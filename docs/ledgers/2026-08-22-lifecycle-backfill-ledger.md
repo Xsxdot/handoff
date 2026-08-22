@@ -26,8 +26,8 @@
 | d_runtime_maintenance | 18 | 0 | 0 | 18：版本探测、发布、工具链、自更新和 skill 结果快照，无持久生命周期状态，跳过 |
 | d_sessions | 20 | 4 | 7 | 13：hostproc/连接与快照结构缺少可证生命周期，跳过 |
 | d_transport | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
-| d_transport_channel | 12 | 待扫 | 待扫 | 待逐符号核查 |
-| d_transport_tunnel | 8 | 待扫 | 待扫 | 待逐符号核查 |
+| d_transport_channel | 12 | 3 | 5 | 9：wire/连接缓存的非生命周期投影跳过；保留 Pool、entry 与预热退避状态 |
+| d_transport_tunnel | 8 | 4 | 9 | 4：Frame/错误/地址等协议值对象无生命周期，保留 Dialer、Listener、appListener 和 secureConn |
 | d_web | 254 | 待扫 | 待扫 | wire/展示类型优先跳过，仍核查真实构造点 |
 | d_workspace | 3 | 待扫 | 待扫 | 待逐符号核查 |
 | **合计** | **707** | **待扫** | **待扫** | |
@@ -42,3 +42,5 @@
 - Task d_runtime_maintenance 完成：18 个 model，0 个 model 有可证生命周期，0 条新增，全部跳过（版本探测、发布、工具链、自更新和 skill 结果快照无持久生命周期状态）。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_runtime_config 完成：26 个 model，0 个 model 有可证生命周期，0 条新增，全部跳过（配置、环境、路径和权限门模型是解析输入或策略快照）。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_coordination_cli 完成：13 个 model，0 个 model 有可证生命周期，0 条新增，全部跳过（CLI 请求/响应、错误和升级命令内部结构无独立生命周期状态）。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
+- Task d_transport_channel 完成：12 个 model，3 个 model 有可证生命周期，新增 5 条，9 个跳过（wire/连接缓存的非生命周期投影）。`NewPool`、`Pool.For`、预热退避状态的构造和 `backoff`/`nextAt` 写入均有源码证据；spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
+- Task d_transport_tunnel 完成：8 个 model，4 个 model 有可证生命周期，新增 9 条，4 个跳过（Frame/错误/地址等协议值对象）。`NewDialer`、`NewListener`、`secure`、`serveSession` 的明确构造，以及 Dialer 隧道字段的写入均有源码证据；spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。

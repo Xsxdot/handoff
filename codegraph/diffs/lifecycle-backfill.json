@@ -60,6 +60,20 @@
     {"who":"n_turn_FrameWriter_BeginTurn","model":"m_turn_FrameWriter","kind":"writer","field":"turn"},
     {"who":"n_turn_FrameWriter_NextPart","model":"m_turn_FrameWriter","kind":"writer","field":"nextPart"},
     {"who":"n_turn_FrameWriter_appendLocked","model":"m_turn_FrameWriter","kind":"writer","field":"seq"},
-    {"who":"n_turn_ParseTrailer","model":"m_turn_Trailer","kind":"creator"}
+    {"who":"n_turn_ParseTrailer","model":"m_turn_Trailer","kind":"creator"},
+    {"who":"n_targetclient_NewPool","model":"m_targetclient_Pool","kind":"creator"},
+    {"who":"n_targetclient_Pool_For","model":"m_targetclient_entry","kind":"creator"},
+    {"who":"n_targetclient_Pool_warmOnce","model":"m_targetclient_warmState","kind":"creator"},
+    {"who":"n_targetclient_Pool_warmOnce","model":"m_targetclient_warmState","kind":"writer","field":"backoff"},
+    {"who":"n_targetclient_Pool_warmOnce","model":"m_targetclient_warmState","kind":"writer","field":"nextAt"},
+    {"who":"n_relay_NewDialer","model":"m_relay_Dialer","kind":"creator"},
+    {"who":"n_relay_NewListener","model":"m_relay_Listener","kind":"creator"},
+    {"who":"n_relay_secure","model":"m_relay_secureConn","kind":"creator"},
+    {"who":"n_relay_Listener_serveSession","model":"m_relay_appListener","kind":"creator"},
+    {"who":"n_relay_Dialer_ensureTunnel","model":"m_relay_Dialer","kind":"writer","field":"session"},
+    {"who":"n_relay_Dialer_ensureTunnel","model":"m_relay_Dialer","kind":"writer","field":"raw"},
+    {"who":"n_relay_Dialer_Close","model":"m_relay_Dialer","kind":"writer","field":"closed"},
+    {"who":"n_relay_Dialer_Close","model":"m_relay_Dialer","kind":"writer","field":"session"},
+    {"who":"n_relay_Dialer_Close","model":"m_relay_Dialer","kind":"writer","field":"raw"}
   ]
 }
