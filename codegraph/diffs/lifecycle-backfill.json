@@ -1,0 +1,33 @@
+{
+  "view": "lifecycle-backfill",
+  "summary": "存量补扫：协调任务、事件工单、工作区与运行状态的可证生命周期关系",
+  "lifecycleAdded": [
+    {"who":"n_store_Store_AppendEvent","model":"m_proto_Event","kind":"creator"},
+    {"who":"n_agentd_Manager_escalatePermission","model":"m_proto_Ticket","kind":"creator"},
+    {"who":"n_store_Store_AnswerTicket","model":"m_proto_Ticket","kind":"writer","field":"answer"},
+    {"who":"n_store_Store_MarkTicketDelivered","model":"m_proto_Ticket","kind":"writer","field":"delivered_at"},
+    {"who":"n_store_Store_VoidPendingTickets","model":"m_proto_Ticket","kind":"writer","field":"answer"},
+    {"who":"n_agentd_Manager_persistProject","model":"m_proto_ProjectLocation","kind":"creator"},
+    {"who":"n_agentd_parseWorktreePorcelain","model":"m_proto_Workspace","kind":"creator"},
+    {"who":"n_agentd_readBackWorktree","model":"m_proto_Workspace","kind":"creator"},
+    {"who":"n_agentd_PrepareWorkspace","model":"m_agentd_Workspace","kind":"creator"},
+    {"who":"n_agentd_Server_handleConsole","model":"m_store_Session","kind":"creator"},
+    {"who":"n_store_Store_RevokeSession","model":"m_store_Session","kind":"writer","field":"revoked_at"},
+    {"who":"n_store_Store_TouchSession","model":"m_store_Session","kind":"writer","field":"last_seen_at"},
+    {"who":"n_store_Store_TouchSession","model":"m_store_Session","kind":"writer","field":"expires_at"},
+    {"who":"n_agentd_newPullTracker","model":"m_agentd_pullTracker","kind":"creator"},
+    {"who":"n_agentd_pullTracker_begin","model":"m_proto_PullState","kind":"creator"},
+    {"who":"n_agentd_pullTracker_stage","model":"m_proto_PullState","kind":"writer","field":"stage"},
+    {"who":"n_agentd_pullTracker_fail","model":"m_proto_PullState","kind":"writer","field":"stage"},
+    {"who":"n_agentd_Server_beginDesktopDownload","model":"m_proto_DownloadState","kind":"creator"},
+    {"who":"n_agentd_Server_setDesktopDownloadStage","model":"m_proto_DownloadState","kind":"writer","field":"stage"},
+    {"who":"n_agentd_Server_setDesktopDownloadFailed","model":"m_proto_DownloadState","kind":"writer","field":"stage"},
+    {"who":"n_agentd_Server_setDesktopDownloadDone","model":"m_proto_DownloadState","kind":"writer","field":"stage"},
+    {"who":"n_turn_FrameWriter_BeginTurn","model":"m_proto_Frame","kind":"creator"},
+    {"who":"n_turn_FrameWriter_Text","model":"m_proto_Frame","kind":"creator"},
+    {"who":"n_turn_FrameWriter_Reasoning","model":"m_proto_Frame","kind":"creator"},
+    {"who":"n_turn_FrameWriter_ToolCall","model":"m_proto_Frame","kind":"creator"},
+    {"who":"n_turn_FrameWriter_ToolResult","model":"m_proto_Frame","kind":"creator"},
+    {"who":"n_turn_FrameWriter_EventRef","model":"m_proto_Frame","kind":"creator"}
+  ]
+}

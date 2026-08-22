@@ -1,0 +1,37 @@
+# 2026-08-22 lifecycle-backfill ledger
+
+## 扫描口径
+
+- 基线：`codegraph/baseline.json`，其中 `kind == "model"` 共 707 个，既有 lifecycle 2 条不重复产出。
+- 法律：`docs/codegraph-scan-recipe.md` 的 creator/writer 纪律；只能把源码中能确认的返回类型、明确构造字面量或状态字段写入记为关系。
+- 产物：`codegraph/diffs/lifecycle-backfill.json` 与本 ledger；不改源码、配方、声明、baseline 或 target。
+- 进度恢复：每个领域完成后追加一行，提交范围用 `HEAD^..HEAD` 表示该领域提交。
+
+## 覆盖统计
+
+| 领域 | model 数 | 有生命周期的 model | lifecycle 条目 | 处置/跳过理由 |
+|---|---:|---:|---:|---|
+| d_coordination | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
+| d_coordination_api | 0 | 待扫 | 待扫 | 入口容器，无直接 model |
+| d_coordination_cli | 13 | 待扫 | 待扫 | 待逐符号核查 |
+| d_coordination_graph | 0 | 待扫 | 待扫 | 无直接 model 容器 |
+| d_coordination_task | 194 | 10 | 27 | 184：wire/配置/展示投影/枚举/无状态服务结构跳过 |
+| d_execution | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
+| d_execution_adapters | 0 | 待扫 | 待扫 | 无直接 model 容器 |
+| d_execution_host | 14 | 待扫 | 待扫 | 待逐符号核查 |
+| d_executor | 97 | 待扫 | 待扫 | 待逐符号核查 |
+| d_ledger | 48 | 待扫 | 待扫 | 待逐符号核查 |
+| d_runtime | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
+| d_runtime_config | 26 | 待扫 | 待扫 | 待逐符号核查 |
+| d_runtime_maintenance | 18 | 待扫 | 待扫 | 待逐符号核查 |
+| d_sessions | 20 | 待扫 | 待扫 | 待逐符号核查 |
+| d_transport | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
+| d_transport_channel | 12 | 待扫 | 待扫 | 待逐符号核查 |
+| d_transport_tunnel | 8 | 待扫 | 待扫 | 待逐符号核查 |
+| d_web | 254 | 待扫 | 待扫 | wire/展示类型优先跳过，仍核查真实构造点 |
+| d_workspace | 3 | 待扫 | 待扫 | 待逐符号核查 |
+| **合计** | **707** | **待扫** | **待扫** | |
+
+## 领域进度
+
+- Task d_coordination_task 完成：194 个 model，10 个 model 有可证生命周期，新增 27 条，184 个跳过（wire/配置/展示投影/枚举/无状态服务结构）。逐条检查了构造返回类型、明确类型字面量与状态字段写入；spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
