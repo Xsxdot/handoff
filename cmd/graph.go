@@ -375,20 +375,32 @@ var graphEntityCmd = &cobra.Command{
 }
 
 var graphResolveCmd = &cobra.Command{
-	Use:   "resolve",
-	Short: "校验文档中的 file#Symbol 符号锚（坏锚即非零退出）",
-	Args:  cobra.NoArgs,
+	Use:   "resolve [file#Symbol]",
+	Short: "校验 file#Symbol 符号锚，或批量检查文档（坏锚即非零退出）",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		defer func() {
 			graphResetState()
 			cmd.Flags().Lookup("doc").Changed = false
 		}()
-		if graphResolveDoc == "" {
-			return fmt.Errorf("resolve 必须指定 --doc")
+		if len(args) > 1 {
+			return fmt.Errorf("resolve 只接受一个 file#Symbol 位置参数")
+		}
+		if graphResolveDoc != "" && len(args) > 0 {
+			return fmt.Errorf("resolve 的 --doc 与 file#Symbol 位置参数互斥")
+		}
+		if graphResolveDoc == "" && len(args) == 0 {
+			return fmt.Errorf("resolve 必须指定 --doc 或 file#Symbol")
 		}
 		v, _, err := graphLoadView()
 		if err != nil {
 			return err
+		}
+		if len(args) == 1 {
+			anchor, err := codegraph.ResolveAnchor(v, graphRepo, args[0])
+			if err != nil {
+				return err
+			}
+			return graphPrintJSON(cmd, anchor)
 		}
 		anchors, err := codegraph.CheckDocAnchors(v, graphRepo, graphResolveDoc)
 		if err != nil {

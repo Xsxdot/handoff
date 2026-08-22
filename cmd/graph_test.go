@@ -237,6 +237,37 @@ func TestGraphResolveDoc(t *testing.T) {
 	}
 }
 
+func TestGraphResolveSingle(t *testing.T) {
+	repo := t.TempDir()
+	copyFixtureRepo(t, fixtureRepo, repo)
+	out, err := runGraph(t, "resolve", "svc/server.go#Do", "--repo", repo)
+	if err != nil {
+		t.Fatalf("图内单锚应通过: %v\n%s", err, out)
+	}
+	var graphAnchor codegraph.AnchorResult
+	if err := json.Unmarshal([]byte(out), &graphAnchor); err != nil {
+		t.Fatalf("单锚 JSON: %v\n%s", err, out)
+	}
+	if graphAnchor.NodeID != "n_do" || graphAnchor.Anchor != "ok" {
+		t.Fatalf("图内单锚: %+v", graphAnchor)
+	}
+
+	if err := os.WriteFile(filepath.Join(repo, "outside.go"), []byte("package outside\n\nfunc Moved() {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err = runGraph(t, "resolve", "outside.go#Moved", "--repo", repo)
+	if err != nil {
+		t.Fatalf("图外单锚应通过: %v\n%s", err, out)
+	}
+	graphAnchor = codegraph.AnchorResult{}
+	if err := json.Unmarshal([]byte(out), &graphAnchor); err != nil {
+		t.Fatalf("图外单锚 JSON: %v\n%s", err, out)
+	}
+	if graphAnchor.Anchor != "moved" || graphAnchor.Line != 3 || graphAnchor.NodeID != "" {
+		t.Fatalf("图外单锚: %+v", graphAnchor)
+	}
+}
+
 func TestGraphContractSet(t *testing.T) {
 	repo := t.TempDir()
 	copyFixtureRepo(t, fixtureRepo, repo)
