@@ -343,6 +343,25 @@ var graphSymCmd = &cobra.Command{
 	},
 }
 
+// graphEntityCmd 查询数据实体的投影链：typed/handroll 投影点与跨语言孪生侧。
+var graphEntityCmd = &cobra.Command{
+	Use:   "entity <model 名或节点 id>",
+	Short: "数据实体的投影链：typed/handroll 投影点 + 跨语言孪生（序列化边界四查入口）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer graphResetState()
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		r, err := codegraph.EntityLookup(v, graphRepo, args[0])
+		if err != nil {
+			return err
+		}
+		return graphPrintJSON(cmd, r)
+	},
+}
+
 // graphSummaryCmd 输出一段图存在性摘要，供 SessionStart hook 注入会话上下文：
 // 让 agent 开局就知道图存在、先查图再 grep。
 var graphSummaryCmd = &cobra.Command{
@@ -368,6 +387,6 @@ func init() {
 	graphCmd.PersistentFlags().BoolVar(&graphStale, "stale", false, "附带保鲜检测结果")
 	graphAbsorbCmd.Flags().StringVar(&absorbCommit, "commit", "", "写入基线 meta 的提交号（缺省从 git HEAD 读取）")
 	graphAbsorbCmd.Flags().StringVar(&absorbBranch, "branch", "", "写入基线 meta 的分支名（缺省从 git 读取）")
-	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd, graphSymCmd, graphSummaryCmd)
+	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd, graphSymCmd, graphEntityCmd, graphSummaryCmd)
 	rootCmd.AddCommand(graphCmd)
 }

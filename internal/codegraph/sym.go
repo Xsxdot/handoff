@@ -41,21 +41,25 @@ func SymLookup(v *View, repoRoot, arg string) (*SymResult, error) {
 	}
 	r := &SymResult{View: v.Name, Query: arg}
 	for _, id := range ids {
-		n := v.Nodes[id]
-		m := SymMatch{ID: id, ViewNode: n}
-		if c, ok := v.Containers[n.Container]; ok {
-			m.Domain = c.Domain
-		}
-		if n.Unscanned || n.File == "" {
-			m.Anchor = "unscanned"
-		} else {
-			line, status := ReAnchor(repoRoot, n.Node)
-			m.Line = line
-			m.Anchor = status
-		}
-		r.Matches = append(r.Matches, m)
+		r.Matches = append(r.Matches, symMatchFor(v, repoRoot, id))
 	}
 	return r, nil
+}
+
+func symMatchFor(v *View, repoRoot, id string) SymMatch {
+	n := v.Nodes[id]
+	m := SymMatch{ID: id, ViewNode: n}
+	if c, ok := v.Containers[n.Container]; ok {
+		m.Domain = c.Domain
+	}
+	if n.Unscanned || n.File == "" {
+		m.Anchor = "unscanned"
+	} else {
+		line, status := ReAnchor(repoRoot, n.Node)
+		m.Line = line
+		m.Anchor = status
+	}
+	return m
 }
 
 // symResolve 返回决议命中的节点 id 集（有序）。三级优先，高优先级命中即短路：

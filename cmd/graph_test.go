@@ -32,7 +32,7 @@ func TestGraphValidate(t *testing.T) {
 	}
 	var r map[string]any
 	if json.Unmarshal([]byte(out), &r) != nil ||
-		r["nodes"].(float64) != 7 || r["unscannedEntries"].(float64) != 1 {
+		r["nodes"].(float64) != 8 || r["unscannedEntries"].(float64) != 1 {
 		t.Fatalf("统计 JSON 形状: %s", out)
 	}
 }
@@ -203,6 +203,24 @@ func TestGraphSymMiss(t *testing.T) {
 	out, err := runGraph(t, "sym", "Nope", "--repo", fixtureRepo)
 	if err == nil || !bytes.Contains([]byte(err.Error()), []byte("图未覆盖")) {
 		t.Fatalf("sym 未命中错误: err=%v out=%s", err, out)
+	}
+}
+
+func TestGraphEntity(t *testing.T) {
+	out, err := runGraph(t, "entity", "Task", "--repo", fixtureRepo)
+	if err != nil {
+		t.Fatalf("entity 应通过: %v\n%s", err, out)
+	}
+	var r struct {
+		Model    map[string]any   `json:"model"`
+		Typed    []map[string]any `json:"typed"`
+		Handroll []map[string]any `json:"handroll"`
+	}
+	if err := json.Unmarshal([]byte(out), &r); err != nil {
+		t.Fatalf("非法 JSON: %v\n%s", err, out)
+	}
+	if r.Model["id"] != "m_task" || len(r.Typed) == 0 || len(r.Handroll) == 0 {
+		t.Fatalf("entity 输出形状: %s", out)
 	}
 }
 
