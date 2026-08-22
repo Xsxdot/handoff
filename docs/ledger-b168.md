@@ -24,7 +24,7 @@
   FAIL github.com/Xsxdot/handoff/cmd 0.004s
   ```
 
-- 基线实测：删去 CLI 的 `States` 长度前置判断后，当前 `internal/ledger.Store.PutWorkflow` 对 `Nodes` 与 `States` 同为空仍会成功写入；本 Task 不改 `internal/ledger`，CLI 只补两字段同时缺失的指路错误。
+- 基线代码检查：当前 `internal/ledger.Store.validateNodes` 对空 `Nodes` 直接返回 nil，`PutWorkflow` 没有其它空定义拒绝；删除前置校验后的该库层行为未单独运行验证（未验证）。本 Task 不改 `internal/ledger`，CLI 只补两字段同时缺失的指路错误。
 
 ## 进度
 
@@ -45,3 +45,8 @@
 
 - Task 2：完成；双裁决第 1 轮通过。规范符合性：逐项列出匹配位置并区分同族/非同族，仅报告未改代码；代码质量：自查命令实际输出与分类一致。
 - Task 2 提交范围：本 ledger；提交信息：`docs(workflow): 记录派生字段校验同族自查`。
+
+## 整分支终审
+
+- 相对分支起点 `408cd912` 的完整 diff 共 3 个文件；终审修复轮第 1 轮仅修正上述“未实际运行却写成实测”的 ledger 记账，代码范围无新增发现。
+- 最终验证：`go test ./cmd/ -count=1` 输出 `ok github.com/Xsxdot/handoff/cmd 5.255s`；`go build ./...` 无输出且退出成功；`go vet ./...` 无输出且退出成功；`gofmt -l .` 无输出且退出成功。
