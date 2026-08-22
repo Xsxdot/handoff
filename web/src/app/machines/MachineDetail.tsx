@@ -11,6 +11,7 @@ import { cn } from '@/lib/utils'
 import type { Machine } from '../../api/types'
 import { MachineDiscipline } from './MachineDiscipline'
 import { MachineEnv } from './MachineEnv'
+import { MachineLaunchers } from './MachineLaunchers'
 import { MachineExecutor } from './MachineExecutor'
 import { machineEndpoint } from './machineEndpoint'
 
@@ -70,6 +71,7 @@ export function MachineDetail({ machine, dirCount, lastProbe }: MachineDetailPro
 
       <MachineDiscipline machine={machine} />
       <MachineEnv machine={machine} />
+      <MachineLaunchers machine={machine} />
       <MachineExecutor machine={machine} />
 
       <p className="mt-3 text-[11px] text-muted-foreground">
