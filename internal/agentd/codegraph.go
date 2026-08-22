@@ -19,7 +19,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/Xsxdot/handoff/internal/codegraph"
+	"github.com/Xsxdot/charter/graph/codegraph"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 

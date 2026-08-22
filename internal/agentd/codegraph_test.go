@@ -10,14 +10,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/codegraph"
+	"github.com/Xsxdot/charter/graph/codegraph"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func codegraphFixtureRepo(t *testing.T) string {
 	t.Helper()
 	repo := t.TempDir()
-	sourceRoot := filepath.Join("..", "codegraph", "testdata", "repo")
+	sourceRoot := filepath.Join("testdata", "codegraph-repo")
 	for _, rel := range []string{
 		"codegraph/baseline.json",
 		"codegraph/diffs/branch-x.json",
