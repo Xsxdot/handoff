@@ -4,7 +4,11 @@
 package grok
 
 import (
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +18,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/coder/websocket"
 )
 
 // TestGrokToolTimingPaired 钉住「工具调用的两端都喂给了段切分器」。
@@ -22,18 +27,16 @@ import (
 // 一次配对的 tool_call / tool_call_update(completed) 必须产出 tool 条目，
 // 且 tool_result 帧上带 dur_ms。
 func TestGrokToolTimingPaired(t *testing.T) {
-	a := New(nil)
-	r := newTestRun(t, a, "timing-paired")
+	updates := []string{
+		`{"update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"run_terminal_command","rawInput":{"command":"echo hi"}}}`,
+		`{"update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","title":"Execute ` + "`echo hi`" + `"}}`,
+	}
+	a, r := newACPTestRun(t, "timing-paired", updates)
+	if err := a.Send(context.Background(), r.taskID, "继续"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
 
-	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
-	h := &acpHandler{a: a, r: r}
-	h.onSessionUpdate([]byte(`{"update":{"sessionUpdate":"tool_call","toolCallId":"call-1","title":"run_terminal_command","rawInput":{"command":"echo hi"}}}`))
-	// 留出可观测的毫秒间隔，避免真实耗时被 Duration.Milliseconds 截成 0
-	time.Sleep(2 * time.Millisecond)
-	h.onSessionUpdate([]byte(`{"update":{"sessionUpdate":"tool_call_update","toolCallId":"call-1","status":"completed","title":"Execute ` + "`echo hi`" + `"}}`))
-	a.reportTiming(r, r.seg.EndTurn())
-
-	timings := drainTimings(r)
+	timings := waitForTurnResult(t, r)
 	var tool *proto.TimingEntry
 	for i := range timings {
 		if timings[i].Kind == proto.TimingKindTool {
@@ -51,6 +54,12 @@ func TestGrokToolTimingPaired(t *testing.T) {
 	}
 	if !hasKind(timings, proto.TimingKindAPI) {
 		t.Error("工具开始时必须收掉当前模型段，缺 api 条目")
+	}
+	if got := countKind(timings, proto.TimingKindAPI); got != 2 {
+		t.Errorf("工具前后的两个模型段都应收尾，实得 %d 个 api 条目", got)
+	}
+	if got := countKind(timings, proto.TimingKindTurn); got < 4 {
+		t.Errorf("真实 BeginTurn、工具两端与 EndTurn 都应上报 turn 条目，实得 %d 个", got)
 	}
 
 	frames := readFrames(t, r)
@@ -90,12 +99,18 @@ func TestGrokToolTimingPaired(t *testing.T) {
 // 所以这里锁的是**保守方向**：不认识就不产 tool_result 帧、不收工具段，
 // 回合照跑。开着的工具由 EndTurn 丢弃、由聚合层的 Partial 标出。
 func TestGrokUnknownToolStatusIsNotTerminal(t *testing.T) {
-	a := New(nil)
-	r := newTestRun(t, a, "timing-unknown-status")
-	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
-	h := &acpHandler{a: a, r: r}
-	h.onSessionUpdate([]byte(`{"update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"x","rawInput":{}}}`))
-	h.onSessionUpdate([]byte(`{"update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"in_progress"}}`))
+	updates := []string{
+		`{"update":{"sessionUpdate":"tool_call","toolCallId":"c1","title":"x","rawInput":{}}}`,
+		`{"update":{"sessionUpdate":"tool_call_update","toolCallId":"c1","status":"in_progress"}}`,
+	}
+	a, r := newACPTestRun(t, "timing-unknown-status", updates)
+	if err := a.Send(context.Background(), r.taskID, "继续"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
+	timings := waitForTurnResult(t, r)
+	if got := countKind(timings, proto.TimingKindTurn); got < 3 {
+		t.Errorf("真实 BeginTurn、工具开始与 EndTurn 都应上报 turn 条目，实得 %d 个", got)
+	}
 
 	for _, f := range readFrames(t, r) {
 		if f.Type == proto.FrameToolResult {
@@ -109,25 +124,89 @@ func TestGrokUnknownToolStatusIsNotTerminal(t *testing.T) {
 	}
 }
 
-// newTestRun 造一个只带 frames/seg 的最小运行态：本文件的测试不碰 ACP 连接。
-func newTestRun(t *testing.T, a *Adapter, id string) *runState {
+// newACPTestRun 通过真实 Send 路径造一个带 ACP 连接的运行态。
+// 测试不直接调用 Segmenter 的回合边界，BeginTurn/EndTurn 必须由 adapter 自己喂入。
+func newACPTestRun(t *testing.T, id string, updates []string) (*Adapter, *runState) {
 	t.Helper()
 	taskDir := t.TempDir()
+	a := New(nil)
+	r := &runState{
+		taskID: id, taskDir: taskDir, repoPath: taskDir,
+		evCh: make(chan executor.AdapterEvent, 256),
+		acc:  newTurnAccumulator(), pending: map[string]pendingPerm{},
+	}
 	fw, err := turn.WriterFor(taskDir, a.log)
 	if err != nil {
 		t.Fatalf("WriterFor: %v", err)
 	}
-	r := &runState{
-		taskID: id, taskDir: taskDir,
-		evCh: make(chan executor.AdapterEvent, 256),
-		acc:  newTurnAccumulator(), pending: map[string]pendingPerm{},
-		frames: fw, seg: turn.NewSegmenter(nil),
+	r.frames, r.seg = fw, turn.NewSegmenter(nil)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := websocket.Accept(w, req, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		for {
+			_, data, err := conn.Read(req.Context())
+			if err != nil {
+				return
+			}
+			var in struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if json.Unmarshal(data, &in) != nil || in.Method != "session/prompt" {
+				continue
+			}
+			for i, update := range updates {
+				if i > 0 {
+					// 留出可观测的毫秒间隔，避免真实耗时被 Duration.Milliseconds 截成 0。
+					time.Sleep(2 * time.Millisecond)
+				}
+				msg := `{"jsonrpc":"2.0","method":"session/update","params":` + update + `}`
+				if err := conn.Write(req.Context(), websocket.MessageText, []byte(msg)); err != nil {
+					return
+				}
+			}
+			response := fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"stopReason":"end_turn"}}`, in.ID)
+			if err := conn.Write(req.Context(), websocket.MessageText, []byte(response)); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	cli, err := DialACP(context.Background(), "ws"+srv.URL[len("http"):], &acpHandler{a: a, r: r}, a.log)
+	if err != nil {
+		t.Fatalf("DialACP: %v", err)
 	}
-	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
-		t.Fatalf("BeginTurn: %v", err)
+	r.cli = cli
+	a.mu.Lock()
+	a.runs[id] = r
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = a.Stop(id) })
+	return a, r
+}
+
+// waitForTurnResult 消费真实回合的事件直到 finishTurn 分类事件到达。
+// 这样 EndTurn 缺失时不会被初始 turn 条目掩盖。
+func waitForTurnResult(t *testing.T, r *runState) []proto.TimingEntry {
+	t.Helper()
+	var timings []proto.TimingEntry
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case ev := <-r.evCh:
+			if ev.Type == "usage" && ev.Timing != nil {
+				timings = append(timings, *ev.Timing)
+			}
+			if ev.Type == "result" || ev.Type == "question" {
+				return timings
+			}
+		case <-deadline:
+			t.Fatal("等待真实 finishTurn 结果超时")
+		}
 	}
-	r.textPart = r.frames.NextPart()
-	return r
 }
 
 // drainTimings 取走通道里全部耗时条目（非阻塞排空）。
@@ -152,6 +231,16 @@ func hasKind(es []proto.TimingEntry, k proto.TimingKind) bool {
 		}
 	}
 	return false
+}
+
+func countKind(es []proto.TimingEntry, k proto.TimingKind) int {
+	var n int
+	for _, e := range es {
+		if e.Kind == k {
+			n++
+		}
+	}
+	return n
 }
 
 // readFrames 读回本任务已落盘的帧。
