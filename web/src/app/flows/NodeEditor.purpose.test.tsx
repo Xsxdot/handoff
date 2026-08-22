@@ -3,7 +3,9 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { NodeEditor } from './NodeEditor'
 
+// index 是 B169 之后的必填 prop：控件 id 用节点下标当稳定键，不再由列名生成。
 const props = {
+  index: 0,
   templates: ['feature-impl'],
   disciplines: ['implement', 'review'],
   nodeNames: ['进行中', '待审阅'],
