@@ -29,6 +29,23 @@ import (
 // 这条断言把「Pool 满足 Machines」钉在编译期，签名漂移当场编译失败。
 var _ Machines = (*targetclient.Pool)(nil)
 
+type safeBuf struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *safeBuf) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *safeBuf) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
 // fakeMachines 是 Machines 的内存实现：清单与客户端可在测试中随时替换，
 // 用来模拟控制台运行期增 / 改 / 删机器。
 //
@@ -234,7 +251,7 @@ func TestMirrorDropsSubWhenMachineRemoved(t *testing.T) {
 	linkedCard(t, s, "gone-box", "T1")
 	mach := machinesWith(t, "gone-box")
 	calls := make(chan srcCall, 4)
-	var logs bytes.Buffer
+	var logs safeBuf
 	oldLogger := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, nil)))
 	t.Cleanup(func() { slog.SetDefault(oldLogger) })
