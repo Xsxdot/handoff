@@ -1581,7 +1581,13 @@ func (a *Adapter) mapToolPart(r *runState, tool, key, status string,
 	if key == "" {
 		return // 没有配对键就没法配对，跳过
 	}
-	if r.toolStages[key] == toolStageNone {
+	st, terminal := toolResultStatus(status)
+	// pending 的 state.input 在真机上是空对象；等第一次拿到非空入参再开段，
+	// 这样 Segmenter 的 Detail 与 tool_call 帧同时拿到真实命令。pending→首个
+	// running 之间没有审批等待，审批等待发生在后续 running 之间，所以此时机
+	// 不会缩短契约要求的墙钟口径。
+	// 若直到终态仍没有非空入参，终态本身触发一次诚实的空对象回落。
+	if r.toolStages[key] == toolStageNone && (toolInputReady(input) || terminal) {
 		r.toolStages[key] = toolStageStarted
 		a.reportTiming(r, r.seg.ToolStart(key, tool, toolDetail(input)))
 		// 帧里存 state.input 全文（只受头尾截断约束）
@@ -1589,7 +1595,6 @@ func (a *Adapter) mapToolPart(r *runState, tool, key, status string,
 			a.log.Warn("写 tool_call 帧失败，不影响回合", "task", r.taskID, "cause", err)
 		}
 	}
-	st, terminal := toolResultStatus(status)
 	if !terminal || r.toolStages[key] == toolStageDone {
 		return
 	}
@@ -1634,6 +1639,19 @@ func toolDetail(input json.RawMessage) string {
 		return in.Command
 	}
 	return string(input)
+}
+
+// toolInputReady 判断 state.input 是否已经带有实际入参。
+// opencode 的 pending 事件稳定地带空对象；空对象不是有效凭据，不能据此写死
+// tool_call 帧或 TimingEntry.Detail。state.input 契约上是对象，非对象值保守地视为
+// 已有内容，终态回落由 mapToolPart 的 terminal 分支负责。
+func toolInputReady(input json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(input, &fields) == nil {
+		return len(fields) > 0
+	}
+	trimmed := strings.TrimSpace(string(input))
+	return trimmed != "" && trimmed != "null"
 }
 
 // toolStage 是一个 tool part 的推进阶段，用于去重（见 runState.toolStages）。
