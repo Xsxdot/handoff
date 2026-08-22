@@ -117,9 +117,14 @@ func (s *Store) TaskTiming(taskID string) (*proto.TaskTiming, error) {
 //   - OtherMS = max(0, Total − API − ToolSpan)。取 max 是**防御不是语义**，
 //     真出现负数说明采集有 bug，此时 Partial 必为真
 //
-// 关于 Partial 的一个反直觉推论：**运行中的任务几乎总是 Partial**。回合开始时
-// 就写了 turn 行，而模型段要到第一次 ToolStart 或 EndTurn 才关闭——所以在跑的
-// 那个回合没有 api 行。这不是 bug，正是「other 此刻偏大」的诚实表达。
+// 关于 Partial 的窗口（2026-08-22 真机实测，别按直觉推）：它只在「回合已开始、
+// 但本回合还没有任何一个模型段收口」那一小段时间里为真——回合开始就写了 turn
+// 行，而首个 api 行要等第一次 ToolStart（或 EndTurn）才落。一旦第一次工具调用
+// 发生，该回合就有了 api 行，partial 转 false 并一路保持。
+//
+// 所以**不要**把它读成「运行中就一定 Partial」：真机上一个跑了两分钟的任务，
+// 绝大部分时间都是 partial=false 且三分法自洽。它真正标出的是「有回合缺段」，
+// 常见来源是那个开头窗口、以及 executor 中途退出留下的半条账。
 func aggregateTiming(rows []timingRow) *proto.TaskTiming {
 	if len(rows) == 0 {
 		return nil
