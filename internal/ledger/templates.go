@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"reflect"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/discipline"
@@ -144,24 +145,45 @@ func (s *Store) ListTemplateNames() ([]string, error) {
 
 // reviewVerdictContract 审阅输出契约原文——进审阅模板 prompt，随模板
 // 版本化（改契约 = 出新模板版本，spec §5）。
-const reviewVerdictContract = "回合结束时，在最终报文末尾输出你的裁决，格式为一个 fenced code block，" +
+const reviewVerdictContract = "回合结束时，在最终报文正文中输出你的裁决，格式为一个 fenced code block，" +
 	"语言标记 handoff-verdict，内容是 JSON：\n" +
 	"```handoff-verdict\n" +
 	`{"verdict":"pass"或"fail","findings":[{"severity":"major"或"minor","summary":"一句话","file":"可选路径"}],"notes":"可选"}` +
 	"\n```\n" +
 	"只输出一个该 block；解析不到会转人工，不要省略。\n" +
-	// why 要专门写收尾行的确切形状：回合铁律只给了两个出口——提问，或
-	// 「commit 后输出 branch/commit/summary」。审阅被禁止提交，于是它唯一
-	// 合法的出口只剩提问，三个执行器都照做把裁决塞进了工单（2026-08-19
-	// 真机实测）。协议其实允许只带 summary 的收尾行，这里把它说明白。
+	"裁决块可以出现在收尾行之前或之后；节点会从完整回合正文扫描它。\n" +
+	"收尾行：你不提交，所以本回合最后一行输出 " + "`" + `{"summary":"<简短摘要>"}` + "`" + "。\n" +
+	"不要用提问工单发裁决——工单是提问通道，节点只读回合末尾的最终报文。"
+
+// legacyReviewVerdictContract 是 B176 之前的出厂契约，仅用于识别存量的
+// 未被用户修改的 v1 模板。模板是不可变数据，不能用当前常量覆盖用户版本；
+// 只有完整匹配旧出厂定义时才追加新版本。
+const legacyReviewVerdictContract = "回合结束时，在最终报文末尾输出你的裁决，格式为一个 fenced code block，" +
+	"语言标记 handoff-verdict，内容是 JSON：\n" +
+	"```handoff-verdict\n" +
+	`{"verdict":"pass"或"fail","findings":[{"severity":"major"或"minor","summary":"一句话","file":"可选路径"}],"notes":"可选"}` +
+	"\n```\n" +
+	"只输出一个该 block；解析不到会转人工，不要省略。\n" +
 	"收尾行：你不提交，所以本回合最后一行输出 " + "`" + `{"summary":"<裁决块原文，换行写成 \n>"}` + "`" + "。\n" +
 	"不要用提问工单发裁决——工单是提问通道，节点只读回合末尾的最终报文。"
 
 // implVerdictContract 实现类裁决节点（契约冻结/集成）的输出契约。与
 // reviewVerdictContract 的区别只在收尾：实现节点要正常 commit，收尾行按
-// 纪律块输出 branch/commit/summary；裁决块写在同一条最终报文里、收尾行之前
-// （ParseVerdict 全文扫 fenced block 取最后一个，两者共存不冲突）。
+// 纪律块输出 branch/commit/summary；裁决块与收尾行都写在同一条最终报文正文里，
+// 两者前后顺序均可（ParseVerdict 全文扫 fenced block 取最后一个）。
 const implVerdictContract = "\n回合结束时，在最终报文里输出你的自检裁决，格式为一个 fenced code block，" +
+	"语言标记 handoff-verdict，内容是 JSON：\n" +
+	"```handoff-verdict\n" +
+	`{"verdict":"pass"或"fail","findings":[{"severity":"major"或"minor","summary":"一句话","file":"可选路径"}],"notes":"可选"}` +
+	"\n```\n" +
+	"只输出一个该 block；解析不到会转人工，不要省略。\n" +
+	"pass 的唯一依据是你真实跑到的结果（编译/测试输出原文）；没跑到结果不许写 pass。\n" +
+	"你正常 commit；裁决块与收尾行都放在同一条最终报文正文里，块可在收尾行之前或之后；" +
+	"收尾行照纪律块输出 branch/commit/summary。"
+
+// legacyImplVerdictContract 与 legacyReviewVerdictContract 同为存量识别器，
+// 不参与新模板渲染；保留原文是为了让升级只触及未改过的内建模板。
+const legacyImplVerdictContract = "\n回合结束时，在最终报文里输出你的自检裁决，格式为一个 fenced code block，" +
 	"语言标记 handoff-verdict，内容是 JSON：\n" +
 	"```handoff-verdict\n" +
 	`{"verdict":"pass"或"fail","findings":[{"severity":"major"或"minor","summary":"一句话","file":"可选路径"}],"notes":"可选"}` +
@@ -234,8 +256,28 @@ func (s *Store) EnsureDefaultTemplates() error {
 			Prompt:     domainIntegrationPrompt + implVerdictContract,
 		},
 	}
+	// 只列出本次契约变更涉及的旧出厂 prompt。比较完整 TemplateDef 后才
+	// 升级，避免把用户自行修改过的同名模板误判成内建模板。
+	legacyPrompts := map[string]string{
+		"review-generic": "审阅卡 {{CARD}}（{{TITLE}}）对应分支的完整 diff：spec 符合性（要求全实现、没有多做）+ 代码质量双裁决。\n" +
+			"验收判据：{{ACCEPT}}\n" + legacyReviewVerdictContract,
+		"domain-ticket0":     domainTicket0Prompt + legacyImplVerdictContract,
+		"domain-integration": domainIntegrationPrompt + legacyImplVerdictContract,
+	}
 	for name, def := range defaults {
-		if _, err := s.GetTemplate(name, 0); err == nil {
+		if current, err := s.GetTemplate(name, 0); err == nil {
+			if oldPrompt, ok := legacyPrompts[name]; ok {
+				legacyDef := def
+				legacyDef.Prompt = oldPrompt
+				if reflect.DeepEqual(current.Def, legacyDef) {
+					version, err := s.PutTemplate(name, def)
+					if err != nil {
+						return err
+					}
+					log().Info("升级默认派发模板", "name", name,
+						"from_version", current.Version, "version", version)
+				}
+			}
 			continue
 		} else if !errors.Is(err, ErrNotFound) {
 			return err

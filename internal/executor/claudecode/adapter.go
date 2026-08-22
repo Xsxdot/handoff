@@ -798,6 +798,8 @@ func (a *Adapter) mapResult(r *runState, m streamMsg) {
 		r.turnMu.Unlock()
 	}
 	kind, tr := turn.ParseTrailer(text)
+	a.log.Info("claude 回合收尾", "task", r.taskID, "kind", kind,
+		"final_text_len", len([]rune(text)))
 	switch kind {
 	case "ask":
 		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(tr.Question)})
@@ -805,6 +807,7 @@ func (a *Adapter) mapResult(r *runState, m streamMsg) {
 		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 			OK: true, Branch: tr.Branch, CommitHash: tr.Commit,
 			Summary: tr.Summary, SessionID: r.session,
+			FinalText: turn.FinalText(text),
 		}})
 	default:
 		a.fallbackClassify(r, text)

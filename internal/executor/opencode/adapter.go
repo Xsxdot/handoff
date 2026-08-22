@@ -1975,6 +1975,8 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 	// 误抑制掉——任务停在 running 无人知晓，正是 B49 要消灭的形态
 	askedViaTool := r.takeAskedViaTool()
 	kind, t := turn.ParseTrailer(text)
+	a.log.Info("opencode 回合收尾", "task", r.taskID, "kind", kind,
+		"asked_via_tool", askedViaTool, "final_text_len", len([]rune(text)))
 	switch kind {
 	case "ask":
 		// 回合级去重（B49 §4.4）：本回合已通过 question 工具问过协调者时，
@@ -1992,6 +1994,7 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
 			OK: true, Branch: t.Branch, CommitHash: t.Commit,
 			Summary: t.Summary, SessionID: r.session,
+			FinalText: turn.FinalText(text),
 		}})
 	case "none":
 		a.fallbackClassify(r, text)

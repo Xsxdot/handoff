@@ -26,6 +26,12 @@ func TestTemplateVersioningAndDefaults(t *testing.T) {
 	if !strings.Contains(rv.Def.Prompt, "handoff-verdict") {
 		t.Fatalf("审阅模板缺输出契约: %q", rv.Def.Prompt)
 	}
+	if !strings.Contains(rv.Def.Prompt, "正文中") || !strings.Contains(rv.Def.Prompt, "<简短摘要>") {
+		t.Fatalf("审阅模板未同步正文传输契约: %q", rv.Def.Prompt)
+	}
+	if strings.Contains(rv.Def.Prompt, "裁决块原文") {
+		t.Fatalf("审阅模板仍要求把裁决块塞进 summary: %q", rv.Def.Prompt)
+	}
 	if err := s.EnsureDefaultTemplates(); err != nil {
 		t.Fatal(err)
 	}
@@ -48,6 +54,63 @@ func TestTemplateVersioningAndDefaults(t *testing.T) {
 	tp3, _ := s.GetTemplate("feature-impl", 0)
 	if tp3.Def.ModelByTarget["mac-02"] != "gpt-5.6-luna" {
 		t.Fatalf("覆盖丢失: %+v", tp3.Def)
+	}
+}
+
+// TestVerdictTemplateContractUpgradeCreatesNewVersion 保证契约变更会给未改动的
+// 出厂模板追加版本，同时保留旧版本；用户改过同名模板时不应被 seed 覆盖。
+func TestVerdictTemplateContractUpgradeCreatesNewVersion(t *testing.T) {
+	s := newTestStore(t)
+	legacy := map[string]TemplateDef{
+		"review-generic": {
+			Executor: "grok", Purpose: "review", BranchPrefix: "cards",
+			Discipline: discipline.NameReview,
+			Prompt: "审阅卡 {{CARD}}（{{TITLE}}）对应分支的完整 diff：spec 符合性（要求全实现、没有多做）+ 代码质量双裁决。\n" +
+				"验收判据：{{ACCEPT}}\n" + legacyReviewVerdictContract,
+		},
+		"domain-ticket0": {
+			Executor: "codex", Purpose: "ticket0", BranchPrefix: "cards",
+			Discipline: discipline.NameImplement,
+			Prompt:     domainTicket0Prompt + legacyImplVerdictContract,
+		},
+		"domain-integration": {
+			Executor: "codex", Purpose: "integration", BranchPrefix: "cards",
+			Discipline: discipline.NameImplement,
+			Prompt:     domainIntegrationPrompt + legacyImplVerdictContract,
+		},
+	}
+	for name, def := range legacy {
+		if version, err := s.PutTemplate(name, def); err != nil || version != 1 {
+			t.Fatalf("写入 %s v1: version=%d err=%v", name, version, err)
+		}
+	}
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("升级默认模板: %v", err)
+	}
+	for name := range legacy {
+		latest, err := s.GetTemplate(name, 0)
+		if err != nil {
+			t.Fatalf("读取 %s 最新版本: %v", name, err)
+		}
+		if latest.Version != 2 {
+			t.Fatalf("%s 应追加 v2，实得 v%d", name, latest.Version)
+		}
+		if latest.Def.Prompt == legacy[name].Prompt {
+			t.Fatalf("%s v2 仍是旧契约", name)
+		}
+		old, err := s.GetTemplate(name, 1)
+		if err != nil || old.Def.Prompt != legacy[name].Prompt {
+			t.Fatalf("%s v1 不应被改写: %+v err=%v", name, old.Def, err)
+		}
+	}
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("重复 seed: %v", err)
+	}
+	for name := range legacy {
+		latest, _ := s.GetTemplate(name, 0)
+		if latest.Version != 2 {
+			t.Fatalf("重复 seed 不应追加 %s v%d", name, latest.Version)
+		}
 	}
 }
 
@@ -173,6 +236,9 @@ func TestDefaultDomainTemplates(t *testing.T) {
 		tpl, _ := s.GetTemplate(name, 0)
 		if !strings.Contains(tpl.Def.Prompt, "handoff-verdict") {
 			t.Fatalf("%s 缺裁决输出契约", name)
+		}
+		if !strings.Contains(tpl.Def.Prompt, "之前或之后") {
+			t.Fatalf("%s 未同步裁决块位置契约", name)
 		}
 	}
 	for name, want := range map[string]string{

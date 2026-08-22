@@ -54,6 +54,36 @@ func TestFailedPayloadCarriesGitTruth(t *testing.T) {
 	}
 }
 
+func TestCompletedPayloadCarriesFinalTextAsOptionalField(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	createRunningTask(t, st, "final-text")
+	finalText := "审阅正文\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"
+	m.handleResult("final-text", executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK: true, Branch: "handoff/B176", CommitHash: "abc", Summary: "简短摘要", FinalText: finalText,
+	}})
+
+	ev := lastEventOfType(t, m, "final-text", string(proto.EventTypeCompleted))
+	var payload completedPayload
+	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.FinalText == nil || *payload.FinalText != finalText {
+		t.Fatalf("completed payload 未保全 final_text: %+v", payload)
+	}
+	if payload.Summary != "简短摘要" || payload.Branch != "handoff/B176" || payload.CommitHash != "abc" {
+		t.Fatalf("新增字段不应改变既有 payload: %+v", payload)
+	}
+
+	createRunningTask(t, st, "legacy-result")
+	m.handleResult("legacy-result", executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK: true, Branch: "handoff/legacy", CommitHash: "def", Summary: "旧消费者摘要",
+	}})
+	legacy := lastEventOfType(t, m, "legacy-result", string(proto.EventTypeCompleted))
+	if strings.Contains(string(legacy.Payload), `"final_text"`) {
+		t.Fatalf("无正文时新增字段必须省略，保持 additive optional: %s", legacy.Payload)
+	}
+}
+
 func TestFailedPayloadOmitsGitTruthWhenAbsent(t *testing.T) {
 	m, st, _, _ := newTestManager(t)
 	mustTaskWithTicket(t, st, "t2", proto.TaskStateRunning)

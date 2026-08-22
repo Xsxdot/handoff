@@ -30,6 +30,18 @@ func TestTailRunesKeepsSuffix(t *testing.T) {
 	}
 }
 
+func TestFinalTextKeepsVerdictAtTail(t *testing.T) {
+	verdict := "```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"
+	text := strings.Repeat("前文 ", turn.FinalTextLimit+10) + verdict
+	got := turn.FinalText(text)
+	if !strings.HasSuffix(got, verdict) {
+		t.Fatalf("正文尾部窗口必须保全裁决块，尾部为 %q", turn.TailRunes(got, 120))
+	}
+	if len([]rune(got)) != turn.FinalTextLimit {
+		t.Fatalf("正文窗口应为 %d rune，实际 %d", turn.FinalTextLimit, len([]rune(got)))
+	}
+}
+
 // TestClampQuestionPointsAtRenderLog 钉住 ClampQuestion 与 TruncateMarked 的
 // **语义差异**：question 的全文只在 render.log 里，截断后必须指路。
 // opencode 的 regression_group_a_test.go 断言同一件事，这里是搬包后的同源钉子。
