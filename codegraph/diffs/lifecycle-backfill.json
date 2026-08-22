@@ -37,6 +37,9 @@
     {"who":"n_ledger_Store_addComment","model":"m_ledger_Event","kind":"creator"},
     {"who":"n_ledger_Store_OpenDecision","model":"m_ledger_Decision","kind":"creator"},
     {"who":"n_ledger_Store_AnswerDecision","model":"m_ledger_Decision","kind":"writer","field":"status"},
-    {"who":"n_ledger_Store_MigrateCardWorkflow","model":"m_ledger_WorkflowMigration","kind":"creator"}
+    {"who":"n_ledger_Store_MigrateCardWorkflow","model":"m_ledger_WorkflowMigration","kind":"creator"},
+    {"who":"n_prochost_CheckAdmission","model":"m_prochost_Admission","kind":"creator"},
+    {"who":"n_prochost_Start","model":"m_prochost_Handle","kind":"creator"},
+    {"who":"n_prochost_AcquireLock","model":"m_prochost_Lock","kind":"creator"}
   ]
 }
