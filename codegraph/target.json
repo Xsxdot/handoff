@@ -1,9 +1,9 @@
 {
   "meta": {
-    "version": 1,
+    "version": 2,
     "project": "handoff"
   },
-  "domains": [
+  "subsystems": [
     {
       "id": "d_ledger",
       "name": "账本域",
@@ -109,7 +109,6 @@
       ]
     }
   ],
-  "assignments": [],
   "assembly": [
     "main.go"
   ],
@@ -126,19 +125,16 @@
     {
       "from": "d_cli",
       "to": "d_controlplane",
-      "entries": [],
       "legacyBudget": 12
     },
     {
       "from": "d_cli",
       "to": "d_executor",
-      "entries": [],
       "legacyBudget": 7
     },
     {
       "from": "d_cli",
       "to": "d_host",
-      "entries": [],
       "legacyBudget": 6
     },
     {
@@ -162,7 +158,6 @@
     {
       "from": "d_cli",
       "to": "d_release",
-      "entries": [],
       "legacyBudget": 8
     },
     {
@@ -222,7 +217,6 @@
     {
       "from": "d_controlplane",
       "to": "d_release",
-      "entries": [],
       "legacyBudget": 14
     },
     {
@@ -239,13 +233,11 @@
       "entries": [
         "proto 实体",
         "proto.Task"
-      ],
-      "legacyBudget": 0
+      ]
     },
     {
       "from": "d_executor",
       "to": "d_host",
-      "entries": [],
       "legacyBudget": 9
     },
     {
@@ -259,13 +251,11 @@
     {
       "from": "d_localint",
       "to": "d_remote",
-      "entries": [],
       "legacyBudget": 2
     },
     {
       "from": "d_release",
       "to": "d_localint",
-      "entries": [],
       "legacyBudget": 1
     },
     {
@@ -273,16 +263,14 @@
       "to": "d_remote",
       "entries": [
         "client.Client"
-      ],
-      "legacyBudget": 0
+      ]
     },
     {
       "from": "d_remote",
       "to": "d_contract",
       "entries": [
         "proto 实体"
-      ],
-      "legacyBudget": 0
+      ]
     },
     {
       "from": "d_remote",
@@ -290,8 +278,7 @@
       "entries": [
         "config 实体",
         "config.Target"
-      ],
-      "legacyBudget": 0
+      ]
     }
   ]
 }
