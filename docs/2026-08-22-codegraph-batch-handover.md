@@ -51,6 +51,7 @@ charter 架构法（`~/workspace/charter/skills/architecture-law/SKILL.md` 术�
      > 69 条 new-direction 里 65 假 4 真。**本批次需在刀 0/1 之外一并修边解析**
      > （Go 边 import 门控、认限定符、禁跨语言裸名连边），先修工具、重扫干净基线，
      > 再做 target.json 标定。详见 backlog B173 修订。
+     > 假边已按门控清洗（4748→4642 边），`graph check` 收敛到 18 条真实红。
 
    - handoff-server 仓 `codegraph/target.json`：`domains` 数组 4 条（`d_tunnel`/`d_account`/`d_admin`/`d_console`，带 boundary/logic 类型与 `contracts` 依赖方向）——按架构法判据这些是**子系统**。
 
