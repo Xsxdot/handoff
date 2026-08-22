@@ -55,6 +55,9 @@ func TestOpencodeToolTimingPaired(t *testing.T) {
 	if tools[0].DurMS <= 0 {
 		t.Errorf("配对成功时耗时应为正，实得 %d", tools[0].DurMS)
 	}
+	if tools[0].Detail != "echo hi" {
+		t.Errorf("tool TimingEntry.Detail 应取非空 input.command，实得 %q", tools[0].Detail)
+	}
 
 	var calls, results []proto.Frame
 	for _, f := range readFrames(t, r) {
@@ -68,6 +71,9 @@ func TestOpencodeToolTimingPaired(t *testing.T) {
 	if len(calls) != 1 {
 		t.Fatalf("重复的 running 不得重复产 tool_call 帧，实得 %d 条", len(calls))
 	}
+	if !strings.Contains(calls[0].Input, `"echo hi"`) {
+		t.Errorf("tool_call 帧应等到非空 input 后写入并含真实命令，实得 %q", calls[0].Input)
+	}
 	if len(results) != 1 {
 		t.Fatalf("重复的终态不得重复产 tool_result 帧，实得 %d 条", len(results))
 	}
@@ -76,6 +82,47 @@ func TestOpencodeToolTimingPaired(t *testing.T) {
 	}
 	if !strings.Contains(results[0].Output, "hi") {
 		t.Errorf("tool_result 帧应带 state.output，实得 %q", results[0].Output)
+	}
+}
+
+// TestOpencodeToolInputFallsBackAtTerminal 钉住没有任何非空 input 时的诚实回落：
+// 终态前仍应补一条 tool_call 帧，但不能伪造命令内容。
+func TestOpencodeToolInputFallsBackAtTerminal(t *testing.T) {
+	a, _ := startFakeRun(t, newFakeServer(t), "timing-empty-input", t.TempDir(), t.TempDir())
+	r := a.lookup("timing-empty-input")
+	events, done := collectEvents(r)
+	const base = `"id":"prt_empty","messageID":"msg_empty","type":"tool","tool":"bash","callID":"call_empty"`
+	feedPart(t, a, r, `{"part":{`+base+`,"state":{"status":"pending","input":{}}}}`)
+	feedPart(t, a, r, `{"part":{`+base+`,"state":{"status":"completed","input":{},"output":"无输入"}}}`)
+	finishIdleForTimingTest(a, r)
+	timings := waitForResultEvents(t, events)
+	_ = a.Stop(r.taskID)
+	<-done
+
+	var calls []proto.Frame
+	for _, f := range readFrames(t, r) {
+		if f.Type == proto.FrameToolCall {
+			calls = append(calls, f)
+		}
+	}
+	if len(calls) != 1 {
+		t.Fatalf("终态前应补恰好一条回落 tool_call 帧，实得 %d 条", len(calls))
+	}
+	if calls[0].Input != "{}" {
+		t.Errorf("没有非空 input 时应诚实保留空对象，实得 %q", calls[0].Input)
+	}
+	var tool *proto.TimingEntry
+	for _, e := range timings {
+		if e.Kind == proto.TimingKindTool {
+			copy := e
+			tool = &copy
+		}
+	}
+	if tool == nil {
+		t.Fatal("终态回落仍应产出 tool TimingEntry")
+	}
+	if tool.Detail != "{}" {
+		t.Errorf("没有非空 input 时 Detail 应诚实保留空对象，实得 %q", tool.Detail)
 	}
 }
 
