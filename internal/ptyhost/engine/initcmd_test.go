@@ -21,6 +21,11 @@ import (
 	"github.com/Xsxdot/handoff/internal/ptyhost/engine"
 )
 
+// shellBannerWait 是假 shell 启动前提的宽松死线，不是本功能的性能判据。
+// 全量并发时进程调度可能让假 shell 晚于平时吐出 banner；真正的就绪写入
+// 判据从 banner 已到达之后开始计时。
+const shellBannerWait = 30 * time.Second
+
 // fakeShell 写一个可执行的假 shell 并返回其路径。
 //
 // body 之后统一接一个 read 回显循环：这样「命令有没有被写进去」可以通过
@@ -90,9 +95,11 @@ func TestInitCommandEmptyKeepsOldBehaviour(t *testing.T) {
 		Shell: sh, BasePath: t.TempDir(), BaseKind: "workspace",
 		Env: os.Environ(),
 	})
-	if !wait("READY", 5*time.Second) {
+	if !wait("READY", shellBannerWait) {
 		t.Fatal("假 shell 的 banner 没出现，用例前提不成立")
 	}
+	// 前提已经成立后才开始观察「空命令确实没有写入」；否则 shell 尚未启动
+	// 就结束这段等待，会把测试变成与启动时序无关的假绿。
 	if wait("GOT:", 1500*time.Millisecond) {
 		t.Fatal("InitCommand 为空时不得向 PTY 写入任何东西")
 	}
@@ -102,16 +109,21 @@ func TestInitCommandEmptyKeepsOldBehaviour(t *testing.T) {
 // 远早于 3s 兜底。
 func TestInitCommandWrittenOnFirstByte(t *testing.T) {
 	sh := fakeShell(t, "printf 'READY\\n'")
-	start := time.Now()
 	_, _, wait := openAndCollect(t, ptyhost.OpenOptions{
 		Shell: sh, BasePath: t.TempDir(), BaseKind: "workspace",
 		Env: os.Environ(), InitCommand: "echo hello",
 	})
+	if !wait("READY", shellBannerWait) {
+		t.Fatal("假 shell 的 banner 没出现，用例前提不成立")
+	}
+	readyAt := time.Now()
 	if !wait("GOT:echo hello", 5*time.Second) {
 		t.Fatal("首字节到达后应写入启动命令")
 	}
-	if el := time.Since(start); el >= 2*time.Second {
-		t.Errorf("首字节路径不应等到兜底：耗时 %v", el)
+	// 只量 banner 到回显的间隔：假 shell 启动多慢都属于前提，不应污染
+	// 首字节路径判据。若实现退化成无条件等满 3s，这里仍会红。
+	if el := time.Since(readyAt); el >= time.Second {
+		t.Errorf("首字节路径不应等到兜底：banner 后耗时 %v", el)
 	}
 }
 
@@ -140,6 +152,9 @@ func TestInitCommandWritesExactlyCommandPlusNewline(t *testing.T) {
 		Shell: sh, BasePath: t.TempDir(), BaseKind: "workspace",
 		Env: os.Environ(), InitCommand: "echo hello",
 	})
+	if !wait("READY", shellBannerWait) {
+		t.Fatal("假 shell 的 banner 没出现，用例前提不成立")
+	}
 	if !wait("GOT:echo hello", 5*time.Second) {
 		t.Fatal("应写入启动命令")
 	}
