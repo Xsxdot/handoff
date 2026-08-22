@@ -158,6 +158,19 @@ tests 中每个 TestRef 字段：
 
 ## 硬纪律（历次扫描验证过的坑）
 
+- **连边前必须确认 callee 就是被调的那个符号**（B173 假边事故后新增；08-22 全量重扫
+  按裸名撞库产生了 106 条假边，如 `os.ReadFile` 被连到 `agentd.ReadFile`、TSX 本地
+  `save()` 被连到 Go 未导出的 `config.save`）：
+  - 带限定符的调用按限定符解析：`os.ReadFile`、`json.NewDecoder(...).Decode` 是标准库，
+    标准库与第三方符号不入图、也不连边；
+  - Go 跨包边必须满足「调用方包 import 了被调方包」；方法调用先定 receiver 类型再归属，
+    定不出类型的方法调用**宁缺毋滥（不连边）**；
+  - 同名不是证据：常用名（save/close/match/Decode/ReadFile）在多个包里都有定义，
+    名字相同只说明撞名，不说明调用；
+  - 跨语言（TS↔Go）禁止调用边：前端调后端走 HTTP，不是函数调用；wire 类型关联走
+    projections/twins，不走 edges；
+  - 收尾自检的 `handoff graph validate` 含机械门控（跨包无 import / 跨语言的边直接
+    非零退出），扫描产物过不了门控就是不合格。
 - 容器按 struct 一级：Go 方法按 receiver 归 pkg.Receiver 容器，自由函数归
   pkg（包级函数），model 归 pkg 实体；入口分 CLI/HTTP/WS 三容器。
 - 所有入口必须全量盘点；没追链的标 unscanned: true——宁缺毋滥。
