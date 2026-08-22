@@ -193,6 +193,12 @@ type AdapterEvent struct {
 	// Spend 是「新增消耗」的账目（按 Key 覆盖后**求和**）。数量级完全不同，
 	// 一个帧可以两者都带，但**绝不能互相赋值**。
 	Spend *proto.SpendEntry
+	// Timing 是这一段的耗时账目；nil = 本帧不带耗时信息。
+	//
+	// 与 Spend 并列走 Type="usage" 事件（**不新增事件类型**）：Usage/Spend/Timing
+	// 是同一次模型调用结束时的三样产物，拆成两个事件之间就能插进一次 agentd
+	// 重启。三者语义互不交叉，**绝不能互相赋值**。
+	Timing *proto.TimingEntry
 }
 
 // Adapter 是 executor 挂载契约，实现方与 manager 的交互面就是这五个动作。

@@ -1134,7 +1134,8 @@ func (a *Adapter) appendItemFrame(r *runState, method string, it *threadItem) {
 	if it.ExitCode != nil && *it.ExitCode != 0 {
 		status = "error"
 	}
-	if err := r.frames.ToolResult(it.ID, status, it.renderLine()); err != nil {
+	// TODO(contract Ticket 0): 耗时打点归 implement 节点；-1 = 不知道，帧上不带 dur_ms。
+	if err := r.frames.ToolResult(it.ID, status, it.renderLine(), -1); err != nil {
 		a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
 	}
 }

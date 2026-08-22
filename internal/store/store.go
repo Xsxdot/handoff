@@ -123,6 +123,27 @@ func Open(path string) (*Store, error) {
   cost_state TEXT NOT NULL DEFAULT '',
   updated_at TIMESTAMP NOT NULL,
   PRIMARY KEY (task_id, entry_key))`,
+		`CREATE TABLE IF NOT EXISTS task_timing_ledger (
+  -- 2026-08-22 耗时账本：一行 = 一段耗时，聚合值由对本表求和得到。
+  -- 与 task_usage_ledger 同形（同一条幂等纪律、同一种建表法），刻意不合并成
+  -- 一张表：两者的幂等键粒度不同（消耗按上游消息 id，耗时按回合内的段），
+  -- 合并会逼出「只有时间没有 token」的半空行。
+  task_id TEXT NOT NULL,
+  -- entry_key 由**内容派生**：tool/<turn>/<part>、api/<turn>/<n>、turn/<turn>。
+  -- 绝不用进程内计数器——重启或上游重放后计数器归零，会覆盖掉真数据。
+  entry_key TEXT NOT NULL,
+  -- kind 取 api / tool / turn。turn **不是段**，是 other 的分母。
+  kind TEXT NOT NULL,
+  turn INTEGER NOT NULL DEFAULT 0,
+  dur_ms INTEGER NOT NULL DEFAULT 0,
+  -- offset_ms 仅 kind=tool 有意义：相对本回合起点的偏移，聚合层靠它算工具
+  -- 段的区间并集（并发工具时 Σdur_ms 会大于墙钟跨度）。
+  offset_ms INTEGER NOT NULL DEFAULT 0,
+  label TEXT NOT NULL DEFAULT '',
+  -- detail 是命令摘要，写入前已按 200 rune 头尾截断；不存全文。
+  detail TEXT NOT NULL DEFAULT '',
+  updated_at TIMESTAMP NOT NULL,
+  PRIMARY KEY (task_id, entry_key))`,
 		`CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY AUTOINCREMENT, task_id TEXT NOT NULL, type TEXT NOT NULL,
   payload TEXT NOT NULL, created_at TIMESTAMP NOT NULL)`,
@@ -593,6 +614,53 @@ func (s *Store) UpsertSpend(taskID string, e proto.SpendEntry) error {
 		return fmt.Errorf("记任务 %s 消耗 %s: %w", taskID, e.Key, err)
 	}
 	return nil
+}
+
+// UpsertTiming 记一条耗时账目；同 (taskID, e.Key) **覆盖**既有行。
+//
+// 参数：
+//   - taskID: 所属任务
+//   - e: 账目。Detail 必须已由调用方截断（本方法不做截断——截断规则属于
+//     采集侧的凭据边界，放在这里会让两处都以为对方管了）
+//
+// 注意：
+//   - e.Key 为空时直接返回错误——没有键就没有幂等，与 UpsertSpend 同款
+//   - 覆盖而非累加是刻意的：kind=turn 的条目随回合推进反复上报同一个键，
+//     覆盖天然取到最终值
+//   - **不打成功日志**：频率与 UpsertSpend 同级，会刷屏
+func (s *Store) UpsertTiming(taskID string, e proto.TimingEntry) error {
+	if e.Key == "" {
+		return fmt.Errorf("记任务 %s 的耗时：幂等键为空", taskID)
+	}
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO task_timing_ledger
+   (task_id, entry_key, kind, turn, dur_ms, offset_ms, label, detail, updated_at)
+ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+ ON CONFLICT(task_id, entry_key) DO UPDATE SET
+   kind = excluded.kind, turn = excluded.turn, dur_ms = excluded.dur_ms,
+   offset_ms = excluded.offset_ms, label = excluded.label,
+   detail = excluded.detail, updated_at = excluded.updated_at`,
+		taskID, e.Key, string(e.Kind), e.Turn, e.DurMS, e.OffsetMS,
+		e.Label, e.Detail, fmtTime(time.Now())); err != nil {
+		return fmt.Errorf("记任务 %s 耗时 %s: %w", taskID, e.Key, err)
+	}
+	return nil
+}
+
+// TaskTiming 对该任务的全部耗时账目求和，得到三分法聚合。
+//
+// 返回：
+//   - 没有任何账目行时返回 (nil, nil)。**不返回零值结构**——0 会被读成
+//     「一共没花时间」，而真相是「还不知道」（与 TaskCumulative 同款纪律）
+//   - OtherMS = max(0, TotalMS − APIMS − ToolSpanMS)；取 max 是防御不是语义，
+//     真出现负数说明采集有 bug，此时 Partial 必为真
+//
+// TODO(contract Ticket 0): 骨架只钉签名与返回语义，聚合实现归 implement 节点。
+// 本方法**尚未被任何调用方接线**（GetTask 不填 Task.Timing），所以这个空壳
+// 不会伪装成「已经能用」——接线与实现必须同一轮完成。
+func (s *Store) TaskTiming(taskID string) (*proto.TaskTiming, error) {
+	_ = taskID
+	return nil, nil
 }
 
 // TaskCumulative 对该任务的全部账目求和，得到累计消耗。

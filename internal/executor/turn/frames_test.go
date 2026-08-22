@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -80,7 +81,7 @@ func TestFrameWriterWritesEachType(t *testing.T) {
 	if err := w.ToolCall("p03", "Bash", "go test ./..."); err != nil {
 		t.Fatalf("ToolCall: %v", err)
 	}
-	if err := w.ToolResult("p03", "ok", "PASS"); err != nil {
+	if err := w.ToolResult("p03", "ok", "PASS", 1500*time.Millisecond); err != nil {
 		t.Fatalf("ToolResult: %v", err)
 	}
 	if err := w.EventRef(88, "permission_request"); err != nil {
@@ -111,6 +112,15 @@ func TestFrameWriterWritesEachType(t *testing.T) {
 	}
 	if frames[5].RefSeq != 88 || frames[5].Event != "permission_request" {
 		t.Errorf("event 帧应带 ref_seq=88 与类型名，实得 %+v", frames[5])
+	}
+	// 契约锁（2026-08-22 需求 A §2.5/§2.6）：耗时只落在 tool_result 上，
+	// 且 tool_call 那一帧**不带** dur_ms——两处一起断言，才拦得住「顺手给所有
+	// 帧都加上耗时」这种把投影摊开的改法。
+	if frames[4].DurMS != 1500 {
+		t.Errorf("tool_result 应带 dur_ms=1500，实得 %d", frames[4].DurMS)
+	}
+	if frames[3].DurMS != 0 {
+		t.Errorf("tool_call 不该带 dur_ms，实得 %d", frames[3].DurMS)
 	}
 }
 
@@ -166,7 +176,7 @@ func TestFrameWriterTruncatesToolFields(t *testing.T) {
 	w, _ := NewFrameWriter(dir, nil)
 	_ = w.BeginTurn("dispatch", "")
 	big := strings.Repeat("x", FrameFieldHead+FrameFieldTail+1000)
-	_ = w.ToolResult("p01", "ok", big)
+	_ = w.ToolResult("p01", "ok", big, -1) // -1 = 不知道耗时
 
 	frames := readFrames(t, dir)
 	fr := frames[len(frames)-1]

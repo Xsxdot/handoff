@@ -723,7 +723,8 @@ func (a *Adapter) mapUserMessage(r *runState, msg json.RawMessage) {
 		if block.IsError {
 			status = "error"
 		}
-		if err := r.frames.ToolResult(block.ToolUseID, status, full); err != nil {
+		// TODO(contract Ticket 0): 耗时打点归 implement 节点；-1 = 不知道，帧上不带 dur_ms。
+		if err := r.frames.ToolResult(block.ToolUseID, status, full, -1); err != nil {
 			a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
 		}
 	}

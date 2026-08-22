@@ -199,7 +199,15 @@ func (w *FrameWriter) ToolCall(part, tool, input string) error {
 }
 
 // ToolResult 写一条工具结果帧；output 超长时头尾截断。
-func (w *FrameWriter) ToolResult(part, status, output string) error {
+//
+// 参数 dur 是本次工具调用的耗时（调用方从配对的 tool_call 时刻算出）。
+// **dur < 0 表示「不知道」**，此时帧上不带 dur_ms。刻意不用 0 表达未知：
+// 0ms 是一次真实可能的极快调用，用它当哨兵就再也分不清「没报」与「很快」。
+//
+// 为什么改签名而不是新增一个带耗时的变体：变体会让「忘记传耗时」成为一个
+// 不报错的选项，而全仓调用方只有个位数——改签名的成本远低于让一半调用方
+// 静默不报耗时（契约文档 §6.4 的拍板记录）。
+func (w *FrameWriter) ToolResult(part, status, output string, dur time.Duration) error {
 	if w == nil {
 		return nil
 	}
@@ -210,7 +218,16 @@ func (w *FrameWriter) ToolResult(part, status, output string) error {
 	return w.append(proto.Frame{
 		Type: proto.FrameToolResult, Part: part, Status: status,
 		Output: out, Truncated: truncated, Bytes: truncatedBytes(truncated, orig),
+		DurMS: durMS(dur),
 	})
+}
+
+// durMS 把时长折算成帧上的毫秒数；负数（未知）折算成 0，即字段缺席。
+func durMS(d time.Duration) int64 {
+	if d < 0 {
+		return 0
+	}
+	return d.Milliseconds()
 }
 
 // EventRef 写一条控制面事件的引用帧。

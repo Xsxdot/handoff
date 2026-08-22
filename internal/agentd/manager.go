@@ -1638,6 +1638,7 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 		// 两条通道各走各的：Usage 走当前占用，Spend 走累计账本，绝不交叉。
 		m.handleUsage(taskID, ev)
 		m.handleSpend(taskID, ev)
+		m.handleTiming(taskID, ev)
 	default:
 		m.log.Warn("未知 adapter 事件", "task", taskID, "type", ev.Type)
 	}
@@ -2906,6 +2907,27 @@ func (m *Manager) handleSpend(taskID string, ev executor.AdapterEvent) {
 	m.log.Debug("任务消耗已入账", "task", taskID, "key", ev.Spend.Key,
 		"input", ev.Spend.InputTokens, "cached", ev.Spend.CachedTokens,
 		"output", ev.Spend.OutputTokens, "cost_state", ev.Spend.CostState)
+}
+
+// handleTiming 把 executor 报回的「这一段耗时」记进耗时账本。
+//
+// 与 handleSpend 的关系：两者是同一个 usage 事件上的两样产物，处置纪律逐条
+// 相同——**只写库，不追加事件行、不广播**（频率同级，进事件日志会淹没审核者
+// 真正要看的 permission/question/completed）；落库失败仅 Warn（耗时是辅助
+// 字段，不影响主流程）。
+//
+// 幂等同样只能落在库里：内存态在 agentd 重启后为空，首帧必写一次；对「当前
+// 占用」无害，对「累计」就是重复计数（handleSpend 注释里的同一条理由）。
+func (m *Manager) handleTiming(taskID string, ev executor.AdapterEvent) {
+	if ev.Timing == nil {
+		return
+	}
+	if err := m.st.UpsertTiming(taskID, *ev.Timing); err != nil {
+		m.log.Warn("记任务耗时失败", "task", taskID, "key", ev.Timing.Key, "cause", err)
+		return
+	}
+	m.log.Debug("任务耗时已入账", "task", taskID, "key", ev.Timing.Key,
+		"kind", ev.Timing.Kind, "turn", ev.Timing.Turn, "dur_ms", ev.Timing.DurMS)
 }
 
 // handleResult 中介回合结果：OK → completed 事件，!OK → failed 事件；两者都进

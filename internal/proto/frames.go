@@ -66,6 +66,13 @@ type Frame struct {
 	Output string `json:"output,omitempty"`
 	// Status 是 tool_result 的结局（ok / error / 上游原文）。
 	Status string `json:"status,omitempty"`
+	// DurMS 是 tool_result 配对的那次工具调用的耗时（毫秒），只出现在
+	// tool_result 帧上。**缺席 = 该 executor 没报出耗时，不是 0ms**。
+	//
+	// 它是耗时账本（task_timing_ledger）的投影而非真相：帧上带一份是为了让
+	// 工具卡不必回查账本就能画出耗时（与 Frame.Event 冗余存类型名同款理由）。
+	// 两者不一致时以账本为准，界面不并列显示。
+	DurMS int64 `json:"dur_ms,omitempty"`
 
 	// Truncated 报告 Input/Output 是否被截断。
 	Truncated bool `json:"truncated,omitempty"`

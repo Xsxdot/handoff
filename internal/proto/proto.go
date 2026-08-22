@@ -284,6 +284,9 @@ type Task struct {
 	// Cumulative 是任务的累计消耗；nil = 没有任何账目（或本次是列表读取，
 	// 列表不填充——见 Store.ListTasks）。与 Usage 是两个口径，别混。
 	Cumulative *Cumulative `json:"cumulative,omitempty"`
+	// Timing 是任务的耗时聚合；nil = 没有任何耗时账目（或本次是列表读取，
+	// 列表不填充——与 Cumulative 同一条纪律，见 Store.ListTasks）。
+	Timing *TaskTiming `json:"timing,omitempty"`
 	// Machine 是这条任务所在的机器：""=本机；否则为**本机** cfg.Targets 的键。
 	//
 	// 线注解，不入库（存储层不读不写这一列）：它由汇总方在响应时盖章，

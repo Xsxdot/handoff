@@ -36,6 +36,7 @@ export interface Task {
   actual_model?: string   // executor 报回的实际模型名；缺省=还没报（与入参 model 不是一回事）
   usage?: Usage           // 当前 context 占用；缺省=还没有任何一次模型调用完成
   cumulative?: Cumulative  // 累计消耗；缺省=还没有账目，或本次是列表读取
+  timing?: TaskTiming      // 耗时聚合；缺省=还没有耗时账目，或本次是列表读取
   machine: string      // ""=本机；否则为本机 cfg.Targets 的键，由汇总方盖章（W3a §3）
   project_id: string   // 归属项目；未归属为 ""（W3a §1.3）
 }
@@ -608,6 +609,35 @@ export interface Frame {
   reason?: string
   // turn_start（send）携带的审核者指令原文；dispatch 与旧帧缺席
   instructions?: string
+  // tool_result 配对的那次工具调用耗时（毫秒）。**缺席 = 没报出耗时，不是 0ms**。
+  // 它是耗时账本的投影，账本才是真相（2026-08-22 需求 A 契约 §2.5）。
+  dur_ms?: number
+}
+
+// TaskTiming 是一个任务的耗时聚合（三分法：模型段 / 工具段 / 未归类）。
+//
+// 缺席即「还不知道」，**绝不显示成 0**：历史任务、以及还没跑出第一段的任务
+// 都是缺席。与 Cumulative 同一条纪律。
+export interface TaskTiming {
+  total_ms: number
+  api_ms: number
+  // tool_ms 是各工具段时长之和；并发工具时它可以大于 tool_span_ms
+  tool_ms: number
+  // tool_span_ms 是工具占用的墙钟跨度。它与 tool_ms 同时给出、互不冒充
+  tool_span_ms: number
+  // other_ms 承载排队、等审批、框架开销。**绝不摊进 api_ms**
+  other_ms: number
+  // partial 为真表示至少有一个回合缺条目，other_ms 因此偏大——界面要读得出来
+  partial: boolean
+  buckets?: TimingBucket[]
+}
+
+// TimingBucket 是按标签聚合的一格耗时；sub 只下钻一层（工具名 → 命令首词）。
+export interface TimingBucket {
+  label: string
+  dur_ms: number
+  count: number
+  sub?: TimingBucket[]
 }
 
 // DirEntry 是 GET /api/workspaces/dir 列举出的一项。
