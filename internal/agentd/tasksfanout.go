@@ -42,9 +42,17 @@ func (s *Server) tasksAll(ctx context.Context) proto.TasksResp {
 		s.log.Error("任务汇总：查询镜像快照失败", "cause", err)
 		mirrors = []store.MirrorTask{}
 	}
+	// 有哪些机器，判据只有一个：活配置。已删机器遗留在镜像表里的快照不再展示
+	//（副本不是真相；库里的行不删，删行是破坏性操作，读时判据正确就够）。
+	targets := s.conf().Targets
+	skipped := 0
 	// target → 该机最新一条快照的时刻（机器应答行的数据新旧）
 	fetched := map[string]time.Time{}
 	for _, mt := range mirrors {
+		if _, ok := targets[mt.Target]; !ok {
+			skipped++
+			continue
+		}
 		t := mt.Task
 		t.Machine = mt.Target // 汇总方盖章：这条任务是从哪个 target 拉来的
 		views = append(views, proto.TaskView{Task: t, Watchers: s.hub.Watchers(t.ID)})
@@ -52,10 +60,13 @@ func (s *Server) tasksAll(ctx context.Context) proto.TasksResp {
 			fetched[mt.Target] = mt.FetchedAt
 		}
 	}
+	if skipped > 0 {
+		s.log.Debug("任务汇总：跳过已删机器的镜像快照", "skipped", skipped)
+	}
 
 	machines := []proto.MachineStatus{{Name: "", Ok: true, FetchedAt: time.Now().UTC()}}
-	names := make([]string, 0, len(s.conf().Targets))
-	for name := range s.conf().Targets {
+	names := make([]string, 0, len(targets))
+	for name := range targets {
 		names = append(names, name)
 	}
 	sort.Strings(names)
