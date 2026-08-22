@@ -5,8 +5,6 @@ package ledgermirror
 import (
 	"context"
 	"fmt"
-	"sort"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,51 +13,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
-
-type fakeMachines struct {
-	mu      sync.Mutex
-	clients map[string]*client.Client
-}
-
-func newFakeMachines() *fakeMachines {
-	return &fakeMachines{clients: map[string]*client.Client{}}
-}
-
-func machinesWith(t *testing.T, names ...string) *fakeMachines {
-	t.Helper()
-	f := newFakeMachines()
-	for i, n := range names {
-		f.set(n, client.New(fmt.Sprintf("127.0.0.1:%d", 9000+i), "tok"))
-	}
-	return f
-}
-
-func (f *fakeMachines) Names() []string {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	names := make([]string, 0, len(f.clients))
-	for n := range f.clients {
-		names = append(names, n)
-	}
-	sort.Strings(names)
-	return names
-}
-
-func (f *fakeMachines) For(name string) (*client.Client, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	c, ok := f.clients[name]
-	if !ok {
-		return nil, fmt.Errorf("target %s 未在配置中登记", name)
-	}
-	return c, nil
-}
-
-func (f *fakeMachines) set(name string, c *client.Client) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.clients[name] = c
-}
 
 func testLedger(t *testing.T) *ledger.Store {
 	t.Helper()
