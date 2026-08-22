@@ -24,7 +24,6 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
-	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 const (
@@ -73,7 +72,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		a.log.Info("该任务已有运行态或恢复进行中，跳过本次恢复", "task", taskID)
 		return executor.ResumeOutcome{Alive: false, Note: "该任务的恢复正在进行中"}, nil
 	}
-	a.runs[taskID] = &runState{taskID: taskID} // 占位
+	a.runs[taskID] = &runState{taskID: taskID} // 占位；不承载运行态 runstate-literal-ok
 	a.mu.Unlock()
 	defer func() {
 		// 失败路径清掉占位，否则这个任务永远恢复不了
@@ -134,14 +133,10 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		a.log.Warn("修复 auth 软链失败，仍尝试重连", "task", taskID, "cause", err)
 	}
 
-	r := &runState{
-		taskID: taskID, taskDir: taskDir, repoPath: repoPath, sessionID: sessionID,
-		proc: proc, evCh: make(chan executor.AdapterEvent, 64),
-		acc: newTurnAccumulator(), pending: map[string]pendingPerm{},
-	}
-	if _, c, _, gerr := turn.GitTurnStatus(repoPath, ""); gerr == nil {
-		r.startCommit = c
-	}
+	// 必须经 newRun：这里曾手搓字面量，于是 frames 与 seg 两次被漏掉，
+	// 恢复后的每一轮都不产结构化帧、不产耗时账目，且全程无声（见 newRun 注释）
+	r := a.newRun(taskID, taskDir, repoPath, proc)
+	r.sessionID = sessionID
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()

@@ -128,6 +128,45 @@ type pendingPerm struct {
 	desc  string
 }
 
+// newRun 造一个 grok 运行态。
+//
+// **唯一构造点**：首发（Start）与冷恢复（Resume）都必须经这里。它们曾经各搓
+// 一份字面量，代价是每次给 runState 加可见性字段，都只有首发那份被改到——
+// frames 漏了一次（结构化帧在恢复后整轮消失），seg 又漏了一次（耗时账目在
+// 恢复后整轮为空）。两次都无声：这两个字段对 nil 接收者都是空操作，漏了不报错、
+// 不留日志，只是数据从此不再产生。另外三家 executor 一直只有一个构造点，
+// 所以从没犯过这个错——这是形状问题，不是手误。
+//
+// 参数：proc 是已起好的 serve 进程；sessionID 由调用方在返回后按各自来源赋值
+// （首发是 session/new 的结果，恢复是任务记录里的旧会话）。
+//
+// 注意：本函数**不**把 r 登记进 a.runs——两个调用点的登记时机不同（恢复要替换
+// 先前的占位），登记留给调用方。
+func (a *Adapter) newRun(taskID, taskDir, repoPath string, proc *Proc) *runState {
+	r := &runState{
+		taskID: taskID, taskDir: taskDir, repoPath: repoPath,
+		proc: proc, evCh: make(chan executor.AdapterEvent, 64),
+		acc: newTurnAccumulator(), pending: map[string]pendingPerm{},
+	}
+	// 帧写入器构造失败不挡任务：可见性是增强能力，方法对 nil 接收者是空操作
+	fw, err := turn.WriterFor(taskDir, a.log)
+	if err != nil {
+		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
+	}
+	r.frames = fw
+	// 段切分器不依赖文件 IO，构造不会失败，与 frames 的 nil 兜底无关。
+	// 回合号取自 frames（见 FrameWriter.Turn 注释），恢复后从磁盘续号，
+	// 不会撞掉上一次运行的账目键
+	r.seg = turn.NewSegmenter(nil)
+	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
+	if _, c, _, gerr := turn.GitTurnStatus(repoPath, ""); gerr == nil {
+		r.startCommit = c
+	} else {
+		a.log.Warn("读取回合起点 commit 失败，兜底裁决将退化", "task", taskID, "cause", gerr)
+	}
+	return r
+}
+
 func renderStartPrompt(taskID, planContent, disciplineBlock string) (string, error) {
 	return turn.RenderPrompt(taskID, planContent, disciplineBlock)
 }
@@ -163,29 +202,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	r := &runState{
-		taskID: taskID, taskDir: req.TaskDir, repoPath: req.Task.Workdir(),
-		proc: proc, evCh: make(chan executor.AdapterEvent, 64),
-		acc: newTurnAccumulator(), pending: map[string]pendingPerm{},
-	}
-	// 构造失败不挡任务：FrameWriter 的方法对 nil 接收者是空操作
-	// （放块里用局部 err：Start 的 err 是命名返回值，覆写它会让下面的
-	// defer 把「本任务无结构化帧」误判成「启动失败」而杀掉 serve 进程）
-	{
-		fw, err := turn.WriterFor(req.TaskDir, a.log)
-		if err != nil {
-			a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
-		}
-		r.frames = fw
-	}
-	// 段切分器不依赖文件 IO，构造不会失败，与 frames 的 nil 兜底无关
-	r.seg = turn.NewSegmenter(nil)
-	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
-	if _, c, _, gerr := turn.GitTurnStatus(req.Task.Workdir(), ""); gerr == nil {
-		r.startCommit = c
-	} else {
-		a.log.Warn("读取回合起点 commit 失败，兜底裁决将退化", "task", taskID, "cause", gerr)
-	}
+	r := a.newRun(taskID, req.TaskDir, req.Task.Workdir(), proc)
 
 	cli, err := DialACP(ctx, proc.WSURL(), &acpHandler{a: a, r: r}, a.log)
 	if err != nil {
