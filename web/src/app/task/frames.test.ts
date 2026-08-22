@@ -162,6 +162,39 @@ describe('buildBlocks 工具配对', () => {
       outputTruncated: true, outputBytes: 141882,
     })
   })
+
+  it('dur_ms 从 tool_result 带进 ToolBlock', () => {
+    const blocks = buildBlocks([
+      f({ seq: 1, type: 'tool_call', part: 'p04', tool: 'bash', input: 'go test ./...' }),
+      f({ seq: 2, type: 'tool_result', part: 'p04', status: 'ok', output: 'ok', dur_ms: 1500 }),
+    ])
+    expect((blocks[0] as ToolBlock).durMS).toBe(1500)
+  })
+
+  // 反向断言（tool_call 上的 dur_ms 无意义，契约 §2.5）+ 配套的正面断言，
+  // 锁住「它只从 tool_result 来」而不是「它从哪都不来」。
+  it('tool_call 上的 dur_ms 被忽略，只认 tool_result 的', () => {
+    const blocks = buildBlocks([
+      f({ seq: 1, type: 'tool_call', part: 'p05', tool: 'bash', input: 'ls', dur_ms: 999_999 }),
+    ])
+    expect((blocks[0] as ToolBlock).durMS).toBeUndefined()
+
+    const paired = buildBlocks([
+      f({ seq: 1, type: 'tool_call', part: 'p05', tool: 'bash', input: 'ls', dur_ms: 999_999 }),
+      f({ seq: 2, type: 'tool_result', part: 'p05', status: 'ok', output: '', dur_ms: 42 }),
+    ])
+    expect((paired[0] as ToolBlock).durMS).toBe(42)
+  })
+
+  it('没报耗时时是 undefined 而不是 0（0ms 与「没报」不能混）', () => {
+    const blocks = buildBlocks([
+      f({ seq: 1, type: 'tool_call', part: 'p06', tool: 'bash', input: 'ls' }),
+      f({ seq: 2, type: 'tool_result', part: 'p06', status: 'ok', output: 'a' }),
+    ])
+    expect((blocks[0] as ToolBlock).durMS).toBeUndefined()
+    const first = buildBlocks([f({ seq: 1, type: 'tool_result', part: 'p07', status: 'ok', output: 'a' })])
+    expect((first[0] as ToolBlock).durMS).toBeUndefined()
+  })
 })
 
 describe('buildBlocks 其余帧型', () => {

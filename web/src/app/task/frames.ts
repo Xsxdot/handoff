@@ -94,6 +94,10 @@ export type Block =
       input: string
       inputTruncated: boolean
       inputBytes: number
+      // durMS 是这次调用的耗时（毫秒）。**缺席 = 没报出耗时，不是 0ms**：
+      // 线格式上 dur_ms 是 omitempty，0 与未知不可分（契约 §2.5 的既有取舍），
+      // 所以渲染层只做「有就显示」，绝不把缺席画成 0ms
+      durMS?: number
       // status 为 null 表示「还没有配上 tool_result」——它与 status: '' 是两回事，
       // 前者是没有回音，后者是上游给了个空状态。判定交给 toolState。
       status: string | null
@@ -156,6 +160,8 @@ export function buildBlocks(frames: Frame[]): Block[] {
         blocks.push({ kind: 'turn', key, turn, reason: fr.reason ?? '', ts: fr.ts, instructions: fr.instructions ?? '' })
         break
       case 'tool_call': {
+        // 刻意不读 fr.dur_ms：耗时只在 tool_result 上有意义（契约 §2.5）。
+        // 这里顺手读一下不会报错，但会让「调用刚发出就显示耗时 999s」成为可能
         const k = `${turn}/${fr.part ?? ''}`
         const hit = tools.get(k)
         if (hit) {
@@ -185,6 +191,7 @@ export function buildBlocks(frames: Frame[]): Block[] {
           hit.output = fr.output ?? ''
           hit.outputTruncated = fr.truncated ?? false
           hit.outputBytes = fr.bytes ?? 0
+          hit.durMS = fr.dur_ms
           break
         }
         const b: ToolBlock = {
@@ -193,6 +200,7 @@ export function buildBlocks(frames: Frame[]): Block[] {
           inputTruncated: false, inputBytes: 0,
           status: fr.status ?? '', output: fr.output ?? '',
           outputTruncated: fr.truncated ?? false, outputBytes: fr.bytes ?? 0,
+          durMS: fr.dur_ms,
         }
         tools.set(k, b)
         blocks.push(b)

@@ -4,7 +4,7 @@
 // 百分比，没有用量就不显用量，绝不用 0 或 — 占位。
 import { describe, expect, it } from 'vitest'
 
-import { formatCost, formatCumulativeLine, formatExecutorLine, formatTokens } from './format'
+import { formatCost, formatCumulativeLine, formatDuration, formatExecutorLine, formatTokens } from './format'
 
 describe('formatTokens', () => {
   it('千位以上用 k 缩写并保留一位小数', () => {
@@ -105,5 +105,30 @@ describe('formatCumulativeLine', () => {
     const noCost = { cumulative: { ...base.cumulative, cost: undefined } }
     expect(formatCumulativeLine(noCost as never))
       .toBe('1.2M · 输入 340.2k · 缓存 820.5k · 输出 39.3k')
+  })
+})
+
+describe('formatDuration', () => {
+  it('毫秒档：不足一秒直接给 ms', () => {
+    expect(formatDuration(0)).toBe('0ms')
+    expect(formatDuration(1)).toBe('1ms')
+    expect(formatDuration(999)).toBe('999ms')
+  })
+  it('秒档：保留一位小数', () => {
+    expect(formatDuration(1000)).toBe('1.0s')
+    expect(formatDuration(1500)).toBe('1.5s')
+    expect(formatDuration(59_940)).toBe('59.9s')
+  })
+  it('分档与时档：升档判据用四舍五入后的值', () => {
+    expect(formatDuration(59_950)).toBe('1m0s')
+    expect(formatDuration(60_000)).toBe('1m0s')
+    expect(formatDuration(90_000)).toBe('1m30s')
+    expect(formatDuration(3_599_000)).toBe('59m59s')
+    expect(formatDuration(3_600_000)).toBe('1h0m')
+    expect(formatDuration(7_500_000)).toBe('2h5m')
+    expect(formatDuration(7_530_000)).toBe('2h6m')
+  })
+  it('负数夹到 0：调用方用「缺席」表达未知，不用负数', () => {
+    expect(formatDuration(-1)).toBe('0ms')
   })
 })

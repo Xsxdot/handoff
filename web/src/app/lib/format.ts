@@ -162,3 +162,25 @@ export function formatCumulativeLine(task: Task): string {
   if (c.cost) parts.push(formatCost(c.cost).text)
   return parts.join(' · ')
 }
+
+// formatDuration 把毫秒折算成人眼可读的短串。
+//
+// 四档：<1s → `340ms`；<1min → `12.3s`；<1h → `4m17s`；否则 `2h5m`。
+// 越大的量级越不需要精度——读者在小时档问的是「跑了两个多小时」，
+// 而秒档要能分辨 1.2s 与 1.9s。
+//
+// 边界：
+//   - 升档判据用**四舍五入后**的值，否则 59_950ms 会显示成 `60.0s`，
+//     一个永远不该出现的读数（与 formatTokens 的既有纪律同源）
+//   - 负数夹到 0。**「未知」用缺席表达，不用负数**——线格式上 dur_ms 缺席即
+//     未知（omitempty），调用方在缺席时根本不该调本函数
+export function formatDuration(ms: number): string {
+  const v = Math.max(0, ms)
+  if (v < 1000) return `${Math.round(v)}ms`
+  const s = v / 1000
+  if (Math.round(s * 10) / 10 < 60) return `${(Math.round(s * 10) / 10).toFixed(1)}s`
+  const totalSec = Math.round(s)
+  if (totalSec < 3600) return `${Math.floor(totalSec / 60)}m${totalSec % 60}s`
+  const totalMin = Math.round(totalSec / 60)
+  return `${Math.floor(totalMin / 60)}h${totalMin % 60}m`
+}
