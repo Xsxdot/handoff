@@ -365,3 +365,18 @@ stderr 同次命令实测仍有：
 - 代码质量：通过。字段说明与 charter v0.3.0 `LifecycleRef` 对齐，规则集中在独立章节并补充硬校验提示，表格和现有 schema 结构保持一致。
 - 修复轮：无。
 - commit 范围：`f55c9b88..HEAD`（本 task）。
+
+## Task 3：任务与工作区样板声明
+
+- 变更：新增 `codegraph/domains/d_coordination_task.json`，按 `internal/proto/proto.go#transitTable` 的真实六状态、十二条合法迁移填写 stateMachine；责任、不变式、生命周期分别锚定真实协调任务代码，测试引用为仓内实际测试函数。
+- 变更：新增 `codegraph/domains/d_workspace.json`，覆盖 `PrepareWorkspace` 到 `RemoveManagedWorktree` 的生命周期，以及分支/工作树互斥注入防护、脏主仓快照、工作区白名单、任务分支同步四条真实不变式。
+- 验证：两个声明分别经 `python3 -m json.tool` 解析；`git diff --check` exit 0。
+- 验证命令：`TMPDIR=/root/.handoff/worktrees/f60d3c19/.tmp GOTMPDIR=/root/.handoff/worktrees/f60d3c19/.tmp GIT_CEILING_DIRECTORIES=/root/.handoff/worktrees/f60d3c19 go run . graph validate --repo .`。
+- 验证 stdout：`containers=237`、`nodes=3564`、`edges=4522`、`domainDecls=2`、`issues=null`、`edgeIssues=null`；exit 0。该校验实际解析了 lifecycle/stateMachine 锚点与 invariants.testRef，因此锚点和测试引用均通过 v0.3.0 校验。
+
+### 双裁决
+
+- spec 符合性：通过。两个计划指定领域均有声明；`d_coordination_task` 的状态迁移和测试引用来自实读源码，`d_workspace` 覆盖跨子系统职责并仅引用真实锚点；validate 绿且 `domainDecls=2`。
+- 代码质量：通过。声明保持最小且可审计，不编造终态后继或测试名；生命周期和状态迁移锚点均由库校验解析。
+- 修复轮：无。
+- commit 范围：`1db7c86b..HEAD`（本 task）。
