@@ -106,3 +106,35 @@
 - 岔口拍板记录（2026-08-22，用户）：一期范围=查询面+采纳接线；保鲜=查询时再锚定；文档符号锚=挂二期。
 - 覆盖线派发卡的先决事实：executor 家族 15 节点 vs agentd 530，怀疑扫描配方或时点问题，根因先查再补扫，不带病重扫。
 - 二期排期时优先 entity 链：序列化边界是本项目缺陷史最烂一族（15 处手搭 map 回包、08-21 两次 wire 缺陷），自动化它的四查收益大于其余挂账项。
+
+---
+
+## 5. 二期 Spec（2026-08-22 追加，一期已验收后定稿）
+
+**级别与档位：L2**（主体仍在图子系统，schema 为包内数据契约；CLI 薄壳沿既有方向）。路由：plan → implement → review → acceptance → finish。
+
+**范围**：总纲 §3 二期挂账中归属本线的三项——entity 投影链、文档符号锚 resolve、contract set。MCP 包装与 review 回路自动扫描仍沿 08-19/08-21 挂账，不进本期。
+
+### 5.1 岔口拍板记录
+
+**投影链数据 = 扫描产投影边**（2026-08-22，用户）。弃选：查询时启发式（手搭 map 投影点在类型系统里隐形——一期实测 `SpendEntry` 上游只有类型引用可见的 `Store.UpsertSpend`，`handleSpend` 手搭点不可见；启发式的链会漏最危险的那环，假完整感重演原缺陷）；混合（两套维护面，假完整感只被标注缓解）。
+
+### 5.2 实现决定
+
+- **schema**：baseline 顶层新增 `projections` 列表（同 `implements` 先例，独立列表、存量零迁移），元素 `[投影点节点 id, model 节点 id, kind]`。kind 三值：`typed`（类型可见的投影：DTO 转换、store scan、类型引用）、`handroll`（手搭 map/字面量拼装，类型系统不可见——缺陷族主战场）、`twin`（跨语言孪生，model↔model，如 proto.Cumulative ↔ types.ts Cumulative）。diff 侧 `projectionsAdded`/`projectionsDeleted`。validate 校验两端存在与 kind 取值。
+- **盘点态显式化**：Node 增 `projScanned`（bool，omitempty，model 专用）；recipe 规定盘点过的 model 必标。`graph entity` 对未标 model 输出「未盘点」警告而非空链——区分「查询无结果」与「根本没扫」（沿 UnscannedEntries 先例）。
+- **`graph entity <model>`**：输出 model 卡片（含 TS 孪生）+ 按 kind 分组的投影点清单，每个投影点带 sym 同款再锚定行号。这是序列化边界四查的自动化入口。
+- **`graph resolve <file#Symbol>`**：符号锚决议——图内命中走节点+再锚定；图外退化为文件内词边界搜索（文档锚不被图覆盖面卡住）。`--doc <md>` 批量校验一份文档里的全部 `file#Symbol` 引用，坏锚非零退出（contract/breakdown 出稿自检一发跑完）。
+- **`graph contract set`**：target.json 契约条目的受检写入口（改/建 from→to 条目的 entries/interfaces/legacyBudget），写回前过 ValidateTarget，输出前后对照。graph 族「本地只读」的边界改口为：不经 agentd、离线可用；baseline/diffs 只由 absorb 写，target 只由 contract set 写。
+- **采纳接线（二期部分）**：charter 的 contract/breakdown 节点条款——文档引用推荐 `file#Symbol` 锚，出稿自检跑 `graph resolve --doc`。
+- **投影点盘点走派发**（同覆盖线模式）：schema 与命令合并后，派发对 wire 实体清单（proto 包 model 为主）逐个识别投影点、落 projections 与 projScanned。
+
+### 5.3 测试接缝
+
+同一期：codegraph 包导出函数为最高可测缝。entity/resolve/contract set 各自单测 + CLI 烟测；穿真实序列化边界的回归 = 在真实 baseline 上对 Cumulative 跑 entity（盘点卡合并后，链上必须同时出现 store 侧、agentd 手搭侧、TS 孪生）。
+
+### 5.4 Out of Scope（二期）
+
+- MCP 包装、review 回路自动扫描（沿既有挂账）。
+- 投影边的自动增量维护（分支内改代码自动更新 projections）——先靠盘点派发与 absorb 流程，自动化待真实腐化数据再议。
+- web 查看器对 projections 的可视化——零。
