@@ -436,7 +436,13 @@ func startFakeRun(t *testing.T, fs *fakeServer, taskID, repo, taskDir string) (*
 	return ad, ad.Events(taskID)
 }
 
-// waitEventType 消费事件通道直到出现指定类型的事件（跳过 progress 等噪音）。
+// isTimingEvent 判断 usage 通道里的耗时事件。它是正常的元数据噪音，
+// 不应改变这些行为测试对 permission/question/result 的断言顺序。
+func isTimingEvent(ev executor.AdapterEvent) bool {
+	return ev.Type == "usage" && ev.Timing != nil
+}
+
+// waitEventType 消费事件通道直到出现指定类型的事件（跳过 progress/耗时等噪音）。
 func waitEventType(t *testing.T, ch <-chan executor.AdapterEvent, wantType string) executor.AdapterEvent {
 	t.Helper()
 	deadline := time.After(5 * time.Second)
@@ -601,26 +607,33 @@ func TestIdleFallbackNoTrailer(t *testing.T) {
 }
 
 // TestSessionReadyProgress 验证「会话就绪」信号：CreateSession 成功后立即产出
-// 一条带 SessionID 的 progress 事件（事件通道首条必为它，见 startRun 顺序）。
+// 一条带 SessionID 的 progress 事件（非耗时事件首条为它，见 startRun 顺序）。
 // manager 据此落 task.ExecutorSession——question 收尾的审核主路径不经 result，
 // 这是会话 id 到达 manager 的可靠通道。
 func TestSessionReadyProgress(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-ready-001", t.TempDir(), t.TempDir())
-	select {
-	case ev := <-ch:
-		if ev.Type != "progress" {
-			t.Fatalf("首事件类型=%s，期望 progress（会话就绪信号）", ev.Type)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if isTimingEvent(ev) {
+				continue
+			}
+			if ev.Type != "progress" {
+				t.Fatalf("首个非耗时事件类型=%s，期望 progress（会话就绪信号）", ev.Type)
+			}
+			if ev.SessionID != "sess-1" {
+				t.Errorf("会话就绪事件 SessionID=%q，期望 sess-1（manager 落 ExecutorSession 用）", ev.SessionID)
+			}
+			if !strings.Contains(ev.Text, "会话就绪") {
+				t.Errorf("会话就绪事件文本=%q，应含 会话就绪", ev.Text)
+			}
+			return
+		case <-deadline:
+			t.Fatal("等待会话就绪 progress 事件超时")
 		}
-		if ev.SessionID != "sess-1" {
-			t.Errorf("会话就绪事件 SessionID=%q，期望 sess-1（manager 落 ExecutorSession 用）", ev.SessionID)
-		}
-		if !strings.Contains(ev.Text, "会话就绪") {
-			t.Errorf("会话就绪事件文本=%q，应含 会话就绪", ev.Text)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("等待会话就绪 progress 事件超时")
 	}
 }
 
@@ -632,24 +645,40 @@ func TestIdleEmptyTurnSkips(t *testing.T) {
 	fs := newFakeServer(t)
 	_, ch := startFakeRun(t, fs, "task-empty-001", t.TempDir(), t.TempDir())
 	// 先消费会话就绪 progress，再注入空回合 idle（两个冗余信号都推，验证只产一条）
-	select {
-	case ev := <-ch:
-		if ev.Type != "progress" {
-			t.Fatalf("首事件类型=%s，期望 progress", ev.Type)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if isTimingEvent(ev) {
+				continue
+			}
+			if ev.Type != "progress" {
+				t.Fatalf("首个非耗时事件类型=%s，期望 progress", ev.Type)
+			}
+			goto ready
+		case <-deadline:
+			t.Fatal("等待会话就绪 progress 事件超时")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("等待会话就绪 progress 事件超时")
 	}
+ready:
 	fs.push(statusIdleEvent())
 	fs.push(sessionIdleEvent())
-	select {
-	case ev := <-ch:
-		if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
-			t.Fatalf("空回合 idle 应产出失败结果（B21），实际 %+v", ev)
+	deadline = time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if isTimingEvent(ev) {
+				continue
+			}
+			if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
+				t.Fatalf("空回合 idle 应产出失败结果（B21），实际 %+v", ev)
+			}
+			goto resultReceived
+		case <-deadline:
+			t.Fatal("等待空回合失败结果超时")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("等待空回合失败结果超时")
 	}
+resultReceived:
 	select {
 	case ev := <-ch:
 		t.Fatalf("冗余 session.idle 不应再产出第二条事件，收到 %+v", ev)
@@ -707,13 +736,20 @@ func TestApprovedPermissionEmptyTurnEmitsFailedResult(t *testing.T) {
 		t.Fatalf("RespondPermission: %v", err)
 	}
 	fs.push(statusIdleEvent())
-	select {
-	case ev := <-ch:
-		if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
-			t.Fatalf("批准后的零文本回合应产出失败结果（B21），实际 %+v", ev)
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case ev := <-ch:
+			if isTimingEvent(ev) {
+				continue
+			}
+			if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
+				t.Fatalf("批准后的零文本回合应产出失败结果（B21），实际 %+v", ev)
+			}
+			return
+		case <-deadline:
+			t.Fatal("等待零文本回合失败结果超时")
 		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("等待零文本回合失败结果超时")
 	}
 }
 
@@ -1365,7 +1401,7 @@ func TestSessionIsolationUsesPropertiesSessionID(t *testing.T) {
 	for {
 		select {
 		case ev := <-ch:
-			if ev.Type == "progress" {
+			if ev.Type == "progress" || isTimingEvent(ev) {
 				continue
 			}
 			t.Fatalf("其他会话的 permission 事件未被隔离: %+v", ev)

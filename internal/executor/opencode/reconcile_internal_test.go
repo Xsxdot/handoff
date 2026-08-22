@@ -68,11 +68,16 @@ func newTestRun(t *testing.T, a *Adapter, srvURL, watermark string, armed bool) 
 
 // drainOne 读一条事件；没有事件时返回 ok=false。
 func drainOne(r *runState) (executor.AdapterEvent, bool) {
-	select {
-	case ev := <-r.evCh:
-		return ev, true
-	default:
-		return executor.AdapterEvent{}, false
+	for {
+		select {
+		case ev := <-r.evCh:
+			if isTimingEvent(ev) {
+				continue
+			}
+			return ev, true
+		default:
+			return executor.AdapterEvent{}, false
+		}
 	}
 }
 

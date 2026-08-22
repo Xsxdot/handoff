@@ -52,6 +52,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/prochost"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // 看门狗与节流参数：
@@ -165,24 +166,34 @@ func New(log *slog.Logger) *Adapter {
 // 关闭权仍归 subscribeLoop（见 closeEvents）。lastEventAt 被事件映射写、
 // 看门狗 goroutine 读，用 atomic 保证并发安全。
 type runState struct {
-	taskID      string
-	taskDir     string
-	repoPath    string
-	session     string
-	api         *API
-	handle      serveHandle
-	runCtx      context.Context
-	runCancel   context.CancelFunc
-	evCh        chan executor.AdapterEvent
-	stopCh      chan struct{}
-	stopOnce    sync.Once
-	closeOnce   sync.Once
-	renderPath  string
-	frames      *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
-	emitMu      sync.Mutex        // 保护 evCh 的写入与关闭（订阅 goroutine 与 idle 定时器 goroutine 共写）
-	evClosed    bool              // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
-	turnMu      sync.Mutex        // 保护以下回合累积状态（订阅 goroutine 与 idle 定时器 goroutine 共访）
-	idleGen     uint64            // idle 去抖代次：任何回合推进都自增，使在途的候选 idle 失效
+	taskID     string
+	taskDir    string
+	repoPath   string
+	session    string
+	api        *API
+	handle     serveHandle
+	runCtx     context.Context
+	runCancel  context.CancelFunc
+	evCh       chan executor.AdapterEvent
+	stopCh     chan struct{}
+	stopOnce   sync.Once
+	closeOnce  sync.Once
+	renderPath string
+	frames     *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	seg        *turn.Segmenter   // 耗时段切分器；与 frames 同款 nil 安全约定
+	// toolStages 记 callID -> 推进阶段。
+	//
+	// 为什么必须有：opencode 的 message.part.updated 对同一个 tool part 会
+	// **反复**发 status:"running"（输出边长边发，见 testdata/spike5-events.jsonl
+	// 第 299/301 行），终态也可能因 SSE 重放再来一次。没有这张表，一次工具调用
+	// 会产出 N 条 tool_call 帧。
+	//
+	// 会话级不清空：callID 在会话内唯一，与 partTypes 同款理由（A-4）。
+	toolStages  map[string]toolStage
+	emitMu      sync.Mutex // 保护 evCh 的写入与关闭（订阅 goroutine 与 idle 定时器 goroutine 共写）
+	evClosed    bool       // evCh 已关闭，emit 必须静默丢弃（防 send on closed channel）
+	turnMu      sync.Mutex // 保护以下回合累积状态（订阅 goroutine 与 idle 定时器 goroutine 共访）
+	idleGen     uint64     // idle 去抖代次：任何回合推进都自增，使在途的候选 idle 失效
 	idleTimer   *time.Timer
 	startCommit string // 本回合起点 commit（兜底分类的基线，每回合结束后刷新）
 	// 回合文本按 part 分段保存而非拼成一个字符串：服务端会修订同一个 part 的
@@ -263,6 +274,7 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		childSessions:   map[string]string{},
 		permSession:     map[string]string{},
 		seenQuestionIDs: map[string]bool{},
+		toolStages:      map[string]toolStage{},
 	}
 	// 构造失败不挡任务：FrameWriter 的方法对 nil 接收者是空操作
 	fw, err := turn.WriterFor(taskDir, a.log)
@@ -270,6 +282,8 @@ func (a *Adapter) newRun(taskID, taskDir, repoPath string) *runState {
 		a.log.Warn("创建帧写入器失败，本任务无结构化帧", "task", taskID, "cause", err)
 	}
 	r.frames = fw
+	// 段切分器不依赖文件 IO，构造不会失败，与 frames 的 nil 兜底无关
+	r.seg = turn.NewSegmenter(nil)
 	r.runCtx, r.runCancel = context.WithCancel(context.Background())
 	a.mu.Lock()
 	a.runs[taskID] = r
@@ -377,6 +391,7 @@ func (a *Adapter) startRun(ctx context.Context, req executor.StartReq, api *API,
 	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.Task.ID, "cause", err)
 	}
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	a.log.Info("adapter 启动运行", "task", r.taskID, "task_dir", r.taskDir, "workdir", r.repoPath)
 	defer func() {
 		if err != nil {
@@ -477,6 +492,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	if err := r.frames.BeginTurn("send", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	a.log.Info("adapter 收到续接指令", "task", taskID, "text", turn.TruncateRunes(text, 80))
 	defer func() {
 		if err != nil {
@@ -947,6 +963,10 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	case "result":
 		ok := ev.Result != nil && ev.Result.OK
 		a.log.Info("adapter 产出结果事件", "task", r.taskID, "type", ev.Type, "ok", ok)
+	case "usage":
+		// 不打 Info：用量/耗时事件频率高（一个回合几十到几百条），逐条打入口
+		// 日志就是刷屏。落库结果的日志在 manager 的 handleUsage/handleSpend/
+		// handleTiming 里打（那里是 Debug，且只在真落库时打）。
 	default:
 		a.log.Info("adapter 产出未知事件", "task", r.taskID, "type", ev.Type)
 	}
@@ -961,6 +981,24 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 		return true
 	case <-r.stopCh:
 		return false
+	}
+}
+
+// reportTiming 把段切分器产出的条目逐条经 usage 事件上报。
+//
+// 为什么走 usage 而不是新事件类型：Usage（当前占用）、Spend（累计消耗）与
+// Timing（耗时）是同一次模型调用结束时的三样产物；拆成两个事件，两者之间
+// 就能插进一次 agentd 重启（契约文档 §6.3 的拍板记录）。
+//
+// entries 为空是常态（不是错误），静默返回。
+func (a *Adapter) reportTiming(r *runState, entries []proto.TimingEntry) {
+	for i := range entries {
+		e := entries[i]
+		if !a.emit(r, executor.AdapterEvent{Type: "usage", Timing: &e}) {
+			a.log.Debug("opencode 耗时条目未能上报（事件通道已终止或已满）",
+				"task", r.taskID, "key", e.Key, "remaining", len(entries)-i)
+			return
+		}
 	}
 }
 
@@ -1453,6 +1491,14 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 			MessageID string `json:"messageID"`
 			Type      string `json:"type"`
 			Text      string `json:"text"`
+			// 以下四个只在 type=="tool" 时有意义（见 mapToolPart）
+			Tool   string `json:"tool"`
+			CallID string `json:"callID"`
+			State  struct {
+				Status string          `json:"status"`
+				Input  json.RawMessage `json:"input"`
+				Output string          `json:"output"`
+			} `json:"state"`
 		} `json:"part"`
 	}
 	if err := json.Unmarshal(props, &pu); err != nil {
@@ -1467,6 +1513,12 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 	// 类型登记先于 text 过滤（why 见函数注释）：delta 无类型字段，只有这里能
 	// 建立「part -> 非 text」的事实，mapPartDelta 据此跳过 reasoning/tool 增量
 	r.partTypes[key] = p.Type
+	if p.Type == "tool" {
+		// 工具帧与耗时打点走这一路；tool part 的**文本增量**照旧不产帧
+		// （frameKind("tool") == kindSkip，两条路不相干）
+		a.mapToolPart(r, p.Tool, toolPartKey(p.CallID, p.ID),
+			p.State.Status, p.State.Input, p.State.Output)
+	}
 	isText := p.Type == "text" && !r.userMsgs[p.MessageID]
 	if isText {
 		r.lastAssistantMsgID = p.MessageID
@@ -1495,6 +1547,103 @@ func (a *Adapter) mapPartUpdated(r *runState, props json.RawMessage) {
 	}
 	a.setPartText(r, key, p.Text)
 }
+
+// toolPartKey 取工具调用的配对键：优先 callID，缺失时回落 part.id。
+//
+// 为什么优先 callID：permission.asked 事件里的 tool.callID 用的就是它
+// （testdata/spike5-events.jsonl 第 289 行），拿同一个键才对得上审批与调用。
+func toolPartKey(callID, partID string) string {
+	if callID != "" {
+		return callID
+	}
+	return partID
+}
+
+// mapToolPart 把一次工具调用的推进落成帧 + 打点。调用方必须持有 r.turnMu。
+//
+// 参数：tool 是工具名（part.tool）；key 是配对键；status/input/output 取自
+// part.state。
+//
+// 去重是本函数的主要职责：opencode 对同一个 tool part 会反复发 running
+// （输出边长边发），终态也可能因 SSE 重放再来一次。toolStages 保证
+// tool_call 帧与 tool_result 帧各恰好一条。
+//
+// 打点必须在写帧**之前**：写帧要过一次头尾截断与文件 IO，把那段时间算进
+// 工具耗时是在给工具记别人的账。
+//
+// 为什么 dur 取 Segmenter 的墙钟而不是 part.state.time：state.time 记的是
+// 「最后一次尝试」的起点，重试时会跳变、且不含权限审批等待（真机抓包实测：
+// 同一个 callID 的 time.start 在一次审批前后从 …464643 跳到 …478355）。
+// claudecode/codex 的工具耗时都含审批等待，取 state.time 会让 opencode 的
+// 同一条命令看起来比别家快——那是**口径差不是性能差**（计划 §1.4 的拍板）。
+func (a *Adapter) mapToolPart(r *runState, tool, key, status string,
+	input json.RawMessage, output string) {
+	if key == "" {
+		return // 没有配对键就没法配对，跳过
+	}
+	if r.toolStages[key] == toolStageNone {
+		r.toolStages[key] = toolStageStarted
+		a.reportTiming(r, r.seg.ToolStart(key, tool, toolDetail(input)))
+		// 帧里存 state.input 全文（只受头尾截断约束）
+		if err := r.frames.ToolCall(key, tool, string(input)); err != nil {
+			a.log.Warn("写 tool_call 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
+	}
+	st, terminal := toolResultStatus(status)
+	if !terminal || r.toolStages[key] == toolStageDone {
+		return
+	}
+	r.toolStages[key] = toolStageDone
+	// 先取耗时再写帧：没配上时 dur 是 -1（不知道），帧上就不带 dur_ms
+	dur, entries := r.seg.ToolEnd(key)
+	if err := r.frames.ToolResult(key, st, output, dur); err != nil {
+		a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
+	}
+	a.reportTiming(r, entries)
+}
+
+// toolResultStatus 把 opencode 的工具状态映射成帧上的 status。
+//
+// 返回 ok=false 表示**不是终态**（pending/running/未知）：不产 tool_result 帧、
+// 不收工具段。error 是真实存在的终态——权限被拒会终结回合并只留 error 状态的
+// tool part（见 mapIdle 的注释）。
+//
+// 不认识的状态一律按非终态处置，理由的不对称性与 grok 版一致：把非终态当终态
+// 会提前收段并留下一个永远配不上的 start；把终态当非终态只是少一条条目，
+// 由聚合层的 Partial 如实标出。
+func toolResultStatus(status string) (string, bool) {
+	switch status {
+	case "completed":
+		return "ok", true
+	case "error":
+		return "error", true
+	default:
+		return "", false
+	}
+}
+
+// toolDetail 从工具入参里取一句给人看的凭据（进 TimingEntry.Detail）。
+//
+// 优先 input.command（命令类工具），没有就用整个 input 的紧凑 JSON。
+// 截断由 Segmenter 按 DetailRunes 负责，这里不截——两处都截会截两次。
+func toolDetail(input json.RawMessage) string {
+	var in struct {
+		Command string `json:"command"`
+	}
+	if len(input) > 0 && json.Unmarshal(input, &in) == nil && in.Command != "" {
+		return in.Command
+	}
+	return string(input)
+}
+
+// toolStage 是一个 tool part 的推进阶段，用于去重（见 runState.toolStages）。
+type toolStage int
+
+const (
+	toolStageNone    toolStage = iota // 没见过
+	toolStageStarted                  // 已产 tool_call 帧、已开工具段
+	toolStageDone                     // 已产 tool_result 帧、已收工具段
+)
 
 // partFrameKind 是 part 类型到帧类型的归类结果。
 type partFrameKind int
@@ -1694,6 +1843,9 @@ func (r *runState) cancelPendingIdle() {
 // 空回合例外，它走 question（有内容可问，见下文）。props 为触发 idle 的
 // session.status 载荷，仅用于日志上下文。
 func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
+	// 回合收尾在最前面：本函数有四条出口（被拒空回合、零文本、trailer 三分支），
+	// 放在开头是唯一能同时覆盖全部的位置。EndTurn 幂等，重复触发无害。
+	a.reportTiming(r, r.seg.EndTurn())
 	text := r.turnText()
 	if strings.TrimSpace(text) == "" {
 		// 被拒终止的回合：opencode 收到 reject 直接终结回合，只留 error 状态的
