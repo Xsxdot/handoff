@@ -36,6 +36,15 @@ charter 架构法（`~/workspace/charter/skills/architecture-law/SKILL.md` 术�
 
 2. **同一个词「领域」在两层图里指两级东西。**
    - handoff 仓 `codegraph/baseline.json`：2229 节点 / 3642 边 / **19 个「领域」**，粒度接近真·领域（`d_coordination_task`、`d_web`、`d_coordination_api`……）；
+
+     > **同日后续（08-22 晚，`charter:finish` 收尾）**：这份读数取自重扫前的基线。
+     > 当天晚些做了一次全量重扫（提交 `f588ebe11`，锚点 `e228dc6e1`），基线变成
+     > **3664 节点 / 4748 边 / 237 容器 / 19 子系统**——领域数没变，节点多了 64%
+     > （旧基线漏扫了 `internal/launcher` 整个包等大片代码）。上面的粒度判断不受影响，
+     > 但**规模数字请以新基线为准**。副作用：完整基线让 `graph check` 由绿转红
+     > （69 条未声明跨域方向 + 17 条预算偏低），已记 backlog B173，与第 1 刀的
+     > `domains`→`subsystems` 改名有重叠，两者需一并规划。
+
    - handoff-server 仓 `codegraph/target.json`：`domains` 数组 4 条（`d_tunnel`/`d_account`/`d_admin`/`d_console`，带 boundary/logic 类型与 `contracts` 依赖方向）——按架构法判据这些是**子系统**。
 
    迁移时两层图必须一起理，否则 `domains` 在同一个仓里有两个意思。
