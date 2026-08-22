@@ -111,6 +111,7 @@ type runState struct {
 	actualModel string
 
 	frames   *turn.FrameWriter // 结构化回合帧；构造失败时为 nil，方法对 nil 安全
+	seg      *turn.Segmenter   // 耗时段切分器；与 frames 同款 nil 安全约定
 	textPart string            // 本回合正文/思维链的 part 标识
 
 	pendMu  sync.Mutex
@@ -177,6 +178,8 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 		r.frames = fw
 	}
+	// 段切分器不依赖文件 IO，构造不会失败，与 frames 的 nil 兜底无关
+	r.seg = turn.NewSegmenter(nil)
 	// 回合起点 commit：兜底分类要靠「是否有新提交」这个事实裁决
 	if _, c, _, gerr := turn.GitTurnStatus(req.Task.Workdir(), ""); gerr == nil {
 		r.startCommit = c
@@ -211,6 +214,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	r.textPart = r.frames.NextPart()
 	// 不等待：session/prompt 要跑完一整个回合才响应，Start 必须立即返回
 	resCh, err := cli.CallAsync("session/prompt", map[string]any{
@@ -300,6 +304,7 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) error {
 	if err := r.frames.BeginTurn("send", text); err != nil {
 		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", taskID, "cause", err)
 	}
+	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	r.textPart = r.frames.NextPart()
 	// 续接即发新的 session/prompt，回合边界由它的响应（stopReason）标记
 	resCh, err := r.cli.CallAsync("session/prompt", map[string]any{
@@ -390,6 +395,24 @@ func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
 	default:
 		a.log.Warn("事件通道满，丢弃事件", "task", r.taskID, "type", ev.Type)
 		return false
+	}
+}
+
+// reportTiming 把段切分器产出的条目逐条经 usage 事件上报。
+//
+// 为什么走 usage 而不是新事件类型：Usage（当前占用）、Spend（累计消耗）与
+// Timing（耗时）是同一次模型调用结束时的三样产物；拆成两个事件，两者之间
+// 就能插进一次 agentd 重启（契约文档 §6.3 的拍板记录）。
+//
+// entries 为空是常态（不是错误），静默返回。
+func (a *Adapter) reportTiming(r *runState, entries []proto.TimingEntry) {
+	for i := range entries {
+		e := entries[i]
+		if !a.emit(r, executor.AdapterEvent{Type: "usage", Timing: &e}) {
+			a.log.Debug("grok 耗时条目未能上报（事件通道已终止或已满）",
+				"task", r.taskID, "key", e.Key, "remaining", len(entries)-i)
+			return
+		}
 	}
 }
 
@@ -514,6 +537,9 @@ func (a *Adapter) awaitTurn(r *runState, ch <-chan ACPResult) {
 // 为什么 stopReason != end_turn 一律判失败：那意味着回合没跑完（拒答、达到
 // 上限、被取消），此时模型的产出不可信，交协调者比替它猜测安全。
 func (a *Adapter) finishTurn(r *runState, res ACPResult) {
+	// 回合收尾在最前面：本函数有三条出口（res.Err、stopReason 异常、正常路径），
+	// 放在开头是唯一能同时覆盖三条的位置。EndTurn 幂等，重复触发无害。
+	a.reportTiming(r, r.seg.EndTurn())
 	if res.Err != nil {
 		a.emitTurnFailed(r, fmt.Sprintf("回合异常终止: %v", res.Err))
 		return
@@ -650,10 +676,10 @@ const (
 
 // updateFrameKind 把 ACP 的 sessionUpdate 类型归类成帧类型。
 //
-// 为什么 tool_call / tool_call_update 归 updateNone：grok 的工具动作今天只有
-// 一行人读摘要（toolLine，带 200 截断），拿它当 tool_call 帧的 input 会把
-// 「命令尾部可能藏着危险片段」这个已知问题（见 adapter.go 的 toolLine 注释）
-// 复制进帧流。W4a 不为 grok 造工具帧——诚实缺席好过失真在场（spec §3.5）。
+// 为什么 tool_call / tool_call_update 归 updateNone：它们不产**正文/思维链**帧。
+// 工具帧走另一条路（updateToolFields → onSessionUpdate 的工具分支），
+// 那条路拿的是 rawInput 原文而不是 toolLine 的 200 字摘要，所以当初
+// 「拿人读摘要当帧 input 会丢掉命令尾部」的反对理由在那里不成立。
 //
 // 未知类型一律 updateNone。
 func updateFrameKind(sessionUpdate string) updateKind {
@@ -754,6 +780,80 @@ func updateFrameFields(raw []byte) (kind, text string) {
 		return "", ""
 	}
 	return msg.Params.Update.Kind, msg.Params.Update.Content.Text
+}
+
+// toolUpdate 是一条 session/update 里的工具动作字段。
+//
+// 与 feedRaw / updateFrameFields 同款做法：累积器是纯累积器，工具分流在它的
+// 调用方，故这里再解析一次同一份消息（三处解析同一套字段名，改字段要一起改）。
+type toolUpdate struct {
+	Kind     string          // "tool_call" | "tool_call_update"
+	ID       string          // toolCallId，回合内的配对键
+	Title    string          // tool_call 时是工具名；tool_call_update 时是人读句子
+	Status   string          // 仅 tool_call_update 携带
+	RawInput json.RawMessage // 完整入参（不截断）
+	Output   string          // 工具输出；ACP 的 content 数组拼出来，可能为空
+}
+
+// updateToolFields 从一条原始 session/update 消息里取工具动作字段。
+//
+// 返回 ok=false 表示这条不是工具动作（含解析失败、非 session/update、
+// 缺 toolCallId）——调用方据此跳过，绝不 panic。
+//
+// 注意 Output：ACP 的 tool_call_update 可以带 content 数组，但 grok 实际发不发、
+// 发什么形状**尚未真机确认**（本仓 testdata/updates.jsonl 是手写夹具）。
+// 解析不到就留空串，帧上的 output 为空——诚实的空好过编一个值。
+func updateToolFields(raw []byte) (toolUpdate, bool) {
+	var msg struct {
+		Method string `json:"method"`
+		Params struct {
+			Update struct {
+				Kind     string          `json:"sessionUpdate"`
+				ID       string          `json:"toolCallId"`
+				Title    string          `json:"title"`
+				Status   string          `json:"status"`
+				RawInput json.RawMessage `json:"rawInput"`
+				Content  []struct {
+					Content struct {
+						Text string `json:"text"`
+					} `json:"content"`
+				} `json:"content"`
+			} `json:"update"`
+		} `json:"params"`
+	}
+	if json.Unmarshal(raw, &msg) != nil || msg.Method != "session/update" {
+		return toolUpdate{}, false
+	}
+	u := msg.Params.Update
+	if u.Kind != "tool_call" && u.Kind != "tool_call_update" {
+		return toolUpdate{}, false
+	}
+	if u.ID == "" {
+		return toolUpdate{}, false // 没有配对键就没法配对，跳过
+	}
+	var sb strings.Builder
+	for _, c := range u.Content {
+		sb.WriteString(c.Content.Text)
+	}
+	return toolUpdate{Kind: u.Kind, ID: u.ID, Title: u.Title,
+		Status: u.Status, RawInput: u.RawInput, Output: sb.String()}, true
+}
+
+// toolResultStatus 把 ACP 的工具状态映射成帧上的 status。
+//
+// 返回 ok=false 表示**不是终态**：不产 tool_result 帧、不收工具段。
+// 不认识的状态一律按非终态处置——猜错方向的代价不对称：把非终态当终态会
+// 提前收段并留下一个永远配不上的 start；把终态当非终态只是少一条条目，
+// 由聚合层的 Partial 如实标出。grok 的真实状态取值集合见真机清单。
+func toolResultStatus(status string) (string, bool) {
+	switch status {
+	case "completed":
+		return "ok", true
+	case "failed", "error":
+		return "error", true
+	default:
+		return "", false
+	}
 }
 
 // toolLine 把工具调用渲染成一行人类可读摘要：优先用 rawInput.command，
@@ -924,8 +1024,40 @@ func (h *acpHandler) onSessionUpdate(params json.RawMessage) {
 			}
 		}
 	}
+	if tu, ok := updateToolFields(raw); ok {
+		h.a.mapToolUpdate(h.r, tu)
+	}
 	h.r.turnMu.Unlock()
 	h.a.flushRender(h.r)
+}
+
+// mapToolUpdate 把一条工具动作落成帧 + 打点。调用方必须持有 r.turnMu。
+//
+// 两端各一次：tool_call 产 tool_call 帧并开工具段；终态的 tool_call_update
+// 产 tool_result 帧并收工具段。中间态（in_progress 等）只更新不了什么，跳过。
+//
+// 打点必须在写帧**之前**：写帧要过一次头尾截断与文件 IO，把那段时间算进
+// 工具耗时是在给工具记别人的账。
+func (a *Adapter) mapToolUpdate(r *runState, tu toolUpdate) {
+	if tu.Kind == "tool_call" {
+		a.reportTiming(r, r.seg.ToolStart(tu.ID, tu.Title, rawCommand(tu.RawInput)))
+		// 帧里存 rawInput 全文（只受头尾截断约束），不是 toolLine 的 200 字摘要
+		if err := r.frames.ToolCall(tu.ID, tu.Title, string(tu.RawInput)); err != nil {
+			a.log.Warn("写 tool_call 帧失败，不影响回合", "task", r.taskID, "cause", err)
+		}
+		return
+	}
+	status, terminal := toolResultStatus(tu.Status)
+	if !terminal {
+		return // 中间态：没有可落的结果，也不能收段
+	}
+	// 先取耗时再写帧：dur 来自 Segmenter 里记的 tool_call 时刻，
+	// 没配上时是 -1（不知道），帧上就不带 dur_ms
+	dur, entries := r.seg.ToolEnd(tu.ID)
+	if err := r.frames.ToolResult(tu.ID, status, tu.Output, dur); err != nil {
+		a.log.Warn("写 tool_result 帧失败，不影响回合", "task", r.taskID, "cause", err)
+	}
+	a.reportTiming(r, entries)
 }
 
 // onUsageNotification 处理 _x.ai/session_notification：只有 response_completed
