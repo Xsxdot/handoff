@@ -195,6 +195,26 @@ describe('buildBlocks 工具配对', () => {
     const first = buildBlocks([f({ seq: 1, type: 'tool_result', part: 'p07', status: 'ok', output: 'a' })])
     expect((first[0] as ToolBlock).durMS).toBeUndefined()
   })
+
+  // 这条正面断言专门守 result-先到的新建块路径。审核实验 A 证明：删掉
+  // 新建块里的 durMS 赋值后，原有 233 条测试仍全绿；所以不能只断言缺席。
+  it('结果先到且带耗时时，新建块保留 result 的 durMS', () => {
+    const blocks = buildBlocks([
+      f({ seq: 1, type: 'tool_result', part: 'p08', status: 'ok', output: 'done', dur_ms: 42 }),
+    ])
+    expect((blocks[0] as ToolBlock).durMS).toBe(42)
+  })
+
+  // 这条反向断言专门守 tool_call 补字段的 hit 路径。审核实验 B 证明：若在
+  // 该路径补上 hit.durMS = fr.dur_ms，原有 233 条测试仍全绿，却会把 result
+  // 已写好的值抹掉；tool/input 断言也证明确实命中了这条补字段路径。
+  it('结果先到后调用补字段时，调用侧 dur_ms 不覆盖 result 的值', () => {
+    const blocks = buildBlocks([
+      f({ seq: 1, type: 'tool_result', part: 'p09', status: 'ok', output: 'done', dur_ms: 42 }),
+      f({ seq: 2, type: 'tool_call', part: 'p09', tool: 'bash', input: 'ls', dur_ms: 999_999 }),
+    ])
+    expect(blocks[0]).toMatchObject({ kind: 'tool', tool: 'bash', input: 'ls', durMS: 42 })
+  })
 })
 
 describe('buildBlocks 其余帧型', () => {

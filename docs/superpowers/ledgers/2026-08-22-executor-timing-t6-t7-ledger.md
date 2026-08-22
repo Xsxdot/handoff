@@ -33,3 +33,10 @@
 - 变异 16（TasksResp 清空 Timing 的两行删除）：先跑 `go test ./internal/proto/ -count=1` 失败首行 `--- FAIL: TestContractFixtures (0.00s)`；临时 `-update` 生成带 timing 的 TasksResp.json 后，`npx vitest run src/api/contract.test.ts` 失败首行 `❯ src/api/contract.test.ts (34 tests | 1 failed)`，两端均红；已恢复源码并重生成原夹具。
 - 收口修复轮 1：为变异 2 补同回合重复 turn 行覆盖断言；变异重跑红后恢复生产实现。修复范围：`internal/store/timing_agg_test.go`；commit 范围待收口提交。
 - 整分支终审（相对 `2450d3a7`）：`git diff --check` 通过，文件范围仅含本计划的 ledger、T6 store/proto/fixtures、T7 web 纯函数/组件/契约测试与 fixtures；无残留变异（`false &&`、`if (false)`、`dur_ms ?? 0` 均无输出）。终审复跑 `gofmt -l internal/store internal/proto` 无输出、`go test ./internal/store/ -count=1`、`go test ./internal/proto/ -count=1`、`npx tsc -b`、`npx vitest run src/app/task src/api`（24 files / 233 tests）与 `npm run lint`（0 errors）均通过。特殊项：三 task 均无新增日志（读路径高频、前端不打 console）；`TaskTiming` 用 `s.db.QueryContext`，与 `TaskCumulative` 一致，本包无 DAO/`mvc.ExtractDB` 分层。收口 commit 范围：相对基线的完整实现、测试、夹具与本 ledger；提交信息为 `test(timing): 收口耗时聚合与 TUI 展示`。
+
+## 收口修复轮 2
+
+- 补测 `frames.test.ts` 两条工具配对断言：result-先到新建块必须保留 `durMS`；result-先到后 tool_call 补字段时，tool/input 必须补上且调用侧 `dur_ms` 不得覆盖 result 的 42。注释明确记录审核实验 A/B：删除新建块赋值或加入覆盖赋值时原有 233 tests 都曾全绿。
+- 变异 17：删除 `tool_result` 新建块的 `durMS: fr.dur_ms` 后，`npx vitest run src/app/task/frames.test.ts` 失败首行 `❯ src/app/task/frames.test.ts (31 tests | 2 failed)`；两条新增断言均按预期失败，已恢复。
+- 变异 18：在 `tool_call` 补字段分支加入 `hit.durMS = fr.dur_ms` 后，同一命令失败首行 `❯ src/app/task/frames.test.ts (31 tests | 1 failed)`，诊断为期望 42、实际 999999；已恢复。
+- 本轮只改 `web/src/app/task/frames.test.ts` 与本 ledger，未改生产代码；commit 信息按要求为 `test(web): 锁住 durMS 在四条工具配对路径上的语义`。
