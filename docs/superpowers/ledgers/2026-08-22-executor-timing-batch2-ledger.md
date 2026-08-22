@@ -80,4 +80,31 @@
 
 ## Task 3 · 收口
 
-未开始。
+- 改动：`internal/executor/claudecode/start_ordering_test.go`。将 usage 事件过滤循环
+  的 `time.After(10 * time.Second)` 移到循环外的 `deadline`，保留原 10 秒时长与
+  既有断言；防止不停产 usage 时每次迭代重置死线。
+- 四家一致性只读复核：
+  - `grep -c "func (a \*Adapter) reportTiming" internal/executor/{claudecode,codex,grok,opencode}/adapter.go`
+    输出四个文件各为 `1`。
+  - `grep -n -A3 "frames.BeginTurn" ...` 目视确认四家 dispatch/send 两处均紧跟
+    `a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))`。
+  - `sed` 目视确认 claudecode `mapResult`、codex/grok `finishTurn`、opencode
+    `mapIdle` 的函数体第一条执行语句均为 `a.reportTiming(r, r.seg.EndTurn())`。
+  - `grep -nE "claude|codex|grok|opencode" internal/executor/turn/timing.go`
+    无输出。
+- `go test ./internal/executor/claudecode/ -run '^TestStartWritesPromptBeforeWaitingReady$'`
+  输出 `ok github.com/Xsxdot/handoff/internal/executor/claudecode 0.245s`。
+- 计划指定的
+  `gofmt -l internal/ && go vet ./internal/executor/... && go build ./... && go test ./internal/executor/... 2>&1 | tail -20`
+  已实测：gofmt 无输出，vet/build 无错误输出；尾部显示 claudecode 失败、其余
+  executor 包 `ok`。不带管道掩码并使用短临时目录的
+  `TMPDIR=/tmp/handoff-timing-batch2 go test ./internal/executor/...` 仍失败，原始
+  失败包含 `perm_test.go: 裁决 socket 路径过长（114/115/116 字节，上限 107）`
+  与 `resume_test.go: TestResumeContinuesFromOffset ... 裁决 socket 路径过长`，
+  以及 `TestClaudeToolTimingPaired` 的 `FAIL`；codex、fake、grok、opencode、
+  rawtap、turn 均为 `ok`。该失败未修改无关测试或生产代码。
+- Task 3 双裁决：规格方面完成指定 timeout 修复与四家只读核对；质量方面目标
+  claudecode 顺序测试通过、gofmt/vet/build 命令链无前置错误，剩余全包失败已按
+  原始输出记账。
+- commit 范围：`internal/executor/claudecode/start_ordering_test.go` 与本 ledger；
+  提交信息待按计划提交。

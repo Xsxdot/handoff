@@ -59,6 +59,10 @@ func TestStartWritesPromptBeforeWaitingReady(t *testing.T) {
 	// 死线放到 10s（仍在外层 15s ctx 之内）：本用例要等一个真的子进程被拉起、
 	// 写 fifo、事件穿过 streamLoop。2s 在多包并发 -race 把 CPU 吃满时不够用，
 	// 已实测偶发失败。放宽不削弱断言——顺序错了照样失败，只是容得下慢机器。
+	// 死线取一次放在循环外：放进 select 里就是**每次迭代**各 10s，
+	// 一个不停产 usage 事件的回归会把本用例挂到 go test 的全局超时才死，
+	// 而那时报的是 "panic: test timed out"，指不到这里。
+	deadline := time.After(10 * time.Second)
 	for {
 		select {
 		case ev := <-r.evCh:
@@ -69,7 +73,7 @@ func TestStartWritesPromptBeforeWaitingReady(t *testing.T) {
 				t.Fatalf("首个非耗时事件应是带假执行者 session_id 的 init，实际 %+v", ev)
 			}
 			goto initReceived
-		case <-time.After(10 * time.Second):
+		case <-deadline:
 			t.Fatal("10s 内未收到 init progress 事件")
 		}
 	}
