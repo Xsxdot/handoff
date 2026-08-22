@@ -1,3 +1,4 @@
 # B162 WS 截断诊断 ledger
 
 - Task 1 / 完成裁决：spec 符合（新增测试专用 `onTruncationDiagnosed` 钩子与 nil-safe helper，error/warned/covered 三条诊断分支各调用一次，生产 nil 时行为不变）；代码质量符合（不改诊断判定与日志文案，回调位置在各分支日志之后）。验证：`gofmt -w internal/agentd/server.go` 实际完成；`go test ./internal/agentd/ -run 'TestWSTruncation' -count=1` 实际通过，原始输出 `ok  	github.com/Xsxdot/handoff/internal/agentd	0.239s`。修复轮次：0。Commit 范围：`HEAD^..HEAD`。
+- Task 2 / 完成裁决：spec 符合（`newWSTestEnv` 注入容量为 4 的 `truncationDiagnosed` 通道与服务端钩子，两条截断用例改用已有 `wsDeadline(t, 10*time.Second)` 上下文等待并断言 `warned`，日志文案与 `gap_total=15` 断言保留）；代码质量符合（只改等待同步方式，不引入新挂钟常数，失败信息包含 verdict 与日志尾部）。验证：`gofmt -w internal/agentd/ws_regression_round2_test.go` 实际完成；`go test ./internal/agentd/ -run 'TestWSTruncation' -count=5` 实际通过，原始输出 `ok  	github.com/Xsxdot/handoff/internal/agentd	1.548s`。修复轮次：0。Commit 范围：`HEAD^..HEAD`。
