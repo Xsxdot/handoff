@@ -239,7 +239,8 @@ var agentdCmd = &cobra.Command{
 		// 留着 len>0 的闸会让控制台新增的第一台机器永远等不到镜像。
 		mirror := agentd.NewMirror(srv.Pool(), st, srv.Hub(), logger)
 		go mirror.Run(wdCtx)
-		logger.Info("事件镜像已启动", "targets", len(cfg.Targets), "tick", "30s")
+		logger.Info("事件镜像已启动", "targets", len(srv.Pool().Names()), "tick", "30s",
+			"note", "运行期新增的机器无需重启")
 
 		// 账本域是可选功能（默认关）。关掉时既不开库也不起镜像，DataDir 下
 		// 不会凭空多出 ledger.db；web 侧靠 /api/ledger/health 探到 enabled:false
@@ -253,11 +254,13 @@ var agentdCmd = &cobra.Command{
 				logger.Info("账本未启用（ledger.enabled=false）")
 			}
 		} else {
-			// 账本镜像子系统：有已登记 target 才有镜像对象；账本库按配置解析
-			//（dsn 空 = DataDir/ledger.db 单机回退）。构造→go Run→Stop→Close
-			// 的次序是硬约束：订阅回调在写库，Stop 必须先于账本库 Close。
-			// 账本库始终打开：没有登记 target 时镜像循环不启动，但本机 web
-			// 看板仍必须能读写单机回退账本。
+			// 账本镜像子系统：机器清单来自 target 客户端池的活配置读取，启动时
+			// 没有机器不代表以后没有——恒挂载才能让控制台新增的第一台机器无需重启
+			// 即开始镜像。池必须与任务镜像共用同一个，避免重复 relay 隧道。
+			// 账本库按配置解析（dsn 空 = DataDir/ledger.db 单机回退）。
+			// 构造→go Run→Stop→Close 的次序是硬约束：订阅回调在写库，Stop 必须先于
+			// 账本库 Close。账本库始终打开，即使没有登记机器，本机 web 看板仍必须
+			// 能读写单机回退账本。
 			ldsn := cfg.Ledger.DSN
 			if ldsn == "" {
 				ldsn = filepath.Join(cfg.DataDir, "ledger.db")
@@ -274,24 +277,18 @@ var agentdCmd = &cobra.Command{
 				return fmt.Errorf("seed 默认派发模板: %w", err)
 			}
 			srv.SetLedger(lst)
-			if len(cfg.Targets) > 0 {
-				host, _ := os.Hostname()
-				lm := ledgermirror.New(lst, func() map[string]config.Target {
-					// /api/machines 热改会原子替换配置快照；从配置文件读取使
-					// 本子系统无需持有启动时的旧 targets 集合。
-					current, err := config.Load(p)
-					if err != nil {
-						logger.Warn("读取镜像 targets 配置失败，沿用启动快照", "err", err)
-						return cfg.Targets
-					}
-					return current.Targets
-				}, ledgermirror.Options{Holder: host})
-				go lm.Run(wdCtx)
-				defer lm.Stop()
-				logger.Info("账本镜像子系统已挂载", "holder", host)
-			} else {
-				logger.Info("账本镜像未启动：无已登记 target")
-			}
+			// 恒挂载：机器清单来自 target 客户端池的活配置读取，启动时没有机器
+			// 不代表以后没有——留着 len(cfg.Targets)>0 的闸会让控制台新增的第一台
+			// 机器永远等不到账本镜像（与上方任务镜像同一条纪律，B163 ①）。
+			// 池必须与任务镜像共用同一个：两个池等于两套 relay 隧道。
+			host, _ := os.Hostname()
+			lm := ledgermirror.New(lst, srv.Pool(), ledgermirror.Options{Holder: host})
+			go lm.Run(wdCtx)
+			// 次序硬约束：订阅回调在写账本库，Stop 必须先于 lst.Close()。
+			// defer 是 LIFO，本行注册在 defer lst.Close() 之后，因此先于它执行。
+			defer lm.Stop()
+			logger.Info("账本镜像子系统已挂载", "holder", host,
+				"machines", len(srv.Pool().Names()))
 		}
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1

@@ -113,3 +113,39 @@ func TestTasksBareArrayContract(t *testing.T) {
 		t.Errorf("裸数组响应不该含信封键：%s", raw)
 	}
 }
+
+// TestTasksScopeAllSkipsUnregisteredMachine 断言：控制台删掉一台机器后，
+// 它遗留在镜像表里的任务不再出现在任务汇总里。
+//
+// why：镜像快照是副本不是真相，「有哪些机器」的判据只有一个——活配置。
+// 库里的遗留行不删（删行是破坏性操作），读时过滤即可（B163）。
+func TestTasksScopeAllSkipsUnregisteredMachine(t *testing.T) {
+	env := seedTasksEnv(t) // cfg 里只登记了 devbox
+	now := time.Now().UTC()
+	if err := env.st.UpsertMirrorTask("deleted-box", proto.Task{
+		ID: uuid.NewString(), Name: "已删机器的遗留任务", State: proto.TaskStateRunning,
+		RepoPath: "/remote/gone", CreatedAt: now, UpdatedAt: now,
+	}, now); err != nil {
+		t.Fatalf("UpsertMirrorTask: %v", err)
+	}
+
+	var resp proto.TasksResp
+	code := env.getJSON(t, "/api/tasks?scope=all", &resp)
+	if code != http.StatusOK {
+		t.Fatalf("状态码 = %d，期望 200", code)
+	}
+	if len(resp.Tasks) != 3 {
+		t.Fatalf("任务数 = %d，期望 3（本机 2 + devbox 1，已删机器那条不算）：%+v",
+			len(resp.Tasks), resp.Tasks)
+	}
+	for _, tv := range resp.Tasks {
+		if tv.Machine == "deleted-box" {
+			t.Fatalf("已删机器的任务仍在列表里：%+v", tv)
+		}
+	}
+	for _, ms := range resp.Machines {
+		if ms.Name == "deleted-box" {
+			t.Fatalf("已删机器仍出现在 machines 行里：%+v", ms)
+		}
+	}
+}
