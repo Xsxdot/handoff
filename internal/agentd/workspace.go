@@ -1112,6 +1112,36 @@ func ResolveBaseBranch(ctx context.Context, repo, remote, branch string) (string
 	return sha, nil
 }
 
+// resolveDefaultBaseBranch 读取项目仓库记录的远端默认分支名。
+//
+// 参数：repo 为已通过 EnsureRepoUsable 的项目仓库路径。
+// 返回：origin/HEAD 指向的分支名；没有该符号引用或引用形态异常时返回
+// ErrBadWorkspaceReq 包装错误。
+//
+// 注意：这里只负责得到分支名，不在这里 fetch。调用方随后把分支名交给
+// resolveDispatchBase 的 D2 路径；这样卡派发与显式 --base 共用同一套远端
+// 补拉和 SHA 落库逻辑，同时普通 CLI 的空 Base 仍留在 ResolveBaseline 的
+// HEAD 语义上。
+func resolveDefaultBaseBranch(ctx context.Context, repo string) (string, error) {
+	out, stderr, err := gitRun(ctx, repo, "symbolic-ref", "--short", "refs/remotes/origin/HEAD")
+	ref := strings.TrimSpace(out)
+	if err != nil || ref == "" {
+		log().Warn("无法解析项目默认分支：origin/HEAD 不存在", "repo", repo,
+			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		return "", fmt.Errorf("%w: 无法解析项目默认分支：origin/HEAD 未设置（仓库 %s；git 输出：%s）",
+			ErrBadWorkspaceReq, repo, strings.TrimSpace(truncateRunes(stderr, 300)))
+	}
+	const prefix = "origin/"
+	if !strings.HasPrefix(ref, prefix) || strings.TrimPrefix(ref, prefix) == "" {
+		log().Warn("无法解析项目默认分支：origin/HEAD 形态异常", "repo", repo, "ref", ref)
+		return "", fmt.Errorf("%w: 无法解析项目默认分支：origin/HEAD 指向异常引用 %q",
+			ErrBadWorkspaceReq, ref)
+	}
+	branch := strings.TrimPrefix(ref, prefix)
+	log().Info("项目默认分支已解析", "repo", repo, "ref", ref, "branch", branch)
+	return branch, nil
+}
+
 // headCommit 取仓库当前 HEAD 的完整 sha。
 //
 // 返回空串只对应「仓库一个提交都没有」：仓库有效性已由 Dispatch 前置的

@@ -412,6 +412,10 @@ type DispatchReq struct {
 	NewBranch string
 	// Base 是新分支起点（仅与 NewBranch/自动分支连用；空=HEAD）。
 	Base string
+	// ResolveDefaultBase 仅用于卡派发的空基线：在目标项目仓库路径已解析后，
+	// 先取 origin/HEAD 指向的默认分支名，再交给既有 D2 补拉到远端尖端。
+	// false 时 Base 为空仍保持普通 CLI/--no-sync-check 的 HEAD 语义。
+	ResolveDefaultBase bool
 	// Worktree / NewWorktree worktree 二选一：Worktree=用户自带 worktree；
 	// NewWorktree=在 DataDir/worktrees 下新建 managed worktree（done 时删除）。
 	Worktree    string
@@ -651,7 +655,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		"plan_name", req.PlanName, "target", req.Target,
 		"executor", req.Executor, "model", req.Model, "name", req.Name,
 		"branch", req.Branch, "new_branch", req.NewBranch, "base", req.Base,
-		"base_commit", req.BaseCommit, "worktree", req.Worktree, "new_worktree", req.NewWorktree)
+		"base_commit", req.BaseCommit, "resolve_default_base", req.ResolveDefaultBase,
+		"worktree", req.Worktree, "new_worktree", req.NewWorktree)
 	defer func() {
 		if err != nil {
 			m.log.Error("dispatch 失败",
@@ -739,6 +744,15 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 走到 worktree add 才失败，扁平成 500
 	if err := EnsureRepoUsable(ctx, repoPath); err != nil {
 		return nil, err
+	}
+	if req.ResolveDefaultBase && req.Base == "" && req.Branch == "" {
+		defaultBase, baseErr := resolveDefaultBaseBranch(ctx, repoPath)
+		if baseErr != nil {
+			m.log.Warn("卡派发默认基线解析失败，拒绝派发", "repo", repoPath, "cause", baseErr)
+			return nil, baseErr
+		}
+		req.Base = defaultBase
+		m.log.Info("卡派发默认基线已解析", "repo", repoPath, "base", req.Base)
 	}
 
 	// 派发前置 2（B42）：工作目录占用守卫。managed 树每任务一棵，天然不冲突，

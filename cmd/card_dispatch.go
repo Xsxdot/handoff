@@ -37,11 +37,12 @@ type dispatchRequest struct {
 	executor       string
 	// discipline 是本次派发点名的纪律块角色名；空=让 agentd 按 executor 兜底。
 	// 只传名字不传正文：正文由 agentd 解析注入，CLI 不再是纪律块的搬运工。
-	discipline string
-	model      string
-	planB64    string
-	planName   string
-	base       string
+	discipline         string
+	model              string
+	planB64            string
+	planName           string
+	base               string
+	resolveDefaultBase bool
 }
 
 // dispatchTransport 是派发前逻辑的测试缝。生产路径由
@@ -74,7 +75,8 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
 		Discipline: req.discipline,
 		PlanB64:    req.planB64, PlanName: req.planName, Base: req.base,
-		NewWorktree: req.newWorktree,
+		ResolveDefaultBase: req.resolveDefaultBase,
+		NewWorktree:        req.newWorktree,
 	})
 	if err != nil {
 		return "", err
@@ -93,6 +95,7 @@ func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, er
 		executor: opts.Executor, model: opts.Model, planB64: opts.PlanB64,
 		planName: opts.PlanName, base: opts.Base, existingBranch: opts.ExistingBranch,
 		discipline: opts.Discipline, newWorktree: opts.NewWorktree,
+		resolveDefaultBase: opts.ResolveDefaultBase,
 	})
 }
 

@@ -724,13 +724,16 @@ type DispatchOpts struct {
 	Name        string
 	Executor    string
 	// Discipline 是本次派发点名的纪律块角色名；空=按 executor 兜底。
-	Discipline  string
-	Model       string
-	Branch      string
-	NewBranch   string
-	Base        string
-	Worktree    string
-	NewWorktree bool
+	Discipline string
+	Model      string
+	Branch     string
+	NewBranch  string
+	Base       string
+	// ResolveDefaultBase 仅供 card dispatch 链路使用：Base 为空时让目标
+	// agentd 按项目仓库的 origin/HEAD 解析默认分支；false=普通 CLI 派发语义。
+	ResolveDefaultBase bool
+	Worktree           string
+	NewWorktree        bool
 	// BaseCommit 是协调者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
@@ -750,7 +753,8 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
 		"discipline": opts.Discipline,
 		"branch":     opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
-		"worktree": opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
+		"resolve_default_base": opts.ResolveDefaultBase,
+		"worktree":             opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)
