@@ -1,0 +1,26 @@
+{
+  "domain": "d_workspace",
+  "responsibility": "为任务提供项目登记、工作树准备、分支同步、跨机器镜像和工作台启动项配置。",
+  "invariants": [
+    {
+      "text": "工作区请求的 branch/new-branch、worktree/new-worktree 选项互斥，并拒绝以连字符开头的 Git 参数。",
+      "testRef": "TestPrepareWorkspaceMutualExclusionAndInjection"
+    },
+    {
+      "text": "创建 managed worktree 时主仓库的脏状态只作为快照，不阻塞新工作树准备。",
+      "testRef": "TestPrepareWorkspaceNewWorktreeAllowsDirtyMainRepo"
+    },
+    {
+      "text": "工作区文件入口只允许访问白名单路径，未列出的路径被拒绝。",
+      "testRef": "TestWorkspaceEntryRejectsUnlistedPath"
+    },
+    {
+      "text": "远端任务分支同步到本地时不切换协调者当前 HEAD。",
+      "testRef": "TestFetchBringsTaskBranchLocally"
+    }
+  ],
+  "lifecycle": {
+    "from": "internal/agentd/workspace.go#PrepareWorkspace",
+    "to": "internal/agentd/workspace.go#RemoveManagedWorktree"
+  }
+}
