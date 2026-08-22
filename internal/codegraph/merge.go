@@ -22,15 +22,24 @@ type ViewEdge struct {
 	Status string `json:"status,omitempty"`
 }
 
+// ViewProjection 是视图里的投影关系，带有 diff 状态供消费方展示。
+type ViewProjection struct {
+	From   string `json:"from"`
+	To     string `json:"to"`
+	Kind   string `json:"kind"` // typed | handroll | twin
+	Status string `json:"status,omitempty"`
+}
+
 // View 是合并后的图视图。
 type View struct {
 	Name string `json:"view"`
 	// Domains 原样来自基线：diff 只改节点与边，不改领域划分。
-	Domains    map[string]Domain    `json:"domains,omitempty"`
-	Containers map[string]Container `json:"containers"`
-	Nodes      map[string]ViewNode  `json:"nodes"`
-	Edges      []ViewEdge           `json:"edges"`
-	Implements []ViewEdge           `json:"implements"`
+	Domains     map[string]Domain    `json:"domains,omitempty"`
+	Containers  map[string]Container `json:"containers"`
+	Nodes       map[string]ViewNode  `json:"nodes"`
+	Edges       []ViewEdge           `json:"edges"`
+	Implements  []ViewEdge           `json:"implements"`
+	Projections []ViewProjection     `json:"projections"`
 }
 
 // Merge 把基线与一个 diff 合并成视图。d 为 nil 时返回纯基准视图（Name="baseline"）。
@@ -45,6 +54,9 @@ func Merge(g *Graph, d *Diff) *View {
 	}
 	for _, e := range g.Implements {
 		v.Implements = append(v.Implements, ViewEdge{From: e[0], To: e[1]})
+	}
+	for _, p := range g.Projections {
+		v.Projections = append(v.Projections, ViewProjection{From: p[0], To: p[1], Kind: p[2]})
 	}
 	if d == nil {
 		return v
@@ -99,6 +111,25 @@ func Merge(g *Graph, d *Diff) *View {
 			continue
 		}
 		v.Implements = append(v.Implements, ViewEdge{From: e[0], To: e[1], Status: "added"})
+	}
+	delProjections := map[string]bool{}
+	for _, p := range d.ProjectionsDeleted {
+		delProjections[p[0]+"\x00"+p[1]+"\x00"+p[2]] = true
+	}
+	for i := range v.Projections {
+		p := &v.Projections[i]
+		if delProjections[p.From+"\x00"+p.To+"\x00"+p.Kind] {
+			p.Status = "deleted"
+		}
+	}
+	for _, p := range d.ProjectionsAdded {
+		if _, ok := v.Nodes[p[0]]; !ok {
+			continue
+		}
+		if _, ok := v.Nodes[p[1]]; !ok {
+			continue
+		}
+		v.Projections = append(v.Projections, ViewProjection{From: p[0], To: p[1], Kind: p[2], Status: "added"})
 	}
 	return v
 }

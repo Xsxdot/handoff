@@ -7,7 +7,7 @@ import (
 
 func TestMergeBaselineOnly(t *testing.T) {
 	v := Merge(loadFixture(t), nil)
-	if v.Name != "baseline" || len(v.Nodes) != 7 || len(v.Edges) != 4 {
+	if v.Name != "baseline" || len(v.Nodes) != 8 || len(v.Edges) != 4 {
 		t.Fatalf("基准视图形状: %s %d %d", v.Name, len(v.Nodes), len(v.Edges))
 	}
 	if v.Nodes["n_do"].Status != "" {

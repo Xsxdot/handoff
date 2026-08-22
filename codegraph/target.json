@@ -109,8 +109,9 @@
     { "from": "d_controlplane", "to": "d_localint", "entries": [], "legacyBudget": 36 },
     { "from": "d_controlplane", "to": "d_release", "entries": [], "legacyBudget": 15 },
     { "from": "d_controlplane", "to": "d_remote", "entries": [], "legacyBudget": 13 },
-    { "from": "d_executor", "to": "d_contract", "entries": ["proto 实体"], "legacyBudget": 0 },
-    { "from": "d_ledger", "to": "d_contract", "entries": ["proto 实体"], "legacyBudget": 2 },
+    { "from": "d_executor", "to": "d_contract", "entries": ["proto 实体"], "legacyBudget": 1 },
+    { "from": "d_executor", "to": "d_host", "entries": [], "legacyBudget": 4 },
+    { "from": "d_ledger", "to": "d_contract", "entries": ["proto 实体"], "legacyBudget": 31 },
     { "from": "d_localint", "to": "d_remote", "entries": [], "legacyBudget": 2 },
     { "from": "d_remote", "to": "d_contract", "entries": [], "legacyBudget": 25 },
     { "from": "d_remote", "to": "d_localint", "entries": [], "legacyBudget": 3 }

@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -33,7 +33,7 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 	_ = s.LinkTask(c.ID, "mac-02", "T1", "implement", "t")
 
 	var calls atomic.Int64
-	fake := func(ctx context.Context, addr, token, taskID string, fromSeq int64,
+	fake := func(ctx context.Context, _ *client.Client, taskID string, fromSeq int64,
 		onEvent func(proto.Event) error) error {
 		calls.Add(1)
 		for _, e := range []proto.Event{
@@ -51,9 +51,7 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	m := New(s, func() map[string]config.Target {
-		return map[string]config.Target{"mac-02": {Addr: "127.0.0.1:1", Token: "t"}}
-	}, Options{Holder: "test-coord", Tick: 50 * time.Millisecond,
+	m := New(s, machinesWith(t, "mac-02"), Options{Holder: "test-coord", Tick: 50 * time.Millisecond,
 		LeaseTTL: time.Second, Source: fake})
 	ctx, cancel := context.WithCancel(context.Background())
 	go m.Run(ctx)
@@ -81,13 +79,13 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 
 func TestMirrorLeaseExclusive(t *testing.T) {
 	s := testLedger(t)
-	blockSrc := func(ctx context.Context, _, _, _ string, _ int64, _ func(proto.Event) error) error {
+	blockSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}
-	targets := func() map[string]config.Target { return nil }
-	a := New(s, targets, Options{Holder: "A", Tick: 50 * time.Millisecond, LeaseTTL: time.Second, Source: blockSrc})
-	b := New(s, targets, Options{Holder: "B", Tick: 50 * time.Millisecond, LeaseTTL: time.Second, Source: blockSrc})
+	machines := newFakeMachines()
+	a := New(s, machines, Options{Holder: "A", Tick: 50 * time.Millisecond, LeaseTTL: time.Second, Source: blockSrc})
+	b := New(s, machines, Options{Holder: "B", Tick: 50 * time.Millisecond, LeaseTTL: time.Second, Source: blockSrc})
 	ctx, cancel := context.WithCancel(context.Background())
 	go a.Run(ctx)
 	go b.Run(ctx)
@@ -102,15 +100,10 @@ func TestMirrorNoTouchWhenDisconnected(t *testing.T) {
 	s := testLedger(t)
 	c, _ := s.CreateCard(ledger.NewCard{Title: "卡", Project: "p", Workflow: "bug", Actor: "t"})
 	_ = s.LinkTask(c.ID, "dead-box", "T9", "implement", "t")
-	failSrc := func(ctx context.Context, _, _, _ string, _ int64, _ func(proto.Event) error) error {
+	failSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
 		return fmt.Errorf("dial refused")
 	}
-	m := New(s, func() map[string]config.Target {
-		return map[string]config.Target{
-			"dead-box": {Addr: "127.0.0.1:1", Token: "t"},
-			"idle-box": {Addr: "127.0.0.1:2", Token: "t"},
-		}
-	}, Options{Holder: "test", Tick: 50 * time.Millisecond, LeaseTTL: time.Second, Source: failSrc})
+	m := New(s, machinesWith(t, "dead-box", "idle-box"), Options{Holder: "test", Tick: 50 * time.Millisecond, LeaseTTL: time.Second, Source: failSrc})
 	ctx, cancel := context.WithCancel(context.Background())
 	go m.Run(ctx)
 	t.Cleanup(func() { cancel(); m.Stop() })
@@ -145,7 +138,7 @@ func TestMirrorNoTouchWhenDisconnected(t *testing.T) {
 
 func TestMirrorStopBeforeRun(t *testing.T) {
 	s := testLedger(t)
-	m := New(s, func() map[string]config.Target { return nil }, Options{Holder: "test"})
+	m := New(s, newFakeMachines(), Options{Holder: "test"})
 	m.Stop()
 	done := make(chan struct{})
 	go func() {

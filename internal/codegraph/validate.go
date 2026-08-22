@@ -32,6 +32,9 @@ func Validate(g *Graph) []string {
 			}
 		}
 	}
+	for _, p := range g.Projections {
+		issues = append(issues, validateProjection(g.Nodes, p, "投影")...)
+	}
 	issues = append(issues, validateDomains(g)...)
 	sort.Strings(issues)
 	return issues
@@ -132,6 +135,40 @@ func ValidateDiff(g *Graph, d *Diff) []string {
 			}
 		}
 	}
+	knownNodeMap := make(map[string]Node, len(g.Nodes)+len(d.NodesAdded))
+	for id, n := range g.Nodes {
+		knownNodeMap[id] = n
+	}
+	for id, n := range d.NodesAdded {
+		knownNodeMap[id] = n
+	}
+	for id, n := range d.NodesModified {
+		if _, ok := knownNodeMap[id]; ok {
+			knownNodeMap[id] = n
+		}
+	}
+	for _, p := range append(append([]Projection{}, d.ProjectionsAdded...), d.ProjectionsDeleted...) {
+		issues = append(issues, validateProjection(knownNodeMap, p, "diff 投影")...)
+	}
 	sort.Strings(issues)
+	return issues
+}
+
+func validateProjection(nodes map[string]Node, p Projection, label string) []string {
+	var issues []string
+	from, fromOK := nodes[p[0]]
+	to, toOK := nodes[p[1]]
+	if !fromOK {
+		issues = append(issues, fmt.Sprintf("%s %s→%s(%s) 引用不存在的节点 %s", label, p[0], p[1], p[2], p[0]))
+	}
+	if !toOK {
+		issues = append(issues, fmt.Sprintf("%s %s→%s(%s) 引用不存在的节点 %s", label, p[0], p[1], p[2], p[1]))
+	}
+	if p[2] != "typed" && p[2] != "handroll" && p[2] != "twin" {
+		issues = append(issues, fmt.Sprintf("%s %s→%s 的 kind 非法: %q（只认 typed/handroll/twin）", label, p[0], p[1], p[2]))
+	}
+	if p[2] == "twin" && fromOK && toOK && (from.Kind != "model" || to.Kind != "model") {
+		issues = append(issues, fmt.Sprintf("%s %s→%s 的 twin 两端必须都是 model 节点", label, p[0], p[1]))
+	}
 	return issues
 }

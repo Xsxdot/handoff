@@ -21,12 +21,13 @@ import (
 // 边与 implements 增/删。
 func Absorb(g *Graph, d *Diff) *Graph {
 	out := &Graph{
-		Meta:       g.Meta,
-		Domains:    maps.Clone(g.Domains),
-		Containers: maps.Clone(g.Containers),
-		Nodes:      maps.Clone(g.Nodes),
-		Edges:      slices.Clone(g.Edges),
-		Implements: slices.Clone(g.Implements),
+		Meta:        g.Meta,
+		Domains:     maps.Clone(g.Domains),
+		Containers:  maps.Clone(g.Containers),
+		Nodes:       maps.Clone(g.Nodes),
+		Edges:       slices.Clone(g.Edges),
+		Implements:  slices.Clone(g.Implements),
+		Projections: slices.Clone(g.Projections),
 	}
 	for id, n := range d.NodesAdded {
 		out.Nodes[id] = n
@@ -42,6 +43,7 @@ func Absorb(g *Graph, d *Diff) *Graph {
 	}
 	out.Edges = mergeEdges(out.Edges, d.EdgesAdded, d.EdgesDeleted, dead)
 	out.Implements = mergeEdges(out.Implements, d.ImplementsAdded, d.ImplementsDeleted, dead)
+	out.Projections = mergeProjections(out.Projections, d.ProjectionsAdded, d.ProjectionsDeleted, dead)
 	return out
 }
 
@@ -59,6 +61,27 @@ func mergeEdges(base, added, deleted []Edge, dead map[string]bool) []Edge {
 		}
 		seen[e] = true
 		out = append(out, e)
+	}
+	return out
+}
+
+// mergeProjections 併入三元投影关系：加 added、剔 deleted、剔任一端指向已删节点，顺带去重。
+func mergeProjections(base, added, deleted []Projection, dead map[string]bool) []Projection {
+	if len(base) == 0 && len(added) == 0 {
+		return nil
+	}
+	drop := make(map[Projection]bool, len(deleted))
+	for _, p := range deleted {
+		drop[p] = true
+	}
+	seen := make(map[Projection]bool, len(base)+len(added))
+	out := make([]Projection, 0, len(base)+len(added))
+	for _, p := range append(slices.Clone(base), added...) {
+		if drop[p] || dead[p[0]] || dead[p[1]] || seen[p] {
+			continue
+		}
+		seen[p] = true
+		out = append(out, p)
 	}
 	return out
 }
