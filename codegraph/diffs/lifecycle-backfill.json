@@ -40,6 +40,13 @@
     {"who":"n_ledger_Store_MigrateCardWorkflow","model":"m_ledger_WorkflowMigration","kind":"creator"},
     {"who":"n_prochost_CheckAdmission","model":"m_prochost_Admission","kind":"creator"},
     {"who":"n_prochost_Start","model":"m_prochost_Handle","kind":"creator"},
-    {"who":"n_prochost_AcquireLock","model":"m_prochost_Lock","kind":"creator"}
+    {"who":"n_prochost_AcquireLock","model":"m_prochost_Lock","kind":"creator"},
+    {"who":"n_ptyhost_Host_Open","model":"m_ptyhost_Session","kind":"creator"},
+    {"who":"n_ptyhost_NewAttachment","model":"m_ptyhost_Attachment","kind":"creator"},
+    {"who":"n_engine_Engine_Open","model":"m_engine_session","kind":"creator"},
+    {"who":"n_engine_Engine_Open","model":"m_ptyhost_Session","kind":"creator"},
+    {"who":"n_engine_Engine_reap","model":"m_engine_session","kind":"writer","field":"exitCode"},
+    {"who":"n_engine_newRing","model":"m_engine_ring","kind":"creator"},
+    {"who":"n_engine_ring_write","model":"m_engine_ring","kind":"writer","field":"n"}
   ]
 }
