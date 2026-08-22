@@ -7,8 +7,10 @@ package store
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -290,5 +292,63 @@ func TestTaskTimingWiring(t *testing.T) {
 	}
 	if got.Timing.TotalMS != 2000 {
 		t.Fatalf("同键重报应覆盖成 2000（不是累加成 3000），实际 %d", got.Timing.TotalMS)
+	}
+}
+
+// TestCommandHead 穷举下钻层标签的取词规则。
+//
+// 每条真机来源的用例都注明出处：这些形状不是想出来的，是 2026-08-22 在
+// linux-01 隔离实例上从 task_timing_ledger 里抄出来的原文。
+func TestCommandHead(t *testing.T) {
+	cases := []struct{ name, in, want string }{
+		// 真机（codex）：不剥壳的话这三条全叫 `/bin/bash -lc`，整层失效
+		{"codex 包装-sleep", `/bin/bash -lc 'sleep 3 && ls -a >> notes/one.txt'`, "sleep 3"},
+		{"codex 包装-mkdir", `/bin/bash -lc 'mkdir -p notes && sleep 2 && echo one > notes/one.txt'`, "mkdir -p"},
+		{"双引号包装", `bash -c "go test ./..."`, "go test"},
+		{"短标志 -c", `sh -c 'ls'`, "ls"},
+		{"绝对路径 shell", `/usr/bin/zsh -lic 'npm run build'`, "npm run"},
+
+		// 非包装：原样取前两段
+		{"裸命令", "go test ./internal/store/", "go test"},
+		{"单段命令", "pwd", "pwd"},
+
+		// 真机（grok）：连接符不是命令的一部分
+		{"连接符不入标签", "pwd && git status && git log", "pwd"},
+		{"管道不入标签", "cat a.txt | wc -l", "cat a.txt"},
+
+		// 真机（grok）：注释起头的多行脚本，真命令在第二行
+		{"注释行跳到下一行", "# ledger outside the git worktree\nLEDGER=\"/tmp/x\"\necho hi >> $LEDGER", "echo hi"},
+		{"整段都是注释", "# 只有说明\n# 没有命令", ""},
+
+		// 真机（grok）：Detail 被 200 rune 头尾截断，碎片不能当标签
+		{"第二段被截断则只留第一段", `echo "task…（已截断）xt;`, "echo"},
+		{"第一段就被截断则不下钻", `…（已截断）xt; echo hi`, ""},
+
+		// 既有规则不得回归
+		{"入参 JSON 不下钻", `{"file_path":"/a/b.go"}`, ""},
+		{"入参数组不下钻", `["a","b"]`, ""},
+		{"环境赋值跳过", "TOKEN=s3cret go test ./...", "go test"},
+		{"多个环境赋值跳过", "A=1 B=2 make build", "make build"},
+		{"只有包装没有命令则保留原文", "/bin/bash -lc", "/bin/bash -lc"},
+		{"--flag=v 不是环境赋值", "tool --mode=fast run", "tool --mode=fast"},
+		{"空串", "   ", ""},
+	}
+	for _, c := range cases {
+		if got := commandHead(c.in); got != c.want {
+			t.Errorf("%s: commandHead(%q) = %q，期望 %q", c.name, c.in, got, c.want)
+		}
+	}
+}
+
+// TestCommandHeadSubLabelTruncation 锁住 rune 上限：截断按 rune 不按字节，
+// 否则中文命令会被切在半个字符上。
+func TestCommandHeadSubLabelTruncation(t *testing.T) {
+	long := "命令" + strings.Repeat("х", 60) // 非 ASCII，按字节切必然切坏
+	got := commandHead(long)
+	if r := []rune(got); len(r) != subLabelRunes {
+		t.Fatalf("应截到 %d 个 rune，实际 %d 个（%q）", subLabelRunes, len(r), got)
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("截断后不是合法 UTF-8: %q", got)
 	}
 }

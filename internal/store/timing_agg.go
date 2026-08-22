@@ -270,36 +270,135 @@ func rankBuckets(m map[string]*bucketAcc) []proto.TimingBucket {
 	return out
 }
 
+// shellBins 是要剥掉的 shell 包装（按 basename 比对）。
+//
+// 2026-08-22 真机实测：codex 的 Detail 一律是 `/bin/bash -lc '<真命令>'`，
+// 不剥的话下钻层每一格都叫 `/bin/bash -lc`——4 次互不相同的命令全挤进同一格，
+// 整层对缺省执行者完全失效，spec §A.4 用户故事 3 对 codex 不成立。
+var shellBins = map[string]bool{"sh": true, "bash": true, "zsh": true, "dash": true, "ksh": true}
+
+// shellOps 是不该被当成命令参数的 shell 连接符。
+//
+// `pwd && git status` 的前两段是 `pwd &&`，一格标签末尾挂个孤零零的 && 读起来
+// 是坏的，而且它没回答「哪条命令慢」。连接符不是命令的一部分。
+var shellOps = map[string]bool{"&&": true, "||": true, ";": true, "|": true, "&": true}
+
 // commandHead 从 Detail 取「命令首词」，作为排行下钻层的标签。
 // 返回 "" 表示这条 Detail 不适合下钻（调用方跳过，不建空格子）。
 //
-// 三条规则（P4=(b) 的落地）：
+// 规则（P4=(b) 的落地 + 2026-08-22 真机补完）：
 //  1. 以 { 或 [ 开头 → ""。那是入参 JSON（非 Bash 工具的 Detail 回落成
 //     compactJSON），它的「首词」是 `{"path":` 之类，对「哪条命令慢」无价值
-//  2. 跳过前导的 VAR=value 环境赋值：它们不是命令，`TOKEN=… go test` 应当与
-//     `go test` 落进同一格；顺带避免把赋值右边的凭据抬进排行标签
-//  3. 取剩下的前两段（`go test ./...` → `go test`，把 go build/vet/test 分开），
+//  2. **先整体剥 shell 包装**（见 unwrapShell）。必须在按行切分之前做：包装里的
+//     命令串自带换行时，先切行会把开引号和闭引号分到两行上
+//  3. 逐行找第一行「像命令」的：跳过空行、# 注释行、纯环境赋值行、被截断出来
+//     的碎片。跳过而不是就地返回 ""，是因为真机上见过 `# 说明` 起头、第二行
+//     才是真命令的多行脚本
+//  4. 取那一行的前两段（`go test ./...` → `go test`，把 go build/vet/test 分开），
 //     再按 subLabelRunes 截断
 func commandHead(detail string) string {
 	s := strings.TrimSpace(detail)
 	if s == "" || s[0] == '{' || s[0] == '[' {
 		return ""
 	}
+	s = unwrapShell(s)
+	for _, line := range strings.Split(s, "\n") {
+		if h := headOfLine(line); h != "" {
+			return h
+		}
+	}
+	return ""
+}
+
+// headOfLine 从一行里取命令首词；这一行不像命令时返回 ""，由 commandHead
+// 接着看下一行。
+func headOfLine(line string) string {
+	s := strings.TrimSpace(line)
+	if s == "" || strings.HasPrefix(s, "#") {
+		return ""
+	}
 	fields := strings.Fields(s)
+	// 跳过前导的 VAR=value 环境赋值：它们不是命令，`TOKEN=… go test` 应当与
+	// `go test` 落进同一格；顺带避免把赋值右边的凭据抬进排行标签
 	for len(fields) > 0 && isEnvAssign(fields[0]) {
 		fields = fields[1:]
 	}
-	if len(fields) == 0 {
+	if len(fields) == 0 || isElided(fields[0]) {
 		return ""
 	}
 	head := fields[0]
-	if len(fields) > 1 {
+	if len(fields) > 1 && !isElided(fields[1]) && !shellOps[fields[1]] {
 		head += " " + fields[1]
 	}
 	if r := []rune(head); len(r) > subLabelRunes {
 		return string(r[:subLabelRunes])
 	}
 	return head
+}
+
+// unwrapShell 剥掉 `<shell> -c '<真命令>'` 这层包装，返回里面的真命令；
+// 不是这个形状时**原样返回**。
+//
+// 只剥一层：嵌套包装（bash -lc 'sh -c "…"'）在真实 executor 上没见过，
+// 为它加循环等于给一条不存在的路径写代码。
+func unwrapShell(s string) string {
+	bin, rest := nextField(s)
+	if !isShellBin(bin) {
+		return s
+	}
+	flag, rest2 := nextField(rest)
+	if !isShellCmdFlag(flag) {
+		return s
+	}
+	inner := trimOuterQuote(strings.TrimSpace(rest2))
+	if inner == "" {
+		return s // 只有包装没有命令：保留原文，别把一条真账目变成空标签
+	}
+	return inner
+}
+
+// nextField 取 s 的第一个空白分隔段，返回该段与其后的剩余**原文**。
+//
+// 不能用 strings.Fields 再拼回去：引号内的空格会被吃掉，`-lc 'a  b'` 会变成
+// `-lc 'a b'`，剥出来的命令与真实执行的那条不再是同一个字符串。
+func nextField(s string) (string, string) {
+	s = strings.TrimLeft(s, " \t")
+	i := strings.IndexAny(s, " \t")
+	if i < 0 {
+		return s, ""
+	}
+	return s[:i], s[i:]
+}
+
+// isShellBin 判断一段是不是 shell 可执行文件；按 basename 比对，认绝对路径。
+func isShellBin(f string) bool {
+	if i := strings.LastIndexAny(f, `/\`); i >= 0 {
+		f = f[i+1:]
+	}
+	return shellBins[f]
+}
+
+// isShellCmdFlag 判断一段是不是「下一段就是命令串」的 shell 标志：
+// 单横线短选项且含 c（-c / -lc / -lic / -ec 都算）。
+func isShellCmdFlag(f string) bool {
+	return len(f) >= 2 && f[0] == '-' && f[1] != '-' && strings.ContainsRune(f, 'c')
+}
+
+// trimOuterQuote 去掉首尾成对的引号。
+func trimOuterQuote(s string) string {
+	if len(s) >= 2 && (s[0] == '\'' || s[0] == '"') && s[len(s)-1] == s[0] {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+// isElided 判断一段里是否含省略号——含就说明它是截断出来的碎片，不是命令词。
+//
+// 刻意**不**比对 executor.TruncationMarker 的字面值：为一个常量从 d_ledger
+// 拉一条到 d_executor 的依赖边不值当，而「命令词里不会出现 …」这条判据比那个
+// 具体标记更稳（标记改了它照样成立）。
+func isElided(f string) bool {
+	return strings.ContainsRune(f, '…')
 }
 
 // isEnvAssign 判断一段是不是 VAR=value 形式的环境赋值。
