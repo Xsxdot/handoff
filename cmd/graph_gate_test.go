@@ -3,7 +3,7 @@ package cmd
 import (
 	"testing"
 
-	"github.com/Xsxdot/handoff/internal/codegraph"
+	"github.com/Xsxdot/charter/graph/codegraph"
 )
 
 // 本测试是 handoff 仓库自身的契约闸：真实 baseline 套真实 target。

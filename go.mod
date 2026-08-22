@@ -4,6 +4,7 @@ go 1.26.1
 
 require (
 	charm.land/huh/v2 v2.0.3
+	github.com/Xsxdot/charter/graph v0.1.0
 	github.com/charmbracelet/x/ansi v0.11.6
 	github.com/coder/websocket v1.8.15
 	github.com/creack/pty v1.1.24
