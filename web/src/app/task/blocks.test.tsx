@@ -81,6 +81,17 @@ describe('ToolCard', () => {
     expect(screen.getByText(/141882/)).toBeInTheDocument()
     expect(screen.getByText(/已截断/)).toBeInTheDocument()
   })
+
+  it('有 durMS 时折叠态显示单次耗时', () => {
+    render(<ToolCard block={tool({ durMS: 1500 })} taskState="completed" />)
+    expect(screen.getByText('1.5s')).toBeInTheDocument()
+  })
+
+  it('durMS 缺席时一个字都不多画，尤其不画 0ms', () => {
+    render(<ToolCard block={tool({})} taskState="completed" />)
+    expect(screen.queryByText('0ms')).not.toBeInTheDocument()
+    expect(screen.queryByText(/^\d+(\.\d+)?(ms|s)$/)).not.toBeInTheDocument()
+  })
 })
 
 describe('ToolCard 工具名中文化', () => {

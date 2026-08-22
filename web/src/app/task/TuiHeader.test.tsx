@@ -50,4 +50,31 @@ describe('TuiHeader', () => {
     expect(screen.queryByRole('button', { name: /审阅栏/ })).not.toBeInTheDocument()
     expect(screen.queryByText(/ctx/)).not.toBeInTheDocument()
   })
+
+  it('遥测行：有 timing 时挂出耗时 chip', () => {
+    const withTiming = {
+      ...base,
+      task: { ...task, timing: {
+        total_ms: 184_300, api_ms: 121_500, tool_ms: 71_200,
+        tool_span_ms: 58_400, other_ms: 4_400, partial: false,
+      } } as unknown as Task,
+    }
+    render(<TuiHeader {...withTiming} />)
+    expect(screen.getByRole('button', { name: /耗时 3m4s/ })).toBeInTheDocument()
+  })
+
+  it('分隔点跟着耗时 chip 一起有无，不留悬空的「·」', () => {
+    const dots = (t: string) => (t.match(/·/g) ?? []).length
+    const plain = render(<TuiHeader {...base} />).container.textContent ?? ''
+    expect(plain).not.toContain('耗时')
+
+    const withTiming = render(
+      <TuiHeader {...base} task={{ ...task, timing: {
+        total_ms: 1000, api_ms: 700, tool_ms: 200,
+        tool_span_ms: 200, other_ms: 100, partial: false,
+      } } as unknown as Task} />,
+    ).container.textContent ?? ''
+    expect(withTiming).toContain('耗时')
+    expect(dots(withTiming)).toBe(dots(plain) + 1)
+  })
 })

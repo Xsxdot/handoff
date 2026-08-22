@@ -137,8 +137,30 @@ describe('契约 fixture 与 TS 类型', () => {
     expect(task.branch).toBe('handoff/w1-web-scaffold')
     expect(task.created_at).toMatch(/^2026-08-11T/)
     expect(task.worktree_managed).toBe(true)
-    for (const key of ['id', 'target', 'repo_path', 'branch', 'plan_path', 'plan_summary', 'executor_session', 'state', 'created_at', 'updated_at', 'name', 'executor', 'model', 'work_dir', 'worktree_managed', 'base_commit', 'base_ahead', 'repo_dirty_count', 'repo_dirty_files', 'actual_model', 'usage']) {
+    for (const key of ['id', 'target', 'repo_path', 'branch', 'plan_path', 'plan_summary', 'executor_session', 'state', 'created_at', 'updated_at', 'name', 'executor', 'model', 'work_dir', 'worktree_managed', 'base_commit', 'base_ahead', 'repo_dirty_count', 'repo_dirty_files', 'actual_model', 'usage', 'timing']) {
       expect(Object.keys(task)).toContain(key)
+    }
+  })
+
+  it('Task.timing：三分法自洽，tool_ms 与 tool_span_ms 互不冒充', () => {
+    const task: Task = taskFixture
+    const t = task.timing!
+    expect(t).toBeDefined()
+    expect(t.total_ms - t.api_ms - t.tool_span_ms).toBe(t.other_ms)
+    expect(t.tool_ms).toBeGreaterThan(t.tool_span_ms)
+    expect(t.partial).toBe(false)
+    const bash = t.buckets!.find((b) => b.label === 'Bash')!
+    expect(bash.sub!.map((s) => s.label)).toEqual(['go test', 'git status'])
+    for (const s of bash.sub!) expect(s.sub).toBeUndefined()
+  })
+
+  // 注意 TS 侧 TasksResp.tasks 是扁平的 Task[]（Go 的 TaskView 内嵌 Task，
+  // JSON 把它摊平了），不是 { task, watchers } 的嵌套形状
+  it('TasksResp 的任务不带 timing（ListTasks 不填，夹具必须与那个事实一致）', () => {
+    const resp = tasksRespFixture as TasksResp
+    expect(resp.tasks.length).toBeGreaterThan(0)
+    for (const t of resp.tasks) {
+      expect(Object.keys(t)).not.toContain('timing')
     }
   })
 
@@ -328,6 +350,7 @@ describe('W4a 帧契约', () => {
     expect(f.status).toBe('error')
     expect(f.truncated).toBe(true)
     expect(f.bytes).toBe(193422)
+    expect(f.dur_ms).toBe(1500)
     expect(f.ts).toMatch(/^2026-/)
     // omitempty 的边界：这六个键必须**缺席**而不是空值。
     // 前端据此可以用 `f.delta ?? ''` 安全兜底；若它们变成 "" 或 null，

@@ -1,7 +1,7 @@
 // TuiHeader —— TUI tab 的两行页头。
 //
 // 职责：第一行身份 + 动作（审阅栏开关/调试）；第二行遥测（executor·模型·回合
-// 下拉·运行时长·ctx）。回合下拉的数据由 TuiTab 从 frames 派生传入。
+// 下拉·ctx·耗时）。回合下拉的数据由 TuiTab 从 frames 派生传入。
 // 边界：不取数、不持流；「回合下拉只覆盖已加载范围」必须写在下拉里（turnsPartial）。
 import { useState } from 'react'
 import type { Task } from '../../api/types'
@@ -10,6 +10,7 @@ import { Badge } from '@/components/ui/badge'
 import { stateBadgeVariant, stateLabel } from '../board/columns'
 import { formatRelative, shortID } from '../lib/format'
 import { UsageChip } from './UsageChip'
+import { TimingChip } from './TimingChip'
 import { cn } from '@/lib/utils'
 
 export interface TuiHeaderProps {
@@ -96,6 +97,11 @@ export function TuiHeader({
         <span>派发于 {formatRelative(task.created_at)}</span>
         <span className="opacity-50">·</span>
         <UsageChip usage={task.usage} cumulative={task.cumulative} />
+        {/* 分隔点跟着 chip 一起有无。TimingChip 自己在 timing 缺席时返回 null，
+            这里再判一次是为了不留下一个悬空的「·」——上面 UsageChip 那个点是
+            既有的同类瑕疵，不在本卡范围内，别顺手改（它牵动 UsageChip 的测试） */}
+        {task.timing && <span className="opacity-50">·</span>}
+        <TimingChip timing={task.timing} />
         <span className="ml-auto font-mono text-[11px]">handoff-{shortID(task.id)}</span>
       </div>
     </div>

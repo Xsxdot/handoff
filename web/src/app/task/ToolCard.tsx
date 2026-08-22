@@ -1,7 +1,7 @@
 // ToolCard —— 时间线上的一次工具调用（调用与结果合成一张卡）。
 //
 // 职责：
-//   - 折叠态显示工具名、参数摘要、状态徽章
+//   - 折叠态显示工具名、参数摘要、单次耗时（有才显示）、状态徽章
 //   - 展开态显示完整输入与输出，截断时标出原始字节数
 //
 // 边界：
@@ -10,6 +10,7 @@
 import { useState } from 'react'
 import { cn } from '@/lib/utils'
 import { toolState, type ToolBlock, type ToolState } from './frames'
+import { formatDuration } from '../lib/format'
 
 // STATE_LABEL 是四种工具状态的中文标签。
 //
@@ -97,6 +98,11 @@ export function ToolCard({ block, taskState }: { block: ToolBlock; taskState: st
           {TOOL_LABEL[block.tool] ?? (block.tool || '(未知工具)')}
         </span>
         <span className="min-w-0 flex-1 truncate font-mono">{argSummary(block.input)}</span>
+        {/* 耗时缺席就一个字都不画：0ms 与「没报」在线格式上不可分（契约 §2.5），
+            画一个 0ms 出来会让「极快」与「没测到」变成同一句话 */}
+        {block.durMS !== undefined && (
+          <span className="shrink-0 font-mono text-[11px]">{formatDuration(block.durMS)}</span>
+        )}
         <span className="shrink-0 text-[11px]">{STATE_LABEL[st]}</span>
       </button>
       {open && (
