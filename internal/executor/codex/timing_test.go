@@ -2,7 +2,11 @@ package codex
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"testing"
@@ -10,6 +14,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/coder/websocket"
 )
 
 type timingTestClock struct{ t time.Time }
@@ -24,11 +29,45 @@ func newTimingTestRun(t *testing.T) (*Adapter, *runState, *timingTestClock) {
 	a := New(nil)
 	r := a.newRunState("timing-test", taskDir, taskDir)
 	r.seg = turn.NewSegmenter(clock.now)
-	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
-		t.Fatalf("BeginTurn: %v", err)
+	r.threadID = "thread-timing"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		conn, err := websocket.Accept(w, req, nil)
+		if err != nil {
+			return
+		}
+		defer conn.Close(websocket.StatusNormalClosure, "")
+		for {
+			_, data, err := conn.Read(req.Context())
+			if err != nil {
+				return
+			}
+			var in struct {
+				ID     json.RawMessage `json:"id"`
+				Method string          `json:"method"`
+			}
+			if json.Unmarshal(data, &in) != nil || in.Method != methodTurnStart {
+				continue
+			}
+			response := fmt.Sprintf(`{"jsonrpc":"2.0","id":%s,"result":{"turn":{"id":"turn-timing"}}}`, in.ID)
+			if err := conn.Write(req.Context(), websocket.MessageText, []byte(response)); err != nil {
+				return
+			}
+		}
+	}))
+	t.Cleanup(srv.Close)
+	cli, err := Dial(context.Background(), "ws"+srv.URL[len("http"):], &handler{a: a, r: r}, a.log)
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
 	}
-	r.textPart = r.frames.NextPart()
-	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
+	r.cli = cli
+	a.mu.Lock()
+	a.runs[r.taskID] = r
+	a.mu.Unlock()
+	t.Cleanup(func() { _ = a.Stop(r.taskID) })
+	if err := a.Send(context.Background(), r.taskID, "继续"); err != nil {
+		t.Fatalf("Send: %v", err)
+	}
 	return a, r, clock
 }
 
