@@ -87,4 +87,13 @@ describe('TimingChip', () => {
     fireEvent.keyDown(document, { key: 'Escape' })
     expect(screen.queryByText('模型')).not.toBeInTheDocument()
   })
+  // 这条锁的是**锚定方向这一个决定**，不是布局正确性——jsdom 没有布局，量不出裁切。
+  // 它存在的理由是 2026-08-22 的真机实测：left-0 时弹出层溢出 overflow-auto 祖先
+  // 32px，数字整列被裁，而 DOM 文本俱在，所以上面九条断言全绿。改回 left-0 时它变红。
+  it('弹出层右锚：本 chip 是遥测行最右的元素，左锚必然出界', () => {
+    openPanel()
+    const panel = screen.getByText('耗时三分').parentElement!
+    expect(panel.className).toContain('right-0')
+    expect(panel.className).not.toContain('left-0')
+  })
 })
