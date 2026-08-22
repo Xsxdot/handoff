@@ -224,6 +224,60 @@ func TestGraphEntity(t *testing.T) {
 	}
 }
 
+func TestGraphResolveDoc(t *testing.T) {
+	repo := t.TempDir()
+	copyFixtureRepo(t, fixtureRepo, repo)
+	doc := filepath.Join(repo, "doc.md")
+	if err := os.WriteFile(doc, []byte("`svc/server.go#Do` `svc/server.go#Gone`"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runGraph(t, "resolve", "--doc", doc, "--repo", repo)
+	if err == nil || !bytes.Contains([]byte(out), []byte(`"anchor"`)) || !bytes.Contains([]byte(out), []byte(`"vanished"`)) {
+		t.Fatalf("坏文档锚点应非零并输出结果: err=%v out=%s", err, out)
+	}
+}
+
+func TestGraphContractSet(t *testing.T) {
+	repo := t.TempDir()
+	copyFixtureRepo(t, fixtureRepo, repo)
+	out, err := runGraph(t, "contract", "set", "--from", "d_cmd", "--to", "d_svc", "--entries", "svc.Server", "--budget", "3", "--repo", repo)
+	if err != nil {
+		t.Fatalf("contract set 应通过: %v\n%s", err, out)
+	}
+	if !bytes.Contains([]byte(out), []byte(`"before"`)) || !bytes.Contains([]byte(out), []byte(`"after"`)) {
+		t.Fatalf("应输出前后对照: %s", out)
+	}
+	target, err := codegraph.LoadTarget(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(target.Contracts) != 1 || target.Contracts[0].LegacyBudget != 3 || len(target.Contracts[0].Entries) != 1 {
+		t.Fatalf("contract set 写回: %+v", target.Contracts)
+	}
+	_, err = runGraph(t, "contract", "set", "--from", "d_cmd", "--to", "d_svc", "--entries", "svc.Other", "--repo", repo)
+	if err != nil {
+		t.Fatalf("未传 budget 的 contract set 应通过: %v", err)
+	}
+	target, err = codegraph.LoadTarget(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Contracts[0].LegacyBudget != 3 || len(target.Contracts[0].Entries) != 1 || target.Contracts[0].Entries[0] != "svc.Other" {
+		t.Fatalf("未传 budget 不应覆盖旧值: %+v", target.Contracts)
+	}
+	_, err = runGraph(t, "contract", "set", "--from", "d_cmd", "--to", "d_svc", "--budget", "0", "--repo", repo)
+	if err != nil {
+		t.Fatalf("显式 budget=0 的 contract set 应通过: %v", err)
+	}
+	target, err = codegraph.LoadTarget(repo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if target.Contracts[0].LegacyBudget != 0 || len(target.Contracts[0].Entries) != 1 || target.Contracts[0].Entries[0] != "svc.Other" {
+		t.Fatalf("显式 budget=0 或清单写回不对: %+v", target.Contracts)
+	}
+}
+
 func TestGraphSummary(t *testing.T) {
 	out, err := runGraph(t, "summary", "--repo", fixtureRepo)
 	if err != nil {

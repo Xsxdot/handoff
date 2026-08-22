@@ -25,12 +25,18 @@ import (
 )
 
 var (
-	graphRepo    = "."
-	graphDepth   = 2
-	graphView    string
-	graphStale   bool
-	absorbCommit string
-	absorbBranch string
+	graphRepo               = "."
+	graphDepth              = 2
+	graphView               string
+	graphStale              bool
+	absorbCommit            string
+	absorbBranch            string
+	graphResolveDoc         string
+	graphContractFrom       string
+	graphContractTo         string
+	graphContractEntries    []string
+	graphContractInterfaces []string
+	graphContractBudget     int
 )
 
 var graphCmd = &cobra.Command{
@@ -73,6 +79,12 @@ func graphResetState() {
 	graphStale = false
 	absorbCommit = ""
 	absorbBranch = ""
+	graphResolveDoc = ""
+	graphContractFrom = ""
+	graphContractTo = ""
+	graphContractEntries = nil
+	graphContractInterfaces = nil
+	graphContractBudget = 0
 }
 
 var graphValidateCmd = &cobra.Command{
@@ -362,6 +374,81 @@ var graphEntityCmd = &cobra.Command{
 	},
 }
 
+var graphResolveCmd = &cobra.Command{
+	Use:   "resolve",
+	Short: "校验文档中的 file#Symbol 符号锚（坏锚即非零退出）",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer func() {
+			graphResetState()
+			cmd.Flags().Lookup("doc").Changed = false
+		}()
+		if graphResolveDoc == "" {
+			return fmt.Errorf("resolve 必须指定 --doc")
+		}
+		v, _, err := graphLoadView()
+		if err != nil {
+			return err
+		}
+		anchors, err := codegraph.CheckDocAnchors(v, graphRepo, graphResolveDoc)
+		if err != nil {
+			return err
+		}
+		if anchors == nil {
+			anchors = []codegraph.AnchorResult{}
+		}
+		if err := graphPrintJSON(cmd, map[string]any{"anchors": anchors}); err != nil {
+			return err
+		}
+		for _, a := range anchors {
+			if a.Anchor == "vanished" || a.Anchor == "file_missing" {
+				return fmt.Errorf("文档锚点检查失败: %s (%s)", a.Ref, a.Anchor)
+			}
+		}
+		return nil
+	},
+}
+
+var graphContractCmd = &cobra.Command{
+	Use:   "contract",
+	Short: "维护目标图中的跨领域契约",
+}
+
+var graphContractSetCmd = &cobra.Command{
+	Use:   "set",
+	Short: "创建或更新 From→To 契约",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, args []string) error {
+		defer func() {
+			graphResetState()
+			for _, name := range []string{"from", "to", "entries", "interfaces", "budget"} {
+				cmd.Flags().Lookup(name).Changed = false
+			}
+		}()
+		if graphContractFrom == "" || graphContractTo == "" {
+			return fmt.Errorf("contract set 必须指定 --from 与 --to")
+		}
+		c := codegraph.Contract{From: graphContractFrom, To: graphContractTo}
+		if cmd.Flags().Changed("entries") {
+			c.Entries = append([]string(nil), graphContractEntries...)
+			c.EntriesSet = true
+		}
+		if cmd.Flags().Changed("interfaces") {
+			c.Interfaces = append([]string(nil), graphContractInterfaces...)
+			c.InterfacesSet = true
+		}
+		if cmd.Flags().Changed("budget") {
+			c.LegacyBudget = graphContractBudget
+			c.LegacyBudgetSet = true
+		}
+		before, after, err := codegraph.SetContract(graphRepo, c)
+		if err != nil {
+			return err
+		}
+		return graphPrintJSON(cmd, map[string]any{"before": before, "after": after})
+	},
+}
+
 // graphSummaryCmd 输出一段图存在性摘要，供 SessionStart hook 注入会话上下文：
 // 让 agent 开局就知道图存在、先查图再 grep。
 var graphSummaryCmd = &cobra.Command{
@@ -387,6 +474,13 @@ func init() {
 	graphCmd.PersistentFlags().BoolVar(&graphStale, "stale", false, "附带保鲜检测结果")
 	graphAbsorbCmd.Flags().StringVar(&absorbCommit, "commit", "", "写入基线 meta 的提交号（缺省从 git HEAD 读取）")
 	graphAbsorbCmd.Flags().StringVar(&absorbBranch, "branch", "", "写入基线 meta 的分支名（缺省从 git 读取）")
-	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd, graphSymCmd, graphEntityCmd, graphSummaryCmd)
+	graphResolveCmd.Flags().StringVar(&graphResolveDoc, "doc", "", "要检查的 Markdown 文档路径")
+	graphContractSetCmd.Flags().StringVar(&graphContractFrom, "from", "", "契约来源域 id")
+	graphContractSetCmd.Flags().StringVar(&graphContractTo, "to", "", "契约目标域 id")
+	graphContractSetCmd.Flags().StringSliceVar(&graphContractEntries, "entries", nil, "允许进入目标域的入口清单")
+	graphContractSetCmd.Flags().StringSliceVar(&graphContractInterfaces, "interfaces", nil, "允许的跨域接口清单")
+	graphContractSetCmd.Flags().IntVar(&graphContractBudget, "budget", 0, "存量直调预算")
+	graphContractCmd.AddCommand(graphContractSetCmd)
+	graphCmd.AddCommand(graphValidateCmd, graphCheckCmd, graphAbsorbCmd, graphViewsCmd, graphChainCmd, graphWhoCallsCmd, graphDomainsCmd, graphSymCmd, graphEntityCmd, graphResolveCmd, graphContractCmd, graphSummaryCmd)
 	rootCmd.AddCommand(graphCmd)
 }

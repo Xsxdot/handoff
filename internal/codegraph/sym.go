@@ -142,7 +142,20 @@ func ReAnchor(repoRoot string, n Node) (int, string) {
 			}
 		}
 	}
-	def, any := 0, 0
+	def, any := findTokenLine(lines, token)
+	switch {
+	case def > 0:
+		return def, "moved"
+	case any > 0:
+		return any, "moved"
+	default:
+		return n.Line, "vanished"
+	}
+}
+
+// findTokenLine 返回 token 的定义形状行与任意词边界命中行，行号均为 1 基；
+// 定义形状规则与 ReAnchor 的历史行为一致，供图内再锚定和图外文档锚搜索共用。
+func findTokenLine(lines []string, token string) (def, any int) {
 	for i, l := range lines {
 		if !symTokenOnLine(l, token) {
 			continue
@@ -157,14 +170,7 @@ func ReAnchor(repoRoot string, n Node) (int, string) {
 			break
 		}
 	}
-	switch {
-	case def > 0:
-		return def, "moved"
-	case any > 0:
-		return any, "moved"
-	default:
-		return n.Line, "vanished"
-	}
+	return def, any
 }
 
 // symTokenOnLine 按词边界判断 token 是否出现在行内——裸 Contains 会把 "Do"
