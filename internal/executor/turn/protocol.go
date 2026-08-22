@@ -20,6 +20,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 	"text/template"
 )
@@ -103,6 +104,12 @@ func RenderPrompt(taskID, planContent, disciplineBlock string) (string, error) {
 //   - 找不到或 JSON 损坏时返回 "none"，绝不 panic（模型输出不可信，防御在边界上做）
 //   - 纯函数：不打日志，由调用方记录提取结果
 func ParseTrailer(text string) (kind string, t Trailer) {
+	// 裁决块是正文的一部分，不是回合协议 trailer。模型可能把它写在
+	// trailer 后（codex 真机形态），若直接按最后一行/最后一个 JSON 行扫描，
+	// 裁决 JSON 会遮住真正的 branch/commit/summary。先移除完整裁决块，保留
+	// trailer 的既有「末行优先、旧 JSON 行回退」语义；不完整的块不移除，
+	// 继续 fail-closed 地判 none。
+	text = verdictBlockPat.ReplaceAllString(text, "")
 	lines := strings.Split(text, "\n")
 
 	// 主路径：只在最后一个非空行上宽容提取（B48）。模型会把正文和协议 JSON
@@ -139,6 +146,8 @@ func ParseTrailer(text string) (kind string, t Trailer) {
 	}
 	return "none", t
 }
+
+var verdictBlockPat = regexp.MustCompile("(?s)```handoff-verdict\\s*\\n.*?\\n?```")
 
 // decodeProtocolJSON 从 line 中第一个 { 起解码一个 JSON 值，并按协议字段分类。
 //

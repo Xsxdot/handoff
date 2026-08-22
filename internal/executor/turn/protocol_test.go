@@ -83,6 +83,10 @@ func TestParseTrailer(t *testing.T) {
 			"{\"ask\":\"更早的问题\"}\n收尾说明没有花括号", "ask", "更早的问题"},
 		{"末行含 { 但不是合法 JSON", "见 {} 占位\n真的没有协议行", "none", ""},
 		{"末行是合法 JSON 但无协议字段", `说明 {"foo":1}`, "none", ""},
+		{"裁决块在 trailer 之后", "正文\n" + `{"branch":"handoff/T1","commit":"abc123","summary":"done"}` +
+			"\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[{\"summary\":\"x\"}]}\n```", "finish", "abc123"},
+		{"裁决块在 trailer 之前", "正文\n```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[]}\n```\n" +
+			`{"branch":"handoff/T1","commit":"def456","summary":"done"}`, "finish", "def456"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

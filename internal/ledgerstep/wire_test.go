@@ -32,6 +32,53 @@ func TestFinalMessageFromEventsUsesProtocolFields(t *testing.T) {
 	}
 }
 
+func TestFinalMessageFromEventsPrefersOptionalFinalText(t *testing.T) {
+	finalText := "正文\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"
+	payload, err := json.Marshal(map[string]string{"summary": "旧摘要", "final_text": finalText})
+	if err != nil {
+		t.Fatal(err)
+	}
+	events := []proto.Event{{Type: proto.EventTypeCompleted, Payload: payload}}
+	got, err := finalMessageFromEvents(events)
+	if err != nil || got != finalText {
+		t.Fatalf("应优先取 final_text: err=%v got=%q", err, got)
+	}
+
+	// 旧 agentd 的 payload 没有增量字段时必须继续使用 summary。
+	got, err = finalMessageFromEvents([]proto.Event{{Type: proto.EventTypeCompleted,
+		Payload: json.RawMessage(`{"summary":"历史摘要"}`)}})
+	if err != nil || got != "历史摘要" {
+		t.Fatalf("缺 final_text 时应回落 summary: err=%v got=%q", err, got)
+	}
+
+	// 指针字段把「显式空值」与「字段缺失」区分开，空正文不能静默伪装成摘要。
+	if _, err := finalMessageFromEvents([]proto.Event{{Type: proto.EventTypeCompleted,
+		Payload: json.RawMessage(`{"summary":"摘要","final_text":""}`)}}); err == nil {
+		t.Fatal("显式空 final_text 应报错，不应退回摘要")
+	}
+}
+
+func TestFinalMessageFromEventsPreservesVerdictAfterTrailer(t *testing.T) {
+	finalText := "正文\n" +
+		`{"branch":"handoff/B176","commit":"abc","summary":"简短摘要"}` +
+		"\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"
+	payload, err := json.Marshal(map[string]string{
+		"branch": "handoff/B176", "commit": "abc", "summary": "简短摘要", "final_text": finalText,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	message, err := finalMessageFromEvents([]proto.Event{{Type: proto.EventTypeCompleted,
+		Payload: payload}})
+	if err != nil {
+		t.Fatalf("取回合末正文: %v", err)
+	}
+	verdict, err := ParseVerdict(message)
+	if err != nil || !verdict.Pass {
+		t.Fatalf("trailer 后的裁决块应能路由: err=%v verdict=%+v message=%q", err, verdict, message)
+	}
+}
+
 // codex 收尾会在 completed 之后再补一条 turn_failed（app-server 断连），
 // 那是传输层假警报。取报文必须认 completed——否则环节拿到的是断连文案，
 // 裁决必然解析失败、每次审阅都白白转人工。2026-08-19 真机实测踩中。

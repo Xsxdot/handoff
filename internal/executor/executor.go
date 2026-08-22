@@ -80,6 +80,10 @@ type Result struct {
 	CommitHash string // 回合收尾 commit 的哈希
 	SessionID  string // executor 会话标识（如 opencode session id），供续接与归档
 	Summary    string // 执行摘要（给协调者看的完成说明）
+	// FinalText 是回合末正文的尾部窗口。它与 Summary 分开传递，因为裁决块
+	// 属于正文而不是 trailer 摘要；adapter 只保留正文尾部，以便在结果 payload
+	// 有界时仍保全契约要求位于报文末尾的 handoff-verdict block。
+	FinalText  string
 	OK         bool   // true=正常完成；false=失败（见 FailReason）
 	FailReason string // OK=false 时的失败原因/日志尾部
 	// VoidReason 是本次失败导致挂起工单被作废时写进审计事件的理由。

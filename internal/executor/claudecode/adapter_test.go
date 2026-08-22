@@ -32,13 +32,21 @@ func TestMapInitEmitsSessionID(t *testing.T) {
 func TestMapResultFinishEmitsResult(t *testing.T) {
 	a, r := newTestRun(t)
 	a.mapMessage(r, streamMsg{Type: "result", Subtype: "success",
-		Result: `{"branch":"handoff/ab","commit":"c0ffee","summary":"完成"}`})
+		Result: strings.Repeat("前文 ", turn.FinalTextLimit+100) +
+			`{"branch":"handoff/ab","commit":"c0ffee","summary":"完成"}` +
+			"\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"})
 	ev := mustRecv(t, r)
 	if ev.Type != "result" || ev.Result == nil || !ev.Result.OK {
 		t.Fatalf("finish trailer 应产出成功 result，实际 %+v", ev)
 	}
 	if ev.Result.Branch != "handoff/ab" || ev.Result.CommitHash != "c0ffee" {
 		t.Errorf("git 字段未透传: %+v", ev.Result)
+	}
+	if !strings.Contains(ev.Result.FinalText, "handoff-verdict") {
+		t.Fatalf("成功结果必须带回合末正文，实得 %q", ev.Result.FinalText)
+	}
+	if len([]rune(ev.Result.FinalText)) != turn.FinalTextLimit {
+		t.Fatalf("超长正文应尾截断到 %d rune，实得 %d", turn.FinalTextLimit, len([]rune(ev.Result.FinalText)))
 	}
 }
 

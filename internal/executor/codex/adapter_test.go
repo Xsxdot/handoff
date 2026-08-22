@@ -9,6 +9,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 func drain(t *testing.T, ch <-chan executor.AdapterEvent, d time.Duration) []executor.AdapterEvent {
@@ -33,7 +34,9 @@ func TestFinishTrailerEmitsOKResult(t *testing.T) {
 	a, r := codex.NewAdapterWithRunForTest("T1")
 	// 收尾 trailer 是单行 JSON（turn.ParseTrailer 只认以 { 开头的行），
 	// 计划原稿误用了 HANDOFF_STATUS: 纯文本行，那会被 ParseTrailer 判成 none
-	body := "干完了。\n" + `{"branch":"handoff/T1","commit":"abc1234","summary":"加了 codex adapter"}`
+	body := strings.Repeat("前文 ", turn.FinalTextLimit+100) +
+		`{"branch":"handoff/T1","commit":"abc1234","summary":"加了 codex adapter"}` +
+		"\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"
 	codex.FinishTurnForTest(a, r, "completed", "", body)
 
 	evs := drain(t, codex.EventsForTest(r), 500*time.Millisecond)
@@ -46,6 +49,12 @@ func TestFinishTrailerEmitsOKResult(t *testing.T) {
 	}
 	if last.Result.Branch != "handoff/T1" || last.Result.CommitHash != "abc1234" {
 		t.Fatalf("trailer 的 branch/commit 应优先，实得 %+v", last.Result)
+	}
+	if !strings.Contains(last.Result.FinalText, "handoff-verdict") {
+		t.Fatalf("成功结果必须带回合末正文，实得 %q", last.Result.FinalText)
+	}
+	if len([]rune(last.Result.FinalText)) != turn.FinalTextLimit {
+		t.Fatalf("超长正文应尾截断到 %d rune，实得 %d", turn.FinalTextLimit, len([]rune(last.Result.FinalText)))
 	}
 }
 

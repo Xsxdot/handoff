@@ -15,6 +15,20 @@ import "github.com/Xsxdot/handoff/internal/executor"
 // 搬包后它得能从 turn 引到同一个值——两处各写一个 8000 就会悄悄漂移。
 const QuestionTextLimit = 8000
 
+// FinalTextLimit 是回合末正文送入 completed payload 的尾部窗口（按 rune 计）。
+// 裁决块按模板契约位于正文尾部，保留尾部而不是头部，才能在长回合受限时仍
+// 把裁决交给下游解析器；正文完整证据仍保留在 render.log。
+const FinalTextLimit = 16 << 10
+
+// FinalText 返回用于终态 Result 的正文窗口。
+//
+// 参数：text 是 adapter 收集到的完整回合正文。
+// 返回：不超过 FinalTextLimit 个 rune 的正文尾部；短正文原样返回。
+// 注意：这是传输边界的有界投影，不应替代 render.log 作为完整取证来源。
+func FinalText(text string) string {
+	return TailRunes(text, FinalTextLimit)
+}
+
 // TruncateMarked 按 rune 截断到 n，确实截断时追加 executor.TruncationMarker。
 //
 // 为什么必须带标记：上层据此 fail-closed——权限文本含标记说明裁决者看到的是

@@ -65,10 +65,17 @@ func finalMessageFromEvents(events []proto.Event) (string, error) {
 			continue
 		}
 		var payload struct {
-			Summary string `json:"summary"`
+			Summary   string  `json:"summary"`
+			FinalText *string `json:"final_text"`
 		}
 		if err := json.Unmarshal(events[i].Payload, &payload); err != nil {
 			return "", fmt.Errorf("completed payload 解析失败: %w", err)
+		}
+		if payload.FinalText != nil {
+			if *payload.FinalText == "" {
+				return "", fmt.Errorf("completed payload final_text 为空")
+			}
+			return *payload.FinalText, nil
 		}
 		if payload.Summary == "" {
 			return "", fmt.Errorf("completed payload 缺 summary")
@@ -80,10 +87,17 @@ func finalMessageFromEvents(events []proto.Event) (string, error) {
 		switch event.Type {
 		case proto.EventTypeCompleted:
 			var payload struct {
-				Summary string `json:"summary"`
+				Summary   string  `json:"summary"`
+				FinalText *string `json:"final_text"`
 			}
 			if err := json.Unmarshal(event.Payload, &payload); err != nil {
 				return "", fmt.Errorf("completed payload 解析失败: %w", err)
+			}
+			if payload.FinalText != nil {
+				if *payload.FinalText == "" {
+					return "", fmt.Errorf("completed payload final_text 为空")
+				}
+				return *payload.FinalText, nil
 			}
 			if payload.Summary == "" {
 				return "", fmt.Errorf("completed payload 缺 summary")

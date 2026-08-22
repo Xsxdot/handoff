@@ -598,7 +598,8 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 		a.log.Warn("git 回合取证失败，降级只用 trailer", "task", r.taskID, "cause", gerr)
 	}
 	a.log.Info("grok 回合收尾", "task", r.taskID, "kind", kind,
-		"has_new_commit", hasNew, "branch", branch, "asked_via_tool", askedViaTool)
+		"has_new_commit", hasNew, "branch", branch, "asked_via_tool", askedViaTool,
+		"final_text_len", len([]rune(text)))
 
 	switch kind {
 	case "ask":
@@ -607,7 +608,7 @@ func (a *Adapter) finishTurn(r *runState, res ACPResult) {
 		a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.sessionID,
 			Result: &executor.Result{OK: true, Branch: firstNonEmpty(tr.Branch, branch),
 				CommitHash: firstNonEmpty(tr.Commit, commit), SessionID: r.sessionID,
-				Summary: tr.Summary}})
+				Summary: tr.Summary, FinalText: turn.FinalText(text)}})
 	default:
 		// 兜底：模型没守收尾纪律。唯一可信的是 git 实况——但**有新提交不等于
 		// 干完了**，只等于「这回合动过代码」。模型没宣布完成，handoff 就不替它

@@ -530,6 +530,10 @@ type completedPayload struct {
 	Branch     string `json:"branch"`
 	CommitHash string `json:"commit"`
 	Summary    string `json:"summary"`
+	// FinalText is optional for rolling upgrades: old adapters omit it and old
+	// consumers ignore it. A pointer distinguishes an absent field from an
+	// explicitly empty final text at the JSON boundary.
+	FinalText *string `json:"final_text,omitempty"`
 }
 
 // failedPayload 是 failed 事件的 payload。
@@ -2993,6 +2997,9 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 			m.log.Warn("落库 executor_session 失败", "task", taskID, "session", r.SessionID, "cause", err)
 		}
 	}
+	m.log.Debug("回合结果正文已准备传输", "task", taskID,
+		"ok", r.OK, "final_text_len", len([]rune(r.FinalText)),
+		"final_text_present", r.FinalText != "")
 	// 状态先就位：事件一落库就可被 WS 重放读到，晚于事件迁移等于放任协调者
 	// 在 running 上执行 done（详见函数头注释）
 	if err := m.transitToReview(taskID); err != nil {
@@ -3001,8 +3008,13 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 	}
 	var evt proto.Event
 	if r.OK {
+		var finalTextPtr *string
+		if r.FinalText != "" {
+			finalTextPtr = &r.FinalText
+		}
 		evt, err = m.st.AppendEvent(taskID, proto.EventTypeCompleted, completedPayload{
 			Branch: r.Branch, CommitHash: r.CommitHash, Summary: r.Summary,
+			FinalText: finalTextPtr,
 		})
 	} else {
 		// 挂起工单一并作废（U-3）：与 RecoverOnStartup 的重启恢复路径同语义。

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
 // TestMapUpdateRoutesByKind 验证四类 session/update 的分流：
@@ -69,6 +70,28 @@ func TestTurnTextEndsWithTrailerSoParseWorks(t *testing.T) {
 	}
 	if tr.Question != "用哪个库？" {
 		t.Errorf("Question = %q", tr.Question)
+	}
+}
+
+func TestFinishTurnCarriesFinalTextAfterTrailer(t *testing.T) {
+	a, r := grok.NewAdapterWithRunForTest("T-final-text")
+	body := strings.Repeat("前文 ", turn.FinalTextLimit+100) +
+		`{"branch":"handoff/T1","commit":"abc123","summary":"完成"}` +
+		"\n```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"
+	grok.FinishTurnForTest(a, r, "end_turn", body)
+	select {
+	case ev := <-r.EventsForTest():
+		if ev.Type != "result" || ev.Result == nil || !ev.Result.OK {
+			t.Fatalf("应产出成功结果，实得 %+v", ev)
+		}
+		if ev.Result.Summary != "完成" || !strings.Contains(ev.Result.FinalText, "handoff-verdict") {
+			t.Fatalf("正文或 trailer 丢失: %+v", ev.Result)
+		}
+		if len([]rune(ev.Result.FinalText)) != turn.FinalTextLimit {
+			t.Fatalf("超长正文应尾截断到 %d rune，实得 %d", turn.FinalTextLimit, len([]rune(ev.Result.FinalText)))
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("2 秒内未收到成功结果")
 	}
 }
 

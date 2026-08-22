@@ -529,7 +529,9 @@ func TestIdleClassifyFinish(t *testing.T) {
 	quietLog(t)
 	fs := newFakeServer(t)
 	fs.push(userMsgEvent("msg-u1"))
-	fs.push(partUpdatedEvent("msg-a1", "prt-a1", "全部完成\n{\"branch\":\"handoff/T1\",\"commit\":\"abc12345\",\"summary\":\"完成功能\"}"))
+	fs.push(partUpdatedEvent("msg-a1", "prt-a1", strings.Repeat("前文 ", turn.FinalTextLimit+100)+
+		"{\"branch\":\"handoff/T1\",\"commit\":\"abc12345\",\"summary\":\"完成功能\"}\n"+
+		"```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"))
 	fs.push(statusIdleEvent())
 
 	_, ch := startFakeRun(t, fs, "task-fin-0001", t.TempDir(), t.TempDir())
@@ -548,6 +550,12 @@ func TestIdleClassifyFinish(t *testing.T) {
 	}
 	if ev.Result.SessionID != "sess-1" {
 		t.Errorf("SessionID=%q，期望 sess-1（供 manager 落 ExecutorSession）", ev.Result.SessionID)
+	}
+	if !strings.Contains(ev.Result.FinalText, "handoff-verdict") {
+		t.Fatalf("成功结果必须带回合末正文，实得 %q", ev.Result.FinalText)
+	}
+	if len([]rune(ev.Result.FinalText)) != turn.FinalTextLimit {
+		t.Fatalf("超长正文应尾截断到 %d rune，实得 %d", turn.FinalTextLimit, len([]rune(ev.Result.FinalText)))
 	}
 }
 
