@@ -28,6 +28,15 @@
     {"who":"n_turn_FrameWriter_Reasoning","model":"m_proto_Frame","kind":"creator"},
     {"who":"n_turn_FrameWriter_ToolCall","model":"m_proto_Frame","kind":"creator"},
     {"who":"n_turn_FrameWriter_ToolResult","model":"m_proto_Frame","kind":"creator"},
-    {"who":"n_turn_FrameWriter_EventRef","model":"m_proto_Frame","kind":"creator"}
+    {"who":"n_turn_FrameWriter_EventRef","model":"m_proto_Frame","kind":"creator"},
+    {"who":"n_ledger_Store_CreateCard","model":"m_ledger_Card","kind":"creator"},
+    {"who":"n_ledger_Store_MoveCard","model":"m_ledger_Card","kind":"writer","field":"status"},
+    {"who":"n_ledger_Store_CloseCard","model":"m_ledger_Card","kind":"writer","field":"status"},
+    {"who":"n_ledger_Store_ReviveCard","model":"m_ledger_Card","kind":"writer","field":"status"},
+    {"who":"n_ledger_Store_MigrateCardWorkflow","model":"m_ledger_Card","kind":"writer","field":"status"},
+    {"who":"n_ledger_Store_addComment","model":"m_ledger_Event","kind":"creator"},
+    {"who":"n_ledger_Store_OpenDecision","model":"m_ledger_Decision","kind":"creator"},
+    {"who":"n_ledger_Store_AnswerDecision","model":"m_ledger_Decision","kind":"writer","field":"status"},
+    {"who":"n_ledger_Store_MigrateCardWorkflow","model":"m_ledger_WorkflowMigration","kind":"creator"}
   ]
 }
