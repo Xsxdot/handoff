@@ -97,6 +97,10 @@ var graphValidateCmd = &cobra.Command{
 			return err
 		}
 		issues := codegraph.Validate(g)
+		edgeIssues := codegraph.CheckEdges(graphRepo, g.Nodes, g.Edges)
+		for _, ei := range edgeIssues {
+			issues = append(issues, "调用边门控: "+ei.Detail)
+		}
 		views, err := codegraph.ListViews(graphRepo)
 		if err != nil {
 			return err
@@ -112,6 +116,21 @@ var graphValidateCmd = &cobra.Command{
 			for _, is := range codegraph.ValidateDiff(g, d) {
 				issues = append(issues, "["+name+"] "+is)
 			}
+			mergedNodes := make(map[string]codegraph.Node, len(g.Nodes)+len(d.NodesAdded))
+			for id, n := range g.Nodes {
+				mergedNodes[id] = n
+			}
+			for id, n := range d.NodesAdded {
+				mergedNodes[id] = n
+			}
+			for id, n := range d.NodesModified {
+				if _, ok := mergedNodes[id]; ok {
+					mergedNodes[id] = n
+				}
+			}
+			for _, ei := range codegraph.CheckEdges(graphRepo, mergedNodes, d.EdgesAdded) {
+				issues = append(issues, "["+name+"] 调用边门控: "+ei.Detail)
+			}
 		}
 		var stale []codegraph.StaleNode
 		if graphStale {
@@ -126,7 +145,7 @@ var graphValidateCmd = &cobra.Command{
 		out := map[string]any{
 			"nodes": len(g.Nodes), "edges": len(g.Edges),
 			"containers": len(g.Containers), "domains": len(g.Domains), "views": views,
-			"unscannedEntries": unscanned, "issues": issues,
+			"unscannedEntries": unscanned, "issues": issues, "edgeIssues": edgeIssues,
 		}
 		if graphStale {
 			out["stale"] = stale
@@ -185,6 +204,25 @@ var graphAbsorbCmd = &cobra.Command{
 		}
 		if issues := codegraph.ValidateDiff(g, d); len(issues) > 0 {
 			return fmt.Errorf("视图 %s 引用不完整，拒绝併入: %v", args[0], issues)
+		}
+		mergedNodes := make(map[string]codegraph.Node, len(g.Nodes)+len(d.NodesAdded))
+		for id, n := range g.Nodes {
+			mergedNodes[id] = n
+		}
+		for id, n := range d.NodesAdded {
+			mergedNodes[id] = n
+		}
+		for id, n := range d.NodesModified {
+			if _, ok := mergedNodes[id]; ok {
+				mergedNodes[id] = n
+			}
+		}
+		if eis := codegraph.CheckEdges(graphRepo, mergedNodes, d.EdgesAdded); len(eis) > 0 {
+			var lines []string
+			for _, ei := range eis {
+				lines = append(lines, ei.Detail)
+			}
+			return fmt.Errorf("视图 %s 含 %d 条不可能真实的调用边，拒绝併入:\n%s", args[0], len(eis), strings.Join(lines, "\n"))
 		}
 		merged := codegraph.Absorb(g, d)
 		// 刷新来源戳。--commit/--branch 未给时从 git 取；取不到就报错，
