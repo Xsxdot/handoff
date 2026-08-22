@@ -86,8 +86,8 @@ var wfPutCmd = &cobra.Command{
 		if err := json.Unmarshal(raw, &def); err != nil {
 			return fmt.Errorf("解析定义: %w", err)
 		}
-		if len(def.States) < 2 {
-			return fmt.Errorf("状态序列至少两个状态")
+		if len(def.Nodes) == 0 && len(def.States) == 0 {
+			return fmt.Errorf("写入工作流失败（定义文件里 nodes 与 states 至少给一个，节点模型下应给 nodes）")
 		}
 		st, err := openLedger()
 		if err != nil {
