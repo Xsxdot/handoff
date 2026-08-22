@@ -25,12 +25,18 @@ bug 流上的跨域改造，或一张走在重流程上的一行小修。
 
 按「触及域数 × 是否动契约」分级，向上兼容、按需升级：
 
+> **2026-08-22 修订（B174）**：L2/L3 统一收敛到单条 `charter` 流——L2 是 L3 的子集
+> （L3 = contract/breakdown 的头 + N 个 L2 形状子卡 + integrate 的尾），条件边一期用
+> 人工 move 表达，门（plan 列要 spec 附件、implement 列要 plan 附件）作结构性执法。
+> `feature`/`domain` 流被 charter 流吸收，退役出日常（定义保留不删）。下表为修订后形态。
+
 | 级 | 工作流 | 适用 | 形态 | 现状 |
 |---|---|---|---|---|
 | L1 | `bug` | 单域小修，根因明确，不动契约 | 待办 → 进行中(派发实现) → 待审阅(裁决) → 已完成 | ✅ 出厂已有 |
-| L2 | `feature` | 单域功能，需要 spec，不动跨域契约 | 待办 → 已出spec(闸:spec 附件) → 进行中(派发) → 待审阅(裁决) → 待合并(人工门) → 已完成 | ✅ 出厂已有 |
-| L3·轻 | `domain`（不扇出） | 跨域协作，但**每域改动浅**（加个方法/端点/字段） | 拆解 → 契约冻结 → **单轮实现** → 终审 | ✅ 用同一条 domain 流，域实现列不扇出 |
-| L3·重 | `domain`（完整扇出） | 跨域协作，且**单域工作量大到一个执行者一轮装不下** | 拆解 → 契约冻结 → 域实现(扇出子卡) → 集成 → 终审 | ✅ 内建 domain 流 |
+| L2 | `charter`（跳列） | 单域功能，需要 spec，不动跨域契约 | spec ─跳→ plan(闸:spec) → implement(闸:plan) → review → acceptance ─跳→ finish | ✅ charter v2 |
+| L3·轻 | `charter`（顺链不扇出） | 跨域协作，但**每域改动浅**（加个方法/端点/字段） | spec → contract → breakdown → **单轮** plan/implement/review → acceptance ─跳→ finish | ✅ charter v2 |
+| L3·重 | `charter`（扇出子卡） | 跨域协作，且**单域工作量大到一个执行者一轮装不下** | spec → contract → breakdown ─跳→ integrate 等聚合闸；子卡各从 plan 起步跑到 review | ✅ charter v2 + split/聚合闸 |
+| — | ~~`feature`~~ / ~~`domain`~~ | 已被 charter 流吸收（B174），定义保留、日常不用 | — | 🗄️ 退役 |
 
 判级判据（定性节点回答两个问题即可定级）：
 
