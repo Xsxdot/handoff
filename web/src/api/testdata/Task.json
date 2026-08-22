@@ -24,6 +24,38 @@
     "context_tokens": 24668,
     "context_window": 258400
   },
+  "timing": {
+    "total_ms": 184300,
+    "api_ms": 121500,
+    "tool_ms": 71200,
+    "tool_span_ms": 58400,
+    "other_ms": 4400,
+    "partial": false,
+    "buckets": [
+      {
+        "label": "Bash",
+        "dur_ms": 52100,
+        "count": 9,
+        "sub": [
+          {
+            "label": "go test",
+            "dur_ms": 41800,
+            "count": 4
+          },
+          {
+            "label": "git status",
+            "dur_ms": 10300,
+            "count": 5
+          }
+        ]
+      },
+      {
+        "label": "Read",
+        "dur_ms": 19100,
+        "count": 23
+      }
+    ]
+  },
   "machine": "",
   "project_id": "a1b2c3d4e5f60718"
 }

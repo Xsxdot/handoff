@@ -226,8 +226,23 @@ func taskSample(now time.Time, taskID string) Task {
 		// 由 web 侧的 Usage 可选字段与 TaskHeader 测试覆盖。
 		ActualModel: "gpt-5.6-sol",
 		Usage:       &Usage{ContextTokens: 24668, ContextWindow: &sampleCtxWindow},
-		Machine:     "",
-		ProjectID:   "a1b2c3d4e5f60718",
+		// B85/需求 A：Timing 必须进 fixture —— 「两端各自有测试」≠「这条链路有
+		// 测试」，账本域两次 wire 缺陷都是这个形状（CardView.ChildrenTotal）。
+		// 数字刻意造成 tool_ms > tool_span_ms（并发工具），把「两个数互不冒充」
+		// 这条契约钉进线格式；三分法自洽：184300 − 121500 − 58400 = 4400。
+		Timing: &TaskTiming{
+			TotalMS: 184300, APIMS: 121500, ToolMS: 71200, ToolSpanMS: 58400,
+			OtherMS: 4400, Partial: false,
+			Buckets: []TimingBucket{
+				{Label: "Bash", DurMS: 52100, Count: 9, Sub: []TimingBucket{
+					{Label: "go test", DurMS: 41800, Count: 4},
+					{Label: "git status", DurMS: 10300, Count: 5},
+				}},
+				{Label: "Read", DurMS: 19100, Count: 23},
+			},
+		},
+		Machine:   "",
+		ProjectID: "a1b2c3d4e5f60718",
 	}
 }
 
@@ -380,6 +395,12 @@ func tasksRespSample(now time.Time, taskID string) TasksResp {
 	remote.Machine = "devbox"
 	remote.State = "waiting_review"
 	remote.Name = "B12 远端派发"
+	// 列表响应由 ListTasks 产出，它**不填** Timing（store.go 的 ListTasks 注释
+	// 写死了这条纪律）。夹具必须与那个事实一致——留着 taskSample 带来的
+	// timing，就是让契约夹具去描述一个不存在的响应。
+	remote.Timing = nil
+	local := taskSample(now, taskID)
+	local.Timing = nil
 	return TasksResp{
 		Machines: []MachineStatus{
 			{Name: "", Ok: true, FetchedAt: now, Error: ""},
@@ -387,7 +408,7 @@ func tasksRespSample(now time.Time, taskID string) TasksResp {
 				Error: "dial tcp 10.0.0.8:7777: connect: connection refused"},
 		},
 		Tasks: []TaskView{
-			{Task: taskSample(now, taskID), Watchers: 1},
+			{Task: local, Watchers: 1},
 			{Task: remote, Watchers: 0},
 		},
 	}
@@ -495,8 +516,11 @@ func ptySessionsRespSample(now time.Time) PtySessionsResp {
 // frameSample 返回 Frame 的代表性样本（被截断的 tool_result）。
 //
 // 为什么选 tool_result 而不是 text：它是字段最多的一种帧，能同时钉住
-// Part/Status/Output/Truncated/Bytes 五个字段的序列化结果；text 帧只有
+// Part/Status/Output/Truncated/Bytes/DurMS 六个字段的序列化结果；text 帧只有
 // Part+Delta，钉不住 omitempty 的边界。
+//
+// DurMS 只出现在 tool_result（契约 §2.5）：tool_call 上带 dur_ms 是无意义的，
+// 那条反向断言在 frames_test.go 与 web 的 frames.test.ts 里各锁一次。
 func frameSample(now time.Time) Frame {
 	return Frame{
 		Seq:       42,
@@ -508,6 +532,7 @@ func frameSample(now time.Time) Frame {
 		Output:    "go: downloading …\n…（已截断）…\nFAIL\texit status 1",
 		Truncated: true,
 		Bytes:     193422,
+		DurMS:     1500,
 	}
 }
 

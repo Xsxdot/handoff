@@ -6,6 +6,7 @@
   "part": "toolu_01ABCdefGHIjklMNOpqrs",
   "output": "go: downloading …\n…（已截断）…\nFAIL\texit status 1",
   "status": "error",
+  "dur_ms": 1500,
   "truncated": true,
   "bytes": 193422
 }

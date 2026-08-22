@@ -384,6 +384,12 @@ func (s *Store) GetTask(id string) (*proto.Task, error) {
 		return nil, err
 	}
 	task.Cumulative = cum
+	// 耗时聚合同样来自另一张表，与 Cumulative 同进同出：列表刻意不带。
+	tm, err := s.TaskTiming(id)
+	if err != nil {
+		return nil, err
+	}
+	task.Timing = tm
 	return &task, nil
 }
 
@@ -391,8 +397,8 @@ func (s *Store) GetTask(id string) (*proto.Task, error) {
 //
 // 注意：
 //   - created_at 统一为 UTC RFC3339Nano 文本，字典序即时间序，可直接排序
-//   - **不填充 Task.Cumulative**。列表页不显示累计消耗，为每一行做一次
-//     SUM 是纯浪费；要拿累计值请用 GetTask。这不是 bug，改之前先想清楚代价。
+//   - **不填充 Task.Cumulative 与 Task.Timing**。列表页不显示累计消耗或耗时，
+//     为每一行做两次 SUM 是纯浪费；要拿聚合值请用 GetTask。这不是 bug，改之前先想清楚代价。
 func (s *Store) ListTasks() ([]proto.Task, error) {
 	rows, err := s.db.QueryContext(context.Background(),
 		`SELECT `+taskColumns+` FROM tasks ORDER BY created_at DESC`)
@@ -645,22 +651,6 @@ func (s *Store) UpsertTiming(taskID string, e proto.TimingEntry) error {
 		return fmt.Errorf("记任务 %s 耗时 %s: %w", taskID, e.Key, err)
 	}
 	return nil
-}
-
-// TaskTiming 对该任务的全部耗时账目求和，得到三分法聚合。
-//
-// 返回：
-//   - 没有任何账目行时返回 (nil, nil)。**不返回零值结构**——0 会被读成
-//     「一共没花时间」，而真相是「还不知道」（与 TaskCumulative 同款纪律）
-//   - OtherMS = max(0, TotalMS − APIMS − ToolSpanMS)；取 max 是防御不是语义，
-//     真出现负数说明采集有 bug，此时 Partial 必为真
-//
-// TODO(contract Ticket 0): 骨架只钉签名与返回语义，聚合实现归 implement 节点。
-// 本方法**尚未被任何调用方接线**（GetTask 不填 Task.Timing），所以这个空壳
-// 不会伪装成「已经能用」——接线与实现必须同一轮完成。
-func (s *Store) TaskTiming(taskID string) (*proto.TaskTiming, error) {
-	_ = taskID
-	return nil, nil
 }
 
 // TaskCumulative 对该任务的全部账目求和，得到累计消耗。
