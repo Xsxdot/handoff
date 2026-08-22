@@ -351,7 +351,7 @@ stderr 同次命令实测仍有：
 - spec 符合性：通过。依赖与 migrate 在同一待提交范围；target 由 canonical migrate 生成；检查读数和全量构建/静态检查/测试通过。
 - 代码质量：通过。无源码逻辑改动；go.mod/go.sum 与迁移产物为最小变更；ledger 固化了前后原始 JSON 和环境偏差。
 - 修复轮：无。
-- commit 范围：`4d908dd9..HEAD`（本 task）。
+- commit 范围：`4d908dd9..f55c9b88`（本 task）。
 
 ## Task 2：扫描配方扩展
 
@@ -364,7 +364,7 @@ stderr 同次命令实测仍有：
 - spec 符合性：通过。计划要求的路径术语、baseline 生命周期段、diff 两个生命周期字段和 creator/writer 纪律均逐项落文档；未新增扫描数据或源码范围。
 - 代码质量：通过。字段说明与 charter v0.3.0 `LifecycleRef` 对齐，规则集中在独立章节并补充硬校验提示，表格和现有 schema 结构保持一致。
 - 修复轮：无。
-- commit 范围：`f55c9b88..HEAD`（本 task）。
+- commit 范围：`f55c9b88..1db7c86b`（本 task）。
 
 ## Task 3：任务与工作区样板声明
 
@@ -379,4 +379,27 @@ stderr 同次命令实测仍有：
 - spec 符合性：通过。两个计划指定领域均有声明；`d_coordination_task` 的状态迁移和测试引用来自实读源码，`d_workspace` 覆盖跨子系统职责并仅引用真实锚点；validate 绿且 `domainDecls=2`。
 - 代码质量：通过。声明保持最小且可审计，不编造终态后继或测试名；生命周期和状态迁移锚点均由库校验解析。
 - 修复轮：无。
-- commit 范围：`1db7c86b..HEAD`（本 task）。
+- commit 范围：`1db7c86b..c81f0a62`（本 task）。
+
+## Task 4：整分支终审与收尾验收
+
+- 最终构建：`TMPDIR=... GOTMPDIR=... GIT_CEILING_DIRECTORIES=... go build ./...` exit 0，无输出。
+- 最终静态检查：`TMPDIR=... GOTMPDIR=... GIT_CEILING_DIRECTORIES=... go vet ./...` exit 0，无输出。
+- 最终测试：`TMPDIR=... GOTMPDIR=... GIT_CEILING_DIRECTORIES=... go test ./... -count=1` exit 0；`github.com/Xsxdot/handoff` 与 `github.com/Xsxdot/handoff/cmd` 输出 `ok`，cmd 包含 `TestRepoContractGate`。
+- 最终声明校验：`graph validate --repo .` exit 0，stdout 为 `containers=237`、`nodes=3564`、`edges=4522`、`domainDecls=2`、`issues=null`、`edgeIssues=null`。
+- 最终契约检查：`go run . graph check --repo .` exit 0，`fails=[]`、`warns` 共 20 条（19 legacy + 1 dead-assembly），legacyHits 与升级前逐项一致。
+- 兼容入口：`go run . graph --help` stdout 首行含 `[deprecated：请改用 codegraph 二进制]`；`go run . graph summary --repo .` stdout 仅为图摘要文本，无告警污染。两条命令的 stderr 仅有 relay/proxy 环境日志。
+- target 断言：`meta.version=2`、`subsystems` 存在；`LoadTarget` 语义中的 assignments 长度为 0。`grep -c '^replace' go.mod` stdout 为 `0`（grep 因无匹配返回 exit 1）；canonical v0.3.0 的 `Assignments json:"assignments,omitempty"` 使空数组键不落盘，未手改迁移产物。
+
+### 双裁决
+
+- spec 符合性：通过。T1 原子提交、T2 配方、T3 声明和全部卡面机内验收均完成；前后 check JSON 已完整留档，真实机跨版本对账、坏锚变异、Web 控制台和执行机 hook 按计划留给协调者。
+- 代码质量：通过。相对分支起点 `4d908dd9` 的完整 diff 仅包含计划范围文件；`git diff 4d908dd9..HEAD --check` exit 0，无发现项，无需修复波。
+- 修复轮：无。
+- commit 范围：`c81f0a62..HEAD`（本 task 的最终收尾提交）。
+
+## 执行偏差与未验证项
+
+- 计划示例 `go run ./cmd/handoff graph check --repo .` 实测失败，原始 stderr：`stat /root/.handoff/worktrees/f60d3c19/cmd/handoff: directory not found`；本仓实际入口为 `go run .`，据此执行了同一 graph 子命令。
+- 初次依赖下载实测报错：`open /root/go/pkg/mod/cache/.../v0.3.0.lock: read-only file system`；改用已获准的 escalated `go get` 完成下载。`TMPDIR=/tmp` 测试实测报错：`mktemp: failed to create file via template ‘/tmp/tmp.XXXXXXXXXX’: Read-only file system`。默认任务临时目录还实测产生 `裁决 socket 路径过长（113/114/115/116 字节，上限 107）`；最终使用仓内 `.tmp` 加 `GIT_CEILING_DIRECTORIES`，全量测试 exit 0。
+- 未验证：升级前 v0.2.1 二进制逐条跨版本对账、坏锚变异复验、Web 控制台渲染、执行机 hook；这些是计划明确划给协调者的真机项。
