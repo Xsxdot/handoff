@@ -399,6 +399,8 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - GET  /api/env/file                读 env 文件正文（仅编辑时）
 //   - PUT  /api/env/file                写 env 文件（写前解析校验）
 //   - PUT  /api/env/mapping             整段替换 executor→env 文件映射
+//   - GET  /api/launchers               工作台自定义启动项列表
+//   - PUT  /api/launchers               整段替换启动项列表
 //   - GET  /api/executor/default       查询机器级缺省执行者、它的默认模型与可选名单
 //   - PUT  /api/executor/default       整体替换机器级缺省执行者与它的默认模型
 //   - GET  /api/workspaces/dir          列举工作树内一层目录（白名单：仅已探测到的工作树）
@@ -478,6 +480,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/env/file", s.handleEnvFileRead)
 	api.HandleFunc("PUT /api/env/file", s.handleEnvFileWrite)
 	api.HandleFunc("PUT /api/env/mapping", s.handleEnvMapping)
+	api.HandleFunc("GET /api/launchers", s.handleLaunchersGet)
+	api.HandleFunc("PUT /api/launchers", s.handleLaunchersPut)
 	api.HandleFunc("GET /api/executor/default", s.handleExecutorDefaultGet)
 	api.HandleFunc("PUT /api/executor/default", s.handleExecutorDefaultPut)
 	api.HandleFunc("POST /api/machines", s.handleAddMachine)
