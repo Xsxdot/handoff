@@ -1,7 +1,7 @@
-// useMachineCaps —— 每台机器的能力位（PTY / 在访达中显示 / 草稿区，spec §5.5）。
+// useMachineCaps —— 每台机器的能力位（PTY / 在访达中显示 / 草稿区 / 启动项，spec §5.5）。
 //
 // 职责：加载时拉一次 GET /api/machines，把 pty_supported / reveal_supported /
-// scratch_root 整理成按机器查询的能力函数。
+// scratch_root / launchers_supported 整理成按机器查询的能力函数。
 //
 // 边界：
 //   - 只读能力位，不管会话
@@ -20,6 +20,8 @@ export interface MachineCaps {
   // 调用方对 null 的正确反应是「照常放行，出了错再说实话」，不是「禁用」。
   pty: (machine: string) => boolean | null
   reveal: (machine: string) => boolean | null
+  // 启动项与 pty/reveal 同为三态，但调用方处置相反：只有明确 true 才展示。
+  launchers: (machine: string) => boolean | null
   // scratchRoot 返回草稿区路径；空串 = 这台机器不支持临时文件。
   // 与 pty/reveal 的三态不同，这里缺的是一个路径，没有路径就无法发请求。
   scratchRoot: (machine: string) => string
@@ -29,6 +31,7 @@ export interface MachineCaps {
 export function useMachineCaps(): MachineCaps {
   const [ptyMap, setPtyMap] = useState<Record<string, boolean> | null>(null)
   const [revealMap, setRevealMap] = useState<Record<string, boolean> | null>(null)
+  const [launchersMap, setLaunchersMap] = useState<Record<string, boolean> | null>(null)
   const [scratchMap, setScratchMap] = useState<Record<string, string> | null>(null)
   const [error, setError] = useState('')
   // ranRef 与 cancelledRef 配对：ranRef 管「只跑一次」，cancelledRef 管「结果
@@ -49,15 +52,18 @@ export function useMachineCaps(): MachineCaps {
           if (cancelledRef.current) return
           const nextPty: Record<string, boolean> = {}
           const nextReveal: Record<string, boolean> = {}
+          const nextLaunchers: Record<string, boolean> = {}
           const nextScratch: Record<string, string> = {}
           for (const m of resp.machines) {
             // 只收明确上报的：缺席/null 不进表，查询时自然落到 null
             if (typeof m.pty_supported === 'boolean') nextPty[m.name] = m.pty_supported
             if (typeof m.reveal_supported === 'boolean') nextReveal[m.name] = m.reveal_supported
+            if (typeof m.launchers_supported === 'boolean') nextLaunchers[m.name] = m.launchers_supported
             if (m.scratch_root) nextScratch[m.name] = m.scratch_root
           }
           setPtyMap(nextPty)
           setRevealMap(nextReveal)
+          setLaunchersMap(nextLaunchers)
           setScratchMap(nextScratch)
         })
         .catch((err: unknown) => {
@@ -74,6 +80,7 @@ export function useMachineCaps(): MachineCaps {
   return {
     pty: (machine: string) => (ptyMap && machine in ptyMap ? ptyMap[machine] : null),
     reveal: (machine: string) => (revealMap && machine in revealMap ? revealMap[machine] : null),
+    launchers: (machine: string) => (launchersMap && machine in launchersMap ? launchersMap[machine] : null),
     scratchRoot: (machine: string) => (scratchMap && machine in scratchMap ? scratchMap[machine] : ''),
     error,
   }

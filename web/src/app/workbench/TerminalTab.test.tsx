@@ -81,6 +81,18 @@ describe('TerminalTab', () => {
     )
   })
 
+  it('启动项字段写入建会话请求，普通终端不增加字段', async () => {
+    render(<TerminalTab base={WS} seq={1} envFile="proxy.env" initCommand="echo hello" onSession={vi.fn()} />)
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    expect(createPtySession).toHaveBeenCalledWith(
+      {
+        base_kind: 'workspace', base_path: '/home/dev/handoff', cols: 100, rows: 30,
+        env_file: 'proxy.env', init_command: 'echo hello',
+      },
+      '',
+    )
+  })
+
   it('home 基准不把 "~" 发给后端——那不是一个服务端认识的路径', async () => {
     render(<TerminalTab base={HOME} seq={1} onSession={vi.fn()} />)
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())

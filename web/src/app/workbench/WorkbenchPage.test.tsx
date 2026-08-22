@@ -414,6 +414,22 @@ describe('WorkbenchPage', () => {
     expect(open).not.toHaveBeenCalled()
   })
 
+  it('空白 tab 选启动项后原地变成带 launcher 名字的终端', () => {
+    const setContent = vi.fn()
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'blank' })
+    const id = wb.groups[0].tabs[0].id
+    render(
+      <WorkbenchPage
+        api={api({ wb, setContent })}
+        launchers={[{ name: '跑测试', command: 'echo test', env_file: 'test.env', env_missing: false }]}
+        onAddProject={vi.fn()}
+        renderContent={() => <div>内容</div>}
+      />,
+    )
+    fireEvent.click(screen.getByRole('button', { name: '跑测试' }))
+    expect(setContent).toHaveBeenCalledWith(0, id, { kind: 'terminal', seq: 1, launcher: '跑测试' })
+  })
+
   it('空白 tab 点「打开任务」弹出选择器，选中后原地变成 TUI tab', () => {
     const setContent = vi.fn()
     const wb = openTab(EMPTY_WORKBENCH, { kind: 'blank' })

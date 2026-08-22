@@ -18,7 +18,7 @@
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
-import { ApiError, deleteProject, deletePtySession, fetchPtySessions } from '../../api/client'
+import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
 import { fetchCards, fetchDecisions } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import { useMachines } from '../data/useMachines'
@@ -101,6 +101,24 @@ export function Shell() {
     return new Set((summary.tasks ?? []).map((task) => task.task_id))
   }, [cardsState.data])
   const caps = useMachineCaps()
+  const launcherMachine = wb.base?.machine ?? ''
+  const launchersSupported = caps.launchers(launcherMachine) === true
+  const launchersState = usePoll(
+    () => fetchLaunchers(launcherMachine),
+    30_000,
+    { enabled: launchersSupported },
+  )
+  const { data: launchersData, refresh: refreshLaunchers } = launchersState
+  // usePoll 的 fetcher 用 ref 保持稳定；机器切换时 enabled 仍可能同为 true，
+  // 所以主动 refresh 一次，避免沿用上一台机器的列表。能力从未知变成 true 时，
+  // usePoll 自己会因 enabled 变化首拉，不需要再制造第二次请求。
+  const launcherMachineRef = useRef(launcherMachine)
+  useEffect(() => {
+    if (launcherMachineRef.current !== launcherMachine && launchersSupported) {
+      refreshLaunchers()
+    }
+    launcherMachineRef.current = launcherMachine
+  }, [launcherMachine, launchersSupported, refreshLaunchers])
   // scratchRoot 是本机草稿区路径；空串 = 这台 agentd 不支持临时文件，
   // 浮窗里的入口不渲染。
   const scratchRoot = caps.scratchRoot('')
@@ -483,6 +501,7 @@ export function Shell() {
                   tasks={tasks}
                   onFileCreated={() => setFileTreeNonce((n) => n + 1)}
                   terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
+                  launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
                   onBeforeClose={beforeCloseTab}
                   renderContent={(c, base, group, tabId) => {
                     switch (c.kind) {
@@ -491,12 +510,17 @@ export function Shell() {
                         if (note !== '') {
                           return <p className="p-4 text-sm text-muted-foreground">{note}</p>
                         }
+                        const launcher = c.launcher
+                          ? launchersData?.launchers.find((item) => item.name === c.launcher)
+                          : undefined
                         return (
                           <TerminalTab
                             base={base}
                             seq={c.seq}
                             sessionId={c.sessionId}
                             rel={c.rel}
+                            envFile={launcher?.env_file}
+                            initCommand={launcher?.command}
                             incompatible={c.incompatible}
                             // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                             // 就会再建一个会话，用户每切一次多留一个 shell

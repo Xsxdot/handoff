@@ -42,6 +42,9 @@ export interface TerminalTabProps {
   incompatible?: boolean
   // rel 是终端要起的工作树子目录；空串/缺席 = 工作树根。
   rel?: string
+  // envFile / initCommand 是启动项换算后的具体请求字段；组件不认识启动项名字。
+  envFile?: string
+  initCommand?: string
   // onSession 把新建会话的 id 交回上层写进 TabContent。必须回报：
   // 不回报的话切一次 tab 就会再建一个会话，用户每切一次多留一个 shell。
   onSession: (id: string) => void
@@ -65,7 +68,19 @@ function ptyBase(base: BaseDir, rel?: string): { base_kind: string; base_path: s
   return out
 }
 
-export function TerminalTab({ base, seq, sessionId, rel, incompatible = false, onSession }: TerminalTabProps) {
+// launcherFields 把启动项参数翻译成建会话请求的两个字段。
+// 不带时返回空对象，保证普通终端请求与历史形态逐字节一致；对象展开不会替
+// 多余属性检查，所以这里必须显式守住这个边界。
+function launcherFields(envFile?: string, initCommand?: string): { env_file?: string; init_command?: string } {
+  const out: { env_file?: string; init_command?: string } = {}
+  if (envFile) out.env_file = envFile
+  if (initCommand) out.init_command = initCommand
+  return out
+}
+
+export function TerminalTab({
+  base, seq, sessionId, rel, envFile, initCommand, incompatible = false, onSession,
+}: TerminalTabProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const [error, setError] = useState<string | null>(null)
   // exit 为 undefined 表示还活着；已退出时它是退出码（对端没给退出码时是 null）
@@ -199,7 +214,7 @@ export function TerminalTab({ base, seq, sessionId, rel, incompatible = false, o
       }
       if (!id) {
         const created = await createPtySession(
-          { ...ptyBase(base, rel), cols: term.cols, rows: term.rows },
+          { ...ptyBase(base, rel), ...launcherFields(envFile, initCommand), cols: term.cols, rows: term.rows },
           base.machine,
         )
         if (disposed) {

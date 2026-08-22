@@ -11,10 +11,10 @@
 // 于是「在这一栏右边分」是确定的，比原来的「往末尾追加」更贴合手指指的地方；
 // ②面包屑那行在桌面薄壳里被画进窗口顶部的原生拖动区，那里的点击会被 AppKit
 // 吞掉，放按钮等于放一个点不动的按钮（见 lib/desktopShell.ts）
-import { Columns2, Plus, X } from 'lucide-react'
+import { Columns2, Plus, TerminalSquare, X } from 'lucide-react'
 import { MAX_GROUPS, tabTitle, type Tab } from './tabs'
-import { pickItemsFor, type PickKind } from './BlankTab'
-import { IconMenu } from '../lib/IconMenu'
+import { launchersFor, pickItemsFor, type LauncherItem, type PickKind } from './BlankTab'
+import { IconMenu, type IconMenuItem } from '../lib/IconMenu'
 import type { BaseDir } from './useWorkbench'
 import { cn } from '@/lib/utils'
 
@@ -27,6 +27,9 @@ export interface TabBarProps {
   onClose: (group: number, tabId: string) => void
   // onNew 收到的是用户在 + 菜单里选的种类，由调用方决定怎么把它变成 tab。
   onNew: (group: number, kind: PickKind) => void
+  // 启动项不属于 PickKind 闭集，单独走名字回调。
+  onNewLauncher?: (group: number, name: string) => void
+  launchers?: LauncherItem[]
   // terminalUnavailable 非空 = 这台机器开不了终端，菜单里摘掉终端项（不置灰）
   terminalUnavailable?: string
   // onSplit 在这一栏右边再开一栏。canSplit=false 时按钮置灰。
@@ -45,11 +48,29 @@ export function TabBar({
   onActivate,
   onClose,
   onNew,
+  onNewLauncher,
+  launchers,
   terminalUnavailable,
   onSplit,
   canSplit,
 }: TabBarProps) {
   const baseLabel = base.label
+  const menuItems: IconMenuItem[] = [
+    ...pickItemsFor(base, terminalUnavailable).map((item) => ({
+      key: item.kind,
+      label: item.label,
+      hotkey: item.hotkey,
+      icon: <item.icon className="size-3.5 text-muted-foreground" />,
+      // 包一层箭头：不包的话 onSelect 会把参数直接漏进 onNew
+      onSelect: () => onNew(group, item.kind),
+    })),
+    ...launchersFor(launchers, terminalUnavailable).map((item) => ({
+      key: `launcher:${item.name}`,
+      label: item.name,
+      icon: <TerminalSquare className="size-3.5 text-muted-foreground" />,
+      onSelect: () => { onNewLauncher?.(group, item.name) },
+    })),
+  ]
   return (
     <div role="tablist" className="flex min-h-9 items-stretch border-b bg-background">
       {tabs.map((t) => {
@@ -81,14 +102,7 @@ export function TabBar({
         label="新建标签页"
         icon={<Plus className="size-4" />}
         className="flex items-center px-2 text-muted-foreground hover:text-foreground"
-        items={pickItemsFor(base, terminalUnavailable).map((item) => ({
-          key: item.kind,
-          label: item.label,
-          hotkey: item.hotkey,
-          icon: <item.icon className="size-3.5 text-muted-foreground" />,
-          // 包一层箭头：不包的话 onSelect 会把参数直接漏进 onNew
-          onSelect: () => onNew(group, item.kind),
-        }))}
+        items={menuItems}
       />
       <button
         type="button"

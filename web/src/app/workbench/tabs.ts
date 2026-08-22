@@ -28,7 +28,15 @@ export type TabContent =
   // 界面就该有反应，不能等一次网络往返。会话建成后由 TerminalTab 回填。
   // rel 是终端要起的工作树子目录（空串/缺席 = 工作树根），右键「在终端中
   // 打开」时带上，其余入口不带。
-  | { kind: 'terminal'; seq: number; sessionId?: string; rel?: string; incompatible?: boolean }
+  | {
+      kind: 'terminal'
+      seq: number
+      sessionId?: string
+      rel?: string
+      incompatible?: boolean
+      // launcher 是开这个终端用的启动项名字；缺席表示普通终端。
+      launcher?: string
+    }
   // file 的 draft / baseSha 是**草稿寄存**，不是文件内容本身。
   //
   // 为什么必须放在这里：WorkbenchPage 只渲染 activeTab，切到别的 tab 会把 FileTab
@@ -371,6 +379,7 @@ export function nextTerminalSeq(wb: Workbench): number {
 export function tabTitle(c: TabContent, baseLabel: string): string {
   switch (c.kind) {
     case 'terminal':
+      if (c.launcher) return c.launcher
       return c.seq <= 1 ? `bash · ${baseLabel}` : `bash · ${baseLabel} (${c.seq})`
     case 'file':
       return c.rel.split('/').pop() || c.rel
