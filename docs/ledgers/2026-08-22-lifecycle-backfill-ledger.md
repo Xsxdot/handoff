@@ -16,7 +16,7 @@
 | d_coordination_cli | 13 | 0 | 0 | 13：CLI 请求/响应、错误和升级命令内部结构，无独立生命周期状态，跳过 |
 | d_coordination_graph | 0 | 0 | 0 | 无直接 model 容器 |
 | d_coordination_task | 194 | 10 | 27 | 184：wire/配置/展示投影/枚举/无状态服务结构跳过 |
-| d_execution | 0 | 待扫 | 待扫 | 父领域，无直接容器 |
+| d_execution | 0 | 0 | 0 | 父领域，无直接 model |
 | d_execution_adapters | 0 | 待扫 | 待扫 | 无直接 model 容器 |
 | d_execution_host | 14 | 3 | 3 | 11：进程凭据/判定快照/roster 结构无可证生命周期，跳过 |
 | d_executor | 97 | 10 | 14 | 87：结果/事件/协议投影及纯业务辅助结构无稳定生命周期，跳过 |
@@ -49,3 +49,4 @@
 - Task d_coordination 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；父领域无直接 model，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_coordination_api 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；入口容器无直接 model，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
 - Task d_coordination_graph 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；无直接 model 容器，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
+- Task d_execution 完成：0 个 model，0 个 model 有可证生命周期，新增 0 条；父领域无直接 model，跳过。spec 符合性与代码质量双裁决通过。`go run . graph validate --repo .` 已验证 `issues: null`；提交范围：`HEAD^..HEAD`。
