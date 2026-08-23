@@ -23,6 +23,7 @@ var (
 	cardDispatchStep       string
 	cardDispatchExecutor   string
 	cardDispatchModel      string
+	cardDispatchExtra      string
 )
 
 type dispatchRequest struct {
@@ -192,6 +193,7 @@ var cardDispatchCmd = &cobra.Command{
 			DisciplineOverride: cardDispatchDiscipline,
 			ExecutorOverride:   cardDispatchExecutor,
 			ModelOverride:      cardDispatchModel,
+			Extra:              cardDispatchExtra,
 		})
 		if err != nil {
 			// 回滚要连租约一起退：只退状态会把卡留在「待办但有主」，
@@ -208,6 +210,7 @@ func init() {
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTemplate, "template", "feature-impl", "派发模板名")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTarget, "target", "", "目标机（覆盖模板）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchPlan, "plan", "", "plan 文件路径（挂派发事件）")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchExtra, "extra", "", "本次派发的一次性补充说明（进 prompt 的「本次补充」小节；不落卡，不影响后续轮次）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchDiscipline, "discipline-override", "", "覆盖模板指定的纪律块角色名（如 review；测试/应急）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchStep, "step", "", "节点名（= 看板列名），从卡钉住的工作流里查；不给则不跑节点")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchExecutor, "executor", "", "一次性覆盖模板/节点的执行器")
