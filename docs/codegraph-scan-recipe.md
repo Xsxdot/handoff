@@ -27,6 +27,18 @@ codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 和组件，容器用模块路径分组。静态可达性只用于补充调用边，不能用来决定节点是否
 存在。
 
+**文件级完整性自检（必做，B220 后新增）**：交付前必须逐目录比对「盘上有多少源码
+文件」与「图里有多少文件出现在某个节点的 `file` 上」，**两个数字必须相等**，不等就
+逐个列出差集并说明每个文件为何零节点（合法情形只有：纯常量/类型别名文件、
+generated 文件、被 target 排除的目录）。
+
+这条不是形式主义：**工具查不出漏建**。`stale` 是图→盘（拿图里的 file:line 去核实），
+`check` 的 `outside-file` 只看已经在图里的文件，**没有任何判据是盘→图方向的**，所以
+扫描没访问过的文件对 validate / check / stale 三者完全不可见，会静默至今。
+2026-08-23 实测：`cmd/` 下 50 个源码文件里 9 个在图中零节点（其中 7 个在上次全量
+扫描时就已存在），`handoff card` 族 24 个命令一个 entry 节点都没有——而 validate 全绿。
+后果是下游的目标图 gap 数字少报约 18%。
+
 ## Schema（必须严格遵守）
 
 字段名、JSON 类型和可选性必须与 codegraph canonical 家 charter 仓 `graph/codegraph/types.go`（github.com/Xsxdot/charter/graph，本仓 go.mod 钉版）一致。不得增加
@@ -44,6 +56,7 @@ codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 | nodes | Record<string, Node> | 节点，key 是节点 ID |
 | edges | [string, string][] | 调用关系 [caller, callee] |
 | implements | [string, string][] | 接口满足关系 [实现节点 id, 接口节点 id] |
+| projections | Projection[] | 数据实体投影关系；可选，缺省为空 |
 | lifecycle | LifecycleRef[] | 生命周期关系 [creator/writer 节点对 model 的创建或状态写入] |
 
 meta 字段：
@@ -92,7 +105,9 @@ nodes 的 value 字段：
 | summary | string | 是 | 职责摘要 |
 | tests | TestRef[] | 是 | 直接关联测试 |
 | fields | string[][] | 是 | model 专用字段 [名, 类型, 说明] |
+| modelKind | "entity" \| "dto" \| "config" | 是 | **仅 kind=="model" 有意义**，判据见下节；空＝未分种 |
 | unscanned | boolean | 是 | 入口尚未追链时为 true，默认 false |
+| projScanned | boolean | 是 | 该节点的投影关系已盘点过时为 true，默认 false |
 
 tests 中每个 TestRef 字段：
 
@@ -111,6 +126,17 @@ lifecycle 中每个 LifecycleRef 字段：
 | kind | "creator" \| "writer" | 否 | 生命周期关系类型 |
 | field | string | 是 | writer 真正写入的状态类字段名；creator 不填 |
 
+Projection 是一个三元组 `[投影点节点 id, model 节点 id, kind]`：
+
+| kind | 含义 |
+| --- | --- |
+| typed | 类型可见的投影（签名/字段里能看到该 model 类型） |
+| handroll | 手搭 map/字面量拼装，类型系统不可见 |
+| twin | 跨语言孪生的 model↔model 关系（如 Go struct ↔ TS interface） |
+
+**跨语言关联一律走 projections 的 twin，不走 edges**（硬纪律里那条「跨语言禁止调用边」
+的正面出口就是它）。
+
 ### codegraph/diffs/<视图名>.json
 
 顶层对象字段：
@@ -120,6 +146,7 @@ lifecycle 中每个 LifecycleRef 字段：
 | view | string | 否 | 分支/计划视图标签，如 branch:x |
 | base | string | 是 | 相对的基线提交 |
 | summary | string | 是 | 变化摘要 |
+| containersAdded | Record<string, Container> | 是 | **本分支新建的容器**（新包/新类型）。没有它，分支上新建的入口容器进不了视图——`ValidateDiff` 会拒收引用未知容器的新节点。容器必须带 `domain` 且该领域**必须已存在于基线**（diff 不能新增领域，见下） |
 | nodesAdded | Record<string, Node> | 是 | 新增节点的完整定义 |
 | nodesModified | Record<string, Node> | 是 | 修改节点的完整新定义，可带 signatureOld |
 | nodesDeleted | string[] | 是 | 被删除的基线节点 ID |
@@ -127,12 +154,37 @@ lifecycle 中每个 LifecycleRef 字段：
 | edgesDeleted | [string, string][] | 是 | 删除调用关系 |
 | implementsAdded | [string, string][] | 是 | 新增接口满足关系 [实现节点 id, 接口节点 id] |
 | implementsDeleted | [string, string][] | 是 | 删除接口满足关系 [实现节点 id, 接口节点 id] |
+| projectionsAdded | Projection[] | 是 | 新增投影关系 |
+| projectionsDeleted | Projection[] | 是 | 删除投影关系 |
 | lifecycleAdded | LifecycleRef[] | 是 | 新增生命周期关系 |
 | lifecycleDeleted | LifecycleRef[] | 是 | 删除生命周期关系 |
 
 未发生变化的字段可以省略（消费方按空 map/空数组处理）。nodesModified 中必须
 提供修改后的完整 Node，不要只写修改字段；删除的节点只写 ID，删除节点的旧定义
 由基线提供。
+
+## model 分种（modelKind）
+
+`kind: "model"` 今天把两样东西混在一起：真实体（有创建点、有状态被写）与传输/配置
+结构。2026-08-23 实测本仓 707 个 model 里只有 53 个有生命周期——其余 654 个是 wire
+类型、DTO、配置结构，它们把实体表、`codegraph entity` 查询与查看器的实体徽标全淹了。
+
+**判据按优先级从上往下，命中即止**：
+
+| 序 | 判据 | 结论 |
+| --- | --- | --- |
+| 1 | 该 model 在 `lifecycle` 段有 creator 或 writer | **entity** |
+| 2 | proto/wire 生成物，或位于跨进程传输结构目录（如 `internal/proto/**`、`web/src/api/**`） | **dto** |
+| 3 | 构造后只读、从配置文件或 env 装载 | **config** |
+| 4 | 以上都不是 | **dto**（兜底） |
+
+兜底选 dto 而不是留空，因为先验强烈：默认就是 DTO。**留空只用于「这一轮没判」**，
+不是「判不出」——空值语义是「未分种」，消费方不会把它当实体，但也不会当 DTO。
+
+三条会被 `handoff graph validate` 判成硬 issue（自相矛盾类）：取值不在枚举内；
+`modelKind` 挂在非 model 节点上；标了 `dto` 却在 `lifecycle` 段有 writer 条目。
+**标了 `entity` 却没有 lifecycle 条目不报错**，只在 validate 的
+`entitiesWithoutLifecycle` 里计数——那是补标进度表。
 
 ## 怎么切领域
 
@@ -164,9 +216,26 @@ lifecycle 中每个 LifecycleRef 字段：
 - **desc 写内部逻辑**：这个领域内部怎么组织、有哪些关键类型、对外靠什么方式协作。
 - **领域之间的连线不用手写**：消费方按跨领域的调用边自动聚合，只要 container.domain
   归属正确，连线与「对外开放接口」清单就是对的。
+- **wire 类型不进业务领域**。proto/协议生成物是「跨进程契约」这一件事，不是任务、
+  不是工作区、不是任何一块业务。把 111 个 proto model 挂进任务生命周期域，那个域的
+  实体数会从 83 变成 194，而多出来的一百多个跟任务生命周期毫无关系——2026-08-23
+  实测本仓就是这个状态。协议契约**自成一个领域**（`d_protocol`），它服务的是
+  「谁和谁之间说什么话」，与业务领域平级。
 - 接口类型建 model 节点；扫到 `var _ Iface = (*Impl)(nil)`、方法集满足或显式注入处，
   为每个实现产一条 implements 边；接口节点归**使用方**的容器/域，实现节点归提供方
   （消费者侧接口惯例，spec §3）。
+
+### 扫描产出的是现状，不是应然
+
+**`codegraph/target.json` 不是扫描产出物，一个字都不要动它。** 它记的是「架构应该
+长成什么样」，由人拍板；baseline 记的是「今天实际长成什么样」，由扫描产出。两者
+之间的差就是迁移待办——扫描者去「顺手补全」目标图，等于把现状抄成应然，那个差
+当场归零，整套机制失去意义。
+
+同理，`codegraph/domains/*.json`（领域声明：职责、不变式、状态机锚）也**不是**扫描
+产出物——那是人写的语义承诺，生成出来的只会是一堆正确但空洞的话。
+
+扫描者能写的只有：`codegraph/baseline.json` 与 `codegraph/diffs/<视图>.json`。
 
 ## 生命周期产出纪律
 
@@ -201,6 +270,8 @@ lifecycle 中每个 LifecycleRef 字段：
 - 容器按 struct 一级：Go 方法按 receiver 归 pkg.Receiver 容器，自由函数归
   pkg（包级函数），model 归 pkg 实体；入口分 CLI/HTTP/WS 三容器。
 - 所有入口必须全量盘点；没追链的标 unscanned: true——宁缺毋滥。
+- **每个源码文件至少要有一个节点，或在交付说明里解释为何零节点**。工具查不出漏建
+  （没有盘→图方向的判据），只有这条自检拦得住，见「扫描范围与完整性」。
 - file/line/signature 必须与真实代码一致（line 指函数或类型定义行）。
 - tests 找同包 *_test.go 里直接测到该函数的；找不到就 []，不编造。
 - 链路追到导出方法级；承重的未导出函数（如 RunE 主函数）也入图；纯工具小函数不入。
