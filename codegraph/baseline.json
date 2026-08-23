@@ -2279,6 +2279,7 @@
   },
   "m_agentd_Approver": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 60,
    "name": "Approver",
@@ -2288,6 +2289,7 @@
   },
   "m_agentd_ApproverDecision": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 52,
    "name": "ApproverDecision",
@@ -2319,6 +2321,7 @@
   },
   "m_agentd_Baseline": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 830,
    "name": "Baseline",
@@ -2345,6 +2348,7 @@
   },
   "m_agentd_DataDirLock": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 44,
    "name": "DataDirLock",
@@ -2354,6 +2358,7 @@
   },
   "m_agentd_DirtyWorktreeError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 224,
    "name": "DirtyWorktreeError",
@@ -2370,6 +2375,7 @@
   },
   "m_agentd_DispatchReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 369,
    "name": "DispatchReq",
@@ -2456,6 +2462,7 @@
   },
   "m_agentd_Hub": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 32,
    "name": "Hub",
@@ -2465,6 +2472,7 @@
   },
   "m_agentd_Manager": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 108,
    "name": "Manager",
@@ -2474,6 +2482,7 @@
   },
   "m_agentd_Mirror": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 60,
    "name": "Mirror",
@@ -2483,6 +2492,7 @@
   },
   "m_agentd_RecoverReport": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 2487,
    "name": "RecoverReport",
@@ -2539,6 +2549,7 @@
   },
   "m_agentd_RegisterProjectReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 79,
    "name": "RegisterProjectReq",
@@ -2565,6 +2576,7 @@
   },
   "m_agentd_Server": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 82,
    "name": "Server",
@@ -2574,6 +2586,7 @@
   },
   "m_agentd_Shutdown": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 45,
    "name": "Shutdown",
@@ -2583,6 +2596,7 @@
   },
   "m_agentd_UpdateDeps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 33,
    "name": "UpdateDeps",
@@ -2592,6 +2606,7 @@
   },
   "m_agentd_Workspace": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_agentd_model",
    "order": 265,
    "name": "Workspace",
@@ -2638,6 +2653,7 @@
   },
   "m_agentd_WorkspaceReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 253,
    "name": "WorkspaceReq",
@@ -2689,6 +2705,7 @@
   },
   "m_agentd_approvalDroppedPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 555,
    "name": "approvalDroppedPayload",
@@ -2715,6 +2732,7 @@
   },
   "m_agentd_approverDecisionPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 546,
    "name": "approverDecisionPayload",
@@ -2751,6 +2769,7 @@
   },
   "m_agentd_approverDisabledPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 563,
    "name": "approverDisabledPayload",
@@ -2767,6 +2786,7 @@
   },
   "m_agentd_branchAction": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1031,
    "name": "branchAction",
@@ -2776,6 +2796,7 @@
   },
   "m_agentd_completedPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 499,
    "name": "completedPayload",
@@ -2802,6 +2823,7 @@
   },
   "m_agentd_continueRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1287,
    "name": "continueRequest",
@@ -2818,6 +2840,7 @@
   },
   "m_agentd_deliveryFailedPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 487,
    "name": "deliveryFailedPayload",
@@ -2844,6 +2867,7 @@
   },
   "m_agentd_denyGuidancePayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 579,
    "name": "denyGuidancePayload",
@@ -2865,6 +2889,7 @@
   },
   "m_agentd_denyReasonInBander": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 3194,
    "name": "denyReasonInBander",
@@ -2874,6 +2899,7 @@
   },
   "m_agentd_dispatchRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1050,
    "name": "dispatchRequest",
@@ -2960,6 +2986,7 @@
   },
   "m_agentd_doneRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1326,
    "name": "doneRequest",
@@ -2976,6 +3003,7 @@
   },
   "m_agentd_doneResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1335,
    "name": "doneResult",
@@ -2997,6 +3025,7 @@
   },
   "m_agentd_failedPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 506,
    "name": "failedPayload",
@@ -3028,6 +3057,7 @@
   },
   "m_agentd_footprinter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 239,
    "name": "footprinter",
@@ -3037,6 +3067,7 @@
   },
   "m_agentd_hostAllowlist": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 95,
    "name": "hostAllowlist",
@@ -3046,6 +3077,7 @@
   },
   "m_agentd_identity": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 46,
    "name": "identity",
@@ -3055,6 +3087,7 @@
   },
   "m_agentd_identityKey": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 52,
    "name": "identityKey",
@@ -3064,6 +3097,7 @@
   },
   "m_agentd_machineUpgradeRunner": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 37,
    "name": "machineUpgradeRunner",
@@ -3073,6 +3107,7 @@
   },
   "m_agentd_permissionPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 472,
    "name": "permissionPayload",
@@ -3099,6 +3134,7 @@
   },
   "m_agentd_permissionReusePayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 568,
    "name": "permissionReusePayload",
@@ -3130,6 +3166,7 @@
   },
   "m_agentd_prober": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 43,
    "name": "prober",
@@ -3139,6 +3176,7 @@
   },
   "m_agentd_progressPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 494,
    "name": "progressPayload",
@@ -3155,6 +3193,7 @@
   },
   "m_agentd_projectAddRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1174,
    "name": "projectAddRequest",
@@ -3181,6 +3220,7 @@
   },
   "m_agentd_projectIndex": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 24,
    "name": "projectIndex",
@@ -3190,6 +3230,7 @@
   },
   "m_agentd_projectPatchRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 731,
    "name": "projectPatchRequest",
@@ -3211,6 +3252,7 @@
   },
   "m_agentd_pullTracker": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_agentd_model",
    "order": 28,
    "name": "pullTracker",
@@ -3220,6 +3262,7 @@
   },
   "m_agentd_questionPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 479,
    "name": "questionPayload",
@@ -3246,6 +3289,7 @@
   },
   "m_agentd_reaper": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 3176,
    "name": "reaper",
@@ -3255,6 +3299,7 @@
   },
   "m_agentd_reconciler": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 2570,
    "name": "reconciler",
@@ -3264,6 +3309,7 @@
   },
   "m_agentd_replyRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 881,
    "name": "replyRequest",
@@ -3285,6 +3331,7 @@
   },
   "m_agentd_replyResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 891,
    "name": "replyResult",
@@ -3311,6 +3358,7 @@
   },
   "m_agentd_resourcePressurePayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 61,
    "name": "resourcePressurePayload",
@@ -3332,6 +3380,7 @@
   },
   "m_agentd_restorer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 3167,
    "name": "restorer",
@@ -3341,6 +3390,7 @@
   },
   "m_agentd_result": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 196,
    "name": "result",
@@ -3362,6 +3412,7 @@
   },
   "m_agentd_runOutputBuffer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1707,
    "name": "runOutputBuffer",
@@ -3371,6 +3422,7 @@
   },
   "m_agentd_runRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1710,
    "name": "runRequest",
@@ -3387,6 +3439,7 @@
   },
   "m_agentd_runResponse": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 1715,
    "name": "runResponse",
@@ -3408,6 +3461,7 @@
   },
   "m_agentd_stalledPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 54,
    "name": "stalledPayload",
@@ -3429,6 +3483,7 @@
   },
   "m_agentd_stateMismatchTransit": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 51,
    "name": "stateMismatchTransit",
@@ -3438,6 +3493,7 @@
   },
   "m_agentd_taskDetail": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 873,
    "name": "taskDetail",
@@ -3464,6 +3520,7 @@
   },
   "m_agentd_taskProcPressurePayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 70,
    "name": "taskProcPressurePayload",
@@ -3485,6 +3542,7 @@
   },
   "m_agentd_ticketAnsweredPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 506,
    "name": "ticketAnsweredPayload",
@@ -3494,6 +3552,7 @@
   },
   "m_agentd_ticketRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 465,
    "name": "ticketRequest",
@@ -3520,6 +3579,7 @@
   },
   "m_agentd_ticketsVoidedPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 25,
    "name": "ticketsVoidedPayload",
@@ -3541,6 +3601,7 @@
   },
   "m_agentd_volatilePermitter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 3185,
    "name": "volatilePermitter",
@@ -3550,6 +3611,7 @@
   },
   "m_agentd_worktreeEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_agentd_model",
    "order": 29,
    "name": "worktreeEntry",
@@ -3576,6 +3638,7 @@
   },
   "m_claudecode_Adapter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 67,
    "name": "Adapter",
@@ -3602,6 +3665,7 @@
   },
   "m_claudecode_Proc": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_claudecode_model",
    "order": 93,
    "name": "Proc",
@@ -3628,6 +3692,7 @@
   },
   "m_claudecode_StartProcReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 74,
    "name": "StartProcReq",
@@ -3689,6 +3754,7 @@
   },
   "m_claudecode_mcpConfig": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 137,
    "name": "mcpConfig",
@@ -3705,6 +3771,7 @@
   },
   "m_claudecode_mcpServer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 142,
    "name": "mcpServer",
@@ -3726,6 +3793,7 @@
   },
   "m_claudecode_modelUsage": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 53,
    "name": "modelUsage",
@@ -3747,6 +3815,7 @@
   },
   "m_claudecode_permAsk": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 37,
    "name": "permAsk",
@@ -3773,6 +3842,7 @@
   },
   "m_claudecode_permDecision": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 44,
    "name": "permDecision",
@@ -3799,6 +3869,7 @@
   },
   "m_claudecode_permServer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 51,
    "name": "permServer",
@@ -3845,6 +3916,7 @@
   },
   "m_claudecode_permissionsSection": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 130,
    "name": "permissionsSection",
@@ -3871,6 +3943,7 @@
   },
   "m_claudecode_procInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 342,
    "name": "procInfo",
@@ -3897,6 +3970,7 @@
   },
   "m_claudecode_runState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_claudecode_model",
    "order": 89,
    "name": "runState",
@@ -4053,6 +4127,7 @@
   },
   "m_claudecode_settingsFile": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 121,
    "name": "settingsFile",
@@ -4069,6 +4144,7 @@
   },
   "m_claudecode_streamMsg": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 44,
    "name": "streamMsg",
@@ -4145,6 +4221,7 @@
   },
   "m_claudecode_tailer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_claudecode_model",
    "order": 61,
    "name": "tailer",
@@ -4176,6 +4253,7 @@
   },
   "m_client_AttachInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 167,
    "name": "AttachInfo",
@@ -4202,6 +4280,7 @@
   },
   "m_client_BacklogSummary": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 35,
    "name": "BacklogSummary",
@@ -4258,6 +4337,7 @@
   },
   "m_client_Client": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 178,
    "name": "Client",
@@ -4267,6 +4347,7 @@
   },
   "m_client_DispatchOpts": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 700,
    "name": "DispatchOpts",
@@ -4353,6 +4434,7 @@
   },
   "m_client_ProjectAddOpts": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 760,
    "name": "ProjectAddOpts",
@@ -4379,6 +4461,7 @@
   },
   "m_client_ReclaimRejected": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 543,
    "name": "ReclaimRejected",
@@ -4405,6 +4488,7 @@
   },
   "m_client_UpdateRejected": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 32,
    "name": "UpdateRejected",
@@ -4426,6 +4510,7 @@
   },
   "m_client_httpStatusError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 90,
    "name": "httpStatusError",
@@ -4435,6 +4520,7 @@
   },
   "m_client_permanentError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_client_model",
    "order": 59,
    "name": "permanentError",
@@ -4444,6 +4530,7 @@
   },
   "m_cmdEndpoint": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 103,
    "name": "Endpoint",
@@ -4453,6 +4540,7 @@
   },
   "m_cmdagentdPeer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 68,
    "name": "agentdPeer",
@@ -4462,6 +4550,7 @@
   },
   "m_cmdcliRemoteFetcher": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 591,
    "name": "cliRemoteFetcher",
@@ -4471,6 +4560,7 @@
   },
   "m_cmddispatchRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 26,
    "name": "dispatchRequest",
@@ -4480,6 +4570,7 @@
   },
   "m_cmdexitCodeError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 28,
    "name": "exitCodeError",
@@ -4489,6 +4580,7 @@
   },
   "m_cmdhuhPrompter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 26,
    "name": "huhPrompter",
@@ -4498,6 +4590,7 @@
   },
   "m_cmdmachineState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 149,
    "name": "machineState",
@@ -4507,6 +4600,7 @@
   },
   "m_cmdoutcome": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 231,
    "name": "outcome",
@@ -4516,6 +4610,7 @@
   },
   "m_cmdreleaseChecker": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 47,
    "name": "releaseChecker",
@@ -4525,6 +4620,7 @@
   },
   "m_cmdreleaseFetcher": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 56,
    "name": "releaseFetcher",
@@ -4534,6 +4630,7 @@
   },
   "m_cmdrpcRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 43,
    "name": "rpcRequest",
@@ -4543,6 +4640,7 @@
   },
   "m_cmdrpcResponse": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 50,
    "name": "rpcResponse",
@@ -4552,6 +4650,7 @@
   },
   "m_cmdstatusJSON": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "c_cli",
    "order": 37,
    "name": "statusJSON",
@@ -4561,6 +4660,7 @@
   },
   "m_codex_Adapter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 149,
    "name": "Adapter",
@@ -4587,6 +4687,7 @@
   },
   "m_codex_Client": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 53,
    "name": "Client",
@@ -4653,6 +4754,7 @@
   },
   "m_codex_Handler": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 39,
    "name": "Handler",
@@ -4679,6 +4781,7 @@
   },
   "m_codex_Proc": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_codex_model",
    "order": 52,
    "name": "Proc",
@@ -4705,6 +4808,7 @@
   },
   "m_codex_Result": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 32,
    "name": "Result",
@@ -4726,6 +4830,7 @@
   },
   "m_codex_changeKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 34,
    "name": "changeKind",
@@ -4742,6 +4847,7 @@
   },
   "m_codex_commandAction": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 48,
    "name": "commandAction",
@@ -4768,6 +4874,7 @@
   },
   "m_codex_commandApproval": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 51,
    "name": "commandApproval",
@@ -4809,6 +4916,7 @@
   },
   "m_codex_deltaKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 73,
    "name": "deltaKind",
@@ -4818,6 +4926,7 @@
   },
   "m_codex_fileUpdateChange": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 39,
    "name": "fileUpdateChange",
@@ -4839,6 +4948,7 @@
   },
   "m_codex_handler": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 875,
    "name": "handler",
@@ -4860,6 +4970,7 @@
   },
   "m_codex_itemIndex": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 95,
    "name": "itemIndex",
@@ -4891,6 +5002,7 @@
   },
   "m_codex_modelPrice": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 23,
    "name": "modelPrice",
@@ -4917,6 +5029,7 @@
   },
   "m_codex_pendingPerm": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 153,
    "name": "pendingPerm",
@@ -4938,6 +5051,7 @@
   },
   "m_codex_permTable": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 159,
    "name": "permTable",
@@ -4969,6 +5083,7 @@
   },
   "m_codex_procInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 261,
    "name": "procInfo",
@@ -4990,6 +5105,7 @@
   },
   "m_codex_runState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_codex_model",
    "order": 167,
    "name": "runState",
@@ -5121,6 +5237,7 @@
   },
   "m_codex_spendBase": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 22,
    "name": "spendBase",
@@ -5157,6 +5274,7 @@
   },
   "m_codex_threadItem": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 58,
    "name": "threadItem",
@@ -5218,6 +5336,7 @@
   },
   "m_codex_userInputOption": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 29,
    "name": "userInputOption",
@@ -5239,6 +5358,7 @@
   },
   "m_codex_userInputQuestion": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_codex_model",
    "order": 35,
    "name": "userInputQuestion",
@@ -5280,6 +5400,7 @@
   },
   "m_config_ApproverConfig": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 158,
    "name": "ApproverConfig",
@@ -5311,6 +5432,7 @@
   },
   "m_config_Config": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 43,
    "name": "Config",
@@ -5412,6 +5534,7 @@
   },
   "m_config_ExecutorConfig": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 166,
    "name": "ExecutorConfig",
@@ -5433,6 +5556,7 @@
   },
   "m_config_LedgerConfig": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 143,
    "name": "LedgerConfig",
@@ -5442,6 +5566,7 @@
   },
   "m_config_ListenClass": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 19,
    "name": "ListenClass",
@@ -5451,6 +5576,7 @@
   },
   "m_config_ProcFenceConfig": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 280,
    "name": "ProcFenceConfig",
@@ -5482,6 +5608,7 @@
   },
   "m_config_RelayConfig": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 139,
    "name": "RelayConfig",
@@ -5508,6 +5635,7 @@
   },
   "m_config_SyncConfig": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 147,
    "name": "SyncConfig",
@@ -5524,6 +5652,7 @@
   },
   "m_config_Target": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 199,
    "name": "Target",
@@ -5565,6 +5694,7 @@
   },
   "m_config_TerminalConfig": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 180,
    "name": "TerminalConfig",
@@ -5581,6 +5711,7 @@
   },
   "m_config_WebConfig": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_config_model",
    "order": 192,
    "name": "WebConfig",
@@ -5597,6 +5728,7 @@
   },
   "m_discipline_Block": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_discipline_model",
    "order": 59,
    "name": "Block",
@@ -5606,6 +5738,7 @@
   },
   "m_discipline_Builtin": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_discipline_model",
    "order": 118,
    "name": "Builtin",
@@ -5615,6 +5748,7 @@
   },
   "m_discipline_FileInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_discipline_model",
    "order": 39,
    "name": "FileInfo",
@@ -5624,6 +5758,7 @@
   },
   "m_discipline_Resolver": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_discipline_model",
    "order": 35,
    "name": "Resolver",
@@ -5633,6 +5768,7 @@
   },
   "m_engine_Engine": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_engine_model",
    "order": 52,
    "name": "Engine",
@@ -5642,6 +5778,7 @@
   },
   "m_engine_engineAttachOps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_engine_model",
    "order": 364,
    "name": "engineAttachOps",
@@ -5651,6 +5788,7 @@
   },
   "m_engine_ring": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_engine_model",
    "order": 9,
    "name": "ring",
@@ -5660,6 +5798,7 @@
   },
   "m_engine_session": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_engine_model",
    "order": 72,
    "name": "session",
@@ -5669,6 +5808,7 @@
   },
   "m_engine_subscriber": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_engine_model",
    "order": 66,
    "name": "subscriber",
@@ -5678,6 +5818,7 @@
   },
   "m_envfile_FileInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_envfile_model",
    "order": 43,
    "name": "FileInfo",
@@ -5687,6 +5828,7 @@
   },
   "m_envfile_KV": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_envfile_model",
    "order": 33,
    "name": "KV",
@@ -5696,6 +5838,7 @@
   },
   "m_envfile_Resolver": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_envfile_model",
    "order": 30,
    "name": "Resolver",
@@ -5705,6 +5848,7 @@
   },
   "m_executor_Adapter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 209,
    "name": "Adapter",
@@ -5741,6 +5885,7 @@
   },
   "m_executor_AdapterEvent": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 167,
    "name": "AdapterEvent",
@@ -5802,6 +5947,7 @@
   },
   "m_executor_PermRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 125,
    "name": "PermRequest",
@@ -5828,6 +5974,7 @@
   },
   "m_executor_ProbeOutcome": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 34,
    "name": "ProbeOutcome",
@@ -5849,6 +5996,7 @@
   },
   "m_executor_ProbeReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 19,
    "name": "ProbeReq",
@@ -5875,6 +6023,7 @@
   },
   "m_executor_ReconcileOutcome": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 23,
    "name": "ReconcileOutcome",
@@ -5906,6 +6055,7 @@
   },
   "m_executor_Result": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 78,
    "name": "Result",
@@ -5952,6 +6102,7 @@
   },
   "m_executor_ResumeOutcome": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 60,
    "name": "ResumeOutcome",
@@ -5983,6 +6134,7 @@
   },
   "m_executor_ResumeReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 31,
    "name": "ResumeReq",
@@ -6039,6 +6191,7 @@
   },
   "m_executor_StartReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_executor_model",
    "order": 66,
    "name": "StartReq",
@@ -6075,6 +6228,7 @@
   },
   "m_fake_Fake": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_fake_model",
    "order": 71,
    "name": "Fake",
@@ -6131,6 +6285,7 @@
   },
   "m_fake_PermCall": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_fake_model",
    "order": 48,
    "name": "PermCall",
@@ -6162,6 +6317,7 @@
   },
   "m_fake_SendCall": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_fake_model",
    "order": 42,
    "name": "SendCall",
@@ -6183,6 +6339,7 @@
   },
   "m_fake_Step": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_fake_model",
    "order": 35,
    "name": "Step",
@@ -6209,6 +6366,7 @@
   },
   "m_fake_taskRun": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_fake_model",
    "order": 56,
    "name": "taskRun",
@@ -6265,6 +6423,7 @@
   },
   "m_grok_ACPClient": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 52,
    "name": "ACPClient",
@@ -6326,6 +6485,7 @@
   },
   "m_grok_ACPHandler": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 37,
    "name": "ACPHandler",
@@ -6357,6 +6517,7 @@
   },
   "m_grok_ACPResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 30,
    "name": "ACPResult",
@@ -6378,6 +6539,7 @@
   },
   "m_grok_Adapter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 55,
    "name": "Adapter",
@@ -6404,6 +6566,7 @@
   },
   "m_grok_Proc": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_grok_model",
    "order": 56,
    "name": "Proc",
@@ -6435,6 +6598,7 @@
   },
   "m_grok_acpHandler": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 883,
    "name": "acpHandler",
@@ -6456,6 +6620,7 @@
   },
   "m_grok_authFile": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 37,
    "name": "authFile",
@@ -6465,6 +6630,7 @@
   },
   "m_grok_carryResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 31,
    "name": "carryResult",
@@ -6501,6 +6667,7 @@
   },
   "m_grok_pendingPerm": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 125,
    "name": "pendingPerm",
@@ -6522,6 +6689,7 @@
   },
   "m_grok_permToolCall": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 791,
    "name": "permToolCall",
@@ -6558,6 +6726,7 @@
   },
   "m_grok_procInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 295,
    "name": "procInfo",
@@ -6584,6 +6753,7 @@
   },
   "m_grok_runState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_grok_model",
    "order": 73,
    "name": "runState",
@@ -6710,6 +6880,7 @@
   },
   "m_grok_toolUpdate": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 806,
    "name": "toolUpdate",
@@ -6719,6 +6890,7 @@
   },
   "m_grok_turnAccumulator": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 675,
    "name": "turnAccumulator",
@@ -6740,6 +6912,7 @@
   },
   "m_grok_updateKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_grok_model",
    "order": 686,
    "name": "updateKind",
@@ -6749,6 +6922,7 @@
   },
   "m_hostproc_Spec": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_hostproc_model",
    "order": 48,
    "name": "Spec",
@@ -6758,6 +6932,7 @@
   },
   "m_hostproc_outbound": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_hostproc_model",
    "order": 62,
    "name": "outbound",
@@ -6767,6 +6942,7 @@
   },
   "m_hostproc_server": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_hostproc_model",
    "order": 69,
    "name": "server",
@@ -6776,6 +6952,7 @@
   },
   "m_initflow_Cond": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_initflow_model",
    "order": 55,
    "name": "Cond",
@@ -6785,6 +6962,7 @@
   },
   "m_initflow_DefaultRule": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_initflow_model",
    "order": 66,
    "name": "DefaultRule",
@@ -6794,6 +6972,7 @@
   },
   "m_initflow_Field": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_initflow_model",
    "order": 38,
    "name": "Field",
@@ -6803,6 +6982,7 @@
   },
   "m_initflow_Kind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_initflow_model",
    "order": 25,
    "name": "Kind",
@@ -6812,6 +6992,7 @@
   },
   "m_initflow_Option": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_initflow_model",
    "order": 33,
    "name": "Option",
@@ -6821,6 +7002,7 @@
   },
   "m_initflow_Prompter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_initflow_model",
    "order": 40,
    "name": "Prompter",
@@ -6830,6 +7012,7 @@
   },
   "m_initflow_ScriptedPrompter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_initflow_model",
    "order": 47,
    "name": "ScriptedPrompter",
@@ -6839,6 +7022,7 @@
   },
   "m_launcher_Item": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_launcher_model",
    "order": 43,
    "name": "Item",
@@ -6848,6 +7032,7 @@
   },
   "m_ledger_Attachment": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 91,
    "name": "Attachment",
@@ -6869,6 +7054,7 @@
   },
   "m_ledger_Card": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_ledger_model",
    "order": 97,
    "name": "Card",
@@ -6960,6 +7146,7 @@
   },
   "m_ledger_CardBrief": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 279,
    "name": "CardBrief",
@@ -6986,6 +7173,7 @@
   },
   "m_ledger_CardFilter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 244,
    "name": "CardFilter",
@@ -7027,6 +7215,7 @@
   },
   "m_ledger_CardView": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 231,
    "name": "CardView",
@@ -7083,6 +7272,7 @@
   },
   "m_ledger_Decision": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_ledger_model",
    "order": 217,
    "name": "Decision",
@@ -7144,6 +7334,7 @@
   },
   "m_ledger_DispatchSnapshot": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 115,
    "name": "DispatchSnapshot",
@@ -7200,6 +7391,7 @@
   },
   "m_ledger_Event": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_ledger_model",
    "order": 123,
    "name": "Event",
@@ -7256,6 +7448,7 @@
   },
   "m_ledger_Gate": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 136,
    "name": "Gate",
@@ -7282,6 +7475,7 @@
   },
   "m_ledger_MirrorHealthRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 23,
    "name": "MirrorHealthRow",
@@ -7308,6 +7502,7 @@
   },
   "m_ledger_MirroredEvent": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 14,
    "name": "MirroredEvent",
@@ -7349,6 +7544,7 @@
   },
   "m_ledger_NewCard": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 18,
    "name": "NewCard",
@@ -7395,6 +7591,7 @@
   },
   "m_ledger_NodeDef": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 167,
    "name": "NodeDef",
@@ -7461,6 +7658,7 @@
   },
   "m_ledger_NodeOverride": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 151,
    "name": "NodeOverride",
@@ -7492,6 +7690,7 @@
   },
   "m_ledger_Relation": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 117,
    "name": "Relation",
@@ -7523,6 +7722,7 @@
   },
   "m_ledger_Store": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 26,
    "name": "Store",
@@ -7569,6 +7769,7 @@
   },
   "m_ledger_TaskLink": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 18,
    "name": "TaskLink",
@@ -7605,6 +7806,7 @@
   },
   "m_ledger_TaskStateRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 14,
    "name": "TaskStateRow",
@@ -7641,6 +7843,7 @@
   },
   "m_ledger_Template": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 60,
    "name": "Template",
@@ -7672,6 +7875,7 @@
   },
   "m_ledger_TemplateDef": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 18,
    "name": "TemplateDef",
@@ -7723,6 +7927,7 @@
   },
   "m_ledger_Workflow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 209,
    "name": "Workflow",
@@ -7754,6 +7959,7 @@
   },
   "m_ledger_WorkflowDef": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 202,
    "name": "WorkflowDef",
@@ -7780,6 +7986,7 @@
   },
   "m_ledger_WorkflowLocation": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 76,
    "name": "WorkflowLocation",
@@ -7806,6 +8013,7 @@
   },
   "m_ledger_WorkflowMigration": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_ledger_model",
    "order": 83,
    "name": "WorkflowMigration",
@@ -7837,6 +8045,7 @@
   },
   "m_ledger_WorkflowTarget": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 69,
    "name": "WorkflowTarget",
@@ -7863,6 +8072,7 @@
   },
   "m_ledger_dialect": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 18,
    "name": "dialect",
@@ -7872,6 +8082,7 @@
   },
   "m_ledger_eventSink": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 150,
    "name": "eventSink",
@@ -7888,6 +8099,7 @@
   },
   "m_ledger_mirroredTaskPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 65,
    "name": "mirroredTaskPayload",
@@ -7909,6 +8121,7 @@
   },
   "m_ledger_openTicketKey": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 61,
    "name": "openTicketKey",
@@ -7940,6 +8153,7 @@
   },
   "m_ledger_rowScanner": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 210,
    "name": "rowScanner",
@@ -7949,6 +8163,7 @@
   },
   "m_ledger_taskEventQueryer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 147,
    "name": "taskEventQueryer",
@@ -7958,6 +8173,7 @@
   },
   "m_ledger_ticketPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledger_model",
    "order": 70,
    "name": "ticketPayload",
@@ -7974,6 +8190,7 @@
   },
   "m_ledgermirror_Machines": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgermirror_model",
    "order": 55,
    "name": "Machines",
@@ -7983,6 +8200,7 @@
   },
   "m_ledgermirror_Mirror": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgermirror_model",
    "order": 51,
    "name": "Mirror",
@@ -8074,6 +8292,7 @@
   },
   "m_ledgermirror_Options": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgermirror_model",
    "order": 29,
    "name": "Options",
@@ -8105,6 +8324,7 @@
   },
   "m_ledgermirror_Source": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgermirror_model",
    "order": 35,
    "name": "Source",
@@ -8114,6 +8334,7 @@
   },
   "m_ledgermirror_subscription": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgermirror_model",
    "order": 69,
    "name": "subscription",
@@ -8123,6 +8344,7 @@
   },
   "m_ledgerstep_Action": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 18,
    "name": "Action",
@@ -8132,6 +8354,7 @@
   },
   "m_ledgerstep_DispatchOpts": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 25,
    "name": "DispatchOpts",
@@ -8203,6 +8426,7 @@
   },
   "m_ledgerstep_DispatchResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 34,
    "name": "DispatchResult",
@@ -8249,6 +8473,7 @@
   },
   "m_ledgerstep_Dispatcher": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 45,
    "name": "Dispatcher",
@@ -8275,6 +8500,7 @@
   },
   "m_ledgerstep_Finding": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 14,
    "name": "Finding",
@@ -8301,6 +8527,7 @@
   },
   "m_ledgerstep_NodeStep": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 40,
    "name": "NodeStep",
@@ -8332,6 +8559,7 @@
   },
   "m_ledgerstep_Outcome": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 29,
    "name": "Outcome",
@@ -8358,6 +8586,7 @@
   },
   "m_ledgerstep_StepRunner": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 22,
    "name": "StepRunner",
@@ -8394,6 +8623,7 @@
   },
   "m_ledgerstep_TemplateDispatch": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 52,
    "name": "TemplateDispatch",
@@ -8445,6 +8675,7 @@
   },
   "m_ledgerstep_Transport": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 31,
    "name": "Transport",
@@ -8454,6 +8685,7 @@
   },
   "m_ledgerstep_Verdict": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ledgerstep_model",
    "order": 21,
    "name": "Verdict",
@@ -8485,6 +8717,7 @@
   },
   "m_localsync_Opts": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_localsync_model",
    "order": 35,
    "name": "Opts",
@@ -8511,6 +8744,7 @@
   },
   "m_localsync_Result": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_localsync_model",
    "order": 46,
    "name": "Result",
@@ -8537,6 +8771,7 @@
   },
   "m_logx_multiHandler": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_logx_model",
    "order": 60,
    "name": "multiHandler",
@@ -8546,6 +8781,7 @@
   },
   "m_opencode_API": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 76,
    "name": "API",
@@ -8592,6 +8828,7 @@
   },
   "m_opencode_Adapter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 129,
    "name": "Adapter",
@@ -8633,6 +8870,7 @@
   },
   "m_opencode_PendingQuestion": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 604,
    "name": "PendingQuestion",
@@ -8659,6 +8897,7 @@
   },
   "m_opencode_Proc": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_opencode_model",
    "order": 72,
    "name": "Proc",
@@ -8690,6 +8929,7 @@
   },
   "m_opencode_QuestionInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 595,
    "name": "QuestionInfo",
@@ -8726,6 +8966,7 @@
   },
   "m_opencode_QuestionOption": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 587,
    "name": "QuestionOption",
@@ -8747,6 +8988,7 @@
   },
   "m_opencode_SessionMessage": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 331,
    "name": "SessionMessage",
@@ -8798,6 +9040,7 @@
   },
   "m_opencode_opencodeConfig": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 119,
    "name": "opencodeConfig",
@@ -8819,6 +9062,7 @@
   },
   "m_opencode_partFrameKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 1667,
    "name": "partFrameKind",
@@ -8828,6 +9072,7 @@
   },
   "m_opencode_permissionConfig": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 53,
    "name": "permissionConfig",
@@ -8859,6 +9104,7 @@
   },
   "m_opencode_procHandle": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 106,
    "name": "procHandle",
@@ -8875,6 +9121,7 @@
   },
   "m_opencode_procInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 326,
    "name": "procInfo",
@@ -8911,6 +9158,7 @@
   },
   "m_opencode_promptAsyncRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 500,
    "name": "promptAsyncRequest",
@@ -8927,6 +9175,7 @@
   },
   "m_opencode_promptPart": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 494,
    "name": "promptPart",
@@ -8948,6 +9197,7 @@
   },
   "m_opencode_questionReplyRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 611,
    "name": "questionReplyRequest",
@@ -8964,6 +9214,7 @@
   },
   "m_opencode_runState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_opencode_model",
    "order": 167,
    "name": "runState",
@@ -9170,6 +9421,7 @@
   },
   "m_opencode_serveHandle": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 95,
    "name": "serveHandle",
@@ -9196,6 +9448,7 @@
   },
   "m_opencode_sessionCreateRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 201,
    "name": "sessionCreateRequest",
@@ -9212,6 +9465,7 @@
   },
   "m_opencode_sessionDetail": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 221,
    "name": "sessionDetail",
@@ -9238,6 +9492,7 @@
   },
   "m_opencode_sessionListItem": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 211,
    "name": "sessionListItem",
@@ -9254,6 +9509,7 @@
   },
   "m_opencode_sessionMessageEnvelope": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 346,
    "name": "sessionMessageEnvelope",
@@ -9275,6 +9531,7 @@
   },
   "m_opencode_sessionResponse": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 206,
    "name": "sessionResponse",
@@ -9291,6 +9548,7 @@
   },
   "m_opencode_sseEvent": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 982,
    "name": "sseEvent",
@@ -9317,6 +9575,7 @@
   },
   "m_opencode_toolStage": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 1658,
    "name": "toolStage",
@@ -9326,6 +9585,7 @@
   },
   "m_opencode_watchdogConfig": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_opencode_model",
    "order": 851,
    "name": "watchdogConfig",
@@ -9352,6 +9612,7 @@
   },
   "m_pathenv_Options": {
    "kind": "model",
+   "modelKind": "config",
    "container": "k_pathenv_model",
    "order": 43,
    "name": "Options",
@@ -9361,6 +9622,7 @@
   },
   "m_permgate_Action": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_permgate_model",
    "order": 29,
    "name": "Action",
@@ -9370,6 +9632,7 @@
   },
   "m_permgate_Gate": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_permgate_model",
    "order": 86,
    "name": "Gate",
@@ -9379,6 +9642,7 @@
   },
   "m_permgate_Request": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_permgate_model",
    "order": 58,
    "name": "Request",
@@ -9415,6 +9679,7 @@
   },
   "m_permgate_Scope": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_permgate_model",
    "order": 70,
    "name": "Scope",
@@ -9436,6 +9701,7 @@
   },
   "m_permgate_Verdict": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_permgate_model",
    "order": 79,
    "name": "Verdict",
@@ -9462,6 +9728,7 @@
   },
   "m_permgate_argTargetKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_permgate_model",
    "order": 24,
    "name": "argTargetKind",
@@ -9471,6 +9738,7 @@
   },
   "m_prochost_Admission": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_prochost_model",
    "order": 159,
    "name": "Admission",
@@ -9497,6 +9765,7 @@
   },
   "m_prochost_Handle": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_prochost_model",
    "order": 90,
    "name": "Handle",
@@ -9543,6 +9812,7 @@
   },
   "m_prochost_Lock": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_prochost_model",
    "order": 30,
    "name": "Lock",
@@ -9552,6 +9822,7 @@
   },
   "m_prochost_ProcessCredential": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 24,
    "name": "ProcessCredential",
@@ -9573,6 +9844,7 @@
   },
   "m_prochost_PtyhostCredentialProvider": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 34,
    "name": "PtyhostCredentialProvider",
@@ -9582,6 +9854,7 @@
   },
   "m_prochost_Spec": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 47,
    "name": "Spec",
@@ -9653,6 +9926,7 @@
   },
   "m_prochost_TaskCred": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 32,
    "name": "TaskCred",
@@ -9674,6 +9948,7 @@
   },
   "m_prochost_Verdict": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 24,
    "name": "Verdict",
@@ -9683,6 +9958,7 @@
   },
   "m_prochost_jobBasicProcessIDList": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 78,
    "name": "jobBasicProcessIDList",
@@ -9692,6 +9968,7 @@
   },
   "m_prochost_memberSnapshot": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 26,
    "name": "memberSnapshot",
@@ -9701,6 +9978,7 @@
   },
   "m_prochost_membersSampler": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 92,
    "name": "membersSampler",
@@ -9710,6 +9988,7 @@
   },
   "m_prochost_procEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 118,
    "name": "procEntry",
@@ -9719,6 +9998,7 @@
   },
   "m_prochost_rosterEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 35,
    "name": "rosterEntry",
@@ -9728,6 +10008,7 @@
   },
   "m_prochost_rosterSampler": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_prochost_model",
    "order": 286,
    "name": "rosterSampler",
@@ -9737,6 +10018,7 @@
   },
   "m_proto_ActiveTask": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 61,
    "name": "ActiveTask",
@@ -9794,6 +10076,7 @@
   },
   "m_proto_AddMachineReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 306,
    "name": "AddMachineReq",
@@ -9831,6 +10114,7 @@
   },
   "m_proto_ArchivedPayload": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 306,
    "name": "ArchivedPayload",
@@ -9848,6 +10132,7 @@
   },
   "m_proto_Attachment": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 9,
    "name": "Attachment",
@@ -9870,6 +10155,7 @@
   },
   "m_proto_AuthTicketResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 16,
    "name": "AuthTicketResp",
@@ -9892,6 +10178,7 @@
   },
   "m_proto_BuildInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 29,
    "name": "BuildInfo",
@@ -9934,6 +10221,7 @@
   },
   "m_proto_Card": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 15,
    "name": "Card",
@@ -10026,6 +10314,7 @@
   },
   "m_proto_CardBrief": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 79,
    "name": "CardBrief",
@@ -10053,6 +10342,7 @@
   },
   "m_proto_CardCreateResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 187,
    "name": "CardCreateResp",
@@ -10070,6 +10360,7 @@
   },
   "m_proto_CardDetail": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 133,
    "name": "CardDetail",
@@ -10122,6 +10413,7 @@
   },
   "m_proto_CardView": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 110,
    "name": "CardView",
@@ -10229,6 +10521,7 @@
   },
   "m_proto_CardWorkflowLocation": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 170,
    "name": "CardWorkflowLocation",
@@ -10261,6 +10554,7 @@
   },
   "m_proto_Cost": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 165,
    "name": "Cost",
@@ -10283,6 +10577,7 @@
   },
   "m_proto_CostState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 150,
    "name": "CostState",
@@ -10292,6 +10587,7 @@
   },
   "m_proto_CreatePtySessionReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 47,
    "name": "CreatePtySessionReq",
@@ -10329,6 +10625,7 @@
   },
   "m_proto_CreateWorkspaceEntryReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 270,
    "name": "CreateWorkspaceEntryReq",
@@ -10351,6 +10648,7 @@
   },
   "m_proto_CreateWorktreeReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 349,
    "name": "CreateWorktreeReq",
@@ -10378,6 +10676,7 @@
   },
   "m_proto_Cumulative": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 184,
    "name": "Cumulative",
@@ -10415,6 +10714,7 @@
   },
   "m_proto_Decision": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 86,
    "name": "Decision",
@@ -10477,6 +10777,7 @@
   },
   "m_proto_DesktopState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 15,
    "name": "DesktopState",
@@ -10509,6 +10810,7 @@
   },
   "m_proto_DirEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 204,
    "name": "DirEntry",
@@ -10541,6 +10843,7 @@
   },
   "m_proto_DirListResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 218,
    "name": "DirListResult",
@@ -10558,6 +10861,7 @@
   },
   "m_proto_DirtyFile": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 34,
    "name": "DirtyFile",
@@ -10580,6 +10884,7 @@
   },
   "m_proto_DisciplineBinding": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 44,
    "name": "DisciplineBinding",
@@ -10612,6 +10917,7 @@
   },
   "m_proto_DisciplineBuiltin": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 23,
    "name": "DisciplineBuiltin",
@@ -10634,6 +10940,7 @@
   },
   "m_proto_DisciplineFile": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 29,
    "name": "DisciplineFile",
@@ -10661,6 +10968,7 @@
   },
   "m_proto_DisciplineMappingReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 64,
    "name": "DisciplineMappingReq",
@@ -10678,6 +10986,7 @@
   },
   "m_proto_DisciplineResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 15,
    "name": "DisciplineResp",
@@ -10710,6 +11019,7 @@
   },
   "m_proto_DownloadState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_proto_model",
    "order": 37,
    "name": "DownloadState",
@@ -10752,6 +11062,7 @@
   },
   "m_proto_EnvBinding": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 38,
    "name": "EnvBinding",
@@ -10779,6 +11090,7 @@
   },
   "m_proto_EnvFile": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 24,
    "name": "EnvFile",
@@ -10806,6 +11118,7 @@
   },
   "m_proto_EnvKey": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 62,
    "name": "EnvKey",
@@ -10833,6 +11146,7 @@
   },
   "m_proto_EnvKeysResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 69,
    "name": "EnvKeysResp",
@@ -10850,6 +11164,7 @@
   },
   "m_proto_EnvMappingReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 78,
    "name": "EnvMappingReq",
@@ -10867,6 +11182,7 @@
   },
   "m_proto_EnvResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 17,
    "name": "EnvResp",
@@ -10894,6 +11210,7 @@
   },
   "m_proto_Event": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_proto_model",
    "order": 342,
    "name": "Event",
@@ -10931,6 +11248,7 @@
   },
   "m_proto_EventType": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 39,
    "name": "EventType",
@@ -10940,6 +11258,7 @@
   },
   "m_proto_ExecutorDefaultReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 26,
    "name": "ExecutorDefaultReq",
@@ -10962,6 +11281,7 @@
   },
   "m_proto_ExecutorDefaultResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 16,
    "name": "ExecutorDefaultResp",
@@ -10989,6 +11309,7 @@
   },
   "m_proto_FileConflictResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 319,
    "name": "FileConflictResp",
@@ -11011,6 +11332,7 @@
   },
   "m_proto_FileRead": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 246,
    "name": "FileRead",
@@ -11048,6 +11370,7 @@
   },
   "m_proto_FileWriteReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 284,
    "name": "FileWriteReq",
@@ -11070,6 +11393,7 @@
   },
   "m_proto_FileWriteResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 293,
    "name": "FileWriteResp",
@@ -11092,6 +11416,7 @@
   },
   "m_proto_FlowDetail": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 145,
    "name": "FlowDetail",
@@ -11124,6 +11449,7 @@
   },
   "m_proto_FootprintResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 248,
    "name": "FootprintResp",
@@ -11151,6 +11477,7 @@
   },
   "m_proto_FootprintRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 239,
    "name": "FootprintRow",
@@ -11188,6 +11515,7 @@
   },
   "m_proto_Frame": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_proto_model",
    "order": 44,
    "name": "Frame",
@@ -11280,6 +11608,7 @@
   },
   "m_proto_FrameType": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 19,
    "name": "FrameType",
@@ -11289,6 +11618,7 @@
   },
   "m_proto_Gate": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 49,
    "name": "Gate",
@@ -11316,6 +11646,7 @@
   },
   "m_proto_LatestResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 31,
    "name": "LatestResp",
@@ -11338,6 +11669,7 @@
   },
   "m_proto_Launcher": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 19,
    "name": "Launcher",
@@ -11347,6 +11679,7 @@
   },
   "m_proto_LaunchersReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 53,
    "name": "LaunchersReq",
@@ -11356,6 +11689,7 @@
   },
   "m_proto_LaunchersResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 45,
    "name": "LaunchersResp",
@@ -11365,6 +11699,7 @@
   },
   "m_proto_LedgerEvent": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 100,
    "name": "LedgerEvent",
@@ -11407,6 +11742,7 @@
   },
   "m_proto_Machine": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 109,
    "name": "Machine",
@@ -11489,6 +11825,7 @@
   },
   "m_proto_MachineStatus": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 86,
    "name": "MachineStatus",
@@ -11521,6 +11858,7 @@
   },
   "m_proto_MachineUpgrade": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 168,
    "name": "MachineUpgrade",
@@ -11568,6 +11906,7 @@
   },
   "m_proto_MachineUpgradeResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 49,
    "name": "MachineUpgradeResp",
@@ -11610,6 +11949,7 @@
   },
   "m_proto_MachinesResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 182,
    "name": "MachinesResp",
@@ -11627,6 +11967,7 @@
   },
   "m_proto_MigrateCardReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 163,
    "name": "MigrateCardReq",
@@ -11654,6 +11995,7 @@
   },
   "m_proto_MigrateCardResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 178,
    "name": "MigrateCardResp",
@@ -11691,6 +12033,7 @@
   },
   "m_proto_NewCardReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 153,
    "name": "NewCardReq",
@@ -11733,6 +12076,7 @@
   },
   "m_proto_NodeDef": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 64,
    "name": "NodeDef",
@@ -11800,6 +12144,7 @@
   },
   "m_proto_NodeOverride": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 56,
    "name": "NodeOverride",
@@ -11832,6 +12177,7 @@
   },
   "m_proto_ProcUsage": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 89,
    "name": "ProcUsage",
@@ -11854,6 +12200,7 @@
   },
   "m_proto_ProjectBranch": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 329,
    "name": "ProjectBranch",
@@ -11876,6 +12223,7 @@
   },
   "m_proto_ProjectBranchesResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 338,
    "name": "ProjectBranchesResp",
@@ -11903,6 +12251,7 @@
   },
   "m_proto_ProjectLocation": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_proto_model",
    "order": 423,
    "name": "ProjectLocation",
@@ -11945,6 +12294,7 @@
   },
   "m_proto_ProjectLocationNode": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 57,
    "name": "ProjectLocationNode",
@@ -11982,6 +12332,7 @@
   },
   "m_proto_ProjectNode": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 73,
    "name": "ProjectNode",
@@ -12014,6 +12365,7 @@
   },
   "m_proto_ProjectTreeResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 98,
    "name": "ProjectTreeResp",
@@ -12041,6 +12393,7 @@
   },
   "m_proto_PtyControl": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 73,
    "name": "PtyControl",
@@ -12088,6 +12441,7 @@
   },
   "m_proto_PtyFootprintRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 226,
    "name": "PtyFootprintRow",
@@ -12125,6 +12479,7 @@
   },
   "m_proto_PtySession": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 13,
    "name": "PtySession",
@@ -12207,6 +12562,7 @@
   },
   "m_proto_PtySessionsResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 40,
    "name": "PtySessionsResp",
@@ -12229,6 +12585,7 @@
   },
   "m_proto_PullState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_proto_model",
    "order": 128,
    "name": "PullState",
@@ -12266,6 +12623,7 @@
   },
   "m_proto_ReclaimAction": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 66,
    "name": "ReclaimAction",
@@ -12275,6 +12633,7 @@
   },
   "m_proto_ReclaimError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 101,
    "name": "ReclaimError",
@@ -12302,6 +12661,7 @@
   },
   "m_proto_ReclaimListResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 58,
    "name": "ReclaimListResp",
@@ -12324,6 +12684,7 @@
   },
   "m_proto_ReclaimReason": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 91,
    "name": "ReclaimReason",
@@ -12333,6 +12694,7 @@
   },
   "m_proto_ReclaimResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 78,
    "name": "ReclaimResp",
@@ -12370,6 +12732,7 @@
   },
   "m_proto_ReclaimRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 41,
    "name": "ReclaimRow",
@@ -12422,6 +12785,7 @@
   },
   "m_proto_Relation": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 36,
    "name": "Relation",
@@ -12454,6 +12818,7 @@
   },
   "m_proto_RenameWorkspaceEntryReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 276,
    "name": "RenameWorkspaceEntryReq",
@@ -12471,6 +12836,7 @@
   },
   "m_proto_SearchHit": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 223,
    "name": "SearchHit",
@@ -12498,6 +12864,7 @@
   },
   "m_proto_SearchResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 230,
    "name": "SearchResult",
@@ -12520,6 +12887,7 @@
   },
   "m_proto_SessionInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 24,
    "name": "SessionInfo",
@@ -12562,6 +12930,7 @@
   },
   "m_proto_SpendEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 203,
    "name": "SpendEntry",
@@ -12604,6 +12973,7 @@
   },
   "m_proto_StatusResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 155,
    "name": "StatusResp",
@@ -12696,6 +13066,7 @@
   },
   "m_proto_Task": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_proto_model",
    "order": 217,
    "name": "Task",
@@ -12838,6 +13209,7 @@
   },
   "m_proto_TaskPlan": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 262,
    "name": "TaskPlan",
@@ -12870,6 +13242,7 @@
   },
   "m_proto_TaskState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 18,
    "name": "TaskState",
@@ -12879,6 +13252,7 @@
   },
   "m_proto_TaskStateRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 43,
    "name": "TaskStateRow",
@@ -12916,6 +13290,7 @@
   },
   "m_proto_TaskTiming": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 85,
    "name": "TaskTiming",
@@ -12925,6 +13300,7 @@
   },
   "m_proto_TaskView": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 330,
    "name": "TaskView",
@@ -12947,6 +13323,7 @@
   },
   "m_proto_TasksResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 193,
    "name": "TasksResp",
@@ -12969,6 +13346,7 @@
   },
   "m_proto_Ticket": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_proto_model",
    "order": 354,
    "name": "Ticket",
@@ -13026,6 +13404,7 @@
   },
   "m_proto_TimingBucket": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 73,
    "name": "TimingBucket",
@@ -13035,6 +13414,7 @@
   },
   "m_proto_TimingEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 45,
    "name": "TimingEntry",
@@ -13044,6 +13424,7 @@
   },
   "m_proto_TimingKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 22,
    "name": "TimingKind",
@@ -13053,6 +13434,7 @@
   },
   "m_proto_UpdateError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 65,
    "name": "UpdateError",
@@ -13075,6 +13457,7 @@
   },
   "m_proto_UpdateResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 30,
    "name": "UpdateResp",
@@ -13112,6 +13495,7 @@
   },
   "m_proto_UpdateStatus": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 106,
    "name": "UpdateStatus",
@@ -13139,6 +13523,7 @@
   },
   "m_proto_Usage": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 131,
    "name": "Usage",
@@ -13161,6 +13546,7 @@
   },
   "m_proto_WorkbenchBase": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 11,
    "name": "WorkbenchBase",
@@ -13188,6 +13574,7 @@
   },
   "m_proto_WorkbenchBaseReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 35,
    "name": "WorkbenchBaseReq",
@@ -13210,6 +13597,7 @@
   },
   "m_proto_WorkbenchDockReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 48,
    "name": "WorkbenchDockReq",
@@ -13227,6 +13615,7 @@
   },
   "m_proto_WorkbenchSelectedReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 42,
    "name": "WorkbenchSelectedReq",
@@ -13244,6 +13633,7 @@
   },
   "m_proto_WorkbenchStateResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 24,
    "name": "WorkbenchStateResp",
@@ -13271,6 +13661,7 @@
   },
   "m_proto_Workspace": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_proto_model",
    "order": 23,
    "name": "Workspace",
@@ -13313,6 +13704,7 @@
   },
   "m_proto_WorktreeState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_proto_model",
    "order": 17,
    "name": "WorktreeState",
@@ -13322,6 +13714,7 @@
   },
   "m_ptyhost_AttachOps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ptyhost_model",
    "order": 14,
    "name": "AttachOps",
@@ -13331,6 +13724,7 @@
   },
   "m_ptyhost_Attachment": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_ptyhost_model",
    "order": 24,
    "name": "Attachment",
@@ -13367,6 +13761,7 @@
   },
   "m_ptyhost_Host": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ptyhost_model",
    "order": 51,
    "name": "Host",
@@ -13376,6 +13771,7 @@
   },
   "m_ptyhost_OpenOptions": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ptyhost_model",
    "order": 40,
    "name": "OpenOptions",
@@ -13417,6 +13813,7 @@
   },
   "m_ptyhost_Session": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_ptyhost_model",
    "order": 16,
    "name": "Session",
@@ -13493,6 +13890,7 @@
   },
   "m_ptyhost_clientAttachment": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ptyhost_model",
    "order": 85,
    "name": "clientAttachment",
@@ -13502,6 +13900,7 @@
   },
   "m_ptyhost_clientSession": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ptyhost_model",
    "order": 65,
    "name": "clientSession",
@@ -13511,6 +13910,7 @@
   },
   "m_ptyhost_launchSpec": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_ptyhost_model",
    "order": 71,
    "name": "launchSpec",
@@ -13520,6 +13920,7 @@
   },
   "m_rawtap_Tap": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_rawtap_model",
    "order": 34,
    "name": "Tap",
@@ -13541,6 +13942,7 @@
   },
   "m_relay_ControlError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_relay_model",
    "order": 115,
    "name": "ControlError",
@@ -13550,6 +13952,7 @@
   },
   "m_relay_Dialer": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_relay_model",
    "order": 20,
    "name": "Dialer",
@@ -13559,6 +13962,7 @@
   },
   "m_relay_Frame": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_relay_model",
    "order": 40,
    "name": "Frame",
@@ -13568,6 +13972,7 @@
   },
   "m_relay_FrameType": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_relay_model",
    "order": 16,
    "name": "FrameType",
@@ -13577,6 +13982,7 @@
   },
   "m_relay_Listener": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_relay_model",
    "order": 26,
    "name": "Listener",
@@ -13586,6 +13992,7 @@
   },
   "m_relay_appListener": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_relay_model",
    "order": 189,
    "name": "appListener",
@@ -13595,6 +14002,7 @@
   },
   "m_relay_relayAddr": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_relay_model",
    "order": 197,
    "name": "relayAddr",
@@ -13604,6 +14012,7 @@
   },
   "m_relay_secureConn": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_relay_model",
    "order": 218,
    "name": "secureConn",
@@ -13613,6 +14022,7 @@
   },
   "m_release_Asset": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_release_model",
    "order": 46,
    "name": "Asset",
@@ -13622,6 +14032,7 @@
   },
   "m_release_Client": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_release_model",
    "order": 139,
    "name": "Client",
@@ -13631,6 +14042,7 @@
   },
   "m_release_Installer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_release_model",
    "order": 80,
    "name": "Installer",
@@ -13640,6 +14052,7 @@
   },
   "m_release_Release": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_release_model",
    "order": 52,
    "name": "Release",
@@ -13649,6 +14062,7 @@
   },
   "m_release_ghRelease": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_release_model",
    "order": 165,
    "name": "ghRelease",
@@ -13658,6 +14072,7 @@
   },
   "m_release_httpStatusError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_release_model",
    "order": 333,
    "name": "httpStatusError",
@@ -13667,6 +14082,7 @@
   },
   "m_selfupdate_CLICheck": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_selfupdate_model",
    "order": 28,
    "name": "CLICheck",
@@ -13676,6 +14092,7 @@
   },
   "m_selfupdate_parsedVersion": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_selfupdate_model",
    "order": 147,
    "name": "parsedVersion",
@@ -13685,6 +14102,7 @@
   },
   "m_service_Manager": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_service_model",
    "order": 58,
    "name": "Manager",
@@ -13694,6 +14112,7 @@
   },
   "m_service_Spec": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_service_model",
    "order": 34,
    "name": "Spec",
@@ -13703,6 +14122,7 @@
   },
   "m_service_Status": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_service_model",
    "order": 44,
    "name": "Status",
@@ -13712,6 +14132,7 @@
   },
   "m_service_launchdManager": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_service_model",
    "order": 33,
    "name": "launchdManager",
@@ -13721,6 +14142,7 @@
   },
   "m_service_systemdManager": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_service_model",
    "order": 23,
    "name": "systemdManager",
@@ -13730,6 +14152,7 @@
   },
   "m_service_windowsManager": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_service_model",
    "order": 45,
    "name": "windowsManager",
@@ -13739,6 +14162,7 @@
   },
   "m_sessdir_Entry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_sessdir_model",
    "order": 68,
    "name": "Entry",
@@ -13748,6 +14172,7 @@
   },
   "m_sessdir_Meta": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_sessdir_model",
    "order": 56,
    "name": "Meta",
@@ -13757,6 +14182,7 @@
   },
   "m_sessdir_State": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_sessdir_model",
    "order": 41,
    "name": "State",
@@ -13766,6 +14192,7 @@
   },
   "m_skill_Site": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_skill_model",
    "order": 35,
    "name": "Site",
@@ -13775,6 +14202,7 @@
   },
   "m_store_MirrorTask": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_store_model",
    "order": 27,
    "name": "MirrorTask",
@@ -13784,6 +14212,7 @@
   },
   "m_store_Session": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_store_model",
    "order": 32,
    "name": "Session",
@@ -13793,6 +14222,7 @@
   },
   "m_store_Store": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_store_model",
    "order": 46,
    "name": "Store",
@@ -13802,6 +14232,7 @@
   },
   "m_store_bucketAcc": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_store_model",
    "order": 65,
    "name": "bucketAcc",
@@ -13811,6 +14242,7 @@
   },
   "m_store_rowScanner": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_store_model",
    "order": 326,
    "name": "rowScanner",
@@ -13820,6 +14252,7 @@
   },
   "m_store_span": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_store_model",
    "order": 50,
    "name": "span",
@@ -13829,6 +14262,7 @@
   },
   "m_store_timingRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_store_model",
    "order": 40,
    "name": "timingRow",
@@ -13838,6 +14272,7 @@
   },
   "m_store_turnAcc": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_store_model",
    "order": 53,
    "name": "turnAcc",
@@ -13847,6 +14282,7 @@
   },
   "m_targetclient_Pool": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_targetclient_model",
    "order": 44,
    "name": "Pool",
@@ -13856,6 +14292,7 @@
   },
   "m_targetclient_entry": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_targetclient_model",
    "order": 32,
    "name": "entry",
@@ -13865,6 +14302,7 @@
   },
   "m_targetclient_warmState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_targetclient_model",
    "order": 28,
    "name": "warmState",
@@ -13874,6 +14312,7 @@
   },
   "m_toolchain_Result": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_toolchain_model",
    "order": 64,
    "name": "Result",
@@ -13883,6 +14322,7 @@
   },
   "m_toolchain_State": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_toolchain_model",
    "order": 31,
    "name": "State",
@@ -13892,6 +14332,7 @@
   },
   "m_turn_FrameWriter": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_turn_model",
    "order": 54,
    "name": "FrameWriter",
@@ -13933,6 +14374,7 @@
   },
   "m_turn_Segmenter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_turn_model",
    "order": 47,
    "name": "Segmenter",
@@ -13942,6 +14384,7 @@
   },
   "m_turn_Trailer": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_turn_model",
    "order": 28,
    "name": "Trailer",
@@ -13973,6 +14416,7 @@
   },
   "m_turn_openTool": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_turn_model",
    "order": 34,
    "name": "openTool",
@@ -13982,6 +14426,7 @@
   },
   "m_turn_promptData": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_turn_model",
    "order": 63,
    "name": "promptData",
@@ -14013,6 +14458,7 @@
   },
   "m_upgrade_Fetcher": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_upgrade_model",
    "order": 71,
    "name": "Fetcher",
@@ -14022,6 +14468,7 @@
   },
   "m_upgrade_Machine": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_upgrade_model",
    "order": 21,
    "name": "Machine",
@@ -14031,6 +14478,7 @@
   },
   "m_upgrade_Options": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_upgrade_model",
    "order": 77,
    "name": "Options",
@@ -14040,6 +14488,7 @@
   },
   "m_upgrade_Peer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_upgrade_model",
    "order": 64,
    "name": "Peer",
@@ -14049,6 +14498,7 @@
   },
   "m_upgrade_Result": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_upgrade_model",
    "order": 51,
    "name": "Result",
@@ -14058,6 +14508,7 @@
   },
   "m_upgrade_Status": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_upgrade_model",
    "order": 27,
    "name": "Status",
@@ -14067,6 +14518,7 @@
   },
   "m_upgrade_Verdict": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_upgrade_model",
    "order": 37,
    "name": "Verdict",
@@ -14076,6 +14528,7 @@
   },
   "m_web_api_client_ApiError": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_client_model",
    "order": 78,
    "name": "ApiError",
@@ -14085,6 +14538,7 @@
   },
   "m_web_api_ledger_Attachment": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 27,
    "name": "Attachment",
@@ -14107,6 +14561,7 @@
   },
   "m_web_api_ledger_Card": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 32,
    "name": "Card",
@@ -14199,6 +14654,7 @@
   },
   "m_web_api_ledger_CardBrief": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 73,
    "name": "CardBrief",
@@ -14226,6 +14682,7 @@
   },
   "m_web_api_ledger_CardCreateResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 139,
    "name": "CardCreateResp",
@@ -14243,6 +14700,7 @@
   },
   "m_web_api_ledger_CardDetail": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 79,
    "name": "CardDetail",
@@ -14295,6 +14753,7 @@
   },
   "m_web_api_ledger_CardPatch": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 238,
    "name": "CardPatch",
@@ -14304,6 +14763,7 @@
   },
   "m_web_api_ledger_CardView": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 5,
    "name": "CardView",
@@ -14411,6 +14871,7 @@
   },
   "m_web_api_ledger_CardWorkflowLocation": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 149,
    "name": "CardWorkflowLocation",
@@ -14443,6 +14904,7 @@
   },
   "m_web_api_ledger_Decision": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 173,
    "name": "Decision",
@@ -14505,6 +14967,7 @@
   },
   "m_web_api_ledger_FlowDetail": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 123,
    "name": "FlowDetail",
@@ -14537,6 +15000,7 @@
   },
   "m_web_api_ledger_FlowsResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 198,
    "name": "FlowsResp",
@@ -14546,6 +15010,7 @@
   },
   "m_web_api_ledger_Gate": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 101,
    "name": "Gate",
@@ -14573,6 +15038,7 @@
   },
   "m_web_api_ledger_LedgerEvent": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 164,
    "name": "LedgerEvent",
@@ -14615,6 +15081,7 @@
   },
   "m_web_api_ledger_LedgerHealth": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 279,
    "name": "LedgerHealth",
@@ -14624,6 +15091,7 @@
   },
   "m_web_api_ledger_MigrateCardReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 143,
    "name": "MigrateCardReq",
@@ -14651,6 +15119,7 @@
   },
   "m_web_api_ledger_MigrateCardResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 156,
    "name": "MigrateCardResp",
@@ -14688,6 +15157,7 @@
   },
   "m_web_api_ledger_NewCardReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 130,
    "name": "NewCardReq",
@@ -14730,6 +15200,7 @@
   },
   "m_web_api_ledger_NodeDef": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 109,
    "name": "NodeDef",
@@ -14797,6 +15268,7 @@
   },
   "m_web_api_ledger_NodeOverride": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 94,
    "name": "NodeOverride",
@@ -14829,6 +15301,7 @@
   },
   "m_web_api_ledger_Relation": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 51,
    "name": "Relation",
@@ -14861,6 +15334,7 @@
   },
   "m_web_api_ledger_TaskStateRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 58,
    "name": "TaskStateRow",
@@ -14898,6 +15372,7 @@
   },
   "m_web_api_ledger_TemplateWire": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 192,
    "name": "TemplateWire",
@@ -14907,6 +15382,7 @@
   },
   "m_web_api_ledger_UnlinkedSummary": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 66,
    "name": "UnlinkedSummary",
@@ -14916,6 +15392,7 @@
   },
   "m_web_api_ledger_WorkflowWire": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ledger_model",
    "order": 186,
    "name": "WorkflowWire",
@@ -14925,6 +15402,7 @@
   },
   "m_web_api_pty_PtyHandle": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_pty_model",
    "order": 54,
    "name": "PtyHandle",
@@ -14934,6 +15412,7 @@
   },
   "m_web_api_pty_PtyOptions": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_pty_model",
    "order": 36,
    "name": "PtyOptions",
@@ -14943,6 +15422,7 @@
   },
   "m_web_api_pty_PtySocketLike": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_pty_model",
    "order": 25,
    "name": "PtySocketLike",
@@ -14952,6 +15432,7 @@
   },
   "m_web_api_types_ActiveTask": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 342,
    "name": "ActiveTask",
@@ -14998,6 +15479,7 @@
   },
   "m_web_api_types_AddMachineReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 290,
    "name": "AddMachineReq",
@@ -15034,6 +15516,7 @@
   },
   "m_web_api_types_AuthTicketResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 318,
    "name": "AuthTicketResp",
@@ -15055,6 +15538,7 @@
   },
   "m_web_api_types_BranchesResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 441,
    "name": "BranchesResult",
@@ -15081,6 +15565,7 @@
   },
   "m_web_api_types_BuildInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 332,
    "name": "BuildInfo",
@@ -15117,6 +15602,7 @@
   },
   "m_web_api_types_CgContainer": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 719,
    "name": "CgContainer",
@@ -15148,6 +15634,7 @@
   },
   "m_web_api_types_CgDiff": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 734,
    "name": "CgDiff",
@@ -15199,6 +15686,7 @@
   },
   "m_web_api_types_CgDomain": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 712,
    "name": "CgDomain",
@@ -15235,6 +15723,7 @@
   },
   "m_web_api_types_CgGraph": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 726,
    "name": "CgGraph",
@@ -15271,6 +15760,7 @@
   },
   "m_web_api_types_CgNode": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 693,
    "name": "CgNode",
@@ -15352,6 +15842,7 @@
   },
   "m_web_api_types_CgSourceResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 750,
    "name": "CgSourceResp",
@@ -15378,6 +15869,7 @@
   },
   "m_web_api_types_CgStaleNode": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 744,
    "name": "CgStaleNode",
@@ -15409,6 +15901,7 @@
   },
   "m_web_api_types_CgTestRef": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 692,
    "name": "CgTestRef",
@@ -15435,6 +15928,7 @@
   },
   "m_web_api_types_CodegraphResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 745,
    "name": "CodegraphResp",
@@ -15461,6 +15955,7 @@
   },
   "m_web_api_types_Cost": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 53,
    "name": "Cost",
@@ -15482,6 +15977,7 @@
   },
   "m_web_api_types_CreateProjectReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 305,
    "name": "CreateProjectReq",
@@ -15508,6 +16004,7 @@
   },
   "m_web_api_types_CreateProjectResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 126,
    "name": "CreateProjectResp",
@@ -15517,6 +16014,7 @@
   },
   "m_web_api_types_CreatePtySessionReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 673,
    "name": "CreatePtySessionReq",
@@ -15548,6 +16046,7 @@
   },
   "m_web_api_types_CreateWorktreeReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 204,
    "name": "CreateWorktreeReq",
@@ -15574,6 +16073,7 @@
   },
   "m_web_api_types_Cumulative": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 61,
    "name": "Cumulative",
@@ -15610,6 +16110,7 @@
   },
   "m_web_api_types_DesktopState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 755,
    "name": "DesktopState",
@@ -15641,6 +16142,7 @@
   },
   "m_web_api_types_DiffResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 419,
    "name": "DiffResult",
@@ -15657,6 +16159,7 @@
   },
   "m_web_api_types_DirEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 617,
    "name": "DirEntry",
@@ -15688,6 +16191,7 @@
   },
   "m_web_api_types_DirListResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 629,
    "name": "DirListResult",
@@ -15704,6 +16208,7 @@
   },
   "m_web_api_types_DisciplineBinding": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 498,
    "name": "DisciplineBinding",
@@ -15735,6 +16240,7 @@
   },
   "m_web_api_types_DisciplineBuiltin": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 483,
    "name": "DisciplineBuiltin",
@@ -15756,6 +16262,7 @@
   },
   "m_web_api_types_DisciplineFile": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 489,
    "name": "DisciplineFile",
@@ -15782,6 +16289,7 @@
   },
   "m_web_api_types_DisciplineMappingReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 514,
    "name": "DisciplineMappingReq",
@@ -15798,6 +16306,7 @@
   },
   "m_web_api_types_DisciplineResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 506,
    "name": "DisciplineResp",
@@ -15829,6 +16338,7 @@
   },
   "m_web_api_types_DownloadState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 769,
    "name": "DownloadState",
@@ -15870,6 +16380,7 @@
   },
   "m_web_api_types_EnvBinding": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 529,
    "name": "EnvBinding",
@@ -15896,6 +16407,7 @@
   },
   "m_web_api_types_EnvFile": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 519,
    "name": "EnvFile",
@@ -15922,6 +16434,7 @@
   },
   "m_web_api_types_EnvKey": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 543,
    "name": "EnvKey",
@@ -15948,6 +16461,7 @@
   },
   "m_web_api_types_EnvKeysResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 550,
    "name": "EnvKeysResp",
@@ -15964,6 +16478,7 @@
   },
   "m_web_api_types_EnvMappingReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 555,
    "name": "EnvMappingReq",
@@ -15980,6 +16495,7 @@
   },
   "m_web_api_types_EnvResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 536,
    "name": "EnvResp",
@@ -16006,6 +16522,7 @@
   },
   "m_web_api_types_Event": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 69,
    "name": "Event",
@@ -16042,6 +16559,7 @@
   },
   "m_web_api_types_ExecutorDefaultReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 250,
    "name": "ExecutorDefaultReq",
@@ -16063,6 +16581,7 @@
   },
   "m_web_api_types_ExecutorDefaultResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 242,
    "name": "ExecutorDefaultResp",
@@ -16089,6 +16608,7 @@
   },
   "m_web_api_types_FileConflictResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 477,
    "name": "FileConflictResp",
@@ -16110,6 +16630,7 @@
   },
   "m_web_api_types_FileRead": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 456,
    "name": "FileRead",
@@ -16146,6 +16667,7 @@
   },
   "m_web_api_types_FileResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 448,
    "name": "FileResult",
@@ -16162,6 +16684,7 @@
   },
   "m_web_api_types_FileWriteReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 465,
    "name": "FileWriteReq",
@@ -16183,6 +16706,7 @@
   },
   "m_web_api_types_FileWriteResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 471,
    "name": "FileWriteResp",
@@ -16204,6 +16728,7 @@
   },
   "m_web_api_types_Frame": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 593,
    "name": "Frame",
@@ -16295,6 +16820,7 @@
   },
   "m_web_api_types_FrameType": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 577,
    "name": "FrameType",
@@ -16304,6 +16830,7 @@
   },
   "m_web_api_types_LatestResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 763,
    "name": "LatestResp",
@@ -16325,6 +16852,7 @@
   },
   "m_web_api_types_Launcher": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 736,
    "name": "Launcher",
@@ -16334,6 +16862,7 @@
   },
   "m_web_api_types_LaunchersReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 750,
    "name": "LaunchersReq",
@@ -16343,6 +16872,7 @@
   },
   "m_web_api_types_LaunchersResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 746,
    "name": "LaunchersResp",
@@ -16352,6 +16882,7 @@
   },
   "m_web_api_types_Live": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 340,
    "name": "Live",
@@ -16361,6 +16892,7 @@
   },
   "m_web_api_types_Machine": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 211,
    "name": "Machine",
@@ -16442,6 +16974,7 @@
   },
   "m_web_api_types_MachineStatus": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 159,
    "name": "MachineStatus",
@@ -16473,6 +17006,7 @@
   },
   "m_web_api_types_MachineUpgrade": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 262,
    "name": "MachineUpgrade",
@@ -16519,6 +17053,7 @@
   },
   "m_web_api_types_MachineUpgradeResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 277,
    "name": "MachineUpgradeResp",
@@ -16560,6 +17095,7 @@
   },
   "m_web_api_types_MachinesResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 272,
    "name": "MachinesResp",
@@ -16576,6 +17112,7 @@
   },
   "m_web_api_types_PatchProjectReq": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 313,
    "name": "PatchProjectReq",
@@ -16597,6 +17134,7 @@
   },
   "m_web_api_types_ProjectBranch": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 189,
    "name": "ProjectBranch",
@@ -16618,6 +17156,7 @@
   },
   "m_web_api_types_ProjectBranchesResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 197,
    "name": "ProjectBranchesResp",
@@ -16644,6 +17183,7 @@
   },
   "m_web_api_types_ProjectLocation": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 115,
    "name": "ProjectLocation",
@@ -16685,6 +17225,7 @@
   },
   "m_web_api_types_ProjectLocationNode": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 142,
    "name": "ProjectLocationNode",
@@ -16721,6 +17262,7 @@
   },
   "m_web_api_types_ProjectNode": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 150,
    "name": "ProjectNode",
@@ -16752,6 +17294,7 @@
   },
   "m_web_api_types_ProjectTreeResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 181,
    "name": "ProjectTreeResp",
@@ -16778,6 +17321,7 @@
   },
   "m_web_api_types_PtyControl": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 681,
    "name": "PtyControl",
@@ -16824,6 +17368,7 @@
   },
   "m_web_api_types_PtySession": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 651,
    "name": "PtySession",
@@ -16905,6 +17450,7 @@
   },
   "m_web_api_types_PtySessionsResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 668,
    "name": "PtySessionsResp",
@@ -16926,6 +17472,7 @@
   },
   "m_web_api_types_ReplyRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 391,
    "name": "ReplyRequest",
@@ -16947,6 +17494,7 @@
   },
   "m_web_api_types_ReplyResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 398,
    "name": "ReplyResult",
@@ -16973,6 +17521,7 @@
   },
   "m_web_api_types_ResumeResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 560,
    "name": "ResumeResult",
@@ -17029,6 +17578,7 @@
   },
   "m_web_api_types_RunResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 413,
    "name": "RunResult",
@@ -17050,6 +17600,7 @@
   },
   "m_web_api_types_SearchHit": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 634,
    "name": "SearchHit",
@@ -17076,6 +17627,7 @@
   },
   "m_web_api_types_SearchResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 642,
    "name": "SearchResult",
@@ -17097,6 +17649,7 @@
   },
   "m_web_api_types_SessionInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 323,
    "name": "SessionInfo",
@@ -17138,6 +17691,7 @@
   },
   "m_web_api_types_StatusResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 352,
    "name": "StatusResp",
@@ -17204,6 +17758,7 @@
   },
   "m_web_api_types_StopResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 406,
    "name": "StopResult",
@@ -17225,6 +17780,7 @@
   },
   "m_web_api_types_Task": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 15,
    "name": "Task",
@@ -17361,6 +17917,7 @@
   },
   "m_web_api_types_TaskDetail": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 371,
    "name": "TaskDetail",
@@ -17387,6 +17944,7 @@
   },
   "m_web_api_types_TaskPlan": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 427,
    "name": "TaskPlan",
@@ -17418,6 +17976,7 @@
   },
   "m_web_api_types_TaskTiming": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 631,
    "name": "TaskTiming",
@@ -17427,6 +17986,7 @@
   },
   "m_web_api_types_TasksResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 174,
    "name": "TasksResp",
@@ -17448,6 +18008,7 @@
   },
   "m_web_api_types_Ticket": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 77,
    "name": "Ticket",
@@ -17499,6 +18060,7 @@
   },
   "m_web_api_types_TicketRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 382,
    "name": "TicketRequest",
@@ -17530,6 +18092,7 @@
   },
   "m_web_api_types_TimingBucket": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 646,
    "name": "TimingBucket",
@@ -17539,6 +18102,7 @@
   },
   "m_web_api_types_Usage": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 46,
    "name": "Usage",
@@ -17560,6 +18124,7 @@
   },
   "m_web_api_types_WorkbenchBaseRow": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 94,
    "name": "WorkbenchBaseRow",
@@ -17586,6 +18151,7 @@
   },
   "m_web_api_types_WorkbenchStateResp": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 102,
    "name": "WorkbenchStateResp",
@@ -17612,6 +18178,7 @@
   },
   "m_web_api_types_Workspace": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_types_model",
    "order": 129,
    "name": "Workspace",
@@ -17653,6 +18220,7 @@
   },
   "m_web_api_ws_WsOptions": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ws_model",
    "order": 57,
    "name": "WsOptions",
@@ -17662,6 +18230,7 @@
   },
   "m_web_api_ws_WsSocketLike": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ws_model",
    "order": 33,
    "name": "WsSocketLike",
@@ -17671,6 +18240,7 @@
   },
   "m_web_api_ws_WsStatus": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ws_model",
    "order": 28,
    "name": "WsStatus",
@@ -17680,6 +18250,7 @@
   },
   "m_web_api_ws_WsTermination": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_api_ws_model",
    "order": 43,
    "name": "WsTermination",
@@ -17689,6 +18260,7 @@
   },
   "m_web_app_board_BoardColumn": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_board_model",
    "order": 18,
    "name": "BoardColumn",
@@ -17698,6 +18270,7 @@
   },
   "m_web_app_board_BoardFilter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_board_model",
    "order": 18,
    "name": "BoardFilter",
@@ -17707,6 +18280,7 @@
   },
   "m_web_app_board_BoardPageProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_board_model",
    "order": 36,
    "name": "BoardPageProps",
@@ -17716,6 +18290,7 @@
   },
   "m_web_app_board_FilterBarProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_board_model",
    "order": 16,
    "name": "FilterBarProps",
@@ -17725,6 +18300,7 @@
   },
   "m_web_app_board_StateTone": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_board_model",
    "order": 78,
    "name": "StateTone",
@@ -17734,6 +18310,7 @@
   },
   "m_web_app_cards_AnyRecord": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_cards_model",
    "order": 100,
    "name": "AnyRecord",
@@ -17743,6 +18320,7 @@
   },
   "m_web_app_cards_CardItemProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_cards_model",
    "order": 6,
    "name": "CardItemProps",
@@ -17752,6 +18330,7 @@
   },
   "m_web_app_cards_DrawerTaskDetail": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_cards_model",
    "order": 250,
    "name": "DrawerTaskDetail",
@@ -17761,6 +18340,7 @@
   },
   "m_web_app_cards_MigrateDialogProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_cards_model",
    "order": 10,
    "name": "MigrateDialogProps",
@@ -17770,6 +18350,7 @@
   },
   "m_web_app_cards_Relation": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_cards_model",
    "order": 11,
    "name": "Relation",
@@ -17779,6 +18360,7 @@
   },
   "m_web_app_cards_VerdictFinding": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_cards_model",
    "order": 142,
    "name": "VerdictFinding",
@@ -17788,6 +18370,7 @@
   },
   "m_web_app_codegraph_CgView": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 12,
    "name": "CgView",
@@ -17797,6 +18380,7 @@
   },
   "m_web_app_codegraph_ChainTreeNode": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 122,
    "name": "ChainTreeNode",
@@ -17806,6 +18390,7 @@
   },
   "m_web_app_codegraph_DetailPanelProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 9,
    "name": "DetailPanelProps",
@@ -17815,6 +18400,7 @@
   },
   "m_web_app_codegraph_DomainAgg": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 29,
    "name": "DomainAgg",
@@ -17824,6 +18410,7 @@
   },
   "m_web_app_codegraph_DomainCard": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 13,
    "name": "DomainCard",
@@ -17833,6 +18420,7 @@
   },
   "m_web_app_codegraph_DomainDetailProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 9,
    "name": "DomainDetailProps",
@@ -17842,6 +18430,7 @@
   },
   "m_web_app_codegraph_DomainEdge": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 22,
    "name": "DomainEdge",
@@ -17851,6 +18440,7 @@
   },
   "m_web_app_codegraph_DomainPanoramaProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 18,
    "name": "DomainPanoramaProps",
@@ -17860,6 +18450,7 @@
   },
   "m_web_app_codegraph_FocusGraphProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 13,
    "name": "FocusGraphProps",
@@ -17869,6 +18460,7 @@
   },
   "m_web_app_codegraph_Status": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 9,
    "name": "Status",
@@ -17878,6 +18470,7 @@
   },
   "m_web_app_codegraph_ViewEdge": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 11,
    "name": "ViewEdge",
@@ -17887,6 +18480,7 @@
   },
   "m_web_app_codegraph_ViewNode": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_codegraph_model",
    "order": 10,
    "name": "ViewNode",
@@ -17896,6 +18490,7 @@
   },
   "m_web_app_data_LedgerEnabledState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_data_model",
    "order": 11,
    "name": "LedgerEnabledState",
@@ -17905,6 +18500,7 @@
   },
   "m_web_app_data_MachineCaps": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_data_model",
    "order": 18,
    "name": "MachineCaps",
@@ -17914,6 +18510,7 @@
   },
   "m_web_app_data_PollState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_data_model",
    "order": 19,
    "name": "PollState",
@@ -17923,6 +18520,7 @@
   },
   "m_web_app_files_ChangeStatus": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 27,
    "name": "ChangeStatus",
@@ -17932,6 +18530,7 @@
   },
   "m_web_app_files_DeleteEntryDialogProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 14,
    "name": "DeleteEntryDialogProps",
@@ -17941,6 +18540,7 @@
   },
   "m_web_app_files_DeleteTarget": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 125,
    "name": "DeleteTarget",
@@ -17950,6 +18550,7 @@
   },
   "m_web_app_files_DirEntriesApi": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 19,
    "name": "DirEntriesApi",
@@ -17959,6 +18560,7 @@
   },
   "m_web_app_files_EntryNameDialogProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 15,
    "name": "EntryNameDialogProps",
@@ -17968,6 +18570,7 @@
   },
   "m_web_app_files_FileTreeProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 89,
    "name": "FileTreeProps",
@@ -17977,6 +18580,7 @@
   },
   "m_web_app_files_LevelProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 546,
    "name": "LevelProps",
@@ -17986,6 +18590,7 @@
   },
   "m_web_app_files_MenuEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 109,
    "name": "MenuEntry",
@@ -17995,6 +18600,7 @@
   },
   "m_web_app_files_NameDlg": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_files_model",
    "order": 118,
    "name": "NameDlg",
@@ -18004,6 +18610,7 @@
   },
   "m_web_app_files_SearchState": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_files_model",
    "order": 133,
    "name": "SearchState",
@@ -18013,6 +18620,7 @@
   },
   "m_web_app_flows_NodeEditorProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_flows_model",
    "order": 14,
    "name": "NodeEditorProps",
@@ -18022,6 +18630,7 @@
   },
   "m_web_app_flows_Tab": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_flows_model",
    "order": 7,
    "name": "Tab",
@@ -18031,6 +18640,7 @@
   },
   "m_web_app_homedock_DockSnapshot": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_homedock_model",
    "order": 30,
    "name": "DockSnapshot",
@@ -18040,6 +18650,7 @@
   },
   "m_web_app_homedock_Geom": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_homedock_model",
    "order": 22,
    "name": "Geom",
@@ -18049,6 +18660,7 @@
   },
   "m_web_app_homedock_HomeDockApi": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_homedock_model",
    "order": 32,
    "name": "HomeDockApi",
@@ -18058,6 +18670,7 @@
   },
   "m_web_app_homedock_HomeTab": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_homedock_model",
    "order": 20,
    "name": "HomeTab",
@@ -18067,6 +18680,7 @@
   },
   "m_web_app_homedock_HomeWindowProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_homedock_model",
    "order": 23,
    "name": "HomeWindowProps",
@@ -18076,6 +18690,7 @@
   },
   "m_web_app_lib_ConfirmDialogProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 19,
    "name": "ConfirmDialogProps",
@@ -18085,6 +18700,7 @@
   },
   "m_web_app_lib_DropdownOption": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 13,
    "name": "DropdownOption",
@@ -18094,6 +18710,7 @@
   },
   "m_web_app_lib_DropdownProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 19,
    "name": "DropdownProps",
@@ -18103,6 +18720,7 @@
   },
   "m_web_app_lib_FileDropTarget": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 32,
    "name": "FileDropTarget",
@@ -18112,6 +18730,7 @@
   },
   "m_web_app_lib_IconMenuItem": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 19,
    "name": "IconMenuItem",
@@ -18121,6 +18740,7 @@
   },
   "m_web_app_lib_IconMenuProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 34,
    "name": "IconMenuProps",
@@ -18130,6 +18750,7 @@
   },
   "m_web_app_lib_ParsedVersion": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 6,
    "name": "ParsedVersion",
@@ -18139,6 +18760,7 @@
   },
   "m_web_app_lib_WailsInternal": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 40,
    "name": "WailsInternal",
@@ -18148,6 +18770,7 @@
   },
   "m_web_app_lib_WebkitBridge": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_lib_model",
    "order": 45,
    "name": "WebkitBridge",
@@ -18157,6 +18780,7 @@
   },
   "m_web_app_machines_AddFormState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_machines_model",
    "order": 47,
    "name": "AddFormState",
@@ -18166,6 +18790,7 @@
   },
   "m_web_app_machines_MachineDetailProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_machines_model",
    "order": 23,
    "name": "MachineDetailProps",
@@ -18175,6 +18800,7 @@
   },
   "m_web_app_overlay_BoardOverlayProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_overlay_model",
    "order": 19,
    "name": "BoardOverlayProps",
@@ -18184,6 +18810,7 @@
   },
   "m_web_app_overlay_GlobalTicket": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_overlay_model",
    "order": 20,
    "name": "GlobalTicket",
@@ -18193,6 +18820,7 @@
   },
   "m_web_app_overlay_GlobalTickets": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_overlay_model",
    "order": 25,
    "name": "GlobalTickets",
@@ -18202,6 +18830,7 @@
   },
   "m_web_app_overlay_OverlayProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_overlay_model",
    "order": 16,
    "name": "OverlayProps",
@@ -18211,6 +18840,7 @@
   },
   "m_web_app_overlay_TicketsOverlayProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_overlay_model",
    "order": 20,
    "name": "TicketsOverlayProps",
@@ -18220,6 +18850,7 @@
   },
   "m_web_app_projects_AddProjectWizardProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_projects_model",
    "order": 22,
    "name": "AddProjectWizardProps",
@@ -18229,6 +18860,7 @@
   },
   "m_web_app_projects_Change": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_projects_model",
    "order": 37,
    "name": "Change",
@@ -18238,6 +18870,7 @@
   },
   "m_web_app_projects_LocationChoice": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_projects_model",
    "order": 18,
    "name": "LocationChoice",
@@ -18247,6 +18880,7 @@
   },
   "m_web_app_projects_Outcome": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_projects_model",
    "order": 68,
    "name": "Outcome",
@@ -18256,6 +18890,7 @@
   },
   "m_web_app_projects_ProjectEditDialogProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_projects_model",
    "order": 23,
    "name": "ProjectEditDialogProps",
@@ -18265,6 +18900,7 @@
   },
   "m_web_app_projects_RegisterFormInput": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_projects_model",
    "order": 27,
    "name": "RegisterFormInput",
@@ -18274,6 +18910,7 @@
   },
   "m_web_app_projects_RegisterOutcome": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_projects_model",
    "order": 38,
    "name": "RegisterOutcome",
@@ -18283,6 +18920,7 @@
   },
   "m_web_app_settings_BlockEditorProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_settings_model",
    "order": 15,
    "name": "BlockEditorProps",
@@ -18292,6 +18930,7 @@
   },
   "m_web_app_settings_MachineUpgradeViewState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_settings_model",
    "order": 29,
    "name": "MachineUpgradeViewState",
@@ -18301,6 +18940,7 @@
   },
   "m_web_app_settings_SectionKey": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_settings_model",
    "order": 37,
    "name": "SectionKey",
@@ -18310,6 +18950,7 @@
   },
   "m_web_app_settings_Selection": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_settings_model",
    "order": 29,
    "name": "Selection",
@@ -18319,6 +18960,7 @@
   },
   "m_web_app_settings_UpdatePageProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_settings_model",
    "order": 14,
    "name": "UpdatePageProps",
@@ -18328,6 +18970,7 @@
   },
   "m_web_app_shared_ContextMenuEntry": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_shared_model",
    "order": 25,
    "name": "ContextMenuEntry",
@@ -18337,6 +18980,7 @@
   },
   "m_web_app_shared_ContextMenuItem": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_shared_model",
    "order": 15,
    "name": "ContextMenuItem",
@@ -18346,6 +18990,7 @@
   },
   "m_web_app_shared_ContextMenuProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_shared_model",
    "order": 27,
    "name": "ContextMenuProps",
@@ -18355,6 +19000,7 @@
   },
   "m_web_app_shell_OverlayKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_shell_model",
    "order": 63,
    "name": "OverlayKind",
@@ -18364,6 +19010,7 @@
   },
   "m_web_app_task_Block": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 85,
    "name": "Block",
@@ -18373,6 +19020,7 @@
   },
   "m_web_app_task_Busy": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 17,
    "name": "Busy",
@@ -18382,6 +19030,7 @@
   },
   "m_web_app_task_ConversationStreamHandle": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 55,
    "name": "ConversationStreamHandle",
@@ -18391,6 +19040,7 @@
   },
   "m_web_app_task_ConversationStreamProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 38,
    "name": "ConversationStreamProps",
@@ -18400,6 +19050,7 @@
   },
   "m_web_app_task_Delivery": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 12,
    "name": "Delivery",
@@ -18409,6 +19060,7 @@
   },
   "m_web_app_task_DiffLine": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 14,
    "name": "DiffLine",
@@ -18418,6 +19070,7 @@
   },
   "m_web_app_task_EventPhrase": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 11,
    "name": "EventPhrase",
@@ -18427,6 +19080,7 @@
   },
   "m_web_app_task_FileDiff": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 20,
    "name": "FileDiff",
@@ -18436,6 +19090,7 @@
   },
   "m_web_app_task_FramesStream": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_task_model",
    "order": 30,
    "name": "FramesStream",
@@ -18445,6 +19100,7 @@
   },
   "m_web_app_task_ParsedDiff": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 29,
    "name": "ParsedDiff",
@@ -18454,6 +19110,7 @@
   },
   "m_web_app_task_ParsedTicketRequest": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 65,
    "name": "ParsedTicketRequest",
@@ -18463,6 +19120,7 @@
   },
   "m_web_app_task_ReviewTab": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 17,
    "name": "ReviewTab",
@@ -18472,6 +19130,7 @@
   },
   "m_web_app_task_ScanResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 27,
    "name": "ScanResult",
@@ -18481,6 +19140,7 @@
   },
   "m_web_app_task_Segment": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 20,
    "name": "Segment",
@@ -18490,6 +19150,7 @@
   },
   "m_web_app_task_StreamItem": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 27,
    "name": "StreamItem",
@@ -18499,6 +19160,7 @@
   },
   "m_web_app_task_TaskSession": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_task_model",
    "order": 32,
    "name": "TaskSession",
@@ -18508,6 +19170,7 @@
   },
   "m_web_app_task_TicketAction": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 17,
    "name": "TicketAction",
@@ -18517,6 +19180,7 @@
   },
   "m_web_app_task_TicketsPanelProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 26,
    "name": "TicketsPanelProps",
@@ -18526,6 +19190,7 @@
   },
   "m_web_app_task_ToolBlock": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 112,
    "name": "ToolBlock",
@@ -18535,6 +19200,7 @@
   },
   "m_web_app_task_ToolGroupBlock": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 18,
    "name": "ToolGroupBlock",
@@ -18544,6 +19210,7 @@
   },
   "m_web_app_task_ToolState": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 222,
    "name": "ToolState",
@@ -18553,6 +19220,7 @@
   },
   "m_web_app_task_TuiHeaderProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 16,
    "name": "TuiHeaderProps",
@@ -18562,6 +19230,7 @@
   },
   "m_web_app_task_UserInstructionBlockProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_task_model",
    "order": 25,
    "name": "UserInstructionBlockProps",
@@ -18571,6 +19240,7 @@
   },
   "m_web_app_tree_NewWorktreeDialogProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 24,
    "name": "NewWorktreeDialogProps",
@@ -18580,6 +19250,7 @@
   },
   "m_web_app_tree_NodeCounts": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 12,
    "name": "NodeCounts",
@@ -18589,6 +19260,7 @@
   },
   "m_web_app_tree_ProjectMetrics": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 95,
    "name": "ProjectMetrics",
@@ -18598,6 +19270,7 @@
   },
   "m_web_app_tree_ProjectSort": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 13,
    "name": "ProjectSort",
@@ -18607,6 +19280,7 @@
   },
   "m_web_app_tree_ProjectTreeProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 58,
    "name": "ProjectTreeProps",
@@ -18616,6 +19290,7 @@
   },
   "m_web_app_tree_RowCountsProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 12,
    "name": "RowCountsProps",
@@ -18625,6 +19300,7 @@
   },
   "m_web_app_tree_TreeFilter": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 21,
    "name": "TreeFilter",
@@ -18634,6 +19310,7 @@
   },
   "m_web_app_tree_TreePrefs": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_tree_model",
    "order": 16,
    "name": "TreePrefs",
@@ -18643,6 +19320,7 @@
   },
   "m_web_app_tree_TreePrefsMenuProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 16,
    "name": "TreePrefsMenuProps",
@@ -18652,6 +19330,7 @@
   },
   "m_web_app_tree_WorkspaceIdleInfo": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 144,
    "name": "WorkspaceIdleInfo",
@@ -18661,6 +19340,7 @@
   },
   "m_web_app_tree_WorkspaceMetrics": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_tree_model",
    "order": 18,
    "name": "WorkspaceMetrics",
@@ -18670,6 +19350,7 @@
   },
   "m_web_app_update_ToastCandidate": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_update_model",
    "order": 16,
    "name": "ToastCandidate",
@@ -18679,6 +19360,7 @@
   },
   "m_web_app_update_ToastKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_update_model",
    "order": 14,
    "name": "ToastKind",
@@ -18688,6 +19370,7 @@
   },
   "m_web_app_update_UpdateToastsProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_update_model",
    "order": 23,
    "name": "UpdateToastsProps",
@@ -18697,6 +19380,7 @@
   },
   "m_web_app_workbench_BaseDir": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_workbench_model",
    "order": 38,
    "name": "BaseDir",
@@ -18706,6 +19390,7 @@
   },
   "m_web_app_workbench_BlankTabProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 38,
    "name": "BlankTabProps",
@@ -18715,6 +19400,7 @@
   },
   "m_web_app_workbench_DropZone": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 23,
    "name": "DropZone",
@@ -18724,6 +19410,7 @@
   },
   "m_web_app_workbench_GroupDividerProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 23,
    "name": "GroupDividerProps",
@@ -18733,6 +19420,7 @@
   },
   "m_web_app_workbench_LauncherItem": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 33,
    "name": "LauncherItem",
@@ -18742,6 +19430,7 @@
   },
   "m_web_app_workbench_PersistedBase": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 28,
    "name": "PersistedBase",
@@ -18751,6 +19440,7 @@
   },
   "m_web_app_workbench_PickKind": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 19,
    "name": "PickKind",
@@ -18760,6 +19450,7 @@
   },
   "m_web_app_workbench_RestoreInput": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 58,
    "name": "RestoreInput",
@@ -18769,6 +19460,7 @@
   },
   "m_web_app_workbench_RestoreResult": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 68,
    "name": "RestoreResult",
@@ -18778,6 +19470,7 @@
   },
   "m_web_app_workbench_StoredDraft": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_workbench_model",
    "order": 20,
    "name": "StoredDraft",
@@ -18787,6 +19480,7 @@
   },
   "m_web_app_workbench_Tab": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 51,
    "name": "Tab",
@@ -18796,6 +19490,7 @@
   },
   "m_web_app_workbench_TabBarProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 21,
    "name": "TabBarProps",
@@ -18805,6 +19500,7 @@
   },
   "m_web_app_workbench_TabContent": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 23,
    "name": "TabContent",
@@ -18814,6 +19510,7 @@
   },
   "m_web_app_workbench_TabGroup": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 57,
    "name": "TabGroup",
@@ -18823,6 +19520,7 @@
   },
   "m_web_app_workbench_TaskPickerDialogProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 22,
    "name": "TaskPickerDialogProps",
@@ -18832,6 +19530,7 @@
   },
   "m_web_app_workbench_TerminalInputFix": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 58,
    "name": "TerminalInputFix",
@@ -18841,6 +19540,7 @@
   },
   "m_web_app_workbench_TerminalTabProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 36,
    "name": "TerminalTabProps",
@@ -18850,6 +19550,7 @@
   },
   "m_web_app_workbench_Workbench": {
    "kind": "model",
+   "modelKind": "entity",
    "container": "k_web_app_workbench_model",
    "order": 75,
    "name": "Workbench",
@@ -18859,6 +19560,7 @@
   },
   "m_web_app_workbench_WorkbenchApi": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 85,
    "name": "WorkbenchApi",
@@ -18868,6 +19570,7 @@
   },
   "m_web_app_workbench_WorkbenchPageProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 31,
    "name": "WorkbenchPageProps",
@@ -18877,6 +19580,7 @@
   },
   "m_web_app_workbench_WorkbenchSyncDeps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_app_workbench_model",
    "order": 44,
    "name": "WorkbenchSyncDeps",
@@ -18886,6 +19590,7 @@
   },
   "m_web_components_ui_BadgeProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_components_ui_model",
    "order": 31,
    "name": "BadgeProps",
@@ -18895,6 +19600,7 @@
   },
   "m_web_components_ui_ButtonProps": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_web_components_ui_model",
    "order": 37,
    "name": "ButtonProps",
@@ -18904,6 +19610,7 @@
   },
   "m_wire_Control": {
    "kind": "model",
+   "modelKind": "dto",
    "container": "k_wire_model",
    "order": 56,
    "name": "Control",
