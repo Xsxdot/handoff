@@ -11,9 +11,10 @@
 // 边界：
 //   - 不管建完之后干什么——打开抽屉、刷新列表都由调用方决定（onCreated）
 //   - 项目与基线分支**建卡后不可改**：表单上写明，而不是让人建完才发现改不了
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { createCard } from '../../api/ledger'
-import { fetchProjects } from '../../api/client'
+import { ApiError, fetchProjectBranches, fetchProjects } from '../../api/client'
+import type { ProjectBranchesResp } from '../../api/types'
 import { errorMessage } from '../lib/format'
 
 const LAST_PROJECT_KEY = 'handoff.cards.lastProject'
@@ -32,6 +33,15 @@ function saveLastProject(name: string): void {
   } catch (err) {
     console.warn('[NewCardDialog] 上次建卡项目写入失败，本次只在内存生效', err)
   }
+}
+
+// branchOptionsOf 与 NewWorktreeDialog.baseOptions 同款：本地分支表并上服务端
+// 推导的 default。default 可能是 origin/main 这种远端跟踪分支名，不在本地分支
+// 表里——不并进来，引用它的地方会落空，看起来像「没选基线」而实际有值且合法。
+function branchOptionsOf(data: ProjectBranchesResp): string[] {
+  const names = data.branches.map((branch) => branch.name)
+  if (data.default !== '' && !names.includes(data.default)) return [data.default, ...names]
+  return names
 }
 
 export function NewCardDialog({
@@ -60,6 +70,10 @@ export function NewCardDialog({
   const [picked, setPicked] = useState<string | null>(null)
   const [registered, setRegistered] = useState<string[]>([])
   const [projectsError, setProjectsError] = useState('')
+  const branchSeq = useRef(0)
+  const [branchOptions, setBranchOptions] = useState<string[]>([])
+  const [branchDefault, setBranchDefault] = useState('')
+  const [branchHint, setBranchHint] = useState('')
 
   useEffect(() => {
     if (!open) return
@@ -79,6 +93,8 @@ export function NewCardDialog({
     if (!open) {
       // 关闭即复位：下次打开重新按三档预选，不带上一轮的残值
       setPicked(null); setTitle(''); setBaseBranch(''); setError('')
+      setBranchOptions([]); setBranchDefault(''); setBranchHint('')
+      branchSeq.current++
     }
   }, [open])
 
@@ -92,6 +108,36 @@ export function NewCardDialog({
     const last = loadLastProject()
     if (last !== '' && candidates.includes(last)) projectValue = last
   }
+
+  // 分支列表跟随有效项目重取：预选（含打开时的第一档）也要取，不只手动切换才取。
+  // seq 防竞态：连切两个项目时，慢到的旧响应不得覆盖新项目的结果。
+  // 成功时把服务端推导的默认基线显式填入输入框——它可能是不在本地分支表里的
+  // 远端跟踪名，看不见就等于没选（spec §6 判据「出现在选项中且被预选」）。
+  // 切项目在此清空已填分支：旧项目的分支名在新项目下无意义。
+  useEffect(() => {
+    if (!open || projectValue === '') return
+    setBaseBranch('')
+    setBranchOptions([]); setBranchDefault(''); setBranchHint('')
+    const seq = ++branchSeq.current
+    fetchProjectBranches(projectValue)
+      .then((resp) => {
+        if (seq !== branchSeq.current) return
+        setBranchOptions(branchOptionsOf(resp))
+        setBranchDefault(resp.default)
+        setBaseBranch(resp.default)
+      })
+      .catch((err) => {
+        if (seq !== branchSeq.current) return
+        setBranchOptions([]); setBranchDefault('')
+        // 未登记（404）是合法场景：给未登记项目建卡照常能完成，退回手输并说明；
+        // 其余失败同样退回手输但透出原文——缩略成「加载失败」会把唯一线索弄丢
+        setBranchHint(
+          err instanceof ApiError && err.status === 404
+            ? `项目 ${projectValue} 未登记位置，分支需手输`
+            : errorMessage(err),
+        )
+      })
+  }, [open, projectValue])
 
   if (!open) return null
 
@@ -162,9 +208,16 @@ export function NewCardDialog({
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="new-card-base">基线分支</label>
         <input
           id="new-card-base" className="mt-1 w-full rounded border px-2 py-1.5 font-mono text-sm"
-          placeholder={parent ? '留空 = 继承父卡' : '留空 = 项目主线'}
+          list="new-card-base-options"
+          placeholder={parent
+            ? '留空 = 继承父卡'
+            : branchDefault !== '' ? `留空 = ${branchDefault}` : '留空 = 项目主线'}
           value={baseBranch} onChange={(e) => setBaseBranch(e.target.value)}
         />
+        <datalist id="new-card-base-options">
+          {branchOptions.map((name) => <option key={name} value={name} />)}
+        </datalist>
+        {branchHint !== '' && <p className="mt-1 text-xs text-muted-foreground">{branchHint}</p>}
         <p className="mt-1 text-xs text-muted-foreground">
           这张卡的合并目标。<b>建卡后不可改</b>——已派出去的任务会按它工作。
         </p>

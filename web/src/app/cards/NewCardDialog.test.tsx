@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { ApiError } from '../../api/client'
 import { NewCardDialog } from './NewCardDialog'
 
 vi.mock('../../api/ledger', async (importOriginal) => ({
@@ -13,6 +14,10 @@ vi.mock('../../api/client', async (importOriginal) => ({
     { project_id: 'p1', name: 'handoff', path: '/h', origin_url: '', created_at: '' },
     { project_id: 'p2', name: 'sq', path: '/s', origin_url: '', created_at: '' },
   ]),
+  fetchProjectBranches: vi.fn().mockImplementation((name: string) =>
+    name === 'sq'
+      ? Promise.resolve({ branches: [{ name: 'develop', worktree: '' }], default: 'develop', worktree_root: '/w' })
+      : Promise.resolve({ branches: [{ name: 'main', worktree: '' }], default: 'origin/main', worktree_root: '/w' })),
 }))
 
 beforeEach(() => {
@@ -41,7 +46,7 @@ describe('建卡对话框', () => {
   })
 
   it('基线分支标明「建卡后不可改」', () => {
-    render(<NewCardDialog {...props} onCreated={() => {}} />)
+    render(<NewCardDialog {...props} cardProjects={['ghost', 'handoff']} onCreated={() => {}} />)
     expect(screen.getAllByText(/建卡后不可改/)).toHaveLength(2)
   })
 
@@ -98,6 +103,43 @@ describe('项目选择', () => {
     fireEvent.click(screen.getByRole('button', { name: '建卡' }))
     await waitFor(() => expect(vi.mocked(ledger.createCard)).toHaveBeenCalledWith(
       expect.objectContaining({ title: '第一张 sq 卡', project: 'sq' }),
+    ))
+  })
+})
+
+describe('基线分支', () => {
+  it('选定项目即取分支：default 是远端跟踪名也并进选项并被填入，切项目重取并换值', async () => {
+    const api = await import('../../api/client')
+    render(<NewCardDialog {...props} onCreated={() => {}} />)
+    const base = await screen.findByLabelText('基线分支') as HTMLInputElement
+    await waitFor(() => {
+      expect(base.value).toBe('origin/main')
+      expect(vi.mocked(api.fetchProjectBranches)).toHaveBeenCalledWith('handoff')
+    })
+    const options = document.querySelectorAll('#new-card-base-options option')
+    expect([...options].some((option) => (option as HTMLOptionElement).value === 'origin/main')).toBe(true)
+    fireEvent.change(screen.getByLabelText('项目'), { target: { value: 'sq' } })
+    await waitFor(() => {
+      expect(base.value).toBe('develop')
+      expect(vi.mocked(api.fetchProjectBranches)).toHaveBeenLastCalledWith('sq')
+    })
+  })
+
+  it('项目未登记（404）降级纯手输并说明原因，不弹错；手输名照常随卡提交', async () => {
+    const api = await import('../../api/client')
+    const ledger = await import('../../api/ledger')
+    vi.mocked(api.fetchProjectBranches).mockImplementation((name: string) =>
+      name === 'ghost'
+        ? Promise.reject(new ApiError(404, '项目 ghost 未登记'))
+        : Promise.resolve({ branches: [{ name: 'main', worktree: '' }], default: 'main', worktree_root: '/w' }))
+    render(<NewCardDialog {...props} cardProjects={['ghost', 'handoff']} onCreated={() => {}} />)
+    fireEvent.change(await screen.findByLabelText('项目'), { target: { value: 'ghost' } })
+    expect(await screen.findByText(/未登记位置，分支需手输/)).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('基线分支'), { target: { value: 'feat/from-scratch' } })
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: '给未登记项目建卡' } })
+    fireEvent.click(screen.getByRole('button', { name: '建卡' }))
+    await waitFor(() => expect(vi.mocked(ledger.createCard)).toHaveBeenCalledWith(
+      expect.objectContaining({ project: 'ghost', base_branch: 'feat/from-scratch' }),
     ))
   })
 })
