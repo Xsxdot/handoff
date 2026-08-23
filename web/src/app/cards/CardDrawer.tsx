@@ -8,6 +8,7 @@ import { errorMessage } from '../lib/format'
 import { TicketsPanel } from '../task/TicketsPanel'
 import { boardColumns } from './columns'
 import { TaskState } from '../board/StateDot'
+import { isTerminalState } from '../workbench/TaskPickerDialog'
 
 type Relation = { From: string; To: string; Type: string }
 
@@ -258,6 +259,15 @@ function linkedTaskOf(row: TaskStateRow, tasks: Task[] | undefined): Task | unde
   return tasks?.find((task) => task.id === row.TaskID)
 }
 
+// isRunningRow 判「这一行此刻在不在跑」。口径刻意与看板分栏、任务选择弹层同源：
+// 非 isTerminalState 即在跑（waiting_answer/waiting_review 是「等你动手」，不是
+// 「结束」；spec §5 明令复用这一个终态集合，不许自造第三套）。关联不上的一律
+// 不算在跑：不知道的事不能报成「活着」。n 是几十量级，不做 memo 化。
+function isRunningRow(row: TaskStateRow, tasks: Task[] | undefined): boolean {
+  const live = linkedTaskOf(row, tasks)
+  return live !== undefined && !isTerminalState(live.state)
+}
+
 function pendingTickets(detail: DrawerTaskDetail): Ticket[] {
   return detail.pending_tickets ?? detail.tickets ?? []
 }
@@ -368,6 +378,21 @@ export function CardDrawer({
     })
   }, [detail, timelineFilter])
   const groups = timelineGroups(filteredEvents)
+  // 关联执行的展示序与计数：在跑的排最前（扫一眼就知道有没有活着的），其余按
+  // 最后事件序号倒序；平局保持账本返回的原序（Array.prototype.sort 自 ES2019 起
+  // 稳定）。tasks===undefined 时不动序也不计数：「在跑」无从判定，标题退回旧
+  // 形态——不知道就说不知道，不谎报「0 个在跑」（spec §3.1/§3.2 的诚实降级）。
+  const taskRows = useMemo(() => {
+    const rows = [...(detail?.task_states ?? [])]
+    if (tasks === undefined) return rows
+    return rows.sort((left, right) => {
+      const leftRunning = isRunningRow(left, tasks)
+      const rightRunning = isRunningRow(right, tasks)
+      if (leftRunning !== rightRunning) return leftRunning ? -1 : 1
+      return right.LastSeq - left.LastSeq
+    })
+  }, [detail, tasks])
+  const runningCount = tasks === undefined ? null : taskRows.filter((row) => isRunningRow(row, tasks)).length
 
   const beginTitleEdit = () => {
     if (!detail) return
@@ -752,10 +777,13 @@ export function CardDrawer({
               </section>
             )}
 
-            {(detail.task_states ?? []).length > 0 && (
+            {taskRows.length > 0 && (
               <section className="mb-5">
-                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">关联执行（task）</h3>
-                {(detail.task_states ?? []).map((row) => {
+                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
+                  {/* 计数与行渲染同源（同一个 taskRows/isRunningRow 派生），不会各说各话 */}
+                  {runningCount === null ? '关联执行（task）' : `关联执行 · ${runningCount} 个在跑 / 共 ${taskRows.length} 个`}
+                </h3>
+                {taskRows.map((row) => {
                   const open = expandedTask === row.TaskID
                   const taskDetail = taskDetails[row.TaskID]
                   const linked = linkedTaskOf(row, tasks)

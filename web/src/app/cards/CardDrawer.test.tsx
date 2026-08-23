@@ -550,3 +550,58 @@ describe('抽屉里的关联执行实况', () => {
     expect(within(row).queryByText(/^最后事件/)).not.toBeInTheDocument()
   })
 })
+
+describe('抽屉里的关联执行排序与计数', () => {
+  it('运行中的行排在前面，其余按最后事件序号倒序', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-old-done', Purpose: 'implement', LastType: 'turn_end', LastSeq: 20 },
+      { Target: 'linux-01', TaskID: 'task-live', Purpose: 'implement', LastType: 'question', LastSeq: 5 },
+      { Target: 'local', TaskID: 'task-new-done', Purpose: 'review', LastType: 'review_verdict', LastSeq: 40 },
+    ]))
+    render(
+      <CardDrawer
+        id="B30" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[
+          task({ id: 'task-old-done', state: 'completed' }),
+          task({ id: 'task-live', state: 'running' }),
+          task({ id: 'task-new-done', state: 'failed' }),
+        ]}
+      />,
+    )
+    const section = (await screen.findByText(/关联执行/)).closest('section') as HTMLElement
+    const names = within(section).getAllByRole('button').map((element) => element.textContent ?? '')
+    expect(names[0]).toMatch(/^task-live/)
+    expect(names[1]).toMatch(/^task-new-done/) // 已结束里 LastSeq 40 的在前
+    expect(names[2]).toMatch(/^task-old-done/)
+  })
+
+  it('区块标题的在跑计数与任务流一致（waiting_review 也算在跑，completed 不算）', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-a', Purpose: 'implement', LastType: 'question', LastSeq: 1 },
+      { Target: 'local', TaskID: 'task-b', Purpose: 'review', LastType: 'review_requested', LastSeq: 2 },
+      { Target: 'local', TaskID: 'task-c', Purpose: 'plan', LastType: 'turn_end', LastSeq: 3 },
+    ]))
+    render(
+      <CardDrawer
+        id="B30" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[
+          task({ id: 'task-a', state: 'waiting_answer' }),
+          task({ id: 'task-b', state: 'waiting_review' }),
+          task({ id: 'task-c', state: 'completed' }),
+        ]}
+      />,
+    )
+    expect(await screen.findByText('关联执行 · 2 个在跑 / 共 3 个')).toBeInTheDocument()
+  })
+
+  it('任务流未接入时标题不带计数——不知道就说不知道，不谎报「0 个在跑」', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-x', Purpose: 'plan', LastType: '', LastSeq: 0 },
+    ]))
+    render(<CardDrawer id="B30" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText('关联执行（task）')).toBeInTheDocument()
+  })
+})
