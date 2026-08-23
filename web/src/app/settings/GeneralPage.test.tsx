@@ -5,7 +5,7 @@ import { render, screen } from '@testing-library/react'
 import { renderHook } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { GeneralPage } from './GeneralPage'
-import { useTreePrefs } from '../tree/useTreePrefs'
+import { useTreePrefs, __resetTreePrefsForTest } from '../tree/useTreePrefs'
 import { PREFS_KEY } from '../tree/treePrefs'
 
 const tree = {
@@ -18,6 +18,7 @@ const tree = {
 
 beforeEach(() => {
   localStorage.clear()
+  __resetTreePrefsForTest()
 })
 
 describe('GeneralPage', () => {
@@ -51,6 +52,14 @@ describe('GeneralPage', () => {
     render(<GeneralPage tree={tree} />)
     await userEvent.click(screen.getByRole('checkbox', { name: /隐藏已结束分组/ }))
     expect(JSON.parse(localStorage.getItem(PREFS_KEY)!).hideArchived).toBe(true)
+  })
+
+  it('隐藏文件夹数量默认勾选，点一次后落盘为 false', async () => {
+    render(<GeneralPage tree={tree} />)
+    const box = screen.getByRole('checkbox', { name: /隐藏文件夹数量/ })
+    expect(box).toBeChecked()
+    await userEvent.click(box)
+    expect(JSON.parse(localStorage.getItem(PREFS_KEY)!).hideDirCounts).toBe(false)
   })
 
   it('项目树还没到时不画项目那一组，但另外两项照常可用', () => {

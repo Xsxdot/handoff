@@ -579,6 +579,15 @@ describe('显示偏好', () => {
     expect(screen.queryByRole('menuitem', { name: '全不选' })).toBeNull()
   })
 
+  it('默认不显示文件夹数量；取消勾选后项目行出现开发目录', () => {
+    render(<ProjectTree {...props({})} />)
+    expect(screen.queryByTitle('开发目录')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
+    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏文件夹数量/ }))
+    // 项目行和机器行都会画出这一段
+    expect(screen.getAllByTitle('开发目录').length).toBeGreaterThan(0)
+  })
+
   it('开「隐藏已结束分组」后，「已结束」行不再出现', () => {
     const p = props({})
     p.tasks.push(task({

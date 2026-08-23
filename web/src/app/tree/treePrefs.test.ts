@@ -43,13 +43,36 @@ describe('偏好读写', () => {
       v: 1, hideIdleWorktrees: true, projectSort: 'name', hiddenProjects: ['p2'],
     }))
     expect(loadPrefs()).toEqual({
-      v: 1, hideIdleWorktrees: true, projectSort: 'name', hiddenProjects: ['p2'], hideArchived: false,
+      v: 1, hideIdleWorktrees: true, projectSort: 'name', hiddenProjects: ['p2'],
+      hideArchived: false, hideDirCounts: true,
     })
   })
 
   it('hideArchived 能存能取', () => {
     savePrefs({ ...DEFAULT_PREFS, hideArchived: true })
     expect(loadPrefs().hideArchived).toBe(true)
+  })
+
+  it('默认藏文件夹数量', () => {
+    expect(DEFAULT_PREFS.hideDirCounts).toBe(true)
+    expect(loadPrefs().hideDirCounts).toBe(true)
+  })
+
+  it('旧盘没有 hideDirCounts 时当 true，不整份丢弃', () => {
+    // 缺字段必须当「藏」而不是当「显示」：用户已量过这段是噪声。
+    // 也不能 bump v，否则排序和隐藏名单一起被清掉。
+    localStorage.setItem(PREFS_KEY, JSON.stringify({
+      v: 1, hideIdleWorktrees: true, projectSort: 'name', hiddenProjects: ['p2'],
+    }))
+    const got = loadPrefs()
+    expect(got.hideDirCounts).toBe(true)
+    expect(got.projectSort).toBe('name')
+    expect(got.hiddenProjects).toEqual(['p2'])
+  })
+
+  it('hideDirCounts 显式 false 能存能取（字段缺失 ≠ 值为 false）', () => {
+    savePrefs({ ...DEFAULT_PREFS, hideDirCounts: false })
+    expect(loadPrefs().hideDirCounts).toBe(false)
   })
 })
 

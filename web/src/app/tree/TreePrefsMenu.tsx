@@ -47,6 +47,14 @@ export function TreePrefsMenu({ prefs, projects, onChange }: TreePrefsMenuProps)
       keepOpen: true,
       onSelect: () => onChange({ ...prefs, hideArchived: !prefs.hideArchived }),
     },
+    {
+      key: 'hide-dir-counts',
+      label: '隐藏文件夹数量',
+      kind: 'check',
+      checked: prefs.hideDirCounts,
+      keepOpen: true,
+      onSelect: () => onChange({ ...prefs, hideDirCounts: !prefs.hideDirCounts }),
+    },
     { key: 'h-sort', label: '排序方式', kind: 'header' },
     ...SORT_LABELS.map((s) => ({
       key: `sort-${s.value}`,

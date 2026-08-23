@@ -379,6 +379,9 @@ func TestViaTemplateOmitAcceptanceWithholdsCriteria(t *testing.T) {
 			if tc.wantNotice && !strings.Contains(got.Prompt, "本节点不注入整卡验收判据") {
 				t.Fatalf("收起判据时应保留显式说明：\n%s", got.Prompt)
 			}
+			if strings.Contains(got.Prompt, "这是整卡的最终验收判据") {
+				t.Fatalf("omit 说明已是完整句，prompt 不应再跟「这是整卡的最终验收判据」：\n%s", got.Prompt)
+			}
 		})
 	}
 }

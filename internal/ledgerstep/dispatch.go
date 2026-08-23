@@ -134,7 +134,9 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 
 	// 判据被收起时不留空冒号：模板正文里「验收判据：{{ACCEPT}}」后面跟一片
-	// 空白，比说明白更让执行者困惑。
+	// 空白，比说明白更让执行者困惑。替换值已经是完整句——模板 {{ACCEPT}} 后面
+	// 不要再跟「这是整卡的最终验收判据」：那句是 B182 的失败缓解，omit 时会
+	// 跟本句并置成病句（B197），且没挡住 plan 节点写实现。
 	acceptance := c.AcceptanceCriteria
 	if req.OmitAcceptance {
 		acceptance = "（本节点不注入整卡验收判据——那是实现级的最终判据；本节点的产出物与 pass 依据以纪律块为准）"

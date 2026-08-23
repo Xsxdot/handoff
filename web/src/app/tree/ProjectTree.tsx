@@ -478,7 +478,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 className={cn('size-4 shrink-0', projectColorClass(project.project_id))}
               />
               <span className="min-w-0 flex-1 truncate">{project.name}</span>
-              <RowCounts dirs={pCounts.dirs} running={pCounts.running} pending={pCounts.pending} />
+              {/* 藏文件夹数量是「不传 dirs」，不是改 RowCounts：省略 dirs 本来就不画那一段 */}
+              <RowCounts dirs={prefs.hideDirCounts ? undefined : pCounts.dirs} running={pCounts.running} pending={pCounts.pending} />
             </button>
 
             {pOpen &&
@@ -542,7 +543,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             试过叠加）。用 invisible 而不是 hidden——保留占位，
                             行内其它元素不会因为 hover 左右位移 */}
                         <span className={cn(onWorktreeCreated && problem === '' && 'group-hover:invisible')}>
-                          <RowCounts dirs={mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
+                          <RowCounts dirs={prefs.hideDirCounts ? undefined : mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
                         </span>
                       </button>
                       {onWorktreeCreated && problem === '' && (
