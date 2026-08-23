@@ -348,19 +348,41 @@ func (m *Manager) resolveModel(reqModel, execName string) string {
 	return ""
 }
 
-// resolveDisciplineFor 按「有名字用名字、无名字按 executor 兜底」裁出纪律块。
+// resolveDisciplineFor 按「有名字用名字、无名字按 executor 兜底」解析并组装纪律块。
 //
 // 参数：name 角色名（空=不点名）；execName 执行者名。
-// 返回：解析出的块；名字非法 / 未知 / 覆盖文件坏掉时返回错误（调用方拒发）。
+// 返回：解析后的角色/执行者正文加平台恒在层；错误保持 Resolver 原因。
 //
 // 为什么要收口成一个函数：三个调用点（Dispatch / resumeForContinue / ResumeTask）
 // 必须用同一套判定。分开写的表现是首回合注入了点名的块、continue 之后悄悄换成
 // 兜底块——首回合是对的，事后极难查。
 func (m *Manager) resolveDisciplineFor(name, execName string) (discipline.Block, error) {
+	platformEnabled := m.conf().PlatformInvariantsEnabled()
+	m.log.Info("开始解析纪律块", "name", name, "executor", execName,
+		"platform_invariants", platformEnabled)
+
+	var (
+		base discipline.Block
+		err  error
+	)
 	if strings.TrimSpace(name) != "" {
-		return m.discipline.ByName(name, execName)
+		base, err = m.discipline.ByName(name, execName)
+	} else {
+		base, err = m.discipline.For(execName)
 	}
-	return m.discipline.For(execName)
+	if err != nil {
+		m.log.Error("纪律块解析失败", "name", name, "executor", execName,
+			"platform_invariants", platformEnabled, "cause", err)
+		return discipline.Block{}, err
+	}
+	m.log.Info("纪律块基础来源解析完成", "name", name, "executor", execName,
+		"source", base.Source, "bytes", len(base.Text))
+
+	assembled := discipline.Compose(base, platformEnabled)
+	m.log.Info("纪律块组装完成", "name", name, "executor", execName,
+		"platform_invariants", platformEnabled, "source", assembled.Source,
+		"bytes", len(assembled.Text))
+	return assembled, nil
 }
 
 // registeredNames 返回注册表全部执行者名（按字母序，供错误提示与日志）。

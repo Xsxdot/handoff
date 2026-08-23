@@ -132,10 +132,28 @@ type Config struct {
 	// 为什么第三档不同：env 内容是机器特有的，猜错不如不猜；纪律块内容是 handoff
 	// 通用的，不给默认等于让用户退回人工粘贴到 plan 头部（见 B129 spec §2.4）。
 	Discipline map[string]string
+	// PlatformInvariants 是平台底线恒在层的显式开关。
+	//
+	// nil 表示未配置，PlatformInvariantsEnabled 将其解释为 true；非 nil 的 false
+	// 才是关闭平台不变量的明确机器级选择。使用指针并保留 omitempty，是为了同时
+	// 区分旧配置的「没有这个键」与用户明确写入的 false，并避免默认值污染旧配置。
+	PlatformInvariants *bool `yaml:"platform_invariants,omitempty"`
 	// ProcFence 是 executor 进程围栏配置。默认启用、保留 10%。
 	ProcFence ProcFenceConfig `yaml:"proc_fence,omitempty"`
 	// Web 是浏览器控制台相关配置。
 	Web WebConfig
+}
+
+// PlatformInvariantsEnabled 返回本机是否注入平台不变量恒在层。
+//
+// 参数：无；接收 nil Config 时按默认启用处理，便于启动早期与测试构造使用。
+// 返回：配置缺失或显式 true 时为 true；只有显式 false 时为 false。
+// 注意：调用方不要直接解引用 PlatformInvariants，否则旧配置会把默认底线误关掉。
+func (c *Config) PlatformInvariantsEnabled() bool {
+	if c == nil || c.PlatformInvariants == nil {
+		return true
+	}
+	return *c.PlatformInvariants
 }
 
 // LedgerConfig 账本域（任务卡）中心库配置。只描述本机如何连库，
@@ -374,6 +392,9 @@ func Load(path string) (*Config, error) {
 		log().Error("配置校验失败", "path", path, "cause", verr)
 		return nil, fmt.Errorf("校验配置 %s: %w", path, verr)
 	}
+	if !cfg.PlatformInvariantsEnabled() {
+		log().Warn("平台不变量已通过显式配置关闭", "path", path, "key", "platform_invariants")
+	}
 	if cfg.Relay != nil {
 		log().Info("relay egress configured", "url", cfg.Relay.URL, "node", cfg.Relay.Node)
 	}
@@ -535,7 +556,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }
