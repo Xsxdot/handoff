@@ -79,3 +79,5 @@
 - 2026-08-24：读取当前状态：`git status --short --branch` 原始输出为 `## cards/B185-charter-3`；`git log -5 --oneline --decorate` 原始输出首行为 `1de332ec (HEAD -> cards/B185-charter-3) chore(ledger): record B185 final verification`；工作树无未提交差异。
 - 2026-08-24：执行 `git add docs/superpowers/ledgers/2026-08-24-b185-contract-ledger.md` 成功；随后执行 `git diff --cached --check`，原始输出为空，exit 0。
 - 2026-08-24：更新台账后再次执行 `git diff --cached --check`，原始输出为空，exit 0；该状态作为提交前格式门禁。
+- 2026-08-24：执行 `git commit -m "chore(ledger): finalize B185 plan verification"` 成功；原始输出为 `[cards/B185-charter-3 0b54b489] chore(ledger): finalize B185 plan verification`、`1 file changed, 4 insertions(+)`。
+- 2026-08-24：为记录上一条提交事实而再次执行 `git add docs/superpowers/ledgers/2026-08-24-b185-contract-ledger.md` 与 `git diff --cached --check`；两命令成功，后者原始输出为空，exit 0。
