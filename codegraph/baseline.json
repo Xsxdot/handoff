@@ -139,6 +139,18 @@
   }
  },
  "containers": {
+  "c_main": {
+   "label": "handoff 二进制入口",
+   "kind": "入口",
+   "entry": true,
+   "domain": "d_coordination_cli"
+  },
+  "c_web_main": {
+   "label": "Web 应用入口",
+   "kind": "入口",
+   "entry": true,
+   "domain": "d_web"
+  },
   "c_cli": {
    "label": "CLI 命令",
    "kind": "入口",
@@ -1329,6 +1341,501 @@
   }
  },
  "nodes": {
+  "e_cli_card": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 51,
+   "name": "handoff card",
+   "file": "cmd/card.go",
+   "line": 18,
+   "summary": "Cobra 分组命令；行为由 card 子命令处理",
+   "unscanned": true
+  },
+  "e_cli_card_add": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 52,
+   "name": "handoff card add",
+   "file": "cmd/card.go",
+   "line": 29
+  },
+  "e_cli_card_list": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 53,
+   "name": "handoff card list",
+   "file": "cmd/card.go",
+   "line": 51
+  },
+  "e_cli_card_show": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 54,
+   "name": "handoff card show",
+   "file": "cmd/card.go",
+   "line": 99
+  },
+  "e_cli_card_update": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 55,
+   "name": "handoff card update",
+   "file": "cmd/card.go",
+   "line": 136
+  },
+  "e_cli_card_move": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 56,
+   "name": "handoff card move",
+   "file": "cmd/card.go",
+   "line": 184
+  },
+  "e_cli_card_close": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 57,
+   "name": "handoff card close",
+   "file": "cmd/card.go",
+   "line": 215
+  },
+  "e_cli_card_revive": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 58,
+   "name": "handoff card revive",
+   "file": "cmd/card.go",
+   "line": 241
+  },
+  "e_cli_card_link": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 59,
+   "name": "handoff card link",
+   "file": "cmd/card.go",
+   "line": 259
+  },
+  "e_cli_card_unlink": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 60,
+   "name": "handoff card unlink",
+   "file": "cmd/card.go",
+   "line": 277
+  },
+  "e_cli_card_merge": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 61,
+   "name": "handoff card merge",
+   "file": "cmd/card.go",
+   "line": 295
+  },
+  "e_cli_card_unmerge": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 62,
+   "name": "handoff card unmerge",
+   "file": "cmd/card.go",
+   "line": 320
+  },
+  "e_cli_card_split": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 63,
+   "name": "handoff card split",
+   "file": "cmd/card.go",
+   "line": 338
+  },
+  "e_cli_card_note": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 64,
+   "name": "handoff card note",
+   "file": "cmd/card.go",
+   "line": 356
+  },
+  "e_cli_card_export": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 65,
+   "name": "handoff card export",
+   "file": "cmd/card.go",
+   "line": 386
+  },
+  "e_cli_card_dispatch": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 66,
+   "name": "handoff card dispatch",
+   "file": "cmd/card_dispatch.go",
+   "line": 151
+  },
+  "e_cli_card_release": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 67,
+   "name": "handoff card release",
+   "file": "cmd/card_driver.go",
+   "line": 12
+  },
+  "e_cli_card_takeover": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 68,
+   "name": "handoff card takeover",
+   "file": "cmd/card_driver.go",
+   "line": 36
+  },
+  "e_cli_card_import": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 69,
+   "name": "handoff card import",
+   "file": "cmd/card_import.go",
+   "line": 20
+  },
+  "e_cli_card_min_b": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 70,
+   "name": "handoff card min-b",
+   "file": "cmd/card_minb.go",
+   "line": 13
+  },
+  "e_cli_card_prefix": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 71,
+   "name": "handoff card prefix",
+   "file": "cmd/card_prefix.go",
+   "line": 12
+  },
+  "e_cli_card_accept": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 72,
+   "name": "handoff card accept",
+   "file": "cmd/card_records.go",
+   "line": 32
+  },
+  "e_cli_card_needs": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 73,
+   "name": "handoff card needs",
+   "file": "cmd/card_records.go",
+   "line": 67
+  },
+  "e_cli_card_wait": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 74,
+   "name": "handoff card wait",
+   "file": "cmd/card_wait.go",
+   "line": 32
+  },
+  "e_cli_decision": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 75,
+   "name": "handoff decision",
+   "file": "cmd/decision.go",
+   "line": 14,
+   "summary": "Cobra 分组命令；行为由 decision 子命令处理",
+   "unscanned": true
+  },
+  "e_cli_decision_open": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 76,
+   "name": "handoff decision open",
+   "file": "cmd/decision.go",
+   "line": 22
+  },
+  "e_cli_decision_list": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 77,
+   "name": "handoff decision list",
+   "file": "cmd/decision.go",
+   "line": 38
+  },
+  "e_cli_decision_answer": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 78,
+   "name": "handoff decision answer",
+   "file": "cmd/decision.go",
+   "line": 60
+  },
+  "e_cli_graph": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 79,
+   "name": "handoff graph",
+   "file": "cmd/graph.go",
+   "line": 18,
+   "summary": "deprecated 的 codegraph 命令别名；实现委托 charter graph",
+   "unscanned": true
+  },
+  "e_cli_template": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 80,
+   "name": "handoff template",
+   "file": "cmd/template.go",
+   "line": 14,
+   "summary": "Cobra 分组命令；行为由 template 子命令处理",
+   "unscanned": true
+  },
+  "e_cli_template_list": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 81,
+   "name": "handoff template list",
+   "file": "cmd/template.go",
+   "line": 24
+  },
+  "e_cli_template_show": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 82,
+   "name": "handoff template show",
+   "file": "cmd/template.go",
+   "line": 51
+  },
+  "e_cli_template_put": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 83,
+   "name": "handoff template put",
+   "file": "cmd/template.go",
+   "line": 70
+  },
+  "e_cli_workflow": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 84,
+   "name": "handoff workflow",
+   "file": "cmd/workflow.go",
+   "line": 16,
+   "summary": "Cobra 分组命令；行为由 workflow 子命令处理",
+   "unscanned": true
+  },
+  "e_cli_workflow_list": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 85,
+   "name": "handoff workflow list",
+   "file": "cmd/workflow.go",
+   "line": 27
+  },
+  "e_cli_workflow_show": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 86,
+   "name": "handoff workflow show",
+   "file": "cmd/workflow.go",
+   "line": 62
+  },
+  "e_cli_workflow_put": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 87,
+   "name": "handoff workflow put",
+   "file": "cmd/workflow.go",
+   "line": 78
+  },
+  "e_cli_workflow_migrate": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 88,
+   "name": "handoff workflow migrate",
+   "file": "cmd/workflow.go",
+   "line": 105
+  },
+  "e_main": {
+   "kind": "entry",
+   "container": "c_main",
+   "order": 1,
+   "name": "handoff binary",
+   "file": "main.go",
+   "line": 22
+  },
+  "e_web_main": {
+   "kind": "entry",
+   "container": "c_web_main",
+   "order": 1,
+   "name": "Web 控制台",
+   "file": "web/src/main.tsx",
+   "line": 6
+  },
+  "n_discipline_Compose": {
+   "kind": "func",
+   "container": "k_discipline_fn",
+   "order": 23,
+   "name": "Compose",
+   "file": "internal/discipline/platform.go",
+   "line": 23,
+   "signature": "func Compose(base Block, platformEnabled bool) Block",
+   "returns": "Block",
+   "summary": "组装平台不变量与角色纪律块"
+  },
+  "n_ledger_Store_cardPrefixTx": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 22,
+   "name": "Store.cardPrefixTx",
+   "file": "internal/ledger/card_prefixes.go",
+   "line": 22,
+   "signature": "func (s *Store) cardPrefixTx(tx *sql.Tx, project string) (string, error)",
+   "returns": "string, error",
+   "summary": "在建卡事务中读取或分配项目卡号前缀"
+  },
+  "n_ledger_firstASCIILetter": {
+   "kind": "func",
+   "container": "k_ledger_fn",
+   "order": 57,
+   "name": "firstASCIILetter",
+   "file": "internal/ledger/card_prefixes.go",
+   "line": 57,
+   "signature": "func firstASCIILetter(project string) string",
+   "returns": "string",
+   "summary": "提取项目名中的首个 ASCII 字母并转大写"
+  },
+  "n_ledger_Store_SetCardPrefix": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 77,
+   "name": "Store.SetCardPrefix",
+   "file": "internal/ledger/card_prefixes.go",
+   "line": 77,
+   "signature": "func (s *Store) SetCardPrefix(project, prefix string) error",
+   "returns": "error",
+   "summary": "校验并持久化项目卡号前缀"
+  },
+  "n_ledgerstep_RenderOutputPath": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 17,
+   "name": "RenderOutputPath",
+   "file": "internal/ledgerstep/output.go",
+   "line": 17,
+   "signature": "func RenderOutputPath(template string, card ledger.Card, node ledger.NodeDef, now time.Time) string",
+   "returns": "string",
+   "summary": "渲染工作流产出路径模板"
+  },
+  "n_ledgerstep_ChangedPaths": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 31,
+   "name": "ChangedPaths",
+   "file": "internal/ledgerstep/output.go",
+   "line": 31,
+   "signature": "func ChangedPaths(diff string) []string",
+   "returns": "[]string",
+   "summary": "从 git diff 提取去重后的仓内相对路径"
+  },
+  "n_ledgerstep_changedPathsText": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 80,
+   "name": "changedPathsText",
+   "file": "internal/ledgerstep/output.go",
+   "line": 80,
+   "signature": "func changedPathsText(paths []string) string",
+   "returns": "string",
+   "summary": "把产出路径清单格式化为可读文本"
+  },
+  "n_ledgerstep_diffPath": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 88,
+   "name": "diffPath",
+   "file": "internal/ledgerstep/output.go",
+   "line": 88,
+   "signature": "func diffPath(raw string) string",
+   "returns": "string",
+   "summary": "规范化 diff 文件路径并过滤 /dev/null"
+  },
+  "n_ledgerstep_diffHeaderFields": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 107,
+   "name": "diffHeaderFields",
+   "file": "internal/ledgerstep/output.go",
+   "line": 107,
+   "signature": "func diffHeaderFields(raw string) []string",
+   "returns": "[]string",
+   "summary": "解析 git diff 头部的两个路径字段"
+  },
+  "n_web_components_ui_Card": {
+   "kind": "func",
+   "container": "k_web_components_ui",
+   "order": 5,
+   "name": "Card",
+   "file": "web/src/components/ui/card.tsx",
+   "line": 5,
+   "signature": "const Card = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>",
+   "returns": "React.ForwardRefExoticComponent",
+   "summary": "提供基础卡片容器"
+  },
+  "n_web_components_ui_CardHeader": {
+   "kind": "func",
+   "container": "k_web_components_ui",
+   "order": 20,
+   "name": "CardHeader",
+   "file": "web/src/components/ui/card.tsx",
+   "line": 20,
+   "signature": "const CardHeader = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>",
+   "returns": "React.ForwardRefExoticComponent",
+   "summary": "提供卡片头部容器"
+  },
+  "n_web_components_ui_CardTitle": {
+   "kind": "func",
+   "container": "k_web_components_ui",
+   "order": 32,
+   "name": "CardTitle",
+   "file": "web/src/components/ui/card.tsx",
+   "line": 32,
+   "signature": "const CardTitle = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>",
+   "returns": "React.ForwardRefExoticComponent",
+   "summary": "提供卡片标题容器"
+  },
+  "n_web_components_ui_CardDescription": {
+   "kind": "func",
+   "container": "k_web_components_ui",
+   "order": 44,
+   "name": "CardDescription",
+   "file": "web/src/components/ui/card.tsx",
+   "line": 44,
+   "signature": "const CardDescription = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>",
+   "returns": "React.ForwardRefExoticComponent",
+   "summary": "提供卡片描述容器"
+  },
+  "n_web_components_ui_CardContent": {
+   "kind": "func",
+   "container": "k_web_components_ui",
+   "order": 56,
+   "name": "CardContent",
+   "file": "web/src/components/ui/card.tsx",
+   "line": 56,
+   "signature": "const CardContent = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>",
+   "returns": "React.ForwardRefExoticComponent",
+   "summary": "提供卡片内容容器"
+  },
+  "n_web_components_ui_CardFooter": {
+   "kind": "func",
+   "container": "k_web_components_ui",
+   "order": 64,
+   "name": "CardFooter",
+   "file": "web/src/components/ui/card.tsx",
+   "line": 64,
+   "signature": "const CardFooter = React.forwardRef<HTMLDivElement, React.HTMLAttributes<HTMLDivElement>>",
+   "returns": "React.ForwardRefExoticComponent",
+   "summary": "提供卡片底部容器"
+  },
   "e_cli_agentd": {
    "kind": "entry",
    "container": "c_cli",
