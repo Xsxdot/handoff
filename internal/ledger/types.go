@@ -62,6 +62,7 @@ const (
 	EvDecisionAnswered   = "decision_answered"
 	EvTaskMirrored       = "task_mirrored"
 	EvWorkflowMigrated   = "workflow_migrated"
+	EvDriverTakeover     = "driver_takeover"
 )
 
 // WorkflowTarget 是跨流迁移的显式目标。Version==0 表示在迁移事务内取目标流最新版。
@@ -108,7 +109,7 @@ type Card struct {
 	AcceptanceCriteria string       `json:"acceptance_criteria,omitempty"`
 	BaseBranch         string       `json:"base_branch,omitempty"` // 空 = 继承祖先/项目主线（EffectiveBaseBranch 解析）
 	DriverSession      string       `json:"driver_session,omitempty"`
-	DriverHeartbeatAt  time.Time    `json:"driver_heartbeat_at,omitempty"`
+	DriverHeartbeatAt  time.Time    `json:"driver_heartbeat_at,omitempty"` // 兼容列名；语义是认领时刻，不是续租心跳
 	CreatedAt          time.Time    `json:"created_at"`
 	UpdatedAt          time.Time    `json:"updated_at"`
 }

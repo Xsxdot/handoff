@@ -244,7 +244,7 @@ func TestAttendanceReportsCardDriverInsteadOfOrphan(t *testing.T) {
 		t.Fatalf("卡驱动归属未带出: %+v", got)
 	}
 	if got.HeartbeatAge < 12*time.Minute || got.HeartbeatAge >= 13*time.Minute {
-		t.Fatalf("心跳年龄应约为 12 分钟: %s", got.HeartbeatAge)
+		t.Fatalf("认领时刻年龄应约为 12 分钟: %s", got.HeartbeatAge)
 	}
 
 	var buf bytes.Buffer
@@ -261,8 +261,8 @@ func TestAttendanceReportsCardDriverInsteadOfOrphan(t *testing.T) {
 	if strings.Contains(line, "无人值守") {
 		t.Fatalf("有卡驱动时不应显示无人值守:\n%s", line)
 	}
-	if !strings.Contains(line, "12m 前") {
-		t.Fatalf("渲染应显示整分钟心跳年龄:\n%s", line)
+	if !strings.Contains(line, "认领于 12m 前") {
+		t.Fatalf("渲染应显示整分钟认领时刻年龄:\n%s", line)
 	}
 	var unknownHeartbeat bytes.Buffer
 	renderStatusWithLookup(&unknownHeartbeat, "127.0.0.1:7777", proto.BuildInfo{}, &proto.StatusResp{
@@ -271,8 +271,8 @@ func TestAttendanceReportsCardDriverInsteadOfOrphan(t *testing.T) {
 	}, func(string) (string, string, time.Time, bool) {
 		return "B177", "session-1", time.Time{}, true
 	})
-	if !strings.Contains(unknownHeartbeat.String(), "心跳 未知") {
-		t.Fatalf("零值心跳应显示未知:\n%s", unknownHeartbeat.String())
+	if !strings.Contains(unknownHeartbeat.String(), "认领于 未知") {
+		t.Fatalf("零值认领时刻应显示未知:\n%s", unknownHeartbeat.String())
 	}
 }
 

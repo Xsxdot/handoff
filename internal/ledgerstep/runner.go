@@ -9,7 +9,6 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -23,13 +22,9 @@ import (
 type StepRunner struct {
 	St         *ledger.Store
 	Dispatcher *Dispatcher
-	// Session 是本次节点运行的驱动租约标识。CLI 使用带 pid 的运行会话，
+	// Session 是本次节点运行的驱动标识。CLI 使用带 pid 的运行会话，
 	// agentd 使用请求 actor；它必须能区分两个并发驱动者。
 	Session string
-	// Heartbeat 是续租测试缝；为空时调用 St.HeartbeatDriver。
-	Heartbeat func(cardID, session string) error
-	// HeartbeatInterval 覆盖生产续租间隔，仅供测试缩短等待；零值使用默认值。
-	HeartbeatInterval time.Duration
 	// Clients 按 target 名取一个已装配好的 agentd 客户端。
 	//
 	// why 这里要的是客户端而不是 (addr, token)：relay 形态的机器根本没有 addr，
@@ -42,9 +37,6 @@ type StepRunner struct {
 	Extra string
 }
 
-// defaultDriverHeartbeatInterval 小于账本五分钟租约的一半，给调度抖动留出余量。
-const defaultDriverHeartbeatInterval = 2 * time.Minute
-
 // Run 跑一次节点。
 //
 // 参数：cardID 卡；nodeName 节点名（= 看板的列名），从卡钉住的工作流版本里查。
@@ -53,6 +45,7 @@ const defaultDriverHeartbeatInterval = 2 * time.Minute
 // 阻塞行为：节点开了 Verdict 时会阻塞到被派出去的 task 跑到回合终态
 // （几分钟到几十分钟，executor 挂在 waiting_answer 时更久）。调用方要么
 // 自己在 goroutine 里跑（agentd 就是这么做的），要么接受前台阻塞（CLI）。
+// 认领时刻不会自动续期；异常遗留归属由 takeover/release 显式处置。
 func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome, error) {
 	logger := slog.Default().With("card", cardID, "node", nodeName)
 	logger.Info("进入节点执行")
@@ -68,7 +61,7 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 		Await:    r.awaitNode(),
 	}
 	if !node.Dispatch {
-		// 纯人工列没有执行能力，不应因为被误点而留下驱动租约。
+		// 纯人工列没有执行能力，不应因为被误点而留下驱动归属。
 		logger.Info("纯人工节点跳过驱动认领")
 		return nodeStep.RunOnce(ctx, cardID)
 	}
@@ -89,9 +82,7 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 		return Outcome{}, fmt.Errorf("认领节点驱动: %w", err)
 	}
 	logger.Info("节点驱动已认领", "session", session)
-	stopHeartbeat := r.startDriverHeartbeat(ctx, cardID, session, logger)
 	defer func() {
-		stopHeartbeat()
 		if err := r.St.ReleaseCard(cardID, session); err != nil {
 			logger.Warn("释放节点驱动失败", "session", session, "cause", err)
 			return
@@ -99,46 +90,6 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 		logger.Info("节点驱动已释放", "session", session)
 	}()
 	return nodeStep.RunOnce(ctx, cardID)
-}
-
-// startDriverHeartbeat 在节点回合存活期间续租，返回停止并等待续租协程的函数。
-//
-// 注意：续租失败只记录警告，不中止已经派出的回合；回合仍需正常收口，
-// 归属丢失交给协调者从日志和账本状态判断。
-func (r *StepRunner) startDriverHeartbeat(ctx context.Context, cardID, session string, logger *slog.Logger) func() {
-	interval := r.HeartbeatInterval
-	if interval <= 0 {
-		interval = defaultDriverHeartbeatInterval
-	}
-	heartbeat := r.Heartbeat
-	if heartbeat == nil {
-		heartbeat = r.St.HeartbeatDriver
-	}
-	heartbeatCtx, cancel := context.WithCancel(ctx)
-	done := make(chan struct{})
-	logger.Info("节点驱动续租已启动", "session", session, "interval", interval)
-	go func() {
-		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-heartbeatCtx.Done():
-				return
-			case <-ticker.C:
-				if err := heartbeat(cardID, session); err != nil {
-					logger.Warn("节点驱动续租失败", "session", session, "cause", err)
-					continue
-				}
-				logger.Info("节点驱动续租成功", "session", session)
-			}
-		}
-	}()
-	return func() {
-		cancel()
-		<-done
-		logger.Info("节点驱动续租已停止", "session", session)
-	}
 }
 
 // nodeFor 在卡**钉住的**工作流版本里按名字找节点。

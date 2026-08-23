@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
@@ -187,41 +186,5 @@ func TestRunnerReleasesDriverAfterDispatchFailure(t *testing.T) {
 	}
 	if got.DriverSession != "" || !got.DriverHeartbeatAt.IsZero() {
 		t.Fatalf("失败回合也应释放驱动租约，实际 session=%q heartbeat=%v", got.DriverSession, got.DriverHeartbeatAt)
-	}
-}
-
-func TestRunnerHeartbeatsDuringLongRun(t *testing.T) {
-	st, card := nodeLedger(t)
-	started := make(chan struct{})
-	finish := make(chan struct{})
-	heartbeats := make(chan struct{}, 1)
-	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
-		close(started)
-		<-finish
-		return "T-heartbeat", nil
-	})
-	runner.HeartbeatInterval = 5 * time.Millisecond
-	runner.Heartbeat = func(cardID, session string) error {
-		select {
-		case heartbeats <- struct{}{}:
-		default:
-		}
-		return nil
-	}
-
-	done := make(chan error, 1)
-	go func() {
-		_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
-		done <- err
-	}()
-	<-started
-	select {
-	case <-heartbeats:
-	case <-time.After(time.Second):
-		t.Fatal("长回合期间未观察到驱动续租")
-	}
-	close(finish)
-	if err := <-done; err != nil {
-		t.Fatalf("Run: %v", err)
 	}
 }

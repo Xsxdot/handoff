@@ -135,16 +135,15 @@ func (s *Store) pendingChildrenTx(tx *sql.Tx, id string) ([]string, error) {
 // 事务。派发即认领用它——分两次写会留出「进行中但驱动为空」的窗口，
 // 并发输家恰好读到那个瞬间就报不出认领者是谁（判据⑥要求报出会话名），
 // 进程若在窗口内崩掉还会留下一张没人驱动的「进行中」卡。
-// 冲突返回 ErrCASConflict，卡上已有活跃的别家驱动同样拒。
+// 冲突返回 ErrCASConflict，卡上已有别家驱动同样拒。
 func (s *Store) ClaimCard(id, to, expect, session string) error {
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
 			return fmt.Errorf("认领: 卡 %s: %w", id, err)
 		}
-		expired := card.DriverHeartbeatAt.IsZero() || time.Since(card.DriverHeartbeatAt) > driverLeaseTTL
-		if card.DriverSession != "" && card.DriverSession != session && !expired {
-			log().Warn("认领被拒：卡已有活跃驱动", "card", id, "holder", card.DriverSession, "claimer", session)
+		if card.DriverSession != "" && card.DriverSession != session {
+			log().Warn("认领被拒：卡已有驱动", "card", id, "holder", card.DriverSession, "claimer", session)
 			return fmt.Errorf("卡 %s 已被 %s 认领: %w", id, card.DriverSession, ErrCASConflict)
 		}
 		if err := s.moveCardTx(tx, sink, id, to, expect, session); err != nil {
@@ -159,26 +158,40 @@ func (s *Store) ClaimCard(id, to, expect, session string) error {
 	})
 }
 
-// ReleaseCard 释放驱动租约（幂等；只动自己持有的那份）。
+// ReleaseCard 释放驱动归属（幂等；只动自己持有的那份）。
 //
-// 参数：id 卡号；session 租约持有者标识，与 ClaimCard 传的同一个。
+// 参数：id 卡号；session 驱动持有者标识，与 ClaimCard 传的同一个。
 // 非持有者调用是无操作而不是报错——回滚路径不该因为竞态再抛一次错。
 //
 // why 需要它：派发失败时回滚只退状态会把卡留在「待办但有主」。驱动身份
-// 带 pid，同一个人换个进程重试会被自己的旧租约挡住，要等满 5 分钟 TTL
-// 才动得了（2026-08-19 真机踩到：远端缺分支导致派发 400，重试即撞）。
+// 带 pid，同一个人换个进程重试会被自己的旧归属挡住（2026-08-19 真机踩到：
+// 远端缺分支导致派发 400，重试即撞）。显式释放保证回滚能清掉这份归属。
 func (s *Store) ReleaseCard(id, session string) error {
-	return s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+	log().Info("开始释放驱动", "card", id, "session", session)
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
 		result, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_heartbeat_at = ?
 			WHERE id = ? AND driver_session = ?`), s.tval(time.Time{}), id, session)
 		if err != nil {
-			return fmt.Errorf("释放驱动租约: %w", err)
+			return fmt.Errorf("释放驱动归属: %w", err)
 		}
-		if n, err := result.RowsAffected(); err == nil && n > 0 {
-			log().Info("驱动租约已释放", "card", id, "session", session)
+		n, err := result.RowsAffected()
+		if err != nil {
+			log().Warn("读取释放驱动影响行数失败", "card", id, "session", session, "cause", err)
+			return nil
 		}
+		if n == 0 {
+			log().Info("释放驱动无操作", "card", id, "session", session)
+			return nil
+		}
+		log().Info("驱动归属已释放", "card", id, "session", session)
 		return nil
 	})
+	if err != nil {
+		log().Warn("释放驱动失败", "card", id, "session", session, "cause", err)
+		return err
+	}
+	log().Info("释放驱动处理完成", "card", id, "session", session)
+	return nil
 }
 
 // getWorkflowTx 事务内取指定版本工作流（Move 的 gate 判定必须与写同事务）。

@@ -1,4 +1,4 @@
-// card_tasks 弱引用（账本 → 执行域的唯一通道）与卡的 driver lease。
+// card_tasks 弱引用（账本 → 执行域的唯一通道）与卡的 driver 归属。
 // 弱引用无外键校验 task 真实存在——执行域在别的机器的 SQLite 里，
 // 账本只记指针；指针悬空由镜像/看板 join 时显性化，不在写入时拦。
 package ledger
@@ -9,10 +9,6 @@ import (
 	"fmt"
 	"time"
 )
-
-// driverLeaseTTL 驱动会话心跳有效期。超过即视为无主，可被抢占；
-// 看板「无驱动会话」告警也以此为准。
-const driverLeaseTTL = 5 * time.Minute
 
 // TaskLink card_tasks 一行。
 type TaskLink struct {
@@ -93,16 +89,16 @@ func (s *Store) CardOfTask(target, taskID string) (string, error) {
 	return cardID, nil
 }
 
-// ClaimDriver 认领驱动权：现驱动为空、为己、或心跳过期才可得；
-// 否则 ErrCASConflict（提示对方会话标识）。
+// ClaimDriver 认领驱动权：现驱动为空或为己才可得；非空的他会话永不因时间流逝自动释放。
+// driver_heartbeat_at 保留兼容列名，但这里只在认领成功时写认领时刻。
 func (s *Store) ClaimDriver(cardID, session string) error {
-	return s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+	log().Info("开始认领驱动", "card", cardID, "session", session)
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
 		card, err := getCardTx(s, tx, cardID)
 		if err != nil {
 			return fmt.Errorf("认领驱动: 卡 %s: %w", cardID, err)
 		}
-		expired := card.DriverHeartbeatAt.IsZero() || time.Since(card.DriverHeartbeatAt) > driverLeaseTTL
-		if card.DriverSession != "" && card.DriverSession != session && !expired {
+		if card.DriverSession != "" && card.DriverSession != session {
 			log().Warn("驱动认领被拒", "card", cardID, "holder", card.DriverSession, "claimer", session)
 			return fmt.Errorf("卡 %s 正由 %s 驱动: %w", cardID, card.DriverSession, ErrCASConflict)
 		}
@@ -112,19 +108,38 @@ func (s *Store) ClaimDriver(cardID, session string) error {
 		}
 		return nil
 	})
+	if err != nil {
+		log().Warn("认领驱动失败", "card", cardID, "session", session, "cause", err)
+		return err
+	}
+	log().Info("驱动已认领", "card", cardID, "session", session)
+	return nil
 }
 
-// HeartbeatDriver 续心跳（仅现持有者可续）。
-func (s *Store) HeartbeatDriver(cardID, session string) error {
-	return s.mutate(func(tx *sql.Tx, _ *eventSink) error {
-		result, err := tx.Exec(s.q(`UPDATE cards SET driver_heartbeat_at = ? WHERE id = ? AND driver_session = ?`),
-			s.tval(time.Now()), cardID, session)
+// TakeoverCard 显式替换卡的驱动归属，并在同一事务写可审计事件。
+// 参数：id 卡号；session 新驱动会话；actor 发起接管的人/入口标识。
+// 注意：这是有意覆盖现有驱动的独立动作，不读取认领时刻，也不自动改变卡状态。
+func (s *Store) TakeoverCard(id, session, actor string) error {
+	log().Info("开始接管驱动", "card", id, "session", session, "actor", actor)
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		card, err := getCardTx(s, tx, id)
 		if err != nil {
-			return fmt.Errorf("续心跳: %w", err)
+			return fmt.Errorf("接管驱动: 卡 %s: %w", id, err)
 		}
-		if count, _ := result.RowsAffected(); count == 0 {
-			return fmt.Errorf("卡 %s 的驱动不是 %s: %w", cardID, session, ErrCASConflict)
+		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_heartbeat_at = ? WHERE id = ?`),
+			session, s.tval(time.Now()), id); err != nil {
+			return fmt.Errorf("接管写驱动: %w", err)
+		}
+		if _, err := s.appendEvent(tx, sink, id, EvDriverTakeover, actor,
+			map[string]string{"from": card.DriverSession, "to": session}); err != nil {
+			return fmt.Errorf("接管落事件: %w", err)
 		}
 		return nil
 	})
+	if err != nil {
+		log().Warn("接管驱动失败", "card", id, "session", session, "actor", actor, "cause", err)
+		return err
+	}
+	log().Info("驱动已接管", "card", id, "session", session, "actor", actor)
+	return nil
 }
