@@ -1613,3 +1613,67 @@ const onChange = vi.fn((next: NodeDef) => {
 - 依赖事实出处：Store.AttachFile 幂等、gate kind-only、NodeStep 当前 route 顺序、Client.Diff 签名、wire projection、附件白名单均已在台账写明源码行号；web 依赖不可用事实也已写原始报错。
 - 派发系统动作：本计划没有任何需要驱动 handoff 的验收步骤；若未来 implement 需要该动作，由协调者执行，不派发给本卡执行者。
 - 本节点红线：只生成并提交此计划和台账，不写实现代码、不启动 executor、不调用 handoff CLI。
+
+---
+
+## 修复轮 F1（review 轮 fail 后的协调者裁定，2026-08-23）
+
+审阅轮报了 5 条 findings。协调者逐条复核后**只有一条成立**，本轮只修它；其余四条的
+裁定写在下面，**不要去动它们**。
+
+### F1（唯一要修的，major）：ChangedPaths 把 hunk 内容行当成了改动文件
+
+`internal/ledgerstep/output.go` 的 `ChangedPaths` 无条件把任何以 `--- ` / `+++ ` 开头的
+行当作文件头。但在 unified diff 里，**hunk 正文中一行原本以 `++ ` 开头的内容，会渲染成
+`+++ ...`**——于是文档正文里引用的一段 diff 会被解析成「本轮改动了那个文件」。
+
+协调者本机探针实测（临时用例，跑完已删）：
+
+```
+输入：一份只改了 docs/superpowers/ledgers/x.md 的 diff，其 hunk 正文里引用了
+      "+++ b/docs/superpowers/plans/b201-plan.md" 这一行
+解析出的路径清单 = ["docs/superpowers/ledgers/x.md" "docs/superpowers/plans/b201-plan.md"]
+```
+
+**为什么这条是 major 而不是洁癖**：本卡的存在性校验就是
+`containsPath(changedPaths, declaredPath)`。于是**一个什么都没干、只提交了台账的轮次，
+只要台账正文里引用了产出物路径所在的那行 diff，就能通过校验并把附件挂上**——本机制
+本来是要挡住「节点空转」的，这个解析漏洞反而给它发通行证。而本仓每个执行者台账都在
+粘命令原始输出，里面就带 diff，触发条件一点都不罕见。
+
+#### 要求
+
+1. **按 unified diff 的结构解析，不要按行首字符猜**：`--- ` / `+++ ` 只有出现在文件头
+   区段（`diff --git` 之后、该文件第一个 `@@` 之前）时才算路径；一旦进入 hunk 正文，
+   直到下一个 `diff --git` 之前，所有 `---` / `+++` 开头的行一律当内容忽略。
+   `rename from/to` 同理只在文件头区段内有效。
+2. **既有的 `ChangedPaths` 用例一条都不许改**（它们是这次收紧的防回归网）。若确有必要
+   改，必须在报文里逐条说明改了什么、为什么。
+3. **注释要写清「为什么不能按行首字符判」**，把上面那个 `++ ` → `+++ ` 的渲染事实写进去
+   ——这是个反直觉的点，不写下次还会被改回去。
+
+#### 必须新增的用例（先红后绿，红的原始输出进台账）
+
+- hunk 正文里含 `+++ b/<某路径>` 与 `--- a/<某路径>` → 结果**只有**真正改动的那个文件；
+- 文件头区段的 `--- a/x` / `+++ b/x` 仍被正确解析（防止修过头）；
+- 新增文件（`--- /dev/null`）与 rename 两个既有场景仍正确。
+
+#### 验收判据
+
+- `gofmt -l .` 无输出；`go vet ./...` 与 `go build ./...` 退出码 0；
+- `go test ./internal/ledgerstep/ ./internal/ledger/` 全绿；
+- **变异证明**：把第 1 条的结构判定改回「按行首字符判」，新增的第一条用例必须变红、
+  其余保持绿；改回后复跑全绿。没跑到这个结果不许写 pass。
+
+### 其余四条的裁定：都不修，不要动
+
+- **「Web typecheck / Vitest 未验证」**：那是执行机的环境限制（tsc 不在 PATH、npm 缓存
+  EROFS），不是缺陷。**协调者已在本机补跑**：`npx tsc -b --noEmit` 退出码 0；
+  `npx vitest run` 退出码 0，116 文件 / 1139 用例全绿。已结清。
+- **「HTTP produces round-trip 测试被 SKIP，序列化边界未验」**：同样是环境。协调者本机
+  实测 `TestFlowNodeProducesRoundTripsThroughHTTPWire` **PASS（1.86s）**。已结清。
+- **「produces.kind 未按附件白名单校验」**：不改。今天 `Gate.RequireAttachment` 同样不做
+  白名单校验，produces 与它保持一致才是对的；单独给 produces 加校验会让 `internal/ledger`
+  反向依赖 `internal/agentd` 的 `attachmentKinds`。
+- **「裁决落账到挂载/路由之间无重启恢复保障」**：不改，越界。那是整个 `RunOnce` 的既有
+  性质（本卡之前就是这样），属于 B185「回合状态落账可恢复」的范围。
