@@ -605,3 +605,56 @@ describe('抽屉里的关联执行排序与计数', () => {
     expect(await screen.findByText('关联执行（task）')).toBeInTheDocument()
   })
 })
+
+describe('抽屉里的任务跳转', () => {
+  it('点 ↗ 发起跳转回调，且不触发展开', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'linux-01', TaskID: 'task-j', Purpose: 'implement', LastType: 'turn_end', LastSeq: 7 },
+    ]))
+    const onJump = vi.fn()
+    render(
+      <CardDrawer
+        id="B31" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[task({ id: 'task-j' })]} onJumpToTask={onJump}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '跳到 task-j' }))
+    expect(onJump).toHaveBeenCalledTimes(1)
+    expect(onJump).toHaveBeenCalledWith('task-j')
+    // 展开没被误触：aria-expanded 还是 false，工单加载占位也没出现
+    expect(screen.getByRole('button', { name: /^task-j/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('正在读取工单…')).not.toBeInTheDocument()
+  })
+
+  it('没给跳转回调时不画 ↗ 按钮', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-nojump', Purpose: 'plan', LastType: '', LastSeq: 0 },
+    ]))
+    render(<CardDrawer id="B34" onClose={() => {}} onOpenCard={() => {}} tasks={[]} />)
+    await screen.findByRole('button', { name: /^task-nojump/ })
+    expect(screen.queryByRole('button', { name: /跳到/ })).not.toBeInTheDocument()
+  })
+
+  it('整行点击仍然展开工单面板——跳转按钮不抢走既有入口', async () => {
+    const ledger = await import('../../api/ledger')
+    const client = await import('../../api/client')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'linux-01', TaskID: 'task-tk', Purpose: 'implement', LastType: 'question', LastSeq: 9 },
+    ]))
+    vi.mocked(client.fetchTaskDetail).mockResolvedValue({
+      task: { id: 'task-tk', state: 'waiting_answer' },
+      tickets: [{ id: 'tk-9', kind: 'ask', request: '这里要用哪个基线？' }],
+      events: [],
+    } as never)
+    render(
+      <CardDrawer
+        id="B33" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[task({ id: 'task-tk', state: 'waiting_answer' })]} onJumpToTask={vi.fn()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /^task-tk/ }))
+    expect(await screen.findByText('这里要用哪个基线？')).toBeInTheDocument()
+  })
+})

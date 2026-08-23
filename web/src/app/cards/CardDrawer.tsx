@@ -280,6 +280,7 @@ export function CardDrawer({
   initialSection,
   nodes,
   tasks,
+  onJumpToTask,
 }: {
   id: string
   onClose: () => void
@@ -291,6 +292,11 @@ export function CardDrawer({
   // 抽屉不自起第二条轮询——同页两条 2.5s 流会各自跳动，卡上的状态会和看板
   // 在不同时刻更新（spec §5）。undefined = 流未接入或首拉未回。
   tasks?: Task[]
+  // 提供时每行渲染 ↗ 跳转按钮。语义固定为深链 navigate('/tasks/{taskId}')，
+  // 由调用方注入（CardsPage 用 useNavigate 实现）；抽屉自己绝不解析目录或切
+  // tab——那是 Shell 既有 TaskDeepLink 的职责，复制它等于养第二份会漂移的逻辑
+  // （spec §3.3 明令禁止）。缺省不画按钮。
+  onJumpToTask?: (taskId: string) => void
 }) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
@@ -789,11 +795,23 @@ export function CardDrawer({
                   const linked = linkedTaskOf(row, tasks)
                   return (
                     <div key={`${row.Target}/${row.TaskID}`} className="mb-1 rounded-md border text-xs">
-                      <button
-                        type="button"
+                      {/* 整行点击=展开工单（现状职责，spec §3.3 不动它）。外层从
+                          <button> 换成 div[role=button] 是为了容纳行内的 ↗ 真
+                          按钮（button 不能嵌 button）；role/tabIndex/键盘处理
+                          照抄 CardItem.tsx:35-44 的行内可点先例，cursor-pointer
+                          补回原生 button 自带的指针。 */}
+                      <div
+                        role="button"
+                        tabIndex={0}
                         aria-expanded={open}
                         onClick={() => toggleTask(row.TaskID)}
-                        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            toggleTask(row.TaskID)
+                          }
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left"
                       >
                         {/* 实况来自页面级 2.5s 任务流的真 state，渲染与看板同一套
                             圆点+文案。LastType 只是镜像事件的类型不是状态：
@@ -807,7 +825,22 @@ export function CardDrawer({
                           <span className="ml-auto text-muted-foreground">实况未知{row.LastType !== '' && ` · 最后事件 ${row.LastType}`}</span>
                         )}
                         <span className="text-muted-foreground">{row.Target}</span>
-                      </button>
+                        {onJumpToTask && (
+                          <button
+                            type="button"
+                            aria-label={`跳到 ${row.TaskID}`}
+                            title="去该任务所在的目录并打开它的 TUI 标签页；目录解析不到时会开在当前目录下"
+                            onClick={(event) => {
+                              // 跳转必须掐掉冒泡：整行的点击语义是展开工单，
+                              // 一次点击不能又跳走又把面板拉出来（spec §3.3；
+                              // 验收含「去掉 stopPropagation 必须红」的变异复验）
+                              event.stopPropagation()
+                              onJumpToTask(row.TaskID)
+                            }}
+                            className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] hover:bg-accent"
+                          >↗</button>
+                        )}
+                      </div>
                       {open && (
                         <div className="border-t px-2 py-2">
                           {/* 远程 task 的工单在这里也答得了：agentd 的 byTask 中间件会把
