@@ -115,11 +115,18 @@ func TestHelperFenceRaise(t *testing.T) {
 		os.Stdout.WriteString("SETFAIL " + err.Error() + "\n")
 		os.Exit(0)
 	}
+	// 装上之后先把硬限读出来、与抬回结果打在同一行：硬限对 root 与非 root
+	// 同样可读，是「Max 也被压到 want」的直接证据，不依赖特权上下文。
+	_, hard, err := getNprocLimits()
+	if err != nil {
+		os.Stdout.WriteString("GETFAIL " + err.Error() + "\n")
+		os.Exit(0)
+	}
 	// 抬回装之前的软硬限：硬限只能降不能升（升需特权），正确实现下必然失败
 	if err := setNprocLimit(orig); err != nil {
-		os.Stdout.WriteString("RAISE_DENIED\n")
+		os.Stdout.WriteString("RAISE_DENIED HARD=" + strconv.Itoa(hard) + "\n")
 	} else {
-		os.Stdout.WriteString("RAISE_OK\n")
+		os.Stdout.WriteString("RAISE_OK HARD=" + strconv.Itoa(hard) + "\n")
 	}
 	os.Exit(0)
 }
@@ -143,7 +150,33 @@ func TestFenceCannotBeRaisedBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("helper 执行失败: %v (输出 %q)", err, out)
 	}
-	if got := strings.TrimSpace(string(out)); got != "RAISE_DENIED" {
-		t.Fatalf("围栏应拆不掉，helper 报告 %q", got)
+	line := strings.TrimSpace(string(out))
+
+	// 第 1 段（所有权限档都断言，不按特权分档跳过）：硬限必须等于 want。
+	// 这是产品性质本身——setNprocLimit 要把软硬限一起压到 n；而硬限能直接
+	// 读，root 与非 root 读法完全一样，因此这一段不受特权影响，root 上照测。
+	fields := strings.Fields(line)
+	if len(fields) < 2 || !strings.HasPrefix(fields[0], "RAISE_") || !strings.HasPrefix(fields[1], "HARD=") {
+		t.Fatalf("helper 输出格式异常: %q", line)
+	}
+	hard, err := strconv.Atoi(strings.TrimPrefix(fields[1], "HARD="))
+	if err != nil {
+		t.Fatalf("helper 输出的 HARD 字段解析失败: %q", line)
+	}
+	if hard != want {
+		t.Fatalf("装围栏后硬限应为 %d，实际为 %d（helper 完整输出 %q）", want, hard, line)
+	}
+
+	// 第 2 段（仅非特权）：「抬不回来」这一端到端证据来自内核——非特权进程
+	// 不能抬硬限是内核的既定语义，不是我们写的代码；root 持 CAP_SYS_RESOURCE，
+	// 无论硬限是否被压都能抬回，这段在 root 上区分不了对错。我们要证的是自己
+	// 那一行有没有把 Max 一起设上（第 1 段已直接证毕），所以 root 上不补测
+	// 「单向门」也没关系：测我们写的，不测内核写的。故这里只在非 root 下断言，
+	// 而不是 t.Skip 整条用例——那样第 1 段也没了。
+	if os.Geteuid() == 0 {
+		return
+	}
+	if !strings.HasPrefix(line, "RAISE_DENIED") {
+		t.Fatalf("非特权进程应拆不掉围栏，helper 完整输出 %q", line)
 	}
 }

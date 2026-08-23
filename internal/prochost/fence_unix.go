@@ -5,6 +5,7 @@
 // 职责：
 //   - setNprocLimit：把当前进程的 RLIMIT_NPROC 软硬限一起压到给定值
 //   - getNprocLimit：读回当前软限（自检与测试用）
+//   - getNprocLimits：读回当前软硬两限（测试直接断言 Max 用）
 //
 // 边界：
 //   - 只动**调用者自己**的 rlimit，不影响同 uid 的其它进程；子孙靠继承拿到
@@ -69,4 +70,29 @@ func getNprocLimit() (int, error) {
 		return math.MaxInt32, nil
 	}
 	return int(rl.Cur), nil
+}
+
+// getNprocLimits 读当前进程的 RLIMIT_NPROC 软硬两限。
+//
+// 返回：软限、硬限；getrlimit 失败时返回错误。
+//
+// 边界：硬限与软限同样钳到 math.MaxInt32，理由同 getNprocLimit——
+// RLIM_INFINITY 直接 int() 转换会得到 -1，把「无上限」误读成「上限为负」。
+// 与 getNprocLimit 一样不 fork，保持本包零 fork 约束。
+func getNprocLimits() (soft, hard int, err error) {
+	var rl unix.Rlimit
+	if err := unix.Getrlimit(unix.RLIMIT_NPROC, &rl); err != nil {
+		return 0, 0, fmt.Errorf("getrlimit RLIMIT_NPROC: %w", err)
+	}
+	if rl.Cur > uint64(math.MaxInt32) {
+		soft = math.MaxInt32
+	} else {
+		soft = int(rl.Cur)
+	}
+	if rl.Max > uint64(math.MaxInt32) {
+		hard = math.MaxInt32
+	} else {
+		hard = int(rl.Max)
+	}
+	return soft, hard, nil
 }
