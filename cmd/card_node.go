@@ -28,7 +28,7 @@ func runStepDispatch(cmd *cobra.Command, st *ledger.Store, id, node, actor strin
 		}
 	}()
 	runner := &ledgerstep.StepRunner{
-		St: st,
+		St: st, Session: ledgerSession(),
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: st, Transport: cliTransport, Actor: actor,
 		},
