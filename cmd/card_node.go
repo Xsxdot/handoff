@@ -43,6 +43,7 @@ func runStepDispatch(cmd *cobra.Command, st *ledger.Store, id, node, actor strin
 		Target:   cardDispatchTarget,
 		Executor: cardDispatchExecutor,
 		Model:    cardDispatchModel,
+		Extra:    cardDispatchExtra,
 	}
 	outcome, err := runner.Run(ctx, id, node)
 	if err != nil {

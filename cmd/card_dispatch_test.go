@@ -170,3 +170,96 @@ func TestCardDispatchFailureReleasesLease(t *testing.T) {
 		t.Fatalf("失败后重派应放行: %v", err)
 	}
 }
+
+// TestCardDispatchExtraReachesPrompt 钉死 --extra 的正文真的落进 prompt。
+// 这是协调者对**某一轮**说话的唯一通道：没有它就只能往工作分支塞提交，
+// 而那条路会撞上 WorkBranch 取「最近一条非审阅 dispatched 快照」的三个坑。
+func TestCardDispatchExtraReachesPrompt(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "带补充说明的卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	var got dispatchRequest
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+		got = req
+		return "T-extra-1", nil
+	})
+	defer restore()
+	const extra = "本轮只修 F1，不要重跑整卡"
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
+		"--template", "feature-impl", "--target", "mac-02", "--extra", extra); err != nil {
+		t.Fatalf("card dispatch --extra: %v", err)
+	}
+	if !strings.Contains(got.prompt, extra) {
+		t.Fatalf("prompt 里没有 --extra 正文:\n%s", got.prompt)
+	}
+	if !strings.Contains(got.prompt, "本次补充") {
+		t.Fatalf("prompt 缺「本次补充」小节，执行者无从判断这段的身份:\n%s", got.prompt)
+	}
+}
+
+// TestCardDispatchStepExtraReachesPrompt --step 与模板路径必须共用同一个 flag，
+// 否则「给某一轮补一句话」在节点派发上仍然无解——而节点派发正是它最需要的地方。
+func TestCardDispatchStepExtraReachesPrompt(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "step 带补充说明的卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	var got dispatchRequest
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+		got = req
+		return "T-step-extra-1", nil
+	})
+	defer restore()
+	const extra = "上一轮把审阅当成了实现，本轮只改 output.go"
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中",
+		"--target", "mac-02", "--extra", extra); err != nil {
+		t.Fatalf("card dispatch --step --extra: %v", err)
+	}
+	if !strings.Contains(got.prompt, extra) {
+		t.Fatalf("--step 的 prompt 里没有 --extra 正文:\n%s", got.prompt)
+	}
+}
+
+// TestCardDispatchWithoutExtraHasNoSupplementSection 空值不得留下空小节：
+// 「## 本次补充」后面跟一片空白比没有更让执行者困惑（同 {{ACCEPT}} 的既有取舍）。
+func TestCardDispatchWithoutExtraHasNoSupplementSection(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "不带补充的卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	var got dispatchRequest
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+		got = req
+		return "T-noextra-1", nil
+	})
+	defer restore()
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
+		"--template", "feature-impl", "--target", "mac-02"); err != nil {
+		t.Fatalf("card dispatch: %v", err)
+	}
+	if strings.Contains(got.prompt, "本次补充") {
+		t.Fatalf("未传 --extra 时不应出现「本次补充」小节:\n%s", got.prompt)
+	}
+}
