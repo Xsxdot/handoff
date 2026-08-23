@@ -1227,6 +1227,83 @@ func TestResolveDispatchBaseLocalBranchUsesConfiguredRemote(t *testing.T) {
 	}
 }
 
+// TestResolveDispatchBaseLocalBranchUsesLocalRef 验证 local_base_branch=true 只读
+// refs/heads/<branch>，即使 origin 不可达也能解析本地尖端且绝不 fetch。
+func TestResolveDispatchBaseLocalBranchUsesLocalRef(t *testing.T) {
+	repo := initTestRepo(t)
+	gitT(t, repo, "branch", "work")
+	gitT(t, repo, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing-origin.git"))
+	want := gitOut(t, repo, "rev-parse", "refs/heads/work^{commit}")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), repo, "work", true)
+	if err != nil {
+		t.Fatalf("resolveDispatchBase(local): %v", err)
+	}
+	if fetched {
+		t.Fatal("本地工作分支解析不得触发 fetch")
+	}
+	if got != want {
+		t.Fatalf("本地工作分支尖端=%s，期望=%s", got, want)
+	}
+}
+
+// TestResolveDispatchBaseLocalBranchMissingRejects 验证本地 ref 缺失时使用可行动的
+// ErrBadWorkspaceReq 拒发文案，而不是退回 HEAD 或访问远端。
+func TestResolveDispatchBaseLocalBranchMissingRejects(t *testing.T) {
+	repo := initTestRepo(t)
+	gitT(t, repo, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing-origin.git"))
+
+	_, fetched, err := resolveDispatchBase(context.Background(), repo, "missing", true)
+	if fetched {
+		t.Fatal("本地工作分支缺失时不得触发 fetch")
+	}
+	if !errors.Is(err, ErrBadWorkspaceReq) {
+		t.Fatalf("缺失本地工作分支应返回 ErrBadWorkspaceReq，实得 %v", err)
+	}
+	for _, want := range []string{"工作分支只存在于创建它的那台机器", "先 push 到 origin", "--base"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误应包含 %q，实得 %v", want, err)
+		}
+	}
+}
+
+// TestDispatchNormalBaseSemanticsUnchanged 反向锁住 local_base_branch=false 的三条
+// 既有语义：普通分支仍 D2 补拉、普通空 Base 仍取本地 HEAD、卡空基线仍读 origin/HEAD。
+func TestDispatchNormalBaseSemanticsUnchanged(t *testing.T) {
+	t.Run("普通分支仍补拉", func(t *testing.T) {
+		origin, clone := newOriginAndClone(t)
+		want := commitOnOrigin(t, origin, "second.txt", "second")
+		got, fetched, err := resolveDispatchBase(context.Background(), clone, "main", false)
+		if err != nil {
+			t.Fatalf("resolveDispatchBase: %v", err)
+		}
+		if !fetched || got != want {
+			t.Fatalf("普通分支应 D2 补拉到 %s，got=%s fetched=%v", want, got, fetched)
+		}
+	})
+	t.Run("普通空基线仍取 HEAD", func(t *testing.T) {
+		repo := initTestRepo(t)
+		want := gitOut(t, repo, "rev-parse", "HEAD")
+		got, err := ResolveBaseline(context.Background(), repo, "")
+		if err != nil {
+			t.Fatalf("ResolveBaseline: %v", err)
+		}
+		if got.Start != want || got.Fetched {
+			t.Fatalf("普通空基线应取 HEAD=%s，got=%+v", want, got)
+		}
+	})
+	t.Run("卡空基线仍读 origin HEAD", func(t *testing.T) {
+		_, clone := newOriginAndClone(t)
+		got, err := resolveDefaultBaseBranch(context.Background(), clone)
+		if err != nil {
+			t.Fatalf("resolveDefaultBaseBranch: %v", err)
+		}
+		if got != "main" {
+			t.Fatalf("卡空基线应读 main，实得 %q", got)
+		}
+	})
+}
+
 // TestResolveBaseBranchMissingBranch origin 上没有该分支时拒绝，且带原文。
 func TestResolveBaseBranchMissingBranch(t *testing.T) {
 	_, clone := newOriginAndClone(t)

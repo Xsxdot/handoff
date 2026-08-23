@@ -11,6 +11,7 @@ package ledgerstep
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -116,6 +117,22 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		purpose = req.PurposeOverride
 	}
 
+	// WorkBranch 同时返回分支和上次目标机；这两个值必须来自同一条非审阅
+	// dispatched 快照，才能可靠判断本次是否仍在持有该私有工作分支的机器上。
+	// 跨机时在 Transport 之前拒绝，避免静默退回卡基线并丢掉上一轮产出。
+	workInfo, workErr := d.St.WorkBranch(c.ID)
+	hasWorkBranch := workErr == nil
+	if workErr != nil && !errors.Is(workErr, ledger.ErrNotFound) {
+		slog.Default().Error("读取卡工作分支失败", "card", c.ID, "target", target, "cause", workErr)
+		return zero, fmt.Errorf("取卡工作分支: %w", workErr)
+	}
+	if hasWorkBranch && (workInfo.Target == "" || workInfo.Target != target) {
+		slog.Default().Warn("工作分支跨目标机，拒绝接续", "card", c.ID,
+			"branch", workInfo.Branch, "previous_target", workInfo.Target, "target", target)
+		return zero, fmt.Errorf("工作分支只存在于创建它的那台机器：上次目标机 %q，本次目标机 %q；请先 push 到 origin（git push origin %s），再用显式 --base 指定",
+			workInfo.Target, target, workInfo.Branch)
+	}
+
 	// 判据被收起时不留空冒号：模板正文里「验收判据：{{ACCEPT}}」后面跟一片
 	// 空白，比说明白更让执行者困惑。
 	acceptance := c.AcceptanceCriteria
@@ -128,18 +145,15 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"{{ACCEPT}}", acceptance,
 	).Replace(tpl.Def.Prompt)
 
-	reviewBase := ""
 	// 审阅轮跑在卡的工作分支上：审阅是只读的，开自己的分支既没意义，又会
 	// 让同一张卡的第二轮撞上第一轮的同名分支（判据② 的 3 轮封顶因此走不到
 	// 第二轮——2026-08-19 真机实测 fatal: a branch named ... already exists）
 	branch := fmt.Sprintf("%s/%s-%s", tpl.Def.BranchPrefix, c.ID, purpose)
 	existingBranch := ""
 	if purpose == ledger.PurposeReview {
-		workInfo, err := d.St.WorkBranch(c.ID)
-		if err != nil {
-			return zero, fmt.Errorf("审阅轮取工作分支: %w", err)
+		if !hasWorkBranch {
+			return zero, fmt.Errorf("审阅轮取工作分支: %w", workErr)
 		}
-		work := workInfo.Branch
 		// 审阅每轮开一条指向工作分支当前提交的一次性分支。三个约束叠出这个形态：
 		// ① 不能复用固定名 cards/<卡>-review——第二轮撞名，判据② 的 3 轮封顶
 		//    走不到第二轮；② 不能直接检出工作分支——实现任务的工作树还占着它，
@@ -150,7 +164,6 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 			return zero, fmt.Errorf("审阅轮取轮次: %w", err)
 		}
 		branch = fmt.Sprintf("%s/%s-review-%d", tpl.Def.BranchPrefix, c.ID, round+1)
-		reviewBase = work
 	} else {
 		// 非审阅节点的重跑同样会撞分支名——同一张卡第二次从同 purpose 模板
 		// 派发时，目标机上第一轮分支还在，git 拒绝创建同名分支（与审阅轮
@@ -170,8 +183,10 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if err != nil {
 		return zero, fmt.Errorf("取有效基线: %w", err)
 	}
-	if reviewBase != "" {
-		base = reviewBase // 审阅分支从工作分支的当前提交开，不是从基线开
+	localBaseBranch := false
+	if hasWorkBranch {
+		base = workInfo.Branch // 后续节点从同机工作分支起，不是从卡合并基线起
+		localBaseBranch = true
 	}
 	resolveDefaultBase := base == ""
 	// 三段拼装要用到有效基线，所以必须排在 base 算完之后。审阅轮的 base 被
@@ -217,6 +232,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		PlanName: planName, Base: base, NewWorktree: true,
 		ExistingBranch: existingBranch, Discipline: disciplineName,
 		ResolveDefaultBase: resolveDefaultBase,
+		LocalBaseBranch:    localBaseBranch,
 	})
 	if err != nil {
 		return zero, fmt.Errorf("派发: %w", err)
