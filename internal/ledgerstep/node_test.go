@@ -600,3 +600,81 @@ func TestNodeStepRerunSameOutputPathIsIdempotent(t *testing.T) {
 		t.Fatalf("同 path 重跑应幂等，附件=%+v", got.Attachments)
 	}
 }
+
+// 裁决未过时产出物校验必须整段跳过：否则失败轮会因为"没有法定产出物"被判成
+// 等人，OnFail 的重试回路（3 轮封顶）对所有声明产出的节点就此失效。
+func TestNodeStepFailedVerdictSkipsOutputVerification(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "plan", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next: ledger.StatusReview, OnFail: "进行中",
+			Produces: &ledger.NodeOutput{Kind: "plan", Path: "docs/b201-plan.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-failed-verdict", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return "报告\n```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[]}\n```", nil
+		},
+		OutputPath: func() string {
+			t.Fatal("裁决未过时不应渲染产出路径")
+			return ""
+		},
+		Diff: func(context.Context, string, string) ([]string, error) {
+			t.Fatal("裁决未过时不应读改动清单")
+			return nil, nil
+		},
+		Attach: func(string, string, string, string) error {
+			t.Fatal("裁决未过时不应挂产出物")
+			return nil
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("失败轮执行出错: %v", err)
+	}
+	if out.Action != ActionContinue {
+		t.Fatalf("Action = %q, want %q（失败轮应走 OnFail 而非等人）", out.Action, ActionContinue)
+	}
+	got, _ := st.GetCard(card.ID)
+	if got.Status != "进行中" {
+		t.Fatalf("失败轮应退到 OnFail «进行中»，实际 %q", got.Status)
+	}
+}
+
+// 声明了产出物却没装配校验钩子时必须显式转等人：静默跳过等于把"节点产出物挂卡"
+// 悄悄降级成不校验，而 nil 钩子直接调用会 panic 掉整个环节。
+func TestNodeStepProducesWithoutHooksHaltsForHuman(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "plan", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next:     ledger.StatusReview,
+			Produces: &ledger.NodeOutput{Kind: "plan", Path: "docs/b201-plan.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-unwired", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return nodePassMessage(), nil
+		},
+		// OutputPath / Diff / Attach 三者故意留空
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("未装配钩子时执行出错: %v", err)
+	}
+	if out.Action != ActionNeedsHuman {
+		t.Fatalf("Action = %q, want %q", out.Action, ActionNeedsHuman)
+	}
+	if !strings.Contains(out.Reason, "产出物校验未装配") {
+		t.Fatalf("Reason = %q，未点明是校验依赖缺失", out.Reason)
+	}
+	got, _ := st.GetCard(card.ID)
+	if got.Status == ledger.StatusReview {
+		t.Fatal("未装配校验时不得放行到下一列")
+	}
+}
