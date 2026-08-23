@@ -2,9 +2,9 @@
  "meta": {
   "project": "handoff",
   "branch": "cards/B223-implement",
-  "commit": "f149c818",
+  "commit": "b5427188",
   "scannedAt": "2026-08-23",
-  "generator": "codex-codegraph-b223-rescan"
+  "generator": "codex-codegraph-b223-callgraph"
  },
  "domains": {
   "d_coordination": {
@@ -1341,6 +1341,860 @@
   }
  },
  "nodes": {
+  "n_cmd_cardAddCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 33,
+   "name": "cardAddCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 33,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+    [
+     "cmd",
+     "*cobra.Command",
+     ""
+    ],
+    [
+     "args",
+     "[]string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "handoff card add 的命令执行入口"
+  },
+  "n_cmd_cardListCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 55,
+   "name": "cardListCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 55,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card list 的命令执行入口"
+ },
+  "n_cmd_cardShowCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 103,
+   "name": "cardShowCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 103,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card show 的命令执行入口"
+ },
+  "n_cmd_cardUpdateCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 140,
+   "name": "cardUpdateCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 140,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card update 的命令执行入口"
+ },
+  "n_cmd_cardMoveCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 188,
+   "name": "cardMoveCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 188,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card move 的命令执行入口"
+ },
+  "n_cmd_cardCloseCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 219,
+   "name": "cardCloseCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 219,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card close 的命令执行入口"
+ },
+  "n_cmd_cardReviveCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 245,
+   "name": "cardReviveCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 245,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card revive 的命令执行入口"
+ },
+  "n_cmd_cardLinkCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 263,
+   "name": "cardLinkCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 263,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card link 的命令执行入口"
+ },
+  "n_cmd_cardUnlinkCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 281,
+   "name": "cardUnlinkCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 281,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card unlink 的命令执行入口"
+ },
+  "n_cmd_cardMergeCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 299,
+   "name": "cardMergeCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 299,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card merge 的命令执行入口"
+ },
+  "n_cmd_cardUnmergeCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 324,
+   "name": "cardUnmergeCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 324,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card unmerge 的命令执行入口"
+ },
+  "n_cmd_cardSplitCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 342,
+   "name": "cardSplitCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 342,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card split 的命令执行入口"
+ },
+  "n_cmd_cardNoteCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 360,
+   "name": "cardNoteCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 360,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card note 的命令执行入口"
+ },
+  "n_cmd_cardExportCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 390,
+   "name": "cardExportCmd.RunE",
+   "file": "cmd/card.go",
+   "line": 390,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card export 的命令执行入口"
+ },
+  "n_cmd_cardWaitCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 36,
+   "name": "cardWaitCmd.RunE",
+   "file": "cmd/card_wait.go",
+   "line": 36,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card wait 的命令执行入口"
+ },
+  "n_cmd_cardAcceptCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 36,
+   "name": "cardAcceptCmd.RunE",
+   "file": "cmd/card_records.go",
+   "line": 36,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card accept 的命令执行入口"
+ },
+  "n_cmd_cardNeedsCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 71,
+   "name": "cardNeedsCmd.RunE",
+   "file": "cmd/card_records.go",
+   "line": 71,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card needs 的命令执行入口"
+ },
+  "n_cmd_cardDispatchCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 155,
+   "name": "cardDispatchCmd.RunE",
+   "file": "cmd/card_dispatch.go",
+   "line": 155,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card dispatch 的命令执行入口"
+ },
+  "n_cmd_cardReleaseCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 16,
+   "name": "cardReleaseCmd.RunE",
+   "file": "cmd/card_driver.go",
+   "line": 16,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card release 的命令执行入口"
+ },
+  "n_cmd_cardTakeoverCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 40,
+   "name": "cardTakeoverCmd.RunE",
+   "file": "cmd/card_driver.go",
+   "line": 40,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card takeover 的命令执行入口"
+ },
+  "n_cmd_cardImportCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 29,
+   "name": "cardImportCmd.RunE",
+   "file": "cmd/card_import.go",
+   "line": 29,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card import 的命令执行入口"
+ },
+  "n_cmd_cardMinBCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 18,
+   "name": "cardMinBCmd.RunE",
+   "file": "cmd/card_minb.go",
+   "line": 18,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card min-b 的命令执行入口"
+ },
+  "n_cmd_cardPrefixCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 16,
+   "name": "cardPrefixCmd.RunE",
+   "file": "cmd/card_prefix.go",
+   "line": 16,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff card prefix 的命令执行入口"
+ },
+  "n_cmd_decOpenCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 24,
+   "name": "decOpenCmd.RunE",
+   "file": "cmd/decision.go",
+   "line": 24,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff decision open 的命令执行入口"
+ },
+  "n_cmd_decListCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 40,
+   "name": "decListCmd.RunE",
+   "file": "cmd/decision.go",
+   "line": 40,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff decision list 的命令执行入口"
+ },
+  "n_cmd_decAnswerCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 62,
+   "name": "decAnswerCmd.RunE",
+   "file": "cmd/decision.go",
+   "line": 62,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff decision answer 的命令执行入口"
+ },
+  "n_cmd_tplListCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 28,
+   "name": "tplListCmd.RunE",
+   "file": "cmd/template.go",
+   "line": 28,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff template list 的命令执行入口"
+ },
+  "n_cmd_tplShowCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 55,
+   "name": "tplShowCmd.RunE",
+   "file": "cmd/template.go",
+   "line": 55,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff template show 的命令执行入口"
+ },
+  "n_cmd_tplPutCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 73,
+   "name": "tplPutCmd.RunE",
+   "file": "cmd/template.go",
+   "line": 73,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff template put 的命令执行入口"
+ },
+  "n_cmd_wfListCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 29,
+   "name": "wfListCmd.RunE",
+   "file": "cmd/workflow.go",
+   "line": 29,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff workflow list 的命令执行入口"
+ },
+  "n_cmd_wfShowCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 64,
+   "name": "wfShowCmd.RunE",
+   "file": "cmd/workflow.go",
+   "line": 64,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff workflow show 的命令执行入口"
+ },
+  "n_cmd_wfPutCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 80,
+   "name": "wfPutCmd.RunE",
+   "file": "cmd/workflow.go",
+   "line": 80,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff workflow put 的命令执行入口"
+ },
+  "n_cmd_wfMigrateCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 107,
+   "name": "wfMigrateCmd.RunE",
+   "file": "cmd/workflow.go",
+   "line": 107,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+     [
+       "cmd",
+       "*cobra.Command",
+       ""
+     ],
+     [
+       "args",
+       "[]string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "handoff workflow migrate 的命令执行入口"
+ },
+  "n_ledger_Store_ImportCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 289,
+   "name": "Store.ImportCard",
+   "file": "internal/ledger/cards.go",
+   "line": 289,
+   "signature": "func (s *Store) ImportCard(id, source string, nc NewCard) (Card, error)",
+   "params": [
+     [
+       "id",
+       "string",
+       ""
+     ],
+     [
+       "source",
+       "string",
+       ""
+     ],
+     [
+       "nc",
+       "NewCard",
+       ""
+     ]
+   ],
+   "returns": "Card, error",
+   "summary": "显式卡号导入建卡并记录导入来源"
+ },
+  "n_ledger_Store_TakeoverCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 122,
+   "name": "Store.TakeoverCard",
+   "file": "internal/ledger/tasks.go",
+   "line": 122,
+   "signature": "func (s *Store) TakeoverCard(id, session, actor string) error",
+   "params": [
+     [
+       "id",
+       "string",
+       ""
+     ],
+     [
+       "session",
+       "string",
+       ""
+     ],
+     [
+       "actor",
+       "string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "显式替换卡的驱动归属并记录接管事件"
+ },
+  "n_ledger_Store_SetCardBaseBranch": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 537,
+   "name": "Store.SetCardBaseBranch",
+   "file": "internal/ledger/cards.go",
+   "line": 537,
+   "signature": "func (s *Store) SetCardBaseBranch(id, branch, actor string) error",
+   "params": [
+     [
+       "id",
+       "string",
+       ""
+     ],
+     [
+       "branch",
+       "string",
+       ""
+     ],
+     [
+       "actor",
+       "string",
+       ""
+     ]
+   ],
+   "returns": "error",
+   "summary": "在首次派发前设置或清除卡的显式基线"
+ },
+  "n_ledgerstep_StepRunner_diffNode": {
+   "kind": "func",
+   "container": "k_ledgerstep_StepRunner",
+   "order": 200,
+   "name": "StepRunner.diffNode",
+   "file": "internal/ledgerstep/runner.go",
+   "line": 200,
+   "signature": "func (r *StepRunner) diffNode() func(context.Context, string, string) ([]string, error)",
+   "returns": "func(context.Context, string, string) ([]string, error)",
+   "summary": "生产读取节点 diff 并投影为路径清单的回调"
+ },
   "e_cli_card": {
    "kind": "entry",
    "container": "c_cli",
@@ -71944,6 +72798,894 @@
   }
  },
  "edges": [
+  [
+   "n_ledger_Store_ImportCard",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_TakeoverCard",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_SetCardBaseBranch",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_SetCardBaseBranch",
+   "n_ledger_toTime"
+  ],
+  [
+   "n_ledger_Store_SetCardPrefix",
+   "n_ledger_log"
+  ],
+  [
+   "n_ledger_Store_cardPrefixTx",
+   "n_ledger_log"
+  ],
+  [
+   "n_web_components_ui_Card",
+   "n_web_utils_cn"
+  ],
+  [
+   "n_web_components_ui_CardHeader",
+   "n_web_utils_cn"
+  ],
+  [
+   "n_web_components_ui_CardTitle",
+   "n_web_utils_cn"
+  ],
+  [
+   "n_web_components_ui_CardDescription",
+   "n_web_utils_cn"
+  ],
+  [
+   "n_web_components_ui_CardContent",
+   "n_web_utils_cn"
+  ],
+  [
+   "n_web_components_ui_CardFooter",
+   "n_web_utils_cn"
+  ],
+  [
+   "n_ledger_Store_ImportCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_ImportCard",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_TakeoverCard",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_TakeoverCard",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_TakeoverCard",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_TakeoverCard",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_TakeoverCard",
+   "n_ledger_Store_appendEvent"
+  ],
+  [
+   "n_ledger_Store_SetCardBaseBranch",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_SetCardBaseBranch",
+   "n_ledger_getCardTx"
+  ],
+  [
+   "n_ledger_Store_SetCardBaseBranch",
+   "n_ledger_Store_q"
+  ],
+  [
+   "n_ledger_Store_SetCardBaseBranch",
+   "n_ledger_Store_tval"
+  ],
+  [
+   "n_ledger_Store_SetCardBaseBranch",
+   "n_ledger_Store_timeNow"
+  ],
+  [
+   "n_ledger_Store_SetCardBaseBranch",
+   "n_ledger_Store_appendEventAt"
+  ],
+  [
+   "n_ledger_Store_SetCardPrefix",
+   "n_ledger_Store_mutate"
+  ],
+  [
+   "n_ledger_Store_cardPrefixTx",
+   "n_ledger_Store_q"
+  ],
+  [
+   "e_cli_card_add",
+   "n_cmd_cardAddCmd_RunE"
+  ],
+  [
+   "e_cli_card_list",
+   "n_cmd_cardListCmd_RunE"
+  ],
+  [
+   "e_cli_card_show",
+   "n_cmd_cardShowCmd_RunE"
+  ],
+  [
+   "e_cli_card_update",
+   "n_cmd_cardUpdateCmd_RunE"
+  ],
+  [
+   "e_cli_card_move",
+   "n_cmd_cardMoveCmd_RunE"
+  ],
+  [
+   "e_cli_card_close",
+   "n_cmd_cardCloseCmd_RunE"
+  ],
+  [
+   "e_cli_card_revive",
+   "n_cmd_cardReviveCmd_RunE"
+  ],
+  [
+   "e_cli_card_link",
+   "n_cmd_cardLinkCmd_RunE"
+  ],
+  [
+   "e_cli_card_unlink",
+   "n_cmd_cardUnlinkCmd_RunE"
+  ],
+  [
+   "e_cli_card_merge",
+   "n_cmd_cardMergeCmd_RunE"
+  ],
+  [
+   "e_cli_card_unmerge",
+   "n_cmd_cardUnmergeCmd_RunE"
+  ],
+  [
+   "e_cli_card_split",
+   "n_cmd_cardSplitCmd_RunE"
+  ],
+  [
+   "e_cli_card_note",
+   "n_cmd_cardNoteCmd_RunE"
+  ],
+  [
+   "e_cli_card_export",
+   "n_cmd_cardExportCmd_RunE"
+  ],
+  [
+   "e_cli_card_wait",
+   "n_cmd_cardWaitCmd_RunE"
+  ],
+  [
+   "e_cli_card_accept",
+   "n_cmd_cardAcceptCmd_RunE"
+  ],
+  [
+   "e_cli_card_needs",
+   "n_cmd_cardNeedsCmd_RunE"
+  ],
+  [
+   "e_cli_card_dispatch",
+   "n_cmd_cardDispatchCmd_RunE"
+  ],
+  [
+   "e_cli_card_release",
+   "n_cmd_cardReleaseCmd_RunE"
+  ],
+  [
+   "e_cli_card_takeover",
+   "n_cmd_cardTakeoverCmd_RunE"
+  ],
+  [
+   "e_cli_card_import",
+   "n_cmd_cardImportCmd_RunE"
+  ],
+  [
+   "e_cli_card_min_b",
+   "n_cmd_cardMinBCmd_RunE"
+  ],
+  [
+   "e_cli_card_prefix",
+   "n_cmd_cardPrefixCmd_RunE"
+  ],
+  [
+   "e_cli_decision_open",
+   "n_cmd_decOpenCmd_RunE"
+  ],
+  [
+   "e_cli_decision_list",
+   "n_cmd_decListCmd_RunE"
+  ],
+  [
+   "e_cli_decision_answer",
+   "n_cmd_decAnswerCmd_RunE"
+  ],
+  [
+   "e_cli_template_list",
+   "n_cmd_tplListCmd_RunE"
+  ],
+  [
+   "e_cli_template_show",
+   "n_cmd_tplShowCmd_RunE"
+  ],
+  [
+   "e_cli_template_put",
+   "n_cmd_tplPutCmd_RunE"
+  ],
+  [
+   "e_cli_workflow_list",
+   "n_cmd_wfListCmd_RunE"
+  ],
+  [
+   "e_cli_workflow_show",
+   "n_cmd_wfShowCmd_RunE"
+  ],
+  [
+   "e_cli_workflow_put",
+   "n_cmd_wfPutCmd_RunE"
+  ],
+  [
+   "e_cli_workflow_migrate",
+   "n_cmd_wfMigrateCmd_RunE"
+  ],
+  [
+   "n_cmd_cardAddCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardAddCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardAddCmd_RunE",
+   "n_ledger_Store_CreateCard"
+  ],
+  [
+   "n_cmd_cardAddCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardAddCmd_RunE",
+   "n_cmdprintCardJSON"
+  ],
+  [
+   "n_cmd_cardListCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardListCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardListCmd_RunE",
+   "n_ledger_Store_ListCards"
+  ],
+  [
+   "n_cmd_cardListCmd_RunE",
+   "n_cmd_cardViewWire"
+  ],
+  [
+   "n_cmd_cardShowCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardShowCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardShowCmd_RunE",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_cmd_cardShowCmd_RunE",
+   "n_ledger_Store_RelationsOf"
+  ],
+  [
+   "n_cmd_cardShowCmd_RunE",
+   "n_ledger_Store_TasksOf"
+  ],
+  [
+   "n_cmd_cardShowCmd_RunE",
+   "n_ledger_Store_EventsFromAsc"
+  ],
+  [
+   "n_cmd_cardShowCmd_RunE",
+   "n_ledger_Store_EffectiveBaseBranch"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_ledger_Store_AttachFile"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_ledger_Store_DetachFile"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_ledger_Store_SetAcceptance"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_ledger_Store_SetCardBaseBranch"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_ledger_Store_UpdateCardMeta"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_cmd_cardUpdateCmd_RunE",
+   "n_cmdprintCardJSON"
+  ],
+  [
+   "n_cmd_cardMoveCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardMoveCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardMoveCmd_RunE",
+   "n_ledger_Store_MoveCard"
+  ],
+  [
+   "n_cmd_cardMoveCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardMoveCmd_RunE",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_cmd_cardMoveCmd_RunE",
+   "n_cmdprintCardJSON"
+  ],
+  [
+   "n_cmd_cardCloseCmd_RunE",
+   "n_cmdconfirmDestructive"
+  ],
+  [
+   "n_cmd_cardCloseCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardCloseCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardCloseCmd_RunE",
+   "n_ledger_Store_CloseCard"
+  ],
+  [
+   "n_cmd_cardCloseCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardReviveCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardReviveCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardReviveCmd_RunE",
+   "n_ledger_Store_ReviveCard"
+  ],
+  [
+   "n_cmd_cardReviveCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardLinkCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardLinkCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardLinkCmd_RunE",
+   "n_ledger_Store_AddBlocks"
+  ],
+  [
+   "n_cmd_cardLinkCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardUnlinkCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardUnlinkCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardUnlinkCmd_RunE",
+   "n_ledger_Store_RemoveRelation"
+  ],
+  [
+   "n_cmd_cardMergeCmd_RunE",
+   "n_cmdconfirmDestructive"
+  ],
+  [
+   "n_cmd_cardMergeCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardMergeCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardMergeCmd_RunE",
+   "n_ledger_Store_MergeCards"
+  ],
+  [
+   "n_cmd_cardMergeCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardUnmergeCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardUnmergeCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardUnmergeCmd_RunE",
+   "n_ledger_Store_UnmergeCard"
+  ],
+  [
+   "n_cmd_cardUnmergeCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardSplitCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardSplitCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardSplitCmd_RunE",
+   "n_ledger_Store_SplitCard"
+  ],
+  [
+   "n_cmd_cardSplitCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardSplitCmd_RunE",
+   "n_cmdprintCardJSON"
+  ],
+  [
+   "n_cmd_cardNoteCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardNoteCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardNoteCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardNoteCmd_RunE",
+   "n_ledger_Store_AddCommentReset"
+  ],
+  [
+   "n_cmd_cardNoteCmd_RunE",
+   "n_ledger_Store_AddComment"
+  ],
+  [
+   "n_cmd_cardExportCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardExportCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardExportCmd_RunE",
+   "n_ledger_Store_ListCards"
+  ],
+  [
+   "n_cmd_cardWaitCmd_RunE",
+   "n_cmdrunCardWait"
+  ],
+  [
+   "n_cmd_cardAcceptCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardAcceptCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardAcceptCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardAcceptCmd_RunE",
+   "n_ledger_Store_RecordAcceptance"
+  ],
+  [
+   "n_cmd_cardNeedsCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardNeedsCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardNeedsCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardNeedsCmd_RunE",
+   "n_ledger_Store_ClearNeedsHuman"
+  ],
+  [
+   "n_cmd_cardNeedsCmd_RunE",
+   "n_ledger_Store_MarkNeedsHuman"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_cmdledgerSession"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_cmdrunStepDispatch"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_ledger_Store_GetCard"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_ledger_Store_ClaimCard"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_cmdcliTransport"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_ledgerstep_Dispatcher_ViaTemplate"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_ledger_Store_MoveCard"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_ledger_Store_ReleaseCard"
+  ],
+  [
+   "n_cmd_cardReleaseCmd_RunE",
+   "n_cmdledgerSession"
+  ],
+  [
+   "n_cmd_cardReleaseCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardReleaseCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardReleaseCmd_RunE",
+   "n_ledger_Store_ReleaseCard"
+  ],
+  [
+   "n_cmd_cardTakeoverCmd_RunE",
+   "n_cmdledgerSession"
+  ],
+  [
+   "n_cmd_cardTakeoverCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardTakeoverCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardTakeoverCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardTakeoverCmd_RunE",
+   "n_ledger_Store_TakeoverCard"
+  ],
+  [
+   "n_cmd_cardImportCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardImportCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardImportCmd_RunE",
+   "n_ledger_Store_ImportCard"
+  ],
+  [
+   "n_cmd_cardImportCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_cardImportCmd_RunE",
+   "n_cmdprintCardJSON"
+  ],
+  [
+   "n_cmd_cardMinBCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardMinBCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_cardMinBCmd_RunE",
+   "n_ledger_Store_EnsureMinB"
+  ],
+  [
+   "n_cmd_cardPrefixCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_cardPrefixCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_decOpenCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_decOpenCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_decOpenCmd_RunE",
+   "n_ledger_Store_OpenDecision"
+  ],
+  [
+   "n_cmd_decOpenCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_decListCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_decListCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_decListCmd_RunE",
+   "n_ledger_Store_ListDecisions"
+  ],
+  [
+   "n_cmd_decAnswerCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_decAnswerCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_decAnswerCmd_RunE",
+   "n_ledger_Store_AnswerDecision"
+  ],
+  [
+   "n_cmd_decAnswerCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "n_cmd_tplListCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_tplListCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_tplListCmd_RunE",
+   "n_ledger_Store_ListTemplateNames"
+  ],
+  [
+   "n_cmd_tplListCmd_RunE",
+   "n_ledger_Store_GetTemplate"
+  ],
+  [
+   "n_cmd_tplShowCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_tplShowCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_tplShowCmd_RunE",
+   "n_ledger_Store_GetTemplate"
+  ],
+  [
+   "n_cmd_tplPutCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_tplPutCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_tplPutCmd_RunE",
+   "n_ledger_Store_PutTemplate"
+  ],
+  [
+   "n_cmd_wfListCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_wfListCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_wfListCmd_RunE",
+   "n_ledger_Store_GetWorkflow"
+  ],
+  [
+   "n_cmd_wfListCmd_RunE",
+   "n_ledger_Store_ListWorkflowNames"
+  ],
+  [
+   "n_cmd_wfShowCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_wfShowCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_wfShowCmd_RunE",
+   "n_ledger_Store_GetWorkflow"
+  ],
+  [
+   "n_cmd_wfPutCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_wfPutCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_wfPutCmd_RunE",
+   "n_ledger_Store_PutWorkflow"
+  ],
+  [
+   "n_cmd_wfMigrateCmd_RunE",
+   "n_cmdconfirmDestructive"
+  ],
+  [
+   "n_cmd_wfMigrateCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_wfMigrateCmd_RunE",
+   "n_ledger_Store_Close"
+  ],
+  [
+   "n_cmd_wfMigrateCmd_RunE",
+   "n_ledger_Store_MigrateCardWorkflow"
+  ],
+  [
+   "n_cmd_wfMigrateCmd_RunE",
+   "n_cmdledgerActor"
+  ],
+  [
+   "e_main",
+   "n_cmdSetSkillContent"
+  ],
+  [
+   "e_main",
+   "n_cmdExecute"
+  ],
+  [
+   "e_main",
+   "n_cmdExitCode"
+  ],
+  [
+   "e_web_main",
+   "n_web_App_App"
+  ],
+  [
+   "n_agentd_Manager_resolveDisciplineFor",
+   "n_discipline_Compose"
+  ],
+  [
+   "n_ledger_Store_CreateCard",
+   "n_ledger_Store_cardPrefixTx"
+  ],
+  [
+   "n_ledger_Store_cardPrefixTx",
+   "n_ledger_firstASCIILetter"
+  ],
+  [
+   "n_ledgerstep_StepRunner_Run",
+   "n_ledgerstep_StepRunner_diffNode"
+  ],
+  [
+   "n_ledgerstep_StepRunner_Run",
+   "n_ledger_Store_AttachFile"
+  ],
+  [
+   "n_ledgerstep_StepRunner_dispatchNode",
+   "n_ledgerstep_RenderOutputPath"
+  ],
+  [
+   "n_ledgerstep_StepRunner_dispatchNode",
+   "n_ledgerstep_Dispatcher_ViaTemplate"
+  ],
+  [
+   "n_ledgerstep_StepRunner_diffNode",
+   "n_ledgerstep_ChangedPaths"
+  ],
+  [
+   "n_ledgerstep_NodeStep_RunOnce",
+   "n_ledgerstep_changedPathsText"
+  ],
+  [
+   "n_ledgerstep_ChangedPaths",
+   "n_ledgerstep_diffPath"
+  ],
+  [
+   "n_ledgerstep_ChangedPaths",
+   "n_ledgerstep_diffHeaderFields"
+  ],
+  [
+   "n_cmd_cardPrefixCmd_RunE",
+   "n_ledger_Store_SetCardPrefix"
+  ],
   [
    "e_cli_agentd",
    "n_cmd_agentdCmd_RunE"
