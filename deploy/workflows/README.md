@@ -5,7 +5,9 @@
 
 ## charter-v4.json
 
-配合 B183 / B182 的代码改动使用。相对账本里的 charter v3 只有两处改动：
+配合 B183 / B182 / B201 的代码改动使用。下表三处改动是这份文件的完整历史；
+**其中前两处（`purpose` / `omit_acceptance`）已经在账本的 charter v6 里生效**，
+因此相对当前账本，本文件唯一的未应用增量是第三行的 `produces`。
 
 | 节点 | 改动 | 为什么 |
 |---|---|---|
@@ -24,16 +26,23 @@ implement=require_attachment: plan。
 
 ### 应用顺序（**先部署二进制，后 put**）
 
+**当前状态（2026-08-23，B201 合并进 main 之后）**：代码已在 `main`，但两件事都还没做——
+本机 agentd 跑的仍是 `86ff76d89`（B205 的合并点，早于 B201，`workflow show charter`
+的输出里根本没有 `produces` 字段），账本里的 charter 最新版仍是 **v6，三个节点的
+`produces` 全为空**。也就是说 B201 的机制已经合入并验过，但对真实的 charter 流还没生效，
+产文档节点仍需人工补挂附件。要打开它，按下面的顺序把这两步补齐。
+
+
 ```bash
-# 1. 先让 agentd 与 CLI 都换成含 B183/B182 改动的二进制
-# 2. 再写入新版本（不改旧版，v3 上的存量卡不受影响）
+# 1. 先让 agentd 与 CLI 都换成含 B183/B182/B201 改动的二进制（本机 + linux-01 都要换）
+# 2. 再写入新版本（不改旧版，钉在 v6 上的存量卡不受影响）
 handoff workflow put charter --file deploy/workflows/charter-v4.json
 # 3. 只有需要让某张在飞的卡用上新流程时，才显式迁
 handoff workflow migrate <卡号> --workflow charter --column <当前列> --yes
 ```
 
 顺序反了会造出「配置已新、二进制还旧」的窗口：旧二进制的 JSON 解码会**静默忽略**
-它不认识的 `purpose` / `omit_acceptance` 两个字段，于是 v4 表现得和 v3 一模一样，
+它不认识的 `purpose` / `omit_acceptance` / `produces` 字段，于是新版本表现得和旧版一模一样，
 而看板上写着已经改了。
 
 ### 本次刻意**没有**改的两个节点
