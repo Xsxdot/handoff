@@ -2,15 +2,20 @@ package agentd
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // TestForwardProjectAddToNamedMachine 断言：带 ?machine= 的登记请求被原样搬到
@@ -203,4 +208,163 @@ func TestForwardedRequestNeverForwardsAgain(t *testing.T) {
 	if resp.StatusCode != http.StatusServiceUnavailable {
 		t.Fatalf("带转发头的请求必须本机处理，实得状态码 %d", resp.StatusCode)
 	}
+}
+
+func TestForwardWorktreeStripsCardIDsAndAttachesLocally(t *testing.T) {
+	type receivedRequest struct {
+		Body map[string]json.RawMessage
+	}
+	received := make(chan receivedRequest, 1)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(body, &object); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		received <- receivedRequest{Body: object}
+		_ = json.NewEncoder(w).Encode(proto.Workspace{Path: "/remote/manual/feat-relay", Branch: "feat/relay", Managed: true})
+	}))
+	t.Cleanup(remote.Close)
+	local := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token:   testToken,
+		Targets: map[string]config.Target{"devbox": {Addr: remote.URL, Token: testToken}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	led, err := ledger.Open(t.TempDir() + "/ledger.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	if err := led.EnsureDefaultWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	local.srv.SetLedger(led)
+	card, err := led.CreateCard(ledger.NewCard{Title: "跨机挂卡", Project: "p", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		local.ts.URL+"/api/projects/demo/worktrees?machine=devbox",
+		strings.NewReader(`{"mode":"new_branch","branch":"feat/relay","base":"main","card_ids":["`+card.ID+`"],"future_key":"preserve"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("跨机建树 code=%d body=%s", resp.StatusCode, body)
+	}
+	var ws proto.Workspace
+	if err := json.Unmarshal(body, &ws); err != nil {
+		t.Fatal(err)
+	}
+	if len(ws.CardResults) != 1 || !ws.CardResults[0].OK || ws.CardResults[0].ID != card.ID {
+		t.Fatalf("本地挂卡结果错误: %+v body=%s", ws.CardResults, body)
+	}
+	got, _ := led.GetCard(card.ID)
+	if got.BaseBranch != ws.Branch {
+		t.Fatalf("本地卡基线=%q，想要=%q", got.BaseBranch, ws.Branch)
+	}
+	select {
+	case receivedReq := <-received:
+		if _, ok := receivedReq.Body["card_ids"]; ok {
+			t.Fatalf("转发给目标的请求不应含 card_ids: %+v", receivedReq.Body)
+		}
+		if string(receivedReq.Body["future_key"]) != `"preserve"` ||
+			string(receivedReq.Body["mode"]) != `"new_branch"` {
+			t.Fatalf("转发请求未保留未知键/已有键: %+v", receivedReq.Body)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("目标未收到建树请求")
+	}
+}
+
+func TestForwardWorktreeErrorAndCancel(t *testing.T) {
+	t.Run("target error is unchanged and does not attach", func(t *testing.T) {
+		remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusInternalServerError)
+			_, _ = w.Write([]byte(`{"error":"target boom"}`))
+		}))
+		t.Cleanup(remote.Close)
+		local := newTestAgentdEnvWithCfg(t, &config.Config{
+			Token:   testToken,
+			Targets: map[string]config.Target{"devbox": {Addr: remote.URL, Token: testToken}},
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		led, err := ledger.Open(t.TempDir() + "/ledger.db")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = led.Close() })
+		if err := led.EnsureDefaultWorkflows(); err != nil {
+			t.Fatal(err)
+		}
+		local.srv.SetLedger(led)
+		card, err := led.CreateCard(ledger.NewCard{Title: "错误不挂卡", Project: "p", Workflow: "bug", Actor: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/projects/demo/worktrees?machine=devbox",
+			strings.NewReader(`{"mode":"new_branch","branch":"feat/error","base":"main","card_ids":["`+card.ID+`"]}`))
+		req.Host = "127.0.0.1:7777"
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		rec := httptest.NewRecorder()
+		local.srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusInternalServerError || rec.Body.String() != `{"error":"target boom"}` {
+			t.Fatalf("目标错误未原样透传: code=%d body=%s", rec.Code, rec.Body.String())
+		}
+		got, _ := led.GetCard(card.ID)
+		if got.BaseBranch != "" {
+			t.Fatalf("目标失败后不应写卡: %q", got.BaseBranch)
+		}
+	})
+
+	t.Run("cancel does not attach", func(t *testing.T) {
+		remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			<-r.Context().Done()
+		}))
+		t.Cleanup(remote.Close)
+		local := newTestAgentdEnvWithCfg(t, &config.Config{
+			Token:   testToken,
+			Targets: map[string]config.Target{"devbox": {Addr: remote.URL, Token: testToken}},
+		}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+		led, err := ledger.Open(t.TempDir() + "/ledger.db")
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { _ = led.Close() })
+		if err := led.EnsureDefaultWorkflows(); err != nil {
+			t.Fatal(err)
+		}
+		local.srv.SetLedger(led)
+		card, err := led.CreateCard(ledger.NewCard{Title: "取消不挂卡", Project: "p", Workflow: "bug", Actor: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		req := httptest.NewRequest(http.MethodPost, "/api/projects/demo/worktrees?machine=devbox",
+			strings.NewReader(`{"mode":"new_branch","branch":"feat/cancel","base":"main","card_ids":["`+card.ID+`"]}`)).WithContext(ctx)
+		req.Host = "127.0.0.1:7777"
+		req.Header.Set("Authorization", "Bearer "+testToken)
+		rec := httptest.NewRecorder()
+		local.srv.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("取消应返回 502，实得 %d body=%s", rec.Code, rec.Body.String())
+		}
+		got, _ := led.GetCard(card.ID)
+		if got.BaseBranch != "" {
+			t.Fatalf("取消后不应写卡: %q", got.BaseBranch)
+		}
+	})
 }

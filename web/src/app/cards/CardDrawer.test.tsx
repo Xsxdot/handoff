@@ -275,12 +275,47 @@ describe('抽屉里的编辑', () => {
     await waitFor(() => expect(vi.mocked(ledger.detachFile)).toHaveBeenCalledWith('B20', 'docs/p.md'))
   })
 
-  it('基线分支只读且注明不可改', async () => {
+  it('基线分支显示继承态并提供编辑入口', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
     render(<CardDrawer id="B20" onClose={() => {}} onOpenCard={() => {}} />)
-    expect(await screen.findByText('feat/x')).toBeInTheDocument()
-    expect(screen.getByText(/建卡时定，不可改/)).toBeInTheDocument()
+    expect(await screen.findByText('继承 feat/x')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '编辑基线' })).toBeInTheDocument()
+  })
+
+  it('基线三态分别显示自设、继承和未设置', async () => {
+    const ledger = await import('../../api/ledger')
+    const cases = [
+      { id: 'B21', own: 'cards/own', effective: 'cards/own', label: '自设 cards/own' },
+      { id: 'B22', own: '', effective: 'cards/inherited', label: '继承 cards/inherited' },
+      { id: 'B23', own: '', effective: '', label: '未设置/回落项目主线' },
+    ]
+    for (const current of cases) {
+      vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+        ...detail, card: card({ id: current.id, base_branch: current.own }), effective_base_branch: current.effective,
+      } as never)
+      const view = render(<CardDrawer id={current.id} onClose={() => {}} onOpenCard={() => {}} />)
+      expect(await screen.findByText(current.label)).toBeInTheDocument()
+      view.unmount()
+    }
+  })
+
+  it('保存与清除基线发送精确 payload，409 保留旧值并显示原文', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detail as never)
+    const patch = vi.mocked(ledger.patchCard)
+    render(<CardDrawer id="B20" onClose={() => {}} onOpenCard={() => {}} />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑基线' }))
+    fireEvent.change(screen.getByLabelText('基线分支'), { target: { value: 'cards/new-base' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存基线' }))
+    await waitFor(() => expect(patch).toHaveBeenCalledWith('B20', { base_branch: 'cards/new-base' }))
+
+    patch.mockRejectedValueOnce(new Error('B20 已在 cards/first 首次派发，基线已冻结'))
+    fireEvent.click(screen.getByRole('button', { name: '编辑基线' }))
+    fireEvent.change(screen.getByLabelText('基线分支'), { target: { value: '' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存基线' }))
+    expect(await screen.findByText(/cards\/first 首次派发/)).toBeInTheDocument()
+    expect(screen.getByLabelText('基线分支')).toHaveValue('')
   })
 })
 

@@ -1008,3 +1008,68 @@ ledgerPatch、newTestServerWithManager/doWorktreeReq 和现有 Web render harnes
 插入位置说明留进生产代码。
 
 本节点的产物是本计划文档，不是实现代码。
+
+---
+
+## 修复轮任务单（协调者裁定，2026-08-23 review 轮 fail 之后）
+
+review 轮（task baeec284）判 fail，三条 finding。协调者逐条核过，**本轮范围是下面三项**。
+裁定写在这里是因为 `carry_card_context` 只拼卡号/标题/基线/判据/附件路径，不拼 note——
+写在卡上执行者读不到。
+
+### F1（major）补一条冻结语义用例：卡的唯一一次派发是审阅轮
+
+`internal/ledger/cards_test.go` 现存用例 `first dispatched including review freezes` 先记
+implement 派发、再记 review 派发；`ORDER BY seq ASC LIMIT 1` 取到的是 implement 那条。
+于是「**只**派过审阅轮的卡」这个情形没有任何用例罩住。
+
+协调者已用变异证实这是真缺口：在 `SetCardBaseBranch` 里让 `snapshot.Purpose ==
+PurposeReview` 时跳过冻结（直接违反契约「任何已派发事件都冻结基线」），
+`go test ./internal/ledger/` **仍然全绿**。
+
+要做的：补一条用例，卡上只记一次 `Purpose: PurposeReview` 的 dispatched 快照，
+断言 `SetCardBaseBranch` 仍返回 `ErrBadState`，且报文里带的是那条审阅快照的分支与时间。
+**先让它在当前实现上跑绿、再用上面那条变异确认它会红**——否则等于没补。
+
+### F2（minor）卡候选加载失败要有重试入口
+
+`web/src/app/tree/NewWorktreeDialog.tsx` 的分支加载失败路径有「重试」按钮（`reloadKey`
+驱动，约 199 行）；新增的卡加载失败路径只 `setCardLoadError`，effect 仅依赖
+`[open, projectName]`，失败后除了关掉重开没有别的出路。
+
+同一个弹层里两种「失败」语义不该自相矛盾——这与 §0.1 里 P4 的裁定同一条理由。
+补一个与分支侧同形态的重试入口，并补对应组件测试。
+
+### F3（major）消掉卡候选的 N+1
+
+`loadCards` 对列表里**每一张卡**调 `fetchCardDetail`，只为判断有没有 `dispatched` 事件。
+实测：handoff 项目 21 张活跃卡 = 弹层每打开一次发 21 次详情请求，而详情返回整条事件流
+（单张 B205 就 47135 字节 / 57 条事件，B192 34088 字节）。每次开弹层拉几百 KB，
+只为算出每张卡一个布尔值。
+
+这不在 §0.1 里 P2 的裁定内：P2 定的是「打开时按项目调一次 `GET /api/cards?project=…`」，
+逐卡详情是实现阶段自己加的。
+
+**建议修法**：给卡列表投影加一个布尔字段（`base_frozen` 或 `dispatched`），服务端一次
+查出来。它是在既有读投影上加可选字段，与契约 §2.4「加字段、旧客户端不传即旧行为」
+同形态，风险低。Go 侧与 `web/src/api/types.ts` 两边都要加，并按既有做法补/改
+`web/src/api/testdata/` 下的金样本（Go 与前端读同一份，别只改一边）。
+
+**若你判断这必须走契约修订而不是加字段，不要自行扩接缝——把理由写进产出交回，
+由协调者决定。**
+
+### 不在本轮范围
+
+review 的 finding 2「T5 前端测试与构建门禁未执行」**已由协调者结案，不要动**。
+它不是代码缺陷：审阅轮只读、装 `node_modules` 是写操作，所以它如实记了「未执行」——
+这是纪律在正确起作用。协调者已在本地补验：`npx tsc -b --noEmit` 干净、
+`npx vitest run` 116 文件 / 1138 用例全绿。
+
+### 本轮完工判据
+
+- `go build ./...`、`gofmt -l`、`go vet` 干净
+- `go test ./internal/ledger/... ./internal/agentd/... ./cmd/...` 全绿
+- F1 的新用例：先绿，再用上述变异确认会红
+- 前端：`npx tsc -b --noEmit` 与 `npx vitest run` 都要真跑（本机装依赖是允许的，
+  implement 不是只读回合）；跑不了就如实记未验交回，**不许把环境红写成 pass**
+

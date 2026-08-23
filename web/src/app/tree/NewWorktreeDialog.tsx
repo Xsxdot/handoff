@@ -17,6 +17,8 @@ import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { createWorktree, fetchProjectBranches } from '../../api/client'
 import type { ProjectBranchesResp, Workspace } from '../../api/types'
+import { fetchCards } from '../../api/ledger'
+import type { CardView } from '../../api/ledger'
 import { Button } from '@/components/ui/button'
 import { errorMessage } from '../lib/format'
 
@@ -51,6 +53,11 @@ function baseOptions(data: ProjectBranchesResp): string[] {
   return names
 }
 
+type CardOption = {
+  card: CardView
+  dispatched: boolean
+}
+
 /** 加载目标机器的分支并提交一棵手工工作树。 */
 export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreated }: NewWorktreeDialogProps) {
   const [mode, setMode] = useState<'new_branch' | 'existing_branch'>('new_branch')
@@ -61,8 +68,13 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
   const [loadError, setLoadError] = useState('')
   const [submitError, setSubmitError] = useState('')
   const [submitting, setSubmitting] = useState(false)
+  const [cardOptions, setCardOptions] = useState<CardOption[]>([])
+  const [selectedCardIDs, setSelectedCardIDs] = useState<string[]>([])
+  const [cardLoadError, setCardLoadError] = useState('')
+  const [createdWorkspace, setCreatedWorkspace] = useState<Workspace | null>(null)
   // reloadKey 只为「重试」按钮服务：改它就重跑下面那个 effect
   const [reloadKey, setReloadKey] = useState(0)
+  const [cardReloadKey, setCardReloadKey] = useState(0)
 
   // 每次打开都重置：弹层是复用的同一个实例，不重置会把上一次的输入与报错带过来
   useEffect(() => {
@@ -73,6 +85,10 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
     setSubmitError('')
     setData(null)
     setLoadError('')
+    setCardOptions([])
+    setSelectedCardIDs([])
+    setCardLoadError('')
+    setCreatedWorkspace(null)
     let alive = true
     fetchProjectBranches(projectName, machine)
       .then((resp) => {
@@ -90,6 +106,31 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
     return () => { alive = false }
   }, [open, projectName, machine, reloadKey])
 
+  // 卡列表是可选的账本增强：账本不可用时只告警，分支工作树仍可创建。
+  useEffect(() => {
+    if (!open) return
+    let alive = true
+    const loadCards = async () => {
+      setCardLoadError('')
+      setCardOptions([])
+      try {
+        const response = await fetchCards(`project=${encodeURIComponent(projectName)}`)
+        const options = (response.cards ?? []).map((card) => ({
+          card,
+          dispatched: card.base_frozen === true,
+        }))
+        if (!alive) return
+        setCardOptions(options)
+      } catch (err) {
+        if (!alive) return
+        setCardOptions([])
+        setCardLoadError(errorMessage(err))
+      }
+    }
+    void loadCards()
+    return () => { alive = false }
+  }, [open, projectName, cardReloadKey])
+
   if (!open) return null
 
   const free = (data?.branches ?? []).filter((b) => b.worktree === '')
@@ -101,15 +142,17 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
     setSubmitting(true)
     setSubmitError('')
     try {
+      const request = mode === 'new_branch'
+        ? { mode, branch: branch.trim(), base } as const
+        : { mode, branch: existing, base: '' } as const
+      const cardIDs = selectedCardIDs.filter((id) => cardOptions.some((option) => option.card.id === id && !option.dispatched))
+      const requestWithCards = cardIDs.length > 0 ? { ...request, card_ids: cardIDs } : request
       const ws = await createWorktree(
         projectName,
-        mode === 'new_branch'
-          ? { mode, branch: branch.trim(), base }
-          : { mode, branch: existing, base: '' },
+        requestWithCards,
         machine,
       )
-      onCreated(ws)
-      onClose()
+      setCreatedWorkspace(ws)
     } catch (err) {
       setSubmitError(errorMessage(err))
     } finally {
@@ -130,7 +173,24 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
           项目 {projectName} · {machineLabel(machine)}
         </p>
 
-        {loadError !== '' ? (
+        {createdWorkspace ? (
+          <div className="space-y-3">
+            <p className="text-sm font-medium">工作树已创建</p>
+            <p className="break-all text-xs text-muted-foreground">{createdWorkspace.branch} · {createdWorkspace.path}</p>
+            {createdWorkspace.card_results && createdWorkspace.card_results.length > 0 ? (
+              <ul className="space-y-1 text-xs">
+                {createdWorkspace.card_results.map((result) => (
+                  <li key={result.id} className={result.ok ? 'text-emerald-700' : 'break-words text-destructive'}>
+                    {result.id}：{result.ok ? '已挂接' : (result.error ?? '挂接失败')}
+                  </li>
+                ))}
+              </ul>
+            ) : <p className="text-xs text-muted-foreground">没有请求挂接卡</p>}
+            <div className="flex justify-end">
+              <Button size="sm" onClick={() => { onCreated(createdWorkspace); onClose() }}>完成</Button>
+            </div>
+          </div>
+        ) : loadError !== '' ? (
           <div className="space-y-2">
             <p className="break-words text-xs text-destructive">{loadError}</p>
             <Button size="sm" variant="outline" onClick={() => setReloadKey((k) => k + 1)}>重试</Button>
@@ -139,6 +199,34 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
           <p className="text-xs text-muted-foreground">正在读取分支…</p>
         ) : (
           <div className="space-y-3">
+            {cardLoadError !== '' && (
+              <div className="flex items-start gap-2 text-xs text-amber-700">
+                <p className="min-w-0 flex-1 break-words">账本候选加载失败：{cardLoadError}</p>
+                <Button size="sm" variant="outline" onClick={() => setCardReloadKey((key) => key + 1)}>重试卡候选</Button>
+              </div>
+            )}
+            {cardOptions.length > 0 && (
+              <fieldset className="space-y-1.5 rounded border p-2">
+                <legend className="px-1 text-xs text-muted-foreground">关联卡（可选）</legend>
+                {cardOptions.map((option) => (
+                  <label key={option.card.id} className="flex items-start gap-2 text-xs">
+                    <input
+                      type="checkbox"
+                      aria-label={`选择卡 ${option.card.id}`}
+                      checked={selectedCardIDs.includes(option.card.id)}
+                      disabled={option.dispatched}
+                      onChange={(event) => setSelectedCardIDs((current) => event.target.checked
+                        ? [...current, option.card.id]
+                        : current.filter((id) => id !== option.card.id))}
+                    />
+                    <span className="min-w-0 flex-1 break-words">
+                      <span className="font-mono">{option.card.id}</span> · {option.card.title}
+                      {option.dispatched && <span className="ml-1 text-muted-foreground">已派发，基线已冻结</span>}
+                    </span>
+                  </label>
+                ))}
+              </fieldset>
+            )}
             <label className="flex items-center gap-2 text-xs">
               <input type="radio" aria-label="新建分支" checked={mode === 'new_branch'} onChange={() => setMode('new_branch')} />
               <span>新建分支</span>

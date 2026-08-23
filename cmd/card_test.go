@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestCardAddListShowMove(t *testing.T) {
@@ -76,6 +77,118 @@ func TestCardAddChildAndBaseBranch(t *testing.T) {
 	out, _, _ = runLedgerCLI(t, dir, "card", "list", "--project", "demo", "--base-branch", "desktop-shell", "--json")
 	if !strings.Contains(out, child.ID) {
 		t.Fatalf("基线继承过滤: %q", out)
+	}
+}
+
+func TestCardUpdateBaseBranch(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "可更新基线", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+
+	out, _, err = runLedgerCLI(t, dir, "card", "update", card.ID, "--base-branch", "cards/keep")
+	if err != nil {
+		t.Fatalf("设置基线: %v", err)
+	}
+	var updated struct {
+		BaseBranch string `json:"base_branch"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &updated); err != nil || updated.BaseBranch != "cards/keep" {
+		t.Fatalf("设置基线输出: err=%v card=%+v output=%q", err, updated, out)
+	}
+
+	// 未提供 --base-branch 时，组合 update 不能隐式清除既有基线。
+	out, _, err = runLedgerCLI(t, dir, "card", "update", card.ID, "--title", "标题更新")
+	if err != nil {
+		t.Fatalf("无基线 flag 的元信息更新: %v", err)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &updated); err != nil || updated.BaseBranch != "cards/keep" {
+		t.Fatalf("无基线 flag 改动了基线: err=%v card=%+v output=%q", err, updated, out)
+	}
+
+	// 显式空串必须走 presence 语义，清除自身覆盖值。
+	out, _, err = runLedgerCLI(t, dir, "card", "update", card.ID, "--base-branch", "")
+	if err != nil {
+		t.Fatalf("清除基线: %v", err)
+	}
+	if strings.Contains(out, "cards/keep") {
+		t.Fatalf("清除基线输出仍含旧值: %q", out)
+	}
+
+	out, _, err = runLedgerCLI(t, dir, "card", "add", "已派发卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var dispatched struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &dispatched); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "update", dispatched.ID, "--accept", "测试全绿"); err != nil {
+		t.Fatalf("设置派发判据: %v", err)
+	}
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		return "T-b205-update-base", nil
+	})
+	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", dispatched.ID,
+		"--template", "feature-impl", "--target", "mac-02", "--discipline-override", "implement")
+	restore()
+	if err != nil {
+		t.Fatalf("准备首次派发: %v", err)
+	}
+
+	var shown struct {
+		Events []struct {
+			Type      string          `json:"type"`
+			Payload   json.RawMessage `json:"payload"`
+			CreatedAt time.Time       `json:"created_at"`
+		} `json:"events"`
+	}
+	out, _, err = runLedgerCLI(t, dir, "card", "show", dispatched.ID)
+	if err != nil {
+		t.Fatalf("读派发事件: %v", err)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &shown); err != nil {
+		t.Fatal(err)
+	}
+	var firstBranch string
+	var firstAt time.Time
+	for _, event := range shown.Events {
+		if event.Type != "dispatched" {
+			continue
+		}
+		var payload struct {
+			Branch string `json:"branch"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatal(err)
+		}
+		firstBranch, firstAt = payload.Branch, event.CreatedAt
+		break
+	}
+	if firstBranch == "" || firstAt.IsZero() {
+		t.Fatalf("未找到首次派发事件: %+v", shown.Events)
+	}
+
+	_, stderr, err := runLedgerCLI(t, dir, "card", "update", dispatched.ID, "--base-branch", "cards/rejected")
+	if err == nil {
+		t.Fatal("已派发卡修改基线应失败")
+	}
+	if !strings.Contains(err.Error()+stderr, firstBranch) ||
+		!strings.Contains(err.Error()+stderr, firstAt.Format(time.RFC3339Nano)) {
+		t.Fatalf("冻结错误缺少首次派发出处: err=%v stderr=%q", err, stderr)
+	}
+	out, _, err = runLedgerCLI(t, dir, "card", "show", dispatched.ID)
+	if err != nil || strings.Contains(out, `"base_branch":"cards/rejected"`) {
+		t.Fatalf("拒绝后基线被改写: err=%v output=%q", err, out)
 	}
 }
 

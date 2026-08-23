@@ -135,7 +135,7 @@ func ledgerCardViewWire(view ledger.CardView, conflict bool, openTickets int) pr
 		ID: view.ID, Title: view.Title, Status: view.Status, Priority: view.Priority,
 		Project: view.Project, Workflow: view.WorkflowName, Parent: view.ParentID, BaseBranch: view.BaseBranch,
 		Attachments: attachments, Following: view.Following, Blocked: view.Blocked,
-		BlockedBy: view.BlockedBy, MergedCount: view.MergedCount, Needs: view.NeedsReason,
+		BaseFrozen: view.BaseFrozen, BlockedBy: view.BlockedBy, MergedCount: view.MergedCount, Needs: view.NeedsReason,
 		OpenDecisions: view.OpenDecisions, ChildrenTotal: view.ChildrenTotal, ChildrenDone: view.ChildrenDone,
 		Conflict: conflict, OpenTickets: openTickets,
 	}
@@ -724,9 +724,9 @@ func (s *Server) handleCardMigrate(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, response)
 }
 
-// handleCardPatch 改卡的标题 / 优先级 / 验收判据。
+// handleCardPatch 改卡的标题 / 优先级 / 验收判据 / 显式基线。
 //
-// **缺字段 = 不动该字段，不是置空。** 三个字段都用 *string 收，靠指针区分
+// **缺字段 = 不动该字段，不是置空。** 四个字段都用 *string 收，靠指针区分
 // 「没给」与「给了空串」——用值类型收会让「只改优先级」把标题和判据一起清掉。
 func (s *Server) handleCardPatch(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
@@ -734,14 +734,20 @@ func (s *Server) handleCardPatch(w http.ResponseWriter, r *http.Request) {
 		Title              *string `json:"title"`
 		Priority           *string `json:"priority"`
 		AcceptanceCriteria *string `json:"acceptance_criteria"`
+		BaseBranch         *string `json:"base_branch"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		s.log.Warn("卡 patch 请求体解析失败", "card", id, "cause", err)
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
 		return
 	}
+	s.log.Info("卡 patch 请求", "card", id, "has_title", body.Title != nil,
+		"has_priority", body.Priority != nil, "has_acceptance", body.AcceptanceCriteria != nil,
+		"has_base_branch", body.BaseBranch != nil)
 	card, err := s.ledger.GetCard(id)
 	if err != nil {
-		writeErr(w, http.StatusNotFound, err)
+		s.log.Warn("卡 patch 读取卡失败", "card", id, "cause", err)
+		ledgerErr(w, err)
 		return
 	}
 	actor := s.ledgerActor(r)
@@ -772,6 +778,14 @@ func (s *Server) handleCardPatch(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		s.log.Info("已写验收判据", "card", id, "bytes", len(*body.AcceptanceCriteria), "actor", actor)
+	}
+	if body.BaseBranch != nil {
+		if err := s.ledger.SetCardBaseBranch(id, *body.BaseBranch, actor); err != nil {
+			s.log.Warn("写卡基线失败", "card", id, "branch", *body.BaseBranch, "cause", err)
+			ledgerErr(w, err)
+			return
+		}
+		s.log.Info("已写卡基线", "card", id, "branch", *body.BaseBranch, "actor", actor)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }

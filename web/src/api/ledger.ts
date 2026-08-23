@@ -11,6 +11,8 @@ export interface CardView {
   workflow: string
   parent: string
   base_branch: string
+  // 列表投影直接给出是否出现过 dispatched，避免建树弹层为每张卡拉详情事件流。
+  base_frozen?: boolean
   attachments: Attachment[]
   following: string
   blocked: boolean

@@ -913,6 +913,9 @@ func (s *Server) handleProjectBranches(w http.ResponseWriter, r *http.Request) {
 //
 // 响应：200 proto.Workspace；项目不存在 404；请求不合法 400；git 失败 500（原文透出）
 func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Request) {
+	if s.forwardWorktreeIfRequested(w, r) {
+		return
+	}
 	if s.forwardIfRequested(w, r) {
 		return
 	}
@@ -925,7 +928,7 @@ func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	s.log.Info("建树请求", "name", name, "machine", r.URL.Query().Get("machine"),
-		"mode", req.Mode, "branch", req.Branch, "base", req.Base)
+		"mode", req.Mode, "branch", req.Branch, "base", req.Base, "card_count", len(req.CardIDs))
 	loc, err := s.st.GetProjectLocationByName(name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
@@ -948,6 +951,31 @@ func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, status, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return
 	}
-	s.log.Info("建树完成", "name", name, "dir", ws.Path, "branch", ws.Branch)
+	if len(req.CardIDs) > 0 && s.ledger != nil {
+		ws = s.attachCardBaseBranches(ws, req.CardIDs, s.ledgerActor(r))
+	}
+	s.log.Info("建树完成", "name", name, "dir", ws.Path, "branch", ws.Branch,
+		"card_result_count", len(ws.CardResults))
 	writeJSON(w, http.StatusOK, ws)
+}
+
+// attachCardBaseBranches 在 Git 工作树已经成功后，按请求顺序逐张设置卡基线。
+// 单张失败只进入该项结果，不删除已经存在的工作树，也不回滚此前成功的卡。
+func (s *Server) attachCardBaseBranches(ws proto.Workspace, ids []string, actor string) proto.Workspace {
+	results := make([]proto.CardBaseBranchResult, 0, len(ids))
+	s.log.Info("建树后开始逐卡挂基线", "branch", ws.Branch, "card_count", len(ids), "actor", actor)
+	for _, id := range ids {
+		result := proto.CardBaseBranchResult{ID: id}
+		if err := s.ledger.SetCardBaseBranch(id, ws.Branch, actor); err != nil {
+			result.Error = err.Error()
+			s.log.Warn("建树后挂卡失败：工作树保留", "card", id, "branch", ws.Branch, "cause", err)
+		} else {
+			result.OK = true
+			s.log.Info("建树后挂卡完成", "card", id, "branch", ws.Branch, "actor", actor)
+		}
+		results = append(results, result)
+	}
+	ws.CardResults = results
+	s.log.Info("建树后逐卡挂基线完成", "branch", ws.Branch, "card_count", len(results))
+	return ws
 }

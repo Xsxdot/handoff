@@ -250,6 +250,7 @@ type Decision struct {
 type CardView struct {
 	Card
 	Blocked       bool     `json:"blocked"`
+	BaseFrozen    bool     `json:"base_frozen"`          // true = 至少有一条 dispatched 事件，基线已冻结
 	BlockedBy     []string `json:"blocked_by,omitempty"` // 未完成的 blocker
 	Following     string   `json:"following,omitempty"`  // 非空 = merged_into 的承载卡 id（跟随态）
 	MergedCount   int      `json:"merged_count"`         // 承载的成员数
