@@ -13,6 +13,12 @@
    "summary": "为协调者编排任务从派发、审批、执行到归档的完整生命周期。",
    "desc": "Manager、SQLite 状态和对外入口共同组织任务、工单、事件与执行回合；协议模型承接跨进程数据，控制面容器分别承载命令、HTTP/WS 和领域查询。"
   },
+  "d_protocol": {
+   "label": "协议契约",
+   "kind": "跨进程数据契约",
+   "summary": "为控制面、执行器与工作台定义跨进程交换的数据契约。",
+   "desc": "internal/proto 中的请求、响应、事件、状态和工作区模型构成跨进程 wire 契约；该领域只承载协议数据结构及其必要的协议辅助函数，不承担业务生命周期。"
+  },
   "d_coordination_api": {
    "label": "控制入口",
    "kind": "控制 API 与实时事件",
@@ -764,22 +770,22 @@
   "k_proto_Task": {
    "label": "proto.Task",
    "kind": "类型方法",
-   "domain": "d_coordination_task"
+   "domain": "d_protocol"
   },
   "k_proto_TaskState": {
    "label": "proto.TaskState",
    "kind": "类型方法",
-   "domain": "d_coordination_task"
+   "domain": "d_protocol"
   },
   "k_proto_fn": {
    "label": "proto（包级函数）",
    "kind": "函数组",
-   "domain": "d_coordination_task"
+   "domain": "d_protocol"
   },
   "k_proto_model": {
    "label": "proto 实体",
    "kind": "实体",
-   "domain": "d_coordination_task"
+   "domain": "d_protocol"
   },
   "k_proxycfg_fn": {
    "label": "proxycfg（包级函数）",
