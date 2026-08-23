@@ -14,7 +14,7 @@ const props = {
 describe('节点编辑器', () => {
   it('能改执行者与纪律块覆盖，改动原样冒泡给上层', () => {
     const onChange = vi.fn()
-    render(<NodeEditor node={base} {...props} onChange={onChange} onRemove={() => {}} />)
+    render(<NodeEditor node={base} {...props} index={0} onChange={onChange} onRemove={() => {}} />)
     fireEvent.change(screen.getByLabelText('纪律块'), { target: { value: 'finishing' } })
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
       override: expect.objectContaining({ discipline: 'finishing' }),
@@ -23,7 +23,7 @@ describe('节点编辑器', () => {
 
   it('关掉派发时，裁决/模板/轮次一并失效——它们没有派发就没有意义', () => {
     const onChange = vi.fn()
-    render(<NodeEditor node={base} {...props} onChange={onChange} onRemove={() => {}} />)
+    render(<NodeEditor node={base} {...props} index={0} onChange={onChange} onRemove={() => {}} />)
     fireEvent.click(screen.getByLabelText('派发'))
     const next = onChange.mock.calls[0][0]
     expect(next.dispatch).toBe(false)
@@ -32,14 +32,14 @@ describe('节点编辑器', () => {
   })
 
   it('路由下拉的候选是别的节点名，不含自己', () => {
-    render(<NodeEditor node={base} {...props} onChange={() => {}} onRemove={() => {}} />)
+    render(<NodeEditor node={base} {...props} index={0} onChange={() => {}} onRemove={() => {}} />)
     const options = [...screen.getByLabelText('通过后去').querySelectorAll('option')].map((o) => o.textContent)
     expect(options).toContain('已完成')
     expect(options).not.toContain('待审阅')
   })
 
   it('纯人工列不显示模板与纪律块——避免让人以为配了会生效', () => {
-    render(<NodeEditor node={{ name: '待办' }} {...props} onChange={() => {}} onRemove={() => {}} />)
+    render(<NodeEditor node={{ name: '待办' }} {...props} index={0} onChange={() => {}} onRemove={() => {}} />)
     expect(screen.queryByLabelText('模板')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('纪律块')).not.toBeInTheDocument()
   })

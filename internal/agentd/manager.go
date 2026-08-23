@@ -2987,7 +2987,21 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		m.log.Debug("任务已终结，忽略 result 事件", "task", taskID, "state", cur.State)
 		return
 	}
-
+	// 回合已收口（waiting_review）之后到达的**失败**结果一律丢弃：executor 进程
+	// 正常退出时读流会报 EOF，adapter 把它当执行终结投一条 result{OK:false}，
+	// 而这一回合的终态事件早已落库。真机两次实证（grok echo probe、codex 任务
+	// c43f4a83）：completed 之后 0.1s 补一条 turn_failed，任务其实成功。
+	//
+	// 与 reconcileExecutorGone 的守卫是同一件事的两半：「executor 已不在」有两个
+	// 到达口（事件通道关闭、adapter 投失败 result），那一路早有守卫，这一路没有。
+	//
+	// 只挡失败、不挡成功是刻意的：迟到的 completed 带着本回合唯一的报文（agentd
+	// 重启丢终态事件时正靠它补回），丢掉它的代价远大于一条重复事件。
+	if ev.Result != nil && !ev.Result.OK && cur.State == proto.TaskStateWaitingReview {
+		m.log.Warn("回合已收口后到达的失败结果，判为传输层假警报并丢弃",
+			"task", taskID, "state", cur.State, "fail_reason", ev.Result.FailReason)
+		return
+	}
 	r := ev.Result
 	// result 落 executor_session 是「会话就绪」progress 的双保险：适配器在
 	// result 上也携带 SessionID，即使 progress 通道异常（如乱序丢失），会话 id

@@ -153,6 +153,16 @@ type NodeOverride struct {
 	Discipline string `json:"discipline,omitempty"` // 具名纪律块名，如 review / finishing
 	Target     string `json:"target,omitempty"`
 	Model      string `json:"model,omitempty"`
+	// Purpose 覆盖模板的派发用途（implement / review / ...）。
+	//
+	// why 用途必须能按节点覆盖：模板是**复用物**（一条流的十个节点常引同一份
+	// 模板），而用途是**这一列要干什么**。派发期有四处行为按用途裁决——分支
+	// 命名、审阅轮的基线取工作分支、卡的工作分支归属（WorkBranch 跳过审阅
+	// 轮）、重跑轮次挂号——节点拿不到自己的用途时，这四处会一起判错。
+	// 2026-08-22 真机实测：charter 流 review 节点引的是 purpose=charter 的
+	// 通用模板，于是审阅轮从卡基线开了条新分支，执行者在空分支上把实现又写
+	// 了一遍，等于从未审阅过工作分支（B183）。
+	Purpose string `json:"purpose,omitempty"`
 }
 
 // NodeDef 工作流的一个节点：看板的一列 + 卡走到这列时的执行规矩。
@@ -174,6 +184,14 @@ type NodeDef struct {
 	Verdict          bool `json:"verdict,omitempty"`            // 等回合终态、解析裁决块并按结果路由（蕴含 Dispatch）
 	CarryCardContext bool `json:"carry_card_context,omitempty"` // prompt 里拼入卡上下文段
 	MaxRounds        int  `json:"max_rounds,omitempty"`         // Verdict 的轮次封顶；0 = 用包内默认
+	// OmitAcceptance 为真时，本节点的 prompt 不注入整卡的验收判据。
+	//
+	// why 需要这个开关：验收判据通常是**实现级**的（测试全绿、真机跑通），
+	// 而计划/拆解类节点的法定产出是文档。两者同时在场时，「pass 的依据是你
+	// 真实跑到的结果」这条裁决契约在计划节点上无解，执行者化解矛盾的方式是
+	// 直接把实现做掉——2026-08-22 真机实测过一次（B182）；对照组是同一条流上
+	// 判据字段为空的卡，同一个执行者没有越轨。
+	OmitAcceptance bool `json:"omit_acceptance,omitempty"`
 
 	Next   string `json:"next,omitempty"`    // 裁决通过后移到哪一列；空 = 停在本列
 	OnFail string `json:"on_fail,omitempty"` // 裁决未过退到哪一列；空 = 停在本列

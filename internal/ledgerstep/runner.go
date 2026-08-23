@@ -94,6 +94,8 @@ func (r *StepRunner) dispatchNode() func(context.Context, ledger.Card, ledger.No
 			ExecutorOverride:   node.Override.Executor,
 			ModelOverride:      node.Override.Model,
 			CarryCardContext:   node.CarryCardContext,
+			PurposeOverride:    node.Override.Purpose,
+			OmitAcceptance:     node.OmitAcceptance,
 			Extra:              r.Extra,
 		})
 		if err != nil {

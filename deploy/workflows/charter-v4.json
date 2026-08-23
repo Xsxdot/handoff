@@ -1,0 +1,142 @@
+{
+  "nodes": [
+    {
+      "name": "待办",
+      "override": {},
+      "next": "spec",
+      "gate": {}
+    },
+    {
+      "name": "spec",
+      "override": {},
+      "next": "contract",
+      "gate": {}
+    },
+    {
+      "name": "contract",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-contract"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "breakdown",
+      "on_fail": "spec",
+      "gate": {
+        "require_attachment": "spec"
+      },
+      "omit_acceptance": true
+    },
+    {
+      "name": "breakdown",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-breakdown"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "plan",
+      "on_fail": "contract",
+      "gate": {
+        "require_attachment": "contract"
+      },
+      "omit_acceptance": true
+    },
+    {
+      "name": "plan",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-plan"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "implement",
+      "on_fail": "breakdown",
+      "gate": {
+        "require_attachment": "spec"
+      },
+      "omit_acceptance": true
+    },
+    {
+      "name": "implement",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-implement"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "review",
+      "on_fail": "plan",
+      "gate": {
+        "require_attachment": "plan"
+      }
+    },
+    {
+      "name": "review",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-review",
+        "purpose": "review"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "acceptance",
+      "on_fail": "implement",
+      "gate": {}
+    },
+    {
+      "name": "acceptance",
+      "override": {},
+      "next": "integrate",
+      "gate": {}
+    },
+    {
+      "name": "integrate",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-integrate"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "图对账",
+      "on_fail": "acceptance",
+      "gate": {}
+    },
+    {
+      "name": "图对账",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-recon"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 2,
+      "next": "finish",
+      "gate": {}
+    },
+    {
+      "name": "finish",
+      "override": {},
+      "next": "已完成",
+      "gate": {}
+    },
+    {
+      "name": "已完成",
+      "override": {},
+      "gate": {}
+    }
+  ]
+}

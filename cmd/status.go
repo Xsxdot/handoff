@@ -79,7 +79,27 @@ var statusCmd = &cobra.Command{
 			return json.NewEncoder(out).Encode(statusJSON{
 				Reachable: true, CLI: cliVer, Agentd: st})
 		}
-		renderStatus(out, addr, cliVer, st)
+		var lookup func(taskID string) (cardID, driver string, heartbeatAt time.Time, ok bool)
+		// 账本是可选的。先检查开关再调用 openLedger，避免 status 在账本未
+		// 启用时触发账本命令族自己的「未启用」告警；任何打开/查询失败都
+		// 静默退回只看 watchers 的旧判据。
+		if loadCLIConfig().Ledger.Enabled {
+			if ledgerStore, ledgerErr := openLedger(); ledgerErr == nil {
+				defer ledgerStore.Close()
+				lookup = func(taskID string) (string, string, time.Time, bool) {
+					cardID, err := ledgerStore.CardOfTask(targetName, taskID)
+					if err != nil {
+						return "", "", time.Time{}, false
+					}
+					card, err := ledgerStore.GetCard(cardID)
+					if err != nil || card.DriverSession == "" {
+						return "", "", time.Time{}, false
+					}
+					return card.ID, card.DriverSession, card.DriverHeartbeatAt, true
+				}
+			}
+		}
+		renderStatusWithLookup(out, addr, cliVer, st, lookup)
 		return nil
 	},
 }
@@ -102,6 +122,11 @@ func renderDegraded(w io.Writer, addr string) {
 
 // renderStatus 渲染完整状态。
 func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.StatusResp) {
+	renderStatusWithLookup(w, addr, cli, st, nil)
+}
+
+func renderStatusWithLookup(w io.Writer, addr string, cli proto.BuildInfo, st *proto.StatusResp,
+	lookup func(taskID string) (cardID, driver string, heartbeatAt time.Time, ok bool)) {
 	fmt.Fprintf(w, "agentd   %s   可用\n", addr)
 	fmt.Fprintf(w, "版本     %s\n", describeBuild(st.Version))
 	fmt.Fprintf(w, "本地     %s\n", compareBuild(cli, st.Version))
@@ -150,10 +175,14 @@ func renderStatus(w io.Writer, addr string, cli proto.BuildInfo, st *proto.Statu
 		if a.Procs != nil {
 			line += fmt.Sprintf("  %d 进程", *a.Procs)
 		}
-		if unattended(a) {
+		att := attendance(a, lookup)
+		if att.Unattended {
 			// 追加而不是替换：executor 活着但没人听，与 executor 死了是两个独立结论，
 			// 昨晚的现场正是「存活 + 无人值守」这一格
 			line += "  ⚠ 无人值守"
+		} else if att.CardID != "" {
+			line += fmt.Sprintf("  ⚠ 无人订阅（卡 %s 驱动 %s，心跳 %s）",
+				att.CardID, att.Driver, heartbeatAgeText(att.HeartbeatAge))
 		}
 		fmt.Fprintln(w, line)
 	}
@@ -292,10 +321,46 @@ func liveText(a proto.ActiveTask) string {
 	}
 }
 
-// unattended 判断一个活跃任务是否处于「该有人听却没人听」的异常状态。
+// attendance 是 status 行的三格归属判定。
 //
-// 参数：
-//   - a: status 响应里的一个活跃任务
+// lookup 只在原本会被标为无人值守时调用；ok 必须表示 task 已挂在一张卡上，
+// 且该卡当前有 DriverSession。账本不可用时传 nil，保持旧的无人值守判据。
+type attendanceResult struct {
+	Unattended   bool
+	CardID       string
+	Driver       string
+	HeartbeatAge time.Duration
+}
+
+func attendance(a proto.ActiveTask, lookup func(taskID string) (cardID, driver string, heartbeatAt time.Time, ok bool)) attendanceResult {
+	result := attendanceResult{}
+	if a.Watchers == nil || *a.Watchers > 0 {
+		return result
+	}
+	switch proto.TaskState(a.State) {
+	case proto.TaskStatePending, proto.TaskStateRunning, proto.TaskStateWaitingAnswer:
+		result.Unattended = true
+	default:
+		return result
+	}
+	if lookup == nil {
+		return result
+	}
+	cardID, driver, heartbeatAt, ok := lookup(a.ID)
+	if !ok || cardID == "" || driver == "" {
+		return result
+	}
+	result.Unattended = false
+	result.CardID = cardID
+	result.Driver = driver
+	if !heartbeatAt.IsZero() {
+		result.HeartbeatAge = time.Since(heartbeatAt)
+	}
+	return result
+}
+
+// unattended 保留给既有调用方与回归测试；新渲染路径使用 attendance，以便
+// 在同一判定中带出卡驱动归属。
 //
 // 返回：
 //   - true 仅当：对端给出了 watchers（非 nil）、其值为 0、且状态属于
@@ -306,15 +371,15 @@ func liveText(a proto.ActiveTask) string {
 // 也算进来，这条标记会天天亮，一周之内就没人再看它了——误报是诊断标记最贵的
 // 失败模式。终态同理。
 func unattended(a proto.ActiveTask) bool {
-	if a.Watchers == nil || *a.Watchers > 0 {
-		return false
+	return attendance(a, nil).Unattended
+}
+
+// heartbeatAgeText 把账本里的心跳年龄按整分钟展示；零值表示账本没有心跳。
+func heartbeatAgeText(age time.Duration) string {
+	if age <= 0 {
+		return "未知"
 	}
-	switch proto.TaskState(a.State) {
-	case proto.TaskStatePending, proto.TaskStateRunning, proto.TaskStateWaitingAnswer:
-		return true
-	default:
-		return false
-	}
+	return fmt.Sprintf("%dm 前", int(age/time.Minute))
 }
 
 // short8 取 id 前 8 位用于展示。

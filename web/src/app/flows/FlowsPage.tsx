@@ -139,6 +139,7 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
             <div key={`${node.name}-${index}`}>
               <NodeEditor
                 node={node}
+                index={index}
                 templates={templates}
                 disciplines={disciplines}
                 nodeNames={nodes.map((item) => item.name)}

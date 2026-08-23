@@ -41,6 +41,8 @@ type wsTestEnv struct {
 	st   *store.Store
 	logs *strings.Builder
 	mu   sync.Mutex
+	// truncationDiagnosed 接收截断诊断完成信号；缓冲避免服务端诊断回调阻塞。
+	truncationDiagnosed chan string
 	// sockBuf>0 时钉住两端 socket 缓冲（服务端发送 / 客户端接收），
 	// 让「对端不读」类用例的 TCP 背压不再取决于运行机器的默认值。
 	sockBuf int
@@ -78,10 +80,18 @@ func newWSTestEnvWithSockBuf(t *testing.T, sockBuf int) *wsTestEnv {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	env := &wsTestEnv{st: st, logs: &strings.Builder{}, sockBuf: sockBuf}
+	env := &wsTestEnv{
+		st:                  st,
+		logs:                &strings.Builder{},
+		truncationDiagnosed: make(chan string, 4),
+		sockBuf:             sockBuf,
+	}
 	logger := slog.New(slog.NewTextHandler(env, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := &config.Config{Token: wsTestToken, DataDir: t.TempDir()}
 	env.srv = NewServer(cfg, st, logger)
+	env.srv.onTruncationDiagnosed = func(verdict string) {
+		env.truncationDiagnosed <- verdict
+	}
 	if sockBuf <= 0 {
 		env.ts = httptest.NewServer(env.srv.Handler())
 	} else {
@@ -305,12 +315,13 @@ func TestWSTruncationWarnsOnRealGap(t *testing.T) {
 	fresh := env.appendAndPublish(t, taskID, "新事件")
 	waitEventSeq(t, ctx, conn, fresh.Seq)
 
-	// 轮询等告警日志：服务端在写出事件**之后**才跑截断诊断并打日志，客户端收到
-	// fresh 的时刻可能先于诊断日志落盘（负载下尤其明显）——直接断言会偶发读到
-	// 尚未写入的日志。轮询把「诊断确实未触发」与「日志还没写到」区分开。
-	deadline := time.Now().Add(3 * time.Second)
-	for !strings.Contains(env.logged(), "补发窗口截断且缺口未由实时流补齐") && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
+	select {
+	case verdict := <-env.truncationDiagnosed:
+		if verdict != "warned" {
+			t.Fatalf("截断诊断跑完了但判定是 %q，期望 warned；日志尾部：%s", verdict, tailStr(env.logged(), 600))
+		}
+	case <-ctx.Done():
+		t.Fatalf("等截断诊断完成超时；日志尾部：%s", tailStr(env.logged(), 600))
 	}
 	if !strings.Contains(env.logged(), "补发窗口截断且缺口未由实时流补齐") {
 		t.Errorf("重放截断留下真实缺口 (5, 20] 却未告警——诊断被高 seq 实时事件掩盖；日志尾部：%s",
@@ -356,14 +367,15 @@ func TestWSTruncationGapCountedPerTask(t *testing.T) {
 	fresh := env.appendAndPublish(t, taskID, "新事件")
 	waitEventSeq(t, ctx, conn, fresh.Seq)
 
-	// 轮询等告警日志：why 同 TestWSTruncationWarnsOnRealGap——诊断日志在事件写出
-	// 之后才落盘，客户端先收到事件时直接断言会偶发读到未写入的日志
-	deadline := time.Now().Add(3 * time.Second)
-	logs := env.logged()
-	for !strings.Contains(logs, "补发窗口截断且缺口未由实时流补齐") && time.Now().Before(deadline) {
-		time.Sleep(10 * time.Millisecond)
-		logs = env.logged()
+	select {
+	case verdict := <-env.truncationDiagnosed:
+		if verdict != "warned" {
+			t.Fatalf("截断诊断跑完了但判定是 %q，期望 warned；日志尾部：%s", verdict, tailStr(env.logged(), 600))
+		}
+	case <-ctx.Done():
+		t.Fatalf("等截断诊断完成超时；日志尾部：%s", tailStr(env.logged(), 600))
 	}
+	logs := env.logged()
 	if !strings.Contains(logs, "补发窗口截断且缺口未由实时流补齐") {
 		t.Fatalf("重放被截断且缺口未补齐，应告警；日志尾部：%s", tailStr(logs, 600))
 	}

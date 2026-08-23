@@ -206,6 +206,115 @@ func TestViaTemplateSecondRoundGetsNumberedBranch(t *testing.T) {
 	}
 }
 
+func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var dispatched []DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		dispatched = append(dispatched, opts)
+		return fmt.Sprintf("T-purpose-%d", len(dispatched)), nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+		t.Fatalf("实现轮 ViaTemplate: %v", err)
+	}
+	workBranch := "cards/" + card.ID + "-implement"
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{
+			Template: "feature-impl", Target: "mac-02", PurposeOverride: ledger.PurposeReview,
+		}); err != nil {
+		t.Fatalf("审阅轮 ViaTemplate: %v", err)
+	}
+	if len(dispatched) != 2 {
+		t.Fatalf("应派两轮，实得 %d", len(dispatched))
+	}
+	if got, want := dispatched[1].Branch, "cards/"+card.ID+"-review-1"; got != want {
+		t.Fatalf("审阅分支应为 %q，实得 %q", want, got)
+	}
+	if dispatched[1].Base != workBranch {
+		t.Fatalf("审阅分支基线应为首轮工作分支 %q，实得 %q", workBranch, dispatched[1].Base)
+	}
+	if dispatched[1].ResolveDefaultBase {
+		t.Fatal("审阅轮已有工作分支，不应要求目标侧解析默认基线")
+	}
+	reviews, err := st.ReviewRounds(card.ID)
+	if err != nil {
+		t.Fatalf("ReviewRounds: %v", err)
+	}
+	if reviews != 1 {
+		t.Fatalf("审阅轮数应为 1，实得 %d", reviews)
+	}
+	gotWorkBranch, err := st.WorkBranch(card.ID)
+	if err != nil {
+		t.Fatalf("WorkBranch: %v", err)
+	}
+	if gotWorkBranch != workBranch {
+		t.Fatalf("WorkBranch 应跳过审阅轮并保持 %q，实得 %q", workBranch, gotWorkBranch)
+	}
+}
+
+func TestViaTemplateWithoutPurposeOverrideKeepsTemplatePurpose(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var got DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		got = opts
+		return "T-template-purpose", nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+		t.Fatalf("ViaTemplate: %v", err)
+	}
+	if want := "cards/" + card.ID + "-implement"; got.Branch != want {
+		t.Fatalf("无覆盖时应沿用模板用途的分支 %q，实得 %q", want, got.Branch)
+	}
+	if got.Base != "" {
+		t.Fatalf("首轮无卡基线时 Base 应为空，实得 %q", got.Base)
+	}
+	if !got.ResolveDefaultBase {
+		t.Fatal("首轮无卡基线时应要求目标侧解析默认基线")
+	}
+}
+
+func TestViaTemplateOmitAcceptanceWithholdsCriteria(t *testing.T) {
+	const criteria = "go test ./... 全绿且真机跑通"
+	for _, tc := range []struct {
+		name       string
+		omit       bool
+		wantCount  int
+		wantNotice bool
+	}{
+		{name: "收起判据", omit: true, wantCount: 0, wantNotice: true},
+		{name: "保留判据", omit: false, wantCount: 2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, card := dispatchTestCard(t)
+			if err := st.SetAcceptance(card.ID, criteria, "test"); err != nil {
+				t.Fatalf("SetAcceptance: %v", err)
+			}
+			card, err := st.GetCard(card.ID)
+			if err != nil {
+				t.Fatalf("GetCard: %v", err)
+			}
+			var got DispatchOpts
+			d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+				got = opts
+				return "T-acceptance", nil
+			}}
+			if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+				Template: "feature-impl", Target: "mac-02", CarryCardContext: true,
+				OmitAcceptance: tc.omit,
+			}); err != nil {
+				t.Fatalf("ViaTemplate: %v", err)
+			}
+			if count := strings.Count(got.Prompt, criteria); count != tc.wantCount {
+				t.Fatalf("判据原文应出现 %d 次，实得 %d：\n%s", tc.wantCount, count, got.Prompt)
+			}
+			if tc.wantNotice && !strings.Contains(got.Prompt, "本节点不注入整卡验收判据") {
+				t.Fatalf("收起判据时应保留显式说明：\n%s", got.Prompt)
+			}
+		})
+	}
+}
+
 func TestBuildPromptThreeSections(t *testing.T) {
 	card := ledger.Card{
 		ID: "B9.1", Title: "做点什么", AcceptanceCriteria: "测试全绿",
@@ -215,13 +324,13 @@ func TestBuildPromptThreeSections(t *testing.T) {
 		},
 	}
 	t.Run("全关时只有模板正文", func(t *testing.T) {
-		got := buildPrompt("模板正文", card, "feat/x", false, "")
+		got := buildPrompt("模板正文", card, "feat/x", false, false, "")
 		if got != "模板正文" {
 			t.Fatalf("不该有多余段落:\n%s", got)
 		}
 	})
 	t.Run("带卡上下文", func(t *testing.T) {
-		got := buildPrompt("模板正文", card, "feat/x", true, "")
+		got := buildPrompt("模板正文", card, "feat/x", true, false, "")
 		for _, want := range []string{
 			"模板正文", "## 本卡上下文", "B9.1", "做点什么",
 			"feat/x", "合并目标以此为准", "测试全绿",
@@ -233,13 +342,13 @@ func TestBuildPromptThreeSections(t *testing.T) {
 		}
 	})
 	t.Run("带本次补充", func(t *testing.T) {
-		got := buildPrompt("模板正文", card, "feat/x", false, "这次只看并发安全")
+		got := buildPrompt("模板正文", card, "feat/x", false, false, "这次只看并发安全")
 		if !strings.Contains(got, "## 本次补充") || !strings.Contains(got, "这次只看并发安全") {
 			t.Fatalf("补充段没拼进去:\n%s", got)
 		}
 	})
 	t.Run("空基线不写死 main", func(t *testing.T) {
-		got := buildPrompt("模板正文", card, "", true, "")
+		got := buildPrompt("模板正文", card, "", true, false, "")
 		if strings.Contains(got, "有效基线分支：main") {
 			t.Fatalf("基线为空时不得替用户猜一个:\n%s", got)
 		}
@@ -249,7 +358,7 @@ func TestBuildPromptThreeSections(t *testing.T) {
 	})
 	t.Run("无附件不留空标题", func(t *testing.T) {
 		bare := ledger.Card{ID: "B9.2", Title: "无附件"}
-		got := buildPrompt("模板正文", bare, "feat/x", true, "")
+		got := buildPrompt("模板正文", bare, "feat/x", true, false, "")
 		if strings.Contains(got, "- 附件：") {
 			t.Fatalf("没有附件时不该出现附件小节:\n%s", got)
 		}

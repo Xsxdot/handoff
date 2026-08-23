@@ -462,10 +462,14 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 2. 给每个 `watchers == 0` 的**活跃**任务（`pending` / `running` /
    `waiting_answer`）补开一条 follow 订阅（无后台机制的 harness 改为前台
    逐轮 wait，见「在 agent 会话里挂 wait」）。`waiting_review` 不用补：
-   它在等你裁决，挂几天都正常
+   它在等你裁决，挂几天都正常。补订阅与播报分开：补订阅照旧对上述所有
+   `watchers == 0` 的任务做；向用户播报需处置事项时，只报无挂账卡或卡上
+   没有 `DriverSession` 的真孤儿。有驱动归属的任务不打扰用户，恢复报告里
+   最多列一行事实，例如「卡 B177 由 <session> 驱动，已补挂订阅」
 3. `handoff show` 逐个清 `pending_tickets`
 
-`handoff status` 会把同一结论直接标在活跃任务行上：`⚠ 无人值守`。
+`handoff status` 会把归属结论直接标在活跃任务行上：真孤儿是 `⚠ 无人值守`；
+有卡驱动但暂时无人订阅的是 `⚠ 无人订阅（卡 <id> 驱动 <session>，心跳 <时长>）`。
 
 `pending_tickets` 是关键——它是「我还欠哪些没答」的权威清单。把里面每张工单
 `reply` 掉，然后按当前 state 决定：`running` → 订阅已在（follow 不需要重挂）；

@@ -16,7 +16,7 @@ describe('NodeEditor 聚合闸', () => {
   it('勾选写 require_children_done，取消勾选清掉字段', () => {
     const onChange = vi.fn()
     const { rerender } = render(
-      <NodeEditor node={{ name: '集成' }} {...props} onChange={onChange} />,
+      <NodeEditor node={{ name: '集成' }} {...props} index={0} onChange={onChange} />,
     )
     fireEvent.click(screen.getByLabelText('需全部子卡完结'))
     expect(onChange).toHaveBeenCalledWith(expect.objectContaining({
@@ -28,6 +28,7 @@ describe('NodeEditor 聚合闸', () => {
       <NodeEditor
         node={{ name: '集成', gate: { require_children_done: true } }}
         {...props}
+        index={0}
         onChange={onChange}
       />,
     )

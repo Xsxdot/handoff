@@ -216,6 +216,90 @@ func TestUnattendedJudgement(t *testing.T) {
 	}
 }
 
+func TestAttendanceMarksTrueOrphan(t *testing.T) {
+	zero := 0
+	got := attendance(proto.ActiveTask{State: "running", Watchers: &zero},
+		func(string) (string, string, time.Time, bool) {
+			return "", "", time.Time{}, false
+		})
+	if !got.Unattended {
+		t.Fatalf("账本查不到卡时应保留无人值守: %+v", got)
+	}
+}
+
+func TestAttendanceReportsCardDriverInsteadOfOrphan(t *testing.T) {
+	zero := 0
+	heartbeatAt := time.Now().Add(-12 * time.Minute)
+	task := proto.ActiveTask{ID: "task-1", State: "waiting_answer", Watchers: &zero}
+	got := attendance(task, func(taskID string) (string, string, time.Time, bool) {
+		if taskID != task.ID {
+			t.Fatalf("lookup taskID = %q, want %q", taskID, task.ID)
+		}
+		return "B177", "session-1", heartbeatAt, true
+	})
+	if got.Unattended {
+		t.Fatalf("有卡驱动时不应标无人值守: %+v", got)
+	}
+	if got.CardID != "B177" || got.Driver != "session-1" {
+		t.Fatalf("卡驱动归属未带出: %+v", got)
+	}
+	if got.HeartbeatAge < 12*time.Minute || got.HeartbeatAge >= 13*time.Minute {
+		t.Fatalf("心跳年龄应约为 12 分钟: %s", got.HeartbeatAge)
+	}
+
+	var buf bytes.Buffer
+	renderStatusWithLookup(&buf, "127.0.0.1:7777", proto.BuildInfo{}, &proto.StatusResp{
+		TaskCounts: map[string]int{"waiting_answer": 1},
+		Active:     []proto.ActiveTask{task},
+	}, func(string) (string, string, time.Time, bool) {
+		return "B177", "session-1", heartbeatAt, true
+	})
+	line := buf.String()
+	if !strings.Contains(line, "无人订阅") || !strings.Contains(line, "B177") {
+		t.Fatalf("渲染应显示无人订阅与卡号:\n%s", line)
+	}
+	if strings.Contains(line, "无人值守") {
+		t.Fatalf("有卡驱动时不应显示无人值守:\n%s", line)
+	}
+	if !strings.Contains(line, "12m 前") {
+		t.Fatalf("渲染应显示整分钟心跳年龄:\n%s", line)
+	}
+	var unknownHeartbeat bytes.Buffer
+	renderStatusWithLookup(&unknownHeartbeat, "127.0.0.1:7777", proto.BuildInfo{}, &proto.StatusResp{
+		TaskCounts: map[string]int{"waiting_answer": 1},
+		Active:     []proto.ActiveTask{task},
+	}, func(string) (string, string, time.Time, bool) {
+		return "B177", "session-1", time.Time{}, true
+	})
+	if !strings.Contains(unknownHeartbeat.String(), "心跳 未知") {
+		t.Fatalf("零值心跳应显示未知:\n%s", unknownHeartbeat.String())
+	}
+}
+
+func TestAttendanceIgnoresLedgerWhenLookupNil(t *testing.T) {
+	zero := 0
+	got := attendance(proto.ActiveTask{State: "running", Watchers: &zero}, nil)
+	if !got.Unattended {
+		t.Fatalf("lookup 为 nil 时应降级为无人值守: %+v", got)
+	}
+}
+
+func TestAttendanceKeepsWatchedTaskSilent(t *testing.T) {
+	one := 1
+	called := false
+	got := attendance(proto.ActiveTask{State: "running", Watchers: &one},
+		func(string) (string, string, time.Time, bool) {
+			called = true
+			return "B177", "session-1", time.Now(), true
+		})
+	if got.Unattended || got.CardID != "" || got.Driver != "" || got.HeartbeatAge != 0 {
+		t.Fatalf("有订阅的任务三格都应为空: %+v", got)
+	}
+	if called {
+		t.Fatal("有订阅的任务不应查询账本")
+	}
+}
+
 // TestRenderStatusMarksUnattended 验证活跃任务行在存活结论之后追加标记，
 // 且只对该标记的三个状态出现。
 func TestRenderStatusMarksUnattended(t *testing.T) {
