@@ -4,6 +4,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/testperm"
 )
 
 func TestCursorPathUsesNamespacedLayout(t *testing.T) {
@@ -73,9 +75,6 @@ func TestReadCursorCorruptContentIsReported(t *testing.T) {
 }
 
 func TestReadCursorPermissionDeniedIsReported(t *testing.T) {
-	if os.Geteuid() == 0 {
-		t.Skip("root 无视权限位，本用例无意义")
-	}
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	c := New("http://127.0.0.1:7777", "")
@@ -86,9 +85,10 @@ func TestReadCursorPermissionDeniedIsReported(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(p, []byte("42"), 0o000); err != nil {
+	if err := os.WriteFile(p, []byte("42"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	testperm.DenyRead(t, p)
 	seq, reported := c.readCursorWithDiag("denied")
 	if seq != 0 {
 		t.Fatalf("读不了必须退回 0，got %d", seq)

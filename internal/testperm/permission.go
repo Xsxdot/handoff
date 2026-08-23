@@ -70,6 +70,7 @@ func DenyRead(t testing.TB, path string) {
 	t.Helper()
 	info := targetInfo(t, path, "读")
 	if info.IsDir() {
+		slog.Default().Error("读权限前提目标类型不支持", "operation", "读", "path", path, "reason", "目标是目录而不是普通文件")
 		t.Fatalf("读权限前提目标必须是文件，path=%q", path)
 		return
 	}
