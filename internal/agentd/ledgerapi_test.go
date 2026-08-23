@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
@@ -307,6 +308,117 @@ func TestPatchCardOmittedFieldsUntouched(t *testing.T) {
 	}
 	if got.Priority != "高" {
 		t.Fatalf("priority 没生效: %q", got.Priority)
+	}
+}
+
+func TestPatchCardBaseBranch(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "基线 API")
+	code, body := ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+card.ID,
+		`{"base_branch":"cards/api-base"}`)
+	if code != http.StatusOK {
+		t.Fatalf("写基线 code=%d body=%s", code, body)
+	}
+	got, err := env.ledger.GetCard(card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	effective, err := env.ledger.EffectiveBaseBranch(card.ID)
+	if err != nil || got.BaseBranch != "cards/api-base" || effective != "cards/api-base" {
+		t.Fatalf("基线未写入: card=%+v effective=%q err=%v", got, effective, err)
+	}
+
+	if code, body = ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+card.ID, `{}`); code != http.StatusOK {
+		t.Fatalf("空 patch code=%d body=%s", code, body)
+	}
+	if code, body = ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+card.ID, `{"priority":"高"}`); code != http.StatusOK {
+		t.Fatalf("仅改 priority code=%d body=%s", code, body)
+	}
+	got, _ = env.ledger.GetCard(card.ID)
+	if got.BaseBranch != "cards/api-base" {
+		t.Fatalf("省略 base_branch 却改变基线: %q", got.BaseBranch)
+	}
+
+	parent := seedCard(t, env, "父卡基线")
+	if err := env.ledger.SetCardBaseBranch(parent.ID, "parent/api-base", "test"); err != nil {
+		t.Fatal(err)
+	}
+	child := seedChildCard(t, env, parent.ID, "子卡基线")
+	if code, body = ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+child.ID, `{"base_branch":"child/api-base"}`); code != http.StatusOK {
+		t.Fatalf("子卡写基线 code=%d body=%s", code, body)
+	}
+	if code, body = ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+child.ID, `{"base_branch":""}`); code != http.StatusOK {
+		t.Fatalf("清除子卡基线 code=%d body=%s", code, body)
+	}
+	childGot, _ := env.ledger.GetCard(child.ID)
+	childEffective, _ := env.ledger.EffectiveBaseBranch(child.ID)
+	if childGot.BaseBranch != "" || childEffective != "parent/api-base" {
+		t.Fatalf("清除后未继承父卡: card=%+v effective=%q", childGot, childEffective)
+	}
+}
+
+func TestPatchCardBaseBranchErrorsAndPartialOrder(t *testing.T) {
+	env := newLedgerEnv(t)
+	missingCode, missingBody := ledgerPatch(t, env.testAgentdEnv, "/api/cards/B205-missing",
+		`{"base_branch":"cards/missing"}`)
+	if missingCode != http.StatusNotFound {
+		t.Fatalf("未知卡应 404，实得 %d body=%s", missingCode, missingBody)
+	}
+
+	card := seedCard(t, env, "冻结基线")
+	first := ledger.DispatchSnapshot{Target: "acc", TaskID: "T-first", Branch: "cards/api-first",
+		Purpose: ledger.PurposeImplement, Template: "feature-impl", Actor: "test"}
+	if err := env.ledger.RecordDispatch(card.ID, first); err != nil {
+		t.Fatal(err)
+	}
+	events, err := env.ledger.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstAt time.Time
+	for _, event := range events {
+		if event.Type == ledger.EvDispatched {
+			firstAt = event.CreatedAt
+			break
+		}
+	}
+	if firstAt.IsZero() {
+		t.Fatal("未找到首次派发时间")
+	}
+	code, body := ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+card.ID,
+		`{"base_branch":"cards/rejected"}`)
+	if code != http.StatusConflict || !strings.Contains(body, "cards/api-first") ||
+		!strings.Contains(body, firstAt.Format(time.RFC3339Nano)) {
+		t.Fatalf("冻结错误应 409 且带首次出处: code=%d body=%s", code, body)
+	}
+	got, _ := env.ledger.GetCard(card.ID)
+	if got.BaseBranch != "" {
+		t.Fatalf("冻结拒绝后卡被改写: %q", got.BaseBranch)
+	}
+
+	partial := seedCard(t, env, "冻结部分成功")
+	if err := env.ledger.RecordDispatch(partial.ID, ledger.DispatchSnapshot{
+		Target: "acc", TaskID: "T-partial", Branch: "cards/partial-first",
+		Purpose: ledger.PurposeImplement, Template: "feature-impl", Actor: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	code, body = ledgerPatch(t, env.testAgentdEnv, "/api/cards/"+partial.ID,
+		`{"title":"标题已改","base_branch":"cards/rejected"}`)
+	if code != http.StatusConflict || !strings.Contains(body, "cards/partial-first") {
+		t.Fatalf("同时 patch 冻结基线应 409: code=%d body=%s", code, body)
+	}
+	partialGot, _ := env.ledger.GetCard(partial.ID)
+	if partialGot.Title != "标题已改" || partialGot.BaseBranch != "" {
+		t.Fatalf("部分顺序不符: %+v", partialGot)
+	}
+}
+
+func TestPatchCardBaseBranchWithoutLedger(t *testing.T) {
+	env := newTestAgentdEnv(t)
+	code, body := ledgerPatch(t, env, "/api/cards/B205-missing", `{"base_branch":"cards/no-ledger"}`)
+	if code != http.StatusServiceUnavailable || strings.Contains(body, `"ok":true`) || !strings.Contains(body, "账本") {
+		t.Fatalf("无账本应 503 且不假报成功: code=%d body=%s", code, body)
 	}
 }
 
