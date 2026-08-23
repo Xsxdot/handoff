@@ -102,3 +102,6 @@
 - 命令：`git commit -m "fix(card): preserve model for same executor override"`
 - 原始输出：`[cards/B203-charter-4 36c52ece] fix(card): preserve model for same executor override`；`5 files changed, 116 insertions(+), 6 deletions(-)`；退出码 `0`。
 - 判断：B203 F1 修复、新增回归测试与台账已完成首个本地提交；未执行 push。
+- 命令：`git status --short --branch && git log -2 --oneline`
+- 原始输出：`## cards/B203-charter-4`；`e94fd85e chore(ledger): record B203 verification`；`36c52ece fix(card): preserve model for same executor override`；退出码 `0`。
+- 判断：收尾核验时工作区干净，当前分支保持 `cards/B203-charter-4`，HEAD 为台账收尾提交。
