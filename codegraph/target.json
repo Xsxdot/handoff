@@ -143,7 +143,7 @@
       "entries": [
         "ledger.Store"
       ],
-      "legacyBudget": 1
+      "legacyBudget": 2
     },
     {
       "from": "d_cli",
@@ -177,7 +177,7 @@
         "proto 实体",
         "proto.Task"
       ],
-      "legacyBudget": 19
+      "legacyBudget": 20
     },
     {
       "from": "d_controlplane",
