@@ -40,7 +40,9 @@ func runStepDispatch(cmd *cobra.Command, st *ledger.Store, id, node, actor strin
 			cleanups = append(cleanups, done)
 			return cl, nil
 		},
-		Target: cardDispatchTarget,
+		Target:   cardDispatchTarget,
+		Executor: cardDispatchExecutor,
+		Model:    cardDispatchModel,
 	}
 	outcome, err := runner.Run(ctx, id, node)
 	if err != nil {

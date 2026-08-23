@@ -106,12 +106,12 @@ func (s *Store) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]Eve
 
 var cardRefPat = regexp.MustCompile(`#([A-Z]{1,4}\d+(?:\.\d+)*)`)
 
-// DispatchSnapshot 派发事件快照：模板版本 + 纪律块角色名 + 落点。
+// DispatchSnapshot 派发事件快照：模板版本 + 纪律块角色名 + 有效执行器/模型 + 落点。
 // 「B107 那次派发用的哪版纪律块」从这里答（蓝图 §3.3 取证文化）。
 //
 // 原字段是正文指纹；纪律块改为具名资源后正文不再经过 CLI，指纹无从算起，
 // 同一个问题的答案换成名字。老事件里的旧指纹键留在已落盘的 payload 里，
-// 只是不再写新的——事件是追加式的，不做回填。
+// 只是不再写新的——事件是追加式的，不做回填；老事件也没有 executor/model 键。
 type DispatchSnapshot struct {
 	Template        string `json:"template"`
 	TemplateVersion int    `json:"template_version"`
@@ -119,6 +119,8 @@ type DispatchSnapshot struct {
 	Target          string `json:"target"`
 	TaskID          string `json:"task_id"`
 	Branch          string `json:"branch"`
+	Executor        string `json:"executor"`
+	Model           string `json:"model"`
 	Purpose         string `json:"purpose,omitempty"` // implement|review|…：审阅轮不新开分支，靠它区分
 	PlanPath        string `json:"plan_path,omitempty"`
 	Actor           string `json:"-"`

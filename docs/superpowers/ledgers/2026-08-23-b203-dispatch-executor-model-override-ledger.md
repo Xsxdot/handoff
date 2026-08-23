@@ -1,0 +1,45 @@
+# B203 实现台账
+
+- 事实：当前分支是 `cards/B203-charter`，工作区在本轮开始时干净；`git log -5 --oneline` 首行为 `80bb199a merge(b201): spec 第二版落 main`。
+- 事实：B203 spec 位于 `docs/superpowers/specs/2026-08-23-b203-dispatch-executor-model-override.md`，状态标注为已批准，要求 `card dispatch` 的两条路径支持一次性 `--executor`/`--model` 覆盖、覆盖优先级 CLI > 节点 > 模板、同层 executor 覆盖时 model 不继承下层、dispatched 事件记录 executor/model。
+- 事实：`cmd/card_dispatch.go` 当前已有完整请求中的 `executor`/`model` 字段和 `dispatchTransportWithOpts` 到 `client.DispatchOpts` 的传递，但 Cobra 仍只注册 template/target/plan/discipline-override/step 五个 flag。
+- 事实：`cmd/card_node.go:30-44` 当前构造 `StepRunner` 时只传入 `Target`，未传入 executor/model CLI 覆盖。
+- 事实：`internal/ledgerstep/runner.go:144-160` 当前已把 `node.Override.Executor`/`Model` 传入 `TemplateDispatch`，但 `StepRunner` 没有 CLI executor/model 字段。
+- 事实：`internal/ledgerstep/dispatch.go:47-65` 当前 `TemplateDispatch` 已有 `ExecutorOverride`/`ModelOverride` 字段；`ViaTemplate` 当前先从模板 `ModelByTarget[target]` 取 model，再分别应用 executor/model override，尚未实现成对规则。
+- 事实：`internal/ledgerstep/dispatch.go:191-208` 当前 Transport 的 `DispatchOpts` 已发送 executor/model；`DispatchSnapshot` 调用当前没有传 executor/model。
+- 命令：`go test ./internal/ledgerstep ./cmd`
+- 原始输出：`ok  github.com/Xsxdot/handoff/internal/ledgerstep  3.828s`；`ok  github.com/Xsxdot/handoff/cmd  6.800s`；退出码 `0`。
+- 判断：B203 触及的 `internal/ledgerstep` 与 `cmd` 基线测试均通过，后续新增回归测试可直接区分本轮行为变化。
+- 命令：`go test ./internal/ledgerstep -run 'Test(ViaTemplateExecutorModelOverridesAndPairRule|ViaTemplateSnapshotRecordsExecutorModel|RunnerExecutorModelOverridePriorityAndPairRule)$' -count=1`
+- 原始失败：`dispatch_test.go:106:15: snapshot.Executor undefined (type ledger.DispatchSnapshot has no field or method Executor)`；`dispatch_test.go:106:46: snapshot.Model undefined`；`dispatch_test.go:107:67: snapshot.Executor undefined`；`dispatch_test.go:107:86: snapshot.Model undefined`；`runner_test.go:142:9: runner.Executor undefined (type *StepRunner has no field or method Executor)`；`runner_test.go:143:9: runner.Model undefined`；`runner_test.go:151:9: runner.Model undefined`；`FAIL .../internal/ledgerstep [build failed]`。
+- 命令：`go test ./cmd -run 'TestCardDispatch(ExecutorModelFlags|StepExecutorModelFlags|ExecutorModelFlagsHaveDefaultModelHelp)$' -count=1`
+- 原始失败：`card_dispatch_test.go:89: card dispatch: unknown flag: --executor`；`card_dispatch_test.go:124: card dispatch --step: unknown flag: --executor`；`card_node_test.go:31: 找不到 --executor flag`；`FAIL .../cmd`。
+- 判断：新增回归测试按预期先红，缺口集中在 DispatchSnapshot/StepRunner 字段和 card dispatch flag 注册，未发现测试夹具本身的失败。
+- 命令：`gofmt -w cmd/card_dispatch.go cmd/card_node.go internal/ledgerstep/runner.go internal/ledgerstep/dispatch.go internal/ledger/events.go && go test ./internal/ledgerstep -run 'Test(ViaTemplateExecutorModelOverridesAndPairRule|ViaTemplateSnapshotRecordsExecutorModel|RunnerExecutorModelOverridePriorityAndPairRule)$' -count=1`
+- 原始结果：模板覆盖与快照子测试均打印预期的 `executor/model` 日志；节点优先级测试首轮通过，第二轮失败原文为 `runner_test.go:136: 节点成对规则派发: 回链挂账: 写挂账（task 可能已挂在别的卡）: constraint failed: UNIQUE constraint failed: card_tasks.target, card_tasks.task_id (1555)`；`FAIL .../internal/ledgerstep`。
+- 判断：失败是新增测试 Transport 连续返回相同 task id 造成唯一键冲突，非产品实现判据；将夹具改为每次返回唯一 task id 后重跑。
+- 命令：`gofmt -w internal/ledgerstep/runner_test.go && go test ./internal/ledgerstep -run 'Test(ViaTemplateExecutorModelOverridesAndPairRule|ViaTemplateSnapshotRecordsExecutorModel|RunnerExecutorModelOverridePriorityAndPairRule)$' -count=1 && go test ./cmd -run 'TestCardDispatch(ExecutorModelFlags|StepExecutorModelFlags|ExecutorModelFlagsHaveDefaultModelHelp)$' -count=1`
+- 原始输出：`ok  github.com/Xsxdot/handoff/internal/ledgerstep  0.710s`；`ok  github.com/Xsxdot/handoff/cmd  0.272s`；退出码 `0`。
+- 判断：新增的模板成对规则、节点优先级、事件快照序列化、无 step/--step CLI 接线和 flag help 回归测试均通过。
+- 命令：`go test ./internal/ledgerstep ./internal/ledger ./cmd`
+- 原始输出：`ok  github.com/Xsxdot/handoff/internal/ledgerstep  5.105s`；`ok  github.com/Xsxdot/handoff/internal/ledger  11.844s`；`ok  github.com/Xsxdot/handoff/cmd  7.287s`；退出码 `0`。
+- 判断：触及包的完整测试通过；旧 dispatched 事件读取与现有 CLI/StepRunner 调用方未被新增快照字段破坏。
+- 命令：`go test ./...`
+- 原始失败：`--- FAIL: TestPermServerAskThenRespond (0.00s)`，`perm_test.go:56: newPermServer: 裁决 socket 路径过长（114 字节，上限 107）: /root/.handoff/tasks/32500acc-d4db-4610-9437-95c198884475/tmp/TestPermServerAskThenRespond3461385606/001/perm.sock——把 DataDir 配到更浅的位置`；`--- FAIL: TestPermServerRespondUnknownID (0.00s)`，`perm_test.go:91: newPermServer: 裁决 socket 路径过长（116 字节，上限 107）: /root/.handoff/tasks/32500acc-d4db-4610-9437-95c198884475/tmp/TestPermServerRespondUnknownID3973608326/001/perm.sock——把 DataDir 配到更浅的位置`；`--- FAIL: TestPermServerReRegisterSameID (0.00s)`，`perm_test.go:108: newPermServer: 裁决 socket 路径过长（116 字节，上限 107）: /root/.handoff/tasks/32500acc-d4db-4610-9437-95c198884475/tmp/TestPermServerReRegisterSameID2483270782/001/perm.sock——把 DataDir 配到更浅的位置`；`--- FAIL: TestResumeContinuesFromOffset (0.00s)`，`resume_test.go:89: Resume 应判活并续读: alive=false err=裁决 socket 路径过长（115 字节，上限 107）: /root/.handoff/tasks/32500acc-d4db-4610-9437-95c198884475/tmp/TestResumeContinuesFromOffset1311074723/001/perm.sock——把 DataDir 配到更浅的位置`；`FAIL github.com/Xsxdot/handoff/internal/executor/claudecode`；最终 `FAIL`。
+- 原始通过摘录：`ok github.com/Xsxdot/handoff/internal/ledgerstep (cached)`；`ok github.com/Xsxdot/handoff/internal/ledger (cached)`；`ok github.com/Xsxdot/handoff/cmd 6.169s`。
+- 判断：仓库级命令退出码 `1`；这里只记录命令实际输出，未将失败归因于 B203。
+- 命令：`git diff --check`
+- 原始输出：无输出，退出码 `0`。
+- 命令：`go build ./... && git diff --check && git status --short --branch`
+- 原始输出：`go build ./...` 与 `git diff --check` 无输出且退出码 `0`；状态首行 `## cards/B203-charter`，其余为本卡 9 个源码/测试文件修改和 1 个台账未跟踪文件。
+- 判断：仓库全量 Go 编译通过，差异无空白错误；当前仍只在 `cards/B203-charter` 工作。
+- 判断：补充 `DispatchSnapshot` 注释，明确新快照记录有效 executor/model、老事件不回填；仅文档注释变更，无行为变化。
+- 命令：`gofmt -l cmd/card_dispatch.go cmd/card_dispatch_test.go cmd/card_node.go cmd/card_node_test.go internal/ledger/events.go internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go; git diff --check`
+- 原始输出：无输出，退出码 `0`。
+- 判断：本卡修改的 Go 文件均已 gofmt，差异检查保持通过。
+- 命令：`git add cmd/card_dispatch.go cmd/card_dispatch_test.go cmd/card_node.go cmd/card_node_test.go internal/ledger/events.go internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go docs/superpowers/ledgers/2026-08-23-b203-dispatch-executor-model-override-ledger.md`
+- 原始失败：`fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/32500acc/index.lock': Read-only file system`；退出码 `128`。
+- 判断：当前沙箱禁止写 worktree 的 git index；实现文件仍未提交，需获得 git 元数据写权限后重试同一收口命令。
+- 命令：同一 `git add ...` 在 `sandbox_permissions=require_escalated` 下重试。
+- 原始输出：无输出，退出码 `0`。
+- 判断：当前 B203 文件集已成功加入 Git index；未执行 push。

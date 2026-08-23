@@ -64,6 +64,70 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	}
 }
 
+// TestCardDispatchExecutorModelFlags 穿过 card dispatch 无 step 路径的真实 CLI 接线，
+// 并从账本 JSON 事件核对一次性覆盖确实落账。
+func TestCardDispatchExecutorModelFlags(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "覆盖执行器的卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	var got dispatchRequest
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+		got = req
+		return "T-cli-executor-model", nil
+	})
+	defer restore()
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
+		"--template", "feature-impl", "--target", "mac-02", "--executor", "grok", "--model", "grok-model"); err != nil {
+		t.Fatalf("card dispatch: %v", err)
+	}
+	if got.executor != "grok" || got.model != "grok-model" {
+		t.Fatalf("CLI 请求 executor/model = %q/%q, want %q/%q", got.executor, got.model, "grok", "grok-model")
+	}
+	show, _, err := runLedgerCLI(t, dir, "card", "show", card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(show, `"executor":"grok"`) || !strings.Contains(show, `"model":"grok-model"`) {
+		t.Fatalf("dispatched 快照缺 executor/model: %q", show)
+	}
+}
+
+// TestCardDispatchStepExecutorModelFlags 验证 --step 与模板路径共用同一对 CLI flag。
+func TestCardDispatchStepExecutorModelFlags(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "step 覆盖执行器的卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	var got dispatchRequest
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+		got = req
+		return "T-step-executor-model", nil
+	})
+	defer restore()
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中",
+		"--target", "mac-02", "--executor", "grok"); err != nil {
+		t.Fatalf("card dispatch --step: %v", err)
+	}
+	if got.executor != "grok" || got.model != "" {
+		t.Fatalf("--step 请求 executor/model = %q/%q, want %q/%q", got.executor, got.model, "grok", "")
+	}
+}
+
 // 派发失败必须连驱动租约一起退：只退状态会让卡停在「待办但有主」，
 // 而驱动身份带 pid——同一个人换个进程重试会被自己挡住 5 分钟。
 func TestCardDispatchFailureReleasesLease(t *testing.T) {

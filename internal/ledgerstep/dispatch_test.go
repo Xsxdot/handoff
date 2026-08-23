@@ -32,6 +32,85 @@ func dispatchTestCard(t *testing.T) (*ledger.Store, ledger.Card) {
 	return st, card
 }
 
+// setTemplateModel 为装配层测试给指定目标机注入模板模型。
+// 这里复用真实的不可变模板版本写入口，确保断言穿过模板 JSON 存储边界。
+func setTemplateModel(t *testing.T, st *ledger.Store, target, model string) {
+	t.Helper()
+	tpl, err := st.GetTemplate("feature-impl", 0)
+	if err != nil {
+		t.Fatalf("取 feature-impl 模板: %v", err)
+	}
+	tpl.Def.ModelByTarget = map[string]string{target: model}
+	if _, err := st.PutTemplate("feature-impl", tpl.Def); err != nil {
+		t.Fatalf("写带模型模板: %v", err)
+	}
+}
+
+// TestViaTemplateExecutorModelOverridesAndPairRule 钉住 CLI/节点共用的模板装配语义：
+// 同层 executor 覆盖时，model 不能从模板下层漏下来；两者都不覆盖时则保持旧值。
+func TestViaTemplateExecutorModelOverridesAndPairRule(t *testing.T) {
+	const target = "mac-02"
+	cases := []struct {
+		name         string
+		req          TemplateDispatch
+		wantExecutor string
+		wantModel    string
+	}{
+		{name: "无覆盖保留模板", req: TemplateDispatch{Template: "feature-impl", Target: target}, wantExecutor: "opencode", wantModel: "template-model"},
+		{name: "只覆盖执行器清空模板模型", req: TemplateDispatch{Template: "feature-impl", Target: target, ExecutorOverride: "grok"}, wantExecutor: "grok", wantModel: ""},
+		{name: "只覆盖模型沿用模板执行器", req: TemplateDispatch{Template: "feature-impl", Target: target, ModelOverride: "cli-model"}, wantExecutor: "opencode", wantModel: "cli-model"},
+		{name: "同时覆盖执行器模型", req: TemplateDispatch{Template: "feature-impl", Target: target, ExecutorOverride: "grok", ModelOverride: "grok-model"}, wantExecutor: "grok", wantModel: "grok-model"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, card := dispatchTestCard(t)
+			setTemplateModel(t, st, target, "template-model")
+			var got DispatchOpts
+			d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+				got = opts
+				return "T-override", nil
+			}}
+			if _, err := d.ViaTemplate(context.Background(), card, tc.req); err != nil {
+				t.Fatalf("ViaTemplate: %v", err)
+			}
+			if got.Executor != tc.wantExecutor || got.Model != tc.wantModel {
+				t.Fatalf("executor/model = %q/%q, want %q/%q", got.Executor, got.Model, tc.wantExecutor, tc.wantModel)
+			}
+		})
+	}
+}
+
+// TestViaTemplateSnapshotRecordsExecutorModel 穿过真实 dispatched JSON 边界验证执行器和模型快照。
+func TestViaTemplateSnapshotRecordsExecutorModel(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		return "T-snapshot-executor-model", nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02", ExecutorOverride: "grok", ModelOverride: "grok-model",
+	}); err != nil {
+		t.Fatalf("ViaTemplate: %v", err)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 50)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	for _, event := range events {
+		if event.Type != ledger.EvDispatched {
+			continue
+		}
+		var snapshot ledger.DispatchSnapshot
+		if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+			t.Fatalf("解 dispatched payload: %v", err)
+		}
+		if snapshot.Executor != "grok" || snapshot.Model != "grok-model" {
+			t.Fatalf("快照 executor/model = %q/%q, want %q/%q", snapshot.Executor, snapshot.Model, "grok", "grok-model")
+		}
+		return
+	}
+	t.Fatal("缺 dispatched 事件")
+}
+
 // TestViaTemplateSendsDisciplineName 模板的角色名要随派发请求上送，
 // 而不是被 CLI 读成正文拼进 prompt。
 func TestViaTemplateSendsDisciplineName(t *testing.T) {

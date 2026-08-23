@@ -61,7 +61,8 @@ type TemplateDispatch struct {
 	Target             string
 	PlanPath           string
 	DisciplineOverride string
-	// ExecutorOverride / ModelOverride 是节点对模板的单字段覆盖；空 = 用模板的。
+	// ExecutorOverride / ModelOverride 是调用方对模板的单字段覆盖；空 = 用模板的。
+	// 当 ExecutorOverride 非空且 ModelOverride 为空时，ViaTemplate 会清掉下层模型。
 	ExecutorOverride string
 	ModelOverride    string
 	// CarryCardContext 为真时把卡上下文段拼进 prompt（来自节点的同名开关）。
@@ -206,6 +207,9 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	executor := tpl.Def.Executor
 	if req.ExecutorOverride != "" {
 		executor = req.ExecutorOverride
+		// 模型是执行器的同层伴随覆盖。换执行器时不能把模板声明的模型
+		// 带给新执行器；空值交给新执行器自身的默认模型。
+		model = ""
 	}
 	if req.ModelOverride != "" {
 		model = req.ModelOverride
@@ -221,7 +225,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	slog.Default().Info("按模板派发",
 		"card", c.ID, "template", req.Template, "target", target,
-		"executor", executor, "discipline", disciplineName,
+		"executor", executor, "model", model, "discipline", disciplineName,
 		"purpose", purpose, "purpose_overridden", req.PurposeOverride != "",
 		"omit_acceptance", req.OmitAcceptance,
 		"branch", branch, "base", base,
@@ -251,12 +255,14 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if err := d.St.RecordDispatch(c.ID, ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		Target: target, TaskID: taskID, Branch: snapshotBranch,
+		Executor: executor, Model: model,
 		Purpose: purpose, PlanPath: req.PlanPath, Actor: d.Actor,
 	}); err != nil {
 		return zero, fmt.Errorf("快照落账: %w", err)
 	}
 	slog.Default().Info("模板派发完成", "card", c.ID, "template", tpl.Name,
-		"task", taskID, "target", target, "branch", snapshotBranch, "discipline", disciplineName)
+		"task", taskID, "target", target, "executor", executor, "model", model,
+		"branch", snapshotBranch, "discipline", disciplineName)
 	return DispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
