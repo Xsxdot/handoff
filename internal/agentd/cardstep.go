@@ -41,7 +41,7 @@ func (s *Server) startCardStep(cardID, node, actor string) error {
 		return fmt.Errorf("%w: %s 的 %s 节点正在运行", errStepInFlight, cardID, node)
 	}
 	runner := &ledgerstep.StepRunner{
-		St: s.ledger,
+		St: s.ledger, Session: actor,
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: s.ledger, Transport: s.stepTransport, Actor: actor,
 		},
