@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -810,6 +812,148 @@ func TestProjectWorktreeCreateOK(t *testing.T) {
 	wantRoot := ManualWorktreeRoot(filepath.Join(s.conf().DataDir, "worktrees"))
 	if !strings.HasPrefix(canonPath(ws.Path), canonPath(wantRoot)) {
 		t.Fatalf("落点 %q 不在 %q 下", ws.Path, wantRoot)
+	}
+}
+
+func TestProjectWorktreeCreateAttachesCardsAfterGit(t *testing.T) {
+	s, _, st := newTestServerWithManager(t)
+	led, err := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	if err := led.EnsureDefaultWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	s.SetLedger(led)
+	name := registerWorktreeTestProject(t, st, initGitRepo(t))
+	cardA, err := led.CreateCard(ledger.NewCard{Title: "树卡 A", Project: "p", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cardB, err := led.CreateCard(ledger.NewCard{Title: "树卡 B", Project: "p", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees",
+		fmt.Sprintf(`{"mode":"new_branch","branch":"feat/cards","base":"main","card_ids":[%q,%q]}`,
+			cardA.ID, cardB.ID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var ws proto.Workspace
+	if err := json.Unmarshal(rec.Body.Bytes(), &ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ws.Path); err != nil {
+		t.Fatalf("Git 成功后工作树不存在: %v", err)
+	}
+	if len(ws.CardResults) != 2 || !ws.CardResults[0].OK || !ws.CardResults[1].OK ||
+		ws.CardResults[0].ID != cardA.ID || ws.CardResults[1].ID != cardB.ID {
+		t.Fatalf("逐卡结果顺序/成功态错误: %+v", ws.CardResults)
+	}
+	for _, id := range []string{cardA.ID, cardB.ID} {
+		card, err := led.GetCard(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if card.BaseBranch != ws.Branch {
+			t.Fatalf("卡 %s 基线=%q，想要=%q", id, card.BaseBranch, ws.Branch)
+		}
+	}
+}
+
+func TestProjectWorktreeCreatePartialCardFailureKeepsTree(t *testing.T) {
+	s, _, st := newTestServerWithManager(t)
+	led, err := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	if err := led.EnsureDefaultWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	s.SetLedger(led)
+	name := registerWorktreeTestProject(t, st, initGitRepo(t))
+	first, err := led.CreateCard(ledger.NewCard{Title: "先挂卡", Project: "p", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := led.CreateCard(ledger.NewCard{Title: "冻结卡", Project: "p", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := led.RecordDispatch(second.ID, ledger.DispatchSnapshot{
+		Target: "acc", TaskID: "T-frozen", Branch: "cards/frozen-first",
+		Purpose: ledger.PurposeImplement, Template: "feature-impl", Actor: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees",
+		fmt.Sprintf(`{"mode":"new_branch","branch":"feat/partial","base":"main","card_ids":[%q,%q]}`,
+			first.ID, second.ID))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	var ws proto.Workspace
+	if err := json.Unmarshal(rec.Body.Bytes(), &ws); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(ws.Path); err != nil {
+		t.Fatalf("部分失败不应删除工作树: %v", err)
+	}
+	if len(ws.CardResults) != 2 || !ws.CardResults[0].OK || ws.CardResults[1].OK ||
+		!strings.Contains(ws.CardResults[1].Error, "cards/frozen-first") {
+		t.Fatalf("部分失败结果错误: %+v", ws.CardResults)
+	}
+	firstGot, _ := led.GetCard(first.ID)
+	secondGot, _ := led.GetCard(second.ID)
+	if firstGot.BaseBranch != ws.Branch || secondGot.BaseBranch != "" {
+		t.Fatalf("部分失败写入状态错误: first=%q second=%q", firstGot.BaseBranch, secondGot.BaseBranch)
+	}
+}
+
+func TestProjectWorktreeCreateLedgerDisabledOmitsResults(t *testing.T) {
+	s, _, st := newTestServerWithManager(t)
+	name := registerWorktreeTestProject(t, st, initGitRepo(t))
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees",
+		`{"mode":"new_branch","branch":"feat/no-ledger","base":"main","card_ids":["B205"]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("无账本仍应建树成功: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	var ws proto.Workspace
+	if err := json.Unmarshal(rec.Body.Bytes(), &ws); err != nil {
+		t.Fatal(err)
+	}
+	if ws.CardResults != nil || strings.Contains(rec.Body.String(), "card_results") {
+		t.Fatalf("无账本不应返回 card_results: %+v body=%s", ws, rec.Body.String())
+	}
+}
+
+func TestProjectWorktreeCreateGitFailureOmitsResults(t *testing.T) {
+	s, _, st := newTestServerWithManager(t)
+	led, err := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	if err := led.EnsureDefaultWorkflows(); err != nil {
+		t.Fatal(err)
+	}
+	s.SetLedger(led)
+	name := registerWorktreeTestProject(t, st, initGitRepo(t))
+	card, err := led.CreateCard(ledger.NewCard{Title: "Git 失败卡", Project: "p", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees",
+		fmt.Sprintf(`{"mode":"new_branch","branch":"feat/git-failure","base":"missing-base","card_ids":[%q]}`, card.ID))
+	if rec.Code == http.StatusOK || strings.Contains(rec.Body.String(), "card_results") {
+		t.Fatalf("Git 失败不应返回成功/卡结果: status=%d body=%s", rec.Code, rec.Body.String())
+	}
+	got, _ := led.GetCard(card.ID)
+	if got.BaseBranch != "" {
+		t.Fatalf("Git 失败前不应写卡基线: %q", got.BaseBranch)
 	}
 }
 

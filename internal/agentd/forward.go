@@ -18,6 +18,9 @@
 package agentd
 
 import (
+	"bytes"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -25,6 +28,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // forwardedHeader 是防环标记。一跳封顶：A→B→A 不可能成环。
@@ -66,6 +70,156 @@ func (s *Server) forwardIfRequested(w http.ResponseWriter, r *http.Request) bool
 		return true
 	}
 	s.forwardTo(w, r, name, c, t.Token)
+	return true
+}
+
+// stripWorktreeCardIDs removes only the local ledger instruction from a worktree
+// request. Unknown fields remain intact so older and newer agentd versions can
+// still exchange their own request additions.
+func stripWorktreeCardIDs(raw []byte) ([]byte, error) {
+	var object map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &object); err != nil {
+		return nil, err
+	}
+	delete(object, "card_ids")
+	return json.Marshal(object)
+}
+
+// copyForwardHeaders copies the response headers owned by the agentd wire
+// contract. Hop-by-hop and transport-specific headers remain local.
+func copyForwardHeaders(w http.ResponseWriter, headers http.Header) {
+	if contentType := headers.Get("Content-Type"); contentType != "" {
+		w.Header().Set("Content-Type", contentType)
+	}
+	for key, values := range headers {
+		if !strings.HasPrefix(http.CanonicalHeaderKey(key), "X-Handoff-") {
+			continue
+		}
+		for _, value := range values {
+			w.Header().Add(key, value)
+		}
+	}
+}
+
+// forwardJSON sends a bounded JSON request through the configured target
+// client and returns the complete response for the route-specific projection.
+// The caller owns status handling because worktree success is followed by local
+// card attachment while target errors are returned byte-for-byte.
+func (s *Server) forwardJSON(r *http.Request, name string, c *client.Client, token string, body []byte) (status int, headers http.Header, payload []byte, err error) {
+	target, err := forwardURL(c.BaseURL(), r.URL)
+	if err != nil {
+		s.log.Error("建树 JSON 转发失败：目标地址不合法", "machine", name, "cause", err)
+		return 0, nil, nil, err
+	}
+	req, err := http.NewRequestWithContext(r.Context(), r.Method, target, bytes.NewReader(body))
+	if err != nil {
+		s.log.Error("建树 JSON 转发失败：构造请求", "machine", name, "cause", err)
+		return 0, nil, nil, err
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if contentType := r.Header.Get("Content-Type"); contentType != "" {
+		req.Header.Set("Content-Type", contentType)
+	}
+	req.Header.Set(forwardedHeader, "1")
+	resp, err := c.HTTPClient().Do(req)
+	if err != nil {
+		s.log.Error("建树 JSON 转发失败：上游不可达", "machine", name, "cause", err)
+		return 0, nil, nil, err
+	}
+	defer resp.Body.Close()
+	payload, err = io.ReadAll(io.LimitReader(resp.Body, forwardBodyLimit+1))
+	if err != nil {
+		s.log.Error("建树 JSON 转发失败：读取响应", "machine", name, "status", resp.StatusCode, "cause", err)
+		return 0, nil, nil, err
+	}
+	if len(payload) > forwardBodyLimit {
+		err := fmt.Errorf("目标响应超过 %d 字节上限", forwardBodyLimit)
+		s.log.Error("建树 JSON 转发失败：目标响应过大", "machine", name,
+			"status", resp.StatusCode, "bytes", len(payload), "cause", err)
+		return 0, nil, nil, err
+	}
+	headers = resp.Header.Clone()
+	s.log.Info("建树 JSON 转发完成", "machine", name, "status", resp.StatusCode, "bytes", len(payload))
+	return resp.StatusCode, headers, payload, nil
+}
+
+// forwardWorktreeIfRequested handles the worktree-specific machine route.
+// card_ids belong to the coordinating agentd's ledger, so they are removed
+// before the target creates the tree and attached only after its response is
+// received locally.
+func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Request) bool {
+	name := r.URL.Query().Get("machine")
+	if name == "" || isForwarded(r) {
+		return false
+	}
+	s.log.Info("建树请求开始专用转发", "machine", name, "path", r.URL.Path)
+	target, ok := s.conf().Targets[name]
+	if !ok {
+		s.log.Warn("建树专用转发被拒：机器未定义", "machine", name)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "机器 " + name + " 未定义"})
+		return true
+	}
+	c, err := s.pool.For(name)
+	if err != nil {
+		s.log.Error("建树专用转发失败：取目标客户端", "machine", name, "cause", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "转发到 " + name + " 失败: " + err.Error()})
+		return true
+	}
+	raw, err := io.ReadAll(io.LimitReader(r.Body, forwardBodyLimit+1))
+	if err != nil {
+		s.log.Error("建树专用转发失败：读取请求", "machine", name, "cause", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "读取转发请求失败: " + err.Error()})
+		return true
+	}
+	if len(raw) > forwardBodyLimit {
+		s.log.Warn("建树专用转发被拒：请求体过大", "machine", name, "bytes", len(raw),
+			"limit", forwardBodyLimit)
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "请求体超过 1 MiB 上限"})
+		return true
+	}
+	var original proto.CreateWorktreeReq
+	if err := json.Unmarshal(raw, &original); err != nil {
+		s.log.Warn("建树专用转发失败：请求 JSON 无法解析", "machine", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {mode, branch, base}"})
+		return true
+	}
+	body, stripErr := stripWorktreeCardIDs(raw)
+	if stripErr != nil {
+		s.log.Warn("建树专用转发失败：请求对象无法裁剪", "machine", name, "cause", stripErr)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON object"})
+		return true
+	}
+	status, headers, payload, err := s.forwardJSON(r, name, c, target.Token, body)
+	if err != nil {
+		s.log.Error("建树专用转发失败：目标请求", "machine", name, "cause", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "转发到 " + name + " 失败: " + err.Error()})
+		return true
+	}
+	if status < http.StatusOK || status >= http.StatusMultipleChoices {
+		s.log.Warn("建树专用转发原样回送目标错误", "machine", name, "status", status)
+		copyForwardHeaders(w, headers)
+		w.WriteHeader(status)
+		if _, err := w.Write(payload); err != nil {
+			s.log.Warn("建树专用转发回送目标错误失败", "machine", name, "status", status, "cause", err)
+		}
+		return true
+	}
+	var ws proto.Workspace
+	if err := json.Unmarshal(payload, &ws); err != nil {
+		s.log.Error("建树专用转发失败：目标响应不是 Workspace", "machine", name, "status", status, "cause", err)
+		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "目标建树响应无法解析: " + err.Error()})
+		return true
+	}
+	ws.CardResults = nil
+	if len(original.CardIDs) > 0 && s.ledger != nil {
+		ws = s.attachCardBaseBranches(ws, original.CardIDs, s.ledgerActor(r))
+	}
+	copyForwardHeaders(w, headers)
+	writeJSON(w, http.StatusOK, ws)
+	s.log.Info("建树专用转发完成并在本机挂卡", "machine", name, "branch", ws.Branch,
+		"card_result_count", len(ws.CardResults))
 	return true
 }
 
