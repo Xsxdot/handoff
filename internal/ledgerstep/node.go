@@ -106,15 +106,20 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		"dispatch", n.Node.Dispatch, "verdict", n.Node.Verdict,
 		"template", n.Node.Template, "max_rounds", n.maxRounds())
 
+	card, err := n.St.GetCard(cardID)
+	if err != nil {
+		logger.Warn("读取节点所属卡失败", "cause", err)
+		return Outcome{}, err
+	}
+	logger.Debug("读取节点所属卡完成", "workflow", card.WorkflowName,
+		"workflow_version", card.WorkflowVersion, "status", card.Status)
 	if !n.Node.Dispatch {
 		// 纯人工列没有可执行能力。这不是「什么都不做」而是配置错误——
 		// 界面上不该给这种列画执行按钮，走到这里说明调用方绕过了判断。
-		logger.Warn("纯人工列被要求执行")
-		return Outcome{}, fmt.Errorf("节点 %q 没有 Dispatch 能力，不可执行", n.Node.Name)
-	}
-	card, err := n.St.GetCard(cardID)
-	if err != nil {
-		return Outcome{}, err
+		logger.Warn("纯人工列被要求执行", "workflow", card.WorkflowName,
+			"hint", "用 handoff workflow put 发布节点形定义")
+		return Outcome{}, fmt.Errorf("节点 %q 没有 Dispatch 能力，不可执行；这条流是老定义 / 这一列是人工列，要让它可派发用 `handoff workflow put %s --file <定义文件>`",
+			n.Node.Name, card.WorkflowName)
 	}
 	base, err := n.St.EffectiveBaseBranch(cardID)
 	if err != nil {

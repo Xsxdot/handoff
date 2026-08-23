@@ -42,6 +42,12 @@ func TestRunnerFindsNodeInPinnedWorkflowVersion(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "Dispatch") {
 		t.Fatalf("应报缺 Dispatch 能力，实际: %v", err)
 	}
+	if !strings.Contains(err.Error(), "老定义") || !strings.Contains(err.Error(), "人工列") {
+		t.Fatalf("缺少老定义/人工列的原因指引，实际: %v", err)
+	}
+	if !strings.Contains(err.Error(), "handoff workflow put") || !strings.Contains(err.Error(), "nodeflow") {
+		t.Fatalf("缺少 workflow put 修复指引，实际: %v", err)
+	}
 }
 
 func TestRunnerPassesNodePurposeAndAcceptanceSwitch(t *testing.T) {

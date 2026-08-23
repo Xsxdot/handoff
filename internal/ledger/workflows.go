@@ -162,6 +162,23 @@ func (s *Store) PutWorkflow(name string, def WorkflowDef) (int, error) {
 
 // GetWorkflow 取指定版本；version==0 取最新版。找不到返回 ErrNotFound。
 func (s *Store) GetWorkflow(name string, version int) (Workflow, error) {
+	workflow, err := s.getWorkflowStored(name, version)
+	if err != nil {
+		return Workflow{}, err
+	}
+	workflow.Def = workflow.Def.withNodesFromStates()
+	if len(workflow.Def.Nodes) > 0 && len(workflow.Def.Nodes) == len(workflow.Def.States) {
+		log().Debug("读出工作流", "name", workflow.Name, "version", workflow.Version, "nodes", len(workflow.Def.Nodes))
+	}
+	return workflow, nil
+}
+
+// getWorkflowStored 读取工作流存储的原始定义，不做老 def 的 Nodes 投影。
+//
+// 参数：name 工作流名；version==0 取最新版。返回：数据库中的 Workflow，
+// 找不到返回 ErrNotFound。注意：仅供 Store 内部判定存储形态；对外读取必须
+// 使用 GetWorkflow，保持老 def 也能被消费方当作节点形态使用的兼容语义。
+func (s *Store) getWorkflowStored(name string, version int) (Workflow, error) {
 	q := `SELECT name, version, definition, created_at FROM workflows WHERE name = ?`
 	args := []any{name}
 	if version > 0 {
@@ -181,10 +198,6 @@ func (s *Store) GetWorkflow(name string, version int) (Workflow, error) {
 	}
 	if err := jsonUnmarshal(raw, &workflow.Def); err != nil {
 		return Workflow{}, fmt.Errorf("解码工作流定义: %w", err)
-	}
-	workflow.Def = workflow.Def.withNodesFromStates()
-	if len(workflow.Def.Nodes) > 0 && len(workflow.Def.Nodes) == len(workflow.Def.States) {
-		log().Debug("读出工作流", "name", workflow.Name, "version", workflow.Version, "nodes", len(workflow.Def.Nodes))
 	}
 	workflow.CreatedAt = toTime(createdAt)
 	return workflow, nil
@@ -278,9 +291,30 @@ func (s *Store) EnsureDefaultWorkflows() error {
 		},
 	}
 	for name, def := range defaults {
-		if _, err := s.GetWorkflow(name, 0); err == nil {
-			continue // 已存在，不覆盖
+		stored, err := s.getWorkflowStored(name, 0)
+		if err == nil {
+			if len(stored.Def.Nodes) == 0 && len(stored.Def.States) > 0 {
+				// GetWorkflow 会把老 def 投影成纯人工节点，不能用它来判形态，
+				// 否则无法区分存量老行与用户刻意发布的全人工节点形态。
+				log().Info("发现老形态默认工作流，准备追加节点版",
+					"name", name, "version", stored.Version, "states", len(stored.Def.States))
+				version, putErr := s.PutWorkflow(name, def)
+				if putErr != nil {
+					log().Error("补版默认工作流失败", "name", name,
+						"from_version", stored.Version, "cause", putErr)
+					return fmt.Errorf("补版默认工作流 %s: %w", name, putErr)
+				}
+				log().Info("补版默认工作流", "name", name,
+					"from_version", stored.Version, "version", version,
+					"nodes", len(def.Nodes), "dispatch_nodes", countDispatchNodes(def.Nodes))
+			} else {
+				log().Debug("默认工作流已存在，跳过 seed", "name", name,
+					"version", stored.Version, "nodes", len(stored.Def.Nodes),
+					"states", len(stored.Def.States))
+			}
+			continue
 		} else if !errors.Is(err, ErrNotFound) {
+			log().Error("读取默认工作流失败", "name", name, "cause", err)
 			return err
 		}
 		if _, err := s.PutWorkflow(name, def); err != nil {
