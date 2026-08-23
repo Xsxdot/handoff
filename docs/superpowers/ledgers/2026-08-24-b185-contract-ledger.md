@@ -48,3 +48,4 @@
 - 2026-08-24：执行 `git commit -m "chore(ledger): close B185 breakdown"` 成功；原始输出为 `[cards/B185-charter-2 f5a38ff1] chore(ledger): close B185 breakdown`、`1 file changed, 2 insertions(+)`。
 - 2026-08-24：执行 `git commit -m "chore(ledger): record B185 breakdown close"` 成功；原始输出为 `[cards/B185-charter-2 5df1b86f] chore(ledger): record B185 breakdown close`、`1 file changed, 1 insertion(+)`。
 - 2026-08-24：最终复核执行 `git status --short --branch && git log -4 --oneline --decorate && git diff --check && go run . graph resolve --repo . --doc docs/superpowers/specs/b185-breakdown.md`；原始输出状态为 `## cards/B185-charter-2` 且无工作区改动，HEAD 为 `5df1b86f`，`git diff --check` 无输出；resolve 再次列出 11 个锚点，全部 `ok` 或既有 `moved`，退出码 `0`，另有既有 relay/proxy INFO 日志。
+- 2026-08-24：执行 `git commit -m "chore(ledger): record B185 final verification"` 成功；原始输出为 `[cards/B185-charter-2 4dd34c31] chore(ledger): record B185 final verification`、`1 file changed, 2 insertions(+)`。
