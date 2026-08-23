@@ -126,9 +126,10 @@ func ledgerNodeWire(node ledger.NodeDef) proto.NodeDef {
 		Dispatch: node.Dispatch, Verdict: node.Verdict, CarryCardContext: node.CarryCardContext,
 		MaxRounds: node.MaxRounds, OmitAcceptance: node.OmitAcceptance, Next: node.Next, OnFail: node.OnFail,
 		Gate: proto.Gate{
-			RequireAttachment:   node.Gate.RequireAttachment,
-			RequireAcceptance:   node.Gate.RequireAcceptance,
-			RequireChildrenDone: node.Gate.RequireChildrenDone,
+			RequireAttachment:    node.Gate.RequireAttachment,
+			RequireAttachmentAny: node.Gate.RequireAttachmentAny,
+			RequireAcceptance:    node.Gate.RequireAcceptance,
+			RequireChildrenDone:  node.Gate.RequireChildrenDone,
 		},
 		HumanBases: node.HumanBases,
 		Produces:   produces,

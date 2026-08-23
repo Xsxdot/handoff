@@ -136,7 +136,18 @@ type Event struct {
 // Gate workflow 转移进入某状态前的门条件。
 type Gate struct {
 	RequireAttachment string `json:"require_attachment,omitempty"` // 附件 kind 非空集
-	RequireAcceptance bool   `json:"require_acceptance,omitempty"` // 验收判据非空
+	// RequireAttachmentAny 择一门：卡带其中**任意一种** kind 的附件即放行。
+	//
+	// 存在的理由是一条列序服务多条路径时，单值门必然顾此失彼（B226）：
+	// charter 流的 implement 列，L2 走 spec→plan→implement（有 plan 无
+	// breakdown），L3 轻档走 contract→breakdown→implement（有 breakdown
+	// 无 plan）。门真正要保证的是「有一份可执行的工作单」，而不是「那份
+	// 工作单叫什么名字」。
+	//
+	// 与 RequireAttachment 是 **AND** 关系：两个都设就两个都要过。
+	// 空 slice 等同未设。
+	RequireAttachmentAny []string `json:"require_attachment_any,omitempty"`
+	RequireAcceptance    bool     `json:"require_acceptance,omitempty"` // 验收判据非空
 	// RequireChildrenDone 聚合闸：全部**直接**子卡已完结（已完成或终止）
 	// 才许进入本列。无子卡时空洞为真——同一工作流复用给不扇出的卡时，
 	// 这张卡不该被自己用不上的闸卡住。终止也算完结是刻意的：被取消的

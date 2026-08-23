@@ -47,9 +47,12 @@ type TaskStateRow struct {
 
 // Gate 是工作流节点进入条件的 wire DTO。
 type Gate struct {
-	RequireAttachment   string `json:"require_attachment,omitempty"`
-	RequireAcceptance   bool   `json:"require_acceptance,omitempty"`
-	RequireChildrenDone bool   `json:"require_children_done,omitempty"`
+	RequireAttachment string `json:"require_attachment,omitempty"`
+	// RequireAttachmentAny 择一门：带其中任意一种 kind 即放行。与
+	// RequireAttachment 是 AND。见 ledger.Gate 的说明。
+	RequireAttachmentAny []string `json:"require_attachment_any,omitempty"`
+	RequireAcceptance    bool     `json:"require_acceptance,omitempty"`
+	RequireChildrenDone  bool     `json:"require_children_done,omitempty"`
 }
 
 // NodeOverride 是工作流节点模板覆盖的 wire DTO。
