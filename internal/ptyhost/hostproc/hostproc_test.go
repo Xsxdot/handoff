@@ -5,6 +5,7 @@ package hostproc_test
 import (
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ptyhost/hostproc"
 	"github.com/Xsxdot/handoff/internal/ptyhost/sessdir"
 	"github.com/Xsxdot/handoff/internal/ptyhost/wire"
+	"github.com/Xsxdot/handoff/internal/ptytestroot"
 )
 
 // startHost 在后台跑一个真的 ptyhost 主体，返回会话根目录与会话 id。
@@ -76,16 +78,19 @@ func waitSessionReady(t *testing.T, root, id string) {
 	t.Fatalf("会话迟迟没就绪（socket 或 meta.json 缺失）: root=%s id=%s", root, id)
 }
 
-// shortTempDir 给 Unix socket 留出 sockaddr_un 的路径空间；本仓库的测试任务根目录很深，
-// 直接把 t.TempDir 作为 socket 根会在 bind 之前触发本 task 要验证的路径护栏。
+// shortTempDir 给 hostproc 的 Unix socket 留出路径空间，并复用 ptyhost 客户端的唯一
+// 根目录决策。hostproc 用 s1 做白盒会话 ID，但仍按 UUID 最大长度预留空间。
 func shortTempDir(t *testing.T) string {
 	t.Helper()
-	root, err := os.MkdirTemp(".", "ph-")
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	decision, err := ptytestroot.Resolve(
+		ptytestroot.SocketIDForBudget, ptytestroot.SocketPathLimit, logger)
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("PTY 测试根目录不可用: %v", err)
+		return ""
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	return root
+	t.Cleanup(decision.Cleanup)
+	return decision.Root
 }
 
 func waitSock(t *testing.T, path string) {
