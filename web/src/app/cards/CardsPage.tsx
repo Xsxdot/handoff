@@ -162,7 +162,7 @@ export function CardsPage() {
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
       {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} initialSection={drawerFocus} nodes={drawerNodes} />}
       <NewCardDialog
-        open={newCardOpen} project={project} workflows={newCardWorkflows}
+        open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}
         onCreated={(id) => { setNewCardOpen(false); cardsPoll.refresh(); openDrawer(id) }}
       />
