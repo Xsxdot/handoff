@@ -531,12 +531,55 @@ func (s *Store) UpdateCardMeta(id, title, priority, actor string) error {
 	})
 }
 
-// SetCardBaseBranch 为卡设置/清除显式基线。
-//
-// Ticket 0 只冻结可编译签名；首次派发冻结判定、cards 写入与事件留痕
-// 由后续实现节点完成，避免本节点提前引入可观测行为。
+// SetCardBaseBranch 为尚未出现任何 dispatched 事件的卡设置或清除显式基线。
+// id 是卡号，branch 非空为显式分支、空串清除自身覆盖值，actor 是审计主体。
+// 首次派发判定、cards 更新和 EvComment 必须在同一个 mutate 事务内完成。
 func (s *Store) SetCardBaseBranch(id, branch, actor string) error {
-	return nil
+	log().Info("设置卡基线进入", "card", id, "branch", branch, "actor", actor)
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, id); err != nil {
+			log().Warn("设置卡基线失败：卡不存在或读取失败", "card", id, "cause", err)
+			return fmt.Errorf("设置卡基线：卡 %s: %w", id, err)
+		}
+		var raw string
+		var createdAt any
+		err := tx.QueryRow(s.q(`SELECT payload, created_at FROM card_events
+			WHERE card_id = ? AND type = ? ORDER BY seq ASC LIMIT 1`), id, EvDispatched).Scan(&raw, &createdAt)
+		switch {
+		case err == nil:
+			var snapshot DispatchSnapshot
+			if decodeErr := json.Unmarshal([]byte(raw), &snapshot); decodeErr != nil {
+				log().Error("首条 dispatched payload 损坏", "card", id, "cause", decodeErr)
+				return fmt.Errorf("卡 %s 的首次派发快照损坏: %w", id, ErrBadState)
+			}
+			at := toTime(createdAt).Format(time.RFC3339Nano)
+			log().Warn("设置卡基线被拒：基线已冻结", "card", id,
+				"first_branch", snapshot.Branch, "first_dispatched_at", at, "actor", actor)
+			return fmt.Errorf("卡 %s 已在分支 %q 于 %s 首次派发，基线已冻结: %w",
+				id, snapshot.Branch, at, ErrBadState)
+		case !errors.Is(err, sql.ErrNoRows):
+			log().Error("查询 dispatched 事件失败", "card", id, "cause", err)
+			return fmt.Errorf("查询卡 %s 的 dispatched 事件: %w", id, err)
+		}
+		now := s.timeNow()
+		if _, err := tx.Exec(s.q(`UPDATE cards SET base_branch = ?, updated_at = ? WHERE id = ?`),
+			branch, s.tval(now), id); err != nil {
+			log().Error("写 cards 基线失败", "card", id, "branch", branch, "cause", err)
+			return fmt.Errorf("写卡 %s 基线: %w", id, err)
+		}
+		payload := map[string]any{"kind": "普通", "base_branch": branch,
+			"body": fmt.Sprintf("更新卡基线：%q", branch)}
+		if _, err := s.appendEventAt(tx, sink, id, EvComment, actor, payload, now); err != nil {
+			log().Error("落基线 comment 失败", "card", id, "branch", branch, "cause", err)
+			return fmt.Errorf("记录卡 %s 基线变更: %w", id, err)
+		}
+		log().Info("设置卡基线完成", "card", id, "branch", branch, "actor", actor)
+		return nil
+	})
+	if err != nil {
+		log().Warn("设置卡基线未提交", "card", id, "branch", branch, "cause", err)
+	}
+	return err
 }
 
 // CloseCard 终止（从任意非终态；reason 受控词表）。终止不是删除：

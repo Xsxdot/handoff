@@ -1,9 +1,11 @@
 package ledger
 
 import (
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 // seedStore 建好默认工作流的测试库——建卡类测试共用。
@@ -329,6 +331,147 @@ func TestUpdateCardMeta(t *testing.T) {
 	if got.Title != "新标题" || got.Priority != "低" {
 		t.Fatalf("空串应保持原值: %+v", got)
 	}
+}
+
+func TestSetCardBaseBranch(t *testing.T) {
+	t.Run("write and audit", func(t *testing.T) {
+		s := seedStore(t)
+		card := mk(t, s, "基线可写")
+		if err := s.SetCardBaseBranch(card.ID, "cards/B205-charter", "test"); err != nil {
+			t.Fatalf("写基线: %v", err)
+		}
+		got, err := s.GetCard(card.ID)
+		if err != nil || got.BaseBranch != "cards/B205-charter" {
+			t.Fatalf("读回自身基线: %+v err=%v", got, err)
+		}
+		effective, err := s.EffectiveBaseBranch(card.ID)
+		if err != nil || effective != "cards/B205-charter" {
+			t.Fatalf("读回有效基线: %q err=%v", effective, err)
+		}
+		events, err := s.EventsFromAsc([]string{card.ID}, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var payload map[string]any
+		found := false
+		for _, event := range events {
+			if event.Type == EvComment && strings.Contains(string(event.Payload), "更新卡基线") {
+				if err := json.Unmarshal(event.Payload, &payload); err != nil {
+					t.Fatal(err)
+				}
+				found = true
+			}
+		}
+		if !found || payload["base_branch"] != "cards/B205-charter" {
+			t.Fatalf("comment payload 不完整: found=%v payload=%v", found, payload)
+		}
+	})
+
+	t.Run("clear preserves parent", func(t *testing.T) {
+		s := seedStore(t)
+		parent, err := s.CreateCard(NewCard{Title: "父卡", Project: "p", BaseBranch: "parent/base", Actor: "test"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		child := mustChild(t, s, parent.ID, "子卡")
+		if err := s.SetCardBaseBranch(child.ID, "", "test"); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := s.GetCard(child.ID)
+		if got.BaseBranch != "" {
+			t.Fatalf("自身覆盖未清除: %q", got.BaseBranch)
+		}
+		effective, err := s.EffectiveBaseBranch(child.ID)
+		if err != nil || effective != "parent/base" {
+			t.Fatalf("父链继承错误: %q err=%v", effective, err)
+		}
+		events, _ := s.EventsFromAsc([]string{child.ID}, 0, 100)
+		var payload map[string]any
+		found := false
+		for _, event := range events {
+			if event.Type == EvComment && strings.Contains(string(event.Payload), "更新卡基线") {
+				_ = json.Unmarshal(event.Payload, &payload)
+				found = true
+			}
+		}
+		value, exists := payload["base_branch"]
+		if !found || !exists || value != "" {
+			t.Fatalf("清除必须保留存在且为空的键: found=%v exists=%v value=%v", found, exists, value)
+		}
+		if err := s.SetCardBaseBranch(child.ID, "child/override", "test"); err != nil {
+			t.Fatal(err)
+		}
+		parentAfter, _ := s.GetCard(parent.ID)
+		if parentAfter.BaseBranch != "parent/base" {
+			t.Fatalf("子卡写入改了父卡: %q", parentAfter.BaseBranch)
+		}
+	})
+
+	t.Run("missing card", func(t *testing.T) {
+		s := seedStore(t)
+		if err := s.SetCardBaseBranch("B205-missing", "cards/missing", "test"); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("err=%v, want ErrNotFound", err)
+		}
+	})
+
+	t.Run("first dispatched including review freezes", func(t *testing.T) {
+		s := seedStore(t)
+		card := mk(t, s, "已派发")
+		first := DispatchSnapshot{Template: "feature-impl", Target: "acc", TaskID: "impl-1",
+			Branch: "cards/B205-first", Purpose: PurposeImplement, Actor: "test"}
+		review := DispatchSnapshot{Template: "review-generic", Target: "acc", TaskID: "review-1",
+			Branch: "cards/B205-review", Purpose: PurposeReview, Actor: "test"}
+		if err := s.RecordDispatch(card.ID, first); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.RecordDispatch(card.ID, review); err != nil {
+			t.Fatal(err)
+		}
+		events, _ := s.EventsFromAsc([]string{card.ID}, 0, 100)
+		var firstEvent Event
+		for _, event := range events {
+			if event.Type == EvDispatched {
+				firstEvent = event
+				break
+			}
+		}
+		err := s.SetCardBaseBranch(card.ID, "cards/should-reject", "test")
+		if !errors.Is(err, ErrBadState) {
+			t.Fatalf("err=%v, want ErrBadState", err)
+		}
+		for _, want := range []string{"cards/B205-first", firstEvent.CreatedAt.Format(time.RFC3339Nano)} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("冻结错误缺少 %q: %v", want, err)
+			}
+		}
+		got, _ := s.GetCard(card.ID)
+		if got.BaseBranch != "" {
+			t.Fatalf("拒绝路径改了卡: %q", got.BaseBranch)
+		}
+	})
+
+	t.Run("comment failure rolls back card", func(t *testing.T) {
+		s := seedStore(t)
+		card := mk(t, s, "事务回滚")
+		_, err := s.db.Exec("CREATE TRIGGER fail_base_comment BEFORE INSERT ON card_events WHEN NEW.type = 'comment' BEGIN SELECT RAISE(ABORT, 'forced base comment failure'); END")
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = s.SetCardBaseBranch(card.ID, "cards/rollback", "test")
+		if err == nil || !strings.Contains(err.Error(), "forced base comment failure") {
+			t.Fatalf("comment 失败未透出: %v", err)
+		}
+		got, _ := s.GetCard(card.ID)
+		if got.BaseBranch != "" {
+			t.Fatalf("事件失败后基线仍存在: %q", got.BaseBranch)
+		}
+		events, _ := s.EventsFromAsc([]string{card.ID}, 0, 100)
+		for _, event := range events {
+			if event.Type == EvComment && strings.Contains(string(event.Payload), "cards/rollback") {
+				t.Fatalf("事件失败后仍有 comment: %+v", event)
+			}
+		}
+	})
 }
 
 func TestCloseAndRevive(t *testing.T) {
