@@ -34,6 +34,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -279,11 +280,32 @@ func TestDispatchPassesDisciplineAndRecordsSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	if got := ad.lastStartReq().Discipline; !strings.Contains(got, "在本会话内自己逐 task 实现") {
-		t.Errorf("StartReq.Discipline 没拿到单上下文版，实得前 40 字：%.40s", got)
+	start := ad.lastStartReq()
+	if !strings.Contains(start.Discipline, "在本会话内自己逐 task 实现") {
+		t.Errorf("StartReq.Discipline 没拿到单上下文版，实得前 80 字：%.80s", start.Discipline)
 	}
-	if task.Discipline != "内置:single-context" {
+	if !strings.Contains(start.Discipline, "# 平台不变量（恒在层）") ||
+		!strings.Contains(start.Discipline, "收口前逐条自查：") {
+		t.Fatalf("StartReq.Discipline 缺平台头尾：%.160s", start.Discipline)
+	}
+	if strings.Count(start.Discipline, "# 平台不变量（恒在层）") != 1 ||
+		strings.Count(start.Discipline, "收口前逐条自查：") != 1 {
+		t.Fatalf("平台头尾必须各一次：头=%d 尾=%d",
+			strings.Count(start.Discipline, "# 平台不变量（恒在层）"),
+			strings.Count(start.Discipline, "收口前逐条自查："))
+	}
+	if task.Discipline != "内置:平台不变量 + 内置:single-context" {
 		t.Errorf("task.Discipline = %q", task.Discipline)
+	}
+	rendered, err := turn.RenderPrompt(task.ID, "计划正文", start.Discipline)
+	if err != nil {
+		t.Fatalf("RenderPrompt: %v", err)
+	}
+	if strings.Count(rendered, "# 平台不变量（恒在层）") != 1 ||
+		strings.Count(rendered, "收口前逐条自查：") != 1 {
+		t.Fatalf("真实 prompt 边界重复或丢失：头=%d 尾=%d",
+			strings.Count(rendered, "# 平台不变量（恒在层）"),
+			strings.Count(rendered, "收口前逐条自查："))
 	}
 	evs, err := st.EventsFromAsc(task.ID, 0, 100)
 	if err != nil {
@@ -291,12 +313,13 @@ func TestDispatchPassesDisciplineAndRecordsSource(t *testing.T) {
 	}
 	var found bool
 	for _, e := range evs {
-		if e.Type == proto.EventTypeProgress && strings.Contains(string(e.Payload), "纪律块") {
+		if e.Type == proto.EventTypeProgress &&
+			strings.Contains(string(e.Payload), "纪律块: 内置:平台不变量 + 内置:single-context") {
 			found = true
 		}
 	}
 	if !found {
-		t.Error("事件流里没有纪律块回显，handoff show 将看不见档位")
+		t.Error("事件流里没有多来源纪律块回显")
 	}
 }
 
@@ -2405,8 +2428,8 @@ func TestDispatchNamedDisciplineInjectsNamedBlock(t *testing.T) {
 	if task.DisciplineName != discipline.NameReview {
 		t.Fatalf("名字应落到 task 上，实得 %q", task.DisciplineName)
 	}
-	if task.Discipline != "内置:review" {
-		t.Fatalf("来源标注应为 内置:review，实得 %q", task.Discipline)
+	if task.Discipline != "内置:平台不变量 + 内置:review" {
+		t.Fatalf("来源标注应同时包含平台层和 review，实得 %q", task.Discipline)
 	}
 }
 
@@ -2426,8 +2449,8 @@ func TestDispatchUnnamedDisciplineUnchanged(t *testing.T) {
 	if task.DisciplineName != "" {
 		t.Fatalf("不点名时 DisciplineName 应为空，实得 %q", task.DisciplineName)
 	}
-	if !strings.HasPrefix(task.Discipline, "内置:") {
-		t.Fatalf("兜底来源标注变了：%q", task.Discipline)
+	if task.Discipline != "内置:平台不变量 + 内置:single-context" {
+		t.Fatalf("不点名时来源 = %q", task.Discipline)
 	}
 }
 
@@ -2458,16 +2481,48 @@ func TestResolveDisciplineForPrefersName(t *testing.T) {
 	if err != nil {
 		t.Fatalf("有名字: %v", err)
 	}
-	if named.Source != "内置:review" {
-		t.Fatalf("有名字应走 ByName，实得 %q", named.Source)
+	if named.Source != "内置:平台不变量 + 内置:review" {
+		t.Fatalf("有名字应走 ByName 后再组装平台层，实得 %q", named.Source)
+	}
+	if !strings.Contains(named.Text, "只读，不写") ||
+		!strings.Contains(named.Text, "# 平台不变量（恒在层）") {
+		t.Fatalf("有名字的正文缺 review 或平台层：%.160s", named.Text)
 	}
 
 	fallback, err := m.resolveDisciplineFor("", "codex")
 	if err != nil {
 		t.Fatalf("无名字: %v", err)
 	}
-	if fallback.Source != "内置:"+discipline.TierSingleContext {
-		t.Fatalf("无名字应走 For，实得 %q", fallback.Source)
+	if fallback.Source != "内置:平台不变量 + 内置:single-context" {
+		t.Fatalf("无名字应走 For 后再组装平台层，实得 %q", fallback.Source)
+	}
+}
+
+func TestDispatchExplicitlyDisablesPlatformInvariantsWithSourceEcho(t *testing.T) {
+	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"codex": ad}, "codex")
+	disabled := false
+	m.cfg.PlatformInvariants = &disabled
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "做点事", Executor: "codex",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	wantSource := "平台不变量已关闭 + 内置:single-context"
+	if task.Discipline != wantSource {
+		t.Fatalf("显式关闭后的 task.Discipline = %q, want %q", task.Discipline, wantSource)
+	}
+	got := ad.lastStartReq().Discipline
+	if strings.Contains(got, "# 平台不变量（恒在层）") ||
+		strings.Contains(got, "收口前逐条自查：") {
+		t.Fatalf("显式关闭后仍有平台正文：%.160s", got)
+	}
+	if !strings.Contains(got, "在本会话内自己逐 task 实现") {
+		t.Fatalf("显式关闭不应移除 executor 默认纪律：%.160s", got)
 	}
 }
 
