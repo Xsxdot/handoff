@@ -18,7 +18,13 @@
 | HTTP projection | ledgerNodeWire.Produces *proto.NodeOutput 与 proto.NodeDef.Produces *proto.NodeOutput | /api/flows GET/PUT、Web API 类型 |
 | Web API | type NodeOutput = { kind: string; path: string }；NodeDef.produces?: NodeOutput | NodeEditor |
 
-Produces 的 kind 复用现有附件白名单中的 doc，因为 internal/agentd/ledgerapi.go:639-643 当前只接受 spec|plan|doc|contract；不新增枚举。charter 的 plan gate 从 spec 改为 doc，因为 breakdown 产出的 doc 才是 plan 节点进入 implement 前需要的附件。
+Produces 的 kind 一律取自现有附件白名单 `spec|plan|doc|contract`（`internal/agentd/ledgerapi.go` 的 `attachmentKinds`），**不新增枚举**：contract 节点产 `contract`，plan 节点产 `plan`（`plan` 本来就在白名单里），breakdown 节点没有专属 kind，产 `doc`。
+
+**【协调者更正 2026-08-23】本段原文写的是「kind 一律用 doc」并要求「charter 的 plan gate 从 spec 改为 doc」，两处都作废：**
+
+1. 原文的理由（白名单只接受那四个所以只能用 doc）**前提就是错的**——`plan` 就在那四个里面，不需要绕道。
+2. 原文与本文档第 5 个 task 的配置段（contract 用 `contract`、plan 用 `plan`）**自相矛盾**，以配置段为准。
+3. **plan 列的 gate 必须保持 `require_attachment=spec`，一个字都不许改。** 原文只考虑了 L3 链（spec→contract→breakdown→plan），而 **L2 卡是带着 spec 从 triage 直接跳进 plan 列的**——2026-08-23 的 B203 与 B201 两张卡都是这么进来的，靠的正是这道 spec 门。改成 `doc` 会让**今后所有 L2 卡都进不了 plan 列**，而 `Gate.RequireAttachment` 是单值、表达不了「spec 或 doc」。breakdown 产出的 `doc` 照挂（附件留痕有价值），但**不作为门**。
 
 ## 基线证据与最小测试边界
 
@@ -1462,10 +1468,10 @@ UI 只负责字段冒泡与关闭派发时清除无执行对象的声明；不�
   "path": "docs/superpowers/plans/{{CARD_LOWER}}-plan.md"
 }
 ```
-4. plan 节点 gate 的 require_attachment 从 spec 改成 doc；contract gate 继续 require_attachment=spec，breakdown gate 继续 require_attachment=contract，implement gate 继续 require_attachment=plan。
+4. **四道 gate 一律不动**：contract 继续 `require_attachment=spec`，breakdown 继续 `contract`，**plan 继续 `spec`**（改它会切断 L2 卡直接跳进 plan 列的路径，见「交付边界与冻结决定」里的协调者更正），implement 继续 `plan`。本卡只加 produces 声明，不碰任何 gate。
 5. 所有 produces 均与 dispatch/verdict 节点同层，JSON 只新增这些确定字段，不改 next/on_fail/discipline。
 
-修改 deploy/workflows/README.md 的 charter-v4 表格增加一行，明确 contract、breakdown、plan 各自的 kind/path 模板与 plan gate=doc；应用顺序段的二进制先部署、再 workflow put、存量卡显式 migrate 保持不变。补充如下明确说明：
+修改 deploy/workflows/README.md 的 charter-v4 表格增加一行，明确 contract、breakdown、plan 各自的 kind/path 模板，并写明**四道 gate 本次一律不变**；应用顺序段的二进制先部署、再 workflow put、存量卡显式 migrate 保持不变。补充如下明确说明：
 
 ```md
 B201 使产文档节点在 pass 后由协调者按约定路径校验本轮 diff 并自动挂卡：
@@ -1505,7 +1511,7 @@ npx vitest run src/api/contract.test.ts src/app/flows/NodeEditor.test.tsx src/ap
 - 线格式族：Go fixture 与 TS import 同时见 kind/path，omitempty 缺失不被改写为空对象。
 - HTTP 投影族：PUT/SQLite/GET 的 produces 端到端 round-trip；legacy 节点 produces 为 nil。
 - UI 状态族：partial → complete → dispatch off 的三态断言；路径帮助四占位符齐全。
-- 配置/门禁族：contract→contract、breakdown→doc、plan→plan；plan gate=doc，implement gate=plan。
+- 配置/门禁族：produces 为 contract→`contract`、breakdown→`doc`、plan→`plan`；**四道 gate 保持原样**（contract=spec、breakdown=contract、plan=spec、implement=plan），本卡不改门。
 - 兼容族：旧工作流没有 produces 时 Go/TS/UI 都不凭空产生字段；老节点无需重发定义。
 - 可观测性族：HTTP projection/错误路径、配置加载/校验沿用结构化日志；UI 无 print。
 
@@ -1569,7 +1575,7 @@ const onChange = vi.fn((next: NodeDef) => {
 - 空字段/缺字段：Task 1 用指针区分 JSON 缺失和显式零对象；validateNodes 拒绝存储零 kind/path；Task 5 HTTP/fixture 同时断言两种状态。
 - 路径模板：Task 2 四个占位符、unknown literal、固定时钟；Task 4 同一 Run 只渲染一次，避免 prompt 与 Attach 路径不一致。
 - diff 误判：Task 2 只采信 diff --git、rename from/to、非 /dev/null ---/+++；提交元数据、hunk、basename 不进入 paths。
-- 顺序/门禁：Task 3 明确 Attach 在 routeTo 前；Task 5 plan gate=doc、implement gate=plan；配置 jq 检查。
+- 顺序/门禁：Task 3 明确 Attach 在 routeTo 前；Task 5 **不改任何 gate**（implement gate 仍是 plan，正好由 plan 节点新增的 produces=plan 满足）；配置 jq 检查。
 - 失败处置：Diff/client 失败转 needs_human 并留上下文；Attach 失败只 Warn 后仍路由；旧节点没有 hook 调用。
 - 幂等/重跑：Task 3 两次同 path 真实读卡仍一条附件；不使用日期作为 charter 缺省路径。
 - 兼容/迁移：Produces optional；老 JSON/老 States 读出保持 nil；charter 文件应用只产生新版本，存量卡不自动迁移。
