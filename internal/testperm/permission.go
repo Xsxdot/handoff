@@ -22,9 +22,8 @@ const (
 )
 
 type probeDecision struct {
-	action              probeAction
-	restoreBeforeAction bool
-	message             string
+	action  probeAction
+	message string
 }
 
 // DenyWrite 清除 path 的全部写 permission bits，并用一次真实写探针确认限制。
@@ -157,8 +156,7 @@ func apply(t testing.TB, path string, original, restricted os.FileMode, operatio
 func decideProbe(operation, path string, probeErr error) probeDecision {
 	if probeErr == nil {
 		return probeDecision{
-			action:              probeSkip,
-			restoreBeforeAction: true,
+			action: probeSkip,
 			message: fmt.Sprintf("权限前提未成立：%s 探针成功，当前机器无法表达 path=%q 的限制；这不是禁用用例",
 				operation, path),
 		}
@@ -170,8 +168,7 @@ func decideProbe(operation, path string, probeErr error) probeDecision {
 		}
 	}
 	return probeDecision{
-		action:              probeFatal,
-		restoreBeforeAction: true,
+		action: probeFatal,
 		message: fmt.Sprintf("权限探针出现无关错误：operation=%s path=%q err=%v",
 			operation, path, probeErr),
 	}

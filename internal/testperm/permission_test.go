@@ -15,24 +15,20 @@ import (
 
 func TestDecideProbe(t *testing.T) {
 	tests := []struct {
-		name        string
-		err         error
-		wantAction  probeAction
-		wantRestore bool
-		wantText    string
+		name       string
+		err        error
+		wantAction probeAction
+		wantText   string
 	}{
-		{name: "write succeeded", err: nil, wantAction: probeSkip, wantRestore: true, wantText: "探针成功"},
-		{name: "permission denied", err: &fs.PathError{Op: "open", Path: "p", Err: fs.ErrPermission}, wantAction: probeContinue, wantRestore: false, wantText: "限制已生效"},
-		{name: "unrelated error", err: errors.New("file disappeared"), wantAction: probeFatal, wantRestore: true, wantText: "无关错误"},
+		{name: "write succeeded", err: nil, wantAction: probeSkip, wantText: "探针成功"},
+		{name: "permission denied", err: &fs.PathError{Op: "open", Path: "p", Err: fs.ErrPermission}, wantAction: probeContinue, wantText: "限制已生效"},
+		{name: "unrelated error", err: errors.New("file disappeared"), wantAction: probeFatal, wantText: "无关错误"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			got := decideProbe("写", "/tmp/probe", tt.err)
 			if got.action != tt.wantAction {
 				t.Fatalf("action = %d, want %d", got.action, tt.wantAction)
-			}
-			if got.restoreBeforeAction != tt.wantRestore {
-				t.Fatalf("restoreBeforeAction = %v, want %v", got.restoreBeforeAction, tt.wantRestore)
 			}
 			if !strings.Contains(got.message, tt.wantText) {
 				t.Fatalf("message = %q, want substring %q", got.message, tt.wantText)
@@ -41,7 +37,13 @@ func TestDecideProbe(t *testing.T) {
 	}
 }
 
-func TestApplyProbeRestoresBeforeSkip(t *testing.T) {
+// 只断言「skip 之后 mode 已还原」这一个可观测事实。
+//
+// why 不叫 RestoresBeforeSkip：立即 restore() 与 t.Cleanup 的还原从外部看不出先后
+// （Cleanup 是 LIFO，helper 在 t.TempDir 之后注册，还原必然先于目录删除），
+// 断言不了的时序不该写进用例名——否则读者以为它守着这条，实际掐掉立即 restore()
+// 它照样绿（B219 审查实测）。
+func TestApplyProbeRestoresAfterSkip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "probe-file")
 	if err := os.WriteFile(path, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
