@@ -172,6 +172,101 @@ func TestEnsureDefaultWorkflowsDoesNotOverwrite(t *testing.T) {
 	}
 }
 
+func TestEnsureDefaultWorkflowsUpgradesLegacyDefinition(t *testing.T) {
+	s := newTestStore(t)
+	legacy := WorkflowDef{
+		States: []string{StatusTodo, StatusDoing, StatusReview, StatusDone},
+	}
+	if _, err := s.PutWorkflow("bug", legacy); err != nil {
+		t.Fatalf("写老 bug 流: %v", err)
+	}
+	if err := s.EnsureDefaultWorkflows(); err != nil {
+		t.Fatalf("补版 seed: %v", err)
+	}
+
+	latest, err := s.GetWorkflow("bug", 0)
+	if err != nil {
+		t.Fatalf("读补版 bug 流: %v", err)
+	}
+	if latest.Version != 2 {
+		t.Fatalf("老流补版应写 v2，得到 v%d", latest.Version)
+	}
+	var doing *NodeDef
+	for i := range latest.Def.Nodes {
+		if latest.Def.Nodes[i].Name == StatusDoing {
+			doing = &latest.Def.Nodes[i]
+			break
+		}
+	}
+	if doing == nil || !doing.Dispatch || doing.Template != "feature-impl" {
+		t.Fatalf("补版后的进行中节点缺少出厂派发能力: %+v", doing)
+	}
+
+	old, err := s.GetWorkflow("bug", 1)
+	if err != nil {
+		t.Fatalf("读旧版 bug 流: %v", err)
+	}
+	if old.Version != 1 || len(old.Def.States) != len(legacy.States) {
+		t.Fatalf("旧版行被改动: v%d %+v", old.Version, old.Def)
+	}
+	for _, node := range old.Def.Nodes {
+		if node.Dispatch || node.Verdict || node.Template != "" {
+			t.Fatalf("旧版投影不应获得派发能力: %+v", old.Def.Nodes)
+		}
+	}
+	var raw string
+	if err := s.db.QueryRow(s.q(`SELECT definition FROM workflows WHERE name = ? AND version = ?`), "bug", 1).Scan(&raw); err != nil {
+		t.Fatalf("读取旧版原始定义: %v", err)
+	}
+	var stored WorkflowDef
+	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
+		t.Fatalf("解码旧版原始定义: %v", err)
+	}
+	if len(stored.Nodes) != 0 || len(stored.States) != len(legacy.States) {
+		t.Fatalf("旧版原始行不是老 def: %+v", stored)
+	}
+}
+
+func TestEnsureDefaultWorkflowsDoesNotUpgradeNodeDefinition(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("seed 模板: %v", err)
+	}
+	if _, err := s.PutWorkflow("feature", WorkflowDef{Nodes: []NodeDef{{Name: "用户列"}}}); err != nil {
+		t.Fatalf("写用户节点形流: %v", err)
+	}
+	if err := s.EnsureDefaultWorkflows(); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	got, err := s.GetWorkflow("feature", 0)
+	if err != nil {
+		t.Fatalf("读用户节点形流: %v", err)
+	}
+	if got.Version != 1 || len(got.Def.Nodes) != 1 || got.Def.Nodes[0].Name != "用户列" {
+		t.Fatalf("用户节点形流被补版或覆盖: v%d %+v", got.Version, got.Def.Nodes)
+	}
+}
+
+func TestEnsureDefaultWorkflowsLegacyUpgradeIsIdempotent(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.PutWorkflow("feature", WorkflowDef{States: []string{StatusTodo, StatusDoing}}); err != nil {
+		t.Fatalf("写老 feature 流: %v", err)
+	}
+	if err := s.EnsureDefaultWorkflows(); err != nil {
+		t.Fatalf("首次补版 seed: %v", err)
+	}
+	if err := s.EnsureDefaultWorkflows(); err != nil {
+		t.Fatalf("重复补版 seed: %v", err)
+	}
+	got, err := s.GetWorkflow("feature", 0)
+	if err != nil {
+		t.Fatalf("读补版流: %v", err)
+	}
+	if got.Version != 2 {
+		t.Fatalf("老流重复 seed 不应继续涨版本，得到 v%d", got.Version)
+	}
+}
+
 func TestPutWorkflowRejectsBadNodes(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.EnsureDefaultTemplates(); err != nil {
@@ -483,7 +578,9 @@ func TestDefaultDomainWorkflow(t *testing.T) {
 // TestEnsureDefaultsKeepsUserDomainWorkflow 用户自建的同名流不被 seed 覆盖。
 func TestEnsureDefaultsKeepsUserDomainWorkflow(t *testing.T) {
 	s := newTestStore(t)
-	if _, err := s.PutWorkflow("domain", WorkflowDef{States: []string{"甲", "乙"}}); err != nil {
+	if _, err := s.PutWorkflow("domain", WorkflowDef{Nodes: []NodeDef{
+		{Name: "甲", Next: "乙"}, {Name: "乙"},
+	}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.EnsureDefaultWorkflows(); err != nil {
@@ -493,7 +590,7 @@ func TestEnsureDefaultsKeepsUserDomainWorkflow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if wf.Version != 1 || len(wf.Def.States) != 2 {
-		t.Fatalf("用户的 domain 流被覆盖了: v%d %v", wf.Version, wf.Def.States)
+	if wf.Version != 1 || len(wf.Def.Nodes) != 2 || wf.Def.Nodes[0].Name != "甲" {
+		t.Fatalf("用户的 domain 流被覆盖了: v%d %+v", wf.Version, wf.Def.Nodes)
 	}
 }
