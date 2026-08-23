@@ -1,10 +1,10 @@
 {
  "meta": {
   "project": "handoff",
-  "branch": "main",
-  "commit": "8c37058c17417c42283a9f0076e262a6e9c13bef",
-  "scannedAt": "2026-08-22",
-  "generator": "codex-codegraph-full-rescan"
+  "branch": "cards/B223-implement",
+  "commit": "f149c818",
+  "scannedAt": "2026-08-23",
+  "generator": "codex-codegraph-b223-rescan"
  },
  "domains": {
   "d_coordination": {
