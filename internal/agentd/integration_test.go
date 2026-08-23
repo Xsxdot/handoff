@@ -944,6 +944,27 @@ func TestDispatchTwoNewWorktreesNotBlocked(t *testing.T) {
 	}
 }
 
+// TestDispatchWireLocalBaseBranchEndToEnd 穿过 client map、HTTP DTO、server→manager
+// 映射与真实本地 resolver：origin 是不可达的占位地址，只有完整 wire 上的
+// local_base_branch=true 才能在不 fetch 的情况下从 work 分支创建任务。
+func TestDispatchWireLocalBaseBranchEndToEnd(t *testing.T) {
+	env := newIntegEnv(t, nil)
+	runGit(t, env.repo, "branch", "work")
+	pid := env.registerProject(t, env.repo)
+	wantBase := strings.TrimSpace(runGit(t, env.repo, "rev-parse", "refs/heads/work^{commit}"))
+
+	task, err := env.cli.Dispatch(context.Background(), client.DispatchOpts{
+		ProjectID: pid, Prompt: "从本地工作分支继续", Target: "local",
+		Base: "work", LocalBaseBranch: true, NewWorktree: true,
+	})
+	if err != nil {
+		t.Fatalf("本地工作分支 wire 派发: %v", err)
+	}
+	if task.BaseCommit != wantBase {
+		t.Fatalf("任务实际起点=%q，期望本地 work 尖端=%q", task.BaseCommit, wantBase)
+	}
+}
+
 // TestDispatchUserWorktreeBusy 覆盖第三种模式：两个任务指同一棵用户自带
 // worktree，第二个被拒。判定键是 WorkDir，一条规则覆盖三种模式。
 func TestDispatchUserWorktreeBusy(t *testing.T) {

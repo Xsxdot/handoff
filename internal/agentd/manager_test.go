@@ -312,6 +312,54 @@ func TestDispatchRequiresPlanOrPrompt(t *testing.T) {
 	}
 }
 
+// TestDispatchRejectsLocalBaseBranchInvariant 验证本地起点的两个请求不变式都在
+// ResolveDefaultBase/ResolveBaseline、建任务与建 worktree 之前拒绝。
+func TestDispatchRejectsLocalBaseBranchInvariant(t *testing.T) {
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	cases := []struct {
+		name string
+		req  DispatchReq
+		want string
+	}{
+		{
+			name: "互斥默认基线",
+			req: DispatchReq{ProjectID: pid, Prompt: "x", Base: "main", LocalBaseBranch: true,
+				ResolveDefaultBase: true, NewWorktree: true},
+			want: "互斥",
+		},
+		{
+			name: "空本地起点",
+			req:  DispatchReq{ProjectID: pid, Prompt: "x", LocalBaseBranch: true, NewWorktree: true},
+			want: "非空工作分支名",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if _, err := m.Dispatch(context.Background(), tc.req); !errors.Is(err, ErrBadWorkspaceReq) {
+				t.Fatalf("应返回 ErrBadWorkspaceReq，实得 %v", err)
+			} else if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("错误应包含 %q，实得 %v", tc.want, err)
+			}
+			tasks, err := st.ListTasks()
+			if err != nil {
+				t.Fatalf("ListTasks: %v", err)
+			}
+			if len(tasks) != 0 {
+				t.Fatalf("拒绝请求不得创建任务：%+v", tasks)
+			}
+			entries, err := os.ReadDir(filepath.Join(m.cfg.DataDir, "worktrees"))
+			if err != nil && !os.IsNotExist(err) {
+				t.Fatalf("读取 managed worktree: %v", err)
+			}
+			if len(entries) != 0 {
+				t.Fatalf("拒绝请求不得创建 managed worktree：%v", entries)
+			}
+		})
+	}
+}
+
 // TestDispatchPromptAppendedToPlan 验证 prompt 与 plan 同时存在时，prompt 作为
 // 附加指令拼接在 plan 之后（任务目录里的 plan 文件含两段）。
 func TestDispatchPromptAppendedToPlan(t *testing.T) {

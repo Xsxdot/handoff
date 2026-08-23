@@ -990,17 +990,52 @@ func needsBaseBranchSync(ctx context.Context, repo, rev string) bool {
 }
 
 // resolveDispatchBase 按 --base 的形态选择旧 commit-ish 解析或 D2 分支补拉。
-// localBaseBranch 为真时起点来自目标机本地工作分支；Ticket 0 先把该判据
-// 穿到解析缝，后续实现补上只读 refs/heads 且拒绝网络的分支。
+// localBaseBranch 为真时只解析目标机本地 refs/heads，不得进入 D2 的远端补拉路径。
 // 返回值 fetched 供 manager 日志标记是否真的走过 origin fetch。
 func resolveDispatchBase(ctx context.Context, repo, rev string, localBaseBranch bool) (resolved string, fetched bool, err error) {
-	_ = localBaseBranch
+	if localBaseBranch {
+		return resolveLocalBaseBranch(ctx, repo, rev)
+	}
 	if !needsBaseBranchSync(ctx, repo, rev) {
 		resolved, err = resolveCommit(ctx, repo, rev)
 		return resolved, false, err
 	}
 	resolved, err = ResolveBaseBranch(ctx, repo, baseBranchRemote(ctx, repo, rev), rev)
 	return resolved, true, err
+}
+
+// resolveLocalBaseBranch 把工作分支名固定解析为目标机本地 refs/heads 下的提交号。
+//
+// 参数：repo 为目标机登记的项目仓库；branch 为不带 refs/heads/ 前缀的本地分支名。
+// 返回：本地分支尖端 SHA、fetched=false；本地 ref 缺失时返回 ErrBadWorkspaceReq。
+//
+// 注意：这里故意不用 ResolveBaseBranch，也不检查远程跟踪 ref。工作分支只存在于
+// 创建它的目标机上，拿 origin 的陈旧镜像替代它会把接续节点悄悄带回错误代码。
+func resolveLocalBaseBranch(ctx context.Context, repo, branch string) (string, bool, error) {
+	log().Info("解析本地工作分支", "repo", repo, "branch", branch, "ref", "refs/heads/"+branch)
+	if branch == "" || strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "refs/") {
+		log().Warn("本地工作分支名非法，拒绝派发", "repo", repo, "branch", branch)
+		return "", false, fmt.Errorf("%w: local_base_branch 要求非空本地分支名 %q（只解析 refs/heads/<分支>）",
+			ErrBadWorkspaceReq, branch)
+	}
+	ref := "refs/heads/" + branch
+	if _, stderr, err := gitProbe(ctx, repo, "show-ref", "--verify", "--quiet", ref); err != nil {
+		log().Warn("本地工作分支不存在，拒绝派发", "repo", repo, "branch", branch,
+			"ref", ref, "stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		return "", false, fmt.Errorf("%w: 工作分支只存在于创建它的那台机器，本地 %s 不存在；请先 push 到 origin，再用显式 --base 指定",
+			ErrBadWorkspaceReq, ref)
+	}
+	out, stderr, err := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
+	resolved := strings.TrimSpace(out)
+	if err != nil || resolved == "" {
+		log().Warn("本地工作分支不存在，拒绝派发", "repo", repo, "branch", branch,
+			"ref", ref, "stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+		return "", false, fmt.Errorf("%w: 工作分支只存在于创建它的那台机器，本地 %s 不存在；请先 push 到 origin，再用显式 --base 指定",
+			ErrBadWorkspaceReq, ref)
+	}
+	log().Info("本地工作分支解析完成", "repo", repo, "branch", branch, "ref", ref, "start", resolved,
+		"fetched", false)
+	return resolved, false, nil
 }
 
 // baseBranchRemote 为 D2 选择真正持有分支的远端：本地分支优先看其配置的

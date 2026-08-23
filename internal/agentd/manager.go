@@ -663,6 +663,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		"executor", req.Executor, "model", req.Model, "name", req.Name,
 		"branch", req.Branch, "new_branch", req.NewBranch, "base", req.Base,
 		"base_commit", req.BaseCommit, "resolve_default_base", req.ResolveDefaultBase,
+		"local_base_branch", req.LocalBaseBranch,
 		"worktree", req.Worktree, "new_worktree", req.NewWorktree)
 	defer func() {
 		if err != nil {
@@ -696,6 +697,20 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if repoPath == "" || (req.PlanB64 == "" && req.Prompt == "") {
 		return nil, fmt.Errorf("%w: repo_path=%q plan_b64 长度=%d prompt 长度=%d",
 			errBadDispatchRequest, repoPath, len(req.PlanB64), len(req.Prompt))
+	}
+	// 本地工作分支是一个明确的目标机本地起点，不允许借默认基线或空 Base
+	// 语义兜底。这个门必须早于默认分支解析、基线 fetch、建任务和 worktree，
+	// 否则调用方会收到一个看似普通派发成功/失败的结果并留下错误副作用。
+	if req.LocalBaseBranch && req.ResolveDefaultBase {
+		m.log.Warn("dispatch 被拒：本地工作分支与默认基线标记互斥",
+			"base", req.Base, "resolve_default_base", req.ResolveDefaultBase)
+		return nil, fmt.Errorf("%w: local_base_branch 与 resolve_default_base 互斥",
+			ErrBadWorkspaceReq)
+	}
+	if req.LocalBaseBranch && strings.TrimSpace(req.Base) == "" {
+		m.log.Warn("dispatch 被拒：本地工作分支缺少 Base")
+		return nil, fmt.Errorf("%w: local_base_branch=true 时 base 必须是非空工作分支名",
+			ErrBadWorkspaceReq)
 	}
 	// dispatch 期解析执行者：req.Executor 空回退缺省；未注册按参数错误拒绝（400）
 	execName, ad, err := m.resolveExecutor(req.Executor)

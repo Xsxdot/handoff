@@ -206,6 +206,71 @@ func TestViaTemplateSecondRoundGetsNumberedBranch(t *testing.T) {
 	}
 }
 
+// TestViaTemplateContinuationUsesLocalWorkBranch 验证第二轮沿同机工作分支接续，
+// 且把本地起点标记送入 Transport；首轮仍保留空基线的默认分支语义。
+func TestViaTemplateContinuationUsesLocalWorkBranch(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var dispatched []DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		dispatched = append(dispatched, opts)
+		return fmt.Sprintf("T-continuation-%d", len(dispatched)), nil
+	}}
+	for i := 0; i < 2; i++ {
+		if _, err := d.ViaTemplate(context.Background(), card,
+			TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+			t.Fatalf("第 %d 轮 ViaTemplate: %v", i+1, err)
+		}
+	}
+	if dispatched[0].LocalBaseBranch || !dispatched[0].ResolveDefaultBase || dispatched[0].Base != "" {
+		t.Fatalf("首轮应沿空基线默认解析：base=%q local=%v default=%v", dispatched[0].Base,
+			dispatched[0].LocalBaseBranch, dispatched[0].ResolveDefaultBase)
+	}
+	wantBranch := "cards/" + card.ID + "-implement"
+	if dispatched[1].Base != wantBranch || !dispatched[1].LocalBaseBranch || dispatched[1].ResolveDefaultBase {
+		t.Fatalf("第二轮应从同机工作分支本地解析：base=%q local=%v default=%v", dispatched[1].Base,
+			dispatched[1].LocalBaseBranch, dispatched[1].ResolveDefaultBase)
+	}
+}
+
+// TestViaTemplateRejectsCrossTargetBeforeTransport 验证跨机时不静默掉回卡基线，
+// 且拒绝发生在 Transport/LinkTask/RecordDispatch 之前，不留下新的派发副作用。
+func TestViaTemplateRejectsCrossTargetBeforeTransport(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	transportCalls := 0
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		transportCalls++
+		return fmt.Sprintf("T-cross-%d", transportCalls), nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+		t.Fatalf("首轮 ViaTemplate: %v", err)
+	}
+	before, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "linux-01"}); err == nil {
+		t.Fatal("跨机接续必须拒绝")
+	} else {
+		for _, want := range []string{"工作分支只存在于创建它的那台机器", "git push", "--base"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("跨机拒绝应包含 %q，实得 %v", want, err)
+			}
+		}
+	}
+	if transportCalls != 1 {
+		t.Fatalf("跨机拒绝不得调用 Transport，调用次数=%d", transportCalls)
+	}
+	after, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("跨机拒绝不得新增账本事件：before=%d after=%d", len(before), len(after))
+	}
+}
+
 func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var dispatched []DispatchOpts
@@ -235,6 +300,9 @@ func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
 	}
 	if dispatched[1].ResolveDefaultBase {
 		t.Fatal("审阅轮已有工作分支，不应要求目标侧解析默认基线")
+	}
+	if !dispatched[1].LocalBaseBranch {
+		t.Fatal("审阅轮工作分支必须标记为目标机本地起点")
 	}
 	reviews, err := st.ReviewRounds(card.ID)
 	if err != nil {
