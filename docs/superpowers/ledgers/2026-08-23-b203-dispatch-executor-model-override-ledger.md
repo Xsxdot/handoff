@@ -99,3 +99,6 @@
 - 命令：`git diff --cached --stat && git status --short --branch`
 - 原始输出：暂存差异为台账、`dispatch.go`、`dispatch_test.go`、`runner.go`、`runner_test.go` 五个文件；状态为 `## cards/B203-charter-4` 且五个文件均已暂存。
 - 判断：提交前暂存内容与本卡范围一致，没有额外文件。
+- 命令：`git commit -m "fix(card): preserve model for same executor override"`
+- 原始输出：`[cards/B203-charter-4 36c52ece] fix(card): preserve model for same executor override`；`5 files changed, 116 insertions(+), 6 deletions(-)`；退出码 `0`。
+- 判断：B203 F1 修复、新增回归测试与台账已完成首个本地提交；未执行 push。
