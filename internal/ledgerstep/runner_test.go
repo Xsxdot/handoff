@@ -159,6 +159,32 @@ func TestRunnerExecutorModelOverridePriorityAndPairRule(t *testing.T) {
 	}
 }
 
+// TestRunnerSameExecutorKeepsNodeModel ensures a CLI executor spelling that
+// matches the node layer does not discard that layer's model.
+func TestRunnerSameExecutorKeepsNodeModel(t *testing.T) {
+	const target = "mac-02"
+	st, card := dispatchTestCard(t)
+	var got DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		got = opts
+		return "T-runner-same-executor", nil
+	}}
+	node := ledger.NodeDef{
+		Name: "进行中", Dispatch: true, Template: "feature-impl",
+		Override: ledger.NodeOverride{Executor: "opencode", Model: "node-model"},
+	}
+	runner := &StepRunner{
+		St: st, Dispatcher: d, Target: target,
+		Executor: "opencode", Model: "",
+	}
+	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+		t.Fatalf("同 executor 节点覆盖派发: %v", err)
+	}
+	if got.Executor != "opencode" || got.Model != "node-model" {
+		t.Fatalf("same executor executor/model = %q/%q, want %q/%q", got.Executor, got.Model, "opencode", "node-model")
+	}
+}
+
 func TestRunnerClaimsDriverWithoutChangingNodeStatusAndReleasesAfterRun(t *testing.T) {
 	st, card := nodeLedger(t)
 	started := make(chan struct{})

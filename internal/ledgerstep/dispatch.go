@@ -62,7 +62,8 @@ type TemplateDispatch struct {
 	PlanPath           string
 	DisciplineOverride string
 	// ExecutorOverride / ModelOverride 是调用方对模板的单字段覆盖；空 = 用模板的。
-	// 当 ExecutorOverride 非空且 ModelOverride 为空时，ViaTemplate 会清掉下层模型。
+	// 当 ExecutorOverride 真的改变有效 executor 且 ModelOverride 为空时，
+	// ViaTemplate 会清掉下层模型；只显式重述同一个 executor 不改变模型。
 	ExecutorOverride string
 	ModelOverride    string
 	// CarryCardContext 为真时把卡上下文段拼进 prompt（来自节点的同名开关）。
@@ -205,11 +206,15 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		model = tpl.Def.ModelByTarget[target]
 	}
 	executor := tpl.Def.Executor
-	if req.ExecutorOverride != "" {
+	if req.ExecutorOverride != "" && req.ExecutorOverride != tpl.Def.Executor {
 		executor = req.ExecutorOverride
 		// 模型是执行器的同层伴随覆盖。换执行器时不能把模板声明的模型
-		// 带给新执行器；空值交给新执行器自身的默认模型。
+		// 带给新执行器；空值交给新执行器自身的默认模型。这里按“有效
+		// executor 是否变化”判定，与 agentd Manager.resolveModel 的边界
+		// 注释同源：显式写出默认 executor 仍照常套用配置模型。
 		model = ""
+	} else if req.ExecutorOverride != "" {
+		executor = req.ExecutorOverride
 	}
 	if req.ModelOverride != "" {
 		model = req.ModelOverride

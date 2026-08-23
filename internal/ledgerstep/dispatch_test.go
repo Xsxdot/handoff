@@ -80,6 +80,27 @@ func TestViaTemplateExecutorModelOverridesAndPairRule(t *testing.T) {
 	}
 }
 
+// TestViaTemplateSameExecutorKeepsTemplateModel ensures spelling out the template
+// executor is a no-op for the paired model override.
+func TestViaTemplateSameExecutorKeepsTemplateModel(t *testing.T) {
+	const target = "mac-02"
+	st, card := dispatchTestCard(t)
+	setTemplateModel(t, st, target, "template-model")
+	var got DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		got = opts
+		return "T-same-executor", nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: target, ExecutorOverride: "opencode",
+	}); err != nil {
+		t.Fatalf("ViaTemplate: %v", err)
+	}
+	if got.Executor != "opencode" || got.Model != "template-model" {
+		t.Fatalf("same executor executor/model = %q/%q, want %q/%q", got.Executor, got.Model, "opencode", "template-model")
+	}
+}
+
 // TestViaTemplateSnapshotRecordsExecutorModel 穿过真实 dispatched JSON 边界验证执行器和模型快照。
 func TestViaTemplateSnapshotRecordsExecutorModel(t *testing.T) {
 	st, card := dispatchTestCard(t)

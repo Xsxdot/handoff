@@ -129,10 +129,13 @@ func (r *StepRunner) dispatchNode() func(context.Context, ledger.Card, ledger.No
 		executor := node.Override.Executor
 		model := node.Override.Model
 		if r.Executor != "" {
-			// CLI executor 与 model 是同层覆盖；故意把空 model 传下去，
-			// 让 ViaTemplate 清掉节点/模板的下层模型，而不是错误继承。
+			// CLI executor 与 model 是同层覆盖。只有 CLI executor 真正
+			// 换掉节点 executor 时，空 model 才切断节点/模板的下层模型；
+			// 同名 executor 是显式重述，不应丢掉节点 model。
 			executor = r.Executor
-			model = r.Model
+			if r.Model != "" || r.Executor != node.Override.Executor {
+				model = r.Model
+			}
 		} else if r.Model != "" {
 			model = r.Model
 		}

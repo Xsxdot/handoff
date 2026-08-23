@@ -44,3 +44,58 @@
 - 原始输出：无输出，退出码 `0`。
 - 判断：当前 B203 文件集已成功加入 Git index；未执行 push。
 - 提交：`9277fe585bcffc1605399f562e35137b26acba88`（`feat(card): allow executor and model overrides`），当前分支 `cards/B203-charter`；`git status --short --branch` 仅输出分支首行，工作区干净。
+- 命令：`pwd && rg --files -g 'SKILL.md' -g 'docs/superpowers/**' -g '*ledger*' -g '*台账*' -g '.gitignore' | sort && git status --short --branch`
+- 原始输出：当前目录 `/root/.handoff/worktrees/5ff79424`；发现仓内 `skills/handoff/SKILL.md`、B203 spec/plan/ledger；分支首行为 `## cards/B203-charter`，无工作区改动。
+- 判断：已确认只在 `cards/B203-charter` 工作；本轮不调用 handoff CLI，不切分支、不改 git 配置。
+- 命令：`sed -n '1,260p' skills/handoff/SKILL.md && sed -n '1,260p' docs/superpowers/specs/2026-08-23-b203-dispatch-executor-model-override.md && sed -n '1,320p' docs/superpowers/plans/2026-08-23-b203-dispatch-executor-model-override.md && sed -n '1,240p' docs/superpowers/ledgers/2026-08-23-b203-dispatch-executor-model-override-ledger.md`
+- 原始输出：成功读取 handoff 技能说明、B203 spec、修复轮 plan 与既有台账；plan 将唯一剩余任务定义为 ViaTemplate 与 dispatchNode 的“有效 executor 实际发生变化”判据收紧，并要求新增用例先红后绿、变异证明与指定验证命令。
+- 判断：本节点需在既有 B203 实现基础上仅修复 F1，不修改既有四条防回归子用例断言。
+- 修改：先新增 `TestViaTemplateSameExecutorKeepsTemplateModel` 与 `TestRunnerSameExecutorKeepsNodeModel`，分别覆盖模板层和节点/CLI 层“executor 名称相同且未给 model 时保留下层 model”；未改动既有四条防回归子用例。
+- 命令：`go test ./internal/ledgerstep -run 'Test(ViaTemplateSameExecutorKeepsTemplateModel|RunnerSameExecutorKeepsNodeModel)$' -count=1`
+- 原始失败：`dispatch_test.go:100: same executor executor/model = "opencode"/"", want "opencode"/"template-model"`；`runner_test.go:184: same executor executor/model = "opencode"/"", want "opencode"/"node-model"`；最终 `FAIL github.com/Xsxdot/handoff/internal/ledgerstep`。
+- 判断：两条新增测试均因现有实现无条件清空 model 而失败，失败原因是功能缺失而非测试 typo，满足先红后绿。
+- 修改：`ViaTemplate` 将成对规则条件收紧为 `req.ExecutorOverride != "" && req.ExecutorOverride != tpl.Def.Executor`，并保留同名 executor；`dispatchNode` 在 CLI executor 与节点 executor 同名且 CLI model 为空时保留节点 model；补充注释说明与 `Manager.resolveModel` 边界判据同源。
+- 命令：`gofmt -w internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go && go test ./internal/ledgerstep -run 'Test(ViaTemplateExecutorModelOverridesAndPairRule|ViaTemplateSameExecutorKeepsTemplateModel|RunnerExecutorModelOverridePriorityAndPairRule|RunnerSameExecutorKeepsNodeModel)$' -count=1`
+- 原始输出：`ok github.com/Xsxdot/handoff/internal/ledgerstep 0.862s`；退出码 `0`。
+- 判断：新增同 executor 保留 model 用例与既有模板/节点成对规则防回归用例均通过。
+- 变异：临时将 `ViaTemplate` 条件改回 `req.ExecutorOverride != ""`，未保留该变更。
+- 命令：`go test ./internal/ledgerstep -run 'Test(ViaTemplateSameExecutorKeepsTemplateModel|RunnerSameExecutorKeepsNodeModel)$' -count=1`
+- 原始失败：`dispatch_test.go:100: same executor executor/model = "opencode"/"", want "opencode"/"template-model"`；`runner_test.go` 对应新增用例在变异条件下也进入失败进程（变异命令最终 `FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 `1`）。
+- 判断：将条件退回旧判据会使两条新增同 executor 用例变红，证明新增测试能识别 F1；已立即恢复有效 executor 变化判据。
+- 命令：`go test ./internal/ledgerstep ./cmd`
+- 原始输出：`ok github.com/Xsxdot/handoff/internal/ledgerstep 4.045s`；`ok github.com/Xsxdot/handoff/cmd 5.809s`；退出码 `0`。
+- 判断：触及子系统的完整测试在恢复正确实现后通过。
+- 命令：`gofmt -l .`
+- 原始输出：无输出；退出码 `0`。
+- 判断：全仓 Go 源文件格式检查通过。
+- 命令：`go vet ./...`
+- 原始输出：无输出；退出码 `0`。
+- 判断：全仓静态检查通过。
+- 命令：`go build ./...`
+- 原始输出：无输出；退出码 `0`。
+- 判断：全仓编译通过。
+- 放弃的尝试：首次追加编译事实时误写台账路径并提交空 patch，`apply_patch` 原始报错为 `apply_patch verification failed: invalid hunk at line 4, Update hunk does not contain any lines`；未改变文件，随后使用正确路径完成本条记录。
+- 命令：`go test ./...`
+- 原始输出：全量多数包通过；`internal/executor/claudecode` 失败：`--- FAIL: TestPermServerAskThenRespond (0.00s)`，`perm_test.go:56: newPermServer: 裁决 socket 路径过长（114 字节，上限 107）: /root/.handoff/tasks/5ff79424-beeb-4c4b-825f-76ea17a41bfd/tmp/TestPermServerAskThenRespond3922240139/001/perm.sock——把 DataDir 配到更浅的位置`；同包另有 `TestPermServerRespondUnknownID`、`TestPermServerReRegisterSameID` 相同 114/116 字节路径错误，以及 `TestResumeContinuesFromOffset`：`裁决 socket 路径过长（115 字节，上限 107）`；最终 `FAIL github.com/Xsxdot/handoff/internal/executor/claudecode`、退出码 `1`。其余相关摘录：`ok github.com/Xsxdot/handoff/internal/ledgerstep (cached)`、`ok github.com/Xsxdot/handoff/cmd 6.407s`、`ok github.com/Xsxdot/handoff/internal/agentd 112.862s`。
+- 判断：全量测试真实失败，失败原文是 plan 已声明的 claudecode 裁决 socket 路径长度环境事实；本轮不修改该包、不替它归因。
+- 命令：`ps -eo pid=,ppid=,stat=,args= | rg '[g]o test ./\\.\\.\\.'`
+- 原始输出：无输出；退出码 `1`。
+- 判断：检查时没有残留的 `go test ./...` 进程。
+- 命令：`git diff --stat && git diff -- internal/ledgerstep/dispatch.go internal/ledgerstep/runner.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner_test.go && git status --short --branch`
+- 原始输出：差异仅含 B203 台账、`internal/ledgerstep/dispatch.go`、`runner.go` 及对应两份测试；状态首行为 `## cards/B203-charter-4`，无其他未跟踪文件。
+- 判断：实际当前分支是 `cards/B203-charter-4`，本轮保持该分支不切换；实现差异只包含 F1 修复与两条新增回归测试。
+- 命令：`git diff --check`
+- 原始输出：无输出；退出码 `0`。
+- 判断：当前差异无空白错误。
+- 命令：`git diff --check`（收尾复核）
+- 原始输出：无输出；退出码 `0`。
+- 判断：加入最终台账记录后，准备提交的差异仍无空白错误。
+- 命令：`git add docs/superpowers/ledgers/2026-08-23-b203-dispatch-executor-model-override-ledger.md internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go`
+- 原始失败：`fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/5ff79424/index.lock': Read-only file system`；退出码 `128`。
+- 判断：首次暂存受 Git worktree 元数据写权限限制，源码未改变；需用已允许的提权方式重试暂存。
+- 命令：同一 `git add ...` 在 `sandbox_permissions=require_escalated` 下重试。
+- 原始输出：无输出；退出码 `0`。
+- 判断：B203 修复、回归测试与台账已成功加入 Git index；未执行 push。
+- 命令：`git diff --cached --stat && git status --short --branch`
+- 原始输出：暂存差异为台账、`dispatch.go`、`dispatch_test.go`、`runner.go`、`runner_test.go` 五个文件；状态为 `## cards/B203-charter-4` 且五个文件均已暂存。
+- 判断：提交前暂存内容与本卡范围一致，没有额外文件。
