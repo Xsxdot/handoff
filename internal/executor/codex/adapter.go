@@ -108,11 +108,36 @@ func deltaFrameKind(method string) deltaKind {
 // 专用开发机上，网络面本来就敞着；反方向的代价是实的——关掉后装依赖会失败，
 // 且实证拒网**不产工单**，属于协调者不知情的哑失败。
 
-// taskTmpDir 返回任务专属临时目录（<taskDir>/tmp）。
+// taskTmpDir 返回任务专属临时目录（<DataDir>/tmp/<id8>）。
 //
-// TaskDir 位于 <DataDir>/tasks/<id>，因此该目录在工作区之外。把 TMPDIR 指进
-// 仓库会让「非 git 目录应报错」用例的临时目录落入仓库，git 命令正常成功而假红。
-func taskTmpDir(taskDir string) string { return filepath.Join(taskDir, "tmp") }
+// TaskDir 位于 <DataDir>/tasks/<id>（见 executor.StartReq.TaskDir 的契约注释），
+// 因此向上两级取 DataDir，任务 ID（= filepath.Base(taskDir)）取前 8 位作短号，
+// 不足 8 位时按原样用（不 panic、不补位）。
+//
+// 新目录仍在 DataDir 之内、仍在仓库工作区之外：把 TMPDIR 指进仓库会让
+// 「非 git 目录应报错」用例的临时目录落入仓库，git 命令正常成功而假红。
+//
+// 为什么必须是这个短形状（61→27 的字节账，别只当成风格偏好）：
+// Go 的 t.TempDir() 在 TMPDIR 下再套一层 <用例名><随机数>/001，claudecode 测试
+// 还要在里面建 unix socket perm.sock，而 AF_UNIX sun_path 上限是 108 字节（含
+// 结尾 NUL），internal/executor/claudecode/perm.go 的 sunPathMax = 107。旧形状
+// <DataDir>/tasks/<36 位 UUID>/tmp 在默认 DataDir /root/.handoff（14 字节）下
+// 长 61 字节：61 + 测试子路径预算 51（<用例名><随机数>/001 41 + /perm.sock 10）
+// = 112 > 107，派出去的每一轮 go test ./... 必红。新形状 <DataDir>/tmp/<id8>
+// 长 27 字节（14 + /tmp/ 5 + 8 位短号），27 + 51 = 78，留足余量。改回去=复现
+// 必红的整轮测试，所以不要动。
+func taskTmpDir(taskDir string) string {
+	dataDir := filepath.Dir(filepath.Dir(taskDir))
+	return filepath.Join(dataDir, "tmp", shortTaskID(filepath.Base(taskDir)))
+}
+
+// shortTaskID 取任务 ID 前 8 位（不足 8 位则原样返回）。
+func shortTaskID(id string) string {
+	if len(id) <= 8 {
+		return id
+	}
+	return id[:8]
+}
 
 // tmpEnvKVs 把 Go 工具链的临时目录与构建缓存指向任务专属 tmp。
 //
