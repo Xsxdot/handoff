@@ -320,6 +320,10 @@ export function CardDrawer({
   const [acceptanceDraft, setAcceptanceDraft] = useState('')
   const [acceptanceBusy, setAcceptanceBusy] = useState(false)
   const [acceptanceError, setAcceptanceError] = useState('')
+  const [baseEditing, setBaseEditing] = useState(false)
+  const [baseDraft, setBaseDraft] = useState('')
+  const [baseBusy, setBaseBusy] = useState(false)
+  const [baseError, setBaseError] = useState('')
   const [attachmentKind, setAttachmentKind] = useState('plan')
   const [attachmentPath, setAttachmentPath] = useState('')
   const [attachmentBusy, setAttachmentBusy] = useState(false)
@@ -367,6 +371,13 @@ export function CardDrawer({
   const driverStale = Boolean(driverSession) && (!heartbeat || Number.isNaN(Date.parse(heartbeat)) || Date.now() - Date.parse(heartbeat) > 5 * 60 * 1000)
   const acceptanceInfo = detail ? acceptance(detail) : { criteria: '', verified: false, evidence: '' }
   const attachments = attachmentsOf(card)
+  const ownBase = value<string>(card, 'base_branch', '')
+  const effectiveBase = value<string>(detail, 'effective_base_branch', '')
+  const baseLabel = ownBase !== ''
+    ? `自设 ${ownBase}`
+    : effectiveBase !== ''
+      ? `继承 ${effectiveBase}`
+      : '未设置/回落项目主线'
   // 验收 chip 三态：已验 / 待真机验（活干完了等验）/ 未验（还没干完）。
   // 原来只有两态，把「还在进行中的卡」也显示成「待真机验」——那会让看板上
   // 一片卡都像在等人验，真正等验的那几张反而看不出来
@@ -460,6 +471,26 @@ export function CardDrawer({
       setAcceptanceError(errorMessage(err))
     } finally {
       setAcceptanceBusy(false)
+    }
+  }
+
+  const beginBaseEdit = () => {
+    setBaseDraft(ownBase)
+    setBaseError('')
+    setBaseEditing(true)
+  }
+
+  const submitBase = async () => {
+    setBaseBusy(true)
+    setBaseError('')
+    try {
+      await patchCard(id, { base_branch: baseDraft })
+      setBaseEditing(false)
+      load()
+    } catch (err) {
+      setBaseError(errorMessage(err))
+    } finally {
+      setBaseBusy(false)
     }
   }
 
@@ -650,11 +681,22 @@ export function CardDrawer({
                 <dt className="text-muted-foreground">附件</dt><dd>{attachments.map((item) => item.path).join('、') || '—'}</dd>
                 <dt className="text-muted-foreground">基线</dt>
                 <dd className="font-mono">
-                  {value(detail, 'effective_base_branch', '') || '—'}
-                  {/* 基线分支只读：卡建出来之后改基线，会让已经派出去、正按老基线工作的
-                      任务与卡的说法对不上——那种不一致在事后极难分辨是谁错了。要换基线
-                      就新建一张卡。 */}
-                  <span className="ml-2 font-sans text-[11px] text-muted-foreground">建卡时定，不可改</span>
+                  {baseEditing ? (
+                    <span className="flex flex-wrap items-center gap-1.5 font-sans">
+                      <input aria-label="基线分支" value={baseDraft} onChange={(event) => setBaseDraft(event.target.value)}
+                        className="min-w-0 flex-1 rounded border bg-background px-2 py-1 font-mono text-xs" />
+                      <button type="button" disabled={baseBusy} onClick={() => void submitBase()}
+                        className="rounded border px-2 py-1 text-[11px] disabled:opacity-50">保存基线</button>
+                      <button type="button" disabled={baseBusy} onClick={() => setBaseEditing(false)}
+                        className="rounded border px-2 py-1 text-[11px]">取消</button>
+                    </span>
+                  ) : (
+                    <span className="flex flex-wrap items-center gap-1.5">
+                      <span>{baseLabel}</span>
+                      <button type="button" onClick={beginBaseEdit} className="font-sans rounded border px-2 py-1 text-[11px]">编辑基线</button>
+                    </span>
+                  )}
+                  {baseError && <span role="alert" className="mt-1 block break-words font-sans text-xs text-destructive">{baseError}</span>}
                 </dd>
                 {(following || driverStale) && <><dt className="text-muted-foreground">驱动/跟随</dt><dd>{following ? `跟随 ${following}` : `驱动异常：${driverSession}`}</dd></>}
               </dl>
