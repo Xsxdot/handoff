@@ -69,7 +69,7 @@ func TestContractFixtures(t *testing.T) {
 		{"ProjectLocation", projectLocationSample(now)},
 		{"ProjectTreeResp", projectTreeSample()},
 		{"WorkspaceCardResults", Workspace{
-			Path: "/home/dev/.handoff/worktrees/manual/feat-b205",
+			Path:   "/home/dev/.handoff/worktrees/manual/feat-b205",
 			Branch: "feat/b205-baseline", Head: "482aab1", Managed: true,
 			CreatedAt: now,
 			CardResults: []CardBaseBranchResult{
