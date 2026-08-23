@@ -7,6 +7,7 @@ import {
   fetchDiscipline,
   fetchDisciplineFile,
   fetchProjectBranches,
+  fetchProjects,
   fetchTasks,
   saveDisciplineFile,
   saveDisciplineMapping,
@@ -150,6 +151,21 @@ describe('建树接口', () => {
     )
     await createWorktree('handoff', { mode: 'new_branch', branch: 'feat/x', base: 'main' })
     expect(spy.mock.calls[0][0]).toBe('/api/projects/handoff/worktrees')
+    spy.mockRestore()
+  })
+})
+
+describe('列项目接口', () => {
+  it('fetchProjects GET /api/projects，返回位置数组', async () => {
+    const spy = vi.spyOn(globalThis, 'fetch').mockResolvedValue(
+      new Response(JSON.stringify([
+        { project_id: 'a1b2c3d4e5f60718', name: 'handoff', path: '/home/dev/handoff', origin_url: '', created_at: '', status: '有效' },
+        { project_id: 'p2', name: 'sq', path: '/d/sq', origin_url: '', created_at: '' },
+      ]), { status: 200, headers: { 'Content-Type': 'application/json' } }),
+    )
+    const locs = await fetchProjects()
+    expect(spy.mock.calls[0][0]).toBe('/api/projects')
+    expect(locs.map((loc) => loc.name)).toEqual(['handoff', 'sq'])
     spy.mockRestore()
   })
 })
