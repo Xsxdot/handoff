@@ -123,7 +123,7 @@ func TestContractFixtures(t *testing.T) {
 		{"LedgerEvent", LedgerEvent{Seq: 9, CardID: "B167", Type: "workflow_migrated", Actor: "web:127.0.0.1",
 			Payload: json.RawMessage(`{"from_workflow":"bug","from_version":1,"from_status":"进行中","to_workflow":"domain","to_version":1,"to_status":"拆解"}`), CreatedAt: now}},
 		{"CardView", CardView{ID: "B167", Title: "需要定性", Status: "待办", Priority: "中", Project: "handoff", Workflow: "triage", Parent: "", BaseBranch: "main",
-			Attachments: []Attachment{{Kind: "spec", Path: "specs/example.md"}}, BlockedBy: []string{}, Following: "", Needs: "", Blocked: false, MergedCount: 0, OpenDecisions: 0, ChildrenTotal: 0, ChildrenDone: 0, Conflict: false, OpenTickets: 0}},
+			BaseFrozen: false, Attachments: []Attachment{{Kind: "spec", Path: "specs/example.md"}}, BlockedBy: []string{}, Following: "", Needs: "", Blocked: false, MergedCount: 0, OpenDecisions: 0, ChildrenTotal: 0, ChildrenDone: 0, Conflict: false, OpenTickets: 0}},
 		{"CardDetail", CardDetail{Card: Card{ID: "B167", Title: "需要定性", Status: "待办", Priority: "中", Project: "handoff", WorkflowName: "triage", WorkflowVersion: 1}, Relations: []Relation{}, Events: []LedgerEvent{}, TaskStates: []TaskStateRow{}, EffectiveBaseBranch: "main", Decisions: []Decision{}, Needs: "", Children: []CardBrief{}}},
 		{"NodeDef", NodeDef{Name: "定性中", Next: "已定性"}},
 		{"FlowDetail", FlowDetail{Name: "triage", Version: 1, Nodes: []NodeDef{{Name: "待办", Next: "定性中"}, {Name: "定性中", Next: "已定性"}, {Name: "已定性"}}, States: []string{"待办", "定性中", "已定性"}}},

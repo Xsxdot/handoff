@@ -450,6 +450,39 @@ func TestSetCardBaseBranch(t *testing.T) {
 		}
 	})
 
+	t.Run("review-only dispatched freezes", func(t *testing.T) {
+		s := seedStore(t)
+		card := mk(t, s, "只审阅派发")
+		review := DispatchSnapshot{Template: "review-generic", Target: "acc", TaskID: "review-only-1",
+			Branch: "cards/B205-review-only", Purpose: PurposeReview, Actor: "test"}
+		if err := s.RecordDispatch(card.ID, review); err != nil {
+			t.Fatal(err)
+		}
+		events, err := s.EventsFromAsc([]string{card.ID}, 0, 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var reviewEvent Event
+		for _, event := range events {
+			if event.Type == EvDispatched {
+				reviewEvent = event
+				break
+			}
+		}
+		if reviewEvent.Seq == 0 {
+			t.Fatal("应找到唯一审阅派发事件")
+		}
+		err = s.SetCardBaseBranch(card.ID, "cards/should-reject", "test")
+		if !errors.Is(err, ErrBadState) {
+			t.Fatalf("只派审阅轮也应冻结基线，err=%v", err)
+		}
+		for _, want := range []string{"cards/B205-review-only", reviewEvent.CreatedAt.Format(time.RFC3339Nano)} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("冻结错误缺少 %q：%v", want, err)
+			}
+		}
+	})
+
 	t.Run("comment failure rolls back card", func(t *testing.T) {
 		s := seedStore(t)
 		card := mk(t, s, "事务回滚")

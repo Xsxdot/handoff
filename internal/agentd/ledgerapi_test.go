@@ -602,6 +602,20 @@ func TestCardsListWireCarriesChildrenCounts(t *testing.T) {
 	t.Fatalf("列表找不到父卡 %s: %s", parent.ID, body)
 }
 
+func TestCardsListWireCarriesBaseFrozen(t *testing.T) {
+	encoded, err := json.Marshal(ledgerCardViewWire(ledger.CardView{}, false, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(encoded, &fields); err != nil {
+		t.Fatal(err)
+	}
+	if raw, ok := fields["base_frozen"]; !ok || string(raw) != "false" {
+		t.Fatalf("CardView wire 缺 base_frozen=false：%s", encoded)
+	}
+}
+
 func TestLedgerAPIWithoutLedger(t *testing.T) {
 	env := newTestAgentdEnv(t)
 	code, body := ledgerGet(t, env, "/api/cards")

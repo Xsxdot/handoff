@@ -428,7 +428,8 @@ func cardViewWire(view ledger.CardView) map[string]any {
 	return map[string]any{
 		"id": view.ID, "title": view.Title, "status": view.Status, "priority": view.Priority,
 		"project": view.Project, "parent": view.ParentID, "base_branch": view.BaseBranch,
-		"following": view.Following, "blocked": view.Blocked, "blocked_by": view.BlockedBy,
+		"base_frozen": view.BaseFrozen,
+		"following":   view.Following, "blocked": view.Blocked, "blocked_by": view.BlockedBy,
 		"needs": view.NeedsReason, "open_decisions": view.OpenDecisions,
 	}
 }

@@ -21,10 +21,6 @@ const branches = {
 const cardA: CardView = { id: 'B1', title: '卡 A', project: 'handoff', status: '待办', priority: '中', workflow: 'triage', parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [], merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0, conflict: false, open_tickets: 0 }
 const cardB: CardView = { ...cardA, id: 'B2', title: '卡 B' }
 
-function detailCard(view: CardView) {
-  return { ...view, workflow_version: 1, created_at: '', updated_at: '' }
-}
-
 beforeEach(() => {
   vi.restoreAllMocks()
   vi.spyOn(ledger, 'fetchCards').mockResolvedValue({ cards: [], unlinked: { count: 0, tasks: null, unknown_targets: null } })
@@ -92,17 +88,30 @@ describe('建树弹层', () => {
 
   it('列出卡候选，已派发卡置灰并说明冻结', async () => {
     vi.spyOn(client, 'fetchProjectBranches').mockResolvedValue(branches)
-    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [cardA, cardB], unlinked: { count: 0, tasks: null, unknown_targets: null } })
-    vi.mocked(ledger.fetchCardDetail).mockImplementation(async (id) => ({
-      card: detailCard(id === 'B1' ? cardA : cardB),
-      relations: [], events: id === 'B1' ? [{ seq: 1, card_id: id, type: 'dispatched', actor: 'test', payload: {}, created_at: '' }] : [],
-      task_states: [], effective_base_branch: '', decisions: [], needs: '',
-    }))
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [
+        { ...cardA, base_frozen: true },
+        { ...cardB, base_frozen: false },
+      ],
+      unlinked: { count: 0, tasks: null, unknown_targets: null },
+    })
     open()
     expect(await screen.findByRole('checkbox', { name: '选择卡 B1' })).toBeDisabled()
     expect(screen.getByText('已派发，基线已冻结')).toBeInTheDocument()
     expect(screen.getByRole('checkbox', { name: '选择卡 B2' })).not.toBeDisabled()
     expect(ledger.fetchCards).toHaveBeenCalledWith('project=handoff')
+  })
+
+  it('卡候选直接使用列表冻结标记，不为每张卡追加详情请求', async () => {
+    vi.spyOn(client, 'fetchProjectBranches').mockResolvedValue(branches)
+    const frozen = { ...cardA, base_frozen: true } as CardView & { base_frozen: boolean }
+    const free = { ...cardB, base_frozen: false } as CardView & { base_frozen: boolean }
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [frozen, free], unlinked: { count: 0, tasks: null, unknown_targets: null } })
+    vi.mocked(ledger.fetchCardDetail).mockClear()
+    open()
+    expect(await screen.findByRole('checkbox', { name: '选择卡 B1' })).toBeDisabled()
+    expect(screen.getByRole('checkbox', { name: '选择卡 B2' })).not.toBeDisabled()
+    expect(ledger.fetchCardDetail).not.toHaveBeenCalled()
   })
 
   it('选择卡时按顺序发送 card_ids，零选择不发送该键', async () => {
@@ -164,6 +173,17 @@ describe('建树弹层', () => {
     await waitFor(() => expect(client.createWorktree).toHaveBeenCalled())
     const request = vi.mocked(client.createWorktree).mock.calls[0][1]
     expect(Object.keys(request)).not.toContain('card_ids')
+  })
+
+  it('卡候选加载失败提供重试入口', async () => {
+    vi.spyOn(client, 'fetchProjectBranches').mockResolvedValue(branches)
+    vi.mocked(ledger.fetchCards).mockRejectedValueOnce(new Error('账本暂不可用'))
+    vi.mocked(ledger.fetchCards).mockResolvedValueOnce({ cards: [cardA], unlinked: { count: 0, tasks: null, unknown_targets: null } })
+    open()
+    expect(await screen.findByText(/账本暂不可用/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '重试卡候选' }))
+    expect(await screen.findByRole('checkbox', { name: '选择卡 B1' })).toBeInTheDocument()
+    expect(ledger.fetchCards).toHaveBeenCalledTimes(2)
   })
 
   it('创建失败把 agentd 原文贴出来，不缩略成「操作失败」', async () => {

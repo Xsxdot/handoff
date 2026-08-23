@@ -116,6 +116,7 @@ type CardView struct {
 	Workflow      string       `json:"workflow"`
 	Parent        string       `json:"parent"`
 	BaseBranch    string       `json:"base_branch"`
+	BaseFrozen    bool         `json:"base_frozen"`
 	Attachments   []Attachment `json:"attachments"`
 	Following     string       `json:"following"`
 	Blocked       bool         `json:"blocked"`

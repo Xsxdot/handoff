@@ -57,6 +57,10 @@ func (s *Store) ListCards(filter CardFilter) ([]CardView, error) {
 	if err != nil {
 		return nil, err
 	}
+	baseFrozen, err := s.baseFrozenMap()
+	if err != nil {
+		return nil, err
+	}
 	openDecisions, err := s.openDecisionCount()
 	if err != nil {
 		return nil, err
@@ -82,7 +86,7 @@ func (s *Store) ListCards(filter CardFilter) ([]CardView, error) {
 
 	var out []CardView
 	for _, card := range cards {
-		view := CardView{Card: card, OpenDecisions: openDecisions[card.ID], NeedsReason: needs[card.ID]}
+		view := CardView{Card: card, BaseFrozen: baseFrozen[card.ID], OpenDecisions: openDecisions[card.ID], NeedsReason: needs[card.ID]}
 		if stat := childStats[card.ID]; stat != nil {
 			view.ChildrenTotal, view.ChildrenDone = stat.total, stat.done
 		}
@@ -130,6 +134,31 @@ func (s *Store) ListCards(filter CardFilter) ([]CardView, error) {
 		return out[i].ID < out[j].ID
 	})
 	return out, nil
+}
+
+// baseFrozenMap 从 dispatched 事件流推导基线冻结态；不新增或维护状态列，避免
+// 派发与列表投影之间出现需要人工修复的双写窗口。
+func (s *Store) baseFrozenMap() (map[string]bool, error) {
+	rows, err := s.db.Query(s.q(`SELECT card_id FROM card_events WHERE type = ? AND card_id IS NOT NULL`), EvDispatched)
+	if err != nil {
+		log().Error("推导卡基线冻结态失败：查询 dispatched 事件", "cause", err)
+		return nil, fmt.Errorf("读卡基线冻结事件: %w", err)
+	}
+	defer rows.Close()
+	frozen := map[string]bool{}
+	for rows.Next() {
+		var cardID string
+		if err := rows.Scan(&cardID); err != nil {
+			log().Error("推导卡基线冻结态失败：读取 dispatched 卡号", "cause", err)
+			return nil, fmt.Errorf("读卡基线冻结卡号: %w", err)
+		}
+		frozen[cardID] = true
+	}
+	if err := rows.Err(); err != nil {
+		log().Error("推导卡基线冻结态失败：遍历 dispatched 事件", "cause", err)
+		return nil, fmt.Errorf("遍历卡基线冻结事件: %w", err)
+	}
+	return frozen, nil
 }
 
 // allParents 全量 child→parent 映射（只含有父的卡）。与 allStatuses 同为

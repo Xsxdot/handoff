@@ -135,7 +135,7 @@ func ledgerCardViewWire(view ledger.CardView, conflict bool, openTickets int) pr
 		ID: view.ID, Title: view.Title, Status: view.Status, Priority: view.Priority,
 		Project: view.Project, Workflow: view.WorkflowName, Parent: view.ParentID, BaseBranch: view.BaseBranch,
 		Attachments: attachments, Following: view.Following, Blocked: view.Blocked,
-		BlockedBy: view.BlockedBy, MergedCount: view.MergedCount, Needs: view.NeedsReason,
+		BaseFrozen: view.BaseFrozen, BlockedBy: view.BlockedBy, MergedCount: view.MergedCount, Needs: view.NeedsReason,
 		OpenDecisions: view.OpenDecisions, ChildrenTotal: view.ChildrenTotal, ChildrenDone: view.ChildrenDone,
 		Conflict: conflict, OpenTickets: openTickets,
 	}

@@ -1,6 +1,9 @@
 package ledger
 
-import "testing"
+import (
+	"encoding/json"
+	"testing"
+)
 
 func TestListCardsDerivedBlocked(t *testing.T) {
 	s := seedStore(t)
@@ -84,6 +87,46 @@ func TestListCardsFilters(t *testing.T) {
 	views, _ = s.ListCards(CardFilter{Project: "p", Needs: true})
 	if len(views) != 1 || views[0].ID != b.ID {
 		t.Fatalf("needs 过滤: %+v", views)
+	}
+}
+
+func TestListCardsDerivesBaseFrozen(t *testing.T) {
+	s := seedStore(t)
+	free := mk(t, s, "未派发卡")
+	frozen := mk(t, s, "已派发卡")
+	if err := s.RecordDispatch(frozen.ID, DispatchSnapshot{
+		Template: "feature-impl", Target: "acc", TaskID: "freeze-list-1",
+		Branch: "cards/frozen-list", Purpose: PurposeImplement, Actor: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	views, err := s.ListCards(CardFilter{Project: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	wire := map[string]map[string]any{}
+	for _, view := range views {
+		encoded, err := json.Marshal(view)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fields map[string]any
+		if err := json.Unmarshal(encoded, &fields); err != nil {
+			t.Fatal(err)
+		}
+		wire[view.ID] = fields
+	}
+	for _, want := range []struct {
+		id     string
+		frozen bool
+	}{
+		{free.ID, false},
+		{frozen.ID, true},
+	} {
+		value, ok := wire[want.id]["base_frozen"].(bool)
+		if !ok || value != want.frozen {
+			t.Fatalf("卡 %s 的 base_frozen=%v（存在=%v），want %v；wire=%v", want.id, value, ok, want.frozen, wire[want.id])
+		}
 	}
 }
 

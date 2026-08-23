@@ -17,7 +17,7 @@ import { useEffect, useState } from 'react'
 import { X } from 'lucide-react'
 import { createWorktree, fetchProjectBranches } from '../../api/client'
 import type { ProjectBranchesResp, Workspace } from '../../api/types'
-import { fetchCardDetail, fetchCards } from '../../api/ledger'
+import { fetchCards } from '../../api/ledger'
 import type { CardView } from '../../api/ledger'
 import { Button } from '@/components/ui/button'
 import { errorMessage } from '../lib/format'
@@ -56,7 +56,6 @@ function baseOptions(data: ProjectBranchesResp): string[] {
 type CardOption = {
   card: CardView
   dispatched: boolean
-  detailError: string
 }
 
 /** 加载目标机器的分支并提交一棵手工工作树。 */
@@ -75,6 +74,7 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
   const [createdWorkspace, setCreatedWorkspace] = useState<Workspace | null>(null)
   // reloadKey 只为「重试」按钮服务：改它就重跑下面那个 effect
   const [reloadKey, setReloadKey] = useState(0)
+  const [cardReloadKey, setCardReloadKey] = useState(0)
 
   // 每次打开都重置：弹层是复用的同一个实例，不重置会把上一次的输入与报错带过来
   useEffect(() => {
@@ -111,16 +111,13 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
     if (!open) return
     let alive = true
     const loadCards = async () => {
+      setCardLoadError('')
+      setCardOptions([])
       try {
         const response = await fetchCards(`project=${encodeURIComponent(projectName)}`)
-        const options = await Promise.all((response.cards ?? []).map(async (card) => {
-          try {
-            const detail = await fetchCardDetail(card.id)
-            const dispatched = (detail.events ?? []).some((event) => event.type === 'dispatched')
-            return { card, dispatched, detailError: '' }
-          } catch (err) {
-            return { card, dispatched: false, detailError: errorMessage(err) }
-          }
+        const options = (response.cards ?? []).map((card) => ({
+          card,
+          dispatched: card.base_frozen === true,
         }))
         if (!alive) return
         setCardOptions(options)
@@ -132,7 +129,7 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
     }
     void loadCards()
     return () => { alive = false }
-  }, [open, projectName])
+  }, [open, projectName, cardReloadKey])
 
   if (!open) return null
 
@@ -202,7 +199,12 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
           <p className="text-xs text-muted-foreground">正在读取分支…</p>
         ) : (
           <div className="space-y-3">
-            {cardLoadError !== '' && <p className="break-words text-xs text-amber-700">账本候选加载失败：{cardLoadError}</p>}
+            {cardLoadError !== '' && (
+              <div className="flex items-start gap-2 text-xs text-amber-700">
+                <p className="min-w-0 flex-1 break-words">账本候选加载失败：{cardLoadError}</p>
+                <Button size="sm" variant="outline" onClick={() => setCardReloadKey((key) => key + 1)}>重试卡候选</Button>
+              </div>
+            )}
             {cardOptions.length > 0 && (
               <fieldset className="space-y-1.5 rounded border p-2">
                 <legend className="px-1 text-xs text-muted-foreground">关联卡（可选）</legend>
@@ -220,7 +222,6 @@ export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreat
                     <span className="min-w-0 flex-1 break-words">
                       <span className="font-mono">{option.card.id}</span> · {option.card.title}
                       {option.dispatched && <span className="ml-1 text-muted-foreground">已派发，基线已冻结</span>}
-                      {!option.dispatched && option.detailError !== '' && <span className="ml-1 text-amber-700">详情不可用：{option.detailError}</span>}
                     </span>
                   </label>
                 ))}
