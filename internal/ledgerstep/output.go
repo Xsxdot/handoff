@@ -26,6 +26,8 @@ func RenderOutputPath(template string, card ledger.Card, node ledger.NodeDef, no
 // ChangedPaths 提取 git diff 中首次出现的仓内相对路径，并保持其出现顺序。
 // 只接受 diff --git、rename from/to 和非 /dev/null 的 ---/+++ 记录，避免把
 // 提交标题、作者、索引或 hunk 内容误当成产出路径。
+// 不能只按行首字符判断：hunk 中原文以 "++ " 开头的新增内容会渲染为
+// "+++ ..."，同理原文以 "-- " 开头的删除内容会渲染为 "--- ..."。
 func ChangedPaths(diff string) []string {
 	paths := make([]string, 0)
 	seen := make(map[string]struct{})
@@ -41,16 +43,27 @@ func ChangedPaths(diff string) []string {
 		paths = append(paths, path)
 	}
 
+	inFileHeader := false
 	scanner := bufio.NewScanner(strings.NewReader(diff))
 	for scanner.Scan() {
 		line := scanner.Text()
-		switch {
-		case strings.HasPrefix(line, "diff --git "):
+		if strings.HasPrefix(line, "diff --git ") {
+			inFileHeader = true
 			fields := diffHeaderFields(strings.TrimPrefix(line, "diff --git "))
 			if len(fields) >= 2 {
 				add(fields[0])
 				add(fields[1])
 			}
+			continue
+		}
+		if inFileHeader && strings.HasPrefix(line, "@@") {
+			inFileHeader = false
+			continue
+		}
+		if !inFileHeader {
+			continue
+		}
+		switch {
 		case strings.HasPrefix(line, "rename from "):
 			add(strings.TrimPrefix(line, "rename from "))
 		case strings.HasPrefix(line, "rename to "):

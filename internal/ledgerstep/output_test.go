@@ -3,6 +3,7 @@
 package ledgerstep
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -62,6 +63,59 @@ func TestChangedPaths(t *testing.T) {
 		if strings.Contains(path, "commit") || strings.Contains(path, "Author") {
 			t.Fatalf("metadata leaked as path: %v", got)
 		}
+	}
+}
+
+func TestChangedPathsIgnoresHunkFileHeaderLikeContent(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/docs/ledger.md b/docs/ledger.md",
+		"index 1111111..2222222 100644",
+		"--- a/docs/ledger.md",
+		"+++ b/docs/ledger.md",
+		"@@ -1,2 +1,4 @@",
+		" context",
+		"+++ b/docs/superpowers/plans/b201-plan.md",
+		"--- a/docs/superpowers/plans/not-the-file.md",
+		" context",
+	}, "\n")
+	got := ChangedPaths(diff)
+	want := []string{"docs/ledger.md"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("hunk file-header-like content leaked into paths: got %v, want %v", got, want)
+	}
+}
+
+func TestChangedPathsAcceptsFileHeaderRecords(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/docs/changed.md b/docs/changed.md",
+		"--- a/docs/changed.md",
+		"+++ b/docs/changed.md",
+		"@@ -1 +1 @@",
+		"-before",
+		"+after",
+	}, "\n")
+	got := ChangedPaths(diff)
+	want := []string{"docs/changed.md"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("file-header records parsed incorrectly: got %v, want %v", got, want)
+	}
+}
+
+func TestChangedPathsHandlesNewFileAndRenameHeaders(t *testing.T) {
+	diff := strings.Join([]string{
+		"diff --git a/docs/added.md b/docs/added.md",
+		"new file mode 100644",
+		"--- /dev/null",
+		"+++ b/docs/added.md",
+		"diff --git a/docs/old.md b/docs/renamed.md",
+		"similarity index 95%",
+		"rename from docs/old.md",
+		"rename to docs/renamed.md",
+	}, "\n")
+	got := ChangedPaths(diff)
+	want := []string{"docs/added.md", "docs/old.md", "docs/renamed.md"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("new-file or rename headers parsed incorrectly: got %v, want %v", got, want)
 	}
 }
 
