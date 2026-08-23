@@ -48,6 +48,16 @@ type Workspace struct {
 	// 为什么取不到时留零值而不是报错：整棵项目树不该因为一个 stat 失败就 500。
 	// 消费方把零值当「最旧」处理。
 	CreatedAt time.Time `json:"created_at"`
+	// CardResults 是建树成功后逐卡设置基线的结果；无 card_ids 时省略。
+	CardResults []CardBaseBranchResult `json:"card_results,omitempty"`
+}
+
+// CardBaseBranchResult 是建树后逐卡设置基线的单项结果。
+// OK=false 时 Error 是该卡的独立失败原因，工作树本身仍已创建。
+type CardBaseBranchResult struct {
+	ID    string `json:"id"`
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
 }
 
 // ProjectLocationNode 是一个项目在**一台**机器上的位置（项目树的中间层）。
@@ -365,4 +375,6 @@ type CreateWorktreeReq struct {
 	Branch string `json:"branch"`
 	// Base 是新分支的起点，仅 new_branch 模式有意义；空串时由服务端推导。
 	Base string `json:"base"`
+	// CardIDs 是建树成功后要设置基线的卡号；空/缺省表示不挂卡。
+	CardIDs []string `json:"card_ids,omitempty"`
 }
