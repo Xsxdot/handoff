@@ -108,6 +108,83 @@ func TestRunnerPassesNodePurposeAndAcceptanceSwitch(t *testing.T) {
 	}
 }
 
+// TestRunnerExecutorModelOverridePriorityAndPairRule 验证节点覆盖与 CLI 覆盖的优先级，
+// 并确认同层 executor 覆盖会切断更低层 model。
+func TestRunnerExecutorModelOverridePriorityAndPairRule(t *testing.T) {
+	const target = "mac-02"
+	st, card := dispatchTestCard(t)
+	setTemplateModel(t, st, target, "template-model")
+	var got DispatchOpts
+	call := 0
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		got = opts
+		call++
+		return fmt.Sprintf("T-runner-override-%d", call), nil
+	}}
+	node := ledger.NodeDef{
+		Name: "进行中", Dispatch: true, Template: "feature-impl",
+		Override: ledger.NodeOverride{Executor: "node-executor", Model: "node-model"},
+	}
+	runner := &StepRunner{St: st, Dispatcher: d, Target: target}
+	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+		t.Fatalf("节点覆盖派发: %v", err)
+	}
+	if got.Executor != "node-executor" || got.Model != "node-model" {
+		t.Fatalf("节点覆盖 executor/model = %q/%q, want %q/%q", got.Executor, got.Model, "node-executor", "node-model")
+	}
+
+	node.Override.Model = ""
+	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+		t.Fatalf("节点成对规则派发: %v", err)
+	}
+	if got.Executor != "node-executor" || got.Model != "" {
+		t.Fatalf("节点只覆盖 executor 时 executor/model = %q/%q, want %q/%q", got.Executor, got.Model, "node-executor", "")
+	}
+
+	runner.Executor = "cli-executor"
+	runner.Model = ""
+	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+		t.Fatalf("CLI 成对规则派发: %v", err)
+	}
+	if got.Executor != "cli-executor" || got.Model != "" {
+		t.Fatalf("CLI 只覆盖 executor 时 executor/model = %q/%q, want %q/%q", got.Executor, got.Model, "cli-executor", "")
+	}
+
+	runner.Model = "cli-model"
+	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+		t.Fatalf("CLI 双覆盖派发: %v", err)
+	}
+	if got.Executor != "cli-executor" || got.Model != "cli-model" {
+		t.Fatalf("CLI 双覆盖 executor/model = %q/%q, want %q/%q", got.Executor, got.Model, "cli-executor", "cli-model")
+	}
+}
+
+// TestRunnerSameExecutorKeepsNodeModel ensures a CLI executor spelling that
+// matches the node layer does not discard that layer's model.
+func TestRunnerSameExecutorKeepsNodeModel(t *testing.T) {
+	const target = "mac-02"
+	st, card := dispatchTestCard(t)
+	var got DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		got = opts
+		return "T-runner-same-executor", nil
+	}}
+	node := ledger.NodeDef{
+		Name: "进行中", Dispatch: true, Template: "feature-impl",
+		Override: ledger.NodeOverride{Executor: "opencode", Model: "node-model"},
+	}
+	runner := &StepRunner{
+		St: st, Dispatcher: d, Target: target,
+		Executor: "opencode", Model: "",
+	}
+	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+		t.Fatalf("同 executor 节点覆盖派发: %v", err)
+	}
+	if got.Executor != "opencode" || got.Model != "node-model" {
+		t.Fatalf("same executor executor/model = %q/%q, want %q/%q", got.Executor, got.Model, "opencode", "node-model")
+	}
+}
+
 func TestRunnerClaimsDriverWithoutChangingNodeStatusAndReleasesAfterRun(t *testing.T) {
 	st, card := nodeLedger(t)
 	started := make(chan struct{})

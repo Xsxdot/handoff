@@ -24,6 +24,21 @@ func TestStepFlagHelpMentionsNodeName(t *testing.T) {
 	}
 }
 
+func TestCardDispatchExecutorModelFlagsHaveDefaultModelHelp(t *testing.T) {
+	for _, name := range []string{"executor", "model"} {
+		flag := cardDispatchCmd.Flags().Lookup(name)
+		if flag == nil {
+			t.Fatalf("找不到 --%s flag", name)
+		}
+		if flag.Usage == "" {
+			t.Fatalf("--%s 的说明为空", name)
+		}
+	}
+	if !strings.Contains(cardDispatchCmd.Flags().Lookup("model").Usage, "执行器自身默认") {
+		t.Fatalf("--model 的说明应明确空值交给执行器默认: %s", cardDispatchCmd.Flags().Lookup("model").Usage)
+	}
+}
+
 func TestCardStepRejectsUnknown(t *testing.T) {
 	dir := t.TempDir()
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "x", "--project", "demo", "--workflow", "bug")

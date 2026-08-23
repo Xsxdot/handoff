@@ -33,6 +33,10 @@ type StepRunner struct {
 	Clients func(target string) (*client.Client, error)
 	// Target 覆盖节点/模板里的目标机；空则用节点覆盖或模板的 target。
 	Target string
+	// Executor/Model 是本次 CLI 节点派发的一次性覆盖；空值表示不覆盖该字段。
+	// 当 Executor 非空而 Model 为空时，ViaTemplate 会按成对规则切断下层模型。
+	Executor string
+	Model    string
 	// Extra 本次执行的临时补充说明，透传进 prompt 的第三段；可为空。
 	Extra string
 }
@@ -122,12 +126,25 @@ func (r *StepRunner) dispatchNode() func(context.Context, ledger.Card, ledger.No
 		if target == "" {
 			target = node.Override.Target
 		}
+		executor := node.Override.Executor
+		model := node.Override.Model
+		if r.Executor != "" {
+			// CLI executor 与 model 是同层覆盖。只有 CLI executor 真正
+			// 换掉节点 executor 时，空 model 才切断节点/模板的下层模型；
+			// 同名 executor 是显式重述，不应丢掉节点 model。
+			executor = r.Executor
+			if r.Model != "" || r.Executor != node.Override.Executor {
+				model = r.Model
+			}
+		} else if r.Model != "" {
+			model = r.Model
+		}
 		result, err := r.Dispatcher.ViaTemplate(ctx, card, TemplateDispatch{
 			Template:           node.Template,
 			Target:             target,
 			DisciplineOverride: node.Override.Discipline,
-			ExecutorOverride:   node.Override.Executor,
-			ModelOverride:      node.Override.Model,
+			ExecutorOverride:   executor,
+			ModelOverride:      model,
 			CarryCardContext:   node.CarryCardContext,
 			PurposeOverride:    node.Override.Purpose,
 			OmitAcceptance:     node.OmitAcceptance,
