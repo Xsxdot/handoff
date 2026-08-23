@@ -45,3 +45,4 @@
 - 2026-08-24：提升权限重跑 `git add ...` 后执行 `git diff --cached --check && git diff --cached --stat && git status --short --branch`；原始输出 `git diff --cached --check` 无输出，暂存统计为拆解 `476` 行、台账 `20` 行，合计 `2 files changed, 496 insertions(+)`，分支仍为 `cards/B185-charter-2`，两文件均已暂存。
 - 2026-08-24：执行 `git add docs/superpowers/specs/b185-breakdown.md docs/superpowers/ledgers/2026-08-24-b185-contract-ledger.md && git commit -m "docs(b185): add breakdown proposal"` 成功；原始输出为 `[cards/B185-charter-2 4925ac31] docs(b185): add breakdown proposal`、`2 files changed, 497 insertions(+)`，拆解文档已入库。
 - 2026-08-24：提交后执行 `git diff --check && git status --short --branch`；原始输出 `git diff --check` 无输出，状态仅为 `M docs/superpowers/ledgers/2026-08-24-b185-contract-ledger.md`，说明首个提交干净且仅待补写本次提交事实。
+- 2026-08-24：执行 `git commit -m "chore(ledger): close B185 breakdown"` 成功；原始输出为 `[cards/B185-charter-2 f5a38ff1] chore(ledger): close B185 breakdown`、`1 file changed, 2 insertions(+)`。
