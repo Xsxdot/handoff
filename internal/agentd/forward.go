@@ -73,9 +73,11 @@ func (s *Server) forwardIfRequested(w http.ResponseWriter, r *http.Request) bool
 	return true
 }
 
-// stripWorktreeCardIDs removes only the local ledger instruction from a worktree
-// request. Unknown fields remain intact so older and newer agentd versions can
-// still exchange their own request additions.
+// stripWorktreeCardIDs 只摘掉 card_ids 这一条**属于协调者本地账本**的指令。
+//
+// 为什么用「反序列化成 map 再删一个键」而不是重新编码一个结构体：结构体编码会把
+// 本端不认识的字段一并丢掉，而两端 agentd 版本可能不同——新端加的请求字段会在
+// 转发途中被旧端静默抹掉，且不报错。保留未知字段，转发才是透明的。
 func stripWorktreeCardIDs(raw []byte) ([]byte, error) {
 	var object map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &object); err != nil {
@@ -85,8 +87,10 @@ func stripWorktreeCardIDs(raw []byte) ([]byte, error) {
 	return json.Marshal(object)
 }
 
-// copyForwardHeaders copies the response headers owned by the agentd wire
-// contract. Hop-by-hop and transport-specific headers remain local.
+// copyForwardHeaders 只搬 agentd 线契约拥有的响应头（Content-Type 与 X-Handoff-*）。
+//
+// 为什么不整份复制：逐跳头（Connection、Transfer-Encoding 之类）与传输层相关的头
+// 描述的是**本端到对端那一条连接**，搬给下游客户端会与本端真实的传输方式冲突。
 func copyForwardHeaders(w http.ResponseWriter, headers http.Header) {
 	if contentType := headers.Get("Content-Type"); contentType != "" {
 		w.Header().Set("Content-Type", contentType)
@@ -101,10 +105,11 @@ func copyForwardHeaders(w http.ResponseWriter, headers http.Header) {
 	}
 }
 
-// forwardJSON sends a bounded JSON request through the configured target
-// client and returns the complete response for the route-specific projection.
-// The caller owns status handling because worktree success is followed by local
-// card attachment while target errors are returned byte-for-byte.
+// forwardJSON 经目标机客户端发一次有大小上限的 JSON 请求，把完整响应交回调用方。
+//
+// 为什么状态码的处置留给调用方而不在这里收口：建树这条路的成功与失败去向不同——
+// 成功之后还要在**本端**接着挂卡（响应要改写），失败则必须把目标机的报文一字不动
+// 地透出去（改写会把真因换成一句转发层的套话）。这个分叉只有路由自己知道。
 func (s *Server) forwardJSON(r *http.Request, name string, c *client.Client, token string, body []byte) (status int, headers http.Header, payload []byte, err error) {
 	target, err := forwardURL(c.BaseURL(), r.URL)
 	if err != nil {
@@ -145,10 +150,13 @@ func (s *Server) forwardJSON(r *http.Request, name string, c *client.Client, tok
 	return resp.StatusCode, headers, payload, nil
 }
 
-// forwardWorktreeIfRequested handles the worktree-specific machine route.
-// card_ids belong to the coordinating agentd's ledger, so they are removed
-// before the target creates the tree and attached only after its response is
-// received locally.
+// forwardWorktreeIfRequested 是建树请求专用的 ?machine 转发路径。
+//
+// 为什么建树不能走通用的 forwardIfRequested：card_ids 指的是**协调者这台机器的
+// 账本**里的卡。通用转发原样搬运请求体，目标机会拿一批它不认识的卡号去写自己的
+// 账本——要么全部失败，要么在目标机没挂账本时静默成空操作（树建好了、卡一张没挂、
+// card_results 还因 omitempty 被省略，界面上看不出异常）。所以这里的分工是：
+// **目标机只建树，回来之后由本端用返回的 ws.Branch 挂卡。**
 func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Request) bool {
 	name := r.URL.Query().Get("machine")
 	if name == "" || isForwarded(r) {
