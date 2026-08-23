@@ -14,11 +14,16 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+
+	"github.com/Xsxdot/handoff/internal/ptyhost/sessdir"
 )
 
-// SocketPathLimit 必须与 internal/ptyhost/sessdir 的保守 bind 上限保持一致。
-// sessdir 以 macOS 104、Linux 108 为基础取 100，给 sockaddr 路径留出余量。
-const SocketPathLimit = 100
+// SocketPathLimit 就是 sessdir 的 bind 上限本身，不是它的副本。
+//
+// 这里保留一个本包的名字只为让调用点读起来是「测试根的预算」而不是「会话目录的
+// 上限」；值必须是同一个。以前这里抄的是字面量 100，sessdir 改了上限不会让本包
+// 编译失败、也不会让任何测试变红（B210）。
+const SocketPathLimit = sessdir.MaxSockPath
 
 // SocketIDForBudget 是 UUID 长度的占位 ID；真实 ptyhost 客户端 ID 由 uuid.NewString
 // 生成，hostproc 白盒测试使用的 s1 更短。用最大长度预算避免测试根选得过长。

@@ -32,10 +32,14 @@ import (
 	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
-// maxSockPath 是 unix socket 路径的保守上限。
+// MaxSockPath 是 unix socket 路径的保守上限。
 //
 // macOS 的 sockaddr_un.sun_path 是 104 字节、Linux 是 108，取小的再留 4 字节余量。
-const maxSockPath = 100
+//
+// 导出是因为它有第二个消费者：internal/ptytestroot 要用同一个上限预算测试根的
+// 路径长度。那边曾经自己抄了一份字面量，于是改这里既不会让它编译失败、也不会
+// 让任何测试变红，要到真 bind 的时候才炸——那时错误现场离根因已经很远。
+const MaxSockPath = 100
 
 // State 是一个会话目录的扫描结论。
 type State string
@@ -90,14 +94,14 @@ func LogPath(root, id string) string { return filepath.Join(Dir(root, id), "ptyh
 // CheckSockPath 在 bind 之前检查 socket 路径长度。
 //
 // 参数：root 是会话根目录；id 是会话 id。
-// 返回：超过 maxSockPath 时返回可读错误，否则 nil。
+// 返回：超过 MaxSockPath 时返回可读错误，否则 nil。
 //
 // 注意：DataDir 可以被配置到任意深的路径下，而 bind 对超长路径只会给一句
 // "invalid argument"，所以必须在 bind 之前自己检查。
 func CheckSockPath(root, id string) error {
 	p := SockPath(root, id)
-	if len(p) > maxSockPath {
-		return fmt.Errorf("会话 socket 路径过长（%d 字节，上限 %d）：%s；请把 DataDir 换到更短的路径下", len(p), maxSockPath, p)
+	if len(p) > MaxSockPath {
+		return fmt.Errorf("会话 socket 路径过长（%d 字节，上限 %d）：%s；请把 DataDir 换到更短的路径下", len(p), MaxSockPath, p)
 	}
 	return nil
 }
