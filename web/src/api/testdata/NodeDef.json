@@ -2,5 +2,9 @@
   "name": "定性中",
   "override": {},
   "next": "已定性",
-  "gate": {}
+  "gate": {},
+  "produces": {
+    "kind": "doc",
+    "path": "docs/superpowers/plans/b201-plan.md"
+  }
 }

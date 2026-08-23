@@ -495,13 +495,13 @@ func TestBuildPromptThreeSections(t *testing.T) {
 		},
 	}
 	t.Run("全关时只有模板正文", func(t *testing.T) {
-		got := buildPrompt("模板正文", card, "feat/x", false, false, "")
+		got := buildPrompt("模板正文", card, "feat/x", false, false, "", "")
 		if got != "模板正文" {
 			t.Fatalf("不该有多余段落:\n%s", got)
 		}
 	})
 	t.Run("带卡上下文", func(t *testing.T) {
-		got := buildPrompt("模板正文", card, "feat/x", true, false, "")
+		got := buildPrompt("模板正文", card, "feat/x", true, false, "", "")
 		for _, want := range []string{
 			"模板正文", "## 本卡上下文", "B9.1", "做点什么",
 			"feat/x", "合并目标以此为准", "测试全绿",
@@ -513,13 +513,13 @@ func TestBuildPromptThreeSections(t *testing.T) {
 		}
 	})
 	t.Run("带本次补充", func(t *testing.T) {
-		got := buildPrompt("模板正文", card, "feat/x", false, false, "这次只看并发安全")
+		got := buildPrompt("模板正文", card, "feat/x", false, false, "这次只看并发安全", "")
 		if !strings.Contains(got, "## 本次补充") || !strings.Contains(got, "这次只看并发安全") {
 			t.Fatalf("补充段没拼进去:\n%s", got)
 		}
 	})
 	t.Run("空基线不写死 main", func(t *testing.T) {
-		got := buildPrompt("模板正文", card, "", true, false, "")
+		got := buildPrompt("模板正文", card, "", true, false, "", "")
 		if strings.Contains(got, "有效基线分支：main") {
 			t.Fatalf("基线为空时不得替用户猜一个:\n%s", got)
 		}
@@ -529,9 +529,29 @@ func TestBuildPromptThreeSections(t *testing.T) {
 	})
 	t.Run("无附件不留空标题", func(t *testing.T) {
 		bare := ledger.Card{ID: "B9.2", Title: "无附件"}
-		got := buildPrompt("模板正文", bare, "feat/x", true, false, "")
+		got := buildPrompt("模板正文", bare, "feat/x", true, false, "", "")
 		if strings.Contains(got, "- 附件：") {
 			t.Fatalf("没有附件时不该出现附件小节:\n%s", got)
 		}
 	})
+}
+
+func TestBuildPromptIncludesOutputPathWithoutCardContext(t *testing.T) {
+	card := ledger.Card{ID: "B201", Title: "产文档"}
+	got := buildPrompt(
+		"模板正文", card, "", false, true, "",
+		"docs/b201-plan.md",
+	)
+	if strings.Contains(got, "## 本卡上下文") {
+		t.Fatalf("carry=false 不应注入卡上下文:\n%s", got)
+	}
+	for _, want := range []string{
+		"## 本节点产出物",
+		"docs/b201-plan.md",
+		"请把本节点产出物写到该路径，不要另起文件名",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("缺产出路径段 %q:\n%s", want, got)
+		}
+	}
 }

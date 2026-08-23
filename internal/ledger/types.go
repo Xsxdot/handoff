@@ -166,6 +166,14 @@ type NodeOverride struct {
 	Purpose string `json:"purpose,omitempty"`
 }
 
+// NodeOutput 是节点在本轮必须写出的单一附件声明。
+// Kind 复用附件白名单；Path 是仓内相对路径模板，由派发前渲染。
+// nil 表示该节点不声明产出，保持旧工作流行为。
+type NodeOutput struct {
+	Kind string `json:"kind"`
+	Path string `json:"path"`
+}
+
 // NodeDef 工作流的一个节点：看板的一列 + 卡走到这列时的执行规矩。
 //
 // 设计要点（用户 2026-08-21 定死，改动前先回看 spec）：
@@ -193,6 +201,9 @@ type NodeDef struct {
 	// 直接把实现做掉——2026-08-22 真机实测过一次（B182）；对照组是同一条流上
 	// 判据字段为空的卡，同一个执行者没有越轨。
 	OmitAcceptance bool `json:"omit_acceptance,omitempty"`
+	// Produces 为真时，节点裁决 pass 后由协调者按声明路径检查本轮 diff 并挂附件。
+	// 注意：这里只保存声明，不在账本层读取文件系统或验证文档内容。
+	Produces *NodeOutput `json:"produces,omitempty"`
 
 	Next   string `json:"next,omitempty"`    // 裁决通过后移到哪一列；空 = 停在本列
 	OnFail string `json:"on_fail,omitempty"` // 裁决未过退到哪一列；空 = 停在本列

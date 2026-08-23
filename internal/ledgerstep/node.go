@@ -44,6 +44,12 @@ type NodeStep struct {
 	Dispatch func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (target, taskID string, err error)
 	// Await 等该 task 跑到回合终态并取回最终报文。只在 Node.Verdict 时调用。
 	Await func(ctx context.Context, target, taskID string) (message string, err error)
+	// OutputPath 返回本次派发已经渲染的单一路径；只有 Node.Produces 非 nil 时读取。
+	OutputPath func() string
+	// Diff 返回本次 task 相对协调者基线的 changed paths；实现方负责把 Client.Diff 投影为路径。
+	Diff func(ctx context.Context, target, taskID string) ([]string, error)
+	// Attach 将法定 kind/path 以节点 actor 挂到协调者账本；同 path 由 Store 保证幂等。
+	Attach func(cardID, kind, path, actor string) error
 }
 
 // maxRounds 返回本节点的轮次封顶：节点没配就用包内默认。
@@ -188,6 +194,46 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		logger.Info("已撤回本节点此前的等人标记")
 	}
 
+	// 先挂产出再路由：下一列的附件 gate 必须能看到本轮刚确认的文件。
+	if verdict.Pass && n.Node.Produces != nil {
+		output := n.Node.Produces
+		if n.OutputPath == nil || n.Diff == nil || n.Attach == nil {
+			logger.Error("节点声明产出但输出依赖未装配",
+				"kind", output.Kind, "declared_path", output.Path)
+			return n.haltForHuman(cardID, "产出物校验未装配",
+				"本节点声明了产出物，但协调者未装配输出校验依赖")
+		}
+		declaredPath := n.OutputPath()
+		logger.Info("开始校验节点产出物",
+			"kind", output.Kind, "declared_path", declaredPath, "target", target, "task", taskID)
+		changedPaths, diffErr := n.Diff(ctx, target, taskID)
+		if diffErr != nil {
+			logger.Warn("读取本轮改动失败，转等人",
+				"kind", output.Kind, "declared_path", declaredPath,
+				"target", target, "task", taskID, "cause", diffErr)
+			return n.haltForHuman(cardID, "读取产出物改动失败",
+				"本节点无法确认产出物是否在本轮改动中：\n"+diffErr.Error())
+		}
+		logger.Info("本轮改动已取得",
+			"kind", output.Kind, "declared_path", declaredPath,
+			"changed_paths", changedPaths)
+		if declaredPath == "" || !containsPath(changedPaths, declaredPath) {
+			body := "本节点要求的产出物路径：\n" + declaredPath +
+				"\n本轮实际改动文件：\n" + changedPathsText(changedPaths)
+			logger.Warn("法定产出物未出现在本轮改动",
+				"kind", output.Kind, "declared_path", declaredPath,
+				"changed_paths", changedPaths)
+			return n.haltForHuman(cardID, "缺少约定产出物", body)
+		}
+		if attachErr := n.Attach(cardID, output.Kind, declaredPath, n.actor()); attachErr != nil {
+			logger.Warn("挂载节点产出物失败，继续尝试路由",
+				"kind", output.Kind, "path", declaredPath, "target", target, "task", taskID, "cause", attachErr)
+		} else {
+			logger.Info("节点产出物已挂载",
+				"kind", output.Kind, "path", declaredPath, "actor", n.actor())
+		}
+	}
+
 	to, action := n.Node.OnFail, ActionContinue
 	if verdict.Pass {
 		to, action = n.Node.Next, ActionPass
@@ -201,4 +247,13 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 	}
 	logger.Info("节点结束", "action", string(action), "moved_to", to)
 	return Outcome{Action: action, Verdict: verdict}, nil
+}
+
+func containsPath(paths []string, want string) bool {
+	for _, path := range paths {
+		if path == want {
+			return true
+		}
+	}
+	return false
 }

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
@@ -126,7 +127,7 @@ func TestRunnerExecutorModelOverridePriorityAndPairRule(t *testing.T) {
 		Override: ledger.NodeOverride{Executor: "node-executor", Model: "node-model"},
 	}
 	runner := &StepRunner{St: st, Dispatcher: d, Target: target}
-	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+	if _, _, err := runner.dispatchNode(nil)(context.Background(), card, node); err != nil {
 		t.Fatalf("节点覆盖派发: %v", err)
 	}
 	if got.Executor != "node-executor" || got.Model != "node-model" {
@@ -134,7 +135,7 @@ func TestRunnerExecutorModelOverridePriorityAndPairRule(t *testing.T) {
 	}
 
 	node.Override.Model = ""
-	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+	if _, _, err := runner.dispatchNode(nil)(context.Background(), card, node); err != nil {
 		t.Fatalf("节点成对规则派发: %v", err)
 	}
 	if got.Executor != "node-executor" || got.Model != "" {
@@ -143,7 +144,7 @@ func TestRunnerExecutorModelOverridePriorityAndPairRule(t *testing.T) {
 
 	runner.Executor = "cli-executor"
 	runner.Model = ""
-	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+	if _, _, err := runner.dispatchNode(nil)(context.Background(), card, node); err != nil {
 		t.Fatalf("CLI 成对规则派发: %v", err)
 	}
 	if got.Executor != "cli-executor" || got.Model != "" {
@@ -151,7 +152,7 @@ func TestRunnerExecutorModelOverridePriorityAndPairRule(t *testing.T) {
 	}
 
 	runner.Model = "cli-model"
-	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+	if _, _, err := runner.dispatchNode(nil)(context.Background(), card, node); err != nil {
 		t.Fatalf("CLI 双覆盖派发: %v", err)
 	}
 	if got.Executor != "cli-executor" || got.Model != "cli-model" {
@@ -177,7 +178,7 @@ func TestRunnerSameExecutorKeepsNodeModel(t *testing.T) {
 		St: st, Dispatcher: d, Target: target,
 		Executor: "opencode", Model: "",
 	}
-	if _, _, err := runner.dispatchNode()(context.Background(), card, node); err != nil {
+	if _, _, err := runner.dispatchNode(nil)(context.Background(), card, node); err != nil {
 		t.Fatalf("同 executor 节点覆盖派发: %v", err)
 	}
 	if got.Executor != "opencode" || got.Model != "node-model" {
@@ -264,4 +265,74 @@ func TestRunnerReleasesDriverAfterDispatchFailure(t *testing.T) {
 	if got.DriverSession != "" || !got.DriverHeartbeatAt.IsZero() {
 		t.Fatalf("失败回合也应释放驱动租约，实际 session=%q heartbeat=%v", got.DriverSession, got.DriverHeartbeatAt)
 	}
+}
+
+func TestRunnerRendersDeclaredOutputPathAndInjectsPrompt(t *testing.T) {
+	st, _ := nodeLedger(t)
+	if _, err := st.PutWorkflow("output-runner", ledger.WorkflowDef{Nodes: []ledger.NodeDef{
+		{Name: ledger.StatusTodo, Next: "plan"},
+		{
+			Name: "plan", Dispatch: true, Verdict: true, Template: "feature-impl",
+			Next: ledger.StatusReview, OmitAcceptance: true,
+			Produces: &ledger.NodeOutput{
+				Kind: "doc", Path: "docs/{{DATE}}/{{CARD_LOWER}}-{{NODE}}.md",
+			},
+		},
+		{Name: ledger.StatusReview},
+	}}); err != nil {
+		t.Fatalf("写 output workflow: %v", err)
+	}
+	card, err := st.CreateCard(ledger.NewCard{
+		Title: "runner 产物", Project: "p", Workflow: "output-runner", Actor: "t",
+	})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	var opts DispatchOpts
+	d := &Dispatcher{
+		St: st, Actor: "runner-test",
+		Transport: func(ctx context.Context, got DispatchOpts) (string, error) {
+			opts = got
+			return "task-output-runner", nil
+		},
+	}
+	runner := &StepRunner{
+		St: st, Dispatcher: d, Session: "output-runner-session", Target: "linux-01",
+		Now: func() time.Time { return time.Date(2026, 8, 23, 10, 0, 0, 0, time.UTC) },
+	}
+	path := ""
+	node := stMustNode(t, st, card.ID, "plan")
+	target, taskID, err := runner.dispatchNode(&path)(context.Background(), card, node)
+	if err != nil {
+		t.Fatalf("dispatchNode: %v", err)
+	}
+	if target != "linux-01" || taskID != "task-output-runner" {
+		t.Fatalf("dispatch 返回: target=%q task=%q", target, taskID)
+	}
+	wantPath := "docs/2026-08-23/" + strings.ToLower(card.ID) + "-plan.md"
+	if path != wantPath || opts.OutputPath != wantPath {
+		t.Fatalf("渲染路径: holder=%q opts=%q want=%q", path, opts.OutputPath, wantPath)
+	}
+	if !strings.Contains(opts.Prompt, "## 本节点产出物") || !strings.Contains(opts.Prompt, wantPath) {
+		t.Fatalf("prompt 未注入法定路径:\n%s", opts.Prompt)
+	}
+}
+
+func stMustNode(t *testing.T, st *ledger.Store, cardID, name string) ledger.NodeDef {
+	t.Helper()
+	card, err := st.GetCard(cardID)
+	if err != nil {
+		t.Fatalf("读卡: %v", err)
+	}
+	flow, err := st.GetWorkflow(card.WorkflowName, card.WorkflowVersion)
+	if err != nil {
+		t.Fatalf("读卡钉工作流: %v", err)
+	}
+	for _, node := range flow.Def.Nodes {
+		if node.Name == name {
+			return node
+		}
+	}
+	t.Fatalf("找不到节点 %q", name)
+	return ledger.NodeDef{}
 }

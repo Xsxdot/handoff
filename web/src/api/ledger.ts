@@ -108,6 +108,13 @@ export interface Gate {
   require_children_done?: boolean
 }
 
+// NodeOutput 是节点 pass 后由协调者校验并挂载的单一附件声明。
+// 可选字段由 NodeDef 指针投影而来；缺失表示旧工作流没有产出声明。
+export interface NodeOutput {
+  kind: string
+  path: string
+}
+
 // NodeDef 工作流的一个节点：看板的一列 + 卡走到这列时的执行规矩。
 // 字段名与 Go 侧 ledger.NodeDef 一字不差。
 export interface NodeDef {
@@ -124,6 +131,7 @@ export interface NodeDef {
   on_fail?: string
   gate?: Gate
   human_bases?: string[]
+  produces?: NodeOutput
 }
 
 export interface FlowDetail {

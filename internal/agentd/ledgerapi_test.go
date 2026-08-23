@@ -800,6 +800,66 @@ func TestFlowPutCreatesNewVersion(t *testing.T) {
 	}
 }
 
+func TestFlowNodeProducesRoundTripsThroughHTTPWire(t *testing.T) {
+	env := newLedgerEnv(t)
+	payload := []byte("{\"nodes\":[{\"name\":\"legacy\"},{\"name\":\"breakdown\",\"produces\":{\"kind\":\"doc\",\"path\":\"docs/b201-breakdown.md\"}}]}")
+	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/feature", string(payload))
+	if code != http.StatusOK {
+		t.Fatalf("put code = %d, body = %s", code, body)
+	}
+
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/flows/feature")
+	if code != http.StatusOK {
+		t.Fatalf("get code = %d, body = %s", code, body)
+	}
+	var got struct {
+		Nodes []struct {
+			Name     string `json:"name"`
+			Produces *struct {
+				Kind string `json:"kind"`
+				Path string `json:"path"`
+			} `json:"produces"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("解码 flow: %v（原文 %s）", err, body)
+	}
+	if len(got.Nodes) != 2 {
+		t.Fatalf("nodes 数量 = %d, want 2", len(got.Nodes))
+	}
+	if got.Nodes[0].Produces != nil {
+		t.Fatalf("legacy 节点字段缺失必须保持 nil: %+v", got.Nodes[0].Produces)
+	}
+	if got.Nodes[1].Produces == nil ||
+		got.Nodes[1].Produces.Kind != "doc" ||
+		got.Nodes[1].Produces.Path != "docs/b201-breakdown.md" {
+		t.Fatalf("produces wire round-trip 失败: %+v", got.Nodes[1].Produces)
+	}
+}
+
+func TestLedgerNodeWirePreservesProduces(t *testing.T) {
+	node := ledger.NodeDef{
+		Name:     "breakdown",
+		Produces: &ledger.NodeOutput{Kind: "doc", Path: "docs/b201-breakdown.md"},
+	}
+	raw, err := json.Marshal(ledgerNodeWire(node))
+	if err != nil {
+		t.Fatalf("编码节点 wire: %v", err)
+	}
+	var got struct {
+		Produces *struct {
+			Kind string `json:"kind"`
+			Path string `json:"path"`
+		} `json:"produces"`
+	}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("解码节点 wire: %v", err)
+	}
+	if got.Produces == nil || got.Produces.Kind != "doc" || got.Produces.Path != "docs/b201-breakdown.md" {
+		t.Fatalf("wire 丢失 produces: %s", raw)
+	}
+}
+
 func TestFlowPutRejectsBadNodes(t *testing.T) {
 	env := newLedgerEnv(t)
 	// Next 指向不存在的节点：校验应在 Store 层拦下，HTTP 翻成 400 而不是 500。

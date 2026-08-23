@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -39,6 +40,8 @@ type StepRunner struct {
 	Model    string
 	// Extra 本次执行的临时补充说明，透传进 prompt 的第三段；可为空。
 	Extra string
+	// Now 只为路径日期提供可注入时钟；nil 使用 time.Now。
+	Now func() time.Time
 }
 
 // Run 跑一次节点。
@@ -58,11 +61,17 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 		logger.Warn("读取节点失败", "cause", err)
 		return Outcome{}, err
 	}
+	outputPath := ""
 	nodeStep := &NodeStep{
-		St:       r.St,
-		Node:     node,
-		Dispatch: r.dispatchNode(),
-		Await:    r.awaitNode(),
+		St:         r.St,
+		Node:       node,
+		Dispatch:   r.dispatchNode(&outputPath),
+		Await:      r.awaitNode(),
+		OutputPath: func() string { return outputPath },
+		Diff:       r.diffNode(),
+		Attach: func(cardID, kind, path, actor string) error {
+			return r.St.AttachFile(cardID, kind, path, actor)
+		},
 	}
 	if !node.Dispatch {
 		// 纯人工列没有执行能力，不应因为被误点而留下驱动归属。
@@ -120,7 +129,7 @@ func (r *StepRunner) nodeFor(cardID, nodeName string) (ledger.NodeDef, error) {
 }
 
 // dispatchNode 生产 NodeStep.Dispatch：按节点的模板引用 + 单字段覆盖派发。
-func (r *StepRunner) dispatchNode() func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+func (r *StepRunner) dispatchNode(outputPath *string) func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
 	return func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (string, string, error) {
 		target := r.Target
 		if target == "" {
@@ -139,6 +148,15 @@ func (r *StepRunner) dispatchNode() func(context.Context, ledger.Card, ledger.No
 		} else if r.Model != "" {
 			model = r.Model
 		}
+		renderedPath := ""
+		if node.Produces != nil {
+			renderedPath = RenderOutputPath(node.Produces.Path, card, node, r.now())
+		}
+		if outputPath != nil {
+			*outputPath = renderedPath
+		}
+		slog.Default().Info("准备派发节点", "card", card.ID, "node", node.Name,
+			"target", target, "kind", outputKind(node), "output_path", renderedPath)
 		result, err := r.Dispatcher.ViaTemplate(ctx, card, TemplateDispatch{
 			Template:           node.Template,
 			Target:             target,
@@ -149,17 +167,69 @@ func (r *StepRunner) dispatchNode() func(context.Context, ledger.Card, ledger.No
 			PurposeOverride:    node.Override.Purpose,
 			OmitAcceptance:     node.OmitAcceptance,
 			Extra:              r.Extra,
+			OutputPath:         renderedPath,
 		})
 		if err != nil {
+			slog.Default().Warn("节点派发失败", "card", card.ID, "node", node.Name,
+				"target", target, "output_path", renderedPath, "cause", err)
 			return "", "", err
 		}
+		slog.Default().Info("节点派发完成", "card", card.ID, "node", node.Name,
+			"target", result.Target, "task", result.Task, "output_path", renderedPath)
 		return result.Target, result.Task, nil
+	}
+}
+
+// now 返回路径渲染使用的时钟；可注入固定时间以保证同一运行的测试和审计稳定。
+func (r *StepRunner) now() time.Time {
+	if r.Now != nil {
+		return r.Now()
+	}
+	return time.Now()
+}
+
+func outputKind(node ledger.NodeDef) string {
+	if node.Produces == nil {
+		return ""
+	}
+	return node.Produces.Kind
+}
+
+// diffNode 只通过已装配的 Client.Diff 取得本轮改动，再投影成路径清单。
+// 不访问目标机的其它文件 API，确保产出存在性判定仍以同一 diff 通道为准。
+func (r *StepRunner) diffNode() func(context.Context, string, string) ([]string, error) {
+	return func(ctx context.Context, target, taskID string) ([]string, error) {
+		logger := slog.Default().With("target", target, "task", taskID)
+		logger.Info("读取节点本轮 diff")
+		if r.Clients == nil {
+			err := fmt.Errorf("节点 diff 客户端未装配")
+			logger.Warn("取得节点 diff 客户端失败", "cause", err)
+			return nil, err
+		}
+		cl, err := r.Clients(target)
+		if err != nil {
+			logger.Warn("取得节点 diff 客户端失败", "cause", err)
+			return nil, err
+		}
+		raw, err := cl.Diff(ctx, taskID, "")
+		if err != nil {
+			logger.Warn("取得节点 diff 失败", "cause", err)
+			return nil, err
+		}
+		paths := ChangedPaths(raw)
+		logger.Info("节点本轮 diff 已投影", "changed_paths", paths)
+		return paths, nil
 	}
 }
 
 // awaitNode 生产 NodeStep.Await：等回合终态并取最终报文，取到后归档该 task。
 func (r *StepRunner) awaitNode() func(context.Context, string, string) (string, error) {
 	return func(ctx context.Context, target, taskID string) (string, error) {
+		if r.Clients == nil {
+			err := fmt.Errorf("节点等待客户端未装配")
+			slog.Default().Warn("取得节点等待客户端失败", "target", target, "task", taskID, "cause", err)
+			return "", err
+		}
 		cl, err := r.Clients(target)
 		if err != nil {
 			return "", err

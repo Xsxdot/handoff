@@ -11,6 +11,16 @@
 |---|---|---|
 | `review` | `override.purpose = "review"` | 让审阅轮走审阅专用路径：基线取卡的工作分支、开一次性 `cards/<卡>-review-N` 分支、不被 `WorkBranch` 当成卡的工作分支。v3 里 review 节点引的是 `charter-default`（purpose=charter），审阅轮因此从卡基线开新分支，工作树里根本没有待审的代码（B183 真机实测：执行者在空分支上把实现重写了一遍） |
 | `contract` / `breakdown` / `plan` | `omit_acceptance: true` | 这三个节点的法定产出是文档/骨架，而卡的验收判据通常是实现级的（测试全绿、真机跑通）。两者同时在场时，「pass 的依据是你真实跑到的结果」在这些节点上无解，执行者化解矛盾的方式是直接把实现做掉（B182 真机实测一次；对照组是判据字段为空的卡，同一执行者没越轨） |
+| `contract` / `breakdown` / `plan` | `produces.kind/path` | pass 后分别自动挂载 `contract`/`doc`/`plan` 到约定的 specs/plans 路径；四道 gate 保持不变 |
+
+B201 使产文档节点在 pass 后由协调者按约定路径校验本轮 diff 并自动挂卡：
+`contract` 产出 `contract` 到 `docs/superpowers/specs/{{CARD_LOWER}}-contract.md`，
+`breakdown` 产出 `doc` 到 `docs/superpowers/specs/{{CARD_LOWER}}-breakdown.md`，
+`plan` 产出 `plan` 到 `docs/superpowers/plans/{{CARD_LOWER}}-plan.md`。
+路径在派发 prompt 中固定告知执行者；未声明 `produces` 的旧工作流行为不变。
+本次四道 gate 一律不变：contract=require_attachment: spec、
+breakdown=require_attachment: contract、plan=require_attachment: spec、
+implement=require_attachment: plan。
 
 ### 应用顺序（**先部署二进制，后 put**）
 

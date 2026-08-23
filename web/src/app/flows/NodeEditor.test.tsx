@@ -3,6 +3,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { NodeEditor } from './NodeEditor'
+import type { NodeDef } from '../../api/ledger'
 
 const base = { name: '待审阅', dispatch: true, verdict: true, template: 'review-generic' }
 const props = {
@@ -42,5 +43,39 @@ describe('节点编辑器', () => {
     render(<NodeEditor node={{ name: '待办' }} {...props} index={0} onChange={() => {}} onRemove={() => {}} />)
     expect(screen.queryByLabelText('模板')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('纪律块')).not.toBeInTheDocument()
+  })
+
+  it('能编辑产出类型与路径，关闭派发会清掉产出声明', () => {
+    let current: NodeDef = { ...base }
+    let view: ReturnType<typeof render>
+    const onChange = vi.fn((next: NodeDef) => {
+      current = next
+      view.rerender(
+        <NodeEditor node={current} {...props} index={0} onChange={onChange} onRemove={() => {}} />,
+      )
+    })
+    view = render(
+      <NodeEditor node={current} {...props} index={0} onChange={onChange} onRemove={() => {}} />,
+    )
+
+    fireEvent.change(screen.getByLabelText('产出类型'), { target: { value: 'doc' } })
+    expect(current.produces).toEqual({ kind: 'doc' })
+
+    fireEvent.change(screen.getByLabelText('产出路径'), {
+      target: { value: 'docs/{{CARD_LOWER}}-plan.md' },
+    })
+    expect(current.produces).toEqual({
+      kind: 'doc',
+      path: 'docs/{{CARD_LOWER}}-plan.md',
+    })
+
+    fireEvent.click(screen.getByLabelText('派发'))
+    expect(current.dispatch).toBe(false)
+    expect(current.produces).toBeUndefined()
+  })
+
+  it('产出路径帮助文本列出四个可用占位符', () => {
+    render(<NodeEditor node={base} {...props} index={0} onChange={() => {}} onRemove={() => {}} />)
+    expect(screen.getByText(/{{CARD}}.*{{CARD_LOWER}}.*{{NODE}}.*{{DATE}}/)).toBeInTheDocument()
   })
 })
