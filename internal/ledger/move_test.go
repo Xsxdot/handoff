@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestMoveCASAndGate(t *testing.T) {
@@ -86,13 +87,15 @@ func TestClaimCardIsAtomic(t *testing.T) {
 		t.Fatal("认领未落心跳时间")
 	}
 
-	// 第二个会话：前值已不是「待办」，且卡上有活跃驱动——错误必须报出持有者
-	err := s.ClaimCard(c.ID, StatusDoing, StatusTodo, "sess-B#2")
-	if !errors.Is(err, ErrCASConflict) {
-		t.Fatalf("并发认领应 ErrCASConflict: %v", err)
+	old := time.Now().Add(-24 * time.Hour)
+	if _, err := s.db.Exec(s.q(`UPDATE cards SET driver_heartbeat_at = ? WHERE id = ?`),
+		s.tval(old), c.ID); err != nil {
+		t.Fatalf("做旧认领时刻: %v", err)
 	}
-	if !strings.Contains(err.Error(), "sess-A#1") {
-		t.Fatalf("错误必须点名持有者会话（判据⑥）: %v", err)
+	// 第二个会话：即使认领时刻很早，也必须拒绝并报出持有者
+	err := s.ClaimCard(c.ID, StatusDoing, StatusTodo, "sess-B#2")
+	if !errors.Is(err, ErrCASConflict) || !strings.Contains(err.Error(), "sess-A#1") {
+		t.Fatalf("旧认领时刻仍须点名原驱动并拒绝: %v", err)
 	}
 
 	// 同一会话重入不算冲突（重试安全）

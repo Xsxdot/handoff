@@ -181,8 +181,8 @@ func renderStatusWithLookup(w io.Writer, addr string, cli proto.BuildInfo, st *p
 			// 昨晚的现场正是「存活 + 无人值守」这一格
 			line += "  ⚠ 无人值守"
 		} else if att.CardID != "" {
-			line += fmt.Sprintf("  ⚠ 无人订阅（卡 %s 驱动 %s，心跳 %s）",
-				att.CardID, att.Driver, heartbeatAgeText(att.HeartbeatAge))
+			line += fmt.Sprintf("  ⚠ 无人订阅（卡 %s 驱动 %s，认领于 %s）",
+				att.CardID, att.Driver, claimAgeText(att.HeartbeatAge))
 		}
 		fmt.Fprintln(w, line)
 	}
@@ -324,7 +324,8 @@ func liveText(a proto.ActiveTask) string {
 // attendance 是 status 行的三格归属判定。
 //
 // lookup 只在原本会被标为无人值守时调用；ok 必须表示 task 已挂在一张卡上，
-// 且该卡当前有 DriverSession。账本不可用时传 nil，保持旧的无人值守判据。
+// 且该卡当前有 DriverSession。B184 的无人值守判据仍是 watchers；认领时刻只补充展示。
+// 账本不可用时传 nil，保持旧的无人值守判据。
 type attendanceResult struct {
 	Unattended   bool
 	CardID       string
@@ -374,8 +375,8 @@ func unattended(a proto.ActiveTask) bool {
 	return attendance(a, nil).Unattended
 }
 
-// heartbeatAgeText 把账本里的心跳年龄按整分钟展示；零值表示账本没有心跳。
-func heartbeatAgeText(age time.Duration) string {
+// claimAgeText 把兼容字段 driver_heartbeat_at 的认领时刻年龄按整分钟展示；零值表示未知。
+func claimAgeText(age time.Duration) string {
 	if age <= 0 {
 		return "未知"
 	}
