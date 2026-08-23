@@ -88,6 +88,80 @@ func TestDefaultsHasEmptyDisciplineMap(t *testing.T) {
 	}
 }
 
+func TestPlatformInvariantsConfigRoundTripsMissingFalseAndTrue(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "config.yaml")
+
+	missing := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir,
+		StallTimeout: 2 * time.Hour}
+	if missing.PlatformInvariants != nil {
+		t.Fatal("未设置平台开关时字段必须保持 nil，不能把默认 true 写成配置")
+	}
+	if !missing.PlatformInvariantsEnabled() {
+		t.Fatal("缺少 platform_invariants 时必须默认启用")
+	}
+	if err := config.Save(path, missing); err != nil {
+		t.Fatalf("Save missing: %v", err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Read missing config: %v", err)
+	}
+	if strings.Contains(string(raw), "platform_invariants:") {
+		t.Fatalf("默认启用不应伪造成显式配置：%s", raw)
+	}
+	gotMissing, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load missing: %v", err)
+	}
+	if gotMissing.PlatformInvariants != nil || !gotMissing.PlatformInvariantsEnabled() {
+		t.Fatalf("缺失开关读回 = %#v / enabled=%v", gotMissing.PlatformInvariants,
+			gotMissing.PlatformInvariantsEnabled())
+	}
+
+	disabled := false
+	missing.PlatformInvariants = &disabled
+	if err := config.Save(path, missing); err != nil {
+		t.Fatalf("Save false: %v", err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Read false config: %v", err)
+	}
+	if !strings.Contains(string(raw), "platform_invariants: false") {
+		t.Fatalf("显式关闭必须落盘为 false：%s", raw)
+	}
+	gotFalse, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load false: %v", err)
+	}
+	if gotFalse.PlatformInvariants == nil || gotFalse.PlatformInvariantsEnabled() {
+		t.Fatalf("显式 false 读回 = %#v / enabled=%v", gotFalse.PlatformInvariants,
+			gotFalse.PlatformInvariantsEnabled())
+	}
+
+	enabled := true
+	missing.PlatformInvariants = &enabled
+	if err := config.Save(path, missing); err != nil {
+		t.Fatalf("Save true: %v", err)
+	}
+	raw, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("Read true config: %v", err)
+	}
+	if !strings.Contains(string(raw), "platform_invariants: true") {
+		t.Fatalf("显式 true 必须可落盘：%s", raw)
+	}
+	gotTrue, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load true: %v", err)
+	}
+	if gotTrue.PlatformInvariants == nil || !gotTrue.PlatformInvariantsEnabled() {
+		t.Fatalf("显式 true 读回 = %#v / enabled=%v", gotTrue.PlatformInvariants,
+			gotTrue.PlatformInvariantsEnabled())
+	}
+}
+
 // TestLoadParsesTargets 验证合法配置（已知键）正常解析：token 与 targets 表。
 // 此 fixture 全部为已知键——严格解析（L-1）下必须保持可加载，是回归基线。
 func TestLoadParsesTargets(t *testing.T) {
