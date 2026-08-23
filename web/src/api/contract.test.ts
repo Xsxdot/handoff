@@ -30,6 +30,9 @@ import fileWriteRespFixture from './testdata/FileWriteResp.json'
 import machinesFixture from './testdata/MachinesResp.json'
 import projectLocationFixture from './testdata/ProjectLocation.json'
 import projectTreeFixture from './testdata/ProjectTreeResp.json'
+import workspaceCardResultsFixture from './testdata/WorkspaceCardResults.json'
+import createWorktreeReqFixture from './testdata/CreateWorktreeReq.json'
+import createWorktreeReqEmptyFixture from './testdata/CreateWorktreeReqEmpty.json'
 import ptySessionFixture from './testdata/PtySession.json'
 import ptySessionsRespFixture from './testdata/PtySessionsResp.json'
 import sessionFixture from './testdata/SessionInfo.json'
@@ -75,6 +78,8 @@ import {
   type Frame,
   type MachinesResp,
   type ProjectLocation,
+  type Workspace,
+  type CreateWorktreeReq,
   type LaunchersResp,
   type ProjectTreeResp,
   type PtySession,
@@ -254,6 +259,19 @@ describe('W3a 契约', () => {
     expect(Array.isArray(loc.workspaces)).toBe(true)
     expect(typeof loc.workspaces[0].is_main).toBe('boolean')
     expect(typeof loc.workspaces[0].managed).toBe('boolean')
+  })
+
+  it('B205 建树请求与逐卡挂接结果的可选字段在线格式一致', () => {
+    const req = createWorktreeReqFixture as CreateWorktreeReq
+    expect(req.card_ids).toEqual(['B205', 'B205.1'])
+    const legacyReq = createWorktreeReqEmptyFixture as CreateWorktreeReq
+    expect(legacyReq.card_ids).toBeUndefined()
+
+    const ws: Workspace = workspaceCardResultsFixture
+    expect(ws.card_results).toEqual([
+      { id: 'B205', ok: true },
+      { id: 'B206', ok: false, error: '卡已派发：基线已冻结' },
+    ])
   })
 
   it('MachinesResp 带 W3b 需要的三个只读投影', () => {

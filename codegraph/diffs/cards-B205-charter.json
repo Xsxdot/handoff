@@ -1,0 +1,137 @@
+{
+  "view": "cards/B205-charter",
+  "base": "8b1b861c",
+  "summary": "B205 Ticket 0：卡基线写入门面与建树挂卡 wire 空壳",
+  "nodesAdded": {
+    "n_ledger_Store_SetCardBaseBranch": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 388,
+      "name": "Store.SetCardBaseBranch",
+      "file": "internal/ledger/cards.go",
+      "line": 538,
+      "signature": "func (s *Store) SetCardBaseBranch(id, branch, actor string) error",
+      "params": [
+        ["id", "string", "卡号"],
+        ["branch", "string", "显式基线；空串表示清除"],
+        ["actor", "string", "审计主体"]
+      ],
+      "returns": "error",
+      "summary": "为未派发卡设置或清除显式基线；首次派发后的冻结判定由实现节点完成"
+    },
+    "m_proto_CardBaseBranchResult": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 24,
+      "name": "CardBaseBranchResult",
+      "file": "internal/proto/projects.go",
+      "line": 57,
+      "summary": "建树后逐卡设置基线的单项结果",
+      "fields": [
+        ["ID", "string", "卡号"],
+        ["OK", "bool", "该卡是否挂接成功"],
+        ["Error", "string", "单卡失败原因；成功时省略"]
+      ],
+      "projScanned": true
+    },
+    "m_web_api_types_CardBaseBranchResult": {
+      "kind": "model",
+      "container": "k_web_api_types_model",
+      "order": 130,
+      "name": "CardBaseBranchResult",
+      "file": "web/src/api/types.ts",
+      "line": 144,
+      "signature": "interface CardBaseBranchResult",
+      "fields": [
+        ["id", "string", ""],
+        ["ok", "boolean", ""],
+        ["error", "string", "可选失败原因"]
+      ]
+    }
+  },
+  "nodesModified": {
+    "m_proto_Workspace": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 23,
+      "name": "Workspace",
+      "file": "internal/proto/projects.go",
+      "line": 23,
+      "summary": "Workspace 是一个 git 工作树（含主工作树自身），可带逐卡挂接结果",
+      "fields": [
+        ["Path", "string", ""],
+        ["Branch", "string", ""],
+        ["Head", "string", ""],
+        ["IsMain", "bool", ""],
+        ["Managed", "bool", ""],
+        ["CreatedAt", "time.Time", ""],
+        ["CardResults", "[]CardBaseBranchResult", "建树后的逐卡结果；空时省略"]
+      ],
+      "projScanned": true
+    },
+    "m_proto_CreateWorktreeReq": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 349,
+      "name": "CreateWorktreeReq",
+      "file": "internal/proto/projects.go",
+      "line": 371,
+      "summary": "CreateWorktreeReq 是建树请求，可携带要挂接的卡号",
+      "fields": [
+        ["Mode", "string", ""],
+        ["Branch", "string", ""],
+        ["Base", "string", ""],
+        ["CardIDs", "[]string", "建树成功后逐卡设置基线；空时不挂卡"]
+      ],
+      "projScanned": true
+    },
+    "m_web_api_types_Workspace": {
+      "kind": "model",
+      "container": "k_web_api_types_model",
+      "order": 129,
+      "name": "Workspace",
+      "file": "web/src/api/types.ts",
+      "line": 130,
+      "signature": "interface Workspace",
+      "fields": [
+        ["path", "string", ""],
+        ["branch", "string", "detached 时为空串"],
+        ["head", "string", "短 sha"],
+        ["is_main", "boolean", ""],
+        ["managed", "boolean", "true = agentd 自建的管理工作树"],
+        ["created_at", "string", "RFC3339Nano；零值表示取不到"],
+        ["card_results", "CardBaseBranchResult[]", "建树后的逐卡结果；空时省略"]
+      ]
+    },
+    "m_web_api_types_CreateWorktreeReq": {
+      "kind": "model",
+      "container": "k_web_api_types_model",
+      "order": 204,
+      "name": "CreateWorktreeReq",
+      "file": "web/src/api/types.ts",
+      "line": 214,
+      "signature": "interface CreateWorktreeReq",
+      "fields": [
+        ["mode", "'new_branch' | 'existing_branch'", ""],
+        ["branch", "string", ""],
+        ["base", "string", ""],
+        ["card_ids", "string[]", "建树成功后逐卡设置基线；空时不挂卡"]
+      ]
+    },
+    "m_web_api_ledger_CardPatch": {
+      "kind": "model",
+      "container": "k_web_api_ledger_model",
+      "order": 238,
+      "name": "CardPatch",
+      "file": "web/src/api/ledger.ts",
+      "line": 242,
+      "signature": "export interface CardPatch {",
+      "fields": [
+        ["title", "string", "可选；缺席不动"],
+        ["priority", "string", "可选；缺席不动"],
+        ["acceptance_criteria", "string", "可选；缺席不动"],
+        ["base_branch", "string", "可选；缺席不动，空串清除"]
+      ]
+    }
+  }
+}

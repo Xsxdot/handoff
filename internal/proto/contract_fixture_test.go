@@ -68,6 +68,15 @@ func TestContractFixtures(t *testing.T) {
 		{"Ticket", ticketSample(now, taskID)},
 		{"ProjectLocation", projectLocationSample(now)},
 		{"ProjectTreeResp", projectTreeSample()},
+		{"WorkspaceCardResults", Workspace{
+			Path:   "/home/dev/.handoff/worktrees/manual/feat-b205",
+			Branch: "feat/b205-baseline", Head: "482aab1", Managed: true,
+			CreatedAt: now,
+			CardResults: []CardBaseBranchResult{
+				{ID: "B205", OK: true},
+				{ID: "B206", OK: false, Error: "卡已派发：基线已冻结"},
+			},
+		}},
 		{"MachinesResp", machinesSample()},
 		{"TasksResp", tasksRespSample(now, taskID)},
 		{"AuthTicketResp", authTicketSample(now)},
@@ -86,6 +95,7 @@ func TestContractFixtures(t *testing.T) {
 		{"FileConflictResp", fileConflictSample()},
 		{"ProjectBranchesResp", projectBranchesSample()},
 		{"CreateWorktreeReq", createWorktreeReqSample()},
+		{"CreateWorktreeReqEmpty", CreateWorktreeReq{Mode: "existing_branch", Branch: "main", Base: ""}},
 		{"DisciplineResp", disciplineRespSample()},
 		{"DisciplineMappingReq", disciplineMappingReqSample()},
 		{"EnvResp", envRespSample()},
@@ -611,7 +621,8 @@ func projectBranchesSample() ProjectBranchesResp {
 
 // createWorktreeReqSample 是建树请求的契约样本。
 func createWorktreeReqSample() CreateWorktreeReq {
-	return CreateWorktreeReq{Mode: "new_branch", Branch: "feat/b114-sidebar-prefs", Base: "main"}
+	return CreateWorktreeReq{Mode: "new_branch", Branch: "feat/b114-sidebar-prefs", Base: "main",
+		CardIDs: []string{"B205", "B205.1"}}
 }
 
 // disciplineRespSample 返回 DisciplineResp 的代表性样本：三档各出现一次

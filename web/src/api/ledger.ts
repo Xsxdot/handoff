@@ -236,13 +236,14 @@ export const createCard = (req: NewCardReq) =>
 export const migrateCard = (id: string, req: MigrateCardReq) =>
   postJSON<MigrateCardResp>(`/api/cards/${encodeURIComponent(id)}/migrate`, req)
 
-// CardPatch 的三个字段**全部可选，缺席即「不动该字段」**（不是置空）。
+// CardPatch 的四个字段**全部可选，缺席即「不动该字段」**（不是置空）。
 // 调用方只放要改的键，别为了「补全」而把现值原样塞回去——那会在没改动的
 // 字段上也落一条事件。
 export interface CardPatch {
   title?: string
   priority?: string
   acceptance_criteria?: string
+  base_branch?: string
 }
 
 export const patchCard = (id: string, patch: CardPatch) =>

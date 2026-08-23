@@ -1,0 +1,19 @@
+{
+  "path": "/home/dev/.handoff/worktrees/manual/feat-b205",
+  "branch": "feat/b205-baseline",
+  "head": "482aab1",
+  "is_main": false,
+  "managed": true,
+  "created_at": "2026-08-11T10:30:00+08:00",
+  "card_results": [
+    {
+      "id": "B205",
+      "ok": true
+    },
+    {
+      "id": "B206",
+      "ok": false,
+      "error": "卡已派发：基线已冻结"
+    }
+  ]
+}

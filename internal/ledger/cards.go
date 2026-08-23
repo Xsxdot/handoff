@@ -531,6 +531,14 @@ func (s *Store) UpdateCardMeta(id, title, priority, actor string) error {
 	})
 }
 
+// SetCardBaseBranch 为卡设置/清除显式基线。
+//
+// Ticket 0 只冻结可编译签名；首次派发冻结判定、cards 写入与事件留痕
+// 由后续实现节点完成，避免本节点提前引入可观测行为。
+func (s *Store) SetCardBaseBranch(id, branch, actor string) error {
+	return nil
+}
+
 // CloseCard 终止（从任意非终态；reason 受控词表）。终止不是删除：
 // 号仍占用、事件仍在流里、搁置可复活。
 func (s *Store) CloseCard(id, reason, actor string) error {

@@ -136,6 +136,15 @@ export interface Workspace {
   // created_at 是工作树的创建时间（RFC3339Nano）。零值时间 = agentd 取不到，
   // 排序时当「最旧」处理，见 sortWorkspaces。
   created_at: string
+  // 建树成功后逐卡设置基线的结果；无 card_ids 时省略。
+  card_results?: CardBaseBranchResult[]
+}
+
+// CardBaseBranchResult 是建树后逐卡设置基线的单项结果。
+export interface CardBaseBranchResult {
+  id: string
+  ok: boolean
+  error?: string
 }
 
 // ProjectLocationNode 是一个项目在一台机器上的位置。
@@ -206,6 +215,7 @@ export interface CreateWorktreeReq {
   mode: 'new_branch' | 'existing_branch'
   branch: string
   base: string
+  card_ids?: string[]
 }
 
 // Machine 是 GET /api/machines 的单台投影。W3a §4。
