@@ -23,7 +23,7 @@ var (
 	cardListBlocked, cardListNeeds, cardListJSON, cardListAll                    bool
 	cardMoveExpect                                                               string
 	cardUpdateTitle, cardUpdatePriority, cardUpdateAccept                        string
-	cardUpdateAttach, cardUpdateDetach                                           string
+	cardUpdateAttach, cardUpdateDetach, cardUpdateBase                           string
 )
 
 var cardAddCmd = &cobra.Command{
@@ -160,6 +160,11 @@ var cardUpdateCmd = &cobra.Command{
 		}
 		if cardUpdateAccept != "" {
 			if err := st.SetAcceptance(id, cardUpdateAccept, actor); err != nil {
+				return err
+			}
+		}
+		if cmd.Flags().Changed("base-branch") {
+			if err := st.SetCardBaseBranch(id, cardUpdateBase, actor); err != nil {
 				return err
 			}
 		}
@@ -451,6 +456,7 @@ func init() {
 	cardUpdateCmd.Flags().StringVar(&cardUpdateAttach, "attach", "", "挂附件 kind:path")
 	cardUpdateCmd.Flags().StringVar(&cardUpdateDetach, "detach", "", "摘附件 path")
 	cardUpdateCmd.Flags().StringVar(&cardUpdateAccept, "accept", "", "设验收判据")
+	cardUpdateCmd.Flags().StringVar(&cardUpdateBase, "base-branch", "", "设/清除显式基线（空串=清除）")
 
 	cardCloseCmd.Flags().StringVar(&cardCloseReason, "reason", "", "取消|废弃|搁置（必填）")
 	cardCloseCmd.Flags().BoolVar(&cardCloseYes, "yes", false, "跳过确认")
