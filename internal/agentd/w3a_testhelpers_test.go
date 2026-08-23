@@ -21,6 +21,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
+	"github.com/Xsxdot/handoff/internal/ptytestroot"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
@@ -61,17 +62,22 @@ func newTestAgentdEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logg
 	srv := NewServer(cfg, st, logger)
 	srv.SetConfigPath(cfgPath)
 	if runtime.GOOS != "windows" {
-		ptyRoot, err := os.MkdirTemp(".", "at-pty-")
+		decision, err := ptytestroot.Resolve(
+			ptytestroot.SocketIDForBudget, ptytestroot.SocketPathLimit, logger)
 		if err != nil {
-			t.Fatalf("准备 PTY 根目录失败: %v", err)
+			t.Skipf("PTY 测试根目录不可用: %v", err)
+			return nil
 		}
+		ptyRoot := decision.Root
 		srv.ptyRootPath = ptyRoot
 		srv.pty = ptyhost.New(ptyRoot, testHandoffExecutable(t), logger)
 		t.Cleanup(func() {
 			for _, sess := range srv.pty.List() {
-				_ = srv.pty.Close(sess.ID)
+				if err := srv.pty.Close(sess.ID); err != nil {
+					logger.Warn("清理 PTY 测试会话失败", "session", sess.ID, "err", err)
+				}
 			}
-			_ = os.RemoveAll(ptyRoot)
+			decision.Cleanup()
 		})
 	}
 	ts := httptest.NewServer(srv.Handler())

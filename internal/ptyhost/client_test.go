@@ -17,7 +17,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"testing"
 	"time"
 
@@ -26,6 +25,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ptyhost/hostproc"
 	"github.com/Xsxdot/handoff/internal/ptyhost/sessdir"
 	"github.com/Xsxdot/handoff/internal/ptyhost/wire"
+	"github.com/Xsxdot/handoff/internal/ptytestroot"
 )
 
 func TestClientOpenList(t *testing.T) {
@@ -298,21 +298,20 @@ func buildHandoff(t *testing.T) string {
 // 两个约束同时成立才行：
 //   - 短：root 下要建 unix socket，路径有 ~104 字节上限（macOS）。t.TempDir()
 //     在 macOS 上落在 /var/folders/…/T/ 那条长路径下，会把 socket 路径顶爆。
-//   - 不在包目录内：曾经用 MkdirTemp(".", …) 满足「短」，代价是临时目录出现在
+//   - 不在包目录内：曾经在当前包目录创建临时根来满足「短」，代价是临时目录出现在
 //     ./... 的包枚举里，全量并发跑时偶发撞红 TestWindowsCrossCompiles（B186）。
 //
-// 于是显式落在 /tmp 下。Windows 没有 unix socket 路径限制也没有 /tmp，用 t.TempDir()。
+// 于是交给 ptytestroot 在 /tmp 与仓库点号目录之间择位。
 func shortRoot(t *testing.T) string {
 	t.Helper()
-	if runtime.GOOS == "windows" {
-		return t.TempDir()
-	}
-	root, err := os.MkdirTemp("/tmp", "ph-")
+	decision, err := ptytestroot.Resolve(
+		ptytestroot.SocketIDForBudget, ptytestroot.SocketPathLimit, testLog())
 	if err != nil {
-		t.Fatal(err)
+		t.Skipf("PTY 测试根目录不可用: %v", err)
+		return ""
 	}
-	t.Cleanup(func() { _ = os.RemoveAll(root) })
-	return root
+	t.Cleanup(decision.Cleanup)
+	return decision.Root
 }
 
 // waitSessionReady 等到会话**真正**就绪：socket 与 meta.json 都在。
