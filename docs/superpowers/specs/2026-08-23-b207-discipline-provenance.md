@@ -71,7 +71,10 @@
    不确定就写「未验证」。
 3. 每确立一个事实就往台账文件追加一行——提交、跑过的命令与原始输出、放弃的尝试、
    做出的判断。**不要攒到回合结束再写：回合可能不会有结束。**
-4. 按协议输出 trailer 收口。
+~~4. 按协议输出 trailer 收口。~~ **已删除**——plan 节点基线核实：四家 adapter 都把
+   `StartReq.Discipline` 传给 `turn.RenderPrompt`（`internal/executor/executor.go:71-74`
+   明写这是对所有 adapter 的要求），trailer 协议本来就随每次派发注入，codex 另有一份
+   常驻 `developerInstructions`。放进恒在层就是第二遍/第三遍。**恒在层实为三条。**
 
 第 3 条的措辞是本卡的一处刻意修正：原文是「每 task 完成、每轮修复各追加一行，含
 commit 范围」，把「增量写」这个**承重性质**和「task/commit」这个**任务形态假设**焊在
@@ -119,10 +122,11 @@ commit 范围」，把「增量写」这个**承重性质**和「task/commit」�
 3. **`For` 的「显式空串 = 关闭注入」不再关掉平台不变量**。那个开关的语义是「这台机器
    给这个执行器派任务时不注入**执行纪律**」，与平台底线不是同一件事。要连底线一起关，
    走下一条的显式开关。
-4. **trailer 那条先查后写**：`internal/executor/*/adapter.go` 各 adapter 是否已在
-   prompt 层单独注入 trailer 指令。已注入的话第 4 条改为不注入（避免重复），并把这个
-   事实写进注释；未注入则按原样进恒在层。**不许假设，B202 那轮能正常收口不能证明所有
-   执行器都行。**
+4. ~~**trailer 那条先查后写**~~ **已查实（2026-08-23，plan 节点 + 协调者独立复核）**：
+   四家 adapter 全部经 `turn.RenderPrompt` 注入协议，`executor.go:71-74` 明写这是对
+   所有 adapter 的强制要求；codex 另把同一份 `ProtocolRules` 放进常驻
+   `developerInstructions`。**结论：第 4 条不进恒在层**，且实现的文件头注释要写明
+   「不复制 turn.ProtocolRules，提问与 trailer 协议由 executor/turn 负责」。
 5. **关闭出口**：机器级配置一个显式开关，关闭时派发回显必须明写「平台不变量已关闭」。
    不做成「覆盖文件里声明」——那正是今天这个 bug 的形状：一份拷来的文件能静默关掉底线。
 6. **来源回显改成可以列多个**，如 `内置:平台不变量 + 配置:charter-plan`。

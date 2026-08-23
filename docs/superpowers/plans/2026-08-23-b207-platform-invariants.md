@@ -2,7 +2,7 @@
 
 > 节点：charter-plan，产出物=本计划文档；实现者只按本文件执行，不在本回合直接改实现。
 > 冻结物：docs/superpowers/specs/2026-08-23-b207-discipline-provenance.md（已批准，L2）。
-> 目标：把平台四条底线从可被 Resolver.ByName 整份替换的纪律块中拆出，作为 discipline 包内无条件组装的第四层来源；保留角色块选择语义，并增加一个可留痕的机器级关闭开关。
+> 目标：把平台三条底线从可被 Resolver.ByName 整份替换的纪律块中拆出，作为 discipline 包内无条件组装的第四层来源；保留角色块选择语义，并增加一个可留痕的机器级关闭开关。
 
 ## 0. 边界与完成定义
 
@@ -10,7 +10,7 @@
 
 - 不重构 workflow 纪律块的任务契约层、执行器适配层或选择键。
 - 不移除 Resolver.For 未配置时的内置默认，不给纪律块增加版本号，也不处理两机副本漂移。
-- 不新增 adapter 的 trailer 文案。基线已核实：四家 adapter 都把 StartReq.Discipline 传给 turn.RenderPrompt；Codex 另把同一份 ProtocolRules 放进常驻 developerInstructions。平台层只注入四条平台不变量与尾部自查，不能再复制协议 trailer。
+- 不新增 adapter 的 trailer 文案。基线已核实：四家 adapter 都把 StartReq.Discipline 传给 turn.RenderPrompt；Codex 另把同一份 ProtocolRules 放进常驻 developerInstructions。平台层只注入三条平台不变量与尾部自查，不能再复制协议 trailer。原 spec 的第 4 条「按协议输出 trailer 收口」据此删除——它已由 turn.RenderPrompt 对所有 adapter 无条件注入（codex 另有一份常驻 developerInstructions），再放进恒在层就是第二遍/第三遍。
 - 不新增 handoff CLI、executor 进程或外部写入。
 
 完成定义：
@@ -99,7 +99,6 @@ base.Source 为空时只返回 平台不变量已关闭。关闭只取消平台�
 1. 不要派发、不要调用 handoff CLI（只读本地图数据的 handoff graph 子命令除外）、不要起任何新的 executor 进程或子任务。
 2. 没有亲自跑到结果的命令，不许写它的结论。跑了但失败，贴原始报错原文，不要替它归因；不确定就写「未验证」。
 3. 每确立一个事实就往台账文件追加一行——提交、跑过的命令与原始输出、放弃的尝试、做出的判断。不要攒到回合结束再写：回合可能不会有结束。
-4. 按协议输出 trailer 收口。
 
 收口前逐条自查：① 有没有把没亲自跑到结果的命令写成结论？② 台账是边干边追加的吗？③ 这一轮碰过 handoff CLI 或起过新 executor 吗？
 ~~~
@@ -230,12 +229,12 @@ go test ./internal/discipline -run 'TestCompose' -count=1
 
 ### 步骤 1.3：写最小实现
 
-新建 internal/discipline/platform.go。为避免复制现有 ProtocolRules，平台层只放 spec 的四条正文和收口自查：
+新建 internal/discipline/platform.go。为避免复制现有 ProtocolRules，平台层只放三条正文和收口自查（spec 原列四条，trailer 那条经基线核实已由 turn 层注入，删除）：
 
 ~~~go
 // platform.go —— 平台不变量恒在层的正文与组装边界。
 //
-// 职责：持有平台四条底线与收口自查，并把角色/执行者纪律块组装成一个 Block。
+// 职责：持有平台三条底线与收口自查，并把角色/执行者纪律块组装成一个 Block。
 // 边界：纯函数，不读配置、不读文件、不写日志、不启动 executor；不复制
 // turn.ProtocolRules，提问与 trailer 协议由 executor/turn 负责。
 package discipline
@@ -246,8 +245,7 @@ const platformInvariantHead = `# 平台不变量（恒在层）
 
 1. 不要派发、不要调用 handoff CLI（只读本地图数据的 handoff graph 子命令除外）、不要起任何新的 executor 进程或子任务。
 2. 没有亲自跑到结果的命令，不许写它的结论。跑了但失败，贴原始报错原文，不要替它归因；不确定就写「未验证」。
-3. 每确立一个事实就往台账文件追加一行——提交、跑过的命令与原始输出、放弃的尝试、做出的判断。不要攒到回合结束再写：回合可能不会有结束。
-4. 按协议输出 trailer 收口。`
+3. 每确立一个事实就往台账文件追加一行——提交、跑过的命令与原始输出、放弃的尝试、做出的判断。不要攒到回合结束再写：回合可能不会有结束。`
 
 const platformInvariantTail = `收口前逐条自查：① 有没有把没亲自跑到结果的命令写成结论？② 台账是边干边追加的吗？③ 这一轮碰过 handoff CLI 或起过新 executor 吗？`
 
