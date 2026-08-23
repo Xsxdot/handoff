@@ -1,4 +1,4 @@
-// card min-b：切换期一次性命令——把 B 号水位垫到历史总账 max B，
+// card min-b：切换期一次性命令——把 B 前缀水位垫到历史总账 max B，
 // 此后新建卡号严格大于历史号，markdown 旧账与账本新账永不撞号。
 // Hidden：日常工作流用不到它，藏起来防误用。
 package cmd
@@ -12,7 +12,7 @@ import (
 
 var cardMinBCmd = &cobra.Command{
 	Use:    "min-b <n>",
-	Short:  "垫 B 号水位（切换期一次性；只升不降）",
+	Short:  "垫 B 前缀水位（切换期一次性；只升不降）",
 	Hidden: true,
 	Args:   cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {

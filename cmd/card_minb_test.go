@@ -12,7 +12,7 @@ func TestCardMinB(t *testing.T) {
 	if _, _, err := runLedgerCLI(t, dir, "card", "min-b", "156"); err != nil {
 		t.Fatalf("min-b: %v", err)
 	}
-	out, _, err := runLedgerCLI(t, dir, "card", "add", "垫号后的第一张卡", "--project", "demo")
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "垫号后的第一张卡", "--project", "handoff")
 	if err != nil {
 		t.Fatalf("add: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestCardMinB(t *testing.T) {
 	if _, _, err := runLedgerCLI(t, dir, "card", "min-b", "100"); err != nil {
 		t.Fatalf("回垫应为无操作: %v", err)
 	}
-	out, _, _ = runLedgerCLI(t, dir, "card", "add", "又一张", "--project", "demo")
+	out, _, _ = runLedgerCLI(t, dir, "card", "add", "又一张", "--project", "handoff")
 	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &c)
 	if c.ID != "B158" {
 		t.Fatalf("回垫不应降水位，应 B158 实为 %s", c.ID)

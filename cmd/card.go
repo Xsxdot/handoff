@@ -28,7 +28,7 @@ var (
 
 var cardAddCmd = &cobra.Command{
 	Use:   "add <标题>",
-	Short: "建卡（B 号自动分配；--parent 建子卡）",
+	Short: "建卡（按项目分配带前缀卡号；--parent 建子卡）",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st, err := openLedger()
@@ -350,7 +350,7 @@ var cardSplitCmd = &cobra.Command{
 
 var cardNoteCmd = &cobra.Command{
 	Use:   "note <id> <text...>",
-	Short: "记一笔（#B 号引用自动成关系边；--correction 记更正；--reset-node 重置节点回合计数）",
+	Short: "记一笔（#卡号引用自动成关系边；--correction 记更正；--reset-node 重置节点回合计数）",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st, err := openLedger()

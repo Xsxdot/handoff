@@ -1,4 +1,4 @@
-// card import：显式 B 号导入建卡的命令面薄壳。存量 markdown 总账迁入、
+// card import：显式带前缀卡号导入建卡的命令面薄壳。存量 markdown 总账迁入、
 // 冻结 md 里的搁置条目复活都走它——是永久能力，不是一次性迁移脚本。
 // 薄壳只做参数拼装与转发，撞号/缺父的判定全在账本域 Store.ImportCard。
 package cmd
@@ -19,10 +19,10 @@ var (
 
 var cardImportCmd = &cobra.Command{
 	Use:   "import <id> <标题>",
-	Short: "按既有 B 号导入建卡（存量迁入/搁置复活；撞号即拒）",
-	Long: `按既有 B 号导入建卡。
+	Short: "按既有带前缀卡号导入建卡（存量迁入/搁置复活；撞号即拒）",
+	Long: `按既有带前缀卡号导入建卡。
 
-id 形如 B153（顶层）或 B153.1（点号子卡，父卡须已存在）。
+id 形如 B153、C1（顶层）或 C1.1（点号子卡，父卡须已存在）。
 目标号已存在时拒绝，不覆盖。导入不受 min_b 水位约束——
 水位只管自动取号，导入一律按原号落位。`,
 	Args: cobra.MinimumNArgs(2),

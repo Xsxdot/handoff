@@ -45,6 +45,18 @@ func TestImportCardExplicitID(t *testing.T) {
 	}
 }
 
+func TestImportCardAcceptsNonBPrefix(t *testing.T) {
+	s := seedStore(t)
+	card, err := s.ImportCard("C1", "charter.md", NewCard{
+		Title: "charter 存量行", Project: "charter", Actor: "test"})
+	if err != nil {
+		t.Fatalf("非 B 前缀应可导入: %v", err)
+	}
+	if card.ID != "C1" {
+		t.Fatalf("导入应保留 C1，得 %s", card.ID)
+	}
+}
+
 // 撞已存在 ID 必须拒绝——导入覆盖既有卡等于静默丢账，比报错难发现得多。
 func TestImportCardRejectsExistingID(t *testing.T) {
 	s := seedStore(t)

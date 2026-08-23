@@ -118,6 +118,104 @@ func TestCreateCardAllocatesBNumbers(t *testing.T) {
 	}
 }
 
+// TestCreateCardAllocatesIndependentProjectPrefixes 验证新项目前缀从各自的 1
+// 起步，且 handoff 的历史 B 水位不会污染其它前缀；子卡只继承父卡号的前缀。
+func TestCreateCardAllocatesIndependentProjectPrefixes(t *testing.T) {
+	s := seedStore(t)
+	if err := s.EnsureMinB(173); err != nil {
+		t.Fatalf("EnsureMinB: %v", err)
+	}
+
+	handoff, err := s.CreateCard(NewCard{Title: "handoff 卡", Project: "handoff", Actor: "test"})
+	if err != nil {
+		t.Fatalf("handoff 建卡: %v", err)
+	}
+	if handoff.ID != "B174" {
+		t.Fatalf("handoff 应续 B 水位，得 %s", handoff.ID)
+	}
+	charter, err := s.CreateCard(NewCard{Title: "charter 卡", Project: "charter", Actor: "test"})
+	if err != nil {
+		t.Fatalf("charter 建卡: %v", err)
+	}
+	if charter.ID != "C1" {
+		t.Fatalf("charter 应从 C1 起步，得 %s", charter.ID)
+	}
+	sq, err := s.CreateCard(NewCard{Title: "sq 卡", Project: "sq", Actor: "test"})
+	if err != nil {
+		t.Fatalf("sq 建卡: %v", err)
+	}
+	if sq.ID != "S1" {
+		t.Fatalf("sq 应从 S1 起步，得 %s", sq.ID)
+	}
+	child, err := s.CreateCard(NewCard{Title: "charter 子卡", Project: "charter", Parent: charter.ID, Actor: "test"})
+	if err != nil {
+		t.Fatalf("charter 子卡: %v", err)
+	}
+	if child.ID != "C1.1" {
+		t.Fatalf("子卡应继承 C 前缀，得 %s", child.ID)
+	}
+}
+
+// TestCreateCardRejectsPrefixCollision 建卡不能在前缀撞车时静默回退到 B；
+// 显式配置后才允许继续建卡。
+func TestCreateCardRejectsPrefixCollision(t *testing.T) {
+	s := seedStore(t)
+	_, err := s.CreateCard(NewCard{Title: "benchmarking 卡", Project: "benchmarking", Actor: "test"})
+	if err == nil {
+		t.Fatal("benchmarking 的自动 B 前缀撞 handoff 时应拒绝建卡")
+	}
+	for _, want := range []string{"benchmarking", "handoff", "card prefix"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("撞车错误应含 %q，实得 %v", want, err)
+		}
+	}
+	if _, err := s.GetCard("B1"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("撞车拒绝后不应落 B1，实得 %v", err)
+	}
+	if err := s.SetCardPrefix("benchmarking", "BE"); err != nil {
+		t.Fatalf("显式配置前缀: %v", err)
+	}
+	card, err := s.CreateCard(NewCard{Title: "benchmarking 卡", Project: "benchmarking", Actor: "test"})
+	if err != nil {
+		t.Fatalf("显式前缀后建卡: %v", err)
+	}
+	if card.ID != "BE1" {
+		t.Fatalf("显式前缀应生成 BE1，得 %s", card.ID)
+	}
+}
+
+func TestCreateCardRejectsProjectWithoutASCIIPrefix(t *testing.T) {
+	s := seedStore(t)
+	_, err := s.CreateCard(NewCard{Title: "无字母项目", Project: "项目123", Actor: "test"})
+	if err == nil || !strings.Contains(err.Error(), "ASCII") {
+		t.Fatalf("无 ASCII 字母项目应拒绝并说明原因，实得 %v", err)
+	}
+}
+
+func TestSetCardPrefixValidationAndExistingCards(t *testing.T) {
+	s := seedStore(t)
+	for _, prefix := range []string{"", "b", "ABCDE", "A1", "中文"} {
+		if err := s.SetCardPrefix("demo", prefix); err == nil {
+			t.Fatalf("非法前缀 %q 应拒绝", prefix)
+		}
+	}
+	if err := s.SetCardPrefix("demo", "DE"); err != nil {
+		t.Fatalf("设前缀: %v", err)
+	}
+	if err := s.SetCardPrefix("demo", "DE"); err != nil {
+		t.Fatalf("重复设相同前缀应幂等: %v", err)
+	}
+	if _, err := s.CreateCard(NewCard{Title: "demo 卡", Project: "demo", Actor: "test"}); err != nil {
+		t.Fatalf("demo 建卡: %v", err)
+	}
+	if err := s.SetCardPrefix("demo", "D"); err == nil || !strings.Contains(err.Error(), "已有卡") {
+		t.Fatalf("已有卡后改前缀应拒绝，实得 %v", err)
+	}
+	if err := s.SetCardPrefix("other", "DE"); err == nil || !strings.Contains(err.Error(), "demo") {
+		t.Fatalf("前缀被占用时应指出占用项目，实得 %v", err)
+	}
+}
+
 func TestCreateCardValidation(t *testing.T) {
 	s := seedStore(t)
 	if _, err := s.CreateCard(NewCard{Project: "p", Workflow: "feature"}); err == nil {

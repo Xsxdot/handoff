@@ -1,4 +1,4 @@
-// 任务卡的建/读/改/终止/复活与 B 号分配。状态转移在 move.go，
+// 任务卡的建/读/改/终止/复活与带前缀号段分配。状态转移在 move.go，
 // 关系与合并在 relations.go / merge.go——本文件不碰关系表。
 package ledger
 
@@ -20,7 +20,7 @@ type NewCard struct {
 	Title, Project, Priority, Parent, Workflow, BaseBranch, Actor string
 }
 
-var topIDPat = regexp.MustCompile(`^B(\d+)$`)
+var topIDPat = regexp.MustCompile(`^([A-Z]{1,4})(\d+)$`)
 
 // maxWorkflowNesting 父链上同名工作流的嵌套上限（含新卡自身）。
 //
@@ -31,7 +31,7 @@ var topIDPat = regexp.MustCompile(`^B(\d+)$`)
 // 配置化（项目实例化清单覆盖）等真实需求出现再做。
 const maxWorkflowNesting = 3
 
-// EnsureMinB 垫高 B 号水位（迁移前防与 markdown 总账撞号；只升不降）。
+// EnsureMinB 垫高 B 前缀水位（迁移前防与 markdown 总账撞号；只升不降）。
 func (s *Store) EnsureMinB(n int) error {
 	return s.mutate(func(tx *sql.Tx, _ *eventSink) error {
 		current := 0
@@ -55,42 +55,48 @@ func (s *Store) EnsureMinB(n int) error {
 	})
 }
 
-// nextTopID 事务内分配下一个顶层 B 号：max(现存顶层号, min_b) + 1。
+// nextTopID 事务内分配下一个指定前缀的顶层号：
+// max(该前缀现存顶层号, B 前缀的 min_b 水位) + 1。
 // 号永不复用（终止/归档的卡仍占号）。在 mutate 的全局写锁内调用，
-// 无并发分配竞态。
-func (s *Store) nextTopID(tx *sql.Tx) (string, error) {
+// 无并发分配竞态。min_b 只对 B 前缀生效，其它前缀从 1 起步。
+func (s *Store) nextTopID(tx *sql.Tx, prefix string) (string, error) {
 	maxNumber := 0
 	rows, err := tx.Query(`SELECT id FROM cards WHERE parent_id IS NULL`)
 	if err != nil {
-		return "", fmt.Errorf("扫现存 B 号: %w", err)
+		return "", fmt.Errorf("扫现存 %s 号: %w", prefix, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var id string
 		if err := rows.Scan(&id); err != nil {
-			return "", err
+			return "", fmt.Errorf("扫现存 %s 号时读卡: %w", prefix, err)
 		}
 		if match := topIDPat.FindStringSubmatch(id); match != nil {
-			if number, _ := strconv.Atoi(match[1]); number > maxNumber {
+			if match[1] != prefix {
+				continue
+			}
+			if number, _ := strconv.Atoi(match[2]); number > maxNumber {
 				maxNumber = number
 			}
 		}
 	}
 	if err := rows.Err(); err != nil {
-		return "", err
+		return "", fmt.Errorf("扫现存 %s 号: %w", prefix, err)
 	}
 	var value string
-	if err := tx.QueryRow(s.q(`SELECT value FROM ledger_meta WHERE key = 'min_b'`)).Scan(&value); err == nil {
-		if number, _ := strconv.Atoi(value); number > maxNumber {
-			maxNumber = number
+	if prefix == "B" {
+		if err := tx.QueryRow(s.q(`SELECT value FROM ledger_meta WHERE key = 'min_b'`)).Scan(&value); err == nil {
+			if number, _ := strconv.Atoi(value); number > maxNumber {
+				maxNumber = number
+			}
+		} else if !errors.Is(err, sql.ErrNoRows) {
+			return "", fmt.Errorf("读 B 前缀水位 min_b: %w", err)
 		}
-	} else if !errors.Is(err, sql.ErrNoRows) {
-		return "", err
 	}
-	return fmt.Sprintf("B%d", maxNumber+1), nil
+	return fmt.Sprintf("%s%d", prefix, maxNumber+1), nil
 }
 
-// nextChildID 分配 parent 下一个点号子位（B157 → B157.1、B157.2…）。
+// nextChildID 分配 parent 下一个点号子位（C1 → C1.1、C1.2…）。
 func (s *Store) nextChildID(tx *sql.Tx, parent string) (string, error) {
 	rows, err := tx.Query(s.q(`SELECT id FROM cards WHERE parent_id = ?`), parent)
 	if err != nil {
@@ -215,11 +221,13 @@ func (s *Store) insertCardTx(tx *sql.Tx, sink *eventSink, id string, nc NewCard,
 		WorkflowVersion: wf.Version, BaseBranch: nc.BaseBranch, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-// CreateCard 建卡：分配 B 号、钉工作流最新版本、初始态 = 工作流首态、
+// CreateCard 建卡：按项目分配号段前缀与顶层号、钉工作流最新版本、初始态 = 工作流首态、
 // 落 card_created 事件。
 func (s *Store) CreateCard(nc NewCard) (Card, error) {
+	log().Info("开始建卡", "project", nc.Project, "title", nc.Title, "parent", nc.Parent)
 	wf, err := s.prepareCard(&nc)
 	if err != nil {
+		log().Warn("建卡前校验失败", "project", nc.Project, "title", nc.Title, "cause", err)
 		return Card{}, err
 	}
 	var card Card
@@ -232,24 +240,38 @@ func (s *Store) CreateCard(nc NewCard) (Card, error) {
 		if nc.Parent != "" {
 			id, idErr = s.nextChildID(tx, nc.Parent)
 		} else {
-			id, idErr = s.nextTopID(tx)
+			prefix, prefixErr := s.cardPrefixTx(tx, nc.Project)
+			if prefixErr != nil {
+				return prefixErr
+			}
+			id, idErr = s.nextTopID(tx, prefix)
 		}
 		if idErr != nil {
+			log().Error("建卡取号失败", "project", nc.Project, "parent", nc.Parent, "cause", idErr)
 			return idErr
 		}
 		card, err = s.insertCardTx(tx, sink, id, nc, wf, nil)
+		if err != nil {
+			log().Error("建卡落库失败", "card", id, "project", nc.Project, "cause", err)
+			return err
+		}
+		log().Info("建卡完成", "card", card.ID, "project", card.Project, "workflow", card.WorkflowName)
 		return err
 	})
+	if err != nil {
+		log().Warn("建卡失败", "project", nc.Project, "title", nc.Title, "parent", nc.Parent, "cause", err)
+	}
 	return card, err
 }
 
-// importIDPat 导入卡号的合法形态：顶层 B<数字>，或点号子卡 B<数字>(.<数字>)+。
-var importIDPat = regexp.MustCompile(`^B\d+(\.\d+)*$`)
+// importIDPat 导入卡号的合法形态：顶层 <前缀><数字>，或点号子卡
+// <前缀><数字>(.<数字>)+；前缀为 1~4 个大写 ASCII 字母。
+var importIDPat = regexp.MustCompile(`^[A-Z]{1,4}\d+(\.\d+)*$`)
 
-// ImportCard 显式 ID 导入建卡：携带既有 B 号（markdown 存量总账的行、
+// ImportCard 显式 ID 导入建卡：携带既有带前缀卡号（markdown 存量总账的行、
 // 搁置条目复活）原号迁入账本。这是永久能力，不是一次性迁移脚本。
 //
-// 参数：id 目标卡号（顶层 "B153" 或点号子卡 "B153.1"，父卡 id 由点号前缀
+// 参数：id 目标卡号（顶层 "B153"/"C1" 或点号子卡 "C1.1"，父卡 id 由点号前缀
 // 推导，nc.Parent 无需也不应自行填写）；source 导入来源标注（落进
 // card_created 事件负载，空串记为「手工导入」）；nc 卡字段（标题、project
 // 必填；优先级缺省「中」；工作流缺省 triage）。
@@ -267,7 +289,7 @@ var importIDPat = regexp.MustCompile(`^B\d+(\.\d+)*$`)
 func (s *Store) ImportCard(id, source string, nc NewCard) (Card, error) {
 	id = strings.TrimSpace(id)
 	if !importIDPat.MatchString(id) {
-		return Card{}, fmt.Errorf("导入卡: id %q 形如 B153 或 B153.1", id)
+		return Card{}, fmt.Errorf("导入卡: id %q 形如 B153、C1 或 C1.1", id)
 	}
 	if strings.TrimSpace(source) == "" {
 		source = "手工导入"

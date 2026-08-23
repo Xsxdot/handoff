@@ -24,7 +24,7 @@ func TestOpenCreatesSchema(t *testing.T) {
 	// 全部表都建出来了：逐表 SELECT 不报错即证明 DDL 幂等执行成功
 	for _, tbl := range []string{"cards", "card_relations", "card_tasks",
 		"card_events", "workflows", "dispatch_templates", "decisions",
-		"mirror_lease", "mirror_cursors", "ledger_meta"} {
+		"mirror_lease", "mirror_cursors", "ledger_meta", "card_prefixes"} {
 		if _, err := s.db.Exec("SELECT * FROM " + tbl + " LIMIT 0"); err != nil {
 			t.Fatalf("表 %s 不存在: %v", tbl, err)
 		}
