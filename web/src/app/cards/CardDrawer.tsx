@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { fetchTaskDetail, replyTicket } from '../../api/client'
-import type { TaskDetail, Ticket } from '../../api/types'
+import type { Task, TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard, runCardStep } from '../../api/ledger'
-import type { CardDetail, Decision, LedgerEvent, NodeDef } from '../../api/ledger'
+import type { CardDetail, Decision, LedgerEvent, NodeDef, TaskStateRow } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { TicketsPanel } from '../task/TicketsPanel'
 import { boardColumns } from './columns'
+import { TaskState } from '../board/StateDot'
 
 type Relation = { From: string; To: string; Type: string }
 
@@ -249,6 +250,14 @@ function timelineGroups(events: LedgerEvent[]): Array<{ kind: 'mirror' | 'event'
 
 type DrawerTaskDetail = TaskDetail & { tickets?: Ticket[]; events?: unknown[] }
 
+// linkedTaskOf 把账本挂账行关联到任务流里的真实任务；关联不上返回 undefined。
+// 关联不上是真实情形（任务已归档清出流 / 流首拉未回），调用方按「实况未知」
+// 如实降级，不猜不冒充——与 internal/ledger/taskstate.go 文件头「滞后要显性化，
+// 不拿陈旧实况冒充新鲜」是同一纪律在前端的落法。
+function linkedTaskOf(row: TaskStateRow, tasks: Task[] | undefined): Task | undefined {
+  return tasks?.find((task) => task.id === row.TaskID)
+}
+
 function pendingTickets(detail: DrawerTaskDetail): Ticket[] {
   return detail.pending_tickets ?? detail.tickets ?? []
 }
@@ -260,6 +269,7 @@ export function CardDrawer({
   workflowStates,
   initialSection,
   nodes,
+  tasks,
 }: {
   id: string
   onClose: () => void
@@ -267,6 +277,10 @@ export function CardDrawer({
   workflowStates?: string[]
   initialSection?: 'merge'
   nodes?: NodeDef[]
+  // 任务实况快照：调用方（CardsPage）把页面级 useTasks() 的结果原样传下来。
+  // 抽屉不自起第二条轮询——同页两条 2.5s 流会各自跳动，卡上的状态会和看板
+  // 在不同时刻更新（spec §5）。undefined = 流未接入或首拉未回。
+  tasks?: Task[]
 }) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
@@ -741,32 +755,44 @@ export function CardDrawer({
             {(detail.task_states ?? []).length > 0 && (
               <section className="mb-5">
                 <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">关联执行（task）</h3>
-                {(detail.task_states ?? []).map((task) => {
-                  const open = expandedTask === task.TaskID
-                  const taskDetail = taskDetails[task.TaskID]
+                {(detail.task_states ?? []).map((row) => {
+                  const open = expandedTask === row.TaskID
+                  const taskDetail = taskDetails[row.TaskID]
+                  const linked = linkedTaskOf(row, tasks)
                   return (
-                    <div key={`${task.Target}/${task.TaskID}`} className="mb-1 rounded-md border text-xs">
+                    <div key={`${row.Target}/${row.TaskID}`} className="mb-1 rounded-md border text-xs">
                       <button
                         type="button"
                         aria-expanded={open}
-                        onClick={() => toggleTask(task.TaskID)}
+                        onClick={() => toggleTask(row.TaskID)}
                         className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
                       >
-                        <span className="font-mono">{task.TaskID}</span><span>{task.Purpose}</span><span className="ml-auto text-muted-foreground">{task.LastType || '未知'}</span><span className="text-muted-foreground">{task.Target}</span>
+                        {/* 实况来自页面级 2.5s 任务流的真 state，渲染与看板同一套
+                            圆点+文案。LastType 只是镜像事件的类型不是状态：
+                            turn_failed 可 continue、completed 事件早于落态，拿它判
+                            「跑没跑完」会和看板得出相反结论（spec §3.1）。关联不上
+                            就写「实况未知」并把 LastType 当线索列出。 */}
+                        <span className="font-mono">{row.TaskID}</span><span>{row.Purpose}</span>
+                        {linked ? (
+                          <span className="ml-auto"><TaskState state={linked.state} /></span>
+                        ) : (
+                          <span className="ml-auto text-muted-foreground">实况未知{row.LastType !== '' && ` · 最后事件 ${row.LastType}`}</span>
+                        )}
+                        <span className="text-muted-foreground">{row.Target}</span>
                       </button>
                       {open && (
                         <div className="border-t px-2 py-2">
                           {/* 远程 task 的工单在这里也答得了：agentd 的 byTask 中间件会把
                               /api/tasks/{id}/* 透明代理到该 task 的属主机器。所以这一段
                               是纯前端复用，不需要任何新后端。 */}
-                          {taskLoading === task.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
-                          {taskErrors[task.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[task.TaskID]}</p>}
+                          {taskLoading === row.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
+                          {taskErrors[row.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[row.TaskID]}</p>}
                           {taskDetail && (
                             <TicketsPanel
                               bare
                               tickets={pendingTickets(taskDetail)}
                               disabled={false}
-                              onReply={(ticket, answer) => replyTaskTicket(task.TaskID, ticket, answer)}
+                              onReply={(ticket, answer) => replyTaskTicket(row.TaskID, ticket, answer)}
                             />
                           )}
                         </div>
