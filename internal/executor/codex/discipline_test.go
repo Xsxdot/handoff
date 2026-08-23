@@ -25,9 +25,9 @@ func TestStartInjectsDisciplineIntoPrompt(t *testing.T) {
 }
 
 func TestSandboxPolicyGrantsTaskTmp(t *testing.T) {
-	p := codex.SandboxPolicyForTest("/data/tasks/T1/tmp")
+	p := codex.SandboxPolicyForTest("/root/.handoff/tmp/137a7dc9")
 	roots, _ := p["writableRoots"].([]any)
-	if len(roots) != 1 || roots[0] != "/data/tasks/T1/tmp" {
+	if len(roots) != 1 || roots[0] != "/root/.handoff/tmp/137a7dc9" {
 		t.Fatalf("writableRoots = %v，任务专属 tmp 没进可写域", p["writableRoots"])
 	}
 	if p["excludeSlashTmp"] != true || p["excludeTmpdirEnvVar"] != true {
