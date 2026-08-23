@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/testperm"
 	"gopkg.in/yaml.v3"
 )
 
@@ -471,12 +472,7 @@ func TestLoadStripUpdateDoesNotBlockOnSaveFailure(t *testing.T) {
 	if err := os.WriteFile(p, []byte("listen: 127.0.0.1:7777\ntoken: tk\nupdate:\n  auto: true\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	// chmod 文件本身，不是目录：macOS 上 WriteFile 仍能截断已有 0600 文件，
-	// 目录 0500 挡不住回写，用例会假绿。0444 才让 Save 真正失败。
-	if err := os.Chmod(p, 0o444); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = os.Chmod(p, 0o600) })
+	testperm.DenyWrite(t, p)
 	if _, err := config.Load(p); err != nil {
 		t.Fatalf("回写失败不得阻断启动: %v", err)
 	}

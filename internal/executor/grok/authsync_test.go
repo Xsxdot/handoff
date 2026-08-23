@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/testperm"
 )
 
 const (
@@ -247,16 +248,10 @@ func TestSyncAuthKeepsTaskCopyWhenAuthorityCorrupt(t *testing.T) {
 
 // 用例 7（spec §7）：写回失败 → **任务侧副本被保留、软链未被恢复**。
 // 与用例 3 方向相反：那条守"别倒灌"，这条守"别把唯一一份新凭据丢掉"。
-// 构造手法：把假的 ~/.grok 置为 0500（可读可进、不可写），
-// CreateTemp 因此失败，而读权威副本仍然成功。
 func TestSyncAuthKeepsTaskCopyWhenWriteFails(t *testing.T) {
 	authPath, homeDir := fakeHome(t, authJSON(t, expOld, "authority"))
 	grokDir := filepath.Dir(authPath)
-	if err := os.Chmod(grokDir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	// 必须还原，否则 t.TempDir 的清理会失败
-	t.Cleanup(func() { _ = os.Chmod(grokDir, 0o700) })
+	testperm.DenyWrite(t, grokDir)
 	link := writeTaskCopy(t, homeDir, authJSON(t, expNewer, "task"))
 
 	if err := grok.SyncAuthToAuthority(homeDir, nil); err == nil {

@@ -20,6 +20,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/testperm"
 )
 
 func quietLog() *slog.Logger { return slog.New(slog.NewTextHandler(io.Discard, nil)) }
@@ -341,13 +343,7 @@ func TestActivateUnwritableDir(t *testing.T) {
 	if err := os.WriteFile(newp, []byte("NEW"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Skip("无法置只读目录，跳过")
-	}
-	t.Cleanup(func() { _ = os.Chmod(dir, 0o700) })
-	if os.Geteuid() == 0 {
-		t.Skip("root 无视目录权限，跳过")
-	}
+	testperm.DenyWrite(t, dir)
 	_, err := Activate(newp, target)
 	if err == nil {
 		t.Fatal("只读目录下 Activate 应失败")

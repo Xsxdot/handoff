@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/testperm"
 )
 
 func TestCursorNamespaceFoldsAddressForms(t *testing.T) {
@@ -38,11 +40,11 @@ func TestCursorRootPrefersHome(t *testing.T) {
 
 func TestCursorRootFallsBackToCwdWhenHomeUnwritable(t *testing.T) {
 	home := t.TempDir()
-	// 造一个不可写的 ~/.handoff：先建目录再摘掉写权限，
-	// 这样 MkdirAll 成功而 CreateTemp 失败——正是沙箱里的形状
-	if err := os.MkdirAll(filepath.Join(home, ".handoff"), 0o500); err != nil {
+	homeHandoff := filepath.Join(home, ".handoff")
+	if err := os.MkdirAll(homeHandoff, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	testperm.DenyWrite(t, homeHandoff)
 	t.Setenv("HOME", home)
 	cwd := t.TempDir()
 	t.Chdir(cwd)
@@ -79,14 +81,18 @@ func TestCursorRootResolvesOnlyOnce(t *testing.T) {
 
 func TestCursorRootErrorNamesBothPaths(t *testing.T) {
 	home := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(home, ".handoff"), 0o500); err != nil {
+	homeHandoff := filepath.Join(home, ".handoff")
+	if err := os.MkdirAll(homeHandoff, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	testperm.DenyWrite(t, homeHandoff)
 	t.Setenv("HOME", home)
 	cwd := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(cwd, ".handoff"), 0o500); err != nil {
+	cwdHandoff := filepath.Join(cwd, ".handoff")
+	if err := os.MkdirAll(cwdHandoff, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	testperm.DenyWrite(t, cwdHandoff)
 	t.Chdir(cwd)
 
 	c := New("http://127.0.0.1:7777", "")
