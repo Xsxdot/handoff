@@ -43,3 +43,4 @@
 - 命令：同一 `git add ...` 在 `sandbox_permissions=require_escalated` 下重试。
 - 原始输出：无输出，退出码 `0`。
 - 判断：当前 B203 文件集已成功加入 Git index；未执行 push。
+- 提交：`9277fe585bcffc1605399f562e35137b26acba88`（`feat(card): allow executor and model overrides`），当前分支 `cards/B203-charter`；`git status --short --branch` 仅输出分支首行，工作区干净。
