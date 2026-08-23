@@ -416,6 +416,9 @@ type DispatchReq struct {
 	// 先取 origin/HEAD 指向的默认分支名，再交给既有 D2 补拉到远端尖端。
 	// false 时 Base 为空仍保持普通 CLI/--no-sync-check 的 HEAD 语义。
 	ResolveDefaultBase bool
+	// LocalBaseBranch 表示 Base 是目标机本地工作分支；解析时不得补拉。
+	// 与 ResolveDefaultBase 互斥。
+	LocalBaseBranch bool
 	// Worktree / NewWorktree worktree 二选一：Worktree=用户自带 worktree；
 	// NewWorktree=在 DataDir/worktrees 下新建 managed worktree（done 时删除）。
 	Worktree    string
@@ -802,7 +805,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if start != "" {
 		// D2 只补拉普通分支名；短 sha、tag、origin/<分支> 等 commit-ish 形态
 		// 必须保留旧 resolveCommit 路径，否则 --base 的既有承诺会被网络 fetch 打断。
-		resolved, fetched, rerr := resolveDispatchBase(ctx, repoPath, start)
+		resolved, fetched, rerr := resolveDispatchBase(ctx, repoPath, start, req.LocalBaseBranch)
 		if rerr != nil {
 			return nil, rerr
 		}

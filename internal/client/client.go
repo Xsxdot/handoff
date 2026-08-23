@@ -732,8 +732,11 @@ type DispatchOpts struct {
 	// ResolveDefaultBase 仅供 card dispatch 链路使用：Base 为空时让目标
 	// agentd 按项目仓库的 origin/HEAD 解析默认分支；false=普通 CLI 派发语义。
 	ResolveDefaultBase bool
-	Worktree           string
-	NewWorktree        bool
+	// LocalBaseBranch 标记 Base 是目标机本地的工作分支；目标侧只解析本地 ref，
+	// 不得补拉。与 ResolveDefaultBase 互斥。
+	LocalBaseBranch bool
+	Worktree        string
+	NewWorktree     bool
 	// BaseCommit 是协调者本地 HEAD 的提交号，随请求上送让 agentd 校验任务仓库
 	// 不落后于本地（空=不校验）。
 	BaseCommit string
@@ -754,6 +757,7 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"discipline": opts.Discipline,
 		"branch":     opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
 		"resolve_default_base": opts.ResolveDefaultBase,
+		"local_base_branch":    opts.LocalBaseBranch,
 		"worktree":             opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
 	})
 	if err != nil {

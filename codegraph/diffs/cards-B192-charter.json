@@ -1,0 +1,134 @@
+{
+  "view": "cards/B192-charter",
+  "base": "bde05d2d",
+  "summary": "B192 Ticket 0：工作分支目标机返回值与本地起点 wire 标记",
+  "nodesAdded": {
+    "m_ledger_WorkBranchInfo": {
+      "kind": "model",
+      "container": "k_ledger_model",
+      "order": 127,
+      "name": "WorkBranchInfo",
+      "file": "internal/ledger/events.go",
+      "line": 129,
+      "summary": "WorkBranchInfo 是卡最近一次非审阅派发的工作分支及其目标机",
+      "fields": [
+        ["Branch", "string", "最近一次非审阅派发的工作分支名"],
+        ["Target", "string", "该次派发的目标机；空值表示历史快照没有目标机信息"]
+      ]
+    }
+  },
+  "nodesModified": {
+    "n_ledger_Store_WorkBranch": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 392,
+      "name": "Store.WorkBranch",
+      "file": "internal/ledger/events.go",
+      "line": 399,
+      "signature": "func (s *Store) WorkBranch(cardID string) (WorkBranchInfo, error)",
+      "signatureOld": "func (s *Store) WorkBranch(cardID string) (string, error)",
+      "params": [["cardID", "string", ""]],
+      "returns": "WorkBranchInfo, error",
+      "summary": "WorkBranch 返回最近一次非审阅派发的分支及目标机"
+    },
+    "m_ledgerstep_DispatchOpts": {
+      "kind": "model",
+      "container": "k_ledgerstep_model",
+      "order": 25,
+      "name": "DispatchOpts",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 25,
+      "summary": "DispatchOpts 是 Transport 的完整派发请求",
+      "fields": [
+        ["Prompt", "string", ""],
+        ["Branch", "string", ""],
+        ["Target", "string", ""],
+        ["Project", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["PlanB64", "string", ""],
+        ["PlanName", "string", ""],
+        ["Base", "string", ""],
+        ["ExistingBranch", "string", ""],
+        ["Discipline", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["ResolveDefaultBase", "bool", "空基线时由目标侧解析项目默认分支"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"]
+      ]
+    },
+    "m_client_DispatchOpts": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 700,
+      "name": "DispatchOpts",
+      "file": "internal/client/client.go",
+      "line": 715,
+      "summary": "DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应",
+      "fields": [
+        ["ProjectID", "string", ""],
+        ["ProjectName", "string", ""],
+        ["PlanB64", "string", ""],
+        ["PlanName", "string", ""],
+        ["Target", "string", ""],
+        ["Prompt", "string", ""],
+        ["Name", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["Branch", "string", ""],
+        ["NewBranch", "string", ""],
+        ["Base", "string", ""],
+        ["ResolveDefaultBase", "bool", "空基线时由目标侧解析项目默认分支"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"],
+        ["Worktree", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["BaseCommit", "string", ""]
+      ]
+    },
+    "m_agentd_DispatchReq": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 369,
+      "name": "DispatchReq",
+      "file": "internal/agentd/manager.go",
+      "line": 384,
+      "summary": "DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数",
+      "fields": [
+        ["ProjectID", "string", ""],
+        ["ProjectName", "string", ""],
+        ["PlanB64", "string", "plan 内容，base64 编码（路由/CLI 层编码，此处解码）"],
+        ["PlanName", "string", "plan 文件名（归档展示用，写入 task 的 PlanPath 目录下）"],
+        ["Target", "string", "目标主机名（归档展示用，记入 task.Target）"],
+        ["Prompt", "string", ""],
+        ["Name", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["Branch", "string", ""],
+        ["NewBranch", "string", ""],
+        ["Base", "string", ""],
+        ["ResolveDefaultBase", "bool", "空基线时解析 origin/HEAD"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"],
+        ["Worktree", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["BaseCommit", "string", ""]
+      ]
+    },
+    "n_agentd_resolveDispatchBase": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 994,
+      "name": "resolveDispatchBase",
+      "file": "internal/agentd/workspace.go",
+      "line": 996,
+      "signature": "func resolveDispatchBase(ctx context.Context, repo, rev string, localBaseBranch bool) (resolved string, fetched bool, err error)",
+      "signatureOld": "func resolveDispatchBase(ctx context.Context, repo, rev string) (resolved string, fetched bool, err error)",
+      "params": [
+        ["ctx", "context.Context", ""],
+        ["repo", "string", ""],
+        ["rev", "string", ""],
+        ["localBaseBranch", "bool", "本地工作分支标记"]
+      ],
+      "returns": "resolved string, fetched bool, err error",
+      "summary": "按起点来源选择 commit-ish 解析或分支补拉；本地工作分支标记接缝已冻结"
+    }
+  }
+}

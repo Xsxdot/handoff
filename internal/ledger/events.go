@@ -124,6 +124,13 @@ type DispatchSnapshot struct {
 	Actor           string `json:"-"`
 }
 
+// WorkBranchInfo 是卡最近一次非审阅派发的工作分支及其目标机。
+// Target 用于下一轮派发判断工作分支是否仍在同一台执行机上。
+type WorkBranchInfo struct {
+	Branch string
+	Target string
+}
+
 // RecordDispatch 落派发事件。
 func (s *Store) RecordDispatch(cardID string, snap DispatchSnapshot) error {
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
@@ -389,20 +396,21 @@ func (s *Store) Subtree(rootID string) ([]string, error) {
 // 的答案必须跳过审阅轮，否则合并节点会去合一条审阅分支，而第二轮审阅
 // 会撞上第一轮的同名分支（真机实测：fatal: a branch named ... already exists）。
 // 老快照没有 purpose 字段时回落到挂账表按 task_id 查用途。
-func (s *Store) WorkBranch(cardID string) (string, error) {
+func (s *Store) WorkBranch(cardID string) (WorkBranchInfo, error) {
+	var zero WorkBranchInfo
 	events, err := s.EventsFromAsc([]string{cardID}, 0, 10000)
 	if err != nil {
-		return "", fmt.Errorf("读卡 dispatched 事件: %w", err)
+		return zero, fmt.Errorf("读卡 dispatched 事件: %w", err)
 	}
 	links, err := s.TasksOf(cardID)
 	if err != nil {
-		return "", err
+		return zero, err
 	}
 	purposeOf := map[string]string{}
 	for _, link := range links {
 		purposeOf[link.TaskID] = link.Purpose
 	}
-	branch := ""
+	info := WorkBranchInfo{}
 	for _, event := range events {
 		if event.Type != EvDispatched {
 			continue
@@ -419,13 +427,13 @@ func (s *Store) WorkBranch(cardID string) (string, error) {
 			continue
 		}
 		if snapshot.Branch != "" {
-			branch = snapshot.Branch
+			info = WorkBranchInfo{Branch: snapshot.Branch, Target: snapshot.Target}
 		}
 	}
-	if branch == "" {
-		return "", fmt.Errorf("卡 %s 没有非审阅的 dispatched 快照（还没派过实现轮？）: %w", cardID, ErrNotFound)
+	if info.Branch == "" {
+		return zero, fmt.Errorf("卡 %s 没有非审阅的 dispatched 快照（还没派过实现轮？）: %w", cardID, ErrNotFound)
 	}
-	return branch, nil
+	return info, nil
 }
 
 // PurposeRounds 数该卡已派出的指定 purpose 轮数（只增不减，用于给重跑轮的
