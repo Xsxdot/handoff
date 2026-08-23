@@ -17,6 +17,19 @@ import { ApiError, fetchProjectBranches, fetchProjects } from '../../api/client'
 import type { ProjectBranchesResp } from '../../api/types'
 import { errorMessage } from '../lib/format'
 
+// parseTitles 把多行标题文本解析成建卡清单：一行一张。
+//
+// 容错规则（spec §3.3）：逐行 trim、跳过空行、去掉行首的 `-` `*` `•` 或
+// `1.` `1)` `1、` 式列表前缀——从聊天记录或文档粘一份清单进来就能直接用。
+// 数字前缀允许零空格（「1.标题」也认）；`-`/`*` 后面必须跟空白才算前缀，
+// 否则负数样标题（-40ms）会被剥得缺胳膊少腿。
+export function parseTitles(raw: string): string[] {
+  return raw
+    .split('\n')
+    .map((line) => line.replace(/^\s*(?:[-*•]\s+|\d+[.)、]\s*)/, '').trim())
+    .filter((line) => line !== '')
+}
+
 const LAST_PROJECT_KEY = 'handoff.cards.lastProject'
 
 function loadLastProject(): string {
@@ -65,7 +78,6 @@ export function NewCardDialog({
   const [priority, setPriority] = useState('中')
   const [baseBranch, setBaseBranch] = useState('')
   const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
   // picked 是用户手动动过的选择；null = 还没动过，让位给三档预选派生
   const [picked, setPicked] = useState<string | null>(null)
   const [registered, setRegistered] = useState<string[]>([])
@@ -74,6 +86,10 @@ export function NewCardDialog({
   const [branchOptions, setBranchOptions] = useState<string[]>([])
   const [branchDefault, setBranchDefault] = useState('')
   const [branchHint, setBranchHint] = useState('')
+  const [result, setResult] = useState<{
+    succeeded: { title: string; id: string }[]
+    failed: { title: string; reason: string }[]
+  } | null>(null)
 
   useEffect(() => {
     if (!open) return
@@ -92,7 +108,7 @@ export function NewCardDialog({
   useEffect(() => {
     if (!open) {
       // 关闭即复位：下次打开重新按三档预选，不带上一轮的残值
-      setPicked(null); setTitle(''); setBaseBranch(''); setError('')
+      setPicked(null); setTitle(''); setBaseBranch(''); setResult(null)
       setBranchOptions([]); setBranchDefault(''); setBranchHint('')
       branchSeq.current++
     }
@@ -141,26 +157,42 @@ export function NewCardDialog({
 
   if (!open) return null
 
+  const titles = parseTitles(title)
+
   const submit = async () => {
-    const trimmed = title.trim()
-    if (!trimmed || projectValue === '') return
+    if (titles.length === 0 || projectValue === '') return
     setBusy(true)
-    setError('')
-    try {
-      const result = await createCard({
-        title: trimmed, project: projectValue, workflow, priority,
-        ...(parent ? { parent } : {}),
-        ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
-      })
-      setTitle('')
-      setBaseBranch('')
-      saveLastProject(projectValue)
-      onCreated(result.id)
-    } catch (err) {
-      setError(errorMessage(err))
-    } finally {
-      setBusy(false)
+    setResult(null)
+    const succeeded: { title: string; id: string }[] = []
+    const failed: { title: string; reason: string }[] = []
+    // 串行不并发：并发会让卡号顺序与用户写下顺序对不上，而 B 号顺序是人读
+    // 账本时的隐含线索（spec §5）。逐条提交逐条记账，已成功的不回滚。
+    for (const one of titles) {
+      try {
+        const created = await createCard({
+          title: one,
+          project: projectValue,
+          workflow,
+          priority,
+          ...(parent ? { parent } : {}),
+          ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
+        })
+        succeeded.push({ title: one, id: created.id })
+      } catch (err) {
+        failed.push({ title: one, reason: errorMessage(err) })
+      }
     }
+    setBusy(false)
+    if (succeeded.length > 0) saveLastProject(projectValue)
+    if (failed.length > 0) {
+      // 有失败就留在原地展示结果：成功列卡号、失败列原因；用户改掉失败那几行
+      // 直接再点一次，不用从头重来（spec 故事 7）
+      setResult({ succeeded, failed })
+      return
+    }
+    setTitle('')
+    setBaseBranch('')
+    onCreated(succeeded[succeeded.length - 1].id)
   }
 
   return (
@@ -181,10 +213,14 @@ export function NewCardDialog({
         )}
         <p className="mt-1 text-xs text-muted-foreground">建卡后不可改</p>
         <label className="mt-3 block text-xs text-muted-foreground" htmlFor="new-card-title">标题</label>
-        <input
-          id="new-card-title" className="mt-1 w-full rounded border px-2 py-1.5 text-sm"
+        <textarea
+          id="new-card-title" rows={3} className="mt-1 w-full rounded border px-2 py-1.5 text-sm"
+          placeholder="一行一张卡；粘贴多行时 - / * / 1. 前缀和空行会被忽略"
           value={title} onChange={(e) => setTitle(e.target.value)} autoFocus
         />
+        <p className="mt-1 text-xs text-muted-foreground">
+          {titles.length > 0 ? `将建 ${titles.length} 张卡${titles.length > 1 ? '，共用下方字段' : ''}` : '一行一张卡'}
+        </p>
         <div className="mt-3 grid grid-cols-2 gap-3">
           <div>
             <label className="block text-xs text-muted-foreground" htmlFor="new-card-workflow">工作流</label>
@@ -221,12 +257,21 @@ export function NewCardDialog({
         <p className="mt-1 text-xs text-muted-foreground">
           这张卡的合并目标。<b>建卡后不可改</b>——已派出去的任务会按它工作。
         </p>
-        {error !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-2 text-xs">{error}</p>}
+        {result !== null && (
+          <div className="mt-3 space-y-1 rounded border p-2 text-xs">
+            {result.succeeded.map((row, i) => (
+              <p key={`${row.id}-${i}`}>已建 <span className="font-mono">{row.id}</span> · {row.title}</p>
+            ))}
+            {result.failed.map((row, i) => (
+              <p key={`${row.title}-${i}`} className="text-destructive">「{row.title}」未建成：{row.reason}</p>
+            ))}
+          </div>
+        )}
         <div className="mt-4 flex justify-end gap-2">
           <button type="button" className="rounded border px-3 py-1.5 text-sm" onClick={onClose}>取消</button>
           <button
             type="button" className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-            disabled={busy || title.trim() === '' || projectValue === ''}
+            disabled={busy || titles.length === 0 || projectValue === ''}
             onClick={() => void submit()}
           >建卡</button>
         </div>

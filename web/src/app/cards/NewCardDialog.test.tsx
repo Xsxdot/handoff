@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ApiError } from '../../api/client'
-import { NewCardDialog } from './NewCardDialog'
+import { NewCardDialog, parseTitles } from './NewCardDialog'
 
 vi.mock('../../api/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/ledger')>()),
@@ -141,5 +141,53 @@ describe('基线分支', () => {
     await waitFor(() => expect(vi.mocked(ledger.createCard)).toHaveBeenCalledWith(
       expect.objectContaining({ project: 'ghost', base_branch: 'feat/from-scratch' }),
     ))
+  })
+})
+
+describe('标题批量', () => {
+  it('parseTitles：列表前缀、空行、trim；负数样标题不被误伤', () => {
+    expect(parseTitles('- 一\n* 二\n1. 三\n2) 四\n3、五\n\n  六  \n-40ms')).toEqual(
+      ['一', '二', '三', '四', '五', '六', '-40ms'],
+    )
+    expect(parseTitles('   ')).toEqual([])
+    expect(parseTitles('')).toEqual([])
+  })
+
+  it('N 行提交按输入顺序串行调 createCard N 次，标题各异其余字段相同；成功后回调最后一张', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.createCard)
+      .mockResolvedValueOnce({ id: 'B201' })
+      .mockResolvedValueOnce({ id: 'B202' })
+      .mockResolvedValueOnce({ id: 'B203' })
+    const onCreated = vi.fn()
+    render(<NewCardDialog {...props} project="" onCreated={onCreated} />)
+    fireEvent.change(await screen.findByLabelText('项目'), { target: { value: 'handoff' } })
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: '- 一\n二\n3. 三' } })
+    expect(screen.getByText(/将建 3 张卡/)).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '建卡' }))
+    await waitFor(() => expect(ledger.createCard).toHaveBeenCalledTimes(3))
+    const calls = vi.mocked(ledger.createCard).mock.calls.map((call) => call[0])
+    expect(calls.map((request) => request.title)).toEqual(['一', '二', '三'])
+    for (const request of calls) {
+      expect(request).toMatchObject({ project: 'handoff', workflow: 'feature', priority: '中' })
+    }
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('B203'))
+  })
+
+  it('部分失败不回滚：成功的列卡号、失败的列行内容与原因，留在原地可改行重试', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.createCard)
+      .mockResolvedValueOnce({ id: 'B204' })
+      .mockRejectedValueOnce(new Error('title 与 workflow 都是必填'))
+      .mockResolvedValueOnce({ id: 'B205' })
+    const onCreated = vi.fn()
+    render(<NewCardDialog {...props} project="" onCreated={onCreated} />)
+    fireEvent.change(await screen.findByLabelText('项目'), { target: { value: 'handoff' } })
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: '甲\n乙\n丙' } })
+    fireEvent.click(screen.getByRole('button', { name: '建卡' }))
+    expect(await screen.findAllByText(/已建/)).toHaveLength(2)
+    expect(screen.getByText(/B204/)).toBeInTheDocument()
+    expect(screen.getByText(/乙.*title 与 workflow 都是必填/)).toBeInTheDocument()
+    expect(onCreated).not.toHaveBeenCalled()
   })
 })
