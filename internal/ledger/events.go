@@ -104,7 +104,7 @@ func (s *Store) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]Eve
 
 // ---- 以下为建立在事件流上的领域操作 ----
 
-var cardRefPat = regexp.MustCompile(`#(B\d+(?:\.\d+)*)`)
+var cardRefPat = regexp.MustCompile(`#([A-Z]{1,4}\d+(?:\.\d+)*)`)
 
 // DispatchSnapshot 派发事件快照：模板版本 + 纪律块角色名 + 落点。
 // 「B107 那次派发用的哪版纪律块」从这里答（蓝图 §3.3 取证文化）。
@@ -155,7 +155,7 @@ func (s *Store) RecordReviewVerdict(cardID, node string, pass bool, raw, actor s
 	})
 }
 
-// AddComment 发评论。body 里的 #B 号引用解析出来：存在的卡自动建
+// AddComment 发评论。body 里的 #<前缀><数字> 号引用解析出来：存在的卡自动建
 // relates 边（幂等），不存在的只留在 refs 里（评论是记录不是校验）。
 // kind ∈ {普通, 更正}——「更正」承接 markdown 总账的变更痕迹文化。
 func (s *Store) AddComment(cardID, body, kind, actor string) (Event, error) {

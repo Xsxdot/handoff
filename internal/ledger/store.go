@@ -252,6 +252,10 @@ func (s *Store) ensureSchema() error {
 				updated_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS ledger_meta (
 				key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS card_prefixes (
+				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
+			`INSERT INTO card_prefixes (project, prefix) VALUES ('handoff', 'B')
+				ON CONFLICT (project) DO NOTHING`,
 		}
 	} else {
 		// SQLite 回退映射（spec §2.1 文末注）：BIGSERIAL→AUTOINCREMENT、
@@ -310,6 +314,10 @@ func (s *Store) ensureSchema() error {
 				updated_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS ledger_meta (
 				key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS card_prefixes (
+				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
+			`INSERT INTO card_prefixes (project, prefix) VALUES ('handoff', 'B')
+				ON CONFLICT (project) DO NOTHING`,
 		}
 	}
 	for _, stmt := range ddl {

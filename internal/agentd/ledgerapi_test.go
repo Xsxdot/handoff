@@ -586,7 +586,7 @@ func TestCardAcceptUnknownCard404(t *testing.T) {
 // 200 会让前端以为它已经做完了。
 func TestCardStepReturns202(t *testing.T) {
 	env := newLedgerEnv(t)
-	seedCardWithProject(t, env.srv, "demo")
+	seedCardWithProject(t, env.srv, "handoff")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -602,7 +602,7 @@ func TestCardStepReturns202(t *testing.T) {
 // TestCardStepSecondReturns409 同卡第二个环节 409 并说清冲突原因。
 func TestCardStepSecondReturns409(t *testing.T) {
 	env := newLedgerEnv(t)
-	seedCardWithProject(t, env.srv, "demo")
+	seedCardWithProject(t, env.srv, "handoff")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -623,7 +623,7 @@ func TestCardStepSecondReturns409(t *testing.T) {
 // 浏览器里没有那个文件，只能走 CLI。
 func TestCardStepRejectsImplement(t *testing.T) {
 	env := newLedgerEnv(t)
-	seedCardWithProject(t, env.srv, "demo")
+	seedCardWithProject(t, env.srv, "handoff")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
