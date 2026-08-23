@@ -118,13 +118,17 @@
       "to": "d_contract",
       "entries": [
         "proto 实体",
-        "proto.TaskState"
+        "proto.TaskState",
+        "proto.CardStepReq"
       ],
       "legacyBudget": 4
     },
     {
       "from": "d_cli",
       "to": "d_controlplane",
+      "entries": [
+        "POST /api/cards/{id}/step"
+      ],
       "legacyBudget": 12
     },
     {
@@ -175,7 +179,8 @@
       "entries": [
         "discipline.Resolver",
         "proto 实体",
-        "proto.Task"
+        "proto.Task",
+        "proto.CardStepReq"
       ],
       "legacyBudget": 19
     },
@@ -201,6 +206,7 @@
       "to": "d_ledger",
       "entries": [
         "ledger.Store",
+        "ledgerstep.StepRunner",
         "store.Store"
       ],
       "legacyBudget": 3
@@ -257,6 +263,13 @@
       "from": "d_release",
       "to": "d_localint",
       "legacyBudget": 1
+    },
+    {
+      "from": "d_web",
+      "to": "d_controlplane",
+      "entries": [
+        "POST /api/cards/{id}/step"
+      ]
     },
     {
       "from": "d_release",
