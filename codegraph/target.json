@@ -165,7 +165,8 @@
       "to": "d_remote",
       "entries": [
         "client 实体",
-        "client.Client"
+        "client.Client",
+        "client.DispatchOpts.local_base_branch"
       ],
       "legacyBudget": 10
     },
@@ -223,7 +224,8 @@
       "from": "d_controlplane",
       "to": "d_remote",
       "entries": [
-        "targetclient.Pool"
+        "targetclient.Pool",
+        "client.DispatchOpts.local_base_branch"
       ],
       "legacyBudget": 6
     },

@@ -201,8 +201,8 @@ func TestViaTemplateSecondRoundGetsNumberedBranch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkBranch: %v", err)
 	}
-	if wb != want[1] {
-		t.Fatalf("WorkBranch 应读回最新挂号分支 %q，实得 %q", want[1], wb)
+	if wb.Branch != want[1] || wb.Target != "mac-02" {
+		t.Fatalf("WorkBranch 应读回最新挂号分支及目标机 %q，实得 %+v", want[1], wb)
 	}
 }
 
@@ -247,8 +247,8 @@ func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WorkBranch: %v", err)
 	}
-	if gotWorkBranch != workBranch {
-		t.Fatalf("WorkBranch 应跳过审阅轮并保持 %q，实得 %q", workBranch, gotWorkBranch)
+	if gotWorkBranch.Branch != workBranch || gotWorkBranch.Target != "mac-02" {
+		t.Fatalf("WorkBranch 应跳过审阅轮并保持分支及目标机 %q，实得 %+v", workBranch, gotWorkBranch)
 	}
 }
 

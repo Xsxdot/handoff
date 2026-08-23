@@ -990,8 +990,11 @@ func needsBaseBranchSync(ctx context.Context, repo, rev string) bool {
 }
 
 // resolveDispatchBase 按 --base 的形态选择旧 commit-ish 解析或 D2 分支补拉。
+// localBaseBranch 为真时起点来自目标机本地工作分支；Ticket 0 先把该判据
+// 穿到解析缝，后续实现补上只读 refs/heads 且拒绝网络的分支。
 // 返回值 fetched 供 manager 日志标记是否真的走过 origin fetch。
-func resolveDispatchBase(ctx context.Context, repo, rev string) (resolved string, fetched bool, err error) {
+func resolveDispatchBase(ctx context.Context, repo, rev string, localBaseBranch bool) (resolved string, fetched bool, err error) {
+	_ = localBaseBranch
 	if !needsBaseBranchSync(ctx, repo, rev) {
 		resolved, err = resolveCommit(ctx, repo, rev)
 		return resolved, false, err

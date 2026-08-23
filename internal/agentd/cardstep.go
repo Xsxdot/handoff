@@ -105,6 +105,7 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		Discipline: opts.Discipline,
 		PlanB64:    opts.PlanB64, PlanName: opts.PlanName, Base: opts.Base,
 		ResolveDefaultBase: opts.ResolveDefaultBase,
+		LocalBaseBranch:    opts.LocalBaseBranch,
 		NewWorktree:        opts.NewWorktree,
 	})
 	if err != nil {

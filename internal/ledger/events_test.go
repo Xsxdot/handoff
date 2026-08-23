@@ -187,8 +187,8 @@ func TestWorkBranchSkipsReviewRounds(t *testing.T) {
 		t.Fatalf("记审阅派发: %v", err)
 	}
 	got, err := s.WorkBranch(c.ID)
-	if err != nil || got != "cards/"+c.ID+"-implement" {
-		t.Fatalf("工作分支应为实现轮的分支: %q %v", got, err)
+	if err != nil || got.Branch != "cards/"+c.ID+"-implement" || got.Target != "acc" {
+		t.Fatalf("工作分支应为实现轮的分支及目标机: %+v %v", got, err)
 	}
 
 	// 老快照没有 purpose 字段时，回落到挂账表查用途
@@ -196,8 +196,8 @@ func TestWorkBranchSkipsReviewRounds(t *testing.T) {
 	_ = s.RecordDispatch(c.ID, DispatchSnapshot{
 		Template: "review-generic", Target: "acc", TaskID: "T-review-2",
 		Branch: "cards/" + c.ID + "-review", Actor: "test"})
-	if got, err = s.WorkBranch(c.ID); err != nil || got != "cards/"+c.ID+"-implement" {
-		t.Fatalf("无 purpose 的审阅快照应经挂账表识别并跳过: %q %v", got, err)
+	if got, err = s.WorkBranch(c.ID); err != nil || got.Branch != "cards/"+c.ID+"-implement" || got.Target != "acc" {
+		t.Fatalf("无 purpose 的审阅快照应经挂账表识别并跳过: %+v %v", got, err)
 	}
 }
 

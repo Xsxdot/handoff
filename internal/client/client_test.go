@@ -612,6 +612,33 @@ func TestDispatchSerializesCardDefaultBaseMarker(t *testing.T) {
 	}
 }
 
+// TestDispatchSerializesLocalBaseBranchMarker freezes the new wire key: the
+// work-branch continuation marker must cross the JSON boundary as a distinct
+// boolean and remain mutually exclusive with the default-base marker.
+func TestDispatchSerializesLocalBaseBranchMarker(t *testing.T) {
+	var got map[string]any
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("解析 dispatch 请求: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"T-local-base"}`))
+	}))
+	defer ts.Close()
+	if _, err := client.New(ts.URL, testToken).Dispatch(context.Background(), client.DispatchOpts{
+		ProjectID: "deadbeefdeadbeef", Prompt: "card", Base: "cards/B192-implement",
+		LocalBaseBranch: true,
+	}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if got["local_base_branch"] != true {
+		t.Fatalf("请求必须带 local_base_branch=true，实得 %#v", got["local_base_branch"])
+	}
+	if got["resolve_default_base"] != false {
+		t.Fatalf("本地工作分支起点不得同时要求默认基线解析，实得 %#v", got["resolve_default_base"])
+	}
+}
+
 // TestDoneNoteSavedTrue 断言新 agentd 回传 true 时如实返回。
 func TestDoneNoteSavedTrue(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

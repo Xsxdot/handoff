@@ -43,6 +43,7 @@ type dispatchRequest struct {
 	planName           string
 	base               string
 	resolveDefaultBase bool
+	localBaseBranch    bool
 }
 
 // dispatchTransport 是派发前逻辑的测试缝。生产路径由
@@ -76,6 +77,7 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		Discipline: req.discipline,
 		PlanB64:    req.planB64, PlanName: req.planName, Base: req.base,
 		ResolveDefaultBase: req.resolveDefaultBase,
+		LocalBaseBranch:    req.localBaseBranch,
 		NewWorktree:        req.newWorktree,
 	})
 	if err != nil {
@@ -96,6 +98,7 @@ func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, er
 		planName: opts.PlanName, base: opts.Base, existingBranch: opts.ExistingBranch,
 		discipline: opts.Discipline, newWorktree: opts.NewWorktree,
 		resolveDefaultBase: opts.ResolveDefaultBase,
+		localBaseBranch:    opts.LocalBaseBranch,
 	})
 }
 

@@ -1209,7 +1209,7 @@ func TestResolveDispatchBaseLocalBranchUsesConfiguredRemote(t *testing.T) {
 	upstreamSHA := commitOnOrigin(t, upstream, "upstream.txt", "upstream")
 	gitT(t, clone, "config", "branch.main.remote", "upstream")
 
-	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main", false)
 	if err != nil {
 		t.Fatalf("resolveDispatchBase: %v", err)
 	}
@@ -1266,7 +1266,7 @@ func TestResolveDispatchBaseCommitISHKeepsOldPath(t *testing.T) {
 			want := gitOut(t, clone, "rev-parse", base+"^{commit}")
 			gitT(t, clone, "remote", "set-url", "origin", filepath.Join(t.TempDir(), "missing-origin.git"))
 
-			got, fetched, err := resolveDispatchBase(context.Background(), clone, base)
+			got, fetched, err := resolveDispatchBase(context.Background(), clone, base, false)
 			if err != nil {
 				t.Fatalf("resolveDispatchBase(%q): %v", base, err)
 			}
@@ -1290,7 +1290,7 @@ func TestResolveDispatchBaseAmbiguousRemoteOnlyBranch(t *testing.T) {
 	gitT(t, clone, "remote", "add", "upstream", up)
 	gitT(t, clone, "fetch", "-q", "upstream")
 
-	_, fetched, err := resolveDispatchBase(context.Background(), clone, "shared-base")
+	_, fetched, err := resolveDispatchBase(context.Background(), clone, "shared-base", false)
 	if fetched {
 		t.Fatalf("多远端歧义不得触发 D2 fetch")
 	}
@@ -1312,7 +1312,7 @@ func TestResolveDispatchBaseRemoteOnlyUpstreamStillFetches(t *testing.T) {
 	gitT(t, clone, "branch", "-D", "main")
 	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
 
-	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main", false)
 	if err != nil {
 		t.Fatalf("resolveDispatchBase: %v", err)
 	}
@@ -1332,7 +1332,7 @@ func TestResolveDispatchBaseRemoteOnlyOriginStillFetches(t *testing.T) {
 	gitT(t, clone, "branch", "-D", "main")
 	newSHA := commitOnOrigin(t, origin, "second.txt", "2")
 
-	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main")
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "main", false)
 	if err != nil {
 		t.Fatalf("resolveDispatchBase: %v", err)
 	}

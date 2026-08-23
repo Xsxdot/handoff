@@ -28,6 +28,9 @@ type DispatchOpts struct {
 	// ResolveDefaultBase 标记卡链没有显式基线，需由知道目标仓库路径的 agentd
 	// 解析项目默认分支；false 时保持普通派发的 Base/HEAD 语义。
 	ResolveDefaultBase bool
+	// LocalBaseBranch 标记 Base 是目标机本地的工作分支；目标侧只解析本地 ref，
+	// 不得走分支名的远端补拉路径。与 ResolveDefaultBase 互斥。
+	LocalBaseBranch bool
 }
 
 // Transport 是注入的派发传输。返回 agentd 生成的 task id；实现不关心传输协议。
@@ -132,10 +135,11 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	branch := fmt.Sprintf("%s/%s-%s", tpl.Def.BranchPrefix, c.ID, purpose)
 	existingBranch := ""
 	if purpose == ledger.PurposeReview {
-		work, err := d.St.WorkBranch(c.ID)
+		workInfo, err := d.St.WorkBranch(c.ID)
 		if err != nil {
 			return zero, fmt.Errorf("审阅轮取工作分支: %w", err)
 		}
+		work := workInfo.Branch
 		// 审阅每轮开一条指向工作分支当前提交的一次性分支。三个约束叠出这个形态：
 		// ① 不能复用固定名 cards/<卡>-review——第二轮撞名，判据② 的 3 轮封顶
 		//    走不到第二轮；② 不能直接检出工作分支——实现任务的工作树还占着它，
