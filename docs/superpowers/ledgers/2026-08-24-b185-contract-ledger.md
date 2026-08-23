@@ -82,3 +82,4 @@
 - 2026-08-24：执行 `git commit -m "chore(ledger): finalize B185 plan verification"` 成功；原始输出为 `[cards/B185-charter-3 0b54b489] chore(ledger): finalize B185 plan verification`、`1 file changed, 4 insertions(+)`。
 - 2026-08-24：为记录上一条提交事实而再次执行 `git add docs/superpowers/ledgers/2026-08-24-b185-contract-ledger.md` 与 `git diff --cached --check`；两命令成功，后者原始输出为空，exit 0。
 - 2026-08-24：最终门禁执行 `git status --short --branch`、`git log -6 --oneline --decorate`、`git diff --check`、`git diff --name-only HEAD~8..HEAD -- cmd internal/agentd internal/ledgerstep internal/proto web`、`git ls-files --error-unmatch docs/superpowers/plans/2026-08-24-b185-step-in-agentd.md` 与占位符扫描；原始输出依次为 `## cards/B185-charter-3`、HEAD `0ff81d5b`、实现域差异为空、计划路径、占位符扫描为空，所有命令 exit 0。
+- 2026-08-24：执行 `git commit -m "chore(ledger): record B185 final gate"` 成功；原始输出为 `[cards/B185-charter-3 e349e9f4] chore(ledger): record B185 final gate`、`1 file changed, 1 insertion(+)`。
