@@ -25,7 +25,9 @@ import (
 // 读成 PlanB64/PlanName；其余字段与 agentd 的派发协议一一对应。
 type DispatchOpts struct {
 	Prompt, Branch, Target, Project, Executor, Model, PlanB64, PlanName, Base, ExistingBranch, Discipline string
-	NewWorktree                                                                                           bool
+	// OutputPath 是节点声明路径的确定值，供 transport 审计与测试观察；路径同时已注入 Prompt。
+	OutputPath  string
+	NewWorktree bool
 	// ResolveDefaultBase 标记卡链没有显式基线，需由知道目标仓库路径的 agentd
 	// 解析项目默认分支；false 时保持普通派发的 Base/HEAD 语义。
 	ResolveDefaultBase bool
@@ -74,6 +76,9 @@ type TemplateDispatch struct {
 	OmitAcceptance bool
 	// Extra 是本次派发的临时补充说明，可为空。
 	Extra string
+	// OutputPath 是本节点声明路径在协调者侧按本轮派发日期渲染后的确定值。
+	// 它独立于 CarryCardContext：即使不携带卡上下文，执行者仍必须收到该法定路径。
+	OutputPath string
 }
 
 // ViaTemplate 按模板把一张卡派出去。
@@ -198,7 +203,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if err != nil {
 		return zero, fmt.Errorf("取卡上下文基线: %w", err)
 	}
-	prompt := buildPrompt(body, c, cardBase, req.CarryCardContext, req.OmitAcceptance, req.Extra)
+	prompt := buildPrompt(body, c, cardBase, req.CarryCardContext, req.OmitAcceptance, req.Extra, req.OutputPath)
 	model := ""
 	if tpl.Def.ModelByTarget != nil {
 		model = tpl.Def.ModelByTarget[target]
@@ -227,11 +232,15 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"branch", branch, "base", base,
 		"resolve_default_base", resolveDefaultBase,
 		"carry_card_context", req.CarryCardContext, "has_extra", strings.TrimSpace(req.Extra) != "",
+		"output_path", req.OutputPath,
 		"prompt_bytes", len(prompt))
+	slog.Default().Info("派发前已确定节点产出路径", "card", c.ID, "template", req.Template,
+		"target", target, "output_path", req.OutputPath)
 	taskID, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
-		PlanName: planName, Base: base, NewWorktree: true,
+		OutputPath: req.OutputPath,
+		PlanName:   planName, Base: base, NewWorktree: true,
 		ExistingBranch: existingBranch, Discipline: disciplineName,
 		ResolveDefaultBase: resolveDefaultBase,
 		LocalBaseBranch:    localBaseBranch,
@@ -272,6 +281,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 //   - carry: 是否拼入卡上下文段（节点的 CarryCardContext 开关）
 //   - omitAccept: 是否**不**注入整卡验收判据（节点的 OmitAcceptance 开关）
 //   - extra: 本次派发的临时补充说明，可为空
+//   - outputPath: 本节点声明路径；独立于 carry，即使不带卡上下文也必须注入
 //
 // 返回：拼好的 prompt。三段之间用空行分隔，缺席的段不留空标题。
 //
@@ -282,7 +292,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 // 注意：**这里绝不拼纪律块正文**。纪律块只传名字，正文由 agentd 按 B129 注入；
 // 两份纪律同场会让审阅的「只读」被实现块的「完成即 commit」推翻（2026-08-19
 // 真机出过一次）。
-func buildPrompt(body string, c ledger.Card, base string, carry, omitAccept bool, extra string) string {
+func buildPrompt(body string, c ledger.Card, base string, carry, omitAccept bool, extra, outputPath string) string {
 	sections := []string{body}
 	if carry {
 		var b strings.Builder
@@ -311,6 +321,11 @@ func buildPrompt(body string, c ledger.Card, base string, carry, omitAccept bool
 	}
 	if strings.TrimSpace(extra) != "" {
 		sections = append(sections, "## 本次补充\n\n"+strings.TrimSpace(extra))
+	}
+	if strings.TrimSpace(outputPath) != "" {
+		sections = append(sections,
+			"## 本节点产出物\n\n- 法定路径："+outputPath+
+				"\n- 请把本节点产出物写到该路径，不要另起文件名。")
 	}
 	return strings.Join(sections, "\n\n")
 }

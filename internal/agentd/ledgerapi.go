@@ -109,6 +109,14 @@ func ledgerEventWire(event ledger.Event) proto.LedgerEvent {
 }
 
 func ledgerNodeWire(node ledger.NodeDef) proto.NodeDef {
+	// 显式投影指针，保留旧节点字段缺失与新节点显式对象之间的区别。
+	var produces *proto.NodeOutput
+	if node.Produces != nil {
+		produces = &proto.NodeOutput{
+			Kind: node.Produces.Kind,
+			Path: node.Produces.Path,
+		}
+	}
 	return proto.NodeDef{
 		Name: node.Name, Template: node.Template,
 		Override: proto.NodeOverride{
@@ -116,13 +124,14 @@ func ledgerNodeWire(node ledger.NodeDef) proto.NodeDef {
 			Target: node.Override.Target, Model: node.Override.Model,
 		},
 		Dispatch: node.Dispatch, Verdict: node.Verdict, CarryCardContext: node.CarryCardContext,
-		MaxRounds: node.MaxRounds, Next: node.Next, OnFail: node.OnFail,
+		MaxRounds: node.MaxRounds, OmitAcceptance: node.OmitAcceptance, Next: node.Next, OnFail: node.OnFail,
 		Gate: proto.Gate{
 			RequireAttachment:   node.Gate.RequireAttachment,
 			RequireAcceptance:   node.Gate.RequireAcceptance,
 			RequireChildrenDone: node.Gate.RequireChildrenDone,
 		},
 		HumanBases: node.HumanBases,
+		Produces:   produces,
 	}
 }
 

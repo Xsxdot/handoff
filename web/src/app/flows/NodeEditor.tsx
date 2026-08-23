@@ -74,6 +74,18 @@ export function NodeEditor({
     update({ gate: Object.keys(cleanedGate).length > 0 ? cleanedGate : undefined })
   }
 
+  // 允许先填 kind 再填 path：编辑器需要保留 partial 状态，完整性由后端保存校验。
+  const setProducesField = (key: 'kind' | 'path', value: string) => {
+    const produces: Partial<NonNullable<NodeDef['produces']>> = { ...(node.produces ?? {}) }
+    if (value === '') delete produces[key]
+    else produces[key] = value
+    update({
+      produces: Object.keys(produces).length > 0
+        ? produces as NonNullable<NodeDef['produces']>
+        : undefined,
+    })
+  }
+
   const setDispatch = (enabled: boolean) => {
     if (!enabled) {
       // 派发关掉后，下面这些字段没有执行对象就不会生效；一起清掉还能让保存的
@@ -86,6 +98,7 @@ export function NodeEditor({
         max_rounds: undefined,
         on_fail: undefined,
         omit_acceptance: undefined,
+        produces: undefined,
       })
       return
     }
@@ -221,6 +234,29 @@ export function NodeEditor({
               </div>
             )
           })}
+          <div>
+            <label className={labelClass} htmlFor={id('produces-kind')}>产出类型</label>
+            <input
+              id={id('produces-kind')}
+              className={inputClass}
+              value={node.produces?.kind ?? ''}
+              placeholder="例如 doc"
+              onChange={(event) => setProducesField('kind', event.target.value)}
+            />
+          </div>
+          <div>
+            <label className={labelClass} htmlFor={id('produces-path')}>产出路径</label>
+            <input
+              id={id('produces-path')}
+              className={inputClass}
+              value={node.produces?.path ?? ''}
+              placeholder="例如 docs/{{CARD_LOWER}}-plan.md"
+              onChange={(event) => setProducesField('path', event.target.value)}
+            />
+            <p className="mt-1 text-xs text-muted-foreground">
+              可用占位符：{'{{CARD}}'}、{'{{CARD_LOWER}}'}、{'{{NODE}}'}、{'{{DATE}}'}。
+            </p>
+          </div>
         </div>
       )}
 

@@ -27,7 +27,11 @@
       "gate": {
         "require_attachment": "spec"
       },
-      "omit_acceptance": true
+      "omit_acceptance": true,
+      "produces": {
+        "kind": "contract",
+        "path": "docs/superpowers/specs/{{CARD_LOWER}}-contract.md"
+      }
     },
     {
       "name": "breakdown",
@@ -44,7 +48,11 @@
       "gate": {
         "require_attachment": "contract"
       },
-      "omit_acceptance": true
+      "omit_acceptance": true,
+      "produces": {
+        "kind": "doc",
+        "path": "docs/superpowers/specs/{{CARD_LOWER}}-breakdown.md"
+      }
     },
     {
       "name": "plan",
@@ -61,7 +69,11 @@
       "gate": {
         "require_attachment": "spec"
       },
-      "omit_acceptance": true
+      "omit_acceptance": true,
+      "produces": {
+        "kind": "plan",
+        "path": "docs/superpowers/plans/{{CARD_LOWER}}-plan.md"
+      }
     },
     {
       "name": "implement",

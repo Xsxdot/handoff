@@ -132,6 +132,10 @@ describe('契约 fixture 与 TS 类型', () => {
 		expect(Object.keys(view)).toEqual(expect.arrayContaining(['children_total', 'children_done', 'open_tickets']))
 		expect(Object.keys(detail)).toEqual(expect.arrayContaining(['card', 'relations', 'events', 'task_states', 'effective_base_branch', 'decisions', 'needs', 'children']))
 		expect(node.dispatch).toBeUndefined()
+		expect(node.produces).toEqual({
+			kind: 'doc',
+			path: 'docs/superpowers/plans/b201-plan.md',
+		})
 		expect(flow.states).toEqual(['待办', '定性中', '已定性'])
 	})
   it('Task：可解析为 Task 类型，关键字段齐全', () => {

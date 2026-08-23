@@ -71,6 +71,17 @@ func countDispatchNodes(nodes []NodeDef) int {
 	return n
 }
 
+// countProducesNodes 数带单一附件产出声明的节点，只用于写入成功日志。
+func countProducesNodes(nodes []NodeDef) int {
+	n := 0
+	for _, node := range nodes {
+		if node.Produces != nil {
+			n++
+		}
+	}
+	return n
+}
+
 // validateNodes 校验节点序列的内部一致性。
 //
 // 参数：nodes 节点序列（可为空，空 = 老 def 形态，不校验）。
@@ -114,6 +125,12 @@ func (s *Store) validateNodes(nodes []NodeDef) error {
 			return fmt.Errorf("节点 %q 设了 MaxRounds 却没开 Verdict（不裁决就没有轮次）: %w",
 				node.Name, ErrBadState)
 		}
+		if node.Produces != nil {
+			if strings.TrimSpace(node.Produces.Kind) == "" || strings.TrimSpace(node.Produces.Path) == "" {
+				return fmt.Errorf("节点 %q 的 produces 必须同时填写 kind 和 path: %w",
+					node.Name, ErrBadState)
+			}
+		}
 		if node.OnFail != "" && !node.Verdict {
 			return fmt.Errorf("节点 %q 设了 OnFail 却没开 Verdict（不裁决就没有失败分支）: %w",
 				node.Name, ErrBadState)
@@ -154,7 +171,8 @@ func (s *Store) PutWorkflow(name string, def WorkflowDef) (int, error) {
 			return fmt.Errorf("写工作流 %s v%d: %w", name, version, err)
 		}
 		log().Info("写入工作流版本", "name", name, "version", version,
-			"nodes", len(def.Nodes), "dispatch_nodes", countDispatchNodes(def.Nodes))
+			"nodes", len(def.Nodes), "dispatch_nodes", countDispatchNodes(def.Nodes),
+			"produces_nodes", countProducesNodes(def.Nodes))
 		return nil
 	})
 	return version, err

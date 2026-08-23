@@ -396,3 +396,207 @@ func TestNodeStepMaxRoundsFromNode(t *testing.T) {
 		t.Fatalf("Action = %q, want %q", out.Action, ActionNeedsHuman)
 	}
 }
+
+func nodePassMessage() string {
+	fence := string([]byte{96, 96, 96})
+	return fence + "handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n" + fence
+}
+
+func TestNodeStepAttachesDeclaredOutputAndRoutes(t *testing.T) {
+	st, card := nodeLedger(t)
+	attached := 0
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "breakdown", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next:     ledger.StatusReview,
+			Produces: &ledger.NodeOutput{Kind: "doc", Path: "docs/b201-breakdown.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-output", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return nodePassMessage(), nil
+		},
+		OutputPath: func() string { return "docs/b201-breakdown.md" },
+		Diff: func(context.Context, string, string) ([]string, error) {
+			return []string{"docs/b201-breakdown.md"}, nil
+		},
+		Attach: func(cardID, kind, path, actor string) error {
+			attached++
+			if cardID != card.ID || kind != "doc" || path != "docs/b201-breakdown.md" || actor != "node:breakdown" {
+				t.Fatalf("Attach 参数错误: %q %q %q %q", cardID, kind, path, actor)
+			}
+			return st.AttachFile(cardID, kind, path, actor)
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionPass {
+		t.Fatalf("pass 输出: %v %+v", err, out)
+	}
+	if attached != 1 {
+		t.Fatalf("Attach 次数 = %d, want 1", attached)
+	}
+	got, err := st.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读卡: %v", err)
+	}
+	if got.Status != ledger.StatusReview {
+		t.Fatalf("挂附件后未路由，status=%q", got.Status)
+	}
+	if len(got.Attachments) != 1 || got.Attachments[0].Kind != "doc" || got.Attachments[0].Path != "docs/b201-breakdown.md" {
+		t.Fatalf("附件未落账: %+v", got.Attachments)
+	}
+}
+
+func TestNodeStepMissingDeclaredOutputMarksNeedsHumanWithDiffList(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "plan", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next:     ledger.StatusReview,
+			Produces: &ledger.NodeOutput{Kind: "plan", Path: "docs/b201-plan.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-missing-output", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return nodePassMessage(), nil
+		},
+		OutputPath: func() string { return "docs/b201-plan.md" },
+		Diff: func(context.Context, string, string) ([]string, error) {
+			return []string{"docs/other.md", "internal/changed.go"}, nil
+		},
+		Attach: func(string, string, string, string) error {
+			t.Fatal("缺产物时不应 Attach")
+			return nil
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionNeedsHuman {
+		t.Fatalf("缺产物输出: %v %+v", err, out)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == ledger.EvComment &&
+			strings.Contains(string(event.Payload), "docs/b201-plan.md") &&
+			strings.Contains(string(event.Payload), "docs/other.md") &&
+			strings.Contains(string(event.Payload), "internal/changed.go") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("缺产物 comment 未同时写法定路径与实际改动清单")
+	}
+}
+
+func TestNodeStepAttachFailureWarnsButStillRoutes(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "plan", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next:     ledger.StatusReview,
+			Produces: &ledger.NodeOutput{Kind: "plan", Path: "docs/b201-plan.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-attach-error", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return nodePassMessage(), nil
+		},
+		OutputPath: func() string { return "docs/b201-plan.md" },
+		Diff: func(context.Context, string, string) ([]string, error) {
+			return []string{"docs/b201-plan.md"}, nil
+		},
+		Attach: func(string, string, string, string) error {
+			return fmt.Errorf("sqlite 写入失败")
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionPass {
+		t.Fatalf("挂载失败仍应 pass 并路由: %v %+v", err, out)
+	}
+	got, err := st.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读卡: %v", err)
+	}
+	if got.Status != ledger.StatusReview {
+		t.Fatalf("挂载失败不应阻断路由: %q", got.Status)
+	}
+}
+
+func TestNodeStepWithoutProducesDoesNotInvokeOutputHooks(t *testing.T) {
+	st, card := nodeLedger(t)
+	called := 0
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "plan", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next: ledger.StatusReview,
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-legacy", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return nodePassMessage(), nil
+		},
+		OutputPath: func() string { called++; t.Fatal("legacy 节点不应取输出路径"); return "" },
+		Diff: func(context.Context, string, string) ([]string, error) {
+			called++
+			t.Fatal("legacy 节点不应取 diff")
+			return nil, nil
+		},
+		Attach: func(string, string, string, string) error {
+			called++
+			t.Fatal("legacy 节点不应挂附件")
+			return nil
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionPass || called != 0 {
+		t.Fatalf("legacy 节点行为变化: %v %+v hooks=%d", err, out, called)
+	}
+}
+
+func TestNodeStepRerunSameOutputPathIsIdempotent(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "plan", Dispatch: true, Verdict: true, Template: "review-generic",
+			Produces: &ledger.NodeOutput{Kind: "plan", Path: "docs/b201-plan.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-rerun", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return nodePassMessage(), nil
+		},
+		OutputPath: func() string { return "docs/b201-plan.md" },
+		Diff: func(context.Context, string, string) ([]string, error) {
+			return []string{"docs/b201-plan.md"}, nil
+		},
+		Attach: func(cardID, kind, path, actor string) error {
+			return st.AttachFile(cardID, kind, path, actor)
+		},
+	}
+	for i := 0; i < 2; i++ {
+		out, err := step.RunOnce(context.Background(), card.ID)
+		if err != nil || out.Action != ActionPass {
+			t.Fatalf("第 %d 次重跑: %v %+v", i+1, err, out)
+		}
+	}
+	got, err := st.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读卡: %v", err)
+	}
+	if len(got.Attachments) != 1 {
+		t.Fatalf("同 path 重跑应幂等，附件=%+v", got.Attachments)
+	}
+}

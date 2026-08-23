@@ -60,6 +60,13 @@ type NodeOverride struct {
 	Model      string `json:"model,omitempty"`
 }
 
+// NodeOutput 是工作流节点声明的单一附件 kind/path wire DTO。
+// 指针由 NodeDef.Produces 持有，以区分旧 JSON 的字段缺失和显式对象。
+type NodeOutput struct {
+	Kind string `json:"kind"`
+	Path string `json:"path"`
+}
+
 // NodeDef 是工作流节点的 wire DTO。
 type NodeDef struct {
 	Name             string       `json:"name"`
@@ -69,10 +76,12 @@ type NodeDef struct {
 	Verdict          bool         `json:"verdict,omitempty"`
 	CarryCardContext bool         `json:"carry_card_context,omitempty"`
 	MaxRounds        int          `json:"max_rounds,omitempty"`
+	OmitAcceptance   bool         `json:"omit_acceptance,omitempty"`
 	Next             string       `json:"next,omitempty"`
 	OnFail           string       `json:"on_fail,omitempty"`
 	Gate             Gate         `json:"gate,omitempty"`
 	HumanBases       []string     `json:"human_bases,omitempty"`
+	Produces         *NodeOutput  `json:"produces,omitempty"`
 }
 
 // CardBrief 是详情中直接子卡的最小摘要 wire DTO。

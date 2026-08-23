@@ -594,3 +594,82 @@ func TestEnsureDefaultsKeepsUserDomainWorkflow(t *testing.T) {
 		t.Fatalf("用户的 domain 流被覆盖了: v%d %+v", wf.Version, wf.Def.Nodes)
 	}
 }
+
+func TestWorkflowNodeProducesRoundTripAndPresence(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.EnsureDefaultTemplates(); err != nil {
+		t.Fatalf("seed 模板: %v", err)
+	}
+	want := &NodeOutput{Kind: "doc", Path: "docs/superpowers/specs/b201-breakdown.md"}
+	if _, err := s.PutWorkflow("produces", WorkflowDef{Nodes: []NodeDef{{
+		Name: "breakdown", Dispatch: true, Template: "feature-impl", Produces: want,
+	}}}); err != nil {
+		t.Fatalf("写带产出的工作流: %v", err)
+	}
+	got, err := s.GetWorkflow("produces", 0)
+	if err != nil {
+		t.Fatalf("读带产出的工作流: %v", err)
+	}
+	if got.Def.Nodes[0].Produces == nil || *got.Def.Nodes[0].Produces != *want {
+		t.Fatalf("产出声明未 round-trip: %+v", got.Def.Nodes[0].Produces)
+	}
+
+	var missing NodeDef
+	if err := json.Unmarshal([]byte("{\"name\":\"plan\"}"), &missing); err != nil {
+		t.Fatalf("解码缺失字段: %v", err)
+	}
+	if missing.Produces != nil {
+		t.Fatalf("字段缺失必须保持 nil: %+v", missing.Produces)
+	}
+
+	var zero NodeDef
+	if err := json.Unmarshal([]byte("{\"name\":\"plan\",\"produces\":{\"kind\":\"\",\"path\":\"\"}}"), &zero); err != nil {
+		t.Fatalf("解码显式零值: %v", err)
+	}
+	if zero.Produces == nil || zero.Produces.Kind != "" || zero.Produces.Path != "" {
+		t.Fatalf("显式零值必须保留为非 nil 指针: %+v", zero.Produces)
+	}
+}
+
+func TestWorkflowRejectsIncompleteProduces(t *testing.T) {
+	cases := []struct {
+		name   string
+		output *NodeOutput
+	}{
+		{name: "missing kind", output: &NodeOutput{Path: "docs/x.md"}},
+		{name: "missing path", output: &NodeOutput{Kind: "doc"}},
+		{name: "all empty", output: &NodeOutput{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestStore(t)
+			if err := s.EnsureDefaultTemplates(); err != nil {
+				t.Fatalf("seed 模板: %v", err)
+			}
+			_, err := s.PutWorkflow("invalid-"+tc.name, WorkflowDef{Nodes: []NodeDef{{
+				Name: "node", Dispatch: true, Template: "feature-impl", Produces: tc.output,
+			}}})
+			if err == nil || !errors.Is(err, ErrBadState) || !strings.Contains(err.Error(), "produces") {
+				t.Fatalf("不完整 produces 未按 ErrBadState 拒绝: %v", err)
+			}
+		})
+	}
+}
+
+func TestLegacyWorkflowNodeHasNoProduces(t *testing.T) {
+	s := newTestStore(t)
+	if _, err := s.PutWorkflow("legacy-produces", WorkflowDef{
+		States: []string{"待办", "完成"},
+	}); err != nil {
+		t.Fatalf("写 legacy 工作流: %v", err)
+	}
+	got, err := s.GetWorkflow("legacy-produces", 0)
+	if err != nil {
+		t.Fatalf("读 legacy 工作流: %v", err)
+	}
+	for _, node := range got.Def.Nodes {
+		if node.Produces != nil {
+			t.Fatalf("legacy 节点不应凭空带 produces: %+v", node)
+		}
+	}
+}
