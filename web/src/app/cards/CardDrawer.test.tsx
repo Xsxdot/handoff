@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import type { Card, CardDetail } from '../../api/ledger'
+import type { Task } from '../../api/types'
 import { CardDrawer } from './CardDrawer'
 
 // card 造一张字段齐全、**大小写与线格式一致**的卡。
@@ -18,6 +19,26 @@ function card(over: Partial<Card> = {}): Card {
     created_at: '', updated_at: '', ...over,
   }
 }
+
+// task 造一个字段齐全的线格式 Task：缺一个必填字段 tsc 就红。
+function task(over: Partial<Task> = {}): Task {
+  return {
+    id: 'task-x', target: 'local', repo_path: '/repo/handoff', branch: '',
+    plan_path: '', plan_summary: '', executor_session: '', state: 'running',
+    created_at: '', updated_at: '', name: '', executor: '', model: '',
+    work_dir: '', worktree_managed: false, base_commit: '', base_ahead: 0,
+    repo_dirty_count: 0, repo_dirty_files: '', done_note: '', machine: '', project_id: '', ...over,
+  }
+}
+
+// detailWithRows 造一张带挂账行的卡详情。大小写与线格式一致：
+// task_states 是账本的 Go 风格 PascalCase（api/ledger.ts:58-64），
+// 任务流是 snake_case（api/types.ts:15-42）——这条接缝正是被测对象。
+const detailWithRows = (rows: CardDetail['task_states']): CardDetail => ({
+  card: card({ id: 'B30', title: '在跑的卡', status: '进行中' }),
+  relations: [], events: [], effective_base_branch: '', decisions: [], needs: '',
+  children: [], task_states: rows,
+})
 
 vi.mock('../../api/client', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/client')>()),
@@ -464,5 +485,176 @@ describe('审阅裁决的呈现与等人标记的撤回', () => {
     expect(await screen.findByText('审阅未取到报文')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: '已处理' }))
     await waitFor(() => expect(vi.mocked(ledger.clearCardNeeds)).toHaveBeenCalledWith('B1.1'))
+  })
+})
+
+describe('抽屉里的关联执行实况', () => {
+  it('行上显示任务流的真实 state，而不是最后一条镜像事件的类型', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'linux-01', TaskID: 'task-run', Purpose: 'implement', LastType: 'turn_end', LastSeq: 12 },
+    ]))
+    render(
+      <CardDrawer
+        id="B30" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[task({ id: 'task-run', state: 'running' })]}
+      />,
+    )
+    // 卡头部的状态 chip 也叫「进行中」，断言必须收在任务行里
+    const row = await screen.findByRole('button', { name: /^task-run/ })
+    expect(within(row).getByText('进行中')).toBeInTheDocument()
+    expect(within(row).queryByText('turn_end')).not.toBeInTheDocument()
+  })
+
+  it('关键回归：state=running 而最后一条镜像是 turn_failed 时，行上仍显示进行中', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'linux-01', TaskID: 'task-run', Purpose: 'implement', LastType: 'turn_failed', LastSeq: 13 },
+    ]))
+    render(
+      <CardDrawer
+        id="B30" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[task({ id: 'task-run', state: 'running' })]}
+      />,
+    )
+    const row = await screen.findByRole('button', { name: /^task-run/ })
+    // turn_failed 可 continue 不是终态；把它当状态渲染出来 = 和看板打架
+    expect(within(row).queryByText(/turn_failed/)).not.toBeInTheDocument()
+    expect(within(row).getByText('进行中')).toBeInTheDocument()
+  })
+
+  it('任务已不在任务流里时如实显示「实况未知」，把 LastType 当线索列出，不冒充状态', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'linux-01', TaskID: 'task-gone', Purpose: 'implement', LastType: 'question', LastSeq: 3 },
+    ]))
+    // tasks=[]：流已接入但查无此任务（归档清出流是真实情形）
+    render(<CardDrawer id="B30" onClose={() => {}} onOpenCard={() => {}} tasks={[]} />)
+    const row = await screen.findByRole('button', { name: /^task-gone/ })
+    expect(within(row).getByText('实况未知 · 最后事件 question')).toBeInTheDocument()
+    // 六个已知状态标签一个都不许出现：不知道就说不知道
+    for (const label of ['等待执行', '进行中', '等你答复', 'Review', '已完成', '失败']) {
+      expect(within(row).queryByText(label)).not.toBeInTheDocument()
+    }
+  })
+
+  it('连最后事件类型都没有时只说「实况未知」，不再沿用旧的「未知」占位', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-fresh', Purpose: 'plan', LastType: '', LastSeq: 0 },
+    ]))
+    render(<CardDrawer id="B30" onClose={() => {}} onOpenCard={() => {}} tasks={[]} />)
+    const row = await screen.findByRole('button', { name: /^task-fresh/ })
+    // getByText 默认整串精确匹配，不会误中带线索的长串
+    expect(within(row).getByText('实况未知')).toBeInTheDocument()
+    expect(within(row).queryByText(/^最后事件/)).not.toBeInTheDocument()
+  })
+})
+
+describe('抽屉里的关联执行排序与计数', () => {
+  it('运行中的行排在前面，其余按最后事件序号倒序', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-old-done', Purpose: 'implement', LastType: 'turn_end', LastSeq: 20 },
+      { Target: 'linux-01', TaskID: 'task-live', Purpose: 'implement', LastType: 'question', LastSeq: 5 },
+      { Target: 'local', TaskID: 'task-new-done', Purpose: 'review', LastType: 'review_verdict', LastSeq: 40 },
+    ]))
+    render(
+      <CardDrawer
+        id="B30" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[
+          task({ id: 'task-old-done', state: 'completed' }),
+          task({ id: 'task-live', state: 'running' }),
+          task({ id: 'task-new-done', state: 'failed' }),
+        ]}
+      />,
+    )
+    const section = (await screen.findByText(/关联执行/)).closest('section') as HTMLElement
+    const names = within(section).getAllByRole('button').map((element) => element.textContent ?? '')
+    expect(names[0]).toMatch(/^task-live/)
+    expect(names[1]).toMatch(/^task-new-done/) // 已结束里 LastSeq 40 的在前
+    expect(names[2]).toMatch(/^task-old-done/)
+  })
+
+  it('区块标题的在跑计数与任务流一致（waiting_review 也算在跑，completed 不算）', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-a', Purpose: 'implement', LastType: 'question', LastSeq: 1 },
+      { Target: 'local', TaskID: 'task-b', Purpose: 'review', LastType: 'review_requested', LastSeq: 2 },
+      { Target: 'local', TaskID: 'task-c', Purpose: 'plan', LastType: 'turn_end', LastSeq: 3 },
+    ]))
+    render(
+      <CardDrawer
+        id="B30" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[
+          task({ id: 'task-a', state: 'waiting_answer' }),
+          task({ id: 'task-b', state: 'waiting_review' }),
+          task({ id: 'task-c', state: 'completed' }),
+        ]}
+      />,
+    )
+    expect(await screen.findByText('关联执行 · 2 个在跑 / 共 3 个')).toBeInTheDocument()
+  })
+
+  it('任务流未接入时标题不带计数——不知道就说不知道，不谎报「0 个在跑」', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-x', Purpose: 'plan', LastType: '', LastSeq: 0 },
+    ]))
+    render(<CardDrawer id="B30" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText('关联执行（task）')).toBeInTheDocument()
+  })
+})
+
+describe('抽屉里的任务跳转', () => {
+  it('点 ↗ 发起跳转回调，且不触发展开', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'linux-01', TaskID: 'task-j', Purpose: 'implement', LastType: 'turn_end', LastSeq: 7 },
+    ]))
+    const onJump = vi.fn()
+    render(
+      <CardDrawer
+        id="B31" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[task({ id: 'task-j' })]} onJumpToTask={onJump}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '跳到 task-j' }))
+    expect(onJump).toHaveBeenCalledTimes(1)
+    expect(onJump).toHaveBeenCalledWith('task-j')
+    // 展开没被误触：aria-expanded 还是 false，工单加载占位也没出现
+    expect(screen.getByRole('button', { name: /^task-j/ })).toHaveAttribute('aria-expanded', 'false')
+    expect(screen.queryByText('正在读取工单…')).not.toBeInTheDocument()
+  })
+
+  it('没给跳转回调时不画 ↗ 按钮', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'local', TaskID: 'task-nojump', Purpose: 'plan', LastType: '', LastSeq: 0 },
+    ]))
+    render(<CardDrawer id="B34" onClose={() => {}} onOpenCard={() => {}} tasks={[]} />)
+    await screen.findByRole('button', { name: /^task-nojump/ })
+    expect(screen.queryByRole('button', { name: /跳到/ })).not.toBeInTheDocument()
+  })
+
+  it('整行点击仍然展开工单面板——跳转按钮不抢走既有入口', async () => {
+    const ledger = await import('../../api/ledger')
+    const client = await import('../../api/client')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue(detailWithRows([
+      { Target: 'linux-01', TaskID: 'task-tk', Purpose: 'implement', LastType: 'question', LastSeq: 9 },
+    ]))
+    vi.mocked(client.fetchTaskDetail).mockResolvedValue({
+      task: { id: 'task-tk', state: 'waiting_answer' },
+      tickets: [{ id: 'tk-9', kind: 'ask', request: '这里要用哪个基线？' }],
+      events: [],
+    } as never)
+    render(
+      <CardDrawer
+        id="B33" onClose={() => {}} onOpenCard={() => {}}
+        tasks={[task({ id: 'task-tk', state: 'waiting_answer' })]} onJumpToTask={vi.fn()}
+      />,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /^task-tk/ }))
+    expect(await screen.findByText('这里要用哪个基线？')).toBeInTheDocument()
   })
 })

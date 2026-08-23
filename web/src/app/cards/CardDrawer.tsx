@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { fetchTaskDetail, replyTicket } from '../../api/client'
-import type { TaskDetail, Ticket } from '../../api/types'
+import type { Task, TaskDetail, Ticket } from '../../api/types'
 import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard, runCardStep } from '../../api/ledger'
-import type { CardDetail, Decision, LedgerEvent, NodeDef } from '../../api/ledger'
+import type { CardDetail, Decision, LedgerEvent, NodeDef, TaskStateRow } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { TicketsPanel } from '../task/TicketsPanel'
 import { boardColumns } from './columns'
+import { TaskState } from '../board/StateDot'
+import { isTerminalState } from '../workbench/TaskPickerDialog'
 
 type Relation = { From: string; To: string; Type: string }
 
@@ -249,6 +251,23 @@ function timelineGroups(events: LedgerEvent[]): Array<{ kind: 'mirror' | 'event'
 
 type DrawerTaskDetail = TaskDetail & { tickets?: Ticket[]; events?: unknown[] }
 
+// linkedTaskOf 把账本挂账行关联到任务流里的真实任务；关联不上返回 undefined。
+// 关联不上是真实情形（任务已归档清出流 / 流首拉未回），调用方按「实况未知」
+// 如实降级，不猜不冒充——与 internal/ledger/taskstate.go 文件头「滞后要显性化，
+// 不拿陈旧实况冒充新鲜」是同一纪律在前端的落法。
+function linkedTaskOf(row: TaskStateRow, tasks: Task[] | undefined): Task | undefined {
+  return tasks?.find((task) => task.id === row.TaskID)
+}
+
+// isRunningRow 判「这一行此刻在不在跑」。口径刻意与看板分栏、任务选择弹层同源：
+// 非 isTerminalState 即在跑（waiting_answer/waiting_review 是「等你动手」，不是
+// 「结束」；spec §5 明令复用这一个终态集合，不许自造第三套）。关联不上的一律
+// 不算在跑：不知道的事不能报成「活着」。n 是几十量级，不做 memo 化。
+function isRunningRow(row: TaskStateRow, tasks: Task[] | undefined): boolean {
+  const live = linkedTaskOf(row, tasks)
+  return live !== undefined && !isTerminalState(live.state)
+}
+
 function pendingTickets(detail: DrawerTaskDetail): Ticket[] {
   return detail.pending_tickets ?? detail.tickets ?? []
 }
@@ -260,6 +279,8 @@ export function CardDrawer({
   workflowStates,
   initialSection,
   nodes,
+  tasks,
+  onJumpToTask,
 }: {
   id: string
   onClose: () => void
@@ -267,6 +288,15 @@ export function CardDrawer({
   workflowStates?: string[]
   initialSection?: 'merge'
   nodes?: NodeDef[]
+  // 任务实况快照：调用方（CardsPage）把页面级 useTasks() 的结果原样传下来。
+  // 抽屉不自起第二条轮询——同页两条 2.5s 流会各自跳动，卡上的状态会和看板
+  // 在不同时刻更新（spec §5）。undefined = 流未接入或首拉未回。
+  tasks?: Task[]
+  // 提供时每行渲染 ↗ 跳转按钮。语义固定为深链 navigate('/tasks/{taskId}')，
+  // 由调用方注入（CardsPage 用 useNavigate 实现）；抽屉自己绝不解析目录或切
+  // tab——那是 Shell 既有 TaskDeepLink 的职责，复制它等于养第二份会漂移的逻辑
+  // （spec §3.3 明令禁止）。缺省不画按钮。
+  onJumpToTask?: (taskId: string) => void
 }) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
@@ -354,6 +384,21 @@ export function CardDrawer({
     })
   }, [detail, timelineFilter])
   const groups = timelineGroups(filteredEvents)
+  // 关联执行的展示序与计数：在跑的排最前（扫一眼就知道有没有活着的），其余按
+  // 最后事件序号倒序；平局保持账本返回的原序（Array.prototype.sort 自 ES2019 起
+  // 稳定）。tasks===undefined 时不动序也不计数：「在跑」无从判定，标题退回旧
+  // 形态——不知道就说不知道，不谎报「0 个在跑」（spec §3.1/§3.2 的诚实降级）。
+  const taskRows = useMemo(() => {
+    const rows = [...(detail?.task_states ?? [])]
+    if (tasks === undefined) return rows
+    return rows.sort((left, right) => {
+      const leftRunning = isRunningRow(left, tasks)
+      const rightRunning = isRunningRow(right, tasks)
+      if (leftRunning !== rightRunning) return leftRunning ? -1 : 1
+      return right.LastSeq - left.LastSeq
+    })
+  }, [detail, tasks])
+  const runningCount = tasks === undefined ? null : taskRows.filter((row) => isRunningRow(row, tasks)).length
 
   const beginTitleEdit = () => {
     if (!detail) return
@@ -738,35 +783,77 @@ export function CardDrawer({
               </section>
             )}
 
-            {(detail.task_states ?? []).length > 0 && (
+            {taskRows.length > 0 && (
               <section className="mb-5">
-                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">关联执行（task）</h3>
-                {(detail.task_states ?? []).map((task) => {
-                  const open = expandedTask === task.TaskID
-                  const taskDetail = taskDetails[task.TaskID]
+                <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">
+                  {/* 计数与行渲染同源（同一个 taskRows/isRunningRow 派生），不会各说各话 */}
+                  {runningCount === null ? '关联执行（task）' : `关联执行 · ${runningCount} 个在跑 / 共 ${taskRows.length} 个`}
+                </h3>
+                {taskRows.map((row) => {
+                  const open = expandedTask === row.TaskID
+                  const taskDetail = taskDetails[row.TaskID]
+                  const linked = linkedTaskOf(row, tasks)
                   return (
-                    <div key={`${task.Target}/${task.TaskID}`} className="mb-1 rounded-md border text-xs">
-                      <button
-                        type="button"
+                    <div key={`${row.Target}/${row.TaskID}`} className="mb-1 rounded-md border text-xs">
+                      {/* 整行点击=展开工单（现状职责，spec §3.3 不动它）。外层从
+                          <button> 换成 div[role=button] 是为了容纳行内的 ↗ 真
+                          按钮（button 不能嵌 button）；role/tabIndex/键盘处理
+                          照抄 CardItem.tsx:35-44 的行内可点先例，cursor-pointer
+                          补回原生 button 自带的指针。 */}
+                      <div
+                        role="button"
+                        tabIndex={0}
                         aria-expanded={open}
-                        onClick={() => toggleTask(task.TaskID)}
-                        className="flex w-full items-center gap-2 px-2 py-1.5 text-left"
+                        onClick={() => toggleTask(row.TaskID)}
+                        onKeyDown={(event) => {
+                          if (event.key === 'Enter' || event.key === ' ') {
+                            event.preventDefault()
+                            toggleTask(row.TaskID)
+                          }
+                        }}
+                        className="flex w-full cursor-pointer items-center gap-2 px-2 py-1.5 text-left"
                       >
-                        <span className="font-mono">{task.TaskID}</span><span>{task.Purpose}</span><span className="ml-auto text-muted-foreground">{task.LastType || '未知'}</span><span className="text-muted-foreground">{task.Target}</span>
-                      </button>
+                        {/* 实况来自页面级 2.5s 任务流的真 state，渲染与看板同一套
+                            圆点+文案。LastType 只是镜像事件的类型不是状态：
+                            turn_failed 可 continue、completed 事件早于落态，拿它判
+                            「跑没跑完」会和看板得出相反结论（spec §3.1）。关联不上
+                            就写「实况未知」并把 LastType 当线索列出。 */}
+                        <span className="font-mono">{row.TaskID}</span><span>{row.Purpose}</span>
+                        {linked ? (
+                          <span className="ml-auto"><TaskState state={linked.state} /></span>
+                        ) : (
+                          <span className="ml-auto text-muted-foreground">实况未知{row.LastType !== '' && ` · 最后事件 ${row.LastType}`}</span>
+                        )}
+                        <span className="text-muted-foreground">{row.Target}</span>
+                        {onJumpToTask && (
+                          <button
+                            type="button"
+                            aria-label={`跳到 ${row.TaskID}`}
+                            title="去该任务所在的目录并打开它的 TUI 标签页；目录解析不到时会开在当前目录下"
+                            onClick={(event) => {
+                              // 跳转必须掐掉冒泡：整行的点击语义是展开工单，
+                              // 一次点击不能又跳走又把面板拉出来（spec §3.3；
+                              // 验收含「去掉 stopPropagation 必须红」的变异复验）
+                              event.stopPropagation()
+                              onJumpToTask(row.TaskID)
+                            }}
+                            className="shrink-0 rounded border px-1.5 py-0.5 text-[11px] hover:bg-accent"
+                          >↗</button>
+                        )}
+                      </div>
                       {open && (
                         <div className="border-t px-2 py-2">
                           {/* 远程 task 的工单在这里也答得了：agentd 的 byTask 中间件会把
                               /api/tasks/{id}/* 透明代理到该 task 的属主机器。所以这一段
                               是纯前端复用，不需要任何新后端。 */}
-                          {taskLoading === task.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
-                          {taskErrors[task.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[task.TaskID]}</p>}
+                          {taskLoading === row.TaskID && <p className="text-xs text-muted-foreground">正在读取工单…</p>}
+                          {taskErrors[row.TaskID] && <p role="alert" className="break-words text-xs text-destructive">{taskErrors[row.TaskID]}</p>}
                           {taskDetail && (
                             <TicketsPanel
                               bare
                               tickets={pendingTickets(taskDetail)}
                               disabled={false}
-                              onReply={(ticket, answer) => replyTaskTicket(task.TaskID, ticket, answer)}
+                              onReply={(ticket, answer) => replyTaskTicket(row.TaskID, ticket, answer)}
                             />
                           )}
                         </div>
