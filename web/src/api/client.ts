@@ -588,6 +588,14 @@ export function patchProject(name: string, req: PatchProjectReq, machine?: strin
   return patchJSON<ProjectLocation>(`/api/projects/${encodeURIComponent(name)}${machineQuery(machine)}`, req)
 }
 
+// fetchProjects 列全部项目位置（GET /api/projects）。
+//
+// 返回 ProjectLocation[]。服务端保证空列表序列化成 [] 而不是 null，调用方不必再做
+// null 归一。
+export function fetchProjects(): Promise<ProjectLocation[]> {
+  return request<ProjectLocation[]>('/api/projects')
+}
+
 // fetchProjectBranches 列项目位置的本地分支（GET /api/projects/{name}/branches）。
 //
 // name 是**登记名**（ProjectLocationNode.name），不是 ProjectNode.name——后者取的是

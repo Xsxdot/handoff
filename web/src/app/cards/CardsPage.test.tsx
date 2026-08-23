@@ -13,6 +13,12 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   ]),
 }))
 
+vi.mock('./NewCardDialog', () => ({
+  NewCardDialog: (props: Record<string, unknown>) => (
+    <div data-testid="new-card-dialog-stub" data-project={String(props.project)} />
+  ),
+}))
+
 describe('项目级请示横幅', () => {
   it('不开「需要你」筛选也要显示——它被算进了徽标，藏起来等于数字对不上', async () => {
     render(<CardsPage />)
@@ -23,5 +29,25 @@ describe('项目级请示横幅', () => {
     render(<CardsPage />)
     await waitFor(() => expect(screen.getByText(/项目级请示/)).toBeInTheDocument())
     expect(screen.getByText(/不挂卡/)).toBeInTheDocument()
+  })
+})
+
+describe('建卡入口接线', () => {
+  const cardView = {
+    id: 'B187', title: '现场铁证', status: '待办', priority: '中', project: 'benchmarking',
+    workflow: 'feature', parent: '', base_branch: '', attachments: [], following: '',
+    blocked: false, blocked_by: [], merged_count: 0, needs: '', open_decisions: 0,
+    children_total: 0, children_done: 0, conflict: false, open_tickets: 0,
+  }
+
+  it('「全部项目」下传给对话框的 project 是空串——不再拿 cards[0].project 当兜底（B187 回归网）', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [cardView],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    })
+    render(<CardsPage />)
+    const stub = await screen.findByTestId('new-card-dialog-stub')
+    expect(stub.dataset.project).toBe('')
   })
 })
