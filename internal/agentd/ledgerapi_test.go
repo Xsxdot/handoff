@@ -1252,3 +1252,45 @@ func TestCardStepRejectsOversizedBody(t *testing.T) {
 	default:
 	}
 }
+
+// TestCardStepBodySizeLimitBoundary 从两侧钉死请求体的大小上限本身。
+//
+// 与 TestCardStepRejectsOversizedBody 的分工：那条验的是「边界上的尾随内容」，
+// 而多读 1 字节这个手法本身就能挡住它——于是「有没有真的判长度」被掩盖了。
+// 这条验的是上限本身：恰好等于上限的**纯合法**请求必须放行，多一个字节的
+// **同样合法**的请求必须拒。少了它，把 > 写成 >=、或干脆删掉长度判断，都不会变红。
+func TestCardStepBodySizeLimitBoundary(t *testing.T) {
+	build := func(total int) string {
+		head := `{"step":"待审阅","actor":"cli:u@h#1","extra":"`
+		tail := `"}`
+		body := head + strings.Repeat("x", total-len(head)-len(tail)) + tail
+		if len(body) != total {
+			t.Fatalf("构造 %d 字节请求体失败，实得 %d", total, len(body))
+		}
+		return body
+	}
+	t.Run("恰好等于上限放行", func(t *testing.T) {
+		env := newLedgerEnv(t)
+		seedCardWithProject(t, env.srv, "handoff")
+		env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) {}
+		code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step", build(maxCardStepBody))
+		if code != http.StatusAccepted {
+			t.Fatalf("恰好 %d 字节应 202，实得 %d（%s）", maxCardStepBody, code, body)
+		}
+	})
+	t.Run("多一个字节即拒", func(t *testing.T) {
+		env := newLedgerEnv(t)
+		seedCardWithProject(t, env.srv, "handoff")
+		called := make(chan struct{}, 1)
+		env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+		code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step", build(maxCardStepBody+1))
+		if code != http.StatusRequestEntityTooLarge {
+			t.Fatalf("%d 字节应 413，实得 %d（%s）", maxCardStepBody+1, code, body)
+		}
+		select {
+		case <-called:
+			t.Fatal("超限请求不应启动 runner")
+		default:
+		}
+	})
+}

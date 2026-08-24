@@ -37,3 +37,42 @@ func TestCardStepRejectsOversizedAck(t *testing.T) {
 		t.Fatal("超限的受理响应应报错")
 	}
 }
+
+// TestCardStepAckSizeLimitBoundary 从两侧钉死受理响应的大小上限本身。
+//
+// 分工同 agentd 侧：TestCardStepRejectsOversizedAck 验的是边界上的尾随内容，
+// 而多读 1 字节本身就挡得住它；这条验上限本身——恰好等于上限的纯合法响应必须
+// 被当成受理，多一个字节的同样合法的响应必须报错。
+func TestCardStepAckSizeLimitBoundary(t *testing.T) {
+	build := func(total int) string {
+		head := `{"ok":true,"pad":"`
+		tail := `"}`
+		body := head + strings.Repeat("x", total-len(head)-len(tail)) + tail
+		if len(body) != total {
+			t.Fatalf("构造 %d 字节响应失败，实得 %d", total, len(body))
+		}
+		return body
+	}
+	serve := func(payload string) *httptest.Server {
+		return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(http.StatusAccepted)
+			_, _ = w.Write([]byte(payload))
+		}))
+	}
+	t.Run("恰好等于上限视为受理", func(t *testing.T) {
+		ts := serve(build(maxCardStepAck))
+		defer ts.Close()
+		if err := New(ts.URL, "tok").CardStep(context.Background(), "B1",
+			proto.CardStepReq{Step: "review", Actor: "cli:u@h#1"}); err != nil {
+			t.Fatalf("恰好 %d 字节的受理响应应通过，实得 %v", maxCardStepAck, err)
+		}
+	})
+	t.Run("多一个字节即报错", func(t *testing.T) {
+		ts := serve(build(maxCardStepAck + 1))
+		defer ts.Close()
+		if err := New(ts.URL, "tok").CardStep(context.Background(), "B1",
+			proto.CardStepReq{Step: "review", Actor: "cli:u@h#1"}); err == nil {
+			t.Fatalf("%d 字节的受理响应应报错", maxCardStepAck+1)
+		}
+	})
+}
