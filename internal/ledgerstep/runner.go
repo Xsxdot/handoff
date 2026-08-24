@@ -23,9 +23,13 @@ import (
 type StepRunner struct {
 	St         *ledger.Store
 	Dispatcher *Dispatcher
-	// Session 是本次节点运行的驱动标识。CLI 使用带 pid 的运行会话，
-	// agentd 使用请求 actor；它必须能区分两个并发驱动者。
+	// Session 是本次节点运行的发起方**归属身份**（人尺度，cli:user@host 档）。
+	// 它只用于认领「这张卡归谁在推」，不再承担运行互斥——互斥归 RunLock。
 	Session string
+	// RunHolder 是承载本次编排的那次运行的标识，由 agentd 在每次启动编排时
+	// 生成（全局唯一、含机器线索）；它是卡运行锁的持有者。空 = 未装配，
+	// 运行锁路径在实现轮必须拒绝放行。
+	RunHolder string
 	// Clients 按 target 名取一个已装配好的 agentd 客户端。
 	//
 	// why 这里要的是客户端而不是 (addr, token)：relay 形态的机器根本没有 addr，

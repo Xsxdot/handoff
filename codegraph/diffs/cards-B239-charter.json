@@ -1,0 +1,114 @@
+{
+  "view": "cards/B239-charter",
+  "base": "84af7380",
+  "summary": "B239 Ticket 0：运行锁类型与 Store 门面签名空壳、StepRunner.RunHolder 字段",
+  "nodesAdded": {
+    "m_ledger_RunLock": {
+      "kind": "model",
+      "container": "k_ledger_model",
+      "order": 280,
+      "name": "RunLock",
+      "file": "internal/ledger/runlock.go",
+      "line": 15,
+      "summary": "运行锁一行：哪张卡、哪个节点、谁持有（运行标识）、租期到几点",
+      "fields": [
+        ["CardID", "string", "卡号"],
+        ["Node", "string", "正在跑的节点名"],
+        ["Holder", "string", "承载编排的运行标识，非人尺度归属身份"],
+        ["AcquiredAt", "time.Time", "本轮取得时刻；续租不动它"],
+        ["ExpiresAt", "time.Time", "租期到期时刻"]
+      ]
+    },
+    "n_ledger_Store_AcquireRunLock": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 538,
+      "name": "Store.AcquireRunLock",
+      "file": "internal/ledger/runlock.go",
+      "line": 26,
+      "signature": "func (s *Store) AcquireRunLock(cardID, node, holder string, ttl time.Duration) (RunLock, bool, error)",
+      "params": [
+        ["cardID", "string", "卡号"],
+        ["node", "string", "节点名"],
+        ["holder", "string", "运行标识"],
+        ["ttl", "time.Duration", "租期"]
+      ],
+      "returns": "(RunLock, bool, error)",
+      "summary": "取得运行锁；他主未过期拒绝并返回现存锁，过期覆盖并落抢占事件（Ticket 0 空壳）"
+    },
+    "n_ledger_Store_RenewRunLock": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 539,
+      "name": "Store.RenewRunLock",
+      "file": "internal/ledger/runlock.go",
+      "line": 32,
+      "signature": "func (s *Store) RenewRunLock(cardID, holder string, ttl time.Duration) (bool, error)",
+      "params": [
+        ["cardID", "string", "卡号"],
+        ["holder", "string", "运行标识"],
+        ["ttl", "time.Duration", "续到的租期长度"]
+      ],
+      "returns": "(bool, error)",
+      "summary": "仅当前持有者可续；false = 已失去，必须停止对卡的写（Ticket 0 空壳）"
+    },
+    "n_ledger_Store_ReleaseRunLock": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 540,
+      "name": "Store.ReleaseRunLock",
+      "file": "internal/ledger/runlock.go",
+      "line": 38,
+      "signature": "func (s *Store) ReleaseRunLock(cardID, holder string) error",
+      "params": [
+        ["cardID", "string", "卡号"],
+        ["holder", "string", "运行标识"]
+      ],
+      "returns": "error",
+      "summary": "回合结束的尽力而为清理；非持有者 no-op（Ticket 0 空壳）"
+    },
+    "n_ledger_Store_RunLockOf": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 541,
+      "name": "Store.RunLockOf",
+      "file": "internal/ledger/runlock.go",
+      "line": 44,
+      "signature": "func (s *Store) RunLockOf(cardID string) (RunLock, bool, error)",
+      "params": [["cardID", "string", "卡号"]],
+      "returns": "(RunLock, bool, error)",
+      "summary": "读单卡运行锁行；不过滤过期，在跑与否由消费侧判 ExpiresAt（Ticket 0 空壳）"
+    },
+    "n_ledger_Store_AllRunLocks": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 542,
+      "name": "Store.AllRunLocks",
+      "file": "internal/ledger/runlock.go",
+      "line": 49,
+      "signature": "func (s *Store) AllRunLocks() ([]RunLock, error)",
+      "returns": "([]RunLock, error)",
+      "summary": "全部运行锁行，看板批量判定用；同样不过滤过期（Ticket 0 空壳）"
+    }
+  },
+  "nodesModified": {
+    "m_ledgerstep_StepRunner": {
+      "kind": "model",
+      "container": "k_ledgerstep_model",
+      "order": 22,
+      "name": "StepRunner",
+      "file": "internal/ledgerstep/runner.go",
+      "line": 23,
+      "summary": "StepRunner 节点执行的装配器；Session 收窄为归属身份，新增 RunHolder 运行标识",
+      "fields": [
+        ["St", "*ledger.Store", ""],
+        ["Dispatcher", "*Dispatcher", ""],
+        ["Clients", "func(target string) (*client.Client, error)", ""],
+        ["Target", "string", ""],
+        ["Extra", "string", ""],
+        ["Session", "string", "发起方人尺度归属身份，不再承担互斥"],
+        ["RunHolder", "string", "本次编排的运行标识 = 运行锁持有者；空则运行锁路径拒绝放行"]
+      ]
+    }
+  }
+}

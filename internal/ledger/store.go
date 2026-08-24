@@ -250,6 +250,10 @@ func (s *Store) ensureSchema() error {
 			`CREATE TABLE IF NOT EXISTS mirror_cursors (
 				target TEXT PRIMARY KEY, last_seq BIGINT NOT NULL,
 				updated_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS card_run_locks (
+				card_id TEXT PRIMARY KEY REFERENCES cards(id),
+				node TEXT NOT NULL, holder TEXT NOT NULL,
+				acquired_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS ledger_meta (
 				key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
@@ -312,6 +316,10 @@ func (s *Store) ensureSchema() error {
 			`CREATE TABLE IF NOT EXISTS mirror_cursors (
 				target TEXT PRIMARY KEY, last_seq INTEGER NOT NULL,
 				updated_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS card_run_locks (
+				card_id TEXT PRIMARY KEY REFERENCES cards(id),
+				node TEXT NOT NULL, holder TEXT NOT NULL,
+				acquired_at TEXT NOT NULL, expires_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS ledger_meta (
 				key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
