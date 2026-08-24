@@ -11,6 +11,10 @@
 仅新增或更新 codegraph/baseline.json（全量重扫）或
 codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 
+扫描写面只有上述图产物。`codegraph/target.json`、`codegraph/domains/*.json` 和
+`codegraph/best.json` 都是人工维护的应然/归属声明，扫描期间一律只读，禁止创建、
+覆盖或顺手补全。
+
 基线文件描述扫描时刻的完整图；增量文件描述某个 branch/plan 相对基线的变化。
 视图名使用文件名去掉 .json 的部分，消费方从 codegraph/diffs/ 发现视图，不读取
 基线顶层的历史兼容字段。
@@ -26,6 +30,12 @@ codegraph/diffs/<视图名>.json（分支增量），不改任何源码文件。
 协议主路径私有函数；对 TypeScript/React 目录，至少盘点计划明确的类型、导出函数
 和组件，容器用模块路径分组。静态可达性只用于补充调用边，不能用来决定节点是否
 存在。
+
+对每一个出现在节点 `file` 上的目录都建立 `packages` 条目：Go 包的 `summary` 只转录
+该包源码 doc 注释，无注释则写空串；TypeScript/React 目录也必须建条目，但其
+`summary` 固定为空串，不编造包职责。包目录键必须使用仓库内相对路径，并与节点
+`file` 的目录部分同构。类型与函数节点的 `summary` 同样从源码 doc 注释转录；有
+doc 注释的 `model` 与 `func` 必须 100% 收录，不能以静态可达性或调用链为由跳过。
 
 **文件级完整性自检（必做，B220 后新增）**：交付前必须逐目录比对「盘上有多少源码
 文件」与「图里有多少文件出现在某个节点的 `file` 上」，**两个数字必须相等**，不等就
@@ -58,6 +68,17 @@ generated 文件、被 target 排除的目录）。
 | implements | [string, string][] | 接口满足关系 [实现节点 id, 接口节点 id] |
 | projections | Projection[] | 数据实体投影关系；可选，缺省为空 |
 | lifecycle | LifecycleRef[] | 生命周期关系 [creator/writer 节点对 model 的创建或状态写入] |
+| packages | Record&lt;string, Package&gt; | 包目录到包 doc 摘要；可选，缺省时不得写入该键 |
+
+packages 的 value 字段：
+
+| 字段 | 类型 | 可选 | 说明 |
+| --- | --- | --- | --- |
+| summary | string | 否 | 包源码 doc 注释的一句话转录；无注释或 TS/React 目录为空串，禁止生成式概括 |
+
+`packages` 的 key 必须是图中至少一个节点 `file` 的目录；悬空 key 会被
+`handoff graph validate` 判为硬错误。反过来，有目录没有条目不由 validate 执法，必须
+由本配方的文件级完整性自检逐目录发现并说明。
 
 meta 字段：
 
@@ -163,6 +184,14 @@ Projection 是一个三元组 `[投影点节点 id, model 节点 id, kind]`：
 提供修改后的完整 Node，不要只写修改字段；删除的节点只写 ID，删除节点的旧定义
 由基线提供。
 
+### 摘要抓取红线
+
+`packages.summary`、`model` 节点的 `summary` 和 `func` 节点的 `summary` 都是源码
+doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描器根据实现自行生成的职责
+概括。无 doc 注释就写空串，不能从名称、字段、调用边或静态可达性推断摘要；生成式
+概括是红线，因为它会让图里出现源码不存在的意图。对有 doc 注释的类型与函数，必须
+逐项保留其摘要，收录率为 100%。
+
 ## model 分种（modelKind）
 
 `kind: "model"` 今天把两样东西混在一起：真实体（有创建点、有状态被写）与传输/配置
@@ -227,13 +256,11 @@ Projection 是一个三元组 `[投影点节点 id, model 节点 id, kind]`：
 
 ### 扫描产出的是现状，不是应然
 
-**`codegraph/target.json` 不是扫描产出物，一个字都不要动它。** 它记的是「架构应该
-长成什么样」，由人拍板；baseline 记的是「今天实际长成什么样」，由扫描产出。两者
-之间的差就是迁移待办——扫描者去「顺手补全」目标图，等于把现状抄成应然，那个差
-当场归零，整套机制失去意义。
-
-同理，`codegraph/domains/*.json`（领域声明：职责、不变式、状态机锚）也**不是**扫描
-产出物——那是人写的语义承诺，生成出来的只会是一堆正确但空洞的话。
+**`codegraph/target.json`、`codegraph/domains/*.json` 与 `codegraph/best.json` 都不是
+扫描产出物，一个字都不要动。** target 记的是「架构应该长成什么样」，domains 记
+职责/不变式/状态机锚，best 记人工确认的容器归属；baseline 才记「今天实际长成什么
+样」。扫描者去「顺手补全」这些人工声明，等于把现状抄成应然或擅自改变归属，迁移
+差异与善后审计都会失去意义。
 
 扫描者能写的只有：`codegraph/baseline.json` 与 `codegraph/diffs/<视图>.json`。
 
