@@ -106,3 +106,6 @@
 - 2026-08-24: 提交前差异核验 `git diff --check` -> 无输出，退出码 0；`git diff --stat` -> `9 files changed, 112 insertions(+), 80 deletions(-)`；工作树仅含本轮预期变更，分支仍为 `cards/B230-charter-3`。
 - 2026-08-24: 最终暂存 `git add cmd/b230_test.go cmd/card_dispatch.go cmd/card_dispatch_test.go internal/agentd/cardstep_test.go internal/agentd/forward_test.go internal/agentd/ledger_fixtures_test.go internal/agentd/ledgerapi_test.go internal/agentd/projectadmin_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
 - 2026-08-24: 暂存区核验 `git diff --cached --check` -> 无输出，退出码 0；`git diff --cached --stat` -> `9 files changed, 114 insertions(+), 80 deletions(-)`；所有预期文件均处于暂存状态。
+- 2026-08-24: 最终实现提交 `git commit -m "test: isolate agentd workflow fixtures"` -> `[cards/B230-charter-3 d16a2e6f] test: isolate agentd workflow fixtures`、`9 files changed, 115 insertions(+), 80 deletions(-)`，删除 `cmd/b230_test.go`，退出码 0。
+- 2026-08-24: 提交后核验 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 仅台账因追加提交事实而修改；`git log --oneline -6` 顶部为 `d16a2e6f`，分支仍为 `cards/B230-charter-3`。
+- 2026-08-24: 最终台账暂存检查 `git diff --cached --check` -> 无输出，退出码 0。
