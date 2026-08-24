@@ -21052,7 +21052,7 @@
    "file": "web/src/app/tree/NewWorktreeDialog.tsx",
    "line": 26,
    "signature": "export interface NewWorktreeDialogProps {",
-   "summary": "/** 新建工作树弹层的输入；登记名用于寻址，机器名用于选择目标位置。 */"
+   "summary": "新建工作树弹层的输入；登记名用于寻址，机器名用于选择目标位置。"
   },
   "m_web_app_tree_NodeCounts": {
    "kind": "model",
@@ -21140,7 +21140,7 @@
    "file": "web/src/app/tree/TreePrefsMenu.tsx",
    "line": 16,
    "signature": "export interface TreePrefsMenuProps {",
-   "summary": "/** TreePrefsMenu 的输入；projects 必须是未经过隐藏过滤的全量项目。 */"
+   "summary": "TreePrefsMenu 的输入；projects 必须是未经过隐藏过滤的全量项目。"
   },
   "m_web_app_tree_WorkspaceIdleInfo": {
    "kind": "model",
@@ -69964,7 +69964,7 @@
    "file": "web/src/app/codegraph/CodegraphPage.tsx",
    "line": 202,
    "signature": "function CodegraphPlaceholder({ loading, error, project, onRetry }: {",
-   "summary": "/** CodegraphPlaceholder 是内容区的三种非图状态：加载中 / 没扫过 / 真出错。 */"
+   "summary": "CodegraphPlaceholder 是内容区的三种非图状态：加载中 / 没扫过 / 真出错。"
   },
   "n_web_app_codegraph_DetailPanel": {
    "kind": "func",
@@ -72564,7 +72564,7 @@
    "file": "web/src/app/tree/NewWorktreeDialog.tsx",
    "line": 62,
    "signature": "export function NewWorktreeDialog({ open, projectName, machine, onClose, onCreated }: NewWorktreeDialogProps) {",
-   "summary": "/** 加载目标机器的分支并提交一棵手工工作树。 */"
+   "summary": "加载目标机器的分支并提交一棵手工工作树。"
   },
   "n_web_app_tree_ProjectTree": {
    "kind": "func",
@@ -72594,7 +72594,7 @@
    "file": "web/src/app/tree/TreePrefsMenu.tsx",
    "line": 30,
    "signature": "export function TreePrefsMenu({ prefs, projects, onChange }: TreePrefsMenuProps) {",
-   "summary": "/** 把偏好选项渲染为左栏项目标题旁的 IconMenu。 */"
+   "summary": "把偏好选项渲染为左栏项目标题旁的 IconMenu。"
   },
   "n_web_app_tree___resetTreePrefsForTest": {
    "kind": "func",

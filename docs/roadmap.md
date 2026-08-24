@@ -103,3 +103,24 @@
   协程，理由是「驱动方是有人在后面的会话，不是会静默死亡的进程」。B185 因此把
   恢复限定在「进程自己确知的死亡」（agentd 重启）。若将来要恢复覆盖到别的死法，
   **必须先推翻 B189 的裁决**，不能顺手加回 TTL。来源：同上，弃选 A。
+
+## 来自 B231 扫描补职责面（2026-08-24）
+
+- **符号级漏建残余 33 个**：`cmd/`+`internal/` 范围 1993 个函数/方法声明里 33 个不在图中
+  （1.7%），其中 6 个是导出符号：`internal/client/client.go#CardStep`、
+  `internal/ledgerstep/runner.go#ResolveNode`、`internal/executor/turn/text.go#FinalText`、
+  `internal/executor/turn/timing.go#PauseWaiting`/`Resume`、
+  `internal/config/config.go#PlatformInvariantsEnabled`。本轮只把判据写进配方
+  （「符号级完整性自检」），补建留给下一次重扫。来源：B231 协调者验收实测。
+- **6 个零节点容器**：`k_codegraph_Target`/`k_codegraph_fn`/`k_codegraph_model`/
+  `k_svc_Server`/`k_svc_model`/`k_web_model`，是 `internal/agentd/testdata/codegraph-repo`
+  被 target 排除后留下的残骸，B231 之前就存在。`check` 只统计有节点的容器
+  （`assignedContainers 233 = viewContainers 233`），所以它们对执法完全隐形。
+  配方已加「零节点容器不入图」，清理随下一次重扫。来源：同上。
+- **6 个非 card 族 CLI 父入口仍标 `unscanned`**：`e_cli_decision`/`graph`/`template`/
+  `workflow`/`project`/`service`。B231 的禁用兜底只覆盖 card 族，这几个按 plan 允许保留；
+  它们不参与预算重定标。来源：`plans/2026-08-24-b231-scan-plan.md` 本轮特别要求第 3 条。
+- **终态事件丢失第二次实测**（叠加到「来自 B185 spec」那条）：2026-08-24 B231-2 重扫
+  的 codex 任务在最后一次提交获批后静默 **76 分钟**（与 2026-08-23 那次同样是 76 分钟），
+  executor 进程仍存活、`resume` 报「当前 executor 不支持会话对账」，最终靠
+  `resume --force` 收口。同一形态第二次出现，不再是偶发。
