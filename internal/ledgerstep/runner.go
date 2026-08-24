@@ -109,12 +109,22 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 //
 // why 一定要用卡钉的版本而不是最新版：工作流是不可变版本化的，卡在建卡时
 // 钉了版本号。拿最新版去解释一张老卡，等于用今天的流程图判昨天的卡走到哪了。
-func (r *StepRunner) nodeFor(cardID, nodeName string) (ledger.NodeDef, error) {
-	card, err := r.St.GetCard(cardID)
+// ResolveNode 查一张卡在它钉住的工作流里的某个节点定义。
+//
+// 参数：st 是账本；cardID 是卡号；nodeName 是节点名（= 看板列名）。
+// 返回：卡不存在时原样透传 ledger.ErrNotFound（调用方据此映射 404）；工作流取不到、
+// 或节点名不在该工作流里，返回带卡号与工作流版本的描述性错误。
+//
+// 为什么导出：受理一个节点请求是有副作用的（认领驱动、派任务），而编排跑在后台
+// goroutine 里——HTTP 层必须能在受理之前用同一份判断拒掉无效输入，否则卡号或节点名
+// 打错只会换来一句「已受理」，失败连一条卡事件都留不下。两处必须查同一个真相源，
+// 各查各的迟早漂移。
+func ResolveNode(st *ledger.Store, cardID, nodeName string) (ledger.NodeDef, error) {
+	card, err := st.GetCard(cardID)
 	if err != nil {
 		return ledger.NodeDef{}, err
 	}
-	workflow, err := r.St.GetWorkflow(card.WorkflowName, card.WorkflowVersion)
+	workflow, err := st.GetWorkflow(card.WorkflowName, card.WorkflowVersion)
 	if err != nil {
 		return ledger.NodeDef{}, fmt.Errorf("取卡 %s 钉住的工作流 %s v%d: %w",
 			cardID, card.WorkflowName, card.WorkflowVersion, err)
@@ -126,6 +136,10 @@ func (r *StepRunner) nodeFor(cardID, nodeName string) (ledger.NodeDef, error) {
 	}
 	return ledger.NodeDef{}, fmt.Errorf("节点 %q 不在卡 %s 的工作流 %s v%d 里",
 		nodeName, cardID, card.WorkflowName, card.WorkflowVersion)
+}
+
+func (r *StepRunner) nodeFor(cardID, nodeName string) (ledger.NodeDef, error) {
+	return ResolveNode(r.St, cardID, nodeName)
 }
 
 // dispatchNode 生产 NodeStep.Dispatch：按节点的模板引用 + 单字段覆盖派发。

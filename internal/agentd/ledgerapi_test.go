@@ -730,7 +730,7 @@ func TestCardStepReturns202(t *testing.T) {
 	}
 	env.srv.runStepFn = func(context.Context, *ledgerstep.StepRunner, string, string) {}
 
-	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
 	if code != http.StatusAccepted {
 		t.Fatalf("应 202，实得 %d（%s）", code, body)
 	}
@@ -747,7 +747,7 @@ func TestCardStepSecondReturns409(t *testing.T) {
 	release := holdCardStep(t, env.srv, card.ID)
 	defer release()
 
-	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
 	if code != http.StatusConflict {
 		t.Fatalf("应 409，实得 %d", code)
 	}
@@ -760,7 +760,7 @@ func TestCardStepSecondReturns409(t *testing.T) {
 // 冻结请求没有调用方本地文件字段，规范 actor 请求应进入同一异步 runner。
 func TestCardStepAcceptsImplementWithoutInlineFile(t *testing.T) {
 	env := newLedgerEnv(t)
-	seedCardWithProject(t, env.srv, "handoff")
+	seedImplementCardWithProject(t, env.srv, "handoff")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -811,7 +811,7 @@ func TestCardStepLegacyActorFallback(t *testing.T) {
 	}
 	defer transport.CloseIdleConnections()
 	code, body := ledgerPostWithClient(t, env.testAgentdEnv, &http.Client{Transport: transport},
-		"/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+		"/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
 	if code != http.StatusAccepted {
 		t.Fatalf("legacy 请求应 202，实得 %d（%s）", code, body)
 	}
@@ -839,7 +839,7 @@ func TestCardStepRejectsEmptyActor(t *testing.T) {
 	}
 	called := make(chan struct{}, 1)
 	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
-	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review","actor":""}`)
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"待审阅","actor":""}`)
 	if code != http.StatusBadRequest || !strings.Contains(body, "actor") {
 		t.Fatalf("显式空 actor 应 400，实得 %d（%s）", code, body)
 	}
@@ -886,7 +886,7 @@ func TestCardStepIgnoresUnknownFields(t *testing.T) {
 	runnerCh := make(chan *ledgerstep.StepRunner, 1)
 	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) { runnerCh <- runner }
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step",
-		`{"step":"review","actor":"cli:u@h#1","future_optional":"x","plan_path":"local.md"}`)
+		`{"step":"待审阅","actor":"cli:u@h#1","future_optional":"x","plan_path":"local.md"}`)
 	if code != http.StatusAccepted {
 		t.Fatalf("未知字段不应拒绝，实得 %d（%s）", code, body)
 	}
@@ -911,7 +911,7 @@ func TestCardStepPropagatesRequestFields(t *testing.T) {
 	runnerCh := make(chan *ledgerstep.StepRunner, 1)
 	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) { runnerCh <- runner }
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step",
-		`{"step":"review","target":"linux-01","executor":"grok","model":"grok-model","extra":"本轮只修 F1","actor":"cli:u@h#1"}`)
+		`{"step":"待审阅","target":"linux-01","executor":"grok","model":"grok-model","extra":"本轮只修 F1","actor":"cli:u@h#1"}`)
 	if code != http.StatusAccepted {
 		t.Fatalf("规范请求应 202，实得 %d（%s）", code, body)
 	}
@@ -1141,5 +1141,74 @@ func TestCardDetailCarriesDecisions(t *testing.T) {
 	}
 	if strings.Contains(body, "项目级的那条不该串进来") {
 		t.Fatalf("项目级裁决不该出现在卡详情里: %q", body)
+	}
+}
+
+// TestCardStepRejectsUnknownCard 钉死「不存在的卡当场 404，而不是先回 202 再在
+// 后台悄悄失败」。
+//
+// 为什么这条必须有：受理是异步的，卡不存在时 StepRunner 在 goroutine 里才发现，
+// 那时既没有卡可以落事件，也没有响应可以带错——失败只剩 agentd 日志一处。
+// 调用方拿到的是「已受理」，从此再无任何可看之处。B185 之前 CLI 在进程内跑
+// runner，这种输入是当场报错的；异步化不应把它变成静默黑洞。
+func TestCardStepRejectsUnknownCard(t *testing.T) {
+	env := newLedgerEnv(t)
+	called := make(chan struct{}, 1)
+	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B999999/step",
+		`{"step":"review","actor":"cli:u@h#1"}`)
+	if code != http.StatusNotFound {
+		t.Fatalf("不存在的卡应 404，实得 %d（%s）", code, body)
+	}
+	select {
+	case <-called:
+		t.Fatal("不存在的卡不应启动 runner")
+	default:
+	}
+}
+
+// TestCardStepRejectsUnknownNode 钉死「节点名不在卡钉住的工作流里时当场 400」。
+//
+// 与卡不存在同一族：节点名打错今天也是先 202 再在后台失败，而节点解析失败发生在
+// 驱动认领之前，卡上连一条事件都不会留。
+func TestCardStepRejectsUnknownNode(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "handoff")
+	called := make(chan struct{}, 1)
+	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step",
+		`{"step":"这个节点不存在","actor":"cli:u@h#1"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("未知节点应 400，实得 %d（%s）", code, body)
+	}
+	if !strings.Contains(body, "这个节点不存在") {
+		t.Fatalf("400 报文应点名那个节点，实得 %s", body)
+	}
+	select {
+	case <-called:
+		t.Fatal("未知节点不应启动 runner")
+	default:
+	}
+}
+
+// TestCardStepRejectsTrailingGarbage 钉死「请求体带尾随内容时整体拒绝」。
+//
+// 为什么：json.Decoder.Decode 只吃第一个 JSON 值，尾随内容被静默丢弃——一个被
+// 中途截断又重发的请求体会被当成合法请求受理。受理是有副作用的（认领驱动、
+// 派发任务），不能建立在「只看了前半句」上。
+func TestCardStepRejectsTrailingGarbage(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "handoff")
+	called := make(chan struct{}, 1)
+	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step",
+		`{"step":"review","actor":"cli:u@h#1"} {"step":"另一个"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("尾随内容应 400，实得 %d（%s）", code, body)
+	}
+	select {
+	case <-called:
+		t.Fatal("带尾随内容的请求不应启动 runner")
+	default:
 	}
 }

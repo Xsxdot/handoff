@@ -917,3 +917,40 @@ func TestReclaimForceCarriesIntoRequestBody(t *testing.T) {
 		t.Fatalf("请求体必须带 force=true，实得：%s", gotBody)
 	}
 }
+
+// TestCardStepRejectsTrailingGarbageInAck 钉死「受理响应带尾随内容时整体拒绝」。
+//
+// 与服务端同一族：Decoder.Decode 只吃第一个 JSON 值。一个被截断/串包的响应体
+// 会让 CLI 报「已受理」，而调用方据此就不再重试了。
+func TestCardStepRejectsTrailingGarbageInAck(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}{"ok":false}`))
+	}))
+	defer ts.Close()
+	err := client.New(ts.URL, testToken).
+		CardStep(context.Background(), "B1", proto.CardStepReq{Step: "review", Actor: "cli:u@h#1"})
+	if err == nil {
+		t.Fatal("带尾随内容的受理响应应报错")
+	}
+}
+
+// TestCardStepAckFalseCarriesBody 钉死「ok=false 时把响应体带进错误」。
+//
+// 为什么：ok=false 是服务端唯一能在 202 之后说「其实没受理」的通道，它携带的
+// 原因是排查的全部素材。丢掉它，调用方只剩一句「未确认受理」，无从下手。
+func TestCardStepAckFalseCarriesBody(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":false,"error":"账本镜像只读，写操作要发给持有者"}`))
+	}))
+	defer ts.Close()
+	err := client.New(ts.URL, testToken).
+		CardStep(context.Background(), "B1", proto.CardStepReq{Step: "review", Actor: "cli:u@h#1"})
+	if err == nil {
+		t.Fatal("ok=false 应报错")
+	}
+	if !strings.Contains(err.Error(), "账本镜像只读") {
+		t.Fatalf("错误应带上响应体里的原因，实得 %v", err)
+	}
+}

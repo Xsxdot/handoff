@@ -796,15 +796,25 @@ func (c *Client) CardStep(ctx context.Context, cardID string, req proto.CardStep
 		logger.Warn("卡节点未受理", "status", resp.StatusCode, "cause", err)
 		return err
 	}
+	// 整段读进来再 Unmarshal，而不是 Decoder.Decode：后者只吃第一个 JSON 值，
+	// 尾随内容被静默丢弃——一个被截断或串包的响应会让这里报「已受理」，而调用方
+	// 据此就不再重试了。上限沿用 httpError 的 4096（够放下一段中文诊断）。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if err != nil {
+		logger.Warn("卡节点受理响应读取失败", "cause", err)
+		return fmt.Errorf("读取 card step 响应: %w", err)
+	}
 	var ack struct {
 		OK bool `json:"ok"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&ack); err != nil {
-		logger.Warn("卡节点受理响应解码失败", "cause", err)
+	if err := json.Unmarshal(body, &ack); err != nil {
+		logger.Warn("卡节点受理响应解码失败", "cause", err, "body", string(body))
 		return fmt.Errorf("解析 card step 响应: %w", err)
 	}
 	if !ack.OK {
-		err := fmt.Errorf("card step 响应未确认受理")
+		// 响应体带进错误：ok=false 是服务端在 202 之后唯一能说「其实没受理」的
+		// 通道，它携带的原因是排查的全部素材，丢掉就只剩一句没有信息量的断言。
+		err := fmt.Errorf("card step 响应未确认受理: %s", strings.TrimSpace(string(body)))
 		logger.Warn("卡节点受理响应为 ok=false", "cause", err)
 		return err
 	}
