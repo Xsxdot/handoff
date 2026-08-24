@@ -203,3 +203,4 @@
 - 2026-08-25：补记台账后再次暂存核对 `git status --short && git diff --cached --check && git diff --cached --stat` 通过；原始输出显示 5 个文件全部 staged、`141 insertions(+), 1 deletion(-)`，cached diff check 为空。
 - 2026-08-25：实现提交 `git commit -m 'fix(b239): gate dispatch ledger writes'` 首次成功；原始输出 `[cards/B239-charter-7 bb852d33] fix(b239): gate dispatch ledger writes`、`5 files changed, 142 insertions(+), 1 deletion(-)`，退出码 0；因本条事实随后回写台账，将用 `git commit --amend --no-edit` 收口。
 - 2026-08-25：`git commit --amend --no-edit` 收口成功；原始输出 `[cards/B239-charter-7 54baab3e] fix(b239): gate dispatch ledger writes`、`5 files changed, 143 insertions(+), 1 deletion(-)`，退出码 0；当前实现与台账已在该提交中。
+- 2026-08-25：提交后核对 `git status --short --branch && git log -2 --oneline --decorate && git show --stat --oneline --summary HEAD && git diff HEAD^ --check`；原始输出分支为 `## cards/B239-charter-7` 且无未提交行，HEAD=`6c5f55d9`，上一实现提交=`54baab3e`，HEAD 仅含 1 条台账记录，`git diff HEAD^ --check` 为空。
