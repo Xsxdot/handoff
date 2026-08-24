@@ -67,6 +67,21 @@ func codegraphRawGET(t *testing.T, env *testAgentdEnv, path string) (int, []byte
 	return resp.StatusCode, body
 }
 
+// roundTripReport 把库直调的报告过一遍 JSON 编解码，使其与 HTTP 响应侧的
+// 反序列化产物处于同一表示口径（omitempty 字段的 nil/空值差异在此抹平）。
+func roundTripReport(t *testing.T, rep *codegraph.Report) *codegraph.Report {
+	t.Helper()
+	raw, err := json.Marshal(rep)
+	if err != nil {
+		t.Fatalf("序列化直调报告: %v", err)
+	}
+	var out codegraph.Report
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("反序列化直调报告: %v", err)
+	}
+	return &out
+}
+
 type codegraphResponse struct {
 	Baseline codegraph.Graph           `json:"baseline"`
 	Views    map[string]codegraph.Diff `json:"views"`
@@ -118,7 +133,11 @@ func TestCodegraphEndpoint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("加载 fixture domain decls: %v", err)
 	}
-	wantReport := codegraph.Check(target, best, codegraph.Merge(g, nil), decls)
+	// 直调结果要走一遍 JSON 往返再比：响应侧的 report 是反序列化产物，而
+	// Report.LegacyHits 带 omitempty——空 map 在 wire 上被丢掉、解回来是 nil，
+	// 与内存里恒非空的 map[string]int{} 天然不相等。往返后两侧同口径，比的才
+	// 是「宿主传的报告 == 库直调的报告」，而不是内存表示的偶然差异。
+	wantReport := roundTripReport(t, codegraph.Check(target, best, codegraph.Merge(g, nil), decls))
 	if !reflect.DeepEqual(body.Report, wantReport) {
 		t.Fatalf("代码图报告与直调 Check 不一致:\n got=%+v\nwant=%+v", body.Report, wantReport)
 	}
