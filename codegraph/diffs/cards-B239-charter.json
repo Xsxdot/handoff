@@ -1,15 +1,16 @@
 {
   "view": "cards/B239-charter",
   "base": "84af7380",
-  "summary": "B239 Ticket 0：运行锁类型与 Store 门面签名空壳、StepRunner.RunHolder 字段",
+  "summary": "B239：拆分归属锁与运行锁，补齐运行锁生命周期、写闸字段及调用边",
   "nodesAdded": {
     "m_ledger_RunLock": {
       "kind": "model",
+      "modelKind": "entity",
       "container": "k_ledger_model",
       "order": 280,
       "name": "RunLock",
       "file": "internal/ledger/runlock.go",
-      "line": 15,
+      "line": 19,
       "summary": "运行锁一行：哪张卡、哪个节点、谁持有（运行标识）、租期到几点",
       "fields": [
         ["CardID", "string", "卡号"],
@@ -25,7 +26,7 @@
       "order": 538,
       "name": "Store.AcquireRunLock",
       "file": "internal/ledger/runlock.go",
-      "line": 26,
+      "line": 39,
       "signature": "func (s *Store) AcquireRunLock(cardID, node, holder string, ttl time.Duration) (RunLock, bool, error)",
       "params": [
         ["cardID", "string", "卡号"],
@@ -42,7 +43,7 @@
       "order": 539,
       "name": "Store.RenewRunLock",
       "file": "internal/ledger/runlock.go",
-      "line": 32,
+      "line": 106,
       "signature": "func (s *Store) RenewRunLock(cardID, holder string, ttl time.Duration) (bool, error)",
       "params": [
         ["cardID", "string", "卡号"],
@@ -58,7 +59,7 @@
       "order": 540,
       "name": "Store.ReleaseRunLock",
       "file": "internal/ledger/runlock.go",
-      "line": 38,
+      "line": 129,
       "signature": "func (s *Store) ReleaseRunLock(cardID, holder string) error",
       "params": [
         ["cardID", "string", "卡号"],
@@ -73,7 +74,7 @@
       "order": 541,
       "name": "Store.RunLockOf",
       "file": "internal/ledger/runlock.go",
-      "line": 44,
+      "line": 145,
       "signature": "func (s *Store) RunLockOf(cardID string) (RunLock, bool, error)",
       "params": [["cardID", "string", "卡号"]],
       "returns": "(RunLock, bool, error)",
@@ -85,30 +86,114 @@
       "order": 542,
       "name": "Store.AllRunLocks",
       "file": "internal/ledger/runlock.go",
-      "line": 49,
+      "line": 162,
       "signature": "func (s *Store) AllRunLocks() ([]RunLock, error)",
       "returns": "([]RunLock, error)",
       "summary": "全部运行锁行，看板批量判定用；同样不过滤过期（Ticket 0 空壳）"
     }
   },
   "nodesModified": {
+    "m_ledgerstep_TemplateDispatch": {
+      "kind": "model",
+      "modelKind": "dto",
+      "container": "k_ledgerstep_model",
+      "order": 52,
+      "name": "TemplateDispatch",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 61,
+      "summary": "TemplateDispatch 描述一次按模板派发：模板、目标机、可选 plan 与纪律角色覆盖。",
+      "fields": [
+        ["Template", "string", ""],
+        ["Target", "string", ""],
+        ["PlanPath", "string", ""],
+        ["DisciplineOverride", "string", ""],
+        ["WriteGate", "func() bool", "运行节点在每处账本写入前使用的写闸；nil 表示不设闸"],
+        ["ExecutorOverride", "string", ""],
+        ["ModelOverride", "string", ""],
+        ["CarryCardContext", "bool", ""],
+        ["PurposeOverride", "string", ""],
+        ["OmitAcceptance", "bool", ""],
+        ["Extra", "string", ""],
+        ["OutputPath", "string", ""]
+      ]
+    },
+    "m_ledgerstep_NodeStep": {
+      "kind": "model",
+      "modelKind": "dto",
+      "container": "k_ledgerstep_model",
+      "order": 40,
+      "name": "NodeStep",
+      "file": "internal/ledgerstep/node.go",
+      "line": 44,
+      "summary": "NodeStep 通用节点执行体：一个节点该怎么跑，完全由 Node 上的能力开关决定。",
+      "fields": [
+        ["St", "*ledger.Store", ""],
+        ["Node", "ledger.NodeDef", ""],
+        ["Dispatch", "func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (target, taskID string, err error)", ""],
+        ["Await", "func(ctx context.Context, target, taskID string) (message string, err error)", ""],
+        ["OutputPath", "func() string", ""],
+        ["Diff", "func(ctx context.Context, target, taskID string) ([]string, error)", ""],
+        ["Attach", "func(cardID, kind, path, actor string) error", ""],
+        ["WriteGate", "func() bool", "生产编排注入的卡写闸；nil 表示不设闸"]
+      ]
+    },
     "m_ledgerstep_StepRunner": {
       "kind": "model",
+      "modelKind": "dto",
       "container": "k_ledgerstep_model",
       "order": 22,
       "name": "StepRunner",
       "file": "internal/ledgerstep/runner.go",
-      "line": 23,
-      "summary": "StepRunner 节点执行的装配器；Session 收窄为归属身份，新增 RunHolder 运行标识",
+      "line": 24,
+      "summary": "StepRunner 节点执行的装配器。依赖全部显式注入，调用方各填各的。",
       "fields": [
         ["St", "*ledger.Store", ""],
         ["Dispatcher", "*Dispatcher", ""],
+        ["Session", "string", "发起方人尺度归属身份，不再承担互斥"],
+        ["RunHolder", "string", "本次编排的运行标识 = 运行锁持有者；空则运行锁路径拒绝放行"],
+        ["RenewBeat", "<-chan time.Time", "续租节拍源；nil 时生产路径使用 RunLockRenewInterval ticker"],
         ["Clients", "func(target string) (*client.Client, error)", ""],
         ["Target", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
         ["Extra", "string", ""],
-        ["Session", "string", "发起方人尺度归属身份，不再承担互斥"],
-        ["RunHolder", "string", "本次编排的运行标识 = 运行锁持有者；空则运行锁路径拒绝放行"]
+        ["Now", "func() time.Time", ""]
       ]
+    },
+    "n_ledger_Store_ClaimCard": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 139,
+      "name": "Store.ClaimCard",
+      "file": "internal/ledger/move.go",
+      "line": 143,
+      "signature": "func (s *Store) ClaimCard(id, owner string) error",
+      "signatureOld": "func (s *Store) ClaimCard(id, to, expect, session string) error",
+      "params": [
+        ["id", "string", "卡号"],
+        ["owner", "string", "人尺度归属身份"]
+      ],
+      "returns": "error",
+      "summary": "ClaimCard 认领卡的归属锁（人尺度）：归属判定与归属写入同事务完成，不改变状态列、不落认领事件。"
     }
-  }
+  },
+  "nodesDeleted": [
+    "n_ledger_Store_ClaimDriver"
+  ],
+  "edgesAdded": [
+    ["n_agentd_Server_handleCardsList", "n_ledger_Store_AllRunLocks"]
+  ],
+  "lifecycleAdded": [
+    {
+      "who": "n_ledger_Store_AcquireRunLock",
+      "model": "m_ledger_RunLock",
+      "kind": "creator"
+    },
+    {
+      "who": "n_ledger_Store_RenewRunLock",
+      "model": "m_ledger_RunLock",
+      "kind": "writer",
+      "field": "ExpiresAt"
+    }
+  ]
 }
