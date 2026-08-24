@@ -347,7 +347,7 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 
 | 动作 | 命令 |
 |---|---|
-| 建卡 | `handoff card add "<标题>" --project <项目> [--priority 高\|中\|低] [--parent <父卡>]`（缺省落 triage） |
+| 建卡 | `handoff card add "<标题>" --project <项目> [--workflow <流>] [--priority 高\|中\|低] [--parent <父卡>]`（不指定流时按账本内流集合解析：零条先建流、唯一条自动使用、多条要求显式指定） |
 | 按原号导入 | `handoff card import <B号> "<标题>" --project <项目> --source <来源>`（撞号即拒） |
 | 看板 / 单卡 | `handoff card list [--status <列>] [--needs] [--all] [--json]` / `handoff card show <id>` |
 | 挂附件 / 改卡 | `handoff card update <id> --attach <kind>:<仓内相对路径> / --title / --priority / --accept` |
@@ -431,9 +431,9 @@ handoff card move <id> <下一列>              # 人工列的跳转（如 accep
 四条要点：
 
 - **各流的列序与逐节点卡操作对照表在 `product-backlog` skill 的「推进 charter 流」**
-  ——那边是驾驶手册。现役流：`triage`（收件箱/领活池）与 `charter`（L1/L2/L3
-  执行流，L1 按定级跳边直入 implement）；`bug` 流停用中（存量卡走完即退役，
-  新 L1 不再迁入）；`feature` / `domain` 已退役。本节只管流无关的通用机制。
+  ——那边是驾驶手册。工作流定义由用户或上层方法论安装，handoff 出厂不预设任何流；
+  本节不复制某条流的列序，只说明流无关的通用机制。建卡未指定流时，账本按流数量作
+  唯一解析：空账本指向先建流，恰好一条自动使用，多条必须显式指定。
 - **审阅类节点的 fail 会自动 `continue`**（带发现项原文），**3 轮封顶**，超限自动
   打「等人」。要人工重置计数用 `handoff card note <id> --reset-node <节点名>`
   （注意这个 flag 仍叫 `--reset-node`：「节点→环节」改名只动了
@@ -465,7 +465,7 @@ handoff card move <id> <下一列>              # 人工列的跳转（如 accep
 ### 6. 验收后发现 bug：开新卡，不 reopen
 
 ```bash
-handoff card add "<标题>" --project <项目>          # 缺省落 triage 收件箱
+handoff card add "<标题>" --project <项目>          # 缺省按账本流集合解析；多流时显式加 --workflow
 handoff card note <新卡> "发现自 <原卡 id> 的验收"
 # 定性后按级别走 charter：L1 挂 spec+plan 合体页跳 implement（见 product-backlog）
 ```

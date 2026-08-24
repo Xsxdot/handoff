@@ -74,7 +74,7 @@ export function NewCardDialog({
   onCreated: (id: string) => void
 }) {
   const [title, setTitle] = useState('')
-  const [workflow, setWorkflow] = useState(workflows[0] ?? 'feature')
+  const [workflow, setWorkflow] = useState(workflows[0] ?? '')
   const [priority, setPriority] = useState('中')
   const [baseBranch, setBaseBranch] = useState('')
   const [busy, setBusy] = useState(false)
@@ -90,6 +90,11 @@ export function NewCardDialog({
     succeeded: { title: string; id: string }[]
     failed: { title: string; reason: string }[]
   } | null>(null)
+
+  useEffect(() => {
+    // 流列表异步到齐或刷新时，只保留仍存在的手选值；空列表保持空值，交给账本解析。
+    setWorkflow((current) => workflows.includes(current) ? current : (workflows[0] ?? ''))
+  }, [workflows])
 
   useEffect(() => {
     if (!open) return
@@ -172,8 +177,8 @@ export function NewCardDialog({
         const created = await createCard({
           title: one,
           project: projectValue,
-          workflow,
           priority,
+          ...(workflow ? { workflow } : {}),
           ...(parent ? { parent } : {}),
           ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
         })
@@ -228,7 +233,9 @@ export function NewCardDialog({
               id="new-card-workflow" className="mt-1 w-full rounded border px-2 py-1.5 text-sm"
               value={workflow} onChange={(e) => setWorkflow(e.target.value)}
             >
-              {workflows.map((name) => <option key={name} value={name}>{name}</option>)}
+              {workflows.length === 0
+                ? <option value="">由账本按实际工作流解析</option>
+                : workflows.map((name) => <option key={name} value={name}>{name}</option>)}
             </select>
           </div>
           <div>

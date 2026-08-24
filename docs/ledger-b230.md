@@ -1,0 +1,29 @@
+# B230 实施台账
+
+- 2026-08-24：读取 `/root/.codex/skills/handoff/SKILL.md` 全文；本执行者按要求不调用 handoff CLI、不派发任务。
+- 2026-08-24：执行 `git status --short --branch`；原始输出为 `## cards/B230-charter-4`，工作树无未提交改动。
+- 2026-08-24：读取 B230 spec、plan 与既有台账格式；本轮范围为 review 轮 F1–F4，计划要求不要重做已通过部分。
+- 2026-08-24：检查 `web/src/app/cards/NewCardDialog.tsx` 与测试；当前初始化仍为 `workflows[0] ?? 'feature'`，提交请求始终带 `workflow`，且空流场景没有直接测试；`web/src/api/ledger.ts` 的 `NewCardReq.workflow` 已是可选字段。
+- 2026-08-24：检查 `internal/ledger/workflows_test.go` 与 `test_fixtures_test.go`；F2 指定的 9 个出厂种子测试仍在，夹具仍含四条退役流定义与补版/不覆盖逻辑；`TestWorkflowLegacyDefStillDecodes` 已直接覆盖 States→Nodes 读取行为。
+- 2026-08-24：检查 `skills/handoff/SKILL.md`；出厂/缺省流文档仍写 triage、feature、domain，至少命中行 350、434–436、468；`internal/ledgerstep/dispatch_test.go:16` 的 `seedLedgerStepStore` 注释仍为英文。
+- 2026-08-24：按 F2 删除 `workflows_test.go` 指定的 9 个出厂种子测试；保留并加强 `TestWorkflowLegacyDefStillDecodes`，现在逐节点断言 States 顺序、Next 串接、纯人工能力与 Gate 读取。
+- 2026-08-24：按 F2 将 `seedTestWorkflows` 改为直接写入最小测试流，删除夹具中的老 def 补版、不覆盖与幂等逻辑；feature/bug/triage/domain 只保留现有账本行为测试所需列与闸。
+- 2026-08-24：按 F3 修改 `skills/handoff/SKILL.md` 建卡速查、流语义与建卡示例；grep 复核后不再出现退役流名 triage/feature/domain，剩余“缺省”仅指执行器缺省或账本流集合解析。
+- 2026-08-24：按 F4 将 `internal/ledgerstep/dispatch_test.go` 的 `seedLedgerStepStore` 英文注释改为中文，并在本轮触及文件中复核新增注释均为中文。
+- 2026-08-24：在已写入的 F1 前端回归测试之后，修改 `NewCardDialog`：空工作流保持空值、显示账本解析提示、异步列表刷新时同步有效选项，建卡请求仅在有值时发送 `workflow`。
+- 2026-08-24：执行 `gofmt -w internal/ledger/workflows_test.go internal/ledger/test_fixtures_test.go && go test ./internal/ledger/... -run 'TestWorkflowLegacyDefStillDecodes|TestCreateCardAllocatesBNumbers|TestMoveCard|TestMigrateCannotBypassGate' -count=1`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行 `go test ./internal/ledger/... -count=1`；原始输出为空，命令退出码 0；最小流夹具覆盖现有 ledger 测试。
+- 2026-08-24：执行 `rg -n '^\\s*//.*[A-Za-z]{3}'` 检查本轮触及文件；输出仅为原有英文/技术标识注释，F2/F4/F1 新增或改写注释均为中文。
+- 2026-08-24：在 F1 修复后执行 `npm test -- --run src/app/cards/NewCardDialog.test.tsx`；原始输出为 `sh: 1: vitest: not found`，前端测试未验证。
+- 2026-08-24：执行 `npm run typecheck`；原始输出为 `sh: 1: tsc: not found`，前端类型检查未验证。
+- 2026-08-24：执行四项 grep：9 个指定测试名、`EnsureDefaultWorkflows/EnsureDefaultTemplates`、7 个方法论常量均无命中；仅 `workflows.go` 的 `withStatesFromNodes/withNodesFromStates` 正常包含 Nodes 长度判断。
+- 2026-08-24：执行 `gofmt -l .`；原始输出为空，格式检查通过。
+- 2026-08-24：首次执行 `go build ./...`；原始失败为 `go: writing go.mod cache: open /root/go/pkg/mod/cache/download/github.com/!xsxdot/charter/graph/@v/v0.5.0.mod985110611.tmp: read-only file system` 与 `cmd/graph.go:14:2: open /root/go/pkg/mod/cache/download/github.com/!xsxdot/charter/graph/@v/v0.5.0.lock: read-only file system`。
+- 2026-08-24：获准使用模块缓存后重跑 `go build ./...`；原始输出仅为 `go: downloading github.com/Xsxdot/charter/graph v0.5.0`，命令退出码 0。
+- 2026-08-24：执行 `go vet ./...`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行法定测试一 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/discipline/...`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行法定测试二 `go test ./cmd/... ./internal/proto/... ./internal/ledgermirror/...`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行法定测试三 `go test ./internal/agentd/...`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行 `git status --short --branch && git diff --check && git diff --stat`；当前分支仍为 `cards/B230-charter-4`，仅 F1–F4 目标文件与本轮台账有改动，diff check 无输出。
+- 2026-08-24：普通沙箱执行 `git add docs/ledger-b230.md internal/ledger/test_fixtures_test.go internal/ledger/workflows_test.go internal/ledgerstep/dispatch_test.go skills/handoff/SKILL.md web/src/app/cards/NewCardDialog.tsx web/src/app/cards/NewCardDialog.test.tsx` 失败；原始报错为 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/7985d142/index.lock': Read-only file system`，尚未暂存。
+- 2026-08-24：提升权限重跑暂存、`git diff --cached --check` 与统计；原始输出为 7 个预期文件已暂存，统计 `86 insertions(+), 329 deletions(-)`，cached diff check 无输出。

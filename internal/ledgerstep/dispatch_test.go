@@ -13,9 +13,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
-// seedLedgerStepStore installs explicit test data. Store.Open itself has no
-// production seeds; these templates/workflow are only the fixtures required by
-// ledgerstep's prompt and snapshot tests.
+// seedLedgerStepStore 写入显式测试数据。Store.Open 本身没有生产种子；
+// 这些模板和工作流只服务于 ledgerstep 的提示词与快照测试。
 func seedLedgerStepStore(t *testing.T, st *ledger.Store) {
 	t.Helper()
 	for name, def := range map[string]ledger.TemplateDef{
