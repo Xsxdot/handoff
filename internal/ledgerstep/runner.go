@@ -158,15 +158,41 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 	done := make(chan struct{})
 	finished := make(chan struct{})
 	var lostOnce sync.Once
-	noteLost := func() {
+	var lostReport struct {
+		holder    string
+		expiresAt string
+		readError string
+	}
+	noteLost := func() (string, string, string) {
 		lostOnce.Do(func() {
-			body := fmt.Sprintf("本轮运行锁已被接手（holder=%s）：本回合自即刻起停止对这张卡的移列、裁决、附件与等人标记写入；已在跑的远端任务继续等待并照常归档。", r.RunHolder)
+			lock, ok, err := r.St.RunLockOf(cardID)
+			var lockInfo string
+			switch {
+			case err != nil:
+				lostReport.readError = err.Error()
+				lockInfo = "现持有者读取失败：" + lostReport.readError
+				logger.Warn("失去写权说明读取运行锁失败", "cause", err)
+			case !ok:
+				lostReport.readError = "运行锁行不存在"
+				lockInfo = "现持有者读取失败：" + lostReport.readError
+				logger.Warn("失去写权说明读取运行锁失败", "cause", lostReport.readError)
+			default:
+				lostReport.holder = lock.Holder
+				lostReport.expiresAt = lock.ExpiresAt.Format(time.RFC3339)
+				lockInfo = fmt.Sprintf("holder=%s expires_at=%s", lostReport.holder, lostReport.expiresAt)
+			}
+			body := fmt.Sprintf("本轮运行锁已被接手（%s）：本回合自即刻起停止对这张卡的移列、裁决、附件与等人标记写入；已在跑的远端任务继续等待并照常归档。", lockInfo)
 			if _, err := r.St.AddComment(cardID, body, "普通", "node:"+nodeName); err != nil {
 				logger.Warn("失去写权说明落卡失败", "cause", err)
 				return
 			}
-			logger.Info("失去写权说明已落卡")
+			if lostReport.readError != "" {
+				logger.Info("失去写权说明已落卡", "lock_holder_read_error", lostReport.readError)
+			} else {
+				logger.Info("失去写权说明已落卡", "lock_holder", lostReport.holder, "expires_at", lostReport.expiresAt)
+			}
 		})
+		return lostReport.holder, lostReport.expiresAt, lostReport.readError
 	}
 	beats := r.RenewBeat
 	if beats == nil {
@@ -190,8 +216,12 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 				case ok:
 					logger.Info("运行锁已续租", "ttl", ledger.RunLockTTL.String())
 				default:
-					noteLost()
-					logger.Warn("续租被拒：本轮已失去对卡的写权", "holder", r.RunHolder)
+					holder, expiresAt, readError := noteLost()
+					if readError != "" {
+						logger.Warn("续租被拒：本轮已失去对卡的写权", "lock_holder_read_error", readError)
+					} else {
+						logger.Warn("续租被拒：本轮已失去对卡的写权", "lock_holder", holder, "expires_at", expiresAt)
+					}
 					return
 				}
 			}
