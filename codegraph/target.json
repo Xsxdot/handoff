@@ -1,298 +1,221 @@
 {
-  "meta": {
-    "version": 2,
-    "project": "handoff"
+ "meta": {
+  "version": 3,
+  "project": "handoff"
+ },
+ "assembly": [
+  "main.go"
+ ],
+ "contracts": [
+  {
+   "from": "d_cli",
+   "to": "d_execution",
+   "legacyBudget": 11
   },
-  "subsystems": [
-    {
-      "id": "d_ledger",
-      "name": "账本域",
-      "type": "logic",
-      "paths": [
-        "internal/ledger/**",
-        "internal/ledgerstep/**",
-        "internal/ledgermirror/**",
-        "internal/store/**"
-      ]
-    },
-    {
-      "id": "d_controlplane",
-      "name": "控制面 API 域",
-      "type": "logic",
-      "paths": [
-        "internal/agentd/**",
-        "internal/webui/**"
-      ],
-      "note": "待竖切：61 文件平铺包，实例化清单 §5.1/§6 已立待办，竖切前整包归一域；B205 工作树挂卡仍经 ledger.Store 门面，账本未启用时建树照常"
-    },
-    {
-      "id": "d_remote",
-      "name": "远端连接域",
-      "type": "boundary",
-      "paths": [
-        "internal/client/**",
-        "internal/targetclient/**",
-        "internal/relay/**",
-        "internal/proxycfg/**"
-      ]
-    },
-    {
-      "id": "d_executor",
-      "name": "Executor 适配域",
-      "type": "boundary",
-      "paths": [
-        "internal/executor/**"
-      ]
-    },
-    {
-      "id": "d_host",
-      "name": "宿主进程与 PTY 域",
-      "type": "boundary",
-      "paths": [
-        "internal/prochost/**",
-        "internal/ptyhost/**"
-      ]
-    },
-    {
-      "id": "d_release",
-      "name": "换版与发布域",
-      "type": "boundary",
-      "paths": [
-        "internal/release/**",
-        "internal/upgrade/**",
-        "internal/selfupdate/**"
-      ]
-    },
-    {
-      "id": "d_localint",
-      "name": "本机集成域",
-      "type": "boundary",
-      "paths": [
-        "internal/service/**",
-        "internal/toolchain/**",
-        "internal/pathenv/**",
-        "internal/envfile/**",
-        "internal/launcher/**",
-        "internal/permgate/**",
-        "internal/initflow/**",
-        "internal/localsync/**",
-        "internal/skill/**",
-        "internal/config/**",
-        "internal/logx/**"
-      ]
-    },
-    {
-      "id": "d_cli",
-      "name": "CLI 域",
-      "type": "logic",
-      "paths": [
-        "cmd/**"
-      ]
-    },
-    {
-      "id": "d_web",
-      "name": "Web 控制台域",
-      "type": "logic",
-      "paths": [
-        "web/src/**"
-      ]
-    },
-    {
-      "id": "d_contract",
-      "name": "契约域",
-      "type": "logic",
-      "paths": [
-        "internal/proto/**",
-        "internal/buildinfo/**",
-        "internal/projectid/**",
-        "internal/discipline/**"
-      ]
-    }
-  ],
-  "assembly": [
-    "main.go"
-  ],
-  "contracts": [
-    {
-      "from": "d_cli",
-      "to": "d_contract",
-      "entries": [
-        "proto 实体",
-        "proto.TaskState",
-        "proto.CardStepReq"
-      ],
-      "legacyBudget": 4
-    },
-    {
-      "from": "d_cli",
-      "to": "d_controlplane",
-      "entries": [
-        "POST /api/cards/{id}/step"
-      ],
-      "legacyBudget": 12
-    },
-    {
-      "from": "d_cli",
-      "to": "d_executor",
-      "legacyBudget": 7
-    },
-    {
-      "from": "d_cli",
-      "to": "d_host",
-      "legacyBudget": 6
-    },
-    {
-      "from": "d_cli",
-      "to": "d_ledger",
-      "entries": [
-        "ledger.Store"
-      ],
-      "legacyBudget": 2
-    },
-    {
-      "from": "d_cli",
-      "to": "d_localint",
-      "entries": [
-        "config 实体",
-        "config.Target",
-        "localsync 实体"
-      ],
-      "legacyBudget": 35
-    },
-    {
-      "from": "d_cli",
-      "to": "d_release",
-      "legacyBudget": 8
-    },
-    {
-      "from": "d_cli",
-      "to": "d_remote",
-      "entries": [
-        "client 实体",
-        "client.Client"
-      ],
-      "legacyBudget": 10
-    },
-    {
-      "from": "d_controlplane",
-      "to": "d_contract",
-      "entries": [
-        "discipline.Resolver",
-        "proto 实体",
-        "proto.Task",
-        "proto.CardStepReq"
-      ],
-      "legacyBudget": 20
-    },
-    {
-      "from": "d_controlplane",
-      "to": "d_executor",
-      "entries": [
-        "executor 实体"
-      ],
-      "legacyBudget": 3
-    },
-    {
-      "from": "d_controlplane",
-      "to": "d_host",
-      "entries": [
-        "ptyhost 实体",
-        "ptyhost.Host"
-      ],
-      "legacyBudget": 16
-    },
-    {
-      "from": "d_controlplane",
-      "to": "d_ledger",
-      "entries": [
-        "ledger.Store",
-        "ledgerstep.ResolveNode",
-        "ledgerstep.StepRunner",
-        "store.Store"
-      ],
-      "legacyBudget": 3
-    },
-    {
-      "from": "d_controlplane",
-      "to": "d_localint",
-      "entries": [
-        "config 实体",
-        "permgate 实体"
-      ],
-      "legacyBudget": 18
-    },
-    {
-      "from": "d_controlplane",
-      "to": "d_release",
-      "legacyBudget": 14
-    },
-    {
-      "from": "d_controlplane",
-      "to": "d_remote",
-      "entries": [
-        "targetclient.Pool"
-      ],
-      "legacyBudget": 6
-    },
-    {
-      "from": "d_executor",
-      "to": "d_contract",
-      "entries": [
-        "proto 实体",
-        "proto.Task"
-      ]
-    },
-    {
-      "from": "d_executor",
-      "to": "d_host",
-      "legacyBudget": 9
-    },
-    {
-      "from": "d_ledger",
-      "to": "d_contract",
-      "entries": [
-        "proto 实体"
-      ],
-      "legacyBudget": 2
-    },
-    {
-      "from": "d_localint",
-      "to": "d_remote",
-      "legacyBudget": 2
-    },
-    {
-      "from": "d_release",
-      "to": "d_localint",
-      "legacyBudget": 1
-    },
-    {
-      "from": "d_web",
-      "to": "d_controlplane",
-      "entries": [
-        "POST /api/cards/{id}/step"
-      ]
-    },
-    {
-      "from": "d_release",
-      "to": "d_remote",
-      "entries": [
-        "client.Client"
-      ]
-    },
-    {
-      "from": "d_remote",
-      "to": "d_contract",
-      "entries": [
-        "proto 实体"
-      ]
-    },
-    {
-      "from": "d_remote",
-      "to": "d_localint",
-      "entries": [
-        "config 实体",
-        "config.Target"
-      ]
-    }
-  ]
+  {
+   "from": "d_cli",
+   "to": "d_ledger",
+   "legacyBudget": 1,
+   "entries": [
+    "ledger.Store"
+   ]
+  },
+  {
+   "from": "d_cli",
+   "to": "d_maintenance",
+   "legacyBudget": 18
+  },
+  {
+   "from": "d_cli",
+   "to": "d_orchestration",
+   "legacyBudget": 13
+  },
+  {
+   "from": "d_cli",
+   "to": "d_policy",
+   "legacyBudget": 32
+  },
+  {
+   "from": "d_cli",
+   "to": "d_protocol",
+   "legacyBudget": 1,
+   "entries": [
+    "proto 实体"
+   ]
+  },
+  {
+   "from": "d_cli",
+   "to": "d_sessions",
+   "legacyBudget": 2
+  },
+  {
+   "from": "d_cli",
+   "to": "d_transport",
+   "legacyBudget": 10,
+   "entries": [
+    "client 实体",
+    "client.Client"
+   ]
+  },
+  {
+   "from": "d_cli",
+   "to": "d_workspace",
+   "legacyBudget": 9
+  },
+  {
+   "from": "d_execution",
+   "to": "d_protocol",
+   "legacyBudget": 0,
+   "entries": [
+    "proto 实体",
+    "proto.Task"
+   ]
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_execution",
+   "legacyBudget": 1
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_ledger",
+   "legacyBudget": 14,
+   "entries": [
+    "ledgerstep.StepRunner"
+   ]
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_maintenance",
+   "legacyBudget": 7
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_orchestration",
+   "legacyBudget": 319
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_policy",
+   "legacyBudget": 38
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_protocol",
+   "legacyBudget": 0,
+   "entries": [
+    "proto 实体"
+   ]
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_sessions",
+   "legacyBudget": 14,
+   "entries": [
+    "ptyhost 实体"
+   ]
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_transport",
+   "legacyBudget": 8
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_workspace",
+   "legacyBudget": 1
+  },
+  {
+   "from": "d_maintenance",
+   "to": "d_protocol",
+   "legacyBudget": 1
+  },
+  {
+   "from": "d_maintenance",
+   "to": "d_transport",
+   "legacyBudget": 3
+  },
+  {
+   "from": "d_orchestration",
+   "to": "d_execution",
+   "legacyBudget": 27
+  },
+  {
+   "from": "d_orchestration",
+   "to": "d_gateway",
+   "legacyBudget": 2
+  },
+  {
+   "from": "d_orchestration",
+   "to": "d_maintenance",
+   "legacyBudget": 8
+  },
+  {
+   "from": "d_orchestration",
+   "to": "d_policy",
+   "legacyBudget": 16
+  },
+  {
+   "from": "d_orchestration",
+   "to": "d_protocol",
+   "legacyBudget": 1,
+   "entries": [
+    "proto 实体",
+    "proto.Task"
+   ]
+  },
+  {
+   "from": "d_orchestration",
+   "to": "d_sessions",
+   "legacyBudget": 2
+  },
+  {
+   "from": "d_orchestration",
+   "to": "d_transport",
+   "legacyBudget": 5
+  },
+  {
+   "from": "d_orchestration",
+   "to": "d_workspace",
+   "legacyBudget": 19
+  },
+  {
+   "from": "d_policy",
+   "to": "d_maintenance",
+   "legacyBudget": 2
+  },
+  {
+   "from": "d_policy",
+   "to": "d_transport",
+   "legacyBudget": 2
+  },
+  {
+   "from": "d_sessions",
+   "to": "d_execution",
+   "legacyBudget": 6
+  },
+  {
+   "from": "d_transport",
+   "to": "d_policy",
+   "legacyBudget": 4
+  },
+  {
+   "from": "d_transport",
+   "to": "d_protocol",
+   "legacyBudget": 0,
+   "entries": [
+    "proto 实体"
+   ]
+  },
+  {
+   "from": "d_workspace",
+   "to": "d_orchestration",
+   "legacyBudget": 2
+  },
+  {
+   "from": "d_workspace",
+   "to": "d_protocol",
+   "legacyBudget": 3
+  }
+ ]
 }
