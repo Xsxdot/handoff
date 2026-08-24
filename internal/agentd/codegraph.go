@@ -72,9 +72,35 @@ func (s *Server) handleProjectCodegraph(w http.ResponseWriter, r *http.Request) 
 	if stale == nil {
 		stale = []codegraph.StaleNode{}
 	}
+	response := map[string]any{"baseline": g, "views": views, "stale": stale}
+	best, err := codegraph.LoadBest(loc.Path)
+	if err != nil {
+		s.log.Warn("代码图最优图加载失败，跳过对照数据", "name", name, "repo", loc.Path, "cause", err)
+	} else if best != nil {
+		response["best"] = best
+		target, err := codegraph.LoadTarget(loc.Path)
+		if err != nil {
+			s.log.Warn("代码图目标图加载失败，跳过目标与报告", "name", name, "repo", loc.Path, "cause", err)
+		} else {
+			response["target"] = target
+			decls, err := codegraph.LoadDomainDecls(loc.Path)
+			if err != nil {
+				s.log.Warn("代码图领域声明加载失败，跳过报告", "name", name, "repo", loc.Path, "cause", err)
+			} else {
+				report := codegraph.Check(target, best, codegraph.Merge(g, nil), decls)
+				if report.Fails == nil {
+					report.Fails = []codegraph.Finding{}
+				}
+				if report.Warns == nil {
+					report.Warns = []codegraph.Finding{}
+				}
+				response["report"] = report
+			}
+		}
+	}
 	s.log.Info("代码图完成", "name", name, "nodes", len(g.Nodes),
 		"edges", len(g.Edges), "domains", len(g.Domains), "views", len(views), "stale", len(stale))
-	writeJSON(w, http.StatusOK, map[string]any{"baseline": g, "views": views, "stale": stale})
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleProjectCodegraphSource 处理 GET /api/projects/{name}/codegraph/source。

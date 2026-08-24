@@ -1,0 +1,15 @@
+{
+  "meta": { "version": 1, "project": "fixture" },
+  "domains": {
+    "d_core": {
+      "label": "核心",
+      "responsibility": "承载 fixture 的全部代码图节点。",
+      "type": "logic"
+    }
+  },
+  "containers": {
+    "c_cli": "d_core",
+    "k_svc": "d_core",
+    "k_ent": "d_core"
+  }
+}
