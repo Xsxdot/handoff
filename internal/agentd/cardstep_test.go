@@ -103,7 +103,9 @@ func TestStartCardStepRejectsSecondInFlight(t *testing.T) {
 // 否则一张卡审一次之后就再也审不了了——而且这个 bug 要等到第二次点才发现。
 func TestStartCardStepReleasesSlotOnFinish(t *testing.T) {
 	s := newStepTestServer(t)
-	seedCardWithProject(t, s, "demo")
+	// 用 handoff 项目让建出的卡确实是 B1（前缀取项目名首字母）：B229 起
+	// startCardStep 同步段会解析卡与节点，卡号必须真实存在。
+	seedCardWithProject(t, s, "handoff")
 	done := make(chan struct{})
 	s.runStepFn = func(ctx context.Context, runner *ledgerstep.StepRunner, cardID, step string) {
 		select {
@@ -112,12 +114,12 @@ func TestStartCardStepReleasesSlotOnFinish(t *testing.T) {
 			close(done)
 		}
 	}
-	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: ledger.StatusReview, Actor: "web:test"}); err != nil {
 		t.Fatalf("首次应放行: %v", err)
 	}
 	<-done
 	waitFor(t, func() bool { return !cardStepInFlight(s, "B1") })
-	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: ledger.StatusReview, Actor: "web:test"}); err != nil {
 		t.Fatalf("跑完之后应能再发起: %v", err)
 	}
 }

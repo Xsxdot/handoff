@@ -82,6 +82,9 @@ func TestCardAddChildAndBaseBranch(t *testing.T) {
 
 func TestCardUpdateBaseBranch(t *testing.T) {
 	dir := t.TempDir()
+	// B229 起裸卡派发在认领前过拒发闸，闸的前提由共享夹具满足（本测试钉的是
+	// 基线分支更新语义）。
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "可更新基线", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
