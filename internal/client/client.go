@@ -774,6 +774,11 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	return &task, nil
 }
 
+// maxCardStepAck 是 card step 受理响应的大小上限。响应约定是 {"ok":true}，4096
+// 与 httpError 的错误体上限同级（够放下一段中文诊断）。超过即整体拒绝，不截断——
+// 理由与 agentd 侧的 maxCardStepBody 相同。
+const maxCardStepAck = 4096
+
 // CardStep 向 agentd 提交一个卡节点，成功只表示服务端已受理。
 //
 // 参数：ctx 控制本次短 HTTP 请求；cardID 是 URL 中的卡号；req 是带节点名、一次性
@@ -798,11 +803,16 @@ func (c *Client) CardStep(ctx context.Context, cardID string, req proto.CardStep
 	}
 	// 整段读进来再 Unmarshal，而不是 Decoder.Decode：后者只吃第一个 JSON 值，
 	// 尾随内容被静默丢弃——一个被截断或串包的响应会让这里报「已受理」，而调用方
-	// 据此就不再重试了。上限沿用 httpError 的 4096（够放下一段中文诊断）。
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	// 据此就不再重试了。多读 1 字节判超限：只截断的话，一段恰好等于上限的
+	// {"ok":true,...} 后面接什么都会被切掉，防线在边界上就破了。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCardStepAck+1))
 	if err != nil {
 		logger.Warn("卡节点受理响应读取失败", "cause", err)
 		return fmt.Errorf("读取 card step 响应: %w", err)
+	}
+	if len(body) > maxCardStepAck {
+		logger.Warn("卡节点受理响应超限", "limit", maxCardStepAck)
+		return fmt.Errorf("card step 响应超过 %d 字节", maxCardStepAck)
 	}
 	var ack struct {
 		OK bool `json:"ok"`

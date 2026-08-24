@@ -1218,3 +1218,37 @@ func TestCardStepRejectsTrailingGarbage(t *testing.T) {
 	default:
 	}
 }
+
+// TestCardStepRejectsOversizedBody 钉死「超限的请求体整体拒绝，而不是截断后受理」。
+//
+// 为什么单靠 LimitReader 不够：它只截断、不报错。构造一段**恰好等于上限**的合法
+// JSON，后面再接尾随内容——截断刚好把尾随内容切掉，剩下的是完整合法请求，于是
+// 「拒尾随内容」那道防线在上限边界上被绕过。多读 1 字节再判长度才闭合。
+func TestCardStepRejectsOversizedBody(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "handoff")
+	called := make(chan struct{}, 1)
+	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+
+	head := `{"step":"待审阅","actor":"cli:u@h#1","extra":"`
+	tail := `"}`
+	pad := strings.Repeat("x", maxCardStepBody-len(head)-len(tail))
+	exact := head + pad + tail
+	if len(exact) != maxCardStepBody {
+		t.Fatalf("构造的合法前缀应恰好 %d 字节，实得 %d", maxCardStepBody, len(exact))
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step", exact+` {"step":"另一个"}`)
+	// 413 而不是 400：请求体超限是「太大」，不是「格式不对」，调用方据此知道该
+	// 缩短 --extra 而不是去查 JSON 语法。
+	if code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("超限请求体应 413，实得 %d（%s）", code, body)
+	}
+	if !strings.Contains(body, "超过") {
+		t.Fatalf("413 报文应说清是超限，实得 %s", body)
+	}
+	select {
+	case <-called:
+		t.Fatal("超限请求体不应启动 runner")
+	default:
+	}
+}

@@ -390,9 +390,13 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
-// maxCardStepBody 是 step 请求体的读取上限。请求只有六个短字段，--extra 是其中唯一
+// maxCardStepBody 是 step 请求体的大小上限。请求只有六个短字段，--extra 是其中唯一
 // 可能长的一项（一段中文补充说明）；1 MiB 给它留了三个数量级的余量，同时挡住把
 // 整个进程内存喂进来的畸形请求。
+//
+// 它是**上限**不是**截断点**：超过就整体拒绝。只截断的话，一段恰好等于上限的合法
+// JSON 后面接任何尾随内容，都会被截断切干净、当成合法请求受理——那道「拒尾随内容」
+// 的防线就在边界上破了。判定手法沿用 envfile.Parse：多读 1 字节再比长度。
 const maxCardStepBody = 1 << 20
 
 // handleCardStep 受理一个卡节点，受理即 202；202 不代表回合已完成。
@@ -410,10 +414,18 @@ const maxCardStepBody = 1 << 20
 // 结果落卡的事件流。
 func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
-	payload, err := io.ReadAll(io.LimitReader(r.Body, maxCardStepBody))
+	// 多读 1 字节用于判定「是否超限」：正好等于上限时 LimitReader 读满但未越界。
+	payload, err := io.ReadAll(io.LimitReader(r.Body, maxCardStepBody+1))
 	if err != nil {
 		s.log.Warn("卡节点请求读取失败", "card", id, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	if len(payload) > maxCardStepBody {
+		s.log.Warn("卡节点请求被拒：请求体超限", "card", id, "limit", maxCardStepBody)
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+			"error": fmt.Sprintf("card step 请求体超过 %d 字节", maxCardStepBody),
+		})
 		return
 	}
 	// 两次解同一段字节：raw 只用来区分「actor 键缺席」与「显式空串」，req 是规范请求。
