@@ -237,6 +237,9 @@ func (s *Store) ensureSchema() error {
 			`CREATE TABLE IF NOT EXISTS dispatch_templates (
 				name TEXT NOT NULL, version INT NOT NULL, definition JSONB NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (name, version))`,
+			`CREATE TABLE IF NOT EXISTS disciplines (
+				name TEXT NOT NULL, version INT NOT NULL, body TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (name, version))`,
 			`CREATE TABLE IF NOT EXISTS decisions (
 				id BIGSERIAL PRIMARY KEY, card_id TEXT REFERENCES cards(id),
 				body TEXT NOT NULL, options JSONB,
@@ -298,6 +301,9 @@ func (s *Store) ensureSchema() error {
 				created_at TEXT NOT NULL, PRIMARY KEY (name, version))`,
 			`CREATE TABLE IF NOT EXISTS dispatch_templates (
 				name TEXT NOT NULL, version INTEGER NOT NULL, definition TEXT NOT NULL,
+				created_at TEXT NOT NULL, PRIMARY KEY (name, version))`,
+			`CREATE TABLE IF NOT EXISTS disciplines (
+				name TEXT NOT NULL, version INTEGER NOT NULL, body TEXT NOT NULL,
 				created_at TEXT NOT NULL, PRIMARY KEY (name, version))`,
 			`CREATE TABLE IF NOT EXISTS decisions (
 				id INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT REFERENCES cards(id),

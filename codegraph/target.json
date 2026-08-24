@@ -33,7 +33,10 @@
   {
    "from": "d_cli",
    "to": "d_policy",
-   "legacyBudget": 32
+   "legacyBudget": 32,
+   "entries": [
+    "discipline（包级函数）"
+   ]
   },
   {
    "from": "d_cli",
@@ -97,7 +100,10 @@
   {
    "from": "d_gateway",
    "to": "d_policy",
-   "legacyBudget": 38
+   "legacyBudget": 38,
+   "entries": [
+    "discipline（包级函数）"
+   ]
   },
   {
    "from": "d_gateway",

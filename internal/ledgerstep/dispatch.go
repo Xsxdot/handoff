@@ -25,6 +25,11 @@ import (
 // 读成 PlanB64/PlanName；其余字段与 agentd 的派发协议一一对应。
 type DispatchOpts struct {
 	Prompt, Branch, Target, Project, Executor, Model, PlanB64, PlanName, Base, ExistingBranch, Discipline string
+	// B229：DisciplineText 是协调者侧组装好的纪律正文（缝 1 discipline.ResolveDispatch 产物），
+	// 随请求下发；执行机收文即用，不再自行解析。DisciplineVersion 是命中的账本
+	// 版本号（未点名或临时正文为 0），供快照与回放。Ticket 0 仅声明，接线归实现票。
+	DisciplineText    string
+	DisciplineVersion int
 	// OutputPath 是节点声明路径的确定值，供 transport 审计与测试观察；路径同时已注入 Prompt。
 	OutputPath  string
 	NewWorktree bool
@@ -48,6 +53,8 @@ type DispatchResult struct {
 	Template        string `json:"template"`
 	TemplateVersion int    `json:"template_version"`
 	DisciplineName  string `json:"discipline_name"`
+	// DisciplineVersion 是本次派发命中的纪律块账本版本（B229）；未点名/临时正文为 0。
+	DisciplineVersion int `json:"discipline_version"`
 }
 
 // Dispatcher 持有模板派发需要的账本、传输和审计 actor。

@@ -232,12 +232,15 @@ func taskSample(now time.Time, taskID string) Task {
 		Name:            "W1 前端地基",
 		Executor:        "opencode",
 		Model:           "",
-		WorkDir:         "/home/dev/handoff/.worktrees/w1",
-		WorktreeManaged: true,
-		BaseCommit:      "482aab1f9e12a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
-		BaseAhead:       1,
-		RepoDirtyCount:  2,
-		RepoDirtyFiles:  "web/package.json, internal/proto/proto.go 等 2 处",
+		// B229：纪律块账本版本进 fixture——「那次用的哪一版正文」的线格式钉死。
+		DisciplineName:    "review",
+		DisciplineVersion: 2,
+		WorkDir:           "/home/dev/handoff/.worktrees/w1",
+		WorktreeManaged:   true,
+		BaseCommit:        "482aab1f9e12a3b4c5d6e7f8a9b0c1d2e3f4a5b6",
+		BaseAhead:         1,
+		RepoDirtyCount:    2,
+		RepoDirtyFiles:    "web/package.json, internal/proto/proto.go 等 2 处",
 		// B80：给非零值才能把线格式钉进 fixture（两个字段都带 omitempty）。
 		// context_window 给值是为了钉住「有分母」的形状；无分母时该键缺席，
 		// 由 web 侧的 Usage 可选字段与 TaskHeader 测试覆盖。
@@ -366,6 +369,8 @@ func machinesSample() MachinesResp {
 				ActiveTasks:     1,
 				Error:           "",
 				PtySupported:    &ptyOK,
+				// B229：能力位投影进 fixture（Machine 是控制台实际读取的形态）。
+				DisciplinesSupported: &ptyOK,
 			},
 			{
 				Name:            "devbox",
@@ -488,8 +493,9 @@ func statusSample(now time.Time, taskID string) StatusResp {
 		},
 		Active: []ActiveTask{activeTaskSample(taskID)},
 		// 放在 Active 之后：能力位与运行时数据分开，一眼能看出它是 agentd 上报的。
-		PtySupported:    &ptyOK,
-		RevealSupported: &revealOK,
+		PtySupported:         &ptyOK,
+		RevealSupported:      &revealOK,
+		DisciplinesSupported: &revealOK, // B229：能力位进 fixture，缺席/置值的线格式由 web 侧承接
 	}
 }
 

@@ -159,6 +159,11 @@ type Machine struct {
 	// 这是刻意的：投影漏写不会变成一个静默错误的功能，只会变成功能不出现。
 	LaunchersSupported *bool `json:"launchers_supported,omitempty"`
 
+	// DisciplinesSupported 是这台机器的「接收下发纪律正文」能力位，探活时从
+	// 它的 StatusResp 投影而来（B229）。三态与 LaunchersSupported 同向：
+	// nil = 按不支持处置（协调者侧对该机的派发直接拒发，绝不静默降级）。
+	DisciplinesSupported *bool `json:"disciplines_supported,omitempty"`
+
 	// RevealSupported 是这台机器的「在访达中显示」能力位，探活时从它的
 	// StatusResp 投影而来。三态与 PtySupported 同一纪律。
 	RevealSupported *bool `json:"reveal_supported,omitempty"`

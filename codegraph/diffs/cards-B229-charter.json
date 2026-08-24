@@ -1,0 +1,223 @@
+{
+ "view": "cards/B229-charter",
+ "base": "10906bb1",
+ "summary": "B229 Ticket 0：disciplines 聚合（缝 2）与派发期纪律解析入口（缝 1，落 d_policy）空壳 + wire 加法字段",
+ "nodesAdded": {
+  "m_ledger_Discipline": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 27,
+   "name": "Discipline",
+   "file": "internal/ledger/disciplines.go",
+   "line": 23,
+   "summary": "一份版本化的纪律块正文（账本权威副本），与 dispatch_templates 同构不可变版本化",
+   "fields": [
+    ["Name", "string", ""],
+    ["Version", "int", "只增不改"],
+    ["Body", "string", "正文；写入时拒绝空与超 64KiB"],
+    ["CreatedAt", "time.Time", ""]
+   ]
+  },
+  "n_ledger_Store_PutDiscipline": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 389,
+   "name": "Store.PutDiscipline",
+   "file": "internal/ledger/disciplines.go",
+   "line": 43,
+   "signature": "func (s *Store) PutDiscipline(name, body string) (int, error)",
+   "params": [
+    ["name", "string", "纪律块名；非法名拒绝"],
+    ["body", "string", "正文；空或超 64KiB 拒绝"]
+   ],
+   "returns": "(int, error)",
+   "summary": "写入下一版本（不改旧行），返回新版本号"
+  },
+  "n_ledger_Store_GetDiscipline": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 390,
+   "name": "Store.GetDiscipline",
+   "file": "internal/ledger/disciplines.go",
+   "line": 70,
+   "signature": "func (s *Store) GetDiscipline(name string, version int) (Discipline, error)",
+   "params": [
+    ["name", "string", "纪律块名"],
+    ["version", "int", "0 = 最新"]
+   ],
+   "returns": "(ledger.Discipline, error)",
+   "summary": "取指定版本；不存在包 ErrNotFound"
+  },
+  "n_ledger_Store_ListDisciplineNames": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 391,
+   "name": "Store.ListDisciplineNames",
+   "file": "internal/ledger/disciplines.go",
+   "line": 93,
+   "signature": "func (s *Store) ListDisciplineNames() ([]string, error)",
+   "returns": "([]string, error)",
+   "summary": "全部纪律块名（去重升序）；接卡节点角色下拉与 CLI discipline list"
+  },
+  "m_discipline_DisciplineRef": {
+   "kind": "model",
+   "container": "k_discipline_model",
+   "order": 33,
+   "name": "DisciplineRef",
+   "file": "internal/discipline/dispatch.go",
+   "line": 37,
+   "summary": "点名一次纪律来源：Name 经 lookup 取账本最新版；RawText 直发不落库（版本 0）；都空=只平台层",
+   "fields": [
+    ["Name", "string", "角色名"],
+    ["RawText", "string", "临时正文；与 Name 互斥"]
+   ]
+  },
+  "m_discipline_ResolvedDiscipline": {
+   "kind": "model",
+   "container": "k_discipline_model",
+   "order": 34,
+   "name": "ResolvedDiscipline",
+   "file": "internal/discipline/dispatch.go",
+   "line": 45,
+   "summary": "随派发请求下发的纪律正文及其出处",
+   "fields": [
+    ["Text", "string", "三层组装后的完整正文"],
+    ["Source", "string", "人可读来源标注"],
+    ["Name", "string", "点名角色名；未点名为空"],
+    ["Version", "int", "账本版本号；未点名/临时正文为 0"]
+   ]
+  },
+  "n_discipline_ResolveDispatch": {
+   "kind": "func",
+   "container": "k_discipline_fn",
+   "order": 24,
+   "name": "ResolveDispatch",
+   "file": "internal/discipline/dispatch.go",
+   "line": 66,
+   "signature": "func ResolveDispatch(lookup DisciplineLookup, ref DisciplineRef, platformEnabled bool, targetCap *bool) (ResolvedDiscipline, error)",
+   "params": [
+    ["lookup", "discipline.DisciplineLookup", "账本读取视图（函数注入，d_policy 不 import d_ledger）"],
+    ["ref", "DisciplineRef", "纪律来源"],
+    ["platformEnabled", "bool", "协调者侧 PlatformInvariantsEnabled() 原值"],
+    ["targetCap", "*bool", "目标机 StatusResp.DisciplinesSupported 原值；nil/false=拒发"]
+   ],
+   "returns": "(ResolvedDiscipline, error)",
+   "summary": "派发期纪律正文唯一裁决点：取正文→组装→判能力→正文或拒发理由；未知名拒发不兜底"
+  }
+ },
+ "nodesModified": {
+  "m_proto_Task": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 217,
+   "name": "Task",
+   "file": "internal/proto/proto.go",
+   "line": 220,
+   "summary": "Task 表示一个 handoff 任务；B229 增 DisciplineVersion 落盘字段",
+   "fields": [
+    ["ID", "string", ""],
+    ["DisciplineName", "string", "派发点名的角色名"],
+    ["DisciplineVersion", "int", "命中的账本版本；老任务为 0"],
+    ["State", "string", ""],
+    ["Executor", "string", ""]
+   ],
+   "projScanned": true
+  },
+  "m_proto_StatusResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 155,
+   "name": "StatusResp",
+   "file": "internal/proto/status.go",
+   "line": 155,
+   "summary": "agentd 状态上报；B229 增 DisciplinesSupported 能力位（nil=false=拒发）",
+   "fields": [
+    ["PtySupported", "*bool", ""],
+    ["LaunchersSupported", "*bool", ""],
+    ["DisciplinesSupported", "*bool", "接收下发纪律正文的能力位；缺席按不支持处置"],
+    ["RevealSupported", "*bool", ""]
+   ],
+   "projScanned": true
+  },
+  "m_proto_Machine": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 109,
+   "name": "Machine",
+   "file": "internal/proto/projects.go",
+   "line": 119,
+   "summary": "汇总方探活投影的机器条目；B229 增 DisciplinesSupported 投影位",
+   "fields": [
+    ["Name", "string", ""],
+    ["Reachable", "bool", ""],
+    ["PtySupported", "*bool", ""],
+    ["LaunchersSupported", "*bool", ""],
+    ["DisciplinesSupported", "*bool", "从对端 StatusResp 投影；nil 按不支持处置"]
+   ],
+   "projScanned": true
+  },
+  "m_ledger_DispatchSnapshot": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 28,
+   "name": "DispatchSnapshot",
+   "file": "internal/ledger/events.go",
+   "line": 115,
+   "summary": "派发事件快照；B229 增 discipline_version 键，恢复「哪一版正文」可回放性",
+   "fields": [
+    ["Template", "string", ""],
+    ["TemplateVersion", "int", ""],
+    ["DisciplineName", "string", ""],
+    ["DisciplineVersion", "int", "命中的账本版本；老事件无此键反序列化为 0"],
+    ["Target", "string", ""],
+    ["TaskID", "string", ""]
+   ],
+   "projScanned": true
+  },
+  "m_web_api_types_StatusResp": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 352,
+   "name": "StatusResp",
+   "file": "web/src/api/types.ts",
+   "line": 378,
+   "signature": "interface StatusResp",
+   "fields": [
+    ["pty_supported", "boolean | null", ""],
+    ["launchers_supported", "boolean | null", ""],
+    ["disciplines_supported", "boolean | null", "缺席/null=按不支持处置（拒发）"]
+   ]
+  },
+  "m_web_api_types_Machine": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 211,
+   "name": "Machine",
+   "file": "web/src/api/types.ts",
+   "line": 226,
+   "summary": "TS 侧机器条目；B229 补 disciplines_supported 投影位",
+   "signature": "interface Machine",
+   "fields": [
+    ["launchers_supported", "boolean", ""],
+    ["disciplines_supported", "boolean", "缺席按不支持处置"],
+    ["reveal_supported", "boolean", ""]
+   ]
+  },
+  "m_web_api_types_Task": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 128,
+   "name": "Task",
+   "file": "web/src/api/types.ts",
+   "line": 15,
+   "signature": "interface Task",
+   "summary": "TS 侧 Task 此前漏声明 discipline_name，B229 一并补齐并新增 discipline_version",
+   "fields": [
+    ["executor", "string", ""],
+    ["model", "string", ""],
+    ["discipline_name", "string", "可选；派发点名的角色名"],
+    ["discipline_version", "number", "可选；命中的账本版本"]
+   ]
+  }
+ }
+}

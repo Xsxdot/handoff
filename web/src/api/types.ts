@@ -26,6 +26,10 @@ export interface Task {
   name: string
   executor: string
   model: string
+  // B229 补齐：Go 侧一直有 discipline_name/discipline_version，TS 镜像此前漏声明。
+  // name = 派发点名的纪律块角色名；version = 命中的账本版本（未点名/临时正文缺席）。
+  discipline_name?: string
+  discipline_version?: number
   work_dir: string
   worktree_managed: boolean
   base_commit: string
@@ -241,6 +245,10 @@ export interface Machine {
   // 请求；这里放行的代价是请求 200、终端正常出现、变量悄悄不在——用户可能
   // 半小时后才发现。未知时的保守方向由「失败可不可见」决定。
   launchers_supported?: boolean | null
+  // disciplines_supported 三态与 launchers_supported 同向（B229）：
+  // 缺席/null = 对端 agentd 太老 → 按不支持处置（协调者侧对该机的派发直接
+  // 拒发，绝不静默降级）。理由同上：放行的代价是任务正常创建、纪律悄悄不对。
+  disciplines_supported?: boolean | null
   // reveal_supported 三态同 pty_supported：缺席/null = 对端没上报（**不是**不支持）。
   // 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台
   // 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。
@@ -383,6 +391,8 @@ export interface StatusResp {
   // launchers_supported 的缺席**按不支持处置**，与上面那条相反。
   // 理由见 Machine.launchers_supported 的注释。
   launchers_supported?: boolean
+  // disciplines_supported 的缺席**按不支持处置**，与 launchers_supported 同向（B229）。
+  disciplines_supported?: boolean
   reveal_supported?: boolean
 }
 

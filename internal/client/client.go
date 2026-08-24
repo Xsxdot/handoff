@@ -723,12 +723,17 @@ type DispatchOpts struct {
 	Prompt      string
 	Name        string
 	Executor    string
-	// Discipline 是本次派发点名的纪律块角色名；空=按 executor 兜底。
-	Discipline string
-	Model      string
-	Branch     string
-	NewBranch  string
-	Base       string
+	// Discipline 是本次派发点名的纪律块角色名；空=未点名。
+	// B229：名字仅作审计展示；正文由协调者侧缝 1 组装后经 DisciplineText 下发，
+	// 执行机不再解析。DisciplineText 与 DisciplineVersion 由 discipline.ResolveDispatch 产出；
+	// 三者同源填写，调用方不得只填其一。
+	Discipline        string
+	DisciplineText    string
+	DisciplineVersion int
+	Model             string
+	Branch            string
+	NewBranch         string
+	Base              string
 	// ResolveDefaultBase 仅供 card dispatch 链路使用：Base 为空时让目标
 	// agentd 按项目仓库的 origin/HEAD 解析默认分支；false=普通 CLI 派发语义。
 	ResolveDefaultBase bool
@@ -754,8 +759,10 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"project_id": opts.ProjectID, "project_name": opts.ProjectName,
 		"plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
-		"discipline": opts.Discipline,
-		"branch":     opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
+		"discipline":         opts.Discipline,
+		"discipline_text":    opts.DisciplineText,
+		"discipline_version": opts.DisciplineVersion,
+		"branch":             opts.Branch, "new_branch": opts.NewBranch, "base": opts.Base,
 		"resolve_default_base": opts.ResolveDefaultBase,
 		"local_base_branch":    opts.LocalBaseBranch,
 		"worktree":             opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,

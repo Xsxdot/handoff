@@ -426,6 +426,12 @@ type DispatchReq struct {
 	// agentd 上没有意义），正文要跨网络搬运且没法被机器级覆盖。名字让 agentd
 	// 成为纪律块的唯一拥有者，调用方只说「我要哪个角色」。
 	Discipline string
+	// B229：DisciplineText 是协调者侧缝 1 组装好的纪律正文，本机收文即用、
+	// 落盘随任务走；执行机不再读本地纪律目录。DisciplineVersion 是命中的账本
+	// 版本（未点名/临时正文为 0）。Ticket 0 仅声明字段与透传，收文即用的切换
+	// 归实现票。
+	DisciplineText    string
+	DisciplineVersion int
 	// Model 是任务级模型覆盖；空=配置 executor.model，再空=executor 自身默认。
 	Model string
 	// Branch / NewBranch 分支二选一（与 PrepareWorkspace 的 WorkspaceReq 一致）：

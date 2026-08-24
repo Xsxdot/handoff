@@ -217,6 +217,18 @@ type StatusResp struct {
 	// 「先上报、下一版补实现」。
 	LaunchersSupported *bool `json:"launchers_supported,omitempty"`
 
+	// DisciplinesSupported 报告本机 agentd 是否认识「接收下发的纪律正文」
+	// （/api/tasks 的 discipline_text / discipline_version，B229）。
+	//
+	// 三态的处置与 PtySupported / RevealSupported 刻意相反、与 LaunchersSupported
+	// 同向：缺席(nil) = 对端太老 → 按不支持处置（协调者侧拒发）；false = 不支持；
+	// true = 支持。放行的代价是静默降级——请求 200、任务正常创建、纪律块悄悄
+	// 变成执行机本地残留（B229 缺陷三的原样复活），所以未知时按不支持拒发。
+	//
+	// 能力位与实现同生同死：收文即用、正文落盘、continue/resume 消费落盘正文
+	// 三件齐了才许上报 true。
+	DisciplinesSupported *bool `json:"disciplines_supported,omitempty"`
+
 	// RevealSupported 报告本机 agentd 是否支持「在访达中显示」（B108）。
 	//
 	// 三态与 PtySupported 逐字相同：

@@ -34,5 +34,6 @@
     }
   ],
   "pty_supported": true,
+  "disciplines_supported": true,
   "reveal_supported": true
 }

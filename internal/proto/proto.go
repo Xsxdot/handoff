@@ -247,6 +247,10 @@ type Task struct {
 	// 不落盘的话一次 continue 或一次 agentd 重启就会让点名的任务静默退回兜底块，
 	// 而且首回合是对的，事后极难查。
 	DisciplineName string `json:"discipline_name,omitempty"`
+	// DisciplineVersion 是派发时命中的纪律块账本版本（B229）；未点名/临时正文为 0。
+	// 老任务为空。落盘理由与 DisciplineName 同一条：不落盘，「那次用的哪一版
+	// 正文」在 agentd 重启后就再也答不上来。
+	DisciplineVersion int `json:"discipline_version,omitempty"`
 	// WorkDir 是任务工作区目录。空=原地模式（工作区即 RepoPath，由 Workdir() 统一回退）。
 	// 审阅命令（diff/fetch/run）与 executor 的 cwd 都从这里取值，不得直接读 RepoPath。
 	WorkDir string `json:"work_dir"`

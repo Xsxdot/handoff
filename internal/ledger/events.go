@@ -116,14 +116,18 @@ type DispatchSnapshot struct {
 	Template        string `json:"template"`
 	TemplateVersion int    `json:"template_version"`
 	DisciplineName  string `json:"discipline_name"`
-	Target          string `json:"target"`
-	TaskID          string `json:"task_id"`
-	Branch          string `json:"branch"`
-	Executor        string `json:"executor"`
-	Model           string `json:"model"`
-	Purpose         string `json:"purpose,omitempty"` // implement|review|…：审阅轮不新开分支，靠它区分
-	PlanPath        string `json:"plan_path,omitempty"`
-	Actor           string `json:"-"`
+	// DisciplineVersion 是派发时命中的纪律块账本版本（B229）。「那次派发用的
+	// 哪一版正文」的答案从名字升级回名字+版本。老事件无此键：append-only
+	// 不回填，反序列化得 0。
+	DisciplineVersion int    `json:"discipline_version,omitempty"`
+	Target            string `json:"target"`
+	TaskID            string `json:"task_id"`
+	Branch            string `json:"branch"`
+	Executor          string `json:"executor"`
+	Model             string `json:"model"`
+	Purpose           string `json:"purpose,omitempty"` // implement|review|…：审阅轮不新开分支，靠它区分
+	PlanPath          string `json:"plan_path,omitempty"`
+	Actor             string `json:"-"`
 }
 
 // WorkBranchInfo 是卡最近一次非审阅派发的工作分支及其目标机。
