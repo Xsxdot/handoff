@@ -1,6 +1,6 @@
 # Spec：handoff 宿主侧挂载 charter viewer（同源静态挂载 + iframe 薄壳 + fullPageRoute 修复）
 
-> 状态：**待用户批准**（2026-08-24 出稿）
+> 状态：**已批准**（2026-08-24；用户预授权发 charter graph 新 tag 到 GitHub、重打包 handoff 并重启 agentd——两项均为本刀的法定步骤）
 > 级别与档位：**L3 轻档**（对接一个已冻结的跨仓契约：charter `graph/webui.FS()` 与两条只读 API 的同源前提；handoff 侧无并行子系统可扇出）→ contract → breakdown → 单轮 implement → review → acceptance → finish
 > 卡：`C1.7`（父卡 `C1` 代码图批次二；来源是 C1.4 实现计划的 T4，因跨仓另开卡承载）
 > 来源：`docs/roadmap.md` 第 11 条；C1.4 plan `docs/plans/2026-08-23-codegraph-webui-extraction-plan.md#T4`
