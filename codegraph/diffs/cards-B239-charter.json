@@ -90,6 +90,50 @@
       "signature": "func (s *Store) AllRunLocks() ([]RunLock, error)",
       "returns": "([]RunLock, error)",
       "summary": "全部运行锁行，看板批量判定用；同样不过滤过期（Ticket 0 空壳）"
+    },
+    "n_ledgerstep_StepRunner_haltEntrypoint": {
+      "kind": "func",
+      "container": "k_ledgerstep_StepRunner",
+      "order": 48,
+      "name": "StepRunner.haltEntrypoint",
+      "file": "internal/ledgerstep/runner.go",
+      "line": 252,
+      "signature": "func (r *StepRunner) haltEntrypoint(cardID, nodeName, reason, body string) (Outcome, error)",
+      "params": [
+        ["cardID", "string", "卡号"],
+        ["nodeName", "string", "节点名"],
+        ["reason", "string", "等人原因"],
+        ["body", "string", "卡评论正文"]
+      ],
+      "returns": "(Outcome, error)",
+      "summary": "把 RunOnce 之外的入口失败同步写入卡事件流，保证 card wait 有唯一可见证据。"
+    },
+    "n_ledgerstep_StepRunner_dispatchNodeWithGate": {
+      "kind": "func",
+      "container": "k_ledgerstep_StepRunner",
+      "order": 88,
+      "name": "StepRunner.dispatchNodeWithGate",
+      "file": "internal/ledgerstep/runner.go",
+      "line": 310,
+      "signature": "func (r *StepRunner) dispatchNodeWithGate(outputPath *string, writeGate func() bool) func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error)",
+      "params": [
+        ["outputPath", "*string", "渲染后的产出路径写入点"],
+        ["writeGate", "func() bool", "协调者账本写入闸"]
+      ],
+      "returns": "func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error)",
+      "summary": "运行节点的派发适配器；写闸只在 Transport 返回后约束协调者账本写入，远端任务已经受理的事实不回滚。"
+    },
+    "n_ledgerstep_NodeStep_gatedWrite": {
+      "kind": "func",
+      "container": "k_ledgerstep_NodeStep",
+      "order": 70,
+      "name": "NodeStep.gatedWrite",
+      "file": "internal/ledgerstep/node.go",
+      "line": 74,
+      "signature": "func (n *NodeStep) gatedWrite(action string) error",
+      "params": [["action", "string", "写入动作"]],
+      "returns": "error",
+      "summary": "在实际账本写入前确认本轮仍拥有运行锁；关闭时 fail-closed，防止续租失败后的编排继续移列、落裁决、挂附件或改等人标记。"
     }
   },
   "nodesModified": {
@@ -178,10 +222,27 @@
     }
   },
   "nodesDeleted": [
-    "n_ledger_Store_ClaimDriver"
+    "n_ledger_Store_ClaimDriver",
+    "n_cmdledgerSession"
   ],
   "edgesAdded": [
-    ["n_agentd_Server_handleCardsList", "n_ledger_Store_AllRunLocks"]
+    ["n_agentd_Server_handleCardsList", "n_ledger_Store_AllRunLocks"],
+    ["n_ledgerstep_StepRunner_Run", "n_ledger_Store_AcquireRunLock"],
+    ["n_ledgerstep_StepRunner_Run", "n_ledger_Store_ReleaseRunLock"],
+    ["n_ledgerstep_StepRunner_Run", "n_ledger_Store_ClaimCard"],
+    ["n_ledgerstep_StepRunner_Run", "n_ledger_Store_RunLockOf"],
+    ["n_ledgerstep_StepRunner_Run", "n_ledger_Store_AddComment"],
+    ["n_ledgerstep_StepRunner_Run", "n_ledger_Store_RenewRunLock"],
+    ["n_ledgerstep_StepRunner_Run", "n_ledgerstep_StepRunner_haltEntrypoint"],
+    ["n_ledgerstep_StepRunner_Run", "n_ledgerstep_StepRunner_dispatchNodeWithGate"],
+    ["n_ledgerstep_StepRunner_haltEntrypoint", "n_ledger_Store_AddComment"],
+    ["n_ledgerstep_StepRunner_haltEntrypoint", "n_ledger_Store_MarkNeedsHuman"],
+    ["n_ledgerstep_NodeStep_haltForHuman", "n_ledgerstep_NodeStep_gatedWrite"],
+    ["n_ledgerstep_NodeStep_routeTo", "n_ledgerstep_NodeStep_gatedWrite"],
+    ["n_ledgerstep_NodeStep_RunOnce", "n_ledgerstep_NodeStep_gatedWrite"]
+  ],
+  "edgesDeleted": [
+    ["n_ledgerstep_StepRunner_Run", "n_ledgerstep_StepRunner_dispatchNode"]
   ],
   "lifecycleAdded": [
     {
