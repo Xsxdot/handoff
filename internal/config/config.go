@@ -159,10 +159,10 @@ func (c *Config) PlatformInvariantsEnabled() bool {
 // LedgerConfig 账本域（任务卡）中心库配置。只描述本机如何连库，
 // 不描述库里有什么——schema 归 internal/ledger 管。
 type LedgerConfig struct {
-	// Enabled 账本域总开关，默认 false。账本是可选功能：不开时 CLI 的
-	// card/workflow/decision 三族拒绝执行、agentd 不开库不起镜像、web
-	// 不渲染入口。不能用「DSN 非空」当启用信号——单机 SQLite 用户
-	// 恰恰是 DSN 为空的那一类，那样判会把他们永久排除在外。
+	// Enabled 已退休（B229 §2.6）：账本变必需品，恒开。键与字段仅为
+	// KnownFields 严格解析不炸存量 config 而保留，值被忽略；加载到该键时
+	// Load 会 Warn 一条退休提示。不能用「DSN 非空」当启用信号——单机
+	// SQLite 用户恰恰是 DSN 为空的那一类。
 	Enabled bool `yaml:"enabled,omitempty"`
 	// DSN 形如 postgres://user:pass@host:5432/db。空 = SQLite 回退。
 	DSN string `yaml:"dsn,omitempty"`
@@ -379,6 +379,18 @@ func Load(path string) (*Config, error) {
 		if uerr := decodeStrict(b, cfg); uerr != nil {
 			log().Error("配置解析失败", "path", path, "cause", uerr)
 			return nil, fmt.Errorf("解析配置 %s: %w", path, uerr)
+		}
+		// B229 §2.6：ledger.enabled 键退休——字段与键保留（KnownFields 严格解析
+		// 不炸存量 config），值已无任何语义。这里按「键是否存在」告警而不是按值：
+		// 退休要提醒的是写过这个开关的机器（配了却无效必须可见），没写过的机器
+		// 不该被一个自己从未用过的开关天天打扰。指针探测 nil 与显式 false。
+		var retiredProbe struct {
+			LedgerCfg struct {
+				Enabled *bool `yaml:"enabled"`
+			} `yaml:"ledger"`
+		}
+		if perr := yaml.Unmarshal(b, &retiredProbe); perr == nil && retiredProbe.LedgerCfg.Enabled != nil {
+			log().Warn("ledger.enabled 已退休：纪律块入库后账本是必需品，该键已忽略", "path", path)
 		}
 	}
 	applyComputedDefaults(cfg)

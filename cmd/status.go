@@ -80,23 +80,21 @@ var statusCmd = &cobra.Command{
 				Reachable: true, CLI: cliVer, Agentd: st})
 		}
 		var lookup func(taskID string) (cardID, driver string, heartbeatAt time.Time, ok bool)
-		// 账本是可选的。先检查开关再调用 openLedger，避免 status 在账本未
-		// 启用时触发账本命令族自己的「未启用」告警；任何打开/查询失败都
-		// 静默退回只看 watchers 的旧判据。
-		if loadCLIConfig().Ledger.Enabled {
-			if ledgerStore, ledgerErr := openLedger(); ledgerErr == nil {
-				defer ledgerStore.Close()
-				lookup = func(taskID string) (string, string, time.Time, bool) {
-					cardID, err := ledgerStore.CardOfTask(targetName, taskID)
-					if err != nil {
-						return "", "", time.Time{}, false
-					}
-					card, err := ledgerStore.GetCard(cardID)
-					if err != nil || card.DriverSession == "" {
-						return "", "", time.Time{}, false
-					}
-					return card.ID, card.DriverSession, card.DriverHeartbeatAt, true
+		// 账本是必需品（B229 §2.6：enabled 开关已退休）：恒尝试开库取归属。
+		// 任何打开/查询失败都静默退回只看 watchers 的旧判据——status 是诊断
+		// 命令，账本故障不该把它整个打挂，只损失卡驱动两格补充信息。
+		if ledgerStore, ledgerErr := openLedger(); ledgerErr == nil {
+			defer ledgerStore.Close()
+			lookup = func(taskID string) (string, string, time.Time, bool) {
+				cardID, err := ledgerStore.CardOfTask(targetName, taskID)
+				if err != nil {
+					return "", "", time.Time{}, false
 				}
+				card, err := ledgerStore.GetCard(cardID)
+				if err != nil || card.DriverSession == "" {
+					return "", "", time.Time{}, false
+				}
+				return card.ID, card.DriverSession, card.DriverHeartbeatAt, true
 			}
 		}
 		renderStatusWithLookup(out, addr, cliVer, st, lookup)

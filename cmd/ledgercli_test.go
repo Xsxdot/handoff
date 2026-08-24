@@ -126,28 +126,52 @@ func TestOpenLedgerFallbackSQLite(t *testing.T) {
 	}
 }
 
-// TestLedgerDisabledByDefault 未配 ledger 段时 card 族必须拒绝执行，
-// 且不得在 DataDir 下自建 ledger.db——「静默自建」正是本次要消灭的行为。
-func TestLedgerDisabledByDefault(t *testing.T) {
+// TestOpenLedgerIgnoresRetiredEnabledFlag 钉住 B229 §26 的退休语义：
+// enabled 开关已不存在「关」这一档——显式写 enabled=false 的配置同样
+// 必须正常开库（单机回退 DataDir/ledger.db），不再出现「账本未启用」拒绝。
+func TestOpenLedgerIgnoresRetiredEnabledFlag(t *testing.T) {
+	resetFlags(t)
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "config.yaml")
-	c := &config.Config{Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour}
+	c := &config.Config{
+		Listen: "127.0.0.1:0", Token: testToken, DataDir: dir, StallTimeout: 2 * time.Hour,
+		Ledger: config.LedgerConfig{Enabled: false},
+	}
 	if err := config.Save(cfgPath, c); err != nil {
 		t.Fatalf("写测试配置: %v", err)
 	}
-	resetAllFlags(rootCmd)
-	var out, errb bytes.Buffer
-	rootCmd.SetOut(&out)
-	rootCmd.SetErr(&errb)
-	rootCmd.SetArgs([]string{"--config", cfgPath, "card", "add", "标题", "--project", "demo"})
-	err := Execute()
-	if err == nil {
-		t.Fatalf("账本未启用时 card add 应报错，实际成功: %q", out.String())
+	configPath = cfgPath
+	st, err := openLedger()
+	if err != nil {
+		t.Fatalf("enabled 已退休，openLedger 应恒开库: %v", err)
 	}
-	if !strings.Contains(err.Error(), "账本未启用") {
-		t.Fatalf("错误文案应含「账本未启用」，实际: %v", err)
+	defer st.Close()
+	if _, err := st.ListTemplateNames(); err != nil {
+		t.Fatalf("开出的库应可查询: %v", err)
 	}
-	if _, statErr := os.Stat(filepath.Join(dir, "ledger.db")); statErr == nil {
-		t.Fatalf("账本未启用时不得自建 ledger.db")
+}
+
+// TestLedgerAlwaysOnAfterRetirement 未配 ledger 段时 card 族照常可用，
+// DataDir 下正常落 ledger.db——B229 §2.6 退休后账本变必需品，本用例是
+// 原「未启用即拒绝且不得自建」语义的翻转钉（TestLedgerDisabledByDefault）。
+// 预写一份无 ledger 键的 config.yaml：runLedgerCLI 只在缺配置时才代写，
+// 借此把「完全没配过账本」的老机器场景钉住。
+func TestLedgerAlwaysOnAfterRetirement(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	c := &config.Config{Listen: "127.0.0.1:0", Token: testToken, DataDir: dir, StallTimeout: 2 * time.Hour}
+	if err := config.Save(cfgPath, c); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	raw, err := os.ReadFile(cfgPath)
+	if err != nil || strings.Contains(string(raw), "ledger") {
+		t.Fatalf("前置条件失败：测试配置不应含 ledger 键（raw=%s err=%v）", raw, err)
+	}
+	_, _, execErr := runLedgerCLI(t, dir, "card", "add", "标题", "--project", "demo")
+	if execErr != nil {
+		t.Fatalf("退休后 card add 应照常执行，实际报错: %v", execErr)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "ledger.db")); statErr != nil {
+		t.Fatalf("账本必需后 openLedger 应在 DataDir 落 ledger.db: %v", statErr)
 	}
 }

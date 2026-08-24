@@ -2,6 +2,8 @@
 package config_test
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -760,6 +762,70 @@ func TestDefaultsWritesNothingToDisk(t *testing.T) {
 	if cfg2.Token == "" {
 		t.Fatal("二次调用 Defaults 也应生成随机 token")
 	}
+}
+
+// captureSlog 把 slog 默认 logger 指向一个内存 buffer，返回它。
+// 用例结束时自动还原。config 包的 log() 在调用点取 slog.Default()，
+// 所以 SetDefault 即可拦截 Load 发出的全部日志。
+func captureSlog(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf,
+		&slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(old) })
+	return &buf
+}
+
+// TestLedgerEnabledRetiredWarnsOnce 钉住 B229 contract §2.6 的退休语义：
+// 存量配置里的 ledger.enabled 键保留合法（严格解析不炸），但值被忽略；
+// 配了该键的机器加载时必须恰见一条「ledger.enabled 已退休」Warn——
+// 「配了却无效」要可见而不是静默；没配该键的机器不得被无谓打扰。
+func TestLedgerEnabledRetiredWarnsOnce(t *testing.T) {
+	dir := t.TempDir()
+	writeCfg := func(name, body string) string {
+		t.Helper()
+		p := filepath.Join(dir, name)
+		if err := os.WriteFile(p, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+
+	t.Run("显式 enabled=false 加载成功且恰一条 Warn", func(t *testing.T) {
+		p := writeCfg("retired-false.yaml",
+			"datadir: "+filepath.Join(dir, "d1")+"\nledger:\n  enabled: false\n")
+		buf := captureSlog(t)
+		if _, err := config.Load(p); err != nil {
+			t.Fatalf("含已退休键的存量 yaml 必须加载成功: %v", err)
+		}
+		if n := strings.Count(buf.String(), "ledger.enabled 已退休"); n != 1 {
+			t.Fatalf("「ledger.enabled 已退休」Warn 应恰一条，实得 %d\n日志:\n%s", n, buf.String())
+		}
+	})
+
+	t.Run("显式 enabled=true 同样告警（值已被忽略）", func(t *testing.T) {
+		p := writeCfg("retired-true.yaml",
+			"datadir: "+filepath.Join(dir, "d2")+"\nledger:\n  enabled: true\n")
+		buf := captureSlog(t)
+		if _, err := config.Load(p); err != nil {
+			t.Fatalf("加载失败: %v", err)
+		}
+		if n := strings.Count(buf.String(), "ledger.enabled 已退休"); n != 1 {
+			t.Fatalf("enabled=true 也应恰一条退休 Warn，实得 %d\n日志:\n%s", n, buf.String())
+		}
+	})
+
+	t.Run("未配 enabled 键不告警", func(t *testing.T) {
+		p := writeCfg("no-flag.yaml", "datadir: "+filepath.Join(dir, "d3")+"\n")
+		buf := captureSlog(t)
+		if _, err := config.Load(p); err != nil {
+			t.Fatalf("加载失败: %v", err)
+		}
+		if n := strings.Count(buf.String(), "ledger.enabled 已退休"); n != 0 {
+			t.Fatalf("没配 enabled 键不应出现退休 Warn，实得 %d\n日志:\n%s", n, buf.String())
+		}
+	})
 }
 
 // 未知键的错误提示必须把 proxy 列进"支持的键"，否则用户配对了却被拒时无从判断。
