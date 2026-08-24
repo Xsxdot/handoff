@@ -223,7 +223,7 @@ func newTestServerManaged(t *testing.T) *Server {
 	t.Helper()
 	st := newTestStore(t)
 	srv, _ := newUpdateServer(t, st, true)
-	srv.SetManager(NewManager(st, srv.Hub(), map[string]executor.Adapter{}, srv.conf(), nil, nil, nil, nil,
+	srv.SetManager(NewManager(st, srv.Hub(), map[string]executor.Adapter{}, srv.conf(), nil, nil, nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil))))
 	srv.upd.Platform = func() (string, string) { return "linux", "amd64" }
 	return srv

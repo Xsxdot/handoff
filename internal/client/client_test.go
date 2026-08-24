@@ -333,7 +333,7 @@ func TestReplyRoundTrip(t *testing.T) {
 	}
 	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)},
 		&config.Config{Token: env.token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
-		nil, nil, nil,
+		nil, nil,
 		gate,
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetManager(mgr)

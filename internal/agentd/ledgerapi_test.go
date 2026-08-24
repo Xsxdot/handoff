@@ -7,6 +7,8 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -1048,8 +1050,26 @@ func TestFlowPutRejectsBadNodes(t *testing.T) {
 	}
 }
 
-func TestDisciplinesListIncludesBuiltins(t *testing.T) {
+// TestDisciplinesListFromLedgerOnly B229 后下拉只反映账本：
+// 含账本种子名；退役磁盘目录里的残留文件名不再出现。
+func TestDisciplinesListFromLedgerOnly(t *testing.T) {
 	env := newLedgerEnv(t)
+	// 账本种子两个名字（乱序放入，验证去重升序）
+	for _, name := range []string{"charter-review", "charter-implement"} {
+		if _, err := env.ledger.PutDiscipline(name, "正文 "+name); err != nil {
+			t.Fatalf("PutDiscipline(%s): %v", name, err)
+		}
+	}
+	// 磁盘残留：退役目录里的文件绝不上拉。目录放在独立临时目录下——
+	// newLedgerEnv 的 cfg.DataDir 为空，不能拿它拼相对路径写进仓库工作树
+	discDir := filepath.Join(t.TempDir(), "discipline")
+	if err := os.MkdirAll(discDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(discDir, "disk-only.md"), []byte("本地残留"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	code, body := ledgerGet(t, env.testAgentdEnv, "/api/disciplines")
 	if code != http.StatusOK {
 		t.Fatalf("code = %d, body = %s", code, body)
@@ -1060,15 +1080,18 @@ func TestDisciplinesListIncludesBuiltins(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("解码: %v（原文 %s）", err, body)
 	}
-	for _, want := range []string{"implement", "review", "spec-draft", "plan-writing", "finishing"} {
-		found := false
-		for _, name := range got.Names {
-			if name == want {
-				found = true
-			}
+	want := []string{"charter-implement", "charter-review"}
+	if len(got.Names) != len(want) {
+		t.Fatalf("names = %v, want %v", got.Names, want)
+	}
+	for i, w := range want {
+		if got.Names[i] != w {
+			t.Fatalf("names = %v, want 升序 %v", got.Names, want)
 		}
-		if !found {
-			t.Fatalf("纪律块清单缺 %q: %v", want, got.Names)
+	}
+	for _, name := range got.Names {
+		if name == "disk-only" || name == "implement" || name == "review" {
+			t.Fatalf("退役来源的名字 %q 不应出现在下拉里: %v", name, got.Names)
 		}
 	}
 }

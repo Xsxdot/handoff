@@ -30,11 +30,9 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
-	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
-	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -194,7 +192,7 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
-	return NewManager(st, hub, ads, cfg, nil, nil, approver, newTestGate(t), logger), st, hub
+	return NewManager(st, hub, ads, cfg, nil, approver, newTestGate(t), logger), st, hub
 }
 
 // mustCreateTask 直接落库一个任务（绕过 Dispatch 的工作区准备），供路由类测试造数据。
@@ -268,58 +266,6 @@ func TestDispatchPromptOnly(t *testing.T) {
 	}
 	if task.Name == "" {
 		t.Fatalf("name 应从 prompt 派生: %q", task.Name)
-	}
-}
-
-func TestDispatchPassesDisciplineAndRecordsSource(t *testing.T) {
-	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
-	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"codex": ad}, "codex")
-	repo := initTestRepo(t)
-	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "做点事"})
-	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
-	}
-	start := ad.lastStartReq()
-	if !strings.Contains(start.Discipline, "在本会话内自己逐 task 实现") {
-		t.Errorf("StartReq.Discipline 没拿到单上下文版，实得前 80 字：%.80s", start.Discipline)
-	}
-	if !strings.Contains(start.Discipline, "# 平台不变量（恒在层）") ||
-		!strings.Contains(start.Discipline, "收口前逐条自查：") {
-		t.Fatalf("StartReq.Discipline 缺平台头尾：%.160s", start.Discipline)
-	}
-	if strings.Count(start.Discipline, "# 平台不变量（恒在层）") != 1 ||
-		strings.Count(start.Discipline, "收口前逐条自查：") != 1 {
-		t.Fatalf("平台头尾必须各一次：头=%d 尾=%d",
-			strings.Count(start.Discipline, "# 平台不变量（恒在层）"),
-			strings.Count(start.Discipline, "收口前逐条自查："))
-	}
-	if task.Discipline != "内置:平台不变量 + 内置:single-context" {
-		t.Errorf("task.Discipline = %q", task.Discipline)
-	}
-	rendered, err := turn.RenderPrompt(task.ID, "计划正文", start.Discipline)
-	if err != nil {
-		t.Fatalf("RenderPrompt: %v", err)
-	}
-	if strings.Count(rendered, "# 平台不变量（恒在层）") != 1 ||
-		strings.Count(rendered, "收口前逐条自查：") != 1 {
-		t.Fatalf("真实 prompt 边界重复或丢失：头=%d 尾=%d",
-			strings.Count(rendered, "# 平台不变量（恒在层）"),
-			strings.Count(rendered, "收口前逐条自查："))
-	}
-	evs, err := st.EventsFromAsc(task.ID, 0, 100)
-	if err != nil {
-		t.Fatalf("读取事件: %v", err)
-	}
-	var found bool
-	for _, e := range evs {
-		if e.Type == proto.EventTypeProgress &&
-			strings.Contains(string(e.Payload), "纪律块: 内置:平台不变量 + 内置:single-context") {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("事件流里没有多来源纪律块回显")
 	}
 }
 
@@ -479,7 +425,7 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
-	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, nil, newTestGate(t), logger)
+	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, newTestGate(t), logger)
 	pid := registerTestProject(t, m, repo)
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
@@ -567,7 +513,7 @@ func TestManagerReadsLiveExecutorDefault(t *testing.T) {
 	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
 	ads := map[string]executor.Adapter{"fake": &failStartAdapter{}, "opencode": &failStartAdapter{}}
 	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
-		env.srv.DisciplineMapping, env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
+		env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
 	env.srv.SetManager(mgr) // 注入活配置就发生在这一刻
 
 	name, _, err := mgr.resolveExecutor("")
@@ -610,7 +556,7 @@ func TestStatusReportsLiveExecutorDefault(t *testing.T) {
 	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
 	mgr := NewManager(env.st, env.srv.Hub(),
 		map[string]executor.Adapter{"fake": &failStartAdapter{}, "opencode": &failStartAdapter{}},
-		env.srv.conf(), env.srv.DisciplineMapping, env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
+		env.srv.conf(), env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
 	env.srv.SetManager(mgr)
 
 	if err := env.srv.swapConf(func(c *config.Config) error {
@@ -1437,7 +1383,7 @@ func TestDispatchRejectsWhenEnvFileMissing(t *testing.T) {
 		Executor: config.ExecutorConfig{Default: "fake"},
 		Env:      map[string]string{"fake": "missing.env"},
 	}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
 
 	// 先登记一个真实项目让解析通过：env 解析发生在任何 git 动作之前，
 	// 这条断言同时证明了「解析确实排在最前段」——若排到 git 动作之后，
@@ -1489,7 +1435,7 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 		Env:      map[string]string{"fake": "dev.env"},
 	}
 	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, nil, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
 	pid := registerTestProject(t, m, repo)
 
 	if _, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
@@ -1753,7 +1699,7 @@ func compensateFixture(t *testing.T) (*Manager, string) {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	return m, dataDir
 }
 
@@ -1898,7 +1844,7 @@ func compensateOnlyManager(t *testing.T) *Manager {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	return NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
 // TestCompensateKeepsBranchWhenWorktreeRemoveFails 验证 worktree 删不掉时
@@ -2408,121 +2354,6 @@ func TestDispatchBaseBranchNameYieldsRequestedBranch(t *testing.T) {
 	// 分支确实建在任务仓库里，且指向 base 的尖端
 	if got := gitOut(t, clone, "rev-parse", "refs/heads/feat/wanted"); got != wantBase {
 		t.Fatalf("新分支应从解析后的起点开出: branch=%s base=%s", got, wantBase)
-	}
-}
-
-// TestDispatchNamedDisciplineInjectsNamedBlock 点名 review 时注入的是只读块，
-// 而不是按 executor 兜底的实现块。
-func TestDispatchNamedDisciplineInjectsNamedBlock(t *testing.T) {
-	clone := initClonedRepo(t, "named-base")
-	m := compensateOnlyManager(t)
-	pid := registerTestProject(t, m, clone)
-
-	task, err := m.Dispatch(context.Background(), DispatchReq{
-		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
-		Discipline: discipline.NameReview,
-	})
-	if err != nil {
-		t.Fatalf("派发应成功: %v", err)
-	}
-	if task.DisciplineName != discipline.NameReview {
-		t.Fatalf("名字应落到 task 上，实得 %q", task.DisciplineName)
-	}
-	if task.Discipline != "内置:平台不变量 + 内置:review" {
-		t.Fatalf("来源标注应同时包含平台层和 review，实得 %q", task.Discipline)
-	}
-}
-
-// TestDispatchUnnamedDisciplineUnchanged 不点名时行为逐字不变——
-// 这是本次重构的兼容底线：所有现存部署走的都是这条路。
-func TestDispatchUnnamedDisciplineUnchanged(t *testing.T) {
-	clone := initClonedRepo(t, "named-base")
-	m := compensateOnlyManager(t)
-	pid := registerTestProject(t, m, clone)
-
-	task, err := m.Dispatch(context.Background(), DispatchReq{
-		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
-	})
-	if err != nil {
-		t.Fatalf("派发应成功: %v", err)
-	}
-	if task.DisciplineName != "" {
-		t.Fatalf("不点名时 DisciplineName 应为空，实得 %q", task.DisciplineName)
-	}
-	if task.Discipline != "内置:平台不变量 + 内置:single-context" {
-		t.Fatalf("不点名时来源 = %q", task.Discipline)
-	}
-}
-
-// TestDispatchUnknownDisciplineNameRejected 点了不存在的名字：拒发，不静默兜底。
-func TestDispatchUnknownDisciplineNameRejected(t *testing.T) {
-	clone := initClonedRepo(t, "named-base")
-	m := compensateOnlyManager(t)
-	pid := registerTestProject(t, m, clone)
-
-	_, err := m.Dispatch(context.Background(), DispatchReq{
-		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
-		Discipline: "no-such-role",
-	})
-	if err == nil {
-		t.Fatal("未知纪律块名字应拒发")
-	}
-	if !strings.Contains(err.Error(), "no-such-role") {
-		t.Fatalf("错误里应带名字：%v", err)
-	}
-}
-
-// TestResolveDisciplineForPrefersName 直接打 resolveDisciplineFor 的两条分支：
-// 有名字走 ByName、无名字走 For。这条守的是三个调用点共用的那段判定。
-func TestResolveDisciplineForPrefersName(t *testing.T) {
-	m := compensateOnlyManager(t)
-
-	named, err := m.resolveDisciplineFor(discipline.NameReview, "codex")
-	if err != nil {
-		t.Fatalf("有名字: %v", err)
-	}
-	if named.Source != "内置:平台不变量 + 内置:review" {
-		t.Fatalf("有名字应走 ByName 后再组装平台层，实得 %q", named.Source)
-	}
-	if !strings.Contains(named.Text, "只读，不写") ||
-		!strings.Contains(named.Text, "# 平台不变量（恒在层）") {
-		t.Fatalf("有名字的正文缺 review 或平台层：%.160s", named.Text)
-	}
-
-	fallback, err := m.resolveDisciplineFor("", "codex")
-	if err != nil {
-		t.Fatalf("无名字: %v", err)
-	}
-	if fallback.Source != "内置:平台不变量 + 内置:single-context" {
-		t.Fatalf("无名字应走 For 后再组装平台层，实得 %q", fallback.Source)
-	}
-}
-
-func TestDispatchExplicitlyDisablesPlatformInvariantsWithSourceEcho(t *testing.T) {
-	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
-	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"codex": ad}, "codex")
-	disabled := false
-	m.cfg.PlatformInvariants = &disabled
-	repo := initTestRepo(t)
-	pid := registerTestProject(t, m, repo)
-
-	task, err := m.Dispatch(context.Background(), DispatchReq{
-		ProjectID: pid, Prompt: "做点事", Executor: "codex",
-	})
-	if err != nil {
-		t.Fatalf("Dispatch: %v", err)
-	}
-	wantSource := "平台不变量已关闭 + 内置:single-context"
-	if task.Discipline != wantSource {
-		t.Fatalf("显式关闭后的 task.Discipline = %q, want %q", task.Discipline, wantSource)
-	}
-	got := ad.lastStartReq().Discipline
-	if strings.Contains(got, "# 平台不变量（恒在层）") ||
-		strings.Contains(got, "收口前逐条自查：") {
-		t.Fatalf("显式关闭后仍有平台正文：%.160s", got)
-	}
-	if !strings.Contains(got, "在本会话内自己逐 task 实现") {
-		t.Fatalf("显式关闭不应移除 executor 默认纪律：%.160s", got)
 	}
 }
 

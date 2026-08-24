@@ -58,7 +58,6 @@ import (
 	"unicode"
 
 	"github.com/Xsxdot/handoff/internal/config"
-	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
@@ -100,6 +99,10 @@ var errEnvResolveFailed = errors.New("解析 env 文件失败")
 // 与 errEnvResolveFailed 并列，让 server 层把真因回显给协调者而不是扁平成 500。
 var errDisciplineResolveFailed = errors.New("纪律块解析失败")
 
+// disciplineFileName 是纪律正文随任务落盘的文件名（B229 §2.5：正文落任务目录）。
+// 首派时把协调者下发的正文写进去；continue/resume 读回同一份，逐字节回注。
+const disciplineFileName = "discipline.md"
+
 // Manager 是任务状态机中枢与 adapter 事件中介。
 //
 // 并发安全：无共享可变字段（st/hub/ads/cfg/conf/log 构造后只读），
@@ -121,8 +124,6 @@ type Manager struct {
 	// env 是 env 文件解析器（B19）：Dispatch 时按 task.Executor 解析出要注入
 	// executor 进程的环境变量。构造后只读，每次 For 都重新读盘（支持热更新）。
 	env *envfile.Resolver
-	// discipline 按 executor 名裁出该次派发要注入的纪律块（B129）。
-	discipline *discipline.Resolver
 	// approver 是分级审批链的廉价模型裁决器；nil=不启用（二期前行为：
 	// 权限请求直接升级人工协调者）。构造后只读。
 	approver *Approver
@@ -172,6 +173,13 @@ type Manager struct {
 	// 依赖 shim 真正退出，它落后于 stopExecutor 返回。吞掉它就是 B93 犯过的错：
 	// 宣称「终态即清扫」，实际每次都被拒，直到 B103 排查才发现。
 	sweepProcs func(taskID string) error
+	// writeTaskFile 是任务目录文件写入的测试缝（B229.1）。**生产路径恒为 nil**，
+	// 由 m.writeTaskDirFile 退回 os.WriteFile；非测试代码不得赋值。
+	//
+	// 为什么需要它：纪律正文落盘必须先于 executor 启动，「落盘失败 → 不启动」
+	// 这条顺序性质需要能在磁盘层面之外注入失败（权限位无法在任务目录创建后、
+	// 写入前的窗口里稳定制造），函数注入是唯一可靠的失败源。
+	writeTaskFile func(dir, name string, data []byte) error
 	// usageMu 保护 lastUsage：usage 事件的去重指纹（Task 2 通路）。
 	usageMu   sync.Mutex
 	lastUsage map[string]string // taskID → 上一次上报的用量指纹，去重用
@@ -185,6 +193,31 @@ func (m *Manager) sweep(taskID string) error {
 		return m.sweepProcs(taskID)
 	}
 	return m.sweepTaskProcsOnce(taskID)
+}
+
+// writeTaskDirFile 向任务目录写一个文件，走测试缝或 os.WriteFile（0600）。
+//
+// 参数：dir 任务目录；name 纯文件名；data 全量内容
+func (m *Manager) writeTaskDirFile(dir, name string, data []byte) error {
+	if m.writeTaskFile != nil {
+		return m.writeTaskFile(dir, name, data)
+	}
+	return os.WriteFile(filepath.Join(dir, name), data, 0o600)
+}
+
+// loadPersistedDiscipline 读首派落盘的纪律正文（B229 §2.5.2）。
+//
+// 参数：taskID 任务 id（正文固定在 <DataDir>/tasks/<id>/discipline.md）
+//
+// 返回：正文与读取错误。文件不存在按错误原样返回，不与空正文混淆——
+// 调用方据任务是否点名裁决（Cold 拒绝 / 热重连不阻断），本层不做策略。
+func (m *Manager) loadPersistedDiscipline(taskID string) (string, error) {
+	path := filepath.Join(m.cfg.DataDir, "tasks", taskID, disciplineFileName)
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return "", fmt.Errorf("读取 %s: %w", path, err)
+	}
+	return string(data), nil
 }
 
 // sweepRetryAttempts / sweepRetryGap 是终态清扫对 ErrExecutorAlive 的重试参数。
@@ -254,8 +287,6 @@ func (m *Manager) consumeSweepOwned(taskID string) bool {
 //     任务按 executor 名路由，缺省名取 cfg.Executor.Default
 //   - cfg: 配置**快照**。运行期可变的字段（Executor / Targets）不要直接读它，
 //     走 m.conf()——Server.SetManager 会把活取值函数注入进来（B160 §4.2）
-//   - discMapping: 取当前纪律块映射的函数（生产上传 (*Server).DisciplineMapping）；
-//     nil 时全部 executor 走内置默认
 //   - envMapping: 取当前 env 文件映射的函数（生产上传 (*Server).EnvMapping）；
 //     nil 时所有 agent 都不注入环境变量
 //   - approver: 审批链裁决器；nil=不启用
@@ -264,18 +295,17 @@ func (m *Manager) consumeSweepOwned(taskID string) bool {
 //
 // 注意：
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
+//   - B229 起本机不做任何纪律解析（收文即用），机器级 Discipline 映射不再进
+//     Manager；映射的保存与回显仍归 Server 的 /api/discipline 端点
 func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config,
-	discMapping func() map[string]string, envMapping func() map[string]string,
+	envMapping func() map[string]string,
 	approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
-	disc := discipline.NewResolver(discipline.Dir(cfg.DataDir), discMapping, log)
-	disc.Preflight()
 	env := envfile.NewResolver(envfile.Dir(cfg.DataDir), envMapping, log)
 	return &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg,
 		conf:     func() *config.Config { return cfg },
 		approver: approver, gate: gate, log: log,
 		env:          env,
-		discipline:   disc,
 		apInflight:   map[string]bool{},
 		apFails:      map[string]int{},
 		apDisabled:   map[string]bool{},
@@ -348,43 +378,6 @@ func (m *Manager) resolveModel(reqModel, execName string) string {
 	return ""
 }
 
-// resolveDisciplineFor 按「有名字用名字、无名字按 executor 兜底」解析并组装纪律块。
-//
-// 参数：name 角色名（空=不点名）；execName 执行者名。
-// 返回：解析后的角色/执行者正文加平台恒在层；错误保持 Resolver 原因。
-//
-// 为什么要收口成一个函数：三个调用点（Dispatch / resumeForContinue / ResumeTask）
-// 必须用同一套判定。分开写的表现是首回合注入了点名的块、continue 之后悄悄换成
-// 兜底块——首回合是对的，事后极难查。
-func (m *Manager) resolveDisciplineFor(name, execName string) (discipline.Block, error) {
-	platformEnabled := m.conf().PlatformInvariantsEnabled()
-	m.log.Info("开始解析纪律块", "name", name, "executor", execName,
-		"platform_invariants", platformEnabled)
-
-	var (
-		base discipline.Block
-		err  error
-	)
-	if strings.TrimSpace(name) != "" {
-		base, err = m.discipline.ByName(name, execName)
-	} else {
-		base, err = m.discipline.For(execName)
-	}
-	if err != nil {
-		m.log.Error("纪律块解析失败", "name", name, "executor", execName,
-			"platform_invariants", platformEnabled, "cause", err)
-		return discipline.Block{}, err
-	}
-	m.log.Info("纪律块基础来源解析完成", "name", name, "executor", execName,
-		"source", base.Source, "bytes", len(base.Text))
-
-	assembled := discipline.Compose(base, platformEnabled)
-	m.log.Info("纪律块组装完成", "name", name, "executor", execName,
-		"platform_invariants", platformEnabled, "source", assembled.Source,
-		"bytes", len(assembled.Text))
-	return assembled, nil
-}
-
 // registeredNames 返回注册表全部执行者名（按字母序，供错误提示与日志）。
 func registeredNames(ads map[string]executor.Adapter) []string {
 	names := make([]string, 0, len(ads))
@@ -420,16 +413,15 @@ type DispatchReq struct {
 	Name string
 	// Executor 是任务选择的执行者名；空=缺省（cfg.Executor.Default）。
 	Executor string
-	// Discipline 是本次派发点名的纪律块**角色名**（如 review）；空=按 executor 兜底。
+	// Discipline 是本次派发点名的纪律块**角色名**（如 review）；空=未点名。
 	//
-	// 为什么是名字而不是路径或正文：路径要跨机器解析（协调者的仓内相对路径在
-	// agentd 上没有意义），正文要跨网络搬运且没法被机器级覆盖。名字让 agentd
-	// 成为纪律块的唯一拥有者，调用方只说「我要哪个角色」。
+	// B229 起：名字只作记录与回显，本机**不再按名字解析任何东西**——正文必须
+	// 由协调者侧缝 1 解析组装后经 DisciplineText 下发；点名而正文缺席 = 拒派。
 	Discipline string
-	// B229：DisciplineText 是协调者侧缝 1 组装好的纪律正文，本机收文即用、
-	// 落盘随任务走；执行机不再读本地纪律目录。DisciplineVersion 是命中的账本
-	// 版本（未点名/临时正文为 0）。Ticket 0 仅声明字段与透传，收文即用的切换
-	// 归实现票。
+	// DisciplineText 是协调者侧缝 1 组装好的纪律正文，本机收文即用、落盘随任务
+	// 走；执行机不再读本地纪律目录。DisciplineVersion 是命中的账本版本（未点名/
+	// 临时正文为 0）。三者关系（B229 契约 §2.5）：正文非空→逐字节注入并落盘；
+	// 正文与名字都空→零注入；名字非空而正文空→拒派。
 	DisciplineText    string
 	DisciplineVersion int
 	// Model 是任务级模型覆盖；空=配置 executor.model，再空=executor 自身默认。
@@ -755,11 +747,29 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("%w: %v", errEnvResolveFailed, err)
 	}
-	// 纪律块裁决与 env 解析同段：失败是配置问题，此刻还没有落库/建树副作用，
-	// 拒发是干净的。
-	discBlock, err := m.resolveDisciplineFor(req.Discipline, execName)
-	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errDisciplineResolveFailed, err)
+	// 纪律正文裁决与 env 解析同段：失败是参数/配置问题，此刻还没有落库/建树
+	// 副作用，拒派是干净的。
+	//
+	// B229 §2.5 收文即用：正文由协调者侧缝 1 组装后随请求下发，本机逐字节使用、
+	// 零本地解析。点名但没收到正文 = 拒派——磁盘同名文件与内置块都不再是兜底，
+	// 任何「查不到就退回 X」的分支都会让 charter-must-override 哨兵连同缺陷三
+	// （老 agentd 静默降级）一起复活，这条反向约束有测试钉死。
+	discText := req.DisciplineText
+	if strings.TrimSpace(req.Discipline) != "" && discText == "" {
+		m.log.Warn("dispatch 被拒：点名纪律块但未收到下发正文", "name", req.Discipline)
+		return nil, fmt.Errorf("%w: 点名纪律块 %q 但请求未携带 discipline_text（执行机不再本地解析，正文须由协调者下发）",
+			errDisciplineResolveFailed, req.Discipline)
+	}
+	// 来源标注只服务任务回显与 progress 播报；正文本体不进日志（§3.4），只记字节量。
+	discSource := ""
+	if discText != "" {
+		discSource = "下发"
+		if req.Discipline != "" {
+			discSource += ":" + req.Discipline
+			if req.DisciplineVersion > 0 {
+				discSource += fmt.Sprintf("@v%d", req.DisciplineVersion)
+			}
+		}
 	}
 
 	// 内容合成：plan 解码后作为主体；prompt 非空时——
@@ -902,8 +912,21 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		return nil, fmt.Errorf("创建任务目录 %s: %w", taskDir, err)
 	}
 	planPath := filepath.Join(taskDir, planName)
-	if err := os.WriteFile(planPath, planContent, 0o600); err != nil {
+	if err := m.writeTaskDirFile(taskDir, planName, planContent); err != nil {
 		return nil, fmt.Errorf("写计划文件 %s: %w", planPath, err)
+	}
+
+	// 纪律正文落盘（B229 §2.5.1）：先落盘后启动 executor 是顺序性质——
+	// continue/resume 要消费这份文件，executor 启动失败可以补偿重来，
+	// 正文丢了却会让点名任务永远续接不了。落盘失败在此上抛：此刻任务行
+	// 尚未创建、executor 尚未启动，拒派干净（worktree 由 defer 补偿清理）。
+	if discText != "" {
+		if err := m.writeTaskDirFile(taskDir, disciplineFileName, []byte(discText)); err != nil {
+			m.log.Error("纪律正文落盘失败，拒派", "task", taskID, "bytes", len(discText), "cause", err)
+			return nil, fmt.Errorf("落盘纪律块正文: %w", err)
+		}
+		m.log.Info("纪律正文已落盘", "task", taskID,
+			"path", filepath.Join(taskDir, disciplineFileName), "bytes", len(discText))
 	}
 
 	task = &proto.Task{
@@ -918,13 +941,16 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		// 二期字段创建时即已知，随 CreateTask 写入（WorkDir 三种模式都是满的：
 		// 原地=仓库路径、用户树/managed=工作树路径；proto.Task.Workdir() 的
 		// 空串回退只服务旧库历史行）
-		Name:            name,
-		Executor:        execName,
-		Model:           model,
-		Discipline:      discBlock.Source,
-		DisciplineName:  req.Discipline,
-		WorkDir:         ws.WorkDir,
-		WorktreeManaged: ws.Managed,
+		Name:           name,
+		Executor:       execName,
+		Model:          model,
+		Discipline:     discSource,
+		DisciplineName: req.Discipline,
+		// 版本号随任务元数据落盘：不落盘，「那次用的哪一版正文」在重启后
+		// 就再也答不上来（与 DisciplineName 同一条纪律）
+		DisciplineVersion: req.DisciplineVersion,
+		WorkDir:           ws.WorkDir,
+		WorktreeManaged:   ws.Managed,
 		// 基线随创建期一并入库（此刻已由 ResolveBaseline 决议完毕），
 		// 不走 SetTaskField——那个白名单只服务「创建时还不知道」的字段
 		BaseCommit: start,
@@ -960,7 +986,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent),
-		TaskDir: taskDir, Env: envKVs, Discipline: discBlock.Text}); err != nil {
+		TaskDir: taskDir, Env: envKVs, Discipline: discText}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，协调者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
@@ -980,15 +1006,16 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("读取派发后的任务: %w", err)
 	}
-	task.Discipline = discBlock.Source
+	task.Discipline = discSource
 	task.DisciplineName = req.Discipline
-	m.log.Info("纪律块已裁定", "task", taskID, "name", req.Discipline, "source", discBlock.Source)
-	// 派发回显：纪律块配置化之后，写 plan 的人再也看不到它躺在 plan 头部了。
-	if discBlock.Source != "" {
-		m.appendProgress(taskID, "纪律块: "+discBlock.Source)
+	m.log.Info("纪律正文收文即用完成", "task", taskID, "name", req.Discipline,
+		"version", req.DisciplineVersion, "source", discSource)
+	// 派发回显：正文不再躺在 plan 头部，progress 播报是协调者唯一的当场可见性。
+	if discSource != "" {
+		m.appendProgress(taskID, "纪律块: "+discSource)
 	}
 	m.log.Info("纪律块已注入", "task", taskID, "executor", execName,
-		"source", discBlock.Source, "bytes", len(discBlock.Text))
+		"source", discSource, "bytes", len(discText))
 	go m.mediate(taskID)
 	return task, nil
 }
@@ -1267,33 +1294,36 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "cause", eerr)
 	}
-	// 名字必须从落盘的 task 上取：这里没有派发请求，重新按 executor 算会换块。
-	discBlock, derr := m.resolveDisciplineFor(task.DisciplineName, execName)
+	// 名字与正文都必须从落盘现场取：这里没有派发请求。B229 §2.5.2 续接不再
+	// 解析——首回合之后协调者侧的「最新版」可能已经变了，续接必须看到与会话
+	// 开始时同一份世界（契约 §4.3）。
+	discText, derr := m.loadPersistedDiscipline(taskID)
 	switch {
 	case derr != nil && task.DisciplineName != "":
-		// 点名的任务解析失败：拒绝续接，与 Dispatch 同一条规则。
+		// 点名的任务缺落盘正文：拒绝续接，与 Dispatch 同一条规则。
 		//
 		// why 这里不能沿用「不注入」的降级：本路径是 Cold=true，会重建 executor
 		// 进程——纪律块是约束在新进程里的**唯一**来源。空块意味着一个点名 review
 		// 的审阅任务在续接后失去「只读，不写」，可能开始在审阅分支上真提交。
 		// 拒绝是可见的，静默降级不是。
-		m.log.Error("续接时点名的纪律块解析失败，拒绝续接",
+		m.log.Error("续接时点名的纪律块缺落盘正文，拒绝续接",
 			"task", taskID, "name", task.DisciplineName, "cause", derr)
-		return fmt.Errorf("%w: 任务 %s 点名的纪律块 %q 解析失败: %v",
+		return fmt.Errorf("%w: 任务 %s 点名的纪律块 %q 缺少首派落盘正文: %v",
 			errDisciplineResolveFailed, taskID, task.DisciplineName, derr)
 	case derr != nil:
-		// 未点名：沿用既有降级。这条路上丢的是按 executor 选的通用纪律，
-		// 不是某个角色的正确性约束；在这里改成拒绝会让所有配置坏掉的存量部署
+		// 未点名且无落盘正文：沿用既有降级。这条路上丢的是通用纪律，
+		// 不是某个角色的正确性约束；在这里改成拒绝会让所有存量部署
 		// 突然续接不了，代价远大于收益。
-		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
+		m.log.Warn("恢复时纪律正文缺失，本次不注入", "task", taskID, "cause", derr)
 	default:
-		m.log.Info("续接/恢复重解析纪律块", "task", taskID, "name", task.DisciplineName, "source", discBlock.Source)
+		m.log.Info("续接/恢复回注首派落盘正文", "task", taskID,
+			"name", task.DisciplineName, "bytes", len(discText))
 	}
 	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
 		RepoPath: task.Workdir(), SessionID: task.ExecutorSession,
-		Env: envKVs, Discipline: discBlock.Text, Model: task.Model,
+		Env: envKVs, Discipline: discText, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: true,
 	})
 	if err != nil {
@@ -3376,29 +3406,29 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "executor", execName, "cause", eerr)
 	}
-	// 名字必须从落盘的 task 上取：这里没有派发请求，重新按 executor 算会换块。
-	discBlock, derr := m.resolveDisciplineFor(task.DisciplineName, execName)
+	// 名字与正文都必须从落盘现场取（B229 §2.5.2，同 resumeForContinue）。
+	discText, derr := m.loadPersistedDiscipline(taskID)
 	switch {
 	case derr != nil && task.DisciplineName != "":
-		// 点名的任务解析失败：记 Error 但**不**拒绝恢复——与 resumeForContinue 的
-		// 处置刻意不同。
+		// 点名的任务缺落盘正文：记 Error 但**不**拒绝恢复——与 resumeForContinue
+		// 的处置刻意不同。
 		//
 		// why 不对称：本路径一律 Cold=false（见下方注释），是热重连，executor
 		// 进程还活着、首回合注入的纪律块仍在它的上下文里，空块并不会让约束消失。
 		// 而拒绝恢复会把一个健康的活任务晾成孤儿，纯亏。真正会丢约束的是重建
 		// 进程的冷恢复，那条在 resumeForContinue 里已经拒了。
-		m.log.Error("启动恢复时点名的纪律块解析失败（热重连，约束仍在原会话上下文内）",
+		m.log.Error("启动恢复时点名的纪律块缺落盘正文（热重连，约束仍在原会话上下文内）",
 			"task", taskID, "name", task.DisciplineName, "cause", derr)
 	case derr != nil:
-		m.log.Warn("恢复时纪律块读取失败，本次不注入", "task", taskID, "cause", derr)
+		m.log.Warn("恢复时纪律正文缺失，本次不注入", "task", taskID, "cause", derr)
 	default:
-		m.log.Info("续接/恢复重解析纪律块", "task", taskID, "name", task.DisciplineName, "source", discBlock.Source)
+		m.log.Info("启动恢复回注首派落盘正文", "task", taskID, "bytes", len(discText))
 	}
 	// 启动恢复一律 Cold=false：agentd 重启时若有 10 个任务的 executor 已死，
 	// 急着冷恢复等于凭空拉起 10 个没人跟它说话的 executor（spec §4）
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(),
-		SessionID: task.ExecutorSession, Env: envKVs, Discipline: discBlock.Text, Model: task.Model,
+		SessionID: task.ExecutorSession, Env: envKVs, Discipline: discText, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: false,
 	})
 	if err != nil {
