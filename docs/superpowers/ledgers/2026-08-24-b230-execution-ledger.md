@@ -58,3 +58,12 @@
 - 2026-08-24: Task 3 新增 `internal/ledger/seed_teardown_test.go`，并执行 `gofmt -w internal/ledger/seed_teardown_test.go` 与 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/ -run TestOpenInstallsNoSeeds -v` -> `--- PASS: TestOpenInstallsNoSeeds (0.06s)`、`ok github.com/Xsxdot/handoff/internal/ledger 0.064s`，退出码 0。
 - 2026-08-24: Task 3 变异前暂存 `git add internal/ledger/seed_teardown_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
 - 2026-08-24: Task 3 变异前暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 变异前提交 `git commit -m "test: lock empty ledger seeds"` -> `[cards/B230-charter-3 45943ea8] test: lock empty ledger seeds`、`2 files changed, 35 insertions(+)`，新增 `internal/ledger/seed_teardown_test.go`，退出码 0。
+- 2026-08-24: Task 3 变异验证：临时在 `internal/ledger/store.go` 的 `Open` 建 schema 后写入 `x` 工作流，再执行 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/ -run TestOpenInstallsNoSeeds -v` -> 原始失败含 `seed_teardown_test.go:21: 新账本不该有任何工作流，实得 [x]`、`--- FAIL: TestOpenInstallsNoSeeds`、退出码 1，证明断言能打红。
+- 2026-08-24: Task 3 变异还原 `git diff -- internal/ledger/store.go` -> 无输出，退出码 0，临时写入已移除。
+- 2026-08-24: Task 3 还原后绿测 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/ -run TestOpenInstallsNoSeeds -v` -> `--- PASS: TestOpenInstallsNoSeeds (0.05s)`、`ok github.com/Xsxdot/handoff/internal/ledger 0.051s`，退出码 0。
+- 2026-08-24: Task 3 ledger 全包测试 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/...` -> `ok github.com/Xsxdot/handoff/internal/ledger 12.057s`，退出码 0。
+- 2026-08-24: Task 3 收尾编译 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 格式检查 `gofmt -l internal/ledger/seed_teardown_test.go` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 收尾 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 仅台账有 7 行未提交记录，分支为 `cards/B230-charter-3`。
+- 2026-08-24: Task 3 暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
