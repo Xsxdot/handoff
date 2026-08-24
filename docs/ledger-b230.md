@@ -32,3 +32,4 @@
 - 2026-08-24：执行 `git add docs/ledger-b230.md && git diff --cached --check && git commit -m "chore(ledger): close B230 review"`；原始输出为 `[cards/B230-charter-4 ed6733ff] chore(ledger): close B230 review`，台账收口记录已提交。
 - 2026-08-24：执行 `git add docs/ledger-b230.md && git diff --cached --check && git commit -m "chore(ledger): record B230 ledger close"`；原始输出为 `[cards/B230-charter-4 7136b9e0] chore(ledger): record B230 ledger close`。
 - 2026-08-24：提交后执行 `git status --short --branch && git log -3 --oneline --decorate`；原始输出为干净分支 `## cards/B230-charter-4`，HEAD 为 `7136b9e0`，其前两提交为 `ed6733ff` 与 `a7969776`。
+- 2026-08-24：执行 `git status --short --branch && git log -1 --oneline --decorate`；原始输出为干净分支 `## cards/B230-charter-4`，HEAD 为 `b85b75fc (HEAD -> cards/B230-charter-4) chore(ledger): record final B230 status`。
