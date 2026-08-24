@@ -154,15 +154,16 @@ var cardDispatchCmd = &cobra.Command{
 	Short: "按模板派发（派发即认领；--step 走工作流节点）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		id := args[0]
+		if cardDispatchStep != "" {
+			return runStepDispatch(cmd, id, cardDispatchStep)
+		}
 		st, err := openLedger()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		id, actor := args[0], ledgerActor()
-		if cardDispatchStep != "" {
-			return runStepDispatch(cmd, st, id, cardDispatchStep, actor)
-		}
+		actor := ledgerActor()
 		card, err := st.GetCard(id)
 		if err != nil {
 			return err
