@@ -4,13 +4,30 @@
 > 上游：spec `docs/superpowers/specs/2026-08-24-b239-claim-lock-split.md`（头部 :4「状态：**已批准**——2026-08-24 用户批准」，开工核对一致，无需回写）；
 > 契约 `docs/superpowers/specs/b239-contract.md`（头部「contract 轮冻结稿（2026-08-25）……随本提交冻结……交棒：breakdown」，冻结提交 c7565808，开工核对一致）。
 > 档位：spec 选档复核冻死**轻档**——契约冻结照做，**实现归一轮**：下列单元由单个 implement 执行者按 DAG 序贯消化，不做跨执行器扇出。
-> 台账：docs/ledger-b239-breakdown.md（边干边追加）。
+> 台账：docs/superpowers/ledgers/ledger-b239-breakdown.md（边干边追加）。
 
 ---
 
 ## 待拍板岔口（集中清单，拍板者按此裁决）
 
-> **裁决（协调者）**：＿＿＿＿＿＿（拍板后随本稿一并提交入库）
+> **裁决（协调者）**：2026-08-25 拍板，三条岔口均定，随实现一并入库。
+> **岔口一：采方案 A**——handleCardsList 里 `AllRunLocks()` 一次拉全量、内存建
+> card_id→RunLock join。判据不是「代码直白度 vs 查询次数」这么中性：本项目卡账本已在
+> 远端 PG（postgres://…:54322，2026-08-24 起），逐卡 RunLockOf 是 N 次跨网往返，
+> 列表页正是放大最明显的地方；出稿倾向正确，理由换这条。
+> **岔口二：采方案 A**——`run:<host>#<pid>#<unixnano>`。holder 的第一读者是报文里的人，
+> 不是程序；B239 伤害链起点就是「报文说不清谁占着」。UUID 省心但把取证成本转嫁给日志。
+> 硬约束照守：同一轮编排内 holder 恒定（续租/释放拿它当键）。
+> **岔口三：两案都不采，上移一层**——可注入的不是续租间隔而是**节拍源本身**
+> （生产 time.Ticker，测试用手动触发的 chan/回调驱动）。方案 A 的毫秒级 sleep 与
+> 方案 B 的每秒空转都还在等真实时间，只是量级不同；本仓吃过偶发红的亏。节拍源成缝后：
+> 测试零真实等待、循环体不空转、生产行为不变。断言落点不变：**库行 expires_at 推进**，
+> 不许落在 runner 内存字段上（防假绿）。硬约束照守：随回合 ctx 取消而停、不留泄漏 goroutine。
+> **附带裁决**：① TTL 与续租间隔常量放 internal/ledger/runlock.go 包级常量——不否决，
+> 按拆解稿钉定执行；② 边界澄清一（d_coordination 在图上实为 d_gateway + d_cli）与澄清二
+> （web fallback 只收敛 ledgerapi.go:446 一处，其余六处审计署名不动）均接受，不退回 contract；
+> ③ 行号漂移属正常漂移，符号锚全部命中，不作缺陷；④ 台账位置统一：本稿台账已挪至
+> docs/superpowers/ledgers/ledger-b239-breakdown.md（与 2026-08-25-b239-contract-ledger.md 同处）。
 
 **岔口一：看板 conflict 徽标的运行锁取数落点**
 徽标判据（断言 38）要「存在未过期运行锁且最新 task 态 failed」。列表页一次画 N 张卡。
@@ -239,7 +256,7 @@ RunLock 字段从产生到消费的手写投影全清单：
 - 实现节点先读本稿与契约 §4 欠账清单；U0→U4 序贯消化；不得把 Ticket 0 空壳当行为已完成。
 - review 节点注意：契约 §2.4 两条可观察行为变更（release 退出语义、dispatch 不挪列）须进对账清单点名。
 - finish 节点欠账（spec Out of Scope 末行）：skills/handoff/SKILL.md 与 product-backlog 中「裸 dispatch 必然失败」「驱动权泄漏 CLI 侧无解」两处文案回流，本卡实现合入后必须做。
-- 台账：docs/ledger-b239-breakdown.md。
+- 台账：docs/superpowers/ledgers/ledger-b239-breakdown.md。
 
 ## 交稿自检
 
