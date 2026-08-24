@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"strings"
 	"testing"
@@ -35,13 +36,23 @@ func ledgerGet(t *testing.T, env *testAgentdEnv, path string) (int, string) {
 
 func ledgerPost(t *testing.T, env *testAgentdEnv, path, body string) (int, string) {
 	t.Helper()
+	return ledgerPostWithClient(t, env, http.DefaultClient, path, body)
+}
+
+// ledgerPostWithClient 同 ledgerPost，但由调用方提供 HTTP 客户端。
+//
+// 为什么需要它：只有调用方持有的 Transport 才看得见本次连接的**客户端源地址**，
+// 而服务端的 actor 回退正是由 r.RemoteAddr 推出来的。用 http.DefaultClient 就
+// 拿不到这个地址，只能拿服务端监听地址去猜——那是端口巧合，不是判据。
+func ledgerPostWithClient(t *testing.T, env *testAgentdEnv, cl *http.Client, path, body string) (int, string) {
+	t.Helper()
 	req, err := http.NewRequest(http.MethodPost, env.ts.URL+path, bytes.NewBufferString(body))
 	if err != nil {
 		t.Fatal(err)
 	}
 	req.Header.Set("Authorization", "Bearer "+env.token)
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := cl.Do(req)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -784,13 +795,32 @@ func TestCardStepLegacyActorFallback(t *testing.T) {
 	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) {
 		runnerCh <- runner
 	}
-	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+	// 期望值必须是**本次连接的客户端源地址**（服务端 r.RemoteAddr 的来源），
+	// 不是 httptest 服务端的监听地址：两者只在内核恰好把相邻端口先后分给监听
+	// 套接字与连接套接字时才相等——Linux 上常成立、macOS 上恒不成立。原先拿
+	// env.ts.URL 当期望值是在赌端口巧合，本机 6/6 必红。
+	var localAddr string
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+			if err == nil {
+				localAddr = conn.LocalAddr().String()
+			}
+			return conn, err
+		},
+	}
+	defer transport.CloseIdleConnections()
+	code, body := ledgerPostWithClient(t, env.testAgentdEnv, &http.Client{Transport: transport},
+		"/api/cards/"+card.ID+"/step", `{"step":"review"}`)
 	if code != http.StatusAccepted {
 		t.Fatalf("legacy 请求应 202，实得 %d（%s）", code, body)
 	}
+	if localAddr == "" {
+		t.Fatal("未记录到客户端源地址，期望值无从构造")
+	}
 	select {
 	case runner := <-runnerCh:
-		want := "web:" + strings.TrimPrefix(env.ts.URL, "http://")
+		want := "web:" + localAddr
 		if runner.Session != want || runner.Dispatcher.Actor != want {
 			t.Fatalf("legacy actor = session %q dispatcher %q, want %q", runner.Session, runner.Dispatcher.Actor, want)
 		}
