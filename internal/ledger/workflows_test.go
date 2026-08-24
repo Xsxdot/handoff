@@ -512,7 +512,7 @@ func TestDefaultTriageWorkflow(t *testing.T) {
 		t.Fatalf("triage 状态序列 = %v，want %v", got, want)
 	}
 	for _, node := range wf.Def.Nodes {
-		if node.Dispatch || node.Verdict || node.CarryCardContext || node.Template != "" || node.Gate != (Gate{}) {
+		if node.Dispatch || node.Verdict || node.CarryCardContext || node.Template != "" || !reflect.DeepEqual(node.Gate, Gate{}) {
 			t.Fatalf("triage 节点必须纯人工且无闸: %+v", node)
 		}
 	}

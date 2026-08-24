@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -26,7 +27,12 @@ func (d WorkflowDef) withStatesFromNodes() WorkflowDef {
 	gates := make(map[string]Gate, len(d.Nodes))
 	for _, node := range d.Nodes {
 		states = append(states, node.Name)
-		if node.Gate != (Gate{}) {
+		// 用 DeepEqual 而不是 != 或手写 isEmpty()：Gate 自带了 slice 字段
+		//（RequireAttachmentAny）已不可比较，而手写的空判定有个静默失败模式
+		// ——将来给 Gate 加字段却忘了更新它，只设了新字段的 gate 会被判成空、
+		// 悄悄不登记进 Gates，门就此无声失效。DeepEqual 对加字段免疫。
+		// 本函数每次载入工作流只跑一次、节点是个位数，反射开销无关紧要。
+		if !reflect.DeepEqual(node.Gate, Gate{}) {
 			gates[node.Name] = node.Gate
 		}
 	}

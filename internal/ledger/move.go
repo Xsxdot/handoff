@@ -79,17 +79,23 @@ func (s *Store) checkWorkflowGateTx(tx *sql.Tx, card Card, workflow Workflow, to
 	if !ok {
 		return nil
 	}
-	if gate.RequireAttachment != "" {
-		hasAttachment := false
-		for _, attachment := range card.Attachments {
-			if attachment.Kind == gate.RequireAttachment {
-				hasAttachment = true
+	if gate.RequireAttachment != "" && !cardHasAttachmentKind(card, gate.RequireAttachment) {
+		log().Warn(action+"被拒：gate 缺附件", "card", card.ID, "to", to, "need", gate.RequireAttachment)
+		return fmt.Errorf("进 %q 需要 %s 附件（当前没有）: %w", to, gate.RequireAttachment, ErrGateBlocked)
+	}
+	// 择一门与上面的单值门是 AND：两个都设就两个都要过。
+	if len(gate.RequireAttachmentAny) > 0 {
+		matched := false
+		for _, kind := range gate.RequireAttachmentAny {
+			if cardHasAttachmentKind(card, kind) {
+				matched = true
 				break
 			}
 		}
-		if !hasAttachment {
-			log().Warn(action+"被拒：gate 缺附件", "card", card.ID, "to", to, "need", gate.RequireAttachment)
-			return fmt.Errorf("进 %q 需要 %s 附件（当前没有）: %w", to, gate.RequireAttachment, ErrGateBlocked)
+		if !matched {
+			need := strings.Join(gate.RequireAttachmentAny, " 或 ")
+			log().Warn(action+"被拒：gate 缺附件（择一）", "card", card.ID, "to", to, "need", need)
+			return fmt.Errorf("进 %q 需要 %s 附件之一（当前都没有）: %w", to, need, ErrGateBlocked)
 		}
 	}
 	if gate.RequireAcceptance && card.AcceptanceCriteria == "" {
@@ -212,4 +218,16 @@ func (s *Store) getWorkflowTx(tx *sql.Tx, name string, version int) (Workflow, e
 	}
 	workflow.CreatedAt = toTime(createdAt)
 	return workflow, nil
+}
+
+// cardHasAttachmentKind 判断卡是否挂了某种 kind 的附件。
+// 抽出来是因为单值门与择一门（Gate.RequireAttachmentAny）用的是同一条判定，
+// 两处各写一遍的话，将来改附件匹配语义（比如加大小写归一）必然漏改一处。
+func cardHasAttachmentKind(card Card, kind string) bool {
+	for _, attachment := range card.Attachments {
+		if attachment.Kind == kind {
+			return true
+		}
+	}
+	return false
 }
