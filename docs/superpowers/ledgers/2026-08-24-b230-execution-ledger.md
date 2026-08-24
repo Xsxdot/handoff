@@ -72,3 +72,12 @@
 - 2026-08-24: Task 4 变异前收尾 `git diff --check` -> 无输出，退出码 0；当前待提交为台账、`internal/agentd/ledger_fixtures_test.go`、`ledgerapi_test.go`，共 `16 insertions(+), 4 deletions(-)`。
 - 2026-08-24: Task 4 变异前暂存 `git add internal/agentd/ledger_fixtures_test.go internal/agentd/ledgerapi_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
 - 2026-08-24: Task 4 变异前暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 变异前提交 `git commit -m "test: cover attachment gate variants"` -> `[cards/B230-charter-3 f86c101a] test: cover attachment gate variants`、`3 files changed, 19 insertions(+), 4 deletions(-)`，退出码 0。
+- 2026-08-24: Task 4 变异验证：临时从 `internal/agentd/ledgerapi.go` 的 `attachmentKinds` 删除 `plan`，执行 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/ -run TestAttachmentKindsCoverGateKinds -v` -> 原始失败 `ledgerapi_test.go:508: 工作流 attachment-gates/多附件 使用的附件 kind "plan" 未登记到 attachmentKinds`、`--- FAIL: TestAttachmentKindsCoverGateKinds`、退出码 1，证明断言能打红。
+- 2026-08-24: Task 4 变异还原 `git diff -- internal/agentd/ledgerapi.go` -> 无输出，退出码 0，`attachmentKinds` 已恢复。
+- 2026-08-24: Task 4 全包测试 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/...` -> `ok github.com/Xsxdot/handoff/internal/agentd 139.958s`，退出码 0。
+- 2026-08-24: Task 4 格式检查 `gofmt -l internal/agentd/ledgerapi.go internal/agentd/ledgerapi_test.go internal/agentd/ledger_fixtures_test.go` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 收尾编译 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 变异后收尾 `git diff --check` -> 无输出，退出码 0；待提交为台账与 `internal/agentd/ledgerapi.go` 的 gate 白名单注释更新，共 `8 insertions(+), 2 deletions(-)`。
+- 2026-08-24: Task 4 变异后暂存 `git add internal/agentd/ledgerapi.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 变异后暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
