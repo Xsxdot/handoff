@@ -361,3 +361,7 @@ driver_takeover」——答案是对侧常量执法证明它零程序消费者�
 
 **交棒对象**：`breakdown`。实现节点须先读本文档与上游 spec，按 §3 清单逐条落地、
 §4 欠账逐条销账；不得把 Ticket 0 空壳当作行为已实现，不得在归属侧引入任何形式的过期判定。
+
+## 8. 修订记录
+
+- 2026-08-25（breakdown 轮，拆解稿 `docs/superpowers/specs/b239-breakdown.md` §二）：边界澄清两条，均不退回 contract。**澄清一**：本文行文的 `d_coordination` 不是 codegraph 域 id——图上该职责分属 `d_gateway`（internal/agentd）与 `d_cli`（cmd），子系统 id 以 `codegraph/best.json` 为准，依赖方向与 §6 冻结面不变。**澄清二**：`web:<r.RemoteAddr>` 在 `internal/agentd/ledgerapi.go` 共七处（:89/:367/:386/:446/:522/:542/:693），仅 :446（CardStepReq fallback actor，会成锁身份）随本卡收敛为 host 档；其余六处是事件审计署名，不动。
