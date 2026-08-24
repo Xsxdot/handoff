@@ -44,8 +44,8 @@ func runLedgerCLI(t *testing.T, dir string, args ...string) (string, string, err
 	return out.String(), errb.String(), err
 }
 
-// seedCardCLIForTest supplies only the explicit data needed by existing card
-// command tests. It is test harness data; production openLedger has no seed.
+// seedCardCLIForTest 只写入既有 card 命令测试所需的显式数据。
+// 它是测试夹具数据；生产的 openLedger 不做任何 seed。
 func seedCardCLIForTest(t *testing.T, dir string, args []string) {
 	t.Helper()
 	if len(args) == 0 || args[0] != "card" {
