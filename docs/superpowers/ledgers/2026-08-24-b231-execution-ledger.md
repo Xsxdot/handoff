@@ -1,5 +1,7 @@
 # B231 执行台账
 
+- 2026-08-24 收口命令 `git commit -m "scan(codegraph): B231-2 full responsibility rescan"` 原始输出：`[cards/B231-charter-2 9d06e9c9] scan(codegraph): B231-2 full responsibility rescan`、`2 files changed, 6564 insertions(+), 4561 deletions(-)`；未 push。
+
 - 2026-08-24 命令 `git restore --staged docs/superpowers/plans/2026-08-24-b231-scan-plan.md`（获批准后执行）原始输出为空、退出码 0；随后 `git status --short` 原始结果为 `M codegraph/baseline.json`、`M docs/superpowers/ledgers/2026-08-24-b231-execution-ledger.md`、`?? docs/superpowers/plans/2026-08-24-b231-scan-plan.md`，plan 未进入暂存区。
 
 - 2026-08-24 最终自检原始输出：`json_duplicate_check=ok`；`meta {'project': 'handoff', 'branch': 'cards/B231-charter-2', 'commit': '4454c5cc4cdd0416a01c9043621cee87c5eafdc5', 'scannedAt': '2026-08-24', 'generator': 'codex-codegraph-b231-full-rescan'}`；`counts {'domains': 20, 'containers': 239, 'nodes': 3655, 'edges': 4740, 'implements': 7, 'projections': 378, 'lifecycle': 127, 'packages': 66}`；`node_kinds Counter({'func': 2789, 'model': 708, 'entry': 158})`；`package_dir_match 66 66 True`；`card_entries 24 card_unscanned []`；`unscanned ['e_cli_decision', 'e_cli_graph', 'e_cli_template', 'e_cli_workflow', 'e_cli_project', 'e_cli_service']`；规范校验器 `validate_issues=[]`、`stale_count=0`；`git diff --check` 无输出；保护文件 diff 无输出。
