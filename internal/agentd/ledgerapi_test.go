@@ -210,7 +210,12 @@ func TestMigrateCardRouteUsesExplicitTargetShape(t *testing.T) {
 // handler 断言，Store 有值不代表 wire 上有值（ChildrenTotal 教训）。
 func TestMigrateAPIProjectsFromTo(t *testing.T) {
 	env := newLedgerEnv(t)
-	card, err := env.ledger.CreateCard(ledger.NewCard{Title: "迁移投影", Project: "p", Actor: "test"})
+	// 显式声明起点流：本轮起账本不再有出厂流，缺省解析在多流时按歧义拒绝。
+	// 取 triage 而非 bug，让 migrate 的 from/to 落在两条不同的流上——
+	// 本测试断言的正是 from/to 投影，同流同列会让断言失去分辨力。
+	card, err := env.ledger.CreateCard(ledger.NewCard{
+		Title: "迁移投影", Project: "p", Workflow: "triage", Actor: "test",
+	})
 	if err != nil {
 		t.Fatalf("建卡: %v", err)
 	}
