@@ -17,7 +17,7 @@ TUI tab 是任务会话主视图。
 | （无需页） | `/machines` → 重定向到 `/settings` | `/machines` | — |
 | pages/board.html | 工作项账本看板（统一任务卡：看板/列表双视图、「需要你」就地筛选、详情抽屉含并入区/验收/Timeline、合并跟随可拆回） | `/cards` | 已确认 |
 | pages/flows.html | 流程管理页（工作流状态形状 + gate、派发模板 + 纪律块版本，均不可变版本化） | `/flows` | 已确认 |
-| pages/codegraph.html | 代码图页（理想树全景：子系统卡 + gap 读数 + 契约边；C1.3 一期已按此形态上线 charter graph/webui）；二期下钻（领域页双 tab / 泳道 / 级联）仍在规划 | `/codegraph` | 已确认（一期全景，2026-08-24）；二期形态 确认中 |
+| pages/codegraph.html | 代码图页（理想树全景：子系统卡 + gap 读数 + 契约边；C1.3 一期已按此形态上线 charter graph/webui）；二期下钻（领域页双 tab / 泳道 / 级联）仍在规划 | `/codegraph` | 已确认（一期全景，2026-08-24）；二期形态（嵌套同构下钻+迁移视角+欠账读数，基准 fork `codegraph-phase2/pages/codegraph2.html`）确认中（2026-08-24 走查通过，待真实页面开发对照验收后推已确认） |
 
 工作项账本两页的形态基准经 fork 副本 `workbench-ledger/`（`pages/board.html`、
 `pages/flows.html`）走查确认（2026-08-19）。原则性约定：卡的一切信息只在详情抽屉
