@@ -139,3 +139,27 @@
 - **工作台蓝图二/三/四期**：B156.2（协作层）、B156.3（自动化层）、B156.4（蓝图域）仍在
   「待办」，B156 父卡按 epic 规则「子卡全完成才能标完成」动不了。**一期收尾不等于蓝图
   收尾**。来源：同上 spec 的 Out of Scope。
+
+## 来自 B156.1 执行期（2026-08-24，一期收尾实测）
+
+- **charter v9 的自动挂端到端未验**：B238 那轮验的是 v8 的路径约定（带 `{{DATE}}`），
+  三条判据全中；随后按 B201 的既有约定纠正成 v9（去 `{{DATE}}`、contract/breakdown 落
+  `docs/superpowers/specs/`、breakdown 的 kind 由 `doc` 改 `breakdown`）后**没有再验一次**。
+  同一条代码路径、只改了模板字符串，但按 B156.1 自己的标准（行为事实要真跑）这欠着。
+  **下一张走 plan 节点的卡就是它的验证**——回来先看附件的 actor 是不是 `node:plan`。
+- **判据⑥ 的 `--step` 并发认领未验**：裸 `card dispatch` 那条路径已红并落卡 B237
+  （认领硬编码「进行中」）。`--step` 走 StepRunner 是另一条代码路径，本期没造过并发冲突。
+- **判据⑤ 的三元组比对未验到**：`fake` executor 不产生 `task_mirrored` 事件，而三元组
+  （source_target/source_task/source_seq）是镜像事件才有的字段。要完整验需要真 executor
+  在 subtree wait 挂起期间跑一轮。旁证已有（B238 单卡 wait 收到过镜像事件；判据⑦ 的
+  461 条零重复），但没有一次实验同时满足四个条件。
+- **判据③ 的第二条要不要改**：原判据要求「blocker 终止后下游新增 needs_human 事件」，
+  实现选的是派生视图（`internal/ledger/derived.go:106` 动态计算，不落事件）。功能等价
+  且派生更合理（blocker 可 revive，落事件反而要撤销历史），但**本期未改判据去迁就实现**，
+  按红记在卡上。判据是否改口径留用户裁决。
+- **`deploy/workflows/charter-v4.json` 与账本 v9 已不一致**：那份文件的 README 仍写
+  「待应用」，而其 breakdown kind（`doc`）与 implement 门（`require_attachment: plan`）
+  都已被 v9 取代。归 C6（charter 定义的可复现落点）处理，本期不越界改。
+- **linux-01 上的 `cards/B240.1-charter` 空分支**：判据①⑤ 的 fake 探针 stop 后保留了分支
+  （stop 删 worktree、保留分支），当时无活着的 worktree 可作删除通道。下次在该机有活
+  worktree 时顺手 `git branch -D`。
