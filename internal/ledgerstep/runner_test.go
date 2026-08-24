@@ -624,6 +624,73 @@ func TestRunnerLossCommentNamesCurrentRunLockHolder(t *testing.T) {
 	t.Fatal("未找到失权说明 comment")
 }
 
+func TestRunnerLossCommentReportsRunLockReadError(t *testing.T) {
+	dbPath := t.TempDir() + "/ledger.db"
+	st, err := ledger.Open(dbPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	seedLedgerStepStore(t, st)
+	card, err := st.CreateCard(ledger.NewCard{Title: "失权读错", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	started, release := make(chan struct{}), make(chan struct{})
+	const holderA = "run:runner-read-error#1#1"
+	runner := &StepRunner{St: st, Session: "session-runner", Target: "mac-02", RunHolder: holderA, RenewBeat: make(chan time.Time, 8),
+		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+			close(started)
+			<-release
+			return "T-read-error", nil
+		}}}
+	done := make(chan error, 1)
+	go func() { _, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing); done <- err }()
+	<-started
+
+	lockDB, err := sql.Open("sqlite", dbPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("打开锁测试连接: %v", err)
+	}
+	t.Cleanup(func() { _ = lockDB.Close() })
+	if _, err := lockDB.Exec("DROP TABLE card_run_locks"); err != nil {
+		t.Fatalf("删除运行锁表: %v", err)
+	}
+	_, _, readErr := st.RunLockOf(card.ID)
+	if readErr == nil {
+		t.Fatal("删除运行锁表后读取应返回原始错误")
+	}
+
+	close(release)
+	if err := <-done; !errors.Is(err, ErrWriteGateClosed) {
+		t.Fatalf("运行锁读取失败后首个卡写应被闸拒绝: %v", err)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Type != ledger.EvComment {
+			continue
+		}
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if json.Unmarshal(event.Payload, &payload) != nil || !strings.Contains(payload.Body, "本轮运行锁已被接手") {
+			continue
+		}
+		if !strings.Contains(payload.Body, "现持有者读取失败："+readErr.Error()) {
+			t.Fatalf("失权说明应如实包含运行锁读取错误 %q: %s", readErr, payload.Body)
+		}
+		if strings.Contains(payload.Body, holderA) {
+			t.Fatalf("读取失败时不得回落打印本轮 holder %q: %s", holderA, payload.Body)
+		}
+		return
+	}
+	t.Fatal("未找到失权读错说明 comment")
+}
+
 func stMustNode(t *testing.T, st *ledger.Store, cardID, name string) ledger.NodeDef {
 	t.Helper()
 	card, err := st.GetCard(cardID)
