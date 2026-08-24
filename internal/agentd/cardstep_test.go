@@ -19,6 +19,7 @@ func newStepTestServer(t *testing.T) *Server {
 
 func seedCardWithProject(t *testing.T, s *Server, project string) {
 	t.Helper()
+	seedAgentdLedger(t, s.ledger, "bug")
 	if _, err := s.ledger.CreateCard(newCardForStepTest(project)); err != nil {
 		t.Fatal(err)
 	}
@@ -61,6 +62,7 @@ func seedImplementCardWithProject(t *testing.T, s *Server, project string) {
 func holdCardStep(t *testing.T, s *Server, cardID string) func() {
 	t.Helper()
 	if _, err := s.ledger.GetCard(cardID); err != nil {
+		seedAgentdLedger(t, s.ledger, "bug")
 		if _, createErr := s.ledger.CreateCard(newCardForStepTest("demo")); createErr != nil {
 			t.Fatalf("准备占位卡失败: %v", createErr)
 		}

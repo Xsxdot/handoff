@@ -7,10 +7,10 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
-// seedAgentdLedger installs explicit workflow/template fixtures for HTTP tests.
-// Production agentd startup leaves the ledger empty; tests that need a flow
-// declare the exact data they consume here.
-func seedAgentdLedger(t *testing.T, st *ledger.Store) {
+// seedAgentdLedger 为 HTTP 测试写入模板与指定的工作流夹具。
+// 不传工作流名时只写入 attachment-gates，供附件白名单测试使用；其余测试
+// 必须在调用处点名所需流，避免共享夹具伪装成出厂世界。
+func seedAgentdLedger(t *testing.T, st *ledger.Store, workflowNames ...string) {
 	t.Helper()
 	for name, def := range map[string]ledger.TemplateDef{
 		"feature-impl":   {Executor: "opencode", Purpose: ledger.PurposeImplement, BranchPrefix: "cards", Discipline: discipline.NameImplement, Prompt: "实现 {{TITLE}}：{{ACCEPT}}"},
@@ -49,7 +49,14 @@ func seedAgentdLedger(t *testing.T, st *ledger.Store) {
 			{Name: ledger.StatusDone},
 		}},
 	}
-	for name, def := range workflows {
+	if len(workflowNames) == 0 {
+		workflowNames = []string{"attachment-gates"}
+	}
+	for _, name := range workflowNames {
+		def, ok := workflows[name]
+		if !ok {
+			t.Fatalf("未定义测试工作流夹具 %q", name)
+		}
 		if _, err := st.PutWorkflow(name, def); err != nil {
 			t.Fatalf("写测试工作流 %s: %v", name, err)
 		}

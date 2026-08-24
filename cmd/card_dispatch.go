@@ -151,7 +151,7 @@ func targetClient(target string) (*client.Client, func(), error) {
 	return newTargetClientNamed(target)
 }
 
-// resolveCardDispatchTemplate resolves a bare card dispatch against the ledger.
+// resolveCardDispatchTemplate 按账本解析裸 card dispatch 的模板。
 //
 // 参数：st 已打开的账本；全局 cardDispatchTemplate 是显式 --template 值。
 // 返回：显式模板原样返回；无显式值时唯一模板自动返回，零/多模板返回可行动错误。
