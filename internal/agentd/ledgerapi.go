@@ -390,6 +390,11 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
+// maxCardStepBody 是 step 请求体的读取上限。请求只有六个短字段，--extra 是其中唯一
+// 可能长的一项（一段中文补充说明）；1 MiB 给它留了三个数量级的余量，同时挡住把
+// 整个进程内存喂进来的畸形请求。
+const maxCardStepBody = 1 << 20
+
 // handleCardStep 受理一个卡节点，受理即 202；202 不代表回合已完成。
 //
 // 规范 CLI 请求必须带非空 actor；旧看板只发送 {"step":...}，仅在原始 JSON
@@ -403,11 +408,6 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 // 请求、确认卡与节点都解得开（卡不存在 404，节点名不对 400）。其余一切——门是否
 // 放行、目标机是否够得着、回合是否超轮——都在后台 goroutine 里由 StepRunner 判定，
 // 结果落卡的事件流。
-// maxCardStepBody 是 step 请求体的读取上限。请求只有六个短字段，--extra 是其中唯一
-// 可能长的一项（一段中文补充说明）；1 MiB 给它留了三个数量级的余量，同时挡住把
-// 整个进程内存喂进来的畸形请求。
-const maxCardStepBody = 1 << 20
-
 func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	payload, err := io.ReadAll(io.LimitReader(r.Body, maxCardStepBody))
