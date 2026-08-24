@@ -216,3 +216,67 @@
 - 2026-08-25：`git commit --amend --no-edit` 收口成功；原始输出 `[cards/B239-charter-8 945a8a10] docs(b239): record dispatch write-gate scope revision`、`2 files changed, 12 insertions(+), 1 deletion(-)`，退出码 0；本条台账事实仍需纳入最终 amend。
 - 2026-08-25：最终核验 `git status --short --branch && git diff --check && git show --stat --oneline --summary HEAD && git diff HEAD^ --check && git diff HEAD^ --name-only`；原始输出分支 `## cards/B239-charter-8` 且状态无未提交行，HEAD=`dd42a4ee`，提交仅含台账与计划两份文档（`2 files changed, 13 insertions(+), 1 deletion(-)`），两处 diff check 为空。
 - 2026-08-25：最终状态复核 `git status --short --branch && git log -1 --oneline --decorate`；原始输出 `## cards/B239-charter-8`（无未提交行）与 `deda2faa (HEAD -> cards/B239-charter-8) docs(b239): record dispatch write-gate scope revision`。
+- 2026-08-25：本轮启动读取 `/root/.codex/skills/handoff/SKILL.md` 至 EOF（`wc -l` 原始输出 `374`）；平台纪律禁止调用 handoff CLI，故未调用。当前工作树核对原始输出为 `## cards/B239-charter-9`，状态无未提交行；当前 HEAD 为 `51145028 (HEAD -> cards/B239-charter-9, cards/B239-review-3, cards/B239-charter-8) docs(b239): record dispatch write-gate scope revision`。
+- 2026-08-25：复读 `internal/agentd/ledgerapi_test.go` 与 `internal/agentd/ledgerapi.go` 确认存量 `TestCardStepLegacyActorFallback` 仍构造 `want := "web:" + localAddr`，生产 legacy fallback 已是 `req.Actor = "web:" + hostOnly(r.RemoteAddr)`；同包新增 `TestLegacyStepFallbackActorIsHostOnly` 断言 `web:127.0.0.1`。原始检索还确认 `ClaimDriver` 在 `internal cmd` 生产代码无命中（此前台账已有记录）。
+- 2026-08-25：按补充要求先复跑存量测试 `go test ./internal/agentd/ -run '^TestCardStepLegacyActorFallback$' -count=1`；原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 0.134s`，退出码 0。本机该单测未复现协调者报告的旧端口断言红，但断言源码仍与 host-only 生产语义矛盾，需按新语义修正测试。
+- 2026-08-25：同族排查按三组共 24 个正则关键词扫 `internal cmd -g '*_test.go'`：actor/端点 7 个（`localAddr|hostOnly|RemoteAddr|legacy actor|legacy.*fallback|web:.*:[0-9]|actor.*want`）、归属/运行锁 10 个（`ClaimDriver|DriverSession|driver_session|claim.*(pid|进|owner|归属)|归属.*(pid|进)|认领.*进行中|非持有者 release|release.*(ok|成功)|Release.*Non|release.*非持有者`）、状态变更 7 个（`MoveCard...进行中|Status.*进行中|step.*进行中|认领.*状态|状态.*认领|claim.*status|status.*claim`）。命中仅包括本次旧 `localAddr` 断言、reveal 的 RemoteAddr 安全测试、正常工作流/dispatch 的“进行中”、以及 B239 正确的非持有者可见失败与 `DriverSession` 人尺度断言；`ClaimDriver` 无测试命中，未发现归属带 pid、认领转“进行中”、release 非持有者返回成功的其他存量断言。原始命中行含 `internal/agentd/ledgerapi_test.go:937 want := "web:" + localAddr`、`cmd/card_dispatch_test.go:586 非持有者 release 必须失败`、`internal/ledger/move_test.go:90 认领不得改状态列`、`:143 非持有者释放应可见失败`。
+- 2026-08-25：按排查结论修改 `internal/agentd/ledgerapi_test.go` 的 `TestCardStepLegacyActorFallback`：移除端口探测 transport，端到端请求改用既有 `ledgerPost`，期望值固定为新语义 `web:127.0.0.1`，保留 session 与 dispatcher 双位置断言；未改生产代码、未删除新增的 host-only 测试。执行 `gofmt -w internal/agentd/ledgerapi_test.go && go test ./internal/agentd/ -run '^TestCardStepLegacyActorFallback$' -count=1`，原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 0.147s`，退出码 0。
+- 2026-08-25：如实复核历史验收命令：台账可核实 implement/E1 的集成命令是 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/...`，记录中无 `-run` 且明确包含 `internal/agentd`；同轮可核实的静态命令是 `go build ./...`、`go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd`、`gofmt -l internal/ledger internal/ledgerstep internal/agentd cmd`。D2 另实际跑过 `go test -race ./internal/ledgerstep/`，不是 `go test -race ./...`。本仓台账没有 review#2 自报所称“build/vet/test/race 全绿”的原始完整命令记录，因此不能把它扩写成全仓 race 结论；本轮补充明确：历史记录显示未漏 agentd，但未记录全仓 `-race`。
+- 2026-08-25：本轮修复后触及包集成 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/...` 通过，退出码 0；原始输出按完成顺序为 `ok  github.com/Xsxdot/handoff/internal/ledger 14.737s`、`ok  github.com/Xsxdot/handoff/internal/ledgerstep 6.672s`、`ok  github.com/Xsxdot/handoff/internal/agentd 125.363s`、`ok  github.com/Xsxdot/handoff/cmd 8.792s`。
+- 2026-08-25：修复后收尾静态闸并行执行：`go build ./...` 原始输出为空、退出码 0；`go vet ./...` 原始输出为空、退出码 0；`gofmt -l internal/ledger internal/ledgerstep internal/agentd cmd` 原始输出为空、退出码 0。
+- 2026-08-25：本轮最终按补充要求执行无任何 `-run` 过滤的 `go test ./...`，退出码 0；完整包级尾部原始输出如下（无 `FAIL` 行）：
+  ```text
+  ok  	github.com/Xsxdot/handoff	0.453s
+  ok  	github.com/Xsxdot/handoff/cmd	9.065s
+  ok  	github.com/Xsxdot/handoff/internal/agentd	118.809s
+  ok  	github.com/Xsxdot/handoff/internal/buildinfo	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/client	9.454s
+  ok  	github.com/Xsxdot/handoff/internal/config	0.024s
+  ok  	github.com/Xsxdot/handoff/internal/discipline	0.008s
+  ok  	github.com/Xsxdot/handoff/internal/envfile	0.015s
+  ok  	github.com/Xsxdot/handoff/internal/executor	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/executor/claudecode	4.078s
+  ok  	github.com/Xsxdot/handoff/internal/executor/codex	6.045s
+  ok  	github.com/Xsxdot/handoff/internal/executor/fake	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/executor/grok	1.419s
+  ok  	github.com/Xsxdot/handoff/internal/executor/opencode	18.031s
+  ok  	github.com/Xsxdot/handoff/internal/executor/rawtap	0.013s
+  ok  	github.com/Xsxdot/handoff/internal/executor/turn	0.045s
+  ok  	github.com/Xsxdot/handoff/internal/initflow	0.005s
+  ok  	github.com/Xsxdot/handoff/internal/launcher	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/ledger	(cached)
+  ok  	github.com/Xsxdot/handoff/internal/ledgermirror	2.184s
+  ok  	github.com/Xsxdot/handoff/internal/ledgerstep	(cached)
+  ok  	github.com/Xsxdot/handoff/internal/localsync	0.157s
+  ok  	github.com/Xsxdot/handoff/internal/logx	0.002s
+  ok  	github.com/Xsxdot/handoff/internal/pathenv	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/permgate	0.007s
+  ok  	github.com/Xsxdot/handoff/internal/prochost	20.659s
+  ok  	github.com/Xsxdot/handoff/internal/projectid	0.002s
+  ok  	github.com/Xsxdot/handoff/internal/proto	0.003s
+  ok  	github.com/Xsxdot/handoff/internal/proxycfg	0.002s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost	0.029s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost/engine	15.954s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost/hostproc	0.020s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost/sessdir	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost/wire	0.002s
+  ok  	github.com/Xsxdot/handoff/internal/ptytestroot	0.008s
+  ok  	github.com/Xsxdot/handoff/internal/relay	0.007s
+  ok  	github.com/Xsxdot/handoff/internal/release	0.088s
+  ok  	github.com/Xsxdot/handoff/internal/selfupdate	0.006s
+  ok  	github.com/Xsxdot/handoff/internal/service	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/skill	0.005s
+  ok  	github.com/Xsxdot/handoff/internal/store	6.254s
+  ok  	github.com/Xsxdot/handoff/internal/targetclient	0.153s
+  ok  	github.com/Xsxdot/handoff/internal/testperm	0.010s
+  ok  	github.com/Xsxdot/handoff/internal/toolchain	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/upgrade	0.003s
+  ok  	github.com/Xsxdot/handoff/internal/webui	0.013s
+  ```
+- 2026-08-25：收尾复核并行命令结果：`gofmt -l .` 原始输出为空、退出码 0；旧语义复扫 `rg -n "want := \"web:\" \+ localAddr|ClaimDriver|release.*非持有者.*成功|非持有者 release.*ok|认领.*进行中|status.*claim" internal cmd -g '*_test.go'` 原始输出为空；`git diff --check && git status --short && git diff --stat && git diff --name-only` 通过，原始状态仅两份改动文件（台账与 `internal/agentd/ledgerapi_test.go`），统计 `60 insertions(+), 23 deletions(-)`。
+- 2026-08-25：首次收尾暂存 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md internal/agentd/ledgerapi_test.go` 失败；原始报错 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/368c8c31/index.lock': Read-only file system`，退出码 128，尚未产生暂存或提交。
+- 2026-08-25：提权后重试同一 `git add ...` 成功，原始输出为空、退出码 0；暂存核对 `git status --short --branch && git diff --cached --check && git diff --cached --stat && git diff --cached --name-only` 通过，分支 `## cards/B239-charter-9`，两份目标文件均 staged，cached diff check 为空，统计 `62 insertions(+), 23 deletions(-)`。
+- 2026-08-25：提交前复核 `git status --short --branch && git diff --cached --check && git diff --check && git diff --cached --stat` 通过；原始输出分支 `## cards/B239-charter-9`、两份文件 staged，两个 diff check 均为空，当前统计 `63 insertions(+), 23 deletions(-)`。
+- 2026-08-25：提交 `git commit -m 'test(b239): align legacy actor fallback expectation'` 成功；原始输出 `[cards/B239-charter-9 a4a4d0ca] test(b239): align legacy actor fallback expectation`、`2 files changed, 64 insertions(+), 23 deletions(-)`，退出码 0。因本条事实随后写回台账，将执行 amend 收口。
+- 2026-08-25：`git commit --amend --no-edit` 后核对 `git status --short --branch && git log -2 --oneline --decorate && git show --stat --oneline --summary HEAD && git diff HEAD^ --check && git diff HEAD^ --name-only`；原始输出工作树无未提交行、分支 `## cards/B239-charter-9`、HEAD=`ec09ec93 test(b239): align legacy actor fallback expectation`，提交包含台账与 `internal/agentd/ledgerapi_test.go`（`65 insertions(+), 23 deletions(-)`），父提交差异 check 为空。
+- 2026-08-25：最终台账收口前只读复核 `git status --short --branch && git log -1 --oneline --decorate && git diff HEAD^ --check`；原始输出为 `## cards/B239-charter-9`（无未提交行）、`2a913198 (HEAD -> cards/B239-charter-9) test(b239): align legacy actor fallback expectation`，差异 check 无输出、退出码 0；本条将随最后一次 amend 纳入提交。

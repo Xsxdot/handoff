@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -897,7 +896,7 @@ func TestCardStepAcceptsImplementWithoutInlineFile(t *testing.T) {
 	}
 }
 
-// TestCardStepLegacyActorFallback preserves the old dashboard body while making its actor explicit internally.
+// TestCardStepLegacyActorFallback preserves the old dashboard body while making its host-only actor explicit internally.
 func TestCardStepLegacyActorFallback(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
@@ -909,32 +908,13 @@ func TestCardStepLegacyActorFallback(t *testing.T) {
 	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) {
 		runnerCh <- runner
 	}
-	// 期望值必须是**本次连接的客户端源地址**（服务端 r.RemoteAddr 的来源），
-	// 不是 httptest 服务端的监听地址：两者只在内核恰好把相邻端口先后分给监听
-	// 套接字与连接套接字时才相等——Linux 上常成立、macOS 上恒不成立。原先拿
-	// env.ts.URL 当期望值是在赌端口巧合，本机 6/6 必红。
-	var localAddr string
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
-			if err == nil {
-				localAddr = conn.LocalAddr().String()
-			}
-			return conn, err
-		},
-	}
-	defer transport.CloseIdleConnections()
-	code, body := ledgerPostWithClient(t, env.testAgentdEnv, &http.Client{Transport: transport},
-		"/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
 	if code != http.StatusAccepted {
 		t.Fatalf("legacy 请求应 202，实得 %d（%s）", code, body)
 	}
-	if localAddr == "" {
-		t.Fatal("未记录到客户端源地址，期望值无从构造")
-	}
 	select {
 	case runner := <-runnerCh:
-		want := "web:" + localAddr
+		want := "web:127.0.0.1"
 		if runner.Session != want || runner.Dispatcher.Actor != want {
 			t.Fatalf("legacy actor = session %q dispatcher %q, want %q", runner.Session, runner.Dispatcher.Actor, want)
 		}
