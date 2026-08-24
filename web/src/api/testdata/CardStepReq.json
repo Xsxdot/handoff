@@ -1,0 +1,8 @@
+{
+  "step": "review",
+  "target": "linux-01",
+  "executor": "codex",
+  "model": "gpt-5",
+  "extra": "只检查本轮改动",
+  "actor": "cli:alice@linux-01#1234"
+}

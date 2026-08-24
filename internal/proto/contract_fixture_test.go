@@ -111,6 +111,10 @@ func TestContractFixtures(t *testing.T) {
 		{"WorkbenchSelectedReq", workbenchSelectedReqSample()},
 		{"WorkbenchDockReq", workbenchDockReqSample()},
 		{"NewCardReq", NewCardReq{Title: "需要定性", Project: "handoff"}},
+		{"CardStepReq", CardStepReq{
+			Step: "review", Target: "linux-01", Executor: "codex",
+			Model: "gpt-5", Extra: "只检查本轮改动", Actor: "cli:alice@linux-01#1234",
+		}},
 		{"CardCreateResp", CardCreateResp{ID: "B167"}},
 		{"MigrateCardReq", MigrateCardReq{Workflow: "domain", Status: "拆解"}},
 		{"MigrateCardResp", MigrateCardResp{

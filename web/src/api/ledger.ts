@@ -142,12 +142,23 @@ export interface FlowDetail {
 }
 
 export interface NewCardReq {
-  title: string
-  project: string
+	title: string
+	project: string
   workflow?: string
   priority?: string
   parent?: string
-  base_branch?: string
+	base_branch?: string
+}
+
+// CardStepReq 是卡节点提交的 wire 请求镜像；可选覆盖项缺席表示沿用下层配置。
+// PlanPath 及任何调用方本地文件字段不属于 --step 请求。
+export interface CardStepReq {
+  step: string
+  target?: string
+  executor?: string
+  model?: string
+  extra?: string
+  actor: string
 }
 
 export interface CardCreateResp {

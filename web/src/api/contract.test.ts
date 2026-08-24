@@ -14,6 +14,7 @@
 // 路径按模块相对解析、稳定且自带编译期类型。
 import { describe, expect, it } from 'vitest'
 import activeTaskFixture from './testdata/ActiveTask.json'
+import cardStepReqFixture from './testdata/CardStepReq.json'
 import dirListFixture from './testdata/DirListResult.json'
 import disciplineMappingReqFixture from './testdata/DisciplineMappingReq.json'
 import disciplineRespFixture from './testdata/DisciplineResp.json'
@@ -103,9 +104,19 @@ import type {
   MigrateCardResp,
   NewCardReq,
   NodeDef,
+  CardStepReq,
 } from './ledger'
 
 describe('契约 fixture 与 TS 类型', () => {
+	it('CardStepReq：六字段可由 Go fixture 解析', () => {
+		const req: CardStepReq = cardStepReqFixture
+		expect(req).toEqual({
+			step: 'review', target: 'linux-01', executor: 'codex', model: 'gpt-5',
+			extra: '只检查本轮改动', actor: 'cli:alice@linux-01#1234',
+		})
+		expect(Object.keys(req)).toEqual(['step', 'target', 'executor', 'model', 'extra', 'actor'])
+	})
+
 	it('账本 wire：建卡/迁移 DTO 与派生投影字段完整', () => {
 		const create: NewCardReq = newCardReqFixture
 		const created: CardCreateResp = cardCreateRespFixture
