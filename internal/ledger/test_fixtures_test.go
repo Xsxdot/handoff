@@ -2,59 +2,45 @@ package ledger
 
 import (
 	"errors"
-	"reflect"
-	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/discipline"
 )
 
-// seedTestTemplates installs explicit test data for tests that exercise dispatch
-// assembly. Production Store.Open deliberately installs no templates.
+// seedTestTemplates 为派发组装测试写入显式测试数据。生产 Store.Open 不安装模板。
+// 夹具只验证模板能存、能取、能组装，不替已退场的出厂方法论正文作证。
 func seedTestTemplates(t *testing.T, s *Store) error {
 	t.Helper()
 	defs := map[string]TemplateDef{
 		"feature-impl": {
 			Executor: "opencode", Purpose: "implement", BranchPrefix: "cards",
 			Discipline: discipline.NameImplement,
-			Prompt:     "实现以下工作项：{{TITLE}}（卡 {{CARD}}）。\n验收判据：{{ACCEPT}}\n完整需求见随附 plan。",
+			Prompt:     "实现 {{TITLE}}：{{ACCEPT}}",
 		},
 		"review-generic": {
 			Executor: "grok", Purpose: "review", BranchPrefix: "cards",
 			Discipline: discipline.NameReview,
-			Prompt: "审阅卡 {{CARD}}（{{TITLE}}）对应分支的完整 diff：spec 符合性（要求全实现、没有多做）+ 代码质量双裁决。\n" +
-				"验收判据：{{ACCEPT}}\n" + reviewVerdictContract,
+			Prompt:     "审阅 {{TITLE}}：{{ACCEPT}}",
 		},
 		"domain-breakdown": {
 			Executor: "codex", Purpose: "breakdown", BranchPrefix: "cards",
 			Discipline: discipline.NameSpecDraft,
-			Prompt:     domainBreakdownPrompt,
+			Prompt:     "拆解 {{TITLE}}：{{ACCEPT}}",
 		},
 		"domain-ticket0": {
 			Executor: "codex", Purpose: "ticket0", BranchPrefix: "cards",
 			Discipline: discipline.NameImplement,
-			Prompt:     domainTicket0Prompt + implVerdictContract,
+			Prompt:     "冻结 {{TITLE}}：{{ACCEPT}}",
 		},
 		"domain-integration": {
 			Executor: "codex", Purpose: "integration", BranchPrefix: "cards",
 			Discipline: discipline.NameImplement,
-			Prompt:     domainIntegrationPrompt + implVerdictContract,
+			Prompt:     "集成 {{TITLE}}：{{ACCEPT}}",
 		},
 	}
 	for name, def := range defs {
-		current, err := s.GetTemplate(name, 0)
+		_, err := s.GetTemplate(name, 0)
 		if err == nil {
-			if reflect.DeepEqual(current.Def, def) {
-				continue
-			}
-			// A legacy fixture is intentionally upgraded once; arbitrary user
-			// edits remain untouched just like a real user-owned definition.
-			if strings.Contains(current.Def.Prompt, legacyReviewVerdictContract) ||
-				strings.Contains(current.Def.Prompt, legacyImplVerdictContract) {
-				if _, err := s.PutTemplate(name, def); err != nil {
-					return err
-				}
-			}
 			continue
 		}
 		if !errors.Is(err, ErrNotFound) {

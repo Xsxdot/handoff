@@ -46,3 +46,11 @@
 - 2026-08-24: Task 1 首次暂存 `git add internal/agentd/ledgerapi_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 原始错误 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/b63d6071/index.lock': Read-only file system`，退出码 128。
 - 2026-08-24: 经允许的重试 `git add internal/agentd/ledgerapi_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0；Task 1 文件已进入暂存区。
 - 2026-08-24: 暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 1 提交 `git commit -m "test: pin agentd migration workflow"` -> `[cards/B230-charter-3 1b841636] test: pin agentd migration workflow`、`2 files changed, 19 insertions(+), 1 deletion(-)`，退出码 0。
+- 2026-08-24: Task 2 清理测试夹具与生产常量后执行 `gofmt -w internal/ledger/test_fixtures_test.go internal/ledger/templates_test.go` 及常量扫描 `rg -n 'reviewVerdictContract|legacyReviewVerdictContract|implVerdictContract|legacyImplVerdictContract|domainBreakdownPrompt|domainTicket0Prompt|domainIntegrationPrompt' --glob '*.go' internal cmd` -> 格式化无输出；扫描无命中，因 `rg` 无匹配退出码 1。
+- 2026-08-24: Task 2 局部测试 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/...` -> `ok github.com/Xsxdot/handoff/internal/ledger 11.330s`，退出码 0。
+- 2026-08-24: Task 2 全仓编译 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 2 静态检查 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go vet ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 2 收尾 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 当前分支 `cards/B230-charter-3`，待提交文件为台账、`internal/ledger/templates.go`、`templates_test.go`、`test_fixtures_test.go`；diff 统计 `4 files changed, 19 insertions(+), 195 deletions(-)`。
+- 2026-08-24: Task 2 暂存 `git add internal/ledger/templates.go internal/ledger/templates_test.go internal/ledger/test_fixtures_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: Task 2 暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。

@@ -23,14 +23,8 @@ func TestTemplateVersioningAndDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("review-generic: %v", err)
 	}
-	if !strings.Contains(rv.Def.Prompt, "handoff-verdict") {
-		t.Fatalf("审阅模板缺输出契约: %q", rv.Def.Prompt)
-	}
-	if !strings.Contains(rv.Def.Prompt, "正文中") || !strings.Contains(rv.Def.Prompt, "<简短摘要>") {
-		t.Fatalf("审阅模板未同步正文传输契约: %q", rv.Def.Prompt)
-	}
-	if strings.Contains(rv.Def.Prompt, "裁决块原文") {
-		t.Fatalf("审阅模板仍要求把裁决块塞进 summary: %q", rv.Def.Prompt)
+	if !strings.Contains(rv.Def.Prompt, "{{TITLE}}") || !strings.Contains(rv.Def.Prompt, "{{ACCEPT}}") {
+		t.Fatalf("审阅测试模板缺少最小变量: %q", rv.Def.Prompt)
 	}
 	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatal(err)
@@ -54,63 +48,6 @@ func TestTemplateVersioningAndDefaults(t *testing.T) {
 	tp3, _ := s.GetTemplate("feature-impl", 0)
 	if tp3.Def.ModelByTarget["mac-02"] != "gpt-5.6-luna" {
 		t.Fatalf("覆盖丢失: %+v", tp3.Def)
-	}
-}
-
-// TestVerdictTemplateContractUpgradeCreatesNewVersion 保证契约变更会给未改动的
-// 出厂模板追加版本，同时保留旧版本；用户改过同名模板时不应被 seed 覆盖。
-func TestVerdictTemplateContractUpgradeCreatesNewVersion(t *testing.T) {
-	s := newTestStore(t)
-	legacy := map[string]TemplateDef{
-		"review-generic": {
-			Executor: "grok", Purpose: "review", BranchPrefix: "cards",
-			Discipline: discipline.NameReview,
-			Prompt: "审阅卡 {{CARD}}（{{TITLE}}）对应分支的完整 diff：spec 符合性（要求全实现、没有多做）+ 代码质量双裁决。\n" +
-				"验收判据：{{ACCEPT}}\n" + legacyReviewVerdictContract,
-		},
-		"domain-ticket0": {
-			Executor: "codex", Purpose: "ticket0", BranchPrefix: "cards",
-			Discipline: discipline.NameImplement,
-			Prompt:     domainTicket0Prompt + legacyImplVerdictContract,
-		},
-		"domain-integration": {
-			Executor: "codex", Purpose: "integration", BranchPrefix: "cards",
-			Discipline: discipline.NameImplement,
-			Prompt:     domainIntegrationPrompt + legacyImplVerdictContract,
-		},
-	}
-	for name, def := range legacy {
-		if version, err := s.PutTemplate(name, def); err != nil || version != 1 {
-			t.Fatalf("写入 %s v1: version=%d err=%v", name, version, err)
-		}
-	}
-	if err := seedTestTemplates(t, s); err != nil {
-		t.Fatalf("升级默认模板: %v", err)
-	}
-	for name := range legacy {
-		latest, err := s.GetTemplate(name, 0)
-		if err != nil {
-			t.Fatalf("读取 %s 最新版本: %v", name, err)
-		}
-		if latest.Version != 2 {
-			t.Fatalf("%s 应追加 v2，实得 v%d", name, latest.Version)
-		}
-		if latest.Def.Prompt == legacy[name].Prompt {
-			t.Fatalf("%s v2 仍是旧契约", name)
-		}
-		old, err := s.GetTemplate(name, 1)
-		if err != nil || old.Def.Prompt != legacy[name].Prompt {
-			t.Fatalf("%s v1 不应被改写: %+v err=%v", name, old.Def, err)
-		}
-	}
-	if err := seedTestTemplates(t, s); err != nil {
-		t.Fatalf("重复 seed: %v", err)
-	}
-	for name := range legacy {
-		latest, _ := s.GetTemplate(name, 0)
-		if latest.Version != 2 {
-			t.Fatalf("重复 seed 不应追加 %s v%d", name, latest.Version)
-		}
 	}
 }
 
@@ -176,8 +113,8 @@ func TestGetTemplateNewFieldWins(t *testing.T) {
 	}
 }
 
-// TestDefaultTemplatesUseNames 出厂模板用名字，不再指路径。
-func TestDefaultTemplatesUseNames(t *testing.T) {
+// TestTemplateFixturesUseNames 测试夹具使用纪律块名字，不再指向路径。
+func TestTemplateFixturesUseNames(t *testing.T) {
 	st := newTestStore(t)
 	if err := seedTestTemplates(t, st); err != nil {
 		t.Fatalf("写测试模板: %v", err)
@@ -199,10 +136,10 @@ func TestDefaultTemplatesUseNames(t *testing.T) {
 	}
 }
 
-// TestDefaultDomainTemplates 分域三模板的 seed 形状。purpose 必须互异——
+// TestDomainTemplateFixtures 分域三模板的夹具形状。purpose 必须互异——
 // 分支名由 purpose 拼出，相同会在同一张卡上撞名。变量白名单断言防静默失败：
 // prompt 里写了不受支持的 {{X}} 不会报错，会原样送到执行者面前。
-func TestDefaultDomainTemplates(t *testing.T) {
+func TestDomainTemplateFixtures(t *testing.T) {
 	s := newTestStore(t)
 	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatal(err)
@@ -229,31 +166,5 @@ func TestDefaultDomainTemplates(t *testing.T) {
 		if strings.Contains(stripped, "{{") {
 			t.Fatalf("%s prompt 含不受支持的模板变量（会原样送出）:\n%s", name, tpl.Def.Prompt)
 		}
-	}
-	// 带 Verdict 节点引用的两个模板必须携带裁决输出契约，否则报文里没有
-	// handoff-verdict block，节点永远解析失败转等人。
-	for _, name := range []string{"domain-ticket0", "domain-integration"} {
-		tpl, _ := s.GetTemplate(name, 0)
-		if !strings.Contains(tpl.Def.Prompt, "handoff-verdict") {
-			t.Fatalf("%s 缺裁决输出契约", name)
-		}
-		if !strings.Contains(tpl.Def.Prompt, "之前或之后") {
-			t.Fatalf("%s 未同步裁决块位置契约", name)
-		}
-	}
-	for name, want := range map[string]string{
-		"domain-breakdown":   "graph check --view",
-		"domain-ticket0":     "契约冻结即提交该文件",
-		"domain-integration": "棘轮只减不增",
-	} {
-		tpl, _ := s.GetTemplate(name, 0)
-		if !strings.Contains(tpl.Def.Prompt, want) {
-			t.Fatalf("%s 缺 graph check 契约片段 %q", name, want)
-		}
-	}
-	// 拆解节点不裁决，prompt 里出现契约会诱导 spec-draft 角色多输出一个假裁决块。
-	tpl, _ := s.GetTemplate("domain-breakdown", 0)
-	if strings.Contains(tpl.Def.Prompt, "handoff-verdict") {
-		t.Fatal("domain-breakdown 不该带裁决契约")
 	}
 }
