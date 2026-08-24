@@ -109,3 +109,5 @@
 - 2026-08-24: 最终实现提交 `git commit -m "test: isolate agentd workflow fixtures"` -> `[cards/B230-charter-3 d16a2e6f] test: isolate agentd workflow fixtures`、`9 files changed, 115 insertions(+), 80 deletions(-)`，删除 `cmd/b230_test.go`，退出码 0。
 - 2026-08-24: 提交后核验 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 仅台账因追加提交事实而修改；`git log --oneline -6` 顶部为 `d16a2e6f`，分支仍为 `cards/B230-charter-3`。
 - 2026-08-24: 最终台账暂存检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: 最终台账提交 `git commit -m "chore: record final B230 verification"` -> `[cards/B230-charter-3 39208196] chore: record final B230 verification`、`1 file changed, 3 insertions(+)`，退出码 0。
+- 2026-08-24: 末次台账暂存 `git add docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
