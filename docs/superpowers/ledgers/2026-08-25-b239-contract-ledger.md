@@ -165,3 +165,4 @@
 - 2026-08-25：收尾暂存 `git add --all` 失败；原始报错：`fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/e07609e9/index.lock': Read-only file system`，退出码 128，尚未产生暂存或提交。
 - 2026-08-25：在获准的提权上下文重试 `git add --all` 成功；原始输出为空，退出码 0，随后因本条台账追加需再次暂存。
 - 2026-08-25：暂存核对 `git status --short && git diff --cached --check && git diff --check` 通过；原始输出显示本卡 18 项改动均已暂存，两个 diff check 均为空且退出码 0。
+- 2026-08-25：实现提交 `git commit -m 'feat(b239): split ownership and run locks'` 成功；原始输出 `[cards/B239-charter-6 0886d1ba] feat(b239): split ownership and run locks`、`19 files changed, 1322 insertions(+), 184 deletions(-)`，退出码 0。
