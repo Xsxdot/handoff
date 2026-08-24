@@ -822,9 +822,7 @@ func TestProjectWorktreeCreateAttachesCardsAfterGit(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = led.Close() })
-	if err := led.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, led)
 	s.SetLedger(led)
 	name := registerWorktreeTestProject(t, st, initGitRepo(t))
 	cardA, err := led.CreateCard(ledger.NewCard{Title: "树卡 A", Project: "p", Workflow: "bug", Actor: "test"})
@@ -870,9 +868,7 @@ func TestProjectWorktreeCreatePartialCardFailureKeepsTree(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = led.Close() })
-	if err := led.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, led)
 	s.SetLedger(led)
 	name := registerWorktreeTestProject(t, st, initGitRepo(t))
 	first, err := led.CreateCard(ledger.NewCard{Title: "先挂卡", Project: "p", Workflow: "bug", Actor: "test"})
@@ -937,9 +933,7 @@ func TestProjectWorktreeCreateGitFailureOmitsResults(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = led.Close() })
-	if err := led.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, led)
 	s.SetLedger(led)
 	name := registerWorktreeTestProject(t, st, initGitRepo(t))
 	card, err := led.CreateCard(ledger.NewCard{Title: "Git 失败卡", Project: "p", Workflow: "bug", Actor: "test"})

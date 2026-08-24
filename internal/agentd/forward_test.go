@@ -239,9 +239,7 @@ func TestForwardWorktreeStripsCardIDsAndAttachesLocally(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = led.Close() })
-	if err := led.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, led)
 	local.srv.SetLedger(led)
 	card, err := led.CreateCard(ledger.NewCard{Title: "跨机挂卡", Project: "p", Workflow: "bug", Actor: "test"})
 	if err != nil {
@@ -306,9 +304,7 @@ func TestForwardWorktreeErrorAndCancel(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = led.Close() })
-		if err := led.EnsureDefaultWorkflows(); err != nil {
-			t.Fatal(err)
-		}
+		seedAgentdLedger(t, led)
 		local.srv.SetLedger(led)
 		card, err := led.CreateCard(ledger.NewCard{Title: "错误不挂卡", Project: "p", Workflow: "bug", Actor: "test"})
 		if err != nil {
@@ -343,9 +339,7 @@ func TestForwardWorktreeErrorAndCancel(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { _ = led.Close() })
-		if err := led.EnsureDefaultWorkflows(); err != nil {
-			t.Fatal(err)
-		}
+		seedAgentdLedger(t, led)
 		local.srv.SetLedger(led)
 		card, err := led.CreateCard(ledger.NewCard{Title: "取消不挂卡", Project: "p", Workflow: "bug", Actor: "test"})
 		if err != nil {

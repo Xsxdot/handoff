@@ -47,7 +47,7 @@ id 形如 B153、C1（顶层）或 C1.1（点号子卡，父卡须已存在）�
 func init() {
 	cardImportCmd.Flags().StringVar(&cardImportProject, "project", "", "项目名（必填）")
 	cardImportCmd.Flags().StringVar(&cardImportPriority, "priority", "中", "高|中|低")
-	cardImportCmd.Flags().StringVar(&cardImportWorkflow, "workflow", "", "工作流名（空=triage）")
+	cardImportCmd.Flags().StringVar(&cardImportWorkflow, "workflow", "", "工作流名（空=账本唯一流自动解析）")
 	cardImportCmd.Flags().StringVar(&cardImportSource, "source", "", "导入来源标注（落 card_created 事件；空=手工导入）")
 	cardImportCmd.Flags().StringVar(&cardImportBase, "base-branch", "", "基线分支（空=继承/主线）")
 	_ = cardImportCmd.MarkFlagRequired("project")

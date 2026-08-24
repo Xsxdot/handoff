@@ -16,8 +16,7 @@ func nodeLedger(t *testing.T) (*ledger.Store, ledger.Card) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	_ = s.EnsureDefaultWorkflows()
-	_ = s.EnsureDefaultTemplates()
+	seedLedgerStepStore(t, s)
 	c, _ := s.CreateCard(ledger.NewCard{Title: "被审卡", Project: "p", Workflow: "bug", Actor: "t"})
 	return s, c
 }

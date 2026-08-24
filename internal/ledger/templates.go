@@ -9,10 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
-	"reflect"
 	"time"
-
-	"github.com/Xsxdot/handoff/internal/discipline"
 )
 
 // TemplateDef 派发模板定义。
@@ -220,72 +217,3 @@ const domainIntegrationPrompt = "你是「分域开发」流程的集成执行�
 	"2. 端到端测试：按拆解文档的验收判据补 e2e，全量测试跑绿。\n" +
 	"3. 契约对照：项目根有 codegraph/target.json 时，跑 handoff graph check（全量与分支视图各一次），fail 清单必须清零；若你的接线让某接缝 legacy 命中数下降，在报文里提请审核者调低对应 legacyBudget（棘轮只减不增）。\n" +
 	"边界域的真机清单不归你跑，在报文里列出留给审核者。"
-
-// EnsureDefaultTemplates 幂等 seed 出厂模板。已存在同名的不覆盖。
-func (s *Store) EnsureDefaultTemplates() error {
-	defaults := map[string]TemplateDef{
-		"feature-impl": {
-			Executor: "opencode", Purpose: "implement", BranchPrefix: "cards",
-			Discipline: discipline.NameImplement,
-			Prompt:     "实现以下工作项：{{TITLE}}（卡 {{CARD}}）。\n验收判据：{{ACCEPT}}\n完整需求见随附 plan。",
-		},
-		"review-generic": {
-			Executor: "grok", Purpose: "review", BranchPrefix: "cards",
-			// 审阅用只读纪律块：实现类纪律块写着「每个 task 完成即 commit」，
-			// 派给审阅者会让它在审阅分支上真的提交东西（2026-08-19 真机实测
-			// 出现过一次）——审阅的产出是裁决报文，不是提交
-			Discipline: discipline.NameReview,
-			Prompt: "审阅卡 {{CARD}}（{{TITLE}}）对应分支的完整 diff：spec 符合性（要求全实现、没有多做）+ 代码质量双裁决。\n" +
-				"验收判据：{{ACCEPT}}\n" + reviewVerdictContract,
-		},
-		"domain-breakdown": {
-			Executor: "codex", Purpose: "breakdown", BranchPrefix: "cards",
-			// spec-draft 角色：只出文档不写代码，岔口发工单问——拆解的产出
-			// 本来就是提案，拍板在人。
-			Discipline: discipline.NameSpecDraft,
-			Prompt:     domainBreakdownPrompt,
-		},
-		"domain-ticket0": {
-			Executor: "codex", Purpose: "ticket0", BranchPrefix: "cards",
-			Discipline: discipline.NameImplement,
-			Prompt:     domainTicket0Prompt + implVerdictContract,
-		},
-		"domain-integration": {
-			Executor: "codex", Purpose: "integration", BranchPrefix: "cards",
-			Discipline: discipline.NameImplement,
-			Prompt:     domainIntegrationPrompt + implVerdictContract,
-		},
-	}
-	// 只列出本次契约变更涉及的旧出厂 prompt。比较完整 TemplateDef 后才
-	// 升级，避免把用户自行修改过的同名模板误判成内建模板。
-	legacyPrompts := map[string]string{
-		"review-generic": "审阅卡 {{CARD}}（{{TITLE}}）对应分支的完整 diff：spec 符合性（要求全实现、没有多做）+ 代码质量双裁决。\n" +
-			"验收判据：{{ACCEPT}}\n" + legacyReviewVerdictContract,
-		"domain-ticket0":     domainTicket0Prompt + legacyImplVerdictContract,
-		"domain-integration": domainIntegrationPrompt + legacyImplVerdictContract,
-	}
-	for name, def := range defaults {
-		if current, err := s.GetTemplate(name, 0); err == nil {
-			if oldPrompt, ok := legacyPrompts[name]; ok {
-				legacyDef := def
-				legacyDef.Prompt = oldPrompt
-				if reflect.DeepEqual(current.Def, legacyDef) {
-					version, err := s.PutTemplate(name, def)
-					if err != nil {
-						return err
-					}
-					log().Info("升级默认派发模板", "name", name,
-						"from_version", current.Version, "version", version)
-				}
-			}
-			continue
-		} else if !errors.Is(err, ErrNotFound) {
-			return err
-		}
-		if _, err := s.PutTemplate(name, def); err != nil {
-			return err
-		}
-		log().Info("seed 默认派发模板", "name", name)
-	}
-	return nil
-}

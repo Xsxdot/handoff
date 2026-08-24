@@ -8,6 +8,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -149,6 +151,37 @@ func targetClient(target string) (*client.Client, func(), error) {
 	return newTargetClientNamed(target)
 }
 
+// resolveCardDispatchTemplate resolves a bare card dispatch against the ledger.
+//
+// 参数：st 已打开的账本；全局 cardDispatchTemplate 是显式 --template 值。
+// 返回：显式模板原样返回；无显式值时唯一模板自动返回，零/多模板返回可行动错误。
+// 注意：仅供不带 --step 的裸 dispatch 使用；工作流节点模板由节点定义决定。
+func resolveCardDispatchTemplate(st *ledger.Store) (string, error) {
+	if strings.TrimSpace(cardDispatchTemplate) != "" {
+		slog.Info("采用显式派发模板", "template", cardDispatchTemplate)
+		return cardDispatchTemplate, nil
+	}
+	slog.Info("解析缺省派发模板")
+	names, err := st.ListTemplateNames()
+	if err != nil {
+		slog.Warn("列派发模板失败", "cause", err)
+		return "", fmt.Errorf("解析缺省派发模板: 列模板失败: %w", err)
+	}
+	switch len(names) {
+	case 0:
+		err := fmt.Errorf("派发缺少模板：账本中没有模板，请先用 template put 建立一条模板")
+		slog.Warn("裸派发被拒：账本没有模板")
+		return "", err
+	case 1:
+		slog.Info("裸派发采用唯一模板", "template", names[0])
+		return names[0], nil
+	default:
+		err := fmt.Errorf("派发缺少模板：账本中有多条模板，请显式指定 --template（可选：%s）", strings.Join(names, "、"))
+		slog.Warn("裸派发被拒：缺省模板有歧义", "templates", names)
+		return "", err
+	}
+}
+
 var cardDispatchCmd = &cobra.Command{
 	Use:   "dispatch <id>",
 	Short: "按模板派发（派发即认领；--step 走工作流节点）",
@@ -163,6 +196,10 @@ var cardDispatchCmd = &cobra.Command{
 			return err
 		}
 		defer st.Close()
+		templateName, err := resolveCardDispatchTemplate(st)
+		if err != nil {
+			return err
+		}
 		actor := ledgerActor()
 		card, err := st.GetCard(id)
 		if err != nil {
@@ -188,7 +225,7 @@ var cardDispatchCmd = &cobra.Command{
 		}
 		dispatcher := &ledgerstep.Dispatcher{St: st, Transport: cliTransport, Actor: actor}
 		result, err := dispatcher.ViaTemplate(ctx, card, ledgerstep.TemplateDispatch{
-			Template:           cardDispatchTemplate,
+			Template:           templateName,
 			Target:             cardDispatchTarget,
 			PlanPath:           cardDispatchPlan,
 			DisciplineOverride: cardDispatchDiscipline,
@@ -208,7 +245,7 @@ var cardDispatchCmd = &cobra.Command{
 }
 
 func init() {
-	cardDispatchCmd.Flags().StringVar(&cardDispatchTemplate, "template", "feature-impl", "派发模板名")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchTemplate, "template", "", "派发模板名（缺省时账本仅有一条模板才自动采用）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTarget, "target", "", "目标机（覆盖模板）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchPlan, "plan", "", "plan 文件路径（挂派发事件）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchExtra, "extra", "", "本次派发的一次性补充说明（进 prompt 的「本次补充」小节；不落卡，不影响后续轮次）")

@@ -46,7 +46,7 @@ func TestWorkflowNodesProjectToStates(t *testing.T) {
 	s := newTestStore(t)
 	// 先 seed 模板：本用例引用了 feature-impl，而 Task 2 会给 PutWorkflow 加上
 	// 模板存在性校验。现在补这一行，等 Task 2 落地时这个用例不会回头变红。
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	// 新 def：只给 Nodes，States/Gates 应由写入侧派生出来，
@@ -83,7 +83,7 @@ func TestWorkflowNodesProjectToStates(t *testing.T) {
 
 func TestWorkflowNodeCarriesPurposeAndAcceptanceSwitch(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	_, err := s.PutWorkflow("node-fields", WorkflowDef{Nodes: []NodeDef{{
@@ -108,10 +108,10 @@ func TestWorkflowNodeCarriesPurposeAndAcceptanceSwitch(t *testing.T) {
 
 func TestDefaultWorkflowsAreNodeForm(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatalf("seed 工作流: %v", err)
 	}
 	feature, err := s.GetWorkflow("feature", 0)
@@ -157,13 +157,13 @@ func TestDefaultWorkflowsAreNodeForm(t *testing.T) {
 
 func TestEnsureDefaultWorkflowsDoesNotOverwrite(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	if _, err := s.PutWorkflow("feature", WorkflowDef{Nodes: []NodeDef{{Name: "我自己的列"}}}); err != nil {
 		t.Fatalf("写用户版本: %v", err)
 	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	got, _ := s.GetWorkflow("feature", 0)
@@ -180,7 +180,7 @@ func TestEnsureDefaultWorkflowsUpgradesLegacyDefinition(t *testing.T) {
 	if _, err := s.PutWorkflow("bug", legacy); err != nil {
 		t.Fatalf("写老 bug 流: %v", err)
 	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatalf("补版 seed: %v", err)
 	}
 
@@ -229,13 +229,13 @@ func TestEnsureDefaultWorkflowsUpgradesLegacyDefinition(t *testing.T) {
 
 func TestEnsureDefaultWorkflowsDoesNotUpgradeNodeDefinition(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	if _, err := s.PutWorkflow("feature", WorkflowDef{Nodes: []NodeDef{{Name: "用户列"}}}); err != nil {
 		t.Fatalf("写用户节点形流: %v", err)
 	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	got, err := s.GetWorkflow("feature", 0)
@@ -252,10 +252,10 @@ func TestEnsureDefaultWorkflowsLegacyUpgradeIsIdempotent(t *testing.T) {
 	if _, err := s.PutWorkflow("feature", WorkflowDef{States: []string{StatusTodo, StatusDoing}}); err != nil {
 		t.Fatalf("写老 feature 流: %v", err)
 	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatalf("首次补版 seed: %v", err)
 	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatalf("重复补版 seed: %v", err)
 	}
 	got, err := s.GetWorkflow("feature", 0)
@@ -269,7 +269,7 @@ func TestEnsureDefaultWorkflowsLegacyUpgradeIsIdempotent(t *testing.T) {
 
 func TestPutWorkflowRejectsBadNodes(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	cases := []struct {
@@ -315,7 +315,7 @@ func TestPutWorkflowRejectsBadNodes(t *testing.T) {
 
 func TestPutWorkflowAcceptsGoodNodes(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	version, err := s.PutWorkflow("good", WorkflowDef{Nodes: []NodeDef{
@@ -335,7 +335,7 @@ func TestPutWorkflowAcceptsGoodNodes(t *testing.T) {
 
 func TestEnsureDefaultWorkflows(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	wf, err := s.GetWorkflow("feature", 0) // 0 = 最新版
@@ -349,7 +349,7 @@ func TestEnsureDefaultWorkflows(t *testing.T) {
 		t.Fatalf("gate 缺失: %+v", wf.Def.Gates)
 	}
 	// 幂等：重复 seed 不产生新版本
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatalf("re-seed: %v", err)
 	}
 	if wf2, _ := s.GetWorkflow("feature", 0); wf2.Version != 1 {
@@ -429,7 +429,7 @@ func TestMigrateRejectsInFlight(t *testing.T) {
 // 从哪到哪——审计链要能解释「这张卡为什么换了流程」。
 func TestMigrateWritesMigrationEvent(t *testing.T) {
 	s := seedStore(t)
-	c, err := s.CreateCard(NewCard{Title: "迁移留痕", Project: "p", Actor: "test"}) // 空 workflow 默认 triage
+	c, err := s.CreateCard(NewCard{Title: "迁移留痕", Project: "p", Workflow: "triage", Actor: "test"})
 	if err != nil {
 		t.Fatalf("建卡: %v", err)
 	}
@@ -583,7 +583,7 @@ func TestEnsureDefaultsKeepsUserDomainWorkflow(t *testing.T) {
 	}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if err := seedTestWorkflows(t, s); err != nil {
 		t.Fatal(err)
 	}
 	wf, err := s.GetWorkflow("domain", 0)
@@ -597,7 +597,7 @@ func TestEnsureDefaultsKeepsUserDomainWorkflow(t *testing.T) {
 
 func TestWorkflowNodeProducesRoundTripAndPresence(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	want := &NodeOutput{Kind: "doc", Path: "docs/superpowers/specs/b201-breakdown.md"}
@@ -643,7 +643,7 @@ func TestWorkflowRejectsIncompleteProduces(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestStore(t)
-			if err := s.EnsureDefaultTemplates(); err != nil {
+			if err := seedTestTemplates(t, s); err != nil {
 				t.Fatalf("seed 模板: %v", err)
 			}
 			_, err := s.PutWorkflow("invalid-"+tc.name, WorkflowDef{Nodes: []NodeDef{{

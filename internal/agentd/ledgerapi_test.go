@@ -136,9 +136,7 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	if err := st.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, st)
 	env := newTestAgentdEnv(t)
 	env.srv.SetLedger(st)
 	return &ledgerEnv{testAgentdEnv: env, ledger: st}
@@ -528,12 +526,7 @@ func TestLedgerAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lst.Close() })
-	if err := lst.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
-	if err := lst.EnsureDefaultTemplates(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, lst)
 	card, err := lst.CreateCard(ledger.NewCard{Title: "api 卡", Project: "p", Workflow: "bug", Actor: "t"})
 	if err != nil {
 		t.Fatal(err)
@@ -1113,9 +1106,7 @@ func TestCardDetailCarriesDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lst.Close() })
-	if err := lst.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, lst)
 	card, err := lst.CreateCard(ledger.NewCard{Title: "有请示的卡", Project: "p", Workflow: "bug", Actor: "t"})
 	if err != nil {
 		t.Fatal(err)

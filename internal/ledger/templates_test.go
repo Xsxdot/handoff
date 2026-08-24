@@ -9,7 +9,7 @@ import (
 
 func TestTemplateVersioningAndDefaults(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 	tp, err := s.GetTemplate("feature-impl", 0)
@@ -32,7 +32,7 @@ func TestTemplateVersioningAndDefaults(t *testing.T) {
 	if strings.Contains(rv.Def.Prompt, "裁决块原文") {
 		t.Fatalf("审阅模板仍要求把裁决块塞进 summary: %q", rv.Def.Prompt)
 	}
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatal(err)
 	}
 	if tp2, _ := s.GetTemplate("feature-impl", 0); tp2.Version != 1 {
@@ -84,7 +84,7 @@ func TestVerdictTemplateContractUpgradeCreatesNewVersion(t *testing.T) {
 			t.Fatalf("写入 %s v1: version=%d err=%v", name, version, err)
 		}
 	}
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("升级默认模板: %v", err)
 	}
 	for name := range legacy {
@@ -103,7 +103,7 @@ func TestVerdictTemplateContractUpgradeCreatesNewVersion(t *testing.T) {
 			t.Fatalf("%s v1 不应被改写: %+v err=%v", name, old.Def, err)
 		}
 	}
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("重复 seed: %v", err)
 	}
 	for name := range legacy {
@@ -179,8 +179,8 @@ func TestGetTemplateNewFieldWins(t *testing.T) {
 // TestDefaultTemplatesUseNames 出厂模板用名字，不再指路径。
 func TestDefaultTemplatesUseNames(t *testing.T) {
 	st := newTestStore(t)
-	if err := st.EnsureDefaultTemplates(); err != nil {
-		t.Fatalf("EnsureDefaultTemplates: %v", err)
+	if err := seedTestTemplates(t, st); err != nil {
+		t.Fatalf("写测试模板: %v", err)
 	}
 	for name, want := range map[string]string{
 		"feature-impl":   discipline.NameImplement,
@@ -204,7 +204,7 @@ func TestDefaultTemplatesUseNames(t *testing.T) {
 // prompt 里写了不受支持的 {{X}} 不会报错，会原样送到执行者面前。
 func TestDefaultDomainTemplates(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatal(err)
 	}
 	cases := map[string]struct{ discipline, purpose string }{
