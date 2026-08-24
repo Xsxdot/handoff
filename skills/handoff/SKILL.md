@@ -367,9 +367,9 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 
 | 谁 | 推什么 |
 |---|---|
-| **代码自动** | 派发即认领（待办→进行中，CAS）；一切失败出口打「等人」标记；合并环节成功后推「待合并」 |
-| **你（主会话）** | 中间的推进：task 完成→待审阅、裁决 pass→下一态、集成分支合完→已完成 |
-| **人** | 答裁决、批工单、合 main、主线卡推「已完成」 |
+| **代码自动** | `--step` 认领卡的驱动权（只写 `driver_session`，**不改状态**）；裁决 pass 自动进下一列、fail 退回上一节点再来一轮；声明了 `produces` 的节点在 pass 时自动挂附件再路由；一切失败出口打「等人」标记 |
+| **你（主会话）** | 逐节点点火 `card dispatch --step`（**连点就是跳过协调者检查点**）；人工列（spec / acceptance / finish）做完后自己 `card move`；定级跳边 |
+| **人** | 答裁决、批工单、合 main、推「已完成」 |
 
 一期你就是那台发动机。三期规则引擎接手「按按钮」的活，调的是同一个环节执行体。
 
@@ -389,22 +389,32 @@ handoff card show <id>             # 在飞的卡：字段 + 关系 + 挂账 tas
 ### 2. 派发前查账，防重复开工
 
 ```bash
-handoff card list --project <项目> --status 进行中
+handoff card list --project <项目>     # 落在执行列（既非「待办」也非「已完成」）的就是在飞的
 ```
 
-这条是「重复开会话把同一件事又做一遍」的正解。真撞上了也不会出事：
-`card dispatch` 的认领是 CAS，第二个会话干净失败并告诉你已被谁认领。
+这条是「重复开会话把同一件事又做一遍」的正解。**别按 `--status 进行中` 筛**——
+现役 charter 流没有这一列，那条查询稳定返回**空表**，看起来像「没人在做」
+（2026-08-24 实测；这是文档腐烂里最阴的一种，它不报错）。
+
+真撞上了通常不会出事：`--step` 派发前先认领卡的驱动权，第二个会话干净失败并报出持有者。
+但**认领失败在 `--step` 下是静默的**——见排障表最后一行。
 
 ### 3. 外层派发与等待
 
 ```bash
 handoff card dispatch <id> --step <节点名>   # 走工作流节点（节点名 = 看板列名）
-handoff card dispatch <id> [--plan <plan.md>] [--target <机器>] [--template <模板名>]
 handoff card wait <id> [--subtree] [--timeout 3h]
 ```
 
-- `card dispatch` 会自动做三件事：CAS 认领（待办→进行中）、把 task 回链到卡、
-  把模板版本与纪律块 hash 快照进派发事件。**「挂卡」不是一个你要单独做的动作。**
+- **裸 `card dispatch`（不带 `--step`）在 charter 流上必然失败，不要用**
+  （B237，2026-08-24 实测）：它的「派发即认领」把卡 CAS 到硬编码的「进行中」
+  （`internal/ledger/types.go`），而现役唯一的流没有这一列。报文是
+  `认领失败（可能被并发抢先）: 状态 "进行中" 不在工作流 charter v9 中`
+  ——**前半句是错误归因**（当时并没有并发），真因在后半句，排查时别往 CAS 冲突方向找。
+  卡驱动一律走 `--step`。
+- `--step` 会自动做三件事：**认领卡的驱动权**（只写 `driver_session`，**不改卡的状态**；
+  纯人工节点直接跳过认领）、把 task 回链到卡、把模板版本与纪律块 hash 快照进派发事件。
+  **「挂卡」不是一个你要单独做的动作。**
 - **`--step` 提交后立刻返回**（202 受理）：CLI 只把请求交给本机 agentd，编排在
   agentd 里跑完；进展看 `card wait` 或看板，**命令返回值不带回合结论**。卡号或
   节点名打错当场 404 / 400。**两条硬前提**：本机 agentd 必须活着（够不着就干净
@@ -444,7 +454,7 @@ handoff card move <id> <下一列>              # 人工列的跳转（如 accep
   人工列，合并归人（`charter:finish`）。账本里不存在「跑完自动合 main」这回事。
 
 `card move` 的每一步都拿卡钉的那版工作流当法律——状态名合不合法、gate（如
-「进『待合并』需已验收」）过不过，全按配置判。被拒了先 `handoff workflow show
+「进 `implement` 需 plan 或 breakdown 附件」）过不过，全按配置判。被拒了先 `handoff workflow show
 <name>` 看形状，别硬推。
 
 ### 5. 回合末四分法落账
@@ -483,7 +493,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | 念头 | 事实 |
 |------|------|
 | 「状态应该会自动流转吧」 | 每次转移都要 actor。一期的发动机是你，不是数据库。 |
-| 「我记得这张卡已经推到待审阅了」 | 和 task 一样：`card show` 是权威，会话记忆不是。 |
+| 「我记得这张卡已经推到 review 了」 | 和 task 一样：`card show` 是权威，会话记忆不是。 |
 | 「审阅没过，我再 continue 一轮」 | 环节自己会 continue，3 轮封顶。手工绕开封顶就是绕开防死循环的安全阀。 |
 | 「验过了，accept 一下，证据就不写了」 | 已验必须带证据，命令会直接拒。这是取证文化不是输入校验。 |
 | 「节点跑完就合进 main 了吧」 | 主线永远人工。合并发生在 finish 人工列，由你本地做。 |
@@ -563,6 +573,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「分支 …，起点 …」行就是实际起点 |
 | `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复阶梯」看走到哪一级 |
 | 任务归档后有残留（worktree / executor 进程） | 回收失败（事件里会带残留提示） | worktree 用 `handoff reclaim` 回收；进程按事件提示处置，彻底死透按 `proc.json` 的 `handle.pid` 手工 kill shim |
+| `card dispatch --step` 打印「已受理」，但卡上零事件、看板毫无动静 | **驱动权泄漏**：上一轮编排异常中断（如 agentd 重启）没走到 `defer` 的释放，持有者会话早已死亡；而认领**永不因心跳僵死而失效**（`internal/ledger/tasks.go` 明写）。`--step` 是 202 受理，失败只进 agentd.log，卡上不留任何事件 | `grep 驱动认领被拒 ~/.handoff/agentd.log` 取真因（带 holder / claimer）。**CLI 侧今天无解**：`card takeover` 把驱动认领给随即死亡的本次调用，`card release` 只对当前持有者生效、恒为 no-op 却返回 `{"ok":true}`。见 B239 |
 
 **日志在哪**（在 executor 所在机器上）：
 
