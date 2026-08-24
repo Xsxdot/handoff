@@ -2,6 +2,8 @@
 
 日期 2026-08-25 · 前置 [spec](2026-08-24-b229-discipline-layers-and-store.md)（已批准，L3 重档） · 节点 `charter:contract` · 有效基线 `claude/config-sync-workflow-arch-fd96b7`
 
+> 状态：**已冻结（2026-08-25，提交 97dcaf96）** · 拆解期仅允许头部状态元数据与 §8 修订记录追加，冻结正文不改。
+
 **冻结物**：本文档 + `codegraph/target.json` 的契约条目与预算 + Ticket 0 骨架提交（含本分支视图 diff）。
 
 每个签名都对着现状代码查证过，出处以 `文件:行` 标注（本轮工作树实读，台账逐条留痕）。
@@ -329,3 +331,14 @@ interface Task { discipline_version?: number }
 7. TS 侧 typecheck/vitest 回归（本轮未验证）。
 
 交棒：`charter:breakdown`。
+
+---
+
+## 8. 拆解期修订记录（breakdown 2026-08-25，只追加不改上文）
+
+以下四条是 breakdown 契约核对中做出的边界澄清，结论均为「不退回 contract、不需改签名」；按流程纪律留痕于此，冻结正文（§1–§7）一字未动：
+
+1. **下拉来源切换的卡片归属**：欠账 4 后半（ledgerapi.go:658 改 `ListDisciplineNames`）随执行机删除同一张子卡原子落地——`discipline.Dir/List` 一删该处即编译失败；CLI discipline 命令族独立成卡。
+2. **RawText 用户入口不在冻结物内**：本契约只冻库能力与 wire 字段；spec 用户故事 3 的 CLI 入口是否本期交付属范围决策，由 breakdown 待拍板清单裁决，不构成本契约缺口。
+3. **退役清单遗漏项**：§2.7 未列 GET/PUT `/api/discipline/file` 两端点与 `discipline.Write`（internal/agentd/discipline.go:110/:141 实读发现）。处置方案（拒服务 vs 保留读写死目录）由 breakdown 待拍板清单裁决；「保留写死目录」被否因为它是编辑成功但永不生效的静默失败通道 + 漂移载体复活口。
+4. **T2 上报前提的保障形态**：§2.4 四件事齐才报 true 由 DAG 排序与 review 核对保障，无运行时断言——已知残余风险，登记在拆解稿真机清单。
