@@ -1201,10 +1201,16 @@ func TestCardStepRejectsTrailingGarbage(t *testing.T) {
 	seedCardWithProject(t, env.srv, "handoff")
 	called := make(chan struct{}, 1)
 	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+	// 节点名必须是 bug 流里真实存在的那个：拿一个不存在的节点名，400 会来自
+	// 「节点解不开」而不是「尾随内容」，这条测试就会为错误的理由通过——变异
+	// 复核（把请求体解码换回宽松的 Decoder）正是靠这一点抓到它存活的。
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step",
-		`{"step":"review","actor":"cli:u@h#1"} {"step":"另一个"}`)
+		`{"step":"待审阅","actor":"cli:u@h#1"} {"step":"另一个"}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("尾随内容应 400，实得 %d（%s）", code, body)
+	}
+	if !strings.Contains(body, "bad json") {
+		t.Fatalf("400 应因解码失败而来（bad json），实得 %s", body)
 	}
 	select {
 	case <-called:
