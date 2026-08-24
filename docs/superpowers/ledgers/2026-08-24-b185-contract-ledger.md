@@ -147,6 +147,9 @@
 - 2026-08-24：提权最终核对 `git status --short --branch`、`git diff --check`、`git diff --stat HEAD`；exit 0，原始输出为 `## cards/B185-charter-4`、空白检查无输出、剩余差异仅 `CHANGELOG.md` 与本台账（共 70 insertions）。
 - 2026-08-24：提权再次执行 U4 提交前 `git diff --check`；exit 0，原始输出为空。
 - 2026-08-24：提权执行 `git add CHANGELOG.md docs/superpowers/ledgers/2026-08-24-b185-contract-ledger.md` 与 `git diff --cached --check`；两命令 exit 0，后者原始输出为空，U4 交付文件已暂存并通过门禁。
+- 2026-08-24：提权执行 `git commit -m "docs(b185): record step runner behavior"` 成功；原始输出为 `[cards/B185-charter-4 2e9d8f87] docs(b185): record step runner behavior`、`2 files changed, 73 insertions(+)`。
+- 2026-08-24：提权最终复核执行 `git diff --check`、`git status --short --branch`、`git log -6 --oneline --decorate`；exit 0，原始输出为 `## cards/B185-charter-4`、台账有一条待提交修改，HEAD 为 `2e9d8f87`，最近实现提交依次为 `9bc74690`、`f5320372`、`0e8709a7`、`db1ebd58`，基线合并为 `b30fcb02`。
+- 2026-08-24：最终提交前将本台账剩余事实单独落盘；随后会以提权方式暂存并提交，不改变实现文件。
 - 2026-08-24：U2 agentd step 族回归执行 `go test ./internal/agentd -run 'TestCardStep' -count=1`；exit 0，原始输出为 `ok  github.com/Xsxdot/handoff/internal/agentd 1.602s`。
 - 2026-08-24：提权执行 U2 格式门禁 `git diff --check`；exit 0，原始输出为空。
 - 2026-08-24：提权执行 `git add internal/agentd/ledgerapi.go internal/agentd/cardstep.go internal/agentd/ledgerapi_test.go internal/agentd/cardstep_test.go` 与 `git diff --cached --check`；两命令 exit 0，后者原始输出为空，U2 四文件已暂存并通过门禁。
