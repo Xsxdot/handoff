@@ -745,18 +745,156 @@ func TestCardStepSecondReturns409(t *testing.T) {
 	}
 }
 
-// TestCardStepRejectsImplement implement 不是环节——它要挂 plan 文件，
-// 浏览器里没有那个文件，只能走 CLI。
-func TestCardStepRejectsImplement(t *testing.T) {
+// TestCardStepAcceptsImplementWithoutInlineFile implement 不因节点名被拒绝；
+// 冻结请求没有调用方本地文件字段，规范 actor 请求应进入同一异步 runner。
+func TestCardStepAcceptsImplementWithoutInlineFile(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"implement"}`)
-	if code != http.StatusBadRequest {
-		t.Fatalf("应 400，实得 %d", code)
+	runnerCh := make(chan *ledgerstep.StepRunner, 1)
+	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) {
+		runnerCh <- runner
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"implement","actor":"cli:u@h#123"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("implement 应 202，实得 %d（%s）", code, body)
+	}
+	select {
+	case runner := <-runnerCh:
+		if runner.Session != "cli:u@h#123" || runner.Dispatcher.Actor != "cli:u@h#123" {
+			t.Fatalf("actor 未落到 runner 双位置：session=%q dispatcher=%q", runner.Session, runner.Dispatcher.Actor)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("implement 202 后未启动 runner")
+	}
+}
+
+// TestCardStepLegacyActorFallback preserves the old dashboard body while making its actor explicit internally.
+func TestCardStepLegacyActorFallback(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "handoff")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerCh := make(chan *ledgerstep.StepRunner, 1)
+	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) {
+		runnerCh <- runner
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("legacy 请求应 202，实得 %d（%s）", code, body)
+	}
+	select {
+	case runner := <-runnerCh:
+		want := "web:" + strings.TrimPrefix(env.ts.URL, "http://")
+		if runner.Session != want || runner.Dispatcher.Actor != want {
+			t.Fatalf("legacy actor = session %q dispatcher %q, want %q", runner.Session, runner.Dispatcher.Actor, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("legacy 202 后未启动 runner")
+	}
+}
+
+// TestCardStepRejectsEmptyActor rejects an explicit empty actor instead of using the legacy fallback.
+func TestCardStepRejectsEmptyActor(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "handoff")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	called := make(chan struct{}, 1)
+	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"review","actor":""}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "actor") {
+		t.Fatalf("显式空 actor 应 400，实得 %d（%s）", code, body)
+	}
+	select {
+	case <-called:
+		t.Fatal("显式空 actor 不应启动 runner")
+	default:
+	}
+}
+
+// TestCardStepRejectsEmptyStep rejects both an absent step and an explicit empty step.
+func TestCardStepRejectsEmptyStep(t *testing.T) {
+	for _, body := range []string{`{"actor":"cli:u@h#1"}`, `{"step":"","actor":"cli:u@h#1"}`} {
+		t.Run(body, func(t *testing.T) {
+			env := newLedgerEnv(t)
+			seedCardWithProject(t, env.srv, "handoff")
+			card, err := env.ledger.GetCard("B1")
+			if err != nil {
+				t.Fatal(err)
+			}
+			called := make(chan struct{}, 1)
+			env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+			code, response := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", body)
+			if code != http.StatusBadRequest || !strings.Contains(response, "step") {
+				t.Fatalf("空 step 应 400，实得 %d（%s）", code, response)
+			}
+			select {
+			case <-called:
+				t.Fatal("空 step 不应启动 runner")
+			default:
+			}
+		})
+	}
+}
+
+// TestCardStepIgnoresUnknownFields locks the deliberately loose JSON decoding contract.
+func TestCardStepIgnoresUnknownFields(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "handoff")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerCh := make(chan *ledgerstep.StepRunner, 1)
+	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) { runnerCh <- runner }
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step",
+		`{"step":"review","actor":"cli:u@h#1","future_optional":"x","plan_path":"local.md"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("未知字段不应拒绝，实得 %d（%s）", code, body)
+	}
+	select {
+	case runner := <-runnerCh:
+		if runner.Session != "cli:u@h#1" || runner.Dispatcher.Actor != "cli:u@h#1" {
+			t.Fatalf("未知字段请求 actor 丢失：%+v", runner)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("未知字段请求未启动 runner")
+	}
+}
+
+// TestCardStepPropagatesRequestFields verifies one request populates the same runner's fields and both actor locations.
+func TestCardStepPropagatesRequestFields(t *testing.T) {
+	env := newLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "handoff")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	runnerCh := make(chan *ledgerstep.StepRunner, 1)
+	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) { runnerCh <- runner }
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step",
+		`{"step":"review","target":"linux-01","executor":"grok","model":"grok-model","extra":"本轮只修 F1","actor":"cli:u@h#1"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("规范请求应 202，实得 %d（%s）", code, body)
+	}
+	select {
+	case runner := <-runnerCh:
+		if runner.Target != "linux-01" || runner.Executor != "grok" || runner.Model != "grok-model" || runner.Extra != "本轮只修 F1" {
+			t.Fatalf("请求覆盖未落到 runner：target=%q executor=%q model=%q extra=%q", runner.Target, runner.Executor, runner.Model, runner.Extra)
+		}
+		if runner.Session != "cli:u@h#1" || runner.Dispatcher.Actor != "cli:u@h#1" {
+			t.Fatalf("actor 未落到 runner 双位置：session=%q dispatcher=%q", runner.Session, runner.Dispatcher.Actor)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("规范请求未启动 runner")
 	}
 }
 

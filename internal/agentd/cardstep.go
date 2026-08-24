@@ -17,40 +17,48 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // errStepInFlight 表示该卡已有环节在跑，调用方应答 409。
 var errStepInFlight = errors.New("该卡已有环节在运行")
 
-// startCardStep 起一个卡环节。
+// startCardStep 装配并异步启动一个卡节点。
 //
-// 参数：cardID 卡；node 节点名（= 看板列名）；actor 发起人（web:<addr>）。
-// 返回：前置校验失败时返回错误（调用方翻成 400/404/409）；校验通过后
-// 立刻返回 nil，环节在后台 goroutine 里跑。
+// 参数：cardID 是卡号；req 是已完成 actor 归一和字段校验的规范请求。
+// 返回：同卡已有在飞节点时返回 errStepInFlight；其它前置校验错误原样返回；成功
+// 只表示 goroutine 已启动，不表示节点完成。后台结束时必须释放既有卡槽位。
 //
 // 为什么必须异步：审阅环节会阻塞到被派出去的 task 跑到回合终态——几分钟到
 // 几十分钟，executor 挂在 waiting_answer 时更久。HTTP 请求扛不住这个时长，
 // 界面靠已有的卡事件流看进展。
 //
 // 注意：返回 nil 不代表环节成功，只代表它启动了。成败落在卡的事件流上。
-func (s *Server) startCardStep(cardID, node, actor string) error {
+func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 	if !s.claimCardStep(cardID) {
-		return fmt.Errorf("%w: %s 的 %s 节点正在运行", errStepInFlight, cardID, node)
+		return fmt.Errorf("%w: %s 的 %s 节点正在运行", errStepInFlight, cardID, req.Step)
 	}
 	runner := &ledgerstep.StepRunner{
-		St: s.ledger, Session: actor,
+		St: s.ledger, Session: req.Actor,
 		Dispatcher: &ledgerstep.Dispatcher{
-			St: s.ledger, Transport: s.stepTransport, Actor: actor,
+			St: s.ledger, Transport: s.stepTransport, Actor: req.Actor,
 		},
-		Clients: s.pool.For,
+		Clients:  s.pool.For,
+		Target:   req.Target,
+		Executor: req.Executor,
+		Model:    req.Model,
+		Extra:    req.Extra,
 	}
-	s.log.Info("节点已受理", "card", cardID, "node", node, "actor", actor)
+	s.log.Info("卡节点装配完成", "card", cardID, "node", req.Step,
+		"actor", req.Actor, "target", req.Target, "executor", req.Executor,
+		"model", req.Model, "has_extra", strings.TrimSpace(req.Extra) != "")
 	go func() {
 		defer s.releaseCardStep(cardID)
-		s.runStepFn(context.Background(), runner, cardID, node)
+		s.runStepFn(context.Background(), runner, cardID, req.Step)
 	}()
 	return nil
 }
@@ -94,8 +102,11 @@ func (s *Server) cardStepInFlight(cardID string) bool {
 func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {
 	// 走 target 客户端池而不是自己 client.New：relay 形态的机器没有 addr，
 	// 直连构造对它们恒失败（见 internal/targetclient 与 nodirectclient_test）。
+	s.log.Info("agentd 节点派发请求", "target", opts.Target, "executor", opts.Executor,
+		"model", opts.Model, "prompt_bytes", len(opts.Prompt))
 	cl, err := s.pool.For(opts.Target)
 	if err != nil {
+		s.log.Warn("取得节点派发客户端失败", "target", opts.Target, "cause", err)
 		return "", err
 	}
 	task, err := cl.Dispatch(ctx, client.DispatchOpts{
@@ -109,7 +120,20 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		NewWorktree:        opts.NewWorktree,
 	})
 	if err != nil {
+		s.log.Warn("agentd 节点派发失败", "target", opts.Target, "executor", opts.Executor,
+			"model", opts.Model, "cause", err)
 		return "", err
 	}
+	s.log.Info("agentd 节点派发已受理", "target", opts.Target, "task", task.ID)
 	return task.ID, nil
+}
+
+// requiresInlineLocalFile 判断一次 step 请求是否要求把调用方 CWD 的本地文件
+// 内联发送给 agentd。
+//
+// 今天恒为 false 是有意的：CardStepReq 没有 PlanPath 或本地文件字段，StepRunner
+// 也没有 PlanPath；PlanPath 只由不带 --step 的 CLI TemplateDispatch 在调用方 CWD 读取。
+// 如果未来增加本地文件字段，必须先改冻结契约并把拒绝测试落在同一条 wire 上。
+func requiresInlineLocalFile(req proto.CardStepReq) bool {
+	return false
 }

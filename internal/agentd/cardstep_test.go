@@ -8,6 +8,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func newStepTestServer(t *testing.T) *Server {
@@ -61,7 +62,7 @@ func TestStartCardStepRejectsSecondInFlight(t *testing.T) {
 	s := newStepTestServer(t)
 	release := holdCardStep(t, s, "B1")
 	defer release()
-	if err := s.startCardStep("B1", "review", "web:test"); !errors.Is(err, errStepInFlight) {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); !errors.Is(err, errStepInFlight) {
 		t.Fatalf("第二个环节应被拒，实得 %v", err)
 	}
 }
@@ -79,12 +80,25 @@ func TestStartCardStepReleasesSlotOnFinish(t *testing.T) {
 			close(done)
 		}
 	}
-	if err := s.startCardStep("B1", "review", "web:test"); err != nil {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
 		t.Fatalf("首次应放行: %v", err)
 	}
 	<-done
 	waitFor(t, func() bool { return !cardStepInFlight(s, "B1") })
-	if err := s.startCardStep("B1", "review", "web:test"); err != nil {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
 		t.Fatalf("跑完之后应能再发起: %v", err)
+	}
+}
+
+// TestRequiresInlineLocalFile keeps the guard tied to request capabilities rather than node names.
+func TestRequiresInlineLocalFile(t *testing.T) {
+	for _, req := range []proto.CardStepReq{
+		{Step: "implement"},
+		{Step: "review", Target: "linux-01", Executor: "codex", Model: "gpt-5", Extra: "x", Actor: "cli:u@h#1"},
+		{Step: "review", Target: "", Executor: "", Model: "", Extra: "", Actor: ""},
+	} {
+		if requiresInlineLocalFile(req) {
+			t.Fatalf("requiresInlineLocalFile(%+v) = true, want false", req)
+		}
 	}
 }

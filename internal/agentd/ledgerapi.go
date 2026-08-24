@@ -387,43 +387,70 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
-// handleCardStep 发起一个卡节点，受理即 202。
+// handleCardStep 受理一个卡节点，受理即 202；202 不代表回合已完成。
 //
-// 为什么是 202 而不是 200：环节要跑几分钟到几十分钟，200 会让前端以为
-// 它已经做完了。202 的语义正是「收到了，正在做」，界面据此把按钮置灰并
-// 提示「进展见下方 Timeline」。
-//
-// 为什么不支持 implement：实现派发通常要挂 plan 文件，浏览器里没有那个文件。
-// 它留在 CLI；其余节点名透传给卡钉工作流，由 StepRunner 做合法性判断。
+// 规范 CLI 请求必须带非空 actor；旧看板只发送 {"step":...}，仅在原始 JSON
+// 缺少 actor 键时补 web:<r.RemoteAddr>。显式 actor:"" 不能借 fallback 进入驱动锁。
+// JSON 使用宽松解码：未知字段忽略，避免版本错配把新可选字段变成 400。
 func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Step string `json:"step"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	id := r.PathValue("id")
+	var raw map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&raw); err != nil {
+		s.log.Warn("卡节点请求解码失败", "card", id, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
 		return
 	}
-	id := r.PathValue("id")
-	if req.Step == discipline.NameImplement {
+	payload, err := json.Marshal(raw)
+	if err != nil {
+		s.log.Warn("卡节点请求重新编码失败", "card", id, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	var req proto.CardStepReq
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.log.Warn("卡节点请求字段解码失败", "card", id, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	if _, ok := raw["actor"]; !ok {
+		req.Actor = "web:" + r.RemoteAddr
+		s.log.Info("legacy 卡节点请求补 actor", "card", id, "node", req.Step,
+			"actor", req.Actor, "remote_addr", r.RemoteAddr)
+	}
+	if req.Step == "" {
+		s.log.Warn("卡节点请求被拒：step 为空", "card", id)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "step 不能为空"})
+		return
+	}
+	if req.Actor == "" {
+		s.log.Warn("卡节点请求被拒：actor 为空", "card", id, "node", req.Step)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "actor 不能为空"})
+		return
+	}
+	if requiresInlineLocalFile(req) {
+		s.log.Warn("卡节点请求被拒：要求内联本地文件", "card", id, "node", req.Step,
+			"actor", req.Actor)
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "implement 节点只能通过 CLI 派发（浏览器没有 plan 文件）",
+			"error": "card step 不接受调用方本地文件",
 		})
 		return
 	}
-	actor := "web:" + r.RemoteAddr
-	err := s.startCardStep(id, req.Step, actor)
+	s.log.Info("开始装配卡节点", "card", id, "node", req.Step, "actor", req.Actor,
+		"target", req.Target, "executor", req.Executor, "model", req.Model,
+		"has_extra", strings.TrimSpace(req.Extra) != "")
+	err = s.startCardStep(id, req)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 	case errors.Is(err, errStepInFlight):
-		s.log.Warn("节点被拒：已有在飞", "card", id, "node", req.Step, "cause", err)
+		s.log.Warn("节点被拒：已有在飞", "card", id, "node", req.Step,
+			"actor", req.Actor, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ledger.ErrNotFound):
+		s.log.Warn("卡节点所属卡不存在", "card", id, "node", req.Step, "cause", err)
 		ledgerErr(w, err)
 	default:
-		// 其余都是前置校验失败（节点名不在卡钉工作流、卡不存在）：这些是调用方能改的，
-		// 400 比 500 更准确，且错误原文里已经写了该怎么办
-		s.log.Warn("节点被拒", "card", id, "node", req.Step, "cause", err)
+		s.log.Warn("节点被拒", "card", id, "node", req.Step, "actor", req.Actor, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 }
