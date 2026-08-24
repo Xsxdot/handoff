@@ -1963,9 +1963,11 @@ func (r *StepRunner) haltEntrypoint(cardID, nodeName, reason, body string) (Outc
 }
 ```
 
+**D2 修订 1（2026-08-25，review#1 finding，落地提交 `901290d8`）**：写闸范围由契约 §2.3 步骤 5 的「移列、落裁决、挂附件、打撤等人标记」四类业务写，扩展为同时覆盖派发路径的 `LinkTask` 与 `RecordDispatch`；断言落点为 `card_tasks` 行数与 `EvDispatched` 事件。
+
 **D2 边界申报（代审发现的两处契约字面差异，均不越冻结面）**：
 ① Session 兜底沿用现状形状（`Session=="" && Dispatcher!=nil` 时取 `Dispatcher.Actor`）——契约 §2.3 引用的正是这段现状代码（runner.go:86-96）；断言 25 以两者皆空触发拒绝路径，兜底分支本身不被新断言钉死。
-② `Dispatcher.ViaTemplate` 内部的挂账评论（LinkTask→EvComment）与派发快照（RecordDispatch→EvDispatched）**不加闸**：契约 §2.3 步骤 5 的禁写清单是「移列、落裁决、挂附件、打撤等人标记」四族，挂账/快照不在其内；且生产时序上首次闸判定发生在派发受理之后。因此断言 31 的「恰一条说明 comment」按 body 标记（「本轮运行锁已被接手」）计数而非 EvComment 总数。
+② `Dispatcher.ViaTemplate` 内部的挂账评论（`LinkTask`→`EvComment`）与派发快照（`RecordDispatch`→`EvDispatched`）现在同样受写闸保护；失权后的 `card_tasks` 行数与 `EvDispatched` 事件数均不得新增。断言 31 的「恰一条说明 comment」仍按 body 标记（「本轮运行锁已被接手」）计数，而非按 `EvComment` 总数计数。
 
 （import 变更：runner.go 补 `"sync"`；`"time"` 已有。）
 
