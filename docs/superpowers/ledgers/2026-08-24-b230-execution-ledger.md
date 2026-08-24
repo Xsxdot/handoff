@@ -54,3 +54,7 @@
 - 2026-08-24: Task 2 收尾 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 当前分支 `cards/B230-charter-3`，待提交文件为台账、`internal/ledger/templates.go`、`templates_test.go`、`test_fixtures_test.go`；diff 统计 `4 files changed, 19 insertions(+), 195 deletions(-)`。
 - 2026-08-24: Task 2 暂存 `git add internal/ledger/templates.go internal/ledger/templates_test.go internal/ledger/test_fixtures_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
 - 2026-08-24: Task 2 暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 2 提交 `git commit -m "test: remove retired template prompts"` -> `[cards/B230-charter-3 7bfb6c5d] test: remove retired template prompts`、`4 files changed, 22 insertions(+), 195 deletions(-)`，退出码 0。
+- 2026-08-24: Task 3 新增 `internal/ledger/seed_teardown_test.go`，并执行 `gofmt -w internal/ledger/seed_teardown_test.go` 与 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/ -run TestOpenInstallsNoSeeds -v` -> `--- PASS: TestOpenInstallsNoSeeds (0.06s)`、`ok github.com/Xsxdot/handoff/internal/ledger 0.064s`，退出码 0。
+- 2026-08-24: Task 3 变异前暂存 `git add internal/ledger/seed_teardown_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 变异前暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
