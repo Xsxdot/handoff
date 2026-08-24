@@ -27,3 +27,5 @@
 - 2026-08-24：执行 `git status --short --branch && git diff --check && git diff --stat`；当前分支仍为 `cards/B230-charter-4`，仅 F1–F4 目标文件与本轮台账有改动，diff check 无输出。
 - 2026-08-24：普通沙箱执行 `git add docs/ledger-b230.md internal/ledger/test_fixtures_test.go internal/ledger/workflows_test.go internal/ledgerstep/dispatch_test.go skills/handoff/SKILL.md web/src/app/cards/NewCardDialog.tsx web/src/app/cards/NewCardDialog.test.tsx` 失败；原始报错为 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/7985d142/index.lock': Read-only file system`，尚未暂存。
 - 2026-08-24：提升权限重跑暂存、`git diff --cached --check` 与统计；原始输出为 7 个预期文件已暂存，统计 `86 insertions(+), 329 deletions(-)`，cached diff check 无输出。
+- 2026-08-24：执行 `git add docs/ledger-b230.md && git diff --cached --check && git commit -m "fix(b230): address review findings"`；原始输出为 `[cards/B230-charter-4 a7969776] fix(b230): address review findings`，7 个文件提交，`87 insertions(+), 329 deletions(-)`。
+- 2026-08-24：提交后执行 `git status --short --branch && git log -1 --oneline --decorate`；原始输出为 `## cards/B230-charter-4` 与 `a7969776 (HEAD -> cards/B230-charter-4) fix(b230): address review findings`。
