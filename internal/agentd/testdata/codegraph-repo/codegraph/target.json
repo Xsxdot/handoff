@@ -1,11 +1,4 @@
 {
-  "meta": { "version": 1, "project": "fixture" },
-  "domains": [
-    { "id": "d_svc", "name": "服务", "type": "logic", "paths": ["svc/**"] },
-    { "id": "d_cmd", "name": "入口", "type": "logic", "paths": ["cmd/**"] }
-  ],
-  "assembly": ["cmd/run.go"],
-  "contracts": [
-    { "from": "d_cmd", "to": "d_svc", "entries": ["svc.Server"], "legacyBudget": 0 }
-  ]
+  "meta": { "version": 3, "project": "fixture" },
+  "assembly": ["cmd/run.go"]
 }
