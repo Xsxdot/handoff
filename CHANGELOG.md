@@ -10,6 +10,11 @@
 
 ## [Unreleased]
 
+### 变更
+
+- `card dispatch --step` 现在把环节请求提交给本机 agentd，收到 HTTP 202 后立即返回；本机 agentd 不可用时命令失败，不再在 CLI 进程内回落本地编排。
+- `card dispatch --step` 的 stdout 不再打印回合 `Outcome`，改为输出卡号、节点名和 `handoff card wait <卡>` 进展入口。
+
 _（下一版的改动记在这里。）_
 
 ## [v0.3.9] - 2026-08-21
