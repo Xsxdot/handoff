@@ -206,6 +206,7 @@
       "to": "d_ledger",
       "entries": [
         "ledger.Store",
+        "ledgerstep.ResolveNode",
         "ledgerstep.StepRunner",
         "store.Store"
       ],
