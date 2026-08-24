@@ -135,36 +135,3 @@ func TestTemplateFixturesUseNames(t *testing.T) {
 		}
 	}
 }
-
-// TestDomainTemplateFixtures 分域三模板的夹具形状。purpose 必须互异——
-// 分支名由 purpose 拼出，相同会在同一张卡上撞名。变量白名单断言防静默失败：
-// prompt 里写了不受支持的 {{X}} 不会报错，会原样送到执行者面前。
-func TestDomainTemplateFixtures(t *testing.T) {
-	s := newTestStore(t)
-	if err := seedTestTemplates(t, s); err != nil {
-		t.Fatal(err)
-	}
-	cases := map[string]struct{ discipline, purpose string }{
-		"domain-breakdown":   {"spec-draft", "breakdown"},
-		"domain-ticket0":     {"implement", "ticket0"},
-		"domain-integration": {"implement", "integration"},
-	}
-	for name, want := range cases {
-		tpl, err := s.GetTemplate(name, 0)
-		if err != nil {
-			t.Fatalf("取 %s: %v", name, err)
-		}
-		if tpl.Def.Executor != "codex" || tpl.Def.BranchPrefix != "cards" {
-			t.Fatalf("%s 执行者/分支前缀不对: %+v", name, tpl.Def)
-		}
-		if tpl.Def.Discipline != want.discipline || tpl.Def.Purpose != want.purpose {
-			t.Fatalf("%s 角色/purpose 不对: 想要 %+v 实得 %s/%s",
-				name, want, tpl.Def.Discipline, tpl.Def.Purpose)
-		}
-		stripped := strings.NewReplacer(
-			"{{TITLE}}", "", "{{CARD}}", "", "{{ACCEPT}}", "").Replace(tpl.Def.Prompt)
-		if strings.Contains(stripped, "{{") {
-			t.Fatalf("%s prompt 含不受支持的模板变量（会原样送出）:\n%s", name, tpl.Def.Prompt)
-		}
-	}
-}

@@ -162,7 +162,8 @@ type FlowDetail struct {
 	States  []string  `json:"states"`
 }
 
-// NewCardReq 是建卡请求。workflow 缺席或为空表示尚未定性，由账本解析为 triage。
+// NewCardReq 是建卡请求。workflow 缺席或为空时，由账本按流数量解析：零条报错指路、
+// 唯一条自动采用、多条要求显式指定并列出可选流名。
 type NewCardReq struct {
 	Title      string `json:"title"`
 	Project    string `json:"project"`

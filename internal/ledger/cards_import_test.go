@@ -21,7 +21,7 @@ func TestImportCardExplicitID(t *testing.T) {
 	if card.ID != "B42" {
 		t.Fatalf("应保原号 B42，得 %s", card.ID)
 	}
-	// 与普通卡零行为差别：工作流缺省 triage、钉最新版本、初始态 = 首态
+	// 与普通卡零行为差别：显式指定 triage 工作流、钉最新版本、初始态 = 首态
 	if card.WorkflowName != "triage" || card.WorkflowVersion != 1 || card.Status != StatusTodo {
 		t.Fatalf("导入卡与普通卡不一致: %+v", card)
 	}
