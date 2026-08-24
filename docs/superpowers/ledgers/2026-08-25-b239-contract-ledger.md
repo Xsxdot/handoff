@@ -166,3 +166,39 @@
 - 2026-08-25：在获准的提权上下文重试 `git add --all` 成功；原始输出为空，退出码 0，随后因本条台账追加需再次暂存。
 - 2026-08-25：暂存核对 `git status --short && git diff --cached --check && git diff --check` 通过；原始输出显示本卡 18 项改动均已暂存，两个 diff check 均为空且退出码 0。
 - 2026-08-25：实现提交 `git commit -m 'feat(b239): split ownership and run locks'` 成功；原始输出 `[cards/B239-charter-6 0886d1ba] feat(b239): split ownership and run locks`、`19 files changed, 1322 insertions(+), 184 deletions(-)`，退出码 0。
+- 2026-08-25：定点修复轮工作树事实：当前分支 `cards/B239-charter-7`，HEAD=`af37dfe0`（`chore(b239): record verification ledger`），`git status --short` 无输出；未切换分支。
+- 2026-08-25：复读 `internal/ledgerstep/dispatch.go` 确认 `LinkTask` 位于 :266、`RecordDispatch` 位于 :269，均在 `Transport` 成功后且当前没有运行锁写闸。
+- 2026-08-25：复读既有 D2 结构确认 `StepRunner.WriteGate` 由 `runner.go:201-203` 注入，节点路径已有写闸；现有断言 `TestRunnerStopsCardWritesAfterLosingWriteGate` 位于 `runner_test.go:468`，当前检索未发现其覆盖 `card_tasks` 行或 `dispatched` 事件。
+- 2026-08-25：先加数据库可观测断言后运行 `go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1`；按 TDD 预期失败，原始报错：`runner_test.go:543: 失去写权后不得新增 card_tasks 行: before=0 after=1`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1；日志同时显示失权后仍有 `模板派发完成`，确认测试命中 LinkTask/RecordDispatch 后的现行缺口。
+- 2026-08-25：最小实现完成并运行 `gofmt -w internal/ledgerstep/dispatch.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go && go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1`；原始测试输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.096s`，退出码 0；写闸测试同时覆盖失权后的 `card_tasks` 行数与 `dispatched` 事件数未增加。
+- 2026-08-25：`git diff --check` 在定点修复代码与测试、台账修改后通过；原始输出为空，退出码 0。
+- 2026-08-25：触及包测试 `go test ./internal/ledgerstep/` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 4.549s`，退出码 0。
+- 2026-08-25：变异前唯一命中核对 `rg -n -U 'if req\\.WriteGate != nil && !req\\.WriteGate\\(\\) \\{\\n\\s*err := fmt\\.Errorf\\("挂账被拒' internal/ledgerstep/dispatch.go`；原始输出唯一命中 :269-270，确认首个挂账闸锚点唯一。
+- 2026-08-25：变异①取反首个挂账闸后运行 `go build ./...`；原始输出为空，退出码 0，确认变异可编译。
+- 2026-08-25：变异①行为先验 `go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1` 按预期失败；原始报错：`runner_test.go:543: 失去写权后不得新增 card_tasks 行: before=0 after=1`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1；确认测试真的拦住首个派发写闸失效。
+- 2026-08-25：变异②前唯一命中核对 `rg -n -U 'if req\\.WriteGate != nil && !req\\.WriteGate\\(\\) \\{\\n\\s*err := fmt\\.Errorf\\("快照落账被拒' internal/ledgerstep/dispatch.go`；原始输出唯一命中 :277-278，确认第二个快照闸锚点唯一。
+- 2026-08-25：变异②取反第二个快照闸后运行 `go build ./...`；原始输出为空，退出码 0，确认变异可编译。
+- 2026-08-25：变异②取反第二个快照闸后运行既有 `go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1`；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.093s`，退出码 0；确认既有失权前置测试未覆盖“挂账后、快照前”窗口，需补独立数据库断言。
+- 2026-08-25：在变异②仍生效时补加 `TestViaTemplateStopsSnapshotAfterWriteGateCloses`，运行 `gofmt -w internal/ledgerstep/dispatch_test.go && go test ./internal/ledgerstep/ -run '^TestViaTemplateStopsSnapshotAfterWriteGateCloses$' -count=1`；原始报错：`dispatch_test.go:184: 快照写前失权应被拒: <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1；新断言确认第二处快照闸有牙。
+- 2026-08-25：还原变异②后运行 `go test ./internal/ledgerstep/ -run '^(TestRunnerStopsCardWritesAfterLosingWriteGate|TestViaTemplateStopsSnapshotAfterWriteGateCloses)$' -count=1`；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.186s`，退出码 0。
+- 2026-08-25：变异①复核再次取反挂账闸后运行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：变异①复核行为先验 `go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1` 失败；原始报错：`runner_test.go:543: 失去写权后不得新增 card_tasks 行: before=0 after=1`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1。
+- 2026-08-25：变异①受影响包全量 `go test ./internal/ledgerstep/` 失败；原始输出尾部：`--- FAIL: TestRunnerStopsCardWritesAfterLosingWriteGate`、`runner_test.go:543: 失去写权后不得新增 card_tasks 行: before=0 after=1`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep 4.718s`，退出码 1（工具输出标记 truncated）。
+- 2026-08-25：变异①受影响包失败数 `go test ./internal/ledgerstep/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `2`，退出码 0（管道末端为 rg）；两条新增/既有失权断言均参与拦截。
+- 2026-08-25：变异②复核再次取反快照闸后运行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：变异②复核行为先验 `go test ./internal/ledgerstep/ -run '^TestViaTemplateStopsSnapshotAfterWriteGateCloses$' -count=1` 失败；原始报错：`dispatch_test.go:184: 快照写前失权应被拒: <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1。
+- 2026-08-25：变异②受影响包全量 `go test ./internal/ledgerstep/` 失败；原始输出尾部：`FAIL github.com/Xsxdot/handoff/internal/ledgerstep 4.599s`，退出码 1（工具输出标记 truncated）。
+- 2026-08-25：变异②受影响包失败数 `go test ./internal/ledgerstep/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0（管道末端为 rg）；新测试唯一拦截第二处快照闸变异。
+- 2026-08-25：还原全部变异、格式化四个触及 Go 文件并运行 `gofmt -w internal/ledgerstep/dispatch.go internal/ledgerstep/runner.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner_test.go && go test ./internal/ledgerstep/`；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 5.477s`，退出码 0。
+- 2026-08-25：最终验收台账追加首次尝试失败；原始工具报错 `apply_patch verification failed: invalid hunk ... is empty`，路径误写为 `docs/superpowers/2026-08-25-b239-contract-ledger.md`，未产生改动，随后用正确路径重试。
+- 2026-08-25：最终全量构建 `go build ./...` 通过；原始输出为空，退出码 0。
+- 2026-08-25：最终全量静态检查 `go vet ./...` 通过；原始输出为空，退出码 0。
+- 2026-08-25：最终格式检查 `gofmt -l internal/ledger internal/ledgerstep internal/agentd cmd` 通过；原始输出为空，退出码 0。
+- 2026-08-25：四包集成测试 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/...` 通过；命令首段原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 13.220s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep (cached)`，续行原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 115.542s`、`ok github.com/Xsxdot/handoff/cmd 8.213s`，最终退出码 0。
+- 2026-08-25：收尾差异检查 `git diff --check && git status --short && git diff --stat && git diff --name-only` 通过；原始输出 `git diff --check` 为空，工作区仅有 5 个文件：本台账、`internal/ledgerstep/dispatch.go`、`dispatch_test.go`、`runner.go`、`runner_test.go`；统计为 `136 insertions(+), 1 deletion(-)`。
+- 2026-08-25：最终 diff 复读确认：`TemplateDispatch.WriteGate` 在 Transport 后分别守护 `LinkTask` 与 `RecordDispatch`；StepRunner 通过 `dispatchNodeWithGate` 传入现有 `NodeStep.WriteGate`；测试分别覆盖失权前置时两类数据库事实均不新增，以及挂账后失权时保留挂账但不新增 dispatched。
+- 2026-08-25：提交前 `git diff --check && gofmt -l internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go` 通过；原始输出为空，退出码 0。
+- 2026-08-25：收尾暂存首次尝试 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go` 失败；原始报错：`fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/d290f533/index.lock': Read-only file system`，退出码 128，尚未暂存。
+- 2026-08-25：获准提权后重试同一 `git add ...` 成功；原始输出为空，退出码 0。暂存核对显示 5 个文件、`140 insertions(+), 1 deletion(-)`，`git diff --cached --check` 为空。
+- 2026-08-25：补记台账后再次暂存核对 `git status --short && git diff --cached --check && git diff --cached --stat` 通过；原始输出显示 5 个文件全部 staged、`141 insertions(+), 1 deletion(-)`，cached diff check 为空。
+- 2026-08-25：实现提交 `git commit -m 'fix(b239): gate dispatch ledger writes'` 首次成功；原始输出 `[cards/B239-charter-7 bb852d33] fix(b239): gate dispatch ledger writes`、`5 files changed, 142 insertions(+), 1 deletion(-)`，退出码 0；因本条事实随后回写台账，将用 `git commit --amend --no-edit` 收口。

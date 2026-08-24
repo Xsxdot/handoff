@@ -478,6 +478,20 @@ func TestRunnerStopsCardWritesAfterLosingWriteGate(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	linksBefore, err := st.TasksOf(card.ID)
+	if err != nil {
+		t.Fatalf("读失权前挂账: %v", err)
+	}
+	eventsBefore, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+	if err != nil {
+		t.Fatalf("读失权前事件: %v", err)
+	}
+	dispatchedBefore := 0
+	for _, event := range eventsBefore {
+		if event.Type == ledger.EvDispatched {
+			dispatchedBefore++
+		}
+	}
 	started, release := make(chan struct{}), make(chan struct{})
 	runner := &StepRunner{St: st, Session: "session-runner", Target: "mac-02", RunHolder: "run:loser#9#9", RenewBeat: make(chan time.Time, 8),
 		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
@@ -520,6 +534,22 @@ func TestRunnerStopsCardWritesAfterLosingWriteGate(t *testing.T) {
 	}
 	if explanatory != 1 {
 		t.Fatalf("说明性 comment 应恰一条，实得 %d 条: %+v", explanatory, events)
+	}
+	linksAfter, err := st.TasksOf(card.ID)
+	if err != nil {
+		t.Fatalf("读失权后挂账: %v", err)
+	}
+	if len(linksAfter) != len(linksBefore) {
+		t.Fatalf("失去写权后不得新增 card_tasks 行: before=%d after=%d", len(linksBefore), len(linksAfter))
+	}
+	dispatchedAfter := 0
+	for _, event := range events {
+		if event.Type == ledger.EvDispatched {
+			dispatchedAfter++
+		}
+	}
+	if dispatchedAfter != dispatchedBefore {
+		t.Fatalf("失去写权后不得新增 dispatched 事件: before=%d after=%d", dispatchedBefore, dispatchedAfter)
 	}
 }
 

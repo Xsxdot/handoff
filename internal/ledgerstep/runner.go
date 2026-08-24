@@ -77,13 +77,15 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 	nodeStep := &NodeStep{
 		St:         r.St,
 		Node:       node,
-		Dispatch:   r.dispatchNode(&outputPath),
 		Await:      r.awaitNode(),
 		OutputPath: func() string { return outputPath },
 		Diff:       r.diffNode(),
 		Attach: func(cardID, kind, path, actor string) error {
 			return r.St.AttachFile(cardID, kind, path, actor)
 		},
+	}
+	nodeStep.Dispatch = func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (string, string, error) {
+		return r.dispatchNodeWithGate(&outputPath, nodeStep.WriteGate)(ctx, card, node)
 	}
 	if !node.Dispatch {
 		// 纯人工列没有执行能力，不应因为被误点而留下驱动归属。
@@ -270,6 +272,12 @@ func (r *StepRunner) nodeFor(cardID, nodeName string) (ledger.NodeDef, error) {
 
 // dispatchNode 生产 NodeStep.Dispatch：按节点的模板引用 + 单字段覆盖派发。
 func (r *StepRunner) dispatchNode(outputPath *string) func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+	return r.dispatchNodeWithGate(outputPath, nil)
+}
+
+// dispatchNodeWithGate 是运行节点的派发适配器；写闸只在 Transport 返回后
+// 约束协调者账本写入，远端任务已经受理的事实不回滚。
+func (r *StepRunner) dispatchNodeWithGate(outputPath *string, writeGate func() bool) func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
 	return func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (string, string, error) {
 		target := r.Target
 		if target == "" {
@@ -308,6 +316,7 @@ func (r *StepRunner) dispatchNode(outputPath *string) func(context.Context, ledg
 			OmitAcceptance:     node.OmitAcceptance,
 			Extra:              r.Extra,
 			OutputPath:         renderedPath,
+			WriteGate:          writeGate,
 		})
 		if err != nil {
 			slog.Default().Warn("节点派发失败", "card", card.ID, "node", node.Name,
