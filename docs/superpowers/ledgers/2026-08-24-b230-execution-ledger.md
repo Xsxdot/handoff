@@ -67,3 +67,8 @@
 - 2026-08-24: Task 3 格式检查 `gofmt -l internal/ledger/seed_teardown_test.go` -> 无输出，退出码 0。
 - 2026-08-24: Task 3 收尾 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 仅台账有 7 行未提交记录，分支为 `cards/B230-charter-3`。
 - 2026-08-24: Task 3 暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 台账提交 `git commit -m "chore: record seed assertion verification"` -> `[cards/B230-charter-3 7abd0ee7] chore: record seed assertion verification`、`1 file changed, 9 insertions(+)`，退出码 0。
+- 2026-08-24: Task 4 更新 agentd 测试夹具新增专用 `attachment-gates` 流，覆盖 `RequireAttachment` 与 `RequireAttachmentAny`；测试改名为 `TestAttachmentKindsCoverGateKinds` 并收集两个字段。执行 `gofmt -w internal/agentd/ledger_fixtures_test.go internal/agentd/ledgerapi_test.go` 与 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/ -run TestAttachmentKindsCoverGateKinds -v` -> `--- PASS: TestAttachmentKindsCoverGateKinds (0.84s)`、`ok github.com/Xsxdot/handoff/internal/agentd 0.842s`，退出码 0。
+- 2026-08-24: Task 4 变异前收尾 `git diff --check` -> 无输出，退出码 0；当前待提交为台账、`internal/agentd/ledger_fixtures_test.go`、`ledgerapi_test.go`，共 `16 insertions(+), 4 deletions(-)`。
+- 2026-08-24: Task 4 变异前暂存 `git add internal/agentd/ledger_fixtures_test.go internal/agentd/ledgerapi_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 变异前暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。

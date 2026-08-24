@@ -479,13 +479,14 @@ func TestAttachContractViaAPI(t *testing.T) {
 	}
 }
 
-// TestAttachmentKindsCoverDefaultWorkflowGates 出厂工作流新增闸 kind 时，
-// 必须同步登记 Web 白名单；否则 CLI 与 Web 行为分裂，闸在 Web 永远无法满足。
-func TestAttachmentKindsCoverDefaultWorkflowGates(t *testing.T) {
+// TestAttachmentKindsCoverGateKinds 工作流 gate 用到的每个 attachment kind
+// 都必须在 Web 白名单里，否则闸在 Web 永远无法满足。数据来自测试夹具，
+// 不是出厂种子；夹具同时覆盖单值与多值 gate。
+func TestAttachmentKindsCoverGateKinds(t *testing.T) {
 	env := newLedgerEnv(t)
 	names, err := env.ledger.ListWorkflowNames()
 	if err != nil {
-		t.Fatalf("列出厂工作流: %v", err)
+		t.Fatalf("列测试工作流: %v", err)
 	}
 	seen := map[string]string{}
 	for _, name := range names {
@@ -495,6 +496,9 @@ func TestAttachmentKindsCoverDefaultWorkflowGates(t *testing.T) {
 		}
 		for _, node := range wf.Def.Nodes {
 			if kind := node.Gate.RequireAttachment; kind != "" {
+				seen[kind] = name + "/" + node.Name
+			}
+			for _, kind := range node.Gate.RequireAttachmentAny {
 				seen[kind] = name + "/" + node.Name
 			}
 		}

@@ -42,6 +42,12 @@ func seedAgentdLedger(t *testing.T, st *ledger.Store) {
 			{Name: ledger.StatusTodo, Next: "拆解"}, {Name: "拆解", Next: "契约冻结"},
 			{Name: "契约冻结", Gate: ledger.Gate{RequireAttachment: "contract"}},
 		}},
+		"attachment-gates": {Nodes: []ledger.NodeDef{
+			{Name: ledger.StatusTodo, Next: "单附件"},
+			{Name: "单附件", Next: "多附件", Gate: ledger.Gate{RequireAttachment: "spec"}},
+			{Name: "多附件", Next: ledger.StatusDone, Gate: ledger.Gate{RequireAttachmentAny: []string{"plan", "contract"}}},
+			{Name: ledger.StatusDone},
+		}},
 	}
 	for name, def := range workflows {
 		if _, err := st.PutWorkflow(name, def); err != nil {
