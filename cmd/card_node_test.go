@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 )
@@ -41,6 +42,11 @@ func TestCardDispatchExecutorModelFlagsHaveDefaultModelHelp(t *testing.T) {
 
 func TestCardStepRejectsUnknown(t *testing.T) {
 	dir := t.TempDir()
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = cardStepBody(t, r)
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"节点 \"verify\" 不在卡 D1 的工作流 bug v1 里"}`))
+	}))
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "x", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)

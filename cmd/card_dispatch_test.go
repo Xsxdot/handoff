@@ -3,9 +3,55 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/config"
 )
+
+func newCardStepCLIEndpoint(t *testing.T, dir string, handler http.Handler) *httptest.Server {
+	t.Helper()
+	ts := httptest.NewServer(handler)
+	cfg := &config.Config{
+		Listen: strings.TrimPrefix(ts.URL, "http://"), Token: testToken, DataDir: dir,
+		StallTimeout: 2 * time.Hour, Ledger: config.LedgerConfig{Enabled: true},
+	}
+	if err := config.Save(filepath.Join(dir, "config.yaml"), cfg); err != nil {
+		ts.Close()
+		t.Fatalf("写 card step 测试配置: %v", err)
+	}
+	t.Cleanup(ts.Close)
+	return ts
+}
+
+func cardStepBody(t *testing.T, r *http.Request) map[string]json.RawMessage {
+	t.Helper()
+	if r.Method != http.MethodPost || !strings.HasPrefix(r.URL.Path, "/api/cards/") || !strings.HasSuffix(r.URL.Path, "/step") {
+		t.Fatalf("请求 = %s %s，want POST /api/cards/{id}/step", r.Method, r.URL.Path)
+	}
+	if got := r.Header.Get("Authorization"); got != "Bearer "+testToken {
+		t.Fatalf("Authorization = %q, want Bearer %s", got, testToken)
+	}
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		t.Fatalf("解析 card step body: %v", err)
+	}
+	return body
+}
+
+func cardStepString(t *testing.T, body map[string]json.RawMessage, key string) string {
+	t.Helper()
+	var value string
+	if err := json.Unmarshal(body[key], &value); err != nil {
+		t.Fatalf("字段 %s 不是字符串：%v", key, err)
+	}
+	return value
+}
 
 func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	dir := t.TempDir()
@@ -103,6 +149,12 @@ func TestCardDispatchExecutorModelFlags(t *testing.T) {
 // TestCardDispatchStepExecutorModelFlags 验证 --step 与模板路径共用同一对 CLI flag。
 func TestCardDispatchStepExecutorModelFlags(t *testing.T) {
 	dir := t.TempDir()
+	var got map[string]json.RawMessage
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = cardStepBody(t, r)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "step 覆盖执行器的卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
@@ -113,18 +165,18 @@ func TestCardDispatchStepExecutorModelFlags(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
 		t.Fatal(err)
 	}
-	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
-		got = req
-		return "T-step-executor-model", nil
-	})
-	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中",
-		"--target", "mac-02", "--executor", "grok"); err != nil {
+		"--target", "mac-02", "--executor", "grok", "--model", "grok-model"); err != nil {
 		t.Fatalf("card dispatch --step: %v", err)
 	}
-	if got.executor != "grok" || got.model != "" {
-		t.Fatalf("--step 请求 executor/model = %q/%q, want %q/%q", got.executor, got.model, "grok", "")
+	if gotTarget := cardStepString(t, got, "target"); gotTarget != "mac-02" {
+		t.Fatalf("--step 请求 target = %q, want mac-02", gotTarget)
+	}
+	if gotExecutor := cardStepString(t, got, "executor"); gotExecutor != "grok" {
+		t.Fatalf("--step 请求 executor = %q, want grok", gotExecutor)
+	}
+	if gotModel := cardStepString(t, got, "model"); gotModel != "grok-model" {
+		t.Fatalf("--step 请求 model = %q, want grok-model", gotModel)
 	}
 }
 
@@ -209,6 +261,12 @@ func TestCardDispatchExtraReachesPrompt(t *testing.T) {
 // 否则「给某一轮补一句话」在节点派发上仍然无解——而节点派发正是它最需要的地方。
 func TestCardDispatchStepExtraReachesPrompt(t *testing.T) {
 	dir := t.TempDir()
+	var got map[string]json.RawMessage
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = cardStepBody(t, r)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "step 带补充说明的卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
@@ -219,19 +277,192 @@ func TestCardDispatchStepExtraReachesPrompt(t *testing.T) {
 	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
 		t.Fatal(err)
 	}
-	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
-		got = req
-		return "T-step-extra-1", nil
-	})
-	defer restore()
 	const extra = "上一轮把审阅当成了实现，本轮只改 output.go"
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中",
 		"--target", "mac-02", "--extra", extra); err != nil {
 		t.Fatalf("card dispatch --step --extra: %v", err)
 	}
-	if !strings.Contains(got.prompt, extra) {
-		t.Fatalf("--step 的 prompt 里没有 --extra 正文:\n%s", got.prompt)
+	if gotExtra := cardStepString(t, got, "extra"); gotExtra != extra {
+		t.Fatalf("--step 请求 extra = %q, want %q", gotExtra, extra)
+	}
+}
+
+// TestCardDispatchStepSubmitsToLocalAgentd verifies the step request uses the local endpoint and real client wire.
+func TestCardDispatchStepSubmitsToLocalAgentd(t *testing.T) {
+	dir := t.TempDir()
+	var got map[string]json.RawMessage
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = cardStepBody(t, r)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "本机 agentd 卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中"); err != nil {
+		t.Fatalf("card dispatch --step: %v", err)
+	}
+	if gotStep := cardStepString(t, got, "step"); gotStep != "进行中" {
+		t.Fatalf("step = %q, want 进行中", gotStep)
+	}
+}
+
+// TestCardDispatchStepReturnsImmediately verifies the 202 stdout contract instead of a runner outcome.
+func TestCardDispatchStepReturnsImmediately(t *testing.T) {
+	dir := t.TempDir()
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = cardStepBody(t, r)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "即时返回卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中")
+	if err != nil {
+		t.Fatalf("card dispatch --step: %v", err)
+	}
+	for _, want := range []string{card.ID, "进行中", "handoff card wait " + card.ID} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("stdout = %q, want %q", out, want)
+		}
+	}
+	if strings.Contains(out, "Outcome") || strings.Contains(out, "T-") {
+		t.Fatalf("stdout 不应包含旧 Outcome/task id：%q", out)
+	}
+}
+
+// TestCardDispatchStepCarriesOverrides locks all four CLI override values at the local agentd wire.
+func TestCardDispatchStepCarriesOverrides(t *testing.T) {
+	dir := t.TempDir()
+	var got map[string]json.RawMessage
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = cardStepBody(t, r)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "四项覆盖卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中",
+		"--target", "mac-02", "--executor", "grok", "--model", "grok-model", "--extra", "本轮只修 F1"); err != nil {
+		t.Fatalf("card dispatch --step: %v", err)
+	}
+	for key, want := range map[string]string{"target": "mac-02", "executor": "grok", "model": "grok-model", "extra": "本轮只修 F1"} {
+		if got := cardStepString(t, got, key); got != want {
+			t.Fatalf("wire %s = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// TestCardDispatchStepUsesPIDActor verifies step requests carry the per-process CLI session.
+func TestCardDispatchStepUsesPIDActor(t *testing.T) {
+	dir := t.TempDir()
+	var got map[string]json.RawMessage
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = cardStepBody(t, r)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "PID actor 卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中"); err != nil {
+		t.Fatalf("card dispatch --step: %v", err)
+	}
+	if actor := cardStepString(t, got, "actor"); actor != ledgerSession() {
+		t.Fatalf("wire actor = %q, want ledgerSession %q", actor, ledgerSession())
+	}
+}
+
+// TestCardDispatchStepRejectsPlan rejects local files before endpoint lookup or HTTP.
+func TestCardDispatchStepRejectsPlan(t *testing.T) {
+	dir := t.TempDir()
+	var requests int32
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt32(&requests, 1)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "拒绝 plan 卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中", "--plan", "local.md"); err == nil || !strings.Contains(err.Error(), "不会被上传") {
+		t.Fatalf("--plan 应在发送前拒绝，err=%v", err)
+	}
+	if got := atomic.LoadInt32(&requests); got != 0 {
+		t.Fatalf("--plan 拒绝前不应发 HTTP，请求数=%d", got)
+	}
+}
+
+// TestCardDispatchStepNoLocalFallback ensures endpoint failure does not invoke the old local transport seam.
+func TestCardDispatchStepNoLocalFallback(t *testing.T) {
+	dir := t.TempDir()
+	cfg := &config.Config{
+		Listen: "127.0.0.1:1", Token: testToken, DataDir: dir,
+		StallTimeout: 2 * time.Hour, Ledger: config.LedgerConfig{Enabled: true},
+		Targets: map[string]config.Target{"mac-02": {Addr: "127.0.0.1:1", Token: "remote-token"}},
+	}
+	if err := config.Save(filepath.Join(dir, "config.yaml"), cfg); err != nil {
+		t.Fatalf("写不可达测试配置: %v", err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "不回落卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	called := false
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+		called = true
+		return "T-local-fallback", nil
+	})
+	defer restore()
+	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中", "--target", "mac-02")
+	if err == nil || !strings.Contains(err.Error(), "够不着") {
+		t.Fatalf("本机 agentd 不可达应失败，err=%v", err)
+	}
+	if called {
+		t.Fatal("本机 agentd 不可达时不应调用旧本地 transport")
 	}
 }
 

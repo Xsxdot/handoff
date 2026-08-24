@@ -8,6 +8,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func newStepTestServer(t *testing.T) *Server {
@@ -25,6 +26,36 @@ func seedCardWithProject(t *testing.T, s *Server, project string) {
 
 func newCardForStepTest(project string) ledger.NewCard {
 	return ledger.NewCard{Title: "环节测试卡", Project: project, Workflow: "bug", Actor: "test"}
+}
+
+// seedImplementCardWithProject 建一张钉在「带 implement 节点」的工作流上的卡。
+//
+// 为什么不能沿用 bug 流的种子卡：受理前会校验节点名确实在卡钉住的工作流里，
+// 而 implement 这个名字只存在于 charter 流——charter 不是出厂工作流（出厂只有
+// feature/domain/bug/triage），测试环境里没有，所以这里当场写一条最小工作流。
+//
+// 为什么不能把节点名换成 bug 流里现成的：被测属性正是「守卫不再按节点名拒绝
+// implement」，换掉名字测的就变成另一条属性了。
+func seedImplementCardWithProject(t *testing.T, s *Server, project string) {
+	t.Helper()
+	if _, err := s.ledger.PutWorkflow("charter", ledger.WorkflowDef{
+		Nodes: []ledger.NodeDef{
+			{Name: ledger.StatusTodo, Next: "implement"},
+			{Name: "implement", Next: "review", Dispatch: true, Verdict: true,
+				Template: "review-generic", CarryCardContext: true, MaxRounds: 3},
+			{Name: "review", Next: ledger.StatusDone, Dispatch: true, Verdict: true,
+				Template: "review-generic", CarryCardContext: true, MaxRounds: 3,
+				OnFail: "implement"},
+			{Name: ledger.StatusDone},
+		},
+	}); err != nil {
+		t.Fatalf("写入带 implement 节点的测试工作流: %v", err)
+	}
+	if _, err := s.ledger.CreateCard(ledger.NewCard{
+		Title: "charter 环节测试卡", Project: project, Workflow: "charter", Actor: "test",
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func holdCardStep(t *testing.T, s *Server, cardID string) func() {
@@ -61,7 +92,7 @@ func TestStartCardStepRejectsSecondInFlight(t *testing.T) {
 	s := newStepTestServer(t)
 	release := holdCardStep(t, s, "B1")
 	defer release()
-	if err := s.startCardStep("B1", "review", "web:test"); !errors.Is(err, errStepInFlight) {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); !errors.Is(err, errStepInFlight) {
 		t.Fatalf("第二个环节应被拒，实得 %v", err)
 	}
 }
@@ -79,12 +110,25 @@ func TestStartCardStepReleasesSlotOnFinish(t *testing.T) {
 			close(done)
 		}
 	}
-	if err := s.startCardStep("B1", "review", "web:test"); err != nil {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
 		t.Fatalf("首次应放行: %v", err)
 	}
 	<-done
 	waitFor(t, func() bool { return !cardStepInFlight(s, "B1") })
-	if err := s.startCardStep("B1", "review", "web:test"); err != nil {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
 		t.Fatalf("跑完之后应能再发起: %v", err)
+	}
+}
+
+// TestRequiresInlineLocalFile keeps the guard tied to request capabilities rather than node names.
+func TestRequiresInlineLocalFile(t *testing.T) {
+	for _, req := range []proto.CardStepReq{
+		{Step: "implement"},
+		{Step: "review", Target: "linux-01", Executor: "codex", Model: "gpt-5", Extra: "x", Actor: "cli:u@h#1"},
+		{Step: "review", Target: "", Executor: "", Model: "", Extra: "", Actor: ""},
+	} {
+		if requiresInlineLocalFile(req) {
+			t.Fatalf("requiresInlineLocalFile(%+v) = true, want false", req)
+		}
 	}
 }

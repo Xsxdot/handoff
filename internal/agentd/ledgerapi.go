@@ -1,8 +1,9 @@
 // 账本 HTTP API：web 看板的唯一账本通道。薄层——业务全在
 // internal/ledger，此处只做解码/调用/编码与错误翻译。写动作：
 // move/note/answer/accept 同步返回；step（工作流节点）异步 202，
-// 编排在 internal/ledgerstep。实现类派发仍只由 CLI 承载——它要挂 plan 文件，
-// 浏览器里没有那个文件。
+// 编排在 internal/ledgerstep。step 不区分节点名——包括 implement 在内的所有节点都走
+// 这条通道；被拒的只有「要求内联调用方本地文件」的请求，而 CardStepReq 里没有这类
+// 字段（见 requiresInlineLocalFile）。
 package agentd
 
 import (
@@ -10,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"sort"
 	"strconv"
@@ -19,6 +21,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -388,43 +391,106 @@ func (s *Server) handleCardNote(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, event)
 }
 
-// handleCardStep 发起一个卡节点，受理即 202。
+// maxCardStepBody 是 step 请求体的大小上限。请求只有六个短字段，--extra 是其中唯一
+// 可能长的一项（一段中文补充说明）；1 MiB 给它留了三个数量级的余量，同时挡住把
+// 整个进程内存喂进来的畸形请求。
 //
-// 为什么是 202 而不是 200：环节要跑几分钟到几十分钟，200 会让前端以为
-// 它已经做完了。202 的语义正是「收到了，正在做」，界面据此把按钮置灰并
-// 提示「进展见下方 Timeline」。
+// 它是**上限**不是**截断点**：超过就整体拒绝。只截断的话，一段恰好等于上限的合法
+// JSON 后面接任何尾随内容，都会被截断切干净、当成合法请求受理——那道「拒尾随内容」
+// 的防线就在边界上破了。判定手法沿用 envfile.Parse：多读 1 字节再比长度。
+const maxCardStepBody = 1 << 20
+
+// handleCardStep 受理一个卡节点，受理即 202；202 不代表回合已完成。
 //
-// 为什么不支持 implement：实现派发通常要挂 plan 文件，浏览器里没有那个文件。
-// 它留在 CLI；其余节点名透传给卡钉工作流，由 StepRunner 做合法性判断。
+// 规范 CLI 请求必须带非空 actor；旧看板只发送 {"step":...}，仅在原始 JSON
+// 缺少 actor 键时补 web:<r.RemoteAddr>。显式 actor:"" 不能借 fallback 进入驱动锁。
+// JSON 对**未知字段**宽松（忽略，避免版本错配把新可选字段变成 400），但对**尾随
+// 内容**严格：整段读进来用 json.Unmarshal 解，多出的字节一律 400。Decoder.Decode
+// 只吃第一个 JSON 值，被截断又重发的请求体会被它当成合法请求受理——而受理是有
+// 副作用的（认领驱动、派任务），不能建立在只看了前半句上。
+//
+// 受理前只做四件事：解出规范请求、校验 step/actor 非空、拒掉要求内联本地文件的
+// 请求、确认卡与节点都解得开（卡不存在 404，节点名不对 400）。其余一切——门是否
+// 放行、目标机是否够得着、回合是否超轮——都在后台 goroutine 里由 StepRunner 判定，
+// 结果落卡的事件流。
 func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		Step string `json:"step"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+	id := r.PathValue("id")
+	// 多读 1 字节用于判定「是否超限」：正好等于上限时 LimitReader 读满但未越界。
+	payload, err := io.ReadAll(io.LimitReader(r.Body, maxCardStepBody+1))
+	if err != nil {
+		s.log.Warn("卡节点请求读取失败", "card", id, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
 		return
 	}
-	id := r.PathValue("id")
-	if req.Step == discipline.NameImplement {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "implement 节点只能通过 CLI 派发（浏览器没有 plan 文件）",
+	if len(payload) > maxCardStepBody {
+		s.log.Warn("卡节点请求被拒：请求体超限", "card", id, "limit", maxCardStepBody)
+		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{
+			"error": fmt.Sprintf("card step 请求体超过 %d 字节", maxCardStepBody),
 		})
 		return
 	}
-	actor := "web:" + r.RemoteAddr
-	err := s.startCardStep(id, req.Step, actor)
+	// 两次解同一段字节：raw 只用来区分「actor 键缺席」与「显式空串」，req 是规范请求。
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(payload, &raw); err != nil {
+		s.log.Warn("卡节点请求解码失败", "card", id, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	var req proto.CardStepReq
+	if err := json.Unmarshal(payload, &req); err != nil {
+		s.log.Warn("卡节点请求字段解码失败", "card", id, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "bad json"})
+		return
+	}
+	if _, ok := raw["actor"]; !ok {
+		req.Actor = "web:" + r.RemoteAddr
+		s.log.Info("legacy 卡节点请求补 actor", "card", id, "node", req.Step,
+			"actor", req.Actor, "remote_addr", r.RemoteAddr)
+	}
+	if req.Step == "" {
+		s.log.Warn("卡节点请求被拒：step 为空", "card", id)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "step 不能为空"})
+		return
+	}
+	if req.Actor == "" {
+		s.log.Warn("卡节点请求被拒：actor 为空", "card", id, "node", req.Step)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "actor 不能为空"})
+		return
+	}
+	if requiresInlineLocalFile(req) {
+		s.log.Warn("卡节点请求被拒：要求内联本地文件", "card", id, "node", req.Step,
+			"actor", req.Actor)
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "card step 不接受调用方本地文件",
+		})
+		return
+	}
+	if _, err := ledgerstep.ResolveNode(s.ledger, id, req.Step); err != nil {
+		s.log.Warn("卡节点请求被拒：卡或节点解不开", "card", id, "node", req.Step,
+			"actor", req.Actor, "cause", err)
+		if errors.Is(err, ledger.ErrNotFound) {
+			ledgerErr(w, err)
+			return
+		}
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	s.log.Info("开始装配卡节点", "card", id, "node", req.Step, "actor", req.Actor,
+		"target", req.Target, "executor", req.Executor, "model", req.Model,
+		"has_extra", strings.TrimSpace(req.Extra) != "")
+	err = s.startCardStep(id, req)
 	switch {
 	case err == nil:
 		writeJSON(w, http.StatusAccepted, map[string]bool{"ok": true})
 	case errors.Is(err, errStepInFlight):
-		s.log.Warn("节点被拒：已有在飞", "card", id, "node", req.Step, "cause", err)
+		s.log.Warn("节点被拒：已有在飞", "card", id, "node", req.Step,
+			"actor", req.Actor, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ledger.ErrNotFound):
+		s.log.Warn("卡节点所属卡不存在", "card", id, "node", req.Step, "cause", err)
 		ledgerErr(w, err)
 	default:
-		// 其余都是前置校验失败（节点名不在卡钉工作流、卡不存在）：这些是调用方能改的，
-		// 400 比 500 更准确，且错误原文里已经写了该怎么办
-		s.log.Warn("节点被拒", "card", id, "node", req.Step, "cause", err)
+		s.log.Warn("节点被拒", "card", id, "node", req.Step, "actor", req.Actor, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	}
 }

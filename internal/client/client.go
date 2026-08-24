@@ -774,6 +774,64 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	return &task, nil
 }
 
+// maxCardStepAck 是 card step 受理响应的大小上限。响应约定是 {"ok":true}，4096
+// 与 httpError 的错误体上限同级（够放下一段中文诊断）。超过即整体拒绝，不截断——
+// 理由与 agentd 侧的 maxCardStepBody 相同。
+const maxCardStepAck = 4096
+
+// CardStep 向 agentd 提交一个卡节点，成功只表示服务端已受理。
+//
+// 参数：ctx 控制本次短 HTTP 请求；cardID 是 URL 中的卡号；req 是带节点名、一次性
+// 覆盖项和发起会话 actor 的规范请求。调用方不得把 --plan 文件塞进 req。
+//
+// 返回：agentd 返回 HTTP 202 且 JSON body 为 {"ok":true} 时返回 nil；非 2xx 保留
+// agentd 的状态码和错误体；连接失败保留 ErrUnreachable；响应 JSON 非法或 ok=false
+// 返回错误。nil 不代表回合已完成，进展由 card wait/事件流读取。
+func (c *Client) CardStep(ctx context.Context, cardID string, req proto.CardStepReq) error {
+	logger := c.log().With("card", cardID, "step", req.Step, "actor", req.Actor)
+	logger.Info("提交卡节点")
+	resp, err := c.do(ctx, http.MethodPost, "/api/cards/"+cardID+"/step", req)
+	if err != nil {
+		logger.Warn("提交卡节点请求失败", "cause", err)
+		return fmt.Errorf("card step 请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusAccepted {
+		err := c.httpError("card step", resp)
+		logger.Warn("卡节点未受理", "status", resp.StatusCode, "cause", err)
+		return err
+	}
+	// 整段读进来再 Unmarshal，而不是 Decoder.Decode：后者只吃第一个 JSON 值，
+	// 尾随内容被静默丢弃——一个被截断或串包的响应会让这里报「已受理」，而调用方
+	// 据此就不再重试了。多读 1 字节判超限：只截断的话，一段恰好等于上限的
+	// {"ok":true,...} 后面接什么都会被切掉，防线在边界上就破了。
+	body, err := io.ReadAll(io.LimitReader(resp.Body, maxCardStepAck+1))
+	if err != nil {
+		logger.Warn("卡节点受理响应读取失败", "cause", err)
+		return fmt.Errorf("读取 card step 响应: %w", err)
+	}
+	if len(body) > maxCardStepAck {
+		logger.Warn("卡节点受理响应超限", "limit", maxCardStepAck)
+		return fmt.Errorf("card step 响应超过 %d 字节", maxCardStepAck)
+	}
+	var ack struct {
+		OK bool `json:"ok"`
+	}
+	if err := json.Unmarshal(body, &ack); err != nil {
+		logger.Warn("卡节点受理响应解码失败", "cause", err, "body", string(body))
+		return fmt.Errorf("解析 card step 响应: %w", err)
+	}
+	if !ack.OK {
+		// 响应体带进错误：ok=false 是服务端在 202 之后唯一能说「其实没受理」的
+		// 通道，它携带的原因是排查的全部素材，丢掉就只剩一句没有信息量的断言。
+		err := fmt.Errorf("card step 响应未确认受理: %s", strings.TrimSpace(string(body)))
+		logger.Warn("卡节点受理响应为 ok=false", "cause", err)
+		return err
+	}
+	logger.Info("卡节点已受理")
+	return nil
+}
+
 // ProjectAddOpts 是 ProjectAdd 的参数。
 //
 // 形态由 Path / 路径是否存在 / OriginURL 是否非空共同决定：

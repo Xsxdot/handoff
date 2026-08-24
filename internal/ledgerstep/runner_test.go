@@ -151,6 +151,19 @@ func TestRunnerExecutorModelOverridePriorityAndPairRule(t *testing.T) {
 		t.Fatalf("CLI 只覆盖 executor 时 executor/model = %q/%q, want %q/%q", got.Executor, got.Model, "cli-executor", "")
 	}
 
+	// 上一段里节点的 model 已经是空的，所以它区分不开「切断下层模型」与「沿用
+	// 下层模型」——两条分支的结果都是空。把节点的 model 放回去再验一次，成对
+	// 规则才真的被钉住：CLI 换掉执行器且不给模型时，节点层的模型必须被切断，
+	// 否则一个模型名会被套到另一个执行器上（跨执行器复用模型名，第一个事件就是 400）。
+	node.Override.Model = "node-model"
+	if _, _, err := runner.dispatchNode(nil)(context.Background(), card, node); err != nil {
+		t.Fatalf("CLI 换执行器且节点有模型时派发: %v", err)
+	}
+	if got.Executor != "cli-executor" || got.Model != "" {
+		t.Fatalf("CLI 换执行器且节点有模型时 executor/model = %q/%q, want %q/%q",
+			got.Executor, got.Model, "cli-executor", "")
+	}
+
 	runner.Model = "cli-model"
 	if _, _, err := runner.dispatchNode(nil)(context.Background(), card, node); err != nil {
 		t.Fatalf("CLI 双覆盖派发: %v", err)
