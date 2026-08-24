@@ -2,6 +2,8 @@ package ledgerstep
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,6 +16,7 @@ func dispatchRunner(t *testing.T, st *ledger.Store, transport func(context.Conte
 	t.Helper()
 	return &StepRunner{
 		St: st, Session: "session-runner", Target: "mac-02",
+		RunHolder: "run:test-host#4242#1", RenewBeat: make(chan time.Time, 8),
 		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: transport},
 	}
 }
@@ -94,7 +97,7 @@ func TestRunnerPassesNodePurposeAndAcceptanceSwitch(t *testing.T) {
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
 		t.Fatalf("先派实现轮: %v", err)
 	}
-	runner := &StepRunner{St: st, Dispatcher: d, Target: "mac-02"}
+	runner := &StepRunner{St: st, Dispatcher: d, Target: "mac-02", RunHolder: "run:test-host#4242#2"}
 	if _, err := runner.Run(context.Background(), card.ID, "待审阅"); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
@@ -199,7 +202,7 @@ func TestRunnerSameExecutorKeepsNodeModel(t *testing.T) {
 	}
 }
 
-func TestRunnerClaimsDriverWithoutChangingNodeStatusAndReleasesAfterRun(t *testing.T) {
+func TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun(t *testing.T) {
 	st, card := nodeLedger(t)
 	started := make(chan struct{})
 	finish := make(chan struct{})
@@ -222,6 +225,10 @@ func TestRunnerClaimsDriverWithoutChangingNodeStatusAndReleasesAfterRun(t *testi
 	if claimed.DriverSession != runner.Session {
 		t.Fatalf("运行中应记录驱动会话 %q，实际 %q", runner.Session, claimed.DriverSession)
 	}
+	lockRow, ok, err := st.RunLockOf(card.ID)
+	if err != nil || !ok || lockRow.Holder != runner.RunHolder {
+		t.Fatalf("运行中应有 RunHolder 锁行: ok=%v err=%v row=%+v", ok, err, lockRow)
+	}
 	if claimed.Status != ledger.StatusTodo {
 		t.Fatalf("节点流不应把状态改成进行中，实际 %q", claimed.Status)
 	}
@@ -234,14 +241,17 @@ func TestRunnerClaimsDriverWithoutChangingNodeStatusAndReleasesAfterRun(t *testi
 	if err != nil {
 		t.Fatalf("读收口卡: %v", err)
 	}
-	if released.DriverSession != "" || !released.DriverHeartbeatAt.IsZero() {
-		t.Fatalf("回合结束应释放驱动租约，实际 session=%q heartbeat=%v", released.DriverSession, released.DriverHeartbeatAt)
+	if _, ok, _ := st.RunLockOf(card.ID); ok {
+		t.Fatal("回合结束运行锁行应消失")
+	}
+	if released.DriverSession != runner.Session || released.DriverHeartbeatAt.IsZero() {
+		t.Fatalf("回合结束应保持归属，实际 session=%q heartbeat=%v", released.DriverSession, released.DriverHeartbeatAt)
 	}
 }
 
 func TestRunnerRejectsActiveDriverAndReportsHolder(t *testing.T) {
 	st, card := nodeLedger(t)
-	if err := st.ClaimDriver(card.ID, "session-holder"); err != nil {
+	if err := st.ClaimCard(card.ID, "cli:holder@h"); err != nil {
 		t.Fatalf("预先认领: %v", err)
 	}
 	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
@@ -250,19 +260,19 @@ func TestRunnerRejectsActiveDriverAndReportsHolder(t *testing.T) {
 	})
 
 	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
-	if err == nil || !strings.Contains(err.Error(), "session-holder") {
+	if err == nil || !strings.Contains(err.Error(), "cli:holder@h") {
 		t.Fatalf("拒绝应报告当前持有者，实际: %v", err)
 	}
 	stillHeld, getErr := st.GetCard(card.ID)
 	if getErr != nil {
 		t.Fatalf("读冲突卡: %v", getErr)
 	}
-	if stillHeld.DriverSession != "session-holder" {
+	if stillHeld.DriverSession != "cli:holder@h" {
 		t.Fatalf("冲突方不应改写驱动，实际 %q", stillHeld.DriverSession)
 	}
 }
 
-func TestRunnerReleasesDriverAfterDispatchFailure(t *testing.T) {
+func TestRunnerKeepsOwnershipAfterDispatchFailure(t *testing.T) {
 	st, card := nodeLedger(t)
 	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
 		return "", fmt.Errorf("目标机不可达")
@@ -275,8 +285,11 @@ func TestRunnerReleasesDriverAfterDispatchFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读失败收口卡: %v", err)
 	}
-	if got.DriverSession != "" || !got.DriverHeartbeatAt.IsZero() {
-		t.Fatalf("失败回合也应释放驱动租约，实际 session=%q heartbeat=%v", got.DriverSession, got.DriverHeartbeatAt)
+	if _, ok, _ := st.RunLockOf(card.ID); ok {
+		t.Fatal("失败回合运行锁行也应消失")
+	}
+	if got.DriverSession != runner.Session {
+		t.Fatalf("失败回合归属也应保持，实际 session=%q", got.DriverSession)
 	}
 }
 
@@ -328,6 +341,185 @@ func TestRunnerRendersDeclaredOutputPathAndInjectsPrompt(t *testing.T) {
 	}
 	if !strings.Contains(opts.Prompt, "## 本节点产出物") || !strings.Contains(opts.Prompt, wantPath) {
 		t.Fatalf("prompt 未注入法定路径:\n%s", opts.Prompt)
+	}
+}
+
+func assertHaltOnCard(t *testing.T, st *ledger.Store, cardID, wantSub string) {
+	t.Helper()
+	events, err := st.EventsFromAsc([]string{cardID}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	comment, flagged := false, false
+	for _, e := range events {
+		switch e.Type {
+		case ledger.EvComment:
+			var p struct {
+				Body string `json:"body"`
+			}
+			if json.Unmarshal(e.Payload, &p) == nil && strings.Contains(p.Body, wantSub) {
+				comment = true
+			}
+		case ledger.EvNeedsHuman:
+			flagged = true
+		}
+	}
+	if !comment || !flagged {
+		t.Fatalf("卡上应有含 %q 的评论与 needs_human: comments=%v flagged=%v events=%+v", wantSub, comment, flagged, events)
+	}
+}
+
+func TestRunnerUnknownNodeHaltsWithCardEvent(t *testing.T) {
+	st, card := nodeLedger(t)
+	runner := &StepRunner{St: st}
+	_, err := runner.Run(context.Background(), card.ID, "查无此节点")
+	if err == nil || !strings.Contains(err.Error(), "查无此节点") {
+		t.Fatalf("节点解不开应报错并带节点名: %v", err)
+	}
+	assertHaltOnCard(t, st, card.ID, "查无此节点")
+}
+
+func TestRunnerMissingSessionHaltsWithCardEvent(t *testing.T) {
+	st, card := nodeLedger(t)
+	runner := &StepRunner{St: st, RunHolder: "run:x#1#1", Dispatcher: &Dispatcher{St: st, Actor: ""}}
+	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
+	if err == nil {
+		t.Fatal("会话未设置应报错")
+	}
+	assertHaltOnCard(t, st, card.ID, "会话未设置")
+}
+
+func TestRunnerRunLockRefusalReportsWhoNodeExpiry(t *testing.T) {
+	st, card := nodeLedger(t)
+	if _, acq, err := st.AcquireRunLock(card.ID, ledger.StatusDoing, "run:other-host#7#7", ledger.RunLockTTL); err != nil || !acq {
+		t.Fatalf("预占运行锁: %v %v", acq, err)
+	}
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
+		t.Fatal("运行锁被拒时不得派发")
+		return "", nil
+	})
+	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
+	if err == nil || !strings.Contains(err.Error(), "run:other-host#7#7") || !strings.Contains(err.Error(), ledger.StatusDoing) {
+		t.Fatalf("报错应点名持有者与节点: %v", err)
+	}
+	assertHaltOnCard(t, st, card.ID, "run:other-host#7#7")
+	got, _ := st.GetCard(card.ID)
+	if got.DriverSession != "" {
+		t.Fatalf("运行锁被拒时不得认领归属: %q", got.DriverSession)
+	}
+}
+
+func TestRunnerOwnershipRefusalHaltsWithCardEvent(t *testing.T) {
+	st, card := nodeLedger(t)
+	if err := st.ClaimCard(card.ID, "cli:holder@h"); err != nil {
+		t.Fatalf("预占归属: %v", err)
+	}
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
+		t.Fatal("归属被拒时不得派发")
+		return "", nil
+	})
+	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
+	if err == nil || !strings.Contains(err.Error(), "cli:holder@h") {
+		t.Fatalf("报错应点名持有者: %v", err)
+	}
+	assertHaltOnCard(t, st, card.ID, "cli:holder@h")
+	stillHeld, _ := st.GetCard(card.ID)
+	if stillHeld.DriverSession != "cli:holder@h" {
+		t.Fatalf("冲突方不得改写归属: %q", stillHeld.DriverSession)
+	}
+}
+
+func TestRunRenewsLockRowOnBeat(t *testing.T) {
+	st, card := nodeLedger(t)
+	started, release := make(chan struct{}), make(chan struct{})
+	beats := make(chan time.Time, 8)
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
+		close(started)
+		<-release
+		return "T-beat", nil
+	})
+	runner.RenewBeat = beats
+	done := make(chan error, 1)
+	go func() { _, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing); done <- err }()
+	<-started
+	before, ok, err := st.RunLockOf(card.ID)
+	if err != nil || !ok {
+		t.Fatalf("回合中应有锁行: ok=%v err=%v", ok, err)
+	}
+	beats <- time.Time{}
+	deadline := time.Now().Add(time.Second)
+	var after ledger.RunLock
+	for {
+		after, _, _ = st.RunLockOf(card.ID)
+		if after.ExpiresAt.After(before.ExpiresAt) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("节拍后库行 expires_at 必须推进: before=%v after=%v", before.ExpiresAt, after.ExpiresAt)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+}
+
+func TestRunnerStopsCardWritesAfterLosingWriteGate(t *testing.T) {
+	st, _ := nodeLedger(t)
+	if _, err := st.PutWorkflow("gateflow", ledger.WorkflowDef{Nodes: []ledger.NodeDef{
+		{Name: ledger.StatusTodo, Next: "审阅"},
+		{Name: "审阅", Dispatch: true, Verdict: true, Template: "feature-impl", Next: ledger.StatusDone, OnFail: ledger.StatusTodo},
+		{Name: ledger.StatusDone},
+	}}); err != nil {
+		t.Fatalf("写工作流: %v", err)
+	}
+	card, err := st.CreateCard(ledger.NewCard{Title: "写闸卡", Project: "p", Workflow: "gateflow", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	started, release := make(chan struct{}), make(chan struct{})
+	runner := &StepRunner{St: st, Session: "session-runner", Target: "mac-02", RunHolder: "run:loser#9#9", RenewBeat: make(chan time.Time, 8),
+		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+			close(started)
+			<-release
+			return "T-gate", nil
+		}}}
+	done := make(chan error, 1)
+	go func() { _, err := runner.Run(context.Background(), card.ID, "审阅"); done <- err }()
+	<-started
+	lock, ok, err := st.RunLockOf(card.ID)
+	if err != nil || !ok {
+		t.Fatalf("读锁行: ok=%v err=%v", ok, err)
+	}
+	if err := st.ReleaseRunLock(card.ID, lock.Holder); err != nil {
+		t.Fatal(err)
+	}
+	close(release)
+	runErr := <-done
+	if !errors.Is(runErr, ErrWriteGateClosed) {
+		t.Fatalf("失去写权后首个卡写应被闸拒绝: %v", runErr)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	explanatory := 0
+	for _, e := range events {
+		switch e.Type {
+		case ledger.EvComment:
+			var p struct {
+				Body string `json:"body"`
+			}
+			if json.Unmarshal(e.Payload, &p) == nil && strings.Contains(p.Body, "本轮运行锁已被接手") {
+				explanatory++
+			}
+		case ledger.EvNeedsHuman, ledger.EvNeedsCleared, ledger.EvReviewVerdict, ledger.EvStatusMoved:
+			t.Fatalf("失去写权后不得继续写卡: %+v", e)
+		}
+	}
+	if explanatory != 1 {
+		t.Fatalf("说明性 comment 应恰一条，实得 %d 条: %+v", explanatory, events)
 	}
 }
 

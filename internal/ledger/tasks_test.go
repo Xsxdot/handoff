@@ -36,10 +36,10 @@ func TestLinkTask(t *testing.T) {
 	}
 }
 
-func TestDriverClaimDoesNotExpire(t *testing.T) {
+func TestClaimCardDoesNotExpire(t *testing.T) {
 	s := seedStore(t)
 	card := mk(t, s, "卡")
-	if err := s.ClaimDriver(card.ID, "session-A"); err != nil {
+	if err := s.ClaimCard(card.ID, "session-A"); err != nil {
 		t.Fatalf("claim A: %v", err)
 	}
 	old := time.Now().Add(-24 * time.Hour)
@@ -47,7 +47,7 @@ func TestDriverClaimDoesNotExpire(t *testing.T) {
 		s.tval(old), card.ID); err != nil {
 		t.Fatalf("做旧认领时刻: %v", err)
 	}
-	if err := s.ClaimDriver(card.ID, "session-B"); !errors.Is(err, ErrCASConflict) {
+	if err := s.ClaimCard(card.ID, "session-B"); !errors.Is(err, ErrCASConflict) {
 		t.Fatalf("旧认领时刻也必须拒绝他会话: %v", err)
 	}
 	got, err := s.GetCard(card.ID)
@@ -57,7 +57,7 @@ func TestDriverClaimDoesNotExpire(t *testing.T) {
 	if got.DriverSession != "session-A" {
 		t.Fatalf("冲突认领不得改写驱动: %q", got.DriverSession)
 	}
-	if err := s.ClaimDriver(card.ID, "session-A"); err != nil {
+	if err := s.ClaimCard(card.ID, "session-A"); err != nil {
 		t.Fatalf("同会话重入必须放行: %v", err)
 	}
 }
@@ -65,11 +65,11 @@ func TestDriverClaimDoesNotExpire(t *testing.T) {
 func TestReleaseCardOnlyOwnerCanClearAndOtherCanClaim(t *testing.T) {
 	s := seedStore(t)
 	card := mk(t, s, "卡")
-	if err := s.ClaimDriver(card.ID, "session-A"); err != nil {
+	if err := s.ClaimCard(card.ID, "session-A"); err != nil {
 		t.Fatalf("claim: %v", err)
 	}
-	if err := s.ReleaseCard(card.ID, "session-B"); err != nil {
-		t.Fatalf("非持有者 release 应为无操作: %v", err)
+	if err := s.ReleaseCard(card.ID, "session-B"); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("非持有者 release 应可见失败: %v", err)
 	}
 	got, _ := s.GetCard(card.ID)
 	if got.DriverSession != "session-A" || got.DriverHeartbeatAt.IsZero() {
@@ -78,7 +78,7 @@ func TestReleaseCardOnlyOwnerCanClearAndOtherCanClaim(t *testing.T) {
 	if err := s.ReleaseCard(card.ID, "session-A"); err != nil {
 		t.Fatalf("owner release: %v", err)
 	}
-	if err := s.ClaimDriver(card.ID, "session-B"); err != nil {
+	if err := s.ClaimCard(card.ID, "session-B"); err != nil {
 		t.Fatalf("release 后应可被新会话认领: %v", err)
 	}
 }
@@ -86,7 +86,7 @@ func TestReleaseCardOnlyOwnerCanClearAndOtherCanClaim(t *testing.T) {
 func TestTakeoverCardWritesDriverAndRoundTripsPayload(t *testing.T) {
 	s := seedStore(t)
 	card := mk(t, s, "卡")
-	if err := s.ClaimDriver(card.ID, "session-old"); err != nil {
+	if err := s.ClaimCard(card.ID, "session-old"); err != nil {
 		t.Fatalf("claim old: %v", err)
 	}
 	if err := s.TakeoverCard(card.ID, "session-new", "cli:test@example"); err != nil {

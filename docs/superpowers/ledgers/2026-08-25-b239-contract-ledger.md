@@ -13,5 +13,155 @@
 - 2026-08-25：图闸门实测：`go run . graph validate --repo .` → issues=None 且视图清单含 cards-B239-charter；`go run . graph check --repo . --view cards-B239-charter` → fails=[]；`go run . graph sym --repo . --view cards-B239-charter Store.AcquireRunLock` → n_ledger_Store_AcquireRunLock anchor=ok file=internal/ledger/runlock.go line=26。
 - 2026-08-25：法定产出物写至 `docs/superpowers/specs/b239-contract.md`（§1 现状查证含依赖行为与对侧常量执法、§2 契约增量、§3 三十九条原子断言、§4 Ticket 0 边界与七条交棒欠账、§5 三条拍板记录、§6 可执行冻结与图、§7 交棒声明）。
 - 2026-08-25：符号锚自检 `go run . graph resolve --repo . --view cards-B239-charter --doc docs/superpowers/specs/b239-contract.md` 退出码 0；九个锚点七个 ok、两个 moved（ledgerSession 与 StepRunner.Run 为基线扫描后的既有行漂移，均按符号再锚定到正确节点），无坏锚。
-
-
+- 2026-08-25：执行节点启动复核 `git status --short --branch`；原始输出 `## cards/B239-charter-6`，当前分支与工作树状态已确认。
+- 2026-08-25：首次读取计划时误用路径 `superpowers/specs/2026-08-24-b239-claim-lock-split.md`；原始报错 `sed: can't read superpowers/specs/2026-08-24-b239-claim-lock-split.md: No such file or directory`，已改用 `docs/superpowers/specs/...`，未改动代码。
+- 2026-08-25：A0 基线复核 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：A0 基线复核 `go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd`；原始输出为空，退出码 0。
+- 2026-08-25：A0 基线复核 `go test ./internal/ledger/ ./internal/ledgerstep/`；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledger 12.461s`、`ok  github.com/Xsxdot/handoff/internal/ledgerstep (cached)`，退出码 0。
+- 2026-08-25：A0 基线复核 `go test ./cmd/ -run 'TestCardDispatch|TestResolveCardDispatchTemplate'`；原始输出 `ok  github.com/Xsxdot/handoff/cmd (cached)`，退出码 0。
+- 2026-08-25：A0 基线复核 `go test ./internal/agentd/ -run 'TestStartCardStep|TestRequiresInlineLocalFile'`；原始输出 `ok  github.com/Xsxdot/handoff/internal/agentd (cached)`，退出码 0。
+- 2026-08-25：A1 红测 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics|TestReleaseCardOwnershipSemantics'`；原始输出为编译失败：`not enough arguments in call to s.ClaimCard`，新测试已确认击中旧四参接口而非测试拼写错误。
+- 2026-08-25：首次 A2 `apply_patch` 因 move.go 注释/尾部上下文不完全匹配失败，原始工具报错 `apply_patch verification failed: Failed to find expected lines`；未产生文件改动，随后缩短锚点重试。
+- 2026-08-25：A2 账本实现后 `go test ./internal/ledger/`；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledger 12.874s`，退出码 0；tasks_test 已同步收窄 ClaimCard 并改为非持有者 release 可见失败。
+- 2026-08-25：A3 后 cmd 行为红测 `go test ./cmd/ -run 'TestCardDispatch|TestCardRelease|TestCardTakeover|TestResolveCardDispatchTemplate'`；原始输出首先为生产调用仍四参 `st.ClaimCard` 的编译错误，且新测试缺少 `fmt` import；已确认非功能性阻塞。
+- 2026-08-25：首次 A4 多文件大补丁被 `apply_patch` 拒绝，原始工具报错 `invalid patch: multiple operations target .../cmd/card_driver.go`；未产生代码改动，改为分文件应用。
+- 2026-08-25：Task A 触碰文件 `gofmt -w ...`；原始输出为空，退出码 0。
+- 2026-08-25：Task A cmd 缝绿 `go test ./cmd/ -run 'TestCardDispatch|TestCardRelease|TestCardTakeover|TestResolveCardDispatchTemplate'`；原始输出 `ok  github.com/Xsxdot/handoff/cmd 2.236s`，退出码 0。
+- 2026-08-25：Task A ledger/ledgerstep 缝绿 `go test ./internal/ledger/ ./internal/ledgerstep/`；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger (cached)`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 4.543s`，退出码 0。
+- 2026-08-25：按计划命令 `rg -n 'ledgerSession' --include='*.go' cmd/ internal/ | grep -v _test.go` 失败；原始报错 `rg: unrecognized flag --include`，已换用 `rg -n 'ledgerSession' cmd/ internal/ -g '*.go' | grep -v _test.go`，原始输出为空、退出码 1（无命中）。
+- 2026-08-25：Task A 收尾 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：Task A 收尾 `go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd`；原始输出为空，退出码 0。
+- 2026-08-25：Task A 收尾 `gofmt -l internal/ledger internal/ledgerstep cmd`；原始输出为空，退出码 0。
+- 2026-08-25：B1 红测 `go test ./internal/ledger/ -run 'TestAcquireRunLock|TestReleaseRunLock|TestRunLockReads|TestCardRunLocksPK'`；原始失败片段：`runlock_test.go:33: 不存在卡应 ErrNotFound: <nil>`、`:92: 预占: false <nil>`、`:132: 取得: false <nil>`、`:156: 负 TTL 造过期行: false <nil>`、`:186: 撞 PK 后首行不得被动`，退出码 1；确认命中 runlock 空壳行为。
+- 2026-08-25：B2 运行锁实现后局部行为测试 `go test ./internal/ledger/ -run 'TestAcquireRunLock|TestReleaseRunLock|TestRunLockReads|TestCardRunLocksPK'`；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledger 0.479s`，退出码 0。
+- 2026-08-25：B2 账本子包测试 `go test ./internal/ledger/`；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledger 11.946s`，退出码 0。
+- 2026-08-25：Task B 收尾 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：Task B 收尾 `go vet ./internal/ledger`；原始输出为空，退出码 0。
+- 2026-08-25：Task B 收尾 `gofmt -l internal/ledger`；原始输出为空，退出码 0。
+- 2026-08-25：C1 新测试首次执行因测试环境 PTY 根目录不可用而跳过；原始输出 `PTY 测试根目录不可用: ... read-only file system`，该读数未作为行为结果采用，随后为 B239 测试补建不依赖 PTY 的 HTTP/Server 夹具。
+- 2026-08-25：C1 夹具补 import 后首次执行编译失败；原始输出 `internal/agentd/ledgerapi_test.go:163:33: undefined: slog`、`:165:8: undefined: httptest`，已补 import。
+- 2026-08-25：C1 红测在不依赖 PTY 夹具上执行 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus|TestStartCardStepAssemblesRunHolder|TestLegacyStepFallbackActorIsHostOnly' -count=1`；原始失败片段：`holder 应为 run:<host>#<pid>#<unixnano> 形态: ""`、`未过期运行锁 + 最新 task failed 应亮徽标`、`legacy 请求应 202 受理: 400 {"error":"节点 \"review\" 不在卡 P1 的工作流 bug v1 里"}`，退出码 1；前两条确认功能红，第三条为夹具节点名问题，已改用 StatusDoing。
+- 2026-08-25：C1 台账追加尝试使用错误日期锚点失败；原始工具报错 `apply_patch verification failed: Failed to find expected lines`，未产生改动，随后使用正确锚点重试。
+- 2026-08-25：C2 首次编译 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus|TestStartCardStepAssemblesRunHolder|TestLegacyStepFallbackActorIsHostOnly' -count=1`；原始报错 `hostOnly redeclared in this block`，既有定义位于 `internal/agentd/hostguard.go:236`，已删除重复 helper 并复用既有实现。
+- 2026-08-25：C2 agentd 局部缝测试 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus|TestStartCardStepAssemblesRunHolder|TestLegacyStepFallbackActorIsHostOnly' -count=1`；原始输出 `ok  github.com/Xsxdot/handoff/internal/agentd 0.562s`，退出码 0。
+- 2026-08-25：C2 收尾 `go test ./internal/agentd/`；原始输出 `ok  github.com/Xsxdot/handoff/internal/agentd 131.869s`，退出码 0。
+- 2026-08-25：C2 收尾 `go vet ./internal/agentd`；原始输出为空，退出码 0。
+- 2026-08-25：C2 收尾 `gofmt -l internal/agentd`；原始输出为空，退出码 0。
+- 2026-08-25：D1 首次红测 `go test ./internal/ledgerstep/ -run 'TestRunner' -count=1`；原始编译失败片段：`unknown field RenewBeat in struct literal of type StepRunner`、`runner.RenewBeat undefined`、`undefined: ErrWriteGateClosed`，确认新注入缝尚未存在。
+- 2026-08-25：D2 首次 gofmt 发现 runner 续租循环写出非法 select；原始报错 `internal/ledgerstep/runner.go:171:9: expected 1 expression`，已拆成 ctx.Done 与 done 两个 case。
+- 2026-08-25：D2 接缝空壳后 `go test ./internal/ledgerstep/ -run 'TestRunner' -count=1` 真实断言红；原始失败片段包括 `运行中应有 RunHolder 锁行: ok=false`、`失败回合归属也应保持，实际 session=""`、`卡上应有含 "查无此节点" 的评论与 needs_human`、`会话未设置应报错`、`运行锁被拒时不得派发`、`失去写权...` 之前的入口条件错误，退出码 1；确认不是编译/拼写红。
+- 2026-08-25：D1 接口总表声明 `RenewBeat <-chan time.Time` 与测试直接向字段发送冲突；选择保持冻结签名为只读通道，测试改为持有双向 `beats` 后经字段注入，未改生产接口。
+- 2026-08-25：D2 修正入口失败返回：落卡成功后同时返回原始错误，保留既有调用方的错误可见性；补齐非产出 gateflow 的 StatusDone 测试节点，并给既有 runner 测试装配 RunHolder。
+- 2026-08-25：D2 全量局部测试 `go test ./internal/ledgerstep/` 失败；原始失败：`runner_test.go:452: 节拍后库行 expires_at 必须推进: before=2026-08-24 18:34:25.210106358 +0000 UTC after=2026-08-24 18:34:25.210106358 +0000 UTC`，退出码 1；同次输出显示续租日志随后发生，判定为测试读取竞态，待改为等待库行推进后复测。
+- 2026-08-25：D2 格式化 `gofmt -w internal/ledgerstep/runner_test.go` 成功，原始输出为空，退出码 0。
+- 2026-08-25：D2 续租接缝测试 `go test ./internal/ledgerstep/ -run 'TestRunRenewsLockRowOnBeat' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.103s`，退出码 0。
+- 2026-08-25：D2 ledgerstep 局部全量 `go test ./internal/ledgerstep/` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 5.309s`，退出码 0。
+- 2026-08-25：D2 ledgerstep 竞态测试 `go test -race ./internal/ledgerstep/` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 6.799s`，退出码 0。
+- 2026-08-25：D2 收尾 `go vet ./internal/ledgerstep` 通过；原始输出为空，退出码 0。
+- 2026-08-25：D2 收尾 `gofmt -l internal/ledgerstep` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异①唯一命中检查 `rg -n '无权释放|return fmt.Errorf("卡 %s 由 %s 持有' internal/ledger/move.go`；原始输出唯一命中 `208: return fmt.Errorf("卡 %s 由 %s 持有：%s 无权释放: %w",`，退出码 0。
+- 2026-08-25：E2 变异①编译 `go build ./...` 通过；原始输出为空，退出码 0，确认变异可编译。
+- 2026-08-25：E2 变异①行为断言 `go test ./internal/ledger/ -run 'TestReleaseCardOwnershipSemantics' -count=1` 按预期失败；原始报错：`--- FAIL: TestReleaseCardOwnershipSemantics (0.07s)`、`move_test.go:144: 非持有者释放应可见失败并点名持有者: <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异①还原后复绿 `go test ./internal/ledger/ -run 'TestReleaseCardOwnershipSemantics' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.096s`，退出码 0。
+- 2026-08-25：E2 变异②唯一命中检查 `rg -n -F 'if card.DriverSession != "" && card.DriverSession != owner {' internal/ledger/move.go`；原始输出唯一命中 `160: if card.DriverSession != "" && card.DriverSession != owner {`，退出码 0。
+- 2026-08-25：E2 变异②编译 `go build ./...` 通过；原始输出为空，退出码 0，确认过期判据变异可编译。
+- 2026-08-25：E2 变异②行为断言 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 按预期失败；原始报错：`--- FAIL: TestClaimCardOwnershipSemantics (0.11s)`、`move_test.go:109: 他主持有应拒且点名持有者: 卡 P1 的归属已过期: ledger: 状态已被并发修改`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异②还原后复绿 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.115s`，退出码 0。
+- 2026-08-25：E2 变异③唯一命中检查 `rg -n -F 'UPDATE cards SET driver_session' internal/ledger/move.go`；原始输出包含认领唯一写点 `165: if _, err := tx.Exec(s.q(UPDATE cards SET driver_session = ?, driver_heartbeat_at = ? WHERE id = ?),`，退出码 0。
+- 2026-08-25：E2 变异③编译 `go build ./...` 通过；原始输出为空，退出码 0，确认状态列变异可编译。
+- 2026-08-25：E2 变异③账本行为断言 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 按预期失败；原始报错：`--- FAIL: TestClaimCardOwnershipSemantics (0.09s)`、`move_test.go:90: 认领不得改状态列: before="待办" after="进行中"`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异③命令行为断言 `go test ./cmd/ -run 'TestCardDispatchClaimAndSnapshot' -count=1` 按预期失败；原始报错：`--- FAIL: TestCardDispatchClaimAndSnapshot (0.10s)`、`card_dispatch_test.go:165: 裸 dispatch 不得挪列，实际 "进行中"`、`FAIL github.com/Xsxdot/handoff/cmd`，退出码 1。
+- 2026-08-25：E2 变异③还原后账本断言复绿 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.064s`，退出码 0。
+- 2026-08-25：E2 变异③还原后命令断言复绿 `go test ./cmd/ -run 'TestCardDispatchClaimAndSnapshot' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/cmd 0.094s`，退出码 0。
+- 2026-08-25：E2 变异④台账追加首次尝试失败；原始工具报错 `apply_patch verification failed: Failed to find expected lines ... 原始输出 ok github.com/Xsxdot/handoff/internal/ledger 0.094s`，未产生改动，随后改用正确锚点重试。
+- 2026-08-25：E2 变异④唯一命中检查 `rg -n -F 'case row.ExpiresAt.After(now):' internal/ledger/runlock.go`；原始输出唯一命中 `75: case row.ExpiresAt.After(now):`，退出码 0。
+- 2026-08-25：E2 变异④编译 `go build ./...` 通过；原始输出为空，退出码 0，确认删除过期抢占分支的语义变异可编译。
+- 2026-08-25：E2 变异④行为断言 `go test ./internal/ledger/ -run 'TestAcquireRunLockPreemptsExpiredWithGoldPayload' -count=1` 按预期失败；原始报错：`--- FAIL: TestAcquireRunLockPreemptsExpiredWithGoldPayload (0.10s)`、`runlock_test.go:97: 过期后应可取得: false <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异④还原后复绿 `go test ./internal/ledger/ -run 'TestAcquireRunLockPreemptsExpiredWithGoldPayload' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.084s`，退出码 0。
+- 2026-08-25：E2 变异⑤初查发现短锚 `WHERE card_id = ? AND holder = ?` 在 Renew 与 Release 两处命中；原始输出 `108: UPDATE ... WHERE card_id = ? AND holder = ?`、`129: DELETE ... WHERE card_id = ? AND holder = ?`，拒绝用短文本替换。
+- 2026-08-25：E2 变异⑤改用 Renew 函数上下文锚，`rg -n -F 'renewed := false' internal/ledger/runlock.go` 唯一命中 `104: renewed := false`，退出码 0。
+- 2026-08-25：E2 变异⑤首次记录编译结果时误用路径 `docs/superpowers/2026-08-25-b239-contract-ledger.md` 且空 hunk；原始工具报错 `apply_patch verification failed: invalid hunk ... is empty`，未产生改动，随后用正确台账路径重试。
+- 2026-08-25：E2 变异⑤编译 `go build ./...` 通过；原始输出为空，退出码 0，确认移除 Renew 持有者条件的语义变异可编译。
+- 2026-08-25：E2 变异⑤行为断言 `go test ./internal/ledger/ -run 'TestAcquireRunLockBasics' -count=1` 按预期失败；原始报错：`--- FAIL: TestAcquireRunLockBasics (0.15s)`、`runlock_test.go:77: 非持有者续租应 false,nil: true <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异⑤还原后复绿 `go test ./internal/ledger/ -run 'TestAcquireRunLockBasics' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.143s`，退出码 0。
+- 2026-08-25：E3 断言38变异唯一命中检查 `rg -n -F 'if state.LastType == "failed" {' internal/agentd/ledgerapi.go`；原始输出唯一命中 `203: if state.LastType == "failed" {`，退出码 0。
+- 2026-08-25：E3 断言38变异编译 `go build ./...` 通过；原始输出为空，退出码 0，确认徽标状态门变异可编译。
+- 2026-08-25：E3 断言38变异行为断言 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus' -count=1` 按预期失败；原始报错：`--- FAIL: TestCardsListConflictFollowsRunLockNotStatus (0.17s)`、`ledgerapi_test.go:218: 未过期运行锁 + 最新 task failed 应亮徽标`、`FAIL github.com/Xsxdot/handoff/internal/agentd`，退出码 1。
+- 2026-08-25：E3 断言38变异还原后复绿 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 0.204s`，退出码 0。
+- 2026-08-25：E3 工作区差异检查 `git diff --check` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E3 按收尾自审补齐 ClaimCard/ReleaseCard 过时导出注释、运行锁常量文档与新增运行锁测试文件头；格式化 `gofmt -w internal/ledger/move.go internal/ledger/runlock.go internal/ledger/runlock_test.go` 成功，原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核①再次编译 `go build ./...` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核①行为先验 `go test ./internal/ledger/ -run 'TestReleaseCardOwnershipSemantics' -count=1` 失败；原始报错：`move_test.go:144: 非持有者释放应可见失败并点名持有者: <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1，确认变异命中。
+- 2026-08-25：E2 变异全量复核①受影响包 `go test ./internal/ledger/` 失败；工具输出被截断（`Warning: truncated output`），尾部原始输出 `FAIL github.com/Xsxdot/handoff/internal/ledger 12.045s`、退出码 1。
+- 2026-08-25：E2 变异全量复核①失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `2`，退出码 0；失败名复核 `go test ./internal/ledger/ 2>&1 | rg '^--- FAIL|^    [^ ]+\\.go:[0-9]+:'` 原始输出：`--- FAIL: TestReleaseCardOwnershipSemantics (0.14s)`、`move_test.go:144: 非持有者释放应可见失败并点名持有者: <nil>`、`--- FAIL: TestReleaseCardOnlyOwnerCanClearAndOtherCanClaim (0.15s)`、`tasks_test.go:72: 非持有者 release 应可见失败: <nil>`，退出码 0（管道末端为 rg）。
+- 2026-08-25：E2 变异全量复核②再次应用过期判据变异并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核②行为先验 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 失败；原始报错：`move_test.go:109: 他主持有应拒且点名持有者: 卡 P1 的归属已过期: ledger: 状态已被并发修改`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1，确认变异命中。
+- 2026-08-25：E2 变异全量复核②受影响包失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0；失败名复核 `go test ./internal/ledger/ 2>&1 | rg '^--- FAIL|^    [^ ]+\\.go:[0-9]+:'` 原始输出：`--- FAIL: TestClaimCardOwnershipSemantics (0.12s)`、`move_test.go:109: 他主持有应拒且点名持有者: 卡 P1 的归属已过期: ledger: 状态已被并发修改`，退出码 0（管道末端为 rg）。
+- 2026-08-25：E2 变异全量复核③再次应用状态列变异并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核③账本行为先验 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 失败；原始报错：`move_test.go:90: 认领不得改状态列: before="待办" after="进行中"`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异全量复核③命令行为先验 `go test ./cmd/ -run 'TestCardDispatchClaimAndSnapshot' -count=1` 失败；原始报错：`card_dispatch_test.go:165: 裸 dispatch 不得挪列，实际 "进行中"`、`FAIL github.com/Xsxdot/handoff/cmd`，退出码 1。
+- 2026-08-25：E2 变异全量复核③台账追加首次尝试失败；原始工具报错 `apply_patch verification failed: Failed to find expected lines`，因记录中的失败包名误写为 ledger，未产生改动，随后用正确锚点重试。
+- 2026-08-25：E2 变异全量复核③账本包失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0；失败名复核输出：`--- FAIL: TestClaimCardOwnershipSemantics (0.12s)`、`move_test.go:90: 认领不得改状态列: before="待办" after="进行中"`。
+- 2026-08-25：E2 变异全量复核③cmd 包失败数 `go test ./cmd/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `2`，退出码 0；失败名复核输出：`--- FAIL: TestCardDispatchClaimAndSnapshot (0.14s)`、`card_dispatch_test.go:165: 裸 dispatch 不得挪列，实际 "进行中"`、`--- FAIL: TestCardDispatchFailureReleasesLease (0.09s)`、`card_dispatch_test.go:342: 派发失败回滚不得动状态列: ... status":"进行中" ...`。
+- 2026-08-25：E2 变异全量复核④台账追加首次尝试失败；原始工具报错 `apply_patch verification failed: Failed to find expected lines`，因引号转义锚点不匹配，未产生改动，随后改用文件尾部正确锚点重试。
+- 2026-08-25：E2 变异全量复核④再次应用过期抢占删除变异并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核④行为先验 `go test ./internal/ledger/ -run 'TestAcquireRunLockPreemptsExpiredWithGoldPayload' -count=1` 失败；原始报错：`runlock_test.go:99: 过期后应可取得: false <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异全量复核④受影响包失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0；失败名复核输出：`--- FAIL: TestAcquireRunLockPreemptsExpiredWithGoldPayload (0.12s)`、`runlock_test.go:99: 过期后应可取得: false <nil>`。
+- 2026-08-25：E2 变异全量复核⑤再次移除 Renew 持有者条件并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核⑤行为先验 `go test ./internal/ledger/ -run 'TestAcquireRunLockBasics' -count=1` 失败；原始报错：`runlock_test.go:79: 非持有者续租应 false,nil: true <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异全量复核⑤受影响包失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0；失败名复核输出：`--- FAIL: TestAcquireRunLockBasics (0.13s)`、`runlock_test.go:79: 非持有者续租应 false,nil: true <nil>`。
+- 2026-08-25：E3 断言38全量复核再次应用徽标状态门变异并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E3 断言38全量复核行为先验 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus' -count=1` 失败；原始报错：`--- FAIL: TestCardsListConflictFollowsRunLockNotStatus (0.13s)`、`ledgerapi_test.go:218: 未过期运行锁 + 最新 task failed 应亮徽标`、`FAIL github.com/Xsxdot/handoff/internal/agentd`，退出码 1。
+- 2026-08-25：E3 断言38全量复核失败数 `go test ./internal/agentd/ 2>&1 | rg -c '^--- FAIL'` 完成；原始输出 `1`，管道末端退出码 0，确认受影响包全量只拦截 1 个失败。
+- 2026-08-25：E1 最终全量构建 `go build ./...` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E1 最终静态检查 `go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E1 最终格式检查 `gofmt -l internal/ledger internal/ledgerstep internal/agentd cmd` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E1 最终四包集成测试 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/...` 通过；原始输出：`ok github.com/Xsxdot/handoff/internal/ledger 14.843s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 6.630s`、`ok github.com/Xsxdot/handoff/internal/agentd 123.700s`、`ok github.com/Xsxdot/handoff/cmd 8.982s`，退出码 0。
+- 2026-08-25：E4 生产面复核 `rg -n 'ledgerSession' cmd/ internal/ -g '*.go' -g '!**/*_test.go'` 无输出，退出码 1（rg 无匹配），确认生产代码零命中。
+- 2026-08-25：E5 断言映射 1 → `TestClaimCardOwnershipSemantics` 不存在卡 ErrNotFound。
+- 2026-08-25：E5 断言映射 2 → `TestClaimCardOwnershipSemantics` 终态卡 ErrBadState。
+- 2026-08-25：E5 断言映射 3 → `TestClaimCardOwnershipSemantics` 他主 ErrCASConflict 与持有者文本。
+- 2026-08-25：E5 断言映射 4 → `TestClaimCardOwnershipSemantics` 做旧认领时刻仍拒绝他主。
+- 2026-08-25：E5 断言映射 5 → `TestClaimCardOwnershipSemantics` 同 owner 重入幂等。
+- 2026-08-25：E5 断言映射 6 → `TestClaimCardOwnershipSemantics` 认领前后状态列相同。
+- 2026-08-25：E5 断言映射 7 → `TestClaimCardOwnershipSemantics` 归属字段与认领时刻写入。
+- 2026-08-25：E5 断言映射 8 → `TestReleaseCardOwnershipSemantics` 不存在卡 ErrNotFound。
+- 2026-08-25：E5 断言映射 9 → `TestReleaseCardOwnershipSemantics` 无主卡释放幂等成功。
+- 2026-08-25：E5 断言映射 10 → `TestReleaseCardOwnershipSemantics` 持有者释放清空归属字段。
+- 2026-08-25：E5 断言映射 11 → `TestReleaseCardOwnershipSemantics` 非持有者可见冲突且归属不变。
+- 2026-08-25：E5 断言映射 12 → `TestTakeoverCardWritesDriverAndRoundTripsPayload` 覆盖归属并核对 takeover payload。
+- 2026-08-25：E5 断言映射 13 → `TestAcquireRunLockBasics` 不存在卡 ErrNotFound。
+- 2026-08-25：E5 断言映射 14 → `TestAcquireRunLockBasics` 租期内他人被拒并返回原行。
+- 2026-08-25：E5 断言映射 15 → `TestAcquireRunLockPreemptsExpiredWithGoldPayload` 过期后覆盖运行锁四字段。
+- 2026-08-25：E5 断言映射 16 → `TestAcquireRunLockPreemptsExpiredWithGoldPayload` takeover 事件 payload 三键金样本。
+- 2026-08-25：E5 断言映射 17 → `TestAcquireRunLockBasics` 首次取得不落卡事件。
+- 2026-08-25：E5 断言映射 18 → `TestAcquireRunLockBasics` 同 holder 重入只刷新 expires_at。
+- 2026-08-25：E5 断言映射 19 → `TestAcquireRunLockBasics` 持有者续租成功、非持有者 false 无副作用。
+- 2026-08-25：E5 断言映射 20 → `TestReleaseRunLockSemantics` 释放后立即可被他人取得。
+- 2026-08-25：E5 断言映射 21 → `TestReleaseRunLockSemantics` 非持有者释放 nil 且不动他人行。
+- 2026-08-25：E5 断言映射 22 → `TestRunLockReadsReturnExpiredRowsAsIs` 读面保留过期行。
+- 2026-08-25：E5 断言映射 23 → `TestCardRunLocksPKIsCardID` 表存在且 card_id 主键生效。
+- 2026-08-25：E5 断言映射 24 → `TestRunnerUnknownNodeHaltsWithCardEvent` 入口节点失败落评论与 needs_human。
+- 2026-08-25：E5 断言映射 25 → `TestRunnerMissingSessionHaltsWithCardEvent` 缺 session 落卡后返回错误。
+- 2026-08-25：E5 断言映射 26 → `TestRunnerRunLockRefusalReportsWhoNodeExpiry` 运行锁拒绝落持有者/节点/卡事件。
+- 2026-08-25：E5 断言映射 27 → `TestRunnerOwnershipRefusalHaltsWithCardEvent` 归属拒绝落卡且不改他主。
+- 2026-08-25：E5 断言映射 28 → `TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun` 正常结束删运行锁、保归属。
+- 2026-08-25：E5 断言映射 29 → `TestRunnerKeepsOwnershipAfterDispatchFailure` 失败结束删运行锁、保归属。
+- 2026-08-25：E5 断言映射 30 → `TestRunRenewsLockRowOnBeat` 注入节拍推进库行 expires_at。
+- 2026-08-25：E5 断言映射 31 → `TestRunnerStopsCardWritesAfterLosingWriteGate` 失权后禁止业务写且只留一条说明评论。
+- 2026-08-25：E5 断言映射 32 → `TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun` 与 `TestRunnerKeepsOwnershipAfterDispatchFailure` 证明编排收口只释放运行锁。
+- 2026-08-25：E5 断言映射 33 → `TestCardReleaseRejectsNonHolderAndSucceedsForOwner` CLI 非持有者失败、持有者成功。
+- 2026-08-25：E5 断言映射 34 → `TestCardDispatchClaimAndSnapshot` 无驱动裸 dispatch 放行。
+- 2026-08-25：E5 断言映射 35 → `TestCardDispatchGuardFollowsOwnership` 裸 dispatch 他主拒绝并点名持有者。
+- 2026-08-25：E5 断言映射 36 → `TestCardDispatchClaimAndSnapshot` 裸 dispatch 成功保持原状态列。
+- 2026-08-25：E5 断言映射 37 → `TestCardDispatchFailureReleasesLease` 失败回滚只清归属。
+- 2026-08-25：E5 断言映射 38 → `TestCardsListConflictFollowsRunLockNotStatus` 徽标由未过期运行锁与 failed task 决定。
+- 2026-08-25：E5 断言映射 39 → `rg -n 'ledgerSession' ... -g '!**/*_test.go'` 生产代码零命中。
+- 2026-08-25：E5 收尾差异检查 `git diff --check` 通过；原始输出为空，退出码 0。工作区仅含本卡实现文件、测试、台账及新增 `internal/ledger/runlock_test.go`，未见未授权分支切换或配置改动。
+- 2026-08-25：E5 日志禁令扫描 `rg -n 'fmt\\.Print|console\\.log|print\\(' cmd internal/ledger internal/ledgerstep internal/agentd -g '*.go'` 仅命中既有 stdout/测试与 `fmt.Sprint`，本卡新增路径未使用 print/console.log；命令退出码 0。
+- 2026-08-25：E5 当前分支复核 `git branch --show-current` 原始输出 `cards/B239-charter-6`；实现仍在当前分支，未切换分支。
+- 2026-08-25：E5 旧符号复核 `rg -n 'ClaimDriver' internal cmd -g '*.go' -g '!**/*_test.go'` 无输出，退出码 1（rg 无匹配），确认生产代码已删除 ClaimDriver。
+- 2026-08-25：E5 最终 `git diff --check` 通过；原始输出为空，退出码 0。
+- 2026-08-25：收尾暂存 `git add --all` 失败；原始报错：`fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/e07609e9/index.lock': Read-only file system`，退出码 128，尚未产生暂存或提交。
+- 2026-08-25：在获准的提权上下文重试 `git add --all` 成功；原始输出为空，退出码 0，随后因本条台账追加需再次暂存。
+- 2026-08-25：暂存核对 `git status --short && git diff --cached --check && git diff --check` 通过；原始输出显示本卡 18 项改动均已暂存，两个 diff check 均为空且退出码 0。

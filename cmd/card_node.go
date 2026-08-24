@@ -37,7 +37,7 @@ func runStepDispatch(cmd *cobra.Command, id, node string) error {
 	cl := client.New(addr, token)
 	req := proto.CardStepReq{
 		Step: node, Target: cardDispatchTarget, Executor: cardDispatchExecutor,
-		Model: cardDispatchModel, Extra: cardDispatchExtra, Actor: ledgerSession(),
+		Model: cardDispatchModel, Extra: cardDispatchExtra, Actor: ledgerActor(),
 	}
 	slog.Default().Info("CLI 提交卡节点", "card", id, "node", node, "agentd", cl.BaseURL(),
 		"target", req.Target, "executor", req.Executor, "model", req.Model,

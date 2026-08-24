@@ -9,6 +9,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"sync"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
@@ -30,6 +31,8 @@ type StepRunner struct {
 	// 生成（全局唯一、含机器线索）；它是卡运行锁的持有者。空 = 未装配，
 	// 运行锁路径在实现轮必须拒绝放行。
 	RunHolder string
+	// RenewBeat 续租节拍源；nil 时生产路径使用 RunLockRenewInterval ticker。
+	RenewBeat <-chan time.Time
 	// Clients 按 target 名取一个已装配好的 agentd 客户端。
 	//
 	// why 这里要的是客户端而不是 (addr, token)：relay 形态的机器根本没有 addr，
@@ -51,19 +54,24 @@ type StepRunner struct {
 // Run 跑一次节点。
 //
 // 参数：cardID 卡；nodeName 节点名（= 看板的列名），从卡钉住的工作流版本里查。
-// 返回：Outcome；节点不存在、没有 Dispatch 能力或执行内部失败时返回错误。
+// 返回：Outcome；入口失败先落 needs_human 与原文评论，再返回错误。
 //
 // 阻塞行为：节点开了 Verdict 时会阻塞到被派出去的 task 跑到回合终态
 // （几分钟到几十分钟，executor 挂在 waiting_answer 时更久）。调用方要么
 // 自己在 goroutine 里跑（agentd 就是这么做的），要么接受前台阻塞（CLI）。
-// 认领时刻不会自动续期；异常遗留归属由 takeover/release 显式处置。
+// 归属锁持久保留；运行锁由本轮续租并在回合结束释放。
 func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome, error) {
-	logger := slog.Default().With("card", cardID, "node", nodeName)
+	logger := slog.Default().With("card", cardID, "node", nodeName, "run_holder", r.RunHolder)
 	logger.Info("进入节点执行")
 	node, err := r.nodeFor(cardID, nodeName)
 	if err != nil {
 		logger.Warn("读取节点失败", "cause", err)
-		return Outcome{}, err
+		o, haltErr := r.haltEntrypoint(cardID, nodeName, "节点解不开",
+			fmt.Sprintf("本节点无法从卡钉住的工作流里解开：%s", err.Error()))
+		if haltErr != nil {
+			return Outcome{}, haltErr
+		}
+		return o, err
 	}
 	outputPath := ""
 	nodeStep := &NodeStep{
@@ -79,7 +87,7 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 	}
 	if !node.Dispatch {
 		// 纯人工列没有执行能力，不应因为被误点而留下驱动归属。
-		logger.Info("纯人工节点跳过驱动认领")
+		logger.Info("纯人工节点跳过锁与认领")
 		return nodeStep.RunOnce(ctx, cardID)
 	}
 
@@ -90,23 +98,137 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 		session = r.Dispatcher.Actor
 	}
 	if session == "" {
-		err := fmt.Errorf("节点驱动会话未设置")
+		err := fmt.Errorf("节点归属会话未设置")
 		logger.Error("节点执行被拒", "cause", err)
-		return Outcome{}, err
+		o, haltErr := r.haltEntrypoint(cardID, nodeName, "会话未设置",
+			"本节点执行被拒：发起方归属会话未设置。\n"+err.Error())
+		if haltErr != nil {
+			return Outcome{}, haltErr
+		}
+		return o, err
 	}
-	if err := r.St.ClaimDriver(cardID, session); err != nil {
-		logger.Warn("认领节点驱动失败", "session", session, "cause", err)
-		return Outcome{}, fmt.Errorf("认领节点驱动: %w", err)
+	if r.RunHolder == "" {
+		err := fmt.Errorf("运行标识未装配（RunHolder 为空）")
+		logger.Error("运行锁路径拒绝放行", "cause", err)
+		return r.haltEntrypoint(cardID, nodeName, "运行标识缺失", "本节点执行被拒："+err.Error())
 	}
-	logger.Info("节点驱动已认领", "session", session)
+	lock, acquired, err := r.St.AcquireRunLock(cardID, nodeName, r.RunHolder, ledger.RunLockTTL)
+	if err != nil {
+		logger.Error("取得运行锁失败", "cause", err)
+		o, haltErr := r.haltEntrypoint(cardID, nodeName, "取得运行锁失败", "本节点取得运行锁失败：\n"+err.Error())
+		if haltErr != nil {
+			return Outcome{}, fmt.Errorf("取得运行锁: %w", err)
+		}
+		return o, fmt.Errorf("取得运行锁: %w", err)
+	}
+	if !acquired {
+		detail := fmt.Sprintf("卡正由 %s 运行节点 %s，租期到 %s",
+			lock.Holder, lock.Node, lock.ExpiresAt.Format(time.RFC3339))
+		logger.Warn("运行锁被拒", "lock_holder", lock.Holder,
+			"lock_node", lock.Node, "expires_at", lock.ExpiresAt.Format(time.RFC3339))
+		o, haltErr := r.haltEntrypoint(cardID, nodeName, "运行锁被他方占用",
+			"本节点无法开跑："+detail+"。\n原因原文：AcquireRunLock 返回 acquired=false")
+		if haltErr != nil {
+			return Outcome{}, haltErr
+		}
+		return o, fmt.Errorf("运行锁被拒：%s", detail)
+	}
+	logger.Info("运行锁已取得", "expires_at", lock.ExpiresAt.Format(time.RFC3339))
 	defer func() {
-		if err := r.St.ReleaseCard(cardID, session); err != nil {
-			logger.Warn("释放节点驱动失败", "session", session, "cause", err)
+		if err := r.St.ReleaseRunLock(cardID, r.RunHolder); err != nil {
+			logger.Warn("释放运行锁失败", "cause", err)
 			return
 		}
-		logger.Info("节点驱动已释放", "session", session)
+		logger.Info("运行锁已释放", "holder", r.RunHolder)
+	}()
+
+	if err := r.St.ClaimCard(cardID, session); err != nil {
+		logger.Warn("归属认领被拒", "session", session, "cause", err)
+		o, haltErr := r.haltEntrypoint(cardID, nodeName, "归属认领被拒",
+			fmt.Sprintf("以 %s 认领这张卡被拒：\n%s", session, err.Error()))
+		if haltErr != nil {
+			return Outcome{}, haltErr
+		}
+		return o, fmt.Errorf("认领归属: %w", err)
+	}
+	logger.Info("归属已认领", "session", session)
+
+	done := make(chan struct{})
+	finished := make(chan struct{})
+	var lostOnce sync.Once
+	noteLost := func() {
+		lostOnce.Do(func() {
+			body := fmt.Sprintf("本轮运行锁已被接手（holder=%s）：本回合自即刻起停止对这张卡的移列、裁决、附件与等人标记写入；已在跑的远端任务继续等待并照常归档。", r.RunHolder)
+			if _, err := r.St.AddComment(cardID, body, "普通", "node:"+nodeName); err != nil {
+				logger.Warn("失去写权说明落卡失败", "cause", err)
+				return
+			}
+			logger.Info("失去写权说明已落卡")
+		})
+	}
+	beats := r.RenewBeat
+	if beats == nil {
+		ticker := time.NewTicker(ledger.RunLockRenewInterval)
+		defer ticker.Stop()
+		beats = ticker.C
+	}
+	go func() {
+		defer close(finished)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-done:
+				return
+			case <-beats:
+				ok, err := r.St.RenewRunLock(cardID, r.RunHolder, ledger.RunLockTTL)
+				switch {
+				case err != nil:
+					logger.Warn("续租出错（下一节拍重试）", "cause", err)
+				case ok:
+					logger.Info("运行锁已续租", "ttl", ledger.RunLockTTL.String())
+				default:
+					noteLost()
+					logger.Warn("续租被拒：本轮已失去对卡的写权", "holder", r.RunHolder)
+					return
+				}
+			}
+		}
+	}()
+	defer func() { <-finished }()
+	defer close(done)
+
+	nodeStep.WriteGate = func() bool {
+		ok, err := r.St.RenewRunLock(cardID, r.RunHolder, ledger.RunLockTTL)
+		if err != nil {
+			logger.Warn("写闸续租判定出错（按失权处理）", "cause", err)
+			noteLost()
+			return false
+		}
+		if !ok {
+			noteLost()
+		}
+		return ok
+	}
+	defer func() {
+		logger.Info("节点执行收口", "session", session)
 	}()
 	return nodeStep.RunOnce(ctx, cardID)
+}
+
+// haltEntrypoint 把 RunOnce 之外的入口失败同步写入卡事件流，保证 card wait 有唯一可见证据。
+func (r *StepRunner) haltEntrypoint(cardID, nodeName, reason, body string) (Outcome, error) {
+	logger := slog.Default().With("card", cardID, "node", nodeName)
+	if _, err := r.St.AddComment(cardID, body, "普通", "node:"+nodeName); err != nil {
+		logger.Error("入口失败落卡：写评论失败", "reason", reason, "cause", err)
+		return Outcome{}, fmt.Errorf("入口失败落卡（原始原因：%s）：%w", body, err)
+	}
+	if err := r.St.MarkNeedsHuman(cardID, reason, "node:"+nodeName); err != nil {
+		logger.Error("入口失败落卡：打等人标记失败", "reason", reason, "cause", err)
+		return Outcome{}, fmt.Errorf("入口失败打等人标记（原始原因：%s）：%w", body, err)
+	}
+	logger.Info("入口失败已落卡", "reason", reason)
+	return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
 }
 
 // nodeFor 在卡**钉住的**工作流版本里按名字找节点。
