@@ -384,29 +384,25 @@ handoff card wait <id> [--subtree] [--timeout 3h]
 ### 4. task 完成之后的推进
 
 ```bash
-handoff card move <id> 待审阅
-handoff card dispatch <id> --step review     # 审阅环节
+handoff card dispatch <id> --step <节点名>   # 触发下一个派发列（节点名 = 看板列名）
 handoff card accept <id> --evidence "go test ./... 全绿"
-handoff card move <id> <下一态>
-handoff card dispatch <id> --step merge      # 合并环节
+handoff card move <id> <下一列>              # 人工列的跳转（如 acceptance → finish）
 ```
 
 四条要点：
 
-- **审阅环节的 fail 会自动 `continue`**（带发现项原文），**3 轮封顶**，超限自动
-  打「等人」。要人工重置计数用 `handoff card note <id> --reset-node review`
-  （注意这个 flag 仍叫 `--reset-node`：本次「节点→环节」改名只动了
+- **各流的列序与逐节点卡操作对照表在 `product-backlog` skill 的「推进 charter 流」**
+  ——那边是驾驶手册。现役流：`triage`（收件箱/领活池）与 `charter`（L1/L2/L3
+  执行流，L1 按定级跳边直入 implement）；`bug` 流停用中（存量卡走完即退役，
+  新 L1 不再迁入）；`feature` / `domain` 已退役。本节只管流无关的通用机制。
+- **审阅类节点的 fail 会自动 `continue`**（带发现项原文），**3 轮封顶**，超限自动
+  打「等人」。要人工重置计数用 `handoff card note <id> --reset-node <节点名>`
+  （注意这个 flag 仍叫 `--reset-node`：「节点→环节」改名只动了
   `card dispatch` 的 `--step`，没顺带改它）。
 - **`card accept` 的「已验」必须带 `--evidence`**——已验是一个断言，无证据的
   断言不许落账。还没验就用 `--unverified`。
-- **合并环节永不自动合主线**：基线是 main 的卡，它跑完客观判据后推「待合并」
-  等你，不会自己合。基线是集成分支的才自动合。
-- **合并环节走 origin，且会推两条分支**：它先把工作分支推上 origin（执行机的
-  分支 origin 上本来没有），再在一个临时脱头 worktree 里合并、把结果推到
-  origin 的基线分支。两个后果要知道：① 你本地仓的当前分支、未提交改动都不会
-  被动，合并不在你的工作区里发生；② **你本地的基线分支引用不会前进**——结果
-  在 origin 上，想看得 `git fetch`。工作分支在本地和 origin 都找不到时，卡会
-  转「等人」并明说「先 handoff pull 再重试」。
+- **合并主线永远人工**：现役各流都没有自动合并节点——charter 流的 finish 是
+  人工列，合并归人（`charter:finish`）。账本里不存在「跑完自动合 main」这回事。
 
 `card move` 的每一步都拿卡钉的那版工作流当法律——状态名合不合法、gate（如
 「进『待合并』需已验收」）过不过，全按配置判。被拒了先 `handoff workflow show
@@ -430,8 +426,9 @@ handoff card dispatch <id> --step merge      # 合并环节
 ### 6. 验收后发现 bug：开新卡，不 reopen
 
 ```bash
-handoff card add "<标题>" --project <项目> --workflow bug
+handoff card add "<标题>" --project <项目>          # 缺省落 triage 收件箱
 handoff card note <新卡> "发现自 <原卡 id> 的验收"
+# 定性后按级别走 charter：L1 挂 spec+plan 合体页跳 implement（见 product-backlog）
 ```
 
 账本历史不改写，与 task 机的「归档了就是归档了」对齐。
@@ -450,7 +447,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | 「我记得这张卡已经推到待审阅了」 | 和 task 一样：`card show` 是权威，会话记忆不是。 |
 | 「审阅没过，我再 continue 一轮」 | 环节自己会 continue，3 轮封顶。手工绕开封顶就是绕开防死循环的安全阀。 |
 | 「验过了，accept 一下，证据就不写了」 | 已验必须带证据，命令会直接拒。这是取证文化不是输入校验。 |
-| 「合并环节跑完就合进 main 了吧」 | 主线永远人工。它只会把卡推到「待合并」等你。 |
+| 「节点跑完就合进 main 了吧」 | 主线永远人工。合并发生在 finish 人工列，由你本地做。 |
 | 「先 `handoff dispatch` 派了，回头再挂卡」 | 那样出来的是「未挂账」task，重复开工检测看不见它。要挂卡就用 `card dispatch`。 |
 | 「卡的事件流里没有，那就是没发生」 | 镜像可能滞后。看板会显式标「事件流滞后」，`card show` 的挂账 task 也能对账。 |
 
