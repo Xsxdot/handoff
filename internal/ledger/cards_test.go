@@ -8,12 +8,12 @@ import (
 	"time"
 )
 
-// seedStore 建好默认工作流的测试库——建卡类测试共用。
+// seedStore 建好显式测试工作流的测试库——建卡类测试共用；生产打开账本不种子。
 func seedStore(t *testing.T) *Store {
 	t.Helper()
 	s := newTestStore(t)
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("seed: %v", err)
+	if err := seedTestWorkflows(t, s); err != nil {
+		t.Fatalf("写测试工作流: %v", err)
 	}
 	return s
 }
@@ -128,28 +128,28 @@ func TestCreateCardAllocatesIndependentProjectPrefixes(t *testing.T) {
 		t.Fatalf("EnsureMinB: %v", err)
 	}
 
-	handoff, err := s.CreateCard(NewCard{Title: "handoff 卡", Project: "handoff", Actor: "test"})
+	handoff, err := s.CreateCard(NewCard{Title: "handoff 卡", Project: "handoff", Workflow: "bug", Actor: "test"})
 	if err != nil {
 		t.Fatalf("handoff 建卡: %v", err)
 	}
 	if handoff.ID != "B174" {
 		t.Fatalf("handoff 应续 B 水位，得 %s", handoff.ID)
 	}
-	charter, err := s.CreateCard(NewCard{Title: "charter 卡", Project: "charter", Actor: "test"})
+	charter, err := s.CreateCard(NewCard{Title: "charter 卡", Project: "charter", Workflow: "bug", Actor: "test"})
 	if err != nil {
 		t.Fatalf("charter 建卡: %v", err)
 	}
 	if charter.ID != "C1" {
 		t.Fatalf("charter 应从 C1 起步，得 %s", charter.ID)
 	}
-	sq, err := s.CreateCard(NewCard{Title: "sq 卡", Project: "sq", Actor: "test"})
+	sq, err := s.CreateCard(NewCard{Title: "sq 卡", Project: "sq", Workflow: "bug", Actor: "test"})
 	if err != nil {
 		t.Fatalf("sq 建卡: %v", err)
 	}
 	if sq.ID != "S1" {
 		t.Fatalf("sq 应从 S1 起步，得 %s", sq.ID)
 	}
-	child, err := s.CreateCard(NewCard{Title: "charter 子卡", Project: "charter", Parent: charter.ID, Actor: "test"})
+	child, err := s.CreateCard(NewCard{Title: "charter 子卡", Project: "charter", Workflow: "bug", Parent: charter.ID, Actor: "test"})
 	if err != nil {
 		t.Fatalf("charter 子卡: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestCreateCardAllocatesIndependentProjectPrefixes(t *testing.T) {
 // 显式配置后才允许继续建卡。
 func TestCreateCardRejectsPrefixCollision(t *testing.T) {
 	s := seedStore(t)
-	_, err := s.CreateCard(NewCard{Title: "benchmarking 卡", Project: "benchmarking", Actor: "test"})
+	_, err := s.CreateCard(NewCard{Title: "benchmarking 卡", Project: "benchmarking", Workflow: "bug", Actor: "test"})
 	if err == nil {
 		t.Fatal("benchmarking 的自动 B 前缀撞 handoff 时应拒绝建卡")
 	}
@@ -177,7 +177,7 @@ func TestCreateCardRejectsPrefixCollision(t *testing.T) {
 	if err := s.SetCardPrefix("benchmarking", "BE"); err != nil {
 		t.Fatalf("显式配置前缀: %v", err)
 	}
-	card, err := s.CreateCard(NewCard{Title: "benchmarking 卡", Project: "benchmarking", Actor: "test"})
+	card, err := s.CreateCard(NewCard{Title: "benchmarking 卡", Project: "benchmarking", Workflow: "bug", Actor: "test"})
 	if err != nil {
 		t.Fatalf("显式前缀后建卡: %v", err)
 	}
@@ -188,7 +188,7 @@ func TestCreateCardRejectsPrefixCollision(t *testing.T) {
 
 func TestCreateCardRejectsProjectWithoutASCIIPrefix(t *testing.T) {
 	s := seedStore(t)
-	_, err := s.CreateCard(NewCard{Title: "无字母项目", Project: "项目123", Actor: "test"})
+	_, err := s.CreateCard(NewCard{Title: "无字母项目", Project: "项目123", Workflow: "bug", Actor: "test"})
 	if err == nil || !strings.Contains(err.Error(), "ASCII") {
 		t.Fatalf("无 ASCII 字母项目应拒绝并说明原因，实得 %v", err)
 	}
@@ -207,7 +207,7 @@ func TestSetCardPrefixValidationAndExistingCards(t *testing.T) {
 	if err := s.SetCardPrefix("demo", "DE"); err != nil {
 		t.Fatalf("重复设相同前缀应幂等: %v", err)
 	}
-	if _, err := s.CreateCard(NewCard{Title: "demo 卡", Project: "demo", Actor: "test"}); err != nil {
+	if _, err := s.CreateCard(NewCard{Title: "demo 卡", Project: "demo", Workflow: "bug", Actor: "test"}); err != nil {
 		t.Fatalf("demo 建卡: %v", err)
 	}
 	if err := s.SetCardPrefix("demo", "D"); err == nil || !strings.Contains(err.Error(), "已有卡") {
@@ -369,7 +369,7 @@ func TestSetCardBaseBranch(t *testing.T) {
 
 	t.Run("clear preserves parent", func(t *testing.T) {
 		s := seedStore(t)
-		parent, err := s.CreateCard(NewCard{Title: "父卡", Project: "p", BaseBranch: "parent/base", Actor: "test"})
+		parent, err := s.CreateCard(NewCard{Title: "父卡", Project: "p", Workflow: "bug", BaseBranch: "parent/base", Actor: "test"})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -534,13 +534,40 @@ func TestCloseAndRevive(t *testing.T) {
 	}
 }
 
-func TestCreateCardEmptyWorkflowDefaultsToTriage(t *testing.T) {
-	s := seedStore(t)
-	card, err := s.CreateCard(NewCard{Title: "待定性", Project: "p", Actor: "test"})
-	if err != nil {
-		t.Fatalf("建卡: %v", err)
-	}
-	if card.WorkflowName != "triage" || card.Status != "待办" {
-		t.Fatalf("空 workflow 应落 triage 待办: %+v", card)
-	}
+func TestCreateCardEmptyWorkflowRequiresUniqueWorkflow(t *testing.T) {
+	t.Run("zero", func(t *testing.T) {
+		s := newTestStore(t)
+		_, err := s.CreateCard(NewCard{Title: "无流", Project: "p", Actor: "test"})
+		if err == nil || !strings.Contains(err.Error(), "先用 workflow put") {
+			t.Fatalf("零工作流应指引先建流: %v", err)
+		}
+	})
+
+	t.Run("one", func(t *testing.T) {
+		s := newTestStore(t)
+		if _, err := s.PutWorkflow("charter", WorkflowDef{States: []string{"待办", "完成"}}); err != nil {
+			t.Fatal(err)
+		}
+		card, err := s.CreateCard(NewCard{Title: "唯一流", Project: "p", Actor: "test"})
+		if err != nil {
+			t.Fatalf("建卡: %v", err)
+		}
+		if card.WorkflowName != "charter" || card.Status != "待办" {
+			t.Fatalf("唯一工作流应自动采用: %+v", card)
+		}
+	})
+
+	t.Run("many", func(t *testing.T) {
+		s := newTestStore(t)
+		for _, name := range []string{"charter", "other"} {
+			if _, err := s.PutWorkflow(name, WorkflowDef{States: []string{"待办", "完成"}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		_, err := s.CreateCard(NewCard{Title: "多流", Project: "p", Actor: "test"})
+		if err == nil || !strings.Contains(err.Error(), "显式指定 --workflow") ||
+			!strings.Contains(err.Error(), "charter") || !strings.Contains(err.Error(), "other") {
+			t.Fatalf("多工作流应列出选项并要求显式指定: %v", err)
+		}
+	})
 }

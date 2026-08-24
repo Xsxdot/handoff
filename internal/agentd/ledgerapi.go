@@ -713,9 +713,9 @@ func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {
 }
 
 // attachmentKinds 是允许的附件类型。收窄成白名单不是洁癖：附件 kind 是
-// 「进入某一列的门槛」的判据（Gate.RequireAttachment），拼错一个字母会让门
+// 「进入某一列的门槛」的判据（Gate.RequireAttachment/RequireAttachmentAny），拼错一个字母会让门
 // 永远过不去，而界面上看着附件明明挂着——那种问题极难自查。新增
-// Gate.RequireAttachment 取值时必须同步登记，家族回归测试会拦住遗漏。
+// Gate.RequireAttachment 或 Gate.RequireAttachmentAny 取值时必须同步登记，家族回归测试会拦住遗漏。
 var attachmentKinds = map[string]bool{"spec": true, "plan": true, "doc": true, "contract": true}
 
 // handleCardCreate 建卡。

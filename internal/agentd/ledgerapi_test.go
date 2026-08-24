@@ -136,9 +136,7 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	if err := st.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, st)
 	env := newTestAgentdEnv(t)
 	env.srv.SetLedger(st)
 	return &ledgerEnv{testAgentdEnv: env, ledger: st}
@@ -146,6 +144,7 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 
 func seedCard(t *testing.T, env *ledgerEnv, title string) ledger.Card {
 	t.Helper()
+	seedAgentdLedger(t, env.ledger, "bug")
 	card, err := env.ledger.CreateCard(ledger.NewCard{Title: title, Project: "p", Workflow: "bug", Actor: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -155,6 +154,7 @@ func seedCard(t *testing.T, env *ledgerEnv, title string) ledger.Card {
 
 func TestCreateCardViaAPI(t *testing.T) {
 	env := newLedgerEnv(t)
+	seedAgentdLedger(t, env.ledger, "bug")
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards",
 		`{"title":"浏览器建的卡","project":"p","workflow":"bug","priority":"高","base_branch":"feat/x"}`)
 	if code != http.StatusOK {
@@ -188,6 +188,7 @@ func TestCreateCardRejectsEmptyTitle(t *testing.T) {
 
 func TestMigrateCardRouteUsesExplicitTargetShape(t *testing.T) {
 	env := newLedgerEnv(t)
+	seedAgentdLedger(t, env.ledger, "domain")
 	card := seedCard(t, env, "迁移骨架")
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/migrate", `{"workflow":"domain","status":"拆解"}`)
 	if code != http.StatusOK {
@@ -212,7 +213,13 @@ func TestMigrateCardRouteUsesExplicitTargetShape(t *testing.T) {
 // handler 断言，Store 有值不代表 wire 上有值（ChildrenTotal 教训）。
 func TestMigrateAPIProjectsFromTo(t *testing.T) {
 	env := newLedgerEnv(t)
-	card, err := env.ledger.CreateCard(ledger.NewCard{Title: "迁移投影", Project: "p", Actor: "test"})
+	seedAgentdLedger(t, env.ledger, "triage", "bug")
+	// 显式声明起点流：本轮起账本不再有出厂流，缺省解析在多流时按歧义拒绝。
+	// 取 triage 而非 bug，让 migrate 的 from/to 落在两条不同的流上——
+	// 本测试断言的正是 from/to 投影，同流同列会让断言失去分辨力。
+	card, err := env.ledger.CreateCard(ledger.NewCard{
+		Title: "迁移投影", Project: "p", Workflow: "triage", Actor: "test",
+	})
 	if err != nil {
 		t.Fatalf("建卡: %v", err)
 	}
@@ -476,13 +483,14 @@ func TestAttachContractViaAPI(t *testing.T) {
 	}
 }
 
-// TestAttachmentKindsCoverDefaultWorkflowGates 出厂工作流新增闸 kind 时，
-// 必须同步登记 Web 白名单；否则 CLI 与 Web 行为分裂，闸在 Web 永远无法满足。
-func TestAttachmentKindsCoverDefaultWorkflowGates(t *testing.T) {
+// TestAttachmentKindsCoverGateKinds 工作流 gate 用到的每个 attachment kind
+// 都必须在 Web 白名单里，否则闸在 Web 永远无法满足。数据来自测试夹具，
+// 不是出厂种子；夹具同时覆盖单值与多值 gate。
+func TestAttachmentKindsCoverGateKinds(t *testing.T) {
 	env := newLedgerEnv(t)
 	names, err := env.ledger.ListWorkflowNames()
 	if err != nil {
-		t.Fatalf("列出厂工作流: %v", err)
+		t.Fatalf("列测试工作流: %v", err)
 	}
 	seen := map[string]string{}
 	for _, name := range names {
@@ -492,6 +500,9 @@ func TestAttachmentKindsCoverDefaultWorkflowGates(t *testing.T) {
 		}
 		for _, node := range wf.Def.Nodes {
 			if kind := node.Gate.RequireAttachment; kind != "" {
+				seen[kind] = name + "/" + node.Name
+			}
+			for _, kind := range node.Gate.RequireAttachmentAny {
 				seen[kind] = name + "/" + node.Name
 			}
 		}
@@ -528,12 +539,7 @@ func TestLedgerAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lst.Close() })
-	if err := lst.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
-	if err := lst.EnsureDefaultTemplates(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, lst, "bug")
 	card, err := lst.CreateCard(ledger.NewCard{Title: "api 卡", Project: "p", Workflow: "bug", Actor: "t"})
 	if err != nil {
 		t.Fatal(err)
@@ -930,6 +936,7 @@ func TestCardStepPropagatesRequestFields(t *testing.T) {
 
 func TestFlowGetReturnsNodes(t *testing.T) {
 	env := newLedgerEnv(t)
+	seedAgentdLedger(t, env.ledger, "feature")
 	code, body := ledgerGet(t, env.testAgentdEnv, "/api/flows/feature")
 	if code != http.StatusOK {
 		t.Fatalf("code = %d, body = %s", code, body)
@@ -952,6 +959,7 @@ func TestFlowGetReturnsNodes(t *testing.T) {
 
 func TestFlowPutCreatesNewVersion(t *testing.T) {
 	env := newLedgerEnv(t)
+	seedAgentdLedger(t, env.ledger, "feature")
 	payload := `{"nodes":[{"name":"待办","next":"进行中"},{"name":"进行中"}]}`
 	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/feature", payload)
 	if code != http.StatusOK {
@@ -970,6 +978,7 @@ func TestFlowPutCreatesNewVersion(t *testing.T) {
 
 func TestFlowNodeProducesRoundTripsThroughHTTPWire(t *testing.T) {
 	env := newLedgerEnv(t)
+	seedAgentdLedger(t, env.ledger, "feature")
 	payload := []byte("{\"nodes\":[{\"name\":\"legacy\"},{\"name\":\"breakdown\",\"produces\":{\"kind\":\"doc\",\"path\":\"docs/b201-breakdown.md\"}}]}")
 	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/feature", string(payload))
 	if code != http.StatusOK {
@@ -1030,6 +1039,7 @@ func TestLedgerNodeWirePreservesProduces(t *testing.T) {
 
 func TestFlowPutRejectsBadNodes(t *testing.T) {
 	env := newLedgerEnv(t)
+	seedAgentdLedger(t, env.ledger, "feature")
 	// Next 指向不存在的节点：校验应在 Store 层拦下，HTTP 翻成 400 而不是 500。
 	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/feature",
 		`{"nodes":[{"name":"A","next":"查无此节点"}]}`)
@@ -1113,9 +1123,7 @@ func TestCardDetailCarriesDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = lst.Close() })
-	if err := lst.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
+	seedAgentdLedger(t, lst, "bug")
 	card, err := lst.CreateCard(ledger.NewCard{Title: "有请示的卡", Project: "p", Workflow: "bug", Actor: "t"})
 	if err != nil {
 		t.Fatal(err)

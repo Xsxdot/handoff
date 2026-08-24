@@ -3,7 +3,6 @@ package ledger
 import (
 	"encoding/json"
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 )
@@ -25,17 +24,25 @@ func TestWorkflowLegacyDefStillDecodes(t *testing.T) {
 		t.Fatalf("States 丢了: %v", got.Def.States)
 	}
 	// 读出时应补出等价的纯人工节点序列，且顺序与 States 一致、按序 Next。
-	if len(got.Def.Nodes) != 3 {
-		t.Fatalf("Nodes 应补出 3 个，得到 %d", len(got.Def.Nodes))
+	wantStates := []string{"待办", "进行中", "已完成"}
+	if len(got.Def.Nodes) != len(wantStates) {
+		t.Fatalf("Nodes 应补出 %d 个，得到 %d", len(wantStates), len(got.Def.Nodes))
 	}
-	if got.Def.Nodes[0].Name != "待办" || got.Def.Nodes[0].Next != "进行中" {
-		t.Fatalf("首节点补错: %+v", got.Def.Nodes[0])
-	}
-	if got.Def.Nodes[2].Next != "" {
-		t.Fatalf("末节点不该有 Next: %+v", got.Def.Nodes[2])
-	}
-	if got.Def.Nodes[0].Dispatch || got.Def.Nodes[0].Verdict {
-		t.Fatalf("补出的节点必须是纯人工列: %+v", got.Def.Nodes[0])
+	for i, want := range wantStates {
+		node := got.Def.Nodes[i]
+		if node.Name != want {
+			t.Fatalf("节点[%d] = %q，want %q", i, node.Name, want)
+		}
+		wantNext := ""
+		if i+1 < len(wantStates) {
+			wantNext = wantStates[i+1]
+		}
+		if node.Next != wantNext {
+			t.Fatalf("节点[%d] Next = %q，want %q", i, node.Next, wantNext)
+		}
+		if node.Dispatch || node.Verdict || node.CarryCardContext || node.Template != "" {
+			t.Fatalf("补出的节点必须是纯人工列: %+v", node)
+		}
 	}
 	if got.Def.Nodes[2].Gate.RequireAcceptance != true {
 		t.Fatalf("Gate 应并入对应节点: %+v", got.Def.Nodes[2].Gate)
@@ -46,7 +53,7 @@ func TestWorkflowNodesProjectToStates(t *testing.T) {
 	s := newTestStore(t)
 	// 先 seed 模板：本用例引用了 feature-impl，而 Task 2 会给 PutWorkflow 加上
 	// 模板存在性校验。现在补这一行，等 Task 2 落地时这个用例不会回头变红。
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	// 新 def：只给 Nodes，States/Gates 应由写入侧派生出来，
@@ -83,7 +90,7 @@ func TestWorkflowNodesProjectToStates(t *testing.T) {
 
 func TestWorkflowNodeCarriesPurposeAndAcceptanceSwitch(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	_, err := s.PutWorkflow("node-fields", WorkflowDef{Nodes: []NodeDef{{
@@ -106,170 +113,9 @@ func TestWorkflowNodeCarriesPurposeAndAcceptanceSwitch(t *testing.T) {
 	}
 }
 
-func TestDefaultWorkflowsAreNodeForm(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
-		t.Fatalf("seed 模板: %v", err)
-	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("seed 工作流: %v", err)
-	}
-	feature, err := s.GetWorkflow("feature", 0)
-	if err != nil {
-		t.Fatalf("读 feature 流: %v", err)
-	}
-	if len(feature.Def.Nodes) == 0 {
-		t.Fatalf("出厂工作流应是节点形")
-	}
-	var review, merge *NodeDef
-	for i := range feature.Def.Nodes {
-		switch feature.Def.Nodes[i].Name {
-		case "待审阅":
-			review = &feature.Def.Nodes[i]
-		case "待合并":
-			merge = &feature.Def.Nodes[i]
-		}
-	}
-	if review == nil || !review.Dispatch || !review.Verdict || !review.CarryCardContext {
-		t.Fatalf("待审阅应是派发+裁决+带卡上下文: %+v", review)
-	}
-	if review.OnFail != "进行中" {
-		t.Fatalf("审阅未过应退回进行中，实际 %q", review.OnFail)
-	}
-	if merge == nil || !merge.Dispatch {
-		t.Fatalf("待合并应是派发型节点: %+v", merge)
-	}
-	// main 上的合并必须留人工——出厂默认不能自动往主线合。
-	found := false
-	for _, base := range merge.HumanBases {
-		if base == "main" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("出厂合并节点必须把 main 列入人工清单: %+v", merge.HumanBases)
-	}
-	// States 投影必须仍在，看板与 MoveCard 靠它。
-	if len(feature.Def.States) != len(feature.Def.Nodes) {
-		t.Fatalf("States 投影缺失: %v", feature.Def.States)
-	}
-}
-
-func TestEnsureDefaultWorkflowsDoesNotOverwrite(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
-		t.Fatalf("seed 模板: %v", err)
-	}
-	if _, err := s.PutWorkflow("feature", WorkflowDef{Nodes: []NodeDef{{Name: "我自己的列"}}}); err != nil {
-		t.Fatalf("写用户版本: %v", err)
-	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	got, _ := s.GetWorkflow("feature", 0)
-	if len(got.Def.Nodes) != 1 || got.Def.Nodes[0].Name != "我自己的列" {
-		t.Fatalf("seed 覆盖了用户改过的工作流: %+v", got.Def.Nodes)
-	}
-}
-
-func TestEnsureDefaultWorkflowsUpgradesLegacyDefinition(t *testing.T) {
-	s := newTestStore(t)
-	legacy := WorkflowDef{
-		States: []string{StatusTodo, StatusDoing, StatusReview, StatusDone},
-	}
-	if _, err := s.PutWorkflow("bug", legacy); err != nil {
-		t.Fatalf("写老 bug 流: %v", err)
-	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("补版 seed: %v", err)
-	}
-
-	latest, err := s.GetWorkflow("bug", 0)
-	if err != nil {
-		t.Fatalf("读补版 bug 流: %v", err)
-	}
-	if latest.Version != 2 {
-		t.Fatalf("老流补版应写 v2，得到 v%d", latest.Version)
-	}
-	var doing *NodeDef
-	for i := range latest.Def.Nodes {
-		if latest.Def.Nodes[i].Name == StatusDoing {
-			doing = &latest.Def.Nodes[i]
-			break
-		}
-	}
-	if doing == nil || !doing.Dispatch || doing.Template != "feature-impl" {
-		t.Fatalf("补版后的进行中节点缺少出厂派发能力: %+v", doing)
-	}
-
-	old, err := s.GetWorkflow("bug", 1)
-	if err != nil {
-		t.Fatalf("读旧版 bug 流: %v", err)
-	}
-	if old.Version != 1 || len(old.Def.States) != len(legacy.States) {
-		t.Fatalf("旧版行被改动: v%d %+v", old.Version, old.Def)
-	}
-	for _, node := range old.Def.Nodes {
-		if node.Dispatch || node.Verdict || node.Template != "" {
-			t.Fatalf("旧版投影不应获得派发能力: %+v", old.Def.Nodes)
-		}
-	}
-	var raw string
-	if err := s.db.QueryRow(s.q(`SELECT definition FROM workflows WHERE name = ? AND version = ?`), "bug", 1).Scan(&raw); err != nil {
-		t.Fatalf("读取旧版原始定义: %v", err)
-	}
-	var stored WorkflowDef
-	if err := json.Unmarshal([]byte(raw), &stored); err != nil {
-		t.Fatalf("解码旧版原始定义: %v", err)
-	}
-	if len(stored.Nodes) != 0 || len(stored.States) != len(legacy.States) {
-		t.Fatalf("旧版原始行不是老 def: %+v", stored)
-	}
-}
-
-func TestEnsureDefaultWorkflowsDoesNotUpgradeNodeDefinition(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
-		t.Fatalf("seed 模板: %v", err)
-	}
-	if _, err := s.PutWorkflow("feature", WorkflowDef{Nodes: []NodeDef{{Name: "用户列"}}}); err != nil {
-		t.Fatalf("写用户节点形流: %v", err)
-	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	got, err := s.GetWorkflow("feature", 0)
-	if err != nil {
-		t.Fatalf("读用户节点形流: %v", err)
-	}
-	if got.Version != 1 || len(got.Def.Nodes) != 1 || got.Def.Nodes[0].Name != "用户列" {
-		t.Fatalf("用户节点形流被补版或覆盖: v%d %+v", got.Version, got.Def.Nodes)
-	}
-}
-
-func TestEnsureDefaultWorkflowsLegacyUpgradeIsIdempotent(t *testing.T) {
-	s := newTestStore(t)
-	if _, err := s.PutWorkflow("feature", WorkflowDef{States: []string{StatusTodo, StatusDoing}}); err != nil {
-		t.Fatalf("写老 feature 流: %v", err)
-	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("首次补版 seed: %v", err)
-	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("重复补版 seed: %v", err)
-	}
-	got, err := s.GetWorkflow("feature", 0)
-	if err != nil {
-		t.Fatalf("读补版流: %v", err)
-	}
-	if got.Version != 2 {
-		t.Fatalf("老流重复 seed 不应继续涨版本，得到 v%d", got.Version)
-	}
-}
-
 func TestPutWorkflowRejectsBadNodes(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	cases := []struct {
@@ -315,7 +161,7 @@ func TestPutWorkflowRejectsBadNodes(t *testing.T) {
 
 func TestPutWorkflowAcceptsGoodNodes(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	version, err := s.PutWorkflow("good", WorkflowDef{Nodes: []NodeDef{
@@ -330,30 +176,6 @@ func TestPutWorkflowAcceptsGoodNodes(t *testing.T) {
 	}
 	if version != 1 {
 		t.Fatalf("version = %d, want 1", version)
-	}
-}
-
-func TestEnsureDefaultWorkflows(t *testing.T) {
-	s := newTestStore(t)
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("seed: %v", err)
-	}
-	wf, err := s.GetWorkflow("feature", 0) // 0 = 最新版
-	if err != nil {
-		t.Fatalf("get: %v", err)
-	}
-	if wf.Version != 1 || wf.Def.States[1] != "已出spec" {
-		t.Fatalf("feature 流不符: %+v", wf)
-	}
-	if g := wf.Def.Gates["已出spec"]; g.RequireAttachment != "spec" {
-		t.Fatalf("gate 缺失: %+v", wf.Def.Gates)
-	}
-	// 幂等：重复 seed 不产生新版本
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("re-seed: %v", err)
-	}
-	if wf2, _ := s.GetWorkflow("feature", 0); wf2.Version != 1 {
-		t.Fatalf("seed 不幂等，版本涨到 %d", wf2.Version)
 	}
 }
 
@@ -429,7 +251,7 @@ func TestMigrateRejectsInFlight(t *testing.T) {
 // 从哪到哪——审计链要能解释「这张卡为什么换了流程」。
 func TestMigrateWritesMigrationEvent(t *testing.T) {
 	s := seedStore(t)
-	c, err := s.CreateCard(NewCard{Title: "迁移留痕", Project: "p", Actor: "test"}) // 空 workflow 默认 triage
+	c, err := s.CreateCard(NewCard{Title: "迁移留痕", Project: "p", Workflow: "triage", Actor: "test"})
 	if err != nil {
 		t.Fatalf("建卡: %v", err)
 	}
@@ -502,102 +324,9 @@ func TestMigrateCannotBypassGate(t *testing.T) {
 	}
 }
 
-func TestDefaultTriageWorkflow(t *testing.T) {
-	s := seedStore(t)
-	wf, err := s.GetWorkflow("triage", 0)
-	if err != nil {
-		t.Fatalf("取 triage 流: %v", err)
-	}
-	if got, want := wf.Def.States, []string{"待办", "定性中", "已定性"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("triage 状态序列 = %v，want %v", got, want)
-	}
-	for _, node := range wf.Def.Nodes {
-		if node.Dispatch || node.Verdict || node.CarryCardContext || node.Template != "" || !reflect.DeepEqual(node.Gate, Gate{}) {
-			t.Fatalf("triage 节点必须纯人工且无闸: %+v", node)
-		}
-	}
-}
-
-// TestDefaultDomainWorkflow domain 流的 seed 形状：节点序列、三道闸、
-// 能力开关矩阵。States/Gates 断言走真实写读路径——它们是 Nodes 的投影，
-// 投影断了看板列渲染与 MoveCard 校验就断了（序列化边界检查）。
-func TestDefaultDomainWorkflow(t *testing.T) {
-	s := seedStore(t)
-	wf, err := s.GetWorkflow("domain", 0)
-	if err != nil {
-		t.Fatalf("取 domain 流: %v", err)
-	}
-	wantStates := []string{StatusTodo, "拆解", "契约冻结", "域实现", "集成", "终审", StatusDone}
-	if len(wf.Def.States) != len(wantStates) {
-		t.Fatalf("States 应为 %v，实得 %v", wantStates, wf.Def.States)
-	}
-	for i, want := range wantStates {
-		if wf.Def.States[i] != want {
-			t.Fatalf("States[%d] 应为 %q，实得 %q", i, want, wf.Def.States[i])
-		}
-	}
-	nodes := map[string]NodeDef{}
-	for _, n := range wf.Def.Nodes {
-		nodes[n.Name] = n
-	}
-	// 拆解：只派发不裁决——人工移动到契约冻结即拍板动作。
-	breakdown := nodes["拆解"]
-	if !breakdown.Dispatch || breakdown.Verdict || breakdown.Template != "domain-breakdown" {
-		t.Fatalf("拆解节点形状不对: %+v", breakdown)
-	}
-	// 契约冻结：进入门槛 = contract 附件（投影到 Gates 也要在——真实读路径断言）。
-	freeze := nodes["契约冻结"]
-	if freeze.Gate.RequireAttachment != "contract" || !freeze.Verdict || freeze.Template != "domain-ticket0" {
-		t.Fatalf("契约冻结节点形状不对: %+v", freeze)
-	}
-	if wf.Def.Gates["契约冻结"].RequireAttachment != "contract" {
-		t.Fatal("契约冻结的闸没投影进 Gates（看板 MoveCard 校验读的是这里）")
-	}
-	// 域实现：纯人工列——扇出子卡是驱动 handoff 自身的操作，归协调者。
-	if nodes["域实现"].Dispatch {
-		t.Fatal("域实现必须是纯人工列")
-	}
-	// 集成：聚合闸 + 裁决未过退回域实现。
-	integ := nodes["集成"]
-	if !integ.Gate.RequireChildrenDone || integ.OnFail != "域实现" || integ.Template != "domain-integration" {
-		t.Fatalf("集成节点形状不对: %+v", integ)
-	}
-	if !wf.Def.Gates["集成"].RequireChildrenDone {
-		t.Fatal("聚合闸没投影进 Gates")
-	}
-	// 终审：验收判据闸 + main 人工门 + finishing 覆盖，形状与 feature 待合并一致。
-	final := nodes["终审"]
-	if !final.Gate.RequireAcceptance || len(final.HumanBases) == 0 || final.HumanBases[0] != "main" {
-		t.Fatalf("终审节点形状不对: %+v", final)
-	}
-	if final.Override.Discipline != "finishing" || final.Template != "review-generic" {
-		t.Fatalf("终审应复用 review-generic + finishing 覆盖: %+v", final)
-	}
-}
-
-// TestEnsureDefaultsKeepsUserDomainWorkflow 用户自建的同名流不被 seed 覆盖。
-func TestEnsureDefaultsKeepsUserDomainWorkflow(t *testing.T) {
-	s := newTestStore(t)
-	if _, err := s.PutWorkflow("domain", WorkflowDef{Nodes: []NodeDef{
-		{Name: "甲", Next: "乙"}, {Name: "乙"},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
-	wf, err := s.GetWorkflow("domain", 0)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if wf.Version != 1 || len(wf.Def.Nodes) != 2 || wf.Def.Nodes[0].Name != "甲" {
-		t.Fatalf("用户的 domain 流被覆盖了: v%d %+v", wf.Version, wf.Def.Nodes)
-	}
-}
-
 func TestWorkflowNodeProducesRoundTripAndPresence(t *testing.T) {
 	s := newTestStore(t)
-	if err := s.EnsureDefaultTemplates(); err != nil {
+	if err := seedTestTemplates(t, s); err != nil {
 		t.Fatalf("seed 模板: %v", err)
 	}
 	want := &NodeOutput{Kind: "doc", Path: "docs/superpowers/specs/b201-breakdown.md"}
@@ -643,7 +372,7 @@ func TestWorkflowRejectsIncompleteProduces(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s := newTestStore(t)
-			if err := s.EnsureDefaultTemplates(); err != nil {
+			if err := seedTestTemplates(t, s); err != nil {
 				t.Fatalf("seed 模板: %v", err)
 			}
 			_, err := s.PutWorkflow("invalid-"+tc.name, WorkflowDef{Nodes: []NodeDef{{

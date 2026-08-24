@@ -39,7 +39,7 @@ func TestCardImportEndToEnd(t *testing.T) {
 	}
 	if shown.Card.Title != "存量迁入的行" || shown.Card.Priority != "高" ||
 		shown.Card.Project != "handoff" || shown.Card.Status != "待办" ||
-		shown.Card.WorkflowName != "triage" {
+		shown.Card.WorkflowName != "bug" {
 		t.Fatalf("字段没落对: %+v", shown.Card)
 	}
 

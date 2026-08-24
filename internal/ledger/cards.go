@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-// NewCard 建卡请求。Workflow 为空时由账本解析为 triage；Parent 非空则建子卡
+// NewCard 建卡请求。Workflow 为空时由账本按现有工作流数量解析；Parent 非空则建子卡
 // （点号 id，继承基线由查询期解析）。
 type NewCard struct {
 	Title, Project, Priority, Parent, Workflow, BaseBranch, Actor string
@@ -122,7 +122,7 @@ func (s *Store) nextChildID(tx *sql.Tx, parent string) (string, error) {
 	return fmt.Sprintf("%s.%d", parent, maxNumber+1), nil
 }
 
-// prepareCard 校验建卡请求并补默认值（优先级缺省「中」、工作流缺省 triage），
+// prepareCard 校验建卡请求并补默认值（优先级缺省「中」、工作流按账本现有流解析），
 // 取回要钉住的工作流版本。
 //
 // 参数：nc 建卡请求（就地补默认，故取指针）。
@@ -141,7 +141,25 @@ func (s *Store) prepareCard(nc *NewCard) (Workflow, error) {
 		nc.Priority = "中"
 	}
 	if strings.TrimSpace(nc.Workflow) == "" {
-		nc.Workflow = "triage"
+		log().Info("建卡解析缺省工作流", "project", nc.Project, "title", nc.Title)
+		names, err := s.ListWorkflowNames()
+		if err != nil {
+			log().Error("建卡列工作流失败", "project", nc.Project, "title", nc.Title, "cause", err)
+			return Workflow{}, fmt.Errorf("建卡解析缺省工作流: 列工作流失败: %w", err)
+		}
+		switch len(names) {
+		case 0:
+			err := fmt.Errorf("建卡缺少工作流：账本中没有工作流，请先用 workflow put 建立一条工作流")
+			log().Warn("建卡被拒：账本没有工作流", "project", nc.Project, "title", nc.Title)
+			return Workflow{}, err
+		case 1:
+			nc.Workflow = names[0]
+			log().Info("建卡采用唯一工作流", "project", nc.Project, "title", nc.Title, "workflow", nc.Workflow)
+		default:
+			err := fmt.Errorf("建卡缺少工作流：账本中有多条工作流，请显式指定 --workflow（可选：%s）", strings.Join(names, "、"))
+			log().Warn("建卡被拒：缺省工作流有歧义", "project", nc.Project, "title", nc.Title, "workflows", names)
+			return Workflow{}, err
+		}
 	}
 	wf, err := s.GetWorkflow(nc.Workflow, 0)
 	if err != nil {
@@ -274,7 +292,7 @@ var importIDPat = regexp.MustCompile(`^[A-Z]{1,4}\d+(\.\d+)*$`)
 // 参数：id 目标卡号（顶层 "B153"/"C1" 或点号子卡 "C1.1"，父卡 id 由点号前缀
 // 推导，nc.Parent 无需也不应自行填写）；source 导入来源标注（落进
 // card_created 事件负载，空串记为「手工导入」）；nc 卡字段（标题、project
-// 必填；优先级缺省「中」；工作流缺省 triage）。
+// 必填；优先级缺省「中」；工作流为空时按账本唯一流规则解析）。
 // 返回：建成的卡；目标号已存在返回包装 ErrBadState 的错误。
 //
 // 注意：

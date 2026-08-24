@@ -1,0 +1,155 @@
+# B230 execution ledger
+
+- 2026-08-24: `pwd && git status --short --branch && rg --files -g '!*node_modules*' | sed -n '1,160p'` -> workspace `/root/.handoff/worktrees/0eae5e21`; branch `cards/B230-charter`; initial status output had no changed-file lines; repository is Go-based with `internal/ledger`, `cmd`, and tests.
+- 2026-08-24: `rg --files docs | rg 'b230|B230|2026-08-24.*factory|ledger'` -> no B230 execution ledger existed; spec exists at `docs/superpowers/specs/2026-08-24-b230-factory-seed-teardown.md`.
+- 2026-08-24: `sed -n '1,260p' docs/superpowers/specs/2026-08-24-b230-factory-seed-teardown.md` -> spec is marked approved, scopes changes to `d_coordination`, requires removing both default seed methods, adding zero/one/many default resolution, removing hard-coded workflow list rows, and explicitly excludes charter's 已定性 column and conditional edges.
+- 2026-08-24: `git log -6 --oneline --decorate` -> HEAD `0c2deede` is `docs(spec): B230 出厂种子退场——handoff 不再预设方法论`; branch tracks `origin/claude/kai-b230-da3f0d`; no implementation commit is present after the spec commit.
+- 2026-08-24: Baseline `go test ./internal/ledger ./cmd` -> `ok github.com/Xsxdot/handoff/internal/ledger 12.152s`; `cmd` setup failed because Go attempted to write `/root/go/pkg/mod/cache/download/github.com/!xsxdot/charter/graph/@v/v0.5.0.mod762009374.tmp` and `.lock`, both reported `read-only file system`.
+- 2026-08-24: `sed -n '230,430p' internal/ledger/workflows.go` -> `EnsureDefaultWorkflows` currently calls `EnsureDefaultTemplates` and seeds `feature`, `domain`, `bug`, and `triage`; `ListWorkflowNames` already queries all distinct names in ascending order.
+- 2026-08-24: `rg -n 'func \\(s \\*Store\\).*Workflow|ListWorkflowNames|EnsureDefault' ...` -> seed methods are referenced by ledger tests and many package tests; implementation must classify/update these callers rather than leave deleted methods referenced.
+- 2026-08-24: `sed -n '1,230p' internal/ledger/cards.go` -> `NewCard` documents empty `Workflow` as defaulting to `triage`; `prepareCard` is the Store-side creation seam identified for the three-state resolution.
+- 2026-08-24: `rg -n ...` -> existing tests include `TestCreateCardEmptyWorkflowDefaultsToTriage`; `cmd/card_dispatch_test.go` and `cmd/card_test.go` explicitly provide `--template feature-impl`, while template/workflow tests directly call seed methods.
+- 2026-08-24: `sed -n '210,390p' internal/ledger/templates.go` -> `EnsureDefaultTemplates` owns five hard-coded template definitions; `ListTemplateNames` already returns all stored names in ascending order.
+- 2026-08-24: `sed -n '1,130p' cmd/workflow.go` -> `workflow list` currently reads hard-coded `feature`, `bug`, `triage` before listing other names, so an empty ledger fails before `ListWorkflowNames` is used.
+- 2026-08-24: `sed -n '1,285p' cmd/card_dispatch.go` -> bare `card dispatch` currently has flag default `feature-impl`; `--step` returns before opening the ledger and uses node template resolution, so only the no-step path needs a template resolver.
+- 2026-08-24: `sed -n '1,80p' cmd/ledgercli.go` and `sed -n '240,300p' cmd/agentd.go` -> CLI `openLedger` and agentd startup each invoke both seed methods; removing these calls is required for a zero-seed install.
+- 2026-08-24: `rg -l 'EnsureDefaultWorkflows|EnsureDefaultTemplates' --glob '*.go'` -> production callers are `cmd/ledgercli.go`, `cmd/agentd.go`, and the two seed method files; remaining references are test setup or tests of the deleted seed behavior.
+- 2026-08-24: `sed -n '1,150p' internal/ledgerstep/dispatch.go` -> `ledgerstep.Dispatcher.ViaTemplate` requires a non-empty template name and reads it from Store; resolver belongs in `cmd` for bare CLI dispatch, while step dispatch remains node-defined.
+- 2026-08-24: `gofmt -w internal/ledger/cards.go internal/ledger/workflows.go internal/ledger/templates.go cmd/ledgercli.go cmd/agentd.go cmd/workflow.go cmd/card_dispatch.go` -> no output, exit 0.
+- 2026-08-24: First `go test ./internal/ledger` after production seed removal -> compile failed with original errors such as `internal/ledger/cards_test.go:15:14: s.EnsureDefaultWorkflows undefined` and `internal/ledger/templates_test.go:12:14: s.EnsureDefaultTemplates undefined`; this drove explicit test fixture migration.
+- 2026-08-24: `go test ./internal/ledger -run 'Test(CreateCardEmptyWorkflowRequiresUniqueWorkflow|TemplateVersioningAndDefaults|VerdictTemplateContractUpgradeCreatesNewVersion|EnsureDefaultWorkflows|DefaultDomainWorkflow|MigrateWritesMigrationEvent)'` -> `ok github.com/Xsxdot/handoff/internal/ledger 1.049s`.
+- 2026-08-24: `go test ./internal/ledgerstep ./internal/ledgermirror ./internal/agentd` with default cache -> `ledgerstep` and `ledgermirror` passed; `agentd` setup failed with original errors `go: writing go.mod cache: open /root/go/pkg/mod/cache/download/github.com/!xsxdot/charter/graph/@v/v0.5.0.mod62667803.tmp: read-only file system` and `open /root/go/pkg/mod/cache/download/github.com/!xsxdot/charter/graph/@v/v0.5.0.lock: read-only file system`.
+- 2026-08-24: `GOMODCACHE=/root/.handoff/tmp/0eae5e21/gomodcache go test ./internal/agentd` -> `ok  github.com/Xsxdot/handoff/internal/agentd 125.311s` (exit 0).
+- 2026-08-24: `GOMODCACHE=/root/.handoff/tmp/0eae5e21/gomodcache go test ./cmd` -> `ok  github.com/Xsxdot/handoff/cmd 7.013s` (exit 0).
+- 2026-08-24: `rg -n 'EnsureDefault|出厂三条恒在|feature-impl|domain-breakdown|triage' cmd internal/ledger --glob '*.go' --glob '!**/*_test.go'` -> no production seed methods, seed-list marker, or `feature-impl`/`domain-breakdown` literals; it found only existing card CLI help text saying empty workflow is `triage` in `cmd/card.go:441` and `cmd/card_import.go:50`, which requires review against B230's Store-level `card add` contract.
+- 2026-08-24: Judgment: because both `card add` and `card import` construct `ledger.NewCard` with an empty workflow and therefore use the same Store resolver, both help strings were changed to `空=账本唯一流自动解析`; no runtime branch was added.
+- 2026-08-24: `GOMODCACHE=/root/.handoff/tmp/0eae5e21/gomodcache go test ./cmd ./internal/ledger` -> `ok github.com/Xsxdot/handoff/cmd 6.888s`; `ok github.com/Xsxdot/handoff/internal/ledger (cached)` (exit 0).
+- 2026-08-24: Final production scan `rg -n 'EnsureDefault|出厂三条恒在|feature-impl|domain-breakdown|triage' cmd internal/ledger --glob '*.go' --glob '!**/*_test.go'` -> only stale `internal/ledger/cards.go:295` documentation said workflow defaults to `triage`; `git diff --check` produced no output (exit 0), and status remained on `cards/B230-charter` with the intended B230 files changed/untracked.
+- 2026-08-24: The stale `ImportCard` documentation was corrected to state that an empty workflow uses the Store's unique-workflow resolution; this is documentation-only and follows the already shared `NewCard` path.
+- 2026-08-24: Re-run production scan `rg -n 'EnsureDefault|出厂三条恒在|feature-impl|domain-breakdown|triage' cmd internal/ledger --glob '*.go' --glob '!**/*_test.go'` -> no output (exit 1, no matches); `git diff --check` -> no output (exit 0). The reviewed production diff shows seed call/method removal, all-real workflow listing, and bare-dispatch template resolution.
+- 2026-08-24: `rg -n 'reviewVerdictContract|legacyReviewVerdictContract|implVerdictContract|legacyImplVerdictContract|domainBreakdownPrompt|domainTicket0Prompt|domainIntegrationPrompt' internal/ledger --glob '*.go'` -> these prompt constants are referenced by `internal/ledger/test_fixtures_test.go`/`templates_test.go` and declared in `templates.go`; they are retained as test-fixture inputs, while the production seed methods that consumed them are deleted.
+- 2026-08-24: Pre-commit scope check: `git diff --check` -> no output (exit 0); `git status --short --branch` -> branch `cards/B230-charter` with the intended cmd/ledger/agentd/ledgerstep/ledgermirror test changes plus three new fixture/test/ledger files; `git diff --name-only && git ls-files --others --exclude-standard` listed exactly those files.
+- 2026-08-24: `git add cmd internal docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md && git diff --cached --check && git status --short --branch` failed before staging with original error: `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/0eae5e21/index.lock': Read-only file system`.
+- 2026-08-24: Re-run of the same staging/check command with approved elevated filesystem access -> `git diff --cached --check` produced no output (exit 0); all intended files are staged on `cards/B230-charter`.
+- 2026-08-24: `git add docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md && git diff --cached --check && git commit -m "feat: remove factory ledger seeds"` -> commit `277d780f` on `cards/B230-charter`; output: `[cards/B230-charter 277d780f] feat: remove factory ledger seeds`, `28 files changed, 553 insertions(+), 351 deletions(-)`, with four new files created (`cmd/b230_test.go`, the execution ledger, and two test-fixture files).
+- 2026-08-24: Post-implementation commit check `git diff --check && git status --short --branch` -> only the execution ledger is modified after recording commit `277d780f`; `git log -2 --oneline --decorate` -> `277d780f (HEAD -> cards/B230-charter) feat: remove factory ledger seeds`, parent `0c2deede`.
+- 2026-08-24: 修复轮开工核对 `git log --oneline -4` -> `b1ad7db8`、`e07c821f`、`277d780f`、`0c2deede` 按计划顺序存在；`git status --short --branch` -> `## cards/B230-charter-3`，无未提交文件；本轮台账为 `docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md`。
+- 2026-08-24: Task 1 红测尝试 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test ./internal/agentd/ -run TestMigrateAPIProjectsFromTo` -> 原始输出含依赖下载，最终 `ok github.com/Xsxdot/handoff/internal/agentd 0.147s`，退出码 0；计划记录的该测试失败在当前起点未复现，未据此宣称缺陷已修复。
+- 2026-08-24: Task 1 以 `-count=1 -v` 复核 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 -v ./internal/agentd/ -run 'Test(MigrateAPIProjectsFromTo|AttachmentKindsCoverDefaultWorkflowGates)'` -> 两个测试均因 `PTY 测试根目录不可用` 被跳过；原始原因含 `/tmp ... read-only file system` 与仓内 socket 113 字节超过 100 字节上限，命令整体 PASS 但未执行测试体，故 Task 1 红测在本环境未验证。
+- 2026-08-24: Task 1 在 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p` 下重跑真实红测 `... go test -count=1 -v ./internal/agentd/ -run TestMigrateAPIProjectsFromTo` -> 原始失败：`ledgerapi_test.go:215: 建卡: 建卡缺少工作流：账本中有多条工作流，请显式指定 --workflow（可选：bug、domain、feature、triage）`，随后 `--- FAIL: TestMigrateAPIProjectsFromTo`、退出码 1。
+- 2026-08-24: Task 1 最小修复已应用：`TestMigrateAPIProjectsFromTo` 建卡显式使用 `Workflow: "triage"`，并补充中文说明其保持迁移 from/to 投影可分辨。
+- 2026-08-24: Task 1 绿测 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 -v ./internal/agentd/ -run TestMigrateAPIProjectsFromTo` -> `--- PASS: TestMigrateAPIProjectsFromTo (0.90s)`、`ok github.com/Xsxdot/handoff/internal/agentd 0.901s`、退出码 0。
+- 2026-08-24: Task 1 全包复跑 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/...` -> `ok github.com/Xsxdot/handoff/internal/agentd 135.778s`，退出码 0。
+- 2026-08-24: Task 1 格式检查 `gofmt -l internal/agentd/ledgerapi_test.go` -> 无输出，退出码 0。
+- 2026-08-24: Task 1 收尾编译 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 1 差异检查 `git diff --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 1 首次暂存 `git add internal/agentd/ledgerapi_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 原始错误 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/b63d6071/index.lock': Read-only file system`，退出码 128。
+- 2026-08-24: 经允许的重试 `git add internal/agentd/ledgerapi_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0；Task 1 文件已进入暂存区。
+- 2026-08-24: 暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 1 提交 `git commit -m "test: pin agentd migration workflow"` -> `[cards/B230-charter-3 1b841636] test: pin agentd migration workflow`、`2 files changed, 19 insertions(+), 1 deletion(-)`，退出码 0。
+- 2026-08-24: Task 2 清理测试夹具与生产常量后执行 `gofmt -w internal/ledger/test_fixtures_test.go internal/ledger/templates_test.go` 及常量扫描 `rg -n 'reviewVerdictContract|legacyReviewVerdictContract|implVerdictContract|legacyImplVerdictContract|domainBreakdownPrompt|domainTicket0Prompt|domainIntegrationPrompt' --glob '*.go' internal cmd` -> 格式化无输出；扫描无命中，因 `rg` 无匹配退出码 1。
+- 2026-08-24: Task 2 局部测试 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/...` -> `ok github.com/Xsxdot/handoff/internal/ledger 11.330s`，退出码 0。
+- 2026-08-24: Task 2 全仓编译 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 2 静态检查 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go vet ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 2 收尾 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 当前分支 `cards/B230-charter-3`，待提交文件为台账、`internal/ledger/templates.go`、`templates_test.go`、`test_fixtures_test.go`；diff 统计 `4 files changed, 19 insertions(+), 195 deletions(-)`。
+- 2026-08-24: Task 2 暂存 `git add internal/ledger/templates.go internal/ledger/templates_test.go internal/ledger/test_fixtures_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: Task 2 暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 2 提交 `git commit -m "test: remove retired template prompts"` -> `[cards/B230-charter-3 7bfb6c5d] test: remove retired template prompts`、`4 files changed, 22 insertions(+), 195 deletions(-)`，退出码 0。
+- 2026-08-24: Task 3 新增 `internal/ledger/seed_teardown_test.go`，并执行 `gofmt -w internal/ledger/seed_teardown_test.go` 与 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/ -run TestOpenInstallsNoSeeds -v` -> `--- PASS: TestOpenInstallsNoSeeds (0.06s)`、`ok github.com/Xsxdot/handoff/internal/ledger 0.064s`，退出码 0。
+- 2026-08-24: Task 3 变异前暂存 `git add internal/ledger/seed_teardown_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 变异前暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 变异前提交 `git commit -m "test: lock empty ledger seeds"` -> `[cards/B230-charter-3 45943ea8] test: lock empty ledger seeds`、`2 files changed, 35 insertions(+)`，新增 `internal/ledger/seed_teardown_test.go`，退出码 0。
+- 2026-08-24: Task 3 变异验证：临时在 `internal/ledger/store.go` 的 `Open` 建 schema 后写入 `x` 工作流，再执行 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/ -run TestOpenInstallsNoSeeds -v` -> 原始失败含 `seed_teardown_test.go:21: 新账本不该有任何工作流，实得 [x]`、`--- FAIL: TestOpenInstallsNoSeeds`、退出码 1，证明断言能打红。
+- 2026-08-24: Task 3 变异还原 `git diff -- internal/ledger/store.go` -> 无输出，退出码 0，临时写入已移除。
+- 2026-08-24: Task 3 还原后绿测 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/ -run TestOpenInstallsNoSeeds -v` -> `--- PASS: TestOpenInstallsNoSeeds (0.05s)`、`ok github.com/Xsxdot/handoff/internal/ledger 0.051s`，退出码 0。
+- 2026-08-24: Task 3 ledger 全包测试 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/...` -> `ok github.com/Xsxdot/handoff/internal/ledger 12.057s`，退出码 0。
+- 2026-08-24: Task 3 收尾编译 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 格式检查 `gofmt -l internal/ledger/seed_teardown_test.go` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 收尾 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 仅台账有 7 行未提交记录，分支为 `cards/B230-charter-3`。
+- 2026-08-24: Task 3 暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 3 台账提交 `git commit -m "chore: record seed assertion verification"` -> `[cards/B230-charter-3 7abd0ee7] chore: record seed assertion verification`、`1 file changed, 9 insertions(+)`，退出码 0。
+- 2026-08-24: Task 4 更新 agentd 测试夹具新增专用 `attachment-gates` 流，覆盖 `RequireAttachment` 与 `RequireAttachmentAny`；测试改名为 `TestAttachmentKindsCoverGateKinds` 并收集两个字段。执行 `gofmt -w internal/agentd/ledger_fixtures_test.go internal/agentd/ledgerapi_test.go` 与 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/ -run TestAttachmentKindsCoverGateKinds -v` -> `--- PASS: TestAttachmentKindsCoverGateKinds (0.84s)`、`ok github.com/Xsxdot/handoff/internal/agentd 0.842s`，退出码 0。
+- 2026-08-24: Task 4 变异前收尾 `git diff --check` -> 无输出，退出码 0；当前待提交为台账、`internal/agentd/ledger_fixtures_test.go`、`ledgerapi_test.go`，共 `16 insertions(+), 4 deletions(-)`。
+- 2026-08-24: Task 4 变异前暂存 `git add internal/agentd/ledger_fixtures_test.go internal/agentd/ledgerapi_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 变异前暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 变异前提交 `git commit -m "test: cover attachment gate variants"` -> `[cards/B230-charter-3 f86c101a] test: cover attachment gate variants`、`3 files changed, 19 insertions(+), 4 deletions(-)`，退出码 0。
+- 2026-08-24: Task 4 变异验证：临时从 `internal/agentd/ledgerapi.go` 的 `attachmentKinds` 删除 `plan`，执行 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/ -run TestAttachmentKindsCoverGateKinds -v` -> 原始失败 `ledgerapi_test.go:508: 工作流 attachment-gates/多附件 使用的附件 kind "plan" 未登记到 attachmentKinds`、`--- FAIL: TestAttachmentKindsCoverGateKinds`、退出码 1，证明断言能打红。
+- 2026-08-24: Task 4 变异还原 `git diff -- internal/agentd/ledgerapi.go` -> 无输出，退出码 0，`attachmentKinds` 已恢复。
+- 2026-08-24: Task 4 全包测试 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/...` -> `ok github.com/Xsxdot/handoff/internal/agentd 139.958s`，退出码 0。
+- 2026-08-24: Task 4 格式检查 `gofmt -l internal/agentd/ledgerapi.go internal/agentd/ledgerapi_test.go internal/agentd/ledger_fixtures_test.go` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 收尾编译 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 变异后收尾 `git diff --check` -> 无输出，退出码 0；待提交为台账与 `internal/agentd/ledgerapi.go` 的 gate 白名单注释更新，共 `8 insertions(+), 2 deletions(-)`。
+- 2026-08-24: Task 4 变异后暂存 `git add internal/agentd/ledgerapi.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 变异后暂存差异检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: Task 4 台账提交 `git commit -m "chore: record attachment gate verification"` -> `[cards/B230-charter-3 63403c78] chore: record attachment gate verification`、`2 files changed, 11 insertions(+), 2 deletions(-)`，退出码 0。
+- 2026-08-24: Task 5 将 `cmd/b230_test.go` 的 `TestResolveCardDispatchTemplateThreeStates` 并入 `cmd/card_dispatch_test.go`，删除原文件；三处夹具/解析注释改为中文。执行 `gofmt -w cmd/card_dispatch_test.go internal/agentd/ledger_fixtures_test.go` 与 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./cmd/...` -> `ok github.com/Xsxdot/handoff/cmd 7.013s`，退出码 0。
+- 2026-08-24: Task 5 三包测试 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./cmd/... ./internal/ledger/... ./internal/agentd/...` -> `ok github.com/Xsxdot/handoff/cmd 7.132s`、`ok github.com/Xsxdot/handoff/internal/ledger 12.906s`、`ok github.com/Xsxdot/handoff/internal/agentd 132.813s`，退出码 0。
+- 2026-08-24: Task 5 文件/注释核对 `test ! -e cmd/b230_test.go` -> 无输出、退出码 0；符号扫描确认解析测试已在 `cmd/card_dispatch_test.go`，三处注释为中文；英文旧注释扫描无命中（命令以 `|| true` 收口，整体退出码 0）。
+- 2026-08-24: 最终验收测试 1 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/... ./internal/ledgerstep/... ./internal/discipline/...` -> `ok github.com/Xsxdot/handoff/internal/ledger 13.086s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 5.781s`、`ok github.com/Xsxdot/handoff/internal/discipline 0.005s`，退出码 0。
+- 2026-08-24: 最终验收测试 2 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./cmd/... ./internal/proto/... ./internal/ledgermirror/...` -> `ok github.com/Xsxdot/handoff/cmd 7.112s`、`ok github.com/Xsxdot/handoff/internal/proto 0.003s`、`ok github.com/Xsxdot/handoff/internal/ledgermirror 2.178s`，退出码 0。
+- 2026-08-24: 最终验收测试 3 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/...` -> `ok github.com/Xsxdot/handoff/internal/agentd 134.374s`，退出码 0；三条法定测试命令均实测通过。
+- 2026-08-24: 最终格式验收 `gofmt -l .`（仓内无 node_modules 目录）-> 无输出，退出码 0。
+- 2026-08-24: 最终编译验收 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: 最终静态验收 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go vet ./...` -> 无输出，退出码 0。
+- 2026-08-24: 最终前置扫描发现 `EnsureDefaultWorkflows` 仅残留在 `internal/ledger/workflows_test.go` 的历史测试函数名，生产方法/调用已无命中；方法论常量七名在 `internal`/`cmd` Go 文件中零命中。agentd 夹具仍保留 bug/feature/domain/triage 以供共享测试使用，Task 4 专用 `attachment-gates` 已追加。
+- 2026-08-24: 按 Task 4 计划补强夹具隔离：`seedAgentdLedger` 默认只安装 `attachment-gates`，其余工作流改为各测试调用处显式点名；新增/调整 bug、feature、domain、triage 的显式夹具调用，避免测试共享出厂工作流集合。
+- 2026-08-24: 夹具隔离回归集 `gofmt -w internal/agentd/ledger_fixtures_test.go internal/agentd/ledgerapi_test.go internal/agentd/cardstep_test.go internal/agentd/forward_test.go internal/agentd/projectadmin_test.go` 与定向测试 -> 7 个 agentd 测试均 `--- PASS`，最终 `ok github.com/Xsxdot/handoff/internal/agentd 1.788s`，退出码 0。
+- 2026-08-24: 夹具隔离后全包回归 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/...` -> 原始失败：`--- FAIL: TestStartCardStepRejectsSecondInFlight`，`cardstep_test.go:94: 准备占位卡失败: 建卡取工作流 "bug": 工作流 bug v0: ledger: 记录不存在`，随后 `FAIL github.com/Xsxdot/handoff/internal/agentd 124.902s`，退出码 1。
+- 2026-08-24: 修复 `holdCardStep` 的占位卡路径，在缺卡时显式安装 bug 流；先跑 `gofmt -w internal/agentd/cardstep_test.go` 与定向测试 `... go test -count=1 ./internal/agentd/ -run TestStartCardStepRejectsSecondInFlight -v` -> `--- PASS: TestStartCardStepRejectsSecondInFlight (0.85s)`、`ok github.com/Xsxdot/handoff/internal/agentd 0.852s`，退出码 0。
+- 2026-08-24: 夹具隔离修复后全包 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/b63d6071/p GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/agentd/...` -> `ok github.com/Xsxdot/handoff/internal/agentd 127.984s`，退出码 0。
+- 2026-08-24: 夹具隔离后的最终格式复核 `gofmt -l .`（仓内无 node_modules 目录）-> 无输出，退出码 0。
+- 2026-08-24: 夹具隔离后的最终编译 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go build ./...` -> 无输出，退出码 0。
+- 2026-08-24: 夹具隔离后的最终静态检查 `GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go vet ./...` -> 无输出，退出码 0。
+- 2026-08-24: 最终验收测试 1（夹具隔离后复跑）`GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./internal/ledger/... ./internal/ledgerstep/... ./internal/discipline/...` -> `ok github.com/Xsxdot/handoff/internal/ledger 13.422s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 5.781s`、`ok github.com/Xsxdot/handoff/internal/discipline 0.005s`，退出码 0。
+- 2026-08-24: 最终验收测试 2（夹具隔离后复跑）`GOMODCACHE=/root/.handoff/tmp/b63d6071/gomodcache go test -count=1 ./cmd/... ./internal/proto/... ./internal/ledgermirror/...` -> `ok github.com/Xsxdot/handoff/cmd 7.103s`、`ok github.com/Xsxdot/handoff/internal/proto 0.004s`、`ok github.com/Xsxdot/handoff/internal/ledgermirror 2.187s`，退出码 0。
+- 2026-08-24: 最终结构核验：生产 Go 文件扫描 `EnsureDefaultWorkflows|EnsureDefaultTemplates` 与 7 个方法论常量均无命中；`test ! -e cmd/b230_test.go` 无输出退出码 0；`git diff --check` 无输出退出码 0；当前变更为预期的 cmd/agentd 测试与注释、删除旧测试文件及台账。
+- 2026-08-24: 提交前差异核验 `git diff --check` -> 无输出，退出码 0；`git diff --stat` -> `9 files changed, 112 insertions(+), 80 deletions(-)`；工作树仅含本轮预期变更，分支仍为 `cards/B230-charter-3`。
+- 2026-08-24: 最终暂存 `git add cmd/b230_test.go cmd/card_dispatch.go cmd/card_dispatch_test.go internal/agentd/cardstep_test.go internal/agentd/forward_test.go internal/agentd/ledger_fixtures_test.go internal/agentd/ledgerapi_test.go internal/agentd/projectadmin_test.go docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+- 2026-08-24: 暂存区核验 `git diff --cached --check` -> 无输出，退出码 0；`git diff --cached --stat` -> `9 files changed, 114 insertions(+), 80 deletions(-)`；所有预期文件均处于暂存状态。
+- 2026-08-24: 最终实现提交 `git commit -m "test: isolate agentd workflow fixtures"` -> `[cards/B230-charter-3 d16a2e6f] test: isolate agentd workflow fixtures`、`9 files changed, 115 insertions(+), 80 deletions(-)`，删除 `cmd/b230_test.go`，退出码 0。
+- 2026-08-24: 提交后核验 `git diff --check` -> 无输出，退出码 0；`git status --short --branch` -> 仅台账因追加提交事实而修改；`git log --oneline -6` 顶部为 `d16a2e6f`，分支仍为 `cards/B230-charter-3`。
+- 2026-08-24: 最终台账暂存检查 `git diff --cached --check` -> 无输出，退出码 0。
+- 2026-08-24: 最终台账提交 `git commit -m "chore: record final B230 verification"` -> `[cards/B230-charter-3 39208196] chore: record final B230 verification`、`1 file changed, 3 insertions(+)`，退出码 0。
+- 2026-08-24: 末次台账暂存 `git add docs/superpowers/ledgers/2026-08-24-b230-execution-ledger.md` -> 无输出，退出码 0。
+
+---
+
+## 附：修复轮台账（原 `docs/ledger-b230.md`）
+
+> 这一段由 F1-F4 修复轮的执行者写在仓库根 `docs/ledger-b230.md`，与本文件是同一张卡的
+> 两段工作记录。收尾时并入本文件（台账的规范落点是 `docs/superpowers/ledgers/`，
+> 那里有 45 份同类文件）；内容原样保留，未作改写。
+
+- 2026-08-24：读取 `/root/.codex/skills/handoff/SKILL.md` 全文；本执行者按要求不调用 handoff CLI、不派发任务。
+- 2026-08-24：执行 `git status --short --branch`；原始输出为 `## cards/B230-charter-4`，工作树无未提交改动。
+- 2026-08-24：读取 B230 spec、plan 与既有台账格式；本轮范围为 review 轮 F1–F4，计划要求不要重做已通过部分。
+- 2026-08-24：检查 `web/src/app/cards/NewCardDialog.tsx` 与测试；当前初始化仍为 `workflows[0] ?? 'feature'`，提交请求始终带 `workflow`，且空流场景没有直接测试；`web/src/api/ledger.ts` 的 `NewCardReq.workflow` 已是可选字段。
+- 2026-08-24：检查 `internal/ledger/workflows_test.go` 与 `test_fixtures_test.go`；F2 指定的 9 个出厂种子测试仍在，夹具仍含四条退役流定义与补版/不覆盖逻辑；`TestWorkflowLegacyDefStillDecodes` 已直接覆盖 States→Nodes 读取行为。
+- 2026-08-24：检查 `skills/handoff/SKILL.md`；出厂/缺省流文档仍写 triage、feature、domain，至少命中行 350、434–436、468；`internal/ledgerstep/dispatch_test.go:16` 的 `seedLedgerStepStore` 注释仍为英文。
+- 2026-08-24：按 F2 删除 `workflows_test.go` 指定的 9 个出厂种子测试；保留并加强 `TestWorkflowLegacyDefStillDecodes`，现在逐节点断言 States 顺序、Next 串接、纯人工能力与 Gate 读取。
+- 2026-08-24：按 F2 将 `seedTestWorkflows` 改为直接写入最小测试流，删除夹具中的老 def 补版、不覆盖与幂等逻辑；feature/bug/triage/domain 只保留现有账本行为测试所需列与闸。
+- 2026-08-24：按 F3 修改 `skills/handoff/SKILL.md` 建卡速查、流语义与建卡示例；grep 复核后不再出现退役流名 triage/feature/domain，剩余“缺省”仅指执行器缺省或账本流集合解析。
+- 2026-08-24：按 F4 将 `internal/ledgerstep/dispatch_test.go` 的 `seedLedgerStepStore` 英文注释改为中文，并在本轮触及文件中复核新增注释均为中文。
+- 2026-08-24：在已写入的 F1 前端回归测试之后，修改 `NewCardDialog`：空工作流保持空值、显示账本解析提示、异步列表刷新时同步有效选项，建卡请求仅在有值时发送 `workflow`。
+- 2026-08-24：执行 `gofmt -w internal/ledger/workflows_test.go internal/ledger/test_fixtures_test.go && go test ./internal/ledger/... -run 'TestWorkflowLegacyDefStillDecodes|TestCreateCardAllocatesBNumbers|TestMoveCard|TestMigrateCannotBypassGate' -count=1`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行 `go test ./internal/ledger/... -count=1`；原始输出为空，命令退出码 0；最小流夹具覆盖现有 ledger 测试。
+- 2026-08-24：执行 `rg -n '^\\s*//.*[A-Za-z]{3}'` 检查本轮触及文件；输出仅为原有英文/技术标识注释，F2/F4/F1 新增或改写注释均为中文。
+- 2026-08-24：在 F1 修复后执行 `npm test -- --run src/app/cards/NewCardDialog.test.tsx`；原始输出为 `sh: 1: vitest: not found`，前端测试未验证。
+- 2026-08-24：执行 `npm run typecheck`；原始输出为 `sh: 1: tsc: not found`，前端类型检查未验证。
+- 2026-08-24：执行四项 grep：9 个指定测试名、`EnsureDefaultWorkflows/EnsureDefaultTemplates`、7 个方法论常量均无命中；仅 `workflows.go` 的 `withStatesFromNodes/withNodesFromStates` 正常包含 Nodes 长度判断。
+- 2026-08-24：执行 `gofmt -l .`；原始输出为空，格式检查通过。
+- 2026-08-24：首次执行 `go build ./...`；原始失败为 `go: writing go.mod cache: open /root/go/pkg/mod/cache/download/github.com/!xsxdot/charter/graph/@v/v0.5.0.mod985110611.tmp: read-only file system` 与 `cmd/graph.go:14:2: open /root/go/pkg/mod/cache/download/github.com/!xsxdot/charter/graph/@v/v0.5.0.lock: read-only file system`。
+- 2026-08-24：获准使用模块缓存后重跑 `go build ./...`；原始输出仅为 `go: downloading github.com/Xsxdot/charter/graph v0.5.0`，命令退出码 0。
+- 2026-08-24：执行 `go vet ./...`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行法定测试一 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/discipline/...`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行法定测试二 `go test ./cmd/... ./internal/proto/... ./internal/ledgermirror/...`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行法定测试三 `go test ./internal/agentd/...`；原始输出为空，命令退出码 0。
+- 2026-08-24：执行 `git status --short --branch && git diff --check && git diff --stat`；当前分支仍为 `cards/B230-charter-4`，仅 F1–F4 目标文件与本轮台账有改动，diff check 无输出。
+- 2026-08-24：普通沙箱执行 `git add docs/ledger-b230.md internal/ledger/test_fixtures_test.go internal/ledger/workflows_test.go internal/ledgerstep/dispatch_test.go skills/handoff/SKILL.md web/src/app/cards/NewCardDialog.tsx web/src/app/cards/NewCardDialog.test.tsx` 失败；原始报错为 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/7985d142/index.lock': Read-only file system`，尚未暂存。
+- 2026-08-24：提升权限重跑暂存、`git diff --cached --check` 与统计；原始输出为 7 个预期文件已暂存，统计 `86 insertions(+), 329 deletions(-)`，cached diff check 无输出。
+- 2026-08-24：执行 `git add docs/ledger-b230.md && git diff --cached --check && git commit -m "fix(b230): address review findings"`；原始输出为 `[cards/B230-charter-4 a7969776] fix(b230): address review findings`，7 个文件提交，`87 insertions(+), 329 deletions(-)`。
+- 2026-08-24：提交后执行 `git status --short --branch && git log -1 --oneline --decorate`；原始输出为 `## cards/B230-charter-4` 与 `a7969776 (HEAD -> cards/B230-charter-4) fix(b230): address review findings`。
+- 2026-08-24：执行 `git add docs/ledger-b230.md && git diff --cached --check && git commit -m "chore(ledger): close B230 review"`；原始输出为 `[cards/B230-charter-4 ed6733ff] chore(ledger): close B230 review`，台账收口记录已提交。
+- 2026-08-24：执行 `git add docs/ledger-b230.md && git diff --cached --check && git commit -m "chore(ledger): record B230 ledger close"`；原始输出为 `[cards/B230-charter-4 7136b9e0] chore(ledger): record B230 ledger close`。
+- 2026-08-24：提交后执行 `git status --short --branch && git log -3 --oneline --decorate`；原始输出为干净分支 `## cards/B230-charter-4`，HEAD 为 `7136b9e0`，其前两提交为 `ed6733ff` 与 `a7969776`。
+- 2026-08-24：执行 `git status --short --branch && git log -1 --oneline --decorate`；原始输出为干净分支 `## cards/B230-charter-4`，HEAD 为 `b85b75fc (HEAD -> cards/B230-charter-4) chore(ledger): record final B230 status`。

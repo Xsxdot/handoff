@@ -14,14 +14,14 @@ import (
 func TestImportCardExplicitID(t *testing.T) {
 	s := seedStore(t)
 	card, err := s.ImportCard("B42", "backlog.md", NewCard{
-		Title: "存量行", Project: "handoff", Priority: "高", Actor: "test"})
+		Title: "存量行", Project: "handoff", Priority: "高", Workflow: "triage", Actor: "test"})
 	if err != nil {
 		t.Fatalf("导入: %v", err)
 	}
 	if card.ID != "B42" {
 		t.Fatalf("应保原号 B42，得 %s", card.ID)
 	}
-	// 与普通卡零行为差别：工作流缺省 triage、钉最新版本、初始态 = 首态
+	// 与普通卡零行为差别：显式指定 triage 工作流、钉最新版本、初始态 = 首态
 	if card.WorkflowName != "triage" || card.WorkflowVersion != 1 || card.Status != StatusTodo {
 		t.Fatalf("导入卡与普通卡不一致: %+v", card)
 	}
@@ -48,7 +48,7 @@ func TestImportCardExplicitID(t *testing.T) {
 func TestImportCardAcceptsNonBPrefix(t *testing.T) {
 	s := seedStore(t)
 	card, err := s.ImportCard("C1", "charter.md", NewCard{
-		Title: "charter 存量行", Project: "charter", Actor: "test"})
+		Title: "charter 存量行", Project: "charter", Workflow: "triage", Actor: "test"})
 	if err != nil {
 		t.Fatalf("非 B 前缀应可导入: %v", err)
 	}
@@ -62,7 +62,7 @@ func TestImportCardRejectsExistingID(t *testing.T) {
 	s := seedStore(t)
 	existing := mk(t, s, "先来的")
 	if _, err := s.ImportCard(existing.ID, "", NewCard{
-		Title: "后来的", Project: "handoff", Actor: "test"}); !errors.Is(err, ErrBadState) {
+		Title: "后来的", Project: "handoff", Workflow: "triage", Actor: "test"}); !errors.Is(err, ErrBadState) {
 		t.Fatalf("撞号应拒（wrap ErrBadState），实得: %v", err)
 	}
 	// 被撞的卡一字未动
@@ -76,15 +76,15 @@ func TestImportCardRejectsExistingID(t *testing.T) {
 func TestImportCardChildRequiresParent(t *testing.T) {
 	s := seedStore(t)
 	if _, err := s.ImportCard("B77.1", "", NewCard{
-		Title: "孤儿子卡", Project: "handoff", Actor: "test"}); err == nil {
+		Title: "孤儿子卡", Project: "handoff", Workflow: "triage", Actor: "test"}); err == nil {
 		t.Fatal("父卡不存在应拒绝")
 	}
 	if _, err := s.ImportCard("B77", "", NewCard{
-		Title: "父卡", Project: "handoff", Actor: "test"}); err != nil {
+		Title: "父卡", Project: "handoff", Workflow: "triage", Actor: "test"}); err != nil {
 		t.Fatalf("导入父卡: %v", err)
 	}
 	child, err := s.ImportCard("B77.1", "", NewCard{
-		Title: "子卡", Project: "handoff", Actor: "test"})
+		Title: "子卡", Project: "handoff", Workflow: "triage", Actor: "test"})
 	if err != nil {
 		t.Fatalf("父卡在时导入子卡: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestImportCardIgnoresMinB(t *testing.T) {
 		t.Fatalf("EnsureMinB: %v", err)
 	}
 	card, err := s.ImportCard("B12", "backlog.md", NewCard{
-		Title: "水位以下的历史号", Project: "handoff", Actor: "test"})
+		Title: "水位以下的历史号", Project: "handoff", Workflow: "triage", Actor: "test"})
 	if err != nil {
 		t.Fatalf("水位以下的号应导得进: %v", err)
 	}
@@ -122,7 +122,7 @@ func TestImportCardIgnoresMinB(t *testing.T) {
 		t.Fatalf("应保原号 B12，得 %s", card.ID)
 	}
 	// 水位仍管自动取号：新建卡落 B201 而不是 B13
-	fresh, err := s.CreateCard(NewCard{Title: "新卡", Project: "handoff", Actor: "test"})
+	fresh, err := s.CreateCard(NewCard{Title: "新卡", Project: "handoff", Workflow: "triage", Actor: "test"})
 	if err != nil {
 		t.Fatalf("建卡: %v", err)
 	}
@@ -139,10 +139,10 @@ func TestImportCardShiftsAutoAllocation(t *testing.T) {
 		t.Fatalf("EnsureMinB: %v", err)
 	}
 	if _, err := s.ImportCard("B300", "backlog.md", NewCard{
-		Title: "高于水位的导入号", Project: "handoff", Actor: "test"}); err != nil {
+		Title: "高于水位的导入号", Project: "handoff", Workflow: "triage", Actor: "test"}); err != nil {
 		t.Fatalf("导入: %v", err)
 	}
-	fresh, err := s.CreateCard(NewCard{Title: "导入之后的新卡", Project: "handoff", Actor: "test"})
+	fresh, err := s.CreateCard(NewCard{Title: "导入之后的新卡", Project: "handoff", Workflow: "triage", Actor: "test"})
 	if err != nil {
 		t.Fatalf("建卡: %v", err)
 	}
@@ -151,11 +151,11 @@ func TestImportCardShiftsAutoAllocation(t *testing.T) {
 	}
 	// 子卡位同理：导入 B300.5 后，自动分配的下一个子位是 B300.6
 	if _, err := s.ImportCard("B300.5", "backlog.md", NewCard{
-		Title: "点号子卡", Project: "handoff", Actor: "test"}); err != nil {
+		Title: "点号子卡", Project: "handoff", Workflow: "triage", Actor: "test"}); err != nil {
 		t.Fatalf("导入子卡: %v", err)
 	}
 	child, err := s.CreateCard(NewCard{
-		Title: "自动分配的子卡", Project: "handoff", Parent: "B300", Actor: "test"})
+		Title: "自动分配的子卡", Project: "handoff", Workflow: "triage", Parent: "B300", Actor: "test"})
 	if err != nil {
 		t.Fatalf("建子卡: %v", err)
 	}

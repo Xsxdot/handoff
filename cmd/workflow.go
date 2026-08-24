@@ -5,6 +5,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -34,23 +35,16 @@ var wfListCmd = &cobra.Command{
 		defer st.Close()
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
 		fmt.Fprintln(w, "名称\t最新版\t状态序列")
-		for _, name := range []string{"feature", "bug", "triage"} { // 出厂三条恒在
-			workflow, err := st.GetWorkflow(name, 0)
-			if err != nil {
-				return err
-			}
-			fmt.Fprintf(w, "%s\tv%d\t%v\n", workflow.Name, workflow.Version, workflow.Def.States)
-		}
 		names, err := st.ListWorkflowNames()
 		if err != nil {
+			slog.Warn("列工作流失败", "cause", err)
 			return err
 		}
+		slog.Info("列出工作流", "count", len(names), "names", names)
 		for _, name := range names {
-			if name == "feature" || name == "bug" || name == "triage" {
-				continue
-			}
 			workflow, err := st.GetWorkflow(name, 0)
 			if err != nil {
+				slog.Warn("读取工作流失败", "name", name, "cause", err)
 				return err
 			}
 			fmt.Fprintf(w, "%s\tv%d\t%v\n", workflow.Name, workflow.Version, workflow.Def.States)

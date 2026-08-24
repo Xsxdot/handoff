@@ -93,6 +93,17 @@ handoff wait <task> --notify --timeout 1h
 
 `progress` / `approver_decision` / `approver_disabled` / `tickets_voided` 四类事件**不会**唤醒 `wait`（只入库）。你只会在 `show` 的事件历史里见到它们，日常不用管。
 
+## 执行器选型与模型
+
+- **codex**：缺省执行者，稳重不跑偏——整份 plan 的执行、大规模机械改动
+  （codemod、跨文件重命名、依赖升级修编译）。
+- **grok**：快、挖 bug 能挖到根——根因排查（复现、加日志、二分定位）、真机烟测、
+  tool 调用多的纯执行。根因后分流：一两行小修顺手修掉，架构级修复回本地走流程。
+- **opencode**：备选，codex 不可用时顶上。
+- **一律不传 `--model`**，除非要点名某个具体模型：缺省执行者用机器默认模型；
+  改派非缺省执行器时留空、由其自身默认接管。模型名**按机器不同**，跨机/跨执行器
+  复用模型名，第一个事件就是 400。
+
 ## 在 agent 会话里挂 wait
 
 上面的主循环假设操作者能前台阻塞一小时。agent 的 Bash 工具做不到（前台超时上限通常只有几分钟到十分钟），于是最常见的走样就是自己发明 `show` + `sleep` 轮询循环，或把几百轮 wait 包进一条 shell 大循环。**两种都不要。** 正确形态按你所在 harness 的能力二选一：
@@ -332,6 +343,23 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 
 一句话记法：**`card` 族管卡，执行域动词管 task，两者分层不混用。**
 
+### 卡命令族速查
+
+| 动作 | 命令 |
+|---|---|
+| 建卡 | `handoff card add "<标题>" --project <项目> [--workflow <流>] [--priority 高\|中\|低] [--parent <父卡>]`（不指定流时按账本内流集合解析：零条先建流、唯一条自动使用、多条要求显式指定） |
+| 按原号导入 | `handoff card import <B号> "<标题>" --project <项目> --source <来源>`（撞号即拒） |
+| 看板 / 单卡 | `handoff card list [--status <列>] [--needs] [--all] [--json]` / `handoff card show <id>` |
+| 挂附件 / 改卡 | `handoff card update <id> --attach <kind>:<仓内相对路径> / --title / --priority / --accept` |
+| 移列 | `handoff card move <id> <状态>`（CAS；`--expect` 钉前值；gate 拒绝会说清缺什么） |
+| 跨流迁移 | `handoff workflow migrate <id> --workflow <流> --column <落点列> --yes` |
+| 记一笔 | `handoff card note <id> "<正文>" [--correction] [--reset-node <节点>]` |
+| 记验收 | `handoff card accept <id> --evidence "<命令+结果>"` / `--unverified` |
+| 拆子卡 / 阻塞边 | `handoff card split <id> "<子卡标题>"` / `card link <阻塞者> <被阻塞>` |
+| 等人标记 | `handoff card needs <id> "<原因>"` / `--clear` |
+| 搁置 / 复活 / 终止 | `handoff card close <id> --reason 搁置\|取消\|废弃` / `handoff card revive <id>` |
+| 工作流形状 | `handoff workflow show <流>`——**列序与门以账本为准，任何文档都不复制** |
+
 ### 状态不会自己流转
 
 账本里每一次状态转移都必须有 actor 落进事件流（取证要能回答「这步是谁推的」），
@@ -370,12 +398,23 @@ handoff card list --project <项目> --status 进行中
 ### 3. 外层派发与等待
 
 ```bash
+handoff card dispatch <id> --step <节点名>   # 走工作流节点（节点名 = 看板列名）
 handoff card dispatch <id> [--plan <plan.md>] [--target <机器>] [--template <模板名>]
 handoff card wait <id> [--subtree] [--timeout 3h]
 ```
 
 - `card dispatch` 会自动做三件事：CAS 认领（待办→进行中）、把 task 回链到卡、
   把模板版本与纪律块 hash 快照进派发事件。**「挂卡」不是一个你要单独做的动作。**
+- **`--step` 提交后立刻返回**（202 受理）：CLI 只把请求交给本机 agentd，编排在
+  agentd 里跑完；进展看 `card wait` 或看板，**命令返回值不带回合结论**。卡号或
+  节点名打错当场 404 / 400。**两条硬前提**：本机 agentd 必须活着（够不着就干净
+  失败，不回落本地直跑）；CLI 与 agentd 必须**同批升级**（新 CLI 的覆盖项旧
+  agentd 不认，每次派发都以「目标机未定」失败）。
+- 裁决落在卡的事件流（`review_verdict`）：pass 自动进下一列，fail 退回上一节点
+  再来一轮；裁决解析失败或超轮打 `needs_human`，人工裁决后把结论 `note` 落卡，
+  重派前 `card needs <id> --clear`。
+- 一次性覆盖：`--executor` / `--model`（B203）、`--extra "<本轮补充>"`（进 prompt
+  的「本次补充」小节，不落卡、不影响后续轮次）、`--discipline-override <角色>`（应急）。
 - `card wait` 跟的是**账本单流**（卡或整棵子树的事件，含镜像进来的 task 事件），
   不是 task 集合——所以挂起期间新拆的子卡、新派的任务天然进流，没有动态成员问题。
 - 醒来之后**处置方式与任务回路完全相同**：先 `handoff show <task>` 以 state
@@ -384,29 +423,25 @@ handoff card wait <id> [--subtree] [--timeout 3h]
 ### 4. task 完成之后的推进
 
 ```bash
-handoff card move <id> 待审阅
-handoff card dispatch <id> --step review     # 审阅环节
+handoff card dispatch <id> --step <节点名>   # 触发下一个派发列（节点名 = 看板列名）
 handoff card accept <id> --evidence "go test ./... 全绿"
-handoff card move <id> <下一态>
-handoff card dispatch <id> --step merge      # 合并环节
+handoff card move <id> <下一列>              # 人工列的跳转（如 acceptance → finish）
 ```
 
 四条要点：
 
-- **审阅环节的 fail 会自动 `continue`**（带发现项原文），**3 轮封顶**，超限自动
-  打「等人」。要人工重置计数用 `handoff card note <id> --reset-node review`
-  （注意这个 flag 仍叫 `--reset-node`：本次「节点→环节」改名只动了
+- **各流的列序与逐节点卡操作对照表在 `product-backlog` skill 的「推进 charter 流」**
+  ——那边是驾驶手册。工作流定义由用户或上层方法论安装，handoff 出厂不预设任何流；
+  本节不复制某条流的列序，只说明流无关的通用机制。建卡未指定流时，账本按流数量作
+  唯一解析：空账本指向先建流，恰好一条自动使用，多条必须显式指定。
+- **审阅类节点的 fail 会自动 `continue`**（带发现项原文），**3 轮封顶**，超限自动
+  打「等人」。要人工重置计数用 `handoff card note <id> --reset-node <节点名>`
+  （注意这个 flag 仍叫 `--reset-node`：「节点→环节」改名只动了
   `card dispatch` 的 `--step`，没顺带改它）。
 - **`card accept` 的「已验」必须带 `--evidence`**——已验是一个断言，无证据的
   断言不许落账。还没验就用 `--unverified`。
-- **合并环节永不自动合主线**：基线是 main 的卡，它跑完客观判据后推「待合并」
-  等你，不会自己合。基线是集成分支的才自动合。
-- **合并环节走 origin，且会推两条分支**：它先把工作分支推上 origin（执行机的
-  分支 origin 上本来没有），再在一个临时脱头 worktree 里合并、把结果推到
-  origin 的基线分支。两个后果要知道：① 你本地仓的当前分支、未提交改动都不会
-  被动，合并不在你的工作区里发生；② **你本地的基线分支引用不会前进**——结果
-  在 origin 上，想看得 `git fetch`。工作分支在本地和 origin 都找不到时，卡会
-  转「等人」并明说「先 handoff pull 再重试」。
+- **合并主线永远人工**：现役各流都没有自动合并节点——charter 流的 finish 是
+  人工列，合并归人（`charter:finish`）。账本里不存在「跑完自动合 main」这回事。
 
 `card move` 的每一步都拿卡钉的那版工作流当法律——状态名合不合法、gate（如
 「进『待合并』需已验收」）过不过，全按配置判。被拒了先 `handoff workflow show
@@ -430,8 +465,9 @@ handoff card dispatch <id> --step merge      # 合并环节
 ### 6. 验收后发现 bug：开新卡，不 reopen
 
 ```bash
-handoff card add "<标题>" --project <项目> --workflow bug
+handoff card add "<标题>" --project <项目>          # 缺省按账本流集合解析；多流时显式加 --workflow
 handoff card note <新卡> "发现自 <原卡 id> 的验收"
+# 定性后按级别走 charter：L1 挂 spec+plan 合体页跳 implement（见 product-backlog）
 ```
 
 账本历史不改写，与 task 机的「归档了就是归档了」对齐。
@@ -450,7 +486,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | 「我记得这张卡已经推到待审阅了」 | 和 task 一样：`card show` 是权威，会话记忆不是。 |
 | 「审阅没过，我再 continue 一轮」 | 环节自己会 continue，3 轮封顶。手工绕开封顶就是绕开防死循环的安全阀。 |
 | 「验过了，accept 一下，证据就不写了」 | 已验必须带证据，命令会直接拒。这是取证文化不是输入校验。 |
-| 「合并环节跑完就合进 main 了吧」 | 主线永远人工。它只会把卡推到「待合并」等你。 |
+| 「节点跑完就合进 main 了吧」 | 主线永远人工。合并发生在 finish 人工列，由你本地做。 |
 | 「先 `handoff dispatch` 派了，回头再挂卡」 | 那样出来的是「未挂账」task，重复开工检测看不见它。要挂卡就用 `card dispatch`。 |
 | 「卡的事件流里没有，那就是没发生」 | 镜像可能滞后。看板会显式标「事件流滞后」，`card show` 的挂账 task 也能对账。 |
 

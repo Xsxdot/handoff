@@ -21,7 +21,7 @@ func testLedger(t *testing.T) *ledger.Store {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { s.Close() })
-	if err := s.EnsureDefaultWorkflows(); err != nil {
+	if _, err := s.PutWorkflow("bug", ledger.WorkflowDef{States: []string{ledger.StatusTodo, ledger.StatusDoing, ledger.StatusDone}}); err != nil {
 		t.Fatal(err)
 	}
 	return s

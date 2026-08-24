@@ -40,6 +40,20 @@ describe('建卡对话框', () => {
     await waitFor(() => expect(onCreated).toHaveBeenCalledWith('B77'))
   })
 
+  it('工作流列表为空时不伪造 feature，提交省略 workflow 交给账本解析', async () => {
+    const ledger = await import('../../api/ledger')
+    render(<NewCardDialog {...props} workflows={[]} onCreated={() => {}} />)
+    const workflow = screen.getByLabelText('工作流') as HTMLSelectElement
+    expect(workflow.value).toBe('')
+    expect(screen.getByText('由账本按实际工作流解析')).toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: '待解析的工作项' } })
+    expect(screen.getByRole('button', { name: '建卡' })).toBeEnabled()
+    fireEvent.click(screen.getByRole('button', { name: '建卡' }))
+    await waitFor(() => expect(vi.mocked(ledger.createCard)).toHaveBeenCalledWith(
+      expect.not.objectContaining({ workflow: expect.anything() }),
+    ))
+  })
+
   it('标题为空时建卡按钮不可用——别把明知会 400 的请求发出去', () => {
     render(<NewCardDialog {...props} onCreated={() => {}} />)
     expect(screen.getByRole('button', { name: '建卡' })).toBeDisabled()

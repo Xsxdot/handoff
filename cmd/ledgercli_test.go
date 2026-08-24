@@ -4,6 +4,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +15,8 @@ import (
 	"github.com/spf13/pflag"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/discipline"
+	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
 // runLedgerCLI 在 dir（DataDir 兼配置目录）下跑一条 handoff 命令。
@@ -31,6 +34,7 @@ func runLedgerCLI(t *testing.T, dir string, args ...string) (string, string, err
 			t.Fatalf("写测试配置: %v", err)
 		}
 	}
+	seedCardCLIForTest(t, dir, args)
 	resetAllFlags(rootCmd)
 	var out, errb bytes.Buffer
 	rootCmd.SetOut(&out)
@@ -38,6 +42,60 @@ func runLedgerCLI(t *testing.T, dir string, args ...string) (string, string, err
 	rootCmd.SetArgs(append([]string{"--config", cfgPath}, args...))
 	err := Execute()
 	return out.String(), errb.String(), err
+}
+
+// seedCardCLIForTest 只写入既有 card 命令测试所需的显式数据。
+// 它是测试夹具数据；生产的 openLedger 不做任何 seed。
+func seedCardCLIForTest(t *testing.T, dir string, args []string) {
+	t.Helper()
+	if len(args) == 0 || args[0] != "card" {
+		return
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("打开 CLI 测试账本: %v", err)
+	}
+	defer st.Close()
+	workflowName := "bug"
+	for i, arg := range args {
+		if arg == "--workflow" && i+1 < len(args) {
+			workflowName = args[i+1]
+			break
+		}
+	}
+	for name, def := range map[string]ledger.TemplateDef{
+		"feature-impl":   {Executor: "opencode", Purpose: ledger.PurposeImplement, BranchPrefix: "cards", Discipline: discipline.NameImplement, Prompt: "实现 {{TITLE}}：{{ACCEPT}}"},
+		"review-generic": {Executor: "grok", Purpose: ledger.PurposeReview, BranchPrefix: "cards", Discipline: discipline.NameReview, Prompt: "审阅 {{TITLE}}：{{ACCEPT}}"},
+	} {
+		if _, err := st.GetTemplate(name, 0); errors.Is(err, ledger.ErrNotFound) {
+			if _, err := st.PutTemplate(name, def); err != nil {
+				t.Fatalf("写 CLI 测试模板 %s: %v", name, err)
+			}
+		} else if err != nil {
+			t.Fatalf("读 CLI 测试模板 %s: %v", name, err)
+		}
+	}
+	if _, err := st.GetWorkflow(workflowName, 0); errors.Is(err, ledger.ErrNotFound) {
+		def := ledger.WorkflowDef{Nodes: []ledger.NodeDef{{Name: ledger.StatusTodo, Next: ledger.StatusDoing},
+			{Name: ledger.StatusDoing, Next: ledger.StatusReview, Dispatch: true, Template: "feature-impl"},
+			{Name: ledger.StatusReview, Next: ledger.StatusDone, Dispatch: true, Verdict: true, Template: "review-generic", OnFail: ledger.StatusDoing},
+			{Name: ledger.StatusDone}}}
+		if workflowName == "feature" {
+			def = ledger.WorkflowDef{Nodes: []ledger.NodeDef{
+				{Name: ledger.StatusTodo, Next: "已出spec"},
+				{Name: "已出spec", Next: ledger.StatusDoing, Gate: ledger.Gate{RequireAttachment: "spec"}},
+				{Name: ledger.StatusDoing, Next: ledger.StatusReview, Dispatch: true, Template: "feature-impl"},
+				{Name: ledger.StatusReview, Next: "待合并", Dispatch: true, Verdict: true, Template: "review-generic", OnFail: ledger.StatusDoing},
+				{Name: "待合并", Next: ledger.StatusDone, Gate: ledger.Gate{RequireAcceptance: true}, Dispatch: true, Verdict: true, Template: "review-generic"},
+				{Name: ledger.StatusDone},
+			}}
+		}
+		if _, err := st.PutWorkflow(workflowName, def); err != nil {
+			t.Fatalf("写 CLI 测试工作流 %s: %v", workflowName, err)
+		}
+	} else if err != nil {
+		t.Fatalf("读 CLI 测试工作流 %s: %v", workflowName, err)
+	}
 }
 
 // resetAllFlags 递归把命令树上所有 flag 恢复默认值。cobra 的 flag 绑定
@@ -60,8 +118,8 @@ func TestOpenLedgerFallbackSQLite(t *testing.T) {
 	if err != nil {
 		t.Fatalf("workflow list: %v", err)
 	}
-	if !strings.Contains(out, "feature") || !strings.Contains(out, "bug") {
-		t.Fatalf("默认工作流缺失: %q", out)
+	if strings.Contains(out, "feature") || strings.Contains(out, "bug") || strings.Contains(out, "triage") {
+		t.Fatalf("新账本不应注入出厂工作流: %q", out)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "ledger.db")); err != nil {
 		t.Fatalf("回退 SQLite 未落 DataDir: %v", err)

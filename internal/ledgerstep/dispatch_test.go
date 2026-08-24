@@ -9,8 +9,31 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
+
+// seedLedgerStepStore 写入显式测试数据。Store.Open 本身没有生产种子；
+// 这些模板和工作流只服务于 ledgerstep 的提示词与快照测试。
+func seedLedgerStepStore(t *testing.T, st *ledger.Store) {
+	t.Helper()
+	for name, def := range map[string]ledger.TemplateDef{
+		"feature-impl":   {Executor: "opencode", Purpose: "implement", BranchPrefix: "cards", Discipline: discipline.NameImplement, Prompt: "实现 {{TITLE}}：{{ACCEPT}}"},
+		"review-generic": {Executor: "grok", Purpose: "review", BranchPrefix: "cards", Discipline: discipline.NameReview, Prompt: "审阅 {{TITLE}}：{{ACCEPT}}"},
+	} {
+		if _, err := st.PutTemplate(name, def); err != nil {
+			t.Fatalf("写测试模板 %s: %v", name, err)
+		}
+	}
+	if _, err := st.PutWorkflow("bug", ledger.WorkflowDef{Nodes: []ledger.NodeDef{
+		{Name: ledger.StatusTodo, Next: ledger.StatusDoing},
+		{Name: ledger.StatusDoing, Next: ledger.StatusReview, Dispatch: true, Template: "feature-impl"},
+		{Name: ledger.StatusReview, Next: ledger.StatusDone, Dispatch: true, Verdict: true, Template: "review-generic", OnFail: ledger.StatusDoing},
+		{Name: ledger.StatusDone},
+	}}); err != nil {
+		t.Fatalf("写测试工作流: %v", err)
+	}
+}
 
 func dispatchTestCard(t *testing.T) (*ledger.Store, ledger.Card) {
 	t.Helper()
@@ -19,12 +42,7 @@ func dispatchTestCard(t *testing.T) (*ledger.Store, ledger.Card) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	if err := st.EnsureDefaultWorkflows(); err != nil {
-		t.Fatal(err)
-	}
-	if err := st.EnsureDefaultTemplates(); err != nil {
-		t.Fatal(err)
-	}
+	seedLedgerStepStore(t, st)
 	card, err := st.CreateCard(ledger.NewCard{Title: "要派的卡", Project: "demo", Workflow: "bug", Actor: "test"})
 	if err != nil {
 		t.Fatal(err)
@@ -179,12 +197,7 @@ func TestViaTemplateMarksEmptyBaseForTargetResolution(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer st.Close()
-		if err := st.EnsureDefaultWorkflows(); err != nil {
-			t.Fatal(err)
-		}
-		if err := st.EnsureDefaultTemplates(); err != nil {
-			t.Fatal(err)
-		}
+		seedLedgerStepStore(t, st)
 		card, err := st.CreateCard(ledger.NewCard{
 			Title: "显式基线卡", Project: "demo", Workflow: "bug", BaseBranch: "release", Actor: "test",
 		})

@@ -38,8 +38,8 @@ func TestPGSchema(t *testing.T) {
 // 清理段会删除账本表中的数据，因此 LEDGER_TEST_PG_DSN 必须指向专用测试库。
 func TestPGSmokeEndToEnd(t *testing.T) {
 	s := newPGStore(t)
-	if err := s.EnsureDefaultWorkflows(); err != nil {
-		t.Fatalf("seed: %v", err)
+	if err := seedTestWorkflows(t, s); err != nil {
+		t.Fatalf("写测试工作流: %v", err)
 	}
 	if err := s.EnsureMinB(9000); err != nil { // 高位垫号，避免与库内已有数据撞
 		t.Fatalf("minb: %v", err)

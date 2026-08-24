@@ -1,0 +1,95 @@
+package ledger
+
+import (
+	"errors"
+	"testing"
+
+	"github.com/Xsxdot/handoff/internal/discipline"
+)
+
+// seedTestTemplates 为派发组装测试写入显式测试数据。生产 Store.Open 不安装模板。
+// 夹具只验证模板能存、能取、能组装，不替已退场的出厂方法论正文作证。
+func seedTestTemplates(t *testing.T, s *Store) error {
+	t.Helper()
+	defs := map[string]TemplateDef{
+		"feature-impl": {
+			Executor: "opencode", Purpose: "implement", BranchPrefix: "cards",
+			Discipline: discipline.NameImplement,
+			Prompt:     "实现 {{TITLE}}：{{ACCEPT}}",
+		},
+		"review-generic": {
+			Executor: "grok", Purpose: "review", BranchPrefix: "cards",
+			Discipline: discipline.NameReview,
+			Prompt:     "审阅 {{TITLE}}：{{ACCEPT}}",
+		},
+		"domain-breakdown": {
+			Executor: "codex", Purpose: "breakdown", BranchPrefix: "cards",
+			Discipline: discipline.NameSpecDraft,
+			Prompt:     "拆解 {{TITLE}}：{{ACCEPT}}",
+		},
+		"domain-ticket0": {
+			Executor: "codex", Purpose: "ticket0", BranchPrefix: "cards",
+			Discipline: discipline.NameImplement,
+			Prompt:     "冻结 {{TITLE}}：{{ACCEPT}}",
+		},
+		"domain-integration": {
+			Executor: "codex", Purpose: "integration", BranchPrefix: "cards",
+			Discipline: discipline.NameImplement,
+			Prompt:     "集成 {{TITLE}}：{{ACCEPT}}",
+		},
+	}
+	for name, def := range defs {
+		_, err := s.GetTemplate(name, 0)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		if _, err := s.PutTemplate(name, def); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// seedTestWorkflows 为账本行为测试写入最小工作流夹具。夹具只提供各测试所需的列和闸，
+// 不复制生产默认流，也不承担补版、覆盖或幂等策略。
+func seedTestWorkflows(t *testing.T, s *Store) error {
+	t.Helper()
+	if err := seedTestTemplates(t, s); err != nil {
+		return err
+	}
+	defs := map[string]WorkflowDef{
+		"feature": {Nodes: []NodeDef{
+			{Name: StatusTodo, Next: "已出spec"},
+			{Name: "已出spec", Next: StatusDoing, Gate: Gate{RequireAttachment: "spec"}},
+			{Name: StatusDoing, Next: StatusReview, Dispatch: true, Template: "feature-impl"},
+			{Name: StatusReview, Next: "待合并", OnFail: StatusDoing, Dispatch: true, Verdict: true, Template: "review-generic"},
+			{Name: "待合并", Next: StatusDone, Gate: Gate{RequireAcceptance: true}},
+			{Name: StatusDone},
+		}},
+		"bug": {Nodes: []NodeDef{
+			{Name: StatusTodo, Next: StatusDoing},
+			{Name: StatusDoing, Next: StatusReview, Dispatch: true, Template: "feature-impl"},
+			{Name: StatusReview, Next: StatusDone, OnFail: StatusDoing, Dispatch: true, Verdict: true, Template: "review-generic"},
+			{Name: StatusDone},
+		}},
+		"triage": {Nodes: []NodeDef{
+			{Name: StatusTodo, Next: "定性中"},
+			{Name: "定性中", Next: "已定性"},
+			{Name: "已定性"},
+		}},
+		"domain": {Nodes: []NodeDef{
+			{Name: StatusTodo, Next: "契约冻结"},
+			{Name: "契约冻结", Next: StatusDone, Gate: Gate{RequireAttachment: "contract"}},
+			{Name: StatusDone},
+		}},
+	}
+	for name, def := range defs {
+		if _, err := s.PutWorkflow(name, def); err != nil {
+			return err
+		}
+	}
+	return nil
+}

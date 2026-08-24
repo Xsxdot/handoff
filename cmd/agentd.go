@@ -270,12 +270,6 @@ var agentdCmd = &cobra.Command{
 				return fmt.Errorf("打开账本库: %w", err)
 			}
 			defer lst.Close()
-			if err := lst.EnsureDefaultWorkflows(); err != nil {
-				return fmt.Errorf("seed 默认工作流: %w", err)
-			}
-			if err := lst.EnsureDefaultTemplates(); err != nil {
-				return fmt.Errorf("seed 默认派发模板: %w", err)
-			}
 			srv.SetLedger(lst)
 			// 恒挂载：机器清单来自 target 客户端池的活配置读取，启动时没有机器
 			// 不代表以后没有——留着 len(cfg.Targets)>0 的闸会让控制台新增的第一台

@@ -97,8 +97,8 @@ export function CardsPage() {
   const projectOptions = useMemo(() => [...new Set(cards.map((card) => card.project).filter(Boolean))].sort(), [cards])
   const workflowStates = workflow
     ? flows?.workflows.find((flow) => flow.name === workflow)?.def.states ?? []
-    // 多条流的列序按流程先后拓扑合并——取并集会把 feature 独有的
-    // 「已出spec」「待合并」甩到 bug 流的「已完成」后面（见 mergeStateOrder）
+    // 多条流的列序按流程先后拓扑合并——取并集会把某条流独有的后置状态
+    // 甩到另一条流的「已完成」后面（见 mergeStateOrder）
     : mergeStateOrder(flows?.workflows.map((flow) => flow.def.states) ?? [])
   const workflowOptions = flows?.workflows ?? []
   const healthRows = healthPoll.data?.mirror ?? []
