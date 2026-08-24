@@ -1,5 +1,7 @@
 # B231 执行台账
 
+- 2026-08-24 收口复核命令 `git status --short && git branch --show-current && git rev-parse HEAD && git show --stat --oneline --summary HEAD && git show --stat --oneline --summary HEAD^` 原始结果：仅 `?? docs/superpowers/plans/2026-08-24-b231-scan-plan.md`；分支 `cards/B231-charter-2`；HEAD `584f4db0ead0b55dbe301d77f7884af950bf8f66`；B231 产物提交为 `9d06e9c9 scan(codegraph): B231-2 full responsibility rescan`，台账补记提交为 `584f4db0 chore(ledger): record B231 closeout`。
+
 - 2026-08-24 收口命令 `git commit -m "scan(codegraph): B231-2 full responsibility rescan"` 原始输出：`[cards/B231-charter-2 9d06e9c9] scan(codegraph): B231-2 full responsibility rescan`、`2 files changed, 6564 insertions(+), 4561 deletions(-)`；未 push。
 
 - 2026-08-24 命令 `git restore --staged docs/superpowers/plans/2026-08-24-b231-scan-plan.md`（获批准后执行）原始输出为空、退出码 0；随后 `git status --short` 原始结果为 `M codegraph/baseline.json`、`M docs/superpowers/ledgers/2026-08-24-b231-execution-ledger.md`、`?? docs/superpowers/plans/2026-08-24-b231-scan-plan.md`，plan 未进入暂存区。
