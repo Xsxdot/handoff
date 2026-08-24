@@ -612,6 +612,148 @@ func TestDispatchSerializesCardDefaultBaseMarker(t *testing.T) {
 	}
 }
 
+// TestCardStepSerializesAllFields 钉住卡节点请求的真实 HTTP 线格式、路径与认证头。
+func TestCardStepSerializesAllFields(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			t.Errorf("method = %s, want POST", r.Method)
+		}
+		if r.URL.Path != "/api/cards/B185/step" {
+			t.Errorf("path = %s, want /api/cards/B185/step", r.URL.Path)
+		}
+		if got := r.Header.Get("Content-Type"); got != "application/json" {
+			t.Errorf("Content-Type = %q, want application/json", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer "+testToken {
+			t.Errorf("Authorization = %q, want Bearer %s", got, testToken)
+		}
+		var got map[string]json.RawMessage
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		want := map[string]string{
+			"step": "review", "target": "linux-01", "executor": "codex",
+			"model": "gpt-5", "extra": "只检查本轮改动", "actor": "cli:alice@linux-01#1234",
+		}
+		if len(got) != len(want) {
+			t.Errorf("request keys = %d, want %d: %#v", len(got), len(want), got)
+		}
+		for key, value := range want {
+			var actual string
+			if err := json.Unmarshal(got[key], &actual); err != nil {
+				t.Errorf("field %s: %v", key, err)
+				continue
+			}
+			if actual != value {
+				t.Errorf("field %s = %q, want %q", key, actual, value)
+			}
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer ts.Close()
+
+	err := client.New(ts.URL, testToken).CardStep(context.Background(), "B185", proto.CardStepReq{
+		Step: "review", Target: "linux-01", Executor: "codex", Model: "gpt-5",
+		Extra: "只检查本轮改动", Actor: "cli:alice@linux-01#1234",
+	})
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+}
+
+// TestCardStepOmitsEmptyOptionalFields distinguishes absent optional fields from explicit empty strings.
+func TestCardStepOmitsEmptyOptionalFields(t *testing.T) {
+	var got map[string]json.RawMessage
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer ts.Close()
+
+	err := client.New(ts.URL, testToken).CardStep(context.Background(), "B185", proto.CardStepReq{
+		Step: "review", Actor: "cli:alice@linux-01#1234",
+	})
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("request keys = %#v, want only step and actor", got)
+	}
+	for _, key := range []string{"target", "executor", "model", "extra"} {
+		if _, ok := got[key]; ok {
+			t.Errorf("request unexpectedly contains optional key %q", key)
+		}
+	}
+}
+
+// TestCardStepAccepts202 verifies that a valid acknowledgement is the only success condition.
+func TestCardStepAccepts202(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	defer ts.Close()
+	if err := client.New(ts.URL, testToken).CardStep(context.Background(), "B185", proto.CardStepReq{Step: "review", Actor: "cli:u@h#1"}); err != nil {
+		t.Fatalf("CardStep 202: %v", err)
+	}
+}
+
+// TestCardStepPreservesHTTPError verifies status code and response body survive the shared error path.
+func TestCardStepPreservesHTTPError(t *testing.T) {
+	const body = `{"error":"节点已在飞，请稍后重试"}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(body))
+	}))
+	defer ts.Close()
+	err := client.New(ts.URL, testToken).CardStep(context.Background(), "B185", proto.CardStepReq{Step: "review", Actor: "cli:u@h#1"})
+	if err == nil {
+		t.Fatal("409 must return an error")
+	}
+	if !strings.Contains(err.Error(), "409") || !strings.Contains(err.Error(), "节点已在飞") {
+		t.Fatalf("error = %v, want status and body", err)
+	}
+}
+
+// TestCardStepRejectsBadAck rejects malformed and negative acknowledgements even with HTTP 202.
+func TestCardStepRejectsBadAck(t *testing.T) {
+	tests := []struct {
+		name string
+		body string
+	}{
+		{name: "malformed json", body: `{"ok":`},
+		{name: "ok false", body: `{"ok":false}`},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.WriteHeader(http.StatusAccepted)
+				_, _ = w.Write([]byte(tt.body))
+			}))
+			defer ts.Close()
+			err := client.New(ts.URL, testToken).CardStep(context.Background(), "B185", proto.CardStepReq{Step: "review", Actor: "cli:u@h#1"})
+			if err == nil {
+				t.Fatalf("body %s must return an error", tt.body)
+			}
+		})
+	}
+}
+
+// TestCardStepSurfacesUnreachable preserves ErrUnreachable for callers that need to avoid local fallback.
+func TestCardStepSurfacesUnreachable(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
+	addr := ts.URL
+	ts.Close()
+	err := client.New(addr, testToken).CardStep(context.Background(), "B185", proto.CardStepReq{Step: "review", Actor: "cli:u@h#1"})
+	if err == nil || !errors.Is(err, client.ErrUnreachable) {
+		t.Fatalf("error = %v, want ErrUnreachable", err)
+	}
+}
+
 // TestDispatchSerializesLocalBaseBranchMarker freezes the new wire key: the
 // work-branch continuation marker must cross the JSON boundary as a distinct
 // boolean and remain mutually exclusive with the default-base marker.
