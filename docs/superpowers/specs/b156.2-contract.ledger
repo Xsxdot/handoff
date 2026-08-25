@@ -1,0 +1,27 @@
+# B156.2 contract 节点台账（边干边落）
+
+2026-08-25 开工。分支 cards/B156.2-charter-2（上轮零产出，从卡基线 afea153c 继续）；spec 头部状态行=「已批准（用户，2026-08-25）」，上游状态位一致，无需回写。
+2026-08-25 读 spec §8.0/§8.1：会话子系统=第 13 个顶层域；双向门面；被依赖子系统建薄 api 门面；d_sessions（PTY）同名不同物须显式区分。
+2026-08-25 查证：`go run . graph check --repo .` → fails: []（仅存量 warns：anchor-off-domain d_workspace→d_coordination_task ×2、container-misplaced k_web_app_* 等，均为既有债，本轮不动）。
+2026-08-25 查证：账本事件类型词表唯一定义点 internal/ledger/types.go:46-66；EvDecisionAnswered=types.go:62，生产者 decisions.go:85（AnswerDecision），消费者=web answerDecision（web/src/api/ledger.ts:302）+ handleDecisionAnswer 路由 ledgerapi.go:45——活跃事实源。
+2026-08-25 查证：appendEvent 唯一落事件入口 events.go:19-58（PG RETURNING+pg_notify / SQLite LastInsertId）；EventsFromAsc events.go:63-103（升序截尾、limit<=0 取 1000）。
+2026-08-25 查证：Follow（follow.go:13-19）只消费 members() 集合内卡的事件，「card_id 为空的项目级事件不在内」——群级无卡消息不会打扰多路 wait，executor 侧零感知。
+2026-08-25 查证：归属锁人尺度=cards.driver_session（ClaimCard move.go:143-175 CAS 同事务；ReleaseCard :181-211；TakeoverCard tasks.go:95-118 落 EvDriverTakeover）；运行锁运行尺度=card_run_locks（runlock.go:29-32 TTL 5m/续租 2m；AcquireRunLock 过期抢占落 EvDriverTakeover runlock.go:89-91；RunLockOf :145-159 不过滤过期、消费侧判）。两锁互不代写是本文件头注释明文。
+2026-08-25 查证：moveCardTx 注释（move.go:23-25）——认领与移列必须同事务，拆两次写留「进行中没有驱动」窗口。这是绑定权威裁决的关键代码事实。
+2026-08-25 查证：Hub.Publish 按 proto.Event.TaskID 扇出（hub.go:166-178），账本 card_events 不经 Hub；控制台账本读面走 REST（registerLedgerRoutes ledgerapi.go:30-51）+ web usePoll 轮询（web/src/app/data/usePoll.ts）。/ws/events 仅任务事件（server.go:524）。
+2026-08-25 查证：Watchers(taskID)=订阅数即「协调者在听」（hub.go:118-122，注释明文唯一调用点 /ws/events）。
+2026-08-25 查证：工单在 d_orchestration 的 store（CreateTicket store.go:941、GetTicket :1031），proto.Ticket。
+2026-08-25 查证：ledger 包现状零 import internal/proto（grep 无命中）——RecordRoomMessage 载荷用 proto 类型将构成新增 d_ledger→d_protocol 边，须先在 target.json 声明。
+2026-08-25 查证：proto.LedgerEvent（internal/proto/ledger.go:112-119）Payload 为 RawMessage，载荷 schema 由消费方解释；映射先例 ledgerEventWire（agentd/ledgerapi.go:106）。
+2026-08-25 查证：CLI actor 格式 cli:<user>@<host>（cmd/ledgercli.go:44-51）；driver CLI 族在 cmd/card_driver.go（release/takeover 直调 Store）。
+2026-08-25 查证：ledger 测试基座 newTestStore=临时 SQLite（store_test.go:12-21），collab 包测试可用 ledger.Open(t.TempDir()) 同形自建。
+2026-08-25 裁决：绑定与心跳的权威存放在**账本域卡上**（判据=架构法第五条 + moveCardTx 单事务事实 + spec §4「绑定落卡」原文）；会话侧只持投影。详见契约文档拍板记录 5.1。
+2026-08-25 裁决：消息=单一事件类型 room_message + 受控 kind 词表（否掉七事件类型方案）；消费恰好一次的权威在账本 message_consumed 事件（照 ClearNeedsHumanFrom 同形事务内查后写），会话侧游标降为纯缓存。
+2026-08-25 裁决：房间读面走 REST 轮询不加 WS 通道（与既有卡片时间线同形态）；Hub 不动。
+2026-08-25 裁决：消息事件词表只加两常量（room_message/message_consumed），kind 七值收在 proto.RoomMsg*；裁决答复不另发房间消息、由 decision_answered 投影，防同一事实两处落账。
+2026-08-25 裁决：环节执行体「终态遗留裁决」补解析=转等人+EnsureComment 幂等留痕，绝不伪造 decision_answered；签名 EnsureComment(cardID, dedupeKey, body, actor) 已入 Ticket 0 空壳。
+2026-08-25 图：best.json 加第 13 顶层域 d_collab（协作房间）与容器 k_collab_Service/fn/model/client_model、k_ledger_api_Facade、k_web_api_rooms(_model)；baseline.json 同步加 d_collab 域条目（view diff 的 containersAdded 必须引用基线已存在的领域——charter validate.go:209 执法，Diff 无 domainsAdded 通道，域本身须落 baseline）。
+2026-08-25 图：diffs/cards-B156.2-charter-2.json 落 containersAdded(7 容器)+nodesAdded(21 符号)+edgesAdded(4)+implementsAdded(Facade→LedgerClient)；web 容器基线域引用用 d_web（基线无 d_web_contract 细分，最优归属在 best.json 完成）。
+2026-08-25 图：target.json 首轮声明四方向被 dead-contract 打红（声明方向必须有活跃边背书）；改为三条已声明（d_collab→d_protocol、d_ledger→d_protocol 有竖切实边；d_collab→d_ledger 以 interfaces:["LedgerClient"] 形态声明、implements 边即活证且零调用预算继续执法穿透禁令），gateway/cli→collab 两条改为「预定声明」，实现节点引入首个消费边的同提交写入。check --view fails=0 为证。
+2026-08-26 收尾证据：go build ./... exit 0；gofmt -l 干净（rooms.go 曾有一处格式漂移，gofmt -w 修复）；go vet 四包干净；go test ./internal/proto ./internal/ledger ./internal/collab -count=1 → 3 包 ok；cd web && npm run typecheck（tsc -b）exit 0；npx vitest run src/api/rooms.test.ts → 5/5 passed；graph validate exit 0；graph check --view cards-B156.2-charter-2 → fails 0；graph resolve --doc b156.2-contract.md --view cards-B156.2-charter-2 → 10 锚全 ok/moved、0 坏锚。
+2026-08-26 金样本可执行冻结已跑：Go rooms_fixture_test.go 三类编码 + collab 竖切/执法分支测试（含 TestRoomEventTypeLiteralMatchesLedger 词表等式）；TS 孪生 RoomsFixture.json 5 断言。哈希/密钥派生无命中。

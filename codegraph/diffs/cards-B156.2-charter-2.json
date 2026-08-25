@@ -1,0 +1,451 @@
+{
+  "view": "cards/B156.2-charter-2",
+  "base": "afea153c",
+  "summary": "B156.2 Ticket 0：协作房间域骨架——proto 房间 wire DTO、账本房间事件/绑定/租约方法、collab 入站门面与出站 client 接口、ledger/api 薄门面、TS 镜像",
+  "containersAdded": {
+    "k_collab_Service": { "label": "collab 入站门面", "kind": "go", "entry": true, "domain": "d_collab" },
+    "k_collab_fn": { "label": "collab 包级函数", "kind": "go", "domain": "d_collab" },
+    "k_collab_model": { "label": "collab 数据模型", "kind": "go", "domain": "d_collab" },
+    "k_collab_client_model": { "label": "collab 出站接口", "kind": "go", "domain": "d_collab" },
+    "k_ledger_api_Facade": { "label": "账本薄门面 Facade", "kind": "go", "entry": true, "domain": "d_ledger" },
+    "k_web_api_rooms": { "label": "房间 API 请求函数", "kind": "ts", "domain": "d_web" },
+    "k_web_api_rooms_model": { "label": "房间 API 类型镜像", "kind": "ts", "domain": "d_web" }
+  },
+  "nodesAdded": {
+    "m_proto_RoomMessage": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 430,
+      "name": "RoomMessage",
+      "file": "internal/proto/rooms.go",
+      "line": 24,
+      "summary": "room_message 账本事件的载荷 schema；kind 受控词表 RoomMsg*",
+      "fields": [
+        ["Room", "string", "卡号 | project:<name> | global"],
+        ["Kind", "string", "escalation|deviation|closing|relay|reply|user|pointer"],
+        ["Body", "string", ""],
+        ["Refs", "[]string", "引用锚；可选"],
+        ["Mentions", "[]string", "@成员；可选"],
+        ["DecisionID", "int64", "简报挂的裁决 id；可选"],
+        ["BySystem", "bool", "系统组件指针行；可选"]
+      ],
+      "projScanned": true
+    },
+    "m_proto_InboxItem": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 431,
+      "name": "InboxItem",
+      "file": "internal/proto/rooms.go",
+      "line": 46,
+      "summary": "待回复收件箱三源聚合条目（decision/ticket/mention）",
+      "fields": [
+        ["Origin", "string", "decision|ticket|mention"],
+        ["Title", "string", ""],
+        ["CardID", "string", "可选"],
+        ["RefID", "string", "统一字符串形 id"],
+        ["Payload", "json.RawMessage", "来源原对象；可选"]
+      ],
+      "projScanned": true
+    },
+    "m_proto_RoomSummary": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 432,
+      "name": "RoomSummary",
+      "file": "internal/proto/rooms.go",
+      "line": 56,
+      "summary": "会话列表（扁平活动排序）单行",
+      "fields": [
+        ["ID", "string", "卡号 | project:<name> | global"],
+        ["Kind", "string", "card|project|global"],
+        ["Project", "string", "可选"],
+        ["Title", "string", ""],
+        ["BoundSession", "string", "当前绑定者投影；可选"],
+        ["Live", "bool", "绑定者租约未过期"],
+        ["ReadOnly", "bool", "并入冻结或终态归档"],
+        ["LastActivity", "time.Time", ""]
+      ],
+      "projScanned": true
+    },
+    "n_ledger_Store_RecordRoomMessage": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 700,
+      "name": "Store.RecordRoomMessage",
+      "file": "internal/ledger/rooms.go",
+      "line": 15,
+      "signature": "func (s *Store) RecordRoomMessage(cardID string, msg proto.RoomMessage, actor string) (int64, error)",
+      "params": [
+        ["cardID", "string", "卡房间卡号；空=群级无卡事件"],
+        ["msg", "proto.RoomMessage", "消息载荷"],
+        ["actor", "string", "书写者标识"]
+      ],
+      "returns": "(int64, error)",
+      "summary": "落一条房间消息事件；白名单与书写者执法在 d_collab 的 Send"
+    },
+    "n_ledger_Store_RecordMessageConsumed": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 701,
+      "name": "Store.RecordMessageConsumed",
+      "file": "internal/ledger/rooms.go",
+      "line": 33,
+      "signature": "func (s *Store) RecordMessageConsumed(cardID string, msgSeq int64, consumer string) error",
+      "params": [
+        ["cardID", "string", "消息所属卡；群级为空"],
+        ["msgSeq", "int64", "被消费消息 seq"],
+        ["consumer", "string", "消费者标识"]
+      ],
+      "returns": "error",
+      "summary": "恰好一次消费标记；Ticket 0 空壳，实现节点按契约 §4 补齐事务内查重"
+    },
+    "n_ledger_Store_EnsureComment": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 702,
+      "name": "Store.EnsureComment",
+      "file": "internal/ledger/events.go",
+      "line": 232,
+      "signature": "func (s *Store) EnsureComment(cardID, dedupeKey, body, actor string) (bool, error)",
+      "params": [
+        ["cardID", "string", "卡号"],
+        ["dedupeKey", "string", "幂等去重键"],
+        ["body", "string", "评论正文"],
+        ["actor", "string", "审计主体"]
+      ],
+      "returns": "(bool, error)",
+      "summary": "幂等留痕评论；环节执行体「终态遗留裁决」补解析用。Ticket 0 空壳"
+    },
+    "n_ledger_Store_ClaimCardAs": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 703,
+      "name": "Store.ClaimCardAs",
+      "file": "internal/ledger/binding.go",
+      "line": 29,
+      "signature": "func (s *Store) ClaimCardAs(id, owner, carrier string) error",
+      "params": [
+        ["id", "string", "卡号"],
+        ["owner", "string", "协调者会话标识"],
+        ["carrier", "string", "载体类型"]
+      ],
+      "returns": "error",
+      "summary": "派发即认领的载体扩展版；既有 ClaimCard 保持签名不变转调本方法。Ticket 0 空壳"
+    },
+    "n_ledger_Store_RebindDriver": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 704,
+      "name": "Store.RebindDriver",
+      "file": "internal/ledger/binding.go",
+      "line": 40,
+      "signature": "func (s *Store) RebindDriver(id, toSession, carrier, expect string) error",
+      "params": [
+        ["id", "string", "卡号"],
+        ["toSession", "string", "新绑定会话"],
+        ["carrier", "string", "载体类型"],
+        ["expect", "string", "当前绑定 CAS 前值"]
+      ],
+      "returns": "error",
+      "summary": "换绑：CAS 校验后覆写并落 EvDriverTakeover 审计。Ticket 0 空壳"
+    },
+    "n_ledger_Store_RenewDriverLease": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 705,
+      "name": "Store.RenewDriverLease",
+      "file": "internal/ledger/binding.go",
+      "line": 50,
+      "signature": "func (s *Store) RenewDriverLease(session string, ttl time.Duration) (bool, error)",
+      "params": [
+        ["session", "string", "协调者会话标识"],
+        ["ttl", "time.Duration", "租期"]
+      ],
+      "returns": "(bool, error)",
+      "summary": "驱动活性租约续租/首建（upsert）。Ticket 0 空壳恒返回 true,nil"
+    },
+    "n_ledger_Store_DropDriverLease": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 706,
+      "name": "Store.DropDriverLease",
+      "file": "internal/ledger/binding.go",
+      "line": 58,
+      "signature": "func (s *Store) DropDriverLease(session string) error",
+      "params": [["session", "string", "协调者会话标识"]],
+      "returns": "error",
+      "summary": "删除租约行（幂等）。Ticket 0 空壳"
+    },
+    "n_ledger_Store_DriverLeaseOf": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 707,
+      "name": "Store.DriverLeaseOf",
+      "file": "internal/ledger/binding.go",
+      "line": 67,
+      "signature": "func (s *Store) DriverLeaseOf(session string) (DriverLease, bool, error)",
+      "params": [["session", "string", "协调者会话标识"]],
+      "returns": "(DriverLease, bool, error)",
+      "summary": "读租约，不过滤过期、消费侧判活性（RunLockOf 同一约定）。Ticket 0 空壳恒 exists=false"
+    },
+    "n_ledger_Store_AllDriverLeases": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 708,
+      "name": "Store.AllDriverLeases",
+      "file": "internal/ledger/binding.go",
+      "line": 74,
+      "signature": "func (s *Store) AllDriverLeases() ([]DriverLease, error)",
+      "returns": "([]DriverLease, error)",
+      "summary": "全部租约行（看板批量判活用）。Ticket 0 空壳"
+    },
+    "m_ledger_DriverLease": {
+      "kind": "model",
+      "container": "k_ledger_model",
+      "order": 900,
+      "name": "DriverLease",
+      "file": "internal/ledger/binding.go",
+      "line": 13,
+      "summary": "驱动活性租约一行：哪个协调者会话、活到几点",
+      "fields": [
+        ["Session", "string", "协调者会话标识"],
+        ["ExpiresAt", "time.Time", "过期时刻；消费侧按同一注入时钟判定"]
+      ]
+    },
+    "m_collab_Service": {
+      "kind": "model",
+      "container": "k_collab_Service",
+      "order": 10,
+      "name": "Service",
+      "file": "internal/collab/service.go",
+      "line": 39,
+      "signature": "type Service struct {\n\tlc client.LedgerClient\n}",
+      "summary": "协作房间域入站门面；依赖只收 client 接口，组装点绑定 ledger/api.Facade"
+    },
+    "n_collab_Service_Send": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 11,
+      "name": "Service.Send",
+      "file": "internal/collab/service.go",
+      "line": 55,
+      "signature": "func (s *Service) Send(roomID string, msg proto.RoomMessage, actor string) (int64, error)",
+      "params": [
+        ["roomID", "string", "卡号 | project:<name> | global"],
+        ["msg", "proto.RoomMessage", "消息"],
+        ["actor", "string", "书写者标识"]
+      ],
+      "returns": "(int64, error)",
+      "summary": "发消息唯一写入口：白名单+书写者执法；user 类随直通竖切真实接线，其余分支欠账 #1"
+    },
+    "n_collab_Service_Pointer": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 12,
+      "name": "Service.Pointer",
+      "file": "internal/collab/service.go",
+      "line": 82,
+      "signature": "func (s *Service) Pointer(roomID string, msg proto.RoomMessage) (int64, error)",
+      "params": [
+        ["roomID", "string", "房间标识"],
+        ["msg", "proto.RoomMessage", "指针行消息"]
+      ],
+      "returns": "(int64, error)",
+      "summary": "系统组件写里程碑指针专用入口；HTTP/CLI 面不得路由。Ticket 0 空壳"
+    },
+    "n_collab_Service_History": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 13,
+      "name": "Service.History",
+      "file": "internal/collab/service.go",
+      "line": 90,
+      "signature": "func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error)",
+      "params": [
+        ["roomID", "string", "房间标识"],
+        ["beforeSeq", "int64", "排他游标"],
+        ["limit", "int", "<=0 取 200"]
+      ],
+      "returns": "([]proto.LedgerEvent, error)",
+      "summary": "房间历史：只返回 room_message，升序截尾"
+    },
+    "n_collab_Service_Pending": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 14,
+      "name": "Service.Pending",
+      "file": "internal/collab/service.go",
+      "line": 114,
+      "signature": "func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error)",
+      "params": [["consumer", "string", "协调者/用户标识"]],
+      "returns": "([]proto.LedgerEvent, error)",
+      "summary": "@定向消费队列读侧；游标维度随欠账 #3，当前空切片占位"
+    },
+    "n_collab_Service_Consume": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 15,
+      "name": "Service.Consume",
+      "file": "internal/collab/service.go",
+      "line": 121,
+      "signature": "func (s *Service) Consume(seq int64, consumer string) error",
+      "params": [
+        ["seq", "int64", "被消费消息 seq"],
+        ["consumer", "string", "消费者标识"]
+      ],
+      "returns": "error",
+      "summary": "消费落账；恰好一次权威在账本 message_consumed 事件。Ticket 0 空壳"
+    },
+    "n_collab_Service_Mentions": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 16,
+      "name": "Service.Mentions",
+      "file": "internal/collab/service.go",
+      "line": 128,
+      "signature": "func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.LedgerEvent, error)",
+      "params": [
+        ["member", "string", "成员（卡号或用户标识）"],
+        ["afterSeq", "int64", "排他游标"],
+        ["limit", "int", "<=0 取 200"]
+      ],
+      "returns": "([]proto.LedgerEvent, error)",
+      "summary": "收件箱源③：@member 未消费提及"
+    },
+    "n_collab_Service_ListRooms": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 17,
+      "name": "Service.ListRooms",
+      "file": "internal/collab/service.go",
+      "line": 151,
+      "signature": "func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error)",
+      "params": [["project", "string", "筛选；空=全部"]],
+      "returns": "([]proto.RoomSummary, error)",
+      "summary": "扁平活动排序会话列表；派生成员规则随欠账 #3，当前空切片占位"
+    },
+    "n_collab_Service_MarkRead": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 18,
+      "name": "Service.MarkRead",
+      "file": "internal/collab/service.go",
+      "line": 157,
+      "signature": "func (s *Service) MarkRead(member, roomID string, uptoSeq int64) error",
+      "params": [
+        ["member", "string", "成员"],
+        ["roomID", "string", "房间"],
+        ["uptoSeq", "int64", "已读水位"]
+      ],
+      "returns": "error",
+      "summary": "未读游标置位（多人预留 member 维度）。Ticket 0 空壳"
+    },
+    "n_collab_Service_Unread": {
+      "kind": "func",
+      "container": "k_collab_Service",
+      "order": 19,
+      "name": "Service.Unread",
+      "file": "internal/collab/service.go",
+      "line": 165,
+      "signature": "func (s *Service) Unread(member, roomID string) (int, error)",
+      "params": [
+        ["member", "string", "成员"],
+        ["roomID", "string", "房间"]
+      ],
+      "returns": "(int, error)",
+      "summary": "未读计数。Ticket 0 空壳恒 0"
+    },
+    "m_collab_client_LedgerClient": {
+      "kind": "model",
+      "container": "k_collab_client_model",
+      "order": 20,
+      "name": "LedgerClient",
+      "file": "internal/collab/client/client.go",
+      "line": 19,
+      "signature": "type LedgerClient interface",
+      "summary": "会话侧出站接口（测试缝）：对外部账本能力的全部需求面；实现由组装点绑定为 ledger/api.Facade",
+      "fields": [
+        ["GetCard", "func", "读卡（含绑定投影）"],
+        ["ListActiveCards", "func", "已开始未结束的卡（成员派生输入）"],
+        ["RecordRoomMessage", "func", "发布房间消息事件"],
+        ["RecordMessageConsumed", "func", "恰好一次消费标记"],
+        ["EventsFromAsc", "func", "升序游标读事件"],
+        ["BindDriver", "func", "绑定/换绑 CAS"],
+        ["DriverLease", "func", "绑定者活性租约"]
+      ]
+    },
+    "m_ledger_api_Facade": {
+      "kind": "model",
+      "container": "k_ledger_api_Facade",
+      "order": 21,
+      "name": "Facade",
+      "file": "internal/ledger/api/api.go",
+      "line": 18,
+      "signature": "type Facade struct {\n\tst *ledger.Store\n}",
+      "summary": "账本薄门面：逐方法转调 Store 并做 Event→proto 映射，无业务判断；组装点构造注入 collab.New"
+    },
+    "m_web_api_rooms_RoomMessage": {
+      "kind": "model",
+      "container": "k_web_api_rooms_model",
+      "order": 330,
+      "name": "RoomMessage",
+      "file": "web/src/api/rooms.ts",
+      "line": 24,
+      "signature": "interface RoomMessage",
+      "fields": [
+        ["room", "string", ""],
+        ["kind", "RoomMsgKind", "七值受控词表"],
+        ["body", "string", ""],
+        ["refs", "string[]", "可选"],
+        ["mentions", "string[]", "可选"],
+        ["decision_id", "number", "可选"],
+        ["by_system", "boolean", "可选"]
+      ]
+    },
+    "m_web_api_rooms_InboxItem": {
+      "kind": "model",
+      "container": "k_web_api_rooms_model",
+      "order": 331,
+      "name": "InboxItem",
+      "file": "web/src/api/rooms.ts",
+      "line": 41,
+      "signature": "interface InboxItem",
+      "fields": [
+        ["origin", "InboxOrigin", "decision|ticket|mention"],
+        ["title", "string", ""],
+        ["card_id", "string", "可选"],
+        ["ref_id", "string", ""],
+        ["payload", "unknown", "可选"]
+      ]
+    },
+    "m_web_api_rooms_RoomSummary": {
+      "kind": "model",
+      "container": "k_web_api_rooms_model",
+      "order": 332,
+      "name": "RoomSummary",
+      "file": "web/src/api/rooms.ts",
+      "line": 50,
+      "signature": "interface RoomSummary",
+      "fields": [
+        ["id", "string", ""],
+        ["kind", "'card' | 'project' | 'global'", ""],
+        ["project", "string", "可选"],
+        ["title", "string", ""],
+        ["bound_session", "string", "可选"],
+        ["live", "boolean", ""],
+        ["read_only", "boolean", ""],
+        ["last_activity", "string", "RFC3339"]
+      ]
+    }
+  },
+  "edgesAdded": [
+    ["n_collab_Service_Send", "m_proto_RoomMessage"],
+    ["n_collab_Service_History", "m_proto_LedgerEvent"],
+    ["n_collab_Service_Mentions", "m_proto_RoomMessage"],
+    ["n_ledger_Store_RecordRoomMessage", "m_proto_RoomMessage"]
+  ],
+  "implementsAdded": [
+    ["m_ledger_api_Facade", "m_collab_client_LedgerClient"]
+  ]
+}

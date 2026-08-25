@@ -8,10 +8,37 @@
   "internal/agentd/server.go",
   "internal/agentd/codegraph.go"
  ],
- "contracts": [
-  {
-   "from": "d_cli",
-   "to": "d_gateway",
+  "contracts": [
+   {
+    "from": "d_collab",
+    "to": "d_protocol",
+    "legacyBudget": 0,
+    "entries": [
+     "proto 实体"
+    ],
+    "legacyBudgetNote": "B156.2：新增方向。房间消息/收件箱/会话列表的 wire DTO 在 proto 唯一定义处（internal/proto/rooms.go）；竖切路径 Service.Send/History/Mentions 已有真实引用边。"
+   },
+   {
+    "from": "d_ledger",
+    "to": "d_protocol",
+    "legacyBudget": 0,
+    "entries": [
+     "proto 实体"
+    ],
+    "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。"
+   },
+   {
+    "from": "d_collab",
+    "to": "d_ledger",
+    "legacyBudget": 0,
+    "interfaces": [
+     "LedgerClient"
+    ],
+    "legacyBudgetNote": "B156.2：出站 client 接口缝（会话→账本）。接口定义在会话侧 internal/collab/client，实现 ledger/api.Facade 由组装点绑定；本方向零调用预算——collab 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红，穿透禁令由此执法。"
+   },
+   {
+    "from": "d_cli",
+    "to": "d_gateway",
    "legacyBudget": 1,
    "legacyBudgetNote": "B229：补记既存方向，非新增依赖。基线 e24b9a31:cmd/agentd.go:273 已有 srv.SetLedger(lst)，T5 仅将其提取为具名函数 setupLedger，调用未变；baseline.json 中 n_cmd_agentdCmd_RunE→n_agentd_* 既有 12 条边。此前契约缺席是建模缺口（内联调用未建节点），提取后边才显形。"
   },

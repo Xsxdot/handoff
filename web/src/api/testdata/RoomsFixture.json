@@ -1,0 +1,47 @@
+[
+  {
+    "case": "escalation-full",
+    "message": {
+      "room": "B156",
+      "kind": "escalation",
+      "body": "一句话：验收判据不成立，挂 B156",
+      "refs": ["docs/superpowers/specs/b156.2-contract.md", "timeline#note-3"],
+      "mentions": ["user:sy"],
+      "decision_id": 7
+    }
+  },
+  {
+    "case": "user-minimal",
+    "message": {
+      "room": "project:handoff",
+      "kind": "user",
+      "body": "先停一下"
+    }
+  },
+  {
+    "case": "inbox-decision",
+    "item": {
+      "origin": "decision",
+      "title": "推翻级简报：契约语义冲突",
+      "card_id": "B156",
+      "ref_id": "7",
+      "payload": { "id": 7, "status": "open" }
+    }
+  },
+  {
+    "case": "inbox-ticket",
+    "item": {
+      "origin": "ticket",
+      "title": "权限工单待答复",
+      "ref_id": "tkt-42"
+    }
+  },
+  {
+    "case": "inbox-mention",
+    "item": {
+      "origin": "mention",
+      "title": "@你：改动影响 B145",
+      "ref_id": "918"
+    }
+  }
+]
