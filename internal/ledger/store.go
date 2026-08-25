@@ -192,12 +192,15 @@ func (s *Store) OnEvent(fn func(seq int64)) {
 	s.listeners = append(s.listeners, fn)
 }
 
-// ensureSchema 幂等建表。与 internal/store 相同的策略：CREATE IF NOT
-// EXISTS 列表顺序执行，无版本号——幂等即契约；后续加列走「ALTER +
-// 容忍 duplicate column」（现在还没有第二版，留到真需要时加）。
-func (s *Store) ensureSchema() error {
+// ddlStatements 返回指定方言的建库 DDL 语句表（pg=true 为 PG 方言，false 为
+// SQLite 回退方言）。两个分支必须登记同一集合的表——合并冲突只会在其中一块
+// 报出来、另一块可能被 git 静默自动合上，TestDDLDialectParity 是这类「一个
+// 方言缺表」静默缺口的唯一机内防线，往任一支加表必须同步另一支。
+// 整体沿用 var+if/else 形态而非早返回：保持两支语句文本与提取前逐字节一致
+// （含行内缩进），diff 只剩函数壳替换。
+func ddlStatements(pg bool) []string {
 	var ddl []string
-	if s.dialect == dialectPG {
+	if pg {
 		ddl = []string{
 			`CREATE TABLE IF NOT EXISTS cards (
 				id TEXT PRIMARY KEY, title TEXT NOT NULL, status TEXT NOT NULL,
@@ -352,7 +355,14 @@ func (s *Store) ensureSchema() error {
 				ON CONFLICT (project) DO NOTHING`,
 		}
 	}
-	for _, stmt := range ddl {
+	return ddl
+}
+
+// ensureSchema 幂等建表。与 internal/store 相同的策略：CREATE IF NOT
+// EXISTS 列表顺序执行，无版本号——幂等即契约；后续加列走「ALTER +
+// 容忍 duplicate column」（现在还没有第二版，留到真需要时加）。
+func (s *Store) ensureSchema() error {
+	for _, stmt := range ddlStatements(s.dialect == dialectPG) {
 		if _, err := s.db.Exec(stmt); err != nil {
 			short := stmt
 			if len(short) > 40 {
