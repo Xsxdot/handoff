@@ -172,7 +172,6 @@
     "k_config_Target": "d_policy",
     "k_config_fn": "d_policy",
     "k_config_model": "d_policy",
-    "k_discipline_Resolver": "d_policy",
     "k_discipline_fn": "d_policy",
     "k_discipline_model": "d_policy",
     "k_engine_Engine": "d_sessions",
