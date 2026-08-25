@@ -287,31 +287,77 @@ func TestCreateCardRejectsDeepWorkflowNesting(t *testing.T) {
 func TestUpdateCardAttachAccept(t *testing.T) {
 	s := seedStore(t)
 	card, _ := s.CreateCard(NewCard{Title: "t", Project: "p", Workflow: "feature", Actor: "test"})
-	if err := s.AttachFile(card.ID, "spec", "specs/x.md", "test"); err != nil {
+	if _, err := s.AttachFile(card.ID, "spec", "specs/x.md", "test"); err != nil {
 		t.Fatalf("attach: %v", err)
+	}
+	if _, err := s.AttachFile(card.ID, "plan", "specs/x.md", "test"); err != nil {
+		t.Fatalf("同 path 不同 kind attach: %v", err)
 	}
 	if err := s.SetAcceptance(card.ID, "跑通判据一", "test"); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
 	got, _ := s.GetCard(card.ID)
-	if len(got.Attachments) != 1 || got.Attachments[0].Path != "specs/x.md" {
+	if len(got.Attachments) != 2 || got.Attachments[0].Kind != "spec" ||
+		got.Attachments[1].Kind != "plan" || got.Attachments[0].Path != "specs/x.md" ||
+		got.Attachments[1].Path != "specs/x.md" {
 		t.Fatalf("附件: %+v", got.Attachments)
 	}
 	if got.AcceptanceCriteria != "跑通判据一" {
 		t.Fatalf("判据: %q", got.AcceptanceCriteria)
 	}
 	// 同 path 重复 attach 幂等（不追加重复项）
-	_ = s.AttachFile(card.ID, "spec", "specs/x.md", "test")
+	_, _ = s.AttachFile(card.ID, "spec", "specs/x.md", "test")
 	got, _ = s.GetCard(card.ID)
-	if len(got.Attachments) != 1 {
+	if len(got.Attachments) != 2 {
 		t.Fatalf("attach 不幂等: %+v", got.Attachments)
 	}
-	if err := s.DetachFile(card.ID, "specs/x.md", "test"); err != nil {
+	if _, err := s.DetachFile(card.ID, "spec:specs/x.md", "test"); err != nil {
+		t.Fatalf("精确 detach: %v", err)
+	}
+	got, _ = s.GetCard(card.ID)
+	if len(got.Attachments) != 1 || got.Attachments[0].Kind != "plan" {
+		t.Fatalf("精确 detach 不得摘掉另一 kind: %+v", got.Attachments)
+	}
+	if _, err := s.DetachFile(card.ID, "specs/x.md", "test"); err != nil {
 		t.Fatalf("detach: %v", err)
 	}
 	got, _ = s.GetCard(card.ID)
 	if len(got.Attachments) != 0 {
 		t.Fatalf("detach 未生效: %+v", got.Attachments)
+	}
+}
+
+func TestAttachmentMutationResults(t *testing.T) {
+	s := seedStore(t)
+	card, err := s.CreateCard(NewCard{Title: "附件返回值", Project: "p", Workflow: "feature", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+
+	added, err := s.AttachFile(card.ID, "spec", "docs/b250.md", "test")
+	if err != nil || !added {
+		t.Fatalf("首次 attach 应返回新增 true: added=%v err=%v", added, err)
+	}
+	added, err = s.AttachFile(card.ID, "spec", "docs/b250.md", "test")
+	if err != nil || added {
+		t.Fatalf("重复 attach 应返回新增 false: added=%v err=%v", added, err)
+	}
+	added, err = s.AttachFile(card.ID, "plan", "docs/b250.md", "test")
+	if err != nil || !added {
+		t.Fatalf("同 path 不同 kind 应返回新增 true: added=%v err=%v", added, err)
+	}
+
+	removed, err := s.DetachFile(card.ID, "spec:docs/b250.md", "test")
+	if err != nil || len(removed) != 1 || removed[0].Kind != "spec" || removed[0].Path != "docs/b250.md" {
+		t.Fatalf("精确 detach 应返回摘掉清单: removed=%+v err=%v", removed, err)
+	}
+	removed, err = s.DetachFile(card.ID, "docs/b250.md", "test")
+	if err != nil || len(removed) != 1 || removed[0].Kind != "plan" || removed[0].Path != "docs/b250.md" {
+		t.Fatalf("裸 path detach 应返回剩余清单: removed=%+v err=%v", removed, err)
+	}
+	removed, err = s.DetachFile(card.ID, "docs/b250.md", "test")
+	if err != nil || len(removed) != 0 {
+		t.Fatalf("重复裸 path detach 应返回空清单: removed=%+v err=%v", removed, err)
 	}
 }
 

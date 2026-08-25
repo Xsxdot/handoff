@@ -51,7 +51,7 @@ func TestAttachmentAnyGateBlocksWhenNoneMatch(t *testing.T) {
 	}
 
 	// 挂一种不在清单里的附件仍应被拒——择一不是「有附件就行」。
-	if err := s.AttachFile(card.ID, "spec", "docs/s.md", "test"); err != nil {
+	if _, err := s.AttachFile(card.ID, "spec", "docs/s.md", "test"); err != nil {
 		t.Fatalf("挂 spec: %v", err)
 	}
 	if err := s.MoveCard(card.ID, "implement", "", "test"); !errors.Is(err, ErrGateBlocked) {
@@ -66,13 +66,35 @@ func TestAttachmentAnyGateAcceptsEitherKind(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			s := anyGateStore(t)
 			card := mkAnyGate(t, s, "带 "+kind)
-			if err := s.AttachFile(card.ID, kind, "docs/"+kind+".md", "test"); err != nil {
+			if _, err := s.AttachFile(card.ID, kind, "docs/"+kind+".md", "test"); err != nil {
 				t.Fatalf("挂 %s: %v", kind, err)
 			}
 			if err := s.MoveCard(card.ID, "implement", "", "test"); err != nil {
 				t.Fatalf("带 %s 附件应放行，实得: %v", kind, err)
 			}
 		})
+	}
+}
+
+// 同一路径同时登记为 spec 与 plan 后，charter 的 implement 择一门必须真的放行。
+// 这条是 B250 的端到端牙齿：只断言附件数组长度，改坏门仍可能假绿。
+func TestAttachmentKindsOnSamePathUnlockImplementGate(t *testing.T) {
+	s := anyGateStore(t)
+	card := mkAnyGate(t, s, "同一路径双 kind")
+	for _, kind := range []string{"spec", "plan"} {
+		if _, err := s.AttachFile(card.ID, kind, "docs/b250.md", "test"); err != nil {
+			t.Fatalf("挂 %s: %v", kind, err)
+		}
+	}
+	got, err := s.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读双 kind 卡: %v", err)
+	}
+	if len(got.Attachments) != 2 {
+		t.Fatalf("同路径双 kind 应各自保留: %+v", got.Attachments)
+	}
+	if err := s.MoveCard(card.ID, "implement", "", "test"); err != nil {
+		t.Fatalf("双 kind 应通过 implement 择一门: %v", err)
 	}
 }
 
@@ -96,14 +118,14 @@ func TestAttachmentAnyGateAndsWithSingleGate(t *testing.T) {
 	}
 
 	// 只满足择一门，缺 contract → 仍拒。
-	if err := s.AttachFile(card.ID, "breakdown", "docs/b.md", "test"); err != nil {
+	if _, err := s.AttachFile(card.ID, "breakdown", "docs/b.md", "test"); err != nil {
 		t.Fatalf("挂 breakdown: %v", err)
 	}
 	if err := s.MoveCard(card.ID, "implement", "", "test"); !errors.Is(err, ErrGateBlocked) {
 		t.Fatalf("缺单值门要求的 contract 应拒，实得: %v", err)
 	}
 
-	if err := s.AttachFile(card.ID, "contract", "docs/c.md", "test"); err != nil {
+	if _, err := s.AttachFile(card.ID, "contract", "docs/c.md", "test"); err != nil {
 		t.Fatalf("挂 contract: %v", err)
 	}
 	if err := s.MoveCard(card.ID, "implement", "", "test"); err != nil {

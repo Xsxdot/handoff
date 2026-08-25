@@ -426,7 +426,8 @@ func TestNodeStepAttachesDeclaredOutputAndRoutes(t *testing.T) {
 			if cardID != card.ID || kind != "doc" || path != "docs/b201-breakdown.md" || actor != "node:breakdown" {
 				t.Fatalf("Attach 参数错误: %q %q %q %q", cardID, kind, path, actor)
 			}
-			return st.AttachFile(cardID, kind, path, actor)
+			_, err := st.AttachFile(cardID, kind, path, actor)
+			return err
 		},
 	}
 	out, err := step.RunOnce(context.Background(), card.ID)
@@ -582,7 +583,8 @@ func TestNodeStepRerunSameOutputPathIsIdempotent(t *testing.T) {
 			return []string{"docs/b201-plan.md"}, nil
 		},
 		Attach: func(cardID, kind, path, actor string) error {
-			return st.AttachFile(cardID, kind, path, actor)
+			_, err := st.AttachFile(cardID, kind, path, actor)
+			return err
 		},
 	}
 	for i := 0; i < 2; i++ {

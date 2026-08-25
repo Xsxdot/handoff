@@ -121,6 +121,14 @@ handoff wait <task> --notify --timeout 1h
 
 事件作为通知逐条流入本会话，**没有「重挂」这个动作**。
 
+**命令后面不要接任何过滤器**（`grep` / `sed` / `awk`）。INFO 噪声在 **stderr**，
+stdout 上本来就只有 JSON 事件——要静音用 `2>/dev/null`，一个过滤器都不需要。
+接了会**静默掐断唤醒**：2026-08-25 实测，裸跑 `card wait` 从账本落账到事件出流
+是 274ms；同一条流接上 `2>&1 | grep -vE "INFO"` 后一条不出，直到进程超时退出才
+一次性吐出来（3/3 复现，加 `--line-buffered` 也救不回来）。C1.5 那轮工单因此在
+无人应答里躺了 23 分钟，而会话把它误判成「镜像没过来」，多挂了一层 task 级订阅。
+判据：卡上/任务上明明有新事件，Monitor 却一声不吭——先看自己的命令里有没有管道。
+
 - `--timeout` 是**空闲**上限（距上一次收到任何帧，含不唤醒的 progress），
   必须**大于**对端 agentd 的 stalltimeout（默认 2h），故取 3h。设小了，
   客户端的超时会抢在 agentd 的 stalled 诊断前面退出——把一条带 last_seq 的
@@ -440,6 +448,12 @@ handoff card wait <id> [--subtree] [--timeout 3h]
   的「本次补充」小节，不落卡、不影响后续轮次）、`--discipline-override <角色>`（应急）。
 - `card wait` 跟的是**账本单流**（卡或整棵子树的事件，含镜像进来的 task 事件），
   不是 task 集合——所以挂起期间新拆的子卡、新派的任务天然进流，没有动态成员问题。
+- **一次工作流只挂一次 `card wait`，不必再叠 task 级 `wait --follow`**。唤醒语义
+  与 `wait --follow` 同款：逐条事件即时流出、命令不退出、不用重挂；工单
+  （`question` / `permission_request`）由镜像子系统转成 `task_mirrored` 进卡流，
+  只跳过 `progress` / `approver_decision` / `approver_disabled`
+  （`internal/ledgermirror/mirror.go` 的 `mirrorSkip`）。**卡流该有的事件却没动静时，
+  先查自己的命令有没有接管道**（见上文「订阅」一节的过滤器禁令），别先怀疑镜像。
 - 醒来之后**处置方式与任务回路完全相同**：先 `handoff show <task>` 以 state
   为准，再按事件分诊表办。别在这里另发明一套。
 
