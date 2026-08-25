@@ -15,20 +15,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
-// TestManagedTaskTmpEnv keeps cold-restart environment construction aligned with
-// the executor TaskTmpDir contract before the restart seam is exercised.
-func TestManagedTaskTmpEnv(t *testing.T) {
-	tmpDir, env := managedTaskTmpEnv(filepath.Join("/data", "tasks", "0123456789"), "0123456789")
-	wantDir := filepath.Join("/data", "tmp", "01234567")
-	wantEnv := []string{"TMPDIR=" + wantDir, "GOTMPDIR=" + wantDir, "GOCACHE=" + filepath.Join(wantDir, "gocache")}
-	if tmpDir != wantDir {
-		t.Fatalf("managed tmp dir = %q, want %q", tmpDir, wantDir)
-	}
-	if strings.Join(env, "\x00") != strings.Join(wantEnv, "\x00") {
-		t.Fatalf("managed tmp env = %v, want %v", env, wantEnv)
-	}
-}
-
 // 凭据缺失 → 判死不存活（manager 按不存活走 failed 恢复路径）。
 func TestResumeMissingProcInfo(t *testing.T) {
 	a := New(nil)
@@ -179,6 +165,20 @@ func TestResumeColdStartsResumeProcess(t *testing.T) {
 		if req.SessionID != "sess-1" || req.Model != "sonnet" || req.RepoPath != repo {
 			t.Fatalf("冷恢复入参不对: %+v", req)
 		}
+		wantDir := executor.TaskTmpDir(filepath.Dir(dir), "T-1")
+		wantEnv := []string{
+			"TMPDIR=/user/tmp",
+			"GOCACHE=/user/cache",
+			"TMPDIR=" + wantDir,
+			"GOTMPDIR=" + wantDir,
+			"GOCACHE=" + filepath.Join(wantDir, "gocache"),
+		}
+		if strings.Join(req.Env, "\x00") != strings.Join(wantEnv, "\x00") {
+			t.Fatalf("冷恢复 env = %v, want %v", req.Env, wantEnv)
+		}
+		if _, err := os.Stat(wantDir); err != nil {
+			t.Fatalf("冷恢复启动 seam 前任务 tmp 未创建: %v", err)
+		}
 		return &Proc{Handle: prochost.Handle{PID: 4242, LockPath: lock}, TaskDir: dir, SessionID: "sess-1"}, nil
 	}
 	defer func() { startProc = old }()
@@ -190,7 +190,8 @@ func TestResumeColdStartsResumeProcess(t *testing.T) {
 	defer func() { newPermServerFn = oldPerm }()
 
 	out, err := a.Resume(executor.ResumeReq{TaskID: "T-1", TaskDir: dir,
-		RepoPath: repo, SessionID: "sess-1", Model: "sonnet", Cold: true})
+		RepoPath: repo, SessionID: "sess-1", Model: "sonnet", Cold: true,
+		Env: []string{"TMPDIR=/user/tmp", "GOCACHE=/user/cache"}})
 	if err != nil {
 		t.Fatal(err)
 	}

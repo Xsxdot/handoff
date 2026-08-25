@@ -67,6 +67,14 @@ func TestJudgeSafeCommandRejectsMimicsAndConnectors(t *testing.T) {
 	}
 }
 
+func TestJudgeUnknownGraphSubcommandFailsClosed(t *testing.T) {
+	g := newTestGate(t)
+	v := g.Judge(Request{Tool: "bash", Command: "handoff graph inspect --doc docs/spec.md"}, Scope{Workdir: t.TempDir()})
+	if v.Action != Escalate || v.Rule != RuleSelfCommand {
+		t.Fatalf("unknown graph subcommand verdict = %#v, want Escalate/self-command", v)
+	}
+}
+
 // TestJudgeFailClosedTable 把 spec §7 的 fail-closed 表逐行钉死。
 //
 // 表里没有任何一行导向 AutoAllow——这是整个设计的支点，一旦有人加了新的

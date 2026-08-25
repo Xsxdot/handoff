@@ -28,7 +28,13 @@ const RuleSelfCommand = "self-command"
 var selfCmdReadOnly = map[string]bool{
 	"tasks": true, "show": true, "diff": true, "fetch": true, "status": true,
 	"frames": true, "sessions": true, "footprint": true, "ls": true,
-	"graph": true, // graph resolve --doc is a read-only contract query
+}
+
+// selfCmdNestedReadOnly contains the second-level whitelist for commands whose
+// top-level name is not safe by itself. Keeping graph's child command explicit
+// preserves fail-closed behavior for newly added graph subcommands.
+var selfCmdNestedReadOnly = map[string]map[string]bool{
+	"graph": {"resolve": true},
 }
 
 // selfCmdMutating 是明确的变更类子命令名单。
@@ -115,6 +121,19 @@ func judgeSegment(seg string) (bool, string) {
 		if selfCmdMutating[c] {
 			return true, c
 		}
+	}
+	for i, c := range cand {
+		children, nested := selfCmdNestedReadOnly[c]
+		if !nested {
+			continue
+		}
+		if i+1 < len(cand) && children[cand[i+1]] {
+			return false, ""
+		}
+		if i+1 < len(cand) {
+			return true, cand[i+1]
+		}
+		return true, c
 	}
 	for _, c := range cand {
 		if selfCmdReadOnly[c] {

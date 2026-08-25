@@ -3,6 +3,7 @@
 package codex_test
 
 import (
+	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -59,6 +60,59 @@ func TestResumeColdDisallowedStaysDead(t *testing.T) {
 	}
 	if out.Note == "" {
 		t.Fatal("必须给出判死原因，协调者要能看懂为什么任务没恢复")
+	}
+}
+
+// TestResumeHotReattachDoesNotCreateTaskTmp exercises the Resume hot path through
+// the live proc seam. A broken implementation that creates the cold-only directory
+// before checking Alive returns that filesystem error instead of reaching reattach.
+func TestResumeHotReattachDoesNotCreateTaskTmp(t *testing.T) {
+	root := t.TempDir()
+	taskDir := filepath.Join(root, "tasks", "hot-task")
+	if err := os.MkdirAll(taskDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "tmp"), []byte("not a directory"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() {
+		for {
+			conn, acceptErr := ln.Accept()
+			if acceptErr != nil {
+				return
+			}
+			_ = conn.Close()
+		}
+	}()
+	lockPath := filepath.Join(taskDir, "proc.lock")
+	held, err := prochost.AcquireLock(lockPath)
+	if err != nil {
+		t.Fatalf("预占热恢复锁失败: %v", err)
+	}
+	defer held.Release()
+	if err := codex.WriteServeInfoForTest(&codex.Proc{
+		Handle:  prochost.Handle{PID: os.Getpid(), LockPath: lockPath},
+		TaskDir: taskDir,
+		Port:    ln.Addr().(*net.TCPAddr).Port,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	a := codex.New(nil)
+	out, err := a.Resume(executor.ResumeReq{
+		TaskID: "hot-task", TaskDir: taskDir, RepoPath: taskDir,
+		SessionID: "thread-1", Cold: true,
+	})
+	if err != nil {
+		t.Fatalf("热重连不应被冷路径 tmp 创建失败拦截: %v", err)
+	}
+	if out.Alive {
+		t.Fatalf("测试 listener 非 Codex WS，热重连应在拨号后判不可恢复: %+v", out)
 	}
 }
 

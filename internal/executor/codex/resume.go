@@ -58,13 +58,6 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		a.log.Info("恢复凭据缺失，判不可恢复", "task", taskID, "cause", err)
 		return executor.ResumeOutcome{}, nil
 	}
-	taskTmp := taskTmpDir(taskDir)
-	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o700); err != nil {
-		a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
-		return executor.ResumeOutcome{}, fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
-	}
-	a.log.Info("任务专属 tmp 就绪", "task", taskID, "dir", taskTmp)
-
 	// 冷恢复互斥：先在 runs 上占位再拉进程，后到者直接返回「恢复进行中」。
 	// 两个 app-server 抢同一个 thread 是数据损坏级别的后果。
 	a.mu.Lock()
@@ -109,6 +102,12 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		}
 		a.log.Info("app-server 已不在，进入冷恢复", "task", taskID,
 			"old_port", proc.Port, "thread", threadID)
+		taskTmp := taskTmpDir(taskDir)
+		if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o700); err != nil {
+			a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
+			return executor.ResumeOutcome{}, fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
+		}
+		a.log.Info("任务专属 tmp 就绪", "task", taskID, "dir", taskTmp)
 		env := append(append([]string{}, req.Env...), tmpEnvKVs(taskTmp)...)
 		newProc, serr := startServe(context.Background(), repoPath, taskID, req.MarkRoot,
 			taskDir, env, a.log)

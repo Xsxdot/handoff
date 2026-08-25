@@ -4,6 +4,7 @@ package ledgermirror
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync/atomic"
 	"testing"
@@ -69,6 +70,26 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 			}
 		}
 		if mirrored == 3 {
+			var found bool
+			for _, e := range evs {
+				if e.Type != ledger.EvTaskMirrored || string(e.Payload) == "" {
+					continue
+				}
+				var payload struct {
+					TaskType string `json:"task_type"`
+					Payload  struct {
+						PermissionID string `json:"permission_id"`
+					} `json:"payload"`
+				}
+				if err := json.Unmarshal(e.Payload, &payload); err == nil &&
+					payload.TaskType == string(proto.EventTypePermissionAutoAllow) &&
+					payload.Payload.PermissionID == "perm-1" {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("镜像缺少 permission_auto_allow 的真实 payload: %#v", evs)
+			}
 			rows, _ := s.MirrorHealth()
 			if len(rows) == 1 && rows[0].Target == "mac-02" {
 				return
