@@ -1060,9 +1060,11 @@ func TestDisciplinesListFromLedgerOnly(t *testing.T) {
 			t.Fatalf("PutDiscipline(%s): %v", name, err)
 		}
 	}
-	// 磁盘残留：退役目录里的文件绝不上拉。目录放在独立临时目录下——
-	// newLedgerEnv 的 cfg.DataDir 为空，不能拿它拼相对路径写进仓库工作树
-	discDir := filepath.Join(t.TempDir(), "discipline")
+	// 磁盘残留夹具必须落在处理器/配置真正认得的 <DataDir>/discipline 之下：
+	// 一旦有人把读盘兜底加回 handleDisciplineNames，disk-only 就会混进下拉，
+	// 上面的长度判据与下面的名字判据同时变红。放在任何随机目录里都会让这条
+	// 断言永远无牙（读不到夹具 = 拦不住复活）。
+	discDir := filepath.Join(env.srv.conf().DataDir, "discipline")
 	if err := os.MkdirAll(discDir, 0o700); err != nil {
 		t.Fatal(err)
 	}

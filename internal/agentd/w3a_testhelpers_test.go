@@ -45,9 +45,16 @@ func newTestAgentdEnv(t *testing.T) *testAgentdEnv {
 }
 
 // newTestAgentdEnvWithCfg 同 newTestAgentdEnv，但注入自定义配置与日志器。
+// 未显式给 DataDir 的用例统一落到本测试的临时目录：包内大量代码按
+// <DataDir>/… 拼路径（tasks、env、discipline 等），零值空串会把路径拼成
+// 相对路径污染仓库工作树，或让「配置认得的目录」测试（如纪律块下拉防复活
+// 断言）的夹具与被测对象失联。
 func newTestAgentdEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logger) *testAgentdEnv {
 	t.Helper()
 	dir := t.TempDir()
+	if cfg.DataDir == "" {
+		cfg.DataDir = dir
+	}
 	cfgPath := filepath.Join(dir, "config.yaml")
 	// 先落一份真实配置再注入路径：handler 层写操作（如新增开发机）经 swapConf
 	// 落盘时要求 cfgPath 非空，且该路径上已存在一份可覆盖的配置
