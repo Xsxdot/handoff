@@ -1,6 +1,7 @@
 # B252：codex 权限请求的沙箱档位只读呈现——盲批变知情批
 
-状态：**已批准**（用户 2026-08-25 问答裁决三选一，选定「最小档：只读呈现」）
+状态：**已退回搁置**（2026-08-25 implement 轮触发 spec 内建退路：真实线协议不携带
+档位字段，最小档不可实施；原批准记录：用户 2026-08-25 问答裁决选定「最小档：只读呈现」）
 级别：**L1**（单子系统 codex executor adapter，不动跨子系统契约；plan 增量为零、
 验收一眼可核——spec 末尾三行即 plan，同一文件挂 spec:/plan: 双 kind）
 卡：B252
@@ -64,7 +65,23 @@ with_additional_permissions / require_escalated，其中 require_escalated 是**
 - 其他执行器的档位维度（已核实不存在，永不做，除非对端协议先长出来）。
 - permgate 判据规则按档位加权（先呈现，规则层是否消费该附注归 B249 族后续）。
 
-## Plan（L1 三行，与 spec 同文件双 kind）
+## 实施退回记录（2026-08-25）
+
+implement 轮（linux-01，task dd7819a7）按「夹具先行」核对后触发本 spec 的预留退路：
+
+- 仓内真实录制的 `item/commandExecution/requestApproval` params（协议设计文档
+  §1.2 + `internal/executor/codex/appserver_test.go` 夹具）**不含任何档位字段**；
+- 上游 Codex `ExecCommandApprovalParams` schema 同样不含；`SandboxPermissions`
+  三值枚举是 codex **内部/工具请求**概念，不上 app-server 线协议；
+- 上游实验性 `additionalPermissions` / 录制报文里的 `proposedExecpolicyAmendment`
+  只表达 with_additional_permissions 方向，推不出 require_escalated（脱沙箱）——
+  盲批痛点的核心恰是后者。
+
+结论：最小档在当前可核对的线协议上不可实施，不硬造。逐条取证与命令原文见
+`docs/ledgers/2026-08-25-b252-ledger.md`。卡搁置，复活判据：上游协议长出档位
+字段，或实验性 execpolicy 载荷正式化到足以近似呈现。
+
+## Plan（L1 三行，与 spec 同文件双 kind）——已作废，见退回记录
 
 1. 改 `internal/executor/codex/perm.go`：`commandApproval` 增档位字段并解析，
    require_escalated 时在 desc 与账本事件文本附注「要求脱离沙箱执行」。

@@ -419,6 +419,8 @@
   唤醒。来源：B253 spec OOS。
 - **续派语义改「origin 上存在工作分支即放行、执行机自行 fetch」**：与跨机拒绝报文的
   原建议对齐；要处理「有产出但未 push」的静默丢产出风险。来源：B254 spec OOS。
-- **codex 权限裁决选择性回发（只批沙箱内执行，with_additional_permissions）**：需开
-  codex 的 exec_permission_approvals 特性；等 B252 只读呈现跑出真实提权请求量再定
-  性价比。来源：B252 spec OOS。
+- **codex 权限档位可见性/选择性回发**：B252 最小档已证伪——app-server 线协议不携带
+  档位字段（`SandboxPermissions` 枚举是 codex 内部概念，取证见
+  docs/ledgers/2026-08-25-b252-ledger.md）。复活判据：上游协议长出档位字段，或实验性
+  `additionalPermissions`/`proposedExecpolicyAmendment` 载荷正式化。来源：B252 spec
+  退回记录（卡已搁置）。
