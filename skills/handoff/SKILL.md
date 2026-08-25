@@ -121,6 +121,14 @@ handoff wait <task> --notify --timeout 1h
 
 事件作为通知逐条流入本会话，**没有「重挂」这个动作**。
 
+**命令后面不要接任何过滤器**（`grep` / `sed` / `awk`）。INFO 噪声在 **stderr**，
+stdout 上本来就只有 JSON 事件——要静音用 `2>/dev/null`，一个过滤器都不需要。
+接了会**静默掐断唤醒**：2026-08-25 实测，裸跑 `card wait` 从账本落账到事件出流
+是 274ms；同一条流接上 `2>&1 | grep -vE "INFO"` 后一条不出，直到进程超时退出才
+一次性吐出来（3/3 复现，加 `--line-buffered` 也救不回来）。C1.5 那轮工单因此在
+无人应答里躺了 23 分钟，而会话把它误判成「镜像没过来」，多挂了一层 task 级订阅。
+判据：卡上/任务上明明有新事件，Monitor 却一声不吭——先看自己的命令里有没有管道。
+
 - `--timeout` 是**空闲**上限（距上一次收到任何帧，含不唤醒的 progress），
   必须**大于**对端 agentd 的 stalltimeout（默认 2h），故取 3h。设小了，
   客户端的超时会抢在 agentd 的 stalled 诊断前面退出——把一条带 last_seq 的
@@ -272,7 +280,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 
 ## 审批：批什么，不批什么
 
-`--approve` 批的是**这一条**操作，不是一类操作的长期授权。两个自动化例外要心里有数：同一任务内**等价**的权限请求会自动复用你先前的 allow——判等不是逐字比对，而是三域指纹（命令域 / 路径域 / 全文域，B91），同一条命令换个包装也会命中（`permission_reuse` 事件留痕，跨任务不复用）；工作区内的文件写入由静态规则自动放行，根本不会来问你。
+`--approve` 批的是**这一条**操作，不是一类操作的长期授权。两个自动化例外要心里有数：同一任务内**等价**的权限请求会自动复用你先前的 allow——判等不是逐字比对，而是三域指纹（命令域 / 路径域 / 全文域，B91），同一条命令换个包装也会命中（`permission_reuse` 事件留痕，跨任务不复用）；还有一档**静态规则自动放行**，根本不会来问你，B249 起覆盖三类：**落在任务范围内的写入**（任务工作区、任务私有目录、任务临时目录三个根；共享的 `/tmp/<executor>` **不在**范围内，写它照旧升级）、**已知安全命令**（`go build|test|vet`、`gofmt`、`npm test|run`、`make`、`ls|cat|grep`、`git status|diff|log`，以及 charter 台账纪律的法定动作 `git add <范围内路径> && git commit --amend --no-edit`）、**handoff 自身的只读子命令**。白名单匹配命令主体形态而非子串，`echo "go test"` 不会被放行；未登记的 `handoff` 子命令一律 fail-closed。命令白名单的每次放行都**补一条事件**，所以「这一段静默放行了什么」能从事件流查到，不必开 Debug 日志。
 
 **`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。理由是否送达的留痕分执行器：claude 的理由与裁决**同帧送达**，事件历史里**不会**有留痕事件——没有留痕不等于没送达，反而是送得更早；其余 executor（opencode / grok / codex）走带外注入，事件历史里有 `deny_guidance_relayed` / `deny_guidance_dropped`。
 
@@ -440,6 +448,12 @@ handoff card wait <id> [--subtree] [--timeout 3h]
   的「本次补充」小节，不落卡、不影响后续轮次）、`--discipline-override <角色>`（应急）。
 - `card wait` 跟的是**账本单流**（卡或整棵子树的事件，含镜像进来的 task 事件），
   不是 task 集合——所以挂起期间新拆的子卡、新派的任务天然进流，没有动态成员问题。
+- **一次工作流只挂一次 `card wait`，不必再叠 task 级 `wait --follow`**。唤醒语义
+  与 `wait --follow` 同款：逐条事件即时流出、命令不退出、不用重挂；工单
+  （`question` / `permission_request`）由镜像子系统转成 `task_mirrored` 进卡流，
+  只跳过 `progress` / `approver_decision` / `approver_disabled`
+  （`internal/ledgermirror/mirror.go` 的 `mirrorSkip`）。**卡流该有的事件却没动静时，
+  先查自己的命令有没有接管道**（见上文「订阅」一节的过滤器禁令），别先怀疑镜像。
 - 醒来之后**处置方式与任务回路完全相同**：先 `handoff show <task>` 以 state
   为准，再按事件分诊表办。别在这里另发明一套。
 
@@ -586,7 +600,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「分支 …，起点 …」行就是实际起点 |
 | `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复阶梯」看走到哪一级 |
 | 任务归档后有残留（worktree / executor 进程） | 回收失败（事件里会带残留提示） | worktree 用 `handoff reclaim` 回收；进程按事件提示处置，彻底死透按 `proc.json` 的 `handle.pid` 手工 kill shim |
-| `card dispatch --step` 打印「已受理」，但卡上零事件、看板毫无动静 | **驱动权泄漏**：上一轮编排异常中断（如 agentd 重启）没走到 `defer` 的释放，持有者会话早已死亡；而认领**永不因心跳僵死而失效**（`internal/ledger/tasks.go` 明写）。`--step` 是 202 受理，失败只进 agentd.log，卡上不留任何事件 | `grep 驱动认领被拒 ~/.handoff/agentd.log` 取真因（带 holder / claimer）。**CLI 侧今天无解**：`card takeover` 把驱动认领给随即死亡的本次调用，`card release` 只对当前持有者生效、恒为 no-op 却返回 `{"ok":true}`。见 B239 |
+| `card dispatch --step` 打印「已受理」，但卡上零事件、看板毫无动静 | **驱动权泄漏**：上一轮编排异常中断（如 agentd 重启）没走到 `defer` 的释放，持有者会话早已死亡；而认领**永不因心跳僵死而失效**（`internal/ledger/tasks.go` 明写）。`--step` 是 202 受理，失败只进 agentd.log，卡上不留任何事件 | `grep 驱动认领被拒 ~/.handoff/agentd.log` 取真因（带 holder / claimer）。处置：`card takeover <id>` 显式接管，驱动归属落到人名下（不带 PID，不随本次调用结束失效），随后正常 `--step` 派发即可。`card release` 只对当前持有者生效，非持有者调用会失败并告知谁在持有——用它确认持有方，不要指望它替你解锁。（B239 前 takeover/release 均不可用，旧描述已作废）|
 
 **日志在哪**（在 executor 所在机器上）：
 

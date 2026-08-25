@@ -108,6 +108,10 @@ const disciplineFileName = "discipline.md"
 // 并发安全：无共享可变字段（st/hub/ads/cfg/conf/log 构造后只读），
 // 每个任务的中介 goroutine 与应答 goroutine 通过 store CAS + hub 路由协作。
 // approver 相关的 in-flight/失败计数/停用表由 apMu 保护。
+// appendEventFunc is the Store.AppendEvent seam used by audit tests; production
+// construction always assigns the Store method directly.
+type appendEventFunc func(string, proto.EventType, any) (proto.Event, error)
+
 type Manager struct {
 	st  *store.Store
 	hub *Hub
@@ -119,8 +123,9 @@ type Manager struct {
 	// 指针，而 swapConf 换的是新指针，运行期可变的字段（Executor / Targets）
 	// 读 cfg 永远是旧值（B160 §4.2）。默认值等价于旧行为，Server.SetManager
 	// 挂接时会换成活的。
-	conf func() *config.Config
-	log  *slog.Logger
+	conf        func() *config.Config
+	log         *slog.Logger
+	appendEvent appendEventFunc
 	// env 是 env 文件解析器（B19）：Dispatch 时按 task.Executor 解析出要注入
 	// executor 进程的环境变量。构造后只读，每次 For 都重新读盘（支持热更新）。
 	env *envfile.Resolver
@@ -303,8 +308,9 @@ func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg 
 	env := envfile.NewResolver(envfile.Dir(cfg.DataDir), envMapping, log)
 	return &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg,
-		conf:     func() *config.Config { return cfg },
-		approver: approver, gate: gate, log: log,
+		appendEvent: st.AppendEvent,
+		conf:        func() *config.Config { return cfg },
+		approver:    approver, gate: gate, log: log,
 		env:          env,
 		apInflight:   map[string]bool{},
 		apFails:      map[string]int{},
@@ -1779,9 +1785,10 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	// 判据前置分流（B23/B27）：结构化判据先判，三个出口对应三条既有路径。
 	// AutoAllow 不建工单、不发事件、不改状态——工作区内的写入是派发的目的
 	// 本身，为它唤醒任何人都是噪音。
-	switch m.judgePermission(taskID, ev).Action {
+	verdict := m.judgePermission(taskID, ev)
+	switch verdict.Action {
 	case permgate.AutoAllow:
-		m.autoAllowPermission(taskID, ev)
+		m.autoAllowPermission(taskID, ev, verdict)
 		return
 	case permgate.Consult:
 		// 审批者可用且本任务未停用时才咨询；否则退化为升级人工（原行为）。
@@ -1879,8 +1886,9 @@ func (m *Manager) judgePermission(taskID string, ev executor.AdapterEvent) permg
 			Reason: "读任务失败，工作区范围不可知"}
 	}
 	scope := permgate.Scope{
-		Workdir: task.Workdir(),
-		TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
+		Workdir:    task.Workdir(),
+		TaskDir:    filepath.Join(m.cfg.DataDir, "tasks", taskID),
+		TaskTmpDir: executor.TaskTmpDir(m.cfg.DataDir, taskID),
 	}
 	v := m.gate.Judge(permgate.Request{
 		Tool:      ev.Perm.Tool,
@@ -1901,6 +1909,7 @@ func (m *Manager) judgePermission(taskID string, ev executor.AdapterEvent) permg
 		m.log.Log(context.Background(), lvl, "权限判定：升级人工",
 			"task", taskID, "perm", ev.PermissionID, "tool", ev.Perm.Tool,
 			"paths", ev.Perm.Paths, "workdir", scope.Workdir, "task_dir", scope.TaskDir,
+			"task_tmp_dir", scope.TaskTmpDir,
 			"reason", v.Reason, "rule", v.Rule)
 	}
 	return v
@@ -1922,8 +1931,20 @@ func escalateLogLevel(rule string) slog.Level {
 	return slog.LevelInfo
 }
 
-// autoAllowPermission 自动放行一次权限请求：不建工单、不发事件、不改状态，
-// 直接把 once 回传 executor。
+// permissionAutoAllowPayload is the bounded structured audit shape for a static
+// safe-command allow. It is stored through Store.AppendEvent and never Publishs.
+type permissionAutoAllowPayload struct {
+	PermissionID string   `json:"permission_id"`
+	Permission   string   `json:"permission"`
+	Tool         string   `json:"tool"`
+	Command      string   `json:"command,omitempty"`
+	Paths        []string `json:"paths,omitempty"`
+	Rule         string   `json:"rule"`
+	Reason       string   `json:"reason"`
+}
+
+// autoAllowPermission records a safe-command audit when applicable, then
+// responds once to the executor. Audit failure never blocks that response.
 //
 // 注意：
 //   - 没有工单可失败，因此回传失败**不产 delivery_failed 事件**；最常见的
@@ -1931,7 +1952,40 @@ func escalateLogLevel(rule string) slog.Level {
 //     早已应答完毕），按 Warn 记录即可
 //   - adapterFor 失败意味着任务的运行态已经没了，executor 侧那次请求将无人
 //     应答——这是 Error 级，但同样无工单可失败
-func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent) {
+
+func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict) {
+	m.log.Info("权限请求自动放行", "task", taskID, "perm", ev.PermissionID,
+		"action", verdict.Action.String(), "rule", verdict.Rule, "reason", verdict.Reason)
+	if verdict.Rule == permgate.RuleSafeCommand {
+		if ev.Perm == nil {
+			m.log.Error("白名单自动放行缺结构化权限载荷", "task", taskID,
+				"perm", ev.PermissionID, "rule", verdict.Rule)
+		} else {
+			payload := permissionAutoAllowPayload{
+				PermissionID: ev.PermissionID,
+				Permission:   permEventText(ev.Text),
+				Tool:         ev.Perm.Tool,
+				Command:      ev.Perm.Command,
+				Paths:        append([]string(nil), ev.Perm.Paths...),
+				Rule:         verdict.Rule,
+				Reason:       verdict.Reason,
+			}
+			appendEvent := m.appendEvent
+			if appendEvent == nil && m.st != nil {
+				appendEvent = m.st.AppendEvent
+			}
+			if appendEvent == nil {
+				m.log.Error("白名单自动放行审计无落库入口", "task", taskID,
+					"perm", ev.PermissionID, "rule", verdict.Rule)
+			} else if _, err := appendEvent(taskID, proto.EventTypePermissionAutoAllow, payload); err != nil {
+				m.log.Error("白名单自动放行审计落库失败", "task", taskID,
+					"perm", ev.PermissionID, "rule", verdict.Rule, "cause", err)
+			} else {
+				m.log.Info("白名单自动放行审计已落库", "task", taskID,
+					"perm", ev.PermissionID, "rule", verdict.Rule)
+			}
+		}
+	}
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("自动放行：解析执行者失败，该权限请求将无人应答",
@@ -1941,11 +1995,12 @@ func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent) {
 	actx, acancel := unaryCtx(context.Background())
 	defer acancel()
 	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, "once", ""); err != nil {
-		m.log.Warn("自动放行回传 executor 失败（多为订阅重放，请求已失效）",
+		m.log.Error("自动放行回传 executor 失败（多为订阅重放，请求已失效）",
 			"task", taskID, "perm", ev.PermissionID, "cause", err)
 		return
 	}
 	m.noteAutoAllowed(taskID)
+	m.log.Info("自动放行已回传 executor", "task", taskID, "perm", ev.PermissionID)
 }
 
 // noteAutoAllowed 累计一次自动放行。
@@ -2251,6 +2306,30 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 //     此处放行以补发事件，CreateTicket 本身幂等，不会产生第二张工单
 //   - 工单存在且事件也在 → 真重放，跳过（P1-7 的幂等承诺）
 func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {
+	// Safe-command AutoAllow deliberately has no ticket, so its audit event is
+	// the durable idempotency marker for replayed permission notifications.
+	if events, err := m.st.EventsFrom(taskID, 0, 1000); err != nil {
+		m.log.Error("查询权限自动放行审计事件失败", "task", taskID, "perm", permID, "cause", err)
+	} else {
+		for _, event := range events {
+			if event.Type != proto.EventTypePermissionAutoAllow {
+				continue
+			}
+			var payload struct {
+				PermissionID string `json:"permission_id"`
+			}
+			if err := json.Unmarshal(event.Payload, &payload); err != nil {
+				m.log.Error("解析权限自动放行审计事件失败", "task", taskID,
+					"perm", permID, "seq", event.Seq, "cause", err)
+				continue
+			}
+			if payload.PermissionID == permID {
+				m.log.Debug("权限自动放行请求重放，跳过中介", "task", taskID,
+					"perm", permID, "seq", event.Seq)
+				return true
+			}
+		}
+	}
 	tk, err := m.st.GetTicket(ticketID)
 	if errors.Is(err, store.ErrNotFound) {
 		return false

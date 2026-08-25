@@ -52,8 +52,8 @@ var builtinBlacklist = []string{
 // 剥完就干净了。命中这条即恢复硬拦，不给绕过留口子。
 //
 // 三种形态（大小写不敏感）：
-//   - 解释器直调：sh/bash/zsh/dash/ksh/env 的 `-c` 形态——`env ... -c` 的 -c
-//     由第二段 alternation 的通用执行标志兜住（spec §4.1 包装器清单）
+//   - 解释器直调：sh/bash/zsh/dash/ksh/env 的 `-c` 及组合短选项形态（如 codex
+//     上报的 `/bin/bash -lc`）；`env ... -c` 的 -c 也由这一段识别
 //   - eval：内容是不可见的变量/构造串，判据无从判定（TestQuoteBypass 锁死）
 //   - xargs：把管道输入当作参数喂给后续命令
 //   - 通用执行标志：任意工具的 `-c` / `-e` / `-E`（psql -c / mysql -e /
@@ -66,7 +66,7 @@ var builtinBlacklist = []string{
 // 参与升级（见 judgeCommand），`git log -c` / `gcc -c` 这类无害 -c 用法不命中
 // 黑名单，不会因此被误升级。
 var execWrapperRx = regexp.MustCompile(
-	`(?i)\b(sh|bash|zsh|dash|ksh|env)\b[^|;&]*\s-c\b` +
+	`(?i)\b(sh|bash|zsh|dash|ksh|env)\b[^|;&]*\s-[a-z]*c[a-z]*\b` +
 		`|\beval\b|\bxargs\b` +
 		`|\b[a-z][a-z0-9_-]*\b[^|;&\n]*\s-[ceE]\b`)
 

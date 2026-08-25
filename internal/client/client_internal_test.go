@@ -53,6 +53,14 @@ func TestIsPermanent(t *testing.T) {
 	}
 }
 
+// TestPermissionAutoAllowIsNotDeliverable keeps static audit events out of
+// ordinary wait/follow wakeups; all=true callers bypass this predicate.
+func TestPermissionAutoAllowIsNotDeliverable(t *testing.T) {
+	if isDeliverable(proto.EventTypePermissionAutoAllow) {
+		t.Fatal("permission_auto_allow must be filtered from ordinary delivery")
+	}
+}
+
 // TestIsPermanentStatus 覆盖握手状态码判定：400/401/403 永久，其余瞬时。
 func TestIsPermanentStatus(t *testing.T) {
 	cases := []struct {

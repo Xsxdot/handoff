@@ -81,7 +81,8 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 		OutputPath: func() string { return outputPath },
 		Diff:       r.diffNode(),
 		Attach: func(cardID, kind, path, actor string) error {
-			return r.St.AttachFile(cardID, kind, path, actor)
+			_, err := r.St.AttachFile(cardID, kind, path, actor)
+			return err
 		},
 	}
 	nodeStep.Dispatch = func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (string, string, error) {

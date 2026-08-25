@@ -30,6 +30,10 @@ const (
 	targetLastArg
 	// targetOfPrefix：落点写在 of=PATH 里（dd）
 	targetOfPrefix
+	// targetGofmt：只有 gofmt 的 -w 后非标志参数是写落点
+	targetGofmt
+	// targetGit：只有 git add 的 pathspec 与 git diff 的 --output 值是写落点
+	targetGit
 )
 
 // writeCommands 是「落点在参数位」的写命令表。
@@ -44,6 +48,8 @@ var writeCommands = map[string]argTargetKind{
 	"ln":      targetLastArg,
 	"install": targetLastArg,
 	"dd":      targetOfPrefix,
+	"gofmt":   targetGofmt,
+	"git":     targetGit,
 }
 
 // WriteArgTargets 从命令串里摘出全部「参数位写落点」。
@@ -129,6 +135,42 @@ func targetsOf(kind argTargetKind, args []string) []string {
 			return nil
 		}
 		return plain[len(plain)-1:]
+	case targetGofmt:
+		write := false
+		for _, a := range args {
+			if a == "-w" {
+				write = true
+				continue
+			}
+			if write && !strings.HasPrefix(a, "-") {
+				byFlag = append(byFlag, a)
+			}
+		}
+		return byFlag
+	case targetGit:
+		if len(args) == 0 {
+			return nil
+		}
+		switch args[0] {
+		case "add":
+			return targetsOf(targetAllArgs, args[1:])
+		case "diff":
+			var out []string
+			for i := 1; i < len(args); i++ {
+				a := args[i]
+				if v, ok := strings.CutPrefix(a, "--output="); ok && v != "" {
+					out = append(out, v)
+					continue
+				}
+				if a == "--output" && i+1 < len(args) && args[i+1] != "" {
+					i++
+					out = append(out, args[i])
+				}
+			}
+			return out
+		default:
+			return nil
+		}
 	}
 	return nil
 }

@@ -76,6 +76,41 @@ func TestQuoteBypassStillEscalates(t *testing.T) {
 	}
 }
 
+// TestCombinedShellExecWrapperEscalates locks down codex's /bin/bash -lc
+// permission-command shape and keeps unrelated command flags out of the gate.
+func TestCombinedShellExecWrapperEscalates(t *testing.T) {
+	g := newTestGate(t)
+	dangers := []struct {
+		name string
+		cmd  string
+	}{
+		{name: "rm -rf", cmd: `rm -rf /tmp/x`},
+		{name: "git reset --hard", cmd: `git reset --hard HEAD~3`},
+		{name: "sudo", cmd: `sudo systemctl restart nginx`},
+		{name: "git push --force", cmd: `git push --force origin main`},
+	}
+	wrappers := []string{"-lc", "-cl", "-lic", "-c"}
+	for _, wrapper := range wrappers {
+		for _, danger := range dangers {
+			wrapper, danger := wrapper, danger
+			t.Run(wrapper+"/"+danger.name, func(t *testing.T) {
+				command := `/bin/bash ` + wrapper + ` '` + danger.cmd + `'`
+				if v := g.judgeCommand(command); v.Action != Escalate {
+					t.Fatalf("包装器内危险命令必须硬升级\n  输入: %s\n  实得: %s（%s）", command, v.Action, v.Reason)
+				}
+			})
+		}
+	}
+
+	for _, clean := range []string{`gcc -static hello.c`, `git log -c`} {
+		t.Run(clean, func(t *testing.T) {
+			if v := g.judgeCommand(clean); v.Action == Escalate {
+				t.Fatalf("无害执行标志不应因包装器放宽而硬升级\n  输入: %s\n  理由: %s", clean, v.Reason)
+			}
+		})
+	}
+}
+
 // TestCleanCommandGoesToApprover 未命中黑名单的普通命令走审批者，形状不变。
 func TestCleanCommandGoesToApprover(t *testing.T) {
 	g := newTestGate(t)

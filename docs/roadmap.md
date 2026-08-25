@@ -268,25 +268,45 @@
   合进 main 没人拦。卡流的「图对账」列只在协调者记得点火时才走——**没有机械执法**。
   下一步值得让 finish 前的门检查「本分支删改过的文件是否在图里还有符号」。
 
-## 来自 B229 部署前置的实测（2026-08-25，协调者本机核过）
+## 来自 B229 部署前置的实测（2026-08-25，协调者本机核过；同日更正，见下）
 
-- **在飞的 charter 任务跨不过一次 agentd 升级，只能重新 dispatch。**判据一行：
-  `ls <DataDir>/tasks/<id>/discipline.md`，没有就跨不过去。链条三段都实测过：
-  ① 旧 agentd **不写**这个文件——B229 前的 main（`8cb707294`）里 `manager.go` 对
-  `disciplineFileName|discipline.md` 是 0 命中，`disciplineFileName` 随 `5585ecc2a`
-  （b229.1）才进来；本机 `~/.handoff/tasks/*/` 抽查四个旧任务目录也都没有它。
-  ② 旧 agentd **确实记了名字**——`discipline_name` 列早于 B229（`f4dc50057`），
-  实测在飞任务 `fe509380` 的 `discipline_name` = `charter-contract`。
-  ③ 新代码在「有名字 + 无正文」时**拒绝续接**（`internal/agentd/manager.go:1301-1313`），
-  理由是冷恢复重建 executor 进程、纪律块是新进程里约束的唯一来源，空块会让一个
-  点名 review 的任务失去「只读不写」。
-  两条合起来：升级窗口一开，旧 agentd 派出的每个 charter 任务都落进拒绝分支。
-  **注意这不只是「下一次点火失败」**——`continue` 在协议层不校验能力位，但跨重启
-  会走 `resumeForContinue`，那条路才是被拒的地方。
-- **可做的改进（本期不做）**：升级时把 `discipline_name` 已知、正文缺失的在飞任务
-  按名字回填一份 `discipline.md`，让它们能跨过升级。风险是回填的是「升级后的最新版」
-  而非首派那一版，与 B229 §2.5.2「续接必须看到与会话开始时同一份世界」冲突——
-  要做得先想清楚这个矛盾，不是顺手补个文件。
+> **更正（2026-08-25 晚）：本节原来的结论是错的，且错在最贵的方向——它会让人为升级去等一个根本不必等的窗口。**
+> 原结论：「在飞的 charter 任务跨不过一次 agentd 升级，只能重新 dispatch。」
+> **事实：一次 `systemctl restart` 不会让执行者消失，在飞任务照常跑完。**
+> 打脸的经过：一个 peer 会话在 linux-01 上重启了 agentd，事后发现同机有一条 17:27:42 派出的
+> charter 任务（`discipline_name=charter-implement`，任务目录确实没有 `discipline.md`）——
+> 正是本节判定「跨不过去」的那一类。它没事：`render.log` 与 `frames.jsonl` 在重启后继续增长、
+> `handoff resume` 报 `executor_gone: false`、shim 的 PPID 是 1 且启动时间早于新 agentd。
+>
+> **机制（本仓早就写着，我们没人去看）**：执行者由 agentd 经 shim 以**独立会话**拉起，
+> 目的就是活过 agentd 的重启与升级；`deploy/handoff-agentd.service` 里 `KillMode=process`
+> 的注释原文写着「是本项目的硬要求，不是可选优化」，并解释 systemd 默认的 `control-group`
+> 会连坐执行者；`internal/agentd/killmode.go#WarnIfKillModeUnsafe` 还在启动时自检并打日志
+> 「systemd KillMode 配置正确，agentd 重启不会连坐执行者」。重启后 agentd 按 `proc.json`
+> + `proc.lock` 存活锁重新接管。**这是设计使然，不是侥幸。**
+
+- **`discipline.md` 判据本身没错，错的是它的定义域**：它管的是**冷恢复**那条路。只有执行者
+  **真的没了**（shim 死了、机器重启、unit 被改成 `KillMode=control-group`、或部署形态本就不
+  保活）时，`Continue` 才会撞 `ErrTaskNotRunning` 落到 `resumeForContinue`，那时才需要读回
+  首派落盘的纪律正文；有名字而无正文即拒绝续接（`internal/agentd/manager.go:1301-1313`）。
+  **平常一次 `systemctl restart` 走不到那里。**
+  判据仍然是一行 `ls <DataDir>/tasks/<id>/discipline.md`，只是它回答的问题变成了
+  「**万一执行者真没了**，这个任务还能不能续接」。
+- **两条前提必须一并记住，它们是条件不是背景**：① unit 里 `KillMode=process`；② 执行者经
+  shim 以独立会话拉起。换一台机器、换一种部署形态，前提可能不成立。**macOS 上那两台是
+  launchd，未验证**——不要把 linux 的结论推广过去。
+- **升级窗口的真实条件**因此比原先宽得多：不需要「执行机上零在飞 charter 任务」。
+- 旧 agentd 不写 `discipline.md` 这条实测依然成立（B229 前的 main `8cb707294` 里 `manager.go`
+  对 `disciplineFileName|discipline.md` 0 命中，`disciplineFileName` 随 `5585ecc2a` 才进来；
+  本机四个旧任务目录抽查也都没有它）。它只是不再蕴含原来那个结论。
+- **这条链是怎么错的**：三个会话接力**推**出来的，每一环各自为真——旧 agentd 不写文件（实测）、
+  新代码在有名无正文时拒绝续接（读代码）——缺的是没人去验的那一环：**重启到底会不会让
+  executor 消失**。链条上每个环节为真，不代表结论为真。而正确答案本来就写在
+  `deploy/handoff-agentd.service` 的注释里，我们谁都没去读那个文件。
+- **可做的改进（本期不做）**：升级时把 `discipline_name` 已知、正文缺失的在飞任务按名字回填
+  一份 `discipline.md`，让它们在**真冷恢复**时也能续接。风险是回填的是「升级后的最新版」而非
+  首派那一版，与 B229 §2.5.2「续接必须看到与会话开始时同一份世界」冲突——要做得先想清楚
+  这个矛盾，不是顺手补个文件。
 
 ## 来自 C1.11 finish 的残余（2026-08-25）
 
@@ -354,3 +374,42 @@
   anchor 全 ok、check 零新增违规），但下一张卡不会自动有人补。
   形态有两条：给执行机装 codegraph，或让 recon 纪律块在工具缺失时判 `needs_human` 而不是 pass
   ——后者更稳，因为前者会随新执行机接入反复失效（参见 opencode 不在非登录 shell PATH 的旧坑）。
+
+## 来自 B249 spec（2026-08-25，权限判据降噪）
+
+- **评估下线廉价模型审批者**：B249 的白名单只吃掉可枚举的安全形态，长尾仍交给 approver。
+  等白名单稳定运行一段、Consult 计数显著下降后再评估是否整个下线（省一次模型调用与
+  6.2s 中位延迟）。**前置条件是下一条**——没有计数就没有「显著下降」的判据。
+  来源：`specs/2026-08-25-b249-permission-noise-reduction.md` 的 Out of Scope。
+- **权限出口的持续计数与看板**：今天 AutoAllow 逐次只有 Debug 日志（默认不开）、
+  Consult/Escalate 只能靠扫 `agentd.log` 事后归因，一次取证要写一个子 agent 跑 15 分钟。
+  应有常驻的三出口计数（manager 已有 `aaCount` 可扩），并在控制台呈现。
+  它是上一条的前置，也是「判据改动到底降了多少噪」的唯一判据。来源：同上 spec。
+- **（判据背景，防重走）** 2026-08-25 对 linux-01 三天 1377 次判定的全量取证结论：
+  人被叫醒 246 次、批 238 次、拒 6 次且**6 次全与安全无关**（都是方法论纠偏）；
+  「容器管不住」的网络副作用维度三天是空集（0 curl / kubectl / psql / aws / ssh /
+  git push）。**再有人提「靠 OS 隔离来减少权限打扰」，先复读这组数字**——降噪的杠杆
+  在判据不在隔离，隔离的价值在 B227 与进程清扫，两件事不要再捆在一起论证。
+
+## 来自 B249 执行过程（2026-08-25，非 spec 预见的残余）
+
+- **卡基线在首派那刻冻结，依赖卡后落地就再也进不来**。B249 15:54 首派 contract 时
+  B248 尚未落地，于是 B249 分支上一直是旧正则，implement、三轮 review、全量测试
+  **三关全绿且无一报错**——review 只审本卡改动，测试不测另一张卡的行为，三方合并还能
+  保住对方的改动。症状只有一个：两卡改动从未在同一份代码上一起跑过，而 B248 spec 明写
+  「必须同轮落地，先放宽后收紧的中间态是净减安全」。协调者在 acceptance 阶段用
+  `git merge-base --is-ancestor` 才查出来，本地合并后重做验收（21/21 行为判据绿）。
+  **可做的**：`card dispatch` 或 finish 阶段对「卡 spec 里点名的前置卡」做一次祖先检查。
+  尚未取号，需要时 `handoff card add`。
+- **contract 节点给 `codegraph/target.json` 写 entries 时用了函数符号名**
+  （`executor.TaskTmpDir`），而该字段的语义是**容器 Label**（判定见 charter
+  `graph/codegraph/check.go`：逐条比对 `Container.Label`，无跳过分支）。后果是必然在
+  review 阶段撞 dead-entry、多烧一整轮 implement + review。基线里其余 9 条 entries
+  全是容器级形态（`ledger.Store`、`proto 实体`、`ptyhost 实体` 等），无一函数符号。
+  **归属 charter 仓**（`~/workspace/charter` 的 contract 节点 skill 该给出这条判据，
+  改完跑 `scripts/regen_discipline.py`），不是 handoff 仓的改动。
+- **（已有卡，不重复取号）** 审批者对沙箱层级完全失明 = **B252**；`card --attach`
+  按 path 去重忽略 kind = **B250，已于 2026-08-25 合入 main**（附件身份改 (kind, path)）；
+  执行者隔离层 = **B247**。
+- **（已修，留痕）** `skills/handoff/SKILL.md` 排障表原写「驱动权泄漏 CLI 侧今天无解」，
+  B239 后 `card takeover` 已可用、`card release` 也不再是静默 no-op，本轮实测确认并改正。

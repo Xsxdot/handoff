@@ -75,6 +75,9 @@ const (
 	// 既有人工批准，被自动放行而没有再次叫醒协调者（B57②）。
 	// 复用必须留痕，否则「我明明没批过这个」将无从对质。
 	EventTypePermissionReuse EventType = "permission_reuse"
+	// EventTypePermissionAutoAllow records a static safe-command allow. It is an
+	// audit event, not a deliverable event and must not wake a waiting client.
+	EventTypePermissionAutoAllow EventType = "permission_auto_allow"
 	// EventTypeDenyGuidanceRelayed 表示协调者拒绝时给出的原因已作为一条消息
 	// 下发给 executor（B50）。
 	EventTypeDenyGuidanceRelayed EventType = "deny_guidance_relayed"

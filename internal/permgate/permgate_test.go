@@ -7,6 +7,74 @@ import (
 	"testing"
 )
 
+// TestJudgeSafeCommandTable exercises the whitelist only through Gate.Judge;
+// matcher internals are not a substitute for the range-before-command seam.
+func TestJudgeSafeCommandTable(t *testing.T) {
+	g := newTestGate(t)
+	work := t.TempDir()
+	sc := Scope{Workdir: work, TaskDir: t.TempDir(), TaskTmpDir: filepath.Join(work, "tmp")}
+	cases := []struct {
+		id      string
+		command string
+	}{
+		{"git-ledger-amend", "git add docs/ledger.md && git commit --amend --no-edit"},
+		{"go-build", "go build ./..."},
+		{"go-test", "go test ./..."},
+		{"go-vet", "go vet ./..."},
+		{"gofmt", "gofmt -w internal/a.go"},
+		{"npm-test", "npm test -- --runInBand"},
+		{"npm-run", "npm run lint -- --quiet"},
+		{"make", "make test"},
+		{"ls", "ls -la"},
+		{"cat", "cat docs/spec.md"},
+		{"grep", "grep -R pattern docs"},
+		{"git-status", "git status --short"},
+		{"git-diff", "git diff --stat"},
+		{"git-log", "git log -5"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.id, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Command: tc.command}, sc)
+			if v.Action != AutoAllow || v.Rule != RuleSafeCommand || !strings.Contains(v.Reason, tc.id) {
+				t.Fatalf("command %q verdict = %#v, want AutoAllow safe-command %s", tc.command, v, tc.id)
+			}
+		})
+	}
+}
+
+// TestJudgeSafeCommandRejectsMimicsAndConnectors keeps shell wrappers and
+// untrusted command joins outside the positive whitelist.
+func TestJudgeSafeCommandRejectsMimicsAndConnectors(t *testing.T) {
+	g := newTestGate(t)
+	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
+	for _, command := range []string{
+		`echo "go test ./..."`,
+		`bash -c "go test ./..."`,
+		"go test ./... | tee /tmp/out",
+		"go test ./...; cat file",
+		"go test ./...\ncat file",
+		"git status && git log",
+		"handoff graph dispatch --doc x",
+		"handoff graph unknown --doc x",
+	} {
+		v := g.Judge(Request{Tool: "bash", Command: command}, sc)
+		if v.Action == AutoAllow && v.Rule == RuleSafeCommand {
+			t.Fatalf("unsafe mimic/connector %q was auto-allowed: %#v", command, v)
+		}
+	}
+	if v := g.Judge(Request{Tool: "webfetch", Text: "go test ./..."}, sc); v.Action == AutoAllow && v.Rule == RuleSafeCommand {
+		t.Fatalf("non-bash command was auto-allowed: %#v", v)
+	}
+}
+
+func TestJudgeUnknownGraphSubcommandFailsClosed(t *testing.T) {
+	g := newTestGate(t)
+	v := g.Judge(Request{Tool: "bash", Command: "handoff graph inspect --doc docs/spec.md"}, Scope{Workdir: t.TempDir()})
+	if v.Action != Escalate || v.Rule != RuleSelfCommand {
+		t.Fatalf("unknown graph subcommand verdict = %#v, want Escalate/self-command", v)
+	}
+}
+
 // TestJudgeFailClosedTable 把 spec §7 的 fail-closed 表逐行钉死。
 //
 // 表里没有任何一行导向 AutoAllow——这是整个设计的支点，一旦有人加了新的
@@ -55,14 +123,12 @@ func TestJudgeAutoAllowOnlyForInScopeWrites(t *testing.T) {
 	}
 }
 
-// TestJudgeNeverAutoAllowsNonFileTools 非写文件工具永远拿不到 AutoAllow。
-//
-// 本次改动不放宽任何现有工具的裁决——bash 再干净也只到 Consult。
-func TestJudgeNeverAutoAllowsNonFileTools(t *testing.T) {
+// TestJudgeNonBashToolsRemainNonAutoAllowed keeps the whitelist scoped to Bash.
+func TestJudgeNonBashToolsRemainNonAutoAllowed(t *testing.T) {
 	g := newTestGate(t)
 	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir()}
 	reqs := []Request{
-		{Tool: "bash", Text: "Bash: go build ./...", Command: "go build ./..."},
+		{Tool: "bash", Text: "Bash: unknown-command", Command: "unknown-command"},
 		{Tool: "webfetch", Text: "WebFetch: https://example.com"},
 		{Tool: "other", Text: "SomeTool: whatever"},
 	}
@@ -130,29 +196,32 @@ func TestJudgeBashInScopeFallsBack(t *testing.T) {
 	wd := t.TempDir()
 	scope := Scope{Workdir: wd}
 	g := newTestGate(t)
-	cases := []Request{
-		{Tool: "bash", Text: "Bash: echo x > out.txt", Command: "echo x > out.txt"},
-		{Tool: "bash", Text: "Bash: go test ./... > " + wd + "/log", Command: "go test ./... > " + wd + "/log"},
-		{Tool: "bash", Text: "Bash: go test ./... > /dev/null", Command: "go test ./... > /dev/null"},
-		{Tool: "bash", Text: "Bash: go test ./... 2>&1", Command: "go test ./... 2>&1"},
+	cases := []struct {
+		req  Request
+		want Action
+	}{
+		{Request{Tool: "bash", Text: "Bash: echo x > out.txt", Command: "echo x > out.txt"}, Consult},
+		{Request{Tool: "bash", Text: "Bash: go test ./... > " + wd + "/log", Command: "go test ./... > " + wd + "/log"}, AutoAllow},
+		{Request{Tool: "bash", Text: "Bash: go test ./... > /dev/null", Command: "go test ./... > /dev/null"}, AutoAllow},
+		{Request{Tool: "bash", Text: "Bash: go test ./... 2>&1", Command: "go test ./... 2>&1"}, AutoAllow},
 	}
-	for _, req := range cases {
-		t.Run(req.Command, func(t *testing.T) {
-			if v := g.Judge(req, scope); v.Action != Consult {
-				t.Fatalf("Action = %v（reason=%q），期望 Consult——落点合法就该落回命令判据",
-					v.Action, v.Reason)
+	for _, tc := range cases {
+		t.Run(tc.req.Command, func(t *testing.T) {
+			if v := g.Judge(tc.req, scope); v.Action != tc.want {
+				t.Fatalf("Action = %v（reason=%q），期望 %v——落点合法后再按白名单判定",
+					v.Action, v.Reason, tc.want)
 			}
 		})
 	}
 }
 
-// TestJudgeBashNoPathsUnchanged 无落点的 bash 请求必须与改动前逐字同判：
-// 本 task 不许顺带改变绝大多数命令的走向。
+// TestJudgeBashNoPathsUnchanged keeps non-whitelisted and blacklisted commands
+// unchanged while allowing the explicit build whitelist.
 func TestJudgeBashNoPathsUnchanged(t *testing.T) {
 	g := newTestGate(t)
 	scope := Scope{Workdir: t.TempDir()}
-	if v := g.Judge(Request{Tool: "bash", Text: "Bash: go build ./...", Command: "go build ./..."}, scope); v.Action != Consult {
-		t.Fatalf("无害命令 Action = %v，期望 Consult", v.Action)
+	if v := g.Judge(Request{Tool: "bash", Text: "Bash: go build ./...", Command: "go build ./..."}, scope); v.Action != AutoAllow || v.Rule != RuleSafeCommand {
+		t.Fatalf("白名单命令 Action/Rule = %v/%q，期望 AutoAllow/safe-command", v.Action, v.Rule)
 	}
 	if v := g.Judge(Request{Tool: "bash", Text: "Bash: rm -rf /", Command: "rm -rf /"}, scope); v.Action != Escalate {
 		t.Fatalf("黑名单命令 Action = %v，期望 Escalate", v.Action)

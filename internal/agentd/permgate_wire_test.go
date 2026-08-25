@@ -1,6 +1,9 @@
 package agentd
 
 import (
+	"context"
+	"encoding/json"
+	"errors"
 	"log/slog"
 	"path/filepath"
 	"testing"
@@ -9,7 +12,112 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
+
+// TestSafeCommandPermissionAuditsOnceWithoutTicket drives the real Manager
+// permission seam through Store JSON persistence and the fake adapter reply.
+func TestSafeCommandPermissionAuditsOnceWithoutTicket(t *testing.T) {
+	m, st, _, adapter := newTestManager(t)
+	taskID := "safe-task"
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	tmpDir := executor.TaskTmpDir(m.cfg.DataDir, taskID)
+	command := "go test ./... > " + filepath.Join(tmpDir, "out")
+	ev := executor.AdapterEvent{
+		Type: "permission", PermissionID: "safe-1", Text: "Bash: " + command,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	}
+	m.handlePermission(context.Background(), taskID, ev)
+	if got := adapter.recordedPerms(); len(got) != 1 || got[0] != "safe-1:once" {
+		t.Fatalf("responded permissions = %v, want [safe-1:once]", got)
+	}
+	events := mustEvents(t, st, taskID)
+	var audit proto.Event
+	count := 0
+	for _, event := range events {
+		if event.Type == proto.EventTypePermissionAutoAllow {
+			audit = event
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("permission_auto_allow count = %d, want 1", count)
+	}
+	var payload permissionAutoAllowPayload
+	if err := json.Unmarshal(audit.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.PermissionID != "safe-1" || payload.Tool != executor.PermToolBash ||
+		payload.Command != command || payload.Rule != permgate.RuleSafeCommand || payload.Reason == "" {
+		t.Fatalf("audit payload = %#v", payload)
+	}
+	if _, err := st.GetTicket(taskID + ":safe-1"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("ticket lookup error = %v, want store.ErrNotFound", err)
+	}
+	task, err := st.GetTask(taskID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if task.State != proto.TaskStateRunning {
+		t.Fatalf("task state = %s, want running", task.State)
+	}
+
+	// Replaying the same permission id is idempotent at the Manager seam.
+	m.handlePermission(context.Background(), taskID, ev)
+	if got := adapter.recordedPerms(); len(got) != 1 {
+		t.Fatalf("replayed response count = %d, want 1", len(got))
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 1 {
+		t.Fatalf("replayed audit count = %d, want 1", got)
+	}
+}
+
+// TestSafeCommandAuditFailureStillResponds verifies Store append failure does
+// not leave the executor waiting for its once response.
+func TestSafeCommandAuditFailureStillResponds(t *testing.T) {
+	m, st, _, adapter := newTestManager(t)
+	taskID := "safe-audit-failure"
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	m.appendEvent = func(string, proto.EventType, any) (proto.Event, error) {
+		return proto.Event{}, errors.New("audit store unavailable")
+	}
+	command := "go test ./..."
+	m.handlePermission(context.Background(), taskID, executor.AdapterEvent{
+		Type: "permission", PermissionID: "safe-fail", Text: "Bash: " + command,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	})
+	if got := adapter.recordedPerms(); len(got) != 1 || got[0] != "safe-fail:once" {
+		t.Fatalf("responded permissions = %v, want [safe-fail:once]", got)
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 0 {
+		t.Fatalf("failed audit count = %d, want 0", got)
+	}
+}
+
+// TestInScopeWriteDoesNotCreateSafeCommandAudit preserves the distinction
+// between ordinary in-scope writes and static command whitelist decisions.
+func TestInScopeWriteDoesNotCreateSafeCommandAudit(t *testing.T) {
+	m, st, _, adapter := newTestManager(t)
+	taskID := "write-no-audit"
+	work := t.TempDir()
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: work, Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	m.handlePermission(context.Background(), taskID, executor.AdapterEvent{
+		Type: "permission", PermissionID: "write-1", Text: "Write: main.go",
+		Perm: &executor.PermRequest{Tool: executor.PermToolWrite, Paths: []string{filepath.Join(work, "main.go")}},
+	})
+	if got := adapter.recordedPerms(); len(got) != 1 || got[0] != "write-1:once" {
+		t.Fatalf("responded permissions = %v, want [write-1:once]", got)
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 0 {
+		t.Fatalf("in-scope write audit count = %d, want 0", got)
+	}
+}
 
 // TestJudgePermissionNilPermEscalates adapter 没给结构 → fail-closed 升级。
 func TestJudgePermissionNilPermEscalates(t *testing.T) {
@@ -32,6 +140,22 @@ func TestJudgePermissionInScopeWriteAutoAllows(t *testing.T) {
 	})
 	if v.Action != permgate.AutoAllow {
 		t.Fatalf("工作区内写入应自动放行，实得 %s（%s）", v.Action, v.Reason)
+	}
+}
+
+// TestJudgePermissionSafeCommandUsesTaskTmpScope verifies Manager wires the
+// executor-owned scratch root into the policy gate instead of rebuilding it in
+// permgate.
+func TestJudgePermissionSafeCommandUsesTaskTmpScope(t *testing.T) {
+	m, taskID, _ := newWireTestManagerWithTask(t)
+	tmpDir := executor.TaskTmpDir(m.cfg.DataDir, taskID)
+	command := "go test ./... > " + filepath.Join(tmpDir, "out")
+	v := m.judgePermission(taskID, executor.AdapterEvent{
+		Type: "permission", PermissionID: "p-safe", Text: "Bash: " + command,
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	})
+	if v.Action != permgate.AutoAllow || v.Rule != permgate.RuleSafeCommand {
+		t.Fatalf("task tmp safe command verdict = %#v, want AutoAllow safe-command", v)
 	}
 }
 

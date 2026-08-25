@@ -135,7 +135,7 @@ var cardShowCmd = &cobra.Command{
 
 var cardUpdateCmd = &cobra.Command{
 	Use:   "update <id>",
-	Short: "改卡：--title/--priority/--attach kind:path/--detach path/--accept 判据",
+	Short: "改卡：--title/--priority/--attach kind:path/--detach kind:path|path/--accept 判据",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		st, err := openLedger()
@@ -149,13 +149,31 @@ var cardUpdateCmd = &cobra.Command{
 			if !ok {
 				return fmt.Errorf("--attach 形如 kind:path（如 spec:specs/x.md）")
 			}
-			if err := st.AttachFile(id, kind, path, actor); err != nil {
+			added, err := st.AttachFile(id, kind, path, actor)
+			if err != nil {
 				return err
+			}
+			if !added {
+				if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "附件已存在，跳过：%s:%s\n", kind, path); err != nil {
+					return fmt.Errorf("输出附件提示: %w", err)
+				}
 			}
 		}
 		if cardUpdateDetach != "" {
-			if err := st.DetachFile(id, cardUpdateDetach, actor); err != nil {
+			removed, err := st.DetachFile(id, cardUpdateDetach, actor)
+			if err != nil {
 				return err
+			}
+			removedNames := make([]string, 0, len(removed))
+			for _, attachment := range removed {
+				removedNames = append(removedNames, attachment.Kind+":"+attachment.Path)
+			}
+			removedSummary := strings.Join(removedNames, "、")
+			if removedSummary == "" {
+				removedSummary = "无"
+			}
+			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "摘掉附件 %d 条：%s\n", len(removed), removedSummary); err != nil {
+				return fmt.Errorf("输出摘附件提示: %w", err)
 			}
 		}
 		if cardUpdateAccept != "" {
@@ -455,7 +473,7 @@ func init() {
 	cardUpdateCmd.Flags().StringVar(&cardUpdateTitle, "title", "", "改标题")
 	cardUpdateCmd.Flags().StringVar(&cardUpdatePriority, "priority", "", "改优先级")
 	cardUpdateCmd.Flags().StringVar(&cardUpdateAttach, "attach", "", "挂附件 kind:path")
-	cardUpdateCmd.Flags().StringVar(&cardUpdateDetach, "detach", "", "摘附件 path")
+	cardUpdateCmd.Flags().StringVar(&cardUpdateDetach, "detach", "", "摘附件 kind:path 或 path")
 	cardUpdateCmd.Flags().StringVar(&cardUpdateAccept, "accept", "", "设验收判据")
 	cardUpdateCmd.Flags().StringVar(&cardUpdateBase, "base-branch", "", "设/清除显式基线（空串=清除）")
 

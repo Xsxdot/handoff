@@ -863,7 +863,7 @@ func (s *Server) handleCardPatch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
 }
 
-// handleCardAttach 给卡挂一个附件（同 path 幂等）。kind 只认 spec|plan|doc|contract。
+// handleCardAttach 给卡挂一个附件（同 kind、path 二元组幂等）。kind 只认 spec|plan|doc|contract。
 func (s *Server) handleCardAttach(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	var body struct {
@@ -883,7 +883,7 @@ func (s *Server) handleCardAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := s.ledgerActor(r)
-	if err := s.ledger.AttachFile(id, body.Kind, strings.TrimSpace(body.Path), actor); err != nil {
+	if _, err := s.ledger.AttachFile(id, body.Kind, strings.TrimSpace(body.Path), actor); err != nil {
 		s.log.Warn("挂附件失败", "card", id, "kind", body.Kind, "path", body.Path, "cause", err)
 		writeErr(w, http.StatusBadRequest, err)
 		return
@@ -907,7 +907,7 @@ func (s *Server) handleCardDetach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	actor := s.ledgerActor(r)
-	if err := s.ledger.DetachFile(id, body.Path, actor); err != nil {
+	if _, err := s.ledger.DetachFile(id, body.Path, actor); err != nil {
 		s.log.Warn("摘附件失败", "card", id, "path", body.Path, "cause", err)
 		writeErr(w, http.StatusBadRequest, err)
 		return

@@ -1,10 +1,14 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
 func TestCardAddListShowMove(t *testing.T) {
@@ -52,6 +56,82 @@ func TestCardAddListShowMove(t *testing.T) {
 	// --expect CAS 钉前值：错前值干净失败
 	if _, _, err := runLedgerCLI(t, dir, "card", "move", created.ID, "进行中", "--expect", "待办"); err == nil {
 		t.Fatal("错前值应失败")
+	}
+}
+
+func TestCardUpdateAttachmentKindsAndDetachMessages(t *testing.T) {
+	var logOutput bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "附件身份", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &created); err != nil {
+		t.Fatalf("add 输出: %v", err)
+	}
+
+	path := "docs/superpowers/specs/b250.md"
+	if _, _, err := runLedgerCLI(t, dir, "card", "update", created.ID, "--attach", "spec:"+path); err != nil {
+		t.Fatalf("attach spec: %v", err)
+	}
+	if out, _, err = runLedgerCLI(t, dir, "card", "update", created.ID, "--attach", "plan:"+path); err != nil {
+		t.Fatalf("attach plan: %v", err)
+	} else {
+		var card ledger.Card
+		if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+			t.Fatalf("双 kind 输出: %v", err)
+		}
+		if len(card.Attachments) != 2 || card.Attachments[0].Kind != "spec" || card.Attachments[1].Kind != "plan" {
+			t.Fatalf("双 kind 未保留且顺序不稳: %+v", card.Attachments)
+		}
+	}
+
+	_, stderr, err := runLedgerCLI(t, dir, "card", "update", created.ID, "--attach", "spec:"+path)
+	if err != nil {
+		t.Fatalf("重复 attach: %v", err)
+	}
+	if strings.Count(stderr, "附件已存在，跳过：spec:"+path) != 1 {
+		t.Fatalf("重复 attach 应在 stderr 出声，stderr=%q", stderr)
+	}
+	if strings.Contains(stderr, "level=INFO") || strings.Contains(logOutput.String(), "附件已存在，跳过：spec:"+path) {
+		t.Fatalf("用户提示必须是 stderr 普通输出且只出现一次，stderr=%q logs=%q", stderr, logOutput.String())
+	}
+
+	out, stderr, err = runLedgerCLI(t, dir, "card", "update", created.ID, "--detach", "spec:"+path)
+	if err != nil {
+		t.Fatalf("精确 detach: %v", err)
+	}
+	if !strings.Contains(stderr, "摘掉附件 1 条") || !strings.Contains(stderr, "spec:"+path) {
+		t.Fatalf("精确 detach 应报告条数与清单，stderr=%q", stderr)
+	}
+	var card ledger.Card
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatalf("精确 detach 输出: %v", err)
+	}
+	if len(card.Attachments) != 1 || card.Attachments[0].Kind != "plan" {
+		t.Fatalf("精确 detach 摘错附件: %+v", card.Attachments)
+	}
+
+	out, stderr, err = runLedgerCLI(t, dir, "card", "update", created.ID, "--detach", path)
+	if err != nil {
+		t.Fatalf("裸 path detach: %v", err)
+	}
+	if !strings.Contains(stderr, "摘掉附件 1 条") || !strings.Contains(stderr, "plan:"+path) {
+		t.Fatalf("裸 path detach 应报告条数与清单，stderr=%q", stderr)
+	}
+	card = ledger.Card{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatalf("裸 path detach 输出: %v", err)
+	}
+	if len(card.Attachments) != 0 {
+		t.Fatalf("裸 path 应摘掉同 path 全部附件: %+v", card.Attachments)
 	}
 }
 
