@@ -77,6 +77,14 @@ ok  	github.com/Xsxdot/handoff/internal/agentd	0.148s
 首次未指定可写模块缓存的合并命令还真实失败过，原始 `read-only file system` 输出已留在
 台账 §8；实现者必须使用上面的任务临时缓存路径，不得把该环境失败写成业务回归。
 
+### 0.3 Review 修订记录（2026-08-25）
+
+review 发现 `TestGitCommonDirNormalizesMainAndLinkedWorktree` 直接比较
+`filepath.Join(t.TempDir(), ".git")` 与 Git 返回路径，在 macOS `/var` → `/private/var`
+符号链接环境下会假红。冻结口径修订为：测试先对 want 与 got 执行
+`filepath.Clean` + `filepath.EvalSymlinks` 再比较，并保留主仓库与 linked worktree 的真实
+Git 调用；不改 `GitCommonDir` 实现，不以 `t.Skip` 绕过平台差异。
+
 ## 1. 工作项接口与接缝清单
 
 ### T1：codex 计算并缓存 git 公共目录
@@ -142,26 +150,31 @@ git -C <repo> -c core.hooksPath=<fresh-empty-dir> <args...>
 
 ### T1.2 写失败测试并跑红
 
-在 `internal/executor/turn/gitprobe_test.go` 的 import 增加 `path/filepath`，再追加以下
+在 `internal/executor/turn/gitprobe_test.go` 的 import 增加 `os`、`path/filepath`，再追加以下
 完整测试；它复用本文件已有的
-`initRepo(t) (string, string)` 夹具，入口真实执行 git，锁住相对 common-dir 与 linked
-worktree 绝对 common-dir 两种形态，并锁住非 git 的错误出口：
+`initRepo(t) (string, string)` 夹具，入口真实执行 git，并通过仓库符号链接复现路径别名；
+want 与 got 均先做 `Clean + EvalSymlinks` 归一，锁住主仓库与 linked worktree 的共同
+common-dir，并锁住非 git 的错误出口：
 
 ```go
 func TestGitCommonDirNormalizesMainAndLinkedWorktree(t *testing.T) {
 	repo, _ := initRepo(t)
-	want := filepath.Clean(filepath.Join(repo, ".git"))
+	mainPath := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(repo, mainPath); err != nil {
+		t.Fatalf("建立主仓库符号链接: %v", err)
+	}
+	want := normalizePathForTest(t, filepath.Join(mainPath, ".git"))
 
-	got, err := turn.GitCommonDir(repo)
+	got, err := turn.GitCommonDir(mainPath)
 	if err != nil {
 		t.Fatalf("主仓库读取 git-common-dir: %v", err)
 	}
-	if got != want {
+	if got := normalizePathForTest(t, got); got != want {
 		t.Fatalf("主仓库 common-dir = %q，want %q", got, want)
 	}
 
 	linked := filepath.Join(t.TempDir(), "linked")
-	cmd := exec.Command("git", "-C", repo, "worktree", "add", "-q", "-b", "probe", linked)
+	cmd := exec.Command("git", "-C", mainPath, "worktree", "add", "-q", "-b", "probe", linked)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("建立 linked worktree: %v\n%s", err, out)
 	}
@@ -170,9 +183,19 @@ func TestGitCommonDirNormalizesMainAndLinkedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linked worktree 读取 git-common-dir: %v", err)
 	}
-	if got != want {
+	if got := normalizePathForTest(t, got); got != want {
 		t.Fatalf("linked worktree common-dir = %q，want %q", got, want)
 	}
+}
+
+func normalizePathForTest(t *testing.T, path string) string {
+	t.Helper()
+	cleaned := filepath.Clean(path)
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		t.Fatalf("归一化路径 %q: %v", path, err)
+	}
+	return filepath.Clean(resolved)
 }
 
 func TestGitCommonDirRejectsNonGitPath(t *testing.T) {

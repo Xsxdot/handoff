@@ -1,6 +1,7 @@
 package turn_test
 
 import (
+	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
@@ -63,18 +64,22 @@ func TestGitTurnStatusDetectsNewCommit(t *testing.T) {
 
 func TestGitCommonDirNormalizesMainAndLinkedWorktree(t *testing.T) {
 	repo, _ := initRepo(t)
-	want := filepath.Clean(filepath.Join(repo, ".git"))
+	mainPath := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(repo, mainPath); err != nil {
+		t.Fatalf("建立主仓库符号链接: %v", err)
+	}
+	want := normalizePathForTest(t, filepath.Join(mainPath, ".git"))
 
-	got, err := turn.GitCommonDir(repo)
+	got, err := turn.GitCommonDir(mainPath)
 	if err != nil {
 		t.Fatalf("主仓库读取 git-common-dir: %v", err)
 	}
-	if got != want {
+	if got := normalizePathForTest(t, got); got != want {
 		t.Fatalf("主仓库 common-dir = %q，want %q", got, want)
 	}
 
 	linked := filepath.Join(t.TempDir(), "linked")
-	cmd := exec.Command("git", "-C", repo, "worktree", "add", "-q", "-b", "probe", linked)
+	cmd := exec.Command("git", "-C", mainPath, "worktree", "add", "-q", "-b", "probe", linked)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("建立 linked worktree: %v\n%s", err, out)
 	}
@@ -83,9 +88,19 @@ func TestGitCommonDirNormalizesMainAndLinkedWorktree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("linked worktree 读取 git-common-dir: %v", err)
 	}
-	if got != want {
+	if got := normalizePathForTest(t, got); got != want {
 		t.Fatalf("linked worktree common-dir = %q，want %q", got, want)
 	}
+}
+
+func normalizePathForTest(t *testing.T, path string) string {
+	t.Helper()
+	cleaned := filepath.Clean(path)
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		t.Fatalf("归一化路径 %q: %v", path, err)
+	}
+	return filepath.Clean(resolved)
 }
 
 func TestGitCommonDirRejectsNonGitPath(t *testing.T) {
