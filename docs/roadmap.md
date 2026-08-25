@@ -424,3 +424,5 @@
   docs/ledgers/2026-08-25-b252-ledger.md）。复活判据：上游协议长出档位字段，或实验性
   `additionalPermissions`/`proposedExecpolicyAmendment` 载荷正式化。来源：B252 spec
   退回记录（卡已搁置）。
+- **B253 子树快照测试断言补强**：review minor finding——`cmd/card_wait_test.go` 子树
+  用例未严格断言事件段包含每个成员，非阻塞。来源：B253 review 轮 findings。

@@ -448,6 +448,14 @@ handoff card wait <id> [--subtree] [--timeout 3h]
   的「本次补充」小节，不落卡、不影响后续轮次）、`--discipline-override <角色>`（应急）。
 - `card wait` 跟的是**账本单流**（卡或整棵子树的事件，含镜像进来的 task 事件），
   不是 task 集合——所以挂起期间新拆的子卡、新派的任务天然进流，没有动态成员问题。
+- `card wait` 建连时先逐成员输出一行 `card_snapshot` 快照（`status` / `needs_human` /
+  `needs_reason`），再进入事件跟随——`--step` 受理后、订阅建连前就落卡的瞬时失败
+  （如「目标机未定」）在第一行即可见，不再静默停摆（B253，2026-08-26 合入，
+  **新 CLI 二进制生效**，与 agentd 无关；旧 CLI 上仍需派发后先 `card show` 一次兜底）。
+- 零产出的失败轮（task 已终态且分支上无该轮提交）**不再把卡钉死在那台执行机上**——
+  改派其他目标机直接放行，从卡基线重新起步；有产出的跨机改派仍拒，且报文改为如实
+  陈述（不再建议对 `card dispatch` 无效的 push origin / --base）（B254，2026-08-26
+  合入，**agentd 侧生效需重建重启**）。
 - **一次工作流只挂一次 `card wait`，不必再叠 task 级 `wait --follow`**。唤醒语义
   与 `wait --follow` 同款：逐条事件即时流出、命令不退出、不用重挂；工单
   （`question` / `permission_request`）由镜像子系统转成 `task_mirrored` 进卡流，
