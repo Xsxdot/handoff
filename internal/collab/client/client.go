@@ -22,6 +22,12 @@ type LedgerClient interface {
 	// ListActiveCards 列项目范围内「已开始未结束」的卡（成员派生规则的输入；
 	// project 空 = 跨项目）。Status ∉ {已完成, 终止} 即在列。
 	ListActiveCards(project string) ([]proto.Card, error)
+	// ListAllCards 列项目范围内全部卡（含终态与并入成员）：账本
+	// ListCards{IncludeTerminal:true} 的直通镜像（B156.2 岔口一方案甲还债
+	// 直通）。终态房间「沉底可列」与并入只读判定（Following 非空）的唯一
+	// 枚举源。注意 Following 只在列表方法上有值：GetCard 走单卡读、不派生
+	// 跟随态，恒为空串。
+	ListAllCards(project string) ([]proto.Card, error)
 	// RecordRoomMessage 发布房间消息事件（卡房间 cardID=卡号；群级传空串）。
 	RecordRoomMessage(cardID string, msg proto.RoomMessage, actor string) (int64, error)
 	// RecordMessageConsumed 落恰好一次的消费标记（幂等由账本事务保证）。
