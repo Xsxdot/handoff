@@ -261,3 +261,23 @@
 - **C1.7 自己的图对账被跳过了一次**：分支删了十份文件、留了 42 个悬空符号在基线里，一路
   合进 main 没人拦。卡流的「图对账」列只在协调者记得点火时才走——**没有机械执法**。
   下一步值得让 finish 前的门检查「本分支删改过的文件是否在图里还有符号」。
+
+## 来自 B229 部署前置的实测（2026-08-25，协调者本机核过）
+
+- **在飞的 charter 任务跨不过一次 agentd 升级，只能重新 dispatch。**判据一行：
+  `ls <DataDir>/tasks/<id>/discipline.md`，没有就跨不过去。链条三段都实测过：
+  ① 旧 agentd **不写**这个文件——B229 前的 main（`8cb707294`）里 `manager.go` 对
+  `disciplineFileName|discipline.md` 是 0 命中，`disciplineFileName` 随 `5585ecc2a`
+  （b229.1）才进来；本机 `~/.handoff/tasks/*/` 抽查四个旧任务目录也都没有它。
+  ② 旧 agentd **确实记了名字**——`discipline_name` 列早于 B229（`f4dc50057`），
+  实测在飞任务 `fe509380` 的 `discipline_name` = `charter-contract`。
+  ③ 新代码在「有名字 + 无正文」时**拒绝续接**（`internal/agentd/manager.go:1301-1313`），
+  理由是冷恢复重建 executor 进程、纪律块是新进程里约束的唯一来源，空块会让一个
+  点名 review 的任务失去「只读不写」。
+  两条合起来：升级窗口一开，旧 agentd 派出的每个 charter 任务都落进拒绝分支。
+  **注意这不只是「下一次点火失败」**——`continue` 在协议层不校验能力位，但跨重启
+  会走 `resumeForContinue`，那条路才是被拒的地方。
+- **可做的改进（本期不做）**：升级时把 `discipline_name` 已知、正文缺失的在飞任务
+  按名字回填一份 `discipline.md`，让它们能跨过升级。风险是回填的是「升级后的最新版」
+  而非首派那一版，与 B229 §2.5.2「续接必须看到与会话开始时同一份世界」冲突——
+  要做得先想清楚这个矛盾，不是顺手补个文件。
