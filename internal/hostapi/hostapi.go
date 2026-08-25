@@ -4,8 +4,9 @@
 // 不经此门面；执行域照旧不认识账本/会话/编制域。
 //
 // 命名说明：包名取 hostapi 而不是 internal/prochost/api，因为代码图扫描按
-// 包名生成容器 id，多个域各开 `api` 子包会撞容器。实现归实现票：内部复用
-// prochost 原语与 opencode serve 协议知识（同属 d_execution 子域，不跨界）。
+// 包名生成容器 id，多个域各开 `api` 子包会撞容器。实现走 `opencode run` 无头
+// 形态（见 driver.go），同属 d_execution 顶层域，不跨子系统边界；会话身份由
+// CLI 自家存储承担，本门面零状态。
 package hostapi
 
 import (
@@ -14,8 +15,9 @@ import (
 	"time"
 )
 
-// ErrUnavailable 表示承载能力尚未接线（B156.3 实现票落地前，骨架恒返回它，
-// 不假装成功）。
+// ErrUnavailable 是骨架期的兼容哨兵（契约 §7 冻结导出面，保留不删）。
+// RunTurn 实装后正常路径不再返回它：名单外 CLI 得到含 CLI 名的「未实装」
+// 错误（岔口一裁决 A），名单内失败得到具体原因。
 var ErrUnavailable = errors.New("hostapi: 协调者会话承载尚未接线")
 
 // TurnRequest 描述一回合的无头执行。SessionID 为空 = 新建会话，非空 = 续接；
@@ -43,7 +45,8 @@ type Host struct{}
 // New 构造承载门面。
 func New() *Host { return &Host{} }
 
-// RunTurn 执行一回合。骨架期恒返回 ErrUnavailable。
+// RunTurn 执行一回合（实装本体见 driver.go：run 形态驱动 + JSONL 解析 +
+// 超时执法）。签名是契约 §7 冻结面，一字不改。
 func (h *Host) RunTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
-	return TurnReply{}, ErrUnavailable
+	return runTurn(ctx, req)
 }
