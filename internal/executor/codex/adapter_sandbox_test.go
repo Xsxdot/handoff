@@ -1,6 +1,6 @@
-// adapter_sandbox_test.go —— codex 运行态的 git 公共目录测试。
+// adapter_sandbox_test.go —— codex 运行态的 git 公共目录与私有目录取证测试。
 //
-// 职责：锁住 newRunState 对 git common directory 的一次性取证与非 git 静默跳过。
+// 职责：锁住 newRunState 对共享与私有 git 目录的一次性取证与非 git 静默跳过。
 // 边界：只验证运行态接缝，不测试 Linux 沙箱本身的 OS 行为。
 package codex
 
@@ -10,7 +10,7 @@ import (
 	"testing"
 )
 
-func TestNewRunStateCachesGitCommonDirAndSkipsNonGit(t *testing.T) {
+func TestNewRunStateCachesGitDirectoriesAndSkipsNonGit(t *testing.T) {
 	repo := initGitCommonDirRepo(t)
 	taskDir := t.TempDir()
 	a := New(nil)

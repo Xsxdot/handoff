@@ -228,7 +228,7 @@ import (
 	"testing"
 )
 
-func TestNewRunStateCachesGitCommonDirAndSkipsNonGit(t *testing.T) {
+func TestNewRunStateCachesGitDirectoriesAndSkipsNonGit(t *testing.T) {
 	repo := initGitCommonDirRepo(t)
 	taskDir := t.TempDir()
 	a := New(nil)
@@ -342,7 +342,7 @@ WebSocket 夹具。断言逐条写死如下（这是序列化边界的附加锁�
 ```bash
 GOMODCACHE=/root/.handoff/tmp/02772ff3/gomodcache \
   go test ./internal/executor/turn ./internal/executor/codex \
-  -run 'TestGitCommonDir|TestNewRunStateCachesGitCommonDirAndSkipsNonGit|TestSandboxPolicyGrantsTaskTmpAndGitCommonDir|TestSandboxPolicySurvivesClientJSONSerialization' -count=1
+  -run 'TestGitCommonDir|TestNewRunStateCachesGitDirectoriesAndSkipsNonGit|TestSandboxPolicyGrantsTaskTmpAndGitCommonDir|TestSandboxPolicySurvivesClientJSONSerialization' -count=1
 ```
 
 预期为编译/断言失败，因为基线没有 `GitCommonDir`、新 `sandboxPolicy` 签名、缓存字段
@@ -470,7 +470,8 @@ func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
 ### T1.4 注释、日志与绿测
 
 确认新函数头写职责/边界，导出 `GitCommonDir` 写参数/返回/只读注意事项，
-`runState.gitCommonDir` 解释空值语义，`sandboxPolicy` 解释两根的顺序与缓存原因。
+`runState.gitCommonDir` 与 `runState.gitDir` 解释空值语义，`sandboxPolicy` 解释三根的
+顺序、去重与缓存原因。
 确认读取前、成功后、失败后均有结构化 slog；禁用 `print`/`fmt.Println`。
 
 先 `gofmt -w` 仅处理 T1 文件，再运行：
@@ -485,7 +486,7 @@ GOMODCACHE=/root/.handoff/tmp/02772ff3/gomodcache \
 ```bash
 GOMODCACHE=/root/.handoff/tmp/02772ff3/gomodcache \
   go test ./internal/executor/turn ./internal/executor/codex \
-  -run 'TestGitCommonDir|TestNewRunStateCachesGitCommonDirAndSkipsNonGit|TestSandboxPolicyGrantsTaskTmpAndGitCommonDir|TestSandboxPolicySurvivesClientJSONSerialization|TestTmpEnvPointsGoToolchainAtTaskTmp' -count=1
+  -run 'TestGitCommonDir|TestNewRunStateCachesGitDirectoriesAndSkipsNonGit|TestSandboxPolicyGrantsTaskTmpAndGitCommonDir|TestSandboxPolicySurvivesClientJSONSerialization|TestTmpEnvPointsGoToolchainAtTaskTmp' -count=1
 ```
 
 ## 3. T2 详细步骤：在 gitExec 单点堵住 hooks 逃逸
@@ -661,23 +662,25 @@ git status --short --branch
 - 主仓库与 linked worktree 的 `git-common-dir` 都归一成同一个绝对 common dir；非 git
   工作目录不报错、不追加根、不阻断 Start/Resume。
 - 每个运行态只在 `newRunState` 取证一次；Start 与 Resume 均使用缓存字段，
-  `startTurn` 下发的 `writableRoots` 顺序固定为任务 tmp、common dir；原有 network 与
-  两个 exclude 保持 true。
-- `sandboxPolicy` 的 map 穿过 JSON-RPC `Client.write` 后字段存在、类型正确、空 common
-  dir 不被编码成空占位。
+  `startTurn` 下发的 `writableRoots` 顺序固定为任务 tmp、common dir、private git dir；
+  空目录不占位，原地模式下 common dir 与 private git dir 相同则只保留一根；原有
+  network 与两个 exclude 保持 true。
+- `sandboxPolicy` 的 map 穿过 JSON-RPC `Client.write` 后字段存在、类型正确，空的
+  common/private git dir 不被编码成空占位，相同目录不重复编码。
 - 每次 agentd git 调用均使用独立空 hooks 目录的命令行覆盖；被篡改的仓库配置不能使
   post-checkout 运行；临时目录回收失败不会篡改 git 返回值。
 - Linux 真机清单按 §4 四条逐条通过；这项行为不能由 macOS 单元测试宣称通过。
 
 ### 5.2 defect-families 对抗审查
 
-- 路径拓扑：主仓库相对 `.git`、linked worktree 绝对 common dir、非 git/空输出三形态
-  均有断言；不使用 worktree 私有目录冒充 common dir。
+- 路径拓扑：主仓库相对 `.git`、linked worktree 绝对 common dir、linked worktree 私有
+  git dir、非 git/空输出均有断言；私有目录由 Git 取证，不按 worktree basename 拼接，
+  且原地模式相同目录去重，不使用 worktree 私有目录冒充 common dir。
 - 配置/安全逃逸：测试先证明未覆盖时恶意 hook 会运行，再证明命令行 `-c` 压过被篡改
   `.git/config`；不靠仓库配置自觉清空 hooks。
 - 序列化边界：`adapter.go#sandboxPolicy` 的手搭 map 与 `appserver.go#Client.write`
-  的 `json.Marshal` 都列入文件清单，真实 WebSocket harness 逐字段断言；可空 common
-  dir 与非空路径分别断言，区分字段省略与空值。
+  的 `json.Marshal` 都列入文件清单，真实 WebSocket harness 逐字段断言；可空
+  common/private git dir 与非空路径分别断言，区分字段省略与空值，并锁住相同目录不重复。
 - 错误/可观测性：Git common-dir 探测失败只 Debug 并保留空根；临时 hooks 目录创建失败
   Error 返回；Git 原始 stderr 继续进入失败日志/返回；成功调用有完成耗时日志。
 - 并发/清理：hooks 路径按调用 `MkdirTemp`，不共享可写目录；defer 回收；既有
@@ -700,7 +703,8 @@ git status --short --branch
 测试 → 缝：T1 map 测试入口直接调用 `SandboxPolicyForTest`，其实现只转发到
 `sandboxPolicy`；JSON 测试入口 `Client.Call` 穿过 `Client.write`；T2 入口是声明缝的
 生产调用链 `PrepareWorkspace`，不是直接调用内部 helper。内部 `newRunState` 测试仅作
-附加生命周期锁，理由已在 T1.2 明示，不能顶替缝级测试。
+附加生命周期锁，理由已在 T1.2 明示，不能顶替缝级测试；同文件的
+`TestSandboxPolicyDeduplicatesSameGitDirs` 额外锁住原地模式的去重边界。
 
 缝 → 测试：两条声明缝各至少有一支缝级断言；不得删除任一测试或把它降格成纯 helper
 表驱动测试。

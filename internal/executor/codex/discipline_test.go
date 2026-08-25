@@ -66,6 +66,26 @@ func TestSandboxPolicyGrantsTaskTmpAndGitCommonDir(t *testing.T) {
 	}
 }
 
+func TestSandboxPolicyDeduplicatesSameGitDirs(t *testing.T) {
+	const (
+		taskTmp = "/root/.handoff/tmp/137a7dc9"
+		gitDir  = "/srv/repos/handoff/.git"
+	)
+
+	raw, err := json.Marshal(codex.SandboxPolicyForTest(taskTmp, gitDir, gitDir))
+	if err != nil {
+		t.Fatalf("序列化原地模式 sandboxPolicy: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("反序列化原地模式 sandboxPolicy: %v", err)
+	}
+	roots, ok := wire["writableRoots"].([]any)
+	if !ok || len(roots) != 2 || roots[0] != taskTmp || roots[1] != gitDir {
+		t.Fatalf("原地模式 JSON writableRoots = %#v，want [%q %q]", wire["writableRoots"], taskTmp, gitDir)
+	}
+}
+
 func TestTmpEnvPointsGoToolchainAtTaskTmp(t *testing.T) {
 	kvs := codex.TmpEnvKVsForTest("/root/.handoff/tmp/137a7dc9")
 	want := map[string]string{
