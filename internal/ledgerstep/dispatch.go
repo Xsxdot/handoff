@@ -63,6 +63,9 @@ type TemplateDispatch struct {
 	Target             string
 	PlanPath           string
 	DisciplineOverride string
+	// WriteGate 在 Transport 成功后、每一处账本写入前调用；nil 表示不设闸。
+	// 运行节点用它阻止失去运行锁后的挂账与 dispatched 快照写入。
+	WriteGate func() bool
 	// ExecutorOverride / ModelOverride 是调用方对模板的单字段覆盖；空 = 用模板的。
 	// 当 ExecutorOverride 真的改变有效 executor 且 ModelOverride 为空时，
 	// ViaTemplate 会清掉下层模型；只显式重述同一个 executor 不改变模型。
@@ -263,8 +266,18 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if snapshotBranch == "" {
 		snapshotBranch = existingBranch
 	}
+	if req.WriteGate != nil && !req.WriteGate() {
+		err := fmt.Errorf("挂账被拒：%w", ErrWriteGateClosed)
+		slog.Default().Warn("失去写权，停止派发挂账", "card", c.ID, "target", target, "task", taskID, "cause", err)
+		return zero, err
+	}
 	if err := d.St.LinkTask(c.ID, target, taskID, purpose, d.Actor); err != nil {
 		return zero, fmt.Errorf("回链挂账: %w", err)
+	}
+	if req.WriteGate != nil && !req.WriteGate() {
+		err := fmt.Errorf("快照落账被拒：%w", ErrWriteGateClosed)
+		slog.Default().Warn("失去写权，停止派发快照落账", "card", c.ID, "target", target, "task", taskID, "cause", err)
+		return zero, err
 	}
 	if err := d.St.RecordDispatch(c.ID, ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,

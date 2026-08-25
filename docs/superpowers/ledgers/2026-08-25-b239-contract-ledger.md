@@ -1,0 +1,374 @@
+# B239 契约落地台账
+
+- 2026-08-25：开工读数 `git branch --show-current && git log --oneline -1 && git status --short`；原始输出分支 `cards/B239-charter`、HEAD `84af7380 spec(b239): 把「认领」一分为二——归属锁与运行锁`、工作树干净。
+- 2026-08-25：核对上游状态位 `docs/superpowers/specs/2026-08-24-b239-claim-lock-split.md:3-4`；原文「级别：**L3**　档位：**轻档**　路由：contract → breakdown →（单轮）implement」与「状态：**已批准** —— 2026-08-24 用户批准」，状态位一致无需回写。
+- 2026-08-25：现状查证（逐条对照 spec「现状事实」表，全部命中）：`StatusDoing="进行中"` 在 `internal/ledger/types.go:14`；裸 dispatch 守卫判状态列 `cmd/card_dispatch.go:208-210`、认领写「进行中」`:213`；`ClaimCard` 状态 CAS 与写驱动同事务 `internal/ledger/move.go:145-165`；`ReleaseCard` 带 `AND driver_session = ?`、0 行时静默返回 nil `internal/ledger/move.go:175-201`（假成功实锤）；`TakeoverCard` 无条件覆盖 + `EvDriverTakeover` payload from/to `internal/ledger/tasks.go:122-145`；actor 不带 pid / session 带 pid `cmd/ledgercli.go:45-62`；`--step` 把 `ledgerSession()` 当 Actor 发给 agentd `cmd/card_node.go:40`、agentd 拿它当驱动会话 `internal/agentd/cardstep.go:46`、编排 goroutine `:59-62`；编排取锁失败直接 return 不落卡 `internal/ledgerstep/runner.go:93-96`、defer 释放 `:98-104`；编排体内部异常转等人 `internal/ledgerstep/node.go:157-178`（haltForHuman 三件套 `:66-80`）；在飞 map 进程内 `internal/agentd/server.go`（cardstep.go:80-100）、重启即清（cardstep.go 文件头 10-13 行注明刻意取舍）；conflict 徽标判据 `view.Status == ledger.StatusDoing` `internal/agentd/ledgerapi.go:186-196`；可注入时钟 `internal/ledger/store.go:35-47`；账本 schema 仅 CREATE IF NOT EXISTS `internal/ledger/store.go:198-333`、task 域逐列 ALTER 先例 `internal/store/store.go:227-240`；`card wait` 只读事件流 `cmd/card_wait.go:96`（Follow）；web 展示 driver_session/认领时刻 `web/src/app/cards/CardDrawer.tsx:367-370`。
+- 2026-08-25：TTL 租约先例出处修正：`AcquireMirrorLease` 定义在 `internal/ledger/mirror.go:92-127`（单行表 CAS、`s.timeNow()` 注入时钟、过期即可接任），spec 写的是消费方 `internal/ledgermirror/mirror.go:170` 的调用点——符号存在，引用行号漂移，不构成覆盖债。
+- 2026-08-25：对侧常量执法：`EvDriverTakeover` 生产者仅 `TakeoverCard`（tasks.go:133），Go/web 全仓 grep 零程序消费者（web `eventSummary` 仅按 body/reason/text 优先级泛化渲染，CardDrawer.tsx:125-138）→ spec 契约语义 5 的复用判定成立，复用不污染任何既有消费者；且 web 渲染优先取 `payload.reason` 字符串 → 抢占事件的 `reason` 冻结为人读中文短句。`StatusDoing` 生产路径消费者仅 card_dispatch.go:208/213/239 与 ledgerapi.go:187 四处，全部在本卡改造范围内；改造后生产路径零写入，常量保留为骨架锚点（spec 实现决定 6）。`ErrCASConflict/ErrBadState/ErrNotFound` 的 HTTP 映射收口在 `internal/agentd/ledgerapi.go:65-76`（409/404/500）。
+- 2026-08-25：charter 流无「进行中」列的复核：仓内种子定义 `deploy/workflows/charter-v4.json` 各节点名（待办/spec/contract/breakdown/plan/implement/review/acceptance/integrate/图对账/finish/已完成）不含「进行中」；线上 charter v9 的读数出自上游 spec 作者 CLI 实测（本回合受 handoff CLI 禁令不可复验，标「引上游读数」）。
+- 2026-08-25：设计判断落定（详见契约文档 §2）：①归属认领收口为 `ClaimCard` 单符号并删除 `ClaimDriver`；②`--step` 编排认领持久归属（人尺度）、运行结束只退运行锁不退归属；③抢占复用 `EvDriverTakeover` + `reason` 人读短句、首次取得不落事件。三条均过三重闸门，拍板记录在契约文档 §5。
+- 2026-08-25：Ticket 0 骨架落码：新建 `internal/ledger/runlock.go`（RunLock 类型 + 五个 Store 方法空壳）；`internal/ledger/store.go` ensureSchema 两方言分支各加 `card_run_locks` 表 DDL（PG 在 ：250-253、SQLite 在 ：316-319）；`internal/ledgerstep/runner.go` StepRunner 新增 RunHolder 字段并把 Session 注释收窄为归属身份。
+- 2026-08-25：编译与静态检查命令 `go build ./... && echo BUILD_OK_$?` 原始输出 `BUILD_OK_0`；`go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd` 无输出退出 0；`gofmt -l` 对三个触碰文件无输出。
+- 2026-08-25：图数据落盘：`codegraph/diffs/cards-B239-charter.json`（view=cards/B239-charter，base=84af7380，6 个新增节点 + StepRunner 字段变更）与 `codegraph/target.json`（d_gateway→d_ledger entries 补为 ["ledger.Store","ledgerstep.StepRunner"]）。两文件 `python3 -m json.tool` 校验通过。
+- 2026-08-25：图闸门实测：`go run . graph validate --repo .` → issues=None 且视图清单含 cards-B239-charter；`go run . graph check --repo . --view cards-B239-charter` → fails=[]；`go run . graph sym --repo . --view cards-B239-charter Store.AcquireRunLock` → n_ledger_Store_AcquireRunLock anchor=ok file=internal/ledger/runlock.go line=26。
+- 2026-08-25：法定产出物写至 `docs/superpowers/specs/b239-contract.md`（§1 现状查证含依赖行为与对侧常量执法、§2 契约增量、§3 三十九条原子断言、§4 Ticket 0 边界与七条交棒欠账、§5 三条拍板记录、§6 可执行冻结与图、§7 交棒声明）。
+- 2026-08-25：符号锚自检 `go run . graph resolve --repo . --view cards-B239-charter --doc docs/superpowers/specs/b239-contract.md` 退出码 0；九个锚点七个 ok、两个 moved（ledgerSession 与 StepRunner.Run 为基线扫描后的既有行漂移，均按符号再锚定到正确节点），无坏锚。
+- 2026-08-25：执行节点启动复核 `git status --short --branch`；原始输出 `## cards/B239-charter-6`，当前分支与工作树状态已确认。
+- 2026-08-25：首次读取计划时误用路径 `superpowers/specs/2026-08-24-b239-claim-lock-split.md`；原始报错 `sed: can't read superpowers/specs/2026-08-24-b239-claim-lock-split.md: No such file or directory`，已改用 `docs/superpowers/specs/...`，未改动代码。
+- 2026-08-25：A0 基线复核 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：A0 基线复核 `go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd`；原始输出为空，退出码 0。
+- 2026-08-25：A0 基线复核 `go test ./internal/ledger/ ./internal/ledgerstep/`；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledger 12.461s`、`ok  github.com/Xsxdot/handoff/internal/ledgerstep (cached)`，退出码 0。
+- 2026-08-25：A0 基线复核 `go test ./cmd/ -run 'TestCardDispatch|TestResolveCardDispatchTemplate'`；原始输出 `ok  github.com/Xsxdot/handoff/cmd (cached)`，退出码 0。
+- 2026-08-25：A0 基线复核 `go test ./internal/agentd/ -run 'TestStartCardStep|TestRequiresInlineLocalFile'`；原始输出 `ok  github.com/Xsxdot/handoff/internal/agentd (cached)`，退出码 0。
+- 2026-08-25：A1 红测 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics|TestReleaseCardOwnershipSemantics'`；原始输出为编译失败：`not enough arguments in call to s.ClaimCard`，新测试已确认击中旧四参接口而非测试拼写错误。
+- 2026-08-25：首次 A2 `apply_patch` 因 move.go 注释/尾部上下文不完全匹配失败，原始工具报错 `apply_patch verification failed: Failed to find expected lines`；未产生文件改动，随后缩短锚点重试。
+- 2026-08-25：A2 账本实现后 `go test ./internal/ledger/`；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledger 12.874s`，退出码 0；tasks_test 已同步收窄 ClaimCard 并改为非持有者 release 可见失败。
+- 2026-08-25：A3 后 cmd 行为红测 `go test ./cmd/ -run 'TestCardDispatch|TestCardRelease|TestCardTakeover|TestResolveCardDispatchTemplate'`；原始输出首先为生产调用仍四参 `st.ClaimCard` 的编译错误，且新测试缺少 `fmt` import；已确认非功能性阻塞。
+- 2026-08-25：首次 A4 多文件大补丁被 `apply_patch` 拒绝，原始工具报错 `invalid patch: multiple operations target .../cmd/card_driver.go`；未产生代码改动，改为分文件应用。
+- 2026-08-25：Task A 触碰文件 `gofmt -w ...`；原始输出为空，退出码 0。
+- 2026-08-25：Task A cmd 缝绿 `go test ./cmd/ -run 'TestCardDispatch|TestCardRelease|TestCardTakeover|TestResolveCardDispatchTemplate'`；原始输出 `ok  github.com/Xsxdot/handoff/cmd 2.236s`，退出码 0。
+- 2026-08-25：Task A ledger/ledgerstep 缝绿 `go test ./internal/ledger/ ./internal/ledgerstep/`；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger (cached)`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 4.543s`，退出码 0。
+- 2026-08-25：按计划命令 `rg -n 'ledgerSession' --include='*.go' cmd/ internal/ | grep -v _test.go` 失败；原始报错 `rg: unrecognized flag --include`，已换用 `rg -n 'ledgerSession' cmd/ internal/ -g '*.go' | grep -v _test.go`，原始输出为空、退出码 1（无命中）。
+- 2026-08-25：Task A 收尾 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：Task A 收尾 `go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd`；原始输出为空，退出码 0。
+- 2026-08-25：Task A 收尾 `gofmt -l internal/ledger internal/ledgerstep cmd`；原始输出为空，退出码 0。
+- 2026-08-25：B1 红测 `go test ./internal/ledger/ -run 'TestAcquireRunLock|TestReleaseRunLock|TestRunLockReads|TestCardRunLocksPK'`；原始失败片段：`runlock_test.go:33: 不存在卡应 ErrNotFound: <nil>`、`:92: 预占: false <nil>`、`:132: 取得: false <nil>`、`:156: 负 TTL 造过期行: false <nil>`、`:186: 撞 PK 后首行不得被动`，退出码 1；确认命中 runlock 空壳行为。
+- 2026-08-25：B2 运行锁实现后局部行为测试 `go test ./internal/ledger/ -run 'TestAcquireRunLock|TestReleaseRunLock|TestRunLockReads|TestCardRunLocksPK'`；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledger 0.479s`，退出码 0。
+- 2026-08-25：B2 账本子包测试 `go test ./internal/ledger/`；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledger 11.946s`，退出码 0。
+- 2026-08-25：Task B 收尾 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：Task B 收尾 `go vet ./internal/ledger`；原始输出为空，退出码 0。
+- 2026-08-25：Task B 收尾 `gofmt -l internal/ledger`；原始输出为空，退出码 0。
+- 2026-08-25：C1 新测试首次执行因测试环境 PTY 根目录不可用而跳过；原始输出 `PTY 测试根目录不可用: ... read-only file system`，该读数未作为行为结果采用，随后为 B239 测试补建不依赖 PTY 的 HTTP/Server 夹具。
+- 2026-08-25：C1 夹具补 import 后首次执行编译失败；原始输出 `internal/agentd/ledgerapi_test.go:163:33: undefined: slog`、`:165:8: undefined: httptest`，已补 import。
+- 2026-08-25：C1 红测在不依赖 PTY 夹具上执行 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus|TestStartCardStepAssemblesRunHolder|TestLegacyStepFallbackActorIsHostOnly' -count=1`；原始失败片段：`holder 应为 run:<host>#<pid>#<unixnano> 形态: ""`、`未过期运行锁 + 最新 task failed 应亮徽标`、`legacy 请求应 202 受理: 400 {"error":"节点 \"review\" 不在卡 P1 的工作流 bug v1 里"}`，退出码 1；前两条确认功能红，第三条为夹具节点名问题，已改用 StatusDoing。
+- 2026-08-25：C1 台账追加尝试使用错误日期锚点失败；原始工具报错 `apply_patch verification failed: Failed to find expected lines`，未产生改动，随后使用正确锚点重试。
+- 2026-08-25：C2 首次编译 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus|TestStartCardStepAssemblesRunHolder|TestLegacyStepFallbackActorIsHostOnly' -count=1`；原始报错 `hostOnly redeclared in this block`，既有定义位于 `internal/agentd/hostguard.go:236`，已删除重复 helper 并复用既有实现。
+- 2026-08-25：C2 agentd 局部缝测试 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus|TestStartCardStepAssemblesRunHolder|TestLegacyStepFallbackActorIsHostOnly' -count=1`；原始输出 `ok  github.com/Xsxdot/handoff/internal/agentd 0.562s`，退出码 0。
+- 2026-08-25：C2 收尾 `go test ./internal/agentd/`；原始输出 `ok  github.com/Xsxdot/handoff/internal/agentd 131.869s`，退出码 0。
+- 2026-08-25：C2 收尾 `go vet ./internal/agentd`；原始输出为空，退出码 0。
+- 2026-08-25：C2 收尾 `gofmt -l internal/agentd`；原始输出为空，退出码 0。
+- 2026-08-25：D1 首次红测 `go test ./internal/ledgerstep/ -run 'TestRunner' -count=1`；原始编译失败片段：`unknown field RenewBeat in struct literal of type StepRunner`、`runner.RenewBeat undefined`、`undefined: ErrWriteGateClosed`，确认新注入缝尚未存在。
+- 2026-08-25：D2 首次 gofmt 发现 runner 续租循环写出非法 select；原始报错 `internal/ledgerstep/runner.go:171:9: expected 1 expression`，已拆成 ctx.Done 与 done 两个 case。
+- 2026-08-25：D2 接缝空壳后 `go test ./internal/ledgerstep/ -run 'TestRunner' -count=1` 真实断言红；原始失败片段包括 `运行中应有 RunHolder 锁行: ok=false`、`失败回合归属也应保持，实际 session=""`、`卡上应有含 "查无此节点" 的评论与 needs_human`、`会话未设置应报错`、`运行锁被拒时不得派发`、`失去写权...` 之前的入口条件错误，退出码 1；确认不是编译/拼写红。
+- 2026-08-25：D1 接口总表声明 `RenewBeat <-chan time.Time` 与测试直接向字段发送冲突；选择保持冻结签名为只读通道，测试改为持有双向 `beats` 后经字段注入，未改生产接口。
+- 2026-08-25：D2 修正入口失败返回：落卡成功后同时返回原始错误，保留既有调用方的错误可见性；补齐非产出 gateflow 的 StatusDone 测试节点，并给既有 runner 测试装配 RunHolder。
+- 2026-08-25：D2 全量局部测试 `go test ./internal/ledgerstep/` 失败；原始失败：`runner_test.go:452: 节拍后库行 expires_at 必须推进: before=2026-08-24 18:34:25.210106358 +0000 UTC after=2026-08-24 18:34:25.210106358 +0000 UTC`，退出码 1；同次输出显示续租日志随后发生，判定为测试读取竞态，待改为等待库行推进后复测。
+- 2026-08-25：D2 格式化 `gofmt -w internal/ledgerstep/runner_test.go` 成功，原始输出为空，退出码 0。
+- 2026-08-25：D2 续租接缝测试 `go test ./internal/ledgerstep/ -run 'TestRunRenewsLockRowOnBeat' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.103s`，退出码 0。
+- 2026-08-25：D2 ledgerstep 局部全量 `go test ./internal/ledgerstep/` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 5.309s`，退出码 0。
+- 2026-08-25：D2 ledgerstep 竞态测试 `go test -race ./internal/ledgerstep/` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 6.799s`，退出码 0。
+- 2026-08-25：D2 收尾 `go vet ./internal/ledgerstep` 通过；原始输出为空，退出码 0。
+- 2026-08-25：D2 收尾 `gofmt -l internal/ledgerstep` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异①唯一命中检查 `rg -n '无权释放|return fmt.Errorf("卡 %s 由 %s 持有' internal/ledger/move.go`；原始输出唯一命中 `208: return fmt.Errorf("卡 %s 由 %s 持有：%s 无权释放: %w",`，退出码 0。
+- 2026-08-25：E2 变异①编译 `go build ./...` 通过；原始输出为空，退出码 0，确认变异可编译。
+- 2026-08-25：E2 变异①行为断言 `go test ./internal/ledger/ -run 'TestReleaseCardOwnershipSemantics' -count=1` 按预期失败；原始报错：`--- FAIL: TestReleaseCardOwnershipSemantics (0.07s)`、`move_test.go:144: 非持有者释放应可见失败并点名持有者: <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异①还原后复绿 `go test ./internal/ledger/ -run 'TestReleaseCardOwnershipSemantics' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.096s`，退出码 0。
+- 2026-08-25：E2 变异②唯一命中检查 `rg -n -F 'if card.DriverSession != "" && card.DriverSession != owner {' internal/ledger/move.go`；原始输出唯一命中 `160: if card.DriverSession != "" && card.DriverSession != owner {`，退出码 0。
+- 2026-08-25：E2 变异②编译 `go build ./...` 通过；原始输出为空，退出码 0，确认过期判据变异可编译。
+- 2026-08-25：E2 变异②行为断言 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 按预期失败；原始报错：`--- FAIL: TestClaimCardOwnershipSemantics (0.11s)`、`move_test.go:109: 他主持有应拒且点名持有者: 卡 P1 的归属已过期: ledger: 状态已被并发修改`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异②还原后复绿 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.115s`，退出码 0。
+- 2026-08-25：E2 变异③唯一命中检查 `rg -n -F 'UPDATE cards SET driver_session' internal/ledger/move.go`；原始输出包含认领唯一写点 `165: if _, err := tx.Exec(s.q(UPDATE cards SET driver_session = ?, driver_heartbeat_at = ? WHERE id = ?),`，退出码 0。
+- 2026-08-25：E2 变异③编译 `go build ./...` 通过；原始输出为空，退出码 0，确认状态列变异可编译。
+- 2026-08-25：E2 变异③账本行为断言 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 按预期失败；原始报错：`--- FAIL: TestClaimCardOwnershipSemantics (0.09s)`、`move_test.go:90: 认领不得改状态列: before="待办" after="进行中"`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异③命令行为断言 `go test ./cmd/ -run 'TestCardDispatchClaimAndSnapshot' -count=1` 按预期失败；原始报错：`--- FAIL: TestCardDispatchClaimAndSnapshot (0.10s)`、`card_dispatch_test.go:165: 裸 dispatch 不得挪列，实际 "进行中"`、`FAIL github.com/Xsxdot/handoff/cmd`，退出码 1。
+- 2026-08-25：E2 变异③还原后账本断言复绿 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.064s`，退出码 0。
+- 2026-08-25：E2 变异③还原后命令断言复绿 `go test ./cmd/ -run 'TestCardDispatchClaimAndSnapshot' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/cmd 0.094s`，退出码 0。
+- 2026-08-25：E2 变异④台账追加首次尝试失败；原始工具报错 `apply_patch verification failed: Failed to find expected lines ... 原始输出 ok github.com/Xsxdot/handoff/internal/ledger 0.094s`，未产生改动，随后改用正确锚点重试。
+- 2026-08-25：E2 变异④唯一命中检查 `rg -n -F 'case row.ExpiresAt.After(now):' internal/ledger/runlock.go`；原始输出唯一命中 `75: case row.ExpiresAt.After(now):`，退出码 0。
+- 2026-08-25：E2 变异④编译 `go build ./...` 通过；原始输出为空，退出码 0，确认删除过期抢占分支的语义变异可编译。
+- 2026-08-25：E2 变异④行为断言 `go test ./internal/ledger/ -run 'TestAcquireRunLockPreemptsExpiredWithGoldPayload' -count=1` 按预期失败；原始报错：`--- FAIL: TestAcquireRunLockPreemptsExpiredWithGoldPayload (0.10s)`、`runlock_test.go:97: 过期后应可取得: false <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异④还原后复绿 `go test ./internal/ledger/ -run 'TestAcquireRunLockPreemptsExpiredWithGoldPayload' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.084s`，退出码 0。
+- 2026-08-25：E2 变异⑤初查发现短锚 `WHERE card_id = ? AND holder = ?` 在 Renew 与 Release 两处命中；原始输出 `108: UPDATE ... WHERE card_id = ? AND holder = ?`、`129: DELETE ... WHERE card_id = ? AND holder = ?`，拒绝用短文本替换。
+- 2026-08-25：E2 变异⑤改用 Renew 函数上下文锚，`rg -n -F 'renewed := false' internal/ledger/runlock.go` 唯一命中 `104: renewed := false`，退出码 0。
+- 2026-08-25：E2 变异⑤首次记录编译结果时误用路径 `docs/superpowers/2026-08-25-b239-contract-ledger.md` 且空 hunk；原始工具报错 `apply_patch verification failed: invalid hunk ... is empty`，未产生改动，随后用正确台账路径重试。
+- 2026-08-25：E2 变异⑤编译 `go build ./...` 通过；原始输出为空，退出码 0，确认移除 Renew 持有者条件的语义变异可编译。
+- 2026-08-25：E2 变异⑤行为断言 `go test ./internal/ledger/ -run 'TestAcquireRunLockBasics' -count=1` 按预期失败；原始报错：`--- FAIL: TestAcquireRunLockBasics (0.15s)`、`runlock_test.go:77: 非持有者续租应 false,nil: true <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异⑤还原后复绿 `go test ./internal/ledger/ -run 'TestAcquireRunLockBasics' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 0.143s`，退出码 0。
+- 2026-08-25：E3 断言38变异唯一命中检查 `rg -n -F 'if state.LastType == "failed" {' internal/agentd/ledgerapi.go`；原始输出唯一命中 `203: if state.LastType == "failed" {`，退出码 0。
+- 2026-08-25：E3 断言38变异编译 `go build ./...` 通过；原始输出为空，退出码 0，确认徽标状态门变异可编译。
+- 2026-08-25：E3 断言38变异行为断言 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus' -count=1` 按预期失败；原始报错：`--- FAIL: TestCardsListConflictFollowsRunLockNotStatus (0.17s)`、`ledgerapi_test.go:218: 未过期运行锁 + 最新 task failed 应亮徽标`、`FAIL github.com/Xsxdot/handoff/internal/agentd`，退出码 1。
+- 2026-08-25：E3 断言38变异还原后复绿 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus' -count=1` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 0.204s`，退出码 0。
+- 2026-08-25：E3 工作区差异检查 `git diff --check` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E3 按收尾自审补齐 ClaimCard/ReleaseCard 过时导出注释、运行锁常量文档与新增运行锁测试文件头；格式化 `gofmt -w internal/ledger/move.go internal/ledger/runlock.go internal/ledger/runlock_test.go` 成功，原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核①再次编译 `go build ./...` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核①行为先验 `go test ./internal/ledger/ -run 'TestReleaseCardOwnershipSemantics' -count=1` 失败；原始报错：`move_test.go:144: 非持有者释放应可见失败并点名持有者: <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1，确认变异命中。
+- 2026-08-25：E2 变异全量复核①受影响包 `go test ./internal/ledger/` 失败；工具输出被截断（`Warning: truncated output`），尾部原始输出 `FAIL github.com/Xsxdot/handoff/internal/ledger 12.045s`、退出码 1。
+- 2026-08-25：E2 变异全量复核①失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `2`，退出码 0；失败名复核 `go test ./internal/ledger/ 2>&1 | rg '^--- FAIL|^    [^ ]+\\.go:[0-9]+:'` 原始输出：`--- FAIL: TestReleaseCardOwnershipSemantics (0.14s)`、`move_test.go:144: 非持有者释放应可见失败并点名持有者: <nil>`、`--- FAIL: TestReleaseCardOnlyOwnerCanClearAndOtherCanClaim (0.15s)`、`tasks_test.go:72: 非持有者 release 应可见失败: <nil>`，退出码 0（管道末端为 rg）。
+- 2026-08-25：E2 变异全量复核②再次应用过期判据变异并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核②行为先验 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 失败；原始报错：`move_test.go:109: 他主持有应拒且点名持有者: 卡 P1 的归属已过期: ledger: 状态已被并发修改`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1，确认变异命中。
+- 2026-08-25：E2 变异全量复核②受影响包失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0；失败名复核 `go test ./internal/ledger/ 2>&1 | rg '^--- FAIL|^    [^ ]+\\.go:[0-9]+:'` 原始输出：`--- FAIL: TestClaimCardOwnershipSemantics (0.12s)`、`move_test.go:109: 他主持有应拒且点名持有者: 卡 P1 的归属已过期: ledger: 状态已被并发修改`，退出码 0（管道末端为 rg）。
+- 2026-08-25：E2 变异全量复核③再次应用状态列变异并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核③账本行为先验 `go test ./internal/ledger/ -run 'TestClaimCardOwnershipSemantics' -count=1` 失败；原始报错：`move_test.go:90: 认领不得改状态列: before="待办" after="进行中"`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异全量复核③命令行为先验 `go test ./cmd/ -run 'TestCardDispatchClaimAndSnapshot' -count=1` 失败；原始报错：`card_dispatch_test.go:165: 裸 dispatch 不得挪列，实际 "进行中"`、`FAIL github.com/Xsxdot/handoff/cmd`，退出码 1。
+- 2026-08-25：E2 变异全量复核③台账追加首次尝试失败；原始工具报错 `apply_patch verification failed: Failed to find expected lines`，因记录中的失败包名误写为 ledger，未产生改动，随后用正确锚点重试。
+- 2026-08-25：E2 变异全量复核③账本包失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0；失败名复核输出：`--- FAIL: TestClaimCardOwnershipSemantics (0.12s)`、`move_test.go:90: 认领不得改状态列: before="待办" after="进行中"`。
+- 2026-08-25：E2 变异全量复核③cmd 包失败数 `go test ./cmd/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `2`，退出码 0；失败名复核输出：`--- FAIL: TestCardDispatchClaimAndSnapshot (0.14s)`、`card_dispatch_test.go:165: 裸 dispatch 不得挪列，实际 "进行中"`、`--- FAIL: TestCardDispatchFailureReleasesLease (0.09s)`、`card_dispatch_test.go:342: 派发失败回滚不得动状态列: ... status":"进行中" ...`。
+- 2026-08-25：E2 变异全量复核④台账追加首次尝试失败；原始工具报错 `apply_patch verification failed: Failed to find expected lines`，因引号转义锚点不匹配，未产生改动，随后改用文件尾部正确锚点重试。
+- 2026-08-25：E2 变异全量复核④再次应用过期抢占删除变异并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核④行为先验 `go test ./internal/ledger/ -run 'TestAcquireRunLockPreemptsExpiredWithGoldPayload' -count=1` 失败；原始报错：`runlock_test.go:99: 过期后应可取得: false <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异全量复核④受影响包失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0；失败名复核输出：`--- FAIL: TestAcquireRunLockPreemptsExpiredWithGoldPayload (0.12s)`、`runlock_test.go:99: 过期后应可取得: false <nil>`。
+- 2026-08-25：E2 变异全量复核⑤再次移除 Renew 持有者条件并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E2 变异全量复核⑤行为先验 `go test ./internal/ledger/ -run 'TestAcquireRunLockBasics' -count=1` 失败；原始报错：`runlock_test.go:79: 非持有者续租应 false,nil: true <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledger`，退出码 1。
+- 2026-08-25：E2 变异全量复核⑤受影响包失败数 `go test ./internal/ledger/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0；失败名复核输出：`--- FAIL: TestAcquireRunLockBasics (0.13s)`、`runlock_test.go:79: 非持有者续租应 false,nil: true <nil>`。
+- 2026-08-25：E3 断言38全量复核再次应用徽标状态门变异并执行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：E3 断言38全量复核行为先验 `go test ./internal/agentd/ -run 'TestCardsListConflictFollowsRunLockNotStatus' -count=1` 失败；原始报错：`--- FAIL: TestCardsListConflictFollowsRunLockNotStatus (0.13s)`、`ledgerapi_test.go:218: 未过期运行锁 + 最新 task failed 应亮徽标`、`FAIL github.com/Xsxdot/handoff/internal/agentd`，退出码 1。
+- 2026-08-25：E3 断言38全量复核失败数 `go test ./internal/agentd/ 2>&1 | rg -c '^--- FAIL'` 完成；原始输出 `1`，管道末端退出码 0，确认受影响包全量只拦截 1 个失败。
+- 2026-08-25：E1 最终全量构建 `go build ./...` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E1 最终静态检查 `go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E1 最终格式检查 `gofmt -l internal/ledger internal/ledgerstep internal/agentd cmd` 通过；原始输出为空，退出码 0。
+- 2026-08-25：E1 最终四包集成测试 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/...` 通过；原始输出：`ok github.com/Xsxdot/handoff/internal/ledger 14.843s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 6.630s`、`ok github.com/Xsxdot/handoff/internal/agentd 123.700s`、`ok github.com/Xsxdot/handoff/cmd 8.982s`，退出码 0。
+- 2026-08-25：E4 生产面复核 `rg -n 'ledgerSession' cmd/ internal/ -g '*.go' -g '!**/*_test.go'` 无输出，退出码 1（rg 无匹配），确认生产代码零命中。
+- 2026-08-25：E5 断言映射 1 → `TestClaimCardOwnershipSemantics` 不存在卡 ErrNotFound。
+- 2026-08-25：E5 断言映射 2 → `TestClaimCardOwnershipSemantics` 终态卡 ErrBadState。
+- 2026-08-25：E5 断言映射 3 → `TestClaimCardOwnershipSemantics` 他主 ErrCASConflict 与持有者文本。
+- 2026-08-25：E5 断言映射 4 → `TestClaimCardOwnershipSemantics` 做旧认领时刻仍拒绝他主。
+- 2026-08-25：E5 断言映射 5 → `TestClaimCardOwnershipSemantics` 同 owner 重入幂等。
+- 2026-08-25：E5 断言映射 6 → `TestClaimCardOwnershipSemantics` 认领前后状态列相同。
+- 2026-08-25：E5 断言映射 7 → `TestClaimCardOwnershipSemantics` 归属字段与认领时刻写入。
+- 2026-08-25：E5 断言映射 8 → `TestReleaseCardOwnershipSemantics` 不存在卡 ErrNotFound。
+- 2026-08-25：E5 断言映射 9 → `TestReleaseCardOwnershipSemantics` 无主卡释放幂等成功。
+- 2026-08-25：E5 断言映射 10 → `TestReleaseCardOwnershipSemantics` 持有者释放清空归属字段。
+- 2026-08-25：E5 断言映射 11 → `TestReleaseCardOwnershipSemantics` 非持有者可见冲突且归属不变。
+- 2026-08-25：E5 断言映射 12 → `TestTakeoverCardWritesDriverAndRoundTripsPayload` 覆盖归属并核对 takeover payload。
+- 2026-08-25：E5 断言映射 13 → `TestAcquireRunLockBasics` 不存在卡 ErrNotFound。
+- 2026-08-25：E5 断言映射 14 → `TestAcquireRunLockBasics` 租期内他人被拒并返回原行。
+- 2026-08-25：E5 断言映射 15 → `TestAcquireRunLockPreemptsExpiredWithGoldPayload` 过期后覆盖运行锁四字段。
+- 2026-08-25：E5 断言映射 16 → `TestAcquireRunLockPreemptsExpiredWithGoldPayload` takeover 事件 payload 三键金样本。
+- 2026-08-25：E5 断言映射 17 → `TestAcquireRunLockBasics` 首次取得不落卡事件。
+- 2026-08-25：E5 断言映射 18 → `TestAcquireRunLockBasics` 同 holder 重入只刷新 expires_at。
+- 2026-08-25：E5 断言映射 19 → `TestAcquireRunLockBasics` 持有者续租成功、非持有者 false 无副作用。
+- 2026-08-25：E5 断言映射 20 → `TestReleaseRunLockSemantics` 释放后立即可被他人取得。
+- 2026-08-25：E5 断言映射 21 → `TestReleaseRunLockSemantics` 非持有者释放 nil 且不动他人行。
+- 2026-08-25：E5 断言映射 22 → `TestRunLockReadsReturnExpiredRowsAsIs` 读面保留过期行。
+- 2026-08-25：E5 断言映射 23 → `TestCardRunLocksPKIsCardID` 表存在且 card_id 主键生效。
+- 2026-08-25：E5 断言映射 24 → `TestRunnerUnknownNodeHaltsWithCardEvent` 入口节点失败落评论与 needs_human。
+- 2026-08-25：E5 断言映射 25 → `TestRunnerMissingSessionHaltsWithCardEvent` 缺 session 落卡后返回错误。
+- 2026-08-25：E5 断言映射 26 → `TestRunnerRunLockRefusalReportsWhoNodeExpiry` 运行锁拒绝落持有者/节点/卡事件。
+- 2026-08-25：E5 断言映射 27 → `TestRunnerOwnershipRefusalHaltsWithCardEvent` 归属拒绝落卡且不改他主。
+- 2026-08-25：E5 断言映射 28 → `TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun` 正常结束删运行锁、保归属。
+- 2026-08-25：E5 断言映射 29 → `TestRunnerKeepsOwnershipAfterDispatchFailure` 失败结束删运行锁、保归属。
+- 2026-08-25：E5 断言映射 30 → `TestRunRenewsLockRowOnBeat` 注入节拍推进库行 expires_at。
+- 2026-08-25：E5 断言映射 31 → `TestRunnerStopsCardWritesAfterLosingWriteGate` 失权后禁止业务写且只留一条说明评论。
+- 2026-08-25：E5 断言映射 32 → `TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun` 与 `TestRunnerKeepsOwnershipAfterDispatchFailure` 证明编排收口只释放运行锁。
+- 2026-08-25：E5 断言映射 33 → `TestCardReleaseRejectsNonHolderAndSucceedsForOwner` CLI 非持有者失败、持有者成功。
+- 2026-08-25：E5 断言映射 34 → `TestCardDispatchClaimAndSnapshot` 无驱动裸 dispatch 放行。
+- 2026-08-25：E5 断言映射 35 → `TestCardDispatchGuardFollowsOwnership` 裸 dispatch 他主拒绝并点名持有者。
+- 2026-08-25：E5 断言映射 36 → `TestCardDispatchClaimAndSnapshot` 裸 dispatch 成功保持原状态列。
+- 2026-08-25：E5 断言映射 37 → `TestCardDispatchFailureReleasesLease` 失败回滚只清归属。
+- 2026-08-25：E5 断言映射 38 → `TestCardsListConflictFollowsRunLockNotStatus` 徽标由未过期运行锁与 failed task 决定。
+- 2026-08-25：E5 断言映射 39 → `rg -n 'ledgerSession' ... -g '!**/*_test.go'` 生产代码零命中。
+- 2026-08-25：E5 收尾差异检查 `git diff --check` 通过；原始输出为空，退出码 0。工作区仅含本卡实现文件、测试、台账及新增 `internal/ledger/runlock_test.go`，未见未授权分支切换或配置改动。
+- 2026-08-25：E5 日志禁令扫描 `rg -n 'fmt\\.Print|console\\.log|print\\(' cmd internal/ledger internal/ledgerstep internal/agentd -g '*.go'` 仅命中既有 stdout/测试与 `fmt.Sprint`，本卡新增路径未使用 print/console.log；命令退出码 0。
+- 2026-08-25：E5 当前分支复核 `git branch --show-current` 原始输出 `cards/B239-charter-6`；实现仍在当前分支，未切换分支。
+- 2026-08-25：E5 旧符号复核 `rg -n 'ClaimDriver' internal cmd -g '*.go' -g '!**/*_test.go'` 无输出，退出码 1（rg 无匹配），确认生产代码已删除 ClaimDriver。
+- 2026-08-25：E5 最终 `git diff --check` 通过；原始输出为空，退出码 0。
+- 2026-08-25：收尾暂存 `git add --all` 失败；原始报错：`fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/e07609e9/index.lock': Read-only file system`，退出码 128，尚未产生暂存或提交。
+- 2026-08-25：在获准的提权上下文重试 `git add --all` 成功；原始输出为空，退出码 0，随后因本条台账追加需再次暂存。
+- 2026-08-25：暂存核对 `git status --short && git diff --cached --check && git diff --check` 通过；原始输出显示本卡 18 项改动均已暂存，两个 diff check 均为空且退出码 0。
+- 2026-08-25：实现提交 `git commit -m 'feat(b239): split ownership and run locks'` 成功；原始输出 `[cards/B239-charter-6 0886d1ba] feat(b239): split ownership and run locks`、`19 files changed, 1322 insertions(+), 184 deletions(-)`，退出码 0。
+- 2026-08-25：定点修复轮工作树事实：当前分支 `cards/B239-charter-7`，HEAD=`af37dfe0`（`chore(b239): record verification ledger`），`git status --short` 无输出；未切换分支。
+- 2026-08-25：复读 `internal/ledgerstep/dispatch.go` 确认 `LinkTask` 位于 :266、`RecordDispatch` 位于 :269，均在 `Transport` 成功后且当前没有运行锁写闸。
+- 2026-08-25：复读既有 D2 结构确认 `StepRunner.WriteGate` 由 `runner.go:201-203` 注入，节点路径已有写闸；现有断言 `TestRunnerStopsCardWritesAfterLosingWriteGate` 位于 `runner_test.go:468`，当前检索未发现其覆盖 `card_tasks` 行或 `dispatched` 事件。
+- 2026-08-25：先加数据库可观测断言后运行 `go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1`；按 TDD 预期失败，原始报错：`runner_test.go:543: 失去写权后不得新增 card_tasks 行: before=0 after=1`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1；日志同时显示失权后仍有 `模板派发完成`，确认测试命中 LinkTask/RecordDispatch 后的现行缺口。
+- 2026-08-25：最小实现完成并运行 `gofmt -w internal/ledgerstep/dispatch.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go && go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1`；原始测试输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.096s`，退出码 0；写闸测试同时覆盖失权后的 `card_tasks` 行数与 `dispatched` 事件数未增加。
+- 2026-08-25：`git diff --check` 在定点修复代码与测试、台账修改后通过；原始输出为空，退出码 0。
+- 2026-08-25：触及包测试 `go test ./internal/ledgerstep/` 通过；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 4.549s`，退出码 0。
+- 2026-08-25：变异前唯一命中核对 `rg -n -U 'if req\\.WriteGate != nil && !req\\.WriteGate\\(\\) \\{\\n\\s*err := fmt\\.Errorf\\("挂账被拒' internal/ledgerstep/dispatch.go`；原始输出唯一命中 :269-270，确认首个挂账闸锚点唯一。
+- 2026-08-25：变异①取反首个挂账闸后运行 `go build ./...`；原始输出为空，退出码 0，确认变异可编译。
+- 2026-08-25：变异①行为先验 `go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1` 按预期失败；原始报错：`runner_test.go:543: 失去写权后不得新增 card_tasks 行: before=0 after=1`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1；确认测试真的拦住首个派发写闸失效。
+- 2026-08-25：变异②前唯一命中核对 `rg -n -U 'if req\\.WriteGate != nil && !req\\.WriteGate\\(\\) \\{\\n\\s*err := fmt\\.Errorf\\("快照落账被拒' internal/ledgerstep/dispatch.go`；原始输出唯一命中 :277-278，确认第二个快照闸锚点唯一。
+- 2026-08-25：变异②取反第二个快照闸后运行 `go build ./...`；原始输出为空，退出码 0，确认变异可编译。
+- 2026-08-25：变异②取反第二个快照闸后运行既有 `go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1`；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.093s`，退出码 0；确认既有失权前置测试未覆盖“挂账后、快照前”窗口，需补独立数据库断言。
+- 2026-08-25：在变异②仍生效时补加 `TestViaTemplateStopsSnapshotAfterWriteGateCloses`，运行 `gofmt -w internal/ledgerstep/dispatch_test.go && go test ./internal/ledgerstep/ -run '^TestViaTemplateStopsSnapshotAfterWriteGateCloses$' -count=1`；原始报错：`dispatch_test.go:184: 快照写前失权应被拒: <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1；新断言确认第二处快照闸有牙。
+- 2026-08-25：还原变异②后运行 `go test ./internal/ledgerstep/ -run '^(TestRunnerStopsCardWritesAfterLosingWriteGate|TestViaTemplateStopsSnapshotAfterWriteGateCloses)$' -count=1`；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.186s`，退出码 0。
+- 2026-08-25：变异①复核再次取反挂账闸后运行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：变异①复核行为先验 `go test ./internal/ledgerstep/ -run '^TestRunnerStopsCardWritesAfterLosingWriteGate$' -count=1` 失败；原始报错：`runner_test.go:543: 失去写权后不得新增 card_tasks 行: before=0 after=1`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1。
+- 2026-08-25：变异①受影响包全量 `go test ./internal/ledgerstep/` 失败；原始输出尾部：`--- FAIL: TestRunnerStopsCardWritesAfterLosingWriteGate`、`runner_test.go:543: 失去写权后不得新增 card_tasks 行: before=0 after=1`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep 4.718s`，退出码 1（工具输出标记 truncated）。
+- 2026-08-25：变异①受影响包失败数 `go test ./internal/ledgerstep/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `2`，退出码 0（管道末端为 rg）；两条新增/既有失权断言均参与拦截。
+- 2026-08-25：变异②复核再次取反快照闸后运行 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：变异②复核行为先验 `go test ./internal/ledgerstep/ -run '^TestViaTemplateStopsSnapshotAfterWriteGateCloses$' -count=1` 失败；原始报错：`dispatch_test.go:184: 快照写前失权应被拒: <nil>`、`FAIL github.com/Xsxdot/handoff/internal/ledgerstep`，退出码 1。
+- 2026-08-25：变异②受影响包全量 `go test ./internal/ledgerstep/` 失败；原始输出尾部：`FAIL github.com/Xsxdot/handoff/internal/ledgerstep 4.599s`，退出码 1（工具输出标记 truncated）。
+- 2026-08-25：变异②受影响包失败数 `go test ./internal/ledgerstep/ 2>&1 | rg -c '^--- FAIL'` 原始输出 `1`，退出码 0（管道末端为 rg）；新测试唯一拦截第二处快照闸变异。
+- 2026-08-25：还原全部变异、格式化四个触及 Go 文件并运行 `gofmt -w internal/ledgerstep/dispatch.go internal/ledgerstep/runner.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner_test.go && go test ./internal/ledgerstep/`；原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 5.477s`，退出码 0。
+- 2026-08-25：最终验收台账追加首次尝试失败；原始工具报错 `apply_patch verification failed: invalid hunk ... is empty`，路径误写为 `docs/superpowers/2026-08-25-b239-contract-ledger.md`，未产生改动，随后用正确路径重试。
+- 2026-08-25：最终全量构建 `go build ./...` 通过；原始输出为空，退出码 0。
+- 2026-08-25：最终全量静态检查 `go vet ./...` 通过；原始输出为空，退出码 0。
+- 2026-08-25：最终格式检查 `gofmt -l internal/ledger internal/ledgerstep internal/agentd cmd` 通过；原始输出为空，退出码 0。
+- 2026-08-25：四包集成测试 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/...` 通过；命令首段原始输出 `ok github.com/Xsxdot/handoff/internal/ledger 13.220s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep (cached)`，续行原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 115.542s`、`ok github.com/Xsxdot/handoff/cmd 8.213s`，最终退出码 0。
+- 2026-08-25：收尾差异检查 `git diff --check && git status --short && git diff --stat && git diff --name-only` 通过；原始输出 `git diff --check` 为空，工作区仅有 5 个文件：本台账、`internal/ledgerstep/dispatch.go`、`dispatch_test.go`、`runner.go`、`runner_test.go`；统计为 `136 insertions(+), 1 deletion(-)`。
+- 2026-08-25：最终 diff 复读确认：`TemplateDispatch.WriteGate` 在 Transport 后分别守护 `LinkTask` 与 `RecordDispatch`；StepRunner 通过 `dispatchNodeWithGate` 传入现有 `NodeStep.WriteGate`；测试分别覆盖失权前置时两类数据库事实均不新增，以及挂账后失权时保留挂账但不新增 dispatched。
+- 2026-08-25：提交前 `git diff --check && gofmt -l internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go` 通过；原始输出为空，退出码 0。
+- 2026-08-25：收尾暂存首次尝试 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go` 失败；原始报错：`fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/d290f533/index.lock': Read-only file system`，退出码 128，尚未暂存。
+- 2026-08-25：获准提权后重试同一 `git add ...` 成功；原始输出为空，退出码 0。暂存核对显示 5 个文件、`140 insertions(+), 1 deletion(-)`，`git diff --cached --check` 为空。
+- 2026-08-25：补记台账后再次暂存核对 `git status --short && git diff --cached --check && git diff --cached --stat` 通过；原始输出显示 5 个文件全部 staged、`141 insertions(+), 1 deletion(-)`，cached diff check 为空。
+- 2026-08-25：实现提交 `git commit -m 'fix(b239): gate dispatch ledger writes'` 首次成功；原始输出 `[cards/B239-charter-7 bb852d33] fix(b239): gate dispatch ledger writes`、`5 files changed, 142 insertions(+), 1 deletion(-)`，退出码 0；因本条事实随后回写台账，将用 `git commit --amend --no-edit` 收口。
+- 2026-08-25：`git commit --amend --no-edit` 收口成功；原始输出 `[cards/B239-charter-7 54baab3e] fix(b239): gate dispatch ledger writes`、`5 files changed, 143 insertions(+), 1 deletion(-)`，退出码 0；当前实现与台账已在该提交中。
+- 2026-08-25：提交后核对 `git status --short --branch && git log -2 --oneline --decorate && git show --stat --oneline --summary HEAD && git diff HEAD^ --check`；原始输出分支为 `## cards/B239-charter-7` 且无未提交行，HEAD=`6c5f55d9`，上一实现提交=`54baab3e`，HEAD 仅含 1 条台账记录，`git diff HEAD^ --check` 为空。
+- 2026-08-25：本轮启动核对 `pwd && git status --short --branch && rg --files ...`；原始输出路径 `/root/.handoff/worktrees/210cf1b8`、分支 `## cards/B239-charter-8`，状态无未提交行；已定位本轮仅允许修改的计划与台账文件。
+- 2026-08-25：按本轮补充回写 `docs/superpowers/plans/b239-plan.md` 的 D2 边界；新增 `D2 修订 1`，记录 review#1 finding、落地提交 `901290d8`，并将写闸范围扩至 `LinkTask`/`RecordDispatch`，断言落点为 `card_tasks` 行数与 `EvDispatched` 事件；未修改契约文档或任何 `.go` 文件。
+- 2026-08-25：收尾差异核对 `git diff --check && git status --short && git diff --name-only && git diff --stat`；原始输出 `git diff --check` 为空，文件清单仅为 `docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md` 与 `docs/superpowers/plans/b239-plan.md`，统计 `2 files changed, 5 insertions(+), 1 deletion(-)`。
+- 2026-08-25：首次暂存 `git add docs/superpowers/plans/b239-plan.md docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md` 失败；原始报错 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/210cf1b8/index.lock': Read-only file system`，退出码 128，尚未产生暂存。
+- 2026-08-25：获准提权后重试同一 `git add docs/superpowers/plans/b239-plan.md docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md` 成功；原始输出为空，退出码 0。
+- 2026-08-25：暂存核对 `git status --short && git diff --cached --check && git diff --cached --name-only && git diff --cached --stat`；原始输出显示台账为 `MM`（新增暂存后又追加一条台账事实）、计划为 `M `，cached 文件仍仅两份目标文档，cached diff check 为空，统计 `7 insertions(+), 1 deletion(-)`。
+- 2026-08-25：为纳入上述暂存核对后的台账事实，再次执行同一 `git add docs/superpowers/plans/b239-plan.md docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md`；原始输出为空，退出码 0。
+- 2026-08-25：提交前核对 `git status --short --branch && git diff --cached --check && git diff --check && git diff --cached --name-only && git diff --cached --stat`；原始输出分支 `## cards/B239-charter-8`，两份目标文档均 staged，两个 diff check 为空，统计 `2 files changed, 10 insertions(+), 1 deletion(-)`。
+- 2026-08-25：文档回写提交 `git commit -m 'docs(b239): record dispatch write-gate scope revision'` 成功；原始输出 `[cards/B239-charter-8 458929ef] docs(b239): record dispatch write-gate scope revision`、`2 files changed, 11 insertions(+), 1 deletion(-)`，退出码 0；因本条事实随后回写台账，将 amend 收口。
+- 2026-08-25：`git commit --amend --no-edit` 收口成功；原始输出 `[cards/B239-charter-8 945a8a10] docs(b239): record dispatch write-gate scope revision`、`2 files changed, 12 insertions(+), 1 deletion(-)`，退出码 0；本条台账事实仍需纳入最终 amend。
+- 2026-08-25：最终核验 `git status --short --branch && git diff --check && git show --stat --oneline --summary HEAD && git diff HEAD^ --check && git diff HEAD^ --name-only`；原始输出分支 `## cards/B239-charter-8` 且状态无未提交行，HEAD=`dd42a4ee`，提交仅含台账与计划两份文档（`2 files changed, 13 insertions(+), 1 deletion(-)`），两处 diff check 为空。
+- 2026-08-25：最终状态复核 `git status --short --branch && git log -1 --oneline --decorate`；原始输出 `## cards/B239-charter-8`（无未提交行）与 `deda2faa (HEAD -> cards/B239-charter-8) docs(b239): record dispatch write-gate scope revision`。
+- 2026-08-25：本轮启动读取 `/root/.codex/skills/handoff/SKILL.md` 至 EOF（`wc -l` 原始输出 `374`）；平台纪律禁止调用 handoff CLI，故未调用。当前工作树核对原始输出为 `## cards/B239-charter-9`，状态无未提交行；当前 HEAD 为 `51145028 (HEAD -> cards/B239-charter-9, cards/B239-review-3, cards/B239-charter-8) docs(b239): record dispatch write-gate scope revision`。
+- 2026-08-25：复读 `internal/agentd/ledgerapi_test.go` 与 `internal/agentd/ledgerapi.go` 确认存量 `TestCardStepLegacyActorFallback` 仍构造 `want := "web:" + localAddr`，生产 legacy fallback 已是 `req.Actor = "web:" + hostOnly(r.RemoteAddr)`；同包新增 `TestLegacyStepFallbackActorIsHostOnly` 断言 `web:127.0.0.1`。原始检索还确认 `ClaimDriver` 在 `internal cmd` 生产代码无命中（此前台账已有记录）。
+- 2026-08-25：按补充要求先复跑存量测试 `go test ./internal/agentd/ -run '^TestCardStepLegacyActorFallback$' -count=1`；原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 0.134s`，退出码 0。本机该单测未复现协调者报告的旧端口断言红，但断言源码仍与 host-only 生产语义矛盾，需按新语义修正测试。
+- 2026-08-25：同族排查按三组共 24 个正则关键词扫 `internal cmd -g '*_test.go'`：actor/端点 7 个（`localAddr|hostOnly|RemoteAddr|legacy actor|legacy.*fallback|web:.*:[0-9]|actor.*want`）、归属/运行锁 10 个（`ClaimDriver|DriverSession|driver_session|claim.*(pid|进|owner|归属)|归属.*(pid|进)|认领.*进行中|非持有者 release|release.*(ok|成功)|Release.*Non|release.*非持有者`）、状态变更 7 个（`MoveCard...进行中|Status.*进行中|step.*进行中|认领.*状态|状态.*认领|claim.*status|status.*claim`）。命中仅包括本次旧 `localAddr` 断言、reveal 的 RemoteAddr 安全测试、正常工作流/dispatch 的“进行中”、以及 B239 正确的非持有者可见失败与 `DriverSession` 人尺度断言；`ClaimDriver` 无测试命中，未发现归属带 pid、认领转“进行中”、release 非持有者返回成功的其他存量断言。原始命中行含 `internal/agentd/ledgerapi_test.go:937 want := "web:" + localAddr`、`cmd/card_dispatch_test.go:586 非持有者 release 必须失败`、`internal/ledger/move_test.go:90 认领不得改状态列`、`:143 非持有者释放应可见失败`。
+- 2026-08-25：按排查结论修改 `internal/agentd/ledgerapi_test.go` 的 `TestCardStepLegacyActorFallback`：移除端口探测 transport，端到端请求改用既有 `ledgerPost`，期望值固定为新语义 `web:127.0.0.1`，保留 session 与 dispatcher 双位置断言；未改生产代码、未删除新增的 host-only 测试。执行 `gofmt -w internal/agentd/ledgerapi_test.go && go test ./internal/agentd/ -run '^TestCardStepLegacyActorFallback$' -count=1`，原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 0.147s`，退出码 0。
+- 2026-08-25：如实复核历史验收命令：台账可核实 implement/E1 的集成命令是 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/...`，记录中无 `-run` 且明确包含 `internal/agentd`；同轮可核实的静态命令是 `go build ./...`、`go vet ./internal/ledger ./internal/ledgerstep ./cmd ./internal/agentd`、`gofmt -l internal/ledger internal/ledgerstep internal/agentd cmd`。D2 另实际跑过 `go test -race ./internal/ledgerstep/`，不是 `go test -race ./...`。本仓台账没有 review#2 自报所称“build/vet/test/race 全绿”的原始完整命令记录，因此不能把它扩写成全仓 race 结论；本轮补充明确：历史记录显示未漏 agentd，但未记录全仓 `-race`。
+- 2026-08-25：本轮修复后触及包集成 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/...` 通过，退出码 0；原始输出按完成顺序为 `ok  github.com/Xsxdot/handoff/internal/ledger 14.737s`、`ok  github.com/Xsxdot/handoff/internal/ledgerstep 6.672s`、`ok  github.com/Xsxdot/handoff/internal/agentd 125.363s`、`ok  github.com/Xsxdot/handoff/cmd 8.792s`。
+- 2026-08-25：修复后收尾静态闸并行执行：`go build ./...` 原始输出为空、退出码 0；`go vet ./...` 原始输出为空、退出码 0；`gofmt -l internal/ledger internal/ledgerstep internal/agentd cmd` 原始输出为空、退出码 0。
+- 2026-08-25：本轮最终按补充要求执行无任何 `-run` 过滤的 `go test ./...`，退出码 0；完整包级尾部原始输出如下（无 `FAIL` 行）：
+  ```text
+  ok  	github.com/Xsxdot/handoff	0.453s
+  ok  	github.com/Xsxdot/handoff/cmd	9.065s
+  ok  	github.com/Xsxdot/handoff/internal/agentd	118.809s
+  ok  	github.com/Xsxdot/handoff/internal/buildinfo	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/client	9.454s
+  ok  	github.com/Xsxdot/handoff/internal/config	0.024s
+  ok  	github.com/Xsxdot/handoff/internal/discipline	0.008s
+  ok  	github.com/Xsxdot/handoff/internal/envfile	0.015s
+  ok  	github.com/Xsxdot/handoff/internal/executor	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/executor/claudecode	4.078s
+  ok  	github.com/Xsxdot/handoff/internal/executor/codex	6.045s
+  ok  	github.com/Xsxdot/handoff/internal/executor/fake	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/executor/grok	1.419s
+  ok  	github.com/Xsxdot/handoff/internal/executor/opencode	18.031s
+  ok  	github.com/Xsxdot/handoff/internal/executor/rawtap	0.013s
+  ok  	github.com/Xsxdot/handoff/internal/executor/turn	0.045s
+  ok  	github.com/Xsxdot/handoff/internal/initflow	0.005s
+  ok  	github.com/Xsxdot/handoff/internal/launcher	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/ledger	(cached)
+  ok  	github.com/Xsxdot/handoff/internal/ledgermirror	2.184s
+  ok  	github.com/Xsxdot/handoff/internal/ledgerstep	(cached)
+  ok  	github.com/Xsxdot/handoff/internal/localsync	0.157s
+  ok  	github.com/Xsxdot/handoff/internal/logx	0.002s
+  ok  	github.com/Xsxdot/handoff/internal/pathenv	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/permgate	0.007s
+  ok  	github.com/Xsxdot/handoff/internal/prochost	20.659s
+  ok  	github.com/Xsxdot/handoff/internal/projectid	0.002s
+  ok  	github.com/Xsxdot/handoff/internal/proto	0.003s
+  ok  	github.com/Xsxdot/handoff/internal/proxycfg	0.002s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost	0.029s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost/engine	15.954s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost/hostproc	0.020s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost/sessdir	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/ptyhost/wire	0.002s
+  ok  	github.com/Xsxdot/handoff/internal/ptytestroot	0.008s
+  ok  	github.com/Xsxdot/handoff/internal/relay	0.007s
+  ok  	github.com/Xsxdot/handoff/internal/release	0.088s
+  ok  	github.com/Xsxdot/handoff/internal/selfupdate	0.006s
+  ok  	github.com/Xsxdot/handoff/internal/service	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/skill	0.005s
+  ok  	github.com/Xsxdot/handoff/internal/store	6.254s
+  ok  	github.com/Xsxdot/handoff/internal/targetclient	0.153s
+  ok  	github.com/Xsxdot/handoff/internal/testperm	0.010s
+  ok  	github.com/Xsxdot/handoff/internal/toolchain	0.004s
+  ok  	github.com/Xsxdot/handoff/internal/upgrade	0.003s
+  ok  	github.com/Xsxdot/handoff/internal/webui	0.013s
+  ```
+- 2026-08-25：收尾复核并行命令结果：`gofmt -l .` 原始输出为空、退出码 0；旧语义复扫 `rg -n "want := \"web:\" \+ localAddr|ClaimDriver|release.*非持有者.*成功|非持有者 release.*ok|认领.*进行中|status.*claim" internal cmd -g '*_test.go'` 原始输出为空；`git diff --check && git status --short && git diff --stat && git diff --name-only` 通过，原始状态仅两份改动文件（台账与 `internal/agentd/ledgerapi_test.go`），统计 `60 insertions(+), 23 deletions(-)`。
+- 2026-08-25：首次收尾暂存 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md internal/agentd/ledgerapi_test.go` 失败；原始报错 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/368c8c31/index.lock': Read-only file system`，退出码 128，尚未产生暂存或提交。
+- 2026-08-25：提权后重试同一 `git add ...` 成功，原始输出为空、退出码 0；暂存核对 `git status --short --branch && git diff --cached --check && git diff --cached --stat && git diff --cached --name-only` 通过，分支 `## cards/B239-charter-9`，两份目标文件均 staged，cached diff check 为空，统计 `62 insertions(+), 23 deletions(-)`。
+- 2026-08-25：提交前复核 `git status --short --branch && git diff --cached --check && git diff --check && git diff --cached --stat` 通过；原始输出分支 `## cards/B239-charter-9`、两份文件 staged，两个 diff check 均为空，当前统计 `63 insertions(+), 23 deletions(-)`。
+- 2026-08-25：提交 `git commit -m 'test(b239): align legacy actor fallback expectation'` 成功；原始输出 `[cards/B239-charter-9 a4a4d0ca] test(b239): align legacy actor fallback expectation`、`2 files changed, 64 insertions(+), 23 deletions(-)`，退出码 0。因本条事实随后写回台账，将执行 amend 收口。
+- 2026-08-25：`git commit --amend --no-edit` 后核对 `git status --short --branch && git log -2 --oneline --decorate && git show --stat --oneline --summary HEAD && git diff HEAD^ --check && git diff HEAD^ --name-only`；原始输出工作树无未提交行、分支 `## cards/B239-charter-9`、HEAD=`ec09ec93 test(b239): align legacy actor fallback expectation`，提交包含台账与 `internal/agentd/ledgerapi_test.go`（`65 insertions(+), 23 deletions(-)`），父提交差异 check 为空。
+- 2026-08-25：最终台账收口前只读复核 `git status --short --branch && git log -1 --oneline --decorate && git diff HEAD^ --check`；原始输出为 `## cards/B239-charter-9`（无未提交行）、`2a913198 (HEAD -> cards/B239-charter-9) test(b239): align legacy actor fallback expectation`，差异 check 无输出、退出码 0；本条将随最后一次 amend 纳入提交。
+- 2026-08-25：本轮初始 `git status --short --branch`；原始输出为 `## cards/B239-charter-10`，无未提交改动。
+- 2026-08-25：按 TDD 先在 `internal/ledgerstep/runner_test.go` 增加 `TestRunnerLossCommentNamesCurrentRunLockHolder`，仅覆盖 A 运行锁过期后由 `AcquireRunLock` 真实接管、A 续租失败时评论正文点名 B 且不点名 A；尚未修改生产代码。
+- 2026-08-25：红测 `go test ./internal/ledgerstep/ -run 'TestRunnerLossCommentNamesCurrentRunLockHolder' -count=1` 退出码 1；原始失败为 `runner_test.go:617: 失权说明应点名当前 B 持有者 "run:otherbox#999#1": 本轮运行锁已被接手（holder=run:runner-a#1#1）：本回合自即刻起停止对这张卡的移列、裁决、附件与等人标记写入；已在跑的远端任务继续等待并照常归档。`，随后 `FAIL github.com/Xsxdot/handoff/internal/ledgerstep`。失败直接命中目标行为：生产报文把 A 自己当成 holder。
+- 2026-08-25：红测后仅修改 `internal/ledgerstep/runner.go` 的失权报文/日志读取当前运行锁，以及 `runner_test.go` 的新断言；`gofmt -w internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go` 退出码 0、无原始输出。
+- 2026-08-25：绿测 `go test ./internal/ledgerstep/ -run 'TestRunnerLossCommentNamesCurrentRunLockHolder' -count=1` 退出码 0；原始输出为 `ok  github.com/Xsxdot/handoff/internal/ledgerstep  0.095s`。
+- 2026-08-25：触及包测试 `go test ./internal/ledgerstep/... -count=1` 退出码 0；原始输出为 `ok  github.com/Xsxdot/handoff/internal/ledgerstep  5.181s`。
+- 2026-08-25：变异前锚点 `rg -F -c 'lockInfo = fmt.Sprintf("holder=%s expires_at=%s", lostReport.holder, lostReport.expiresAt)' internal/ledgerstep/runner.go` 原始输出 `1`、退出码 0，确认变异文本命中唯一。
+- 2026-08-25：语义变异将失权报文的 holder 改为 `r.RunHolder`；变异编译 `go build ./...` 退出码 0、原始输出为空，故该发变异有效且未被编译错误污染。
+- 2026-08-25：变异行为断言先跑 `go test ./internal/ledgerstep/ -run 'TestRunnerLossCommentNamesCurrentRunLockHolder' -count=1`，退出码 1；原始失败为 `runner_test.go:617: 失权说明应点名当前 B 持有者 "run:otherbox#999#1": 本轮运行锁已被接手（holder=run:runner-a#1#1 expires_at=2026-08-24T20:39:15Z）：本回合自即刻起停止对这张卡的移列、裁决、附件与等人标记写入；已在跑的远端任务继续等待并照常归档。`，确认行为断言确实拦住变异。
+- 2026-08-25：变异全量触及包测试 `go test ./internal/ledgerstep/... -count=1` 退出码 1；原始失败计数为 1 个 `--- FAIL: TestRunnerLossCommentNamesCurrentRunLockHolder`，尾部为 `FAIL github.com/Xsxdot/handoff/internal/ledgerstep 5.534s`。
+- 2026-08-25：恢复正确实现后复跑定点 `go test ./internal/ledgerstep/ -run 'TestRunnerLossCommentNamesCurrentRunLockHolder' -count=1` 退出码 0；原始输出为 `ok  github.com/Xsxdot/handoff/internal/ledgerstep  0.089s`。
+- 2026-08-25：收尾并行校验中 `go build ./...` 退出码 0、原始输出为空；`go vet ./...` 退出码 0、原始输出为空；`gofmt -l .` 退出码 0、原始输出为空。
+- 2026-08-25：收尾验收测试 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/... -count=1` 单独重跑并完整结束，退出码 0；原始输出为 `ok github.com/Xsxdot/handoff/internal/ledger 16.556s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 7.212s`、`ok github.com/Xsxdot/handoff/internal/agentd 144.002s`、`ok github.com/Xsxdot/handoff/cmd 8.949s`。
+- 2026-08-25：同一验收测试首次与 build/vet/gofmt 并行启动时 30 秒窗口返回 `exit_code=undefined`，仅取得 `ok github.com/Xsxdot/handoff/internal/ledger 15.611s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 7.242s`；未据此下结论，随后按上一行单独重跑取得完整退出码 0。
+- 2026-08-25：首次完整 `go test ./...` 无过滤运行至结束但退出码 1；原始尾部为 `--- FAIL: TestMirrorDropsSubWhenMachineRemoved (3.54s)`、`machines_test.go:272: 机器消失的退订原因不正确`，日志实际 reason=`本轮取不到该机器的客户端`，随后 `FAIL github.com/Xsxdot/handoff/internal/ledgermirror 22.514s`；B239 触及包 `internal/ledgerstep` 原始输出为 `ok ... 28.823s`。未据此修改无关包。
+- 2026-08-25：针对首次失败用例复跑 `go test ./internal/ledgermirror -run 'TestMirrorDropsSubWhenMachineRemoved' -count=1` 退出码 0；原始输出为 `ok github.com/Xsxdot/handoff/internal/ledgermirror 0.111s`。
+- 2026-08-25：最终无过滤 `go test ./...` 第二次完整运行退出码 0；原始尾部为 `ok github.com/Xsxdot/handoff/internal/agentd 128.134s`、`ok github.com/Xsxdot/handoff/internal/buildinfo (cached)`、`ok github.com/Xsxdot/handoff/internal/client (cached)`、`ok github.com/Xsxdot/handoff/internal/config (cached)`、`ok github.com/Xsxdot/handoff/internal/discipline (cached)`、`ok github.com/Xsxdot/handoff/internal/envfile (cached)`、`ok github.com/Xsxdot/handoff/internal/executor (cached)`、`ok github.com/Xsxdot/handoff/internal/executor/claudecode (cached)`、`ok github.com/Xsxdot/handoff/internal/executor/codex (cached)`、`ok github.com/Xsxdot/handoff/internal/executor/fake (cached)`、`ok github.com/Xsxdot/handoff/internal/executor/grok (cached)`、`ok github.com/Xsxdot/handoff/internal/executor/opencode (cached)`、`ok github.com/Xsxdot/handoff/internal/executor/rawtap (cached)`、`ok github.com/Xsxdot/handoff/internal/executor/turn (cached)`、`ok github.com/Xsxdot/handoff/internal/initflow (cached)`、`ok github.com/Xsxdot/handoff/internal/launcher (cached)`、`ok github.com/Xsxdot/handoff/internal/ledger (cached)`、`ok github.com/Xsxdot/handoff/internal/ledgermirror 2.329s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep (cached)`、`ok github.com/Xsxdot/handoff/internal/localsync (cached)`、`ok github.com/Xsxdot/handoff/internal/logx (cached)`、`ok github.com/Xsxdot/handoff/internal/pathenv (cached)`、`ok github.com/Xsxdot/handoff/internal/permgate (cached)`、`ok github.com/Xsxdot/handoff/internal/prochost 3.140s`、`ok github.com/Xsxdot/handoff/internal/projectid (cached)`、`ok github.com/Xsxdot/handoff/internal/proto (cached)`、`ok github.com/Xsxdot/handoff/internal/ptyhost (cached)`、`ok github.com/Xsxdot/handoff/internal/ptyhost/engine (cached)`、`ok github.com/Xsxdot/handoff/internal/ptyhost/hostproc 0.027s`、`ok github.com/Xsxdot/handoff/internal/ptyhost/sessdir (cached)`、`ok github.com/Xsxdot/handoff/internal/ptyhost/wire (cached)`、`ok github.com/Xsxdot/handoff/internal/ptytestroot (cached)`、`ok github.com/Xsxdot/handoff/internal/relay (cached)`、`ok github.com/Xsxdot/handoff/internal/release (cached)`、`ok github.com/Xsxdot/handoff/internal/selfupdate (cached)`、`ok github.com/Xsxdot/handoff/internal/service (cached)`、`ok github.com/Xsxdot/handoff/internal/skill (cached)`、`ok github.com/Xsxdot/handoff/internal/store (cached)`、`ok github.com/Xsxdot/handoff/internal/targetclient (cached)`、`ok github.com/Xsxdot/handoff/internal/testperm (cached)`、`ok github.com/Xsxdot/handoff/internal/toolchain (cached)`、`ok github.com/Xsxdot/handoff/internal/upgrade (cached)`、`ok github.com/Xsxdot/handoff/internal/webui (cached)`。
+- 2026-08-25：提交前只读复核 `git diff --check` 退出码 0、原始输出为空；`git status --short --branch` 原始输出为 `## cards/B239-charter-10` 与三份改动文件；`git diff --stat` 原始输出为 `3 files changed, 123 insertions(+), 5 deletions(-)`；改动文件仅台账、`internal/ledgerstep/runner.go`、`internal/ledgerstep/runner_test.go`。
+- 2026-08-25：台账追加后再次执行 `git diff --check`，退出码 0、原始输出为空。
+- 2026-08-25：首次 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md internal/ledgerstep/runner.go internal/ledgerstep/runner_test.go` 失败，退出码 128；原始报错为 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/46056a89/index.lock': Read-only file system`，尚未产生暂存。
+- 2026-08-25：提权重试同一 `git add ...` 成功，退出码 0、原始输出为空；随后因本条台账事实追加，需再次暂存台账后提交。
+- 2026-08-25：暂存复核 `git status --short --branch && git diff --cached --check && git diff --cached --stat && git diff --cached --name-only` 分拆执行均退出码 0；分支为 `## cards/B239-charter-10`，三份文件 staged，cached diff check 为空，统计 `3 files changed, 127 insertions(+), 5 deletions(-)`。
+- 2026-08-25：提交 `git commit -m 'fix(b239): report current run lock holder'` 成功；原始输出为 `[cards/B239-charter-10 aa63d4cf] fix(b239): report current run lock holder`、`3 files changed, 128 insertions(+), 5 deletions(-)`，退出码 0；因本条事实随后执行 amend 收口。
+- 2026-08-25：为纳入上一条事实，提权 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md` 成功、原始输出为空；随后 `git commit --amend --no-edit` 成功，原始输出为 `[cards/B239-charter-10 a3ae15d6] fix(b239): report current run lock holder`、`3 files changed, 129 insertions(+), 5 deletions(-)`，退出码 0；因本条事实还需最后一次 amend。
+- 2026-08-25：本轮初始只读核对 `git status --short --branch && git log --oneline -8`；原始输出为 `## cards/B239-review-5`（无未提交行），HEAD=`6a737cec fix(b239): report current run lock holder`，未调用 handoff CLI、未启动 executor 或子任务。
+- 2026-08-25：按当前节点要求读取 `/root/.codex/skills/handoff/SKILL.md`；文件存在并可读，读取动作未调用 handoff CLI。尝试用计划中旧基线名执行 `git diff --stat claude/spec-issues-213-237-239-421d70..HEAD` 失败，退出码 128，原始报错为 `fatal: ambiguous argument 'claude/spec-issues-213-237-239-421d70..HEAD': unknown revision or path not in the working tree.`。
+- 2026-08-25：当前提交 `HEAD^..HEAD` 只改 `docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md`、`internal/ledgerstep/runner.go`、`internal/ledgerstep/runner_test.go`；`git diff HEAD^ HEAD --check` 退出码 0、无输出。复核源码确认 `TestRunnerLossCommentNamesCurrentRunLockHolder` 解码 `EvComment` 正文并同时断言出现 `holderB` 与不出现 `holderA`（`internal/ledgerstep/runner_test.go:610-620`）；`noteLost` 的 `RunLockOf` 错误/无行分支把原始错误或“运行锁行不存在”写入评论，未回落到 `r.RunHolder`（`internal/ledgerstep/runner.go:168-184`）。检索未发现读锁失败分支的专门测试。
+- 2026-08-25：定向复核命令 `go test ./internal/ledgerstep/ -run 'TestRunnerLossCommentNamesCurrentRunLockHolder' -count=1` 退出码 0；原始输出 `ok  github.com/Xsxdot/handoff/internal/ledgerstep  0.111s`。
+- 2026-08-25：并行静态门禁 `go build ./...` 退出码 0、原始输出为空；`go vet ./...` 退出码 0、原始输出为空；`gofmt -l .` 退出码 0、原始输出为空。
+- 2026-08-25：并行启动验收测试 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/... -count=1` 的 30 秒窗口未取得最终退出码（工具结果 `exit_code=undefined`）；截至窗口只收到 `ok github.com/Xsxdot/handoff/internal/ledger 15.735s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 7.875s`，agentd/cmd 与整体结果未验证，未据此下全绿结论。
+- 2026-08-25：单独重跑验收测试 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/... -count=1`，前四次等待无新增输出，最终退出码 0；原始输出为 `ok github.com/Xsxdot/handoff/internal/ledger 15.075s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 6.816s`、`ok github.com/Xsxdot/handoff/internal/agentd 128.244s`、`ok github.com/Xsxdot/handoff/cmd 8.842s`。
+- 2026-08-25：首次尝试用过时的台账尾行上下文追加本轮测试事实，`apply_patch` 失败，原始报错为 `Failed to find expected lines`；未产生文件改动。
+- 2026-08-25：为补齐读锁失败的可观测回归，在 `internal/ledgerstep/runner_test.go` 增加 `TestRunnerLossCommentReportsRunLockReadError`：删除临时 SQLite 的 `card_run_locks` 表，捕获 `RunLockOf` 原始错误，触发失权写闸后断言 `EvComment.body` 包含该错误且不包含本轮 holder；执行 `gofmt -w internal/ledgerstep/runner_test.go && go test ./internal/ledgerstep/ -run 'TestRunnerLossCommentNamesCurrentRunLockHolder|TestRunnerLossCommentReportsRunLockReadError' -count=1` 退出码 0，原始输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep  0.195s`。
+- 2026-08-25：新增读锁失败回归后的静态复核并行执行 `go build ./...`、`go vet ./...`、`gofmt -l .`；三条命令均退出码 0、原始输出均为空。
+- 2026-08-25：新增读锁失败回归后的验收测试 `go test ./internal/ledger/... ./internal/ledgerstep/... ./internal/agentd/... ./cmd/... -count=1` 单独执行，前两次等待无新增输出，最终退出码 0；原始输出为 `ok github.com/Xsxdot/handoff/internal/ledger 15.379s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 7.443s`、`ok github.com/Xsxdot/handoff/internal/agentd 125.731s`、`ok github.com/Xsxdot/handoff/cmd 9.448s`。
+- 2026-08-25：`git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md internal/ledgerstep/runner_test.go` 提权执行成功，随后暂存复核 `git status --short --branch && git diff --cached --check && git diff --cached --stat && git diff --cached --name-only` 退出码 0；原始输出为分支 `## cards/B239-review-5`、两份文件 staged、cached diff check 无输出，统计 `2 files changed, 78 insertions(+)`，文件名仅台账与 `internal/ledgerstep/runner_test.go`。
+- 2026-08-25：提交 `git commit -m 'test(b239): cover run lock holder read failures'` 成功，原始输出 `[cards/B239-review-5 40127adf] test(b239): cover run lock holder read failures`、`2 files changed, 79 insertions(+)`，退出码 0；因本条事实追加进台账，需 amend 纳入最终提交。
+- 2026-08-25：`git add` 后 `git commit --amend --no-edit` 成功，原始输出 `[cards/B239-review-5 6066800c] test(b239): cover run lock holder read failures`、`2 files changed, 80 insertions(+)`，退出码 0。随后只读收口 `git status --short --branch && git log -1 --oneline --decorate && git show --stat --oneline --summary HEAD && git diff HEAD^ --check && git diff HEAD^ --name-only` 退出码 0；工作树无未提交行，HEAD=`6066800c`，差异 check 无输出，提交文件仅台账与 `internal/ledgerstep/runner_test.go`。
+- 2026-08-25：本轮现场核对 `pwd && git branch --show-current && git status --short`；原始输出路径 `/root/.handoff/worktrees/afd572c1`、当前分支 `cards/B239-charter-11`、状态无未提交行；指定对账对象为 `cards/B239-charter-10`，两者不一致，尚未执行分支范围对账。
+- 2026-08-25：协调者确认本轮改在 `cards/B239-charter-11`，且对账范围为 `git diff main...HEAD`；实跑 `git rev-parse main HEAD` 得 `7adeb8f93df0f85a8bcb12e3fae4db027d63b1fb` 与 `6a737cec7fa8c11ed730de14020624e9e013724d`，共同祖先为 `7adeb8f93df0f85a8bcb12e3fae4db027d63b1fb`；`git diff --numstat main...HEAD` 汇总 `files=261 added=132188 deleted=87283`。
+- 2026-08-25：读取 `codegraph/diffs/cards-B239-charter.json` 与 `codegraph/target.json`；视图 diff 的 `base=84af7380`、`nodesAdded` 为 `RunLock` 加五个 `Store` 运行锁方法、`nodesModified` 为 `StepRunner`；target 实际条目为 `d_cli→d_ledger` 的 `entries=["ledger.Store"]`、`legacyBudget=1`（另有既存 `d_gateway→d_ledger` 的 `ledger.Store` 与 `ledgerstep.StepRunner`），未见字面量 `d_cmd`。
+- 2026-08-25：按扫描配方对 B239 基线到 HEAD 的生产导出声明复扫；新增 `RunLock`、五个 `Store` 运行锁方法、`ErrWriteGateClosed`，修改 `Store.ClaimCard` 签名，删除 `Store.ClaimDriver`；新增导出字段 `TemplateDispatch.WriteGate`、`NodeStep.WriteGate`、`StepRunner.RunHolder`、`StepRunner.RenewBeat`，新增导出常量 `RunLockTTL`/`RunLockRenewInterval`。现有视图只记录 `RunLock`、五个运行锁方法和 `StepRunner.RunHolder`，未记录其余改动项。
+- 2026-08-25：`git diff --unified=5 84af7380...HEAD -- codegraph/target.json` 原始结果仅新增 `d_gateway→d_ledger` 的 `entries` 项 `ledger.Store`，`legacyBudget` 仍为 14；B239 基线已有 `d_cli→d_ledger` 的 `ledger.Store` 且预算 1。生产新增跨域读取调用在 `internal/agentd/ledgerapi.go:184` 的 `s.ledger.AllRunLocks()`，方向与新增 `d_gateway→d_ledger` 条目相符，预算未增加。
+- 2026-08-25：实跑 `go run . graph validate --repo .` 退出码 0；原始 JSON 为 `containers=239, domainDecls=2, domains=20, edgeIssues=null, edges=4740, entitiesWithoutLifecycle=0, issues=null, nodes=3655, unscannedEntries=6, views=[cards-B192-charter,cards-B205-charter,cards-B239-charter]`，随后日志输出 relay/proxy 配置信息。
+- 2026-08-25：实跑 3 次 `go run . graph sym <symbol> --repo . --view cards-B239-charter` 均退出码 0；`RunLock` 命中 `m_ledger_RunLock`、`Store.AcquireRunLock` 命中 `n_ledger_Store_AcquireRunLock`、`StepRunner` 命中 `m_ledgerstep_StepRunner`，三者分别标记 `added`、`added`、`modified`；工具对运行锁方法报告 anchor=`moved`，其余 anchor=`ok`。
+- 2026-08-25：实跑 `go run . graph check --repo . --view cards-B239-charter` 退出码 0；原始关键结果 `fails=[]`、`warns` 共 103 条、`legacyHits` 含 `d_cli→d_ledger:1`、`bestCoverage.crossDomainEdges=995`；warnings 为既有领域锚/容器归属、legacy 预算与包拆分提示，未出现 B239 专属 fail。
+- 2026-08-25：读取当前生产源码与图基线/视图；`internal/agentd/ledgerapi.go:184` 的 `Server.handleCardsList→Store.AllRunLocks` 是新增跨域调用，但视图没有 `edgesAdded`；基线已有 caller `n_agentd_Server_handleCardsList`，新增 callee 为 `n_ledger_Store_AllRunLocks`，该边因此未被记录。
+- 2026-08-25：当前 `internal/ledger/runlock.go` 声明行为实际行号为 `RunLock=19`、`AcquireRunLock=39`、`RenewRunLock=106`、`ReleaseRunLock=129`、`RunLockOf=145`、`AllRunLocks=162`，视图仍记为 15/26/32/38/44/49；`graph sym` 以 `anchor=moved` 命中，但行号元数据未随实现更新。
+- 2026-08-25：视图 JSON 的 `lifecycleAdded`、`edgesAdded`、`nodesDeleted` 均为缺省；基线存在 `n_ledger_Store_ClaimDriver`，而 B239 代码已删除该导出方法；`Store.ClaimCard` 旧签名为 `func (s *Store) ClaimCard(id, to, expect, session string) error`、当前为 `func (s *Store) ClaimCard(id, owner string) error`，视图未提供 `nodesModified`/`signatureOld`；新持久化 `RunLock` 由 `AcquireRunLock` 返回且 `RenewRunLock` 写入租期字段，但视图未声明 `modelKind`/生命周期关系。
+- 2026-08-25：收口复核 `git diff --check && git status --short --branch && git diff --name-only && git diff --stat` 退出码 0；原始输出分支 `## cards/B239-charter-11`，唯一改动为本台账，统计 `1 file changed, 11 insertions(+)`，业务代码与 `codegraph/` 均未改动。
+- 2026-08-25：首次 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md && git commit -m 'chore(b239): record codegraph reconciliation'` 失败，退出码 128；原始报错 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/afd572c1/index.lock': Read-only file system`，尚未产生暂存或提交。
+- 2026-08-25：提权重试同一 `git add ... && git commit ...` 成功；原始输出 `[cards/B239-charter-11 ac6b318f] chore(b239): record codegraph reconciliation`、`1 file changed, 13 insertions(+)`，退出码 0；本条事实需再 amend 纳入台账。
+- 2026-08-25：提权 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md && git commit --amend --no-edit` 成功；原始输出 `[cards/B239-charter-11 a0070c56] chore(b239): record codegraph reconciliation`、`1 file changed, 14 insertions(+)`，本条事实需随最终收口再次 amend。
+- 2026-08-25：当前分支源码与 `84af7380...HEAD` 差异复核确认，`TemplateDispatch.WriteGate`、`NodeStep.WriteGate`、`StepRunner.RenewBeat` 均为本分支新增字段；三者对应模型节点需在增量视图中完整记录。
+- 2026-08-25：当前 `internal/ledger/runlock.go` 真实声明行复核为 `RunLock=19`、`AcquireRunLock=39`、`RenewRunLock=106`、`ReleaseRunLock=129`、`RunLockOf=145`、`AllRunLocks=162`；当前 `Store.ClaimCard` 声明为 `internal/ledger/move.go:143`。
+- 2026-08-25：基线节点复核确认 `ClaimCard`、`ClaimDriver` 与 `TemplateDispatch`、`NodeStep`、`StepRunner` 均存在于 `codegraph/baseline.json`；新增运行锁方法节点及 `RunLock` 模型已在视图，待补边、删除、改签名、生命周期及字段/行号修订。
+- 2026-08-25：视图补齐后 `jq empty codegraph/diffs/cards-B239-charter.json` 退出码 0；`git diff --check` 退出码 0；当前改动文件仅 `codegraph/diffs/cards-B239-charter.json` 与本台账。
+- 2026-08-25：实跑 `go run . graph validate --repo .` 退出码 0；原始 JSON 为 `containers=239, domainDecls=2, domains=20, edgeIssues=null, edges=4740, entitiesWithoutLifecycle=0, issues=null, nodes=3655, unscannedEntries=6, views=[cards-B192-charter,cards-B205-charter,cards-B239-charter]`。
+- 2026-08-25：实跑 `go run . graph sym RunLock --repo . --view cards-B239-charter` 退出码 0；命中 `m_ledger_RunLock`，`anchor=ok`、`line=19`、`modelKind=entity`、`status=added`。
+- 2026-08-25：实跑 `go run . graph sym Store.AllRunLocks --repo . --view cards-B239-charter` 退出码 0；命中 `n_ledger_Store_AllRunLocks`，`anchor=ok`、`line=162`、`status=added`。
+- 2026-08-25：实跑 `go run . graph sym Store.ClaimCard --repo . --view cards-B239-charter` 退出码 0；命中 `n_ledger_Store_ClaimCard`，`anchor=ok`、新签名为两参且带 `signatureOld`、`status=modified`。
+- 2026-08-25：实跑 `go run . graph check --repo . --view cards-B239-charter` 退出码 0；原始 JSON `fails=[]`，存在既有领域锚、容器归属、legacy 与包规模 warnings，未出现 B239 专属 fail。
+- 2026-08-25：首次 `git add codegraph/diffs/cards-B239-charter.json docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md` 失败，退出码 128；原始报错为 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/2ba1cbae/index.lock': Read-only file system`，尚未产生暂存。
+- 2026-08-25：提权重试同一 `git add ...` 成功，退出码 0；`git status --short --branch` 显示仅视图与台账 staged，`git diff --cached --check` 无输出，暂存统计为 `2 files changed, 107 insertions(+), 12 deletions(-)`。
+- 2026-08-25：追加台账后再次复核暂存集；`git diff --cached --check` 无输出，分支为 `cards/B239-charter-12`，暂存文件仍仅 `codegraph/diffs/cards-B239-charter.json` 与本台账，统计为 `2 files changed, 108 insertions(+), 12 deletions(-)`。
+- 2026-08-25：提交 `git commit -m 'chore(b239): complete codegraph reconciliation'` 成功；原始输出 `[cards/B239-charter-12 b575a09d] chore(b239): complete codegraph reconciliation`、`2 files changed, 109 insertions(+), 12 deletions(-)`，退出码 0；本条事实需 amend 纳入最终提交。
+- 2026-08-25：提权执行 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md && git commit --amend --no-edit` 成功；原始输出 `[cards/B239-charter-12 2d972e4f] chore(b239): complete codegraph reconciliation`、`2 files changed, 110 insertions(+), 12 deletions(-)`，退出码 0。
+- 2026-08-25：最终复核 `git status --short --branch` 无未提交行、HEAD=`4ddf1815`；`git show --stat` 显示提交仅含视图与本台账（`2 files changed, 111 insertions(+), 12 deletions(-)`），`git diff HEAD^ --check` 无输出，提交文件名仅 `codegraph/diffs/cards-B239-charter.json` 与本台账。
+- 2026-08-25：为纳入最终复核事实执行 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md && git commit --amend --no-edit` 成功；原始输出 `[cards/B239-charter-12 66ecb68d] chore(b239): complete codegraph reconciliation`、`2 files changed, 112 insertions(+), 12 deletions(-)`，退出码 0。
+- 2026-08-25：最终只读复核 `git status --short --branch && git log -1 --oneline --decorate && git show --stat --oneline --summary HEAD && git diff HEAD^ --check && git diff HEAD^ --name-only`；原始输出工作树无未提交行、HEAD=`844b8dde`，提交仅含 `codegraph/diffs/cards-B239-charter.json` 与本台账（`2 files changed, 113 insertions(+), 12 deletions(-)`），差异 check 无输出。
+- 2026-08-25：本轮启动现场核对 `pwd; git branch --show-current; git status --short; rg --files ...`；原始输出工作树 `/root/.handoff/worktrees/f438d44e`、分支 `cards/B239-charter-13`、状态无未提交行；仓库存在 `codegraph/`，本轮台账为 `docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md`。
+- 2026-08-25：首次用对象字段读取 baseline 边时命令失败；原始报错 `jq: error (at codegraph/baseline.json:96330): Cannot index array with string "from"`，随后确认 baseline 的 `edges` 是二元数组。
+- 2026-08-25：视图/基线结构核对 `git log...; jq...`；原始输出 HEAD=`1eaf9f49`、分支 `cards/B239-charter-13`，视图 base=`84af7380`、nodesAdded=6、nodesDeleted=1、edgesAdded=1、edgesDeleted=0；baseline 为 3655 节点/4740 边；baseline 已有 `n_ledgerstep_StepRunner_Run -> n_ledgerstep_StepRunner_dispatchNode` 与 `-> n_ledger_Store_AttachFile`，并确认 `n_cmdledgerSession` 存在。
+- 2026-08-25：源码定位 `rg/nl` 实跑确认新增函数：`haltEntrypoint` 在 `runner.go:252`，`dispatchNodeWithGate` 在 `runner.go:310`，`NodeStep.gatedWrite` 在 `node.go:74`；`Run` 调用 Acquire/Release/Claim/RunLockOf/AddComment/Renew，且生产 dispatch 闭包调用 `dispatchNodeWithGate`；`haltEntrypoint` 调用 AddComment/MarkNeedsHuman；`NodeStep.gatedWrite` 调用点实际归属 `haltForHuman`、`routeTo`、`RunOnce`（RunOnce 内三次），`ledgerSession` 当前生产源码无命中。
+- 2026-08-25：baseline 方法节点核对确认已有 `NodeStep.RunOnce`、`NodeStep.haltForHuman`、`NodeStep.routeTo`，以及 `StepRunner.Run`、`StepRunner.dispatchNode`；旧行号分别为 109/70/86 与 56/146，当前源码行号已漂移，需以当前锚点补新视图。
+- 2026-08-25：完整读取 `docs/codegraph-scan-recipe.md`；本轮遵守其增量只写 `codegraph/diffs/<view>.json`、不得改 baseline/target/best，边需按 receiver/import 解析，生命周期 creator/writer 需有真实返回/状态写入证据。
+- 2026-08-25：基线调用节点核对确认 `n_ledger_Store_AddComment`、`n_ledger_Store_MarkNeedsHuman`、`n_ledgerstep_NodeStep_RunOnce`、`n_ledgerstep_NodeStep_haltForHuman`、`n_ledgerstep_NodeStep_routeTo` 均存在；视图已有运行锁方法节点可作为新增边 callee，边格式为二元数组。
+- 2026-08-25：首次补视图大补丁未应用；原始工具报错 `apply_patch verification failed: Failed to find expected lines`，原因是当前 JSON 使用紧凑数组格式而补丁锚点按展开格式书写，未产生视图改动。
+- 2026-08-25：补丁初次应用后 `jq` 实跑显示 3 个新增函数误落 `nodesModified`（nodesAdded 仍为 6）；已定位 JSON 层级并用 `apply_patch` 移入 `nodesAdded`，无业务代码改动。
+- 2026-08-25：视图 JSON 修正后 `jq empty` 通过；原始计数为 nodesAdded=9、nodesModified=4、nodesDeleted=2、edgesAdded=14、edgesDeleted=1，新增节点含 `haltEntrypoint`、`dispatchNodeWithGate`、`gatedWrite`，删除节点含 `ClaimDriver`、`cmdledgerSession`。
+- 2026-08-25：实跑 `go run . graph validate --repo .` 退出码 0；原始输出 JSON 为 `containers=239, domainDecls=2, domains=20, edgeIssues=null, edges=4740, entitiesWithoutLifecycle=0, issues=null, nodes=3655, unscannedEntries=6, views=[cards-B192-charter,cards-B205-charter,cards-B239-charter]`，另有 relay/proxy INFO 日志。
+- 2026-08-25：实跑 `go run . graph check --repo . --view cards-B239-charter` 退出码 0；原始输出核心结果 `fails=[]`，仅有既有 anchor-off-domain/anchor-off-graph、container-misplaced、legacy、oversized-package 与 prefix-family warnings。
+- 2026-08-25：并行实跑三项新增符号抽查均退出码 0：`go run . graph sym StepRunner.haltEntrypoint --repo . --view cards-B239-charter` 命中 `n_ledgerstep_StepRunner_haltEntrypoint`、anchor=ok、line=252；`... StepRunner.dispatchNodeWithGate ...` 命中对应节点、anchor=ok、line=310；`... NodeStep.gatedWrite ...` 命中对应节点、anchor=ok、line=74；三者 status=added。
+- 2026-08-25：收口前只读复核 `git diff --check; git status --short --branch; git diff --name-only; git diff --stat; jq...`；原始输出分支 `cards/B239-charter-13`，差异检查无输出，唯一改动文件为视图与本台账，统计 `2 files changed, 76 insertions(+), 2 deletions(-)`；视图 base=`84af7380`、nodesAdded=9、nodesModified=4、nodesDeleted=2、edgesAdded=14、edgesDeleted=1、lifecycleAdded=2。
+- 2026-08-25：只读审阅 `git diff -- codegraph/diffs/cards-B239-charter.json`；差异仅包含本轮 3 个函数节点、`n_cmdledgerSession` 删除、14 条新增边与 1 条删除边，未触及 baseline/target/best 或业务源码。
+- 2026-08-25：首次执行 `git add codegraph/diffs/cards-B239-charter.json docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md` 失败，退出码 128；原始报错 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/f438d44e/index.lock': Read-only file system`，未产生暂存。
+- 2026-08-25：提权重试同一 `git add ...` 成功，退出码 0；视图与台账已进入暂存区，本条事实需随最终提交一并纳入。
+- 2026-08-25：暂存集复核 `git diff --cached --check; git status --short --branch; git diff --cached --name-only; git diff --cached --stat`；原始输出差异检查无输出，分支 `cards/B239-charter-13`，仅暂存视图与台账，统计 `2 files changed, 80 insertions(+), 2 deletions(-)`。
+- 2026-08-25：提交 `git commit -m 'chore(b239): complete codegraph reconciliation'` 成功，退出码 0；原始输出 `[cards/B239-charter-13 1d20ff14] chore(b239): complete codegraph reconciliation`、`2 files changed, 81 insertions(+), 2 deletions(-)`；本条事实需 amend 纳入最终提交。
+- 2026-08-25：提权执行 `git add docs/superpowers/ledgers/2026-08-25-b239-contract-ledger.md && git commit --amend --no-edit` 成功，退出码 0；原始输出 `[cards/B239-charter-13 c78d9b38] chore(b239): complete codegraph reconciliation`、`2 files changed, 82 insertions(+), 2 deletions(-)`；本条事实需再纳入最终提交。
+- 2026-08-25：最终只读复核 `git status --short --branch; git log -1 --oneline --decorate; git show --stat --oneline --summary HEAD; git diff HEAD^ --check; git diff HEAD^ --name-only; jq...`；原始输出工作树无未提交行、HEAD=`1ce73138`，提交仅含 `codegraph/diffs/cards-B239-charter.json` 与本台账，差异检查无输出，视图计数仍为 nodesAdded=9、nodesModified=4、nodesDeleted=2、edgesAdded=14、edgesDeleted=1、lifecycleAdded=2。
+- 2026-08-25：最终提交后的 `git status --short --branch` 退出码 0；原始输出仅 `## cards/B239-charter-13`，工作树干净；本条随最终 amend 纳入。

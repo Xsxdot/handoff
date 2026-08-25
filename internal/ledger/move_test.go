@@ -69,37 +69,82 @@ func TestMoveGateAcceptance(t *testing.T) {
 	}
 }
 
-// 认领必须原子：转状态与落驱动同事务。分两步写时并发输家会读到
-// 「进行中但驱动为空」的中间态，报不出认领者是谁（判据⑥要会话名），
-// 进程在窗口内崩掉还会留下没人驱动的「进行中」卡。
-func TestClaimCardIsAtomic(t *testing.T) {
+// TestClaimCardOwnershipSemantics 归属锁全集（b239-contract.md §3 断言 1–7）。
+// 归属是人尺度：不随时间流逝转移（8-23 decision #1）、不改状态列、幂等重入。
+func TestClaimCardOwnershipSemantics(t *testing.T) {
 	s := seedStore(t)
-	c, _ := s.CreateCard(NewCard{Title: "认领", Project: "p", Workflow: "bug", Actor: "test"})
+	c, _ := s.CreateCard(NewCard{Title: "归属", Project: "p", Workflow: "bug", Actor: "t"})
+	before, _ := s.GetCard(c.ID)
 
-	if err := s.ClaimCard(c.ID, StatusDoing, StatusTodo, "sess-A#1"); err != nil {
+	if err := s.ClaimCard("B99999", "cli:a@h"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在卡应 ErrNotFound: %v", err)
+	}
+	if err := s.ClaimCard(c.ID, ""); err == nil {
+		t.Fatalf("空 owner 应被拒")
+	}
+	if err := s.ClaimCard(c.ID, "cli:a@h"); err != nil {
 		t.Fatalf("首次认领: %v", err)
 	}
 	got, _ := s.GetCard(c.ID)
-	if got.Status != StatusDoing || got.DriverSession != "sess-A#1" {
-		t.Fatalf("状态与驱动必须同时落定: status=%q driver=%q", got.Status, got.DriverSession)
+	if got.Status != before.Status {
+		t.Fatalf("认领不得改状态列: before=%q after=%q", before.Status, got.Status)
 	}
-	if got.DriverHeartbeatAt.IsZero() {
-		t.Fatal("认领未落心跳时间")
+	if got.DriverSession != "cli:a@h" || got.DriverHeartbeatAt.IsZero() {
+		t.Fatalf("认领应写归属与认领时刻: %+v", got)
+	}
+	events, _ := s.EventsFromAsc([]string{c.ID}, 0, 100)
+	for _, e := range events {
+		if e.Type == EvDriverTakeover || e.Type == EvStatusMoved {
+			t.Fatalf("认领不得落事件: %+v", e)
+		}
 	}
 
-	old := time.Now().Add(-24 * time.Hour)
+	old := time.Now().Add(-30 * 24 * time.Hour)
 	if _, err := s.db.Exec(s.q(`UPDATE cards SET driver_heartbeat_at = ? WHERE id = ?`),
 		s.tval(old), c.ID); err != nil {
 		t.Fatalf("做旧认领时刻: %v", err)
 	}
-	// 第二个会话：即使认领时刻很早，也必须拒绝并报出持有者
-	err := s.ClaimCard(c.ID, StatusDoing, StatusTodo, "sess-B#2")
-	if !errors.Is(err, ErrCASConflict) || !strings.Contains(err.Error(), "sess-A#1") {
-		t.Fatalf("旧认领时刻仍须点名原驱动并拒绝: %v", err)
+	err := s.ClaimCard(c.ID, "cli:b@h")
+	if !errors.Is(err, ErrCASConflict) || !strings.Contains(err.Error(), "cli:a@h") {
+		t.Fatalf("他主持有应拒且点名持有者: %v", err)
 	}
+	if err := s.ClaimCard(c.ID, "cli:a@h"); err != nil {
+		t.Fatalf("同 owner 重入应幂等: %v", err)
+	}
+	_ = s.MoveCard(c.ID, StatusDone, "", "t")
+	if err := s.ClaimCard(c.ID, "cli:c@h"); !errors.Is(err, ErrBadState) {
+		t.Fatalf("终态卡认领应 ErrBadState: %v", err)
+	}
+}
 
-	// 同一会话重入不算冲突（重试安全）
-	if err := s.ClaimCard(c.ID, StatusReview, StatusDoing, "sess-A#1"); err != nil {
-		t.Fatalf("同会话推进不应被自己的驱动挡住: %v", err)
+// TestReleaseCardOwnershipSemantics 归属释放反转（断言 8–11）。
+// 今天非持有者释放是静默 no-op + CLI 假成功——这是本卡核心行为反转点。
+func TestReleaseCardOwnershipSemantics(t *testing.T) {
+	s := seedStore(t)
+	if err := s.ReleaseCard("B99999", "cli:x@h"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("不存在卡应 ErrNotFound: %v", err)
+	}
+	c, _ := s.CreateCard(NewCard{Title: "释放", Project: "p", Workflow: "bug", Actor: "t"})
+	if err := s.ReleaseCard(c.ID, "cli:a@h"); err != nil {
+		t.Fatalf("无主卡释放应幂等成功: %v", err)
+	}
+	if err := s.ClaimCard(c.ID, "cli:a@h"); err != nil {
+		t.Fatalf("认领: %v", err)
+	}
+	if err := s.ReleaseCard(c.ID, "cli:a@h"); err != nil {
+		t.Fatalf("本人释放: %v", err)
+	}
+	got, _ := s.GetCard(c.ID)
+	if got.DriverSession != "" || !got.DriverHeartbeatAt.IsZero() {
+		t.Fatalf("本人释放应清空两个字段: %+v", got)
+	}
+	_ = s.ClaimCard(c.ID, "cli:a@h")
+	err := s.ReleaseCard(c.ID, "cli:b@h")
+	if !errors.Is(err, ErrCASConflict) || !strings.Contains(err.Error(), "cli:a@h") {
+		t.Fatalf("非持有者释放应可见失败并点名持有者: %v", err)
+	}
+	after, _ := s.GetCard(c.ID)
+	if after.DriverSession != "cli:a@h" {
+		t.Fatalf("失败的释放不得动归属: %q", after.DriverSession)
 	}
 }

@@ -137,66 +137,76 @@ func (s *Store) pendingChildrenTx(tx *sql.Tx, id string) ([]string, error) {
 	return pending, rows.Err()
 }
 
-// ClaimCard 原子认领：把「CAS 转入 to」与「落驱动 session」并进同一个
-// 事务。派发即认领用它——分两次写会留出「进行中但驱动为空」的窗口，
-// 并发输家恰好读到那个瞬间就报不出认领者是谁（判据⑥要求报出会话名），
-// 进程若在窗口内崩掉还会留下一张没人驱动的「进行中」卡。
-// 冲突返回 ErrCASConflict，卡上已有别家驱动同样拒。
-func (s *Store) ClaimCard(id, to, expect, session string) error {
-	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+// ClaimCard 认领卡的归属锁（人尺度）。归属判定与归属写入在同一事务完成，
+// 不改变状态列、不落认领事件；冲突返回 ErrCASConflict，归属不因时间流逝转移。
+// 同一 owner 重入幂等成功。
+func (s *Store) ClaimCard(id, owner string) error {
+	log().Info("开始认领归属", "card", id, "owner", owner)
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		if owner == "" {
+			log().Warn("认领被拒：owner 为空", "card", id)
+			return fmt.Errorf("认领被拒：owner 为空")
+		}
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
 			return fmt.Errorf("认领: 卡 %s: %w", id, err)
 		}
-		if card.DriverSession != "" && card.DriverSession != session {
-			log().Warn("认领被拒：卡已有驱动", "card", id, "holder", card.DriverSession, "claimer", session)
-			return fmt.Errorf("卡 %s 已被 %s 认领: %w", id, card.DriverSession, ErrCASConflict)
+		if card.Status == StatusDone || card.Status == StatusClosed {
+			log().Warn("认领被拒：终态卡", "card", id, "status", card.Status)
+			return fmt.Errorf("卡 %s 已处于终态 %s: %w", id, card.Status, ErrBadState)
 		}
-		if err := s.moveCardTx(tx, sink, id, to, expect, session); err != nil {
-			return err
+		if card.DriverSession != "" && card.DriverSession != owner {
+			log().Warn("认领被拒：他主持有", "card", id,
+				"holder", card.DriverSession, "claimer", owner)
+			return fmt.Errorf("卡 %s 已由 %s 认领: %w", id, card.DriverSession, ErrCASConflict)
 		}
 		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_heartbeat_at = ? WHERE id = ?`),
-			session, s.tval(time.Now()), id); err != nil {
-			return fmt.Errorf("认领写驱动: %w", err)
+			owner, s.tval(time.Now()), id); err != nil {
+			return fmt.Errorf("认领写归属: %w", err)
 		}
-		log().Info("卡已认领", "card", id, "to", to, "session", session)
 		return nil
 	})
+	if err != nil {
+		log().Warn("认领归属失败", "card", id, "owner", owner, "cause", err)
+		return err
+	}
+	log().Info("归属已认领", "card", id, "owner", owner)
+	return nil
 }
 
 // ReleaseCard 释放驱动归属（幂等；只动自己持有的那份）。
 //
 // 参数：id 卡号；session 驱动持有者标识，与 ClaimCard 传的同一个。
-// 非持有者调用是无操作而不是报错——回滚路径不该因为竞态再抛一次错。
-//
-// why 需要它：派发失败时回滚只退状态会把卡留在「待办但有主」。驱动身份
-// 带 pid，同一个人换个进程重试会被自己的旧归属挡住（2026-08-19 真机踩到：
-// 远端缺分支导致派发 400，重试即撞）。显式释放保证回滚能清掉这份归属。
+// 非持有者调用返回 ErrCASConflict 并保留归属；无主卡释放仍是幂等成功。
 func (s *Store) ReleaseCard(id, session string) error {
-	log().Info("开始释放驱动", "card", id, "session", session)
+	log().Info("开始释放归属", "card", id, "session", session)
 	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
-		result, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_heartbeat_at = ?
-			WHERE id = ? AND driver_session = ?`), s.tval(time.Time{}), id, session)
+		card, err := getCardTx(s, tx, id)
 		if err != nil {
-			return fmt.Errorf("释放驱动归属: %w", err)
+			return fmt.Errorf("释放: 卡 %s: %w", id, err)
 		}
-		n, err := result.RowsAffected()
-		if err != nil {
-			log().Warn("读取释放驱动影响行数失败", "card", id, "session", session, "cause", err)
+		switch {
+		case card.DriverSession == "":
+			log().Info("释放无操作：卡无主", "card", id)
 			return nil
-		}
-		if n == 0 {
-			log().Info("释放驱动无操作", "card", id, "session", session)
+		case card.DriverSession == session:
+			if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_heartbeat_at = ?
+				WHERE id = ?`), s.tval(time.Time{}), id); err != nil {
+				return fmt.Errorf("释放归属: %w", err)
+			}
+			log().Info("归属已释放", "card", id, "session", session)
 			return nil
+		default:
+			log().Warn("释放被拒：非持有者", "card", id,
+				"holder", card.DriverSession, "caller", session)
+			return fmt.Errorf("卡 %s 由 %s 持有：%s 无权释放: %w",
+				id, card.DriverSession, session, ErrCASConflict)
 		}
-		log().Info("驱动归属已释放", "card", id, "session", session)
-		return nil
 	})
 	if err != nil {
-		log().Warn("释放驱动失败", "card", id, "session", session, "cause", err)
+		log().Warn("释放归属失败", "card", id, "session", session, "cause", err)
 		return err
 	}
-	log().Info("释放驱动处理完成", "card", id, "session", session)
 	return nil
 }
 

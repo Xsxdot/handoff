@@ -1,6 +1,6 @@
 // card dispatch：按模板拼装 prompt，带上纪律块**角色名**（正文由 agentd 注入），
 // 走既有 dispatch 通道；
-// 派发即认领（CAS 进「进行中」就是 claim，第二个会话干净失败）；
+// 派发即认领归属（不动状态列；运行互斥归账本运行锁）；
 // task 回链 + 模板版本/纪律角色名快照落事件。
 package cmd
 
@@ -205,19 +205,11 @@ var cardDispatchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if card.Status == ledger.StatusDoing {
-			return fmt.Errorf("卡 %s 已被认领（驱动 %s）", id, card.DriverSession)
+		if card.DriverSession != "" && card.DriverSession != actor {
+			return fmt.Errorf("卡 %s 已由 %s 认领: %w", id, card.DriverSession, ledger.ErrCASConflict)
 		}
-		// 原子认领：转状态与落驱动同事务。分两步写会留出「进行中但驱动
-		// 为空」的窗口，并发输家读到它就报不出认领者是谁（判据⑥要会话名）
-		if err := st.ClaimCard(id, ledger.StatusDoing, card.Status, ledgerSession()); err != nil {
-			// 报文只出一次：库层在「读到时已有驱动」时自带会话名，CAS 竞态
-			// 里则没有，这里补读一次；两条路径都只包哨兵不包文案，避免套娃
-			if current, getErr := st.GetCard(id); getErr == nil && current.DriverSession != "" &&
-				current.DriverSession != ledgerSession() {
-				return fmt.Errorf("卡 %s 已被 %s 认领: %w", id, current.DriverSession, ledger.ErrCASConflict)
-			}
-			return fmt.Errorf("认领失败（可能被并发抢先）: %w", err)
+		if err := st.ClaimCard(id, actor); err != nil {
+			return fmt.Errorf("认领失败: %w", err)
 		}
 		ctx := cmd.Context()
 		if ctx == nil {
@@ -234,10 +226,9 @@ var cardDispatchCmd = &cobra.Command{
 			Extra:              cardDispatchExtra,
 		})
 		if err != nil {
-			// 回滚要连租约一起退：只退状态会把卡留在「待办但有主」，
-			// 驱动身份带 pid，本人换个进程重试都会被自己挡住（见 ReleaseCard）
-			_ = st.MoveCard(id, card.Status, ledger.StatusDoing, actor)
-			_ = st.ReleaseCard(id, ledgerSession())
+			// 回滚只退归属；没有状态转移需要回退，归属不带 pid，
+			// 同一人换个进程也能自己清掉。
+			_ = st.ReleaseCard(id, actor)
 			return err
 		}
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
