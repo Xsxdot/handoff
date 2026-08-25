@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -37,6 +38,20 @@ func swapStartServe(fn startServeFn) func() {
 	old := startServe
 	startServe = fn
 	return func() { startServe = old }
+}
+
+// TestManagedTaskTmpEnv keeps cold-restart environment construction aligned with
+// the executor TaskTmpDir contract before the restart seam is exercised.
+func TestManagedTaskTmpEnv(t *testing.T) {
+	tmpDir, env := managedTaskTmpEnv(filepath.Join("/data", "tasks", "0123456789"), "0123456789")
+	wantDir := filepath.Join("/data", "tmp", "01234567")
+	wantEnv := []string{"TMPDIR=" + wantDir, "GOTMPDIR=" + wantDir, "GOCACHE=" + filepath.Join(wantDir, "gocache")}
+	if tmpDir != wantDir {
+		t.Fatalf("managed tmp dir = %q, want %q", tmpDir, wantDir)
+	}
+	if strings.Join(env, "\x00") != strings.Join(wantEnv, "\x00") {
+		t.Fatalf("managed tmp env = %v, want %v", env, wantEnv)
+	}
 }
 
 // TestResumeColdDisallowedStaysDead Cold=false 时进程已死即判不可恢复（启动恢复语义不变）。

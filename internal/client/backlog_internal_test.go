@@ -89,7 +89,8 @@ func TestComputeBacklogSkipsAuditEvents(t *testing.T) {
 		{Seq: 101, TaskID: "t1", Type: proto.EventTypeProgress},
 		{Seq: 102, TaskID: "t1", Type: proto.EventTypeApproverDecision},
 		{Seq: 103, TaskID: "t1", Type: proto.EventTypeApproverDisabled},
-		{Seq: 104, TaskID: "t1", Type: proto.EventTypeCompleted},
+		{Seq: 104, TaskID: "t1", Type: proto.EventTypePermissionAutoAllow},
+		{Seq: 105, TaskID: "t1", Type: proto.EventTypeCompleted},
 	}}
 	if got := computeBacklog("t1", 100, snap).Missed; got != 1 {
 		t.Fatalf("missed = %d, want 1（三类审计/进度事件不计）", got)

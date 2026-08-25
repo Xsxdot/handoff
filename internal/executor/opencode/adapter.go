@@ -140,6 +140,36 @@ type Adapter struct {
 	reapMaxAttempts int
 }
 
+// managedTaskTmpEnv derives the task-private environment from TaskDir.
+//
+// The managed entries are appended after user entries at the process seam so
+// handoff's isolation values cannot be overridden by task configuration.
+func managedTaskTmpEnv(taskDir, taskID string) (string, []string) {
+	dataDir := filepath.Dir(filepath.Dir(taskDir))
+	if filepath.Base(filepath.Dir(taskDir)) != "tasks" {
+		// Unit seams may use a direct temporary TaskDir; production manager
+		// requests always use <DataDir>/tasks/<id>.
+		dataDir = filepath.Dir(taskDir)
+	}
+	tmpDir := executor.TaskTmpDir(dataDir, taskID)
+	return tmpDir, []string{
+		"TMPDIR=" + tmpDir,
+		"GOTMPDIR=" + tmpDir,
+		"GOCACHE=" + filepath.Join(tmpDir, "gocache"),
+	}
+}
+
+// ensureTaskTmp creates the task-private directory immediately before a new
+// process is started; hot reattach paths must not create it.
+func ensureTaskTmp(taskID, tmpDir string, log *slog.Logger) error {
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		log.Error("创建任务临时目录失败", "task", taskID, "tmp_dir", tmpDir, "cause", err)
+		return err
+	}
+	log.Info("任务临时目录已就绪", "task", taskID, "tmp_dir", tmpDir)
+	return nil
+}
+
 // New 创建 opencode adapter。
 //
 // 参数：
@@ -352,9 +382,14 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	// serve 的工作目录（cwd）取 task.Workdir()：worktree 任务的 executor 必须在
 	// worktree 里跑（分支 HEAD 在那里），主仓库 HEAD 停在派发前位置；原地模式
 	// Workdir() 回退 RepoPath，行为与一期一致
+	tmpDir, managedEnv := managedTaskTmpEnv(req.TaskDir, req.Task.ID)
+	if err := ensureTaskTmp(req.Task.ID, tmpDir, a.log); err != nil {
+		return fmt.Errorf("创建任务临时目录 %s: %w", tmpDir, err)
+	}
+	env := append(append([]string{}, req.Env...), managedEnv...)
 	proc, err := startServe(ctx, req.Task.Workdir(), req.Task.ID,
 		prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
-		req.TaskDir, configPath, req.Env, a.log)
+		req.TaskDir, configPath, env, a.log)
 	if err != nil {
 		return err
 	}

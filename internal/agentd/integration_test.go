@@ -246,7 +246,7 @@ func eventually(t *testing.T, timeout time.Duration, desc string, cond func() bo
 // continue（fake 收到指令）→ 再 completed → done（fake 收到 Stop）→ completed。
 func TestFullLoop(t *testing.T) {
 	env := newIntegEnv(t, []fake.Step{
-		{Permission: "Bash: go test ./..."},
+		{Permission: "Bash: go list ./..."},
 		{Question: "表结构用单数还是复数?"},
 		{Finish: executor.Result{OK: true, Branch: "handoff/T1", CommitHash: "abc123", Summary: "完成表结构设计"}},
 	})
@@ -270,7 +270,7 @@ func TestFullLoop(t *testing.T) {
 	if permTicket != task.ID+":perm-1" {
 		t.Fatalf("permission ticket_id=%q, want %q（命名空间化）", permTicket, task.ID+":perm-1")
 	}
-	if perm, _ := pm["permission"].(string); perm != "Bash: go test ./..." {
+	if perm, _ := pm["permission"].(string); perm != "Bash: go list ./..." {
 		t.Fatalf("permission 描述=%q, want 原文", perm)
 	}
 	if err := env.cli.Reply(context.Background(), task.ID, permTicket, "allow"); err != nil {
@@ -546,7 +546,7 @@ func TestReviewRoutes(t *testing.T) {
 // waiting_answer 跳过回迁，任务随后落回 waiting_answer 且无人再答，永久卡死
 // （探针 1/60 复现「waiting_answer 但 pending_tickets=0」）。
 func TestPermissionImmediateVisible(t *testing.T) {
-	env := newIntegEnv(t, []fake.Step{{Permission: "Bash: go test ./..."}})
+	env := newIntegEnv(t, []fake.Step{{Permission: "Bash: go list ./..."}})
 	task := env.dispatchPlan(t, "把 users 表建出来")
 
 	// 事件到达（WS 收到 permission_request = Publish 已完成）后立即 attach

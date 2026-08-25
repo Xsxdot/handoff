@@ -128,15 +128,7 @@ func deltaFrameKind(method string) deltaKind {
 // 必红的整轮测试，所以不要动。
 func taskTmpDir(taskDir string) string {
 	dataDir := filepath.Dir(filepath.Dir(taskDir))
-	return filepath.Join(dataDir, "tmp", shortTaskID(filepath.Base(taskDir)))
-}
-
-// shortTaskID 取任务 ID 前 8 位（不足 8 位则原样返回）。
-func shortTaskID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
+	return executor.TaskTmpDir(dataDir, filepath.Base(taskDir))
 }
 
 // tmpEnvKVs 把 Go 工具链的临时目录与构建缓存指向任务专属 tmp。
@@ -275,7 +267,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}()
 
 	taskTmp := taskTmpDir(req.TaskDir)
-	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o700); err != nil {
 		a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
 		return fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
 	}
