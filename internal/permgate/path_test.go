@@ -6,6 +6,17 @@ import (
 	"testing"
 )
 
+// resolvedPath mirrors InScope's longest-existing-prefix resolution so the
+// test compares canonical bases on platforms where /var is a symlink to /private/var.
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", path, err)
+	}
+	return resolved
+}
+
 // TestInScopeUsesTaskTmpAsThirdRoot locks the executor-owned task scratch area
 // into the same path gate as worktree and TaskDir.
 func TestInScopeUsesTaskTmpAsThirdRoot(t *testing.T) {
@@ -26,9 +37,9 @@ func TestInScopeUsesTaskTmpAsThirdRoot(t *testing.T) {
 		wantIn   bool
 		wantBase string
 	}{
-		{"worktree", filepath.Join(scope.Workdir, "out.txt"), true, scope.Workdir},
-		{"task-dir", filepath.Join(scope.TaskDir, "log.txt"), true, scope.TaskDir},
-		{"task-tmp", filepath.Join(scope.TaskTmpDir, "out.txt"), true, scope.TaskTmpDir},
+		{"worktree", filepath.Join(scope.Workdir, "out.txt"), true, resolvedPath(t, scope.Workdir)},
+		{"task-dir", filepath.Join(scope.TaskDir, "log.txt"), true, resolvedPath(t, scope.TaskDir)},
+		{"task-tmp", filepath.Join(scope.TaskTmpDir, "out.txt"), true, resolvedPath(t, scope.TaskTmpDir)},
 		{"shared-tmp", filepath.Join(root, "tmp", "shared", "out.txt"), false, ""},
 		{"prefix-sibling", filepath.Join(root, "tmp", "abcd1234-sibling", "out.txt"), false, ""},
 	}
