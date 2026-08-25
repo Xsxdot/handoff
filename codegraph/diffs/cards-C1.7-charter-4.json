@@ -1,0 +1,78 @@
+{
+ "view": "cards-C1.7-charter-4",
+ "base": "9598ee2c4",
+ "summary": "C1.7：/app/codegraph 十份查看器实现迁往 charter graph/webui，宿主只留同源 iframe 薄壳 CodegraphFrame",
+ "nodesAdded": {
+  "n_web_app_codegraph_CodegraphFrame": {
+   "kind": "func",
+   "container": "k_web_app_codegraph",
+   "order": 1,
+   "name": "CodegraphFrame",
+   "file": "web/src/app/codegraph/CodegraphFrame.tsx",
+   "line": 14,
+   "signature": "export function CodegraphFrame({ project }: CodegraphFrameProps): ReactElement {",
+   "summary": "把当前工作台项目名编码进同源 charter viewer iframe 的 URL；不取 API、不传 token"
+  },
+  "m_web_app_codegraph_CodegraphFrameProps": {
+   "kind": "model",
+   "container": "k_web_app_codegraph_model",
+   "order": 1,
+   "name": "CodegraphFrameProps",
+   "file": "web/src/app/codegraph/CodegraphFrame.tsx",
+   "line": 8,
+   "signature": "export interface CodegraphFrameProps",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "project",
+     "string",
+     "当前 BaseDir.projectName；空串合法，viewer 会跳过取数"
+    ]
+   ]
+  }
+ },
+ "nodesDeleted": [
+  "m_web_app_codegraph_CgView",
+  "m_web_app_codegraph_ChainTreeNode",
+  "m_web_app_codegraph_DetailPanelProps",
+  "m_web_app_codegraph_DomainAgg",
+  "m_web_app_codegraph_DomainCard",
+  "m_web_app_codegraph_DomainDetailProps",
+  "m_web_app_codegraph_DomainEdge",
+  "m_web_app_codegraph_DomainPanoramaProps",
+  "m_web_app_codegraph_FocusGraphProps",
+  "m_web_app_codegraph_Status",
+  "m_web_app_codegraph_ViewEdge",
+  "m_web_app_codegraph_ViewNode",
+  "n_web_app_codegraph_CallTree",
+  "n_web_app_codegraph_CodegraphPage",
+  "n_web_app_codegraph_CodegraphPlaceholder",
+  "n_web_app_codegraph_DetailPanel",
+  "n_web_app_codegraph_DomainDetail",
+  "n_web_app_codegraph_DomainPanorama",
+  "n_web_app_codegraph_FocusGraph",
+  "n_web_app_codegraph_NodeLink",
+  "n_web_app_codegraph_Row",
+  "n_web_app_codegraph_Sec",
+  "n_web_app_codegraph_Sec_2",
+  "n_web_app_codegraph_buildAdj",
+  "n_web_app_codegraph_cardStats",
+  "n_web_app_codegraph_chainTree",
+  "n_web_app_codegraph_childDomainsOf",
+  "n_web_app_codegraph_domainAgg",
+  "n_web_app_codegraph_domainAncestors",
+  "n_web_app_codegraph_domainPathOf",
+  "n_web_app_codegraph_hasDomains",
+  "n_web_app_codegraph_inScope",
+  "n_web_app_codegraph_layoutBands",
+  "n_web_app_codegraph_layoutDomains",
+  "n_web_app_codegraph_leafRoots",
+  "n_web_app_codegraph_mergeView",
+  "n_web_app_codegraph_neighborhood",
+  "n_web_app_codegraph_nodeDomainPathOf",
+  "n_web_app_codegraph_ringOuter",
+  "n_web_app_codegraph_scannedEntries",
+  "n_web_app_codegraph_separate",
+  "n_web_app_codegraph_useCodegraph"
+ ]
+}
