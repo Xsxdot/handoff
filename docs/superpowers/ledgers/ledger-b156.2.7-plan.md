@@ -83,3 +83,4 @@
   - 变异③ 删 d_cli→d_collab 六条活边 → `graph check --view` EXIT=1、fails=1 dead-contract d_cli→d_collab（与协调者对照实验一致）→ 备份还原后 EXIT=0 fails=0；
   - 变异④ rebind 吞错返回 ok → TestCardRebindConflictNonZeroExitAndCAS 红「CAS 冲突必须失败（退出码非零）」→ 还原复绿。
   - 还原后全量复验：`go test ./cmd/ -run 'TestRoom|TestCardDispatchWritesPointer|TestCardDispatchPointerFailure|TestCardRebind'` ok；`graph check --view` EXIT=0 fails=0 warns=96。
+- R13 协调者显式请求落地（与计划 §T7.2 内联 RunE 冲突，以协调者补充为准）：派发指针调用从 RunE 匿名闭包提取为具名函数 `writeDispatchPointer(st, id, nodeLabel)`（card_dispatch.go）——C6 指针引用白名单守卫按「所在函数」归属，落在闭包里归属不到真正调用点。`writeDispatchPointer` 内部仍是 `roomPointer(collab.New(ledgerapi.New(st)), ...)` 同一 seam；判据一/二测试不变。图边保持计划声明形状 `n_cmd_cardDispatchCmd_RunE → n_collab_Service_Pointer`（调用边门控只校验文件 import，不校验调用行位置）；`graph check --view` 复跑 EXIT=0 fails=0。
