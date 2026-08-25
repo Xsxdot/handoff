@@ -51,7 +51,7 @@ func TestAttachmentAnyGateBlocksWhenNoneMatch(t *testing.T) {
 	}
 
 	// 挂一种不在清单里的附件仍应被拒——择一不是「有附件就行」。
-	if err := s.AttachFile(card.ID, "spec", "docs/s.md", "test"); err != nil {
+	if _, err := s.AttachFile(card.ID, "spec", "docs/s.md", "test"); err != nil {
 		t.Fatalf("挂 spec: %v", err)
 	}
 	if err := s.MoveCard(card.ID, "implement", "", "test"); !errors.Is(err, ErrGateBlocked) {
@@ -66,7 +66,7 @@ func TestAttachmentAnyGateAcceptsEitherKind(t *testing.T) {
 		t.Run(kind, func(t *testing.T) {
 			s := anyGateStore(t)
 			card := mkAnyGate(t, s, "带 "+kind)
-			if err := s.AttachFile(card.ID, kind, "docs/"+kind+".md", "test"); err != nil {
+			if _, err := s.AttachFile(card.ID, kind, "docs/"+kind+".md", "test"); err != nil {
 				t.Fatalf("挂 %s: %v", kind, err)
 			}
 			if err := s.MoveCard(card.ID, "implement", "", "test"); err != nil {
@@ -82,7 +82,7 @@ func TestAttachmentKindsOnSamePathUnlockImplementGate(t *testing.T) {
 	s := anyGateStore(t)
 	card := mkAnyGate(t, s, "同一路径双 kind")
 	for _, kind := range []string{"spec", "plan"} {
-		if err := s.AttachFile(card.ID, kind, "docs/b250.md", "test"); err != nil {
+		if _, err := s.AttachFile(card.ID, kind, "docs/b250.md", "test"); err != nil {
 			t.Fatalf("挂 %s: %v", kind, err)
 		}
 	}
@@ -118,14 +118,14 @@ func TestAttachmentAnyGateAndsWithSingleGate(t *testing.T) {
 	}
 
 	// 只满足择一门，缺 contract → 仍拒。
-	if err := s.AttachFile(card.ID, "breakdown", "docs/b.md", "test"); err != nil {
+	if _, err := s.AttachFile(card.ID, "breakdown", "docs/b.md", "test"); err != nil {
 		t.Fatalf("挂 breakdown: %v", err)
 	}
 	if err := s.MoveCard(card.ID, "implement", "", "test"); !errors.Is(err, ErrGateBlocked) {
 		t.Fatalf("缺单值门要求的 contract 应拒，实得: %v", err)
 	}
 
-	if err := s.AttachFile(card.ID, "contract", "docs/c.md", "test"); err != nil {
+	if _, err := s.AttachFile(card.ID, "contract", "docs/c.md", "test"); err != nil {
 		t.Fatalf("挂 contract: %v", err)
 	}
 	if err := s.MoveCard(card.ID, "implement", "", "test"); err != nil {

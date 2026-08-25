@@ -51,7 +51,7 @@ func TestPGSmokeEndToEnd(t *testing.T) {
 	if err := s.MoveCard(card.ID, "已出spec", "", "pgtest"); err == nil {
 		t.Fatal("gate 在 PG 上应同样拒绝")
 	}
-	if err := s.AttachFile(card.ID, "spec", "s.md", "pgtest"); err != nil {
+	if _, err := s.AttachFile(card.ID, "spec", "s.md", "pgtest"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
 	if err := s.MoveCard(card.ID, "已出spec", "", "pgtest"); err != nil {

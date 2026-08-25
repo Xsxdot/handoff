@@ -7,7 +7,6 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -150,32 +149,19 @@ var cardUpdateCmd = &cobra.Command{
 			if !ok {
 				return fmt.Errorf("--attach 形如 kind:path（如 spec:specs/x.md）")
 			}
-			card, err := st.GetCard(id)
+			added, err := st.AttachFile(id, kind, path, actor)
 			if err != nil {
 				return err
 			}
-			already := false
-			for _, attachment := range card.Attachments {
-				if attachment.Kind == kind && attachment.Path == path {
-					already = true
-					break
+			if !added {
+				if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "附件已存在，跳过：%s:%s\n", kind, path); err != nil {
+					return fmt.Errorf("输出附件提示: %w", err)
 				}
-			}
-			if err := st.AttachFile(id, kind, path, actor); err != nil {
-				return err
-			}
-			if already {
-				slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil)).Info(
-					"附件已存在，跳过："+kind+":"+path, "card", id, "kind", kind, "path", path)
 			}
 		}
 		if cardUpdateDetach != "" {
-			card, err := st.GetCard(id)
+			removed, err := st.DetachFile(id, cardUpdateDetach, actor)
 			if err != nil {
-				return err
-			}
-			removed := attachmentsForDetach(card.Attachments, cardUpdateDetach)
-			if err := st.DetachFile(id, cardUpdateDetach, actor); err != nil {
 				return err
 			}
 			removedNames := make([]string, 0, len(removed))
@@ -186,9 +172,9 @@ var cardUpdateCmd = &cobra.Command{
 			if removedSummary == "" {
 				removedSummary = "无"
 			}
-			slog.New(slog.NewTextHandler(cmd.ErrOrStderr(), nil)).Info(
-				fmt.Sprintf("摘掉附件 %d 条：%s", len(removed), removedSummary), "card", id, "selector", cardUpdateDetach,
-				"count", len(removed), "attachments", removedNames)
+			if _, err := fmt.Fprintf(cmd.ErrOrStderr(), "摘掉附件 %d 条：%s\n", len(removed), removedSummary); err != nil {
+				return fmt.Errorf("输出摘附件提示: %w", err)
+			}
 		}
 		if cardUpdateAccept != "" {
 			if err := st.SetAcceptance(id, cardUpdateAccept, actor); err != nil {
@@ -211,35 +197,6 @@ var cardUpdateCmd = &cobra.Command{
 		}
 		return printCardJSON(cmd, card)
 	},
-}
-
-// attachmentsForDetach 只为 CLI 的 stderr 回显计算将被摘掉的清单；账本门面
-// DetachFile 在同一写事务内再次执行相同判定，避免把展示逻辑变成数据写入入口。
-func attachmentsForDetach(attachments []ledger.Attachment, selector string) []ledger.Attachment {
-	kind, path, hasKind := strings.Cut(selector, ":")
-	exact := false
-	if hasKind {
-		for _, attachment := range attachments {
-			if attachment.Kind == kind && attachment.Path == path {
-				exact = true
-				break
-			}
-		}
-	}
-	if !exact {
-		path = selector
-	}
-	removed := make([]ledger.Attachment, 0, 1)
-	for _, attachment := range attachments {
-		match := attachment.Path == path
-		if exact {
-			match = len(removed) == 0 && attachment.Kind == kind && attachment.Path == path
-		}
-		if match {
-			removed = append(removed, attachment)
-		}
-	}
-	return removed
 }
 
 var cardMoveCmd = &cobra.Command{

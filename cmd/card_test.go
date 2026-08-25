@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"bytes"
 	"encoding/json"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -58,6 +60,11 @@ func TestCardAddListShowMove(t *testing.T) {
 }
 
 func TestCardUpdateAttachmentKindsAndDetachMessages(t *testing.T) {
+	var logOutput bytes.Buffer
+	previousLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logOutput, nil)))
+	t.Cleanup(func() { slog.SetDefault(previousLogger) })
+
 	dir := t.TempDir()
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "附件身份", "--project", "demo", "--workflow", "bug")
 	if err != nil {
@@ -90,8 +97,11 @@ func TestCardUpdateAttachmentKindsAndDetachMessages(t *testing.T) {
 	if err != nil {
 		t.Fatalf("重复 attach: %v", err)
 	}
-	if !strings.Contains(stderr, "附件已存在，跳过：spec:"+path) {
+	if strings.Count(stderr, "附件已存在，跳过：spec:"+path) != 1 {
 		t.Fatalf("重复 attach 应在 stderr 出声，stderr=%q", stderr)
+	}
+	if strings.Contains(stderr, "level=INFO") || strings.Contains(logOutput.String(), "附件已存在，跳过：spec:"+path) {
+		t.Fatalf("用户提示必须是 stderr 普通输出且只出现一次，stderr=%q logs=%q", stderr, logOutput.String())
 	}
 
 	out, stderr, err = runLedgerCLI(t, dir, "card", "update", created.ID, "--detach", "spec:"+path)

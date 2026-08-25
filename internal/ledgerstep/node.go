@@ -52,7 +52,7 @@ type NodeStep struct {
 	OutputPath func() string
 	// Diff 返回本次 task 相对协调者基线的 changed paths；实现方负责把 Client.Diff 投影为路径。
 	Diff func(ctx context.Context, target, taskID string) ([]string, error)
-	// Attach 将法定 kind/path 以节点 actor 挂到协调者账本；同 path 由 Store 保证幂等。
+	// Attach 将法定 kind/path 以节点 actor 挂到协调者账本；同 kind、path 由 Store 保证幂等。
 	Attach func(cardID, kind, path, actor string) error
 	// WriteGate 是生产编排注入的卡写闸；nil 表示不设闸。
 	WriteGate func() bool

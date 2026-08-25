@@ -459,11 +459,14 @@ func (s *Store) ChildrenOf(cardID string) ([]CardBrief, error) {
 	return children, nil
 }
 
-// AttachFile 挂附件（同 kind、path 二元组幂等）；落 comment 事件记录动作，
-// 附件本体是卡字段不是事件。
-func (s *Store) AttachFile(id, kind, path, actor string) error {
+// AttachFile 挂附件（同 kind、path 二元组幂等）；返回是否实际新增。
+// 落 comment 事件记录动作，附件本体是卡字段不是事件。
+//
+// 注意：返回 true 只表示事务已提交并新增了条目；重复挂载返回 false、nil。
+func (s *Store) AttachFile(id, kind, path, actor string) (bool, error) {
 	log().Info("挂附件进入", "card", id, "kind", kind, "path", path, "actor", actor)
-	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+	added := false
+	if err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
 			log().Warn("挂附件失败：读取卡", "card", id, "kind", kind, "path", path, "cause", err)
@@ -471,11 +474,11 @@ func (s *Store) AttachFile(id, kind, path, actor string) error {
 		}
 		for _, attachment := range card.Attachments {
 			if attachment.Kind == kind && attachment.Path == path {
-				log().Info("附件已存在，跳过："+kind+":"+path, "card", id, "kind", kind, "path", path)
 				return nil // 幂等
 			}
 		}
 		card.Attachments = append(card.Attachments, Attachment{Kind: kind, Path: path})
+		added = true
 		raw, _ := json.Marshal(card.Attachments)
 		if _, err := tx.Exec(s.q(`UPDATE cards SET attachments = ?, updated_at = ? WHERE id = ?`),
 			string(raw), s.tval(time.Now()), id); err != nil {
@@ -489,16 +492,20 @@ func (s *Store) AttachFile(id, kind, path, actor string) error {
 			return err
 		}
 		log().Info("挂附件完成", "card", id, "kind", kind, "path", path, "actor", actor)
-		return err
-	})
+		return nil
+	}); err != nil {
+		return false, err
+	}
+	return added, nil
 }
 
 // DetachFile 摘附件。selector 命中卡上已有的 kind:path 时只摘该二元组；
 // 否则把 selector 当作裸 path，摘掉该路径的全部附件。两种形态都落 comment
-// 事件，附件本体是卡字段不是事件。
-func (s *Store) DetachFile(id, selector, actor string) error {
+// 事件，附件本体是卡字段不是事件。返回同一事务内摘掉的条目清单。
+func (s *Store) DetachFile(id, selector, actor string) ([]Attachment, error) {
 	log().Info("摘附件进入", "card", id, "selector", selector, "actor", actor)
-	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+	var removed []Attachment
+	if err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
 			log().Warn("摘附件失败：读取卡", "card", id, "selector", selector, "cause", err)
@@ -506,7 +513,7 @@ func (s *Store) DetachFile(id, selector, actor string) error {
 		}
 		kind, path, exact := detachSelector(card.Attachments, selector)
 		kept := card.Attachments[:0]
-		removed := make([]Attachment, 0, 1)
+		removed = make([]Attachment, 0, 1)
 		for _, attachment := range card.Attachments {
 			match := attachment.Path == path
 			if exact {
@@ -532,8 +539,11 @@ func (s *Store) DetachFile(id, selector, actor string) error {
 		}
 		log().Info("摘附件完成", "card", id, "selector", selector, "exact", exact,
 			"count", len(removed), "attachments", removed, "actor", actor)
-		return err
-	})
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	return removed, nil
 }
 
 // detachSelector 解析 detach 的双形态。只有卡上确实存在 kind:path 精确项时
