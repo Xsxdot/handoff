@@ -406,8 +406,8 @@
   `graph/codegraph/check.go`：逐条比对 `Container.Label`，无跳过分支）。后果是必然在
   review 阶段撞 dead-entry、多烧一整轮 implement + review。基线里其余 9 条 entries
   全是容器级形态（`ledger.Store`、`proto 实体`、`ptyhost 实体` 等），无一函数符号。
-  **归属 charter 仓**（`~/workspace/charter` 的 contract 节点 skill 该给出这条判据，
-  改完跑 `scripts/regen_discipline.py`），不是 handoff 仓的改动。
+  **归属 charter 仓 = C13**（2026-08-25 建卡，待办）：contract 节点 skill 该给出这条判据，
+  改完跑 `scripts/regen_discipline.py` 同步纪律块。不是 handoff 仓的改动。
 - **（已有卡，不重复取号）** 审批者对沙箱层级完全失明 = **B252**；`card --attach`
   按 path 去重忽略 kind = **B250，已于 2026-08-25 合入 main**（附件身份改 (kind, path)）；
   执行者隔离层 = **B247**。
