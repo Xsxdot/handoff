@@ -70,4 +70,22 @@ plan 节点台账（B156.2.5 C5·消费恰好一次与注意力读模型）。�
 
 ## 视图增量与变异复验（T5.5，commit 2 前）
 
-（T5.5 执行中追加：best.json/charter-4 diff 追加、graph check/validate、逐容器点数、变异①-④红文、commit 2）
+- I9: 实际符号行核对：room.go ReadAllEvents=227/ConsumedSeqs=246/RoomIDOf=269/MessageKind=281、cursor.go Store=19/New=28/MarkRead=35/Cursor=56、service.go SetCursorStore=68——与 plan 代码块 B 预填行号**逐一致**，无需机械修正。
+- I10: best.json 追加 k_collab_cursor_fn/k_collab_cursor_Store→d_collab（两行，其余不动）；cards-B156.2-charter-4.json 追加 containersAdded 2 + nodesAdded 9 + edgesAdded 18（既有键一字不动）。
+- I11: **手写 JSON 双判据**：`grep -c '"edgesAdded"'`/`"nodesAdded"`/`"containersAdded"` 各 ==1（无重复键）；`python3 json.load` 解析条数 edgesAdded=29/nodesAdded=17/containersAdded=4 与声明一致（非空解析）。C4 的「重复键+取末值归零」族被当场排除。
+- I12: `graph check --view cards-B156.2-charter-4` → fails=0（warn 97 与基线一致）、bestCoverage.assignedContainers=257；`graph validate` EXIT=0。
+- I13: 逐容器点数：k_collab_room_fn=11、k_collab_room_model=1、k_collab_cursor_fn=1、k_collab_cursor_Store=3、k_collab_Service=11（view 节点）——与源码导出符号逐一相等（grep 实测 room.go 11 函数/1 类型、cursor.go 1 函数/1 类型/2 方法、service.go New+10 方法/1 类型）。graph check 零源码解析，一致性只能由本步证明。
+- I14: **变异复验**（全部先 `go build ./internal/collab/...` 编译过、再数红）：
+  - 变异①：ListRooms 判据 `nowFn()`→`time.Now()` → TestListRoomsLiveFlip 红「租约未过期应 live=true … Live:false」→ 还原；
+  - 变异②a：Pending consumed 过滤置空 map → TestPendingGroupMentionAndConsume 红「消费后 Pending 应清空:[…]」→ 还原；（初稿删 `|| consumed[ev.Seq]` 触发「declared and not used」编译红，改语义变异后复验——变异必须编译过的实证）
+  - 变异②b：Mentions consumed 过滤置空 map → TestMentionsExcludesConsumed 红「消费后 Mentions 应清空:[…]」→ 还原；
+  - 变异③：Consume 定位后不调 RecordMessageConsumed → TestConsumeIdempotentSameArgs 红「不得产生第二条标记: 0」+ TestConsumePayloadTwoKeys 红「没有消费标记事件」→ 还原；
+  - 变异④：Consume 去掉 type 检查（非 room_message 也写标记）→ TestConsumeInvalidSeq 红「无效 seq 不得落标记: 1」→ 还原（回归锁有牙）;
+  - 变异⑤（可选）：TestCursorFilePersistsAcrossInstances 的 svc 换 `cursor.New("")`（不落盘）→ 红「持久化游标应生效: 1」→ 还原（持久化断言有牙）。
+  - 还原后 `go test ./internal/collab/... -count=1` ok、`go build ./...` EXIT=0、`gofmt -l internal cmd` 零输出、graph check fails=0 复验。
+- I15: commit 2（T5.5）：`graph(b156.2.5): cursor 子包与 room 读助手入图（best+charter-4 视图增量）`——含 codegraph/best.json、codegraph/diffs/cards-B156.2-charter-4.json、本台账追加。
+
+## 收尾（commit 2 后）
+
+- I16: `gofmt -l internal cmd` 零输出、`go test ./internal/collab/... -count=1` ok、`go build ./...` EXIT=0、`go vet ./internal/collab/...` EXIT=0、graph check fails=0 / validate EXIT=0——收尾五闸全绿。
+- I17: 台账与两个产出物提交均已落库，工作树干净。
