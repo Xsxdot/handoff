@@ -1,7 +1,8 @@
 // Package api 是账本域对协作房间域的薄门面（B156.2 还债路径）：包住既有
 // *ledger.Store，逐方法转调并做 Event→proto.LedgerEvent 映射（先例
 // ledgerEventWire，internal/agentd/ledgerapi.go:106），不含任何业务判断。
-// 由组装点构造并注入 collab.New；本包之外不得引用。
+// 由组装点构造并注入 collab.New；组装点之外只认 client.LedgerClient 接口，
+// 不要直接引用本包的具体类型。
 //
 // 本文件属直通镜像接线：转调体照抄既有同形方法的接线形态。
 package api
