@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
+	"time"
 )
 
 func TestCommentRefsAutoRelate(t *testing.T) {
@@ -198,6 +199,131 @@ func TestWorkBranchSkipsReviewRounds(t *testing.T) {
 		Branch: "cards/" + c.ID + "-review", Actor: "test"})
 	if got, err = s.WorkBranch(c.ID); err != nil || got.Branch != "cards/"+c.ID+"-implement" || got.Target != "acc" {
 		t.Fatalf("无 purpose 的审阅快照应经挂账表识别并跳过: %+v %v", got, err)
+	}
+}
+
+// recordB254WorkRound 通过真实派发与挂账入口建立一轮工作快照，避免测试绕过
+// WorkBranch 所消费的 dispatched JSON 边界。
+func recordB254WorkRound(t *testing.T, s *Store, c Card, target, taskID, branch, purpose string) {
+	t.Helper()
+	if err := s.LinkTask(c.ID, target, taskID, purpose, "test"); err != nil {
+		t.Fatalf("LinkTask(%s): %v", taskID, err)
+	}
+	if err := s.RecordDispatch(c.ID, DispatchSnapshot{
+		Template: "feature-impl", Target: target, TaskID: taskID, Branch: branch,
+		Purpose: purpose, Actor: "test",
+	}); err != nil {
+		t.Fatalf("RecordDispatch(%s): %v", taskID, err)
+	}
+}
+
+// mirrorB254WorkEvent 通过真实镜像入口写入 task 终态与原始 payload，验证
+// WorkBranch 从账本回放 JSON，而非直接读取测试内部状态。
+func mirrorB254WorkEvent(t *testing.T, s *Store, c Card, target, taskID, typ, payload string, seq int64) {
+	t.Helper()
+	if _, err := s.AppendMirroredEvent(c.ID, MirroredEvent{
+		Target: target, Task: taskID, SourceSeq: seq, Type: typ,
+		Payload: []byte(payload), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMirroredEvent(%s,%d): %v", typ, seq, err)
+	}
+}
+
+func TestWorkBranchSkipsZeroOutputTerminalRounds(t *testing.T) {
+	cases := []struct {
+		name    string
+		typ     string
+		payload string
+	}{
+		{name: "failed fields missing", typ: "failed", payload: `{"fail_reason":"executor gone"}`},
+		{name: "failed commit explicitly empty", typ: "failed", payload: `{"branch":"cards/P1-empty","commit":""}`},
+		{name: "failed commit on another branch", typ: "failed", payload: `{"branch":"cards/other","commit":"abc123"}`},
+		{name: "archived without prior result", typ: "archived", payload: `{}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s := seedStore(t)
+			c := mk(t, s, "零产出")
+			branch := "cards/" + c.ID + "-empty"
+			taskID := "T-empty-" + tc.name
+			recordB254WorkRound(t, s, c, "mac-02", taskID, branch, PurposeImplement)
+			mirrorB254WorkEvent(t, s, c, "mac-02", taskID, tc.typ, tc.payload, 1)
+			if _, err := s.WorkBranch(c.ID); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("零产出终态轮应被跳过并返回 ErrNotFound，实得 %v", err)
+			}
+		})
+	}
+}
+
+func TestWorkBranchKeepsProducedFailedRound(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "失败但有产出")
+	branch := "cards/" + c.ID + "-failed"
+	recordB254WorkRound(t, s, c, "mac-02", "T-produced-failed", branch, PurposeImplement)
+	mirrorB254WorkEvent(t, s, c, "mac-02", "T-produced-failed", "failed",
+		`{"fail_reason":"turn stopped","branch":"`+branch+`","commit":"abc123"}`, 1)
+	got, err := s.WorkBranch(c.ID)
+	if err != nil {
+		t.Fatalf("WorkBranch: %v", err)
+	}
+	if got.Branch != branch || got.Target != "mac-02" {
+		t.Fatalf("有产出失败轮必须保留分支和目标机，实得 %+v", got)
+	}
+}
+
+func TestWorkBranchKeepsProducedArchivedRound(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "完成后归档")
+	branch := "cards/" + c.ID + "-archived"
+	recordB254WorkRound(t, s, c, "mac-02", "T-produced-archived", branch, PurposeImplement)
+	mirrorB254WorkEvent(t, s, c, "mac-02", "T-produced-archived", "completed",
+		`{"branch":"`+branch+`","commit":"def456"}`, 1)
+	mirrorB254WorkEvent(t, s, c, "mac-02", "T-produced-archived", "archived", `{}`, 2)
+	got, err := s.WorkBranch(c.ID)
+	if err != nil {
+		t.Fatalf("WorkBranch: %v", err)
+	}
+	if got.Branch != branch || got.Target != "mac-02" {
+		t.Fatalf("归档前有产出的轮必须保留分支和目标机，实得 %+v", got)
+	}
+}
+
+func TestWorkBranchSkipsZeroOutputAndUsesPreviousProducedRound(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "跳过后回到上一轮")
+	oldBranch := "cards/" + c.ID + "-implement"
+	recordB254WorkRound(t, s, c, "mac-02", "T-produced", oldBranch, PurposeImplement)
+	mirrorB254WorkEvent(t, s, c, "mac-02", "T-produced", "completed",
+		`{"branch":"`+oldBranch+`","commit":"old123"}`, 1)
+	mirrorB254WorkEvent(t, s, c, "mac-02", "T-produced", "archived", `{}`, 2)
+
+	emptyBranch := "cards/" + c.ID + "-implement-2"
+	recordB254WorkRound(t, s, c, "linux-01", "T-empty", emptyBranch, PurposeImplement)
+	mirrorB254WorkEvent(t, s, c, "linux-01", "T-empty", "failed",
+		`{"fail_reason":"credential revoked"}`, 1)
+
+	got, err := s.WorkBranch(c.ID)
+	if err != nil {
+		t.Fatalf("WorkBranch: %v", err)
+	}
+	if got.Branch != oldBranch || got.Target != "mac-02" {
+		t.Fatalf("零产出新轮不能覆盖上一条有产出轮，实得 %+v", got)
+	}
+}
+
+func TestWorkBranchKeepsLiveTurnFailedRound(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "仍待裁决")
+	branch := "cards/" + c.ID + "-live"
+	recordB254WorkRound(t, s, c, "mac-02", "T-live", branch, PurposeImplement)
+	mirrorB254WorkEvent(t, s, c, "mac-02", "T-live", "turn_failed",
+		`{"fail_reason":"可继续","branch":"`+branch+`","commit":""}`, 1)
+	got, err := s.WorkBranch(c.ID)
+	if err != nil {
+		t.Fatalf("WorkBranch: %v", err)
+	}
+	if got.Branch != branch || got.Target != "mac-02" {
+		t.Fatalf("turn_failed 仍是 waiting_review，不能当零产出终态跳过，实得 %+v", got)
 	}
 }
 

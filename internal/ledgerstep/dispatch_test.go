@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -399,30 +400,87 @@ func TestViaTemplateContinuationUsesLocalWorkBranch(t *testing.T) {
 	}
 }
 
-// TestViaTemplateRejectsCrossTargetBeforeTransport 验证跨机时不静默掉回卡基线，
+func mirrorB254DispatchEvent(t *testing.T, st *ledger.Store, cardID, target, taskID string,
+	seq int64, typ, payload string) {
+	t.Helper()
+	if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+		Target: target, Task: taskID, SourceSeq: seq, Type: typ,
+		Payload: []byte(payload), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("AppendMirroredEvent(%s): %v", typ, err)
+	}
+}
+
+// TestViaTemplateAllowsCrossTargetAfterZeroOutputFailure 穿过真实镜像事件边界，
+// 验证零产出终态不会占住工作分支，改派从卡基线重新开始。
+func TestViaTemplateAllowsCrossTargetAfterZeroOutputFailure(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var dispatched []DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		dispatched = append(dispatched, opts)
+		return fmt.Sprintf("T-zero-%d", len(dispatched)), nil
+	}}
+	first, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "mac-02"})
+	if err != nil {
+		t.Fatalf("首轮 ViaTemplate: %v", err)
+	}
+	mirrorB254DispatchEvent(t, st, card.ID, "mac-02", first.Task, 1, "failed",
+		`{"fail_reason":"codex refresh token revoked"}`)
+
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "linux-01"}); err != nil {
+		t.Fatalf("零产出失败轮后应允许改派另一台目标机: %v", err)
+	}
+	if len(dispatched) != 2 {
+		t.Fatalf("应调用两次 Transport，实得 %d", len(dispatched))
+	}
+	second := dispatched[1]
+	if second.Target != "linux-01" {
+		t.Fatalf("改派目标机 = %q，want linux-01", second.Target)
+	}
+	if second.Base != "" || second.LocalBaseBranch || !second.ResolveDefaultBase {
+		t.Fatalf("零产出轮后应从卡空基线重新开始：base=%q local=%v default=%v",
+			second.Base, second.LocalBaseBranch, second.ResolveDefaultBase)
+	}
+}
+
+// TestViaTemplateRejectsCrossTargetBeforeTransport 验证有产出跨机时仍拒绝接续，
 // 且拒绝发生在 Transport/LinkTask/RecordDispatch 之前，不留下新的派发副作用。
 func TestViaTemplateRejectsCrossTargetBeforeTransport(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	transportCalls := 0
 	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
 		transportCalls++
-		return fmt.Sprintf("T-cross-%d", transportCalls), nil
+		return fmt.Sprintf("T-produced-%d", transportCalls), nil
 	}}
-	if _, err := d.ViaTemplate(context.Background(), card,
-		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+	first, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "mac-02"})
+	if err != nil {
 		t.Fatalf("首轮 ViaTemplate: %v", err)
 	}
+	mirrorB254DispatchEvent(t, st, card.ID, "mac-02", first.Task, 1, "completed",
+		fmt.Sprintf(`{"branch":%q,"commit":"abc123"}`, first.Branch))
+	mirrorB254DispatchEvent(t, st, card.ID, "mac-02", first.Task, 2, "archived", `{}`)
 	before, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("读拒发前事件: %v", err)
 	}
-	if _, err := d.ViaTemplate(context.Background(), card,
-		TemplateDispatch{Template: "feature-impl", Target: "linux-01"}); err == nil {
-		t.Fatal("跨机接续必须拒绝")
+
+	_, err = d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "linux-01"})
+	if err == nil {
+		t.Fatal("有产出轮跨目标机必须拒绝")
 	} else {
-		for _, want := range []string{"工作分支只存在于创建它的那台机器", "git push", "--base"} {
-			if !strings.Contains(err.Error(), want) {
-				t.Fatalf("跨机拒绝应包含 %q，实得 %v", want, err)
+		message := err.Error()
+		for _, want := range []string{"工作分支归属于另一台执行机", "请回上次目标机继续", "mac-02", "linux-01"} {
+			if !strings.Contains(message, want) {
+				t.Fatalf("跨机拒绝缺少真实可走路径 %q，实得 %q", want, message)
+			}
+		}
+		for _, invalid := range []string{"git push", "--base"} {
+			if strings.Contains(message, invalid) {
+				t.Fatalf("card dispatch 文案不应给无效出口 %q：%q", invalid, message)
 			}
 		}
 	}
@@ -431,13 +489,12 @@ func TestViaTemplateRejectsCrossTargetBeforeTransport(t *testing.T) {
 	}
 	after, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("读拒发后事件: %v", err)
 	}
 	if len(after) != len(before) {
 		t.Fatalf("跨机拒绝不得新增账本事件：before=%d after=%d", len(before), len(after))
 	}
 }
-
 func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var dispatched []DispatchOpts

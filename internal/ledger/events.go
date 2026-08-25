@@ -397,25 +397,109 @@ func (s *Store) Subtree(rootID string) ([]string, error) {
 	return out, rows.Err()
 }
 
-// WorkBranch 卡的工作分支：最近一次**非审阅**派发所用的分支。
-// 审阅是只读的、跑在工作分支上，不新开分支——所以「卡的分支」这个问题
-// 的答案必须跳过审阅轮，否则合并节点会去合一条审阅分支，而第二轮审阅
-// 会撞上第一轮的同名分支（真机实测：fatal: a branch named ... already exists）。
-// 老快照没有 purpose 字段时回落到挂账表按 task_id 查用途。
+type workBranchTaskState struct {
+	lastType         string
+	producedBranches map[string]struct{}
+	projectionBroken bool
+}
+
+type workBranchResultPayload struct {
+	Branch *string `json:"branch"`
+	Commit *string `json:"commit"`
+}
+
+// scanWorkBranchTaskStates 只从协调者账本回放 task 镜像：执行机可能正因凭据
+// 失效或不可达而需要改派，WorkBranch 不能把执行机 git 当成判定依赖。
+func scanWorkBranchTaskStates(events []Event) map[string]workBranchTaskState {
+	states := make(map[string]workBranchTaskState)
+	for _, event := range events {
+		if event.Type != EvTaskMirrored || event.SourceTask == "" {
+			continue
+		}
+		state := states[event.SourceTask]
+		if state.producedBranches == nil {
+			state.producedBranches = make(map[string]struct{})
+		}
+		var mirrored mirroredTaskPayload
+		if err := json.Unmarshal(event.Payload, &mirrored); err != nil {
+			state.projectionBroken = true
+			state.lastType = ""
+			log().Warn("回放工作分支 task 镜像失败", "task", event.SourceTask,
+				"seq", event.Seq, "cause", err)
+			states[event.SourceTask] = state
+			continue
+		}
+		state.lastType = mirrored.TaskType
+		if mirrored.TaskType == "" {
+			state.projectionBroken = true
+		}
+		if len(mirrored.Payload) == 0 || string(mirrored.Payload) == "null" {
+			states[event.SourceTask] = state
+			continue
+		}
+		var result workBranchResultPayload
+		if err := json.Unmarshal(mirrored.Payload, &result); err != nil {
+			state.projectionBroken = true
+			log().Warn("解码工作分支 task 结果失败", "task", event.SourceTask,
+				"seq", event.Seq, "task_type", mirrored.TaskType, "cause", err)
+			states[event.SourceTask] = state
+			continue
+		}
+		if result.Branch != nil && result.Commit != nil &&
+			strings.TrimSpace(*result.Branch) != "" &&
+			strings.TrimSpace(*result.Commit) != "" {
+			state.producedBranches[*result.Branch] = struct{}{}
+		}
+		states[event.SourceTask] = state
+	}
+	return states
+}
+
+func keepsWorkBranchSnapshot(snapshot DispatchSnapshot, states map[string]workBranchTaskState) bool {
+	if snapshot.TaskID == "" {
+		// 老快照无法关联 task 结局；保留是唯一不会静默丢产出的选择。
+		log().Debug("工作分支快照缺 task_id，保留保护", "branch", snapshot.Branch)
+		return true
+	}
+	state, ok := states[snapshot.TaskID]
+	if !ok || state.projectionBroken {
+		log().Debug("工作分支 task 结局未知，保留保护", "task", snapshot.TaskID,
+			"branch", snapshot.Branch, "known", ok, "projection_broken", state.projectionBroken)
+		return true
+	}
+	if state.lastType != "failed" && state.lastType != "archived" {
+		return true
+	}
+	if _, produced := state.producedBranches[snapshot.Branch]; produced {
+		return true
+	}
+	log().Info("跳过零产出工作分支快照", "task", snapshot.TaskID,
+		"branch", snapshot.Branch, "target", snapshot.Target, "terminal", state.lastType)
+	return false
+}
+
+// WorkBranch 卡的工作分支：最近一次**有资格的非审阅**派发所用的分支。
+// 审阅跑在工作分支上不新开分支；已收口且没有同分支 commit 的轮次也不占指针。
+// 结局和 commit 只从协调者账本的 EvTaskMirrored 回放，不能访问执行机 git。
+// 老快照没有 purpose 时仍回落到挂账表按 task_id 查用途。
 func (s *Store) WorkBranch(cardID string) (WorkBranchInfo, error) {
 	var zero WorkBranchInfo
+	log().Info("查询卡工作分支", "card", cardID)
 	events, err := s.EventsFromAsc([]string{cardID}, 0, 10000)
 	if err != nil {
+		log().Error("读取卡 dispatched 事件失败", "card", cardID, "cause", err)
 		return zero, fmt.Errorf("读卡 dispatched 事件: %w", err)
 	}
 	links, err := s.TasksOf(cardID)
 	if err != nil {
+		log().Error("读取卡挂账失败", "card", cardID, "cause", err)
 		return zero, err
 	}
 	purposeOf := map[string]string{}
 	for _, link := range links {
 		purposeOf[link.TaskID] = link.Purpose
 	}
+	states := scanWorkBranchTaskStates(events)
 	info := WorkBranchInfo{}
 	for _, event := range events {
 		if event.Type != EvDispatched {
@@ -423,22 +507,31 @@ func (s *Store) WorkBranch(cardID string) (WorkBranchInfo, error) {
 		}
 		var snapshot DispatchSnapshot
 		if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+			log().Warn("解码工作分支 dispatched 快照失败", "card", cardID,
+				"seq", event.Seq, "cause", err)
 			continue
 		}
 		purpose := snapshot.Purpose
 		if purpose == "" {
 			purpose = purposeOf[snapshot.TaskID]
 		}
-		if purpose == PurposeReview {
+		if purpose == PurposeReview || snapshot.Branch == "" {
 			continue
 		}
-		if snapshot.Branch != "" {
-			info = WorkBranchInfo{Branch: snapshot.Branch, Target: snapshot.Target}
+		if !keepsWorkBranchSnapshot(snapshot, states) {
+			continue
 		}
+		info = WorkBranchInfo{Branch: snapshot.Branch, Target: snapshot.Target}
+		log().Debug("采用卡工作分支快照", "card", cardID, "task", snapshot.TaskID,
+			"branch", snapshot.Branch, "target", snapshot.Target, "purpose", purpose)
 	}
 	if info.Branch == "" {
-		return zero, fmt.Errorf("卡 %s 没有非审阅的 dispatched 快照（还没派过实现轮？）: %w", cardID, ErrNotFound)
+		err := fmt.Errorf("卡 %s 没有有资格的非审阅 dispatched 快照（尚未派出实现轮，或最近轮零产出）: %w",
+			cardID, ErrNotFound)
+		log().Warn("卡没有可用工作分支", "card", cardID, "cause", err)
+		return zero, err
 	}
+	log().Info("卡工作分支查询完成", "card", cardID, "branch", info.Branch, "target", info.Target)
 	return info, nil
 }
 

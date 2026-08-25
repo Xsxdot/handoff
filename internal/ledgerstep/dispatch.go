@@ -154,8 +154,13 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if hasWorkBranch && (workInfo.Target == "" || workInfo.Target != target) {
 		slog.Default().Warn("工作分支跨目标机，拒绝接续", "card", c.ID,
 			"branch", workInfo.Branch, "previous_target", workInfo.Target, "target", target)
-		return zero, fmt.Errorf("工作分支只存在于创建它的那台机器：上次目标机 %q，本次目标机 %q；请先 push 到 origin（git push origin %s），再用显式 --base 指定",
+		message := fmt.Sprintf("工作分支归属于另一台执行机，不能跨机接续：上次目标机 %q，本次目标机 %q，分支 %q；请回上次目标机继续，card dispatch 不提供跨机接续出口",
 			workInfo.Target, target, workInfo.Branch)
+		if workInfo.Target == "" {
+			message = fmt.Sprintf("工作分支缺少历史目标机归属，不能在本次目标机 %q 接续：分支 %q；请在创建该分支的原执行机继续，card dispatch 不提供跨机接续出口",
+				target, workInfo.Branch)
+		}
+		return zero, errors.New(message)
 	}
 
 	// 判据被收起时不留空冒号：模板正文里「验收判据：{{ACCEPT}}」后面跟一片
