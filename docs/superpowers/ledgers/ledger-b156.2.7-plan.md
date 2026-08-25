@@ -73,3 +73,13 @@
 - R5 计划测试修正② + harness 根因修复（resetAllFlags 切片 flag）：计划 §T7.1 的 TestRoomSendCarriesRefAndMention 断言 `len(msg.Refs)==2`，首跑红 `refs 载荷漂移: [[] [] ... docs/x.md B156]`。根因=harness resetAllFlags 对切片 flag 用 `Value.Set(DefValue)` 复位，pflag 的 Set 是 append 语义且空默认 DefValue="[]" → 每次 Execute 往共享的 roomSendRefs 追加垃圾元素（decision.go --option 是既有同型 flag，只因无长度断言才未被咬）。修复：resetAllFlags 对 `pflag.SliceValue` 且 DefValue∈{"","[]"} 走 `Replace(nil)` 分支（ledgercli_test.go）。
 - R6 harness 根因修复②（runLedgerCLI 执行后复位）：room inbox 测试（--target mac-02）是 room_test.go 最后一个测试，脏 targetName 经 root/sessions 测试的 resetFlags save-restore 传播，导致 status 族 6 测试全红（「target mac-02 未在配置中定义」）。修复：runLedgerCLI Execute() 后再 resetAllFlags 一次并还原 configPath=cfgPath（workflow_test.go 执行后直接 openLedger() 依赖 configPath 保持）。全仓 `go test ./cmd/` 复绿（含全部既有 status/decision/workflow 测试）。
 - R7 T7.3 收口读数：`go build ./...` EXIT=0；`go vet ./cmd/...` EXIT=0；`gofmt -l internal cmd` 零输出（room.go/room_test.go 曾被列出，gofmt -w 后干净）；`grep -rn "fmt.Print" cmd/room.go cmd/card_driver.go cmd/card_dispatch.go` 零命中（机器输出走 OutOrStdout 的 fmt.Fprintln，非日志）。触及测试 10 支全 PASS；`go test ./cmd/` 全量 + `internal/client`/`internal/ledger/...`/`internal/collab/...` 全绿。
+- R8 T7.4 图数据落盘：target.json contracts 尾部追加 d_cli→d_collab（entries=["collab 入站门面","collab 包级函数"]，逐字节仅追加不改动既有条目）；视图 diff nodesAdded +8、edgesAdded +12（既有 29 边 + 12 = 41）。
+- R9 手写 JSON 双判据：`python3` 解析 edgesAdded len==41（声明 12 条全在）、nodesAdded keys==25（17 既有 + 8 新，无重复键被静默归零）；target.json `d_cli→d_collab` 计数==1。grep -c 每个新节点 id == 1 定义 + N 处边引用（无重复定义键）。
+- R10 图闸读数：`go run . graph validate --repo .` EXIT=0；`go run . graph check --repo . --view cards-B156.2-charter-4` fails=[] warns=96（协调者基线 97，-1 由 k_collab_fn 从空容器补上 n_collab_New 消掉 best-dangling 所致——正向变化，已核对）。
+- R11 逐容器点数（读源码侧）：k_collab_fn 视图 +1、`grep -c '^func New(' internal/collab/service.go`==1；k_cmd_fn 视图 +6、room RunE 4 + rebind 1 + openRoomService 1；k_client_Client 视图 +1、`func (c *Client) Inbox`==1；k_collab_Service 零新增。
+- R12 变异复验（四发全红后还原，均在 cmd/card_dispatch.go / cmd/card_driver.go / codegraph/diffs 施加与执行同路径）：
+  - 变异① 去掉指针调用（`if false` 保 import 可编译）→ TestCardDispatchWritesPointerLine 红「账本里没有 kind=pointer…」→ 还原复绿；
+  - 变异② 指针失败改 `return perr` → TestCardDispatchPointerFailureDoesNotInterrupt 红「Pointer 失败不应打断派发主流程: 指针写失败」→ 还原复绿；
+  - 变异③ 删 d_cli→d_collab 六条活边 → `graph check --view` EXIT=1、fails=1 dead-contract d_cli→d_collab（与协调者对照实验一致）→ 备份还原后 EXIT=0 fails=0；
+  - 变异④ rebind 吞错返回 ok → TestCardRebindConflictNonZeroExitAndCAS 红「CAS 冲突必须失败（退出码非零）」→ 还原复绿。
+  - 还原后全量复验：`go test ./cmd/ -run 'TestRoom|TestCardDispatchWritesPointer|TestCardDispatchPointerFailure|TestCardRebind'` ok；`graph check --view` EXIT=0 fails=0 warns=96。
