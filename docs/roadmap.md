@@ -413,3 +413,12 @@
   执行者隔离层 = **B247**。
 - **（已修，留痕）** `skills/handoff/SKILL.md` 排障表原写「驱动权泄漏 CLI 侧今天无解」，
   B239 后 `card takeover` 已可用、`card release` 也不再是静默 no-op，本轮实测确认并改正。
+- **card wait 的 cursor 持久化与事件回放**：建连快照行（B253）不够用时的下一档——
+  多成员动态子树的 cursor 语义要先想清楚。来源：B253 spec OOS。
+- **`--step` 202 报文对同步已知失败直接回吐**：锦上添花，快照行落地后价值仅剩省一次
+  唤醒。来源：B253 spec OOS。
+- **续派语义改「origin 上存在工作分支即放行、执行机自行 fetch」**：与跨机拒绝报文的
+  原建议对齐；要处理「有产出但未 push」的静默丢产出风险。来源：B254 spec OOS。
+- **codex 权限裁决选择性回发（只批沙箱内执行，with_additional_permissions）**：需开
+  codex 的 exec_permission_approvals 特性；等 B252 只读呈现跑出真实提权请求量再定
+  性价比。来源：B252 spec OOS。
