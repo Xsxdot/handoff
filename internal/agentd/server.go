@@ -39,6 +39,7 @@ import (
 
 	charterwebui "github.com/Xsxdot/charter/graph/webui"
 
+	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/hostapi"
@@ -2236,8 +2237,9 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	facade := ledgerapi.New(st)
 	s.autoLedger = facade
 	s.scheduling = scheduling.New(facadeAsRegistry{f: facade})
+	rooms := collab.New(facade)
 	runner := coordinatorRunner{h: hostapi.New()}
-	s.keystone = keystone.New(runner, roomNarrator{f: facade}, facade, attachLocator{})
+	s.keystone = keystone.New(runner, roomNarrator{c: rooms}, facade, attachLocator{})
 	if s.pty != nil {
 		s.ptyGate = ptyapi.New(s.pty)
 	}
@@ -2324,17 +2326,16 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 }
 
 // roomNarrator 是叙事落点的房间实现：B156.2 房间制已落地，按 keysclient.Narrator
-// 预告的换绑路径把协调者叙事从卡 note 迁到卡房间——薄里程碑指针行
-// （proto.RoomMsgPointer + BySystem，仅系统组件可书），白名单执法仍在 d_collab
-// 的 Send；keystone 不感知差异。凡承重必须落账，通道不再是兜底通道。
+// 预告的换绑路径把协调者叙事从卡 note 迁到卡房间——薄里程碑指针行（仅系统组件
+// 可书）。本路经 d_collab 入站门面的指针专用入口 Service.Pointer：kind=pointer
+// 与 BySystem=true 由 Pointer 自己置，房间解析与只读判定也归 collab 执法；
+// keystone 不感知差异。凡承重必须落账，通道不再是兜底通道。
 type roomNarrator struct {
-	f *ledgerapi.Facade
+	c *collab.Service
 }
 
 func (n roomNarrator) Say(cardID, text string) error {
-	_, err := n.f.RecordRoomMessage(cardID, proto.RoomMessage{
-		Room: cardID, Kind: proto.RoomMsgPointer, Body: text, BySystem: true,
-	}, "keystone")
+	_, err := n.c.Pointer(cardID, proto.RoomMessage{Body: text})
 	return err
 }
 

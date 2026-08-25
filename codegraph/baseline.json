@@ -1,10 +1,10 @@
 {
  "meta": {
   "project": "handoff",
-  "branch": "cards/B156.3-charter-4",
-  "commit": "e2302432c1092ceda1cb1d52f8c55c58fcb90d25",
+  "branch": "cards/B156.3-charter-5",
+  "commit": "2e2b2b37b1252ca0f6d6475f22baeacf34731b8c",
   "scannedAt": "2026-08-26",
-  "generator": "ox-alpha-codegraph-b156.3-backfill"
+  "generator": "ox-alpha-codegraph-b156.3-narrator-rebind"
  },
  "domains": {
   "d_coordination": {
@@ -1471,6 +1471,11 @@
    "label": "api 实体",
    "kind": "模型",
    "domain": "d_ledger"
+  },
+  "k_agentd_roomNarrator": {
+   "label": "agentd.roomNarrator",
+   "kind": "类型方法",
+   "domain": "d_keystone"
   }
  },
  "nodes": {
@@ -76363,7 +76368,7 @@
    "order": 60,
    "name": "Server.SetupAutomation",
    "file": "internal/agentd/server.go",
-   "line": 2235,
+   "line": 2236,
    "signature": "func (s *Server) SetupAutomation(st *ledger.Store)",
    "params": [
     [
@@ -76381,7 +76386,7 @@
    "order": 61,
    "name": "Server.PtyAPI",
    "file": "internal/agentd/server.go",
-   "line": 2247,
+   "line": 2249,
    "signature": "func (s *Server) PtyAPI() *ptyapi.Host",
    "params": [],
    "returns": "*ptyapi.Host",
@@ -76393,7 +76398,7 @@
    "order": 62,
    "name": "Server.SetScheduling",
    "file": "internal/agentd/server.go",
-   "line": 2250,
+   "line": 2252,
    "signature": "func (s *Server) SetScheduling(svc *scheduling.Service)",
    "params": [
     [
@@ -76411,7 +76416,7 @@
    "order": 63,
    "name": "Server.SetKeystone",
    "file": "internal/agentd/server.go",
-   "line": 2253,
+   "line": 2255,
    "signature": "func (s *Server) SetKeystone(svc *keystone.Service)",
    "params": [
     [
@@ -76429,7 +76434,7 @@
    "order": 700,
    "name": "facadeAsRegistry.Get",
    "file": "internal/agentd/server.go",
-   "line": 2272,
+   "line": 2273,
    "signature": "func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error)",
    "params": [
     [
@@ -76452,7 +76457,7 @@
    "order": 701,
    "name": "coordinatorRunner.Resume",
    "file": "internal/agentd/server.go",
-   "line": 2319,
+   "line": 2321,
    "signature": "func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error)",
    "params": [
     [
@@ -76667,10 +76672,10 @@
   },
   "n_agentd_roomNarrator_Say": {
    "kind": "func",
-   "container": "k_agentd_fn",
+   "container": "k_agentd_roomNarrator",
    "name": "roomNarrator.Say",
    "file": "internal/agentd/server.go",
-   "line": 2334,
+   "line": 2337,
    "signature": "func (n roomNarrator) Say(cardID, text string) error",
    "params": [
     [
@@ -76685,7 +76690,7 @@
     ]
    ],
    "returns": "error",
-   "summary": "叙事落点的房间实现：协调者叙事经 RecordRoomMessage 落卡房间指针行，keystone 不感知差异"
+   "summary": "叙事落点的房间实现：经 d_collab 入站门面的指针专用入口 Service.Pointer 落卡房间指针行，kind 与 BySystem 由 Pointer 自置，房间解析与只读判定归 collab；keystone 不感知差异"
   }
  },
  "edges": [
@@ -95668,6 +95673,10 @@
   [
    "n_agentd_facadeAsRegistry_Get",
    "n_ledger_api_Facade_Get"
+  ],
+  [
+   "n_agentd_roomNarrator_Say",
+   "n_collab_Service_Pointer"
   ]
  ],
  "implements": [

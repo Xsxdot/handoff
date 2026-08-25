@@ -384,6 +384,7 @@
     "k_keystone_fn": "d_keystone",
     "k_keystone_model": "d_keystone",
     "k_keysclient_model": "d_keystone",
+    "k_agentd_roomNarrator": "d_keystone",
     "k_hostapi_Host": "d_execution_host",
     "k_hostapi_fn": "d_execution_host",
     "k_hostapi_model": "d_execution_host",

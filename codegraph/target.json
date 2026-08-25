@@ -143,6 +143,18 @@
    "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（keystone→账本）。LedgerView 定义在会话承载侧 internal/keysclient，实现 internal/ledger/api.Facade 由组装点按结构化类型注入；本方向零调用预算——keystone 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。两份门面归一后与 d_collab 共用同一 Facade，三方互不 import。"
   },
   {
+   "from": "d_keystone",
+   "to": "d_collab",
+   "legacyBudget": 0,
+   "interfaces": [
+    "Narrator"
+   ],
+   "entries": [
+    "collab 入站门面"
+   ],
+   "legacyBudgetNote": "B156.3 叙事换绑轮：出站接口缝（keystone→协作房间）。Narrator 定义在使用方侧 internal/keysclient，具体绑定在组装点 roomNarrator——它转调 d_collab 入站门面的指针专用入口 Service.Pointer（kind/BySystem 由 Pointer 自置，房间解析与只读判定归 collab），keystone 生产代码零 import collab；本方向零调用预算。声明与本轮首个消费边同提交落地。"
+  },
+  {
    "from": "d_gateway",
    "to": "d_ledger",
    "legacyBudget": 17,
