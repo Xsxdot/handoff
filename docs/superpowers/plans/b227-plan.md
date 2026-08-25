@@ -85,6 +85,17 @@ review 发现 `TestGitCommonDirNormalizesMainAndLinkedWorktree` 直接比较
 `filepath.Clean` + `filepath.EvalSymlinks` 再比较，并保留主仓库与 linked worktree 的真实
 Git 调用；不改 `GitCommonDir` 实现，不以 `t.Skip` 绕过平台差异。
 
+### 0.4 真机验收修订记录（2026-08-25）
+
+协调者在 Linux 隔离靶子复测发现：只把 git 公共目录加入可写根仍不足以写入 linked
+worktree 的 `FETCH_HEAD` 与 `index.lock`；该工作树私有 git 目录被单独只读挂载。故在
+实现节点补充第三根：由 `git rev-parse --absolute-git-dir` 查询并做绝对化/Clean，不能
+按 `commonDir/worktrees/<repo basename>` 拼接。`newRunState` 同一构造点缓存该目录，
+取证失败 Debug 后以空串跳过；策略根顺序修订为 task tmp、common dir、private git dir，
+原地模式后两者相同则去重。测试补充改名后的 linked worktree 私有目录断言、三根 JSON-RPC
+断言，以及私有目录为空时不追加空串的用例。本文 T1 接口与示例中关于两根/两参的旧文字
+由本修订记录覆盖；hooks 加固半边与 Linux 真机验收仍按原计划不变，后者由协调者执行。
+
 ## 1. 工作项接口与接缝清单
 
 ### T1：codex 计算并缓存 git 公共目录
@@ -99,7 +110,7 @@ Consumes：
 ```go
 func GitTurnStatus(repoPath, startCommit string) (branch, commit string, hasNew bool, err error)
 func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState
-func sandboxPolicy(taskTmp string) map[string]any
+func sandboxPolicy(taskTmp, gitCommonDir, gitDir string) map[string]any
 func (a *Adapter) startTurn(r *runState, text string) error
 func (c *Client) Call(ctx context.Context, method string, params any) (json.RawMessage, error)
 ```
@@ -108,15 +119,16 @@ Produces：
 
 ```go
 func GitCommonDir(repoPath string) (commonDir string, err error)
-func sandboxPolicy(taskTmp, gitCommonDir string) map[string]any
-func SandboxPolicyForTest(taskTmpDir, gitCommonDir string) map[string]any
+func GitDir(repoPath string) (gitDir string, err error)
+func sandboxPolicy(taskTmp, gitCommonDir, gitDir string) map[string]any
+func SandboxPolicyForTest(taskTmpDir, gitCommonDir, gitDir string) map[string]any
 ```
 
-以及 `runState.gitCommonDir string`。`gitCommonDir` 是空串时，策略不得追加该根；
-`newRunState` 必须在唯一构造点调用一次 `GitCommonDir`，Start 与 Resume 继续共同经过
-该构造点。`GitCommonDir` 的返回必须是绝对、Clean 的 common git directory：主仓库的
-相对 `.git` 要展开，linked worktree 返回的绝对 common dir 要原样 Clean；非 git 目录
-返回错误供运行态以 Debug 记录并静默跳过，不能阻断任务。
+以及 `runState.gitCommonDir string`、`runState.gitDir string`。两个目录为空串时，策略
+不得追加对应根；`newRunState` 必须在唯一构造点各调用一次 `GitCommonDir` 与 `GitDir`，
+Start 与 Resume 继续共同经过该构造点。两个函数的返回必须是绝对、Clean 的 git directory；
+主仓库的相对输出要展开，linked worktree 的私有目录不能按工作树 basename 拼接；非 git
+目录或取证失败返回错误供运行态以 Debug 记录并静默跳过，不能阻断任务。
 
 ### T2：agentd git 收口覆盖 hooks
 

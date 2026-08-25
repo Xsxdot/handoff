@@ -26,6 +26,9 @@ func TestNewRunStateCachesGitCommonDirAndSkipsNonGit(t *testing.T) {
 	if r.gitCommonDir != "" {
 		t.Fatalf("非 git 工作目录不得产生可写根，got %q", r.gitCommonDir)
 	}
+	if r.gitDir != "" {
+		t.Fatalf("非 git 工作目录不得产生私有 git 可写根，got %q", r.gitDir)
+	}
 }
 
 func initGitCommonDirRepo(t *testing.T) string {

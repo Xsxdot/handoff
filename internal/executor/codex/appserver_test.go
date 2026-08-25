@@ -172,6 +172,7 @@ func TestSandboxPolicySurvivesClientJSONSerialization(t *testing.T) {
 	const (
 		taskTmp   = "/root/.handoff/tmp/137a7dc9"
 		commonDir = "/srv/repos/handoff/.git"
+		gitDir    = "/srv/repos/handoff/.git/worktrees/task-id"
 	)
 	validated := make(chan error, 1)
 	srv := startFakeServer(t, func(in string) []string {
@@ -200,7 +201,7 @@ func TestSandboxPolicySurvivesClientJSONSerialization(t *testing.T) {
 			return nil
 		}
 		policy := params.SandboxPolicy
-		if len(policy.WritableRoots) != 2 || policy.WritableRoots[0] != taskTmp || policy.WritableRoots[1] != commonDir {
+		if len(policy.WritableRoots) != 3 || policy.WritableRoots[0] != taskTmp || policy.WritableRoots[1] != commonDir || policy.WritableRoots[2] != gitDir {
 			validated <- fmt.Errorf("writableRoots = %#v", policy.WritableRoots)
 			return nil
 		}
@@ -220,7 +221,7 @@ func TestSandboxPolicySurvivesClientJSONSerialization(t *testing.T) {
 	}
 	defer cli.Close()
 	if _, err := cli.Call(ctx, "turn/start", map[string]any{
-		"sandboxPolicy": codex.SandboxPolicyForTest(taskTmp, commonDir),
+		"sandboxPolicy": codex.SandboxPolicyForTest(taskTmp, commonDir, gitDir),
 	}); err != nil {
 		t.Fatalf("Call turn/start: %v", err)
 	}

@@ -36,8 +36,8 @@ func ThreadResumeParamsForTest(threadID, repoPath, developerInstructions string)
 	return buildThreadResumeParams(threadID, repoPath, developerInstructions)
 }
 
-func SandboxPolicyForTest(taskTmpDir, gitCommonDir string) map[string]any {
-	return sandboxPolicy(taskTmpDir, gitCommonDir)
+func SandboxPolicyForTest(taskTmpDir, gitCommonDir, gitDir string) map[string]any {
+	return sandboxPolicy(taskTmpDir, gitCommonDir, gitDir)
 }
 func TaskTmpDirForTest(taskDir string) string     { return taskTmpDir(taskDir) }
 func TmpEnvKVsForTest(taskTmpDir string) []string { return tmpEnvKVs(taskTmpDir) }

@@ -65,3 +65,27 @@ func GitCommonDir(repoPath string) (string, error) {
 	}
 	return filepath.Clean(abs), nil
 }
+
+// GitDir 返回 repoPath 所属工作树的私有 git 目录。
+//
+// 参数：repoPath 是主仓库或 linked worktree 的工作目录。
+// 返回：绝对、Clean 的 git directory；repoPath 非 git 仓库、git 不可用、输出为空
+// 或路径绝对化失败时返回错误。此函数只读 git，不依赖工作树目录名，也不改变配置。
+func GitDir(repoPath string) (string, error) {
+	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--absolute-git-dir").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --absolute-git-dir: %w", err)
+	}
+	privateDir := strings.TrimSpace(string(out))
+	if privateDir == "" {
+		return "", fmt.Errorf("git rev-parse --absolute-git-dir returned empty path")
+	}
+	if !filepath.IsAbs(privateDir) {
+		privateDir = filepath.Join(repoPath, privateDir)
+	}
+	abs, err := filepath.Abs(privateDir)
+	if err != nil {
+		return "", fmt.Errorf("absolute git-dir %q: %w", privateDir, err)
+	}
+	return filepath.Clean(abs), nil
+}

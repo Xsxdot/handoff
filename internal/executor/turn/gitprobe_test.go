@@ -4,6 +4,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor/turn"
@@ -105,6 +106,52 @@ func normalizePathForTest(t *testing.T, path string) string {
 
 func TestGitCommonDirRejectsNonGitPath(t *testing.T) {
 	if got, err := turn.GitCommonDir(t.TempDir()); err == nil || got != "" {
+		t.Fatalf("非 git 目录应返回空路径与错误，got path=%q err=%v", got, err)
+	}
+}
+
+func TestGitDirUsesGitReportedPrivateDir(t *testing.T) {
+	repo, _ := initRepo(t)
+	created := filepath.Join(t.TempDir(), "created-worktree")
+	linked := filepath.Join(t.TempDir(), "renamed-worktree")
+	cmd := exec.Command("git", "-C", repo, "worktree", "add", "-q", "-b", "probe-private-dir", created)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("建立 linked worktree: %v\n%s", err, out)
+	}
+	if err := os.Rename(created, linked); err != nil {
+		t.Fatalf("改名 linked worktree: %v", err)
+	}
+
+	pointer, err := os.ReadFile(filepath.Join(linked, ".git"))
+	if err != nil {
+		t.Fatalf("读取 linked worktree gitdir 指针: %v", err)
+	}
+	const prefix = "gitdir: "
+	privateWant := strings.TrimSpace(strings.TrimPrefix(string(pointer), prefix))
+	if privateWant == string(pointer) {
+		t.Fatalf("linked worktree gitdir 指针格式异常: %q", pointer)
+	}
+
+	got, err := turn.GitDir(linked)
+	if err != nil {
+		t.Fatalf("读取 linked worktree 私有 git 目录: %v", err)
+	}
+	if got := normalizePathForTest(t, got); got != normalizePathForTest(t, privateWant) {
+		t.Fatalf("linked worktree git-dir = %q，want %q", got, privateWant)
+	}
+
+	got, err = turn.GitDir(repo)
+	if err != nil {
+		t.Fatalf("读取主仓库 git 目录: %v", err)
+	}
+	want := normalizePathForTest(t, filepath.Join(repo, ".git"))
+	if got := normalizePathForTest(t, got); got != want {
+		t.Fatalf("主仓库 git-dir = %q，want %q", got, want)
+	}
+}
+
+func TestGitDirRejectsNonGitPath(t *testing.T) {
+	if got, err := turn.GitDir(t.TempDir()); err == nil || got != "" {
 		t.Fatalf("非 git 目录应返回空路径与错误，got path=%q err=%v", got, err)
 	}
 }

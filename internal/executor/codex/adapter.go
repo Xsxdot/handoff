@@ -154,12 +154,18 @@ func tmpEnvKVs(taskTmp string) []string {
 // sandboxPolicy 返回每回合显式下发的沙箱策略。
 //
 // taskTmp 是任务隔离的工具链临时目录；gitCommonDir 是 linked worktree 所需的
-// 共享 git 公共目录。两者按固定顺序进入 writableRoots，空值不占位；其余安全姿态
-// 保持历史值。真正的 gitCommonDir 只在 newRunState 中取一次并缓存，避免每回合重跑 git。
-func sandboxPolicy(taskTmp, gitCommonDir string) map[string]any {
-	roots := []any{}
-	for _, root := range []string{taskTmp, gitCommonDir} {
+// 共享 git 公共目录；gitDir 是当前工作树的私有 git 目录。三者按固定顺序进入
+// writableRoots，空值不占位；原地模式下后两者相同，去重避免同一路径重复声明。
+// 其余安全姿态保持历史值。两个 git 目录只在 newRunState 中取一次并缓存，避免每回合重跑 git。
+func sandboxPolicy(taskTmp, gitCommonDir, gitDir string) map[string]any {
+	roots := make([]any, 0, 3)
+	seen := make(map[string]struct{}, 3)
+	for _, root := range []string{taskTmp, gitCommonDir, gitDir} {
 		if root != "" {
+			if _, ok := seen[root]; ok {
+				continue
+			}
+			seen[root] = struct{}{}
 			roots = append(roots, root)
 		}
 	}
@@ -200,8 +206,10 @@ type runState struct {
 	threadID    string // == sessionId，落 task.ExecutorSession
 	startCommit string
 	// gitCommonDir 是构造运行态时一次性取证的共享 git 公共目录。
-	// 空串表示工作目录非 git 仓库或取证失败；sandboxPolicy 据此不追加该根。
+	// gitDir 是同一时点取证的当前工作树私有 git 目录。
+	// 空串表示工作目录非 git 仓库或取证失败；sandboxPolicy 据此不追加对应根。
 	gitCommonDir string
+	gitDir       string
 
 	proc *Proc
 	cli  *Client
@@ -237,9 +245,10 @@ type runState struct {
 	pricingWarned bool
 }
 
-// newRunState 建一条运行态；git 公共目录在此唯一构造点取证并缓存，Start 与 Resume 共用。
+// newRunState 建一条运行态；两个 git 目录在此唯一构造点取证并缓存，Start 与 Resume 共用。
 func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
 	gitCommonDir := ""
+	gitDir := ""
 	if repoPath != "" {
 		a.log.Debug("读取 git 公共目录", "task", taskID, "repo", repoPath)
 		var err error
@@ -252,9 +261,20 @@ func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
 			a.log.Info("git 公共目录已准备为沙箱可写根", "task", taskID,
 				"repo", repoPath, "common_dir", gitCommonDir)
 		}
+		a.log.Debug("读取 git 私有目录", "task", taskID, "repo", repoPath)
+		gitDir, err = turn.GitDir(repoPath)
+		if err != nil {
+			a.log.Debug("git 私有目录不可用，跳过追加可写根", "task", taskID,
+				"repo", repoPath, "cause", err)
+			gitDir = ""
+		} else {
+			a.log.Info("git 私有目录已准备为沙箱可写根", "task", taskID,
+				"repo", repoPath, "git_dir", gitDir)
+		}
 	}
 	r := &runState{
-		taskID: taskID, taskDir: taskDir, repoPath: repoPath, gitCommonDir: gitCommonDir,
+		taskID: taskID, taskDir: taskDir, repoPath: repoPath,
+		gitCommonDir: gitCommonDir, gitDir: gitDir,
 		evCh:      make(chan executor.AdapterEvent, 64),
 		permTable: newPermTable(),
 		items:     newItemIndex(itemIndexCap),
@@ -486,7 +506,7 @@ func (a *Adapter) startTurn(r *runState, text string) error {
 	ch, err := r.cli.CallAsync(methodTurnStart, map[string]any{
 		"threadId":          r.threadID,
 		"cwd":               r.repoPath,
-		"sandboxPolicy":     sandboxPolicy(taskTmpDir(r.taskDir), r.gitCommonDir),
+		"sandboxPolicy":     sandboxPolicy(taskTmpDir(r.taskDir), r.gitCommonDir, r.gitDir),
 		"approvalPolicy":    "on-request",
 		"approvalsReviewer": "user",
 		"input":             []any{map[string]any{"type": "text", "text": text}},

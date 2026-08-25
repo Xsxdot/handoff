@@ -29,8 +29,9 @@ func TestSandboxPolicyGrantsTaskTmpAndGitCommonDir(t *testing.T) {
 	const (
 		taskTmp   = "/root/.handoff/tmp/137a7dc9"
 		commonDir = "/srv/repos/handoff/.git"
+		gitDir    = "/srv/repos/handoff/.git/worktrees/task-id"
 	)
-	p := codex.SandboxPolicyForTest(taskTmp, commonDir)
+	p := codex.SandboxPolicyForTest(taskTmp, commonDir, gitDir)
 
 	raw, err := json.Marshal(p)
 	if err != nil {
@@ -41,8 +42,8 @@ func TestSandboxPolicyGrantsTaskTmpAndGitCommonDir(t *testing.T) {
 		t.Fatalf("反序列化 sandboxPolicy: %v", err)
 	}
 	roots, ok := wire["writableRoots"].([]any)
-	if !ok || len(roots) != 2 || roots[0] != taskTmp || roots[1] != commonDir {
-		t.Fatalf("JSON writableRoots = %#v，want [%q %q]", wire["writableRoots"], taskTmp, commonDir)
+	if !ok || len(roots) != 3 || roots[0] != taskTmp || roots[1] != commonDir || roots[2] != gitDir {
+		t.Fatalf("JSON writableRoots = %#v，want [%q %q %q]", wire["writableRoots"], taskTmp, commonDir, gitDir)
 	}
 	if wire["excludeSlashTmp"] != true || wire["excludeTmpdirEnvVar"] != true {
 		t.Fatal("两个 exclude 必须保持 true")
@@ -51,7 +52,7 @@ func TestSandboxPolicyGrantsTaskTmpAndGitCommonDir(t *testing.T) {
 		t.Fatal("networkAccess 必须保持 true")
 	}
 
-	emptyRaw, err := json.Marshal(codex.SandboxPolicyForTest(taskTmp, ""))
+	emptyRaw, err := json.Marshal(codex.SandboxPolicyForTest(taskTmp, commonDir, ""))
 	if err != nil {
 		t.Fatalf("序列化无 common-dir 的 sandboxPolicy: %v", err)
 	}
@@ -60,8 +61,8 @@ func TestSandboxPolicyGrantsTaskTmpAndGitCommonDir(t *testing.T) {
 		t.Fatalf("反序列化无 common-dir 的 sandboxPolicy: %v", err)
 	}
 	emptyRoots, ok := emptyWire["writableRoots"].([]any)
-	if !ok || len(emptyRoots) != 1 || emptyRoots[0] != taskTmp {
-		t.Fatalf("无 common-dir 时 writableRoots = %#v，want [%q]", emptyWire["writableRoots"], taskTmp)
+	if !ok || len(emptyRoots) != 2 || emptyRoots[0] != taskTmp || emptyRoots[1] != commonDir {
+		t.Fatalf("无私有 git-dir 时 writableRoots = %#v，want [%q %q]", emptyWire["writableRoots"], taskTmp, commonDir)
 	}
 }
 
