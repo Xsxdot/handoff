@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "main",
-  "commit": "dd2220e1c4f3f9b90a529b4e61ac79da65d57a11",
+  "commit": "acfd5dcd8e101a280672832e390e9eb11b122e84",
   "scannedAt": "2026-08-24",
   "generator": "codex-codegraph-b231-full-rescan"
  },
@@ -1607,6 +1607,38 @@
    "name": "handoff diff",
    "file": "cmd/diff.go",
    "line": 21
+  },
+  "e_cli_discipline": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 89,
+   "name": "handoff discipline",
+   "file": "cmd/discipline.go",
+   "line": 16
+  },
+  "e_cli_discipline_get": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 91,
+   "name": "handoff discipline get",
+   "file": "cmd/discipline.go",
+   "line": 50
+  },
+  "e_cli_discipline_list": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 90,
+   "name": "handoff discipline list",
+   "file": "cmd/discipline.go",
+   "line": 23
+  },
+  "e_cli_discipline_put": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 92,
+   "name": "handoff discipline put",
+   "file": "cmd/discipline.go",
+   "line": 74
   },
   "e_cli_dispatch": {
    "kind": "entry",
@@ -3254,8 +3286,8 @@
    "order": 1050,
    "name": "dispatchRequest",
    "file": "internal/agentd/server.go",
-   "line": 1084,
-   "summary": "dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传，",
+   "line": 1096,
+   "summary": "dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传）。",
    "fields": [
     [
      "ProjectID",
@@ -3298,6 +3330,21 @@
      ""
     ],
     [
+     "Discipline",
+     "string",
+     "点名的纪律块角色名；空=未点名（只注入平台层）"
+    ],
+    [
+     "DisciplineText",
+     "string",
+     "协调者侧缝 1 组装好的纪律正文；本机收文即用不再解析"
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     "命中的账本版本，随任务落盘供回放"
+    ],
+    [
      "Model",
      "string",
      ""
@@ -3315,6 +3362,16 @@
     [
      "Base",
      "string",
+     ""
+    ],
+    [
+     "ResolveDefaultBase",
+     "bool",
+     ""
+    ],
+    [
+     "LocalBaseBranch",
+     "bool",
      ""
     ],
     [
@@ -4731,7 +4788,7 @@
    "name": "DispatchOpts",
    "file": "internal/client/client.go",
    "line": 715,
-   "summary": "DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应。",
+   "summary": "DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应；B229 增正文下发三件套。",
    "fields": [
     [
      "ProjectID",
@@ -4774,6 +4831,21 @@
      ""
     ],
     [
+     "Discipline",
+     "string",
+     "点名角色名；仅审计展示"
+    ],
+    [
+     "DisciplineText",
+     "string",
+     "协调者侧缝 1 组装好的正文"
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     "命中的账本版本"
+    ],
+    [
      "Model",
      "string",
      ""
@@ -4791,6 +4863,16 @@
     [
      "Base",
      "string",
+     ""
+    ],
+    [
+     "ResolveDefaultBase",
+     "bool",
+     ""
+    ],
+    [
+     "LocalBaseBranch",
+     "bool",
      ""
     ],
     [
@@ -4948,8 +5030,91 @@
    "order": 26,
    "name": "dispatchRequest",
    "file": "cmd/card_dispatch.go",
-   "line": 29,
+   "line": 32,
    "signature": "type dispatchRequest struct {",
+   "summary": "card dispatch 的派发前参数包（测试缝 dispatchTransportWithOpts 的入参）。",
+   "fields": [
+    [
+     "prompt",
+     "string",
+     ""
+    ],
+    [
+     "branch",
+     "string",
+     ""
+    ],
+    [
+     "newWorktree",
+     "bool",
+     ""
+    ],
+    [
+     "existingBranch",
+     "string",
+     ""
+    ],
+    [
+     "target",
+     "string",
+     ""
+    ],
+    [
+     "project",
+     "string",
+     ""
+    ],
+    [
+     "executor",
+     "string",
+     ""
+    ],
+    [
+     "discipline",
+     "string",
+     "点名的角色名；空=未点名，仅作审计展示"
+    ],
+    [
+     "disciplineText",
+     "string",
+     "缝 1 组装好的正文，随请求下发"
+    ],
+    [
+     "disciplineVersion",
+     "int",
+     "命中的账本版本"
+    ],
+    [
+     "model",
+     "string",
+     ""
+    ],
+    [
+     "planB64",
+     "string",
+     ""
+    ],
+    [
+     "planName",
+     "string",
+     ""
+    ],
+    [
+     "base",
+     "string",
+     ""
+    ],
+    [
+     "resolveDefaultBase",
+     "bool",
+     ""
+    ],
+    [
+     "localBaseBranch",
+     "bool",
+     ""
+    ]
+   ],
    "modelKind": "dto"
   },
   "m_cmdexitCodeError": {
@@ -5976,7 +6141,7 @@
    "file": "internal/config/config.go",
    "line": 161,
    "signature": "type LedgerConfig struct {",
-   "summary": "LedgerConfig 账本域（任务卡）中心库配置。只描述本机如何连库，",
+   "summary": "LedgerConfig 账本域配置；Enabled 键已退休（B229 §2.6）：值被忽略，加载到该键时 Load 会 Warn。",
    "modelKind": "config"
   },
   "m_config_ListenClass": {
@@ -6148,43 +6313,72 @@
    "order": 59,
    "name": "Block",
    "file": "internal/discipline/discipline.go",
-   "line": 59,
+   "line": 22,
    "signature": "type Block struct {",
-   "summary": "Block 是一次纪律解析的产物。",
+   "summary": "Block 是一次纪律组装的产物（正文 + 人可读来源标注）；B229 起来源收窄为账本/临时正文/平台层三种。",
    "modelKind": "dto"
   },
-  "m_discipline_Builtin": {
+  "m_discipline_DisciplineLookup": {
    "kind": "model",
    "container": "k_discipline_model",
-   "order": 118,
-   "name": "Builtin",
-   "file": "internal/discipline/discipline.go",
-   "line": 118,
-   "signature": "type Builtin struct {",
-   "summary": "Builtin 是一份内置纪律块（Tier + 正文）。控制台把它作为只读条目展示，",
-   "modelKind": "dto"
+   "order": 120,
+   "name": "DisciplineLookup",
+   "file": "internal/discipline/dispatch.go",
+   "line": 34,
+   "signature": "type DisciplineLookup func(name string) (version int, body string, err error)",
+   "summary": "缝 1 对账本的窄依赖视图（函数注入）：按名字取最新版正文；本包不 import 账本包，d_policy 对 d_ledger 零依赖"
   },
-  "m_discipline_FileInfo": {
+  "m_discipline_DisciplineRef": {
    "kind": "model",
    "container": "k_discipline_model",
-   "order": 39,
-   "name": "FileInfo",
-   "file": "internal/discipline/files.go",
-   "line": 39,
-   "signature": "type FileInfo struct {",
-   "summary": "FileInfo 是纪律块目录下的一个文件（不含正文）。",
-   "modelKind": "dto"
+   "order": 33,
+   "name": "DisciplineRef",
+   "file": "internal/discipline/dispatch.go",
+   "line": 42,
+   "summary": "点名一次纪律来源：Name 经 lookup 取账本最新版；RawText 直发不落库（版本 0）；都空=只平台层",
+   "fields": [
+    [
+     "Name",
+     "string",
+     "角色名"
+    ],
+    [
+     "RawText",
+     "string",
+     "临时正文；与 Name 互斥"
+    ]
+   ]
   },
-  "m_discipline_Resolver": {
+  "m_discipline_ResolvedDiscipline": {
    "kind": "model",
    "container": "k_discipline_model",
-   "order": 35,
-   "name": "Resolver",
-   "file": "internal/discipline/resolver.go",
-   "line": 35,
-   "signature": "type Resolver struct {",
-   "summary": "Resolver 按 executor 名裁出该次派发要注入的纪律块。",
-   "modelKind": "dto"
+   "order": 34,
+   "name": "ResolvedDiscipline",
+   "file": "internal/discipline/dispatch.go",
+   "line": 48,
+   "summary": "随派发请求下发的纪律正文及其出处",
+   "fields": [
+    [
+     "Text",
+     "string",
+     "三层组装后的完整正文"
+    ],
+    [
+     "Source",
+     "string",
+     "人可读来源标注"
+    ],
+    [
+     "Name",
+     "string",
+     "点名角色名；未点名为空"
+    ],
+    [
+     "Version",
+     "int",
+     "账本版本号；未点名/临时正文为 0"
+    ]
+   ]
   },
   "m_engine_Engine": {
    "kind": "model",
@@ -7795,6 +7989,37 @@
    ],
    "modelKind": "entity"
   },
+  "m_ledger_Discipline": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 27,
+   "name": "Discipline",
+   "file": "internal/ledger/disciplines.go",
+   "line": 23,
+   "summary": "一份版本化的纪律块正文（账本权威副本），与 dispatch_templates 同构不可变版本化",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Version",
+     "int",
+     "只增不改"
+    ],
+    [
+     "Body",
+     "string",
+     "正文；写入时拒绝空与超 64KiB"
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
   "m_ledger_DispatchSnapshot": {
    "kind": "model",
    "container": "k_ledger_model",
@@ -7802,7 +8027,7 @@
    "name": "DispatchSnapshot",
    "file": "internal/ledger/events.go",
    "line": 115,
-   "summary": "DispatchSnapshot 派发事件快照：模板版本 + 纪律块角色名 + 有效执行器/模型 + 落点。",
+   "summary": "DispatchSnapshot 派发事件快照；B229 增 discipline_version 键，恢复「哪一版正文」可回放性。",
    "fields": [
     [
      "Template",
@@ -7820,6 +8045,11 @@
      ""
     ],
     [
+     "DisciplineVersion",
+     "int",
+     "命中的账本版本；老事件无此键反序列化为 0"
+    ],
+    [
      "Target",
      "string",
      ""
@@ -7831,6 +8061,16 @@
     ],
     [
      "Branch",
+     "string",
+     ""
+    ],
+    [
+     "Executor",
+     "string",
+     ""
+    ],
+    [
+     "Model",
      "string",
      ""
     ],
@@ -8859,8 +9099,8 @@
    "order": 25,
    "name": "DispatchOpts",
    "file": "internal/ledgerstep/dispatch.go",
-   "line": 26,
-   "summary": "DispatchOpts 是 Transport 的完整派发请求。PlanPath 已在 ViaTemplate 中",
+   "line": 27,
+   "summary": "DispatchOpts 是 Transport 的完整派发请求；B229 增 DisciplineText/DisciplineVersion 下发通道。",
    "fields": [
     [
      "Prompt",
@@ -8915,10 +9155,35 @@
     [
      "Discipline",
      "string",
+     "点名角色名；仅透传与记账"
+    ],
+    [
+     "DisciplineText",
+     "string",
+     "协调者侧缝 1 组装好的正文，随请求下发"
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     "命中的账本版本号；未点名或临时正文为 0"
+    ],
+    [
+     "OutputPath",
+     "string",
      ""
     ],
     [
      "NewWorktree",
+     "bool",
+     ""
+    ],
+    [
+     "ResolveDefaultBase",
+     "bool",
+     ""
+    ],
+    [
+     "LocalBaseBranch",
      "bool",
      ""
     ]
@@ -8931,7 +9196,7 @@
    "order": 34,
    "name": "DispatchResult",
    "file": "internal/ledgerstep/dispatch.go",
-   "line": 43,
+   "line": 49,
    "summary": "DispatchResult 是模板派发完成后的回显与审计信息。",
    "fields": [
     [
@@ -8968,6 +9233,11 @@
      "DisciplineName",
      "string",
      ""
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     "命中的账本版本；未点名/临时正文为 0"
     ]
    ],
    "modelKind": "dto"
@@ -8978,7 +9248,7 @@
    "order": 45,
    "name": "Dispatcher",
    "file": "internal/ledgerstep/dispatch.go",
-   "line": 54,
+   "line": 62,
    "summary": "Dispatcher 持有模板派发需要的账本、传输和审计 actor。",
    "fields": [
     [
@@ -8995,6 +9265,16 @@
      "Actor",
      "string",
      ""
+    ],
+    [
+     "DisciplineText",
+     "string",
+     "调用方装配时经缝 1 解析好的正文；数据字段不是解析函数"
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     "命中的账本版本"
     ]
    ],
    "modelKind": "dto"
@@ -12406,7 +12686,7 @@
    "name": "Machine",
    "file": "internal/proto/projects.go",
    "line": 119,
-   "summary": "Machine 是 GET /api/machines 的单台投影。",
+   "summary": "Machine 是 GET /api/machines 的单台投影；B229 增 DisciplinesSupported 投影位（原样搬运含 nil）。",
    "fields": [
     [
      "Name",
@@ -12462,6 +12742,16 @@
      "PtySupported",
      "*bool",
      ""
+    ],
+    [
+     "LaunchersSupported",
+     "*bool",
+     ""
+    ],
+    [
+     "DisciplinesSupported",
+     "*bool",
+     "从对端 StatusResp 投影；nil 按不支持处置"
     ],
     [
      "RevealSupported",
@@ -13639,7 +13929,7 @@
    "name": "StatusResp",
    "file": "internal/proto/status.go",
    "line": 155,
-   "summary": "StatusResp 是 GET /api/status 的响应。",
+   "summary": "StatusResp 是 GET /api/status 的响应；B229 增 DisciplinesSupported 能力位（nil/false=拒发，方向与 LaunchersSupported 同向）。",
    "fields": [
     [
      "Version",
@@ -13712,6 +14002,16 @@
      ""
     ],
     [
+     "LaunchersSupported",
+     "*bool",
+     ""
+    ],
+    [
+     "DisciplinesSupported",
+     "*bool",
+     "接收下发纪律正文的能力位；缺席(nil)=对端太老，按不支持处置"
+    ],
+    [
      "RevealSupported",
      "*bool",
      ""
@@ -13732,7 +14032,7 @@
    "name": "Task",
    "file": "internal/proto/proto.go",
    "line": 220,
-   "summary": "Task 表示一个 handoff 任务。",
+   "summary": "Task 表示一个 handoff 任务；B229 增 DisciplineVersion 落盘字段（版本号不落盘，「哪一版正文」重启后无从回答）。",
    "fields": [
     [
      "ID",
@@ -13805,6 +14105,16 @@
      ""
     ],
     [
+     "DisciplineName",
+     "string",
+     ""
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     "命中的账本版本；老任务为 0"
+    ],
+    [
      "WorkDir",
      "string",
      ""
@@ -13852,6 +14162,11 @@
     [
      "Cumulative",
      "*Cumulative",
+     ""
+    ],
+    [
+     "Timing",
+     "*TaskTiming",
      ""
     ],
     [
@@ -17641,7 +17956,7 @@
    "order": 211,
    "name": "Machine",
    "file": "web/src/api/types.ts",
-   "line": 222,
+   "line": 226,
    "signature": "interface Machine",
    "summary": "Machine 是 GET /api/machines 的单台投影。W3a §4。",
    "fields": [
@@ -17658,7 +17973,7 @@
     [
      "relay",
      "string",
-     "relay 节点名；空=直连形态。与 addr 互斥（配置层保证）。"
+     "relay 节点名；空=直连形态"
     ],
     [
      "reachable",
@@ -17683,7 +17998,7 @@
     [
      "probe_ms",
      "number",
-     "本机恒 0（进程内直查）"
+     "本机恒 0"
     ],
     [
      "active_tasks",
@@ -17698,22 +18013,32 @@
     [
      "pty_supported",
      "boolean | null",
-     "pty_supported 三态：缺席/null = 对端没上报（**不是**不支持）， false = 平台明确不支持，true = 支持。"
+     "缺席/null=对端没上报（不是不支持）"
+    ],
+    [
+     "launchers_supported",
+     "boolean | null",
+     "缺席/null 按不支持处置（与 pty 相反）"
+    ],
+    [
+     "disciplines_supported",
+     "boolean | null",
+     "缺席/null 按不支持处置（拒发），与 launchers 同向"
     ],
     [
      "reveal_supported",
      "boolean | null",
-     "reveal_supported 三态同 pty_supported：缺席/null = 对端没上报（**不是**不支持）。 注意它只是**平台**支持度——真能不能揭示还要看浏览器是不是和 agentd 在同一台 机器上，那一层由 FileTree 用 location.hostname 判（spec §4.3）。"
+     "缺席/null=对端没上报"
     ],
     [
      "upgrade",
      "MachineUpgrade",
-     "upgrade 是这台机器最近一次升级的状态；本机恒缺席（本机版本走薄壳同步路）。"
+     "最近一次升级状态；本机恒缺席"
     ],
     [
      "scratch_root",
      "string",
-     "scratch_root 是这台机器的草稿区路径，探活时从对端 StatusResp 投影。 缺席 = 不支持临时文件（老 agentd 或目录建不出来），前端不渲染入口。"
+     "草稿区路径投影；缺席=不支持临时文件"
     ]
    ],
    "modelKind": "dto"
@@ -18458,7 +18783,7 @@
    "order": 352,
    "name": "StatusResp",
    "file": "web/src/api/types.ts",
-   "line": 370,
+   "line": 378,
    "signature": "interface StatusResp",
    "fields": [
     [
@@ -18504,12 +18829,22 @@
     [
      "scratch_root",
      "string",
-     "scratch_root 是草稿区绝对路径；缺席 = 这台 agentd 不支持临时文件。"
+     "缺席=不支持临时文件"
     ],
     [
      "pty_supported",
      "boolean",
-     "缺席 = 对端 agentd 没上报（版本过旧），**不等于 false**。见 types 头注释的三态约定。"
+     "缺席=对端没上报（不等于 false）"
+    ],
+    [
+     "launchers_supported",
+     "boolean",
+     "缺席按不支持处置"
+    ],
+    [
+     "disciplines_supported",
+     "boolean",
+     "缺席按不支持处置（拒发）"
     ],
     [
      "reveal_supported",
@@ -18550,6 +18885,7 @@
    "file": "web/src/api/types.ts",
    "line": 15,
    "signature": "interface Task",
+   "summary": "TS 侧 Task 此前漏声明 discipline_name，B229 一并补齐并新增 discipline_version。",
    "fields": [
     [
      "id",
@@ -18617,6 +18953,16 @@
      ""
     ],
     [
+     "discipline_name",
+     "string",
+     "可选；派发点名的角色名"
+    ],
+    [
+     "discipline_version",
+     "number",
+     "可选；命中的账本版本"
+    ],
+    [
      "work_dir",
      "string",
      ""
@@ -18649,32 +18995,37 @@
     [
      "done_note",
      "string",
-     "归档时审核者留的完成说明（handoff done --note）；\"\"=未留说明或归档于该功能之前"
+     "归档时审核者留的完成说明；\"\"=未留说明"
     ],
     [
      "actual_model",
      "string",
-     "executor 报回的实际模型名；缺省=还没报（与入参 model 不是一回事）"
+     "executor 报回的实际模型名；缺省=还没报"
     ],
     [
      "usage",
      "Usage",
-     "当前 context 占用；缺省=还没有任何一次模型调用完成"
+     "当前 context 占用；缺省=还没有完成的模型调用"
     ],
     [
      "cumulative",
      "Cumulative",
-     "累计消耗；缺省=还没有账目，或本次是列表读取"
+     "累计消耗；缺省=还没有账目"
+    ],
+    [
+     "timing",
+     "TaskTiming",
+     "耗时聚合；缺省=还没有耗时账目"
     ],
     [
      "machine",
      "string",
-     "\"\"=本机；否则为本机 cfg.Targets 的键，由汇总方盖章（W3a §3）"
+     "\"\"=本机；否则为汇总方盖章的机器键"
     ],
     [
      "project_id",
      "string",
-     "归属项目；未归属为 \"\"（W3a §1.3）"
+     "归属项目；未归属为 \"\""
     ]
    ],
    "modelKind": "dto"
@@ -21435,7 +21786,7 @@
    "order": 622,
    "name": "Manager.Dispatch",
    "file": "internal/agentd/manager.go",
-   "line": 681,
+   "line": 679,
    "signature": "func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error)",
    "params": [
     [
@@ -21450,7 +21801,7 @@
     ]
    ],
    "returns": "task *proto.Task, err error",
-   "summary": "Dispatch 派发一个新任务：准备任务分支 → 建任务 → 建 taskDir 写 plan → Adapter.Start →",
+   "summary": "Dispatch 派发一个新任务：B229 起纪律正文收文即用（点名而正文缺席=拒派），先落盘任务目录 discipline.md 再启动 executor。",
    "tests": [
     {
      "name": "TestRecoverMidTask",
@@ -21950,7 +22301,7 @@
    "order": 3251,
    "name": "Manager.ResumeTask",
    "file": "internal/agentd/manager.go",
-   "line": 3331,
+   "line": 3367,
    "signature": "func (m *Manager) ResumeTask(taskID string) bool {",
    "summary": "ResumeTask 恢复 agentd 重启前已在执行的任务：探测执行器存活；存活则经 adapter"
   },
@@ -23109,6 +23460,16 @@
     }
    ]
   },
+  "n_agentd_Manager_loadPersistedDiscipline": {
+   "kind": "func",
+   "container": "k_agentd_Manager",
+   "order": 3253,
+   "name": "Manager.loadPersistedDiscipline",
+   "file": "internal/agentd/manager.go",
+   "line": 214,
+   "signature": "func (m *Manager) loadPersistedDiscipline(taskID string) (string, error)",
+   "summary": "读首派落盘的纪律正文（\u003cDataDir\u003e/tasks/\u003cid\u003e/discipline.md）；文件不存在按错误原样返回，Cold 续接点名任务据此拒绝"
+  },
   "n_agentd_Manager_markApproverInflight": {
    "kind": "func",
    "container": "k_agentd_Manager",
@@ -23598,16 +23959,6 @@
    ],
    "summary": "relayDenyGuidance 把协调者的拒绝原因作为一条普通消息下发给 executor，开新回合。"
   },
-  "n_agentd_Manager_resolveDisciplineFor": {
-   "kind": "func",
-   "container": "k_agentd_Manager",
-   "order": 359,
-   "name": "Manager.resolveDisciplineFor",
-   "file": "internal/agentd/manager.go",
-   "line": 359,
-   "signature": "func (m *Manager) resolveDisciplineFor(name, execName string) (discipline.Block, error) {",
-   "summary": "resolveDisciplineFor 按「有名字用名字、无名字按 executor 兜底」解析并组装纪律块。"
-  },
   "n_agentd_Manager_resolveExecutor": {
    "kind": "func",
    "container": "k_agentd_Manager",
@@ -23724,7 +24075,7 @@
    "order": 1156,
    "name": "Manager.resumeForContinue",
    "file": "internal/agentd/manager.go",
-   "line": 1247,
+   "line": 1280,
    "signature": "func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad executor.Adapter) error",
    "params": [
     [
@@ -24231,6 +24582,16 @@
     ]
    ],
    "summary": "waitQuestion 阻塞等待提问工单的回答，把回答原文原样透传给 executor 并回迁 running。"
+  },
+  "n_agentd_Manager_writeTaskDirFile": {
+   "kind": "func",
+   "container": "k_agentd_Manager",
+   "order": 3252,
+   "name": "Manager.writeTaskDirFile",
+   "file": "internal/agentd/manager.go",
+   "line": 201,
+   "signature": "func (m *Manager) writeTaskDirFile(dir, name string, data []byte) error",
+   "summary": "向任务目录写文件（0600），走测试缝或 os.WriteFile；纪律正文落盘先于 executor 启动的顺序性质由它承载"
   },
   "n_agentd_ManualWorktreeRoot": {
    "kind": "func",
@@ -24793,8 +25154,8 @@
    "order": 267,
    "name": "NewManager",
    "file": "internal/agentd/manager.go",
-   "line": 267,
-   "signature": "func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, discMapping func() map[string]string, envMapping func() map[string]string, approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager",
+   "line": 300,
+   "signature": "func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config, envMapping func() map[string]string, approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager",
    "params": [
     [
      "st",
@@ -24817,23 +25178,8 @@
      ""
     ],
     [
-     "discMapping",
-     "map[string]string",
-     ""
-    ],
-    [
-     "func()",
-     "map[string]string",
-     ""
-    ],
-    [
      "envMapping",
-     "map[string]string",
-     ""
-    ],
-    [
-     "func()",
-     "map[string]string",
+     "func() map[string]string",
      ""
     ],
     [
@@ -24853,7 +25199,7 @@
     ]
    ],
    "returns": "*Manager",
-   "summary": "NewManager 创建任务管理器。",
+   "summary": "NewManager 创建任务管理器；B229 起不再持有 discipline.Resolver（收文即用），discMapping 参数删除。",
    "tests": [
     {
      "name": "TestDispatchExecutorStartFailureReturnsReason",
@@ -26071,10 +26417,10 @@
    "order": 72,
    "name": "Server.disciplineBindings",
    "file": "internal/agentd/discipline.go",
-   "line": 72,
+   "line": 70,
    "signature": "func (s *Server) disciplineBindings() []proto.DisciplineBinding",
    "returns": "[]proto.DisciplineBinding",
-   "summary": "disciplineBindings 把「已注册的 executor ∪ 配置里已出现的键」折成档位列表，按名字升序。"
+   "summary": "disciplineBindings 把「已注册的 executor ∪ 配置里已出现的键」折成档位列表；DefaultTier 恒空串（内置档位表已随 B229 删除）。"
   },
   "n_agentd_Server_envBindings": {
    "kind": "func",
@@ -26653,7 +26999,7 @@
    "order": 111,
    "name": "Server.handleDisciplineFileRead",
    "file": "internal/agentd/discipline.go",
-   "line": 111,
+   "line": 109,
    "signature": "func (s *Server) handleDisciplineFileRead(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -26667,7 +27013,7 @@
      ""
     ]
    ],
-   "summary": "handleDisciplineFileRead 处理 GET /api/discipline/file?name=[\u0026machine=]。"
+   "summary": "handleDisciplineFileRead 处理 GET /api/discipline/file：B229 P4 裁决(a)拒服务（410），指路 handoff discipline put。"
   },
   "n_agentd_Server_handleDisciplineFileWrite": {
    "kind": "func",
@@ -26675,7 +27021,7 @@
    "order": 146,
    "name": "Server.handleDisciplineFileWrite",
    "file": "internal/agentd/discipline.go",
-   "line": 146,
+   "line": 122,
    "signature": "func (s *Server) handleDisciplineFileWrite(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -26689,7 +27035,7 @@
      ""
     ]
    ],
-   "summary": "handleDisciplineFileWrite 处理 PUT /api/discipline/file?name=[\u0026machine=]。"
+   "summary": "handleDisciplineFileWrite 处理 PUT /api/discipline/file：拒服务（410），绝不在磁盘留下新文件。"
   },
   "n_agentd_Server_handleDisciplineGet": {
    "kind": "func",
@@ -26697,7 +27043,7 @@
    "order": 35,
    "name": "Server.handleDisciplineGet",
    "file": "internal/agentd/discipline.go",
-   "line": 35,
+   "line": 43,
    "signature": "func (s *Server) handleDisciplineGet(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -26711,7 +27057,7 @@
      ""
     ]
    ],
-   "summary": "handleDisciplineGet 处理 GET /api/discipline[?machine=]。"
+   "summary": "handleDisciplineGet 处理 GET /api/discipline[?machine=]；Builtins/Files 恒为空数组（类型保留防 TS 断裂），Bindings 照常。"
   },
   "n_agentd_Server_handleDisciplineMapping": {
    "kind": "func",
@@ -26719,7 +27065,7 @@
    "order": 212,
    "name": "Server.handleDisciplineMapping",
    "file": "internal/agentd/discipline.go",
-   "line": 212,
+   "line": 161,
    "signature": "func (s *Server) handleDisciplineMapping(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -26733,7 +27079,7 @@
      ""
     ]
    ],
-   "summary": "handleDisciplineMapping 处理 PUT /api/discipline/mapping[?machine=]。"
+   "summary": "handleDisciplineMapping 整段替换机器级 discipline 映射段；保存语义不动（③层 Out of Scope），file 档仍要求目标文件可读。"
   },
   "n_agentd_Server_handleDisciplineNames": {
    "kind": "func",
@@ -26741,9 +27087,9 @@
    "order": 566,
    "name": "Server.handleDisciplineNames",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 642,
+   "line": 645,
    "signature": "func (s *Server) handleDisciplineNames(w http.ResponseWriter, r *http.Request) {",
-   "summary": "handleDisciplineNames 列出可选的纪律块名：内置角色 + DataDir 下的自定义文件。"
+   "summary": "handleDisciplineNames 列出可选的纪律块名：B229 起权威副本在账本，经 ListDisciplineNames 返回；账本读不了如实 500。"
   },
   "n_agentd_Server_handleDispatch": {
    "kind": "func",
@@ -26751,7 +27097,7 @@
    "order": 1075,
    "name": "Server.handleDispatch",
    "file": "internal/agentd/server.go",
-   "line": 1116,
+   "line": 1132,
    "signature": "func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -27602,7 +27948,7 @@
    "order": 631,
    "name": "Server.handleStatus",
    "file": "internal/agentd/server.go",
-   "line": 659,
+   "line": 662,
    "signature": "func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -27616,7 +27962,7 @@
      ""
     ]
    ],
-   "summary": "handleStatus 返回本 agentd 的可用性与身份信息（handoff status 的数据源）。",
+   "summary": "handleStatus 返回本 agentd 的可用性与身份信息；B229 起上报 DisciplinesSupported 能力位（与实现同生同死四件事核对单）。",
    "tests": [
     {
      "name": "TestStatusReportsPtySupported",
@@ -28286,7 +28632,7 @@
    "line": 78,
    "signature": "func (s *Server) localMachine() proto.Machine",
    "returns": "proto.Machine",
-   "summary": "localMachine 投影本机：进程内直查，不自拨 HTTP（自拨会在 agentd 忙时把",
+   "summary": "localMachine 投影本机：进程内直查，不自拨 HTTP；B229 起就地填写 DisciplinesSupported=true（与本机实现同生同死）。",
    "tests": [
     {
      "name": "TestLocalMachineReportsRevealSupported",
@@ -28565,6 +28911,16 @@
      "file": "internal/agentd/pty_api_test.go:166"
     }
    ]
+  },
+  "n_agentd_Server_resolveStepDiscipline": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1815,
+   "name": "Server.resolveStepDiscipline",
+   "file": "internal/agentd/cardstep.go",
+   "line": 128,
+   "signature": "func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (discipline.ResolvedDiscipline, error)",
+   "summary": "环节派发的缝 1 收口：按与 ViaTemplate 同序取有效（角色名，目标机），探能力位并经 ResolveDispatch 产出正文；拒发发生在 goroutine 启动之前"
   },
   "n_agentd_Server_resolveWorkspace": {
    "kind": "func",
@@ -28847,9 +29203,9 @@
    "order": 39,
    "name": "Server.startCardStep",
    "file": "internal/agentd/cardstep.go",
-   "line": 41,
+   "line": 44,
    "signature": "func (s *Server) startCardStep(cardID, node, actor string) error {",
-   "summary": "startCardStep 装配并异步启动一个卡节点。"
+   "summary": "startCardStep 装配并异步启动一个卡节点；B229 起在同步段完成缝 1 纪律解析，拒发发生在 goroutine 启动之前。"
   },
   "n_agentd_Server_stepTransport": {
    "kind": "func",
@@ -28857,7 +29213,7 @@
    "order": 94,
    "name": "Server.stepTransport",
    "file": "internal/agentd/cardstep.go",
-   "line": 102,
+   "line": 173,
    "signature": "func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {"
   },
   "n_agentd_Server_swapConf": {
@@ -30399,7 +30755,7 @@
    "order": 143,
    "name": "fillFromStatus",
    "file": "internal/agentd/machines.go",
-   "line": 145,
+   "line": 149,
    "signature": "func fillFromStatus(m *proto.Machine, st *proto.StatusResp)",
    "params": [
     [
@@ -30413,7 +30769,7 @@
      ""
     ]
    ],
-   "summary": "fillFromStatus 把 GET /api/status 的响应投影进机器条目。",
+   "summary": "fillFromStatus 把 GET /api/status 的响应投影进机器条目；能力位原样搬运含 nil（对端没上报=按不支持处置）。",
    "tests": [
     {
      "name": "TestFillFromStatusCarriesRevealSupported",
@@ -31110,6 +31466,16 @@
    "line": 114,
    "signature": "func ledgerNodeWire(node ledger.NodeDef) proto.NodeDef",
    "returns": "proto.NodeDef"
+  },
+  "n_agentd_legacyDisciplineFilePath": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 2822,
+   "name": "legacyDisciplineFilePath",
+   "file": "internal/agentd/discipline.go",
+   "line": 135,
+   "signature": "func legacyDisciplineFilePath(dataDir, name string) string",
+   "summary": "换算机器级映射指向的旧文件路径（只读校验用）；PUT /api/discipline/mapping 的保存语义不动（B229 契约 §2.7，③层映射 Out of Scope），目录布局知识内联于此并注明来历，避免误以为它可复用为新解析入口"
   },
   "n_agentd_localIPs": {
    "kind": "func",
@@ -33825,6 +34191,16 @@
    "returns": "error",
    "summary": "validateEntryName 校验新条目名：空、.、..、含 / 或 \\、含 NUL 字节一律"
   },
+  "n_agentd_validateLegacyDisciplineFileName": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 2823,
+   "name": "validateLegacyDisciplineFileName",
+   "file": "internal/agentd/discipline.go",
+   "line": 141,
+   "signature": "func validateLegacyDisciplineFileName(name string) error",
+   "summary": "校验映射里的文件名仍是「纯文件名」，与退役前 resolvePath 的判据一致（拒分隔符/./..），保存语义不动的一部分"
+  },
   "n_agentd_validateProjectName": {
    "kind": "func",
    "container": "k_agentd_fn",
@@ -36227,7 +36603,7 @@
    "order": 729,
    "name": "Client.Dispatch",
    "file": "internal/client/client.go",
-   "line": 752,
+   "line": 757,
    "signature": "func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error)",
    "params": [
     [
@@ -38856,7 +39232,8 @@
      ""
     ]
    ],
-   "returns": "error"
+   "returns": "error",
+   "summary": "agentd 启动命令；B229 起账本域恒开（setupLedger 提取），NewManager 不再传 discMapping。"
   },
   "n_cmd_askDecision": {
    "kind": "func",
@@ -39054,7 +39431,7 @@
    "order": 155,
    "name": "cardDispatchCmd.RunE",
    "file": "cmd/card_dispatch.go",
-   "line": 156,
+   "line": 234,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -39068,7 +39445,8 @@
      ""
     ]
    ],
-   "returns": "error"
+   "returns": "error",
+   "summary": "按模板派发入口；B229 起认领前经 PreflightDiscipline + resolveCardDispatchDiscipline 完成缝 1 解析，被拒时零半状态。"
   },
   "n_cmd_cardExportCmd_RunE": {
    "kind": "func",
@@ -39906,6 +40284,36 @@
    ],
    "returns": "error"
   },
+  "n_cmd_discGetCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 641,
+   "name": "discGetCmd.RunE",
+   "file": "cmd/discipline.go",
+   "line": 54,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "summary": "handoff discipline get：看纪律块正文（--version 指定版本，缺省最新）"
+  },
+  "n_cmd_discListCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 640,
+   "name": "discListCmd.RunE",
+   "file": "cmd/discipline.go",
+   "line": 27,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "summary": "handoff discipline list：列全部纪律块名与最新版本（tabwriter 两列）"
+  },
+  "n_cmd_discPutCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 642,
+   "name": "discPutCmd.RunE",
+   "file": "cmd/discipline.go",
+   "line": 78,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "summary": "handoff discipline put：读文件写纪律块新版本（不改旧版），校验全在库层"
+  },
   "n_cmd_dispVer": {
    "kind": "func",
    "container": "k_cmd_fn",
@@ -39952,7 +40360,7 @@
    "order": 172,
    "name": "dispatchCmd.RunE",
    "file": "cmd/dispatch.go",
-   "line": 172,
+   "line": 214,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -39966,7 +40374,8 @@
      ""
     ]
    ],
-   "returns": "error"
+   "returns": "error",
+   "summary": "裸派发入口；B229 起发出任何任务请求前先经 resolveBareDiscipline 过拒发闸（未点名也注入平台层）。"
   },
   "n_cmd_dispatchWithAutoRegister": {
    "kind": "func",
@@ -41673,6 +42082,26 @@
    ],
    "returns": "error"
   },
+  "n_cmd_resolveBareDiscipline": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 643,
+   "name": "resolveBareDiscipline",
+   "file": "cmd/dispatch.go",
+   "line": 182,
+   "signature": "func resolveBareDiscipline(ctx context.Context, cli *client.Client, rawFile string) (discipline.ResolvedDiscipline, error)",
+   "summary": "裸派发的缝 1 收口：未点名只注入平台层；--discipline-file 作 RawText 直通（不落库、版本 0）；先探目标机能力位，探活失败按不支持处置"
+  },
+  "n_cmd_resolveCardDispatchDiscipline": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 644,
+   "name": "resolveCardDispatchDiscipline",
+   "file": "cmd/card_dispatch.go",
+   "line": 199,
+   "signature": "func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, target string) (discipline.ResolvedDiscipline, error)",
+   "summary": "CLI 模板派发的缝 1 收口：绑账本 lookup 与能力位探活各一次，经 ResolveDispatch 产出随派发下发的正文三元组"
+  },
   "n_cmd_resolveServiceBinFrom": {
    "kind": "func",
    "container": "k_cmd_fn",
@@ -42220,6 +42649,16 @@
    ],
    "returns": "error"
   },
+  "n_cmd_setupLedger": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 645,
+   "name": "setupLedger",
+   "file": "cmd/agentd.go",
+   "line": 440,
+   "signature": "func setupLedger(cfg *config.Config, srv *agentd.Server, ctx context.Context, logger *slog.Logger) (func(), error)",
+   "summary": "打开账本库并挂载镜像子系统；B229 §2.6 起 ledger.enabled 开关退休，恒执行；返回的 stop 先停镜像再关库"
+  },
   "n_cmd_shellJoin": {
    "kind": "func",
    "container": "k_cmd_fn",
@@ -42496,7 +42935,8 @@
      ""
     ]
    ],
-   "returns": "error"
+   "returns": "error",
+   "summary": "handoff status 入口；B229 §2.6 起账本恒尝试开库取卡驱动归属，失败静默退回只看 watchers。"
   },
   "n_cmd_stopCmd_RunE": {
    "kind": "func",
@@ -43414,9 +43854,9 @@
    "order": 26,
    "name": "openLedger",
    "file": "cmd/ledgercli.go",
-   "line": 26,
+   "line": 29,
    "signature": "func openLedger() (*ledger.Store, error) {",
-   "summary": "openLedger 按配置打开账本库：ledger.dsn 非空连中心库，空则回退"
+   "summary": "openLedger 按配置打开账本库：dsn 非空连中心库，空则回退 DataDir/ledger.db；enabled 开关已退休（B229 §2.6），恒开库。"
   },
   "n_cmdprintCardJSON": {
    "kind": "func",
@@ -46258,7 +46698,7 @@
     ]
    ],
    "returns": "*Config, error",
-   "summary": "Load 加载配置：文件不存在时返回带默认值的 Config 并自动生成随机 Token 写盘。",
+   "summary": "Load 加载配置：文件不存在时返回默认值 Config 并自动生成 Token；B229 起探测 ledger.enabled 键在场即 Warn 退休提示。",
    "tests": [
     {
      "name": "TestLoadGeneratesDefaultsAndToken",
@@ -46534,399 +46974,49 @@
    "line": 292,
    "signature": "func validateRelayURL(raw string) error {"
   },
-  "n_discipline_Builtins": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 69,
-   "name": "Builtins",
-   "file": "internal/discipline/discipline.go",
-   "line": 127,
-   "signature": "func Builtins() []Builtin",
-   "returns": "[]Builtin",
-   "summary": "Builtins 返回全部内置纪律块，顺序固定为 subagent、single-context、review、",
-   "tests": [
-    {
-     "name": "TestBuiltinsAndDefaultTier",
-     "file": "internal/discipline/files_test.go:146"
-    }
-   ]
-  },
   "n_discipline_Compose": {
    "kind": "func",
    "container": "k_discipline_fn",
    "order": 23,
    "name": "Compose",
    "file": "internal/discipline/platform.go",
-   "line": 23,
+   "line": 25,
    "signature": "func Compose(base Block, platformEnabled bool) Block",
    "returns": "Block",
-   "summary": "Compose 把 Resolver 产出的角色/执行者纪律块与平台层组装成一个 Block。"
+   "summary": "Compose 把角色/执行者纪律块与平台层组装成一个 Block；B229 起是唯一组装点，派发期由 ResolveDispatch 调用。"
   },
-  "n_discipline_DefaultTierFor": {
+  "n_discipline_ResolveDispatch": {
    "kind": "func",
    "container": "k_discipline_fn",
-   "order": 80,
-   "name": "DefaultTierFor",
-   "file": "internal/discipline/discipline.go",
-   "line": 144,
-   "signature": "func DefaultTierFor(executor string) string",
+   "order": 24,
+   "name": "ResolveDispatch",
+   "file": "internal/discipline/dispatch.go",
+   "line": 65,
+   "signature": "func ResolveDispatch(lookup DisciplineLookup, ref DisciplineRef, platformEnabled bool, targetCap *bool) (ResolvedDiscipline, error)",
    "params": [
     [
-     "executor",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "string",
-   "summary": "DefaultTierFor 返回该 executor 在「未配置」这一档会用到的内置版本名。",
-   "tests": [
-    {
-     "name": "TestBuiltinsAndDefaultTier",
-     "file": "internal/discipline/files_test.go:146"
-    }
-   ]
-  },
-  "n_discipline_Dir": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 28,
-   "name": "Dir",
-   "file": "internal/discipline/resolver.go",
-   "line": 29,
-   "signature": "func Dir(dataDir string) string",
-   "params": [
-    [
-     "dataDir",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "string",
-   "summary": "Dir 返回纪律块文件目录（\u003cdataDir\u003e/discipline）。"
-  },
-  "n_discipline_List": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 57,
-   "name": "List",
-   "file": "internal/discipline/files.go",
-   "line": 57,
-   "signature": "func List(dir string) ([]FileInfo, error)",
-   "params": [
-    [
-     "dir",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "[]FileInfo, error",
-   "summary": "List 列举纪律块目录下的全部普通文件，按名字升序。",
-   "tests": [
-    {
-     "name": "TestListEmptyWhenDirMissing",
-     "file": "internal/discipline/files_test.go:17"
-    },
-    {
-     "name": "TestListReturnsNameSizeHashSorted",
-     "file": "internal/discipline/files_test.go:29"
-    }
-   ]
-  },
-  "n_discipline_NewResolver": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 50,
-   "name": "NewResolver",
-   "file": "internal/discipline/resolver.go",
-   "line": 51,
-   "signature": "func NewResolver(dir string, mapping func() map[string]string, log *slog.Logger) *Resolver",
-   "params": [
-    [
-     "dir",
-     "string",
-     ""
+     "lookup",
+     "discipline.DisciplineLookup",
+     "账本读取视图（函数注入，d_policy 不 import d_ledger）"
     ],
     [
-     "mapping",
-     "map[string]string",
-     ""
+     "ref",
+     "DisciplineRef",
+     "纪律来源"
     ],
     [
-     "func()",
-     "map[string]string",
-     ""
+     "platformEnabled",
+     "bool",
+     "协调者侧 PlatformInvariantsEnabled() 原值"
     ],
     [
-     "log",
-     "*slog.Logger",
-     ""
+     "targetCap",
+     "*bool",
+     "目标机 StatusResp.DisciplinesSupported 原值；nil/false=拒发"
     ]
    ],
-   "returns": "*Resolver",
-   "summary": "NewResolver 构造 Resolver。",
-   "tests": [
-    {
-     "name": "TestForUnconfiguredUsesBuiltinByTier",
-     "file": "internal/discipline/resolver_test.go:16"
-    },
-    {
-     "name": "TestForUnknownExecutorFallsBackToSingleContext",
-     "file": "internal/discipline/resolver_test.go:37"
-    },
-    {
-     "name": "TestForConfiguredReadsFile",
-     "file": "internal/discipline/resolver_test.go:48"
-    },
-    {
-     "name": "TestForEmptyValueDisablesInjection",
-     "file": "internal/discipline/resolver_test.go:66"
-    },
-    {
-     "name": "TestForRejectsPathSeparator",
-     "file": "internal/discipline/resolver_test.go:77"
-    },
-    {
-     "name": "TestForMissingFileErrors",
-     "file": "internal/discipline/resolver_test.go:86"
-    },
-    {
-     "name": "TestPreflightDoesNotPanicOnBadConfig",
-     "file": "internal/discipline/resolver_test.go:93"
-    },
-    {
-     "name": "TestForReadsMappingEveryCall",
-     "file": "internal/discipline/resolver_test.go:98"
-    },
-    {
-     "name": "TestNilMappingBehavesAsEmpty",
-     "file": "internal/discipline/resolver_test.go:122"
-    }
-   ]
-  },
-  "n_discipline_Read": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 84,
-   "name": "Read",
-   "file": "internal/discipline/files.go",
-   "line": 84,
-   "signature": "func Read(dir, name string) (content, sha string, size int64, err error)",
-   "params": [
-    [
-     "dir",
-     "string",
-     ""
-    ],
-    [
-     "name",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "content, sha string, size int64, err error",
-   "summary": "Read 读一个纪律块文件的正文。",
-   "tests": [
-    {
-     "name": "TestReadReturnsContentAndHash",
-     "file": "internal/discipline/files_test.go:56"
-    },
-    {
-     "name": "TestReadMissingIsNotExist",
-     "file": "internal/discipline/files_test.go:71"
-    }
-   ]
-  },
-  "n_discipline_Resolver_ByName": {
-   "kind": "func",
-   "container": "k_discipline_Resolver",
-   "order": 141,
-   "name": "Resolver.ByName",
-   "file": "internal/discipline/resolver.go",
-   "line": 141,
-   "signature": "func (r *Resolver) ByName(name, executor string) (Block, error) {",
-   "summary": "ByName 按**角色名**解析纪律块，与 For（按 executor 兜底）并列的另一条路径。"
-  },
-  "n_discipline_Resolver_For": {
-   "kind": "func",
-   "container": "k_discipline_Resolver",
-   "order": 86,
-   "name": "Resolver.For",
-   "file": "internal/discipline/resolver.go",
-   "line": 87,
-   "signature": "func (r *Resolver) For(executor string) (Block, error)",
-   "params": [
-    [
-     "executor",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "Block, error",
-   "summary": "For 返回该 executor 派发时应注入的纪律块。",
-   "tests": [
-    {
-     "name": "TestForUnconfiguredUsesBuiltinByTier",
-     "file": "internal/discipline/resolver_test.go:16"
-    },
-    {
-     "name": "TestForUnknownExecutorFallsBackToSingleContext",
-     "file": "internal/discipline/resolver_test.go:37"
-    },
-    {
-     "name": "TestForConfiguredReadsFile",
-     "file": "internal/discipline/resolver_test.go:48"
-    },
-    {
-     "name": "TestForEmptyValueDisablesInjection",
-     "file": "internal/discipline/resolver_test.go:66"
-    },
-    {
-     "name": "TestForRejectsPathSeparator",
-     "file": "internal/discipline/resolver_test.go:77"
-    },
-    {
-     "name": "TestForMissingFileErrors",
-     "file": "internal/discipline/resolver_test.go:86"
-    },
-    {
-     "name": "TestForReadsMappingEveryCall",
-     "file": "internal/discipline/resolver_test.go:98"
-    },
-    {
-     "name": "TestNilMappingBehavesAsEmpty",
-     "file": "internal/discipline/resolver_test.go:122"
-    }
-   ]
-  },
-  "n_discipline_Resolver_Preflight": {
-   "kind": "func",
-   "container": "k_discipline_Resolver",
-   "order": 206,
-   "name": "Resolver.Preflight",
-   "file": "internal/discipline/resolver.go",
-   "line": 206,
-   "signature": "func (r *Resolver) Preflight() {",
-   "summary": "Preflight 读一遍所有被引用的纪律块文件，把问题以 WARN 暴露在启动日志里。"
-  },
-  "n_discipline_Static": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 63,
-   "name": "Static",
-   "file": "internal/discipline/resolver.go",
-   "line": 63,
-   "signature": "func Static(m map[string]string) func() map[string]string {",
-   "summary": "Static 把一份固定映射包成取值函数，供测试与不需要热更新的调用方使用。"
-  },
-  "n_discipline_Write": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 108,
-   "name": "Write",
-   "file": "internal/discipline/files.go",
-   "line": 108,
-   "signature": "func Write(dir, name, content, baseSHA string) (sha string, size int64, err error)",
-   "params": [
-    [
-     "dir",
-     "string",
-     ""
-    ],
-    [
-     "name",
-     "string",
-     ""
-    ],
-    [
-     "content",
-     "string",
-     ""
-    ],
-    [
-     "baseSHA",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "sha string, size int64, err error",
-   "summary": "Write 写一个纪律块文件，带前置哈希保护。",
-   "tests": [
-    {
-     "name": "TestWriteCreatesDirAndFile",
-     "file": "internal/discipline/files_test.go:77"
-    },
-    {
-     "name": "TestWriteNewOnExistingIsErrExists",
-     "file": "internal/discipline/files_test.go:92"
-    },
-    {
-     "name": "TestWriteBaseMismatchReturnsCurrentHash",
-     "file": "internal/discipline/files_test.go:103"
-    },
-    {
-     "name": "TestWriteBaseMatchOverwrites",
-     "file": "internal/discipline/files_test.go:117"
-    },
-    {
-     "name": "TestWriteRejectsBadNames",
-     "file": "internal/discipline/files_test.go:131"
-    },
-    {
-     "name": "TestWriteRejectsOversize",
-     "file": "internal/discipline/files_test.go:139"
-    }
-   ]
-  },
-  "n_discipline_builtinByName": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 95,
-   "name": "builtinByName",
-   "file": "internal/discipline/discipline.go",
-   "line": 95,
-   "signature": "func builtinByName(name, executor string) (Block, bool) {",
-   "summary": "builtinByName 返回该名字的内置纪律块；名字没有内置对应物时返回 ok=false。"
-  },
-  "n_discipline_builtinFor": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 52,
-   "name": "builtinFor",
-   "file": "internal/discipline/discipline.go",
-   "line": 80,
-   "signature": "func builtinFor(executor string) Block",
-   "params": [
-    [
-     "executor",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "Block",
-   "summary": "builtinFor 返回该 executor 的内置纪律块。"
-  },
-  "n_discipline_resolvePath": {
-   "kind": "func",
-   "container": "k_discipline_fn",
-   "order": 132,
-   "name": "resolvePath",
-   "file": "internal/discipline/resolver.go",
-   "line": 191,
-   "signature": "func resolvePath(dir, name string) (string, error)",
-   "params": [
-    [
-     "dir",
-     "string",
-     ""
-    ],
-    [
-     "name",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "string, error",
-   "summary": "resolvePath 把配置里的文件名换算为绝对路径，并拒绝一切非「纯文件名」的写法。"
+   "returns": "(ResolvedDiscipline, error)",
+   "summary": "派发期纪律正文唯一裁决点：取正文→组装→判能力→正文或拒发理由；未知名拒发不兜底"
   },
   "n_engine_Engine_Attach": {
    "kind": "func",
@@ -51865,6 +51955,29 @@
    "returns": "Card, error",
    "summary": "GetCard 读单卡。不存在返回 ErrNotFound。"
   },
+  "n_ledger_Store_GetDiscipline": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 390,
+   "name": "Store.GetDiscipline",
+   "file": "internal/ledger/disciplines.go",
+   "line": 70,
+   "signature": "func (s *Store) GetDiscipline(name string, version int) (Discipline, error)",
+   "params": [
+    [
+     "name",
+     "string",
+     "纪律块名"
+    ],
+    [
+     "version",
+     "int",
+     "0 = 最新"
+    ]
+   ],
+   "returns": "(ledger.Discipline, error)",
+   "summary": "取指定版本；不存在包 ErrNotFound"
+  },
   "n_ledger_Store_GetTemplate": {
    "kind": "func",
    "container": "k_ledger_Store",
@@ -52030,6 +52143,17 @@
    ],
    "returns": "[]Decision, error",
    "summary": "ListDecisions openOnly=true 只列未答复（全局裁决收件箱）；false 全量按"
+  },
+  "n_ledger_Store_ListDisciplineNames": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 391,
+   "name": "Store.ListDisciplineNames",
+   "file": "internal/ledger/disciplines.go",
+   "line": 93,
+   "signature": "func (s *Store) ListDisciplineNames() ([]string, error)",
+   "returns": "([]string, error)",
+   "summary": "全部纪律块名（去重升序）；接卡节点角色下拉与 CLI discipline list"
   },
   "n_ledger_Store_ListTemplateNames": {
    "kind": "func",
@@ -52326,6 +52450,29 @@
    ],
    "returns": "int, error",
    "summary": "PurposeRounds 数该卡已派出的指定 purpose 轮数（只增不减，用于给重跑轮的"
+  },
+  "n_ledger_Store_PutDiscipline": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 389,
+   "name": "Store.PutDiscipline",
+   "file": "internal/ledger/disciplines.go",
+   "line": 43,
+   "signature": "func (s *Store) PutDiscipline(name, body string) (int, error)",
+   "params": [
+    [
+     "name",
+     "string",
+     "纪律块名；非法名拒绝"
+    ],
+    [
+     "body",
+     "string",
+     "正文；空或超 64KiB 拒绝"
+    ]
+   ],
+   "returns": "(int, error)",
+   "summary": "写入下一版本（不改旧行），返回新版本号"
   },
   "n_ledger_Store_PutTemplate": {
    "kind": "func",
@@ -53265,7 +53412,7 @@
    "line": 198,
    "signature": "func (s *Store) ensureSchema() error",
    "returns": "error",
-   "summary": "ensureSchema 幂等建表。与 internal/store 相同的策略：CREATE IF NOT"
+   "summary": "ensureSchema 幂等建表；B229 起 PG 与 SQLite 双方言各建 disciplines 聚合表，主键 (name, version)。"
   },
   "n_ledger_Store_getWorkflowTx": {
    "kind": "func",
@@ -54004,7 +54151,7 @@
    "order": 76,
    "name": "Dispatcher.ViaTemplate",
    "file": "internal/ledgerstep/dispatch.go",
-   "line": 96,
+   "line": 112,
    "signature": "func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req TemplateDispatch) (DispatchResult, error)",
    "params": [
     [
@@ -54024,7 +54171,7 @@
     ]
    ],
    "returns": "DispatchResult, error",
-   "summary": "ViaTemplate 按模板把一张卡派出去。"
+   "summary": "ViaTemplate 按模板把一张卡派出去；B229 起把调用方解析好的正文与版本透传进 DispatchOpts 与 dispatched 快照。"
   },
   "n_ledgerstep_NodeStep_RunOnce": {
    "kind": "func",
@@ -54157,6 +54304,16 @@
    ],
    "returns": "Verdict, error",
    "summary": "ParseVerdict 从审阅报文提取最后一个 handoff-verdict block 并解析。"
+  },
+  "n_ledgerstep_PreflightDiscipline": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 266,
+   "name": "PreflightDiscipline",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 338,
+   "signature": "func PreflightDiscipline(st *ledger.Store, templateName, overrideName, reqTarget string) (name, target string, err error)",
+   "summary": "以与 ViaTemplate 完全相同的裁决顺序算出有效（纪律角色名，目标机），供调用方在装配 Dispatcher 前完成缝 1 解析"
   },
   "n_ledgerstep_RenderOutputPath": {
    "kind": "func",
@@ -54314,7 +54471,7 @@
    "order": 233,
    "name": "buildPrompt",
    "file": "internal/ledgerstep/dispatch.go",
-   "line": 306,
+   "line": 367,
    "signature": "func buildPrompt(body string, c ledger.Card, base string, carry bool, extra string) string",
    "params": [
     [
@@ -54404,6 +54561,16 @@
    "line": 88,
    "signature": "func diffPath(raw string) string",
    "returns": "string"
+  },
+  "n_ledgerstep_disciplineAndTarget": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 267,
+   "name": "disciplineAndTarget",
+   "file": "internal/ledgerstep/dispatch.go",
+   "line": 312,
+   "signature": "func disciplineAndTarget(def ledger.TemplateDef, overrideName, reqTarget string) (name, target string)",
+   "summary": "返回一次模板派发的有效（纪律角色名，目标机）：请求覆盖优先，模板缺省兜底；ViaTemplate 与 PreflightDiscipline 必须共用这一份实现——缝 1 解析与派发时裁决漂移会让拒发闸打错机器"
   },
   "n_ledgerstep_finalMessageFromEvents": {
    "kind": "func",
@@ -64219,7 +64386,7 @@
     ]
    ],
    "returns": "*Store, error",
-   "summary": "Open 打开（必要时创建）path 处的 SQLite 数据库并建表。",
+   "summary": "Open 打开（必要时创建）path 处的 SQLite 数据库并建表；B229 起 tasks 表增 discipline_version 列（含存量 ALTER 迁移）。",
    "tests": [
     {
      "name": "TestEventHookFiresAfterInsert",
@@ -64653,7 +64820,7 @@
    "order": 274,
    "name": "Store.CreateTask",
    "file": "internal/store/store.go",
-   "line": 299,
+   "line": 304,
    "signature": "func (s *Store) CreateTask(t *proto.Task) error",
    "params": [
     [
@@ -64663,7 +64830,7 @@
     ]
    ],
    "returns": "error",
-   "summary": "CreateTask 写入一个新任务。",
+   "summary": "CreateTask 写入一个新任务；B229 起连同 discipline_version 一致写入。",
    "tests": [
     {
      "name": "TestTaskLifecycle",
@@ -66064,7 +66231,7 @@
    "order": 306,
    "name": "scanTaskRow",
    "file": "internal/store/store.go",
-   "line": 333,
+   "line": 339,
    "signature": "func scanTaskRow(sc rowScanner) (proto.Task, error)",
    "params": [
     [
@@ -75131,10 +75298,6 @@
    "n_web_App_App"
   ],
   [
-   "n_agentd_Manager_resolveDisciplineFor",
-   "n_discipline_Compose"
-  ],
-  [
    "n_ledger_Store_CreateCard",
    "n_ledger_Store_cardPrefixTx"
   ],
@@ -76084,10 +76247,6 @@
   ],
   [
    "n_agentd_Manager_Dispatch",
-   "n_discipline_Resolver_For"
-  ],
-  [
-   "n_agentd_Manager_Dispatch",
    "n_store_Store_CreateTask"
   ],
   [
@@ -76393,10 +76552,6 @@
   [
    "n_agentd_Manager_ResumeTask",
    "n_agentd_Manager_mediate"
-  ],
-  [
-   "n_agentd_Manager_ResumeTask",
-   "n_agentd_Manager_resolveDisciplineFor"
   ],
   [
    "n_agentd_Manager_ResumeTask",
@@ -77387,10 +77542,6 @@
    "n_turn_DenyGuidanceText"
   ],
   [
-   "n_agentd_Manager_resolveDisciplineFor",
-   "n_discipline_Resolver_ByName"
-  ],
-  [
    "n_agentd_Manager_resolveExecutor",
    "n_agentd_registeredNames"
   ],
@@ -77421,10 +77572,6 @@
   [
    "n_agentd_Manager_resumeForContinue",
    "n_agentd_Hub_Publish"
-  ],
-  [
-   "n_agentd_Manager_resumeForContinue",
-   "n_discipline_Resolver_For"
   ],
   [
    "n_agentd_Manager_resumeForContinue",
@@ -77717,14 +77864,6 @@
   [
    "n_agentd_NewManager",
    "m_config_Config"
-  ],
-  [
-   "n_agentd_NewManager",
-   "n_discipline_Dir"
-  ],
-  [
-   "n_agentd_NewManager",
-   "n_discipline_NewResolver"
   ],
   [
    "n_agentd_NewManager",
@@ -78263,10 +78402,6 @@
    "n_agentd_Server_conf"
   ],
   [
-   "n_agentd_Server_disciplineBindings",
-   "n_discipline_DefaultTierFor"
-  ],
-  [
    "n_agentd_Server_envBindings",
    "m_proto_EnvBinding"
   ],
@@ -78731,14 +78866,6 @@
    "n_agentd_writeJSON"
   ],
   [
-   "n_agentd_Server_handleDisciplineFileRead",
-   "n_discipline_Dir"
-  ],
-  [
-   "n_agentd_Server_handleDisciplineFileRead",
-   "n_discipline_Read"
-  ],
-  [
    "n_agentd_Server_handleDisciplineFileWrite",
    "m_proto_FileConflictResp"
   ],
@@ -78771,18 +78898,6 @@
    "n_agentd_writeJSON"
   ],
   [
-   "n_agentd_Server_handleDisciplineFileWrite",
-   "n_discipline_Dir"
-  ],
-  [
-   "n_agentd_Server_handleDisciplineFileWrite",
-   "n_discipline_Read"
-  ],
-  [
-   "n_agentd_Server_handleDisciplineFileWrite",
-   "n_discipline_Write"
-  ],
-  [
    "n_agentd_Server_handleDisciplineGet",
    "m_proto_DisciplineBuiltin"
   ],
@@ -78811,18 +78926,6 @@
    "n_agentd_writeJSON"
   ],
   [
-   "n_agentd_Server_handleDisciplineGet",
-   "n_discipline_Builtins"
-  ],
-  [
-   "n_agentd_Server_handleDisciplineGet",
-   "n_discipline_Dir"
-  ],
-  [
-   "n_agentd_Server_handleDisciplineGet",
-   "n_discipline_List"
-  ],
-  [
    "n_agentd_Server_handleDisciplineMapping",
    "m_config_Config"
   ],
@@ -78849,14 +78952,6 @@
   [
    "n_agentd_Server_handleDisciplineMapping",
    "n_agentd_writeJSON"
-  ],
-  [
-   "n_agentd_Server_handleDisciplineMapping",
-   "n_discipline_Dir"
-  ],
-  [
-   "n_agentd_Server_handleDisciplineMapping",
-   "n_discipline_Read"
   ],
   [
    "n_agentd_Server_handleDisciplineNames",
@@ -85581,30 +85676,6 @@
   [
    "n_config_stripDeprecatedTopLevel",
    "n_config_removeMapKey"
-  ],
-  [
-   "n_discipline_Read",
-   "n_discipline_resolvePath"
-  ],
-  [
-   "n_discipline_Resolver_ByName",
-   "n_discipline_builtinByName"
-  ],
-  [
-   "n_discipline_Resolver_For",
-   "n_discipline_builtinFor"
-  ],
-  [
-   "n_discipline_Resolver_For",
-   "n_discipline_resolvePath"
-  ],
-  [
-   "n_discipline_Write",
-   "n_discipline_resolvePath"
-  ],
-  [
-   "n_discipline_builtinByName",
-   "n_discipline_builtinFor"
   ],
   [
    "n_engine_Engine_Attach",
@@ -93281,6 +93352,162 @@
   [
    "n_ledgerstep_NodeStep_RunOnce",
    "n_ledgerstep_NodeStep_gatedWrite"
+  ],
+  [
+   "e_cli_discipline_list",
+   "n_cmd_discListCmd_RunE"
+  ],
+  [
+   "e_cli_discipline_get",
+   "n_cmd_discGetCmd_RunE"
+  ],
+  [
+   "e_cli_discipline_put",
+   "n_cmd_discPutCmd_RunE"
+  ],
+  [
+   "n_cmd_discListCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_discListCmd_RunE",
+   "n_ledger_Store_ListDisciplineNames"
+  ],
+  [
+   "n_cmd_discListCmd_RunE",
+   "n_ledger_Store_GetDiscipline"
+  ],
+  [
+   "n_cmd_discGetCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_discGetCmd_RunE",
+   "n_ledger_Store_GetDiscipline"
+  ],
+  [
+   "n_cmd_discPutCmd_RunE",
+   "n_cmdopenLedger"
+  ],
+  [
+   "n_cmd_discPutCmd_RunE",
+   "n_ledger_Store_PutDiscipline"
+  ],
+  [
+   "n_cmd_dispatchCmd_RunE",
+   "n_cmd_resolveBareDiscipline"
+  ],
+  [
+   "n_cmd_resolveBareDiscipline",
+   "n_client_Client_Status"
+  ],
+  [
+   "n_cmd_resolveBareDiscipline",
+   "n_cmd_loadCLIConfig"
+  ],
+  [
+   "n_cmd_resolveBareDiscipline",
+   "n_discipline_ResolveDispatch"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_ledgerstep_PreflightDiscipline"
+  ],
+  [
+   "n_cmd_cardDispatchCmd_RunE",
+   "n_cmd_resolveCardDispatchDiscipline"
+  ],
+  [
+   "n_cmd_resolveCardDispatchDiscipline",
+   "n_cmdtargetClient"
+  ],
+  [
+   "n_cmd_resolveCardDispatchDiscipline",
+   "n_client_Client_Status"
+  ],
+  [
+   "n_cmd_resolveCardDispatchDiscipline",
+   "n_cmd_loadCLIConfig"
+  ],
+  [
+   "n_cmd_resolveCardDispatchDiscipline",
+   "n_ledger_Store_GetDiscipline"
+  ],
+  [
+   "n_cmd_resolveCardDispatchDiscipline",
+   "n_discipline_ResolveDispatch"
+  ],
+  [
+   "n_cmd_agentdCmd_RunE",
+   "n_cmd_setupLedger"
+  ],
+  [
+   "n_cmd_setupLedger",
+   "n_ledger_Open"
+  ],
+  [
+   "n_cmd_setupLedger",
+   "n_ledgermirror_New"
+  ],
+  [
+   "n_cmd_setupLedger",
+   "n_agentd_Server_SetLedger"
+  ],
+  [
+   "n_agentd_Server_startCardStep",
+   "n_agentd_Server_resolveStepDiscipline"
+  ],
+  [
+   "n_agentd_Server_resolveStepDiscipline",
+   "n_ledgerstep_PreflightDiscipline"
+  ],
+  [
+   "n_agentd_Server_resolveStepDiscipline",
+   "n_client_Client_Status"
+  ],
+  [
+   "n_agentd_Server_resolveStepDiscipline",
+   "n_ledger_Store_GetDiscipline"
+  ],
+  [
+   "n_agentd_Server_resolveStepDiscipline",
+   "n_discipline_ResolveDispatch"
+  ],
+  [
+   "n_agentd_Manager_Dispatch",
+   "n_agentd_Manager_writeTaskDirFile"
+  ],
+  [
+   "n_agentd_Manager_resumeForContinue",
+   "n_agentd_Manager_loadPersistedDiscipline"
+  ],
+  [
+   "n_agentd_Manager_ResumeTask",
+   "n_agentd_Manager_loadPersistedDiscipline"
+  ],
+  [
+   "n_agentd_Server_handleDisciplineNames",
+   "n_ledger_Store_ListDisciplineNames"
+  ],
+  [
+   "n_discipline_ResolveDispatch",
+   "n_discipline_Compose"
+  ],
+  [
+   "n_ledgerstep_PreflightDiscipline",
+   "n_ledger_Store_GetTemplate"
+  ],
+  [
+   "n_ledgerstep_PreflightDiscipline",
+   "n_ledgerstep_disciplineAndTarget"
+  ],
+  [
+   "n_agentd_Server_handleDisciplineMapping",
+   "n_agentd_legacyDisciplineFilePath"
+  ],
+  [
+   "n_agentd_Server_handleDisciplineMapping",
+   "n_agentd_validateLegacyDisciplineFileName"
   ]
  ],
  "implements": [
@@ -95916,6 +96143,11 @@
    "model": "m_ledger_RunLock",
    "kind": "writer",
    "field": "ExpiresAt"
+  },
+  {
+   "who": "n_ledger_Store_PutDiscipline",
+   "model": "m_ledger_Discipline",
+   "kind": "creator"
   }
  ]
 }
