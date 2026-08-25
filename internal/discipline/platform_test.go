@@ -42,6 +42,15 @@ func TestComposeEnabledWithEmptyBaseStillInjectsPlatformLayer(t *testing.T) {
 	}
 }
 
+// B229.7：落台账要求已移出平台层（spec 第 80 行），由角色层只对产出型角色承载。
+// 平台层正文出现「台账」即视为有人把该条加了回来，必须红。
+func TestComposeEnabledWithEmptyBaseOmitsLedgerFromPlatformLayer(t *testing.T) {
+	got := Compose(Block{}, true)
+	if n := strings.Count(got.Text, "台账"); n != 0 {
+		t.Fatalf("平台层组装产出含「台账」%d 次，落台账要求应由角色层承载：%q", n, got.Text)
+	}
+}
+
 func TestComposeDisabledPreservesBaseAndLeavesAuditSource(t *testing.T) {
 	base := Block{Text: "角色纪律正文\n", Source: "内置:review"}
 	got := Compose(base, false)
