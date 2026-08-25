@@ -158,6 +158,25 @@
   成员健康位的形状。触发条件：小队真跑起来后第一次撞限额。来源：同上。
 - **多协调机下的拉起仲裁实测**：机制按镜像 lease 同模式设计；真出现第二台协调机
   指向同一账本库时再验，与上文「双协调机对等两条判据的复活条件」合流。来源：同上。
+## 代码图数据债（2026-08-26 B156.3 contract 轮实测）
+
+- **`baseline.json` 逐符号真重扫（合 main 前必做）**：现有 baseline 的所谓「重扫」实为
+  「已有全量扫描 + 机械视图 diff 合并 + 定向增量」，`meta.commit` 不是真审计锚点。
+  实测规模：带 `file`+`line` 的方法节点 1155 个中 **500 个行号对不上源码（43%）**，
+  漂移多在 16~43 行（`agentd/manager.go` 64/64、`client/client.go` 50/53、
+  `executor/opencode/adapter.go` 47/50、`agentd/server.go` 42/48、grok/codex/claudecode
+  三个 adapter 全中）。不影响闸门（check/validate 不看行号，`graph sym` 查询时再锚定），
+  影响的是把 `file#Symbol` 当定位证据用的人——契约与拆解文档正是这么用的。
+  **验收判据两条**：①行号比对脚本 mismatched 降到 0；②抽查若干新符号确实在图里
+  ——不能只看 `check` 的 exit code，空壳基线照样 exit 0。
+  来源：`specs/b156.3-contract-ledger.md`「图数据债」节。
+- **清掉陈旧域声明 `codegraph/domains/d_orchestration.json`**：它声明的域在图里不存在
+  （图里叫 `d_coordination`）。仓内 `go run . graph validate`（`charter/graph v0.8.0`，
+  `TestRepoContractGate` 用的那份）不报，较新的独立 `codegraph` 二进制会报
+  `[decl d_orchestration] 领域不在图 domains 段中`。**跨会话报图读数时要点名用的是哪份
+  工具**——两份严格度不同，读到的图却一致，最容易造出「他那边红我这边绿」的伪矛盾。
+  来源：同上。
+
 - **被依赖子系统的实现迁进标准结构**：B156.3 按用户 08-26 的架构硬约束只建薄 api
   门面（`d_execution_host` 进程承载、`d_sessions` PTY），包住既有实现不改内部；
   **实现本身的迁移是后续的活**（绞杀式还债、升格随卡走）。与 B156.2 同源条目合流：
