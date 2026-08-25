@@ -29,3 +29,4 @@
 - 2026-08-25：收尾判断：实现、局部测试、全仓编译、变异自验与静态检查均已完成；按纪律在当前分支执行 `git add` 与 `git commit`，不 push。
 - 2026-08-25：首次执行 `git add internal/permgate/blacklist.go internal/permgate/blacklist_test.go docs/superpowers/ledgers/2026-08-25-b248-execution-ledger.md` 失败；原始报错 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/afca9663/index.lock': Read-only file system`，退出码 128，未产生暂存结果。
 - 2026-08-25：提升权限后重试同一 `git add ...` 成功；原始输出为空，退出码 0。
+- 2026-08-25：提升权限后执行 `git commit -m "fix(permgate): catch combined shell wrappers"`；原始输出 `[cards/B248-charter 03c65f6a] fix(permgate): catch combined shell wrappers`、`3 files changed, 69 insertions(+), 3 deletions(-)`、新增台账文件，退出码 0。
