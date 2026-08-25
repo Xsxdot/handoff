@@ -30,3 +30,25 @@
 - [亲测] 步骤1基线（裁决三改写后形态）：`go build ./...` → BUILD_OK；`go test ./internal/ledger/api/` → `[no test files]`（C1 尚未在本工作树落地）。真判据见下一条。
 - [亲测] 红灯：`go test ./internal/ledger/api/ -run TestRecordMessageConsumed -v` → 恰四条 FAIL（裁决六补正断言后 UnknownSeq 也红）：ExactlyOnce「首次消费后应恰 1 条标记，实得 0」、GroupMarker「群级消费标记应恰一条，实得 0」、UnknownSeq「未知 seq 的消费也应真落恰好一条标记，实得 0」、Rejects「不存在的卡必须报 ErrNotFound，got <nil>」。
 - [亲测] 红灯：`go test ./internal/ledger/ -run 'TestEnsureComment' -v` → 恰两条 FAIL：WritesOncePerKey「首次写入应返回 true,nil，得到 (false,<nil>)」、EmptyKeyRejected「空白 dedupeKey 必须报错」。失败原因均为功能缺失非 typo。
+- [亲测] 绿灯：`go test ./internal/ledger/api/ -run TestRecordMessageConsumed -v` → 四支全 PASS（ExactlyOnce / GroupMarker / UnknownSeq / Rejects），`ok ... 0.357s`。
+- [亲测] 绿灯：`go test ./internal/ledger/ -run 'TestEnsureComment' -v` → 两支全 PASS（WritesOncePerKey / EmptyKeyRejected）。
+- [亲测] `go test ./internal/ledger/...` → ok internal/ledger 13.197s、ok internal/ledger/api 0.418s，无回归。
+- [变异自验·三发全拦] 每发先 grep 断言命中唯一（count=1×3 处），再改语义不改「有没有用到」，编译过（MUT_BUILD_OK×3）后行为断言：
+  1. rooms.go 查重条件取反（`marker.Consumer == consumer`→`!=`）→ ExactlyOnce 红「同参重试后仍应恰 1 条标记，实得 2」；
+  2. events.go EnsureComment 查重条件取反（`==`→`!=`）→ WritesOncePerKey 红「同键二次调用应返回 false,nil，得到 (true,<nil>)」；
+  3. events.go 整块删除空键守卫 → EmptyKeyRejected 红「空白 dedupeKey 必须报错」。
+  三发均已 revert，`git status --short` 干净。
+- [亲测] 全量触及包回归：`go build ./...`=BUILD_OK；`go test ./internal/ledger/... ./internal/collab/... ./internal/ledgerstep/...` → 全 ok（collab 0.854s、ledgerstep 6.237s，其余 cached）。
+- [亲测] 图闸（裁决四：判据只认 fails）：`go run . graph check --repo . --view cards-B156.2-charter-4` → exit=0，解析 JSON 得 fails=0 warns=97。warns 数不作为判据。视图存在且引用完整，未触碰 target.json/best.json，未造新视图。
+- [亲测] 占位残留扫描：`grep "Ticket 0 空壳" internal/ledger/{rooms,events}.go` 零命中；`grep "_ = cardID\|_ = msgSeq\|_ = consumer\|_ = dedupeKey" internal/ledger/*.go` 零命中。
+- [亲测] 验收看板补行（裁决五）：`grep -rn "EvMessageConsumed" --include="*.go"` 非测试命中仅 types.go:74 常量定义与 rooms.go:75(查重 SELECT)/rooms.go:98(appendEvent)；appendEvent 发出点全仓恰一处＝internal/ledger/rooms.go:98，位于 Store.RecordMessageConsumed 内。给 C5 的提醒照裁决五转记：Service.Consume 现为 return nil 空壳，填肉时不得绕过账本方法直接 appendEvent。
+- [亲测] 日志检查：`grep -n "Println\|fmt.Print" internal/ledger/rooms.go internal/ledger/events.go` 零命中；成功路径（已落账）与幂等跳过路径均有 slog 结构化 Info。
+- [偏差台账·六条裁决逐条落实情况]
+  1. 裁决一：测试文件落为 internal/ledger/api/api_rooms_test.go（未用 plan:58/:90/:95/:97 的 api_test.go，该名归 C1）；提交命令 git add 路径同步改。
+  2. 裁决二：newFixture 返回 (client.LedgerClient, *ledger.Store)，四支测试的 RecordRoomMessage/RecordMessageConsumed 调用一律经接口变量 f；markersOf 改持 *ledger.Store 直查库（st.EventsFromAsc）。三方法均在契约 §3.4 八方法内。
+  3. 裁决三：步骤1改为记录现状（api 包 no test files，C1 未在本工作树落地），真判据=四支新测试实现前跑红——实测恰四 FAIL（含裁决六正断言使 UnknownSeq 也红，plan:91 的「三红一绿预期」随之作废）。
+  4. 裁决四：图闸只认 fails=0，warns=97 不进验收；实现轮未遇 registry.go/keystone.go（本工作树快照早于 B156.3 回灌），若后续 rebase 见到属正常。
+  5. 裁决五：验收看板补行完成（上一条 grep 证据）；C5 提醒已转记。
+  6. 裁决六：UnknownSeq 测试补正断言「调用后 markersOf 恰一条」，红灯原文在案。
+- [提交切分] b0044ba1 台账开卷；a9813f8a T2.1（rooms.go + api_rooms_test.go）；e917933e T2.2（events.go + events_test.go）；本条随 docs 收尾 commit 入库。
+- [自审] 错误分支均带上下文 %w 包裹；成功/幂等路径有结构化日志；新类型 consumedMarker 与导出符号 RecordMessageConsumed/EnsureComment 文档注释齐全；签名与冻结 stub 一字未变（RecordMessageConsumed(cardID string, msgSeq int64, consumer string) error / EnsureComment(cardID, dedupeKey, body, actor string) (bool, error)）。
