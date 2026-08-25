@@ -9,9 +9,11 @@
 package agentd
 
 import (
+	"bytes"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -108,5 +110,92 @@ func TestApiMethodMismatchStays405(t *testing.T) {
 	b, _ := io.ReadAll(resp.Body)
 	if strings.Contains(strings.ToLower(string(b)), "<html") {
 		t.Errorf("405 响应体被回落成 HTML，body = %q", b)
+	}
+}
+
+// TestCodegraphRoute locks the complete authenticated charter viewer mount.
+// It intentionally enters through httptest.Server so mux registration, auth,
+// prefix stripping, SPA fallback, and method handling are tested together.
+func TestCodegraphRoute(t *testing.T) {
+	ts, cookie := consoleTestEnv(t)
+
+	read := func(resp *http.Response) []byte {
+		t.Helper()
+		defer resp.Body.Close()
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			t.Fatalf("读取 %s: %v", resp.Request.URL.Path, err)
+		}
+		return body
+	}
+
+	rootResp := getWithCookie(t, ts, "/", cookie)
+	if rootResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET / 状态码 = %d，want 200", rootResp.StatusCode)
+	}
+	rootBody := read(rootResp)
+
+	charterResp := getWithCookie(t, ts, "/codegraph/app/", cookie)
+	if charterResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /codegraph/app/ 状态码 = %d，want 200", charterResp.StatusCode)
+	}
+	charterBody := read(charterResp)
+	if bytes.Equal(charterBody, rootBody) {
+		t.Fatal("/codegraph/app/ 返回了 handoff 根 index，而不是 charter index")
+	}
+	if !bytes.Contains(charterBody, []byte("<html")) {
+		t.Fatalf("charter index 不是 HTML，body 前缀 = %q", charterBody[:min(len(charterBody), 120)])
+	}
+
+	deepResp := getWithCookie(t, ts, "/codegraph/app/graph/domains/core", cookie)
+	if deepResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET charter 深路径状态码 = %d，want 200", deepResp.StatusCode)
+	}
+	if deepBody := read(deepResp); !bytes.Equal(deepBody, charterBody) {
+		t.Fatal("charter 深路径没有回落到同一份 charter index")
+	}
+
+	assetMatch := regexp.MustCompile(`(?:src|href)="(\./assets/[^"?#]+)"`).FindSubmatch(charterBody)
+	if len(assetMatch) != 2 {
+		t.Fatalf("charter index 未找到 assets 资源引用，body 前缀 = %q", charterBody[:min(len(charterBody), 240)])
+	}
+	assetPath := strings.TrimPrefix(string(assetMatch[1]), ".")
+	assetResp := getWithCookie(t, ts, "/codegraph/app"+assetPath, cookie)
+	if assetResp.StatusCode != http.StatusOK {
+		t.Fatalf("GET charter asset 状态码 = %d，want 200", assetResp.StatusCode)
+	}
+	if got := assetResp.Header.Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+		t.Fatalf("charter hashed asset Cache-Control = %q，want immutable", got)
+	}
+	_ = read(assetResp)
+
+	postReq, err := http.NewRequest(http.MethodPost, ts.URL+"/codegraph/app/", nil)
+	if err != nil {
+		t.Fatalf("构造 POST: %v", err)
+	}
+	postReq.AddCookie(&http.Cookie{Name: sessionCookieName, Value: cookie})
+	postResp, err := ts.Client().Do(postReq)
+	if err != nil {
+		t.Fatalf("POST /codegraph/app/: %v", err)
+	}
+	defer postResp.Body.Close()
+	if postResp.StatusCode != http.StatusMethodNotAllowed {
+		t.Fatalf("POST /codegraph/app/ 状态码 = %d，want 405", postResp.StatusCode)
+	}
+
+	unauthResp, err := ts.Client().Get(ts.URL + "/codegraph/app/")
+	if err != nil {
+		t.Fatalf("未登录 GET /codegraph/app/: %v", err)
+	}
+	defer unauthResp.Body.Close()
+	unauthBody, err := io.ReadAll(unauthResp.Body)
+	if err != nil {
+		t.Fatalf("读取未登录响应: %v", err)
+	}
+	if unauthResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("未登录 GET /codegraph/app/ 状态码 = %d，want 401", unauthResp.StatusCode)
+	}
+	if strings.Contains(strings.ToLower(string(unauthBody)), "<html") {
+		t.Fatalf("未登录响应被任一 SPA index 吞掉：%q", unauthBody)
 	}
 }

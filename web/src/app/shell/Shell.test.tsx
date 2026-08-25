@@ -406,6 +406,45 @@ describe('Shell 三栏外框', () => {
     renderShell()
     await waitFor(() => expect(screen.queryByLabelText('home 基准终端')).toBeNull())
   })
+
+  it.each([
+    ['空格', 'project name'],
+    ['斜杠', 'project/name'],
+    ['中文', '项目/中文'],
+  ])('代码图 iframe 对项目名（%s）只做 query 编码', async (_kind, projectName) => {
+    const specialTree: ProjectTreeResp = {
+      ...tree,
+      projects: tree.projects.map((project) => ({ ...project, name: projectName })),
+    }
+    vi.mocked(fetchProjectTree).mockResolvedValue(specialTree)
+
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: '代码图' }))
+
+    await waitFor(() => expect(document.querySelector('iframe[title="代码图"]')).not.toBeNull())
+    const frame = document.querySelector('iframe[title="代码图"]')
+    expect(frame?.getAttribute('src')).toBe(
+      `/codegraph/app/?project=${encodeURIComponent(projectName)}`,
+    )
+  })
+
+  it('/codegraph 同时隐藏 Breadcrumb/FileTree，回到工作台后恢复', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
+    expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '代码图' }))
+    await waitFor(() => expect(document.querySelector('iframe[title="代码图"]')).not.toBeNull())
+    expect(screen.queryByText('文件')).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('当前位置')).not.toBeInTheDocument()
+
+    fireEvent.click(screen.getByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
+    expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
+  })
 })
 
 describe('关闭带草稿的文件 tab 要二次确认', () => {

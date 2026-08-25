@@ -50,7 +50,7 @@ import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
 import { useGlobalTickets } from '../overlay/useGlobalTickets'
 import { SettingsPage } from '../settings/SettingsPage'
-import { CodegraphPage } from '../codegraph/CodegraphPage'
+import { CodegraphFrame } from '../codegraph/CodegraphFrame'
 import { CardsPage } from '../cards/CardsPage'
 import { FlowsPage } from '../flows/FlowsPage'
 import { needsAttention } from '../cards/columns'
@@ -388,7 +388,7 @@ export function Shell() {
   // 于是点了目录再点「工作项」，中央换成了看板、右边那棵文件树却一直挂着，
   // 面包屑也还写着上一个目录（2026-08-19 真机看到）。它们是工作台的一部分，
   // 不属于这些整页。左栏导航树不在此列——它是导航，任何页面都该在。
-  const fullPageRoute = ['/cards', '/flows', '/settings', '/machines']
+  const fullPageRoute = ['/cards', '/flows', '/settings', '/machines', '/codegraph']
     .some((path) => location.pathname.startsWith(path))
 
   // selectDir 是「点一个目录」的唯一实现：换回工作台 + 选中。
@@ -488,7 +488,11 @@ export function Shell() {
               path="/settings"
               element={<SettingsPage onClose={() => navigate('/')} />}
             />
-            <Route path="/codegraph" element={<CodegraphPage />} />
+            {/* /codegraph 的 viewer 唯一来源是同源 iframe；它不在 Shell 内复制取数或凭据。 */}
+            <Route
+              path="/codegraph"
+              element={<CodegraphFrame project={wb.base?.projectName ?? ''} />}
+            />
             <Route path="/machines" element={<Navigate to="/settings" replace />} />
             <Route path="/tasks/:id" element={<TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} />} />
             <Route
