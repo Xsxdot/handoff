@@ -189,3 +189,9 @@ L3 轻档不执行跨子系统直通竖切；本节点只落契约查询的 Tick
 ## 7. 本节点欠账
 
 无“已实现但零测试”的欠账：Ticket 0 仅实现 `TaskTmpDir` 纯查询与 Codex 直通镜像，且已有本轮金样本和整包测试证据。范围第三根、白名单、审计事件、`graph` 自指令和另外三个执行器环境接线均尚未在本节点实现，按上节测试清单交给后续实现节点；不得将它们描述为当前已生效行为。
+
+## 8. Breakdown 轮边界澄清修订记录
+
+- 2026-08-25：拆解核对澄清：本轮只消费已冻结的 `d_orchestration → d_execution` / `executor.TaskTmpDir` 接缝；`permgate` 仍是 `d_policy` 内的纯判据，`internal/store` 的既有 `AppendEvent` 属编排域，`ledgermirror` 只是既有事件消费验证点，不新增域间入口。此记录不改变第 1–6 节冻结语义。
+- 2026-08-25：拆解核对澄清：任务临时目录的 AF_UNIX 字节预算属于实现注释的权威知识搬家，不是新 API 或新接缝；完整中文账必须归 `internal/executor/tempdir.go#TaskTmpDir`，Codex 直通镜像不得成为唯一知识源。此记录不改变 `TaskTmpDir` 的签名与路径语义。
+- 2026-08-25：拆解核对澄清：B248 先合入是实现轮的安全基线前置，不是 B249 契约增量；若实现轮开工前实查已含 `execWrapperRx` 放宽则跳过合并，否则不得在 B249 放宽白名单的中间态落地。此记录不改变本卡的 out-of-scope 黑名单规则。
