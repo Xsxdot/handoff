@@ -242,48 +242,14 @@ var agentdCmd = &cobra.Command{
 		logger.Info("事件镜像已启动", "targets", len(srv.Pool().Names()), "tick", "30s",
 			"note", "运行期新增的机器无需重启")
 
-		// 账本域是可选功能（默认关）。关掉时既不开库也不起镜像，DataDir 下
-		// 不会凭空多出 ledger.db；web 侧靠 /api/ledger/health 探到 enabled:false
-		// 后不渲染入口。
-		if !cfg.Ledger.Enabled {
-			if cfg.Ledger.DSN != "" {
-				// 配了 dsn 却没开开关是典型的半配状态，静默跳过会让人对着
-				// 一个「配了却不生效」的库排查半天
-				logger.Warn("ledger.dsn 已配置但 enabled=false，账本未启用")
-			} else {
-				logger.Info("账本未启用（ledger.enabled=false）")
-			}
-		} else {
-			// 账本镜像子系统：机器清单来自 target 客户端池的活配置读取，启动时
-			// 没有机器不代表以后没有——恒挂载才能让控制台新增的第一台机器无需重启
-			// 即开始镜像。池必须与任务镜像共用同一个，避免重复 relay 隧道。
-			// 账本库按配置解析（dsn 空 = DataDir/ledger.db 单机回退）。
-			// 构造→go Run→Stop→Close 的次序是硬约束：订阅回调在写库，Stop 必须先于
-			// 账本库 Close。账本库始终打开，即使没有登记机器，本机 web 看板仍必须
-			// 能读写单机回退账本。
-			ldsn := cfg.Ledger.DSN
-			if ldsn == "" {
-				ldsn = filepath.Join(cfg.DataDir, "ledger.db")
-			}
-			lst, err := ledger.Open(ldsn)
-			if err != nil {
-				return fmt.Errorf("打开账本库: %w", err)
-			}
-			defer lst.Close()
-			srv.SetLedger(lst)
-			// 恒挂载：机器清单来自 target 客户端池的活配置读取，启动时没有机器
-			// 不代表以后没有——留着 len(cfg.Targets)>0 的闸会让控制台新增的第一台
-			// 机器永远等不到账本镜像（与上方任务镜像同一条纪律，B163 ①）。
-			// 池必须与任务镜像共用同一个：两个池等于两套 relay 隧道。
-			host, _ := os.Hostname()
-			lm := ledgermirror.New(lst, srv.Pool(), ledgermirror.Options{Holder: host})
-			go lm.Run(wdCtx)
-			// 次序硬约束：订阅回调在写账本库，Stop 必须先于 lst.Close()。
-			// defer 是 LIFO，本行注册在 defer lst.Close() 之后，因此先于它执行。
-			defer lm.Stop()
-			logger.Info("账本镜像子系统已挂载", "holder", host,
-				"machines", len(srv.Pool().Names()))
+		// 账本域是必需品（B229 §2.6：enabled 开关已退休，配置里的键被忽略）：
+		// 恒开库恒挂镜像。dsn 空 = DataDir/ledger.db 单机回退；web 侧靠
+		// /api/ledger/health 拿到 enabled:true 后渲染入口。
+		stopLedger, err := setupLedger(cfg, srv, wdCtx, logger)
+		if err != nil {
+			return err
 		}
+		defer stopLedger()
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
@@ -457,4 +423,44 @@ func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
 		"覆盖默认执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
+}
+
+// setupLedger 打开账本库并挂载镜像子系统。
+//
+// B229 §2.6：ledger.enabled 开关退休，账本变必需品——本函数恒执行，
+// 不再看任何开关位。dsn 空 = DataDir/ledger.db 单机回退。
+//
+// 参数：cfg 取 Ledger.DSN 与 DataDir；srv 接收 SetLedger 注入并出镜像
+// 所需的 target 客户端池；ctx 是镜像生命周期（随 agentd 停机取消）；
+// logger 为启动日志入口。
+//
+// 返回：stop 必须由调用方 defer，且保证先于账本库 Close 执行——订阅
+// 回调在写库，Stop 先于 Close 是硬约束（本函数把 Close 一并收进 stop，
+// 调用方只需 defer stop() 一个动作）。
+func setupLedger(cfg *config.Config, srv *agentd.Server, ctx context.Context,
+	logger *slog.Logger) (func(), error) {
+	ldsn := cfg.Ledger.DSN
+	if ldsn == "" {
+		ldsn = filepath.Join(cfg.DataDir, "ledger.db")
+	}
+	lst, err := ledger.Open(ldsn)
+	if err != nil {
+		logger.Error("打开账本库失败", "dsn", ldsn, "cause", err)
+		return nil, fmt.Errorf("打开账本库: %w", err)
+	}
+	srv.SetLedger(lst)
+	// 恒挂载：机器清单来自 target 客户端池的活配置读取，启动时没有机器
+	// 不代表以后没有——留着 len(cfg.Targets)>0 的闸会让控制台新增的第一台
+	// 机器永远等不到账本镜像（与任务镜像同一条纪律，B163 ①）。
+	// 池必须与任务镜像共用同一个：两个池等于两套 relay 隧道。
+	host, _ := os.Hostname()
+	lm := ledgermirror.New(lst, srv.Pool(), ledgermirror.Options{Holder: host})
+	go lm.Run(ctx)
+	logger.Info("账本镜像子系统已挂载", "holder", host,
+		"machines", len(srv.Pool().Names()), "dsn", ldsn)
+	return func() {
+		// 次序硬约束：先停镜像（不再写库）再关账本库。
+		lm.Stop()
+		lst.Close()
+	}, nil
 }
