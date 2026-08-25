@@ -459,16 +459,19 @@ func (s *Store) ChildrenOf(cardID string) ([]CardBrief, error) {
 	return children, nil
 }
 
-// AttachFile 挂附件（同 path 幂等）；落 comment 事件记录动作，附件本体
-// 是卡字段不是事件。
+// AttachFile 挂附件（同 kind、path 二元组幂等）；落 comment 事件记录动作，
+// 附件本体是卡字段不是事件。
 func (s *Store) AttachFile(id, kind, path, actor string) error {
+	log().Info("挂附件进入", "card", id, "kind", kind, "path", path, "actor", actor)
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
+			log().Warn("挂附件失败：读取卡", "card", id, "kind", kind, "path", path, "cause", err)
 			return fmt.Errorf("挂附件: 卡 %s: %w", id, err)
 		}
 		for _, attachment := range card.Attachments {
-			if attachment.Path == path {
+			if attachment.Kind == kind && attachment.Path == path {
+				log().Info("附件已存在，跳过："+kind+":"+path, "card", id, "kind", kind, "path", path)
 				return nil // 幂等
 			}
 		}
@@ -476,36 +479,76 @@ func (s *Store) AttachFile(id, kind, path, actor string) error {
 		raw, _ := json.Marshal(card.Attachments)
 		if _, err := tx.Exec(s.q(`UPDATE cards SET attachments = ?, updated_at = ? WHERE id = ?`),
 			string(raw), s.tval(time.Now()), id); err != nil {
+			log().Error("挂附件失败：写附件", "card", id, "kind", kind, "path", path, "cause", err)
 			return fmt.Errorf("写附件: %w", err)
 		}
 		_, err = s.appendEvent(tx, sink, id, EvComment, actor,
 			map[string]any{"kind": "普通", "body": fmt.Sprintf("挂附件 %s:%s", kind, path)})
+		if err != nil {
+			log().Error("挂附件失败：落事件", "card", id, "kind", kind, "path", path, "cause", err)
+			return err
+		}
+		log().Info("挂附件完成", "card", id, "kind", kind, "path", path, "actor", actor)
 		return err
 	})
 }
 
-// DetachFile 摘附件（按 path 匹配）。
-func (s *Store) DetachFile(id, path, actor string) error {
+// DetachFile 摘附件。selector 命中卡上已有的 kind:path 时只摘该二元组；
+// 否则把 selector 当作裸 path，摘掉该路径的全部附件。两种形态都落 comment
+// 事件，附件本体是卡字段不是事件。
+func (s *Store) DetachFile(id, selector, actor string) error {
+	log().Info("摘附件进入", "card", id, "selector", selector, "actor", actor)
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
+			log().Warn("摘附件失败：读取卡", "card", id, "selector", selector, "cause", err)
 			return fmt.Errorf("摘附件: 卡 %s: %w", id, err)
 		}
+		kind, path, exact := detachSelector(card.Attachments, selector)
 		kept := card.Attachments[:0]
+		removed := make([]Attachment, 0, 1)
 		for _, attachment := range card.Attachments {
-			if attachment.Path != path {
-				kept = append(kept, attachment)
+			match := attachment.Path == path
+			if exact {
+				match = len(removed) == 0 && attachment.Kind == kind && attachment.Path == path
 			}
+			if match {
+				removed = append(removed, attachment)
+				continue
+			}
+			kept = append(kept, attachment)
 		}
 		raw, _ := json.Marshal(kept)
 		if _, err := tx.Exec(s.q(`UPDATE cards SET attachments = ?, updated_at = ? WHERE id = ?`),
 			string(raw), s.tval(time.Now()), id); err != nil {
+			log().Error("摘附件失败：写附件", "card", id, "selector", selector, "removed", removed, "cause", err)
 			return fmt.Errorf("写附件: %w", err)
 		}
 		_, err = s.appendEvent(tx, sink, id, EvComment, actor,
-			map[string]any{"kind": "普通", "body": "摘附件 " + path})
+			map[string]any{"kind": "普通", "body": "摘附件 " + selector})
+		if err != nil {
+			log().Error("摘附件失败：落事件", "card", id, "selector", selector, "removed", removed, "cause", err)
+			return err
+		}
+		log().Info("摘附件完成", "card", id, "selector", selector, "exact", exact,
+			"count", len(removed), "attachments", removed, "actor", actor)
 		return err
 	})
+}
+
+// detachSelector 解析 detach 的双形态。只有卡上确实存在 kind:path 精确项时
+// 才进入精确模式；否则保留旧语义，把完整 selector 当作 path。
+func detachSelector(attachments []Attachment, selector string) (kind, path string, exact bool) {
+	kind, path, hasKind := strings.Cut(selector, ":")
+	if !hasKind {
+		return "", selector, false
+	}
+	for _, attachment := range attachments {
+		if attachment.Kind == kind && attachment.Path == path {
+			return kind, path, true
+		}
+	}
+	return "", selector, false
 }
 
 // SetAcceptance 写验收判据文本（判据是卡字段；验收**结果**走

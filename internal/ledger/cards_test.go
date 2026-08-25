@@ -290,11 +290,16 @@ func TestUpdateCardAttachAccept(t *testing.T) {
 	if err := s.AttachFile(card.ID, "spec", "specs/x.md", "test"); err != nil {
 		t.Fatalf("attach: %v", err)
 	}
+	if err := s.AttachFile(card.ID, "plan", "specs/x.md", "test"); err != nil {
+		t.Fatalf("同 path 不同 kind attach: %v", err)
+	}
 	if err := s.SetAcceptance(card.ID, "跑通判据一", "test"); err != nil {
 		t.Fatalf("accept: %v", err)
 	}
 	got, _ := s.GetCard(card.ID)
-	if len(got.Attachments) != 1 || got.Attachments[0].Path != "specs/x.md" {
+	if len(got.Attachments) != 2 || got.Attachments[0].Kind != "spec" ||
+		got.Attachments[1].Kind != "plan" || got.Attachments[0].Path != "specs/x.md" ||
+		got.Attachments[1].Path != "specs/x.md" {
 		t.Fatalf("附件: %+v", got.Attachments)
 	}
 	if got.AcceptanceCriteria != "跑通判据一" {
@@ -303,8 +308,15 @@ func TestUpdateCardAttachAccept(t *testing.T) {
 	// 同 path 重复 attach 幂等（不追加重复项）
 	_ = s.AttachFile(card.ID, "spec", "specs/x.md", "test")
 	got, _ = s.GetCard(card.ID)
-	if len(got.Attachments) != 1 {
+	if len(got.Attachments) != 2 {
 		t.Fatalf("attach 不幂等: %+v", got.Attachments)
+	}
+	if err := s.DetachFile(card.ID, "spec:specs/x.md", "test"); err != nil {
+		t.Fatalf("精确 detach: %v", err)
+	}
+	got, _ = s.GetCard(card.ID)
+	if len(got.Attachments) != 1 || got.Attachments[0].Kind != "plan" {
+		t.Fatalf("精确 detach 不得摘掉另一 kind: %+v", got.Attachments)
 	}
 	if err := s.DetachFile(card.ID, "specs/x.md", "test"); err != nil {
 		t.Fatalf("detach: %v", err)

@@ -76,6 +76,28 @@ func TestAttachmentAnyGateAcceptsEitherKind(t *testing.T) {
 	}
 }
 
+// 同一路径同时登记为 spec 与 plan 后，charter 的 implement 择一门必须真的放行。
+// 这条是 B250 的端到端牙齿：只断言附件数组长度，改坏门仍可能假绿。
+func TestAttachmentKindsOnSamePathUnlockImplementGate(t *testing.T) {
+	s := anyGateStore(t)
+	card := mkAnyGate(t, s, "同一路径双 kind")
+	for _, kind := range []string{"spec", "plan"} {
+		if err := s.AttachFile(card.ID, kind, "docs/b250.md", "test"); err != nil {
+			t.Fatalf("挂 %s: %v", kind, err)
+		}
+	}
+	got, err := s.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读双 kind 卡: %v", err)
+	}
+	if len(got.Attachments) != 2 {
+		t.Fatalf("同路径双 kind 应各自保留: %+v", got.Attachments)
+	}
+	if err := s.MoveCard(card.ID, "implement", "", "test"); err != nil {
+		t.Fatalf("双 kind 应通过 implement 择一门: %v", err)
+	}
+}
+
 // 单值门与择一门是 AND：两个都设就两个都要过。
 // 这条钉住的是「加了择一门不会把既有单值门弱化成或」——弱化是静默的，
 // 只有正面断言才发现得了。
