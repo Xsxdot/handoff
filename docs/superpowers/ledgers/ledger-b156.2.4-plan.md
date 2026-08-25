@@ -76,3 +76,13 @@ plan 节点台账（B156.2.4 C4·Send 白名单执法全矩阵 + Pointer 实现�
 - R10: 变异②（VerifyWriter default 分支绑定比对改 `if false`）→ 编译过 → TestSendCoordinatorKindsRequireBinding 与 TestSendRebindRevokesOldSession 红（红文：`kind escalation 非绑定者必须 ErrNotWriter，got <nil>`）；relay 两支保持绿（只动 default 分支，命中唯一——`actor != r.Card.DriverSession` 在文件出现 2 次，用「协调者类被拒：群房间无绑定席位可比」长锚命中 default 分支）→ 已还原。
 - R11: 变异还原后 `go test ./internal/collab/... -count=1` ok EXIT=0；`go build ./...` EXIT=0。
 - R12: Pointer 函数体 grep 判据：`sed -n '/func (s \*Service) Pointer/,/^}/p' internal/collab/service.go | grep -c "return 0, nil"` = 0。
+
+## 修复轮台账（2026-08-26，本工作树 cards/B156.2.4-charter-3）
+
+- F1: 复现审阅者缺陷：修复前 `grep -c '"edgesAdded"' codegraph/diffs/cards-B156.2-charter-4.json` = 2；`python3 -c "import json;d=json.load(open('codegraph/diffs/cards-B156.2-charter-4.json'));print(len(d['edgesAdded']))"` = 0（第 19 行 11 条边 + 第 184 行空数组，JSON 重复键取末值）。
+- F2: 修复：删除第 184 行 `"edgesAdded": [],` 重复键，保留第 19 行 11 条边；edges 内容不动（审阅已验合法）。
+- F3: 自验判据①：`python3 -c "import json;d=json.load(open('codegraph/diffs/cards-B156.2-charter-4.json'));print(len(d['edgesAdded']))"` = **11**（EXIT=0）。
+- F4: 自验判据②：`grep -c '"edgesAdded"' codegraph/diffs/cards-B156.2-charter-4.json` = **1**；顶层键序 `['view','base','summary','containersAdded','nodesAdded','edgesAdded','nodesModified','implementsAdded']` 无重复。
+- F5: `go run . graph validate --repo .` 重定向取真退出码 → **EXIT=0**，原文 JSON `containers=263, nodes=3718, edges=4746, issues=null, edgeIssues=null`，views 含 `cards-B156.2-charter-4`。
+- F6: `go run . graph check --repo . --view cards-B156.2-charter-4` 重定向取真退出码 → **EXIT=0**，`"fails": []`（warns 为既有 anchor-off/container-misplaced/legacy/oversized 类，非本轮引入）。
+- F7: 纪律自查：①命令全部本工作树实跑、原文入台账，未将未跑结果写成结论；②未调用 handoff CLI 写命令、未起新 executor（仅只读 graph validate/check 子命令与 go 进程）；③未动 internal/collab/*.go、未改 best.json、未碰既有测试。
