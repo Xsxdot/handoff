@@ -100,7 +100,7 @@
   {
    "from": "d_gateway",
    "to": "d_policy",
-   "legacyBudget": 38,
+   "legacyBudget": 27,
    "entries": [
     "discipline（包级函数）"
    ]

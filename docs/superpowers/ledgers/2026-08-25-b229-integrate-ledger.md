@@ -1,0 +1,36 @@
+# B229 集成节点台账（acc/integration-B229）
+
+- 2026-08-25：开工核对 `git status --short --branch && git log --oneline -5`；原始输出：`## cards/B229-charter-3`（工作树干净），HEAD 链 `e24b9a31 breakdown ← f848f0e6 契约冻结台账 ← 97dcaf96 contract ← 10906bb1 spec ← 16cadcb8 roadmap`；判断：本节点从 cards/B229-charter-3 顶开集成分支。
+- 2026-08-25：`git fetch origin` 后逐条核对五条子卡分支顶提交号，与协调者报文一致：cards/B229.1-charter-2=2b3e6bc28、cards/B229.2-charter=5bb29836c、cards/B229.3-charter=680cea0bd、cards/B229.4-review-1=407ca1d96、cards/B229.5-charter=5d13c1348；基线分支 origin/claude/config-sync-workflow-arch-fd96b7=10906bb1 为当前 HEAD 祖先。另核 `git rev-list --count HEAD..origin/main`=2（main 仅多 C1.7 两笔 docs 提交，不在本卡范围）。
+- 2026-08-25：建集成分支 `acc/integration-B229`（自 e24b9a31，沿 B156.1 的 acc/integration-* 命名先例）；按 DAG 顺序 T1→T2→T3→T4→T5 逐一 `git merge --no-ff <top>` 合入：零冲突。合入点（merge commit）：
+  - T1 cards/B229.1-charter-2 (2b3e6bc28) → merge commit d9d4ce89
+  - T2 cards/B229.2-charter (5bb29836c) → merge commit 7d162874
+  - T3 cards/B229.3-charter (680cea0bd) → merge commit 8ef60723
+  - T4 cards/B229.4-review-1 (407ca1d96) → merge commit 9437a208
+  - T5 cards/B229.5-charter (5d13c1348) → merge commit 97da0766
+  （`git log --merges --oneline` 原始输出前五行与此一致；合并过程零冲突、零手工改文件。）
+- 2026-08-25：全量回归（T7 法定顺序）原始输出：`go build ./... && echo BUILD_OK && go vet ./... && echo VET_OK` → `BUILD_OK`、`VET_OK`，退出 0。
+- 2026-08-25：`gofmt -l ./cmd ./internal` → 无输出（退出 0）；`gofmt -l . | grep -v node_modules` 同样无输出。
+- 2026-08-25：`go test ./... -count=1` 完整落盘 /tmp/opencode/b229-integrate-gotest.txt：`EXIT=0`，`grep -c "^ok"`=46 包全 ok，`grep -nE "^(FAIL|---)"` 零命中（NO_FAIL_LINES）。关键包读数：cmd 10.506s、internal/agentd 138.590s、internal/discipline 0.004s、internal/ledger 14.831s、internal/ledgerstep 6.365s、internal/config 0.020s。判据 1 达成。
+- 2026-08-25：`git diff --check` → 无输出（DIFFCHECK_EXIT=0）。
+- 2026-08-25：结构判据①（协调者两条）：`grep -rn "discipline.Compose" --include="*.go" internal/ cmd/`（去 _test）→ 生产调用方仅 internal/discipline/dispatch.go 三处（:85/:92/:95，Compose 定义在 platform.go:23）；internal/agentd/manager.go 内 Compose/resolveDisciplineFor/NewResolver/builtinFor/builtinByName/DefaultTierFor/TierImplement 全部零命中（唯一 NewResolver 命中是 envfile.NewResolver，manager.go:303，属 Env 文件域非纪律块）。
+- 2026-08-25：结构判据②：能力位三处投影链齐备——server.go:695 handleStatus 置 `resp.DisciplinesSupported = &disciplinesOK` 且上方带 §2.4 四件事核对单注释；machines.go:109 localMachine 就地填（注释说明本机不走 HTTP 的原因）；machines.go:161 fillFromStatus `m.DisciplinesSupported = st.DisciplinesSupported` 原样搬运含 nil（注释「探到了但对端没这个字段，结论就是没上报」）。
+- 2026-08-25：T1 拆除判据 grep：`grep -rn "builtinFor\|builtinByName\|DefaultTierFor\|TierImplement\|discipline.Dir\|discipline.List(\|discipline.Read(\|discipline.Write(" --include="*.go" internal/ cmd/` → ZERO_HITS（生产+测试全无）；`ls internal/discipline/builtin/` → No such file or directory；包内仅剩 discipline.go/dispatch.go/platform.go 及测试，resolver.go/files.go 已删。判据 2 前半达成。
+- 2026-08-25：判据 2 后半：`go build -o /tmp/opencode/handoff-b229 .` 成功；`grep -c "每确立一个事实就往台账文件追加一行" /tmp/opencode/handoff-b229` → 1。platform.go 平台层正文仍在二进制内。
+- 2026-08-25：判据 3 建表：internal/ledger/store.go PG 方言 :240-242 与 SQLite 方言 :305-307 各有 `CREATE TABLE IF NOT EXISTS disciplines (... PRIMARY KEY (name, version))`，双方言均建表、主键一致。
+- 2026-08-25：判据 3 CLI 实测（隔离临时库 /tmp/opencode/b229-ledger/ledger.db，经 `--config /tmp/opencode/b229-cfg.yaml` 指定 dsn；**未触碰本机 ~/.handoff/handoff.db**——真机正式导入是 T6/协调者数据操作）：`discipline list` 空库 → 表头一行；对 ~/.handoff/discipline/ 七份 charter-*.md 逐一 `discipline put` → 各返回 `{"name":"charter-*","version":1}`；再 `discipline list` → 七名升序 v1 齐全；`get` 输出去掉首行后与源 .md `cmp` 七份全部 BYTE_IDENTICAL。CLI 能列出导入的纪律块及版本——能力面实测成立，「7 份入生产账本」本身仍归 T6。
+- 2026-08-25：判据 6 机内证据：dispatch_test.go:39 用例「nil 按不支持处置」+:123 `errors.Is(err, ErrUnsupportedTarget)` 断言能力位 nil 必拒；ErrUnsupportedTarget 文案含升级指引（dispatch.go:26）；cardstep_discipline_test.go TestStartCardStepRejectsUnsupportedTarget 覆盖 nil/false 双态拒发（用例名「能力位缺席(nil)」）；cmd/dispatch.go:195 与 cardstep.go:149 探活失败按不支持处置（保守同向），无静默降级路径。定向测试实跑全 PASS（原始 RUN/PASS 行见上方命令输出）：TestResolveDispatchTriState / TestResolveDispatchAssembly / TestResolveDispatchRefusal / TestStartCardStepRejectsUnsupportedTarget 所在组 / TestStatusReportsDisciplinesSupported / TestFillFromStatusCarriesDisciplinesSupportedIncludingNil / TestViaTemplateCarriesResolvedDiscipline / TestDispatchSnapshotVersionKeyRegression / TestViaTemplateNoDisciplineInPrompt / TestDisciplinePutGetRoundtrip / TestDisciplineListAscendingDedup / TestDisciplinePutRejectsBadInput。
+- 2026-08-25：契约对照（graph check 双读数）。注意：本机安装的 `handoff` 旧二进制报「target.json schema version 3 不支持，请先 codegraph migrate」——改用本集成分支自建二进制 /tmp/opencode/handoff-b229 执行（只读图数据，平台不变量允许）。① 无视图 `graph check` → `"fails": []`、EXIT=0（warns 为 d_workspace 锚漂移与 proto transitTable 不入图等既有告警，grep -icE discipline 两份输出均零命中）；② `--view cards-B229-charter`（`graph views` 确认该视图存在）→ 同样 `"fails": []`、EXIT=0。集成阶段契约错配 = 0。
+- 2026-08-25：棘轮对账：`graph check` legacyHits 实测 d_cli→d_policy=32 / 预算 32（恰好贴顶，无下调空间），d_gateway→d_policy=**27** / 预算 38——T1 拆除执行机侧纪律解析使该接缝存量直调下降 11。按棘轮规则在同一变更集内把 codegraph/target.json 该边 legacyBudget 38→27（diff 仅此一行），改后复跑 `graph check` → `"fails": []`、EXIT=0，审计自洽。
+- 2026-08-25：回旋镖对账（breakdown/plan 预测 vs 实测）：① 协调者试合并先验「零冲突、全绿」——实测五合一同样零冲突、46 包全绿，一致；② breakdown 并行组判断「T1/T3/T4/T5 文件集互不相交」——合并零冲突佐证成立；③ 「T2 上报 true 的四件事核对单以注释+review 保证」——server.go:683 注释在位；④ 预测偏差一处：breakdown T4 验收预期 `go test ./cmd -run 'TestDiscipline(Put|Get|List)'`，实跑该正则命中 TestDisciplinePutGetRoundtrip/TestDisciplineListAscendingDedup/TestDisciplinePutRejectsBadInput 三条 PASS（命名是组合词而非 Put/Get/List 三独立函数，判据实质达成）；⑤ breakdown 预言「web tsc/vitest 本环境跑不了」——成立（下一行复核：node_modules 空目录），按纪律记「未验证，需真机」。
+- 2026-08-25：web 工具链复核：`ls node_modules/` 无输出（空目录）、`web/node_modules` 不存在——tsc/vitest 本环境确实不可跑，记「未验证，需真机」（真机清单第 6 条）。
+- 2026-08-25：接缝缺陷记账：集成阶段新发现缺陷数 = **0**。合并零冲突；全量测试一次全绿；graph check 双读数 fails 清零。唯一环境观察（非代码缺陷）：本机安装版 handoff 二进制不支持 target.json schema v3，graph check 需用集成分支自建二进制执行（见契约对照条目）。
+
+## 集成报告（交棒）
+
+- **集成分支**：`acc/integration-B229`，顶提交见本文件所在提交的收尾行 commit 字段。基线 cards/B229-charter-3 (e24b9a31)，其含 spec 10906bb1 / 契约冻结 97dcaf96 / breakdown e24b9a31。
+- **五条分支合入点**（全部 --no-ff，零冲突）：T1 cards/B229.1-charter-2 2b3e6bc28→d9d4ce89；T2 cards/B229.2-charter 5bb29836c→7d162874；T3 cards/B229.3-charter 680cea0bd→8ef60723；T4 cards/B229.4-review-1 407ca1d96→9437a208；T5 cards/B229.5-charter 5d13c1348→97da0766。
+- **本节点亲跑的验收命令**（原始输出全文见上方案目与 /tmp/opencode/b229-integrate-gotest.txt）：go build ./... && go vet ./... 退出 0；gofmt -l ./cmd ./internal 无输出；go test ./... -count=1 EXIT=0、46 包全 ok、无 FAIL 行；git diff --check 无输出；graph check 无视图 + --view cards-B229-charter 双读数 `"fails": []`；棘轮改预算后 graph check 复跑仍 `"fails": []`。
+- **验收判据机内状态**：判据 1 ✓ 实测；判据 2 ✓（builtin 六份 .md 目录不存在、退役 grep ZERO_HITS、平台正文在自建二进制 grep 命中 1 次）；判据 3 ✓（双方言建表主键 (name,version) + CLI 在隔离临时库七份 put/list/get roundtrip 全部实测，生产账本正式导入归 T6/协调者）；判据 6 ✓ 机内证据（TriState nil 必拒断言、cardstep/cmd 探活失败按不支持处置）。**判据 4、5 属真机派发对照，本节点未执行，登记为未执行。**
+- **下一步：acceptance / 协调者真机验证**——先构建本分支二进制，验一条真机判据：一次真派发的 prompt 正文含平台不变量块原文且恰好出现 1 次；随后走 breakdown §5 真机清单 8 条（混版拒发、continue/resume、linux-01 目录残留清理、web tsc/vitest、PlatformInvariants:false 裸派发、升级批次核对等）。**真机清单本轮一条都未执行。**
+- **移交物**：CHANGELOG [Unreleased] 五条行为变化已记；codegraph/target.json d_gateway→d_policy legacyBudget 38→27（棘轮同变更集）；T7 的 CHANGELOG 要求已满足。并入 main 与归档收口是协调者裁决——本分支不 push、不开 PR。
