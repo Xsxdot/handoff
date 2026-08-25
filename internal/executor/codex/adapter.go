@@ -128,15 +128,7 @@ func deltaFrameKind(method string) deltaKind {
 // 必红的整轮测试，所以不要动。
 func taskTmpDir(taskDir string) string {
 	dataDir := filepath.Dir(filepath.Dir(taskDir))
-	return filepath.Join(dataDir, "tmp", shortTaskID(filepath.Base(taskDir)))
-}
-
-// shortTaskID 取任务 ID 前 8 位（不足 8 位则原样返回）。
-func shortTaskID(id string) string {
-	if len(id) <= 8 {
-		return id
-	}
-	return id[:8]
+	return executor.TaskTmpDir(dataDir, filepath.Base(taskDir))
 }
 
 // tmpEnvKVs 把 Go 工具链的临时目录与构建缓存指向任务专属 tmp。

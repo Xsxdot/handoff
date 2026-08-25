@@ -1,0 +1,47 @@
+{
+  "view": "cards/B249-charter",
+  "base": "dd445a569b7a69e67145b37d688fd4638e233a4f",
+  "summary": "B249 Ticket 0：执行契约统一任务临时目录查询，Codex 直通调用",
+  "nodesAdded": {
+    "n_executor_TaskTmpDir": {
+      "kind": "func",
+      "container": "k_executor_fn",
+      "order": 145,
+      "name": "TaskTmpDir",
+      "file": "internal/executor/tempdir.go",
+      "line": 11,
+      "signature": "func TaskTmpDir(dataDir, taskID string) string",
+      "params": [
+        ["dataDir", "string", "agentd DataDir"],
+        ["taskID", "string", "任务 ID；取前 8 个字节"]
+      ],
+      "returns": "string",
+      "summary": "TaskTmpDir 返回 handoff 为任务分配的任务专属临时目录。",
+      "tests": [
+        {
+          "name": "TestTaskTmpDirGoldenVectors",
+          "file": "internal/executor/tempdir_test.go:9"
+        }
+      ]
+    }
+  },
+  "nodesModified": {
+    "n_codex_taskTmpDir": {
+      "kind": "func",
+      "container": "k_codex_fn",
+      "order": 115,
+      "name": "taskTmpDir",
+      "file": "internal/executor/codex/adapter.go",
+      "line": 129,
+      "signature": "func taskTmpDir(taskDir string) string",
+      "params": [
+        ["taskDir", "string", "任务目录"]
+      ],
+      "returns": "string",
+      "summary": "taskTmpDir 返回任务专属临时目录（<DataDir>/tmp/<id8>）。"
+    }
+  },
+  "edgesAdded": [
+    ["n_codex_taskTmpDir", "n_executor_TaskTmpDir"]
+  ]
+}

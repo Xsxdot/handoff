@@ -139,7 +139,10 @@
   {
    "from": "d_orchestration",
    "to": "d_execution",
-   "legacyBudget": 27
+   "legacyBudget": 27,
+   "entries": [
+    "executor.TaskTmpDir"
+   ]
   },
   {
    "from": "d_orchestration",
