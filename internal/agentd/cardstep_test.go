@@ -3,6 +3,7 @@ package agentd
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,7 +113,7 @@ func TestStartCardStepReleasesSlotOnFinish(t *testing.T) {
 			close(done)
 		}
 	}
-	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: ledger.StatusDoing, Actor: "web:test"}); err != nil {
 		t.Fatalf("首次应放行: %v", err)
 	}
 	<-done
@@ -120,6 +121,29 @@ func TestStartCardStepReleasesSlotOnFinish(t *testing.T) {
 	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
 		t.Fatalf("跑完之后应能再发起: %v", err)
 	}
+}
+
+// TestStartCardStepAssemblesRunHolder 锁住生产装配不能漏传运行身份。
+func TestStartCardStepAssemblesRunHolder(t *testing.T) {
+	s := newNoPTYLedgerEnv(t).srv
+	seedCardWithProject(t, s, "demo")
+	ch := make(chan string, 1)
+	s.runStepFn = func(ctx context.Context, runner *ledgerstep.StepRunner, cardID, step string) {
+		ch <- runner.RunHolder
+	}
+	if err := s.startCardStep("B1", proto.CardStepReq{Step: "review", Actor: "web:test"}); err != nil {
+		t.Fatalf("受理: %v", err)
+	}
+	var holder string
+	select {
+	case holder = <-ch:
+	case <-time.After(2 * time.Second):
+		t.Fatal("编排未被启动")
+	}
+	if holder == "" || !strings.HasPrefix(holder, "run:") || strings.Count(holder, "#") != 2 {
+		t.Fatalf("holder 应为 run:<host>#<pid>#<unixnano> 形态: %q", holder)
+	}
+	waitFor(t, func() bool { return !cardStepInFlight(s, "B1") })
 }
 
 // TestRequiresInlineLocalFile keeps the guard tied to request capabilities rather than node names.

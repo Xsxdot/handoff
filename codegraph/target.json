@@ -82,6 +82,7 @@
    "to": "d_ledger",
    "legacyBudget": 14,
    "entries": [
+    "ledger.Store",
     "ledgerstep.StepRunner"
    ]
   },

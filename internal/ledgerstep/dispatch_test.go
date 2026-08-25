@@ -5,6 +5,7 @@ package ledgerstep
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -148,6 +149,59 @@ func TestViaTemplateSnapshotRecordsExecutorModel(t *testing.T) {
 		return
 	}
 	t.Fatal("缺 dispatched 事件")
+}
+
+// TestViaTemplateStopsSnapshotAfterWriteGateCloses 覆盖挂账成功后、快照写入前
+// 失去运行锁的窗口：已有 card_tasks 行保留，但不得再落 dispatched 事件。
+func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	const holder = "run:gate-test#1#1"
+	if _, acquired, err := st.AcquireRunLock(card.ID, "审阅", holder, ledger.RunLockTTL); err != nil || !acquired {
+		t.Fatalf("取得测试运行锁: acquired=%v err=%v", acquired, err)
+	}
+
+	gateCalls := 0
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		return "T-write-gate", nil
+	}}
+	_, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02",
+		WriteGate: func() bool {
+			gateCalls++
+			if gateCalls == 2 {
+				if err := st.ReleaseRunLock(card.ID, holder); err != nil {
+					t.Fatalf("释放测试运行锁: %v", err)
+				}
+			}
+			ok, renewErr := st.RenewRunLock(card.ID, holder, ledger.RunLockTTL)
+			if renewErr != nil {
+				t.Fatalf("续租测试运行锁: %v", renewErr)
+			}
+			return ok
+		},
+	})
+	if !errors.Is(err, ErrWriteGateClosed) {
+		t.Fatalf("快照写前失权应被拒: %v", err)
+	}
+	if gateCalls != 2 {
+		t.Fatalf("两处账本写入前都应检查写闸，实得 %d 次", gateCalls)
+	}
+	links, err := st.TasksOf(card.ID)
+	if err != nil {
+		t.Fatalf("读挂账: %v", err)
+	}
+	if len(links) != 1 {
+		t.Fatalf("失权前已完成的挂账应保留，实得 %d 行", len(links))
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == ledger.EvDispatched {
+			t.Fatalf("失权后不得新增 dispatched 事件: %+v", event)
+		}
+	}
 }
 
 // TestViaTemplateSendsDisciplineName 模板的角色名要随派发请求上送，

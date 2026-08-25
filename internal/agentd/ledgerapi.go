@@ -181,10 +181,22 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 		s.log.Warn("未决工单推导失败（徽标退化为不显示，不阻塞列表）", "err", err)
 		tickets = nil
 	}
+	runLocks, lockErr := s.ledger.AllRunLocks()
+	if lockErr != nil {
+		s.log.Warn("运行锁批量读取失败（冲突徽标退化为不显示，不阻塞列表）", "err", lockErr)
+		runLocks = nil
+	}
+	activeLock := make(map[string]struct{}, len(runLocks))
+	now := time.Now()
+	for _, lock := range runLocks {
+		if lock.ExpiresAt.After(now) {
+			activeLock[lock.CardID] = struct{}{}
+		}
+	}
 	out := make([]proto.CardView, 0, len(views))
 	for _, view := range views {
 		conflict := false
-		if view.Status == ledger.StatusDoing {
+		if _, locked := activeLock[view.ID]; locked {
 			states, stateErr := s.ledger.LatestTaskStates(view.ID)
 			if stateErr == nil {
 				for _, state := range states {
@@ -443,7 +455,7 @@ func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, ok := raw["actor"]; !ok {
-		req.Actor = "web:" + r.RemoteAddr
+		req.Actor = "web:" + hostOnly(r.RemoteAddr)
 		s.log.Info("legacy 卡节点请求补 actor", "card", id, "node", req.Step,
 			"actor", req.Actor, "remote_addr", r.RemoteAddr)
 	}
