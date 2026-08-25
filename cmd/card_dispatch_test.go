@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -152,20 +153,88 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 		t.Fatalf("派发未带 project: %q", gotProject)
 	}
 
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	card, err := st.GetCard(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.Status != ledger.StatusTodo {
+		t.Fatalf("裸 dispatch 不得挪列，实际 %q", card.Status)
+	}
+	if card.DriverSession == "" || strings.Contains(card.DriverSession, "#") ||
+		!strings.HasPrefix(card.DriverSession, "cli:") {
+		t.Fatalf("归属应为人尺度身份: %q", card.DriverSession)
+	}
+	st.Close()
 	show, _, err := runLedgerCLI(t, dir, "card", "show", c.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(show, `"Status":"进行中"`) && !strings.Contains(show, `"status":"进行中"`) {
-		t.Fatalf("未认领: %q", show)
-	}
-	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID, "--template", "feature-impl",
-		"--target", "mac-02", "--discipline-override", "implement"); err == nil ||
-		!strings.Contains(err.Error(), "认领") {
-		t.Fatalf("重复派发应报已认领: %v", err)
-	}
 	if !strings.Contains(show, "dispatched") || !strings.Contains(show, "discipline_name") {
 		t.Fatalf("快照事件缺失: %q", show)
+	}
+}
+
+// TestCardDispatchGuardFollowsOwnership 断言裸 dispatch 的守卫只看归属锁。
+func TestCardDispatchGuardFollowsOwnership(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "守卫卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
+		t.Fatal(err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ClaimCard(c.ID, "cli:other@remote-host"); err != nil {
+		t.Fatalf("预占: %v", err)
+	}
+	st.Close()
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		t.Fatal("他主持有时不应走到派发")
+		return "", nil
+	})
+	defer restore()
+	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", c.ID,
+		"--template", "feature-impl", "--target", "mac-02")
+	if err == nil || !strings.Contains(err.Error(), "cli:other@remote-host") {
+		t.Fatalf("他主持有应拒且点名持有者: %v", err)
+	}
+}
+
+// TestCardDispatchSameOwnerReentryIdempotent 断言同一人换进程重入幂等。
+func TestCardDispatchSameOwnerReentryIdempotent(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "重入卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for i := 0; i < 2; i++ {
+		restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+			n++
+			return fmt.Sprintf("T-reentry-%d", n), nil
+		})
+		if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
+			"--template", "feature-impl", "--target", "mac-02"); err != nil {
+			t.Fatalf("同人第 %d 次派发应放行: %v", i+1, err)
+		}
+		restore()
 	}
 }
 
@@ -239,8 +308,7 @@ func TestCardDispatchStepExecutorModelFlags(t *testing.T) {
 	}
 }
 
-// 派发失败必须连驱动租约一起退：只退状态会让卡停在「待办但有主」，
-// 而驱动身份带 pid——同一个人换个进程重试会被自己挡住 5 分钟。
+// 派发失败必须退归属；裸 dispatch 从不改变状态列。
 func TestCardDispatchFailureReleasesLease(t *testing.T) {
 	dir := t.TempDir()
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "会派失败的卡", "--project", "demo", "--workflow", "bug")
@@ -269,6 +337,9 @@ func TestCardDispatchFailureReleasesLease(t *testing.T) {
 	}
 	if !strings.Contains(show, `"driver_session":""`) && strings.Contains(show, `"driver_session":"`) {
 		t.Fatalf("派发失败后租约未释放: %q", show)
+	}
+	if !strings.Contains(show, `"status":"待办"`) && !strings.Contains(show, `"Status":"待办"`) {
+		t.Fatalf("派发失败回滚不得动状态列: %q", show)
 	}
 
 	// 真正的判据：换一个会话（新进程即新会话）能立刻重派
@@ -435,8 +506,8 @@ func TestCardDispatchStepCarriesOverrides(t *testing.T) {
 	}
 }
 
-// TestCardDispatchStepUsesPIDActor verifies step requests carry the per-process CLI session.
-func TestCardDispatchStepUsesPIDActor(t *testing.T) {
+// TestCardDispatchStepUsesActorIdentity verifies step requests carry human-scale identity.
+func TestCardDispatchStepUsesActorIdentity(t *testing.T) {
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -457,8 +528,8 @@ func TestCardDispatchStepUsesPIDActor(t *testing.T) {
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中"); err != nil {
 		t.Fatalf("card dispatch --step: %v", err)
 	}
-	if actor := cardStepString(t, got, "actor"); actor != ledgerSession() {
-		t.Fatalf("wire actor = %q, want ledgerSession %q", actor, ledgerSession())
+	if actor := cardStepString(t, got, "actor"); actor != ledgerActor() || strings.Contains(actor, "#") {
+		t.Fatalf("wire actor = %q, want human-scale ledgerActor %q", actor, ledgerActor())
 	}
 }
 
@@ -486,6 +557,100 @@ func TestCardDispatchStepRejectsPlan(t *testing.T) {
 	}
 	if got := atomic.LoadInt32(&requests); got != 0 {
 		t.Fatalf("--plan 拒绝前不应发 HTTP，请求数=%d", got)
+	}
+}
+
+// TestCardReleaseRejectsNonHolderAndSucceedsForOwner 断言 release 的可见失败与闭环。
+func TestCardReleaseRejectsNonHolderAndSucceedsForOwner(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "释放卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
+		t.Fatal(err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.ClaimCard(c.ID, "cli:someone-else@far-away"); err != nil {
+		t.Fatalf("预占: %v", err)
+	}
+	st.Close()
+	_, stderr, err := runLedgerCLI(t, dir, "card", "release", c.ID)
+	if err == nil {
+		t.Fatal("非持有者 release 必须失败")
+	}
+	if !strings.Contains(stderr+err.Error(), "cli:someone-else@far-away") {
+		t.Fatalf("失败报文必须点名持有者: stderr=%q err=%v", stderr, err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "takeover", c.ID); err != nil {
+		t.Fatalf("takeover: %v", err)
+	}
+	stdout, _, err := runLedgerCLI(t, dir, "card", "release", c.ID)
+	if err != nil || !strings.Contains(stdout, `{"ok":true}`) {
+		t.Fatalf("持有者 release 应成功: %q %v", stdout, err)
+	}
+}
+
+// TestCardTakeoverAssignsHumanIdentity 断言 takeover 的 from/to payload 仍可审计。
+func TestCardTakeoverAssignsHumanIdentity(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "接管卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
+		t.Fatal(err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if err := st.ClaimCard(c.ID, "cli:prev@h1"); err != nil {
+		t.Fatalf("预占: %v", err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "takeover", c.ID); err != nil {
+		t.Fatalf("takeover: %v", err)
+	}
+	card, err := st.GetCard(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.DriverSession != ledgerActor() {
+		t.Fatalf("takeover 后归属应是本 CLI 人尺度身份: %q want %q", card.DriverSession, ledgerActor())
+	}
+	events, err := st.EventsFromAsc([]string{c.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, e := range events {
+		if e.Type != ledger.EvDriverTakeover {
+			continue
+		}
+		var payload struct {
+			From string `json:"from"`
+			To   string `json:"to"`
+		}
+		if err := json.Unmarshal(e.Payload, &payload); err != nil {
+			t.Fatalf("payload 解码: %v", err)
+		}
+		if payload.From != "cli:prev@h1" || payload.To != ledgerActor() {
+			t.Fatalf("takeover payload from/to = %q/%q", payload.From, payload.To)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("takeover 必须落 driver_takeover 事件")
 	}
 }
 

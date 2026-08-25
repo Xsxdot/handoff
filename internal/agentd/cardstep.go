@@ -17,7 +17,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
@@ -42,8 +44,10 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 	if !s.claimCardStep(cardID) {
 		return fmt.Errorf("%w: %s 的 %s 节点正在运行", errStepInFlight, cardID, req.Step)
 	}
+	host, _ := os.Hostname()
 	runner := &ledgerstep.StepRunner{
 		St: s.ledger, Session: req.Actor,
+		RunHolder: fmt.Sprintf("run:%s#%d#%d", host, os.Getpid(), time.Now().UnixNano()),
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: s.ledger, Transport: s.stepTransport, Actor: req.Actor,
 		},
@@ -55,7 +59,8 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 	}
 	s.log.Info("卡节点装配完成", "card", cardID, "node", req.Step,
 		"actor", req.Actor, "target", req.Target, "executor", req.Executor,
-		"model", req.Model, "has_extra", strings.TrimSpace(req.Extra) != "")
+		"model", req.Model, "run_holder", runner.RunHolder,
+		"has_extra", strings.TrimSpace(req.Extra) != "")
 	go func() {
 		defer s.releaseCardStep(cardID)
 		s.runStepFn(context.Background(), runner, cardID, req.Step)

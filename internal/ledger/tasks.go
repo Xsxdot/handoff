@@ -89,33 +89,6 @@ func (s *Store) CardOfTask(target, taskID string) (string, error) {
 	return cardID, nil
 }
 
-// ClaimDriver 认领驱动权：现驱动为空或为己才可得；非空的他会话永不因时间流逝自动释放。
-// driver_heartbeat_at 保留兼容列名，但这里只在认领成功时写认领时刻。
-func (s *Store) ClaimDriver(cardID, session string) error {
-	log().Info("开始认领驱动", "card", cardID, "session", session)
-	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
-		card, err := getCardTx(s, tx, cardID)
-		if err != nil {
-			return fmt.Errorf("认领驱动: 卡 %s: %w", cardID, err)
-		}
-		if card.DriverSession != "" && card.DriverSession != session {
-			log().Warn("驱动认领被拒", "card", cardID, "holder", card.DriverSession, "claimer", session)
-			return fmt.Errorf("卡 %s 正由 %s 驱动: %w", cardID, card.DriverSession, ErrCASConflict)
-		}
-		if _, err = tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_heartbeat_at = ? WHERE id = ?`),
-			session, s.tval(time.Now()), cardID); err != nil {
-			return fmt.Errorf("写驱动: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		log().Warn("认领驱动失败", "card", cardID, "session", session, "cause", err)
-		return err
-	}
-	log().Info("驱动已认领", "card", cardID, "session", session)
-	return nil
-}
-
 // TakeoverCard 显式替换卡的驱动归属，并在同一事务写可审计事件。
 // 参数：id 卡号；session 新驱动会话；actor 发起接管的人/入口标识。
 // 注意：这是有意覆盖现有驱动的独立动作，不读取认领时刻，也不自动改变卡状态。
