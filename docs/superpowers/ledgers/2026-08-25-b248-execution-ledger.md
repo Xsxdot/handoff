@@ -1,0 +1,31 @@
+# B248 `/bin/bash -lc` 包装器绕过执行台账
+
+- 2026-08-25：读取 handoff 技能说明；按本卡恒在层约束，本回合不调用 handoff CLI、不派发子任务。
+- 2026-08-25：开工检查 `pwd`；原始输出 `/root/.handoff/worktrees/afca9663`。
+- 2026-08-25：开工检查 `git status --short --branch`；原始输出 `## cards/B248-charter`，工作区无脏改动。
+- 2026-08-25：读取计划 `docs/superpowers/specs/2026-08-25-b248-lc-wrapper-bypass.md`；确认范围为 `internal/permgate/blacklist.go` 与 `internal/permgate/blacklist_test.go`，验收命令为 `go test ./internal/permgate/ -count=1`。
+- 2026-08-25：现状查证 `internal/permgate/blacklist.go`；原始代码第一段包装器正则为 `\\s-c\\b`，尚未识别组合短选项 `-lc`。
+- 2026-08-25：现状查证 `internal/permgate/blacklist_test.go`；原有测试覆盖 `sh -c`、`bash -c` 等形态，但没有 `-lc`、`-cl`、`-lic` 组合短选项用例。
+- 2026-08-25：基线测试 `go test ./internal/permgate/ -count=1`；原始输出 `ok  github.com/Xsxdot/handoff/internal/permgate  0.006s`，退出码 0。
+- 2026-08-25：格式化新增测试 `gofmt -w internal/permgate/blacklist_test.go`；原始输出为空，退出码 0。
+- 2026-08-25：TDD 红测 `go test ./internal/permgate/ -run TestCombinedShellExecWrapperEscalates -count=1`；原始输出为 `--- FAIL: TestCombinedShellExecWrapperEscalates`，`-lc`、`-cl`、`-lic` 下四条危险命令均为 `consult（仅引号内字面量命中黑名单，降级交审批者裁决）`；`-c` 四条与 `gcc -static`、`git log -c` 反向用例未失败；末尾为 `FAIL github.com/Xsxdot/handoff/internal/permgate`，退出码 1。确认失败原因是组合短选项功能缺失而非编译/拼写错误。
+- 2026-08-25：最小实现后格式化 `gofmt -w internal/permgate/blacklist.go internal/permgate/blacklist_test.go`；原始输出为空，退出码 0。
+- 2026-08-25：实现后行为测试 `go test ./internal/permgate/ -run TestCombinedShellExecWrapperEscalates -count=1`；原始输出 `ok  github.com/Xsxdot/handoff/internal/permgate  0.002s`，退出码 0。
+- 2026-08-25：触及包全量测试 `go test ./internal/permgate/ -count=1`；原始输出 `ok  github.com/Xsxdot/handoff/internal/permgate  0.006s`，退出码 0。
+- 2026-08-25：全仓编译 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：变异前唯一命中检查 `rg -n -F '\\s-[a-z]*c[a-z]*\\b' internal/permgate/blacklist.go`；原始输出唯一命中 `69: ... \\s-[a-z]*c[a-z]*\\b`，退出码 0，确认可安全替换。
+- 2026-08-25：变异①（要求解释器选项以 `l` 开头）后编译 `go build ./...`；原始输出为空，退出码 0，确认变异可编译，未把编译失败误判为存活。
+- 2026-08-25：变异①行为先验 `go test ./internal/permgate/ -run TestCombinedShellExecWrapperEscalates -count=1`；原始输出 `-cl` 下四条危险命令均失败并实得 `consult（仅引号内字面量命中黑名单，降级交审批者裁决）`，末尾 `FAIL github.com/Xsxdot/handoff/internal/permgate`，退出码 1；确认变异确实改变行为且被唯一相关断言拦截。
+- 2026-08-25：变异①受影响包全量 `go test ./internal/permgate/ -count=1`；原始输出含 `--- FAIL: TestCombinedShellExecWrapperEscalates` 及其 `-cl` 四个子用例，末尾 `FAIL github.com/Xsxdot/handoff/internal/permgate`，退出码 1。
+- 2026-08-25：变异①失败数 `go test ./internal/permgate/ -count=1 2>&1 | rg -c '^--- FAIL'`；原始输出 `1`，退出码 0（管道末端为 `rg`），确认受影响包拦截 1 个顶层失败。
+- 2026-08-25：恢复原实现后聚焦复测 `go test ./internal/permgate/ -run TestCombinedShellExecWrapperEscalates -count=1`；原始输出 `ok  github.com/Xsxdot/handoff/internal/permgate  0.002s`，退出码 0。
+- 2026-08-25：恢复原实现后触及包全量复测 `go test ./internal/permgate/ -count=1`；原始输出 `ok  github.com/Xsxdot/handoff/internal/permgate  0.006s`，退出码 0。
+- 2026-08-25：恢复原实现后全仓编译复测 `go build ./...`；原始输出为空，退出码 0。
+- 2026-08-25：触及包静态检查 `go vet ./internal/permgate`；原始输出为空，退出码 0。
+- 2026-08-25：格式检查 `gofmt -l internal/permgate`；原始输出为空，退出码 0。
+- 2026-08-25：差异空白检查 `git diff --check`；原始输出为空，退出码 0。
+- 2026-08-25：最终差异审阅 `git diff -- internal/permgate/blacklist.go internal/permgate/blacklist_test.go docs/superpowers/ledgers/2026-08-25-b248-execution-ledger.md && git status --short --branch`；原始输出确认仅 `blacklist.go`、`blacklist_test.go` 被修改及本卡台账为新增文件，分支仍为 `cards/B248-charter`，命令退出码 0。
+- 2026-08-25：台账追加后的差异空白复核 `git diff --check`；原始输出为空，退出码 0。
+- 2026-08-25：收尾判断：实现、局部测试、全仓编译、变异自验与静态检查均已完成；按纪律在当前分支执行 `git add` 与 `git commit`，不 push。
+- 2026-08-25：首次执行 `git add internal/permgate/blacklist.go internal/permgate/blacklist_test.go docs/superpowers/ledgers/2026-08-25-b248-execution-ledger.md` 失败；原始报错 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/afca9663/index.lock': Read-only file system`，退出码 128，未产生暂存结果。
+- 2026-08-25：提升权限后重试同一 `git add ...` 成功；原始输出为空，退出码 0。
