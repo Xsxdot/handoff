@@ -60,3 +60,5 @@
 - 2026-08-25：首次运行 `git add docs/superpowers/ledgers/2026-08-25-b250-execution-ledger.md && git commit -m "chore(ledger): record B250 review verdict"`；原始失败为 `fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/94b77267/index.lock': Read-only file system`，尚未提交。
 - 2026-08-25：提升权限重跑 `git add docs/superpowers/ledgers/2026-08-25-b250-execution-ledger.md && git commit -m "chore(ledger): record B250 review verdict"`；原始输出为 `[cards/B250-review-2 7c42b3ca] chore(ledger): record B250 review verdict`、`1 file changed, 14 insertions(+)`。
 - 2026-08-25：运行 `git status --short --branch && git log -3 --oneline --decorate && git rev-parse --abbrev-ref HEAD && git rev-parse HEAD`；原始输出为工作区干净、分支 `cards/B250-review-2`、HEAD `7c42b3cac5a504eea61db1ac975796d8aef39031`。
+- 2026-08-25：尝试追加最终提交前台账行时，`apply_patch` 因上下文未匹配失败，原始报错为 `apply_patch verification failed: Failed to find expected lines`；未改动代码或台账。
+- 2026-08-25：运行 `git status --short --branch && git rev-parse --abbrev-ref HEAD && git rev-parse HEAD`；原始输出为 `## cards/B250-review-2`、无未提交改动、HEAD `7208452ea0caf53230533895d9e44fc908aa6906`。
