@@ -4,7 +4,8 @@
   "project": "handoff"
  },
  "assembly": [
-  "main.go"
+  "main.go",
+  "internal/agentd/server.go"
  ],
  "contracts": [
   {
