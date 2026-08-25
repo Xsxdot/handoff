@@ -2332,7 +2332,7 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 // keystone 不感知差异。凡承重必须落账，通道不再是兜底通道。
 //
 // 当前实况（协调者复核补记 2026-08-26）：collab.Service.Pointer 尚是空壳
-// （返回 0,nil，实现归 C7 子卡），故本路今天**无可观测行为**——上一段描述的
+// （返回 0,nil，实现归 C4 子卡 / d_collab），故本路今天**无可观测行为**——上一段描述的
 // 是 Pointer 的法定职责，不是它今天的行为。C7 填肉前不要据此认为叙事已落账。
 type roomNarrator struct {
 	c *collab.Service
