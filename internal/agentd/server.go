@@ -684,6 +684,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp.PtySupported = &ptyOK
 	launchersOK := true
 	resp.LaunchersSupported = &launchersOK
+	// B229 能力位与实现同生同死：契约 §2.4 四件事核对单（T1 提交 5585ecc2 逐条核销）——
+	//   1. 收文即用：Dispatch 将 DisciplineText 逐字节注入，本地纪律解析已退役（manager.go:757）
+	//   2. 正文落盘：先写任务目录 discipline.md 再启动 executor，落盘失败拒派（manager.go:923）
+	//   3. continue 消费首派落盘正文：Cold 缺失拒绝续接、热重连 Error 不阻断（manager.go:1300）
+	//   4. resume 启动恢复消费同一份落盘正文，不另起第二处解析入口（manager.go:3410）
+	// 四件齐才许上报 true；先报 true 后补实现 = 协调者信了能力位、正文发到一台不会用的
+	// 机器上（缺陷三的镜像事故）。
+	disciplinesOK := true
+	resp.DisciplinesSupported = &disciplinesOK
 	revealOK := revealSupportedOS
 	resp.RevealSupported = &revealOK
 	resp.ScratchRoot = s.scratchRoot()
