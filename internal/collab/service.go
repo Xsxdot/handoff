@@ -3,22 +3,32 @@
 // CLI）只 import 本包与 proto DTO，不得深入内部；对外部账本的能力需求经
 // client.LedgerClient 接口由组装点绑定（双向门面，架构法第四条第 3 档）。
 //
-// 根包只保留门面：执法规则（房间解析、只读判定、书写者校验）全部沉在
-// internal/collab/room 子包；错误哨兵定义在 room、由本包再导出。
+// 根包只保留门面：执法规则（房间解析、只读判定、书写者校验）与读侧过滤
+// 助手全部沉在 internal/collab/room 子包；未读游标介质在 internal/collab/cursor
+// 子包；错误哨兵定义在 room、由本包再导出。
 //
 // 与 d_sessions（终端 PTY 回放域）同名不同物：本包管协作房间，不管 PTY。
 package collab
 
 import (
 	"log/slog"
+	"sort"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
+	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // log 结构化 logger（同 ledger 包 log() 先例，slog.Default()）。
 func log() *slog.Logger { return slog.Default() }
+
+// nowFn 可注入时钟，仅供测试替换（breakdown：活性判定所需时钟用 collab 包内
+// 变量注入，不改构造器）。生产不设，回退到 time.Now。ListRooms 的 live 字段
+// 判定读它；测试把它与假 client 的租约 expiresAt 拨到同一可拨源，防「判据
+// 读真实时钟、夹具拨别的钟」的假绿。
+var nowFn = time.Now
 
 // 错误哨兵。调用方（CLI/agentd）按哨兵翻译为退出码或 HTTP 状态：
 // ErrNoRoom→400/404、ErrKindNotAllowed→400、ErrNotWriter→403、
@@ -32,7 +42,7 @@ var (
 	ErrNotBound       = room.ErrNotBound
 )
 
-// historyDefaultLimit History 未给 limit 时的取数上限。
+// historyDefaultLimit History/Mentions 未给 limit 时的取数上限。
 const historyDefaultLimit = 200
 
 // pointerActor Pointer 写指针行时落账的 actor 标识（契约 §3.3 Pointer 无
@@ -41,13 +51,21 @@ const pointerActor = "system:pointer"
 
 // Service 协作房间域入站门面。依赖只收 client 接口。
 type Service struct {
-	lc client.LedgerClient
+	lc     client.LedgerClient
+	cursor *cursor.Store
 }
 
-// New 组装点调用；lc 的具体实现是 internal/ledger/api.Facade。
+// New 组装点调用；lc 的具体实现是 internal/ledger/api.Facade。未读游标默认
+// 纯内存（拍板 5.4 降为缓存）；组装点持 DataDir 时用 SetCursorStore 换文件介质。
 func New(lc client.LedgerClient) *Service {
-	return &Service{lc: lc}
+	return &Service{lc: lc, cursor: cursor.New("")}
 }
+
+// SetCursorStore 把未读游标换成指定介质（移交区 A.1 岔口四方案甲：datadir 下
+// JSON 文件缓存，tmp+rename 原子写）。组装点（agentd server / CLI main）持
+// DataDir，用 cursor.New(filepath.Join(cfg.DataDir, "room-cursors.json")) 接线；
+// 不调用则保持 New 的纯内存默认——游标非权威，重启丢失无害、打开房间即自愈。
+func (s *Service) SetCursorStore(st *cursor.Store) { s.cursor = st }
 
 // Send 发消息：白名单 + 书写者执法的唯一写入口（pointer 除外——它只能走
 // Pointer，经本方法一律拒收）。返回落账 seq。
@@ -125,34 +143,94 @@ func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.Le
 	return out, nil
 }
 
-// Pending @定向消费队列（读侧）：mentions∋consumer 且尚无本人消费标记的
-// 群级消息 + 其绑定卡房间的未消费用户留言。实现随欠账 #3 补齐游标维度；
-// 当前返回空切片占位，调用方不得依赖其完整性。
+// Pending @定向消费队列（读侧）：全流扫描「mentions∋consumer 且尚无本人
+// message_consumed 标记的群级消息」∪「consumer 所绑卡房间内未消费的用户
+// 留言（kind==user）」。所绑卡房间 = ListAllCards 里 DriverSession==consumer
+// 的全部卡（含终态/并入卡——只读冻结防新写，不抹旧留言，杜绝无人消费的黑洞）。
 func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
-	_ = consumer
-	return []proto.LedgerEvent{}, nil
+	events, err := room.ReadAllEvents(s.lc, 0)
+	if err != nil {
+		log().Warn("待消费队列组装失败：读事件流", "consumer", consumer, "cause", err)
+		return nil, err
+	}
+	consumed := room.ConsumedSeqs(events, consumer)
+	bound := map[string]bool{}
+	cards, err := s.lc.ListAllCards("")
+	if err != nil {
+		log().Warn("待消费队列组装失败：读卡列表", "consumer", consumer, "cause", err)
+		return nil, err
+	}
+	for _, c := range cards {
+		if c.DriverSession == consumer {
+			bound[c.ID] = true
+		}
+	}
+	out := []proto.LedgerEvent{}
+	for _, ev := range events {
+		if ev.Type != room.RoomEventType || consumed[ev.Seq] {
+			continue
+		}
+		if ev.CardID == "" {
+			if room.MentionsMember(ev, consumer) {
+				out = append(out, ev)
+			}
+			continue
+		}
+		if bound[ev.CardID] && room.MessageKind(ev) == proto.RoomMsgUser {
+			out = append(out, ev)
+		}
+	}
+	log().Info("待消费队列已组装", "consumer", consumer, "count", len(out))
+	return out, nil
 }
 
-// Consume 消费落账（恰好一次的权威在账本 message_consumed 事件）。
-// Ticket 0 空壳：无可观测行为。
+// Consume 消费落账（恰好一次的权威在账本 message_consumed 事件，拍板 5.4）。
+// 幂等：同参重复消费返回 nil；seq 不存在或非 room_message 同样幂等 nil
+// （岔口六方案甲——「已消费」目标态对不存在消息天然成立，静默面由
+// Pending/Mentions 只列未消费兜底）。查重与写入的原子性在账本同 mutate
+// 事务内（C2 已锁），本方法只负责定位消息所在卡并把 cardID 传给 client。
 func (s *Service) Consume(seq int64, consumer string) error {
-	_ = seq
-	_ = consumer
-	return nil
+	events, err := room.ReadAllEvents(s.lc, 0)
+	if err != nil {
+		log().Warn("消费失败：读事件流", "seq", seq, "consumer", consumer, "cause", err)
+		return err
+	}
+	for _, ev := range events {
+		if ev.Seq != seq {
+			continue
+		}
+		if ev.Type != room.RoomEventType {
+			return nil // 非 room_message：幂等 nil，不落标记
+		}
+		if err := s.lc.RecordMessageConsumed(ev.CardID, seq, consumer); err != nil {
+			log().Warn("消费落账失败", "seq", seq, "consumer", consumer, "card", ev.CardID, "cause", err)
+			return err
+		}
+		log().Info("消息已消费", "seq", seq, "consumer", consumer, "card", ev.CardID)
+		return nil
+	}
+	return nil // 不存在：幂等 nil
 }
 
-// Mentions 收件箱源③：@member 的未消费提及。
+// Mentions 收件箱源③：@member 的未消费提及。全流扫描 afterSeq 之后、
+// mentions∋member 且尚无本人 message_consumed 标记的 room_message。
+// limit<=0 取 historyDefaultLimit。
 func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
-	events, err := s.lc.EventsFromAsc([]string{}, afterSeq, 0)
+	events, err := room.ReadAllEvents(s.lc, afterSeq)
 	if err != nil {
+		log().Warn("提及读取失败：读事件流", "member", member, "cause", err)
 		return nil, err
 	}
-	out := make([]proto.LedgerEvent, 0, len(events))
+	consumed := room.ConsumedSeqs(events, member)
+	out := []proto.LedgerEvent{}
 	for _, ev := range events {
 		if ev.Type != room.RoomEventType || !room.MentionsMember(ev, member) {
+			continue
+		}
+		if consumed[ev.Seq] {
 			continue
 		}
 		out = append(out, ev)
@@ -160,27 +238,127 @@ func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.Le
 			break
 		}
 	}
+	log().Info("未消费提及已组装", "member", member, "count", len(out))
 	return out, nil
 }
 
-// ListRooms 会话列表（扁平活动排序 + 项目筛选）。派生成员规则随欠账 #3
-// 落地；当前返回空切片占位，调用方不得依赖其完整性。
+// ListRooms 会话列表：扁平活动排序 + 项目筛选（project=="" 表示全部）。
+// 条目=全部卡房间（终态卡沉底）+ 各项目的 project:<name> 群 + global 恒在。
+// LastActivity=该房间最新一条 room_message 时刻；卡房间无消息时回退卡的
+// UpdatedAt。Live=绑定者租约未过期（同一注入时钟 nowFn 判定），无绑定时
+// false；DriverLease 读失败向上传播（C6 handler 退化 503，不吞错）。
 func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
-	_ = project
-	return []proto.RoomSummary{}, nil
+	cards, err := s.lc.ListAllCards(project)
+	if err != nil {
+		log().Warn("会话列表组装失败：读卡列表", "project", project, "cause", err)
+		return nil, err
+	}
+	events, err := room.ReadAllEvents(s.lc, 0)
+	if err != nil {
+		log().Warn("会话列表组装失败：读事件流", "project", project, "cause", err)
+		return nil, err
+	}
+	rooms := []proto.RoomSummary{}
+	byID := map[string]int{}
+	terminal := map[string]bool{}
+	projects := map[string]bool{}
+	for _, c := range cards {
+		isTerm := room.IsTerminalStatus(c.Status)
+		terminal[c.ID] = isTerm
+		byID[c.ID] = len(rooms)
+		rooms = append(rooms, proto.RoomSummary{
+			ID: c.ID, Kind: room.KindCard, Project: c.Project, Title: c.Title,
+			BoundSession: c.DriverSession,
+			ReadOnly:     isTerm || c.Following != "",
+			LastActivity: c.UpdatedAt,
+		})
+		if c.Project != "" {
+			projects[c.Project] = true
+		}
+	}
+	for p := range projects {
+		byID["project:"+p] = len(rooms)
+		rooms = append(rooms, proto.RoomSummary{ID: "project:" + p, Kind: room.KindProject, Project: p, Title: p})
+	}
+	byID["global"] = len(rooms)
+	rooms = append(rooms, proto.RoomSummary{ID: "global", Kind: room.KindGlobal, Title: "全员"})
+	// 活动：扫全流，逐房间取最新 room_message 时刻（升序遍历，后写覆盖）。
+	for _, ev := range events {
+		if ev.Type != room.RoomEventType {
+			continue
+		}
+		if idx, ok := byID[room.RoomIDOf(ev)]; ok && ev.CreatedAt.After(rooms[idx].LastActivity) {
+			rooms[idx].LastActivity = ev.CreatedAt
+		}
+	}
+	// 活性：按不同绑定会话去重读租约（兼任多席只问一次「会话活着吗」）。
+	liveOf := map[string]bool{}
+	sessionSeen := map[string]bool{}
+	for _, r := range rooms {
+		if r.BoundSession == "" || sessionSeen[r.BoundSession] {
+			continue
+		}
+		sessionSeen[r.BoundSession] = true
+		expiresAt, exists, err := s.lc.DriverLease(r.BoundSession)
+		if err != nil {
+			log().Warn("会话列表组装失败：读租约", "session", r.BoundSession, "cause", err)
+			return nil, err
+		}
+		liveOf[r.BoundSession] = exists && expiresAt.After(nowFn())
+	}
+	for i := range rooms {
+		if bs := rooms[i].BoundSession; bs != "" {
+			rooms[i].Live = liveOf[bs]
+		}
+	}
+	// 排序：非终态（含群房间）按活动降序在前，终态卡房间沉底（各自内部按
+	// 活动降序；Stable 保证同活动时保持插入序，输出形状确定）。
+	active := []proto.RoomSummary{}
+	sunk := []proto.RoomSummary{}
+	for _, r := range rooms {
+		if terminal[r.ID] {
+			sunk = append(sunk, r)
+		} else {
+			active = append(active, r)
+		}
+	}
+	sort.SliceStable(active, func(i, j int) bool { return active[i].LastActivity.After(active[j].LastActivity) })
+	sort.SliceStable(sunk, func(i, j int) bool { return sunk[i].LastActivity.After(sunk[j].LastActivity) })
+	log().Info("会话列表已组装", "project", project, "count", len(rooms))
+	return append(active, sunk...), nil
 }
 
-// MarkRead 未读游标置位（打开房间即已读）。Ticket 0 空壳。
+// MarkRead 未读游标置位（打开房间即已读）。按成员按房间记 seq 水位，单调
+// 只进不退；并发到达由 cursor.Store 互斥锁 + tmp+rename 原子写兜底。
 func (s *Service) MarkRead(member, roomID string, uptoSeq int64) error {
-	_ = member
-	_ = roomID
-	_ = uptoSeq
+	if err := s.cursor.MarkRead(member, roomID, uptoSeq); err != nil {
+		log().Warn("未读游标置位失败", "member", member, "room", roomID, "upto_seq", uptoSeq, "cause", err)
+		return err
+	}
+	log().Info("未读游标已置位", "member", member, "room", roomID, "upto_seq", uptoSeq)
 	return nil
 }
 
-// Unread 未读计数。Ticket 0 空壳：恒返回 0。
+// Unread 未读计数：该房间内 room_message 事件中 seq 大于该成员游标的条数
+// （水位语义：打开房间 MarkRead 到当前最大 seq 后即 0；未读过 = 全量）。
 func (s *Service) Unread(member, roomID string) (int, error) {
-	_ = member
-	_ = roomID
-	return 0, nil
+	cursorSeq, err := s.cursor.Cursor(member, roomID)
+	if err != nil {
+		log().Warn("未读计数失败：读游标", "member", member, "room", roomID, "cause", err)
+		return 0, err
+	}
+	events, err := room.ReadAllEvents(s.lc, cursorSeq)
+	if err != nil {
+		log().Warn("未读计数失败：读事件流", "member", member, "room", roomID, "cause", err)
+		return 0, err
+	}
+	n := 0
+	for _, ev := range events {
+		if ev.Type != room.RoomEventType || !room.SameRoom(ev, roomID) {
+			continue
+		}
+		n++
+	}
+	log().Info("未读计数完成", "member", member, "room", roomID, "unread", n)
+	return n, nil
 }

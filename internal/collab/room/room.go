@@ -214,3 +214,74 @@ func MentionsMember(ev proto.LedgerEvent, member string) bool {
 func UnmarshalMessage(raw json.RawMessage, msg *proto.RoomMessage) error {
 	return json.Unmarshal(raw, msg)
 }
+
+// ConsumedEventType 是账本流上消息消费标记的事件类型字面量。取值必须等于
+// ledger.EvMessageConsumed；门面禁令禁止 import ledger，等式由
+// readmodel_test.go 的字面量测试钉住。
+const ConsumedEventType = "message_consumed"
+
+// ReadAllEvents 分页读完整事件流（升序游标、每页 1000、EventsFromAsc 语义）。
+// A.5 护栏注记（契约 §8 A.5，照抄触发条件）：单流 >10^5 行实测变慢再议，
+// 不预先优化、不加类型过滤参数——Pending/Mentions/ListRooms/Unread 的全流
+// 扫描都走这里。
+func ReadAllEvents(lc client.LedgerClient, fromSeq int64) ([]proto.LedgerEvent, error) {
+	var out []proto.LedgerEvent
+	seq := fromSeq
+	for {
+		page, err := lc.EventsFromAsc([]string{}, seq, 1000)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, page...)
+		if len(page) < 1000 {
+			return out, nil
+		}
+		seq = page[len(page)-1].Seq
+	}
+}
+
+// ConsumedSeqs 收集该消费者已消费的消息 seq 集：按事件 actor 列（=consumer）
+// 粗筛 message_consumed 事件 + 载荷 message_seq/consumer 精确匹配（载荷才是
+// 权威，ledger/rooms.go 注释同款）。Pending/Mentions 的「未消费」过滤共用。
+func ConsumedSeqs(events []proto.LedgerEvent, consumer string) map[int64]bool {
+	consumed := make(map[int64]bool)
+	for _, ev := range events {
+		if ev.Type != ConsumedEventType || ev.Actor != consumer {
+			continue
+		}
+		var marker struct {
+			MessageSeq int64  `json:"message_seq"`
+			Consumer   string `json:"consumer"`
+		}
+		if err := json.Unmarshal(ev.Payload, &marker); err != nil {
+			continue // 非法载荷不该出现；跳过不破坏消费集
+		}
+		if marker.Consumer != consumer {
+			continue
+		}
+		consumed[marker.MessageSeq] = true
+	}
+	return consumed
+}
+
+// RoomIDOf 事件所属房间 id：卡级事件 card_id 即房间号；群级无卡事件看载荷
+// Room 字段（ListRooms 建活动索引用）。
+func RoomIDOf(ev proto.LedgerEvent) string {
+	if ev.CardID != "" {
+		return ev.CardID
+	}
+	var msg proto.RoomMessage
+	if err := UnmarshalMessage(ev.Payload, &msg); err != nil {
+		return ""
+	}
+	return msg.Room
+}
+
+// MessageKind 事件载荷的消息 kind；非 room_message 或解码失败返回空串。
+func MessageKind(ev proto.LedgerEvent) string {
+	var msg proto.RoomMessage
+	if err := UnmarshalMessage(ev.Payload, &msg); err != nil {
+		return ""
+	}
+	return msg.Kind
+}

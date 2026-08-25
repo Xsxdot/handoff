@@ -56,3 +56,18 @@ plan 节点台账（B156.2.5 C5·消费恰好一次与注意力读模型）。�
 - 判据先在基线跑：P1 探针 13 红 1 回归绿；P5-P7 变异三靶全红（防假绿）。
 - 占位符扫描：计划无 TBD/占位；全部代码块为 P3 验证过的 gofmt 干净形态。
 - 跨 task 签名一致性：本卡 Produces（无新契约签名，仅 SetCursorStore 属 A.1 机制）+ Consumes（RoomSummary/RoomMessage/LedgerEvent/ListAllCards/RecordMessageConsumed/DriverLease 等 client 方法逐字对照契约 §3.4）；C6 消费 ListRooms/History/Mentions/MarkRead/Unread/Consume 签名不变。
+
+## 实现轮（B156.2.5 charter-implement，2026-08-26）
+
+- I1: 基线复核 `go test ./internal/collab/... -count=1` → ok（0.695s），工作树含既有测试全绿。
+- I2: 立红（T5.1）：新建 readmodel_test.go（最终形态 + 临时 `var nowFn = time.Now`）→ `go test ./internal/collab/ -run 'TestPending|TestConsume|TestMentions|TestListRooms|TestMarkRead' -v` → **14 支 FAIL**（PendingGroupMention「Pending 应只含…: []」/PendingCardRoom「Pending 应只含…: []」/ConsumeIdempotent「不得产生第二条标记: 0」/ConsumeSecondConsumer「A 应恰一条: 0」/ConsumePayloadTwoKeys「没有消费标记事件」/MentionsExcludes「消费后 Mentions 应清空」/ListRoomsSorts「列表条目数不符: []」/TerminalSinks「条目数: []」/ReadOnlyFlags「并入卡应只读」/LiveFlip/LiveRealStore/Unmerge「并入卡房间应只读」/MarkReadUnread「未读应 3: 0」/MarkReadPerRoom「卡B 未读应 1: 0」）+ **1 支 PASS 回归锁**（ConsumeInvalidSeq）+ 既有 TestMentionsFiltersByMember 保持 PASS。红因均为断言失败（功能缺失），非 typo。
+- I3: 实现（T5.2/T5.3）：cursor/cursor.go 新建、room.go 追加 5 符号（ConsumedEventType/ReadAllEvents/ConsumedSeqs/RoomIDOf/MessageKind）、service.go 整文件替换（nowFn + cursor 字段 + SetCursorStore + 六方法填肉）、删除测试临时 nowFn、cursorfile_test.go 新建。
+- I4: 跑绿：`go test ./internal/collab/... -count=1` → ok；`-v -run 'TestPending|TestConsume|TestMentionsExcludes|TestListRooms|TestMarkRead|TestCursor|TestConsumedEvent'` 逐支核 **18 支全 PASS**。
+- I5: 回归：`go build ./...` EXIT=0；`go vet ./internal/collab/...` EXIT=0。
+- I6: **gofmt 闸首跑被拦**：`gofmt -l internal cmd` 列出 4 文件（service.go/cursor.go/readmodel_test.go/cursorfile_test.go），diff 均为「文件末尾缺换行」（write 落盘不带尾换行）。`gofmt -w internal/collab/` 后 `gofmt -l internal cmd` 零输出；复跑 `go test ./internal/collab/...` ok、`go build ./...` EXIT=0（格式与行为正交复验）。C4 教训在实现轮被 gofmt 闸当场拦截。
+- I7: 占位残留扫描（T5.4 步骤 4 六模式）→ grep EXIT=1 零命中。
+- I8: commit 1（T5.1-T5.4 同批）：`feat(collab): 消费恰好一次门面路径 + 注意力读模型 + 游标介质（B156.2.5 欠账#2collab半+#3+A.1+A.5）`——含 room.go 追加、cursor/cursor.go、service.go、readmodel_test.go、cursorfile_test.go、本台账。
+
+## 视图增量与变异复验（T5.5，commit 2 前）
+
+（T5.5 执行中追加：best.json/charter-4 diff 追加、graph check/validate、逐容器点数、变异①-④红文、commit 2）
