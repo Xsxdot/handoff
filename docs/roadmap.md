@@ -294,3 +294,36 @@
 - **`d_workspace.json` 的职责句可能有跨域残留**：键已是 best 顶层 id 所以本期零改动，但其职责文本里的「工作台启动项配置」一类表述可能实际属 `d_policy` / `d_web_workbench`。要动它得重走一次归属核对，不是文字润色。
 - **C1.11 的两条真机项由 CI 结论兜底，未单独验**：(a) Windows/macOS 文件系统对 `codegraph/domains/` 存在性、权限、大小写的差异——本次只在 macOS 上实测；(b) CI runner 上 desktop tidy 门通过后，其后的 Windows 交叉编译、Windows vet、install.sh 三步是否**真的执行而非 skipped**。两条都会在本次合并推上去后由 CI 自然给出结论，届时若为 skipped 需回头处理。
 - **前端消费 `decls` 未实现**：宿主已供上 wire，域页如何渲染声明归 C1.10 的后续，本卡不冒充完成。
+
+## 来自 B227 spec 的残余（2026-08-25，协调者本机实测）
+
+前置：B227 本期选定「扩 codex 可写域到 git 公共目录 + 堵住 agentd 侧的 hooks 触发」。
+以下四条是它显式推迟的，逐条带前置条件与不做的理由。判据与原始读数在
+`docs/superpowers/ledgers/2026-08-25-b227-spec-ledger.md`。
+
+- **换用 codex 支持 deny 的权限声明面（`permissions`），把 hooks 与 config 从可写域里
+  deny 出去。**这是唯一能同时做到「git 完全好用」与「关掉 hooks 逃逸链」的方案——
+  实测 `permissions` 的 entries 支持 `read/write/deny` + priority，而现用的
+  `sandboxPolicy` 面**表达不出 deny**（台账 §3）。**前置未知项：执行机上的 codex 版本**
+  （本机是 0.147.0，linux-01 未查——本轮唯一活任务是他人的回合，借用会干扰）。
+  两个面**互斥**（二进制原文 `permissions` cannot be combined with `sandboxPolicy`），
+  且 `permissions.filesystem` 另有约束不能在此定义 profile，所以这不是「换个字段名」，
+  要把整套安全姿态迁过去 + 加版本门 + 双轨回落。做之前先把执行机版本钉死。
+
+- **改用「沙箱内追加权限」档（`with_additional_permissions`）替代现有的提权档。**
+  codex 的 per-command 覆盖有三档，今天 handoff 只见到 `require_escalated`，
+  而它的语义是**整条命令完全脱离沙箱**（二进制原文 `for unsandboxed execution`）。
+  第三档是沙箱内追加本次所需权限、不脱沙箱，但需要开启 `features.exec_permission_approvals`。
+  价值：让 B227 覆盖不到的其余提权场景（装依赖、出网）不再等价于无沙箱执行。
+  **这条对审批判据类的卡有直接影响**——白名单自动放行的若是 `require_escalated`，
+  放行的就是无沙箱的整条 shell 行，其授权面宽于任何可写域调整。
+
+- **同仓并行任务互相踩踏的收窄。**B227 让 git 公共目录整个可写，意味着同一仓库的两个
+  在飞任务能互改对方的索引与引用（`objects`/`refs`/`packed-refs` 都是共享的，落点分布见台账 §5）。
+  本期接受这个代价（与原地模式同档，且不新增权限类别），但**同仓并行派发正是本产品的卖点**，
+  值得单独一张卡。可能的方向：worktree 私有目录收窄到自己那一份 + 对象库/引用仍共享，
+  但那只解决一半，另一半要靠上一条的 deny 能力。
+
+- **纪律块层面的兜底：告知执行者 git 元数据被拒时应提权重跑。**成本近零，覆盖 B227
+  未触及的边角情形。**不进本期是因为它会让 B227 的验收判据变模糊**——一旦纪律块也在
+  影响行为，就分不清「沙箱修好了」还是「模型这次听话了」。等 B227 真机验收落定后再加。
