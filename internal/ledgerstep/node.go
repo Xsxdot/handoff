@@ -8,11 +8,15 @@ package ledgerstep
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
+
+// ErrWriteGateClosed 表示本轮运行锁已失去，后续卡写必须停止。
+var ErrWriteGateClosed = errors.New("运行锁已失去写权")
 
 // Action 环节执行的结论。
 type Action string
@@ -50,6 +54,8 @@ type NodeStep struct {
 	Diff func(ctx context.Context, target, taskID string) ([]string, error)
 	// Attach 将法定 kind/path 以节点 actor 挂到协调者账本；同 path 由 Store 保证幂等。
 	Attach func(cardID, kind, path, actor string) error
+	// WriteGate 是生产编排注入的卡写闸；nil 表示不设闸。
+	WriteGate func() bool
 }
 
 // maxRounds 返回本节点的轮次封顶：节点没配就用包内默认。
@@ -63,11 +69,23 @@ func (n *NodeStep) maxRounds() int {
 // actor 返回本节点写事件时的署名，形如 node:待审阅。
 func (n *NodeStep) actor() string { return "node:" + n.Node.Name }
 
+// gatedWrite 在实际账本写入前确认本轮仍拥有运行锁；关闭时 fail-closed，
+// 防止续租失败后的编排继续移列、落裁决、挂附件或改等人标记。
+func (n *NodeStep) gatedWrite(action string) error {
+	if n.WriteGate == nil || n.WriteGate() {
+		return nil
+	}
+	return fmt.Errorf("%s被拒：%w", action, ErrWriteGateClosed)
+}
+
 // haltForHuman 落一条说明性 comment（body 非空时）并打等人标记，返回统一的 Outcome。
 //
 // why 抽出来：这条「留痕 + 打旗 + 返回」三件套在本文件里出现五次，每次漏掉
 // 其中任何一件，卡在看板上都会看着一切正常而实际没人在推它。
 func (n *NodeStep) haltForHuman(cardID, reason, body string) (Outcome, error) {
+	if err := n.gatedWrite("等人留痕"); err != nil {
+		return Outcome{Action: ActionNeedsHuman, Reason: reason}, err
+	}
 	if body != "" {
 		if _, err := n.St.AddComment(cardID, body, "普通", n.actor()); err != nil {
 			return Outcome{}, err
@@ -93,6 +111,9 @@ func (n *NodeStep) routeTo(cardID, to string) error {
 	}
 	if card.Status == to {
 		return nil
+	}
+	if err := n.gatedWrite("移列"); err != nil {
+		return err
 	}
 	return n.St.MoveCard(cardID, to, card.Status, n.actor())
 }
@@ -177,6 +198,9 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		logger.Info("裁决解析失败转等人", "cause", parseErr)
 		return n.haltForHuman(cardID, "裁决解析失败", "裁决解析失败，报文原文：\n"+message)
 	}
+	if err := n.gatedWrite("裁决落账"); err != nil {
+		return Outcome{}, err
+	}
 	if err := n.St.RecordReviewVerdict(cardID, n.Node.Name, verdict.Pass, verdict.Raw, n.actor()); err != nil {
 		return Outcome{}, err
 	}
@@ -188,6 +212,9 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 	//
 	// 失败只告警不中断：裁决已落账，为一次收尾清理失败而让整个节点报错，
 	// 代价比留一条陈标记大。
+	if err := n.gatedWrite("撤等人标记"); err != nil {
+		return Outcome{}, err
+	}
 	if cleared, cerr := n.St.ClearNeedsHumanFrom(cardID, n.actor()); cerr != nil {
 		logger.Warn("撤回本节点旧等人标记失败", "cause", cerr)
 	} else if cleared {
@@ -224,6 +251,9 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 				"kind", output.Kind, "declared_path", declaredPath,
 				"changed_paths", changedPaths)
 			return n.haltForHuman(cardID, "缺少约定产出物", body)
+		}
+		if err := n.gatedWrite("挂附件"); err != nil {
+			return Outcome{}, err
 		}
 		if attachErr := n.Attach(cardID, output.Kind, declaredPath, n.actor()); attachErr != nil {
 			logger.Warn("挂载节点产出物失败，继续尝试路由",

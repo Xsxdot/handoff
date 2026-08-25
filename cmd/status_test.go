@@ -307,7 +307,7 @@ func TestStatusReportsLedgerHealthWithRetiredEnabledFlag(t *testing.T) {
 	if err := lst.LinkTask(card.ID, "", "task-ledger-1", "implement", "t"); err != nil {
 		t.Fatalf("挂账: %v", err)
 	}
-	if err := lst.ClaimDriver(card.ID, "sess-retired"); err != nil {
+	if err := lst.ClaimCard(card.ID, "sess-retired"); err != nil {
 		t.Fatalf("认领驱动: %v", err)
 	}
 	// 先关库：status 会以进程内第二次 Open 打开同一路径。

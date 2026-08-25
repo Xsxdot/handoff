@@ -5,17 +5,20 @@ import (
 	"context"
 	"encoding/json"
 	"io"
-	"net"
+	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 func ledgerGet(t *testing.T, env *testAgentdEnv, path string) (int, string) {
@@ -143,6 +146,110 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	env := newTestAgentdEnv(t)
 	env.srv.SetLedger(st)
 	return &ledgerEnv{testAgentdEnv: env, ledger: st}
+}
+
+// newNoPTYLedgerEnv 只装配 ledger HTTP 面；这些 B239 测试不触碰 PTY，
+// 因而不应因受限环境无法创建 PTY 根目录而整支跳过。
+func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
+	t.Helper()
+	ledgerStore, err := ledger.Open(t.TempDir() + "/ledger.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledgerStore.Close() })
+	seedAgentdLedger(t, ledgerStore)
+	backend, err := store.Open(t.TempDir() + "/handoff.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	cfg := &config.Config{Token: testToken, DataDir: t.TempDir()}
+	srv := NewServer(cfg, backend, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetLedger(ledgerStore)
+	ts := httptest.NewServer(srv.Handler())
+	t.Cleanup(ts.Close)
+	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore}
+}
+
+func linkTaskFailed(t *testing.T, st *ledger.Store, cardID string) {
+	t.Helper()
+	if err := st.LinkTask(cardID, "mac-02", "T-badge", "implement", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+		Target: "mac-02", Task: "T-badge", SourceSeq: 1, Type: "failed",
+		Payload: []byte(`{}`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func cardsConflictMap(t *testing.T, env *ledgerEnv) map[string]bool {
+	t.Helper()
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards")
+	if code != http.StatusOK {
+		t.Fatalf("列表应 200: %d %s", code, body)
+	}
+	var resp struct {
+		Cards []struct {
+			ID       string `json:"id"`
+			Conflict bool   `json:"conflict"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]bool{}
+	for _, c := range resp.Cards {
+		out[c.ID] = c.Conflict
+	}
+	return out
+}
+
+func TestCardsListConflictFollowsRunLockNotStatus(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	card := seedCard(t, env, "徽标判定卡")
+	linkTaskFailed(t, env.ledger, card.ID)
+	if got := cardsConflictMap(t, env); got[card.ID] {
+		t.Fatal("无运行锁时不得亮徽标")
+	}
+	if _, acq, err := env.ledger.AcquireRunLock(card.ID, "review", "run:badge#1#1", 5*time.Minute); err != nil || !acq {
+		t.Fatalf("造在飞锁: %v %v", acq, err)
+	}
+	if got := cardsConflictMap(t, env); !got[card.ID] {
+		t.Fatal("未过期运行锁 + 最新 task failed 应亮徽标")
+	}
+	if err := env.ledger.ReleaseRunLock(card.ID, "run:badge#1#1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, acq, err := env.ledger.AcquireRunLock(card.ID, "review", "run:badge#2#2", -time.Minute); err != nil || !acq {
+		t.Fatalf("造过期锁: %v %v", acq, err)
+	}
+	if got := cardsConflictMap(t, env); got[card.ID] {
+		t.Fatal("仅剩过期运行锁不得亮徽标")
+	}
+}
+
+func TestLegacyStepFallbackActorIsHostOnly(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	card := seedCard(t, env, "fallback host 卡")
+	ch := make(chan string, 1)
+	env.srv.runStepFn = func(ctx context.Context, runner *ledgerstep.StepRunner, cardID, step string) {
+		ch <- runner.Session
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"进行中"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("legacy 请求应 202 受理: %d %s", code, body)
+	}
+	select {
+	case session := <-ch:
+		if session != "web:127.0.0.1" {
+			t.Fatalf("fallback actor 应为 host 档 web:127.0.0.1，实得 %q", session)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("编排未被启动")
+	}
+	waitFor(t, func() bool { return !env.srv.cardStepInFlight(card.ID) })
 }
 
 func seedCard(t *testing.T, env *ledgerEnv, title string) ledger.Card {
@@ -792,7 +899,7 @@ func TestCardStepAcceptsImplementWithoutInlineFile(t *testing.T) {
 	}
 }
 
-// TestCardStepLegacyActorFallback preserves the old dashboard body while making its actor explicit internally.
+// TestCardStepLegacyActorFallback preserves the old dashboard body while making its host-only actor explicit internally.
 func TestCardStepLegacyActorFallback(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
@@ -804,32 +911,13 @@ func TestCardStepLegacyActorFallback(t *testing.T) {
 	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) {
 		runnerCh <- runner
 	}
-	// 期望值必须是**本次连接的客户端源地址**（服务端 r.RemoteAddr 的来源），
-	// 不是 httptest 服务端的监听地址：两者只在内核恰好把相邻端口先后分给监听
-	// 套接字与连接套接字时才相等——Linux 上常成立、macOS 上恒不成立。原先拿
-	// env.ts.URL 当期望值是在赌端口巧合，本机 6/6 必红。
-	var localAddr string
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			conn, err := (&net.Dialer{}).DialContext(ctx, network, addr)
-			if err == nil {
-				localAddr = conn.LocalAddr().String()
-			}
-			return conn, err
-		},
-	}
-	defer transport.CloseIdleConnections()
-	code, body := ledgerPostWithClient(t, env.testAgentdEnv, &http.Client{Transport: transport},
-		"/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step", `{"step":"待审阅"}`)
 	if code != http.StatusAccepted {
 		t.Fatalf("legacy 请求应 202，实得 %d（%s）", code, body)
 	}
-	if localAddr == "" {
-		t.Fatal("未记录到客户端源地址，期望值无从构造")
-	}
 	select {
 	case runner := <-runnerCh:
-		want := "web:" + localAddr
+		want := "web:127.0.0.1"
 		if runner.Session != want || runner.Dispatcher.Actor != want {
 			t.Fatalf("legacy actor = session %q dispatcher %q, want %q", runner.Session, runner.Dispatcher.Actor, want)
 		}

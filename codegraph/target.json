@@ -91,6 +91,7 @@
    "to": "d_ledger",
    "legacyBudget": 17,
    "entries": [
+    "ledger.Store",
     "ledgerstep.StepRunner"
    ],
    "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。"
