@@ -1,0 +1,214 @@
+{
+  "view": "cards/B156.2-charter-4",
+  "base": "d4dd340e",
+  "summary": "B156.2 charter-4 微修订轮（岔口一方案甲）：proto.Card+=Following(omitempty)、cardWire 补 Following 投影、LedgerClient/Facade += ListAllCards 直通。本视图为累计视图（自带 charter-2 全部符号）：check --view 按基线+单 diff 叠加，缺 charter-2 内容则三条契约面全数 dead——已实测 plain check 4 处违规为证。",
+  "containersAdded": {
+   "k_collab_room_fn": {"label": "collab.room 包级函数", "kind": "函数组", "domain": "d_collab"},
+   "k_collab_room_model": {"label": "collab.room 数据模型", "kind": "实体", "domain": "d_collab"},
+   "k_collab_cursor_fn": {"label": "collab.cursor 包级函数", "kind": "函数组", "domain": "d_collab"},
+   "k_collab_cursor_Store": {"label": "collab.cursor Store 类型", "kind": "类型", "domain": "d_collab"}
+  },
+  "nodesAdded": {
+   "n_collab_room_Resolve": {"kind": "func", "container": "k_collab_room_fn", "order": 1, "name": "Resolve", "file": "internal/collab/room/room.go", "line": 55, "signature": "func Resolve(lc client.LedgerClient, roomID string) (*Room, error)", "params": [["lc", "client.LedgerClient", ""], ["roomID", "string", ""]], "returns": "(*Room, error)", "summary": "Resolve 把房间标识解析为执法上下文。"},
+   "n_collab_room_VerifyWriter": {"kind": "func", "container": "k_collab_room_fn", "order": 2, "name": "VerifyWriter", "file": "internal/collab/room/room.go", "line": 102, "signature": "func VerifyWriter(r *Room, kind, actor string) error", "params": [["r", "*Room", ""], ["kind", "string", ""], ["actor", "string", ""]], "returns": "error", "summary": "VerifyWriter 按 kind 执法书写者身份。"},
+   "n_collab_room_KindAllowed": {"kind": "func", "container": "k_collab_room_fn", "order": 3, "name": "KindAllowed", "file": "internal/collab/room/room.go", "line": 149, "signature": "func KindAllowed(kind string) bool", "params": [["kind", "string", ""]], "returns": "bool", "summary": "KindAllowed kind 是否在受控词表内。"},
+   "n_collab_room_IsTerminalStatus": {"kind": "func", "container": "k_collab_room_fn", "order": 4, "name": "IsTerminalStatus", "file": "internal/collab/room/room.go", "line": 161, "signature": "func IsTerminalStatus(status string) bool", "params": [["status", "string", ""]], "returns": "bool", "summary": "IsTerminalStatus 卡终态判据。"},
+   "n_collab_room_SameRoom": {"kind": "func", "container": "k_collab_room_fn", "order": 5, "name": "SameRoom", "file": "internal/collab/room/room.go", "line": 188, "signature": "func SameRoom(ev proto.LedgerEvent, roomID string) bool", "params": [["ev", "proto.LedgerEvent", ""], ["roomID", "string", ""]], "returns": "bool", "summary": "SameRoom 判断事件是否属于该房间。"},
+   "n_collab_room_MentionsMember": {"kind": "func", "container": "k_collab_room_fn", "order": 6, "name": "MentionsMember", "file": "internal/collab/room/room.go", "line": 200, "signature": "func MentionsMember(ev proto.LedgerEvent, member string) bool", "params": [["ev", "proto.LedgerEvent", ""], ["member", "string", ""]], "returns": "bool", "summary": "MentionsMember 判断事件的 mentions 是否含该成员。"},
+   "n_collab_room_UnmarshalMessage": {"kind": "func", "container": "k_collab_room_fn", "order": 7, "name": "UnmarshalMessage", "file": "internal/collab/room/room.go", "line": 214, "signature": "func UnmarshalMessage(raw json.RawMessage, msg *proto.RoomMessage) error", "params": [["raw", "json.RawMessage", ""], ["msg", "*proto.RoomMessage", ""]], "returns": "error", "summary": "UnmarshalMessage 解码房间消息载荷。"},
+   "m_collab_room_Room": {"kind": "model", "container": "k_collab_room_model", "order": 8, "name": "Room", "file": "internal/collab/room/room.go", "line": 36, "summary": "Room 是房间解析的完整结果：识别房间形态并携带执法所需全部上下文。", "fields": [["ID", "string", ""], ["CardID", "string", ""], ["Kind", "string", ""], ["Project", "string", ""], ["ReadOnly", "bool", ""], ["Card", "*proto.Card", ""], ["ParentSession", "string", ""]]},
+   "n_collab_room_ReadAllEvents": {"kind": "func", "container": "k_collab_room_fn", "order": 9, "name": "ReadAllEvents", "file": "internal/collab/room/room.go", "line": 227, "signature": "func ReadAllEvents(lc client.LedgerClient, fromSeq int64) ([]proto.LedgerEvent, error)", "params": [["lc", "client.LedgerClient", ""], ["fromSeq", "int64", ""]], "returns": "([]proto.LedgerEvent, error)", "summary": "ReadAllEvents 分页读完整事件流（A.5 护栏注记：单流 >10^5 行实测变慢再议，不预先优化）。"},
+   "n_collab_room_ConsumedSeqs": {"kind": "func", "container": "k_collab_room_fn", "order": 10, "name": "ConsumedSeqs", "file": "internal/collab/room/room.go", "line": 246, "signature": "func ConsumedSeqs(events []proto.LedgerEvent, consumer string) map[int64]bool", "params": [["events", "[]proto.LedgerEvent", ""], ["consumer", "string", ""]], "returns": "map[int64]bool", "summary": "ConsumedSeqs 收集该消费者已消费的消息 seq 集（Pending/Mentions 未消费过滤共用）。"},
+   "n_collab_room_RoomIDOf": {"kind": "func", "container": "k_collab_room_fn", "order": 11, "name": "RoomIDOf", "file": "internal/collab/room/room.go", "line": 269, "signature": "func RoomIDOf(ev proto.LedgerEvent) string", "params": [["ev", "proto.LedgerEvent", ""]], "returns": "string", "summary": "RoomIDOf 事件所属房间 id：卡级看 card_id，群级看载荷 Room。"},
+   "n_collab_room_MessageKind": {"kind": "func", "container": "k_collab_room_fn", "order": 12, "name": "MessageKind", "file": "internal/collab/room/room.go", "line": 281, "signature": "func MessageKind(ev proto.LedgerEvent) string", "params": [["ev", "proto.LedgerEvent", ""]], "returns": "string", "summary": "MessageKind 事件载荷的消息 kind；解码失败返回空串。"},
+   "m_collab_cursor_Store": {"kind": "model", "container": "k_collab_cursor_Store", "order": 1, "name": "Store", "file": "internal/collab/cursor/cursor.go", "line": 19, "signature": "type Store struct {\n\tmu sync.Mutex\n\tpath string\n\tloaded bool\n\tdata map[string]map[string]int64\n}", "summary": "Store 未读游标存储：member -> roomID -> uptoSeq，互斥锁串行化 + tmp+rename 原子写。"},
+   "n_collab_cursor_New": {"kind": "func", "container": "k_collab_cursor_fn", "order": 1, "name": "New", "file": "internal/collab/cursor/cursor.go", "line": 28, "signature": "func New(path string) *Store", "params": [["path", "string", ""]], "returns": "*Store", "summary": "New 构造游标存储；path 空=纯内存，非空=JSON 文件介质。"},
+   "n_collab_cursor_Store_MarkRead": {"kind": "func", "container": "k_collab_cursor_Store", "order": 2, "name": "Store.MarkRead", "file": "internal/collab/cursor/cursor.go", "line": 35, "signature": "func (s *Store) MarkRead(member, roomID string, uptoSeq int64) error", "params": [["member", "string", ""], ["roomID", "string", ""], ["uptoSeq", "int64", ""]], "returns": "error", "summary": "MarkRead 置已读水位（单调只进不退，tmp+rename 原子落盘）。"},
+   "n_collab_cursor_Store_Cursor": {"kind": "func", "container": "k_collab_cursor_Store", "order": 3, "name": "Store.Cursor", "file": "internal/collab/cursor/cursor.go", "line": 56, "signature": "func (s *Store) Cursor(member, roomID string) (int64, error)", "params": [["member", "string", ""], ["roomID", "string", ""]], "returns": "(int64, error)", "summary": "Cursor 读该成员在该房间的已读水位；未记过返回 0。"},
+   "n_collab_Service_SetCursorStore": {"kind": "func", "container": "k_collab_Service", "order": 20, "name": "Service.SetCursorStore", "file": "internal/collab/service.go", "line": 68, "signature": "func (s *Service) SetCursorStore(st *cursor.Store)", "params": [["st", "*cursor.Store", ""]], "returns": "", "summary": "SetCursorStore 把未读游标换成指定介质（组装点接线；不调用保持 New 的纯内存默认）。"}
+  },
+  "edgesAdded": [
+   ["n_collab_Service_Send", "n_collab_room_KindAllowed"],
+   ["n_collab_Service_Send", "n_collab_room_Resolve"],
+   ["n_collab_Service_Send", "n_collab_room_VerifyWriter"],
+   ["n_collab_Service_Pointer", "n_collab_room_Resolve"],
+   ["n_collab_Service_History", "n_collab_room_SameRoom"],
+   ["n_collab_Service_Mentions", "n_collab_room_MentionsMember"],
+   ["n_collab_room_Resolve", "m_proto_Card"],
+   ["n_collab_room_VerifyWriter", "m_proto_Card"],
+   ["n_collab_room_SameRoom", "m_proto_RoomMessage"],
+   ["n_collab_room_MentionsMember", "m_proto_RoomMessage"],
+   ["n_collab_room_UnmarshalMessage", "m_proto_RoomMessage"],
+   ["n_collab_Service_Pending", "n_collab_room_ConsumedSeqs"],
+   ["n_collab_Service_Pending", "n_collab_room_MentionsMember"],
+   ["n_collab_Service_Pending", "n_collab_room_MessageKind"],
+   ["n_collab_Service_Pending", "n_collab_room_ReadAllEvents"],
+   ["n_collab_Service_Consume", "n_collab_room_ReadAllEvents"],
+   ["n_collab_Service_Mentions", "n_collab_room_ConsumedSeqs"],
+   ["n_collab_Service_Mentions", "n_collab_room_ReadAllEvents"],
+   ["n_collab_Service_ListRooms", "n_collab_room_ReadAllEvents"],
+   ["n_collab_Service_ListRooms", "n_collab_room_RoomIDOf"],
+   ["n_collab_Service_ListRooms", "n_collab_room_IsTerminalStatus"],
+   ["n_collab_Service_Unread", "n_collab_room_ReadAllEvents"],
+   ["n_collab_Service_Unread", "n_collab_room_SameRoom"],
+   ["n_collab_Service_MarkRead", "n_collab_cursor_Store_MarkRead"],
+   ["n_collab_Service_Unread", "n_collab_cursor_Store_Cursor"],
+   ["n_collab_room_ReadAllEvents", "m_proto_LedgerEvent"],
+   ["n_collab_room_ConsumedSeqs", "m_proto_LedgerEvent"],
+   ["n_collab_room_RoomIDOf", "m_proto_RoomMessage"],
+   ["n_collab_room_MessageKind", "m_proto_RoomMessage"]
+  ],
+  "nodesModified": {
+    "m_proto_Card": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 15,
+      "name": "Card",
+      "file": "internal/proto/ledger.go",
+      "line": 15,
+      "summary": "Card 是账本卡片的 wire DTO；字段名与现有账本 HTTP 响应保持一致。",
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ],
+        [
+          "Title",
+          "string",
+          ""
+        ],
+        [
+          "Status",
+          "string",
+          ""
+        ],
+        [
+          "TerminateReason",
+          "string",
+          ""
+        ],
+        [
+          "Priority",
+          "string",
+          ""
+        ],
+        [
+          "Project",
+          "string",
+          ""
+        ],
+        [
+          "ParentID",
+          "string",
+          ""
+        ],
+        [
+          "WorkflowName",
+          "string",
+          ""
+        ],
+        [
+          "WorkflowVersion",
+          "int",
+          ""
+        ],
+        [
+          "Attachments",
+          "[]Attachment",
+          ""
+        ],
+        [
+          "AcceptanceCriteria",
+          "string",
+          ""
+        ],
+        [
+          "BaseBranch",
+          "string",
+          ""
+        ],
+        [
+          "Following",
+          "string",
+          "非空=已并入承载卡；查询期派生，仅列表投影有值、单卡读恒空；omitempty 可选"
+        ],
+        [
+          "DriverSession",
+          "string",
+          ""
+        ],
+        [
+          "DriverHeartbeatAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "CreatedAt",
+          "time.Time",
+          ""
+        ],
+        [
+          "UpdatedAt",
+          "time.Time",
+          ""
+        ]
+      ],
+      "projScanned": true,
+      "modelKind": "dto"
+    },
+    "m_collab_client_LedgerClient": {
+      "kind": "model",
+      "container": "k_collab_client_model",
+      "order": 20,
+      "name": "LedgerClient",
+      "file": "internal/collab/client/client.go",
+      "line": 19,
+      "signature": "type LedgerClient interface",
+      "summary": "会话侧出站接口（测试缝）：对外部账本能力的全部需求面；实现由组装点绑定为 ledger/api.Facade",
+      "fields": [
+        [
+          "GetCard",
+          "func",
+          "读卡（含绑定投影）"
+        ],
+        [
+          "ListActiveCards",
+          "func",
+          "已开始未结束的卡（成员派生输入）"
+        ],
+        [
+          "ListAllCards",
+          "func",
+          "全部卡直通枚举（含终态/并入成员；Following 投影取数源）"
+        ],
+        [
+          "RecordRoomMessage",
+          "func",
+          "发布房间消息事件"
+        ],
+        [
+          "RecordMessageConsumed",
+          "func",
+          "恰好一次消费标记"
+        ],
+        [
+          "EventsFromAsc",
+          "func",
+          "升序游标读事件"
+        ],
+        [
+          "BindDriver",
+          "func",
+          "绑定/换绑 CAS"
+        ],
+        [
+          "DriverLease",
+          "func",
+          "绑定者活性租约"
+        ]
+      ]
+    }
+  },
+  "implementsAdded": []
+}

@@ -1,7 +1,8 @@
 // Package api 是账本域对协作房间域的薄门面（B156.2 还债路径）：包住既有
 // *ledger.Store，逐方法转调并做 Event→proto.LedgerEvent 映射（先例
 // ledgerEventWire，internal/agentd/ledgerapi.go:106），不含任何业务判断。
-// 由组装点构造并注入 collab.New；本包之外不得引用。
+// 由组装点构造并注入 collab.New；组装点之外只认 client.LedgerClient 接口，
+// 不要直接引用本包的具体类型。
 //
 // 本文件属直通镜像接线：转调体照抄既有同形方法的接线形态。
 package api
@@ -31,7 +32,9 @@ func (f *Facade) GetCard(id string) (proto.Card, error) {
 	if err != nil {
 		return proto.Card{}, err
 	}
-	return cardWire(card), nil
+	// Store.GetCard 返回裸 Card（单卡读不派生跟随态），包一层视图后
+	// Following 恒空；并入态的取数源是 ListActiveCards/ListAllCards。
+	return cardWire(ledger.CardView{Card: card}), nil
 }
 
 func (f *Facade) ListActiveCards(project string) ([]proto.Card, error) {
@@ -44,7 +47,25 @@ func (f *Facade) ListActiveCards(project string) ([]proto.Card, error) {
 	}
 	out := make([]proto.Card, 0, len(views))
 	for _, v := range views {
-		out = append(out, cardWire(v.Card))
+		out = append(out, cardWire(v))
+	}
+	return out, nil
+}
+
+// ListAllCards 是 ListCards{IncludeTerminal:true} 的直通镜像（B156.2 岔口一
+// 方案甲还债直通）：终态房间「沉底可列」与并入只读判定的唯一枚举源。
+// Following 投影随 CardView 直通，本方法不做任何业务判断。
+func (f *Facade) ListAllCards(project string) ([]proto.Card, error) {
+	views, err := f.st.ListCards(ledger.CardFilter{
+		Project:         project,
+		IncludeTerminal: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proto.Card, 0, len(views))
+	for _, v := range views {
+		out = append(out, cardWire(v))
 	}
 	return out, nil
 }
@@ -70,8 +91,8 @@ func (f *Facade) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]pr
 }
 
 func (f *Facade) BindDriver(id, session, carrier, expect string) error {
-	// expect 语义与 RebindDriver 的 CAS 前值一致；空 expect=要求当前无绑定，
-	// 该分派随实现节点落地（欠账 #4），现阶段直通镜像只接显式换绑路径。
+	// expect 语义在账本侧 RebindDriver 落地（B156.2 欠账 #4）：expect=当前
+	// 绑定前值 CAS；空 expect=要求当前无绑定。本方法保持直通镜像零业务判断。
 	return f.st.RebindDriver(id, session, carrier, expect)
 }
 
@@ -84,8 +105,10 @@ func (f *Facade) DriverLease(session string) (time.Time, bool, error) {
 }
 
 // cardWire 账本卡 → wire DTO。字段与 internal/agentd/ledgerapi.go 的既有
-// 投影同形；新增字段两处同步。
-func cardWire(c ledger.Card) proto.Card {
+// 投影同形；新增字段两处同步。入参收 CardView：Following 是查询期派生
+// 标记、只存在于视图（types.go#CardView），裸 Card 无从投影。
+func cardWire(v ledger.CardView) proto.Card {
+	c := v.Card
 	return proto.Card{
 		ID:                 c.ID,
 		Title:              c.Title,
@@ -99,6 +122,7 @@ func cardWire(c ledger.Card) proto.Card {
 		Attachments:        attachmentsWire(c.Attachments),
 		AcceptanceCriteria: c.AcceptanceCriteria,
 		BaseBranch:         c.BaseBranch,
+		Following:          v.Following,
 		DriverSession:      c.DriverSession,
 		DriverHeartbeatAt:  c.DriverHeartbeatAt,
 		CreatedAt:          c.CreatedAt,

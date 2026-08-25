@@ -25,10 +25,14 @@ type Card struct {
 	Attachments        []Attachment `json:"attachments,omitempty"`
 	AcceptanceCriteria string       `json:"acceptance_criteria,omitempty"`
 	BaseBranch         string       `json:"base_branch,omitempty"`
-	DriverSession      string       `json:"driver_session,omitempty"`
-	DriverHeartbeatAt  time.Time    `json:"driver_heartbeat_at,omitempty"`
-	CreatedAt          time.Time    `json:"created_at"`
-	UpdatedAt          time.Time    `json:"updated_at"`
+	// Following 非空 = 该卡已并入承载卡（merged_into 的 to）。查询期派生标记，
+	// 权威在 ledger.CardView.Following：只在列表投影上有值，单卡读不派生、恒空。
+	// omitempty = 缺席不出键，既有契约 fixture 不受扰（B156.2 岔口一微修订）。
+	Following         string    `json:"following,omitempty"`
+	DriverSession     string    `json:"driver_session,omitempty"`
+	DriverHeartbeatAt time.Time `json:"driver_heartbeat_at,omitempty"`
+	CreatedAt         time.Time `json:"created_at"`
+	UpdatedAt         time.Time `json:"updated_at"`
 }
 
 // Relation 是账本关系边的 wire DTO。

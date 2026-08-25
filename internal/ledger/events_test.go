@@ -286,3 +286,71 @@ func TestClearNeedsHumanFrom(t *testing.T) {
 		t.Fatalf("另一环节的标记被抹掉了: %q", got)
 	}
 }
+
+// TestEnsureCommentWritesOncePerKey 幂等留痕：同键二次调用不写、不同键各写
+// 一条。入口是 Store.EnsureComment 本体——它不经任何声明缝（LedgerClient
+// 方法集不含它、RunOnce 接线归 C3），内部锁理由见 b156.2.2-plan.md §7。
+func TestEnsureCommentWritesOncePerKey(t *testing.T) {
+	s := seedStore(t)
+	card := mk(t, s, "遗留裁决卡")
+
+	wrote, err := s.EnsureComment(card.ID, "终态遗留裁决:B123:plan", "存在 open 裁决，转等人", "step:plan")
+	if err != nil || !wrote {
+		t.Fatalf("首次写入应返回 true,nil，得到 (%v,%v)", wrote, err)
+	}
+	wrote, err = s.EnsureComment(card.ID, "终态遗留裁决:B123:plan", "存在 open 裁决，转等人", "step:plan")
+	if err != nil || wrote {
+		t.Fatalf("同键二次调用应返回 false,nil（不产生第二条），得到 (%v,%v)", wrote, err)
+	}
+	wrote, err = s.EnsureComment(card.ID, "终态遗留裁决:B456:review", "另一节点的说明", "step:review")
+	if err != nil || !wrote {
+		t.Fatalf("不同键应各写一条，得到 (%v,%v)", wrote, err)
+	}
+
+	events, err := s.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var comments []Event
+	for _, ev := range events {
+		if ev.Type == EvComment {
+			comments = append(comments, ev)
+		}
+	}
+	if len(comments) != 2 {
+		t.Fatalf("EvComment 应恰 2 条（同键去重生效），实得 %d", len(comments))
+	}
+	var first struct {
+		Kind      string `json:"kind"`
+		Body      string `json:"body"`
+		DedupeKey string `json:"dedupe_key"`
+		Actor     string
+	}
+	if err := json.Unmarshal(comments[0].Payload, &first); err != nil {
+		t.Fatal(err)
+	}
+	first.Actor = comments[0].Actor
+	if first.Kind != "普通" || first.Body != "存在 open 裁决，转等人" ||
+		first.DedupeKey != "终态遗留裁决:B123:plan" || first.Actor != "step:plan" {
+		t.Fatalf("说明评论载荷漂移: %+v", first)
+	}
+}
+
+// TestEnsureCommentEmptyKeyRejected 空 dedupeKey 直接报错且零副作用——
+// 没有键就没有幂等判据。
+func TestEnsureCommentEmptyKeyRejected(t *testing.T) {
+	s := seedStore(t)
+	card := mk(t, s, "空键卡")
+	if _, err := s.EnsureComment(card.ID, "  ", "正文", "step:plan"); err == nil {
+		t.Fatal("空白 dedupeKey 必须报错")
+	}
+	events, err := s.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type == EvComment {
+			t.Fatalf("拒绝后不应有任何评论事件: %+v", ev)
+		}
+	}
+}
