@@ -15,7 +15,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
-	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
@@ -327,7 +326,7 @@ func init() {
 // 状态）；写失败不打断派发主流程——指针是房间面信号，错误仅日志（判据二，
 // TestCardDispatchPointerFailureDoesNotInterrupt）。
 func writeDispatchPointer(st *ledger.Store, id, nodeLabel string) {
-	if perr := roomPointer(collab.New(ledgerapi.New(st)), id, dispatchPointerBody(id, nodeLabel)); perr != nil {
+	if perr := roomPointer(roomServiceFor(st), id, dispatchPointerBody(id, nodeLabel)); perr != nil {
 		slog.Warn("派发指针落账失败", "card", id, "cause", perr)
 	}
 }

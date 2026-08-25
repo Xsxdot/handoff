@@ -27,15 +27,21 @@ var roomCmd = &cobra.Command{
 	Short: "协作房间（卡会话/项目群/全员群的列表、历史、发言与收件箱）",
 }
 
-// openRoomService 是 CLI 侧房间域组装点（target.json assembly 登记点语义：
-// 组装点之外不得 new 他方具体类型——房间命令族共用本入口构造
-// collab.New(ledgerapi.New(...))）。调用方负责 Close 返回的 Store。
+// roomServiceFor 是 CLI 侧 collab 的唯一绑定点（架构法第八条：组装点之外
+// 不得 new 他方具体类型）。openRoomService 与派发指针 writeDispatchPointer
+// 共用它绑定 collab 服务，不在两处分别构造。
+func roomServiceFor(st *ledger.Store) *collab.Service {
+	return collab.New(ledgerapi.New(st))
+}
+
+// openRoomService 是 CLI 侧房间域组装点（target.json assembly 登记点语义），
+// 房间命令族共用本入口；绑定收敛在 roomServiceFor。调用方负责 Close 返回的 Store。
 func openRoomService() (*collab.Service, *ledger.Store, error) {
 	st, err := openLedger()
 	if err != nil {
 		return nil, nil, err
 	}
-	return collab.New(ledgerapi.New(st)), st, nil
+	return roomServiceFor(st), st, nil
 }
 
 var roomListProject string
