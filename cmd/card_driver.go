@@ -57,6 +57,45 @@ var cardTakeoverCmd = &cobra.Command{
 	},
 }
 
+var (
+	cardRebindTo      string
+	cardRebindCarrier string
+	cardRebindExpect  string
+)
+
+// cardRebindCmd 换绑驱动会话（契约 §3.2/§3.5）：expect=CAS 前值（空=要求当前
+// 无绑定），成功覆写 driver_session+driver_carrier 并落 EvDriverTakeover。
+// carrier 是不透明载体标识（breakdown 澄清一）：本期只存不解释，格式定义权归
+// B156.3——帮助文本沿用「不透明载体标识」措辞，不做任何格式假设。
+var cardRebindCmd = &cobra.Command{
+	Use:   "rebind <id>",
+	Short: "换绑驱动会话（CAS；--carrier 为不透明载体标识，本期只存不解释）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		if cardRebindTo == "" {
+			return fmt.Errorf("--to 必填（新驱动会话标识）")
+		}
+		id := args[0]
+		slog.Default().Info("CLI 换绑入口", "card", id, "to", cardRebindTo, "has_expect", cardRebindExpect != "")
+		st, err := openLedger()
+		if err != nil {
+			slog.Default().Warn("CLI 换绑打开账本失败", "card", id, "cause", err)
+			return err
+		}
+		defer st.Close()
+		if err := st.RebindDriver(id, cardRebindTo, cardRebindCarrier, cardRebindExpect); err != nil {
+			slog.Default().Warn("CLI 换绑失败", "card", id, "to", cardRebindTo, "cause", err)
+			return fmt.Errorf("换绑卡 %s: %w", id, err)
+		}
+		slog.Default().Info("CLI 换绑完成", "card", id, "to", cardRebindTo)
+		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
+		return nil
+	},
+}
+
 func init() {
-	cardCmd.AddCommand(cardReleaseCmd, cardTakeoverCmd)
+	cardRebindCmd.Flags().StringVar(&cardRebindTo, "to", "", "新驱动会话标识（必填）")
+	cardRebindCmd.Flags().StringVar(&cardRebindCarrier, "carrier", "", "不透明载体标识（本期只存不解释，格式定义权归 B156.3）")
+	cardRebindCmd.Flags().StringVar(&cardRebindExpect, "expect", "", "CAS 前值（空=要求当前无绑定）")
+	cardCmd.AddCommand(cardReleaseCmd, cardTakeoverCmd, cardRebindCmd)
 }
