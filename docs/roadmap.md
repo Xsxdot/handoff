@@ -268,25 +268,45 @@
   合进 main 没人拦。卡流的「图对账」列只在协调者记得点火时才走——**没有机械执法**。
   下一步值得让 finish 前的门检查「本分支删改过的文件是否在图里还有符号」。
 
-## 来自 B229 部署前置的实测（2026-08-25，协调者本机核过）
+## 来自 B229 部署前置的实测（2026-08-25，协调者本机核过；同日更正，见下）
 
-- **在飞的 charter 任务跨不过一次 agentd 升级，只能重新 dispatch。**判据一行：
-  `ls <DataDir>/tasks/<id>/discipline.md`，没有就跨不过去。链条三段都实测过：
-  ① 旧 agentd **不写**这个文件——B229 前的 main（`8cb707294`）里 `manager.go` 对
-  `disciplineFileName|discipline.md` 是 0 命中，`disciplineFileName` 随 `5585ecc2a`
-  （b229.1）才进来；本机 `~/.handoff/tasks/*/` 抽查四个旧任务目录也都没有它。
-  ② 旧 agentd **确实记了名字**——`discipline_name` 列早于 B229（`f4dc50057`），
-  实测在飞任务 `fe509380` 的 `discipline_name` = `charter-contract`。
-  ③ 新代码在「有名字 + 无正文」时**拒绝续接**（`internal/agentd/manager.go:1301-1313`），
-  理由是冷恢复重建 executor 进程、纪律块是新进程里约束的唯一来源，空块会让一个
-  点名 review 的任务失去「只读不写」。
-  两条合起来：升级窗口一开，旧 agentd 派出的每个 charter 任务都落进拒绝分支。
-  **注意这不只是「下一次点火失败」**——`continue` 在协议层不校验能力位，但跨重启
-  会走 `resumeForContinue`，那条路才是被拒的地方。
-- **可做的改进（本期不做）**：升级时把 `discipline_name` 已知、正文缺失的在飞任务
-  按名字回填一份 `discipline.md`，让它们能跨过升级。风险是回填的是「升级后的最新版」
-  而非首派那一版，与 B229 §2.5.2「续接必须看到与会话开始时同一份世界」冲突——
-  要做得先想清楚这个矛盾，不是顺手补个文件。
+> **更正（2026-08-25 晚）：本节原来的结论是错的，且错在最贵的方向——它会让人为升级去等一个根本不必等的窗口。**
+> 原结论：「在飞的 charter 任务跨不过一次 agentd 升级，只能重新 dispatch。」
+> **事实：一次 `systemctl restart` 不会让执行者消失，在飞任务照常跑完。**
+> 打脸的经过：一个 peer 会话在 linux-01 上重启了 agentd，事后发现同机有一条 17:27:42 派出的
+> charter 任务（`discipline_name=charter-implement`，任务目录确实没有 `discipline.md`）——
+> 正是本节判定「跨不过去」的那一类。它没事：`render.log` 与 `frames.jsonl` 在重启后继续增长、
+> `handoff resume` 报 `executor_gone: false`、shim 的 PPID 是 1 且启动时间早于新 agentd。
+>
+> **机制（本仓早就写着，我们没人去看）**：执行者由 agentd 经 shim 以**独立会话**拉起，
+> 目的就是活过 agentd 的重启与升级；`deploy/handoff-agentd.service` 里 `KillMode=process`
+> 的注释原文写着「是本项目的硬要求，不是可选优化」，并解释 systemd 默认的 `control-group`
+> 会连坐执行者；`internal/agentd/killmode.go#WarnIfKillModeUnsafe` 还在启动时自检并打日志
+> 「systemd KillMode 配置正确，agentd 重启不会连坐执行者」。重启后 agentd 按 `proc.json`
+> + `proc.lock` 存活锁重新接管。**这是设计使然，不是侥幸。**
+
+- **`discipline.md` 判据本身没错，错的是它的定义域**：它管的是**冷恢复**那条路。只有执行者
+  **真的没了**（shim 死了、机器重启、unit 被改成 `KillMode=control-group`、或部署形态本就不
+  保活）时，`Continue` 才会撞 `ErrTaskNotRunning` 落到 `resumeForContinue`，那时才需要读回
+  首派落盘的纪律正文；有名字而无正文即拒绝续接（`internal/agentd/manager.go:1301-1313`）。
+  **平常一次 `systemctl restart` 走不到那里。**
+  判据仍然是一行 `ls <DataDir>/tasks/<id>/discipline.md`，只是它回答的问题变成了
+  「**万一执行者真没了**，这个任务还能不能续接」。
+- **两条前提必须一并记住，它们是条件不是背景**：① unit 里 `KillMode=process`；② 执行者经
+  shim 以独立会话拉起。换一台机器、换一种部署形态，前提可能不成立。**macOS 上那两台是
+  launchd，未验证**——不要把 linux 的结论推广过去。
+- **升级窗口的真实条件**因此比原先宽得多：不需要「执行机上零在飞 charter 任务」。
+- 旧 agentd 不写 `discipline.md` 这条实测依然成立（B229 前的 main `8cb707294` 里 `manager.go`
+  对 `disciplineFileName|discipline.md` 0 命中，`disciplineFileName` 随 `5585ecc2a` 才进来；
+  本机四个旧任务目录抽查也都没有它）。它只是不再蕴含原来那个结论。
+- **这条链是怎么错的**：三个会话接力**推**出来的，每一环各自为真——旧 agentd 不写文件（实测）、
+  新代码在有名无正文时拒绝续接（读代码）——缺的是没人去验的那一环：**重启到底会不会让
+  executor 消失**。链条上每个环节为真，不代表结论为真。而正确答案本来就写在
+  `deploy/handoff-agentd.service` 的注释里，我们谁都没去读那个文件。
+- **可做的改进（本期不做）**：升级时把 `discipline_name` 已知、正文缺失的在飞任务按名字回填
+  一份 `discipline.md`，让它们在**真冷恢复**时也能续接。风险是回填的是「升级后的最新版」而非
+  首派那一版，与 B229 §2.5.2「续接必须看到与会话开始时同一份世界」冲突——要做得先想清楚
+  这个矛盾，不是顺手补个文件。
 
 ## 来自 C1.11 finish 的残余（2026-08-25）
 
