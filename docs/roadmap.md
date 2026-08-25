@@ -347,3 +347,10 @@
   为它加一条启动清扫要动生产代码并重走一轮 implement→review，代价大于收益。
   真要做，形态是 agentd 启动时扫 `TMPDIR/handoff-empty-hooks-*` 并删掉，注意别误删同机
   另一个在跑的 agentd 实例的目录（判据得比前缀更强，比如带 pid 且校验该 pid 不存活）。
+
+- **执行机上装 codegraph（B227 图对账暴露）。**linux-01 没有 codegraph 二进制，
+  图对账节点跑到 `validate` / `sym` 时是 `command not found`，节点仍判 pass 并如实记了原始错误，
+  但**「视图与真代码对不对得上」这一步实际是空的**。B227 这轮由协调者本机补跑（六个节点
+  anchor 全 ok、check 零新增违规），但下一张卡不会自动有人补。
+  形态有两条：给执行机装 codegraph，或让 recon 纪律块在工具缺失时判 `needs_human` 而不是 pass
+  ——后者更稳，因为前者会随新执行机接入反复失效（参见 opencode 不在非登录 shell PATH 的旧坑）。
