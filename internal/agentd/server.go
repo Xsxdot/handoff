@@ -2330,6 +2330,10 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 // 可书）。本路经 d_collab 入站门面的指针专用入口 Service.Pointer：kind=pointer
 // 与 BySystem=true 由 Pointer 自己置，房间解析与只读判定也归 collab 执法；
 // keystone 不感知差异。凡承重必须落账，通道不再是兜底通道。
+//
+// 当前实况（协调者复核补记 2026-08-26）：collab.Service.Pointer 尚是空壳
+// （返回 0,nil，实现归 C7 子卡），故本路今天**无可观测行为**——上一段描述的
+// 是 Pointer 的法定职责，不是它今天的行为。C7 填肉前不要据此认为叙事已落账。
 type roomNarrator struct {
 	c *collab.Service
 }

@@ -76434,7 +76434,7 @@
    "order": 700,
    "name": "facadeAsRegistry.Get",
    "file": "internal/agentd/server.go",
-   "line": 2273,
+   "line": 2274,
    "signature": "func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error)",
    "params": [
     [
@@ -76675,7 +76675,7 @@
    "container": "k_agentd_roomNarrator",
    "name": "roomNarrator.Say",
    "file": "internal/agentd/server.go",
-   "line": 2337,
+   "line": 2341,
    "signature": "func (n roomNarrator) Say(cardID, text string) error",
    "params": [
     [
