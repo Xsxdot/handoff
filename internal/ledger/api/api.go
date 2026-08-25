@@ -31,7 +31,9 @@ func (f *Facade) GetCard(id string) (proto.Card, error) {
 	if err != nil {
 		return proto.Card{}, err
 	}
-	return cardWire(card), nil
+	// Store.GetCard 返回裸 Card（单卡读不派生跟随态），包一层视图后
+	// Following 恒空；并入态的取数源是 ListActiveCards/ListAllCards。
+	return cardWire(ledger.CardView{Card: card}), nil
 }
 
 func (f *Facade) ListActiveCards(project string) ([]proto.Card, error) {
@@ -44,7 +46,25 @@ func (f *Facade) ListActiveCards(project string) ([]proto.Card, error) {
 	}
 	out := make([]proto.Card, 0, len(views))
 	for _, v := range views {
-		out = append(out, cardWire(v.Card))
+		out = append(out, cardWire(v))
+	}
+	return out, nil
+}
+
+// ListAllCards 是 ListCards{IncludeTerminal:true} 的直通镜像（B156.2 岔口一
+// 方案甲还债直通）：终态房间「沉底可列」与并入只读判定的唯一枚举源。
+// Following 投影随 CardView 直通，本方法不做任何业务判断。
+func (f *Facade) ListAllCards(project string) ([]proto.Card, error) {
+	views, err := f.st.ListCards(ledger.CardFilter{
+		Project:         project,
+		IncludeTerminal: true,
+	})
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proto.Card, 0, len(views))
+	for _, v := range views {
+		out = append(out, cardWire(v))
 	}
 	return out, nil
 }
@@ -84,8 +104,10 @@ func (f *Facade) DriverLease(session string) (time.Time, bool, error) {
 }
 
 // cardWire 账本卡 → wire DTO。字段与 internal/agentd/ledgerapi.go 的既有
-// 投影同形；新增字段两处同步。
-func cardWire(c ledger.Card) proto.Card {
+// 投影同形；新增字段两处同步。入参收 CardView：Following 是查询期派生
+// 标记、只存在于视图（types.go#CardView），裸 Card 无从投影。
+func cardWire(v ledger.CardView) proto.Card {
+	c := v.Card
 	return proto.Card{
 		ID:                 c.ID,
 		Title:              c.Title,
@@ -99,6 +121,7 @@ func cardWire(c ledger.Card) proto.Card {
 		Attachments:        attachmentsWire(c.Attachments),
 		AcceptanceCriteria: c.AcceptanceCriteria,
 		BaseBranch:         c.BaseBranch,
+		Following:          v.Following,
 		DriverSession:      c.DriverSession,
 		DriverHeartbeatAt:  c.DriverHeartbeatAt,
 		CreatedAt:          c.CreatedAt,
