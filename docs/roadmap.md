@@ -246,3 +246,25 @@
   「容器管不住」的网络副作用维度三天是空集（0 curl / kubectl / psql / aws / ssh /
   git push）。**再有人提「靠 OS 隔离来减少权限打扰」，先复读这组数字**——降噪的杠杆
   在判据不在隔离，隔离的价值在 B227 与进程清扫，两件事不要再捆在一起论证。
+
+## 来自 B249 执行过程（2026-08-25，非 spec 预见的残余）
+
+- **卡基线在首派那刻冻结，依赖卡后落地就再也进不来**。B249 15:54 首派 contract 时
+  B248 尚未落地，于是 B249 分支上一直是旧正则，implement、三轮 review、全量测试
+  **三关全绿且无一报错**——review 只审本卡改动，测试不测另一张卡的行为，三方合并还能
+  保住对方的改动。症状只有一个：两卡改动从未在同一份代码上一起跑过，而 B248 spec 明写
+  「必须同轮落地，先放宽后收紧的中间态是净减安全」。协调者在 acceptance 阶段用
+  `git merge-base --is-ancestor` 才查出来，本地合并后重做验收（21/21 行为判据绿）。
+  **可做的**：`card dispatch` 或 finish 阶段对「卡 spec 里点名的前置卡」做一次祖先检查。
+  尚未取号，需要时 `handoff card add`。
+- **contract 节点给 `codegraph/target.json` 写 entries 时用了函数符号名**
+  （`executor.TaskTmpDir`），而该字段的语义是**容器 Label**（判定见 charter
+  `graph/codegraph/check.go`：逐条比对 `Container.Label`，无跳过分支）。后果是必然在
+  review 阶段撞 dead-entry、多烧一整轮 implement + review。基线里其余 9 条 entries
+  全是容器级形态（`ledger.Store`、`proto 实体`、`ptyhost 实体` 等），无一函数符号。
+  **归属 charter 仓**（`~/workspace/charter` 的 contract 节点 skill 该给出这条判据，
+  改完跑 `scripts/regen_discipline.py`），不是 handoff 仓的改动。
+- **（已有卡，不重复取号）** 审批者对沙箱层级完全失明 = **B252**；`card --attach`
+  按 path 去重忽略 kind 导致同路径换 kind 静默失败 = **B250**；执行者隔离层 = **B247**。
+- **（已修，留痕）** `skills/handoff/SKILL.md` 排障表原写「驱动权泄漏 CLI 侧今天无解」，
+  B239 后 `card takeover` 已可用、`card release` 也不再是静默 no-op，本轮实测确认并改正。

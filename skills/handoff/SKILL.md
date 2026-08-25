@@ -586,7 +586,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「分支 …，起点 …」行就是实际起点 |
 | `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复阶梯」看走到哪一级 |
 | 任务归档后有残留（worktree / executor 进程） | 回收失败（事件里会带残留提示） | worktree 用 `handoff reclaim` 回收；进程按事件提示处置，彻底死透按 `proc.json` 的 `handle.pid` 手工 kill shim |
-| `card dispatch --step` 打印「已受理」，但卡上零事件、看板毫无动静 | **驱动权泄漏**：上一轮编排异常中断（如 agentd 重启）没走到 `defer` 的释放，持有者会话早已死亡；而认领**永不因心跳僵死而失效**（`internal/ledger/tasks.go` 明写）。`--step` 是 202 受理，失败只进 agentd.log，卡上不留任何事件 | `grep 驱动认领被拒 ~/.handoff/agentd.log` 取真因（带 holder / claimer）。**CLI 侧今天无解**：`card takeover` 把驱动认领给随即死亡的本次调用，`card release` 只对当前持有者生效、恒为 no-op 却返回 `{"ok":true}`。见 B239 |
+| `card dispatch --step` 打印「已受理」，但卡上零事件、看板毫无动静 | **驱动权泄漏**：上一轮编排异常中断（如 agentd 重启）没走到 `defer` 的释放，持有者会话早已死亡；而认领**永不因心跳僵死而失效**（`internal/ledger/tasks.go` 明写）。`--step` 是 202 受理，失败只进 agentd.log，卡上不留任何事件 | `grep 驱动认领被拒 ~/.handoff/agentd.log` 取真因（带 holder / claimer）。处置：`card takeover <id>` 显式接管，驱动归属落到人名下（不带 PID，不随本次调用结束失效），随后正常 `--step` 派发即可。`card release` 只对当前持有者生效，非持有者调用会失败并告知谁在持有——用它确认持有方，不要指望它替你解锁。（B239 前 takeover/release 均不可用，旧描述已作废）|
 
 **日志在哪**（在 executor 所在机器上）：
 
