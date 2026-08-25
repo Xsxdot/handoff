@@ -1,10 +1,14 @@
-// 协作房间域入站门面的直通竖切与执法分支测试（B156.2 契约 §3.3/§7）。
+// 协作房间域入站门面的直通竖切与执法矩阵测试（B156.2 契约 §3.3/§4）。
 //
 // 竖切（重档法定步骤）：一次真实调用 Send(user, 卡房间) 穿过 Service →
 // client.LedgerClient 接口 → internal/ledger/api.Facade → 真 SQLite
 // ledger.Store，落 card_events 后由 History 读回。测试钉在主缝上（库缝
 // 形态 = 夹具直调），这是 Ticket 0「越过空壳的可观测行为须有能变红的测试」
 // 的正当出口。
+//
+// 执法矩阵（欠账 #1）：Send 的协调者类/relay/user 书写者校验、并入只读、
+// 换绑剥权，与 Pointer 实现，全部从入站门面（Service.Send/Service.Pointer）
+// 断言——缝#1 是唯一法定入口，规则实现（room 子包）不设独立单测。
 //
 // 本文件的 import internal/ledger(/api) 仅存在于 _test.go：图边采集排除
 // 测试文件（charter/graph edgegate.go:190），不构成 d_collab→d_ledger 生产边。
@@ -15,6 +19,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -45,6 +50,24 @@ func mustCard(t *testing.T, s *Service, st *ledger.Store, title string) ledger.C
 		t.Fatalf("建卡: %v", err)
 	}
 	return card
+}
+
+// mustCardWithParent 建一张直接父卡为 parentID 的卡。
+func mustCardWithParent(t *testing.T, s *Service, st *ledger.Store, title, parentID string) ledger.Card {
+	t.Helper()
+	card, err := st.CreateCard(ledger.NewCard{Title: title, Project: "handoff", Workflow: "bug", Parent: parentID, Actor: "test"})
+	if err != nil {
+		t.Fatalf("建子卡: %v", err)
+	}
+	return card
+}
+
+// mustBind 用 ClaimCardAs 给卡绑一个协调者会话。
+func mustBind(t *testing.T, st *ledger.Store, id, owner string) {
+	t.Helper()
+	if err := st.ClaimCardAs(id, owner, ""); err != nil {
+		t.Fatalf("绑定 %s→%s: %v", id, owner, err)
+	}
 }
 
 // mustAnyCard 建一张默认标题的卡。
@@ -159,16 +182,227 @@ func TestSendRejectsTerminalCardRoom(t *testing.T) {
 	}
 }
 
-// TestCoordinatorKindsNotForgedBySkeleton 竖切阶段协调者类 kind 不得被
-// 空壳放行——放行即伪造书写者执法通过。
-func TestCoordinatorKindsNotForgedBySkeleton(t *testing.T) {
+// TestSendCoordinatorKindsRequireBinding 契约 §4 条 4：escalation/deviation/
+// closing/reply 由非当前绑定者发送 → ErrNotWriter；当前绑定者可发。
+func TestSendCoordinatorKindsRequireBinding(t *testing.T) {
+	svc, st := newFixture(t)
+	for _, kind := range []string{proto.RoomMsgEscalation, proto.RoomMsgDeviation,
+		proto.RoomMsgClosing, proto.RoomMsgReply} {
+		card := mustCard(t, svc, st, "协调者执法卡")
+		if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: kind, Body: "x"}, "cli:a@h"); err != ErrNotWriter {
+			t.Fatalf("kind %s 非绑定者必须 ErrNotWriter，got %v", kind, err)
+		}
+		mustBind(t, st, card.ID, "cli:a@h")
+		seq, err := svc.Send(card.ID, proto.RoomMessage{Kind: kind, Body: "x"}, "cli:a@h")
+		if err != nil || seq <= 0 {
+			t.Fatalf("kind %s 当前绑定者可发，got err=%v seq=%d", kind, err, seq)
+		}
+	}
+}
+
+// TestSendRelayAllowsDirectParentWriter 契约 §4 条 5：relay 可由直接父卡当前
+// 绑定者发送；条 6 反例在 TestSendRelayRejectsGrandparentAndUnrelated。
+func TestSendRelayAllowsDirectParentWriter(t *testing.T) {
+	svc, st := newFixture(t)
+	parent := mustCard(t, svc, st, "父卡")
+	child := mustCardWithParent(t, svc, st, "子卡", parent.ID)
+	mustBind(t, st, parent.ID, "cli:p@h")
+	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "衔接"}, "cli:p@h"); err != nil {
+		t.Fatalf("直接父绑定者 relay 必须可发，got %v", err)
+	}
+	mustBind(t, st, child.ID, "cli:c@h")
+	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "衔接"}, "cli:c@h"); err != nil {
+		t.Fatalf("本卡绑定者 relay 必须可发，got %v", err)
+	}
+}
+
+// TestSendRelayRejectsGrandparentAndUnrelated 契约 §4 条 6：祖父卡（只查一级
+// 父，拍板 5.5）与无关联会话 → ErrNotWriter。
+func TestSendRelayRejectsGrandparentAndUnrelated(t *testing.T) {
+	svc, st := newFixture(t)
+	gp := mustCard(t, svc, st, "祖父卡")
+	parent := mustCardWithParent(t, svc, st, "父卡", gp.ID)
+	child := mustCardWithParent(t, svc, st, "子卡", parent.ID)
+	mustBind(t, st, gp.ID, "cli:g@h")
+	mustBind(t, st, parent.ID, "cli:p@h")
+	for _, actor := range []string{"cli:g@h", "cli:unrelated@h"} {
+		if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "x"}, actor); err != ErrNotWriter {
+			t.Fatalf("relay actor=%s 必须 ErrNotWriter，got %v", actor, err)
+		}
+	}
+}
+
+// TestSendUserRejectsCardBinding 契约 §4 条 7：user 类 actor 等于房间卡当前
+// 绑定值 → ErrNotWriter（用户不是协调者）。
+func TestSendUserRejectsCardBinding(t *testing.T) {
+	svc, st := newFixture(t)
+	card := mustCard(t, svc, st, "绑定卡")
+	mustBind(t, st, card.ID, "cli:a@h")
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "cli:a@h"); err != ErrNotWriter {
+		t.Fatalf("user actor==绑定值必须 ErrNotWriter，got %v", err)
+	}
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy"); err != nil {
+		t.Fatalf("user 非绑定者应可发，got %v", err)
+	}
+}
+
+// TestSendUserRejectsParentBinding 岔口十最窄读法：子卡房间的 user 类还拒
+// 直接父卡绑定者（相关卡={该卡, 直接父}，与拍板 5.5 一级父同构）。
+func TestSendUserRejectsParentBinding(t *testing.T) {
+	svc, st := newFixture(t)
+	parent := mustCard(t, svc, st, "父卡")
+	child := mustCardWithParent(t, svc, st, "子卡", parent.ID)
+	mustBind(t, st, parent.ID, "cli:p@h")
+	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "cli:p@h"); err != ErrNotWriter {
+		t.Fatalf("user actor==直接父绑定值必须 ErrNotWriter，got %v", err)
+	}
+	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy"); err != nil {
+		t.Fatalf("user 非任何绑定者应可发，got %v", err)
+	}
+}
+
+// TestSendRejectsMergedCardRoom 并入承载卡的房间（merged_into 非空）Send →
+// ErrReadOnly。
+func TestSendRejectsMergedCardRoom(t *testing.T) {
+	svc, st := newFixture(t)
+	carrier := mustCard(t, svc, st, "承载卡")
+	member := mustCard(t, svc, st, "并入卡")
+	if err := st.MergeCards([]string{member.ID}, carrier.ID, "test"); err != nil {
+		t.Fatalf("合并: %v", err)
+	}
+	if _, err := svc.Send(member.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy"); err != ErrReadOnly {
+		t.Fatalf("并入房间必须 ErrReadOnly，got %v", err)
+	}
+}
+
+// TestSendRebindRevokesOldSession 换绑剥权合取（依赖 C1）：RebindDriver 成功
+// 后旧会话对该房间的协调者类 Send → ErrNotWriter，新会话可发。
+func TestSendRebindRevokesOldSession(t *testing.T) {
+	svc, st := newFixture(t)
+	card := mustCard(t, svc, st, "换绑卡")
+	mustBind(t, st, card.ID, "cli:old@h")
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:old@h"); err != nil {
+		t.Fatalf("换绑前旧会话可发，got %v", err)
+	}
+	if err := st.RebindDriver(card.ID, "cli:new@h", "", "cli:old@h"); err != nil {
+		t.Fatalf("换绑: %v", err)
+	}
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:old@h"); err != ErrNotWriter {
+		t.Fatalf("换绑后旧会话必须 ErrNotWriter，got %v", err)
+	}
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:new@h"); err != nil {
+		t.Fatalf("换绑后新会话可发，got %v", err)
+	}
+}
+
+// TestSendUserGroupRoomRequiresNonEmpty 群房间无卡可比：user 仅要求 actor
+// 非空（岔口十最窄读法）。
+func TestSendUserGroupRoomRequiresNonEmpty(t *testing.T) {
+	svc, _ := newFixture(t)
+	if _, err := svc.Send("project:handoff", proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, ""); err != ErrNotWriter {
+		t.Fatalf("群房间空 actor 必须 ErrNotWriter，got %v", err)
+	}
+	if _, err := svc.Send("global", proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy"); err != nil {
+		t.Fatalf("群房间非空 actor 可发，got %v", err)
+	}
+}
+
+// TestPointerWritesPointerMessage Pointer 写入后读回该消息，断言
+// Kind==pointer && BySystem==true、正文与 seq 落账一致（本卡新增判据一）。
+func TestPointerWritesPointerMessage(t *testing.T) {
 	svc, st := newFixture(t)
 	card := mustAnyCard(t, svc, st)
-	for _, kind := range []string{proto.RoomMsgEscalation, proto.RoomMsgDeviation,
-		proto.RoomMsgClosing, proto.RoomMsgRelay, proto.RoomMsgReply} {
-		if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: kind, Body: "x"}, "cli:a@h"); err == nil {
-			t.Fatalf("kind %s 在欠账 #1 落地前不得放行", kind)
+	seq, err := svc.Pointer(card.ID, proto.RoomMessage{Body: "spec 已定稿"})
+	if err != nil {
+		t.Fatalf("Pointer: %v", err)
+	}
+	if seq <= 0 {
+		t.Fatalf("Pointer seq 必须为正，got %d", seq)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var found *ledger.Event
+	for i := range events {
+		if events[i].Seq == seq {
+			found = &events[i]
 		}
+	}
+	if found == nil {
+		t.Fatalf("没找到 pointer 落账行")
+	}
+	if found.CardID != card.ID || found.Actor != "system:pointer" {
+		t.Fatalf("pointer 行身份漂移: card=%q actor=%q", found.CardID, found.Actor)
+	}
+	var back proto.RoomMessage
+	if err := json.Unmarshal(found.Payload, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Kind != proto.RoomMsgPointer || !back.BySystem {
+		t.Fatalf("Pointer 置位失效: kind=%q by_system=%v", back.Kind, back.BySystem)
+	}
+	if back.Body != "spec 已定稿" || back.Room != card.ID {
+		t.Fatalf("pointer 载荷漂移: body=%q room=%q", back.Body, back.Room)
+	}
+	hist, err := svc.History(card.ID, 0, 0)
+	if err != nil || len(hist) != 1 || hist[0].Seq != seq {
+		t.Fatalf("History 读回 pointer 失败: %v %d", err, len(hist))
+	}
+}
+
+// TestPointerOverridesCallerKindAndBySystem 置位在 Pointer 内部：调用方传入
+// 的 Kind/BySystem 被覆盖为 pointer/true（本卡新增判据一的反面形）。
+func TestPointerOverridesCallerKindAndBySystem(t *testing.T) {
+	svc, st := newFixture(t)
+	card := mustAnyCard(t, svc, st)
+	seq, err := svc.Pointer(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x", BySystem: false})
+	if err != nil || seq <= 0 {
+		t.Fatalf("Pointer: %v seq=%d", err, seq)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back proto.RoomMessage
+	for i := range events {
+		if events[i].Seq == seq {
+			if err := json.Unmarshal(events[i].Payload, &back); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if back.Kind != proto.RoomMsgPointer || !back.BySystem {
+		t.Fatalf("Pointer 必须自置 kind/by_system: kind=%q by_system=%v", back.Kind, back.BySystem)
+	}
+}
+
+// TestPointerRejectsReadOnlyRoom 终态或并入房间调 Pointer → ErrReadOnly
+// （本卡新增判据二）。
+func TestPointerRejectsReadOnlyRoom(t *testing.T) {
+	svc, st := newFixture(t)
+	term := mustAnyCard(t, svc, st)
+	if err := st.CloseCard(term.ID, ledger.CloseCancelled, "test"); err != nil {
+		t.Fatalf("置终态: %v", err)
+	}
+	if _, err := svc.Pointer(term.ID, proto.RoomMessage{Body: "x"}); err != ErrReadOnly {
+		t.Fatalf("终态房间 Pointer 必须 ErrReadOnly，got %v", err)
+	}
+	carrier := mustCard(t, svc, st, "承载卡")
+	member := mustCard(t, svc, st, "并入卡")
+	if err := st.MergeCards([]string{member.ID}, carrier.ID, "test"); err != nil {
+		t.Fatalf("合并: %v", err)
+	}
+	if _, err := svc.Pointer(member.ID, proto.RoomMessage{Body: "x"}); err != ErrReadOnly {
+		t.Fatalf("并入房间 Pointer 必须 ErrReadOnly，got %v", err)
+	}
+}
+
+// TestPointerRejectsUnknownRoom Pointer 解析不到房间 → ErrNoRoom。
+func TestPointerRejectsUnknownRoom(t *testing.T) {
+	svc, _ := newFixture(t)
+	if _, err := svc.Pointer("B99999", proto.RoomMessage{Body: "x"}); err != ErrNoRoom {
+		t.Fatalf("未知房间 Pointer 必须 ErrNoRoom，got %v", err)
 	}
 }
 
@@ -217,10 +451,23 @@ func TestMentionsFiltersByMember(t *testing.T) {
 	}
 }
 
-// TestRoomEventTypeLiteralMatchesLedger 钉住 collab 侧字面量与账本词表的
+// TestRoomEventTypeLiteralMatchesLedger 钉住 room 侧字面量与账本词表的
 // 等式；测试文件不计图边，可同时看见两侧（门面禁令只约束生产代码）。
 func TestRoomEventTypeLiteralMatchesLedger(t *testing.T) {
-	if protoRoomEventType != ledger.EvRoomMessage {
-		t.Fatalf("房间事件类型字面量漂移: %q != %q", protoRoomEventType, ledger.EvRoomMessage)
+	if room.RoomEventType != ledger.EvRoomMessage {
+		t.Fatalf("房间事件类型字面量漂移: %q != %q", room.RoomEventType, ledger.EvRoomMessage)
+	}
+}
+
+// TestRoomStatusLiteralMatchesLedger 钉住 room.IsTerminalStatus 的终态字面量
+// 与账本 StatusDone/StatusClosed 的等式（内部锁，理由见 §7）。
+func TestRoomStatusLiteralMatchesLedger(t *testing.T) {
+	if !room.IsTerminalStatus(ledger.StatusDone) || !room.IsTerminalStatus(ledger.StatusClosed) {
+		t.Fatalf("终态字面量漂移: IsTerminalStatus(%q)=%v, IsTerminalStatus(%q)=%v",
+			ledger.StatusDone, room.IsTerminalStatus(ledger.StatusDone),
+			ledger.StatusClosed, room.IsTerminalStatus(ledger.StatusClosed))
+	}
+	if room.IsTerminalStatus(ledger.StatusDoing) {
+		t.Fatalf("进行中不应判终态")
 	}
 }

@@ -50,3 +50,23 @@ plan 节点台账（B156.2.4 C4·Send 白名单执法全矩阵 + Pointer 实现�
 
 - Q1: 没亲自跑到结果的命令是否写成结论？无——graph check、go test、探针红绿、变异红、vet/build 全部本机实跑，原文入台账。
 - Q2: 本轮碰过 handoff CLI / 起过新 executor？无——仅 `go run . graph check/validate`（只读图子命令）与 go 测试进程。
+## 实现轮台账（2026-08-26，本工作树 cards/B156.2.4-charter-2）
+
+- R1: 基线复核：`go test ./internal/collab/...` → ok（EXIT=0）；`go run . graph check --repo . --view cards-B156.2-charter-4` → `"fails": []` EXIT=0（grep 原文在案）。
+- R2: T4.1 立红：按 plan 代码块整文件替换 service_test.go 后 `go test ./internal/collab/ -run 'TestSend|TestPointer' -v` → **恰 11 支 FAIL**、其余（竖切/群级/未知kind/pointer拒收/未知房间/空actor/终态只读/群房间非空）保持绿。红文原文：
+  - TestSendCoordinatorKindsRequireBinding `kind escalation 非绑定者必须 ErrNotWriter，got collab: 消息形态不在白名单`
+  - TestSendRelayAllowsDirectParentWriter `直接父绑定者 relay 必须可发，got collab: 消息形态不在白名单`
+  - TestSendRelayRejectsGrandparentAndUnrelated `relay actor=cli:g@h 必须 ErrNotWriter，got collab: 消息形态不在白名单`
+  - TestSendUserRejectsCardBinding `user actor==绑定值必须 ErrNotWriter，got <nil>`
+  - TestSendUserRejectsParentBinding `user actor==直接父绑定值必须 ErrNotWriter，got <nil>`
+  - TestSendRejectsMergedCardRoom `并入房间必须 ErrReadOnly，got <nil>`
+  - TestSendRebindRevokesOldSession `换绑前旧会话可发，got collab: 消息形态不在白名单`
+  - TestPointerWritesPointerMessage `Pointer seq 必须为正，got 0`
+  - TestPointerOverridesCallerKindAndBySystem `Pointer: <nil> seq=0`
+  - TestPointerRejectsReadOnlyRoom `终态房间 Pointer 必须 ErrReadOnly，got <nil>`
+  - TestPointerRejectsUnknownRoom `未知房间 Pointer 必须 ErrNoRoom，got <nil>`
+  - 编译通过（断言红而非编译红）：失败全是断言失败。
+- R3: T4.2 建 room 子包：`go build ./internal/collab/room/` EXIT=0。
+- R4: T4.3 改写 service.go + pin 改引用（room.RoomEventType / 新增 TestRoomStatusLiteralMatchesLedger）→ `go build ./internal/collab/...` EXIT=0；`grep -n "Println\|fmt.Print" internal/collab/service.go internal/collab/room/*.go` 零命中（exit=1）。
+- R5: T4.4 跑绿：`go test ./internal/collab/ -run 'TestSend|TestPointer' -v` 19 支全 PASS；`go test ./internal/collab/...` ok EXIT=0；`go build ./...` EXIT=0；`go vet ./internal/collab/...` EXIT=0。
+- R6: 占位扫描：`grep -rn "竖切阶段不伪造放行\|Ticket 0 空壳" internal/collab/` ——「竖切阶段不伪造放行」零命中；「Ticket 0 空壳」仅剩 Consume/MarkRead/Unread（C5 半成品，plan §3 T4.4 允许保留）。
