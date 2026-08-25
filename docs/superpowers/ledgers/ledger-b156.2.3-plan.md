@@ -16,3 +16,25 @@
 - [判断] 变异靶两发：①删/反转终端态守卫→正断言红（Test1「应转等人/不得派发」）；②haltForHumanEnsure 内 EnsureComment 换 AddComment→幂等测试红（两次驱动后 comment 恰 1 条翻成 2 条）。
 - [判断] 有界文件集 node.go＋node_test.go，与 C4（service.go+子包）零交集；node_test.go 既有 import 块已含 context/fmt/strings/testing/ledger，测试代码零新增 import。
 - [产出物] docs/superpowers/plans/b156.2.3-plan.md（随本提交入库）。
+
+## 实现轮（2026-08-26，分支 cards/B156.2.3-charter-2，T3.1+T3.2）
+
+- [亲测] 基线复核：`go test ./internal/ledgerstep/...` → `ok github.com/Xsxdot/handoff/internal/ledgerstep 2.034s`（EXIT=0）；`grep -n "终态遗留\|ListDecisions\|EnsureComment" internal/ledgerstep/node.go` → 零命中（grep_exit=1）。
+- [亲测] 跑红（写三支测试后）：`go test ./internal/ledgerstep/ -run 'TestNodeStepLeftover' -v > out.log 2>&1; echo EXIT=$?` → EXIT=1。三支 FAIL 原文（节选）：
+  - `TestNodeStepLeftoverDecisionHaltsForHuman`: `node_test.go:682: 正断言：reason 应以「终态遗留裁决」开头，实得 "裁决解析失败"`；日志尾部 `裁决解析失败转等人 ... cause="报文中没有 handoff-verdict block"`（今天不拦、走派发→Await("")→裁决解析失败路径，与 plan 预测一致）。
+  - `TestNodeStepLeftoverDecisionHaltIsIdempotent`: `node_test.go:745: 重复驱动两次后应仍恰 1 条说明评论（EnsureComment dedupe_key 生效），实得 2`。
+  - `TestNodeStepLeftoverDecisionOnTerminatedCard`: `node_test.go:769: reason 前缀: "裁决解析失败"`。
+  - 三支均为断言红（非编译红），失败原因=功能缺失，非 typo。
+- [判断] 常量引用：ledgerstep 包一贯用全限定名 `ledger.StatusDone`/`ledger.StatusClosed`（plan 代码块的裸名是省略写法），落地用全限定名保编译。
+- [亲测] 跑绿（实现三处改动：import strings / haltForHumanEnsure / RunOnce 检测块）：同上命令 EXIT=0，三支 PASS。日志关键行：`WARN 检测到终态遗留裁决，转等人 status=已完成 open_decisions=1`、`INFO 说明评论已落账 dedupe_key=终态遗留裁决:P1`、第二次驱动 `INFO 说明评论幂等跳过：同键已存在`。
+- [亲测] 触及包全量：`go test ./internal/ledgerstep/...` → ok 0.886s（无回归）。
+- [变异甲] 守卫条件取反为 `card.Status != StatusDone && card.Status != StatusClosed`（改语义不改有没有用）。先 grep 命中唯一（count=1，node.go:170）。`go build` EXIT=0。两次输出（协调者点名必记）：
+  - 守卫移除 + 全断言 → `go test -run '^TestNodeStepLeftoverDecisionHaltsForHuman$' -v` → EXIT=1，红：`node_test.go:682: 正断言：reason 应以「终态遗留裁决」开头，实得 "裁决解析失败"`（即「加上正断言后的红」）。
+  - 守卫移除 + 临时只留负断言（注释掉 Action/reason/派发/评论正断言，`_ = dispatched` + `_ = commentBody` 保编译）→ 同命令 EXIT=0，PASS（即「只留负断言时的绿」）→ 证明负断言单独是稳定假绿，正断言把它锁住。临时改动用 git checkout 复原后重贴三支测试（见下条事故记录），revert 后 `go test -run 'TestNodeStepLeftover'` EXIT=0。
+- [事故] 变异甲 revert 时误用 `git checkout internal/ledgerstep/node_test.go` 从 index 恢复——三支测试尚未 commit，被一并回滚。重新用 edit 重贴完整三支测试（内容逐字与 plan §3 代码块一致），`go test -run 'TestNodeStepLeftover'` EXIT=0 复原。教训：未 commit 的新增内容不能靠 git checkout 恢复。
+- [变异乙] haltForHumanEnsure 内 `n.St.EnsureComment(cardID, dedupeKey, body, n.actor())` 换成 `n.St.AddComment(cardID, body, "普通", n.actor())`。先 grep 命中唯一（count=1）。`go build` EXIT=0。`go test -run '^TestNodeStepLeftoverDecisionHaltIsIdempotent$' -v` → EXIT=1，红：`node_test.go:745: 重复驱动两次后应仍恰 1 条说明评论（EnsureComment dedupe_key 生效），实得 2`。revert 时踩到「同一段文本出现两次」（haltForHuman 与 haltForHumanEnsure 同构），改用带注释锚的上下文才命中唯一。revert 后 `go test -count=1 ./internal/ledgerstep/...` → ok 0.927s。
+- [亲测] 日志/注释检查：`grep -n 'Println\|fmt.Print' internal/ledgerstep/node.go` → 零命中；`gofmt -l` 两文件零输出。
+- [亲测] T3.2 回归：`go test -count=1 ./internal/ledgerstep/... ./internal/ledger/...` → EXIT=0，输出 `ok github.com/Xsxdot/handoff/internal/ledgerstep 0.969s`、`ok github.com/Xsxdot/handoff/internal/ledger 2.800s`、`ok github.com/Xsxdot/handoff/internal/ledger/api 1.357s`。
+- [亲测] T3.2 图闸：`go run . graph check --repo . --view cards-B156.2-charter-4` → EXIT=0；解析 JSON `fails` 为空数组；warns 为既有谱（anchor-off-domain×2 / best-dangling×3 / container-misplaced / legacy 预算内直调 / oversized-package / prefix-family），无 d_ledger/ledgerstep 相关新增条目；首行提示「预算棘轮判据已跳过：无法读取基准 70d243f… 的 codegraph/target.json」（基准缺失，既有形态，非 fail）。
+- [亲测] 占位残留扫描：`grep -n "return 0, nil\|return false, nil" internal/ledgerstep/node.go` → 零命中（scan1_exit=1）；`grep -c "终态遗留裁决" internal/ledgerstep/node.go` → 5（注释×2 + reason 格式化 + logger.Warn + dedupeKey）。
+- [产出物] 提交 T3.1：`feat(ledgerstep): 终态遗留裁决补解析接入（B156.2.3 欠账#7 其余半）`；提交 T3.2：台账收尾。
