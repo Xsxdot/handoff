@@ -89,3 +89,12 @@ plan 节点台账（B156.2.5 C5·消费恰好一次与注意力读模型）。�
 
 - I16: `gofmt -l internal cmd` 零输出、`go test ./internal/collab/... -count=1` ok、`go build ./...` EXIT=0、`go vet ./internal/collab/...` EXIT=0、graph check fails=0 / validate EXIT=0——收尾五闸全绿。
 - I17: 台账与两个产出物提交均已落库，工作树干净。
+
+## 审阅退回·单点修复轮（B156.2.5 charter-3，2026-08-26）
+
+- R1: 基线复核 `go test ./internal/collab/... -count=1` → ok（含既有 TestCursorConcurrentMarkRead 35 次漂移无关的确定性部分）。
+- R2: 补串行确定性测试 `TestCursorMarkReadMonotonicSerial`（cursorfile_test.go）：经 Service.MarkRead 入口 `MarkRead(10)`→`MarkRead(5)`，断言游标水位仍为 10（svc.cursor.Cursor 直接读，等价读法）。文件头注释同步补「串行单调只进不退」。基线绿。
+- R3: **变异（去单调 max，直接覆写 `perRoom[roomID] = uptoSeq`）**：变异前 `grep -c` 锚点两处均 ==1（命中唯一）；`go build ./internal/collab/...` EXIT=0（变异编译过）；`go test ./internal/collab/ -run TestCursorMarkReadMonotonicSerial -count=5` → **5/5 确定性红**，原文：`cursorfile_test.go:100: 单调只进不退被破坏：got 5 want 10`——与审阅轮读数「got 5 want 10」一致；还原。
+- R4: 还原后（git diff cursor.go 为空）`-run TestCursorMarkReadMonotonicSerial -count=5` → **5/5 绿**；全量 `go test ./internal/collab/... -count=1` ok；`go build ./...` EXIT=0；`go vet ./internal/collab/...` EXIT=0；`gofmt -l internal cmd` 零输出。
+- R5: 本轮仅新增/微改测试文件：`git diff --stat` 只含 cursorfile_test.go（+28/-2）；零生产代码改动、零 codegraph 改动（测试文件视图只登记非测试导出符号，理由不必改图）。既有 TestCursorConcurrentMarkRead 未删改。
+- R6: commit 3：`test(collab): 游标单调只进不退串行确定性测试（审阅退回单点修复，B156.2.5）`——含 cursorfile_test.go、本台账。
