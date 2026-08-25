@@ -301,6 +301,13 @@ func TestCodegraphDeclsWireConditions(t *testing.T) {
 			if tc.wantDeclLog && !strings.Contains(logs.String(), "代码图领域声明加载失败") {
 				t.Fatalf("非法声明应产生告警日志，logs=%s", logs.String())
 			}
+			if tc.wantDeclLog {
+				for _, want := range []string{"d_core.json", "cause="} {
+					if !strings.Contains(logs.String(), want) {
+						t.Fatalf("非法声明告警应包含 %q，logs=%s", want, logs.String())
+					}
+				}
+			}
 		})
 	}
 }
