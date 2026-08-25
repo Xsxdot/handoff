@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "main",
-  "commit": "a1a4c38c14780deefde29f5d891dc6eedb262499",
+  "commit": "2516fde0cb46d022889207e4a2a3ee6702a78e7c",
   "scannedAt": "2026-08-24",
   "generator": "codex-codegraph-b231-full-rescan"
  },
@@ -3515,6 +3515,53 @@
    "line": 37,
    "signature": "type machineUpgradeRunner func(ctx context.Context, m upgrade.Machine, target config.Target,",
    "summary": "machineUpgradeRunner 是后台升级动作的缝。",
+   "modelKind": "dto"
+  },
+  "m_agentd_permissionAutoAllowPayload": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 651,
+   "name": "permissionAutoAllowPayload",
+   "file": "internal/agentd/manager.go",
+   "line": 1900,
+   "summary": "permissionAutoAllowPayload is the bounded structured audit shape for a static safe-command allow.",
+   "fields": [
+    [
+     "PermissionID",
+     "string",
+     ""
+    ],
+    [
+     "Permission",
+     "string",
+     ""
+    ],
+    [
+     "Tool",
+     "string",
+     ""
+    ],
+    [
+     "Command",
+     "string",
+     ""
+    ],
+    [
+     "Paths",
+     "[]string",
+     ""
+    ],
+    [
+     "Rule",
+     "string",
+     ""
+    ],
+    [
+     "Reason",
+     "string",
+     ""
+    ]
+   ],
    "modelKind": "dto"
   },
   "m_agentd_permissionPayload": {
@@ -10564,7 +10611,7 @@
    "order": 70,
    "name": "Scope",
    "file": "internal/permgate/permgate.go",
-   "line": 70,
+   "line": 72,
    "summary": "Scope 是本任务的合法作用范围。",
    "fields": [
     [
@@ -10574,6 +10621,11 @@
     ],
     [
      "TaskDir",
+     "string",
+     ""
+    ],
+    [
+     "TaskTmpDir",
      "string",
      ""
     ]
@@ -22555,8 +22607,8 @@
    "order": 1788,
    "name": "Manager.autoAllowPermission",
    "file": "internal/agentd/manager.go",
-   "line": 1898,
-   "signature": "func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent)",
+   "line": 1920,
+   "signature": "func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict)",
    "params": [
     [
      "taskID",
@@ -22567,9 +22619,14 @@
      "ev",
      "executor.AdapterEvent",
      ""
+    ],
+    [
+     "verdict",
+     "permgate.Verdict",
+     ""
     ]
    ],
-   "summary": "autoAllowPermission 自动放行一次权限请求：不建工单、不发事件、不改状态，"
+   "summary": "autoAllowPermission records a safe-command audit when applicable, then responds once to the executor."
   },
   "n_agentd_Manager_cleanupCreatedDir": {
    "kind": "func",
@@ -35645,6 +35702,29 @@
    ],
    "summary": "jsonString 尝试把 JSON 值当作字符串读出。"
   },
+  "n_claudecode_managedTaskTmpEnv": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "order": 78,
+   "name": "managedTaskTmpEnv",
+   "file": "internal/executor/claudecode/adapter.go",
+   "line": 78,
+   "signature": "func managedTaskTmpEnv(taskDir, taskID string) (string, []string)",
+   "params": [
+    [
+     "taskDir",
+     "string",
+     "任务目录"
+    ],
+    [
+     "taskID",
+     "string",
+     "任务 ID"
+    ]
+   ],
+   "returns": "string, []string",
+   "summary": "managedTaskTmpEnv derives the task-private environment from TaskDir."
+  },
   "n_claudecode_newPermServer": {
    "kind": "func",
    "container": "k_claudecode_fn",
@@ -46403,7 +46483,7 @@
     [
      "taskDir",
      "string",
-     ""
+     "任务目录"
     ]
    ],
    "returns": "string",
@@ -47624,6 +47704,35 @@
     ]
    ],
    "summary": "OneShotArgs 返回执行者的一次性调用 argv（prompt 作为末位参数）。"
+  },
+  "n_executor_TaskTmpDir": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 145,
+   "name": "TaskTmpDir",
+   "file": "internal/executor/tempdir.go",
+   "line": 11,
+   "signature": "func TaskTmpDir(dataDir, taskID string) string",
+   "params": [
+    [
+     "dataDir",
+     "string",
+     "agentd DataDir"
+    ],
+    [
+     "taskID",
+     "string",
+     "任务 ID；取前 8 个字节"
+    ]
+   ],
+   "returns": "string",
+   "summary": "TaskTmpDir 返回 handoff 为任务分配的任务专属临时目录。",
+   "tests": [
+    {
+     "name": "TestTaskTmpDirGoldenVectors",
+     "file": "internal/executor/tempdir_test.go:9"
+    }
+   ]
   },
   "n_fake_Fake_Add": {
    "kind": "func",
@@ -50026,6 +50135,35 @@
    ],
    "returns": "carryResult",
    "summary": "loadAuthorityProviderConfig 读权威 config.toml 并抽出可搬运部分。"
+  },
+  "n_grok_managedTaskTmpEnv": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "order": 67,
+   "name": "managedTaskTmpEnv",
+   "file": "internal/executor/grok/adapter.go",
+   "line": 66,
+   "signature": "func managedTaskTmpEnv(taskDir, taskID string) (string, []string)",
+   "params": [
+    [
+     "taskDir",
+     "string",
+     "任务目录"
+    ],
+    [
+     "taskID",
+     "string",
+     "任务 ID"
+    ]
+   ],
+   "returns": "string, []string",
+   "summary": "managedTaskTmpEnv derives the task-private environment from TaskDir.",
+   "tests": [
+    {
+     "name": "TestManagedTaskTmpEnv",
+     "file": "internal/executor/grok/resume_cold_internal_test.go:46"
+    }
+   ]
   },
   "n_grok_mergeNewerEntries": {
    "kind": "func",
@@ -56985,6 +57123,35 @@
    "line": 377,
    "signature": "func freePort() (int, error)",
    "summary": "freePort 找一个随机空闲端口。"
+  },
+  "n_opencode_managedTaskTmpEnv": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "order": 147,
+   "name": "managedTaskTmpEnv",
+   "file": "internal/executor/opencode/adapter.go",
+   "line": 147,
+   "signature": "func managedTaskTmpEnv(taskDir, taskID string) (string, []string)",
+   "params": [
+    [
+     "taskDir",
+     "string",
+     "任务目录"
+    ],
+    [
+     "taskID",
+     "string",
+     "任务 ID"
+    ]
+   ],
+   "returns": "string, []string",
+   "summary": "managedTaskTmpEnv derives the task-private environment from TaskDir.",
+   "tests": [
+    {
+     "name": "TestManagedTaskTmpEnv",
+     "file": "internal/executor/opencode/resume_cold_internal_test.go:24"
+    }
+   ]
   },
   "n_opencode_matchOption": {
    "kind": "func",
@@ -92993,6 +93160,26 @@
   [
    "n_agentd_Server_handleDisciplineMapping",
    "n_agentd_validateLegacyDisciplineFileName"
+  ],
+  [
+   "n_codex_taskTmpDir",
+   "n_executor_TaskTmpDir"
+  ],
+  [
+   "n_claudecode_managedTaskTmpEnv",
+   "n_executor_TaskTmpDir"
+  ],
+  [
+   "n_grok_managedTaskTmpEnv",
+   "n_executor_TaskTmpDir"
+  ],
+  [
+   "n_opencode_managedTaskTmpEnv",
+   "n_executor_TaskTmpDir"
+  ],
+  [
+   "n_agentd_Manager_judgePermission",
+   "n_executor_TaskTmpDir"
   ]
  ],
  "implements": [
