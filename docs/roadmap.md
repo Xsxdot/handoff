@@ -25,6 +25,12 @@
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
 
+## 来自 C1.11 spec（2026-08-25，声明迁移欠账）
+
+- **d_protocol invariant 欠账**：补回“任务状态只能沿 `transitTable` 登记的迁移边变化，completed 无后继而 failed 可重试回 running。”，守护测试为 `TestCanTransit`。该承诺从 `d_coordination_task` 迁出，本期不伪挂到 `d_orchestration`。
+- **d_protocol stateMachine 欠账**：补回原声明中的 12 条协议迁移及其 `internal/proto/proto.go#transitTable` 锚点：
+  `pending → running`、`pending → failed`、`running → waiting_answer`、`running → waiting_review`、`running → completed`、`running → failed`、`waiting_answer → running`、`waiting_answer → failed`、`waiting_review → running`、`waiting_review → completed`、`waiting_review → failed`、`failed → running`。本期不修改 `internal/proto/proto.go` 或 `internal/proto/proto_test.go`，也不把这些迁移伪挂到 `d_orchestration`。
+
 ## 来自 B207 spec（2026-08-23）
 
 - **推平 breakdown / implement / integrate / contract / recon 五份纪律块的两机差异**。
