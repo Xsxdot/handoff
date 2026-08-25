@@ -23,9 +23,116 @@
           "file": "internal/executor/tempdir_test.go:9"
         }
       ]
+    },
+    "n_claudecode_managedTaskTmpEnv": {
+      "kind": "func",
+      "container": "k_claudecode_fn",
+      "order": 78,
+      "name": "managedTaskTmpEnv",
+      "file": "internal/executor/claudecode/adapter.go",
+      "line": 78,
+      "signature": "func managedTaskTmpEnv(taskDir, taskID string) (string, []string)",
+      "params": [
+        ["taskDir", "string", "任务目录"],
+        ["taskID", "string", "任务 ID"]
+      ],
+      "returns": "string, []string",
+      "summary": "managedTaskTmpEnv derives the task-private environment from TaskDir."
+    },
+    "n_grok_managedTaskTmpEnv": {
+      "kind": "func",
+      "container": "k_grok_fn",
+      "order": 67,
+      "name": "managedTaskTmpEnv",
+      "file": "internal/executor/grok/adapter.go",
+      "line": 66,
+      "signature": "func managedTaskTmpEnv(taskDir, taskID string) (string, []string)",
+      "params": [
+        ["taskDir", "string", "任务目录"],
+        ["taskID", "string", "任务 ID"]
+      ],
+      "returns": "string, []string",
+      "summary": "managedTaskTmpEnv derives the task-private environment from TaskDir.",
+      "tests": [
+        {
+          "name": "TestManagedTaskTmpEnv",
+          "file": "internal/executor/grok/resume_cold_internal_test.go:46"
+        }
+      ]
+    },
+    "n_opencode_managedTaskTmpEnv": {
+      "kind": "func",
+      "container": "k_opencode_fn",
+      "order": 147,
+      "name": "managedTaskTmpEnv",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 147,
+      "signature": "func managedTaskTmpEnv(taskDir, taskID string) (string, []string)",
+      "params": [
+        ["taskDir", "string", "任务目录"],
+        ["taskID", "string", "任务 ID"]
+      ],
+      "returns": "string, []string",
+      "summary": "managedTaskTmpEnv derives the task-private environment from TaskDir.",
+      "tests": [
+        {
+          "name": "TestManagedTaskTmpEnv",
+          "file": "internal/executor/opencode/resume_cold_internal_test.go:24"
+        }
+      ]
+    },
+    "m_agentd_permissionAutoAllowPayload": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 651,
+      "name": "permissionAutoAllowPayload",
+      "file": "internal/agentd/manager.go",
+      "line": 1900,
+      "summary": "permissionAutoAllowPayload is the bounded structured audit shape for a static safe-command allow.",
+      "fields": [
+        ["PermissionID", "string", ""],
+        ["Permission", "string", ""],
+        ["Tool", "string", ""],
+        ["Command", "string", ""],
+        ["Paths", "[]string", ""],
+        ["Rule", "string", ""],
+        ["Reason", "string", ""]
+      ],
+      "modelKind": "dto"
     }
   },
   "nodesModified": {
+    "m_permgate_Scope": {
+      "kind": "model",
+      "container": "k_permgate_model",
+      "order": 70,
+      "name": "Scope",
+      "file": "internal/permgate/permgate.go",
+      "line": 72,
+      "summary": "Scope 是本任务的合法作用范围。",
+      "fields": [
+        ["Workdir", "string", ""],
+        ["TaskDir", "string", ""],
+        ["TaskTmpDir", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "n_agentd_Manager_autoAllowPermission": {
+      "kind": "func",
+      "container": "k_agentd_Manager",
+      "order": 1788,
+      "name": "Manager.autoAllowPermission",
+      "file": "internal/agentd/manager.go",
+      "line": 1920,
+      "signature": "func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict)",
+      "signatureOld": "func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent)",
+      "params": [
+        ["taskID", "string", ""],
+        ["ev", "executor.AdapterEvent", ""],
+        ["verdict", "permgate.Verdict", ""]
+      ],
+      "summary": "autoAllowPermission records a safe-command audit when applicable, then responds once to the executor."
+    },
     "n_codex_taskTmpDir": {
       "kind": "func",
       "container": "k_codex_fn",
@@ -42,6 +149,10 @@
     }
   },
   "edgesAdded": [
-    ["n_codex_taskTmpDir", "n_executor_TaskTmpDir"]
+    ["n_codex_taskTmpDir", "n_executor_TaskTmpDir"],
+    ["n_claudecode_managedTaskTmpEnv", "n_executor_TaskTmpDir"],
+    ["n_grok_managedTaskTmpEnv", "n_executor_TaskTmpDir"],
+    ["n_opencode_managedTaskTmpEnv", "n_executor_TaskTmpDir"],
+    ["n_agentd_Manager_judgePermission", "n_executor_TaskTmpDir"]
   ]
 }
