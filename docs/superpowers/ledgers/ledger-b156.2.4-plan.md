@@ -86,3 +86,12 @@ plan 节点台账（B156.2.4 C4·Send 白名单执法全矩阵 + Pointer 实现�
 - F5: `go run . graph validate --repo .` 重定向取真退出码 → **EXIT=0**，原文 JSON `containers=263, nodes=3718, edges=4746, issues=null, edgeIssues=null`，views 含 `cards-B156.2-charter-4`。
 - F6: `go run . graph check --repo . --view cards-B156.2-charter-4` 重定向取真退出码 → **EXIT=0**，`"fails": []`（warns 为既有 anchor-off/container-misplaced/legacy/oversized 类，非本轮引入）。
 - F7: 纪律自查：①命令全部本工作树实跑、原文入台账，未将未跑结果写成结论；②未调用 handoff CLI 写命令、未起新 executor（仅只读 graph validate/check 子命令与 go 进程）；③未动 internal/collab/*.go、未改 best.json、未碰既有测试。
+
+## 修复轮台账（2026-08-26，本工作树 cards/B156.2.4-charter-4，格式修复轮）
+
+- G1: 复现缺陷：`gofmt -l internal cmd` 输出四个文件 `internal/collab/room/errors.go internal/collab/room/room.go internal/collab/service.go internal/collab/service_test.go`；逐个 `gofmt -d <f> | grep -c "No newline at end of file"` 各 = 1，确认每个仅缺末尾换行。
+- G2: 修复：`gofmt -w` 那四个文件 → `git diff --stat` 仅四文件各 `2 +-`（各 1 增 1 删）；`git diff` 全文核对：每文件唯一变化即末尾 `\ No newline at end of file` 消除，无其它重排。
+- G3: 自验①：`gofmt -l internal cmd` 无输出（EXIT=0）。
+- G4: 自验②：`go build ./...` EXIT=0；`go test ./internal/collab/... -count=1` EXIT=0（collab ok 2.036s，client/room 无测试文件）。
+- G5: 自验③：`git diff --stat` 只含那四个文件，每文件 1 增 1 删与「补一个换行」量级吻合。
+- G6: 纪律自查：①全部命令本工作树实跑、原文入台账；②未调用 handoff CLI、未起新 executor；③未动任何逻辑、测试断言与 codegraph/ 文件。
