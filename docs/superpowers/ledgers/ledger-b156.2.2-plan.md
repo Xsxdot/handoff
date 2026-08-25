@@ -23,3 +23,10 @@
 - [探针实测] T2.2 测试块原形写入临时 internal/ledger/zz_probe2_test.go，`go test ./internal/ledger/ -run 'TestZZProbeEnsureComment' -v` 输出原文：--- FAIL TestZZProbeEnsureCommentWritesOncePerKey、--- FAIL TestZZProbeEnsureCommentEmptyKeyRejected（两支均编译通过、对 stub 跑红）。探针已删除。
 - [复核] 探针删除后 `git status --short` 仅剩两个法定产出物（plan + 台账），工作树无残留。
 - [产出物] docs/superpowers/plans/b156.2.2-plan.md（随本提交入库）。
+
+# 实现轮台账（2026-08-26，边干边追加）
+
+- 分支 cards/B156.2.2-charter-2，HEAD=0fe320df，工作树 clean 起步。跨卡审计六条裁决已并入执行（偏差逐条记于本节末尾汇总）。
+- [亲测] 步骤1基线（裁决三改写后形态）：`go build ./...` → BUILD_OK；`go test ./internal/ledger/api/` → `[no test files]`（C1 尚未在本工作树落地）。真判据见下一条。
+- [亲测] 红灯：`go test ./internal/ledger/api/ -run TestRecordMessageConsumed -v` → 恰四条 FAIL（裁决六补正断言后 UnknownSeq 也红）：ExactlyOnce「首次消费后应恰 1 条标记，实得 0」、GroupMarker「群级消费标记应恰一条，实得 0」、UnknownSeq「未知 seq 的消费也应真落恰好一条标记，实得 0」、Rejects「不存在的卡必须报 ErrNotFound，got <nil>」。
+- [亲测] 红灯：`go test ./internal/ledger/ -run 'TestEnsureComment' -v` → 恰两条 FAIL：WritesOncePerKey「首次写入应返回 true,nil，得到 (false,<nil>)」、EmptyKeyRejected「空白 dedupeKey 必须报错」。失败原因均为功能缺失非 typo。
