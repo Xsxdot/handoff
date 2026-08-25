@@ -3,6 +3,7 @@ package codex_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -164,6 +165,72 @@ func TestCallMatchesResponseByID(t *testing.T) {
 	}
 	if string(res) != `{"ok":true}` {
 		t.Fatalf("result = %s", res)
+	}
+}
+
+func TestSandboxPolicySurvivesClientJSONSerialization(t *testing.T) {
+	const (
+		taskTmp   = "/root/.handoff/tmp/137a7dc9"
+		commonDir = "/srv/repos/handoff/.git"
+	)
+	validated := make(chan error, 1)
+	srv := startFakeServer(t, func(in string) []string {
+		var req struct {
+			ID     json.RawMessage `json:"id"`
+			Method string          `json:"method"`
+			Params json.RawMessage `json:"params"`
+		}
+		if err := json.Unmarshal([]byte(in), &req); err != nil {
+			validated <- fmt.Errorf("解码 JSON-RPC 请求: %w", err)
+			return nil
+		}
+		if req.Method != "turn/start" {
+			return nil
+		}
+		var params struct {
+			SandboxPolicy struct {
+				WritableRoots       []string `json:"writableRoots"`
+				ExcludeSlashTmp     bool     `json:"excludeSlashTmp"`
+				ExcludeTmpdirEnvVar bool     `json:"excludeTmpdirEnvVar"`
+				NetworkAccess       bool     `json:"networkAccess"`
+			} `json:"sandboxPolicy"`
+		}
+		if err := json.Unmarshal(req.Params, &params); err != nil {
+			validated <- fmt.Errorf("解码 turn/start params: %w", err)
+			return nil
+		}
+		policy := params.SandboxPolicy
+		if len(policy.WritableRoots) != 2 || policy.WritableRoots[0] != taskTmp || policy.WritableRoots[1] != commonDir {
+			validated <- fmt.Errorf("writableRoots = %#v", policy.WritableRoots)
+			return nil
+		}
+		if !policy.ExcludeSlashTmp || !policy.ExcludeTmpdirEnvVar || !policy.NetworkAccess {
+			validated <- fmt.Errorf("安全策略开关丢失: %+v", policy)
+			return nil
+		}
+		validated <- nil
+		return []string{`{"jsonrpc":"2.0","id":` + string(req.ID) + `,"result":{}}`}
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cli, err := codex.Dial(ctx, wsURL(srv), newFakeHandler(), quiet())
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer cli.Close()
+	if _, err := cli.Call(ctx, "turn/start", map[string]any{
+		"sandboxPolicy": codex.SandboxPolicyForTest(taskTmp, commonDir),
+	}); err != nil {
+		t.Fatalf("Call turn/start: %v", err)
+	}
+	select {
+	case err := <-validated:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-ctx.Done():
+		t.Fatal("服务端未验证 turn/start JSON 报文")
 	}
 }
 

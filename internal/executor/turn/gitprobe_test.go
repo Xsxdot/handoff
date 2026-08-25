@@ -2,6 +2,7 @@ package turn_test
 
 import (
 	"os/exec"
+	"path/filepath"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor/turn"
@@ -57,5 +58,38 @@ func TestGitTurnStatusDetectsNewCommit(t *testing.T) {
 	}
 	if commit2 == start {
 		t.Errorf("commit 应已推进，仍为 %q", commit2)
+	}
+}
+
+func TestGitCommonDirNormalizesMainAndLinkedWorktree(t *testing.T) {
+	repo, _ := initRepo(t)
+	want := filepath.Clean(filepath.Join(repo, ".git"))
+
+	got, err := turn.GitCommonDir(repo)
+	if err != nil {
+		t.Fatalf("主仓库读取 git-common-dir: %v", err)
+	}
+	if got != want {
+		t.Fatalf("主仓库 common-dir = %q，want %q", got, want)
+	}
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	cmd := exec.Command("git", "-C", repo, "worktree", "add", "-q", "-b", "probe", linked)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("建立 linked worktree: %v\n%s", err, out)
+	}
+
+	got, err = turn.GitCommonDir(linked)
+	if err != nil {
+		t.Fatalf("linked worktree 读取 git-common-dir: %v", err)
+	}
+	if got != want {
+		t.Fatalf("linked worktree common-dir = %q，want %q", got, want)
+	}
+}
+
+func TestGitCommonDirRejectsNonGitPath(t *testing.T) {
+	if got, err := turn.GitCommonDir(t.TempDir()); err == nil || got != "" {
+		t.Fatalf("非 git 目录应返回空路径与错误，got path=%q err=%v", got, err)
 	}
 }

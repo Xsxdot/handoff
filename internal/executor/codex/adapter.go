@@ -151,13 +151,17 @@ func tmpEnvKVs(taskTmp string) []string {
 	}
 }
 
-// sandboxPolicy 的 taskTmp 为空时保持历史行为，不新增可写域；非空时只开放
-// 任务专属目录。/tmp 与 $TMPDIR 是跨任务共享目录，保持排除可避免并发任务互相
-// 看见或覆盖临时文件。
-func sandboxPolicy(taskTmp string) map[string]any {
+// sandboxPolicy 返回每回合显式下发的沙箱策略。
+//
+// taskTmp 是任务隔离的工具链临时目录；gitCommonDir 是 linked worktree 所需的
+// 共享 git 公共目录。两者按固定顺序进入 writableRoots，空值不占位；其余安全姿态
+// 保持历史值。真正的 gitCommonDir 只在 newRunState 中取一次并缓存，避免每回合重跑 git。
+func sandboxPolicy(taskTmp, gitCommonDir string) map[string]any {
 	roots := []any{}
-	if taskTmp != "" {
-		roots = append(roots, taskTmp)
+	for _, root := range []string{taskTmp, gitCommonDir} {
+		if root != "" {
+			roots = append(roots, root)
+		}
 	}
 	return map[string]any{
 		"type":                "workspaceWrite",
@@ -195,6 +199,9 @@ type runState struct {
 	repoPath    string
 	threadID    string // == sessionId，落 task.ExecutorSession
 	startCommit string
+	// gitCommonDir 是构造运行态时一次性取证的共享 git 公共目录。
+	// 空串表示工作目录非 git 仓库或取证失败；sandboxPolicy 据此不追加该根。
+	gitCommonDir string
 
 	proc *Proc
 	cli  *Client
@@ -230,10 +237,24 @@ type runState struct {
 	pricingWarned bool
 }
 
-// newRunState 建一条运行态。
+// newRunState 建一条运行态；git 公共目录在此唯一构造点取证并缓存，Start 与 Resume 共用。
 func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState {
+	gitCommonDir := ""
+	if repoPath != "" {
+		a.log.Debug("读取 git 公共目录", "task", taskID, "repo", repoPath)
+		var err error
+		gitCommonDir, err = turn.GitCommonDir(repoPath)
+		if err != nil {
+			a.log.Debug("git 公共目录不可用，跳过追加可写根", "task", taskID,
+				"repo", repoPath, "cause", err)
+			gitCommonDir = ""
+		} else {
+			a.log.Info("git 公共目录已准备为沙箱可写根", "task", taskID,
+				"repo", repoPath, "common_dir", gitCommonDir)
+		}
+	}
 	r := &runState{
-		taskID: taskID, taskDir: taskDir, repoPath: repoPath,
+		taskID: taskID, taskDir: taskDir, repoPath: repoPath, gitCommonDir: gitCommonDir,
 		evCh:      make(chan executor.AdapterEvent, 64),
 		permTable: newPermTable(),
 		items:     newItemIndex(itemIndexCap),
@@ -465,7 +486,7 @@ func (a *Adapter) startTurn(r *runState, text string) error {
 	ch, err := r.cli.CallAsync(methodTurnStart, map[string]any{
 		"threadId":          r.threadID,
 		"cwd":               r.repoPath,
-		"sandboxPolicy":     sandboxPolicy(taskTmpDir(r.taskDir)),
+		"sandboxPolicy":     sandboxPolicy(taskTmpDir(r.taskDir), r.gitCommonDir),
 		"approvalPolicy":    "on-request",
 		"approvalsReviewer": "user",
 		"input":             []any{map[string]any{"type": "text", "text": text}},
