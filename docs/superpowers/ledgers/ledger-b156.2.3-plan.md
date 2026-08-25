@@ -38,3 +38,14 @@
 - [亲测] T3.2 图闸：`go run . graph check --repo . --view cards-B156.2-charter-4` → EXIT=0；解析 JSON `fails` 为空数组；warns 为既有谱（anchor-off-domain×2 / best-dangling×3 / container-misplaced / legacy 预算内直调 / oversized-package / prefix-family），无 d_ledger/ledgerstep 相关新增条目；首行提示「预算棘轮判据已跳过：无法读取基准 70d243f… 的 codegraph/target.json」（基准缺失，既有形态，非 fail）。
 - [亲测] 占位残留扫描：`grep -n "return 0, nil\|return false, nil" internal/ledgerstep/node.go` → 零命中（scan1_exit=1）；`grep -c "终态遗留裁决" internal/ledgerstep/node.go` → 5（注释×2 + reason 格式化 + logger.Warn + dedupeKey）。
 - [产出物] 提交 T3.1：`feat(ledgerstep): 终态遗留裁决补解析接入（B156.2.3 欠账#7 其余半）`；提交 T3.2：台账收尾。
+
+## 补丁轮（2026-08-26，分支 cards/B156.2.3-charter-3，只补一支测试，实现一行未动）
+
+协调者验收变异（去掉 node.go 循环里的 `d.CardID == cardID` 过滤→存活）证明「按卡过滤」从未被测试行使过：node_test.go 三处 OpenDecision（657/718/757 行）全开在被测卡自己身上。本轮补跨卡隔离测试。
+
+- [亲测] 基线复核：`go test -count=1 ./internal/ledgerstep/` → EXIT=0，`ok github.com/Xsxdot/handoff/internal/ledgerstep 1.438s`。
+- [产出物] `internal/ledgerstep/node_test.go` 末尾追加 `TestNodeStepLeftoverDecisionIgnoresOpenDecisionOnOtherCard`（建 A、B 两卡；B 上开一条 open 裁决、A 一条没有；A 移到已完成后驱动 RunOnce；断言 A 正常派发 ActionDispatched、无 needs_human、无「终态遗留裁决」评论）。实现零改动，既有三支测试一字未动。
+- [亲测] 自验判据 1（当前实现绿）：`go test -count=1 -run '^TestNodeStepLeftoverDecisionIgnoresOpenDecisionOnOtherCard$' -v ./internal/ledgerstep/` → EXIT=0 PASS。日志关键行：`INFO 已派发 node=待审阅 card=P1 target=linux-01 task=task-1`、`INFO 节点结束（只派发不裁决）... action=dispatched`——A 未被拦下。全量 `go test -count=1 ./internal/ledgerstep/` → EXIT=0 ok 1.033s（无回归）。
+- [变异] 自验判据 2（去掉过滤翻红）：变异点 `internal/ledgerstep/node.go:178`（`if d.CardID == cardID {`，循环内唯一，`grep -c "d.CardID == cardID"`=1）；施加位置与执行位置同一棵树（本 worktree，HEAD=08db7563）。变异方式=整段去掉过滤守卫（`if d.CardID == cardID { ... }` 换成无条件 append），改语义不改「有没有用」。`go build ./...` → BUILD_EXIT=0（编译过，非编译红）。`go test -count=1 -run '^TestNodeStepLeftoverDecisionIgnoresOpenDecisionOnOtherCard$' -v ./internal/ledgerstep/` → EXIT=1 翻红，断言原文：`node_test.go:844: 跨卡隔离：A 卡无 open 裁决，B 卡的裁决不得拦下 A——应正常派发，实得 action="needs_human" reason="终态遗留裁决：卡已到终态（已完成）但仍有 1 条未答复裁决"`。日志关键行：`WARN 检测到终态遗留裁决，转等人 ... status=已完成 open_decisions=1`——B 的裁决拦住了 A，正是协调者变异的存活路径，本测试把它锁住。
+- [亲测] 还原变异（Edit 加回守卫）后：`git status --short` 仅 ` M internal/ledgerstep/node_test.go`（node.go 零 diff）；`go test -count=1 ./internal/ledgerstep/` → EXIT=0 ok 0.884s 回绿；`gofmt -l internal/ledgerstep/node_test.go` 零输出；`go vet ./internal/ledgerstep/` → EXIT=0。
+- [产出物] 本轮提交：`test(ledgerstep): 补终态遗留裁决跨卡隔离测试（B156.2.3 补丁轮）`（含测试与台账追加）。

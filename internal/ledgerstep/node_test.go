@@ -804,3 +804,68 @@ func TestNodeStepProducesWithoutHooksHaltsForHuman(t *testing.T) {
 		t.Fatal("未装配校验时不得放行到下一列")
 	}
 }
+
+// TestNodeStepLeftoverDecisionIgnoresOpenDecisionOnOtherCard 跨卡隔离（契约
+// §3.7 中间态判据 + breakdown C3 ④「open 判定复用 ListDecisions(openOnly)
+// 按卡过滤」）：open 裁决开在 B 卡上、A 卡一条都没有，驱动 A 的 RunOnce 时
+// B 的裁决必须拦不住 A——A 不转等人、不产生「终态遗留裁决」说明评论，正常派发。
+// 变异靶：把 node.go 过滤循环里的 `d.CardID == cardID` 整段去掉（任何卡的 open
+// 裁决都能拦下本卡）→ 本测试「A 正常派发 / 无 needs_human / 无终态遗留评论」
+// 翻红。协调者验收变异实测该过滤从未被测试行使过——本测试就是它的牙。
+func TestNodeStepLeftoverDecisionIgnoresOpenDecisionOnOtherCard(t *testing.T) {
+	s, cA := nodeLedger(t)
+	cardA := cA.ID
+	cardB, err := s.CreateCard(ledger.NewCard{Title: "B 卡", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatalf("建 B 卡: %v", err)
+	}
+	if _, err := s.OpenDecision(cardB.ID, "B 卡的 open 裁决", []string{"选项A"}, "step:review"); err != nil {
+		t.Fatalf("在 B 卡上开裁决: %v", err)
+	}
+	if err := s.MoveCard(cardA, ledger.StatusDone, "", "test"); err != nil {
+		t.Fatalf("把 A 移到已完成: %v", err)
+	}
+
+	dispatched := false
+	step := &NodeStep{
+		St:   s,
+		Node: ledger.NodeDef{Name: "待审阅", Dispatch: true, Template: "review-generic"},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			dispatched = true
+			return "linux-01", "task-1", nil
+		},
+		Await: func(context.Context, string, string) (string, error) { return "", nil },
+	}
+	out, err := step.RunOnce(context.Background(), cardA)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if out.Action != ActionDispatched {
+		t.Fatalf("跨卡隔离：A 卡无 open 裁决，B 卡的裁决不得拦下 A——应正常派发，实得 action=%q reason=%q", out.Action, out.Reason)
+	}
+	if !dispatched {
+		t.Fatal("跨卡隔离：B 卡的裁决不得拦下 A 的派发")
+	}
+
+	events, err := s.EventsFromAsc([]string{cardA}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentCount, needsCount := 0, 0
+	var commentBody string
+	for _, ev := range events {
+		switch ev.Type {
+		case ledger.EvComment:
+			commentCount++
+			commentBody = string(ev.Payload)
+		case ledger.EvNeedsHuman:
+			needsCount++
+		}
+	}
+	if needsCount != 0 {
+		t.Fatalf("跨卡隔离：A 不得因 B 的裁决转等人，实得 %d 条 needs_human", needsCount)
+	}
+	if commentCount != 0 || strings.Contains(commentBody, "终态遗留裁决") {
+		t.Fatalf("跨卡隔离：A 不得产生「终态遗留裁决」评论，实得 %d 条 body=%q", commentCount, commentBody)
+	}
+}
