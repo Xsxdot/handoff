@@ -140,38 +140,11 @@ func (s *Store) pendingChildrenTx(tx *sql.Tx, id string) ([]string, error) {
 // ClaimCard 认领卡的归属锁（人尺度）。归属判定与归属写入在同一事务完成，
 // 不改变状态列、不落认领事件；冲突返回 ErrCASConflict，归属不因时间流逝转移。
 // 同一 owner 重入幂等成功。
+//
+// B156.2 起：实现转调 ClaimCardAs(id, owner, "")（契约 §3.2 条2——行为
+// 逐字节不变；空载体含义=未登记载体，显式认领会把历史载体值归零）。
 func (s *Store) ClaimCard(id, owner string) error {
-	log().Info("开始认领归属", "card", id, "owner", owner)
-	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
-		if owner == "" {
-			log().Warn("认领被拒：owner 为空", "card", id)
-			return fmt.Errorf("认领被拒：owner 为空")
-		}
-		card, err := getCardTx(s, tx, id)
-		if err != nil {
-			return fmt.Errorf("认领: 卡 %s: %w", id, err)
-		}
-		if card.Status == StatusDone || card.Status == StatusClosed {
-			log().Warn("认领被拒：终态卡", "card", id, "status", card.Status)
-			return fmt.Errorf("卡 %s 已处于终态 %s: %w", id, card.Status, ErrBadState)
-		}
-		if card.DriverSession != "" && card.DriverSession != owner {
-			log().Warn("认领被拒：他主持有", "card", id,
-				"holder", card.DriverSession, "claimer", owner)
-			return fmt.Errorf("卡 %s 已由 %s 认领: %w", id, card.DriverSession, ErrCASConflict)
-		}
-		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_heartbeat_at = ? WHERE id = ?`),
-			owner, s.tval(time.Now()), id); err != nil {
-			return fmt.Errorf("认领写归属: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		log().Warn("认领归属失败", "card", id, "owner", owner, "cause", err)
-		return err
-	}
-	log().Info("归属已认领", "card", id, "owner", owner)
-	return nil
+	return s.ClaimCardAs(id, owner, "")
 }
 
 // ReleaseCard 释放驱动归属（幂等；只动自己持有的那份）。
