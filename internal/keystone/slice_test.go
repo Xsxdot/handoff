@@ -1,8 +1,8 @@
 // 直通竖切（B156.3 重档法定步骤）：一次真实调用穿过本卡全部空壳——
-// 账本（临时 SQLite）→ ledgerapi 门面 → schedclient 端口 → 编制域准入与队列
-// → keystone 唤醒决策与兜底链。写死的结果、真实的接线：断言冻结语义
-// （两级准入、排队顺序、协调者优先清队序、唤醒合并、attach 互斥、兜底降级链），
-// 任一回归当场变红。竖切的写死结果不构成子卡的「已有活路径」。
+// 账本（临时 SQLite）→ internal/ledger/api 门面 → schedclient 端口 → 编制域
+// 准入与队列 → keystone 唤醒决策与兜底链。写死的结果、真实的接线：断言冻结
+// 语义（两级准入、排队顺序、协调者优先清队序、唤醒合并、attach 互斥、兜底
+// 降级链），任一回归当场变红。竖切的写死结果不构成子卡的「已有活路径」。
 package keystone_test
 
 import (
@@ -15,7 +15,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
-	"github.com/Xsxdot/handoff/internal/ledgerapi"
+	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
@@ -62,8 +63,8 @@ type recordingLedger struct {
 	needArgs [][2]string
 }
 
-func (r *recordingLedger) GetCard(id string) (ledgerapi.Card, error) { return r.f.GetCard(id) }
-func (r *recordingLedger) EventsFromAsc(ids []string, from int64, limit int) ([]ledgerapi.Event, error) {
+func (r *recordingLedger) GetCard(id string) (proto.Card, error) { return r.f.GetCard(id) }
+func (r *recordingLedger) EventsFromAsc(ids []string, from int64, limit int) ([]proto.LedgerEvent, error) {
 	return r.f.EventsFromAsc(ids, from, limit)
 }
 func (r *recordingLedger) EffectiveBaseBranch(id string) (string, error) {
@@ -82,11 +83,11 @@ type registryViaFacade struct {
 }
 
 func (a registryViaFacade) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
-	return a.f.RegistryPut(kind, id, expectVersion, body, actor)
+	return a.f.Put(kind, id, expectVersion, body, actor)
 }
 
 func (a registryViaFacade) Get(kind, id string) (schedclient.Record, error) {
-	e, err := a.f.RegistryGet(kind, id)
+	e, err := a.f.Get(kind, id)
 	if err != nil {
 		if errors.Is(err, ledger.ErrNotFound) {
 			return schedclient.Record{}, schedclient.ErrNotFound
@@ -97,7 +98,7 @@ func (a registryViaFacade) Get(kind, id string) (schedclient.Record, error) {
 }
 
 func (a registryViaFacade) List(kind string) ([]schedclient.Record, error) {
-	rows, err := a.f.RegistryList(kind)
+	rows, err := a.f.List(kind)
 	if err != nil {
 		return nil, err
 	}
@@ -109,7 +110,7 @@ func (a registryViaFacade) List(kind string) ([]schedclient.Record, error) {
 }
 
 func (a registryViaFacade) Delete(kind, id string, expectVersion int, actor string) error {
-	return a.f.RegistryDelete(kind, id, expectVersion, actor)
+	return a.f.Delete(kind, id, expectVersion, actor)
 }
 
 // TestIgnitionVerticalSlice 从开编制户口到唤醒回合跑通整条主缝。

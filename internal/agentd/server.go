@@ -45,7 +45,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
-	"github.com/Xsxdot/handoff/internal/ledgerapi"
+	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
@@ -2237,7 +2237,7 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	s.autoLedger = facade
 	s.scheduling = scheduling.New(facadeAsRegistry{f: facade})
 	runner := coordinatorRunner{h: hostapi.New()}
-	s.keystone = keystone.New(runner, noteNarrator{f: facade}, facade, attachLocator{})
+	s.keystone = keystone.New(runner, roomNarrator{f: facade}, facade, attachLocator{})
 	if s.pty != nil {
 		s.ptyGate = ptyapi.New(s.pty)
 	}
@@ -2266,11 +2266,11 @@ type facadeAsRegistry struct {
 }
 
 func (a facadeAsRegistry) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
-	return a.f.RegistryPut(kind, id, expectVersion, body, actor)
+	return a.f.Put(kind, id, expectVersion, body, actor)
 }
 
 func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error) {
-	e, err := a.f.RegistryGet(kind, id)
+	e, err := a.f.Get(kind, id)
 	if err != nil {
 		return schedclient.Record{}, translateRegistryErr(err)
 	}
@@ -2278,7 +2278,7 @@ func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error) {
 }
 
 func (a facadeAsRegistry) List(kind string) ([]schedclient.Record, error) {
-	rows, err := a.f.RegistryList(kind)
+	rows, err := a.f.List(kind)
 	if err != nil {
 		return nil, err
 	}
@@ -2290,7 +2290,7 @@ func (a facadeAsRegistry) List(kind string) ([]schedclient.Record, error) {
 }
 
 func (a facadeAsRegistry) Delete(kind, id string, expectVersion int, actor string) error {
-	return a.f.RegistryDelete(kind, id, expectVersion, actor)
+	return a.f.Delete(kind, id, expectVersion, actor)
 }
 
 func translateRegistryErr(err error) error {
@@ -2323,14 +2323,18 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, err
 }
 
-// noteNarrator 是叙事落点的兜底实现：房间子系统（B156.2）未落地前，
-// 协调者叙事以卡 timeline note 落账——凡承重必须落账，通道可以是兜底通道。
-type noteNarrator struct {
+// roomNarrator 是叙事落点的房间实现：B156.2 房间制已落地，按 keysclient.Narrator
+// 预告的换绑路径把协调者叙事从卡 note 迁到卡房间——薄里程碑指针行
+// （proto.RoomMsgPointer + BySystem，仅系统组件可书），白名单执法仍在 d_collab
+// 的 Send；keystone 不感知差异。凡承重必须落账，通道不再是兜底通道。
+type roomNarrator struct {
 	f *ledgerapi.Facade
 }
 
-func (n noteNarrator) Say(cardID, text string) error {
-	_, err := n.f.AddComment(cardID, text, "普通", "keystone")
+func (n roomNarrator) Say(cardID, text string) error {
+	_, err := n.f.RecordRoomMessage(cardID, proto.RoomMessage{
+		Room: cardID, Kind: proto.RoomMsgPointer, Body: text, BySystem: true,
+	}, "keystone")
 	return err
 }
 

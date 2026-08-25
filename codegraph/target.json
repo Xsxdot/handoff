@@ -131,16 +131,39 @@
    "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调 keystone 域（拉起/唤醒/互斥/attach 定位）；预算 0 = 一律走门面，穿透内部即违法。"
   },
   {
+   "from": "d_keystone",
+   "to": "d_ledger",
+   "legacyBudget": 0,
+   "interfaces": [
+    "LedgerView"
+   ],
+   "entries": [
+    "账本薄门面 Facade"
+   ],
+   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（keystone→账本）。LedgerView 定义在会话承载侧 internal/keysclient，实现 internal/ledger/api.Facade 由组装点按结构化类型注入；本方向零调用预算——keystone 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。两份门面归一后与 d_collab 共用同一 Facade，三方互不 import。"
+  },
+  {
    "from": "d_gateway",
    "to": "d_ledger",
    "legacyBudget": 17,
    "entries": [
     "ledger.Store",
     "ledgerstep.StepRunner",
-    "ledgerapi.Facade",
-    "ledgerapi（包级函数）"
+    "账本薄门面 Facade"
    ],
-   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经 ledgerapi 门面（entries 内的 ledgerapi.*），不扩大直调债。"
+    "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经账本薄门面（entries 内的 账本薄门面 Facade 容器，internal/ledger/api），不扩大直调债；门面归一轮起 internal/ledgerapi 已退役，两份门面归一为 internal/ledger/api 一份。"
+   },
+  {
+   "from": "d_scheduling",
+   "to": "d_ledger",
+   "legacyBudget": 0,
+   "interfaces": [
+    "Registry"
+   ],
+   "entries": [
+    "账本薄门面 Facade"
+   ],
+   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。"
   },
   {
    "from": "d_gateway",

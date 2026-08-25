@@ -8,7 +8,7 @@
 // task（B156.3 spec 测试接缝 3）——Runner 的任何实现都不得调用执行域派发路径。
 package keysclient
 
-import "github.com/Xsxdot/handoff/internal/ledgerapi"
+import "github.com/Xsxdot/handoff/internal/proto"
 
 // SessionSpec 是一次无头拉起的会话规格。HomeDir 是隔离 HOME 档案：协调者
 // 全套（全局规则/skill/MCP/账本凭据），与执行者的干净 HOME 相反（spec §4.3）。
@@ -62,11 +62,13 @@ type Narrator interface {
 }
 
 // LedgerView 是 keystone 对账本的只读面加一条兜底写：读卡/事件流/基线用于
-// 开场评估与重建四步，MarkNeedsHuman 用于兜底链终点「转等人」。组装点直接绑
-// *ledgerapi.Facade（方法集天然满足）。
+// 开场评估与重建四步，MarkNeedsHuman 用于兜底链终点「转等人」。类型一律取
+// proto wire DTO（门面归一轮的弱隔离修正：不再经别名漏账本内部类型），
+// 组装点直接绑 internal/ledger/api 的 *api.Facade——方法集天然满足，keystone
+// 与账本互不 import（架构法第八/九条）。
 type LedgerView interface {
-	GetCard(id string) (ledgerapi.Card, error)
-	EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]ledgerapi.Event, error)
+	GetCard(id string) (proto.Card, error)
+	EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
 	EffectiveBaseBranch(id string) (string, error)
 	MarkNeedsHuman(cardID, reason, actor string) error
 }

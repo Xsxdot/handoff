@@ -384,14 +384,12 @@
     "k_keystone_fn": "d_keystone",
     "k_keystone_model": "d_keystone",
     "k_keysclient_model": "d_keystone",
-    "k_ledgerapi_Facade": "d_ledger",
-    "k_ledgerapi_fn": "d_ledger",
-    "k_ledgerapi_model": "d_ledger",
     "k_hostapi_Host": "d_execution_host",
     "k_hostapi_fn": "d_execution_host",
     "k_hostapi_model": "d_execution_host",
     "k_ptyapi_Host": "d_sessions",
     "k_ptyapi_fn": "d_sessions",
-    "k_ptyapi_model": "d_sessions"
+    "k_ptyapi_model": "d_sessions",
+    "k_ledger_api_model": "d_ledger"
   }
 }
