@@ -225,16 +225,58 @@ func (s *Store) addComment(cardID, body, kind, actor, resetNode string) (Event, 
 	return event, err
 }
 
-// EnsureComment 幂等留痕：payload 带 dedupe_key，同键的说明评论已存在则
-// 不写、返回 false。环节执行体「终态遗留裁决」补解析（B156.2 §3.7）用，
-// 保证重复驱动不产生第二条说明评论。
-// Ticket 0 空壳：无可观测行为。
+// EnsureComment 幂等留痕：payload 带 dedupe_key，同卡内同键的说明评论已
+// 存在则不写、返回 false；本次真的写了才返回 true。环节执行体「终态遗留
+// 裁决」补解析（B156.2 契约 §3.7）用，保证重复驱动同一张卡不产生第二条
+// 说明评论。查重与写入同 mutate 事务（ClearNeedsHumanFrom 同形）。
+//
+// 与 AddComment 的差异：不做 #卡号 引用建边——说明文本由系统生成，引用
+// 解析反而可能误建 relates 边；payload 多 dedupe_key 一键，timeline 渲染
+// 忽略未知键。dedupeKey 空（含纯空白）直接报错：没有键就没有幂等判据。
+// 查重范围限同卡：不同卡的同键评论互不影响。
 func (s *Store) EnsureComment(cardID, dedupeKey, body, actor string) (bool, error) {
-	_ = cardID
-	_ = dedupeKey
-	_ = body
-	_ = actor
-	return false, nil
+	if strings.TrimSpace(dedupeKey) == "" {
+		return false, fmt.Errorf("幂等评论必须带 dedupe_key")
+	}
+	wrote := false
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			return fmt.Errorf("幂等评论: 卡 %s: %w", cardID, err)
+		}
+		rows, err := tx.Query(s.q(`SELECT payload FROM card_events WHERE card_id = ? AND type = ?`),
+			cardID, EvComment)
+		if err != nil {
+			return fmt.Errorf("查说明评论: %w", err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				return fmt.Errorf("扫评论行: %w", err)
+			}
+			var payload struct {
+				DedupeKey string `json:"dedupe_key"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				continue // 老评论无 dedupe_key 或载荷异常：不参与命中，继续
+			}
+			if payload.DedupeKey == dedupeKey {
+				log().Info("说明评论幂等跳过：同键已存在", "card", cardID, "dedupe_key", dedupeKey)
+				return nil
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("遍历评论: %w", err)
+		}
+		if _, err := s.appendEvent(tx, sink, cardID, EvComment, actor,
+			map[string]any{"kind": "普通", "body": body, "refs": []string{}, "dedupe_key": dedupeKey}); err != nil {
+			return err
+		}
+		wrote = true
+		log().Info("说明评论已落账", "card", cardID, "dedupe_key", dedupeKey, "actor", actor)
+		return nil
+	})
+	return wrote, err
 }
 
 // RecordAcceptance 落验收结果事件（verified=true 表示真机已验）。
