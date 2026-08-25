@@ -24,6 +24,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -56,6 +57,36 @@ type Adapter struct {
 	log  *slog.Logger
 	mu   sync.Mutex
 	runs map[string]*runState
+}
+
+// managedTaskTmpEnv derives the task-private environment from TaskDir.
+//
+// The managed entries are appended after user entries at the process seam so
+// handoff's isolation values cannot be overridden by task configuration.
+func managedTaskTmpEnv(taskDir, taskID string) (string, []string) {
+	dataDir := filepath.Dir(filepath.Dir(taskDir))
+	if filepath.Base(filepath.Dir(taskDir)) != "tasks" {
+		// Unit seams may use a direct temporary TaskDir; production manager
+		// requests always use <DataDir>/tasks/<id>.
+		dataDir = filepath.Dir(taskDir)
+	}
+	tmpDir := executor.TaskTmpDir(dataDir, taskID)
+	return tmpDir, []string{
+		"TMPDIR=" + tmpDir,
+		"GOTMPDIR=" + tmpDir,
+		"GOCACHE=" + filepath.Join(tmpDir, "gocache"),
+	}
+}
+
+// ensureTaskTmp creates the task-private directory immediately before a new
+// process is started; hot reattach paths must not create it.
+func ensureTaskTmp(taskID, tmpDir string, log *slog.Logger) error {
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		log.Error("创建任务临时目录失败", "task", taskID, "tmp_dir", tmpDir, "cause", err)
+		return err
+	}
+	log.Info("任务临时目录已就绪", "task", taskID, "tmp_dir", tmpDir)
+	return nil
 }
 
 // New 创建 grok adapter。
@@ -189,9 +220,14 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
+	tmpDir, managedEnv := managedTaskTmpEnv(req.TaskDir, taskID)
+	if err := ensureTaskTmp(taskID, tmpDir, a.log); err != nil {
+		return fmt.Errorf("创建任务临时目录 %s: %w", tmpDir, err)
+	}
+	env := append(append([]string{}, req.Env...), managedEnv...)
 	proc, err := startServe(ctx, req.Task.Workdir(), taskID,
 		prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
-		req.TaskDir, req.Task.Model, req.Env, a.log)
+		req.TaskDir, req.Task.Model, env, a.log)
 	if err != nil {
 		return err
 	}

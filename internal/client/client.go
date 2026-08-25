@@ -122,7 +122,8 @@ func isPermanent(err error) bool {
 
 // isDeliverable 判定一个事件类型是否该唤醒协调者。
 //
-// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled, tickets_voided}。
+// 可交付 = 全部类型 − {progress, approver_decision, approver_disabled,
+// tickets_voided, ticket_answered, permission_auto_allow}。
 //
 // 为什么后两类也要挡：它们在服务端是「只入库不 Publish」（见 manager.go 追加
 // approver_decision 处的注释），**实时流本就见不到**——所以客户端不过滤长期
@@ -142,7 +143,8 @@ func isDeliverable(t proto.EventType) bool {
 		proto.EventTypeApproverDecision,
 		proto.EventTypeApproverDisabled,
 		proto.EventTypeTicketsVoided,
-		proto.EventTypeTicketAnswered:
+		proto.EventTypeTicketAnswered,
+		proto.EventTypePermissionAutoAllow:
 		return false
 	}
 	return true

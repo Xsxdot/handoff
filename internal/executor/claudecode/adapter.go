@@ -71,6 +71,36 @@ type Adapter struct {
 	runs map[string]*runState // taskID -> 运行态
 }
 
+// managedTaskTmpEnv derives the task-private environment from TaskDir.
+//
+// The managed entries are appended after user entries at the process seam so
+// handoff's isolation values cannot be overridden by task configuration.
+func managedTaskTmpEnv(taskDir, taskID string) (string, []string) {
+	dataDir := filepath.Dir(filepath.Dir(taskDir))
+	if filepath.Base(filepath.Dir(taskDir)) != "tasks" {
+		// Unit seams may use a direct temporary TaskDir; production manager
+		// requests always use <DataDir>/tasks/<id>.
+		dataDir = filepath.Dir(taskDir)
+	}
+	tmpDir := executor.TaskTmpDir(dataDir, taskID)
+	return tmpDir, []string{
+		"TMPDIR=" + tmpDir,
+		"GOTMPDIR=" + tmpDir,
+		"GOCACHE=" + filepath.Join(tmpDir, "gocache"),
+	}
+}
+
+// ensureTaskTmp creates the task-private directory immediately before a new
+// process is started; hot reattach paths must not create it.
+func ensureTaskTmp(taskID, tmpDir string, log *slog.Logger) error {
+	if err := os.MkdirAll(tmpDir, 0o700); err != nil {
+		log.Error("创建任务临时目录失败", "task", taskID, "tmp_dir", tmpDir, "cause", err)
+		return err
+	}
+	log.Info("任务临时目录已就绪", "task", taskID, "tmp_dir", tmpDir)
+	return nil
+}
+
 // New 创建 claude adapter。
 //
 // 参数：
@@ -247,6 +277,12 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}
 
 	// 3. 进程：Env 必须原样透传（见 StartProcReq.Env 的注意）
+	tmpDir, managedEnv := managedTaskTmpEnv(req.TaskDir, req.Task.ID)
+	if err := ensureTaskTmp(req.Task.ID, tmpDir, a.log); err != nil {
+		rollback()
+		return fmt.Errorf("创建任务临时目录 %s: %w", tmpDir, err)
+	}
+	env := append(append([]string{}, req.Env...), managedEnv...)
 	proc, err := startProc(ctx, StartProcReq{
 		RepoPath:     req.Task.Workdir(),
 		TaskID:       req.Task.ID,
@@ -255,7 +291,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		Model:        req.Task.Model,
 		SettingsPath: settingsPath,
 		MCPPath:      mcpPath,
-		Env:          req.Env,
+		Env:          env,
 		MarkRoot:     prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
 	}, a.log)
 	if err != nil {

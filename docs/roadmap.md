@@ -314,3 +314,41 @@
 - **`d_workspace.json` 的职责句可能有跨域残留**：键已是 best 顶层 id 所以本期零改动，但其职责文本里的「工作台启动项配置」一类表述可能实际属 `d_policy` / `d_web_workbench`。要动它得重走一次归属核对，不是文字润色。
 - **C1.11 的两条真机项由 CI 结论兜底，未单独验**：(a) Windows/macOS 文件系统对 `codegraph/domains/` 存在性、权限、大小写的差异——本次只在 macOS 上实测；(b) CI runner 上 desktop tidy 门通过后，其后的 Windows 交叉编译、Windows vet、install.sh 三步是否**真的执行而非 skipped**。两条都会在本次合并推上去后由 CI 自然给出结论，届时若为 skipped 需回头处理。
 - **前端消费 `decls` 未实现**：宿主已供上 wire，域页如何渲染声明归 C1.10 的后续，本卡不冒充完成。
+## 来自 B249 spec（2026-08-25，权限判据降噪）
+
+- **评估下线廉价模型审批者**：B249 的白名单只吃掉可枚举的安全形态，长尾仍交给 approver。
+  等白名单稳定运行一段、Consult 计数显著下降后再评估是否整个下线（省一次模型调用与
+  6.2s 中位延迟）。**前置条件是下一条**——没有计数就没有「显著下降」的判据。
+  来源：`specs/2026-08-25-b249-permission-noise-reduction.md` 的 Out of Scope。
+- **权限出口的持续计数与看板**：今天 AutoAllow 逐次只有 Debug 日志（默认不开）、
+  Consult/Escalate 只能靠扫 `agentd.log` 事后归因，一次取证要写一个子 agent 跑 15 分钟。
+  应有常驻的三出口计数（manager 已有 `aaCount` 可扩），并在控制台呈现。
+  它是上一条的前置，也是「判据改动到底降了多少噪」的唯一判据。来源：同上 spec。
+- **（判据背景，防重走）** 2026-08-25 对 linux-01 三天 1377 次判定的全量取证结论：
+  人被叫醒 246 次、批 238 次、拒 6 次且**6 次全与安全无关**（都是方法论纠偏）；
+  「容器管不住」的网络副作用维度三天是空集（0 curl / kubectl / psql / aws / ssh /
+  git push）。**再有人提「靠 OS 隔离来减少权限打扰」，先复读这组数字**——降噪的杠杆
+  在判据不在隔离，隔离的价值在 B227 与进程清扫，两件事不要再捆在一起论证。
+
+## 来自 B249 执行过程（2026-08-25，非 spec 预见的残余）
+
+- **卡基线在首派那刻冻结，依赖卡后落地就再也进不来**。B249 15:54 首派 contract 时
+  B248 尚未落地，于是 B249 分支上一直是旧正则，implement、三轮 review、全量测试
+  **三关全绿且无一报错**——review 只审本卡改动，测试不测另一张卡的行为，三方合并还能
+  保住对方的改动。症状只有一个：两卡改动从未在同一份代码上一起跑过，而 B248 spec 明写
+  「必须同轮落地，先放宽后收紧的中间态是净减安全」。协调者在 acceptance 阶段用
+  `git merge-base --is-ancestor` 才查出来，本地合并后重做验收（21/21 行为判据绿）。
+  **可做的**：`card dispatch` 或 finish 阶段对「卡 spec 里点名的前置卡」做一次祖先检查。
+  尚未取号，需要时 `handoff card add`。
+- **contract 节点给 `codegraph/target.json` 写 entries 时用了函数符号名**
+  （`executor.TaskTmpDir`），而该字段的语义是**容器 Label**（判定见 charter
+  `graph/codegraph/check.go`：逐条比对 `Container.Label`，无跳过分支）。后果是必然在
+  review 阶段撞 dead-entry、多烧一整轮 implement + review。基线里其余 9 条 entries
+  全是容器级形态（`ledger.Store`、`proto 实体`、`ptyhost 实体` 等），无一函数符号。
+  **归属 charter 仓**（`~/workspace/charter` 的 contract 节点 skill 该给出这条判据，
+  改完跑 `scripts/regen_discipline.py`），不是 handoff 仓的改动。
+- **（已有卡，不重复取号）** 审批者对沙箱层级完全失明 = **B252**；`card --attach`
+  按 path 去重忽略 kind = **B250，已于 2026-08-25 合入 main**（附件身份改 (kind, path)）；
+  执行者隔离层 = **B247**。
+- **（已修，留痕）** `skills/handoff/SKILL.md` 排障表原写「驱动权泄漏 CLI 侧今天无解」，
+  B239 后 `card takeover` 已可用、`card release` 也不再是静默 no-op，本轮实测确认并改正。

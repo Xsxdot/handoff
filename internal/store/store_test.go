@@ -563,6 +563,79 @@ func TestTicketHasEvent(t *testing.T) {
 	}
 }
 
+// TestPermissionAutoAllowJSONRoundtrip 验证白名单审计事件穿过真实 SQLite
+// AppendEvent 的 JSON 边界；尤其锁定 permission_id 缺失与显式空串不是同一种线格式。
+func TestPermissionAutoAllowJSONRoundtrip(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	type auditPayload struct {
+		PermissionID string   `json:"permission_id"`
+		Permission   string   `json:"permission"`
+		Tool         string   `json:"tool"`
+		Command      string   `json:"command,omitempty"`
+		Paths        []string `json:"paths,omitempty"`
+		Rule         string   `json:"rule"`
+		Reason       string   `json:"reason"`
+	}
+	if _, err := s.AppendEvent("task-1", proto.EventTypePermissionAutoAllow, auditPayload{
+		PermissionID: "perm-1", Permission: "go test ./...", Tool: "Bash",
+		Rule: "safe-command", Reason: "",
+	}); err != nil {
+		t.Fatalf("AppendEvent full payload: %v", err)
+	}
+	if _, err := s.AppendEvent("task-1", proto.EventTypePermissionAutoAllow,
+		map[string]string{"permission": "missing-id", "rule": "safe-command", "reason": "r"}); err != nil {
+		t.Fatalf("AppendEvent missing permission_id: %v", err)
+	}
+	if _, err := s.AppendEvent("task-1", proto.EventTypePermissionAutoAllow,
+		map[string]string{"permission_id": "", "rule": "safe-command", "reason": "r"}); err != nil {
+		t.Fatalf("AppendEvent empty permission_id: %v", err)
+	}
+
+	events, err := s.EventsFromAsc("task-1", 0, 10)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	if len(events) != 3 {
+		t.Fatalf("审计事件数量 = %d, want 3", len(events))
+	}
+	if events[0].Type != proto.EventTypePermissionAutoAllow {
+		t.Fatalf("event type = %q, want %q", events[0].Type, proto.EventTypePermissionAutoAllow)
+	}
+	var full map[string]json.RawMessage
+	if err := json.Unmarshal(events[0].Payload, &full); err != nil {
+		t.Fatalf("decode full payload: %v", err)
+	}
+	for _, key := range []string{"permission_id", "permission", "tool", "rule", "reason"} {
+		if _, ok := full[key]; !ok {
+			t.Fatalf("full payload 缺少必需字段 %q: %s", key, events[0].Payload)
+		}
+	}
+	for _, key := range []string{"command", "paths"} {
+		if _, ok := full[key]; ok {
+			t.Fatalf("空的可选字段 %q 不应出现在 payload: %s", key, events[0].Payload)
+		}
+	}
+	var missing, empty map[string]json.RawMessage
+	if err := json.Unmarshal(events[1].Payload, &missing); err != nil {
+		t.Fatalf("decode missing payload: %v", err)
+	}
+	if err := json.Unmarshal(events[2].Payload, &empty); err != nil {
+		t.Fatalf("decode empty payload: %v", err)
+	}
+	if _, ok := missing["permission_id"]; ok {
+		t.Fatalf("missing permission_id 不应被补成字段: %s", events[1].Payload)
+	}
+	value, ok := empty["permission_id"]
+	if !ok || string(value) != `""` {
+		t.Fatalf("empty permission_id 应保留为空字符串，got %s", value)
+	}
+}
+
 // TestCreateTaskPersistsBaseline 验证基线两字段能落库并回读——「这个任务建在
 // 哪个提交上、当时仓库比它多几个提交」必须是事后查得到的事实，而不是只在
 // 派发那一刻的日志里闪过。

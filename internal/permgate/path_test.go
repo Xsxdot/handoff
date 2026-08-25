@@ -6,6 +6,56 @@ import (
 	"testing"
 )
 
+// resolvedPath mirrors InScope's longest-existing-prefix resolution so the
+// test compares canonical bases on platforms where /var is a symlink to /private/var.
+func resolvedPath(t *testing.T, path string) string {
+	t.Helper()
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		t.Fatalf("EvalSymlinks(%q): %v", path, err)
+	}
+	return resolved
+}
+
+// TestInScopeUsesTaskTmpAsThirdRoot locks the executor-owned task scratch area
+// into the same path gate as worktree and TaskDir.
+func TestInScopeUsesTaskTmpAsThirdRoot(t *testing.T) {
+	root := t.TempDir()
+	scope := Scope{
+		Workdir:    filepath.Join(root, "work"),
+		TaskDir:    filepath.Join(root, "tasks", "task-1"),
+		TaskTmpDir: filepath.Join(root, "tmp", "abcd1234"),
+	}
+	for _, dir := range []string{scope.Workdir, scope.TaskDir, scope.TaskTmpDir, filepath.Join(root, "tmp", "shared")} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cases := []struct {
+		name     string
+		path     string
+		wantIn   bool
+		wantBase string
+	}{
+		{"worktree", filepath.Join(scope.Workdir, "out.txt"), true, resolvedPath(t, scope.Workdir)},
+		{"task-dir", filepath.Join(scope.TaskDir, "log.txt"), true, resolvedPath(t, scope.TaskDir)},
+		{"task-tmp", filepath.Join(scope.TaskTmpDir, "out.txt"), true, resolvedPath(t, scope.TaskTmpDir)},
+		{"shared-tmp", filepath.Join(root, "tmp", "shared", "out.txt"), false, ""},
+		{"prefix-sibling", filepath.Join(root, "tmp", "abcd1234-sibling", "out.txt"), false, ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			gotIn, gotBase, err := InScope(tc.path, scope)
+			if err != nil {
+				t.Fatalf("InScope(%q): %v", tc.path, err)
+			}
+			if gotIn != tc.wantIn || gotBase != tc.wantBase {
+				t.Fatalf("InScope(%q) = (%v, %q), want (%v, %q)", tc.path, gotIn, gotBase, tc.wantIn, tc.wantBase)
+			}
+		})
+	}
+}
+
 // TestInScopeAccepts 范围内的路径都应判为 in。
 func TestInScopeAccepts(t *testing.T) {
 	work := t.TempDir()

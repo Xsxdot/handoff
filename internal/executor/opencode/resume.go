@@ -112,8 +112,13 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		// 任务物料在 taskDir 里是持久的，路径确定性推导；重写一次保证内容与
 		// 当前 model 一致（PlanContent 只在首轮 prompt 用得上，冷恢复不需要）
 		configPath := filepath.Join(req.TaskDir, configFileName)
+		tmpDir, managedEnv := managedTaskTmpEnv(req.TaskDir, req.TaskID)
+		if err := ensureTaskTmp(req.TaskID, tmpDir, a.log); err != nil {
+			return executor.ResumeOutcome{}, fmt.Errorf("创建任务临时目录 %s: %w", tmpDir, err)
+		}
+		env := append(append([]string{}, req.Env...), managedEnv...)
 		newProc, err := startServe(context.Background(), req.RepoPath, req.TaskID, req.MarkRoot,
-			req.TaskDir, configPath, req.Env, a.log)
+			req.TaskDir, configPath, env, a.log)
 		if err != nil {
 			a.log.Warn("冷恢复重起 serve 失败，判不可恢复", "task", req.TaskID, "cause", err)
 			return executor.ResumeOutcome{Alive: false,
