@@ -267,7 +267,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}()
 
 	taskTmp := taskTmpDir(req.TaskDir)
-	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o700); err != nil {
 		a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
 		return fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
 	}

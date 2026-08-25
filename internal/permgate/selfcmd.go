@@ -28,6 +28,7 @@ const RuleSelfCommand = "self-command"
 var selfCmdReadOnly = map[string]bool{
 	"tasks": true, "show": true, "diff": true, "fetch": true, "status": true,
 	"frames": true, "sessions": true, "footprint": true, "ls": true,
+	"graph": true, // graph resolve --doc is a read-only contract query
 }
 
 // selfCmdMutating 是明确的变更类子命令名单。

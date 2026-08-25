@@ -1,6 +1,7 @@
 package store
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"testing"
 
@@ -58,5 +59,32 @@ func TestAppendEventWithoutHook(t *testing.T) {
 	defer st.Close()
 	if _, err := st.AppendEvent("task-1", proto.EventTypeProgress, map[string]string{}); err != nil {
 		t.Fatalf("无钩子时 AppendEvent 应正常：%v", err)
+	}
+}
+
+// TestEventHookCarriesPermissionAutoAllow 验证新审计类型沿既有 hook 观察链透传，
+// 不需要为它新增 Store 接口或特殊分支。
+func TestEventHookCarriesPermissionAutoAllow(t *testing.T) {
+	st, err := Open(filepath.Join(t.TempDir(), "h.db"))
+	if err != nil {
+		t.Fatalf("打开库: %v", err)
+	}
+	defer st.Close()
+
+	var got proto.Event
+	st.SetEventHook(func(e proto.Event) { got = e })
+	if _, err := st.AppendEvent("task-1", proto.EventTypePermissionAutoAllow,
+		map[string]string{"permission_id": "perm-1", "rule": "safe-command"}); err != nil {
+		t.Fatalf("AppendEvent: %v", err)
+	}
+	if got.Type != proto.EventTypePermissionAutoAllow {
+		t.Fatalf("hook event type = %q, want %q", got.Type, proto.EventTypePermissionAutoAllow)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(got.Payload, &payload); err != nil {
+		t.Fatalf("decode hook payload: %v", err)
+	}
+	if payload["permission_id"] != "perm-1" || payload["rule"] != "safe-command" {
+		t.Fatalf("hook payload = %#v, want permission_id/rule", payload)
 	}
 }

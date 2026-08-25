@@ -26,6 +26,7 @@ func TestIsSelfCommand(t *testing.T) {
 		{"tasks", "handoff tasks", false, ""},
 		{"show", "handoff show T1", false, ""},
 		{"diff 带 flag", "handoff diff T1 --base main", false, ""},
+		{"graph resolve 只读", "handoff graph resolve --doc docs/spec.md", false, ""},
 
 		// 切段：管道后的词元不参与本段判定
 		{"管道隔段", "handoff tasks | grep done", false, ""},

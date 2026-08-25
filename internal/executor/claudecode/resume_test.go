@@ -15,6 +15,20 @@ import (
 	"github.com/Xsxdot/handoff/internal/prochost"
 )
 
+// TestManagedTaskTmpEnv keeps cold-restart environment construction aligned with
+// the executor TaskTmpDir contract before the restart seam is exercised.
+func TestManagedTaskTmpEnv(t *testing.T) {
+	tmpDir, env := managedTaskTmpEnv(filepath.Join("/data", "tasks", "0123456789"), "0123456789")
+	wantDir := filepath.Join("/data", "tmp", "01234567")
+	wantEnv := []string{"TMPDIR=" + wantDir, "GOTMPDIR=" + wantDir, "GOCACHE=" + filepath.Join(wantDir, "gocache")}
+	if tmpDir != wantDir {
+		t.Fatalf("managed tmp dir = %q, want %q", tmpDir, wantDir)
+	}
+	if strings.Join(env, "\x00") != strings.Join(wantEnv, "\x00") {
+		t.Fatalf("managed tmp env = %v, want %v", env, wantEnv)
+	}
+}
+
 // 凭据缺失 → 判死不存活（manager 按不存活走 failed 恢复路径）。
 func TestResumeMissingProcInfo(t *testing.T) {
 	a := New(nil)

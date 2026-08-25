@@ -111,6 +111,11 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 			a.log.Warn("轮转 out.jsonl 失败，仍尝试冷恢复", "task", req.TaskID, "cause", rerr)
 		}
 		a.log.Info("claude 已不在，进入冷恢复", "task", req.TaskID, "session", req.SessionID)
+		tmpDir, managedEnv := managedTaskTmpEnv(req.TaskDir, req.TaskID)
+		if err := ensureTaskTmp(req.TaskID, tmpDir, a.log); err != nil {
+			return executor.ResumeOutcome{}, fmt.Errorf("创建任务临时目录 %s: %w", tmpDir, err)
+		}
+		env := append(append([]string{}, req.Env...), managedEnv...)
 		newProc, err := startProc(context.Background(), StartProcReq{
 			// cwd 必须是原工作区：会话文件路径按 cwd 编码
 			// （~/.claude/projects/<slug(cwd)>/），传错就找不到会话
@@ -118,7 +123,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 			SessionID: req.SessionID, Model: req.Model,
 			SettingsPath: filepath.Join(req.TaskDir, settingsFileName),
 			MCPPath:      filepath.Join(req.TaskDir, mcpFileName),
-			Env:          req.Env, MarkRoot: req.MarkRoot, Resume: true,
+			Env:          env, MarkRoot: req.MarkRoot, Resume: true,
 		}, a.log)
 		if err != nil {
 			a.log.Warn("冷恢复重起 claude 失败，判不可恢复", "task", req.TaskID, "cause", err)

@@ -39,7 +39,9 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 		for _, e := range []proto.Event{
 			{Seq: 1, TaskID: taskID, Type: proto.EventTypeProgress, Payload: []byte(`{}`)},
 			{Seq: 2, TaskID: taskID, Type: "message", Payload: []byte(`{"text":"hi"}`)},
-			{Seq: 3, TaskID: taskID, Type: proto.EventTypeCompleted, Payload: []byte(`{}`)},
+			{Seq: 3, TaskID: taskID, Type: proto.EventTypePermissionAutoAllow,
+				Payload: []byte(`{"permission_id":"perm-1","rule":"safe-command"}`)},
+			{Seq: 4, TaskID: taskID, Type: proto.EventTypeCompleted, Payload: []byte(`{}`)},
 		} {
 			if e.Seq <= fromSeq {
 				continue
@@ -66,7 +68,7 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 				mirrored++
 			}
 		}
-		if mirrored == 2 {
+		if mirrored == 3 {
 			rows, _ := s.MirrorHealth()
 			if len(rows) == 1 && rows[0].Target == "mac-02" {
 				return

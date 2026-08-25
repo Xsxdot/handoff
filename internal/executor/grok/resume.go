@@ -115,8 +115,13 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		}
 		a.log.Info("serve 已不在，进入冷恢复", "task", taskID,
 			"old_port", proc.Port, "session", sessionID)
+		tmpDir, managedEnv := managedTaskTmpEnv(taskDir, taskID)
+		if err := ensureTaskTmp(taskID, tmpDir, a.log); err != nil {
+			return executor.ResumeOutcome{}, fmt.Errorf("创建任务临时目录 %s: %w", tmpDir, err)
+		}
+		env := append(append([]string{}, req.Env...), managedEnv...)
 		newProc, err := startServe(context.Background(), repoPath, taskID, req.MarkRoot,
-			taskDir, req.Model, req.Env, a.log)
+			taskDir, req.Model, env, a.log)
 		if err != nil {
 			// 起不来是可预期现场（配额/凭据过期），按不可恢复处理而非错误
 			a.log.Warn("冷恢复重起 serve 失败，判不可恢复", "task", taskID, "cause", err)

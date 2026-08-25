@@ -59,7 +59,7 @@ func (a *Adapter) Resume(req executor.ResumeReq) (executor.ResumeOutcome, error)
 		return executor.ResumeOutcome{}, nil
 	}
 	taskTmp := taskTmpDir(taskDir)
-	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(taskTmp, "gocache"), 0o700); err != nil {
 		a.log.Error("创建任务专属 tmp 失败", "task", taskID, "dir", taskTmp, "cause", err)
 		return executor.ResumeOutcome{}, fmt.Errorf("创建任务专属 tmp %s: %w", taskTmp, err)
 	}
