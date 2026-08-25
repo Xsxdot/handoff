@@ -124,14 +124,30 @@ func quotaNote(err error) string {
 	return note
 }
 
-// gitExec 是 gitRun / gitProbe 的公共体：执行 git -C repo <args...>。
+// gitExec 是 gitRun / gitProbe 的公共体：执行 git -C repo <args...>，并在命令行层
+// 强制使用本次调用的空 hooks 目录。这样即使仓库配置被执行者改写，agentd 自己的 git
+// 也不会执行仓库 hooks；临时目录在单次调用结束后回收。
 //
 // quiet 只影响**失败时的日志级别**：false 记 Error（真故障），true 记 Debug
 // （预期内的探测未命中）。返回值语义与 quiet 无关。
 func gitExec(ctx context.Context, repo string, quiet bool, args ...string) (stdout, stderr string, err error) {
 	log().Info("git 调用", "repo", repo, "args", args)
 	start := time.Now()
-	cmd := exec.CommandContext(ctx, "git", append([]string{"-C", repo}, args...)...)
+	hooksPath, err := os.MkdirTemp("", "handoff-empty-hooks-")
+	if err != nil {
+		log().Error("创建 git hooks 隔离目录失败", "repo", repo, "args", args, "cause", err)
+		return "", "", fmt.Errorf("创建 git hooks 隔离目录: %w", err)
+	}
+	log().Debug("git hooks 已隔离", "repo", repo, "args", args, "hooks_path", hooksPath)
+	defer func() {
+		if removeErr := os.RemoveAll(hooksPath); removeErr != nil {
+			log().Warn("回收 git hooks 隔离目录失败", "repo", repo, "args", args,
+				"hooks_path", hooksPath, "cause", removeErr)
+		}
+	}()
+
+	cmdArgs := append([]string{"-C", repo, "-c", "core.hooksPath=" + hooksPath}, args...)
+	cmd := exec.CommandContext(ctx, "git", cmdArgs...)
 	var outBuf, errBuf bytes.Buffer
 	cmd.Stdout = &outBuf
 	cmd.Stderr = &errBuf

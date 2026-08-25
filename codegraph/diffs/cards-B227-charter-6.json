@@ -1,0 +1,129 @@
+{
+  "view": "cards/B227-charter-6",
+  "base": "111a523ea07ab853840811f7926da216b050ba4c",
+  "summary": "B227：补齐 codex Git 根与 agentd hooks 隔离图变更；recon 复现病灶（退出码 128）：fatal: Unable to create '/root/.handoff/repos/handoff/.git/worktrees/c778c407/index.lock': Read-only file system",
+  "nodesAdded": {
+    "n_turn_GitCommonDir": {
+      "kind": "func",
+      "container": "k_turn_fn",
+      "order": 25,
+      "name": "GitCommonDir",
+      "file": "internal/executor/turn/gitprobe.go",
+      "line": 50,
+      "signature": "func GitCommonDir(repoPath string) (string, error)",
+      "params": [
+        ["repoPath", "string", "主仓库或 linked worktree 的工作目录"]
+      ],
+      "returns": "string, error",
+      "summary": "GitCommonDir 返回 repoPath 所属仓库的共享 git 公共目录。"
+    },
+    "n_turn_GitDir": {
+      "kind": "func",
+      "container": "k_turn_fn",
+      "order": 26,
+      "name": "GitDir",
+      "file": "internal/executor/turn/gitprobe.go",
+      "line": 74,
+      "signature": "func GitDir(repoPath string) (string, error)",
+      "params": [
+        ["repoPath", "string", "主仓库或 linked worktree 的工作目录"]
+      ],
+      "returns": "string, error",
+      "summary": "GitDir 返回 repoPath 所属工作树的私有 git 目录。"
+    }
+  },
+  "nodesModified": {
+    "m_codex_runState": {
+      "kind": "model",
+      "container": "k_codex_model",
+      "order": 167,
+      "name": "runState",
+      "file": "internal/executor/codex/adapter.go",
+      "line": 202,
+      "summary": "runState 是单任务运行的完整状态。",
+      "modelKind": "entity",
+      "fields": [
+        ["taskID", "string", ""],
+        ["taskDir", "string", ""],
+        ["repoPath", "string", ""],
+        ["threadID", "string", "== sessionId，落 task.ExecutorSession"],
+        ["startCommit", "string", ""],
+        ["gitCommonDir", "string", "构造运行态时一次性取证的共享 git 公共目录"],
+        ["gitDir", "string", "同一时点取证的当前工作树私有 git 目录"],
+        ["proc", "*Proc", ""],
+        ["cli", "*Client", ""],
+        ["*permTable", "*permTable", ""],
+        ["items", "*itemIndex", ""],
+        ["frames", "*turn.FrameWriter", "结构化回合帧；构造失败时为 nil，方法对 nil 安全"],
+        ["seg", "*turn.Segmenter", "耗时段切分器；与 frames 同款 nil 安全约定"],
+        ["textPart", "string", "本回合正文/思维链的 part 标识"],
+        ["stopping", "bool", "stopping 是主动停止标记：Stop 先置位再关连接，onClosed 与回合收尾据此"],
+        ["evCh", "chan executor.AdapterEvent", ""],
+        ["emitMu", "sync.Mutex", ""],
+        ["evClosed", "bool", ""],
+        ["turnMu", "sync.Mutex", ""],
+        ["turnInFlight", "bool", ""],
+        ["turnID", "string", "仅供 turn/interrupt 使用，不参与回合边界判定"],
+        ["bodyBuf", "strings.Builder", ""],
+        ["renderBuf", "strings.Builder", ""],
+        ["lastProgress", "time.Time", ""],
+        ["askedViaTool", "bool", ""],
+        ["spendBase", "spendBase", "spendBase 是累计消耗的回合基线（B83）。与 usage 的当前占用是两个口径，"],
+        ["pricingWarned", "bool", "pricingWarned 是「模型不在牌价表」的 Warn 已打标记：同模型只打一次，"]
+      ]
+    },
+    "n_codex_sandboxPolicy": {
+      "kind": "func",
+      "container": "k_codex_fn",
+      "order": 132,
+      "name": "sandboxPolicy",
+      "file": "internal/executor/codex/adapter.go",
+      "line": 160,
+      "signature": "func sandboxPolicy(taskTmp, gitCommonDir, gitDir string) map[string]any",
+      "params": [
+        ["taskTmp", "string", "任务隔离的工具链临时目录"],
+        ["gitCommonDir", "string", "linked worktree 所需的共享 git 公共目录"],
+        ["gitDir", "string", "当前工作树的私有 git 目录"]
+      ],
+      "returns": "map[string]any",
+      "summary": "sandboxPolicy 返回每回合显式下发的沙箱策略。"
+    },
+    "n_codex_Adapter_newRunState": {
+      "kind": "func",
+      "container": "k_codex_Adapter",
+      "order": 208,
+      "name": "newRunState",
+      "file": "internal/executor/codex/adapter.go",
+      "line": 249,
+      "signature": "func (a *Adapter) newRunState(taskID, taskDir, repoPath string) *runState",
+      "params": [
+        ["taskID", "string", ""],
+        ["taskDir", "string", ""],
+        ["repoPath", "string", ""]
+      ],
+      "returns": "*runState",
+      "summary": "newRunState 建一条运行态；两个 git 目录在此唯一构造点取证并缓存，Start 与 Resume 共用。"
+    },
+    "n_agentd_gitExec": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 131,
+      "name": "gitExec",
+      "file": "internal/agentd/workspace.go",
+      "line": 133,
+      "signature": "func gitExec(ctx context.Context, repo string, quiet bool, args ...string) (stdout, stderr string, err error)",
+      "params": [
+        ["ctx", "context.Context", ""],
+        ["repo", "string", ""],
+        ["quiet", "bool", ""],
+        ["args", "...string", ""]
+      ],
+      "returns": "stdout, stderr string, err error",
+      "summary": "gitExec 是 gitRun / gitProbe 的公共体：执行 git -C repo <args...>，并在命令行层强制使用本次调用的空 hooks 目录。这样即使仓库配置被执行者改写，agentd 自己的 git 也不会执行仓库 hooks；临时目录在单次调用结束后回收。"
+    }
+  },
+  "edgesAdded": [
+    ["n_codex_Adapter_newRunState", "n_turn_GitCommonDir"],
+    ["n_codex_Adapter_newRunState", "n_turn_GitDir"]
+  ]
+}

@@ -1,6 +1,7 @@
 package codex_test
 
 import (
+	"encoding/json"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,17 +25,64 @@ func TestStartInjectsDisciplineIntoPrompt(t *testing.T) {
 	}
 }
 
-func TestSandboxPolicyGrantsTaskTmp(t *testing.T) {
-	p := codex.SandboxPolicyForTest("/root/.handoff/tmp/137a7dc9")
-	roots, _ := p["writableRoots"].([]any)
-	if len(roots) != 1 || roots[0] != "/root/.handoff/tmp/137a7dc9" {
-		t.Fatalf("writableRoots = %v，任务专属 tmp 没进可写域", p["writableRoots"])
+func TestSandboxPolicyGrantsTaskTmpAndGitCommonDir(t *testing.T) {
+	const (
+		taskTmp   = "/root/.handoff/tmp/137a7dc9"
+		commonDir = "/srv/repos/handoff/.git"
+		gitDir    = "/srv/repos/handoff/.git/worktrees/task-id"
+	)
+	p := codex.SandboxPolicyForTest(taskTmp, commonDir, gitDir)
+
+	raw, err := json.Marshal(p)
+	if err != nil {
+		t.Fatalf("序列化 sandboxPolicy: %v", err)
 	}
-	if p["excludeSlashTmp"] != true || p["excludeTmpdirEnvVar"] != true {
-		t.Error("两个 exclude 被放开了，任务隔离被破坏")
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("反序列化 sandboxPolicy: %v", err)
 	}
-	if p["networkAccess"] != true {
-		t.Error("networkAccess 被改动")
+	roots, ok := wire["writableRoots"].([]any)
+	if !ok || len(roots) != 3 || roots[0] != taskTmp || roots[1] != commonDir || roots[2] != gitDir {
+		t.Fatalf("JSON writableRoots = %#v，want [%q %q %q]", wire["writableRoots"], taskTmp, commonDir, gitDir)
+	}
+	if wire["excludeSlashTmp"] != true || wire["excludeTmpdirEnvVar"] != true {
+		t.Fatal("两个 exclude 必须保持 true")
+	}
+	if wire["networkAccess"] != true {
+		t.Fatal("networkAccess 必须保持 true")
+	}
+
+	emptyRaw, err := json.Marshal(codex.SandboxPolicyForTest(taskTmp, commonDir, ""))
+	if err != nil {
+		t.Fatalf("序列化无 common-dir 的 sandboxPolicy: %v", err)
+	}
+	var emptyWire map[string]any
+	if err := json.Unmarshal(emptyRaw, &emptyWire); err != nil {
+		t.Fatalf("反序列化无 common-dir 的 sandboxPolicy: %v", err)
+	}
+	emptyRoots, ok := emptyWire["writableRoots"].([]any)
+	if !ok || len(emptyRoots) != 2 || emptyRoots[0] != taskTmp || emptyRoots[1] != commonDir {
+		t.Fatalf("无私有 git-dir 时 writableRoots = %#v，want [%q %q]", emptyWire["writableRoots"], taskTmp, commonDir)
+	}
+}
+
+func TestSandboxPolicyDeduplicatesSameGitDirs(t *testing.T) {
+	const (
+		taskTmp = "/root/.handoff/tmp/137a7dc9"
+		gitDir  = "/srv/repos/handoff/.git"
+	)
+
+	raw, err := json.Marshal(codex.SandboxPolicyForTest(taskTmp, gitDir, gitDir))
+	if err != nil {
+		t.Fatalf("序列化原地模式 sandboxPolicy: %v", err)
+	}
+	var wire map[string]any
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("反序列化原地模式 sandboxPolicy: %v", err)
+	}
+	roots, ok := wire["writableRoots"].([]any)
+	if !ok || len(roots) != 2 || roots[0] != taskTmp || roots[1] != gitDir {
+		t.Fatalf("原地模式 JSON writableRoots = %#v，want [%q %q]", wire["writableRoots"], taskTmp, gitDir)
 	}
 }
 

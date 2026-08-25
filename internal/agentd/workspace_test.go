@@ -619,6 +619,43 @@ func TestPrepareWorkspaceNewWorktreeAllowsDirtyMainRepo(t *testing.T) {
 	}
 }
 
+func TestPrepareWorkspaceDoesNotRunRepositoryHook(t *testing.T) {
+	repo := initTestRepo(t)
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	t.Setenv("B227_HOOK_MARKER", marker)
+	hooksDir := filepath.Join(repo, ".git", "hooks")
+	hook := filepath.Join(hooksDir, "post-checkout")
+	script := "#!/bin/sh\nprintf 'hook-ran\\n' >> \"$B227_HOOK_MARKER\"\n"
+	if err := os.WriteFile(hook, []byte(script), 0o755); err != nil {
+		t.Fatalf("写 post-checkout hook: %v", err)
+	}
+	gitT(t, repo, "config", "core.hooksPath", hooksDir)
+
+	control := filepath.Join(t.TempDir(), "control")
+	gitT(t, repo, "worktree", "add", "-q", "-b", "hook-control", control)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatalf("对照组 hook 应运行并创建 marker: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("清理对照 marker: %v", err)
+	}
+	gitT(t, repo, "worktree", "remove", "--force", control)
+
+	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+		Repo: repo, TaskID: "hook-target-0000", NewWorktree: true,
+		WorktreesDir: filepath.Join(t.TempDir(), "worktrees"),
+	})
+	if err != nil {
+		t.Fatalf("带 hooks 覆盖的 PrepareWorkspace: %v", err)
+	}
+	if !ws.Managed {
+		t.Fatalf("target 必须是 managed worktree: %+v", ws)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target worktree 不得运行恶意 hook，stat err=%v", err)
+	}
+}
+
 // TestPrepareWorkspaceExistingWorktree 验证 Worktree 模式：用户自带 worktree（归属
 // 校验通过）在其中开任务分支、Managed=false；非本 repo 的目录拒发。
 func TestPrepareWorkspaceExistingWorktree(t *testing.T) {

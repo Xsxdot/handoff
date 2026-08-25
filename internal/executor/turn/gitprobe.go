@@ -8,6 +8,7 @@ package turn
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"strings"
 )
 
@@ -39,4 +40,52 @@ func GitTurnStatus(repoPath, startCommit string) (branch, commit string, hasNew 
 	// 变成 true，等于替模型宣布完成——方向恰好与本函数存在的理由相反。
 	// 逐字保留 opencode 原判据，纯重构不许顺手简化防御条件。
 	return branch, commit, startCommit != "" && commit != "" && commit != startCommit, nil
+}
+
+// GitCommonDir 返回 repoPath 所属仓库的共享 git 公共目录。
+//
+// 参数：repoPath 是主仓库或 linked worktree 的工作目录。
+// 返回：绝对、Clean 的 common git directory；repoPath 非 git 仓库、git 不可用、
+// 输出为空或路径绝对化失败时返回错误。此函数只读，不改变仓库配置。
+func GitCommonDir(repoPath string) (string, error) {
+	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--git-common-dir").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --git-common-dir: %w", err)
+	}
+	common := strings.TrimSpace(string(out))
+	if common == "" {
+		return "", fmt.Errorf("git rev-parse --git-common-dir returned empty path")
+	}
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(repoPath, common)
+	}
+	abs, err := filepath.Abs(common)
+	if err != nil {
+		return "", fmt.Errorf("absolute git-common-dir %q: %w", common, err)
+	}
+	return filepath.Clean(abs), nil
+}
+
+// GitDir 返回 repoPath 所属工作树的私有 git 目录。
+//
+// 参数：repoPath 是主仓库或 linked worktree 的工作目录。
+// 返回：绝对、Clean 的 git directory；repoPath 非 git 仓库、git 不可用、输出为空
+// 或路径绝对化失败时返回错误。此函数只读 git，不依赖工作树目录名，也不改变配置。
+func GitDir(repoPath string) (string, error) {
+	out, err := exec.Command("git", "-C", repoPath, "rev-parse", "--absolute-git-dir").Output()
+	if err != nil {
+		return "", fmt.Errorf("git rev-parse --absolute-git-dir: %w", err)
+	}
+	privateDir := strings.TrimSpace(string(out))
+	if privateDir == "" {
+		return "", fmt.Errorf("git rev-parse --absolute-git-dir returned empty path")
+	}
+	if !filepath.IsAbs(privateDir) {
+		privateDir = filepath.Join(repoPath, privateDir)
+	}
+	abs, err := filepath.Abs(privateDir)
+	if err != nil {
+		return "", fmt.Errorf("absolute git-dir %q: %w", privateDir, err)
+	}
+	return filepath.Clean(abs), nil
 }
