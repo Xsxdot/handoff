@@ -16,7 +16,7 @@ func TestMoveCASAndGate(t *testing.T) {
 	if !errors.Is(err, ErrGateBlocked) {
 		t.Fatalf("gate 应拒绝: %v", err)
 	}
-	_ = s.AttachFile(card.ID, "spec", "specs/x.md", "test")
+	_, _ = s.AttachFile(card.ID, "spec", "specs/x.md", "test")
 	if err := s.MoveCard(card.ID, "已出spec", "", "test"); err != nil {
 		t.Fatalf("挂附件后应放行: %v", err)
 	}
@@ -59,7 +59,7 @@ func TestMoveCASAndGate(t *testing.T) {
 func TestMoveGateAcceptance(t *testing.T) {
 	s := seedStore(t)
 	card, _ := s.CreateCard(NewCard{Title: "t", Project: "p", Workflow: "feature", Actor: "test"})
-	_ = s.AttachFile(card.ID, "spec", "s.md", "test")
+	_, _ = s.AttachFile(card.ID, "spec", "s.md", "test")
 	_ = s.MoveCard(card.ID, "已出spec", "", "test")
 	_ = s.MoveCard(card.ID, StatusDoing, "", "test")
 	_ = s.MoveCard(card.ID, StatusReview, "", "test")
