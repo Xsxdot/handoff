@@ -645,6 +645,131 @@ func TestNodeStepFailedVerdictSkipsOutputVerification(t *testing.T) {
 	}
 }
 
+// TestNodeStepLeftoverDecisionHaltsForHuman 终态遗留裁决补解析（契约 §3.7
+// 正断言）：卡已到终态但挂着 open 裁决（协调者死亡窗口产物）时，RunOnce 入口
+// 必须转等人、reason 以「终态遗留裁决」开头，绝不允许继续派发，绝不伪造
+// decision_answered（答案是用户的事实，系统不代答）。负断言（全路径事件流无
+// decision_answered）单独成立时是稳定假绿——它不能证明补解析跑过；正断言
+// 才是牙，两条一起锁。
+func TestNodeStepLeftoverDecisionHaltsForHuman(t *testing.T) {
+	s, c := nodeLedger(t)
+	cardID := c.ID
+	if _, err := s.OpenDecision(cardID, "终态遗留请示", []string{"选项A", "选项B"}, "step:review"); err != nil {
+		t.Fatalf("开裁决: %v", err)
+	}
+	if err := s.MoveCard(cardID, ledger.StatusDone, "", "test"); err != nil {
+		t.Fatalf("移到已完成: %v", err)
+	}
+
+	dispatched := false
+	step := &NodeStep{
+		St:   s,
+		Node: ledger.NodeDef{Name: "待审阅", Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			dispatched = true
+			return "linux-01", "task-1", nil
+		},
+		Await: func(context.Context, string, string) (string, error) { return "", nil },
+	}
+	out, err := step.RunOnce(context.Background(), cardID)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if out.Action != ActionNeedsHuman {
+		t.Fatalf("正断言：应转等人，实得 %q", out.Action)
+	}
+	if !strings.HasPrefix(out.Reason, "终态遗留裁决") {
+		t.Fatalf("正断言：reason 应以「终态遗留裁决」开头，实得 %q", out.Reason)
+	}
+	if dispatched {
+		t.Fatal("终态遗留裁决必须在派发之前拦下：绝不允许继续派发")
+	}
+
+	events, err := s.EventsFromAsc([]string{cardID}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentCount, answeredCount := 0, 0
+	var commentBody string
+	for _, ev := range events {
+		switch ev.Type {
+		case ledger.EvComment:
+			commentCount++
+			commentBody = string(ev.Payload)
+		case ledger.EvDecisionAnswered:
+			answeredCount++
+		}
+	}
+	if commentCount != 1 || !strings.Contains(commentBody, "终态遗留裁决") {
+		t.Fatalf("应恰一条含「终态遗留裁决」的说明评论，实得 %d 条 body=%q", commentCount, commentBody)
+	}
+	if answeredCount != 0 {
+		t.Fatalf("负断言：全路径事件流不得出现 decision_answered，实得 %d", answeredCount)
+	}
+}
+
+// TestNodeStepLeftoverDecisionHaltIsIdempotent 幂等判据（契约 §4 补解析第 2
+// 条）：重复驱动同一张卡不产生第二条说明评论（EnsureComment dedupe_key 生效）。
+// 变异靶：实现把 EnsureComment 换回 AddComment → 本测试「恰 1 条评论」翻红。
+// dedupeKey 必须是卡级且不带时间戳/节点名，否则同卡重驱动会换键而漏掉第二条。
+func TestNodeStepLeftoverDecisionHaltIsIdempotent(t *testing.T) {
+	s, c := nodeLedger(t)
+	cardID := c.ID
+	if _, err := s.OpenDecision(cardID, "终态遗留请示", []string{"选项A"}, "step:review"); err != nil {
+		t.Fatalf("开裁决: %v", err)
+	}
+	if err := s.MoveCard(cardID, ledger.StatusDone, "", "test"); err != nil {
+		t.Fatalf("移到已完成: %v", err)
+	}
+	step := newNodeStep(t, s, ledger.NodeDef{Name: "待审阅", Dispatch: true, Verdict: true, Template: "review-generic"}, "", nil)
+	for i := 0; i < 2; i++ {
+		out, err := step.RunOnce(context.Background(), cardID)
+		if err != nil || out.Action != ActionNeedsHuman {
+			t.Fatalf("第 %d 次驱动: %v %+v", i+1, err, out)
+		}
+	}
+	events, err := s.EventsFromAsc([]string{cardID}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentCount, answeredCount := 0, 0
+	for _, ev := range events {
+		switch ev.Type {
+		case ledger.EvComment:
+			commentCount++
+		case ledger.EvDecisionAnswered:
+			answeredCount++
+		}
+	}
+	if commentCount != 1 {
+		t.Fatalf("重复驱动两次后应仍恰 1 条说明评论（EnsureComment dedupe_key 生效），实得 %d", commentCount)
+	}
+	if answeredCount != 0 {
+		t.Fatalf("负断言：重复驱动路径也不得出现 decision_answered，实得 %d", answeredCount)
+	}
+}
+
+// TestNodeStepLeftoverDecisionOnTerminatedCard 中间态的另一半：Status=终止
+// （CloseCard 进入）同样触发补解析转等人，reason 前缀一致。
+func TestNodeStepLeftoverDecisionOnTerminatedCard(t *testing.T) {
+	s, c := nodeLedger(t)
+	cardID := c.ID
+	if _, err := s.OpenDecision(cardID, "终止前遗留", []string{"选项A"}, "step:review"); err != nil {
+		t.Fatalf("开裁决: %v", err)
+	}
+	if err := s.CloseCard(cardID, ledger.CloseAbandoned, "test"); err != nil {
+		t.Fatalf("终止: %v", err)
+	}
+	step := newNodeStep(t, s, ledger.NodeDef{Name: "待审阅", Dispatch: true, Verdict: true, Template: "review-generic"}, "", nil)
+	out, err := step.RunOnce(context.Background(), cardID)
+	if err != nil || out.Action != ActionNeedsHuman {
+		t.Fatalf("终止卡: %v %+v", err, out)
+	}
+	if !strings.HasPrefix(out.Reason, "终态遗留裁决") {
+		t.Fatalf("reason 前缀: %q", out.Reason)
+	}
+}
+
 // 声明了产出物却没装配校验钩子时必须显式转等人：静默跳过等于把"节点产出物挂卡"
 // 悄悄降级成不校验，而 nil 钩子直接调用会 panic 掉整个环节。
 func TestNodeStepProducesWithoutHooksHaltsForHuman(t *testing.T) {
@@ -677,5 +802,70 @@ func TestNodeStepProducesWithoutHooksHaltsForHuman(t *testing.T) {
 	got, _ := st.GetCard(card.ID)
 	if got.Status == ledger.StatusReview {
 		t.Fatal("未装配校验时不得放行到下一列")
+	}
+}
+
+// TestNodeStepLeftoverDecisionIgnoresOpenDecisionOnOtherCard 跨卡隔离（契约
+// §3.7 中间态判据 + breakdown C3 ④「open 判定复用 ListDecisions(openOnly)
+// 按卡过滤」）：open 裁决开在 B 卡上、A 卡一条都没有，驱动 A 的 RunOnce 时
+// B 的裁决必须拦不住 A——A 不转等人、不产生「终态遗留裁决」说明评论，正常派发。
+// 变异靶：把 node.go 过滤循环里的 `d.CardID == cardID` 整段去掉（任何卡的 open
+// 裁决都能拦下本卡）→ 本测试「A 正常派发 / 无 needs_human / 无终态遗留评论」
+// 翻红。协调者验收变异实测该过滤从未被测试行使过——本测试就是它的牙。
+func TestNodeStepLeftoverDecisionIgnoresOpenDecisionOnOtherCard(t *testing.T) {
+	s, cA := nodeLedger(t)
+	cardA := cA.ID
+	cardB, err := s.CreateCard(ledger.NewCard{Title: "B 卡", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatalf("建 B 卡: %v", err)
+	}
+	if _, err := s.OpenDecision(cardB.ID, "B 卡的 open 裁决", []string{"选项A"}, "step:review"); err != nil {
+		t.Fatalf("在 B 卡上开裁决: %v", err)
+	}
+	if err := s.MoveCard(cardA, ledger.StatusDone, "", "test"); err != nil {
+		t.Fatalf("把 A 移到已完成: %v", err)
+	}
+
+	dispatched := false
+	step := &NodeStep{
+		St:   s,
+		Node: ledger.NodeDef{Name: "待审阅", Dispatch: true, Template: "review-generic"},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			dispatched = true
+			return "linux-01", "task-1", nil
+		},
+		Await: func(context.Context, string, string) (string, error) { return "", nil },
+	}
+	out, err := step.RunOnce(context.Background(), cardA)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if out.Action != ActionDispatched {
+		t.Fatalf("跨卡隔离：A 卡无 open 裁决，B 卡的裁决不得拦下 A——应正常派发，实得 action=%q reason=%q", out.Action, out.Reason)
+	}
+	if !dispatched {
+		t.Fatal("跨卡隔离：B 卡的裁决不得拦下 A 的派发")
+	}
+
+	events, err := s.EventsFromAsc([]string{cardA}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	commentCount, needsCount := 0, 0
+	var commentBody string
+	for _, ev := range events {
+		switch ev.Type {
+		case ledger.EvComment:
+			commentCount++
+			commentBody = string(ev.Payload)
+		case ledger.EvNeedsHuman:
+			needsCount++
+		}
+	}
+	if needsCount != 0 {
+		t.Fatalf("跨卡隔离：A 不得因 B 的裁决转等人，实得 %d 条 needs_human", needsCount)
+	}
+	if commentCount != 0 || strings.Contains(commentBody, "终态遗留裁决") {
+		t.Fatalf("跨卡隔离：A 不得产生「终态遗留裁决」评论，实得 %d 条 body=%q", commentCount, commentBody)
 	}
 }
