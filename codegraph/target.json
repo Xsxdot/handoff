@@ -9,16 +9,23 @@
  "contracts": [
   {
    "from": "d_cli",
+   "to": "d_gateway",
+   "legacyBudget": 1,
+   "legacyBudgetNote": "B229：补记既存方向，非新增依赖。基线 e24b9a31:cmd/agentd.go:273 已有 srv.SetLedger(lst)，T5 仅将其提取为具名函数 setupLedger，调用未变；baseline.json 中 n_cmd_agentdCmd_RunE→n_agentd_* 既有 12 条边。此前契约缺席是建模缺口（内联调用未建节点），提取后边才显形。"
+  },
+  {
+   "from": "d_cli",
    "to": "d_execution",
    "legacyBudget": 11
   },
   {
    "from": "d_cli",
    "to": "d_ledger",
-   "legacyBudget": 1,
+   "legacyBudget": 4,
    "entries": [
     "ledger.Store"
-   ]
+   ],
+   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。"
   },
   {
    "from": "d_cli",
@@ -82,10 +89,11 @@
   {
    "from": "d_gateway",
    "to": "d_ledger",
-   "legacyBudget": 14,
+   "legacyBudget": 17,
    "entries": [
     "ledgerstep.StepRunner"
-   ]
+   ],
+   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。"
   },
   {
    "from": "d_gateway",
@@ -95,7 +103,8 @@
   {
    "from": "d_gateway",
    "to": "d_orchestration",
-   "legacyBudget": 319
+   "legacyBudget": 321,
+   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。"
   },
   {
    "from": "d_gateway",
@@ -124,7 +133,8 @@
   {
    "from": "d_gateway",
    "to": "d_transport",
-   "legacyBudget": 8
+   "legacyBudget": 9,
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。"
   },
   {
    "from": "d_gateway",
