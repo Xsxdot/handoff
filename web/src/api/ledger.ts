@@ -98,6 +98,8 @@ export interface NodeOverride {
   discipline?: string
   target?: string
   model?: string
+  // squad 是节点绑定的执行者小队名（B156.3）；空 = 存量直绑语义不变。
+  squad?: string
   // purpose 按节点覆盖模板派发用途（如 implement / review）。
   purpose?: string
 }

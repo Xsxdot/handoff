@@ -64,6 +64,16 @@
       "responsibility": "把正确版本的二进制与技能落到每台机器：能力探测、发布资产下载校验、自升级判据与执行、系统服务托管。",
       "type": "boundary"
     },
+    "d_scheduling": {
+      "label": "编制调度",
+      "responsibility": "为工作流节点点火与协调者拉起裁定并发资格：载体（机×CLI×HOME×模型×凭据×上限）与小队的一等登记与版本化、两级并发准入（小队政策位+载体物理位，协调者准入优先、不抢占在跑）、点火请求的持久排队与按就绪度出队——把「谁能现在跑」从任务状态机里分离出来。",
+      "type": "logic"
+    },
+    "d_keystone": {
+      "label": "协调者 Keystone",
+      "responsibility": "替手替眼的机器协调者控制面：开卡即绑/一键拉起两入口、消费 card_events 单流做唤醒决策（该不该醒、同卡合并、attach 人工接管互斥）、无头 resume 与 attach 定位双通道、失败兜底降级链（resume→重建四步→转等人）；不拥有持久数据，只做编排决策。",
+      "type": "logic"
+    },
     "d_execution_contract": {
       "label": "执行契约",
       "responsibility": "定义 executor 挂载契约（Adapter 接口、事件与结果类型）与教模型用的回合帧协议，是执行域对编排域的唯一承诺面。",
@@ -352,6 +362,24 @@
     "k_web_utils": "d_web_shell",
     "k_webui_fn": "d_web_shell",
     "k_wire_fn": "d_sessions",
-    "k_wire_model": "d_sessions"
+    "k_wire_model": "d_sessions",
+    "k_scheduling_Service": "d_scheduling",
+    "k_scheduling_fn": "d_scheduling",
+    "k_scheduling_model": "d_scheduling",
+    "k_schedclient_Registry": "d_scheduling",
+    "k_schedclient_model": "d_scheduling",
+    "k_keystone_Service": "d_keystone",
+    "k_keystone_fn": "d_keystone",
+    "k_keystone_model": "d_keystone",
+    "k_keysclient_model": "d_keystone",
+    "k_ledgerapi_Facade": "d_ledger",
+    "k_ledgerapi_fn": "d_ledger",
+    "k_ledgerapi_model": "d_ledger",
+    "k_hostapi_Host": "d_execution_host",
+    "k_hostapi_fn": "d_execution_host",
+    "k_hostapi_model": "d_execution_host",
+    "k_ptyapi_Host": "d_sessions",
+    "k_ptyapi_fn": "d_sessions",
+    "k_ptyapi_model": "d_sessions"
   }
 }

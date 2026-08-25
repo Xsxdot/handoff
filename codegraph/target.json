@@ -86,7 +86,22 @@
   {
    "from": "d_gateway",
    "to": "d_execution",
-   "legacyBudget": 1
+   "legacyBudget": 1,
+   "entries": [
+    "executor（包级函数）",
+    "hostapi.Host",
+    "hostapi（包级函数）"
+   ]
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_keystone",
+   "legacyBudget": 0,
+   "entries": [
+    "keystone.Service",
+    "keystone（包级函数）"
+   ],
+   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调 keystone 域（拉起/唤醒/互斥/attach 定位）；预算 0 = 一律走门面，穿透内部即违法。"
   },
   {
    "from": "d_gateway",
@@ -94,9 +109,11 @@
    "legacyBudget": 17,
    "entries": [
     "ledger.Store",
-    "ledgerstep.StepRunner"
+    "ledgerstep.StepRunner",
+    "ledgerapi.Facade",
+    "ledgerapi（包级函数）"
    ],
-   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。"
+   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经 ledgerapi 门面（entries 内的 ledgerapi.*），不扩大直调债。"
   },
   {
    "from": "d_gateway",
@@ -127,10 +144,22 @@
   },
   {
    "from": "d_gateway",
+   "to": "d_scheduling",
+   "legacyBudget": 0,
+   "entries": [
+    "scheduling.Service",
+    "scheduling（包级函数）"
+   ],
+   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；预算 0 = 一律走门面，穿透内部即违法。"
+  },
+  {
+   "from": "d_gateway",
    "to": "d_sessions",
    "legacyBudget": 14,
    "entries": [
-    "ptyhost 实体"
+    "ptyhost 实体",
+    "ptyapi.Host",
+    "ptyapi（包级函数）"
    ]
   },
   {

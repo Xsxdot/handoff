@@ -1,0 +1,1783 @@
+{
+ "view": "cards/B156.3-charter-3",
+ "base": "7c5e6b5d8a077c37b64cf8a953ba66adbf0be544",
+ "summary": "B156.3 contract Ticket 0：两个新子系统立户口（d_scheduling 编制调度 / d_keystone 协调者 Keystone）、三个薄门面（ledgerapi/hostapi/ptyapi）与两条出站端口（schedclient/keysclient）的骨架符号入图；节点绑小队的 NodeOverride.Squad 三侧镜像；组装点 SetupAutomation 的跨域绑定边。其中 scheduling/keystone→ledger 无静态调用边——依赖经端口接口在运行期由组装点注入，边声明的是真实运行拓扑。",
+ "containersAdded": {
+  "k_ledgerapi_Facade": {
+   "label": "ledgerapi.Facade",
+   "kind": "类型方法",
+   "domain": "d_ledger"
+  },
+  "k_ledgerapi_fn": {
+   "label": "ledgerapi（包级函数）",
+   "kind": "函数",
+   "domain": "d_ledger"
+  },
+  "k_ledgerapi_model": {
+   "label": "ledgerapi 实体",
+   "kind": "模型",
+   "domain": "d_ledger"
+  },
+  "k_schedclient_Registry": {
+   "label": "schedclient.Registry",
+   "kind": "类型方法",
+   "domain": "d_scheduling"
+  },
+  "k_schedclient_model": {
+   "label": "schedclient 实体",
+   "kind": "模型",
+   "domain": "d_scheduling"
+  },
+  "k_scheduling_Service": {
+   "label": "scheduling.Service",
+   "kind": "类型方法",
+   "domain": "d_scheduling"
+  },
+  "k_scheduling_fn": {
+   "label": "scheduling（包级函数）",
+   "kind": "函数",
+   "domain": "d_scheduling"
+  },
+  "k_scheduling_model": {
+   "label": "scheduling 实体",
+   "kind": "模型",
+   "domain": "d_scheduling"
+  },
+  "k_keystone_Service": {
+   "label": "keystone.Service",
+   "kind": "类型方法",
+   "domain": "d_keystone"
+  },
+  "k_keystone_fn": {
+   "label": "keystone（包级函数）",
+   "kind": "函数",
+   "domain": "d_keystone"
+  },
+  "k_keystone_model": {
+   "label": "keystone 实体",
+   "kind": "模型",
+   "domain": "d_keystone"
+  },
+  "k_keysclient_model": {
+   "label": "keysclient 实体",
+   "kind": "模型",
+   "domain": "d_keystone"
+  },
+  "k_hostapi_Host": {
+   "label": "hostapi.Host",
+   "kind": "类型方法",
+   "domain": "d_execution_host"
+  },
+  "k_hostapi_fn": {
+   "label": "hostapi（包级函数）",
+   "kind": "函数",
+   "domain": "d_execution_host"
+  },
+  "k_hostapi_model": {
+   "label": "hostapi 实体",
+   "kind": "模型",
+   "domain": "d_execution_host"
+  },
+  "k_ptyapi_Host": {
+   "label": "ptyapi.Host",
+   "kind": "类型方法",
+   "domain": "d_sessions"
+  },
+  "k_ptyapi_fn": {
+   "label": "ptyapi（包级函数）",
+   "kind": "函数",
+   "domain": "d_sessions"
+  },
+  "k_ptyapi_model": {
+   "label": "ptyapi 实体",
+   "kind": "模型",
+   "domain": "d_sessions"
+  }
+ },
+ "nodesAdded": {
+  "m_ledgerapi_RegistryEntry": {
+   "kind": "model",
+   "container": "k_ledgerapi_model",
+   "order": 1,
+   "name": "RegistryEntry",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 24,
+   "signature": "type RegistryEntry",
+   "fields": [
+    [
+     "Kind",
+     "string",
+     "注册表种类（carrier/squad/sched_running/ignition_queue/launch_queue）"
+    ],
+    [
+     "ID",
+     "string",
+     "实体 id"
+    ],
+    [
+     "Version",
+     "int",
+     "CAS 版本号，从 1 起"
+    ],
+    [
+     "Seq",
+     "int64",
+     "全表单调写入序；编制域出队 FIFO 的依据"
+    ],
+    [
+     "Body",
+     "json.RawMessage",
+     "写入方序列化好的 JSON，门面不解释"
+    ]
+   ],
+   "summary": "RegistryEntry 是注册表一行（载体/小队/点火队列等版本化实体）"
+  },
+  "n_ledgerapi_New": {
+   "kind": "func",
+   "container": "k_ledgerapi_fn",
+   "order": 1,
+   "name": "New",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 39,
+   "signature": "func New(st *ledger.Store) *Facade",
+   "params": [
+    [
+     "st",
+     "*ledger.Store",
+     "已打开的账本库"
+    ]
+   ],
+   "returns": "*Facade",
+   "summary": "New 包装一个已打开的账本库；组装点构造一次后分发给各消费方，不另开连接"
+  },
+  "n_ledgerapi_Facade_GetCard": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 1,
+   "name": "Facade.GetCard",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 45,
+   "signature": "func (f *Facade) GetCard(id string) (Card, error)",
+   "params": [
+    [
+     "id",
+     "string",
+     "卡号"
+    ]
+   ],
+   "returns": "Card, error",
+   "summary": "读一张卡（透传 ledger.Store.GetCard）"
+  },
+  "n_ledgerapi_Facade_EventsFromAsc": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 2,
+   "name": "Facade.EventsFromAsc",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 48,
+   "signature": "func (f *Facade) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]Event, error)",
+   "params": [
+    [
+     "cardIDs",
+     "[]string",
+     "卡号集"
+    ],
+    [
+     "fromSeq",
+     "int64",
+     "起始 seq（含）"
+    ],
+    [
+     "limit",
+     "int",
+     "上限"
+    ]
+   ],
+   "returns": "[]Event, error",
+   "summary": "按卡读事件流升序段（唤醒决策与重建四步的读账路径）"
+  },
+  "n_ledgerapi_Facade_EffectiveBaseBranch": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 3,
+   "name": "Facade.EffectiveBaseBranch",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 53,
+   "signature": "func (f *Facade) EffectiveBaseBranch(id string) (string, error)",
+   "params": [
+    [
+     "id",
+     "string",
+     "卡号"
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "读卡的有效基线分支（开场评估的新鲜度判据）"
+  },
+  "n_ledgerapi_Facade_AddComment": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 4,
+   "name": "Facade.AddComment",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 59,
+   "signature": "func (f *Facade) AddComment(cardID, body, kind, actor string) (Event, error)",
+   "params": [
+    [
+     "cardID",
+     "string",
+     "卡号"
+    ],
+    [
+     "body",
+     "string",
+     "正文"
+    ],
+    [
+     "kind",
+     "string",
+     "评论类"
+    ],
+    [
+     "actor",
+     "string",
+     "署名"
+    ]
+   ],
+   "returns": "Event, error",
+   "summary": "追加卡 timeline 评论；会话子系统落地前协调者叙事以 note 兜底落账"
+  },
+  "n_ledgerapi_Facade_MarkNeedsHuman": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 5,
+   "name": "Facade.MarkNeedsHuman",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 64,
+   "signature": "func (f *Facade) MarkNeedsHuman(cardID, reason, actor string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     "卡号"
+    ],
+    [
+     "reason",
+     "string",
+     "原因"
+    ],
+    [
+     "actor",
+     "string",
+     "署名"
+    ]
+   ],
+   "returns": "error",
+   "summary": "打等人标记；唤醒兜底链终点「转等人」经此落账"
+  },
+  "n_ledgerapi_Facade_RegistryPut": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 6,
+   "name": "Facade.RegistryPut",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 69,
+   "signature": "func (f *Facade) RegistryPut(kind, id string, expectVersion int, body []byte, actor string) (int, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     "注册表种类"
+    ],
+    [
+     "id",
+     "string",
+     "实体 id"
+    ],
+    [
+     "expectVersion",
+     "int",
+     "期望版本，0=必须不存在"
+    ],
+    [
+     "body",
+     "[]byte",
+     "JSON 正文"
+    ],
+    [
+     "actor",
+     "string",
+     "审计主体"
+    ]
+   ],
+   "returns": "int, error",
+   "summary": "以 CAS 写入注册表实体并返回新版本号（冲突返回 ledger.ErrCASConflict）"
+  },
+  "n_ledgerapi_Facade_RegistryGet": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 7,
+   "name": "Facade.RegistryGet",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 74,
+   "signature": "func (f *Facade) RegistryGet(kind, id string) (RegistryEntry, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     "注册表种类"
+    ],
+    [
+     "id",
+     "string",
+     "实体 id"
+    ]
+   ],
+   "returns": "RegistryEntry, error",
+   "summary": "读一条注册表实体；不存在返回 ledger.ErrNotFound"
+  },
+  "n_ledgerapi_Facade_RegistryList": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 8,
+   "name": "Facade.RegistryList",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 83,
+   "signature": "func (f *Facade) RegistryList(kind string) ([]RegistryEntry, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     "注册表种类"
+    ]
+   ],
+   "returns": "[]RegistryEntry, error",
+   "summary": "按 kind 列出全部实体，seq 升序"
+  },
+  "n_ledgerapi_Facade_RegistryDelete": {
+   "kind": "func",
+   "container": "k_ledgerapi_Facade",
+   "order": 9,
+   "name": "Facade.RegistryDelete",
+   "file": "internal/ledgerapi/ledgerapi.go",
+   "line": 96,
+   "signature": "func (f *Facade) RegistryDelete(kind, id string, expectVersion int, actor string) error",
+   "params": [
+    [
+     "kind",
+     "string",
+     "注册表种类"
+    ],
+    [
+     "id",
+     "string",
+     "实体 id"
+    ],
+    [
+     "expectVersion",
+     "int",
+     "期望版本"
+    ],
+    [
+     "actor",
+     "string",
+     "审计主体"
+    ]
+   ],
+   "returns": "error",
+   "summary": "以 CAS 删除一条注册表实体"
+  },
+  "m_schedclient_Record": {
+   "kind": "model",
+   "container": "k_schedclient_model",
+   "order": 1,
+   "name": "Record",
+   "file": "internal/schedclient/schedclient.go",
+   "line": 22,
+   "signature": "type Record",
+   "fields": [
+    [
+     "ID",
+     "string",
+     "实体 id"
+    ],
+    [
+     "Version",
+     "int",
+     "CAS 版本号"
+    ],
+    [
+     "Seq",
+     "int64",
+     "全局单调写入序（出队 FIFO 依据）"
+    ],
+    [
+     "Body",
+     "[]byte",
+     "调用方序列化好的 JSON——编制域不 import 账本类型（拍板记录①）"
+    ]
+   ],
+   "summary": "Record 是注册表里一条版本化实体的端口投影"
+  },
+  "m_schedclient_Registry": {
+   "kind": "model",
+   "container": "k_schedclient_Registry",
+   "order": 1,
+   "name": "Registry",
+   "file": "internal/schedclient/schedclient.go",
+   "line": 31,
+   "signature": "interface Registry",
+   "fields": [
+    [
+     "Put",
+     "func(kind, id string, expectVersion int, body []byte, actor string) (version int, err error)",
+     "CAS 写入"
+    ],
+    [
+     "Get",
+     "func(kind, id string) (Record, error)",
+     "读取；缺失返回 ErrNotFound"
+    ],
+    [
+     "List",
+     "func(kind string) ([]Record, error)",
+     "按写入序列出"
+    ],
+    [
+     "Delete",
+     "func(kind, id string, expectVersion int, actor string) error",
+     "CAS 删除"
+    ]
+   ],
+   "summary": "Registry 是载体/小队/点火队列/并发计数的持久化缝（接口归使用方，组装点绑定）"
+  },
+  "m_scheduling_Carrier": {
+   "kind": "model",
+   "container": "k_scheduling_model",
+   "order": 1,
+   "name": "Carrier",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 46,
+   "signature": "type Carrier",
+   "fields": [
+    [
+     "Name",
+     "string",
+     "唯一名"
+    ],
+    [
+     "Machine",
+     "string",
+     "配置里的 target 名"
+    ],
+    [
+     "CLI",
+     "string",
+     "opencode / claude / ..."
+    ],
+    [
+     "HomeDir",
+     "string",
+     "隔离 HOME 档案根"
+    ],
+    [
+     "Model",
+     "string",
+     "缺省模型，可被请求覆盖"
+    ],
+    [
+     "Credential",
+     "CredentialSource",
+     "standalone | main_home_sync"
+    ],
+    [
+     "MaxConcurrency",
+     "int",
+     "载体级并发上限（物理位）；0=不限"
+    ],
+    [
+     "Healthy",
+     "bool",
+     "健康位形状；限额探测落 roadmap，登记缺省 true"
+    ]
+   ],
+   "summary": "Carrier 是一台机器上一个可领活的 CLI 档案（spec §3 载体实体归并后的形状）"
+  },
+  "m_scheduling_Squad": {
+   "kind": "model",
+   "container": "k_scheduling_model",
+   "order": 2,
+   "name": "Squad",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 66,
+   "signature": "type Squad",
+   "fields": [
+    [
+     "Name",
+     "string",
+     "小队名"
+    ],
+    [
+     "Role",
+     "SquadRole",
+     "executor 绑节点 / coordinator 绑拉起通道，不混编"
+    ],
+    [
+     "Members",
+     "[]string",
+     "成员载体引用集"
+    ],
+    [
+     "MaxConcurrency",
+     "int",
+     "并发政策位；0=不限"
+    ]
+   ],
+   "summary": "Squad 是编制：角色 + 成员载体引用集 + 并发政策位"
+  },
+  "m_scheduling_IgnitionRequest": {
+   "kind": "model",
+   "container": "k_scheduling_model",
+   "order": 3,
+   "name": "IgnitionRequest",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 76,
+   "signature": "type IgnitionRequest",
+   "fields": [
+    [
+     "Card",
+     "string",
+     "卡号"
+    ],
+    [
+     "Squad",
+     "string",
+     "执行者小队名"
+    ],
+    [
+     "Node",
+     "string",
+     "工作流节点名，可空"
+    ],
+    [
+     "Target",
+     "string",
+     "一次性覆盖（请求或直绑现状值）"
+    ],
+    [
+     "Executor",
+     "string",
+     "同上"
+    ],
+    [
+     "Model",
+     "string",
+     "同上"
+    ],
+    [
+     "Priority",
+     "string",
+     "入队时刻的卡优先级快照"
+    ],
+    [
+     "Ready",
+     "bool",
+     "入队时刻的就绪度快照"
+    ],
+    [
+     "Actor",
+     "string",
+     "发起方"
+    ]
+   ],
+   "summary": "IgnitionRequest 是一次点火/拉起请求；快照在入队定格，出队不再重读卡（拍板记录②）"
+  },
+  "m_scheduling_Binding": {
+   "kind": "model",
+   "container": "k_scheduling_model",
+   "order": 4,
+   "name": "Binding",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 89,
+   "signature": "type Binding",
+   "fields": [
+    [
+     "Squad",
+     "string",
+     "命中小队"
+    ],
+    [
+     "Carrier",
+     "string",
+     "命中的具体载体"
+    ],
+    [
+     "Target",
+     "string",
+     "有效目标机"
+    ],
+    [
+     "Executor",
+     "string",
+     "有效执行者"
+    ],
+    [
+     "Model",
+     "string",
+     "有效模型，可空"
+    ]
+   ],
+   "summary": "Binding 是准入成功后的落点：哪个小队的哪个载体、有效三元组是什么"
+  },
+  "n_scheduling_New": {
+   "kind": "func",
+   "container": "k_scheduling_fn",
+   "order": 1,
+   "name": "New",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 111,
+   "signature": "func New(repo schedclient.Registry) *Service",
+   "params": [
+    [
+     "repo",
+     "schedclient.Registry",
+     "组装点绑定的持久化端口"
+    ]
+   ],
+   "returns": "*Service",
+   "summary": "用绑定的注册表端口构造编制域服务；内存里不留任何权威计数"
+  },
+  "n_scheduling_Service_Admit": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 1,
+   "name": "Service.Admit",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 176,
+   "signature": "func (s *Service) Admit(req IgnitionRequest) (Binding, error)",
+   "params": [
+    [
+     "req",
+     "IgnitionRequest",
+     "点火请求"
+    ]
+   ],
+   "returns": "Binding, error",
+   "summary": "解析加两级准入：小队有位且载体有位才放行；满员返回 ErrNoSlot 调用方转排队"
+  },
+  "n_scheduling_Service_LaunchAdmit": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 2,
+   "name": "Service.LaunchAdmit",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 196,
+   "signature": "func (s *Service) LaunchAdmit(squadName string) (Binding, error)",
+   "params": [
+    [
+     "squadName",
+     "string",
+     "协调者小队名"
+    ]
+   ],
+   "returns": "Binding, error",
+   "summary": "协调者拉起的两级准入（协调者小队并发满时新拉起请求排队，spec §3）"
+  },
+  "n_scheduling_Service_Release": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 3,
+   "name": "Service.Release",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 216,
+   "signature": "func (s *Service) Release(squadName, carrierName string) error",
+   "params": [
+    [
+     "squadName",
+     "string",
+     "小队名"
+    ],
+    [
+     "carrierName",
+     "string",
+     "载体名"
+    ]
+   ],
+   "returns": "error",
+   "summary": "归还两级名额；幂等，计数到 0 不再下探"
+  },
+  "n_scheduling_Service_Enqueue": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 4,
+   "name": "Service.Enqueue",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 225,
+   "signature": "func (s *Service) Enqueue(req IgnitionRequest, kind string) (position int, err error)",
+   "params": [
+    [
+     "req",
+     "IgnitionRequest",
+     "请求"
+    ],
+    [
+     "kind",
+     "string",
+     "launch_queue 或 ignition_queue"
+    ]
+   ],
+   "returns": "position int, err error",
+   "summary": "满员的点火请求持久入队（账本内，agentd 重启不丢）；同键重排保留原入队序"
+  },
+  "n_scheduling_Service_PopReady": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 5,
+   "name": "Service.PopReady",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 257,
+   "signature": "func (s *Service) PopReady(kind string) (IgnitionRequest, bool, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     "队列种类"
+    ]
+   ],
+   "returns": "IgnitionRequest, bool, error",
+   "summary": "取走队头：就绪度 → 卡优先级 → FIFO（冻结顺序，竖切测试钉住）；空队返回 false"
+  },
+  "m_keystone_WakeEvent": {
+   "kind": "model",
+   "container": "k_keystone_model",
+   "order": 1,
+   "name": "WakeEvent",
+   "file": "internal/keystone/keystone.go",
+   "line": 29,
+   "signature": "type WakeEvent",
+   "fields": [
+    [
+     "Kind",
+     "WakeKind",
+     "task_terminal / ticket / queue_release / message；progress 类不在清单=不醒"
+    ],
+    [
+     "Card",
+     "string",
+     "卡号"
+    ],
+    [
+     "Summary",
+     "string",
+     "一行人读得懂的事件摘要，进开场简报"
+    ]
+   ],
+   "summary": "WakeEvent 是一条待决策的唤醒事件（消费 card_events 单流后归一化的形状）"
+  },
+  "m_keystone_Decision": {
+   "kind": "model",
+   "container": "k_keystone_model",
+   "order": 2,
+   "name": "Decision",
+   "file": "internal/keystone/keystone.go",
+   "line": 36,
+   "signature": "type Decision",
+   "fields": [
+    [
+     "Wake",
+     "bool",
+     "该不该醒"
+    ],
+    [
+     "Reason",
+     "string",
+     "不唤醒时必须给出原因"
+    ]
+   ],
+   "summary": "Decision 是唤醒决策结论"
+  },
+  "m_keystone_RoundResult": {
+   "kind": "model",
+   "container": "k_keystone_model",
+   "order": 3,
+   "name": "RoundResult",
+   "file": "internal/keystone/keystone.go",
+   "line": 42,
+   "signature": "type RoundResult",
+   "fields": [
+    [
+     "Woke",
+     "bool",
+     "是否真的跑了协调者回合"
+    ],
+    [
+     "SessionID",
+     "string",
+     "本回合实际生效会话 id"
+    ],
+    [
+     "Rebuilt",
+     "bool",
+     "是否走了重建四步"
+    ],
+    [
+     "Escalated",
+     "bool",
+     "是否转等人"
+    ],
+    [
+     "Output",
+     "string",
+     "回合输出原文"
+    ]
+   ],
+   "summary": "RoundResult 是一次唤醒回合的回执"
+  },
+  "n_keystone_New": {
+   "kind": "func",
+   "container": "k_keystone_fn",
+   "order": 1,
+   "name": "New",
+   "file": "internal/keystone/keystone.go",
+   "line": 62,
+   "signature": "func New(runner keysclient.Runner, narrator keysclient.Narrator, ledger keysclient.LedgerView, locator keysclient.TerminalLocator) *Service",
+   "params": [
+    [
+     "runner",
+     "keysclient.Runner",
+     "会话承载缝"
+    ],
+    [
+     "narrator",
+     "keysclient.Narrator",
+     "叙事落点缝"
+    ],
+    [
+     "ledger",
+     "keysclient.LedgerView",
+     "账本只读面+转等人"
+    ],
+    [
+     "locator",
+     "keysclient.TerminalLocator",
+     "attach 定位缝，可 nil"
+    ]
+   ],
+   "returns": "*Service",
+   "summary": "组装四条出站端口构造 keystone 服务"
+  },
+  "n_keystone_Service_Decide": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 1,
+   "name": "Service.Decide",
+   "file": "internal/keystone/keystone.go",
+   "line": 75,
+   "signature": "func (s *Service) Decide(ev WakeEvent) Decision",
+   "params": [
+    [
+     "ev",
+     "WakeEvent",
+     "事件"
+    ]
+   ],
+   "returns": "Decision",
+   "summary": "判定一条事件该不该敲醒绑定协调者；attach 人工接管中恒判不醒（spec §4.4 互斥）"
+  },
+  "n_keystone_Service_Wake": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 2,
+   "name": "Service.Wake",
+   "file": "internal/keystone/keystone.go",
+   "line": 90,
+   "signature": "func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent) (RoundResult, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "生命周期"
+    ],
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "evs",
+     "[]WakeEvent",
+     "同卡积压事件，合并为一回合"
+    ]
+   ],
+   "returns": "RoundResult, error",
+   "summary": "跑一个唤醒回合：先读账对齐现场再无头续会话；失败兜底链 resume→重建四步→转等人（spec §5.4）"
+  },
+  "n_keystone_Service_LaunchForCard": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 3,
+   "name": "Service.LaunchForCard",
+   "file": "internal/keystone/keystone.go",
+   "line": 117,
+   "signature": "func (s *Service) LaunchForCard(ctx context.Context, card, source string, spec keysclient.SessionSpec) (RoundResult, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "生命周期"
+    ],
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "source",
+     "string",
+     "card_create=开卡即绑 / manual=一键拉起（spec §5.1 两入口）"
+    ],
+    [
+     "spec",
+     "keysclient.SessionSpec",
+     "隔离 HOME 等会话规格"
+    ]
+   ],
+   "returns": "RoundResult, error",
+   "summary": "拉起一张卡的协调者并绑定；source 只进审计，两入口共用同一实现"
+  },
+  "n_keystone_Service_SetAttach": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 4,
+   "name": "Service.SetAttach",
+   "file": "internal/keystone/keystone.go",
+   "line": 139,
+   "signature": "func (s *Service) SetAttach(card string, active bool)",
+   "params": [
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "active",
+     "bool",
+     "是否人工接管中"
+    ]
+   ],
+   "returns": "",
+   "summary": "置/清「人工接管中」；接管态只在进程内存——PTY 会话本就随 agentd 生死（拍板记录③）"
+  },
+  "n_keystone_Service_Locate": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 5,
+   "name": "Service.Locate",
+   "file": "internal/keystone/keystone.go",
+   "line": 146,
+   "signature": "func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error)",
+   "params": [
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "workdir",
+     "string",
+     "打开目录"
+    ]
+   ],
+   "returns": "keysclient.AttachInfo, error",
+   "summary": "产出 attach 定位三元组（机器→目录→resume 命令），不做第二套 TUI（spec §4.4）"
+  },
+  "m_keysclient_SessionSpec": {
+   "kind": "model",
+   "container": "k_keysclient_model",
+   "order": 0,
+   "name": "SessionSpec",
+   "file": "internal/keysclient/keysclient.go",
+   "line": 15,
+   "signature": "type SessionSpec",
+   "fields": [
+    [
+     "CLI",
+     "string",
+     "opencode / claude / ..."
+    ],
+    [
+     "HomeDir",
+     "string",
+     "隔离 HOME 根；协调者=全套（spec §4.3）"
+    ],
+    [
+     "Model",
+     "string",
+     "协调者模型独立配置"
+    ],
+    [
+     "Workdir",
+     "string",
+     "会话工作目录"
+    ],
+    [
+     "Env",
+     "[]string",
+     "追加 KEY=VALUE；值不得进日志"
+    ]
+   ],
+   "summary": "一次无头拉起的会话规格"
+  },
+  "m_keysclient_SessionRef": {
+   "kind": "model",
+   "container": "k_keysclient_model",
+   "order": 0,
+   "name": "SessionRef",
+   "file": "internal/keysclient/keysclient.go",
+   "line": 24,
+   "signature": "type SessionRef",
+   "fields": [
+    [
+     "CLI",
+     "string",
+     "CLI 名"
+    ],
+    [
+     "SessionID",
+     "string",
+     "可 resume 的会话 id"
+    ],
+    [
+     "Machine",
+     "string",
+     "所在机"
+    ]
+   ],
+   "summary": "指向一个可 resume 的持久会话"
+  },
+  "m_keysclient_TurnResult": {
+   "kind": "model",
+   "container": "k_keysclient_model",
+   "order": 0,
+   "name": "TurnResult",
+   "file": "internal/keysclient/keysclient.go",
+   "line": 31,
+   "signature": "type TurnResult",
+   "fields": [
+    [
+     "SessionID",
+     "string",
+     "实际生效的会话 id（fresh 重建时是新 id）"
+    ],
+    [
+     "Output",
+     "string",
+     "回合末输出原文"
+    ]
+   ],
+   "summary": "一个唤醒回合的产出"
+  },
+  "m_keysclient_Runner": {
+   "kind": "model",
+   "container": "k_keysclient_model",
+   "order": 0,
+   "name": "Runner",
+   "file": "internal/keysclient/keysclient.go",
+   "line": 38,
+   "signature": "type Runner",
+   "fields": [
+    [
+     "Launch",
+     "func(spec SessionSpec, prompt string) (TurnResult, error)",
+     "新建会话并送入第一回合"
+    ],
+    [
+     "Resume",
+     "func(ref SessionRef, prompt string) (TurnResult, error)",
+     "无头续一回合——唤醒常规路径"
+    ]
+   ],
+   "summary": "协调者会话承载缝：不进派发状态机、不产生 task（铁律挂本缝，spec 测试接缝 3）"
+  },
+  "m_keysclient_AttachInfo": {
+   "kind": "model",
+   "container": "k_keysclient_model",
+   "order": 0,
+   "name": "AttachInfo",
+   "file": "internal/keysclient/keysclient.go",
+   "line": 47,
+   "signature": "type AttachInfo",
+   "fields": [
+    [
+     "Machine",
+     "string",
+     "在哪台机器"
+    ],
+    [
+     "Dir",
+     "string",
+     "哪个目录"
+    ],
+    [
+     "Command",
+     "string",
+     "用什么命令打开原生 TUI"
+    ]
+   ],
+   "summary": "attach 定位三元组（handoff 只负责把用户送到门口，spec §4.4）"
+  },
+  "m_keysclient_TerminalLocator": {
+   "kind": "model",
+   "container": "k_keysclient_model",
+   "order": 0,
+   "name": "TerminalLocator",
+   "file": "internal/keysclient/keysclient.go",
+   "line": 54,
+   "signature": "type TerminalLocator",
+   "fields": [
+    [
+     "Locate",
+     "func(ref SessionRef, workdir string) (AttachInfo, error)",
+     "定位 attach 落点"
+    ]
+   ],
+   "summary": "attach 定位缝（终端 tab 本体由 PTY 域薄门面 ptyapi 承载）"
+  },
+  "m_keysclient_Narrator": {
+   "kind": "model",
+   "container": "k_keysclient_model",
+   "order": 0,
+   "name": "Narrator",
+   "file": "internal/keysclient/keysclient.go",
+   "line": 60,
+   "signature": "type Narrator",
+   "fields": [
+    [
+     "Say",
+     "func(cardID, text string) error",
+     "发一条叙事；B156.2 房间未落地前组装点绑卡 note 兜底"
+    ]
+   ],
+   "summary": "叙事落点缝"
+  },
+  "m_keysclient_LedgerView": {
+   "kind": "model",
+   "container": "k_keysclient_model",
+   "order": 0,
+   "name": "LedgerView",
+   "file": "internal/keysclient/keysclient.go",
+   "line": 67,
+   "signature": "type LedgerView",
+   "fields": [
+    [
+     "GetCard",
+     "func(id string) (ledgerapi.Card, error)",
+     "读卡"
+    ],
+    [
+     "EventsFromAsc",
+     "func(cardIDs []string, fromSeq int64, limit int) ([]ledgerapi.Event, error)",
+     "读事件流"
+    ],
+    [
+     "EffectiveBaseBranch",
+     "func(id string) (string, error)",
+     "读有效基线"
+    ],
+    [
+     "MarkNeedsHuman",
+     "func(cardID, reason, actor string) error",
+     "兜底链终点转等人"
+    ]
+   ],
+   "summary": "keystone 对账本的只读面加一条兜底写；组装点直接绑 *ledgerapi.Facade"
+  },
+  "m_hostapi_TurnRequest": {
+   "kind": "model",
+   "container": "k_hostapi_model",
+   "order": 1,
+   "name": "TurnRequest",
+   "file": "internal/hostapi/hostapi.go",
+   "line": 23,
+   "signature": "type TurnRequest",
+   "fields": [
+    [
+     "CLI",
+     "string",
+     "opencode / claude / ..."
+    ],
+    [
+     "HomeDir",
+     "string",
+     "隔离 HOME 档案根（协调者=全套）"
+    ],
+    [
+     "Workdir",
+     "string",
+     "进程 cwd"
+    ],
+    [
+     "Model",
+     "string",
+     "空=CLI 缺省"
+    ],
+    [
+     "Prompt",
+     "string",
+     "本回合输入"
+    ],
+    [
+     "SessionID",
+     "string",
+     "空=新建，非空=续接"
+    ],
+    [
+     "Env",
+     "[]string",
+     "追加 KEY=VALUE；值不得进日志"
+    ],
+    [
+     "Timeout",
+     "time.Duration",
+     "到点即判回合失败；0=包内缺省 30 分钟"
+    ]
+   ],
+   "summary": "TurnRequest 描述一回合的无头执行"
+  },
+  "n_hostapi_Host_RunTurn": {
+   "kind": "func",
+   "container": "k_hostapi_Host",
+   "order": 1,
+   "name": "Host.RunTurn",
+   "file": "internal/hostapi/hostapi.go",
+   "line": 47,
+   "signature": "func (h *Host) RunTurn(ctx context.Context, req TurnRequest) (TurnReply, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "生命周期"
+    ],
+    [
+     "req",
+     "TurnRequest",
+     "回合规格"
+    ]
+   ],
+   "returns": "TurnReply, error",
+   "summary": "无头拉起/续接一个 CLI 会话进程喂 prompt 收回合输出；骨架期恒返回 ErrUnavailable。只暴露承载能力，派发状态机不经此门面"
+  },
+  "n_hostapi_New": {
+   "kind": "func",
+   "container": "k_hostapi_fn",
+   "order": 1,
+   "name": "New",
+   "file": "internal/hostapi/hostapi.go",
+   "line": 44,
+   "signature": "func New() *Host",
+   "params": [],
+   "returns": "*",
+   "summary": "构造承载门面"
+  },
+  "m_ptyapi_SessionInfo": {
+   "kind": "model",
+   "container": "k_ptyapi_model",
+   "order": 1,
+   "name": "SessionInfo",
+   "file": "internal/ptyapi/ptyapi.go",
+   "line": 13,
+   "signature": "type SessionInfo",
+   "fields": [
+    [
+     "ID",
+     "string",
+     "PTY 会话 id"
+    ],
+    [
+     "Dir",
+     "string",
+     "会话基准目录（ptyhost.Session.BasePath 投影）"
+    ]
+   ],
+   "summary": "SessionInfo 是 attach 定位需要的会话快照"
+  },
+  "n_ptyapi_Host_Snapshot": {
+   "kind": "func",
+   "container": "k_ptyapi_Host",
+   "order": 1,
+   "name": "Host.Snapshot",
+   "file": "internal/ptyapi/ptyapi.go",
+   "line": 33,
+   "signature": "func (p *Host) Snapshot(id string) (SessionInfo, bool)",
+   "params": [
+    [
+     "id",
+     "string",
+     "PTY 会话 id"
+    ]
+   ],
+   "returns": "SessionInfo, bool",
+   "summary": "读会话快照（直通镜像：ptyhost.Host.Get），attach 入口的存活与落点判据"
+  },
+  "n_ptyapi_New": {
+   "kind": "func",
+   "container": "k_ptyapi_fn",
+   "order": 1,
+   "name": "New",
+   "file": "internal/ptyapi/ptyapi.go",
+   "line": 24,
+   "signature": "func New(h *ptyhost.Host) *Host",
+   "params": [
+    [
+     "h",
+     "*ptyhost.Host",
+     "既有 PTY 宿主"
+    ]
+   ],
+   "returns": "*Host",
+   "summary": "包装既有 PTY 宿主成薄门面"
+  },
+  "m_ledger_RegistryEntry": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 281,
+   "name": "RegistryEntry",
+   "file": "internal/ledger/registry.go",
+   "line": 19,
+   "signature": "type RegistryEntry",
+   "fields": [
+    [
+     "Kind",
+     "string",
+     "注册表种类"
+    ],
+    [
+     "ID",
+     "string",
+     "实体 id"
+    ],
+    [
+     "Version",
+     "int",
+     "CAS 版本号"
+    ],
+    [
+     "Seq",
+     "int64",
+     "全表单调写入序"
+    ],
+    [
+     "Body",
+     "json.RawMessage",
+     "JSON 正文，账本不解释内容"
+    ]
+   ],
+   "summary": "RegistryEntry 是注册表行；通用版本化 KV 的读出形状（拍板记录④）"
+  },
+  "n_ledger_Store_RegistryPut": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 393,
+   "name": "Store.RegistryPut",
+   "file": "internal/ledger/registry.go",
+   "line": 31,
+   "signature": "func (s *Store) RegistryPut(kind, id string, expectVersion int, body []byte, actor string) (int, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     "种类"
+    ],
+    [
+     "id",
+     "string",
+     "实体 id"
+    ],
+    [
+     "expectVersion",
+     "int",
+     "期望版本，0=必须不存在"
+    ],
+    [
+     "body",
+     "[]byte",
+     "JSON 正文"
+    ],
+    [
+     "actor",
+     "string",
+     "审计主体"
+    ]
+   ],
+   "returns": "int, error",
+   "summary": "以 CAS 写入注册表实体返回新版本；消费方只有 ledgerapi 门面，域外不得直用"
+  },
+  "n_ledger_Store_RegistryGet": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 394,
+   "name": "Store.RegistryGet",
+   "file": "internal/ledger/registry.go",
+   "line": 80,
+   "signature": "func (s *Store) RegistryGet(kind, id string) (RegistryEntry, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     "种类"
+    ],
+    [
+     "id",
+     "string",
+     "实体 id"
+    ]
+   ],
+   "returns": "RegistryEntry, error",
+   "summary": "读一条注册表实体；不存在返回 ErrNotFound"
+  },
+  "n_ledger_Store_RegistryList": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 395,
+   "name": "Store.RegistryList",
+   "file": "internal/ledger/registry.go",
+   "line": 95,
+   "signature": "func (s *Store) RegistryList(kind string) ([]RegistryEntry, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     "种类"
+    ]
+   ],
+   "returns": "[]RegistryEntry, error",
+   "summary": "按 kind 全列，seq 升序"
+  },
+  "n_ledger_Store_RegistryDelete": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 396,
+   "name": "Store.RegistryDelete",
+   "file": "internal/ledger/registry.go",
+   "line": 116,
+   "signature": "func (s *Store) RegistryDelete(kind, id string, expectVersion int, actor string) error",
+   "params": [
+    [
+     "kind",
+     "string",
+     "种类"
+    ],
+    [
+     "id",
+     "string",
+     "实体 id"
+    ],
+    [
+     "expectVersion",
+     "int",
+     "期望版本"
+    ],
+    [
+     "actor",
+     "string",
+     "审计主体"
+    ]
+   ],
+   "returns": "error",
+   "summary": "以 CAS 删除注册表实体"
+  },
+  "n_agentd_Server_SetupAutomation": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 60,
+   "name": "Server.SetupAutomation",
+   "file": "internal/agentd/server.go",
+   "line": 2235,
+   "signature": "func (s *Server) SetupAutomation(st *ledger.Store)",
+   "params": [
+    [
+     "st",
+     "*ledger.Store",
+     "cmd 侧打开的账本库"
+    ]
+   ],
+   "returns": "",
+   "summary": "装配自动化层：构造账本门面与两域服务、绑定各出站端口；绑定代码只允许出现在 target.json assembly 登记文件"
+  },
+  "n_agentd_Server_PtyAPI": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 61,
+   "name": "Server.PtyAPI",
+   "file": "internal/agentd/server.go",
+   "line": 2247,
+   "signature": "func (s *Server) PtyAPI() *ptyapi.Host",
+   "params": [],
+   "returns": "*ptyapi.Host",
+   "summary": "返回终端 PTY 薄门面；宿主未装配时返回 nil"
+  },
+  "n_agentd_Server_SetScheduling": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 62,
+   "name": "Server.SetScheduling",
+   "file": "internal/agentd/server.go",
+   "line": 2250,
+   "signature": "func (s *Server) SetScheduling(svc *scheduling.Service)",
+   "params": [
+    [
+     "svc",
+     "*scheduling.Service",
+     "编制域服务实例"
+    ]
+   ],
+   "returns": "",
+   "summary": "注入编制域服务（测试缝：整体替换单测构造的实例）"
+  },
+  "n_agentd_Server_SetKeystone": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 63,
+   "name": "Server.SetKeystone",
+   "file": "internal/agentd/server.go",
+   "line": 2253,
+   "signature": "func (s *Server) SetKeystone(svc *keystone.Service)",
+   "params": [
+    [
+     "svc",
+     "*keystone.Service",
+     "keystone 域服务实例"
+    ]
+   ],
+   "returns": "",
+   "summary": "注入 keystone 域服务（测试缝）"
+  },
+  "n_agentd_facadeAsRegistry_Get": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 700,
+   "name": "facadeAsRegistry.Get",
+   "file": "internal/agentd/server.go",
+   "line": 2272,
+   "signature": "func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     "注册表种类"
+    ],
+    [
+     "id",
+     "string",
+     "实体 id"
+    ]
+   ],
+   "returns": "schedclient.Record, error",
+   "summary": "把账本门面适配成编制域持久化端口（错误哨兵按 schedclient 契约翻译）"
+  },
+  "n_agentd_coordinatorRunner_Resume": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 701,
+   "name": "coordinatorRunner.Resume",
+   "file": "internal/agentd/server.go",
+   "line": 2319,
+   "signature": "func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error)",
+   "params": [
+    [
+     "ref",
+     "keysclient.SessionRef",
+     "会话引用"
+    ],
+    [
+     "prompt",
+     "string",
+     "本回合输入"
+    ]
+   ],
+   "returns": "keysclient.TurnResult, error",
+   "summary": "把进程承载门面适配成 keystone 会话承载缝（resume 半边；直通镜像转发 hostapi.RunTurn）"
+  },
+  "n_agentd_noteNarrator_Say": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 702,
+   "name": "noteNarrator.Say",
+   "file": "internal/agentd/server.go",
+   "line": 2332,
+   "signature": "func (n noteNarrator) Say(cardID, text string) error",
+   "params": [
+    [
+     "cardID",
+     "string",
+     "卡号"
+    ],
+    [
+     "text",
+     "string",
+     "叙事文本"
+    ]
+   ],
+   "returns": "error",
+   "summary": "叙事兜底实现：房间子系统（B156.2）落地前以卡 timeline note 落账——凡承重必须落账"
+  }
+ },
+ "nodesModified": {
+  "m_ledger_NodeOverride": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 56,
+   "name": "NodeOverride",
+   "file": "internal/ledger/types.go",
+   "line": 163,
+   "fields": [
+    [
+     "Executor",
+     "string",
+     "覆盖模板执行者"
+    ],
+    [
+     "Discipline",
+     "string",
+     "具名纪律块角色名覆盖"
+    ],
+    [
+     "Target",
+     "string",
+     "覆盖模板目标机"
+    ],
+    [
+     "Model",
+     "string",
+     "覆盖模板模型"
+    ],
+    [
+     "Squad",
+     "string",
+     "B156.3 新增：绑定的执行者小队名；显式 Target/Executor/Model 仍可一次性覆盖；空=存量直绑语义不变"
+    ],
+    [
+     "Purpose",
+     "string",
+     "覆盖模板派发用途"
+    ]
+   ],
+   "summary": "NodeOverride 是节点的单字段覆盖；B156.3 增加 Squad 小队绑定字段（小队是解析层，不逼存量迁移）"
+  },
+  "m_proto_NodeOverride": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 56,
+   "name": "NodeOverride",
+   "file": "internal/proto/ledger.go",
+   "line": 59,
+   "fields": [
+    [
+     "Executor",
+     "string",
+     ""
+    ],
+    [
+     "Discipline",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ],
+    [
+     "Squad",
+     "string",
+     "B156.3 新增：节点绑定的执行者小队名 wire 字段；空=存量语义"
+    ]
+   ],
+   "summary": "NodeOverride 是工作流节点模板覆盖的 wire DTO；与 ledger.NodeOverride 同步加 Squad",
+   "projScanned": true,
+   "modelKind": "dto"
+  },
+  "m_web_api_ledger_NodeOverride": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 94,
+   "name": "NodeOverride",
+   "file": "web/src/api/ledger.ts",
+   "line": 96,
+   "signature": "interface NodeOverride",
+   "fields": [
+    [
+     "executor",
+     "string",
+     ""
+    ],
+    [
+     "discipline",
+     "string",
+     ""
+    ],
+    [
+     "target",
+     "string",
+     ""
+    ],
+    [
+     "model",
+     "string",
+     ""
+    ],
+    [
+     "squad",
+     "string",
+     "B156.3 新增：节点绑定的执行者小队名；空=存量直绑语义"
+    ],
+    [
+     "purpose",
+     "string",
+     "按节点覆盖模板派发用途"
+    ]
+   ],
+   "summary": "NodeOverride TS 镜像补 squad（顺带补齐此前漂移缺失的 purpose）",
+   "modelKind": "dto"
+  }
+ },
+ "edgesAdded": [
+  [
+   "n_agentd_Server_SetupAutomation",
+   "n_ledgerapi_New"
+  ],
+  [
+   "n_agentd_Server_SetupAutomation",
+   "n_scheduling_New"
+  ],
+  [
+   "n_agentd_Server_SetupAutomation",
+   "n_keystone_New"
+  ],
+  [
+   "n_agentd_Server_SetupAutomation",
+   "n_hostapi_New"
+  ],
+  [
+   "n_agentd_Server_SetupAutomation",
+   "n_ptyapi_New"
+  ],
+  [
+   "n_agentd_coordinatorRunner_Resume",
+   "n_hostapi_Host_RunTurn"
+  ],
+  [
+   "n_agentd_noteNarrator_Say",
+   "n_ledgerapi_Facade_AddComment"
+  ],
+  [
+   "n_agentd_facadeAsRegistry_Get",
+   "n_ledgerapi_Facade_RegistryGet"
+  ]
+ ]
+}

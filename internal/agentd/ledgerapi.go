@@ -124,6 +124,7 @@ func ledgerNodeWire(node ledger.NodeDef) proto.NodeDef {
 		Override: proto.NodeOverride{
 			Executor: node.Override.Executor, Discipline: node.Override.Discipline,
 			Target: node.Override.Target, Model: node.Override.Model,
+			Squad: node.Override.Squad,
 		},
 		Dispatch: node.Dispatch, Verdict: node.Verdict, CarryCardContext: node.CarryCardContext,
 		MaxRounds: node.MaxRounds, OmitAcceptance: node.OmitAcceptance, Next: node.Next, OnFail: node.OnFail,

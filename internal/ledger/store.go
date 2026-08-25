@@ -261,6 +261,12 @@ func (s *Store) ensureSchema() error {
 				key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
 				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
+			`CREATE TABLE IF NOT EXISTS registry (
+				kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL,
+				seq BIGINT NOT NULL, body JSONB NOT NULL,
+				actor TEXT NOT NULL, updated_at TIMESTAMPTZ NOT NULL,
+				PRIMARY KEY (kind, id))`,
+			`CREATE INDEX IF NOT EXISTS idx_registry_kind_seq ON registry(kind, seq)`,
 			`INSERT INTO card_prefixes (project, prefix) VALUES ('handoff', 'B')
 				ON CONFLICT (project) DO NOTHING`,
 		}
@@ -330,6 +336,12 @@ func (s *Store) ensureSchema() error {
 				key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
 				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
+			`CREATE TABLE IF NOT EXISTS registry (
+				kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL,
+				seq INTEGER NOT NULL, body TEXT NOT NULL,
+				actor TEXT NOT NULL, updated_at TEXT NOT NULL,
+				PRIMARY KEY (kind, id))`,
+			`CREATE INDEX IF NOT EXISTS idx_registry_kind_seq ON registry(kind, seq)`,
 			`INSERT INTO card_prefixes (project, prefix) VALUES ('handoff', 'B')
 				ON CONFLICT (project) DO NOTHING`,
 		}
