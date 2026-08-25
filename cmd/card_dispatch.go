@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/spf13/cobra"
@@ -40,9 +41,12 @@ type dispatchRequest struct {
 	target         string
 	project        string
 	executor       string
-	// discipline 是本次派发点名的纪律块角色名；空=让 agentd 按 executor 兜底。
-	// 只传名字不传正文：正文由 agentd 解析注入，CLI 不再是纪律块的搬运工。
+	// discipline 是本次派发点名的纪律块角色名；空=未点名（只注入平台层）。
+	// B229：名字仅作审计展示，正文由本进程在认领前经缝 1 组装后随请求下发
+	// （disciplineText/DisciplineVersion），执行机收文即用不再自行解析。
 	discipline         string
+	disciplineText     string
+	disciplineVersion  int
 	model              string
 	planB64            string
 	planName           string
@@ -79,8 +83,10 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		Prompt: req.prompt, Target: req.target,
 		NewBranch: req.branch, Branch: req.existingBranch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
-		Discipline: req.discipline,
-		PlanB64:    req.planB64, PlanName: req.planName, Base: req.base,
+		Discipline:        req.discipline,
+		DisciplineText:    req.disciplineText,
+		DisciplineVersion: req.disciplineVersion,
+		PlanB64:           req.planB64, PlanName: req.planName, Base: req.base,
 		ResolveDefaultBase: req.resolveDefaultBase,
 		LocalBaseBranch:    req.localBaseBranch,
 		NewWorktree:        req.newWorktree,
@@ -101,7 +107,11 @@ func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, er
 		prompt: opts.Prompt, branch: opts.Branch, target: opts.Target, project: opts.Project,
 		executor: opts.Executor, model: opts.Model, planB64: opts.PlanB64,
 		planName: opts.PlanName, base: opts.Base, existingBranch: opts.ExistingBranch,
-		discipline: opts.Discipline, newWorktree: opts.NewWorktree,
+		discipline: opts.Discipline,
+		// B229：ViaTemplate 透传下来的缝 1 产物（Dispatcher 数据字段），原样上 wire。
+		disciplineText:     opts.DisciplineText,
+		disciplineVersion:  opts.DisciplineVersion,
+		newWorktree:        opts.NewWorktree,
 		resolveDefaultBase: opts.ResolveDefaultBase,
 		localBaseBranch:    opts.LocalBaseBranch,
 	})
@@ -182,6 +192,41 @@ func resolveCardDispatchTemplate(st *ledger.Store) (string, error) {
 	}
 }
 
+// resolveCardDispatchDiscipline 是 CLI 模板派发的缝 1 收口（B229 契约 §2.2）：
+// 绑账本 lookup 与目标机能力位探活各一次，经 discipline.ResolveDispatch 产出
+// 随派发下发的正文三元组。探活失败按「不支持」处置（缺席=nil 的保守方向同向，
+// §2.4）；未点名模板的产物是纯平台层正文、版本 0（§3.1 拒发闸覆盖一切带正文派发）。
+func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, target string) (discipline.ResolvedDiscipline, error) {
+	lookup := func(n string) (int, string, error) {
+		d, err := st.GetDiscipline(n, 0)
+		if err != nil {
+			return 0, "", err
+		}
+		return d.Version, d.Body, nil
+	}
+	var cap *bool
+	cl, done, err := targetClient(target)
+	if err != nil {
+		slog.Warn("派发前取得目标机客户端失败", "target", target, "cause", err)
+	} else {
+		defer done()
+		status, serr := cl.Status(ctx)
+		if serr != nil {
+			slog.Warn("派发前能力位探活失败，按不支持处置", "target", target, "cause", serr)
+		} else {
+			cap = status.DisciplinesSupported
+		}
+	}
+	res, err := discipline.ResolveDispatch(lookup, discipline.DisciplineRef{Name: name},
+		loadCLIConfig().PlatformInvariantsEnabled(), cap)
+	if err != nil {
+		return discipline.ResolvedDiscipline{}, err
+	}
+	slog.Info("模板派发纪律正文已就绪", "target", target,
+		"discipline", name, "version", res.Version, "bytes", len(res.Text))
+	return res, nil
+}
+
 var cardDispatchCmd = &cobra.Command{
 	Use:   "dispatch <id>",
 	Short: "按模板派发（派发即认领；--step 走工作流节点）",
@@ -208,6 +253,26 @@ var cardDispatchCmd = &cobra.Command{
 		if card.Status == ledger.StatusDoing {
 			return fmt.Errorf("卡 %s 已被认领（驱动 %s）", id, card.DriverSession)
 		}
+		// B229 缝 1：解析在认领之前完成——拒发发生在任何状态迁移之前，零半状态。
+		// 有效（角色名，目标机）与 ViaTemplate 同序（共用 PreflightDiscipline）；
+		// 目标机未定时不抢答，放给 ViaTemplate 的既有错误路径。
+		discName, discTarget, err := ledgerstep.PreflightDiscipline(st, templateName, cardDispatchDiscipline, cardDispatchTarget)
+		if err != nil {
+			return err
+		}
+		var resolved discipline.ResolvedDiscipline
+		if discTarget != "" {
+			ctx := cmd.Context()
+			if ctx == nil {
+				ctx = context.Background()
+			}
+			resolved, err = resolveCardDispatchDiscipline(ctx, st, discName, discTarget)
+			if err != nil {
+				slog.Warn("裸卡派发被拒发闸拦下", "card", id, "discipline", discName,
+					"target", discTarget, "cause", err)
+				return err
+			}
+		}
 		// 原子认领：转状态与落驱动同事务。分两步写会留出「进行中但驱动
 		// 为空」的窗口，并发输家读到它就报不出认领者是谁（判据⑥要会话名）
 		if err := st.ClaimCard(id, ledger.StatusDoing, card.Status, ledgerSession()); err != nil {
@@ -223,7 +288,11 @@ var cardDispatchCmd = &cobra.Command{
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		dispatcher := &ledgerstep.Dispatcher{St: st, Transport: cliTransport, Actor: actor}
+		dispatcher := &ledgerstep.Dispatcher{
+			St: st, Transport: cliTransport, Actor: actor,
+			DisciplineText:    resolved.Text,
+			DisciplineVersion: resolved.Version,
+		}
 		result, err := dispatcher.ViaTemplate(ctx, card, ledgerstep.TemplateDispatch{
 			Template:           templateName,
 			Target:             cardDispatchTarget,

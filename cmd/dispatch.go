@@ -20,9 +20,11 @@
 package cmd
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -31,6 +33,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
@@ -50,6 +53,9 @@ var (
 	dispatchNoTerminal  bool
 	dispatchNoSyncCheck bool
 	dispatchAllowDirty  bool
+	// dispatchDisciplineFile 是 P1 裁决 (a) 的临时正文入口：读文件作 RawText 走
+	// 缝 1，只随这一次派发下发，不落账本（版本记 0）。flag 不属契约冻结物。
+	dispatchDisciplineFile string
 )
 
 // projectNotRegisteredMarker 是 agentd 侧 ErrProjectNotRegistered 的哨兵文案。
@@ -165,6 +171,42 @@ func baselineLine(task *proto.Task, userBase string) string {
 // 使用方式：handoff dispatch [--project <名字>] [--prompt ...] [--executor x] [--model m]
 // [--branch b | --new-branch b] [--base t] [--worktree w | --new-worktree]
 // [--no-terminal] [plan 文件]
+// resolveBareDiscipline 是裸派发的缝 1 收口（B229 契约 §2.2/§3.1）：未点名只注入
+// 平台层正文（版本 0）；--discipline-file 把文件内容作 RawText 直通（不落库、版本 0，
+// 服务 spec 用户故事 3 的「临时捏一份下发」）。无论哪种形态都先探目标机能力位——
+// 探活失败按「不支持」处置（能力位缺席=nil 的保守方向同向，§2.4），把「不知道」
+// 当成「支持」正是缺陷三的静默降级换马甲。
+//
+// 参数：cli 已装配的目标机客户端（探活用）；rawFile --discipline-file 路径（空=未点名）。
+// 返回：随派发下发的正文三元组；文件不可读或拒发闸拦下时返回错误。
+func resolveBareDiscipline(ctx context.Context, cli *client.Client, rawFile string) (discipline.ResolvedDiscipline, error) {
+	ref := discipline.DisciplineRef{}
+	if rawFile != "" {
+		content, err := os.ReadFile(rawFile)
+		if err != nil {
+			slog.Warn("裸派发读临时纪律正文失败", "path", rawFile, "cause", err)
+			return discipline.ResolvedDiscipline{}, fmt.Errorf("读取 --discipline-file %s 失败: %w", rawFile, err)
+		}
+		ref.RawText = string(content)
+	}
+	var cap *bool
+	status, err := cli.Status(ctx)
+	if err != nil {
+		slog.Warn("派发前能力位探活失败，按不支持处置", "target", targetName, "cause", err)
+	} else {
+		cap = status.DisciplinesSupported
+	}
+	res, err := discipline.ResolveDispatch(nil, ref, loadCLIConfig().PlatformInvariantsEnabled(), cap)
+	if err != nil {
+		slog.Warn("裸派发被拒发闸拦下", "target", targetName,
+			"has_raw_text", rawFile != "", "cap_absent", cap == nil, "cause", err)
+		return discipline.ResolvedDiscipline{}, err
+	}
+	slog.Info("裸派发纪律正文已就绪", "target", targetName,
+		"source", res.Source, "bytes", len(res.Text))
+	return res, nil
+}
+
 var dispatchCmd = &cobra.Command{
 	Use:   "dispatch [plan 文件]",
 	Short: "派发一个计划任务到 agentd 执行",
@@ -223,6 +265,14 @@ var dispatchCmd = &cobra.Command{
 			Worktree: dispatchWorktree, NewWorktree: dispatchNewWorktree,
 			BaseCommit: baseCommit,
 		}
+		// B229 缝 1：裸派发也注入平台层正文（实现决定 1），每一次派发都过拒发闸
+		// （§3.1）。解析必须在发出任何任务请求之前完成——被拒时目标机上零残留。
+		resolved, err := resolveBareDiscipline(cmd.Context(), cli, dispatchDisciplineFile)
+		if err != nil {
+			return err
+		}
+		opts.DisciplineText = resolved.Text
+		opts.DisciplineVersion = resolved.Version
 		task, err := dispatchWithAutoRegister(
 			func() (*proto.Task, error) { return cli.Dispatch(cmd.Context(), opts) },
 			func() error {
@@ -292,6 +342,8 @@ func init() {
 		"跳过远程仓库基线校验（cwd 与目标项目不是同一个仓库时用）")
 	dispatchCmd.Flags().BoolVar(&dispatchAllowDirty, "allow-dirty", false,
 		"本地工作区有未提交的已跟踪改动时仍照常派发（executor 看不到这些改动）")
+	dispatchCmd.Flags().StringVar(&dispatchDisciplineFile, "discipline-file", "",
+		"临时捏一份纪律块正文直接下发：读文件作本次派发的角色层正文（与平台层组装），不落账本、版本记 0")
 	dispatchCmd.MarkFlagsMutuallyExclusive("branch", "new-branch")
 	dispatchCmd.MarkFlagsMutuallyExclusive("worktree", "new-worktree")
 	rootCmd.AddCommand(dispatchCmd)

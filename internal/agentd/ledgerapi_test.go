@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 )
@@ -916,6 +917,11 @@ func TestCardStepPropagatesRequestFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// B229 起点名目标机的环节在受理段过拒发闸：账本要有角色正文、目标机要报
+	// 支持能力位，否则 202 变 400。本测试钉的是字段传播，闸的前提照常满足。
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "审阅角色正文")
+	yes := true
+	registerFakeTarget(t, env.srv, "linux-01", newFakeTargetMachine(t, &yes))
 	runnerCh := make(chan *ledgerstep.StepRunner, 1)
 	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) { runnerCh <- runner }
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step",
