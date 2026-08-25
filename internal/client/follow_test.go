@@ -12,12 +12,14 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
 )
 
@@ -314,8 +316,9 @@ func TestFollowFiltersAuditEvents(t *testing.T) {
 		{Seq: 1, TaskID: "t-audit", Type: proto.EventTypeApproverDecision},
 		{Seq: 2, TaskID: "t-audit", Type: proto.EventTypeProgress},
 		{Seq: 3, TaskID: "t-audit", Type: proto.EventTypeApproverDisabled},
-		{Seq: 4, TaskID: "t-audit", Type: proto.EventTypeQuestion},
-		{Seq: 5, TaskID: "t-audit", Type: proto.EventTypeFailed},
+		{Seq: 4, TaskID: "t-audit", Type: proto.EventTypePermissionAutoAllow},
+		{Seq: 5, TaskID: "t-audit", Type: proto.EventTypeQuestion},
+		{Seq: 6, TaskID: "t-audit", Type: proto.EventTypeFailed},
 	}
 	ts := pushEvents(t, evs, func(c *websocket.Conn) { <-make(chan struct{}) })
 
@@ -325,7 +328,7 @@ func TestFollowFiltersAuditEvents(t *testing.T) {
 	if err != nil {
 		t.Fatalf("FollowEvents = %v, want nil", err)
 	}
-	want := []int64{4, 5}
+	want := []int64{5, 6}
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("交付 seq = %v, want %v（审计类事件不该唤醒协调者）", got, want)
 	}
@@ -336,18 +339,114 @@ func TestFollowAllDeliversAuditEvents(t *testing.T) {
 	evs := []proto.Event{
 		{Seq: 1, TaskID: "t-all", Type: proto.EventTypeApproverDecision},
 		{Seq: 2, TaskID: "t-all", Type: proto.EventTypeProgress},
-		{Seq: 3, TaskID: "t-all", Type: proto.EventTypeFailed},
+		{Seq: 3, TaskID: "t-all", Type: proto.EventTypePermissionAutoAllow,
+			Payload: json.RawMessage(`{"permission_id":"perm-1","rule":"safe-command"}`)},
+		{Seq: 4, TaskID: "t-all", Type: proto.EventTypeFailed},
 	}
 	ts := pushEvents(t, evs, func(c *websocket.Conn) { <-make(chan struct{}) })
 
-	n := 0
+	var seen []proto.Event
 	err := client.New(ts.URL, "").FollowEvents(t.Context(), "t-all", true, 0,
-		func(*proto.Event) error { n++; return nil }, nil)
+		func(ev *proto.Event) error { seen = append(seen, *ev); return nil }, nil)
 	if err != nil {
 		t.Fatalf("FollowEvents = %v, want nil", err)
 	}
-	if n != 3 {
-		t.Fatalf("all=true 交付 %d 条, want 3（不过滤）", n)
+	if len(seen) != 4 {
+		t.Fatalf("all=true 交付 %d 条, want 4（不过滤）", len(seen))
+	}
+	var payload struct {
+		PermissionID string `json:"permission_id"`
+	}
+	if err := json.Unmarshal(seen[2].Payload, &payload); err != nil {
+		t.Fatalf("all=true 审计 payload 解码失败: %v", err)
+	}
+	if seen[2].Type != proto.EventTypePermissionAutoAllow || payload.PermissionID != "perm-1" {
+		t.Fatalf("all=true 审计事件 = type %q payload=%q, want permission_auto_allow/perm-1",
+			seen[2].Type, seen[2].Payload)
+	}
+}
+
+// TestFollowFiltersPermissionAutoAllowFromStore 验证事件先由真实 Store
+// JSON 序列化，再进入 WS follow；白名单审计只在 all=true 时可见。
+func TestFollowFiltersPermissionAutoAllowFromStore(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	st, err := store.Open(filepath.Join(t.TempDir(), "events.db"))
+	if err != nil {
+		t.Fatalf("Open store: %v", err)
+	}
+	defer st.Close()
+	items := []struct {
+		typ     proto.EventType
+		payload map[string]string
+	}{
+		{proto.EventTypePermissionAutoAllow, map[string]string{"permission_id": "perm-1", "rule": "safe-command"}},
+		{proto.EventTypeQuestion, map[string]string{"ticket_id": "ask-1"}},
+		{proto.EventTypeFailed, map[string]string{"reason": "done"}},
+	}
+	for _, taskID := range []string{"task-store", "task-store-all"} {
+		for _, item := range items {
+			if _, err := st.AppendEvent(taskID, item.typ, item.payload); err != nil {
+				t.Fatalf("AppendEvent %q/%q: %v", taskID, item.typ, err)
+			}
+		}
+	}
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		c, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		taskID := r.URL.Query().Get("task")
+		events, err := st.EventsFromAsc(taskID, 0, 100)
+		if err != nil {
+			return
+		}
+		for _, ev := range events {
+			data, err := json.Marshal(ev)
+			if err != nil {
+				return
+			}
+			if err := c.Write(r.Context(), websocket.MessageText, data); err != nil {
+				return
+			}
+		}
+		_ = c.Close(websocket.StatusNormalClosure, "done")
+	}))
+	t.Cleanup(ts.Close)
+
+	var got []proto.EventType
+	err = client.New(ts.URL, "").FollowEvents(t.Context(), "task-store", false, 0,
+		func(ev *proto.Event) error {
+			got = append(got, ev.Type)
+			return nil
+		}, nil)
+	if err != nil {
+		t.Fatalf("FollowEvents = %v, want nil", err)
+	}
+	if len(got) != 2 || got[0] != proto.EventTypeQuestion || got[1] != proto.EventTypeFailed {
+		t.Fatalf("all=false 交付类型 = %v, want [question failed]", got)
+	}
+
+	var all []proto.Event
+	err = client.New(ts.URL, "").FollowEvents(t.Context(), "task-store-all", true, 0,
+		func(ev *proto.Event) error {
+			all = append(all, *ev)
+			return nil
+		}, nil)
+	if err != nil {
+		t.Fatalf("Store FollowEvents all=true = %v, want nil", err)
+	}
+	if len(all) != 3 || all[0].Type != proto.EventTypePermissionAutoAllow {
+		t.Fatalf("Store all=true 事件 = %#v, want permission_auto_allow/question/failed", all)
+	}
+	var payload struct {
+		PermissionID string `json:"permission_id"`
+		Rule         string `json:"rule"`
+	}
+	if err := json.Unmarshal(all[0].Payload, &payload); err != nil {
+		t.Fatalf("Store all=true 审计 payload 解码失败: %v", err)
+	}
+	if payload.PermissionID != "perm-1" || payload.Rule != "safe-command" {
+		t.Fatalf("Store all=true payload = %#v, want permission_id/rule", payload)
 	}
 }
 

@@ -1,7 +1,10 @@
 package turn_test
 
 import (
+	"os"
 	"os/exec"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor/turn"
@@ -57,5 +60,98 @@ func TestGitTurnStatusDetectsNewCommit(t *testing.T) {
 	}
 	if commit2 == start {
 		t.Errorf("commit 应已推进，仍为 %q", commit2)
+	}
+}
+
+func TestGitCommonDirNormalizesMainAndLinkedWorktree(t *testing.T) {
+	repo, _ := initRepo(t)
+	mainPath := filepath.Join(t.TempDir(), "repo-link")
+	if err := os.Symlink(repo, mainPath); err != nil {
+		t.Fatalf("建立主仓库符号链接: %v", err)
+	}
+	want := normalizePathForTest(t, filepath.Join(mainPath, ".git"))
+
+	got, err := turn.GitCommonDir(mainPath)
+	if err != nil {
+		t.Fatalf("主仓库读取 git-common-dir: %v", err)
+	}
+	if got := normalizePathForTest(t, got); got != want {
+		t.Fatalf("主仓库 common-dir = %q，want %q", got, want)
+	}
+
+	linked := filepath.Join(t.TempDir(), "linked")
+	cmd := exec.Command("git", "-C", mainPath, "worktree", "add", "-q", "-b", "probe", linked)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("建立 linked worktree: %v\n%s", err, out)
+	}
+
+	got, err = turn.GitCommonDir(linked)
+	if err != nil {
+		t.Fatalf("linked worktree 读取 git-common-dir: %v", err)
+	}
+	if got := normalizePathForTest(t, got); got != want {
+		t.Fatalf("linked worktree common-dir = %q，want %q", got, want)
+	}
+}
+
+func normalizePathForTest(t *testing.T, path string) string {
+	t.Helper()
+	cleaned := filepath.Clean(path)
+	resolved, err := filepath.EvalSymlinks(cleaned)
+	if err != nil {
+		t.Fatalf("归一化路径 %q: %v", path, err)
+	}
+	return filepath.Clean(resolved)
+}
+
+func TestGitCommonDirRejectsNonGitPath(t *testing.T) {
+	if got, err := turn.GitCommonDir(t.TempDir()); err == nil || got != "" {
+		t.Fatalf("非 git 目录应返回空路径与错误，got path=%q err=%v", got, err)
+	}
+}
+
+func TestGitDirUsesGitReportedPrivateDir(t *testing.T) {
+	repo, _ := initRepo(t)
+	created := filepath.Join(t.TempDir(), "created-worktree")
+	linked := filepath.Join(t.TempDir(), "renamed-worktree")
+	cmd := exec.Command("git", "-C", repo, "worktree", "add", "-q", "-b", "probe-private-dir", created)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("建立 linked worktree: %v\n%s", err, out)
+	}
+	if err := os.Rename(created, linked); err != nil {
+		t.Fatalf("改名 linked worktree: %v", err)
+	}
+
+	pointer, err := os.ReadFile(filepath.Join(linked, ".git"))
+	if err != nil {
+		t.Fatalf("读取 linked worktree gitdir 指针: %v", err)
+	}
+	const prefix = "gitdir: "
+	privateWant := strings.TrimSpace(strings.TrimPrefix(string(pointer), prefix))
+	if privateWant == string(pointer) {
+		t.Fatalf("linked worktree gitdir 指针格式异常: %q", pointer)
+	}
+
+	got, err := turn.GitDir(linked)
+	if err != nil {
+		t.Fatalf("读取 linked worktree 私有 git 目录: %v", err)
+	}
+	if got := normalizePathForTest(t, got); got != normalizePathForTest(t, privateWant) {
+		t.Fatalf("linked worktree git-dir = %q，want %q", got, privateWant)
+	}
+
+	got, err = turn.GitDir(repo)
+	if err != nil {
+		t.Fatalf("读取主仓库 git 目录: %v", err)
+	}
+	want := normalizePathForTest(t, filepath.Join(repo, ".git"))
+	if got := normalizePathForTest(t, got); got != want {
+		t.Fatalf("主仓库 git-dir = %q，want %q", got, want)
+	}
+}
+
+func TestGitDirRejectsNonGitPath(t *testing.T) {
+	if got, err := turn.GitDir(t.TempDir()); err == nil || got != "" {
+		t.Fatalf("非 git 目录应返回空路径与错误，got path=%q err=%v", got, err)
 	}
 }

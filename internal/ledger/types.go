@@ -174,6 +174,10 @@ type NodeOverride struct {
 	Discipline string `json:"discipline,omitempty"` // 具名纪律块名，如 review / finishing
 	Target     string `json:"target,omitempty"`
 	Model      string `json:"model,omitempty"`
+	// Squad 是本节点绑定的执行者小队名（B156.3）。绑定后目标机/执行者/模型
+	// 由编制域按小队成员载体解析，显式 Target/Executor/Model 仍可一次性覆盖。
+	// 存量直绑节点不填此字段，语义不变（契约 §5：小队是解析层，不逼迁移）。
+	Squad string `json:"squad,omitempty"`
 	// Purpose 覆盖模板的派发用途（implement / review / ...）。
 	//
 	// why 用途必须能按节点覆盖：模板是**复用物**（一条流的十个节点常引同一份

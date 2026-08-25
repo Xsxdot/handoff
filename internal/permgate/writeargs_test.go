@@ -61,3 +61,35 @@ func TestWriteArgTargetsSegmentsIndependently(t *testing.T) {
 		t.Fatalf("复合命令的落点 = %v，期望 [/usr/local/bin/x]", got)
 	}
 }
+
+// TestWriteArgTargetsB249Shapes covers write locations introduced by the
+// permission whitelist; unknown option values remain untrusted and produce no
+// guessed target.
+func TestWriteArgTargetsB249Shapes(t *testing.T) {
+	cases := []struct {
+		command string
+		want    []string
+	}{
+		{"gofmt -w a.go b.go", []string{"a.go", "b.go"}},
+		{"git add -- a.go docs/ledger.md", []string{"a.go", "docs/ledger.md"}},
+		{"git diff --output=tmp.diff", []string{"tmp.diff"}},
+		{"git diff --output tmp.diff", []string{"tmp.diff"}},
+	}
+	for _, tc := range cases {
+		got := WriteArgTargets(tc.command)
+		if len(got) != len(tc.want) {
+			t.Errorf("WriteArgTargets(%q) = %v, want %v", tc.command, got, tc.want)
+			continue
+		}
+		for i := range got {
+			if got[i] != tc.want[i] {
+				t.Errorf("WriteArgTargets(%q)[%d] = %q, want %q", tc.command, i, got[i], tc.want[i])
+			}
+		}
+	}
+	for _, command := range []string{"gofmt -w", "git add --", "git diff --output"} {
+		if got := WriteArgTargets(command); len(got) != 0 {
+			t.Errorf("WriteArgTargets(%q) = %v, want no target", command, got)
+		}
+	}
+}

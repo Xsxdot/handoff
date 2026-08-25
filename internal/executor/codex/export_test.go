@@ -36,9 +36,11 @@ func ThreadResumeParamsForTest(threadID, repoPath, developerInstructions string)
 	return buildThreadResumeParams(threadID, repoPath, developerInstructions)
 }
 
-func SandboxPolicyForTest(taskTmpDir string) map[string]any { return sandboxPolicy(taskTmpDir) }
-func TaskTmpDirForTest(taskDir string) string               { return taskTmpDir(taskDir) }
-func TmpEnvKVsForTest(taskTmpDir string) []string           { return tmpEnvKVs(taskTmpDir) }
+func SandboxPolicyForTest(taskTmpDir, gitCommonDir, gitDir string) map[string]any {
+	return sandboxPolicy(taskTmpDir, gitCommonDir, gitDir)
+}
+func TaskTmpDirForTest(taskDir string) string     { return taskTmpDir(taskDir) }
+func TmpEnvKVsForTest(taskTmpDir string) []string { return tmpEnvKVs(taskTmpDir) }
 
 // ServeSpecForTest 暴露 serveSpec，供 codex_test 包做 argv/env 断言。
 func ServeSpecForTest(repoPath, taskDir string, port int, env []string) prochost.Spec {

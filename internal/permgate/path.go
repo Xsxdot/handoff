@@ -2,7 +2,7 @@
 //
 // 职责：
 //   - 把可能是相对路径、可能经软链的目标路径归一化为真实绝对路径
-//   - 判定它是否落在任务范围（Workdir 或 TaskDir）的子树内
+//   - 判定它是否落在任务范围（Workdir、TaskDir 或 TaskTmpDir）的子树内
 //
 // 边界：
 //   - 只读文件系统（EvalSymlinks 探测），不创建、不修改任何东西
@@ -47,7 +47,7 @@ func InScope(path string, scope Scope) (in bool, base string, err error) {
 	}
 	p = resolveExistingPrefix(p)
 
-	for _, b := range []string{scope.Workdir, scope.TaskDir} {
+	for _, b := range []string{scope.Workdir, scope.TaskDir, scope.TaskTmpDir} {
 		if b == "" {
 			continue
 		}

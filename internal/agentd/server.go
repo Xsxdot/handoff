@@ -39,14 +39,22 @@ import (
 
 	charterwebui "github.com/Xsxdot/charter/graph/webui"
 
+	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/hostapi"
+	"github.com/Xsxdot/handoff/internal/keysclient"
+	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/ptyapi"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/schedclient"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/webui"
@@ -141,6 +149,12 @@ type Server struct {
 	restart     func(reason string) bool
 	pty         *ptyhost.Host
 	ptyRootPath string
+	// B156.3 自动化层：编制域与 keystone 域的服务引用，SetupAutomation 装配。
+	// 生产接线只在本组装点文件内发生；实现票把 handler 接上这些服务。
+	scheduling *scheduling.Service
+	keystone   *keystone.Service
+	autoLedger *ledgerapi.Facade
+	ptyGate    *ptyapi.Host
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
 	desktopMu    sync.Mutex
 	desktopState *proto.DesktopState
@@ -2208,4 +2222,137 @@ func truncateRunes(s string, n int) string {
 		return s
 	}
 	return string(r[:n])
+}
+
+// ===== B156.3 自动化层组装点（架构法第四条第 3 档）=====
+
+// SetupAutomation 装配三期自动化层：账本门面、编制域服务、keystone 域服务，
+// 并把各域的出站端口绑定到具体实现上。与 SetLedger 同形：cmd 侧持账本库，
+// 组装点内完成全部跨域绑定；绑定代码只允许出现在本文件（target.json assembly
+// 登记点），组装点之外不得 new 他方具体类型。
+//
+// 骨架期语义：服务已构造、端口已绑定，行为由实现票逐缝点亮；宿主进程照常
+// 启动，不受未点亮能力影响。
+func (s *Server) SetupAutomation(st *ledger.Store) {
+	facade := ledgerapi.New(st)
+	s.autoLedger = facade
+	s.scheduling = scheduling.New(facadeAsRegistry{f: facade})
+	rooms := collab.New(facade)
+	runner := coordinatorRunner{h: hostapi.New()}
+	s.keystone = keystone.New(runner, roomNarrator{c: rooms}, facade, attachLocator{})
+	if s.pty != nil {
+		s.ptyGate = ptyapi.New(s.pty)
+	}
+}
+
+// PtyAPI 返回终端 PTY 薄门面；PTY 宿主未装配时返回 nil。
+func (s *Server) PtyAPI() *ptyapi.Host { return s.ptyGate }
+
+// SetScheduling 注入编制域服务（测试缝：整体替换单测构造的实例）。
+func (s *Server) SetScheduling(svc *scheduling.Service) { s.scheduling = svc }
+
+// SetKeystone 注入 keystone 域服务（测试缝：同上）。
+func (s *Server) SetKeystone(svc *keystone.Service) { s.keystone = svc }
+
+// Scheduling 返回编制域服务；未装配返回 nil（handler 据此降级 503，同 withLedger）。
+func (s *Server) Scheduling() *scheduling.Service { return s.scheduling }
+
+// Keystone 返回 keystone 域服务。
+func (s *Server) Keystone() *keystone.Service { return s.keystone }
+
+// facadeAsRegistry 把账本门面适配成编制域的持久化端口。错误哨兵按
+// schedclient 的契约翻译；放在组装点是双向门面的法定形态——实现类只在
+// 这里认识两边的具体类型。
+type facadeAsRegistry struct {
+	f *ledgerapi.Facade
+}
+
+func (a facadeAsRegistry) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
+	return a.f.Put(kind, id, expectVersion, body, actor)
+}
+
+func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error) {
+	e, err := a.f.Get(kind, id)
+	if err != nil {
+		return schedclient.Record{}, translateRegistryErr(err)
+	}
+	return schedclient.Record{ID: e.ID, Version: e.Version, Seq: e.Seq, Body: e.Body}, nil
+}
+
+func (a facadeAsRegistry) List(kind string) ([]schedclient.Record, error) {
+	rows, err := a.f.List(kind)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]schedclient.Record, 0, len(rows))
+	for _, e := range rows {
+		out = append(out, schedclient.Record{ID: e.ID, Version: e.Version, Seq: e.Seq, Body: e.Body})
+	}
+	return out, nil
+}
+
+func (a facadeAsRegistry) Delete(kind, id string, expectVersion int, actor string) error {
+	return a.f.Delete(kind, id, expectVersion, actor)
+}
+
+func translateRegistryErr(err error) error {
+	switch {
+	case errors.Is(err, ledger.ErrNotFound):
+		return schedclient.ErrNotFound
+	default:
+		return err
+	}
+}
+
+// coordinatorRunner 把进程承载门面适配成 keystone 的会话承载缝。骨架期
+// RunTurn 直通镜像转发，宿主实现落地后自动生效。
+type coordinatorRunner struct {
+	h *hostapi.Host
+}
+
+func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error) {
+	reply, err := r.h.RunTurn(context.Background(), hostapi.TurnRequest{
+		CLI: spec.CLI, HomeDir: spec.HomeDir, Workdir: spec.Workdir,
+		Model: spec.Model, Prompt: prompt, Env: spec.Env,
+	})
+	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, err
+}
+
+func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error) {
+	reply, err := r.h.RunTurn(context.Background(), hostapi.TurnRequest{
+		CLI: ref.CLI, SessionID: ref.SessionID, Prompt: prompt,
+	})
+	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, err
+}
+
+// roomNarrator 是叙事落点的房间实现：B156.2 房间制已落地，按 keysclient.Narrator
+// 预告的换绑路径把协调者叙事从卡 note 迁到卡房间——薄里程碑指针行（仅系统组件
+// 可书）。本路经 d_collab 入站门面的指针专用入口 Service.Pointer：kind=pointer
+// 与 BySystem=true 由 Pointer 自己置，房间解析与只读判定也归 collab 执法；
+// keystone 不感知差异。凡承重必须落账，通道不再是兜底通道。
+//
+// 当前实况（协调者复核补记 2026-08-26）：collab.Service.Pointer 尚是空壳
+// （返回 0,nil，实现归 C7 子卡），故本路今天**无可观测行为**——上一段描述的
+// 是 Pointer 的法定职责，不是它今天的行为。C7 填肉前不要据此认为叙事已落账。
+type roomNarrator struct {
+	c *collab.Service
+}
+
+func (n roomNarrator) Say(cardID, text string) error {
+	_, err := n.c.Pointer(cardID, proto.RoomMessage{Body: text})
+	return err
+}
+
+// attachLocator 是 attach 定位缝的骨架实现：命令形态按 CLI 拼装，终端 tab
+// 本体仍由 PTY 域承载。实现票接 ptyapi 后在此补充存在性校验。
+type attachLocator struct{}
+
+func (attachLocator) Locate(ref keysclient.SessionRef, workdir string) (keysclient.AttachInfo, error) {
+	if ref.SessionID == "" {
+		return keysclient.AttachInfo{}, errors.New("该卡没有绑定的协调者会话")
+	}
+	return keysclient.AttachInfo{
+		Machine: ref.Machine, Dir: workdir,
+		Command: strings.TrimSpace(ref.CLI + " --session " + ref.SessionID),
+	}, nil
 }

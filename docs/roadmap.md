@@ -146,6 +146,42 @@
   「待办」，B156 父卡按 epic 规则「子卡全完成才能标完成」动不了。**一期收尾不等于蓝图
   收尾**。来源：同上 spec 的 Out of Scope。
 
+## 来自 B156.3 spec 定稿（2026-08-26，三期自动化层的推迟项）
+
+- **四期内核（B156.4 的输入，三期显式让渡）**：全量自动拉起（不阻塞卡自动排队拉
+  协调者，含待办卡的自动 spec 聊天——排队按就绪度+优先级）；goal 驱动自主推进；
+  routines（每晨扫账/canary 定时触发——需要「无卡协调者」新物种，全量自动拉起时
+  自然有家）；兼任/分派定性（B156.2 悬置到三期、三期再悬置到四期：本期拉起全是
+  用户语境内判断，定性问题没有出现的场合）。
+  来源：`specs/2026-08-26-b156.3-automation-keystone-design.md` Out of Scope。
+- **CLI 限额探测（小队成员健康位）**：探测到额度耗尽的成员不领活；三期只预留
+  成员健康位的形状。触发条件：小队真跑起来后第一次撞限额。来源：同上。
+- **多协调机下的拉起仲裁实测**：机制按镜像 lease 同模式设计；真出现第二台协调机
+  指向同一账本库时再验，与上文「双协调机对等两条判据的复活条件」合流。来源：同上。
+## 代码图数据债（2026-08-26 B156.3 contract 轮实测）
+
+- **`baseline.json` 逐符号真重扫（合 main 前必做）**：现有 baseline 的所谓「重扫」实为
+  「已有全量扫描 + 机械视图 diff 合并 + 定向增量」，`meta.commit` 不是真审计锚点。
+  实测规模：带 `file`+`line` 的方法节点 1155 个中 **500 个行号对不上源码（43%）**，
+  漂移多在 16~43 行（`agentd/manager.go` 64/64、`client/client.go` 50/53、
+  `executor/opencode/adapter.go` 47/50、`agentd/server.go` 42/48、grok/codex/claudecode
+  三个 adapter 全中）。不影响闸门（check/validate 不看行号，`graph sym` 查询时再锚定），
+  影响的是把 `file#Symbol` 当定位证据用的人——契约与拆解文档正是这么用的。
+  **验收判据两条**：①行号比对脚本 mismatched 降到 0；②抽查若干新符号确实在图里
+  ——不能只看 `check` 的 exit code，空壳基线照样 exit 0。
+  来源：`specs/b156.3-contract-ledger.md`「图数据债」节。
+- **清掉陈旧域声明 `codegraph/domains/d_orchestration.json`**：它声明的域在图里不存在
+  （图里叫 `d_coordination`）。仓内 `go run . graph validate`（`charter/graph v0.8.0`，
+  `TestRepoContractGate` 用的那份）不报，较新的独立 `codegraph` 二进制会报
+  `[decl d_orchestration] 领域不在图 domains 段中`。**跨会话报图读数时要点名用的是哪份
+  工具**——两份严格度不同，读到的图却一致，最容易造出「他那边红我这边绿」的伪矛盾。
+  来源：同上。
+
+- **被依赖子系统的实现迁进标准结构**：B156.3 按用户 08-26 的架构硬约束只建薄 api
+  门面（`d_execution_host` 进程承载、`d_sessions` PTY），包住既有实现不改内部；
+  **实现本身的迁移是后续的活**（绞杀式还债、升格随卡走）。与 B156.2 同源条目合流：
+  存量 `d_gateway → d_ledger`（17）与 `d_cli → d_ledger`（4）直调债的清理同样在此
+  队列里，两期都只保证不新增。来源：`specs/2026-08-26-b156.3-automation-keystone-design.md` §7.0。
 ## 来自 B156.2 spec 定稿（2026-08-25，二期协作层的推迟项）
 
 - **三期承接（B156.3 的输入）**：规则引擎自动拉起协调者会话（本期拉起一律由用户执行）；
@@ -325,3 +361,102 @@
 - **`d_workspace.json` 的职责句可能有跨域残留**：键已是 best 顶层 id 所以本期零改动，但其职责文本里的「工作台启动项配置」一类表述可能实际属 `d_policy` / `d_web_workbench`。要动它得重走一次归属核对，不是文字润色。
 - **C1.11 的两条真机项由 CI 结论兜底，未单独验**：(a) Windows/macOS 文件系统对 `codegraph/domains/` 存在性、权限、大小写的差异——本次只在 macOS 上实测；(b) CI runner 上 desktop tidy 门通过后，其后的 Windows 交叉编译、Windows vet、install.sh 三步是否**真的执行而非 skipped**。两条都会在本次合并推上去后由 CI 自然给出结论，届时若为 skipped 需回头处理。
 - **前端消费 `decls` 未实现**：宿主已供上 wire，域页如何渲染声明归 C1.10 的后续，本卡不冒充完成。
+
+## 来自 B227 spec 的残余（2026-08-25，协调者本机实测）
+
+前置：B227 本期选定「扩 codex 可写域到 git 公共目录 + 堵住 agentd 侧的 hooks 触发」。
+以下四条是它显式推迟的，逐条带前置条件与不做的理由。判据与原始读数在
+`docs/superpowers/ledgers/2026-08-25-b227-spec-ledger.md`。
+
+- **换用 codex 支持 deny 的权限声明面（`permissions`），把 hooks 与 config 从可写域里
+  deny 出去。**这是唯一能同时做到「git 完全好用」与「关掉 hooks 逃逸链」的方案——
+  实测 `permissions` 的 entries 支持 `read/write/deny` + priority，而现用的
+  `sandboxPolicy` 面**表达不出 deny**（台账 §3）。**前置未知项：执行机上的 codex 版本**
+  （本机是 0.147.0，linux-01 未查——本轮唯一活任务是他人的回合，借用会干扰）。
+  两个面**互斥**（二进制原文 `permissions` cannot be combined with `sandboxPolicy`），
+  且 `permissions.filesystem` 另有约束不能在此定义 profile，所以这不是「换个字段名」，
+  要把整套安全姿态迁过去 + 加版本门 + 双轨回落。做之前先把执行机版本钉死。
+
+- **改用「沙箱内追加权限」档（`with_additional_permissions`）替代现有的提权档。**
+  codex 的 per-command 覆盖有三档，今天 handoff 只见到 `require_escalated`，
+  而它的语义是**整条命令完全脱离沙箱**（二进制原文 `for unsandboxed execution`）。
+  第三档是沙箱内追加本次所需权限、不脱沙箱，但需要开启 `features.exec_permission_approvals`。
+  价值：让 B227 覆盖不到的其余提权场景（装依赖、出网）不再等价于无沙箱执行。
+
+  **前置比想象中大：handoff 侧今天读不到也回发不了档位**（2026-08-25 核过代码，
+  由 B249 协调者首先指出、本会话独立复核）：`internal/executor/codex/perm.go` 的
+  `commandApproval` 字段全集是 itemId / threadId / turnId / command / cwd / commandActions，
+  **不含任何沙箱或提权档位字段**；`decisionFor` 的全部逻辑是 `once` → `accept`、其余 `decline`，
+  回发报文只有一个 `decision` 键。所以要用第三档，这两处都得改：**先能读到请求带的是哪一档，
+  再能回发一个「只批沙箱内执行」的裁决**。这比「开个 feature flag」大得多。
+
+  **这条同时解释了今天审批的性质**：协调者与审批链的每一次 allow 都是**盲批**——
+  不知道自己批的是沙箱内还是脱沙箱，也没有「只批沙箱内」这个选项。B227 落地后
+  绝大多数盲批实例（codex 的 git 本地写）会在源头消失，但**其余场景仍是盲批**，
+  这条 roadmap 才是根治。
+
+  推论（对审批判据类的卡）：只要 handoff 读不到档位，「白名单自动放行」与「人工批准」
+  在沙箱语义上**等价**——不会更危险，但也不会更安全。
+
+- **同仓并行任务互相踩踏的收窄。**B227 让 git 公共目录整个可写，意味着同一仓库的两个
+  在飞任务能互改对方的索引与引用（`objects`/`refs`/`packed-refs` 都是共享的，落点分布见台账 §5）。
+  本期接受这个代价（与原地模式同档，且不新增权限类别），但**同仓并行派发正是本产品的卖点**，
+  值得单独一张卡。可能的方向：worktree 私有目录收窄到自己那一份 + 对象库/引用仍共享，
+  但那只解决一半，另一半要靠上一条的 deny 能力。
+
+- **纪律块层面的兜底：告知执行者 git 元数据被拒时应提权重跑。**成本近零，覆盖 B227
+  未触及的边角情形。**不进本期是因为它会让 B227 的验收判据变模糊**——一旦纪律块也在
+  影响行为，就分不清「沙箱修好了」还是「模型这次听话了」。等 B227 真机验收落定后再加。
+
+- **临时 hooks 目录的启动清扫（B227 review 留的 minor，本期不做）。**`gitExec` 每次调用
+  `os.MkdirTemp` 建一个空目录并 `defer os.RemoveAll`；agentd 被 SIGKILL 时该次调用的目录会遗留。
+  **不进本期的理由是量级**：SIGKILL 只发生一次、只泄漏一个空目录，且落在 TMPDIR 下由系统清理；
+  为它加一条启动清扫要动生产代码并重走一轮 implement→review，代价大于收益。
+  真要做，形态是 agentd 启动时扫 `TMPDIR/handoff-empty-hooks-*` 并删掉，注意别误删同机
+  另一个在跑的 agentd 实例的目录（判据得比前缀更强，比如带 pid 且校验该 pid 不存活）。
+
+- **执行机上装 codegraph（B227 图对账暴露）。**linux-01 没有 codegraph 二进制，
+  图对账节点跑到 `validate` / `sym` 时是 `command not found`，节点仍判 pass 并如实记了原始错误，
+  但**「视图与真代码对不对得上」这一步实际是空的**。B227 这轮由协调者本机补跑（六个节点
+  anchor 全 ok、check 零新增违规），但下一张卡不会自动有人补。
+  形态有两条：给执行机装 codegraph，或让 recon 纪律块在工具缺失时判 `needs_human` 而不是 pass
+  ——后者更稳，因为前者会随新执行机接入反复失效（参见 opencode 不在非登录 shell PATH 的旧坑）。
+
+## 来自 B249 spec（2026-08-25，权限判据降噪）
+
+- **评估下线廉价模型审批者**：B249 的白名单只吃掉可枚举的安全形态，长尾仍交给 approver。
+  等白名单稳定运行一段、Consult 计数显著下降后再评估是否整个下线（省一次模型调用与
+  6.2s 中位延迟）。**前置条件是下一条**——没有计数就没有「显著下降」的判据。
+  来源：`specs/2026-08-25-b249-permission-noise-reduction.md` 的 Out of Scope。
+- **权限出口的持续计数与看板**：今天 AutoAllow 逐次只有 Debug 日志（默认不开）、
+  Consult/Escalate 只能靠扫 `agentd.log` 事后归因，一次取证要写一个子 agent 跑 15 分钟。
+  应有常驻的三出口计数（manager 已有 `aaCount` 可扩），并在控制台呈现。
+  它是上一条的前置，也是「判据改动到底降了多少噪」的唯一判据。来源：同上 spec。
+- **（判据背景，防重走）** 2026-08-25 对 linux-01 三天 1377 次判定的全量取证结论：
+  人被叫醒 246 次、批 238 次、拒 6 次且**6 次全与安全无关**（都是方法论纠偏）；
+  「容器管不住」的网络副作用维度三天是空集（0 curl / kubectl / psql / aws / ssh /
+  git push）。**再有人提「靠 OS 隔离来减少权限打扰」，先复读这组数字**——降噪的杠杆
+  在判据不在隔离，隔离的价值在 B227 与进程清扫，两件事不要再捆在一起论证。
+
+## 来自 B249 执行过程（2026-08-25，非 spec 预见的残余）
+
+- **卡基线在首派那刻冻结，依赖卡后落地就再也进不来**。B249 15:54 首派 contract 时
+  B248 尚未落地，于是 B249 分支上一直是旧正则，implement、三轮 review、全量测试
+  **三关全绿且无一报错**——review 只审本卡改动，测试不测另一张卡的行为，三方合并还能
+  保住对方的改动。症状只有一个：两卡改动从未在同一份代码上一起跑过，而 B248 spec 明写
+  「必须同轮落地，先放宽后收紧的中间态是净减安全」。协调者在 acceptance 阶段用
+  `git merge-base --is-ancestor` 才查出来，本地合并后重做验收（21/21 行为判据绿）。
+  **可做的**：`card dispatch` 或 finish 阶段对「卡 spec 里点名的前置卡」做一次祖先检查。
+  尚未取号，需要时 `handoff card add`。
+- **contract 节点给 `codegraph/target.json` 写 entries 时用了函数符号名**
+  （`executor.TaskTmpDir`），而该字段的语义是**容器 Label**（判定见 charter
+  `graph/codegraph/check.go`：逐条比对 `Container.Label`，无跳过分支）。后果是必然在
+  review 阶段撞 dead-entry、多烧一整轮 implement + review。基线里其余 9 条 entries
+  全是容器级形态（`ledger.Store`、`proto 实体`、`ptyhost 实体` 等），无一函数符号。
+  **归属 charter 仓**（`~/workspace/charter` 的 contract 节点 skill 该给出这条判据，
+  改完跑 `scripts/regen_discipline.py`），不是 handoff 仓的改动。
+- **（已有卡，不重复取号）** 审批者对沙箱层级完全失明 = **B252**；`card --attach`
+  按 path 去重忽略 kind = **B250，已于 2026-08-25 合入 main**（附件身份改 (kind, path)）；
+  执行者隔离层 = **B247**。
+- **（已修，留痕）** `skills/handoff/SKILL.md` 排障表原写「驱动权泄漏 CLI 侧今天无解」，
+  B239 后 `card takeover` 已可用、`card release` 也不再是静默 no-op，本轮实测确认并改正。

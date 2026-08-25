@@ -41,6 +41,26 @@ func TestCanTransit(t *testing.T) {
 	}
 }
 
+// TestPermissionAutoAllowEventTypeJSON locks the independent audit event
+// literal and its Event type roundtrip.
+func TestPermissionAutoAllowEventTypeJSON(t *testing.T) {
+	if string(EventTypePermissionAutoAllow) != "permission_auto_allow" {
+		t.Fatalf("event type = %q, want permission_auto_allow", EventTypePermissionAutoAllow)
+	}
+	event := Event{Type: EventTypePermissionAutoAllow, TaskID: "t1", Payload: json.RawMessage(`{"rule":"safe-command"}`)}
+	b, err := json.Marshal(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundtrip Event
+	if err := json.Unmarshal(b, &roundtrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundtrip.Type != EventTypePermissionAutoAllow || string(roundtrip.Payload) != string(event.Payload) {
+		t.Fatalf("roundtrip = %#v, want type/payload preserved", roundtrip)
+	}
+}
+
 // TestJSONWireFormat 断言 CLI 输出与 WS/REST 共用结构体的 JSON 线格式 key 全部小写。
 //
 // 为什么断言序列化产物而非 Go 结构体字段：wait/tasks/attach 命令与 server

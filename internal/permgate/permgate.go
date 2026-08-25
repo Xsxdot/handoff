@@ -21,6 +21,7 @@ import (
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/executor"
 )
@@ -65,12 +66,19 @@ type Request struct {
 
 // Scope 是本任务的合法作用范围。
 //
-// 两处都是 handoff 分配给该任务的空间：Workdir 是它要改的仓库/worktree，
-// TaskDir 是 agentd 给它的 0700 私有目录。写这两处不该叫醒任何人。
+// 三处都是 handoff 分配给该任务的空间：Workdir 是它要改的仓库/worktree，
+// TaskDir 是 agentd 给它的 0700 私有目录，TaskTmpDir 是执行器的任务草稿/构建
+// 目录。写这三处不该叫醒任何人；共享系统 /tmp 不在范围内。
 type Scope struct {
-	Workdir string
-	TaskDir string
+	Workdir    string
+	TaskDir    string
+	TaskTmpDir string
 }
+
+// RuleSafeCommand marks a positive command-whitelist match. It is distinct
+// from the empty rule used by in-scope file writes so audit callers can record
+// only static command decisions.
+const RuleSafeCommand = "safe-command"
 
 // Verdict 是裁决结果。
 //
@@ -249,5 +257,195 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 		}
 		g.log.Debug("命令落点在任务范围内", "path", p, "base", base)
 	}
-	return g.judgeCommand(req.Command)
+	// Existing self-command, blacklist, and wrapper rules remain authoritative;
+	// the positive whitelist only handles their ordinary Consult result.
+	verdict := g.judgeCommand(req.Command)
+	if verdict.Action != Consult {
+		return verdict
+	}
+	if id, ok := safeCommandID(req.Command); ok {
+		g.log.Info("安全命令白名单命中", "command", req.Command, "id", id,
+			"targets", len(targets))
+		return Verdict{Action: AutoAllow, Rule: RuleSafeCommand,
+			Reason: "安全命令白名单命中: " + id}
+	}
+	g.log.Debug("安全命令白名单未命中", "command", req.Command)
+	return verdict
+}
+
+// safeCommandID matches a complete, positive command shape and returns its
+// stable audit identifier. It tokenizes shell quoting for the command body;
+// it is not a shell executor and rejects connectors except the one ledger
+// amend form explicitly required by charter.
+func safeCommandID(command string) (id string, ok bool) {
+	segments, ok := splitSafeCommand(command)
+	if !ok {
+		return "", false
+	}
+	if len(segments) == 2 {
+		if isLedgerAmend(segments[0], segments[1]) && len(WriteArgTargets(command)) > 0 {
+			return "git-ledger-amend", true
+		}
+		return "", false
+	}
+	if len(segments) != 1 || len(segments[0]) == 0 {
+		return "", false
+	}
+	fields := segments[0]
+	if len(fields) >= 2 && fields[0] == "go" {
+		switch fields[1] {
+		case "build":
+			return "go-build", true
+		case "test":
+			return "go-test", true
+		case "vet":
+			return "go-vet", true
+		}
+	}
+	if fields[0] == "gofmt" {
+		if hasToken(fields[1:], "-w") && len(WriteArgTargets(command)) == 0 {
+			return "", false
+		}
+		return "gofmt", true
+	}
+	if len(fields) >= 2 && fields[0] == "npm" {
+		switch fields[1] {
+		case "test":
+			return "npm-test", true
+		case "run":
+			if len(fields) >= 3 && fields[2] != "" && !strings.HasPrefix(fields[2], "-") {
+				return "npm-run", true
+			}
+		}
+	}
+	if fields[0] == "make" {
+		return "make", true
+	}
+	if fields[0] == "ls" {
+		return "ls", true
+	}
+	if fields[0] == "cat" {
+		return "cat", true
+	}
+	if fields[0] == "grep" {
+		return "grep", true
+	}
+	if len(fields) >= 2 && fields[0] == "git" {
+		switch fields[1] {
+		case "status":
+			return "git-status", true
+		case "diff":
+			if hasGitDiffOutput(fields) && len(WriteArgTargets(command)) == 0 {
+				return "", false
+			}
+			return "git-diff", true
+		case "log":
+			return "git-log", true
+		}
+	}
+	return "", false
+}
+
+func hasToken(fields []string, want string) bool {
+	for _, field := range fields {
+		if field == want {
+			return true
+		}
+	}
+	return false
+}
+
+func hasGitDiffOutput(fields []string) bool {
+	for _, field := range fields[2:] {
+		if field == "--output" || strings.HasPrefix(field, "--output=") {
+			return true
+		}
+	}
+	return false
+}
+
+func isLedgerAmend(left, right []string) bool {
+	if len(left) < 3 || left[0] != "git" || left[1] != "add" {
+		return false
+	}
+	pathspec := false
+	for _, field := range left[2:] {
+		if field == "--" {
+			continue
+		}
+		if !strings.HasPrefix(field, "-") {
+			pathspec = true
+		}
+	}
+	return pathspec && len(right) == 4 && right[0] == "git" && right[1] == "commit" &&
+		right[2] == "--amend" && right[3] == "--no-edit"
+}
+
+// splitSafeCommand tokenizes one command or the two segments of the ledger
+// amend form. Any unapproved shell connector or unterminated quote fails.
+func splitSafeCommand(command string) ([][]string, bool) {
+	var segments [][]string
+	var fields []string
+	var token strings.Builder
+	var quote rune
+	active := false
+	flush := func() {
+		if active {
+			fields = append(fields, token.String())
+			token.Reset()
+			active = false
+		}
+	}
+	for i, rs := 0, []rune(command); i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			} else {
+				token.WriteRune(r)
+			}
+			active = true
+		case r == '\'' || r == '"':
+			quote = r
+			active = true
+		case r == ' ' || r == '\t' || r == '\r':
+			flush()
+		case r == '|', r == ';', r == '\n', r == '(', r == ')', r == '`':
+			return nil, false
+		case r == '&':
+			if i > 0 && rs[i-1] == '>' && i+1 < len(rs) &&
+				((rs[i+1] >= '0' && rs[i+1] <= '9') || rs[i+1] == '-') {
+				// File-descriptor duplication/close (2>&1, >&2, >&-) is
+				// a redirection token, not a command connector.
+				token.WriteRune(r)
+				active = true
+				continue
+			}
+			if i+1 >= len(rs) || rs[i+1] != '&' {
+				return nil, false
+			}
+			flush()
+			if len(fields) == 0 {
+				return nil, false
+			}
+			segments = append(segments, fields)
+			fields = nil
+			i++
+		case r == '$' && i+1 < len(rs) && (rs[i+1] == '(' || rs[i+1] == '{'):
+			return nil, false
+		default:
+			token.WriteRune(r)
+			active = true
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	flush()
+	if len(fields) == 0 {
+		return nil, false
+	}
+	segments = append(segments, fields)
+	return segments, true
 }

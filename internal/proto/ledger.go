@@ -65,6 +65,8 @@ type NodeOverride struct {
 	Discipline string `json:"discipline,omitempty"`
 	Target     string `json:"target,omitempty"`
 	Model      string `json:"model,omitempty"`
+	// Squad 是节点绑定的执行者小队名（B156.3）；空 = 存量直绑语义不变。
+	Squad string `json:"squad,omitempty"`
 }
 
 // NodeOutput 是工作流节点声明的单一附件 kind/path wire DTO。
