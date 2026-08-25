@@ -87,6 +87,20 @@ func (s *Server) handleProjectCodegraph(w http.ResponseWriter, r *http.Request) 
 			if err != nil {
 				s.log.Warn("代码图领域声明加载失败，跳过报告", "name", name, "repo", loc.Path, "cause", err)
 			} else {
+				domainsDir := filepath.Join(loc.Path, "codegraph", "domains")
+				domainsInfo, statErr := os.Stat(domainsDir)
+				if statErr != nil {
+					if errors.Is(statErr, os.ErrNotExist) {
+						s.log.Info("代码图领域声明目录缺失，省略声明响应段", "name", name, "repo", loc.Path, "path", domainsDir, "cause", statErr)
+					} else {
+						s.log.Warn("代码图领域声明目录状态读取失败，省略声明响应段", "name", name, "repo", loc.Path, "path", domainsDir, "cause", statErr)
+					}
+				} else if !domainsInfo.IsDir() {
+					s.log.Warn("代码图领域声明路径不是目录，省略声明响应段", "name", name, "repo", loc.Path, "path", domainsDir)
+				} else {
+					response["decls"] = decls
+					s.log.Info("代码图领域声明完成", "name", name, "repo", loc.Path, "decls", len(decls))
+				}
 				report := codegraph.Check(target, best, codegraph.Merge(g, nil), decls)
 				if report.Fails == nil {
 					report.Fails = []codegraph.Finding{}

@@ -2,8 +2,10 @@
 package agentd
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
@@ -14,6 +16,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/charter/graph/codegraph"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -83,12 +86,13 @@ func roundTripReport(t *testing.T, rep *codegraph.Report) *codegraph.Report {
 }
 
 type codegraphResponse struct {
-	Baseline codegraph.Graph           `json:"baseline"`
-	Views    map[string]codegraph.Diff `json:"views"`
-	Stale    []codegraph.StaleNode     `json:"stale"`
-	Best     *codegraph.Best           `json:"best"`
-	Target   *codegraph.Target         `json:"target"`
-	Report   *codegraph.Report         `json:"report"`
+	Baseline codegraph.Graph                 `json:"baseline"`
+	Views    map[string]codegraph.Diff       `json:"views"`
+	Stale    []codegraph.StaleNode           `json:"stale"`
+	Best     *codegraph.Best                 `json:"best"`
+	Target   *codegraph.Target               `json:"target"`
+	Decls    map[string]codegraph.DomainDecl `json:"decls"`
+	Report   *codegraph.Report               `json:"report"`
 }
 
 func registerCodegraphProject(t *testing.T, env *testAgentdEnv, repo string) {
@@ -117,6 +121,13 @@ func TestCodegraphEndpoint(t *testing.T) {
 	if body.Best == nil || body.Target == nil || body.Report == nil {
 		t.Fatalf("代码图对照数据缺失: best=%v target=%v report=%v", body.Best, body.Target, body.Report)
 	}
+	decls, err := codegraph.LoadDomainDecls(repo)
+	if err != nil {
+		t.Fatalf("加载 fixture domain decls: %v", err)
+	}
+	if body.Decls == nil || !reflect.DeepEqual(body.Decls, decls) {
+		t.Fatalf("代码图声明响应未逐字段保真: got=%+v want=%+v", body.Decls, decls)
+	}
 	best, err := codegraph.LoadBest(repo)
 	if err != nil {
 		t.Fatalf("加载 fixture best: %v", err)
@@ -128,10 +139,6 @@ func TestCodegraphEndpoint(t *testing.T) {
 	g, err := codegraph.LoadGraph(repo)
 	if err != nil {
 		t.Fatalf("加载 fixture baseline: %v", err)
-	}
-	decls, err := codegraph.LoadDomainDecls(repo)
-	if err != nil {
-		t.Fatalf("加载 fixture domain decls: %v", err)
 	}
 	// 直调结果要走一遍 JSON 往返再比：响应侧的 report 是反序列化产物，而
 	// Report.LegacyHits 带 omitempty——空 map 在 wire 上被丢掉、解回来是 nil，
@@ -157,6 +164,144 @@ func TestCodegraphEndpoint(t *testing.T) {
 	var missing map[string]string
 	if status := env.getJSON(t, "/api/projects/demo/codegraph", &missing); status != http.StatusNotFound || !strings.Contains(missing["error"], "未生成代码图") {
 		t.Fatalf("缺失代码图响应: status=%d body=%v", status, missing)
+	}
+}
+
+func TestCodegraphDeclsWireConditions(t *testing.T) {
+	fullDecl := []byte(`{
+  "domain": "d_core",
+  "responsibility": "承载 fixture 的全部代码图节点。",
+  "invariants": [{"text": "fixture invariant", "testRef": "TestCodegraphEndpoint"}],
+  "lifecycle": {"from": "cmd/run.go#Run", "to": "cmd/run.go#Run"},
+  "stateMachine": [{"from": "pending", "to": "running", "anchor": "cmd/run.go#Run"}]
+}`)
+
+	cases := []struct {
+		name        string
+		mutate      func(t *testing.T, repo string)
+		wantDecls   bool
+		wantBest    bool
+		wantTarget  bool
+		wantReport  bool
+		wantDeclLog bool
+	}{
+		{
+			name: "normal directory with legal declaration",
+			mutate: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "codegraph", "domains", "d_core.json"), fullDecl, 0o644); err != nil {
+					t.Fatalf("写入完整声明: %v", err)
+				}
+			},
+			wantDecls: true, wantBest: true, wantTarget: true, wantReport: true,
+		},
+		{
+			name: "empty directory is present",
+			mutate: func(t *testing.T, repo string) {
+				t.Helper()
+				dir := filepath.Join(repo, "codegraph", "domains")
+				if err := os.RemoveAll(dir); err != nil {
+					t.Fatalf("删除声明目录: %v", err)
+				}
+				if err := os.MkdirAll(dir, 0o755); err != nil {
+					t.Fatalf("重建空声明目录: %v", err)
+				}
+			},
+			wantDecls: true, wantBest: true, wantTarget: true, wantReport: true,
+		},
+		{
+			name: "directory absent",
+			mutate: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.RemoveAll(filepath.Join(repo, "codegraph", "domains")); err != nil {
+					t.Fatalf("删除声明目录: %v", err)
+				}
+			},
+			wantDecls: false, wantBest: true, wantTarget: true, wantReport: true,
+		},
+		{
+			name: "best absent",
+			mutate: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.Remove(filepath.Join(repo, "codegraph", "best.json")); err != nil {
+					t.Fatalf("删除 best: %v", err)
+				}
+			},
+			wantDecls: false, wantBest: false, wantTarget: false, wantReport: false,
+		},
+		{
+			name: "target load failure",
+			mutate: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "codegraph", "target.json"), []byte("{"), 0o644); err != nil {
+					t.Fatalf("写入非法 target: %v", err)
+				}
+			},
+			wantDecls: false, wantBest: true, wantTarget: false, wantReport: false,
+		},
+		{
+			name: "single declaration parse failure",
+			mutate: func(t *testing.T, repo string) {
+				t.Helper()
+				if err := os.WriteFile(filepath.Join(repo, "codegraph", "domains", "d_core.json"), []byte("{"), 0o644); err != nil {
+					t.Fatalf("写入非法声明: %v", err)
+				}
+			},
+			wantDecls: false, wantBest: true, wantTarget: true, wantReport: false, wantDeclLog: true,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
+			env := newTestAgentdEnvWithCfg(t, &config.Config{Token: testToken}, logger)
+			repo := codegraphFixtureRepo(t)
+			registerCodegraphProject(t, env, repo)
+			tc.mutate(t, repo)
+
+			status, raw := codegraphRawGET(t, env, "/api/projects/demo/codegraph")
+			if status != http.StatusOK {
+				t.Fatalf("代码图状态=%d body=%s", status, raw)
+			}
+			var response map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &response); err != nil {
+				t.Fatalf("解码代码图响应: %v", err)
+			}
+
+			rawDecls, hasDecls := response["decls"]
+			if tc.wantDecls {
+				if !hasDecls || string(bytes.TrimSpace(rawDecls)) == "null" {
+					t.Fatalf("正常/空目录响应必须有非 null decls: %s", raw)
+				}
+				var gotDecls map[string]codegraph.DomainDecl
+				if err := json.Unmarshal(rawDecls, &gotDecls); err != nil {
+					t.Fatalf("解码 decls: %v", err)
+				}
+				if gotDecls == nil {
+					t.Fatalf("目录存在时 decls 不得为 nil map")
+				}
+				wantDecls, err := codegraph.LoadDomainDecls(repo)
+				if err != nil {
+					t.Fatalf("直调加载声明: %v", err)
+				}
+				if !reflect.DeepEqual(gotDecls, wantDecls) {
+					t.Fatalf("decls 未逐字段保真:\n got=%+v\nwant=%+v", gotDecls, wantDecls)
+				}
+			} else if hasDecls {
+				t.Fatalf("缺席/失败响应不得含 decls 键（包括 null）: %s", raw)
+			}
+
+			_, hasBest := response["best"]
+			_, hasTarget := response["target"]
+			_, hasReport := response["report"]
+			if hasBest != tc.wantBest || hasTarget != tc.wantTarget || hasReport != tc.wantReport {
+				t.Fatalf("对照段存在性错误: best=%t target=%t report=%t body=%s", hasBest, hasTarget, hasReport, raw)
+			}
+			if tc.wantDeclLog && !strings.Contains(logs.String(), "代码图领域声明加载失败") {
+				t.Fatalf("非法声明应产生告警日志，logs=%s", logs.String())
+			}
+		})
 	}
 }
 

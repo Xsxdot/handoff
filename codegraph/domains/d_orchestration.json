@@ -1,0 +1,22 @@
+{
+  "domain": "d_orchestration",
+  "responsibility": "为协调者保存任务、工单、事件和执行回合，并推进它们的合法状态迁移。",
+  "invariants": [
+    {
+      "text": "并发状态更新使用旧状态做 CAS，过期快照不能覆盖先发生的迁移。",
+      "testRef": "TestUpdateTaskStateCAS"
+    },
+    {
+      "text": "按工作目录统计活跃任务时只纳入非终态任务。",
+      "testRef": "TestActiveTasksByWorkDirOnlyNonTerminal"
+    },
+    {
+      "text": "任务进入终态时，剩余挂起工单被作废并留下终态审计痕迹。",
+      "testRef": "TestTransitToTerminalVoidsPendingTickets"
+    }
+  ],
+  "lifecycle": {
+    "from": "internal/agentd/manager.go#Dispatch",
+    "to": "internal/agentd/manager.go#transit"
+  }
+}
