@@ -44,6 +44,11 @@
       "responsibility": "为协调者保存需求卡、类型化关系、工作流定义与裁决的可审计账本，并把挂账任务的事件镜像回账本；与执行域仅弱引用隔离。",
       "type": "logic"
     },
+    "d_collab": {
+      "label": "协作房间",
+      "responsibility": "为控制台与 CLI 播发协作房间消息并执法其白名单与书写者规则：卡会话/项目群/全员群三级房间、@定向消费队列、未读游标与待回复收件箱的读模型。与 d_sessions（终端 PTY 回放）同名不同物——本域管协作房间，不管 PTY；房间消息落账本 card_events 单流，绑定席位权威在账本卡上（B156.2）。",
+      "type": "logic"
+    },
     "d_cli": {
       "label": "协调者命令面",
       "responsibility": "把协调者的终端意图翻译成 client/agentd 调用，并以可脚本化的文本契约呈现结果。",
@@ -209,6 +214,11 @@
     "k_ledger_WorkflowDef": "d_ledger",
     "k_ledger_fn": "d_ledger",
     "k_ledger_model": "d_ledger",
+    "k_ledger_api_Facade": "d_ledger",
+    "k_collab_Service": "d_collab",
+    "k_collab_fn": "d_collab",
+    "k_collab_model": "d_collab",
+    "k_collab_client_model": "d_collab",
     "k_ledgermirror_Mirror": "d_ledger",
     "k_ledgermirror_fn": "d_ledger",
     "k_ledgermirror_model": "d_ledger",
@@ -306,6 +316,8 @@
     "k_web_api_client_model": "d_web_contract",
     "k_web_api_ledger": "d_web_contract",
     "k_web_api_ledger_model": "d_web_contract",
+    "k_web_api_rooms": "d_web_contract",
+    "k_web_api_rooms_model": "d_web_contract",
     "k_web_api_pty": "d_web_contract",
     "k_web_api_pty_model": "d_web_contract",
     "k_web_api_types_model": "d_web_contract",

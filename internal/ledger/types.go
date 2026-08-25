@@ -63,6 +63,15 @@ const (
 	EvTaskMirrored       = "task_mirrored"
 	EvWorkflowMigrated   = "workflow_migrated"
 	EvDriverTakeover     = "driver_takeover"
+	// EvRoomMessage 协作房间域（B156.2）的唯一内容事件；kind 受控词表在
+	// proto.RoomMsgKind*。卡会话消息 CardID=卡号；项目群/全员群消息
+	// CardID=""（无卡事件——follow.go 现状把项目级事件排除在多路 wait 外，
+	// executor 因此零感知，这是刻意的）。载荷 schema 见 proto.RoomMessage。
+	EvRoomMessage = "room_message"
+	// EvMessageConsumed 房间消息被恰好一次消费的落账标记。消费判定在账本
+	// 同一 mutate 事务内查后写（照 ClearNeedsHumanFrom 同形），权威在事件
+	// 存在性；会话侧游标只是缓存。
+	EvMessageConsumed = "message_consumed"
 )
 
 // WorkflowTarget 是跨流迁移的显式目标。Version==0 表示在迁移事务内取目标流最新版。

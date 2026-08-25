@@ -225,6 +225,18 @@ func (s *Store) addComment(cardID, body, kind, actor, resetNode string) (Event, 
 	return event, err
 }
 
+// EnsureComment 幂等留痕：payload 带 dedupe_key，同键的说明评论已存在则
+// 不写、返回 false。环节执行体「终态遗留裁决」补解析（B156.2 §3.7）用，
+// 保证重复驱动不产生第二条说明评论。
+// Ticket 0 空壳：无可观测行为。
+func (s *Store) EnsureComment(cardID, dedupeKey, body, actor string) (bool, error) {
+	_ = cardID
+	_ = dedupeKey
+	_ = body
+	_ = actor
+	return false, nil
+}
+
 // RecordAcceptance 落验收结果事件（verified=true 表示真机已验）。
 // 判据文本在卡字段；结果是事件——「已验/待真机验」从最后一条
 // acceptance_recorded 推导。
