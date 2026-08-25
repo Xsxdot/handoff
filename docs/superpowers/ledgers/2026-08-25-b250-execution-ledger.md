@@ -42,3 +42,4 @@
 - 2026-08-25：在提升权限下重跑同一 `git add ...`；原始输出为空，退出码 0，12 个目标文件已暂存。
 - 2026-08-25：运行 `git diff --cached --check && git diff --cached --stat && git status --short --branch`；原始输出为暂存 diff check 无输出，12 个文件、`119 insertions(+), 85 deletions(-)`，分支 `## cards/B250-charter-2`，12 个目标均显示为已暂存 `M`。
 - 2026-08-25：运行 `git commit -m "fix(ledger): make attachment mutations atomic"`；原始输出为 `[cards/B250-charter-2 2f2c7644] fix(ledger): make attachment mutations atomic`、`12 files changed, 120 insertions(+), 85 deletions(-)`。
+- 2026-08-25：运行 `git commit -m "chore(ledger): record B250 repair close"`；原始输出为 `[cards/B250-charter-2 1f42133f] chore(ledger): record B250 repair close`、`1 file changed, 1 insertion(+)`；随后 `git status --short --branch && git log -3 --oneline --decorate && git rev-parse --abbrev-ref HEAD && git rev-parse HEAD` 原始输出为工作区无未提交改动、当前分支 `cards/B250-charter-2`、HEAD `1f42133fe7fbbcbd32c3cad3ece028a47953167a`。
