@@ -170,6 +170,18 @@
   **验收判据两条**：①行号比对脚本 mismatched 降到 0；②抽查若干新符号确实在图里
   ——不能只看 `check` 的 exit code，空壳基线照样 exit 0。
   来源：`specs/b156.3-contract-ledger.md`「图数据债」节。
+- **真重扫的验收判据要逐容器点数，不能抽查符号名**（2026-08-26 实测得出）：按「抽查
+  某个新符号在不在图里」验收会漏掉整张脸缺席的形态。实证：`internal/ledger/api` 包
+  `Facade` 的导出方法源码 **14 个**，图里 `n_ledger_api_Facade_*` 节点只有 **6 个**，
+  缺的 8 个正好是 B156.2 冻结的整张契约面（`GetCard`/`ListActiveCards`/`ListAllCards`/
+  `RecordRoomMessage`/`RecordMessageConsumed`/`EventsFromAsc`/`BindDriver`/`DriverLease`），
+  而 `graph check` 报 fails=0。行号错了还能靠 `graph sym` 再锚定；符号根本没进图就是
+  `sym` 查不到、`who-calls` 追不出。**判据两条**：①对新建容器逐个比对「源码该类型的
+  导出方法数 == 图里 `n_<容器>_*` 的节点数」；②接口节点比对「`m_*` 的 fields 长度 ==
+  源码 interface 的方法数」（接口方法在图里是 field，不是节点——按名字查必然落空）。
+  归属已查清：`125b5c360` 的 charter-2 视图里只声明了 `m_ledger_api_Facade` 类型节点与
+  `k_ledger_api_Facade` 容器，方法节点从未被声明，非某一轮 absorb 吞掉。
+  来源：`specs/b156.3-contract-ledger.md`，台账㊳。
 - **清掉陈旧域声明 `codegraph/domains/d_orchestration.json`**：它声明的域在图里不存在
   （图里叫 `d_coordination`）。仓内 `go run . graph validate`（`charter/graph v0.8.0`，
   `TestRepoContractGate` 用的那份）不报，较新的独立 `codegraph` 二进制会报
