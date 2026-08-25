@@ -90,8 +90,8 @@ func (f *Facade) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]pr
 }
 
 func (f *Facade) BindDriver(id, session, carrier, expect string) error {
-	// expect 语义与 RebindDriver 的 CAS 前值一致；空 expect=要求当前无绑定，
-	// 该分派随实现节点落地（欠账 #4），现阶段直通镜像只接显式换绑路径。
+	// expect 语义在账本侧 RebindDriver 落地（B156.2 欠账 #4）：expect=当前
+	// 绑定前值 CAS；空 expect=要求当前无绑定。本方法保持直通镜像零业务判断。
 	return f.st.RebindDriver(id, session, carrier, expect)
 }
 

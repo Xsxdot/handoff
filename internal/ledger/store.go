@@ -259,6 +259,9 @@ func (s *Store) ensureSchema() error {
 				acquired_at TIMESTAMPTZ NOT NULL, expires_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS ledger_meta (
 				key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS driver_leases (
+				session TEXT PRIMARY KEY,
+				expires_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
 				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
 			`INSERT INTO card_prefixes (project, prefix) VALUES ('handoff', 'B')
@@ -330,6 +333,9 @@ func (s *Store) ensureSchema() error {
 				key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
 				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
+			`CREATE TABLE IF NOT EXISTS driver_leases (
+				session TEXT PRIMARY KEY,
+				expires_at TEXT NOT NULL)`,
 			`INSERT INTO card_prefixes (project, prefix) VALUES ('handoff', 'B')
 				ON CONFLICT (project) DO NOTHING`,
 		}
@@ -342,6 +348,23 @@ func (s *Store) ensureSchema() error {
 			}
 			return fmt.Errorf("执行 DDL %q: %w", short, err)
 		}
+	}
+	// B156.2 绑定席位加列迁移：CREATE IF NOT EXISTS 不会给已存在的表补列，
+	// 加列走「ALTER + 容忍重复列」（store.go 文件头预留的第二版形态；
+	// internal/store 先例 store.go:232-249）。ADD COLUMN 两方言语法同形，
+	// 但重复列报错文案不同：SQLite 是 duplicate column name（modernc.org/sqlite
+	// v1.56.0 最小程序实测），PG 经 pgx 是 column … already exists (SQLSTATE
+	// 42701)（pgconn/errors.go:53-55 的 Error() 拼装格式）——两种都要容忍，
+	// 否则旧库第二次 Open 直接失败。本处只有这一条 ADD COLUMN，没有可被
+	// 「already exists」误吞的其他错误源。
+	if _, err := s.db.Exec(`ALTER TABLE cards ADD COLUMN driver_carrier TEXT`); err != nil {
+		msg := err.Error()
+		if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+			return fmt.Errorf("迁移 cards.driver_carrier: %w", err)
+		}
+		log().Info("cards.driver_carrier 列已存在，跳过加列")
+	} else {
+		log().Info("账本加列迁移完成", "table", "cards", "column", "driver_carrier")
 	}
 	return nil
 }
