@@ -173,6 +173,10 @@ func TestDispatchAutoRegisterSurvivesMissingLocalAgentd(t *testing.T) {
 	var taskHits, projectHits atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
+		case "/api/status":
+			// B229 起派发前必探能力位（§3.1 拒发闸）；本测试钉的是自动登记编排。
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"disciplines_supported":true}`)
 		case "/api/projects":
 			projectHits.Add(1)
 			w.Header().Set("Content-Type", "application/json")

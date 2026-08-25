@@ -5,7 +5,8 @@
 // 边界：
 //   - 不认领、不动卡状态——实现类派发在调用前自行 CAS 认领，环节派发不认领
 //   - 不做网络——传输经 Transport 注入，本文件不知道对端是 HTTP 还是别的什么
-//   - 不解析纪律块——只把角色名传下去，正文由 agentd 解析注入
+//   - 不解析纪律块——B229 起正文由调用方在装配处经缝 1（discipline.ResolveDispatch）
+//     解析好，以 Dispatcher 数据字段携带进来；本包只透传与记账
 package ledgerstep
 
 import (
@@ -62,6 +63,14 @@ type Dispatcher struct {
 	St        *ledger.Store
 	Transport Transport
 	Actor     string
+
+	// B229 缝 1 产物（数据字段，不是解析函数）：调用方装配时经
+	// discipline.ResolveDispatch 解析好的纪律正文与账本版本号。未点名模板的
+	// 调用方传纯平台层正文、版本 0。ViaTemplate 原样透传进 DispatchOpts 与
+	// dispatched 快照——ledgerstep 不 import discipline：组装点唯一在 d_policy
+	// （B229 契约 §4.5），本包零新增 import，解析动作归调用方装配处。
+	DisciplineText    string
+	DisciplineVersion int
 }
 
 // TemplateDispatch 描述一次按模板派发：模板、目标机、可选 plan 与纪律角色覆盖。
@@ -106,20 +115,19 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if err != nil {
 		return zero, fmt.Errorf("取模板: %w", err)
 	}
+	// 有效目标机与纪律角色名：请求覆盖 > 模板缺省。两个调用方装配处的缝 1
+	// 解析必须与这里完全同序（共用 PreflightDiscipline → disciplineAndTarget），
+	// 各抄一份迟早漂移——探错目标机的拒发闸比没有闸更危险。
 	target := req.Target
 	if target == "" {
 		target = tpl.Def.Target
 	}
-	if target == "" {
-		return zero, fmt.Errorf("目标机未定：--target 或模板 target 至少一个")
-	}
-
-	// 纪律块只传名字，正文由 agentd 解析注入。CLI 曾在这里读文件并拼进 prompt，
-	// 而 agentd 又会按 executor 注入一份——两份同时在场，审阅那次的「只读，不写」
-	// 被实现块的「每个 task 完成即 commit」直接推翻（2026-08-19 真机实测过一次）。
 	disciplineName := tpl.Def.Discipline
 	if req.DisciplineOverride != "" {
 		disciplineName = req.DisciplineOverride
+	}
+	if target == "" {
+		return zero, fmt.Errorf("目标机未定：--target 或模板 target 至少一个")
 	}
 
 	// 有效用途：节点覆盖优先于模板。下面**所有**按用途裁决的地方都读它，
@@ -243,6 +251,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	slog.Default().Info("按模板派发",
 		"card", c.ID, "template", req.Template, "target", target,
 		"executor", executor, "model", model, "discipline", disciplineName,
+		"discipline_version", d.DisciplineVersion,
+		"discipline_bytes", len(d.DisciplineText),
 		"purpose", purpose, "purpose_overridden", req.PurposeOverride != "",
 		"omit_acceptance", req.OmitAcceptance,
 		"branch", branch, "base", base,
@@ -258,6 +268,9 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		OutputPath: req.OutputPath,
 		PlanName:   planName, Base: base, NewWorktree: true,
 		ExistingBranch: existingBranch, Discipline: disciplineName,
+		// B229：调用方经缝 1 解析好的正文与版本，原样下发（§3.1 未点名也带平台层）。
+		DisciplineText:     d.DisciplineText,
+		DisciplineVersion:  d.DisciplineVersion,
 		ResolveDefaultBase: resolveDefaultBase,
 		LocalBaseBranch:    localBaseBranch,
 	})
@@ -275,7 +288,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	if err := d.St.RecordDispatch(c.ID, ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
-		Target: target, TaskID: taskID, Branch: snapshotBranch,
+		DisciplineVersion: d.DisciplineVersion,
+		Target:            target, TaskID: taskID, Branch: snapshotBranch,
 		Executor: executor, Model: model,
 		Purpose: purpose, PlanPath: req.PlanPath, Actor: d.Actor,
 	}); err != nil {
@@ -287,7 +301,47 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	return DispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
+		DisciplineVersion: d.DisciplineVersion,
 	}, nil
+}
+
+// disciplineAndTarget 返回一次模板派发的有效（纪律角色名，目标机）：
+// 请求覆盖优先，模板缺省兜底。ViaTemplate 与 PreflightDiscipline 必须共用
+// 这一份实现——调用方的缝 1 解析若与派发时的裁决漂移，探活会打错机器、
+// 正文会配错名字，拒发闸反而变成事故源。
+func disciplineAndTarget(def ledger.TemplateDef, overrideName, reqTarget string) (name, target string) {
+	name = def.Discipline
+	if overrideName != "" {
+		name = overrideName
+	}
+	target = reqTarget
+	if target == "" {
+		target = def.Target
+	}
+	return name, target
+}
+
+// PreflightDiscipline 以与 ViaTemplate 完全相同的裁决顺序算出一次模板派发的
+// 有效（纪律角色名，目标机），供调用方在装配 Dispatcher 前完成缝 1 解析：
+// 名字经账本 lookup 取正文、目标机探 Status 拿能力位，一并交给
+// discipline.ResolveDispatch 产出正文三元组，再填进 Dispatcher 数据字段。
+//
+// 参数：st 账本；templateName 模板名；overrideName 调用方角色覆盖（空=不覆盖）；
+// reqTarget 调用方目标机覆盖（空=用模板的）。
+// 返回：有效角色名与目标机。target 为空表示「模板与请求都没定目标机」——这是
+// 纯计算结果不是错误，如何处置（提前拒绝 / 放给 ViaTemplate 的既有失败路径）
+// 由调用方按自己的同步语义决定；模板取不到时返回错误。
+//
+// 为什么导出：有效值依赖「请求覆盖 > 模板缺省」这套回退顺序，本包内
+// ViaTemplate 与这里是唯一两处消费点且共用同一私有实现；调用方绕开它
+// 自行推导就会与实际派发漂移。
+func PreflightDiscipline(st *ledger.Store, templateName, overrideName, reqTarget string) (name, target string, err error) {
+	tpl, err := st.GetTemplate(templateName, 0)
+	if err != nil {
+		return "", "", fmt.Errorf("取模板: %w", err)
+	}
+	name, target = disciplineAndTarget(tpl.Def, overrideName, reqTarget)
+	return name, target, nil
 }
 
 // buildPrompt 把 executor 收到的 prompt 按三段拼起来。
@@ -307,9 +361,9 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 // 卡上下文是**每张卡不同的事实**，补充说明是**这一次才有的话**。混在一起就
 // 只能靠占位符硬塞，而占位符加一个就要改所有模板。
 //
-// 注意：**这里绝不拼纪律块正文**。纪律块只传名字，正文由 agentd 按 B129 注入；
-// 两份纪律同场会让审阅的「只读」被实现块的「完成即 commit」推翻（2026-08-19
-// 真机出过一次）。
+// 注意：**这里绝不拼纪律块正文**。正文由调用方经缝 1 解析后走 DispatchOpts
+// 的 DisciplineText 独立通道下发；两份纪律同场会让审阅的「只读」被实现块的
+// 「完成即 commit」推翻（2026-08-19 真机出过一次）。
 func buildPrompt(body string, c ledger.Card, base string, carry, omitAccept bool, extra, outputPath string) string {
 	sections := []string{body}
 	if carry {

@@ -7,10 +7,13 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 )
@@ -914,6 +917,11 @@ func TestCardStepPropagatesRequestFields(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	// B229 起点名目标机的环节在受理段过拒发闸：账本要有角色正文、目标机要报
+	// 支持能力位，否则 202 变 400。本测试钉的是字段传播，闸的前提照常满足。
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "审阅角色正文")
+	yes := true
+	registerFakeTarget(t, env.srv, "linux-01", newFakeTargetMachine(t, &yes))
 	runnerCh := make(chan *ledgerstep.StepRunner, 1)
 	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) { runnerCh <- runner }
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step",
@@ -1048,8 +1056,28 @@ func TestFlowPutRejectsBadNodes(t *testing.T) {
 	}
 }
 
-func TestDisciplinesListIncludesBuiltins(t *testing.T) {
+// TestDisciplinesListFromLedgerOnly B229 后下拉只反映账本：
+// 含账本种子名；退役磁盘目录里的残留文件名不再出现。
+func TestDisciplinesListFromLedgerOnly(t *testing.T) {
 	env := newLedgerEnv(t)
+	// 账本种子两个名字（乱序放入，验证去重升序）
+	for _, name := range []string{"charter-review", "charter-implement"} {
+		if _, err := env.ledger.PutDiscipline(name, "正文 "+name); err != nil {
+			t.Fatalf("PutDiscipline(%s): %v", name, err)
+		}
+	}
+	// 磁盘残留夹具必须落在处理器/配置真正认得的 <DataDir>/discipline 之下：
+	// 一旦有人把读盘兜底加回 handleDisciplineNames，disk-only 就会混进下拉，
+	// 上面的长度判据与下面的名字判据同时变红。放在任何随机目录里都会让这条
+	// 断言永远无牙（读不到夹具 = 拦不住复活）。
+	discDir := filepath.Join(env.srv.conf().DataDir, "discipline")
+	if err := os.MkdirAll(discDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(discDir, "disk-only.md"), []byte("本地残留"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
 	code, body := ledgerGet(t, env.testAgentdEnv, "/api/disciplines")
 	if code != http.StatusOK {
 		t.Fatalf("code = %d, body = %s", code, body)
@@ -1060,15 +1088,18 @@ func TestDisciplinesListIncludesBuiltins(t *testing.T) {
 	if err := json.Unmarshal([]byte(body), &got); err != nil {
 		t.Fatalf("解码: %v（原文 %s）", err, body)
 	}
-	for _, want := range []string{"implement", "review", "spec-draft", "plan-writing", "finishing"} {
-		found := false
-		for _, name := range got.Names {
-			if name == want {
-				found = true
-			}
+	want := []string{"charter-implement", "charter-review"}
+	if len(got.Names) != len(want) {
+		t.Fatalf("names = %v, want %v", got.Names, want)
+	}
+	for i, w := range want {
+		if got.Names[i] != w {
+			t.Fatalf("names = %v, want 升序 %v", got.Names, want)
 		}
-		if !found {
-			t.Fatalf("纪律块清单缺 %q: %v", want, got.Names)
+	}
+	for _, name := range got.Names {
+		if name == "disk-only" || name == "implement" || name == "review" {
+			t.Fatalf("退役来源的名字 %q 不应出现在下拉里: %v", name, got.Names)
 		}
 	}
 }

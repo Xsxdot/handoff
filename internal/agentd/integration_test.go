@@ -86,7 +86,7 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	f := fake.New(script)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, nil, newTestGate(t), logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
 	quiesceOnCleanup(t, st, mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, mgr: mgr, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
@@ -699,7 +699,7 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, nil, newTestGate(t), logger)
+	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
 
 	repo := newTestRepo(t)

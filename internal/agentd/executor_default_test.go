@@ -24,7 +24,7 @@ func newExecDefaultEnv(t *testing.T, def, model string, execs ...string) *testAg
 		ads[n] = &failStartAdapter{}
 	}
 	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
-		env.srv.DisciplineMapping, env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
+		env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
 	env.srv.SetManager(mgr)
 	env.mgr = mgr
 	return env

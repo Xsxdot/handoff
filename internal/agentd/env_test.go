@@ -29,7 +29,7 @@ func newEnvEnv(t *testing.T, mapping map[string]string, execs ...string) (*testA
 		ads[n] = &failStartAdapter{} // 只需要名字进注册表，本组用例不启动任何 executor
 	}
 	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
-		env.srv.DisciplineMapping, env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
+		env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
 	env.srv.SetManager(mgr)
 	env.mgr = mgr
 	return env, filepath.Join(dataDir, "env")

@@ -103,6 +103,10 @@ func (s *Server) localMachine() proto.Machine {
 	m.PtySupported = &ptyOK
 	launchersOK := true
 	m.LaunchersSupported = &launchersOK
+	// disciplines 能力位与 HTTP status 响应同源同值；§2.4 同生同死四件事核对单
+	// 见 handleStatus（T1=5585ecc2 已核销），本机记录不在此重复。
+	disciplinesOK := true
+	m.DisciplinesSupported = &disciplinesOK
 	revealOK := revealSupportedOS
 	m.RevealSupported = &revealOK
 	return m
@@ -154,6 +158,7 @@ func fillFromStatus(m *proto.Machine, st *proto.StatusResp) {
 	// 能力位原样搬运，包括 nil：探到了但对端没这个字段，结论就是「没上报」
 	m.PtySupported = st.PtySupported
 	m.LaunchersSupported = st.LaunchersSupported
+	m.DisciplinesSupported = st.DisciplinesSupported
 	m.RevealSupported = st.RevealSupported
 	m.ScratchRoot = st.ScratchRoot
 }

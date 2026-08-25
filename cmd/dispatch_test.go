@@ -36,6 +36,13 @@ func runDispatch(t *testing.T, extraArgs ...string) (string, string, error) {
 func runDispatchWithConfig(t *testing.T, cfgExtra string, extraArgs ...string) (string, string, error) {
 	t.Helper()
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// B229 起派发前必探能力位（§3.1 拒发闸），假 agentd 按「支持」应答，
+		// 让既有用例继续钉它们原本的关注面。
+		if r.URL.Path == "/api/status" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"disciplines_supported":true}`)
+			return
+		}
 		if r.URL.Path != "/api/tasks" {
 			http.NotFound(w, r)
 			return
@@ -291,6 +298,13 @@ func runRemoteDispatch(t *testing.T, repo string, extraArgs ...string) (string, 
 	t.Helper()
 	var hits atomic.Int32
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// B229 起派发前必探能力位（§3.1）；探活不算任务请求——「目标机请求计数」
+		// 判据数的是建任务的 POST，拒发判据「计数为 0」因此仍然成立。
+		if r.URL.Path == "/api/status" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"disciplines_supported":true}`)
+			return
+		}
 		hits.Add(1)
 		w.Header().Set("Content-Type", "application/json")
 		fmt.Fprint(w, dispatchTestTaskJSON)

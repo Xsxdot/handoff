@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -273,6 +274,67 @@ func TestAttendanceReportsCardDriverInsteadOfOrphan(t *testing.T) {
 	})
 	if !strings.Contains(unknownHeartbeat.String(), "认领于 未知") {
 		t.Fatalf("零值认领时刻应显示未知:\n%s", unknownHeartbeat.String())
+	}
+}
+
+// TestStatusReportsLedgerHealthWithRetiredEnabledFlag 钉住 B229 §2.6：
+// enabled=false 的 config 下 status 不再跳过账本——已挂账且有驱动会话的
+// 任务由账本 lookup 报出卡号与驱动者（账本健康可见），而不是退回「无人值守」。
+func TestStatusReportsLedgerHealthWithRetiredEnabledFlag(t *testing.T) {
+	targetName = ""
+	resetFlags(t)
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	body := "listen: 127.0.0.1:7777\ntoken: " + testToken + "\ndatadir: " + dir +
+		"\nledger:\n  enabled: false\n"
+	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// 种一份真实账本：最小工作流 + 卡 + 挂账（target 空串 = 本机模式）+ 驱动认领。
+	lst, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("开账本: %v", err)
+	}
+	if _, err := lst.PutWorkflow("bug", ledger.WorkflowDef{
+		Nodes: []ledger.NodeDef{{Name: ledger.StatusTodo}}}); err != nil {
+		t.Fatalf("种工作流: %v", err)
+	}
+	card, err := lst.CreateCard(ledger.NewCard{
+		Title: "退休钉", Project: "demo", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	if err := lst.LinkTask(card.ID, "", "task-ledger-1", "implement", "t"); err != nil {
+		t.Fatalf("挂账: %v", err)
+	}
+	if err := lst.ClaimDriver(card.ID, "sess-retired"); err != nil {
+		t.Fatalf("认领驱动: %v", err)
+	}
+	// 先关库：status 会以进程内第二次 Open 打开同一路径。
+	if err := lst.Close(); err != nil {
+		t.Fatalf("关账本: %v", err)
+	}
+
+	const statusBody = `{"listen":"0.0.0.0:7777","data_dir":"/data",
+		"started_at":"2026-08-10T00:00:00Z","version":{},
+		"executors":["opencode"],"default_executor":"opencode",
+		"task_counts":{"running":1},
+		"active":[{"id":"task-ledger-1","name":"挂着账的任务",
+			"state":"running","executor":"opencode","live":"alive","watchers":0}]}`
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(statusBody))
+	}))
+	t.Cleanup(ts.Close)
+
+	out, err := runStatus(t, cfgPath, ts.URL)
+	if err != nil {
+		t.Fatalf("status 应成功: %v", err)
+	}
+	wantCard := "无人订阅（卡 " + card.ID
+	if !strings.Contains(out, wantCard) || !strings.Contains(out, "sess-retired") {
+		t.Fatalf("enabled 退休后 status 应从账本报出卡与驱动（want 含 %q 与 %q）:\n%s",
+			wantCard, "sess-retired", out)
 	}
 }
 

@@ -298,9 +298,9 @@ func (s *Server) conf() *config.Config { return s.cfg.Load() }
 
 // DisciplineMapping 返回当前配置里的 executor 名 → 纪律块文件名映射。
 //
-// 交给 Manager 的 discipline.Resolver 每次派发时调用，因此控制台改完映射
-// **下一个任务就生效**，不必重启 agentd。返回的是当前快照持有的 map，
-// 调用方只读不改（写入方永不原地修改配置，只整体换新）。
+// B229 后它只服务 /api/discipline 端点的回显与 mapping PUT 的整段替换
+// （③层机器级映射语义不动，Out of Scope）；Manager 已收文即用、不再消费该映射。
+// 返回的是当前快照持有的 map，调用方只读不改（写入方永不原地修改配置，只整体换新）。
 func (s *Server) DisciplineMapping() map[string]string { return s.conf().Discipline }
 
 // EnvMapping 返回当前配置里的 agent 名 → env 文件名映射。
@@ -399,7 +399,10 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - POST /api/tasks/{id}/run          在任务仓库执行审阅命令（跑测试/lint）
 //   - POST /api/projects               登记项目（必要时先克隆）
 //   - GET  /api/projects               列出项目位置（含现场实际状态）
-//   - GET  /api/discipline             内置纪律、文件列表与 executor 档位
+//   - GET  /api/discipline             空清单（B229 目录退役）+ executor 档位
+//   - GET  /api/discipline/file        拒服务（410，纪律块已入账本）
+//   - PUT  /api/discipline/file        拒服务（410，纪律块已入账本）
+//   - PUT  /api/discipline/mapping     整段替换机器级 discipline 映射段
 //   - GET  /api/env                    env 文件列表与 executor 档位
 //   - GET  /api/env/file/keys          env 文件的变量清单（不含值）
 //   - GET  /api/env/file                读 env 文件正文（仅编辑时）
@@ -681,6 +684,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	resp.PtySupported = &ptyOK
 	launchersOK := true
 	resp.LaunchersSupported = &launchersOK
+	// B229 能力位与实现同生同死：契约 §2.4 四件事核对单（T1 提交 5585ecc2 逐条核销）——
+	//   1. 收文即用：Dispatch 将 DisciplineText 逐字节注入，本地纪律解析已退役（manager.go:757）
+	//   2. 正文落盘：先写任务目录 discipline.md 再启动 executor，落盘失败拒派（manager.go:923）
+	//   3. continue 消费首派落盘正文：Cold 缺失拒绝续接、热重连 Error 不阻断（manager.go:1300）
+	//   4. resume 启动恢复消费同一份落盘正文，不另起第二处解析入口（manager.go:3410）
+	// 四件齐才许上报 true；先报 true 后补实现 = 协调者信了能力位、正文发到一台不会用的
+	// 机器上（缺陷三的镜像事故）。
+	disciplinesOK := true
+	resp.DisciplinesSupported = &disciplinesOK
 	revealOK := revealSupportedOS
 	resp.RevealSupported = &revealOK
 	resp.ScratchRoot = s.scratchRoot()

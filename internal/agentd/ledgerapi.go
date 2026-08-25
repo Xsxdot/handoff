@@ -19,7 +19,6 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
-	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -635,36 +634,22 @@ func (s *Server) handleFlowPut(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "version": version})
 }
 
-// handleDisciplineNames 列出可选的纪律块名：内置角色 + DataDir 下的自定义文件。
+// handleDisciplineNames 列出可选的纪律块名：账本 disciplines 聚合的全部名字。
 //
 // 给节点配置的下拉用。返回去重升序的名字列表，不带正文——正文有专门的
-// 纪律块读写接口，列表接口没必要驮着几十 KB。
+// 读写接口，列表接口没必要驮着几十 KB。
+//
+// B229 起权威副本在账本：内置角色清单与 <DataDir>/discipline 磁盘文件都已退役，
+// 下拉只反映账本现状（ListDisciplineNames）。账本读不了就如实 500——
+// 它是纪律块的必需品，静默空清单会让用户以为没有可选项。
 func (s *Server) handleDisciplineNames(w http.ResponseWriter, r *http.Request) {
-	seen := map[string]bool{}
-	names := []string{}
-	add := func(name string) {
-		if name == "" || seen[name] {
-			return
-		}
-		seen[name] = true
-		names = append(names, name)
-	}
-	for _, name := range []string{
-		discipline.NameImplement, discipline.NameReview,
-		discipline.NameSpecDraft, discipline.NamePlanWriting, discipline.NameFinishing,
-	} {
-		add(name)
-	}
-	files, err := discipline.List(discipline.Dir(s.conf().DataDir))
+	names, err := s.ledger.ListDisciplineNames()
 	if err != nil {
-		// 目录读不了不该让整个下拉空掉——内置的那几个仍然可用，如实告警即可。
-		s.log.Warn("列自定义纪律块失败，只返回内置", "cause", err)
+		s.log.Error("列纪律块名失败", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
 	}
-	for _, file := range files {
-		add(strings.TrimSuffix(file.Name, ".md"))
-	}
-	sort.Strings(names)
-	s.log.Info("列出纪律块名", "count", len(names), "custom", len(files))
+	s.log.Info("列出纪律块名", "count", len(names))
 	writeJSON(w, http.StatusOK, map[string]any{"names": names})
 }
 

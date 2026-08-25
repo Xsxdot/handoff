@@ -3,6 +3,7 @@ package cmd
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -112,8 +113,39 @@ func cardStepString(t *testing.T, body map[string]json.RawMessage, key string) s
 	return value
 }
 
+// setupDisciplineGateFixture 预写 B229 拒发闸前提：假目标机 mac-02 按 statusBody
+// 应答 /api/status，模板点名的角色正文已入账本。裸卡派发自接线起在认领前过闸，
+// 既有用例钉的是各自关注面，闸的前提在此统一满足。
+func setupDisciplineGateFixture(t *testing.T, dir, statusBody string) {
+	t.Helper()
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, statusBody)
+	}))
+	t.Cleanup(ts.Close)
+	c := &config.Config{
+		Listen: "127.0.0.1:0", Token: testToken, DataDir: dir, StallTimeout: 2 * time.Hour,
+		Ledger: config.LedgerConfig{Enabled: true},
+		Targets: map[string]config.Target{
+			"mac-02": {Addr: strings.TrimPrefix(ts.URL, "http://"), Token: testToken},
+		},
+	}
+	if err := config.Save(filepath.Join(dir, "config.yaml"), c); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.PutDiscipline("implement", "测试角色正文"); err != nil {
+		t.Fatalf("种纪律块: %v", err)
+	}
+}
+
 func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	dir := t.TempDir()
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
 
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "要派的卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
@@ -173,6 +205,7 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 // 并从账本 JSON 事件核对一次性覆盖确实落账。
 func TestCardDispatchExecutorModelFlags(t *testing.T) {
 	dir := t.TempDir()
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "覆盖执行器的卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
@@ -243,6 +276,7 @@ func TestCardDispatchStepExecutorModelFlags(t *testing.T) {
 // 而驱动身份带 pid——同一个人换个进程重试会被自己挡住 5 分钟。
 func TestCardDispatchFailureReleasesLease(t *testing.T) {
 	dir := t.TempDir()
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "会派失败的卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
@@ -287,6 +321,7 @@ func TestCardDispatchFailureReleasesLease(t *testing.T) {
 // 而那条路会撞上 WorkBranch 取「最近一条非审阅 dispatched 快照」的三个坑。
 func TestCardDispatchExtraReachesPrompt(t *testing.T) {
 	dir := t.TempDir()
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "带补充说明的卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
@@ -529,6 +564,7 @@ func TestCardDispatchStepNoLocalFallback(t *testing.T) {
 // 「## 本次补充」后面跟一片空白比没有更让执行者困惑（同 {{ACCEPT}} 的既有取舍）。
 func TestCardDispatchWithoutExtraHasNoSupplementSection(t *testing.T) {
 	dir := t.TempDir()
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "不带补充的卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
@@ -551,5 +587,136 @@ func TestCardDispatchWithoutExtraHasNoSupplementSection(t *testing.T) {
 	}
 	if strings.Contains(got.prompt, "本次补充") {
 		t.Fatalf("未传 --extra 时不应出现「本次补充」小节:\n%s", got.prompt)
+	}
+}
+
+// writeCardDispatchConfig 预写一份带假目标机的配置（runLedgerCLI 见文件存在即跳过）。
+// B229 起 card dispatch 在认领前过拒发闸：账本要有点名正文、目标机要报支持能力位。
+func writeCardDispatchConfig(t *testing.T, dir, addr string) {
+	t.Helper()
+	c := &config.Config{
+		Listen: "127.0.0.1:0", Token: testToken, DataDir: dir, StallTimeout: 2 * time.Hour,
+		Ledger: config.LedgerConfig{Enabled: true},
+		Targets: map[string]config.Target{
+			"fake-01": {Addr: addr, Token: testToken},
+		},
+	}
+	if err := config.Save(filepath.Join(dir, "config.yaml"), c); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+}
+
+// TestCardDispatchDeliversResolvedDiscipline CLI 模板派发的缝 1 接线：认领之前
+// 经 PreflightDiscipline + ResolveDispatch 解析好正文三元组，随请求上 wire，
+// 版本号落 dispatched 快照。
+func TestCardDispatchDeliversResolvedDiscipline(t *testing.T) {
+	dir := t.TempDir()
+	ct := newCaptureTarget(t, `{"disciplines_supported":true}`)
+	writeCardDispatchConfig(t, dir, strings.TrimPrefix(ct.ts.URL, "http://"))
+
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "缝1接线卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	// 种模板与账本正文（feature-impl 点名 implement）。
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutTemplate("feature-impl", ledger.TemplateDef{
+		Executor: "opencode", Purpose: ledger.PurposeImplement, BranchPrefix: "cards",
+		Discipline: "implement", Prompt: "实现 {{TITLE}}",
+	}); err != nil {
+		t.Fatalf("种模板: %v", err)
+	}
+	if _, err := st.PutDiscipline("implement", "实现角色正文B229MARKER"); err != nil {
+		t.Fatalf("种纪律块: %v", err)
+	}
+	_ = st.Close()
+
+	var got dispatchRequest
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+		got = req
+		return "T-cli-discipline", nil
+	})
+	defer restore()
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
+		"--template", "feature-impl", "--target", "fake-01"); err != nil {
+		t.Fatalf("card dispatch: %v", err)
+	}
+	if !strings.Contains(got.disciplineText, "平台不变量") ||
+		!strings.Contains(got.disciplineText, "实现角色正文B229MARKER") {
+		t.Fatalf("wire 的正文应是平台层+角色层组装产物，实得前 80 字节: %q",
+			truncateBytesForTest(got.disciplineText, 80))
+	}
+	if got.disciplineVersion != 1 {
+		t.Fatalf("wire discipline_version = %d, want 1", got.disciplineVersion)
+	}
+	show, _, err := runLedgerCLI(t, dir, "card", "show", card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(show, `"discipline_version":1`) {
+		t.Fatalf("dispatched 快照应含 discipline_version=1: %s", show)
+	}
+}
+
+// TestCardDispatchRefusesUnsupportedTargetBeforeClaim 目标机不支持时在认领之前
+// 拒发：卡留在原状态（无半状态），错误文案可行动。
+func TestCardDispatchRefusesUnsupportedTargetBeforeClaim(t *testing.T) {
+	dir := t.TempDir()
+	ct := newCaptureTarget(t, `{}`)
+	writeCardDispatchConfig(t, dir, strings.TrimPrefix(ct.ts.URL, "http://"))
+
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "拒发零残留卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatal(err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutTemplate("feature-impl", ledger.TemplateDef{
+		Executor: "opencode", Purpose: ledger.PurposeImplement, BranchPrefix: "cards",
+		Discipline: "implement", Prompt: "实现 {{TITLE}}",
+	}); err != nil {
+		t.Fatalf("种模板: %v", err)
+	}
+	if _, err := st.PutDiscipline("implement", "不该被下发"); err != nil {
+		t.Fatalf("种纪律块: %v", err)
+	}
+	_ = st.Close()
+
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+		t.Fatal("拒发时不应发出任何派发请求")
+		return "", nil
+	})
+	defer restore()
+	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID,
+		"--template", "feature-impl", "--target", "fake-01")
+	if err == nil || !strings.Contains(err.Error(), "升级") {
+		t.Fatalf("应在认领前拒发并给升级指引: %v", err)
+	}
+	if n := ct.tasks(); n != 0 {
+		t.Fatalf("目标机不应收到任务请求，实际 %d 次", n)
+	}
+	show, _, serr := runLedgerCLI(t, dir, "card", "show", card.ID)
+	if serr != nil {
+		t.Fatal(serr)
+	}
+	if strings.Contains(show, `"status":"进行中"`) || strings.Contains(show, `"Status":"进行中"`) {
+		t.Fatalf("拒发不得留下已认领的半状态: %s", show)
 	}
 }
