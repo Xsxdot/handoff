@@ -70,3 +70,9 @@ plan 节点台账（B156.2.4 C4·Send 白名单执法全矩阵 + Pointer 实现�
 - R4: T4.3 改写 service.go + pin 改引用（room.RoomEventType / 新增 TestRoomStatusLiteralMatchesLedger）→ `go build ./internal/collab/...` EXIT=0；`grep -n "Println\|fmt.Print" internal/collab/service.go internal/collab/room/*.go` 零命中（exit=1）。
 - R5: T4.4 跑绿：`go test ./internal/collab/ -run 'TestSend|TestPointer' -v` 19 支全 PASS；`go test ./internal/collab/...` ok EXIT=0；`go build ./...` EXIT=0；`go vet ./internal/collab/...` EXIT=0。
 - R6: 占位扫描：`grep -rn "竖切阶段不伪造放行\|Ticket 0 空壳" internal/collab/` ——「竖切阶段不伪造放行」零命中；「Ticket 0 空壳」仅剩 Consume/MarkRead/Unread（C5 半成品，plan §3 T4.4 允许保留）。
+- R7: T4.5 图增量：best.json 加 k_collab_room_fn/k_collab_room_model→d_collab；cards-B156.2-charter-4.json 加 containersAdded(2)+nodesAdded(8)+edgesAdded(11)。`go run . graph validate --repo .` EXIT=0（containers=263/nodes=3718/edges=4746/issues=null）；`go run . graph check --repo . --view cards-B156.2-charter-4` → `"fails": []` EXIT=0。
+- R8: 视图自验逐容器点数：`graph sym --view cards-B156.2-charter-4` 八个新符号全部 anchor=ok 且归属容器正确（7 个 func→k_collab_room_fn、Room→k_collab_room_model），无一落入他容器（协调者反面案例 B228 对照自检）。
+- R9: 变异①（Pointer 函数体改回 `_ = roomID; _ = msg; return 0, nil`）→ `go build ./internal/collab/...` EXIT=0（编译过）→ `go test ./internal/collab/ -run 'TestPointer'` 四支全红（Writes/Overrides/ReadOnly/Unknown FAIL）→ 已还原。
+- R10: 变异②（VerifyWriter default 分支绑定比对改 `if false`）→ 编译过 → TestSendCoordinatorKindsRequireBinding 与 TestSendRebindRevokesOldSession 红（红文：`kind escalation 非绑定者必须 ErrNotWriter，got <nil>`）；relay 两支保持绿（只动 default 分支，命中唯一——`actor != r.Card.DriverSession` 在文件出现 2 次，用「协调者类被拒：群房间无绑定席位可比」长锚命中 default 分支）→ 已还原。
+- R11: 变异还原后 `go test ./internal/collab/... -count=1` ok EXIT=0；`go build ./...` EXIT=0。
+- R12: Pointer 函数体 grep 判据：`sed -n '/func (s \*Service) Pointer/,/^}/p' internal/collab/service.go | grep -c "return 0, nil"` = 0。

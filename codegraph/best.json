@@ -229,6 +229,8 @@
     "k_collab_fn": "d_collab",
     "k_collab_model": "d_collab",
     "k_collab_client_model": "d_collab",
+    "k_collab_room_fn": "d_collab",
+    "k_collab_room_model": "d_collab",
     "k_ledgermirror_Mirror": "d_ledger",
     "k_ledgermirror_fn": "d_ledger",
     "k_ledgermirror_model": "d_ledger",

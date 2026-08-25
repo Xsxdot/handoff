@@ -2,8 +2,33 @@
   "view": "cards/B156.2-charter-4",
   "base": "d4dd340e",
   "summary": "B156.2 charter-4 微修订轮（岔口一方案甲）：proto.Card+=Following(omitempty)、cardWire 补 Following 投影、LedgerClient/Facade += ListAllCards 直通。本视图为累计视图（自带 charter-2 全部符号）：check --view 按基线+单 diff 叠加，缺 charter-2 内容则三条契约面全数 dead——已实测 plain check 4 处违规为证。",
-  "containersAdded": {},
-  "nodesAdded": {},
+  "containersAdded": {
+   "k_collab_room_fn": {"label": "collab.room 包级函数", "kind": "函数组", "domain": "d_collab"},
+   "k_collab_room_model": {"label": "collab.room 数据模型", "kind": "实体", "domain": "d_collab"}
+  },
+  "nodesAdded": {
+   "n_collab_room_Resolve": {"kind": "func", "container": "k_collab_room_fn", "order": 1, "name": "Resolve", "file": "internal/collab/room/room.go", "line": 55, "signature": "func Resolve(lc client.LedgerClient, roomID string) (*Room, error)", "params": [["lc", "client.LedgerClient", ""], ["roomID", "string", ""]], "returns": "(*Room, error)", "summary": "Resolve 把房间标识解析为执法上下文。"},
+   "n_collab_room_VerifyWriter": {"kind": "func", "container": "k_collab_room_fn", "order": 2, "name": "VerifyWriter", "file": "internal/collab/room/room.go", "line": 102, "signature": "func VerifyWriter(r *Room, kind, actor string) error", "params": [["r", "*Room", ""], ["kind", "string", ""], ["actor", "string", ""]], "returns": "error", "summary": "VerifyWriter 按 kind 执法书写者身份。"},
+   "n_collab_room_KindAllowed": {"kind": "func", "container": "k_collab_room_fn", "order": 3, "name": "KindAllowed", "file": "internal/collab/room/room.go", "line": 149, "signature": "func KindAllowed(kind string) bool", "params": [["kind", "string", ""]], "returns": "bool", "summary": "KindAllowed kind 是否在受控词表内。"},
+   "n_collab_room_IsTerminalStatus": {"kind": "func", "container": "k_collab_room_fn", "order": 4, "name": "IsTerminalStatus", "file": "internal/collab/room/room.go", "line": 161, "signature": "func IsTerminalStatus(status string) bool", "params": [["status", "string", ""]], "returns": "bool", "summary": "IsTerminalStatus 卡终态判据。"},
+   "n_collab_room_SameRoom": {"kind": "func", "container": "k_collab_room_fn", "order": 5, "name": "SameRoom", "file": "internal/collab/room/room.go", "line": 188, "signature": "func SameRoom(ev proto.LedgerEvent, roomID string) bool", "params": [["ev", "proto.LedgerEvent", ""], ["roomID", "string", ""]], "returns": "bool", "summary": "SameRoom 判断事件是否属于该房间。"},
+   "n_collab_room_MentionsMember": {"kind": "func", "container": "k_collab_room_fn", "order": 6, "name": "MentionsMember", "file": "internal/collab/room/room.go", "line": 200, "signature": "func MentionsMember(ev proto.LedgerEvent, member string) bool", "params": [["ev", "proto.LedgerEvent", ""], ["member", "string", ""]], "returns": "bool", "summary": "MentionsMember 判断事件的 mentions 是否含该成员。"},
+   "n_collab_room_UnmarshalMessage": {"kind": "func", "container": "k_collab_room_fn", "order": 7, "name": "UnmarshalMessage", "file": "internal/collab/room/room.go", "line": 214, "signature": "func UnmarshalMessage(raw json.RawMessage, msg *proto.RoomMessage) error", "params": [["raw", "json.RawMessage", ""], ["msg", "*proto.RoomMessage", ""]], "returns": "error", "summary": "UnmarshalMessage 解码房间消息载荷。"},
+   "m_collab_room_Room": {"kind": "model", "container": "k_collab_room_model", "order": 8, "name": "Room", "file": "internal/collab/room/room.go", "line": 36, "summary": "Room 是房间解析的完整结果：识别房间形态并携带执法所需全部上下文。", "fields": [["ID", "string", ""], ["CardID", "string", ""], ["Kind", "string", ""], ["Project", "string", ""], ["ReadOnly", "bool", ""], ["Card", "*proto.Card", ""], ["ParentSession", "string", ""]]}
+  },
+  "edgesAdded": [
+   ["n_collab_Service_Send", "n_collab_room_KindAllowed"],
+   ["n_collab_Service_Send", "n_collab_room_Resolve"],
+   ["n_collab_Service_Send", "n_collab_room_VerifyWriter"],
+   ["n_collab_Service_Pointer", "n_collab_room_Resolve"],
+   ["n_collab_Service_History", "n_collab_room_SameRoom"],
+   ["n_collab_Service_Mentions", "n_collab_room_MentionsMember"],
+   ["n_collab_room_Resolve", "m_proto_Card"],
+   ["n_collab_room_VerifyWriter", "m_proto_Card"],
+   ["n_collab_room_SameRoom", "m_proto_RoomMessage"],
+   ["n_collab_room_MentionsMember", "m_proto_RoomMessage"],
+   ["n_collab_room_UnmarshalMessage", "m_proto_RoomMessage"]
+  ],
   "nodesModified": {
     "m_proto_Card": {
       "kind": "model",
