@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
@@ -97,6 +98,25 @@ func (n *NodeStep) haltForHuman(cardID, reason, body string) (Outcome, error) {
 	return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
 }
 
+// haltForHumanEnsure 与 haltForHuman 同构，但说明评论走 EnsureComment 幂等
+// 留痕：同 dedupeKey 不产生第二条评论。供「终态遗留裁决」补解析（契约 §3.7）
+// 用——重复驱动同一张卡只留一条说明，避免看板被刷屏；也绝不伪造
+// decision_answered（答案是用户的事实，系统不代答）。
+func (n *NodeStep) haltForHumanEnsure(cardID, reason, dedupeKey, body string) (Outcome, error) {
+	if err := n.gatedWrite("等人留痕"); err != nil {
+		return Outcome{Action: ActionNeedsHuman, Reason: reason}, err
+	}
+	if body != "" {
+		if _, err := n.St.EnsureComment(cardID, dedupeKey, body, n.actor()); err != nil {
+			return Outcome{}, err
+		}
+	}
+	if err := n.St.MarkNeedsHuman(cardID, reason, n.actor()); err != nil {
+		return Outcome{}, err
+	}
+	return Outcome{Action: ActionNeedsHuman, Reason: reason}, nil
+}
+
 // routeTo 把卡移到 to 列；to 为空表示停在本列（不是错误）。
 //
 // 返回：移动失败时返回错误原文，由调用方转等人——门槛没过（如「待合并」要求
@@ -140,6 +160,36 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 	}
 	logger.Debug("读取节点所属卡完成", "workflow", card.WorkflowName,
 		"workflow_version", card.WorkflowVersion, "status", card.Status)
+	// 终态遗留裁决补解析（B156.2 契约 §3.7）：卡已到终态但仍挂着 open 裁决，
+	// 是协调者死亡窗口的产物。继续推进没有意义（终态没有下一列），而答案是
+	// 用户的事实，系统绝不代答（绝不伪造 decision_answered）。转等人，并走
+	// EnsureComment 幂等留痕——重复驱动同一张卡不产生第二条说明评论。
+	// 检测放 !n.Node.Dispatch 检查之前：真实恢复场景是终态叶子列（无 Dispatch）
+	// 被再驱动，runner.go 对纯人工列直接调 RunOnce 不装配 WriteGate，放后面
+	// 会被「纯人工列不可执行」的配置错误吞掉。
+	if card.Status == ledger.StatusDone || card.Status == ledger.StatusClosed {
+		open, openErr := n.St.ListDecisions(true)
+		if openErr != nil {
+			logger.Warn("读取 open 裁决失败", "cause", openErr)
+			return Outcome{}, openErr
+		}
+		var leftover []ledger.Decision
+		for _, d := range open {
+			if d.CardID == cardID {
+				leftover = append(leftover, d)
+			}
+		}
+		if len(leftover) > 0 {
+			ids := make([]string, 0, len(leftover))
+			for _, d := range leftover {
+				ids = append(ids, fmt.Sprint(d.ID))
+			}
+			reason := fmt.Sprintf("终态遗留裁决：卡已到终态（%s）但仍有 %d 条未答复裁决", card.Status, len(leftover))
+			body := "本卡已到终态但仍有 open 裁决未答复（协调者死亡窗口的产物）。答案属于用户，系统不代答（绝不伪造 decision_answered）——请恢复推进的协调者把裁决转达用户。open 裁决 id：" + strings.Join(ids, ", ")
+			logger.Warn("检测到终态遗留裁决，转等人", "status", card.Status, "open_decisions", len(leftover))
+			return n.haltForHumanEnsure(cardID, reason, "终态遗留裁决:"+cardID, body)
+		}
+	}
 	if !n.Node.Dispatch {
 		// 纯人工列没有可执行能力。这不是「什么都不做」而是配置错误——
 		// 界面上不该给这种列画执行按钮，走到这里说明调用方绕过了判断。
