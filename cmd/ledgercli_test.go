@@ -21,6 +21,15 @@ import (
 
 // runLedgerCLI 在 dir（DataDir 兼配置目录）下跑一条 handoff 命令。
 // 首次调用自动写最小 config.yaml。返回 stdout/stderr 文本与错误。
+//
+// 为什么执行后再 resetAllFlags 一次：resetAllFlags 只在**下次**调用开头生效，
+// 而 flag 是包级变量——一条命令把 --target 这类全局 flag 设成非默认值后，
+// 如果它是该测试的最后一次执行，脏值会一路传染到后续用其他 harness
+// （runStatus/runSubcommandForTest 的 resetFlags 是 save-restore 语义，不清
+// 起始态）的测试。B156.2 C7 room inbox 测试第一个踩中（--target mac-02
+// 传染 status 族）。执行后立即复位，保证每条 runLedgerCLI 前后树都干净。
+// --config 例外：调用方（workflow_test 等）在执行后直接 openLedger()，依赖
+// configPath 仍指向本次临时配置，故复位后把它还原到本次调用设的值。
 func runLedgerCLI(t *testing.T, dir string, args ...string) (string, string, error) {
 	t.Helper()
 	cfgPath := filepath.Join(dir, "config.yaml")
@@ -41,6 +50,8 @@ func runLedgerCLI(t *testing.T, dir string, args ...string) (string, string, err
 	rootCmd.SetErr(&errb)
 	rootCmd.SetArgs(append([]string{"--config", cfgPath}, args...))
 	err := Execute()
+	resetAllFlags(rootCmd)
+	configPath = cfgPath
 	return out.String(), errb.String(), err
 }
 
@@ -102,8 +113,25 @@ func seedCardCLIForTest(t *testing.T, dir string, args []string) {
 // 在包级变量上，跨 Execute() 持久——上一个测试设过的 --parent/--json
 // 会静默污染下一个测试（repo 既有做法是逐个 t.Cleanup 手工复位，账本
 // 命令族 flag 太多，统一在基座里回默认值）。
+//
+// 切片型 flag（StringArray/StringSlice/intSlice）走独立分支：它们的
+// Value.Set 是 append 语义，用 Set(DefValue) 复位只会把默认值追加进既有
+// 切片——B156.2 C7 的 room send --ref/--mention 是第一批有测试断言切片
+// 内容的 flag，首跑就撞上（同进程多次 Execute 后 refs 里堆满垃圾元素）。
+// 空默认的 DefValue 是 pflag 的 "[]"（String() 的括号 CSV 形），正确复位
+// 是 Replace 成空切片；仓库现有切片 flag 默认都是空。非切片 flag 维持原
+// Set 语义。
 func resetAllFlags(c *cobra.Command) {
 	c.Flags().VisitAll(func(f *pflag.Flag) {
+		if sv, ok := f.Value.(pflag.SliceValue); ok {
+			if f.DefValue == "" || f.DefValue == "[]" {
+				sv.Replace(nil)
+			} else {
+				_ = f.Value.Set(f.DefValue)
+			}
+			f.Changed = false
+			return
+		}
 		_ = f.Value.Set(f.DefValue)
 		f.Changed = false
 	})

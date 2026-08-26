@@ -12,9 +12,11 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
 )
 
@@ -298,6 +300,10 @@ var cardDispatchCmd = &cobra.Command{
 			_ = st.ReleaseCard(id, actor)
 			return err
 		}
+		// B156.2 欠账 #11 派发指针（岔口八本期唯一机械触点）：派发成功即落
+		// 里程碑指针行（正文=卡号+节点名）。失败不打断主流程——指针是房间面
+		// 信号，不是派发本身；错误仅日志（判据二，TestCardDispatchPointerFailureDoesNotInterrupt）。
+		writeDispatchPointer(st, id, templateName)
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(result)
 	},
 }
@@ -312,4 +318,40 @@ func init() {
 	cardDispatchCmd.Flags().StringVar(&cardDispatchExecutor, "executor", "", "一次性覆盖模板/节点的执行器")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchModel, "model", "", "一次性覆盖模型；空 = 交给执行器自身默认")
 	cardCmd.AddCommand(cardDispatchCmd)
+}
+
+// writeDispatchPointer 派发成功后落里程碑指针行（B156.2 欠账 #11 岔口八）。
+// 具名函数而非内联进 RunE 闭包：C6 的指针引用白名单守卫按「所在函数」归属，
+// 落在匿名闭包里归属不到真正的调用点。成功路径才写（ViaTemplate 失败零半
+// 状态）；写失败不打断派发主流程——指针是房间面信号，错误仅日志（判据二，
+// TestCardDispatchPointerFailureDoesNotInterrupt）。
+func writeDispatchPointer(st *ledger.Store, id, nodeLabel string) {
+	if perr := roomPointer(roomServiceFor(st), id, dispatchPointerBody(id, nodeLabel)); perr != nil {
+		slog.Warn("派发指针落账失败", "card", id, "cause", perr)
+	}
+}
+
+// dispatchPointerBody 派发成功指针行的正文：卡号 + 派发节点。裸派发节点=模板
+// 名（bare dispatch 唯一可得的派发形态标识；--step 节点派发在 agentd 侧
+// ledgerstep 落指针，不在本 CLI 进程——runStepDispatch 只做 HTTP 受理、不持
+// 账本，见 card_node.go）。
+func dispatchPointerBody(id, nodeLabel string) string {
+	return "已派发 " + id + " @ " + nodeLabel
+}
+
+// roomPointer 是派发成功路径写指针行的测试缝（cmd 包既有 swap 先例：
+// dispatchTransport/startBackgroundCheck）。生产=直调 collab.Service.Pointer
+// （kind/BySystem 由 Pointer 自置，房间解析与只读判定归 collab，调用方只递
+// roomID 与正文）；测试替换它注入失败，断言「指针失败不打断派发主流程」
+// （判据二）。缝只包接缝#1（Service.Pointer）的调用，不改变测试入口符号。
+var roomPointer = func(s *collab.Service, roomID, body string) error {
+	_, err := s.Pointer(roomID, proto.RoomMessage{Body: body})
+	return err
+}
+
+// swapRoomPointer 替换 roomPointer；测试恢复原实现。
+func swapRoomPointer(fn func(*collab.Service, string, string) error) func() {
+	old := roomPointer
+	roomPointer = fn
+	return func() { roomPointer = old }
 }

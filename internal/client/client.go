@@ -1278,6 +1278,26 @@ func (c *Client) RevokeSession(ctx context.Context, id string) error {
 	return nil
 }
 
+// Inbox 拉取待回复收件箱（B156.2 C7）：room inbox 走 agentd HTTP /api/inbox
+// （breakdown 岔口三裁决——ticket 源判据 Hub.Watchers(taskID)==0 是 agentd
+// 进程内快照，CLI 本地重算会让所有等待工单全量误上浮）。三源聚合在服务端
+// 编排单元（C6），本方法只做传输与解码，不含业务判断。
+func (c *Client) Inbox(ctx context.Context) ([]proto.InboxItem, error) {
+	resp, err := c.do(ctx, http.MethodGet, "/api/inbox", nil)
+	if err != nil {
+		return nil, fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("拉收件箱", resp)
+	}
+	var out []proto.InboxItem
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析收件箱: %w", err)
+	}
+	return out, nil
+}
+
 // doStream 发送带 Bearer token 的流式 GET 请求，返回不关闭 body 的响应。
 //
 // 为什么不能复用 do：do 不做任何读体/超时假设，但它没有专门的流式语义——
