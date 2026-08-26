@@ -2268,7 +2268,8 @@ type facadeAsRegistry struct {
 }
 
 func (a facadeAsRegistry) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
-	return a.f.Put(kind, id, expectVersion, body, actor)
+	v, err := a.f.Put(kind, id, expectVersion, body, actor)
+	return v, translateRegistryErr(err)
 }
 
 func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error) {
@@ -2292,13 +2293,17 @@ func (a facadeAsRegistry) List(kind string) ([]schedclient.Record, error) {
 }
 
 func (a facadeAsRegistry) Delete(kind, id string, expectVersion int, actor string) error {
-	return a.f.Delete(kind, id, expectVersion, actor)
+	return translateRegistryErr(a.f.Delete(kind, id, expectVersion, actor))
 }
 
 func translateRegistryErr(err error) error {
 	switch {
 	case errors.Is(err, ledger.ErrNotFound):
 		return schedclient.ErrNotFound
+	case errors.Is(err, ledger.ErrCASConflict):
+		// 计数与队列的 CAS 重试靠这个哨兵分流（schedclient 契约：适配器负责
+		// 翻译底层同义错误）；漏翻译会让重试路径整体失效，冲突变成硬失败。
+		return schedclient.ErrCASConflict
 	default:
 		return err
 	}
