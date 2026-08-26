@@ -6,7 +6,9 @@
    "k_collab_room_fn": {"label": "collab.room 包级函数", "kind": "函数组", "domain": "d_collab"},
    "k_collab_room_model": {"label": "collab.room 数据模型", "kind": "实体", "domain": "d_collab"},
    "k_collab_cursor_fn": {"label": "collab.cursor 包级函数", "kind": "函数组", "domain": "d_collab"},
-   "k_collab_cursor_Store": {"label": "collab.cursor Store 类型", "kind": "类型", "domain": "d_collab"}
+   "k_collab_cursor_Store": {"label": "collab.cursor Store 类型", "kind": "类型", "domain": "d_collab"},
+   "k_web_app_rooms": {"label": "/app/rooms组件与函数", "kind": "React 组件/函数", "domain": "d_web"},
+   "k_web_app_rooms_model": {"label": "/app/rooms 类型", "kind": "TypeScript 模型", "domain": "d_web"}
   },
   "nodesAdded": {
    "n_collab_room_Resolve": {"kind": "func", "container": "k_collab_room_fn", "order": 1, "name": "Resolve", "file": "internal/collab/room/room.go", "line": 55, "signature": "func Resolve(lc client.LedgerClient, roomID string) (*Room, error)", "params": [["lc", "client.LedgerClient", ""], ["roomID", "string", ""]], "returns": "(*Room, error)", "summary": "Resolve 把房间标识解析为执法上下文。"},

@@ -359,6 +359,8 @@
     "k_web_app_overlay_model": "d_web_command",
     "k_web_app_projects": "d_web_admin",
     "k_web_app_projects_model": "d_web_admin",
+    "k_web_app_rooms": "d_web_command",
+    "k_web_app_rooms_model": "d_web_command",
     "k_web_app_settings": "d_web_admin",
     "k_web_app_settings_model": "d_web_admin",
     "k_web_app_shared": "d_web_shell",

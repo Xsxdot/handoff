@@ -65,3 +65,21 @@
 - M6 全量实现 + `constants.ts` → 红 1 残留：`Body has already been read`——plan 代码块 A 的 `mockResolvedValue(jsonResp(...))` 两次调用返回同一 Response，body 只能读一次。**plan 测试夹具机械缺陷**：改为 `mockImplementation(() => Promise.resolve(jsonResp(...)))`（每次新 Response）。断言意图不变。
 - M7 绿：`npx vitest run src/api/rooms.fetch.test.ts src/api/rooms.test.ts` → 12 passed（EXIT=0）；`npx tsc -b` → EXIT=0。
 - M8 变异自验（fetchRooms project 查询串）：变体①删 project 参数 → TS6133 unused 编译失败，**该发不算数**；变体②恒带 `?project=` → TSC EXIT=0 + vitest 1 红（`expected '/api/rooms?project=' to be '/api/rooms'`，AssertionError）→ 还原 → 12 passed。测试有牙。
+
+## 2026-08-26 实现轮 T8.4 图登记（岔口九）
+
+- M9 T8.4 基线图闸（改动前）：`go run . graph check --repo . --view cards-B156.2-charter-4` → EXIT=0，`"fails": []`，`bestCoverage` = `assignedContainers:258 viewContainers:258 crossDomainEdges:1039 misplacedSkipped:114`（warns 数为 96 不作判据）；`go run . graph validate --repo .` → EXIT=0。
+- M10 **现状域比对（判据二要求落地前比对一次）**：baseline.json 全部 web 容器 `domain` = `d_web`（含同批先例 `k_web_app_board`/`k_web_app_board_model`/`k_web_app_task`/`k_web_app_overlay` 全部 `d_web`）；`k_web_app_rooms`/`k_web_app_rooms_model` 在 baseline 不存在（新增容器）。
+- M11 best.json `containers` 加两键：`k_web_app_rooms: d_web_command`、`k_web_app_rooms_model: d_web_command`（应然域，与同批 `k_web_app_board` 等 best 归属一致）。
+- M12 **视图 diff containersAdded 的 domain 填现状域 `d_web`**（不是 plan 代码块 P 写的应然域 `d_web_command`）——判据二硬约束：填应然域会静默消掉一条 misplaced 债。gap.go `containerAlignment` 已读源码核实（chart/graph@v0.8.0 codegraph/gap.go:32-48）：视图域不在 best 词表 → alignSkipped；在词表但与 best 归属不同 → alignMisplaced warn。新增 web 容器无节点（前端不扫描，L9），`hasLiveNode` 为 false，`bestGapFindings` 直接 continue，既不产生 warn 也不影响 misplacedSkipped 计数——但 domain 值本身决定视图语境，填 `d_web` 保持与 baseline 同批容器一致的现状域口径。
+- M13 改后图闸（--view cards-B156.2-charter-4）：`graph check` → EXIT=0 `"fails": []` warns=98（较基线 96 增 2 条 best-dangling：`k_web_app_rooms`、`k_web_app_rooms_model`——新容器无节点，informational 非 fails）；`bestCoverage` = `assignedContainers:258 viewContainers:258 crossDomainEdges:1039 misplacedSkipped:114`（与改动前一致）；`graph validate` → EXIT=0。
+- M14 计数自检：best.json `k_web_app_rooms`/`k_web_app_rooms_model` == `d_web_command d_web_command`；diff `containersAdded` 含两键且 domain=`d_web`（现状域），label/kind 与 baseline 同批 `k_web_app_board` 惯例一致（`/app/rooms组件与函数` React 组件/函数；`/app/rooms 类型` TypeScript 模型）。
+- M15 **plan 事实勘误**：plan L9/D7 声称「web 容器图节点数为 0（前端不扫描成节点），本卡零节点登记」——**与实跑不符**：baseline.json 实际有 715 个 web 节点（`k_web_app_board` 21、`k_web_app_cards` 29、`k_web_app_task` 55、`k_web_app_shell` 6 等，均带真实 file/line）。charter-2 视图 diff 也登记过 web 模型节点（`m_web_api_rooms_RoomMessage/InboxItem/RoomSummary`）。本卡按 plan 与协调者本轮 scope（仅容器归属登记）落地，`k_web_app_rooms(_model)` 无节点→ 2 条 best-dangling warn；rooms 页面/fetch 节点登记留待后续重扫或专门卡，记 notes。
+
+## 2026-08-26 实现轮 T8.5 收尾三档读数（判据八）
+
+- M16 三档读数（web/ 下，先 `npm ci` EXIT=0 0 vulnerabilities）：
+  - `npx tsc -b` → EXIT=0（/tmp/t84_tsc.log）。
+  - `npx vitest run`（web 全量，无路径参数）→ EXIT=0，`Test Files  113 passed (113)` / `Tests  1139 passed (1139)`（/tmp/t84_vitest_full.log）。
+  - `npm run lint`（eslint .）→ EXIT=1，`✖ 19 problems (1 error, 18 warnings)`。**1 error 为本卡范围外基线既有红**：`web/src/app/flows/NodeEditor.test.tsx:50` `'view' is never reassigned. Use 'const' instead (prefer-const)`——该文件最后改动 commit `e8f94b76`（feat charter），本卡（B156.2.8）未触碰此文件（`git log d897323a~1..HEAD -- src/app/flows/NodeEditor.test.tsx` 为空）。18 warnings 均为既有（react-refresh/only-export-components、react-hooks/exhaustive-deps 等），无本卡引入。按判据八不修范围外红。
+  - 本卡文件（rooms 页面/测试、constants.ts、rooms.ts、Shell.tsx、ProjectTree.tsx）在 eslint 输出中零 error；Shell.tsx:201、ProjectTree.tsx fast-refresh 为既有 warning（git blame 属前序 commit，非本卡引入）。
