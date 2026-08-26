@@ -194,6 +194,16 @@
   **实现本身的迁移是后续的活**（绞杀式还债、升格随卡走）。与 B156.2 同源条目合流：
   存量 `d_gateway → d_ledger`（17）与 `d_cli → d_ledger`（4）直调债的清理同样在此
   队列里，两期都只保证不新增。来源：`specs/2026-08-26-b156.3-automation-keystone-design.md` §7.0。
+## 来自 B156.3.3 集成轮（2026-08-26）
+
+- **`cmd/service_test.go` 的 `TestResolveServiceBinFallsBackFromGoBuildCache` 对检出路径敏感**：
+  工作树位于 `os.TempDir()`（`$TMPDIR`）之下时，`isEphemeralBin` 会把仓库内的候选文件
+  （`cmd/service.go`）连同整个检出一起判成「临时产物」，回退臂永远不命中而假红。
+  实测：`TMPDIR=/root/.handoff/tmp/<id>` 且检出在其下 → 单测 FAIL；同一提交树检出在
+  `/root/.handoff/worktrees/<id>` 或以中性 `TMPDIR` 重跑 → ok。基线 `efc6f7d9` 上同位置
+  同样红（非 B156.3.3 引入）。修法方向：夹具不用仓内真实文件充当 durable 二进制，或
+  测试内显式固定 TempDir 探针。来源：2026-08-26 B156.3.3 集成轮全量档第一跑（台账：
+  `docs/superpowers/ledgers/2026-08-26-b156.3.3-integrate-ledger.md`）。
 ## 来自 B156.2 spec 定稿（2026-08-25，二期协作层的推迟项）
 
 - **三期承接（B156.3 的输入）**：规则引擎自动拉起协调者会话（本期拉起一律由用户执行）；
