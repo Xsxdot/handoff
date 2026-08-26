@@ -11,6 +11,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -72,6 +73,21 @@ func readLines(t *testing.T, p string) []string {
 	return out
 }
 
+// readArgvLines 返回桩捕获的 argv 逐元素切片（剔除桩自加的 env:HOME 证据行）。
+// 位置防线的数据源：shebang 脚本的 $0 恒为脚本自身路径、与 cmd.Args[0] 无关，
+// 多余的前导元素只会落在 $@ 第一格——所以「逐元素等值」是唯一能看见它的断言形状。
+func readArgvLines(t *testing.T, p string) []string {
+	t.Helper()
+	var out []string
+	for _, l := range readLines(t, p) {
+		if strings.HasPrefix(l, "env:") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // A1 缝级红绿：新建会话必须返回非空 SessionID 与回合文本，且隔离 HOME
 // 以 req.HomeDir 为准注入子进程环境。
 func TestRunTurnNewSessionReturnsSessionID(t *testing.T) {
@@ -105,10 +121,19 @@ func TestRunTurnNewSessionReturnsSessionID(t *testing.T) {
 	if !found {
 		t.Fatalf("子进程 HOME 未注入为 %s，证据: %v", wantHome, lines)
 	}
+	// argv 位置防线（2026-08-26 审阅轮）：包含式断言看不见前导元素——
+	// argv 组装回归（多出一个 bin）时 $@ 第一格会变成 binpath 而非 "run"，
+	// 只有逐元素等值断言拦得住。整切片比较，位置与内容同时锁死。
+	wantArgv := []string{"run", "--format", "json", "--", "开场简报"}
+	if got := readArgvLines(t, capture); !reflect.DeepEqual(got, wantArgv) {
+		t.Fatalf("argv 逐元素不等（首元素必须恰为 \"run\"，位置防线）:\n got=%q\nwant=%q", got, wantArgv)
+	}
 }
 
-// A2 缝级红绿：带 SessionID 续接必须走 resume 分支——argv 出现 `-s <id>`
-// 且回显会话 id 原样透传。
+// A2 缝级红绿：带 SessionID 续接必须走 resume 分支——argv 逐元素等值于
+// run 形态完整参数表（`-s ses_known` 在其法定位置），回显会话 id 原样透传。
+// 判据形状说明（2026-08-26 审阅轮更正）：「argv 出现 `-s ses_known`」这类
+// 包含式断言不看位置，多一个前导元素照绿——必须整切片 DeepEqual。
 func TestRunTurnResumePassesSessionID(t *testing.T) {
 	installFakeCLI(t)
 	capture := withArgvCapture(t)
@@ -122,15 +147,9 @@ func TestRunTurnResumePassesSessionID(t *testing.T) {
 	if reply.SessionID != "ses_known" {
 		t.Fatalf("SessionID=%q, want ses_known", reply.SessionID)
 	}
-	lines := readLines(t, capture)
-	found := false
-	for i, l := range lines {
-		if l == "-s" && i+1 < len(lines) && lines[i+1] == "ses_known" {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("argv 未出现 -s ses_known（resume 分支缺失）: %v", lines)
+	wantArgv := []string{"run", "--format", "json", "-s", "ses_known", "--", "唤醒简报"}
+	if got := readArgvLines(t, capture); !reflect.DeepEqual(got, wantArgv) {
+		t.Fatalf("argv 逐元素不等（首元素必须恰为 \"run\"，位置防线）:\n got=%q\nwant=%q", got, wantArgv)
 	}
 }
 

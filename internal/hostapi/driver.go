@@ -38,9 +38,10 @@ import (
 	"time"
 )
 
-// DefaultTurnTimeout 是 TurnRequest.Timeout 为 0 时的缺省回合上界。数字不是
-// 本票定的：hostapi.go 的 TurnRequest 注释（契约 §7 冻结面的一部分）已写死
-// 「0 = 用包内缺省（30 分钟）」，实现照办不另立。
+// DefaultTurnTimeout 是 TurnRequest.Timeout 为 0 时的缺省回合上界。数值不是
+// 本票定的：hostapi.go 的 Timeout 字段注释自骨架期（契约提交落库的骨架文件）
+// 起即写明「0 = 用包内缺省（30 分钟）」，本常量是它的执行半边，照办不另立。
+// 契约 §7 只冻签名——数值的出处是骨架源码注释而非契约文本，两者不混称。
 const DefaultTurnTimeout = 30 * time.Minute
 
 // supportedCLIs 是本门面实装的载体 CLI 名单（岔口一裁决 A）。键按
