@@ -363,3 +363,48 @@ FAIL	github.com/Xsxdot/handoff/internal/agentd [build failed]
 - 提交 1 范围：roomsapi.go、ledgerapi.go（6 行注册）、server.go（字段/缝/SetupAutomation/适配器/
   withRooms）、cmd/agentd.go（激活行）、roomsapi_test.go、pointer_gate_test.go、台账。**不含 target.json
   契约**（无消费边声明，view 无新增边，graph check 保持绿）。
+
+## L25 图增量与图闸（T6.5）
+
+**target.json**：追加 `d_gateway→d_collab` 预定声明（entries `["collab 入站门面"]`，实际 label，§0.1）。
+**视图 diff cards-B156.2-charter-4.json**：nodesAdded +14、edgesAdded +12。**n_collab_New 不重复补**（C7
+已落地，协调者发现二）；补录覆盖债 `n_ledger_api_Facade_BindDriver`（k_ledger_api_Facade）。边含
+`n_agentd_Server_SetupAutomation → n_collab_New`（组装边）。
+
+**手写 JSON 双判据（python object_pairs_hook，非 grep）**：
+- 逐对象重复键：改前 target.json NONE / 视图 NONE；改后 target.json NONE / 视图 NONE。
+- 解析条数 vs 声明条数：target.json contracts 46→47（MATCH）；视图 nodesAdded 26→40（MATCH）、
+  edgesAdded 42→54（MATCH）。
+
+**图闸**：
+- `go run . graph check --repo . --view cards-B156.2-charter-4` EXIT=0、fails=[]、
+  legacyHits["d_gateway->d_ledger"]=1（新增 ListDecisions 边目标 k_ledger_Store 在 entries 内，不进
+  legacyHits——§0.4 图口径不变）、warns 96（anchor-off-domain 2 / best-dangling 2 / container-misplaced 51
+  / legacy 34 / oversized-package 2 / prefix-family 5，与基线同分类同数）。
+- `go run . graph validate --repo .` EXIT=0。
+
+**逐容器点数自检**（协调者实况：抽查符号名会命中别的容器同名符号，逐容器数）：
+- k_agentd_Server 新增 = 9（六 handler + roomUserActor + ticketDestructive + withRooms）。计划稿写
+  「=10」为算术笔误（6+1+1+1=9），实际源码新增 Server 方法 = 9，一致。
+- k_agentd_fn 新增 = 4（collabErr + decisionTitle + ticketTitle + facadeBindAdapter.Rebind）。
+- k_ledger_api_Facade 新增 = 1（BindDriver）。k_collab_fn 新增 = 0（n_collab_New 已由 C7 落地）。
+
+**裸门 go test ./cmd/（吸收前固有红，记录不改）**：
+- 改后读数：`--- FAIL: TestRepoContractGate`，violations = dead-contract 2 条（d_cli→d_collab +
+  d_gateway→d_collab）+ dead-entry 1 条（d_cli→d_collab 入口 "collab 包级函数"）= 总数 3。
+- 改前基线（L23）= 2 条（dead-contract d_cli→d_collab + dead-entry "collab 包级函数"）。**+1 恰为
+  d_gateway→d_collab 的 dead-contract**——裸门只读 baseline、不吸收视图 diff（Merge(g,nil)），与
+  §0.2/§1 #4 语义一致。照实记录，不修。
+
+## L26 变异四靶（T6.5 步骤 4，全部单条命令合成、逐一还原、复验绿、git status 干净）
+
+| 靶 | 变异 | 红侧断言（原文） | 还原 |
+|---|---|---|---|
+| ① Watchers 判据牙 | `if watchers > 0 && !destructive` → `if false && ...`（恒上浮） | `roomsapi_test.go:336: Watchers>0 应排除工单: [{Origin:ticket ...}]` | PASS |
+| ② 破坏性不受限牙 | ticketDestructive 命中分支 `return true` → `return false` | `roomsapi_test.go:362: 破坏性工单不受 Watchers 限制应上浮: []` | PASS |
+| ③ 错误映射牙 | collabErr 去掉 `ErrReadOnly` 分支（→500） | `roomsapi_test.go:221: 终态房间应 409: 500` | PASS |
+| ④ rebind 牙 | facadeBindAdapter.Rebind `return a.f.BindDriver(...)` → `return nil` | `roomsapi_test.go:238: expect 不符应 409: 200 {"ok":true}` | PASS |
+
+四靶全部满足：变异可编译（go build ./internal/agentd/ 过）、施加位置==执行位置、anchor count==1
+（python assert）、还原后 `go test ./internal/agentd/ -run <单靶>` 复绿、`git status --short` 无残留。
+另：恒空变异（History return nil）在 L21 已验（红在正面断言「历史应恰好两条: []」）。

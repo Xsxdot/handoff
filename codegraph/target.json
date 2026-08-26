@@ -339,6 +339,15 @@
     "collab 包级函数"
    ],
    "legacyBudgetNote": "B156.2 欠账 #12 另半：第一个 CLI 房间命令落地同提交写入。冻结条目文本「collab.Service 与入站门面实体」按 check 的容器 Label 匹配语义落到实际 label——同批 d_keystone→d_collab 即用「collab 入站门面」（k_collab_Service 的 label）；「collab 包级函数」覆盖组装构造器 collab.New。预算 0 = 一律走门面，穿透内部即违法。"
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_collab",
+   "legacyBudget": 0,
+   "entries": [
+    "collab 入站门面"
+   ],
+   "legacyBudgetNote": "B156.2：预定声明落地（契约 §2.3，entries 用实际容器 label『collab 入站门面』，非 §2.3 字面——逐字照抄会 dead-entry，探针证据台账 L7）。控制面经入站 api 门面调协作房间域（六端点 handler）；预算 0 = 一律走门面，穿透内部即违法。与首个消费边同提交。"
   }
  ]
 }
