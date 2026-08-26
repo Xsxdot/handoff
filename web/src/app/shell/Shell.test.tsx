@@ -42,6 +42,18 @@ vi.mock('../../api/ledger', async () => {
     fetchLedgerHealth: vi.fn().mockResolvedValue({ enabled: true, mirror: [] }),
   }
 })
+// —— B156.2 C8 追加：房间面路由与 dock 入口（seam 贯穿——点击/挂载最终到达 rooms API）——
+vi.mock('../../api/rooms', async () => {
+  const actual = await vi.importActual<typeof import('../../api/rooms')>('../../api/rooms')
+  return {
+    ...actual,
+    fetchRooms: vi.fn().mockResolvedValue([]),
+    fetchInbox: vi.fn().mockResolvedValue([]),
+    fetchRoomMessages: vi.fn().mockResolvedValue([]),
+    markRoomRead: vi.fn().mockResolvedValue({ ok: true }),
+    sendRoomMessage: vi.fn().mockResolvedValue({ seq: 1 }),
+  }
+})
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身（照 TerminalTab.test.tsx）：
 // 点「新终端」后 HomeDock 会挂出 TerminalTab，真实 xterm 在 jsdom 里会抛异常
 const termInstance = {
@@ -562,5 +574,49 @@ describe('会话已经不在时弹层要说实话', () => {
     expect(screen.queryByText(/会被一并结束/)).toBeNull()
     // 没有东西可终止，按钮就不该再叫「关闭并终止」
     expect(screen.getByRole('button', { name: '关闭' })).toBeInTheDocument()
+  })
+})
+
+describe('房间面路由与 dock 入口', () => {
+  it('/rooms 挂载会话列表页：fetchRooms 被调（经接缝 #5）', async () => {
+    const rooms = await import('../../api/rooms')
+    render(
+      <MemoryRouter initialEntries={['/rooms']}>
+        <AppRoutes />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(vi.mocked(rooms.fetchRooms)).toHaveBeenCalled())
+  })
+
+  it('/inbox 挂载收件箱页：fetchInbox 被调', async () => {
+    const rooms = await import('../../api/rooms')
+    render(
+      <MemoryRouter initialEntries={['/inbox']}>
+        <AppRoutes />
+      </MemoryRouter>,
+    )
+    await waitFor(() => expect(vi.mocked(rooms.fetchInbox)).toHaveBeenCalled())
+  })
+
+  it('左栏 dock 点「会话」→ 路由切到 /rooms → fetchRooms 被调', async () => {
+    const rooms = await import('../../api/rooms')
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <AppRoutes />
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '会话' }))
+    await waitFor(() => expect(vi.mocked(rooms.fetchRooms)).toHaveBeenCalled())
+  })
+
+  it('左栏 dock 点「收件箱」→ 路由切到 /inbox → fetchInbox 被调', async () => {
+    const rooms = await import('../../api/rooms')
+    render(
+      <MemoryRouter initialEntries={['/']}>
+        <AppRoutes />
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '收件箱' }))
+    await waitFor(() => expect(vi.mocked(rooms.fetchInbox)).toHaveBeenCalled())
   })
 })
