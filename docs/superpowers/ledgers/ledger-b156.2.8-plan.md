@@ -90,3 +90,15 @@
 - M18 **协调者事实复验**：`grep -rn "export function\|export const" web/src/app/rooms/*.tsx web/src/app/rooms/*.ts` → 恰 4 个导出符号：RoomsListPage(tsx:53) / RoomDetailPage(tsx:52) / InboxPage(tsx:68) / COLLAB_POLL_MS(constants.ts:4)。`grep -nE "^(export )?(interface|type) "` rooms 目录 → 空（EXIT=1），**rooms 确实零类型声明**，与协调者①「k_web_app_rooms_model 结构上恒空」一致。baseline 复核：`k_web_app_*` 486 节点 kind 只有 func(364)/model(122)，const/var 0 个；web model 非 export 签名 27 个（导出与否不是过滤条件）——「无节点」判定成立。
 - M19 **改动**：best.json 删 `k_web_app_rooms_model`（保留 `k_web_app_rooms: d_web_command`）；视图 diff `containersAdded` 删 `k_web_app_rooms_model`；`nodesAdded` 补 3 个 func 节点（容器 `k_web_app_rooms`，id 前缀 n_，order=行号，签名/行号亲读源文件）：`n_web_app_rooms_RoomsListPage`(53)、`n_web_app_rooms_RoomDetailPage`(52)、`n_web_app_rooms_InboxPage`(68)。COLLAB_POLL_MS 常量按「k_web_app_* 无 const/var 节点」先例不建模。
 - M20 **改后图闸**：`graph check --view cards-B156.2-charter-4` → EXIT=0 fails=[]，**warns=97**（anchor-off-domain 2 / best-dangling **2** / container-misplaced **52** / legacy 34 / oversized-package 2 / prefix-family 5）。best-dangling 剩 `k_collab_model`/`k_web_api_rooms`（本卡外既有债，与协调者预期 4→2 一致）。container-misplaced 51→52：`k_web_app_rooms` 补上活节点后进入 `containerAlignment`（gap.go:81），视图域 d_web vs best 应然域 d_web_command → alignMisplaced，与其同批兄弟 `k_web_app_board/cards/task/shell/overlay` 同一族（现状域 vs 应然域债，判据二不填应然域故必现）。bestCoverage = assignedContainers:259 viewContainers:259（258→259：k_web_app_rooms 成为活容器被计入）crossDomainEdges:1039 misplacedSkipped:114。`graph validate` → EXIT=0 issues=null。
+
+## 2026-08-26 修复轮（review fail 回落本地执行，mac-02 执行器全灭：opencode/codex refresh token 被撤、grok ACP -32603）
+
+- M21 **major 修复**：`RoomDetailPage.test.tsx` 只读禁写反面断言补牙——点发送前先 `fireEvent.change` 填非空正文 `'不应发出的内容'`。根因（review 实证）：空 draft 时空正文判定先于守卫兜底，删守卫仍绿。补牙后 read_only 守卫是唯一拦截点。
+- M22 **变异①（只读禁写守卫的牙，T8.5 强制）**：锚 `if (summary?.read_only) return` 全文 count==1（RoomDetailPage.tsx:113）。删守卫 → `npx tsc -b` EXIT=0（编译有效）→ `npx vitest run src/app/rooms/RoomDetailPage.test.tsx` → **1 failed / 4 passed**，红的确为只读禁写用例（expect.poll 等 0 超时——POST 泄漏）→ `git checkout` 还原 → 复跑 **5 passed**。三读数：变异前绿 / 变异后红 / 还原后绿。**review major 发现闭环**。
+- M23 **变异②（A.6 常量）**：plan 原文「换成魔数 2500」会使 import 失去唯一使用点（noUnusedLocals: true 编译失败，该发不算数），按纪律整块替换为可编译等价变异 `usePoll(fetchRooms, COLLAB_POLL_MS - 2500)`（语义=传 2500，import 仍被引用）。锚 `usePoll(fetchRooms, COLLAB_POLL_MS)` count==1（RoomsListPage.tsx:55）。打入 → tsc EXIT=0 → `pollInterval.test.tsx` **1 failed / 2 passed**（红的是会话列表轮询用例）→ 还原 → **3 passed**。
+- M24 **变异③（错误态）**：`poll.disconnected ? null : <p` count==1（RoomsListPage.tsx:98），换成断线且无数据时渲染 `（空）` → tsc EXIT=0 → `RoomsListPage.test.tsx` **1 failed / 6 passed**（红的恰为「错误态不是空列表」用例，断言 `queryByText('（空）')` 应不在）→ 还原 → 全绿。
+- M25 **修复后三档读数**（工作树只剩 `M web/src/app/rooms/RoomDetailPage.test.tsx` 一处改动）：
+  - `npx vitest run`（web 全量）→ EXIT=0，`Tests 1139 passed (1139)`（23.4s）。
+  - `npx tsc -b` → EXIT=0 无输出。
+  - `npm run lint` → EXIT=1，`19 problems (1 error, 18 warnings)`；唯一 error 仍为零事权基线红 `NodeEditor.test.tsx:50 prefer-const`（e8f94b76，非本卡），rooms 相关文件零 error——与 M16 口径一致。
+- M26 minor 发现闭环：本条 M22–M24 即 T8.5 三变异的台账记录（M16 缺记问题由此补齐）。

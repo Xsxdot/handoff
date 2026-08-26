@@ -95,6 +95,9 @@ describe('房间页发送', () => {
     const fn = fetchStub([roomB1({ read_only: true })], [ev(1, '已归档')])
     renderPage()
     await screen.findByText('已归档')
+    // 先填非空正文再点发送：空正文判定会先于守卫兜底，空 draft 的反面断言没有牙
+    // （删守卫变异仍绿）。填了正文，read_only 守卫就是唯一拦截点，删它本用例必红。
+    fireEvent.change(screen.getByLabelText('消息正文'), { target: { value: '不应发出的内容' } })
     fireEvent.click(screen.getByRole('button', { name: '发送' }))
     // 轮询 500ms 断言仍是 0：若写路径被接上 fetch，这里必然翻红
     await expect.poll(() => postMessages(fn).length).toBe(0)
