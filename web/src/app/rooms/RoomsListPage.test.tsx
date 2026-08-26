@@ -1,6 +1,6 @@
 // 会话列表页的数据流与交互语义断言（B156.2 C8）。
 // jsdom 看不见布局（已知陷阱一）：断言只锁数据流/交互/文案，布局进真机清单。
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { fetchRooms } from '../../api/rooms'
@@ -28,8 +28,6 @@ const renderPage = () =>
   )
 
 describe('会话列表页', () => {
-  beforeEach(() => vi.mocked(fetchRooms).mockResolvedValue([]))
-
   it('渲染服务端给出的顺序（LastActivity 降序由服务端保证，页面不二次排序）', async () => {
     vi.mocked(fetchRooms).mockResolvedValue([
       room({ id: 'B2', title: '较新房间' }),
@@ -70,6 +68,11 @@ describe('会话列表页', () => {
   })
 
   it('错误态不是空列表：数据源失败显示错误横幅，不渲染（空）', async () => {
+    // 台账：mockRejectedValue 在「调用时刻」即造出已 rejected 的 promise，若此前
+    // 没有任何已执行的调用把 handler 拉起来，Node 记一次 unhandled rejection、
+    // vitest 据此判红（红的是错误本身，不是断言）。前置一次 mockImplementation
+    // resolve 调用（D 形态）让拒绝干净穿过 usePoll 的 try/catch。
+    vi.mocked(fetchRooms).mockImplementation(() => Promise.resolve([]))
     vi.mocked(fetchRooms).mockRejectedValue(new Error('账本库未配置'))
     renderPage()
     expect(await screen.findByText(/会话列表加载失败/)).toBeInTheDocument()
@@ -77,6 +80,7 @@ describe('会话列表页', () => {
   })
 
   it('空列表渲染（空），不显示错误', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue([])
     renderPage()
     expect(await screen.findByText('（空）')).toBeInTheDocument()
     expect(screen.queryByText(/会话列表加载失败/)).not.toBeInTheDocument()
