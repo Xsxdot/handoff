@@ -408,3 +408,17 @@ FAIL	github.com/Xsxdot/handoff/internal/agentd [build failed]
 四靶全部满足：变异可编译（go build ./internal/agentd/ 过）、施加位置==执行位置、anchor count==1
 （python assert）、还原后 `go test ./internal/agentd/ -run <单靶>` 复绿、`git status --short` 无残留。
 另：恒空变异（History return nil）在 L21 已验（红在正面断言「历史应恰好两条: []」）。
+
+## L27 收尾自审（charter-3 轮）
+
+- 提交：commit 1 = 6e623acf（feat agentd 房间面六端点+收件箱+Pointer 守卫）；commit 2 = 074fda97
+  （graph 增量）。工作树干净。
+- 全量编译 `go build ./...` BUILD_OK；`go vet ./internal/agentd/...` VET_OK；
+  `go test ./internal/agentd/...` ok（63.4s）；`gofmt -l internal cmd` 零输出。
+- 图闸（commit 2 后复跑语义不变）：graph check --view EXIT=0 fails=[] legacyHits 1/17；validate EXIT=0。
+- 每条错误分支带上下文日志、成功路径有出口日志：roomsapi.go 逐 handler 符合；新文件头注释（职责+边界）、
+  导出/关键函数注释齐。
+- 与 plan Interfaces 签名一致（六端点 + rebindPort + collabErr/decisionTitle/ticketTitle 等逐字符核对）。
+- §12 明确不做全部守住：proto/ledger 生产代码/金样本 fixture/registerLedgerRoutes 既有行零改动；
+  未 absorb；未加真机清单项。
+- 本轮未碰 handoff CLI 写命令、未起新 executor；graph 仅用只读子命令。全部结论来自亲自跑过的命令。
