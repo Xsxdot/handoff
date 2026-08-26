@@ -53,7 +53,9 @@ function RoomRow({ room }: { room: RoomSummary }) {
 export function RoomsListPage() {
   const [project, setProject] = useState('')
   const poll = usePoll(fetchRooms, COLLAB_POLL_MS)
-  const rooms = poll.data ?? []
+  // rooms 用 useMemo 包住 ?? []：让引用稳定，避免每次渲染都新建数组、
+  // 下游 useMemo 依赖它在每帧失效重算（CardsPage 同构，react-hooks 警告同源）。
+  const rooms = useMemo(() => poll.data ?? [], [poll.data])
   const projectOptions = useMemo(
     () => [...new Set(rooms.map((r) => r.project).filter((p): p is string => !!p))].sort(),
     [rooms],

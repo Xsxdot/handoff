@@ -70,7 +70,9 @@ export function RoomDetailPage() {
     COLLAB_POLL_MS,
     { enabled: id !== '' },
   )
-  const latest = messagesPoll.data ?? []
+  // latest 用 useMemo 包住 ?? []：让引用稳定，下游 all 的 useMemo 依赖它在
+  // 每帧失效重算（react-hooks 警告同源）。
+  const latest = useMemo(() => messagesPoll.data ?? [], [messagesPoll.data])
   const all = useMemo(() => {
     const seen = new Set<number>()
     const out: RoomHistoryItem[] = []
