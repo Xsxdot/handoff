@@ -10,14 +10,14 @@
 //   - 未装配编制域（SetupAutomation 未执行）时全部端点 503，同 withLedger 形态；
 //   - 不做跨机转发：登记与队列都在协调机侧账本，转发语义无定义。
 //
-// 400/500 分类策略（B156.3.3 修复轮 Major-2/Major-3 后）：
-//  1. wire 边界预检——必填字段在场、凭据来源/角色取值在词表内。词表值引用
-//     scheduling 的导出常量（单一定义，零复制）；这只拦截「线格式就不合法」的
-//     请求，实体规则仍由域内权威校验；
-//  2. 成员引用不存在：域内错误包装 scheduling.ErrNotFound 上浮 → 400（PUT 引用了
-//     缺失资源 = 客户端可修）；成员缺失错误在域内以 %w 包 ErrNotFound 上浮；
-//  3. errors.Is(err, scheduling.ErrInvalid) 臂由 PutCarrier/PutSquad 校验行的
-//     %w 包装通电（修复轮补产生臂）——用户填错一律 400，不落 default→500。
+// 400/500 分类策略（B156.3.3 修复轮 Major-2 收敛后，两层）：
+//  1. wire 线格式检查——body 解码、?expect= 解析、body.name 与路径 {name} 一致性。
+//     只拦截「线格式就不合法」的请求，直接 400。不做任何词表/必填判断；
+//  2. 域校验——PutCarrier/PutSquad 的实体规则（必填、凭据/角色词表、成员存在性）
+//     全部在编制域内，校验失败以 %w 包 ErrInvalid（成员引用缺失包 ErrNotFound）
+//     上浮；schedPutErr 用 errors.Is 分流：ErrInvalid → 400（用户填错）、
+//     ErrNotFound → 400（成员引用缺失）、ErrCASConflict → 409、其余 → 500。
+//     校验逻辑不在此层存在第二份（Major-2：词表检查点收敛到域单一入口）。
 package agentd
 
 import (
@@ -26,7 +26,6 @@ import (
 	"fmt"
 	"net/http"
 	"strconv"
-	"strings"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/schedclient"
@@ -103,20 +102,6 @@ func (s *Server) handleCarrierPut(w http.ResponseWriter, r *http.Request) {
 			"error": fmt.Sprintf("请求体 name %q 与路径 %q 不一致", in.Name, name)})
 		return
 	}
-	// wire 边界预检（词表引用 scheduling 导出常量，非规则复制；实体规则仍由域校验）。
-	if strings.TrimSpace(in.Machine) == "" || strings.TrimSpace(in.CLI) == "" {
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "载体登记不完整：machine/cli 必填"})
-		return
-	}
-	if cs := scheduling.CredentialSource(in.Credential); cs != scheduling.CredentialStandalone &&
-		cs != scheduling.CredentialMainHomeSync {
-		s.log.Warn("载体登记被拒（词表外凭据来源）", "name", name, "credential", in.Credential)
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": fmt.Sprintf("载体 %s 的凭据来源只能是 %s 或 %s", name,
-				scheduling.CredentialStandalone, scheduling.CredentialMainHomeSync)})
-		return
-	}
 	carrier := scheduling.Carrier{
 		Name: name, Machine: in.Machine, CLI: in.CLI, HomeDir: in.HomeDir,
 		Model: in.Model, Credential: scheduling.CredentialSource(in.Credential),
@@ -132,8 +117,8 @@ func (s *Server) handleCarrierPut(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleSquadPut PUT /api/squads/squads/{name}?expect=N：以 CAS 写小队。
-// 规则校验（角色词表、成员存在性）权威在 PutSquad；这里只做形状翻译、
-// 词表预检与成员缺失错误的 400 分类。
+// 规则校验（角色词表、成员存在性）权威在 PutSquad，这里只做形状翻译与
+// 错误分类（ErrNotFound 臂=成员引用缺失 → 400，schedPutErr=其余）。
 func (s *Server) handleSquadPut(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	expect, ok, err := expectVersion(r)
@@ -150,14 +135,6 @@ func (s *Server) handleSquadPut(w http.ResponseWriter, r *http.Request) {
 	if in.Name != "" && in.Name != name {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
 			"error": fmt.Sprintf("请求体 name %q 与路径 %q 不一致", in.Name, name)})
-		return
-	}
-	if sr := scheduling.SquadRole(in.Role); sr != scheduling.RoleExecutor &&
-		sr != scheduling.RoleCoordinator {
-		s.log.Warn("小队登记被拒（词表外角色）", "name", name, "role", in.Role)
-		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": fmt.Sprintf("小队 %s 角色只能是 %s 或 %s", name,
-				scheduling.RoleExecutor, scheduling.RoleCoordinator)})
 		return
 	}
 	squad := scheduling.Squad{

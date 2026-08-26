@@ -148,11 +148,14 @@ func TestCarrierPutRoundtripThroughWire(t *testing.T) {
 		t.Fatalf("缺 expect 应 400 点名参数，得 %d：%s", code, rb)
 	}
 	// 非法凭据来源：400 且文案点名两个合法词（400 报文可行动的门禁半边）。
+	// 报文必须带「登记校验未过」前缀——证明拒因来自域内 PutCarrier 的
+	// ErrInvalid 臂，而不是网关的词表预检（Major-2 收敛后网关无词表校验）。
 	code, rb = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c2?expect=0",
 		`{"machine":"m","cli":"cli","credential":"boss"}`)
 	if code != http.StatusBadRequest ||
+		!strings.Contains(rb, "登记校验未过") ||
 		!strings.Contains(rb, "standalone") || !strings.Contains(rb, "main_home_sync") {
-		t.Fatalf("非法 credential 应 400 点名词表，得 %d：%s", code, rb)
+		t.Fatalf("非法 credential 应 400 点名词表且源自域校验，得 %d：%s", code, rb)
 	}
 }
 
@@ -167,8 +170,9 @@ func TestSquadPutValidatesMembersAndRole(t *testing.T) {
 	}
 	code, rb = schedReq(t, env, http.MethodPut, "/api/squads/squads/sq?expect=0",
 		`{"role":"boss","members":[]}`)
-	if code != http.StatusBadRequest || !strings.Contains(rb, "executor") {
-		t.Fatalf("非法角色应 400 点名词表，得 %d：%s", code, rb)
+	if code != http.StatusBadRequest || !strings.Contains(rb, "登记校验未过") ||
+		!strings.Contains(rb, "executor") {
+		t.Fatalf("非法角色应 400 点名词表且源自域校验，得 %d：%s", code, rb)
 	}
 	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=0",
 		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
@@ -290,6 +294,22 @@ func TestSquadPutBlankNameIs400(t *testing.T) {
 		`{"role":"executor","members":[]}`)
 	if code != http.StatusBadRequest {
 		t.Fatalf("空白小队名应 400，得 %d：%s", code, rb)
+	}
+}
+
+// TC8：machine/cli 必填的 400 分类随 Major-2 收敛到域内——网关不再预检，
+// 报文带「登记校验未过」前缀证明拒因来自 PutCarrier 的 ErrInvalid 臂。
+// 这是被删的三块 wire 预检里「必填字段」那块在 wire 侧的收敛证明。
+func TestCarrierPutMissingRequiredFieldsIs400(t *testing.T) {
+	env := newSchedEnv(t)
+	for name, body := range map[string]string{
+		"缺 machine": `{"cli":"opencode","credential":"standalone"}`,
+		"缺 cli":     `{"machine":"m1","credential":"standalone"}`,
+	} {
+		code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/cx?expect=0", body)
+		if code != http.StatusBadRequest || !strings.Contains(rb, "登记校验未过") {
+			t.Fatalf("%s 应 400 且源自域校验，得 %d：%s", name, code, rb)
+		}
 	}
 }
 
