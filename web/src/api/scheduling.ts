@@ -29,6 +29,7 @@ export interface SquadsResp {
 }
 
 export interface CarrierInput {
+  name?: string
   machine: string
   cli: string
   home_dir: string
@@ -38,6 +39,7 @@ export interface CarrierInput {
 }
 
 export interface SquadInput {
+  name?: string
   role: string
   members: string[]
   max_concurrency?: number
