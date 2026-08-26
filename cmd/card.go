@@ -436,6 +436,28 @@ var cardExportCmd = &cobra.Command{
 	},
 }
 
+// cardCoordinateCmd 一键拉起该卡的绑定协调者（B156.3 K3）。与 squad 族同走
+// agentd HTTP（依赖方向论证见 squad.go 文件头）；launch 端点本体归 K4，接通前
+// 打到 404 会原样呈现——诚实但不友好，K4 合入即愈。服务端 400 的指路文案
+// （未登记协调者小队 → handoff squad create）经 httpStatusError 原样透传。
+var cardCoordinateCmd = &cobra.Command{
+	Use:   "coordinate <卡号>",
+	Short: "一键拉起该卡的绑定协调者（POST coordinator/launch；未登记小队时按报文指路 squad create）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		cl, done, err := newTargetClient()
+		if err != nil {
+			return err
+		}
+		defer done()
+		resp, err := cl.CoordinatorLaunch(cmd.Context(), args[0])
+		if err != nil {
+			return fmt.Errorf("拉起协调者: %w", err)
+		}
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(resp)
+	},
+}
+
 // printCardJSON stdout 单行卡 JSON（机器契约）。
 func printCardJSON(cmd *cobra.Command, card ledger.Card) error {
 	return json.NewEncoder(cmd.OutOrStdout()).Encode(card)
@@ -488,6 +510,7 @@ func init() {
 
 	cardCmd.AddCommand(cardAddCmd, cardListCmd, cardShowCmd, cardUpdateCmd, cardMoveCmd,
 		cardCloseCmd, cardReviveCmd, cardLinkCmd, cardUnlinkCmd,
-		cardMergeCmd, cardUnmergeCmd, cardSplitCmd, cardNoteCmd, cardExportCmd, cardWaitCmd, cardAcceptCmd, cardNeedsCmd)
+		cardMergeCmd, cardUnmergeCmd, cardSplitCmd, cardNoteCmd, cardExportCmd, cardWaitCmd, cardAcceptCmd, cardNeedsCmd,
+		cardCoordinateCmd)
 	rootCmd.AddCommand(cardCmd)
 }
