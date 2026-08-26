@@ -26,6 +26,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
 // errStepInFlight 表示该卡已有环节在跑，调用方应答 409。
@@ -54,9 +55,39 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		s.releaseCardStep(cardID)
 		return err
 	}
-	resolved, err := s.resolveStepDiscipline(node, req.Target)
+	// B156.3 K2：节点绑小队时编制域先裁决本次派发（解析层插在纪律解析之前——
+	// 有效目标机要等 Binding 出来才知道，能力位探活必须打 Binding.Target）。
+	// 三种同步结局：admitted→Binding 三元组接管覆盖继续装配；queued→已持久
+	// 入队，本轮以排队形态结束（释放槽位返回 nil，不起 goroutine、无 task、
+	// 卡事件流零写入）；error→受理失败上浮（HTTP 非 202），已准入的先回滚名额。
+	binding := scheduling.Binding{}
+	if node.Override.Squad != "" {
+		outcome := squadDispatchAdmitted
+		binding, outcome, err = s.admitSquadStep(cardID, req, node)
+		if err != nil {
+			s.releaseCardStep(cardID)
+			return err
+		}
+		if outcome == squadDispatchQueued {
+			s.releaseCardStep(cardID)
+			return nil
+		}
+	}
+	target := req.Target
+	if binding.Target != "" {
+		target = binding.Target
+	}
+	resolved, err := s.resolveStepDiscipline(node, target)
 	if err != nil {
 		s.releaseCardStep(cardID)
+		if binding.Squad != "" {
+			// 准入成功但后续装配失败：回滚两级名额防泄漏假满（Release 幂等；
+			// 回滚失败计数偏高属保守方向，只告警不阻断上报原错误）。
+			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {
+				s.log.Warn("准入回滚失败（计数偏高属保守方向）", "card", cardID,
+					"squad", binding.Squad, "carrier", binding.Carrier, "cause", relErr)
+			}
+		}
 		return err
 	}
 	host, _ := os.Hostname()
@@ -78,6 +109,14 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		"actor", req.Actor, "target", req.Target, "executor", req.Executor,
 		"model", req.Model, "run_holder", runner.RunHolder,
 		"has_extra", strings.TrimSpace(req.Extra) != "")
+	if binding.Squad != "" {
+		// Binding 三元组接管本次派发的有效覆盖（解析层语义，plan §D2）：
+		// runner 字段是 dispatchNodeWithGate 的最高优先级来源，Binding 值恒
+		// 非空（Target/Executor 由载体必填字段保证），模板缺省从此够不着。
+		runner.Target = binding.Target
+		runner.Executor = binding.Executor
+		runner.Model = binding.Model
+	}
 	go func() {
 		defer s.releaseCardStep(cardID)
 		s.runStepFn(context.Background(), runner, cardID, req.Step)
