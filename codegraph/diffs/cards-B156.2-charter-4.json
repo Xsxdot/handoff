@@ -110,7 +110,10 @@
     ["n_agentd_Server_handleInbox", "n_agentd_Hub_Watchers"],
     ["n_agentd_Server_handleCardRebind", "n_agentd_facadeBindAdapter_Rebind"],
     ["n_agentd_facadeBindAdapter_Rebind", "n_ledger_api_Facade_BindDriver"],
-    ["n_agentd_Server_SetupAutomation", "n_collab_New"]
+    ["n_agentd_Server_SetupAutomation", "n_collab_New"],
+    ["n_agentd_Server_SetupAutomation", "n_collab_cursor_New"],
+    ["n_agentd_Server_SetupAutomation", "n_collab_Service_SetCursorStore"],
+    ["n_agentd_Server_ticketDestructive", "n_store_Store_EventsFrom"]
   ],
   "nodesModified": {
     "m_proto_Card": {
