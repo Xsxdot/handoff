@@ -7,9 +7,8 @@
    "k_collab_room_model": {"label": "collab.room 数据模型", "kind": "实体", "domain": "d_collab"},
    "k_collab_cursor_fn": {"label": "collab.cursor 包级函数", "kind": "函数组", "domain": "d_collab"},
    "k_collab_cursor_Store": {"label": "collab.cursor Store 类型", "kind": "类型", "domain": "d_collab"},
-   "k_web_app_rooms": {"label": "/app/rooms组件与函数", "kind": "React 组件/函数", "domain": "d_web"},
-   "k_web_app_rooms_model": {"label": "/app/rooms 类型", "kind": "TypeScript 模型", "domain": "d_web"}
-  },
+"k_web_app_rooms": {"label": "/app/rooms组件与函数", "kind": "React 组件/函数", "domain": "d_web"}
+   },
   "nodesAdded": {
    "n_collab_room_Resolve": {"kind": "func", "container": "k_collab_room_fn", "order": 1, "name": "Resolve", "file": "internal/collab/room/room.go", "line": 55, "signature": "func Resolve(lc client.LedgerClient, roomID string) (*Room, error)", "params": [["lc", "client.LedgerClient", ""], ["roomID", "string", ""]], "returns": "(*Room, error)", "summary": "Resolve 把房间标识解析为执法上下文。"},
    "n_collab_room_VerifyWriter": {"kind": "func", "container": "k_collab_room_fn", "order": 2, "name": "VerifyWriter", "file": "internal/collab/room/room.go", "line": 102, "signature": "func VerifyWriter(r *Room, kind, actor string) error", "params": [["r", "*Room", ""], ["kind", "string", ""], ["actor", "string", ""]], "returns": "error", "summary": "VerifyWriter 按 kind 执法书写者身份。"},
@@ -52,7 +51,10 @@
     "n_agentd_decisionTitle": {"kind": "func", "container": "k_agentd_fn", "order": 2001, "name": "decisionTitle", "file": "internal/agentd/roomsapi.go", "line": 230, "signature": "func decisionTitle(d ledger.Decision) string", "params": [], "returns": "string", "summary": "收件箱 decision 条目标题（Body 首行）。"},
     "n_agentd_ticketTitle": {"kind": "func", "container": "k_agentd_fn", "order": 2002, "name": "ticketTitle", "file": "internal/agentd/roomsapi.go", "line": 242, "signature": "func ticketTitle(tk proto.Ticket) string", "params": [], "returns": "string", "summary": "收件箱 ticket 条目标题（gate/ask）。"},
     "n_agentd_facadeBindAdapter_Rebind": {"kind": "func", "container": "k_agentd_fn", "order": 2003, "name": "facadeBindAdapter.Rebind", "file": "internal/agentd/server.go", "line": 2290, "signature": "func (a facadeBindAdapter) Rebind(id, toSession, carrier, expect string) error", "params": [], "returns": "error", "summary": "换绑端口适配器：转调 Facade.BindDriver。"},
-    "n_ledger_api_Facade_BindDriver": {"kind": "func", "container": "k_ledger_api_Facade", "order": 2000, "name": "Facade.BindDriver", "file": "internal/ledger/api/api.go", "line": 93, "signature": "func (f *Facade) BindDriver(id, session, carrier, expect string) error", "params": [], "returns": "error", "summary": "换绑直通镜像（C1 覆盖债补录，台账 L12；n_collab_New 已由 C7 落地，本卡不重复补）。"}
+    "n_ledger_api_Facade_BindDriver": {"kind": "func", "container": "k_ledger_api_Facade", "order": 2000, "name": "Facade.BindDriver", "file": "internal/ledger/api/api.go", "line": 93, "signature": "func (f *Facade) BindDriver(id, session, carrier, expect string) error", "params": [], "returns": "error", "summary": "换绑直通镜像（C1 覆盖债补录，台账 L12；n_collab_New 已由 C7 落地，本卡不重复补）。"},
+    "n_web_app_rooms_RoomsListPage": {"kind": "func", "container": "k_web_app_rooms", "order": 53, "name": "RoomsListPage", "file": "web/src/app/rooms/RoomsListPage.tsx", "line": 53, "signature": "export function RoomsListPage() {", "summary": "会话列表页：轮询全量会话，客户端项目筛选，live/read_only/kind 徽标，bound_session 原样展示（澄清一不透明载体标识）。"},
+    "n_web_app_rooms_RoomDetailPage": {"kind": "func", "container": "k_web_app_rooms", "order": 52, "name": "RoomDetailPage", "file": "web/src/app/rooms/RoomDetailPage.tsx", "line": 52, "signature": "export function RoomDetailPage() {", "summary": "房间页：历史最新页轮询 + 「加载更早」按 before=最老seq-1 叠加 + 打开即已读 markRoomRead + 发送 POST；只读房由 handler 内守卫拦截。"},
+    "n_web_app_rooms_InboxPage": {"kind": "func", "container": "k_web_app_rooms", "order": 68, "name": "InboxPage", "file": "web/src/app/rooms/InboxPage.tsx", "line": 68, "signature": "export function InboxPage() {", "summary": "收件箱页：三源分区（decision/ticket/mention），决策选项按钮直调 answerDecision，答复后明示等待文案。"}
   },
   "edgesAdded": [
     ["n_collab_Service_Send", "n_collab_room_KindAllowed"],
