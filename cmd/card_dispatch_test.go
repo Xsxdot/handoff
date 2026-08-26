@@ -12,8 +12,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func TestResolveCardDispatchTemplateThreeStates(t *testing.T) {
@@ -900,5 +902,104 @@ func TestCardDispatchRefusesUnsupportedTargetBeforeClaim(t *testing.T) {
 	}
 	if strings.Contains(show, `"status":"进行中"`) || strings.Contains(show, `"Status":"进行中"`) {
 		t.Fatalf("拒发不得留下已认领的半状态: %s", show)
+	}
+}
+
+// TestCardDispatchWritesPointerLine 欠账 #11 派发指针（判据一，成功路径）：
+// 断言必须去账本里查那一行真的在（type=room_message ∧ kind=pointer ∧
+// by_system=true ∧ 正文含卡号与模板名）——不得只断言 dispatch 没报错（Pointer
+// 出错时返回 error、成功时返回 nil，「没报错」区分不出「真写了」与「什么都没写」）。
+// 存在式断言：不数行数（keystone 叙事 roomNarrator 也在写同款指针行且现在
+// 就活着，计数式断言会偶发红，而它红的时候指的并不是本卡的缺陷）。
+func TestCardDispatchWritesPointerLine(t *testing.T) {
+	dir := t.TempDir()
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "指针卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "update", c.ID, "--accept", "测试全绿"); err != nil {
+		t.Fatal(err)
+	}
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		return "T-pointer-1", nil
+	})
+	defer restore()
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
+		"--template", "feature-impl", "--target", "mac-02"); err != nil {
+		t.Fatalf("dispatch: %v", err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	events, err := st.EventsFromAsc([]string{c.ID}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for i := range events {
+		if events[i].Type != ledger.EvRoomMessage {
+			continue
+		}
+		var msg proto.RoomMessage
+		if err := json.Unmarshal(events[i].Payload, &msg); err != nil {
+			continue
+		}
+		if msg.Kind != proto.RoomMsgPointer || !msg.BySystem {
+			continue
+		}
+		if !strings.Contains(msg.Body, c.ID) || !strings.Contains(msg.Body, "feature-impl") {
+			t.Fatalf("指针行正文应含卡号与模板名: %q", msg.Body)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatalf("账本里没有 kind=pointer ∧ by_system=true 的派发指针行: %+v", events)
+	}
+}
+
+// TestCardDispatchPointerFailureDoesNotInterrupt 判据二（失败路径）：Pointer
+// 返回错误时 dispatch 主流程不中断（错误仅日志）。与判据一分开写——只写这条
+// 的话，一个「根本不调 Pointer」的实现也是绿的（判据一的牙齿在
+// TestCardDispatchWritesPointerLine，两条合起来才拔不掉）。
+func TestCardDispatchPointerFailureDoesNotInterrupt(t *testing.T) {
+	dir := t.TempDir()
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "指针失败卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "update", c.ID, "--accept", "测试全绿"); err != nil {
+		t.Fatal(err)
+	}
+	restoreTransport := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		return "T-pointer-fail", nil
+	})
+	defer restoreTransport()
+	restorePointer := swapRoomPointer(func(_ *collab.Service, roomID, body string) error {
+		return errors.New("指针写失败（测试注入）")
+	})
+	defer restorePointer()
+	out, _, err = runLedgerCLI(t, dir, "card", "dispatch", c.ID,
+		"--template", "feature-impl", "--target", "mac-02")
+	if err != nil {
+		t.Fatalf("Pointer 失败不应打断派发主流程: %v", err)
+	}
+	if !strings.Contains(out, "T-pointer-fail") {
+		t.Fatalf("stdout 应含 task id: %q", out)
 	}
 }
