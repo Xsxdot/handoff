@@ -271,6 +271,28 @@ func TestSchedulingEndpointsRequireAuth(t *testing.T) {
 	}
 }
 
+// TC7：空白名（用户可修错误）必须 400 而非 500——Major-3 判据的 wire 半臂。
+// 名来自路径 {name}，网关不预检它，得靠域内 PutCarrier/PutSquad 的校验行
+// 以 %w 包 ErrInvalid 后经 schedPutErr 落到 400；此前裸 fmt.Errorf 上浮
+// default→500。成员引用缺失的 400 分类由 TC3 锁（ErrNotFound 臂）。
+func TestCarrierPutBlankNameIs400(t *testing.T) {
+	env := newSchedEnv(t)
+	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/%20?expect=0",
+		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("空白载体名应 400，得 %d：%s", code, rb)
+	}
+}
+
+func TestSquadPutBlankNameIs400(t *testing.T) {
+	env := newSchedEnv(t)
+	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/squads/%20?expect=0",
+		`{"role":"executor","members":[]}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("空白小队名应 400，得 %d：%s", code, rb)
+	}
+}
+
 // TC6：未装配降级——SetLedger 有、SetupAutomation 没跑 → 503 可行动文案。
 func TestSchedulingEndpointsDegradedWithoutSetup(t *testing.T) {
 	st, err := ledger.Open(t.TempDir() + "/ledger.db")

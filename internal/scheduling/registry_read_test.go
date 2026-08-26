@@ -204,3 +204,36 @@ func TestQueueSnapshotMatchesDrainOrder(t *testing.T) {
 		t.Fatalf("清空后出队应 (false,nil)，得 ok=%v err=%v", ok, err)
 	}
 }
+
+// TestPutValidationWrapsErrInvalid 锁 ErrInvalid 的产生臂（修复轮 Major-3）：
+// PutCarrier/PutSquad 的四处校验 return 必须以 %w 包 ErrInvalid——此前是裸
+// fmt.Errorf，空白名/词表外取值上浮到网关 default→500（用户可修错误落 5xx）。
+// 网关据此把「用户填错（400）」与「registry 故障（500）」分流。
+func TestPutValidationWrapsErrInvalid(t *testing.T) {
+	svc, _ := newRowsFixture(t)
+	carrierIncomplete := svc.PutCarrier(scheduling.Carrier{Name: "", Machine: "m",
+		CLI: "opencode", Credential: scheduling.CredentialStandalone}, 0)
+	if !errors.Is(carrierIncomplete, scheduling.ErrInvalid) {
+		t.Fatalf("载体登记不完整应包 ErrInvalid，得 %v", carrierIncomplete)
+	}
+	credentialOut := svc.PutCarrier(scheduling.Carrier{Name: "c", Machine: "m",
+		CLI: "opencode", Credential: "boss"}, 0)
+	if !errors.Is(credentialOut, scheduling.ErrInvalid) {
+		t.Fatalf("凭据来源词表外应包 ErrInvalid，得 %v", credentialOut)
+	}
+	squadBlank := svc.PutSquad(scheduling.Squad{Name: "  ", Role: scheduling.RoleExecutor}, 0)
+	if !errors.Is(squadBlank, scheduling.ErrInvalid) {
+		t.Fatalf("小队名空白应包 ErrInvalid，得 %v", squadBlank)
+	}
+	roleOut := svc.PutSquad(scheduling.Squad{Name: "sq", Role: "boss"}, 0)
+	if !errors.Is(roleOut, scheduling.ErrInvalid) {
+		t.Fatalf("角色词表外应包 ErrInvalid，得 %v", roleOut)
+	}
+	// 成员引用缺失仍以 ErrNotFound 链上浮（Major-1 判据的域侧半臂）：
+	// 网关 handleSquadPut 靠 errors.Is(ErrNotFound) 把它分到 400。
+	memberMissing := svc.PutSquad(scheduling.Squad{Name: "sq", Role: scheduling.RoleExecutor,
+		Members: []string{"ghost"}}, 0)
+	if !errors.Is(memberMissing, scheduling.ErrNotFound) {
+		t.Fatalf("成员引用缺失应包 ErrNotFound，得 %v", memberMissing)
+	}
+}

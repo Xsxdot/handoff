@@ -10,15 +10,14 @@
 //   - 未装配编制域（SetupAutomation 未执行）时全部端点 503，同 withLedger 形态；
 //   - 不做跨机转发：登记与队列都在协调机侧账本，转发语义无定义。
 //
-// 400/500 分类策略（如实声明）：编制域本轮只新增 ErrInvalid 哨兵声明，
-// PutCarrier/PutSquad 校验行尚未以 %w 包装它。因此状态码分类分三层：
+// 400/500 分类策略（B156.3.3 修复轮 Major-2/Major-3 后）：
 //  1. wire 边界预检——必填字段在场、凭据来源/角色取值在词表内。词表值引用
 //     scheduling 的导出常量（单一定义，零复制）；这只拦截「线格式就不合法」的
 //     请求，实体规则仍由域内权威校验；
 //  2. 成员引用不存在：域内错误包装 scheduling.ErrNotFound 上浮 → 400（PUT 引用了
-//     缺失资源 = 客户端可修）；
-//  3. errors.Is(err, scheduling.ErrInvalid) 臂已就位——域侧日后补上包装即通电，
-//     网关无需再改（当前生产链路上该哨兵尚无产生点，见台账申报）。
+//     缺失资源 = 客户端可修）；成员缺失错误在域内以 %w 包 ErrNotFound 上浮；
+//  3. errors.Is(err, scheduling.ErrInvalid) 臂由 PutCarrier/PutSquad 校验行的
+//     %w 包装通电（修复轮补产生臂）——用户填错一律 400，不落 default→500。
 package agentd
 
 import (
@@ -170,9 +169,9 @@ func (s *Server) handleSquadPut(w http.ResponseWriter, r *http.Request) {
 	if err := s.scheduling.PutSquad(squad, expect); err != nil {
 		if errors.Is(err, scheduling.ErrNotFound) {
 			// 成员引用不存在是唯一会从 PutSquad 带出 NotFound 的路径：
-			// PUT 引用缺失资源 = 客户端可修，400 而非 500。
+			// PUT 引用缺失资源 = 客户端可修，400 而非 500（Major-1：409→400）。
 			s.log.Warn("小队登记被拒（成员引用缺失）", "name", name, "cause", err)
-			writeErr(w, http.StatusConflict, err)
+			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
 		s.schedPutErr(w, "小队", name, err)
@@ -216,13 +215,13 @@ func expectVersion(r *http.Request) (int, bool, error) {
 // 500 registry 故障。分级日志让「用户填错」与「存储坏了」在日志里第一眼可分。
 //
 // ErrCASConflict 判定用 schedclient 哨兵正主：它经组装点适配器 translateRegistryErr
-// 翻译后随域内错误上浮（K2 已落地，本卡不改写）；ErrInvalid 臂当前无产生点
-// （包装归持 PutCarrier/PutSquad 函数体的卡），就位等待域侧通电。
+// 翻译后随域内错误上浮（K2 已落地，本卡不改写）；ErrInvalid 由 PutCarrier/PutSquad
+// 校验行的 %w 包装产生（B156.3.3 修复轮 Major-2：400 而非 409，与 doc 注释一致）。
 func (s *Server) schedPutErr(w http.ResponseWriter, kind, name string, err error) {
 	switch {
 	case errors.Is(err, scheduling.ErrInvalid):
 		s.log.Warn("编制域登记被拒", "kind", kind, "name", name, "cause", err)
-		writeErr(w, http.StatusConflict, err)
+		writeErr(w, http.StatusBadRequest, err)
 	case errors.Is(err, schedclient.ErrCASConflict):
 		s.log.Warn("编制域登记版本冲突", "kind", kind, "name", name, "cause", err)
 		writeErr(w, http.StatusConflict, err)
