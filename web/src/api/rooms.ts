@@ -60,4 +60,47 @@ export interface RoomSummary {
 
 export type RoomHistoryItem = LedgerEvent
 
-// fetch 函数随实现节点接线（契约交棒欠账 #9）；本提交只冻结类型镜像。
+// ---- C8 接线（契约 §3.5 端点 + §3.6 收件箱；响应信封形状与 C6 handler 逐字一致）----
+import { postJSON, request } from './client'
+
+// fetchRooms 会话列表（GET /api/rooms?project=）。project 省略取全部。
+export const fetchRooms = (project = ''): Promise<RoomSummary[]> =>
+  request<{ rooms: RoomSummary[] }>(
+    `/api/rooms${project ? `?project=${encodeURIComponent(project)}` : ''}`,
+  ).then((response) => response.rooms ?? [])
+
+// fetchRoomMessages 房间历史（GET /api/rooms/{id}/messages）。before 排他游标、
+// limit<=0 由服务端取 200；返回升序 room_message 事件。
+export const fetchRoomMessages = (
+  id: string,
+  opts: { before?: number; limit?: number } = {},
+): Promise<RoomHistoryItem[]> => {
+  const q = new URLSearchParams()
+  if (opts.before !== undefined) q.set('before', String(opts.before))
+  if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+  const qs = q.toString()
+  return request<{ messages: RoomHistoryItem[] }>(
+    `/api/rooms/${encodeURIComponent(id)}/messages${qs ? `?${qs}` : ''}`,
+  ).then((response) => response.messages ?? [])
+}
+
+// sendRoomMessage 用户发言（POST /api/rooms/{id}/messages）。kind 服务端固定 user、
+// actor 服务端注入；refs/mentions 为空时不出键（与 Go 侧 omitempty 一致）。
+export const sendRoomMessage = (
+  id: string,
+  body: string,
+  opts: { refs?: string[]; mentions?: string[] } = {},
+): Promise<{ seq: number }> => {
+  const payload: { body: string; refs?: string[]; mentions?: string[] } = { body }
+  if (opts.refs !== undefined && opts.refs.length > 0) payload.refs = opts.refs
+  if (opts.mentions !== undefined && opts.mentions.length > 0) payload.mentions = opts.mentions
+  return postJSON<{ seq: number }>(`/api/rooms/${encodeURIComponent(id)}/messages`, payload)
+}
+
+// markRoomRead 置已读游标（POST /api/rooms/{id}/read）：打开房间即已读（spec §7）。
+export const markRoomRead = (id: string, uptoSeq: number): Promise<{ ok: boolean }> =>
+  postJSON<{ ok: boolean }>(`/api/rooms/${encodeURIComponent(id)}/read`, { upto_seq: uptoSeq })
+
+// fetchInbox 待回复收件箱（GET /api/inbox）：三源聚合在 gateway 编排（契约 §3.6）。
+export const fetchInbox = (): Promise<InboxItem[]> =>
+  request<{ items: InboxItem[] }>('/api/inbox').then((response) => response.items ?? [])

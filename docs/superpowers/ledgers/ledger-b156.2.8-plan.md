@@ -52,3 +52,16 @@
 
 - 本工作树无 web/node_modules，`npx tsc -b` / vitest 未实跑（L24）——实现轮基线步骤含 `npm ci`。
 - 布局/滚动/dock 可达 → 真机清单。
+## 2026-08-26 实现轮 T8.0 基线
+
+- M1 `npm ci`（web/）→ EXIT=0，0 vulnerabilities。
+- M2 `npx tsc -b` → EXIT=0。
+- M3 `npx vitest run src/api/rooms.test.ts` → 1 passed / 5 tests，EXIT=0。
+
+## 2026-08-26 实现轮 T8.1 fetch 五端点 + 常量
+
+- M4 写失败测试 `rooms.fetch.test.ts`（plan 代码块 A）→ 首红 7/7 `TypeError: fetchX is not a function`（编译红，符号缺席，非 typo）。
+- M5 空壳落地（五函数全返回空/恒值）→ 断言红 7/7（URL/body/解码断言全有牙，非编译红）。
+- M6 全量实现 + `constants.ts` → 红 1 残留：`Body has already been read`——plan 代码块 A 的 `mockResolvedValue(jsonResp(...))` 两次调用返回同一 Response，body 只能读一次。**plan 测试夹具机械缺陷**：改为 `mockImplementation(() => Promise.resolve(jsonResp(...)))`（每次新 Response）。断言意图不变。
+- M7 绿：`npx vitest run src/api/rooms.fetch.test.ts src/api/rooms.test.ts` → 12 passed（EXIT=0）；`npx tsc -b` → EXIT=0。
+- M8 变异自验（fetchRooms project 查询串）：变体①删 project 参数 → TS6133 unused 编译失败，**该发不算数**；变体②恒带 `?project=` → TSC EXIT=0 + vitest 1 红（`expected '/api/rooms?project=' to be '/api/rooms'`，AssertionError）→ 还原 → 12 passed。测试有牙。
