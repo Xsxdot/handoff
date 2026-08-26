@@ -449,6 +449,9 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, ctx context.Context,
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}
 	srv.SetLedger(lst)
+	// B156.2 协作房间面装配：collab 入站门面 + 换绑端口 + 游标介质。设计上
+	// SetupAutomation 是全仓唯一组装点（target.json assembly 登记），此处激活。
+	srv.SetupAutomation(lst)
 	// 恒挂载：机器清单来自 target 客户端池的活配置读取，启动时没有机器
 	// 不代表以后没有——留着 len(cfg.Targets)>0 的闸会让控制台新增的第一台
 	// 机器永远等不到账本镜像（与任务镜像同一条纪律，B163 ①）。

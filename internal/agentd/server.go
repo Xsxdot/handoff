@@ -40,6 +40,7 @@ import (
 	charterwebui "github.com/Xsxdot/charter/graph/webui"
 
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/hostapi"
@@ -155,6 +156,9 @@ type Server struct {
 	keystone   *keystone.Service
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
+	// B156.2 协作房间：入站门面实例与换绑端口，SetupAutomation 装配。
+	rooms  *collab.Service
+	rebind rebindPort
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
 	desktopMu    sync.Mutex
 	desktopState *proto.DesktopState
@@ -2237,9 +2241,11 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	facade := ledgerapi.New(st)
 	s.autoLedger = facade
 	s.scheduling = scheduling.New(facadeAsRegistry{f: facade})
-	rooms := collab.New(facade)
+	s.rooms = collab.New(facade)
+	s.rooms.SetCursorStore(cursor.New(filepath.Join(s.conf().DataDir, "room-cursors.json")))
+	s.rebind = facadeBindAdapter{f: facade}
 	runner := coordinatorRunner{h: hostapi.New()}
-	s.keystone = keystone.New(runner, roomNarrator{c: rooms}, facade, attachLocator{})
+	s.keystone = keystone.New(runner, roomNarrator{c: s.rooms}, facade, attachLocator{})
 	if s.pty != nil {
 		s.ptyGate = ptyapi.New(s.pty)
 	}
@@ -2253,6 +2259,37 @@ func (s *Server) SetScheduling(svc *scheduling.Service) { s.scheduling = svc }
 
 // SetKeystone 注入 keystone 域服务（测试缝：同上）。
 func (s *Server) SetKeystone(svc *keystone.Service) { s.keystone = svc }
+
+// SetRooms 注入协作房间服务（测试缝：整体替换 SetupAutomation 构造的实例）。
+func (s *Server) SetRooms(svc *collab.Service) { s.rooms = svc }
+
+// SetRebind 注入换绑端口（测试缝：同 SetRooms）。
+func (s *Server) SetRebind(p rebindPort) { s.rebind = p }
+
+// withRooms 守卫房间面端点：账本与会话服务未装配时 503（与 withLedger 同款降级）。
+func (s *Server) withRooms(h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if s.ledger == nil || s.rooms == nil {
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+				"error": "账本/会话服务未装配",
+			})
+			return
+		}
+		h(w, r)
+	}
+}
+
+// facadeBindAdapter 把账本薄门面的换绑能力适配成 gateway 的 rebindPort（岔口二
+// 条件 4 机械判据：单一 Facade 字段、方法体只做转调、由组装点注入消费端口）。
+// 定义在组装点文件（server.go = target.json assembly 登记点），它 →Facade 的
+// 调用边走组装点豁免（graph check），不构成 gateway 自身引用门面。
+type facadeBindAdapter struct {
+	f *ledgerapi.Facade
+}
+
+func (a facadeBindAdapter) Rebind(id, toSession, carrier, expect string) error {
+	return a.f.BindDriver(id, toSession, carrier, expect)
+}
 
 // Scheduling 返回编制域服务；未装配返回 nil（handler 据此降级 503，同 withLedger）。
 func (s *Server) Scheduling() *scheduling.Service { return s.scheduling }

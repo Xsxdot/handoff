@@ -240,3 +240,126 @@
 - 收口自查：① 全部事实均来自亲自跑过的命令（台账有原始输出）；② 本轮未碰 handoff CLI
   写命令、未起新 executor（仅 `go run . graph <只读子命令>` 与 `go test`）。③ 判据 (a) 的
   「基线即绿」与「会红」均已实跑证明（L13 有效读数），不是纸面推断。
+
+# ===== implement 轮（charter-3，2026-08-26；上一轮 charter-2 被截断、零实现代码，本分支干净重来）=====
+
+## L18 基线复核（T6.1 步骤 1）
+
+- 分支 `cards/B156.2.6-charter-3`，HEAD=9ab8312b（merge origin/feature/b156-workbench），
+  工作树干净。`git merge-base --is-ancestor 948e4cd8 HEAD` = BASE_OK。
+- `go test ./internal/agentd/...` → `ok github.com/Xsxdot/handoff/internal/agentd 73.909s`。
+- `go run . graph check --repo . --view cards-B156.2-charter-4` EXIT=0、fails=[]、
+  legacyHits["d_gateway->d_ledger"]=1。warns 96 条，按 kind 分类：anchor-off-domain 2 /
+  best-dangling 2 / container-misplaced 51 / legacy 34 / oversized-package 2 / prefix-family 5。
+  （计划 §4 写「97 与基线一致」——实测是 96，以实跑为准。）
+- registerLedgerRoutes 亲读无 rooms 路由（ledgerapi.go:30-52）；Server 无 collab 字段（server.go:92-157）。
+- `n_ledger_api_Facade_BindDriver` 不在 baseline.json（k_ledger_api_Facade 无该节点）；`n_collab_New`
+  已在视图 diff（C7 落地，协调者发现二，本卡不重复加节点）；`n_agentd_Server_SetupAutomation` 在
+  baseline 有节点。
+
+## L19 红文（T6.1 步骤 3）
+
+`go test ./internal/agentd/` 预期编译失败。原始报错（截断至 10 行）：
+```
+# github.com/Xsxdot/handoff/internal/agentd [github.com/Xsxdot/handoff/internal/agentd.test]
+internal/agentd/roomsapi_test.go:76:23: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:100:22: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:151:22: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:161:23: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:244:23: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:338:22: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:357:20: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:372:22: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:408:23: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:440:23: env.srv.rooms undefined (type *Server has no field or method rooms)
+internal/agentd/roomsapi_test.go:440:23: too many errors
+FAIL	github.com/Xsxdot/handoff/internal/agentd [build failed]
+```
+红因 = 功能缺失（Server.rooms 字段与六 handler 不存在），非拼写错。判定为有效编译红。
+- 首跑还有一处助手签名错：`ledgerPost(t, env, ...)` 中 env 是 *ledgerEnv，而 ledgerPost 收
+  *testAgentdEnv（ledgerapi_test.go:24/43）。计划代码块 B 直接写 `ledgerPost(t, env, ...)` 编译不过
+  ——按既有先例（ledgerapi_test.go:189 `ledgerGet(t, env.testAgentdEnv, ...)`）机械修正为
+  `env.testAgentdEnv`；`TestRoomsEndpoints503WithoutLedger` 的 env 本就是 *testAgentdEnv，保持原样。
+  这是机械修正非换入口。
+
+## L20 协调者发现一落地（Pointer 归属三种承载形态）
+
+- 亲读功能线原文：`cmd/card_dispatch.go:347` `var roomPointer = func(s *collab.Service, roomID, body string) error {`，
+  :348 `_, err := s.Pointer(roomID, proto.RoomMessage{Body: body})`；:329 `writeDispatchPointer` 只
+  **调用** roomPointer。故真实 Pointer 调用在包级 var 闭包里，不在任何 FuncDecl 内。
+- 全仓非测试 `.go` 候选（排除 unsafe/atomic 前缀后）恰两处：
+  1. `internal/agentd/server.go:2349`（roomNarrator.Say）；
+  2. `cmd/card_dispatch.go:348`（包级 var 闭包 roomPointer）。
+- 守卫归属逻辑按协调者处置增强为三种承载形态：FuncDecl→函数名/「类型.方法名」；包级
+  var/const GenDecl→ValueSpec.Names[0]（本仓命中即 roomPointer）；函数内匿名闭包→最内层
+  FuncDecl（近似）。多 span 命中取跨度最小（最内层）。
+- 白名单两条，第二条函数名**以实测归属输出为准**。实测读数（先不加白名单跑守卫）：
+  `pointer_gate_test.go:153: 白名单外 Pointer 引用: cmd/card_dispatch.go roomPointer`——归属逻辑对包级 var
+  闭包报出变量名 **roomPointer**（与协调者预期一致，但以实测为准）。加白名单条目后复跑 `--- PASS`。
+
+## L21 协调者裁决①：读侧宽容（GET 不存在房间）
+
+**计划前提失实记录**：计划 §0.8/T6.1 断言「GET 不存在房间历史 → 404」的前提是
+`collab.Service.History` 会返回 `collab.ErrNoRoom`。实跑（implement 轮）发现该前提不成立：
+`go test ./internal/agentd/ -run TestRoomSendErrMapping` → `roomsapi_test.go:174: GET 不存在房间应
+404: 200`。对照契约原文（协调者复核，非转述）：
+- 契约 b156.2-contract.md:202-204 History 注释逐字：「读历史：seq 游标分页（beforeSeq 排他、升序截尾
+  同 EventsFromAsc 语义），只返回 type==room_message 的事件。limit<=0 取 200。」**只字未提 ErrNoRoom
+  与房间解析**。
+- 契约 :188-190 Send 注释明写「roomID 必须解析为存在的房间……否则 ErrNoRoom」；:350 验收清单只写
+  「Send 返回 ErrNoRoom」。
+- 结论：ErrNoRoom 是 **Send 的契约义务，不是 History 的**；§3.5「400 ErrNoRoom→404」是**映射规则**
+  不是**行为规定**——条件（History 返回 ErrNoRoom）从不成立。C4 的 History（service.go:125 纯过滤、
+  不调 room.Resolve）完全合规，无缺陷需修。排除 ②（改 C4 冻结缝迎合一格从不触发的映射、波及已合入的
+  C7 room read、每次多一次 GetCard 读）与 ③（handler 经 ListRooms 判存在，重且 project/global 语义模糊）。
+
+**裁决（协调者选 ① + 三条附加）**：
+1. **读写不对称是有意语义**：写侧受守（Send 对不存在房间 ErrNoRoom），读侧宽容（History 对不存在
+   房间返回空列表）。读不存在房间与读空房间对渲染方是同一件事。写清楚防后人当 bug「修」掉（那会
+   反过来破坏契约）。
+2. **handler 的 ErrNoRoom→404 映射保留但今日不可达**：契约要求这格映射，留着零成本。**不写声称验证
+   这条映射的测试**——今天无输入能让 History 吐 ErrNoRoom，那样的测试在验不存在的现实。
+3. **否定断言必须配同测试正面断言**：`TestRoomMessagesEndpoint` 重构为——存在房间已落 2 条
+   room_message → GET 200 且**恰好 2 条**（条数与 seq/正文内容都断言）→ 紧接着不存在 roomID → 200 且
+   零条。同一支测试、同一夹具，「History 恒空」的假实现会在正面断言上翻红。`TestRoomSendErrMapping`
+   删除「GET 不存在房间应 404」断言，保留 POST→400（Send ErrNoRoom 契约义务，写侧受守）。
+
+**恒空变异（协调者顺带要求，合成单条命令执行）**：
+- 变异：`internal/collab/service.go` History 的 `return out, nil`（锚含 SameRoom 过滤体，count==1 唯一）
+  → `return nil, nil`。备份/变异/测/还原/复验一条命令完成（防截断把 C4 冻结代码的变异态留在分支）。
+- 读数：MUT_EXIT=1，红在**正面断言**：`roomsapi_test.go:119: 历史应恰好两条: []`（恒空实现翻红，非红在
+  否定半）；还原后 RESTORE_EXIT=0 PASS；`git status --short` 无 collab 文件（service.go 未在改动清单）。
+
+## L22 Pointer 守卫正控读数（T6.3，两个正控红绿全入交付）
+
+- 正控①（FuncDecl 形态）：临时注册 `POST /api/rooms/{id}/pointer` +
+  `func (s *Server) handleRoomPointer` 真调 `s.rooms.Pointer(...)`。
+  - 红侧：`--- FAIL` + `白名单外 Pointer 引用: internal/agentd/roomsapi.go Server.handleRoomPointer`。
+  - 还原后：`--- PASS`。
+- 正控②（包级 var 闭包形态）：临时 `var probeRoomPointer = func(s *collab.Service) error {
+  _, err := s.Pointer("probe", proto.RoomMessage{Body:"x"}); return err }`。
+  - 红侧：`--- FAIL` + `白名单外 Pointer 引用: internal/agentd/roomsapi.go probeRoomPointer`——归属逻辑对
+    第 2 种承载形态报出变量名、也翻红。
+  - 还原后：`--- PASS`。
+- 两处临时改动均已还原；`git status --short` 复核无残留。
+
+## L23 裸门 go test ./cmd/（吸收前固有红，记录不改）
+
+- commit 1 落盘前实测：`go test ./cmd/` → `--- FAIL: TestRepoContractGate`，red 原文：
+  - `graph_gate_test.go:38: 契约违规 [dead-contract] 契约 d_cli→d_collab 声明的方向没有活跃 call、implements 或组装点豁免边（期望在该方向看到至少一条跨子系统边）`
+  - `graph_gate_test.go:38: 契约违规 [dead-entry] 契约 d_cli→d_collab 声明的入口 "collab 包级函数" 在 d_collab 中不存在...`
+- 这是 C7 的 d_cli→d_collab 契约在未 absorb 视图时的固有形态（TestRepoContractGate 只读 baseline，
+  Merge(g,nil) 不带 diffs）。本卡 commit 2 加 d_gateway→d_collab 契约后此数会变（新增 dead-contract +
+  dead-entry），照实记录、**不修**。
+
+## L24 commit 1（T6.1-T6.4 红绿收口）
+
+- 触及测试全绿：`go test ./internal/agentd/ -run 'TestRooms|TestRoomSend|TestRoomMessages|TestInbox|TestCardRebind|TestRoomsEndpoints|TestPointerRouteAbsent' -count=1 -v` → 15 支全 PASS。
+- `go build ./...` BUILD_OK；`go vet ./internal/agentd/...` VET_OK。
+- gofmt 闸：初扫 `gofmt -l internal cmd` 命中三文件（roomsapi.go/roomsapi_test.go/pointer_gate_test.go，
+  均为 EOF 缺换行 + 一处注释空行），`gofmt -w` 后 `gofmt -l internal cmd` 零输出。
+- 占位残留扫描：`grep -rn "占位\|strings.Repeat(\"\", 0)" internal/agentd/roomsapi_test.go internal/agentd/roomsapi.go`
+  零命中；`grep -n "strings.Repeat\|json.Number\|占位" roomsapi_test.go` 零命中。
+- 提交 1 范围：roomsapi.go、ledgerapi.go（6 行注册）、server.go（字段/缝/SetupAutomation/适配器/
+  withRooms）、cmd/agentd.go（激活行）、roomsapi_test.go、pointer_gate_test.go、台账。**不含 target.json
+  契约**（无消费边声明，view 无新增边，graph check 保持绿）。
