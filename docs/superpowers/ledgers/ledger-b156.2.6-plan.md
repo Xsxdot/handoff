@@ -422,3 +422,83 @@ FAIL	github.com/Xsxdot/handoff/internal/agentd [build failed]
 - §12 明确不做全部守住：proto/ledger 生产代码/金样本 fixture/registerLedgerRoutes 既有行零改动；
   未 absorb；未加真机清单项。
 - 本轮未碰 handoff CLI 写命令、未起新 executor；graph 仅用只读子命令。全部结论来自亲自跑过的命令。
+
+# ===== 审阅退回单点修复轮（charter-4，2026-08-26；四条发现逐条处置）=====
+
+## L28 发现一（major）：守卫解析失败静默跳过 → 改硬红 + 正控双读数
+
+- 改前代码（pointer_gate_test.go:84-87）：`if err != nil { return nil // 解析失败不阻断其它文件（该文件编译错误由 build 兜底） }`。
+  危害属实：全仓 `unsafe.Pointer(` 恰 6 处、5 处在 `internal/prochost/platform_windows.go`，macOS 上
+  `go build ./...` 根本不编译它——「build 兜底」与「守卫跳过」在同一方向同时失效，Windows-only 文件里
+  的违规 Pointer 引用两道防线都拦不住。
+- 改为：`t.Fatalf("守卫扫描源解析失败 %s: %v", rel, err)`，注释一并改写（不再声称 build 兜底，写明
+  platform_windows.go 在 macOS 上不进 build 的实况）。
+- **配正控（变异/测量/还原合成一条命令）**：
+  - 红侧（临时 `zzprobe_broken/broken.go`，内容 `package zzprobe\n\nfunc Broken( {`，语法坏）：
+    `go test ./internal/agentd/ -run TestPointerRouteAbsentFromSource -count=1` → **FAIL**，原文：
+    ```
+    --- FAIL: TestPointerRouteAbsentFromSource (0.07s)
+        pointer_gate_test.go:89: 守卫扫描源解析失败 zzprobe_broken/broken.go: /Users/sycm/.handoff/worktrees/d9beb210/zzprobe_broken/broken.go:3:14: expected ')', found '{'
+    FAIL
+    ```
+    守卫当场 Fatal 并点名文件名与错误原文 ✓。RED_EXIT=1。
+  - 绿侧（删除探针文件后复跑同命令）：`ok github.com/Xsxdot/handoff/internal/agentd`，GREEN_EXIT=0。
+  - 探针目录已删，`git status --short` 无残留（只剩本卡预期改动）。
+
+## L29 发现四（minor）：注释里 `atomic.Pointer` 行号 93 → 94
+
+- 亲测：`sed -n '94p' internal/agentd/server.go` = `cfg atomic.Pointer[config.Config]`（**94**，非 93）。
+  pointer_gate_test.go 两处注释（头注释「判定机制」段 + 排除 atomic 的代码注释）都写 server.go:93，已改 94。
+- **台账补一句（三跳没人重新量的教训）**：注释里出现的行号与 nodesModified 里的行号是同一族事实——
+  写前必须 `sed -n "Np"` 核过，**没有任何闸门在守**（本错数系 plan 轮台账 93 → 审阅材料引用 → 本卡
+  plan 轮引用，三跳无人重测）。
+
+## L30 发现二（minor）：本卡插入造成的既有声明行号失真 → nodesModified +9 条
+
+**判据（自校验）**：对 9ab8312b（本卡基）亲测，取「基线记录行 == 基文件实际行」且「当前实际行 != 记录行」
+的节点 = 本卡插入造成的失真；「基文件实际行 != 记录行」的 = B228 仓级债，不碰。逐节点 `sed -n "Np"`
+核基文件与当前文件（本轮每行都贴原文验证）。
+
+**本卡造成的 9 条（全部 sed 自校验，行原文含符号名）**：
+
+| 节点 | 文件 | 记→改 | sed 当前行原文（节选） |
+|---|---|---|---|
+| n_agentd_Server_handleCardsList | ledgerapi.go | 165→171 | `func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {` |
+| n_agentd_ledgerCardViewWire | ledgerapi.go | 142→148 | `func ledgerCardViewWire(view ledger.CardView, conflict bool, openTickets int) proto.CardView {` |
+| n_agentd_ledgerDecisionWire | ledgerapi.go | 157→163 | `func ledgerDecisionWire(decision ledger.Decision) proto.Decision {` |
+| n_agentd_Server_SetupAutomation | server.go | 2236→2240 | `func (s *Server) SetupAutomation(st *ledger.Store) {` |
+| n_agentd_Server_PtyAPI | server.go | 2249→2255 | `func (s *Server) PtyAPI() *ptyapi.Host { return s.ptyGate }` |
+| n_agentd_Server_SetScheduling | server.go | 2252→2258 | `func (s *Server) SetScheduling(svc *scheduling.Service) { s.scheduling = svc }` |
+| n_agentd_Server_SetKeystone | server.go | 2255→2261 | `func (s *Server) SetKeystone(svc *keystone.Service) { s.keystone = svc }` |
+| n_agentd_facadeAsRegistry_Get | server.go | 2274→2311 | `func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error) {` |
+| n_agentd_coordinatorRunner_Resume | server.go | 2321→2358 | `func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (...` |
+
+位移核对：ledgerapi.go 六行路由插入 → 其后续 +6；server.go import+1、struct+3（SetupAutomation 前共 +4）、
+SetupAutomation 体内 +2（PtyAPI/SetScheduling/SetKeystone +6）、SetKeystone 后 +31（facadeAsRegistry.Get /
+coordinatorRunner.Resume +37）。
+
+**判据反例（B228，不碰）**：`m_agentd_Server` 记 82（基实际 92，行 82 是注释）；`roomNarrator.Say` 记 2341
+（基实际 2348）；`withLedger` 记 55（基实际 54）；`handleCardAttach` 记 870（基实际 868）；cmd/agentd.go
+六节点全部记比基实际小 40。这些先于 B156.2 已失真，属 B228。
+**边界基线（协调者 543ad40f 核量，转记 B228）**：`cmd/`+`internal/agentd/`+`internal/client/` 共 852 个
+func/method 节点，328 个（38%）行号错，中位位移 16，范围 −40~+115；决定性例证 `n_agentd_Branches` 记
+workspace.go:1344（实际那行是注释，func 在 1360），workspace.go 本批从未碰过。**只修 9 条留 328−9 条，
+不会造出「图行号是准的」假象——修的是本卡自己的债，B228 全量仍错。**
+
+## L31 发现三（minor）：SetRooms/SetRebind 未入视图 → 补 nodesAdded
+
+- 改前亲测：diff nodesAdded 只有 withRooms/facadeBindAdapter.Rebind 两个 Server 缝，缺 SetRooms/SetRebind
+  （SetScheduling/SetKeystone 是 baseline 既有节点，为审阅指认的先例）。
+- 补 `n_agentd_Server_SetRooms`（server.go:2264，order 2009）与 `n_agentd_Server_SetRebind`（server.go:2267，
+  order 2010），k_agentd_Server 下，与 SetScheduling/SetKeystone 同形。行号已 sed 核（见 L30 表尾两行）。
+
+## L32 图闸与回归（改动后全量读数）
+
+- `go build ./...` BUILD_EXIT=0；`go vet ./internal/agentd/...` VET_EXIT=0；`gofmt -l internal cmd` 零输出。
+- `go test ./internal/agentd/ -count=1` → `ok github.com/Xsxdot/handoff/internal/agentd 61.400s`。
+- `graph check --repo . --view cards-B156.2-charter-4` EXIT=0、fails=0、legacyHits["d_gateway->d_ledger"]=1；
+  warns 96，按 kind：anchor-off-domain 2 / best-dangling 2 / container-misplaced 51 / legacy 34 /
+  oversized-package 2 / prefix-family 5——与本轮改动前实测（L32 前基线，同六类同数）完全一致，无一类变。
+- `graph validate --repo .` EXIT=0。
+- JSON 双判据：解析 OK；nodesAdded 40→42、nodesModified 2→11，无重复键。
+- `git diff --stat` 只含 pointer_gate_test.go、cards-B156.2-charter-4.json、台账三文件。

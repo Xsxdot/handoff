@@ -12,7 +12,7 @@
 // 判定机制（按接收者形状，协调者复核定案）：go/ast 收集全部 SelectorExpr 且
 // Sel.Name=="Pointer"；排除 X 为标识符 unsafe 的（unsafe.Pointer( 类型转换，恰 6 处：
 // internal/prochost/taskmark_darwin.go 1、platform_windows.go 5）与 X 为标识符 atomic
-// 的（atomic.Pointer[ 泛型类型实例化，另 1 处：server.go:93）——其余都是候选，按
+// 的（atomic.Pointer[ 泛型类型实例化，另 1 处：server.go:94）——其余都是候选，按
 // 所在承载形态与白名单比对。**对第三方类型上的同名 Pointer 方法本测试是过包含的**
 // ——过包含是红线的安全方向，判据要求的出口「新的正当引用显式加进白名单并写明
 // 理由」正是它的退出通道。
@@ -83,7 +83,10 @@ func TestPointerRouteAbsentFromSource(t *testing.T) {
 		}
 		f, err := parser.ParseFile(fset, path, nil, 0)
 		if err != nil {
-			return nil // 解析失败不阻断其它文件（该文件编译错误由 build 兜底）
+			// 解析失败必须当场红：守卫扫的是全仓源码，含当前平台不编译的文件
+			// （如 platform_windows.go 在 macOS 上从不进 build）——「编译错误由
+			// build 兜底」在那些文件上不成立，静默跳过会让违规 Pointer 引用漏网。
+			t.Fatalf("守卫扫描源解析失败 %s: %v", rel, err)
 		}
 		// 收集函数声明与包级 var/const 声明区间，用于把候选定位到所在承载形态
 		// （覆盖 FuncDecl / 包级 var 闭包 / 函数内匿名闭包三种形态）。
@@ -114,7 +117,7 @@ func TestPointerRouteAbsentFromSource(t *testing.T) {
 				return true
 			}
 			// 排除 unsafe.Pointer(（类型转换，恰 6 处）与 atomic.Pointer[（泛型
-			// 类型实例化，server.go:93）——X 均为裸标识符，且都是类型构造不是方法调用。
+			// 类型实例化，server.go:94）——X 均为裸标识符，且都是类型构造不是方法调用。
 			if id, ok := sel.X.(*ast.Ident); ok && (id.Name == "unsafe" || id.Name == "atomic") {
 				return true
 			}

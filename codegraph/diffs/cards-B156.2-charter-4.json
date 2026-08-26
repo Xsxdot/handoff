@@ -44,6 +44,8 @@
     "n_agentd_Server_roomUserActor": {"kind": "func", "container": "k_agentd_Server", "order": 2006, "name": "Server.roomUserActor", "file": "internal/agentd/roomsapi.go", "line": 42, "signature": "func (s *Server) roomUserActor(r *http.Request) string", "params": [], "returns": "string", "summary": "控制台成员/actor 标识（web:+hostOnly）。"},
     "n_agentd_Server_ticketDestructive": {"kind": "func", "container": "k_agentd_Server", "order": 2007, "name": "Server.ticketDestructive", "file": "internal/agentd/roomsapi.go", "line": 209, "signature": "func (s *Server) ticketDestructive(taskID, ticketID string) bool", "params": [], "returns": "bool", "summary": "破坏性工单判定：approver_decision escalate/error 事件链（D-destructive）。"},
     "n_agentd_Server_withRooms": {"kind": "func", "container": "k_agentd_Server", "order": 2008, "name": "Server.withRooms", "file": "internal/agentd/server.go", "line": 2270, "signature": "func (s *Server) withRooms(h http.HandlerFunc) http.HandlerFunc", "params": [], "returns": "http.HandlerFunc", "summary": "房间端点守卫：账本/会话未装配 503。"},
+    "n_agentd_Server_SetRooms": {"kind": "func", "container": "k_agentd_Server", "order": 2009, "name": "Server.SetRooms", "file": "internal/agentd/server.go", "line": 2264, "signature": "func (s *Server) SetRooms(svc *collab.Service)", "params": [], "returns": "", "summary": "注入协作房间服务（测试缝：整体替换 SetupAutomation 构造的实例）。"},
+    "n_agentd_Server_SetRebind": {"kind": "func", "container": "k_agentd_Server", "order": 2010, "name": "Server.SetRebind", "file": "internal/agentd/server.go", "line": 2267, "signature": "func (s *Server) SetRebind(p rebindPort)", "params": [], "returns": "", "summary": "注入换绑端口（测试缝：同 SetRooms）。"},
     "n_agentd_collabErr": {"kind": "func", "container": "k_agentd_fn", "order": 2000, "name": "collabErr", "file": "internal/agentd/roomsapi.go", "line": 26, "signature": "func collabErr(w http.ResponseWriter, err error)", "params": [], "returns": "", "summary": "collab 哨兵→HTTP 状态映射。"},
     "n_agentd_decisionTitle": {"kind": "func", "container": "k_agentd_fn", "order": 2001, "name": "decisionTitle", "file": "internal/agentd/roomsapi.go", "line": 230, "signature": "func decisionTitle(d ledger.Decision) string", "params": [], "returns": "string", "summary": "收件箱 decision 条目标题（Body 首行）。"},
     "n_agentd_ticketTitle": {"kind": "func", "container": "k_agentd_fn", "order": 2002, "name": "ticketTitle", "file": "internal/agentd/roomsapi.go", "line": 242, "signature": "func ticketTitle(tk proto.Ticket) string", "params": [], "returns": "string", "summary": "收件箱 ticket 条目标题（gate/ask）。"},
@@ -256,6 +258,147 @@
           "绑定者活性租约"
         ]
       ]
+    },
+    "n_agentd_Server_handleCardsList": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 152,
+      "name": "Server.handleCardsList",
+      "file": "internal/agentd/ledgerapi.go",
+      "line": 171,
+      "signature": "func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request)"
+    },
+    "n_agentd_ledgerCardViewWire": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 129,
+      "name": "ledgerCardViewWire",
+      "file": "internal/agentd/ledgerapi.go",
+      "line": 148,
+      "signature": "func ledgerCardViewWire(view ledger.CardView, conflict bool, openTickets int) proto.CardView",
+      "returns": "proto.CardView"
+    },
+    "n_agentd_ledgerDecisionWire": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 144,
+      "name": "ledgerDecisionWire",
+      "file": "internal/agentd/ledgerapi.go",
+      "line": 163,
+      "signature": "func ledgerDecisionWire(decision ledger.Decision) proto.Decision",
+      "returns": "proto.Decision"
+    },
+    "n_agentd_Server_SetupAutomation": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 60,
+      "name": "Server.SetupAutomation",
+      "file": "internal/agentd/server.go",
+      "line": 2240,
+      "signature": "func (s *Server) SetupAutomation(st *ledger.Store)",
+      "params": [
+        [
+          "st",
+          "*ledger.Store",
+          "cmd 侧打开的账本库"
+        ]
+      ],
+      "returns": "",
+      "summary": "装配自动化层：构造账本门面与两域服务、绑定各出站端口；绑定代码只允许出现在 target.json assembly 登记文件"
+    },
+    "n_agentd_Server_PtyAPI": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 61,
+      "name": "Server.PtyAPI",
+      "file": "internal/agentd/server.go",
+      "line": 2255,
+      "signature": "func (s *Server) PtyAPI() *ptyapi.Host",
+      "params": [],
+      "returns": "*ptyapi.Host",
+      "summary": "返回终端 PTY 薄门面；宿主未装配时返回 nil"
+    },
+    "n_agentd_Server_SetScheduling": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 62,
+      "name": "Server.SetScheduling",
+      "file": "internal/agentd/server.go",
+      "line": 2258,
+      "signature": "func (s *Server) SetScheduling(svc *scheduling.Service)",
+      "params": [
+        [
+          "svc",
+          "*scheduling.Service",
+          "编制域服务实例"
+        ]
+      ],
+      "returns": "",
+      "summary": "注入编制域服务（测试缝：整体替换单测构造的实例）"
+    },
+    "n_agentd_Server_SetKeystone": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 63,
+      "name": "Server.SetKeystone",
+      "file": "internal/agentd/server.go",
+      "line": 2261,
+      "signature": "func (s *Server) SetKeystone(svc *keystone.Service)",
+      "params": [
+        [
+          "svc",
+          "*keystone.Service",
+          "keystone 域服务实例"
+        ]
+      ],
+      "returns": "",
+      "summary": "注入 keystone 域服务（测试缝）"
+    },
+    "n_agentd_facadeAsRegistry_Get": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 700,
+      "name": "facadeAsRegistry.Get",
+      "file": "internal/agentd/server.go",
+      "line": 2311,
+      "signature": "func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error)",
+      "params": [
+        [
+          "kind",
+          "string",
+          "注册表种类"
+        ],
+        [
+          "id",
+          "string",
+          "实体 id"
+        ]
+      ],
+      "returns": "schedclient.Record, error",
+      "summary": "把账本门面适配成编制域持久化端口（错误哨兵按 schedclient 契约翻译）"
+    },
+    "n_agentd_coordinatorRunner_Resume": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 701,
+      "name": "coordinatorRunner.Resume",
+      "file": "internal/agentd/server.go",
+      "line": 2358,
+      "signature": "func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error)",
+      "params": [
+        [
+          "ref",
+          "keysclient.SessionRef",
+          "会话引用"
+        ],
+        [
+          "prompt",
+          "string",
+          "本回合输入"
+        ]
+      ],
+      "returns": "keysclient.TurnResult, error",
+      "summary": "把进程承载门面适配成 keystone 会话承载缝（resume 半边；直通镜像转发 hostapi.RunTurn）"
     }
   },
   "implementsAdded": []
