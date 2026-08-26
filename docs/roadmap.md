@@ -460,3 +460,21 @@
   执行者隔离层 = **B247**。
 - **（已修，留痕）** `skills/handoff/SKILL.md` 排障表原写「驱动权泄漏 CLI 侧今天无解」，
   B239 后 `card takeover` 已可用、`card release` 也不再是静默 no-op，本轮实测确认并改正。
+
+## 来自 B156.2 integrate（2026-08-26，集成阶段跨卡缺口——扇出时无人被指派的格子）
+
+取证口径：`git grep -nE "(^|[^A-Za-z0-9_.])<符号>\(|\.<符号>\(" 82b49cb26 -- '*.go'`，生产侧滤
+_test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 事件流 10:11–10:31 与 11:17 四条
+协调者实测 note。本期不处理，逐条待归属：
+
+- **@提及进收件箱后永远清不掉**：`collab.Service.Mentions` 源写入收件箱后无消费路径——
+  `Consume`/`Pending`/`Unread` 三法生产命中全 0（测试 10/3/10）。根因：恰好一次的消费面只
+  覆盖了决策源，提及源没人领。形态危险点：只报「有/无消费方」时它与「有消费方」长得一样。
+- **`driver_carrier` 在 wire 上无载体**：澄清一要求房间面原样展示 carrier，但
+  `proto.RoomSummary`/`InboxItem` 均无该字段——carrier 只活在账本 SQL 与 CLI。冻结的展示
+  义务没有传输载体，控制台拿不到。需一次契约补字段（小卡量级）。
+- **`RoomSummary.Live` 生产恒 false**：无心跳写入路径，`live` 从第一刻起对每个房间永远
+  为 false——不是「5 分钟后翻 false」，是恒假。要么接心跳，要么改字段语义，不能留着误导。
+- **租约三法零生产消费方且不属三期**：`RenewDriverLease`/`DropDriverLease`/`AllDriverLeases`
+  生产命中全 0（测试 9/2/2）；已核 B156.3 的 contract/breakdown 两文档 grep 零命中、K4 有界
+  文件集不含——不是「等三期」，是无人认领。要么补消费方，要么删除。
