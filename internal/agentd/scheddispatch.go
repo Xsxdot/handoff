@@ -3,8 +3,9 @@
 // 职责：
 //   - Override.Squad 非空的节点，先把本次一次性覆盖交给编制域 Admit，用 Binding
 //     的有效三元组接管本次派发的目标机/执行者/模型（契约 §5 解析层形态）
-//   - 满员（ErrNoSlot）转 Enqueue 持久排队，本轮以排队形态结束：不起 runner、
-//     不产生 task、不留痕失败
+//   - 满员（ErrNoSlot）或准入重试预算耗尽（ErrRetryExhausted，瞬态争用）转
+//     Enqueue 持久排队，本轮以排队形态结束：不起 runner、不产生 task、不留痕
+//     失败（后者必须先落 WARN 标记词，预算耗尽信号不许静默吞掉）
 //   - 其余错误（ErrNoHealthy/角色不符/未装配等）上浮为受理失败，与排队静默可区分
 //
 // 边界：
@@ -40,7 +41,8 @@ const (
 // 请求已在 ignition_queue 持久排队；error 为受理失败，调用方应释放卡槽位并上浮。
 //
 // 注意：ErrNoHealthy/ErrNotFound/ErrRoleMismatch 都经 %w 包装上浮，调用方继续用
-// errors.Is 分流；本函数自己只消化 ErrNoSlot（转排队）。Ready 快照恒 true 的
+// errors.Is 分流；本函数自己消化 ErrNoSlot 与 ErrRetryExhausted（都转排队，收敛
+// 在同一个 Enqueue 调用点；预算耗尽先落 WARN 标记词）。Ready 快照恒 true 的
 // 取值决策见 plan §D4。
 func (s *Server) admitSquadStep(cardID string, req proto.CardStepReq, node ledger.NodeDef) (scheduling.Binding, squadDispatchOutcome, error) {
 	if s.scheduling == nil {
@@ -70,7 +72,16 @@ func (s *Server) admitSquadStep(cardID string, req proto.CardStepReq, node ledge
 			"executor", binding.Executor, "model", binding.Model)
 		return binding, squadDispatchAdmitted, nil
 	}
-	if errors.Is(err, scheduling.ErrNoSlot) {
+	if errors.Is(err, scheduling.ErrNoSlot) || errors.Is(err, scheduling.ErrRetryExhausted) {
+		if errors.Is(err, scheduling.ErrRetryExhausted) {
+			// 预算耗尽是瞬态争用（请求合法、容量可能存在），停去等人是错的：
+			// 与满员同处置转排队；但它是真实信号，WARN 落痕不许吞（协调者裁决
+			// 2026-08-26）。载体身份在 cause 的计数键里（carrier/<名>）——失败时
+			// Binding 为零值，公开面本轮冻结加不了离散载体字段。
+			s.log.Warn("准入重试预算耗尽，按满员转排队", "card", cardID,
+				"node", node.Name, "squad", node.Override.Squad, "actor", req.Actor,
+				"cause", err)
+		}
 		position, enqErr := s.scheduling.Enqueue(ireq, scheduling.KindIgnitionQueue)
 		if enqErr != nil {
 			return scheduling.Binding{}, 0, fmt.Errorf("满员转排队失败: %w", enqErr)

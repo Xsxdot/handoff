@@ -2296,6 +2296,9 @@ func (a facadeAsRegistry) Delete(kind, id string, expectVersion int, actor strin
 	return translateRegistryErr(a.f.Delete(kind, id, expectVersion, actor))
 }
 
+// translateRegistryErr 把账本门面的错误翻译成 schedclient 契约哨兵（NotFound/
+// CASConflict）。代价声明（拍板记录，2026-08-26）：哨兵替换会丢底层报文，
+// 诊断信息由调用方日志补。
 func translateRegistryErr(err error) error {
 	switch {
 	case errors.Is(err, ledger.ErrNotFound):

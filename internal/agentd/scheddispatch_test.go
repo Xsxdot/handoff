@@ -17,7 +17,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
+	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/discipline"
@@ -25,6 +27,7 @@ import (
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
@@ -281,6 +284,79 @@ func TestSquadNodeRejectsAreDistinctFromQueueing(t *testing.T) {
 			t.Fatalf("want ErrRoleMismatch 上浮，实得 %v", err)
 		}
 	})
+}
+
+// ---- 修复轮（charter-3）：准入重试预算耗尽与满员同处置转排队 + WARN 落痕 ----
+
+// casConflictOnRunning 把 sched_running 的写全部打成 CAS 冲突的替身注册表，
+// 其余读写原样透传生产同款适配器。Admit 的计数 CAS 因此连续冲突直至预算耗尽
+// ——用替身注入构造 ErrRetryExhausted（协调者裁决：可用替身，不必真打并发）。
+type casConflictOnRunning struct{ inner schedclient.Registry }
+
+func (r casConflictOnRunning) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
+	if kind == "sched_running" {
+		return 0, schedclient.ErrCASConflict
+	}
+	return r.inner.Put(kind, id, expectVersion, body, actor)
+}
+
+func (r casConflictOnRunning) Get(kind, id string) (schedclient.Record, error) {
+	return r.inner.Get(kind, id)
+}
+
+func (r casConflictOnRunning) List(kind string) ([]schedclient.Record, error) {
+	return r.inner.List(kind)
+}
+
+func (r casConflictOnRunning) Delete(kind, id string, expectVersion int, actor string) error {
+	return r.inner.Delete(kind, id, expectVersion, actor)
+}
+
+// TestSquadAdmitBudgetExhaustedQueuesWithWarn 锁修复轮裁决：Admit 返回
+// ErrRetryExhausted（瞬态争用，不是「没容量」）时与满员同处置——转 Enqueue、
+// 本轮以排队形态结束；且必须先落一条 WARN 标记词「准入重试预算耗尽，按满员
+// 转排队」，预算耗尽这个真实信号不许被吞。强制正控：去掉该分流分支本测试必翻红。
+func TestSquadAdmitBudgetExhaustedQueuesWithWarn(t *testing.T) {
+	env, _ := setupSquadEnv(t, 2)
+	// 整体替换编制域服务（既有测试缝 SetScheduling）：内层用生产适配器，
+	// 只有计数写恒冲突——载体/小队登记已在替换前经真实服务落库。
+	env.srv.SetScheduling(scheduling.New(casConflictOnRunning{
+		inner: facadeAsRegistry{f: env.srv.autoLedger}}))
+	cardID := seedSquadFlow(t, env, "sq1", 1)[0]
+
+	var logs strings.Builder
+	prevLog := env.srv.log
+	env.srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { env.srv.log = prevLog })
+
+	queued := make(chan struct{}, 1)
+	env.srv.runStepFn = func(context.Context, *ledgerstep.StepRunner, string, string) {
+		queued <- struct{}{} // 排队形态不得走到这里
+	}
+	before := countCardEvents(t, env.ledger, cardID)
+	if err := env.srv.startCardStep(cardID, proto.CardStepReq{
+		Step: "implement", Actor: "web:test"}); err != nil {
+		t.Fatalf("预算耗尽应与满员同处置静默排队（返回 nil），实得 %v", err)
+	}
+	select {
+	case <-queued:
+		t.Fatal("预算耗尽的排队形态起了 runner——违反「本轮以排队形态结束」")
+	default:
+	}
+	if after := countCardEvents(t, env.ledger, cardID); after != before {
+		t.Fatalf("排队留痕：卡事件数 %d→%d，want 零新增", before, after)
+	}
+	facade := env.srv.autoLedger
+	if got := runningCountIn(t, facade, "carrier/c1"); got != 0 {
+		t.Fatalf("计数 CAS 恒冲突下不该有成功准入：carrier/c1=%d，want 0", got)
+	}
+	if _, err := facade.Get(scheduling.KindIgnitionQueue, cardID+"|implement"); err != nil {
+		t.Fatalf("队列行不存在，排队没有真正发生: %v", err)
+	}
+	out := logs.String()
+	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "准入重试预算耗尽，按满员转排队") {
+		t.Fatalf("缺 WARN 落痕（级别或标记词缺失），日志原文：\n%s", out)
+	}
 }
 
 // ---- Task D：反面断言（存量直绑逐字节不变 + 调度侧零痕迹）----
