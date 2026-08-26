@@ -108,6 +108,14 @@ var (
 	// ErrRetryExhausted 表示运行计数的 CAS 连续冲突超出重试预算。它与 ErrNoSlot
 	// 的分流是并发验收的排查序：先预算后语义（岔口三附加约束，plan §D5.3）。
 	ErrRetryExhausted = errors.New("scheduling: 运行计数连续冲突")
+
+	// ErrInvalid 表示登记输入未过校验（名字缺失、凭据来源词表外、角色词表外、
+	// 成员引用不存在）。gateway 据此把用户输入错（400）与 registry 故障（500）
+	// 分流；哨兵住 scheduling 包——校验规则与词表常量都在本包（B156.3 K3）。
+	// 注：本轮白名单只允许声明哨兵，PutCarrier/PutSquad 校验行的 %w 包装点
+	// 仍裸返回（包装归后续持这些函数的卡），gateway 现以边界预检 + ErrNotFound
+	// 包装链分类，见 internal/agentd/schedapi.go 头注。
+	ErrInvalid = errors.New("scheduling: 登记校验未过")
 )
 
 // Service 是编制域的规则引擎本体。全部状态经 Registry 持久（agentd 重启

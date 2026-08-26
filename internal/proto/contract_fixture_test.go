@@ -134,6 +134,30 @@ func TestContractFixtures(t *testing.T) {
 			Produces: &NodeOutput{Kind: "doc", Path: "docs/superpowers/plans/b201-plan.md"},
 		}},
 		{"FlowDetail", FlowDetail{Name: "triage", Version: 1, Nodes: []NodeDef{{Name: "待办", Next: "定性中"}, {Name: "定性中", Next: "已定性"}, {Name: "已定性"}}, States: []string{"待办", "定性中", "已定性"}}},
+		// 编制域 wire 面（B156.3 K3）：样本刻意踩 omitempty 边界——载体 Model=""
+		// 缺席、小队 max_concurrency=0 缺席、载体 max_concurrency=2 在场、
+		// QueueEntry 的 Ready=false 显式在场（「字段缺失 vs 值为零」可分辨）。
+		{"SquadsResp", SquadsResp{
+			Carriers: []CarrierView{{
+				Name: "mac-01-opencode", Machine: "mac-01", CLI: "opencode",
+				HomeDir: "/Users/dev/.handoff/homes/opencode", Model: "",
+				Credential: "standalone", MaxConcurrency: 2, Healthy: true, Version: 1,
+			}},
+			Squads: []SquadView{{
+				Name: "coord", Role: "coordinator",
+				Members: []string{"mac-01-opencode"}, MaxConcurrency: 0, Version: 3,
+			}},
+		}},
+		{"QueueResp", QueueResp{Queue: []QueueEntry{{
+			Kind: "ignition_queue", ID: "B242|implement", Card: "B242", Node: "implement",
+			Squad: "exec", Target: "", Executor: "", Model: "",
+			Priority: "高", Ready: false, Actor: "cli:u@h",
+			Seq: 7, Position: 1,
+		}}}},
+		{"CoordinatorLaunchResp", CoordinatorLaunchResp{
+			Woke: true, SessionID: "sess-01HX", Rebuilt: false, Escalated: false,
+			Output: "开场评估完成",
+		}},
 	}
 
 	dir := fixtureDir(t)
