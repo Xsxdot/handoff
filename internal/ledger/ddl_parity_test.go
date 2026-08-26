@@ -5,8 +5,10 @@
 // 本测试当场翻红——而不是等真 PG 在生产建表时才炸；Task A 的 PG 腿无 DSN 时
 // skip 恒绿，盖不住这个缺口，本测试无条件跑。
 //
-// 边界：判据是「CREATE TABLE 集合相等」而不是点名某张表——以后任何人在任一
-// 方言块加表漏掉另一块都会红，判据本身不用跟着改；也不用行号当判据（行号会漂）。
+// 边界：判据是「CREATE TABLE 多重集相等」（排序后逐元素等值，重数计入）而不是
+// 点名某张表——以后任何人在任一方言块加表漏掉另一块都会红，判据本身不用跟着改；
+// 只比集合挡不住同一张表在同一支内重复登记（审阅轮实测该变异存活：集合相等而
+// 重数不等），故必须逐元素比对而非包含式差集；也不用行号当判据（行号会漂）。
 // 索引与种子 INSERT 不进判据：表缺席会让它们当场失败，危害面小于表缺席且不属
 // 本卡范围。
 package ledger
@@ -39,18 +41,14 @@ func TestDDLDialectParity(t *testing.T) {
 		t.Fatalf("表名解析空结果: pg=%d sqlite=%d——createTableName 正则或 DDL 形态已变，对等检失效", len(pg), len(sqlite))
 	}
 
-	var onlyPG, onlySQLite []string
-	for _, name := range pg {
-		if !slices.Contains(sqlite, name) {
-			onlyPG = append(onlyPG, name)
-		}
-	}
-	for _, name := range sqlite {
-		if !slices.Contains(pg, name) {
-			onlySQLite = append(onlySQLite, name)
-		}
-	}
-	if len(onlyPG) > 0 || len(onlySQLite) > 0 {
-		t.Fatalf("两方言建表集合不等:\n只在 PG 有: %v\n只在 SQLite 有: %v", onlyPG, onlySQLite)
+	// 重数判据：排序后逐元素等值（多重集相等）。防「少了」用包含式差集够，
+	// 防「多了 / 重复了」只能逐元素等值或计数——集合相等而重数不等的变异
+	// （同一支重复登记一张表）在纯集合判据下存活，这里把它钉死成红。
+	pgSorted := slices.Clone(pg)
+	sqliteSorted := slices.Clone(sqlite)
+	slices.Sort(pgSorted)
+	slices.Sort(sqliteSorted)
+	if !slices.Equal(pgSorted, sqliteSorted) {
+		t.Fatalf("两方言建表多重集不等（重数计入判据，排序后逐元素比对）:\nPG 排序后: %v\nSQLite 排序后: %v", pgSorted, sqliteSorted)
 	}
 }

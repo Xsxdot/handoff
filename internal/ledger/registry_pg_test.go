@@ -52,6 +52,57 @@ func TestSQLiteRegistryCASAndSeq(t *testing.T) {
 	assertRegistrySemantics(t, s)
 }
 
+// TestSQLiteRegistryPutLostUpdateGuard 锁 Put 更新路径的最后一道防线：UPDATE
+// 带 version 谓词却匹配 0 行（SELECT 与 UPDATE 之间行被并发改走）时必须报
+// ErrCASConflict 而非静默假成功。判据体②的冲突都开火在更早的版本比对上，
+// 到不了这个分支——审阅轮（B156.3.7）指出该守卫此前无机内防线，本测试补上。
+//
+// 机内确定性构造法：BEFORE UPDATE 触发器在更新落格前把该行删掉——WHERE 已按
+// SELECT 看到的版本匹配，触发器删行使实际改动归零，RowsAffected==0 分支被真实
+// 踩中（探针实测：守卫开火报「并发修改」，回滚后行原样保留）。这等价于并发
+// 事务在窗口期删走行的结局，只是把竞态窗口换成引擎保证的确定时点。PG 方言无法
+// 移植本构造（同表 BEFORE 触发器删自身行的行为不同型），PG 侧同型守卫的真机
+// 验证归真机清单第 4 条。
+func TestSQLiteRegistryPutLostUpdateGuard(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if err != nil {
+		t.Fatalf("打开临时 SQLite 账本: %v", err)
+	}
+	t.Cleanup(func() { s.Close() })
+
+	v, err := s.RegistryPut(registrySmokeKind, "lost-1", 0, []byte(`{"n":1}`), "smoke")
+	if err != nil || v != 1 {
+		t.Fatalf("播种 lost-1: v=%d err=%v", v, err)
+	}
+
+	const trig = `zz_putguard_lost_update`
+	if _, err := s.db.Exec(`CREATE TRIGGER ` + trig + ` BEFORE UPDATE ON registry
+		FOR EACH ROW WHEN NEW.version = OLD.version + 1
+		BEGIN DELETE FROM registry WHERE kind = OLD.kind AND id = OLD.id AND version = OLD.version; END`); err != nil {
+		t.Fatalf("建丢失更新触发器: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := s.db.Exec(`DROP TRIGGER IF EXISTS ` + trig); err != nil {
+			t.Errorf("拆触发器: %v", err)
+		}
+	})
+
+	if _, err := s.RegistryPut(registrySmokeKind, "lost-1", 1, []byte(`{"n":2}`), "smoke"); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("RowsAffected==0 守卫应报 ErrCASConflict，得 %v", err)
+	}
+
+	// 冲突不写入：mutate 整体回滚连触发器的 DELETE 一并撤销——行必须原样还在，
+	// 版本与 body 都不动。若守卫被摘除，Put 会假成功且行真的被改写。
+	back, err := s.RegistryGet(registrySmokeKind, "lost-1")
+	if err != nil {
+		t.Fatalf("冲突后读回: %v", err)
+	}
+	if back.Version != 1 {
+		t.Fatalf("冲突后版本应仍为 1，得 %d", back.Version)
+	}
+	assertSameJSON(t, "lost-1 body 不变", []byte(`{"n":1}`), back.Body)
+}
+
 // assertRegistrySemantics 双方言共用的判据体。断言编号①–⑨与 plan §5 的
 // 验收映射表一一对应；seq 断言一律用相对比较（共享库上绝对前值不定）。
 func assertRegistrySemantics(t *testing.T, s *Store) {
