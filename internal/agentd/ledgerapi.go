@@ -46,6 +46,12 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/flows/{name}", s.withLedger(s.handleFlowGet))
 	api.HandleFunc("PUT /api/flows/{name}", s.withLedger(s.handleFlowPut))
 	api.HandleFunc("GET /api/disciplines", s.withLedger(s.handleDisciplineNames))
+	api.HandleFunc("GET /api/rooms", s.withRooms(s.handleRoomsList))
+	api.HandleFunc("GET /api/rooms/{id}/messages", s.withRooms(s.handleRoomMessages))
+	api.HandleFunc("POST /api/rooms/{id}/messages", s.withRooms(s.handleRoomSend))
+	api.HandleFunc("POST /api/rooms/{id}/read", s.withRooms(s.handleRoomRead))
+	api.HandleFunc("GET /api/inbox", s.withRooms(s.handleInbox))
+	api.HandleFunc("POST /api/cards/{id}/rebind", s.withRooms(s.handleCardRebind))
 	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
 	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
 	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)
