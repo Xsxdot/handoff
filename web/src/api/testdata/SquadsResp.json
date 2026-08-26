@@ -1,0 +1,24 @@
+{
+  "carriers": [
+    {
+      "name": "mac-01-opencode",
+      "machine": "mac-01",
+      "cli": "opencode",
+      "home_dir": "/Users/dev/.handoff/homes/opencode",
+      "credential": "standalone",
+      "max_concurrency": 2,
+      "healthy": true,
+      "version": 1
+    }
+  ],
+  "squads": [
+    {
+      "name": "coord",
+      "role": "coordinator",
+      "members": [
+        "mac-01-opencode"
+      ],
+      "version": 3
+    }
+  ]
+}

@@ -542,6 +542,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
 	api.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	s.registerLedgerRoutes(api)
+	s.registerSchedulingRoutes(api)
 
 	// 控制台静态资源兜底：一切未被更精确模式匹配的路径都到这里。
 	//

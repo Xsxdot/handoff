@@ -108,6 +108,13 @@ var (
 	// ErrRetryExhausted 表示运行计数的 CAS 连续冲突超出重试预算。它与 ErrNoSlot
 	// 的分流是并发验收的排查序：先预算后语义（岔口三附加约束，plan §D5.3）。
 	ErrRetryExhausted = errors.New("scheduling: 运行计数连续冲突")
+
+	// ErrInvalid 表示登记输入未过校验（名字缺失、凭据来源词表外、角色词表外、
+	// 成员引用不存在）。gateway 据此把用户输入错（400）与 registry 故障（500）
+	// 分流；哨兵住 scheduling 包——校验规则与词表常量都在本包（B156.3 K3）。
+	// PutCarrier/PutSquad 的四处校验 return 均以 %w 包它（B156.3.3 修复轮
+	// Major-3 + 协调者白名单扩容：plan §D4 原文本就如此）。
+	ErrInvalid = errors.New("scheduling: 登记校验未过")
 )
 
 // Service 是编制域的规则引擎本体。全部状态经 Registry 持久（agentd 重启
@@ -123,10 +130,10 @@ func New(repo schedclient.Registry) *Service { return &Service{repo: repo} }
 // 本期没有探测手段，「未探测」不得表现为「不健康」把载体饿死。
 func (s *Service) PutCarrier(c Carrier, expect int) error {
 	if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Machine) == "" || strings.TrimSpace(c.CLI) == "" {
-		return fmt.Errorf("载体登记不完整：name/machine/cli 必填")
+		return fmt.Errorf("%w: 载体登记不完整：name/machine/cli 必填", ErrInvalid)
 	}
 	if c.Credential != CredentialStandalone && c.Credential != CredentialMainHomeSync {
-		return fmt.Errorf("载体 %s 的凭据来源只能是 standalone 或 main_home_sync", c.Name)
+		return fmt.Errorf("%w: 载体 %s 的凭据来源只能是 standalone 或 main_home_sync", ErrInvalid, c.Name)
 	}
 	if !c.Healthy {
 		c.Healthy = true
@@ -159,10 +166,10 @@ func (s *Service) Carriers() ([]Carrier, error) {
 // PutSquad 以 CAS 写小队定义（expect=0 新建）。成员引用必须指向已存在的载体。
 func (s *Service) PutSquad(q Squad, expect int) error {
 	if strings.TrimSpace(q.Name) == "" {
-		return fmt.Errorf("小队名不能为空")
+		return fmt.Errorf("%w: 小队名不能为空", ErrInvalid)
 	}
 	if q.Role != RoleExecutor && q.Role != RoleCoordinator {
-		return fmt.Errorf("小队 %s 角色只能是 executor 或 coordinator", q.Name)
+		return fmt.Errorf("%w: 小队 %s 角色只能是 executor 或 coordinator", ErrInvalid, q.Name)
 	}
 	for _, m := range q.Members {
 		if _, err := s.Carrier(m); err != nil {
