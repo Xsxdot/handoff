@@ -7,6 +7,7 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"os"
 	"strings"
 	"text/tabwriter"
@@ -19,6 +20,7 @@ var cardCmd = &cobra.Command{Use: "card", Short: "任务卡账本（工作项的
 
 var (
 	cardAddProject, cardAddPriority, cardAddParent, cardAddWorkflow, cardAddBase string
+	cardAddCoordinate                                                            bool
 	cardListStatus, cardListProject, cardListBase                                string
 	cardListBlocked, cardListNeeds, cardListJSON, cardListAll                    bool
 	cardMoveExpect                                                               string
@@ -43,6 +45,16 @@ var cardAddCmd = &cobra.Command{
 		})
 		if err != nil {
 			return fmt.Errorf("建卡: %w", err)
+		}
+		// 开卡即绑（spec §5.1 入口 1）：拉起失败不阻断建卡（见 card_coordinate.go 文件头）。
+		if cardAddCoordinate {
+			if err := coordinateAfterCreate(cmd, card.ID); err != nil {
+				slog.Default().Warn("开卡即绑拉起失败（卡已创建，可稍后控制台一键拉起）",
+					"card", card.ID, "cause", err)
+				fmt.Fprintf(cmd.ErrOrStderr(),
+					"注意：协调者拉起失败（%v）——卡 %s 已创建，可稍后从控制台或 card coordinate 拉起\n",
+					err, card.ID)
+			}
 		}
 		return printCardJSON(cmd, card)
 	},
@@ -480,6 +492,7 @@ func init() {
 	cardAddCmd.Flags().StringVar(&cardAddParent, "parent", "", "父卡 id（建子卡）")
 	cardAddCmd.Flags().StringVar(&cardAddWorkflow, "workflow", "", "工作流名（空=账本唯一流自动解析）")
 	cardAddCmd.Flags().StringVar(&cardAddBase, "base-branch", "", "基线分支（空=继承/主线）")
+	cardAddCmd.Flags().BoolVar(&cardAddCoordinate, "coordinate", false, "开卡即绑：创建成功后拉起并绑定协调者")
 	_ = cardAddCmd.MarkFlagRequired("project")
 
 	cardListCmd.Flags().StringVar(&cardListProject, "project", "", "按项目过滤")
