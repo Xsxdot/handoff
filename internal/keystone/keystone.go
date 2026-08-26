@@ -96,14 +96,15 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent) (Round
 	ref, ok := s.sessions[card]
 	prompt := s.briefing(card, evs)
 	if !ok {
-		return s.launchRound(card, prompt)
+		return s.launchRound(card, prompt, keysclient.SessionSpec{})
 	}
 	result, err := s.runner.Resume(ref, prompt)
 	if err == nil {
 		return RoundResult{Woke: true, SessionID: result.SessionID, Output: result.Output}, nil
 	}
 	// resume 失败：换载体承接同一协调者身份，房间落「载体已更换」指针。
-	rebuilt, launchErr := s.launchRound(card, prompt)
+	// 重建 spec 保留原会话的 CLI（其余字段此刻不可得，由 K5 唤醒重建路径补齐）。
+	rebuilt, launchErr := s.launchRound(card, prompt, keysclient.SessionSpec{CLI: ref.CLI})
 	if launchErr != nil {
 		_ = s.ledger.MarkNeedsHuman(card, "协调者唤醒失败：resume 与重建均不可用", "keystone")
 		return zero, fmt.Errorf("resume: %v; 重建: %w", err, launchErr)
@@ -115,7 +116,7 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent) (Round
 // LaunchForCard 拉起一张卡的协调者并绑定。source 记录拉起来源（card_create =
 // 开卡即绑；manual = 卡上一键拉起），两入口共用同一实现（spec §5.1）。
 func (s *Service) LaunchForCard(ctx context.Context, card, source string, spec keysclient.SessionSpec) (RoundResult, error) {
-	result, err := s.launchRound(card, "")
+	result, err := s.launchRound(card, "", spec)
 	if err != nil {
 		return RoundResult{}, fmt.Errorf("拉起协调者（来源 %s）失败: %w", source, err)
 	}
@@ -154,10 +155,11 @@ func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error) {
 	return s.locator.Locate(ref, workdir)
 }
 
-// launchRound 用新载体承接同一协调者身份并绑定。重建四步的输入由开场简报
-// 携带：读卡 → 会话史（账本事件流）→ timeline → 仓内文档指针。
-func (s *Service) launchRound(card, extra string) (RoundResult, error) {
-	spec := keysclient.SessionSpec{Workdir: ""}
+// launchRound 用新载体承接同一协调者身份并绑定。spec 由组装点解析后传入
+// （协调者小队 → LaunchAdmit → Binding → Carrier 读 HomeDir，契约 §15 澄清 2），
+// 不再自造空 spec——骨架期忽略入参的欠账已补齐，防空 spec 回潮。重建四步的
+// 输入由开场简报携带：读卡 → 会话史（账本事件流）→ timeline → 仓内文档指针。
+func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec) (RoundResult, error) {
 	if s.narrator != nil {
 		_ = s.narrator.Say(card, "载体已更换：新载体承接同一协调者身份（重建四步已执行）")
 	}
