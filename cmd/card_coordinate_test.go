@@ -61,3 +61,70 @@ func TestCardCoordinateSurfacesSquadCreatePointer(t *testing.T) {
 		t.Fatalf("400 指路文案必须透传到操作者，得 %v stderr=%s", err, errOut)
 	}
 }
+
+// ---- B156.3 K4：card add --coordinate 开卡即绑（launch 端点已由 K4 落地）----
+
+// TE-4：开卡即绑主路径——card add --coordinate 建卡成功后恰触发一次
+// source=card_create 的拉起；stdout 仍是单行卡 JSON（建卡是命令的主产出）。
+func TestCardAddCoordinateTriggersCardCreateLaunch(t *testing.T) {
+	dir := t.TempDir()
+	var launches int
+	var gotPath, gotBody string
+	stubSquadAgentd(t, dir, http.StatusOK,
+		`{"woke":true,"session_id":"s1","rebuilt":true,"escalated":false,"output":"ok"}`,
+		func(r *http.Request, body string) {
+			if strings.Contains(r.URL.Path, "/coordinator/launch") {
+				launches++
+				gotPath, gotBody = r.URL.Path, body
+			}
+		})
+	out, errOut, err := runLedgerCLI(t, dir, "card", "add", "标题", "--project", "demo", "--coordinate")
+	if err != nil {
+		t.Fatalf("card add --coordinate 应成功: %v（stderr=%q）", err, errOut)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &created); err != nil || created.ID == "" {
+		t.Fatalf("stdout 应单行卡 JSON: %q err=%v", out, err)
+	}
+	if launches != 1 {
+		t.Fatalf("开卡即绑应恰触发一次拉起，实际 %d", launches)
+	}
+	if gotPath != "/api/cards/"+created.ID+"/coordinator/launch" {
+		t.Fatalf("拉起路径不符: %s", gotPath)
+	}
+	if !strings.Contains(gotBody, "card_create") {
+		t.Fatalf("source=card_create 未携带: %s", gotBody)
+	}
+}
+
+// TE-5：拉起失败不阻断建卡——卡已创建（防重跑 add 造重复卡），stderr 出声
+// 可行动提示，命令仍成功退出。
+func TestCardAddCoordinateLaunchFailureDegrades(t *testing.T) {
+	dir := t.TempDir()
+	var launches int
+	stubSquadAgentd(t, dir, http.StatusBadRequest,
+		`{"error":"未登记协调者小队：handoff squad create ..."}`,
+		func(r *http.Request, body string) {
+			if strings.Contains(r.URL.Path, "/coordinator/launch") {
+				launches++
+			}
+		})
+	out, errOut, err := runLedgerCLI(t, dir, "card", "add", "标题", "--project", "demo", "--coordinate")
+	if err != nil {
+		t.Fatalf("拉起失败不应阻断建卡: %v", err)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &created); err != nil || created.ID == "" {
+		t.Fatalf("卡应已创建: %q err=%v", out, err)
+	}
+	if launches != 1 {
+		t.Fatalf("应尝试恰一次拉起，实际 %d", launches)
+	}
+	if !strings.Contains(errOut, "协调者拉起失败") {
+		t.Fatalf("stderr 应出声拉起失败提示: %q", errOut)
+	}
+}
