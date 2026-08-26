@@ -53,6 +53,9 @@ import { SettingsPage } from '../settings/SettingsPage'
 import { CodegraphFrame } from '../codegraph/CodegraphFrame'
 import { CardsPage } from '../cards/CardsPage'
 import { FlowsPage } from '../flows/FlowsPage'
+import { InboxPage } from '../rooms/InboxPage'
+import { RoomDetailPage } from '../rooms/RoomDetailPage'
+import { RoomsListPage } from '../rooms/RoomsListPage'
 import { needsAttention } from '../cards/columns'
 import { UpdateToasts } from '../update/UpdateToasts'
 import { Breadcrumb } from './Breadcrumb'
@@ -388,7 +391,7 @@ export function Shell() {
   // 于是点了目录再点「工作项」，中央换成了看板、右边那棵文件树却一直挂着，
   // 面包屑也还写着上一个目录（2026-08-19 真机看到）。它们是工作台的一部分，
   // 不属于这些整页。左栏导航树不在此列——它是导航，任何页面都该在。
-  const fullPageRoute = ['/cards', '/flows', '/settings', '/machines', '/codegraph']
+  const fullPageRoute = ['/cards', '/flows', '/rooms', '/inbox', '/settings', '/machines', '/codegraph']
     .some((path) => location.pathname.startsWith(path))
 
   // selectDir 是「点一个目录」的唯一实现：换回工作台 + 选中。
@@ -453,6 +456,8 @@ export function Shell() {
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
             onOpenFlows={() => navigate('/flows')}
+            onOpenRooms={() => navigate('/rooms')}
+            onOpenInbox={() => navigate('/inbox')}
             ledgerEnabled={ledgerEnabled}
             cardNeedsCount={cardNeedsCount}
             unlinkedCount={unlinkedTaskIds?.size ?? 0}
@@ -482,6 +487,10 @@ export function Shell() {
               <>
                 <Route path="/cards" element={<CardsPage />} />
                 <Route path="/flows" element={<FlowsPage />} />
+                {/* 房间面三路由：spec §8.1 扩展点②。路由挂载即页面经接缝 #5 轮询。 */}
+                <Route path="/rooms" element={<RoomsListPage />} />
+                <Route path="/rooms/:id" element={<RoomDetailPage />} />
+                <Route path="/inbox" element={<InboxPage />} />
               </>
             )}
             <Route
