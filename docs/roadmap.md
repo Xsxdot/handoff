@@ -204,6 +204,23 @@
   同样红（非 B156.3.3 引入）。修法方向：夹具不用仓内真实文件充当 durable 二进制，或
   测试内显式固定 TempDir 探针。来源：2026-08-26 B156.3.3 集成轮全量档第一跑（台账：
   `docs/superpowers/ledgers/2026-08-26-b156.3.3-integrate-ledger.md`）。
+## 来自 B156.3.4 集成轮（2026-08-26，review 核销项登记）
+
+review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记账（本轮集成不修业务
+代码；原文锚点在 acceptance 台账 §7，该提交未入集成分支，在此落痕防孤儿。台账：
+`docs/superpowers/ledgers/2026-08-26-b156.3.4-integrate-ledger.md`）：
+
+- **（major，建议归 K5）失败拉起后两级名额永久占用且 409 文案双重误导**：生产 launch
+  路径无 Release 臂——LaunchAdmit 成功→LaunchForCard 失败→502，名额挂回合终局而
+  失败拉起无回合可终局；coordapi.go:134-135 的「等现役回合结束名额自动回收」文案在
+  该场景误导。核销动作：修 409 文案＋立名额归还验收条目。
+- **（minor，K6 镜像时核销）GET /coordinator 的 attach 三元组 machine/dir 恒空串**：
+  coordapi.go:206 `Locate(id, "")` 的数据来源所致。
+- **（minor）handleCoordAttach 错误分支无测试锁**：active 缺失 400／定位失败回滚／
+  ?machine= 转发三条均无断言。
+- **（minor，流程偏差记账）Task 0 遇 K3 未并入直接 merge 而非按 plan 提问**：结果
+  正确零冲突，但越过了 plan 的停下提问纪律。
+
 ## 来自 B156.2 spec 定稿（2026-08-25，二期协作层的推迟项）
 
 - **三期承接（B156.3 的输入）**：规则引擎自动拉起协调者会话（本期拉起一律由用户执行）；
