@@ -543,6 +543,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/auth/logout", s.handleLogout)
 	s.registerLedgerRoutes(api)
 	s.registerSchedulingRoutes(api)
+	s.registerCoordRoutes(api)
 
 	// 控制台静态资源兜底：一切未被更精确模式匹配的路径都到这里。
 	//
