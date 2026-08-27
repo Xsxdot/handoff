@@ -1,13 +1,12 @@
-// terminalWheel —— alt-screen 鼠标追踪下，把滚轮像素折成多格 SGR 报告。
+// terminalWheel —— alt-screen 鼠标追踪下，把滚轮像素折成多格鼠标报告。
 //
-// 职责：按指针所在格子生成 `ESC[<64/65;col;rowM` 序列。xterm 开了鼠标追踪时
-//       每个 DOM wheel 只发一格，触控板一甩的像素全被丢掉，TUI 就要滑好多轮
-//       才翻一页。原生终端会按滑过的行数连发同一坐标的滚轮报告。
+// 职责：按指针格子（或像素编码下的像素）生成与 xterm CoreMouseService 同形的
+//       滚轮序列。xterm 每个 DOM wheel 只发一格；这里补格数、横滑、修饰位。
 // 边界：
-//   - 不写 PTY、不读 xterm。调用方负责上送和拦截 xterm 那一格重复报告
-//   - 不造假坐标。col/row 必须是指针格子；曾经用屏幕 35% 当坐标，TUI
-//     把整屏（含输入框）当拖动划走，resize 救不回来
-//   - 不改成方向键。方向键在 OpenCode 里是输入历史
+//   - 不写 PTY、不读 xterm 实例（encoding 由调用方传入）
+//   - 不造假坐标。col/row 必须是指针格子
+//   - 不改成方向键
+//   - 不在这里决定「划词放行」——那是 wheelForcesSelection，调用方据此根本不调用本函数
 
 const wheelTickCap = 32
 
@@ -39,30 +38,88 @@ export function pointerCell(
   return { col, row }
 }
 
-// altBufferWheelSgr 把一次滚轮换成若干格同坐标 SGR 报告。
-//
-// 参数：
-//   - deltaY：WheelEvent.deltaY（上负下正）
-//   - cellHeight：一行像素高度，<=0 时按 16 兜底
-//   - remainder：像素级小数行残留，函数会就地改它
-//   - col/row：1-based 指针格子
-// 返回：要写入 PTY 的序列；凑不满一行或格子非法时返回空串。
-export function altBufferWheelSgr(
-  deltaY: number,
-  cellHeight: number,
-  remainder: { value: number },
+// wheelForcesSelection 对齐 xterm SelectionService.shouldForceSelection：
+// Mac + macOptionClickForcesSelection 时 Option 强制划词；其它平台是 Shift。
+export function wheelForcesSelection(
+  ev: { altKey: boolean; shiftKey: boolean },
+  isMac: boolean,
+): boolean {
+  return isMac ? ev.altKey : ev.shiftKey
+}
+
+// mouseEncodingOf 读 xterm 当前鼠标编码。公开 IModes 没有 encoding 字段，
+// 写死 SGR 会在应用要了 SGR_PIXELS（1016）时把格子坐标当像素发出去再偏一次，
+// 所以这里读私有 _core.coreMouseService.activeEncoding；读不到退 SGR。
+export function mouseEncodingOf(
+  term: { _core?: { coreMouseService?: { activeEncoding?: string } } },
+): 'SGR' | 'SGR_PIXELS' | 'DEFAULT' {
+  const enc = term._core?.coreMouseService?.activeEncoding
+  if (enc === 'SGR_PIXELS' || enc === 'SGR' || enc === 'DEFAULT') return enc
+  return 'SGR'
+}
+
+function eventCode(wheelBtn: 64 | 65 | 66 | 67, shift: boolean, alt: boolean, ctrl: boolean): number {
+  return wheelBtn | (shift ? 4 : 0) | (alt ? 8 : 0) | (ctrl ? 16 : 0)
+}
+
+function encodeOne(
+  encoding: 'SGR' | 'SGR_PIXELS' | 'DEFAULT',
+  code: number,
   col: number,
   row: number,
+  pixelX: number,
+  pixelY: number,
 ): string {
-  if (deltaY === 0) return ''
-  if (!Number.isFinite(col) || !Number.isFinite(row) || col < 1 || row < 1) return ''
-  const px = cellHeight > 0 ? cellHeight : 16
-  remainder.value += deltaY / px
-  const lines = Math.trunc(remainder.value)
-  remainder.value -= lines
-  if (lines === 0) return ''
-  const n = Math.min(Math.abs(lines), wheelTickCap)
-  const btn = lines < 0 ? 64 : 65
-  const one = `\x1b[<${btn};${Math.floor(col)};${Math.floor(row)}M`
-  return one.repeat(n)
+  if (encoding === 'SGR_PIXELS') return `\x1b[<${code};${pixelX};${pixelY}M`
+  if (encoding === 'DEFAULT') {
+    const pb = code + 32
+    const px = col + 32
+    const py = row + 32
+    if (pb > 255 || px > 255 || py > 255) return ''
+    return `\x1b[M${String.fromCharCode(pb, px, py)}`
+  }
+  return `\x1b[<${code};${col};${row}M`
+}
+
+function ticksFromDelta(delta: number, cell: number, rem: { value: number }): number {
+  if (delta === 0) return 0
+  const px = cell > 0 ? cell : 16
+  rem.value += delta / px
+  const lines = Math.trunc(rem.value)
+  rem.value -= lines
+  if (lines === 0) return 0
+  return Math.min(Math.abs(lines), wheelTickCap) * Math.sign(lines)
+}
+
+// altBufferWheelReports 把一次滚轮换成若干格同坐标鼠标报告。
+//
+// 参数：delta 与格子尺寸按轴分别累计；remainder 就地改；col/row 是指针格子；
+//       pixelX/Y 只在 SGR_PIXELS 下使用；shift/alt/ctrl 并进按钮码。
+// 返回：要写入 PTY 的序列；凑不满一格或格子非法时返回空串。
+export function altBufferWheelReports(p: {
+  deltaX: number; deltaY: number; cellWidth: number; cellHeight: number
+  remainder: { x: number; y: number }
+  col: number; row: number; pixelX: number; pixelY: number
+  shift: boolean; alt: boolean; ctrl: boolean
+  encoding: 'SGR' | 'SGR_PIXELS' | 'DEFAULT'
+}): string {
+  if (!Number.isFinite(p.col) || !Number.isFinite(p.row) || p.col < 1 || p.row < 1) return ''
+  const yHold = { value: p.remainder.y }
+  const xHold = { value: p.remainder.x }
+  const yTicks = ticksFromDelta(p.deltaY, p.cellHeight, yHold)
+  const xTicks = ticksFromDelta(p.deltaX, p.cellWidth, xHold)
+  p.remainder.y = yHold.value
+  p.remainder.x = xHold.value
+  let out = ''
+  if (yTicks !== 0) {
+    const btn: 64 | 65 = yTicks < 0 ? 64 : 65
+    const one = encodeOne(p.encoding, eventCode(btn, p.shift, p.alt, p.ctrl), p.col, p.row, p.pixelX, p.pixelY)
+    out += one.repeat(Math.abs(yTicks))
+  }
+  if (xTicks !== 0) {
+    const btn: 66 | 67 = xTicks < 0 ? 66 : 67
+    const one = encodeOne(p.encoding, eventCode(btn, p.shift, p.alt, p.ctrl), p.col, p.row, p.pixelX, p.pixelY)
+    out += one.repeat(Math.abs(xTicks))
+  }
+  return out
 }

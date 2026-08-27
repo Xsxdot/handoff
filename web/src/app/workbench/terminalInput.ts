@@ -1,10 +1,12 @@
 // terminalInput —— 补上 xterm 输入路径在 WebKit 上的两个漏字符缺口。
 //
 // 职责：在**不 fork xterm** 的前提下，把两类被 xterm 静默丢弃的可打印输入
-//       重新喂回终端。只补漏，不接管：xterm 自己发得出去的字符一律不碰。
+//       重新喂回终端；并在同一槽位转发 ⌘←/⌘→/⌘K（清屏不上送 PTY）。
+//       只补漏，不接管：xterm 自己发得出去的字符一律不碰。
 // 边界：
-//   - 只管「可打印文本怎么进 PTY」。控制键（方向键/Enter/Ctrl-C）、
+//   - 可打印文本怎么进 PTY。控制键（方向键/Enter/Ctrl-C）、
 //     输入法合成（compositionstart/end）、粘贴，全部原样留给 xterm
+//   - ⌘K 是仿真器本地清屏，禁止因此往 PTY 写任何 CSI/C0
 //   - 不直接往 WS 写字节。补发一律走 `term.input()`，让补发的字符与用户
 //     手敲的字符走同一条 onData —— 上层的取证日志、尺寸逻辑因此不必知道本模块存在
 //   - 独占 `attachCustomKeyEventHandler`（xterm 只有一个槽位）。将来若有别处
@@ -156,8 +158,6 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   // 的位置恰在 `_keyPressHandled = true` **之前**——xterm 因此既不发首字符，也不会
   // 给随后的 input 事件留下「已处理」的标记，补发路径才走得通。
   //
-  // keydown / keyup 一律放行：本模块只挑 keypress 的刺。
-  //
   // disposed 这道闸不能省：`attachCustomKeyEventHandler` 只有一个槽位、也没有
   // 「摘除」接口，dispose 时若不自己失效，拦截会在补漏已经卸掉之后继续生效——
   // keypress 被拦、又没人补发，字符就凭空消失了。不用「dispose 时重新 attach
@@ -165,6 +165,31 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   let disposed = false
   term.attachCustomKeyEventHandler((ev) => {
     if (disposed) return true
+    if (ev.type === 'keydown') {
+      if (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === 'ArrowLeft') {
+        ev.preventDefault()
+        ev.stopPropagation()
+        logTermFix(label, '⌘← 行首', '\x01')
+        term.input('\x01')
+        return false
+      }
+      if (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === 'ArrowRight') {
+        ev.preventDefault()
+        ev.stopPropagation()
+        logTermFix(label, '⌘→ 行尾', '\x05')
+        term.input('\x05')
+        return false
+      }
+      // 不上送 \x0c：TUI 会当成输入（B267 方向键同类）。term.clear() 把当前行
+      // 留作第 0 行并丢掉 scrollback（xterm Terminal.clear）。
+      if (ev.metaKey && !ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === 'k') {
+        ev.preventDefault()
+        ev.stopPropagation()
+        logTermFix(label, '⌘K 清屏', '')
+        term.clear()
+        return false
+      }
+    }
     if (ev.type !== 'keypress') return true
     if (!isInjectedText(ev)) return true
     logTermFix(label, '拦下注入键事件', ev.key)

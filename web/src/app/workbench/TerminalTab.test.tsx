@@ -1,5 +1,6 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Terminal } from '@xterm/xterm'
 import { TerminalTab } from './TerminalTab'
 import type { BaseDir } from './useWorkbench'
 
@@ -91,6 +92,10 @@ describe('TerminalTab', () => {
       { base_kind: 'workspace', base_path: '/home/dev/handoff', cols: 100, rows: 30 },
       '',
     )
+    expect(Terminal).toHaveBeenCalledWith(expect.objectContaining({
+      macOptionIsMeta: true,
+      macOptionClickForcesSelection: true,
+    }))
   })
 
   it('启动项字段写入建会话请求，普通终端不增加字段', async () => {
@@ -286,6 +291,42 @@ describe('TerminalTab', () => {
     termInstance.modes.mouseTrackingMode = 'vt200'
     expect(handler({ deltaY: -160, clientX: 50, clientY: 50 })).toBe(false)
     expect(termInstance.input).toHaveBeenCalledWith('\x1b[<64;7;4M'.repeat(10))
+    spy.mockRestore()
+  })
+
+  it('Option（Mac 划词）时不拦截滚轮', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: {
+      deltaY: number; altKey?: boolean; shiftKey?: boolean; deltaX?: number
+      clientX?: number; clientY?: number
+    }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    const mac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent)
+    if (mac) {
+      expect(handler({ deltaY: -160, altKey: true, clientX: 50, clientY: 50 })).toBe(true)
+      expect(termInstance.input).not.toHaveBeenCalled()
+    } else {
+      expect(handler({ deltaY: -16, shiftKey: true, clientX: 50, clientY: 50 })).toBe(true)
+      expect(termInstance.input).not.toHaveBeenCalled()
+    }
+  })
+
+  it('横滑发 66', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800, height: 480, x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 480,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: {
+      deltaX: number; deltaY: number; clientX: number; clientY: number
+    }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    expect(handler({ deltaX: -80, deltaY: 0, clientX: 50, clientY: 50 })).toBe(false)
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[<66;7;4M'.repeat(10))
     spy.mockRestore()
   })
 

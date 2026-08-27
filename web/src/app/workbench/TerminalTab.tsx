@@ -30,9 +30,9 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { createPtySession, deletePtySession } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
-import { describeElement, logTermFocus, logTermHost, logTermInput, logTermResize, logTermWheel } from './terminalDebug'
+import { describeElement, logTermFocus, logTermHost, logTermInput, logTermResize, logTermWheel, logTermWheelBypass } from './terminalDebug'
 import { isTerminalHostResponse } from './terminalHostResponse'
-import { altBufferWheelSgr, pointerCell } from './terminalWheel'
+import { altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelection } from './terminalWheel'
 import { installTerminalInputFix } from './terminalInput'
 import { registerFileDropTarget, shellQuote } from '../lib/desktopFileDrop'
 import type { BaseDir } from './useWorkbench'
@@ -119,6 +119,8 @@ export function TerminalTab({
       cursorBlink: true,
       scrollback: 5000,
       theme: { background: '#0b0b0c' },
+      macOptionIsMeta: true,
+      macOptionClickForcesSelection: true,
     })
     const fit = new FitAddon()
     term.loadAddon(fit)
@@ -195,19 +197,36 @@ export function TerminalTab({
       handle?.send(new TextEncoder().encode(d))
     })
 
-    // 鼠标追踪开启时，xterm 每个 DOM wheel 只发一格 SGR，触控板一甩的像素
-    // 全丢了。这里按滑过的行数在**指针所在格子**连发同一条报告，协议仍是
-    // 原生 SGR，只是补上 xterm 丢掉的格数。没开追踪则放给 xterm（它自己会
-    // 按行数重复方向键）。
-    const wheelRemainder = { value: 0 }
+    // 鼠标追踪开启时，xterm 每个 DOM wheel 只发一格报告，触控板一甩的像素
+    // 全丢了。这里按滑过的行数在**指针所在格子**连发，编码跟 xterm 当前
+    // 模式走（禁止写死 1006）。没开追踪则放给 xterm。Option（Mac）/ Shift
+    // （其它）划词必须放行，否则自定义 handler 会把选区吃掉。
+    const wheelRemainder = { x: 0, y: 0 }
+    const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent)
     term.attachCustomWheelEventHandler((ev) => {
       if (term.buffer.active.type !== 'alternate') return true
       if (term.modes.mouseTrackingMode === 'none') return true
-      if (ev.deltaY === 0) return true
-      const rect = host.getBoundingClientRect()
+      if (wheelForcesSelection(ev, isMac)) {
+        logTermWheelBypass(label, 'forces-selection')
+        return true
+      }
+      const deltaX = ev.deltaX ?? 0
+      const deltaY = ev.deltaY ?? 0
+      if (deltaX === 0 && deltaY === 0) return true
+      const screenEl = (host.querySelector('.xterm-screen') as HTMLElement | null) ?? host
+      const rect = screenEl.getBoundingClientRect()
       const cellH = term.rows > 0 ? rect.height / term.rows : 16
+      const cellW = term.cols > 0 ? rect.width / term.cols : 8
       const { col, row } = pointerCell(ev.clientX, ev.clientY, rect, term.cols, term.rows)
-      const seq = altBufferWheelSgr(ev.deltaY, cellH, wheelRemainder, col, row)
+      const pixelX = Math.max(0, Math.floor(ev.clientX - rect.left))
+      const pixelY = Math.max(0, Math.floor(ev.clientY - rect.top))
+      const seq = altBufferWheelReports({
+        deltaX, deltaY, cellWidth: cellW, cellHeight: cellH,
+        remainder: wheelRemainder, col, row, pixelX, pixelY,
+        shift: ev.shiftKey, alt: ev.altKey, ctrl: ev.ctrlKey,
+        // 公开 IModes 没有 encoding，见 mouseEncodingOf。
+        encoding: mouseEncodingOf(term as Parameters<typeof mouseEncodingOf>[0]),
+      })
       if (seq !== '') {
         logTermWheel(label, seq.split('\x1b').length - 1, seq)
         term.input(seq)

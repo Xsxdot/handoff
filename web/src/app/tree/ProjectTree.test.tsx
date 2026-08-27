@@ -392,6 +392,19 @@ describe('ProjectTree', () => {
     expect(document.activeElement).toBe(input)
   })
 
+  it('焦点在 xterm textarea 时 ⌘K 不抢搜索', () => {
+    render(<ProjectTree {...props()} />)
+    const ta = document.createElement('textarea')
+    ta.className = 'xterm-helper-textarea'
+    document.body.appendChild(ta)
+    ta.focus()
+    const search = screen.getByPlaceholderText('搜索项目、机器或任务')
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    expect(document.activeElement).toBe(ta)
+    expect(document.activeElement).not.toBe(search)
+    ta.remove()
+  })
+
   it('Ctrl+K 同样聚焦（非 mac）', () => {
     render(<ProjectTree {...props()} />)
     const input = screen.getByPlaceholderText('搜索项目、机器或任务')

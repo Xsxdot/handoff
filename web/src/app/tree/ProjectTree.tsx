@@ -270,12 +270,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   // ⌘K / Ctrl+K 聚焦搜索框。
   //
   // 刻意挂在**冒泡阶段**（addEventListener 第三参不传 true），不是捕获阶段。
-  // 这是一条让位次序：将来中央的终端 tab 拿到焦点时，xterm 会吞掉自己的
-  // 按键；冒泡阶段监听意味着「任何调用 stopPropagation 的组件优先」——
-  // 在终端里按 ⌘K 不该把焦点抢到左栏来。改成 capture 会当场破坏这一点。
+  // xterm **不处理** ⌘K，不会 stopPropagation；终端侧 handler 会 preventDefault
+  // + clear，这里再按焦点漏一次。Ctrl+K 在终端里由 xterm 处理并
+  // stopPropagation，到不了这里。改成 capture 会当场破坏这一点。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (!(e.metaKey || e.ctrlKey) || e.key.toLowerCase() !== 'k') return
+      if (e.defaultPrevented) return
+      const el = document.activeElement
+      if (el instanceof HTMLElement && (
+        el.classList.contains('xterm-helper-textarea') || el.closest('.xterm') !== null
+      )) return
       e.preventDefault()
       searchRef.current?.focus()
       searchRef.current?.select()

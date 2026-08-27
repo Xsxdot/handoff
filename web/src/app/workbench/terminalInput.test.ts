@@ -8,7 +8,7 @@
 //
 // 每个缺口都配一条「不装补漏」的对照断言。没有对照，这些用例明天被改成永远
 // 为真也没人看得出来——它们断言的恰恰是「xterm 自己会漏」。
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Terminal } from '@xterm/xterm'
 import { installTerminalInputFix, type TerminalInputFix } from './terminalInput'
 
@@ -64,12 +64,14 @@ function makeRig(withFix: boolean): Rig {
 // 判分支的依据，写不进去测试就会假绿。
 function key(
   type: 'keydown' | 'keypress' | 'keyup',
-  init: { key: string; keyCode: number; charCode?: number; shiftKey?: boolean },
+  init: { key: string; keyCode: number; charCode?: number; shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean },
 ): KeyboardEvent {
   const charCode = init.charCode ?? 0
   const ev = new KeyboardEvent(type, {
     key: init.key,
     shiftKey: init.shiftKey ?? false,
+    metaKey: init.metaKey ?? false,
+    ctrlKey: init.ctrlKey ?? false,
     bubbles: true,
     cancelable: true,
     composed: true,
@@ -243,5 +245,31 @@ describe('dispose 之后不再插手', () => {
     rig.ta.dispatchEvent(key('keypress', { key: 'git status', keyCode: 103, charCode: 103 }))
     rig.ta.dispatchEvent(input(rig.ta, 'git status'))
     expect(rig.data).toEqual(['g'])
+  })
+})
+
+describe('mac 终端键：⌘←/⌘→/⌘K', () => {
+  it('⌘← 发出 0x01，⌘→ 发出 0x05，且不经普通字母路径双发', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: 'ArrowLeft', keyCode: 37, metaKey: true }))
+    rig.ta.dispatchEvent(key('keydown', { key: 'ArrowRight', keyCode: 39, metaKey: true }))
+    expect(rig.data).toEqual(['\x01', '\x05'])
+  })
+
+  it('⌘K 调用 clear 且 onData 没有任何字节', () => {
+    rig = makeRig(true)
+    const clear = vi.spyOn(rig.term, 'clear')
+    const ev = key('keydown', { key: 'k', keyCode: 75, metaKey: true })
+    rig.ta.dispatchEvent(ev)
+    expect(clear).toHaveBeenCalledTimes(1)
+    expect(rig.data).toEqual([])
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('Ctrl+K 不走清屏（readline 删到行尾仍归 xterm）', () => {
+    rig = makeRig(true)
+    const clear = vi.spyOn(rig.term, 'clear')
+    rig.ta.dispatchEvent(key('keydown', { key: 'k', keyCode: 75, ctrlKey: true }))
+    expect(clear).not.toHaveBeenCalled()
   })
 })
