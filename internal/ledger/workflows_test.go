@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func TestWorkflowLegacyDefStillDecodes(t *testing.T) {
@@ -46,6 +48,39 @@ func TestWorkflowLegacyDefStillDecodes(t *testing.T) {
 	}
 	if got.Def.Nodes[2].Gate.RequireAcceptance != true {
 		t.Fatalf("Gate 应并入对应节点: %+v", got.Def.Nodes[2].Gate)
+	}
+}
+
+func TestBoardLayoutRoundTripAndValidation(t *testing.T) {
+	s := newTestStore(t)
+	valid := &proto.BoardLayout{
+		Columns:       []string{"收集", "沟通", "实现", "验收", "完成"},
+		StateToColumn: map[string]string{"待办": "收集", "终止": "完成"},
+		Fallback:      "实现",
+	}
+	if _, err := s.PutWorkflow("board", WorkflowDef{Nodes: []NodeDef{{Name: "待办"}}, Board: valid}); err != nil {
+		t.Fatalf("合法看板布局应写入: %v", err)
+	}
+	got, err := s.GetWorkflow("board", 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Def.Board == nil || len(got.Def.Board.Columns) != 5 || got.Def.Board.Columns[0] != "收集" ||
+		got.Def.Board.StateToColumn["待办"] != "收集" || got.Def.Board.Fallback != "实现" {
+		t.Fatalf("看板布局往返失败: %+v", got.Def.Board)
+	}
+	for name, layout := range map[string]*proto.BoardLayout{
+		"四列":    {Columns: []string{"a", "b", "c", "d"}, Fallback: "a"},
+		"重复列":   {Columns: []string{"a", "a", "b", "c", "d"}, Fallback: "a"},
+		"空列":    {Columns: []string{"a", "", "b", "c", "d"}, Fallback: "a"},
+		"兜底不在列": {Columns: []string{"a", "b", "c", "d", "e"}, Fallback: "z"},
+		"映射不在列": {Columns: []string{"a", "b", "c", "d", "e"}, StateToColumn: map[string]string{"待办": "z"}, Fallback: "a"},
+	} {
+		if _, err := s.PutWorkflow("bad-board-"+name, WorkflowDef{Nodes: []NodeDef{{Name: "待办"}}, Board: layout}); err == nil {
+			t.Fatalf("%s 应被拒绝", name)
+		} else if !errors.Is(err, ErrBadState) {
+			t.Fatalf("%s 应包装 ErrBadState: %v", name, err)
+		}
 	}
 }
 

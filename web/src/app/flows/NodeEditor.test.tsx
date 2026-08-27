@@ -47,16 +47,16 @@ describe('节点编辑器', () => {
 
   it('能编辑产出类型与路径，关闭派发会清掉产出声明', () => {
     let current: NodeDef = { ...base }
-    let view: ReturnType<typeof render>
-    const onChange = vi.fn((next: NodeDef) => {
+    const onChange = vi.fn((next: NodeDef) => { current = next })
+    const view = render(
+      <NodeEditor node={current} {...props} index={0} onChange={onChange} onRemove={() => {}} />,
+    )
+    onChange.mockImplementation((next: NodeDef) => {
       current = next
       view.rerender(
         <NodeEditor node={current} {...props} index={0} onChange={onChange} onRemove={() => {}} />,
       )
     })
-    view = render(
-      <NodeEditor node={current} {...props} index={0} onChange={onChange} onRemove={() => {}} />,
-    )
 
     fireEvent.change(screen.getByLabelText('产出类型'), { target: { value: 'doc' } })
     expect(current.produces).toEqual({ kind: 'doc' })

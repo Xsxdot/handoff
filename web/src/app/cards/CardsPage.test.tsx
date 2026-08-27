@@ -114,3 +114,38 @@ describe('卡到任务深链的数据通路', () => {
     expect(await screen.findByText('deep-link-hit')).toBeInTheDocument()
   })
 })
+
+describe('可配置看板列入口', () => {
+  it('选中工作流时按其看板映射渲染五列', async () => {
+    const ledger = await import('../../api/ledger')
+    const baseCard = {
+      id: 'B200', title: '普通卡', status: '待办', priority: '中', project: 'p', workflow: 'custom', parent: '', base_branch: '', attachments: [], following: '',
+      blocked: false, blocked_by: [], merged_count: 0, needs: '', open_decisions: 0,
+      children_total: 0, children_done: 0, conflict: false, open_tickets: 0,
+    }
+    vi.mocked(ledger.fetchFlows).mockResolvedValue({
+      workflows: [{
+        name: 'custom', version: 2,
+        def: {
+          states: ['待办'],
+          board: {
+            columns: ['收集', '沟通', '实现', '验收', '完成'],
+            state_to_column: { 待办: '收集' }, fallback: '实现',
+          },
+        },
+      }],
+      templates: [],
+    })
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [{
+        ...baseCard, title: '自定义看板卡',
+      }],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    })
+    renderPage()
+    await screen.findByText('自定义看板卡')
+    fireEvent.change(screen.getByRole('combobox', { name: '工作流' }), { target: { value: 'custom' } })
+    expect(await screen.findByText('收集')).toBeInTheDocument()
+    expect(screen.getByText('完成')).toBeInTheDocument()
+  })
+})

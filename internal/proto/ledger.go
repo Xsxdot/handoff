@@ -160,12 +160,21 @@ type CardDetail struct {
 	Children            []CardBrief    `json:"children"`
 }
 
+// BoardLayout 是工作流状态到看板列的持久化投影。
+// Columns 必须恰有五个非空唯一值；映射值和 Fallback 必须在 Columns 中。
+type BoardLayout struct {
+	Columns       []string          `json:"columns"`
+	StateToColumn map[string]string `json:"state_to_column"`
+	Fallback      string            `json:"fallback"`
+}
+
 // FlowDetail 是工作流详情的 wire DTO。
 type FlowDetail struct {
-	Name    string    `json:"name"`
-	Version int       `json:"version"`
-	Nodes   []NodeDef `json:"nodes"`
-	States  []string  `json:"states"`
+	Name    string       `json:"name"`
+	Version int          `json:"version"`
+	Nodes   []NodeDef    `json:"nodes"`
+	States  []string     `json:"states"`
+	Board   *BoardLayout `json:"board,omitempty"`
 }
 
 // NewCardReq 是建卡请求。workflow 缺席或为空时，由账本按流数量解析：零条报错指路、

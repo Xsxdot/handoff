@@ -577,46 +577,23 @@ describe('会话已经不在时弹层要说实话', () => {
   })
 })
 
-describe('房间面路由与 dock 入口', () => {
-  it('/rooms 挂载会话列表页：fetchRooms 被调（经接缝 #5）', async () => {
-    const rooms = await import('../../api/rooms')
-    render(
-      <MemoryRouter initialEntries={['/rooms']}>
-        <AppRoutes />
-      </MemoryRouter>,
-    )
-    await waitFor(() => expect(vi.mocked(rooms.fetchRooms)).toHaveBeenCalled())
+describe('统一房间面板挂载', () => {
+  it('/cards 将 RoomPanel 作为右侧常驻 sibling 挂载', async () => {
+    renderShell('/cards')
+    expect(await screen.findByTestId('room-panel')).toBeInTheDocument()
   })
 
-  it('/inbox 挂载收件箱页：fetchInbox 被调', async () => {
-    const rooms = await import('../../api/rooms')
-    render(
-      <MemoryRouter initialEntries={['/inbox']}>
-        <AppRoutes />
-      </MemoryRouter>,
-    )
-    await waitFor(() => expect(vi.mocked(rooms.fetchInbox)).toHaveBeenCalled())
+  it('其它页面显示浮动房间入口，旧 rooms/inbox 页面不再由路由渲染', async () => {
+    renderShell('/settings')
+    expect(await screen.findByRole('button', { name: '打开房间面板' })).toBeInTheDocument()
+
+    renderShell('/rooms')
+    await waitFor(() => expect(screen.queryByTestId('room-list')).not.toBeInTheDocument())
+    expect(screen.queryByText('待回复收件箱')).not.toBeInTheDocument()
   })
 
-  it('左栏 dock 点「会话」→ 路由切到 /rooms → fetchRooms 被调', async () => {
-    const rooms = await import('../../api/rooms')
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <AppRoutes />
-      </MemoryRouter>,
-    )
-    fireEvent.click(await screen.findByRole('button', { name: '会话' }))
-    await waitFor(() => expect(vi.mocked(rooms.fetchRooms)).toHaveBeenCalled())
-  })
-
-  it('左栏 dock 点「收件箱」→ 路由切到 /inbox → fetchInbox 被调', async () => {
-    const rooms = await import('../../api/rooms')
-    render(
-      <MemoryRouter initialEntries={['/']}>
-        <AppRoutes />
-      </MemoryRouter>,
-    )
-    fireEvent.click(await screen.findByRole('button', { name: '收件箱' }))
-    await waitFor(() => expect(vi.mocked(rooms.fetchInbox)).toHaveBeenCalled())
+  it('Shell 不再挂更新提示组件', async () => {
+    renderShell('/settings')
+    await waitFor(() => expect(screen.queryByTestId('update-toasts')).not.toBeInTheDocument())
   })
 })

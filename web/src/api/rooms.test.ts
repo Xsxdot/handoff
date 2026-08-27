@@ -6,12 +6,13 @@
 // 改线格式必须同步 Go 结构体、fixture 与本文件，漏一处就有一个测试当场变红。
 import { describe, expect, it } from 'vitest'
 import fixture from './testdata/RoomsFixture.json'
-import type { InboxItem, RoomMessage } from './rooms'
+import type { InboxItem, RoomMessage, RoomSummary } from './rooms'
 
 const cases = fixture as {
   case: string
   message?: RoomMessage
   item?: InboxItem
+  room?: RoomSummary
 }[]
 
 describe('room message twin fixtures', () => {
@@ -39,6 +40,17 @@ describe('room message twin fixtures', () => {
     const kinds = ['escalation', 'deviation', 'closing', 'relay', 'reply', 'user', 'pointer']
     const msg = cases.find((c) => c.case === 'escalation-full')!.message!
     expect(kinds).toContain(msg.kind)
+  })
+
+  it('RoomSummary 保留 unread 0、attach 四字段，缺失 attach 为 undefined', () => {
+    const attached = cases.find((c) => c.case === 'room-summary-attach')!.room as RoomSummary
+    expect(attached.unread).toBe(0)
+    expect(attached.attach).toEqual({
+      target: 'devbox', task_id: 'T1', work_dir: '/w/B1', command: 'handoff attach T1',
+    })
+    const global = cases.find((c) => c.case === 'room-summary-no-attach')!.room as RoomSummary
+    expect(global.unread).toBe(0)
+    expect(global.attach).toBeUndefined()
   })
 })
 

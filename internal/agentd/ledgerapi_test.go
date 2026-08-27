@@ -171,6 +171,45 @@ func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore}
 }
 
+func TestFlowBoardLayoutEndpointRoundTripAndValidation(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	valid := `{"nodes":[{"name":"待办"}],"board":{"columns":["收集","沟通","实现","验收","完成"],"state_to_column":{"待办":"收集","终止":"完成"},"fallback":"实现"}}`
+	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/board-api", valid)
+	if code != 200 {
+		t.Fatalf("合法看板布局应 PUT 200: %d %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/flows/board-api")
+	if code != 200 {
+		t.Fatalf("GET 自定义看板布局应 200: %d %s", code, body)
+	}
+	var got struct {
+		Board struct {
+			Columns       []string          `json:"columns"`
+			StateToColumn map[string]string `json:"state_to_column"`
+			Fallback      string            `json:"fallback"`
+		} `json:"board"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(got.Board.Columns, ",") != "收集,沟通,实现,验收,完成" ||
+		got.Board.StateToColumn["待办"] != "收集" || got.Board.Fallback != "实现" {
+		t.Fatalf("看板布局 HTTP 往返失败: %+v", got.Board)
+	}
+	for name, board := range map[string]string{
+		"four":      `{"columns":["a","b","c","d"],"fallback":"a"}`,
+		"duplicate": `{"columns":["a","a","b","c","d"],"fallback":"a"}`,
+		"fallback":  `{"columns":["a","b","c","d","e"],"fallback":"z"}`,
+		"mapping":   `{"columns":["a","b","c","d","e"],"state_to_column":{"待办":"z"},"fallback":"a"}`,
+	} {
+		code, body = ledgerPut(t, env.testAgentdEnv, "/api/flows/board-api-"+name,
+			`{"nodes":[{"name":"待办"}],"board":`+board+`}`)
+		if code != http.StatusBadRequest {
+			t.Fatalf("非法 %s 看板布局应 400: %d %s", name, code, body)
+		}
+	}
+}
+
 func linkTaskFailed(t *testing.T, st *ledger.Store, cardID string) {
 	t.Helper()
 	if err := st.LinkTask(cardID, "mac-02", "T-badge", "implement", "t"); err != nil {

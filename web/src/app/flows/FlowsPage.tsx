@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { fetchDisciplineNames, fetchFlow, fetchFlows, putFlow } from '../../api/ledger'
 import type { FlowsResp, NodeDef, TemplateWire, WorkflowWire } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
+import { defaultBoardLayout, type BoardLayout } from '../cards/columns'
 import { NodeEditor } from './NodeEditor'
 
 type Tab = 'workflows' | 'templates'
@@ -52,6 +53,25 @@ function nodesFromStates(states: string[]): NodeDef[] {
   }))
 }
 
+function boardInput(columns: string[]): string {
+  return columns.join('，')
+}
+
+function parseBoardInput(value: string): string[] {
+  return value.split(/[，,、]/).map((column) => column.trim())
+}
+
+function boardValidation(board: BoardLayout, states: string[]): string {
+  if (board.columns.length !== 5) return '看板列必须恰好填写五项。'
+  if (board.columns.some((column) => column === '')) return '看板列名不能为空。'
+  if (new Set(board.columns).size !== 5) return '看板列名不能重复。'
+  if (!board.columns.includes(board.fallback)) return '看板兜底列必须在五列中。'
+  for (const state of states) {
+    if (!board.columns.includes(board.state_to_column[state] ?? '')) return `状态「${state}」映射到的列不存在。`
+  }
+  return ''
+}
+
 function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templates: string[] }) {
   const [editing, setEditing] = useState(false)
   const [loading, setLoading] = useState(false)
@@ -61,6 +81,8 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
   const [version, setVersion] = useState(workflow.version)
   const [loadError, setLoadError] = useState('')
   const [saveError, setSaveError] = useState('')
+  const [board, setBoard] = useState<BoardLayout>(() => workflow.def.board ?? defaultBoardLayout(workflow.def.states))
+  const [savedBoard, setSavedBoard] = useState<BoardLayout>(() => workflow.def.board ?? defaultBoardLayout(workflow.def.states))
 
   const beginEdit = () => {
     setEditing(true)
@@ -68,10 +90,12 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
     setLoadError('')
     setSaveError('')
     setNodes(nodesFromStates(workflow.def.states))
+    setBoard(workflow.def.board ?? defaultBoardLayout(workflow.def.states))
     void Promise.all([fetchFlow(workflow.name), fetchDisciplineNames()])
       .then(([detail, names]) => {
         setNodes(detail.nodes)
         setDisciplines(names)
+        setBoard(detail.board ?? defaultBoardLayout(detail.states))
       })
       .catch((err: unknown) => setLoadError(errorMessage(err)))
       .finally(() => setLoading(false))
@@ -101,11 +125,17 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
   }
 
   const save = async () => {
+    const boardError = boardValidation(board, nodes.map((node) => node.name))
+    if (boardError !== '') {
+      setSaveError(boardError)
+      return
+    }
     setBusy(true)
     setSaveError('')
     try {
-      const result = await putFlow(workflow.name, nodes)
+      const result = await putFlow(workflow.name, nodes, board)
       setVersion(result.version)
+      setSavedBoard(board)
       setEditing(false)
     } catch (err) {
       setSaveError(errorMessage(err))
@@ -134,6 +164,78 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
         {loadError !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">读取节点定义失败：{loadError}</p>}
         {saveError !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">{saveError}</p>}
         {loading && <p className="mt-3 text-xs text-muted-foreground">正在读取完整节点定义…</p>}
+        <section className="mt-3 rounded border p-3" aria-label="看板列映射">
+          <h4 className="text-xs font-semibold">看板列映射</h4>
+          <p className="mt-1 text-xs text-muted-foreground">五列顺序可配；列名用中文/英文逗号或顿号分隔。</p>
+          <label className="mt-2 block text-xs">
+            列名
+            <input
+              aria-label="看板列名"
+              value={boardInput(board.columns)}
+              onChange={(event) => setBoard((current) => {
+                const columns = parseBoardInput(event.target.value)
+                const fallback = columns.includes(current.fallback) ? current.fallback : (columns[0] ?? '')
+                const state_to_column = Object.fromEntries(
+                  Object.entries(current.state_to_column).map(([state, column]) => [state, columns.includes(column) ? column : fallback]),
+                )
+                return { ...current, columns, fallback, state_to_column }
+              })}
+              className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-xs"
+            />
+          </label>
+          <div className="mt-2 space-y-1">
+            {board.columns.map((column, index) => (
+              <div key={`${column}-${index}`} className="flex items-center gap-1 text-xs">
+                <span className="min-w-0 flex-1 truncate">{column || '（空列）'}</span>
+                <button
+                  type="button"
+                  aria-label={`看板列${column || index + 1}上移`}
+                  disabled={index === 0}
+                  onClick={() => setBoard((current) => {
+                    if (index === 0) return current
+                    const columns = [...current.columns]
+                    ;[columns[index - 1], columns[index]] = [columns[index], columns[index - 1]]
+                    return { ...current, columns }
+                  })}
+                  className="rounded border px-1.5 py-0.5 disabled:opacity-50"
+                >上移</button>
+                <button
+                  type="button"
+                  aria-label={`看板列${column || index + 1}下移`}
+                  disabled={index === board.columns.length - 1}
+                  onClick={() => setBoard((current) => {
+                    if (index >= current.columns.length - 1) return current
+                    const columns = [...current.columns]
+                    ;[columns[index], columns[index + 1]] = [columns[index + 1], columns[index]]
+                    return { ...current, columns }
+                  })}
+                  className="rounded border px-1.5 py-0.5 disabled:opacity-50"
+                >下移</button>
+              </div>
+            ))}
+          </div>
+          <div className="mt-3 space-y-1.5">
+            {nodes.map((node) => (
+              <label key={node.name} className="flex items-center gap-2 text-xs">
+                <span className="w-20 shrink-0 truncate">{node.name}</span>
+                <select
+                  aria-label={`状态 ${node.name} 的看板列`}
+                  value={board.state_to_column[node.name] ?? board.fallback}
+                  onChange={(event) => setBoard((current) => ({ ...current, state_to_column: { ...current.state_to_column, [node.name]: event.target.value } }))}
+                  className="min-w-0 flex-1 rounded border bg-background px-1.5 py-1"
+                >
+                  {board.columns.map((column, index) => <option key={`${column}-${index}`} value={column}>{column || '（空列）'}</option>)}
+                </select>
+              </label>
+            ))}
+            <label className="flex items-center gap-2 text-xs">
+              <span className="w-20 shrink-0">兜底列</span>
+              <select aria-label="看板兜底列" value={board.fallback} onChange={(event) => setBoard((current) => ({ ...current, fallback: event.target.value }))} className="min-w-0 flex-1 rounded border bg-background px-1.5 py-1">
+                {board.columns.map((column, index) => <option key={`${column}-${index}`} value={column}>{column || '（空列）'}</option>)}
+              </select>
+            </label>
+          </div>
+        </section>
         <div className="mt-3 space-y-3">
           {nodes.map((node, index) => (
             <div key={`${node.name}-${index}`}>
@@ -184,6 +286,7 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
 
   const displayWorkflow = { ...workflow, version }
   const gates = workflow.def.gates ?? {}
+  const displayBoard = savedBoard
   return (
     <section className="rounded-lg border p-4">
       <div className="flex items-center gap-2">
@@ -195,6 +298,7 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
       <div className="mt-3">
         <Pipeline workflow={displayWorkflow} />
       </div>
+      <p className="mt-3 text-xs text-muted-foreground">看板列：{displayBoard.columns.join(' → ')}</p>
       <dl className="mt-4 grid grid-cols-[auto_1fr] gap-x-4 gap-y-1 text-xs">
         <dt className="text-muted-foreground">状态数</dt>
         <dd>{workflow.def.states.length}</dd>

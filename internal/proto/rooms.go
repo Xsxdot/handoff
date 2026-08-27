@@ -52,6 +52,16 @@ type InboxItem struct {
 	Payload json.RawMessage `json:"payload,omitempty"`
 }
 
+// RoomAttach 是房间详情可执行的任务 attach 投影。
+// Target 为空表示当前 agentd；WorkDir 是任务 Workdir() 的结果；Command 是
+// 当前 CLI 能执行的完整命令。它不把 BoundSession 当作 task/session。
+type RoomAttach struct {
+	Target  string `json:"target,omitempty"`
+	TaskID  string `json:"task_id"`
+	WorkDir string `json:"work_dir"`
+	Command string `json:"command"`
+}
+
 // RoomSummary 是会话列表（扁平活动排序）的单行。
 type RoomSummary struct {
 	ID      string `json:"id"`   // 卡号 | project:<name> | global
@@ -63,6 +73,8 @@ type RoomSummary struct {
 	// Live 绑定者租约未过期（同一注入时钟判定）；无绑定时 false。
 	Live bool `json:"live"`
 	// ReadOnly 并入冻结或卡终态归档。
-	ReadOnly     bool      `json:"read_only"`
-	LastActivity time.Time `json:"last_activity"`
+	ReadOnly     bool        `json:"read_only"`
+	LastActivity time.Time   `json:"last_activity"`
+	Unread       int         `json:"unread"`
+	Attach       *RoomAttach `json:"attach,omitempty"`
 }

@@ -57,6 +57,17 @@ describe('账本写操作的线格式', () => {
     expect(bodyOf(0).nodes).toHaveLength(1)
   })
 
+  it('发工作流新版本时透传五列看板布局', async () => {
+    await putFlow('feature', [{ name: '待办' }], {
+      columns: ['代办', '沟通中', '进行中', '审核中', '结束'],
+      state_to_column: { 待办: '代办' }, fallback: '进行中',
+    })
+    expect(bodyOf(0).board).toEqual({
+      columns: ['代办', '沟通中', '进行中', '审核中', '结束'],
+      state_to_column: { 待办: '代办' }, fallback: '进行中',
+    })
+  })
+
   it('卡号里的特殊字符要被编码，不能直接拼进 URL', async () => {
     await patchCard('B1/../admin', { priority: '低' })
     expect(calls[0].url).not.toContain('/../')

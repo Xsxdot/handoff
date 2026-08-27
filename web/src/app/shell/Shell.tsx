@@ -53,11 +53,8 @@ import { SettingsPage } from '../settings/SettingsPage'
 import { CodegraphFrame } from '../codegraph/CodegraphFrame'
 import { CardsPage } from '../cards/CardsPage'
 import { FlowsPage } from '../flows/FlowsPage'
-import { InboxPage } from '../rooms/InboxPage'
-import { RoomDetailPage } from '../rooms/RoomDetailPage'
-import { RoomsListPage } from '../rooms/RoomsListPage'
+import { RoomPanel } from '../rooms/RoomPanel'
 import { needsAttention } from '../cards/columns'
-import { UpdateToasts } from '../update/UpdateToasts'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
 
@@ -391,8 +388,9 @@ export function Shell() {
   // 于是点了目录再点「工作项」，中央换成了看板、右边那棵文件树却一直挂着，
   // 面包屑也还写着上一个目录（2026-08-19 真机看到）。它们是工作台的一部分，
   // 不属于这些整页。左栏导航树不在此列——它是导航，任何页面都该在。
-  const fullPageRoute = ['/cards', '/flows', '/rooms', '/inbox', '/settings', '/machines', '/codegraph']
+  const fullPageRoute = ['/cards', '/flows', '/settings', '/machines', '/codegraph']
     .some((path) => location.pathname.startsWith(path))
+  const cardsRoute = location.pathname.startsWith('/cards')
 
   // selectDir 是「点一个目录」的唯一实现：换回工作台 + 选中。
   const selectDir = (base: BaseDir) => {
@@ -456,8 +454,6 @@ export function Shell() {
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
             onOpenFlows={() => navigate('/flows')}
-            onOpenRooms={() => navigate('/rooms')}
-            onOpenInbox={() => navigate('/inbox')}
             ledgerEnabled={ledgerEnabled}
             cardNeedsCount={cardNeedsCount}
             unlinkedCount={unlinkedTaskIds?.size ?? 0}
@@ -477,20 +473,16 @@ export function Shell() {
         )}
       </aside>
 
-      <div className="flex min-w-0 flex-1 flex-col">
+      <div className={`relative flex min-w-0 flex-1 ${cardsRoute ? 'flex-row' : 'flex-col'}`}>
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
         {wb.base && !desktop && !fullPageRoute && <Breadcrumb base={wb.base} />}
-        <main className="min-h-0 flex-1">
+        <main className="min-h-0 min-w-0 flex-1">
           <Routes>
             {ledgerEnabled && (
               <>
                 <Route path="/cards" element={<CardsPage />} />
                 <Route path="/flows" element={<FlowsPage />} />
-                {/* 房间面三路由：spec §8.1 扩展点②。路由挂载即页面经接缝 #5 轮询。 */}
-                <Route path="/rooms" element={<RoomsListPage />} />
-                <Route path="/rooms/:id" element={<RoomDetailPage />} />
-                <Route path="/inbox" element={<InboxPage />} />
               </>
             )}
             <Route
@@ -533,7 +525,7 @@ export function Shell() {
                             sessionId={c.sessionId}
                             rel={c.rel}
                             envFile={launcher?.env_file}
-                            initCommand={launcher?.command}
+                            initCommand={c.initCommand ?? launcher?.command}
                             incompatible={c.incompatible}
                             // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                             // 就会再建一个会话，用户每切一次多留一个 shell
@@ -574,6 +566,7 @@ export function Shell() {
             />
           </Routes>
         </main>
+        {ledgerEnabled && <RoomPanel workbench={wb} persistent={cardsRoute} />}
       </div>
 
       {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}
@@ -622,9 +615,6 @@ export function Shell() {
           }
         />
       )}
-
-      {/* 更新提示与 home 浮窗共享右下角；直接把 dock.windowOpen 下传，避免再造一份全局状态。 */}
-      <UpdateToasts homeOpen={dock.windowOpen} />
 
       {scratchError !== '' && (
         <p role="alert" className="fixed right-5 bottom-24 z-40 rounded border border-destructive/30 bg-background px-3 py-1.5 text-xs text-destructive shadow">

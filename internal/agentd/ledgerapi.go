@@ -579,8 +579,13 @@ func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			continue
 		}
+		def := workflow.Def
+		if def.Board == nil {
+			defaultBoard := ledger.DefaultBoardLayout(def.States)
+			def.Board = &defaultBoard
+		}
 		flows = append(flows, map[string]any{
-			"name": workflow.Name, "version": workflow.Version, "def": workflow.Def,
+			"name": workflow.Name, "version": workflow.Version, "def": def,
 		})
 	}
 	templateNames, _ := s.ledger.ListTemplateNames()
@@ -614,8 +619,13 @@ func (s *Server) handleFlowGet(w http.ResponseWriter, r *http.Request) {
 	for _, node := range workflow.Def.Nodes {
 		nodes = append(nodes, ledgerNodeWire(node))
 	}
+	board := workflow.Def.Board
+	if board == nil {
+		defaultBoard := ledger.DefaultBoardLayout(workflow.Def.States)
+		board = &defaultBoard
+	}
 	writeJSON(w, http.StatusOK, proto.FlowDetail{
-		Name: workflow.Name, Version: workflow.Version, Nodes: nodes, States: workflow.Def.States,
+		Name: workflow.Name, Version: workflow.Version, Nodes: nodes, States: workflow.Def.States, Board: board,
 	})
 }
 
@@ -627,7 +637,8 @@ func (s *Server) handleFlowGet(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleFlowPut(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	var body struct {
-		Nodes []ledger.NodeDef `json:"nodes"`
+		Nodes []ledger.NodeDef   `json:"nodes"`
+		Board *proto.BoardLayout `json:"board,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": fmt.Errorf("解析请求体: %w", err).Error()})
@@ -637,7 +648,7 @@ func (s *Server) handleFlowPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "nodes 不能为空"})
 		return
 	}
-	version, err := s.ledger.PutWorkflow(name, ledger.WorkflowDef{Nodes: body.Nodes})
+	version, err := s.ledger.PutWorkflow(name, ledger.WorkflowDef{Nodes: body.Nodes, Board: body.Board})
 	if err != nil {
 		// 节点校验不过是用户输入问题（400），不是服务器故障（500）。
 		if errors.Is(err, ledger.ErrBadState) {
@@ -649,7 +660,11 @@ func (s *Server) handleFlowPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	s.log.Info("已发布工作流新版本", "name", name, "version", version, "nodes", len(body.Nodes))
+	boardColumns := 0
+	if body.Board != nil {
+		boardColumns = len(body.Board.Columns)
+	}
+	s.log.Info("已发布工作流新版本", "name", name, "version", version, "nodes", len(body.Nodes), "board_columns", boardColumns)
 	writeJSON(w, http.StatusOK, map[string]any{"name": name, "version": version})
 }
 

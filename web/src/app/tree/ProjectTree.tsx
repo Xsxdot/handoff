@@ -33,8 +33,8 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  AlertTriangle, Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid,
-  MessageSquareText, Plus, Search, Settings, SquareKanban, Ticket, WifiOff, Workflow,
+  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid,
+  Plus, Search, Settings, SquareKanban, Ticket, WifiOff, Workflow,
 } from 'lucide-react'
 import { filterTree } from './search'
 import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
@@ -74,9 +74,6 @@ export interface ProjectTreeProps {
   // onOpenFlows 流程页（工作流形状 / 派发模板）。以前没有 dock 入口，
   // 只能手敲 /flows——spec §5 要求入口挂 dock
   onOpenFlows?: () => void
-  // 会话/收件箱：房间面（d_web_command）的全局入口，spec §8.1 扩展点②。
-  onOpenRooms?: () => void
-  onOpenInbox?: () => void
   // unlinkedCount 未挂账 task 数，挂在任务看板按钮上——它现在是兜底入口，
   // 有未挂账时才值得点开（主入口是工作项看板）。
   // 口径由 agentd 的 unlinkedSummary 定义：**只数非终态**的未挂账 task。
@@ -233,7 +230,7 @@ export function findBaseByKey(tree: ProjectTreeResp, key: string): BaseDir | nul
   return null
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, ledgerEnabled = false, onOpenFlows, onOpenRooms, onOpenInbox, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, onSelectDir, onOpenTask, onOpenBoard, onOpenCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -799,28 +796,6 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
           >
             <Workflow className="size-4" />
-          </button>
-        )}
-        {ledgerEnabled && onOpenRooms && (
-          <button
-            type="button"
-            aria-label="会话"
-            title="会话（房间面）"
-            onClick={onOpenRooms}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-          >
-            <MessageSquareText className="size-4" />
-          </button>
-        )}
-        {ledgerEnabled && onOpenInbox && (
-          <button
-            type="button"
-            aria-label="收件箱"
-            title="收件箱（待回复）"
-            onClick={onOpenInbox}
-            className="rounded-md p-1.5 text-muted-foreground hover:bg-accent/60 hover:text-foreground"
-          >
-            <AlertTriangle className="size-4" />
           </button>
         )}
         <button

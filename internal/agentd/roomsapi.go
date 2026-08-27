@@ -9,13 +9,16 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strconv"
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -45,13 +48,74 @@ func (s *Server) roomUserActor(r *http.Request) string {
 
 // handleRoomsList GET /api/rooms?project= → ListRooms（扁平活动排序列表）。
 func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
-	rooms, err := s.rooms.ListRooms(r.URL.Query().Get("project"))
+	project := r.URL.Query().Get("project")
+	member := s.roomUserActor(r)
+	rooms, err := s.rooms.ListRoomsForMember(project, member)
 	if err != nil {
-		s.log.Warn("会话列表读取失败", "project", r.URL.Query().Get("project"), "cause", err)
+		s.log.Warn("会话列表读取失败", "project", project, "member", member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.enrichRoomAttachments(r.Context(), rooms)
+	s.log.Info("会话列表响应成功", "project", project, "member", member, "rooms", len(rooms))
 	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
+}
+
+// enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
+// 保持 Attach=nil。失败不吞：逐项 Warn，UI 得到禁用态；列表主查询仍可用。
+func (s *Server) enrichRoomAttachments(ctx context.Context, rooms []proto.RoomSummary) {
+	for i := range rooms {
+		if rooms[i].Kind != room.KindCard || s.ledger == nil {
+			continue
+		}
+		links, err := s.ledger.TasksOf(rooms[i].ID)
+		if err != nil {
+			s.log.Warn("读取房间挂账失败", "room", rooms[i].ID, "cause", err)
+			continue
+		}
+		for linkIndex := len(links) - 1; linkIndex >= 0; linkIndex-- {
+			link := links[linkIndex]
+			attach, lookupErr := s.lookupRoomAttach(ctx, link)
+			if lookupErr != nil {
+				s.log.Warn("房间 attach 目标不可解析", "room", rooms[i].ID,
+					"target", link.Target, "task", link.TaskID, "cause", lookupErr)
+				continue
+			}
+			rooms[i].Attach = attach
+			s.log.Info("房间 attach 投影成功", "room", rooms[i].ID, "target", link.Target,
+				"task", link.TaskID, "workdir", attach.WorkDir)
+			break
+		}
+	}
+}
+
+// lookupRoomAttach 只接受真实任务详情和 Workdir()；不从 bound_session 猜测 task。
+func (s *Server) lookupRoomAttach(ctx context.Context, link ledger.TaskLink) (*proto.RoomAttach, error) {
+	var workDir string
+	if link.Target == "" {
+		task, err := s.st.GetTask(link.TaskID)
+		if err != nil {
+			return nil, fmt.Errorf("读取本机任务 %s: %w", link.TaskID, err)
+		}
+		workDir = task.Workdir()
+	} else {
+		peer, err := s.pool.For(link.Target)
+		if err != nil {
+			return nil, fmt.Errorf("获取 target %s 客户端: %w", link.Target, err)
+		}
+		info, err := peer.Attach(ctx, link.TaskID)
+		if err != nil {
+			return nil, fmt.Errorf("读取远端任务 %s: %w", link.TaskID, err)
+		}
+		workDir = info.Task.Workdir()
+	}
+	if strings.TrimSpace(workDir) == "" {
+		return nil, errors.New("任务没有可用工作目录")
+	}
+	return &proto.RoomAttach{
+		Target: link.Target, TaskID: link.TaskID, WorkDir: workDir,
+		Command: "handoff attach " + link.TaskID,
+	}, nil
 }
 
 // handleRoomMessages GET /api/rooms/{id}/messages?before=&limit= → History。

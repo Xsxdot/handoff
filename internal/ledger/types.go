@@ -5,6 +5,8 @@ package ledger
 import (
 	"encoding/json"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // 状态骨架锚点（workflow 自定义状态插在锚点之间；终止不在 States 序列里，
@@ -254,9 +256,10 @@ type NodeDef struct {
 // 反方向也成立：只有 States 的老行（存量卡钉的就是它）读出时补出等价的
 // 纯人工节点序列，所以调用方永远可以只看 Nodes。
 type WorkflowDef struct {
-	States []string        `json:"states"`
-	Gates  map[string]Gate `json:"gates,omitempty"` // key = 目标状态
-	Nodes  []NodeDef       `json:"nodes,omitempty"`
+	States []string           `json:"states"`
+	Gates  map[string]Gate    `json:"gates,omitempty"` // key = 目标状态
+	Nodes  []NodeDef          `json:"nodes,omitempty"`
+	Board  *proto.BoardLayout `json:"board,omitempty"`
 }
 
 // Workflow 不可变版本化聚合：同 name 只增版本，不改旧行。

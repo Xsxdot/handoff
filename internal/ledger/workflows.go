@@ -10,7 +10,55 @@ import (
 	"reflect"
 	"strings"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+var defaultBoardColumns = []string{"代办", "沟通中", "进行中", "审核中", "结束"}
+
+// DefaultBoardLayout 返回给定状态集合的默认五列看板映射。
+// 未登记状态落入「进行中」，使旧工作流和新状态都能被诚实呈现。
+func DefaultBoardLayout(states []string) proto.BoardLayout {
+	mapping := map[string]string{
+		"待办": "代办", "已出spec": "沟通中", "已出 spec": "沟通中",
+		"进行中": "进行中", "待审阅": "审核中", "待合并": "审核中",
+		"已完成": "结束", "终止": "结束",
+	}
+	for _, state := range states {
+		if _, ok := mapping[state]; !ok {
+			mapping[state] = "进行中"
+		}
+	}
+	return proto.BoardLayout{
+		Columns:       append([]string(nil), defaultBoardColumns...),
+		StateToColumn: mapping, Fallback: "进行中",
+	}
+}
+
+func validateBoardLayout(layout *proto.BoardLayout) error {
+	if layout == nil {
+		return nil
+	}
+	if len(layout.Columns) != 5 {
+		return fmt.Errorf("看板列必须恰好五列: %w", ErrBadState)
+	}
+	seen := make(map[string]bool, len(layout.Columns))
+	for _, column := range layout.Columns {
+		if strings.TrimSpace(column) == "" || seen[column] {
+			return fmt.Errorf("看板列名必须非空且唯一: %q: %w", column, ErrBadState)
+		}
+		seen[column] = true
+	}
+	if !seen[layout.Fallback] {
+		return fmt.Errorf("看板兜底列 %q 不在列序中: %w", layout.Fallback, ErrBadState)
+	}
+	for state, column := range layout.StateToColumn {
+		if !seen[column] {
+			return fmt.Errorf("状态 %q 映射到不存在的看板列 %q: %w", state, column, ErrBadState)
+		}
+	}
+	return nil
+}
 
 // withStatesFromNodes 把 Nodes 投影成 States/Gates（写入侧）。
 //
@@ -154,6 +202,10 @@ func (s *Store) validateNodes(nodes []NodeDef) error {
 // PutWorkflow 写入 name 的下一个版本并返回版本号。Nodes 在写入前投影为 States/Gates。
 func (s *Store) PutWorkflow(name string, def WorkflowDef) (int, error) {
 	def = def.withStatesFromNodes()
+	if err := validateBoardLayout(def.Board); err != nil {
+		log().Warn("工作流看板布局校验未过", "name", name, "cause", err)
+		return 0, err
+	}
 	if err := s.validateNodes(def.Nodes); err != nil {
 		log().Warn("工作流节点校验未过", "name", name, "cause", err)
 		return 0, err
@@ -176,10 +228,17 @@ func (s *Store) PutWorkflow(name string, def WorkflowDef) (int, error) {
 		}
 		log().Info("写入工作流版本", "name", name, "version", version,
 			"nodes", len(def.Nodes), "dispatch_nodes", countDispatchNodes(def.Nodes),
-			"produces_nodes", countProducesNodes(def.Nodes))
+			"produces_nodes", countProducesNodes(def.Nodes), "board_columns", boardColumnCount(def.Board))
 		return nil
 	})
 	return version, err
+}
+
+func boardColumnCount(board *proto.BoardLayout) int {
+	if board == nil {
+		return 0
+	}
+	return len(board.Columns)
 }
 
 // GetWorkflow 取指定版本；version==0 取最新版。找不到返回 ErrNotFound。

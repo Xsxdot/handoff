@@ -94,6 +94,109 @@ func TestRoomsListEndpoint(t *testing.T) {
 	}
 }
 
+func TestRoomsListUnreadAndAttachProjection(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "可挂账卡")
+	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "一"}, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "二"}, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.st.CreateTask(&proto.Task{ID: "T1", RepoPath: "/repo", WorkDir: "/work/B1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.ledger.LinkTask(card.ID, "", "T1", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Rooms []proto.RoomSummary `json:"rooms"`
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != 200 {
+		t.Fatalf("GET /api/rooms: %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	var found *proto.RoomSummary
+	for i := range out.Rooms {
+		if out.Rooms[i].ID == card.ID {
+			found = &out.Rooms[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("卡房间应出现在列表: %+v", out.Rooms)
+	}
+	if found.Unread != 2 {
+		t.Fatalf("两条未读消息应投影 unread=2: %+v", *found)
+	}
+	if found.Attach == nil || found.Attach.Target != "" || found.Attach.TaskID != "T1" ||
+		found.Attach.WorkDir != "/work/B1" || found.Attach.Command != "handoff attach T1" {
+		t.Fatalf("本机挂账 attach 投影错误: %+v", found.Attach)
+	}
+	globalFound := false
+	for _, room := range out.Rooms {
+		if room.Kind == "global" {
+			globalFound = true
+			if room.Unread < 0 {
+				t.Fatalf("global unread 必须在线: %+v", room)
+			}
+		}
+	}
+	if !globalFound {
+		t.Fatal("global 房间应出现在列表")
+	}
+
+	seq, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "三"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+card.ID+"/read", fmt.Sprintf(`{"upto_seq":%d}`, seq))
+	if code != 200 {
+		t.Fatalf("POST /read: %d %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != 200 {
+		t.Fatalf("GET /api/rooms after read: %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, room := range out.Rooms {
+		if room.ID == card.ID && room.Unread != 0 {
+			t.Fatalf("已读后 unread 应为 0: %+v", room)
+		}
+	}
+}
+
+func TestRoomsListWithoutAttachmentKeepsAttachMissing(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "无挂账卡")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != 200 {
+		t.Fatalf("GET /api/rooms: %d %s", code, body)
+	}
+	var out struct {
+		Rooms []json.RawMessage `json:"rooms"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range out.Rooms {
+		var room struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &room); err != nil {
+			t.Fatal(err)
+		}
+		if room.ID == card.ID && strings.Contains(string(raw), `"attach"`) {
+			t.Fatalf("无挂账卡不应出现 attach: %s", raw)
+		}
+	}
+}
+
 func TestRoomMessagesEndpoint(t *testing.T) {
 	// 写侧受守、读侧宽容的正面锚（协调者裁决①）：存在的房间、已落过 N 条
 	// room_message → GET 返回 200 且恰好那 N 条（条数与内容都断言，不只断言

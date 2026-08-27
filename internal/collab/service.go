@@ -247,7 +247,19 @@ func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.Le
 // LastActivity=该房间最新一条 room_message 时刻；卡房间无消息时回退卡的
 // UpdatedAt。Live=绑定者租约未过期（同一注入时钟 nowFn 判定），无绑定时
 // false；DriverLease 读失败向上传播（C6 handler 退化 503，不吞错）。
+// ListRooms 返回不带成员未读视图的会话列表。需要成员维度时使用
+// ListRoomsForMember；保留本入口供不关心用户身份的调用方使用。
 func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
+	return s.listRooms(project, "")
+}
+
+// ListRoomsForMember 返回会话列表并把指定成员的未读数投影到每一行。
+// member 为空时不读取游标，保持 ListRooms 的旧语义。
+func (s *Service) ListRoomsForMember(project, member string) ([]proto.RoomSummary, error) {
+	return s.listRooms(project, member)
+}
+
+func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error) {
 	cards, err := s.lc.ListAllCards(project)
 	if err != nil {
 		log().Warn("会话列表组装失败：读卡列表", "project", project, "cause", err)
@@ -309,6 +321,17 @@ func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
 	for i := range rooms {
 		if bs := rooms[i].BoundSession; bs != "" {
 			rooms[i].Live = liveOf[bs]
+		}
+	}
+	if member != "" {
+		for i := range rooms {
+			unread, err := s.Unread(member, rooms[i].ID)
+			if err != nil {
+				log().Warn("会话列表组装失败：读未读数",
+					"project", project, "member", member, "room", rooms[i].ID, "cause", err)
+				return nil, err
+			}
+			rooms[i].Unread = unread
 		}
 	}
 	// 排序：非终态（含群房间）按活动降序在前，终态卡房间沉底（各自内部按

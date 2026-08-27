@@ -36,6 +36,8 @@ const roomsFixture: unknown = [
     live: true,
     read_only: false,
     last_activity: '2026-08-26T08:00:00.123456789+08:00',
+    unread: 0,
+    attach: { target: 'devbox', task_id: 'T1', work_dir: '/w/B1', command: 'handoff attach T1' },
   },
   {
     id: 'project:handoff',
@@ -44,6 +46,7 @@ const roomsFixture: unknown = [
     live: false,
     read_only: false,
     last_activity: '2026-08-26T07:00:00+08:00',
+    unread: 0,
   },
 ]
 
@@ -63,6 +66,10 @@ describe('fetchRooms', () => {
     expect(rooms[0].live).toBe(true)
     expect(rooms[0].read_only).toBe(false)
     expect(rooms[0].bound_session).toBe('console:alice@box')
+    expect(rooms[0].unread).toBe(0)
+    expect(rooms[0].attach).toEqual({
+      target: 'devbox', task_id: 'T1', work_dir: '/w/B1', command: 'handoff attach T1',
+    })
 
     await fetchRooms('handoff')
     expect(fetchMock.mock.calls[1][0]).toBe('/api/rooms?project=handoff')
@@ -70,11 +77,13 @@ describe('fetchRooms', () => {
 
   it('bound_session 缺席不出键：解码为 undefined 而非空串（可空 vs 零值）', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResp({ rooms: [{ id: 'global', kind: 'global', title: '全员群', live: false, read_only: false, last_activity: 'x' }] }),
+      jsonResp({ rooms: [{ id: 'global', kind: 'global', title: '全员群', live: false, read_only: false, last_activity: 'x', unread: 0 }] }),
     )
     vi.stubGlobal('fetch', fetchMock)
     const [room] = await fetchRooms()
     expect(room.bound_session).toBeUndefined()
+    expect(room.unread).toBe(0)
+    expect(room.attach).toBeUndefined()
   })
 })
 

@@ -43,5 +43,35 @@
       "title": "@你：改动影响 B145",
       "ref_id": "918"
     }
+  },
+  {
+    "case": "room-summary-attach",
+    "room": {
+      "id": "B1",
+      "kind": "card",
+      "title": "卡会话",
+      "live": true,
+      "read_only": false,
+      "last_activity": "2026-08-26T08:00:00.123456789+08:00",
+      "unread": 0,
+      "attach": {
+        "target": "devbox",
+        "task_id": "T1",
+        "work_dir": "/w/B1",
+        "command": "handoff attach T1"
+      }
+    }
+  },
+  {
+    "case": "room-summary-no-attach",
+    "room": {
+      "id": "global",
+      "kind": "global",
+      "title": "全员",
+      "live": false,
+      "read_only": false,
+      "last_activity": "2026-08-26T08:00:00+08:00",
+      "unread": 0
+    }
   }
 ]
