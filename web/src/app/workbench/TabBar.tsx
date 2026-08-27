@@ -82,6 +82,12 @@ export function TabBar({
               type="button"
               role="tab"
               aria-selected={active}
+              onMouseDown={(e) => {
+                // 浏览器会在 mousedown 就把焦点给这个按钮。TUI 开了 1004
+                // 会立刻收到 ESC [O]，看起来像切 tab 卡死。拦住默认焦点，
+                // 激活后由 TerminalTab 自己 focus textarea。
+                e.preventDefault()
+              }}
               onClick={() => onActivate(group, t.id)}
               className="max-w-48 truncate px-3 py-1.5 text-[13px]"
             >

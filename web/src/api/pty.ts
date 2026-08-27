@@ -55,6 +55,8 @@ export interface PtyHandle {
   close: () => void
   send: (bytes: Uint8Array) => void
   resize: (cols: number, rows: number) => void
+  // debug 把一条取证记到 agentd 日志（type=debug 控制帧），不进 PTY。
+  debug: (message: string) => void
 }
 
 function ptyUrl(sessionId: string, since: number, machine?: string): string {
@@ -76,6 +78,8 @@ export function connectPty(options: PtyOptions): PtyHandle {
   let terminal = false
   let retryDelay = 300
   let retryTimer: number | undefined
+  let opened = false
+  const pendingDebug: string[] = []
 
   function cleanup() {
     if (!ws) return
@@ -125,14 +129,26 @@ export function connectPty(options: PtyOptions): PtyHandle {
 
   function open() {
     if (closedByUs || terminal) return
+    opened = false
     ws = (options.create ?? ((url: string) => new WebSocket(url) as unknown as PtySocketLike))(
       ptyUrl(options.sessionId, cursor, options.machine),
     )
     // 必须在任何消息到达之前设：blob 模式下 onmessage 拿到的是需要 await 的对象
     ws.binaryType = 'arraybuffer'
     ws.onopen = () => {
+      opened = true
       retryDelay = 300
       options.onStatus?.('open')
+      while (pendingDebug.length > 0) {
+        const message = pendingDebug.shift()
+        if (message !== undefined) {
+          try {
+            ws?.send(JSON.stringify({ type: 'debug', message }))
+          } catch {
+            break
+          }
+        }
+      }
     }
     ws.onmessage = (msg) => {
       if (typeof msg.data === 'string') {
@@ -185,6 +201,17 @@ export function connectPty(options: PtyOptions): PtyHandle {
     },
     resize(cols, rows) {
       ws?.send(JSON.stringify({ type: 'resize', cols, rows }))
+    },
+    debug(message) {
+      if (!opened) {
+        if (pendingDebug.length < 50) pendingDebug.push(message)
+        return
+      }
+      try {
+        ws?.send(JSON.stringify({ type: 'debug', message }))
+      } catch {
+        // 通道未就绪时取证丢失，不能把诊断路径变成输入故障
+      }
     },
   }
 }

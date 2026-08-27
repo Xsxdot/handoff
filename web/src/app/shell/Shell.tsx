@@ -507,7 +507,7 @@ export function Shell() {
                   terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
                   launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
                   onBeforeClose={beforeCloseTab}
-                  renderContent={(c, base, group, tabId) => {
+                  renderContent={(c, base, group, tabId, active = true) => {
                     switch (c.kind) {
                       case 'terminal': {
                         const note = ptyNote(base.machine)
@@ -526,6 +526,7 @@ export function Shell() {
                             envFile={launcher?.env_file}
                             initCommand={launcher?.command}
                             incompatible={c.incompatible}
+                            active={active}
                             // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                             // 就会再建一个会话，用户每切一次多留一个 shell
                             onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
@@ -589,7 +590,7 @@ export function Shell() {
           dock={dock}
           onKill={killHomeSession}
           onNewFile={scratchRoot === '' ? undefined : newScratchFile}
-          renderTab={(t) =>
+          renderTab={(t, active = true) =>
             t.kind === 'file' ? (
               <FileTab
                 base={scratchBase(scratchRoot, t.machine)}
@@ -603,10 +604,12 @@ export function Shell() {
               />
             ) : (
               <TerminalTab
+                key={t.id}
                 base={HOME_BASE}
                 seq={t.seq}
                 sessionId={t.sessionId}
                 incompatible={t.incompatible}
+                active={active}
                 onSession={(id) => dock.setSession(t.id, id)}
               />
             )

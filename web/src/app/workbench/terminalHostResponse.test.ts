@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { isTerminalHostResponse } from './terminalHostResponse'
+import { isFocusReport, isTerminalHostResponse, takeLeadingFocusReport } from './terminalHostResponse'
 
 describe('isTerminalHostResponse', () => {
   it('认出 xterm.js Secondary DA：ESC [ > 0 ; 276 ; 0 c', () => {
@@ -50,5 +50,36 @@ describe('isTerminalHostResponse', () => {
 
   it('回包后面若粘了用户输入，整段放行——不能把人敲的字一起吞掉', () => {
     expect(isTerminalHostResponse('\x1b[>0;276;0cls')).toBe(false)
+  })
+
+  it('焦点报告不是设备回包——活着的 [I]/[O] 必须上送', () => {
+    expect(isTerminalHostResponse('\x1b[I')).toBe(false)
+    expect(isTerminalHostResponse('\x1b[O')).toBe(false)
+  })
+})
+
+describe('isFocusReport', () => {
+  it('只认整段 ESC [I / ESC [O', () => {
+    expect(isFocusReport('\x1b[I')).toBe(true)
+    expect(isFocusReport('\x1b[O')).toBe(true)
+  })
+
+  it('方向键、DA、鼠标报告都不是', () => {
+    expect(isFocusReport('\x1b[A')).toBe(false)
+    expect(isFocusReport('\x1b[>0;276;0c')).toBe(false)
+    expect(isFocusReport('\x1b[<64;10;4M')).toBe(false)
+    expect(isFocusReport('')).toBe(false)
+  })
+})
+
+describe('takeLeadingFocusReport', () => {
+  it('吃掉开头的 [I] / [O]，剩下的原样返回', () => {
+    expect(takeLeadingFocusReport('\x1b[O')).toEqual({ report: '\x1b[O', rest: '' })
+    expect(takeLeadingFocusReport('\x1b[Ihello')).toEqual({ report: '\x1b[I', rest: 'hello' })
+  })
+
+  it('不是焦点报告则不动', () => {
+    expect(takeLeadingFocusReport('\x1b[A')).toBeNull()
+    expect(takeLeadingFocusReport('a')).toBeNull()
   })
 })

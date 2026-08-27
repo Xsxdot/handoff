@@ -8,14 +8,15 @@
 // 边界：
 //   - 不认识任何一种 tab 的具体内容：renderContent 由 Shell 注入，
 //     这样中央区的布局与「终端/文件/TUI 各自怎么画」互不牵连
-//   - 不持有状态：全部经 WorkbenchApi
+//   - 不持有状态：全部经 WorkbenchApi。例外：seenTerminals 记住本页见过的
+//     终端 tab，切走、切基准目录都不卸载（B270）。文件 tab 仍切走即卸。
 //
 // 「选了种类之后」的分流（spec §2.2.1）：
 //   - 终端：直接就位，序号由 tabs.ts 算
 //   - 新文件：Task 10 接入创建流程
 //   - 任务 TUI：打开任务选择器，在当前项目内挑选任务
 import { Fragment, useState, type ReactNode } from 'react'
-import { MAX_GROUPS, MIN_PANE_PX, nextTerminalSeq, type TabContent } from './tabs'
+import { MAX_GROUPS, MIN_PANE_PX, nextTerminalSeq, type TabContent, type TabGroup, type Workbench } from './tabs'
 import { BlankTab, type PickKind } from './BlankTab'
 import { EmptyWorkbench } from './EmptyWorkbench'
 import { GroupDivider } from './GroupDivider'
@@ -34,7 +35,9 @@ export interface WorkbenchPageProps {
   // renderContent 多收 group 与 tabId：终端 tab 建出会话之后要把 id 写回
   // **它自己**（setContent(group, tabId, …)），而中央区是唯一知道自己在哪一组、
   // 哪个 tab 的地方。
-  renderContent: (content: TabContent, base: BaseDir, group: number, tabId: string) => ReactNode
+  // active：这个 tab 此刻是不是所在组的激活项。终端 keep-alive 时非激活
+  // 实例仍会收到 renderContent，靠它决定要不要抢焦点。
+  renderContent: (content: TabContent, base: BaseDir, group: number, tabId: string, active?: boolean) => ReactNode
   // terminalUnavailable：当前基准目录所在机器不能开终端时的原因原文
   terminalUnavailable?: string
   // onBeforeClose 返回 false = 这次关闭由上层接管（要先弹确认、先删服务端会话）。
@@ -57,6 +60,105 @@ export interface WorkbenchPageProps {
 // 由 splitGroupAt 夹到合法范围。
 const END_INDEX = Number.MAX_SAFE_INTEGER
 
+// terminalAliveKey 把「哪个基准上的哪个 tab」编成 seen 里的键。
+// 各基准的 nextTabId 都从 t1 起号，不能只用 tab.id——A 的终端和 B 的 TUI
+// 都会叫 t1，混进同一个 Set 会把剪枝判错。
+export function terminalAliveKey(baseKey: string, tabId: string): string {
+  return `${baseKey}\x1f${tabId}`
+}
+
+// aliveTerminalIds 算出「这一帧哪些终端 tab 必须挂着」。
+//
+// 见过（曾经激活过）的终端切走不卸：卸了会重放 1004h，xterm 在失焦时发
+// [O]，把还在跑的 TUI 打成无法输入。关掉的 tab 从 seen 里剔除，避免泄漏。
+//
+// byBase 必须一起算：点左栏任务会 select 到任务所在目录，当前 groups 换成
+// 另一套。只看当前组会把原目录的终端从 seen 里剪掉，等于没 keep-alive。
+export function aliveTerminalIds(
+  seen: ReadonlySet<string>,
+  currentBaseKey: string,
+  groups: TabGroup[],
+  byBase: Record<string, Workbench> = {},
+): Set<string> {
+  const open = new Set<string>()
+  const add = (baseKey: string, gs: TabGroup[]) => {
+    for (const g of gs) {
+      for (const t of g.tabs) open.add(terminalAliveKey(baseKey, t.id))
+    }
+  }
+  if (currentBaseKey !== '') add(currentBaseKey, groups)
+  for (const [key, w] of Object.entries(byBase)) add(key, w.groups)
+  const next = new Set<string>()
+  for (const id of seen) {
+    if (open.has(id)) next.add(id)
+  }
+  if (currentBaseKey !== '') {
+    for (const g of groups) {
+      const t = g.tabs.find((x) => x.id === g.activeId)
+      if (t?.content.kind === 'terminal') next.add(terminalAliveKey(currentBaseKey, t.id))
+    }
+  }
+  return next
+}
+
+// offBaseTerminals 是「仍该挂着、但不在当前基准的 groups 里」的终端。
+// 点左栏任务切走目录时，把它们铺在第一栏下面，尺寸跟单栏工作台一致，
+// 避免卸掉 xterm。分屏后切目录可能有一次 SIGWINCH，比卸载重放轻。
+function offBaseTerminals(
+  alive: ReadonlySet<string>,
+  currentKey: string,
+  byBase: Record<string, Workbench>,
+  baseDirs: Record<string, BaseDir>,
+): Array<{ id: string; content: TabContent; base: BaseDir; group: number }> {
+  const out: Array<{ id: string; content: TabContent; base: BaseDir; group: number }> = []
+  for (const [key, w] of Object.entries(byBase)) {
+    if (key === currentKey) continue
+    const b = baseDirs[key]
+    if (!b) continue
+    w.groups.forEach((g, gi) => {
+      for (const t of g.tabs) {
+        if (t.content.kind === 'terminal' && alive.has(terminalAliveKey(key, t.id))) {
+          out.push({ id: t.id, content: t.content, base: b, group: gi })
+        }
+      }
+    })
+  }
+  return out
+}
+
+// paneTerminalHosts 把「这一栏要挂着的终端」收成一张表，key 永远是
+// baseKey+tabId。当前栏和其它基准必须走同一张表：拆成两个 map 时 React
+// 会当成卸掉再挂上，xterm 重连重放 1004h，OpenTUI/Grok 就卡死。
+function paneTerminalHosts(
+  g: TabGroup,
+  gi: number,
+  currentBase: BaseDir,
+  alive: ReadonlySet<string>,
+  byBase: Record<string, Workbench>,
+  baseDirs: Record<string, BaseDir>,
+): Array<{ key: string; id: string; content: TabContent; base: BaseDir; group: number; isActive: boolean }> {
+  const hosts: Array<{ key: string; id: string; content: TabContent; base: BaseDir; group: number; isActive: boolean }> = []
+  for (const t of g.tabs) {
+    if (t.content.kind !== 'terminal') continue
+    const key = terminalAliveKey(currentBase.key, t.id)
+    if (!alive.has(key)) continue
+    hosts.push({
+      key, id: t.id, content: t.content, base: currentBase, group: gi,
+      isActive: t.id === g.activeId,
+    })
+  }
+  if (gi === 0) {
+    for (const h of offBaseTerminals(alive, currentBase.key, byBase, baseDirs)) {
+      hosts.push({
+        key: terminalAliveKey(h.base.key, h.id),
+        id: h.id, content: h.content, base: h.base, group: h.group,
+        isActive: false,
+      })
+    }
+  }
+  return hosts
+}
+
 export function WorkbenchPage({
   api,
   onAddProject,
@@ -68,7 +170,12 @@ export function WorkbenchPage({
   onFileCreated,
   launchers = [],
 }: WorkbenchPageProps) {
-  const { base, wb } = api
+  const { base, wb, byBase, baseDirs } = api
+  const [seenTerminals, setSeenTerminals] = useState<Set<string>>(() => new Set())
+  const alive = aliveTerminalIds(seenTerminals, base?.key ?? '', wb.groups, byBase)
+  if (alive.size !== seenTerminals.size || [...alive].some((id) => !seenTerminals.has(id))) {
+    setSeenTerminals(alive)
+  }
   // picking 记「谁正在选任务」。null = 弹层关闭。
   //
   // tabId 为 null = 这次是从 tab 条的 + 菜单发起的，还没有承接它的 tab，选完
@@ -305,27 +412,48 @@ export function WorkbenchPage({
               {/* overflow-hidden 而不是 overflow-auto：终端 tab 的 xterm 在
                   凑不满一行滚轮时不会 preventDefault，父级再偷偷滑几像素就会
                   变成「网上滚一点然后卡住」。文件 / 会话流各自有自己的滚动区。 */}
-              <div className="min-h-0 flex-1 overflow-hidden">
+              <div className="relative min-h-0 flex-1 overflow-hidden">
+                {paneTerminalHosts(g, gi, base, alive, byBase, baseDirs).map((h) => (
+                  <div
+                    key={h.key}
+                    data-testid={h.base.key === base.key ? undefined : 'keep-alive-offbase'}
+                    className={cn(
+                      'absolute inset-0 bg-[#0b0b0c]',
+                      h.isActive ? 'z-10' : 'z-0',
+                    )}
+                  >
+                    {renderContent(h.content, h.base, h.group, h.id, h.isActive)}
+                  </div>
+                ))}
                 {activeTab === null ? (
-                  <BlankTab
-                    key={`empty-${gi}`}
-                    base={base}
-                    onPick={(k) => startFromEmpty(gi, k)}
-                    launchers={launcherItems}
-                    onPickLauncher={(name) => startLauncherFromEmpty(gi, name)}
-                    terminalUnavailable={terminalUnavailable}
-                  />
-                ) : activeTab.content.kind === 'blank' ? (
-                  <BlankTab
-                    key={activeTab.id}
-                    base={base}
-                    onPick={(k) => pick(gi, activeTab.id, k)}
-                    launchers={launcherItems}
-                    onPickLauncher={(name) => pickLauncher(gi, activeTab.id, name)}
-                    terminalUnavailable={terminalUnavailable}
-                  />
+                  <div className="absolute inset-0 z-10 bg-background">
+                    <BlankTab
+                      key={`empty-${gi}`}
+                      base={base}
+                      onPick={(k) => startFromEmpty(gi, k)}
+                      launchers={launcherItems}
+                      onPickLauncher={(name) => startLauncherFromEmpty(gi, name)}
+                      terminalUnavailable={terminalUnavailable}
+                    />
+                  </div>
                 ) : (
-                  renderContent(activeTab.content, base, gi, activeTab.id)
+                  <>
+                    {activeTab.content.kind === 'blank' ? (
+                      <div key={activeTab.id} className="absolute inset-0 z-10 bg-background">
+                        <BlankTab
+                          base={base}
+                          onPick={(k) => pick(gi, activeTab.id, k)}
+                          launchers={launcherItems}
+                          onPickLauncher={(name) => pickLauncher(gi, activeTab.id, name)}
+                          terminalUnavailable={terminalUnavailable}
+                        />
+                      </div>
+                    ) : activeTab.content.kind !== 'terminal' ? (
+                      <div key={activeTab.id} className="absolute inset-0 z-10 bg-background">
+                        {renderContent(activeTab.content, base, gi, activeTab.id, true)}
+                      </div>
+                    ) : null}
+                  </>
                 )}
               </div>
             </section>

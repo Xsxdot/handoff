@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
-  altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelection,
+  altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelection, wheelPixelDeltaY,
 } from './terminalWheel'
 
 describe('pointerCell', () => {
@@ -46,19 +46,17 @@ describe('altBufferWheelReports', () => {
   it('一次像素距离换成多格同坐标报告', () => {
     const rem = { x: 0, y: 0 }
     expect(altBufferWheelReports({ ...base, remainder: rem, deltaX: 0, deltaY: -160, col: 12, row: 5 }))
-      .toBe('\x1b[<64;12;5M'.repeat(10))
+      .toBe('\x1b[<64;12;5M'.repeat(8))
   })
-  it('向下是 65，一次最多 32 格', () => {
+  it('向下是 65，一次最多 8 格——32 格会把 OpenTUI/Grok 的输入灌爆', () => {
     const rem = { x: 0, y: 0 }
     expect(altBufferWheelReports({ ...base, remainder: rem, deltaX: 0, deltaY: 1600, col: 3, row: 8 }))
-      .toBe('\x1b[<65;3;8M'.repeat(32))
+      .toBe('\x1b[<65;3;8M'.repeat(8))
   })
   it('横滑是 66/67，与纵滑分开累计', () => {
     const rem = { x: 0, y: 0 }
-    // cellWidth=8：-160px → 20 格；+16px → 2 格。plan 原稿写成 repeat(10)/单格，
-    // 是把纵滑 cellHeight=16 的除法套到了横滑上；公式与纵滑同一条 ticksFromDelta。
     expect(altBufferWheelReports({ ...base, remainder: rem, deltaX: -160, deltaY: 0 }))
-      .toBe('\x1b[<66;10;4M'.repeat(20))
+      .toBe('\x1b[<66;10;4M'.repeat(8))
     expect(altBufferWheelReports({ ...base, remainder: rem, deltaX: 16, deltaY: 0 }))
       .toBe('\x1b[<67;10;4M'.repeat(2))
   })
@@ -76,5 +74,15 @@ describe('altBufferWheelReports', () => {
   it('非法格子不发', () => {
     const rem = { x: 0, y: 0 }
     expect(altBufferWheelReports({ ...base, remainder: rem, deltaX: 0, deltaY: -16, col: 0, row: 1 })).toBe('')
+  })
+})
+
+describe('wheelPixelDeltaY', () => {
+  it('像素模式原样返回', () => {
+    expect(wheelPixelDeltaY({ deltaY: -160, deltaMode: 0 }, 16, 30)).toBe(-160)
+  })
+
+  it('行模式按单元格高度换成像素——触控板是像素、鼠标滚轮常是行', () => {
+    expect(wheelPixelDeltaY({ deltaY: -3, deltaMode: 1 }, 16, 30)).toBe(-48)
   })
 })

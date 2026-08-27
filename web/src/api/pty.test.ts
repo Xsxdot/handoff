@@ -29,6 +29,9 @@ class FakePtySocket implements PtySocketLike {
   emitClose(code: number) {
     this.onclose?.({ code } as CloseEvent)
   }
+  emitOpen() {
+    this.onopen?.({} as Event)
+  }
 }
 
 function harness(overrides: Partial<Parameters<typeof connectPty>[0]> = {}) {
@@ -105,6 +108,23 @@ describe('connectPty', () => {
     handle.resize(120, 40)
     expect(sockets[0].sent[0]).toBeInstanceOf(ArrayBuffer)
     expect(JSON.parse(String(sockets[0].sent[1]))).toEqual({ type: 'resize', cols: 120, rows: 40 })
+  })
+
+  it('debug 走 JSON 文本帧，不走二进制——取证不能进 PTY', () => {
+    const { sockets, handle } = harness()
+    sockets[0].emitOpen()
+    handle.debug('active cycle=1 mouse=vt200')
+    expect(JSON.parse(String(sockets[0].sent[0]))).toEqual({
+      type: 'debug', message: 'active cycle=1 mouse=vt200',
+    })
+  })
+
+  it('open 之前的 debug 在 open 后补发，切 tab 取证不能丢在 CONNECTING', () => {
+    const { sockets, handle } = harness()
+    handle.debug('mount')
+    expect(sockets[0].sent).toHaveLength(0)
+    sockets[0].emitOpen()
+    expect(JSON.parse(String(sockets[0].sent[0]))).toEqual({ type: 'debug', message: 'mount' })
   })
 
   it('machine 非空时进查询串——远程终端由本机 agentd 反代', () => {

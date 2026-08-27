@@ -70,6 +70,7 @@ const (
 	PtyCtrlExit     = "exit"     // 服务端 → 客户端，shell 已退出
 	PtyCtrlError    = "error"    // 服务端 → 客户端
 	PtyCtrlResize   = "resize"   // 客户端 → 服务端
+	PtyCtrlDebug    = "debug"    // 客户端 → 服务端，B270 取证，不进 PTY
 )
 
 // PtyControl 是 /ws/pty 上双向共用的控制帧。

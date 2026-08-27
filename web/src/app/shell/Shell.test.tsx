@@ -52,6 +52,7 @@ const termInstance = {
   writeln: vi.fn(),
   clear: vi.fn(),
   focus: vi.fn(),
+  blur: vi.fn(),
   dispose: vi.fn(),
   loadAddon: vi.fn(),
   refresh: vi.fn(),

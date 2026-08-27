@@ -8,7 +8,28 @@
 //   - 不改成方向键
 //   - 不在这里决定「划词放行」——那是 wheelForcesSelection，调用方据此根本不调用本函数
 
-const wheelTickCap = 32
+const wheelTickCap = 8
+
+// WheelEvent.deltaMode：0 像素 / 1 行 / 2 页。触控板走像素，鼠标滚轮常走行。
+const DOM_DELTA_LINE = 1
+const DOM_DELTA_PAGE = 2
+
+export interface WheelDelta {
+  deltaY: number
+  deltaMode?: number
+}
+
+// wheelPixelDeltaY 把一次滚轮的 deltaY 统一成像素。
+//
+// 参数：ev 至少有 deltaY；cellHeight 一行像素；rows 一页行数（页模式用）。
+// 返回：与触控板像素 delta 同一量纲的有符号像素，上负下正。
+export function wheelPixelDeltaY(ev: WheelDelta, cellHeight: number, rows: number): number {
+  const px = cellHeight > 0 ? cellHeight : 16
+  const mode = ev.deltaMode ?? 0
+  if (mode === DOM_DELTA_LINE) return ev.deltaY * px
+  if (mode === DOM_DELTA_PAGE) return ev.deltaY * px * Math.max(1, rows)
+  return ev.deltaY
+}
 
 export interface PointerRect {
   left: number

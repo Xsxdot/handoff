@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { act, createEvent, fireEvent, render, renderHook, screen, waitFor } from '@testing-library/react'
-import { WorkbenchPage as ActualWorkbenchPage, type WorkbenchPageProps } from './WorkbenchPage'
+import { WorkbenchPage as ActualWorkbenchPage, aliveTerminalIds, terminalAliveKey, type WorkbenchPageProps } from './WorkbenchPage'
 import { BlankTab } from './BlankTab'
 import { createUntitledFile } from './newFile'
 import type { BaseDir, WorkbenchApi } from './useWorkbench'
@@ -556,6 +556,98 @@ describe('WorkbenchPage', () => {
     )
     expect(screen.queryByRole('button', { name: /新终端/ })).not.toBeInTheDocument()
     expect(screen.getByText(/不支持 PTY/)).toBeInTheDocument()
+  })
+
+  it('切走终端 tab 不卸载——重放 1004h 会把正在跑的 TUI 打成失焦', () => {
+    const termWb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1, sessionId: 's1' })
+    const { rerender } = render(
+      <WorkbenchPage
+        api={api({ wb: termWb })}
+        onAddProject={vi.fn()}
+        renderContent={(c) => <div data-testid={`pane-${c.kind}`}>{c.kind}</div>}
+      />,
+    )
+    expect(screen.getByTestId('pane-terminal')).toBeInTheDocument()
+    const both = openTab(termWb, { kind: 'file', rel: 'a.go' })
+    rerender(
+      <WorkbenchPage
+        api={api({ wb: both })}
+        onAddProject={vi.fn()}
+        renderContent={(c) => <div data-testid={`pane-${c.kind}`}>{c.kind}</div>}
+      />,
+    )
+    expect(screen.getByTestId('pane-terminal')).toBeInTheDocument()
+    expect(screen.getByTestId('pane-file')).toBeInTheDocument()
+    // 切走靠下层 z-index + 文件层不透明底挡住。不能用 pointer-events-none：
+    // WKWebView 去掉这个 class 之后经常不恢复命中测试，表现就是能打字
+    //（focus() 直达 textarea）但不能滑（滚轮走命中测试）。
+    const termWrap = screen.getByTestId('pane-terminal').parentElement
+    expect(termWrap).toHaveClass('z-0')
+    expect(termWrap).not.toHaveClass('pointer-events-none')
+    expect(termWrap).not.toHaveClass('opacity-0')
+    expect(termWrap).not.toHaveClass('invisible')
+    expect(termWrap).not.toHaveClass('hidden')
+  })
+
+  it('切到另一个基准目录，已经见过的终端仍挂着——点左栏任务会 select 任务所在目录', () => {
+    const termWb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1, sessionId: 's1' })
+    const other: BaseDir = {
+      key: '/w/other', kind: 'workspace', path: '/w/other',
+      label: 'other', projectName: 'handoff', machine: '',
+    }
+    const otherWb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
+    const { rerender } = render(
+      <WorkbenchPage
+        api={api({
+          wb: termWb,
+          byBase: { [base.key]: termWb },
+          baseDirs: { [base.key]: base },
+        })}
+        onAddProject={vi.fn()}
+        renderContent={(c) => <div data-testid={`pane-${c.kind}`}>{c.kind}</div>}
+      />,
+    )
+    const node = screen.getByTestId('pane-terminal')
+    rerender(
+      <WorkbenchPage
+        api={api({
+          base: other,
+          wb: otherWb,
+          byBase: { [base.key]: termWb, [other.key]: otherWb },
+          baseDirs: { [base.key]: base, [other.key]: other },
+        })}
+        onAddProject={vi.fn()}
+        renderContent={(c) => <div data-testid={`pane-${c.kind}`}>{c.kind}</div>}
+      />,
+    )
+    expect(screen.getByTestId('keep-alive-offbase')).toBeInTheDocument()
+    expect(screen.getByTestId('pane-terminal')).toBe(node)
+    expect(screen.getByTestId('pane-tui')).toBeInTheDocument()
+  })
+
+  it('aliveTerminalIds 把其他基准里见过的终端算进存活集——不靠当前 groups', () => {
+    const termWb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1, sessionId: 's1' })
+    const id = termWb.groups[0]!.tabs[0]!.id
+    const other: BaseDir = {
+      key: '/w/other', kind: 'workspace', path: '/w/other',
+      label: 'other', projectName: 'handoff', machine: '',
+    }
+    const otherWb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
+    const key = terminalAliveKey(base.key, id)
+    const seen = new Set([key])
+    expect(aliveTerminalIds(seen, other.key, otherWb.groups, { [base.key]: termWb }).has(key)).toBe(true)
+    expect(aliveTerminalIds(seen, other.key, otherWb.groups, {}).has(key)).toBe(false)
+  })
+
+  it('点 tab 标题 mousedown 不让按钮抢走焦点', () => {
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1, sessionId: 's1' })
+    render(
+      <WorkbenchPage api={api({ wb })} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />,
+    )
+    const tab = screen.getByRole('tab', { selected: true })
+    const ev = createEvent.mouseDown(tab)
+    fireEvent(tab, ev)
+    expect(ev.defaultPrevented).toBe(true)
   })
 
   it('onBeforeClose 返回 false 时 tab 不关——上层要先删服务端会话', () => {
