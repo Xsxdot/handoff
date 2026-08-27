@@ -160,10 +160,11 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   const onInputCapture = (ev: Event): void => {
     seqBeforeInput = dataSeq
     const ie = ev as InputEvent
-    if (!dropOptionGeneratedText(ie)) return
+    const text = ie.data
+    if (!text || !dropOptionGeneratedText(ie)) return
     ev.stopPropagation()
     ev.preventDefault()
-    logTermFix(label, 'Option Meta', ie.data)
+    logTermFix(label, 'Option Meta', text)
   }
 
   // xterm 处理完 keypress 之后：它发了东西没有？
