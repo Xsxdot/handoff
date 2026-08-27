@@ -262,7 +262,8 @@ func (s *Server) handleCoordAttach(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		mapped := coordinatorAttachInfo(info)
-		s.log.Info("attach 接管完成", "card", id, "machine", mapped.Machine, "dir", mapped.Dir, "command", mapped.Command)
+		// command 只返回给请求方，不写日志：它包含 resume session id。
+		s.log.Info("attach 接管完成", "card", id, "machine", mapped.Machine, "dir", mapped.Dir)
 		writeJSON(w, http.StatusOK, mapped)
 		return
 	}
