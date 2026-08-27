@@ -1,8 +1,8 @@
 # B275：B156.2-156.3 前端 + B265 对话框整合——IM 会话面与看板形态重做
 
 - **卡**：B275（B156.2-156.3 前端原型与对话框整合，含 B265）
-- **级别与档位**：**L3 轻档**（定稿范围复核：动跨子系统 wire 契约——见「契约语义与接缝」两条增量；实现面集中在 Web 控制台一个子系统，单子系统工作量虽超流程固定成本，但无跨子系统并行拆解的必要，contract → breakdown → 单轮 implement → review → acceptance → 图对账 → finish）
-- **状态**：用户已批准（2026-08-27 原型走查逐轮定稿，2026-08-28 授权按 charter 自主推进到底并合并回 acc/b156.2-156.3）
+- **级别与档位**：**L2**（用户裁决，2026-08-28：跳过 contract/breakdown 直接进 plan——两条 wire 增量窄到可在 plan/implement 内冻结，不值两个节点。入口复核原判 L3 轻档：动跨子系统 wire 契约，见「契约语义与接缝」；裁决留痕于此， increments 的精确签名由 plan 写死、review 对照 spec 验收）
+- **状态**：用户已批准（2026-08-27 原型走查逐轮定稿，2026-08-28 授权按 charter 自主推进到底并合并回 acc/b156.2-156.3；同日裁决直接进 plan 列）
 - **形态权威**：`prototypes/b275-frontend-proto/`（随本卡分支强制入库，file:// 直开零依赖）。**实现与验收一律对照原型代码本身；本 spec 与后续 plan 只写决策与接缝，不用文字转述 UI——任何样式/结构歧义以原型代码为准。**
 
 ## 问题陈述
@@ -36,12 +36,12 @@ B156.2（协作层：房间制会话）与 B156.3（自动化层：规则引擎 
 9. 作为协调者，我在卡抽屉有「拉起协调者」动作区（B156.3），卡片抽屉从中间区域最右侧打开、不挡会话面板。
 10. 作为协调者，房间已读即清未读（打开即已读，沿用契约 §7 语义）。
 
-## 契约语义与接缝（L3）
+## 契约语义与接缝
 
 本卡**不动** B156.2 已定五端点语义（`web/src/api/rooms.ts:66-106` 镜像 `internal/proto/rooms.go`）。契约增量两条，均只加投影、不改既有字段语义：
 
-1. **未读数投影**：`Service.Unread` 已存在（`internal/collab/service.go:344`）但 wire 面无投影——`RoomSummary`（`internal/proto/rooms.go:50-61`）无 unread 字段。增量：会话列表行携带未读数（字段形状归 contract 节点），组装在既有 ListRooms 装配点，双侧金样本（`rooms_fixture_test.go` / `rooms.test.ts`）同步锁。
-2. **协调者可 attach 投影**：详情页的「attach」需要一个可 attach 目标（task）与打开终端的工作目录。现状 `RoomSummary.bound_session` 是 driver_session 投影（`internal/collab/service.go:271`），它能否解析出可 attach 的 task 是**代码事实**，contract 节点第一刀查明；查不出可解析路径，则作为第二条投影增量（房间详情携带协调者 task 与工作目录），同样只加不改。
+1. **未读数投影**：`Service.Unread` 已存在（`internal/collab/service.go:344`）但 wire 面无投影——`RoomSummary`（`internal/proto/rooms.go:50-61`）无 unread 字段。增量：会话列表行携带未读数（字段形状归 plan 写死），组装在既有 ListRooms 装配点，双侧金样本（`rooms_fixture_test.go` / `rooms.test.ts`）同步锁。
+2. **协调者可 attach 投影**：详情页的「attach」需要一个可 attach 目标（task）与打开终端的工作目录。现状 `RoomSummary.bound_session` 是 driver_session 投影（`internal/collab/service.go:271`），它能否解析出可 attach 的 task 是**代码事实**，plan 第一刀查明；查不出可解析路径，则作为第二条投影增量（房间详情携带协调者 task 与工作目录），同样只加不改。
 
 边界声明：房间只读态（`read_only`）、Live 租约、消息 kind 白名单等既有语义全部沿用，不在本卡重议。
 
@@ -53,7 +53,7 @@ B156.2（协作层：房间制会话）与 B156.3（自动化层：规则引擎 
 2. **UI 方案 = 原型变体 B**：浅灰底 + 磨砂玻璃气泡等全部样式细节照抄原型 `pages/board.html` 与 `index.html` 的 IM 段；会话列表结构参照微信（行式、分隔线从头像右侧起、未读红徽章压头像角 #fa5151），待回复置顶琥珀底。
 3. **筛选行**：「▦ 全部项目 ∨」项目下拉 +「⚑ 需要你 N」开关，纯文字项样式（非按钮），N 由待回复房间数动态算出；待回复集由收件箱聚合（`fetchInbox` 的 card_id 集）导出，不落独立页面。
 4. **房间详情**：协调者卡（B 号圆形头像、载体、在线态）+ attach 按钮，点击均弹确认框；确认后在该房间对应目录打开终端 tab 并填入 attach 命令。终端 init 命令通道已存在（`internal/proto/pty.go:64` `InitCommand`），TS 镜像 `CreatePtySessionReq`（`web/src/api/types.ts:733`）缺 `init_command` 字段，补上（既有承诺的镜像补全，非新契约）。协调者会话不可 attach 时按钮置灰并说明，不许静默无反应。
-5. **看板列映射**（B265）：看板列从「工作流状态平铺 + 终止」（`web/src/app/cards/columns.ts:6`）改为可配置映射，配置面在工作流卡片（flows 页）新增「看板列映射」表；默认映射即原型五列（代办/沟通中/进行中/审核中/结束）。映射的持久化形状若涉及 wire 增量，contract 节点一并冻结。
+5. **看板列映射**（B265）：看板列从「工作流状态平铺 + 终止」（`web/src/app/cards/columns.ts:6`）改为可配置映射，配置面在工作流卡片（flows 页）新增「看板列映射」表；默认映射即原型五列（代办/沟通中/进行中/审核中/结束）。映射的持久化形状若涉及 wire 增量，plan 一并写死。
 6. **卡抽屉**（B156.3）：新增「拉起协调者」动作区（调既有 `runCardStep` 面，`web/src/api/ledger.ts:252`）；抽屉改为相对中间区域右侧打开、不挡会话面板（原型已在 `pages/board.html` 验证定位方案：抽屉 absolute 于 `.content` 内）。
 7. **更新 toast 删除**（B265）：`web/src/app/update/UpdateToasts.tsx` 及其挂载点（Shell.tsx:60、:627）删除；更新提示的常驻落点即设置页（既有），不再在右下角弹 toast。
 8. **原型 `pages/conversations.html` 是孤儿页**（无任何入口）：删除，不迁进真实前端。
