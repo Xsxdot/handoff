@@ -1,0 +1,226 @@
+<!doctype html>
+<!--
+  流程管理页（fork 副本：workbench-ledger）—— 工作流与派发模板双聚合的管理面。
+  回答的形态问题：
+  ① 工作流/模板管理是独立页（从看板工具条「⚙ 流程」进入），不塞 settings（那是机器域心智）；
+  ② 两个 tab 对应两个聚合：工作流（状态机形状）/ 派发模板（派发配方），各自不可变版本化；
+  ③ 版本列表 + 「N 个 item 钉在 vX」+ 显式迁移动作；
+  ④ 模板详情含 per-target 模型覆盖表、纪律块正文预览、版本取证（哪次派发用了哪版）。
+  交互遵循 light-interaction.md：零依赖、纯 mock、file:// 直开。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · 流程</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  .flows { display: flex; height: 100%; }
+  .flows nav { width: 180px; border-right: 1px solid var(--border); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .flows nav a { padding: 6px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--foreground); text-decoration: none; }
+  .flows nav a.active { background: var(--muted); font-weight: 500; }
+  .flows .body { flex: 1; padding: 20px; overflow-y: auto; max-width: 860px; }
+
+  .pipeline { display: flex; align-items: center; gap: 4px; font-size: 11.5px; flex-wrap: wrap; }
+  .pipeline .st { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--foreground); }
+  .pipeline .st.anchor { background: var(--muted); font-weight: 500; }
+  .pipeline .st.ins { border-style: dashed; }
+  .pipeline .arr { color: var(--muted-foreground); }
+  .legend { font-size: 11.5px; color: var(--muted-foreground); margin-top: 6px; }
+
+  .ver-row { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border: 1px solid var(--border); border-radius: 8px; margin-bottom: 6px; font-size: 12.5px; }
+  .ver-row.current { border-color: #a3a3a3; }
+  .ver-row .vtag { font-family: var(--font-mono); font-weight: 600; }
+  .ver-row .pin { color: var(--muted-foreground); }
+  .ver-row .spacer { flex: 1; }
+
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12.5px; margin: 0; }
+  .kv dt { color: var(--muted-foreground); }
+  .kv dd { margin: 0; }
+  .kv table { border-collapse: collapse; font-size: 12px; }
+  .kv td, .kv th { border: 1px solid var(--border); padding: 3px 10px; text-align: left; font-weight: normal; }
+  .kv th { color: var(--muted-foreground); font-size: 11.5px; background: var(--sidebar); }
+
+  details.block { border: 1px solid var(--border); border-radius: 8px; margin-top: 8px; overflow: hidden; }
+  details.block summary { cursor: pointer; list-style: none; padding: 7px 12px; background: var(--sidebar); font-size: 12.5px; display: flex; gap: 8px; align-items: center; }
+  details.block .bd { padding: 10px 14px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7; color: var(--muted-foreground); white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
+
+  .audit { margin-top: 8px; font-size: 12px; color: var(--muted-foreground); padding: 8px 10px; border-left: 2px solid var(--border); }
+  h2.sec { margin: 0 0 4px; font-size: 16px; }
+  p.sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .tpl-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
+  .tpl-card h3 { margin: 0 0 8px; font-size: 14px; display: flex; align-items: center; gap: 8px; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">handoff</div>
+    <div class="tree">
+      <div class="tree-group">
+        <div class="tree-label">本机（协调机）</div>
+        <a class="tree-item">handoff</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label">mac-02</div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item">gokit</a>
+      </div>
+    </div>
+    <div class="dock">
+      <a class="dock-btn" href="board.html" title="工作项账本">▤<span class="badge dock-badge">3</span></a>
+      <a class="dock-btn" href="../index.html" title="任务看板">▦</a>
+      <button class="dock-btn" title="工单">✉<span class="badge dock-badge">1</span></button>
+      <a class="dock-btn" href="settings.html" title="设置">⚙</a>
+      <button class="dock-btn" title="home 基准终端">▭</button>
+      <button class="dock-btn" title="添加项目">＋</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <main class="content">
+      <div class="flows">
+        <nav>
+          <a class="active" data-tab="wf">工作流</a>
+          <a data-tab="tpl">派发模板</a>
+        </nav>
+        <div class="body">
+
+          <!-- ============ 工作流 tab ============ -->
+          <div class="panel-sec" data-panel="wf">
+            <h2 class="sec">工作流（状态机形状）</h2>
+            <p class="sub">只管状态集合与转移合法性。不可变版本化：编辑产生新版本，工作项钉旧版继续走，显式迁移。派发配方在「派发模板」聚合里，两者独立演进。</p>
+
+            <div class="tpl-card">
+              <h3>feature 流 <span class="badge">当前 v2</span><button class="btn sm" style="margin-left:auto">编辑（产生 v3）…</button></h3>
+              <div class="pipeline">
+                <span class="st anchor">待办</span><span class="arr">→</span>
+                <span class="st ins">已出 spec</span><span class="arr">→</span>
+                <span class="st anchor">进行中</span><span class="arr">→</span>
+                <span class="st anchor">待审阅</span><span class="arr">→</span>
+                <span class="st ins">待合并</span><span class="arr">→</span>
+                <span class="st anchor">已完成</span>
+              </div>
+              <div class="legend">实线 = 骨架锚点（不可删改）；虚线 = 用户插入状态。转移上挂的派发模板：进行中→待审阅 触发 <span class="mono">review-generic v2</span>，待审阅→待合并 触发 <span class="mono">merge-integration v1</span>。</div>
+
+              <!-- B265：节点对应列配置 -->
+              <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+                <div style="font-size:12px;font-weight:600;margin-bottom:8px">看板列映射（B265）</div>
+                <table style="border-collapse:collapse;width:100%;font-size:12px">
+                  <tr><th style="border:1px solid var(--border);padding:6px 10px;text-align:left;background:var(--sidebar)">工作流节点</th><th style="border:1px solid var(--border);padding:6px 10px;text-align:left;background:var(--sidebar)">看板列</th></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">待办</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option selected>代办</option><option>沟通中</option><option>进行中</option><option>审核中</option><option>结束</option></select></td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">已出 spec</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option selected>沟通中</option><option>进行中</option><option>审核中</option><option>结束</option></select></td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">进行中</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option>沟通中</option><option selected>进行中</option><option>审核中</option><option>结束</option></select></td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">待审阅</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option>沟通中</option><option>进行中</option><option selected>审核中</option><option>结束</option></select></td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">待合并</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option>沟通中</option><option>进行中</option><option selected>审核中</option><option>结束</option></select></td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">已完成</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option>沟通中</option><option>进行中</option><option>审核中</option><option selected>结束</option></select></td></tr>
+                </table>
+                <p class="dim" style="font-size:11px;margin:8px 0 0">看板列名与顺序可在工作流编辑中调整；卡进入某节点时，看板自动将其移入对应列。</p>
+              </div>
+
+              <div style="margin-top:12px">
+                <div class="ver-row current"><span class="vtag">v2</span><span>加「已出 spec」插入态（对齐 💡→📋 关口）</span><span class="pin">12 个 item 钉在此版</span><span class="spacer"></span><span class="dim" style="font-size:11px">2026-08-19</span></div>
+                <div class="ver-row"><span class="vtag">v1</span><span>初版（纯骨架）</span><span class="pin">3 个 item 仍钉此版</span><span class="spacer"></span><button class="btn sm">迁移到 v2…</button></div>
+              </div>
+            </div>
+
+            <div class="tpl-card">
+              <h3>bug 流 <span class="badge">当前 v1</span><button class="btn sm" style="margin-left:auto">编辑（产生 v2）…</button></h3>
+              <div class="pipeline">
+                <span class="st anchor">待办</span><span class="arr">→</span>
+                <span class="st anchor">进行中</span><span class="arr">→</span>
+                <span class="st anchor">待审阅</span><span class="arr">→</span>
+                <span class="st ins">待合并</span><span class="arr">→</span>
+                <span class="st anchor">已完成</span>
+              </div>
+              <div class="legend">bug 不设「已出 spec」——小修直接进；根因排查类由派发模板决定派 grok。</div>
+              <div style="margin-top:12px">
+                <div class="ver-row current"><span class="vtag">v1</span><span>初版</span><span class="pin">7 个 item 钉在此版</span><span class="spacer"></span><span class="dim" style="font-size:11px">2026-08-19</span></div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ============ 派发模板 tab ============ -->
+          <div class="panel-sec" data-panel="tpl" hidden>
+            <h2 class="sec">派发模板（派发配方）</h2>
+            <p class="sub">executor、目标机、模型覆盖、纪律块、prompt 模板、分支策略。带版本号；每次派发把「模板版本 + 纪律块 hash」快照进事件——任何一次历史派发都答得上「当时用的哪版」。</p>
+
+            <div class="tpl-card">
+              <h3>feature-impl <span class="badge">当前 v3</span><button class="btn sm" style="margin-left:auto">编辑（产生 v4）…</button></h3>
+              <dl class="kv">
+                <dt>执行器</dt><dd>opencode（一律默认模型，禁止传模型参数）</dd>
+                <dt>目标机</dt><dd>mac-02（默认）· win-b37 可选</dd>
+                <dt>模型覆盖</dt><dd>
+                  <table><tr><th>目标机</th><th>执行器</th><th>模型</th></tr>
+                  <tr><td>mac-02</td><td>codex</td><td class="mono">gpt-5.6-luna</td></tr>
+                  <tr><td>win-b37</td><td>codex</td><td class="mono">deepseek-v4-pro</td></tr></table>
+                </dd>
+                <dt>分支策略</dt><dd class="mono">--new-worktree --new-branch b&lt;item&gt;-&lt;slug&gt;</dd>
+                <dt>前置检查</dt><dd>探活 · 本地已 push · 工作区干净</dd>
+              </dl>
+              <details class="block">
+                <summary>纪律块 · A 版（subagent 版）<span class="mono dim">@1f3c9d</span></summary>
+                <div class="bd"># 执行纪律（先读这段，再读 plan）
+
+你收到的是一份完整实现计划。用你自己的 subagent 机制按以下纪律执行：
+1. 逐 task 派全新 subagent 实现…
+2. 实现 subagent 不并行…
+3. 每个 task 完成后派独立审查 subagent 做双裁决…
+（正文完整存库，此处预览截断）</div>
+              </details>
+              <details class="block">
+                <summary>版本历史</summary>
+                <div style="padding:8px 12px">
+                  <div class="ver-row current"><span class="vtag">v3</span><span>纪律块补 gofmt 必跑（executor ledger 漏 gofmt 实教训）</span><span class="spacer"></span><span class="dim" style="font-size:11px">08-20</span></div>
+                  <div class="ver-row"><span class="vtag">v2</span><span>加 per-target 模型覆盖（codex 跨机 400 实教训）</span></div>
+                  <div class="ver-row"><span class="vtag">v1</span><span>从 CLAUDE.md §4 迁入</span></div>
+                </div>
+              </details>
+              <div class="audit">取证：B141.2 · 08-22 10:02 的派发使用 v3@1f3c9d → <a href="board.html" style="color:var(--foreground)">在该 item 的 timeline 查看</a></div>
+            </div>
+
+            <div class="tpl-card">
+              <h3>review-generic <span class="badge">当前 v2</span><button class="btn sm" style="margin-left:auto">编辑…</button></h3>
+              <dl class="kv">
+                <dt>执行器</dt><dd>grok（审阅快、挖得深）</dd>
+                <dt>裁决协议</dt><dd>结构化 pass/fail + 发现项；解析失败不猜 → 转等人</dd>
+                <dt>回合封顶</dt><dd>3 轮（超限转等人，人工插手重置计数）</dd>
+              </dl>
+              <details class="block">
+                <summary>纪律块 · B 版（单上下文版）<span class="mono dim">@8ac2e1</span></summary>
+                <div class="bd"># 执行纪律（先读这段，再读 plan）
+你收到的是一份完整实现计划。按以下纪律执行：
+1. 在本会话内自己逐 task 实现。不要派发、不要调用 handoff CLI…
+（正文完整存库，此处预览截断）</div>
+              </details>
+            </div>
+
+            <div class="tpl-card">
+              <h3>merge-integration <span class="badge">当前 v1</span><button class="btn sm" style="margin-left:auto">编辑…</button></h3>
+              <dl class="kv">
+                <dt>客观判据</dt><dd>go build + go vet + gofmt -l 无输出 + go test ./...（LLM 裁决 pass 仅为必要条件）</dd>
+                <dt>合并范围</dt><dd>子任务分支 → 功能集成分支（<b>main 永远人工</b>）</dd>
+                <dt>冲突处置</dt><dd>转等人 + 冲突文件清单与双方 commit 范围落 timeline</dd>
+              </dl>
+            </div>
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script>
+  // tab 切换
+  document.querySelectorAll('.flows nav a').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.flows nav a').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.panel-sec').forEach(p => p.hidden = true);
+      tab.classList.add('active');
+      document.querySelector(`.panel-sec[data-panel="${tab.dataset.tab}"]`).hidden = false;
+    });
+  });
+</script>
+</body>
+</html>
