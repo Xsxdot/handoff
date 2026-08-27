@@ -68,7 +68,15 @@ const (
 	roomAttachBackgroundTimeout = 10 * time.Second
 	roomAttachRefreshInterval   = 5 * time.Second
 	roomAttachRefreshWorkers    = 16
+	roomAttachCacheTTL          = time.Minute
 )
+
+// roomAttachCacheEntry 把远端任务详情和其有效期绑定；Attach 只是投影，不是
+// 账本事实。失效时间到达或后台刷新失败后，调用方必须回到不可 attach 态。
+type roomAttachCacheEntry struct {
+	attach    *proto.RoomAttach
+	expiresAt time.Time
+}
 
 // enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
 // 保持 Attach=nil。远端 attach 是非承重字段：请求只读取本地挂账与缓存，缺失项
@@ -194,6 +202,7 @@ func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
 				defer func() { <-workers }()
 				attach, err := s.lookupRoomAttach(ctx, link, nil)
 				if err != nil {
+					s.invalidateRoomAttach(link)
 					s.log.Warn("房间 attach 后台刷新失败", "target", link.Target,
 						"task", link.TaskID, "cause", err)
 					return
@@ -213,24 +222,44 @@ func roomAttachCacheKey(link ledger.TaskLink) string {
 	return link.Target + "\x00" + link.TaskID
 }
 
+// cachedRoomAttach 返回仍在 TTL 内的远端 attach 投影副本；缺失或过期都返回
+// nil，调用方据此保持禁用态。返回副本避免响应组装方读到后台刷新中的指针。
 func (s *Server) cachedRoomAttach(link ledger.TaskLink) *proto.RoomAttach {
-	s.roomAttachMu.RLock()
-	attach := s.roomAttachCache[roomAttachCacheKey(link)]
-	if attach != nil {
-		copy := *attach
-		attach = &copy
+	now := time.Now()
+	s.roomAttachMu.Lock()
+	entry, ok := s.roomAttachCache[roomAttachCacheKey(link)]
+	if !ok || entry.attach == nil {
+		s.roomAttachMu.Unlock()
+		return nil
 	}
-	s.roomAttachMu.RUnlock()
-	return attach
+	if !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt) {
+		delete(s.roomAttachCache, roomAttachCacheKey(link))
+		s.roomAttachMu.Unlock()
+		s.log.Debug("房间 attach 缓存已过期", "target", link.Target, "task", link.TaskID)
+		return nil
+	}
+	copy := *entry.attach
+	s.roomAttachMu.Unlock()
+	return &copy
+}
+
+// invalidateRoomAttach 删除一次失败刷新留下的旧投影；失败不能让不可达目标
+// 永久看起来仍可执行。
+func (s *Server) invalidateRoomAttach(link ledger.TaskLink) {
+	s.roomAttachMu.Lock()
+	delete(s.roomAttachCache, roomAttachCacheKey(link))
+	s.roomAttachMu.Unlock()
 }
 
 func (s *Server) storeRoomAttach(link ledger.TaskLink, attach *proto.RoomAttach) {
 	copy := *attach
 	s.roomAttachMu.Lock()
 	if s.roomAttachCache == nil {
-		s.roomAttachCache = make(map[string]*proto.RoomAttach)
+		s.roomAttachCache = make(map[string]roomAttachCacheEntry)
 	}
-	s.roomAttachCache[roomAttachCacheKey(link)] = &copy
+	s.roomAttachCache[roomAttachCacheKey(link)] = roomAttachCacheEntry{
+		attach: &copy, expiresAt: time.Now().Add(roomAttachCacheTTL),
+	}
 	s.roomAttachMu.Unlock()
 }
 

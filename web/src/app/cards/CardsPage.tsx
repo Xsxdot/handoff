@@ -75,11 +75,12 @@ export function CardsPage() {
   const [flows, setFlows] = useState<FlowsResp | null>(null)
   const [flowsError, setFlowsError] = useState('')
   const [drawerNodes, setDrawerNodes] = useState<NodeDef[] | undefined>()
-  const cardsPoll = usePoll(() => fetchCards(includeArchived ? 'all=1' : ''), POLL_MS)
-  const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
-  const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
   const navigate = useNavigate()
   const location = useLocation()
+  const cardDeepLink = new URLSearchParams(location.search).get('card') ?? ''
+  const cardsPoll = usePoll(() => fetchCards(includeArchived || cardDeepLink !== '' ? 'all=1' : ''), POLL_MS)
+  const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
+  const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
   // 时给 undefined，抽屉按「计数不可知」显示旧标题，不谎报「0 个在跑」。
@@ -91,7 +92,7 @@ export function CardsPage() {
     return () => { cancelled = true }
   }, [])
 
-  useEffect(() => { cardsPoll.refresh() }, [includeArchived]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { cardsPoll.refresh() }, [includeArchived, cardDeepLink]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const cards = useMemo(() => cardsPoll.data?.cards ?? [], [cardsPoll.data])
   const decisions = decisionsPoll.data ?? []
@@ -138,10 +139,9 @@ export function CardsPage() {
   const selectedWorkflowName = selectedCard?.workflow ?? ''
 
   useEffect(() => {
-    const target = new URLSearchParams(location.search).get('card')
-    if (!target || !cards.some((card) => card.id === target)) return
-    setSelected(target)
-  }, [cards, location.search])
+    if (!cardDeepLink || !cards.some((card) => card.id === cardDeepLink)) return
+    setSelected(cardDeepLink)
+  }, [cardDeepLink, cards])
 
   useEffect(() => {
     if (!selected || !selectedWorkflowName) {

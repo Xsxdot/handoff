@@ -16,6 +16,7 @@ import {
 import type { WorkbenchApi } from '../workbench/useWorkbench'
 import { EMPTY_WORKBENCH } from '../workbench/tabs'
 import { RoomPanel } from './RoomPanel'
+import { logRoom } from './roomLog'
 
 vi.mock('../../api/rooms', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/rooms')>()),
@@ -30,6 +31,8 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/ledger')>()),
   fetchCardDetail: vi.fn(),
 }))
+
+vi.mock('./roomLog', () => ({ logRoom: vi.fn() }))
 
 const room = (over: Partial<RoomSummary> = {}): RoomSummary => ({
   id: 'B1',
@@ -163,6 +166,7 @@ describe('RoomPanel', () => {
     expect(screen.getByText('spec')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '打开卡片 B1' }))
     expect(openCard).toHaveBeenCalledWith('B1')
+    expect(logRoom).toHaveBeenCalledWith('debug', 'card_open_requested', { room: 'B1', view: 'detail' })
   })
 
   it('常驻面板收起后保留 FAB，并可重新打开', async () => {

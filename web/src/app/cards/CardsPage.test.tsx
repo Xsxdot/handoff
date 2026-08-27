@@ -133,6 +133,29 @@ describe('房间面板卡片深链', () => {
     renderPage('/cards?card=B50')
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
   })
+
+  it('终态卡的 /cards?card= 深链自动带 all=1 并打开抽屉', async () => {
+    const ledger = await import('../../api/ledger')
+    const terminalCard = {
+      id: 'Bdone', title: '已归档房间卡', status: '已完成', priority: '中', project: 'handoff', workflow: '',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+      merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+      conflict: false, open_tickets: 0,
+    }
+    vi.mocked(ledger.fetchCards).mockImplementation((params = '') => Promise.resolve({
+      cards: params === 'all=1' ? [terminalCard] : [],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    }))
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: {
+        id: 'Bdone', title: '已归档房间卡', status: '已完成', priority: '中', project: 'handoff', parent: '',
+        workflow: '', workflow_version: 1, attachments: [], acceptance_criteria: '', created_at: '', updated_at: '',
+      }, relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    })
+    renderPage('/cards?card=Bdone')
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(vi.mocked(ledger.fetchCards)).toHaveBeenCalledWith('all=1')
+  })
 })
 
 describe('可配置看板列入口', () => {

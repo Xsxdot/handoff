@@ -354,7 +354,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
           <section className="mt-3 rounded-2xl border bg-white/65 p-3 shadow-sm" aria-label="卡片">
             <div className="flex items-center gap-2">
               <h3 className="text-sm font-semibold">卡片</h3>
-              <button type="button" aria-label={`打开卡片 ${selectedRoom.id}`} onClick={() => onOpenCard?.(selectedRoom.id)} className="ml-auto rounded-md border px-2 py-1 text-xs hover:bg-accent">打开</button>
+              <button type="button" aria-label={`打开卡片 ${selectedRoom.id}`} onClick={() => { logRoom('debug', 'card_open_requested', { room: selectedRoom.id, view: 'detail' }); onOpenCard?.(selectedRoom.id) }} className="ml-auto rounded-md border px-2 py-1 text-xs hover:bg-accent">打开</button>
             </div>
             <p className="mt-2 truncate text-sm font-medium">{cardDetail?.card.title ?? selectedRoom.title}</p>
             <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">

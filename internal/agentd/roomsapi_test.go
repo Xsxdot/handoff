@@ -205,6 +205,37 @@ func TestRoomsListWithoutAttachmentKeepsAttachMissing(t *testing.T) {
 	}
 }
 
+func TestRoomsListWireIncludesZeroUnread(t *testing.T) {
+	env := newRoomsEnv(t)
+	seedCard(t, env, "零未读卡")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?project=p")
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/rooms: %d %s", code, body)
+	}
+	var out struct {
+		Rooms []json.RawMessage `json:"rooms"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Rooms) == 0 {
+		t.Fatal("/api/rooms 应返回至少一行")
+	}
+	for _, raw := range out.Rooms {
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		unread, ok := fields["unread"]
+		if !ok {
+			t.Fatalf("房间行必须保留 unread:0，原文=%s", raw)
+		}
+		if unread != float64(0) {
+			t.Fatalf("零未读房间的 raw unread 应为 0，原文=%s", raw)
+		}
+	}
+}
+
 // TestRoomsListAttachTimeoutDoesNotBlockMainList 锁住附加投影的降级边界：远端
 // 任务详情是非承重信息，慢目标只能在短超时内放弃，不能把 /api/rooms 卡住。
 func TestRoomsListAttachTimeoutDoesNotBlockMainList(t *testing.T) {
@@ -314,6 +345,82 @@ func TestRoomsListUsesBackgroundAttachCache(t *testing.T) {
 	defer mu.Unlock()
 	if calls != 1 {
 		t.Fatalf("缓存命中后不应再次拨 relay，实际请求 %d 次", calls)
+	}
+}
+
+func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "失效 attach 卡")
+	if err := env.ledger.LinkTask(card.ID, "relay", "T-relay", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	calls := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"task":            map[string]any{"id": "T-relay", "repo_path": "/repo", "work_dir": "/relay/B1"},
+				"pending_tickets": []any{}, "recent_events": []any{},
+			})
+			return
+		}
+		http.Error(w, "remote attach unavailable", http.StatusBadGateway)
+	}))
+	t.Cleanup(remote.Close)
+	env.srv.conf().Targets = map[string]config.Target{
+		"relay": {Addr: remote.URL, Token: "remote-token"},
+	}
+
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != http.StatusOK {
+		t.Fatalf("首次列表应成功: %d %s", code, body)
+	}
+	key := roomAttachCacheKey(ledger.TaskLink{Target: "relay", TaskID: "T-relay"})
+	eventually(t, 2*time.Second, "首次后台刷新写入缓存", func() bool {
+		mu.Lock()
+		gotCalls := calls
+		mu.Unlock()
+		env.srv.roomAttachMu.RLock()
+		_, cached := env.srv.roomAttachCache[key]
+		env.srv.roomAttachMu.RUnlock()
+		return gotCalls == 1 && cached
+	})
+
+	// 让一个仍未过期的旧投影进入刷新失败路径；失败后不能继续把它当成可执行目标。
+	env.srv.roomAttachMu.Lock()
+	entry := env.srv.roomAttachCache[key]
+	entry.expiresAt = time.Now().Add(time.Minute)
+	env.srv.roomAttachLastRefresh = time.Now().Add(-roomAttachRefreshInterval)
+	env.srv.roomAttachMu.Unlock()
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != http.StatusOK {
+		t.Fatalf("刷新中的列表仍应成功: %d %s", code, body)
+	}
+	eventually(t, 2*time.Second, "刷新失败删除旧 attach 缓存", func() bool {
+		mu.Lock()
+		gotCalls := calls
+		mu.Unlock()
+		env.srv.roomAttachMu.RLock()
+		_, cached := env.srv.roomAttachCache[key]
+		env.srv.roomAttachMu.RUnlock()
+		return gotCalls == 2 && !cached
+	})
+
+	// TTL 是独立的失效闸：即使后台刷新尚未开始，过期投影也不能被列表消费。
+	env.srv.storeRoomAttach(ledger.TaskLink{Target: "relay", TaskID: "T-relay"}, &proto.RoomAttach{
+		Target: "relay", TaskID: "T-relay", WorkDir: "/relay/B1", Command: "handoff attach T-relay",
+	})
+	env.srv.roomAttachMu.Lock()
+	entry = env.srv.roomAttachCache[key]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	env.srv.roomAttachCache[key] = entry
+	env.srv.roomAttachMu.Unlock()
+	if got := env.srv.cachedRoomAttach(ledger.TaskLink{Target: "relay", TaskID: "T-relay"}); got != nil {
+		t.Fatalf("过期 attach 不得从缓存返回: %+v", got)
 	}
 }
 

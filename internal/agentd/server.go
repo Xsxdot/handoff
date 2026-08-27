@@ -106,10 +106,11 @@ type Server struct {
 	unlinkedMu    sync.Mutex
 	unlinkedAt    time.Time
 	unlinkedCache map[string]any
-	// roomAttachCache stores resolved remote task workdirs. Remote attach lookup is
-	// non-critical for the rooms list, so refreshes run in the background.
+	// roomAttachCache stores resolved remote task workdirs with per-entry TTL. Remote
+	// attach lookup is non-critical for the rooms list, so refreshes run in the background;
+	// failed refreshes remove the old projection instead of keeping stale executable data.
 	roomAttachMu          sync.RWMutex
-	roomAttachCache       map[string]*proto.RoomAttach
+	roomAttachCache       map[string]roomAttachCacheEntry
 	roomAttachRefreshing  bool
 	roomAttachLastRefresh time.Time
 	hub                   *Hub
@@ -248,7 +249,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		machineUpgrades:         make(map[string]*proto.MachineUpgrade),
 		machineUpgradeInstaller: inst,
 		cardStepFlight:          make(map[string]bool),
-		roomAttachCache:         make(map[string]*proto.RoomAttach),
+		roomAttachCache:         make(map[string]roomAttachCacheEntry),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade

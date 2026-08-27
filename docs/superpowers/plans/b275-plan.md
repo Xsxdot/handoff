@@ -115,66 +115,15 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 }
 ~~~
 
-逐房间 attach 查找失败不能让主列表变 500；它必须 Warn、留下 Attach=nil，让 UI 显示禁用原因。该 helper 不返回 error，因为其每个 lookup 错误都已被上下文日志和 nil 投影承接：
+### review-5 修订 r6（2026-08-28）：远端 attach 缓存语义
 
-~~~go
-// enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
-// 保持 Attach=nil。失败不吞：逐项 Warn，UI 得到禁用态；列表主查询仍可用。
-func (s *Server) enrichRoomAttachments(ctx context.Context, rooms []proto.RoomSummary) {
-    for i := range rooms {
-        if rooms[i].Kind != room.KindCard || s.ledger == nil {
-            continue
-        }
-        links, err := s.ledger.TasksOf(rooms[i].ID)
-        if err != nil {
-            s.log.Warn("读取房间挂账失败", "room", rooms[i].ID, "cause", err)
-            continue
-        }
-        for linkIndex := len(links) - 1; linkIndex >= 0; linkIndex-- {
-            link := links[linkIndex]
-            attach, lookupErr := s.lookupRoomAttach(ctx, link)
-            if lookupErr != nil {
-                s.log.Warn("房间 attach 目标不可解析", "room", rooms[i].ID,
-                    "target", link.Target, "task", link.TaskID, "cause", lookupErr)
-                continue
-            }
-            rooms[i].Attach = attach
-            break
-        }
-    }
-}
+逐房间 attach 查找失败不能让主列表变 500；它必须 Warn、留下 Attach=nil，让 UI 显示禁用原因。远端 attach 是非承重字段：列表请求只读取本机任务索引与远端投影缓存，不等待 relay；缺失项由后台刷新，最新可解析挂账 task 是精确选择规则，悬空旧 link 不得阻断后续可用 link。
 
-// lookupRoomAttach 只接受真实任务详情和 Workdir()；不从 bound_session 猜测 task。
-func (s *Server) lookupRoomAttach(ctx context.Context, link ledger.TaskLink) (*proto.RoomAttach, error) {
-    var workDir string
-    if link.Target == "" {
-        task, err := s.st.GetTask(link.TaskID)
-        if err != nil {
-            return nil, fmt.Errorf("读取本机任务 %s: %w", link.TaskID, err)
-        }
-        workDir = task.Workdir()
-    } else {
-        peer, err := s.pool.For(link.Target)
-        if err != nil {
-            return nil, fmt.Errorf("获取 target %s 客户端: %w", link.Target, err)
-        }
-        info, err := peer.Attach(ctx, link.TaskID)
-        if err != nil {
-            return nil, fmt.Errorf("读取远端任务 %s: %w", link.TaskID, err)
-        }
-        workDir = info.Task.Workdir()
-    }
-    if strings.TrimSpace(workDir) == "" {
-        return nil, errors.New("任务没有可用工作目录")
-    }
-    return &proto.RoomAttach{
-        Target: link.Target, TaskID: link.TaskID, WorkDir: workDir,
-        Command: "handoff attach " + link.TaskID,
-    }, nil
-}
-~~~
+缓存条目必须同时保存 `*proto.RoomAttach` 与 `expiresAt`。`cachedRoomAttach` 读取时检查 TTL，过期立即删除并返回 nil；后台 `lookupRoomAttach` 失败时也删除该 key，不能继续投影陈旧目标。成功刷新重新写入带 TTL 的条目；缓存只是一项可失效投影，不改变 `bound_session` 的 opaque 语义。
 
-实现者补齐当前 roomsapi.go 的 context、fmt 和 collab/room import，删除重复 import；远端 attach 为非承重字段，Server 维护线程安全缓存并后台刷新，列表请求不等待 relay。最新可解析挂账 task 是精确选择规则，避免悬空 link 阻断可用 link。
+对应可执行验收：`go test ./internal/agentd -run '^TestRoomsListDropsExpiredAndFailedRemoteAttachCache$' -count=1` 先建立远端缓存，再强制刷新返回 502，断言旧 attach 被删除；再把条目置为过期，断言读取返回 nil。`TestRoomsListUsesBackgroundAttachCache` 断言首个 HTTP 列表不等待 relay、后台成功后下一次列表命中缓存且只拨一次。
+
+同一修订补齐两条边界验收：`go test ./internal/agentd -run '^TestRoomsListWireIncludesZeroUnread$' -count=1` 对真实 `/api/rooms` raw body 逐行断言 `unread:0` 存在；`npm test -- --run src/app/cards/CardsPage.test.tsx` 的终态 `/cards?card=` 用例断言请求 `all=1` 并打开抽屉。RoomPanel 卡片打开入口必须在调用 `onOpenCard` 前用 `logRoom` 记录 `room/view`，helper 注释说明缓存职责与过期原因。
 
 web/src/api/rooms.ts 镜像必须逐字匹配：
 
