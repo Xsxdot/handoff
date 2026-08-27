@@ -122,3 +122,21 @@ export function logTermFix(label: string, kind: '补发' | '让给 xterm' | '拦
   if (!terminalDebugEnabled()) return
   console.debug('[term:fix]', { 终端: label, 动作: kind, 原文: JSON.stringify(text) })
 }
+
+// logTermHost 记一次「拦下设备回包、不上送 PTY」。
+//
+// 参数：label 是终端标识；data 是被丢弃的原文。
+// 成功路径也打：切 tab 重放历史时这条会成串出现，正好用来确认泄漏已经被拦住，
+// 而不是「界面上看不见乱码、其实回包已经打进 shell」。
+export function logTermHost(label: string, data: string): void {
+  if (!terminalDebugEnabled()) return
+  console.debug('[term:host]', { 终端: label, 字符数: data.length, 原文: JSON.stringify(data) })
+}
+
+// logTermWheel 记一次「把像素滚轮折成 N 格 SGR 上送」。
+//
+// 参数：label 是终端标识；ticks 是这一次发出的格数；data 是序列原文。
+export function logTermWheel(label: string, ticks: number, data: string): void {
+  if (!terminalDebugEnabled()) return
+  console.debug('[term:wheel]', { 终端: label, 格数: ticks, 原文: JSON.stringify(data) })
+}

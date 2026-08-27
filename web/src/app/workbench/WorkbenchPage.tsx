@@ -302,7 +302,10 @@ export function WorkbenchPage({
                 于是面板的「挂载即聚焦」不会重跑，点了 + 之后焦点还留在 + 按钮上，
                 印在面板上的 ⌘T 按下去没反应（走查实测）。给出各自的身份，让它真的重挂。
               */}
-              <div className="min-h-0 flex-1 overflow-auto">
+              {/* overflow-hidden 而不是 overflow-auto：终端 tab 的 xterm 在
+                  凑不满一行滚轮时不会 preventDefault，父级再偷偷滑几像素就会
+                  变成「网上滚一点然后卡住」。文件 / 会话流各自有自己的滚动区。 */}
+              <div className="min-h-0 flex-1 overflow-hidden">
                 {activeTab === null ? (
                   <BlankTab
                     key={`empty-${gi}`}

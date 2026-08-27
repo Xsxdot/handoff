@@ -6,6 +6,7 @@ import type { BaseDir } from './useWorkbench'
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身：本测试关心的是
 // 「什么时候建会话、拿什么参数连、收到帧之后往终端写什么」，
 // 不是 xterm 自己的渲染——那是上游的测试职责。
+let termOnData: ((d: string) => void) | undefined
 const termInstance = {
   cols: 100,
   rows: 30,
@@ -16,8 +17,16 @@ const termInstance = {
   focus: vi.fn(),
   dispose: vi.fn(),
   loadAddon: vi.fn(),
-  onData: vi.fn(),
+  refresh: vi.fn(),
+  input: vi.fn(),
+  buffer: { active: { type: 'normal' as 'normal' | 'alternate' } },
+  modes: { mouseTrackingMode: 'none' as 'none' | 'x10' | 'vt200' | 'drag' | 'any' },
+  onData: vi.fn((cb: (d: string) => void) => {
+    termOnData = cb
+    return { dispose: vi.fn() }
+  }),
   onResize: vi.fn(),
+  attachCustomWheelEventHandler: vi.fn(),
 }
 // Terminal 用常规 function 而不是箭头函数：组件以 `new Terminal(...)` 实例化它，
 // 箭头函数不是构造函数，`new` 会直接抛 TypeError。function 是构造的，且 `new`
@@ -65,6 +74,9 @@ beforeAll(() => {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  termOnData = undefined
+  termInstance.buffer.active.type = 'normal'
+  termInstance.modes.mouseTrackingMode = 'none'
   roCallbacks.length = 0
   createPtySession.mockResolvedValue({ id: 'new-1', base_path: WS.path })
   deletePtySession.mockResolvedValue({ ok: true })
@@ -240,6 +252,51 @@ describe('TerminalTab', () => {
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     unmount()
     expect(deletePtySession).not.toHaveBeenCalled()
+  })
+
+  it('xterm 的设备回包不上送 PTY——那是查询应答，不是用户按键', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    expect(termOnData).toBeTypeOf('function')
+    termOnData!('\x1b[>0;276;0c')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('用户按键仍然上送', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    termOnData!('ls\r')
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(new TextDecoder().decode(send.mock.calls[0][0])).toBe('ls\r')
+  })
+
+  it('alt-screen 鼠标追踪：按像素连发指针格子上的 SGR，不改方向键', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800, height: 480, x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 480,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: { deltaY: number; clientX: number; clientY: number }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    expect(handler({ deltaY: -160, clientX: 50, clientY: 50 })).toBe(false)
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[<64;7;4M'.repeat(10))
+    spy.mockRestore()
+  })
+
+  it('没开鼠标追踪时不拦截，交给 xterm', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: { deltaY: number }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'none'
+    expect(handler({ deltaY: -48 })).toBe(true)
+    expect(termInstance.input).not.toHaveBeenCalled()
   })
 })
 

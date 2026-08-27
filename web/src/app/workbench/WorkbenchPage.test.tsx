@@ -203,6 +203,15 @@ describe('BlankTab', () => {
 })
 
 describe('WorkbenchPage', () => {
+  it('面板内容区 overflow-hidden，不跟终端抢那几像素滚轮', () => {
+    const wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
+    const { container } = render(
+      <WorkbenchPage api={api({ wb })} onAddProject={vi.fn()} renderContent={() => <div>内容</div>} />,
+    )
+    expect(container.querySelector('.min-h-0.flex-1.overflow-hidden')).not.toBeNull()
+    expect(container.querySelector('.min-h-0.flex-1.overflow-auto')).toBeNull()
+  })
+
   it('未选中目录时显示全局空态而不是死空白', () => {
     render(
       <WorkbenchPage

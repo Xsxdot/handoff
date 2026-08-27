@@ -20,6 +20,8 @@
 // 游标随之丢失，切回来从 since=0 起重放整个环形缓冲。这是**有意**的——
 // 环形缓冲的存在就是为了让任何一次重新接入都能重建屏幕，256 KiB 的重放
 // 远比维护一份前端的「上次看到哪」更可靠。
+// 代价：xterm 会把历史里的 CSI/OSC 查询再答一遍。那些回包必须拦下来不上送
+// （见 terminalHostResponse.ts），否则会打进当前前台进程变成提示符上的乱码。
 import { useEffect, useRef, useState } from 'react'
 import { TerminalSquare } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
@@ -28,7 +30,9 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { createPtySession, deletePtySession } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
-import { describeElement, logTermFocus, logTermInput, logTermResize } from './terminalDebug'
+import { describeElement, logTermFocus, logTermHost, logTermInput, logTermResize, logTermWheel } from './terminalDebug'
+import { isTerminalHostResponse } from './terminalHostResponse'
+import { altBufferWheelSgr, pointerCell } from './terminalWheel'
 import { installTerminalInputFix } from './terminalInput'
 import { registerFileDropTarget, shellQuote } from '../lib/desktopFileDrop'
 import type { BaseDir } from './useWorkbench'
@@ -133,6 +137,10 @@ export function TerminalTab({
         webgl.dispose()
       })
       term.loadAddon(webgl)
+      // WebGL 接管后单元格度量可能变了，下一帧再量一次，避免第一屏花掉。
+      requestAnimationFrame(() => {
+        if (!disposed) fitIfMeasured()
+      })
     } catch (err) {
       console.warn('WebGL 渲染器不可用，已回退到 DOM 渲染', err)
     }
@@ -158,6 +166,9 @@ export function TerminalTab({
     const fitIfMeasured = (): boolean => {
       if (!measured()) return false
       fit.fit()
+      // WebGL 渲染器在 fit 之后偶发不重绘（画布尺寸已经对、纹理还是旧的），
+      // 看起来就是「TUI 花了，拖一下窗口才好」。强制刷新这一屏。
+      term.refresh(0, Math.max(0, term.rows - 1))
       return true
     }
 
@@ -173,8 +184,35 @@ export function TerminalTab({
       handle?.resize(cols, rows)
     })
     term.onData((d) => {
+      // 设备回包（DA / OSC 颜色 / CPR）是 xterm 解析输出时自动生成的，
+      // 不是用户按键。经 WebSocket 绕一圈再写进 PTY 经常迟到，切 tab 重放
+      // 历史时更会把一串回包打进当前前台进程——zsh 就显示成乱码。
+      if (isTerminalHostResponse(d)) {
+        logTermHost(label, d)
+        return
+      }
       logTermInput(label, d, wsStatus)
       handle?.send(new TextEncoder().encode(d))
+    })
+
+    // 鼠标追踪开启时，xterm 每个 DOM wheel 只发一格 SGR，触控板一甩的像素
+    // 全丢了。这里按滑过的行数在**指针所在格子**连发同一条报告，协议仍是
+    // 原生 SGR，只是补上 xterm 丢掉的格数。没开追踪则放给 xterm（它自己会
+    // 按行数重复方向键）。
+    const wheelRemainder = { value: 0 }
+    term.attachCustomWheelEventHandler((ev) => {
+      if (term.buffer.active.type !== 'alternate') return true
+      if (term.modes.mouseTrackingMode === 'none') return true
+      if (ev.deltaY === 0) return true
+      const rect = host.getBoundingClientRect()
+      const cellH = term.rows > 0 ? rect.height / term.rows : 16
+      const { col, row } = pointerCell(ev.clientX, ev.clientY, rect, term.cols, term.rows)
+      const seq = altBufferWheelSgr(ev.deltaY, cellH, wheelRemainder, col, row)
+      if (seq !== '') {
+        logTermWheel(label, seq.split('\x1b').length - 1, seq)
+        term.input(seq)
+      }
+      return false
     })
 
     // 焦点取证：只记不改。relatedTarget 是「焦点去了哪儿 / 从哪儿来」的标准来源，
@@ -332,7 +370,7 @@ export function TerminalTab({
         {status === 'connecting' && exit === undefined && <span>连接中…</span>}
         <span className="ml-auto font-mono">{base.path}</span>
       </div>
-      <div ref={hostRef} className="min-h-0 flex-1 bg-[#0b0b0c]" />
+      <div ref={hostRef} className="min-h-0 flex-1 overscroll-none bg-[#0b0b0c]" />
       {error !== null && (
         <div className="flex items-center gap-3 border-t px-3 py-1.5 text-xs text-destructive">
           <span>{error}</span>

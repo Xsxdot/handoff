@@ -54,8 +54,13 @@ const termInstance = {
   focus: vi.fn(),
   dispose: vi.fn(),
   loadAddon: vi.fn(),
-  onData: vi.fn(),
+  refresh: vi.fn(),
+  input: vi.fn(),
+  buffer: { active: { type: 'normal' } },
+  modes: { mouseTrackingMode: 'none' },
+  onData: vi.fn(() => ({ dispose: vi.fn() })),
   onResize: vi.fn(),
+  attachCustomWheelEventHandler: vi.fn(),
 }
 vi.mock('@xterm/xterm', () => ({ Terminal: vi.fn(function () { return termInstance }) }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
