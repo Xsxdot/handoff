@@ -420,3 +420,12 @@
 - **裁决块 notes 改走围栏 / heredoc**：执行者不再把自由文本塞进裸 JSON 字符串。B273 先做解析容错。来源：B273 spec / 源卡 B242 弃选 a。
 - **trailer 允许 `commit` 为空、由 agentd 填 HEAD**：只读节点完全不提交。要核 completed/turn_failed 对空 commit 的容忍度。B273 只改铁律原文，schema 不动。来源：B273 spec / 源卡 B244 弃选 c。
 - **只读节点变异自验走 `git archive` 写进角色纪律**：B229.1 review 执行者摸出来的正当出口。属于角色纪律正文，不是回合协议铁律。来源：B273 spec / 源卡 B244 旁证。
+
+## 来自 B276 spec（2026-08-28，本期不做）
+
+- **B261 方向 2：轮次进行中把新判据送到当前执行者**。今天 `--extra` 只在 dispatch 注入，`continue` 只在 `waiting_review`。来源：B276 spec / 源卡 B261。
+- **B261 方向 3：纪律块要求执行者收尾回读卡上的判据**。来源：同上。
+- **B258 服务端分码**：工单未注册 vs 已消耗拆成不同 HTTP 状态，不再共用 404「工单不存在」。来源：B276 spec / 源卡 B258。
+- **B258 镜像延迟**：任务已 `waiting_answer`、卡流数分钟零事件。来源：同上。
+- **B259 纪律块 / CLAUDE.md 补仓内 `go run . graph` fallback**。来源：B276 spec / 源卡 B259。
+- **B211 release CI 资产 hash 硬门**（管发布物，管不住手工 `go build`）。来源：B276 spec / 源卡 B211 弃选 C。
