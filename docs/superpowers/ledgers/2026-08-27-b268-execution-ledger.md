@@ -17,3 +17,4 @@
 - 2026-08-27：恢复后 `cd web && npm run typecheck` 退出 0；触及四文件 `113 passed`。`go build ./...` 退出 0、无输出。未改 Go，未跑全仓 Go 测试（移位到集成节点）。
 - 2026-08-27：收尾自审：划词放行走 `logTermWheelBypass`；滚轮上送走 `logTermWheel`；⌘←/⌘→/⌘K 走 `logTermFix`。无 `console.log`。`altBufferWheelSgr` 仓库内零命中。真机清单未跑，标未验证。
 - 2026-08-27：`cd web && npm test`（子系统 vitest 全量）原始收口：`Test Files  109 passed (109)` / `Tests  1136 passed (1136)` / `Duration  13.19s`，退出码 0。
+- 2026-08-27 真机：用户报 Option+B/F 不对，其余 B268 项过。根因：WKWebView Option+B 的 key 是 ∫、keyCode=0，xterm macOptionIsMeta 走不到 ESC+b。补测先红（data=[] 和 data=['∫']），再用 ev.code（KeyB）发 ESC+字母并吞随后 insertText。`terminalInput.test.ts` 18 绿。

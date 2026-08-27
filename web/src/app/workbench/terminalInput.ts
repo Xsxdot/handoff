@@ -1,7 +1,8 @@
 // terminalInput —— 补上 xterm 输入路径在 WebKit 上的两个漏字符缺口。
 //
 // 职责：在**不 fork xterm** 的前提下，把两类被 xterm 静默丢弃的可打印输入
-//       重新喂回终端；并在同一槽位转发 ⌘←/⌘→/⌘K（清屏不上送 PTY）。
+//       重新喂回终端；并在同一槽位转发 ⌘←/⌘→/⌘K 和 Option 当 Meta
+//      （WKWebView 的 Option+B 给的是 ∫ / keyCode=0，xterm 认不到）。
 //       只补漏，不接管：xterm 自己发得出去的字符一律不碰。
 // 边界：
 //   - 可打印文本怎么进 PTY。控制键（方向键/Enter/Ctrl-C）、
@@ -81,6 +82,19 @@ function isInjectedText(ev: KeyboardEvent): boolean {
   return charCode > 0 && ev.key.codePointAt(0) === charCode
 }
 
+// optionMetaLetter 把 Option+字母换成 readline 认识的 Meta 字母。
+//
+// WKWebView 上 Option+B 的 key 是「∫」、keyCode 经常是 0，xterm 的
+// macOptionIsMeta 靠 keyCode 65–90 判，走不到 ESC+b，符号就当普通字打进去。
+// 物理键 ev.code（KeyB）在这条路径上是稳的。
+function optionMetaLetter(ev: KeyboardEvent): string | null {
+  if (!ev.altKey || ev.metaKey || ev.ctrlKey) return null
+  if (!ev.code.startsWith('Key') || ev.code.length !== 4) return null
+  const letter = ev.code.slice(3)
+  if (letter < 'A' || letter > 'Z') return null
+  return ev.shiftKey ? letter : letter.toLowerCase()
+}
+
 // installTerminalInputFix 给一个已经 open 过的终端装上补漏逻辑。
 //
 // 参数：
@@ -110,6 +124,9 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   // 它是 input 事件的免打扰位：大写字母（xterm 的 CapsLock HACK 把 A-Z 交给
   // keypress 处理）走的正是这条路，此时 input 事件里那份 data 是重复的，补发即双字。
   let keypressEmitted = false
+  // optionMetaConsumed：刚用物理键发过 ESC+字母。WKWebView 仍可能再丢一个
+  // insertText（∫/ƒ），补发路径必须闭嘴，否则 zsh 收到 Meta 又吃一个符号。
+  let optionMetaConsumed = false
   // seqBeforeKeypress / seqBeforeInput 是 xterm 看到该事件之前的计数快照。
   let seqBeforeKeypress = 0
   let seqBeforeInput = 0
@@ -118,6 +135,7 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   // 注意 ② 那条路径里 input 排在 keydown 之前，此处的复位对它是无害的空操作。
   const onKeyDownCapture = (): void => {
     keypressEmitted = false
+    optionMetaConsumed = false
   }
   const onKeyPressCapture = (): void => {
     seqBeforeKeypress = dataSeq
@@ -138,6 +156,10 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
     // 合成落定（insertFromComposition）、粘贴（insertFromPaste）、删除，
     // 都有 xterm 自己的通道，插手只会重复。
     if (ie.inputType !== 'insertText' || ie.isComposing || !ie.data) return
+    if (optionMetaConsumed) {
+      optionMetaConsumed = false
+      return
+    }
     if (keypressEmitted) {
       // keypress 已经把这段文本发过了（大写字母那条路），这里的 data 是同一份。
       keypressEmitted = false
@@ -166,6 +188,15 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   term.attachCustomKeyEventHandler((ev) => {
     if (disposed) return true
     if (ev.type === 'keydown') {
+      const metaLetter = optionMetaLetter(ev)
+      if (metaLetter !== null) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        optionMetaConsumed = true
+        logTermFix(label, 'Option Meta', metaLetter)
+        term.input(`\x1b${metaLetter}`)
+        return false
+      }
       if (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === 'ArrowLeft') {
         ev.preventDefault()
         ev.stopPropagation()

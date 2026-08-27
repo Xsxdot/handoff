@@ -64,14 +64,20 @@ function makeRig(withFix: boolean): Rig {
 // 判分支的依据，写不进去测试就会假绿。
 function key(
   type: 'keydown' | 'keypress' | 'keyup',
-  init: { key: string; keyCode: number; charCode?: number; shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean },
+  init: {
+    key: string; keyCode: number; charCode?: number
+    shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean
+    code?: string
+  },
 ): KeyboardEvent {
   const charCode = init.charCode ?? 0
   const ev = new KeyboardEvent(type, {
     key: init.key,
+    code: init.code ?? '',
     shiftKey: init.shiftKey ?? false,
     metaKey: init.metaKey ?? false,
     ctrlKey: init.ctrlKey ?? false,
+    altKey: init.altKey ?? false,
     bubbles: true,
     cancelable: true,
     composed: true,
@@ -271,5 +277,21 @@ describe('mac 终端键：⌘←/⌘→/⌘K', () => {
     const clear = vi.spyOn(rig.term, 'clear')
     rig.ta.dispatchEvent(key('keydown', { key: 'k', keyCode: 75, ctrlKey: true }))
     expect(clear).not.toHaveBeenCalled()
+  })
+})
+
+describe('Option 当 Meta：WKWebView 的 key 是符号、keyCode 经常是 0', () => {
+  it('Option+B / Option+F 发出 ESC+b / ESC+f，即使 key 是 ∫/ƒ 且 keyCode=0', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    rig.ta.dispatchEvent(key('keydown', { key: 'ƒ', keyCode: 0, altKey: true, code: 'KeyF' }))
+    expect(rig.data).toEqual(['\x1bb', '\x1bf'])
+  })
+
+  it('随后的 insertText（∫）不得再补发——否则 zsh 收到 ESC+b 又吃一个符号', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    rig.ta.dispatchEvent(input(rig.ta, '∫'))
+    expect(rig.data).toEqual(['\x1bb'])
   })
 })
