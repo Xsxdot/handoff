@@ -9,6 +9,7 @@ export interface CardItemProps {
   onMigrate?: () => void
   mergedCount?: number
   verified?: boolean
+  queuePosition?: number
 }
 
 function Chip({ children, className, title, onClick }: {
@@ -27,7 +28,7 @@ function Chip({ children, className, title, onClick }: {
   return <span title={title} className={cn('rounded-full border px-1.5 text-[10px]', className)}>{children}</span>
 }
 
-export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_count, verified }: CardItemProps) {
+export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_count, verified, queuePosition }: CardItemProps) {
   const needs = needsAttention(card)
   const attachments = card.attachments ?? []
   const blockedBy = card.blocked_by ?? []
@@ -64,6 +65,7 @@ export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_co
         <Chip className={card.priority === '高' ? 'border-destructive/40 text-destructive' : 'text-muted-foreground'}>
           {card.priority || '—'}
         </Chip>
+        {queuePosition !== undefined && <Chip className="border-amber-300 bg-amber-50 text-amber-700">排队 #{queuePosition}</Chip>}
         {attachments.filter((attachment) => attachment.kind === 'spec').map((attachment) => (
           <Chip key={attachment.path} title={attachment.path} className="text-foreground">▤ spec</Chip>
         ))}

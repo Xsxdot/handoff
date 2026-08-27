@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
 import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
 import type { Decision, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
+import { getQueue } from '../../api/scheduling'
 import { usePoll } from '../data/usePoll'
 import { useTasks } from '../data/useTasks'
 import { errorMessage } from '../lib/format'
@@ -9,6 +10,7 @@ import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
 import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, visibleColumns } from './columns'
 import { ListView } from './ListView'
+import { QueuePanel, queuePositionByCard } from './QueuePanel'
 import { MigrateDialog } from './MigrateDialog'
 import { NewCardDialog } from './NewCardDialog'
 
@@ -78,6 +80,7 @@ export function CardsPage() {
   const cardsPoll = usePoll(() => fetchCards(includeArchived ? 'all=1' : ''), POLL_MS)
   const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
+  const queuePoll = usePoll(getQueue, POLL_MS)
   const navigate = useNavigate()
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
@@ -102,6 +105,11 @@ export function CardsPage() {
     : mergeStateOrder(flows?.workflows.map((flow) => flow.def.states) ?? [])
   const workflowOptions = flows?.workflows ?? []
   const healthRows = healthPoll.data?.mirror ?? []
+  const queueLoading = queuePoll.data === null && !queuePoll.disconnected && !queuePoll.sessionExpired
+  const queuePositions = useMemo(
+    () => queuePositionByCard(queuePoll.data?.queue ?? []),
+    [queuePoll.data],
+  )
   // 滞后要点名是哪台：判据⑦ 判的是「断链期看板该 target 亮事件流滞后」，
   // 只报一个全局「镜像异常」等于告诉你「有台机器哑了，自己猜是哪台」
   const staleTargets = healthRows
@@ -172,7 +180,15 @@ export function CardsPage() {
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
       <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
-      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(boardColumns(workflowStates.length ? workflowStates : mergeStateOrder(cards.map((card) => [card.status]))), filtered, needsOnly).map((status) => { const inColumn = cardsInColumn(filtered, status); return <section key={status} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{status}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
+      <QueuePanel
+        entries={queuePoll.data?.queue ?? []}
+        loading={queueLoading}
+        disconnected={queuePoll.disconnected}
+        sessionExpired={queuePoll.sessionExpired}
+        errorText={queuePoll.errorText}
+        onOpenCard={(id) => openDrawer(id)}
+      />
+      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} queuePositions={queuePositions} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(boardColumns(workflowStates.length ? workflowStates : mergeStateOrder(cards.map((card) => [card.status]))), filtered, needsOnly).map((status) => { const inColumn = cardsInColumn(filtered, status); return <section key={status} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{status}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} queuePosition={queuePositions.get(card.id)} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
       {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} />}
       <NewCardDialog

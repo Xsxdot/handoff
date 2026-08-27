@@ -2,9 +2,10 @@
 // 建卡入口传下去的项目必须来自当前视图而不是列表首张卡（B179）；
 // 卡到任务深链的管线要真通（B181）。
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { Task } from '../../api/types'
+import { getQueue } from '../../api/scheduling'
 import { CardsPage } from './CardsPage'
 
 vi.mock('../../api/client', async (importOriginal) => ({
@@ -22,6 +23,11 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   fetchDecisions: vi.fn().mockResolvedValue([
     { id: 2, card_id: '', body: '要不要先把 acc/ 临时分支清掉？', options: null, status: 'open', answer: '', created_by: 'cli:me@box' },
   ]),
+}))
+
+vi.mock('../../api/scheduling', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/scheduling')>()),
+  getQueue: vi.fn().mockResolvedValue({ queue: [] }),
 }))
 
 // 建卡对话框换成桩：这里要验的是 CardsPage 往下传了什么，不是对话框自己怎么渲染
@@ -112,5 +118,46 @@ describe('卡到任务深链的数据通路', () => {
     fireEvent.click(await screen.findByRole('button', { name: '跳到 task-wire' }))
     // 整条管线：useTasks → CardDrawer.tasks → 行内 ↗ → navigate('/tasks/task-wire')
     expect(await screen.findByText('deep-link-hit')).toBeInTheDocument()
+  })
+})
+
+describe('队列呈现与卡位次', () => {
+  const queuedCard = {
+    id: 'B240', title: '排队卡', status: '待办', priority: '中', project: 'handoff',
+    workflow: '', workflow_version: 1, created_at: '', updated_at: '', parent: '', base_branch: '', attachments: [], following: '', blocked: false,
+    blocked_by: [], merged_count: 0, needs: '', open_decisions: 0, children_total: 0,
+    children_done: 0, conflict: false, open_tickets: 0,
+  }
+
+  it('看板显示服务端位次，点击队列卡号打开同一张卡，列表保留排队列', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [queuedCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: queuedCard, relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    })
+    vi.mocked(getQueue).mockResolvedValue({ queue: [{
+      kind: 'ignition_queue', id: 'q-240', card: 'B240', node: 'implement', squad: 'exec',
+      target: 'linux', executor: 'opencode', model: '', priority: '高', ready: false,
+      actor: 'cli:user', seq: 1, position: 1,
+    }] })
+    renderPage()
+    expect(await screen.findByText('#1')).toBeInTheDocument()
+    const queue = screen.getByRole('region', { name: '排队中' })
+    expect(within(queue).getByText('B240')).toBeInTheDocument()
+    fireEvent.click(within(queue).getByRole('button', { name: 'B240' }))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '列表' }))
+    expect(await screen.findByRole('columnheader', { name: '排队' })).toBeInTheDocument()
+    expect(within(screen.getByRole('table')).getByText('#1')).toBeInTheDocument()
+  })
+
+  it('队列首拉失败不清掉已有卡，显示断线原因', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [queuedCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(getQueue).mockRejectedValueOnce(new Error('queue connection refused'))
+    renderPage()
+    expect(await screen.findByText('排队卡')).toBeInTheDocument()
+    expect((await screen.findAllByText(/queue connection refused/)).length).toBeGreaterThan(0)
   })
 })

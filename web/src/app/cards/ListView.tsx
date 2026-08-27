@@ -5,11 +5,13 @@ export function ListView({
   includeArchived,
   onIncludeArchivedChange,
   onOpen,
+  queuePositions,
 }: {
   cards: CardView[]
   includeArchived: boolean
   onIncludeArchivedChange: (value: boolean) => void
   onOpen: (id: string) => void
+  queuePositions?: ReadonlyMap<string, number>
 }) {
   return (
     <div className="min-h-0 flex-1 overflow-auto px-4 py-3">
@@ -23,7 +25,7 @@ export function ListView({
       <table className="w-full border-collapse text-xs">
         <thead>
           <tr className="border-b text-left text-[11px] text-muted-foreground">
-            {['ID', '标题', '状态', '验收', '优先级', '附件', '备注'].map((label) => <th key={label} className="whitespace-nowrap px-2 py-1.5 font-medium">{label}</th>)}
+            {['ID', '标题', '状态', '验收', '优先级', '排队', '附件', '备注'].map((label) => <th key={label} className="whitespace-nowrap px-2 py-1.5 font-medium">{label}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -37,6 +39,7 @@ export function ListView({
               <td className="whitespace-nowrap px-2 py-2">{card.status}</td>
               <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">待真机验</td>
               <td className="whitespace-nowrap px-2 py-2">{card.priority || '—'}</td>
+              <td className="whitespace-nowrap px-2 py-2">{queuePositions?.get(card.id) !== undefined ? `#${queuePositions.get(card.id)}` : '—'}</td>
               <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">{card.attachments?.length || '—'}</td>
               <td className="px-2 py-2 text-muted-foreground">{card.needs || '—'}</td>
             </tr>
