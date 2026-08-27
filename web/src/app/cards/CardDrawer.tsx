@@ -9,6 +9,7 @@ import { TicketsPanel } from '../task/TicketsPanel'
 import { boardColumns } from './columns'
 import { TaskState } from '../board/StateDot'
 import { isTerminalState } from '../workbench/TaskPickerDialog'
+import { CoordinatorPanel } from './CoordinatorPanel'
 
 type Relation = { From: string; To: string; Type: string }
 
@@ -909,6 +910,8 @@ export function CardDrawer({
             {((detail.decisions ?? []).length > 0 || (detail.needs ?? '') !== '') && (
               <CardAttention cardId={id} needs={detail.needs ?? ''} decisions={detail.decisions ?? []} onAnswered={load} />
             )}
+
+            <CoordinatorPanel cardId={id} />
 
             <section className="mb-5">
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>

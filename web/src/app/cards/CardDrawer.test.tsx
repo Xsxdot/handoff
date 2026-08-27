@@ -65,10 +65,19 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   clearCardNeeds: vi.fn().mockResolvedValue({ ok: true }),
 }))
 
+vi.mock('../../api/scheduling', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/scheduling')>()),
+  getCoordinatorStatus: vi.fn().mockResolvedValue({ bound: false, attach_active: false, attach: null }),
+  launchCoordinator: vi.fn().mockResolvedValue({ woke: true, rebuilt: false, escalated: false, output: '协调者已拉起' }),
+  attachCoordinator: vi.fn().mockResolvedValue({ machine: '', dir: '/repo/handoff', command: 'opencode --session sess' }),
+  releaseCoordinator: vi.fn().mockResolvedValue({ ok: true }),
+}))
+
 describe('抽屉一处看', () => {
   it('承载卡显示并入区成员，关系区不重复「承载着」', async () => {
     render(<CardDrawer id="B147" onClose={() => {}} onOpenCard={() => {}} />)
     expect(await screen.findByText(/并入本卡/)).toBeInTheDocument()
+    expect(await screen.findByText('未绑定')).toBeInTheDocument()
     expect(screen.getByText('B144')).toBeInTheDocument()
     expect(screen.queryByText('承载着')).not.toBeInTheDocument()
   })
