@@ -324,15 +324,18 @@ func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error)
 		}
 	}
 	if member != "" {
-		for i := range rooms {
-			unread, err := s.Unread(member, rooms[i].ID)
-			if err != nil {
-				log().Warn("会话列表组装失败：读未读数",
-					"project", project, "member", member, "room", rooms[i].ID, "cause", err)
-				return nil, err
-			}
-			rooms[i].Unread = unread
+		cursors, err := s.cursor.Snapshot(member)
+		if err != nil {
+			log().Warn("会话列表组装失败：读游标快照",
+				"project", project, "member", member, "cause", err)
+			return nil, err
 		}
+		unread := unreadByRoom(events, cursors)
+		for i := range rooms {
+			rooms[i].Unread = unread[rooms[i].ID]
+		}
+		log().Info("会话列表未读聚合完成", "project", project, "member", member,
+			"rooms", len(rooms))
 	}
 	// 排序：非终态（含群房间）按活动降序在前，终态卡房间沉底（各自内部按
 	// 活动降序；Stable 保证同活动时保持插入序，输出形状确定）。
@@ -349,6 +352,25 @@ func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error)
 	sort.SliceStable(sunk, func(i, j int) bool { return sunk[i].LastActivity.After(sunk[j].LastActivity) })
 	log().Info("会话列表已组装", "project", project, "count", len(rooms))
 	return append(active, sunk...), nil
+}
+
+// unreadByRoom 从列表已经读取的全量事件中聚合成员未读数。
+//
+// 列表本来就需要一次事件流读取来计算 LastActivity；复用这批事件，并在一次
+// Snapshot 游标快照上比较水位，避免每个房间再次 Cursor+ReadAllEvents。
+func unreadByRoom(events []proto.LedgerEvent, cursors map[string]int64) map[string]int {
+	out := make(map[string]int)
+	for _, ev := range events {
+		if ev.Type != room.RoomEventType {
+			continue
+		}
+		roomID := room.RoomIDOf(ev)
+		if roomID == "" || ev.Seq <= cursors[roomID] {
+			continue
+		}
+		out[roomID]++
+	}
+	return out
 }
 
 // MarkRead 未读游标置位（打开房间即已读）。按成员按房间记 seq 水位，单调

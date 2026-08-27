@@ -9,6 +9,7 @@ package collab
 
 import (
 	"encoding/json"
+	"fmt"
 	"testing"
 	"time"
 
@@ -21,9 +22,10 @@ import (
 // 供 ListRooms 排序/筛选/活性翻转等需要精确时刻的读模型测试使用。全部方法
 // 保持与接口一一对应；未用到的写方法返回 nil（本文件不测它们）。
 type fakeLC struct {
-	cards  []proto.Card
-	events []proto.LedgerEvent
-	leases map[string]time.Time // session -> expiresAt
+	cards      []proto.Card
+	events     []proto.LedgerEvent
+	leases     map[string]time.Time // session -> expiresAt
+	eventReads int
 }
 
 func (f *fakeLC) GetCard(id string) (proto.Card, error) {
@@ -64,6 +66,7 @@ func (f *fakeLC) RecordMessageConsumed(cardID string, msgSeq int64, consumer str
 	return nil
 }
 func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	f.eventReads++
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -90,6 +93,39 @@ func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]pr
 		}
 	}
 	return out, nil
+}
+
+// TestListRoomsForMemberScansEventsOnceForUnreadAndActivity 锁住列表性能接缝：
+// 活动时间与成员未读必须复用同一次事件流扫描，不能退化为每个房间各读一遍。
+// 205 张卡刻意超过验收门的 200+ 规模；计数断言比挂钟更稳定。
+func TestListRoomsForMemberScansEventsOnceForUnreadAndActivity(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	fake := &fakeLC{leases: map[string]time.Time{}}
+	for i := 0; i < 205; i++ {
+		id := fmt.Sprintf("B%03d", i)
+		fake.cards = append(fake.cards, proto.Card{
+			ID: id, Title: id, Status: "进行中", Project: "p1",
+			CreatedAt: base, UpdatedAt: base,
+		})
+		fake.events = append(fake.events, fakeRoomMsg(int64(i+1), id, base.Add(time.Duration(i)*time.Second)))
+	}
+
+	svc := New(fake)
+	rooms, err := svc.ListRoomsForMember("p1", "web:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rooms) != 207 { // 205 卡 + 项目群 + 全员群
+		t.Fatalf("房间数量: got %d want 207", len(rooms))
+	}
+	if fake.eventReads != 1 {
+		t.Fatalf("列表应只扫描一次事件流，实际读取 %d 次", fake.eventReads)
+	}
+	for _, r := range rooms {
+		if r.Kind == room.KindCard && r.Unread != 1 {
+			t.Fatalf("卡房间 unread 应为 1: %+v", r)
+		}
+	}
 }
 func (f *fakeLC) BindDriver(id, session, carrier, expect string) error {
 	return nil

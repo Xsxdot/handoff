@@ -6,11 +6,15 @@ package agentd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -194,6 +198,72 @@ func TestRoomsListWithoutAttachmentKeepsAttachMissing(t *testing.T) {
 		if room.ID == card.ID && strings.Contains(string(raw), `"attach"`) {
 			t.Fatalf("无挂账卡不应出现 attach: %s", raw)
 		}
+	}
+}
+
+// TestRoomsListAttachTimeoutDoesNotBlockMainList 锁住附加投影的降级边界：远端
+// 任务详情是非承重信息，慢目标只能在短超时内放弃，不能把 /api/rooms 卡住。
+func TestRoomsListAttachTimeoutDoesNotBlockMainList(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "慢目标卡")
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+	}))
+	t.Cleanup(remote.Close)
+	env.srv.conf().Targets = map[string]config.Target{
+		"slow": {Addr: remote.URL, Token: "remote-token"},
+	}
+	if err := env.ledger.LinkTask(card.ID, "slow", "T-slow", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	started := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(started)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("慢 attach 不应阻断主列表: status=%d elapsed=%s", resp.StatusCode, elapsed)
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("慢 attach 超过主列表短超时: elapsed=%s", elapsed)
+	}
+}
+
+// TestRoomsListTTFB200Cards 是真实账本规模的 HTTP 首字节验收：200+ 卡的主
+// 列表必须在 2 秒内开始响应。事件读取次数的确定性守卫在 collab 包测试中。
+func TestRoomsListTTFB200Cards(t *testing.T) {
+	env := newRoomsEnv(t)
+	for i := 0; i < 205; i++ {
+		seedCard(t, env, fmt.Sprintf("性能卡-%03d", i))
+	}
+	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	started := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(started)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/rooms: status=%d", resp.StatusCode)
+	}
+	t.Logf("本机真实 HTTP/SQLite /api/rooms TTFB=%s cards=205", elapsed)
+	if elapsed >= 2*time.Second {
+		t.Fatalf("200+ 卡列表首字节超时: elapsed=%s", elapsed)
 	}
 }
 

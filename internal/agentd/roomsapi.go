@@ -14,8 +14,11 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/room"
@@ -61,41 +64,139 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
 }
 
+// roomAttachEnrichTimeout 限制非承重 attach 投影占用列表请求的时间。主列表
+// 仍然必须可用；超时只让 Attach 留空，UI 以禁用态呈现。
+const roomAttachEnrichTimeout = 150 * time.Millisecond
+
 // enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
-// 保持 Attach=nil。失败不吞：逐项 Warn，UI 得到禁用态；列表主查询仍可用。
+// 保持 Attach=nil。挂账先一次性读取，逐卡 enrich 并行执行且受短超时约束；
+// 失败不吞：逐项 Warn，UI 得到禁用态；列表主查询仍可用。
 func (s *Server) enrichRoomAttachments(ctx context.Context, rooms []proto.RoomSummary) {
-	for i := range rooms {
-		if rooms[i].Kind != room.KindCard || s.ledger == nil {
-			continue
+	if s.ledger == nil {
+		return
+	}
+	enrichCtx, cancel := context.WithTimeout(ctx, roomAttachEnrichTimeout)
+	defer cancel()
+	linksResult := make(chan struct {
+		links []ledger.TaskLink
+		err   error
+	}, 1)
+	go func() {
+		links, err := s.ledger.AllTaskLinks()
+		linksResult <- struct {
+			links []ledger.TaskLink
+			err   error
+		}{links: links, err: err}
+	}()
+	var links []ledger.TaskLink
+	select {
+	case result := <-linksResult:
+		if result.err != nil {
+			s.log.Warn("读取房间挂账失败", "cause", result.err)
+			return
 		}
-		links, err := s.ledger.TasksOf(rooms[i].ID)
-		if err != nil {
-			s.log.Warn("读取房间挂账失败", "room", rooms[i].ID, "cause", err)
-			continue
-		}
-		for linkIndex := len(links) - 1; linkIndex >= 0; linkIndex-- {
-			link := links[linkIndex]
-			attach, lookupErr := s.lookupRoomAttach(ctx, link)
-			if lookupErr != nil {
-				s.log.Warn("房间 attach 目标不可解析", "room", rooms[i].ID,
-					"target", link.Target, "task", link.TaskID, "cause", lookupErr)
-				continue
-			}
-			rooms[i].Attach = attach
-			s.log.Info("房间 attach 投影成功", "room", rooms[i].ID, "target", link.Target,
-				"task", link.TaskID, "workdir", attach.WorkDir)
+		links = result.links
+	case <-enrichCtx.Done():
+		s.log.Warn("房间 attach enrich 超时：读取挂账", "cause", enrichCtx.Err())
+		return
+	}
+	linksByRoom := make(map[string][]ledger.TaskLink)
+	for _, link := range links {
+		linksByRoom[link.CardID] = append(linksByRoom[link.CardID], link)
+	}
+	for roomID := range linksByRoom {
+		sort.SliceStable(linksByRoom[roomID], func(i, j int) bool {
+			return linksByRoom[roomID][i].CreatedAt.Before(linksByRoom[roomID][j].CreatedAt)
+		})
+	}
+
+	localTasks := make(map[string]proto.Task)
+	needLocalTasks := false
+	for _, link := range links {
+		if link.Target == "" {
+			needLocalTasks = true
 			break
 		}
+	}
+	if needLocalTasks {
+		tasksResult := make(chan struct {
+			tasks []proto.Task
+			err   error
+		}, 1)
+		go func() {
+			tasks, err := s.st.ListTasks()
+			tasksResult <- struct {
+				tasks []proto.Task
+				err   error
+			}{tasks: tasks, err: err}
+		}()
+		select {
+		case result := <-tasksResult:
+			if result.err != nil {
+				s.log.Warn("读取本机任务列表失败，attach 降级禁用", "cause", result.err)
+			} else {
+				for _, task := range result.tasks {
+					localTasks[task.ID] = task
+				}
+				s.log.Debug("本机 attach 任务索引已就绪", "tasks", len(localTasks))
+			}
+		case <-enrichCtx.Done():
+			s.log.Warn("房间 attach enrich 超时：读取本机任务", "cause", enrichCtx.Err())
+			return
+		}
+	}
+
+	var wg sync.WaitGroup
+	for i := range rooms {
+		if rooms[i].Kind != room.KindCard {
+			continue
+		}
+		roomLinks := linksByRoom[rooms[i].ID]
+		if len(roomLinks) == 0 {
+			continue
+		}
+		wg.Add(1)
+		go func(index int, links []ledger.TaskLink) {
+			defer wg.Done()
+			s.enrichRoomAttachment(enrichCtx, &rooms[index], links, localTasks)
+		}(i, roomLinks)
+	}
+	wg.Wait()
+	s.log.Info("房间 attach enrich 完成", "rooms", len(rooms), "links", len(links),
+		"timed_out", enrichCtx.Err() != nil)
+}
+
+// enrichRoomAttachment 为一张卡选择最新可解析的挂账 task。悬空旧 link 不阻断
+// 后续可用 link；Attach=nil 是明确的不可执行态。
+func (s *Server) enrichRoomAttachment(ctx context.Context, summary *proto.RoomSummary, links []ledger.TaskLink, localTasks map[string]proto.Task) {
+	for linkIndex := len(links) - 1; linkIndex >= 0; linkIndex-- {
+		link := links[linkIndex]
+		if ctx.Err() != nil {
+			s.log.Warn("房间 attach enrich 超时", "room", summary.ID, "target", link.Target,
+				"task", link.TaskID, "cause", ctx.Err())
+			return
+		}
+		attach, lookupErr := s.lookupRoomAttach(ctx, link, localTasks)
+		if lookupErr != nil {
+			s.log.Warn("房间 attach 目标不可解析", "room", summary.ID,
+				"target", link.Target, "task", link.TaskID, "cause", lookupErr)
+			continue
+		}
+		summary.Attach = attach
+		s.log.Info("房间 attach 投影成功", "room", summary.ID, "target", link.Target,
+			"task", link.TaskID, "workdir", attach.WorkDir)
+		return
 	}
 }
 
 // lookupRoomAttach 只接受真实任务详情和 Workdir()；不从 bound_session 猜测 task。
-func (s *Server) lookupRoomAttach(ctx context.Context, link ledger.TaskLink) (*proto.RoomAttach, error) {
+// localTasks 是列表装配点的一次性本机任务索引，避免逐挂账查询。
+func (s *Server) lookupRoomAttach(ctx context.Context, link ledger.TaskLink, localTasks map[string]proto.Task) (*proto.RoomAttach, error) {
 	var workDir string
 	if link.Target == "" {
-		task, err := s.st.GetTask(link.TaskID)
-		if err != nil {
-			return nil, fmt.Errorf("读取本机任务 %s: %w", link.TaskID, err)
+		task, ok := localTasks[link.TaskID]
+		if !ok {
+			return nil, fmt.Errorf("读取本机任务 %s: 任务不存在", link.TaskID)
 		}
 		workDir = task.Workdir()
 	} else {
