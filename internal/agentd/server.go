@@ -155,6 +155,9 @@ type Server struct {
 	keystone   *keystone.Service
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
+	// automationStartOnce/automationKick protect the single host automation loop.
+	automationStartOnce sync.Once
+	automationKick      chan struct{}
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
 	desktopMu    sync.Mutex
 	desktopState *proto.DesktopState
@@ -238,6 +241,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		machineUpgrades:         make(map[string]*proto.MachineUpgrade),
 		machineUpgradeInstaller: inst,
 		cardStepFlight:          make(map[string]bool),
+		automationKick:          make(chan struct{}, 1),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade
