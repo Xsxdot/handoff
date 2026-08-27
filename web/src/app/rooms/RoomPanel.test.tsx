@@ -169,6 +169,25 @@ describe('RoomPanel', () => {
     expect(logRoom).toHaveBeenCalledWith('debug', 'card_open_requested', { room: 'B1', view: 'detail' })
   })
 
+  it('打开卡片先记录 room/view，再通知上层打开抽屉', async () => {
+    const sequence: string[] = []
+    vi.mocked(logRoom).mockImplementation((_level, event) => {
+      if (event === 'card_open_requested') sequence.push('logRoom')
+    })
+    const openCard = vi.fn(() => { sequence.push('onOpenCard') })
+    const user = userEvent.setup()
+    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    render(<RoomPanel workbench={workbench()} persistent={false} onOpenCard={openCard} />)
+    await user.click(await screen.findByRole('button', { name: /卡房间/ }))
+    await user.click(screen.getByRole('button', { name: '更多' }))
+    await screen.findByRole('button', { name: '打开卡片 B1' })
+
+    await user.click(screen.getByRole('button', { name: '打开卡片 B1' }))
+
+    expect(sequence).toEqual(['logRoom', 'onOpenCard'])
+    expect(logRoom).toHaveBeenCalledWith('debug', 'card_open_requested', { room: 'B1', view: 'detail' })
+  })
+
   it('常驻面板收起后保留 FAB，并可重新打开', async () => {
     const user = userEvent.setup()
     render(<RoomPanel workbench={workbench()} persistent />)

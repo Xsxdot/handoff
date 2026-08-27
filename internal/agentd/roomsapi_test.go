@@ -409,6 +409,31 @@ func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
 		env.srv.roomAttachMu.RUnlock()
 		return gotCalls == 2 && !cached
 	})
+	assertAttachMissing := func(stage string) {
+		t.Helper()
+		code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+		if code != http.StatusOK {
+			t.Fatalf("%s GET /api/rooms 应成功: %d %s", stage, code, body)
+		}
+		var out struct {
+			Rooms []json.RawMessage `json:"rooms"`
+		}
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s GET /api/rooms 解码失败: %v", stage, err)
+		}
+		for _, raw := range out.Rooms {
+			var summary struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(raw, &summary); err != nil {
+				t.Fatalf("%s 房间行解码失败: %v", stage, err)
+			}
+			if summary.ID == card.ID && strings.Contains(string(raw), `"attach"`) {
+				t.Fatalf("%s 失败后房间 attach 必须缺席: %s", stage, raw)
+			}
+		}
+	}
+	assertAttachMissing("刷新失败后")
 
 	// TTL 是独立的失效闸：即使后台刷新尚未开始，过期投影也不能被列表消费。
 	env.srv.storeRoomAttach(ledger.TaskLink{Target: "relay", TaskID: "T-relay"}, &proto.RoomAttach{
@@ -422,6 +447,7 @@ func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
 	if got := env.srv.cachedRoomAttach(ledger.TaskLink{Target: "relay", TaskID: "T-relay"}); got != nil {
 		t.Fatalf("过期 attach 不得从缓存返回: %+v", got)
 	}
+	assertAttachMissing("TTL 过期后")
 }
 
 // TestRoomsListTTFB200Cards 是真实账本规模的 HTTP 首字节验收：200+ 卡的主

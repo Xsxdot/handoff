@@ -28,3 +28,25 @@
 - 全量编译与静态检查：`go build ./...` 退出 0；`go vet ./internal/proto ./internal/collab ./internal/ledger ./internal/agentd` 退出 0，均无输出。
 - 全量 Web 测试：`npm test -- --run` 退出 0，原始输出 `Test Files 110 passed`、`Tests 1134 passed`、`Duration 17.76s`；测试过程中仍出现既有 `Not implemented: HTMLCanvasElement's getContext()` 提示。
 - 提交：已在当前分支创建 `5211ebf2 fix(b275): expire remote room attach cache`；未 push。
+
+## 2026-08-28 charter-8 review-6
+
+- 节点基线：当前分支 `cards/B275-charter-8`，HEAD `f29afa60`；初始工作树无短状态输出。
+- 环境命令 `cd web && npm ci` 退出 0；原始输出尾部为 `added 290 packages, and audited 291 packages in 2s`、`found 0 vulnerabilities`。
+- 环境基线命令 `cd web && npm test -- --run` 退出 0；原始输出尾部为 `Test Files 110 passed (110)`、`Tests 1134 passed (1134)`、`Duration 15.70s`；过程中有既有 `Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package` 提示。
+- review-6 Go 测试新增后，`gofmt -w internal/agentd/roomsapi_test.go && go test ./internal/agentd -run '^TestRoomsListDropsExpiredAndFailedRemoteAttachCache$' -count=1` 退出 0；原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 0.185s`。
+- review-6 Web 顺序测试首轮红测真实触发新断言：`npm test -- --run src/app/rooms/RoomPanel.test.tsx` 输出 `1 failed | 10 passed (11)`，原始断言为期望 `['logRoom', 'onOpenCard']`、实际含 10 个初始化日志后再有 `onOpenCard`；测试夹具随后收窄为只记录 `card_open_requested`。
+- review-6 Web 顺序测试修正后，`npm test -- --run src/app/rooms/RoomPanel.test.tsx` 退出 0；原始输出 `Test Files 1 passed (1)`、`Tests 11 passed (11)`、`Duration 1.14s`。
+- task 收尾 Go 编译 `go build ./...` 退出 0，无输出。
+- task 收尾 agentd 定向测试 `go test ./internal/agentd -run 'TestRoomsList(WireIncludesZeroUnread|DropsExpiredAndFailedRemoteAttachCache|UsesBackgroundAttachCache|UnreadAndAttachProjection|WithoutAttachmentKeepsAttachMissing|AttachTimeoutDoesNotBlockMainList|Endpoint)$' -count=1` 退出 0；原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 1.678s`。
+- task 收尾 Web typecheck `npm run typecheck` 退出 0；原始输出仅为 npm 脚本头与 `tsc -b`。
+- task 收尾 Web 触及测试 `npm test -- --run src/api/rooms.test.ts src/api/rooms.fetch.test.ts src/app/rooms/RoomPanel.test.tsx src/app/cards/CardsPage.test.tsx` 退出 0；原始输出 `Test Files 4 passed (4)`、`Tests 32 passed (32)`、`Duration 2.42s`。
+- 收尾全量 Web `npm test -- --run` 退出 0；原始输出 `Test Files 110 passed (110)`、`Tests 1135 passed (1135)`、`Duration 30.38s`；过程中有既有 canvas `getContext()` 未实现提示。
+- 收尾全仓 Go `go test ./...` 退出 1；原始汇总为 `ok github.com/Xsxdot/handoff/internal/agentd 160.872s` 及其余包多数 `ok`，末尾为 `FAIL`；`cmd` 失败随后以定向命令取得完整原始报错。
+- 全仓 Go 失败定向复跑 `go test ./cmd -run 'TestRepoContractGate|TestMaybeInstallServiceLinuxRootInstalls' -count=1` 退出 1；原始报错为 `契约违规 [dead-contract] 契约 d_cli→d_collab ...`、`契约违规 [dead-contract] 契约 d_gateway→d_collab ...`、`契约违规 [dead-entry] ... "collab 包级函数" ...`、`legacy 命中: map[...]，warn 102 条`，以及 `托管失败：加载配置 /tmp/handoff.yaml: 写默认配置 /tmp/handoff.yaml: open /tmp/handoff.yaml: read-only file system`；未修改 cmd 范围外代码。
+- 变异自验（Go）：确认过期判断文本唯一命中 1 处；临时取反后 `go build ./...` 退出 0，相关用例真实变红，原始失败为 `roomsapi_test.go:448: 过期 attach 不得从缓存返回: &{Target:relay TaskID:T-relay WorkDir:/relay/B1 Command:handoff attach T-relay}`；随后已恢复实现。
+- 变异自验（Web）：确认 `card_open_requested` 调用文本唯一命中 1 处；临时交换 `onOpenCard` 与 `logRoom` 后 `npm run typecheck` 退出 0，单用例真实变红，原始断言实际为 `["onOpenCard", "logRoom"]`、期望 `["logRoom", "onOpenCard"]`；随后已恢复实现。
+- 恢复临时变异后的最终 Go 编译 `go build ./...` 退出 0，无输出；agentd 定向测试再次退出 0，原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 2.206s`。
+- 恢复临时变异后的 Web typecheck `npm run typecheck` 退出 0；lint `npm run lint` 退出 0，原始汇总 `✖ 20 problems (0 errors, 20 warnings)`；build `npm run build` 退出 0，原始输出 `✓ 1970 modules transformed`、`✓ built in 5.50s`，仅既有 chunk 大小 warning。
+- 恢复临时变异后的全量 Web `npm test -- --run` 退出 0；原始输出 `Test Files 110 passed (110)`、`Tests 1135 passed (1135)`、`Duration 19.82s`；仍有既有 canvas `getContext()` 未实现提示。
+- 提交：当前分支已创建 `d2a8bef0 test(b275): cover room attach invalidation and card log order`；未 push。
