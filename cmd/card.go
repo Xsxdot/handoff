@@ -177,7 +177,14 @@ var cardUpdateCmd = &cobra.Command{
 			}
 		}
 		if cardUpdateAccept != "" {
+			beforeSeq, err := st.MaxSeq()
+			if err != nil {
+				return fmt.Errorf("读判据更新前事件水位: %w", err)
+			}
 			if err := st.SetAcceptance(id, cardUpdateAccept, actor); err != nil {
+				return err
+			}
+			if err := printAcceptanceInFlightNotice(cmd, st, id, beforeSeq); err != nil {
 				return err
 			}
 		}
@@ -434,6 +441,37 @@ var cardExportCmd = &cobra.Command{
 		_, err = fmt.Fprint(cmd.OutOrStdout(), b.String())
 		return err
 	},
+}
+
+// printAcceptanceInFlightNotice 把本次 --accept 新增的在飞影响评论投影到 stderr。
+//
+// 参数：cmd 为 CLI 输出目标，st 为已打开的账本，cardID 为目标卡，fromSeq 为
+// 更新前的全局事件水位。只扫描本次新增的评论，不重复实现 SetAcceptance 的
+// LastType 判定；HTTP 路径不调用本函数，而是从卡时间线读取同一评论。
+// 返回：读取、解码或输出失败时返回带事件上下文的错误。
+func printAcceptanceInFlightNotice(cmd *cobra.Command, st *ledger.Store, cardID string, fromSeq int64) error {
+	events, err := st.EventsFromAsc([]string{cardID}, fromSeq, 100)
+	if err != nil {
+		return fmt.Errorf("读判据更新提示: %w", err)
+	}
+	for _, event := range events {
+		if event.Type != ledger.EvComment {
+			continue
+		}
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			return fmt.Errorf("解码判据更新提示事件 %d: %w", event.Seq, err)
+		}
+		if !strings.Contains(payload.Body, ledger.AcceptanceInFlightNotice) {
+			continue
+		}
+		if _, err := fmt.Fprintln(cmd.ErrOrStderr(), payload.Body); err != nil {
+			return fmt.Errorf("输出判据更新提示: %w", err)
+		}
+	}
+	return nil
 }
 
 // printCardJSON stdout 单行卡 JSON（机器契约）。

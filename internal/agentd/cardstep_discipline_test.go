@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -188,6 +189,81 @@ func TestStartCardStepRejectsUnsupportedTarget(t *testing.T) {
 				t.Fatalf("HTTP 路径同样不得发出任务，实际 %d 次", n)
 			}
 		})
+	}
+}
+
+type probeErrorTargetMachine struct {
+	ts         *httptest.Server
+	mu         sync.Mutex
+	dispatches int
+}
+
+func newProbeErrorTargetMachine(t *testing.T) *probeErrorTargetMachine {
+	t.Helper()
+	target := &probeErrorTargetMachine{}
+	target.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/status" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not-json"))
+			return
+		}
+		if r.URL.Path == "/api/tasks" && r.Method == http.MethodPost {
+			target.mu.Lock()
+			target.dispatches++
+			target.mu.Unlock()
+			http.Error(w, "probe failure test must not dispatch", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(target.ts.Close)
+	return target
+}
+
+func registerProbeErrorTarget(t *testing.T, s *Server, target *probeErrorTargetMachine) {
+	t.Helper()
+	addr := strings.TrimPrefix(target.ts.URL, "http://")
+	if err := s.swapConf(func(c *config.Config) error {
+		c.Targets["probe-error"] = config.Target{Addr: addr, Token: testToken}
+		return nil
+	}); err != nil {
+		t.Fatalf("登记探活错误目标: %v", err)
+	}
+}
+
+func (target *probeErrorTargetMachine) dispatchCount() int {
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	return target.dispatches
+}
+
+func TestCardStepProbeFailureDoesNotClaimUnsupported(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	seedCardWithProject(t, env.srv, "handoff")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedDisciplineOnLedger(t, env, discipline.NameImplement, "探活失败不应下发")
+	target := newProbeErrorTargetMachine(t)
+	registerProbeErrorTarget(t, env.srv, target)
+
+	err = env.srv.startCardStep(card.ID, proto.CardStepReq{
+		Step: "进行中", Target: "probe-error", Actor: "test",
+	})
+	if err == nil {
+		t.Fatal("Status 失败时环节派发必须返回错误")
+	}
+	if !strings.Contains(err.Error(), "探活失败") ||
+		!strings.Contains(err.Error(), "invalid character") {
+		t.Fatalf("错误必须含探活语义和 cause：%v", err)
+	}
+	if strings.Contains(err.Error(), "升级到同批版本") {
+		t.Fatalf("探活失败不得归因成版本升级：%v", err)
+	}
+	if got := target.dispatchCount(); got != 0 {
+		t.Fatalf("探活失败不得发送任务，实际 %d 次", got)
 	}
 }
 

@@ -4,7 +4,7 @@
 
 1. 复制本文档为一次性 plan，替换 <项目名>；
 2. handoff dispatch --target <机器> --new-worktree --new-branch codegraph-scan-<日期> --executor codex <plan 文件>；
-3. 回来后 handoff graph validate --repo . 通过才算扫描合格。
+3. 回来后执行 `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . validate` 通过才算扫描合格。
 
 ## 产物
 
@@ -95,7 +95,7 @@ packages 的 value 字段：
 | summary | string | 否 | 包源码 doc 注释的一句话转录；无注释或 TS/React 目录为空串，禁止生成式概括 |
 
 `packages` 的 key 必须是图中至少一个节点 `file` 的目录；悬空 key 会被
-`handoff graph validate` 判为硬错误。反过来，有目录没有条目不由 validate 执法，必须
+`codegraph validate` 判为硬错误。反过来，有目录没有条目不由 validate 执法，必须
 由本配方的文件级完整性自检逐目录发现并说明。
 
 meta 字段：
@@ -285,7 +285,7 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
 兜底选 dto 而不是留空，因为先验强烈：默认就是 DTO。**留空只用于「这一轮没判」**，
 不是「判不出」——空值语义是「未分种」，消费方不会把它当实体，但也不会当 DTO。
 
-三条会被 `handoff graph validate` 判成硬 issue（自相矛盾类）：取值不在枚举内；
+三条会被 `codegraph validate` 判成硬 issue（自相矛盾类）：取值不在枚举内；
 `modelKind` 挂在非 model 节点上；标了 `dto` 却在 `lifecycle` 段有 writer 条目。
 **标了 `entity` 却没有 lifecycle 条目不报错**，只在 validate 的
 `entitiesWithoutLifecycle` 里计数——那是补标进度表。
@@ -310,7 +310,7 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
   没有职责差异的拆分只会多一次点击。
 - **只含一个容器的领域是信号**：多半该并进它的上级或邻居。整张图里这种领域占多数时，
   说明切分依据用错了（十有八九是按包切的）。
-- **容器只能挂叶子领域**：挂在中间层的容器会静默从图里消失，`handoff graph validate`
+- **容器只能挂叶子领域**：挂在中间层的容器会静默从图里消失，`codegraph validate`
   会把它报成错误。
 - **入口容器（CLI/HTTP/WS）挂到它服务的领域**上，不要单独成领域——入口是领域的对外
   门面，不是独立的一层。
@@ -367,7 +367,7 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
     名字相同只说明撞名，不说明调用；
   - 跨语言（TS↔Go）禁止调用边：前端调后端走 HTTP，不是函数调用；wire 类型关联走
     projections/twins，不走 edges；
-  - 收尾自检的 `handoff graph validate` 含机械门控（跨包无 import / 跨语言的边直接
+  - 收尾自检的 `codegraph validate` 含机械门控（跨包无 import / 跨语言的边直接
     非零退出），扫描产物过不了门控就是不合格。
 - 容器按 struct 一级：Go 方法按 receiver 归 pkg.Receiver 容器，自由函数归
   pkg（包级函数），model 归 pkg 实体；入口分 CLI/HTTP/WS 三容器。
@@ -388,9 +388,10 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
 - lifecycle 的 `who`、`model` 必须引用已定义节点；`model` 必须为 model kind，`kind` 只能是
   creator 或 writer，writer 的 `field` 必须是被实际写入的状态类字段。定不出证据时不填关系。
 - 收尾自检：python3 -m json.tool 验证 JSON 合法性 + 引用完整性脚本（或直接
-  handoff graph validate --repo .（零 issues），再 handoff graph domains --repo . 目视领域树是否符合真实架构，
+  `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . validate`（零 issues），再执行
+  `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . domains` 目视领域树是否符合真实架构，
   并抽查 5 个节点的 file:line。
-- **C12 键自检（validate 罩不住）**：旧版 `handoff graph validate` 会忽略未知键
+- **C12 键自检（validate 罩不住）**：旧版 `codegraph validate` 会忽略未知键
   `flows`/`channel` 并照样全绿。交付前必须用下面这段核对 JSON 文件本身，不能只看
   validate 退出码：
 

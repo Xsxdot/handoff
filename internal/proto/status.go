@@ -247,6 +247,12 @@ type StatusResp struct {
 	// 为什么 status 只给个数、不给每个会话占多少进程：数进程要枚举全机进程，
 	// 而 status 有「不能变成慢命令」的硬纪律。进程数在 /api/footprint 里给。
 	PtySessions *int `json:"pty_sessions,omitempty"`
+
+	// WebEmbedded 报告本机是否编译进 Web 控制台。
+	//
+	// nil = 对端未上报，false = 当前二进制是 stub，true = 已嵌入。
+	// 使用指针保证非 nil 的 false 不被 omitempty 省略。
+	WebEmbedded *bool `json:"web_embedded,omitempty"`
 }
 
 // PtyFootprintRow 是一个终端会话的足迹体检结果。

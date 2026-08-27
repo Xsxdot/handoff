@@ -565,7 +565,13 @@ func (s *Server) Handler() http.Handler {
 	// 这份二进制有没有前端，是「控制台打不开」时第一个要排除的可能。
 	// 不打这一行的话，运维只能靠猜：是构建时漏了 -tags embedweb，
 	// 还是运行时路由坏了，两者现象完全一样。
-	s.log.Info("控制台前端", "embedded", webui.Embedded())
+	embedded := webui.Embedded()
+	if embedded {
+		s.log.Info("控制台前端", "embedded", true)
+	} else {
+		s.log.Warn("控制台前端是 stub：请使用带 -tags embedweb 的发布构建",
+			"embedded", false, "consequence", "当前控制台页面只是说明页")
+	}
 	s.log.Info("Host 白名单已生效", "hosts", sortedKeys(s.allowedHosts()))
 	return s.hostGuard(root)
 }
@@ -707,6 +713,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	revealOK := revealSupportedOS
 	resp.RevealSupported = &revealOK
 	resp.ScratchRoot = s.scratchRoot()
+	webEmbedded := webui.Embedded()
+	resp.WebEmbedded = &webEmbedded
 	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
 	if s.pty != nil {
 		n := len(s.pty.List())

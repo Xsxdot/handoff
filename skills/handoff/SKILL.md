@@ -175,7 +175,7 @@ stdout 上本来就只有 JSON 事件——要静音用 `2>/dev/null`，一个�
   交付，要看历史只能 `handoff show`。一次性 `wait`（不带 `--follow`）没有对账机制，
   会从本机游标（换机接管时即 seq 0）起逐条重放。
 
-这不是 bug，是「事件即信号、show 即权威」分工的推论。所以纪律固定为：**醒来先 show**。历史 question 的 ticket 已被消耗，补 reply 会 404——正常，跳过即可；历史 completed 也不代表当前在 `waiting_review`，state 说了算。
+这不是 bug，是「事件即信号、show 即权威」分工的推论。所以纪律固定为：醒来先 show。发现 reply 返回 404 后，必须用任务实际所在机器执行 `handoff show <task> --target <机器>`，读取 `pending_tickets`：ticket 仍在列表就原样重发 reply；不在列表才按已消耗处理。历史 completed 是否代表当前状态仍由 state 决定。
 
 ## 远程派发：代码怎么过去，改动怎么回来
 
@@ -251,7 +251,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 
 - **`actionable` 是权威的「你还欠什么」**，每张带完整请求原文，可直接
   `reply --ticket <id>`。它**不限于间隙内**——断网前你就看见过、一直没答的也在里面。
-- `stale` 是间隙里已被审批链答掉的工单数，补 `reply` 会 404，跳过即可。
+- `stale` 只是间隙里已经被审批链答掉的工单数，不能单独决定某个 404 是否可跳过。遇到 404，先在任务实际所在机器执行 `handoff show <task> --target <机器>`，检查 `pending_tickets`；仍在列表就原样重发，列表没有才跳过。不要把 backlog_summary 的计数当成当前欠办清单。
 - `missed_truncated` 为 `true` 时，`missed` / `stale` 的语义是「**至少**这么多」
   ——快照的事件窗口没覆盖到 cursor。此时 `actionable` 仍然精确。
 - 摘要行**不是**事件，`agentd` 不存这个类型；它只在客户端合成。
@@ -593,7 +593,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重开**，它不会自己好 |
 | 远程任务的 `wait` / `show` / `reply` 报 `task not found`（1008 / StatusPolicyViolation），id 明明是刚 dispatch 出来的 | **漏了 `--target`**，命令打到了本机 agentd——任务在执行机上，本机当然没有 | 看 stderr 里的 `addr=`：是 `127.0.0.1` 就是漏了 `--target`。补上重发即可，任务本身没事 |
 | `wait` 一直不返回 | 通常只是还没有事件 | 正常。stderr 的重连日志也正常。加 `--timeout` 兜底 |
-| 重开 follow 后吐出旧事件 | cursor 只在 wait 交付时推进；show/reply 不推进，换机接管从 0 起 | 正常。以 `show` 为准处置；历史 ticket 补 reply 404 也正常，跳过 |
+| 重开 follow 后吐出旧事件 | cursor 只在 wait 交付时推进；show/reply 不推进，换机接管从 0 起 | 以 show 为准；若 reply 404，先在任务实际所在机器执行 `handoff show <task> --target <机器>` 并检查 `pending_tickets`；仍在列表就原样重发，不在列表才跳过 |
 | `dispatch` 报「工作区不干净」 | **执行机上**的任务仓库有未提交/未跟踪改动 | 在执行机上提交或 stash 后重试（`--new-worktree` 可绕开主工作区的脏检查，但主仓库仍需可用） |
 | `dispatch` 报「本地工作区有 N 处未提交的已跟踪改动」 | **你本地**（不是执行机）有改动没提交，远程派发的基线不含它们，executor 会基于旧代码开工 | `git commit` 或 `git stash` 后重试；确认这些改动与本次任务无关时加 `--allow-dirty`（放行仍会打印被忽略的文件） |
 | `dispatch` 报 400「基线提交在任务仓库中不存在」 | 本地 HEAD 没 push，或执行机 fetch 不到（无凭证/网络不通） | `git push` 后重试；报文里的 fetch stderr 是根因原文。确实是不同仓库才用 `--no-sync-check` |

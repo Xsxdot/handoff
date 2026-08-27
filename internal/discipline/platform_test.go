@@ -23,6 +23,12 @@ func TestComposeEnabledKeepsHeadBaseTailOrderAndSources(t *testing.T) {
 	if strings.Count(got.Text, tail) != 1 {
 		t.Fatalf("平台尾部出现次数 = %d，want 1", strings.Count(got.Text, tail))
 	}
+	if strings.Contains(got.Text, "handoff graph") {
+		t.Fatal("平台正文不得提供 handoff graph 执行入口")
+	}
+	if !strings.Contains(got.Text, "go run github.com/Xsxdot/charter/graph/cmd/codegraph") {
+		t.Fatal("平台正文缺少 canonical codegraph 查询入口")
+	}
 	if !(strings.Index(got.Text, head) < strings.Index(got.Text, "角色纪律正文") &&
 		strings.Index(got.Text, "角色纪律正文") < strings.Index(got.Text, tail)) {
 		t.Fatalf("正文顺序错误：%q", got.Text)

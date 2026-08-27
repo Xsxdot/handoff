@@ -902,3 +902,94 @@ func TestCardDispatchRefusesUnsupportedTargetBeforeClaim(t *testing.T) {
 		t.Fatalf("拒发不得留下已认领的半状态: %s", show)
 	}
 }
+
+type probeErrorCardTarget struct {
+	ts         *httptest.Server
+	dispatches int32
+}
+
+func newProbeErrorCardTarget(t *testing.T) *probeErrorCardTarget {
+	t.Helper()
+	target := &probeErrorCardTarget{}
+	target.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/status" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not-json"))
+			return
+		}
+		if r.URL.Path == "/api/tasks" && r.Method == http.MethodPost {
+			atomic.AddInt32(&target.dispatches, 1)
+			http.Error(w, "probe failure test must not dispatch", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(target.ts.Close)
+	return target
+}
+
+func setupCardDispatchProbeErrorFixture(t *testing.T, dir string, target *probeErrorCardTarget) {
+	t.Helper()
+	c := &config.Config{
+		Listen: "127.0.0.1:0", Token: testToken, DataDir: dir, StallTimeout: 2 * time.Hour,
+		Ledger: config.LedgerConfig{Enabled: true},
+		Targets: map[string]config.Target{
+			"mac-02": {Addr: strings.TrimPrefix(target.ts.URL, "http://"), Token: testToken},
+		},
+	}
+	if err := config.Save(filepath.Join(dir, "config.yaml"), c); err != nil {
+		t.Fatalf("写探活错误测试配置: %v", err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.PutDiscipline("implement", "测试角色正文"); err != nil {
+		t.Fatalf("种纪律块: %v", err)
+	}
+}
+
+func TestCardDispatchProbeFailureDoesNotClaimUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	target := newProbeErrorCardTarget(t)
+	setupCardDispatchProbeErrorFixture(t, dir, target)
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "探活错误卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &created); err != nil {
+		t.Fatalf("解码建卡: %v", err)
+	}
+	_, errOut, err := runLedgerCLI(t, dir, "card", "dispatch", created.ID,
+		"--template", "feature-impl", "--target", "mac-02")
+	if err == nil {
+		t.Fatal("Status 失败时模板卡派发必须返回错误")
+	}
+	joined := err.Error() + errOut
+	if !strings.Contains(joined, "探活失败") || !strings.Contains(joined, "invalid character") {
+		t.Fatalf("错误必须含探活语义和 cause：%s", joined)
+	}
+	if strings.Contains(joined, "升级到同批版本") {
+		t.Fatalf("探活失败不得归因成版本升级：%s", joined)
+	}
+	if got := atomic.LoadInt32(&target.dispatches); got != 0 {
+		t.Fatalf("探活失败不得发送任务，实际 %d 次", got)
+	}
+	show, _, err := runLedgerCLI(t, dir, "card", "show", created.ID)
+	if err != nil {
+		t.Fatalf("读回卡: %v", err)
+	}
+	var card struct {
+		DriverSession string `json:"driver_session"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(show)), &card); err != nil {
+		t.Fatalf("解码卡: %v", err)
+	}
+	if card.DriverSession != "" {
+		t.Fatalf("探活失败不得认领卡，driver_session=%q", card.DriverSession)
+	}
+}

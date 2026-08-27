@@ -126,9 +126,8 @@ func (s *Server) cardStepInFlight(cardID string) bool {
 // 经 discipline.ResolveDispatch 产出随派发下发的正文三元组。未点名模板同样过闸，
 // 产物是纯平台层正文、版本 0（§3.1：拒发闸覆盖一切带正文派发）。
 //
-// 为什么探活失败也按不支持处置：能力位缺席(nil)的保守方向由失败的可见性决定
-// （契约 §2.4），网络错误时放行等于把「不知道」当成「支持」——那是缺陷三的
-// 静默降级换马甲。探活的错误原因带上下文记 Warn，拒发文案本身含升级指引。
+// 为什么探活失败不能按不支持处置：能力位缺席(nil)只表示探活成功后对端未上报，
+// 网络/认证错误必须保留 cause 并停止派发；只有 nil/false 能力位才进入升级拒发。
 func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (discipline.ResolvedDiscipline, error) {
 	name, target, err := ledgerstep.PreflightDiscipline(s.ledger, node.Template, node.Override.Discipline, reqTarget)
 	if err != nil {
@@ -144,17 +143,19 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 	var cap *bool
 	cl, err := s.pool.For(target)
 	if err != nil {
-		s.log.Warn("环节派发前取得目标机客户端失败", "target", target, "cause", err)
-	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		status, serr := cl.Status(ctx)
-		if serr != nil {
-			s.log.Warn("环节派发前能力位探活失败", "target", target, "cause", serr)
-		} else {
-			cap = status.DisciplinesSupported
-		}
+		s.log.Error("环节派发前取得目标机客户端失败", "target", target, "cause", err)
+		return discipline.ResolvedDiscipline{}, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	status, err := cl.Status(ctx)
+	if err != nil {
+		s.log.Error("环节派发前目标机探活失败", "target", target, "cause", err)
+		return discipline.ResolvedDiscipline{}, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
+	}
+	cap = status.DisciplinesSupported
 	lookup := func(n string) (int, string, error) {
 		d, gerr := s.ledger.GetDiscipline(n, 0)
 		if gerr != nil {

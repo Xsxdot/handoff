@@ -159,6 +159,28 @@ func TestBareDispatchRefusesUnsupportedTarget(t *testing.T) {
 	}
 }
 
+// TestBareDispatchProbeFailureDoesNotClaimUnsupported 探活返回非 JSON 时，裸派发
+// 必须保留真实 cause；这与能力位缺席的「升级」拒发是两条不同的用户处置路径。
+func TestBareDispatchProbeFailureDoesNotClaimUnsupported(t *testing.T) {
+	_, errOut, target, err := runBareDispatchAgainstFake(t, "not-json")
+	if err == nil {
+		t.Fatal("Status 失败时裸派发必须返回错误")
+	}
+	joined := err.Error() + errOut
+	if !strings.Contains(joined, "探活失败") {
+		t.Fatalf("错误必须说明探活失败：%s", joined)
+	}
+	if !strings.Contains(joined, "invalid character") {
+		t.Fatalf("错误必须保留 Status cause：%s", joined)
+	}
+	if strings.Contains(joined, "升级到同批版本") {
+		t.Fatalf("探活失败不得归因成版本升级：%s", joined)
+	}
+	if n := target.tasks(); n != 0 {
+		t.Fatalf("探活失败不得发送任务，实际 %d 次", n)
+	}
+}
+
 // TestBareDispatchDisciplineFileRawText P1(a)：--discipline-file 读文件作
 // RawText 直通——正文含文件原文与平台层标记，不落库所以版本记 0。
 func TestBareDispatchDisciplineFileRawText(t *testing.T) {

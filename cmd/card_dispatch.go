@@ -194,8 +194,9 @@ func resolveCardDispatchTemplate(st *ledger.Store) (string, error) {
 
 // resolveCardDispatchDiscipline 是 CLI 模板派发的缝 1 收口（B229 契约 §2.2）：
 // 绑账本 lookup 与目标机能力位探活各一次，经 discipline.ResolveDispatch 产出
-// 随派发下发的正文三元组。探活失败按「不支持」处置（缺席=nil 的保守方向同向，
-// §2.4）；未点名模板的产物是纯平台层正文、版本 0（§3.1 拒发闸覆盖一切带正文派发）。
+// 随派发下发的正文三元组。探活失败保留网络/认证 cause 并停止派发；只有探活成功
+// 但能力位缺席=nil 或 false 才产生「升级」拒发文案。未点名模板的产物是纯平台层
+// 正文、版本 0（§3.1 拒发闸覆盖一切带正文派发）。
 func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, target string) (discipline.ResolvedDiscipline, error) {
 	lookup := func(n string) (int, string, error) {
 		d, err := st.GetDiscipline(n, 0)
@@ -207,16 +208,18 @@ func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, 
 	var cap *bool
 	cl, done, err := targetClient(target)
 	if err != nil {
-		slog.Warn("派发前取得目标机客户端失败", "target", target, "cause", err)
-	} else {
-		defer done()
-		status, serr := cl.Status(ctx)
-		if serr != nil {
-			slog.Warn("派发前能力位探活失败，按不支持处置", "target", target, "cause", serr)
-		} else {
-			cap = status.DisciplinesSupported
-		}
+		slog.Error("模板派发前取得目标机客户端失败", "target", target, "cause", err)
+		return discipline.ResolvedDiscipline{}, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
 	}
+	defer done()
+	status, err := cl.Status(ctx)
+	if err != nil {
+		slog.Error("模板派发前目标机探活失败", "target", target, "cause", err)
+		return discipline.ResolvedDiscipline{}, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
+	}
+	cap = status.DisciplinesSupported
 	res, err := discipline.ResolveDispatch(lookup, discipline.DisciplineRef{Name: name},
 		loadCLIConfig().PlatformInvariantsEnabled(), cap)
 	if err != nil {

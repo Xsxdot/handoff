@@ -476,6 +476,7 @@ func activeTaskSample(taskID string) ActiveTask {
 func statusSample(now time.Time, taskID string) StatusResp {
 	ptyOK := true
 	revealOK := true
+	webOK := false // 默认构建不嵌入 Web 控制台，线格式必须显式保留 false。
 	return StatusResp{
 		Version:         buildSample(),
 		Listen:          "127.0.0.1:7777",
@@ -496,6 +497,7 @@ func statusSample(now time.Time, taskID string) StatusResp {
 		PtySupported:         &ptyOK,
 		RevealSupported:      &revealOK,
 		DisciplinesSupported: &revealOK, // B229：能力位进 fixture，缺席/置值的线格式由 web 侧承接
+		WebEmbedded:          &webOK,
 	}
 }
 

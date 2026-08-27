@@ -149,6 +149,11 @@ func renderStatusWithLookup(w io.Writer, addr string, cli proto.BuildInfo, st *p
 			}
 		}
 	}
+	// nil 表示旧 peer 没有这个键，true 表示已嵌入；这两种都不能画成 stub。
+	// 只有非 nil 的 false 是当前二进制明确报告的 stub。
+	if st.WebEmbedded != nil && !*st.WebEmbedded {
+		fmt.Fprintln(w, "控制台  前端未嵌入（当前页面是 stub）；请用带 -tags embedweb 的发布构建")
+	}
 	fmt.Fprintln(w)
 	fmt.Fprintf(w, "任务     %s\n", renderCounts(st.TaskCounts))
 	// nil 表示对端没给（老 agentd / 平台不支持），整行不打印。

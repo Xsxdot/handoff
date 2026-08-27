@@ -9,8 +9,9 @@ import "strings"
 
 const platformInvariantHead = `# 平台不变量（恒在层）
 
-1. 不要派发、不要调用 handoff CLI（只读本地图数据的 handoff graph 子命令除外）、不要起任何新的 executor 进程或子任务。
-2. 没有亲自跑到结果的命令，不许写它的结论。跑了但失败，贴原始报错原文，不要替它归因；不确定就写「未验证」。`
+1. 不要派发、不要调用 handoff CLI、不要起任何新的 executor 进程或子任务。
+2. 查图使用 go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . <子命令>；也可使用已安装的 codegraph；两者均不可用时再 grep。
+3. 没有亲自跑到结果的命令，不许写它的结论。跑了但失败，贴原始报错原文，不要替它归因；不确定就写「未验证」。`
 
 // 落台账要求不在平台层：spec 第 80 行把它移出平台层，第 81 行改由角色层只对
 // 产出型角色承载（B229.6 已导入）。平台层若再出现该句，产出型角色会拿到两次、

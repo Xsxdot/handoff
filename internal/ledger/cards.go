@@ -561,10 +561,16 @@ func detachSelector(attachments []Attachment, selector string) (kind, path strin
 	return "", selector, false
 }
 
+// AcceptanceInFlightNotice 是新判据对已启动轮次的明确影响说明。
+const AcceptanceInFlightNotice = "本次修改对正在跑的轮次无效，将从下一轮 `card dispatch --step` 生效"
+
 // SetAcceptance 写验收判据文本（判据是卡字段；验收**结果**走
-// RecordAcceptance 落事件，Task 8）。
+// RecordAcceptance 落事件，Task 8）。写入成功后查询挂账 task 的镜像实况；
+// 这是唯一能同时覆盖 CLI 与 HTTP 的写点，也让新判据不会静默影响已经启动的轮次。
+// 查询到在飞 task 时，先落原有更新评论，再以既有评论事件记录影响提示。
 func (s *Store) SetAcceptance(id, criteria, actor string) error {
-	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+	log().Info("更新验收判据进入", "card", id, "actor", actor, "criteria_bytes", len(criteria))
+	if err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		result, err := tx.Exec(s.q(`UPDATE cards SET acceptance_criteria = ?, updated_at = ? WHERE id = ?`),
 			criteria, s.tval(time.Now()), id)
 		if err != nil {
@@ -576,7 +582,35 @@ func (s *Store) SetAcceptance(id, criteria, actor string) error {
 		_, err = s.appendEvent(tx, sink, id, EvComment, actor,
 			map[string]any{"kind": "普通", "body": "更新验收判据"})
 		return err
-	})
+	}); err != nil {
+		log().Error("更新验收判据失败", "card", id, "actor", actor, "cause", err)
+		return err
+	}
+
+	states, err := s.LatestTaskStates(id)
+	if err != nil {
+		log().Error("判据已写入但读取在飞 task 失败", "card", id, "actor", actor, "cause", err)
+		return nil
+	}
+	liveIDs := make([]string, 0, len(states))
+	for _, state := range states {
+		if state.LastType != "archived" && state.LastType != "failed" {
+			liveIDs = append(liveIDs, state.Target+"/"+state.TaskID)
+		}
+	}
+	if len(liveIDs) == 0 {
+		log().Info("验收判据更新完成，无在飞 task", "card", id, "actor", actor)
+		return nil
+	}
+
+	body := AcceptanceInFlightNotice + "：" + strings.Join(liveIDs, "、")
+	if _, err := s.AddComment(id, body, "普通", actor); err != nil {
+		log().Error("判据已写入但在飞提示落账失败", "card", id, "actor", actor,
+			"tasks", liveIDs, "cause", err)
+		return fmt.Errorf("写在飞判据提示: %w", err)
+	}
+	log().Warn("更新验收判据影响在飞轮次", "card", id, "actor", actor, "tasks", liveIDs)
+	return nil
 }
 
 // UpdateCardMeta 改标题/优先级（空串 = 不改该项）。落 comment 事件。
