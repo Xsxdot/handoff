@@ -86,8 +86,11 @@ type PtyControl struct {
 	Type      string `json:"type"`
 	Since     uint64 `json:"since"`
 	Truncated bool   `json:"truncated"`
-	ExitCode  *int   `json:"exit_code,omitempty"`
-	Message   string `json:"message,omitempty"`
-	Cols      int    `json:"cols,omitempty"`
-	Rows      int    `json:"rows,omitempty"`
+	// BacklogBytes 是 attached 建连帧中旧录像的字节数；不带 omitempty，
+	// 因为 0 与旧服务端缺少该键必须能被前端区分。
+	BacklogBytes uint64 `json:"backlog_bytes"`
+	ExitCode     *int   `json:"exit_code,omitempty"`
+	Message      string `json:"message,omitempty"`
+	Cols         int    `json:"cols,omitempty"`
+	Rows         int    `json:"rows,omitempty"`
 }

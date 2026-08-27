@@ -68,6 +68,20 @@ describe('connectPty', () => {
     expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe('hi')
   })
 
+  it('attached 带 backlog_bytes:0 时原样传给回调——0 不是缺席', () => {
+    const { sockets, onAttached } = harness()
+    sockets[0].emitText({ type: 'attached', since: 0, truncated: false, backlog_bytes: 0 })
+    expect(onAttached).toHaveBeenCalledWith({ since: 0, truncated: false, backlog_bytes: 0 })
+  })
+
+  it('attached 不带 backlog_bytes 时回调没有该键——旧服务端', () => {
+    const { sockets, onAttached } = harness()
+    sockets[0].emitText({ type: 'attached', since: 0, truncated: false })
+    expect(onAttached).toHaveBeenCalledWith({ since: 0, truncated: false })
+    const info = onAttached.mock.calls[0][0] as { backlog_bytes?: number }
+    expect('backlog_bytes' in info).toBe(false)
+  })
+
   it('重连时按已收字节数续传，不重复请求已看过的输出', () => {
     vi.useFakeTimers()
     const { sockets } = harness()

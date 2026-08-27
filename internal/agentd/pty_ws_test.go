@@ -87,6 +87,43 @@ func TestPtyWSEchoRoundTrip(t *testing.T) {
 	readUntil(t, c, "WS_OK")
 }
 
+func TestPtyWSAttachedBacklogBytesKeyPresent(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows 上 PTY 不支持")
+	}
+	env := newTestAgentdEnv(t)
+	t.Setenv("HOME", t.TempDir())
+	s := ptyCreate(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
+	t.Cleanup(func() { _ = env.srv.pty.Close(s.ID) })
+
+	url := strings.Replace(env.ts.URL, "http://", "ws://", 1) +
+		"/ws/pty?session=" + s.ID + "&since=0"
+	c, _, err := websocket.Dial(context.Background(), url, &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + testToken}},
+	})
+	if err != nil {
+		t.Fatalf("拨 /ws/pty 失败: %v", err)
+	}
+	defer c.Close(websocket.StatusNormalClosure, "")
+	typ, data, err := c.Read(context.Background())
+	if err != nil {
+		t.Fatalf("读首帧: %v", err)
+	}
+	if typ != websocket.MessageText {
+		t.Fatalf("首帧类型 = %v", typ)
+	}
+	if !bytes.Contains(data, []byte(`"backlog_bytes"`)) {
+		t.Fatalf("attached 原文必须含 backlog_bytes 键（0 也要写出，不能 omitempty），原文=%s", data)
+	}
+	var ctrl proto.PtyControl
+	if err := json.Unmarshal(data, &ctrl); err != nil {
+		t.Fatalf("解析: %v", err)
+	}
+	if ctrl.BacklogBytes != 0 {
+		t.Fatalf("新会话 backlog_bytes = %d，期望 0", ctrl.BacklogBytes)
+	}
+}
+
 // text 控制帧 resize 生效。
 func TestPtyWSResize(t *testing.T) {
 	if runtime.GOOS == "windows" {
@@ -162,6 +199,29 @@ func TestPtyWSResumeSince(t *testing.T) {
 	got := readUntil(t, c2, "ROUND2")
 	if strings.Contains(got, "ROUND1") {
 		t.Errorf("since 之前的内容不该重放，实得:\n%s", got)
+	}
+}
+
+func TestPtyWSAttachedBacklogBytesMatchesRing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows 上 PTY 不支持")
+	}
+	env := newTestAgentdEnv(t)
+	t.Setenv("HOME", t.TempDir())
+	s := ptyCreate(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
+	t.Cleanup(func() { _ = env.srv.pty.Close(s.ID) })
+
+	c1, _ := dialPty(t, env, s.ID, 0)
+	if err := c1.Write(context.Background(), websocket.MessageBinary, []byte("echo ROUN\"D1\"\n")); err != nil {
+		t.Fatalf("写第一轮命令: %v", err)
+	}
+	readUntil(t, c1, "ROUND1")
+	_ = c1.Close(websocket.StatusNormalClosure, "")
+
+	c2, ctrl := dialPty(t, env, s.ID, 0)
+	defer c2.Close(websocket.StatusNormalClosure, "")
+	if ctrl.BacklogBytes == 0 {
+		t.Fatal("已经有输出再 since=0 重连，backlog_bytes 不该是 0")
 	}
 }
 

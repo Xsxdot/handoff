@@ -776,6 +776,7 @@ export interface PtyControl {
   type: string           // 'attached' | 'exit' | 'error' | 'resize'
   since: number
   truncated: boolean
+  backlog_bytes?: number  // 缺席 = 旧服务端；0 = 没有旧录像
   exit_code?: number
   message?: string
   cols?: number

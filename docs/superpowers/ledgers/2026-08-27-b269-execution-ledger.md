@@ -1,0 +1,16 @@
+# B269 执行台账
+
+- 2026-08-27：当前分支 `cards/B269-charter` 从 `b0f28d10` 执行 `git fetch origin cards/B268-charter`，随后 `git merge origin/cards/B268-charter` 快进至 `a64c848b`；未 reset、未 push。已确认 `docs/superpowers/specs/b269.md` 与 `docs/superpowers/plans/b269-plan.md` 存在。
+- 2026-08-27：按计划基线运行 `go test ./internal/agentd/ -count=1 -timeout 30s -run 'TestPtyWS'`，原始输出 `ok  github.com/Xsxdot/handoff/internal/agentd 0.437s`，退出码 0。
+- 2026-08-27：按计划基线运行 Web `npx vitest run src/api/pty.test.ts src/app/workbench/terminalHostResponse.test.ts src/app/workbench/TerminalTab.test.tsx`，退出码 1；原始错误为 `npm error code EROFS`、`read-only file system`，目标 `/root/.npm/_cacache/tmp/***`，尚未验证 Web 基线。
+- 2026-08-27：检查 `web`：`node_modules` 与 `node_modules/.bin/vitest` 均不存在；`node v24.16.0`、`npm 11.13.0`。需要先按仓库锁文件安装 Web 依赖，缓存改放 `/root/.handoff/tmp/fd79d42d`。
+- 2026-08-27：在 `web` 使用 `NPM_CONFIG_CACHE=/root/.handoff/tmp/fd79d42d/npm-cache npm ci`，原始结果 `added 290 packages, and audited 291 packages`、`found 0 vulnerabilities`，退出码 0。
+- 2026-08-27：Web 基线重跑 `npx vitest run src/api/pty.test.ts src/app/workbench/terminalHostResponse.test.ts src/app/workbench/TerminalTab.test.tsx`，原始收口 `Test Files 3 passed (3)` / `Tests 61 passed (61)` / `Duration 1.31s`，退出码 0。
+- 2026-08-27：Task 1 先加 Go/TS 接缝断言后运行：Go `go test ./internal/agentd/ -count=1 -timeout 30s -run 'TestPtyWSAttachedBacklogBytesKeyPresent'` 编译红，原始错误 `ctrl.BacklogBytes undefined (type proto.PtyControl has no field or method BacklogBytes)`；Web `npx vitest run src/api/pty.test.ts` 为 `1 failed | 10 passed`，失败是回调收到的对象缺少 `backlog_bytes: 0`，非 typo。
+- 2026-08-27：为消除新字段的编译红，在 `proto.PtyControl` 增加无 `omitempty` 的 `BacklogBytes` 空壳；重跑 Go 接缝测试为 `ok ... 0.061s`，Web 仍为 `1 failed | 10 passed`，失败仍是 attached 回调缺少 `backlog_bytes: 0`。Go 的 0 值键断言仅证明字段序列化存在，非正数回放长度行为，继续补该行为红测。
+- 2026-08-27：首次运行 `TestPtyWSAttachedBacklogBytesMatchesRing` 只得到测试跳过，原始输出 `PTY 测试根目录不可用 ... source=tmp ... read-only file system ... source=repo-dot ... socket=113 字节，上限=100`；这是环境根目录不可用，不能作为行为结论。后续改用任务临时目录的 `HANDOFF_PTY_TEST_ROOT` 复跑。
+- 2026-08-27：使用 `HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/fd79d42d/p` 复跑 `TestPtyWSAttachedBacklogBytesMatchesRing`，得到断言红：`pty_ws_test.go:224: 已经有输出再 since=0 重连，backlog_bytes 不该是 0`，退出码 1；确认命中的是回放长度未写入行为而非环境跳过。
+- 2026-08-27：Task 1 最小实现：attached 首帧写入 `uint64(len(att.Backlog))`；Go/TS 类型与 JSON 客户端保持 0 与缺席区分，缺席不写入回调对象。执行 `gofmt -w ... && HANDOFF_PTY_TEST_ROOT=/root/.handoff/tmp/fd79d42d/p go test ./internal/agentd/ -count=1 -timeout 30s -run 'TestPtyWS'`，原始结果 `ok github.com/Xsxdot/handoff/internal/agentd 2.969s`，退出码 0。
+- 2026-08-27：执行 `cd web && npx vitest run src/api/pty.test.ts`，原始收口 `Test Files 1 passed (1)` / `Tests 11 passed (11)` / `Duration 0.558s`，退出码 0。
+- 2026-08-27：Task 1 收尾全量编译/类型检查：`go build ./...` 退出码 0、无输出；`cd web && npm run typecheck` 退出码 0，原始输出为 `> tsc -b` 后无错误。
+- 2026-08-27：Task 1 已提交，执行 `git commit -m "feat(pty): expose attached backlog length"`，原始输出 `[cards/B269-charter 87c833c2] feat(pty): expose attached backlog length`，提交包含 7 个文件；随后为把本事实落入台账将追加行 amend 进同一提交。

@@ -41,8 +41,9 @@ export interface PtyOptions {
   since?: number
   onData: (bytes: Uint8Array) => void
   // onAttached 在**每次**建连时触发（含重连）。truncated=true 表示中间丢了一段，
-  // 调用方必须先清屏再灌，否则同一段输出会被重复画。
-  onAttached: (info: { since: number; truncated: boolean }) => void
+  // 调用方必须先清屏再灌，否则同一段输出会被重复画。backlog_bytes 缺席时表示
+  // 旧服务端，调用方不能把缺席填成 0。
+  onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
   // onExit：shell 已退出。exitCode 可能缺席（对端没给），此时不要显示成 0。
   onExit: (exitCode?: number) => void
   onStatus?: (status: WsStatus) => void
@@ -111,7 +112,13 @@ export function connectPty(options: PtyOptions): PtyHandle {
         // 服务端说它从哪个字节开始给：以**它**的口径为准推进游标。
         // 用本地的猜测会在 truncated 时把游标停在一个环里已经没有的位置。
         cursor = ctrl.since
-        options.onAttached({ since: ctrl.since, truncated: ctrl.truncated })
+        const info: { since: number; truncated: boolean; backlog_bytes?: number } = {
+          since: ctrl.since,
+          truncated: ctrl.truncated,
+        }
+        // 缺键表示旧服务端；不要填 0，否则调用方会误把旧录像当成没有旧录像。
+        if (typeof ctrl.backlog_bytes === 'number') info.backlog_bytes = ctrl.backlog_bytes
+        options.onAttached(info)
         return
       case 'exit':
         terminal = true

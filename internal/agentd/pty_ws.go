@@ -55,6 +55,7 @@ func (s *Server) handlePtyWS(w http.ResponseWriter, r *http.Request) {
 	// 把同一段输出重复画一遍（spec §5.3）。
 	if err := writeCtrl(ctx, conn, proto.PtyControl{
 		Type: proto.PtyCtrlAttached, Since: att.Since, Truncated: att.Truncated,
+		BacklogBytes: uint64(len(att.Backlog)),
 	}); err != nil {
 		s.log.Warn("终端 WS 首帧写失败", "session", id, "cause", err)
 		_ = conn.Close(websocket.StatusInternalError, "首帧写失败")
