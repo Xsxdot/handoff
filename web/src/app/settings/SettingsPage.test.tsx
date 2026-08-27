@@ -33,15 +33,28 @@ vi.mock('../../api/client', async () => {
     fetchEnv: vi.fn().mockResolvedValue({ dir: '/d/env', files: [], bindings: [] }),
   }
 })
+vi.mock('../../api/scheduling', async () => {
+  const actual = await vi.importActual<typeof import('../../api/scheduling')>('../../api/scheduling')
+  return {
+    ...actual,
+    getSquads: vi.fn().mockResolvedValue({ carriers: [], squads: [] }),
+  }
+})
 
 describe('SettingsPage', () => {
-  it('四个分区都在，缺省停在开发机', async () => {
+  it('六个分区都在，缺省停在开发机', async () => {
     render(<SettingsPage onClose={vi.fn()} />)
     expect(screen.getByRole('heading', { name: '设置' })).toBeInTheDocument()
-    for (const label of ['开发机', '执行纪律', '常规', 'Env 文件']) {
+    for (const label of ['开发机', '执行纪律', '常规', 'Env 文件', '自动化编制', '更新']) {
       expect(screen.getByRole('button', { name: label })).toBeInTheDocument()
     }
     await waitFor(() => expect(screen.getAllByText('本机').length).toBeGreaterThan(0))
+  })
+
+  it('点「自动化编制」显示载体/小队配置', async () => {
+    render(<SettingsPage onClose={vi.fn()} />)
+    fireEvent.click(screen.getByRole('button', { name: '自动化编制' }))
+    expect(await screen.findByRole('heading', { name: '自动化编制' })).toBeInTheDocument()
   })
 
   it('点「执行纪律」能切到该分区', async () => {

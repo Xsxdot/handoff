@@ -23,14 +23,16 @@ import { DisciplinePage } from './DisciplinePage'
 import { EnvPage } from './EnvPage'
 import { GeneralPage } from './GeneralPage'
 import { UpdatePage } from './UpdatePage'
+import { SchedulingPage } from './SchedulingPage'
 import { cn } from '@/lib/utils'
 
-// SECTIONS 是设置页的五个分区。更新接在 Env 文件之后，顺序即原型的顺序。
+// SECTIONS 是设置页的六个分区。自动化编制接在 Env 文件之后，更新保持末尾。
 const SECTIONS = [
   { key: 'machines', label: '开发机' },
   { key: 'discipline', label: '执行纪律' },
   { key: 'general', label: '常规' },
   { key: 'env', label: 'Env 文件' },
+  { key: 'scheduling', label: '自动化编制' },
   { key: 'update', label: '更新' },
 ] as const
 
@@ -94,6 +96,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
           {section === 'discipline' && <DisciplinePage />}
           {section === 'general' && <GeneralPage tree={treeState.data} />}
           {section === 'env' && <EnvPage />}
+          {section === 'scheduling' && <SchedulingPage />}
           {section === 'update' && <UpdatePage desktopState={desktopState.data} latest={latest.data} />}
         </div>
       </div>
