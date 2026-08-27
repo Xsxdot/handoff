@@ -73,6 +73,9 @@ func (s *Server) automationLoop(ctx context.Context) {
 }
 
 func (s *Server) runAutomationPass(ctx context.Context) {
+	if _, _, err := s.consumeAutomationEventsOnce(ctx); err != nil {
+		s.log.Error("自动化事件消费轮失败", "cause", err)
+	}
 	if _, err := s.drainQueuesOnce(ctx); err != nil {
 		s.log.Error("自动化队列清队轮失败", "cause", err)
 	}

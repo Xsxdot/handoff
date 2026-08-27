@@ -158,6 +158,11 @@ type Server struct {
 	// automationStartOnce/automationKick protect the single host automation loop.
 	automationStartOnce sync.Once
 	automationKick      chan struct{}
+	automationMu        sync.Mutex
+	automationCursor    int64
+	automationSeen      map[int64]struct{}
+	// automationRoundHook is a test-only observation point; production leaves it nil.
+	automationRoundHook func(card string, result keystone.RoundResult)
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
 	desktopMu    sync.Mutex
 	desktopState *proto.DesktopState
@@ -242,6 +247,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		machineUpgradeInstaller: inst,
 		cardStepFlight:          make(map[string]bool),
 		automationKick:          make(chan struct{}, 1),
+		automationSeen:          make(map[int64]struct{}),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade
