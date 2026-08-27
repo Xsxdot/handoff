@@ -78,6 +78,25 @@ export interface CoordinatorLaunchResp {
   output?: string
 }
 
+/** POST attach=true 的服务端定位回执；machine 空串仍须保留。 */
+export interface CoordinatorAttachInfo {
+  machine: string
+  dir: string
+  command: string
+}
+
+/** GET coordinator 的状态；未绑定时 attach 明确为 null。 */
+export interface CoordinatorStatus {
+  bound: boolean
+  attach_active: boolean
+  attach: CoordinatorAttachInfo | null
+}
+
+/** POST attach=false 的服务端成功回执。 */
+export interface CoordinatorAttachReleaseResp {
+  ok: boolean
+}
+
 export const getSquads = () => request<SquadsResp>('/api/squads')
 export const getQueue = () => request<QueueResp>('/api/queue')
 export const putCarrier = (name: string, expect: number, input: CarrierInput) =>
@@ -94,4 +113,22 @@ export const launchCoordinator = (cardId: string) =>
   postJSON<CoordinatorLaunchResp>(
     `/api/cards/${encodeURIComponent(cardId)}/coordinator/launch`,
     {},
+  )
+
+/** 参数：完整 cardId；返回：GET coordinator wire；路径段必须 encodeURIComponent。 */
+export const getCoordinatorStatus = (cardId: string) =>
+  request<CoordinatorStatus>(`/api/cards/${encodeURIComponent(cardId)}/coordinator`)
+
+/** 参数：完整 cardId 与 workdir；返回：AttachInfo；不改写服务端三元组。 */
+export const attachCoordinator = (cardId: string, workdir: string) =>
+  postJSON<CoordinatorAttachInfo>(
+    `/api/cards/${encodeURIComponent(cardId)}/attach`,
+    { active: true, workdir },
+  )
+
+/** 参数：完整 cardId；返回：{ok:true}；路径段必须 encodeURIComponent。 */
+export const releaseCoordinator = (cardId: string) =>
+  postJSON<CoordinatorAttachReleaseResp>(
+    `/api/cards/${encodeURIComponent(cardId)}/attach`,
+    { active: false },
   )

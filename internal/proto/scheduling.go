@@ -97,3 +97,24 @@ type CoordinatorLaunchResp struct {
 	Escalated bool   `json:"escalated"`
 	Output    string `json:"output,omitempty"`
 }
+
+// CoordinatorAttachInfo 是协调者会话的定位三元组；Machine 允许为空串表示本机。
+// Dir 与 Command 均由服务端定位器产生，客户端不得自行拼接或改写。
+type CoordinatorAttachInfo struct {
+	Machine string `json:"machine"`
+	Dir     string `json:"dir"`
+	Command string `json:"command"`
+}
+
+// CoordinatorStatus 是 GET coordinator 的状态；Attach=nil 序列化为 null 表示未绑定。
+// attach_active 是进程内的人工接管态，与 Attach 三元组是否存在是两件事。
+type CoordinatorStatus struct {
+	Bound        bool                   `json:"bound"`
+	AttachActive bool                   `json:"attach_active"`
+	Attach       *CoordinatorAttachInfo `json:"attach"`
+}
+
+// CoordinatorAttachReleaseResp 是 active=false 交回无头后的成功回执。
+type CoordinatorAttachReleaseResp struct {
+	OK bool `json:"ok"`
+}
