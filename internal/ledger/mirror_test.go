@@ -89,4 +89,7 @@ func TestMirrorHealth(t *testing.T) {
 	if err != nil || len(rows) != 1 || rows[0].LastSeq != 42 || rows[0].UpdatedAt.IsZero() {
 		t.Fatalf("health: %v %+v", err, rows)
 	}
+	if rows[0].Live {
+		t.Fatalf("无挂账的 cursor 不应标 Live: %+v", rows[0])
+	}
 }

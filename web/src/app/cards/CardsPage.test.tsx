@@ -114,3 +114,27 @@ describe('卡到任务深链的数据通路', () => {
     expect(await screen.findByText('deep-link-hit')).toBeInTheDocument()
   })
 })
+
+describe('事件流滞后灯', () => {
+  it('全归档的 target 即使心跳很旧也不亮——没东西可镜像不算断链', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchLedgerHealth).mockResolvedValue({
+      enabled: true,
+      mirror: [{ Target: 'mac-02', LastSeq: 6594, UpdatedAt: '2020-01-01T00:00:00.000Z', Live: false }],
+    })
+    renderPage()
+    await waitFor(() => expect(ledger.fetchLedgerHealth).toHaveBeenCalled())
+    expect(screen.queryByText(/事件流滞后/)).not.toBeInTheDocument()
+    expect(screen.getByTitle('镜像正常')).toBeInTheDocument()
+  })
+
+  it('仍有在飞挂账且心跳过期要点名是哪台', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchLedgerHealth).mockResolvedValue({
+      enabled: true,
+      mirror: [{ Target: 'linux-01', LastSeq: 1, UpdatedAt: '2020-01-01T00:00:00.000Z', Live: true }],
+    })
+    renderPage()
+    expect(await screen.findByText('事件流滞后: linux-01')).toBeInTheDocument()
+  })
+})

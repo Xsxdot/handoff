@@ -226,6 +226,11 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		m.log.Warn("读挂账表失败", "err", err)
 		return
 	}
+	live, err := m.st.LiveMirrorTargets()
+	if err != nil {
+		m.log.Warn("读在飞镜像 target 失败", "err", err)
+		return
+	}
 	want := map[string]ledger.TaskLink{}
 	for _, link := range links {
 		if !registered[link.Target] {
@@ -287,25 +292,48 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		m.log.Info("起订", "sub", key, "target", link.Target)
 	}
 
-	hasSub := map[string]bool{}
+	// 活连接按「还没归档的订阅」计。已 archived 的挂账行仍在 card_tasks 里，
+	// 但订阅已退——再拿它们挡空 touch，心跳会停在最后一条镜像上，看板把
+	// 「没东西可镜像」画成断链（mac-02 本机全归档后亮「事件流滞后」就是这个）。
 	alive := map[string]bool{}
 	for key := range want {
+		if m.ended[key] {
+			continue
+		}
 		separator := strings.IndexByte(key, '/')
 		if separator < 0 {
 			continue
 		}
 		target := key[:separator]
-		hasSub[target] = true
 		if m.conn[key] {
 			alive[target] = true
 		}
 	}
 	for _, name := range names {
-		if hasSub[name] && !alive[name] {
+		// 仍有非终态挂账、但当前一条活连接都没有 → 真断链，不刷新心跳。
+		if live[name] && !alive[name] {
 			continue
 		}
 		if err := m.st.TouchMirrorHealth(name, 0); err != nil {
 			m.log.Warn("touch 健康失败", "target", name, "err", err)
+		}
+	}
+	// 配置里已经没有、只剩 cursor 的名字：全归档就空 touch（旧看板只看
+	// updated_at）；仍有在飞挂账则不碰——订不到，应当亮灯。
+	rows, err := m.st.MirrorHealth()
+	if err != nil {
+		m.log.Warn("读镜像健康失败", "err", err)
+		return
+	}
+	for _, row := range rows {
+		if registered[row.Target] {
+			continue
+		}
+		if live[row.Target] {
+			continue
+		}
+		if err := m.st.TouchMirrorHealth(row.Target, 0); err != nil {
+			m.log.Warn("touch 健康失败", "target", row.Target, "err", err)
 		}
 	}
 }

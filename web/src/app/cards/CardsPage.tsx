@@ -103,9 +103,11 @@ export function CardsPage() {
   const workflowOptions = flows?.workflows ?? []
   const healthRows = healthPoll.data?.mirror ?? []
   // 滞后要点名是哪台：判据⑦ 判的是「断链期看板该 target 亮事件流滞后」，
-  // 只报一个全局「镜像异常」等于告诉你「有台机器哑了，自己猜是哪台」
+  // 只报一个全局「镜像异常」等于告诉你「有台机器哑了，自己猜是哪台」。
+  // Live === false 是「挂账全归档、没东西可镜像」——心跳停在最后一条是正常静默，
+  // 不当断链。字段缺席（旧 agentd）按仍在飞处理，避免把真断链藏掉。
   const staleTargets = healthRows
-    .filter((row) => Date.now() - Date.parse(row.UpdatedAt) > 60_000)
+    .filter((row) => row.Live !== false && Date.now() - Date.parse(row.UpdatedAt) > 60_000)
     .map((row) => row.Target)
   const healthStale = healthPoll.disconnected || staleTargets.length > 0
   const healthLabel = healthPoll.disconnected

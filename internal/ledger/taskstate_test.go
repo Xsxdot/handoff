@@ -5,6 +5,58 @@ import (
 	"time"
 )
 
+func TestLiveMirrorTargets(t *testing.T) {
+	s := seedStore(t)
+	if live, err := s.LiveMirrorTargets(); err != nil || len(live) != 0 {
+		t.Fatalf("空账本应无在飞 target: %v %+v", err, live)
+	}
+	archived := mk(t, s, "已归档")
+	if err := s.LinkTask(archived.ID, "mac-02", "T-arch", "implement", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMirroredEvent(archived.ID, MirroredEvent{Target: "mac-02", Task: "T-arch",
+		SourceSeq: 1, Type: "completed", Payload: []byte(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMirroredEvent(archived.ID, MirroredEvent{Target: "mac-02", Task: "T-arch",
+		SourceSeq: 2, Type: "archived", Payload: []byte(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	failed := mk(t, s, "已失败")
+	if err := s.LinkTask(failed.ID, "mac-02", "T-fail", "implement", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMirroredEvent(failed.ID, MirroredEvent{Target: "mac-02", Task: "T-fail",
+		SourceSeq: 1, Type: "failed", Payload: []byte(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	if live, err := s.LiveMirrorTargets(); err != nil || live["mac-02"] {
+		t.Fatalf("全终态不应算在飞: %v %+v", err, live)
+	}
+	waiting := mk(t, s, "待审")
+	if err := s.LinkTask(waiting.ID, "linux-01", "T-wait", "implement", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AppendMirroredEvent(waiting.ID, MirroredEvent{Target: "linux-01", Task: "T-wait",
+		SourceSeq: 1, Type: "completed", Payload: []byte(`{}`), CreatedAt: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	unknown := mk(t, s, "未镜像")
+	if err := s.LinkTask(unknown.ID, "mac-02", "T-new", "implement", "t"); err != nil {
+		t.Fatal(err)
+	}
+	live, err := s.LiveMirrorTargets()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !live["linux-01"] {
+		t.Fatalf("waiting_review 仍会再来事件，应算在飞: %+v", live)
+	}
+	if !live["mac-02"] {
+		t.Fatalf("从未镜像过的挂账应算在飞: %+v", live)
+	}
+}
+
 func TestLatestTaskStates(t *testing.T) {
 	s := seedStore(t)
 	c := mk(t, s, "卡")

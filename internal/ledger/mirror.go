@@ -24,6 +24,9 @@ type MirrorHealthRow struct {
 	Target    string
 	LastSeq   int64
 	UpdatedAt time.Time
+	// Live 为 true 表示该 target 仍有至少一条非终态挂账（尚未 archived/failed，
+	// 或还从未镜像过）。全是终态时 false——没有东西可镜像，看板不应亮滞后灯。
+	Live bool
 }
 
 // AppendMirroredEvent 幂等写入镜像事件。返回是否真的写入（false=重放跳过）。
@@ -143,7 +146,7 @@ func (s *Store) TouchMirrorHealth(target string, lastSeq int64) error {
 	})
 }
 
-// MirrorHealth 全部 target 的健康行（看板滞后判定：now-UpdatedAt>60s 亮灯）。
+// MirrorHealth 全部 target 的健康行（看板滞后判定：now-UpdatedAt>60s 且 Live 才亮灯）。
 func (s *Store) MirrorHealth() ([]MirrorHealthRow, error) {
 	rows, err := s.db.Query(`SELECT target, last_seq, updated_at FROM mirror_cursors ORDER BY target`)
 	if err != nil {
@@ -160,7 +163,17 @@ func (s *Store) MirrorHealth() ([]MirrorHealthRow, error) {
 		r.UpdatedAt = toTime(ut)
 		out = append(out, r)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	live, err := s.LiveMirrorTargets()
+	if err != nil {
+		return nil, err
+	}
+	for i := range out {
+		out[i].Live = live[out[i].Target]
+	}
+	return out, nil
 }
 
 // MaxSeq 账本单流当前最大 seq（wait 的起点）。

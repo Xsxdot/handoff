@@ -159,6 +159,125 @@ func TestMirrorNoTouchWhenDisconnected(t *testing.T) {
 	}
 }
 
+func TestMirrorTouchesWhenAllLinkedTasksArchived(t *testing.T) {
+	s := testLedger(t)
+	c, _ := s.CreateCard(ledger.NewCard{Title: "卡", Project: "p", Workflow: "bug", Actor: "t"})
+	_ = s.LinkTask(c.ID, "mac-02", "T1", "implement", "t")
+	src := func(ctx context.Context, _ *client.Client, taskID string, fromSeq int64,
+		onEvent func(proto.Event) error) error {
+		ev := proto.Event{Seq: 1, TaskID: taskID, Type: proto.EventTypeArchived, Payload: []byte(`{}`)}
+		if ev.Seq > fromSeq {
+			if err := onEvent(ev); err != nil {
+				return err
+			}
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	m := New(s, machinesWith(t, "mac-02"), Options{Holder: "test", Tick: 50 * time.Millisecond,
+		LeaseTTL: time.Second, Source: src})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	t.Cleanup(func() { cancel(); m.Stop() })
+
+	macAt := func() (time.Time, bool) {
+		rows, _ := s.MirrorHealth()
+		for _, r := range rows {
+			if r.Target == "mac-02" {
+				return r.UpdatedAt, true
+			}
+		}
+		return time.Time{}, false
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	var t1 time.Time
+	for time.Now().Before(deadline) {
+		if at, ok := macAt(); ok {
+			t1 = at
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if t1.IsZero() {
+		t.Fatal("归档后应有健康行")
+	}
+	time.Sleep(200 * time.Millisecond)
+	t2, ok := macAt()
+	if !ok || !t2.After(t1) {
+		t.Fatalf("全归档后应继续空 touch: %v -> %v", t1, t2)
+	}
+}
+
+func TestMirrorTouchesLeftoverIdleCursor(t *testing.T) {
+	s := testLedger(t)
+	if err := s.TouchMirrorHealth("mac-02", 99); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := s.MirrorHealth()
+	var t1 time.Time
+	for _, r := range rows {
+		if r.Target == "mac-02" {
+			t1 = r.UpdatedAt
+		}
+	}
+	if t1.IsZero() {
+		t.Fatal("应已有 mac-02 cursor")
+	}
+	blockSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	m := New(s, machinesWith(t, "idle-box"), Options{Holder: "test", Tick: 50 * time.Millisecond,
+		LeaseTTL: time.Second, Source: blockSrc})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	t.Cleanup(func() { cancel(); m.Stop() })
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		cur, _ := s.MirrorHealth()
+		for _, r := range cur {
+			if r.Target == "mac-02" && r.UpdatedAt.After(t1) {
+				return
+			}
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("清单外、无在飞挂账的残留 cursor 应被空 touch")
+}
+
+func TestMirrorDoesNotTouchUnregisteredLiveCursor(t *testing.T) {
+	s := testLedger(t)
+	c, _ := s.CreateCard(ledger.NewCard{Title: "卡", Project: "p", Workflow: "bug", Actor: "t"})
+	_ = s.LinkTask(c.ID, "mac-02", "T9", "implement", "t")
+	if err := s.TouchMirrorHealth("mac-02", 1); err != nil {
+		t.Fatal(err)
+	}
+	t1 := time.Time{}
+	rows, _ := s.MirrorHealth()
+	for _, r := range rows {
+		if r.Target == "mac-02" {
+			t1 = r.UpdatedAt
+		}
+	}
+	blockSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	m := New(s, machinesWith(t, "idle-box"), Options{Holder: "test", Tick: 50 * time.Millisecond,
+		LeaseTTL: time.Second, Source: blockSrc})
+	ctx, cancel := context.WithCancel(context.Background())
+	go m.Run(ctx)
+	t.Cleanup(func() { cancel(); m.Stop() })
+	time.Sleep(300 * time.Millisecond)
+	cur, _ := s.MirrorHealth()
+	for _, r := range cur {
+		if r.Target == "mac-02" && r.UpdatedAt.After(t1) {
+			t.Fatalf("清单外但仍有在飞挂账的 cursor 不应被空 touch: %v -> %v", t1, r.UpdatedAt)
+		}
+	}
+}
+
 func TestMirrorStopBeforeRun(t *testing.T) {
 	s := testLedger(t)
 	m := New(s, newFakeMachines(), Options{Holder: "test"})
