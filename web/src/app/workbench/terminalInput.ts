@@ -124,24 +124,46 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   // 它是 input 事件的免打扰位：大写字母（xterm 的 CapsLock HACK 把 A-Z 交给
   // keypress 处理）走的正是这条路，此时 input 事件里那份 data 是重复的，补发即双字。
   let keypressEmitted = false
-  // optionMetaConsumed：刚用物理键发过 ESC+字母。WKWebView 仍可能再丢一个
-  // insertText（∫/ƒ），补发路径必须闭嘴，否则 zsh 收到 Meta 又吃一个符号。
+  // optionMetaConsumed：刚用物理键发过 ESC+字母。WKWebView 仍可能再丢
+  // keypress / insertText（∫/ƒ），两条路径都必须闭嘴。
   let optionMetaConsumed = false
+  // optionHeld：Option 已经按下。字母 keydown 还没到时 WebKit 可能先丢
+  // insertText；此时 optionMetaConsumed 还是 false，补发会先打出 ∫ 再跳词。
+  let optionHeld = false
   // seqBeforeKeypress / seqBeforeInput 是 xterm 看到该事件之前的计数快照。
   let seqBeforeKeypress = 0
   let seqBeforeInput = 0
 
+  const isAltKey = (ev: KeyboardEvent): boolean =>
+    ev.key === 'Alt' || ev.code === 'AltLeft' || ev.code === 'AltRight'
+
   // 一次新的按键链开始：清掉上一链的残留状态。
   // 注意 ② 那条路径里 input 排在 keydown 之前，此处的复位对它是无害的空操作。
-  const onKeyDownCapture = (): void => {
+  const onKeyDownCapture = (ev: KeyboardEvent): void => {
     keypressEmitted = false
     optionMetaConsumed = false
+    if (ev.altKey || isAltKey(ev)) optionHeld = true
+  }
+  const onKeyUpCapture = (ev: KeyboardEvent): void => {
+    if (isAltKey(ev)) optionHeld = false
   }
   const onKeyPressCapture = (): void => {
     seqBeforeKeypress = dataSeq
   }
-  const onInputCapture = (): void => {
+  // xterm 的 input 监听挂在 textarea capture，比 host capture 晚。
+  // `_inputEvent` 在 `!composed` 时会自己 triggerDataEvent——只在事后不补发
+  // 拦不住已经发出去的 ∫，必须在下传到 textarea 之前停掉。
+  const dropOptionGeneratedText = (ie: InputEvent): boolean => {
+    if (ie.inputType !== 'insertText' || ie.isComposing || !ie.data) return false
+    return optionMetaConsumed || optionHeld
+  }
+  const onInputCapture = (ev: Event): void => {
     seqBeforeInput = dataSeq
+    const ie = ev as InputEvent
+    if (!dropOptionGeneratedText(ie)) return
+    ev.stopPropagation()
+    ev.preventDefault()
+    logTermFix(label, 'Option Meta', ie.data)
   }
 
   // xterm 处理完 keypress 之后：它发了东西没有？
@@ -156,7 +178,7 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
     // 合成落定（insertFromComposition）、粘贴（insertFromPaste）、删除，
     // 都有 xterm 自己的通道，插手只会重复。
     if (ie.inputType !== 'insertText' || ie.isComposing || !ie.data) return
-    if (optionMetaConsumed) {
+    if (optionMetaConsumed || optionHeld) {
       optionMetaConsumed = false
       return
     }
@@ -187,6 +209,15 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   let disposed = false
   term.attachCustomKeyEventHandler((ev) => {
     if (disposed) return true
+    if (ev.type === 'keypress') {
+      // macOptionIsMeta 只在 keypress.altKey 时跳过；WKWebView 翻译成 ∫ 后
+      // 可能不再带 altKey，xterm 会按 charCode 再发一个符号。
+      if (optionMetaConsumed || optionHeld || optionMetaLetter(ev) !== null) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        return false
+      }
+    }
     if (ev.type === 'keydown') {
       const metaLetter = optionMetaLetter(ev)
       if (metaLetter !== null) {
@@ -228,6 +259,7 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   })
 
   host.addEventListener('keydown', onKeyDownCapture, true)
+  host.addEventListener('keyup', onKeyUpCapture, true)
   host.addEventListener('keypress', onKeyPressCapture, true)
   host.addEventListener('input', onInputCapture, true)
   ta.addEventListener('keypress', onKeyPressAfter, true)
@@ -237,6 +269,7 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
     dispose: () => {
       disposed = true
       host.removeEventListener('keydown', onKeyDownCapture, true)
+      host.removeEventListener('keyup', onKeyUpCapture, true)
       host.removeEventListener('keypress', onKeyPressCapture, true)
       host.removeEventListener('input', onInputCapture, true)
       ta.removeEventListener('keypress', onKeyPressAfter, true)

@@ -97,13 +97,13 @@ function key(
 // input 造一个 InputEvent，并顺手把文本写进 textarea——WebKit 是先改
 // textarea 再派事件的，CompositionHelper 的 `_handleAnyTextareaChanges`
 // 正是靠比对 textarea 前后值判断该不该补发，少了这一步就不是真实现场。
-function input(ta: HTMLTextAreaElement, data: string): InputEvent {
+function input(ta: HTMLTextAreaElement, data: string, composed = true): InputEvent {
   ta.value += data
   return new InputEvent('input', {
     data,
     inputType: 'insertText',
     bubbles: true,
-    composed: true,
+    composed,
   })
 }
 
@@ -292,6 +292,34 @@ describe('Option 当 Meta：WKWebView 的 key 是符号、keyCode 经常是 0', 
     rig = makeRig(true)
     rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
     rig.ta.dispatchEvent(input(rig.ta, '∫'))
+    expect(rig.data).toEqual(['\x1bb'])
+  })
+
+  // xterm `_inputEvent` 准入是 `!composed || !_keyDownSeen`。WKWebView 的
+  // Option 符号经常 composed=false，xterm 会自己再发一遍 ∫；只拦我们的补发不够。
+  it('insertText composed=false 时 xterm 自己发的 ∫ 也必须吞掉', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    rig.ta.dispatchEvent(input(rig.ta, '∫', false))
+    expect(rig.data).toEqual(['\x1bb'])
+  })
+
+  // 可打印键的标准三件套：keydown / keypress / input。macOptionIsMeta 下
+  // keypress 若没带 altKey，xterm 会把 charCode 当成普通字发出去。
+  it('随后的 keypress（charCode=∫、altKey=false）不得再出符号', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    rig.ta.dispatchEvent(key('keypress', { key: '∫', keyCode: 8747, charCode: 8747, code: 'KeyB' }))
+    expect(rig.data).toEqual(['\x1bb'])
+  })
+
+  // Option 先按下时 WebKit 可能先丢 insertText，字母 keydown 还没到。
+  // 补发路径会把 ∫ 喂进去，然后 keydown 再发 ESC+b——真机就是「跳词了但出现 ∫」。
+  it('Option 按下后、字母 keydown 前的 insertText 不得补发', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: 'Alt', keyCode: 18, altKey: true, code: 'AltLeft' }))
+    rig.ta.dispatchEvent(input(rig.ta, '∫'))
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
     expect(rig.data).toEqual(['\x1bb'])
   })
 })
