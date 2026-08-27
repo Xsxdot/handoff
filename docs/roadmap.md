@@ -427,5 +427,5 @@
 - **B261 方向 3：纪律块要求执行者收尾回读卡上的判据**。来源：同上。
 - **B258 服务端分码**：工单未注册 vs 已消耗拆成不同 HTTP 状态，不再共用 404「工单不存在」。来源：B276 spec / 源卡 B258。
 - **B258 镜像延迟**：任务已 `waiting_answer`、卡流数分钟零事件。来源：同上。
-- **B259 纪律块 / CLAUDE.md 补仓内 `go run . graph` fallback**。来源：B276 spec / 源卡 B259。
 - **B211 release CI 资产 hash 硬门**（管发布物，管不住手工 `go build`）。来源：B276 spec / 源卡 B211 弃选 C。
+- **charter 仓刀 0 别名销账**：handoff 侧已删除 `handoff graph`；charter 契约 §4 / charter skill / charter roadmap 第 6 条仍写别名观察期。来源：B276 spec r1 / 审查 Issue 3。
