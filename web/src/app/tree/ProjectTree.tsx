@@ -615,6 +615,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                                 key={t.id}
                                 type="button"
                                 draggable
+                                onMouseDown={(e) => {
+                                  // 同 TabBar：mousedown 默认会把焦点抢到这个按钮，
+                                  // 终端 TUI 的 1004 会先收到 [O] 再跳走。
+                                  e.preventDefault()
+                                }}
                                 onDragStart={(e) => {
                                   e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
                                   e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
@@ -684,6 +689,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               key={t.id}
                               type="button"
                               draggable
+                              onMouseDown={(e) => e.preventDefault()}
                               onDragStart={(e) => {
                                 e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
                                 e.dataTransfer.setData(
@@ -718,6 +724,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               key={t.id}
               type="button"
               draggable
+              onMouseDown={(e) => e.preventDefault()}
               onDragStart={(e) => {
                 e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
                 e.dataTransfer.setData(DRAG_BASE_MIME, 'null')

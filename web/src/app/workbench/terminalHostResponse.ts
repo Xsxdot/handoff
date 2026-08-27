@@ -51,6 +51,26 @@ function consumeOne(s: string): number {
   return 0
 }
 
+// isFocusReport 判断 data 是不是 xterm 在 DECSET 1004 下发出的焦点报告。
+//
+// 活着的 `[I]` / `[O]` 必须上送 PTY（TUI 靠它们暂停/恢复输入）。
+// 环形缓冲重放时 xterm 解析到历史里的 `CSI ? 1004 h` 会再发一次——
+// 没有 `.focus` 类就发 `[O]`，把还在跑的 TUI 打成失焦。那种要拦，
+// 所以焦点报告不进 isTerminalHostResponse，由调用方按「是否在重放」决定。
+export function isFocusReport(data: string): boolean {
+  return data === '\x1b[I' || data === '\x1b[O'
+}
+
+// takeLeadingFocusReport 吃掉 s 开头的一条 [I] / [O]。
+//
+// 有时 xterm 会把焦点报告和下一段粘在一起；只认整段相等会把该丢的 [O]
+// 连同后面的字节一起放行。
+export function takeLeadingFocusReport(s: string): { report: '\x1b[I' | '\x1b[O', rest: string } | null {
+  if (s.startsWith('\x1b[I')) return { report: '\x1b[I', rest: s.slice(3) }
+  if (s.startsWith('\x1b[O')) return { report: '\x1b[O', rest: s.slice(3) }
+  return null
+}
+
 // isTerminalHostResponse 判断 data 是否完全由一条或多条设备回包组成。
 //
 // 参数：data 为 xterm onData 交出的原文（含 ESC）。

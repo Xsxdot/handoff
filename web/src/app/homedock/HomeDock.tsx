@@ -21,7 +21,7 @@ import type { HomeDockApi, HomeTab } from './useHomeDock'
 
 export function HomeDock({ dock, renderTab, onKill, onNewFile }: {
   dock: HomeDockApi
-  renderTab: (t: HomeTab) => ReactNode
+  renderTab: (t: HomeTab, active?: boolean) => ReactNode
   onKill: (id: string) => void
   onNewFile?: () => void
 }) {

@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { HomeWindow } from './HomeWindow'
 
@@ -15,10 +15,25 @@ const base = () => ({
 })
 
 describe('HomeWindow', () => {
-  it('只渲染激活 tab 的内容', () => {
+  it('点 tab 标题 mousedown 不让按钮抢走焦点', () => {
+    render(<HomeWindow {...base()} />)
+    const tab = screen.getByRole('button', { name: 'bash · home' })
+    const ev = createEvent.mouseDown(tab)
+    fireEvent(tab, ev)
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('终端 tab 切走仍挂着且保持不透明——opacity-0 会让 xterm 暂停渲染且第二次切回起不来', () => {
     render(<HomeWindow {...base()} />)
     expect(screen.getByTestId('content-a')).toBeInTheDocument()
-    expect(screen.queryByTestId('content-b')).toBeNull()
+    expect(screen.getByTestId('content-b')).toBeInTheDocument()
+    // 切走靠 z-index，不用 pointer-events-none：WKWebView 去掉该类后经常
+    // 不恢复命中测试，滚轮就丢了（键盘仍走 focus() 所以还能打字）。
+    expect(screen.getByTestId('content-b').parentElement).toHaveClass('z-0')
+    expect(screen.getByTestId('content-b').parentElement).not.toHaveClass('pointer-events-none')
+    expect(screen.getByTestId('content-b').parentElement).not.toHaveClass('opacity-0')
+    expect(screen.getByTestId('content-b').parentElement).not.toHaveClass('invisible')
+    expect(screen.getByTestId('content-a').parentElement).not.toHaveClass('pointer-events-none')
   })
 
   // 本窗是浅色控制台里的一块深色表面，放进来的 tab 用主题令牌上色。

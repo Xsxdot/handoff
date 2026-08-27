@@ -95,12 +95,13 @@ export function logTermFocus(label: string, kind: 'focus' | 'blur', active: stri
 // logTermResize 记一次尺寸上报。
 //
 // 参数：label 是终端标识；cols/rows 是本次上报的尺寸；reason 说明是谁触发的
-//（'attach' = 建连时重申，'observer' = 容器尺寸变化）。
+//（'attach' = 建连时重申，'observer' = 容器尺寸变化，'nudge' = 切回时
+// 交替屏鼠标追踪已关，用一次 ±1 行尺寸逼 TUI 重开追踪）。
 //
 // 为什么这条也留着：尺寸不同步曾经是「TUI 乱码、拖一下窗口就好」的根因
 //（恢复已有会话的路径从不上报尺寸）。修好之后留一条读数，下次再出现同类
 // 现象时能一眼确认尺寸到底发出去没有，不必再从头读一遍挂载次序。
-export function logTermResize(label: string, cols: number, rows: number, reason: 'attach' | 'observer'): void {
+export function logTermResize(label: string, cols: number, rows: number, reason: 'attach' | 'observer' | 'nudge'): void {
   if (!terminalDebugEnabled()) return
   console.debug('[term:resize]', { 终端: label, cols, rows, 触发: reason })
 }
@@ -139,4 +140,13 @@ export function logTermHost(label: string, data: string): void {
 export function logTermWheel(label: string, ticks: number, data: string): void {
   if (!terminalDebugEnabled()) return
   console.debug('[term:wheel]', { 终端: label, 格数: ticks, 原文: JSON.stringify(data) })
+}
+
+// logTermKeepalive 记 keep-alive / 滚轮命中路径上的状态变化（B270）。
+//
+// 参数：label 是终端标识；event 是短名（mount / unmount / active / wheel-miss）；
+// extra 是当场的只读快照（鼠标模式、盒子尺寸、是否暂停渲染）。
+export function logTermKeepalive(label: string, event: string, extra?: Record<string, unknown>): void {
+  if (!terminalDebugEnabled()) return
+  console.debug('[DEBUG-b270]', { 终端: label, 事件: event, ...extra })
 }

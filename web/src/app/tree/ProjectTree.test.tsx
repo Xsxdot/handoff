@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
@@ -253,6 +253,14 @@ describe('ProjectTree', () => {
     render(<ProjectTree {...props({ onOpenTask })} />)
     fireEvent.click(screen.getByText('重构工单通道'))
     expect(onOpenTask).toHaveBeenCalledWith(expect.objectContaining({ key: '/w/b2-b3' }), 'T1')
+  })
+
+  it('任务行 mousedown 不抢焦点——否则终端 TUI 会先收到失焦再跳走', () => {
+    render(<ProjectTree {...props()} />)
+    const row = screen.getByRole('button', { name: /重构工单通道/ })
+    const ev = createEvent.mouseDown(row)
+    fireEvent(row, ev)
+    expect(ev.defaultPrevented).toBe(true)
   })
 
   it('work_dir 为空的任务挂到主目录（原地模式）', () => {

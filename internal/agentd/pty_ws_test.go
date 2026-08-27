@@ -107,6 +107,29 @@ func TestPtyWSResize(t *testing.T) {
 	readUntil(t, c, "43 132")
 }
 
+// debug 控制帧只记日志、不写进 PTY——否则取证字符串会打进 TUI 输入。
+func TestPtyWSDebugDoesNotEnterPty(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows 上 PTY 不支持")
+	}
+	env := newTestAgentdEnv(t)
+	t.Setenv("HOME", t.TempDir())
+	s := ptyCreate(t, env, `{"base_kind":"home","cols":80,"rows":24}`)
+	t.Cleanup(func() { _ = env.srv.pty.Close(s.ID) })
+
+	c, _ := dialPty(t, env, s.ID, 0)
+	defer c.Close(websocket.StatusNormalClosure, "")
+	msg, _ := json.Marshal(proto.PtyControl{Type: proto.PtyCtrlDebug, Message: "active cycle=1 mouse=vt200"})
+	if err := c.Write(context.Background(), websocket.MessageText, msg); err != nil {
+		t.Fatalf("写 debug: %v", err)
+	}
+	_ = c.Write(context.Background(), websocket.MessageBinary, []byte("echo DE\"BUGOK\"\n"))
+	got := readUntil(t, c, "DEBUGOK")
+	if strings.Contains(got, "active cycle") {
+		t.Fatalf("debug 报文进了 PTY：%q", got)
+	}
+}
+
 // 断开重连带 since：只补没看过的那段。
 func TestPtyWSResumeSince(t *testing.T) {
 	if runtime.GOOS == "windows" {

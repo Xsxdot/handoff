@@ -39,8 +39,8 @@ export type TabContent =
     }
   // file 的 draft / baseSha 是**草稿寄存**，不是文件内容本身。
   //
-  // 为什么必须放在这里：WorkbenchPage 只渲染 activeTab，切到别的 tab 会把 FileTab
-  // 整个卸载掉。草稿活在组件 state 里的话，「点一下隔壁终端再切回来」改的字就全没了。
+  // 为什么必须放在这里：WorkbenchPage 对文件 tab 仍是切走即卸载（终端才 keep-alive）。
+  // 草稿活在组件 state 里的话，「点一下隔壁终端再切回来」改的字就全没了。
   // 沿用终端 tab 回写 sessionId 的同一条路（setTabContent）。
   //
   // 两个字段一起存：只存 draft 不存 baseSha，切回来之后就不知道这份草稿是从哪一版
