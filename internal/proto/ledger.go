@@ -55,12 +55,13 @@ type Gate struct {
 	RequireChildrenDone  bool     `json:"require_children_done,omitempty"`
 }
 
-// NodeOverride 是工作流节点模板覆盖的 wire DTO。
+// NodeOverride 是工作流节点模板覆盖的 wire DTO；旧客户端会忽略新增字段。
 type NodeOverride struct {
 	Executor   string `json:"executor,omitempty"`
 	Discipline string `json:"discipline,omitempty"`
 	Target     string `json:"target,omitempty"`
 	Model      string `json:"model,omitempty"`
+	Purpose    string `json:"purpose,omitempty"`
 }
 
 // NodeOutput 是工作流节点声明的单一附件 kind/path wire DTO。

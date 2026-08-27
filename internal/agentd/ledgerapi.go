@@ -111,7 +111,8 @@ func ledgerEventWire(event ledger.Event) proto.LedgerEvent {
 }
 
 func ledgerNodeWire(node ledger.NodeDef) proto.NodeDef {
-	// 显式投影指针，保留旧节点字段缺失与新节点显式对象之间的区别。
+	// 详情 GET 的账本到 proto 投影必须保留 Purpose；同时显式投影指针，
+	// 保留旧节点字段缺失与新节点显式对象之间的区别。
 	var produces *proto.NodeOutput
 	if node.Produces != nil {
 		produces = &proto.NodeOutput{
@@ -124,6 +125,7 @@ func ledgerNodeWire(node ledger.NodeDef) proto.NodeDef {
 		Override: proto.NodeOverride{
 			Executor: node.Override.Executor, Discipline: node.Override.Discipline,
 			Target: node.Override.Target, Model: node.Override.Model,
+			Purpose: node.Override.Purpose,
 		},
 		Dispatch: node.Dispatch, Verdict: node.Verdict, CarryCardContext: node.CarryCardContext,
 		MaxRounds: node.MaxRounds, OmitAcceptance: node.OmitAcceptance, Next: node.Next, OnFail: node.OnFail,

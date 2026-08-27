@@ -1110,6 +1110,76 @@ func TestFlowNodeProducesRoundTripsThroughHTTPWire(t *testing.T) {
 	}
 }
 
+func TestFlowNodePurposeSurvivesHTTPGetPutGet(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	if _, err := env.ledger.PutWorkflow("charter", ledger.WorkflowDef{
+		Nodes: []ledger.NodeDef{{Name: "review"}, {Name: "done"}},
+	}); err != nil {
+		t.Fatalf("seed charter workflow: %v", err)
+	}
+	initial := []byte("{\"nodes\":[{\"name\":\"review\",\"override\":{\"purpose\":\"review\"}},{\"name\":\"done\"}]}")
+	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/charter", string(initial))
+	if code != http.StatusOK {
+		t.Fatalf("initial put code = %d, body = %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/flows/charter")
+	if code != http.StatusOK {
+		t.Fatalf("first get code = %d, body = %s", code, body)
+	}
+	var first struct {
+		Nodes []json.RawMessage `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(body), &first); err != nil {
+		t.Fatalf("decode first get: %v", err)
+	}
+	if len(first.Nodes) != 2 {
+		t.Fatalf("first nodes = %d, want 2", len(first.Nodes))
+	}
+	var review struct {
+		Override struct {
+			Purpose string `json:"purpose"`
+		} `json:"override"`
+	}
+	if err := json.Unmarshal(first.Nodes[0], &review); err != nil {
+		t.Fatalf("decode review: %v", err)
+	}
+	if review.Override.Purpose != "review" {
+		t.Fatalf("first purpose = %q", review.Override.Purpose)
+	}
+	putBody := "{\"nodes\":[" + string(first.Nodes[0]) + "," + string(first.Nodes[1]) + "]}"
+	code, body = ledgerPut(t, env.testAgentdEnv, "/api/flows/charter", putBody)
+	if code != http.StatusOK {
+		t.Fatalf("read-modify-write code = %d, body = %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/flows/charter")
+	if code != http.StatusOK {
+		t.Fatalf("second get code = %d, body = %s", code, body)
+	}
+	var second struct {
+		Nodes []struct {
+			Override struct {
+				Purpose string `json:"purpose"`
+			} `json:"override"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(body), &second); err != nil {
+		t.Fatalf("decode second get: %v", err)
+	}
+	if len(second.Nodes) != 2 || second.Nodes[0].Override.Purpose != "review" {
+		t.Fatalf("purpose lost after GET PUT GET: %+v", second.Nodes)
+	}
+}
+
+func TestLedgerNodeWireOmitsZeroPurpose(t *testing.T) {
+	raw, err := json.Marshal(ledgerNodeWire(ledger.NodeDef{Name: "legacy"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(`"purpose"`)) {
+		t.Fatalf("zero purpose must be omitted: %s", raw)
+	}
+}
+
 func TestLedgerNodeWirePreservesProduces(t *testing.T) {
 	node := ledger.NodeDef{
 		Name:     "breakdown",

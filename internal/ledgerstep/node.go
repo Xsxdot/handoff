@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
@@ -118,7 +119,8 @@ func (n *NodeStep) routeTo(cardID, to string) error {
 	return n.St.MoveCard(cardID, to, card.Status, n.actor())
 }
 
-// RunOnce 跑一次本节点。
+// RunOnce 跑一次本节点；成功抢救裁决时会为被丢弃字段写普通评论，写评论失败
+// 原样返回。
 //
 // 参数：cardID 卡。
 // 返回：Outcome（下一步动作 + 裁决 + 理由）；只有「本节点根本不该被执行」
@@ -197,6 +199,25 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 	if parseErr != nil {
 		logger.Info("裁决解析失败转等人", "cause", parseErr)
 		return n.haltForHuman(cardID, "裁决解析失败", "裁决解析失败，报文原文：\n"+message)
+	}
+	if verdict.salvaged && (verdict.notesDropped || verdict.findingsDropped) {
+		dropped := make([]string, 0, 2)
+		if verdict.notesDropped {
+			dropped = append(dropped, "notes")
+		}
+		if verdict.findingsDropped {
+			dropped = append(dropped, "findings")
+		}
+		body := fmt.Sprintf("裁决 JSON 已抢救，仍按 %t 路由；以下字段因 JSON 损坏被丢弃：%s。Raw 保留在裁决事件中。",
+			verdict.Pass, strings.Join(dropped, "、"))
+		if err := n.gatedWrite("裁决抢救留痕"); err != nil {
+			return Outcome{}, err
+		}
+		if _, err := n.St.AddComment(cardID, body, "普通", n.actor()); err != nil {
+			logger.Warn("裁决抢救留痕失败", "dropped", dropped, "cause", err)
+			return Outcome{}, err
+		}
+		logger.Warn("裁决抢救字段已丢弃并留普通评论", "dropped", dropped)
 	}
 	if err := n.gatedWrite("裁决落账"); err != nil {
 		return Outcome{}, err

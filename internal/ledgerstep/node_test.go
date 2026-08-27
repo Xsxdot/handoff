@@ -63,6 +63,38 @@ func TestReviewStepPassAndFailLoop(t *testing.T) {
 	}
 }
 
+func TestNodeStepCommentsWhenSalvageDropsNotes(t *testing.T) {
+	st, card := nodeLedger(t)
+	fence := strings.Repeat(string(rune(96)), 3)
+	message := fence + "handoff-verdict\n" +
+		"{\"verdict\":\"pass\",\"findings\":[],\"notes\":\"enabled\":true}\n" +
+		fence + "\n"
+	step := newNodeStep(t, st, ledger.NodeDef{
+		Name: "review", Dispatch: true, Verdict: true, Template: "review-generic",
+	}, message, nil)
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("RunOnce() error = %v", err)
+	}
+	if out.Action != ActionPass || !out.Verdict.Pass {
+		t.Fatalf("outcome = %+v", out)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+	if err != nil {
+		t.Fatalf("读取事件: %v", err)
+	}
+	found := false
+	for _, event := range events {
+		if event.Type == ledger.EvComment && strings.Contains(string(event.Payload), "notes") &&
+			strings.Contains(string(event.Payload), "抢救") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("抢救丢弃 notes 没有普通评论留痕")
+	}
+}
+
 func TestReviewStepRoundCapAndParseFailure(t *testing.T) {
 	s, c := nodeLedger(t)
 	failMessage := "```handoff-verdict\n{\"verdict\":\"fail\",\"findings\":[]}\n```"

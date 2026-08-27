@@ -61,6 +61,33 @@ func TestProtocolRulesMatchesTemplate(t *testing.T) {
 	}
 }
 
+func TestProtocolRulesMakeCommitConditionalOnRole(t *testing.T) {
+	out, err := turn.RenderPrompt("T1", "plan", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"是否提交听角色纪律",
+		"角色禁止修改工作树",
+		"commit 填当前 HEAD",
+		"角色要求提交时，必须 git add 并 commit",
+		`"branch"`,
+		`"commit"`,
+		`"summary"`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("prompt 缺少 %q", want)
+		}
+	}
+	if strings.Contains(out, "收尾纪律：全部完成后必须 git add 并 commit（不要 push）") {
+		t.Error("仍保留无条件 commit 铁律")
+	}
+	lower := strings.ToLower(turn.ProtocolRules)
+	if strings.Contains(lower, "review") || strings.Contains(lower, "recon") {
+		t.Error("ProtocolRules 不应点名具体角色")
+	}
+}
+
 func TestParseTrailer(t *testing.T) {
 	cases := []struct {
 		name     string
