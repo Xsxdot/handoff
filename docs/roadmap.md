@@ -413,3 +413,10 @@
   执行者隔离层 = **B247**。
 - **（已修，留痕）** `skills/handoff/SKILL.md` 排障表原写「驱动权泄漏 CLI 侧今天无解」，
   B239 后 `card takeover` 已可用、`card release` 也不再是静默 no-op，本轮实测确认并改正。
+
+## 来自 B273 spec（2026-08-27，本期不做）
+
+- **生产侧不再发没有 `final_text` 的半成品 `completed`**：今天同一处发射点会先发残缺再补全文，是为了重启丢终态时能补回报文。消费侧 B273 用「等带 final_text 的 completed + 秒级宽限」止血。改生产侧等于重议那条补报文决议，另开卡。来源：B273 spec Out of Scope / 源卡 B243。
+- **裁决块 notes 改走围栏 / heredoc**：执行者不再把自由文本塞进裸 JSON 字符串。B273 先做解析容错。来源：B273 spec / 源卡 B242 弃选 a。
+- **trailer 允许 `commit` 为空、由 agentd 填 HEAD**：只读节点完全不提交。要核 completed/turn_failed 对空 commit 的容忍度。B273 只改铁律原文，schema 不动。来源：B273 spec / 源卡 B244 弃选 c。
+- **只读节点变异自验走 `git archive` 写进角色纪律**：B229.1 review 执行者摸出来的正当出口。属于角色纪律正文，不是回合协议铁律。来源：B273 spec / 源卡 B244 旁证。
