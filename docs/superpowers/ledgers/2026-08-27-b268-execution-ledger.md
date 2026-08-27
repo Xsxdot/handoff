@@ -18,3 +18,4 @@
 - 2026-08-27：收尾自审：划词放行走 `logTermWheelBypass`；滚轮上送走 `logTermWheel`；⌘←/⌘→/⌘K 走 `logTermFix`。无 `console.log`。`altBufferWheelSgr` 仓库内零命中。真机清单未跑，标未验证。
 - 2026-08-27：`cd web && npm test`（子系统 vitest 全量）原始收口：`Test Files  109 passed (109)` / `Tests  1136 passed (1136)` / `Duration  13.19s`，退出码 0。
 - 2026-08-27 真机：用户报 Option+B/F 不对，其余 B268 项过。根因：WKWebView Option+B 的 key 是 ∫、keyCode=0，xterm macOptionIsMeta 走不到 ESC+b。补测先红（data=[] 和 data=['∫']），再用 ev.code（KeyB）发 ESC+字母并吞随后 insertText。`terminalInput.test.ts` 18 绿。
+- 2026-08-27：Option+B/F 真机失败后补丁部署。`terminalInput.test.ts` 18 绿；变异把 `term.input(\`\\x1b${metaLetter}\`)` 改成 `term.input(metaLetter)` 后该条红（got `['b','f']`），还原 18 绿。tsc+vite 产物 `index-Wi16f3r8.js`；`go build -tags embedweb` 注入 1ef3c6b8；`handoff service stop/start` 后 `handoff status` 版本 `1ef3c6b8b59e`，旧 chunk `index-CV2PLRIc.js` 不在二进制内。待用户退出桌面重开终端 tab 复验 Option+B/F 词跳、不得出现 ∫/ƒ。
