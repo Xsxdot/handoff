@@ -3,6 +3,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { ApiError } from '../../api/client'
 import type { RoomHistoryItem, RoomSummary } from '../../api/rooms'
 import {
   fetchInbox,
@@ -122,5 +123,50 @@ describe('RoomPanel', () => {
     await user.click(screen.getByRole('button', { name: '更多' }))
     expect(screen.getByRole('button', { name: 'attach' })).toBeDisabled()
     expect(screen.getByText('暂无可 attach 的任务')).toBeInTheDocument()
+  })
+
+  it('常驻面板收起后保留 FAB，并可重新打开', async () => {
+    const user = userEvent.setup()
+    render(<RoomPanel workbench={workbench()} persistent />)
+    expect(await screen.findByTestId('room-panel')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '收起房间面板' }))
+    expect(screen.queryByTestId('room-panel')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '打开房间面板' }))
+    expect(screen.getByTestId('room-panel')).toBeInTheDocument()
+  })
+
+  it('消息流 401 终止时显示告警并禁用发送', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRoomMessages).mockImplementation((_id, opts = {}) => (
+      opts.limit === 1
+        ? Promise.resolve([])
+        : Promise.reject(new ApiError(401, '会话失效'))
+    ))
+    const user = userEvent.setup()
+    render(<RoomPanel workbench={workbench()} persistent />)
+    await user.click(await screen.findByRole('button', { name: /卡房间/ }))
+
+    expect(await screen.findByText('消息会话已过期，请重新登录。')).toBeInTheDocument()
+    expect(screen.queryByText('正在读取…')).not.toBeInTheDocument()
+    expect(screen.getByRole('textbox', { name: '发送消息' })).toBeDisabled()
+    expect(screen.getByRole('button', { name: '发送' })).toBeDisabled()
+  })
+
+  it('会话列表 401 终止时显示告警', async () => {
+    vi.mocked(fetchRooms).mockRejectedValue(new ApiError(401, '会话失效'))
+    render(<RoomPanel workbench={workbench()} persistent />)
+
+    expect(await screen.findByText('会话已过期，请重新登录。')).toBeInTheDocument()
+  })
+
+  it('空房间历史加载完成后显示空态而不是持续读取', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRoomMessages).mockResolvedValue([])
+    const user = userEvent.setup()
+    render(<RoomPanel workbench={workbench()} persistent />)
+    await user.click(await screen.findByRole('button', { name: /卡房间/ }))
+
+    expect(await screen.findByText('（还没有消息）')).toBeInTheDocument()
+    expect(screen.queryByText('正在读取…')).not.toBeInTheDocument()
   })
 })
