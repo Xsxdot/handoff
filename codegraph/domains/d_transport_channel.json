@@ -1,0 +1,4 @@
+{
+  "domain": "d_transport_channel",
+  "responsibility": "把任务、项目、机器和会话操作路由到目标 agentd：单机客户端封装与按 target 复用的连接池。"
+}

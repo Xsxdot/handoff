@@ -1,0 +1,4 @@
+{
+  "domain": "d_cli",
+  "responsibility": "把协调者的终端意图翻译成 client/agentd 调用，并以可脚本化的文本契约呈现结果。"
+}

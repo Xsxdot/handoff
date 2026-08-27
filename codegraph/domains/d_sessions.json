@@ -1,0 +1,4 @@
+{
+  "domain": "d_sessions",
+  "responsibility": "为协调者提供可附着的本机 PTY 会话：会话生命周期、实时输出订阅、历史回放与磁盘落点，跨 agentd 重启可收养。"
+}

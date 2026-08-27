@@ -1,0 +1,4 @@
+{
+  "domain": "d_transport_tunnel",
+  "responsibility": "在直连与 relay 场景下建立可复用的网络通道：懒拨号隧道与代理传输生成。"
+}

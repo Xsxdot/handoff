@@ -86,6 +86,7 @@ target 排除目录）。注意 receiver 方法在图里的 `name` 是 `Receiver
 | projections | Projection[] | 数据实体投影关系；可选，缺省为空 |
 | lifecycle | LifecycleRef[] | 生命周期关系 [creator/writer 节点对 model 的创建或状态写入] |
 | packages | Record&lt;string, Package&gt; | 包目录到包 doc 摘要；可选，缺省时不得写入该键 |
+| flows | Record&lt;承重函数节点 id, Flow&gt; | 承重函数的有序控制流；C12 additive-only。只覆盖承重函数，禁止给全部节点建 flow |
 
 packages 的 value 字段：
 
@@ -122,9 +123,18 @@ containers 的 value 字段：
 | 字段 | 类型 | 可选 | 说明 |
 | --- | --- | --- | --- |
 | label | string | 否 | 展示名称 |
-| kind | string | 否 | 容器类别 |
+| kind | 受控八值 | 否 | 容器类别，见下节词表。未知值必须显式报错，禁止静默改写成「函数组」 |
 | entry | boolean | 是 | 是否为入口容器，默认 false |
 | domain | string | 是 | 所属领域 ID，必须是叶子领域；整图无 domains 段时可省 |
+
+容器 `kind` 受控词表（八值，C12）：
+
+```
+类型方法 | 函数组 | 实体 | TypeScript 模型
+React 组件/函数 | 入口 | TypeScript 函数组 | TypeScript 实体
+```
+
+「兜底桶」= `{函数组, TypeScript 函数组}` 两值。判据引用兜底桶时以词表为准，不以字符串前缀为准。词表外的 kind 是扫描错误，不是可降级的自由字符串。
 
 nodes 的 value 字段：
 
@@ -144,8 +154,11 @@ nodes 的 value 字段：
 | tests | TestRef[] | 是 | 直接关联测试 |
 | fields | string[][] | 是 | model 专用字段 [名, 类型, 说明] |
 | modelKind | "entity" \| "dto" \| "config" | 是 | **仅 kind=="model" 有意义**，判据见下节；空＝未分种 |
+| channel | "cli" \| "http" \| "ws" \| "web" | 是 | **仅 kind=="entry" 有意义**（C12）。入口的对外通道，按注册面填写，禁止靠 id 前缀或名字形状猜完却不写字段。非 entry 不得带此键 |
 | unscanned | boolean | 是 | 入口尚未追链时为 true，默认 false |
 | projScanned | boolean | 是 | 该节点的投影关系已盘点过时为 true，默认 false |
+
+`channel` 取值：Cobra/CLI 子命令 = `cli`；HTTP 路由/handler = `http`；WebSocket 端点 = `ws`；前端页面/壳入口 = `web`。每个 entry 必须有且仅有一个 channel；缺席等于没扫完。
 
 tests 中每个 TestRef 字段：
 
@@ -174,6 +187,51 @@ Projection 是一个三元组 `[投影点节点 id, model 节点 id, kind]`：
 
 **跨语言关联一律走 projections 的 twin，不走 edges**（硬纪律里那条「跨语言禁止调用边」
 的正面出口就是它）。
+
+### flows（C12，承重函数的有序控制流）
+
+`edges` 是无序二元组，表达「谁能调到谁」。`flows` 表达「这个函数内部按什么次序、在什么条件下走」——分支、循环、返回。两段不互相代替：有边无 flow 时查看器降级为机械可达序列并标明「无次序无分支」；禁止把 BFS 邻居序列写进 `flows.steps` 冒充流程图。
+
+Flow 形状：
+
+```
+"flows": {
+  "<承重函数节点 id>": {
+    "steps": [ FlowStep, ... ]
+  }
+}
+```
+
+FlowStep 字段：
+
+| 字段 | 必填 | 说明 |
+| --- | --- | --- |
+| id | 是 | 该函数内唯一（如 s1、s2） |
+| order | 是 | 源码出现顺序，从 1 起 |
+| kind | 是 | `call` / `branch` / `loop` / `return`，四值之外非法 |
+| to | `call` 必填 | 被调节点 id，必须是已定义节点 |
+| cond | `branch`/`loop` 必填 | **源码条件原文**，不做归一化 |
+| line | 是 | 该步骤对应的源码行 |
+| then / else | `branch` 必填 | 子步骤 id 列表 |
+| body | `loop` 必填 | 循环体步骤 id 列表 |
+| iface | 否 | 为真表示 `to` 是接口方法、本调用点是动态分派。实现清单从 `implements` 段 join，**禁止在 flows 里复制实现清单** |
+
+**只给承重函数建 flow**，不要给全部节点建。承重函数 = 下列并集：
+
+1. 所有 `kind=="entry"` 的节点（入口 handler；Cobra 分组命令零出边的仍建一条空 steps 或只有 return 的 flow，并在交付说明列出——不要省略键让查看器当「没扫到」）；
+2. 入口的第一跳真实 handler（entry 的直接 callee，不含兜底桶噪声）；
+3. 跨域入缝符号：被其他领域节点调用、且自身容器 kind **不是**兜底桶的 func/方法；
+4. 编排单元：跨域出边 ≥ 3 的非兜底桶函数（一次调用里把几块域串起来的那种）。
+
+兜底桶（`函数组` / `TypeScript 函数组`）且可被 ≥10 个程序入口到达的符号是噪声，**不建 flow**。拿不准就宁缺：缺席走查看器降级，假流程比没有更糟。
+
+步骤纪律：
+
+- `call` 的 `to` 必须已在 `nodes` 里；标准库/第三方调用不入 step（与边纪律相同）。
+- 接口方法调用标 `iface: true`，`to` 写接口节点，不猜具体实现。
+- `branch`/`loop` 的 `cond` 抄源码，不要改写成「如果失败」。
+- 不要把测试、日志、纯格式化小函数展开成 step。
+- 入口只建一跳是上轮的已知病（162 入口里 137 个出边=1）。本轮 entry 的 flow 与 edges 都必须沿 handler 往下走到编排层，不能在 `cmd.RunE → 一个函数` 处停住。
 
 ### codegraph/diffs/<视图名>.json
 
@@ -313,6 +371,8 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
     非零退出），扫描产物过不了门控就是不合格。
 - 容器按 struct 一级：Go 方法按 receiver 归 pkg.Receiver 容器，自由函数归
   pkg（包级函数），model 归 pkg 实体；入口分 CLI/HTTP/WS 三容器。
+  **本轮不要按服务领域拆入口容器**（那会打乱 `best.json` 的容器归属）。入口
+  属于哪个子系统改由 `channel` + 节点名/路径表达，不改容器拓扑。
 - 所有入口必须全量盘点；没追链的标 unscanned: true——宁缺毋滥。
 - **每个源码文件至少要有一个节点，或在交付说明里解释为何零节点**。工具查不出漏建
   （没有盘→图方向的判据），只有这条自检拦得住，见「扫描范围与完整性」。
@@ -330,3 +390,27 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
 - 收尾自检：python3 -m json.tool 验证 JSON 合法性 + 引用完整性脚本（或直接
   handoff graph validate --repo .（零 issues），再 handoff graph domains --repo . 目视领域树是否符合真实架构，
   并抽查 5 个节点的 file:line。
+- **C12 键自检（validate 罩不住）**：旧版 `handoff graph validate` 会忽略未知键
+  `flows`/`channel` 并照样全绿。交付前必须用下面这段核对 JSON 文件本身，不能只看
+  validate 退出码：
+
+  ```
+  python3 - <<'PY'
+  import json, sys
+  g = json.load(open("codegraph/baseline.json"))
+  flows = g.get("flows") or {}
+  nodes = g["nodes"]
+  entries = [(i, n) for i, n in nodes.items() if n.get("kind") == "entry"]
+  missing_ch = [i for i, n in entries if not n.get("channel")]
+  bad_ch = [i for i, n in entries if n.get("channel") not in (None, "cli", "http", "ws", "web")]
+  dangling = [fid for fid, fl in flows.items() if fid not in nodes]
+  print("flows", len(flows), "entries", len(entries),
+        "missing_channel", len(missing_ch), "packages", len(g.get("packages") or {}))
+  if not flows:
+      sys.exit("FAIL: baseline 没有 flows（C12 本轮必产）")
+  if missing_ch:
+      sys.exit("FAIL: entry 缺 channel " + ",".join(missing_ch[:8]))
+  if dangling:
+      sys.exit("FAIL: flows 键不是已定义节点 " + ",".join(dangling[:8]))
+  PY
+  ```

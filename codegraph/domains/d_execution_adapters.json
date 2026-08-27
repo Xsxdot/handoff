@@ -1,0 +1,4 @@
+{
+  "domain": "d_execution_adapters",
+  "responsibility": "把 claude/codex/grok/opencode 四家模型 CLI 的启动、输出、权限请求和终态差异收敛成统一契约；含 fake 脚本化实现与 rawtap 原始字节旁路。"
+}
