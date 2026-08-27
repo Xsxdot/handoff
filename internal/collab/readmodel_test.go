@@ -10,6 +10,7 @@ package collab
 import (
 	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,6 +126,34 @@ func TestListRoomsForMemberScansEventsOnceForUnreadAndActivity(t *testing.T) {
 		if r.Kind == room.KindCard && r.Unread != 1 {
 			t.Fatalf("卡房间 unread 应为 1: %+v", r)
 		}
+		if r.ID == "B000" {
+			if r.Preview == nil || r.Preview.Body != "x" || r.Preview.Seq != 1 {
+				t.Fatalf("列表应从同一事件扫描投影最后一条 preview: %+v", r.Preview)
+			}
+		}
+	}
+}
+
+func TestListRoomsPreviewTruncatesBody(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	body := strings.Repeat("长", roomPreviewMaxRunes+20)
+	fake := &fakeLC{
+		cards: []proto.Card{{ID: "B1", Title: "B1", Status: "进行中", Project: "p1", CreatedAt: base, UpdatedAt: base}},
+		events: []proto.LedgerEvent{fakeRoomMsgWithBody(1, "B1", base, body)},
+		leases: map[string]time.Time{},
+	}
+	rooms, err := New(fake).ListRooms("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rooms[0].Preview == nil {
+		t.Fatal("房间应有 preview 投影")
+	}
+	if got := len([]rune(rooms[0].Preview.Body)); got > roomPreviewMaxRunes {
+		t.Fatalf("preview 正文应截断到 %d rune，实际 %d", roomPreviewMaxRunes, got)
+	}
+	if rooms[0].Preview.Body == body {
+		t.Fatal("超长 preview 正文不应原样透传")
 	}
 }
 func (f *fakeLC) BindDriver(id, session, carrier, expect string) error {
@@ -138,7 +167,11 @@ func (f *fakeLC) DriverLease(session string) (time.Time, bool, error) {
 // fakeRoomMsg 造一条房间消息事件（群房间 roomID 带 project:/global 前缀时
 // 为无卡事件，同 ledger.RecordRoomMessage 语义）。
 func fakeRoomMsg(seq int64, roomID string, at time.Time) proto.LedgerEvent {
-	payload, _ := json.Marshal(proto.RoomMessage{Room: roomID, Kind: proto.RoomMsgUser, Body: "x"})
+	return fakeRoomMsgWithBody(seq, roomID, at, "x")
+}
+
+func fakeRoomMsgWithBody(seq int64, roomID string, at time.Time, body string) proto.LedgerEvent {
+	payload, _ := json.Marshal(proto.RoomMessage{Room: roomID, Kind: proto.RoomMsgUser, Body: body})
 	cardID := roomID
 	if roomID == "global" || len(roomID) > 8 && roomID[:8] == "project:" {
 		cardID = ""

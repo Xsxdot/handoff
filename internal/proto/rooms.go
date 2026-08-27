@@ -62,6 +62,15 @@ type RoomAttach struct {
 	Command string `json:"command"`
 }
 
+// RoomPreview 是会话列表对最后一条 room_message 的轻量投影。
+// Body 在列表装配点按 rune 截断；Seq 与 CreatedAt 让前端能稳定显示并判断新旧，
+// 不要求前端为列表预览再次读取房间历史。
+type RoomPreview struct {
+	Body      string    `json:"body"`
+	Seq       int64     `json:"seq"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // RoomSummary 是会话列表（扁平活动排序）的单行。
 type RoomSummary struct {
 	ID      string `json:"id"`   // 卡号 | project:<name> | global
@@ -73,8 +82,9 @@ type RoomSummary struct {
 	// Live 绑定者租约未过期（同一注入时钟判定）；无绑定时 false。
 	Live bool `json:"live"`
 	// ReadOnly 并入冻结或卡终态归档。
-	ReadOnly     bool        `json:"read_only"`
-	LastActivity time.Time   `json:"last_activity"`
-	Unread       int         `json:"unread"`
-	Attach       *RoomAttach `json:"attach,omitempty"`
+	ReadOnly     bool         `json:"read_only"`
+	LastActivity time.Time    `json:"last_activity"`
+	Unread       int          `json:"unread"`
+	Attach       *RoomAttach  `json:"attach,omitempty"`
+	Preview      *RoomPreview `json:"preview,omitempty"`
 }

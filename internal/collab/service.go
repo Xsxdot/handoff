@@ -45,6 +45,9 @@ var (
 // historyDefaultLimit History/Mentions 未给 limit 时的取数上限。
 const historyDefaultLimit = 200
 
+// roomPreviewMaxRunes 限制列表 wire 中携带的最后一条正文，避免单条消息把列表响应撑大。
+const roomPreviewMaxRunes = 120
+
 // pointerActor Pointer 写指针行时落账的 actor 标识（契约 §3.3 Pointer 无
 // actor 参数、调用方身份不可得，固定系统组件标识）。
 const pointerActor = "system:pointer"
@@ -299,8 +302,25 @@ func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error)
 		if ev.Type != room.RoomEventType {
 			continue
 		}
-		if idx, ok := byID[room.RoomIDOf(ev)]; ok && ev.CreatedAt.After(rooms[idx].LastActivity) {
+		roomID := room.RoomIDOf(ev)
+		idx, ok := byID[roomID]
+		if !ok {
+			continue
+		}
+		if ev.CreatedAt.After(rooms[idx].LastActivity) {
 			rooms[idx].LastActivity = ev.CreatedAt
+		}
+		var msg proto.RoomMessage
+		if err := room.UnmarshalMessage(ev.Payload, &msg); err != nil {
+			log().Warn("会话列表预览投影跳过：消息载荷无效",
+				"project", project, "room", roomID, "seq", ev.Seq, "cause", err)
+			continue
+		}
+		if rooms[idx].Preview != nil && rooms[idx].Preview.Seq >= ev.Seq {
+			continue
+		}
+		rooms[idx].Preview = &proto.RoomPreview{
+			Body: truncateRoomPreview(msg.Body), Seq: ev.Seq, CreatedAt: ev.CreatedAt,
 		}
 	}
 	// 活性：按不同绑定会话去重读租约（兼任多席只问一次「会话活着吗」）。
@@ -352,6 +372,16 @@ func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error)
 	sort.SliceStable(sunk, func(i, j int) bool { return sunk[i].LastActivity.After(sunk[j].LastActivity) })
 	log().Info("会话列表已组装", "project", project, "count", len(rooms))
 	return append(active, sunk...), nil
+}
+
+// truncateRoomPreview 按 rune 截断列表预览，避免多字节正文被半截字节切坏；
+// 省略号占一个预算位，调用方可据此把超长正文识别为摘要。
+func truncateRoomPreview(body string) string {
+	runes := []rune(body)
+	if len(runes) <= roomPreviewMaxRunes {
+		return body
+	}
+	return string(runes[:roomPreviewMaxRunes-1]) + "…"
 }
 
 // unreadByRoom 从列表已经读取的全量事件中聚合成员未读数。

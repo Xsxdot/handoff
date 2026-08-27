@@ -63,6 +63,23 @@
     }
   },
   {
+    "case": "room-summary-preview",
+    "room": {
+      "id": "B1",
+      "kind": "card",
+      "title": "卡会话",
+      "live": true,
+      "read_only": false,
+      "last_activity": "1970-01-01T00:00:03Z",
+      "unread": 0,
+      "preview": {
+        "body": "最新预览",
+        "seq": 3,
+        "created_at": "1970-01-01T00:00:03Z"
+      }
+    }
+  },
+  {
     "case": "room-summary-no-attach",
     "room": {
       "id": "global",

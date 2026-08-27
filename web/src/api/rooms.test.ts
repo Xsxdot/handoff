@@ -52,6 +52,13 @@ describe('room message twin fixtures', () => {
     expect(global.unread).toBe(0)
     expect(global.attach).toBeUndefined()
   })
+
+  it('RoomSummary preview 保留 body、seq、created_at', () => {
+    const attached = cases.find((c) => c.case === 'room-summary-preview')!.room as RoomSummary
+    expect(attached.preview).toEqual({
+      body: '最新预览', seq: 3, created_at: '1970-01-01T00:00:03Z',
+    })
+  })
 })
 
 describe('inbox item twin fixtures', () => {

@@ -200,7 +200,7 @@ export interface RoomSummary {
 }
 ~~~
 
-列表 preview 不增加第三条 wire：RoomPanel 用既有 fetchRoomMessages(id, { limit: 1 }) 在内存建立 preview；单项失败保留旧值、结构化 Warn、显示暂无预览。
+列表 preview 使用第三条窄 wire：Service.listRooms 在既有全量 room_message 扫描中投影 `RoomSummary.preview`（`body` 按 Unicode rune 截断至 120、附 `seq`/`created_at`）；RoomPanel 直接消费该字段，不再逐房间调用 `fetchRoomMessages(id, { limit: 1 })`。
 
 ### 2.2 Workflow BoardLayout wire
 
@@ -589,10 +589,10 @@ it('attach 无投影时置灰并说明；有投影时确认后打开带 initComm
 5. 实现 RoomPanel：
 
 - 顶层显式状态只有 view、roomID、collapsed、project、needsOnly、attachConfirm、draft；list/room/detail 在同一组件条件渲染，不导航 /rooms。
-- fetchRooms 和 fetchInbox 用两条独立 usePoll，断线保留最后数据并显示已断开及原因，首次失败显示 alert 和重试，401 交给 usePoll 终止。列表轮询即使收起也继续；preview 只在展开并有列表数据时拉取。
+- fetchRooms 和 fetchInbox 用两条独立 usePoll，断线保留最后数据并显示已断开及原因，首次失败显示 alert 和重试，401 交给 usePoll 终止。列表轮询即使收起也继续；preview 直接随列表响应更新。
 - needRoomIDs 是 fetchInbox 的非空 card_id 去重集合；N 是唯一 card room 数，不是 inbox 条数；global 没有 card_id，永远不因 needsOnly 被纳入。
 - project 过滤只过滤非 global 的有项目项；orderRooms 只把需要你置顶，保留服务端同组活动顺序。
-- 预览 effect 对每个可见 room 调 fetchRoomMessages(id, {limit: 1})，使用 roomPreview；单项失败保留旧值、logRoom warn、显示暂无预览。
+- 列表行使用 `RoomSummary.preview.body`；缺失或空正文显示暂无预览。打开房间只允许既有一次 `fetchRoomMessages(id, {limit: 200})` 历史请求。
 - 列表行照 prototype B：44px 圆头像，标题/preview/时间，unread>0 红 badge 压头像角，待回复行琥珀背景并在预览前加 [待回复]。过滤项是纯文字，不能改成按钮。
 - 房间态 header 为返回/title/更多；对方气泡为 rgba(255,255,255,.65)+blur(12px)，自己气泡为 rgba(17,24,39,.85) 白字，底部胶囊输入。read_only 时输入/发送 disabled 且显示原因；发送成功清 draft 并刷新，失败显示原文并记录 error。
 - 打开房间或历史刷新得到 max seq 后调用 markRoomRead(room.id,maxSeq)，仅 maxSeq>0 调用；失败不抹消息，面板内显示 alert。
@@ -727,7 +727,7 @@ Interfaces：
 | Service.listRooms | RoomSummary.Unread | handleRoomsList JSON → fetchRooms | Go/TS 金样本、HTTP unread 2→0、0 在线 |
 | lookupRoomAttach | RoomAttach pointer + command | handleRoomsList JSON → RoomPanel detail | 有挂账四字段、无挂账无键、不可达仍 200/禁用 |
 | Store.PutWorkflow | WorkflowDef.Board JSON blob | flow GET → FlowDetail/WorkflowWire | PUT→GET roundtrip、fixture、非法 400 |
-| RoomPanel | RoomMessage.payload preview | list row | body→preview、单项失败保留旧值并告警 |
+| Service.listRooms | RoomSummary.Preview | handleRoomsList JSON → fetchRooms → list row | body rune 截断、seq/created_at 保留、列表零次 limit=1 请求 |
 | RoomPanel | TabContent.initCommand | Shell TerminalTab → CreatePtySessionReq | confirm→Workbench open、既有 init_command contract test |
 
 spec seam 对应：

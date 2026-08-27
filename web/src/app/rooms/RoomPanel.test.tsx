@@ -81,6 +81,15 @@ describe('RoomPanel', () => {
     expect(screen.queryByText('B2')).not.toBeInTheDocument()
   })
 
+  it('列表直接使用服务端 preview，不发逐房间 limit=1 请求', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue([room({ preview: { body: '服务端预览', seq: 7, created_at: '2026-08-28T08:00:00+08:00' } })])
+    vi.mocked(fetchRoomMessages).mockResolvedValue([message(7, '不应被列表读取')])
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+
+    expect(await screen.findByText('服务端预览')).toBeInTheDocument()
+    expect(fetchRoomMessages).not.toHaveBeenCalled()
+  })
+
   it('打开房间即 mark read，发送直达当前房间，更多进入详情', async () => {
     vi.mocked(fetchRooms).mockResolvedValue([room()])
     vi.mocked(fetchRoomMessages).mockResolvedValue([message(2, '收到')])
@@ -88,6 +97,8 @@ describe('RoomPanel', () => {
     render(<RoomPanel workbench={workbench()} persistent />)
     await user.click(await screen.findByRole('button', { name: /卡房间/ }))
     await waitFor(() => expect(markRoomRead).toHaveBeenCalledWith('B1', 2))
+    expect(fetchRoomMessages).toHaveBeenCalledTimes(1)
+    expect(fetchRoomMessages).toHaveBeenCalledWith('B1', { limit: 200 })
     await user.type(screen.getByRole('textbox', { name: '发送消息' }), '继续')
     await user.click(screen.getByRole('button', { name: '发送' }))
     await waitFor(() => expect(sendRoomMessage).toHaveBeenCalledWith('B1', '继续'))

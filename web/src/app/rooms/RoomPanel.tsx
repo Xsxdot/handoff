@@ -20,7 +20,6 @@ import {
   orderRooms,
   roomInitials,
   roomNeedsReply,
-  roomPreview,
   type RoomPanelView,
   visibleRooms,
 } from './roomPanelModel'
@@ -48,8 +47,8 @@ function messageLabel(event: RoomHistoryItem): string {
   return typeof kind === 'string' ? kind : event.type
 }
 
-function PreviewText({ room, preview, needsReply }: { room: RoomSummary; preview?: string; needsReply: boolean }) {
-  const text = preview ?? '暂无预览'
+function PreviewText({ room, needsReply }: { room: RoomSummary; needsReply: boolean }) {
+  const text = room.preview?.body || '暂无预览'
   return (
     <p className="truncate text-xs text-muted-foreground">
       {needsReply && <span className="mr-1 text-amber-700">[待回复]</span>}
@@ -59,7 +58,7 @@ function PreviewText({ room, preview, needsReply }: { room: RoomSummary; preview
   )
 }
 
-function ListRow({ room, preview, needsReply, onOpen }: { room: RoomSummary; preview?: string; needsReply: boolean; onOpen: (id: string) => void }) {
+function ListRow({ room, needsReply, onOpen }: { room: RoomSummary; needsReply: boolean; onOpen: (id: string) => void }) {
   return (
     <button
       type="button"
@@ -76,7 +75,7 @@ function ListRow({ room, preview, needsReply, onOpen }: { room: RoomSummary; pre
           <span className="truncate text-sm font-medium">{room.title}</span>
           <span className="shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] text-muted-foreground">{KIND_LABEL[room.kind] ?? room.kind}</span>
         </span>
-        <PreviewText room={room} preview={preview} needsReply={needsReply} />
+        <PreviewText room={room} needsReply={needsReply} />
       </span>
       <span className="shrink-0 self-start pt-0.5 text-[10px] text-muted-foreground">{formatRelative(room.last_activity)}</span>
     </button>
@@ -117,7 +116,6 @@ export function RoomPanel({ workbench, persistent }: RoomPanelProps) {
   const [needsOnly, setNeedsOnly] = useState(false)
   const [attachConfirm, setAttachConfirm] = useState(false)
   const [draft, setDraft] = useState('')
-  const [previews, setPreviews] = useState<Record<string, string>>({})
   const [readError, setReadError] = useState('')
   const [sendError, setSendError] = useState('')
   const [stepBusy, setStepBusy] = useState(false)
@@ -167,26 +165,6 @@ export function RoomPanel({ workbench, persistent }: RoomPanelProps) {
   const historyPoll = usePoll(loadHistory, COLLAB_POLL_MS, { enabled: view === 'room' && roomID !== '' })
   const history = useMemo(() => historyPoll.data ?? [], [historyPoll.data])
   const maxSeq = useMemo(() => history.reduce((max, event) => Math.max(max, event.seq), 0), [history])
-
-  useEffect(() => {
-    if (collapsed || roomsPoll.data === null) return
-    let active = true
-    for (const room of visible) {
-      logRoom('debug', 'preview_request_started', { room: room.id, request: 'messages?limit=1' })
-      void fetchRoomMessages(room.id, { limit: 1 })
-        .then((events) => {
-          if (!active) return
-          setPreviews((previous) => ({ ...previous, [room.id]: roomPreview(events) }))
-          logRoom('debug', 'preview_succeeded', { room: room.id, request: 'messages?limit=1' })
-        })
-        .catch((error: unknown) => {
-          if (!active) return
-          logRoom('warn', 'preview_failed', { room: room.id, request: 'messages?limit=1', error: errorMessage(error) })
-          setPreviews((previous) => (previous[room.id] ? previous : { ...previous, [room.id]: '暂无预览' }))
-        })
-    }
-    return () => { active = false }
-  }, [collapsed, roomsPoll.data, visible])
 
   useEffect(() => {
     if (view !== 'room' || !selectedRoom || maxSeq <= 0 || maxSeq <= (markedReads.current[selectedRoom.id] ?? 0)) return
@@ -299,7 +277,7 @@ export function RoomPanel({ workbench, persistent }: RoomPanelProps) {
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-y-auto p-2">
-        {roomsPoll.data === null && !roomsPoll.disconnected && !roomsPoll.sessionExpired ? <p className="p-2 text-sm text-muted-foreground">正在读取…</p> : visible.length === 0 && roomsPoll.data !== null ? <p className="p-2 text-sm text-muted-foreground">（暂无会话）</p> : visible.map((room) => <ListRow key={room.id} room={room} preview={previews[room.id]} needsReply={roomNeedsReply(room, needRoomIDs)} onOpen={openRoom} />)}
+        {roomsPoll.data === null && !roomsPoll.disconnected && !roomsPoll.sessionExpired ? <p className="p-2 text-sm text-muted-foreground">正在读取…</p> : visible.length === 0 && roomsPoll.data !== null ? <p className="p-2 text-sm text-muted-foreground">（暂无会话）</p> : visible.map((room) => <ListRow key={room.id} room={room} needsReply={roomNeedsReply(room, needRoomIDs)} onOpen={openRoom} />)}
       </div>
     </>
   ) : view === 'room' ? (
