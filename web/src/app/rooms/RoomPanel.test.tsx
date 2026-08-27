@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ApiError } from '../../api/client'
+import { fetchCardDetail } from '../../api/ledger'
 import type { RoomHistoryItem, RoomSummary } from '../../api/rooms'
 import {
   fetchInbox,
@@ -23,6 +24,11 @@ vi.mock('../../api/rooms', async (importOriginal) => ({
   fetchRooms: vi.fn(),
   markRoomRead: vi.fn(),
   sendRoomMessage: vi.fn(),
+}))
+
+vi.mock('../../api/ledger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/ledger')>()),
+  fetchCardDetail: vi.fn(),
 }))
 
 const room = (over: Partial<RoomSummary> = {}): RoomSummary => ({
@@ -57,6 +63,14 @@ beforeEach(() => {
   vi.mocked(fetchRoomMessages).mockResolvedValue([])
   vi.mocked(markRoomRead).mockResolvedValue({ ok: true })
   vi.mocked(sendRoomMessage).mockResolvedValue({ seq: 3 })
+  vi.mocked(fetchCardDetail).mockResolvedValue({
+    card: {
+      id: 'B1', title: 'B1 卡房间', status: '待审阅', priority: '高', project: 'p1', parent: '',
+      workflow: 'bug', workflow_version: 1, attachments: [{ kind: 'spec', path: 'docs/spec.md' }],
+      acceptance_criteria: '', created_at: '', updated_at: '',
+    },
+    relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+  })
 })
 
 describe('RoomPanel', () => {
@@ -134,6 +148,21 @@ describe('RoomPanel', () => {
     await user.click(screen.getByRole('button', { name: '更多' }))
     expect(screen.getByRole('button', { name: 'attach' })).toBeDisabled()
     expect(screen.getByText('暂无可 attach 的任务')).toBeInTheDocument()
+  })
+
+  it('详情显示卡片信息，点击卡片跳到 /cards 并打开抽屉', async () => {
+    const openCard = vi.fn()
+    const user = userEvent.setup()
+    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    render(<RoomPanel workbench={workbench()} persistent={false} onOpenCard={openCard} />)
+    await user.click(await screen.findByRole('button', { name: /卡房间/ }))
+    await user.click(screen.getByRole('button', { name: '更多' }))
+    expect(await screen.findByText('卡片')).toBeInTheDocument()
+    expect(screen.getByText('待审阅')).toBeInTheDocument()
+    expect(screen.getByText('高')).toBeInTheDocument()
+    expect(screen.getByText('spec')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '打开卡片 B1' }))
+    expect(openCard).toHaveBeenCalledWith('B1')
   })
 
   it('常驻面板收起后保留 FAB，并可重新打开', async () => {

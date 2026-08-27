@@ -129,7 +129,7 @@ func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.Le
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
-	events, err := s.lc.EventsFromAsc([]string{}, beforeSeq, 0)
+	events, err := room.ReadAllEvents(s.lc, beforeSeq)
 	if err != nil {
 		return nil, err
 	}

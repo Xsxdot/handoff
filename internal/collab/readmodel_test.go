@@ -138,7 +138,7 @@ func TestListRoomsPreviewTruncatesBody(t *testing.T) {
 	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
 	body := strings.Repeat("长", roomPreviewMaxRunes+20)
 	fake := &fakeLC{
-		cards: []proto.Card{{ID: "B1", Title: "B1", Status: "进行中", Project: "p1", CreatedAt: base, UpdatedAt: base}},
+		cards:  []proto.Card{{ID: "B1", Title: "B1", Status: "进行中", Project: "p1", CreatedAt: base, UpdatedAt: base}},
 		events: []proto.LedgerEvent{fakeRoomMsgWithBody(1, "B1", base, body)},
 		leases: map[string]time.Time{},
 	}
@@ -149,13 +149,53 @@ func TestListRoomsPreviewTruncatesBody(t *testing.T) {
 	if rooms[0].Preview == nil {
 		t.Fatal("房间应有 preview 投影")
 	}
-	if got := len([]rune(rooms[0].Preview.Body)); got > roomPreviewMaxRunes {
-		t.Fatalf("preview 正文应截断到 %d rune，实际 %d", roomPreviewMaxRunes, got)
-	}
-	if rooms[0].Preview.Body == body {
-		t.Fatal("超长 preview 正文不应原样透传")
+	want := strings.Repeat("长", roomPreviewMaxRunes-1) + "…"
+	if rooms[0].Preview.Body != want {
+		t.Fatalf("preview 正文应保留省略号并截断到 %d rune: got %q want %q", roomPreviewMaxRunes, rooms[0].Preview.Body, want)
 	}
 }
+
+func TestListRoomsPreviewKeepsLatestEventMetadata(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	latest := base.Add(2 * time.Minute)
+	fake := &fakeLC{
+		cards: []proto.Card{{ID: "B1", Title: "B1", Status: "进行中", Project: "p1", CreatedAt: base, UpdatedAt: base}},
+		events: []proto.LedgerEvent{
+			fakeRoomMsgWithBody(1, "B1", base.Add(time.Minute), "旧预览"),
+			fakeRoomMsgWithBody(2, "B1", latest, "最新预览"),
+		},
+		leases: map[string]time.Time{},
+	}
+	rooms, err := New(fake).ListRooms("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := rooms[0].Preview
+	if preview == nil || preview.Body != "最新预览" || preview.Seq != 2 || !preview.CreatedAt.Equal(latest) {
+		t.Fatalf("preview 必须保留最后一条正文、seq 与 created_at: %+v", preview)
+	}
+}
+
+// TestHistoryFiltersAfterReadingTheWholeEventStream 锁住分页顺序：账本的 LIMIT
+// 作用在事件流读取上，不能先截掉前 1000 条再做房间过滤，否则第 1001 条目标房间
+// 消息会永久从详情页消失。
+func TestHistoryFiltersAfterReadingTheWholeEventStream(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	fake := &fakeLC{}
+	for i := 1; i <= 1000; i++ {
+		fake.events = append(fake.events, fakeRoomMsg(int64(i), "B-noise", base.Add(time.Duration(i)*time.Second)))
+	}
+	fake.events = append(fake.events, fakeRoomMsg(1001, "B-target", base.Add(1001*time.Second)))
+
+	history, err := New(fake).History("B-target", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Seq != 1001 {
+		t.Fatalf("目标房间第 1001 条消息必须可见: %+v", history)
+	}
+}
+
 func (f *fakeLC) BindDriver(id, session, carrier, expect string) error {
 	return nil
 }

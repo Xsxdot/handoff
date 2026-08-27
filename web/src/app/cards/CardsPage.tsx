@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
 import type { Decision, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
 import { usePoll } from '../data/usePoll'
@@ -79,6 +79,7 @@ export function CardsPage() {
   const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
   const navigate = useNavigate()
+  const location = useLocation()
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
   // 时给 undefined，抽屉按「计数不可知」显示旧标题，不谎报「0 个在跑」。
@@ -137,6 +138,12 @@ export function CardsPage() {
   const selectedWorkflowName = selectedCard?.workflow ?? ''
 
   useEffect(() => {
+    const target = new URLSearchParams(location.search).get('card')
+    if (!target || !cards.some((card) => card.id === target)) return
+    setSelected(target)
+  }, [cards, location.search])
+
+  useEffect(() => {
     if (!selected || !selectedWorkflowName) {
       setDrawerNodes(undefined)
       return
@@ -153,7 +160,11 @@ export function CardsPage() {
     return () => { cancelled = true }
   }, [selected, selectedWorkflowName])
   const openDrawer = (id: string, focus?: 'merge') => { setSelected(id); setDrawerFocus(focus) }
-  const closeDrawer = () => { setSelected(null); setDrawerFocus(undefined) }
+  const closeDrawer = () => {
+    setSelected(null)
+    setDrawerFocus(undefined)
+    if (new URLSearchParams(location.search).has('card')) navigate('/cards', { replace: true })
+  }
   const newCardWorkflows = flows?.workflows.map((item) => item.name) ?? []
   // 卡到任务的唯一出口是 /tasks/:id 深链：目录解析、开 TUI tab、跨机全由
   // Shell 既有的 TaskDeepLink 完成，这里绝不顺手做目录切换（spec §3.3 明令

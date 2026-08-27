@@ -64,40 +64,22 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
 }
 
-// roomAttachEnrichTimeout 限制非承重 attach 投影占用列表请求的时间。主列表
-// 仍然必须可用；超时只让 Attach 留空，UI 以禁用态呈现。
-const roomAttachEnrichTimeout = 150 * time.Millisecond
+const (
+	roomAttachBackgroundTimeout = 10 * time.Second
+	roomAttachRefreshInterval   = 5 * time.Second
+	roomAttachRefreshWorkers    = 16
+)
 
 // enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
-// 保持 Attach=nil。挂账先一次性读取，逐卡 enrich 并行执行且受短超时约束；
-// 失败不吞：逐项 Warn，UI 得到禁用态；列表主查询仍可用。
-func (s *Server) enrichRoomAttachments(ctx context.Context, rooms []proto.RoomSummary) {
+// 保持 Attach=nil。远端 attach 是非承重字段：请求只读取本地挂账与缓存，缺失项
+// 交给后台刷新，避免一个 relay 延迟拖住整个房间列表。
+func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSummary) {
 	if s.ledger == nil {
 		return
 	}
-	enrichCtx, cancel := context.WithTimeout(ctx, roomAttachEnrichTimeout)
-	defer cancel()
-	linksResult := make(chan struct {
-		links []ledger.TaskLink
-		err   error
-	}, 1)
-	go func() {
-		links, err := s.ledger.AllTaskLinks()
-		linksResult <- struct {
-			links []ledger.TaskLink
-			err   error
-		}{links: links, err: err}
-	}()
-	var links []ledger.TaskLink
-	select {
-	case result := <-linksResult:
-		if result.err != nil {
-			s.log.Warn("读取房间挂账失败", "cause", result.err)
-			return
-		}
-		links = result.links
-	case <-enrichCtx.Done():
-		s.log.Warn("房间 attach enrich 超时：读取挂账", "cause", enrichCtx.Err())
+	links, err := s.ledger.AllTaskLinks()
+	if err != nil {
+		s.log.Warn("读取房间挂账失败", "cause", err)
 		return
 	}
 	linksByRoom := make(map[string][]ledger.TaskLink)
@@ -111,42 +93,22 @@ func (s *Server) enrichRoomAttachments(ctx context.Context, rooms []proto.RoomSu
 	}
 
 	localTasks := make(map[string]proto.Task)
-	needLocalTasks := false
 	for _, link := range links {
-		if link.Target == "" {
-			needLocalTasks = true
+		if link.Target != "" || s.st == nil {
+			continue
+		}
+		tasks, listErr := s.st.ListTasks()
+		if listErr != nil {
+			s.log.Warn("读取本机任务列表失败，attach 降级禁用", "cause", listErr)
 			break
 		}
-	}
-	if needLocalTasks {
-		tasksResult := make(chan struct {
-			tasks []proto.Task
-			err   error
-		}, 1)
-		go func() {
-			tasks, err := s.st.ListTasks()
-			tasksResult <- struct {
-				tasks []proto.Task
-				err   error
-			}{tasks: tasks, err: err}
-		}()
-		select {
-		case result := <-tasksResult:
-			if result.err != nil {
-				s.log.Warn("读取本机任务列表失败，attach 降级禁用", "cause", result.err)
-			} else {
-				for _, task := range result.tasks {
-					localTasks[task.ID] = task
-				}
-				s.log.Debug("本机 attach 任务索引已就绪", "tasks", len(localTasks))
-			}
-		case <-enrichCtx.Done():
-			s.log.Warn("房间 attach enrich 超时：读取本机任务", "cause", enrichCtx.Err())
-			return
+		for _, task := range tasks {
+			localTasks[task.ID] = task
 		}
+		s.log.Debug("本机 attach 任务索引已就绪", "tasks", len(localTasks))
+		break
 	}
 
-	var wg sync.WaitGroup
 	for i := range rooms {
 		if rooms[i].Kind != room.KindCard {
 			continue
@@ -155,38 +117,121 @@ func (s *Server) enrichRoomAttachments(ctx context.Context, rooms []proto.RoomSu
 		if len(roomLinks) == 0 {
 			continue
 		}
-		wg.Add(1)
-		go func(index int, links []ledger.TaskLink) {
-			defer wg.Done()
-			s.enrichRoomAttachment(enrichCtx, &rooms[index], links, localTasks)
-		}(i, roomLinks)
+		for linkIndex := len(roomLinks) - 1; linkIndex >= 0; linkIndex-- {
+			link := roomLinks[linkIndex]
+			if link.Target == "" {
+				attach, lookupErr := s.lookupRoomAttach(context.Background(), link, localTasks)
+				if lookupErr != nil {
+					s.log.Warn("房间 attach 本机任务不可解析", "room", rooms[i].ID,
+						"task", link.TaskID, "cause", lookupErr)
+					continue
+				}
+				rooms[i].Attach = attach
+				s.log.Info("房间 attach 投影成功", "room", rooms[i].ID,
+					"target", link.Target, "task", link.TaskID, "workdir", attach.WorkDir)
+				break
+			}
+			if attach := s.cachedRoomAttach(link); attach != nil {
+				rooms[i].Attach = attach
+				s.log.Info("房间 attach 从缓存投影成功", "room", rooms[i].ID,
+					"target", link.Target, "task", link.TaskID, "workdir", attach.WorkDir)
+				break
+			}
+		}
 	}
-	wg.Wait()
-	s.log.Info("房间 attach enrich 完成", "rooms", len(rooms), "links", len(links),
-		"timed_out", enrichCtx.Err() != nil)
+	s.startRoomAttachRefresh(links)
+	s.log.Info("房间 attach 投影完成", "rooms", len(rooms), "links", len(links))
 }
 
-// enrichRoomAttachment 为一张卡选择最新可解析的挂账 task。悬空旧 link 不阻断
-// 后续可用 link；Attach=nil 是明确的不可执行态。
-func (s *Server) enrichRoomAttachment(ctx context.Context, summary *proto.RoomSummary, links []ledger.TaskLink, localTasks map[string]proto.Task) {
-	for linkIndex := len(links) - 1; linkIndex >= 0; linkIndex-- {
-		link := links[linkIndex]
-		if ctx.Err() != nil {
-			s.log.Warn("房间 attach enrich 超时", "room", summary.ID, "target", link.Target,
-				"task", link.TaskID, "cause", ctx.Err())
-			return
-		}
-		attach, lookupErr := s.lookupRoomAttach(ctx, link, localTasks)
-		if lookupErr != nil {
-			s.log.Warn("房间 attach 目标不可解析", "room", summary.ID,
-				"target", link.Target, "task", link.TaskID, "cause", lookupErr)
+// startRoomAttachRefresh asynchronously resolves remote task workdirs. A single
+// refresh is shared by concurrent list requests and throttled between passes.
+func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
+	remoteLinks := make(map[string]ledger.TaskLink)
+	for _, link := range links {
+		if link.Target == "" {
 			continue
 		}
-		summary.Attach = attach
-		s.log.Info("房间 attach 投影成功", "room", summary.ID, "target", link.Target,
-			"task", link.TaskID, "workdir", attach.WorkDir)
+		remoteLinks[roomAttachCacheKey(link)] = link
+	}
+	if len(remoteLinks) == 0 {
 		return
 	}
+
+	s.roomAttachMu.Lock()
+	now := time.Now()
+	if s.roomAttachRefreshing || (!s.roomAttachLastRefresh.IsZero() &&
+		now.Sub(s.roomAttachLastRefresh) < roomAttachRefreshInterval) {
+		s.roomAttachMu.Unlock()
+		return
+	}
+	s.roomAttachRefreshing = true
+	s.roomAttachLastRefresh = now
+	s.roomAttachMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.roomAttachMu.Lock()
+			s.roomAttachRefreshing = false
+			s.roomAttachMu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), roomAttachBackgroundTimeout)
+		defer cancel()
+		workers := make(chan struct{}, roomAttachRefreshWorkers)
+		var wg sync.WaitGroup
+		for _, link := range remoteLinks {
+			link := link
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case workers <- struct{}{}:
+				case <-ctx.Done():
+					s.log.Warn("房间 attach 后台刷新取消", "target", link.Target,
+						"task", link.TaskID, "cause", ctx.Err())
+					return
+				}
+				defer func() { <-workers }()
+				attach, err := s.lookupRoomAttach(ctx, link, nil)
+				if err != nil {
+					s.log.Warn("房间 attach 后台刷新失败", "target", link.Target,
+						"task", link.TaskID, "cause", err)
+					return
+				}
+				s.storeRoomAttach(link, attach)
+				s.log.Info("房间 attach 后台刷新成功", "target", link.Target,
+					"task", link.TaskID, "workdir", attach.WorkDir)
+			}()
+		}
+		wg.Wait()
+		s.log.Info("房间 attach 后台刷新完成", "links", len(remoteLinks),
+			"timed_out", ctx.Err() != nil)
+	}()
+}
+
+func roomAttachCacheKey(link ledger.TaskLink) string {
+	return link.Target + "\x00" + link.TaskID
+}
+
+func (s *Server) cachedRoomAttach(link ledger.TaskLink) *proto.RoomAttach {
+	s.roomAttachMu.RLock()
+	attach := s.roomAttachCache[roomAttachCacheKey(link)]
+	if attach != nil {
+		copy := *attach
+		attach = &copy
+	}
+	s.roomAttachMu.RUnlock()
+	return attach
+}
+
+func (s *Server) storeRoomAttach(link ledger.TaskLink, attach *proto.RoomAttach) {
+	copy := *attach
+	s.roomAttachMu.Lock()
+	if s.roomAttachCache == nil {
+		s.roomAttachCache = make(map[string]*proto.RoomAttach)
+	}
+	s.roomAttachCache[roomAttachCacheKey(link)] = &copy
+	s.roomAttachMu.Unlock()
 }
 
 // lookupRoomAttach 只接受真实任务详情和 Workdir()；不从 bound_session 猜测 task。

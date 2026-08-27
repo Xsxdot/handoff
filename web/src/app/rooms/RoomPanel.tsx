@@ -5,6 +5,8 @@
 // 边界：不改变路由、不直接创建 PTY；列表与收件箱轮询独立，消息正文只进入界面，
 // 不进入结构化日志。
 import { useEffect, useMemo, useRef, useState } from 'react'
+import { fetchCardDetail } from '../../api/ledger'
+import type { CardDetail } from '../../api/ledger'
 import { fetchInbox, fetchRoomMessages, fetchRooms, markRoomRead, sendRoomMessage } from '../../api/rooms'
 import type { RoomHistoryItem, RoomSummary } from '../../api/rooms'
 import { nextTerminalSeq } from '../workbench/tabs'
@@ -27,6 +29,7 @@ import {
 export interface RoomPanelProps {
   workbench: WorkbenchApi
   persistent: boolean
+  onOpenCard?: (id: string) => void
 }
 
 const HISTORY_LIMIT = 200
@@ -108,7 +111,7 @@ function PanelHeader({ title, onCollapse }: { title: string; onCollapse: () => v
  * 参数 workbench 是 attach 的唯一工作台接缝；persistent=true 渲染右侧栏，false 渲染可收起浮窗。
  * 房间态不改地址栏，避免三态产生第二套路由状态。
  */
-export function RoomPanel({ workbench, persistent }: RoomPanelProps) {
+export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps) {
   const [view, setView] = useState<RoomPanelView>('list')
   const [roomID, setRoomID] = useState('')
   const [collapsed, setCollapsed] = useState(false)
@@ -119,6 +122,8 @@ export function RoomPanel({ workbench, persistent }: RoomPanelProps) {
   const [readError, setReadError] = useState('')
   const [sendError, setSendError] = useState('')
   const [stepBusy, setStepBusy] = useState(false)
+  const [cardDetail, setCardDetail] = useState<CardDetail | null>(null)
+  const [cardDetailError, setCardDetailError] = useState('')
   const markedReads = useRef<Record<string, number>>({})
 
   const loadRooms = async () => {
@@ -162,6 +167,31 @@ export function RoomPanel({ workbench, persistent }: RoomPanelProps) {
   const visible = useMemo(() => orderRooms(visibleRooms(rooms, project, needsOnly, needRoomIDs), needRoomIDs), [rooms, project, needsOnly, needRoomIDs])
   const projectOptions = useMemo(() => [...new Set(rooms.map((room) => room.project).filter((name): name is string => !!name))].sort(), [rooms])
   const selectedRoom = useMemo(() => rooms.find((room) => room.id === roomID), [rooms, roomID])
+
+  useEffect(() => {
+    if (view !== 'detail' || selectedRoom?.kind !== 'card' || roomID === '') {
+      setCardDetail(null)
+      setCardDetailError('')
+      return
+    }
+    let cancelled = false
+    setCardDetail(null)
+    setCardDetailError('')
+    logRoom('debug', 'card_detail_request_started', { room: roomID, request: 'card_detail' })
+    void fetchCardDetail(roomID)
+      .then((result) => {
+        if (cancelled) return
+        setCardDetail(result)
+        logRoom('debug', 'card_detail_request_succeeded', { room: roomID, request: 'card_detail' })
+      })
+      .catch((error: unknown) => {
+        if (cancelled) return
+        setCardDetailError(errorMessage(error))
+        logRoom('error', 'card_detail_request_failed', { room: roomID, request: 'card_detail', error: errorMessage(error) })
+      })
+    return () => { cancelled = true }
+  }, [roomID, selectedRoom?.kind, view])
+
   const historyPoll = usePoll(loadHistory, COLLAB_POLL_MS, { enabled: view === 'room' && roomID !== '' })
   const history = useMemo(() => historyPoll.data ?? [], [historyPoll.data])
   const maxSeq = useMemo(() => history.reduce((max, event) => Math.max(max, event.seq), 0), [history])
@@ -320,6 +350,21 @@ export function RoomPanel({ workbench, persistent }: RoomPanelProps) {
             {!selectedRoom?.attach && <p className="text-muted-foreground">暂无可 attach 的任务</p>}
           </div>
         </section>
+        {selectedRoom?.kind === 'card' && (
+          <section className="mt-3 rounded-2xl border bg-white/65 p-3 shadow-sm" aria-label="卡片">
+            <div className="flex items-center gap-2">
+              <h3 className="text-sm font-semibold">卡片</h3>
+              <button type="button" aria-label={`打开卡片 ${selectedRoom.id}`} onClick={() => onOpenCard?.(selectedRoom.id)} className="ml-auto rounded-md border px-2 py-1 text-xs hover:bg-accent">打开</button>
+            </div>
+            <p className="mt-2 truncate text-sm font-medium">{cardDetail?.card.title ?? selectedRoom.title}</p>
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[11px]">
+              <span className="rounded-full border px-2 py-0.5">{cardDetail?.card.status ?? '状态未知'}</span>
+              <span className="rounded-full border px-2 py-0.5">{cardDetail?.card.priority ?? '优先级未知'}</span>
+              {(cardDetail?.card.attachments ?? []).map((attachment) => <span key={`${attachment.kind}:${attachment.path}`} className="rounded-full border px-2 py-0.5">{attachment.kind}</span>)}
+            </div>
+            {cardDetailError !== '' && <p role="alert" className="mt-2 text-xs text-destructive">卡片信息读取失败：{cardDetailError}</p>}
+          </section>
+        )}
       </div>
     </>
   )

@@ -38,6 +38,7 @@ const roomsFixture: unknown = [
     last_activity: '2026-08-26T08:00:00.123456789+08:00',
     unread: 0,
     attach: { target: 'devbox', task_id: 'T1', work_dir: '/w/B1', command: 'handoff attach T1' },
+    preview: { body: '真实 HTTP preview', seq: 7, created_at: '2026-08-26T08:00:00.123456789+08:00' },
   },
   {
     id: 'project:handoff',
@@ -69,6 +70,9 @@ describe('fetchRooms', () => {
     expect(rooms[0].unread).toBe(0)
     expect(rooms[0].attach).toEqual({
       target: 'devbox', task_id: 'T1', work_dir: '/w/B1', command: 'handoff attach T1',
+    })
+    expect(rooms[0].preview).toEqual({
+      body: '真实 HTTP preview', seq: 7, created_at: '2026-08-26T08:00:00.123456789+08:00',
     })
 
     await fetchRooms('handoff')

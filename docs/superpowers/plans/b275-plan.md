@@ -174,7 +174,7 @@ func (s *Server) lookupRoomAttach(ctx context.Context, link ledger.TaskLink) (*p
 }
 ~~~
 
-实现者补齐当前 roomsapi.go 的 context、fmt 和 collab/room import，删除重复 import；不改 Server 字段。最新可解析挂账 task 是精确选择规则，避免悬空 link 阻断可用 link。
+实现者补齐当前 roomsapi.go 的 context、fmt 和 collab/room import，删除重复 import；远端 attach 为非承重字段，Server 维护线程安全缓存并后台刷新，列表请求不等待 relay。最新可解析挂账 task 是精确选择规则，避免悬空 link 阻断可用 link。
 
 web/src/api/rooms.ts 镜像必须逐字匹配：
 
@@ -184,6 +184,12 @@ export interface RoomAttach {
   task_id: string
   work_dir: string
   command: string
+}
+
+export interface RoomPreview {
+  body: string
+  seq: number
+  created_at: string
 }
 
 export interface RoomSummary {
@@ -197,6 +203,7 @@ export interface RoomSummary {
   last_activity: string
   unread: number
   attach?: RoomAttach
+  preview?: RoomPreview
 }
 ~~~
 

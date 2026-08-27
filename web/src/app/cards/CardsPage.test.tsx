@@ -32,9 +32,9 @@ vi.mock('./NewCardDialog', () => ({
 }))
 
 // CardsPage 用 useNavigate，必须包在 Router 里渲染（生产态 Shell 把它挂在 <Routes> 下）
-const renderPage = () =>
+const renderPage = (entry = '/cards') =>
   render(
-    <MemoryRouter initialEntries={['/cards']}>
+    <MemoryRouter initialEntries={[entry]}>
       <Routes>
         <Route path="/cards" element={<CardsPage />} />
         {/* 深链探针：只断言导航真的发生了，不复刻 TaskDeepLink 的目录解析逻辑 */}
@@ -112,6 +112,26 @@ describe('卡到任务深链的数据通路', () => {
     fireEvent.click(await screen.findByRole('button', { name: '跳到 task-wire' }))
     // 整条管线：useTasks → CardDrawer.tasks → 行内 ↗ → navigate('/tasks/task-wire')
     expect(await screen.findByText('deep-link-hit')).toBeInTheDocument()
+  })
+})
+
+describe('房间面板卡片深链', () => {
+  it('/cards?card=B50 会直接打开对应卡片抽屉', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [{
+      id: 'B50', title: '房间入口卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+      merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+      conflict: false, open_tickets: 0,
+    }], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: {
+        id: 'B50', title: '房间入口卡', status: '进行中', priority: '中', project: 'handoff', parent: '',
+        workflow: '', workflow_version: 1, attachments: [], acceptance_criteria: '', created_at: '', updated_at: '',
+      }, relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    })
+    renderPage('/cards?card=B50')
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
   })
 })
 

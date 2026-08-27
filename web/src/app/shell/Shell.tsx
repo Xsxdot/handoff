@@ -566,7 +566,7 @@ export function Shell() {
             />
           </Routes>
         </main>
-        {ledgerEnabled && <RoomPanel workbench={wb} persistent={cardsRoute} />}
+        {ledgerEnabled && <RoomPanel workbench={wb} persistent={cardsRoute} onOpenCard={(id) => navigate(`/cards?card=${encodeURIComponent(id)}`)} />}
       </div>
 
       {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}

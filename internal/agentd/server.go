@@ -106,9 +106,15 @@ type Server struct {
 	unlinkedMu    sync.Mutex
 	unlinkedAt    time.Time
 	unlinkedCache map[string]any
-	hub           *Hub
-	log           *slog.Logger
-	mgr           *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
+	// roomAttachCache stores resolved remote task workdirs. Remote attach lookup is
+	// non-critical for the rooms list, so refreshes run in the background.
+	roomAttachMu          sync.RWMutex
+	roomAttachCache       map[string]*proto.RoomAttach
+	roomAttachRefreshing  bool
+	roomAttachLastRefresh time.Time
+	hub                   *Hub
+	log                   *slog.Logger
+	mgr                   *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
 	// 在 NewServer 里记录而非从 bootstrap 传入：NewServer 只在 bootstrap 调用
 	// 一次，语义等价，且不必改动它的签名与全部测试调用点。
@@ -242,6 +248,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		machineUpgrades:         make(map[string]*proto.MachineUpgrade),
 		machineUpgradeInstaller: inst,
 		cardStepFlight:          make(map[string]bool),
+		roomAttachCache:         make(map[string]*proto.RoomAttach),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade

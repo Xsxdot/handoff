@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -87,14 +88,17 @@ func TestRoomsListEndpoint(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("GET /api/rooms: %d", code)
 	}
-	found := false
-	for _, r := range out.Rooms {
-		if r.ID == card.ID {
-			found = true
+	var found *proto.RoomSummary
+	for i := range out.Rooms {
+		if out.Rooms[i].ID == card.ID {
+			found = &out.Rooms[i]
 		}
 	}
-	if !found {
+	if found == nil {
 		t.Fatalf("卡房间应出现在列表: %+v", out.Rooms)
+	}
+	if found.Preview == nil || found.Preview.Body != "hi" || found.Preview.Seq <= 0 || found.Preview.CreatedAt.IsZero() {
+		t.Fatalf("真实 HTTP /api/rooms 应保留 preview 正文、seq、created_at: %+v", found.Preview)
 	}
 }
 
@@ -235,6 +239,81 @@ func TestRoomsListAttachTimeoutDoesNotBlockMainList(t *testing.T) {
 	}
 	if elapsed >= 250*time.Millisecond {
 		t.Fatalf("慢 attach 超过主列表短超时: elapsed=%s", elapsed)
+	}
+}
+
+// TestRoomsListUsesBackgroundAttachCache 锁住 relay 目标的非承重边界：首次列表
+// 不能等待远端任务详情；后台刷新完成后，下一次列表应直接命中缓存而不再拨远端。
+func TestRoomsListUsesBackgroundAttachCache(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "后台 attach 卡")
+	if err := env.ledger.LinkTask(card.ID, "relay", "T-relay", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var mu sync.Mutex
+	calls := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call == 1 {
+			once.Do(func() { close(started) })
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"task":            map[string]any{"id": "T-relay", "repo_path": "/repo", "work_dir": "/relay/B1"},
+				"pending_tickets": []any{}, "recent_events": []any{},
+			})
+			return
+		}
+		http.Error(w, "unexpected second remote lookup", http.StatusInternalServerError)
+	}))
+	t.Cleanup(remote.Close)
+	env.srv.conf().Targets = map[string]config.Target{
+		"relay": {Addr: remote.URL, Token: "remote-token"},
+	}
+
+	startedAt := time.Now()
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	firstElapsed := time.Since(startedAt)
+	if code != http.StatusOK {
+		t.Fatalf("首次列表应成功: %d %s", code, body)
+	}
+	if firstElapsed >= 100*time.Millisecond {
+		t.Fatalf("首次列表不应等待 relay attach: elapsed=%s", firstElapsed)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("后台 attach 刷新未开始")
+	}
+	close(release)
+
+	eventually(t, 2*time.Second, "缓存命中 relay attach", func() bool {
+		code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+		if code != http.StatusOK {
+			return false
+		}
+		var out struct {
+			Rooms []proto.RoomSummary `json:"rooms"`
+		}
+		if json.Unmarshal([]byte(body), &out) != nil {
+			return false
+		}
+		for _, summary := range out.Rooms {
+			if summary.ID == card.ID {
+				return summary.Attach != nil && summary.Attach.Target == "relay" && summary.Attach.WorkDir == "/relay/B1"
+			}
+		}
+		return false
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("缓存命中后不应再次拨 relay，实际请求 %d 次", calls)
 	}
 }
 
