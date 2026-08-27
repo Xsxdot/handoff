@@ -60,6 +60,15 @@ func newCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	return env, runner
 }
 
+func newNoPTYCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
+	t.Helper()
+	env := newNoPTYLedgerEnv(t)
+	env.srv.SetupAutomation(env.ledger)
+	runner := &fakeCoordRunner{}
+	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	return env, runner
+}
+
 // createCoordCard 建一张协调者测试卡（project=handoff，attachment-gates 流）。
 func createCoordCard(t *testing.T, env *ledgerEnv) string {
 	t.Helper()
@@ -121,9 +130,9 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 		t.Fatalf("工作目录应解析为项目位置根，got=%q", got.Workdir)
 	}
 	facade := env.srv.autoLedger
-	for key, want := range map[string]int{"squad/coord": 1, "carrier/c1": 1} {
+	for key, want := range map[string]int{"squad/coord": 0, "carrier/c1": 0} {
 		if n := runningCountIn(t, facade, key); n != want {
-			t.Fatalf("计数 %s=%d，want %d", key, n, want)
+			t.Fatalf("协调者回合结束后计数 %s=%d，want %d", key, n, want)
 		}
 	}
 	// 铁律：拉起路径全程不产生 task（竖切断言延伸到 gateway 层）。
@@ -153,11 +162,6 @@ func TestCoordLaunchSourceFlowsIntoKeystone(t *testing.T) {
 		}
 		if !strings.Contains(body, tc.want) {
 			t.Fatalf("[%s] 来源未进 LaunchForCard：body=%s", tc.src, body)
-		}
-		// 上一次失败的拉起占着两级名额（名额回收归回合终局，K5 窗口）；
-		// 这里模拟回合结束归还名额，让第二次拉起能再次走完准入。
-		if err := env.srv.Scheduling().Release("coord", "c1"); err != nil {
-			t.Fatalf("归还名额: %v", err)
 		}
 	}
 	if len(runner.launches) != 2 {
@@ -289,5 +293,36 @@ func TestCoordStatusEndpoint(t *testing.T) {
 	code, body = ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
 	if code != http.StatusOK || !strings.Contains(body, `"attach_active":true`) {
 		t.Fatalf("接管态未反映：%d %s", code, body)
+	}
+}
+
+func TestCoordLaunchFailureReleasesCapacityAndKeeps502(t *testing.T) {
+	env, runner := newNoPTYCoordEnv(t)
+	seedCoordinatorSquad(t, env)
+	cardID := createCoordCard(t, env)
+	runner.failLaunch = true
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`)
+	if code != http.StatusBadGateway {
+		t.Fatalf("承载失败应 502，状态=%d body=%s", code, body)
+	}
+	if !strings.Contains(body, "拉起协调者失败") || strings.Contains(body, "并发已满") {
+		t.Fatalf("LaunchForCard 失败的错误投影错误：%s", body)
+	}
+	for _, key := range []string{"squad/coord", "carrier/c1"} {
+		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+			t.Fatalf("失败回合后计数 %s=%d，want 0", key, got)
+		}
+	}
+
+	runner.failLaunch = false
+	code, body = ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`)
+	if code != http.StatusOK {
+		t.Fatalf("归还名额后第二次拉起应成功，状态=%d body=%s", code, body)
+	}
+	for _, key := range []string{"squad/coord", "carrier/c1"} {
+		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+			t.Fatalf("成功回合后计数 %s=%d，want 0", key, got)
+		}
 	}
 }

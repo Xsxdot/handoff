@@ -102,7 +102,7 @@ func (s *Server) drainQueuesOnce(ctx context.Context) (processed int, err error)
 				"node", req.Node, "squad", req.Squad, "priority", req.Priority)
 			switch kind {
 			case scheduling.KindLaunchQueue:
-				if _, launchErr := s.launchCoordinatorRound(ctx, req.Card, "queue"); launchErr != nil {
+				if _, launchErr := s.launchCoordinatorRound(ctx, req.Card, "manual"); launchErr != nil {
 					s.requeueAutomation(req, kind, launchErr)
 					return processed, nil
 				}

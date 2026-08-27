@@ -119,7 +119,12 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 	}
 	go func() {
 		defer s.releaseCardStep(cardID)
+		defer s.releaseSchedulingBinding(cardID, binding)
+		s.log.Info("卡节点回合开始", "card", cardID, "node", req.Step,
+			"squad", binding.Squad, "carrier", binding.Carrier)
 		s.runStepFn(context.Background(), runner, cardID, req.Step)
+		s.log.Info("卡节点回合返回", "card", cardID, "node", req.Step,
+			"squad", binding.Squad, "carrier", binding.Carrier)
 	}()
 	return nil
 }

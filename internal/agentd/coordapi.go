@@ -111,55 +111,37 @@ func (s *Server) handleCoordLaunch(w http.ResponseWriter, r *http.Request) {
 		ledgerErr(w, err)
 		return
 	}
-	squad, err := s.resolveCoordinatorSquad()
+	result, err := s.launchCoordinatorRound(r.Context(), id, source)
 	if err != nil {
+		var admissionErr *coordinatorAdmissionError
+		var lookupErr *coordinatorLookupError
 		switch {
-		case errors.Is(err, errNoCoordinatorSquad):
-			// 岔口四 B：不做出厂种子，未登记返回含指路文案与最小参数示例的可行动错误。
+		case errors.As(err, &lookupErr) && errors.Is(lookupErr.err, errNoCoordinatorSquad):
 			writeErr(w, http.StatusBadRequest, fmt.Errorf(
-				"未登记协调者小队：先登记载体，再登记协调者小队（示例：handoff squad create --name coord --role coordinator --member <载体名> --max-concurrency 1）"))
-			return
-		case errors.Is(err, errAmbiguousCoordinatorSquad):
-			writeErr(w, http.StatusConflict, err)
-			return
-		default:
-			s.log.Error("协调者小队识别失败", "card", id, "cause", err)
-			writeErr(w, http.StatusInternalServerError, err)
-			return
-		}
-	}
-	binding, err := s.scheduling.LaunchAdmit(squad.Name)
-	if err != nil {
-		if errors.Is(err, scheduling.ErrNoSlot) {
+				"未登记协调者小队：先登记载体，再登记协调者小队（示例：handoff squad create --name coord --role coordinator --member coord-carrier --max-concurrency 1）"))
+		case errors.As(err, &lookupErr) && errors.Is(lookupErr.err, errAmbiguousCoordinatorSquad):
+			writeErr(w, http.StatusConflict, lookupErr.err)
+		case errors.As(err, &lookupErr):
+			s.log.Error("协调者小队识别失败", "card", id, "source", source, "cause", lookupErr.err)
+			writeErr(w, http.StatusInternalServerError, lookupErr.err)
+		case errors.As(err, &admissionErr) && errors.Is(admissionErr.err, scheduling.ErrNoSlot):
 			writeErr(w, http.StatusConflict, fmt.Errorf(
-				"协调者并发已满（小队 %s）：等现役回合结束名额自动回收后重试，或先 attach 现有会话", squad.Name))
-			return
+				"协调者并发已满（小队 %s）：等现役回合结束名额自动回收后重试，或先 attach 现有会话",
+				admissionErr.squad))
+		case errors.As(err, &admissionErr):
+			s.log.Error("协调者准入被拒", "card", id, "source", source,
+				"squad", admissionErr.squad, "cause", admissionErr.err)
+			writeErr(w, http.StatusBadRequest,
+				fmt.Errorf("协调者准入被拒: %w", admissionErr.err))
+		default:
+			s.log.Error("协调者回合失败", "card", id, "source", source, "cause", err)
+			writeErr(w, http.StatusBadGateway,
+				fmt.Errorf("拉起协调者失败: %w", err))
 		}
-		s.log.Error("协调者准入被拒", "card", id, "squad", squad.Name, "cause", err)
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("协调者准入被拒: %w", err))
 		return
 	}
-	carrier, err := s.scheduling.Carrier(binding.Carrier)
-	if err != nil {
-		s.log.Error("读协调者载体失败", "card", id, "carrier", binding.Carrier, "cause", err)
-		writeErr(w, http.StatusInternalServerError, fmt.Errorf("读载体 %s: %w", binding.Carrier, err))
-		return
-	}
-	spec := keysclient.SessionSpec{
-		CLI:     binding.Executor,
-		HomeDir: carrier.HomeDir,
-		Model:   binding.Model,
-		Workdir: s.resolveCoordWorkdir(id),
-	}
-	s.log.Info("拉起协调者", "card", id, "source", source, "squad", squad.Name,
-		"carrier", binding.Carrier, "target", binding.Target, "cli", spec.CLI,
-		"home_dir", spec.HomeDir, "workdir", spec.Workdir)
-	result, err := s.keystone.LaunchForCard(r.Context(), id, source, spec)
-	if err != nil {
-		s.log.Error("拉起协调者失败", "card", id, "source", source, "cause", err)
-		writeErr(w, http.StatusBadGateway, fmt.Errorf("拉起协调者失败: %w", err))
-		return
-	}
+	s.log.Info("协调者 HTTP 拉起成功", "card", id, "source", source,
+		"session", result.SessionID, "rebuilt", result.Rebuilt, "escalated", result.Escalated)
 	writeJSON(w, http.StatusOK, proto.CoordinatorLaunchResp{
 		Woke: result.Woke, SessionID: result.SessionID, Rebuilt: result.Rebuilt,
 		Escalated: result.Escalated, Output: result.Output,

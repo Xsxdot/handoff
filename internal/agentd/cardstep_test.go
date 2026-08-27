@@ -150,6 +150,38 @@ func TestStartCardStepAssemblesRunHolder(t *testing.T) {
 	waitFor(t, func() bool { return !cardStepInFlight(s, "B1") })
 }
 
+func TestCardStepAdmittedRoundReleasesCapacity(t *testing.T) {
+	env := setupNoPTYSquadEnv(t, 1)
+	cardID := seedSquadFlow(t, env, "sq1", 1)[0]
+	done := make(chan struct{}, 1)
+	env.srv.runStepFn = func(context.Context, *ledgerstep.StepRunner, string, string) {
+		done <- struct{}{}
+	}
+	if err := env.srv.startCardStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}); err != nil {
+		t.Fatalf("准入: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("执行者回合未返回")
+	}
+	waitFor(t, func() bool { return !env.srv.cardStepInFlight(cardID) })
+	for _, key := range []string{"squad/sq1", "carrier/c1"} {
+		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+			t.Fatalf("回合结束后计数 %s=%d，want 0", key, got)
+		}
+	}
+	if err := env.srv.startCardStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}); err != nil {
+		t.Fatalf("释放名额后第二次准入: %v", err)
+	}
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("第二次执行者回合未返回")
+	}
+	waitFor(t, func() bool { return !env.srv.cardStepInFlight(cardID) })
+}
+
 // TestRequiresInlineLocalFile keeps the guard tied to request capabilities rather than node names.
 func TestRequiresInlineLocalFile(t *testing.T) {
 	for _, req := range []proto.CardStepReq{
