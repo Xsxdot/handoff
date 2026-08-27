@@ -136,11 +136,18 @@ export interface NodeDef {
   produces?: NodeOutput
 }
 
+export interface BoardLayout {
+  columns: string[]
+  state_to_column: Record<string, string>
+  fallback: string
+}
+
 export interface FlowDetail {
   name: string
   version: number
   nodes: NodeDef[]
   states: string[]
+  board?: BoardLayout
 }
 
 export interface NewCardReq {
@@ -213,7 +220,7 @@ export interface Decision {
 export interface WorkflowWire {
   name: string
   version: number
-  def: { states: string[]; gates?: Record<string, unknown> }
+  def: { states: string[]; gates?: Record<string, unknown>; nodes?: NodeDef[]; board?: BoardLayout }
 }
 
 export interface TemplateWire {
@@ -290,8 +297,11 @@ export const fetchFlow = (name: string) =>
 
 // putFlow 发布该工作流的**下一个版本**。工作流不可变版本化——保存不是「改」，
 // 已钉在老版本上的卡完全不受影响。
-export const putFlow = (name: string, nodes: NodeDef[]) =>
-  putJSON<{ name: string; version: number }>(`/api/flows/${encodeURIComponent(name)}`, { nodes })
+export const putFlow = (name: string, nodes: NodeDef[], board?: BoardLayout) =>
+  putJSON<{ name: string; version: number }>(
+    `/api/flows/${encodeURIComponent(name)}`,
+    board === undefined ? { nodes } : { nodes, board },
+  )
 
 export const fetchDisciplineNames = () =>
   request<{ names: string[] }>('/api/disciplines').then((response) => response.names ?? [])

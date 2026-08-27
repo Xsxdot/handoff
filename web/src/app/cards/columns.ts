@@ -3,12 +3,50 @@
 // 这些是产品契约（原型走查确认），测试钉死防漂移。
 import type { CardView } from '../../api/ledger'
 
-export function boardColumns(workflowStates: string[]): string[] {
-  return [...workflowStates, '终止']
+export interface BoardLayout {
+  columns: string[]
+  state_to_column: Record<string, string>
+  fallback: string
 }
 
-export function cardsInColumn(cards: CardView[], status: string): CardView[] {
-  return cards.filter((card) => card.status === status && !card.following)
+export const DEFAULT_BOARD_COLUMNS = ['代办', '沟通中', '进行中', '审核中', '结束']
+
+export function defaultBoardLayout(states: string[]): BoardLayout {
+  const state_to_column: Record<string, string> = {
+    待办: '代办', 已出spec: '沟通中', '已出 spec': '沟通中',
+    进行中: '进行中', 待审阅: '审核中', 待合并: '审核中',
+    已完成: '结束', 终止: '结束',
+  }
+  for (const state of states) if (!(state in state_to_column)) state_to_column[state] = '进行中'
+  return { columns: [...DEFAULT_BOARD_COLUMNS], state_to_column, fallback: '进行中' }
+}
+
+export function normalizeBoardLayout(layout: BoardLayout | undefined, states: string[]): BoardLayout {
+  const fallback = layout ?? defaultBoardLayout(states)
+  if (fallback.columns.length !== 5 || new Set(fallback.columns).size !== 5 || fallback.columns.some((column) => column.trim() === '')) {
+    return defaultBoardLayout(states)
+  }
+  const columns = [...fallback.columns]
+  const state_to_column = { ...fallback.state_to_column }
+  const safeFallback = columns.includes(fallback.fallback) ? fallback.fallback : columns[0]
+  for (const state of states) {
+    if (!state_to_column[state] || !columns.includes(state_to_column[state])) state_to_column[state] = safeFallback
+  }
+  return { columns, state_to_column, fallback: safeFallback }
+}
+
+export function boardColumnFor(status: string, layout: BoardLayout): string {
+  const mapped = layout.state_to_column[status]
+  return mapped && layout.columns.includes(mapped) ? mapped : layout.fallback
+}
+
+export function boardColumns(states: string[], layout?: BoardLayout): string[] {
+  return normalizeBoardLayout(layout, states).columns
+}
+
+export function cardsInColumn(cards: CardView[], column: string, layout?: BoardLayout): CardView[] {
+  const resolved = normalizeBoardLayout(layout, cards.map((card) => card.status))
+  return cards.filter((card) => boardColumnFor(card.status, resolved) === column && !card.following)
 }
 
 export function needsAttention(card: CardView): boolean {
@@ -66,7 +104,7 @@ export function mergeStateOrder(sequences: string[][]): string[] {
 // why 筛选时要折叠空列：「需要你」筛完只剩两三张卡，但看板照画全部列，命中的
 // 卡被中间的空列推到横向滚动区外面——徽标写着 4、屏幕上只看得见 2
 // （2026-08-19 真机看到）。不筛选时空列要留着，看板得能看出流程形状。
-export function visibleColumns(columns: string[], cards: CardView[], collapseEmpty: boolean): string[] {
+export function visibleColumns(columns: string[], cards: CardView[], collapseEmpty: boolean, layout?: BoardLayout): string[] {
   if (!collapseEmpty) return columns
-  return columns.filter((status) => cardsInColumn(cards, status).length > 0)
+  return columns.filter((column) => cardsInColumn(cards, column, layout).length > 0)
 }

@@ -34,6 +34,8 @@ export type TabContent =
       sessionId?: string
       rel?: string
       incompatible?: boolean
+      // initCommand 是 attach 等入口传入的首次启动命令；普通终端缺席此字段。
+      initCommand?: string
       // launcher 是开这个终端用的启动项名字；缺席表示普通终端。
       launcher?: string
     }

@@ -6,11 +6,16 @@ package agentd
 import (
 	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -83,14 +88,394 @@ func TestRoomsListEndpoint(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("GET /api/rooms: %d", code)
 	}
-	found := false
-	for _, r := range out.Rooms {
-		if r.ID == card.ID {
-			found = true
+	var found *proto.RoomSummary
+	for i := range out.Rooms {
+		if out.Rooms[i].ID == card.ID {
+			found = &out.Rooms[i]
 		}
 	}
-	if !found {
+	if found == nil {
 		t.Fatalf("卡房间应出现在列表: %+v", out.Rooms)
+	}
+	if found.Preview == nil || found.Preview.Body != "hi" || found.Preview.Seq <= 0 || found.Preview.CreatedAt.IsZero() {
+		t.Fatalf("真实 HTTP /api/rooms 应保留 preview 正文、seq、created_at: %+v", found.Preview)
+	}
+}
+
+func TestRoomsListUnreadAndAttachProjection(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "可挂账卡")
+	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "一"}, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "二"}, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.st.CreateTask(&proto.Task{ID: "T1", RepoPath: "/repo", WorkDir: "/work/B1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.ledger.LinkTask(card.ID, "", "T1", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+	var out struct {
+		Rooms []proto.RoomSummary `json:"rooms"`
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != 200 {
+		t.Fatalf("GET /api/rooms: %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	var found *proto.RoomSummary
+	for i := range out.Rooms {
+		if out.Rooms[i].ID == card.ID {
+			found = &out.Rooms[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatalf("卡房间应出现在列表: %+v", out.Rooms)
+	}
+	if found.Unread != 2 {
+		t.Fatalf("两条未读消息应投影 unread=2: %+v", *found)
+	}
+	if found.Attach == nil || found.Attach.Target != "" || found.Attach.TaskID != "T1" ||
+		found.Attach.WorkDir != "/work/B1" || found.Attach.Command != "handoff attach T1" {
+		t.Fatalf("本机挂账 attach 投影错误: %+v", found.Attach)
+	}
+	globalFound := false
+	for _, room := range out.Rooms {
+		if room.Kind == "global" {
+			globalFound = true
+			if room.Unread < 0 {
+				t.Fatalf("global unread 必须在线: %+v", room)
+			}
+		}
+	}
+	if !globalFound {
+		t.Fatal("global 房间应出现在列表")
+	}
+
+	seq, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "三"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	code, body = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+card.ID+"/read", fmt.Sprintf(`{"upto_seq":%d}`, seq))
+	if code != 200 {
+		t.Fatalf("POST /read: %d %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != 200 {
+		t.Fatalf("GET /api/rooms after read: %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, room := range out.Rooms {
+		if room.ID == card.ID && room.Unread != 0 {
+			t.Fatalf("已读后 unread 应为 0: %+v", room)
+		}
+	}
+}
+
+func TestRoomsListWithoutAttachmentKeepsAttachMissing(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "无挂账卡")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != 200 {
+		t.Fatalf("GET /api/rooms: %d %s", code, body)
+	}
+	var out struct {
+		Rooms []json.RawMessage `json:"rooms"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, raw := range out.Rooms {
+		var room struct {
+			ID string `json:"id"`
+		}
+		if err := json.Unmarshal(raw, &room); err != nil {
+			t.Fatal(err)
+		}
+		if room.ID == card.ID && strings.Contains(string(raw), `"attach"`) {
+			t.Fatalf("无挂账卡不应出现 attach: %s", raw)
+		}
+	}
+}
+
+func TestRoomsListWireIncludesZeroUnread(t *testing.T) {
+	env := newRoomsEnv(t)
+	seedCard(t, env, "零未读卡")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?project=p")
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/rooms: %d %s", code, body)
+	}
+	var out struct {
+		Rooms []json.RawMessage `json:"rooms"`
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	if len(out.Rooms) == 0 {
+		t.Fatal("/api/rooms 应返回至少一行")
+	}
+	for _, raw := range out.Rooms {
+		var fields map[string]any
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatal(err)
+		}
+		unread, ok := fields["unread"]
+		if !ok {
+			t.Fatalf("房间行必须保留 unread:0，原文=%s", raw)
+		}
+		if unread != float64(0) {
+			t.Fatalf("零未读房间的 raw unread 应为 0，原文=%s", raw)
+		}
+	}
+}
+
+// TestRoomsListAttachTimeoutDoesNotBlockMainList 锁住附加投影的降级边界：远端
+// 任务详情是非承重信息，慢目标只能在短超时内放弃，不能把 /api/rooms 卡住。
+func TestRoomsListAttachTimeoutDoesNotBlockMainList(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "慢目标卡")
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(300 * time.Millisecond)
+	}))
+	t.Cleanup(remote.Close)
+	env.srv.conf().Targets = map[string]config.Target{
+		"slow": {Addr: remote.URL, Token: "remote-token"},
+	}
+	if err := env.ledger.LinkTask(card.ID, "slow", "T-slow", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	started := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(started)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("慢 attach 不应阻断主列表: status=%d elapsed=%s", resp.StatusCode, elapsed)
+	}
+	if elapsed >= 250*time.Millisecond {
+		t.Fatalf("慢 attach 超过主列表短超时: elapsed=%s", elapsed)
+	}
+}
+
+// TestRoomsListUsesBackgroundAttachCache 锁住 relay 目标的非承重边界：首次列表
+// 不能等待远端任务详情；后台刷新完成后，下一次列表应直接命中缓存而不再拨远端。
+func TestRoomsListUsesBackgroundAttachCache(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "后台 attach 卡")
+	if err := env.ledger.LinkTask(card.ID, "relay", "T-relay", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+	started := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	var mu sync.Mutex
+	calls := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call == 1 {
+			once.Do(func() { close(started) })
+			<-release
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"task":            map[string]any{"id": "T-relay", "repo_path": "/repo", "work_dir": "/relay/B1"},
+				"pending_tickets": []any{}, "recent_events": []any{},
+			})
+			return
+		}
+		http.Error(w, "unexpected second remote lookup", http.StatusInternalServerError)
+	}))
+	t.Cleanup(remote.Close)
+	env.srv.conf().Targets = map[string]config.Target{
+		"relay": {Addr: remote.URL, Token: "remote-token"},
+	}
+
+	startedAt := time.Now()
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	firstElapsed := time.Since(startedAt)
+	if code != http.StatusOK {
+		t.Fatalf("首次列表应成功: %d %s", code, body)
+	}
+	if firstElapsed >= 100*time.Millisecond {
+		t.Fatalf("首次列表不应等待 relay attach: elapsed=%s", firstElapsed)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("后台 attach 刷新未开始")
+	}
+	close(release)
+
+	eventually(t, 2*time.Second, "缓存命中 relay attach", func() bool {
+		code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+		if code != http.StatusOK {
+			return false
+		}
+		var out struct {
+			Rooms []proto.RoomSummary `json:"rooms"`
+		}
+		if json.Unmarshal([]byte(body), &out) != nil {
+			return false
+		}
+		for _, summary := range out.Rooms {
+			if summary.ID == card.ID {
+				return summary.Attach != nil && summary.Attach.Target == "relay" && summary.Attach.WorkDir == "/relay/B1"
+			}
+		}
+		return false
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 1 {
+		t.Fatalf("缓存命中后不应再次拨 relay，实际请求 %d 次", calls)
+	}
+}
+
+func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
+	env := newRoomsEnv(t)
+	card := seedCard(t, env, "失效 attach 卡")
+	if err := env.ledger.LinkTask(card.ID, "relay", "T-relay", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+	var mu sync.Mutex
+	calls := 0
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		call := calls
+		mu.Unlock()
+		if call == 1 {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"task":            map[string]any{"id": "T-relay", "repo_path": "/repo", "work_dir": "/relay/B1"},
+				"pending_tickets": []any{}, "recent_events": []any{},
+			})
+			return
+		}
+		http.Error(w, "remote attach unavailable", http.StatusBadGateway)
+	}))
+	t.Cleanup(remote.Close)
+	env.srv.conf().Targets = map[string]config.Target{
+		"relay": {Addr: remote.URL, Token: "remote-token"},
+	}
+
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != http.StatusOK {
+		t.Fatalf("首次列表应成功: %d %s", code, body)
+	}
+	key := roomAttachCacheKey(ledger.TaskLink{Target: "relay", TaskID: "T-relay"})
+	eventually(t, 2*time.Second, "首次后台刷新写入缓存", func() bool {
+		mu.Lock()
+		gotCalls := calls
+		mu.Unlock()
+		env.srv.roomAttachMu.RLock()
+		_, cached := env.srv.roomAttachCache[key]
+		env.srv.roomAttachMu.RUnlock()
+		return gotCalls == 1 && cached
+	})
+
+	// 让一个仍未过期的旧投影进入刷新失败路径；失败后不能继续把它当成可执行目标。
+	env.srv.roomAttachMu.Lock()
+	entry := env.srv.roomAttachCache[key]
+	entry.expiresAt = time.Now().Add(time.Minute)
+	env.srv.roomAttachLastRefresh = time.Now().Add(-roomAttachRefreshInterval)
+	env.srv.roomAttachMu.Unlock()
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	if code != http.StatusOK {
+		t.Fatalf("刷新中的列表仍应成功: %d %s", code, body)
+	}
+	eventually(t, 2*time.Second, "刷新失败删除旧 attach 缓存", func() bool {
+		mu.Lock()
+		gotCalls := calls
+		mu.Unlock()
+		env.srv.roomAttachMu.RLock()
+		_, cached := env.srv.roomAttachCache[key]
+		env.srv.roomAttachMu.RUnlock()
+		return gotCalls == 2 && !cached
+	})
+	assertAttachMissing := func(stage string) {
+		t.Helper()
+		code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+		if code != http.StatusOK {
+			t.Fatalf("%s GET /api/rooms 应成功: %d %s", stage, code, body)
+		}
+		var out struct {
+			Rooms []json.RawMessage `json:"rooms"`
+		}
+		if err := json.Unmarshal([]byte(body), &out); err != nil {
+			t.Fatalf("%s GET /api/rooms 解码失败: %v", stage, err)
+		}
+		for _, raw := range out.Rooms {
+			var summary struct {
+				ID string `json:"id"`
+			}
+			if err := json.Unmarshal(raw, &summary); err != nil {
+				t.Fatalf("%s 房间行解码失败: %v", stage, err)
+			}
+			if summary.ID == card.ID && strings.Contains(string(raw), `"attach"`) {
+				t.Fatalf("%s 失败后房间 attach 必须缺席: %s", stage, raw)
+			}
+		}
+	}
+	assertAttachMissing("刷新失败后")
+
+	// TTL 是独立的失效闸：即使后台刷新尚未开始，过期投影也不能被列表消费。
+	env.srv.storeRoomAttach(ledger.TaskLink{Target: "relay", TaskID: "T-relay"}, &proto.RoomAttach{
+		Target: "relay", TaskID: "T-relay", WorkDir: "/relay/B1", Command: "handoff attach T-relay",
+	})
+	env.srv.roomAttachMu.Lock()
+	entry = env.srv.roomAttachCache[key]
+	entry.expiresAt = time.Now().Add(-time.Second)
+	env.srv.roomAttachCache[key] = entry
+	env.srv.roomAttachMu.Unlock()
+	if got := env.srv.cachedRoomAttach(ledger.TaskLink{Target: "relay", TaskID: "T-relay"}); got != nil {
+		t.Fatalf("过期 attach 不得从缓存返回: %+v", got)
+	}
+	assertAttachMissing("TTL 过期后")
+}
+
+// TestRoomsListTTFB200Cards 是真实账本规模的 HTTP 首字节验收：200+ 卡的主
+// 列表必须在 2 秒内开始响应。事件读取次数的确定性守卫在 collab 包测试中。
+func TestRoomsListTTFB200Cards(t *testing.T) {
+	env := newRoomsEnv(t)
+	for i := 0; i < 205; i++ {
+		seedCard(t, env, fmt.Sprintf("性能卡-%03d", i))
+	}
+	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	started := time.Now()
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	elapsed := time.Since(started)
+	_, _ = io.Copy(io.Discard, resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("GET /api/rooms: status=%d", resp.StatusCode)
+	}
+	t.Logf("本机真实 HTTP/SQLite /api/rooms TTFB=%s cards=205", elapsed)
+	if elapsed >= 2*time.Second {
+		t.Fatalf("200+ 卡列表首字节超时: elapsed=%s", elapsed)
 	}
 }
 

@@ -693,3 +693,24 @@ describe('抽屉里的任务跳转', () => {
     expect(await screen.findByText('这里要用哪个基线？')).toBeInTheDocument()
   })
 })
+
+describe('抽屉里的协调者动作', () => {
+  it('当前状态的 dispatch 节点可拉起协调者，并只调用 runCardStep', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: card({ id: 'B50', status: '进行中' }),
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    })
+    render(
+      <CardDrawer
+        id="B50"
+        onClose={() => {}}
+        onOpenCard={() => {}}
+        nodes={[{ name: '进行中', dispatch: true }]}
+      />,
+    )
+    const button = await screen.findByRole('button', { name: '▶ 拉起协调者' })
+    fireEvent.click(button)
+    await waitFor(() => expect(vi.mocked(ledger.runCardStep)).toHaveBeenCalledWith('B50', '进行中'))
+  })
+})

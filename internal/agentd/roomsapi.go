@@ -9,13 +9,19 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -45,13 +51,246 @@ func (s *Server) roomUserActor(r *http.Request) string {
 
 // handleRoomsList GET /api/rooms?project= → ListRooms（扁平活动排序列表）。
 func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
-	rooms, err := s.rooms.ListRooms(r.URL.Query().Get("project"))
+	project := r.URL.Query().Get("project")
+	member := s.roomUserActor(r)
+	rooms, err := s.rooms.ListRoomsForMember(project, member)
 	if err != nil {
-		s.log.Warn("会话列表读取失败", "project", r.URL.Query().Get("project"), "cause", err)
+		s.log.Warn("会话列表读取失败", "project", project, "member", member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	s.enrichRoomAttachments(r.Context(), rooms)
+	s.log.Info("会话列表响应成功", "project", project, "member", member, "rooms", len(rooms))
 	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
+}
+
+const (
+	roomAttachBackgroundTimeout = 10 * time.Second
+	roomAttachRefreshInterval   = 5 * time.Second
+	roomAttachRefreshWorkers    = 16
+	roomAttachCacheTTL          = time.Minute
+)
+
+// roomAttachCacheEntry 把远端任务详情和其有效期绑定；Attach 只是投影，不是
+// 账本事实。失效时间到达或后台刷新失败后，调用方必须回到不可 attach 态。
+type roomAttachCacheEntry struct {
+	attach    *proto.RoomAttach
+	expiresAt time.Time
+}
+
+// enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
+// 保持 Attach=nil。远端 attach 是非承重字段：请求只读取本地挂账与缓存，缺失项
+// 交给后台刷新，避免一个 relay 延迟拖住整个房间列表。
+func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSummary) {
+	if s.ledger == nil {
+		return
+	}
+	links, err := s.ledger.AllTaskLinks()
+	if err != nil {
+		s.log.Warn("读取房间挂账失败", "cause", err)
+		return
+	}
+	linksByRoom := make(map[string][]ledger.TaskLink)
+	for _, link := range links {
+		linksByRoom[link.CardID] = append(linksByRoom[link.CardID], link)
+	}
+	for roomID := range linksByRoom {
+		sort.SliceStable(linksByRoom[roomID], func(i, j int) bool {
+			return linksByRoom[roomID][i].CreatedAt.Before(linksByRoom[roomID][j].CreatedAt)
+		})
+	}
+
+	localTasks := make(map[string]proto.Task)
+	for _, link := range links {
+		if link.Target != "" || s.st == nil {
+			continue
+		}
+		tasks, listErr := s.st.ListTasks()
+		if listErr != nil {
+			s.log.Warn("读取本机任务列表失败，attach 降级禁用", "cause", listErr)
+			break
+		}
+		for _, task := range tasks {
+			localTasks[task.ID] = task
+		}
+		s.log.Debug("本机 attach 任务索引已就绪", "tasks", len(localTasks))
+		break
+	}
+
+	for i := range rooms {
+		if rooms[i].Kind != room.KindCard {
+			continue
+		}
+		roomLinks := linksByRoom[rooms[i].ID]
+		if len(roomLinks) == 0 {
+			continue
+		}
+		for linkIndex := len(roomLinks) - 1; linkIndex >= 0; linkIndex-- {
+			link := roomLinks[linkIndex]
+			if link.Target == "" {
+				attach, lookupErr := s.lookupRoomAttach(context.Background(), link, localTasks)
+				if lookupErr != nil {
+					s.log.Warn("房间 attach 本机任务不可解析", "room", rooms[i].ID,
+						"task", link.TaskID, "cause", lookupErr)
+					continue
+				}
+				rooms[i].Attach = attach
+				s.log.Info("房间 attach 投影成功", "room", rooms[i].ID,
+					"target", link.Target, "task", link.TaskID, "workdir", attach.WorkDir)
+				break
+			}
+			if attach := s.cachedRoomAttach(link); attach != nil {
+				rooms[i].Attach = attach
+				s.log.Info("房间 attach 从缓存投影成功", "room", rooms[i].ID,
+					"target", link.Target, "task", link.TaskID, "workdir", attach.WorkDir)
+				break
+			}
+		}
+	}
+	s.startRoomAttachRefresh(links)
+	s.log.Info("房间 attach 投影完成", "rooms", len(rooms), "links", len(links))
+}
+
+// startRoomAttachRefresh asynchronously resolves remote task workdirs. A single
+// refresh is shared by concurrent list requests and throttled between passes.
+func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
+	remoteLinks := make(map[string]ledger.TaskLink)
+	for _, link := range links {
+		if link.Target == "" {
+			continue
+		}
+		remoteLinks[roomAttachCacheKey(link)] = link
+	}
+	if len(remoteLinks) == 0 {
+		return
+	}
+
+	s.roomAttachMu.Lock()
+	now := time.Now()
+	if s.roomAttachRefreshing || (!s.roomAttachLastRefresh.IsZero() &&
+		now.Sub(s.roomAttachLastRefresh) < roomAttachRefreshInterval) {
+		s.roomAttachMu.Unlock()
+		return
+	}
+	s.roomAttachRefreshing = true
+	s.roomAttachLastRefresh = now
+	s.roomAttachMu.Unlock()
+
+	go func() {
+		defer func() {
+			s.roomAttachMu.Lock()
+			s.roomAttachRefreshing = false
+			s.roomAttachMu.Unlock()
+		}()
+
+		ctx, cancel := context.WithTimeout(context.Background(), roomAttachBackgroundTimeout)
+		defer cancel()
+		workers := make(chan struct{}, roomAttachRefreshWorkers)
+		var wg sync.WaitGroup
+		for _, link := range remoteLinks {
+			link := link
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				select {
+				case workers <- struct{}{}:
+				case <-ctx.Done():
+					s.log.Warn("房间 attach 后台刷新取消", "target", link.Target,
+						"task", link.TaskID, "cause", ctx.Err())
+					return
+				}
+				defer func() { <-workers }()
+				attach, err := s.lookupRoomAttach(ctx, link, nil)
+				if err != nil {
+					s.invalidateRoomAttach(link)
+					s.log.Warn("房间 attach 后台刷新失败", "target", link.Target,
+						"task", link.TaskID, "cause", err)
+					return
+				}
+				s.storeRoomAttach(link, attach)
+				s.log.Info("房间 attach 后台刷新成功", "target", link.Target,
+					"task", link.TaskID, "workdir", attach.WorkDir)
+			}()
+		}
+		wg.Wait()
+		s.log.Info("房间 attach 后台刷新完成", "links", len(remoteLinks),
+			"timed_out", ctx.Err() != nil)
+	}()
+}
+
+func roomAttachCacheKey(link ledger.TaskLink) string {
+	return link.Target + "\x00" + link.TaskID
+}
+
+// cachedRoomAttach 返回仍在 TTL 内的远端 attach 投影副本；缺失或过期都返回
+// nil，调用方据此保持禁用态。返回副本避免响应组装方读到后台刷新中的指针。
+func (s *Server) cachedRoomAttach(link ledger.TaskLink) *proto.RoomAttach {
+	now := time.Now()
+	s.roomAttachMu.Lock()
+	entry, ok := s.roomAttachCache[roomAttachCacheKey(link)]
+	if !ok || entry.attach == nil {
+		s.roomAttachMu.Unlock()
+		return nil
+	}
+	if !entry.expiresAt.IsZero() && !now.Before(entry.expiresAt) {
+		delete(s.roomAttachCache, roomAttachCacheKey(link))
+		s.roomAttachMu.Unlock()
+		s.log.Debug("房间 attach 缓存已过期", "target", link.Target, "task", link.TaskID)
+		return nil
+	}
+	copy := *entry.attach
+	s.roomAttachMu.Unlock()
+	return &copy
+}
+
+// invalidateRoomAttach 删除一次失败刷新留下的旧投影；失败不能让不可达目标
+// 永久看起来仍可执行。
+func (s *Server) invalidateRoomAttach(link ledger.TaskLink) {
+	s.roomAttachMu.Lock()
+	delete(s.roomAttachCache, roomAttachCacheKey(link))
+	s.roomAttachMu.Unlock()
+}
+
+func (s *Server) storeRoomAttach(link ledger.TaskLink, attach *proto.RoomAttach) {
+	copy := *attach
+	s.roomAttachMu.Lock()
+	if s.roomAttachCache == nil {
+		s.roomAttachCache = make(map[string]roomAttachCacheEntry)
+	}
+	s.roomAttachCache[roomAttachCacheKey(link)] = roomAttachCacheEntry{
+		attach: &copy, expiresAt: time.Now().Add(roomAttachCacheTTL),
+	}
+	s.roomAttachMu.Unlock()
+}
+
+// lookupRoomAttach 只接受真实任务详情和 Workdir()；不从 bound_session 猜测 task。
+// localTasks 是列表装配点的一次性本机任务索引，避免逐挂账查询。
+func (s *Server) lookupRoomAttach(ctx context.Context, link ledger.TaskLink, localTasks map[string]proto.Task) (*proto.RoomAttach, error) {
+	var workDir string
+	if link.Target == "" {
+		task, ok := localTasks[link.TaskID]
+		if !ok {
+			return nil, fmt.Errorf("读取本机任务 %s: 任务不存在", link.TaskID)
+		}
+		workDir = task.Workdir()
+	} else {
+		peer, err := s.pool.For(link.Target)
+		if err != nil {
+			return nil, fmt.Errorf("获取 target %s 客户端: %w", link.Target, err)
+		}
+		info, err := peer.Attach(ctx, link.TaskID)
+		if err != nil {
+			return nil, fmt.Errorf("读取远端任务 %s: %w", link.TaskID, err)
+		}
+		workDir = info.Task.Workdir()
+	}
+	if strings.TrimSpace(workDir) == "" {
+		return nil, errors.New("任务没有可用工作目录")
+	}
+	return &proto.RoomAttach{
+		Target: link.Target, TaskID: link.TaskID, WorkDir: workDir,
+		Command: "handoff attach " + link.TaskID,
+	}, nil
 }
 
 // handleRoomMessages GET /api/rooms/{id}/messages?before=&limit= → History。

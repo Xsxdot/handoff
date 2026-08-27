@@ -9,6 +9,8 @@ package collab
 
 import (
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,9 +23,10 @@ import (
 // 供 ListRooms 排序/筛选/活性翻转等需要精确时刻的读模型测试使用。全部方法
 // 保持与接口一一对应；未用到的写方法返回 nil（本文件不测它们）。
 type fakeLC struct {
-	cards  []proto.Card
-	events []proto.LedgerEvent
-	leases map[string]time.Time // session -> expiresAt
+	cards      []proto.Card
+	events     []proto.LedgerEvent
+	leases     map[string]time.Time // session -> expiresAt
+	eventReads int
 }
 
 func (f *fakeLC) GetCard(id string) (proto.Card, error) {
@@ -64,6 +67,7 @@ func (f *fakeLC) RecordMessageConsumed(cardID string, msgSeq int64, consumer str
 	return nil
 }
 func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	f.eventReads++
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -91,6 +95,107 @@ func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]pr
 	}
 	return out, nil
 }
+
+// TestListRoomsForMemberScansEventsOnceForUnreadAndActivity 锁住列表性能接缝：
+// 活动时间与成员未读必须复用同一次事件流扫描，不能退化为每个房间各读一遍。
+// 205 张卡刻意超过验收门的 200+ 规模；计数断言比挂钟更稳定。
+func TestListRoomsForMemberScansEventsOnceForUnreadAndActivity(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	fake := &fakeLC{leases: map[string]time.Time{}}
+	for i := 0; i < 205; i++ {
+		id := fmt.Sprintf("B%03d", i)
+		fake.cards = append(fake.cards, proto.Card{
+			ID: id, Title: id, Status: "进行中", Project: "p1",
+			CreatedAt: base, UpdatedAt: base,
+		})
+		fake.events = append(fake.events, fakeRoomMsg(int64(i+1), id, base.Add(time.Duration(i)*time.Second)))
+	}
+
+	svc := New(fake)
+	rooms, err := svc.ListRoomsForMember("p1", "web:test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rooms) != 207 { // 205 卡 + 项目群 + 全员群
+		t.Fatalf("房间数量: got %d want 207", len(rooms))
+	}
+	if fake.eventReads != 1 {
+		t.Fatalf("列表应只扫描一次事件流，实际读取 %d 次", fake.eventReads)
+	}
+	for _, r := range rooms {
+		if r.Kind == room.KindCard && r.Unread != 1 {
+			t.Fatalf("卡房间 unread 应为 1: %+v", r)
+		}
+		if r.ID == "B000" {
+			if r.Preview == nil || r.Preview.Body != "x" || r.Preview.Seq != 1 {
+				t.Fatalf("列表应从同一事件扫描投影最后一条 preview: %+v", r.Preview)
+			}
+		}
+	}
+}
+
+func TestListRoomsPreviewTruncatesBody(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	body := strings.Repeat("长", roomPreviewMaxRunes+20)
+	fake := &fakeLC{
+		cards:  []proto.Card{{ID: "B1", Title: "B1", Status: "进行中", Project: "p1", CreatedAt: base, UpdatedAt: base}},
+		events: []proto.LedgerEvent{fakeRoomMsgWithBody(1, "B1", base, body)},
+		leases: map[string]time.Time{},
+	}
+	rooms, err := New(fake).ListRooms("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rooms[0].Preview == nil {
+		t.Fatal("房间应有 preview 投影")
+	}
+	want := strings.Repeat("长", roomPreviewMaxRunes-1) + "…"
+	if rooms[0].Preview.Body != want {
+		t.Fatalf("preview 正文应保留省略号并截断到 %d rune: got %q want %q", roomPreviewMaxRunes, rooms[0].Preview.Body, want)
+	}
+}
+
+func TestListRoomsPreviewKeepsLatestEventMetadata(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	latest := base.Add(2 * time.Minute)
+	fake := &fakeLC{
+		cards: []proto.Card{{ID: "B1", Title: "B1", Status: "进行中", Project: "p1", CreatedAt: base, UpdatedAt: base}},
+		events: []proto.LedgerEvent{
+			fakeRoomMsgWithBody(1, "B1", base.Add(time.Minute), "旧预览"),
+			fakeRoomMsgWithBody(2, "B1", latest, "最新预览"),
+		},
+		leases: map[string]time.Time{},
+	}
+	rooms, err := New(fake).ListRooms("p1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	preview := rooms[0].Preview
+	if preview == nil || preview.Body != "最新预览" || preview.Seq != 2 || !preview.CreatedAt.Equal(latest) {
+		t.Fatalf("preview 必须保留最后一条正文、seq 与 created_at: %+v", preview)
+	}
+}
+
+// TestHistoryFiltersAfterReadingTheWholeEventStream 锁住分页顺序：账本的 LIMIT
+// 作用在事件流读取上，不能先截掉前 1000 条再做房间过滤，否则第 1001 条目标房间
+// 消息会永久从详情页消失。
+func TestHistoryFiltersAfterReadingTheWholeEventStream(t *testing.T) {
+	base := time.Date(2026, 8, 28, 0, 0, 0, 0, time.UTC)
+	fake := &fakeLC{}
+	for i := 1; i <= 1000; i++ {
+		fake.events = append(fake.events, fakeRoomMsg(int64(i), "B-noise", base.Add(time.Duration(i)*time.Second)))
+	}
+	fake.events = append(fake.events, fakeRoomMsg(1001, "B-target", base.Add(1001*time.Second)))
+
+	history, err := New(fake).History("B-target", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(history) != 1 || history[0].Seq != 1001 {
+		t.Fatalf("目标房间第 1001 条消息必须可见: %+v", history)
+	}
+}
+
 func (f *fakeLC) BindDriver(id, session, carrier, expect string) error {
 	return nil
 }
@@ -102,7 +207,11 @@ func (f *fakeLC) DriverLease(session string) (time.Time, bool, error) {
 // fakeRoomMsg 造一条房间消息事件（群房间 roomID 带 project:/global 前缀时
 // 为无卡事件，同 ledger.RecordRoomMessage 语义）。
 func fakeRoomMsg(seq int64, roomID string, at time.Time) proto.LedgerEvent {
-	payload, _ := json.Marshal(proto.RoomMessage{Room: roomID, Kind: proto.RoomMsgUser, Body: "x"})
+	return fakeRoomMsgWithBody(seq, roomID, at, "x")
+}
+
+func fakeRoomMsgWithBody(seq int64, roomID string, at time.Time, body string) proto.LedgerEvent {
+	payload, _ := json.Marshal(proto.RoomMessage{Room: roomID, Kind: proto.RoomMsgUser, Body: body})
 	cardID := roomID
 	if roomID == "global" || len(roomID) > 8 && roomID[:8] == "project:" {
 		cardID = ""

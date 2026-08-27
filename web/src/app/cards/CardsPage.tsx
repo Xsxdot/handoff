@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate } from 'react-router-dom'
 import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
 import type { Decision, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
 import { usePoll } from '../data/usePoll'
@@ -7,7 +7,7 @@ import { useTasks } from '../data/useTasks'
 import { errorMessage } from '../lib/format'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
-import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, visibleColumns } from './columns'
+import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, normalizeBoardLayout, visibleColumns } from './columns'
 import { ListView } from './ListView'
 import { MigrateDialog } from './MigrateDialog'
 import { NewCardDialog } from './NewCardDialog'
@@ -75,10 +75,12 @@ export function CardsPage() {
   const [flows, setFlows] = useState<FlowsResp | null>(null)
   const [flowsError, setFlowsError] = useState('')
   const [drawerNodes, setDrawerNodes] = useState<NodeDef[] | undefined>()
-  const cardsPoll = usePoll(() => fetchCards(includeArchived ? 'all=1' : ''), POLL_MS)
+  const navigate = useNavigate()
+  const location = useLocation()
+  const cardDeepLink = new URLSearchParams(location.search).get('card') ?? ''
+  const cardsPoll = usePoll(() => fetchCards(includeArchived || cardDeepLink !== '' ? 'all=1' : ''), POLL_MS)
   const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
-  const navigate = useNavigate()
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
   // 时给 undefined，抽屉按「计数不可知」显示旧标题，不谎报「0 个在跑」。
@@ -90,17 +92,23 @@ export function CardsPage() {
     return () => { cancelled = true }
   }, [])
 
-  useEffect(() => { cardsPoll.refresh() }, [includeArchived]) // eslint-disable-line react-hooks/exhaustive-deps
+  useEffect(() => { cardsPoll.refresh() }, [includeArchived, cardDeepLink]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const cards = useMemo(() => cardsPoll.data?.cards ?? [], [cardsPoll.data])
   const decisions = decisionsPoll.data ?? []
   const projectOptions = useMemo(() => [...new Set(cards.map((card) => card.project).filter(Boolean))].sort(), [cards])
+  const selectedWorkflow = workflow ? flows?.workflows.find((flow) => flow.name === workflow) : undefined
   const workflowStates = workflow
-    ? flows?.workflows.find((flow) => flow.name === workflow)?.def.states ?? []
+    ? selectedWorkflow?.def.states ?? []
     // 多条流的列序按流程先后拓扑合并——取并集会把某条流独有的后置状态
     // 甩到另一条流的「已完成」后面（见 mergeStateOrder）
     : mergeStateOrder(flows?.workflows.map((flow) => flow.def.states) ?? [])
   const workflowOptions = flows?.workflows ?? []
+  const boardLayout = useMemo(
+    () => normalizeBoardLayout(workflow ? selectedWorkflow?.def.board : undefined, workflowStates),
+    [selectedWorkflow, workflow, workflowStates],
+  )
+  const displayedColumns = useMemo(() => boardColumns(workflowStates, boardLayout), [boardLayout, workflowStates])
   const healthRows = healthPoll.data?.mirror ?? []
   // 滞后要点名是哪台：判据⑦ 判的是「断链期看板该 target 亮事件流滞后」，
   // 只报一个全局「镜像异常」等于告诉你「有台机器哑了，自己猜是哪台」
@@ -131,6 +139,11 @@ export function CardsPage() {
   const selectedWorkflowName = selectedCard?.workflow ?? ''
 
   useEffect(() => {
+    if (!cardDeepLink || !cards.some((card) => card.id === cardDeepLink)) return
+    setSelected(cardDeepLink)
+  }, [cardDeepLink, cards])
+
+  useEffect(() => {
     if (!selected || !selectedWorkflowName) {
       setDrawerNodes(undefined)
       return
@@ -147,7 +160,11 @@ export function CardsPage() {
     return () => { cancelled = true }
   }, [selected, selectedWorkflowName])
   const openDrawer = (id: string, focus?: 'merge') => { setSelected(id); setDrawerFocus(focus) }
-  const closeDrawer = () => { setSelected(null); setDrawerFocus(undefined) }
+  const closeDrawer = () => {
+    setSelected(null)
+    setDrawerFocus(undefined)
+    if (new URLSearchParams(location.search).has('card')) navigate('/cards', { replace: true })
+  }
   const newCardWorkflows = flows?.workflows.map((item) => item.name) ?? []
   // 卡到任务的唯一出口是 /tasks/:id 深链：目录解析、开 TUI tab、跨机全由
   // Shell 既有的 TaskDeepLink 完成，这里绝不顺手做目录切换（spec §3.3 明令
@@ -158,7 +175,7 @@ export function CardsPage() {
   }
 
   return (
-    <main className="flex h-full min-h-0 w-full flex-col bg-background">
+    <main className="relative flex h-full min-h-0 w-full flex-col bg-background">
       <header className="flex flex-wrap items-center gap-2 border-b px-4 py-2.5">
         <span className="text-sm font-semibold">工作项</span>
         <div className="inline-flex overflow-hidden rounded-md border"><button type="button" onClick={() => setView('board')} className={`px-2.5 py-1 text-xs ${view === 'board' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}>看板</button><button type="button" onClick={() => setView('list')} className={`px-2.5 py-1 text-xs ${view === 'list' ? 'bg-primary text-primary-foreground' : 'text-muted-foreground'}`}>列表</button></div>
@@ -172,9 +189,9 @@ export function CardsPage() {
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
       <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
-      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(boardColumns(workflowStates.length ? workflowStates : mergeStateOrder(cards.map((card) => [card.status]))), filtered, needsOnly).map((status) => { const inColumn = cardsInColumn(filtered, status); return <section key={status} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{status}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
+      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, boardLayout).map((column) => { const inColumn = cardsInColumn(filtered, column, boardLayout); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} />}
+      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} boardLayout={boardLayout} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}

@@ -45,6 +45,9 @@ var (
 // historyDefaultLimit History/Mentions 未给 limit 时的取数上限。
 const historyDefaultLimit = 200
 
+// roomPreviewMaxRunes 限制列表 wire 中携带的最后一条正文，避免单条消息把列表响应撑大。
+const roomPreviewMaxRunes = 120
+
 // pointerActor Pointer 写指针行时落账的 actor 标识（契约 §3.3 Pointer 无
 // actor 参数、调用方身份不可得，固定系统组件标识）。
 const pointerActor = "system:pointer"
@@ -126,7 +129,7 @@ func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.Le
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
-	events, err := s.lc.EventsFromAsc([]string{}, beforeSeq, 0)
+	events, err := room.ReadAllEvents(s.lc, beforeSeq)
 	if err != nil {
 		return nil, err
 	}
@@ -247,7 +250,19 @@ func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.Le
 // LastActivity=该房间最新一条 room_message 时刻；卡房间无消息时回退卡的
 // UpdatedAt。Live=绑定者租约未过期（同一注入时钟 nowFn 判定），无绑定时
 // false；DriverLease 读失败向上传播（C6 handler 退化 503，不吞错）。
+// ListRooms 返回不带成员未读视图的会话列表。需要成员维度时使用
+// ListRoomsForMember；保留本入口供不关心用户身份的调用方使用。
 func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
+	return s.listRooms(project, "")
+}
+
+// ListRoomsForMember 返回会话列表并把指定成员的未读数投影到每一行。
+// member 为空时不读取游标，保持 ListRooms 的旧语义。
+func (s *Service) ListRoomsForMember(project, member string) ([]proto.RoomSummary, error) {
+	return s.listRooms(project, member)
+}
+
+func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error) {
 	cards, err := s.lc.ListAllCards(project)
 	if err != nil {
 		log().Warn("会话列表组装失败：读卡列表", "project", project, "cause", err)
@@ -287,8 +302,25 @@ func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
 		if ev.Type != room.RoomEventType {
 			continue
 		}
-		if idx, ok := byID[room.RoomIDOf(ev)]; ok && ev.CreatedAt.After(rooms[idx].LastActivity) {
+		roomID := room.RoomIDOf(ev)
+		idx, ok := byID[roomID]
+		if !ok {
+			continue
+		}
+		if ev.CreatedAt.After(rooms[idx].LastActivity) {
 			rooms[idx].LastActivity = ev.CreatedAt
+		}
+		var msg proto.RoomMessage
+		if err := room.UnmarshalMessage(ev.Payload, &msg); err != nil {
+			log().Warn("会话列表预览投影跳过：消息载荷无效",
+				"project", project, "room", roomID, "seq", ev.Seq, "cause", err)
+			continue
+		}
+		if rooms[idx].Preview != nil && rooms[idx].Preview.Seq >= ev.Seq {
+			continue
+		}
+		rooms[idx].Preview = &proto.RoomPreview{
+			Body: truncateRoomPreview(msg.Body), Seq: ev.Seq, CreatedAt: ev.CreatedAt,
 		}
 	}
 	// 活性：按不同绑定会话去重读租约（兼任多席只问一次「会话活着吗」）。
@@ -311,6 +343,20 @@ func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
 			rooms[i].Live = liveOf[bs]
 		}
 	}
+	if member != "" {
+		cursors, err := s.cursor.Snapshot(member)
+		if err != nil {
+			log().Warn("会话列表组装失败：读游标快照",
+				"project", project, "member", member, "cause", err)
+			return nil, err
+		}
+		unread := unreadByRoom(events, cursors)
+		for i := range rooms {
+			rooms[i].Unread = unread[rooms[i].ID]
+		}
+		log().Info("会话列表未读聚合完成", "project", project, "member", member,
+			"rooms", len(rooms))
+	}
 	// 排序：非终态（含群房间）按活动降序在前，终态卡房间沉底（各自内部按
 	// 活动降序；Stable 保证同活动时保持插入序，输出形状确定）。
 	active := []proto.RoomSummary{}
@@ -326,6 +372,35 @@ func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
 	sort.SliceStable(sunk, func(i, j int) bool { return sunk[i].LastActivity.After(sunk[j].LastActivity) })
 	log().Info("会话列表已组装", "project", project, "count", len(rooms))
 	return append(active, sunk...), nil
+}
+
+// truncateRoomPreview 按 rune 截断列表预览，避免多字节正文被半截字节切坏；
+// 省略号占一个预算位，调用方可据此把超长正文识别为摘要。
+func truncateRoomPreview(body string) string {
+	runes := []rune(body)
+	if len(runes) <= roomPreviewMaxRunes {
+		return body
+	}
+	return string(runes[:roomPreviewMaxRunes-1]) + "…"
+}
+
+// unreadByRoom 从列表已经读取的全量事件中聚合成员未读数。
+//
+// 列表本来就需要一次事件流读取来计算 LastActivity；复用这批事件，并在一次
+// Snapshot 游标快照上比较水位，避免每个房间再次 Cursor+ReadAllEvents。
+func unreadByRoom(events []proto.LedgerEvent, cursors map[string]int64) map[string]int {
+	out := make(map[string]int)
+	for _, ev := range events {
+		if ev.Type != room.RoomEventType {
+			continue
+		}
+		roomID := room.RoomIDOf(ev)
+		if roomID == "" || ev.Seq <= cursors[roomID] {
+			continue
+		}
+		out[roomID]++
+	}
+	return out
 }
 
 // MarkRead 未读游标置位（打开房间即已读）。按成员按房间记 seq 水位，单调

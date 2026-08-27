@@ -1,3 +1,4 @@
+import { StrictMode } from 'react'
 import { act, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '../../api/client'
@@ -55,5 +56,36 @@ describe('usePoll', () => {
     renderHook(() => usePoll(fetcher, 1000, { enabled: false }))
     await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
     expect(fetcher).not.toHaveBeenCalled()
+  })
+
+  it('上一轮未结束时不启动重叠请求', async () => {
+    let resolveFirst!: (value: string) => void
+    const first = new Promise<string>((resolve) => { resolveFirst = resolve })
+    const fetcher = vi.fn().mockReturnValueOnce(first).mockResolvedValue('v2')
+    renderHook(() => usePoll(fetcher, 1000))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(fetcher).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveFirst('v1')
+      await first
+    })
+    await act(async () => { await vi.advanceTimersByTimeAsync(1000) })
+    await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
+  })
+
+  it('StrictMode effect 重放不丢失首拉结果', async () => {
+    let resolveFirst!: (value: string) => void
+    const first = new Promise<string>((resolve) => { resolveFirst = resolve })
+    const fetcher = vi.fn().mockReturnValueOnce(first).mockResolvedValue('v2')
+    const { result } = renderHook(() => usePoll(fetcher, 1000), { wrapper: StrictMode })
+
+    expect(fetcher).toHaveBeenCalledTimes(1)
+    await act(async () => {
+      resolveFirst('v1')
+      await first
+    })
+    await waitFor(() => expect(result.current.data).toBe('v1'))
   })
 })

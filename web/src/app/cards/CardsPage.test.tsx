@@ -32,9 +32,9 @@ vi.mock('./NewCardDialog', () => ({
 }))
 
 // CardsPage 用 useNavigate，必须包在 Router 里渲染（生产态 Shell 把它挂在 <Routes> 下）
-const renderPage = () =>
+const renderPage = (entry = '/cards') =>
   render(
-    <MemoryRouter initialEntries={['/cards']}>
+    <MemoryRouter initialEntries={[entry]}>
       <Routes>
         <Route path="/cards" element={<CardsPage />} />
         {/* 深链探针：只断言导航真的发生了，不复刻 TaskDeepLink 的目录解析逻辑 */}
@@ -112,5 +112,83 @@ describe('卡到任务深链的数据通路', () => {
     fireEvent.click(await screen.findByRole('button', { name: '跳到 task-wire' }))
     // 整条管线：useTasks → CardDrawer.tasks → 行内 ↗ → navigate('/tasks/task-wire')
     expect(await screen.findByText('deep-link-hit')).toBeInTheDocument()
+  })
+})
+
+describe('房间面板卡片深链', () => {
+  it('/cards?card=B50 会直接打开对应卡片抽屉', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [{
+      id: 'B50', title: '房间入口卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+      merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+      conflict: false, open_tickets: 0,
+    }], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: {
+        id: 'B50', title: '房间入口卡', status: '进行中', priority: '中', project: 'handoff', parent: '',
+        workflow: '', workflow_version: 1, attachments: [], acceptance_criteria: '', created_at: '', updated_at: '',
+      }, relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    })
+    renderPage('/cards?card=B50')
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+  })
+
+  it('终态卡的 /cards?card= 深链自动带 all=1 并打开抽屉', async () => {
+    const ledger = await import('../../api/ledger')
+    const terminalCard = {
+      id: 'Bdone', title: '已归档房间卡', status: '已完成', priority: '中', project: 'handoff', workflow: '',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+      merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+      conflict: false, open_tickets: 0,
+    }
+    vi.mocked(ledger.fetchCards).mockImplementation((params = '') => Promise.resolve({
+      cards: params === 'all=1' ? [terminalCard] : [],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    }))
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: {
+        id: 'Bdone', title: '已归档房间卡', status: '已完成', priority: '中', project: 'handoff', parent: '',
+        workflow: '', workflow_version: 1, attachments: [], acceptance_criteria: '', created_at: '', updated_at: '',
+      }, relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    })
+    renderPage('/cards?card=Bdone')
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(vi.mocked(ledger.fetchCards)).toHaveBeenCalledWith('all=1')
+  })
+})
+
+describe('可配置看板列入口', () => {
+  it('选中工作流时按其看板映射渲染五列', async () => {
+    const ledger = await import('../../api/ledger')
+    const baseCard = {
+      id: 'B200', title: '普通卡', status: '待办', priority: '中', project: 'p', workflow: 'custom', parent: '', base_branch: '', attachments: [], following: '',
+      blocked: false, blocked_by: [], merged_count: 0, needs: '', open_decisions: 0,
+      children_total: 0, children_done: 0, conflict: false, open_tickets: 0,
+    }
+    vi.mocked(ledger.fetchFlows).mockResolvedValue({
+      workflows: [{
+        name: 'custom', version: 2,
+        def: {
+          states: ['待办'],
+          board: {
+            columns: ['收集', '沟通', '实现', '验收', '完成'],
+            state_to_column: { 待办: '收集' }, fallback: '实现',
+          },
+        },
+      }],
+      templates: [],
+    })
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [{
+        ...baseCard, title: '自定义看板卡',
+      }],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    })
+    renderPage()
+    await screen.findByText('自定义看板卡')
+    fireEvent.change(screen.getByRole('combobox', { name: '工作流' }), { target: { value: 'custom' } })
+    expect(await screen.findByText('收集')).toBeInTheDocument()
+    expect(screen.getByText('完成')).toBeInTheDocument()
   })
 })

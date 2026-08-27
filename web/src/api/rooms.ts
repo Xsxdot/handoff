@@ -46,6 +46,21 @@ export interface InboxItem {
   payload?: unknown
 }
 
+// RoomAttach 是房间详情可执行的任务 attach 投影；target 缺席表示当前 agentd。
+export interface RoomAttach {
+  target?: string
+  task_id: string
+  work_dir: string
+  command: string
+}
+
+// RoomPreview 是服务端随会话列表投影的最后一条消息摘要；列表不再逐房间读历史。
+export interface RoomPreview {
+  body: string
+  seq: number
+  created_at: string
+}
+
 // RoomSummary 是会话列表（扁平活动排序）的单行。
 export interface RoomSummary {
   id: string
@@ -56,6 +71,9 @@ export interface RoomSummary {
   live: boolean
   read_only: boolean
   last_activity: string
+  unread: number
+  attach?: RoomAttach
+  preview?: RoomPreview
 }
 
 export type RoomHistoryItem = LedgerEvent

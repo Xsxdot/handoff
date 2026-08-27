@@ -133,7 +133,7 @@ func TestContractFixtures(t *testing.T) {
 			Name: "定性中", Next: "已定性",
 			Produces: &NodeOutput{Kind: "doc", Path: "docs/superpowers/plans/b201-plan.md"},
 		}},
-		{"FlowDetail", FlowDetail{Name: "triage", Version: 1, Nodes: []NodeDef{{Name: "待办", Next: "定性中"}, {Name: "定性中", Next: "已定性"}, {Name: "已定性"}}, States: []string{"待办", "定性中", "已定性"}}},
+		{"FlowDetail", FlowDetail{Name: "triage", Version: 1, Nodes: []NodeDef{{Name: "待办", Next: "定性中"}, {Name: "定性中", Next: "已定性"}, {Name: "已定性"}}, States: []string{"待办", "定性中", "已定性"}, Board: &BoardLayout{Columns: []string{"代办", "沟通中", "进行中", "审核中", "结束"}, StateToColumn: map[string]string{"待办": "代办", "终止": "结束"}, Fallback: "进行中"}}},
 	}
 
 	dir := fixtureDir(t)

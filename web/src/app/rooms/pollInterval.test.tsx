@@ -1,13 +1,12 @@
-// A.6 轮询间隔默认值落常量：三个房间面页面把 COLLAB_POLL_MS 传给 usePoll，
-// 不散写魔数。mock usePoll 后只断言 interval 参数 == 常量。
+// A.6 轮询间隔默认值落常量：统一 RoomPanel 的列表、收件箱与历史流把
+// COLLAB_POLL_MS 传给 usePoll，不散写魔数。mock usePoll 后只断言 interval 参数。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render } from '@testing-library/react'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { usePoll } from '../data/usePoll'
 import { COLLAB_POLL_MS } from './constants'
-import { InboxPage } from './InboxPage'
-import { RoomDetailPage } from './RoomDetailPage'
-import { RoomsListPage } from './RoomsListPage'
+import { RoomPanel } from './RoomPanel'
+import type { WorkbenchApi } from '../workbench/useWorkbench'
+import { EMPTY_WORKBENCH } from '../workbench/tabs'
 
 const pollState = { data: null, disconnected: false, sessionExpired: false, errorText: '', refresh: vi.fn() }
 
@@ -27,23 +26,9 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
 describe('A.6 轮询间隔常量', () => {
   beforeEach(() => vi.mocked(usePoll).mockClear())
 
-  it('会话列表页以 COLLAB_POLL_MS 轮询', () => {
-    render(<MemoryRouter><RoomsListPage /></MemoryRouter>)
-    expect(vi.mocked(usePoll)).toHaveBeenCalledWith(expect.any(Function), COLLAB_POLL_MS)
-  })
-
-  it('房间页以 COLLAB_POLL_MS 轮询（摘要与历史两条）', () => {
-    render(
-      <MemoryRouter initialEntries={['/rooms/B1']}>
-        <Routes><Route path="/rooms/:id" element={<RoomDetailPage />} /></Routes>
-      </MemoryRouter>,
-    )
+  it('统一面板的列表、收件箱、历史流都以 COLLAB_POLL_MS 轮询', () => {
+    render(<RoomPanel workbench={{ wb: EMPTY_WORKBENCH, open: vi.fn() } as unknown as WorkbenchApi} persistent={false} />)
     const calls = vi.mocked(usePoll).mock.calls
-    expect(calls.filter(([, interval]) => interval === COLLAB_POLL_MS)).toHaveLength(2)
-  })
-
-  it('收件箱页以 COLLAB_POLL_MS 轮询', () => {
-    render(<MemoryRouter><InboxPage /></MemoryRouter>)
-    expect(vi.mocked(usePoll)).toHaveBeenCalledWith(expect.any(Function), COLLAB_POLL_MS)
+    expect(calls.filter(([, interval]) => interval === COLLAB_POLL_MS)).toHaveLength(3)
   })
 })

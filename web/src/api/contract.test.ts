@@ -149,6 +149,7 @@ describe('契约 fixture 与 TS 类型', () => {
 			path: 'docs/superpowers/plans/b201-plan.md',
 		})
 		expect(flow.states).toEqual(['待办', '定性中', '已定性'])
+		expect(flow.board?.columns).toEqual(['代办', '沟通中', '进行中', '审核中', '结束'])
 	})
   it('Task：可解析为 Task 类型，关键字段齐全', () => {
     const task: Task = taskFixture

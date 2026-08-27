@@ -38,11 +38,11 @@ B156.2（协作层：房间制会话）与 B156.3（自动化层：规则引擎 
 
 ## 契约语义与接缝
 
-本卡**不动** B156.2 已定五端点语义（`web/src/api/rooms.ts:66-106` 镜像 `internal/proto/rooms.go`）。契约增量两条，均只加投影、不改既有字段语义：
+本卡**不动** B156.2 已定五端点语义（`web/src/api/rooms.ts:66-106` 镜像 `internal/proto/rooms.go`）。契约增量三条，均只加投影、不改既有字段语义：
 
 1. **未读数投影**：`Service.Unread` 已存在（`internal/collab/service.go:344`）但 wire 面无投影——`RoomSummary`（`internal/proto/rooms.go:50-61`）无 unread 字段。增量：会话列表行携带未读数（字段形状归 plan 写死），组装在既有 ListRooms 装配点，双侧金样本（`rooms_fixture_test.go` / `rooms.test.ts`）同步锁。
 2. **协调者可 attach 投影**：详情页的「attach」需要一个可 attach 目标（task）与打开终端的工作目录。现状 `RoomSummary.bound_session` 是 driver_session 投影（`internal/collab/service.go:271`），它能否解析出可 attach 的 task 是**代码事实**，plan 第一刀查明；查不出可解析路径，则作为第二条投影增量（房间详情携带协调者 task 与工作目录），同样只加不改。
-3. **列表 preview 投影**（验收真机追加，2026-08-28）：会话列表行的最后一条消息预览，现状是前端对每个房间各发一次 `GET messages?limit=1`（RoomPanel preview effect）——200 房间的突发打满浏览器同源 6 连接，房间历史请求被排队饿死 13.7s（验收时序证据落卡）。增量：`RoomSummary` 携带最后一条 room_message 投影（body 截断 + seq + created_at，形状归 plan 写死），组装在既有 ListRooms 装配点（该处已持有全量事件单次扫描，零额外读），前端删除逐房间 preview 请求。双侧金样本同步锁；缝级红测：列表渲染 preview 时逐房间 limit=1 请求数必须为 0。
+3. **列表 preview 投影**（验收真机追加，2026-08-28）：会话列表行的最后一条消息预览，现状是前端对每个房间各发一次 `GET messages?limit=1`（RoomPanel preview effect）——200 房间的突发打满浏览器同源 6 连接，房间历史请求被排队饿死 13.7s（验收时序证据落卡）。增量：`RoomSummary` 携带最后一条 room_message 投影，组装在既有 ListRooms 装配点（该处已持有全量事件单次扫描，零额外读），前端删除逐房间 preview 请求。最终形状（plan 写死）：`{body, seq, created_at}`；`body` 在服务端按 Unicode rune 截断至 120 个字符并以省略号标记，`seq` 与 `created_at` 原样携带；打开房间仍只发一次既有 `limit=200` 历史请求。双侧金样本同步锁；缝级红测：列表渲染 preview 时逐房间 limit=1 请求数必须为 0。
 
 边界声明：房间只读态（`read_only`）、Live 租约、消息 kind 白名单等既有语义全部沿用，不在本卡重议。
 
@@ -75,7 +75,7 @@ B156.2（协作层：房间制会话）与 B156.3（自动化层：规则引擎 
 
 - **永不做**：待回复独立收件箱页（用户裁决）；会话面回左栏 dock。
 - **本期不做（已有归属）**：B156.2 integrate 四条跨卡残余（@提及消费面 / carrier wire 载体 / Live 恒假 / 租约三法），已落 `docs/roadmap.md`，本卡不揽。
-- **本期不做**：后端消息通道、规则引擎、approver 链路的任何行为变更；本卡只加两条投影、不动既有语义。
+- **本期不做**：后端消息通道、规则引擎、approver 链路的任何行为变更；本卡只加三条投影、不动既有语义。
 - **本期不做**：会话面消息的 Markdown/代码块富渲染——原型是 plain text 气泡，照抄；富渲染另开卡。
 
 ## 备注

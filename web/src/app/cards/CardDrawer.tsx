@@ -6,11 +6,18 @@ import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fet
 import type { CardDetail, Decision, LedgerEvent, NodeDef, TaskStateRow } from '../../api/ledger'
 import { errorMessage } from '../lib/format'
 import { TicketsPanel } from '../task/TicketsPanel'
-import { boardColumns } from './columns'
+import { boardColumnFor, boardColumns, normalizeBoardLayout, type BoardLayout } from './columns'
 import { TaskState } from '../board/StateDot'
 import { isTerminalState } from '../workbench/TaskPickerDialog'
 
 type Relation = { From: string; To: string; Type: string }
+
+function logCardStep(level: 'debug' | 'warn' | 'error', event: string, fields: Record<string, unknown>): void {
+  const payload = { subsystem: 'cards', event, ...fields }
+  if (level === 'error') console.error(payload)
+  else if (level === 'warn') console.warn(payload)
+  else console.debug(payload)
+}
 
 // CardAttention 是抽屉里的「需要你」合一区：等人原因 + 挂卡裁决。
 //
@@ -277,6 +284,7 @@ export function CardDrawer({
   onClose,
   onOpenCard,
   workflowStates,
+  boardLayout,
   initialSection,
   nodes,
   tasks,
@@ -286,6 +294,8 @@ export function CardDrawer({
   onClose: () => void
   onOpenCard: (id: string) => void
   workflowStates?: string[]
+  // 看板列是工作流的投影，抽屉沿用同一映射避免状态与列名各说各话。
+  boardLayout?: BoardLayout
   initialSection?: 'merge'
   nodes?: NodeDef[]
   // 任务实况快照：调用方（CardsPage）把页面级 useTasks() 的结果原样传下来。
@@ -365,6 +375,9 @@ export function CardDrawer({
   // 那样 status === '已完成' 在类型上恒假，tsc -b 直接报 TS2367
   const status = value<string>(card, 'status', '')
   const states = workflowStates?.length ? workflowStates : [status]
+  const coordinatorNode = nodes?.find((node) => node.name === status)
+  const coordinatorReady = coordinatorNode?.dispatch === true
+  const resolvedBoardLayout = normalizeBoardLayout(boardLayout, states)
   const following = value(card, 'following', '')
   const driverSession = value(card, 'driver_session', '')
   const heartbeat = value(card, 'driver_heartbeat_at', '')
@@ -588,14 +601,18 @@ export function CardDrawer({
   const startStep = async (step: string) => {
     setStepBusy(step)
     setStepError('')
+    logCardStep('debug', 'coordinator_step_started', { card: id, step })
     try {
       await runCardStep(id, step)
       // 受理即置灰：环节是异步的，再点一次只会撞 409。进展在 Timeline 上
       setStepStarted(step)
       load()
+      logCardStep('debug', 'coordinator_step_succeeded', { card: id, step })
     } catch (err) {
       // 409 的冲突原因是后端写的原文（哪张卡的什么环节在跑），逐字显示
-      setStepError(errorMessage(err))
+      const cause = errorMessage(err)
+      setStepError(cause)
+      logCardStep('error', 'coordinator_step_failed', { card: id, step, cause })
     } finally {
       setStepBusy(null)
     }
@@ -619,7 +636,7 @@ export function CardDrawer({
   }
 
   return (
-    <aside className="fixed inset-y-0 right-0 z-40 flex w-[560px] max-w-[92vw] flex-col border-l bg-background shadow-xl" role="dialog" aria-label="工作项详情">
+    <aside className="absolute inset-y-0 right-0 z-40 flex w-[560px] max-w-[92vw] flex-col border-l bg-background shadow-xl" role="dialog" aria-label="工作项详情">
       <header className="border-b px-4 py-3">
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs text-muted-foreground">{value(card, 'id', id)}</span>
@@ -653,9 +670,24 @@ export function CardDrawer({
         {!detail && !error && <p className="text-sm text-muted-foreground">正在读取账本…</p>}
         {detail && (
           <>
+            <section className="mb-5" aria-label="协调者动作">
+              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">协调者</h3>
+              <button
+                type="button"
+                disabled={!coordinatorReady || stepBusy !== null || stepStarted !== null}
+                title={!coordinatorReady ? '当前状态没有可派发的协调者节点' : undefined}
+                onClick={() => { if (coordinatorNode) void startStep(coordinatorNode.name) }}
+                className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50"
+              >
+                ▶ 拉起协调者
+              </button>
+              {!coordinatorReady && <p className="mt-1 text-xs text-muted-foreground">当前状态未配置可派发节点。</p>}
+              {stepStarted === status && <p className="mt-1 text-xs text-muted-foreground">已受理，进展见 Timeline。</p>}
+            </section>
+
             <section className="mb-5">
               <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
-                {boardColumns(states).map((state) => <span key={state} className={`rounded-full border px-2 py-0.5 ${state === status ? 'border-primary bg-primary text-primary-foreground' : state === '终止' ? 'border-dashed text-muted-foreground' : 'text-muted-foreground'}`}>{state}</span>)}
+                {boardColumns(states, resolvedBoardLayout).map((column) => <span key={column} className={`rounded-full border px-2 py-0.5 ${column === boardColumnFor(status, resolvedBoardLayout) ? 'border-primary bg-primary text-primary-foreground' : column === '结束' ? 'border-dashed text-muted-foreground' : 'text-muted-foreground'}`}>{column}</span>)}
               </div>
             </section>
 

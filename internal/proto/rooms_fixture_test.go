@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestRoomMessageGoldenEscalation(t *testing.T) {
@@ -106,5 +107,55 @@ func TestInboxItemGoldenThreeOrigins(t *testing.T) {
 	}
 	if len(seen) != 3 {
 		t.Fatalf("三源词表漂移: %v", seen)
+	}
+}
+
+func TestRoomSummaryGoldenProjection(t *testing.T) {
+	card := RoomSummary{
+		ID: "B1", Kind: "card", Title: "卡会话", Live: true,
+		ReadOnly: false, LastActivity: time.Unix(0, 0).UTC(), Unread: 0,
+		Attach: &RoomAttach{Target: "devbox", TaskID: "T1", WorkDir: "/w/B1", Command: "handoff attach T1"},
+		Preview: &RoomPreview{Body: "最新预览", Seq: 3, CreatedAt: time.Unix(3, 0).UTC()},
+	}
+	raw, err := json.Marshal(card)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["unread"] != float64(0) {
+		t.Fatalf("unread 0 必须在线: %s", raw)
+	}
+	attach, ok := got["attach"].(map[string]any)
+	if !ok {
+		t.Fatalf("attach 应为对象: %s", raw)
+	}
+	for key, want := range map[string]string{
+		"target": "devbox", "task_id": "T1", "work_dir": "/w/B1", "command": "handoff attach T1",
+	} {
+		if attach[key] != want {
+			t.Fatalf("attach.%s 编码错误: got %v want %q", key, attach[key], want)
+		}
+	}
+	preview, ok := got["preview"].(map[string]any)
+	if !ok {
+		t.Fatalf("preview 应为对象: %s", raw)
+	}
+	if preview["body"] != "最新预览" || preview["seq"] != float64(3) || preview["created_at"] != "1970-01-01T00:00:03Z" {
+		t.Fatalf("preview 编码错误: %s", raw)
+	}
+
+	globalRaw, err := json.Marshal(RoomSummary{ID: "global", Kind: "global", Title: "全员", Unread: 0})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var global map[string]any
+	if err := json.Unmarshal(globalRaw, &global); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := global["attach"]; ok {
+		t.Fatalf("无 attach 的 global 不得出 attach 键: %s", globalRaw)
 	}
 }

@@ -62,6 +62,24 @@ func (s *Store) Cursor(member, roomID string) (int64, error) {
 	return s.data[member][roomID], nil
 }
 
+// Snapshot 返回该成员全部房间的已读水位快照。
+//
+// 返回值是独立副本，调用方可以在不持有游标锁的情况下聚合事件。一次快照
+// 同时覆盖所有房间，供列表读模型避免逐房间重复读取游标文件/内存映射。
+func (s *Store) Snapshot(member string) (map[string]int64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.ensureLoaded(); err != nil {
+		return nil, err
+	}
+	perRoom := s.data[member]
+	out := make(map[string]int64, len(perRoom))
+	for roomID, seq := range perRoom {
+		out[roomID] = seq
+	}
+	return out, nil
+}
+
 // ensureLoaded 首次访问时从磁盘加载（重启/换实例后读回持久化水位）。
 func (s *Store) ensureLoaded() error {
 	if s.path == "" || s.loaded {

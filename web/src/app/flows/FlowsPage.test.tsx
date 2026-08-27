@@ -1,7 +1,7 @@
 // FlowsPage 测试：验证工作流编辑加载、发布新版本与原文错误展示。
 // 边界：节点字段细节由 NodeEditor 测试覆盖，本文件只检查页面编排。
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { FlowsPage } from './FlowsPage'
 
 vi.mock('../../api/ledger', async (importOriginal) => ({
@@ -24,7 +24,9 @@ describe('工作流页可编辑', () => {
     render(<FlowsPage />)
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
     fireEvent.click(await screen.findByRole('button', { name: '保存为新版本' }))
-    await waitFor(() => expect(vi.mocked(ledger.putFlow)).toHaveBeenCalledWith('feature', expect.any(Array)))
+    await waitFor(() => expect(vi.mocked(ledger.putFlow)).toHaveBeenCalledWith(
+      'feature', expect.any(Array), expect.objectContaining({ columns: expect.any(Array), fallback: expect.any(String) }),
+    ))
     expect(await screen.findByText(/v4/)).toBeInTheDocument()
   })
 
@@ -41,5 +43,19 @@ describe('工作流页可编辑', () => {
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
     fireEvent.click(await screen.findByRole('button', { name: '保存为新版本' }))
     expect(await screen.findByText(/Next 指向不存在的节点/)).toBeInTheDocument()
+  })
+
+  it('编辑入口显示看板映射并随保存提交列序与状态映射', async () => {
+    const ledger = await import('../../api/ledger')
+    render(<FlowsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    const mapping = await screen.findByRole('region', { name: '看板列映射' })
+    fireEvent.change(within(mapping).getByRole('textbox', { name: '看板列名' }), {
+      target: { value: '收集,沟通,实现,验收,完成' },
+    })
+    fireEvent.click(await screen.findByRole('button', { name: '保存为新版本' }))
+    await waitFor(() => expect(vi.mocked(ledger.putFlow)).toHaveBeenCalledWith(
+      'feature', expect.any(Array), expect.objectContaining({ columns: ['收集', '沟通', '实现', '验收', '完成'] }),
+    ))
   })
 })

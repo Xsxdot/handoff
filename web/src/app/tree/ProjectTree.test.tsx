@@ -40,8 +40,6 @@ function props(over: {
   onOpenTickets?: () => void
   onOpenSettings?: () => void
   onOpenFlows?: () => void
-  onOpenRooms?: () => void
-  onOpenInbox?: () => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
@@ -75,8 +73,6 @@ function props(over: {
     onOpenTickets: over.onOpenTickets ?? vi.fn(),
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
     onOpenFlows: over.onOpenFlows ?? vi.fn(),
-    onOpenRooms: over.onOpenRooms ?? vi.fn(),
-    onOpenInbox: over.onOpenInbox ?? vi.fn(),
     onAddProject: over.onAddProject ?? vi.fn(),
     // 「显式传 undefined」与「没传」要区分开：右键菜单测试需要 onUnregister
     // 真的是 undefined，`?? vi.fn()` 会把显式 undefined 兜底成 mock
@@ -666,18 +662,8 @@ describe('机器行新建工作树', () => {
   })
 })
 
-describe('dock 会话/收件箱入口', () => {
-  it('点「会话」触发 onOpenRooms', () => {
-    const onOpenRooms = vi.fn()
-    render(<ProjectTree {...props({ onOpenRooms })} />)
-    fireEvent.click(screen.getByRole('button', { name: '会话' }))
-    expect(onOpenRooms).toHaveBeenCalled()
-  })
-
-  it('点「收件箱」触发 onOpenInbox', () => {
-    const onOpenInbox = vi.fn()
-    render(<ProjectTree {...props({ onOpenInbox })} />)
-    fireEvent.click(screen.getByRole('button', { name: '收件箱' }))
-    expect(onOpenInbox).toHaveBeenCalled()
-  })
+it('底部 dock 不再提供会话与收件箱入口', () => {
+  render(<ProjectTree {...props()} />)
+  expect(screen.queryByRole('button', { name: '会话' })).not.toBeInTheDocument()
+  expect(screen.queryByRole('button', { name: '收件箱' })).not.toBeInTheDocument()
 })
