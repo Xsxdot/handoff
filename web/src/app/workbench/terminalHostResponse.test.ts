@@ -52,7 +52,7 @@ describe('isTerminalHostResponse', () => {
     expect(isTerminalHostResponse('\x1b[>0;276;0cls')).toBe(false)
   })
 
-  it('焦点报告不是设备回包——活着的 [I]/[O] 必须上送', () => {
+  it('焦点报告不是设备回包——不并进设备回包识别', () => {
     expect(isTerminalHostResponse('\x1b[I')).toBe(false)
     expect(isTerminalHostResponse('\x1b[O')).toBe(false)
   })

@@ -19,7 +19,7 @@
 // 关于切 tab：曾经只渲染激活 tab，切走即卸载、切回重放环形缓冲，TUI 必坏。
 // B270 起见过的终端在后台继续活：不卸载、不把画布标成看不见、切走不
 // blur/resize。xterm 的 [I]/[O] 不上送 PTY（见 terminalHostResponse.ts）。
-// 刷新仍会重放，回放里的设备回包同样不上送。
+// 刷新仍会重放，只有回放里的设备回包不上送；活着的查询要回到程序。
 import { useEffect, useRef, useState } from 'react'
 import { TerminalSquare } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
@@ -230,7 +230,11 @@ export function TerminalTab({
       logTermResize(label, cols, rows, 'observer')
       handle?.resize(cols, rows)
     })
-    // replayingBacklog：下一次（也是 attached 之后的第一帧）是环形缓冲回放。
+    // hostReply 是设备回包的生命周期：旧服务端无法说明回放长度，只能沿用全丢；
+    // 新服务端的 0 表示没有旧录像，可以放行活查询；正数则等入站旧录像灌完。
+    let hostReply: 'drop-all' | 'replay' | 'live' = 'drop-all'
+    let replayLeft = 0
+    // replayingBacklog：只在确实有旧录像（或旧服务端无法说明长度）时置位。
     // 这段期间 xterm 解析到历史里的 1004h 会合成 [I]/[O]，那不是用户动作。
     let replayingBacklog = false
     const finishReplay = () => {
@@ -264,8 +268,11 @@ export function TerminalTab({
       // 不是用户按键。经 WebSocket 绕一圈再写进 PTY 经常迟到，切 tab 重放
       // 历史时更会把一串回包打进当前前台进程——zsh 就显示成乱码。
       if (isTerminalHostResponse(rest)) {
-        logTermHost(label, rest)
-        return
+        if (hostReply !== 'live') {
+          logTermHost(label, rest)
+          return
+        }
+        logTermKeepalive(label, 'host-pass', { 字节: rest.length })
       }
       logTermInput(label, rest, wsStatus)
       handle?.send(new TextEncoder().encode(rest))
@@ -393,9 +400,22 @@ export function TerminalTab({
       handle = connectPty({
         sessionId: id,
         machine: base.machine,
-        onAttached: ({ truncated }) => {
-          // 下一帧二进制就是 backlog（hostproc 先 attached 再整段回放）。
-          replayingBacklog = true
+        onAttached: ({ truncated, backlog_bytes }) => {
+          if (typeof backlog_bytes !== 'number') {
+            // 旧服务端没有长度，无法安全判断哪一帧是回放；维持全丢，且保留
+            // B270 首帧后的 nudge 语义。
+            hostReply = 'drop-all'
+            replayLeft = 0
+            replayingBacklog = true
+          } else if (backlog_bytes === 0) {
+            hostReply = 'live'
+            replayLeft = 0
+            replayingBacklog = false
+          } else {
+            hostReply = 'replay'
+            replayLeft = backlog_bytes
+            replayingBacklog = true
+          }
           // 服务端说中间丢了一段：屏幕上现有的内容与即将到来的回放接不上，
           // 不清就会把同一段输出画两遍
           if (truncated) term.clear()
@@ -428,7 +448,25 @@ export function TerminalTab({
           handle?.resize(term.cols, term.rows)
         },
         onData: (bytes) => {
-          if (bytes.byteLength === 0) {
+          const n = bytes.byteLength
+          if (hostReply === 'replay' && n > 0) {
+            replayLeft = Math.max(0, replayLeft - n)
+            const last = replayLeft === 0
+            const before = `${term.buffer.active.type}/${term.modes.mouseTrackingMode}/${term.modes.sendFocusMode}`
+            term.write(bytes, () => {
+              const after = `${term.buffer.active.type}/${term.modes.mouseTrackingMode}/${term.modes.sendFocusMode}`
+              if (after !== before) {
+                b270('tui-mode', { 从: before, 到: after, ...snap() })
+              }
+              if (last) {
+                hostReply = 'live'
+                logTermKeepalive(label, 'host-live', { 原因: 'backlog-done' })
+                finishReplay()
+              }
+            })
+            return
+          }
+          if (n === 0) {
             finishReplay()
             return
           }
@@ -438,7 +476,7 @@ export function TerminalTab({
             if (after !== before) {
               b270('tui-mode', { 从: before, 到: after, ...snap() })
             }
-            finishReplay()
+            if (hostReply !== 'live') finishReplay()
           })
         },
         onExit: (code) => {

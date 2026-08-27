@@ -53,10 +53,9 @@ function consumeOne(s: string): number {
 
 // isFocusReport 判断 data 是不是 xterm 在 DECSET 1004 下发出的焦点报告。
 //
-// 活着的 `[I]` / `[O]` 必须上送 PTY（TUI 靠它们暂停/恢复输入）。
-// 环形缓冲重放时 xterm 解析到历史里的 `CSI ? 1004 h` 会再发一次——
-// 没有 `.focus` 类就发 `[O]`，把还在跑的 TUI 打成失焦。那种要拦，
-// 所以焦点报告不进 isTerminalHostResponse，由调用方按「是否在重放」决定。
+// B270 起 `[I]` / `[O]` 一律不上送 PTY。环形缓冲重放时 xterm 解析到历史里的
+// `CSI ? 1004 h` 会再发一次——没有 `.focus` 类就发 `[O]`，把还在跑的 TUI
+// 打成失焦。这里仍只做识别，是否记录与丢弃由 TerminalTab 决定。
 export function isFocusReport(data: string): boolean {
   return data === '\x1b[I' || data === '\x1b[O'
 }

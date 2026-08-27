@@ -274,6 +274,69 @@ describe('TerminalTab', () => {
     expect(send).not.toHaveBeenCalled()
   })
 
+  it('backlog_bytes 为 0 时设备回包上送——新终端没有旧录像', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn(), debug: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
+    }
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    termOnData!('\x1b[>0;276;0c')
+    expect(new TextDecoder().decode(send.mock.calls[0][0])).toBe('\x1b[>0;276;0c')
+  })
+
+  it('缺 backlog_bytes 时设备回包仍不上送——旧服务端维持全丢', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn(), debug: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
+    }
+    opts.onAttached({ since: 0, truncated: false })
+    termOnData!('\x1b[>0;276;0c')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('回放字节未灌完时 DA 不上送，灌完且 write 回调之后才上送', async () => {
+    const send = vi.fn()
+    let writeCb: (() => void) | undefined
+    termInstance.write.mockImplementation((_data: unknown, cb?: () => void) => {
+      writeCb = cb
+    })
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn(), debug: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
+      onData: (bytes: Uint8Array) => void
+    }
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 4 })
+    opts.onData(new TextEncoder().encode('abcd'))
+    termOnData!('\x1b[>0;276;0c')
+    expect(send).not.toHaveBeenCalled()
+    writeCb?.()
+    send.mockClear()
+    termOnData!('\x1b[>0;276;0c')
+    expect(new TextDecoder().decode(send.mock.calls[0][0])).toBe('\x1b[>0;276;0c')
+  })
+
+  it('backlog_bytes 为 0 时 [I]/[O] 仍然不上送', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn(), debug: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
+    }
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    termOnData!('\x1b[O')
+    termOnData!('\x1b[I')
+    expect(send).not.toHaveBeenCalled()
+  })
+
   it('用户按键仍然上送', async () => {
     const send = vi.fn()
     connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })

@@ -126,7 +126,7 @@ export function logTermFix(label: string, kind: '补发' | '让给 xterm' | '拦
   console.debug('[term:fix]', { 终端: label, 动作: kind, 原文: JSON.stringify(text) })
 }
 
-// logTermHost 记一次「拦下设备回包、不上送 PTY」。
+// logTermHost 记一次被拦下的设备回包。
 //
 // 参数：label 是终端标识；data 是被丢弃的原文。
 // 成功路径也打：切 tab 重放历史时这条会成串出现，正好用来确认泄漏已经被拦住，
