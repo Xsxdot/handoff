@@ -31,3 +31,4 @@
 - 2026-08-28 计划结构核对命令 `rg -n '^## (1|2|3|4)\\.|^### [1-4]\\.[1-9]|Consumes：|Produces|基线|最小测试范围|slog|注释|序列化边界|缺陷族|接缝双向' docs/superpowers/plans/b286-plan.md` 实际退出 0，输出包含四个主节、两个 task 的基线/测试范围/日志/注释/序列化/缺陷族/接缝段及 Consumes/Produces；原始输出已由本回合命令取得。
 - 2026-08-28 计划自检命令 `git diff --check` 实际退出 0，原始输出为空。
 - 2026-08-28 计划提交前 `git diff --name-only` 实际输出仅 `docs/superpowers/specs/b286-ledger.md`；计划文件因尚未跟踪不出现在该命令输出。`git status --short --branch` 实际输出为 `## cards/B286-charter`、` M docs/superpowers/specs/b286-ledger.md`、`?? docs/superpowers/plans/b286-plan.md`。
+- 2026-08-28 首次文档提交实际成功：`b3447286 docs(B286): add implementation plan`；`git show --stat --oneline --summary HEAD` 实际显示 `docs/superpowers/plans/b286-plan.md | 987`、`docs/superpowers/specs/b286-ledger.md | 20`、共 `1007 insertions(+)`。提交后 `git status --short --branch` 实际仅输出 `## cards/B286-charter`；`git diff --check` 实际退出 0 且无输出；再次占位符扫描实际退出 1 且无输出。
