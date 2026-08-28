@@ -1,0 +1,1077 @@
+<!doctype html>
+<!--
+  工作台（/）—— 镜像真实控制台的三栏 + 中央 TUI tab 当前形态。
+  TUI 已完成对话式重构（2026-08-17）：整个 tab 只有一个滚动区，事件人话化内联，
+  原始数据收进「调试」抽屉，waiting_review 时右侧滑出审阅栏，底部对话式 composer。
+  镜像的实现：web/src/app/task/{TuiHeader,ConversationStream,ToolCard,streamGroups,
+  ReviewSidePanel,Composer,DebugDrawer}.tsx 与 workbench/TuiTab.tsx。
+  看板/工单为 <dialog> 弹层，不单独成页。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · 工作台</title>
+<link rel="stylesheet" href="shared/styles.css">
+<style>
+  /* ---------- 整体骨架：头 / (流 + 审阅栏) / composer ---------- */
+  .tui { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+  /* 页头两行：第一行身份 + 动作；第二行遥测（模型/回合/时长/ctx），小字浅色 */
+  .tui-head {
+    display: flex; flex-direction: column; gap: 2px;
+    padding: 8px 14px 7px; border-bottom: 1px solid var(--border);
+  }
+  .tui-head .row { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .tui-head .title { font-weight: 600; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .tui-head .telemetry { font-size: 12px; color: var(--muted-foreground); display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .tui-head .telemetry .sep { opacity: .5; }
+  .tui-main { flex: 1; min-height: 0; display: flex; }
+
+  /* ---------- 会话流：唯一滚动区，限宽居中 ---------- */
+  .stream-wrap { flex: 1; min-width: 0; overflow-y: auto; }
+  .stream { max-width: 760px; margin: 0 auto; padding: 20px 24px 32px; }
+  .stream .load-earlier { display: flex; justify-content: center; margin-bottom: 12px; }
+
+  .turn-sep {
+    display: flex; align-items: center; gap: 10px;
+    margin: 22px 0 14px; font-size: 12px; color: var(--muted-foreground);
+  }
+  .turn-sep:first-child { margin-top: 0; }
+  .turn-sep::before, .turn-sep::after { content: ""; height: 1px; flex: 1; background: var(--border); }
+  .turn-sep b { color: var(--foreground); font-weight: 600; }
+
+  /* 审核者指令：对话里「我方」的气泡，右对齐区分方向 */
+  .msg-user {
+    /* width:fit-content + margin-left:auto 才真正靠右：block 盒子 width:auto 时
+       margin-left:auto 会解析成 0，气泡看起来像从左边铺开 */
+    width: fit-content; max-width: 78%;
+    margin: 12px 0 12px auto;
+    background: var(--muted); border-radius: 12px 12px 2px 12px;
+    padding: 8px 12px; font-size: 13px; line-height: 1.6;
+  }
+  .msg-user .who { text-align: right; font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px; }
+
+  /* 模型正文：不装盒子，就是正文 */
+  .msg-model { margin: 10px 0; font-size: 13.5px; line-height: 1.7; }
+  .msg-model p { margin: 0 0 8px; }
+  .msg-model code { font-family: var(--font-mono); font-size: 12px; background: var(--muted); padding: 1px 4px; border-radius: 4px; }
+
+  /* ---- 非正文元素的统一语言：左对齐浅色元数据行 ----
+     思维链 / 工具行 / 生命周期事件全部同一形态（12px、同一左轨、行首小符号），
+     区别只在行首符号与可展开与否。会话里有「表面」的只剩：审核者气泡、
+     模型正文、交付摘要卡——主次一眼可分 */
+  .meta-line { margin: 5px 0; font-size: 12px; color: var(--muted-foreground); }
+  .meta-line > summary, .meta-line > .line {
+    cursor: default; list-style: none;
+    display: flex; align-items: center; gap: 8px; min-width: 0;
+    padding: 2px 0; line-height: 1.5;
+  }
+  details.meta-line > summary { cursor: pointer; }
+  details.meta-line > summary:hover { color: var(--foreground); }
+  .meta-line .glyph { flex-shrink: 0; width: 14px; text-align: center; }
+  .meta-line .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; margin: 0 3.5px; }
+  .meta-line .dot.fail { background: var(--destructive); }
+  .meta-line .dot.busy { background: var(--amber); animation: pulse 1.2s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .meta-line .name { font-weight: 500; color: var(--foreground); white-space: nowrap; flex-shrink: 0; }
+  .meta-line .arg { font-family: var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .meta-line .chev { margin-left: auto; flex-shrink: 0; font-size: 11px; opacity: 0; }
+  details.meta-line > summary:hover .chev { opacity: 1; }
+  .meta-line .body {
+    margin: 4px 0 4px 7px; padding: 6px 12px; border-left: 2px solid var(--border);
+    font-size: 12.5px; line-height: 1.7; color: var(--muted-foreground);
+  }
+  .meta-line .body.mono { font-family: var(--font-mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 260px; overflow-y: auto; }
+  .meta-line.warn, .meta-line.warn .name { color: var(--amber); }
+
+  /* 工具折组：连续 ≥3 条工具行折成一行摘要，点开平铺原行。
+     真机走查发现执行器动辄连发十几条命令，逐行平铺会把正文淹掉 */
+  .tool-group { margin: 5px 0; font-size: 12px; }
+  .tool-group > summary {
+    list-style: none; cursor: pointer; display: flex; align-items: center; gap: 8px;
+    padding: 2px 0; color: var(--muted-foreground);
+  }
+  .tool-group > summary:hover { color: var(--foreground); }
+  .tool-group > summary .caret { width: 14px; text-align: center; flex-shrink: 0; transition: transform .12s; }
+  .tool-group[open] > summary .caret { transform: rotate(90deg); }
+  .tool-group .fail { color: var(--destructive); }
+  .tool-group .members { margin-left: 7px; padding-left: 12px; border-left: 2px solid var(--border); }
+
+  /* 运行中指示：几十秒没有新输出时会补一句「已 N 秒」，避免界面看着像死了 */
+  .running-line { margin: 8px 0; font-size: 12px; color: var(--muted-foreground); display: flex; align-items: center; gap: 8px; }
+  /* display:flex 会盖掉 UA 的 [hidden]{display:none}，必须自己再声明一次 */
+  .running-line[hidden] { display: none; }
+  .running-line .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); animation: pulse 1.2s infinite; }
+
+  /* 交付摘要卡：模型报工的结构化收尾 */
+  .delivery {
+    margin: 12px 0; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px;
+    background: var(--sidebar); font-size: 13px;
+  }
+  .delivery .d-title { font-weight: 600; margin-bottom: 6px; display: flex; align-items: center; gap: 8px; }
+  .delivery dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font-size: 12.5px; }
+  .delivery dt { color: var(--muted-foreground); }
+  .delivery dd { margin: 0; font-family: var(--font-mono); font-size: 12px; word-break: break-all; }
+
+  /* ---------- 审阅栏：右侧滑出 ---------- */
+  .review {
+    width: 44%; min-width: 400px; max-width: 620px;
+    border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0;
+    background: var(--background);
+  }
+  .review.hidden { display: none; }
+  .review .r-head { display: flex; align-items: center; gap: 6px; padding: 8px 12px; border-bottom: 1px solid var(--border); }
+  .review .r-head .rtab { border: none; background: none; padding: 5px 12px; border-radius: 6px; font-size: 12.5px; cursor: pointer; color: var(--muted-foreground); }
+  .review .r-head .rtab.active { background: var(--muted); color: var(--foreground); font-weight: 500; }
+  .review .r-head .close { margin-left: auto; border: none; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 14px; padding: 4px; }
+  .review .r-body { flex: 1; min-height: 0; overflow-y: auto; padding: 10px 12px; }
+
+  /* diff：按文件分组，行级着色 */
+  .dstat { font-size: 12px; color: var(--muted-foreground); margin-bottom: 8px; }
+  details.dfile { border: 1px solid var(--border); border-radius: 8px; margin-bottom: 8px; overflow: hidden; }
+  details.dfile summary { cursor: pointer; list-style: none; display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: var(--sidebar); font-family: var(--font-mono); font-size: 12px; }
+  details.dfile summary .plus { color: var(--green); } details.dfile summary .minus { color: var(--destructive); }
+  details.dfile summary .chev { margin-left: auto; color: var(--muted-foreground); font-size: 11px; }
+  .dlines { font-family: var(--font-mono); font-size: 12px; line-height: 1.55; overflow-x: auto; }
+  .dline { padding: 0 10px; white-space: pre; }
+  .dline.hunk { color: var(--muted-foreground); background: var(--sidebar); padding: 2px 10px; }
+  .dline.add { background: #f0fdf4; color: #166534; }
+  .dline.del { background: #fef2f2; color: #991b1b; }
+
+  .r-row { display: flex; gap: 8px; margin-bottom: 8px; }
+  .r-out { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-family: var(--font-mono); font-size: 12px; line-height: 1.6; white-space: pre-wrap; max-height: 50vh; overflow-y: auto; }
+
+  /* ---------- composer ---------- */
+  .composer { border-top: 1px solid var(--border); padding: 10px 14px 12px; }
+  .composer .inner { max-width: 760px; margin: 0 auto; }
+  .composer .hint { font-size: 12px; color: var(--muted-foreground); margin-bottom: 6px; }
+  .composer .box {
+    border: 1px solid var(--border); border-radius: 10px; padding: 8px 10px 6px;
+    display: flex; flex-direction: column; gap: 6px; background: var(--background);
+  }
+  .composer .box:focus-within { border-color: #a3a3a3; }
+  .composer textarea {
+    border: none; resize: none; outline: none; font-family: var(--font-sans);
+    font-size: 13px; line-height: 1.6; min-height: 40px; background: transparent; color: var(--foreground);
+  }
+  .composer .actions { display: flex; align-items: center; gap: 8px; }
+  .composer .actions .spacer { flex: 1; }
+  .composer .stop { color: var(--destructive); background: none; border: none; font-size: 12px; cursor: pointer; padding: 4px 6px; }
+
+  /* context 占用小表：模型名旁的一眼读数，点开看累计账目 */
+  .ctx-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; color: var(--muted-foreground); cursor: pointer; list-style: none;
+  }
+  .ctx-chip .bar { width: 56px; height: 5px; border-radius: 3px; background: var(--muted); overflow: hidden; }
+  .ctx-chip .bar i { display: block; height: 100%; width: 21%; background: var(--green); }
+  .usage-pop {
+    position: absolute; left: 0; top: 30px; z-index: 10; width: 260px;
+    background: var(--background); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 12px; box-shadow: 0 4px 16px rgba(0,0,0,.08); font-size: 12px;
+  }
+  .usage-pop dl { display: grid; grid-template-columns: auto 1fr; gap: 3px 10px; margin: 0; }
+  .usage-pop dt { color: var(--muted-foreground); }
+  .usage-pop dd { margin: 0; font-family: var(--font-mono); text-align: right; }
+  .usage-pop .sec { font-weight: 600; margin: 6px 0 4px; font-size: 12px; }
+  .usage-pop .sec:first-child { margin-top: 0; }
+
+  /* 回合下拉：回合数本身就是跳转入口，不再单设按钮 */
+  .turn-pop {
+    position: absolute; left: 0; top: 22px; z-index: 10; min-width: 200px;
+    background: var(--background); border: 1px solid var(--border); border-radius: 8px;
+    padding: 4px; box-shadow: 0 4px 16px rgba(0,0,0,.08);
+  }
+  .turn-pop a { display: block; padding: 5px 10px; font-size: 12px; border-radius: 5px; text-decoration: none; color: var(--foreground); }
+  .turn-pop a:hover { background: var(--muted); }
+  .turn-pop p { margin: 2px 0 0; padding: 4px 10px; font-size: 11px; color: var(--muted-foreground); }
+
+  .hbtn { border: 1px solid var(--border); background: var(--background); border-radius: 6px; padding: 3px 10px; font-size: 12px; cursor: pointer; }
+  .hbtn:hover { background: var(--muted); }
+  .hbtn.on { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+
+  /* ---- B265：IM 悬浮按钮 + 微信风格面板 ---- */
+  .im-dock { position: fixed; right: 20px; bottom: 80px; z-index: 40; }
+  .im-fab {
+    width: 48px; height: 48px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--background); box-shadow: 0 4px 16px rgba(0,0,0,.15);
+    cursor: pointer; font-size: 18px; position: relative;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .im-fab-badge {
+    position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px;
+    border-radius: 9px; background: #fa5151; color: #fff; font-size: 10px;
+    display: flex; align-items: center; justify-content: center; padding: 0 4px;
+  }
+  .im-panel-float {
+    position: absolute; right: 0; bottom: 56px; width: 360px; height: 520px;
+    background: var(--background); border: 1px solid var(--border); border-radius: 12px;
+    box-shadow: 0 12px 40px rgba(0,0,0,.18); display: flex; flex-direction: column;
+    overflow: hidden;
+  }
+  .im-panel-float[hidden] { display: none; }
+  .im-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 10px; }
+  .im-title { font-weight: 600; font-size: 15px; flex: 1; }
+  .im-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+  /* 筛选行：纯文字项（参考企业微信消息页），不做成按钮 */
+  .im-filters { display: flex; align-items: center; gap: 2px; padding: 2px 10px 8px; border-bottom: 1px solid var(--border); }
+  .im-filter { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: none; border-radius: 6px; background: none; font-size: 12.5px; color: var(--foreground); cursor: pointer; line-height: 1.5; }
+  .im-filter:hover { background: var(--muted); }
+  .im-filter.on { color: var(--amber); font-weight: 600; background: #fffbeb; }
+  .im-filter select { appearance: none; -webkit-appearance: none; border: none; background: transparent; font: inherit; color: inherit; cursor: pointer; padding: 0; outline: none; }
+  .im-filter .caret { font-size: 10px; color: var(--muted-foreground); }
+  .im-filter .fcnt { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; background: #fef3c7; color: var(--amber); font-size: 10.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+  .im-filter.on .fcnt { background: var(--amber); color: #fff; }
+  .im-filters .sep { width: 1px; height: 14px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
+
+  /* 会话列表：微信行式——分隔线从头像右侧起，未读数红徽章压头像角 */
+  .im-list { flex: 1; overflow-y: auto; }
+  .im-conv { display: flex; gap: 12px; padding: 11px 0 0 14px; cursor: pointer; }
+  .im-conv[hidden] { display: none; }
+  .im-conv:hover { background: #f5f5f5; }
+  .im-conv.needs { background: #fffbeb; }
+  .im-conv.needs:hover { background: #fef3c7; }
+  .im-conv-body { flex: 1; min-width: 0; padding: 1px 14px 11px 0; border-bottom: 1px solid #f0f0f0; }
+  .im-conv:last-child .im-conv-body { border-bottom: none; }
+  .im-avatar { position: relative; width: 44px; height: 44px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .im-avatar .abadge { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #fa5151; color: #fff; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px #fff; }
+  .im-conv.needs .im-avatar .abadge { box-shadow: 0 0 0 2px #fffbeb; }
+  .im-conv-top { display: flex; align-items: baseline; gap: 8px; }
+  .im-conv-name { font-size: 14px; color: #0a0a0a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .im-conv.unread .im-conv-name { font-weight: 600; }
+  .im-conv-time { font-size: 11px; color: var(--muted-foreground); flex-shrink: 0; margin-left: auto; }
+  .im-conv-preview { font-size: 12.5px; color: var(--muted-foreground); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .im-conv-preview .pflag { color: var(--amber); font-weight: 600; }
+
+  /* 房间聊天：选定方案（原变体 B）——浅灰底 + 磨砂玻璃气泡（对方磨砂白 / 自己磨砂黑）、圆头像、胶囊输入 */
+  .im-room { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .im-room[hidden], .im-room-detail[hidden] { display: none; }
+  .im-room-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .im-room-name { font-weight: 600; font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .im-room-msgs { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; background: #fafafa; }
+  .im-m-row { display: flex; gap: 9px; align-items: flex-start; }
+  .im-m-row.right { justify-content: flex-end; }
+  .im-m-avatar { width: 36px; height: 36px; border-radius: 50%; background: rgba(255,255,255,.7); border: 1px solid rgba(255,255,255,.8); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .im-m-bubble { max-width: 72%; padding: 9px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.55; background: rgba(255,255,255,.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.8); box-shadow: 0 4px 16px rgba(15,23,42,.05); }
+  .im-m-row.left .im-m-bubble { border-top-left-radius: 4px; }
+  .im-m-row.right .im-m-bubble { border-top-right-radius: 4px; }
+  .im-m-bubble.user { background: rgba(17,24,39,.85); border-color: transparent; color: #f9fafb; }
+  .im-m-sys { text-align: center; font-size: 11px; color: #9ca3af; }
+  .im-room-input { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--background); }
+  .im-room-input .input { flex: 1; border-radius: 999px; }
+
+  /* 房间详情：浅灰底 + 磨砂卡 */
+  .im-room-detail { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .im-detail-body { flex: 1; overflow-y: auto; padding: 14px; background: #fafafa; }
+  .im-detail-sec { margin-bottom: 14px; }
+  .im-detail-title { font-size: 12px; font-weight: 500; color: var(--muted-foreground); margin: 0 2px 6px; }
+  .im-coord-card { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid rgba(255,255,255,.8); border-radius: 12px; background: rgba(255,255,255,.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: 0 4px 16px rgba(15,23,42,.05); }
+  .im-coord-avatar { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; flex-shrink: 0; cursor: pointer; }
+  .im-coord-avatar:hover { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .im-coord-info { flex: 1; min-width: 0; }
+  .im-coord-name { font-weight: 600; font-size: 13.5px; }
+  .im-coord-meta { font-size: 12px; color: var(--muted-foreground); margin-top: 2px; }
+  .im-card-mini { border: 1px solid rgba(255,255,255,.8); border-radius: 12px; padding: 12px; background: rgba(255,255,255,.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: 0 4px 16px rgba(15,23,42,.05); }
+  .im-card-id { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); }
+  .im-card-title { font-weight: 600; font-size: 13.5px; margin: 4px 0 8px; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span>handoff</span>
+      <!-- 显示偏好：真实前端是 IconMenu，勾选项与单选项混排 -->
+      <button class="icon-btn" id="prefsBtn" title="显示偏好">☰</button>
+    </div>
+    <!-- 顶部搜索：真实前端 ⌘K 聚焦到这里，过滤项目/机器/任务 -->
+    <div class="tree-search">
+      <input class="input sm" id="treeSearch" placeholder="搜索项目、机器或任务">
+      <kbd class="kbd">⌘K</kbd>
+    </div>
+    <div class="tree">
+      <div class="tree-group">
+        <!-- 机器行 hover 才露出动作入口；不可达的机器不给「新建工作树」 -->
+        <div class="tree-label machine-row">
+          <span>本机</span>
+          <span class="row-actions">
+            <button class="icon-btn xs" id="newWtBtn" title="新建工作树">＋</button>
+            <button class="icon-btn xs" title="更多">⋯</button>
+          </span>
+        </div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item selected">└ 7a8334f4（工作树）</a>
+        <a class="tree-item tree-task">● B93 基准评测 opencode-qwen</a>
+        <!-- 「已隐藏 N 个目录」：受显示偏好里的「隐藏无活跃任务的工作树」影响 -->
+        <a class="tree-item dim-item">已隐藏 3 个目录</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label machine-row">
+          <span>mac-02</span>
+          <span class="row-actions">
+            <button class="icon-btn xs" title="新建工作树">＋</button>
+            <button class="icon-btn xs" title="更多">⋯</button>
+          </span>
+        </div>
+        <a class="tree-item">gokit</a>
+      </div>
+    </div>
+    <!-- 底部图标区：08-18 把看板从左栏顶部挪到这里，与工单、设置并列 -->
+    <div class="dock">
+      <a class="dock-btn" href="pages/board.html" title="工作项账本">▤<span class="badge dock-badge">3</span></a>
+      <button class="dock-btn" id="openBoard" title="任务看板">▦<span class="dot amber"></span></button>
+      <a class="dock-btn" href="pages/settings.html" title="设置">⚙</a>
+      <button class="dock-btn" id="openHome" title="home 基准终端">▭</button>
+      <button class="dock-btn" title="添加项目">＋</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="breadcrumb">本机 / handoff / worktrees / 7a8334f4</div>
+    <div class="tabbar">
+      <button class="tab active" aria-current="page">TUI · 7a8334f4</button>
+      <button class="tab">终端 1</button>
+      <button class="tab">README.md</button>
+      <button class="tab-add">＋</button>
+    </div>
+
+    <main class="content">
+      <div class="tui">
+        <!-- 薄页头：两行。第一行身份 + 动作；第二行遥测 -->
+        <div class="tui-head">
+          <div class="row">
+            <span class="title">B93 基准评测 opencode-qwen</span>
+            <span class="badge amber">待审阅</span>
+            <span style="margin-left:auto"></span>
+            <button class="hbtn on" id="reviewToggle">审阅栏</button>
+            <button class="hbtn" id="debugBtn">调试</button>
+          </div>
+          <div class="row telemetry">
+            <span>opencode · qwen3-coder</span>
+            <span class="sep">·</span>
+            <details style="position:relative">
+              <summary style="list-style:none;cursor:pointer" title="跳转回合">回合 2 ▾</summary>
+              <div class="turn-pop">
+                <a href="#turn-1" onclick="this.closest('details').open=false">回合 1 · 派发 11:16</a>
+                <a href="#turn-2" onclick="this.closest('details').open=false">回合 2 · 续发指令 14:20</a>
+                <!-- 锚点只覆盖已加载范围，必须写出来——不假装是全量目录；
+                     跳更早的回合时会一边回翻加载一边跳 -->
+                <p>仅列出已加载回合；更早的回合会边跳边加载</p>
+              </div>
+            </details>
+            <span class="sep">·</span>
+            <span>已运行 3 小时 14 分</span>
+            <span class="sep">·</span>
+            <!-- context 占用：executor 报了 context_window 才显示百分比条；
+                 只报绝对值时退化成 "ctx 41.2k"。点开是两口径的完整账目 -->
+            <details style="position:relative">
+              <summary class="ctx-chip">
+                <span class="bar"><i></i></span>
+                <span>ctx 41.2k / 200k</span>
+              </summary>
+              <div class="usage-pop">
+                <div class="sec">当前占用</div>
+                <dl><dt>context</dt><dd>41,236 / 200,000（21%）</dd></dl>
+                <div class="sec">累计消耗</div>
+                <dl>
+                  <dt>输入</dt><dd>182.4k</dd>
+                  <dt>缓存命中</dt><dd>1.21M</dd>
+                  <dt>输出</dt><dd>96.8k</dd>
+                  <dt>合计</dt><dd>1.49M</dd>
+                  <dt>花费</dt><dd>$0.38 <span class="dim" style="font-family:var(--font-sans)">（估算）</span></dd>
+                </dl>
+              </div>
+            </details>
+          </div>
+        </div>
+
+        <div class="tui-main">
+          <!-- 会话流：唯一的滚动区 -->
+          <div class="stream-wrap">
+            <div class="stream">
+              <!-- 滚到近顶会自动回翻；按钮是显式入口，到文件头后两者一起消失 -->
+              <div class="load-earlier"><button class="btn sm">↑ 加载更早</button></div>
+
+              <div class="turn-sep" id="turn-1"><span><b>回合 1</b> · 派发 · 11:16</span></div>
+
+              <div class="meta-line"><div class="line"><span class="glyph">◇</span>已派发给 opencode（默认模型），工作树 7a8334f4</div></div>
+
+              <div class="msg-model"><p>收到计划。先核对计划事实表里的关键坐标，再建 ledger 和 todo，然后派发 Task 1。</p></div>
+
+              <details class="meta-line">
+                <summary><span class="glyph">▸</span>思维链 · 207 字<span class="chev">展开</span></summary>
+                <div class="body">计划要求六个 task 顺序执行，每个 task 结束做双裁决。先确认分支头与 fact table 的 commit 一致，避免在旧基线上开工……</div>
+              </details>
+
+              <details class="meta-line">
+                <summary><span class="dot"></span><span class="name">读文件</span><span class="arg">docs/plans/b93-plan.md</span><span class="chev">展开</span></summary>
+                <div class="body mono"># B93 实现计划
+Task 1: 终态即清扫 …
+Task 2: watchdog 按任务两档点名 …（其余 180 行）</div>
+              </details>
+
+              <!-- 连续工具行折成一组；组内有失败的在摘要行点出来 -->
+              <details class="tool-group">
+                <summary><span class="caret">▸</span>执行了 4 步操作<span class="fail">（1 失败）</span></summary>
+                <div class="members">
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">npm ci</span><span class="chev">展开</span></summary>
+                    <div class="body mono">added 412 packages in 18s</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot fail"></span><span class="name">跑命令</span><span class="arg">npm test</span><span class="chev">展开</span></summary>
+                    <div class="body mono">Error: EPERM: operation not permitted, mkdir '/var/folders/…/T/…/client'</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">改文件</span><span class="arg">internal/agentd/task.go</span><span class="chev">展开</span></summary>
+                    <div class="body mono">@@ done 幂等：completed 任务重复 done 返回 200</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">go test ./... —— 通过，29 包</span><span class="chev">展开</span></summary>
+                    <div class="body mono">ok  github.com/xsx/handoff/internal/agentd  1.24s
+…（29 包全部 ok，0 FAIL）</div>
+                  </details>
+                </div>
+              </details>
+
+              <div class="meta-line warn"><div class="line"><span class="glyph">⚠</span><span class="name">权限请求</span><span class="arg">external_directory /tmp/*</span>—— 已在工单裁决（允许）</div></div>
+
+              <div class="msg-model"><p>Task 1 实现完成并通过双裁决，commit <code>a41f8c2</code>。继续 Task 2。</p></div>
+
+              <div class="meta-line"><div class="line"><span class="glyph">◇</span>回合 1 结束，进入待审 · 11:31</div></div>
+
+              <div class="turn-sep" id="turn-2"><span><b>回合 2</b> · 续发指令 · 14:20</span></div>
+
+              <div class="msg-user">
+                <div class="who">审核者 · 14:20</div>
+                ledger 里补上变异测试的记录，然后做最后一次全量回归取证再收尾。
+              </div>
+
+              <details class="meta-line">
+                <summary><span class="glyph">▸</span>思维链 · 446 字<span class="chev">展开</span></summary>
+                <div class="body">审核者要求补变异测试记录。ledger 目前只有六个 task 的完成行，需要追加变异测试三条各自的自红验证……收尾前的全量回归要覆盖全部 29 包……</div>
+              </details>
+
+              <details class="tool-group">
+                <summary><span class="caret">▸</span>执行了 3 步操作</summary>
+                <div class="members">
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">文件变更</span><span class="arg">update docs/ledger/b93.md</span><span class="chev">展开</span></summary>
+                    <div class="body mono">+变异测试：三条各自红，恢复后全绿</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">go test ./... —— 通过，29 包，0 FAIL</span><span class="chev">展开</span></summary>
+                    <div class="body mono">ok  github.com/xsx/handoff/internal/agentd  1.19s
+…（全量回归，29 包 0 FAIL）</div>
+                  </details>
+                  <details class="meta-line">
+                    <summary><span class="dot"></span><span class="name">跑命令</span><span class="arg">git commit -m "chore: 更新执行 ledger"</span><span class="chev">展开</span></summary>
+                    <div class="body mono">[bench/b93-opencode-qwen 4e3de5e] chore: 更新执行 ledger</div>
+                  </details>
+                </div>
+              </details>
+
+              <div class="msg-model">
+                <p>B93 全部完成。7 个 commit（6 task + 终审修复波），全量回归 29 包 0 FAIL，工作区干净，未 push。ledger 含变异测试记录与真机复验交接说明（spec §5.8 由审核者执行）。</p>
+              </div>
+
+              <!-- 模型报工的结构化 trailer，解析成交付摘要卡而不是裸 JSON -->
+              <div class="delivery">
+                <div class="d-title">✅ 交付摘要</div>
+                <dl>
+                  <dt>分支</dt><dd>bench/b93-opencode-qwen</dd>
+                  <dt>commit</dt><dd>4e3de5e</dd>
+                  <dt>摘要</dt><dd style="font-family:var(--font-sans);font-size:12.5px">B93 三缺口全落地：终态即清扫、watchdog 按任务两档点名、done 幂等；全回归绿，变异三条各自红</dd>
+                </dl>
+              </div>
+
+              <div class="meta-line"><div class="line"><span class="glyph">◇</span>回合 2 结束，进入待审 · 14:31 —— 右侧审阅栏取证，或在下方下指令</div></div>
+
+              <!-- running 态才出现；十几秒没有新输出时补一句时长，避免界面看着像死了 -->
+              <div class="running-line" hidden><span class="dot"></span>模型工作中…<span>（已 24s 没有新输出）</span></div>
+            </div>
+          </div>
+
+          <!-- 审阅栏：waiting_review 滑出 -->
+          <aside class="review" id="reviewPanel">
+            <div class="r-head">
+              <button class="rtab active" data-tab="diff">改动 <span class="dim">3 文件</span></button>
+              <button class="rtab" data-tab="run">跑命令</button>
+              <button class="rtab" data-tab="file">读文件</button>
+              <button class="close" id="reviewClose" title="收起">✕</button>
+            </div>
+            <div class="r-body">
+              <div class="rp" data-panel="diff">
+                <!-- 基准分支：从仓库分支列表里选，不手填；选中即重算。
+                     老 agentd 没有 /branches 时退化成只有「自动推导」一项 -->
+                <div class="r-row" style="align-items:center">
+                  <label class="dim" style="font-size:12px;flex-shrink:0">基准</label>
+                  <select class="input mono" style="flex:1">
+                    <option value="">自动推导（main）</option>
+                    <option>main</option>
+                    <option>w4-main</option>
+                    <option>release/v0.9</option>
+                  </select>
+                </div>
+                <div class="dstat">相对 <span class="mono">main</span> · 3 个文件 · <span style="color:var(--green)">+21</span> <span style="color:var(--destructive)">−4</span></div>
+
+                <details class="dfile" open>
+                  <summary><span>README.md</span><span class="plus">+2</span><span class="minus">−1</span><span class="chev">收起</span></summary>
+                  <div class="dlines">
+<div class="dline hunk">@@ -247,7 +247,8 @@ Task state machine</div>
+<div class="dline"> retry with `continue`. Only `stop`, or an executor failing to start, lands the task in</div>
+<div class="dline"> `failed` (terminal; re-dispatch to continue). **Both `continue` and `done` require</div>
+<div class="dline del">-`waiting_review`**; any other state returns 409. When in doubt, `handoff show` first.</div>
+<div class="dline add">+`waiting_review`** (except `done` on an already-`completed` task, which is idempotent</div>
+<div class="dline add">+and returns 200); any other state returns 409. When in doubt, `handoff show` first.</div>
+                  </div>
+                </details>
+
+                <details class="dfile">
+                  <summary><span>internal/agentd/task.go</span><span class="plus">+15</span><span class="minus">−3</span><span class="chev">展开</span></summary>
+                  <div class="dlines">
+<div class="dline hunk">@@ -118,9 +118,21 @@ func (s *Server) handleDone(…)</div>
+<div class="dline add">+// done 幂等：completed 任务重复 done 返回 200，不再 409</div>
+<div class="dline add">+if task.State == proto.StateCompleted {</div>
+<div class="dline add">+    writeJSON(w, http.StatusOK, doneResp{AlreadyDone: true})</div>
+<div class="dline add">+    return</div>
+<div class="dline add">+}</div>
+                  </div>
+                </details>
+
+                <details class="dfile">
+                  <summary><span>docs/ledger/b93.md</span><span class="plus">+4</span><span class="minus">−0</span><span class="chev">展开</span></summary>
+                  <div class="dlines">
+<div class="dline add">+Task 6 完成：done 幂等 + 全量回归 29 包 0 FAIL（commit 4e3de5e）</div>
+<div class="dline add">+变异测试：三条各自红，恢复后全绿</div>
+                  </div>
+                </details>
+              </div>
+
+              <div class="rp" data-panel="run" hidden>
+                <div class="r-row">
+                  <input class="input mono" id="runInput" placeholder="在任务工作树跑一条命令，如 go test ./...">
+                  <button class="btn sm primary" id="runBtn">运行</button>
+                </div>
+                <div id="runResult" hidden>
+                  <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px"><span class="badge solid">退出码 0</span><span class="dim" style="font-size:12px">2.4s</span></div>
+                  <div class="r-out">ok  github.com/xsx/handoff/internal/agentd  1.19s
+ok  github.com/xsx/handoff/internal/proto   0.31s
+…（mock 输出）</div>
+                </div>
+              </div>
+
+              <div class="rp" data-panel="file" hidden>
+                <div class="r-row">
+                  <input class="input mono" id="fileInput" placeholder="相对仓库根路径，如 internal/agentd/task.go">
+                  <button class="btn sm primary" id="fileBtn">读取</button>
+                </div>
+                <div class="r-out" id="fileResult" hidden>// task.go —— 任务状态机与推进接口（mock 内容）
+func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) { … }</div>
+              </div>
+            </div>
+          </aside>
+        </div>
+
+        <!-- composer：对话式收口 -->
+        <div class="composer">
+          <div class="inner">
+            <div class="hint">这一轮已干完，等你裁决——下修改指令让它继续，或完成归档。</div>
+            <div class="box">
+              <textarea id="composerText" rows="2" placeholder="下修改指令，回给模型让它继续改…（Enter 发送，Shift+Enter 换行）"></textarea>
+              <div class="actions">
+                <button class="stop" id="stopBtn">停止任务</button>
+                <span class="spacer"></span>
+                <button class="btn sm" id="doneBtn">✓ 完成任务</button>
+                <button class="btn sm primary" id="sendBtn">↑ 续发修改</button>
+              </div>
+            </div>
+            <p class="dim" id="sendFeedback" style="font-size:12px;margin:6px 0 0" hidden>已续发指令（mock），任务回到 running。</p>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <aside class="filetree">
+    <div class="ft-head">文件 · 7a8334f4</div>
+    <div class="ft-item">cmd/</div>
+    <div class="ft-item">internal/</div>
+    <div class="ft-item">web/</div>
+    <div class="ft-item">docs/</div>
+    <div class="ft-item">README.md</div>
+    <div class="ft-item">main.go</div>
+  </aside>
+</div>
+
+<!-- 调试抽屉：原始事件 + 原始正文，日常不可见，排查 adapter 时用 -->
+<dialog id="debugDialog">
+  <div style="padding:16px;width:760px;max-width:92vw">
+    <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">
+      <h3 style="margin:0;font-size:15px">调试数据</h3>
+      <span class="dim" style="font-size:12px">帧渲染出问题时，用原始数据区分「渲染错了」还是「采集错了」</span>
+      <button class="btn sm" id="debugClose" style="margin-left:auto">关闭</button>
+    </div>
+    <div style="display:flex;gap:6px;margin-bottom:8px">
+      <button class="rtab active" data-dtab="events" style="border:1px solid var(--border);background:var(--muted);border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer">原始事件流（58 条）</button>
+      <button class="rtab" data-dtab="render" style="border:1px solid var(--border);background:none;border-radius:6px;padding:4px 12px;font-size:12px;cursor:pointer">原始正文 render.log</button>
+    </div>
+    <div class="dp" data-dpanel="events">
+      <div class="r-out" style="max-height:60vh">#23 progress        2026/8/17 11:16:46  会话就绪
+#24 progress        2026/8/17 11:17:34  Plan
+#26 permission_request  11:27:28  external_directory: /tmp/*
+#28 permission_reuse    11:34:13  [子 agent: Task 1 审查双裁决] bash: rm -rf /var/…（已截断）</div>
+    </div>
+    <div class="dp" data-dpanel="render" hidden>
+      <div class="r-out" style="max-height:60vh">[2026-08-17T11:16:46] session ready
+[2026-08-17T11:17:34] # Plan
+…（render.log 原文，mock）</div>
+    </div>
+  </div>
+</dialog>
+
+<!-- 完成/停止确认（不可逆操作仍要确认，但入口收敛在 composer） -->
+<dialog id="confirmDialog">
+  <div style="padding:20px;width:420px;max-width:90vw">
+    <h3 style="margin:0 0 8px;font-size:15px" id="confirmTitle">完成任务？</h3>
+    <p class="dim" style="font-size:13px;margin:0 0 14px" id="confirmDesc">任务将归档为 completed 并回收执行器。此操作不可撤销。</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn sm" id="confirmCancel">取消</button>
+      <button class="btn sm primary" id="confirmOk">确认</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 看板弹层（形态占位）。列与状态机的映射是硬契约：
+     pending→等待执行；running/waiting_answer→进行中；waiting_review→Review；
+     completed/failed→完成（failed 视觉区分且**不带**干预标记） -->
+<dialog id="boardDialog">
+  <div style="padding:20px;width:860px;max-width:92vw">
+    <h3 style="margin:0 0 12px">任务看板</h3>
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <input class="input sm" style="flex:1" placeholder="按标题/项目筛选（每次打开都重置）">
+      <button class="btn sm">全部机器</button>
+      <button class="btn sm">全部状态</button>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">等待执行</div>
+        <div class="bcard">B96 CLI 契约小修</div>
+      </div>
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">进行中</div>
+        <div class="bcard">B94 web 控制台打磨</div>
+        <!-- waiting_answer：干预标记 + 「等你答复」，后者只出现一次 -->
+        <div class="bcard intervene">B95 grok 权限门<br><span class="badge amber">等你答复</span></div>
+      </div>
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">Review</div>
+        <div class="bcard intervene">B93 基准评测 opencode-qwen<br><span class="badge amber">待审阅</span></div>
+      </div>
+      <div>
+        <div class="dim" style="font-size:12px;margin-bottom:6px">完成</div>
+        <div class="bcard">B92 grok continue 修复</div>
+        <div class="bcard failed">B91 审批噪音（失败）</div>
+      </div>
+    </div>
+    <div style="margin-top:14px;text-align:right"><button class="btn" id="closeBoard">关闭</button></div>
+  </div>
+</dialog>
+
+<!-- 工单弹层（形态占位） -->
+<dialog id="ticketsDialog">
+  <div style="padding:20px;width:560px;max-width:90vw">
+    <h3 style="margin:0 0 12px">工单</h3>
+    <div class="card" style="padding:10px;margin-bottom:8px">
+      <div style="display:flex;gap:8px;align-items:center"><span class="badge amber">permission</span><span style="font-size:13px">external_directory: /tmp/*</span></div>
+      <div style="margin-top:8px;display:flex;gap:8px"><button class="btn sm primary">允许</button><button class="btn sm">拒绝</button></div>
+    </div>
+    <div style="text-align:right"><button class="btn" id="closeTickets">关闭</button></div>
+  </div>
+</dialog>
+
+<!-- 显示偏好（真实前端是左栏顶部的 IconMenu：勾选项 + 单选项 + 分组标题混排） -->
+<dialog id="prefsDialog">
+  <div style="padding:16px;width:280px">
+    <div class="dim" style="font-size:12px;margin-bottom:6px">显示</div>
+    <label style="display:block;font-size:13px;margin-bottom:6px">
+      <input type="checkbox" checked> 隐藏无活跃任务的工作树
+    </label>
+    <label style="display:block;font-size:13px;margin-bottom:10px">
+      <input type="checkbox"> 隐藏已结束分组
+    </label>
+    <div class="dim" style="font-size:12px;margin-bottom:6px">排序方式</div>
+    <label style="display:block;font-size:13px"><input type="radio" name="sort" checked> 活跃优先</label>
+    <label style="display:block;font-size:13px"><input type="radio" name="sort"> 名称</label>
+    <label style="display:block;font-size:13px;margin-bottom:10px"><input type="radio" name="sort"> 最近活动</label>
+    <div class="dim" style="font-size:12px;margin-bottom:6px">项目 · 2</div>
+    <label style="display:block;font-size:13px"><input type="checkbox" checked> handoff</label>
+    <label style="display:block;font-size:13px"><input type="checkbox" checked> gokit</label>
+    <div style="margin-top:14px;text-align:right"><button class="btn sm" id="closePrefs">关闭</button></div>
+  </div>
+</dialog>
+
+<!-- 新建工作树弹层（机器行 hover 入口进入） -->
+<dialog id="newWtDialog">
+  <form id="newWtForm" style="padding:20px;width:460px;max-width:92vw">
+    <h3 style="margin:0 0 12px;font-size:15px">新建工作树</h3>
+    <label style="display:block;font-size:13px;margin-bottom:4px">开发目录</label>
+    <input class="input" value="~/workspace/handoff" style="margin-bottom:10px">
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <label style="font-size:13px"><input type="radio" name="br" checked> 新建分支</label>
+      <label style="font-size:13px"><input type="radio" name="br"> 检出已有分支</label>
+    </div>
+    <label style="display:block;font-size:13px;margin-bottom:4px">分支名</label>
+    <input class="input mono" placeholder="feat/xxx" style="margin-bottom:10px">
+    <label style="display:block;font-size:13px;margin-bottom:4px">基线</label>
+    <input class="input mono" value="handoff/web-console" style="margin-bottom:14px">
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn sm" id="closeNewWt">取消</button>
+      <button type="submit" class="btn sm primary">创建</button>
+    </div>
+    <p class="dim" id="newWtFeedback" style="font-size:12px;margin:10px 0 0" hidden>已创建（mock），数据未真正发送。</p>
+  </form>
+</dialog>
+
+<!-- home 基准终端悬浮窗（桌面壳形态；可收起，会话保留） -->
+<div class="homedock" id="homedock" hidden>
+  <div class="hd-bar">
+    <button class="tab active" style="padding:2px 8px">bash · home 1</button>
+    <button class="icon-btn xs" title="新建">＋</button>
+    <span style="flex:1"></span>
+    <button class="icon-btn xs" id="hideHome" title="收起（会话保留）">－</button>
+  </div>
+  <div class="hd-body">$ handoff status --target mac-02<br>agentd  可用 · 执行者 claude codex grok opencode</div>
+</div>
+
+<script>
+  // 看板/工单弹层：原生 dialog，镜像真实 Shell 的 overlay 行为（同时只开一个）
+  const board = document.getElementById('boardDialog');
+  const tickets = document.getElementById('ticketsDialog');
+  document.getElementById('openBoard').addEventListener('click', () => board.showModal());
+  document.getElementById('closeBoard').addEventListener('click', () => board.close());
+  // 工单弹层入口已随 dock 清理移除，ticketsDialog 暂保留壳（closeTickets 仍可关）
+  // 显示偏好 / 新建工作树 / home 悬浮窗：同为原生 dialog 与 hidden 切换，零依赖
+  const prefs = document.getElementById('prefsDialog');
+  document.getElementById('prefsBtn').addEventListener('click', () => prefs.showModal());
+  document.getElementById('closePrefs').addEventListener('click', () => prefs.close());
+  const newWt = document.getElementById('newWtDialog');
+  document.getElementById('newWtBtn').addEventListener('click', () => newWt.showModal());
+  document.getElementById('closeNewWt').addEventListener('click', () => newWt.close());
+  document.getElementById('newWtForm').addEventListener('submit', (e) => {
+    e.preventDefault(); // 原型不连后端
+    document.getElementById('newWtFeedback').hidden = false;
+  });
+  const home = document.getElementById('homedock');
+  document.getElementById('openHome').addEventListener('click', () => { home.hidden = !home.hidden; });
+  document.getElementById('hideHome').addEventListener('click', () => { home.hidden = true; });
+  document.getElementById('closeTickets').addEventListener('click', () => tickets.close());
+
+  // 审阅栏开合：waiting_review 才有入口，人手动收起后不再抢开
+  const reviewPanel = document.getElementById('reviewPanel');
+  const reviewToggle = document.getElementById('reviewToggle');
+  function setReview(open) {
+    reviewPanel.classList.toggle('hidden', !open);
+    reviewToggle.classList.toggle('on', open);
+  }
+  reviewToggle.addEventListener('click', () => setReview(reviewPanel.classList.contains('hidden')));
+  document.getElementById('reviewClose').addEventListener('click', () => setReview(false));
+
+  // 审阅栏子 tab
+  document.querySelectorAll('.r-head .rtab').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.r-head .rtab').forEach(t => t.classList.remove('active'));
+      document.querySelectorAll('.rp').forEach(p => p.hidden = true);
+      tab.classList.add('active');
+      document.querySelector(`.rp[data-panel="${tab.dataset.tab}"]`).hidden = false;
+    });
+  });
+
+  // 跑命令 / 读文件（mock 反馈）
+  document.getElementById('runBtn').addEventListener('click', () => {
+    if (document.getElementById('runInput').value.trim() === '') return;
+    document.getElementById('runResult').hidden = false;
+  });
+  document.getElementById('fileBtn').addEventListener('click', () => {
+    if (document.getElementById('fileInput').value.trim() === '') return;
+    document.getElementById('fileResult').hidden = false;
+  });
+
+  // 调试抽屉
+  const debugDialog = document.getElementById('debugDialog');
+  document.getElementById('debugBtn').addEventListener('click', () => debugDialog.showModal());
+  document.getElementById('debugClose').addEventListener('click', () => debugDialog.close());
+  document.querySelectorAll('[data-dtab]').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('[data-dtab]').forEach(t => t.style.background = 'none');
+      document.querySelectorAll('.dp').forEach(p => p.hidden = true);
+      tab.style.background = 'var(--muted)';
+      document.querySelector(`.dp[data-dpanel="${tab.dataset.dtab}"]`).hidden = false;
+    });
+  });
+
+  // composer：发送 / 完成 / 停止。完成与停止不可逆，仍走确认弹层
+  const confirmDialog = document.getElementById('confirmDialog');
+  const confirmTitle = document.getElementById('confirmTitle');
+  const confirmDesc = document.getElementById('confirmDesc');
+  document.getElementById('sendBtn').addEventListener('click', () => {
+    const t = document.getElementById('composerText');
+    if (t.value.trim() === '') return;
+    document.getElementById('sendFeedback').hidden = false;   // mock：不真发请求
+    t.value = '';
+  });
+  document.getElementById('composerText').addEventListener('keydown', (e) => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); document.getElementById('sendBtn').click(); }
+  });
+  document.getElementById('doneBtn').addEventListener('click', () => {
+    confirmTitle.textContent = '完成任务？';
+    confirmDesc.textContent = '任务将归档为 completed 并回收执行器。worktree 由 agentd 管理时会被删除。此操作不可撤销。';
+    confirmDialog.showModal();
+  });
+  document.getElementById('stopBtn').addEventListener('click', () => {
+    confirmTitle.textContent = '停止任务？';
+    confirmDesc.textContent = '将停止执行器、作废全部挂起工单，并把任务置为 failed。此操作不可撤销。';
+    confirmDialog.showModal();
+  });
+  document.getElementById('confirmCancel').addEventListener('click', () => confirmDialog.close());
+  document.getElementById('confirmOk').addEventListener('click', () => confirmDialog.close());
+
+  // B265：IM 面板交互（悬浮按钮点开/收起，会话列表 ↔ 房间 ↔ 详情 三态切换）
+  // 注意：IM dock 的 markup 位于本 script 之后（右下角悬浮区），需等 DOM 解析完再接线
+  window.addEventListener('DOMContentLoaded', () => {
+  const imFab = document.getElementById('imFab');
+  const imPanelFloat = document.getElementById('imPanelFloat');
+  const imListView = document.getElementById('imListView');
+  const imRoomView = document.getElementById('imRoomView');
+  const imRoomDetail = document.getElementById('imRoomDetail');
+
+  imFab.addEventListener('click', () => {
+    imPanelFloat.hidden = !imPanelFloat.hidden;
+    if (!imPanelFloat.hidden) {
+      // 回到列表态
+      imListView.hidden = false;
+      imRoomView.hidden = true;
+      imRoomDetail.hidden = true;
+    }
+  });
+  document.getElementById('imCollapseFloat').addEventListener('click', () => {
+    imPanelFloat.hidden = true;
+  });
+
+  // 点击会话进入房间
+  document.querySelectorAll('.im-conv').forEach(el => {
+    el.addEventListener('click', () => {
+      imListView.hidden = true;
+      imRoomView.hidden = false;
+      imRoomDetail.hidden = true;
+      document.getElementById('imRoomName').textContent = el.querySelector('.im-conv-name').textContent;
+    });
+  });
+
+  // 房间返回列表
+  document.getElementById('imBack').addEventListener('click', () => {
+    imListView.hidden = false;
+    imRoomView.hidden = true;
+    imRoomDetail.hidden = true;
+  });
+
+  // 房间详情
+  document.getElementById('imRoomInfo').addEventListener('click', () => {
+    imListView.hidden = true;
+    imRoomView.hidden = true;
+    imRoomDetail.hidden = false;
+  });
+  document.getElementById('imDetailBack').addEventListener('click', () => {
+    imListView.hidden = true;
+    imRoomView.hidden = false;
+    imRoomDetail.hidden = true;
+  });
+
+  // attach 确认
+  const attachDialog = document.getElementById('attachDialog');
+  document.getElementById('imAttachBtn').addEventListener('click', () => attachDialog.showModal());
+  document.getElementById('attachCancel').addEventListener('click', () => attachDialog.close());
+  document.getElementById('attachOk').addEventListener('click', () => {
+    document.getElementById('attachFeedback').hidden = false;
+  });
+
+  // 会话筛选：项目下拉 + 「需要你」开关（文字项，非按钮）；全员房（无项目）不受项目筛选影响
+  let imNeedsOnlyFloat = false;
+  const imConvsFloat = [...document.querySelectorAll('#imListView .im-conv')];
+  document.getElementById('imNeedsCntFloat').textContent = imConvsFloat.filter(e => e.dataset.needs === '1').length;
+  function imApplyFilterFloat() {
+    const fp = document.getElementById('imFProjectFloat').value;
+    imConvsFloat.forEach(el => {
+      const okP = !fp || !el.dataset.project || el.dataset.project === fp;
+      const okN = !imNeedsOnlyFloat || el.dataset.needs === '1';
+      el.hidden = !(okP && okN);
+    });
+  }
+  document.getElementById('imFProjectFloat').addEventListener('change', imApplyFilterFloat);
+  document.getElementById('imFNeedsFloat').addEventListener('click', () => {
+    imNeedsOnlyFloat = !imNeedsOnlyFloat;
+    document.getElementById('imFNeedsFloat').classList.toggle('on', imNeedsOnlyFloat);
+    imApplyFilterFloat();
+  });
+
+  // 协调者头像点击 → attach 确认弹窗（与 attach 按钮同路径）
+  document.getElementById('imCoordAvatarFloat').addEventListener('click', () => attachDialog.showModal());
+  });
+</script>
+
+<!-- B265：IM 悬浮按钮 + 微信风格会话面板（与 home 悬浮窗共用右下角；与 board.html 常驻面板同构） -->
+<div class="im-dock" id="imDock">
+  <button class="im-fab" id="imFab" title="会话（4 条未读）">
+    ◱<span class="im-fab-badge">4</span>
+  </button>
+  <div class="im-panel-float" id="imPanelFloat" hidden>
+    <div class="im-head">
+      <span class="im-title">会话</span>
+      <span class="badge amber" title="4 条未读">4</span>
+      <button class="icon-btn xs" id="imCollapseFloat" title="收起">−</button>
+    </div>
+    <div class="im-body" id="imBodyFloat">
+      <!-- 会话列表态 -->
+      <div class="im-list" id="imListView">
+        <div class="im-filters">
+          <label class="im-filter" title="按项目筛选会话">▦
+            <select id="imFProjectFloat">
+              <option value="">全部项目</option>
+              <option value="handoff">handoff</option>
+              <option value="tk/server">tk/server</option>
+            </select><span class="caret">∨</span>
+          </label>
+          <span class="sep"></span>
+          <button class="im-filter" id="imFNeedsFloat" title="只看需要你的房间">⚑ 需要你 <span class="fcnt" id="imNeedsCntFloat">3</span></button>
+        </div>
+        <!-- 待回复置顶：data-needs 房间排在最前 + 琥珀底 -->
+        <div class="im-conv unread needs active" data-room="B93" data-project="handoff" data-needs="1">
+          <div class="im-avatar" style="background:#dbeafe">B93<span class="abadge">2</span></div>
+          <div class="im-conv-body">
+            <div class="im-conv-top"><span class="im-conv-name">B93 基准评测 opencode-qwen</span><span class="im-conv-time">14:31</span></div>
+            <div class="im-conv-preview"><span class="pflag">[待回复]</span> 协调者：回合 2 结束，进入待审</div>
+          </div>
+        </div>
+        <div class="im-conv unread needs" data-room="B156.2" data-project="handoff" data-needs="1">
+          <div class="im-avatar" style="background:#fef3c7">B156.2<span class="abadge">1</span></div>
+          <div class="im-conv-body">
+            <div class="im-conv-top"><span class="im-conv-name">B156.2 二期·协作层</span><span class="im-conv-time">10:05</span></div>
+            <div class="im-conv-preview"><span class="pflag">[待回复]</span> 推翻级简报：房间模型需调整</div>
+          </div>
+        </div>
+        <div class="im-conv unread needs" data-room="B102" data-project="tk/server" data-needs="1">
+          <div class="im-avatar" style="background:#fee2e2">B102<span class="abadge">1</span></div>
+          <div class="im-conv-body">
+            <div class="im-conv-top"><span class="im-conv-name">B102 订单导出超时优化</span><span class="im-conv-time">09:12</span></div>
+            <div class="im-conv-preview"><span class="pflag">[待回复]</span> 工单 #T-318：超时阈值调到 60s 可以吗</div>
+          </div>
+        </div>
+        <div class="im-conv" data-room="handoff" data-project="handoff">
+          <div class="im-avatar" style="background:#dcfce7">📋</div>
+          <div class="im-conv-body">
+            <div class="im-conv-top"><span class="im-conv-name">handoff 项目群</span><span class="im-conv-time">昨天</span></div>
+            <div class="im-conv-preview">@xushixin B156.2 spec 已更新</div>
+          </div>
+        </div>
+        <div class="im-conv" data-room="B95" data-project="handoff">
+          <div class="im-avatar" style="background:#dbeafe">B95</div>
+          <div class="im-conv-body">
+            <div class="im-conv-top"><span class="im-conv-name">B95 grok 权限门</span><span class="im-conv-time">昨天</span></div>
+            <div class="im-conv-preview">权限请求已批准，继续执行</div>
+          </div>
+        </div>
+        <div class="im-conv" data-room="all" data-project="">
+          <div class="im-avatar" style="background:#f3e8ff">🌐</div>
+          <div class="im-conv-body">
+            <div class="im-conv-top"><span class="im-conv-name">全员群</span><span class="im-conv-time">周三</span></div>
+            <div class="im-conv-preview">agentd v0.3.4 已发布</div>
+          </div>
+        </div>
+      </div>
+      <!-- 房间聊天态（默认隐藏） -->
+      <div class="im-room" id="imRoomView" hidden>
+        <div class="im-room-head">
+          <button class="icon-btn xs" id="imBack" title="返回列表">←</button>
+          <span class="im-room-name" id="imRoomName">B93 基准评测 opencode-qwen</span>
+          <button class="icon-btn xs" id="imRoomInfo" title="房间详情">⋯</button>
+        </div>
+        <div class="im-room-msgs">
+          <div class="im-m-row left">
+            <div class="im-m-avatar">K</div>
+            <div class="im-m-bubble">已派发给 opencode（默认模型），工作树 7a8334f4</div>
+          </div>
+          <div class="im-m-row left">
+            <div class="im-m-avatar">K</div>
+            <div class="im-m-bubble">Task 1 完成，进入待审</div>
+          </div>
+          <div class="im-m-sys">今天 14:20</div>
+          <div class="im-m-row right">
+            <div class="im-m-bubble user">ledger 里补上变异测试的记录，然后做最后一次全量回归取证再收尾</div>
+            <div class="im-m-avatar" style="background:#fde68a">我</div>
+          </div>
+          <div class="im-m-row left">
+            <div class="im-m-avatar">K</div>
+            <div class="im-m-bubble">已收到指令。补充变异测试记录，全量回归通过后收尾。</div>
+          </div>
+          <div class="im-m-sys">今天 14:31</div>
+          <div class="im-m-row left">
+            <div class="im-m-avatar">K</div>
+            <div class="im-m-bubble">回合 2 结束，进入待审</div>
+          </div>
+        </div>
+        <div class="im-room-input">
+          <input class="input sm" placeholder="发消息…">
+          <button class="btn sm primary">发送</button>
+        </div>
+      </div>
+      <!-- 房间详情态（默认隐藏） -->
+      <div class="im-room-detail" id="imRoomDetail" hidden>
+        <div class="im-room-head">
+          <button class="icon-btn xs" id="imDetailBack" title="返回聊天">←</button>
+          <span class="im-room-name">房间详情</span>
+        </div>
+        <div class="im-detail-body">
+          <div class="im-detail-sec">
+            <div class="im-detail-title">协调者（点头像 attach）</div>
+            <div class="im-coord-card" id="imCoordCard">
+              <div class="im-coord-avatar" id="imCoordAvatarFloat" style="background:#dbeafe" title="attach 到该协调者">B93</div>
+              <div class="im-coord-info">
+                <div class="im-coord-name">协调者 Kimi</div>
+                <div class="im-coord-meta">载体：opencode · 本机 · 在线</div>
+              </div>
+              <button class="btn sm" id="imAttachBtn">attach</button>
+            </div>
+          </div>
+          <div class="im-detail-sec">
+            <div class="im-detail-title">卡片</div>
+            <div class="im-card-mini" id="imCardMini">
+              <div class="im-card-id">B93</div>
+              <div class="im-card-title">基准评测 opencode-qwen</div>
+              <div style="display:flex;gap:5px;flex-wrap:wrap">
+                <span class="badge amber">待审阅</span>
+                <span class="badge">handoff · 高优先级</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- attach 确认弹窗 -->
+<dialog id="attachDialog">
+  <div style="padding:20px;width:400px;max-width:90vw">
+    <h3 style="margin:0 0 8px;font-size:15px">attach 协调者会话</h3>
+    <p class="dim" style="font-size:13px;margin:0 0 14px">将在本机目录 <code>~/workspace/handoff</code> 打开终端 tab，并填入：<br><code style="background:var(--muted);padding:2px 6px;border-radius:4px">handoff attach --session B93-coord</code></p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn sm" id="attachCancel">取消</button>
+      <button class="btn sm primary" id="attachOk">打开终端</button>
+    </div>
+    <p class="dim" id="attachFeedback" style="font-size:12px;margin:10px 0 0" hidden>已打开终端 tab 并填入 attach 命令（mock）。</p>
+  </div>
+</dialog>
+
+</body>
+</html>

@@ -1,0 +1,47 @@
+<!--
+  外壳样板（供复制，不被引用执行）——镜像真实控制台 Shell.tsx 的三栏结构：
+  左栏项目树（含底部入口）/ 中央工作台（面包屑 + tab 条 + 内容）/ 右栏文件树。
+  写新页面时整段复制进 <body>，把当前态对应的项加 active / aria-current="page"。
+-->
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">handoff</div>
+    <div class="tree">
+      <div class="tree-group">
+        <div class="tree-label">本机</div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item selected">└ 7a8334f4（工作树）</a>
+        <a class="tree-item tree-task">● B93 基准评测 opencode-qwen</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label">mac-02</div>
+        <a class="tree-item">gokit</a>
+      </div>
+    </div>
+    <div class="footer">
+      <a href="index.html">看板</a>
+      <a>工单 <span class="badge">2</span></a>
+      <a href="pages/settings.html">设置</a>
+      <a>＋ 添加项目</a>
+    </div>
+  </aside>
+  <div class="main">
+    <div class="breadcrumb">本机 / handoff / worktrees / 7a8334f4</div>
+    <div class="tabbar">
+      <button class="tab active" aria-current="page">TUI · 7a8334f4</button>
+      <button class="tab">终端 1</button>
+      <button class="tab">README.md</button>
+      <button class="tab-add">＋</button>
+    </div>
+    <main class="content">
+      <!-- 页面主体内容放这里 -->
+    </main>
+  </div>
+  <aside class="filetree">
+    <div class="ft-head">文件</div>
+    <div class="ft-item">cmd/</div>
+    <div class="ft-item">internal/</div>
+    <div class="ft-item">web/</div>
+    <div class="ft-item">README.md</div>
+  </aside>
+</div>
