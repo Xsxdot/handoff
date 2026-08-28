@@ -214,9 +214,10 @@ export function Shell() {
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
   const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
-  // closingGone：服务端已经查不到这个会话了（最常见是 agentd 重启把内存里的会话
-  // 全清了）。只影响措辞——弹层不能一边说「会终止里面正在运行的命令」，一边
-  // 关的其实是一个早就没了的会话。null = 还没问出来，按「可能还活着」说话
+  // closingGone：服务端已经查不到这个会话了（PTY 会话由 ptyhost 持有、跨 agentd
+  // 重启存活——查不到说明它真的消失了：机器重启、退出 shell 或显式停止）。只影响
+  // 措辞——弹层不能一边说「会终止里面正在运行的命令」，一边关的其实是一个早就
+  // 没了的会话。null = 还没问出来，按「可能还活着」说话
   const [closingGone, setClosingGone] = useState<boolean | null>(null)
   // closingDirtyFile 记「哪个有草稿的文件 tab 正在等确认」。只记位置不记草稿：
   // 草稿仍活在 tab 内容里，确认「不保存，关闭」时 wb.close 会把它一起带走
@@ -267,10 +268,10 @@ export function Shell() {
   // probeClosingSession 向服务端问一句「这个会话还在吗、忙不忙」，答案只用于
   // 弹层措辞，**不阻塞弹层出现**，也不影响能不能确认。
   //
-  // 查不到 = 会话已经不在（agentd 重启是最常见的一种）：那句「会终止正在运行的
-  // 命令」对它是假话，而假话会让用户以为自己正在杀掉什么东西。问不出来
-  // （请求本身失败）时一律退回 null，按「可能还活着」说话——宁可吓一跳，不可
-  // 骗人说没事
+  // 查不到 = 会话已经不在（会话跨 agentd 重启存活，所以「不在」是真的不在——
+  // 机器重启、退出 shell 或显式停止）：那句「会终止正在运行的命令」对它是假话，
+  // 而假话会让用户以为自己正在杀掉什么东西。问不出来（请求本身失败）时一律退回
+  // null，按「可能还活着」说话——宁可吓一跳，不可骗人说没事
   const probeClosingSession = (sessionId: string) => {
     setClosingBusyProc(null)
     setClosingGone(null)
@@ -298,11 +299,11 @@ export function Shell() {
       await deletePtySession(sessionId, machine)
       return true
     } catch (err) {
-      // 404 是**成功**的一种：服务端根本没有这个会话，最常见的是 agentd 重启后
-      // 内存里的会话全没了。此时「不许吞错误」那条纪律护的东西（别把还活着的
-      // shell 从视野里抹掉）根本不存在——已经没有 shell 可留。照旧当失败处理的
-      // 代价是这个 tab 被焊死：确认弹层每次都红字报「会话不存在」，关不掉，也
-      // 没有第二个出口。删除对这一路是幂等的
+      // 404 是**成功**的一种：服务端根本没有这个会话。PTY 会话跨 agentd 重启存活，
+      // 「没有」只能是机器重启、退出 shell 或显式停止之后的真消失。此时「不许吞
+      // 错误」那条纪律护的东西（别把还活着的 shell 从视野里抹掉）根本不存在——
+      // 已经没有 shell 可留。照旧当失败处理的代价是这个 tab 被焊死：确认弹层每次
+      // 都红字报「会话不存在」，关不掉，也没有第二个出口。删除对这一路是幂等的
       if (err instanceof ApiError && err.status === 404) return true
       onError(errorMessage(err))
       return false
@@ -652,7 +653,7 @@ export function Shell() {
         description={
           closingGone === true
             ? // 会话已经不在了：没有东西可终止，这一步只是把 tab 收掉
-              '这个终端会话在服务端已经不存在了（agentd 重启会清掉所有会话）。\n' +
+              '这个终端会话在服务端已经不存在了（终端会话跨 agentd 重启存活，只有机器重启、退出 shell 或显式停止才会让它消失）。\n' +
               '关闭只是把这个 tab 收起来，不会再终止什么。'
             : '关闭会终止这个终端会话，里面正在运行的命令会被一并结束。\n' +
               '只是想切走的话直接切到别的 tab——会话会继续在后台跑。' +

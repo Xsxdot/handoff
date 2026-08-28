@@ -12,7 +12,7 @@
 //   - 不决定「选中哪个目录」：selected 原样透传，校验它还在不在树上是 Shell 的事
 //     （要等项目树，spec §6）
 //   - 不打日志：它不知道自己跑在什么上下文里；统计量以返回值给出，由调用方记录
-import type { PtySession, WorkbenchStateResp } from '../../api/types'
+import type { MachineStatus, PtySession, WorkbenchStateResp } from '../../api/types'
 import {
   clampGeom,
   decodeDock,
@@ -58,6 +58,11 @@ export function baseOfSession(s: PtySession): BaseDir {
 export interface RestoreInput {
   state: WorkbenchStateResp
   sessions: PtySession[]
+  // scope=all 扇出的 machines 行（PtySessionsResp.machines，types.ts:730）。方案3 的
+  // 门控数据：某台机器的行缺席或 ok=false 时，它名下的会话引用不剥——扇出缺席 ≠ 会话
+  // 死亡。整个字段缺席（undefined）按空表处理。本机（machine===''）恒 ok：本机行由
+  // 汇总端点恒以 ok=true 领衔（internal/agentd/pty_api.go:189），本机会话名单从不缺席。
+  machines?: MachineStatus[]
   // 视口宽高与顶部让位，用于夹紧悬浮窗几何。由调用方读 window 后传进来
   vw: number
   vh: number
@@ -74,9 +79,13 @@ export interface RestoreResult {
   //（不开窗、不改几何）。dock 非 null 时它们已被并进 dock.tabs，这里恒为空数组
   dockOrphans: HomeTab[]
   selected: string
-  // 下面三个是给日志用的统计量，不参与渲染
+  // 下面四个是给日志用的统计量，不参与渲染
   dropped: string[]
   pruned: number
+  // purged 是方案2 清掉的外来悬浮窗 tab 数（终端与文件都算）。升级后首启它通常
+  // 一次性格外，之后每次恢复恒 0；调用方把它记进日志，acceptance 对照
+  // 「升级后首启外来 tab 消失属预期」时以此为凭，勿当回归报。
+  purged: number
   adopted: number
 }
 
@@ -107,6 +116,22 @@ function liveSessionIds(sessions: PtySession[]): Set<string> {
     live.add(s.id)
   }
   return live
+}
+
+// machineOkSet 把扇出应答折成「本次答上来了」的机器名集合——方案3 两处 prune 的门控表。
+//
+// 参数：machines 是 PtySessionsResp.machines；undefined 按空表处理。
+// 返回：ok=true 的机器名集合；本机（machine===''）无条件在内——本机行由
+// internal/agentd/pty_api.go:189 恒以 {Name:"", Ok:true} 领衔返回，本机会话名单从不
+// 缺席，门控对本机没有存在意义；集合里查不到的机器一律按「没答上来」处理（保守：
+// 宁可留一个连不上可显式重开的 tab，不静默造孤儿）。
+// 注意：不导出——它只服务 buildRestore 内的两处门控，外面没有第二个消费者。
+function machineOkSet(machines: MachineStatus[] | undefined): Set<string> {
+  const ok = new Set<string>([''])
+  for (const m of machines ?? []) {
+    if (m.ok) ok.add(m.name)
+  }
+  return ok
 }
 
 // collectUsedSessionIds 收集恢复结果里已经被某个 tab 占用的会话 id。
@@ -158,6 +183,7 @@ function orphanTerminal(seq: number, s: PtySession): TabContent {
 export function buildRestore(input: RestoreInput): RestoreResult {
   const live = liveSessionIds(input.sessions)
   const incompatible = incompatibleSessionIds(input.sessions)
+  const machineOk = machineOkSet(input.machines)
 
   // ① 解码基准行，坏行整行丢弃；顺手抹掉死会话
   const entries: Array<{ base: BaseDir; wb: Workbench }> = []
@@ -170,7 +196,12 @@ export function buildRestore(input: RestoreInput): RestoreResult {
       continue
     }
     const before = countTerminalsWithSession(decoded.wb)
-    const wb = pruneDeadSessions(decoded.wb, live)
+    // 方案3（中央区侧）：本行基准的机器这次扇出没答上来时，不做死亡判决——它名下
+    // 的会话可能活着只是没进名单。跳过 prune 保住引用，机器回来照常接上；真死了走
+    // 挂载时的连接错误 / 1008 出口，两条路都有「重开」终态，不会静默自建新 shell。
+    // 归属按 base 行的 machine 取：TabContent 没有 machine 字段，被判死的会话也
+    // 不在会话行里，base 行是唯一可靠来源。
+    const wb = machineOk.has(decoded.base.machine) ? pruneDeadSessions(decoded.wb, live) : decoded.wb
     pruned += before - countTerminalsWithSession(wb)
     // 打标记必须在抹死会话**之后**：两者作用于不相交的集合（死的已经没有
     // sessionId 了），次序颠倒不会出错，但这样读起来与「先清理再标注」一致
@@ -179,15 +210,38 @@ export function buildRestore(input: RestoreInput): RestoreResult {
 
   // ② 解码悬浮窗现场：坏数据或从没存过都得到 null
   let dock: DockSnapshot | null = null
+  let purged = 0
   if (input.state.dock !== '') {
     const d = decodeDock(input.state.dock)
     if (d !== null) {
+      // 方案3（悬浮窗侧）：扇出没答上来的机器，名下会话「可能活着只是没进名单」。
+      // 把这些 tab 的 sessionId 并进 live 副本，prune 就不会剥它们的引用——机器回来
+      // 照常接上；真死了走挂载时的连接错误 / 1008 出口，两条路都有「重开」终态。
+      // 归属按 tab.machine 取：decodeDock 强制该字段为 string，是悬浮窗侧唯一可靠的
+      // 机器归属来源。修复后悬浮窗终端 tab 的 machine 恒为空串（新建不带机器、收编
+      // 仅限本机），这个分支平时不命中；保留它是给 roadmap 的「远程机器 home 终端
+      // 显式入口」预留的正确语义，也让 pruned 统计不被清除误计成剥引用。
+      const effectiveLive = new Set(live)
+      for (const t of d.tabs) {
+        if (t.sessionId !== undefined && !machineOk.has(t.machine)) effectiveLive.add(t.sessionId)
+      }
       const beforeTabs = d.tabs.filter((t) => t.sessionId).length
-      const tabs = pruneDeadDockSessions(d.tabs, live)
-      pruned += beforeTabs - tabs.filter((t) => t.sessionId).length
+      const gated = pruneDeadDockSessions(d.tabs, effectiveLive)
+      pruned += beforeTabs - gated.filter((t) => t.sessionId).length
+      // 方案2：存量外来 tab 一次性清除（终端与文件同规则）。decode 照旧接受旧数据、
+      // 不 bump DOCK_PERSIST_VERSION——丢弃发生在合成层；清过的 dock 随首次写回落盘，
+      // 之后每次恢复都是幂等 no-op。清除命中 activeId 时显式置 null（函数末尾的既有
+      // 兜底只认 null、不认悬空）；tabs 清空时把 windowOpen 一并收为 false——升级后
+      // 首启不该凭空弹一个只有 tab 条的空壳浮窗（decode 出来本来就空的退化现场一并
+      // 兜住，closeTab 不会写出那种形状）。
+      const kept = gated.filter((t) => t.machine === '')
+      purged = d.tabs.length - kept.length
+      const activeId = d.activeId !== null && !kept.some((t) => t.id === d.activeId) ? null : d.activeId
       dock = {
         ...d,
-        tabs: markIncompatibleDockTabs(tabs, incompatible),
+        tabs: markIncompatibleDockTabs(kept, incompatible),
+        activeId,
+        windowOpen: kept.length === 0 ? false : d.windowOpen,
         geom: clampGeom(d.geom, input.vw, input.vh, input.inset),
       }
     }
@@ -201,6 +255,12 @@ export function buildRestore(input: RestoreInput): RestoreResult {
   let dockSeq = Math.max(0, ...(dock?.tabs ?? []).map((t) => t.seq))
   for (const s of input.sessions) {
     if (!live.has(s.id) || used.has(s.id)) continue
+    // 方案1：悬浮窗是本机面。外来机器的 home 会话归它自己机器的悬浮窗管，不收编
+    // ——跨机收编正是 B283「tab 只增不减」的放大器。中央区（workspace）会话的
+    // 收编语义不变（2026-08-20 状态同步 spec 的既有决定）。baseOfSession 的
+    // home@machine 分类分支保留不动：它分类的是 wire 事实，将来「显式远程 home
+    // 入口」（roadmap）直接复用。
+    if (s.base_kind === 'home' && s.machine !== '') continue
     adopted++
     const b = baseOfSession(s)
     if (b.kind === 'home') {
@@ -226,5 +286,5 @@ export function buildRestore(input: RestoreInput): RestoreResult {
     dock.activeId = dock.tabs[0].id
   }
 
-  return { entries, dock, dockOrphans, selected: input.state.selected, dropped, pruned, adopted }
+  return { entries, dock, dockOrphans, selected: input.state.selected, dropped, pruned, purged, adopted }
 }

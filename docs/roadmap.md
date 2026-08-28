@@ -463,3 +463,9 @@
 - **入口失败（认领被拒、运行锁被占）是否在 CLI 复述 `haltEntrypoint` 原文**。B239 已落卡；B286 只收 ViaTemplate 之后那族。来源：B286 spec / C7。
 - **执行机 `FetchTimeout` 内的「基线提交在任务仓库中不存在」让 CLI 非 0**。20s 短等盖不住 2min fetch。来源：B286 spec r1。
 - **`DispatchSnapshot` 是否补 `local_base_branch`**。B286 成功行不打该标签。来源：B286 spec r1 I1。
+
+## 来自 B283 spec（2026-08-28，本期不做）
+
+- **悬浮窗开「远程机器 home 终端」的显式入口**：显式 UI 选机器，不走孤儿收编；`baseOfSession` 的 home@machine 分类保留待复用。来源：B283 spec Out of Scope。
+- **ptyhost 空闲会话回收/孤儿清扫**（服务端侧）：当前只在 shell 退出时回收，被收编循环甩下的孤儿会永久存活。来源：B283 spec Out of Scope。
+- **会话扇出部分失败的用户可见呈现**：`machines.ok=false` 目前只进日志与恢复判据，界面上机器缺席不可见。来源：B283 spec Out of Scope。
