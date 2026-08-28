@@ -287,50 +287,56 @@ func (h *Host) Write(id string, p []byte) error {
 // 返回：控制写失败、控制读非 EOF/timeout、ptyhost 退出失败或等待超时均返回错误。
 // 注意：EOF/timeout 不是收摊事实；只有 cmd_wait 或 session_dir wait 成功才可返回 nil。
 func (h *Host) Close(id string) error {
+	started := time.Now()
 	entry, ok := h.session(id)
 	if !ok {
+		h.log.Warn("关闭 PTY 会话：登记不存在", "session", id, "pid", 0, "wait_path", "unknown",
+			"phase", "lookup", "elapsed", time.Since(started), "cause", ErrNoSession)
 		return ErrNoSession
 	}
 	waitPath := "session_dir"
 	if entry.waitDone != nil {
 		waitPath = "cmd_wait"
 	}
-	started := time.Now()
 	conn, err := h.dial(id, statWait)
 	if err != nil {
-		h.log.Warn("关闭 PTY 会话：连接失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath, "cause", err)
+		h.log.Warn("关闭 PTY 会话：连接失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath,
+			"phase", "dial", "elapsed", time.Since(started), "cause", err)
 		return fmt.Errorf("连接 PTY 会话 %s 关闭: %w", id, err)
 	}
 	if err := conn.SetDeadline(time.Now().Add(statWait)); err != nil {
 		_ = conn.Close()
-		h.log.Warn("关闭 PTY 会话：设置 deadline 失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath, "cause", err)
+		h.log.Warn("关闭 PTY 会话：设置 deadline 失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath,
+			"phase", "control_deadline", "elapsed", time.Since(started), "cause", err)
 		return fmt.Errorf("设置 PTY 会话 %s 关闭超时: %w", id, err)
 	}
 	if err := wire.WriteControl(conn, wire.Control{Type: wire.CtrlKill}); err != nil {
 		_ = conn.Close()
-		h.log.Error("关闭 PTY 会话：发送 kill 失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath, "cause", err)
+		h.log.Error("关闭 PTY 会话：发送 kill 失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath,
+			"phase", "send_kill", "elapsed", time.Since(started), "cause", err)
 		return fmt.Errorf("发送 PTY 会话 %s kill: %w", id, err)
 	}
 	_, _, _, controlErr := wire.ReadFrame(conn)
 	_ = conn.Close()
 	if controlErr != nil {
 		h.log.Warn("关闭 PTY 会话：未收到 control ack，继续等待进程事实", "session", id,
-			"pid", entry.meta.PID, "wait_path", waitPath, "cause", controlErr)
+			"pid", entry.meta.PID, "wait_path", waitPath, "phase", "control_ack",
+			"elapsed", time.Since(started), "cause", controlErr)
 	}
 	waitErr := h.waitPtyhostExit(entry, time.Now().Add(closeWait))
 	h.forget(id)
 	if waitErr != nil {
 		h.log.Error("关闭 PTY 会话：等待收摊失败", "session", id, "pid", entry.meta.PID,
-			"wait_path", waitPath, "elapsed", time.Since(started), "control_error", controlErr, "cause", waitErr)
+			"wait_path", waitPath, "phase", "wait", "elapsed", time.Since(started), "control_error", controlErr, "cause", waitErr)
 		return fmt.Errorf("等待 PTY 会话 %s 收摊: %w", id, waitErr)
 	}
 	if controlErr != nil && !errors.Is(controlErr, io.EOF) && !isTimeout(controlErr) {
 		h.log.Error("关闭 PTY 会话：control ack 失败", "session", id, "pid", entry.meta.PID,
-			"wait_path", waitPath, "elapsed", time.Since(started), "cause", controlErr)
+			"wait_path", waitPath, "phase", "control_ack", "elapsed", time.Since(started), "cause", controlErr)
 		return fmt.Errorf("等待 PTY 会话 %s 收摊控制帧: %w", id, controlErr)
 	}
 	h.log.Info("ptyhost 会话已按请求关闭", "session", id, "pid", entry.meta.PID,
-		"wait_path", waitPath, "elapsed", time.Since(started), "control_error", controlErr)
+		"wait_path", waitPath, "phase", "complete", "elapsed", time.Since(started), "control_error", controlErr)
 	return nil
 }
 

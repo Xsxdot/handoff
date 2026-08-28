@@ -309,6 +309,120 @@ func TestCloseDoesNotTreatControlEOFAsSuccess(t *testing.T) {
 	}
 }
 
+func TestCloseDoesNotTreatControlTimeoutAsSuccess(t *testing.T) {
+	root := shortRoot(t)
+	id := "b234-timeout"
+	if err := sessdir.Create(root, id); err != nil {
+		t.Fatal(err)
+	}
+	meta := sessdir.Meta{
+		ID: id, BasePath: root, BaseKind: "workspace", Cwd: root,
+		Shell: "/bin/sh", CreatedAt: time.Now(), PID: os.Getpid(), ProtoVersion: wire.ProtoVersion,
+	}
+	if err := sessdir.WriteMeta(root, meta); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sessdir.SockPath(root, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDone := make(chan struct{})
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			_, _, _, _ = wire.ReadFrame(conn)
+			time.Sleep(1500 * time.Millisecond)
+			_ = conn.Close()
+		}
+		close(serverDone)
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		_ = sessdir.Remove(root, id)
+	})
+	h := ptyhost.New(root, "", testLog())
+	h.Adopt([]sessdir.Entry{{ID: id, Meta: meta, State: sessdir.StateLive}})
+	err = h.Close(id)
+	if err == nil {
+		t.Fatal("control timeout 且会话目录仍在时 Close 不得返回成功")
+	}
+	if !strings.Contains(err.Error(), id) && !strings.Contains(err.Error(), "超时") {
+		t.Fatalf("Close 错误缺少 session/wait 上下文: %v", err)
+	}
+	if list := h.List(); len(list) != 0 {
+		t.Fatalf("失败 Close 后登记未清除: %+v", list)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake control server 未完成 timeout 场景")
+	}
+}
+
+func TestCloseMissingSessionLogsPhaseAndElapsed(t *testing.T) {
+	var logs bytes.Buffer
+	h := ptyhost.New(t.TempDir(), "", slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := h.Close("b234-missing"); !errors.Is(err, ptyhost.ErrNoSession) {
+		t.Fatalf("Close missing session err=%v, want ErrNoSession", err)
+	}
+	line := logs.String()
+	for _, field := range []string{"session=b234-missing", "phase=lookup", "elapsed=", "cause="} {
+		if !strings.Contains(line, field) {
+			t.Fatalf("Close 早期错误日志缺少 %q: %q", field, line)
+		}
+	}
+}
+
+func TestCloseSuccessLogsPhaseAndElapsed(t *testing.T) {
+	root := shortRoot(t)
+	id := "b234-success-log"
+	if err := sessdir.Create(root, id); err != nil {
+		t.Fatal(err)
+	}
+	meta := sessdir.Meta{
+		ID: id, BasePath: root, BaseKind: "workspace", Cwd: root,
+		Shell: "/bin/sh", CreatedAt: time.Now(), PID: os.Getpid(), ProtoVersion: wire.ProtoVersion,
+	}
+	if err := sessdir.WriteMeta(root, meta); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sessdir.SockPath(root, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDone := make(chan struct{})
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			_, _, _, _ = wire.ReadFrame(conn)
+			_ = conn.Close()
+			_ = sessdir.Remove(root, id)
+		}
+		close(serverDone)
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		_ = sessdir.Remove(root, id)
+	})
+	var logs bytes.Buffer
+	h := ptyhost.New(root, "", slog.New(slog.NewTextHandler(&logs, nil)))
+	h.Adopt([]sessdir.Entry{{ID: id, Meta: meta, State: sessdir.StateLive}})
+	if err := h.Close(id); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("fake control server 未消费 CtrlKill")
+	}
+	line := logs.String()
+	for _, field := range []string{"session=" + id, "pid=", "wait_path=session_dir", "phase=complete", "elapsed="} {
+		if !strings.Contains(line, field) {
+			t.Fatalf("Close 成功日志缺少 %q: %q", field, line)
+		}
+	}
+}
+
 func TestClientProtoMismatch(t *testing.T) {
 	root, h, id, _ := startClientHost(t)
 	m, err := sessdir.ReadMeta(root, id)

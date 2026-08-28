@@ -138,7 +138,7 @@ func (e *wsTestEnv) dialWS(t *testing.T, taskID string, fromSeq int64) *websocke
 	}
 	if e.sockBuf > 0 {
 		buf := e.sockBuf
-		opts.HTTPClient = &http.Client{Transport: &http.Transport{
+		httpClient := &http.Client{Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
 				if err != nil {
@@ -150,6 +150,8 @@ func (e *wsTestEnv) dialWS(t *testing.T, taskID string, fromSeq int64) *websocke
 				return c, nil
 			},
 		}}
+		testhttp.ConfigureClient(httpClient)
+		opts.HTTPClient = httpClient
 	}
 	conn, _, err := websocket.Dial(context.Background(), url, opts)
 	if err != nil {

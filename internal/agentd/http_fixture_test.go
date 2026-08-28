@@ -29,7 +29,7 @@ func assertB234RetryRoute(t *testing.T, run func(testhttp.DialContext) error) {
 		calls++
 		return nil, b234AddressUnavailable{}
 	})
-	err := run(testhttp.RetryDialContext(failing))
+	err := run(failing)
 	if err == nil {
 		t.Fatal("loopback address unavailable must return an error")
 	}
@@ -47,6 +47,7 @@ func TestHTTPFixtureDialRoutesReachRetryLimit(t *testing.T) {
 			old := http.DefaultClient.Transport
 			tr := &http.Transport{DialContext: dial}
 			http.DefaultClient.Transport = tr
+			testhttp.ConfigureClient(http.DefaultClient)
 			t.Cleanup(func() {
 				tr.CloseIdleConnections()
 				http.DefaultClient.Transport = old
@@ -60,6 +61,7 @@ func TestHTTPFixtureDialRoutesReachRetryLimit(t *testing.T) {
 			old := http.DefaultClient.Transport
 			tr := &http.Transport{DialContext: dial}
 			http.DefaultClient.Transport = tr
+			testhttp.ConfigureClient(http.DefaultClient)
 			t.Cleanup(func() {
 				tr.CloseIdleConnections()
 				http.DefaultClient.Transport = old
@@ -77,6 +79,7 @@ func TestHTTPFixtureDialRoutesReachRetryLimit(t *testing.T) {
 			}
 			tr.Dial = nil
 			tr.DialContext = dial
+			testhttp.ConfigureClient(client.HTTPClient())
 			_, err := client.HTTPClient().Get("http://127.0.0.1:1/")
 			return err
 		})

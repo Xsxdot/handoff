@@ -70,3 +70,25 @@ func TestRetryDialContextDoesNotRetryNonLoopback(t *testing.T) {
 		t.Fatalf("非 loopback 必须一次返回原始错误，calls=%d err=%v", calls.Load(), err)
 	}
 }
+
+func TestRetryDialContextRetriesLocalhostAndIPv6Loopback(t *testing.T) {
+	for _, addr := range []string{"localhost:1", "[::1]:1"} {
+		t.Run(addr, func(t *testing.T) {
+			var calls atomic.Int32
+			dial := RetryDialContext(func(context.Context, string, string) (net.Conn, error) {
+				calls.Add(1)
+				return nil, addressUnavailable{}
+			})
+			_, err := dial(context.Background(), "tcp", addr)
+			if err == nil {
+				t.Fatal("loopback address unavailable must return an error")
+			}
+			if got := calls.Load(); got != MaxDialAttempts {
+				t.Fatalf("dial 次数=%d，期望上限 %d", got, MaxDialAttempts)
+			}
+			if !errors.Is(err, syscall.EADDRNOTAVAIL) || !strings.Contains(err.Error(), "can't assign requested address") {
+				t.Fatalf("最终错误丢失原始形状: %v", err)
+			}
+		})
+	}
+}
