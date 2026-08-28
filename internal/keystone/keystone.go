@@ -107,7 +107,7 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent) (Round
 	rebuilt, launchErr := s.launchRound(card, prompt, keysclient.SessionSpec{CLI: ref.CLI})
 	if launchErr != nil {
 		_ = s.ledger.MarkNeedsHuman(card, "协调者唤醒失败：resume 与重建均不可用", "keystone")
-		return zero, fmt.Errorf("resume: %v; 重建: %w", err, launchErr)
+		return RoundResult{Escalated: true}, fmt.Errorf("resume: %v; 重建: %w", err, launchErr)
 	}
 	rebuilt.Rebuilt = true
 	return rebuilt, nil
