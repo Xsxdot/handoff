@@ -260,10 +260,10 @@ describe('Shell 三栏外框', () => {
     expect(screen.getByLabelText('当前位置')).not.toHaveTextContent('integration/b2-b3')
   })
 
-  it('点左栏任务在中央开 TUI tab', async () => {
+  it('点左栏任务在中央开 TUI tab，顶部 tab 条显示任务原名', async () => {
     renderShell()
     fireEvent.click(await screen.findByText('重构工单通道'))
-    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument())
   })
 
   it('左栏开任务日志带项目、机器、路径和 taskId', async () => {
@@ -272,24 +272,22 @@ describe('Shell 三栏外框', () => {
 
     fireEvent.click(await screen.findByText('重构工单通道'))
 
-    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument())
     expect(debug).toHaveBeenCalledWith('shell.task.open', expect.objectContaining({
       project: 'handoff', machine: '', path: '/w/b2-b3', taskId: 'T1',
     }))
     debug.mockRestore()
   })
 
-  it('再次点左栏已打开任务只聚焦原组，不新增标签组', async () => {
+  it('再次点左栏已打开任务只聚焦原 tab，不新增标签', async () => {
     renderShell()
     fireEvent.click(await screen.findByText('重构工单通道'))
     const sidebar = within(screen.getByRole('complementary'))
     await waitFor(() => expect(sidebar.getByText('TUI · T1')).toBeInTheDocument())
-    const groups = screen.getAllByRole('tab')
-    expect(groups).toHaveLength(2)
-    fireEvent.click(screen.getByRole('tab', { name: '组 1' }))
+    expect(screen.getAllByRole('tab')).toHaveLength(1)
     fireEvent.click(sidebar.getByText('TUI · T1'))
-    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toHaveAttribute('aria-selected', 'true'))
-    expect(screen.getAllByRole('tab')).toHaveLength(2)
+    await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toHaveAttribute('aria-selected', 'true'))
+    expect(screen.getAllByRole('tab')).toHaveLength(1)
   })
 
   it('左栏任务的 DataTransfer 穿过 Shell 到同一组的中央分屏并保留项目机器', async () => {
@@ -424,7 +422,8 @@ describe('Shell 三栏外框', () => {
     renderShell()
     await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
-    await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
+    // 关闭钮在窗格头与顶部标签条各有一处（chrome 重绘后同一标题两处入口）
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /关闭 go.mod/ }).length).toBeGreaterThan(0))
   })
 
   it('文件抽屉的 diff 任务按项目、机器和 work_dir 共同选择', async () => {
@@ -500,13 +499,13 @@ describe('Shell 三栏外框', () => {
     renderShell()
     await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
-    await screen.findByRole('button', { name: /关闭 go.mod/ })
+    await screen.findAllByRole('button', { name: /关闭 go.mod/ })
 
     fireEvent.click(screen.getByText('主目录'))
-    await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /关闭 go.mod/ }).length).toBeGreaterThan(0))
 
     fireEvent.click(within(screen.getAllByRole('complementary')[0]).getByText('integration/b2-b3'))
-    await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getAllByRole('button', { name: /关闭 go.mod/ }).length).toBeGreaterThan(0))
   })
 
   it('中央不再渲染手动分屏按钮，布局只由拖放产生', async () => {
@@ -551,7 +550,7 @@ describe('Shell 三栏外框', () => {
 
   it('/tasks/:id 深链选中目录、开 TUI tab 并换回 /', async () => {
     renderShell('/tasks/T1')
-    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument())
     expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3')
   })
 
@@ -560,7 +559,7 @@ describe('Shell 三栏外框', () => {
   it('停在 /cards 时点左栏任务，中央换回工作台并开 TUI tab', async () => {
     renderShell('/cards')
     fireEvent.click(await screen.findByText('重构工单通道'))
-    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument())
   })
 
   it('停在 /cards 时点左栏目录，中央换回工作台', async () => {
@@ -730,7 +729,7 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
     renderShell()
     await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
-    await screen.findByRole('button', { name: /关闭 go.mod/ })
+    await screen.findAllByRole('button', { name: /关闭 go.mod/ })
 
     // 等文件读出来、textarea 可用后打一行字，把「脏」造出来
     const ta = await screen.findByRole('textbox', { name: 'go.mod' })
@@ -740,25 +739,25 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
     fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
 
-    // 点 tab 条上的 ×：这次 tab.content 里已有 draft，应弹确认而不是直接关
-    fireEvent.click(screen.getByRole('button', { name: /关闭 go.mod/ }))
+    // 点窗格头上的 ×：这次 tab.content 里已有 draft，应弹确认而不是直接关
+    fireEvent.click(screen.getAllByRole('button', { name: /关闭 go.mod/ })[0])
     expect(screen.getByRole('heading', { name: '关闭未保存的文件' })).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /关闭 go.mod/ }).length).toBeGreaterThan(0)
 
     // 确认后真的关掉
     fireEvent.click(screen.getByRole('button', { name: '不保存，关闭' }))
-    await waitFor(() => expect(screen.queryByRole('button', { name: /关闭 go.mod/ })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryAllByRole('button', { name: /关闭 go.mod/ })).toHaveLength(0))
   })
 
   it('干净的文件 tab 直接关，不打扰', async () => {
     renderShell()
     await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
-    await screen.findByRole('button', { name: /关闭 go.mod/ })
+    await screen.findAllByRole('button', { name: /关闭 go.mod/ })
 
     // 没打过字，内容没有 draft——× 应该直接关，连弹层都不出现
-    fireEvent.click(screen.getByRole('button', { name: /关闭 go.mod/ }))
-    await waitFor(() => expect(screen.queryByRole('button', { name: /关闭 go.mod/ })).not.toBeInTheDocument())
+    fireEvent.click(screen.getAllByRole('button', { name: /关闭 go.mod/ })[0])
+    await waitFor(() => expect(screen.queryAllByRole('button', { name: /关闭 go.mod/ })).toHaveLength(0))
     expect(screen.queryByRole('heading', { name: '关闭未保存的文件' })).not.toBeInTheDocument()
   })
 })
@@ -784,7 +783,7 @@ describe('关闭一个服务端已经没有的终端会话', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     // 等 TerminalTab 把会话 id 回报上来，否则 × 走的是「还没有会话」那条直接关的路
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
-    return await screen.findByRole('button', { name: /关闭 bash/ })
+    return (await screen.findAllByRole('button', { name: /关闭 bash/ }))[0]
   }
 
   it('DELETE 返回 404 时照样关掉 tab——要杀的东西已经不在了', async () => {
@@ -797,7 +796,7 @@ describe('关闭一个服务端已经没有的终端会话', () => {
     expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: '关闭' }))
 
-    await waitFor(() => expect(screen.queryByRole('button', { name: /关闭 bash/ })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryAllByRole('button', { name: /关闭 bash/ })).toHaveLength(0))
     expect(screen.queryByText(/不存在/)).toBeNull()
   })
 
@@ -812,7 +811,7 @@ describe('关闭一个服务端已经没有的终端会话', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
 
     expect(await screen.findByText(/kill 失败/)).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: /关闭 bash/ })).toBeInTheDocument()
+    expect(screen.getAllByRole('button', { name: /关闭 bash/ }).length).toBeGreaterThan(0)
   })
 })
 
@@ -826,7 +825,7 @@ describe('会话已经不在时弹层要说实话', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
 
-    fireEvent.click(await screen.findByRole('button', { name: /关闭 bash/ }))
+    fireEvent.click((await screen.findAllByRole('button', { name: /关闭 bash/ }))[0])
     expect(await screen.findByText(/在服务端已经不存在了/)).toBeInTheDocument()
     expect(screen.queryByText(/会被一并结束/)).toBeNull()
     // 没有东西可终止，按钮就不该再叫「关闭并终止」

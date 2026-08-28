@@ -1,8 +1,8 @@
 // WorkbenchPage.tsx —— 全局 group 下的列/窗格渲染与真实拖放接缝。
 //
-// 职责：顶层组栏、每列最多两格的 pane，以及 task/dir/tab 的 MIME 投放。
+// 职责：顶部标签栏（TabBar）、每列最多两格的 pane，以及 task/dir/tab 的 MIME 投放。
 // 边界：内容由 renderContent 注入；布局迁移交给 WorkbenchApi/tabs.ts；不按 BaseDir 切换布局。
-import { Fragment, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useState, type ReactNode } from 'react'
 import { BlankTab, type PickKind } from './BlankTab'
 import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
@@ -12,6 +12,7 @@ import { MAX_PANES_PER_COLUMN, MIN_PANE_PX, nextTerminalSeq, tabTitle, type Base
 import type { Launcher, ProjectTreeResp, Task } from '../../api/types'
 import type { WorkbenchApi } from './useWorkbench'
 import { createUntitledFile } from './newFile'
+import { taskDisplayName } from '../lib/taskName'
 import { errorMessage } from '../lib/format'
 import { cn } from '@/lib/utils'
 
@@ -25,10 +26,6 @@ export interface WorkbenchPageProps {
   tasks: Task[]
   onFileCreated?: () => void
   launchers?: Launcher[]
-}
-
-function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): number {
-  return group.columns.reduce((count, column) => count + column.panes.filter(Boolean).length, 0)
 }
 
 type DragOver = {
@@ -47,6 +44,13 @@ export function WorkbenchPage({
   const [newFileError, setNewFileError] = useState('')
   const [dragOver, setDragOver] = useState<DragOver | null>(null)
   const [dropWarning, setDropWarning] = useState('')
+
+  // taskName 把 tui 的 taskId 解析成任务原名（与左栏任务行同口径）；解析不到时
+  // tabTitle 自己回退 TUI · 前 8 位。T7 会把这份解析上移到 Shell，与面包屑共用
+  const taskName = useCallback((id: string) => {
+    const t = tasks.find((x) => x.id === id)
+    return t ? taskDisplayName(t) : undefined
+  }, [tasks])
 
   const dropContext = (source: BaseDir | null | undefined = base) => ({
     project: source?.projectName ?? '',
@@ -95,6 +99,16 @@ export function WorkbenchPage({
       return
     }
     api.close(groupId, tab.id)
+  }
+
+  // closeTabById 是标签条关闭钮的入口：只拿得到 groupId+tabId，先反查 tab 再走
+  // 与窗格 × 同一条 onBeforeClose 确认闸——否则从标签条关终端/带草稿文件会绕过确认
+  const closeTabById = (groupId: string, tabId: string) => {
+    const tab = wb.groups
+      .find((group) => group.id === groupId)
+      ?.columns.flatMap((column) => column.panes)
+      .find((pane) => pane?.id === tabId)
+    if (tab) closeTab(groupId, tab)
   }
 
   const dropTargetAt = (event: React.DragEvent<HTMLElement>, groupId: string, column: number, row: number): {
@@ -182,21 +196,6 @@ export function WorkbenchPage({
     })
   }
 
-  const moveGroup = (sourceGroupId: string, targetGroupId: string, zone: 'left' | 'right' | 'center') => {
-    const sourceGroup = wb.groups.find((group) => group.id === sourceGroupId)
-    const targetGroup = wb.groups.find((group) => group.id === targetGroupId)
-    if (!sourceGroup || !targetGroup || tabCount(sourceGroup) !== 1) {
-      setDropWarning('多窗格标签组不能整体移动，请拖动窗格标题')
-      return
-    }
-    const source = sourceGroup.columns.flatMap((column) => column.panes).find((tab): tab is Tab => tab !== null)
-    if (!source) return
-    const column = zone === 'left' ? 0 : zone === 'right' ? targetGroup.columns.length - 1 : targetGroup.focus[0]
-    const target: PaneTarget = { groupId: targetGroupId, column, row: targetGroup.focus[1], zone }
-    api.place({ kind: 'tab', groupId: sourceGroupId, tabId: source.id }, target)
-    console.debug('workbench.drop.group', { groupId: targetGroupId, tabId: source.id, zone })
-  }
-
   const renderTab = (groupId: string, column: number, row: number, tab: Tab | null) => {
     if (tab === null) {
       if (base === null) return <div className="flex h-full items-center justify-center p-4 text-sm text-muted-foreground">请从左栏选择项目或目录</div>
@@ -260,12 +259,12 @@ export function WorkbenchPage({
                     }}
                     className="min-w-0 flex-1 truncate"
                   >
-                    {tab ? tabTitle(tab.content, tab.base.label) : '空窗格'}
+                    {tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}
                     {tab?.base.projectName && <span className="ml-2 text-muted-foreground">{tab.base.projectName}{tab.base.machine ? ` · ${tab.base.machine}` : ''}</span>}
                   </div>
                   <button
                     type="button"
-                    aria-label={`关闭 ${tab ? tabTitle(tab.content, tab.base.label) : '空窗格'}`}
+                    aria-label={`关闭 ${tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}`}
                     onClick={(event) => {
                       event.stopPropagation()
                       if (tab) closeTab(group.id, tab)
@@ -292,14 +291,13 @@ export function WorkbenchPage({
         groups={wb.groups}
         activeGroupId={wb.activeGroupId}
         base={base}
-        onActivateGroup={api.activateGroup}
-        onCloseGroup={api.closeGroup}
+        taskName={taskName}
+        onActivateTab={api.activate}
+        onCloseTab={closeTabById}
         onNew={openNew}
         onNewLauncher={openLauncher}
         launchers={launcherItems}
         terminalUnavailable={terminalUnavailable}
-        onNewGroup={api.addGroup}
-        onMoveGroup={moveGroup}
       />
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
