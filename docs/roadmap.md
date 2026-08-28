@@ -450,3 +450,8 @@
 - **`resume --force` 给节点能认的终态**：今天只把 `task.state` 推到 `waiting_review` 并打 `progress`，不发 `completed`，charter 节点 `waitForTurnEnd` 不会自动过。不要用假 `completed` 冒充执行器。来源：B271 spec / B268 续。
 - **执行器写完终稿不发 `completed`**（B268 现场 grok）。属执行器卡，不是本机镜像身份。来源：同上。
 - **真远端镜像断线 vs 卡流滞后的可观测性**：现场容易把任务流还在走、卡流停住当成同一个 bug。本卡只拆本机自订。来源：B271 spec Out of Scope。
+
+## 来自 B234 spec（2026-08-28，本期不做）
+
+- **把测试 HTTP helper 迁到全仓其余 `httptest.NewServer`**（executor / release / cmd）。B234 只收口 `internal/agentd`。来源：B234 spec 族一弃选 / OOS。
+- **Darwin 全量 `go test ./...` 在未迁包上仍可能以族一形状伪装成业务断言**。识别纪律：同一次跑里有没有 `can't assign requested address`。来源：B234 spec / B193 note。
