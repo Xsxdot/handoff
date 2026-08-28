@@ -13,3 +13,6 @@
 - `internal/ledger/wire_test.go` 钉了 Card/Event/Decision，没钉 TaskLink/Relation。
 - 图：本机无 `codegraph` 二进制；`go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . resolve ...` 输出空。定位靠 grep / 读码。
 - 无前端页面形态，不走原型。
+- 2026-08-28 独立审查 `01a0464e` 被进程重启打断；`01a04667` 续跑出完整报告。Critical 3 / Important 10。协调者吸收见 `docs/superpowers/reviews/b278-spec-review.md`。
+- r1 关键吸收：`--step` 不赌 CLI stderr；不同名不每次警告；fetch 失败退回本地；禁止 FETCH_HEAD；Transport 回传 BaseCommit；skill 只改仓内 `skills/handoff/SKILL.md`；HTTP 负例；重试 50–200ms ×2。
+- 用户 2026-08-28「老样子」授权批准 r1 并无人值守推进到合 main。
