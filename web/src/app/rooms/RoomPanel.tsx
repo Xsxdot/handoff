@@ -374,7 +374,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
 
   return (
     <>
-      {(!persistent || collapsed) && <button type="button" aria-label="打开房间面板" title="打开房间面板" onClick={() => setCollapsed((current) => !current)} className="fixed bottom-20 right-5 z-40 flex size-11 items-center justify-center rounded-full bg-slate-900 text-white shadow-lg">◌</button>}
+      {(!persistent || collapsed) && <button type="button" aria-label="打开房间面板" title="打开房间面板" onClick={() => setCollapsed((current) => !current)} className="fixed bottom-[104px] right-5 z-40 flex size-11 items-center justify-center rounded-full bg-slate-900 text-white shadow-lg">◌</button>}
       {!collapsed && <aside data-testid="room-panel" className={persistent ? 'flex h-full w-[360px] shrink-0 flex-col border-l bg-background' : 'fixed bottom-20 right-5 z-40 flex h-[520px] w-[360px] flex-col overflow-hidden rounded-2xl border bg-background shadow-xl'}>{content}</aside>}
       <ConfirmDialog open={attachConfirm} title="确认 attach" description={selectedRoom?.attach ? `${selectedRoom.attach.task_id} · ${selectedRoom.attach.work_dir}\n将在对应工作目录打开终端。` : '暂无可 attach 的任务'} confirmLabel="确认 attach" busy={stepBusy} onConfirm={confirmAttach} onCancel={() => setAttachConfirm(false)} />
     </>

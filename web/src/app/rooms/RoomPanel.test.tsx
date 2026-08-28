@@ -253,3 +253,13 @@ describe('RoomPanel 发送后刷新（B287）', () => {
     releaseInbox([])
   })
 })
+
+describe('RoomPanel 悬浮球（B287）', () => {
+  it('收起球上移错开 + 球：bottom-[104px]（+球占 44–88px，净距 16px）', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue([])
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    const fab = await screen.findByRole('button', { name: '打开房间面板' })
+    expect(fab.className).toContain('bottom-[104px]')
+    expect(fab.className).not.toContain('bottom-20')
+  })
+})
