@@ -29,6 +29,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/agy"
 	"github.com/Xsxdot/handoff/internal/executor/claudecode"
 	"github.com/Xsxdot/handoff/internal/executor/codex"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
@@ -373,6 +374,7 @@ func adaptersForWithProbe(goos string, logger *slog.Logger, probeDir string) map
 		"opencode": opencode.New(logger),
 		"codex":    codex.New(logger),
 		"claude":   claudecode.New(logger),
+		"agy":      agy.New(logger),
 		"fake":     fake.New(nil),
 	}
 	if supported, reason := grok.SymlinkCapability(probeDir); supported {
@@ -416,13 +418,13 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 }
 
 // executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok |
-// codex | fake（脚本演示）；Windows 上 grok 是否注册取决于符号链接能力探测。
+// codex | agy | fake（脚本演示）；Windows 上 grok 是否注册取决于符号链接能力探测。
 var executorFlag string
 
 func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
-		"覆盖默认执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
+		"覆盖默认执行者：opencode（默认）| claude | grok | codex | agy | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
 }
 
 // setupLedger 打开账本库并挂载镜像子系统。

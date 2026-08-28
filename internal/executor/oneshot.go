@@ -47,7 +47,12 @@ func OneShotArgs(executorName, model, prompt string) ([]string, error) {
 			return []string{"grok", "--effort", "low", "-m", model, "-p", prompt}, nil
 		}
 		return []string{"grok", "--effort", "low", "-p", prompt}, nil
+	case "agy":
+		if model != "" {
+			return []string{"agy", "-p", "--model", model, prompt}, nil
+		}
+		return []string{"agy", "-p", prompt}, nil
 	default:
-		return nil, fmt.Errorf("未知执行者 %q（one-shot 支持 opencode/claude/grok）", executorName)
+		return nil, fmt.Errorf("未知执行者 %q（one-shot 支持 opencode/claude/grok/agy）", executorName)
 	}
 }
