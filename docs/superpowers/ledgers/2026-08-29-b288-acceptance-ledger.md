@@ -57,3 +57,19 @@
 
 复跑 ✅ 变异 ✅ 真机五条 + 顶部 chrome ✅ 功能保留清单（review 已核）✅。
 **验收通过。**
+
+## 6. 图对账（recon，2026-08-29）
+
+- 改动面：f770304b0..HEAD 的 web 源码（基线不含 test 文件，视图只收源码符号）。
+- 补建 `codegraph/diffs/cards-B285-review-2.json`：nodesAdded 4
+  （taskDisplayName / taskMatchesQuery / OpenItem / OpenedSearchItem）、
+  nodesModified 9（tabTitle、archivedKey、archivedTasks、breadcrumbSegments、
+  Breadcrumb、BreadcrumbSegments、WorkbenchApi+focusTab、TabBarProps+taskName、
+  ProjectTreeProps+openItems/focusedTaskId/onFocusOpenItem/onOpenTerminalAt）。
+  修改节点从基线原节点打补丁，schema 与既有视图一致。
+- `codegraph validate`：12 个 issues 全部为 `[decl d_*]` 基线既有（有无本视图均为
+  12，本视图零新增）；`unscannedEntries: 6` 亦为基线既有。
+- 抽查：`sym taskDisplayName` / `sym taskMatchesQuery` 命中（anchor ok），
+  `sym tabTitle --view` 显示修改后签名。focusTab 以 WorkbenchApi 字段记录
+  （字段不进 sym 索引，按 schema 放 model.fields）。
+- **裁决：pass**。只动了 codegraph/diffs/，未触 baseline/target/best。

@@ -1,0 +1,300 @@
+{
+ "view": "cards-B285-review-2",
+ "base": "f770304b0",
+ "summary": "B288 工作台五处真机修整与顶部 chrome：任务原名、五区拖放落点、列宽不横滑、终态进已结束、左栏层级重绘、组标签条换皮",
+ "nodesAdded": {
+  "n_web_app_lib_taskDisplayName": {
+   "kind": "func",
+   "container": "k_web_app_lib",
+   "order": 9,
+   "name": "taskDisplayName",
+   "file": "web/src/app/lib/taskName.ts",
+   "line": 9,
+   "signature": "function taskDisplayName(t: { name: string; plan_summary: string }): string",
+   "params": [
+    [
+     "t",
+     "{ name: string; plan_summary: string }",
+     "任务流快照行"
+    ]
+   ],
+   "returns": "string",
+   "summary": "任务显示名统一口径：name 优先，空则 plan_summary，再空则「（无名称）」；左栏行、tab 标题、面包屑共用"
+  },
+  "n_web_app_tree_taskMatchesQuery": {
+   "kind": "func",
+   "container": "k_web_app_tree",
+   "order": 69,
+   "name": "taskMatchesQuery",
+   "file": "web/src/app/tree/search.ts",
+   "line": 69,
+   "signature": "function taskMatchesQuery(t: Task, q: string): boolean",
+   "params": [
+    [
+     "t",
+     "Task",
+     "任务"
+    ],
+    [
+     "q",
+     "string",
+     "搜索词（小写）"
+    ]
+   ],
+   "returns": "boolean",
+   "summary": "任务行搜索谓词：任务名命中即匹配；导出给任务组行级过滤复用，与 filterTree 同一条判据"
+  },
+  "m_web_app_tree_OpenItem": {
+   "kind": "model",
+   "container": "k_web_app_tree_model",
+   "order": 59,
+   "name": "OpenItem",
+   "file": "web/src/app/tree/ProjectTree.tsx",
+   "line": 59,
+   "summary": "左栏「已打开行」的一行数据，由 Shell 从工作台投影注入；name 已是展示名，组件不做命名解析",
+   "fields": [
+    [
+     "key",
+     "string",
+     "去重/React 键：baseKey+tabId"
+    ],
+    [
+     "kind",
+     "'tui' | 'terminal' | 'file'",
+     "内容种类"
+    ],
+    [
+     "name",
+     "string",
+     "展示名（tui=任务原名，terminal/file=tabTitle 结果）"
+    ],
+    [
+     "taskId",
+     "string | undefined",
+     "tui 时必填"
+    ],
+    [
+     "machine",
+     "string",
+     "空串 = 本机"
+    ],
+    [
+     "base",
+     "BaseDir",
+     "所在基准目录"
+    ],
+    [
+     "group",
+     "string",
+     "所在组 id"
+    ],
+    [
+     "tabId",
+     "string",
+     "tab id"
+    ],
+    [
+     "detail",
+     "string | undefined",
+     "file 相对路径 / 终端目录 / tui 任务 id，供搜索命中"
+    ]
+   ]
+  },
+  "m_web_app_tree_OpenedSearchItem": {
+   "kind": "model",
+   "container": "k_web_app_tree_model",
+   "order": 23,
+   "name": "OpenedSearchItem",
+   "file": "web/src/app/tree/search.ts",
+   "line": 23,
+   "summary": "搜索期已打开项的裁剪投影：命中任务名的打开行在搜索结果中保留",
+   "fields": [
+    [
+     "key",
+     "string",
+     "对应 OpenItem.key"
+    ],
+    [
+     "name",
+     "string",
+     "展示名"
+    ]
+   ]
+  }
+ },
+ "nodesModified": {
+  "n_web_app_workbench_tabTitle": {
+   "kind": "func",
+   "container": "k_web_app_workbench",
+   "order": 371,
+   "name": "tabTitle",
+   "file": "web/src/app/workbench/tabs.ts",
+   "line": 569,
+   "signature": "function tabTitle(content: TabContent, baseLabel: string, taskName?: (taskId: string) => string | undefined): string",
+   "params": [
+    [
+     "content",
+     "TabContent",
+     "tab 内容"
+    ],
+    [
+     "baseLabel",
+     "string",
+     "基准目录短名"
+    ],
+    [
+     "taskName",
+     "(taskId: string) => string | undefined",
+     "任务名解析器；缺席或解析不到时回退 TUI · 前 8 位"
+    ]
+   ],
+   "summary": "生成 tab 条上显示的标题；tui 用任务原名（B288），terminal 第一个不带序号",
+   "returns": "string"
+  },
+  "n_web_app_tree_archivedKey": {
+   "kind": "func",
+   "container": "k_web_app_tree",
+   "order": 35,
+   "name": "archivedKey",
+   "file": "web/src/app/tree/archived.ts",
+   "line": 38,
+   "signature": "function archivedKey(projectID: string): string",
+   "summary": "已结束分组的归集键：B288 起收敛为项目维度（终态任务不再按机器拆组）",
+   "params": [
+    [
+     "projectID",
+     "string",
+     "项目 id"
+    ]
+   ],
+   "returns": "string"
+  },
+  "n_web_app_tree_archivedTasks": {
+   "kind": "func",
+   "container": "k_web_app_tree",
+   "order": 48,
+   "name": "archivedTasks",
+   "file": "web/src/app/tree/archived.ts",
+   "line": 47,
+   "signature": "function archivedTasks(tasks: Task[]): Map<string, Task[]>",
+   "summary": "求每个项目下全部终态任务（B288 口径：不再要求目录已回收）；未归属任务不收，值内保持任务流原序",
+   "params": [
+    [
+     "tasks",
+     "Task[]",
+     "任务流快照"
+    ]
+   ],
+   "returns": "Map<string, Task[]>"
+  },
+  "n_web_app_shell_breadcrumbSegments": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "order": 22,
+   "name": "breadcrumbSegments",
+   "file": "web/src/app/shell/Breadcrumb.tsx",
+   "line": 23,
+   "signature": "function breadcrumbSegments(base: BaseDir, tail?: string): string[]",
+   "summary": "把基准目录拆成显示段；B288 起第三段可被焦点窗格内容名（任务原名/文件名/终端标题）替换",
+   "params": [
+    [
+     "base",
+     "BaseDir",
+     "基准目录"
+    ],
+    [
+     "tail",
+     "string | undefined",
+     "焦点内容名；非空时替换第三段目录名"
+    ]
+   ],
+   "returns": "string[]"
+  },
+  "n_web_app_shell_Breadcrumb": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "order": 28,
+   "name": "Breadcrumb",
+   "file": "web/src/app/shell/Breadcrumb.tsx",
+   "line": 29,
+   "signature": "function Breadcrumb({ base, tail }: { base: BaseDir; tail?: string })",
+   "summary": "顶部面包屑行（零交互承重约束不变）；形态真源 option-1 的 workspace-context"
+  },
+  "n_web_app_shell_BreadcrumbSegments": {
+   "kind": "func",
+   "container": "k_web_app_shell",
+   "order": 43,
+   "name": "BreadcrumbSegments",
+   "file": "web/src/app/shell/Breadcrumb.tsx",
+   "line": 52,
+   "signature": "function BreadcrumbSegments({ base, tail, tone = 'row' }: { base: BaseDir; tail?: string; tone?: 'row' | 'titlebar' })",
+   "summary": "只画面包屑文字段不带外框；titlebar 分支（桌面薄壳）不传 tail、样式逐字保留"
+  },
+  "m_web_app_workbench_WorkbenchApi": {
+   "kind": "model",
+   "container": "k_web_app_workbench_model",
+   "order": 85,
+   "name": "WorkbenchApi",
+   "file": "web/src/app/workbench/useWorkbench.ts",
+   "line": 42,
+   "signature": "export interface WorkbenchApi {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "focusTab",
+     "(b: BaseDir, group: string, tabId: string) => void",
+     "聚焦已打开项：一次事件内切基准并激活组内该格（B288）；open 的去重键对无会话终端为 null，聚焦必须走 activateTab 语义"
+    ]
+   ]
+  },
+  "m_web_app_workbench_TabBarProps": {
+   "kind": "model",
+   "container": "k_web_app_workbench_model",
+   "order": 21,
+   "name": "TabBarProps",
+   "file": "web/src/app/workbench/TabBar.tsx",
+   "line": 22,
+   "signature": "export interface TabBarProps {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "taskName",
+     "(taskId: string) => string | undefined",
+     "任务名解析器；autoName 组的焦点 tui 显示任务原名，解析不到由 tabTitle 回退"
+    ]
+   ]
+  },
+  "m_web_app_tree_ProjectTreeProps": {
+   "kind": "model",
+   "container": "k_web_app_tree_model",
+   "order": 58,
+   "name": "ProjectTreeProps",
+   "file": "web/src/app/tree/ProjectTree.tsx",
+   "line": 74,
+   "signature": "export interface ProjectTreeProps {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "openItems",
+     "OpenItem[]",
+     "工作台当前打开的全部内容（当前基准在前）"
+    ],
+    [
+     "focusedTaskId",
+     "string | null",
+     "焦点窗格为 tui 时的任务 id"
+    ],
+    [
+     "onFocusOpenItem",
+     "(item: OpenItem) => void",
+     "点击已打开行 → 聚焦该 tab"
+    ],
+    [
+     "onOpenTerminalAt",
+     "(base: BaseDir) => void",
+     "机器行悬停终端钮 → 在该基准开终端"
+    ]
+   ]
+  }
+ }
+}
