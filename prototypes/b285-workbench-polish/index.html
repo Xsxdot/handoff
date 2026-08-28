@@ -1,0 +1,1031 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · B285 工作台收口</title>
+<link rel="stylesheet" href="shared/styles.css">
+<style>
+  .main .content { overflow: hidden; display: flex; flex-direction: column; }
+  .tabbar, .morph-hint, .layout-strip { flex-shrink: 0; }
+  .tabbar .tab {
+    display: inline-flex; align-items: center; gap: 6px; max-width: 200px; cursor: grab;
+  }
+  .tabbar .tab .tab-name {
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    border: none; background: none; color: inherit; font: inherit; cursor: pointer; padding: 0; min-width: 0;
+  }
+  .tabbar .tab .tab-x {
+    border: none; background: none; cursor: pointer; color: var(--muted-foreground);
+    font-size: 13px; padding: 0 2px; border-radius: 4px; line-height: 1;
+  }
+  .tabbar .tab .tab-x:hover { background: var(--muted); color: var(--foreground); }
+  .morph-hint { font-size: 12px; color: var(--muted-foreground); padding: 4px 12px; border-bottom: 1px solid var(--border); }
+  .layout-strip {
+    display: flex; align-items: center; gap: 4px; padding: 4px 8px;
+    border-bottom: 1px solid var(--border); background: var(--sidebar);
+  }
+  .layout-strip button {
+    border: 1px solid transparent; background: none; cursor: pointer; font-size: 12px;
+    color: var(--muted-foreground); padding: 3px 8px; border-radius: 6px; font-family: var(--font-sans);
+  }
+  .layout-strip button:hover { background: var(--muted); color: var(--foreground); }
+  .layout-strip button.active {
+    color: var(--foreground); background: var(--background); border-color: var(--border); font-weight: 500;
+  }
+  .layout-strip .split-add {
+    margin-left: auto; border-color: var(--border); color: var(--foreground);
+  }
+
+  .cols {
+    display: flex; flex: 1; min-height: 0; gap: 1px; background: var(--border); height: 100%;
+  }
+  .col { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; gap: 1px; }
+  .pane {
+    flex: 1; min-width: 0; min-height: 0; background: var(--background);
+    display: flex; flex-direction: column; overflow: hidden; position: relative;
+  }
+  .pane.focused .pane-head { background: #ececec; }
+  .pane.drop { outline: 2px dashed var(--primary); outline-offset: -3px; }
+  .pane.drop-left::after, .pane.drop-right::after, .pane.drop-top::after, .pane.drop-bottom::after {
+    content: ""; position: absolute; pointer-events: none; background: rgba(23,23,23,.08);
+  }
+  .pane.drop-left::after { inset: 0 50% 0 0; }
+  .pane.drop-right::after { inset: 0 0 0 50%; }
+  .pane.drop-top::after { inset: 0 0 50% 0; }
+  .pane.drop-bottom::after { inset: 50% 0 0 0; }
+
+  .pane-head {
+    display: flex; align-items: center; gap: 6px; padding: 4px 8px;
+    border-bottom: 1px solid var(--border); background: var(--sidebar);
+    font-size: 12px; min-height: 28px; cursor: grab;
+  }
+  .pane-head .ph-title { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .pane-head .ph-meta { color: var(--muted-foreground); margin-left: auto; white-space: nowrap; }
+  .pane-body { flex: 1; min-height: 0; overflow: auto; padding: 10px 12px; font-size: 13px; line-height: 1.55; }
+  .pane-empty {
+    flex: 1; display: flex; align-items: center; justify-content: center; text-align: center;
+    color: var(--muted-foreground); font-size: 12px; padding: 16px;
+  }
+  .pane-body pre, .term-pre, .file-pre {
+    margin: 0; font-family: var(--font-mono); font-size: 12px;
+    background: var(--muted); padding: 10px; border-radius: 6px; overflow: auto;
+  }
+  .term-pre { background: #111; color: #d4d4d4; }
+  .term-pre .c { color: #86efac; }
+  .file-pre .cm { color: var(--muted-foreground); }
+  .file-pre .k { color: #7c3aed; }
+  .file-pre .s { color: #b45309; }
+  .meta-line { margin: 4px 0; font-size: 12px; color: var(--muted-foreground); display: flex; gap: 8px; }
+  .msg { margin: 8px 0; font-size: 13px; }
+  .tm-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .tm-title { font-weight: 600; }
+
+  .proj-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 6px 6px 2px; font-size: 13px; font-weight: 600;
+  }
+  .proj-head .proj-name { flex: 1; min-width: 0; }
+  .hover-actions { display: none; gap: 2px; flex-shrink: 0; margin-left: auto; }
+  .proj-head:hover .hover-actions, .mach-row:hover .hover-actions { display: flex; }
+  .hover-actions button, .hover-actions a {
+    border: none; background: none; cursor: pointer; color: var(--muted-foreground);
+    padding: 1px 5px; border-radius: 4px; font-size: 11px; text-decoration: none;
+  }
+  .hover-actions button:hover, .hover-actions a:hover { background: var(--muted); color: var(--foreground); }
+  .mach-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px 4px 32px; border-radius: 6px;
+    font-size: 13px; cursor: grab; user-select: none;
+  }
+  .mach-row:hover { background: var(--muted); }
+  .mach-row .mach-name { flex: 1; min-width: 0; }
+  .mach-row .chev { width: 12px; font-size: 10px; color: var(--muted-foreground); }
+  .task-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px 5px 28px; border-radius: 6px;
+    font-size: 13px; cursor: grab; user-select: none; min-width: 0;
+  }
+  .task-row:hover { background: var(--muted); }
+  .task-row.on { background: #e8e8e8; }
+  .task-row .t-title {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .task-row.on .t-title { font-weight: 500; }
+  .scheme-tag { font-size: 10px; font-weight: 400; color: var(--muted-foreground); margin-left: 6px; }
+  .avatar-wrap { position: relative; width: 22px; height: 22px; flex-shrink: 0; }
+  .avatar-wrap svg.avatar { display: block; width: 22px; height: 22px; border-radius: 50%; }
+  .type-avatar {
+    width: 22px; height: 22px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: #e7e7e7; color: #404040;
+  }
+  .type-avatar svg { width: 13px; height: 13px; display: block; }
+  .avatar-wrap .status {
+    position: absolute; right: -1px; bottom: -1px;
+    width: 8px; height: 8px; border-radius: 50%;
+    border: 1.5px solid var(--sidebar);
+    background: #a3a3a3;
+  }
+  .task-row:hover .avatar-wrap .status { border-color: var(--muted); }
+  .task-row.on .avatar-wrap .status { border-color: #e8e8e8; }
+  .avatar-wrap .status.green { background: var(--green); }
+  .avatar-wrap .status.amber { background: var(--amber); }
+  .type-ic { width: 16px; height: 16px; flex-shrink: 0; color: var(--muted-foreground); display: block; }
+  .mach-name-r {
+    flex-shrink: 0; max-width: 56px;
+    font-size: 11px; color: var(--muted-foreground);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+  .dot.amber { background: var(--amber); }
+  .dot.mute { background: #a3a3a3; }
+  .chip {
+    font-size: 10px; padding: 0 6px; border-radius: 999px;
+    border: 1px solid #fde68a; background: #fef3c7; color: var(--amber);
+  }
+  .toast-mini {
+    position: absolute; bottom: 12px; left: 50%; transform: translateX(-50%);
+    background: var(--primary); color: var(--primary-foreground);
+    padding: 6px 12px; border-radius: 8px; font-size: 12px; display: none; z-index: 8;
+  }
+  .file-pop {
+    position: absolute; z-index: 20; width: 240px;
+    background: var(--background); border: 1px solid var(--border);
+    border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.12); padding: 6px;
+  }
+  .file-pop .fp-head { font-size: 12px; color: var(--muted-foreground); padding: 4px 6px 6px; }
+  .file-pop .fp-item {
+    padding: 5px 8px; border-radius: 6px; font-size: 13px; font-family: var(--font-mono);
+    cursor: grab;
+  }
+  .file-pop .fp-item:hover { background: var(--muted); }
+  .file-pop .fp-item.dir { color: var(--muted-foreground); cursor: default; }
+  .dlg { padding: 16px 18px; min-width: 280px; }
+  .dlg h3 { margin: 0 0 8px; font-size: 14px; }
+  .dlg p { margin: 0 0 10px; color: var(--muted-foreground); font-size: 13px; }
+  .dlg-actions { display: flex; justify-content: flex-end; gap: 8px; }
+  .peer-group { margin: 0; }
+  .sec-head {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px 4px 12px; font-size: 12px; font-weight: 600;
+    color: var(--foreground); user-select: none;
+  }
+  .sec-head.tog { cursor: pointer; }
+  .sec-head .chev { width: 12px; font-size: 10px; }
+  .sec-head:hover .hover-actions { display: flex; }
+  .dir-row {
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 8px 4px 48px; border-radius: 6px;
+    font-size: 13px; cursor: pointer; user-select: none;
+  }
+  .dir-row:hover { background: var(--muted); }
+  .dir-row.on { background: #e8e8e8; color: var(--foreground); }
+  .dir-row .sub { font-weight: 400; color: var(--muted-foreground); }
+  .dir-row:hover .hover-actions { display: flex; }
+  .file-drawer {
+    width: 260px; flex-shrink: 0; border-left: 1px solid var(--border);
+    background: var(--sidebar); display: flex; flex-direction: column; min-height: 0;
+  }
+  .file-drawer[hidden] { display: none; }
+  .file-drawer .fd-head {
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px;
+    border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .file-drawer .fd-head .ttl { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-drawer .fd-body { flex: 1; overflow: auto; padding: 6px; }
+  .file-drawer .fd-item {
+    padding: 4px 8px; border-radius: 6px; font-size: 12px; font-family: var(--font-mono); cursor: pointer;
+  }
+  .file-drawer .fd-item:hover { background: var(--muted); }
+  .file-drawer .fd-item.dir { color: var(--muted-foreground); cursor: default; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span>handoff</span>
+      <button class="icon-btn" title="显示偏好" type="button">☰</button>
+    </div>
+    <div class="tree-search">
+      <input class="input sm" id="treeSearch" placeholder="搜索项目、机器或任务">
+      <kbd class="kbd">⌘K</kbd>
+    </div>
+    <div class="tree" id="taskTree"></div>
+    <div class="dock">
+      <a class="dock-btn" href="pages/board.html" title="工作项账本">▤<span class="badge dock-badge">3</span></a>
+      <button class="dock-btn" id="openBoard" type="button" title="任务看板">▦<span class="dot amber"></span></button>
+      <button class="dock-btn" id="openTickets" type="button" title="工单">✉<span class="badge dock-badge">2</span></button>
+      <a class="dock-btn" href="pages/codegraph.html" title="代码图">◈</a>
+      <a class="dock-btn" href="pages/settings.html" title="设置">⚙</a>
+      <button class="dock-btn" id="openHome" type="button" title="home 基准终端">▭</button>
+      <button class="dock-btn" id="addProject" type="button" title="添加项目">＋</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="breadcrumb" id="crumb">本机 / handoff</div>
+    <div class="tabbar" id="groupBar"></div>
+    <div class="morph-hint">B285：无＋分屏栏 · 关 tab 收分屏 · 拖放半区阴影 · 顶栏跟焦点窗格 · 任务行方案 2</div>
+    <main class="content">
+      <div class="cols" id="cols"></div>
+      <div class="toast-mini" id="toast">这一列最多两格</div>
+    </main>
+  </div>
+  <aside class="file-drawer" id="fileDrawer" hidden></aside>
+</div>
+
+<dialog id="newWtDialog">
+  <form id="newWtForm" class="dlg" style="min-width:420px">
+    <h3>新建工作树</h3>
+    <p id="newWtCtx" class="dim" style="margin-top:-4px"></p>
+    <label style="display:block;font-size:13px;margin-bottom:4px">开发目录</label>
+    <input class="input" id="newWtPath" value="~/workspace/handoff" style="margin-bottom:10px">
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <label style="font-size:13px"><input type="radio" name="br" checked> 新建分支</label>
+      <label style="font-size:13px"><input type="radio" name="br"> 检出已有分支</label>
+    </div>
+    <label style="display:block;font-size:13px;margin-bottom:4px">分支名</label>
+    <input class="input mono" id="newWtBranch" placeholder="feat/xxx" style="margin-bottom:10px">
+    <label style="display:block;font-size:13px;margin-bottom:4px">基线</label>
+    <input class="input mono" id="newWtBase" value="origin/main" style="margin-bottom:14px">
+    <div class="dlg-actions">
+      <button type="button" class="btn sm" id="closeNewWt">取消</button>
+      <button type="submit" class="btn sm primary">创建</button>
+    </div>
+    <p class="dim" id="newWtFeedback" hidden>已创建（mock），数据未真正发送。</p>
+  </form>
+</dialog>
+
+<div class="file-pop" id="filePop" hidden></div>
+
+<dialog id="boardDlg">
+  <div class="dlg">
+    <h3>任务看板</h3>
+    <p>未挂账的任务走这里（mock）。工作项请用左下角 ▤。</p>
+    <div class="dlg-actions"><button class="btn sm" type="button" id="closeBoard">关闭</button></div>
+  </div>
+</dialog>
+<dialog id="ticketsDlg">
+  <div class="dlg">
+    <h3>工单</h3>
+    <p>2 张待回复（mock）· 本原型不连后端。</p>
+    <div class="dlg-actions"><button class="btn sm" type="button" id="closeTickets">关闭</button></div>
+  </div>
+</dialog>
+<dialog id="addDlg">
+  <form class="dlg" id="addForm">
+    <h3>添加项目</h3>
+    <p>原型不连后端，提交只作页面内提示。</p>
+    <input class="input" name="path" placeholder="项目路径" style="margin-bottom:10px">
+    <p id="addFeedback" hidden>已提交（mock），数据未真正发送。</p>
+    <div class="dlg-actions">
+      <button class="btn sm" type="button" id="closeAdd">取消</button>
+      <button class="btn sm primary" type="submit">添加</button>
+    </div>
+  </form>
+</dialog>
+<div class="homedock" id="homedock" hidden>
+  <div class="hd-bar">
+    <span>home · 本机</span>
+    <span style="margin-left:auto"></span>
+    <button class="icon-btn" type="button" id="hideHome">收起</button>
+  </div>
+  <div class="hd-body">$ handoff status<br>agentd 可用 · 本机 · 4 个在飞任务</div>
+</div>
+
+<script>
+const TASKS = [
+  { id: "h-b264", kind: "executor", title: "B264 标签组与分屏以及中央工作台列模型确认", project: "handoff", machine: "本机", status: "running" },
+  { id: "h-b270", kind: "executor", title: "B270 四卡聚合", project: "handoff", machine: "本机", status: "review" },
+  { id: "h-term1", kind: "terminal", title: "终端 1", project: "handoff", machine: "本机" },
+  { id: "h-tabs", kind: "file", title: "tabs.ts", project: "handoff", machine: "本机", file: "tabs.ts" },
+  { id: "h-b93", kind: "executor", title: "B93 基准评测", project: "handoff", machine: "linux-01", status: "running" },
+  { id: "c-using", kind: "file", title: "using-charter.md · 会话入口与节点地图", project: "charter", machine: "本机", file: "using-charter.md" },
+  { id: "c-c19", kind: "executor", title: "C1.9 图下钻", project: "charter", machine: "本机", status: "running" },
+  { id: "a-term", kind: "terminal", title: "终端", project: "aim", machine: "mac-02" },
+  { id: "a-notes", kind: "file", title: "notes.md 评测记录和失败样本", project: "aim", machine: "mac-02", file: "notes.md" },
+  { id: "a-eval", kind: "executor", title: "评测跑批 batch3 全量回归还在跑", project: "aim", machine: "mac-02", status: "running" },
+  { id: "s-schema", kind: "file", title: "schema.sql", project: "sq", machine: "本机", file: "schema.sql" }
+];
+
+const DIRS = {
+  "handoff|本机": {
+    main: { label: "handoff", path: "~/workspace/handoff", branch: "main" },
+    trees: [
+      { label: "7a8334f4", path: "~/workspace/handoff/worktrees/7a8334f4", branch: "feat/b264" },
+      { label: "a1c90e2b", path: "~/workspace/handoff/worktrees/a1c90e2b", branch: "feat/b270" }
+    ]
+  },
+  "handoff|linux-01": {
+    main: { label: "handoff", path: "/home/handoff", branch: "main" },
+    trees: [{ label: "b93-run", path: "/home/handoff/worktrees/b93-run", branch: "bench/b93" }]
+  },
+  "charter|本机": {
+    main: { label: "charter", path: "~/workspace/charter", branch: "main" },
+    trees: []
+  },
+  "aim|mac-02": {
+    main: { label: "aim", path: "~/aim", branch: "master" },
+    trees: [{ label: "eval-3", path: "~/aim/worktrees/eval-3", branch: "eval/batch3" }]
+  },
+  "sq|本机": {
+    main: { label: "sq", path: "~/workspace/sq", branch: "main" },
+    trees: []
+  }
+};
+
+const FILE_TREES = {
+  handoff: [
+    { name: "cmd/", dir: true }, { name: "web/", dir: true }, { name: "desktop/", dir: true },
+    { name: "tabs.ts", dir: false }, { name: "README.md", dir: false }, { name: "main.go", dir: false }
+  ],
+  charter: [
+    { name: "skills/", dir: true }, { name: "using-charter.md", dir: false }, { name: "architecture-law.md", dir: false }
+  ],
+  aim: [
+    { name: "run.py", dir: false }, { name: "notes.md", dir: false }, { name: "README.md", dir: false }
+  ],
+  sq: [
+    { name: "schema.sql", dir: false }, { name: "migrate/", dir: true }
+  ]
+};
+
+const SNIPPETS = {
+  "handoff:tabs.ts": `<span class="cm">// 列模型：左右加列，一列最多上下两格。</span>
+<span class="k">export interface</span> Col { panes: (string | null)[] }`,
+  "handoff:README.md": `<span class="cm"># handoff</span>\n\nHand an implementation plan to another AI.`,
+  "handoff:main.go": `<span class="k">package</span> main\n<span class="k">func</span> main() { run() }`,
+  "charter:using-charter.md": `<span class="cm"># using-charter</span>\n按节点走：spec → plan → implement。`,
+  "charter:architecture-law.md": `<span class="cm"># 架构法</span>\n缝是法定的，层是自选的。`,
+  "aim:run.py": `<span class="k">def</span> main():\n    run_batch(suite=<span class="s">"eval"</span>)`,
+  "aim:notes.md": `<span class="cm"># 评测笔记</span>\nmac-02 上的跑批还在跑。`,
+  "aim:README.md": `<span class="cm"># aim</span>`,
+  "sq:schema.sql": `<span class="k">CREATE TABLE</span> cards (\n  id TEXT PRIMARY KEY\n);`
+};
+
+const EXEC_MOCK = {
+  "h-b264": { model: "左栏按项目 × 机器列正在进行的任务。分屏是列：一列最多两格。", lines: [["◇","已派发给 grok，本机"],["▸","改  中央列模型"],["●","等确认形态"]] },
+  "h-b270": { model: "四卡聚合可点，等审阅。", lines: [["◇","回合 2 结束"],["●","待审阅"]] },
+  "h-b93": { model: "基准套件第三轮还在跑。", lines: [["◇","linux-01 · opencode"],["●","已运行 3 小时 14 分"]] },
+  "c-c19": { model: "图下钻只做一层。", lines: [["◇","本机 · charter"],["●","正在补契约测试"]] },
+  "a-eval": { model: "评测跑批 14/40。", lines: [["◇","codex · mac-02"],["●","batch 3 进行中"]] }
+};
+
+const TERM_MOCK = {
+  "h-term1": `$ <span class="c">ls</span>\ncmd/  web/  README.md  tabs.ts\n$ <span class="c">git status</span>\nOn branch feat/b264-tab-groups`,
+  "a-term": `$ <span class="c">ls</span>\nrun.py  notes.md`
+};
+
+let uid = 1, groupSeq = 3;
+const groups = [
+  { id: "g1", name: "审 B264", autoName: false, cols: [{ panes: ["h-b264"] }], focus: [0, 0] },
+  { id: "g2", name: "跨项目", autoName: false, cols: [{ panes: ["c-c19"] }, { panes: ["a-eval"] }], focus: [0, 0] }
+];
+let activeGroup = 0;
+let dragging = false, suppressClick = false, dragPayload = null;
+const dirOpen = {};
+let drawer = null;
+let wtTarget = null;
+
+function esc(s) {
+  return String(s).replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;" }[c]));
+}
+function taskById(id) { return TASKS.find(t => t.id === id); }
+function cur() { return groups[activeGroup]; }
+function toast(msg) {
+  const el = document.getElementById("toast");
+  el.textContent = msg;
+  el.style.display = "block";
+  clearTimeout(toast._t);
+  toast._t = setTimeout(() => { el.style.display = "none"; }, 1400);
+}
+function focusedTask() {
+  const g = cur();
+  if (!g) return null;
+  const [c, r] = g.focus || [0, 0];
+  const col = g.cols[c];
+  return col ? taskById(col.panes[r]) : null;
+}
+function findTaskLoc(g, id) {
+  for (let c = 0; c < g.cols.length; c++) {
+    const r = g.cols[c].panes.indexOf(id);
+    if (r >= 0) return [c, r];
+  }
+  return null;
+}
+function pruneCols(g) {
+  g.cols = g.cols.filter(col => col.panes.length);
+  if (!g.cols.length) g.cols = [{ panes: [null] }];
+  if (g.focus[0] >= g.cols.length) g.focus = [g.cols.length - 1, 0];
+  const col = g.cols[g.focus[0]];
+  if (g.focus[1] >= col.panes.length) g.focus[1] = col.panes.length - 1;
+}
+function groupHasContent(g) {
+  return g.cols.some(col => col.panes.some(id => id));
+}
+function resetGroup(g) {
+  g.name = "组 1"; g.autoName = true; g.cols = [{ panes: [null] }]; g.focus = [0, 0];
+}
+function dismissGroup(g) {
+  const i = groups.indexOf(g);
+  if (i < 0) return;
+  if (groups.length === 1) { resetGroup(g); activeGroup = 0; return; }
+  groups.splice(i, 1);
+  if (activeGroup >= groups.length) activeGroup = groups.length - 1;
+  else if (activeGroup > i) activeGroup--;
+}
+function closePaneAt(g, ci, ri) {
+  const col = g.cols[ci];
+  if (!col) return;
+  col.panes.splice(ri, 1);
+  if (!col.panes.length) g.cols.splice(ci, 1);
+  if (!groupHasContent(g)) { dismissGroup(g); return; }
+  pruneCols(g);
+}
+
+function findOpen(taskId) {
+  for (let gi = 0; gi < groups.length; gi++) {
+    const loc = findTaskLoc(groups[gi], taskId);
+    if (loc) return { gi, loc };
+  }
+  return null;
+}
+function openOrFocus(taskId) {
+  const hit = findOpen(taskId);
+  if (hit) {
+    activeGroup = hit.gi;
+    groups[hit.gi].focus = hit.loc;
+    render();
+    return;
+  }
+  openNewGroup(taskId);
+}
+function openNewGroup(taskId) {
+  const t = taskById(taskId);
+  groups.push({
+    id: "g" + (groupSeq++),
+    name: t ? t.title : "组 " + groupSeq,
+    autoName: !t,
+    cols: [{ panes: [taskId] }],
+    focus: [0, 0]
+  });
+  activeGroup = groups.length - 1;
+  render();
+}
+function spawnTerminal(project, machine, cwd, label) {
+  const id = "term-" + (uid++);
+  const title = label ? ("终端 · " + label) : "终端";
+  TASKS.push({ id, kind: "terminal", title, project, machine, cwd });
+  TERM_MOCK[id] = "$ <span class=\"c\">pwd</span>\n" + esc(cwd || "") + "\n$ <span class=\"c\">ls</span>\n";
+  return id;
+}
+
+function ensureTask(partial) {
+  const hit = TASKS.find(t =>
+    t.kind === partial.kind && t.project === partial.project && t.machine === partial.machine &&
+    (partial.file ? t.file === partial.file : t.kind === "terminal" && t.title === partial.title)
+  );
+  if (hit) return hit.id;
+  const id = (partial.kind === "terminal" ? "term-" : "file-") + (uid++);
+  TASKS.push({ id, ...partial });
+  return id;
+}
+
+function resolvePayload(raw) {
+  if (!raw) return null;
+  const [kind, ...rest] = raw.split(":");
+  if (kind === "task") return { type: "task", id: rest.join(":") };
+  if (kind === "group") return { type: "group", id: rest.join(":") };
+  if (kind === "pane") return { type: "pane", col: +rest[0], row: +rest[1] };
+  if (kind === "dirterm") {
+    const project = rest[0], machine = rest[1], cwd = decodeURIComponent(rest[2] || ""), label = decodeURIComponent(rest[3] || "");
+    return { type: "task", id: spawnTerminal(project, machine, cwd, label) };
+  }
+  if (kind === "newterm") return { type: "task", id: spawnTerminal(rest[0], rest[1], "", "终端") };
+  if (kind === "newfile") {
+    const project = rest[0], machine = rest[1], file = rest.slice(2).join(":");
+    return { type: "task", id: ensureTask({ kind: "file", title: file, project, machine, file }) };
+  }
+  return { type: "task", id: raw };
+}
+
+function takePayload(p, g) {
+  if (p.type === "pane") {
+    const col = g.cols[p.col];
+    if (!col) return null;
+    const id = col.panes[p.row];
+    col.panes.splice(p.row, 1);
+    if (!col.panes.length) g.cols.splice(p.col, 1);
+    pruneCols(g);
+    return id;
+  }
+  if (p.type === "group") {
+    const gi = groups.findIndex(x => x.id === p.id);
+    if (gi < 0 || gi === activeGroup) return null;
+    const src = groups[gi];
+    const id = src.cols.flatMap(c => c.panes).find(Boolean);
+    groups.splice(gi, 1);
+    if (activeGroup > gi) activeGroup--;
+    return id || null;
+  }
+  return p.id;
+}
+
+function dropZone(ev, el) {
+  const r = el.getBoundingClientRect();
+  const x = ev.clientX - r.left, y = ev.clientY - r.top;
+  const mx = r.width * 0.28, my = r.height * 0.28;
+  if (x < mx) return "left";
+  if (x > r.width - mx) return "right";
+  if (y < my) return "top";
+  if (y > r.height - my) return "bottom";
+  return "center";
+}
+
+function placeTask(g, taskId, colIdx, rowIdx, edge) {
+  if (!taskId) return;
+  const existing = findTaskLoc(g, taskId);
+  if (existing && edge === "center") { g.focus = existing; return; }
+  if (existing) {
+    const [c, r] = existing;
+    g.cols[c].panes.splice(r, 1);
+    if (!g.cols[c].panes.length) g.cols.splice(c, 1);
+    if (colIdx > c) colIdx--;
+    pruneCols(g);
+    if (colIdx >= g.cols.length) colIdx = g.cols.length - 1;
+  }
+  if (edge === "left") {
+    g.cols.splice(colIdx, 0, { panes: [taskId] });
+    g.focus = [colIdx, 0];
+    return;
+  }
+  if (edge === "right") {
+    g.cols.splice(colIdx + 1, 0, { panes: [taskId] });
+    g.focus = [colIdx + 1, 0];
+    return;
+  }
+  const col = g.cols[colIdx] || g.cols[0];
+  if (edge === "center" || !col.panes[rowIdx]) {
+    col.panes[rowIdx] = taskId;
+    g.focus = [g.cols.indexOf(col), rowIdx];
+    return;
+  }
+  if (col.panes.length >= 2) {
+    toast("这一列最多两格");
+    col.panes[rowIdx] = taskId;
+    g.focus = [g.cols.indexOf(col), rowIdx];
+    return;
+  }
+  if (edge === "top") col.panes.splice(rowIdx, 0, taskId);
+  else col.panes.splice(rowIdx + 1, 0, taskId);
+  if (col.panes.length > 2) col.panes.splice(edge === "top" ? 2 : 0, col.panes.length - 2);
+  g.focus = [g.cols.indexOf(col), col.panes.indexOf(taskId)];
+}
+
+function handleDrop(ev, colIdx, rowIdx, el) {
+  const raw = ev.dataTransfer.getData("text/plain") || (dragPayload && dragPayload.raw);
+  const p = resolvePayload(raw);
+  if (!p) return;
+  const g = cur();
+  const id = takePayload(p, g);
+  if (!id) return;
+  placeTask(g, id, colIdx, rowIdx, dropZone(ev, el));
+  pruneCols(g);
+  render();
+}
+
+function addEmptyCol() {
+  cur().cols.push({ panes: [null] });
+  const g = cur();
+  g.focus = [g.cols.length - 1, 0];
+  render();
+}
+
+function filledIds(g) {
+  return g.cols.flatMap(c => c.panes).filter(Boolean);
+}
+function applyShape(kind) {
+  const g = cur();
+  const ids = filledIds(g);
+  if (kind === "1") g.cols = [{ panes: [ids[0] || null] }];
+  else if (kind === "lr") g.cols = [{ panes: [ids[0] || null] }, { panes: [ids[1] || null] }];
+  else if (kind === "tb") g.cols = [{ panes: [ids[0] || null, ids[1] || null] }];
+  else if (kind === "g4") g.cols = [
+    { panes: [ids[0] || null, ids[2] || null] },
+    { panes: [ids[1] || null, ids[3] || null] }
+  ];
+  g.focus = [0, 0];
+  render();
+}
+function shapeOf(g) {
+  if (g.cols.length === 1 && g.cols[0].panes.length === 1) return "1";
+  if (g.cols.length === 2 && g.cols.every(c => c.panes.length === 1)) return "lr";
+  if (g.cols.length === 1 && g.cols[0].panes.length === 2) return "tb";
+  if (g.cols.length === 2 && g.cols.every(c => c.panes.length === 2)) return "g4";
+  return "";
+}
+
+function paneHTML(t) {
+  if (!t) return "";
+  if (t.kind === "terminal") {
+    const body = TERM_MOCK[t.id] || ('$ pwd\n' + esc(t.cwd || (t.project + ' @ ' + t.machine)));
+    return '<pre class="term-pre">' + body + "</pre>";
+  }
+  if (t.kind === "file") {
+    const key = t.project + ":" + (t.file || t.title);
+    return '<pre class="file-pre">' + (SNIPPETS[key] || ("// " + esc(t.title))) + "</pre>";
+  }
+  const mock = EXEC_MOCK[t.id] || { model: t.title, lines: [["◇", t.machine + " / " + t.project]] };
+  const badge = t.status === "review" ? '<span class="badge amber">待审阅</span>' : '<span class="badge">运行中</span>';
+  const lines = mock.lines.map(row => '<div class="meta-line"><span>' + row[0] + "</span><span>" + esc(row[1]) + "</span></div>").join("");
+  return '<div class="tui-mini"><div class="tm-head"><span class="tm-title">' + esc(t.title) + "</span>" + badge + "</div>" + lines +
+    '<div class="msg">' + esc(mock.model) + "</div></div>";
+}
+
+function bindDrag(el, raw) {
+  el.addEventListener("dragstart", ev => {
+    dragging = true; suppressClick = true; dragPayload = { raw };
+    ev.dataTransfer.setData("text/plain", raw);
+    ev.dataTransfer.effectAllowed = "copyMove";
+    document.body.classList.add("dragging");
+  });
+  el.addEventListener("dragend", () => {
+    dragging = false; dragPayload = null;
+    document.body.classList.remove("dragging");
+    document.querySelectorAll(".drop,.drop-left,.drop-right,.drop-top,.drop-bottom").forEach(n => {
+      n.classList.remove("drop","drop-left","drop-right","drop-top","drop-bottom");
+    });
+    setTimeout(() => { suppressClick = false; }, 40);
+  });
+}
+
+function dirKey(proj, mach) { return proj + "|" + mach; }
+function dirsOf(proj, mach) {
+  return DIRS[dirKey(proj, mach)] || { main: { label: proj, path: "~/" + proj, branch: "main" }, trees: [] };
+}
+function openDrawer(proj, mach, dir) {
+  drawer = { project: proj, machine: mach, dir: dir };
+  render();
+}
+function closeDrawer() { drawer = null; render(); }
+function hideFilePop() {
+  const pop = document.getElementById("filePop");
+  if (pop) pop.hidden = true;
+}
+function renderDrawer() {
+  const el = document.getElementById("fileDrawer");
+  if (!el) return;
+  if (!drawer) { el.hidden = true; el.innerHTML = ""; return; }
+  el.hidden = false;
+  const files = FILE_TREES[drawer.project] || [{ name: "README.md", dir: false }];
+  el.innerHTML = '<div class="fd-head"><span class="ttl">' + esc(drawer.dir.label) + " · 文件</span>" +
+    '<button class="icon-btn" type="button" id="closeDrawer" title="关闭">×</button></div><div class="fd-body"></div>';
+  el.querySelector("#closeDrawer").addEventListener("click", closeDrawer);
+  const body = el.querySelector(".fd-body");
+  const path = document.createElement("div");
+  path.className = "fd-item dir";
+  path.textContent = drawer.dir.path;
+  body.appendChild(path);
+  files.forEach(f => {
+    const item = document.createElement("div");
+    item.className = "fd-item" + (f.dir ? " dir" : "");
+    item.textContent = f.name;
+    if (!f.dir) {
+      item.addEventListener("click", () => {
+        const id = ensureTask({ kind: "file", title: f.name, project: drawer.project, machine: drawer.machine, file: f.name });
+        openOrFocus(id);
+      });
+    }
+    body.appendChild(item);
+  });
+}
+
+
+const TASK_SCHEME = { handoff: 2, charter: 2, aim: 2, sq: 2 };
+const SCHEME_HINT = { 1: "方案一 · 机头像", 2: "方案二 · 类型头像", 3: "方案三 · 右机头像" };
+
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+function machineAvatarSvg(name) {
+  const h = hashStr(name);
+  const uid = "c" + h.toString(16);
+  const h1 = h % 360, h2 = (h >> 8) % 360, h3 = (h >> 16) % 360;
+  const x1 = 6 + (h % 10), y1 = 8 + ((h >> 4) % 8);
+  const x2 = 18 + ((h >> 8) % 8), y2 = 18 + ((h >> 12) % 6);
+  return '<svg class="avatar" viewBox="0 0 32 32" aria-hidden="true">' +
+    '<defs><clipPath id="' + uid + '"><circle cx="16" cy="16" r="16"/></clipPath></defs>' +
+    '<g clip-path="url(#' + uid + ')">' +
+    '<rect width="32" height="32" fill="hsl(' + h1 + ',42%,74%)"/>' +
+    '<circle cx="' + x1 + '" cy="' + y1 + '" r="13" fill="hsl(' + h2 + ',48%,62%)"/>' +
+    '<circle cx="' + x2 + '" cy="' + y2 + '" r="11" fill="hsl(' + h3 + ',40%,54%)"/>' +
+    "</g></svg>";
+}
+function typeIconSvg(kind, cls) {
+  const c = cls || "type-ic";
+  if (kind === "terminal") {
+    return '<svg class="' + c + '" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3" width="13" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 7.5 L7 9 L4.5 10.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8.5 10.5h3" stroke="currentColor" stroke-width="1.3"/></svg>';
+  }
+  if (kind === "file") {
+    return '<svg class="' + c + '" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2.5h4.5L12.5 6v7.5H5z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.5 2.5V6h3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+  }
+  return '<svg class="' + c + '" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="6" r="2.4" fill="currentColor"/><path d="M4 13c0-2.2 1.8-4 4-4s4 1.8 4 4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+}
+function statusClass(tsk) {
+  if (tsk.status === "review") return "amber";
+  if (tsk.kind === "executor" && tsk.status === "running") return "green";
+  return "mute";
+}
+function taskRowHTML(tsk, scheme) {
+  const st = statusClass(tsk);
+  const title = '<span class="t-title" title="' + esc(tsk.title) + '">' + esc(tsk.title) + "</span>";
+  if (scheme === 1) {
+    return '<span class="avatar-wrap">' + machineAvatarSvg(tsk.machine) +
+      '<span class="status ' + st + '"></span></span>' + title + typeIconSvg(tsk.kind);
+  }
+  if (scheme === 2) {
+    return '<span class="avatar-wrap"><span class="type-avatar">' + typeIconSvg(tsk.kind) +
+      '</span><span class="status ' + st + '"></span></span>' + title +
+      '<span class="mach-name-r">' + esc(tsk.machine) + "</span>";
+  }
+  return typeIconSvg(tsk.kind) + title +
+    '<span class="avatar-wrap">' + machineAvatarSvg(tsk.machine) +
+    '<span class="status ' + st + '"></span></span>';
+}
+
+function renderTree() {
+  const q = (document.getElementById("treeSearch").value || "").trim().toLowerCase();
+  const focused = focusedTask();
+  const byProj = {};
+  function ensure(proj) {
+    return (byProj[proj] ||= { tasks: [], machines: {} });
+  }
+  TASKS.forEach(t => {
+    if (q && !(t.project + t.machine + t.title).toLowerCase().includes(q)) return;
+    const bucket = ensure(t.project);
+    bucket.tasks.push(t);
+    bucket.machines[t.machine] = true;
+  });
+  Object.keys(DIRS).forEach(k => {
+    const [proj, mach] = k.split("|");
+    if (q && !(proj + mach).toLowerCase().includes(q)) return;
+    ensure(proj).machines[mach] = true;
+  });
+  const root = document.getElementById("taskTree");
+  root.innerHTML = "";
+  Object.keys(byProj).forEach(proj => {
+    const wrap = document.createElement("div");
+    wrap.className = "tree-group";
+    const head = document.createElement("div");
+    head.className = "proj-head";
+    head.innerHTML = '<span class="proj-name">' + esc(proj) + '</span>' +
+      '<span class="hover-actions">' +
+      '<a href="pages/board.html?project=' + encodeURIComponent(proj) + '" title="工作项">▤</a>' +
+      '<a href="pages/codegraph.html?project=' + encodeURIComponent(proj) + '" title="代码图">◈</a>' +
+      "</span>";
+    wrap.appendChild(head);
+
+    const taskGroup = document.createElement("div");
+    taskGroup.className = "peer-group";
+    const taskHead = document.createElement("div");
+    const scheme = TASK_SCHEME[proj] || 1;
+    taskHead.className = "sec-head";
+    taskHead.innerHTML = "<span>任务</span><span class=\"scheme-tag\">" + SCHEME_HINT[scheme] + "</span>";
+    taskGroup.appendChild(taskHead);
+    byProj[proj].tasks.forEach(tsk => {
+      const row = document.createElement("div");
+      row.className = "task-row" + (focused && focused.id === tsk.id ? " on" : "");
+      row.draggable = true;
+      row.innerHTML = taskRowHTML(tsk, scheme);
+      row.addEventListener("click", () => { if (!suppressClick) openOrFocus(tsk.id); });
+      bindDrag(row, "task:" + tsk.id);
+      taskGroup.appendChild(row);
+    });
+    wrap.appendChild(taskGroup);
+
+    const dirGroup = document.createElement("div");
+    dirGroup.className = "peer-group";
+    const dirHead = document.createElement("div");
+    dirHead.className = "sec-head";
+    dirHead.innerHTML = "<span>目录</span>";
+    dirGroup.appendChild(dirHead);
+
+    Object.keys(byProj[proj].machines).forEach(mach => {
+      const key = dirKey(proj, mach);
+      const expanded = !!dirOpen[key];
+      const pack = dirsOf(proj, mach);
+      const mh = document.createElement("div");
+      mh.className = "mach-row";
+      mh.draggable = true;
+      mh.innerHTML = '<span class="chev">' + (expanded ? "▾" : "▸") + '</span>' +
+        '<span class="mach-name">' + esc(mach) + "</span>" +
+        '<span class="hover-actions">' +
+        '<button type="button" data-act="term" title="打开主目录终端">⌘</button>' +
+        '<button type="button" data-act="wt" title="新建工作树">＋</button>' +
+        "</span>";
+      mh.addEventListener("click", ev => {
+        if (suppressClick) return;
+        if (ev.target.closest("button")) return;
+        dirOpen[key] = !expanded;
+        renderTree();
+      });
+      mh.querySelector('[data-act="term"]').addEventListener("click", ev => {
+        ev.stopPropagation();
+        openOrFocus(spawnTerminal(proj, mach, pack.main.path, pack.main.label));
+      });
+      mh.querySelector('[data-act="wt"]').addEventListener("click", ev => {
+        ev.stopPropagation();
+        wtTarget = { project: proj, machine: mach };
+        document.getElementById("newWtCtx").textContent = mach + " / " + proj;
+        document.getElementById("newWtPath").value = pack.main.path;
+        document.getElementById("newWtFeedback").hidden = true;
+        document.getElementById("newWtDialog").showModal();
+      });
+      bindDrag(mh, "dirterm:" + proj + ":" + mach + ":" + encodeURIComponent(pack.main.path) + ":" + encodeURIComponent(pack.main.label));
+      dirGroup.appendChild(mh);
+
+      if (expanded) {
+        [pack.main].concat(pack.trees).forEach(dir => {
+          const row = document.createElement("div");
+          const isOn = drawer && drawer.project === proj && drawer.machine === mach && drawer.dir.path === dir.path;
+          row.className = "dir-row" + (isOn ? " on" : "");
+          row.draggable = true;
+          row.innerHTML = "<span>" + esc(dir.branch || dir.label) +
+            '</span><span class="hover-actions"><button type="button" title="在此打开终端">⌘</button></span>';
+          row.addEventListener("click", ev => {
+            if (suppressClick) return;
+            if (ev.target.closest("button")) return;
+            openDrawer(proj, mach, dir);
+          });
+          row.querySelector("button").addEventListener("click", ev => {
+            ev.stopPropagation();
+            openOrFocus(spawnTerminal(proj, mach, dir.path, dir.label));
+          });
+          bindDrag(row, "dirterm:" + proj + ":" + mach + ":" + encodeURIComponent(dir.path) + ":" + encodeURIComponent(dir.label));
+          dirGroup.appendChild(row);
+        });
+      }
+    });
+    wrap.appendChild(dirGroup);
+    root.appendChild(wrap);
+  });
+}
+
+function renderGroups() {
+  const bar = document.getElementById("groupBar");
+  bar.innerHTML = "";
+  groups.forEach((g, i) => {
+    const tab = document.createElement("div");
+    tab.className = "tab" + (i === activeGroup ? " active" : "");
+    if (i === activeGroup) tab.setAttribute("aria-current", "page");
+    tab.draggable = true;
+    tab.innerHTML = '<button type="button" class="tab-name">' + esc(g.name) + '</button>' +
+      '<button type="button" class="tab-x" title="关闭标签组">×</button>';
+    tab.querySelector(".tab-name").addEventListener("click", () => { activeGroup = i; render(); });
+    tab.querySelector(".tab-x").addEventListener("click", ev => {
+      ev.stopPropagation();
+      if (groups.length === 1) {
+        groups[0] = { id: groups[0].id, name: "组 1", autoName: true, cols: [{ panes: [null] }], focus: [0, 0] };
+        activeGroup = 0; render(); return;
+      }
+      groups.splice(i, 1);
+      if (activeGroup >= groups.length) activeGroup = groups.length - 1;
+      else if (activeGroup > i) activeGroup--;
+      render();
+    });
+    bindDrag(tab, "group:" + g.id);
+    bar.appendChild(tab);
+  });
+  const add = document.createElement("button");
+  add.type = "button"; add.className = "tab-add"; add.textContent = "＋"; add.title = "新建标签组";
+  add.addEventListener("click", () => {
+    groups.push({ id: "g" + (groupSeq++), name: "组 " + groupSeq, autoName: true, cols: [{ panes: [null] }], focus: [0, 0] });
+    activeGroup = groups.length - 1; render();
+  });
+  bar.appendChild(add);
+}
+
+function renderStrip() {}
+
+function renderPanes() {
+  const g = cur();
+  const host = document.getElementById("cols");
+  host.innerHTML = "";
+  g.cols.forEach((col, ci) => {
+    const colEl = document.createElement("div");
+    colEl.className = "col";
+    col.panes.forEach((id, ri) => {
+      const t = id ? taskById(id) : null;
+      const pane = document.createElement("div");
+      pane.className = "pane" + (g.focus[0] === ci && g.focus[1] === ri ? " focused" : "");
+      if (!t) {
+        pane.innerHTML =
+          '<div class="pane-head"><span class="ph-title">空窗格</span>' +
+          '<button class="icon-btn xs" type="button" title="关闭分屏">×</button></div>' +
+          '<div class="pane-empty">拖任务到中间替换，贴到上下左右分屏</div>';
+        pane.querySelector(".icon-btn").addEventListener("click", ev => {
+          ev.stopPropagation();
+          closePaneAt(g, ci, ri);
+          render();
+        });
+      } else {
+        pane.innerHTML =
+          '<div class="pane-head" draggable="true">' +
+          '<span class="ph-title">' + esc(t.title) + '</span>' +
+          '<span class="ph-meta">' + esc(t.machine) + " / " + esc(t.project) + '</span>' +
+          '<button class="icon-btn xs" type="button" title="关闭">×</button></div>' +
+          '<div class="pane-body">' + paneHTML(t) + "</div>";
+        bindDrag(pane.querySelector(".pane-head"), "pane:" + ci + ":" + ri);
+        pane.querySelector(".icon-btn").addEventListener("click", ev => {
+          ev.stopPropagation();
+          closePaneAt(g, ci, ri);
+          render();
+        });
+      }
+      pane.addEventListener("click", () => { g.focus = [ci, ri]; render(); });
+      pane.addEventListener("dragover", ev => {
+        ev.preventDefault();
+        pane.classList.add("drop");
+        pane.classList.remove("drop-left","drop-right","drop-top","drop-bottom");
+        const z = dropZone(ev, pane);
+        if (z !== "center") pane.classList.add("drop-" + z);
+      });
+      pane.addEventListener("dragleave", ev => {
+        if (pane.contains(ev.relatedTarget)) return;
+        pane.classList.remove("drop","drop-left","drop-right","drop-top","drop-bottom");
+      });
+      pane.addEventListener("drop", ev => {
+        ev.preventDefault();
+        pane.classList.remove("drop","drop-left","drop-right","drop-top","drop-bottom");
+        handleDrop(ev, ci, ri, pane);
+      });
+      colEl.appendChild(pane);
+    });
+    host.appendChild(colEl);
+  });
+}
+
+function renderCrumb() {
+  const t = focusedTask();
+  document.getElementById("crumb").textContent = t ? (t.machine + " / " + t.project + " / " + t.title) : "未选中任务";
+}
+
+function render() {
+  renderTree();
+  renderGroups();
+  renderStrip();
+  renderPanes();
+  renderCrumb();
+  renderDrawer();
+}
+
+document.getElementById("treeSearch").addEventListener("input", renderTree);
+document.addEventListener("keydown", e => {
+  if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
+    e.preventDefault(); document.getElementById("treeSearch").focus();
+  }
+});
+document.getElementById("openBoard").addEventListener("click", () => document.getElementById("boardDlg").showModal());
+document.getElementById("closeBoard").addEventListener("click", () => document.getElementById("boardDlg").close());
+document.getElementById("openTickets").addEventListener("click", () => document.getElementById("ticketsDlg").showModal());
+document.getElementById("closeTickets").addEventListener("click", () => document.getElementById("ticketsDlg").close());
+document.getElementById("addProject").addEventListener("click", () => document.getElementById("addDlg").showModal());
+document.getElementById("closeAdd").addEventListener("click", () => document.getElementById("addDlg").close());
+document.getElementById("addForm").addEventListener("submit", e => {
+  e.preventDefault();
+  document.getElementById("addFeedback").hidden = false;
+});
+document.getElementById("closeNewWt").addEventListener("click", () => document.getElementById("newWtDialog").close());
+document.getElementById("newWtForm").addEventListener("submit", e => {
+  e.preventDefault();
+  const pack = wtTarget ? dirsOf(wtTarget.project, wtTarget.machine) : null;
+  const branch = document.getElementById("newWtBranch").value.trim() || ("feat/" + uid);
+  if (pack) {
+    pack.trees.push({
+      label: branch.replace(/\//g, "-").slice(0, 12),
+      path: (document.getElementById("newWtPath").value || pack.main.path) + "/worktrees/" + branch.replace(/\//g, "-"),
+      branch: branch
+    });
+    dirOpen[dirKey(wtTarget.project, wtTarget.machine)] = true;
+  }
+  document.getElementById("newWtFeedback").hidden = false;
+  setTimeout(() => { document.getElementById("newWtDialog").close(); render(); }, 400);
+});
+document.getElementById("openHome").addEventListener("click", () => {
+  document.getElementById("homedock").hidden = false;
+  document.body.classList.add("home-open");
+});
+document.getElementById("hideHome").addEventListener("click", () => {
+  document.getElementById("homedock").hidden = true;
+  document.body.classList.remove("home-open");
+});
+
+render();
+</script>
+</body>
+</html>
