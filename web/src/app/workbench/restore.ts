@@ -12,7 +12,7 @@
 //   - 不决定「选中哪个目录」：selected 原样透传，校验它还在不在树上是 Shell 的事
 //     （要等项目树，spec §6）
 //   - 不打日志：它不知道自己跑在什么上下文里；统计量以返回值给出，由调用方记录
-import type { PtySession, WorkbenchStateResp } from '../../api/types'
+import type { MachineStatus, PtySession, WorkbenchStateResp } from '../../api/types'
 import {
   clampGeom,
   decodeDock,
@@ -58,6 +58,11 @@ export function baseOfSession(s: PtySession): BaseDir {
 export interface RestoreInput {
   state: WorkbenchStateResp
   sessions: PtySession[]
+  // scope=all 扇出的 machines 行（PtySessionsResp.machines，types.ts:730）。方案3 的
+  // 门控数据：某台机器的行缺席或 ok=false 时，它名下的会话引用不剥——扇出缺席 ≠ 会话
+  // 死亡。整个字段缺席（undefined）按空表处理。本机（machine===''）恒 ok：本机行由
+  // 汇总端点恒以 ok=true 领衔（internal/agentd/pty_api.go:189），本机会话名单从不缺席。
+  machines?: MachineStatus[]
   // 视口宽高与顶部让位，用于夹紧悬浮窗几何。由调用方读 window 后传进来
   vw: number
   vh: number
@@ -109,6 +114,22 @@ function liveSessionIds(sessions: PtySession[]): Set<string> {
   return live
 }
 
+// machineOkSet 把扇出应答折成「本次答上来了」的机器名集合——方案3 两处 prune 的门控表。
+//
+// 参数：machines 是 PtySessionsResp.machines；undefined 按空表处理。
+// 返回：ok=true 的机器名集合；本机（machine===''）无条件在内——本机行由
+// internal/agentd/pty_api.go:189 恒以 {Name:"", Ok:true} 领衔返回，本机会话名单从不
+// 缺席，门控对本机没有存在意义；集合里查不到的机器一律按「没答上来」处理（保守：
+// 宁可留一个连不上可显式重开的 tab，不静默造孤儿）。
+// 注意：不导出——它只服务 buildRestore 内的两处门控，外面没有第二个消费者。
+function machineOkSet(machines: MachineStatus[] | undefined): Set<string> {
+  const ok = new Set<string>([''])
+  for (const m of machines ?? []) {
+    if (m.ok) ok.add(m.name)
+  }
+  return ok
+}
+
 // collectUsedSessionIds 收集恢复结果里已经被某个 tab 占用的会话 id。
 // 孤儿判定就是「活着但不在这个集合里」。
 function collectUsedSessionIds(entries: Array<{ base: BaseDir; wb: Workbench }>, dockTabs: HomeTab[]): Set<string> {
@@ -158,6 +179,7 @@ function orphanTerminal(seq: number, s: PtySession): TabContent {
 export function buildRestore(input: RestoreInput): RestoreResult {
   const live = liveSessionIds(input.sessions)
   const incompatible = incompatibleSessionIds(input.sessions)
+  const machineOk = machineOkSet(input.machines)
 
   // ① 解码基准行，坏行整行丢弃；顺手抹掉死会话
   const entries: Array<{ base: BaseDir; wb: Workbench }> = []
@@ -170,7 +192,12 @@ export function buildRestore(input: RestoreInput): RestoreResult {
       continue
     }
     const before = countTerminalsWithSession(decoded.wb)
-    const wb = pruneDeadSessions(decoded.wb, live)
+    // 方案3（中央区侧）：本行基准的机器这次扇出没答上来时，不做死亡判决——它名下
+    // 的会话可能活着只是没进名单。跳过 prune 保住引用，机器回来照常接上；真死了走
+    // 挂载时的连接错误 / 1008 出口，两条路都有「重开」终态，不会静默自建新 shell。
+    // 归属按 base 行的 machine 取：TabContent 没有 machine 字段，被判死的会话也
+    // 不在会话行里，base 行是唯一可靠来源。
+    const wb = machineOk.has(decoded.base.machine) ? pruneDeadSessions(decoded.wb, live) : decoded.wb
     pruned += before - countTerminalsWithSession(wb)
     // 打标记必须在抹死会话**之后**：两者作用于不相交的集合（死的已经没有
     // sessionId 了），次序颠倒不会出错，但这样读起来与「先清理再标注」一致

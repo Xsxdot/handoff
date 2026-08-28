@@ -3,7 +3,7 @@
 // 职责：覆盖死会话抹除、孤儿归组、悬浮窗现场恢复与坏数据降级。
 // 边界：不测试 React、网络请求或项目树选中动作；这些由同步层和 Shell 负责。
 import { describe, expect, it } from 'vitest'
-import type { PtySession, WorkbenchStateResp } from '../../api/types'
+import type { MachineStatus, PtySession, WorkbenchStateResp } from '../../api/types'
 import { encodeBase } from './persist'
 import { encodeDock } from '../homedock/dockPersist'
 import type { BaseDir } from './useWorkbench'
@@ -30,6 +30,20 @@ function sess(id: string, over: Partial<PtySession> = {}): PtySession {
 
 function state(over: Partial<WorkbenchStateResp> = {}): WorkbenchStateResp {
   return { selected: '', dock: '', bases: [], ...over }
+}
+
+const baseM: BaseDir = {
+  key: '/repo/m@mac-02',
+  kind: 'workspace',
+  path: '/repo/m',
+  label: 'm',
+  projectName: 'p',
+  machine: 'mac-02',
+}
+
+// machine 造一条扇出应答行。MachineStatus 四个字段全必填（types.ts:173-178）。
+function machine(name: string, ok: boolean): MachineStatus {
+  return { name, ok, fetched_at: '2026-08-28T00:00:00Z', error: '' }
 }
 
 const VIEW = { vw: 1280, vh: 800, inset: 0 }
@@ -190,5 +204,37 @@ describe('buildRestore', () => {
   it('selected 原样透传', () => {
     const r = buildRestore({ state: state({ selected: '/repo/a' }), sessions: [], ...VIEW })
     expect(r.selected).toBe('/repo/a')
+  })
+
+  it('机器扇出 ok 时本行死会话照常剥——门控只挡「没答上来」，不挡真死', () => {
+    const r = buildRestore({
+      state: state({ bases: [{ base_key: baseM.key, payload: encodeBase(baseM, wbWith('S1')), updated_at: 1 }] }),
+      sessions: [sess('S1', { machine: 'mac-02', base_path: '/repo/m', exit_code: 0 })],
+      machines: [machine('', true), machine('mac-02', true)],
+      ...VIEW,
+    })
+    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1 })
+    expect(r.pruned).toBe(1)
+  })
+
+  it('机器扇出没答上来（ok=false）时它名下基准行的引用不剥——缺席不判死', () => {
+    const r = buildRestore({
+      state: state({ bases: [{ base_key: baseM.key, payload: encodeBase(baseM, wbWith('S1')), updated_at: 1 }] }),
+      sessions: [], // mac-02 没答上来：S1 可能活着，只是没进名单
+      machines: [machine('', true), machine('mac-02', false)],
+      ...VIEW,
+    })
+    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
+    expect(r.pruned).toBe(0)
+  })
+
+  it('machines 整个缺席时同样保守：远端基准行的引用不剥', () => {
+    const r = buildRestore({
+      state: state({ bases: [{ base_key: baseM.key, payload: encodeBase(baseM, wbWith('S1')), updated_at: 1 }] }),
+      sessions: [],
+      ...VIEW,
+    })
+    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
+    expect(r.pruned).toBe(0)
   })
 })

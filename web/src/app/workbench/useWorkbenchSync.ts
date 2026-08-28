@@ -105,6 +105,7 @@ export function useWorkbenchSync(deps: WorkbenchSyncDeps): { error: string; rest
           const r = buildRestore({
             state,
             sessions: sessResp.sessions,
+            machines: sessResp.machines,
             vw: vw > 0 ? vw : 1280,
             vh: vh > 0 ? vh : 800,
             inset: topInset(),

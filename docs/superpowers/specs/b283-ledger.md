@@ -23,3 +23,8 @@
 - 2026-08-28 放弃的尝试（红色回路原样搬）：原夹具 dock tab `machine='mac-02'`，方案2 无条件清除外来 tab 后该 tab 在 open1 即消失，「保引用」断言在 dock 面写不出来。转正夹具改为「外来 tab（承载清除断言）＋本机 tab machine=''（承载保引用反转断言，其会话在名单里）」；「两次打开不增长」不变式保持，open2 的 `adopted=0` 断言兼验方案1。
 - 2026-08-28 关键次序决定：restore.ts ② 内 prune（门控）先于 purge——purge 无条件删整 tab，最终 tabs 与次序无关，但 `pruned` 统计的诚实性依赖这个次序（「外来 tab 被清是整 tab 走、不是剥引用留壳」→ pruned=0，可与基线的 pruned=1 区分）。清除命中 activeId 显式置 null 交给既有兜底（restore.ts:225）重指；kept 为空时 windowOpen 收 false（decode 出来本来就空的退化现场一并兜住——closeTab 写不出那种形状；既有用例对该形状不断言 windowOpen，保持绿）。
 - 2026-08-28 计划落盘：`docs/superpowers/plans/b283-plan.md`——Task1 machines 入参＋中央区门控；Task2 home 收编仅本机（方案1）；Task3 悬浮窗门控＋存量清除（方案2＋方案3 悬浮窗半）；Task4 红色回路转正；Task5 话术订正六处。出稿自审时纠正一处 task 次序错误：清除用例断言 `adopted===0`／`tabs 长 0` 依赖方案1 在位，方案1 必须先于清除 task，DAG 定为 1→2→3→4（5 独立并行）。
+
+## implement 节点（2026-08-28）
+
+- 2026-08-28 implement 开工：工作树 HEAD `54bcc5678`（分支 `fix/B283-float-terminal-dup`，工作树干净）。符号核对：restore.ts 的 import 行/`RestoreInput`/③ 循环、useWorkbenchSync.ts:105 的 buildRestore 调用、Shell.tsx 217/270/301/655、TerminalTab.tsx 8/616 均与计划代码块原文逐字对齐；scripts 实名 `typecheck`=`tsc -b`，另有 `lint`=eslint。图覆盖债：未跑 codegraph，同 plan 节点先例（核对对象全在计划文件集内，直接读码）。
+- 2026-08-28 Task 1 步骤 1 判据基线复核（web/ 下）`npx vitest run src/app/workbench/restore.test.ts src/app/workbench/useWorkbenchSync.test.ts`：`Test Files  2 passed (2)` / `Tests  20 passed (20)`——与计划基线声明一致，动手。
