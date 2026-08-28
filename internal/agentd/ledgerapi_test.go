@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 func ledgerGet(t *testing.T, env *testAgentdEnv, path string) (int, string) {
@@ -182,11 +182,10 @@ func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	srv := NewServer(cfg, backend, log)
 	srv.SetLedger(ledgerStore)
 	srv.SetManager(NewManager(backend, srv.Hub(), nil, cfg, nil, nil, nil, log))
-	ts := httptest.NewServer(srv.Handler())
+	ts := testhttp.NewServer(t, srv.Handler())
 	// Task 3 的本机纪律探活走真实 HTTP；把临时服务地址回填为本机监听地址，
 	// 避免零值 Listen 被误当成 relay 的空端点。
 	cfg.Listen = strings.TrimPrefix(ts.URL, "http://")
-	t.Cleanup(ts.Close)
 	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore}
 }
 

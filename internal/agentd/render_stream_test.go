@@ -15,6 +15,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // newRenderServer 起一个只为 render endpoint 服务的最小 Server，
@@ -38,8 +39,7 @@ func newRenderServer(t *testing.T, taskID, content string) (*httptest.Server, st
 	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: taskDir, State: proto.TaskStateRunning})
 	cfg := &config.Config{Token: "test", DataDir: dir}
 	s := NewServer(cfg, st, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	ts := httptest.NewServer(s.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, s.Handler())
 	return ts, renderPath
 }
 

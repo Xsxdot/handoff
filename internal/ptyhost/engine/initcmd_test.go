@@ -85,6 +85,97 @@ func openAndCollect(t *testing.T, opt ptyhost.OpenOptions) (*engine.Engine, ptyh
 	return h, sess, wait
 }
 
+func waitFile(path string, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		<-ticker.C
+	}
+}
+
+func releaseFIFO(t *testing.T, path string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			done <- err
+			return
+		}
+		_, writeErr := f.WriteString("release\n")
+		closeErr := f.Close()
+		if writeErr != nil {
+			done <- writeErr
+			return
+		}
+		done <- closeErr
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("释放 shell trap FIFO: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("shell trap 未打开 release FIFO")
+	}
+}
+
+func TestCloseWaitsForReapAndLateTrap(t *testing.T) {
+	home := t.TempDir()
+	ready := filepath.Join(home, "b234-ready")
+	release := filepath.Join(home, "b234-release")
+	late := filepath.Join(home, "b234-late")
+	h, sess, _ := openAndCollect(t, ptyhost.OpenOptions{
+		Shell: "/bin/sh", BasePath: home, BaseKind: "home",
+		Env:         append(os.Environ(), "HOME="+home),
+		InitCommand: `mkfifo "$HOME/b234-release"; trap 'cat "$HOME/b234-release" >/dev/null; exit 0' TERM; trap 'printf late > "$HOME/b234-late"' EXIT; : > "$HOME/b234-ready"; while :; do :; done`,
+	})
+	if !waitFile(ready, 3*time.Second) {
+		t.Fatal("InitCommand 未建立 ready marker，测试前提不成立")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- h.Close(sess.ID) }()
+	early := false
+	var earlyErr error
+	select {
+	case earlyErr = <-closeDone:
+		early = true
+	case <-time.After(250 * time.Millisecond):
+	}
+	if early {
+		releaseFIFO(t, release)
+		if earlyErr != nil {
+			t.Fatalf("提前返回的 Close 错误: %v", earlyErr)
+		}
+		if !waitFile(late, time.Second) {
+			t.Fatal("提前返回的 Close 后 EXIT trap 仍未写入 late marker")
+		}
+		t.Fatal("Engine.Close 在 EXIT trap 写入 late marker 前返回")
+	}
+	releaseFIFO(t, release)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("等待 reap 的 Close: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("释放 trap 后 Close 未等待 reap 返回")
+	}
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("Close 返回后 late marker 不存在: %v", err)
+	}
+	if _, ok := h.Get(sess.ID); ok {
+		t.Fatal("Close 返回后会话仍在 Engine 列表")
+	}
+}
+
 // TestInitCommandEmptyKeepsOldBehaviour 是兼容性守卫：不给命令时什么都不写。
 //
 // 反向断言必须配正面断言（下面两个用例就是），单独一条「没有 GOT:」在

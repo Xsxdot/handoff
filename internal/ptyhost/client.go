@@ -40,6 +40,9 @@ const (
 	socketWait = 3 * time.Second
 	// statWait 是一次 stat 查询的硬上限。
 	statWait = 1 * time.Second
+	// closeWait 必须大于 engine.termGrace（2s），给 hostproc 的 Run defer 留出返回并删目录
+	// 的短余量；CloseAll 与 agentd shutdown 的外层 2s 预算保持不变，超时由外层记录。
+	closeWait = 3 * time.Second
 	// attachmentBuffer 是客户端订阅的输出缓冲。跟不上时让网络连接背压，不能静默丢字节。
 	attachmentBuffer = 256
 )
@@ -63,7 +66,8 @@ type Host struct {
 
 // clientSession 是一条可恢复的静态会话登记。活事实不缓存为真相，只在 stat 时现问。
 type clientSession struct {
-	meta sessdir.Meta
+	meta     sessdir.Meta
+	waitDone <-chan error
 }
 
 // launchSpec 是写给 _ptyhost 的启动 JSON。它与 hostproc.Spec 保持同形，但客户端不导入
@@ -121,7 +125,8 @@ func (h *Host) Supported() bool { return Supported() }
 //
 // 参数：opt 是 shell、cwd、环境与初始尺寸。
 // 返回：成功时返回会话快照；失败时保证不会留下本次创建的会话目录。
-// 注意：ptyhost 由自身进程负责收尸，agentd 不等待它退出。
+// 注意：启动路径不阻塞等待 ptyhost；成功登记后显式 Close 保留并等待该 Open child
+// 的 waitDone。
 func (h *Host) Open(opt OpenOptions) (Session, error) {
 	if !h.Supported() {
 		return Session{}, ErrNotSupported
@@ -191,7 +196,7 @@ func (h *Host) Open(opt OpenOptions) (Session, error) {
 		cleanupDetached(cmd, waitDone)
 		return Session{}, fmt.Errorf("读取新 ptyhost 会话元数据 %s: %w", id, err)
 	}
-	h.remember(meta)
+	h.remember(meta, waitDone)
 	sess, err := h.getFresh(id)
 	if err != nil {
 		h.forget(id)
@@ -276,34 +281,56 @@ func (h *Host) Write(id string, p []byte) error {
 	return nil
 }
 
-// Close 显式杀掉一个会话，并从本地登记中摘除它。
+// Close 显式发送 kill 并等待 ptyhost/PTY 收摊后摘除本地登记。
 //
-// 参数：id 是会话 id。
-// 返回：kill 帧发送或等待 ptyhost 收摊失败时报错。
-// 注意：这条路径才发送 kill；Attach 的 Detach 永远只关闭订阅 socket。
+// 参数：id 是已登记会话 id。
+// 返回：控制写失败、控制读非 EOF/timeout、ptyhost 退出失败或等待超时均返回错误。
+// 注意：EOF/timeout 不是收摊事实；只有 cmd_wait 或 session_dir wait 成功才可返回 nil。
 func (h *Host) Close(id string) error {
-	if _, ok := h.session(id); !ok {
+	entry, ok := h.session(id)
+	if !ok {
 		return ErrNoSession
 	}
+	waitPath := "session_dir"
+	if entry.waitDone != nil {
+		waitPath = "cmd_wait"
+	}
+	started := time.Now()
 	conn, err := h.dial(id, statWait)
 	if err != nil {
+		h.log.Warn("关闭 PTY 会话：连接失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath, "cause", err)
 		return fmt.Errorf("连接 PTY 会话 %s 关闭: %w", id, err)
 	}
 	if err := conn.SetDeadline(time.Now().Add(statWait)); err != nil {
 		_ = conn.Close()
+		h.log.Warn("关闭 PTY 会话：设置 deadline 失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath, "cause", err)
 		return fmt.Errorf("设置 PTY 会话 %s 关闭超时: %w", id, err)
 	}
 	if err := wire.WriteControl(conn, wire.Control{Type: wire.CtrlKill}); err != nil {
 		_ = conn.Close()
+		h.log.Error("关闭 PTY 会话：发送 kill 失败", "session", id, "pid", entry.meta.PID, "wait_path", waitPath, "cause", err)
 		return fmt.Errorf("发送 PTY 会话 %s kill: %w", id, err)
 	}
-	_, _, _, readErr := wire.ReadFrame(conn)
+	_, _, _, controlErr := wire.ReadFrame(conn)
 	_ = conn.Close()
-	if readErr != nil && !errors.Is(readErr, io.EOF) && !isTimeout(readErr) {
-		return fmt.Errorf("等待 PTY 会话 %s 收摊: %w", id, readErr)
+	if controlErr != nil {
+		h.log.Warn("关闭 PTY 会话：未收到 control ack，继续等待进程事实", "session", id,
+			"pid", entry.meta.PID, "wait_path", waitPath, "cause", controlErr)
 	}
+	waitErr := h.waitPtyhostExit(entry, time.Now().Add(closeWait))
 	h.forget(id)
-	h.log.Info("ptyhost 会话已按请求关闭", "session", id)
+	if waitErr != nil {
+		h.log.Error("关闭 PTY 会话：等待收摊失败", "session", id, "pid", entry.meta.PID,
+			"wait_path", waitPath, "elapsed", time.Since(started), "control_error", controlErr, "cause", waitErr)
+		return fmt.Errorf("等待 PTY 会话 %s 收摊: %w", id, waitErr)
+	}
+	if controlErr != nil && !errors.Is(controlErr, io.EOF) && !isTimeout(controlErr) {
+		h.log.Error("关闭 PTY 会话：control ack 失败", "session", id, "pid", entry.meta.PID,
+			"wait_path", waitPath, "elapsed", time.Since(started), "cause", controlErr)
+		return fmt.Errorf("等待 PTY 会话 %s 收摊控制帧: %w", id, controlErr)
+	}
+	h.log.Info("ptyhost 会话已按请求关闭", "session", id, "pid", entry.meta.PID,
+		"wait_path", waitPath, "elapsed", time.Since(started), "control_error", controlErr)
 	return nil
 }
 
@@ -379,7 +406,7 @@ func (h *Host) Adopt(entries []sessdir.Entry) {
 		if entry.State != sessdir.StateLive {
 			continue
 		}
-		h.sessions[entry.ID] = &clientSession{meta: entry.Meta}
+		h.sessions[entry.ID] = &clientSession{meta: entry.Meta, waitDone: nil}
 		if credential, ok := prochost.ProcessCredentialForPID(entry.Meta.PID); ok {
 			h.credentials[entry.ID] = credential
 		} else {
@@ -463,10 +490,57 @@ func (h *Host) sessionEntries() []*clientSession {
 	return out
 }
 
-func (h *Host) remember(meta sessdir.Meta) {
+// waitPtyhostExit 等待本次 Close 触发的 ptyhost 真正退出。
+//
+// Open 的 waitDone 是唯一 child Wait 结果；Adopt 没有 child Wait，只能把 hostproc
+// defer 的 sessdir.Remove 作为完成事实。deadline 由 Host.Close 统一提供。
+func (h *Host) waitPtyhostExit(entry *clientSession, deadline time.Time) error {
+	waitPath := "session_dir"
+	if entry.waitDone != nil {
+		waitPath = "cmd_wait"
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return fmt.Errorf("等待 ptyhost %s(pid=%d) 退出超时: wait_path=%s", entry.meta.ID, entry.meta.PID, waitPath)
+		}
+		timer := time.NewTimer(remaining)
+		defer timer.Stop()
+		select {
+		case err := <-entry.waitDone:
+			if err != nil {
+				return fmt.Errorf("ptyhost %s(pid=%d) 退出失败: wait_path=%s: %w", entry.meta.ID, entry.meta.PID, waitPath, err)
+			}
+			return nil
+		case <-timer.C:
+			return fmt.Errorf("等待 ptyhost %s(pid=%d) 退出超时: wait_path=%s", entry.meta.ID, entry.meta.PID, waitPath)
+		}
+	}
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		_, err := os.Stat(sessdir.Dir(h.root, entry.meta.ID))
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("检查 ptyhost %s(pid=%d) 会话目录 %s: wait_path=%s: %w",
+				entry.meta.ID, entry.meta.PID, sessdir.Dir(h.root, entry.meta.ID), waitPath, err)
+		}
+		if time.Now().After(deadline) {
+			return fmt.Errorf("等待 ptyhost %s(pid=%d) 会话目录消失超时: path=%s wait_path=%s",
+				entry.meta.ID, entry.meta.PID, sessdir.Dir(h.root, entry.meta.ID), waitPath)
+		}
+		<-ticker.C
+	}
+}
+
+// remember 登记静态元数据与 Open 子进程的唯一 Wait 通道。
+//
+// waitDone 只对当前进程直接启动的 Open 有值；Adopt 的跨进程会话必须传 nil，
+// 由 waitPtyhostExit 观察会话目录，而不是错误地对非 child 调 exec.Cmd.Wait。
+func (h *Host) remember(meta sessdir.Meta, waitDone <-chan error) {
 	credential, credentialOK := prochost.ProcessCredentialForPID(meta.PID)
 	h.mu.Lock()
-	h.sessions[meta.ID] = &clientSession{meta: meta}
+	h.sessions[meta.ID] = &clientSession{meta: meta, waitDone: waitDone}
 	if credentialOK {
 		h.credentials[meta.ID] = credential
 	} else {

@@ -37,6 +37,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // newTestGate 造一个只带内置黑名单的判据网关（agentd_test 包的统一装配）。
@@ -83,8 +84,7 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 		cfgMut(cfg)
 	}
 	srv := agentd.NewServer(cfg, st, logger)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	f := fake.New(script)
 	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
@@ -697,8 +697,7 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "opencode"}}
 	srv := agentd.NewServer(cfg, st, logger)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
 

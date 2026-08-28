@@ -24,6 +24,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 type localStepHTTPHarness struct {
@@ -41,7 +42,7 @@ type localStepHTTPHarness struct {
 func newLocalStepHTTPHarness(t *testing.T, statusBody string) *localStepHTTPHarness {
 	t.Helper()
 	h := &localStepHTTPHarness{statusBody: statusBody}
-	h.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h.ts = testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/status":
 			h.statusHits.Add(1)
@@ -93,7 +94,6 @@ func newLocalStepHTTPHarness(t *testing.T, statusBody string) *localStepHTTPHarn
 	h.srv = NewServer(cfg, backend, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	h.srv.SetLedger(lst)
 	h.backend, h.ledger = backend, lst
-	t.Cleanup(h.ts.Close)
 	return h
 }
 

@@ -70,14 +70,15 @@ type subscriber struct {
 }
 
 type session struct {
-	mu       sync.Mutex
-	meta     ptyhost.Session
-	f        *os.File
-	cmd      *exec.Cmd
-	buf      *ring
-	subs     map[*subscriber]struct{}
-	exited   bool
-	exitCode *int
+	mu         sync.Mutex
+	meta       ptyhost.Session
+	f          *os.File
+	cmd        *exec.Cmd
+	buf        *ring
+	subs       map[*subscriber]struct{}
+	exited     bool
+	exitCode   *int
+	exitedDone chan struct{}
 	// firstOut 在 shell 吐出第一个字节时关闭，是「shell 就绪」的唯一观测点。
 	// 只有带 InitCommand 的会话才有人等它；不带的会话也照常关，代价是一次
 	// sync.Once（比在 pump 的热路径上加一个 if 判空更简单）。
@@ -110,7 +111,7 @@ func (h *Engine) Open(opt ptyhost.OpenOptions) (ptyhost.Session, error) {
 			Cols: opt.Cols, Rows: opt.Rows, PID: cmd.Process.Pid,
 		},
 		f: f, cmd: cmd, buf: newRing(ringSize), subs: map[*subscriber]struct{}{},
-		firstOut: make(chan struct{}),
+		exitedDone: make(chan struct{}), firstOut: make(chan struct{}),
 	}
 	h.mu.Lock()
 	h.sess[s.meta.ID] = s
@@ -188,10 +189,10 @@ func (h *Engine) writeInitCommand(s *session, cmd string) {
 	h.log.Info("启动命令已写入终端", "session", s.meta.ID, "bytes", len(cmd)+1)
 }
 
-// reap 等待 shell 退出，落 exit_code 并关闭所有订阅通道。
+// reap 是每个 shell 唯一的 cmd.Wait 所有者。
 //
-// 订阅通道的关闭是前端「停止重连」的唯一信号——不关，客户端会一直以为
-// 只是网络抖动。
+// exitedDone 只在 exit code、订阅通道和 PTY 文件都收口后关闭；Engine.Close 只能等
+// 这个通道，禁止另起 cmd.Wait，否则 os/exec 的 Wait 竞态会把 exit code 与清理顺序拆开。
 func (h *Engine) reap(s *session) {
 	code := waitExitCode(s.cmd)
 	s.mu.Lock()
@@ -203,6 +204,7 @@ func (h *Engine) reap(s *session) {
 	s.subs = map[*subscriber]struct{}{}
 	s.mu.Unlock()
 	_ = s.f.Close()
+	close(s.exitedDone)
 	h.log.Info("终端会话已退出", "session", s.meta.ID, "pid", s.meta.PID, "exit_code", code)
 }
 
@@ -291,11 +293,10 @@ func (h *Engine) Write(id string, p []byte) error {
 	return nil
 }
 
-// Close 显式关闭会话：整组 SIGTERM，宽限 termGrace 后 SIGKILL，并立即
-// 把会话从列表里摘掉。
+// Close 显式关闭会话：整组 SIGTERM，宽限 termGrace 后 SIGKILL，并等待已有 reap。
 //
-// 注意：摘除是同步的、杀进程的兜底是异步的——DELETE 请求不该为了等一个
-// 赖着不走的进程而挂 2 秒。用户点了 ×，列表里就该立刻没有它。
+// 会话表仍在发信号前摘除，保持 List/第二次 Close 的同步语义；但函数返回前必须
+// 观察 exitedDone，确保 shell 的 EXIT trap、exit code、订阅关闭和 PTY 文件关闭已经完成。
 func (h *Engine) Close(id string) error {
 	h.mu.Lock()
 	s, ok := h.sess[id]
@@ -307,22 +308,26 @@ func (h *Engine) Close(id string) error {
 	if !ok {
 		return ptyhost.ErrNoSession
 	}
+	started := time.Now()
 	if err := terminatePty(s.cmd); err != nil {
-		h.log.Error("终止终端会话失败", "session", id, "pid", s.meta.PID, "err", err)
+		h.log.Error("终止终端会话失败", "session", id, "pid", s.meta.PID, "phase", "sigterm", "err", err)
 	}
-	go func() {
-		time.Sleep(termGrace)
-		s.mu.Lock()
-		exited := s.exited
-		s.mu.Unlock()
-		if exited {
-			return
+	sigkill := false
+	timer := time.NewTimer(termGrace)
+	defer timer.Stop()
+	select {
+	case <-s.exitedDone:
+	case <-timer.C:
+		sigkill = true
+		h.log.Warn("终端会话在宽限期内未退出，强制终止", "session", id,
+			"pid", s.meta.PID, "grace", termGrace)
+		if err := killPty(s.cmd); err != nil {
+			h.log.Error("强制终止终端会话失败", "session", id, "pid", s.meta.PID, "phase", "sigkill", "err", err)
 		}
-		h.log.Warn("终端会话在宽限期内未退出，强制终止",
-			"session", id, "pid", s.meta.PID, "grace", termGrace)
-		_ = killPty(s.cmd)
-	}()
-	h.log.Info("终端会话已关闭", "session", id, "pid", s.meta.PID, "sessions", remain)
+		<-s.exitedDone
+	}
+	h.log.Info("终端会话已关闭", "session", id, "pid", s.meta.PID,
+		"sessions", remain, "sigkill", sigkill, "elapsed", time.Since(started))
 	return nil
 }
 

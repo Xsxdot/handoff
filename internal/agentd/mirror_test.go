@@ -16,6 +16,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/targetclient"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 	"github.com/google/uuid"
 )
 
@@ -29,14 +30,13 @@ func newMirrorHTTPEnv(t *testing.T) *testAgentdEnv {
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir()}
 	st := newTestStore(t)
 	srv := NewServer(cfg, st, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	return &testAgentdEnv{srv: srv, ts: ts, st: st, token: testToken}
 }
 
 func countedMirrorTarget(t *testing.T, env *testAgentdEnv, counts *mirrorRequestCounts) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/tasks" {
 			counts.list.Add(1)
 		}
@@ -144,8 +144,6 @@ func TestMirrorDiscoverOnceSkipsSelfTarget(t *testing.T) {
 	var localCounts, remoteCounts mirrorRequestCounts
 	localTarget := countedMirrorTarget(t, local, &localCounts)
 	remoteTarget := countedMirrorTarget(t, remote, &remoteCounts)
-	t.Cleanup(localTarget.Close)
-	t.Cleanup(remoteTarget.Close)
 
 	localStore := newTestStore(t)
 	hub := NewHub()

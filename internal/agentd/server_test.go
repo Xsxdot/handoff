@@ -20,6 +20,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 	"github.com/coder/websocket"
 )
 
@@ -66,8 +67,7 @@ func newTestEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logger) *t
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := agentd.NewServer(cfg, st, logger)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	return &testEnv{srv: srv, ts: ts, st: st, token: cfg.Token}
 }
 

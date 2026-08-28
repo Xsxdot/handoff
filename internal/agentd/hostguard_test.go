@@ -20,6 +20,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 const hostTestToken = "host-test-token"
@@ -34,8 +35,7 @@ func newHostTestEnv(t *testing.T, cfg *config.Config) (*Server, *httptest.Server
 	t.Cleanup(func() { st.Close() })
 	var logs strings.Builder
 	srv := NewServer(cfg, st, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	return srv, ts, &logs
 }
 

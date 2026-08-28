@@ -20,6 +20,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // fakeTargetMachine 是一台 httptest 假目标机：/api/status 按给定能力位应答，
@@ -35,7 +36,7 @@ type fakeTargetMachine struct {
 func newFakeTargetMachine(t *testing.T, capSupported *bool) *fakeTargetMachine {
 	t.Helper()
 	ftm := &fakeTargetMachine{capSupported: capSupported}
-	ftm.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ftm.ts = testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/status":
 			w.Header().Set("Content-Type", "application/json")
@@ -62,7 +63,6 @@ func newFakeTargetMachine(t *testing.T, capSupported *bool) *fakeTargetMachine {
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(ftm.ts.Close)
 	return ftm
 }
 
@@ -224,7 +224,7 @@ type probeErrorTargetMachine struct {
 func newProbeErrorTargetMachine(t *testing.T) *probeErrorTargetMachine {
 	t.Helper()
 	target := &probeErrorTargetMachine{}
-	target.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	target.ts = testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/api/status" {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = w.Write([]byte("not-json"))
@@ -239,7 +239,6 @@ func newProbeErrorTargetMachine(t *testing.T) *probeErrorTargetMachine {
 		}
 		http.NotFound(w, r)
 	}))
-	t.Cleanup(target.ts.Close)
 	return target
 }
 
