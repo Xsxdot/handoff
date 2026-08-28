@@ -233,3 +233,23 @@ describe('RoomPanel', () => {
     expect(screen.queryByText('正在读取…')).not.toBeInTheDocument()
   })
 })
+
+describe('RoomPanel 发送后刷新（B287）', () => {
+  it('refresh 不复用旧 nonce 的在飞请求：发送后收件箱立即重取，不等下一轮周期', async () => {
+    // 收件箱首拉故意挂起不放行：制造「发送那一刻有一个旧 nonce 在飞请求」的现场。
+    // 无修复时 refresh 会采纳这个旧请求（内容不可能含新事实），不发新调用；
+    // 有修复时 nonce 变更触发第二只真实请求。
+    let releaseInbox!: (value: Awaited<ReturnType<typeof fetchInbox>>) => void
+    vi.mocked(fetchInbox).mockImplementation(
+      () => new Promise((resolve) => { releaseInbox = resolve }),
+    )
+    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    const user = userEvent.setup()
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    await user.click(await screen.findByRole('button', { name: /会话 B1/ }))
+    await user.type(await screen.findByLabelText('发送消息'), 'hi')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(vi.mocked(fetchInbox).mock.calls.length).toBeGreaterThanOrEqual(2))
+    releaseInbox([])
+  })
+})

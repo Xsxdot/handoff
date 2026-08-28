@@ -246,6 +246,9 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
       await sendRoomMessage(roomID, body)
       setDraft('')
       historyPoll.refresh()
+      // B287：回复即清提及类的前端半边——后端已在发送路径消费该房间提及，
+      // 这里立即重取收件箱把新事实拉进角标，不等下一个 5s 周期。
+      inboxPoll.refresh()
       logRoom('debug', 'send_succeeded', { room: roomID, request: 'messages' })
     } catch (error: unknown) {
       setSendError(errorMessage(error))
