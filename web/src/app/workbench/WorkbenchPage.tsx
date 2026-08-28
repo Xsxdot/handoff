@@ -269,14 +269,16 @@ export function WorkbenchPage({
                     aria-hidden="true"
                     className={cn(
                       'pointer-events-none absolute z-20',
-                      // left/right/center 数值 1:1 对照 prototypes/b288-workbench-ux 的
-                      // .pane.drop-left/right/center::after 规则；top/bottom 不在本卡
-                      // 范围（B264 的中央模型），维持旧形态
+                      // 五区数值 1:1 对照 prototypes/b288-workbench-ux 的
+                      // .pane.drop-{left,right,top,bottom,center}::after 规则
                       dragOver.zone === 'left' && 'inset-y-0 left-0 w-1/2 bg-[rgba(37,99,235,0.32)] shadow-[inset_4px_0_0_#2563eb]',
                       dragOver.zone === 'right' && 'inset-y-0 right-0 w-1/2 bg-[rgba(37,99,235,0.32)] shadow-[inset_-4px_0_0_#2563eb]',
-                      dragOver.zone === 'top' && 'inset-x-0 top-0 h-1/2 bg-primary/15',
-                      dragOver.zone === 'bottom' && 'inset-x-0 bottom-0 h-1/2 bg-primary/15',
+                      dragOver.zone === 'top' && 'inset-x-0 top-0 h-1/2 bg-[rgba(37,99,235,0.32)] shadow-[inset_0_4px_0_#2563eb]',
+                      dragOver.zone === 'bottom' && 'inset-x-0 bottom-0 h-1/2 bg-[rgba(37,99,235,0.32)] shadow-[inset_0_-4px_0_#2563eb]',
                       dragOver.zone === 'center' && 'inset-[18%] bg-[rgba(37,99,235,0.18)] outline outline-2 outline-[#2563eb]',
+                      // 黑底终端窗格（原型 .pane.pane-term.drop-*）：遮罩换浅一档的蓝，
+                      // 否则落点指示在 xterm 上对比不足——这正是问题 2 的主场景
+                      tab?.content.kind === 'terminal' && 'bg-[rgba(147,197,253,0.5)]',
                     )}
                   />
                 )}

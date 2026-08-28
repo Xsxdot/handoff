@@ -206,6 +206,44 @@ describe('WorkbenchPage', () => {
     })
   })
 
+  it('top / bottom 落点 1:1 原型：半区蓝遮罩 + 上下 4px 内边条', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane, 400, 400)
+    const dataTransfer = { types: [DRAG_TASK_MIME], getData: () => '', setData: vi.fn(), dropEffect: '' }
+
+    const dragOverTop = createEvent.dragOver(pane, { dataTransfer })
+    Object.defineProperty(dragOverTop, 'clientX', { value: 200 })
+    Object.defineProperty(dragOverTop, 'clientY', { value: 60 })
+    fireEvent(pane, dragOverTop)
+    expect(view.getByTestId('drop-top')).toHaveClass('bg-[rgba(37,99,235,0.32)]')
+    expect(view.getByTestId('drop-top')).toHaveClass('shadow-[inset_0_4px_0_#2563eb]')
+
+    const dragOverBottom = createEvent.dragOver(pane, { dataTransfer })
+    Object.defineProperty(dragOverBottom, 'clientX', { value: 200 })
+    Object.defineProperty(dragOverBottom, 'clientY', { value: 380 })
+    fireEvent(pane, dragOverBottom)
+    expect(view.getByTestId('drop-bottom')).toHaveClass('bg-[rgba(37,99,235,0.32)]')
+    expect(view.getByTestId('drop-bottom')).toHaveClass('shadow-[inset_0_-4px_0_#2563eb]')
+  })
+
+  it('黑底终端窗格的落点遮罩用浅一档的蓝（原型 .pane.pane-term.drop-*）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane, 400, 400)
+    const dataTransfer = { types: [DRAG_TASK_MIME], getData: () => '', setData: vi.fn(), dropEffect: '' }
+    const dragOver = createEvent.dragOver(pane, { dataTransfer })
+    Object.defineProperty(dragOver, 'clientX', { value: 200 })
+    Object.defineProperty(dragOver, 'clientY', { value: 200 })
+    fireEvent(pane, dragOver)
+    expect(view.getByTestId('drop-center')).toHaveClass('bg-[rgba(147,197,253,0.5)]')
+    expect(view.getByTestId('drop-center')).not.toHaveClass('bg-[rgba(37,99,235,0.18)]')
+  })
+
   it('left 落点 1:1 原型：半区蓝遮罩 + 4px 内边条', () => {
     const hook = renderHook(() => useWorkbench())
     act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
