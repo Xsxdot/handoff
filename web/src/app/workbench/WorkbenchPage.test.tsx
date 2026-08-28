@@ -1,7 +1,7 @@
 import { act, createEvent, fireEvent, render, renderHook, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkbenchPage } from './WorkbenchPage'
-import { DRAG_DIR_MIME, DRAG_TAB_MIME } from './paneDrop'
+import { DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
 import { useWorkbench, type BaseDir } from './useWorkbench'
 
 const local: BaseDir = { key: '/local', kind: 'workspace', path: '/local', label: 'local', projectName: 'handoff', machine: '' }
@@ -143,5 +143,29 @@ describe('WorkbenchPage', () => {
     setPaneRect()
     drop('three')
     expect(view.getByRole('alert')).toHaveTextContent('这一列最多两格')
+  })
+
+  it('目录拖放来源无效时错误日志带当前项目、机器和路径', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.select(local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const event = createEvent.drop(pane, {
+      dataTransfer: {
+        types: [DRAG_DIR_MIME, DRAG_TASK_MIME],
+        getData: (key: string) => key === DRAG_TASK_MIME ? '' : '{bad-json',
+        setData: vi.fn(),
+        dropEffect: '',
+      },
+    })
+    Object.defineProperty(event, 'clientX', { value: 200 })
+    Object.defineProperty(event, 'clientY', { value: 200 })
+    fireEvent(pane, event)
+    expect(warn).toHaveBeenCalledWith('workbench.drop.invalid_source', expect.objectContaining({
+      project: 'handoff', machine: '', path: '/local',
+    }))
+    warn.mockRestore()
   })
 })

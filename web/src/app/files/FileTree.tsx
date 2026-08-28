@@ -162,6 +162,20 @@ function isLoopbackHost(host: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
 }
 
+// logOperationError 让服务端原文和现场坐标一起进入结构化错误日志；面板仍负责把
+// 原文展示给用户，日志额外保留 project/machine/path 供跨机问题定位。
+function logOperationError(operation: string, base: BaseDir, rel: string | undefined, error: unknown): string {
+  const message = errorMessage(error)
+  console.warn(`file_tree.${operation}.failed`, {
+    project: base.projectName,
+    machine: base.machine,
+    path: base.path,
+    ...(rel === undefined ? {} : { rel }),
+    reason: message,
+  })
+  return message
+}
+
 export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey, onClose }: FileTreeProps) {
   const dirs = useDirEntries(base)
   const changed = useChangedFiles(taskId)
@@ -248,7 +262,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
       setNameDlg(null)
     } catch (err) {
       // agentd 的中文错误原文透出，不缩略成「操作失败」
-      setNameError(errorMessage(err))
+      setNameError(logOperationError(nameDlg.mode, base, nameDlg.target, err))
     } finally {
       setNameBusy(false)
     }
@@ -263,7 +277,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
       dirs.reload(parentOf(deleteTarget.rel))
       setDeleteTarget(null)
     } catch (err) {
-      setDeleteError(errorMessage(err))
+      setDeleteError(logOperationError('delete', base, deleteTarget.rel, err))
     } finally {
       setDeleteBusy(false)
     }
@@ -274,7 +288,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
       await copyWorkspaceEntry(base.path, rel, base.machine)
       dirs.reload(parentOf(rel))
     } catch (err) {
-      setOpError(errorMessage(err))
+      setOpError(logOperationError('copy', base, rel, err))
     }
   }
 
@@ -285,7 +299,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
     try {
       await revealInFinder(base.path, rel)
     } catch (err) {
-      setOpError(errorMessage(err))
+      setOpError(logOperationError('reveal', base, rel, err))
     }
   }
 
@@ -303,7 +317,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
       const r = await searchWorkspace(base.path, search.dirOf, q, base.machine || undefined)
       setSearch((s) => (s ? { ...s, busy: false, hits: r.hits, truncated: r.truncated } : s))
     } catch (err) {
-      setSearch((s) => (s ? { ...s, busy: false, error: errorMessage(err) } : s))
+      setSearch((s) => (s ? { ...s, busy: false, error: logOperationError('search', base, search.dirOf, err) } : s))
     }
   }
 

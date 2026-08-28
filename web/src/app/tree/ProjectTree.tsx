@@ -65,9 +65,9 @@ export interface ProjectTreeProps {
   // 底部说了一次，行上再说一遍是噪音。
   ticketsByDir: Map<string, number>
   openedItems: ReadonlyArray<OpenedWorkbenchItem>
-  onOpenDirectory?: (base: BaseDir) => void
-  onOpenDirectoryTerminal?: (base: BaseDir) => void
-  onOpenItem?: (item: OpenedWorkbenchItem) => void
+  onOpenDirectory: (base: BaseDir) => void
+  onOpenDirectoryTerminal: (base: BaseDir) => void
+  onOpenItem: (item: OpenedWorkbenchItem) => void
   onOpenTask: (base: BaseDir | null, taskId: string) => void  // base null = 未归属任务
   onOpenBoard: () => void
   onOpenCards?: () => void
@@ -348,13 +348,13 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     console.debug('project_tree.directory.open', {
       project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
     })
-    onOpenDirectory?.(base)
+    onOpenDirectory(base)
   }
   const openDirectoryTerminal = (base: BaseDir) => {
     console.debug('project_tree.directory.terminal', {
       project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
     })
-    onOpenDirectoryTerminal?.(base)
+    onOpenDirectoryTerminal(base)
   }
   const toggleDirectory = (key: string) =>
     setDirectoryOpen((prev) => {
@@ -627,7 +627,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 tabId: item.tabId,
                 groupId: item.groupId,
               })
-              onOpenItem?.(item)
+              onOpenItem(item)
             },
             undefined,
             item.base.machine,
@@ -847,7 +847,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               <RowCounts dirs={prefs.hideDirCounts ? undefined : mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
                             </span>
                           </button>
-                          {mainBase && onOpenDirectoryTerminal && problem === '' && (
+                          {mainBase && problem === '' && (
                             <button
                               type="button"
                               aria-label="打开主目录终端"

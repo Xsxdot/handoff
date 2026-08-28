@@ -73,9 +73,9 @@ function props(over: {
     ticketCount: over.ticketCount ?? 0,
     ticketsByDir: over.ticketsByDir ?? new Map(),
     openedItems: over.openedItems ?? [],
-    onOpenDirectory: over.onOpenDirectory,
-    onOpenDirectoryTerminal: over.onOpenDirectoryTerminal,
-    onOpenItem: over.onOpenItem,
+    onOpenDirectory: over.onOpenDirectory ?? vi.fn(),
+    onOpenDirectoryTerminal: over.onOpenDirectoryTerminal ?? vi.fn(),
+    onOpenItem: over.onOpenItem ?? vi.fn(),
     onOpenTask: over.onOpenTask ?? vi.fn(),
     onOpenBoard: over.onOpenBoard ?? vi.fn(),
     // 这组 dock 回归测试覆盖账本已启用时的既有入口；未启用门控另由专项用例覆盖。

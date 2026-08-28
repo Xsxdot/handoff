@@ -353,11 +353,16 @@ describe('FileTree', () => {
 
   it('服务端的中文错误原文被显示出来，不吞成「操作失败」', async () => {
     vi.mocked(deleteWorkspaceEntry).mockRejectedValue(new Error('不允许写入 .git 目录'))
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     renderTree()
     await userEvent.pointer({ target: await screen.findByText('go.mod'), keys: '[MouseRight]' })
     await userEvent.click(screen.getByRole('menuitem', { name: '删除' }))
     await userEvent.click(screen.getByRole('button', { name: '删除' }))
     expect(await screen.findByText(/不允许写入 \.git 目录/)).toBeInTheDocument()
+    expect(warn).toHaveBeenCalledWith('file_tree.delete.failed', expect.objectContaining({
+      project: 'handoff', machine: '', path: '/w/b2-b3', rel: 'go.mod',
+    }))
+    warn.mockRestore()
   })
 
   it('新建成功后只刷新该层目录', async () => {

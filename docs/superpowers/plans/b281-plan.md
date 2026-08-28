@@ -10,7 +10,7 @@
 第 821–872 行。原型第 564–567 行的固定 `g4` 形状不实现，因为 B281 已明确弃选五/六宫格。
 
 不改 `internal/agentd`、`internal/proto`、PTY/TUI 协议、账本、跨机同步协议、HomeDock、
-`NewWorktreeDialog` 的请求形状或原型目录。现有 `/api/workbench/state/base` 仍是唯一布局写入
+`NewWorktreeDialog` 的请求形状；对照原型目录随本卡入库作为形态基准，不作为实现。现有 `/api/workbench/state/base` 仍是唯一布局写入
 入口：`internal/agentd/workbench_api.go:64-103` 实际只拒绝空 `base_key`，payload 是不解释的
 字符串；因此前端用非空保留键存全局布局，不添加后端字段或端点。
 
@@ -911,7 +911,7 @@ cd web && npm test -- --run src/app/tree/ProjectTree.test.tsx src/app/tree/searc
 该夹具中追加 project query 投影断言；先加入以下真实 UI 断言：
 
 ~~~tsx
-it('机器下有同级任务与目录，目录默认只露主目录，展开后只显示分支名', () => {
+it('机器下有同级任务与目录，目录默认收起，展开后只显示分支名', () => {
   const onOpenDirectory = vi.fn()
   const onOpenDirectoryTerminal = vi.fn()
   const onOpenItem = vi.fn()
@@ -924,7 +924,7 @@ it('机器下有同级任务与目录，目录默认只露主目录，展开后�
   render(<ProjectTree {...p} />)
   expect(screen.getByText('任务')).toBeInTheDocument()
   expect(screen.getByText('目录')).toBeInTheDocument()
-  expect(screen.getByText('main')).toBeInTheDocument()
+  expect(screen.queryByText('main')).not.toBeInTheDocument()
   expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()
   fireEvent.click(screen.getByText('目录'))
   expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
@@ -1000,8 +1000,8 @@ useEffect(() => {
    后「目录」。任务组跨机器平铺该项目的 openedItems 与后端 tasks；同 taskId 的 opened TUI
    替代重复的 executor row，terminal/file 以打开项额外一行显示。打开项点击调 `onOpenItem`，
    后端任务点击仍调 `onOpenTask(base,taskId)`。
-2. 目录 peer group 单独用 `directoryOpen` 集合，初始收起；组内再按机器分组。机器收起时只渲染
-   该机的主目录，展开后平铺该机所有 workspace，行文案只用 `dirLabel(ws)`，不显示绝对路径。
+2. 目录 peer group 单独用 `directoryOpen` 集合，初始收起；组内再按机器分组。机器默认收起时不渲染
+   主目录或工作树，点机器后再平铺该机所有 workspace，行文案只用 `dirLabel(ws)`，不显示绝对路径。
    机器行最右侧 hover 的 `＋` 调 `onWorktreeCreated`，沿用同一 `NewWorktreeDialog` 路径；机器
    行终端 icon 打开该机主目录，目录行 hover terminal icon 调 `onOpenDirectoryTerminal(base)`；
    机器与目录行 draggable 均写 `DRAG_DIR_MIME` 的 `JSON.stringify(base)`，点击目录调

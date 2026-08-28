@@ -516,7 +516,7 @@ export function Shell() {
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
-            onOpenProjectCards={openProjectCards}
+            onOpenProjectCards={ledgerEnabled ? openProjectCards : undefined}
             onOpenFlows={() => navigate('/flows')}
             ledgerEnabled={ledgerEnabled}
             cardNeedsCount={cardNeedsCount}

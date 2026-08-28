@@ -14,7 +14,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import type { ProjectTreeResp, Task } from '../../api/types'
-import { DRAG_BASE_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -34,6 +34,7 @@ vi.mock('../../api/client', async () => {
   }
 })
 const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchWorkbenchState, fetchMachines, deletePtySession, createPtySession, ApiError } = await import('../../api/client')
+const { fetchLedgerHealth } = await import('../../api/ledger')
 
 vi.mock('../../api/ledger', async () => {
   const actual = await vi.importActual<typeof import('../../api/ledger')>('../../api/ledger')
@@ -297,6 +298,75 @@ describe('Shell 三栏外框', () => {
     fireEvent.drop(target, { dataTransfer })
     await waitFor(() => expect(screen.getByText('aim · linux-01')).toBeInTheDocument())
     expect(screen.getAllByRole('tab')).toHaveLength(2)
+  })
+
+  it('左栏机器与目录的真实 DataTransfer 穿过 WorkbenchPage，终端 cwd 保留来源', async () => {
+    const remoteProject: ProjectTreeResp['projects'][number] = {
+      project_id: 'p2', origin_url: '', name: 'aim',
+      locations: [{
+        machine: 'linux-01', name: 'aim', path: '/srv/aim', probe_error: '',
+        workspaces: [
+          { path: '/srv/aim', branch: 'main', head: 'def', is_main: true, managed: false, created_at: '' },
+          { path: '/srv/aim/worktree', branch: 'feature/work', head: 'ghi', is_main: false, managed: true, created_at: '' },
+        ],
+      }],
+    }
+    vi.mocked(fetchProjectTree).mockResolvedValue({ ...tree, projects: [tree.projects[0], remoteProject] })
+    vi.mocked(fetchMachines).mockResolvedValue({
+      machines: [
+        { name: '', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+        { name: 'linux-01', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+      ],
+    })
+    renderShell()
+    fireEvent.click(await screen.findByText('重构工单通道'))
+    fireEvent.click(await screen.findByRole('button', { name: '增加分屏' }))
+
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => {
+        values.set(type, value)
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type)
+      },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    const remote = within(screen.getByTestId('project-node-p2'))
+    const target = () => screen.getAllByTestId('workbench-pane')[1]
+    const dragToPane = (source: HTMLElement) => {
+      values.clear()
+      dataTransfer.types.length = 0
+      fireEvent.dragStart(source, { dataTransfer })
+      fireEvent.drop(target(), { dataTransfer })
+    }
+
+    dragToPane(remote.getByTestId('machine-row'))
+    expect(dataTransfer.types).toEqual(expect.arrayContaining([DRAG_DIR_MIME, DRAG_BASE_MIME]))
+    expect(JSON.parse(values.get(DRAG_DIR_MIME)!)).toMatchObject({ path: '/srv/aim', machine: 'linux-01' })
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledWith(
+      expect.objectContaining({ base_kind: 'workspace', base_path: '/srv/aim' }),
+      'linux-01',
+    ))
+
+    fireEvent.click(remote.getByTestId('machine-row'))
+    const worktree = remote.getAllByTestId('workspace-row').find((row) => row.textContent?.includes('feature/work'))!
+    vi.mocked(createPtySession).mockClear()
+    dragToPane(worktree)
+    expect(JSON.parse(values.get(DRAG_DIR_MIME)!)).toMatchObject({ path: '/srv/aim/worktree', label: 'feature/work' })
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledWith(
+      expect.objectContaining({ base_kind: 'workspace', base_path: '/srv/aim/worktree' }),
+      'linux-01',
+    ))
+  })
+
+  it('账本关闭时项目名旁隐藏工作项入口，避免导航到未注册的 /cards', async () => {
+    vi.mocked(fetchLedgerHealth).mockResolvedValueOnce({ enabled: false, mirror: [] })
+    renderShell()
+    const project = await screen.findByTestId('project-node-p1')
+    expect(within(project).queryByRole('button', { name: '打开 handoff 工作项' })).toBeNull()
+    expect(within(project).getByRole('button', { name: '打开 handoff 代码图' })).toBeInTheDocument()
   })
 
   it('点右栏文件在中央开 file tab', async () => {

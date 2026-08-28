@@ -15,7 +15,7 @@
 - 2026-08-28：执行 `npm run build`，原始结果为 `✓ built in 5.11s`，退出码 0；Vite 输出既存 chunk 大小 warning（`Some chunks are larger than 500 kB after minification`）。
 - 2026-08-28：执行 `git diff --check`，退出码 0；旧左栏层级检索无输出。
 - 2026-08-28：已 `git add` 计划、spec、台账、Shell 修复/测试与 `WorkbenchPage` seam 测试，并用 `git add -f prototypes/b264-tab-groups` 纳入 8 个原型文件；`git diff --cached --check` 退出码 0，暂存区共 14 个文件。
-- 2026-08-28：执行 `git commit -m "fix B281 review 2 regressions"` 成功，原始输出为 `[cards/B281-charter-6 a162bb36] fix B281 review 2 regressions`；随后将本提交事实写回台账并 amend 同一提交。
+- 2026-08-28：执行 `git commit -m "fix B281 review 2 regressions"` 成功，原始输出为 `[cards/B281-charter-6 16459bb6] fix B281 review 2 regressions`；随后将本提交事实写回台账并 amend 同一提交。
 
 - 2026-08-28：当前分支为 `cards/B281-charter-5`，HEAD 为 `c9cefe28`（父提交包含 `6fb38d67`）；`git status --short --branch` 初始仅输出分支信息，无工作区改动。
 - 2026-08-28：按计划运行 `npm test -- --run src/app/workbench/tabs.test.ts src/app/workbench/paneDrop.test.ts`；原始输出为 `sh: 1: vitest: not found`，退出码 127。
@@ -33,3 +33,24 @@
 - 2026-08-28：最终边界条件变异的第一发删除 `sourceColumnRemoved &&`，编译失败，原始错误为 `src/app/workbench/tabs.ts(367,7): error TS6133: 'sourceColumnRemoved' is declared but its value is never read.`，按纪律不计数；换为可编译的 `!sourceColumnRemoved` 后，类型检查退出 0，唯一边界行为测试原始结果为 `1 failed | 14 skipped (15)`，3 个触及文件原始结果为 `1 failed | 106 passed (107)`，随后恢复原实现。
 - 2026-08-28：恢复最终实现后再次执行 `npm run typecheck`，退出码 0；再次执行计划列出的 12 个测试文件，原始结果为 `Test Files  12 passed (12)`、`Tests  195 passed (195)`，退出码 0；`git diff --check` 退出码 0，`GroupDivider.tsx` 中无 `resizeGroups` 命中。
 - 2026-08-28：执行 `git commit -m "fix B281 workbench drag and diff scope"` 成功，原始输出为 `[cards/B281-charter-5 e96d9ec1] fix B281 workbench drag and diff scope`；随后为将提交事实纳入本台账而 amend 同一提交。
+- 2026-08-28：本轮起点核对为 `cards/B281-charter-7`，HEAD 为 `16459bb62e9ea48a5ef166a2e91c0e922935c66e`，工作树初始干净；该提交可由 `git show -s --format='%H%n%h%n%s' 16459bb6` 实际读到，短 hash 与当前 HEAD 一致。
+- 2026-08-28：按 `web/package-lock.json` 执行 `cd web && npm ci --ignore-scripts`，原始输出为 `added 290 packages, and audited 291 packages in 2s`、`found 0 vulnerabilities`，退出码 0；`web/node_modules/` 仍为忽略项，不纳入提交。
+- 2026-08-28：依赖恢复后执行触及范围基线 `npm test -- --run src/app/tree/ProjectTree.test.tsx src/app/files/FileTree.test.tsx src/app/workbench/WorkbenchPage.test.tsx src/app/shell/Shell.test.tsx src/app/cards/CardsPage.test.tsx`，原始结果为 `Test Files  5 passed (5)`、`Tests  139 passed (139)`，退出码 0。
+- 2026-08-28：新增真实拖放 seam 用例后执行 `npm test -- --run src/app/shell/Shell.test.tsx -t '左栏机器与目录|账本关闭时项目名'`；目录/机器 DataTransfer→TerminalTab 用例通过，账本关闭用例失败，原始断言为 `expected <button ...> to be null`，实际仍渲染 `aria-label="打开 handoff 工作项"`；确认红因是 Shell 无条件传入项目工作项回调，不是测试拼写或夹具问题。
+- 2026-08-28：补充拖放与文件操作错误日志断言后，执行 `npm test -- --run src/app/workbench/WorkbenchPage.test.tsx -t '目录拖放来源无效'`；失败原文显示 `workbench.drop.invalid_source` 仅含 `column/groupId/row/zone`，缺少 `project/machine/path`，退出码 1。
+- 2026-08-28：同批执行 `npm test -- --run src/app/workbench/WorkbenchPage.test.tsx src/app/files/FileTree.test.tsx -t '目录拖放来源无效|服务端的中文错误'`；2 个断言均失败，WorkbenchPage 原始 warn 缺上下文，FileTree 原始 `Number of calls: 0`；该红测发生在生产日志实现修改前。
+- 2026-08-28：按红测最小实现 Shell 项目工作项门控、ProjectTree 三个目录/已打开项回调改必填、WorkbenchPage 拖放上下文、FileTree 操作错误上下文；执行 `npm test -- --run src/app/workbench/WorkbenchPage.test.tsx src/app/files/FileTree.test.tsx src/app/shell/Shell.test.tsx -t '目录拖放来源无效|服务端的中文错误|账本关闭时项目名|左栏机器与目录'`，原始结果为 `Test Files  3 passed (3)`、`Tests  4 passed | 72 skipped (76)`，退出码 0。
+- 2026-08-28：首次执行 `npm run typecheck` 在回调收紧后失败，原始错误为 `src/app/tree/ProjectTree.tsx(850,40): error TS2774: This condition will always return true since this function is always defined. Did you mean to call it instead?`；删除必填回调的冗余条件，未据此下绿结论。
+- 2026-08-28：修正冗余条件后并行执行 `npm run typecheck` 与 5 文件触及测试；类型检查退出 0（无错误输出），测试原始结果为 `Test Files  5 passed (5)`、`Tests  142 passed (142)`，退出码 0。
+- 2026-08-28：变异前执行 `rg -n -F 'onOpenProjectCards={ledgerEnabled ? openProjectCards : undefined}' web/src/app/shell/Shell.tsx | wc -l`，原始输出为 `1`，确认变异锚点唯一。
+- 2026-08-28：将唯一门控表达式变异为无条件 `onOpenProjectCards={openProjectCards}` 后执行 `npm run typecheck`，退出 0、无错误输出；再执行 `npm test -- --run src/app/shell/Shell.test.tsx -t '账本关闭时项目名'`，原始结果为 `1 failed | 36 skipped (37)`，断言重新看到 `aria-label="打开 handoff 工作项"`；确认该测试拦住语义变异。
+- 2026-08-28：恢复正式门控后再次并行执行 `npm run typecheck` 与 5 文件触及测试；类型检查退出 0（仅 npm 启动行、无错误），测试原始结果为 `Test Files  5 passed (5)`、`Tests  142 passed (142)`，退出码 0。
+- 2026-08-28：集成全量执行 `cd web && npm test`，原始结果为 `Test Files  109 passed (109)`、`Tests  1085 passed (1085)`，退出码 0；输出含既有提示 `Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package`。
+- 2026-08-28：集成构建执行 `cd web && npm run build`，原始结果为 `✓ built in 2.56s`，退出码 0；Vite 输出既有 chunk 大小 warning（`Some chunks are larger than 500 kB after minification`）。
+- 2026-08-28：执行全仓 `cd web && npm run lint`，退出码 1；原始输出为 5 个 error（`src/api/pty.ts:115`、`src/app/flows/NodeEditor.test.tsx:50`、`src/app/workbench/terminalHostResponse.ts:45/47/49`）及 18 个 warning。随后仅检查本轮触及的 8 个 TS/TSX 文件，原始结果为 `0 errors, 5 warnings`、退出码 0；warning 位于既有 `Shell.tsx:199` 与 `ProjectTree.tsx:194/209/227/255`。
+- 2026-08-28：为拖放错误分支补充 `reason` 字段后，执行 `npm run typecheck` 退出 0；并执行 3 文件相关断言，原始结果为 `Test Files  3 passed (3)`、`Tests  4 passed | 72 skipped (76)`，退出码 0。
+- 2026-08-28：补充 `reason` 后再次执行全量 `cd web && npm test`，原始结果为 `Test Files  109 passed (109)`、`Tests  1085 passed (1085)`，退出码 0；仍输出既有 canvas getContext 未实现提示。
+- 2026-08-28：最终代码执行 `cd web && npm run build`，原始结果为 `✓ built in 2.25s`，退出码 0；Vite 输出既有 chunk 大小 warning（`Some chunks are larger than 500 kB after minification`）。
+- 2026-08-28：收尾自审执行 `git diff --check`，退出码 0、无输出；旧短 hash/旧原型边界/错误机器收起口径检索均无输出；`git ls-files prototypes/b264-tab-groups | wc -l` 输出 `8`，且 `web/dist/`、`web/node_modules/` 均为忽略项。
+- 2026-08-28：显式暂存本轮 11 个产物/源码/测试文件；`git diff --cached --check` 退出码 0、无输出，暂存统计为 `181 insertions(+), 30 deletions(-)`，未暂存 node_modules 或 dist。
+- 2026-08-28：执行 `git commit -m "fix B281 review 3 regressions"` 成功，原始输出为 `[cards/B281-charter-7 d360cfed] fix B281 review 3 regressions`；随后将该实际提交短 hash 写回台账并 amend 同一提交。

@@ -41,6 +41,12 @@ export function WorkbenchPage({
   const [dragOver, setDragOver] = useState<{ column: number; row: number; zone: DropZone } | null>(null)
   const [dropWarning, setDropWarning] = useState('')
 
+  const dropContext = (source: BaseDir | null | undefined = base) => ({
+    project: source?.projectName ?? '',
+    machine: source?.machine ?? '',
+    path: source?.path ?? '',
+  })
+
   const launcherItems = launchers.map((launcher) => ({ name: launcher.name, envMissing: launcher.env_missing }))
 
   const pickForTab = (groupId: string, tab: Tab, kind: PickKind) => {
@@ -103,12 +109,16 @@ export function WorkbenchPage({
     setDropWarning('')
     if ((requestedZone === 'top' || requestedZone === 'bottom') && !canAddPane) {
       setDropWarning('这一列最多两格，已替换当前窗格')
-      console.warn('workbench.drop.pane_limit', { groupId, column, row, zone: requestedZone })
+      console.warn('workbench.drop.pane_limit', {
+        ...dropContext(), groupId, column, row, zone: requestedZone, reason: 'column already has two panes',
+      })
     }
     if (types.includes(DRAG_TAB_MIME)) {
       const source = readDragTab(event.dataTransfer.getData(DRAG_TAB_MIME))
       if (!source) {
-        console.warn('workbench.drop.invalid_mime', { groupId, column, row, zone: target.zone })
+        console.warn('workbench.drop.invalid_mime', {
+          ...dropContext(), groupId, column, row, zone: target.zone, reason: 'tab MIME payload is missing or invalid',
+        })
         return
       }
       api.place({ kind: 'tab', ...source }, target)
@@ -118,14 +128,23 @@ export function WorkbenchPage({
     const taskId = types.includes(DRAG_TASK_MIME) ? event.dataTransfer.getData(DRAG_TASK_MIME) : ''
     const draggedBase = readDragBase(event.dataTransfer.getData(DRAG_DIR_MIME)) ?? readDragBase(event.dataTransfer.getData(DRAG_BASE_MIME)) ?? base
     if (draggedBase === null || (types.includes(DRAG_TASK_MIME) && taskId === '')) {
-      console.warn('workbench.drop.invalid_source', { groupId, column, row, zone: target.zone })
+      console.warn('workbench.drop.invalid_source', {
+        ...dropContext(draggedBase),
+        groupId,
+        column,
+        row,
+        zone: target.zone,
+        reason: draggedBase === null ? 'directory/base MIME payload is missing or invalid' : 'task MIME payload has no task id',
+      })
       return
     }
     const content: TabContent = types.includes(DRAG_TASK_MIME)
       ? { kind: 'tui', taskId }
       : { kind: 'terminal', seq: nextTerminalSeq(wb) }
     api.place({ kind: 'new', base: draggedBase, content }, target)
-    console.debug('workbench.drop.new', { groupId, column, row, zone: target.zone, baseKey: draggedBase.key })
+    console.debug('workbench.drop.new', {
+      ...dropContext(draggedBase), groupId, column, row, zone: target.zone, baseKey: draggedBase.key,
+    })
   }
 
   const moveGroup = (sourceGroupId: string, targetGroupId: string, zone: 'left' | 'right' | 'center') => {
