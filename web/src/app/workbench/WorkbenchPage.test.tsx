@@ -168,4 +168,34 @@ describe('WorkbenchPage', () => {
     }))
     warn.mockRestore()
   })
+
+  it.each<[string, string]>([
+    ['JSON 损坏', '{bad-json'],
+    ['字段缺失', JSON.stringify({ key: local.key, kind: local.kind })],
+  ])('单独目录 MIME %s 时拒绝放置，不回退到当前选中目录', (_label, directoryPayload) => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.select(local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const event = createEvent.drop(pane, {
+      dataTransfer: {
+        types: [DRAG_DIR_MIME],
+        getData: (key: string) => key === DRAG_DIR_MIME ? directoryPayload : '',
+        setData: vi.fn(),
+        dropEffect: '',
+      },
+    })
+    Object.defineProperty(event, 'clientX', { value: 200 })
+    Object.defineProperty(event, 'clientY', { value: 200 })
+
+    fireEvent(pane, event)
+
+    expect(hook.result.current.wb.groups[0].columns[0].panes[0]).toBeNull()
+    expect(warn).toHaveBeenCalledWith('workbench.drop.invalid_source', expect.objectContaining({
+      project: 'handoff', machine: '', path: '/local',
+    }))
+    warn.mockRestore()
+  })
 })

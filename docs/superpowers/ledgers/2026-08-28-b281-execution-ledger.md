@@ -54,3 +54,19 @@
 - 2026-08-28：收尾自审执行 `git diff --check`，退出码 0、无输出；旧短 hash/旧原型边界/错误机器收起口径检索均无输出；`git ls-files prototypes/b264-tab-groups | wc -l` 输出 `8`，且 `web/dist/`、`web/node_modules/` 均为忽略项。
 - 2026-08-28：显式暂存本轮 11 个产物/源码/测试文件；`git diff --cached --check` 退出码 0、无输出，暂存统计为 `181 insertions(+), 30 deletions(-)`，未暂存 node_modules 或 dist。
 - 2026-08-28：执行 `git commit -m "fix B281 review 3 regressions"` 成功，原始输出为 `[cards/B281-charter-7 d360cfed] fix B281 review 3 regressions`；随后将该实际提交短 hash 写回台账并 amend 同一提交。
+- 2026-08-28：本轮起点核对为当前分支 `cards/B281-charter-8`、HEAD `952c40917357ba63762dc26ca542f25b99956ea3`，工作树初始干净；台账末行仍记录旧短 hash `d360cfed`，待本轮提交后回写最终 HEAD。
+- 2026-08-28：代码核对确认 `WorkbenchPage.tsx` 以 `readDragBase(DRAG_DIR_MIME) ?? readDragBase(DRAG_BASE_MIME) ?? base` 回退到当前 selected base；现有测试仅以同时存在的空 task MIME 触发拒绝，尚未锁住单独损坏目录 MIME 不得回退。
+- 2026-08-28：新增单独损坏目录 MIME 的 WorkbenchPage seam 测试后首次运行 `npm test -- --run src/app/workbench/WorkbenchPage.test.tsx -t '单独目录 MIME 损坏时拒绝放置'`；原始输出为 `sh: 1: vitest: not found`，退出码 127，未据此下测试结论。
+- 2026-08-28：按 `web/package-lock.json` 执行 `cd web && npm ci --ignore-scripts`；原始输出为 `added 290 packages, and audited 291 packages in 2s`、`found 0 vulnerabilities`，退出码 0；依赖未纳入提交。
+- 2026-08-28：新增 seam 红测实际失败；运行 `npm test -- --run src/app/workbench/WorkbenchPage.test.tsx -t '单独目录 MIME 损坏时拒绝放置'` 输出 `1 failed | 6 skipped (7)`，断言原文为 `expected { id: 't1', …(2) } to be null`，实际 pane 被当前 `/local` 选中目录打开为 terminal；同时 stdout 为 `workbench.drop.new`，确认失败原因是功能缺失而非测试拼写。
+- 2026-08-28：最小实现后将同一 seam 扩为 JSON 损坏与字段缺失两例，运行 `npm test -- --run src/app/workbench/WorkbenchPage.test.tsx -t '单独目录 MIME'`；原始结果为 `Test Files  1 passed (1)`、`Tests  2 passed | 6 skipped (8)`，退出码 0。
+- 2026-08-28：变异前以 `rg -n -F 'const draggedBase = hasDirectoryMime' web/src/app/workbench/WorkbenchPage.tsx | wc -l` 核对变异锚点命中数为 `1`。
+- 2026-08-28：首个变异将目录分支改为直接使用 `base`，先执行 `npm run typecheck`；原始错误为 `src/app/workbench/WorkbenchPage.tsx(130,11): error TS6133: 'directoryBase' is declared but its value is never read.`，该发编译失败、未计入变异读数，准备替换为保持变量使用的等价语义变异。
+- 2026-08-28：替换为可编译变异 `hasDirectoryMime ? (directoryBase ?? base)` 后，先执行 `npm run typecheck`，原始输出仅为 npm 启动行、退出码 0；再执行行为测试，原始结果为 `2 failed | 6 skipped (8)`，两例均输出 `workbench.drop.new` 并断言 pane 不应为 null；随后执行 WorkbenchPage 全文件，原始结果为 `Test Files  1 failed (1)`、`Tests  2 failed | 6 passed (8)`，确认测试拦住该语义变异。
+- 2026-08-28：恢复正式实现后并行执行 `npm run typecheck` 与 `npm test -- --run src/app/workbench/WorkbenchPage.test.tsx`；类型检查原始输出为 npm 启动行后无错误、退出码 0；WorkbenchPage 原始结果为 `Test Files  1 passed (1)`、`Tests  8 passed (8)`，退出码 0。
+- 2026-08-28：执行中央拖放及其调用方触及范围 `npm test -- --run src/app/workbench/WorkbenchPage.test.tsx src/app/workbench/launchers.test.tsx src/app/tree/ProjectTree.test.tsx src/app/shell/Shell.test.tsx src/app/files/FileTree.test.tsx`；原始结果为 `Test Files  5 passed (5)`、`Tests  141 passed (141)`，退出码 0。
+- 2026-08-28：执行 `npx eslint src/app/workbench/WorkbenchPage.tsx src/app/workbench/WorkbenchPage.test.tsx`；无输出、退出码 0。
+- 2026-08-28：集成全量执行 `cd web && npm test`；原始结果为 `Test Files  109 passed (109)`、`Tests  1087 passed (1087)`，退出码 0；输出含既有提示 `Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package`。
+- 2026-08-28：集成构建执行 `cd web && npm run build`；原始结果为 `✓ built in 2.15s`，退出码 0；Vite 输出既有 chunk 大小 warning（`Some chunks are larger than 500 kB after minification`）。
+- 2026-08-28：提交前审计执行 `git diff --check`，退出码 0、无输出；`git status --short --branch` 显示仅 3 个文件改动，统计为台账 14 行、WorkbenchPage 测试 30 行、WorkbenchPage 实现 12 行新增/3 行删除；旧的 `readDragBase(DRAG_DIR_MIME) ??` 回退链检索无输出。
+- 2026-08-28：已显式暂存本轮 3 个产物文件；`git diff --cached --check` 退出码 0、无输出，暂存统计为 54 insertions(+), 3 deletions(-)。

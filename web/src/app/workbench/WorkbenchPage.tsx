@@ -126,15 +126,21 @@ export function WorkbenchPage({
       return
     }
     const taskId = types.includes(DRAG_TASK_MIME) ? event.dataTransfer.getData(DRAG_TASK_MIME) : ''
-    const draggedBase = readDragBase(event.dataTransfer.getData(DRAG_DIR_MIME)) ?? readDragBase(event.dataTransfer.getData(DRAG_BASE_MIME)) ?? base
+    const hasDirectoryMime = types.includes(DRAG_DIR_MIME)
+    const directoryBase = hasDirectoryMime ? readDragBase(event.dataTransfer.getData(DRAG_DIR_MIME)) : null
+    const draggedBase = hasDirectoryMime
+      ? directoryBase
+      : readDragBase(event.dataTransfer.getData(DRAG_BASE_MIME)) ?? base
     if (draggedBase === null || (types.includes(DRAG_TASK_MIME) && taskId === '')) {
       console.warn('workbench.drop.invalid_source', {
-        ...dropContext(draggedBase),
+        ...dropContext(draggedBase ?? base),
         groupId,
         column,
         row,
         zone: target.zone,
-        reason: draggedBase === null ? 'directory/base MIME payload is missing or invalid' : 'task MIME payload has no task id',
+        reason: draggedBase === null
+          ? (hasDirectoryMime ? 'directory MIME payload is missing or invalid' : 'directory/base MIME payload is missing or invalid')
+          : 'task MIME payload has no task id',
       })
       return
     }
