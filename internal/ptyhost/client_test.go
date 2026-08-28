@@ -326,15 +326,22 @@ func TestCloseDoesNotTreatControlTimeoutAsSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	controlRead := make(chan struct{})
+	allowServerClose := make(chan struct{})
 	serverDone := make(chan struct{})
 	go func() {
+		defer close(serverDone)
 		conn, acceptErr := ln.Accept()
-		if acceptErr == nil {
-			_, _, _, _ = wire.ReadFrame(conn)
-			time.Sleep(1500 * time.Millisecond)
-			_ = conn.Close()
+		if acceptErr != nil {
+			return
 		}
-		close(serverDone)
+		defer conn.Close()
+		_, _, _, readErr := wire.ReadFrame(conn)
+		if readErr != nil {
+			return
+		}
+		close(controlRead)
+		<-allowServerClose
 	}()
 	t.Cleanup(func() {
 		_ = ln.Close()
@@ -342,7 +349,18 @@ func TestCloseDoesNotTreatControlTimeoutAsSuccess(t *testing.T) {
 	})
 	h := ptyhost.New(root, "", testLog())
 	h.Adopt([]sessdir.Entry{{ID: id, Meta: meta, State: sessdir.StateLive}})
-	err = h.Close(id)
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- h.Close(id) }()
+	select {
+	case <-controlRead:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake control server 未消费 CtrlKill")
+	}
+	select {
+	case err = <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Host.Close 未在 control timeout 后返回")
+	}
 	if err == nil {
 		t.Fatal("control timeout 且会话目录仍在时 Close 不得返回成功")
 	}
@@ -352,10 +370,11 @@ func TestCloseDoesNotTreatControlTimeoutAsSuccess(t *testing.T) {
 	if list := h.List(); len(list) != 0 {
 		t.Fatalf("失败 Close 后登记未清除: %+v", list)
 	}
+	close(allowServerClose)
 	select {
 	case <-serverDone:
 	case <-time.After(2 * time.Second):
-		t.Fatal("fake control server 未完成 timeout 场景")
+		t.Fatal("fake control server 未在 Close 返回错误后收摊")
 	}
 }
 
@@ -483,6 +502,9 @@ func startClientHostWithExitMarker(t *testing.T) (root string, h *ptyhost.Host, 
 		Cols: 80, Rows: 24,
 		InitCommand: `trap 'exit 0' TERM; trap 'printf late > "$HOME/b234-late"' EXIT; : > "$HOME/b234-ready"; while :; do :; done`,
 	})
+	if !waitClientFile(filepath.Join(home, "b234-ready"), 3*time.Second) {
+		t.Fatalf("startClientHostWithExitMarker: InitCommand 未建立 ready marker")
+	}
 	return root, h, id, done, filepath.Join(home, "b234-late")
 }
 
