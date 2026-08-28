@@ -3,10 +3,6 @@
   "base": "d4dd340e",
   "summary": "B156.2 charter-4 微修订轮（岔口一方案甲）：proto.Card+=Following(omitempty)、cardWire 补 Following 投影、LedgerClient/Facade += ListAllCards 直通。本视图为累计视图（自带 charter-2 全部符号）：check --view 按基线+单 diff 叠加，缺 charter-2 内容则三条契约面全数 dead——已实测 plain check 4 处违规为证。",
   "containersAdded": {
-   "k_collab_room_fn": {"label": "collab.room 包级函数", "kind": "函数组", "domain": "d_collab"},
-   "k_collab_room_model": {"label": "collab.room 数据模型", "kind": "实体", "domain": "d_collab"},
-   "k_collab_cursor_fn": {"label": "collab.cursor 包级函数", "kind": "函数组", "domain": "d_collab"},
-   "k_collab_cursor_Store": {"label": "collab.cursor Store 类型", "kind": "类型", "domain": "d_collab"},
 "k_web_app_rooms": {"label": "/app/rooms组件与函数", "kind": "React 组件/函数", "domain": "d_web"}
    },
   "nodesAdded": {

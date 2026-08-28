@@ -460,7 +460,7 @@ func TestMaybeInstallServiceLinuxNonRootOnlyHints(t *testing.T) {
 
 	var buf bytes.Buffer
 	p := initflow.NewScriptedPrompter(strings.NewReader("y\n"), &buf)
-	initflow.MaybeInstallService(&buf, p, true, "/tmp/handoff.yaml")
+	initflow.MaybeInstallService(&buf, p, true, filepath.Join(t.TempDir(), "handoff.yaml"))
 
 	if f.installed != nil {
 		t.Error("Linux 非 root 时不该调 Install：systemd 单元写不进 /etc")
@@ -489,7 +489,7 @@ func TestMaybeInstallServiceLinuxRootInstalls(t *testing.T) {
 
 	var buf bytes.Buffer
 	p := initflow.NewScriptedPrompter(strings.NewReader("y\n"), &buf)
-	initflow.MaybeInstallService(&buf, p, true, "/tmp/handoff.yaml")
+	initflow.MaybeInstallService(&buf, p, true, filepath.Join(t.TempDir(), "handoff.yaml"))
 
 	if f.installed == nil {
 		t.Errorf("Linux root 下答 y 必须真的装，实得输出:\n%s", buf.String())

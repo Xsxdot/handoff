@@ -1376,6 +1376,26 @@
    "kind": "go",
    "domain": "d_collab"
   },
+  "k_collab_room_fn": {
+   "label": "collab.room 包级函数",
+   "kind": "函数组",
+   "domain": "d_collab"
+  },
+  "k_collab_room_model": {
+   "label": "collab.room 数据模型",
+   "kind": "实体",
+   "domain": "d_collab"
+  },
+  "k_collab_cursor_fn": {
+   "label": "collab.cursor 包级函数",
+   "kind": "函数组",
+   "domain": "d_collab"
+  },
+  "k_collab_cursor_Store": {
+   "label": "collab.cursor Store 类型",
+   "kind": "类型",
+   "domain": "d_collab"
+  },
   "k_ledger_api_Facade": {
    "label": "账本薄门面 Facade",
    "kind": "go",
@@ -1527,6 +1547,46 @@
    "name": "handoff card close",
    "file": "cmd/card.go",
    "line": 215
+  },
+  "e_cli_room": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 93,
+   "name": "handoff room",
+   "file": "cmd/room.go",
+   "line": 25
+  },
+  "e_cli_room_list": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 94,
+   "name": "handoff room list",
+   "file": "cmd/room.go",
+   "line": 49
+  },
+  "e_cli_room_read": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 95,
+   "name": "handoff room read",
+   "file": "cmd/room.go",
+   "line": 78
+  },
+  "e_cli_room_send": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 96,
+   "name": "handoff room send",
+   "file": "cmd/room.go",
+   "line": 116
+  },
+  "e_cli_room_inbox": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 97,
+   "name": "handoff room inbox",
+   "file": "cmd/room.go",
+   "line": 141
   },
   "e_cli_card_dispatch": {
    "kind": "entry",
@@ -75022,10 +75082,22 @@
    "returns": "([]proto.RoomSummary, error)",
    "summary": "扁平活动排序会话列表；派生成员规则随欠账 #3，当前空切片占位"
   },
-  "n_collab_Service_MarkRead": {
+  "n_collab_Service_ListRoomsForMember": {
    "kind": "func",
    "container": "k_collab_Service",
    "order": 18,
+   "name": "Service.ListRoomsForMember",
+   "file": "internal/collab/service.go",
+   "line": 261,
+   "signature": "func (s *Service) ListRoomsForMember(project, member string) ([]proto.RoomSummary, error)",
+   "params": [["project", "string", "筛选；空=全部"], ["member", "string", "成员标识"]],
+   "returns": "([]proto.RoomSummary, error)",
+   "summary": "返回会话列表并投影指定成员的未读数"
+  },
+  "n_collab_Service_MarkRead": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 19,
    "name": "Service.MarkRead",
    "file": "internal/collab/service.go",
    "line": 157,
@@ -75053,7 +75125,7 @@
   "n_collab_Service_Unread": {
    "kind": "func",
    "container": "k_collab_Service",
-   "order": 19,
+   "order": 20,
    "name": "Service.Unread",
    "file": "internal/collab/service.go",
    "line": 165,
@@ -76669,6 +76741,416 @@
    ],
    "returns": "error",
    "summary": "打等人标记（透传 Store.MarkNeedsHuman）；唤醒兜底链终点「转等人」经此落账"
+  },
+  "n_collab_New": {
+   "kind": "func",
+   "container": "k_collab_fn",
+   "order": 1,
+   "name": "New",
+   "file": "internal/collab/service.go",
+   "line": 63,
+   "signature": "func New(lc client.LedgerClient) *Service",
+   "params": [["lc", "client.LedgerClient", "账本能力接口"]],
+   "returns": "*Service",
+   "summary": "组装协作房间域服务；默认使用纯内存未读游标"
+  },
+  "n_collab_room_log": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 1,
+   "name": "log",
+   "file": "internal/collab/room/room.go",
+   "line": 23,
+   "signature": "func log() *slog.Logger"
+  },
+  "m_collab_room_Room": {
+   "kind": "model",
+   "container": "k_collab_room_model",
+   "order": 10,
+   "name": "Room",
+   "file": "internal/collab/room/room.go",
+   "line": 36,
+   "signature": "type Room struct",
+   "summary": "房间解析的完整结果，携带执法所需上下文",
+   "fields": [
+    ["ID", "string", "房间标识"],
+    ["CardID", "string", "卡房间的卡号"],
+    ["Kind", "string", "card|project|global"],
+    ["Project", "string", "项目名"],
+    ["ReadOnly", "bool", "并入冻结或终态归档"],
+    ["Card", "*proto.Card", "卡房间上下文；群房间为空"],
+    ["ParentSession", "string", "直接父卡当前绑定者"]
+   ]
+  },
+  "n_collab_room_Resolve": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 11,
+   "name": "Resolve",
+   "file": "internal/collab/room/room.go",
+   "line": 55,
+   "signature": "func Resolve(lc client.LedgerClient, roomID string) (*Room, error)",
+   "params": [["lc", "client.LedgerClient", "账本能力接口"], ["roomID", "string", "房间标识"]],
+   "returns": "(*Room, error)",
+   "summary": "把房间标识解析为执法上下文"
+  },
+  "n_collab_room_VerifyWriter": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 12,
+   "name": "VerifyWriter",
+   "file": "internal/collab/room/room.go",
+   "line": 102,
+   "signature": "func VerifyWriter(r *Room, kind, actor string) error",
+   "params": [["r", "*Room", "房间上下文"], ["kind", "string", "消息形态"], ["actor", "string", "书写者标识"]],
+   "returns": "error",
+   "summary": "按消息形态执法书写者身份"
+  },
+  "n_collab_room_KindAllowed": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 13,
+   "name": "KindAllowed",
+   "file": "internal/collab/room/room.go",
+   "line": 149,
+   "signature": "func KindAllowed(kind string) bool",
+   "params": [["kind", "string", "消息形态"]],
+   "returns": "bool",
+   "summary": "判断消息形态是否在受控白名单内"
+  },
+  "n_collab_room_IsTerminalStatus": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 14,
+   "name": "IsTerminalStatus",
+   "file": "internal/collab/room/room.go",
+   "line": 161,
+   "signature": "func IsTerminalStatus(status string) bool",
+   "params": [["status", "string", "卡状态"]],
+   "returns": "bool",
+   "summary": "判断卡状态是否为终态"
+  },
+  "n_collab_room_isGroupRoom": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 15,
+   "name": "isGroupRoom",
+   "file": "internal/collab/room/room.go",
+   "line": 166,
+   "signature": "func isGroupRoom(roomID string) bool"
+  },
+  "n_collab_room_groupRoomKind": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 16,
+   "name": "groupRoomKind",
+   "file": "internal/collab/room/room.go",
+   "line": 173,
+   "signature": "func groupRoomKind(roomID string) (kind, name string)"
+  },
+  "n_collab_room_SameRoom": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 17,
+   "name": "SameRoom",
+   "file": "internal/collab/room/room.go",
+   "line": 188,
+   "signature": "func SameRoom(ev proto.LedgerEvent, roomID string) bool",
+   "params": [["ev", "proto.LedgerEvent", "账本事件"], ["roomID", "string", "房间标识"]],
+   "returns": "bool",
+   "summary": "判断事件是否属于指定房间"
+  },
+  "n_collab_room_MentionsMember": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 18,
+   "name": "MentionsMember",
+   "file": "internal/collab/room/room.go",
+   "line": 200,
+   "signature": "func MentionsMember(ev proto.LedgerEvent, member string) bool",
+   "params": [["ev", "proto.LedgerEvent", "账本事件"], ["member", "string", "成员标识"]],
+   "returns": "bool",
+   "summary": "判断事件提及列表是否包含指定成员"
+  },
+  "n_collab_room_UnmarshalMessage": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 19,
+   "name": "UnmarshalMessage",
+   "file": "internal/collab/room/room.go",
+   "line": 214,
+   "signature": "func UnmarshalMessage(raw json.RawMessage, msg *proto.RoomMessage) error",
+   "params": [["raw", "json.RawMessage", "房间消息载荷"], ["msg", "*proto.RoomMessage", "解码目标"]],
+   "returns": "error",
+   "summary": "解码房间消息载荷"
+  },
+  "n_collab_room_ReadAllEvents": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 20,
+   "name": "ReadAllEvents",
+   "file": "internal/collab/room/room.go",
+   "line": 227,
+   "signature": "func ReadAllEvents(lc client.LedgerClient, fromSeq int64) ([]proto.LedgerEvent, error)",
+   "params": [["lc", "client.LedgerClient", "账本能力接口"], ["fromSeq", "int64", "起始序号"]],
+   "returns": "([]proto.LedgerEvent, error)",
+   "summary": "分页读取完整房间事件流"
+  },
+  "n_collab_room_ConsumedSeqs": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 21,
+   "name": "ConsumedSeqs",
+   "file": "internal/collab/room/room.go",
+   "line": 246,
+   "signature": "func ConsumedSeqs(events []proto.LedgerEvent, consumer string) map[int64]bool",
+   "params": [["events", "[]proto.LedgerEvent", "事件流"], ["consumer", "string", "消费者标识"]],
+   "returns": "map[int64]bool",
+   "summary": "收集指定消费者已消费的消息序号"
+  },
+  "n_collab_room_RoomIDOf": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 22,
+   "name": "RoomIDOf",
+   "file": "internal/collab/room/room.go",
+   "line": 269,
+   "signature": "func RoomIDOf(ev proto.LedgerEvent) string",
+   "params": [["ev", "proto.LedgerEvent", "账本事件"]],
+   "returns": "string",
+   "summary": "取得事件所属房间标识"
+  },
+  "n_collab_room_MessageKind": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 23,
+   "name": "MessageKind",
+   "file": "internal/collab/room/room.go",
+   "line": 281,
+   "signature": "func MessageKind(ev proto.LedgerEvent) string",
+   "params": [["ev", "proto.LedgerEvent", "账本事件"]],
+   "returns": "string",
+   "summary": "取得事件载荷中的消息形态"
+  },
+  "m_collab_cursor_Store": {
+   "kind": "model",
+   "container": "k_collab_cursor_Store",
+   "order": 10,
+   "name": "Store",
+   "file": "internal/collab/cursor/cursor.go",
+   "line": 19,
+   "signature": "type Store struct",
+   "summary": "按成员和房间持久化未读游标水位",
+   "fields": [
+    ["mu", "sync.Mutex", "并发读写锁"],
+    ["path", "string", "游标文件路径"],
+    ["loaded", "bool", "是否已加载"],
+    ["data", "map[string]map[string]int64", "成员到房间水位"]
+   ]
+  },
+  "n_collab_cursor_New": {
+   "kind": "func",
+   "container": "k_collab_cursor_fn",
+   "order": 1,
+   "name": "New",
+   "file": "internal/collab/cursor/cursor.go",
+   "line": 28,
+   "signature": "func New(path string) *Store",
+   "params": [["path", "string", "游标文件路径；空=内存"]],
+   "returns": "*Store",
+   "summary": "构造未读游标存储"
+  },
+  "n_collab_cursor_Store_MarkRead": {
+   "kind": "func",
+   "container": "k_collab_cursor_Store",
+   "order": 11,
+   "name": "Store.MarkRead",
+   "file": "internal/collab/cursor/cursor.go",
+   "line": 35,
+   "signature": "func (s *Store) MarkRead(member, roomID string, uptoSeq int64) error",
+   "params": [["member", "string", "成员标识"], ["roomID", "string", "房间标识"], ["uptoSeq", "int64", "已读水位"]],
+   "returns": "error",
+   "summary": "单调置成员在房间的已读水位"
+  },
+  "n_collab_cursor_Store_Cursor": {
+   "kind": "func",
+   "container": "k_collab_cursor_Store",
+   "order": 12,
+   "name": "Store.Cursor",
+   "file": "internal/collab/cursor/cursor.go",
+   "line": 56,
+   "signature": "func (s *Store) Cursor(member, roomID string) (int64, error)",
+   "params": [["member", "string", "成员标识"], ["roomID", "string", "房间标识"]],
+   "returns": "(int64, error)",
+   "summary": "读取成员在房间的已读水位"
+  },
+  "n_collab_cursor_Store_Snapshot": {
+   "kind": "func",
+   "container": "k_collab_cursor_Store",
+   "order": 13,
+   "name": "Store.Snapshot",
+   "file": "internal/collab/cursor/cursor.go",
+   "line": 69,
+   "signature": "func (s *Store) Snapshot(member string) (map[string]int64, error)",
+   "params": [["member", "string", "成员标识"]],
+   "returns": "(map[string]int64, error)",
+   "summary": "返回成员全部房间的游标快照"
+  },
+  "n_collab_cursor_Store_ensureLoaded": {
+   "kind": "func",
+   "container": "k_collab_cursor_Store",
+   "order": 14,
+   "name": "Store.ensureLoaded",
+   "file": "internal/collab/cursor/cursor.go",
+   "line": 84,
+   "signature": "func (s *Store) ensureLoaded() error",
+   "returns": "error"
+  },
+  "n_collab_cursor_Store_persist": {
+   "kind": "func",
+   "container": "k_collab_cursor_Store",
+   "order": 15,
+   "name": "Store.persist",
+   "file": "internal/collab/cursor/cursor.go",
+   "line": 107,
+   "signature": "func (s *Store) persist() error",
+   "returns": "error"
+  },
+  "n_cmd_roomServiceFor": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 646,
+   "name": "roomServiceFor",
+   "file": "cmd/room.go",
+   "line": 33,
+   "signature": "func roomServiceFor(st *ledger.Store) *collab.Service",
+   "params": [["st", "*ledger.Store", "本地账本"]],
+   "returns": "*collab.Service",
+   "summary": "CLI 房间域唯一组装绑定点"
+  },
+  "n_cmd_openRoomService": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 647,
+   "name": "openRoomService",
+   "file": "cmd/room.go",
+   "line": 39,
+   "signature": "func openRoomService() (*collab.Service, *ledger.Store, error)",
+   "returns": "(*collab.Service, *ledger.Store, error)",
+   "summary": "打开本地账本并取得 CLI 房间服务"
+  },
+  "n_cmd_roomListCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 648,
+   "name": "roomListCmd.RunE",
+   "file": "cmd/room.go",
+   "line": 52,
+   "signature": "func(cmd *cobra.Command, _ []string) error",
+   "returns": "error"
+  },
+  "n_cmd_roomReadCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 649,
+   "name": "roomReadCmd.RunE",
+   "file": "cmd/room.go",
+   "line": 81,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "returns": "error"
+  },
+  "n_cmd_roomMessageBody": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 650,
+   "name": "roomMessageBody",
+   "file": "cmd/room.go",
+   "line": 102,
+   "signature": "func roomMessageBody(ev proto.LedgerEvent) string",
+   "params": [["ev", "proto.LedgerEvent", "账本事件"]],
+   "returns": "string"
+  },
+  "n_cmd_roomSendCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 651,
+   "name": "roomSendCmd.RunE",
+   "file": "cmd/room.go",
+   "line": 118,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "returns": "error"
+  },
+  "n_cmd_roomInboxCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 652,
+   "name": "roomInboxCmd.RunE",
+   "file": "cmd/room.go",
+   "line": 144,
+   "signature": "func(cmd *cobra.Command, _ []string) error",
+   "returns": "error"
+  },
+  "n_cmd_roomPointer": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 653,
+   "name": "roomPointer",
+   "file": "cmd/card_dispatch.go",
+   "line": 347,
+   "signature": "func(s *collab.Service, roomID, body string) error",
+   "params": [["s", "*collab.Service", "协作房间服务"], ["roomID", "string", "房间标识"], ["body", "string", "指针正文"]],
+   "returns": "error",
+   "summary": "派发成功路径写房间指针的测试缝，生产实现直调 Service.Pointer"
+  },
+  "n_agentd_Server_handleRoomsList": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1816,
+   "name": "Server.handleRoomsList",
+   "file": "internal/agentd/roomsapi.go",
+   "line": 53,
+   "signature": "func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request)",
+   "summary": "GET /api/rooms：返回带成员未读投影的会话列表"
+  },
+  "n_agentd_Server_handleRoomMessages": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1817,
+   "name": "Server.handleRoomMessages",
+   "file": "internal/agentd/roomsapi.go",
+   "line": 301,
+   "signature": "func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request)",
+   "summary": "GET /api/rooms/{id}/messages：读取房间历史"
+  },
+  "n_agentd_Server_handleRoomSend": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1818,
+   "name": "Server.handleRoomSend",
+   "file": "internal/agentd/roomsapi.go",
+   "line": 321,
+   "signature": "func (s *Server) handleRoomSend(w http.ResponseWriter, r *http.Request)",
+   "summary": "POST /api/rooms/{id}/messages：以服务端 actor 发用户消息"
+  },
+  "n_agentd_Server_handleRoomRead": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1819,
+   "name": "Server.handleRoomRead",
+   "file": "internal/agentd/roomsapi.go",
+   "line": 349,
+   "signature": "func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request)",
+   "summary": "POST /api/rooms/{id}/read：置成员已读游标"
+  },
+  "n_agentd_Server_handleInbox": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1820,
+   "name": "Server.handleInbox",
+   "file": "internal/agentd/roomsapi.go",
+   "line": 369,
+   "signature": "func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request)",
+   "summary": "GET /api/inbox：聚合 decision、ticket 与 mention 三源"
   },
   "n_agentd_roomNarrator_Say": {
    "kind": "func",
@@ -95677,8 +96159,64 @@
   [
    "n_agentd_roomNarrator_Say",
    "n_collab_Service_Pointer"
+  ],
+  [
+   "n_cmd_roomServiceFor",
+   "n_collab_New"
+  ],
+  [
+   "n_cmd_openRoomService",
+   "n_cmd_roomServiceFor"
+  ],
+  [
+   "n_cmd_roomListCmd_RunE",
+   "n_cmd_openRoomService"
+  ],
+  [
+   "n_cmd_roomListCmd_RunE",
+   "n_collab_Service_ListRooms"
+  ],
+  [
+   "n_cmd_roomReadCmd_RunE",
+   "n_cmd_openRoomService"
+  ],
+  [
+   "n_cmd_roomReadCmd_RunE",
+   "n_collab_Service_History"
+  ],
+  [
+   "n_cmd_roomSendCmd_RunE",
+   "n_cmd_openRoomService"
+  ],
+  [
+   "n_cmd_roomSendCmd_RunE",
+   "n_collab_Service_Send"
+  ],
+  [
+   "n_cmd_roomPointer",
+   "n_collab_Service_Pointer"
+  ],
+  [
+   "n_agentd_Server_handleRoomsList",
+   "n_collab_Service_ListRoomsForMember"
+  ],
+  [
+   "n_agentd_Server_handleRoomMessages",
+   "n_collab_Service_History"
+  ],
+  [
+   "n_agentd_Server_handleRoomSend",
+   "n_collab_Service_Send"
+  ],
+  [
+   "n_agentd_Server_handleRoomRead",
+   "n_collab_Service_MarkRead"
+  ],
+  [
+   "n_agentd_Server_handleInbox",
+   "n_collab_Service_Mentions"
   ]
- ],
+],
  "implements": [
   [
    "m_claudecode_Adapter",
