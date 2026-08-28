@@ -533,3 +533,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **顺序拉起填不满 `launch_queue`**：协调者小队 `max_concurrency=1` 时，第一次 `POST coordinator/launch` 200 后立即第二次仍 200 新 session，`GET /api/queue` 空。名额在 launch HTTP 返回时就归还（K5 `releaseSchedulingBinding` 与 implement 无 Verdict 同款）。排队 UI 能呈现快照，但顺序满员不会入队。要验「横带有行」得并发双发或改占用寿命。来源：B282 acceptance 真机。
 - **`TestWriteTaskEnvOmitsModelSectionWhenEmpty` 吃本机 grok 配置**：host grok 的 `[models] default=grok-4.6` / `default_reasoning_effort` 漏进任务级 config.toml（日志 `default_from=authority`）。acc 基线同红，linux-01 无此配置故绿。不是 B282 引入，测试未隔离权威 grok 配置。
 - **`best.json` 未声明 `k_web_api_scheduling` / `k_web_api_scheduling_model`**：B282 视图 absorb 后 `check` fails 仍空，多 2 条 `container-unplaced`。L3 轻档零新增契约，不改 best.json；归属下次 contract/best 标定。
+
+## 来自 B289 残余（2026-08-28，B274 移植轮登记）——本期不做、后续要做
+
+- **会话历史翻页**：房间消息只保证最新窗口可见（现值 200 条，含系统行）；更早历史
+  需要前端「加载更多」（服务端 `before` 排他上界游标已由 B274/B289 备好，缺的是
+  UI 与调用）。B289 spec 未记此残余，由 B287 spec 侦查期间补记。来源：B289
+  （`24be42238`）修复后的形态；`docs/superpowers/specs/b289.md`。
