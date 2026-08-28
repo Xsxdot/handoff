@@ -75,6 +75,23 @@ describe('看板排队工具条', () => {
     expect(await screen.findByRole('button', { name: '⧗ 排队中 1' })).toBeInTheDocument()
     expect(scheduling.getQueue).toHaveBeenCalled()
   })
+
+  it('按 queue.poll 契约记录轮询事件和字段', async () => {
+    const scheduling = await import('../../api/scheduling')
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined)
+    vi.mocked(scheduling.getQueue).mockResolvedValue({
+      queue: [{ kind: 'launch_queue', id: 'q1', card: 'B1', squad: 'exec', ready: true, actor: 'wake', seq: 7, position: 1 }],
+    })
+    try {
+      renderPage()
+      expect(await screen.findByRole('button', { name: '⧗ 排队中 1' })).toBeInTheDocument()
+      expect(info).toHaveBeenCalledWith('queue.poll.start', { intervalMs: 5000 })
+      expect(info).toHaveBeenCalledWith('queue.poll.success', { count: 1, stale: false })
+      expect(info.mock.calls.some(([event]) => typeof event === 'string' && event.startsWith('cards.queue'))).toBe(false)
+    } finally {
+      info.mockRestore()
+    }
+  })
 })
 
 describe('建卡入口接线', () => {
@@ -244,5 +261,28 @@ describe('卡片节点标签版本来源', () => {
     expect(card).not.toBeNull()
     await waitFor(() => expect(within(card!).getAllByText('待审阅')).toHaveLength(2))
     expect(vi.mocked(ledger.fetchFlow)).toHaveBeenCalledWith('custom', 1)
+  })
+
+  it('列表缺 workflow_version 时不猜最新版，也不加载无版本节点集', async () => {
+    const ledger = await import('../../api/ledger')
+    const legacyCard = {
+      id: 'B202', title: '缺版本卡', status: '待审阅', priority: '中', project: 'p', workflow: 'custom',
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [], merged_count: 0,
+      needs: '', open_decisions: 0, children_total: 0, children_done: 0, conflict: false, open_tickets: 0,
+    }
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [legacyCard],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ...legacyCard, workflow_version: 0, acceptance_criteria: '', created_at: '', updated_at: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    })
+    vi.mocked(ledger.fetchFlow).mockClear()
+
+    renderPage()
+    fireEvent.click(await screen.findByText('缺版本卡'))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(vi.mocked(ledger.fetchFlow)).not.toHaveBeenCalled()
   })
 })

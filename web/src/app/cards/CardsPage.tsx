@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
 import { ApiError } from '../../api/client'
 import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
@@ -94,6 +94,7 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
   const [flowsError, setFlowsError] = useState('')
   const [drawerNodes, setDrawerNodes] = useState<NodeDef[] | undefined>()
   const [pinnedWorkflows, setPinnedWorkflows] = useState<Record<string, FlowDetail>>({})
+  const previousQueueCount = useRef(0)
   const navigate = useNavigate()
   const location = useLocation()
   const cardDeepLink = new URLSearchParams(location.search).get('card') ?? ''
@@ -101,14 +102,16 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
   const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
   const queuePoll = usePoll(async () => {
-    console.info('cards.queue.start', { interval_ms: 5000 })
+    console.info('queue.poll.start', { intervalMs: 5000 })
     try {
       const response = await getQueue()
-      console.info('cards.queue.success', { entries: response.queue.length })
+      previousQueueCount.current = response.queue.length
+      console.info('queue.poll.success', { count: response.queue.length, stale: false })
       return response
     } catch (cause) {
-      if (cause instanceof ApiError && cause.status === 401) console.warn('cards.queue.session_expired', { status: cause.status })
-      console.error('cards.queue.error', { status: cause instanceof ApiError ? cause.status : 0, cause })
+      const status = cause instanceof ApiError ? cause.status : 0
+      if (status === 401) console.warn('queue.poll.expired', { status })
+      console.error('queue.poll.error', { count: previousQueueCount.current, stale: true, status, cause })
       throw cause
     }
   }, 5000)
@@ -211,7 +214,11 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
       setDrawerNodes(selectedPinnedWorkflow.nodes)
       return () => { cancelled = true }
     }
-    // 抽屉节点动作同样必须使用卡片钉住的版本；没有版本的旧列表数据才退回无版本请求。
+    if (selectedWorkflowVersion === undefined || selectedWorkflowVersion <= 0) {
+      console.warn('cards.workflow.drawer.unversioned', { card: selected, workflow: selectedWorkflowName })
+      return () => { cancelled = true }
+    }
+    // 抽屉节点动作同样必须使用卡片钉住的版本；没有版本的旧列表数据不猜节点集。
     void fetchFlow(selectedWorkflowName, selectedWorkflowVersion)
       .then((flow) => { if (!cancelled) setDrawerNodes(flow.nodes) })
       .catch((cause: unknown) => {
@@ -264,7 +271,7 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
       <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
       {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, boardLayout).map((column) => { const inColumn = cardsInColumn(filtered, column, boardLayout); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => { const pinned = pinnedWorkflowKey(card); const detail = pinned ? pinnedWorkflows[pinned] : undefined; const cardStates = detail?.states ?? []; const cardBoard = detail ? normalizeBoardLayout(detail.board, cardStates) : boardLayout; const cardNodes = detail?.nodes?.map((node) => node.name) ?? []; return <CardItem key={card.id} card={card} queuePosition={queuePositions.get(card.id)} nodeTag={detail ? nodeLabelFor(card.status, cardNodes, cardBoard) : undefined} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} /> })}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? workflowStates} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : boardLayout} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} />}
+      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? boardLayout : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}

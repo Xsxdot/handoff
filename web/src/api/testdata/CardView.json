@@ -5,6 +5,7 @@
   "priority": "中",
   "project": "handoff",
   "workflow": "triage",
+  "workflow_version": 1,
   "parent": "",
   "base_branch": "main",
   "base_frozen": false,

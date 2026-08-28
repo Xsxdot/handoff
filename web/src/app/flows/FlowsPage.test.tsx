@@ -28,6 +28,32 @@ beforeEach(() => {
 })
 
 describe('工作流页可编辑', () => {
+  it('节点定义加载中禁用保存并说明原因', async () => {
+    const ledger = await import('../../api/ledger')
+    let resolveDetail!: (value: Awaited<ReturnType<typeof ledger.fetchFlow>>) => void
+    const pending = new Promise<Awaited<ReturnType<typeof ledger.fetchFlow>>>((resolve) => { resolveDetail = resolve })
+    vi.mocked(ledger.fetchFlow).mockReturnValueOnce(pending)
+    render(<FlowsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    const saveButton = await screen.findByRole('button', { name: '保存为新版本' })
+    expect(saveButton).toBeDisabled()
+    expect(screen.getByText(/节点定义加载完成前不能保存/)).toBeVisible()
+    resolveDetail({ name: 'feature', version: 3, states: ['待办', '已完成'], nodes: [{ name: '待办' }, { name: '已完成' }] })
+  })
+
+  it('节点定义加载失败禁用保存并展示错误态', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchFlow).mockRejectedValueOnce(new Error('节点服务不可用'))
+    vi.mocked(ledger.putFlow).mockClear()
+    render(<FlowsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    expect(await screen.findByText(/读取节点定义失败：节点服务不可用/)).toBeVisible()
+    const saveButton = screen.getByRole('button', { name: '保存为新版本' })
+    expect(saveButton).toBeDisabled()
+    fireEvent.click(saveButton)
+    expect(vi.mocked(ledger.putFlow)).not.toHaveBeenCalled()
+  })
+
   it('保存调 putFlow 并把新版本号显示出来', async () => {
     const ledger = await import('../../api/ledger')
     render(<FlowsPage />)

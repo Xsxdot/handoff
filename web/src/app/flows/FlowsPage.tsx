@@ -168,7 +168,7 @@ function WorkflowCard({ workflow }: { workflow: WorkflowWire }) {
         </p>
         {loadError !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">读取节点定义失败：{loadError}</p>}
         {saveError !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">{saveError}</p>}
-        {loading && <p className="mt-3 text-xs text-muted-foreground">正在读取完整节点定义…</p>}
+        {loading && <p className="mt-3 text-xs text-muted-foreground">正在读取完整节点定义…节点定义加载完成前不能保存。</p>}
         <section className="mt-3 overflow-x-auto rounded border p-3" aria-label="节点编排">
           <h4 className="text-xs font-semibold">节点编排</h4>
           <p className="mt-1 text-xs text-muted-foreground">节点来自工作流版本，不能在此增删；小队只表达执行者归属，空值表示不派发。</p>
@@ -239,7 +239,7 @@ function WorkflowCard({ workflow }: { workflow: WorkflowWire }) {
           <button
             type="button"
             className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
-            disabled={busy}
+            disabled={busy || loading || loadError !== ''}
             onClick={() => void save()}
           >
             {busy ? '保存中…' : '保存为新版本'}

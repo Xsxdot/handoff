@@ -126,26 +126,27 @@ type LedgerEvent struct {
 
 // CardView 是列表卡片及查询期派生标记的 wire DTO。
 type CardView struct {
-	ID            string       `json:"id"`
-	Title         string       `json:"title"`
-	Status        string       `json:"status"`
-	Priority      string       `json:"priority"`
-	Project       string       `json:"project"`
-	Workflow      string       `json:"workflow"`
-	Parent        string       `json:"parent"`
-	BaseBranch    string       `json:"base_branch"`
-	BaseFrozen    bool         `json:"base_frozen"`
-	Attachments   []Attachment `json:"attachments"`
-	Following     string       `json:"following"`
-	Blocked       bool         `json:"blocked"`
-	BlockedBy     []string     `json:"blocked_by"`
-	MergedCount   int          `json:"merged_count"`
-	Needs         string       `json:"needs"`
-	OpenDecisions int          `json:"open_decisions"`
-	ChildrenTotal int          `json:"children_total"`
-	ChildrenDone  int          `json:"children_done"`
-	Conflict      bool         `json:"conflict"`
-	OpenTickets   int          `json:"open_tickets"`
+	ID              string       `json:"id"`
+	Title           string       `json:"title"`
+	Status          string       `json:"status"`
+	Priority        string       `json:"priority"`
+	Project         string       `json:"project"`
+	Workflow        string       `json:"workflow"`
+	WorkflowVersion int          `json:"workflow_version"`
+	Parent          string       `json:"parent"`
+	BaseBranch      string       `json:"base_branch"`
+	BaseFrozen      bool         `json:"base_frozen"`
+	Attachments     []Attachment `json:"attachments"`
+	Following       string       `json:"following"`
+	Blocked         bool         `json:"blocked"`
+	BlockedBy       []string     `json:"blocked_by"`
+	MergedCount     int          `json:"merged_count"`
+	Needs           string       `json:"needs"`
+	OpenDecisions   int          `json:"open_decisions"`
+	ChildrenTotal   int          `json:"children_total"`
+	ChildrenDone    int          `json:"children_done"`
+	Conflict        bool         `json:"conflict"`
+	OpenTickets     int          `json:"open_tickets"`
 }
 
 // CardDetail 是卡片详情的 wire DTO。

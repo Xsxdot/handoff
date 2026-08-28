@@ -768,6 +768,52 @@ func TestCardsListWireCarriesChildrenCounts(t *testing.T) {
 	t.Fatalf("列表找不到父卡 %s: %s", parent.ID, body)
 }
 
+func TestCardsListWireCarriesPinnedWorkflowVersion(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	workflow := "cards-wire-version"
+	if _, err := env.ledger.PutWorkflow(workflow, ledger.WorkflowDef{
+		Nodes: []ledger.NodeDef{{Name: ledger.StatusTodo}},
+	}); err != nil {
+		t.Fatalf("写入工作流 v1: %v", err)
+	}
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: "钉版本卡", Project: "p", Workflow: workflow, Actor: "test"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	if _, err := env.ledger.PutWorkflow(workflow, ledger.WorkflowDef{
+		Nodes: []ledger.NodeDef{{Name: ledger.StatusTodo}, {Name: ledger.StatusDoing}},
+	}); err != nil {
+		t.Fatalf("写入工作流 v2: %v", err)
+	}
+
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards?project=p")
+	if code != http.StatusOK {
+		t.Fatalf("列表 code=%d body=%s", code, body)
+	}
+	var resp struct {
+		Cards []struct {
+			ID              string `json:"id"`
+			WorkflowVersion *int   `json:"workflow_version"`
+		} `json:"cards"`
+	}
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("解析列表: %v body=%s", err, body)
+	}
+	for _, got := range resp.Cards {
+		if got.ID != card.ID {
+			continue
+		}
+		if got.WorkflowVersion == nil {
+			t.Fatalf("卡片列表缺 workflow_version: %s", body)
+		}
+		if *got.WorkflowVersion != 1 {
+			t.Fatalf("列表返回了最新版而非卡片钉住版本: got=%d body=%s", *got.WorkflowVersion, body)
+		}
+		return
+	}
+	t.Fatalf("列表找不到卡 %s: %s", card.ID, body)
+}
+
 func TestCardsListWireCarriesBaseFrozen(t *testing.T) {
 	encoded, err := json.Marshal(ledgerCardViewWire(ledger.CardView{}, false, 0))
 	if err != nil {

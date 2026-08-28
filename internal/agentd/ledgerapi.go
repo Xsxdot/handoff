@@ -152,7 +152,8 @@ func ledgerCardViewWire(view ledger.CardView, conflict bool, openTickets int) pr
 	}
 	return proto.CardView{
 		ID: view.ID, Title: view.Title, Status: view.Status, Priority: view.Priority,
-		Project: view.Project, Workflow: view.WorkflowName, Parent: view.ParentID, BaseBranch: view.BaseBranch,
+		Project: view.Project, Workflow: view.WorkflowName, WorkflowVersion: view.WorkflowVersion,
+		Parent: view.ParentID, BaseBranch: view.BaseBranch,
 		Attachments: attachments, Following: view.Following, Blocked: view.Blocked,
 		BaseFrozen: view.BaseFrozen, BlockedBy: view.BlockedBy, MergedCount: view.MergedCount, Needs: view.NeedsReason,
 		OpenDecisions: view.OpenDecisions, ChildrenTotal: view.ChildrenTotal, ChildrenDone: view.ChildrenDone,

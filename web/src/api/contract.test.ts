@@ -150,6 +150,7 @@ describe('契约 fixture 与 TS 类型', () => {
 		expect(response.from.workflow).toBe('bug')
 		expect(response.to.status).toBe('拆解')
 		expect(view.base_frozen).toBe(false)
+		expect(view.workflow_version).toBe(1)
 		expect(event.payload).toMatchObject({
 			from_workflow: 'bug', from_version: 1, from_status: '进行中',
 			to_workflow: 'domain', to_version: 1, to_status: '拆解',
