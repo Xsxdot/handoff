@@ -21,3 +21,4 @@
      （激活 tab 在首/中时两条规则不相容）；取数得清的断言 + 原型（每 tab 后一条、
      行尾无），分隔线渲染在除最后一个 tab 外的每 tab 之后。
 - T3 完成：breadcrumbSegments(base, tail?) 纯函数 + 行渲染 1:1 workspace-context（28px/13px/#7c7c7c/' / ' 分隔/title 全文），Shell 构建_crumbTaskName 与 tail（焦点 tab 非 blank）；DesktopTitleBar 不传 tail 未动。Breadcrumb.test 5 支新支全绿；Shell.test 2 支断言改写（深链/跳转到该任务 → 第三段=任务原名）。shell 48/48 绿，workbench 225/225 绿，typecheck 绿。
+- T4 完成：dragging 状态（window dragstart 认 data-drag-task / dragend+drop 双保险复位）、pane-content 层拖动期 pointer-events-none、落点预览 left/right/center 数值 1:1 原型（top/bottom 留旧形态属 B264）、testid 改为 drop-<zone>、ProjectTree 三处任务行加 data-drag-task=1。WorkbenchPage.test 5 支新支/改写，75/75 绿，typecheck 绿。
