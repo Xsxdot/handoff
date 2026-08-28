@@ -246,7 +246,7 @@ describe('Shell 三栏外框', () => {
     expect(screen.queryByLabelText('当前位置')).toBeNull()
   })
 
-  it('左栏开目录终端落在当前组的新列，焦点面包屑跟当前 pane 而非 selected tree', async () => {
+  it('左栏开目录终端创建新组，焦点面包屑跟当前 pane 而非 selected tree', async () => {
     renderShell()
     await openBranch()
     fireEvent.click(await screen.findByText('重构工单通道'))
@@ -285,11 +285,12 @@ describe('Shell 三栏外框', () => {
     const sidebar = within(screen.getByRole('complementary'))
     // 左栏已打开行与顶部 chrome 同名：任务原名（不再显示 TUI · T1）
     await waitFor(() => expect(sidebar.getAllByText('重构工单通道').length).toBeGreaterThanOrEqual(1))
-    expect(screen.getAllByRole('tab')).toHaveLength(1)
+    // 2 = 初始空组「组 1」+ 任务的组（基线语义：空组也渲染标签）
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
     // 已打开行已带 aria-current（焦点态），点击后仍是聚焦且不新增
     fireEvent.click(sidebar.getAllByText('重构工单通道')[0])
     await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toHaveAttribute('aria-selected', 'true'))
-    expect(screen.getAllByRole('tab')).toHaveLength(1)
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
   })
 
   it('左栏任务的 DataTransfer 穿过 Shell 到同一组的中央分屏并保留项目机器', async () => {
@@ -776,7 +777,9 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
 
     // 点窗格头上的 ×：这次 tab.content 里已有 draft，应弹确认而不是直接关
-    fireEvent.click(screen.getAllByRole('button', { name: /关闭 go.mod/ })[0])
+    //（组标签条的关闭钮语义是关闭整组，必须瞄准窗格头的那个）
+    const draftPane = screen.getAllByTestId('workbench-pane').find((paneEl) => paneEl.textContent?.includes('go.mod'))!
+    fireEvent.click(within(draftPane).getByRole('button', { name: /关闭 go.mod/ }))
     expect(screen.getByRole('heading', { name: '关闭未保存的文件' })).toBeInTheDocument()
     expect(screen.getAllByRole('button', { name: /关闭 go.mod/ }).length).toBeGreaterThan(0)
 
@@ -791,8 +794,9 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
     fireEvent.click(await screen.findByText('go.mod'))
     await screen.findAllByRole('button', { name: /关闭 go.mod/ })
 
-    // 没打过字，内容没有 draft——× 应该直接关，连弹层都不出现
-    fireEvent.click(screen.getAllByRole('button', { name: /关闭 go.mod/ })[0])
+    // 没打过字，内容没有 draft——窗格头 × 应该直接关，连弹层都不出现
+    const cleanPane = screen.getAllByTestId('workbench-pane').find((paneEl) => paneEl.textContent?.includes('go.mod'))!
+    fireEvent.click(within(cleanPane).getByRole('button', { name: /关闭 go.mod/ }))
     await waitFor(() => expect(screen.queryAllByRole('button', { name: /关闭 go.mod/ })).toHaveLength(0))
     expect(screen.queryByRole('heading', { name: '关闭未保存的文件' })).not.toBeInTheDocument()
   })
@@ -819,7 +823,9 @@ describe('关闭一个服务端已经没有的终端会话', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     // 等 TerminalTab 把会话 id 回报上来，否则 × 走的是「还没有会话」那条直接关的路
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
-    return (await screen.findAllByRole('button', { name: /关闭 bash/ }))[0]
+    // 瞄准窗格头的关闭钮（组标签条同名关闭钮的语义是关闭整组）
+    const pane = screen.getAllByTestId('workbench-pane').find((paneEl) => paneEl.textContent?.includes('bash'))!
+    return within(pane).getByRole('button', { name: /关闭 bash/ })
   }
 
   it('DELETE 返回 404 时照样关掉 tab——要杀的东西已经不在了', async () => {
@@ -861,7 +867,8 @@ describe('会话已经不在时弹层要说实话', () => {
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
 
-    fireEvent.click((await screen.findAllByRole('button', { name: /关闭 bash/ }))[0])
+    const gonePane = screen.getAllByTestId('workbench-pane').find((paneEl) => paneEl.textContent?.includes('bash'))!
+    fireEvent.click(within(gonePane).getByRole('button', { name: /关闭 bash/ }))
     expect(await screen.findByText(/在服务端已经不存在了/)).toBeInTheDocument()
     expect(screen.queryByText(/会被一并结束/)).toBeNull()
     // 没有东西可终止，按钮就不该再叫「关闭并终止」

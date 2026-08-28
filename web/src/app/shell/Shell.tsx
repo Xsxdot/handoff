@@ -44,7 +44,7 @@ import { useHomeDock } from '../homedock/useHomeDock'
 import type { DockSnapshot } from '../homedock/dockPersist'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
-import { tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
+import { nextTerminalSeq, tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
 import { taskDisplayName } from '../lib/taskName'
 import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
 import { BoardOverlay } from '../overlay/BoardOverlay'
@@ -411,12 +411,15 @@ export function Shell() {
     console.debug('shell.workbench_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, groupId: item.group, tabId: item.tabId })
   }
 
-  // openTerminalAt 是左栏机器行/工作树子行终端钮的入口：显式基准开终端，
-  // 不依赖也不改动当前选中的基准。
+  // openTerminalAt 是左栏机器行/工作树子行终端钮的入口（基线语义）：
+  // 选中该基准并 openOrFocus 终端——终端无去重键，落进独立新组，不打散当前组。
   const openTerminalAt = (base: BaseDir) => {
     backToWorkbench()
-    wb.openTerminal(base)
-    console.debug('shell.terminal.open_at', { project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path })
+    wb.select(base)
+    wb.openOrFocus({ kind: 'terminal', seq: nextTerminalSeq(wb.wb) }, base)
+    console.debug('shell.directory.terminal.new_group', {
+      project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
+    })
   }
 
   // openTaskTui 是「点一个任务 → 在它所在目录开 TUI tab」的唯一实现。

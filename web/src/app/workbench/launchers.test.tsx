@@ -2,11 +2,18 @@ import { fireEvent, render, screen, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { BlankTab, launchersFor, pickItemsFor, type LauncherItem } from './BlankTab'
 import { TabBar } from './TabBar'
+import { DRAG_GROUP_MIME } from './paneDrop'
 import type { BaseDir, TabGroup } from './tabs'
 
 const base: BaseDir = { key: '/repo', kind: 'workspace', path: '/repo', label: 'main', projectName: 'handoff', machine: '' }
 const home: BaseDir = { key: '~', kind: 'home', path: '~', label: 'home', projectName: '', machine: '' }
 const group: TabGroup = { id: 'g1', name: '组 1', autoName: true, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] }
+const multiPaneGroup: TabGroup = {
+  id: 'multi', name: '组 1', autoName: true,
+  columns: [{ panes: [{ id: 'tab-1', base, content: { kind: 'file', rel: 'a.ts' } }, { id: 'tab-2', base, content: { kind: 'file', rel: 'b.ts' } }] }],
+  sizes: [1], focus: [0, 0],
+}
+const targetGroup: TabGroup = { id: 'target', name: '组 2', autoName: true, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] }
 const launchers: LauncherItem[] = [{ name: '跑测试', envMissing: false }, { name: '发版', envMissing: true }]
 
 describe('启动项入口', () => {
@@ -27,8 +34,9 @@ describe('启动项入口', () => {
   it('+ 菜单与 BlankTab 共用启动项过滤', () => {
     render(<TabBar
       groups={[group]} activeGroupId="g1" base={base}
-      onActivateTab={vi.fn()} onCloseTab={vi.fn()} onNew={vi.fn()}
-      onNewLauncher={vi.fn()} launchers={launchers}
+      onActivateGroup={vi.fn()} onCloseGroup={vi.fn()} onNew={vi.fn()}
+      onNewLauncher={vi.fn()} launchers={launchers} onNewGroup={vi.fn()}
+      onMoveGroup={vi.fn()}
     />)
     fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
     const names = within(screen.getByRole('menu')).getAllByRole('menuitem').map((item) => item.textContent?.trim())
@@ -36,4 +44,22 @@ describe('启动项入口', () => {
     expect(names.some((name) => name?.includes('发版'))).toBe(true)
   })
 
+  it('整体拖动多窗格标签组时显示告警，并要求拖动窗格标题', () => {
+    render(<TabBar
+      groups={[multiPaneGroup, targetGroup]} activeGroupId="target" base={base}
+      onActivateGroup={vi.fn()} onCloseGroup={vi.fn()} onNew={vi.fn()}
+      onNewLauncher={vi.fn()} launchers={[]} onNewGroup={vi.fn()}
+      onMoveGroup={vi.fn()}
+    />)
+    const target = screen.getByRole('tab', { name: '组 2' }).parentElement
+    expect(target).not.toBeNull()
+    fireEvent.drop(target!, {
+      clientX: 40,
+      dataTransfer: {
+        types: [DRAG_GROUP_MIME],
+        getData: () => JSON.stringify({ groupId: 'multi' }),
+      },
+    })
+    expect(screen.getByRole('alert')).toHaveTextContent('多窗格标签组不能整体移动，请拖动窗格标题')
+  })
 })

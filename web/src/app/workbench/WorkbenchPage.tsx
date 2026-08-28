@@ -37,6 +37,10 @@ type DragOver = {
   zone: DropZone
 }
 
+function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): number {
+  return group.columns.reduce((count, column) => count + column.panes.filter(Boolean).length, 0)
+}
+
 export function WorkbenchPage({
   api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName,
 }: WorkbenchPageProps) {
@@ -114,16 +118,6 @@ export function WorkbenchPage({
       return
     }
     api.close(groupId, tab.id)
-  }
-
-  // closeTabById 是标签条关闭钮的入口：只拿得到 groupId+tabId，先反查 tab 再走
-  // 与窗格 × 同一条 onBeforeClose 确认闸——否则从标签条关终端/带草稿文件会绕过确认
-  const closeTabById = (groupId: string, tabId: string) => {
-    const tab = wb.groups
-      .find((group) => group.id === groupId)
-      ?.columns.flatMap((column) => column.panes)
-      .find((pane) => pane?.id === tabId)
-    if (tab) closeTab(groupId, tab)
   }
 
   const dropTargetAt = (event: React.DragEvent<HTMLElement>, groupId: string, column: number, row: number): {
@@ -209,6 +203,23 @@ export function WorkbenchPage({
     console.debug('workbench.drop.new', {
       ...dropContext(draggedBase), groupId, column, row, zone: target.zone, baseKey: draggedBase.key,
     })
+  }
+
+  // moveGroup 把整组拖放投影成 place：只允许单窗格组整体移动（多窗格由 TabBar
+  // 的告警拦下），落点 zone 决定它并到目标组的哪一列。
+  const moveGroup = (sourceGroupId: string, targetGroupId: string, zone: 'left' | 'right' | 'center') => {
+    const sourceGroup = wb.groups.find((group) => group.id === sourceGroupId)
+    const targetGroup = wb.groups.find((group) => group.id === targetGroupId)
+    if (!sourceGroup || !targetGroup || tabCount(sourceGroup) !== 1) {
+      setDropWarning('多窗格标签组不能整体移动，请拖动窗格标题')
+      return
+    }
+    const source = sourceGroup.columns.flatMap((column) => column.panes).find((tab): tab is Tab => tab !== null)
+    if (!source) return
+    const column = zone === 'left' ? 0 : zone === 'right' ? targetGroup.columns.length - 1 : targetGroup.focus[0]
+    const target: PaneTarget = { groupId: targetGroupId, column, row: targetGroup.focus[1], zone }
+    api.place({ kind: 'tab', groupId: sourceGroupId, tabId: source.id }, target)
+    console.debug('workbench.drop.group', { groupId: targetGroupId, tabId: source.id, zone })
   }
 
   const renderTab = (groupId: string, column: number, row: number, tab: Tab | null) => {
@@ -312,12 +323,14 @@ export function WorkbenchPage({
         activeGroupId={wb.activeGroupId}
         base={base}
         taskName={taskName}
-        onActivateTab={api.activate}
-        onCloseTab={closeTabById}
+        onActivateGroup={api.activateGroup}
+        onCloseGroup={api.closeGroup}
         onNew={openNew}
         onNewLauncher={openLauncher}
         launchers={launcherItems}
         terminalUnavailable={terminalUnavailable}
+        onNewGroup={api.addGroup}
+        onMoveGroup={moveGroup}
       />
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
