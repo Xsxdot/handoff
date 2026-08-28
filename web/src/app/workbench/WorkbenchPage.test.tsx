@@ -186,8 +186,8 @@ describe('WorkbenchPage', () => {
     Object.defineProperty(dragOver, 'clientX', { value: 360 })
     Object.defineProperty(dragOver, 'clientY', { value: 200 })
     fireEvent(pane, dragOver)
-    expect(view.getByTestId('drop-preview')).toHaveAttribute('data-zone', 'right')
-    expect(view.getByTestId('drop-preview')).toHaveClass('w-1/2')
+    expect(view.getByTestId('drop-right')).toHaveAttribute('data-zone', 'right')
+    expect(view.getByTestId('drop-right')).toHaveClass('w-1/2')
     const drop = createEvent.drop(pane, { dataTransfer })
     Object.defineProperty(drop, 'clientX', { value: 360 })
     Object.defineProperty(drop, 'clientY', { value: 200 })
@@ -196,6 +196,82 @@ describe('WorkbenchPage', () => {
     expect(hook.result.current.wb.groups[0].columns[1].panes[0]).toMatchObject({
       base: remote, content: { kind: 'tui', taskId: 'TASK-R' },
     })
+  })
+
+  it('left 落点 1:1 原型：半区蓝遮罩 + 4px 内边条', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane, 400, 400)
+    const dataTransfer = { types: [DRAG_TASK_MIME], getData: () => '', setData: vi.fn(), dropEffect: '' }
+    const dragOver = createEvent.dragOver(pane, { dataTransfer })
+    Object.defineProperty(dragOver, 'clientX', { value: 40 })
+    Object.defineProperty(dragOver, 'clientY', { value: 200 })
+    fireEvent(pane, dragOver)
+    expect(view.getByTestId('drop-left')).toHaveClass('bg-[rgba(37,99,235,0.32)]')
+    expect(view.getByTestId('drop-left')).toHaveClass('shadow-[inset_4px_0_0_#2563eb]')
+  })
+
+  it('center 落点 1:1 原型：18% 内缩、2px 描边、淡蓝底', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane, 400, 400)
+    const dataTransfer = { types: [DRAG_TASK_MIME], getData: () => '', setData: vi.fn(), dropEffect: '' }
+    const dragOver = createEvent.dragOver(pane, { dataTransfer })
+    Object.defineProperty(dragOver, 'clientX', { value: 200 })
+    Object.defineProperty(dragOver, 'clientY', { value: 200 })
+    fireEvent(pane, dragOver)
+    expect(view.getByTestId('drop-center')).toHaveClass('inset-[18%]')
+    expect(view.getByTestId('drop-center')).toHaveClass('outline-[#2563eb]')
+    expect(view.getByTestId('drop-center')).toHaveClass('bg-[rgba(37,99,235,0.18)]')
+  })
+
+  it('任务拖动进行期间内容层 pointer-events 关闭，dragend / drop 后恢复', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
+    const view = render(page(hook.result.current))
+    const contentLayer = () => view.container.querySelector('[data-testid="pane-content"]') as HTMLElement
+    expect(contentLayer().className).not.toContain('pointer-events-none')
+
+    // 模拟从左栏任务行（带 data-drag-task）开始的拖动：事件冒泡到 window
+    act(() => {
+      const source = document.createElement('span')
+      source.setAttribute('data-drag-task', '1')
+      document.body.appendChild(source)
+      source.dispatchEvent(new Event('dragstart', { bubbles: true }))
+      source.remove()
+    })
+    expect(contentLayer().className).toContain('pointer-events-none')
+
+    act(() => { window.dispatchEvent(new Event('dragend')) })
+    expect(contentLayer().className).not.toContain('pointer-events-none')
+
+    act(() => {
+      const source = document.createElement('span')
+      source.setAttribute('data-drag-task', '1')
+      document.body.appendChild(source)
+      source.dispatchEvent(new Event('dragstart', { bubbles: true }))
+      source.remove()
+    })
+    act(() => { window.dispatchEvent(new Event('drop')) })
+    expect(contentLayer().className).not.toContain('pointer-events-none')
+  })
+
+  it('非任务来源的 dragstart 不触发内容层放行', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
+    const view = render(page(hook.result.current))
+    act(() => {
+      const source = document.createElement('span')
+      document.body.appendChild(source)
+      source.dispatchEvent(new Event('dragstart', { bubbles: true }))
+      source.remove()
+    })
+    const contentLayer = view.container.querySelector('[data-testid="pane-content"]') as HTMLElement
+    expect(contentLayer.className).not.toContain('pointer-events-none')
   })
 
   it.each([

@@ -2,7 +2,7 @@
 //
 // 职责：顶部标签栏（TabBar）、每列最多两格的 pane，以及 task/dir/tab 的 MIME 投放。
 // 边界：内容由 renderContent 注入；布局迁移交给 WorkbenchApi/tabs.ts；不按 BaseDir 切换布局。
-import { Fragment, useCallback, useState, type ReactNode } from 'react'
+import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
 import { BlankTab, type PickKind } from './BlankTab'
 import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
@@ -44,6 +44,26 @@ export function WorkbenchPage({
   const [newFileError, setNewFileError] = useState('')
   const [dragOver, setDragOver] = useState<DragOver | null>(null)
   const [dropWarning, setDropWarning] = useState('')
+
+  // dragging 标记「有左栏任务正在被拖」。拖动期间每个窗格的内容层 pointer-events
+  // 关闭（原型 body.dragging .pane-body 规则）：xterm 的 canvas 会吃掉 dragover，
+  // 落点预览根本出不来；从内容层放行才能保证落点指示在黑底终端上也稳定出现。
+  // dragstart 只认带 data-drag-task 的来源；dragend 与 drop 双保险复位，防泄漏。
+  const [dragging, setDragging] = useState(false)
+  useEffect(() => {
+    const onDragStart = (event: DragEvent) => {
+      if ((event.target as HTMLElement | null)?.closest?.('[data-drag-task]')) setDragging(true)
+    }
+    const reset = () => setDragging(false)
+    window.addEventListener('dragstart', onDragStart)
+    window.addEventListener('dragend', reset)
+    window.addEventListener('drop', reset)
+    return () => {
+      window.removeEventListener('dragstart', onDragStart)
+      window.removeEventListener('dragend', reset)
+      window.removeEventListener('drop', reset)
+    }
+  }, [])
 
   // taskName 把 tui 的 taskId 解析成任务原名（与左栏任务行同口径）；解析不到时
   // tabTitle 自己回退 TUI · 前 8 位。T7 会把这份解析上移到 Shell，与面包屑共用
@@ -236,16 +256,19 @@ export function WorkbenchPage({
               >
                 {dragOver?.groupId === group.id && dragOver.column === columnIndex && dragOver.row === row && (
                   <span
-                    data-testid="drop-preview"
+                    data-testid={`drop-${dragOver.zone}`}
                     data-zone={dragOver.zone}
                     aria-hidden="true"
                     className={cn(
-                      'pointer-events-none absolute z-20 rounded-sm bg-primary/15',
-                      dragOver.zone === 'left' && 'inset-y-0 left-0 w-1/2',
-                      dragOver.zone === 'right' && 'inset-y-0 right-0 w-1/2',
-                      dragOver.zone === 'top' && 'inset-x-0 top-0 h-1/2',
-                      dragOver.zone === 'bottom' && 'inset-x-0 bottom-0 h-1/2',
-                      dragOver.zone === 'center' && 'inset-1/4 ring-2 ring-primary/50',
+                      'pointer-events-none absolute z-20',
+                      // left/right/center 数值 1:1 对照 prototypes/b288-workbench-ux 的
+                      // .pane.drop-left/right/center::after 规则；top/bottom 不在本卡
+                      // 范围（B264 的中央模型），维持旧形态
+                      dragOver.zone === 'left' && 'inset-y-0 left-0 w-1/2 bg-[rgba(37,99,235,0.32)] shadow-[inset_4px_0_0_#2563eb]',
+                      dragOver.zone === 'right' && 'inset-y-0 right-0 w-1/2 bg-[rgba(37,99,235,0.32)] shadow-[inset_-4px_0_0_#2563eb]',
+                      dragOver.zone === 'top' && 'inset-x-0 top-0 h-1/2 bg-primary/15',
+                      dragOver.zone === 'bottom' && 'inset-x-0 bottom-0 h-1/2 bg-primary/15',
+                      dragOver.zone === 'center' && 'inset-[18%] bg-[rgba(37,99,235,0.18)] outline outline-2 outline-[#2563eb]',
                     )}
                   />
                 )}
@@ -273,7 +296,7 @@ export function WorkbenchPage({
                     className="rounded p-0.5 text-muted-foreground hover:bg-accent"
                   >×</button>
                 </div>
-                <div className="min-h-0 flex-1 overflow-hidden">{renderTab(group.id, columnIndex, row, tab)}</div>
+                <div data-testid="pane-content" className={cn('min-h-0 flex-1 overflow-hidden', dragging && 'pointer-events-none')}>{renderTab(group.id, columnIndex, row, tab)}</div>
               </div>
             ))}
           </div>

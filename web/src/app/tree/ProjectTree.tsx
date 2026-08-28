@@ -608,6 +608,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             key={key}
             type="button"
             data-testid="task-row"
+            // data-drag-task 是拖动期的来源标记：WorkbenchPage 靠它把「任务正在被拖」
+            // 广播给窗格内容层（关闭 pointer-events），xterm canvas 不再截走 dragover
+            data-drag-task="1"
             draggable={taskId !== undefined || openedTab !== undefined}
             onDragStart={taskId === undefined && openedTab === undefined ? undefined : (e) => {
               if (openedTab !== undefined) {
@@ -941,6 +944,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               key={t.id}
               type="button"
               data-testid="task-row"
+              data-drag-task="1"
               draggable
               onDragStart={(e) => {
                 e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
