@@ -443,3 +443,4 @@
 - **B235 `card dispatch --step --base`**：显式覆盖节点起点。今天卡派发没有这条主路径。来源：同上。
 - **B260 HTTP `task_states` / `relations` 蛇形化**：Web 已按 PascalCase 冻结（`proto.TaskStateRow` 注释 + `web/src/api/ledger.ts`）。要改得连 Web 一起改。来源：B278 spec / 源卡 B260。
 - **B251 存量带日期文件改名**：历史 spec 文件保持原名。来源：B278 spec / 源卡 B251。
+- **仓外 product-backlog skill 日期禁令**：`~/.grok/skills/product-backlog/SKILL.md` 仍只写「不要自己起描述性文件名」。B278 只改仓内 `skills/handoff/SKILL.md` 与 prompt。来源：B278 spec r1 / 审查 Important 8。
