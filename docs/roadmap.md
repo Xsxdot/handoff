@@ -455,3 +455,11 @@
 
 - **把测试 HTTP helper 迁到全仓其余 `httptest.NewServer`**（executor / release / cmd）。B234 只收口 `internal/agentd`。来源：B234 spec 族一弃选 / OOS。
 - **Darwin 全量 `go test ./...` 在未迁包上仍可能以族一形状伪装成业务断言**。识别纪律：同一次跑里有没有 `can't assign requested address`。来源：B234 spec / B193 note。
+
+## 来自 B286 spec（2026-08-28，本期不做）
+
+- **review 闸在新 agentd 全员部署后撤掉台账白名单**。linux-01 现役二进制仍可能拿到旧平台层「落台账」句。来源：B286 spec / C8。
+- **`--step` 把「领先 N 个提交，新分支不含它们」打到 CLI**。任务级 dispatch 已有；卡级 20s 短等未必能拿到执行机领先读数。来源：B286 spec / C7。
+- **入口失败（认领被拒、运行锁被占）是否在 CLI 复述 `haltEntrypoint` 原文**。B239 已落卡；B286 只收 ViaTemplate 之后那族。来源：B286 spec / C7。
+- **执行机 `FetchTimeout` 内的「基线提交在任务仓库中不存在」让 CLI 非 0**。20s 短等盖不住 2min fetch。来源：B286 spec r1。
+- **`DispatchSnapshot` 是否补 `local_base_branch`**。B286 成功行不打该标签。来源：B286 spec r1 I1。
