@@ -49,7 +49,7 @@ import { StateDot } from '../board/StateDot'
 import { RowCounts } from './RowCounts'
 import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 import { TreePrefsMenu } from './TreePrefsMenu'
 import { sortProjects, splitHiddenProjects, splitIdleWorkspaces } from './treePrefs'
 import { useTreePrefs } from './useTreePrefs'
@@ -579,15 +579,21 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           onClick: () => void,
           taskId?: string,
           machine = base?.machine ?? '',
+          openedTab?: { groupId: string; tabId: string },
         ) => (
           <button
             key={key}
             type="button"
             data-testid="task-row"
-            draggable={taskId !== undefined}
+            draggable={taskId !== undefined || openedTab !== undefined}
             onMouseDown={(e) => e.preventDefault()}
-            onDragStart={taskId === undefined ? undefined : (e) => {
-              e.dataTransfer.setData(DRAG_TASK_MIME, taskId)
+            onDragStart={taskId === undefined && openedTab === undefined ? undefined : (e) => {
+              if (openedTab !== undefined) {
+                e.dataTransfer.setData(DRAG_TAB_MIME, JSON.stringify(openedTab))
+                e.dataTransfer.effectAllowed = 'move'
+                return
+              }
+              e.dataTransfer.setData(DRAG_TASK_MIME, taskId!)
               e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
               e.dataTransfer.effectAllowed = 'copy'
             }}
@@ -623,6 +629,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               })
               onOpenItem?.(item)
             },
+            undefined,
+            item.base.machine,
+            { groupId: item.groupId, tabId: item.tabId },
           )
         }
 

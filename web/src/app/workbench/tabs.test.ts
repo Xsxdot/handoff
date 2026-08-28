@@ -105,7 +105,7 @@ describe('placeSource', () => {
     expect(wb.groups[0].columns[0].panes[1]).toMatchObject({ content: { kind: 'tui', taskId: 'C' } })
   })
 
-  it('center 替换、左右插入列、上下插入 pane，并移除 tab 源', () => {
+  it('跨列 center 拖走 tab 后移除空源列并替换目标 pane', () => {
     let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
     wb = placeSource(wb, { kind: 'new', base: aim, content: { kind: 'terminal', seq: 1 } }, {
       groupId: 'g1', column: 0, row: 0, zone: 'right',
@@ -115,8 +115,31 @@ describe('placeSource', () => {
     wb = placeSource(wb, { kind: 'tab', groupId: 'g1', tabId: tab!.id }, {
       groupId: 'g1', column: 1, row: 0, zone: 'center',
     })
+    expect(wb.groups[0].columns).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes).toHaveLength(1)
     expect(wb.groups[0].columns[0].panes[0]).toMatchObject({ content: { kind: 'tui', taskId: 'A' } })
-    expect(wb.groups[0].columns[1].panes[0]).toMatchObject({ content: { kind: 'terminal' } })
+  })
+
+  it('源列仍有另一格时跨列拖动不递减未移除的源列索引', () => {
+    const baseB: BaseDir = { key: '/b', kind: 'workspace', path: '/b', label: 'b', projectName: 'B', machine: '' }
+    const baseC: BaseDir = { key: '/c', kind: 'workspace', path: '/c', label: 'c', projectName: 'C', machine: '' }
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    wb = placeSource(wb, { kind: 'new', base: baseB, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId: 'g1', column: 0, row: 0, zone: 'bottom',
+    })
+    const moved = wb.groups[0].columns[0].panes[1]!
+    wb = addColumn(wb)
+    wb = placeSource(wb, { kind: 'new', base: baseC, content: { kind: 'tui', taskId: 'C' } }, {
+      groupId: 'g1', column: 1, row: 0, zone: 'center',
+    })
+    wb = placeSource(wb, { kind: 'tab', groupId: 'g1', tabId: moved.id }, {
+      groupId: 'g1', column: 1, row: 0, zone: 'center',
+    })
+
+    expect(wb.groups[0].columns).toHaveLength(2)
+    expect(wb.groups[0].columns[0].panes[0]).toMatchObject({ content: { kind: 'tui', taskId: 'A' } })
+    expect(wb.groups[0].columns[0].panes[1]).toBeNull()
+    expect(wb.groups[0].columns[1].panes[0]).toMatchObject({ content: { kind: 'tui', taskId: 'B' } })
   })
 })
 

@@ -5,6 +5,7 @@ import type { BaseDir } from '../workbench/useWorkbench'
 import type { OpenedWorkbenchItem } from '../workbench/tabs'
 import { ProjectTree } from './ProjectTree'
 import { __resetTreePrefsForTest } from './useTreePrefs'
+import { DRAG_TAB_MIME } from '../workbench/paneDrop'
 
 beforeEach(() => {
   localStorage.clear()
@@ -245,6 +246,35 @@ describe('ProjectTree', () => {
     expect(screen.getByTestId('task-avatar-tui')).toBeInTheDocument()
     expect(screen.getAllByTestId('task-machine')).toHaveLength(3)
     expect(screen.queryByTestId('task-row-type-icon')).toBeNull()
+  })
+
+  it('已打开终端和文件行生产可投放到中央的 tab MIME', () => {
+    const opened: OpenedWorkbenchItem[] = [
+      {
+        tabId: 'term-1', groupId: 'g2', column: 0, row: 0,
+        base: { key: '/w', kind: 'workspace', path: '/w', label: 'main', projectName: 'handoff', machine: '' },
+        content: { kind: 'terminal', seq: 1 }, label: '终端 · main',
+      },
+      {
+        tabId: 'file-1', groupId: 'g2', column: 1, row: 0,
+        base: { key: '/w', kind: 'workspace', path: '/w', label: 'main', projectName: 'handoff', machine: '' },
+        content: { kind: 'file', rel: 'README.md' }, label: 'README.md',
+      },
+    ]
+    render(<ProjectTree {...props({ openedItems: opened })} />)
+
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '' }
+    const terminalRow = screen.getByText('终端 · main').closest('button')!
+    const fileRow = screen.getByText('README.md').closest('button')!
+    expect(terminalRow).toHaveAttribute('draggable', 'true')
+    expect(fileRow).toHaveAttribute('draggable', 'true')
+
+    fireEvent.dragStart(terminalRow, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_TAB_MIME, JSON.stringify({ groupId: 'g2', tabId: 'term-1' }))
+    expect(dataTransfer.effectAllowed).toBe('move')
+
+    fireEvent.dragStart(fileRow, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenLastCalledWith(DRAG_TAB_MIME, JSON.stringify({ groupId: 'g2', tabId: 'file-1' }))
   })
 
   it('不可达机器保持可见、标已断开、且不可展开', () => {

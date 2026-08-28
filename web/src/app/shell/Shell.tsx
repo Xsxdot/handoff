@@ -464,9 +464,13 @@ export function Shell() {
   const currentTaskId = useMemo(() => {
     const taskBase = fileDrawer ?? wb.base
     if (!taskBase || taskBase.kind !== 'workspace') return null
-    const under = tasks.filter((t) => t.work_dir === taskBase.path)
+    const projectId = treeState.data?.projects.find((project) => project.name === taskBase.projectName)?.project_id
+    if (projectId === undefined) return null
+    const under = tasks.filter((t) =>
+      t.project_id === projectId && t.machine === taskBase.machine && t.work_dir === taskBase.path,
+    )
     return under.find((t) => t.state === 'running')?.id ?? under[0]?.id ?? null
-  }, [tasks, fileDrawer, wb.base])
+  }, [tasks, fileDrawer, wb.base, treeState.data])
 
   // 薄壳里窗口顶部那 28px 是 AppKit 的隐形拖动区（左键被拿去拖窗口，传不到
   // 页面）。与其空着，不如让它承担面包屑那一行的展示职责——面包屑本来就零

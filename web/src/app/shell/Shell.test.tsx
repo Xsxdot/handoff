@@ -14,6 +14,7 @@ import { MemoryRouter } from 'react-router-dom'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import type { ProjectTreeResp, Task } from '../../api/types'
+import { DRAG_BASE_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -242,11 +243,117 @@ describe('Shell 三栏外框', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
   })
 
+  it('左栏任务的 DataTransfer 穿过 Shell 到同一组的中央分屏并保留项目机器', async () => {
+    const remoteTask: Task = {
+      ...t1,
+      id: 'R1',
+      project_id: 'p2',
+      machine: 'linux-01',
+      work_dir: '/srv/aim',
+      name: '远端任务',
+    }
+    const crossProjectTree: ProjectTreeResp = {
+      ...tree,
+      projects: [
+        tree.projects[0],
+        {
+          project_id: 'p2', origin_url: '', name: 'aim',
+          locations: [{
+            machine: 'linux-01', name: 'aim', path: '/srv/aim', probe_error: '',
+            workspaces: [{ path: '/srv/aim', branch: 'main', head: 'def', is_main: true, managed: false, created_at: '' }],
+          }],
+        },
+      ],
+    }
+    vi.mocked(fetchTasks).mockResolvedValue([t1, remoteTask])
+    vi.mocked(fetchProjectTree).mockResolvedValue(crossProjectTree)
+    vi.mocked(fetchMachines).mockResolvedValue({
+      machines: [
+        { name: '', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+        { name: 'linux-01', addr: '', reachable: true, version: '', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '', pty_supported: true },
+      ],
+    })
+    renderShell()
+    fireEvent.click(await screen.findByText('重构工单通道'))
+    fireEvent.click(await screen.findByRole('button', { name: '增加分屏' }))
+
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => {
+        values.set(type, value)
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type)
+      },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    const source = (await screen.findByText('远端任务')).closest('button')!
+    fireEvent.dragStart(source, { dataTransfer })
+    expect(dataTransfer.types).toEqual(expect.arrayContaining([DRAG_TASK_MIME, DRAG_BASE_MIME]))
+    expect(JSON.parse(values.get(DRAG_BASE_MIME)!)).toMatchObject({ projectName: 'aim', machine: 'linux-01', path: '/srv/aim' })
+
+    const target = screen.getAllByTestId('workbench-pane')[1]
+    fireEvent.drop(target, { dataTransfer })
+    await waitFor(() => expect(screen.getByText('aim · linux-01')).toBeInTheDocument())
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
+  })
+
   it('点右栏文件在中央开 file tab', async () => {
     renderShell()
     await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
     await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
+  })
+
+  it('文件抽屉的 diff 任务按项目、机器和 work_dir 共同选择', async () => {
+    const sharedPath = '/shared/b2'
+    const handoffLocal = {
+      path: sharedPath, branch: 'handoff-local', head: 'abc', is_main: true, managed: false, created_at: '',
+    }
+    const handoffRemote = {
+      path: sharedPath, branch: 'handoff-remote', head: 'def', is_main: false, managed: true, created_at: '',
+    }
+    const aimLocal = {
+      path: sharedPath, branch: 'aim-local', head: 'ghi', is_main: false, managed: true, created_at: '',
+    }
+    const collisionTree: ProjectTreeResp = {
+      projects: [
+        {
+          project_id: 'p1', origin_url: '', name: 'handoff',
+          locations: [
+            { machine: '', name: 'handoff', path: sharedPath, probe_error: '', workspaces: [handoffLocal] },
+            { machine: 'linux-01', name: 'handoff', path: sharedPath, probe_error: '', workspaces: [handoffRemote] },
+          ],
+        },
+        {
+          project_id: 'p2', origin_url: '', name: 'aim',
+          locations: [{ machine: '', name: 'aim', path: sharedPath, probe_error: '', workspaces: [aimLocal] }],
+        },
+      ],
+      unowned: [],
+    }
+    const wrongProject = { ...t1, id: 'wrong-project', project_id: 'p2', work_dir: sharedPath }
+    const wrongMachine = { ...t1, id: 'wrong-machine', machine: 'linux-01', work_dir: sharedPath }
+    const rightTask = { ...t1, id: 'right-task', work_dir: sharedPath }
+    vi.mocked(fetchTasks).mockResolvedValue([wrongProject, wrongMachine, rightTask])
+    vi.mocked(fetchProjectTree).mockResolvedValue(collisionTree)
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue({
+      entries: [{ name: 'handoff.go', is_dir: false, size: 1 }, { name: 'aim.go', is_dir: false, size: 1 }],
+    })
+    vi.mocked(fetchTaskDiff).mockImplementation(async (id: string) => ({
+      diff: `diff --git a/${id === 'right-task' ? 'handoff.go' : 'aim.go'} b/${id === 'right-task' ? 'handoff.go' : 'aim.go'}`,
+    }))
+
+    renderShell()
+    const project = await screen.findByTestId('project-node-p1')
+    fireEvent.click(within(within(project).getAllByTestId('directory-machine-row')[0]).getByTestId('machine-row'))
+    fireEvent.click(await within(project).findByText('handoff-local'))
+
+    await waitFor(() => expect(screen.getByTitle('相对基线已改动（git diff base...HEAD，不含工作区未提交的编辑）')).toBeInTheDocument())
+    expect(screen.getByText('handoff.go')).toHaveClass('text-state-intervention-text')
+    expect(screen.getByText('aim.go')).not.toHaveClass('text-state-intervention-text')
+    expect(fetchTaskDiff).toHaveBeenLastCalledWith('right-task')
   })
 
   it('切到另一个目录再切回来，两边的 tab 组各自保持', async () => {

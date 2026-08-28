@@ -318,13 +318,26 @@ export function addColumn(wb: Workbench, groupId?: string): Workbench {
   return next
 }
 
-function removeTabAt(next: Workbench, loc: { group: number; column: number; row: number }): Tab | null {
-  const column = next.groups[loc.group].columns[loc.column]
+function removeTabAt(next: Workbench, loc: { group: number; column: number; row: number }): { tab: Tab; columnRemoved: boolean } | null {
+  const group = next.groups[loc.group]
+  const column = group.columns[loc.column]
   const tab = column?.panes[loc.row] ?? null
   if (!column || !tab) return null
   column.panes[loc.row] = null
   if (column.panes.length === 2 && column.panes.every((pane) => pane === null)) column.panes = [null]
-  return tab
+  // 移动 tab 后，完全空的源列没有可承载的 pane；移除它才能让目标列索引与
+  // 后续 center/边缘投影保持一致。最后一列仍保留空列，满足 group 的最小布局不变式。
+  if (column.panes.length === 1 && column.panes[0] === null && group.columns.length > 1) {
+    group.columns.splice(loc.column, 1)
+    group.sizes.splice(loc.column, 1)
+    const focusedColumn = group.focus[0] > loc.column
+      ? group.focus[0] - 1
+      : Math.min(group.focus[0], group.columns.length - 1)
+    const focusedPanes = group.columns[focusedColumn].panes
+    group.focus = [focusedColumn, Math.min(group.focus[1], focusedPanes.length - 1)]
+    return { tab, columnRemoved: true }
+  }
+  return { tab, columnRemoved: false }
 }
 
 /** 将新内容或现有 tab 投影到 center/四向区域，整个操作只产生一次新布局。 */
@@ -351,6 +364,7 @@ export function placeSource(wb: Workbench, source: WorkbenchSource, target: Pane
   }
   const next = cloneWorkbench(wb)
   let sourceTab: Tab
+  let sourceColumnRemoved = false
   if (source.kind === 'new') {
     sourceTab = { id: nextId(next, 't'), base: { ...source.base }, content: { ...source.content } as TabContent }
   } else {
@@ -359,11 +373,12 @@ export function placeSource(wb: Workbench, source: WorkbenchSource, target: Pane
       warnInvalid('workbench.place.invalid_source', target)
       return wb
     }
-    sourceTab = moved
+    sourceTab = moved.tab
+    sourceColumnRemoved = moved.columnRemoved
   }
   let columnIndex = target.column
   let rowIndex = target.row
-  if (sourceLoc && sourceLoc.group === targetIndex && sourceLoc.column < columnIndex) columnIndex--
+  if (sourceColumnRemoved && sourceLoc && sourceLoc.group === targetIndex && sourceLoc.column < columnIndex) columnIndex--
   if (sourceLoc && sourceLoc.group === targetIndex && sourceLoc.column === target.column && sourceLoc.row < rowIndex) rowIndex--
   const group = next.groups[targetIndex]
   const column = group.columns[columnIndex]
