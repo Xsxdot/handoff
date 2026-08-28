@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
@@ -47,22 +48,29 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 	hooksPath = filepath.Join(agentsDir, hooksFileName)
 	log.Info("agy 生成任务环境", "task", taskID, "workdir", workdir, "hooks", hooksPath, "sock", sockPath)
 
-	cfg := map[string]hookNamedConfig{
-		"handoff-safety-gate": {
-			PreToolUse: []hookGroup{
-				{
-					Matcher: "run_command",
-					Hooks: []hookHandler{
-						{
-							Type:    "command",
-							Command: fmt.Sprintf("%s permission-hook --sock %s", handoffBin, sockPath),
-							Timeout: 300,
-						},
+	cfg := make(map[string]any)
+	if data, err := os.ReadFile(hooksPath); err == nil {
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			log.Warn("解析既有 hooks.json 失败，将被覆盖", "path", hooksPath, "cause", err)
+			cfg = make(map[string]any)
+		}
+	}
+
+	gateCfg := hookNamedConfig{
+		PreToolUse: []hookGroup{
+			{
+				Matcher: "run_command|write_to_file|replace_file_content|multi_replace_file_content|sed_file|read_url_content|search_web|invoke_subagent",
+				Hooks: []hookHandler{
+					{
+						Type:    "command",
+						Command: fmt.Sprintf("%s permission-hook --sock %s", strconv.Quote(handoffBin), strconv.Quote(sockPath)),
+						Timeout: 86400,
 					},
 				},
 			},
 		},
 	}
+	cfg["handoff-safety-gate"] = gateCfg
 
 	hooksJSON, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {

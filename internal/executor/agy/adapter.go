@@ -298,7 +298,13 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	if r.permSrv == nil {
 		return fmt.Errorf("任务 %s 没有活动的权限服务端", taskID)
 	}
-	return r.permSrv.Respond(permID, decision, reason)
+	behavior := "allow"
+	message := ""
+	if decision != "once" {
+		behavior = "deny"
+		message = turn.DenyGuidanceText(reason)
+	}
+	return r.permSrv.Respond(permID, behavior, message)
 }
 
 func (a *Adapter) onPermissionAsk(r *runState, ask permAsk) {
@@ -315,26 +321,72 @@ func (a *Adapter) onPermissionAsk(r *runState, ask permAsk) {
 }
 
 func permTextAndRequest(toolName string, input json.RawMessage) (string, *executor.PermRequest) {
-	if toolName == "run_command" {
+	switch strings.ToLower(toolName) {
+	case "run_command":
 		var in struct {
 			CommandLine string `json:"CommandLine"`
 			Command     string `json:"command"`
 		}
-		_ = json.Unmarshal(input, &in)
-		cmd := in.CommandLine
-		if cmd == "" {
-			cmd = in.Command
+		if json.Unmarshal(input, &in) == nil {
+			cmd := in.CommandLine
+			if cmd == "" {
+				cmd = in.Command
+			}
+			if cmd != "" {
+				return "run_command: " + cmd, &executor.PermRequest{
+					Tool:    executor.PermToolBash,
+					Command: cmd,
+				}
+			}
 		}
-		text := "run_command: " + cmd
-		return text, &executor.PermRequest{
-			Tool:    executor.PermToolBash,
-			Command: cmd,
+	case "write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file":
+		var in struct {
+			TargetFile   string `json:"TargetFile"`
+			AbsolutePath string `json:"AbsolutePath"`
+			FilePath     string `json:"file_path"`
+			Path         string `json:"path"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			p := in.TargetFile
+			if p == "" {
+				p = in.AbsolutePath
+			}
+			if p == "" {
+				p = in.FilePath
+			}
+			if p == "" {
+				p = in.Path
+			}
+			if p != "" {
+				toolType := executor.PermToolWrite
+				if strings.ToLower(toolName) != "write_to_file" {
+					toolType = executor.PermToolEdit
+				}
+				return fmt.Sprintf("%s: %s", toolName, p), &executor.PermRequest{
+					Tool:  toolType,
+					Paths: []string{p},
+				}
+			}
+		}
+	case "read_url_content", "search_web":
+		var in struct {
+			URL   string `json:"Url"`
+			Query string `json:"query"`
+		}
+		if json.Unmarshal(input, &in) == nil {
+			arg := in.URL
+			if arg == "" {
+				arg = in.Query
+			}
+			if arg != "" {
+				return fmt.Sprintf("%s: %s", toolName, arg), &executor.PermRequest{
+					Tool: executor.PermToolWebFetch,
+				}
+			}
 		}
 	}
 	text := fmt.Sprintf("%s: %s", toolName, turn.TruncateRunes(string(input), 200))
-	return text, &executor.PermRequest{
-		Tool: executor.NormalizePermTool(toolName),
-	}
+	return text, nil
 }
 
 // Stop 终止任务执行并回收资源。
@@ -529,7 +581,7 @@ func (a *Adapter) mapResult(r *runState, res *agyResultData) {
 		r.session = res.ConversationID
 	}
 	u := ParseUsage(res.Usage)
-	spend, hasSpend := parseSpend(res.Usage, r.session, res.NumTurns)
+	spend, hasSpend := parseSpend(res.Usage, r.session)
 	var spendPtr *proto.SpendEntry
 	if hasSpend {
 		spendPtr = &spend
@@ -583,19 +635,29 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 		if err != nil {
 			a.log.Error("git 兜底查询失败", "task", r.taskID, "cause", err)
 		}
-		failReason := turn.NoTrailerFailReason(branch, commit, text)
-		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
-			OK: false, Branch: branch, CommitHash: commit,
-			SessionID: r.session, FailReason: failReason,
-			FinalText: turn.FinalText(text),
-		}})
+		if strings.TrimSpace(text) == "" {
+			a.log.Warn("回合零文本且无新提交，转失败结果交协调者", "task", r.taskID)
+			a.emit(r, executor.AdapterEvent{
+				Type:      "result",
+				SessionID: r.session,
+				Result: &executor.Result{
+					OK:         false,
+					SessionID:  r.session,
+					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
+					VoidReason: executor.VoidReasonTurnDiscipline,
+				},
+			})
+			return
+		}
+		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
 		return
 	}
-	a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
-		OK: true, Branch: branch, CommitHash: commit,
-		Summary: "根据 git 提交历史自动收尾", SessionID: r.session,
-		FinalText: turn.FinalText(text),
-	}})
+	a.log.Warn("兜底判定有新提交，但模型未宣布完成，转失败交协调者裁决",
+		"task", r.taskID, "branch", branch, "commit", commit)
+	a.emit(r, executor.AdapterEvent{
+		Type:   "result",
+		Result: turn.NoTrailerResult(r.session, branch, commit, text),
+	})
 }
 
 func (a *Adapter) mapExit(r *runState, m streamMsg) {

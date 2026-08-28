@@ -74,21 +74,38 @@ func TestFallbackClassifyWithNewCommit(t *testing.T) {
 		if ev.Type != "result" || ev.Result == nil {
 			t.Fatalf("预期收到 result 事件，实得 %+v", ev)
 		}
-		if !ev.Result.OK {
-			t.Fatalf("有新提交时必须判 OK，实得 %+v", ev.Result)
+		if ev.Result.OK {
+			t.Fatalf("B74 规范：无 trailer 有新提交必须判 OK: false，实得 %+v", ev.Result)
 		}
 		if ev.Result.Branch != "feat/x" || ev.Result.CommitHash != head {
 			t.Fatalf("分支/commit 不符合预期: branch=%s commit=%s, want feat/x %s",
 				ev.Result.Branch, ev.Result.CommitHash, head)
+		}
+		if !strings.Contains(ev.Result.FailReason, "相对回合起点有新提交") {
+			t.Fatalf("FailReason 未正确说明有新提交: %s", ev.Result.FailReason)
 		}
 	default:
 		t.Fatalf("未收到事件")
 	}
 }
 
-func TestFallbackClassifyWithoutNewCommit(t *testing.T) {
+func TestFallbackClassifyWithoutNewCommitWithText(t *testing.T) {
 	a, r, _ := newAdapterWithFakeGit(t, "feat/x", false)
-	a.fallbackClassify(r, "Nothing done.")
+	a.fallbackClassify(r, "Where should I start?")
+
+	select {
+	case ev := <-r.evCh:
+		if ev.Type != "question" || ev.Text != "Where should I start?" {
+			t.Fatalf("无新提交且有正文应转 question，实得 %+v", ev)
+		}
+	default:
+		t.Fatalf("未收到事件")
+	}
+}
+
+func TestFallbackClassifyWithoutNewCommitEmptyText(t *testing.T) {
+	a, r, _ := newAdapterWithFakeGit(t, "feat/x", false)
+	a.fallbackClassify(r, "   ")
 
 	select {
 	case ev := <-r.evCh:
@@ -96,7 +113,10 @@ func TestFallbackClassifyWithoutNewCommit(t *testing.T) {
 			t.Fatalf("预期收到 result 事件，实得 %+v", ev)
 		}
 		if ev.Result.OK {
-			t.Fatalf("无新提交时必须判失败，实得 %+v", ev.Result)
+			t.Fatalf("零文本无提交必须判失败，实得 %+v", ev.Result)
+		}
+		if ev.Result.VoidReason != executor.VoidReasonTurnDiscipline {
+			t.Fatalf("VoidReason 应为 TurnDiscipline，实得 %s", ev.Result.VoidReason)
 		}
 	default:
 		t.Fatalf("未收到事件")

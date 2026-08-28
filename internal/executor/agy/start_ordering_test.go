@@ -75,9 +75,20 @@ func TestStartOrderingAndTaskEnv(t *testing.T) {
 		t.Fatalf("Env 未包含隔离 TMPDIR: %v", capturedSpec.Env)
 	}
 
-	// 3. 断言 hooks.json 被生成
+	// 3. 断言 hooks.json 被生成且包含正确的 matcher 与命令
 	hooksPath := filepath.Join(workDir, ".agents", "hooks.json")
-	if _, err := os.Stat(hooksPath); err != nil {
+	data, err := os.ReadFile(hooksPath)
+	if err != nil {
 		t.Fatalf("未能生成 .agents/hooks.json: %v", err)
+	}
+	content := string(data)
+	if !strings.Contains(content, "permission-hook --sock") {
+		t.Fatalf("hooks.json 缺 permission-hook 命令: %s", content)
+	}
+	if !strings.Contains(content, "run_command|write_to_file") {
+		t.Fatalf("hooks.json 缺多工具 matcher: %s", content)
+	}
+	if !strings.Contains(content, "\"timeout\": 86400") {
+		t.Fatalf("hooks.json 缺 24h 超时: %s", content)
 	}
 }

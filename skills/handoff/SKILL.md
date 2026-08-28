@@ -99,6 +99,8 @@ handoff wait <task> --notify --timeout 1h
   （codemod、跨文件重命名、依赖升级修编译）。
 - **grok**：快、挖 bug 能挖到根——根因排查（复现、加日志、二分定位）、真机烟测、
   tool 调用多的纯执行。根因后分流：一两行小修顺手修掉，架构级修复回本地走流程。
+- **claude**：重构、细粒度设计、复杂推理或多文件协同排查。
+- **agy**（Antigravity CLI）：适用于基于 Google Antigravity / Gemini 的工程任务与复杂子代理编排，权限门通过 PreToolUse 钩子挂载。
 - **opencode**：备选，codex 不可用时顶上。
 - **一律不传 `--model`**，除非要点名某个具体模型：缺省执行者用机器默认模型；
   改派非缺省执行器时留空、由其自身默认接管。模型名**按机器不同**，跨机/跨执行器

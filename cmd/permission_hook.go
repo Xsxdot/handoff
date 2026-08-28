@@ -66,9 +66,6 @@ func servePermissionHook(r io.Reader, w io.Writer, sockPath string) error {
 	}
 
 	toolUseID := fmt.Sprintf("step_%d", req.StepIdx)
-	if req.StepIdx == 0 {
-		toolUseID = fmt.Sprintf("tool_%d", time.Now().UnixNano())
-	}
 
 	askFrame, err := json.Marshal(map[string]any{
 		"type":        "ask",

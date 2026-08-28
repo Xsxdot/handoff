@@ -135,11 +135,18 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 }
 
 // agyArgv 组装 agy 的完整命令行参数列表。
+//
+// 说明：
+//   - --input-format / --output-format stream-json: 启用双向流式 stdin/stdout 协议。
+//   - --print-timeout 24h: 避免受默认 5m 打印等待墙截断。
+//   - --sandbox: 启用终端沙箱限制，作为权限钩子之外的第二道防线。
 func agyArgv(req StartProcReq) []string {
 	argv := []string{
 		"agy",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
+		"--print-timeout", "24h",
+		"--sandbox",
 	}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)

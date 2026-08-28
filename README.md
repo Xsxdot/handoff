@@ -563,7 +563,7 @@ Windows 执行机上执行器的现状：
     and the only trace is `failed to refresh available models` scrolling in the task
     directory's `serve.log`.
 - **agy** (Antigravity CLI): the executor machine has installed and logged into `agy` (`agy -p "hi"` produces output).
-  - Permission model: dynamically routes `PreToolUse` hooks in `.agents/hooks.json` to the task's `perm.sock`, ensuring all sensitive tool calls (such as `run_command`) are intercepted and evaluated by Handoff's permission pipeline.
+  - Permission model: dynamically routes `PreToolUse` hooks in `.agents/hooks.json` to the task's `perm.sock`, intercepting `run_command`, file write/edits, and network tools into Handoff's permission pipeline; launches with `--sandbox` for terminal containment while unhooked tools fall back to native policies and local settings.
   - Task artifacts: task directory contains `in.fifo` (input channel), `out.jsonl` (event stream), `agy.log` (stderr log), `perm.sock` (permission socket), and `proc.json` (recovery credentials).
 
 ## Upgrading

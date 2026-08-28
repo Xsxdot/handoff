@@ -187,7 +187,7 @@ func TestLogExecutorDetectionQuietForFake(t *testing.T) {
 // TestAdaptersForAlwaysAvailableKeepsAll 钉住平台能力探测不误伤始终可用的执行器。
 func TestAdaptersForAlwaysAvailableKeepsAll(t *testing.T) {
 	got := adaptersForWithProbe("darwin", slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
-	for _, name := range []string{"opencode", "claude", "codex", "fake"} {
+	for _, name := range []string{"opencode", "claude", "codex", "agy", "fake"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("应注册 %s", name)
 		}

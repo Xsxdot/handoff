@@ -88,7 +88,11 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		if selfExe == "" {
 			selfExe = "handoff"
 		}
-		_, _, _ = WriteTaskEnv(req.RepoPath, req.TaskDir, req.TaskID, "", sockPath, selfExe, "")
+		if _, _, werr := WriteTaskEnv(req.RepoPath, req.TaskDir, req.TaskID, "", sockPath, selfExe, ""); werr != nil {
+			a.log.Error("冷恢复更新 hooks.json 失败", "task", req.TaskID, "cause", werr)
+			return executor.ResumeOutcome{Alive: false,
+				Note: fmt.Sprintf("准备任务环境失败：%v", werr)}, nil
+		}
 
 		a.log.Info("agy 已不在，进入冷恢复", "task", req.TaskID, "session", req.SessionID)
 		newProc, err := startProc(context.Background(), StartProcReq{
@@ -110,13 +114,19 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	r.proc = proc
 
 	sockPath := filepath.Join(req.TaskDir, "perm.sock")
-	if ps, perr := newPermServerFn(sockPath, a.log, func(ask permAsk) {
+	ps, perr := newPermServerFn(sockPath, a.log, func(ask permAsk) {
 		a.onPermissionAsk(r, ask)
-	}); perr == nil {
-		r.permSrv = ps
-	} else {
-		a.log.Warn("恢复权限服务端失败", "task", req.TaskID, "cause", perr)
+	})
+	if perr != nil {
+		a.drop(req.TaskID)
+		if mode == executor.ResumeModeCold && proc != nil {
+			_ = proc.Kill()
+		}
+		a.log.Error("恢复权限服务端失败，判不可恢复", "task", req.TaskID, "cause", perr)
+		return executor.ResumeOutcome{Alive: false,
+			Note: fmt.Sprintf("启动权限服务端失败：%v", perr)}, nil
 	}
+	r.permSrv = ps
 
 	if mode == executor.ResumeModeCold {
 		r.startOffset = 0
