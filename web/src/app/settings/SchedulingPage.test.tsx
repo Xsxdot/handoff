@@ -1,7 +1,7 @@
 // SchedulingPage.test.tsx —— 自动化编制公开组件的 CAS 接缝测试。
 // 边界：每条断言都从页面按钮/表单进入 scheduling API；不直接测试草稿 helper。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { getSquads, putCarrier, putSquad } from '../../api/scheduling'
 import { SchedulingPage } from './SchedulingPage'
@@ -93,7 +93,8 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
     expect(screen.getByRole('option', { name: '协调者队' })).toBeInTheDocument()
     expect(screen.getByText('成员载体（按勾选顺序解析：第一个健康且有空的载体领活）')).toBeVisible()
     expect(screen.getByText('并发上限（政策位；0 / 留空 = 不限）')).toBeVisible()
-    expect(screen.getByText(/协调者队成员必须落在协调机；执行者队成员可以是任何执行机。/)).toBeVisible()
+    // role hint 在弹窗内新增；页面小队区块本就有一条同文提示，故圈定弹窗内断言。
+    expect(within(screen.getByRole('dialog')).getByText(/协调者队成员必须落在协调机；执行者队成员可以是任何执行机。/)).toBeVisible()
     expect(screen.getByRole('dialog').querySelector('form')?.className).toContain('max-w-[440px]')
     await user.click(screen.getByRole('button', { name: '取消' }))
     await user.click(await screen.findByRole('button', { name: '编辑 mbp' }))
