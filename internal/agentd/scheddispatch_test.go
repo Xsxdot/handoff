@@ -152,11 +152,26 @@ func TestEffectiveCoversParityMatrix(t *testing.T) {
 	}
 }
 
+// holdAfterSquadRound 让小队节点在真实派发之后卡住，直到测试结束才返回。
+// implement 节点 Dispatch 且无 Verdict：Run 在派发后立刻返回，K5 的
+// defer releaseSchedulingBinding 会把计数清零（见 TestCardStepAdmittedRoundReleasesCapacity）。
+// 本文件要观察的是「回合还在飞」时的计数与排队，必须把归还推迟到断言之后。
+func holdAfterSquadRound(t *testing.T, env *ledgerEnv) {
+	t.Helper()
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	env.srv.runStepFn = func(ctx context.Context, runner *ledgerstep.StepRunner, cardID, node string) {
+		env.srv.runStep(ctx, runner, cardID, node)
+		<-release
+	}
+}
+
 // TestSquadNodeAdmitsAndDispatchesThroughBinding 缝①（编制域入站 api 门面）×
 // 缝④（环节执行体缝）：Squad 非空节点受理后，派发真的穿过 Binding 的三元组——
 // 目标机/执行者以载体为准，计数两级各 +1，task 挂到卡上。
 func TestSquadNodeAdmitsAndDispatchesThroughBinding(t *testing.T) {
 	env, ftm := setupSquadEnv(t, 2)
+	holdAfterSquadRound(t, env)
 	cardID := seedSquadFlow(t, env, "sq1", 1)[0]
 	if err := env.srv.startCardStep(cardID, proto.CardStepReq{
 		Step: "implement", Actor: "web:test"}); err != nil {
@@ -186,6 +201,7 @@ func TestSquadNodeAdmitsAndDispatchesThroughBinding(t *testing.T) {
 // 覆盖快照与手写裁决（独立 oracle）逐项相等。
 func TestSquadNodeFullQueuesWithoutTrace(t *testing.T) {
 	env, _ := setupSquadEnv(t, 1) // 载体物理位 1：第一张占满，第二张必排队
+	holdAfterSquadRound(t, env)
 	ids := seedSquadFlow(t, env, "sq1", 2)
 	if err := env.srv.startCardStep(ids[0], proto.CardStepReq{
 		Step: "implement", Actor: "web:test", Executor: "grok"}); err != nil {

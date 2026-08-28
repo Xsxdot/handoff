@@ -40,7 +40,8 @@ export function boardColumnFor(status: string, layout: BoardLayout): string {
   return mapped && layout.columns.includes(mapped) ? mapped : layout.fallback
 }
 
-/** 参数：状态、同一工作流的节点名与看板布局；返回：需要标注的节点名或 undefined。 */
+/** 同列出现多个工作流节点时才返回节点名，一对一列沉默。
+ *  多对一判定从 layout.state_to_column 派生（改映射则显形集变），不写死列名。 */
 export function nodeLabelFor(status: string, nodes: readonly string[], layout: BoardLayout): string | undefined {
   if (!nodes.includes(status)) return undefined
   const column = boardColumnFor(status, layout)

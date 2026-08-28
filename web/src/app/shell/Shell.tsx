@@ -90,7 +90,7 @@ export function Shell() {
   const navigate = useNavigate()
   const location = useLocation()
   const openCoordinatorTerminal = useCallback((info: CoordinatorAttachInfo) => {
-    console.info('coordinator.terminal.open', { machine: info.machine, dir: info.dir })
+    console.info('coordinator.terminal.open', { machine: info.machine, dir: info.dir, opened: true, cause: 'attach' })
     wb.openTerminalWithCommand(info.command, coordinatorBase(treeState.data, info))
   }, [treeState.data, wb])
 
