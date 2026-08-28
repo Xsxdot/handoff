@@ -389,8 +389,8 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
   `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . validate`（零 issues），再执行
   `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . domains` 目视领域树是否符合真实架构，
   并抽查 5 个节点的 file:line。
-- **C12 键自检（validate 罩不住）**：旧版 `codegraph validate` 会忽略未知键
-  `flows`/`channel` 并照样全绿。交付前必须用下面这段核对 JSON 文件本身，不能只看
+- **C17 键自检（validate 罩不住）**：旧版 `codegraph validate` 会忽略未知键
+  `flows` 并照样全绿。交付前必须用下面这段核对 JSON 文件本身，不能只看
   validate 退出码：
 
   ```
@@ -399,17 +399,22 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
   g = json.load(open("codegraph/baseline.json"))
   flows = g.get("flows") or {}
   nodes = g["nodes"]
-  entries = [(i, n) for i, n in nodes.items() if n.get("kind") == "entry"]
-  missing_ch = [i for i, n in entries if not n.get("channel")]
-  bad_ch = [i for i, n in entries if n.get("channel") not in (None, "cli", "http", "ws", "web")]
-  dangling = [fid for fid, fl in flows.items() if fid not in nodes]
-  print("flows", len(flows), "entries", len(entries),
-        "missing_channel", len(missing_ch), "packages", len(g.get("packages") or {}))
+  bad = []
   if not flows:
-      sys.exit("FAIL: baseline 没有 flows（C12 本轮必产）")
-  if missing_ch:
-      sys.exit("FAIL: entry 缺 channel " + ",".join(missing_ch[:8]))
-  if dangling:
-      sys.exit("FAIL: flows 键不是已定义节点 " + ",".join(dangling[:8]))
+      sys.exit("FAIL: baseline 没有 flows（C17 本轮必产）")
+  for fid in flows:
+      node = nodes.get(fid)
+      if not node:
+          bad.append("dangling " + fid)
+          continue
+      if node.get("kind") == "entry":
+          bad.append("entry key " + fid)
+      if not str(node.get("file", "")).endswith(".go"):
+          bad.append("non-go " + fid)
+  print("flows", len(flows), "bad", len(bad))
+  for item in bad[:20]:
+      print(" ", item)
+  if bad:
+      sys.exit(1)
   PY
   ```
