@@ -5,7 +5,8 @@
 //   - 没有会话时先建一个，并把 id 回报给 tab（onSession）
 //   - 按键上送、尺寸上送、断线重连（重连逻辑在 api/pty.ts，这里只消费）
 //   - shell 退出后在下方显示退出码，tab 留着等用户自己关
-//   - 订阅被判死（close 1008，最常见的是 agentd 重启后旧会话已不存在）时，
+//   - 订阅被判死（close 1008：会话已不存在——机器重启、退出 shell 或显式停止
+//     都会让它消失；会话本身跨 agentd 重启存活）时，
 //     除了报出服务端给的原因，还给一个「重开一个终端」的出口——没有它，这个
 //     tab 就是死物，用户只能关掉重开
 //
@@ -613,8 +614,9 @@ export function TerminalTab({
               className="rounded border px-2 py-0.5 text-muted-foreground hover:text-foreground"
               onClick={() => {
                 // 划掉旧 id → liveId 变 undefined → effect 重跑，在同一基准目录建新会话。
-                // 老会话不发 DELETE：它在服务端要么已经不存在（agentd 重启），要么是被
-                // 判死的另一条订阅，替用户去删一个可能还活着的 shell 不是这个按钮的职责。
+                // 老会话不发 DELETE：它在服务端要么已经不存在（机器重启 / 退出 shell /
+                // 显式停止之后），要么是被判死的另一条订阅，替用户去删一个可能还活着
+                // 的 shell 不是这个按钮的职责。
                 setDiscarded(sessionId)
                 setError(null)
                 setDead(false)
