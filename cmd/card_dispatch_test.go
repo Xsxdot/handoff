@@ -113,6 +113,61 @@ func cardStepString(t *testing.T, body map[string]json.RawMessage, key string) s
 	return value
 }
 
+func setStepFirstStateTestWindow(t *testing.T) {
+	t.Helper()
+	oldTimeout := stepFirstStateTimeout
+	oldPoll := stepFirstStatePollInterval
+	stepFirstStateTimeout = 40 * time.Millisecond
+	stepFirstStatePollInterval = time.Millisecond
+	t.Cleanup(func() {
+		stepFirstStateTimeout = oldTimeout
+		stepFirstStatePollInterval = oldPoll
+	})
+}
+
+func createStepTestCard(t *testing.T, dir, title string) string {
+	t.Helper()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", title, "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatalf("建 card step 测试卡: %v", err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatalf("解码 card step 测试卡: %v", err)
+	}
+	return card.ID
+}
+
+func appendStepDispatchForTest(t *testing.T, dir, cardID string, snap ledger.DispatchSnapshot) {
+	t.Helper()
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("打开 card step 测试账本: %v", err)
+	}
+	defer st.Close()
+	snap.Actor = "node:test"
+	if err := st.RecordDispatch(cardID, snap); err != nil {
+		t.Fatalf("写 dispatched 测试事件: %v", err)
+	}
+}
+
+func appendStepDispatchFailureForTest(t *testing.T, dir, cardID, body string) {
+	t.Helper()
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("打开 card step 失败账本: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.AddComment(cardID, body, "普通", "node:进行中"); err != nil {
+		t.Fatalf("写派发失败 comment: %v", err)
+	}
+	if err := st.MarkNeedsHuman(cardID, "派发失败", "node:进行中"); err != nil {
+		t.Fatalf("写派发失败 needs_human: %v", err)
+	}
+}
+
 // setupDisciplineGateFixture 预写 B229 拒发闸前提：假目标机 mac-02 按 statusBody
 // 应答 /api/status，模板点名的角色正文已入账本。裸卡派发自接线起在认领前过闸，
 // 既有用例钉的是各自关注面，闸的前提在此统一满足。
@@ -326,6 +381,7 @@ func TestCardDispatchExecutorModelFlags(t *testing.T) {
 
 // TestCardDispatchStepExecutorModelFlags 验证 --step 与模板路径共用同一对 CLI flag。
 func TestCardDispatchStepExecutorModelFlags(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -442,6 +498,7 @@ func TestCardDispatchExtraReachesPrompt(t *testing.T) {
 // TestCardDispatchStepExtraReachesPrompt --step 与模板路径必须共用同一个 flag，
 // 否则「给某一轮补一句话」在节点派发上仍然无解——而节点派发正是它最需要的地方。
 func TestCardDispatchStepExtraReachesPrompt(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -471,6 +528,7 @@ func TestCardDispatchStepExtraReachesPrompt(t *testing.T) {
 
 // TestCardDispatchStepSubmitsToLocalAgentd verifies the step request uses the local endpoint and real client wire.
 func TestCardDispatchStepSubmitsToLocalAgentd(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -496,40 +554,149 @@ func TestCardDispatchStepSubmitsToLocalAgentd(t *testing.T) {
 	}
 }
 
-// TestCardDispatchStepReturnsImmediately verifies the 202 stdout contract instead of a runner outcome.
+// TestCardDispatchStepReturnsImmediately verifies the 202 short-wait stdout contract instead of a runner outcome.
 func TestCardDispatchStepReturnsImmediately(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = cardStepBody(t, r)
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
-	out, _, err := runLedgerCLI(t, dir, "card", "add", "即时返回卡", "--project", "demo", "--workflow", "bug")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var card struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
-		t.Fatal(err)
-	}
-	out, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中")
+	cardID := createStepTestCard(t, dir, "即时返回卡")
+	out, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中")
 	if err != nil {
 		t.Fatalf("card dispatch --step: %v", err)
 	}
-	for _, want := range []string{card.ID, "进行中", "handoff card wait " + card.ID} {
+	for _, want := range []string{cardID, "进行中", "已受理", "handoff card wait " + cardID} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stdout = %q, want %q", out, want)
 		}
+	}
+	if !strings.Contains(out, "首态未到") {
+		t.Fatalf("无新首态时 stdout 必须说明短等结束: %q", out)
 	}
 	if strings.Contains(out, "Outcome") || strings.Contains(out, "T-") {
 		t.Fatalf("stdout 不应包含旧 Outcome/task id：%q", out)
 	}
 }
 
+func TestCardDispatchStepReportsNewDispatchFailure(t *testing.T) {
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	cardID := createStepTestCard(t, dir, "新派发失败卡")
+	appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+		TaskID: "old-task", Branch: "cards/old", Base: "old-base",
+		BaseCommit: "oldcommit123456789012345678901234567890", DisciplineName: "old-discipline",
+	})
+	const comment = "本节点派发失败：\n工作分支跨机：cause-42"
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = cardStepBody(t, r)
+		appendStepDispatchFailureForTest(t, dir, cardID, comment)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, stderr, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中")
+	if err == nil {
+		t.Fatal("水位之后的派发失败首态必须使 CLI 非零退出")
+	}
+	if !strings.Contains(stderr, comment) {
+		t.Fatalf("stderr 必须包含 haltForHuman comment 正文 %q，实际 %q", comment, stderr)
+	}
+	if strings.Contains(out+stderr, "oldcomm") {
+		t.Fatalf("不得把水位之前旧 dispatched 的短号打印成这次结果: out=%q stderr=%q", out, stderr)
+	}
+}
+
+func TestCardDispatchStepReportsNewDispatchSnapshot(t *testing.T) {
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	cardID := createStepTestCard(t, dir, "新派发成功卡")
+	appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+		TaskID: "old-task", Branch: "cards/old", Base: "old-base",
+		BaseCommit: "oldcommit123456789012345678901234567890", DisciplineName: "old-discipline",
+	})
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = cardStepBody(t, r)
+		appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+			Target: "", TaskID: "new-task", Branch: "cards/new", Base: "main",
+			BaseCommit: "1234567890abcdef1234567890abcdef12345678", DisciplineName: "charter-implement",
+		})
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, stderr, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中")
+	if err != nil {
+		t.Fatalf("card dispatch --step: %v stderr=%q", err, stderr)
+	}
+	for _, want := range []string{cardID, "进行中", "本机", "cards/new", "main", "1234567", "charter-implement"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("成功首态 stdout = %q，缺少 %q", out, want)
+		}
+	}
+	for _, forbidden := range []string{"oldcomm", "目标机未定", "本地 ref", "origin"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("成功首态 stdout 不应包含 %q: %q", forbidden, out)
+		}
+	}
+}
+
+func TestCardDispatchStepFormatsEmptyBaseCommit(t *testing.T) {
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	cardID := createStepTestCard(t, dir, "空基线首态卡")
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = cardStepBody(t, r)
+		appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+			Target: "", TaskID: "empty-base-task", Branch: "cards/empty", Base: "",
+			BaseCommit: "", DisciplineName: "charter-review",
+		})
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中")
+	if err != nil {
+		t.Fatalf("card dispatch --step: %v", err)
+	}
+	for _, want := range []string{"无起点分支", "无 sha", "cards/empty", "charter-review"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("空基线首态 stdout = %q，缺少 %q", out, want)
+		}
+	}
+}
+
+func TestCardDispatchStepExecutorWithoutTargetUsesLocalFirstState(t *testing.T) {
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	var got map[string]json.RawMessage
+	cardID := createStepTestCard(t, dir, "只覆盖执行器卡")
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = cardStepBody(t, r)
+		appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+			Target: "", TaskID: "executor-only-task", Branch: "cards/executor-only", Base: "main",
+			BaseCommit: "abcdef0123456789abcdef0123456789abcdef01", DisciplineName: "charter-implement",
+		})
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中", "--executor", "codex")
+	if err != nil {
+		t.Fatalf("只覆盖 executor 的 card dispatch --step: %v", err)
+	}
+	if _, present := got["target"]; present {
+		t.Fatalf("空 target 应保持缺席语义，wire 不应凭空写目标机：%v", got)
+	}
+	if gotExecutor := cardStepString(t, got, "executor"); gotExecutor != "codex" {
+		t.Fatalf("executor = %q, want codex", gotExecutor)
+	}
+	if !strings.Contains(out, "本机") || strings.Contains(out, "目标机未定") {
+		t.Fatalf("只覆盖 executor 仍应显示本机而非版本错文案: %q", out)
+	}
+}
+
 // TestCardDispatchStepCarriesOverrides locks all four CLI override values at the local agentd wire.
 func TestCardDispatchStepCarriesOverrides(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -560,6 +727,7 @@ func TestCardDispatchStepCarriesOverrides(t *testing.T) {
 
 // TestCardDispatchStepUsesActorIdentity verifies step requests carry human-scale identity.
 func TestCardDispatchStepUsesActorIdentity(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

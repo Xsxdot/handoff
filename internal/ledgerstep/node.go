@@ -120,6 +120,35 @@ func (n *NodeStep) routeTo(cardID, to string) error {
 	return n.St.MoveCard(cardID, to, card.Status, n.actor())
 }
 
+var reviewLedgerPathPrefixes = [...]string{
+	"docs/superpowers/ledgers",
+	"docs/ledgers",
+}
+
+// isReviewLedgerPath 只允许审阅节点写入两类台账目录自身或其 POSIX 子路径。
+// 使用字符串边界而非 filepath，是因为 Diff 契约传的是仓内 POSIX 路径，不能让执行平台
+// 的分隔符转换改变白名单；尾斜杠边界也防止 docs/ledgers-extra 越过目录边界。
+func isReviewLedgerPath(path string) bool {
+	for _, prefix := range reviewLedgerPathPrefixes {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// reviewReadOnlyViolations 按 Diff 返回顺序保留全部白名单外路径，不去重、不排序，供
+// review 节点在裁决落账前形成可审计的普通评论。
+func reviewReadOnlyViolations(paths []string) []string {
+	violations := make([]string, 0)
+	for _, path := range paths {
+		if !isReviewLedgerPath(path) {
+			violations = append(violations, path)
+		}
+	}
+	return violations
+}
+
 // RunOnce 跑一次本节点；成功抢救裁决时会为被丢弃字段写普通评论，写评论失败
 // 原样返回。
 //
@@ -219,6 +248,44 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 			return Outcome{}, err
 		}
 		logger.Warn("裁决抢救字段已丢弃并留普通评论", "dropped", dropped)
+	}
+	// review 节点的只读闸必须在 RecordReviewVerdict 前取 Diff：Diff 失败不应
+	// 消耗轮次，越界则把内存 verdict 改为 fail 后走已有 on_fail 路由。
+	if verdict.Pass && n.Node.Override.Purpose == ledger.PurposeReview {
+		logger.Info("开始校验 review 节点只读改动", "target", target, "task", taskID)
+		if n.Diff == nil {
+			err := fmt.Errorf("review 节点 diff 依赖未装配")
+			logger.Error("读取审阅改动失败", "target", target, "task", taskID, "cause", err)
+			return n.haltForHuman(cardID, "读取审阅改动失败",
+				"本节点无法确认审阅轮是否只读：\n"+err.Error())
+		}
+		changedPaths, diffErr := n.Diff(ctx, target, taskID)
+		if diffErr != nil {
+			logger.Warn("读取审阅改动失败", "target", target, "task", taskID, "cause", diffErr)
+			return n.haltForHuman(cardID, "读取审阅改动失败",
+				"本节点无法确认审阅轮是否只读：\n"+diffErr.Error())
+		}
+		violations := reviewReadOnlyViolations(changedPaths)
+		if len(violations) == 0 {
+			logger.Info("review 节点只读改动通过", "target", target, "task", taskID,
+				"changed_paths", changedPaths)
+		} else {
+			verdict.Pass = false
+			body := "审阅节点检测到白名单外改动，按 fail 处理；越界路径：\n" +
+				strings.Join(violations, "\n")
+			if err := n.gatedWrite("审阅只读违规留痕"); err != nil {
+				logger.Warn("审阅只读违规留痕被写闸拒绝", "target", target, "task", taskID,
+					"paths", violations, "cause", err)
+				return Outcome{}, err
+			}
+			if _, err := n.St.AddComment(cardID, body, "普通", n.actor()); err != nil {
+				logger.Warn("审阅只读违规评论写入失败", "target", target, "task", taskID,
+					"paths", violations, "cause", err)
+				return Outcome{}, err
+			}
+			logger.Warn("review 节点只读闸未通过，按 fail 路由", "target", target, "task", taskID,
+				"out_of_scope_paths", violations)
+		}
 	}
 	if err := n.gatedWrite("裁决落账"); err != nil {
 		return Outcome{}, err

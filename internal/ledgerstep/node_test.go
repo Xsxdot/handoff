@@ -2,6 +2,8 @@ package ledgerstep
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -19,6 +21,231 @@ func nodeLedger(t *testing.T) (*ledger.Store, ledger.Card) {
 	seedLedgerStepStore(t, s)
 	c, _ := s.CreateCard(ledger.NewCard{Title: "被审卡", Project: "p", Workflow: "bug", Actor: "t"})
 	return s, c
+}
+
+func newReviewReadOnlyStep(t *testing.T, st *ledger.Store, card ledger.Card,
+	diff func(context.Context, string, string) ([]string, error)) *NodeStep {
+	t.Helper()
+	return &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "review-guard", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next: ledger.StatusReview, OnFail: ledger.StatusDoing,
+			Override: ledger.NodeOverride{Purpose: ledger.PurposeReview},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "target", "task-review-guard", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return nodePassMessage(), nil
+		},
+		Diff: diff,
+	}
+}
+
+func reviewPassValues(t *testing.T, st *ledger.Store, cardID string) []bool {
+	t.Helper()
+	events, err := st.EventsFromAsc([]string{cardID}, 0, 1000)
+	if err != nil {
+		t.Fatalf("读 review_verdict 事件: %v", err)
+	}
+	var values []bool
+	for _, event := range events {
+		if event.Type != ledger.EvReviewVerdict {
+			continue
+		}
+		var payload struct {
+			Pass *bool `json:"pass"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("解码 review_verdict: %v", err)
+		}
+		if payload.Pass == nil {
+			t.Fatalf("review_verdict 缺 pass 键: %s", event.Payload)
+		}
+		values = append(values, *payload.Pass)
+	}
+	return values
+}
+
+func TestNodeStepReviewPurposeAllowsEmptyDiff(t *testing.T) {
+	st, card := nodeLedger(t)
+	called := false
+	step := newReviewReadOnlyStep(t, st, card, func(context.Context, string, string) ([]string, error) {
+		called = true
+		return nil, nil
+	})
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionPass {
+		t.Fatalf("空 diff 应 pass: err=%v out=%+v", err, out)
+	}
+	if !called {
+		t.Fatal("purpose=review 且 pass 时必须调用 Diff，即使 Diff 返回空列表")
+	}
+	values := reviewPassValues(t, st, card.ID)
+	if len(values) != 1 || !values[0] {
+		t.Fatalf("空 diff 的 review_verdict = %v，want [true]", values)
+	}
+}
+
+func TestNodeStepReviewPurposeAllowsLedgerPaths(t *testing.T) {
+	paths := []string{
+		"docs/superpowers/ledgers/foo.md", "docs/ledgers/foo.md",
+		"docs/superpowers/ledgers", "docs/ledgers",
+	}
+	for _, path := range paths {
+		t.Run(path, func(t *testing.T) {
+			st, card := nodeLedger(t)
+			step := newReviewReadOnlyStep(t, st, card, func(context.Context, string, string) ([]string, error) {
+				return []string{path}, nil
+			})
+			out, err := step.RunOnce(context.Background(), card.ID)
+			if err != nil || out.Action != ActionPass {
+				t.Fatalf("白名单路径 %q 应 pass: err=%v out=%+v", path, err, out)
+			}
+			values := reviewPassValues(t, st, card.ID)
+			if len(values) != 1 || !values[0] {
+				t.Fatalf("白名单路径 %q 的 review_verdict = %v，want [true]", path, values)
+			}
+		})
+	}
+}
+
+func TestNodeStepReviewPurposeRejectsOutOfBoundsPaths(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := newReviewReadOnlyStep(t, st, card, func(context.Context, string, string) ([]string, error) {
+		return []string{"docs/ledgers/allowed.md", "docs/ledgers-extra/bad.md", "internal/old.go", "internal/new.go"}, nil
+	})
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionContinue {
+		t.Fatalf("越界 diff 应按 on_fail 继续: err=%v out=%+v", err, out)
+	}
+	got, err := st.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读越界 review 卡: %v", err)
+	}
+	if got.Status != ledger.StatusDoing {
+		t.Fatalf("越界 review 应路由到 OnFail 进行中，实际 %q", got.Status)
+	}
+	values := reviewPassValues(t, st, card.ID)
+	if len(values) != 1 || values[0] {
+		t.Fatalf("越界 review_verdict 必须只有 pass=false，实际 %v", values)
+	}
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+	if err != nil {
+		t.Fatalf("读越界 review 事件: %v", err)
+	}
+	commentFound := false
+	for _, event := range events {
+		if event.Type != ledger.EvComment {
+			continue
+		}
+		var payload struct {
+			Body string `json:"body"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			t.Fatalf("解码越界 comment: %v", err)
+		}
+		if strings.Contains(payload.Body, "docs/ledgers-extra/bad.md") &&
+			strings.Contains(payload.Body, "internal/old.go") &&
+			strings.Contains(payload.Body, "internal/new.go") {
+			commentFound = true
+		}
+	}
+	if !commentFound {
+		t.Fatal("越界 review 必须写普通评论并列出每条越界路径")
+	}
+}
+
+func TestNodeStepReviewPurposeDiffFailureDoesNotRecordVerdict(t *testing.T) {
+	cases := []struct {
+		name string
+		diff func(context.Context, string, string) ([]string, error)
+	}{
+		{name: "nil diff", diff: nil},
+		{name: "diff error", diff: func(context.Context, string, string) ([]string, error) {
+			return nil, errors.New("diff backend unavailable")
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			st, card := nodeLedger(t)
+			step := newReviewReadOnlyStep(t, st, card, tc.diff)
+			beforeEvents, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+			if err != nil {
+				t.Fatalf("读 Diff 失败前事件: %v", err)
+			}
+			beforeRounds := CountRounds(beforeEvents, "review-guard")
+			out, err := step.RunOnce(context.Background(), card.ID)
+			if err != nil || out.Action != ActionNeedsHuman {
+				t.Fatalf("Diff 失败必须 needs_human: err=%v out=%+v", err, out)
+			}
+			if !strings.Contains(out.Reason, "读取审阅改动失败") {
+				t.Fatalf("Reason = %q，缺少审阅 diff 失败语义", out.Reason)
+			}
+			if values := reviewPassValues(t, st, card.ID); len(values) != 0 {
+				t.Fatalf("Diff 失败不得写 review_verdict，实际 %v", values)
+			}
+			reason, err := st.NeedsOf(card.ID)
+			if err != nil {
+				t.Fatalf("读 needs_human: %v", err)
+			}
+			if reason != "读取审阅改动失败" {
+				t.Fatalf("needs_human reason = %q", reason)
+			}
+			got, err := st.GetCard(card.ID)
+			if err != nil {
+				t.Fatalf("读 Diff 失败卡: %v", err)
+			}
+			if got.Status != ledger.StatusTodo {
+				t.Fatalf("Diff 失败不得路由到 OnFail，status=%q", got.Status)
+			}
+			afterEvents, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+			if err != nil {
+				t.Fatalf("读 Diff 失败后事件: %v", err)
+			}
+			if afterRounds := CountRounds(afterEvents, "review-guard"); afterRounds != beforeRounds {
+				t.Fatalf("Diff 失败不得增加裁决轮次: before=%d after=%d", beforeRounds, afterRounds)
+			}
+		})
+	}
+}
+
+func TestNodeStepNameReviewWithoutPurposeKeepsLegacyNoDiff(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := &NodeStep{
+		St:   st,
+		Node: ledger.NodeDef{Name: "review", Dispatch: true, Verdict: true, Template: "review-generic"},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "target", "legacy-review-task", nil
+		},
+		Await: func(context.Context, string, string) (string, error) { return nodePassMessage(), nil },
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionPass {
+		t.Fatalf("Name=review 且 purpose 空的存量行为必须 pass: err=%v out=%+v", err, out)
+	}
+}
+
+func TestNodeStepImplementPurposeDoesNotRunReviewGate(t *testing.T) {
+	st, card := nodeLedger(t)
+	called := false
+	step := newReviewReadOnlyStep(t, st, card, func(context.Context, string, string) ([]string, error) {
+		called = true
+		return []string{"internal/production.go"}, nil
+	})
+	step.Node.Override.Purpose = ledger.PurposeImplement
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionPass {
+		t.Fatalf("purpose=implement 不应触发 review 闸: err=%v out=%+v", err, out)
+	}
+	if called {
+		t.Fatal("purpose=implement 不应调用 Diff")
+	}
+	values := reviewPassValues(t, st, card.ID)
+	if len(values) != 1 || !values[0] {
+		t.Fatalf("purpose=implement 的裁决应保持 pass=true，实际 %v", values)
+	}
 }
 
 func TestReviewStepPassAndFailLoop(t *testing.T) {
