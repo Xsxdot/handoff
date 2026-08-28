@@ -74,3 +74,26 @@
   确认弹层（终端会话/草稿文件，标签条关闭钮也过确认闸）、新建工作树弹层、
   计数内部使用（排序/折叠）——全部有测试支撑且绿。
   真机截图对照原型属验收节点动作，不在本 executor 范围。
+## 裁决与重做（2026-08-29，T2 执行轮）
+
+- 协调者裁决：首轮 T2「摊平内容 tab 条」否决。原因：初版 spec/plan 侦察读了 main 旧形态
+  （目录为组），把卡基线（B281/B285 后）的组/列/格中央模型误判为 B264 未来结构。
+  以修订版 spec/plan（92ef249dd）为准重做，其余产出（T1/T3/T5/T6a/T6b、chrome 资产）保留。
+- T2-rev 完成：TabBar 恢复基线 props 全套（onActivateGroup/onCloseGroup/onNew/onNewLauncher/
+  onNewGroup/onMoveGroup）+ taskName；组拖动 DRAG_GROUP_MIME dragstart/dragover/drop 与
+  多窗格告警原样恢复；option-1 chrome（44px/药丸面/非末尾组分隔线/tab-add 行尾 +=
+  新建标签组）；图标按组焦点内容（tui→dispatch-task.png/terminal/file/空组→Plus）。
+- 问题 1 落点：autoName 组标签在**显示层**推导为焦点内容名（tabTitle + taskName resolver，
+  tui=任务原名、解析不到回退 TUI·id8），不改布局模型、持久化组名不变——基线 tabs.ts
+  的 autoName 只有赋值没有改名路径，显示层推导是「组名/窗格头/左栏已打开行同源一致」
+  且零持久化增量的最小落点（偏离说明：协调者猜测改名在布局迁移函数里，实际不在）。
+- 组关闭钮放回标签旁（基线结构，可访问名=「关闭 <组标签>」精确匹配），不放药丸面内
+  ——保住基线 launchers.test 逐字恢复（getByRole('tab', { name: '组 2' })）。
+  每组「新建内容」IconMenu 原样保留。
+- WorkbenchPage 恢复 moveGroup/tabCount 与基线 TabBar 消费；closeTabById 移除
+  （标签条关闭钮语义回到「关闭整组」，无确认闸——基线语义）。
+- Shell 的机器行终端钮恢复基线行为（select + openOrFocus → 独立新组），onOpenTerminalAt
+  接回；Shell.test：空初始组现在渲染为「组 1」标签（计数 1→2 按基线改回），关闭钮
+  断言全部瞄准窗格头（组关闭钮同名歧义消除）。
+- 红绿：launchers.test 基线逐字恢复（红：组拖动告警）+ TabBar.test 重写 8 支（红 6 支）
+  → 绿；workbench 235/235、shell 50/50、tree+shell+workbench 424/424，typecheck 绿。
