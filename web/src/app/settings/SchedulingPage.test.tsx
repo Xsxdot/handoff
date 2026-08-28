@@ -92,6 +92,8 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
     expect(screen.getByRole('option', { name: '执行者队' })).toBeInTheDocument()
     expect(screen.getByRole('option', { name: '协调者队' })).toBeInTheDocument()
     expect(screen.getByText('成员载体（按勾选顺序解析：第一个健康且有空的载体领活）')).toBeVisible()
+    // 成员行带 机器 · CLI 元信息（原型 check-list 每行形态）
+    expect(within(screen.getByRole('dialog')).getByText('local · opencode')).toBeVisible()
     expect(screen.getByText('并发上限（政策位；0 / 留空 = 不限）')).toBeVisible()
     // role hint 在弹窗内新增；页面小队区块本就有一条同文提示，故圈定弹窗内断言。
     expect(within(screen.getByRole('dialog')).getByText(/协调者队成员必须落在协调机；执行者队成员可以是任何执行机。/)).toBeVisible()
