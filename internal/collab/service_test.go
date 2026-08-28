@@ -512,3 +512,45 @@ func TestRoomStatusLiteralMatchesLedger(t *testing.T) {
 		t.Fatalf("进行中不应判终态")
 	}
 }
+
+// TestSendConsumesRoomMentions B287：用户回复即消费该房间 @本人 的未消费提及；
+// 别的卡房间的提及不受牵连。缝级断言，入口 Service.Send。
+func TestSendConsumesRoomMentions(t *testing.T) {
+	svc, st := newFixture(t)
+	card := mustAnyCard(t, svc, st)
+	other := mustCard(t, svc, st, "另一张卡")
+	lc := ledgerapi.New(st)
+	if err := lc.BindDriver(card.ID, "agent:s1", "car-a", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := lc.BindDriver(other.ID, "agent:s2", "car-b", ""); err != nil {
+		t.Fatal(err)
+	}
+	// 协调者侧 @用户：relay 类必须由绑定者书写（room.VerifyWriter 矩阵）。
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "看一下这个", Mentions: []string{"user:sy"}}, "agent:s1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Send(other.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "那边也看一下", Mentions: []string{"user:sy"}}, "agent:s2"); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := svc.Mentions("user:sy", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("发送前应有两处未消费提及，got %d", len(pending))
+	}
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "收到"}, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = svc.Mentions("user:sy", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("回复后本房间提及应清零、他卡提及保留，got %d", len(pending))
+	}
+	if pending[0].CardID != other.ID {
+		t.Fatalf("保留的应是另一张卡的提及，got card %s", pending[0].CardID)
+	}
+}
