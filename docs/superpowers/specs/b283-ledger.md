@@ -28,3 +28,7 @@
 
 - 2026-08-28 implement 开工：工作树 HEAD `54bcc5678`（分支 `fix/B283-float-terminal-dup`，工作树干净）。符号核对：restore.ts 的 import 行/`RestoreInput`/③ 循环、useWorkbenchSync.ts:105 的 buildRestore 调用、Shell.tsx 217/270/301/655、TerminalTab.tsx 8/616 均与计划代码块原文逐字对齐；scripts 实名 `typecheck`=`tsc -b`，另有 `lint`=eslint。图覆盖债：未跑 codegraph，同 plan 节点先例（核对对象全在计划文件集内，直接读码）。
 - 2026-08-28 Task 1 步骤 1 判据基线复核（web/ 下）`npx vitest run src/app/workbench/restore.test.ts src/app/workbench/useWorkbenchSync.test.ts`：`Test Files  2 passed (2)` / `Tests  20 passed (20)`——与计划基线声明一致，动手。
+- 2026-08-28 Task 1 跑红（步骤 2，`npx vitest run src/app/workbench/restore.test.ts`）：`Tests  2 failed | 15 passed (17)`；红原文 `AssertionError: expected { kind: 'terminal', seq: 1 } to deeply equal { kind: 'terminal', seq: 1, …(1) }`（二、三条新用例，失败原因=门控未实现；首条回归锁绿，与计划基线颜色声明一致）。
+- 2026-08-28 Task 1 跑绿（步骤 3–4 后，声明范围）：`Test Files  2 passed (2)` / `Tests  23 passed (23)`（restore 17 + useWorkbenchSync 6）。
+- 2026-08-28 Task 1 偏离记录：夹具 `homeSess`/`dockRaw`/`HomeTab` import 未按计划落在 Task 1——tsc 的 noUnusedLocals 报 TS6133（`'homeSess' is declared but its value is never read` 等），与「每 task 收口 typecheck 必须绿」冲突；且 `dockRaw` 首个消费者实为 Task 2 用例。处理：两夹具与 import 推迟到首个使用它们的 task 加入，文件终态与计划一致，断言零改动。
+- 2026-08-28 Task 1 typecheck 绿（`tsc -b` 无输出）后提交：`8e39a6228 fix(web): 扇出缺席的机器不判死——machines 入参与中央区门控 (B283)`（触及 restore.ts / restore.test.ts / useWorkbenchSync.ts / 台账，git status 无计划外文件）。

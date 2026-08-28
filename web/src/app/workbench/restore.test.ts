@@ -4,6 +4,7 @@
 // 边界：不测试 React、网络请求或项目树选中动作；这些由同步层和 Shell 负责。
 import { describe, expect, it } from 'vitest'
 import type { MachineStatus, PtySession, WorkbenchStateResp } from '../../api/types'
+import type { HomeTab } from '../homedock/useHomeDock'
 import { encodeBase } from './persist'
 import { encodeDock } from '../homedock/dockPersist'
 import type { BaseDir } from './useWorkbench'
@@ -44,6 +45,16 @@ const baseM: BaseDir = {
 // machine 造一条扇出应答行。MachineStatus 四个字段全必填（types.ts:173-178）。
 function machine(name: string, ok: boolean): MachineStatus {
   return { name, ok, fetched_at: '2026-08-28T00:00:00Z', error: '' }
+}
+
+// homeSess 造一条 home 会话；machineName 缺省 = 本机。
+function homeSess(id: string, machineName = ''): PtySession {
+  return sess(id, { machine: machineName, base_kind: 'home', base_path: '' })
+}
+
+// dockRaw 把一组悬浮窗 tab 编成落盘 payload；activeId / windowOpen 可显式指定。
+function dockRaw(tabs: HomeTab[], activeId: string | null = tabs[0]?.id ?? null, windowOpen = false): string {
+  return encodeDock({ tabs, activeId, windowOpen, geom: { x: 10, y: 10, w: 620, h: 340 }, maximized: false })
 }
 
 const VIEW = { vw: 1280, vh: 800, inset: 0 }
@@ -236,5 +247,19 @@ describe('buildRestore', () => {
     })
     expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
     expect(r.pruned).toBe(0)
+  })
+
+  it('home 收编仅限本机：外来机器的 home 会话不进悬浮窗，本机的照常收', () => {
+    const r = buildRestore({
+      state: state({ dock: dockRaw([], null, false) }),
+      sessions: [homeSess('H1', 'mac-02'), homeSess('H2')],
+      machines: [machine('', true), machine('mac-02', true)],
+      ...VIEW,
+    })
+    expect(r.dock).not.toBeNull()
+    expect(r.dock!.tabs).toHaveLength(1)
+    expect(r.dock!.tabs[0].sessionId).toBe('H2')
+    expect(r.adopted).toBe(1)
+    expect(r.dockOrphans).toHaveLength(0)
   })
 })

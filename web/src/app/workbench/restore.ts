@@ -228,6 +228,12 @@ export function buildRestore(input: RestoreInput): RestoreResult {
   let dockSeq = Math.max(0, ...(dock?.tabs ?? []).map((t) => t.seq))
   for (const s of input.sessions) {
     if (!live.has(s.id) || used.has(s.id)) continue
+    // 方案1：悬浮窗是本机面。外来机器的 home 会话归它自己机器的悬浮窗管，不收编
+    // ——跨机收编正是 B283「tab 只增不减」的放大器。中央区（workspace）会话的
+    // 收编语义不变（2026-08-20 状态同步 spec 的既有决定）。baseOfSession 的
+    // home@machine 分类分支保留不动：它分类的是 wire 事实，将来「显式远程 home
+    // 入口」（roadmap）直接复用。
+    if (s.base_kind === 'home' && s.machine !== '') continue
     adopted++
     const b = baseOfSession(s)
     if (b.kind === 'home') {
