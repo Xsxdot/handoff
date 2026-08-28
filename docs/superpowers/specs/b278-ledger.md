@@ -16,6 +16,7 @@
 - 2026-08-28 独立审查 `01a0464e` 被进程重启打断；`01a04667` 续跑出完整报告。Critical 3 / Important 10。协调者吸收见 `docs/superpowers/reviews/b278-spec-review.md`。
 - r1 关键吸收：`--step` 不赌 CLI stderr；不同名不每次警告；fetch 失败退回本地；禁止 FETCH_HEAD；Transport 回传 BaseCommit；skill 只改仓内 `skills/handoff/SKILL.md`；HTTP 负例；重试 50–200ms ×2。
 - 用户 2026-08-28「老样子」授权批准 r1 并无人值守推进到合 main。
+- 2026-08-28 acceptance：复跑定向缝测试全绿；六发变异均编译过且对应缝级测试转红后还原；真机 `go run . card show B278` 的 `tasks[].task_id` 可读。对象 `1fc1ecd64`。审查三项 minor 记账不修。跳过图对账。
 - 2026-08-28 执行节点基线复核：`git status --short --branch` 输出 `## cards/B278-charter`，`git log -1 --oneline` 输出 `c840605a docs(b278): spec r1 批准——吸收独立审查`；工作树无未提交改动。
 - 2026-08-28 执行节点复核：仓内存在 `codegraph/`、`codegraph/best.json`、`codegraph/baseline.json`；`go.mod` 声明 `github.com/Xsxdot/charter/graph v0.9.0`。
 - 2026-08-28 执行节点运行 `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . context d_workspace d_ledger d_gateway d_cli d_transport`（分域并行调用）；命令成功返回 context JSON，输出含 `view: baseline`、`best=true`、各领域声明/接口/主链和 `actual`，同时出现焦点配额/未扫描入口提示；结果不能据此断言无调用方。
