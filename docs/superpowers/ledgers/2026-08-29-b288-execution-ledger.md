@@ -29,3 +29,27 @@
   （否则窄窗三列被裁切，违反验收场景）。tabs.test 2 支新支（三列夹紧 + 单侧夹紧保留）、
   WorkbenchPage 容器断言 1 支；workbench 232/232 绿，typecheck 绿。
 - T6a 完成：archivedKey 一个参数、archivedTasks(tasks) 不再收 tree（终态全收、顺序=任务流原序、未归属不收）；ARCHIVED_TITLE 改「已完成 / 已失败的任务」；ProjectTree 调用点随签名更新且已结束子行排除已打开 tui（openSet 语义）；search.ts 的 archivedHit 升为项目级（项目可见性用），search.test 1 支断言按新结构改写。tree 136/136 绿，typecheck 绿。
+- T6b 完成：ProjectTree 全量重绘。层级=项目行(加粗名+dispatch-task 计数+右侧箭头)
+  →「任务」小标题组(已打开行在前/未终态任务/已结束行，行=图标槽+状态点+名+机器簇)
+  →「目录」小标题组(机器行绿点+右箭头+悬停终端/新建工作树钮+紧凑子行+左轨线缩进)。
+  ProjectTreeProps：removed openedItems/onOpenItem/onOpenDirectoryTerminal；added
+  openItems/focusedTaskId/onFocusOpenItem/onOpenTerminalAt(Shell 最小接线，T7 收口)。
+  search.ts 新增导出 taskMatchesQuery；filterTree 的 openedItems 参数收窄为
+  OpenedSearchItem(base/name/machine/detail)。
+  测试：ProjectTree.test 重写 62 支(层级 DOM 序/任务组构成/已结束收起+计数/已打开项
+  在前+双态/机器行悬停两 case/搜索/⌘K/dock/偏好/右键/建树)，search.test 2 支夹具
+  改新形状，Shell.test 1 支按任务原名改写。tree+shell 187/187 绿，typecheck 绿。
+- T6b 偏离记录：
+  1) plan Consumes 表 OpenItem.group 类型 number 与 activateTab(groupId: string)
+     矛盾——取 string（group id），activateTab 才能直接消费。
+  2) OpenItem 增加可选 detail 字段（plan 形状没有）：保住「按文件相对路径搜到
+     已打开行」的既有搜索能力（search.ts openedText 原本读 content.rel）。
+  3) plan「列的 min-w-0 机制不动」类问题同款：plan 声称行样式类 .proj-*/.mach-*
+     在 option-1 里，实际它们是 b288-workbench-ux 的类；按 plan 冲突规则
+     「两原型冲突以 option-1 为准」在两者都定义的类（task-row、子行）上取 option-1，
+     仅 b288 定义的类（archive-row、mach-row）取 b288。
+  4) 工作树子行去掉 Home/GitBranch 图标（option-1 目录子行无图标）；行上
+     RowCounts 计数控件全部移除（spec §5 明言），计数保留给排序/折叠内部使用；
+     「隐藏文件夹数量」偏好测试改写为「行上不再渲染计数控件」。
+  5) 项目行悬停「工作项/代码图」既有入口保留（out-of-scope 弃选的是原型新增项，
+     移除现存入口属于功能回退，超出本卡授权）。
