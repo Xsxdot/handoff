@@ -93,6 +93,8 @@ export interface WorkbenchApi {
   // 焦点组」——这是走查里真实撞到的偏差，不是理论问题。
   open: (c: TabContent, b?: BaseDir, group?: number) => void
   openTerminal: (b?: BaseDir, group?: number, rel?: string) => void
+  // attach 等边界入口使用服务端提供的首次命令；命令原样进入 terminal tab。
+  openTerminalWithCommand: (command: string, b?: BaseDir, group?: number) => void
   close: (group: number, tabId: string) => void
   activate: (group: number, tabId: string) => void
   setContent: (group: number, tabId: string, c: TabContent) => void
@@ -191,6 +193,14 @@ export function useWorkbench(): WorkbenchApi {
     [mutate],
   )
 
+  const openTerminalWithCommand = useCallback(
+    (command: string, b?: BaseDir, group?: number) => mutate((w) => {
+      const seq = nextTerminalSeq(w)
+      return openTab(w, { kind: 'terminal', seq, initCommand: command }, group)
+    }, b),
+    [mutate],
+  )
+
   const close = useCallback((g: number, id: string) => mutate((w) => closeTab(w, g, id)), [mutate])
   const activate = useCallback((g: number, id: string) => mutate((w) => activateTab(w, g, id)), [mutate])
   const setContent = useCallback(
@@ -267,6 +277,7 @@ export function useWorkbench(): WorkbenchApi {
     select,
     open,
     openTerminal,
+    openTerminalWithCommand,
     close,
     closeById,
     activate,

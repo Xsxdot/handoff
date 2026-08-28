@@ -22,4 +22,10 @@ describe('CardItem 子卡徽标', () => {
     render(<CardItem card={base} onOpen={vi.fn()} />)
     expect(screen.queryByText(/子卡/)).toBeNull()
   })
+
+  it('有队列位次和节点标签时显示可选胶囊', () => {
+    render(<CardItem card={base} onOpen={vi.fn()} queuePosition={2} nodeTag="待审阅" />)
+    expect(screen.getByText('⧗ 排队 #2')).toBeInTheDocument()
+    expect(screen.getByText('待审阅')).toBeInTheDocument()
+  })
 })

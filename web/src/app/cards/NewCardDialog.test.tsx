@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { ApiError } from '../../api/client'
+import { launchCoordinator } from '../../api/scheduling'
 import { NewCardDialog, parseTitles } from './NewCardDialog'
 
 vi.mock('../../api/ledger', async (importOriginal) => ({
@@ -18,6 +19,11 @@ vi.mock('../../api/client', async (importOriginal) => ({
     name === 'sq'
       ? Promise.resolve({ branches: [{ name: 'develop', worktree: '' }], default: 'develop', worktree_root: '/w' })
       : Promise.resolve({ branches: [{ name: 'main', worktree: '' }], default: 'origin/main', worktree_root: '/w' })),
+}))
+
+vi.mock('../../api/scheduling', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/scheduling')>()),
+  launchCoordinator: vi.fn(),
 }))
 
 beforeEach(() => {
@@ -159,6 +165,35 @@ describe('基线分支', () => {
 })
 
 describe('标题批量', () => {
+  it('开卡即绑不把 coordinate 写入 createCard，并在每张成功卡后拉起协调者', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.createCard)
+      .mockResolvedValueOnce({ id: 'B1' })
+      .mockResolvedValueOnce({ id: 'B2' })
+    vi.mocked(launchCoordinator).mockResolvedValue({ woke: true, rebuilt: false, escalated: false })
+    render(<NewCardDialog {...props} project="handoff" onCreated={() => {}} />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /开卡即绑/ }))
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: '一\n二' } })
+    fireEvent.click(screen.getByRole('button', { name: '建卡' }))
+    await waitFor(() => expect(vi.mocked(ledger.createCard)).toHaveBeenCalledTimes(2))
+    expect(vi.mocked(ledger.createCard).mock.calls[0][0]).not.toHaveProperty('coordinate')
+    expect(launchCoordinator).toHaveBeenNthCalledWith(1, 'B1', 'card_create')
+    expect(launchCoordinator).toHaveBeenNthCalledWith(2, 'B2', 'card_create')
+  })
+
+  it('协调者拉起失败不回滚已建卡，并逐条显示失败原因', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.createCard).mockResolvedValue({ id: 'B3' })
+    vi.mocked(launchCoordinator).mockRejectedValue(new Error('409: 协调者队列已满'))
+    render(<NewCardDialog {...props} project="handoff" onCreated={() => {}} />)
+    fireEvent.click(screen.getByRole('checkbox', { name: /开卡即绑/ }))
+    fireEvent.change(screen.getByLabelText('标题'), { target: { value: '保留已建卡' } })
+    fireEvent.click(screen.getByRole('button', { name: '建卡' }))
+    expect(await screen.findByText(/B3/)).toBeVisible()
+    expect(screen.getByText(/协调者失败/)).toBeVisible()
+    expect(screen.getByText(/队列已满/)).toBeVisible()
+  })
+
   it('parseTitles：列表前缀、空行、trim；负数样标题不被误伤', () => {
     expect(parseTitles('- 一\n* 二\n1. 三\n2) 四\n3、五\n\n  六  \n-40ms')).toEqual(
       ['一', '二', '三', '四', '五', '六', '-40ms'],
@@ -199,7 +234,7 @@ describe('标题批量', () => {
     fireEvent.change(await screen.findByLabelText('项目'), { target: { value: 'handoff' } })
     fireEvent.change(screen.getByLabelText('标题'), { target: { value: '甲\n乙\n丙' } })
     fireEvent.click(screen.getByRole('button', { name: '建卡' }))
-    expect(await screen.findAllByText(/已建/)).toHaveLength(2)
+    await waitFor(() => expect(screen.getAllByText(/^已建 /)).toHaveLength(2))
     expect(screen.getByText(/B204/)).toBeInTheDocument()
     expect(screen.getByText(/乙.*title 与 workflow 都是必填/)).toBeInTheDocument()
     expect(onCreated).not.toHaveBeenCalled()

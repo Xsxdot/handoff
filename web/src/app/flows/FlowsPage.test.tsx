@@ -1,8 +1,13 @@
 // FlowsPage 测试：验证工作流编辑加载、发布新版本与原文错误展示。
 // 边界：节点字段细节由 NodeEditor 测试覆盖，本文件只检查页面编排。
-import { describe, expect, it, vi } from 'vitest'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { getSquads } from '../../api/scheduling'
 import { FlowsPage } from './FlowsPage'
+
+vi.mock('../../api/scheduling', () => ({
+  getSquads: vi.fn().mockResolvedValue({ carriers: [], squads: [] }),
+}))
 
 vi.mock('../../api/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/ledger')>()),
@@ -17,6 +22,10 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   fetchDisciplineNames: vi.fn().mockResolvedValue(['implement', 'review', 'finishing']),
   putFlow: vi.fn().mockResolvedValue({ name: 'feature', version: 4 }),
 }))
+
+beforeEach(() => {
+  vi.clearAllMocks()
+})
 
 describe('工作流页可编辑', () => {
   it('保存调 putFlow 并把新版本号显示出来', async () => {
@@ -57,5 +66,66 @@ describe('工作流页可编辑', () => {
     await waitFor(() => expect(vi.mocked(ledger.putFlow)).toHaveBeenCalledWith(
       'feature', expect.any(Array), expect.objectContaining({ columns: ['收集', '沟通', '实现', '验收', '完成'] }),
     ))
+  })
+
+  it('以工作流详情节点作为固定行，不提供加列或删节点控件', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchFlows).mockResolvedValue({ workflows: [{ name: 'feature', version: 2, def: { states: ['待办', '进行中'] } }], templates: [] })
+    vi.mocked(ledger.fetchFlow).mockResolvedValue({
+      name: 'feature', version: 2, states: ['待办', '进行中'],
+      nodes: [{ name: '待办', override: { executor: 'old' } }, { name: '进行中' }],
+      board: { columns: ['代办', '沟通中', '进行中', '审核中', '结束'], fallback: '代办', state_to_column: { 待办: '代办', 进行中: '进行中' } },
+    })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [] })
+    render(<FlowsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    const orchestration = await screen.findByRole('region', { name: '节点编排' })
+    expect(within(orchestration).getByText('节点编排')).toBeVisible()
+    expect(within(orchestration).getByRole('cell', { name: '待办' })).toBeVisible()
+    expect(within(orchestration).getAllByRole('cell', { name: '进行中' })[0]).toBeVisible()
+    expect(screen.queryByRole('button', { name: '加一列' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /删除/ })).not.toBeInTheDocument()
+    expect(screen.getByRole('combobox', { name: '节点 进行中 的派发小队' })).toHaveValue('')
+    expect(vi.mocked(ledger.fetchDisciplineNames)).not.toHaveBeenCalled()
+  })
+
+  it('把节点小队写入 override.squad 并保留其他覆盖；拉起通道只列 coordinator', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchFlows).mockResolvedValue({ workflows: [{ name: 'feature', version: 2, def: { states: ['待办', '进行中'] } }], templates: [] })
+    vi.mocked(ledger.fetchFlow).mockResolvedValue({
+      name: 'feature', version: 2, states: ['待办', '进行中'],
+      nodes: [{ name: '待办', override: { executor: 'old' } }, { name: '进行中' }],
+      board: { columns: ['代办', '沟通中', '进行中', '审核中', '结束'], fallback: '代办', state_to_column: { 待办: '代办', 进行中: '进行中' } },
+    })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [
+      { name: 'exec', role: 'executor', members: [], version: 1 },
+      { name: 'coord', role: 'coordinator', members: [], version: 1 },
+    ] })
+    render(<FlowsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    fireEvent.change(await screen.findByRole('combobox', { name: '节点 进行中 的派发小队' }), { target: { value: 'exec' } })
+    expect(screen.getByRole('combobox', { name: '拉起通道 的派发小队' })).toHaveValue('coord')
+    expect(screen.getByRole('combobox', { name: '拉起通道 的派发小队' })).not.toHaveValue('exec')
+    fireEvent.click(screen.getByRole('button', { name: '保存为新版本' }))
+    await waitFor(() => expect(vi.mocked(ledger.putFlow)).toHaveBeenCalledWith('feature', [
+      { name: '待办', override: { executor: 'old' } },
+      { name: '进行中', override: { squad: 'exec' } },
+    ], expect.anything()))
+  })
+
+  it('协调者小队不唯一时只展示歧义，不伪造 flow 级 launch 字段', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchFlows).mockResolvedValue({ workflows: [{ name: 'feature', version: 2, def: { states: ['待办'] } }], templates: [] })
+    vi.mocked(ledger.fetchFlow).mockResolvedValue({
+      name: 'feature', version: 2, states: ['待办'], nodes: [{ name: '待办' }], board: undefined,
+    })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [
+      { name: 'coord-a', role: 'coordinator', members: [], version: 1 },
+      { name: 'coord-b', role: 'coordinator', members: [], version: 1 },
+    ] })
+    render(<FlowsPage />)
+    fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
+    expect(await screen.findByText(/协调者小队不唯一/)).toBeVisible()
+    expect(vi.mocked(ledger.putFlow)).not.toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.objectContaining({ launch_squad: expect.anything() }))
   })
 })

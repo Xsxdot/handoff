@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type { CardView } from '../../api/ledger'
-import { boardColumnFor, boardColumns, cardsInColumn, defaultBoardLayout, filterNeeds, mergeStateOrder, needsAttention, normalizeBoardLayout, visibleColumns } from './columns'
+import { boardColumnFor, boardColumns, cardsInColumn, defaultBoardLayout, filterNeeds, mergeStateOrder, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
 
 const card = (over: Partial<CardView>): CardView => ({
   id: 'B1', title: 't', status: '待办', priority: '中', project: 'p', workflow: 'bug', parent: '',
@@ -40,6 +40,21 @@ describe('工作项看板契约', () => {
   it('列序固定为默认五列而非平铺工作流状态', () => {
     expect(boardColumns(['待办', '已出spec', '进行中', '待审阅', '待合并', '已完成']))
       .toEqual(['代办', '沟通中', '进行中', '审核中', '结束'])
+  })
+
+  it('只在同列存在多个节点时返回节点标签，映射变为一对一则隐藏', () => {
+    const nodes = ['待审阅', '待合并', '进行中']
+    const layout = defaultBoardLayout(nodes)
+    expect(nodeLabelFor('待审阅', nodes, layout)).toBe('待审阅')
+    expect(nodeLabelFor('进行中', nodes, layout)).toBeUndefined()
+
+    const oneToOne = { ...layout, state_to_column: { 待审阅: '沟通中', 待合并: '审核中', 进行中: '进行中' } }
+    expect(nodeLabelFor('待审阅', nodes, oneToOne)).toBeUndefined()
+  })
+
+  it('未显式映射的节点也按看板兜底列判断是否同列', () => {
+    const layout = { columns: ['代办', '沟通中', '进行中', '审核中', '结束'], fallback: '进行中', state_to_column: {} }
+    expect(nodeLabelFor('自定义一', ['自定义一', '自定义二'], layout)).toBe('自定义一')
   })
 })
 

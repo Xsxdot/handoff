@@ -9,6 +9,8 @@ export interface CardItemProps {
   onMigrate?: () => void
   mergedCount?: number
   verified?: boolean
+  queuePosition?: number
+  nodeTag?: string
 }
 
 function Chip({ children, className, title, onClick }: {
@@ -27,7 +29,7 @@ function Chip({ children, className, title, onClick }: {
   return <span title={title} className={cn('rounded-full border px-1.5 text-[10px]', className)}>{children}</span>
 }
 
-export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_count, verified }: CardItemProps) {
+export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_count, verified, queuePosition, nodeTag }: CardItemProps) {
   const needs = needsAttention(card)
   const attachments = card.attachments ?? []
   const blockedBy = card.blocked_by ?? []
@@ -78,6 +80,8 @@ export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_co
         {card.open_decisions > 0 && <Chip className="border-amber-300 bg-amber-50 text-amber-700">⚖ 裁决 {card.open_decisions}</Chip>}
         {card.open_tickets > 0 && <Chip className="border-amber-300 bg-amber-50 text-amber-700">🄠 工单 {card.open_tickets}</Chip>}
         {verified !== undefined && <Chip className="border-green-300 bg-green-50 text-green-700">{verified ? '已验' : '待真机验'}</Chip>}
+        {queuePosition !== undefined && <Chip className="border-sky-300 bg-sky-50 text-sky-700">⧗ 排队 #{queuePosition}</Chip>}
+        {nodeTag && <span className="rounded-full bg-slate-900 px-1.5 text-[10px] text-white">{nodeTag}</span>}
         {blockedBy.length > 0 && <Chip className="text-muted-foreground">⛓ {blockedBy.join(', ')}</Chip>}
         {card.needs && <Chip className="border-amber-300 bg-amber-50 text-amber-700">⚑ {card.needs}</Chip>}
         {card.conflict && <Chip className="border-destructive/40 bg-destructive/5 text-destructive">✕ 状态冲突</Chip>}

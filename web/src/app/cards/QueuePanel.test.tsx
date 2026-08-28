@@ -1,72 +1,82 @@
-// QueuePanel.test.tsx —— 后端队列快照的呈现与卡号回接测试。
-//
-// 边界：position、ready 和输入顺序来自服务端；本组件不重排、不推导缺席字段，
-// 轮询及页面组装由 CardsPage 测试覆盖。
+// QueuePanel.test.tsx —— 锁定卡片看板队列折叠、字段和断线保留接缝。
+// 边界：只验证服务端 QueueEntry 的呈现与打开卡回调，不测试轮询实现。
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen } from '@testing-library/react'
+import { render, screen } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import type { QueueEntry } from '../../api/scheduling'
-import { QueuePanel, queuePositionByCard } from './QueuePanel'
+import { QueuePanel } from './QueuePanel'
 
-const entry = (over: Partial<QueueEntry> = {}): QueueEntry => ({
-  kind: 'ignition_queue', id: 'q1', card: 'B1', node: 'implement', squad: 'exec',
-  target: 'linux', executor: 'opencode', model: 'gpt-5', priority: '高',
-  ready: false, actor: 'cli:user', seq: 1, position: 1, ...over,
-})
+const entries: readonly QueueEntry[] = [
+  {
+    kind: 'launch_queue',
+    id: 'q1',
+    card: 'B1',
+    node: '进行中',
+    squad: 'exec',
+    priority: '高',
+    ready: false,
+    actor: 'wake',
+    seq: 7,
+    position: 1,
+  },
+  {
+    kind: 'ignition_queue',
+    id: 'q2',
+    card: 'B2',
+    node: '待审阅',
+    squad: 'coord',
+    target: 'local',
+    executor: 'opencode',
+    model: 'gpt-5',
+    priority: '中',
+    ready: true,
+    actor: 'card_step',
+    seq: 8,
+    position: 2,
+  },
+]
 
-const props = (over: Partial<React.ComponentProps<typeof QueuePanel>> = {}) => ({
-  entries: [], loading: false, disconnected: false, sessionExpired: false,
-  errorText: '', onOpenCard: vi.fn(), ...over,
-})
+function renderPanel(overrides: Partial<React.ComponentProps<typeof QueuePanel>> = {}) {
+  return render(
+    <QueuePanel
+      entries={entries}
+      open={false}
+      loading={false}
+      disconnected={false}
+      sessionExpired={false}
+      errorText=""
+      onToggle={vi.fn()}
+      onOpenCard={vi.fn()}
+      {...overrides}
+    />,
+  )
+}
 
 describe('QueuePanel', () => {
-  it('按服务端顺序显示 position 与队列快照字段，不自行排序', () => {
-    render(<QueuePanel {...props({
-      entries: [
-        entry({ id: 'q2', card: 'B2', node: 'review', ready: true, position: 2 }),
-        entry({ id: 'q1', card: 'B1', node: undefined, squad: 'coord', priority: '', position: 1 }),
-        entry({ id: 'q3', card: 'B3', node: 'implement', position: 3 }),
-      ],
-    })} />)
-    const rows = [...screen.getByRole('list').querySelectorAll('li')]
-    expect(rows.map((row) => row.textContent)).toEqual([
-      expect.stringContaining('#2'), expect.stringContaining('#1'), expect.stringContaining('#3'),
-    ])
-    expect(rows[0]).toHaveTextContent('B2')
-    expect(rows[0]).toHaveTextContent('review')
-    expect(rows[0]).toHaveTextContent('可运行')
-    expect(rows[1]).toHaveTextContent('coord')
-    expect(rows[1]).toHaveTextContent('等待条件')
-    expect(rows[1]).not.toHaveTextContent('优先级')
-  })
-
-  it('同卡取最早服务端位次，空 card 不进入 map，0 保留为真实值', () => {
-    const positions = queuePositionByCard([
-      entry({ card: 'B1', position: 4 }), entry({ card: 'B1', position: 2 }), entry({ card: '', position: 0 }),
-    ])
-    expect(positions.get('B1')).toBe(2)
-    expect(positions.has('')).toBe(false)
-    render(<QueuePanel {...props({ entries: [entry({ card: 'B0', position: 0, node: undefined, squad: '' })] })} />)
-    expect(screen.getByText('#0')).toBeInTheDocument()
-  })
-
-  it('点击卡号回调完整 cardId', () => {
+  it('折叠工具条显示数量，展开后按服务端位次呈现完整字段并可打开卡片', async () => {
     const onOpenCard = vi.fn()
-    render(<QueuePanel {...props({ entries: [entry({ card: 'B1.2' }), entry({ id: 'q2', card: 'B2' })], onOpenCard })} />)
-    fireEvent.click(screen.getByRole('button', { name: 'B1.2' }))
-    expect(onOpenCard).toHaveBeenCalledWith('B1.2')
+    const user = userEvent.setup()
+    renderPanel({ onOpenCard })
+
+    expect(screen.getByRole('button', { name: '⧗ 排队中 2' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '打开 B1' })).not.toBeInTheDocument()
+
+    await user.click(screen.getByRole('button', { name: '⧗ 排队中 2' }))
+
+    expect(screen.getByText('B1')).toBeInTheDocument()
+    expect(screen.getByText('拉起')).toBeInTheDocument()
+    expect(screen.getByText('进行中 · exec')).toBeInTheDocument()
+    expect(screen.getByText('高')).toBeInTheDocument()
+    expect(screen.getByText('未就绪')).toBeInTheDocument()
+    expect(screen.getByText('wake')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '打开 B1' }))
+    expect(onOpenCard).toHaveBeenCalledWith('B1')
   })
 
-  it('断线保留旧 entries 且显示原因；首拉失败与会话失效不伪造空队列', () => {
-    const { rerender } = render(<QueuePanel {...props({ entries: [entry()], disconnected: true, errorText: '连接被拒绝' })} />)
-    expect(screen.getByText('B1')).toBeInTheDocument()
-    expect(screen.getByRole('alert')).toHaveTextContent('已断开')
-    expect(screen.getByRole('alert')).toHaveTextContent('连接被拒绝')
-    expect(screen.queryByText('当前没有排队项。')).not.toBeInTheDocument()
+  it('断线时保留最近队列快照并显示网络断开', () => {
+    renderPanel({ open: true, disconnected: true, errorText: '网络断开' })
 
-    rerender(<QueuePanel {...props({ loading: true, errorText: '首拉超时' })} />)
-    expect(screen.getByText('正在读取队列…')).toBeInTheDocument()
-    rerender(<QueuePanel {...props({ sessionExpired: true, errorText: '401' })} />)
-    expect(screen.getByText(/会话已失效/)).toBeInTheDocument()
-    expect(screen.queryByText('当前没有排队项。')).not.toBeInTheDocument()
+    expect(screen.getByText('网络断开')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '打开 B1' })).toBeInTheDocument()
   })
 })

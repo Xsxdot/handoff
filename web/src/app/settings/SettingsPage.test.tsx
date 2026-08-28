@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { getSquads } from '../../api/scheduling'
 import { SettingsPage } from './SettingsPage'
 
 vi.mock('../data/useMachines', () => ({
@@ -32,6 +33,10 @@ vi.mock('../../api/client', async () => {
     fetchDiscipline: vi.fn().mockResolvedValue({ dir: '/d', builtins: [], files: [], bindings: [] }),
     fetchEnv: vi.fn().mockResolvedValue({ dir: '/d/env', files: [], bindings: [] }),
   }
+})
+vi.mock('../../api/scheduling', async () => {
+  const actual = await vi.importActual<typeof import('../../api/scheduling')>('../../api/scheduling')
+  return { ...actual, getSquads: vi.fn() }
 })
 
 describe('SettingsPage', () => {
@@ -68,5 +73,14 @@ describe('SettingsPage', () => {
     render(<SettingsPage onClose={onClose} />)
     fireEvent.click(screen.getByRole('button', { name: '返回工作台' }))
     expect(onClose).toHaveBeenCalled()
+  })
+
+  it('opens automation directly from the query string', async () => {
+    window.history.pushState({}, '', '/settings?section=automation')
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [] })
+    render(<SettingsPage onClose={vi.fn()} />)
+    expect(await screen.findByRole('heading', { name: '自动化' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '自动化' })).toHaveAttribute('aria-current', 'true')
+    window.history.pushState({}, '', '/')
   })
 })

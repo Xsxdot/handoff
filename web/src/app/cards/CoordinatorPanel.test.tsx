@@ -1,12 +1,9 @@
+// CoordinatorPanel.test.tsx —— 锁定协调者三态、服务端命令确认和交回接缝。
+// 边界：每次生命周期动作都从公开按钮进入；终端真正打开由 Workbench/Shell 接缝负责。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
-import { ApiError } from '../../api/client'
-import {
-  attachCoordinator,
-  getCoordinatorStatus,
-  launchCoordinator,
-  releaseCoordinator,
-} from '../../api/scheduling'
+import { render, screen, waitFor } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
+import { attachCoordinator, getCoordinatorStatus, launchCoordinator, releaseCoordinator } from '../../api/scheduling'
 import type { CoordinatorStatus } from '../../api/scheduling'
 import { usePoll } from '../data/usePoll'
 import { CoordinatorPanel } from './CoordinatorPanel'
@@ -22,100 +19,67 @@ vi.mock('../../api/scheduling', async (importOriginal) => ({
 vi.mock('../data/usePoll', () => ({ usePoll: vi.fn() }))
 
 const refresh = vi.fn()
+const unbound: CoordinatorStatus = { bound: false, attach_active: false, attach: null }
+const info = { machine: '', dir: '/repo/handoff', command: 'opencode --session sess-coord' }
 
-function pollState(over: Partial<{
-  data: CoordinatorStatus | null
-  disconnected: boolean
-  sessionExpired: boolean
-  errorText: string
-}> = {}) {
-  return {
-    data: { bound: false, attach_active: false, attach: null },
-    disconnected: false,
-    sessionExpired: false,
-    errorText: '',
-    refresh,
-    ...over,
-  }
+function pollState(data: CoordinatorStatus | null, over: Partial<{ disconnected: boolean; sessionExpired: boolean; errorText: string }> = {}) {
+  return { data, disconnected: false, sessionExpired: false, errorText: '', refresh, ...over }
 }
 
 describe('协调者面板', () => {
   beforeEach(() => {
     vi.clearAllMocks()
-    vi.mocked(usePoll).mockReturnValue(pollState() as never)
-    vi.mocked(getCoordinatorStatus).mockResolvedValue(pollState().data as CoordinatorStatus)
+    vi.mocked(usePoll).mockReturnValue(pollState(unbound) as never)
+    vi.mocked(getCoordinatorStatus).mockResolvedValue(unbound)
     vi.mocked(launchCoordinator).mockResolvedValue({ woke: true, rebuilt: false, escalated: false, output: '协调者已拉起' })
-    vi.mocked(attachCoordinator).mockResolvedValue({ machine: '', dir: '/repo/handoff', command: 'opencode --session sess' })
+    vi.mocked(attachCoordinator).mockResolvedValue(info)
     vi.mocked(releaseCoordinator).mockResolvedValue({ ok: true })
   })
 
-  it('未绑定时可以拉起，并显示服务端成功回执', async () => {
-    render(<CoordinatorPanel cardId="B1" />)
-    fireEvent.click(screen.getByRole('button', { name: '拉起协调者' }))
-    await waitFor(() => expect(launchCoordinator).toHaveBeenCalledWith('B1'))
-    expect(await screen.findByText('协调者已拉起')).toBeInTheDocument()
-    expect(refresh).toHaveBeenCalled()
+  it('maps unbound, bound, and attach-active status to the three prototype states', async () => {
+    vi.mocked(usePoll)
+      .mockReturnValueOnce(pollState(unbound) as never)
+      .mockReturnValueOnce(pollState({ bound: true, attach_active: false, attach: info }) as never)
+    const { rerender } = render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    expect(await screen.findByText('未绑定')).toBeVisible()
+    expect(screen.getByRole('button', { name: '▶ 拉起协调者' })).toBeVisible()
+    rerender(<CoordinatorPanel cardId="B2" onOpenTerminal={vi.fn()} />)
+    expect(await screen.findByText('已绑定')).toBeVisible()
+    expect(screen.getByRole('button', { name: '打开终端' })).toBeVisible()
   })
 
-  it('拉起失败保留后端原文', async () => {
-    vi.mocked(launchCoordinator).mockRejectedValueOnce(new ApiError(400, '未登记协调者小队'))
-    render(<CoordinatorPanel cardId="B1" />)
-    fireEvent.click(screen.getByRole('button', { name: '拉起协调者' }))
-    expect(await screen.findByText('未登记协调者小队')).toBeInTheDocument()
+  it('confirms service command and workdir, then attaches without rewriting command', async () => {
+    const onOpenTerminal = vi.fn()
+    vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: false, attach: info }) as never)
+    render(<CoordinatorPanel cardId="B1" onOpenTerminal={onOpenTerminal} />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '打开终端' }))
+    expect(screen.getByText(/attach 与自动唤醒互斥/)).toBeVisible()
+    expect(screen.getByText('/repo/handoff')).toBeVisible()
+    expect(screen.getByText('opencode --session sess-coord')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '确认 attach' }))
+    expect(attachCoordinator).toHaveBeenCalledWith('B1', '/repo/handoff')
+    expect(onOpenTerminal).toHaveBeenCalledWith(info)
   })
 
-  it('已绑定未接管时 attach 使用状态目录并显示定位三元组', async () => {
-    vi.mocked(usePoll).mockReturnValue(pollState({
-      data: {
-        bound: true,
-        attach_active: false,
-        attach: { machine: '', dir: '/repo/handoff', command: 'opencode --session cached' },
-      },
-    }) as never)
-    vi.mocked(attachCoordinator).mockResolvedValue({ machine: 'box-2', dir: '/workspace/card', command: 'claude --session sess-2' })
-    render(<CoordinatorPanel cardId="B1" />)
-    fireEvent.click(screen.getByRole('button', { name: '打开终端' }))
-    await waitFor(() => expect(attachCoordinator).toHaveBeenCalledWith('B1', '/repo/handoff'))
-    expect(await screen.findByText('box-2')).toBeInTheDocument()
-    expect(screen.getByText('/workspace/card')).toBeInTheDocument()
-    expect(screen.getByText('claude --session sess-2')).toBeInTheDocument()
+  it('releases attach and exposes errors instead of pretending success', async () => {
+    vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: true, attach: info }) as never)
+    render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    const user = userEvent.setup()
+    expect(await screen.findByText('人工接管中')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '交回无头' }))
+    expect(releaseCoordinator).toHaveBeenCalledWith('B1')
+    await waitFor(() => expect(refresh).toHaveBeenCalled())
   })
 
-  it('接管态可以交回无头协调者', async () => {
-    vi.mocked(usePoll).mockReturnValue(pollState({
-      data: {
-        bound: true,
-        attach_active: true,
-        attach: { machine: '', dir: '/repo/handoff', command: 'opencode --session sess' },
-      },
-    }) as never)
-    render(<CoordinatorPanel cardId="B1" />)
-    fireEvent.click(screen.getByRole('button', { name: '交回无头' }))
-    await waitFor(() => expect(releaseCoordinator).toHaveBeenCalledWith('B1'))
-    expect(refresh).toHaveBeenCalled()
-  })
-
-  it('断线保留状态但禁用会改状态的按钮', () => {
-    vi.mocked(usePoll).mockReturnValue(pollState({
-      data: { bound: true, attach_active: false, attach: null },
-      disconnected: true,
-      errorText: 'coordinator offline',
-    }) as never)
-    render(<CoordinatorPanel cardId="B1" />)
-    expect(screen.getByText('已绑定')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '打开终端' })).toBeDisabled()
-    expect(screen.getByText('coordinator offline')).toBeInTheDocument()
-  })
-
-  it('会话失效与首拉失败分别显示终止态', () => {
-    vi.mocked(usePoll).mockReturnValue(pollState({ data: null, sessionExpired: true }) as never)
-    const expired = render(<CoordinatorPanel cardId="B1" />)
-    expect(screen.getByText(/会话已失效/)).toBeInTheDocument()
-    expired.unmount()
-
-    vi.mocked(usePoll).mockReturnValue(pollState({ data: null, errorText: 'status unavailable' }) as never)
-    render(<CoordinatorPanel cardId="B1" />)
-    expect(screen.getByText('status unavailable')).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '重试' })).toBeInTheDocument()
+  it('release 返回 ok=false 时保留人工接管态并显示错误', async () => {
+    vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: true, attach: info }) as never)
+    vi.mocked(releaseCoordinator).mockResolvedValue({ ok: false })
+    render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '交回无头' }))
+    expect(await screen.findByText('交回无头失败：服务端未确认释放')).toBeVisible()
+    expect(screen.getByText('人工接管中')).toBeVisible()
+    expect(refresh).not.toHaveBeenCalled()
   })
 })

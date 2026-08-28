@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
-import { fetchDisciplineNames, fetchFlow, fetchFlows, putFlow } from '../../api/ledger'
+import { fetchFlow, fetchFlows, putFlow } from '../../api/ledger'
 import type { FlowsResp, NodeDef, TemplateWire, WorkflowWire } from '../../api/ledger'
+import { getSquads } from '../../api/scheduling'
+import type { SquadView } from '../../api/scheduling'
 import { errorMessage } from '../lib/format'
-import { defaultBoardLayout, type BoardLayout } from '../cards/columns'
-import { NodeEditor } from './NodeEditor'
+import { boardColumnFor, defaultBoardLayout, type BoardLayout } from '../cards/columns'
 
 type Tab = 'workflows' | 'templates'
 
@@ -61,6 +62,31 @@ function parseBoardInput(value: string): string[] {
   return value.split(/[，,、]/).map((column) => column.trim())
 }
 
+export type OrchestrationRow = {
+  node: NodeDef
+  boardColumn: string
+  squad: string
+}
+
+/** 只更新节点执行小队，保留其他 override；空值回到存量直绑语义。 */
+function setNodeSquad(node: NodeDef, squad: string): NodeDef {
+  const override = { ...(node.override ?? {}) }
+  if (squad === '') delete override.squad
+  else override.squad = squad
+  return Object.keys(override).length === 0
+    ? { ...node, override: undefined }
+    : { ...node, override }
+}
+
+/** 从版本化 NodeDef 与看板映射构成编排表行，不从看板列反推节点。 */
+function orchestrationRows(nodes: readonly NodeDef[], board: BoardLayout): OrchestrationRow[] {
+  return nodes.map((node) => ({
+    node,
+    boardColumn: boardColumnFor(node.name, board),
+    squad: node.override?.squad ?? '',
+  }))
+}
+
 function boardValidation(board: BoardLayout, states: string[]): string {
   if (board.columns.length !== 5) return '看板列必须恰好填写五项。'
   if (board.columns.some((column) => column === '')) return '看板列名不能为空。'
@@ -72,12 +98,12 @@ function boardValidation(board: BoardLayout, states: string[]): string {
   return ''
 }
 
-function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templates: string[] }) {
+function WorkflowCard({ workflow }: { workflow: WorkflowWire }) {
   const [editing, setEditing] = useState(false)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)
   const [nodes, setNodes] = useState<NodeDef[]>(() => nodesFromStates(workflow.def.states))
-  const [disciplines, setDisciplines] = useState<string[]>([])
+  const [squads, setSquads] = useState<SquadView[]>([])
   const [version, setVersion] = useState(workflow.version)
   const [loadError, setLoadError] = useState('')
   const [saveError, setSaveError] = useState('')
@@ -91,37 +117,18 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
     setSaveError('')
     setNodes(nodesFromStates(workflow.def.states))
     setBoard(workflow.def.board ?? defaultBoardLayout(workflow.def.states))
-    void Promise.all([fetchFlow(workflow.name), fetchDisciplineNames()])
-      .then(([detail, names]) => {
+    console.info('flows.orchestration.load', { workflow: workflow.name })
+    void Promise.all([fetchFlow(workflow.name), getSquads()])
+      .then(([detail, scheduling]) => {
         setNodes(detail.nodes)
-        setDisciplines(names)
+        setSquads(scheduling.squads)
         setBoard(detail.board ?? defaultBoardLayout(detail.states))
       })
-      .catch((err: unknown) => setLoadError(errorMessage(err)))
+      .catch((cause: unknown) => {
+        console.error('flows.orchestration.error', { workflow: workflow.name, phase: 'load', cause })
+        setLoadError(errorMessage(cause))
+      })
       .finally(() => setLoading(false))
-  }
-
-  const updateNode = (index: number, node: NodeDef) => {
-    setNodes((current) => current.map((item, itemIndex) => itemIndex === index ? node : item))
-  }
-
-  const removeNode = (index: number) => {
-    setNodes((current) => current.filter((_, itemIndex) => itemIndex !== index))
-  }
-
-  const moveNode = (index: number, offset: number) => {
-    setNodes((current) => {
-      const target = index + offset
-      if (target < 0 || target >= current.length) return current
-      const next = [...current]
-      const [item] = next.splice(index, 1)
-      next.splice(target, 0, item)
-      return next
-    })
-  }
-
-  const addNode = () => {
-    setNodes((current) => [...current, { name: `新列${current.length + 1}` }])
   }
 
   const save = async () => {
@@ -132,19 +139,25 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
     }
     setBusy(true)
     setSaveError('')
+    console.info('flows.orchestration.save', { workflow: workflow.name, nodeCount: nodes.length })
     try {
       const result = await putFlow(workflow.name, nodes, board)
       setVersion(result.version)
       setSavedBoard(board)
       setEditing(false)
-    } catch (err) {
-      setSaveError(errorMessage(err))
+      console.info('flows.orchestration.save.done', { workflow: workflow.name, version: result.version })
+    } catch (cause) {
+      console.error('flows.orchestration.error', { workflow: workflow.name, phase: 'save', cause })
+      setSaveError(errorMessage(cause))
     } finally {
       setBusy(false)
     }
   }
 
   if (editing) {
+    const rows = orchestrationRows(nodes, board)
+    const executorSquads = squads.filter((squad) => squad.role === 'executor')
+    const coordinatorSquads = squads.filter((squad) => squad.role === 'coordinator')
     return (
       <section className="rounded-lg border p-4">
         <div className="flex items-center gap-2">
@@ -236,41 +249,73 @@ function WorkflowCard({ workflow, templates }: { workflow: WorkflowWire; templat
             </label>
           </div>
         </section>
-        <div className="mt-3 space-y-3">
-          {nodes.map((node, index) => (
-            <div key={`${node.name}-${index}`}>
-              <NodeEditor
-                node={node}
-                index={index}
-                templates={templates}
-                disciplines={disciplines}
-                nodeNames={nodes.map((item) => item.name)}
-                onChange={(next) => updateNode(index, next)}
-                onRemove={() => removeNode(index)}
-              />
-              <div className="mt-1 flex gap-1 pl-1">
-                <button
-                  type="button"
-                  className="rounded border px-2 py-1 text-xs disabled:opacity-50"
-                  disabled={index === 0}
-                  onClick={() => moveNode(index, -1)}
-                >
-                  上移
-                </button>
-                <button
-                  type="button"
-                  className="rounded border px-2 py-1 text-xs disabled:opacity-50"
-                  disabled={index === nodes.length - 1}
-                  onClick={() => moveNode(index, 1)}
-                >
-                  下移
-                </button>
-              </div>
-            </div>
-          ))}
-        </div>
+        <section className="mt-3 overflow-x-auto rounded border p-3" aria-label="节点编排">
+          <h4 className="text-xs font-semibold">节点编排</h4>
+          <p className="mt-1 text-xs text-muted-foreground">节点来自工作流版本，不能在此增删；小队只表达执行者归属，空值表示不派发。</p>
+          <table className="mt-2 min-w-[640px] w-full border-collapse text-xs">
+            <thead>
+              <tr>
+                <th className="border px-2 py-1 text-left font-medium">节点</th>
+                <th className="border px-2 py-1 text-left font-medium">看板列</th>
+                <th className="border px-2 py-1 text-left font-medium">派发小队</th>
+                <th className="border px-2 py-1 text-left font-medium">说明</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map(({ node, boardColumn, squad }, index) => (
+                <tr key={`${node.name}-${index}`}>
+                  <td className="border px-2 py-1 font-medium">{node.name}</td>
+                  <td className="border px-2 py-1">
+                    <select
+                      aria-label={`节点 ${node.name} 的看板列`}
+                      value={boardColumn}
+                      onChange={(event) => setBoard((current) => ({ ...current, state_to_column: { ...current.state_to_column, [node.name]: event.target.value } }))}
+                      className="w-full rounded border bg-background px-1.5 py-1"
+                    >
+                      {board.columns.map((column, columnIndex) => <option key={`${column}-${columnIndex}`} value={column}>{column}</option>)}
+                    </select>
+                  </td>
+                  <td className="border px-2 py-1">
+                    <select
+                      aria-label={`节点 ${node.name} 的派发小队`}
+                      value={squad}
+                      onChange={(event) => setNodes((current) => current.map((item, itemIndex) => itemIndex === index ? setNodeSquad(item, event.target.value) : item))}
+                      className="w-full rounded border bg-background px-1.5 py-1"
+                    >
+                      <option value="">无（不派发）</option>
+                      {executorSquads.map((candidate) => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}
+                    </select>
+                  </td>
+                  <td className="border px-2 py-1 text-muted-foreground">版本化节点配置</td>
+                </tr>
+              ))}
+              <tr>
+                <td className="border px-2 py-1 font-medium">拉起通道</td>
+                <td className="border px-2 py-1 text-muted-foreground">—（不动状态）</td>
+                <td className="border px-2 py-1">
+                  <select
+                    aria-label="拉起通道 的派发小队"
+                    value={coordinatorSquads.length === 1 ? coordinatorSquads[0].name : ''}
+                    disabled={coordinatorSquads.length !== 1}
+                    className="w-full rounded border bg-background px-1.5 py-1 disabled:opacity-60"
+                    onChange={() => undefined}
+                  >
+                    <option value="">无（不自动拉起）</option>
+                    {coordinatorSquads.map((candidate) => <option key={candidate.name} value={candidate.name}>{candidate.name}</option>)}
+                  </select>
+                </td>
+                <td className="border px-2 py-1 text-muted-foreground">
+                  {coordinatorSquads.length === 0
+                    ? '未登记协调者队'
+                    : coordinatorSquads.length > 1
+                      ? `协调者小队不唯一：${coordinatorSquads.map((squad) => squad.name).join('、')}`
+                      : '当前协调者队来自设置·自动化'}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </section>
         <div className="mt-4 flex flex-wrap gap-2">
-          <button type="button" className="rounded border px-3 py-1.5 text-sm" onClick={addNode}>加一列</button>
           <button
             type="button"
             className="rounded bg-primary px-3 py-1.5 text-sm text-primary-foreground disabled:opacity-50"
@@ -445,7 +490,6 @@ export function FlowsPage() {
                 <WorkflowCard
                   key={workflow.name}
                   workflow={workflow}
-                  templates={templates.map((template) => template.name)}
                 />
               ))}
             </div>

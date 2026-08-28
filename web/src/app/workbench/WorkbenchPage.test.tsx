@@ -109,6 +109,7 @@ function api(overrides: Partial<WorkbenchApi> = {}): WorkbenchApi {
     select: vi.fn(),
     open: vi.fn(),
     openTerminal: vi.fn(),
+    openTerminalWithCommand: vi.fn(),
     close: vi.fn(),
     activate: vi.fn(),
     setContent: vi.fn(),

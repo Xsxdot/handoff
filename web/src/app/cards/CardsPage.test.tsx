@@ -24,6 +24,11 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   ]),
 }))
 
+vi.mock('../../api/scheduling', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/scheduling')>()),
+  getQueue: vi.fn().mockResolvedValue({ queue: [] }),
+}))
+
 // 建卡对话框换成桩：这里要验的是 CardsPage 往下传了什么，不是对话框自己怎么渲染
 vi.mock('./NewCardDialog', () => ({
   NewCardDialog: (props: Record<string, unknown>) => (
@@ -53,6 +58,21 @@ describe('项目级请示横幅', () => {
     renderPage()
     await waitFor(() => expect(screen.getByText(/项目级请示/)).toBeInTheDocument())
     expect(screen.getByText(/不挂卡/)).toBeInTheDocument()
+  })
+})
+
+describe('看板排队工具条', () => {
+  it('挂载独立队列轮询并按服务端快照显示数量', async () => {
+    const scheduling = await import('../../api/scheduling')
+    vi.mocked(scheduling.getQueue).mockResolvedValue({
+      queue: [{
+        kind: 'launch_queue', id: 'q1', card: 'B1', node: '进行中', squad: 'exec',
+        priority: '高', ready: false, actor: 'wake', seq: 7, position: 1,
+      }],
+    })
+    renderPage()
+    expect(await screen.findByRole('button', { name: '⧗ 排队中 1' })).toBeInTheDocument()
+    expect(scheduling.getQueue).toHaveBeenCalled()
   })
 })
 

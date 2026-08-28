@@ -16,11 +16,12 @@
 // 关于 ShellContext 的移除：W3 用 <Outlet context> 给三个子页面下发共享数据。
 // 新 IA 里中央不再是路由页面而是 tab，Outlet 没有了消费者；看板与工单改为弹层，
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
 import { fetchCards, fetchDecisions } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
+import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
@@ -62,6 +63,25 @@ import { DesktopTitleBar } from './DesktopTitleBar'
 // Esc 该关哪个会变得含糊。
 type OverlayKind = 'none' | 'board' | 'tickets'
 
+// coordinatorBase 把服务端 attach 定位接回现有工作台基准；树中没有对应目录时，
+// 仍保留 machine/path 的身份，避免把服务端给出的 attach 位置静默丢掉。
+export function coordinatorBase(tree: ProjectTreeResp | null, info: CoordinatorAttachInfo): BaseDir {
+  const match = tree?.projects
+    .flatMap((project) => project.locations.flatMap((location) =>
+      location.workspaces.map((workspace) => ({ project, location, workspace }))))
+    .find(({ location, workspace }) => workspace.path === info.dir && location.machine === info.machine)
+  if (match) return workspaceBase(match.project, match.location.machine, match.workspace)
+  const label = info.dir.split('/').filter(Boolean).pop() || info.dir
+  return {
+    key: info.machine === '' ? info.dir : `${info.dir}@${info.machine}`,
+    kind: 'workspace',
+    path: info.dir,
+    label,
+    projectName: '',
+    machine: info.machine,
+  }
+}
+
 export function Shell() {
   const tasksState = useTasks()
   const treeState = useProjectTree()
@@ -69,6 +89,10 @@ export function Shell() {
   const wb = useWorkbench()
   const navigate = useNavigate()
   const location = useLocation()
+  const openCoordinatorTerminal = useCallback((info: CoordinatorAttachInfo) => {
+    console.info('coordinator.terminal.open', { machine: info.machine, dir: info.dir })
+    wb.openTerminalWithCommand(info.command, coordinatorBase(treeState.data, info))
+  }, [treeState.data, wb])
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -481,7 +505,7 @@ export function Shell() {
           <Routes>
             {ledgerEnabled && (
               <>
-                <Route path="/cards" element={<CardsPage />} />
+                <Route path="/cards" element={<CardsPage onOpenCoordinatorTerminal={openCoordinatorTerminal} />} />
                 <Route path="/flows" element={<FlowsPage />} />
               </>
             )}

@@ -13,6 +13,7 @@ import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
+import { coordinatorBase } from './Shell'
 import type { ProjectTreeResp, Task } from '../../api/types'
 
 vi.mock('../../api/client', async () => {
@@ -217,6 +218,15 @@ function renderShell(path = '/') {
 }
 
 describe('Shell 三栏外框', () => {
+  it('协调者 attach 优先复用树中基准，找不到时建立显式 synthetic workspace', () => {
+    expect(coordinatorBase(tree, { machine: '', dir: '/w/b2-b3', command: 'server command' })).toMatchObject({
+      key: '/w/b2-b3', path: '/w/b2-b3', projectName: 'handoff', machine: '', kind: 'workspace',
+    })
+    expect(coordinatorBase(tree, { machine: 'box-2', dir: '/remote/card', command: 'server command' })).toMatchObject({
+      key: '/remote/card@box-2', path: '/remote/card', label: 'card', projectName: '', machine: 'box-2', kind: 'workspace',
+    })
+  })
+
   it('未选中目录时右栏文件树不渲染，中央是全局空态', async () => {
     renderShell()
     await waitFor(() => expect(screen.getByText('handoff')).toBeInTheDocument())

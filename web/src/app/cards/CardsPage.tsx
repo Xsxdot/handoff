@@ -1,18 +1,24 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useLocation, useNavigate } from 'react-router-dom'
+import { ApiError } from '../../api/client'
 import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
+import { getQueue } from '../../api/scheduling'
+import type { CoordinatorAttachInfo } from '../../api/scheduling'
+import type { QueueEntry } from '../../api/scheduling'
 import type { Decision, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
 import { usePoll } from '../data/usePoll'
 import { useTasks } from '../data/useTasks'
 import { errorMessage } from '../lib/format'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
-import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, normalizeBoardLayout, visibleColumns } from './columns'
+import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
 import { ListView } from './ListView'
 import { MigrateDialog } from './MigrateDialog'
 import { NewCardDialog } from './NewCardDialog'
+import { QueuePanel, queuePositionByCard } from './QueuePanel'
 
 const POLL_MS = 2500
+const EMPTY_QUEUE: QueueEntry[] = []
 
 function projectDecisionCount(decisions: Decision[]): number {
   return decisions.filter((decision) => !decision.card_id).length
@@ -61,7 +67,13 @@ function ProjectDecisions({ decisions }: { decisions: Decision[] }) {
   )
 }
 
-export function CardsPage() {
+/** 可选终端回调由 Shell 注入；工作项页不持有 Workbench 具体实现。 */
+export interface CardsPageProps {
+  onOpenCoordinatorTerminal?: (info: CoordinatorAttachInfo) => void
+}
+
+/** 参数：协调者终端回调；返回：工作项看板/列表与抽屉。 */
+export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
   const [view, setView] = useState<'board' | 'list'>('board')
   const [needsOnly, setNeedsOnly] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
@@ -72,6 +84,7 @@ export function CardsPage() {
   const [workflow, setWorkflow] = useState('')
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
+  const [queueOpen, setQueueOpen] = useState(false)
   const [flows, setFlows] = useState<FlowsResp | null>(null)
   const [flowsError, setFlowsError] = useState('')
   const [drawerNodes, setDrawerNodes] = useState<NodeDef[] | undefined>()
@@ -81,6 +94,18 @@ export function CardsPage() {
   const cardsPoll = usePoll(() => fetchCards(includeArchived || cardDeepLink !== '' ? 'all=1' : ''), POLL_MS)
   const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
+  const queuePoll = usePoll(async () => {
+    console.info('cards.queue.start', { interval_ms: 5000 })
+    try {
+      const response = await getQueue()
+      console.info('cards.queue.success', { entries: response.queue.length })
+      return response
+    } catch (cause) {
+      if (cause instanceof ApiError && cause.status === 401) console.warn('cards.queue.session_expired', { status: cause.status })
+      console.error('cards.queue.error', { status: cause instanceof ApiError ? cause.status : 0, cause })
+      throw cause
+    }
+  }, 5000)
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
   // 时给 undefined，抽屉按「计数不可知」显示旧标题，不谎报「0 个在跑」。
@@ -95,14 +120,17 @@ export function CardsPage() {
   useEffect(() => { cardsPoll.refresh() }, [includeArchived, cardDeepLink]) // eslint-disable-line react-hooks/exhaustive-deps
 
   const cards = useMemo(() => cardsPoll.data?.cards ?? [], [cardsPoll.data])
+  const queueEntries = useMemo(() => queuePoll.data?.queue ?? EMPTY_QUEUE, [queuePoll.data])
+  const queuePositions = useMemo(() => queuePositionByCard(queueEntries), [queueEntries])
   const decisions = decisionsPoll.data ?? []
   const projectOptions = useMemo(() => [...new Set(cards.map((card) => card.project).filter(Boolean))].sort(), [cards])
   const selectedWorkflow = workflow ? flows?.workflows.find((flow) => flow.name === workflow) : undefined
-  const workflowStates = workflow
+  const workflowStates = useMemo(() => workflow
     ? selectedWorkflow?.def.states ?? []
     // 多条流的列序按流程先后拓扑合并——取并集会把某条流独有的后置状态
     // 甩到另一条流的「已完成」后面（见 mergeStateOrder）
-    : mergeStateOrder(flows?.workflows.map((flow) => flow.def.states) ?? [])
+    : mergeStateOrder(flows?.workflows.map((flow) => flow.def.states) ?? []),
+  [flows, selectedWorkflow, workflow])
   const workflowOptions = flows?.workflows ?? []
   const boardLayout = useMemo(
     () => normalizeBoardLayout(workflow ? selectedWorkflow?.def.board : undefined, workflowStates),
@@ -186,12 +214,22 @@ export function CardsPage() {
         <button type="button" onClick={() => setNeedsOnly((current) => !current)} className={`rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}>⚑ 需要你 {attentionCount}</button>
         <span className={`ml-auto flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
       </header>
+      <QueuePanel
+        entries={queueEntries}
+        open={queueOpen}
+        loading={queuePoll.data === null && !queuePoll.disconnected && !queuePoll.sessionExpired}
+        disconnected={queuePoll.disconnected}
+        sessionExpired={queuePoll.sessionExpired}
+        errorText={queuePoll.errorText}
+        onToggle={() => setQueueOpen((current) => !current)}
+        onOpenCard={(id) => openDrawer(id)}
+      />
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
       <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
-      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, boardLayout).map((column) => { const inColumn = cardsInColumn(filtered, column, boardLayout); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
+      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, boardLayout).map((column) => { const inColumn = cardsInColumn(filtered, column, boardLayout); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => <CardItem key={card.id} card={card} queuePosition={queuePositions.get(card.id)} nodeTag={nodeLabelFor(card.status, workflowStates, boardLayout)} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} />)}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} boardLayout={boardLayout} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} />}
+      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={workflowStates} boardLayout={boardLayout} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}

@@ -64,6 +64,16 @@ describe('useWorkbench', () => {
     expect(seqs).toEqual([1, 2])
   })
 
+  it('openTerminalWithCommand 把服务端命令原样写进目标分组', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(wsA))
+    act(() => result.current.split())
+    act(() => result.current.openTerminalWithCommand('opencode --session sess-coord', wsA, 1))
+    expect(result.current.wb.groups[1].tabs[0].content).toEqual({
+      kind: 'terminal', seq: 1, initCommand: 'opencode --session sess-coord',
+    })
+  })
+
   it('home 是独立的一套 tab 组，与工作树互不干扰', () => {
     const { result } = renderHook(() => useWorkbench())
     act(() => result.current.select(wsA))

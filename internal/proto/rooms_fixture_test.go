@@ -114,7 +114,7 @@ func TestRoomSummaryGoldenProjection(t *testing.T) {
 	card := RoomSummary{
 		ID: "B1", Kind: "card", Title: "卡会话", Live: true,
 		ReadOnly: false, LastActivity: time.Unix(0, 0).UTC(), Unread: 0,
-		Attach: &RoomAttach{Target: "devbox", TaskID: "T1", WorkDir: "/w/B1", Command: "handoff attach T1"},
+		Attach:  &RoomAttach{Target: "devbox", TaskID: "T1", WorkDir: "/w/B1", Command: "handoff attach T1"},
 		Preview: &RoomPreview{Body: "最新预览", Seq: 3, CreatedAt: time.Unix(3, 0).UTC()},
 	}
 	raw, err := json.Marshal(card)

@@ -563,11 +563,15 @@ describe('scheduling wire', () => {
     expect(e.ready).toBe(false) // 样本即 false；缺键会在 tsc/undefined 处暴露
     expect(e.position).toBeGreaterThan(0)
     expect(e.kind).toBe('ignition_queue')
+    expect(e.priority).toBe('高')
+    expect(Object.prototype.hasOwnProperty.call(e, 'ready')).toBe(true)
   })
   it('CoordinatorLaunchResp 关键字段', () => {
     const r: CoordinatorLaunchResp = coordinatorLaunchFixture
     expect(r.woke).toBe(true)
     expect(typeof r.session_id).toBe('string')
+    expect(r.rebuilt).toBe(false)
+    expect(r.escalated).toBe(false)
   })
   it('CoordinatorStatus 保留 attach 三元组、machine 空串与 null 未绑定态', () => {
     const r: CoordinatorStatus = coordinatorStatusFixture
@@ -586,5 +590,6 @@ describe('scheduling wire', () => {
   it('CoordinatorAttachReleaseResp 保留 ok=true', () => {
     const r: CoordinatorAttachReleaseResp = coordinatorAttachReleaseFixture
     expect(r.ok).toBe(true)
+    expect(Object.keys(r)).toEqual(['ok'])
   })
 })

@@ -2,22 +2,17 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import { fetchTaskDetail, replyTicket } from '../../api/client'
 import type { Task, TaskDetail, Ticket } from '../../api/types'
-import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard, runCardStep } from '../../api/ledger'
+import { acceptCard, answerDecision, attachFile, clearCardNeeds, detachFile, fetchCardDetail, moveCard, noteCard, patchCard } from '../../api/ledger'
 import type { CardDetail, Decision, LedgerEvent, NodeDef, TaskStateRow } from '../../api/ledger'
+import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import { errorMessage } from '../lib/format'
 import { TicketsPanel } from '../task/TicketsPanel'
-import { boardColumnFor, boardColumns, normalizeBoardLayout, type BoardLayout } from './columns'
+import { boardColumnFor, boardColumns, nodeLabelFor, normalizeBoardLayout, type BoardLayout } from './columns'
+import { CoordinatorPanel } from './CoordinatorPanel'
 import { TaskState } from '../board/StateDot'
 import { isTerminalState } from '../workbench/TaskPickerDialog'
 
 type Relation = { From: string; To: string; Type: string }
-
-function logCardStep(level: 'debug' | 'warn' | 'error', event: string, fields: Record<string, unknown>): void {
-  const payload = { subsystem: 'cards', event, ...fields }
-  if (level === 'error') console.error(payload)
-  else if (level === 'warn') console.warn(payload)
-  else console.debug(payload)
-}
 
 // CardAttention 是抽屉里的「需要你」合一区：等人原因 + 挂卡裁决。
 //
@@ -279,6 +274,19 @@ function pendingTickets(detail: DrawerTaskDetail): Ticket[] {
   return detail.pending_tickets ?? detail.tickets ?? []
 }
 
+export interface CardDrawerProps {
+  id: string
+  onClose: () => void
+  onOpenCard: (id: string) => void
+  workflowStates?: string[]
+  boardLayout?: BoardLayout
+  initialSection?: 'merge'
+  nodes?: NodeDef[]
+  tasks?: Task[]
+  onJumpToTask?: (taskId: string) => void
+  onOpenCoordinatorTerminal?: (info: CoordinatorAttachInfo) => void
+}
+
 export function CardDrawer({
   id,
   onClose,
@@ -289,25 +297,8 @@ export function CardDrawer({
   nodes,
   tasks,
   onJumpToTask,
-}: {
-  id: string
-  onClose: () => void
-  onOpenCard: (id: string) => void
-  workflowStates?: string[]
-  // 看板列是工作流的投影，抽屉沿用同一映射避免状态与列名各说各话。
-  boardLayout?: BoardLayout
-  initialSection?: 'merge'
-  nodes?: NodeDef[]
-  // 任务实况快照：调用方（CardsPage）把页面级 useTasks() 的结果原样传下来。
-  // 抽屉不自起第二条轮询——同页两条 2.5s 流会各自跳动，卡上的状态会和看板
-  // 在不同时刻更新（spec §5）。undefined = 流未接入或首拉未回。
-  tasks?: Task[]
-  // 提供时每行渲染 ↗ 跳转按钮。语义固定为深链 navigate('/tasks/{taskId}')，
-  // 由调用方注入（CardsPage 用 useNavigate 实现）；抽屉自己绝不解析目录或切
-  // tab——那是 Shell 既有 TaskDeepLink 的职责，复制它等于养第二份会漂移的逻辑
-  // （spec §3.3 明令禁止）。缺省不画按钮。
-  onJumpToTask?: (taskId: string) => void
-}) {
+  onOpenCoordinatorTerminal,
+}: CardDrawerProps) {
   const [detail, setDetail] = useState<CardDetail | null>(null)
   const [error, setError] = useState('')
   const [timelineFilter, setTimelineFilter] = useState<'all' | 'comment' | 'verdict' | 'system'>('all')
@@ -342,9 +333,6 @@ export function CardDrawer({
   const [taskDetails, setTaskDetails] = useState<Record<string, DrawerTaskDetail>>({})
   const [taskLoading, setTaskLoading] = useState<string | null>(null)
   const [taskErrors, setTaskErrors] = useState<Record<string, string>>({})
-  const [stepBusy, setStepBusy] = useState<string | null>(null)
-  const [stepStarted, setStepStarted] = useState<string | null>(null)
-  const [stepError, setStepError] = useState('')
   const [moveTarget, setMoveTarget] = useState('')
   const [moveConfirm, setMoveConfirm] = useState(false)
   const [moveBusy, setMoveBusy] = useState(false)
@@ -375,9 +363,9 @@ export function CardDrawer({
   // 那样 status === '已完成' 在类型上恒假，tsc -b 直接报 TS2367
   const status = value<string>(card, 'status', '')
   const states = workflowStates?.length ? workflowStates : [status]
-  const coordinatorNode = nodes?.find((node) => node.name === status)
-  const coordinatorReady = coordinatorNode?.dispatch === true
   const resolvedBoardLayout = normalizeBoardLayout(boardLayout, states)
+  // 节点详情未加载时不猜节点；状态与节点列表不同属时也只显示真实多对一标签。
+  const nodeLabel = nodes ? nodeLabelFor(status, nodes.map((node) => node.name), resolvedBoardLayout) : undefined
   const following = value(card, 'following', '')
   const driverSession = value(card, 'driver_session', '')
   const heartbeat = value(card, 'driver_heartbeat_at', '')
@@ -598,26 +586,6 @@ export function CardDrawer({
     }
   }
 
-  const startStep = async (step: string) => {
-    setStepBusy(step)
-    setStepError('')
-    logCardStep('debug', 'coordinator_step_started', { card: id, step })
-    try {
-      await runCardStep(id, step)
-      // 受理即置灰：环节是异步的，再点一次只会撞 409。进展在 Timeline 上
-      setStepStarted(step)
-      load()
-      logCardStep('debug', 'coordinator_step_succeeded', { card: id, step })
-    } catch (err) {
-      // 409 的冲突原因是后端写的原文（哪张卡的什么环节在跑），逐字显示
-      const cause = errorMessage(err)
-      setStepError(cause)
-      logCardStep('error', 'coordinator_step_failed', { card: id, step, cause })
-    } finally {
-      setStepBusy(null)
-    }
-  }
-
   const submitMove = async () => {
     if (!moveTarget) return
     setMoveBusy(true)
@@ -641,6 +609,7 @@ export function CardDrawer({
         <div className="flex items-center gap-2">
           <span className="font-mono text-xs text-muted-foreground">{value(card, 'id', id)}</span>
           <span className="rounded-full border px-2 py-0.5 text-xs">{status || '加载中'}</span>
+          {nodeLabel && <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{nodeLabel}</span>}
           {acceptanceInfo.verified && <span className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-[10px] text-green-700">已验</span>}
           <button type="button" aria-label="关闭" onClick={onClose} className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><X className="size-4" /></button>
         </div>
@@ -670,20 +639,7 @@ export function CardDrawer({
         {!detail && !error && <p className="text-sm text-muted-foreground">正在读取账本…</p>}
         {detail && (
           <>
-            <section className="mb-5" aria-label="协调者动作">
-              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">协调者</h3>
-              <button
-                type="button"
-                disabled={!coordinatorReady || stepBusy !== null || stepStarted !== null}
-                title={!coordinatorReady ? '当前状态没有可派发的协调者节点' : undefined}
-                onClick={() => { if (coordinatorNode) void startStep(coordinatorNode.name) }}
-                className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50"
-              >
-                ▶ 拉起协调者
-              </button>
-              {!coordinatorReady && <p className="mt-1 text-xs text-muted-foreground">当前状态未配置可派发节点。</p>}
-              {stepStarted === status && <p className="mt-1 text-xs text-muted-foreground">已受理，进展见 Timeline。</p>}
-            </section>
+            <CoordinatorPanel cardId={id} onOpenTerminal={onOpenCoordinatorTerminal ?? (() => undefined)} />
 
             <section className="mb-5">
               <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
@@ -944,24 +900,7 @@ export function CardDrawer({
 
             <section className="mb-5">
               <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">环节动作</h3>
-              <div className="mb-2 flex flex-wrap gap-2">
-                {nodes?.filter((node) => node.dispatch).map((node) => {
-                  const base = value<string>(detail, 'effective_base_branch', '')
-                  const humanOnly = base !== '' && (node.human_bases ?? []).includes(base)
-                  return (
-                    <button
-                      key={node.name}
-                      type="button"
-                      title={humanOnly ? `基线 ${base} 在本节点的人工清单里：点了也不会自动跑，会直接转「需要你」` : undefined}
-                      disabled={stepBusy !== null || stepStarted !== null}
-                      onClick={() => void startStep(node.name)}
-                      className={`rounded-md border px-2.5 py-1 text-xs hover:bg-accent disabled:opacity-50 ${humanOnly ? 'text-muted-foreground' : ''}`}
-                    >跑「{node.name}」</button>
-                  )
-                })}
-              </div>
-              {stepStarted && <p className="mb-2 text-xs text-muted-foreground">已发起，进展见下方 Timeline。</p>}
-              {stepError && <p role="alert" className="mb-2 break-words text-xs text-destructive">{stepError}</p>}
+              <p className="mb-2 text-xs text-muted-foreground">节点执行由协调者生命周期统一接管；此处只保留状态转移。</p>
               {!moveConfirm ? <button type="button" onClick={() => setMoveConfirm(true)} className="rounded-md border px-2.5 py-1 text-xs hover:bg-accent">转移状态…</button> : <div className="flex flex-wrap items-center gap-2"><select value={moveTarget} onChange={(event) => setMoveTarget(event.target.value)} className="rounded-md border bg-background px-2 py-1 text-xs"><option value="">选择目标态</option>{states.filter((state) => state !== status).map((state) => <option key={state} value={state}>{state}</option>)}</select><button type="button" disabled={!moveTarget || moveBusy} onClick={() => void submitMove()} className="rounded-md bg-primary px-2.5 py-1 text-xs text-primary-foreground disabled:opacity-50">确认转移</button><button type="button" onClick={() => setMoveConfirm(false)} className="rounded-md border px-2.5 py-1 text-xs">取消</button></div>}
               {moveError && <p role="alert" className="mt-1 break-words text-xs text-destructive">{moveError}</p>}
             </section>

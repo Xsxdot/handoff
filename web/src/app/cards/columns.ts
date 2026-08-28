@@ -40,6 +40,14 @@ export function boardColumnFor(status: string, layout: BoardLayout): string {
   return mapped && layout.columns.includes(mapped) ? mapped : layout.fallback
 }
 
+/** 参数：状态、同一工作流的节点名与看板布局；返回：需要标注的节点名或 undefined。 */
+export function nodeLabelFor(status: string, nodes: readonly string[], layout: BoardLayout): string | undefined {
+  if (!nodes.includes(status)) return undefined
+  const column = boardColumnFor(status, layout)
+  const nodesInColumn = nodes.filter((node) => node !== '' && boardColumnFor(node, layout) === column)
+  return nodesInColumn.length > 1 ? status : undefined
+}
+
 export function boardColumns(states: string[], layout?: BoardLayout): string[] {
   return normalizeBoardLayout(layout, states).columns
 }

@@ -23,12 +23,14 @@ import { DisciplinePage } from './DisciplinePage'
 import { EnvPage } from './EnvPage'
 import { GeneralPage } from './GeneralPage'
 import { UpdatePage } from './UpdatePage'
+import { SchedulingPage } from './SchedulingPage'
 import { cn } from '@/lib/utils'
 
-// SECTIONS 是设置页的五个分区。更新接在 Env 文件之后，顺序即原型的顺序。
+// SECTIONS 是设置页的六个分区；自动化紧跟执行纪律，?section=automation 可深链进入。
 const SECTIONS = [
   { key: 'machines', label: '开发机' },
   { key: 'discipline', label: '执行纪律' },
+  { key: 'automation', label: '自动化' },
   { key: 'general', label: '常规' },
   { key: 'env', label: 'Env 文件' },
   { key: 'update', label: '更新' },
@@ -40,8 +42,9 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
   const [section, setSection] = useState<SectionKey>(() => {
     // 提示框的「查看详情」用 query 指向更新分区；读取 window 而不是 router hook，
     // 保持 SettingsPage 在现有的独立单测与嵌入场景中也能直接渲染。
-    if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).get('section') === 'update') {
-      return 'update'
+    if (typeof window !== 'undefined') {
+      const value = new URLSearchParams(window.location.search).get('section')
+      if (value === 'automation' || value === 'update') return value
     }
     return 'machines'
   })
@@ -92,6 +95,7 @@ export function SettingsPage({ onClose }: { onClose: () => void }) {
         <div className="min-h-0 flex-1 overflow-auto">
           {section === 'machines' && <MachinesPage tree={treeState.data} />}
           {section === 'discipline' && <DisciplinePage />}
+          {section === 'automation' && <SchedulingPage />}
           {section === 'general' && <GeneralPage tree={treeState.data} />}
           {section === 'env' && <EnvPage />}
           {section === 'update' && <UpdatePage desktopState={desktopState.data} latest={latest.data} />}
