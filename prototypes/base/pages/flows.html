@@ -6,6 +6,11 @@
   ② 两个 tab 对应两个聚合：工作流（状态机形状）/ 派发模板（派发配方），各自不可变版本化；
   ③ 版本列表 + 「N 个 item 钉在 vX」+ 显式迁移动作；
   ④ 模板详情含 per-target 模型覆盖表、纪律块正文预览、版本取证（哪次派发用了哪版）。
+  B279（B156.3 前端控制台）增量：「看板列映射」（B265）与小队绑定合并为一张
+  「节点编排」表——节点 = 上方状态机里已定下的节点（NodeDef.Name 即状态名，
+  不可下拉/增删，改节点 = 编辑工作流产新版；card dispatch --step 的取值域）；
+  按节点配两列：看板列、派发小队（无 = 不派发/存量直绑）。
+  小队登记落点在 settings.html?section=automation。
   交互遵循 light-interaction.md：零依赖、纯 mock、file:// 直开。
 -->
 <html lang="zh-CN">
@@ -46,6 +51,7 @@
   details.block .bd { padding: 10px 14px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.7; color: var(--muted-foreground); white-space: pre-wrap; max-height: 260px; overflow-y: auto; }
 
   .audit { margin-top: 8px; font-size: 12px; color: var(--muted-foreground); padding: 8px 10px; border-left: 2px solid var(--border); }
+  #squadBindTable select { min-width: 92px; } /* 状态/小队长名不被截断 */
   h2.sec { margin: 0 0 4px; font-size: 16px; }
   p.sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
   .tpl-card { border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; margin-bottom: 14px; }
@@ -102,6 +108,24 @@
                 <span class="st anchor">已完成</span>
               </div>
               <div class="legend">实线 = 骨架锚点（不可删改）；虚线 = 用户插入状态。转移上挂的派发模板：进行中→待审阅 触发 <span class="mono">review-generic v2</span>，待审阅→待合并 触发 <span class="mono">merge-integration v1</span>。</div>
+
+              <!-- B265+B279：节点编排——节点就是上方状态机里已定下的节点（NodeDef.Name），
+                   不可下拉、不可增删；按节点配两列：看板列（B265）+ 派发小队（B156.3） -->
+              <div style="margin-top:14px;padding-top:12px;border-top:1px solid var(--border)">
+                <div style="font-size:12px;font-weight:600;margin-bottom:8px">节点编排（工作流节点 → 看板列 · 派发小队）</div>
+                <table style="border-collapse:collapse;width:100%;font-size:12px" id="squadBindTable">
+                  <tr><th style="border:1px solid var(--border);padding:6px 10px;text-align:left;background:var(--sidebar)">节点</th><th style="border:1px solid var(--border);padding:6px 10px;text-align:left;background:var(--sidebar)">看板列</th><th style="border:1px solid var(--border);padding:6px 10px;text-align:left;background:var(--sidebar);width:180px">派发小队</th><th style="border:1px solid var(--border);padding:6px 10px;text-align:left;background:var(--sidebar)">说明</th></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">待办</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option selected>代办</option><option>沟通中</option><option>进行中</option><option>审核中</option><option>结束</option></select></td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option value="" selected>无（不派发）</option><option>executors-default</option></select></td><td style="border:1px solid var(--border);padding:6px 10px" class="dim">待启动</td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">已出 spec</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option selected>沟通中</option><option>进行中</option><option>审核中</option><option>结束</option></select></td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option value="" selected>无（不派发）</option><option>executors-default</option></select></td><td style="border:1px solid var(--border);padding:6px 10px" class="dim">本项目约定协调者本地做</td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">进行中</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option>沟通中</option><option selected>进行中</option><option>审核中</option><option>结束</option></select></td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option value="">无（不派发）</option><option selected>executors-default</option></select></td><td style="border:1px solid var(--border);padding:6px 10px" class="dim">点火由小队解析载体；显式 target/executor 降级为一次性覆盖</td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">待审阅</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option>沟通中</option><option>进行中</option><option selected>审核中</option><option>结束</option></select></td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option value="">无（不派发）</option><option selected>executors-default</option></select></td><td style="border:1px solid var(--border);padding:6px 10px" class="dim">审阅点火同上</td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">待合并</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option>沟通中</option><option>进行中</option><option selected>审核中</option><option>结束</option></select></td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option value="" selected>无（不派发）</option><option>executors-default</option></select></td><td style="border:1px solid var(--border);padding:6px 10px" class="dim">存量直绑，行为逐字节不变，零迁移</td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px">已完成</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option>代办</option><option>沟通中</option><option>进行中</option><option>审核中</option><option selected>结束</option></select></td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option value="" selected>无（不派发）</option><option>executors-default</option></select></td><td style="border:1px solid var(--border);padding:6px 10px" class="dim">—</td></tr>
+                  <tr><td style="border:1px solid var(--border);padding:6px 10px" class="dim">（拉起通道）</td><td style="border:1px solid var(--border);padding:6px 10px" class="dim">—（不动状态）</td><td style="border:1px solid var(--border);padding:6px 10px"><select class="input sm"><option selected>coordinators</option></select></td><td style="border:1px solid var(--border);padding:6px 10px" class="dim">开卡即绑 / 一键拉起；只能绑协调者队，成员载体必须在协调机登记</td></tr>
+                </table>
+                <p class="dim" style="font-size:11px;margin:8px 0 0">节点就是上方状态机里已定下的节点（工作流版本的一部分）——<b>不可下拉、不可增删</b>，改节点 = 编辑工作流产生新版本；<span class="mono">card dispatch --step</span> 的取值域即这些节点名（如 <span class="mono">--step 进行中</span>）。两个可配列都按节点生效：看板列决定卡进哪列；小队决定节点点火派给谁，选「无」= 不派发（存量直绑）。绑小队后点火按成员顺序找第一个健康且有空的载体；两级并发（小队政策位 + 载体物理位）任一满则入队，看板「⧗ 排队中」可见。「审核中」列对应两个节点（待审阅 / 待合并）——列答不出节点时，卡面右上角出节点标签。小队与载体的登记在 <a href="settings.html?section=automation" style="color:var(--foreground)">设置 · 自动化</a>。</p>
+              </div>
+
               <div style="margin-top:12px">
                 <div class="ver-row current"><span class="vtag">v2</span><span>加「已出 spec」插入态（对齐 💡→📋 关口）</span><span class="pin">12 个 item 钉在此版</span><span class="spacer"></span><span class="dim" style="font-size:11px">2026-08-19</span></div>
                 <div class="ver-row"><span class="vtag">v1</span><span>初版（纯骨架）</span><span class="pin">3 个 item 仍钉此版</span><span class="spacer"></span><button class="btn sm">迁移到 v2…</button></div>

@@ -527,3 +527,9 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **小队成员拖拽排序**：成员顺序即点火解析优先级，本期为弹窗内文本编辑；拖拽排序另开卡。
 - **K6 旧 web UI 的可用资产回收评估**：QueuePanel 的全屏队列视图、CoordinatorPanel 的
   部分测试用例可能在「调度可视化扩展」卡里复用；形态本身已裁决不复活（B279 spec 弃选）。
+
+## 来自 B282 finish（2026-08-28）
+
+- **顺序拉起填不满 `launch_queue`**：协调者小队 `max_concurrency=1` 时，第一次 `POST coordinator/launch` 200 后立即第二次仍 200 新 session，`GET /api/queue` 空。名额在 launch HTTP 返回时就归还（K5 `releaseSchedulingBinding` 与 implement 无 Verdict 同款）。排队 UI 能呈现快照，但顺序满员不会入队。要验「横带有行」得并发双发或改占用寿命。来源：B282 acceptance 真机。
+- **`TestWriteTaskEnvOmitsModelSectionWhenEmpty` 吃本机 grok 配置**：host grok 的 `[models] default=grok-4.6` / `default_reasoning_effort` 漏进任务级 config.toml（日志 `default_from=authority`）。acc 基线同红，linux-01 无此配置故绿。不是 B282 引入，测试未隔离权威 grok 配置。
+- **`best.json` 未声明 `k_web_api_scheduling` / `k_web_api_scheduling_model`**：B282 视图 absorb 后 `check` fails 仍空，多 2 条 `container-unplaced`。L3 轻档零新增契约，不改 best.json；归属下次 contract/best 标定。

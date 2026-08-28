@@ -12,11 +12,11 @@ TUI tab 是任务会话主视图。
 | 页面 | 对应功能 | 来源路由 | 确认状态 |
 |------|---------|---------|---------|
 | index.html | 工作台（三栏 + TUI tab 对话式形态 + 看板/工单/偏好/建树弹层 + home 悬浮窗） | `*` | 已确认 |
-| pages/settings.html | 设置页（开发机/执行纪律/常规/Env/**更新**） | `/settings` | 已确认 |
+| pages/settings.html | 设置页（开发机/执行纪律/**自动化**/常规/Env/更新；`?section=automation` 直达编制卡） | `/settings` | 已确认（自动化分区 2026-08-28 B282 回流） |
 | （未建页） | 任务深链：按任务 id 直接打开它的 TUI | `/tasks/:id` | — |
 | （无需页） | `/machines` → 重定向到 `/settings` | `/machines` | — |
-| pages/board.html | 工作项账本看板（统一任务卡：看板/列表双视图、「需要你」就地筛选、详情抽屉含并入区/验收/Timeline、合并跟随可拆回） | `/cards` | 已确认 |
-| pages/flows.html | 流程管理页（工作流状态形状 + gate、派发模板 + 纪律块版本，均不可变版本化） | `/flows` | 已确认 |
+| pages/board.html | 工作项账本看板（统一任务卡 + 排队横带/卡 chip + 抽屉协调者三态 + 开卡即绑） | `/cards` | 已确认（排队/协调者 2026-08-28 B282 回流） |
+| pages/flows.html | 流程管理页（状态形状 + **节点编排**表：看板列·小队；拉起通道只展示协调者队） | `/flows` | 已确认（节点编排 2026-08-28 B282 回流） |
 | pages/codegraph.html | 代码图页（理想树全景：子系统卡 + gap 读数 + 契约边；C1.3 一期已按此形态上线 charter graph/webui）；二期下钻（领域页双 tab / 泳道 / 级联）仍在规划 | `/codegraph` | 已确认（一期全景 + 二期嵌套同构下钻/迁移视角/欠账读数，2026-08-24；二期真实页面 C1.9 已合入 charter graph/webui 并经真数据走查对照）。**注意本页 HTML 尚未镜像二期下钻形态**——形态确认走的是轻量 fork `codegraph-phase2/pages/codegraph2.html`（294 行，专门只演示嵌套递归），本页仍是一期的真数据版；两者在下钻形态上已漂移，重镜像见 roadmap |
 
 工作项账本两页的形态基准经 fork 副本 `workbench-ledger/`（`pages/board.html`、
@@ -24,6 +24,11 @@ TUI tab 是任务会话主视图。
 一处看，不另开面板；裁决/等人合一为「需要你」就地筛选；保真信号（驱动/镜像/冲突）
 默认沉默、仅异常时上浮。真实页面（`/cards`、`/flows`）已按该副本开发并对照验收通过，副本已回流入本基准站
 （2026-08-19，B156.1）。
+
+B282（B156.3 前端调度控制台）于 2026-08-28 把走查定稿的 `prototypes/b279-automation-proto/`
+回流进本基准：设置页「自动化」分区、看板排队横带/卡 chip/抽屉协调者三态/开卡即绑、
+flows 节点编排表。未整份覆盖 `index.html`（外壳在 fork 之后另有改动）。fork 副本仍入库
+（spec 形态权威），日常以本目录为准。
 
 TUI tab 的对话式重构（方案 A：单滚动会话流 + 事件内联 + 审阅右滑栏 + composer +
 ctx/累计用量页头）经 fork 副本 `tui-redesign/` 走查确认，真实前端落地并真机验收后

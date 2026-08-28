@@ -17,6 +17,16 @@
      评论框支持 #B142 引用自动成链；
   ⑦ 看板/列表双视图，列表复刻 markdown 总账列（考古与领活入口，含归档）；
   ⑧ 工具条「⚙ 流程」进工作流/派发模板管理页（flows.html）。
+  B279（B156.3 前端控制台）增量：
+    ⑨ 工具条「⧗ 排队中 N」开关展开调度横带（行=位次/卡号/类型 badge/节点·小队/
+       优先级/就绪态/入队 actor，镜像 QueueEntry；launch 恒先于 ignition）；
+    ⑩ 抽屉「协调者」区三态：未绑定（拉起）/绑定中（打开终端）/人工接管中（交回无头），
+       拉起走 coordinator/launch，attach 弹确认框说明与自动唤醒互斥；
+    ⑪ 新建工作项弹层加「创建后拉起协调者并绑定（开卡即绑）」；
+    ⑫ 卡面节点标签：只在「列答不出节点」时显形——当前仅 审核中 列（含 待审阅/待合并
+       两个节点），卡右上角出深色胶囊示节点名（mock：B120/B128 = 待审阅）；列与节点
+       一一对应时列本身就是标签（沉默原则）。抽屉头部同规则。节点 = 工作流状态机里
+       已定下的节点（NodeDef.Name，--step 的取值域），映射见 flows「节点编排」表。
   交互遵循 light-interaction.md：零依赖、纯 mock、file:// 直开。
 -->
 <html lang="zh-CN">
@@ -78,6 +88,11 @@
   .chip.spec { cursor: pointer; color: var(--foreground); }
   .chip.spec:hover { border-color: #a3a3a3; background: var(--muted); }
   .chip.prio-高 { border-color: #fecaca; color: var(--destructive); }
+  /* B279：当前节点标签——只在「列答不出节点」时显形（多对一映射的列：审核中 ← 待审阅/待合并）；
+     列与节点一一对应时列本身就是节点标签（沉默原则）。节点→列·小队映射在 flows「节点编排」表配置 */
+  .node-tag { margin-left: auto; display: inline-flex; align-items: center; font-size: 10.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: #111827; color: #fff; white-space: nowrap; }
+  .node-tag[hidden] { display: none; }
+  .drawer .node-tag { margin-left: 0; } /* 抽屉里跟状态徽标并排，不做右推（卡片上才 margin-left:auto） */
 
   /* ---- 列表视图 ---- */
   .list-wrap { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; }
@@ -93,8 +108,8 @@
   .orphans .o-row { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 4px; }
   .o-card { display: flex; align-items: center; gap: 8px; flex-shrink: 0; border: 1px dashed var(--border); border-radius: 6px; background: var(--background); padding: 5px 10px; font-size: 12px; }
 
-  /* ---- 详情抽屉 ---- */
-  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 560px; max-width: 92vw; background: var(--background); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0,0,0,.08); z-index: 20; display: flex; flex-direction: column; min-height: 0; }
+  /* ---- 详情抽屉：相对中间区域（.content）最右侧打开；IM 面板是独立区域，不被遮挡 ---- */
+  .drawer { position: absolute; top: 0; right: 0; bottom: 0; width: 560px; max-width: 92%; background: var(--background); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0,0,0,.08); z-index: 20; display: flex; flex-direction: column; min-height: 0; }
   .drawer[hidden] { display: none; }
   .drawer .d-head { padding: 12px 16px 10px; border-bottom: 1px solid var(--border); }
   .drawer .d-head .row1 { display: flex; align-items: center; gap: 8px; }
@@ -154,6 +169,115 @@
   .tl .ref { color: var(--foreground); text-decoration: underline; text-decoration-color: var(--border); cursor: pointer; }
 
   .note-row { display: flex; gap: 6px; margin-top: 8px; }
+
+  /* 布局修正：shared/styles.css 的 .main 是纵向 flex；本页内容区 + 右侧常驻 IM 需横向并排。
+     content 加 relative：卡片抽屉以它为定位锚，抽屉范围被限制在中间区域 */
+  .main { flex-direction: row; }
+  .main > .content { min-width: 0; position: relative; }
+
+  /* ---- B265：IM 微信风格面板（与 index.html 悬浮面板同构，改动需两边同步） ---- */
+  .im-panel { width: 360px; flex-shrink: 0; border-left: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; background: var(--background); }
+  .im-panel[hidden] { display: none; }
+  .im-head { display: flex; align-items: center; gap: 8px; padding: 12px 16px 10px; }
+  .im-title { font-weight: 600; font-size: 15px; flex: 1; }
+  .im-body { flex: 1; min-height: 0; overflow: hidden; display: flex; flex-direction: column; }
+
+  /* 筛选行：纯文字项（参考企业微信消息页），不做成按钮 */
+  .im-filters { display: flex; align-items: center; gap: 2px; padding: 2px 10px 8px; border-bottom: 1px solid var(--border); }
+  .im-filter { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: none; border-radius: 6px; background: none; font-size: 12.5px; color: var(--foreground); cursor: pointer; line-height: 1.5; }
+  .im-filter:hover { background: var(--muted); }
+  .im-filter.on { color: var(--amber); font-weight: 600; background: #fffbeb; }
+  .im-filter select { appearance: none; -webkit-appearance: none; border: none; background: transparent; font: inherit; color: inherit; cursor: pointer; padding: 0; outline: none; }
+  .im-filter .caret { font-size: 10px; color: var(--muted-foreground); }
+  .im-filter .fcnt { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; background: #fef3c7; color: var(--amber); font-size: 10.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+  .im-filter.on .fcnt { background: var(--amber); color: #fff; }
+  .im-filters .sep { width: 1px; height: 14px; background: var(--border); margin: 0 4px; flex-shrink: 0; }
+
+  /* 会话列表：微信行式——分隔线从头像右侧起，未读数红徽章压头像角 */
+  .im-list { flex: 1; overflow-y: auto; }
+  .im-conv { display: flex; gap: 12px; padding: 11px 0 0 14px; cursor: pointer; }
+  .im-conv[hidden] { display: none; }
+  .im-conv:hover { background: #f5f5f5; }
+  .im-conv.needs { background: #fffbeb; }
+  .im-conv.needs:hover { background: #fef3c7; }
+  .im-conv-body { flex: 1; min-width: 0; padding: 1px 14px 11px 0; border-bottom: 1px solid #f0f0f0; }
+  .im-conv:last-child .im-conv-body { border-bottom: none; }
+  .im-avatar { position: relative; width: 44px; height: 44px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .im-avatar .abadge { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #fa5151; color: #fff; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px #fff; }
+  .im-conv.needs .im-avatar .abadge { box-shadow: 0 0 0 2px #fffbeb; }
+  .im-conv-top { display: flex; align-items: baseline; gap: 8px; }
+  .im-conv-name { font-size: 14px; color: #0a0a0a; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .im-conv.unread .im-conv-name { font-weight: 600; }
+  .im-conv-time { font-size: 11px; color: var(--muted-foreground); flex-shrink: 0; margin-left: auto; }
+  .im-conv-preview { font-size: 12.5px; color: var(--muted-foreground); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .im-conv-preview .pflag { color: var(--amber); font-weight: 600; }
+
+  /* 房间聊天：选定方案（原变体 B）——浅灰底 + 磨砂玻璃气泡（对方磨砂白 / 自己磨砂黑）、圆头像、胶囊输入 */
+  .im-room { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .im-room[hidden], .im-room-detail[hidden] { display: none; }
+  .im-room-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .im-room-name { font-weight: 600; font-size: 14px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .im-room-msgs { flex: 1; overflow-y: auto; padding: 14px; display: flex; flex-direction: column; gap: 14px; background: #fafafa; }
+  .im-m-row { display: flex; gap: 9px; align-items: flex-start; }
+  .im-m-row.right { justify-content: flex-end; }
+  .im-m-avatar { width: 36px; height: 36px; border-radius: 50%; background: rgba(255,255,255,.7); border: 1px solid rgba(255,255,255,.8); display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .im-m-bubble { max-width: 72%; padding: 9px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.55; background: rgba(255,255,255,.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.8); box-shadow: 0 4px 16px rgba(15,23,42,.05); }
+  .im-m-row.left .im-m-bubble { border-top-left-radius: 4px; }
+  .im-m-row.right .im-m-bubble { border-top-right-radius: 4px; }
+  .im-m-bubble.user { background: rgba(17,24,39,.85); border-color: transparent; color: #f9fafb; }
+  .im-m-sys { text-align: center; font-size: 11px; color: #9ca3af; }
+  .im-room-input { display: flex; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); background: var(--background); }
+  .im-room-input .input { flex: 1; border-radius: 999px; }
+
+  /* 房间详情：浅灰底 + 磨砂卡 */
+  .im-room-detail { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+  .im-detail-body { flex: 1; overflow-y: auto; padding: 14px; background: #fafafa; }
+  .im-detail-sec { margin-bottom: 14px; }
+  .im-detail-title { font-size: 12px; font-weight: 500; color: var(--muted-foreground); margin: 0 2px 6px; }
+  .im-coord-card { display: flex; align-items: center; gap: 12px; padding: 12px; border: 1px solid rgba(255,255,255,.8); border-radius: 12px; background: rgba(255,255,255,.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: 0 4px 16px rgba(15,23,42,.05); }
+  .im-coord-avatar { width: 48px; height: 48px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 600; flex-shrink: 0; cursor: pointer; }
+  .im-coord-avatar:hover { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .im-coord-info { flex: 1; min-width: 0; }
+  .im-coord-name { font-weight: 600; font-size: 13.5px; }
+  .im-coord-meta { font-size: 12px; color: var(--muted-foreground); margin-top: 2px; }
+  .im-card-mini { border: 1px solid rgba(255,255,255,.8); border-radius: 12px; padding: 12px; background: rgba(255,255,255,.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: 0 4px 16px rgba(15,23,42,.05); }
+  .im-card-id { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); }
+  .im-card-title { font-weight: 600; font-size: 13.5px; margin: 4px 0 8px; }
+
+  .im-dock { position: fixed; right: 20px; bottom: 80px; z-index: 40; }
+  .im-dock[hidden] { display: none; }
+  .im-fab { width: 48px; height: 48px; border-radius: 50%; border: 1px solid var(--border); background: var(--background); box-shadow: 0 4px 16px rgba(0,0,0,.15); cursor: pointer; font-size: 18px; position: relative; display: flex; align-items: center; justify-content: center; }
+  .im-fab-badge { position: absolute; top: -4px; right: -4px; min-width: 18px; height: 18px; border-radius: 9px; background: #fa5151; color: #fff; font-size: 10px; display: flex; align-items: center; justify-content: center; padding: 0 4px; }
+
+  /* ---- B279：排队中横带（toolbar 下方、列区上方；与项目级裁决细条同位逻辑） ---- */
+  #queueStrip { margin: 10px 16px 0; border: 1px solid var(--border); border-radius: 8px; background: var(--sidebar); }
+  #queueStrip[hidden] { display: none; }
+  .qs-head { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid var(--border); font-size: 12.5px; }
+  .qs-head .qs-title { font-weight: 600; }
+  .qs-head .hint { color: var(--muted-foreground); font-size: 11.5px; }
+  .qs-list { list-style: none; margin: 0; padding: 6px 12px 10px; display: flex; flex-direction: column; gap: 5px; }
+  .qs-row { display: flex; align-items: center; gap: 10px; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); font-size: 12.5px; }
+  .qs-pos { font-family: var(--font-mono); font-weight: 700; font-size: 12px; flex-shrink: 0; }
+  .qs-card { font-family: var(--font-mono); font-size: 12px; text-decoration: underline; text-decoration-color: var(--border); cursor: pointer; }
+  .qs-card:hover { text-decoration-color: var(--foreground); }
+  .qs-kind { font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted-foreground); }
+  .qs-kind.launch { background: #fef3c7; border-color: #fde68a; color: var(--amber); }
+  .qs-ready { font-size: 11.5px; }
+  .qs-ready.ok { color: var(--green); }
+  .qs-ready.wait { color: var(--amber); }
+  .qs-row .spacer { flex: 1; }
+  .qs-meta { font-size: 11.5px; color: var(--muted-foreground); }
+
+  /* ---- B279：卡抽屉协调者区（生命周期三态：未绑定 / 绑定中 / 人工接管中） ---- */
+  .coord-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px; }
+  .coord-card .cc-head { display: flex; align-items: center; gap: 12px; }
+  .coord-avatar { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; cursor: pointer; }
+  .coord-avatar:hover { outline: 2px solid var(--amber); outline-offset: 1px; }
+  .coord-card .cc-name { font-weight: 600; font-size: 13.5px; }
+  .coord-card .cc-meta { font-size: 12px; color: var(--muted-foreground); margin-top: 2px; }
+  .coord-card .cc-hint { font-size: 11.5px; color: var(--muted-foreground); line-height: 1.6; margin: 10px 0 0; }
+  .coord-unbound { border: 1px dashed var(--border); border-radius: 10px; padding: 12px; font-size: 12.5px; }
+
 </style>
 </head>
 <body>
@@ -207,6 +331,7 @@
           </select>
           <input class="input sm" id="fSearch" placeholder="搜 B 号 / 标题" style="width:160px">
           <button class="btn sm" id="fNeeds" style="border-color:#fde68a;color:var(--amber)">⚑ 需要你 <span id="needsCnt">5</span></button>
+          <button class="btn sm" id="fQueue" title="点火/拉起请求在排队（并发满时入队，后端顺序）">⧗ 排队中 <span id="queueCnt">3</span></button>
           <div class="spacer"></div>
           <span class="health-dot" title="镜像正常 · 3 台在线（异常时此处会展开告警文字）"></span>
           <a class="btn sm" href="flows.html">⚙ 流程</a>
@@ -216,11 +341,20 @@
         <!-- 项目级裁决（无卡可挂）：只在「需要你」筛选态出现，平时不占位 -->
         <div id="projDecs" hidden></div>
 
+        <!-- B279：排队中横带——点火/拉起请求的服务端位次（⧗ 排队中 开关展开；清队顺序：拉起恒先于点火） -->
+        <div id="queueStrip" hidden>
+          <div class="qs-head">
+            <span class="qs-title">⧗ 排队中</span>
+            <span class="hint" id="queueHint">3 条 · 后端顺序 · 并发满时入队；出队时先唤醒绑定协调者确认基线仍新鲜再真派</span>
+          </div>
+          <ol class="qs-list" id="queueList"></ol>
+        </div>
+
         <div class="cols" id="cols"></div>
 
         <div class="list-wrap" id="listWrap" hidden>
           <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;font-size:12.5px">
-            <label><input type="checkbox" id="fArchived"> 含归档（已完成 / 终止·搁置）</label>
+            <label><input type="checkbox" id="fArchived"> 含归档（结束 / 搁置）</label>
             <span class="dim">列表视图复刻 markdown 总账——领活与考古入口</span>
           </div>
           <table>
@@ -237,73 +371,250 @@
           </div>
         </details>
       </div>
+
+      <!-- 详情抽屉：相对 .content 最右侧打开（absolute），右侧 IM 面板是独立区域不被遮挡 -->
+      <aside class="drawer" id="drawer" hidden>
+        <div class="d-head">
+          <div class="row1">
+            <span class="wid mono dim" id="dId"></span>
+            <span class="badge" id="dStatus"></span>
+            <span class="chip green" id="dVerified" hidden>已验</span>
+            <span class="chip amber" id="dNeeds" hidden>等人</span>
+            <span class="node-tag" id="dNode" hidden></span>
+            <button class="close" id="drawerClose" title="关闭">✕</button>
+          </div>
+          <h3 id="dTitle"></h3>
+        </div>
+        <div class="d-body">
+          <div class="d-sec"><div class="pipeline" id="dPipeline"></div></div>
+          <div class="d-sec"><dl class="kv" id="dKv"></dl></div>
+          <div class="d-sec">
+            <div class="s-title">验收</div>
+            <div class="accept" id="dAccept"></div>
+          </div>
+          <div class="d-sec" id="dMergeSec">
+            <div class="s-title">⊕ 并入本卡（状态跟随，验收各自保留）</div>
+            <div id="dMerge"></div>
+            <p class="dim" id="mgFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
+          </div>
+          <div class="d-sec">
+            <div class="s-title">关系</div>
+            <div id="dRels"></div>
+          </div>
+          <div class="d-sec" id="dSubsSec">
+            <div class="s-title">子任务</div>
+            <div id="dSubs"></div>
+          </div>
+          <div class="d-sec" id="dTasksSec">
+            <div class="s-title">关联执行（task）</div>
+            <div id="dTasks"></div>
+          </div>
+          <div class="d-sec">
+            <div class="s-title">节点动作（与主会话共用同一节点定义）</div>
+            <div class="actions-row">
+              <button class="btn sm" id="actDispatch">▶ 派发实现</button>
+              <button class="btn sm">⇆ 派发审阅</button>
+              <button class="btn sm">⇣ 合入集成分支</button>
+              <button class="btn sm">→ 转移状态…</button>
+            </div>
+            <p class="dim" id="actFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
+          </div>
+          <!-- B279：协调者生命周期区（keystone 语义：未绑定 → 拉起；绑定中 → attach 打开终端；接管中 → 交回无头） -->
+          <div class="d-sec" id="dCoordSec">
+            <div class="s-title">协调者</div>
+            <div id="dCoordBody"></div>
+            <p class="dim" id="coordFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
+          </div>
+          <div class="d-sec">
+            <div class="s-title">Timeline</div>
+            <div class="tl-filters" id="tlFilters">
+              <button class="tf on" data-f="all">全部</button>
+              <button class="tf" data-f="comment">评论</button>
+              <button class="tf" data-f="verdict">裁决</button>
+              <button class="tf" data-f="system">系统</button>
+            </div>
+            <div class="tl" id="dTl"></div>
+            <div class="note-row">
+              <input class="input sm" id="noteInput" placeholder="写评论… 用 #B142 引用其他工作项（自动成关系边）">
+              <button class="btn sm" id="noteBtn">发布</button>
+            </div>
+            <p class="dim" id="noteFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
+          </div>
+        </div>
+      </aside>
     </main>
+
+    <!-- B265：IM 右侧常驻（工作项页内）——与悬浮面板同构的微信风格 -->
+    <aside class="im-panel" id="imPanel">
+      <div class="im-head">
+        <span class="im-title">会话</span>
+        <span class="badge amber" title="4 条未读">4</span>
+        <button class="icon-btn xs" id="imCollapse" title="收起为悬浮按钮">−</button>
+      </div>
+      <div class="im-body">
+        <!-- 会话列表态 -->
+        <div class="im-list" id="imListViewBoard">
+          <div class="im-filters">
+            <label class="im-filter" title="按项目筛选会话">▦
+              <select id="imFProjectBoard">
+                <option value="">全部项目</option>
+                <option value="handoff">handoff</option>
+                <option value="tk/server">tk/server</option>
+              </select><span class="caret">∨</span>
+            </label>
+            <span class="sep"></span>
+            <button class="im-filter" id="imFNeedsBoard" title="只看需要你的房间">⚑ 需要你 <span class="fcnt" id="imNeedsCntBoard">3</span></button>
+          </div>
+          <!-- 待回复置顶：data-needs 房间排在最前 + 琥珀底 -->
+          <div class="im-conv unread needs active" data-room="B93" data-project="handoff" data-needs="1">
+            <div class="im-avatar" style="background:#dbeafe">B93<span class="abadge">2</span></div>
+            <div class="im-conv-body">
+              <div class="im-conv-top"><span class="im-conv-name">B93 基准评测 opencode-qwen</span><span class="im-conv-time">14:31</span></div>
+              <div class="im-conv-preview"><span class="pflag">[待回复]</span> 协调者：回合 2 结束，进入待审</div>
+            </div>
+          </div>
+          <div class="im-conv unread needs" data-room="B156.2" data-project="handoff" data-needs="1">
+            <div class="im-avatar" style="background:#fef3c7">B156.2<span class="abadge">1</span></div>
+            <div class="im-conv-body">
+              <div class="im-conv-top"><span class="im-conv-name">B156.2 二期·协作层</span><span class="im-conv-time">10:05</span></div>
+              <div class="im-conv-preview"><span class="pflag">[待回复]</span> 推翻级简报：房间模型需调整</div>
+            </div>
+          </div>
+          <div class="im-conv unread needs" data-room="B102" data-project="tk/server" data-needs="1">
+            <div class="im-avatar" style="background:#fee2e2">B102<span class="abadge">1</span></div>
+            <div class="im-conv-body">
+              <div class="im-conv-top"><span class="im-conv-name">B102 订单导出超时优化</span><span class="im-conv-time">09:12</span></div>
+              <div class="im-conv-preview"><span class="pflag">[待回复]</span> 工单 #T-318：超时阈值调到 60s 可以吗</div>
+            </div>
+          </div>
+          <div class="im-conv" data-room="handoff" data-project="handoff">
+            <div class="im-avatar" style="background:#dcfce7">📋</div>
+            <div class="im-conv-body">
+              <div class="im-conv-top"><span class="im-conv-name">handoff 项目群</span><span class="im-conv-time">昨天</span></div>
+              <div class="im-conv-preview">@xushixin B156.2 spec 已更新</div>
+            </div>
+          </div>
+          <div class="im-conv" data-room="B95" data-project="handoff">
+            <div class="im-avatar" style="background:#dbeafe">B95</div>
+            <div class="im-conv-body">
+              <div class="im-conv-top"><span class="im-conv-name">B95 grok 权限门</span><span class="im-conv-time">昨天</span></div>
+              <div class="im-conv-preview">权限请求已批准，继续执行</div>
+            </div>
+          </div>
+          <div class="im-conv" data-room="all" data-project="">
+            <div class="im-avatar" style="background:#f3e8ff">🌐</div>
+            <div class="im-conv-body">
+              <div class="im-conv-top"><span class="im-conv-name">全员群</span><span class="im-conv-time">周三</span></div>
+              <div class="im-conv-preview">agentd v0.3.4 已发布</div>
+            </div>
+          </div>
+        </div>
+        <!-- 房间聊天态（默认隐藏） -->
+        <div class="im-room" id="imRoomViewBoard" hidden>
+          <div class="im-room-head">
+            <button class="icon-btn xs" id="imBackBoard" title="返回列表">←</button>
+            <span class="im-room-name" id="imRoomNameBoard">B93 基准评测 opencode-qwen</span>
+            <button class="icon-btn xs" id="imRoomInfoBoard" title="房间详情">⋯</button>
+          </div>
+          <div class="im-room-msgs">
+            <div class="im-m-row left">
+              <div class="im-m-avatar">K</div>
+              <div class="im-m-bubble">已派发给 opencode（默认模型），工作树 7a8334f4</div>
+            </div>
+            <div class="im-m-row left">
+              <div class="im-m-avatar">K</div>
+              <div class="im-m-bubble">Task 1 完成，进入待审</div>
+            </div>
+            <div class="im-m-sys">今天 14:20</div>
+            <div class="im-m-row right">
+              <div class="im-m-bubble user">ledger 里补上变异测试的记录，然后做最后一次全量回归取证再收尾</div>
+              <div class="im-m-avatar" style="background:#fde68a">我</div>
+            </div>
+            <div class="im-m-row left">
+              <div class="im-m-avatar">K</div>
+              <div class="im-m-bubble">已收到指令。补充变异测试记录，全量回归通过后收尾。</div>
+            </div>
+            <div class="im-m-sys">今天 14:31</div>
+            <div class="im-m-row left">
+              <div class="im-m-avatar">K</div>
+              <div class="im-m-bubble">回合 2 结束，进入待审</div>
+            </div>
+          </div>
+          <div class="im-room-input">
+            <input class="input sm" placeholder="发消息…">
+            <button class="btn sm primary">发送</button>
+          </div>
+        </div>
+        <!-- 房间详情态（默认隐藏） -->
+        <div class="im-room-detail" id="imRoomDetailBoard" hidden>
+          <div class="im-room-head">
+            <button class="icon-btn xs" id="imDetailBackBoard" title="返回聊天">←</button>
+            <span class="im-room-name">房间详情</span>
+          </div>
+          <div class="im-detail-body">
+            <div class="im-detail-sec">
+              <div class="im-detail-title">协调者（点头像 attach）</div>
+              <div class="im-coord-card">
+                <div class="im-coord-avatar" id="imCoordAvatarBoard" style="background:#dbeafe" title="attach 到该协调者">B93</div>
+                <div class="im-coord-info">
+                  <div class="im-coord-name">协调者 Kimi</div>
+                  <div class="im-coord-meta">载体：opencode · 本机 · 在线</div>
+                </div>
+                <button class="btn sm" onclick="document.getElementById('attachDialogBoard').showModal()">attach</button>
+              </div>
+            </div>
+            <div class="im-detail-sec">
+              <div class="im-detail-title">卡片</div>
+              <div class="im-card-mini">
+                <div class="im-card-id">B93</div>
+                <div class="im-card-title">基准评测 opencode-qwen</div>
+                <div style="display:flex;gap:5px;flex-wrap:wrap">
+                  <span class="chip prio-高">高</span>
+                  <span class="badge amber">待审阅</span>
+                  <span class="chip">▤ b93-bench</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <!-- B265：IM 悬浮按钮（收起后显示） -->
+    <div class="im-dock" id="imDockBoard" hidden>
+      <button class="im-fab" id="imFabBoard" title="会话（4 条未读）">
+        ◱<span class="im-fab-badge">4</span>
+      </button>
+    </div>
+
+    <!-- attach 确认弹窗 -->
+    <dialog id="attachDialogBoard">
+      <div style="padding:20px;width:400px;max-width:90vw">
+        <h3 style="margin:0 0 8px;font-size:15px">attach 协调者会话</h3>
+        <p class="dim" style="font-size:13px;margin:0 0 14px">将在本机目录 <code>~/workspace/handoff</code> 打开终端 tab，并填入：<br><code style="background:var(--muted);padding:2px 6px;border-radius:4px">handoff attach --session B93-coord</code></p>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn sm" onclick="this.closest('dialog').close()">取消</button>
+          <button class="btn sm primary" onclick="document.getElementById('attachFeedbackBoard').hidden=false;this.closest('dialog').close()">打开终端</button>
+        </div>
+        <p class="dim" id="attachFeedbackBoard" style="font-size:12px;margin:10px 0 0" hidden>已打开终端 tab 并填入 attach 命令（mock）。</p>
+      </div>
+    </dialog>
+
+    <!-- B279：卡抽屉协调者的 attach 确认弹窗（定位三元组来自 GET coordinator / POST attach 回执） -->
+    <dialog id="coordAttachDialog">
+      <div style="padding:20px;width:420px;max-width:90vw">
+        <h3 style="margin:0 0 8px;font-size:15px">attach 协调者会话 · <span id="caCard" class="mono" style="font-size:13px"></span></h3>
+        <p class="dim" style="font-size:13px;margin:0 0 6px">将在 <b id="caMachine">本机</b> 的目录 <code id="caDir" class="mono">~/workspace/handoff</code> 打开终端 tab，并填入：</p>
+        <p style="margin:0 0 14px"><code id="caCmd" class="mono" style="background:var(--muted);padding:2px 6px;border-radius:4px;font-size:12px">handoff attach --session …</code></p>
+        <p class="dim" style="font-size:12px;margin:0 0 14px">attach 期间自动唤醒静音（同一会话不许两个驾驶员）；终端里说的凡承重必须落账。</p>
+        <div style="display:flex;gap:8px;justify-content:flex-end">
+          <button class="btn sm" id="caCancel">取消</button>
+          <button class="btn sm primary" id="caOk">打开终端</button>
+        </div>
+      </div>
+    </dialog>
   </div>
 </div>
-
-<!-- 详情抽屉 -->
-<aside class="drawer" id="drawer" hidden>
-  <div class="d-head">
-    <div class="row1">
-      <span class="wid mono dim" id="dId"></span>
-      <span class="badge" id="dStatus"></span>
-      <span class="chip green" id="dVerified" hidden>已验</span>
-      <span class="chip amber" id="dNeeds" hidden>等人</span>
-      <button class="close" id="drawerClose" title="关闭">✕</button>
-    </div>
-    <h3 id="dTitle"></h3>
-  </div>
-  <div class="d-body">
-    <div class="d-sec"><div class="pipeline" id="dPipeline"></div></div>
-    <div class="d-sec"><dl class="kv" id="dKv"></dl></div>
-    <div class="d-sec">
-      <div class="s-title">验收</div>
-      <div class="accept" id="dAccept"></div>
-    </div>
-    <div class="d-sec" id="dMergeSec">
-      <div class="s-title">⊕ 并入本卡（状态跟随，验收各自保留）</div>
-      <div id="dMerge"></div>
-      <p class="dim" id="mgFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
-    </div>
-    <div class="d-sec">
-      <div class="s-title">关系</div>
-      <div id="dRels"></div>
-    </div>
-    <div class="d-sec" id="dSubsSec">
-      <div class="s-title">子任务</div>
-      <div id="dSubs"></div>
-    </div>
-    <div class="d-sec" id="dTasksSec">
-      <div class="s-title">关联执行（task）</div>
-      <div id="dTasks"></div>
-    </div>
-    <div class="d-sec">
-      <div class="s-title">节点动作（与主会话共用同一节点定义）</div>
-      <div class="actions-row">
-        <button class="btn sm" id="actDispatch">▶ 派发实现</button>
-        <button class="btn sm">⇆ 派发审阅</button>
-        <button class="btn sm">⇣ 合入集成分支</button>
-        <button class="btn sm">→ 转移状态…</button>
-      </div>
-      <p class="dim" id="actFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
-    </div>
-    <div class="d-sec">
-      <div class="s-title">Timeline</div>
-      <div class="tl-filters" id="tlFilters">
-        <button class="tf on" data-f="all">全部</button>
-        <button class="tf" data-f="comment">评论</button>
-        <button class="tf" data-f="verdict">裁决</button>
-        <button class="tf" data-f="system">系统</button>
-      </div>
-      <div class="tl" id="dTl"></div>
-      <div class="note-row">
-        <input class="input sm" id="noteInput" placeholder="写评论… 用 #B142 引用其他工作项（自动成关系边）">
-        <button class="btn sm" id="noteBtn">发布</button>
-      </div>
-      <p class="dim" id="noteFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
-    </div>
-  </div>
-</aside>
 
 <!-- 裁决答复弹窗：主会话回合末落的请示，就地答复，答复落 timeline、会话唤醒可读 -->
 <dialog id="decisionDialog">
@@ -359,6 +670,13 @@
       <div style="flex:1"><label class="dim" style="font-size:12px">优先级</label>
         <select class="input" style="margin-top:4px"><option>高</option><option selected>中</option><option>低</option></select></div>
     </div>
+    <!-- B279：开卡即绑（B156.3 拉起入口一；CLI 对应 card add --coordinate） -->
+    <label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;margin-bottom:14px;cursor:pointer">
+      <input type="checkbox" id="niCoord" style="margin-top:2px">
+      <span>创建后拉起协调者并绑定（开卡即绑）<br>
+        <span class="dim" style="font-size:11.5px;line-height:1.5">协调者醒来先读卡、查依赖、看基线新鲜度；判「现在不适合推」会在房间说一句原因并休眠。之后房间留言、挂账 task 到终态、工单、排队出队都会唤醒它。</span>
+      </span>
+    </label>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button type="button" class="btn sm" id="niCancel">取消</button>
       <button type="submit" class="btn sm primary">创建</button>
@@ -368,9 +686,9 @@
 </dialog>
 
 <script>
-  // ---- mock：工作项账本。字段对齐 phase1 spec：优先级/spec/验收(判据+已验)/关系(带类型)/搁置 ----
-  const STATES = ['待办', '已出 spec', '进行中', '待审阅', '待合并', '已完成'];
-  const INSERTED = { '已出 spec': 'feature 流插入', '待合并': 'feature 流插入' };
+  // ---- mock：工作项账本。B265 新列形态：代办/沟通中/进行中/审核中/结束 ----
+  const STATES = ['代办', '沟通中', '进行中', '审核中', '结束'];
+  const INSERTED = {};
   const SPECS = {
     'workbench-phase1': { file: 'specs/2026-08-18-workbench-phase1-design.md', note: '' },
     'ledger-cleanup':   { file: 'specs/2026-08-20-ledger-cleanup-design.md',
@@ -385,27 +703,27 @@
       status: '进行中', rollup: '1/5', driver: '主会话 @ mbp-work', spec: 'workbench-phase1',
       accept: { crit: '标准例（1→2→(3∥4)→5）真机上主会话全程一个 wait 推完；人工只出现在审 spec / 整功能验收 / 合 main', verified: null } },
     { id: 'B141.1', parent: 'B141', title: '账本数据模型与存量迁移', project: 'handoff', wf: 'feature 流 v2', prio: '高',
-      status: '已完成', spec: 'workbench-phase1',
+      status: '结束', spec: 'workbench-phase1',
       accept: { crit: '迁移后抽查 20 条历史条目字段无损；B 号→item id 映射可反查', verified: true,
         evi: '已验 08-22：抽查证据取自迁移日志原文而非推断——20/20 字段比对一致，映射反查含撞号顺延的 B59' } },
     { id: 'B141.2', parent: 'B141', title: 'CLI 命令面（item / workflow / wait）', project: 'handoff', wf: 'feature 流 v2', prio: '高',
       status: '进行中', driver: '主会话 @ mbp-work', tickets: 1, round: '审 1/3', spec: 'workbench-phase1',
+      coordinator: { bound: true, attachActive: true, who: '协调者 Kimi', carrier: 'mbp-opencode · 本机 · 在线', dir: '~/workspace/handoff', cmd: 'handoff attach --session B141.2-coord' },
       tasks: [{ target: 'mac-02', tid: 't-8f31', state: 'running' }],
       rels: [{ type: '由此发现', id: 'B142' }],
       accept: { crit: 'item add/move/dispatch/wait 全链路真机跑通；并发 dispatch 同一 item 恰一个成功', verified: null } },
     { id: 'B141.3', parent: 'B141', title: '事件镜像子系统', project: 'handoff', wf: 'feature 流 v2', prio: '高',
-      status: '待办', blockedBy: ['B141.2'], spec: 'workbench-phase1',
+      status: '代办', blockedBy: ['B141.2'], spec: 'workbench-phase1',
       accept: { crit: '镜像断链→看板亮滞后标记，恢复后按来源 seq 幂等补齐', verified: null } },
     { id: 'B141.4', parent: 'B141', title: '工作项看板页', project: 'handoff', wf: 'feature 流 v2', prio: '中',
-      status: '待办', blockedBy: ['B141.2'], spec: 'workbench-phase1',
+      status: '代办', blockedBy: ['B141.2'], spec: 'workbench-phase1',
       accept: { crit: '对照 workbench-ledger 原型确认形态验收', verified: null } },
     { id: 'B141.5', parent: 'B141', title: '账本单流多路 wait', project: 'handoff', wf: 'feature 流 v2', prio: '高',
-      status: '待办', blockedBy: ['B141.3', 'B141.4'], spec: 'workbench-phase1',
+      status: '代办', blockedBy: ['B141.3', 'B141.4'], spec: 'workbench-phase1',
       accept: { crit: 'wait 挂起期间新派发 task 的事件不漏（对照账本单流 seq）', verified: null } },
     { id: 'B142', title: '审阅裁决 schema 与解析失败兜底', project: 'handoff', wf: 'feature 流 v2', prio: '高',
-      status: '已出 spec', spec: 'verdict-schema', rels: [{ type: '发现自', id: 'B141.2' }],
+      status: '沟通中', spec: 'verdict-schema', rels: [{ type: '发现自', id: 'B141.2' }],
       accept: { crit: '裁决解析失败不猜，转等人（reason=裁决解析失败）可复现', verified: null } },
-    // 合并示例：三张平级卡并入一张承载卡（一份 spec 一个 plan 一起做，看板只有承载卡流动）
     { id: 'B147', title: '账本清扫一揽子', project: 'handoff', wf: 'bug 流 v1', prio: '中',
       status: '进行中', driver: '主会话 @ mbp-work', spec: 'ledger-cleanup',
       accept: { crit: '批次公共验收：go build + go vet + gofmt -l 无输出 + go test ./... 全绿，两台执行机各独立跑一次；各被并卡另有专属真机判据', verified: null } },
@@ -419,32 +737,37 @@
       status: '进行中', mergedInto: 'B147',
       accept: { crit: '1000 条归档下列表首屏 < 200ms', verified: null } },
     { id: 'B120', title: 'Windows claude executor 接入', project: 'handoff', wf: 'feature 流 v2', prio: '高',
-      status: '待审阅', round: '审 2/3', driver: '主会话 @ mbp-work', spec: 'workbench-phase1',
+      status: '审核中', round: '审 2/3', driver: '主会话 @ mbp-work', spec: 'workbench-phase1',
+      coordinator: { bound: true, attachActive: false, who: '协调者 Kimi', carrier: 'mbp-opencode · 本机 · 在线', dir: '~/workspace/handoff', cmd: 'handoff attach --session B120-coord' },
       tasks: [{ target: 'win-b37', tid: 't-77ab', state: 'waiting_review' }, { target: 'mac-02', tid: 't-91c2 审阅', state: 'running' }],
       accept: { crit: 'win-b37 真机 attach/权限升级/continue 三链路', verified: null } },
     { id: 'B95', title: 'grok continue 丢事件修复', project: 'handoff', wf: 'bug 流 v1', prio: '高',
-      status: '待合并', spec: 'b95-grok',
+      status: '结束', spec: 'b95-grok',
       accept: { crit: 'continue 后 wait 收到全部事件，无空洞（对照 journal seq）', verified: true, evi: '已验 08-19：真机 3 轮 continue 无丢失' } },
     { id: 'B128', title: 'win-b37 引导脚本整固', project: 'handoff', wf: 'bug 流 v1', prio: '中',
-      status: '待审阅', needs: '审阅 3/3 轮未过', round: '审 3/3', spec: 'b95-grok',
+      status: '审核中', needs: '审阅 3/3 轮未过', round: '审 3/3', spec: 'b95-grok',
       accept: { crit: '全新 Windows 账户跑通引导', verified: null } },
     { id: 'B98', title: '导出报表接口拆分', project: 'tk/server', wf: 'feature 流 v2', prio: '中',
-      status: '待办', needs: '前置 B97 已取消',
+      status: '代办', needs: '前置 B97 已取消',
       accept: { crit: '—', verified: null } },
     { id: 'B102', title: '订单导出超时优化', project: 'tk/server', wf: 'bug 流 v1', prio: '高',
       status: '进行中', conflict: '关联 task 已 failed · 驱动 2h 无心跳',
       tasks: [{ target: 'mac-02', tid: 't-c3d1', state: 'failed' }],
       accept: { crit: '10w 行导出 < 30s', verified: null } },
     { id: 'B119', title: 'Sweep 清扫的全有全无', project: 'handoff', wf: 'bug 流 v1', prio: '高',
-      status: '已完成', spec: 'b119-sweep',
+      status: '结束', spec: 'b119-sweep',
       accept: { crit: '强制回收先停源头；执行者存活时降级名册点名', verified: false,
         evi: '总回归与变异测试已绿；真机复验交接说明见 plan——待真机验' } },
     { id: 'B115', title: 'executor 自指令收口', project: 'handoff', wf: 'feature 流 v2', prio: '高',
-      status: '已完成', spec: 'b115-selfcmd',
+      status: '结束', spec: 'b115-selfcmd',
       accept: { crit: 'handoff 变更命令一律升级人工；白名单只读放行', verified: true, evi: '已验 08-18：变异测试 + 真机拦截取证' } },
     { id: 'B53', title: 'agentd 内嵌 TUI 面板', project: 'handoff', wf: 'feature 流 v2', prio: '低',
-      status: '终止', shelved: true, archNote: '搁置 · 可复活——被 Web 控制台形态决策覆盖',
+      status: '结束', shelved: true, archNote: '搁置 · 可复活——被 Web 控制台形态决策覆盖',
       accept: { crit: '—', verified: null } },
+    // B156.3 示例：需要拉起协调者的卡
+    { id: 'B156.3', title: '三期·自动化层：规则引擎 + agentd 拉起协调会话', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '代办', spec: 'workbench-phase1', noCoordinator: true,
+      accept: { crit: '子卡全部完成并通过验收', verified: null } },
   ];
 
   // 裁决项：主会话回合末落的请示，open 期间常亮在等人条，可就地答复
@@ -457,7 +780,30 @@
       options: ['开新工作项', '不做'] },
   ];
 
-  // B141.2 的分层 timeline：评论(气泡) / 裁决 / 系统(meta) / 镜像(折叠组)
+  // B279：点火/拉起队列（mock，镜像 GET /api/queue 的 QueueEntry wire）——
+  // position 是清队顺序下的全局 1 基位次；清队顺序恒为 launch_queue（拉起）先于 ignition_queue（点火）。
+  // ready/priority 是入队时刻的快照，出队不重读卡——新鲜性由出队后协调者确认基线兜底。
+  const QUEUE = [
+    { kind: 'launch_queue', id: 'lq-41', card: 'B156.3', node: '', squad: 'coordinators', priority: '高', ready: true, actor: '用户', when: '14:31', position: 1 },
+    { kind: 'ignition_queue', id: 'iq-42', card: 'B141.3', node: '进行中', squad: 'executors-default', priority: '高', ready: false, actor: '协调者 Kimi', when: '14:28', position: 2 },
+    { kind: 'ignition_queue', id: 'iq-43', card: 'B98', node: '进行中', squad: 'executors-default', priority: '中', ready: true, actor: '用户', when: '14:12', position: 3 },
+  ];
+
+  // B279：卡的当前节点 = 工作流节点（NodeDef.Name，与状态同名；真实数据来自账本状态事件流，
+  // card dispatch --step 的取值域即这些节点名）。节点→看板列映射在 flows 页「节点编排」表配置。
+  // 列与节点一一对应时列本身就是节点标签；只有多对一映射的列（审核中 ← 待审阅/待合并）
+  // 列答不出节点，标签才在卡面显形（与本板「保真信号沉默」原则一致）。
+  const ITEM_NODE = {
+    'B141': '进行中', 'B141.2': '进行中', 'B141.3': '待办', 'B141.4': '待办', 'B141.5': '待办',
+    'B142': '已出 spec', 'B147': '进行中', 'B120': '待审阅', 'B128': '待审阅',
+    'B98': '待办', 'B102': '进行中', 'B156.3': '待办',
+  };
+  const LOSSY_COL = { '审核中': true }; // 列→节点多对一（待审阅 / 待合并）
+  function nodeTagHtml(it) {
+    const n = ITEM_NODE[it.id];
+    if (!n || !LOSSY_COL[it.status]) return '';
+    return `<span class="node-tag" title="当前节点：${n}（「${it.status}」列含多个节点，列答不出；节点→列·小队映射见 流程页「节点编排」）">${n}</span>`;
+  }
   const TIMELINE = {
     'B141.2': [
       { k: 'system', t: '10:02', html: '<b>派发</b> → mac-02 · opencode · 主会话 · <span class="mono" style="font-size:11px">模板 feature-impl v3 · 纪律块 A@1f3c9d</span>' },
@@ -499,6 +845,8 @@
     if (it.needs) chips.push(`<span class="chip amber">⚑ ${it.needs}</span>`);
     if (it.conflict) chips.push(`<span class="chip red">✕ 状态冲突</span>`);
     if (it.tickets) chips.push(`<span class="chip amber">✉ 工单 ${it.tickets}</span>`);
+    const q = QUEUE.find(e => e.card === it.id);
+    if (q) chips.push(`<span class="chip amber" title="${q.kind === 'launch_queue' ? '协调者拉起' : `节点 ${q.node} 点火`}排队中 · 清队位次 #${q.position}（小队 ${q.squad}）">⧗ 排队 #${q.position}</span>`);
     if (it.round) chips.push(`<span class="chip">${it.round}</span>`);
     if (it.rollup) chips.push(`<span class="chip">子任务 ${it.rollup}</span>`);
     // 保真信号沉默原则：驱动正常不显示；只有「进行中却无人驱动」才亮红
@@ -561,7 +909,7 @@
         inCol.forEach(it => {
           const el = document.createElement('div');
           el.className = 'wcard' + (it.needs ? ' needs' : '') + (it.conflict ? ' conflict' : '') + (it.blockedBy ? ' blocked' : '');
-          el.innerHTML = `<div class="wid-row"><span class="wid">${it.id}${it.parent ? ` · 父 ${it.parent}` : ''}</span></div>
+          el.innerHTML = `<div class="wid-row"><span class="wid">${it.id}${it.parent ? ` · 父 ${it.parent}` : ''}</span>${nodeTagHtml(it)}</div>
             <div class="wtitle">${it.title}</div><div class="wmeta">${chipHtml(it)}</div>`;
           el.addEventListener('click', () => openDrawer(it));
           bindCardEvents(el);
@@ -572,11 +920,11 @@
     } else {
       $('#cols').hidden = true; $('#listWrap').hidden = false;
       const showArch = $('#fArchived').checked;
-      const rows = vis.filter(it => showArch || (it.status !== '已完成' && it.status !== '终止'));
+      const rows = vis.filter(it => showArch || (it.status !== '结束' && it.status !== '搁置'));
       const tb = $('#listBody'); tb.innerHTML = '';
       rows.forEach(it => {
         const tr = document.createElement('tr');
-        const acc = it.status === '已完成' ? (it.accept?.verified ? '✅ 已验' : '🟡 待真机验') : (it.accept?.crit && it.accept.crit !== '—' ? '有判据' : '—');
+        const acc = it.status === '结束' ? (it.accept?.verified ? '✅ 已验' : '🟡 待真机验') : (it.accept?.crit && it.accept.crit !== '—' ? '有判据' : '—');
         tr.innerHTML = `<td class="mono-sm">${it.id}</td><td>${it.title}</td>
           <td>${it.mergedInto ? `跟随 ${it.mergedInto}` : it.status}${it.shelved ? '（搁置·可复活）' : ''}${it.needs ? ' ⚑' : ''}${it.conflict ? ' ✕' : ''}</td>
           <td>${acc}</td><td>${it.prio}</td>
@@ -594,6 +942,31 @@
     $('#fNeeds').style.background = needsOnly ? '#fef3c7' : '';
     render();
   });
+
+  // ---- B279：「排队中」横带：就地展开/收起，行内卡号可点开抽屉 ----
+  let queueOpen = false;
+  function renderQueue() {
+    $('#queueCnt').textContent = QUEUE.length;
+    $('#queueHint').textContent = `${QUEUE.length} 条 · 后端顺序 · 并发满时入队；出队时先唤醒绑定协调者确认基线仍新鲜再真派`;
+    const strip = $('#queueStrip');
+    strip.hidden = !queueOpen;
+    $('#fQueue').style.background = queueOpen ? '#fef3c7' : '';
+    if (!queueOpen) return;
+    $('#queueList').innerHTML = QUEUE.map(e => `
+      <li class="qs-row">
+        <span class="qs-pos">#${e.position}</span>
+        <span class="qs-card" data-qcard="${e.card}">${e.card}</span>
+        <span class="qs-kind${e.kind === 'launch_queue' ? ' launch' : ''}">${e.kind === 'launch_queue' ? '拉起协调者' : '点火'}</span>
+        <span class="qs-meta">${e.node ? `节点 ${e.node} · ` : ''}小队 <span class="mono">${e.squad}</span></span>
+        ${e.priority ? `<span class="qs-meta">优先级 ${e.priority}</span>` : ''}
+        <span class="qs-ready ${e.ready ? 'ok' : 'wait'}">${e.ready ? '可运行' : '等待条件'}</span>
+        <span class="spacer"></span>
+        <span class="qs-meta">${e.actor} · ${e.when} 入队</span>
+      </li>`).join('');
+    $('#queueList').querySelectorAll('[data-qcard]').forEach(el =>
+      el.addEventListener('click', () => { const it = byId(el.dataset.qcard); if (it) openDrawer(it); }));
+  }
+  $('#fQueue').addEventListener('click', () => { queueOpen = !queueOpen; renderQueue(); });
 
   // ---- 裁决答复 ----
   let curDecision = null;
@@ -639,7 +1012,7 @@
     $('#dStatus').textContent = it.status + (it.shelved ? '（搁置·可复活）' : '');
     $('#dTitle').textContent = it.title;
     const v = $('#dVerified');
-    v.hidden = !(it.status === '已完成');
+    v.hidden = !(it.status === '结束');
     if (!v.hidden) {
       v.className = 'chip ' + (it.accept?.verified ? 'green' : 'amber');
       v.textContent = it.accept?.verified ? '已验' : '待真机验';
@@ -647,6 +1020,11 @@
     const needs = $('#dNeeds');
     needs.hidden = !(it.needs || it.conflict);
     needs.textContent = '⚑ ' + (it.needs || it.conflict || '');
+    const dn = $('#dNode');
+    const curNode = ITEM_NODE[it.id];
+    const showNode = curNode && LOSSY_COL[it.status];
+    dn.hidden = !showNode;
+    if (showNode) dn.textContent = curNode;
 
     $('#dPipeline').innerHTML = STATES.map(s =>
       `<span class="st${s === it.status ? ' cur' : ''}${INSERTED[s] ? ' ins' : ''}">${s}</span>`
@@ -663,11 +1041,14 @@
     const a = it.accept || { crit: '—', verified: null };
     $('#dAccept').innerHTML = `
       <div class="a-row">
-        <span class="chip ${a.verified === true ? 'green' : (it.status === '已完成' ? 'amber' : '')}">${a.verified === true ? '已验' : (it.status === '已完成' ? '待真机验' : '未验')}</span>
+        <span class="chip ${a.verified === true ? 'green' : (it.status === '结束' ? 'amber' : '')}">${a.verified === true ? '已验' : (it.status === '结束' ? '待真机验' : '未验')}</span>
         <button class="btn sm" style="margin-left:auto">标记已验…</button>
       </div>
       <div class="a-crit">${a.crit}</div>
       ${a.evi ? `<div class="a-evi">${a.evi}</div>` : ''}`;
+
+    // B279：协调者生命周期区（每张卡都显示；三态：未绑定 / 绑定中 / 人工接管中）
+    renderCoordinator(it);
 
     // 并入区：承载卡的被并卡清单就地展示（状态跟随、验收各自保留、可拆回），不弹独立面板
     const members = ITEMS.filter(x => x.mergedInto === it.id);
@@ -716,6 +1097,68 @@
     $('#noteFeedback').hidden = true;
     $('#drawer').hidden = false;
   }
+
+  // ---- B279：协调者生命周期区（keystone 语义） ----
+  function renderCoordinator(it) {
+    const body = $('#dCoordBody');
+    const fb = $('#coordFeedback');
+    fb.hidden = true;
+    const c = it.coordinator;
+    if (!c) {
+      body.innerHTML = `
+        <div class="coord-unbound">
+          <p class="dim" style="margin:0 0 10px">本卡尚未绑定协调者。拉起后它休眠在事件上等唤醒：房间留言、挂账 task 到终态、工单、排队出队。</p>
+          <button class="btn sm primary" id="coordLaunch">▶ 拉起协调者</button>
+        </div>`;
+      body.querySelector('#coordLaunch').addEventListener('click', () => {
+        fb.textContent = `已拉起（mock）：POST /api/cards/${it.id}/coordinator/launch → woke=true。协调者醒来先读卡、查依赖、看基线新鲜度，随后休眠等事件唤醒。`;
+        fb.hidden = false;
+      });
+      return;
+    }
+    body.innerHTML = `
+      <div class="coord-card">
+        <div class="cc-head">
+          <div class="coord-avatar" style="background:#dbeafe" title="${c.attachActive ? '人工接管中' : 'attach 到该协调者'}">${it.id}</div>
+          <div style="flex:1;min-width:0">
+            <div class="cc-name">${c.who}</div>
+            <div class="cc-meta">载体：${c.carrier}</div>
+          </div>
+          ${c.attachActive ? '<span class="badge amber">人工接管中</span>' : '<span class="badge">绑定中</span>'}
+        </div>
+        <div class="actions-row" style="margin-top:10px">
+          ${c.attachActive
+            ? '<button class="btn sm" id="coordRelease">交回无头</button>'
+            : '<button class="btn sm" id="coordAttach">打开终端</button>'}
+        </div>
+        <p class="cc-hint">${c.attachActive
+          ? '人工接管中：自动唤醒静音（同一会话不许两个驾驶员）。聊完点「交回无头」恢复事件唤醒；终端里说的凡承重必须落账。'
+          : 'attach 与自动唤醒互斥：点头像或「打开终端」，在该会话对应目录开终端 tab 深聊。'}</p>
+      </div>`;
+    const attachBtn = body.querySelector('#coordAttach');
+    if (attachBtn) attachBtn.addEventListener('click', () => openCoordAttach(it));
+    body.querySelector('.coord-avatar').addEventListener('click', () => { if (!c.attachActive) openCoordAttach(it); });
+    const releaseBtn = body.querySelector('#coordRelease');
+    if (releaseBtn) releaseBtn.addEventListener('click', () => {
+      fb.textContent = `已交回无头（mock）：POST /api/cards/${it.id}/attach {active:false} → 自动唤醒恢复，事件重新敲醒协调者。`;
+      fb.hidden = false;
+    });
+  }
+
+  function openCoordAttach(it) {
+    const c = it.coordinator;
+    $('#caCard').textContent = it.id;
+    $('#caDir').textContent = c.dir;
+    $('#caCmd').textContent = c.cmd;
+    $('#coordAttachDialog').showModal();
+  }
+  $('#caCancel').addEventListener('click', () => $('#coordAttachDialog').close());
+  $('#caOk').addEventListener('click', () => {
+    $('#coordAttachDialog').close();
+    const fb = $('#coordFeedback');
+    fb.textContent = '已打开终端 tab 并填入 attach 命令（mock）。接管期间本卡自动唤醒静音，状态变为「人工接管中」。';
+    fb.hidden = false;
+  });
 
   function renderTimeline(it, filter) {
     const evs = TIMELINE[it.id] || [];
@@ -787,7 +1230,71 @@
     $('#niFeedback').hidden = false;
   });
 
+  // B265：IM 面板收起/展开（工作项页右侧常驻 ↔ 悬浮按钮）
+  const imPanel = $('#imPanel');
+  const imDock = $('#imDockBoard');
+  $('#imCollapse').addEventListener('click', () => {
+    imPanel.hidden = true;
+    imDock.hidden = false;
+  });
+  $('#imFabBoard').addEventListener('click', () => {
+    imPanel.hidden = false;
+    imDock.hidden = true;
+    // 回到列表态
+    $('#imListViewBoard').hidden = false;
+    $('#imRoomViewBoard').hidden = true;
+    $('#imRoomDetailBoard').hidden = true;
+  });
+
+  // IM 三态切换：列表 → 房间 → 详情
+  document.querySelectorAll('#imListViewBoard .im-conv').forEach(el => {
+    el.addEventListener('click', () => {
+      $('#imListViewBoard').hidden = true;
+      $('#imRoomViewBoard').hidden = false;
+      $('#imRoomDetailBoard').hidden = true;
+      $('#imRoomNameBoard').textContent = el.querySelector('.im-conv-name').textContent;
+    });
+  });
+  $('#imBackBoard').addEventListener('click', () => {
+    $('#imListViewBoard').hidden = false;
+    $('#imRoomViewBoard').hidden = true;
+    $('#imRoomDetailBoard').hidden = true;
+  });
+  $('#imRoomInfoBoard').addEventListener('click', () => {
+    $('#imListViewBoard').hidden = true;
+    $('#imRoomViewBoard').hidden = true;
+    $('#imRoomDetailBoard').hidden = false;
+  });
+  $('#imDetailBackBoard').addEventListener('click', () => {
+    $('#imListViewBoard').hidden = true;
+    $('#imRoomViewBoard').hidden = false;
+    $('#imRoomDetailBoard').hidden = true;
+  });
+
+  // 会话筛选：项目下拉 + 「需要你」开关（文字项，非按钮）；全员房（无项目）不受项目筛选影响
+  let imNeedsOnlyBoard = false;
+  const imConvsBoard = [...document.querySelectorAll('#imListViewBoard .im-conv')];
+  $('#imNeedsCntBoard').textContent = imConvsBoard.filter(e => e.dataset.needs === '1').length;
+  function imApplyFilterBoard() {
+    const fp = $('#imFProjectBoard').value;
+    imConvsBoard.forEach(el => {
+      const okP = !fp || !el.dataset.project || el.dataset.project === fp;
+      const okN = !imNeedsOnlyBoard || el.dataset.needs === '1';
+      el.hidden = !(okP && okN);
+    });
+  }
+  $('#imFProjectBoard').addEventListener('change', imApplyFilterBoard);
+  $('#imFNeedsBoard').addEventListener('click', () => {
+    imNeedsOnlyBoard = !imNeedsOnlyBoard;
+    $('#imFNeedsBoard').classList.toggle('on', imNeedsOnlyBoard);
+    imApplyFilterBoard();
+  });
+
+  // 协调者头像点击 → attach 确认弹窗（与 attach 按钮同路径）
+  $('#imCoordAvatarBoard').addEventListener('click', () => document.getElementById('attachDialogBoard').showModal());
+
   render();
+  renderQueue();
 </script>
 </body>
 </html>
