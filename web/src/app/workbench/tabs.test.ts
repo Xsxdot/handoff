@@ -214,6 +214,29 @@ describe('resize and helpers', () => {
     expect(wb.groups[0].sizes[1]).toBeCloseTo(0.8)
   })
 
+  it('min*2 超过两栏现有份额时不再整体早退，仍夹紧到可行解', () => {
+    // 三列窄窗口：minRatio=0.45 时两栏最小和 0.9 > 现有 0.67，现状直接早退
+    // 返回原对象（容器只能横滑）；新行为把两栏夹到可行解，右栏=下限，左栏拿余量
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
+    wb = addColumn(wb)
+    wb = addColumn(wb)
+    const before = wb
+    const next = resizeColumns(wb, 'g1', 0, -0.3, 0.45)
+    expect(next).not.toBe(before)
+    expect(next.groups[0].sizes).toHaveLength(3)
+    expect(next.groups[0].sizes[1] / 3).toBeCloseTo(0.45)
+    expect(next.groups[0].sizes[0] + next.groups[0].sizes[1]).toBeCloseTo(2)
+    expect(next.groups[0].sizes[2]).toBe(1)
+  })
+
+  it('单侧夹紧保留：delta 把一栏压穿下限时该栏停在下限', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
+    wb = addColumn(wb)
+    const next = resizeColumns(wb, 'g1', 0, -0.45, 0.45)
+    expect(next.groups[0].sizes[0] / 2).toBeCloseTo(0.45)
+    expect(next.groups[0].sizes[1] / 2).toBeCloseTo(0.55)
+  })
+
   it('非法目标记录上下文并返回原对象', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
     expect(placeSource(EMPTY_WORKBENCH, { kind: 'new', base: handoff, content: { kind: 'blank' } }, {

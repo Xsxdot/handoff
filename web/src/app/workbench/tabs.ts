@@ -506,7 +506,11 @@ export function appendRestoredTab(wb: Workbench, base: BaseDir, content: TabCont
   return next
 }
 
-/** 调整同一 group 的相邻 columns；minRatio 由 DOM 容器换算。 */
+/** 调整同一 group 的相邻 columns；minRatio 由 DOM 容器换算。
+ *
+ * 下限只作用于**夹紧**，不做整体早退：三列窄窗口里两栏最小和必然超过现有
+ * 份额，早退会把分隔焊死、逼容器横向滚动；横滚已被容器裁掉（overflow-hidden），
+ * 唯一出口是把两栏夹到可行解——被压的一侧拿余量，另一侧顶到下限。 */
 export function resizeColumns(wb: Workbench, groupId: string, dividerIndex: number, delta: number, minRatio: number): Workbench {
   const index = groupIndex(wb, groupId)
   if (index < 0) return wb
@@ -520,7 +524,6 @@ export function resizeColumns(wb: Workbench, groupId: string, dividerIndex: numb
   const leftRatio = group.sizes[dividerIndex] / total
   const rightRatio = group.sizes[right] / total
   const minimum = Math.max(0, minRatio)
-  if (minimum * 2 > leftRatio + rightRatio) return wb
   let change = delta
   if (leftRatio + change < minimum) change = minimum - leftRatio
   if (rightRatio - change < minimum) change = rightRatio - minimum

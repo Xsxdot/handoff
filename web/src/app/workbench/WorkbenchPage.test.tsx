@@ -22,6 +22,14 @@ function page(api: ReturnType<typeof useWorkbench>) {
 }
 
 describe('WorkbenchPage', () => {
+  it('最外容器裁掉横向溢出：列压进窗口，不允许横滑', () => {
+    const hook = renderHook(() => useWorkbench())
+    const view = render(page(hook.result.current))
+    expect((view.container.firstElementChild as HTMLElement).className).toContain('overflow-hidden')
+    // 列不再带 240px 硬下限：下限由拖拽分隔的 minRatio 夹紧负责（spec §3）
+    expect(view.container.firstElementChild!.innerHTML).not.toContain('min-w-[240px]')
+  })
+
   it('中央只在顶栏渲染 group tab，pane 内没有一排文件 tab', () => {
     const hook = renderHook(() => useWorkbench())
     act(() => hook.result.current.open({ kind: 'file', rel: 'README.md' }, local))

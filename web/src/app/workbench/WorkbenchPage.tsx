@@ -233,7 +233,9 @@ export function WorkbenchPage({
       <div className="flex min-h-0 flex-1 overflow-x-auto bg-border">
         {group.columns.map((column, columnIndex) => (
           <Fragment key={`${group.id}-column-${columnIndex}`}>
-          <div className="flex min-w-[240px] min-h-0 flex-1 flex-col" style={{ flexGrow: group.sizes[columnIndex] ?? 1, flexBasis: 0 }}>
+          {/* min-w-0 而非 240px 硬下限：列宽下限由拖拽分隔的 minRatio 夹紧负责，
+              硬下限会把三列顶出窗口（容器 overflow-hidden 后变成裁切不可达） */}
+          <div className="flex min-w-0 min-h-0 flex-1 flex-col" style={{ flexGrow: group.sizes[columnIndex] ?? 1, flexBasis: 0 }}>
             {column.panes.map((tab, row) => (
               <div
                 key={tab?.id ?? `${group.id}-${columnIndex}-${row}`}
@@ -309,7 +311,7 @@ export function WorkbenchPage({
   )
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col bg-border">
+    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-border">
       <TabBar
         groups={wb.groups}
         activeGroupId={wb.activeGroupId}
