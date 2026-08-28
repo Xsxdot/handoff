@@ -558,12 +558,19 @@ export function openedWorkbenchItems(wb: Workbench): OpenedWorkbenchItem[] {
   return items
 }
 
-/** 生成 pane/左树显示的短标题。 */
-export function tabTitle(content: TabContent, baseLabel: string): string {
+/** 生成 pane/左树显示的短标题。
+ *
+ * taskName 是 tui 内容的任务名解析器，由持有任务流的层注入（WorkbenchPage → TabBar
+ * / Shell 的面包屑）。它可缺席：任务已删除等解析不到的情形下本函数仍要给出一个
+ * 稳定的标题，此时回退现状的 `TUI · 前 8 位` 格式，不抛错。 */
+export function tabTitle(content: TabContent, baseLabel: string, taskName?: (taskId: string) => string | undefined): string {
   switch (content.kind) {
     case 'terminal': return content.launcher ?? (content.seq <= 1 ? `bash · ${baseLabel}` : `bash · ${baseLabel} (${content.seq})`)
     case 'file': return content.rel.split('/').pop() || content.rel
-    case 'tui': return `TUI · ${content.taskId.slice(0, 8)}`
+    case 'tui': {
+      const resolved = taskName?.(content.taskId)
+      return resolved ? resolved : `TUI · ${content.taskId.slice(0, 8)}`
+    }
     case 'blank': return '新建标签页'
   }
 }

@@ -232,6 +232,26 @@ describe('resize and helpers', () => {
   })
 })
 
+describe('tabTitle with task name resolver', () => {
+  it('tui 用 resolver 解析出的任务原名', () => {
+    expect(tabTitle({ kind: 'tui', taskId: 'f22ed520abc' }, 'handoff', () => '审 B264')).toBe('审 B264')
+  })
+
+  it('resolver 返回 undefined 或空串时回退 TUI · 前 8 位', () => {
+    expect(tabTitle({ kind: 'tui', taskId: 'f22ed520abc' }, 'handoff', () => undefined)).toBe('TUI · f22ed520')
+    expect(tabTitle({ kind: 'tui', taskId: 'f22ed520abc' }, 'handoff', () => '')).toBe('TUI · f22ed520')
+  })
+
+  it('不传 resolver 时保持现状格式（回归）', () => {
+    expect(tabTitle({ kind: 'tui', taskId: 'f22ed520abc' }, 'handoff')).toBe('TUI · f22ed520')
+  })
+
+  it('terminal 与 file 标题不因 resolver 改变', () => {
+    expect(tabTitle({ kind: 'terminal', seq: 2 }, 'main', () => '审 B264')).toBe('bash · main (2)')
+    expect(tabTitle({ kind: 'file', rel: 'web/src/app/go.mod' }, 'main', () => '审 B264')).toBe('go.mod')
+  })
+})
+
 describe('immutability', () => {
   it('写入不修改入参', () => {
     const before = EMPTY_WORKBENCH
