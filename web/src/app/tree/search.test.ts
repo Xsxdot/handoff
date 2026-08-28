@@ -93,7 +93,7 @@ describe('filterTree', () => {
     expect(r.projects[0].locations[0].workspaces[0].path).toBe('/w/b2-b3')
   })
 
-  it('命中已结束任务名：祖先项目和机器仍可见（目录已被回收）', () => {
+  it('命中已结束任务名：项目仍可见（已结束行挂在项目任务组尾部，不再依赖机器行）', () => {
     const withArchived = [
       ...tasks,
       task({ id: 'T-old', state: 'completed', work_dir: '/w/gone', name: '已回收的任务' }),
@@ -101,7 +101,6 @@ describe('filterTree', () => {
     const r = filterTree(tree, withArchived, '已回收')
     expect(r.projectCount).toBe(1)
     expect(r.projects[0].name).toBe('handoff')
-    expect(r.projects[0].locations[0].machine).toBe('')
   })
 
   it('未归属分组参与过滤，且不计入 N', () => {

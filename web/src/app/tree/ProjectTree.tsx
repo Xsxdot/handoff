@@ -311,10 +311,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   const filtered = useMemo(() => filterTree(tree, tasks, query, openedItems), [tree, tasks, query, openedItems])
   const searching = filtered.query !== ''
 
-  // 「已结束」分组的数据源：目录已被回收的终态任务（见 archived.ts 文件头）。
-  // 入参是**原树 tree** 而不是 filtered.projects——裁剪过的树会把被搜索过滤掉的
-  // 目录当成「已不在」，正常任务会突然涌进这个分组。
-  const archived = useMemo(() => archivedTasks(tree, tasks), [tree, tasks])
+  // 「已结束」分组的数据源：项目内全部终态任务（B288 口径，见 archived.ts 文件头）。
+  // 已打开的终态任务仍以「已打开行」出现在任务组，不会重复出现在已结束子行。
+  const archived = useMemo(() => archivedTasks(tasks), [tasks])
   // openArchived：**空集 = 全部收起**，取向与 collapsed 刚好相反。
   // 这个分组是历史堆积（实测单台机器 60 条），默认展开会把正在做的活挤出视口。
   const [openArchived, setOpenArchived] = useState<Set<string>>(new Set())
@@ -577,13 +576,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             ),
           )
         })
-        const archivedForProject = allLocations.flatMap((loc) => archived.get(archivedKey(project.project_id, loc.machine)) ?? [])
+        const archivedForProject = archived.get(archivedKey(project.project_id)) ?? []
         const archivedIds = new Set(archivedForProject.map((task) => task.id))
         const visibleProjectTasks = projectTasks.filter((task) => !archivedIds.has(task.id))
         const archiveKey = 'project-archive:' + project.project_id
         const visibleArchived = archivedForProject.filter((task) =>
-          !searching || projectHit || taskName(task).toLowerCase().includes(filtered.query) ||
-          machineLabel(task.machine).toLowerCase().includes(filtered.query),
+          !openedTuiIds.has(task.id) &&
+          (!searching || projectHit || taskName(task).toLowerCase().includes(filtered.query) ||
+          machineLabel(task.machine).toLowerCase().includes(filtered.query)),
         )
         const archivedOpen = openArchived.has(archiveKey) || (searching && visibleArchived.length > 0)
 

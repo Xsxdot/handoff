@@ -16,7 +16,6 @@
 import type { ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import { archivedKey, archivedTasks } from './archived'
 import type { OpenedWorkbenchItem } from '../workbench/tabs'
-
 // TreeFilter 是一次过滤的完整结果。projects 已按可见性裁剪，
 // 调用方直接遍历即可，不需要再判一次。
 export interface TreeFilter {
@@ -115,21 +114,21 @@ export function filterTree(
     }
   }
 
-  // 已结束任务的目录已被回收，不在任何 workspace 下，但它们仍是机器节点的后代。
-  // 不算进去的话，搜一个已回收任务名会得到「没有匹配」——分组存在的意义就没了。
-  const archived = archivedTasks(tree, tasks)
+  // 已结束任务（B288 起为项目内全部终态）按项目归集。它们可能不再挂任何
+  // workspace，但搜到它们时项目行必须可见——「已结束」行就挂在项目任务组尾部。
+  const archived = archivedTasks(tasks)
 
   const projects: ProjectNode[] = []
   for (const project of tree.projects) {
     const projectHit = hit(project.name, q)
+    const archivedHit = (archived.get(archivedKey(project.project_id)) ?? [])
+      .some((t) => hit(taskText(t), q))
     const locations: ProjectLocationNode[] = []
     for (const loc of project.locations) {
       const machineOpenedHit = openedItems.some((item) =>
         item.base.projectName === project.name && item.base.machine === loc.machine && hit(openedText(item), q),
       )
       const machineHit = projectHit || hit(machineText(loc.machine), q)
-      const archivedHit = (archived.get(archivedKey(project.project_id, loc.machine)) ?? [])
-        .some((t) => hit(taskText(t), q))
 
       // 项目或机器自身命中 → 整层目录原样保留；否则逐个目录判
       const workspaces = machineHit
@@ -150,12 +149,12 @@ export function filterTree(
         ? workspaces
         : [...workspaces, ...openedWorkspaces.filter((ws) => !workspaces.some((visible) => visible.path === ws.path))]
 
-      if (machineHit || machineOpenedHit || mergedWorkspaces.length > 0 || archivedHit) {
+      if (machineHit || machineOpenedHit || mergedWorkspaces.length > 0) {
         locations.push({ ...loc, workspaces: mergedWorkspaces })
       }
     }
 
-    if (projectHit || locations.length > 0) projects.push({ ...project, locations })
+    if (projectHit || archivedHit || locations.length > 0) projects.push({ ...project, locations })
   }
 
   const unassignedTasks = unassignedAll.filter((t) => hit(taskText(t), q))
