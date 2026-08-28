@@ -90,24 +90,21 @@ func (s *permServer) serve() {
 }
 
 func (s *permServer) handle(conn net.Conn) {
-	defer func() {
-		// handle 函数退出的唯一路径是：连接异常断开。
-		// 正常的裁决返回由 Respond 关闭连接并从 pending 摘除。
-	}()
-	sc := bufio.NewScanner(conn)
-	if !sc.Scan() {
-		_ = conn.Close()
-		return
-	}
 	var ask struct {
 		Type      string          `json:"type"`
 		ToolUseID string          `json:"tool_use_id"`
 		ToolName  string          `json:"tool_name"`
 		Input     json.RawMessage `json:"input"`
 	}
-	if err := json.Unmarshal(sc.Bytes(), &ask); err != nil || ask.Type != "ask" || ask.ToolUseID == "" {
-		s.log.Warn("收到非法 ask 帧", "raw", sc.Text(), "cause", err)
-		_ = json.NewEncoder(conn).Encode(permDecision{Behavior: "deny", Message: "非法权限请求"})
+	if err := json.NewDecoder(bufio.NewReader(conn)).Decode(&ask); err != nil {
+		s.log.Error("解析裁决请求失败，回发拒绝并丢弃该连接", "cause", err)
+		_ = json.NewEncoder(conn).Encode(permDecision{Behavior: "deny", Message: "非法权限请求: " + err.Error()})
+		_ = conn.Close()
+		return
+	}
+	if ask.Type != "ask" || ask.ToolUseID == "" {
+		s.log.Error("收到非法 ask 帧（缺 tool_use_id 或 type!=ask）", "type", ask.Type, "id", ask.ToolUseID)
+		_ = json.NewEncoder(conn).Encode(permDecision{Behavior: "deny", Message: "缺少 tool_use_id 或非法类型"})
 		_ = conn.Close()
 		return
 	}
@@ -120,11 +117,28 @@ func (s *permServer) handle(conn net.Conn) {
 	s.pending[ask.ToolUseID] = conn
 	s.mu.Unlock()
 
+	s.log.Info("收到权限裁决请求", "tool_use_id", ask.ToolUseID, "tool", ask.ToolName)
 	s.onAsk(permAsk{
 		ToolUseID: ask.ToolUseID,
 		ToolName:  ask.ToolName,
 		Input:     ask.Input,
 	})
+
+	// 异步检测客户端主动断连：断开后从 pending 摘除，确保 Respond 明确报错并触发 delivery_failed
+	go func(id string, c net.Conn) {
+		buf := make([]byte, 1)
+		for {
+			if _, err := c.Read(buf); err != nil {
+				s.mu.Lock()
+				if cur, ok := s.pending[id]; ok && cur == c {
+					delete(s.pending, id)
+					s.log.Info("权限请求连接已断开，从待裁决表移除", "tool_use_id", id)
+				}
+				s.mu.Unlock()
+				return
+			}
+		}
+	}(ask.ToolUseID, conn)
 }
 
 // Respond 对指定 tool_use_id 做出裁决并回发。
@@ -137,7 +151,8 @@ func (s *permServer) Respond(toolUseID, behavior, message string) error {
 	s.mu.Unlock()
 
 	if !ok {
-		return fmt.Errorf("权限工单 %s 未处于待裁决状态（可能已应答或连接已断开）", toolUseID)
+		s.log.Error("裁决目标不存在（请求已失效或连接已断开）", "tool_use_id", toolUseID, "behavior", behavior)
+		return fmt.Errorf("裁决请求 %s 不存在（可能已应答或连接已断开）", toolUseID)
 	}
 	defer conn.Close()
 

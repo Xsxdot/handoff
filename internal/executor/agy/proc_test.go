@@ -22,17 +22,17 @@ func TestAgyArgv(t *testing.T) {
 		{
 			name: "普通启动无模型",
 			req:  StartProcReq{},
-			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--sandbox"},
+			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h"},
 		},
 		{
 			name: "带模型",
 			req:  StartProcReq{Model: "claude-3-5-sonnet"},
-			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--sandbox", "--model", "claude-3-5-sonnet"},
+			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--model", "claude-3-5-sonnet"},
 		},
 		{
 			name: "恢复会话",
 			req:  StartProcReq{SessionID: "sess-123", Resume: true},
-			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--sandbox", "--conversation", "sess-123"},
+			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--conversation", "sess-123"},
 		},
 	}
 	for _, c := range cases {

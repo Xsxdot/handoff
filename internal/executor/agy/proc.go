@@ -139,14 +139,15 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 // 说明：
 //   - --input-format / --output-format stream-json: 启用双向流式 stdin/stdout 协议。
 //   - --print-timeout 24h: 避免受默认 5m 打印等待墙截断。
-//   - --sandbox: 启用终端沙箱限制，作为权限钩子之外的第二道防线。
+//   - 不传 --sandbox：agy 的 OS 级别 sandbox 会严格限制只写工作区，与 handoff 分配在
+//     任务目录下（~/.handoff/tasks/<id>/tmp）的 TMPDIR/GOCACHE 互斥，会导致构建与测试报错；
+//     写安全由工作区 .agents/hooks.json PreToolUse 权限钩子与 handoff 审批链统一把关。
 func agyArgv(req StartProcReq) []string {
 	argv := []string{
 		"agy",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--print-timeout", "24h",
-		"--sandbox",
 	}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)

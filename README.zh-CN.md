@@ -330,7 +330,7 @@ PATH=${PATH}:/usr/local/go/bin             # ${VAR} 单层展开，单引号内�
   - 权限模型不同：工作区内操作（含 `rm -rf`）由 OS 沙箱自动放行不进审批，联网操作按配置放行**不经过任何人**——同样的命令在 claude/grok 上会走审批链。
   - 执行机需代理出网时，**必须**经 `env` 段给 codex 配代理文件——agentd 从非交互上下文启动，继承不到 shell 的代理变量。漏配的症状很迷惑：会话建得起来、任务显示 running，但模型一个 token 都不产，只有任务目录 `serve.log` 里刷 `failed to refresh available models`。
 - **agy**（Antigravity CLI）：执行机安装 `agy` 并完成登录（`agy -p "hi"` 能出结果）。
-  - 权限模型：通过工作区 `.agents/hooks.json` 的 `PreToolUse` 钩子动态连接到任务的 `perm.sock`，拦截 `run_command`、文件写/编辑与联网工具进入 Handoff 审批链；启动参数默认开启 `--sandbox` 提供终端限制，未挂钩工具受 agy 原生策略与本地配置保护。
+  - 权限模型：通过工作区 `.agents/hooks.json` 的 `PreToolUse` 钩子动态连接到任务的 `perm.sock`，拦截 `run_command`、文件写/编辑与联网工具进入 Handoff 审批链。`WriteTaskEnv` 会自动将 `.agents/hooks.json` 追加至 `.git/info/exclude`，避免原地任务工作区变脏；默认不传 `--sandbox` 以保障任务外部私有 `TMPDIR`/`GOCACHE` 可写。
   - 任务物料：任务目录内生成 `in.fifo`（指令输入通道）、`out.jsonl`（事件输出流）、`agy.log`（标准错误日志）、`perm.sock`（权限裁决套接字）及 `proc.json`（进程恢复凭据）。
 
 ## 升级

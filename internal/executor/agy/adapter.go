@@ -289,6 +289,10 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	return nil
 }
 
+// DenyReasonInBand 表明本 adapter 把拒绝理由与裁决同帧送达模型（通过 PreToolUse hook 的 reason 字段）。
+// manager 据此跳过 B50 的带外挂起注入，避免模型被同一条理由说两遍。
+func (a *Adapter) DenyReasonInBand() bool { return true }
+
 // RespondPermission 应答权限门。
 func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decision, reason string) error {
 	r := a.lookup(taskID)
@@ -302,7 +306,11 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	message := ""
 	if decision != "once" {
 		behavior = "deny"
-		message = turn.DenyGuidanceText(reason)
+		if reason != "" {
+			message = turn.DenyGuidanceText(reason)
+		} else {
+			message = "协调者拒绝了本次操作"
+		}
 	}
 	return r.permSrv.Respond(permID, behavior, message)
 }

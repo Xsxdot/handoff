@@ -2,6 +2,7 @@ package agy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"path/filepath"
@@ -59,5 +60,39 @@ func TestResumeCold(t *testing.T) {
 	}
 	if !started {
 		t.Fatalf("冷恢复未调用 startProc")
+	}
+}
+
+func TestResumePermServerFailureReturnsNotAlive(t *testing.T) {
+	tmpDir := t.TempDir()
+	repoDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ad := New(logger)
+
+	lockPath := filepath.Join(tmpDir, lockFileName)
+	writeProcInfo(tmpDir, &procInfo{
+		Handle:    prochost.Handle{PID: 9999999, LockPath: lockPath},
+		SessionID: "sess-perm-fail",
+	})
+
+	oldNewPerm := newPermServerFn
+	defer func() { newPermServerFn = oldNewPerm }()
+
+	newPermServerFn = func(sockPath string, log *slog.Logger, onAsk func(permAsk)) (*permServer, error) {
+		return nil, fmt.Errorf("mock permServer bind failed")
+	}
+
+	out, err := ad.Resume(executor.ResumeReq{
+		TaskID:    "T-PermFail",
+		TaskDir:   tmpDir,
+		RepoPath:  repoDir,
+		SessionID: "sess-perm-fail",
+		Cold:      true,
+	})
+	if err != nil {
+		t.Fatalf("Resume 不应抛硬 error，实得 %v", err)
+	}
+	if out.Alive {
+		t.Fatalf("权限服务端启动失败时，Resume 必须返回 Alive: false")
 	}
 }

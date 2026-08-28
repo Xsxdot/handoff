@@ -10,8 +10,10 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
@@ -39,6 +41,11 @@ type hookNamedConfig struct {
 // WriteTaskEnv 在 workdir 下准备 .agents/hooks.json 并渲染首回合 prompt。
 func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (hooksPath, promptText string, err error) {
 	log := slog.Default()
+
+	// 写入 .git/info/exclude 避免工作区被判定为脏（原地任务 409 拦截）
+	ensureGitExclude(workdir, ".agents/hooks.json")
+	ensureGitExclude(workdir, ".agents/")
+
 	agentsDir := filepath.Join(workdir, agentsDirName)
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
 		log.Error("创建 .agents 目录失败", "workdir", workdir, "cause", err)
@@ -88,4 +95,38 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 		return hooksPath, "", err
 	}
 	return hooksPath, promptText, nil
+}
+
+// ensureGitExclude 将 pattern 追加写入 workdir 对应 git 仓库的 info/exclude 文件，
+// 避免生成的任务物料（如 .agents/hooks.json）导致 git status --porcelain 变脏或触发 ensureCleanWorktree 拦截。
+// info/exclude 仅对本地工作树生效，不影响 git 追踪历史，不会被提交或推送到远端。
+func ensureGitExclude(workdir, pattern string) {
+	out, err := exec.Command("git", "-C", workdir, "rev-parse", "--git-path", "info/exclude").Output()
+	if err != nil {
+		return
+	}
+	relOrAbs := strings.TrimSpace(string(out))
+	if relOrAbs == "" {
+		return
+	}
+	excludePath := relOrAbs
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(workdir, relOrAbs)
+	}
+	data, err := os.ReadFile(excludePath)
+	if err == nil {
+		lines := strings.Split(string(data), "\n")
+		for _, line := range lines {
+			if strings.TrimSpace(line) == pattern {
+				return
+			}
+		}
+	}
+	_ = os.MkdirAll(filepath.Dir(excludePath), 0755)
+	f, err := os.OpenFile(excludePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return
+	}
+	defer f.Close()
+	_, _ = f.WriteString("\n" + pattern + "\n")
 }

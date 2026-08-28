@@ -3,6 +3,7 @@ package agy
 import (
 	"encoding/json"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -89,5 +90,53 @@ func TestWriteTaskEnvMergesExistingHooks(t *testing.T) {
 	}
 	if _, ok := parsed["handoff-safety-gate"]; !ok {
 		t.Fatalf("handoff-safety-gate 钩子未写入")
+	}
+}
+
+func TestWriteTaskEnvGitExcludeCleanStatus(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+
+	// 初始化真实 git 仓库并做首次提交
+	_ = exec.Command("git", "-C", workDir, "init", "-q").Run()
+	_ = exec.Command("git", "-C", workDir, "config", "user.email", "test@handoff.dev").Run()
+	_ = exec.Command("git", "-C", workDir, "config", "user.name", "test").Run()
+	_ = os.WriteFile(filepath.Join(workDir, "README.md"), []byte("# Hello\n"), 0644)
+	_ = exec.Command("git", "-C", workDir, "add", ".").Run()
+	_ = exec.Command("git", "-C", workDir, "commit", "-q", "-m", "init").Run()
+
+	// 确认调用前 git 干净
+	outBefore, err := exec.Command("git", "-C", workDir, "status", "--porcelain").CombinedOutput()
+	if err != nil || len(outBefore) > 0 {
+		t.Fatalf("前置 git status 异常: %v\n%s", err, outBefore)
+	}
+
+	// 执行 WriteTaskEnv
+	_, _, err = WriteTaskEnv(workDir, taskDir, "T-Clean", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
+	if err != nil {
+		t.Fatalf("WriteTaskEnv 失败: %v", err)
+	}
+
+	// 验证 .git/info/exclude 是否包含了 .agents 规则
+	excludeOut, err := exec.Command("git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").CombinedOutput()
+	if err != nil {
+		t.Fatalf("获取 info/exclude 路径失败: %v", err)
+	}
+	excludePath := strings.TrimSpace(string(excludeOut))
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(workDir, excludePath)
+	}
+	excludeData, err := os.ReadFile(excludePath)
+	if err != nil || !strings.Contains(string(excludeData), ".agents/hooks.json") {
+		t.Fatalf("info/exclude 缺少排除规则: %v\n%s", err, excludeData)
+	}
+
+	// 关键断言：WriteTaskEnv 生成 .agents/hooks.json 之后，git status --porcelain 必须完全干净！
+	outAfter, err := exec.Command("git", "-C", workDir, "status", "--porcelain").CombinedOutput()
+	if err != nil {
+		t.Fatalf("git status 失败: %v", err)
+	}
+	if len(outAfter) > 0 {
+		t.Fatalf("WriteTaskEnv 导致工作区变脏，git status --porcelain 实得:\n%s", string(outAfter))
 	}
 }
