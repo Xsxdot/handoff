@@ -15,6 +15,7 @@
 // 筛选）、tree/counts.ts（树计数）都是「纯函数 + 独立测试文件」。
 import type { ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import { archivedKey, archivedTasks } from './archived'
+import type { OpenedWorkbenchItem } from '../workbench/tabs'
 
 // TreeFilter 是一次过滤的完整结果。projects 已按可见性裁剪，
 // 调用方直接遍历即可，不需要再判一次。
@@ -80,7 +81,12 @@ function tasksOfWorkspace(tasks: Task[], project: ProjectNode, machine: string, 
 //     机器、目录、任务，而不是只看到一个光秃秃的项目行。
 //   - 「未归属」分组参与过滤但**不计入 projectCount**：它不是一个项目，
 //     是个收纳箱。算进去会出现「项目 3」但下面只有 2 个能展开的项目行。
-export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: string): TreeFilter {
+export function filterTree(
+  tree: ProjectTreeResp,
+  tasks: Task[],
+  rawQuery: string,
+  openedItems: ReadonlyArray<OpenedWorkbenchItem> = [],
+): TreeFilter {
   const q = rawQuery.trim().toLowerCase()
   const unassignedAll = tasks.filter((t) => t.project_id === '')
 
@@ -102,9 +108,13 @@ export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: strin
   const projects: ProjectNode[] = []
   for (const project of tree.projects) {
     const projectHit = hit(project.name, q)
-
     const locations: ProjectLocationNode[] = []
     for (const loc of project.locations) {
+      const machineOpenedHit = openedItems.some((item) =>
+        item.base.projectName === project.name && item.base.machine === loc.machine && (
+          hit(item.label, q) || hit(item.base.key, q) || hit(item.base.path, q) || hit(item.base.label, q)
+        ),
+      )
       const machineHit = projectHit || hit(machineText(loc.machine), q)
       const archivedHit = (archived.get(archivedKey(project.project_id, loc.machine)) ?? [])
         .some((t) => hit(taskText(t), q))
@@ -117,7 +127,20 @@ export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: strin
             tasksOfWorkspace(tasks, project, loc.machine, ws).some((t) => hit(taskText(t), q)),
           )
 
-      if (machineHit || workspaces.length > 0 || archivedHit) locations.push({ ...loc, workspaces })
+      const openedWorkspaces = loc.workspaces.filter((ws) =>
+        openedItems.some((item) =>
+          item.base.projectName === project.name && item.base.machine === loc.machine && item.base.path === ws.path && (
+            hit(item.label, q) || hit(item.base.key, q) || hit(item.base.path, q) || hit(item.base.label, q)
+          ),
+        ),
+      )
+      const mergedWorkspaces = machineHit
+        ? workspaces
+        : [...workspaces, ...openedWorkspaces.filter((ws) => !workspaces.some((visible) => visible.path === ws.path))]
+
+      if (machineHit || machineOpenedHit || mergedWorkspaces.length > 0 || archivedHit) {
+        locations.push({ ...loc, workspaces: mergedWorkspaces })
+      }
     }
 
     if (projectHit || locations.length > 0) projects.push({ ...project, locations })

@@ -103,6 +103,8 @@ export interface FileTreeProps {
   // 用 reload('') 而不是 refresh()：新文件建在根上，只有那一层需要重取；
   // refresh 会丢掉全部已展开层的缓存，用户展开的目录会全部塌回去。
   refreshKey?: number
+  // 抽屉模式的关闭入口；默认右栏不传，保持旧的固定右栏形态。
+  onClose?: () => void
 }
 
 // MenuEntry 是被右键的条目：菜单项按它算 dirOf 与可用的操作集合。
@@ -160,7 +162,7 @@ function isLoopbackHost(host: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
 }
 
-export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey }: FileTreeProps) {
+export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey, onClose }: FileTreeProps) {
   const dirs = useDirEntries(base)
   const changed = useChangedFiles(taskId)
   const firstRef = useRef(true)
@@ -388,6 +390,17 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
         >
           <RefreshCw className="size-3.5" />
         </button>
+        {onClose && (
+          <button
+            type="button"
+            aria-label="关闭文件抽屉"
+            title="关闭文件抽屉"
+            onClick={onClose}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-3.5" />
+          </button>
+        )}
       </div>
 
       {opError !== '' && (

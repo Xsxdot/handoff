@@ -32,9 +32,9 @@ vi.mock('./NewCardDialog', () => ({
 }))
 
 // CardsPage 用 useNavigate，必须包在 Router 里渲染（生产态 Shell 把它挂在 <Routes> 下）
-const renderPage = () =>
+const renderPage = (path = '/cards') =>
   render(
-    <MemoryRouter initialEntries={['/cards']}>
+    <MemoryRouter initialEntries={[path]}>
       <Routes>
         <Route path="/cards" element={<CardsPage />} />
         {/* 深链探针：只断言导航真的发生了，不复刻 TaskDeepLink 的目录解析逻辑 */}
@@ -73,6 +73,16 @@ describe('建卡入口接线', () => {
     renderPage()
     const stub = await screen.findByTestId('new-card-dialog-stub')
     expect(stub.dataset.project).toBe('')
+  })
+
+  it('从 URL 的 project 查询参数初始化项目筛选', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [cardView],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    })
+    renderPage('/cards?project=benchmarking')
+    expect(await screen.findByRole('combobox', { name: '项目' })).toHaveValue('benchmarking')
   })
 })
 

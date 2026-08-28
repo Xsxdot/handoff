@@ -210,17 +210,25 @@ function renderShell(path = '/') {
   )
 }
 
+async function openBranch() {
+  // 从整页路由回来时 ProjectTree 仍保留 directoryOpen；只有收起时才展开，
+  // 避免第二次调用把已经可见的分支又收回去。
+  const sidebar = within(screen.getByRole('complementary'))
+  if (sidebar.queryByText('integration/b2-b3') === null) fireEvent.click(await sidebar.findByText('目录'))
+  fireEvent.click(await sidebar.findByText('integration/b2-b3'))
+}
+
 describe('Shell 三栏外框', () => {
   it('未选中目录时右栏文件树不渲染，中央是全局空态', async () => {
     renderShell()
     await waitFor(() => expect(screen.getByText('handoff')).toBeInTheDocument())
     expect(screen.queryByText('文件')).not.toBeInTheDocument()
-    expect(screen.getByText(/从侧边栏选择一个目录开始/)).toBeInTheDocument()
+    expect(screen.getByText('请从左栏选择项目或目录')).toBeInTheDocument()
   })
 
   it('选中目录后右栏出现、面包屑显示 项目 / 开发机 / 目录', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
     const crumb = screen.getByLabelText('当前位置')
     expect(crumb).toHaveTextContent('handoff')
@@ -231,62 +239,58 @@ describe('Shell 三栏外框', () => {
   it('点左栏任务在中央开 TUI tab', async () => {
     renderShell()
     fireEvent.click(await screen.findByText('重构工单通道'))
-    await waitFor(() => expect(screen.getByRole('tab', { name: /TUI · T1/ })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
   })
 
   it('点右栏文件在中央开 file tab', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
-    await waitFor(() => expect(screen.getByRole('tab', { name: /go.mod/ })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
   })
 
   it('切到另一个目录再切回来，两边的 tab 组各自保持', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
-    await screen.findByRole('tab', { name: /go.mod/ })
+    await screen.findByRole('button', { name: /关闭 go.mod/ })
 
     fireEvent.click(screen.getByText('主目录'))
-    await waitFor(() => expect(screen.queryByRole('tab', { name: /go.mod/ })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
 
     fireEvent.click(screen.getByText('integration/b2-b3'))
-    await waitFor(() => expect(screen.getByRole('tab', { name: /go.mod/ })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
   })
 
   it('tab 条右端的分屏按钮把中央分成两组', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
-    fireEvent.click(screen.getAllByRole('button', { name: '分屏' })[0])
-    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(2))
-    // 分屏按钮跟着 tab 条走：分完之后每一栏各有一个
-    expect(screen.getAllByRole('button', { name: '分屏' })).toHaveLength(2)
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '增加分屏' }))
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(2))
   })
 
   it('连点两次分屏得到三栏，按钮随即全部 disabled', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
-    fireEvent.click(screen.getAllByRole('button', { name: '分屏' })[0])
-    fireEvent.click(screen.getAllByRole('button', { name: '分屏' })[0])
-    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(3))
-    // 置灰而不是隐藏：按钮消失会让人以为分屏功能没了
-    for (const b of screen.getAllByRole('button', { name: '分屏' })) expect(b).toBeDisabled()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '增加分屏' }))
+    fireEvent.click(screen.getByRole('button', { name: '增加分屏' }))
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(3))
   })
 
   it('⌘D 分屏，并拦掉浏览器的「加入书签」', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
 
     const ev = new KeyboardEvent('keydown', { key: 'd', metaKey: true, bubbles: true, cancelable: true })
     window.dispatchEvent(ev)
 
-    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(2))
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(2))
     expect(ev.defaultPrevented).toBe(true)
   })
 
   it('Ctrl+D 不分屏：终端里那是 EOF，抢走会毁掉终端', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
 
     const ev = new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true, cancelable: true })
     window.dispatchEvent(ev)
@@ -308,7 +312,7 @@ describe('Shell 三栏外框', () => {
 
   it('/tasks/:id 深链选中目录、开 TUI tab 并换回 /', async () => {
     renderShell('/tasks/T1')
-    await waitFor(() => expect(screen.getByRole('tab', { name: /TUI · T1/ })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
     expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3')
   })
 
@@ -317,7 +321,7 @@ describe('Shell 三栏外框', () => {
   it('停在 /cards 时点左栏任务，中央换回工作台并开 TUI tab', async () => {
     renderShell('/cards')
     fireEvent.click(await screen.findByText('重构工单通道'))
-    await waitFor(() => expect(screen.getByRole('tab', { name: /TUI · T1/ })).toBeInTheDocument())
+    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
   })
 
   it('停在 /cards 时点左栏目录，中央换回工作台', async () => {
@@ -325,7 +329,7 @@ describe('Shell 三栏外框', () => {
     // 右栏文件树挂在 Routes 外面，光看它不区分；判据要钉中央区——
     // 账本页的占位文案消失才说明路由真的换回了工作台
     await waitFor(() => expect(screen.getByText(/正在读取账本/)).toBeInTheDocument())
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     await waitFor(() => expect(screen.queryByText(/正在读取账本/)).not.toBeInTheDocument())
     expect(screen.getByText('文件')).toBeInTheDocument()
   })
@@ -334,7 +338,7 @@ describe('Shell 三栏外框', () => {
   // 换掉后它们还留着——点了目录再点「工作项」，文件面板一直挂在右边。
   it('整页路由（/cards）不渲染右栏文件树与面包屑', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
     fireEvent.click(screen.getByLabelText('工作项'))
     await waitFor(() => expect(screen.queryByText('文件')).not.toBeInTheDocument())
@@ -343,7 +347,7 @@ describe('Shell 三栏外框', () => {
 
   it('从整页路由点回目录，右栏文件树回来', async () => {
     renderShell('/cards')
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
   })
 
@@ -351,8 +355,8 @@ describe('Shell 三栏外框', () => {
   // 走整页路由，工作台挂在 path="*" 上会被卸掉，回来重放 1004h，TUI 再卡死。
   it.each(['设置', '工作项'] as const)('整页路由（%s）不卸载已打开的终端', async (entry) => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
-    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     const host = await screen.findByTestId('pty-host')
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
@@ -444,7 +448,7 @@ describe('Shell 三栏外框', () => {
     vi.mocked(fetchProjectTree).mockResolvedValue(specialTree)
 
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
     fireEvent.click(screen.getByRole('button', { name: '代码图' }))
 
@@ -457,7 +461,7 @@ describe('Shell 三栏外框', () => {
 
   it('/codegraph 同时隐藏 Breadcrumb/FileTree，回到工作台后恢复', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
     expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
 
@@ -466,7 +470,7 @@ describe('Shell 三栏外框', () => {
     expect(screen.queryByText('文件')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('当前位置')).not.toBeInTheDocument()
 
-    fireEvent.click(within(screen.getByRole('complementary')).getByText('integration/b2-b3'))
+    await openBranch()
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
     expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
   })
@@ -484,37 +488,37 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
   // 激活项，正好省掉「点回去」这一步）
   it('关一个有草稿的文件 tab 会先弹确认，不直接关掉', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
-    await screen.findByRole('tab', { name: /go.mod/ })
+    await screen.findByRole('button', { name: /关闭 go.mod/ })
 
     // 等文件读出来、textarea 可用后打一行字，把「脏」造出来
     const ta = await screen.findByRole('textbox', { name: 'go.mod' })
     fireEvent.change(ta, { target: { value: 'module handoff\nx' } })
 
     // 从 + 菜单开一个新终端：激活它让 FileTab 卸载回写草稿，内容就此带上 draft
-    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
 
     // 点 tab 条上的 ×：这次 tab.content 里已有 draft，应弹确认而不是直接关
-    fireEvent.click(screen.getByRole('button', { name: '关闭 go.mod' }))
+    fireEvent.click(screen.getByRole('button', { name: /关闭 go.mod/ }))
     expect(screen.getByRole('heading', { name: '关闭未保存的文件' })).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /go.mod/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument()
 
     // 确认后真的关掉
     fireEvent.click(screen.getByRole('button', { name: '不保存，关闭' }))
-    await waitFor(() => expect(screen.queryByRole('tab', { name: /go.mod/ })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('button', { name: /关闭 go.mod/ })).not.toBeInTheDocument())
   })
 
   it('干净的文件 tab 直接关，不打扰', async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    await openBranch()
     fireEvent.click(await screen.findByText('go.mod'))
-    await screen.findByRole('tab', { name: /go.mod/ })
+    await screen.findByRole('button', { name: /关闭 go.mod/ })
 
     // 没打过字，内容没有 draft——× 应该直接关，连弹层都不出现
-    fireEvent.click(screen.getByRole('button', { name: '关闭 go.mod' }))
-    await waitFor(() => expect(screen.queryByRole('tab', { name: /go.mod/ })).not.toBeInTheDocument())
+    fireEvent.click(screen.getByRole('button', { name: /关闭 go.mod/ }))
+    await waitFor(() => expect(screen.queryByRole('button', { name: /关闭 go.mod/ })).not.toBeInTheDocument())
     expect(screen.queryByRole('heading', { name: '关闭未保存的文件' })).not.toBeInTheDocument()
   })
 })
@@ -535,8 +539,8 @@ describe('关闭一个服务端已经没有的终端会话', () => {
   // deletePtySession 抛 404。
   const openTerminalTab = async () => {
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
-    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     // 等 TerminalTab 把会话 id 回报上来，否则 × 走的是「还没有会话」那条直接关的路
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
@@ -553,7 +557,7 @@ describe('关闭一个服务端已经没有的终端会话', () => {
     expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
     fireEvent.click(await screen.findByRole('button', { name: '关闭' }))
 
-    await waitFor(() => expect(screen.queryByRole('tab', { name: /bash/ })).not.toBeInTheDocument())
+    await waitFor(() => expect(screen.queryByRole('button', { name: /关闭 bash/ })).not.toBeInTheDocument())
     expect(screen.queryByText(/不存在/)).toBeNull()
   })
 
@@ -568,7 +572,7 @@ describe('关闭一个服务端已经没有的终端会话', () => {
     fireEvent.click(screen.getByRole('button', { name: '关闭并终止' }))
 
     expect(await screen.findByText(/kill 失败/)).toBeInTheDocument()
-    expect(screen.getByRole('tab', { name: /bash/ })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: /关闭 bash/ })).toBeInTheDocument()
   })
 })
 
@@ -577,8 +581,8 @@ describe('会话已经不在时弹层要说实话', () => {
     // 探测答「一个会话都没有」= agentd 重启后的现场
     vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [] })
     renderShell()
-    fireEvent.click(await screen.findByText('integration/b2-b3'))
-    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
     fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
 

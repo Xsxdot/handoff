@@ -110,6 +110,13 @@ describe('FileTree', () => {
     await waitFor(() => expect(screen.getByText('Makefile')).toBeInTheDocument())
   })
 
+  it('抽屉模式显示关闭入口，默认右栏不显示', () => {
+    const onClose = vi.fn()
+    render(<FileTree base={base} taskId={null} onOpenFile={vi.fn()} onOpenTerminal={vi.fn()} revealSupported={true} onClose={onClose} />)
+    fireEvent.click(screen.getByRole('button', { name: '关闭文件抽屉' }))
+    expect(onClose).toHaveBeenCalledOnce()
+  })
+
   it('refreshKey 变化只重取根目录，不把已展开的层全部刷新', async () => {
     const calls: string[] = []
     vi.mocked(fetchWorkspaceDir).mockImplementation(async (_path, rel) => {

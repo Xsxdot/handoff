@@ -2,6 +2,7 @@ import { createEvent, fireEvent, render, screen, within } from '@testing-library
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
+import type { OpenedWorkbenchItem } from '../workbench/tabs'
 import { ProjectTree } from './ProjectTree'
 import { __resetTreePrefsForTest } from './useTreePrefs'
 
@@ -33,13 +34,18 @@ function props(over: {
   ticketCount?: number
   inPlaceTask?: boolean
   ticketsByDir?: Map<string, number>
-  onSelectDir?: (b: BaseDir) => void
+  openedItems?: ReadonlyArray<OpenedWorkbenchItem>
+  onOpenDirectory?: (b: BaseDir) => void
+  onOpenDirectoryTerminal?: (b: BaseDir) => void
+  onOpenItem?: (item: OpenedWorkbenchItem) => void
   onOpenTask?: (b: BaseDir | null, id: string) => void
   onOpenBoard?: () => void
   ledgerEnabled?: boolean
   onOpenTickets?: () => void
   onOpenSettings?: () => void
   onOpenFlows?: () => void
+  onOpenProjectCards?: (project: ProjectNode) => void
+  onOpenProjectCodegraph?: (project: ProjectNode) => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
@@ -65,7 +71,10 @@ function props(over: {
     selectedKey: over.selectedKey ?? null,
     ticketCount: over.ticketCount ?? 0,
     ticketsByDir: over.ticketsByDir ?? new Map(),
-    onSelectDir: over.onSelectDir ?? vi.fn(),
+    openedItems: over.openedItems ?? [],
+    onOpenDirectory: over.onOpenDirectory,
+    onOpenDirectoryTerminal: over.onOpenDirectoryTerminal,
+    onOpenItem: over.onOpenItem,
     onOpenTask: over.onOpenTask ?? vi.fn(),
     onOpenBoard: over.onOpenBoard ?? vi.fn(),
     // 这组 dock 回归测试覆盖账本已启用时的既有入口；未启用门控另由专项用例覆盖。
@@ -73,6 +82,8 @@ function props(over: {
     onOpenTickets: over.onOpenTickets ?? vi.fn(),
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
     onOpenFlows: over.onOpenFlows ?? vi.fn(),
+    onOpenProjectCards: over.onOpenProjectCards,
+    onOpenProjectCodegraph: over.onOpenProjectCodegraph,
     onAddProject: over.onAddProject ?? vi.fn(),
     // 「显式传 undefined」与「没传」要区分开：右键菜单测试需要 onUnregister
     // 真的是 undefined，`?? vi.fn()` 会把显式 undefined 兜底成 mock
@@ -113,13 +124,17 @@ describe('ProjectTree', () => {
         selectedKey={null}
         ticketCount={1}
         ticketsByDir={new Map([['/r/blocked', 1]])}
-        onSelectDir={vi.fn()}
+        openedItems={[]}
+        onOpenDirectory={vi.fn()}
+        onOpenDirectoryTerminal={vi.fn()}
+        onOpenItem={vi.fn()}
         onOpenTask={vi.fn()}
         onOpenBoard={vi.fn()}
         onOpenTickets={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     )
+    fireEvent.click(screen.getByText('目录'))
     expect(screen.getAllByTestId('workspace-row').map((row) => row.textContent?.replace(/\d+$/, ''))).toEqual([
       'main', 'blocked', 'busy', 'quiet',
     ])
@@ -132,6 +147,30 @@ describe('ProjectTree', () => {
     expect(screen.getByText('main')).toBeInTheDocument()
     expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
     expect(screen.getByText('原地任务')).toBeInTheDocument()
+  })
+
+  it('机器下有同级任务与目录，目录默认只露主目录，展开后可打开目录与已有项', () => {
+    const onOpenDirectory = vi.fn()
+    const onOpenDirectoryTerminal = vi.fn()
+    const onOpenItem = vi.fn()
+    const opened: OpenedWorkbenchItem[] = [{
+      tabId: 't1', groupId: 'g1', column: 0, row: 0,
+      base: { key: '/w/b2', kind: 'workspace', path: '/w/b2', label: 'feat/b2', projectName: 'handoff', machine: '' },
+      content: { kind: 'terminal', seq: 1 }, label: '终端 · feat/b2',
+    }]
+    render(<ProjectTree {...props({ onOpenDirectory, onOpenDirectoryTerminal, onOpenItem, openedItems: opened })} />)
+    expect(screen.getByText('任务')).toBeInTheDocument()
+    expect(screen.getByText('目录')).toBeInTheDocument()
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByText('目录'))
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+    fireEvent.click(screen.getByText('integration/b2-b3'))
+    expect(onOpenDirectory).toHaveBeenCalledWith(expect.objectContaining({ path: '/w/b2-b3', label: 'integration/b2-b3' }))
+    fireEvent.click(screen.getAllByRole('button', { name: '在此打开终端' }).at(-1)!)
+    expect(onOpenDirectoryTerminal).toHaveBeenCalledWith(expect.objectContaining({ path: '/w/b2-b3' }))
+    fireEvent.click(screen.getByText('终端 · feat/b2'))
+    expect(onOpenItem).toHaveBeenCalledWith(opened[0])
   })
 
   it('不可达机器保持可见、标已断开、且不可展开', () => {
@@ -151,7 +190,7 @@ describe('ProjectTree', () => {
     render(
       <ProjectTree
         tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
-        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+        openedItems={[]} onOpenDirectory={vi.fn()} onOpenDirectoryTerminal={vi.fn()} onOpenItem={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
     const row = screen.getByRole('button', { name: /devbox/ })
@@ -170,7 +209,7 @@ describe('ProjectTree', () => {
       }],
       unowned: [],
     }
-    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} openedItems={[]} onOpenDirectory={vi.fn()} onOpenDirectoryTerminal={vi.fn()} onOpenItem={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
     expect(screen.getByText('已断开')).toBeInTheDocument()
     expect(document.querySelector('.bg-state-failed')).not.toBeNull()
   })
@@ -192,7 +231,7 @@ describe('ProjectTree', () => {
     render(
       <ProjectTree
         tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
-        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+        openedItems={[]} onOpenDirectory={vi.fn()} onOpenDirectoryTerminal={vi.fn()} onOpenItem={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
     expect(screen.getByText('目录不存在')).toBeInTheDocument()
@@ -206,7 +245,7 @@ describe('ProjectTree', () => {
     render(
       <ProjectTree
         tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
-        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+        openedItems={[]} onOpenDirectory={vi.fn()} onOpenDirectoryTerminal={vi.fn()} onOpenItem={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
     expect(screen.getByText('未归属')).toBeInTheDocument()
@@ -214,19 +253,20 @@ describe('ProjectTree', () => {
   })
 
   it('点项目行只展开折叠，不再写筛选', () => {
-    const onSelectDir = vi.fn()
-    render(<ProjectTree {...props({ onSelectDir })} />)
+    const onOpenDirectory = vi.fn()
+    render(<ProjectTree {...props({ onOpenDirectory })} />)
     fireEvent.click(screen.getByText('handoff'))
-    expect(onSelectDir).not.toHaveBeenCalled()
+    expect(onOpenDirectory).not.toHaveBeenCalled()
     // 折叠后其下的目录行消失
     expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()
   })
 
   it('点目录行选中它，回调带完整 BaseDir', () => {
-    const onSelectDir = vi.fn()
-    render(<ProjectTree {...props({ onSelectDir })} />)
+    const onOpenDirectory = vi.fn()
+    render(<ProjectTree {...props({ onOpenDirectory })} />)
+    fireEvent.click(screen.getByText('目录'))
     fireEvent.click(screen.getByText('integration/b2-b3'))
-    expect(onSelectDir).toHaveBeenCalledWith({
+    expect(onOpenDirectory).toHaveBeenCalledWith({
       key: '/w/b2-b3',
       kind: 'workspace',
       path: '/w/b2-b3',
@@ -237,10 +277,11 @@ describe('ProjectTree', () => {
   })
 
   it('detached 的目录用目录名兜底作为 label', () => {
-    const onSelectDir = vi.fn()
-    render(<ProjectTree {...props({ onSelectDir, branch: '' })} />)
+    const onOpenDirectory = vi.fn()
+    render(<ProjectTree {...props({ onOpenDirectory, branch: '' })} />)
+    fireEvent.click(screen.getByText('目录'))
     fireEvent.click(screen.getByText('b2-b3'))
-    expect(onSelectDir).toHaveBeenCalledWith(expect.objectContaining({ label: 'b2-b3' }))
+    expect(onOpenDirectory).toHaveBeenCalledWith(expect.objectContaining({ label: 'b2-b3' }))
   })
 
   it('selectedKey 命中的目录行带 aria-current', () => {
@@ -334,7 +375,7 @@ describe('ProjectTree', () => {
     const onOpenTask = vi.fn()
     const tree: ProjectTreeResp = { projects: [], unowned: [] }
     const tasks = [task({ id: 'U1', project_id: '', machine: '', work_dir: '/x', name: '游离任务' })]
-    render(<ProjectTree tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} onSelectDir={vi.fn()} onOpenTask={onOpenTask} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    render(<ProjectTree tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} openedItems={[]} onOpenDirectory={vi.fn()} onOpenDirectoryTerminal={vi.fn()} onOpenItem={vi.fn()} onOpenTask={onOpenTask} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
     fireEvent.click(screen.getByText('游离任务'))
     expect(onOpenTask).toHaveBeenCalledWith(null, 'U1')
   })

@@ -17,7 +17,7 @@
 // 新 IA 里中央不再是路由页面而是 tab，Outlet 没有了消费者；看板与工单改为弹层，
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
 import { fetchCards, fetchDecisions } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
@@ -44,7 +44,7 @@ import { useHomeDock } from '../homedock/useHomeDock'
 import type { DockSnapshot } from '../homedock/dockPersist'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
-import { type TabContent } from '../workbench/tabs'
+import { tabTitle, type TabContent } from '../workbench/tabs'
 import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -69,9 +69,11 @@ export function Shell() {
   const wb = useWorkbench()
   const navigate = useNavigate()
   const location = useLocation()
+  const [routeParams] = useSearchParams()
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [fileDrawer, setFileDrawer] = useState<BaseDir | null>(null)
   // fileTreeNonce 是右栏刷新的触发器。中央区新建文件后递增它。
   // 用计数器而不是把 FileTree 的 refresh 传上来：那会把中央区与右栏焊死，
   // 而它们现在互不认识
@@ -125,7 +127,7 @@ export function Shell() {
   const [scratchError, setScratchError] = useState('')
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
-  const split = wb.split
+  const split = wb.splitColumn
   // ⌘D 分屏。
   //
   // 挂 window 而不是像 BlankTab 的 ⌘T 那样挂面板：那里必须区分「按的是哪一栏的
@@ -163,8 +165,7 @@ export function Shell() {
   // adoptDockTab 仍用 dock.adopt 而不是别的入口：adopt 不打开浮窗、不抢焦点——
   // 页面一加载就弹出浮窗，等于替用户点了一下
   const sync = useWorkbenchSync({
-    byBase: wb.byBase,
-    baseDirs: wb.baseDirs,
+    workbench: wb.wb,
     selectedKey: wb.base?.key ?? '',
     dockSnapshot,
     hydrateWorkbench: wb.hydrate,
@@ -246,7 +247,7 @@ export function Shell() {
   // 这里只要是带会话的终端 tab 就弹。关闭即终止是不可逆操作，而「有没有前台
   // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
   // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
-  const beforeCloseTab = (c: TabContent, tabId: string): boolean => {
+  const beforeCloseTab = (c: TabContent, tabId: string, tabBase: BaseDir): boolean => {
     // 有草稿的文件 tab：关掉就是把用户唯一一份未保存的输入丢掉，且没有回收站。
     // 与终端那条分支同一个理由——不可逆操作先问一句。
     //
@@ -258,7 +259,7 @@ export function Shell() {
     }
     if (c.kind !== 'terminal' || !c.sessionId) return true
     // machine 在这一刻定下来：此刻显示的正是这个 tab 所属基准的工作台
-    setClosingPty({ tabId, sessionId: c.sessionId, machine: wb.base?.machine || '' })
+    setClosingPty({ tabId, sessionId: c.sessionId, machine: tabBase.machine })
     setCloseError('')
     probeClosingSession(c.sessionId)
     return false
@@ -392,10 +393,27 @@ export function Shell() {
   const fullPageRoute = ['/cards', '/flows', '/settings', '/machines', '/codegraph']
     .some((path) => location.pathname.startsWith(path))
 
-  // selectDir 是「点一个目录」的唯一实现：换回工作台 + 选中。
-  const selectDir = (base: BaseDir) => {
+  // onOpenDirectory 是左栏目录的完整入口：选中基准并打开可关闭的文件抽屉。
+  // 抽屉自己的文件点击只开 tab，不清掉 drawer，直到用户明确点 X。
+  const openDirectory = (base: BaseDir) => {
     backToWorkbench()
     wb.select(base)
+    setFileDrawer(base)
+    console.debug('shell.directory.open', { project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path })
+  }
+
+  const openDirectoryTerminal = (base: BaseDir) => {
+    backToWorkbench()
+    wb.select(base)
+    wb.openTerminal(base)
+    console.debug('shell.directory.terminal', { project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path })
+  }
+
+  const openWorkbenchItem = (item: { base: BaseDir; groupId: string; tabId: string }) => {
+    backToWorkbench()
+    wb.select(item.base)
+    wb.activate(item.groupId, item.tabId)
+    console.debug('shell.workbench_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, groupId: item.groupId, tabId: item.tabId })
   }
 
   // openTaskTui 是「点一个任务 → 在它所在目录开 TUI tab」的唯一实现。
@@ -409,17 +427,46 @@ export function Shell() {
     if (target === null && treeState.data) {
       target = findBaseOfTask(treeState.data, tasks, taskId)
     }
-    wb.open({ kind: 'tui', taskId }, target ?? undefined)
+    if (target !== null) wb.select(target)
+    wb.openOrFocus({ kind: 'tui', taskId }, target ?? wb.base ?? undefined)
   }
+
+  const selectProject = (project: ProjectNode) => {
+    const location = project.locations.find((loc) => {
+      const machineDown = treeState.data?.machines?.some((machine) => machine.name === loc.machine && !machine.ok) ?? false
+      return loc.probe_error === '' && !machineDown && loc.workspaces.some((ws) => ws.is_main)
+    })
+    const main = location?.workspaces.find((ws) => ws.is_main)
+    if (location && main) wb.select(workspaceBase(project, location.machine, main))
+  }
+
+  const openProjectCards = (project: ProjectNode) => {
+    selectProject(project)
+    navigate(`/cards?project=${encodeURIComponent(project.name)}`)
+    console.debug('shell.project_route', { project: project.name, route: 'cards' })
+  }
+
+  const openProjectCodegraph = (project: ProjectNode) => {
+    selectProject(project)
+    navigate(`/codegraph?project=${encodeURIComponent(project.name)}`)
+    console.debug('shell.project_route', { project: project.name, route: 'codegraph' })
+  }
+
+  const openedItems = useMemo(() => wb.openedItems.map((item) => {
+    const fresh = treeState.data ? findBaseByKey(treeState.data, item.base.key) : null
+    const nextBase = fresh ?? item.base
+    return { ...item, base: nextBase, label: tabTitle(item.content, nextBase.label) }
+  }), [wb.openedItems, treeState.data])
 
   // currentTaskId 是当前目录上「最该看的那个任务」，只用于右栏 M 角标的数据源。
   // 一个目录下可能有多个任务，取第一个正在跑的，没有就取第一个——角标是装饰，
   // 选谁都不影响正确性，但要稳定（不随渲染抖动）。
   const currentTaskId = useMemo(() => {
-    if (!wb.base || wb.base.kind !== 'workspace') return null
-    const under = tasks.filter((t) => t.work_dir === wb.base?.path)
+    const taskBase = fileDrawer ?? wb.base
+    if (!taskBase || taskBase.kind !== 'workspace') return null
+    const under = tasks.filter((t) => t.work_dir === taskBase.path)
     return under.find((t) => t.state === 'running')?.id ?? under[0]?.id ?? null
-  }, [tasks, wb.base])
+  }, [tasks, fileDrawer, wb.base])
 
   // 薄壳里窗口顶部那 28px 是 AppKit 的隐形拖动区（左键被拿去拖窗口，传不到
   // 页面）。与其空着，不如让它承担面包屑那一行的展示职责——面包屑本来就零
@@ -446,13 +493,17 @@ export function Shell() {
           <ProjectTree
             tree={treeState.data}
             tasks={tasks}
-            selectedKey={wb.base?.key ?? null}
+            selectedKey={fileDrawer?.key ?? wb.base?.key ?? null}
             ticketCount={tickets.count}
             ticketsByDir={tickets.byWorkDir}
-            onSelectDir={selectDir}
+            openedItems={openedItems}
+            onOpenDirectory={openDirectory}
+            onOpenDirectoryTerminal={openDirectoryTerminal}
+            onOpenItem={openWorkbenchItem}
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
+            onOpenProjectCards={openProjectCards}
             onOpenFlows={() => navigate('/flows')}
             ledgerEnabled={ledgerEnabled}
             cardNeedsCount={cardNeedsCount}
@@ -460,6 +511,7 @@ export function Shell() {
             onOpenTickets={() => setOverlay('tickets')}
             onOpenSettings={() => navigate('/settings')}
             onOpenCodegraph={() => navigate('/codegraph')}
+            onOpenProjectCodegraph={openProjectCodegraph}
             onAddProject={() => setWizardOpen(true)}
             onEdit={(p) => setEditProject(p)}
             onUnregister={onUnregister}
@@ -528,9 +580,18 @@ export function Shell() {
                             ? { draft: c.draft, baseSha: c.baseSha }
                             : undefined
                         }
-                        // 草稿必须写回这个 tab：不写回的话切一次 tab 就把改动
-                        // 丢了（WorkbenchPage 只渲染 activeTab，切走即卸载）
+                        // 草稿在 pane 常驻时不能等卸载才寄存：分屏切焦点不会卸载
+                        // FileTab，live 缝保证关闭入口能看到最新未保存内容；卸载回调
+                        // 仍保留，覆盖切换 group/整页路由的路径
                         onDraftChange={(d) =>
+                          wb.setContent(group, tabId, {
+                            kind: 'file',
+                            rel: c.rel,
+                            draft: d?.draft,
+                            baseSha: d?.baseSha,
+                          })
+                        }
+                        onDraftChangeLive={(d) =>
                           wb.setContent(group, tabId, {
                             kind: 'file',
                             rel: c.rel,
@@ -562,7 +623,7 @@ export function Shell() {
             {/* /codegraph 的 viewer 唯一来源是同源 iframe；它不在 Shell 内复制取数或凭据。 */}
             <Route
               path="/codegraph"
-              element={<FullPageCover><CodegraphFrame project={wb.base?.projectName ?? ''} /></FullPageCover>}
+              element={<FullPageCover><CodegraphFrame project={routeParams.get('project') ?? wb.base?.projectName ?? ''} /></FullPageCover>}
             />
             <Route path="/machines" element={<Navigate to="/settings" replace />} />
             <Route path="/tasks/:id" element={<FullPageCover><TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} /></FullPageCover>} />
@@ -571,15 +632,19 @@ export function Shell() {
       </div>
 
       {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}
-      {wb.base && wb.base.kind === 'workspace' && !fullPageRoute && (
+      {fileDrawer !== null && !fullPageRoute && (
         <div className="w-[280px] shrink-0">
           <FileTree
-            base={wb.base}
+            base={fileDrawer}
             refreshKey={fileTreeNonce}
             taskId={currentTaskId}
-            onOpenFile={(rel) => wb.open({ kind: 'file', rel })}
-            onOpenTerminal={(rel) => wb.openTerminal(undefined, undefined, rel)}
+            onOpenFile={(rel) => wb.open({ kind: 'file', rel }, fileDrawer)}
+            onOpenTerminal={(rel) => wb.openTerminal(fileDrawer, undefined, rel)}
             revealSupported={caps.reveal('')}
+            onClose={() => {
+              setFileDrawer(null)
+              console.debug('shell.directory.close', { project: fileDrawer.projectName, machine: fileDrawer.machine, baseKey: fileDrawer.key, path: fileDrawer.path })
+            }}
           />
         </div>
       )}

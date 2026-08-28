@@ -27,11 +27,14 @@ export function FileTab({
   rel,
   initial,
   onDraftChange,
+  onDraftChangeLive,
 }: {
   base: BaseDir
   rel: string
   initial?: { draft: string; baseSha: string }
   onDraftChange?: (d: { draft: string; baseSha: string } | null) => void
+  /** 分屏工作台的内存寄存缝；仅由需要在 pane 常驻时保持脏态的宿主传入。 */
+  onDraftChangeLive?: (d: { draft: string; baseSha: string } | null) => void
 }) {
   const [read, setRead] = useState<FileRead | null>(
     // initial 命中时用草稿造一个临时的 read，让「editable + dirty」从第一帧就成立，
@@ -292,7 +295,13 @@ export function FileTab({
             className="h-full w-full resize-none whitespace-pre p-4 font-mono text-xs leading-relaxed outline-none"
             spellCheck={false}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              const nextDraft = e.target.value
+              setDraft(nextDraft)
+              // 分屏 pane 不会因焦点切换而卸载，宿主必须在输入时寄存脏态，
+              // 否则用户随后关闭文件时，外层看不到这份尚未落盘的内容。
+              onDraftChangeLive?.(nextDraft === read.content ? null : { draft: nextDraft, baseSha })
+            }}
           />
         ) : (
           <pre className="p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap">{read.content}</pre>

@@ -5,6 +5,7 @@
 // 这条规则的四个层级与两个方向。
 import { describe, expect, it } from 'vitest'
 import type { ProjectTreeResp, Task } from '../../api/types'
+import type { OpenedWorkbenchItem } from '../workbench/tabs'
 import { filterTree } from './search'
 
 function task(over: Partial<Task>): Task {
@@ -129,5 +130,27 @@ describe('filterTree', () => {
   it('大小写不敏感，首尾空白被 trim', () => {
     expect(filterTree(tree, tasks, '  HANDOFF  ').projectCount).toBe(1)
     expect(filterTree(tree, tasks, '  ').projectCount).toBe(2)   // 全空白等同空查询
+  })
+
+  it('打开的文件/终端/TUI 也能把项目、机器和目录祖先带入搜索结果', () => {
+    const opened: OpenedWorkbenchItem[] = [
+      {
+        tabId: 'file-1', groupId: 'g1', column: 0, row: 0,
+        base: { key: '/srv/n', kind: 'workspace', path: '/srv/n', label: 'main', projectName: 'nova', machine: 'devbox' },
+        content: { kind: 'file', rel: 'src/opened-file.ts' }, label: 'src/opened-file.ts',
+      },
+      {
+        tabId: 'term-1', groupId: 'g1', column: 1, row: 0,
+        base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+        content: { kind: 'terminal', seq: 0 }, label: '终端 · opened-terminal',
+      },
+    ]
+    const byFile = filterTree(tree, tasks, 'opened-file', opened)
+    expect(byFile.projects[0].name).toBe('nova')
+    expect(byFile.projects[0].locations[0].machine).toBe('devbox')
+    expect(byFile.projects[0].locations[0].workspaces[0].path).toBe('/srv/n')
+    const byTerminal = filterTree(tree, tasks, 'opened-terminal', opened)
+    expect(byTerminal.projects[0].name).toBe('handoff')
+    expect(byTerminal.projects[0].locations[0].workspaces[0].path).toBe('/w/b2-b3')
   })
 })
