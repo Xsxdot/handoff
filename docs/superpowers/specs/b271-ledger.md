@@ -1,5 +1,20 @@
 # B271 spec 台账
 
+- 2026-08-28 计划文档 docs/superpowers/plans/b271-plan.md 已写入 Task 1/2/3：共享自机判定与门铃、本机账本源及两镜像分流、节点/CLI/WorkBranch 本机归一；包含精确接口、基线/红绿命令、结构化日志与注释要求、序列化边界、缺陷族及接缝双向审计。
+- 2026-08-28 计划静态检查 git diff --check 实跑退出码 0，原始输出为空。
+- 2026-08-28 计划最终修改后的 git diff --check 实跑退出码 0，原始输出为空。
+- 2026-08-28 计划残留与无占位扫描 rg -n startLedgerMirror/hostName/cfg.LedgerPath/TBD/TODO/同 Task/适当的错误处理 docs/superpowers/plans/b271-plan.md 实跑退出码 1，原始输出为空。
+- 2026-08-28 计划围栏复核再次得到 32 个行首波浪线围栏与 4 个行首反引号围栏，退出码 0，数量均为偶数。
+- 2026-08-28 补充 Store 门铃完整实现代码块后，git diff --check 仍退出码 0；残留/占位扫描退出码 1、原始输出为空；计划围栏计数为 36 个波浪线围栏和 4 个反引号围栏，均为偶数。
+- 2026-08-28 最终修订 setupLedger 为真实 ledger 生命周期、修正基线正则与本机/远端 client 作用域后，git diff --check 退出码 0；残留/占位扫描退出码 1、原始输出为空；围栏复核输出 36 与 4，均为偶数。
+- 2026-08-28 收口前工作树检查实跑退出码 0：git status --short 仅显示本台账修改与目标计划未跟踪文件；git diff --check 原始输出为空；git diff --stat 仅统计台账的 20 行新增，计划仍需 git add 后纳入统计。
+- 2026-08-28 已执行 git add docs/superpowers/plans/b271-plan.md docs/superpowers/specs/b271-ledger.md，退出码 0；随后 git diff --cached --check 退出码 0，暂存统计为计划 930 行、台账 21 行，共 951 行新增。
+- 2026-08-28 首次提交命令 git commit -m docs: add B271 implementation plan 实跑退出码 0，原始输出为 [cards/B271-charter 21b968ca]、2 files changed、952 insertions、计划文件新建；随后因补记本行将 amend。
+- 2026-08-28 计划文件存在性检查 test -s docs/superpowers/plans/b271-plan.md 实跑退出码 0，原始输出为空。
+- 2026-08-28 计划结构检查 rg -n '^## [1-5]\\. |^### (3\\.|4\\.|5\\.)|接缝 → 测试|测试 → 接缝' docs/superpowers/plans/b271-plan.md 实跑退出码 0；输出列出第 1 至 5 章、Task 2/3 全部子章及双向接缝表。
+- 2026-08-28 无占位词扫描 rg -n 'TBD|TODO|同 Task|适当的错误处理' docs/superpowers/plans/b271-plan.md 实跑退出码 1，原始输出为空。
+- 2026-08-28 计划代码围栏检查分别得到 32 个行首波浪线围栏与 4 个行首反引号围栏，均为偶数，原始输出为 32 与 4。
+
 - 2026-08-28 用户「那就继续下一批」。原分组第四批 = B271 单卡（loopback 镜像 EOF），第五批 B234/B193 不动。
 - 工作树 `/Users/sycm/.handoff/worktrees/b271-loopback`，分支 `fix/b271-local-dispatch`（从 `main` @ `d319f92d2`）。
 - 卡 B271 待办→spec。源 note：B268 本机 grok；空 target 被拒；登记 `local=http://127.0.0.1:7777`；`machine=local` EOF；卡流停在 dispatched；权限门与 EOF 同一毫秒；自动批是 `approver_decision`；`resume --force` 不发 completed。
@@ -17,3 +32,11 @@
 - 2026-08-28 独立审查 `01a046d9` 写入 `docs/superpowers/reviews/b271-spec-review.md`。总判修订后再批。Critical 2（WorkBranch 空串短路 / B192；本机源订 Hub 污染 Watchers）+ Important 5。
 - 协调者吸收 r1：废止 B192 §2.1.3，去掉空串短路，历史缺字段视作本机、LocalBaseBranch 作后门；本机源不订 Hub（门铃+store），Watchers 语义不动；接缝覆盖 stepTransport/awaitNode/diffNode；Addr 去 scheme；For 之前分流。不抬 L3。不选 Hub 内部订。
 - 用户 2026-08-28「老样子」授权批准 r1 并无人值守推进到合 main。
+- 2026-08-28 执行节点按用户指定执行 `git fetch origin fix/b271-local-dispatch` 与 `git merge --ff-only origin/fix/b271-local-dispatch`；快进成功，HEAD 为 `ef61ffea`，父提交为 `d319f92d`，无冲突。
+- 2026-08-28 已读取 `docs/superpowers/specs/b271.md`、本台账与 `docs/superpowers/reviews/b271-spec-review.md`；r1 的本机空 target、self classifier、store 门铃本机源、WorkBranch 历史缺字段口径与 6 条接缝作为计划依据。
+- 2026-08-28 已用 `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . context d_transport_channel`、`context d_gateway`、`context d_orchestration`、`sym ViaTemplate`、`who-calls waitForTurnEnd`、`chain n_ledgerstep_Dispatcher_ViaTemplate --with-source`、`chain n_agentd_Mirror_discoverOnce --with-source`、`chain n_ledgermirror_Mirror_reconcile --with-source`、`chain n_ledgerstep_StepRunner_awaitNode --with-source` 查图；其中未截断的 `ViaTemplate` 链与 `reconcile` 链确认了当前拒绝空 target、WorkBranch/For 顺序及 await/diff 调用面；任务镜像领域存在图覆盖债，未以 grep 结果冒充图覆盖。
+- 2026-08-28 基线命令 `go test ./internal/agentd -count=1` 实跑通过，原始结果为 `ok github.com/Xsxdot/handoff/internal/agentd 150.339s`，退出码 0。
+- 2026-08-28 基线命令 `go test ./cmd -count=1` 实跑失败；命令输出末尾原文为 `FAIL`、`FAIL\tgithub.com/Xsxdot/handoff/cmd\t10.687s`、`FAIL`，退出码 1；失败原因未验证，计划不据此归因。
+- 2026-08-28 基线命令 `go test ./internal/config ./internal/store ./internal/ledgerstep ./internal/ledgermirror -count=1` 实跑通过，原始结果逐包为 `ok github.com/Xsxdot/handoff/internal/config 0.024s`、`ok github.com/Xsxdot/handoff/internal/store 5.209s`、`ok github.com/Xsxdot/handoff/internal/ledgerstep 7.803s`、`ok github.com/Xsxdot/handoff/internal/ledgermirror 3.327s`，退出码 0。
+- 2026-08-28 针对本卡 CLI 接缝的基线命令 `go test ./cmd -run 'Test(TargetEndpoint|BareDispatch|CardDispatch)' -count=1` 实跑通过，原始结果为 `ok github.com/Xsxdot/handoff/cmd 2.194s`，退出码 0；全 `./cmd` 仍保留上一行未归因失败记录。
+- 2026-08-28 再查 `codegraph context d_ledger`：命令退出码 0，但输出预算截断（1391 行），并报告 `fociTruncated total=57 shown=5 reason=focus-quota`、`truncated=false`；图接口列表仍显示旧的 `ledgermirror.New` 形状，故 ledgermirror 的 `Machines`/`Options` 签名以已读源码为准，记录为图覆盖/新鲜度债，不据图旧签名改实现。
