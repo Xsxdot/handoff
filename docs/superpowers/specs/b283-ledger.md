@@ -32,3 +32,5 @@
 - 2026-08-28 Task 1 跑绿（步骤 3–4 后，声明范围）：`Test Files  2 passed (2)` / `Tests  23 passed (23)`（restore 17 + useWorkbenchSync 6）。
 - 2026-08-28 Task 1 偏离记录：夹具 `homeSess`/`dockRaw`/`HomeTab` import 未按计划落在 Task 1——tsc 的 noUnusedLocals 报 TS6133（`'homeSess' is declared but its value is never read` 等），与「每 task 收口 typecheck 必须绿」冲突；且 `dockRaw` 首个消费者实为 Task 2 用例。处理：两夹具与 import 推迟到首个使用它们的 task 加入，文件终态与计划一致，断言零改动。
 - 2026-08-28 Task 1 typecheck 绿（`tsc -b` 无输出）后提交：`8e39a6228 fix(web): 扇出缺席的机器不判死——machines 入参与中央区门控 (B283)`（触及 restore.ts / restore.test.ts / useWorkbenchSync.ts / 台账，git status 无计划外文件）。
+- 2026-08-28 Task 2 跑红：`Tests  1 failed | 17 passed (18)`，红原文 `AssertionError: expected [ { id: 'H1', …(4) }, …(1) ] to have a length of 1 but got 2`（基线把外来 H1 与本机 H2 都收编，失败原因=收编门控未实现）；两条既有本机收编用例仍绿。
+- 2026-08-28 Task 2 跑绿（声明范围 restore.test.ts）：`Tests  18 passed (18)`；typecheck 绿。提交：`2c3251851 fix(web): home 收编仅限本机，悬浮窗不再跨机收编 (B283)`。

@@ -262,4 +262,66 @@ describe('buildRestore', () => {
     expect(r.adopted).toBe(1)
     expect(r.dockOrphans).toHaveLength(0)
   })
+
+  it('悬浮窗本地 tab 的死会话照常剥引用——门控不挡真死', () => {
+    const r = buildRestore({
+      state: state({ dock: dockRaw([{ id: 'h1', kind: 'terminal', seq: 1, machine: '', sessionId: 'H1' }], 'h1', true) }),
+      sessions: [{ ...homeSess('H1'), exit_code: 0 }],
+      machines: [machine('', true)],
+      ...VIEW,
+    })
+    expect(r.dock!.tabs[0].sessionId).toBeUndefined()
+    expect(r.dock!.activeId).toBe('h1') // tab 留位，激活不变
+    expect(r.pruned).toBe(1)
+  })
+
+  it('存量外来 tab 一次性清除：全外来快照清空后 tabs 为空、activeId 为 null、windowOpen 收为 false', () => {
+    const r = buildRestore({
+      state: state({
+        dock: dockRaw(
+          [
+            { id: 'u1', kind: 'terminal', seq: 1, machine: 'mac-02', sessionId: 'H1' },
+            { id: 'u2', kind: 'file', seq: 2, machine: 'linux-01', rel: 'notes.md' },
+          ],
+          'u1',
+          true,
+        ),
+      }),
+      sessions: [homeSess('H1', 'mac-02')], // 它还活着，也照样清——悬浮窗是本机面
+      machines: [machine('', true), machine('mac-02', true), machine('linux-01', true)],
+      ...VIEW,
+    })
+    expect(r.dock).not.toBeNull()
+    expect(r.dock!.tabs).toHaveLength(0)
+    expect(r.dock!.activeId).toBeNull()
+    expect(r.dock!.windowOpen).toBe(false)
+    expect(r.purged).toBe(2)
+    // 清除是整个 tab 走，不是剥引用留壳：活着的 H1 也不计入 prune
+    expect(r.pruned).toBe(0)
+    // 活着的外来 home 会话不再被收编回来（方案1，Task 2 已落地）
+    expect(r.adopted).toBe(0)
+  })
+
+  it('清除命中 activeId 时显式置 null，既有兜底把它重指到剩下的第一个 tab', () => {
+    const r = buildRestore({
+      state: state({
+        dock: dockRaw(
+          [
+            { id: 'u1', kind: 'terminal', seq: 1, machine: 'mac-02', sessionId: 'H1' },
+            { id: 'h2', kind: 'terminal', seq: 2, machine: '', sessionId: 'H2' },
+          ],
+          'u1',
+          true,
+        ),
+      }),
+      sessions: [homeSess('H2')],
+      machines: [machine('', true), machine('mac-02', true)],
+      ...VIEW,
+    })
+    expect(r.dock!.tabs).toHaveLength(1)
+    expect(r.dock!.tabs[0].id).toBe('h2')
+    expect(r.dock!.activeId).toBe('h2')
+    expect(r.purged).toBe(1)
+    expect(r.dock!.windowOpen).toBe(true) // 没清空就不收窗
+  })
 })

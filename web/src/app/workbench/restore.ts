@@ -79,9 +79,13 @@ export interface RestoreResult {
   //（不开窗、不改几何）。dock 非 null 时它们已被并进 dock.tabs，这里恒为空数组
   dockOrphans: HomeTab[]
   selected: string
-  // 下面三个是给日志用的统计量，不参与渲染
+  // 下面四个是给日志用的统计量，不参与渲染
   dropped: string[]
   pruned: number
+  // purged 是方案2 清掉的外来悬浮窗 tab 数（终端与文件都算）。升级后首启它通常
+  // 一次性格外，之后每次恢复恒 0；调用方把它记进日志，acceptance 对照
+  // 「升级后首启外来 tab 消失属预期」时以此为凭，勿当回归报。
+  purged: number
   adopted: number
 }
 
@@ -206,15 +210,38 @@ export function buildRestore(input: RestoreInput): RestoreResult {
 
   // ② 解码悬浮窗现场：坏数据或从没存过都得到 null
   let dock: DockSnapshot | null = null
+  let purged = 0
   if (input.state.dock !== '') {
     const d = decodeDock(input.state.dock)
     if (d !== null) {
+      // 方案3（悬浮窗侧）：扇出没答上来的机器，名下会话「可能活着只是没进名单」。
+      // 把这些 tab 的 sessionId 并进 live 副本，prune 就不会剥它们的引用——机器回来
+      // 照常接上；真死了走挂载时的连接错误 / 1008 出口，两条路都有「重开」终态。
+      // 归属按 tab.machine 取：decodeDock 强制该字段为 string，是悬浮窗侧唯一可靠的
+      // 机器归属来源。修复后悬浮窗终端 tab 的 machine 恒为空串（新建不带机器、收编
+      // 仅限本机），这个分支平时不命中；保留它是给 roadmap 的「远程机器 home 终端
+      // 显式入口」预留的正确语义，也让 pruned 统计不被清除误计成剥引用。
+      const effectiveLive = new Set(live)
+      for (const t of d.tabs) {
+        if (t.sessionId !== undefined && !machineOk.has(t.machine)) effectiveLive.add(t.sessionId)
+      }
       const beforeTabs = d.tabs.filter((t) => t.sessionId).length
-      const tabs = pruneDeadDockSessions(d.tabs, live)
-      pruned += beforeTabs - tabs.filter((t) => t.sessionId).length
+      const gated = pruneDeadDockSessions(d.tabs, effectiveLive)
+      pruned += beforeTabs - gated.filter((t) => t.sessionId).length
+      // 方案2：存量外来 tab 一次性清除（终端与文件同规则）。decode 照旧接受旧数据、
+      // 不 bump DOCK_PERSIST_VERSION——丢弃发生在合成层；清过的 dock 随首次写回落盘，
+      // 之后每次恢复都是幂等 no-op。清除命中 activeId 时显式置 null（函数末尾的既有
+      // 兜底只认 null、不认悬空）；tabs 清空时把 windowOpen 一并收为 false——升级后
+      // 首启不该凭空弹一个只有 tab 条的空壳浮窗（decode 出来本来就空的退化现场一并
+      // 兜住，closeTab 不会写出那种形状）。
+      const kept = gated.filter((t) => t.machine === '')
+      purged = d.tabs.length - kept.length
+      const activeId = d.activeId !== null && !kept.some((t) => t.id === d.activeId) ? null : d.activeId
       dock = {
         ...d,
-        tabs: markIncompatibleDockTabs(tabs, incompatible),
+        tabs: markIncompatibleDockTabs(kept, incompatible),
+        activeId,
+        windowOpen: kept.length === 0 ? false : d.windowOpen,
         geom: clampGeom(d.geom, input.vw, input.vh, input.inset),
       }
     }
@@ -259,5 +286,5 @@ export function buildRestore(input: RestoreInput): RestoreResult {
     dock.activeId = dock.tabs[0].id
   }
 
-  return { entries, dock, dockOrphans, selected: input.state.selected, dropped, pruned, adopted }
+  return { entries, dock, dockOrphans, selected: input.state.selected, dropped, pruned, purged, adopted }
 }

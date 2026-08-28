@@ -131,6 +131,7 @@ export function useWorkbenchSync(deps: WorkbenchSyncDeps): { error: string; rest
           console.debug('工作台状态恢复完成', {
             目录数: r.entries.length,
             抹掉的死会话: r.pruned,
+            '清除的外来悬浮窗 tab': r.purged,
             补进来的孤儿会话: r.adopted,
             丢弃的坏行: r.dropped.length,
             悬浮窗: r.dock !== null ? '已恢复' : '无落盘现场',
