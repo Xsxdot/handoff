@@ -333,3 +333,27 @@ export function breadcrumbSegments(base: BaseDir, tail?: string): string[]
 
 - 无「由协调者执行」的验收步骤混入实现 task；真机对照（截图 vs 原型）是验收
   节点动作，不在本计划 task 内。
+
+---
+
+## 修订（2026-08-29，T2 执行轮裁决）
+
+T2 的「内容 tab 条」实现被协调者否决：卡基线（B281/B285 后）中央模型已是
+组/列/格（基线 tabs.ts：组标签条、列内两格、五区 DropZone、组拖动 DRAG_GROUP_MIME、
+新建/关闭组），plan 初版把 main 上的旧形态当成了基线。T2 重做为：**组标签条换皮**——
+
+- TabBar 恢复基线 props（groups / activeGroupId / onActivateGroup / onCloseGroup /
+  onNew / onNewLauncher / launchers / terminalUnavailable / onNewGroup / onMoveGroup），
+  另加 `taskName` resolver。
+- 样式 1:1 option-1 chrome：44px 条、激活组药丸面、非末尾组后的短分隔线、
+  每组关闭钮、行尾 + = `onNewGroup`（基线语义）、组拖动（DRAG_GROUP_MIME 的
+  dragstart/dragover/drop 处理器原样保留）。
+- 图标按组焦点内容种类：tui→dispatch-task.png、terminal→Terminal、file→FileText、
+  空组→Plus。
+- 问题 1 的落点补全：autoName 组的命名走 taskDisplayName（tui 焦点任务原名），
+  解析不到才回退 TUI·id8——组名、窗格头、左栏已打开行同源一致。
+- T4 落点样式补全 top/bottom 两区（五区全部 1:1 原型）。
+- 恢复被删的 launchers.test 组拖动用例及其它组语义测试（以
+  `git show f770304b0:<file>` 为基线参照，仅样式断言按新皮改写）。
+- T1/T3/T5/T6a/T6b/T7 的产出保留；T7 的 focusTab/openItems 对齐组模型语义
+  （聚焦 = 激活所在组 + 焦点该格）。
