@@ -22,3 +22,9 @@
      行尾无），分隔线渲染在除最后一个 tab 外的每 tab 之后。
 - T3 完成：breadcrumbSegments(base, tail?) 纯函数 + 行渲染 1:1 workspace-context（28px/13px/#7c7c7c/' / ' 分隔/title 全文），Shell 构建_crumbTaskName 与 tail（焦点 tab 非 blank）；DesktopTitleBar 不传 tail 未动。Breadcrumb.test 5 支新支全绿；Shell.test 2 支断言改写（深链/跳转到该任务 → 第三段=任务原名）。shell 48/48 绿，workbench 225/225 绿，typecheck 绿。
 - T4 完成：dragging 状态（window dragstart 认 data-drag-task / dragend+drop 双保险复位）、pane-content 层拖动期 pointer-events-none、落点预览 left/right/center 数值 1:1 原型（top/bottom 留旧形态属 B264）、testid 改为 drop-<zone>、ProjectTree 三处任务行加 data-drag-task=1。WorkbenchPage.test 5 支新支/改写，75/75 绿，typecheck 绿。
+- T5 完成：resizeColumns 删除 min*2>两栏之和 的整体早退（改注释说明夹紧语义），
+  WorkbenchPage 最外容器加 overflow-hidden。偏离记录：plan 写「列的 min-w-0 机制不动」，
+  实际基线列是 min-w-[240px] 硬下限——按 spec §3「列 flex 均分、min-width:0」与
+  原型 .col{min-width:0} 改为 min-w-0，240px 下限改由拖拽 minRatio 夹紧承担
+  （否则窄窗三列被裁切，违反验收场景）。tabs.test 2 支新支（三列夹紧 + 单侧夹紧保留）、
+  WorkbenchPage 容器断言 1 支；workbench 232/232 绿，typecheck 绿。
