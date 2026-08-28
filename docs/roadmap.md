@@ -429,3 +429,10 @@
 - **B258 镜像延迟**：任务已 `waiting_answer`、卡流数分钟零事件。来源：同上。
 - **B211 release CI 资产 hash 硬门**（管发布物，管不住手工 `go build`）。来源：B276 spec / 源卡 B211 弃选 C。
 - **charter 仓刀 0 别名销账**：handoff 侧已删除 `handoff graph`；charter 契约 §4 / charter skill / charter roadmap 第 6 条仍写别名观察期。来源：B276 spec r1 / 审查 Issue 3。
+
+## 来自 B278 spec（2026-08-28，本期不做）
+
+- **B235 不同名分支自动合并**：卡 `base_branch` 与工作分支历史分叉时，dispatch 自动 merge。B278 只警告。来源：B278 spec / 源卡 B235。
+- **B235 `card dispatch --step --base`**：显式覆盖节点起点。今天卡派发没有这条主路径。来源：同上。
+- **B260 HTTP `task_states` / `relations` 蛇形化**：Web 已按 PascalCase 冻结（`proto.TaskStateRow` 注释 + `web/src/api/ledger.ts`）。要改得连 Web 一起改。来源：B278 spec / 源卡 B260。
+- **B251 存量带日期文件改名**：历史 spec 文件保持原名。来源：B278 spec / 源卡 B251。
