@@ -68,6 +68,9 @@ type Dispatcher struct {
 	St        *ledger.Store
 	Transport Transport
 	Actor     string
+	// NormalizeTarget 把调用方已确认的自机登记名归一成空串；nil 等价于恒等
+	// 函数。未知目标名不得在此处改写，目标身份判断归组装点负责。
+	NormalizeTarget func(target string) string
 
 	// B229 缝 1 产物（数据字段，不是解析函数）：调用方装配时经
 	// discipline.ResolveDispatch 解析好的纪律正文与账本版本号。未点名模板的
@@ -121,6 +124,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	var zero DispatchResult
 	tpl, err := d.St.GetTemplate(req.Template, 0)
 	if err != nil {
+		slog.Default().Warn("取模板失败", "card", c.ID, "template", req.Template, "cause", err)
 		return zero, fmt.Errorf("取模板: %w", err)
 	}
 	// 有效目标机与纪律角色名：请求覆盖 > 模板缺省。两个调用方装配处的缝 1
@@ -130,13 +134,16 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if target == "" {
 		target = tpl.Def.Target
 	}
+	rawTarget := target
+	if d.NormalizeTarget != nil {
+		target = d.NormalizeTarget(target)
+	}
 	disciplineName := tpl.Def.Discipline
 	if req.DisciplineOverride != "" {
 		disciplineName = req.DisciplineOverride
 	}
-	if target == "" {
-		return zero, fmt.Errorf("目标机未定：--target 或模板 target 至少一个")
-	}
+	slog.Default().Info("模板派发目标已归一", "card", c.ID, "template", req.Template,
+		"raw_target", rawTarget, "target", target)
 
 	// 有效用途：节点覆盖优先于模板。下面**所有**按用途裁决的地方都读它，
 	// 不再直接读取模板用途字段——漏掉任何一处都会让节点只对了一半（例如分支
@@ -153,14 +160,23 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	workInfo, workErr := d.St.WorkBranch(c.ID)
 	hasWorkBranch := workErr == nil
 	if workErr != nil && !errors.Is(workErr, ledger.ErrNotFound) {
-		slog.Default().Error("读取卡工作分支失败", "card", c.ID, "target", target, "cause", workErr)
+		slog.Default().Error("读取卡工作分支失败", "card", c.ID, "target", target,
+			"previous_target", "", "branch", "", "cause", workErr)
 		return zero, fmt.Errorf("取卡工作分支: %w", workErr)
 	}
-	if hasWorkBranch && (workInfo.Target == "" || workInfo.Target != target) {
+	previousTarget := ""
+	if hasWorkBranch {
+		previousTarget = workInfo.Target
+		if d.NormalizeTarget != nil {
+			previousTarget = d.NormalizeTarget(previousTarget)
+		}
+	}
+	if hasWorkBranch && previousTarget != target {
 		slog.Default().Warn("工作分支跨目标机，拒绝接续", "card", c.ID,
-			"branch", workInfo.Branch, "previous_target", workInfo.Target, "target", target)
+			"branch", workInfo.Branch, "previous_target", previousTarget, "target", target,
+			"cause", "目标机身份不一致")
 		return zero, fmt.Errorf("工作分支只存在于创建它的那台机器：上次目标机 %q，本次目标机 %q；请先 push 到 origin（git push origin %s），再用显式 --base 指定",
-			workInfo.Target, target, workInfo.Branch)
+			previousTarget, target, workInfo.Branch)
 	}
 
 	// 判据被收起时不留空冒号：模板正文里「验收判据：{{ACCEPT}}」后面跟一片
@@ -213,6 +229,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	base, err := d.St.EffectiveBaseBranch(c.ID)
 	if err != nil {
+		slog.Default().Warn("取有效基线失败", "card", c.ID, "target", target,
+			"previous_target", previousTarget, "branch", "", "cause", err)
 		return zero, fmt.Errorf("取有效基线: %w", err)
 	}
 	localBaseBranch := false
@@ -226,6 +244,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	// 因此这里重新取一次而不是复用上面的 base。
 	cardBase, err := d.St.EffectiveBaseBranch(c.ID)
 	if err != nil {
+		slog.Default().Warn("取卡上下文基线失败", "card", c.ID, "target", target,
+			"previous_target", previousTarget, "branch", branch, "cause", err)
 		return zero, fmt.Errorf("取卡上下文基线: %w", err)
 	}
 	prompt := buildPrompt(body, c, cardBase, req.CarryCardContext, req.OmitAcceptance, req.Extra, req.OutputPath)

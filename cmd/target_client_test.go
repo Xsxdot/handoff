@@ -1,7 +1,13 @@
+// targetClient 的本机/登记名归一测试：空 target 与指向本机 loopback 的登记名
+// 必须共用本机 HTTP 端点；未登记名称仍保留原名错误。
 package cmd
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/relay"
@@ -67,5 +73,69 @@ targets:
 	}
 	if !strings.Contains(err.Error(), "broken") {
 		t.Fatalf("错误要点名 target，实得 %v", err)
+	}
+}
+
+// TestTargetClientEmptyAndConfiguredSelf 穿过真实 Status HTTP 请求验证 CLI
+// 本机客户端路由，避免只断言 client.New 的内存地址。
+func TestTargetClientEmptyAndConfiguredSelf(t *testing.T) {
+	var statusHits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/status" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		statusHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(ts.Close)
+	var remoteStatusHits atomic.Int32
+	remoteTS := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/status" || r.Method != http.MethodGet {
+			http.NotFound(w, r)
+			return
+		}
+		remoteStatusHits.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{}`))
+	}))
+	t.Cleanup(remoteTS.Close)
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	remoteAddr := strings.TrimPrefix(remoteTS.URL, "http://")
+	content := fmt.Sprintf("listen: %q\ntoken: %q\ntargets:\n  local:\n    addr: %q\n    token: %q\n  devbox:\n    addr: %q\n    token: %q\n", addr, testToken, "http://"+addr, testToken, remoteAddr, testToken)
+	cfgPath := writeTestConfig(t, content)
+	resetFlags(t)
+	configPath = cfgPath
+	targetName = ""
+	rootCmd.PersistentFlags().Lookup("agentd").Changed = false
+
+	for _, target := range []string{"", "local", "devbox"} {
+		cl, done, err := targetClient(target)
+		if err != nil {
+			t.Fatalf("targetClient(%q): %v", target, err)
+		}
+		status, err := cl.Status(t.Context())
+		done()
+		if err != nil {
+			t.Fatalf("targetClient(%q) Status: %v", target, err)
+		}
+		if status == nil {
+			t.Fatalf("targetClient(%q) 返回空 Status", target)
+		}
+	}
+	if got := statusHits.Load(); got != 2 {
+		t.Fatalf("本机/本机别名 Status 命中 %d 次，期望 2", got)
+	}
+	if got := remoteStatusHits.Load(); got != 1 {
+		t.Fatalf("远端 devbox Status 命中 %d 次，期望 1", got)
+	}
+	if _, done, err := targetClient("本机"); err == nil || !strings.Contains(err.Error(), "本机") {
+		if done != nil {
+			done()
+		}
+		t.Fatalf("未登记 本机 应保留原名错误，err=%v", err)
+	} else if done != nil {
+		done()
 	}
 }

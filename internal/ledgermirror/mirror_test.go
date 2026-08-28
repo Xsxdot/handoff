@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"path/filepath"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -13,6 +16,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 func testLedger(t *testing.T) *ledger.Store {
@@ -292,4 +296,113 @@ func TestMirrorStopBeforeRun(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("Stop 先于 Run 时，Run 未及时退出")
 	}
+}
+
+func TestMirrorLocalTargetUsesLocalSource(t *testing.T) {
+	ledgerStore := testLedger(t)
+	cardID := linkedCard(t, ledgerStore, "", "local-task")
+	localStore, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("打开本机 store: %v", err)
+	}
+	defer localStore.Close()
+	for i := 0; i < 32; i++ {
+		if _, err := localStore.AppendEvent("local-task", proto.EventTypeProgress,
+			map[string]int{"index": i}); err != nil {
+			t.Fatalf("追加 progress %d: %v", i, err)
+		}
+	}
+	permissionPayload := json.RawMessage(`{"permission_id":"perm-1","command":"git status"}`)
+	permission, err := localStore.AppendEvent("local-task", proto.EventTypePermissionRequest, permissionPayload)
+	if err != nil {
+		t.Fatalf("追加 permission_request: %v", err)
+	}
+	if _, err := localStore.AppendEvent("local-task", proto.EventTypeApproverDecision,
+		map[string]string{"decision": "allow"}); err != nil {
+		t.Fatalf("追加 approver_decision: %v", err)
+	}
+
+	machines := newFakeMachines()
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	m := New(ledgerStore, machines, Options{
+		Holder:   "test-local",
+		Tick:     20 * time.Millisecond,
+		LeaseTTL: time.Second,
+		Source: func(context.Context, *client.Client, string, int64, func(proto.Event) error) error {
+			return fmt.Errorf("本机 link 不应调用远端 source")
+		},
+		LocalSource: NewLocalSource(localStore, log),
+	})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.reconcile(ctx)
+
+	deadline := time.Now().Add(time.Second)
+	var mirrored ledger.Event
+	for time.Now().Before(deadline) {
+		events, err := ledgerStore.EventsFromAsc([]string{cardID}, 0, 100)
+		if err != nil {
+			t.Fatalf("读取 card_events: %v", err)
+		}
+		for _, event := range events {
+			if event.Type == ledger.EvTaskMirrored && event.SourceTask == "local-task" &&
+				event.SourceSeq == permission.Seq {
+				mirrored = event
+			}
+		}
+		if mirrored.Seq != 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if mirrored.Seq == 0 {
+		t.Fatal("一秒内没有从本机 Store 镜像 permission_request")
+	}
+	if mirrored.SourceTarget != "" || mirrored.SourceTask != "local-task" || mirrored.SourceSeq != permission.Seq {
+		t.Fatalf("本机镜像来源 = (%q, %q, %d)，want (%q, local-task, %d)",
+			mirrored.SourceTarget, mirrored.SourceTask, mirrored.SourceSeq, "", permission.Seq)
+	}
+	var mirroredPayload struct {
+		TaskType string          `json:"task_type"`
+		Payload  json.RawMessage `json:"payload"`
+	}
+	if err := json.Unmarshal(mirrored.Payload, &mirroredPayload); err != nil {
+		t.Fatalf("解码镜像 payload: %v", err)
+	}
+	if mirroredPayload.TaskType != string(proto.EventTypePermissionRequest) ||
+		string(mirroredPayload.Payload) != string(permissionPayload) {
+		t.Fatalf("镜像 payload = %s, want permission_request 原 payload", mirrored.Payload)
+	}
+
+	events, err := ledgerStore.EventsFromAsc([]string{cardID}, 0, 100)
+	if err != nil {
+		t.Fatalf("再次读取 card_events: %v", err)
+	}
+	var mirroredCount int
+	for _, event := range events {
+		if event.Type == ledger.EvTaskMirrored {
+			mirroredCount++
+			if event.SourceSeq != permission.Seq {
+				t.Fatalf("progress 或 approver_decision 被镜像: %+v", event)
+			}
+		}
+	}
+	if mirroredCount != 1 {
+		t.Fatalf("本机应只镜像一条 permission_request，实得 %d", mirroredCount)
+	}
+	if calls := machines.forCalls(); len(calls) != 0 {
+		t.Fatalf("本机 link 不应调用 Machines.For，实得 %v", calls)
+	}
+
+	wrote, err := ledgerStore.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+		Target: "", Task: "local-task", SourceSeq: permission.Seq,
+		Type: string(permission.Type), Payload: permission.Payload, CreatedAt: permission.CreatedAt,
+	})
+	if err != nil {
+		t.Fatalf("重复镜像同 seq: %v", err)
+	}
+	if wrote {
+		t.Fatal("同 seq 重放不应再次写入 task_mirrored")
+	}
+	m.Stop()
 }

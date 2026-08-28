@@ -32,3 +32,43 @@ func TestClassifyListen(t *testing.T) {
 		})
 	}
 }
+
+func TestIsSelfTarget(t *testing.T) {
+	cases := []struct {
+		name, listen string
+		target       Target
+		want         bool
+	}{
+		{"scheme loopback against single listen", "100.64.0.5:7777", Target{Addr: "http://127.0.0.1:7777"}, true},
+		{"exact address after scheme removal", "127.0.0.1:7777", Target{Addr: "https://127.0.0.1:7777"}, true},
+		{"localhost same port", "127.0.0.1:7777", Target{Addr: "localhost:7777"}, true},
+		{"wildcard listen loopback variant", "0.0.0.0:7777", Target{Addr: "http://127.0.0.1:7777"}, true},
+		{"ipv6 loopback same port", "[::1]:7777", Target{Addr: "http://[::1]:7777"}, true},
+		{"same listen host and port", "myhost.local:7777", Target{Addr: "http://myhost.local:7777"}, true},
+		{"other direct host", "127.0.0.1:7777", Target{Addr: "10.0.0.9:7777"}, false},
+		{"other port", "127.0.0.1:7777", Target{Addr: "127.0.0.1:8888"}, false},
+		{"relay never self", "127.0.0.1:7777", Target{Relay: "wss://relay", Credential: "c", Node: "node", Token: "token"}, false},
+		{"malformed direct addr", "127.0.0.1:7777", Target{Addr: "http://"}, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := IsSelfTarget(tc.listen, tc.target); got != tc.want {
+				t.Fatalf("IsSelfTarget(%q, %+v) = %v, want %v", tc.listen, tc.target, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestLocalDialAddrReusesListenClassification(t *testing.T) {
+	cases := map[string]string{
+		"127.0.0.1:7777":        "http://127.0.0.1:7777",
+		"0.0.0.0:7777":          "http://127.0.0.1:7777",
+		"100.64.0.5:7777":       "http://127.0.0.1:7777",
+		"http://127.0.0.1:7777": "http://127.0.0.1:7777",
+	}
+	for listen, want := range cases {
+		if got := LocalDialAddr(listen); got != want {
+			t.Fatalf("LocalDialAddr(%q) = %q, want %q", listen, got, want)
+		}
+	}
+}

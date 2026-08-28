@@ -37,7 +37,7 @@ type StepRunner struct {
 	//
 	// why 这里要的是客户端而不是 (addr, token)：relay 形态的机器根本没有 addr，
 	// 拿地址自己 client.New 对它们恒失败（会退化成一个没有 Host 的 URL）。
-	// 选路归 agentd 的 target 客户端池管，本包只消费。
+	// 选路归调用方的 target client 工厂管；空 target 也是合法的本机身份，本包只消费。
 	Clients func(target string) (*client.Client, error)
 	// Target 覆盖节点/模板里的目标机；空则用节点覆盖或模板的 target。
 	Target string
@@ -405,28 +405,39 @@ func (r *StepRunner) diffNode() func(context.Context, string, string) ([]string,
 // awaitNode 生产 NodeStep.Await：等回合终态并取最终报文，取到后归档该 task。
 func (r *StepRunner) awaitNode() func(context.Context, string, string) (string, error) {
 	return func(ctx context.Context, target, taskID string) (string, error) {
+		logger := slog.Default().With("target", target, "task", taskID)
+		logger.Info("节点等待开始")
 		if r.Clients == nil {
 			err := fmt.Errorf("节点等待客户端未装配")
-			slog.Default().Warn("取得节点等待客户端失败", "target", target, "task", taskID, "cause", err)
+			logger.Warn("取得节点等待客户端失败", "cause", err)
 			return "", err
 		}
 		cl, err := r.Clients(target)
 		if err != nil {
+			logger.Warn("取得节点等待客户端失败", "cause", err)
 			return "", err
 		}
+		// 本机任务仍走正式 /ws/events；任务镜像已跳过本机，不会再次 Publish
+		// 同一事件。这样节点等待、CLI wait 与远端任务继续共用同一协议。
+		logger.Info("节点等待客户端已就绪")
 		if err := waitForTurnEnd(ctx, func(ctx context.Context) (*proto.Event, error) {
 			return cl.WaitEvent(ctx, taskID, false)
 		}); err != nil {
+			logger.Warn("节点等待终态失败", "cause", err)
 			return "", fmt.Errorf("等回合终态: %w", err)
 		}
 		message, err := clientFinalMessage(ctx, cl, taskID)
 		if err != nil {
+			logger.Warn("节点读取最终报文失败", "cause", err)
 			return "", err
 		}
 		// 报文已经拿到，归档只是回收资源；失败不该把报文丢掉，所以带着报文一起返回错误。
 		if _, err := cl.Done(ctx, taskID, ""); err != nil {
-			slog.Default().Warn("归档节点 task 失败（报文已取到）", "task", taskID, "cause", err)
+			logger.Warn("归档节点 task 失败（报文已取到）", "cause", err)
+		} else {
+			logger.Info("节点 task 已归档")
 		}
+		logger.Info("节点等待完成", "message_bytes", len(message))
 		return message, nil
 	}
 }

@@ -158,15 +158,28 @@ func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	}
 	t.Cleanup(func() { _ = ledgerStore.Close() })
 	seedAgentdLedger(t, ledgerStore)
+	for name, body := range map[string]string{
+		discipline.NameImplement: "本机测试实现纪律",
+		discipline.NameReview:    "本机测试审阅纪律",
+	} {
+		if _, err := ledgerStore.PutDiscipline(name, body); err != nil {
+			t.Fatalf("准备本机测试纪律 %s: %v", name, err)
+		}
+	}
 	backend, err := store.Open(t.TempDir() + "/handoff.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = backend.Close() })
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir()}
-	srv := NewServer(cfg, backend, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := NewServer(cfg, backend, log)
 	srv.SetLedger(ledgerStore)
+	srv.SetManager(NewManager(backend, srv.Hub(), nil, cfg, nil, nil, nil, log))
 	ts := httptest.NewServer(srv.Handler())
+	// Task 3 的本机纪律探活走真实 HTTP；把临时服务地址回填为本机监听地址，
+	// 避免零值 Listen 被误当成 relay 的空端点。
+	cfg.Listen = strings.TrimPrefix(ts.URL, "http://")
 	t.Cleanup(ts.Close)
 	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore}
 }

@@ -237,7 +237,7 @@ var agentdCmd = &cobra.Command{
 
 		// 恒启动：镜像的机器清单现在来自活快照，启动时没有机器不代表以后没有。
 		// 留着 len>0 的闸会让控制台新增的第一台机器永远等不到镜像。
-		mirror := agentd.NewMirror(srv.Pool(), st, srv.Hub(), logger)
+		mirror := agentd.NewMirror(srv.Pool(), st, srv.Hub(), srv.IsSelfTarget, logger)
 		go mirror.Run(wdCtx)
 		logger.Info("事件镜像已启动", "targets", len(srv.Pool().Names()), "tick", "30s",
 			"note", "运行期新增的机器无需重启")
@@ -245,7 +245,7 @@ var agentdCmd = &cobra.Command{
 		// 账本域是必需品（B229 §2.6：enabled 开关已退休，配置里的键被忽略）：
 		// 恒开库恒挂镜像。dsn 空 = DataDir/ledger.db 单机回退；web 侧靠
 		// /api/ledger/health 拿到 enabled:true 后渲染入口。
-		stopLedger, err := setupLedger(cfg, srv, wdCtx, logger)
+		stopLedger, err := setupLedger(cfg, srv, st, wdCtx, logger)
 		if err != nil {
 			return err
 		}
@@ -431,13 +431,13 @@ func init() {
 // 不再看任何开关位。dsn 空 = DataDir/ledger.db 单机回退。
 //
 // 参数：cfg 取 Ledger.DSN 与 DataDir；srv 接收 SetLedger 注入并出镜像
-// 所需的 target 客户端池；ctx 是镜像生命周期（随 agentd 停机取消）；
-// logger 为启动日志入口。
+// 所需的 target 客户端池；taskStore 是本机任务事件库，供本机账本源读取；
+// ctx 是镜像生命周期（随 agentd 停机取消）；logger 为启动日志入口。
 //
 // 返回：stop 必须由调用方 defer，且保证先于账本库 Close 执行——订阅
 // 回调在写库，Stop 先于 Close 是硬约束（本函数把 Close 一并收进 stop，
 // 调用方只需 defer stop() 一个动作）。
-func setupLedger(cfg *config.Config, srv *agentd.Server, ctx context.Context,
+func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store, ctx context.Context,
 	logger *slog.Logger) (func(), error) {
 	ldsn := cfg.Ledger.DSN
 	if ldsn == "" {
@@ -454,7 +454,11 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, ctx context.Context,
 	// 机器永远等不到账本镜像（与任务镜像同一条纪律，B163 ①）。
 	// 池必须与任务镜像共用同一个：两个池等于两套 relay 隧道。
 	host, _ := os.Hostname()
-	lm := ledgermirror.New(lst, srv.Pool(), ledgermirror.Options{Holder: host})
+	lm := ledgermirror.New(lst, srv.Pool(), ledgermirror.Options{
+		Holder:       host,
+		LocalSource:  ledgermirror.NewLocalSource(taskStore, logger.With("source", "local")),
+		IsSelfTarget: srv.IsSelfTarget,
+	})
 	go lm.Run(ctx)
 	logger.Info("账本镜像子系统已挂载", "holder", host,
 		"machines", len(srv.Pool().Names()), "dsn", ldsn)

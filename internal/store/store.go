@@ -50,6 +50,11 @@ type Store struct {
 	// （目前是写 frames.jsonl 的 event 引用帧）。见 SetEventHook 的边界约定。
 	eventHookMu sync.RWMutex
 	eventHook   func(proto.Event)
+
+	// eventDoorbells are task-scoped, capacity-one wakeups. They only signal that
+	// a new event may exist; consumers must read EventsFromAsc with seq > fromSeq.
+	eventDoorbellMu sync.Mutex
+	eventDoorbells  map[string]map[chan struct{}]struct{}
 }
 
 // Open 打开（必要时创建）path 处的 SQLite 数据库并建表。
@@ -765,7 +770,54 @@ func (s *Store) AppendEvent(taskID string, typ proto.EventType, payload any) (pr
 		Payload: json.RawMessage(b), CreatedAt: parseTime(now)}
 	// 同步触发钩子：保证「入库顺序 == 观察顺序」（见 SetEventHook）
 	s.fireEventHook(evt)
+	s.signalEventDoorbell(evt.TaskID)
 	return evt, nil
+}
+
+// SubscribeEventDoorbell subscribes to task-scoped persisted-event wakeups.
+//
+// 返回：
+//   - 容量为 1 的通知 channel，以及可幂等调用的取消函数
+//
+// 注意：通知只表示“有新事件”，真实事件仍须从 EventsFromAsc 按 seq > fromSeq
+// 读取；取消不会关闭共享 channel，以避免 signal 与 cancel 并发时发生 panic。
+func (s *Store) SubscribeEventDoorbell(taskID string) (<-chan struct{}, func()) {
+	events := make(chan struct{}, 1)
+	s.eventDoorbellMu.Lock()
+	if s.eventDoorbells == nil {
+		s.eventDoorbells = make(map[string]map[chan struct{}]struct{})
+	}
+	if s.eventDoorbells[taskID] == nil {
+		s.eventDoorbells[taskID] = make(map[chan struct{}]struct{})
+	}
+	s.eventDoorbells[taskID][events] = struct{}{}
+	s.eventDoorbellMu.Unlock()
+
+	var once sync.Once
+	cancel := func() {
+		once.Do(func() {
+			s.eventDoorbellMu.Lock()
+			listeners := s.eventDoorbells[taskID]
+			delete(listeners, events)
+			if len(listeners) == 0 {
+				delete(s.eventDoorbells, taskID)
+			}
+			s.eventDoorbellMu.Unlock()
+		})
+	}
+	return events, cancel
+}
+
+// signalEventDoorbell wakes current listeners without blocking AppendEvent.
+func (s *Store) signalEventDoorbell(taskID string) {
+	s.eventDoorbellMu.Lock()
+	defer s.eventDoorbellMu.Unlock()
+	for events := range s.eventDoorbells[taskID] {
+		select {
+		case events <- struct{}{}:
+		default:
+		}
+	}
 }
 
 // SetEventHook 注册「事件落库后」的回调。传 nil 可取消。

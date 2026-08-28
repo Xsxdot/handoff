@@ -449,6 +449,158 @@ func TestViaTemplateContinuationUsesLocalWorkBranch(t *testing.T) {
 	}
 }
 
+// TestViaTemplateEmptyTargetIsLocal 锁住空 target 的本机语义：空值必须穿过
+// Transport、挂账与 dispatched JSON，不能被当成“目标机缺失”而提前拒绝。
+func TestViaTemplateEmptyTargetIsLocal(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	setTemplateModel(t, st, "", "local-model")
+	var got DispatchOpts
+	calls := 0
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+		calls++
+		got = opts
+		return "T-local-empty", "local-base-commit", nil
+	}}
+
+	result, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl",
+	})
+	if err != nil {
+		t.Fatalf("空 target 本机派发: %v", err)
+	}
+	if calls != 1 {
+		t.Fatalf("空 target 应调用 Transport 一次，实际 %d", calls)
+	}
+	if got.Target != "" || result.Target != "" {
+		t.Fatalf("Transport/result target = %q/%q，期望均为空", got.Target, result.Target)
+	}
+	if got.Model != "local-model" {
+		t.Fatalf("空 target 应使用 ModelByTarget 的空键模型，实得 %q", got.Model)
+	}
+
+	links, err := st.TasksOf(card.ID)
+	if err != nil {
+		t.Fatalf("读取本机挂账: %v", err)
+	}
+	if len(links) != 1 || links[0].Target != "" {
+		t.Fatalf("本机挂账 target = %+v，期望一条空 target", links)
+	}
+	wb, err := st.WorkBranch(card.ID)
+	if err != nil {
+		t.Fatalf("读取本机工作分支: %v", err)
+	}
+	if wb.Branch == "" || wb.Target != "" {
+		t.Fatalf("本机工作分支 = %+v，期望非空 branch/空 target", wb)
+	}
+
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读取 dispatched 事件: %v", err)
+	}
+	var found bool
+	for _, event := range events {
+		if event.Type != ledger.EvDispatched {
+			continue
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(event.Payload, &raw); err != nil {
+			t.Fatalf("解 dispatched JSON: %v", err)
+		}
+		target, ok := raw["target"]
+		if !ok {
+			t.Fatal("dispatched JSON 必须保留 target 键")
+		}
+		var targetValue string
+		if err := json.Unmarshal(target, &targetValue); err != nil {
+			t.Fatalf("解 dispatched target: %v", err)
+		}
+		if targetValue != "" {
+			t.Fatalf("dispatched target = %q，期望 JSON 空字符串", targetValue)
+		}
+		found = true
+	}
+	if !found {
+		t.Fatal("缺少本机 dispatched 快照")
+	}
+
+	remoteCard, err := st.CreateCard(ledger.NewCard{Title: "远端仍走原路径", Project: "demo", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatalf("创建远端回归卡: %v", err)
+	}
+	if _, err := st.PutTemplate("remote-template", ledger.TemplateDef{
+		Executor: "opencode", Purpose: ledger.PurposeImplement, BranchPrefix: "cards",
+		Target: "linux-01", Prompt: "远端 {{TITLE}}",
+	}); err != nil {
+		t.Fatalf("写远端模板: %v", err)
+	}
+	var remoteOpts DispatchOpts
+	remote := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+		remoteOpts = opts
+		return "T-remote", "", nil
+	}}
+	if _, err := remote.ViaTemplate(context.Background(), remoteCard, TemplateDispatch{Template: "remote-template"}); err != nil {
+		t.Fatalf("远端模板派发: %v", err)
+	}
+	if remoteOpts.Target != "linux-01" {
+		t.Fatalf("远端模板 target = %q，期望 linux-01", remoteOpts.Target)
+	}
+}
+
+// TestViaTemplateSelfAliasContinuesLocalWorkBranch 验证旧配置中的本机登记名
+// 归一为空后可以继续同机工作分支；真正远端仍在 Transport 前被跨机门拦下。
+func TestViaTemplateSelfAliasContinuesLocalWorkBranch(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var dispatched []DispatchOpts
+	d := &Dispatcher{
+		St: st, Actor: "tester",
+		NormalizeTarget: func(target string) string {
+			if target == "local" {
+				return ""
+			}
+			return target
+		},
+		Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+			dispatched = append(dispatched, opts)
+			return fmt.Sprintf("T-local-%d", len(dispatched)), "", nil
+		},
+	}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{Template: "feature-impl", Target: "local"}); err != nil {
+		t.Fatalf("本机别名首轮派发: %v", err)
+	}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{Template: "feature-impl"}); err != nil {
+		t.Fatalf("本机空 target 第二轮派发: %v", err)
+	}
+	if len(dispatched) != 2 {
+		t.Fatalf("同机两轮应调用 Transport 两次，实际 %d", len(dispatched))
+	}
+	if dispatched[0].Target != "" || dispatched[1].Target != "" {
+		t.Fatalf("两轮 Transport target = %q/%q，期望均为空", dispatched[0].Target, dispatched[1].Target)
+	}
+	wantBase := dispatched[0].Branch
+	if wantBase == "" || dispatched[1].Base != wantBase || !dispatched[1].LocalBaseBranch {
+		t.Fatalf("第二轮未沿本机工作分支续接: first=%+v second=%+v", dispatched[0], dispatched[1])
+	}
+	links, err := st.TasksOf(card.ID)
+	if err != nil {
+		t.Fatalf("读取两轮挂账: %v", err)
+	}
+	if len(links) != 2 || links[0].Target != "" || links[1].Target != "" {
+		t.Fatalf("两轮挂账 = %+v，期望 target 均为空", links)
+	}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{Template: "feature-impl", Target: "linux-01"}); err == nil {
+		t.Fatal("空 target 工作分支切到远端必须拒绝")
+	} else {
+		for _, want := range []string{"工作分支只存在于创建它的那台机器", "git push", "--base"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("跨机拒绝应包含 %q，实得 %v", want, err)
+			}
+		}
+	}
+	if len(dispatched) != 2 {
+		t.Fatalf("跨机拒绝不得再次调用 Transport，实际 %d", len(dispatched))
+	}
+}
+
 // TestViaTemplateRejectsCrossTargetBeforeTransport 验证跨机时不静默掉回卡基线，
 // 且拒绝发生在 Transport/LinkTask/RecordDispatch 之前，不留下新的派发副作用。
 func TestViaTemplateRejectsCrossTargetBeforeTransport(t *testing.T) {

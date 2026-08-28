@@ -16,7 +16,7 @@ func TestMirrorSeesTargetsAddedAtRuntime(t *testing.T) {
 	s := newPoolWiringServer(t, cfg)
 	defer s.CloseTargets()
 
-	m := NewMirror(s.Pool(), nil, NewHub(), testLogger(t))
+	m := NewMirror(s.Pool(), nil, NewHub(), nil, testLogger(t))
 	if got := len(m.machineNames()); got != 0 {
 		t.Fatalf("初始应为 0 台，实得 %d", got)
 	}

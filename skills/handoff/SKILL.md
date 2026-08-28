@@ -443,6 +443,8 @@ handoff card wait <id> [--subtree] [--timeout 3h]
   节点名打错当场 404 / 400。**两条硬前提**：本机 agentd 必须活着（够不着就干净
   失败，不回落本地直跑）；CLI 与 agentd 必须**同批升级**（新 CLI 的覆盖项旧
   agentd 不认，每次派发都以「目标机未定」失败）。
+- 本机卡派发省略 `--target`；不要在 `targets` 登记指向本机 loopback 的自机。`--target 本机`
+  不是合法键；版本不一致时的「目标机未定」仍是版本 skew 文案，不表示本机 target 缺失。
 - 裁决落在卡的事件流（`review_verdict`）：pass 自动进下一列，fail 退回上一节点
   再来一轮；裁决解析失败或超轮打 `needs_human`，人工裁决后把结论 `note` 落卡，
   重派前 `card needs <id> --clear`。

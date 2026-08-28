@@ -73,6 +73,14 @@ func NewPool(conf func() *config.Config, log *slog.Logger) *Pool {
 	}
 }
 
+// NewLocal 创建当前 agentd 的本机客户端。
+//
+// 本机没有 target 名，也没有 relay 隧道可加入池；因此它不写入 Pool.entries，
+// 由调用方按本机服务生命周期持有。远端仍必须通过 Pool.For 取得并复用客户端。
+func NewLocal(addr, token string) *client.Client {
+	return client.New(addr, token)
+}
+
 // Names 返回当前配置里全部 target 名，已排序。
 //
 // 排序是为了让 UI 列表与日志顺序稳定：每次刷新都跳序会让人以为数据在变。

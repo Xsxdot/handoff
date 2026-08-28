@@ -39,6 +39,7 @@ import (
 
 	charterwebui "github.com/Xsxdot/charter/graph/webui"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -297,6 +298,57 @@ func (s *Server) SetManager(m *Manager) {
 // 返回的指针在调用方持有期间恒定：写入方永不原地修改 Config，只整体换新，
 // 因此读者看到的始终是一份自洽的配置，而不是改到一半的状态。
 func (s *Server) conf() *config.Config { return s.cfg.Load() }
+
+// IsSelfTarget 判断登记名是否指向本 agentd。
+//
+// 空串是本机的规范身份；非空登记名只有在活配置中存在、且其直连地址经
+// config.IsSelfTarget 判定为本机时才算本机。relay 与未知登记名都不是本机，
+// 后者交给 target client 池保留既有的未登记错误。
+func (s *Server) IsSelfTarget(name string) bool {
+	if name == "" {
+		return true
+	}
+	cfg := s.conf()
+	if cfg == nil {
+		return false
+	}
+	target, ok := cfg.Targets[name]
+	return ok && config.IsSelfTarget(cfg.Listen, target)
+}
+
+// CanonicalTarget 把本机身份归一为空串，保留远端与未知名称原值。
+//
+// 返回值会写入派发请求、任务挂账与快照；调用方不应继续使用归一前的登记名
+// 作为身份。空串与配置中指向本机的登记名共用本机 client。
+func (s *Server) CanonicalTarget(name string) string {
+	if s.IsSelfTarget(name) {
+		return ""
+	}
+	return name
+}
+
+// clientForTarget 按规范目标取得 agentd client。
+//
+// 空串或配置中指向本机的登记名返回本机直连 client；该 client 不由调用方关闭。
+// 远端和未知名称交给 target client 池，池保留既有的配置校验与 relay 生命周期。
+func (s *Server) clientForTarget(target string) (*client.Client, error) {
+	canonical := s.CanonicalTarget(target)
+	if canonical == "" {
+		cfg := s.conf()
+		if cfg == nil || cfg.Token == "" {
+			err := fmt.Errorf("本机客户端缺少配置或 token")
+			s.log.Error("取得本机客户端失败", "target", target,
+				"canonical_target", canonical, "cause", err)
+			return nil, err
+		}
+		s.log.Info("采用本机节点客户端", "target", target,
+			"canonical_target", canonical)
+		return targetclient.NewLocal(config.LocalDialAddr(cfg.Listen), cfg.Token), nil
+	}
+	s.log.Info("采用远端节点客户端", "target", target,
+		"canonical_target", canonical)
+	return s.pool.For(canonical)
+}
 
 // DisciplineMapping 返回当前配置里的 executor 名 → 纪律块文件名映射。
 //
