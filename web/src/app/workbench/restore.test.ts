@@ -68,16 +68,28 @@ describe('buildRestore', () => {
     expect(compatible.workbench.groups[0].columns[0].panes[0]!.content).toMatchObject({ sessionId: 'live', incompatible: true })
   })
 
-  it('未落盘 workspace session 加入全局布局，不改变 active/focus；无空 pane 时追加组', () => {
-    const original = { ...withSession('S1'), activeGroupId: 'g1' }
+  it('恢复孤儿不填现有空列，每个工作区 PTY 独立成组', () => {
+    const layout: Workbench = {
+      activeGroupId: 'g1',
+      groups: [{
+        id: 'g1', name: '组 1', autoName: true,
+        columns: [
+          { panes: [{ id: 't1', base: baseA, content: { kind: 'terminal', seq: 1, sessionId: 'LIVE' } }] },
+          { panes: [null] },
+        ],
+        sizes: [2, 1], focus: [0, 0],
+      }],
+    }
     const r = buildRestore({
-      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(original), updated_at: 1 }] }),
-      sessions: [session('S1'), session('S2', { base_path: '/repo/b' })], ...VIEW,
+      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(layout), updated_at: 1 }] }),
+      sessions: [session('LIVE'), session('S2', { base_path: '/repo/b' }), session('S3', { base_path: '/repo/c' })], ...VIEW,
     })
-    expect(r.workbench.activeGroupId).toBe('g1')
-    expect(r.workbench.groups).toHaveLength(2)
-    expect(r.workbench.groups[1].columns[0].panes[0]!.content).toMatchObject({ sessionId: 'S2' })
-    expect(r.adopted).toBe(1)
+    expect(r.adopted).toBe(2)
+    expect(r.workbench.groups).toHaveLength(3)
+    expect(r.workbench.groups[0].columns).toHaveLength(1)
+    expect(r.workbench.groups[1].columns[0].panes[0]?.content).toMatchObject({ sessionId: 'S2' })
+    expect(r.workbench.groups[2].columns[0].panes[0]?.content).toMatchObject({ sessionId: 'S3' })
+    expect(r.workbench.groups.every((group) => group.columns.every((column) => column.panes.some(Boolean)))).toBe(true)
   })
 
   it('home session 继续走 dock，没 dock 现场进入 dockOrphans', () => {

@@ -44,7 +44,7 @@ import { useHomeDock } from '../homedock/useHomeDock'
 import type { DockSnapshot } from '../homedock/dockPersist'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
-import { tabTitle, type TabContent } from '../workbench/tabs'
+import { nextTerminalSeq, tabTitle, type TabContent, type Workbench } from '../workbench/tabs'
 import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -61,6 +61,16 @@ import { DesktopTitleBar } from './DesktopTitleBar'
 // OverlayKind 是当前打开的弹层。同时只允许一个（spec §0）：两个叠在一起时
 // Esc 该关哪个会变得含糊。
 type OverlayKind = 'none' | 'board' | 'tickets'
+
+// focusedPaneBase 是顶部展示的单向投影：左树 selected base 仍服务于打开新内容，
+// 顶部则必须回答用户正在看的 pane 属于哪个目录。越界或空 pane 代表当前没有内容，
+// 不猜测 selected base，避免左栏点击后顶栏与中央画面脱节。
+function focusedPaneBase(workbench: Workbench): BaseDir | null {
+  const group = workbench.groups.find((candidate) => candidate.id === workbench.activeGroupId)
+  if (!group) return null
+  const [column, row] = group.focus
+  return group.columns[column]?.panes[row]?.base ?? null
+}
 
 export function Shell() {
   const tasksState = useTasks()
@@ -127,31 +137,6 @@ export function Shell() {
   const [scratchError, setScratchError] = useState('')
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
-  const split = wb.splitColumn
-  // ⌘D 分屏。
-  //
-  // 挂 window 而不是像 BlankTab 的 ⌘T 那样挂面板：那里必须区分「按的是哪一栏的
-  // 空白面板」，window 级会让一次 ⌘T 开出两个终端（BlankTab.tsx:75）。⌘D 没有这个
-  // 问题——它只作用于当前焦点组，全局唯一。
-  //
-  // **只认 metaKey，绝不接 ctrlKey**：Ctrl+D 在终端里是 EOF，绑上去等于让用户
-  // 没法退出 shell。这与 BlankTab.tsx:44 已确立的口径一致（本控制台只在 macOS 用，
-  // 将来上 Windows 时这两处要一起改，而且要另选一个不撞 EOF 的键）。
-  //
-  // 必须 preventDefault：macOS 浏览器的 ⌘D 是「加入书签」，不拦会在分屏的同时弹
-  // 书签面板。不排除输入框——⌘D 在 input/textarea 里没有默认语义，排除它只会让
-  // 「光标在 Composer 里时 ⌘D 不好使」变成一个要解释的例外。
-  //
-  // 冒泡阶段监听（第三参不传 true），与 ProjectTree 的 ⌘K 同一条让位次序。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.ctrlKey || e.key.toLowerCase() !== 'd') return
-      e.preventDefault()
-      split()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [split])
   // dockSnapshot 把悬浮窗的五份状态收成一个对象，供落盘层做差分。
   // 必须 useMemo：不 memo 的话每次渲染都是新引用，写回 effect 会每帧重排一次去抖
   const dockSnapshot: DockSnapshot = useMemo(
@@ -405,8 +390,10 @@ export function Shell() {
   const openDirectoryTerminal = (base: BaseDir) => {
     backToWorkbench()
     wb.select(base)
-    wb.openTerminal(base)
-    console.debug('shell.directory.terminal', { project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path })
+    wb.openOrFocus({ kind: 'terminal', seq: nextTerminalSeq(wb.wb) }, base)
+    console.debug('shell.directory.terminal.new_group', {
+      project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
+    })
   }
 
   const openWorkbenchItem = (item: { base: BaseDir; groupId: string; tabId: string }) => {
@@ -486,10 +473,11 @@ export function Shell() {
   // 交互，落在吞点击的区域里零代价，页面反而省下原来那一整行。
   // 浏览器里 desktop 为 false，这条不渲染，布局与从前一模一样。
   const desktop = isDesktopShell()
+  const focusedBase = focusedPaneBase(wb.wb)
 
   return (
     <div className="flex h-dvh flex-col bg-background">
-      {desktop && <DesktopTitleBar base={wb.base} />}
+      {desktop && <DesktopTitleBar base={focusedBase} />}
       <div className="flex min-h-0 flex-1">
       {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
           min-h-0 是必须的——flex 子项默认 min-height:auto，缺它内部的
@@ -541,7 +529,7 @@ export function Shell() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
-        {wb.base && !desktop && !fullPageRoute && <Breadcrumb base={wb.base} />}
+        {focusedBase && !desktop && !fullPageRoute && <Breadcrumb base={focusedBase} />}
         <main className="relative min-h-0 flex-1">
           {/* 工作台常驻。整页路由盖在上面，不走 path="*" 卸载——卸了 xterm
               会断 WS 再重放 1004h，OpenTUI/Grok 卡死（B270 的病在整页入口复发）。

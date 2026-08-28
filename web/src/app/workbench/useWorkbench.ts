@@ -7,8 +7,8 @@ import {
   EMPTY_WORKBENCH,
   activateGroup as activateGroupLayout,
   activateTab,
-  addColumn,
   appendRestoredTab,
+  closePane as closePaneLayout,
   closeGroup as closeGroupLayout,
   closeTab,
   createGroup,
@@ -52,8 +52,8 @@ export interface WorkbenchApi {
   setContent: (groupId: string, tabId: string, content: TabContent) => void
   addGroup: () => void
   closeGroup: (groupId: string) => void
-  splitColumn: (groupId?: string) => void
   place: (source: WorkbenchSource, target: PaneTarget) => void
+  closePane: (groupId: string, column: number, row: number) => void
   closeById: (tabId: string) => void
   resize: (groupId: string, dividerIndex: number, delta: number, minRatio: number) => void
   restoreTerminal: (base: BaseDir, sessionId: string, incompatible?: boolean) => void
@@ -116,9 +116,11 @@ export function useWorkbench(): WorkbenchApi {
   const setContent = useCallback((groupId: string, tabId: string, content: TabContent) => setWb((current) => setTabContent(current, groupId, tabId, content)), [])
   const addGroup = useCallback(() => setWb((current) => createGroup(current)), [])
   const closeGroup = useCallback((groupId: string) => setWb((current) => closeGroupLayout(current, groupId)), [])
-  const splitColumn = useCallback((groupId?: string) => setWb((current) => addColumn(current, groupId)), [])
   const place = useCallback((source: WorkbenchSource, target: PaneTarget) => {
     setWb((current) => placeSource(current, source, target))
+  }, [])
+  const closePane = useCallback((groupId: string, column: number, row: number) => {
+    setWb((current) => closePaneLayout(current, groupId, column, row))
   }, [])
   const closeById = useCallback((tabId: string) => {
     setWb((current) => {
@@ -138,7 +140,7 @@ export function useWorkbench(): WorkbenchApi {
 
   return {
     base, wb, select, open, openOrFocus, openTerminal, close, activate, activateGroup,
-    setContent, addGroup, closeGroup, splitColumn, place, closeById, resize, restoreTerminal,
+    setContent, addGroup, closeGroup, place, closePane, closeById, resize, restoreTerminal,
     hydrate, openedItems: openedWorkbenchItems(wb),
   }
 }

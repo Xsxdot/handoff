@@ -38,7 +38,9 @@ describe('WorkbenchPage', () => {
     act(() => hook.result.current.select(local))
     act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
     const groupId = hook.result.current.wb.activeGroupId
-    act(() => hook.result.current.splitColumn(groupId))
+    act(() => hook.result.current.place({ kind: 'new', base: local, content: { kind: 'tui', taskId: 'second' } }, {
+      groupId, column: 0, row: 0, zone: 'right',
+    }))
     const view = render(page(hook.result.current))
     const panes = view.container.querySelectorAll('[data-testid="workbench-pane"]')
     expect(panes.length).toBe(2)
@@ -167,6 +169,41 @@ describe('WorkbenchPage', () => {
       project: 'handoff', machine: '', path: '/local',
     }))
     warn.mockRestore()
+  })
+
+  it('拖到右半区显示半区预览并通过 place 增加列', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane, 400, 400)
+    const dataTransfer = {
+      types: [DRAG_TASK_MIME],
+      getData: (key: string) => key === DRAG_TASK_MIME ? 'TASK-R' : JSON.stringify(remote),
+      setData: vi.fn(), effectAllowed: '', dropEffect: '',
+    }
+    const dragOver = createEvent.dragOver(pane, { dataTransfer })
+    Object.defineProperty(dragOver, 'clientX', { value: 360 })
+    Object.defineProperty(dragOver, 'clientY', { value: 200 })
+    fireEvent(pane, dragOver)
+    expect(view.getByTestId('drop-preview')).toHaveAttribute('data-zone', 'right')
+    expect(view.getByTestId('drop-preview')).toHaveClass('w-1/2')
+    const drop = createEvent.drop(pane, { dataTransfer })
+    Object.defineProperty(drop, 'clientX', { value: 360 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(pane, drop)
+    expect(hook.result.current.wb.groups[0].columns).toHaveLength(2)
+    expect(hook.result.current.wb.groups[0].columns[1].panes[0]).toMatchObject({
+      base: remote, content: { kind: 'tui', taskId: 'TASK-R' },
+    })
+  })
+
+  it('空 pane 的关闭按钮穿过 WorkbenchPage 并删除该格', () => {
+    const hook = renderHook(() => useWorkbench())
+    const view = render(page(hook.result.current))
+    fireEvent.click(view.getByRole('button', { name: '关闭 空窗格' }))
+    expect(hook.result.current.wb.groups).toHaveLength(1)
+    expect(hook.result.current.wb.groups[0].columns).toEqual([{ panes: [null] }])
   })
 
   it.each<[string, string]>([

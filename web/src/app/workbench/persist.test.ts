@@ -53,6 +53,44 @@ describe('encodeWorkbench / decodeWorkbench', () => {
     expect(panes[1]!.content).toEqual({ kind: 'file', rel: 'same.ts' })
   })
 
+  it('解码先压缩空列空组，并区分缺失字段与零/空值', () => {
+    const source = {
+      v: PERSIST_VERSION,
+      wb: {
+        activeGroupId: 'g1',
+        groups: [
+          {
+            id: 'g1', name: '一组', autoName: true,
+            columns: [
+              { panes: [null] },
+              { panes: [{ id: 't1', base: { key: '', kind: 'workspace', path: '', label: '', projectName: '', machine: '' }, content: { kind: 'terminal', seq: 0, sessionId: '', rel: '', launcher: '' } }] },
+              { panes: [null] },
+            ],
+            sizes: [2, 3, 4], focus: [1, 0],
+          },
+          { id: 'g2', name: '空组', autoName: true, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] },
+        ],
+      },
+    }
+    const decoded = decodeWorkbench(JSON.stringify(source))!
+    expect(decoded.groups).toHaveLength(1)
+    expect(decoded.groups[0].columns).toHaveLength(1)
+    expect(decoded.groups[0].sizes).toEqual([3])
+    expect(decoded.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'terminal', seq: 0, sessionId: '', rel: '', launcher: '' })
+    expect(decoded.groups[0].columns[0].panes[0]?.base).toEqual({ key: '', kind: 'workspace', path: '', label: '', projectName: '', machine: '' })
+  })
+
+  it('所有解码后的组都为空时回到唯一空组', () => {
+    const raw = encodeWorkbench({
+      activeGroupId: 'g2',
+      groups: [
+        { id: 'g1', name: '一组', autoName: true, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] },
+        { id: 'g2', name: '二组', autoName: false, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] },
+      ],
+    })
+    expect(decodeWorkbench(raw)).toEqual(EMPTY_WORKBENCH)
+  })
+
   it.each([
     JSON.stringify({ v: 1 }),
     JSON.stringify({ v: PERSIST_VERSION, wb: { groups: [], activeGroupId: 'g1' } }),

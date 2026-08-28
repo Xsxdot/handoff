@@ -2,7 +2,7 @@
 //
 // 职责：定义 group/column/pane/tab 的身份、去重与布局迁移；所有写入函数都复制输入。
 // 边界：不依赖 React、API 或 DOM。每个 Tab 自带 BaseDir，以支持跨项目同组与精确去重。
-// 不变式：至少一个 group；每个 group 至少一列；每列一或两格；空列只有一个 null；
+// 不变式：至少一个 group；有内容的 group 每列一或两格；空列只作为唯一空组哨兵保留；
 // sizes 与 columns 等长且为正；focus 与 activeGroupId 始终指向现存位置。
 
 export interface BaseDir {
@@ -113,6 +113,41 @@ function cloneWorkbench(wb: Workbench): Workbench {
 
 function emptyGroup(id: string, name: string, autoName: boolean): TabGroup {
   return { id, name, autoName, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] }
+}
+
+/**
+ * 压缩合法布局中的空列与空组，并修正压缩后的焦点。
+ * 参数：`wb` 为已通过持久化校验或模型写入的 Workbench。
+ * 返回：新的、可直接用于渲染与持久化的布局；不修改输入。
+ * 注意：唯一空组是同步层可识别的哨兵，只有布局完全为空时保留它。
+ */
+export function normalizeWorkbench(wb: Workbench): Workbench {
+  const groups = wb.groups.flatMap((group) => {
+    const kept = group.columns
+      .map((column, index) => ({ column, index }))
+      .filter(({ column }) => column.panes.some((pane) => pane !== null))
+    if (kept.length === 0) return []
+    const focusEntry = kept.find(({ index }) => index >= group.focus[0]) ?? kept[kept.length - 1]
+    const focusColumn = kept.indexOf(focusEntry)
+    const columns = kept.map(({ column }) => ({
+      panes: column.panes.map((tab) => tab ? cloneTab(tab) : null),
+    }))
+    return [{
+      id: group.id,
+      name: group.name,
+      autoName: group.autoName,
+      columns,
+      sizes: kept.map(({ index }) => group.sizes[index]),
+      focus: [focusColumn, Math.min(group.focus[1], columns[focusColumn].panes.length - 1)] as [number, number],
+    }]
+  })
+  if (groups.length === 0) return cloneWorkbench(EMPTY_WORKBENCH)
+  return {
+    groups,
+    activeGroupId: groups.some((group) => group.id === wb.activeGroupId)
+      ? wb.activeGroupId
+      : groups[0].id,
+  }
 }
 
 function groupIndex(wb: Workbench, groupId: string): number {
@@ -231,18 +266,57 @@ export function openOrFocus(wb: Workbench, base: BaseDir, content: TabContent): 
   return next
 }
 
-/** 关闭一个 pane 中的 tab；group 和 column 是显式布局，不因空了而自动删除。 */
+/**
+ * 关闭指定坐标的 pane，并按空列、空组的统一生命周期收缩布局。
+ * 参数：`groupId`、`column`、`row` 是渲染层声明的全局布局坐标。
+ * 返回：关闭后的新布局；目标非法时返回原引用并记录上下文 warning。
+ */
+export function closePane(wb: Workbench, groupId: string, column: number, row: number): Workbench {
+  const groupIndexValue = groupIndex(wb, groupId)
+  const currentGroup = groupIndexValue < 0 ? undefined : wb.groups[groupIndexValue]
+  if (!currentGroup || column < 0 || column >= currentGroup.columns.length ||
+      row < 0 || row >= currentGroup.columns[column].panes.length) {
+    warnInvalid('workbench.close.invalid_pane', { groupId, column, row, zone: 'center' })
+    return wb
+  }
+  const next = cloneWorkbench(wb)
+  const group = next.groups[groupIndexValue]
+  const oldFocus = [...group.focus] as [number, number]
+  group.columns[column].panes.splice(row, 1)
+  if (group.columns[column].panes.length === 0) {
+    group.columns.splice(column, 1)
+    group.sizes.splice(column, 1)
+  }
+  console.debug('workbench.close.pane', { groupId, column, row })
+  if (group.columns.length === 0 || !group.columns.some((item) => item.panes.some((pane) => pane !== null))) {
+    if (next.groups.length === 1) {
+      next.groups[0] = emptyGroup(group.id, group.name, group.autoName)
+      next.activeGroupId = group.id
+      console.debug('workbench.close.reset_empty_group', { groupId })
+      return next
+    }
+    next.groups.splice(groupIndexValue, 1)
+    if (next.activeGroupId === groupId) {
+      next.activeGroupId = next.groups[Math.min(groupIndexValue, next.groups.length - 1)].id
+    }
+    console.debug('workbench.close.remove_empty_group', { groupId })
+    return normalizeWorkbench(next)
+  }
+  const focusColumn = oldFocus[0] > column
+    ? oldFocus[0] - 1
+    : Math.min(oldFocus[0], group.columns.length - 1)
+  group.focus = [focusColumn, Math.min(oldFocus[1], group.columns[focusColumn].panes.length - 1)]
+  return next
+}
+
+/** 关闭指定 group 内的 tab；找到后复用坐标关闭的收列/收组生命周期。 */
 export function closeTab(wb: Workbench, groupId: string, tabId: string): Workbench {
   const loc = locationOf(wb, tabId, groupId)
-  if (loc === null) return wb
-  const next = cloneWorkbench(wb)
-  const group = next.groups[loc.group]
-  group.columns[loc.column].panes[loc.row] = null
-  if (group.columns[loc.column].panes.length === 2 && group.columns[loc.column].panes.every((tab) => tab === null)) {
-    group.columns[loc.column].panes = [null]
+  if (loc === null) {
+    console.warn('workbench.close.invalid_tab', { groupId, tabId, reason: 'tab was not found in group' })
+    return wb
   }
-  group.focus = [loc.column, Math.min(loc.row, group.columns[loc.column].panes.length - 1)]
-  return next
+  return closePane(wb, groupId, loc.column, loc.row)
 }
 
 /** 聚焦指定 tab 所在的 group/cell；非法 id 返回原对象并记录上下文。 */
@@ -411,23 +485,24 @@ export function placeSource(wb: Workbench, source: WorkbenchSource, target: Pane
   return next
 }
 
-/** 将恢复的会话放入第一个空 pane；无空 pane 时追加 group，但保留 active/focus。 */
+/** 将恢复的会话加入独立 group；恢复前的空列不会成为孤儿会话的隐式归属。 */
 export function appendRestoredTab(wb: Workbench, base: BaseDir, content: TabContent): Workbench {
-  const next = cloneWorkbench(wb)
-  let groupIndexValue = 0
-  let slot: [number, number] | null = null
-  for (let gi = 0; gi < next.groups.length && slot === null; gi++) {
-    const found = firstEmpty(next.groups[gi])
-    if (found) { groupIndexValue = gi; slot = found }
+  const next = normalizeWorkbench(wb)
+  const tab: Tab = { id: nextId(next, 't'), base: { ...base }, content: { ...content } as TabContent }
+  if (isEmptyWorkbench(next) && next.groups.length === 1) {
+    const group = next.groups[0]
+    group.columns = [{ panes: [tab] }]
+    group.sizes = [1]
+    group.focus = [0, 0]
+    console.debug('workbench.restore.fill_empty_group', { groupId: group.id, sessionId: content.kind === 'terminal' ? content.sessionId : undefined })
+    return next
   }
-  if (slot === null) {
-    const id = nextId(next, 'g')
-    next.groups.push(emptyGroup(id, `组 ${next.groups.length + 1}`, true))
-    groupIndexValue = next.groups.length - 1
-    slot = [0, 0]
-  }
-  const group = next.groups[groupIndexValue]
-  group.columns[slot[0]].panes[slot[1]] = { id: nextId(next, 't'), base: { ...base }, content: { ...content } as TabContent }
+  const id = nextId(next, 'g')
+  next.groups.push({
+    id, name: `组 ${next.groups.length + 1}`, autoName: true,
+    columns: [{ panes: [tab] }], sizes: [1], focus: [0, 0],
+  })
+  console.debug('workbench.restore.new_group', { groupId: id, sessionId: content.kind === 'terminal' ? content.sessionId : undefined })
   return next
 }
 

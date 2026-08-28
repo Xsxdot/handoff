@@ -4,6 +4,7 @@ import {
   MIN_PANE_PX,
   addColumn,
   availablePaneWidth,
+  closePane,
   closeGroup,
   closeTab,
   createGroup,
@@ -144,12 +145,37 @@ describe('placeSource', () => {
 })
 
 describe('group lifecycle and projection', () => {
-  it('closeGroup 最后一组重置为空组，清 pane 不自动关组', () => {
-    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
+  it('关闭 pane 收列、收组，唯一组只重置为空组', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
     const groupId = wb.activeGroupId
+    wb = addColumn(wb)
+    wb = placeSource(wb, { kind: 'new', base: aim, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId, column: 1, row: 0, zone: 'center',
+    })
     wb = closeTab(wb, groupId, 't1')
+    expect(wb.groups[0].columns).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes[0]).toMatchObject({ content: { kind: 'tui', taskId: 'B' } })
+    wb = closeTab(wb, groupId, 't2')
     expect(wb.groups).toHaveLength(1)
     expect(wb.groups[0].columns[0].panes).toEqual([null])
+    expect(wb.activeGroupId).toBe(groupId)
+  })
+
+  it('空 pane 也可关，关闭非法坐标不改变布局', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    wb = placeSource(wb, { kind: 'new', base: aim, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId: 'g1', column: 0, row: 0, zone: 'bottom',
+    })
+    wb = closePane(wb, 'g1', 0, 1)
+    expect(wb.groups[0].columns[0].panes).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'tui', taskId: 'A' })
+    const before = wb
+    expect(closePane(wb, 'g1', 9, 0)).toBe(before)
+  })
+
+  it('closeGroup 最后一组重置为空组', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
+    const groupId = wb.activeGroupId
     wb = closeGroup(wb, groupId)
     expect(wb.groups).toHaveLength(1)
     expect(wb.activeGroupId).toBe('g1')

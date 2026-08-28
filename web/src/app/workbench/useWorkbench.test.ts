@@ -21,10 +21,9 @@ describe('useWorkbench', () => {
     act(() => result.current.select(a))
     act(() => result.current.open({ kind: 'tui', taskId: 'local' }))
     const groupId = result.current.wb.activeGroupId
-    act(() => result.current.splitColumn(groupId))
     act(() => result.current.place({
       kind: 'new', base: b, content: { kind: 'terminal', seq: 1, rel: '' },
-    }, { groupId, column: 1, row: 0, zone: 'center' }))
+    }, { groupId, column: 0, row: 0, zone: 'right' }))
     act(() => result.current.select(b))
     expect(result.current.wb.activeGroupId).toBe(groupId)
     expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({
@@ -64,18 +63,32 @@ describe('useWorkbench', () => {
     expect(panes[1]?.base.kind).toBe('home')
   })
 
-  it('closeById 反查全局坐标，resize 与 splitColumn 只作用于目标 group', () => {
+  it('closePane 暴露空 pane 关闭并委托统一布局生命周期', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(a))
+    act(() => result.current.open({ kind: 'tui', taskId: 'A' }, a))
+    act(() => result.current.place({ kind: 'new', base: b, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId: 'g1', column: 0, row: 0, zone: 'bottom',
+    }))
+    act(() => result.current.closePane('g1', 0, 1))
+    expect(result.current.wb.groups[0].columns[0].panes).toHaveLength(1)
+    expect(result.current.wb.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'tui', taskId: 'A' })
+  })
+
+  it('closeById 反查全局坐标，resize 只作用于目标 group', () => {
     const { result } = renderHook(() => useWorkbench())
     act(() => result.current.select(a))
     act(() => result.current.open({ kind: 'file', rel: 'a.ts' }))
     const groupId = result.current.wb.activeGroupId
-    act(() => result.current.splitColumn(groupId))
-    act(() => result.current.open({ kind: 'file', rel: 'b.ts' }, undefined, groupId))
+    act(() => result.current.place({ kind: 'new', base: a, content: { kind: 'file', rel: 'b.ts' } }, {
+      groupId, column: 0, row: 0, zone: 'right',
+    }))
     act(() => result.current.resize(groupId, 0, 0.1, 0.2))
+    expect(result.current.wb.groups[0].sizes[0]).toBeGreaterThan(result.current.wb.groups[0].sizes[1])
     const id = result.current.wb.groups[0].columns[0].panes[0]!.id
     act(() => result.current.closeById(id))
-    expect(result.current.wb.groups[0].columns[0].panes[0]).toBeNull()
-    expect(result.current.wb.groups[0].sizes[0]).toBeGreaterThan(result.current.wb.groups[0].sizes[1])
+    expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({ content: { kind: 'file', rel: 'b.ts' } })
+    expect(result.current.wb.groups[0].sizes).toEqual([0.8])
   })
 
   it('restoreTerminal 不 select、不抢 active group，hydrate 整体替换布局', () => {

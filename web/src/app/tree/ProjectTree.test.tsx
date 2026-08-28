@@ -5,7 +5,7 @@ import type { BaseDir } from '../workbench/useWorkbench'
 import type { OpenedWorkbenchItem } from '../workbench/tabs'
 import { ProjectTree } from './ProjectTree'
 import { __resetTreePrefsForTest } from './useTreePrefs'
-import { DRAG_TAB_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 beforeEach(() => {
   localStorage.clear()
@@ -241,11 +241,21 @@ describe('ProjectTree', () => {
     ]
     render(<ProjectTree {...props({ openedItems: opened })} />)
 
-    expect(screen.getByTestId('task-avatar-terminal')).toBeInTheDocument()
-    expect(screen.getByTestId('task-avatar-file')).toBeInTheDocument()
-    expect(screen.getByTestId('task-avatar-tui')).toBeInTheDocument()
+    expect(screen.getByTestId('task-avatar-terminal').querySelector('[data-testid="task-avatar-icon"]')).not.toBeNull()
+    expect(screen.getByTestId('task-avatar-file').querySelector('[data-testid="task-avatar-icon"]')).not.toBeNull()
+    expect(screen.getByTestId('task-avatar-tui').querySelector('[data-testid="task-avatar-icon"]')).not.toBeNull()
     expect(screen.getAllByTestId('task-machine')).toHaveLength(3)
     expect(screen.queryByTestId('task-row-type-icon')).toBeNull()
+
+    const taskRow = screen.getAllByTestId('task-row').find((row) => row.textContent?.includes('重构工单通道'))!
+    expect(taskRow).toHaveAttribute('draggable', 'true')
+    const down = createEvent.mouseDown(taskRow, { bubbles: true, cancelable: true })
+    fireEvent(taskRow, down)
+    expect(down.defaultPrevented).toBe(false)
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '' }
+    fireEvent.dragStart(taskRow, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_TASK_MIME, 'T1')
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_BASE_MIME, expect.any(String))
   })
 
   it('已打开终端和文件行生产可投放到中央的 tab MIME', () => {
@@ -354,6 +364,12 @@ describe('ProjectTree', () => {
     )
     expect(screen.getByText('未归属')).toBeInTheDocument()
     expect(screen.getByText('游离任务')).toBeInTheDocument()
+    expect(screen.getByTestId('task-avatar-tui')).toBeInTheDocument()
+    expect(screen.getByTestId('task-status')).toBeInTheDocument()
+    expect(screen.getByTestId('task-machine')).toHaveTextContent('本机')
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '' }
+    fireEvent.dragStart(screen.getByText('游离任务').closest('button')!, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_BASE_MIME, 'null')
   })
 
   it('点项目行只展开折叠，不再写筛选', () => {
@@ -401,12 +417,12 @@ describe('ProjectTree', () => {
     expect(onOpenTask).toHaveBeenCalledWith(expect.objectContaining({ key: '/w/b2-b3' }), 'T1')
   })
 
-  it('任务行 mousedown 不抢焦点——否则终端 TUI 会先收到失焦再跳走', () => {
+  it('任务行 mousedown 不阻断原生拖放', () => {
     render(<ProjectTree {...props()} />)
     const row = screen.getByRole('button', { name: /重构工单通道/ })
     const ev = createEvent.mouseDown(row)
     fireEvent(row, ev)
-    expect(ev.defaultPrevented).toBe(true)
+    expect(ev.defaultPrevented).toBe(false)
   })
 
   it('work_dir 为空的任务挂到主目录（原地模式）', () => {

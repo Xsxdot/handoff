@@ -32,7 +32,7 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, ChevronRight, CircleUserRound, FileText, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow,
+  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow,
 } from 'lucide-react'
 import { filterTree } from './search'
 import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
@@ -127,16 +127,39 @@ function taskRowKind(content: OpenedWorkbenchItem['content']): TaskRowKind | nul
   }
 }
 
+// TaskTypeIcon 是方案 2 的类型语义图标；TaskAvatar 的状态点是运行态，两者不能用
+// 一个通用头像混淆。inline SVG 不依赖图标库的圆钮外观，MIME payload 则是跨组件边界。
+function TaskTypeIcon({ kind }: { kind: TaskRowKind }) {
+  if (kind === 'terminal') return (
+    <svg data-testid="task-avatar-icon" viewBox="0 0 16 16" aria-hidden="true" className="size-3.5">
+      <rect x="1.5" y="3" width="13" height="10" rx="2" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M4.5 7.5 L7 9 L4.5 10.5" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M8.5 10.5h3" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+  if (kind === 'file') return (
+    <svg data-testid="task-avatar-icon" viewBox="0 0 16 16" aria-hidden="true" className="size-3.5">
+      <path d="M5 2.5h4.5L12.5 6v7.5H5z" fill="none" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M9.5 2.5V6h3" fill="none" stroke="currentColor" strokeWidth="1.3" />
+    </svg>
+  )
+  return (
+    <svg data-testid="task-avatar-icon" viewBox="0 0 16 16" aria-hidden="true" className="size-3.5">
+      <circle cx="8" cy="6" r="2.4" fill="currentColor" />
+      <path d="M4 13c0-2.2 1.8-4 4-4s4 1.8 4 4" fill="none" stroke="currentColor" strokeWidth="1.4" />
+    </svg>
+  )
+}
+
 // TaskAvatar 是方案 2 的左侧头像：类型图标在头像内，状态点固定右下角。
-// 参数/返回：kind 决定共用的类型图标，tone 决定状态圆点；不负责任务点击。
+// 参数/返回：kind 决定类型图标，tone 决定状态圆点；不负责任务点击。
 function TaskAvatar({ kind, tone }: { kind: TaskRowKind; tone: StateTone }) {
-  const Icon = kind === 'terminal' ? Terminal : kind === 'file' ? FileText : CircleUserRound
   return (
     <span
       data-testid={`task-avatar-${kind}`}
       className="relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
     >
-      <Icon className="size-3.5" aria-hidden />
+      <TaskTypeIcon kind={kind} />
       <span data-testid="task-status" className="absolute -bottom-0.5 -right-0.5 rounded-full border-2 border-sidebar">
         <StateDot tone={tone} />
       </span>
@@ -586,16 +609,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             type="button"
             data-testid="task-row"
             draggable={taskId !== undefined || openedTab !== undefined}
-            onMouseDown={(e) => e.preventDefault()}
             onDragStart={taskId === undefined && openedTab === undefined ? undefined : (e) => {
               if (openedTab !== undefined) {
                 e.dataTransfer.setData(DRAG_TAB_MIME, JSON.stringify(openedTab))
                 e.dataTransfer.effectAllowed = 'move'
+                console.debug('project_tree.drag.tab', { tabId: openedTab.tabId, groupId: openedTab.groupId, project: base?.projectName ?? '', machine, path: base?.path ?? '' })
                 return
               }
               e.dataTransfer.setData(DRAG_TASK_MIME, taskId!)
               e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
               e.dataTransfer.effectAllowed = 'copy'
+              console.debug('project_tree.drag.task', { taskId, project: base?.projectName ?? '', machine, path: base?.path ?? '' })
             }}
             onClick={onClick}
             title={label}
@@ -916,20 +940,23 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             <button
               key={t.id}
               type="button"
+              data-testid="task-row"
               draggable
-              onMouseDown={(e) => e.preventDefault()}
               onDragStart={(e) => {
                 e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
                 e.dataTransfer.setData(DRAG_BASE_MIME, 'null')
                 e.dataTransfer.effectAllowed = 'copy'
+                console.debug('project_tree.drag.task', { taskId: t.id, project: '', machine: t.machine, path: '' })
               }}
               onClick={() => onOpenTask(null, t.id)}
               className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
               style={{ paddingLeft: 8 + 48 }}
             >
-              <span className="size-4 shrink-0" />
-              <StateDot tone={stateTone(t.state)} />
+              <TaskAvatar kind="tui" tone={stateTone(t.state)} />
               <span className="min-w-0 flex-1 truncate">{taskName(t)}</span>
+              <span data-testid="task-machine" className="ml-auto max-w-[72px] shrink-0 truncate text-[11px] text-muted-foreground">
+                {machineLabel(t.machine)}
+              </span>
             </button>
           ))}
           {filtered.unownedNames.map((name) => (

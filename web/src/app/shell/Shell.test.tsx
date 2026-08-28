@@ -4,12 +4,12 @@
 // 文件树列举、任务详情与 diff 都按固定 fixture 返回。
 //
 // 断言的是「三栏之间怎么接」：选中目录 → 右栏出现 + 面包屑；点任务/文件 → 中央
-// 开对应 tab；切目录 tab 组各自保持；分屏把中央切成两组；/settings 与 /machines
+// 开对应 tab；切目录 tab 组各自保持；拖放把中央切列；/settings 与 /machines
 // 的路由行为；/tasks/:id 深链承接。
 //
 // 注意：本文件依赖 Task 12-15 的组件（BoardOverlay / TicketsOverlay /
 // useGlobalTickets / SettingsPage），在那些任务落地前无法运行，属预期的全期红。
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
@@ -220,6 +220,17 @@ async function openBranch() {
   fireEvent.click(await sidebar.findByText('integration/b2-b3'))
 }
 
+function setPaneRect(element: Element, width = 400, height = 400) {
+  element.getBoundingClientRect = () => ({ left: 0, top: 0, right: width, bottom: height, width, height, x: 0, y: 0, toJSON: () => ({}) }) as DOMRect
+}
+
+function dropAt(element: Element, dataTransfer: { types: string[]; getData: (type: string) => string; setData: (type: string, value: string) => void }, clientX = 360, clientY = 200) {
+  const event = createEvent.drop(element, { dataTransfer: dataTransfer as unknown as DataTransfer })
+  Object.defineProperty(event, 'clientX', { value: clientX })
+  Object.defineProperty(event, 'clientY', { value: clientY })
+  fireEvent(element, event)
+}
+
 describe('Shell 三栏外框', () => {
   it('未选中目录时右栏文件树不渲染，中央是全局空态', async () => {
     renderShell()
@@ -228,20 +239,44 @@ describe('Shell 三栏外框', () => {
     expect(screen.getByText('请从左栏选择项目或目录')).toBeInTheDocument()
   })
 
-  it('选中目录后右栏出现、面包屑显示 项目 / 开发机 / 目录', async () => {
+  it('选中目录后右栏出现，但没有焦点 pane 时不渲染面包屑', async () => {
     renderShell()
     await openBranch()
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
-    const crumb = screen.getByLabelText('当前位置')
-    expect(crumb).toHaveTextContent('handoff')
-    expect(crumb).toHaveTextContent('本机')
-    expect(crumb).toHaveTextContent('integration/b2-b3')
+    expect(screen.queryByLabelText('当前位置')).toBeNull()
+  })
+
+  it('左栏开目录终端创建新组，焦点面包屑跟当前 pane 而非 selected tree', async () => {
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('重构工单通道'))
+    const beforeTabs = screen.getAllByRole('tab').length
+    const project = await screen.findByTestId('project-node-p1')
+    fireEvent.click(within(project).getByRole('button', { name: '打开主目录终端' }))
+    await waitFor(() => expect(screen.getAllByRole('tab')).toHaveLength(beforeTabs + 1))
+    expect(screen.getByLabelText('当前位置')).toHaveTextContent('主目录')
+    fireEvent.click(within(project).getByText('integration/b2-b3'))
+    expect(screen.getByLabelText('当前位置')).toHaveTextContent('主目录')
+    expect(screen.getByLabelText('当前位置')).not.toHaveTextContent('integration/b2-b3')
   })
 
   it('点左栏任务在中央开 TUI tab', async () => {
     renderShell()
     fireEvent.click(await screen.findByText('重构工单通道'))
     await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
+  })
+
+  it('再次点左栏已打开任务只聚焦原组，不新增标签组', async () => {
+    renderShell()
+    fireEvent.click(await screen.findByText('重构工单通道'))
+    const sidebar = within(screen.getByRole('complementary'))
+    await waitFor(() => expect(sidebar.getByText('TUI · T1')).toBeInTheDocument())
+    const groups = screen.getAllByRole('tab')
+    expect(groups).toHaveLength(2)
+    fireEvent.click(screen.getByRole('tab', { name: '组 1' }))
+    fireEvent.click(sidebar.getByText('TUI · T1'))
+    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toHaveAttribute('aria-selected', 'true'))
+    expect(screen.getAllByRole('tab')).toHaveLength(2)
   })
 
   it('左栏任务的 DataTransfer 穿过 Shell 到同一组的中央分屏并保留项目机器', async () => {
@@ -276,7 +311,6 @@ describe('Shell 三栏外框', () => {
     })
     renderShell()
     fireEvent.click(await screen.findByText('重构工单通道'))
-    fireEvent.click(await screen.findByRole('button', { name: '增加分屏' }))
 
     const values = new Map<string, string>()
     const dataTransfer = {
@@ -294,8 +328,9 @@ describe('Shell 三栏外框', () => {
     expect(dataTransfer.types).toEqual(expect.arrayContaining([DRAG_TASK_MIME, DRAG_BASE_MIME]))
     expect(JSON.parse(values.get(DRAG_BASE_MIME)!)).toMatchObject({ projectName: 'aim', machine: 'linux-01', path: '/srv/aim' })
 
-    const target = screen.getAllByTestId('workbench-pane')[1]
-    fireEvent.drop(target, { dataTransfer })
+    const target = screen.getAllByTestId('workbench-pane')[0]
+    setPaneRect(target)
+    dropAt(target, dataTransfer)
     await waitFor(() => expect(screen.getByText('aim · linux-01')).toBeInTheDocument())
     expect(screen.getAllByRole('tab')).toHaveLength(2)
   })
@@ -320,7 +355,6 @@ describe('Shell 三栏外框', () => {
     })
     renderShell()
     fireEvent.click(await screen.findByText('重构工单通道'))
-    fireEvent.click(await screen.findByRole('button', { name: '增加分屏' }))
 
     const values = new Map<string, string>()
     const dataTransfer = {
@@ -334,12 +368,16 @@ describe('Shell 三栏外框', () => {
       dropEffect: '',
     }
     const remote = within(screen.getByTestId('project-node-p2'))
-    const target = () => screen.getAllByTestId('workbench-pane')[1]
+    const target = () => {
+      const pane = screen.getAllByTestId('workbench-pane')[screen.getAllByTestId('workbench-pane').length - 1]
+      setPaneRect(pane)
+      return pane
+    }
     const dragToPane = (source: HTMLElement) => {
       values.clear()
       dataTransfer.types.length = 0
       fireEvent.dragStart(source, { dataTransfer })
-      fireEvent.drop(target(), { dataTransfer })
+      dropAt(target(), dataTransfer)
     }
 
     dragToPane(remote.getByTestId('machine-row'))
@@ -454,34 +492,26 @@ describe('Shell 三栏外框', () => {
     fireEvent.click(screen.getByText('主目录'))
     await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
 
-    fireEvent.click(screen.getByText('integration/b2-b3'))
+    fireEvent.click(within(screen.getAllByRole('complementary')[0]).getByText('integration/b2-b3'))
     await waitFor(() => expect(screen.getByRole('button', { name: /关闭 go.mod/ })).toBeInTheDocument())
   })
 
-  it('tab 条右端的分屏按钮把中央分成两组', async () => {
+  it('中央不再渲染手动分屏按钮，布局只由拖放产生', async () => {
     renderShell()
     await openBranch()
-    fireEvent.click(screen.getByRole('button', { name: '增加分屏' }))
-    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(2))
+    expect(screen.queryByRole('button', { name: '增加分屏' })).toBeNull()
+    expect(screen.getAllByTestId('workbench-pane')).toHaveLength(1)
   })
 
-  it('连点两次分屏得到三栏，按钮随即全部 disabled', async () => {
-    renderShell()
-    await openBranch()
-    fireEvent.click(screen.getByRole('button', { name: '增加分屏' }))
-    fireEvent.click(screen.getByRole('button', { name: '增加分屏' }))
-    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(3))
-  })
-
-  it('⌘D 分屏，并拦掉浏览器的「加入书签」', async () => {
+  it('⌘D 不再分屏，也不拦掉浏览器的「加入书签」', async () => {
     renderShell()
     await openBranch()
 
     const ev = new KeyboardEvent('keydown', { key: 'd', metaKey: true, bubbles: true, cancelable: true })
     window.dispatchEvent(ev)
 
-    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(2))
-    expect(ev.defaultPrevented).toBe(true)
+    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(1))
+    expect(ev.defaultPrevented).toBe(false)
   })
 
   it('Ctrl+D 不分屏：终端里那是 EOF，抢走会毁掉终端', async () => {
@@ -658,6 +688,7 @@ describe('Shell 三栏外框', () => {
   it('/codegraph 同时隐藏 Breadcrumb/FileTree，回到工作台后恢复', async () => {
     renderShell()
     await openBranch()
+    fireEvent.click(await screen.findByText('重构工单通道'))
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
     expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
 

@@ -1,6 +1,6 @@
 // WorkbenchPage.tsx —— 全局 group 下的列/窗格渲染与真实拖放接缝。
 //
-// 职责：顶层组栏、布局条、每列最多两格的 pane，以及 task/dir/tab 的 MIME 投放。
+// 职责：顶层组栏、每列最多两格的 pane，以及 task/dir/tab 的 MIME 投放。
 // 边界：内容由 renderContent 注入；布局迁移交给 WorkbenchApi/tabs.ts；不按 BaseDir 切换布局。
 import { Fragment, useState, type ReactNode } from 'react'
 import { BlankTab, type PickKind } from './BlankTab'
@@ -31,6 +31,13 @@ function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): numb
   return group.columns.reduce((count, column) => count + column.panes.filter(Boolean).length, 0)
 }
 
+type DragOver = {
+  groupId: string
+  column: number
+  row: number
+  zone: DropZone
+}
+
 export function WorkbenchPage({
   api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [],
 }: WorkbenchPageProps) {
@@ -38,7 +45,7 @@ export function WorkbenchPage({
   const activeGroup = wb.groups.find((group) => group.id === wb.activeGroupId) ?? wb.groups[0]
   const [picking, setPicking] = useState<{ groupId: string; tabId: string | null } | null>(null)
   const [newFileError, setNewFileError] = useState('')
-  const [dragOver, setDragOver] = useState<{ column: number; row: number; zone: DropZone } | null>(null)
+  const [dragOver, setDragOver] = useState<DragOver | null>(null)
   const [dropWarning, setDropWarning] = useState('')
 
   const dropContext = (source: BaseDir | null | undefined = base) => ({
@@ -90,22 +97,35 @@ export function WorkbenchPage({
     api.close(groupId, tab.id)
   }
 
+  const dropTargetAt = (event: React.DragEvent<HTMLElement>, groupId: string, column: number, row: number): {
+    target: PaneTarget
+    requestedZone: DropZone
+    canAddPane: boolean
+  } | null => {
+    const targetGroup = wb.groups.find((group) => group.id === groupId)
+    const targetColumn = targetGroup?.columns[column]
+    if (!targetGroup || !targetColumn) return null
+    const rect = event.currentTarget.getBoundingClientRect()
+    const offsetX = event.clientX - rect.left
+    const offsetY = event.clientY - rect.top
+    const canAddPane = targetColumn.panes.length < MAX_PANES_PER_COLUMN
+    const requestedZone = dropZoneAt(offsetX, offsetY, rect.width, rect.height, true, true)
+    const zone = dropZoneAt(offsetX, offsetY, rect.width, rect.height, true, canAddPane)
+    return { target: { groupId, column, row, zone }, requestedZone, canAddPane }
+  }
+
   const placeFromDrop = (event: React.DragEvent<HTMLElement>, groupId: string, column: number, row: number) => {
     const types = event.dataTransfer.types
     const ours = types.includes(DRAG_TASK_MIME) || types.includes(DRAG_DIR_MIME) || types.includes(DRAG_TAB_MIME)
+    setDragOver(null)
     if (!ours) return
     event.preventDefault()
-    const rect = event.currentTarget.getBoundingClientRect()
-    const targetGroup = wb.groups.find((group) => group.id === groupId) ?? activeGroup
-    const targetColumn = targetGroup.columns[column]
-    const canAddPane = targetColumn !== undefined && targetColumn.panes.length < MAX_PANES_PER_COLUMN
-    const requestedZone = dropZoneAt(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height, true, true)
-    const zone = dropZoneAt(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height, true, canAddPane)
-    const target: PaneTarget = {
-      groupId, column, row,
-      zone,
+    const calculation = dropTargetAt(event, groupId, column, row)
+    if (calculation === null) {
+      console.warn('workbench.drop.invalid_target', { ...dropContext(), groupId, column, row, zone: 'center', reason: 'pane target disappeared before drop' })
+      return
     }
-    setDragOver(null)
+    const { target, requestedZone, canAddPane } = calculation
     setDropWarning('')
     if ((requestedZone === 'top' || requestedZone === 'bottom') && !canAddPane) {
       setDropWarning('这一列最多两格，已替换当前窗格')
@@ -195,13 +215,32 @@ export function WorkbenchPage({
                   const types = event.dataTransfer.types
                   if (!types.includes(DRAG_TASK_MIME) && !types.includes(DRAG_DIR_MIME) && !types.includes(DRAG_TAB_MIME)) return
                   event.preventDefault()
-                  const rect = event.currentTarget.getBoundingClientRect()
-                  setDragOver({ column: columnIndex, row, zone: dropZoneAt(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height, true, column.panes.length < MAX_PANES_PER_COLUMN) })
+                  const calculation = dropTargetAt(event, group.id, columnIndex, row)
+                  if (calculation === null) return
+                  setDragOver({ ...calculation.target })
                 }}
                 onDragLeave={(event) => { if (!event.currentTarget.contains(event.relatedTarget as Node | null)) setDragOver(null) }}
                 onDrop={(event) => placeFromDrop(event, group.id, columnIndex, row)}
+                onClick={() => {
+                  if (tab === null) api.activateGroup(group.id)
+                  else api.activate(group.id, tab.id)
+                }}
               >
-                {dragOver?.column === columnIndex && dragOver.row === row && dragOver.zone !== 'center' && <span aria-hidden="true" className={cn('pointer-events-none absolute z-20 bg-primary', dragOver.zone === 'left' && 'inset-y-0 left-0 w-1', dragOver.zone === 'right' && 'inset-y-0 right-0 w-1', dragOver.zone === 'top' && 'inset-x-0 top-0 h-1', dragOver.zone === 'bottom' && 'inset-x-0 bottom-0 h-1')} />}
+                {dragOver?.groupId === group.id && dragOver.column === columnIndex && dragOver.row === row && (
+                  <span
+                    data-testid="drop-preview"
+                    data-zone={dragOver.zone}
+                    aria-hidden="true"
+                    className={cn(
+                      'pointer-events-none absolute z-20 rounded-sm bg-primary/15',
+                      dragOver.zone === 'left' && 'inset-y-0 left-0 w-1/2',
+                      dragOver.zone === 'right' && 'inset-y-0 right-0 w-1/2',
+                      dragOver.zone === 'top' && 'inset-x-0 top-0 h-1/2',
+                      dragOver.zone === 'bottom' && 'inset-x-0 bottom-0 h-1/2',
+                      dragOver.zone === 'center' && 'inset-1/4 ring-2 ring-primary/50',
+                    )}
+                  />
+                )}
                 <div className="flex min-h-8 shrink-0 items-center gap-2 border-b px-2 text-xs">
                   <div
                     draggable={tab !== null}
@@ -215,7 +254,16 @@ export function WorkbenchPage({
                     {tab ? tabTitle(tab.content, tab.base.label) : '空窗格'}
                     {tab?.base.projectName && <span className="ml-2 text-muted-foreground">{tab.base.projectName}{tab.base.machine ? ` · ${tab.base.machine}` : ''}</span>}
                   </div>
-                  {tab && <button type="button" aria-label={`关闭 ${tabTitle(tab.content, tab.base.label)}`} onClick={() => closeTab(group.id, tab)} className="rounded p-0.5 text-muted-foreground hover:bg-accent">×</button>}
+                  <button
+                    type="button"
+                    aria-label={`关闭 ${tab ? tabTitle(tab.content, tab.base.label) : '空窗格'}`}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      if (tab) closeTab(group.id, tab)
+                      else api.closePane(group.id, columnIndex, row)
+                    }}
+                    className="rounded p-0.5 text-muted-foreground hover:bg-accent"
+                  >×</button>
                 </div>
                 <div className="min-h-0 flex-1 overflow-hidden">{renderTab(group.id, columnIndex, row, tab)}</div>
               </div>
@@ -246,9 +294,6 @@ export function WorkbenchPage({
       />
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
-      <div className="flex min-h-8 shrink-0 items-center border-b bg-background px-2">
-        <button type="button" aria-label="增加分屏" onClick={() => api.splitColumn(activeGroup.id)} className="text-xs text-muted-foreground hover:text-foreground">＋分屏</button>
-      </div>
       <div className="relative flex min-h-0 flex-1">
         {wb.groups.map((group) => (
           <Fragment key={group.id}>

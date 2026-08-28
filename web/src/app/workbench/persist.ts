@@ -4,6 +4,7 @@
 // 边界：只处理前端 payload，不发 HTTP；draft/baseSha 与 incompatible 是运行时字段，不落盘。
 import {
   isEmptyWorkbench as isEmptyLayout,
+  normalizeWorkbench,
   type BaseDir,
   type Tab,
   type TabContent,
@@ -133,12 +134,13 @@ function parseWorkbench(raw: unknown): Workbench | null {
   return { groups, activeGroupId: raw.activeGroupId }
 }
 
-/** 解码全局 payload；版本、布局、BaseDir、TabContent 任一字段不合法都返回 null。 */
+/** 解码并压缩全局 payload；非法字段返回 null，合法空列/空组在渲染前统一删除。 */
 export function decodeWorkbench(raw: string): Workbench | null {
   try {
     const parsed: unknown = JSON.parse(raw)
     if (!isObject(parsed) || !hasOnly(parsed, ['v', 'wb']) || parsed.v !== PERSIST_VERSION) return null
-    return parseWorkbench(parsed.wb)
+    const workbench = parseWorkbench(parsed.wb)
+    return workbench === null ? null : normalizeWorkbench(workbench)
   } catch {
     return null
   }

@@ -5,6 +5,7 @@
 //   - 没有会话时先建一个，并把 id 回报给 tab（onSession）
 //   - 按键上送、尺寸上送、断线重连（重连逻辑在 api/pty.ts，这里只消费）
 //   - shell 退出后在下方显示退出码，tab 留着等用户自己关
+//   - 只提供 PTY host 与运行态出口；pane 标题由 WorkbenchPage 统一负责
 //   - 订阅被判死（close 1008，最常见的是 agentd 重启后旧会话已不存在）时，
 //     除了报出服务端给的原因，还给一个「重开一个终端」的出口——没有它，这个
 //     tab 就是死物，用户只能关掉重开
@@ -21,7 +22,6 @@
 // blur/resize。xterm 的 [I]/[O] 不上送 PTY（见 terminalHostResponse.ts）。
 // 刷新仍会重放，只有回放里的设备回包不上送；活着的查询要回到程序。
 import { useEffect, useRef, useState } from 'react'
-import { TerminalSquare } from 'lucide-react'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
@@ -114,7 +114,6 @@ export function TerminalTab({
   const [error, setError] = useState<string | null>(null)
   // exit 为 undefined 表示还活着；已退出时它是退出码（对端没给退出码时是 null）
   const [exit, setExit] = useState<number | null | undefined>(undefined)
-  const [status, setStatus] = useState<'connecting' | 'open' | 'closed'>('connecting')
   // dead：这条订阅被服务端判死（close 1008），api/pty.ts 不会再重连。
   // 与 error 分开存：普通断线也会写 error，但那时还在退避重连，不该给重开入口。
   const [dead, setDead] = useState(false)
@@ -373,7 +372,6 @@ export function TerminalTab({
       if (incompatibleLive) {
         setError('会话由不兼容的版本托管')
         setDead(true)
-        setStatus('closed')
         return
       }
       if (!id) {
@@ -481,11 +479,9 @@ export function TerminalTab({
         },
         onExit: (code) => {
           setExit(code ?? null)
-          setStatus('closed')
         },
         onStatus: (s) => {
           wsStatus = s
-          setStatus(s)
         },
         onError: (message) => setError(message),
         onTerminal: ({ message }) => {
@@ -594,15 +590,6 @@ export function TerminalTab({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b px-3 py-1.5 text-xs text-muted-foreground">
-        <TerminalSquare className="size-3.5" />
-        <span className="font-mono">
-          {base.label}
-          {seq > 1 && ` (${seq})`}
-        </span>
-        {status === 'connecting' && exit === undefined && <span>连接中…</span>}
-        <span className="ml-auto font-mono">{base.path}</span>
-      </div>
       <div ref={hostRef} data-testid="pty-host" className="min-h-0 flex-1 overscroll-none bg-[#0b0b0c]" />
       {error !== null && (
         <div className="flex items-center gap-3 border-t px-3 py-1.5 text-xs text-destructive">
