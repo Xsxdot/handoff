@@ -44,7 +44,8 @@ import { useHomeDock } from '../homedock/useHomeDock'
 import type { DockSnapshot } from '../homedock/dockPersist'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
-import { nextTerminalSeq, tabTitle, type TabContent, type Workbench } from '../workbench/tabs'
+import { nextTerminalSeq, tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
+import { taskDisplayName } from '../lib/taskName'
 import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -70,6 +71,15 @@ function focusedPaneBase(workbench: Workbench): BaseDir | null {
   if (!group) return null
   const [column, row] = group.focus
   return group.columns[column]?.panes[row]?.base ?? null
+}
+
+// focusedTab 是顶部展示的另一个单向投影：焦点窗格里的 tab 本体，
+// 面包屑第三段（内容名）与左栏焦点态都要用它。
+function focusedTabOf(workbench: Workbench): Tab | null {
+  const group = workbench.groups.find((candidate) => candidate.id === workbench.activeGroupId)
+  if (!group) return null
+  const [column, row] = group.focus
+  return group.columns[column]?.panes[row] ?? null
 }
 
 export function Shell() {
@@ -477,6 +487,17 @@ export function Shell() {
   // 浏览器里 desktop 为 false，这条不渲染，布局与从前一模一样。
   const desktop = isDesktopShell()
   const focusedBase = focusedPaneBase(wb.wb)
+  // 面包屑第三段跟焦点窗格的内容名（spec §3）：tui=任务原名、file=文件名、
+  // terminal=终端标题；空白窗格或没有焦点内容时不传，行里回落目录名。
+  // crumbTaskName 与 T2 的 WorkbenchPage resolver 同口径，T7 收口成一份下传
+  const crumbTaskName = (id: string) => {
+    const t = tasks.find((x) => x.id === id)
+    return t ? taskDisplayName(t) : undefined
+  }
+  const focusedTab = focusedTabOf(wb.wb)
+  const crumbTail = focusedBase && focusedTab && focusedTab.content.kind !== 'blank'
+    ? tabTitle(focusedTab.content, focusedBase.label, crumbTaskName)
+    : undefined
 
   return (
     <div className="flex h-dvh flex-col bg-background">
@@ -532,7 +553,7 @@ export function Shell() {
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
-        {focusedBase && !desktop && !fullPageRoute && <Breadcrumb base={focusedBase} />}
+        {focusedBase && !desktop && !fullPageRoute && <Breadcrumb base={focusedBase} tail={crumbTail} />}
         <main className="relative min-h-0 flex-1">
           {/* 工作台常驻。整页路由盖在上面，不走 path="*" 卸载——卸了 xterm
               会断 WS 再重放 1004h，OpenTUI/Grok 卡死（B270 的病在整页入口复发）。

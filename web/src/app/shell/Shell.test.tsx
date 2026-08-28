@@ -551,7 +551,8 @@ describe('Shell 三栏外框', () => {
   it('/tasks/:id 深链选中目录、开 TUI tab 并换回 /', async () => {
     renderShell('/tasks/T1')
     await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument())
-    expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3')
+    // 面包屑第三段跟焦点窗格内容名（任务原名），替换掉目录名
+    expect(screen.getByLabelText('当前位置')).toHaveTextContent('重构工单通道')
   })
 
   // 停在 /cards 或 /flows 时，整页盖在工作台上——侧栏点任务只改工作台状态
@@ -632,7 +633,8 @@ describe('Shell 三栏外框', () => {
     fireEvent.click(await screen.findByRole('button', { name: /^工单$/ }))
     const jump = await screen.findByRole('button', { name: '跳到该任务' })
     fireEvent.click(jump)
-    await waitFor(() => expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3'))
+    // 第三段跟焦点窗格内容名：跳到的是 T2（等你批），不是 T1
+    await waitFor(() => expect(screen.getByLabelText('当前位置')).toHaveTextContent('等你批'))
   })
 
   it('home 终端不进中央 tab 条', async () => {
