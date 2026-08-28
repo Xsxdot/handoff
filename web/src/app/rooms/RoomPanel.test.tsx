@@ -1,7 +1,7 @@
 // RoomPanel 接缝测试：从统一面板入口验证列表/房间/详情三态、轮询数据流、写入守卫与 attach。
 // 边界：不测 CSS 像素；这里只锁定 API 调用、可见状态和 Workbench 开 tab 的契约。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ApiError } from '../../api/client'
 import { fetchCardDetail } from '../../api/ledger'
@@ -261,5 +261,43 @@ describe('RoomPanel 悬浮球（B287）', () => {
     const fab = await screen.findByRole('button', { name: '打开房间面板' })
     expect(fab.className).toContain('bottom-[104px]')
     expect(fab.className).not.toContain('bottom-20')
+  })
+})
+
+describe('RoomPanel 浮窗几何（B287）', () => {
+  it('浮窗按 geom 摆位：拖标题栏改 left/top，拉角落改宽高，最小尺寸钳制', async () => {
+    window.localStorage.setItem('handoff:room-panel-geom.v1', JSON.stringify({ x: 100, y: 80, w: 360, h: 520 }))
+    vi.mocked(fetchRooms).mockResolvedValue([])
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    const panel = await screen.findByTestId('room-panel')
+    expect(panel.style.left).toBe('100px')
+    expect(panel.style.top).toBe('80px')
+    fireEvent.pointerDown(screen.getByTestId('room-panel-title'), { clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 30 })
+    fireEvent.pointerUp(document)
+    expect(panel.style.left).toBe('130px')
+    expect(panel.style.top).toBe('100px')
+    fireEvent.pointerDown(screen.getByTestId('room-panel-corner'), { clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(document, { clientX: -500, clientY: -500 })
+    fireEvent.pointerUp(document)
+    expect(panel.style.width).toBe('320px')
+    expect(panel.style.height).toBe('360px')
+  })
+
+  it('几何本机持久化：拖动后写入 localStorage，重挂载恢复摆法', async () => {
+    window.localStorage.clear()
+    vi.mocked(fetchRooms).mockResolvedValue([])
+    const view = render(<RoomPanel workbench={workbench()} persistent={false} />)
+    await screen.findByTestId('room-panel')
+    fireEvent.pointerDown(screen.getByTestId('room-panel-title'), { clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(document, { clientX: 15, clientY: 10 })
+    fireEvent.pointerUp(document)
+    const stored = JSON.parse(window.localStorage.getItem('handoff:room-panel-geom.v1') ?? '{}')
+    expect(stored).toMatchObject({ w: 360, h: 520 })
+    view.unmount()
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    const restored = await screen.findByTestId('room-panel')
+    expect(restored.style.left).toBe(`${stored.x}px`)
+    expect(restored.style.top).toBe(`${stored.y}px`)
   })
 })

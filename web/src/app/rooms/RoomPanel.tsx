@@ -4,7 +4,7 @@
 // 以及 attach 后的 Workbench 终端入口。
 // 边界：不改变路由、不直接创建 PTY；列表与收件箱轮询独立，消息正文只进入界面，
 // 不进入结构化日志。
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { fetchCardDetail } from '../../api/ledger'
 import type { CardDetail } from '../../api/ledger'
 import { fetchInbox, fetchRoomMessages, fetchRooms, markRoomRead, sendRoomMessage } from '../../api/rooms'
@@ -16,6 +16,7 @@ import { errorMessage, formatRelative } from '../lib/format'
 import { usePoll } from '../data/usePoll'
 import { COLLAB_POLL_MS } from './constants'
 import { logRoom } from './roomLog'
+import { useRoomPanelGeom } from './useRoomPanelGeom'
 import {
   attachBase,
   messageBody,
@@ -97,11 +98,11 @@ function MessageBubble({ event }: { event: RoomHistoryItem }) {
   )
 }
 
-function PanelHeader({ title, onCollapse }: { title: string; onCollapse: () => void }) {
+function PanelHeader({ title, onCollapse, onDragDown }: { title: string; onCollapse: () => void; onDragDown: (event: ReactPointerEvent) => void }) {
   return (
-    <header className="flex shrink-0 items-center justify-between border-b px-3 py-2.5">
+    <header data-testid="room-panel-title" onPointerDown={onDragDown} className="flex shrink-0 cursor-move select-none items-center justify-between border-b px-3 py-2.5">
       <span className="text-sm font-semibold">{title}</span>
-      <button type="button" aria-label="收起房间面板" onClick={onCollapse} className="rounded-md px-2 py-1 text-xs hover:bg-accent">×</button>
+      <button type="button" aria-label="收起房间面板" onPointerDown={(event) => event.stopPropagation()} onClick={onCollapse} className="rounded-md px-2 py-1 text-xs hover:bg-accent">×</button>
     </header>
   )
 }
@@ -125,6 +126,41 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
   const [cardDetail, setCardDetail] = useState<CardDetail | null>(null)
   const [cardDetailError, setCardDetailError] = useState('')
   const markedReads = useRef<Record<string, number>>({})
+  // 浮窗几何：仅非持久形态消费；geom===null 时浮窗不渲染（避免闪现在 (0,0)）。
+  const { geom: panelGeom, ensurePlaced, onGeom: applyGeom } = useRoomPanelGeom()
+  const geomRef = useRef(panelGeom)
+  geomRef.current = panelGeom
+  const floating = !persistent && !collapsed
+  useEffect(() => {
+    if (floating) ensurePlaced()
+  }, [floating, ensurePlaced])
+
+  // grab 照抄 HomeWindow：按下记起点、document 收 move、抬起一次性解绑；
+  // 指针拖出窗口也收得到 move，窗口不会卡在半路。
+  const grab = (event: ReactPointerEvent, apply: (dx: number, dy: number) => void) => {
+    event.preventDefault()
+    const sx = event.clientX
+    const sy = event.clientY
+    const move = (e: PointerEvent) => apply(e.clientX - sx, e.clientY - sy)
+    const up = () => {
+      document.removeEventListener('pointermove', move)
+      const g = geomRef.current
+      if (g) logRoom('debug', 'room_geom_committed', { x: g.x, y: g.y, w: g.w, h: g.h })
+    }
+    document.addEventListener('pointermove', move)
+    document.addEventListener('pointerup', up, { once: true })
+    document.addEventListener('pointercancel', up, { once: true })
+  }
+  const onTitleDown = (event: ReactPointerEvent) => {
+    const from = panelGeom
+    if (persistent || !from) return
+    grab(event, (dx, dy) => applyGeom({ x: from.x + dx, y: from.y + dy }))
+  }
+  const onCornerDown = (event: ReactPointerEvent) => {
+    const from = panelGeom
+    if (persistent || !from) return
+    grab(event, (dx, dy) => applyGeom({ w: from.w + dx, h: from.h + dy }))
+  }
 
   const loadRooms = async () => {
     logRoom('debug', 'rooms_request_started', { request: 'rooms' })
@@ -286,7 +322,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
 
   const content = view === 'list' ? (
     <>
-      <PanelHeader title="会话" onCollapse={() => setCollapsed(true)} />
+      <PanelHeader title="会话" onCollapse={() => setCollapsed(true)} onDragDown={onTitleDown} />
       <div className="shrink-0 space-y-2 border-b px-3 py-2">
         <div className="flex items-center justify-between gap-2 text-xs">
           <span role="presentation" onClick={() => setNeedsOnly((current) => !current)} className={`cursor-pointer ${needsOnly ? 'font-semibold text-amber-700' : 'text-muted-foreground'}`}>⚑ 需要你 {needRoomIDs.size}</span>
@@ -315,10 +351,10 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
     </>
   ) : view === 'room' ? (
     <>
-      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5">
-        <button type="button" aria-label="返回会话列表" onClick={backToList} className="rounded-md px-1.5 py-1 text-sm hover:bg-accent">‹</button>
+      <header onPointerDown={onTitleDown} className="flex shrink-0 cursor-move select-none items-center gap-2 border-b px-3 py-2.5">
+        <button type="button" aria-label="返回会话列表" onPointerDown={(event) => event.stopPropagation()} onClick={backToList} className="rounded-md px-1.5 py-1 text-sm hover:bg-accent">‹</button>
         <span className="min-w-0 flex-1 truncate text-sm font-semibold">{selectedRoom?.title ?? roomID}</span>
-        <button type="button" aria-label="更多" onClick={() => setView('detail')} className="rounded-md px-2 py-1 text-xs hover:bg-accent">•••</button>
+        <button type="button" aria-label="更多" onPointerDown={(event) => event.stopPropagation()} onClick={() => setView('detail')} className="rounded-md px-2 py-1 text-xs hover:bg-accent">•••</button>
       </header>
       {(historyPoll.disconnected || historyPoll.sessionExpired || readError !== '') && <p role="alert" className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-800">{readError !== '' ? `已读失败：${readError}` : historyPoll.sessionExpired ? '消息会话已过期，请重新登录。' : `消息流已断开：${historyPoll.errorText}`}</p>}
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50/60 p-3">
@@ -335,10 +371,10 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
     </>
   ) : (
     <>
-      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2.5">
-        <button type="button" aria-label="返回房间" onClick={() => setView('room')} className="rounded-md px-1.5 py-1 text-sm hover:bg-accent">‹</button>
+      <header onPointerDown={onTitleDown} className="flex shrink-0 cursor-move select-none items-center gap-2 border-b px-3 py-2.5">
+        <button type="button" aria-label="返回房间" onPointerDown={(event) => event.stopPropagation()} onClick={() => setView('room')} className="rounded-md px-1.5 py-1 text-sm hover:bg-accent">‹</button>
         <span className="min-w-0 flex-1 truncate text-sm font-semibold">房间详情</span>
-        <button type="button" aria-label="更多" onClick={() => setView('list')} className="rounded-md px-2 py-1 text-xs hover:bg-accent">•••</button>
+        <button type="button" aria-label="更多" onPointerDown={(event) => event.stopPropagation()} onClick={() => setView('list')} className="rounded-md px-2 py-1 text-xs hover:bg-accent">•••</button>
       </header>
       <div className="min-h-0 flex-1 overflow-y-auto p-3">
         <section className="rounded-2xl border bg-white/65 p-3 shadow-sm" aria-label="协调者">
@@ -375,7 +411,9 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
   return (
     <>
       {(!persistent || collapsed) && <button type="button" aria-label="打开房间面板" title="打开房间面板" onClick={() => setCollapsed((current) => !current)} className="fixed bottom-[104px] right-5 z-40 flex size-11 items-center justify-center rounded-full bg-slate-900 text-white shadow-lg">◌</button>}
-      {!collapsed && <aside data-testid="room-panel" className={persistent ? 'flex h-full w-[360px] shrink-0 flex-col border-l bg-background' : 'fixed bottom-20 right-5 z-40 flex h-[520px] w-[360px] flex-col overflow-hidden rounded-2xl border bg-background shadow-xl'}>{content}</aside>}
+      {!collapsed && (persistent
+        ? <aside data-testid="room-panel" className="flex h-full w-[360px] shrink-0 flex-col border-l bg-background">{content}</aside>
+        : panelGeom !== null && <aside data-testid="room-panel" className="fixed z-40 flex flex-col overflow-hidden rounded-2xl border bg-background shadow-xl" style={{ left: panelGeom.x, top: panelGeom.y, width: panelGeom.w, height: panelGeom.h }}>{content}<span data-testid="room-panel-corner" onPointerDown={onCornerDown} aria-hidden="true" className="absolute bottom-0 right-0 size-[15px] cursor-nwse-resize" style={{ background: 'linear-gradient(135deg, transparent 50%, #71717a 50%)' }} /></aside>)}
       <ConfirmDialog open={attachConfirm} title="确认 attach" description={selectedRoom?.attach ? `${selectedRoom.attach.task_id} · ${selectedRoom.attach.work_dir}\n将在对应工作目录打开终端。` : '暂无可 attach 的任务'} confirmLabel="确认 attach" busy={stepBusy} onConfirm={confirmAttach} onCancel={() => setAttachConfirm(false)} />
     </>
   )
