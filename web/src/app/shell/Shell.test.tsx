@@ -214,7 +214,7 @@ async function openBranch() {
   // 从整页路由回来时 ProjectTree 仍保留 directoryOpen；只有收起时才展开，
   // 避免第二次调用把已经可见的分支又收回去。
   const sidebar = within(screen.getByRole('complementary'))
-  if (sidebar.queryByText('integration/b2-b3') === null) fireEvent.click(await sidebar.findByText('目录'))
+  if (sidebar.queryByText('integration/b2-b3') === null) fireEvent.click(await sidebar.findByTestId('machine-row'))
   fireEvent.click(await sidebar.findByText('integration/b2-b3'))
 }
 

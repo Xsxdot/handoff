@@ -54,6 +54,20 @@ function taskText(t: Task): string {
   return t.name || t.plan_summary || '（无名称）'
 }
 
+// openedText 把工作台项的可见标题与内容自身的定位字段合在一起。
+// 文件 tab 的标题可能被用户入口改写，但相对路径仍是左栏搜索应能找到的真实祖先线索；
+// 终端的 rel 与 TUI taskId 同理。只读投影数据，不改变 tab 或树节点。
+function openedText(item: OpenedWorkbenchItem): string {
+  const detail = item.content.kind === 'file'
+    ? item.content.rel
+    : item.content.kind === 'terminal'
+      ? item.content.rel ?? ''
+      : item.content.kind === 'tui'
+        ? item.content.taskId
+        : ''
+  return [item.label, detail, item.base.key, item.base.path, item.base.label, machineText(item.base.machine)].join(' ')
+}
+
 // tasksOfWorkspace 挑出挂在某个目录下的任务。
 // 判据是 work_dir 与 workspace.path 路径等值；work_dir 为空表示原地模式，
 // 挂到主目录——与 proto.Task.Workdir() 的回退语义一致。
@@ -111,9 +125,7 @@ export function filterTree(
     const locations: ProjectLocationNode[] = []
     for (const loc of project.locations) {
       const machineOpenedHit = openedItems.some((item) =>
-        item.base.projectName === project.name && item.base.machine === loc.machine && (
-          hit(item.label, q) || hit(item.base.key, q) || hit(item.base.path, q) || hit(item.base.label, q)
-        ),
+        item.base.projectName === project.name && item.base.machine === loc.machine && hit(openedText(item), q),
       )
       const machineHit = projectHit || hit(machineText(loc.machine), q)
       const archivedHit = (archived.get(archivedKey(project.project_id, loc.machine)) ?? [])
@@ -130,7 +142,7 @@ export function filterTree(
       const openedWorkspaces = loc.workspaces.filter((ws) =>
         openedItems.some((item) =>
           item.base.projectName === project.name && item.base.machine === loc.machine && item.base.path === ws.path && (
-            hit(item.label, q) || hit(item.base.key, q) || hit(item.base.path, q) || hit(item.base.label, q)
+            hit(openedText(item), q)
           ),
         ),
       )

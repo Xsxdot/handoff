@@ -134,22 +134,26 @@ describe('ProjectTree', () => {
         onOpenSettings={vi.fn()}
       />,
     )
-    fireEvent.click(screen.getByText('目录'))
+    fireEvent.click(screen.getByTestId('machine-row'))
     expect(screen.getAllByTestId('workspace-row').map((row) => row.textContent?.replace(/\d+$/, ''))).toEqual([
       'main', 'blocked', 'busy', 'quiet',
     ])
   })
 
-  it('层级是 项目 → 机器 → 目录 → 任务', () => {
+  it('层级是 项目 → 任务/目录同级，目录内再按机器分组', () => {
     render(<ProjectTree {...props({ inPlaceTask: true })} />)
     expect(screen.getByText('handoff')).toBeInTheDocument()
-    expect(screen.getByText('本机')).toBeInTheDocument()
+    expect(screen.getByTestId('task-group')).toBeInTheDocument()
+    expect(screen.getByTestId('directory-group')).toBeInTheDocument()
+    expect(screen.getByTestId('machine-row')).toBeInTheDocument()
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('machine-row'))
     expect(screen.getByText('main')).toBeInTheDocument()
     expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
     expect(screen.getByText('原地任务')).toBeInTheDocument()
   })
 
-  it('机器下有同级任务与目录，目录默认只露主目录，展开后可打开目录与已有项', () => {
+  it('目录默认收起，点击机器后展开目录并可打开目录与已有项', () => {
     const onOpenDirectory = vi.fn()
     const onOpenDirectoryTerminal = vi.fn()
     const onOpenItem = vi.fn()
@@ -161,9 +165,11 @@ describe('ProjectTree', () => {
     render(<ProjectTree {...props({ onOpenDirectory, onOpenDirectoryTerminal, onOpenItem, openedItems: opened })} />)
     expect(screen.getByText('任务')).toBeInTheDocument()
     expect(screen.getByText('目录')).toBeInTheDocument()
-    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.queryByText('main')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: '打开主目录终端' }))
+    expect(onOpenDirectoryTerminal).toHaveBeenNthCalledWith(1, expect.objectContaining({ path: '/w', label: 'main' }))
     expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()
-    fireEvent.click(screen.getByText('目录'))
+    fireEvent.click(screen.getByTestId('machine-row'))
     expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
     fireEvent.click(screen.getByText('integration/b2-b3'))
     expect(onOpenDirectory).toHaveBeenCalledWith(expect.objectContaining({ path: '/w/b2-b3', label: 'integration/b2-b3' }))
@@ -171,6 +177,74 @@ describe('ProjectTree', () => {
     expect(onOpenDirectoryTerminal).toHaveBeenCalledWith(expect.objectContaining({ path: '/w/b2-b3' }))
     fireEvent.click(screen.getByText('终端 · feat/b2'))
     expect(onOpenItem).toHaveBeenCalledWith(opened[0])
+  })
+
+  it('项目下任务与目录是同级组，任务跨机器平铺，目录组内再按机器分组', () => {
+    const tree: ProjectTreeResp = {
+      projects: [{
+        project_id: 'p1', origin_url: '', name: 'handoff',
+        locations: [
+          {
+            machine: '', name: 'handoff', path: '/w', probe_error: '',
+            workspaces: [{ path: '/w', branch: 'main', head: 'a', is_main: true, managed: false, created_at: '' }],
+          },
+          {
+            machine: 'linux-01', name: 'handoff', path: '/srv/w', probe_error: '',
+            workspaces: [{ path: '/srv/w', branch: 'main', head: 'b', is_main: true, managed: false, created_at: '' }],
+          },
+        ],
+      }],
+      unowned: [],
+    }
+    const tasks = [
+      task({ id: 'local-task', project_id: 'p1', machine: '', work_dir: '/w', name: '本机任务' }),
+      task({ id: 'remote-task', project_id: 'p1', machine: 'linux-01', work_dir: '/srv/w', name: '远端任务' }),
+    ]
+    render(
+      <ProjectTree
+        tree={tree}
+        tasks={tasks}
+        selectedKey={null}
+        ticketCount={0}
+        ticketsByDir={new Map()}
+        openedItems={[]}
+        onOpenDirectory={vi.fn()}
+        onOpenDirectoryTerminal={vi.fn()}
+        onOpenItem={vi.fn()}
+        onOpenTask={vi.fn()}
+        onOpenBoard={vi.fn()}
+        onOpenTickets={vi.fn()}
+        onOpenSettings={vi.fn()}
+      />,
+    )
+
+    expect(screen.getAllByTestId('task-group')).toHaveLength(1)
+    expect(screen.getAllByTestId('directory-group')).toHaveLength(1)
+    expect(screen.getAllByTestId('directory-machine-row')).toHaveLength(2)
+    expect(screen.getByText('本机任务')).toBeInTheDocument()
+    expect(screen.getByText('远端任务')).toBeInTheDocument()
+  })
+
+  it('任务行使用按类型共用的头像并在右侧显示机器名', () => {
+    const opened: OpenedWorkbenchItem[] = [
+      {
+        tabId: 'term-1', groupId: 'g1', column: 0, row: 0,
+        base: { key: '/w', kind: 'workspace', path: '/w', label: 'main', projectName: 'handoff', machine: '' },
+        content: { kind: 'terminal', seq: 1 }, label: '终端 · main',
+      },
+      {
+        tabId: 'file-1', groupId: 'g1', column: 1, row: 0,
+        base: { key: '/w', kind: 'workspace', path: '/w', label: 'main', projectName: 'handoff', machine: '' },
+        content: { kind: 'file', rel: 'README.md' }, label: 'README.md',
+      },
+    ]
+    render(<ProjectTree {...props({ openedItems: opened })} />)
+
+    expect(screen.getByTestId('task-avatar-terminal')).toBeInTheDocument()
+    expect(screen.getByTestId('task-avatar-file')).toBeInTheDocument()
+    expect(screen.getByTestId('task-avatar-tui')).toBeInTheDocument()
+    expect(screen.getAllByTestId('task-machine')).toHaveLength(3)
+    expect(screen.queryByTestId('task-row-type-icon')).toBeNull()
   })
 
   it('不可达机器保持可见、标已断开、且不可展开', () => {
@@ -264,7 +338,7 @@ describe('ProjectTree', () => {
   it('点目录行选中它，回调带完整 BaseDir', () => {
     const onOpenDirectory = vi.fn()
     render(<ProjectTree {...props({ onOpenDirectory })} />)
-    fireEvent.click(screen.getByText('目录'))
+    fireEvent.click(screen.getByTestId('machine-row'))
     fireEvent.click(screen.getByText('integration/b2-b3'))
     expect(onOpenDirectory).toHaveBeenCalledWith({
       key: '/w/b2-b3',
@@ -279,13 +353,14 @@ describe('ProjectTree', () => {
   it('detached 的目录用目录名兜底作为 label', () => {
     const onOpenDirectory = vi.fn()
     render(<ProjectTree {...props({ onOpenDirectory, branch: '' })} />)
-    fireEvent.click(screen.getByText('目录'))
+    fireEvent.click(screen.getByTestId('machine-row'))
     fireEvent.click(screen.getByText('b2-b3'))
     expect(onOpenDirectory).toHaveBeenCalledWith(expect.objectContaining({ label: 'b2-b3' }))
   })
 
   it('selectedKey 命中的目录行带 aria-current', () => {
     render(<ProjectTree {...props({ selectedKey: '/w/b2-b3' })} />)
+    fireEvent.click(screen.getByTestId('machine-row'))
     expect(screen.getByRole('button', { name: /integration\/b2-b3/ })).toHaveAttribute('aria-current', 'true')
   })
 
@@ -608,6 +683,7 @@ describe('显示偏好', () => {
     render(<ProjectTree {...p} tasks={tasks} />)
     fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏无活跃任务的工作树/ }))
+    fireEvent.click(screen.getByTestId('machine-row'))
     expect(screen.queryByText('integration/b2-b3')).toBeNull()
     fireEvent.click(screen.getByText(/已隐藏 1 个目录/))
     expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
@@ -619,6 +695,7 @@ describe('显示偏好', () => {
     render(<ProjectTree {...p} tasks={tasks} />)
     fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏无活跃任务的工作树/ }))
+    fireEvent.click(screen.getByTestId('machine-row'))
     expect(screen.getByText('main')).toBeInTheDocument()          // 主目录
     expect(screen.getByText('integration/b2-b3')).toBeInTheDocument() // 选中目录
     expect(screen.queryByText(/已隐藏/)).toBeNull()

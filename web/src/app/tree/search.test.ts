@@ -153,4 +153,18 @@ describe('filterTree', () => {
     expect(byTerminal.projects[0].name).toBe('handoff')
     expect(byTerminal.projects[0].locations[0].workspaces[0].path).toBe('/w/b2-b3')
   })
+
+  it('打开文件的相对路径参与搜索，即使任务行标题不是文件名', () => {
+    const opened: OpenedWorkbenchItem[] = [{
+      tabId: 'file-2', groupId: 'g1', column: 0, row: 0,
+      base: {
+        key: '/srv/n', kind: 'workspace', path: '/srv/n', label: 'main',
+        projectName: 'nova', machine: 'devbox',
+      },
+      content: { kind: 'file', rel: 'src/relative-only.ts' }, label: '已打开文件',
+    }]
+    const result = filterTree(tree, tasks, 'relative-only', opened)
+    expect(result.projects[0].name).toBe('nova')
+    expect(result.projects[0].locations[0].workspaces[0].path).toBe('/srv/n')
+  })
 })

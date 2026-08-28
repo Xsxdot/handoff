@@ -1,19 +1,18 @@
 // ProjectTree —— 左栏项目树。
 //
-// 层级（严格三层 + 任务层）：项目 → 机器 → 目录（workspace）→ 任务。
-// 为什么机器下不再分组一层：W3a §1.1 保证一个项目在一台机器上至多一个位置，
-// 这条不变式可以直接依赖——每个项目下的机器节点恰好对应它的一个 location。
+// 层级：项目 → 两个同级组「任务」「目录」；目录组内再按机器 → 目录分组。
+// 任务组跨机器平铺，目录组保留机器边界，避免把同名工作树误看成同一现场。
 //
 // 诚实展示（spec §8）：
 //   - 不可达机器（machines[].ok===false 或 location.probe_error）保持可见、
 //     标「已断开」并透出原因原文，绝不静默少一台
 //   - 未归属任务（project_id===""）挂在树末尾的「未归属」分组，不被吞掉
 //
-// 点击语义（W4 §3.1 改造）：
-//   - 项目 / 开发机行：只展开折叠，不再写筛选。看板的筛选归看板弹层自己的
-//     FilterBar，树不再是筛选的编辑入口
-//   - 目录行：**选中为当前目录**——切中央 tab 组 + 右栏文件树 + 面包屑
-//   - 任务行：选中其所在目录，并在中央开它的 TUI tab
+// 点击语义：
+//   - 项目行：展开/收起项目；看板的筛选归看板自己的 FilterBar
+//   - 目录组内的机器行：展开该机的主目录与工作树；机器右侧可直接开主目录终端
+//   - 目录行：选中目录并打开可关闭的文件抽屉
+//   - 任务行：已打开项聚焦原窗格，执行者任务按其项目/机器开 TUI tab
 //   - 未归属任务没有基准目录，中央以当前选中目录开它的 TUI tab；一个都没选中时
 //     由 Shell 提示先选目录
 //
@@ -33,7 +32,7 @@
 // agentd 报错原文透出（spec §10）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, ChevronRight, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, SquareKanban, Ticket, WifiOff, Workflow,
+  Archive, ChevronRight, CircleUserRound, FileText, FolderGit2, GitBranch, HardDrive, Home, LayoutGrid, Plus, Search, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow,
 } from 'lucide-react'
 import { filterTree } from './search'
 import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
@@ -45,7 +44,7 @@ import { errorMessage } from '../lib/format'
 import { ContextMenu } from '../shared/ContextMenu'
 import { countsForMachine, countsForProject } from './counts'
 import { ARCHIVED_LABEL, ARCHIVED_TITLE, archivedKey, archivedTasks } from './archived'
-import { stateTone } from '../board/columns'
+import { stateTone, type StateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
 import { RowCounts } from './RowCounts'
 import { projectColorClass } from './projectColor'
@@ -114,6 +113,36 @@ function locationProblem(loc: ProjectLocationNode, machines: MachineStatus[] | u
 
 // ROW_CLASS 是所有行的基础样式；选中态 / hover 态在其上叠加。
 const ROW_CLASS = 'flex w-full items-center gap-1.5 py-1 pr-2 text-left text-[13px]'
+
+type TaskRowKind = 'terminal' | 'file' | 'tui'
+
+// taskRowKind 把左栏任务行的内容类型集中映射到一套稳定图标：图标代表终端、文件
+// 或 TUI，不依赖任务 id 随机化，也不把机器头像和类型图标混在一行里。
+function taskRowKind(content: OpenedWorkbenchItem['content']): TaskRowKind | null {
+  switch (content.kind) {
+    case 'terminal': return 'terminal'
+    case 'file': return 'file'
+    case 'tui': return 'tui'
+    case 'blank': return null
+  }
+}
+
+// TaskAvatar 是方案 2 的左侧头像：类型图标在头像内，状态点固定右下角。
+// 参数/返回：kind 决定共用的类型图标，tone 决定状态圆点；不负责任务点击。
+function TaskAvatar({ kind, tone }: { kind: TaskRowKind; tone: StateTone }) {
+  const Icon = kind === 'terminal' ? Terminal : kind === 'file' ? FileText : CircleUserRound
+  return (
+    <span
+      data-testid={`task-avatar-${kind}`}
+      className="relative flex size-5 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground"
+    >
+      <Icon className="size-3.5" aria-hidden />
+      <span data-testid="task-status" className="absolute -bottom-0.5 -right-0.5 rounded-full border-2 border-sidebar">
+        <StateDot tone={tone} />
+      </span>
+    </span>
+  )
+}
 
 // Arrow 是展开箭头所在的可点 span——必须是 span 而不是 button，避免与行 button 嵌套。
 function Arrow({ open, onToggle }: { open: boolean; onToggle: () => void }) {
@@ -485,357 +514,388 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       <div data-testid="tree-scroll" className="min-h-0 flex-1 overflow-y-auto">
 
       {orderedProjects.map((project) => {
-        const pKey = `p:${project.project_id}`
+        const pKey = 'p:' + project.project_id
         const pOpen = expanded(pKey)
         const pCounts = countsForProject(tasks, project)
+        const projectHit = searching && project.name.toLowerCase().includes(filtered.query)
+        const allProject = tree.projects.find((candidate) => candidate.project_id === project.project_id) ?? project
+        const allLocations = allProject.locations
+        const openedItemMatches = (item: OpenedWorkbenchItem) => {
+          const contentText = item.content.kind === 'file'
+            ? item.content.rel
+            : item.content.kind === 'terminal'
+              ? item.content.rel ?? ''
+              : item.content.kind === 'tui'
+                ? item.content.taskId
+                : ''
+          return item.label.toLowerCase().includes(filtered.query) || contentText.toLowerCase().includes(filtered.query)
+        }
+        const projectItems = openedItems.filter((item) =>
+          item.base.projectName === project.name &&
+          item.content.kind !== 'blank' &&
+          (!searching || projectHit || openedItemMatches(item) ||
+            item.base.key.toLowerCase().includes(filtered.query) ||
+            item.base.path.toLowerCase().includes(filtered.query) ||
+            item.base.label.toLowerCase().includes(filtered.query) ||
+            machineLabel(item.base.machine).toLowerCase().includes(filtered.query)),
+        )
+        const openedTuiIds = new Set(
+          projectItems.flatMap((item) => item.content.kind === 'tui' ? [item.content.taskId] : []),
+        )
+        const projectTasks = tasks.filter((task) => {
+          if (task.project_id !== project.project_id || openedTuiIds.has(task.id)) return false
+          if (!searching || projectHit) return true
+          if (taskName(task).toLowerCase().includes(filtered.query)) return true
+          if (machineLabel(task.machine).toLowerCase().includes(filtered.query)) return true
+          return allLocations.some((loc) =>
+            loc.machine === task.machine &&
+            loc.workspaces.some((ws) =>
+              dirLabel(ws).toLowerCase().includes(filtered.query) && tasksOfWorkspace([task], project, loc.machine, ws).length > 0,
+            ),
+          )
+        })
+        const archivedForProject = allLocations.flatMap((loc) => archived.get(archivedKey(project.project_id, loc.machine)) ?? [])
+        const archivedIds = new Set(archivedForProject.map((task) => task.id))
+        const visibleProjectTasks = projectTasks.filter((task) => !archivedIds.has(task.id))
+        const archiveKey = 'project-archive:' + project.project_id
+        const visibleArchived = archivedForProject.filter((task) =>
+          !searching || projectHit || taskName(task).toLowerCase().includes(filtered.query) ||
+          machineLabel(task.machine).toLowerCase().includes(filtered.query),
+        )
+        const archivedOpen = openArchived.has(archiveKey) || (searching && visibleArchived.length > 0)
+
+        const baseForTask = (task: Task): BaseDir | null =>
+          findBaseOfTask(tree, tasks, task.id) ?? archivedBase(project, task.machine)
+
+        const openedTone = (kind: TaskRowKind): StateTone =>
+          kind === 'terminal' ? 'active' : kind === 'tui' ? 'intervention' : 'idle'
+
+        const renderTaskRow = (
+          key: string,
+          label: string,
+          base: BaseDir | null,
+          kind: TaskRowKind,
+          tone: StateTone,
+          onClick: () => void,
+          taskId?: string,
+          machine = base?.machine ?? '',
+        ) => (
+          <button
+            key={key}
+            type="button"
+            data-testid="task-row"
+            draggable={taskId !== undefined}
+            onMouseDown={(e) => e.preventDefault()}
+            onDragStart={taskId === undefined ? undefined : (e) => {
+              e.dataTransfer.setData(DRAG_TASK_MIME, taskId)
+              e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
+              e.dataTransfer.effectAllowed = 'copy'
+            }}
+            onClick={onClick}
+            title={label}
+            className={cn(ROW_CLASS, 'min-w-0 text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
+            style={{ paddingLeft: 8 + 20 }}
+          >
+            <TaskAvatar kind={kind} tone={tone} />
+            <span className="min-w-0 flex-1 truncate">{label}</span>
+            <span data-testid="task-machine" className="ml-auto max-w-[72px] shrink-0 truncate text-[11px] text-muted-foreground">
+              {machineLabel(machine)}
+            </span>
+          </button>
+        )
+
+        const renderOpened = (item: OpenedWorkbenchItem) => {
+          const kind = taskRowKind(item.content)
+          if (kind === null) return null
+          return renderTaskRow(
+            'opened:' + item.tabId,
+            item.label,
+            item.base,
+            kind,
+            openedTone(kind),
+            () => {
+              console.debug('project_tree.opened_item.focus', {
+                project: item.base.projectName,
+                machine: item.base.machine,
+                baseKey: item.base.key,
+                tabId: item.tabId,
+                groupId: item.groupId,
+              })
+              onOpenItem?.(item)
+            },
+          )
+        }
+
+        const renderTask = (task: Task) => {
+          const taskBase = baseForTask(task)
+          return renderTaskRow(
+            'task:' + task.id,
+            taskName(task),
+            taskBase,
+            'tui',
+            stateTone(task.state),
+            () => onOpenTask(taskBase, task.id),
+            task.id,
+            task.machine,
+          )
+        }
+
+        const renderArchivedTask = (task: Task) => {
+          const taskBase = baseForTask(task)
+          return renderTaskRow(
+            'archived:' + task.id,
+            taskName(task),
+            taskBase,
+            'tui',
+            stateTone(task.state),
+            () => onOpenTask(taskBase, task.id),
+            task.id,
+            task.machine,
+          )
+        }
+
         return (
-          <div key={pKey}>
+          <div key={pKey} data-testid={'project-node-' + project.project_id}>
             <div className="group relative">
-            <button
-              type="button"
-              aria-expanded={project.locations.length > 0 ? pOpen : undefined}
-              onClick={() => toggle(pKey)}
-              className={cn(ROW_CLASS, 'hover:bg-accent/60')}
-              style={{ paddingLeft: 8 }}
-            >
-              {project.locations.length > 0 ? (
-                <Arrow open={pOpen} onToggle={() => toggle(pKey)} />
-              ) : (
-                <span className="size-4 shrink-0" />
+              <button
+                type="button"
+                aria-expanded={project.locations.length > 0 ? pOpen : undefined}
+                onClick={() => toggle(pKey)}
+                className={cn(ROW_CLASS, 'hover:bg-accent/60')}
+                style={{ paddingLeft: 8 }}
+              >
+                {project.locations.length > 0 ? (
+                  <Arrow open={pOpen} onToggle={() => toggle(pKey)} />
+                ) : (
+                  <span className="size-4 shrink-0" />
+                )}
+                <FolderGit2
+                  data-project-color={projectColorClass(project.project_id)}
+                  className={cn('size-4 shrink-0', projectColorClass(project.project_id))}
+                />
+                <span className="min-w-0 flex-1 truncate">{project.name}</span>
+                <RowCounts dirs={prefs.hideDirCounts ? undefined : pCounts.dirs} running={pCounts.running} pending={pCounts.pending} />
+              </button>
+              {(onOpenProjectCards || onOpenProjectCodegraph) && (
+                <span className="absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 bg-sidebar group-hover:flex">
+                  {onOpenProjectCards && (
+                    <button
+                      type="button"
+                      aria-label={'打开 ' + project.name + ' 工作项'}
+                      title="工作项"
+                      onClick={() => onOpenProjectCards(project)}
+                      className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <SquareKanban className="size-3.5" />
+                    </button>
+                  )}
+                  {onOpenProjectCodegraph && (
+                    <button
+                      type="button"
+                      aria-label={'打开 ' + project.name + ' 代码图'}
+                      title="代码图"
+                      onClick={() => onOpenProjectCodegraph(project)}
+                      className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                    >
+                      <GitBranch className="size-3.5" />
+                    </button>
+                  )}
+                </span>
               )}
-              {/* 项目身份色：让整棵树不至于只有一个灰。取色只依赖 project_id，
-                  与列表顺序无关（见 projectColor.ts 的边界说明） */}
-              <FolderGit2
-                data-project-color={projectColorClass(project.project_id)}
-                className={cn('size-4 shrink-0', projectColorClass(project.project_id))}
-              />
-              <span className="min-w-0 flex-1 truncate">{project.name}</span>
-              {/* 藏文件夹数量是「不传 dirs」，不是改 RowCounts：省略 dirs 本来就不画那一段 */}
-              <RowCounts dirs={prefs.hideDirCounts ? undefined : pCounts.dirs} running={pCounts.running} pending={pCounts.pending} />
-            </button>
-            {(onOpenProjectCards || onOpenProjectCodegraph) && (
-              <span className="absolute right-2 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 bg-sidebar group-hover:flex">
-                {onOpenProjectCards && (
-                  <button
-                    type="button"
-                    aria-label={`打开 ${project.name} 工作项`}
-                    title="工作项"
-                    onClick={() => onOpenProjectCards(project)}
-                    className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                  >
-                    <SquareKanban className="size-3.5" />
-                  </button>
-                )}
-                {onOpenProjectCodegraph && (
-                  <button
-                    type="button"
-                    aria-label={`打开 ${project.name} 代码图`}
-                    title="代码图"
-                    onClick={() => onOpenProjectCodegraph(project)}
-                    className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-                  >
-                    <GitBranch className="size-3.5" />
-                  </button>
-                )}
-              </span>
-            )}
             </div>
 
-            {pOpen &&
-              project.locations.map((loc) => {
-                const mKey = `m:${project.project_id}:${loc.machine}`
-                const mOpen = expanded(mKey)
-                const problem = locationProblem(loc, tree.machines)
-                const hasChildren = loc.workspaces.length > 0
-                const mCounts = countsForMachine(tasks, project, loc.machine)
-                const aKey = archivedKey(project.project_id, loc.machine)
-                // 搜索期间分组内也跟着按任务名过滤：搜到了却埋在几十条历史里等于没搜到
-                const aTasks = (archived.get(aKey) ?? []).filter(
-                  (t) => !searching || taskName(t).toLowerCase().includes(filtered.query),
-                )
-                // 搜索命中时自动展开（与 expanded() 旁路 collapsed 同一条理由），
-                // 但没命中时不跟着展开——历史堆积不该反客为主
-                const aOpen = openArchived.has(aKey) || (searching && aTasks.length > 0)
-                return (
-                  // 外层只负责分组，不再是定位祖先
-                  <div key={mKey}>
-                    {/* 定位上下文收在机器行这一层：右键菜单按鼠标坐标 fixed 定位，
-                        不依赖它；但目录行/任务行仍不该进这个分组容器 */}
-                    <div
-                      className="group relative"
-                      data-testid="machine-row"
-                      onContextMenu={
-                        onUnregister || onEdit || onWorktreeCreated
-                          ? (e) => {
-                              // 阻止浏览器原生菜单，换成我们这份。
-                              // Shift+F10 与 ContextMenu 键也派发这个事件，
-                              // 所以键盘用户走的是同一条路，不需要额外快捷键
-                              e.preventDefault()
-                              setMenu({ x: e.clientX, y: e.clientY, name: loc.name, machine: loc.machine, project })
-                            }
-                          : undefined
-                      }
-                    >
+            {pOpen && (
+              <>
+                <div data-testid="task-group">
+                  <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">任务</p>
+                  {projectItems.map(renderOpened)}
+                  {visibleProjectTasks.map(renderTask)}
+                  {visibleArchived.length > 0 && !(prefs.hideArchived && !searching) && (
+                    <div>
                       <button
                         type="button"
-                        aria-disabled={problem !== '' || undefined}
-                        aria-expanded={hasChildren && problem === '' ? mOpen : undefined}
-                        onClick={problem !== '' ? undefined : () => toggle(mKey)}
-                        className={cn(ROW_CLASS, 'hover:bg-accent/60')}
-                        style={{ paddingLeft: 8 + 16 }}
+                        data-testid="archived-row"
+                        aria-expanded={archivedOpen}
+                        title={ARCHIVED_TITLE}
+                        onClick={() => toggleArchived(archiveKey)}
+                        className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
+                        style={{ paddingLeft: 8 + 20 }}
                       >
-                        {hasChildren && problem === '' ? (
-                          <Arrow open={mOpen} onToggle={() => toggle(mKey)} />
-                        ) : (
-                          <span className="size-4 shrink-0" />
-                        )}
-                        <HardDrive className="size-4 shrink-0 text-muted-foreground" />
-                        {/* 连接态用与任务状态同一套圆点：一个界面里两套"绿点"含义不同会更糊涂。
-                            probe_error 非空 = 这个位置探测失败 = 机器当前不可达 */}
-                        <StateDot tone={loc.probe_error !== '' ? 'failed' : 'active'} />
-                        <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
-                        {problem !== '' && <DisconnectedBadge />}
-                        {/* 机器行保留三段（原型只有两段）：待处理是「你还欠什么」的信号，
-                            机器是任务的实际落点，在这层藏掉等于逼人展开到目录才看得见 */}
-                        {/* hover 时让位给 + 按钮：两者都要行右端，让位是唯一
-                            不重叠的排法（此前的结论是「排不出来」，那是因为只
-                            试过叠加）。用 invisible 而不是 hidden——保留占位，
-                            行内其它元素不会因为 hover 左右位移 */}
-                        <span className={cn(onWorktreeCreated && problem === '' && 'group-hover:invisible')}>
-                          <RowCounts dirs={prefs.hideDirCounts ? undefined : mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
-                        </span>
+                          <Arrow open={archivedOpen} onToggle={() => toggleArchived(archiveKey)} />
+                        <Archive className="size-3.5 shrink-0" />
+                        <span className="min-w-0 flex-1 truncate">{ARCHIVED_LABEL}</span>
+                        <span className="ml-auto shrink-0 font-mono text-[9.5px] tabular-nums">{visibleArchived.length}</span>
                       </button>
-                      {onWorktreeCreated && problem === '' && (
-                        <button
-                          type="button"
-                          aria-label="新建工作树"
-                          title="新建工作树"
-                          onClick={() => setWorktreeTarget({ project, loc })}
-                          className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
-                        >
-                          <Plus className="size-3.5" />
-                        </button>
-                      )}
+                      {archivedOpen && visibleArchived.map(renderArchivedTask)}
                     </div>
-                    {/* 目录行、任务行留在外层，不进定位上下文 */}
-                    {problem !== '' && (
-                      <p
-                        className="break-words pb-1 pr-2 text-[11px] text-destructive"
-                        style={{ paddingLeft: 8 + 16 + 20 }}
-                      >
-                        {problem}
-                      </p>
-                    )}
+                  )}
+                </div>
 
-                    {problem === '' && mOpen && (() => {
-                      const sorted = sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws))
-                      const split = splitIdleWorkspaces(
-                        sorted,
-                        (ws) => {
-                          const c = wsCounts(project, loc.machine, ws)
-                          return {
-                            isMain: ws.is_main,
-                            // 必须走 workspaceBase 而不是直接比 path：key 带机器维度之后
-                            // 拿 path 比会让远端目录永远未被选中，进而被当成空闲折叠掉
-                            selected: selectedKey === workspaceBase(project, loc.machine, ws).key,
-                            active: c.running + c.pending,
-                          }
-                        },
-                        // 搜索期间不折叠，理由同项目隐藏
-                        prefs.hideIdleWorktrees && !searching,
-                      )
-                      const main = sorted.find((ws) => ws.is_main) ?? sorted[0]
-                      const legacyLayout = onOpenDirectory === undefined
-                      const directoriesExpanded = directoryOpen.has(mKey) || searching || legacyLayout
-                      const renderWorkspace = (ws: Workspace) => {
-                        const base = workspaceBase(project, loc.machine, ws)
-                        const dSelected = selectedKey === base.key
-                        const under = wsCounts(project, loc.machine, ws)
-                        return (
-                          <div key={base.key} className="group relative">
-                            <button
-                              type="button"
-                              data-testid="workspace-row"
-                              aria-current={dSelected ? 'true' : undefined}
-                              draggable
-                              onClick={() => openDirectory(base)}
-                              onDragStart={(e) => {
-                                e.dataTransfer.setData(DRAG_DIR_MIME, JSON.stringify(base))
-                                e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
-                                e.dataTransfer.effectAllowed = 'copy'
-                              }}
-                              className={cn(ROW_CLASS, 'hover:bg-accent/60', dSelected && 'bg-sidebar-accent font-medium')}
-                              style={{ paddingLeft: 8 + 32 }}
-                            >
-                              <span className="size-4 shrink-0" />
-                              {ws.is_main ? (
-                                <Home className="size-3.5 shrink-0 text-muted-foreground" />
-                              ) : (
-                                <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
-                              )}
-                              <span className="min-w-0 flex-1 truncate font-mono">{dirLabel(ws)}</span>
-                              <RowCounts running={under.running} pending={under.pending} />
-                            </button>
-                            <button
-                              type="button"
-                              aria-label="在此打开终端"
-                              title="在此打开终端"
-                              onClick={() => openDirectoryTerminal(base)}
-                              className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
-                            >
-                              <HardDrive className="size-3.5" />
-                            </button>
-                          </div>
-                        )
-                      }
-                      const locationItems = openedItems.filter((item) => item.base.projectName === project.name && item.base.machine === loc.machine)
-                      const openedTuiIds = new Set(locationItems.flatMap((item) => item.content.kind === 'tui' ? [item.content.taskId] : []))
-                      const baseForTask = (task: Task): BaseDir | null => {
-                        const ws = loc.workspaces.find((item) => tasksOfWorkspace(tasks, project, loc.machine, item).some((candidate) => candidate.id === task.id))
-                        return ws ? workspaceBase(project, loc.machine, ws) : null
-                      }
-                      const renderTask = (task: Task) => {
-                        const taskBase = baseForTask(task)
-                        return (
+                <div data-testid="directory-group">
+                  <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">目录</p>
+                  {project.locations.map((loc) => {
+                    const mKey = 'm:' + project.project_id + ':' + loc.machine
+                    const mOpen = directoryOpen.has(mKey) || searching
+                    const problem = locationProblem(loc, tree.machines)
+                    const hasChildren = loc.workspaces.length > 0
+                    const mCounts = countsForMachine(tasks, project, loc.machine)
+                    const sorted = sortWorkspaces(loc.workspaces, (ws) => wsMetrics(project, loc.machine, ws))
+                    const split = splitIdleWorkspaces(
+                      sorted,
+                      (ws) => {
+                        const c = wsCounts(project, loc.machine, ws)
+                        return {
+                          isMain: ws.is_main,
+                          selected: selectedKey === workspaceBase(project, loc.machine, ws).key,
+                          active: c.running + c.pending,
+                        }
+                      },
+                      prefs.hideIdleWorktrees && !searching,
+                    )
+                    const main = sorted.find((ws) => ws.is_main) ?? sorted[0]
+                    const mainBase = main ? workspaceBase(project, loc.machine, main) : null
+                    const hiddenOpen = openHiddenDirs.has(mKey)
+                    const renderWorkspace = (ws: Workspace) => {
+                      const base = workspaceBase(project, loc.machine, ws)
+                      const dSelected = selectedKey === base.key
+                      const under = wsCounts(project, loc.machine, ws)
+                      return (
+                        <div key={base.key} className="group relative">
                           <button
-                            key={task.id}
                             type="button"
+                            data-testid="workspace-row"
+                            aria-current={dSelected ? 'true' : undefined}
                             draggable
-                            onMouseDown={(e) => e.preventDefault()}
+                            onClick={() => openDirectory(base)}
                             onDragStart={(e) => {
-                              e.dataTransfer.setData(DRAG_TASK_MIME, task.id)
-                              e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(taskBase))
+                              e.dataTransfer.setData(DRAG_DIR_MIME, JSON.stringify(base))
+                              e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(base))
                               e.dataTransfer.effectAllowed = 'copy'
                             }}
-                            onClick={() => onOpenTask(taskBase, task.id)}
-                            className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
-                            style={{ paddingLeft: 8 + 48 }}
+                            className={cn(ROW_CLASS, 'hover:bg-accent/60', dSelected && 'bg-sidebar-accent font-medium')}
+                            style={{ paddingLeft: 8 + 32 }}
                           >
                             <span className="size-4 shrink-0" />
-                            <StateDot tone={stateTone(task.state)} />
-                            <span className="min-w-0 flex-1 truncate">{taskName(task)}</span>
+                            {ws.is_main ? (
+                              <Home className="size-3.5 shrink-0 text-muted-foreground" />
+                            ) : (
+                              <GitBranch className="size-3.5 shrink-0 text-muted-foreground" />
+                            )}
+                            <span className="min-w-0 flex-1 truncate font-mono">{dirLabel(ws)}</span>
+                            <RowCounts running={under.running} pending={under.pending} />
                           </button>
-                        )
-                      }
-                      const renderOpened = (item: OpenedWorkbenchItem) => (
-                        <button
-                          key={`opened:${item.tabId}`}
-                          type="button"
-                          onClick={() => {
-                            console.debug('project_tree.opened_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, tabId: item.tabId, groupId: item.groupId })
-                            onOpenItem?.(item)
-                          }}
-                          className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
-                          style={{ paddingLeft: 8 + 48 }}
-                        >
-                          <span className="size-4 shrink-0" />
-                          <StateDot tone={item.content.kind === 'terminal' ? 'active' : item.content.kind === 'tui' ? 'intervention' : 'idle'} />
-                          <span className="min-w-0 flex-1 truncate">{item.label}</span>
-                        </button>
+                          <button
+                            type="button"
+                            aria-label="在此打开终端"
+                            title="在此打开终端"
+                            onClick={() => openDirectoryTerminal(base)}
+                            className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                          >
+                            <HardDrive className="size-3.5" />
+                          </button>
+                        </div>
                       )
-                      const hiddenOpen = openHiddenDirs.has(mKey)
-                      return (
-                        <>
-                          <div data-testid="task-group">
-                            <p className="px-3 py-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">任务</p>
-                            {locationItems.filter((item) => item.content.kind !== 'tui' || !openedTuiIds.has(item.content.taskId)).map(renderOpened)}
-                            {loc.workspaces.flatMap((ws) => tasksOfWorkspace(tasks, project, loc.machine, ws)).filter((task) => !openedTuiIds.has(task.id)).map(renderTask)}
-                          </div>
-                          <div data-testid="directory-group">
-                            <div className="group relative">
-                              <button
-                                type="button"
-                                aria-expanded={directoriesExpanded}
-                                onClick={() => toggleDirectory(mKey)}
-                                className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
-                                style={{ paddingLeft: 8 + 32 }}
-                              >
-                                <Arrow open={directoriesExpanded} onToggle={() => toggleDirectory(mKey)} />
-                                <span className="min-w-0 flex-1 truncate">目录</span>
-                              </button>
-                              {onWorktreeCreated && onOpenDirectory && (
+                    }
+                    return (
+                      <div key={mKey}>
+                        <div
+                          className="group relative"
+                          data-testid="directory-machine-row"
+                          onContextMenu={
+                            onUnregister || onEdit || onWorktreeCreated
+                              ? (e) => {
+                                  e.preventDefault()
+                                  setMenu({ x: e.clientX, y: e.clientY, name: loc.name, machine: loc.machine, project })
+                                }
+                              : undefined
+                          }
+                        >
+                          <button
+                            type="button"
+                            data-testid="machine-row"
+                            aria-disabled={problem !== '' || undefined}
+                            aria-expanded={hasChildren && problem === '' ? mOpen : undefined}
+                            draggable={mainBase !== null && problem === ''}
+                            onClick={problem !== '' ? undefined : () => toggleDirectory(mKey)}
+                            onDragStart={mainBase === null || problem !== '' ? undefined : (e) => {
+                              e.dataTransfer.setData(DRAG_DIR_MIME, JSON.stringify(mainBase))
+                              e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(mainBase))
+                              e.dataTransfer.effectAllowed = 'copy'
+                            }}
+                            className={cn(ROW_CLASS, 'hover:bg-accent/60')}
+                            style={{ paddingLeft: 8 + 16 }}
+                          >
+                            {hasChildren && problem === '' ? (
+                              <Arrow open={mOpen} onToggle={() => toggleDirectory(mKey)} />
+                            ) : (
+                              <span className="size-4 shrink-0" />
+                            )}
+                            <HardDrive className="size-4 shrink-0 text-muted-foreground" />
+                            <StateDot tone={problem !== '' ? 'failed' : 'active'} />
+                            <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
+                            {problem !== '' && <DisconnectedBadge />}
+                            <span className={cn(onWorktreeCreated && problem === '' && 'group-hover:invisible')}>
+                              <RowCounts dirs={prefs.hideDirCounts ? undefined : mCounts.dirs} running={mCounts.running} pending={mCounts.pending} />
+                            </span>
+                          </button>
+                          {mainBase && onOpenDirectoryTerminal && problem === '' && (
+                            <button
+                              type="button"
+                              aria-label="打开主目录终端"
+                              title="打开主目录终端"
+                              onClick={() => openDirectoryTerminal(mainBase)}
+                              className="absolute right-8 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                            >
+                              <Terminal className="size-3.5" />
+                            </button>
+                          )}
+                          {onWorktreeCreated && problem === '' && (
+                            <button
+                              type="button"
+                              aria-label="新建工作树"
+                              title="新建工作树"
+                              onClick={() => setWorktreeTarget({ project, loc })}
+                              className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                            >
+                              <Plus className="size-3.5" />
+                            </button>
+                          )}
+                        </div>
+                        {problem !== '' && (
+                          <p
+                            className="break-words pb-1 pr-2 text-[11px] text-destructive"
+                            style={{ paddingLeft: 8 + 16 + 20 }}
+                          >
+                            {problem}
+                          </p>
+                        )}
+                        {problem === '' && mOpen && (
+                          <>
+                            {split.shown.map(renderWorkspace)}
+                            {split.hidden.length > 0 && (
+                              <>
                                 <button
                                   type="button"
-                                  aria-label="新建工作树"
-                                  title="新建工作树"
-                                  onClick={() => setWorktreeTarget({ project, loc })}
-                                  className="absolute right-2 top-1/2 hidden -translate-y-1/2 rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground group-hover:block"
+                                  data-testid="hidden-dirs-row"
+                                  aria-expanded={hiddenOpen}
+                                  onClick={() => toggleHiddenDirs(mKey)}
+                                  className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
+                                  style={{ paddingLeft: 8 + 32 }}
                                 >
-                                  <Plus className="size-3.5" />
+                                  <Arrow open={hiddenOpen} onToggle={() => toggleHiddenDirs(mKey)} />
+                                  <span className="min-w-0 flex-1 truncate">已隐藏 {split.hidden.length} 个目录</span>
                                 </button>
-                              )}
-                            </div>
-                            {(directoriesExpanded ? split.shown : main ? [main] : []).map(renderWorkspace)}
-                            {directoriesExpanded && split.hidden.length > 0 && (
-                            <>
-                              <button
-                                type="button"
-                                data-testid="hidden-dirs-row"
-                                aria-expanded={hiddenOpen}
-                                onClick={() => toggleHiddenDirs(mKey)}
-                                className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
-                                style={{ paddingLeft: 8 + 32 }}
-                              >
-                                <Arrow open={hiddenOpen} onToggle={() => toggleHiddenDirs(mKey)} />
-                                <span className="min-w-0 flex-1 truncate">已隐藏 {split.hidden.length} 个目录</span>
-                              </button>
-                              {hiddenOpen && split.hidden.map(renderWorkspace)}
-                            </>
+                                {hiddenOpen && split.hidden.map(renderWorkspace)}
+                              </>
                             )}
-                          </div>
-                        </>
-                      )
-                    })()}
-
-                    {/* 「已结束」分组：done 回收了 worktree，这些任务在树上没有可挂的
-                        目录行。默认收起，展开后仍可点开它们的 TUI 回看（spec §8 的
-                        「不静默少一条」在任务这一层的兑现）。
-                        hideArchived 在搜索期间旁路：藏起来就搜不到，等于把兜底拆了。 */}
-                    {problem === '' && mOpen && aTasks.length > 0 && !(prefs.hideArchived && !searching) && (
-                      <div>
-                        <button
-                          type="button"
-                          data-testid="archived-row"
-                          aria-expanded={aOpen}
-                          title={ARCHIVED_TITLE}
-                          onClick={() => toggleArchived(aKey)}
-                          className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60')}
-                          style={{ paddingLeft: 8 + 32 }}
-                        >
-                          <Arrow open={aOpen} onToggle={() => toggleArchived(aKey)} />
-                          <Archive className="size-3.5 shrink-0" />
-                          <span className="min-w-0 flex-1 truncate">{ARCHIVED_LABEL}</span>
-                          <span className="ml-auto shrink-0 font-mono text-[9.5px] tabular-nums">{aTasks.length}</span>
-                        </button>
-                        {aOpen &&
-                          aTasks.map((t) => (
-                            <button
-                              key={t.id}
-                              type="button"
-                              draggable
-                              onMouseDown={(e) => e.preventDefault()}
-                              onDragStart={(e) => {
-                                e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
-                                e.dataTransfer.setData(
-                                  DRAG_BASE_MIME,
-                                  JSON.stringify(archivedBase(project, loc.machine)),
-                                )
-                                e.dataTransfer.effectAllowed = 'copy'
-                              }}
-                              onClick={() => onOpenTask(archivedBase(project, loc.machine), t.id)}
-                              className={cn(ROW_CLASS, 'text-muted-foreground hover:bg-accent/60 hover:text-foreground')}
-                              style={{ paddingLeft: 8 + 48 }}
-                            >
-                              <span className="size-4 shrink-0" />
-                              <StateDot tone={stateTone(t.state)} />
-                              <span className="min-w-0 flex-1 truncate">{taskName(t)}</span>
-                            </button>
-                          ))}
+                          </>
+                        )}
                       </div>
-                    )}
-                    </div>
-                )
-              })}
+                    )
+                  })}
+                </div>
+              </>
+            )}
           </div>
         )
       })}
