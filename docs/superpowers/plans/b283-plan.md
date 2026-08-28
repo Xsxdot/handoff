@@ -767,6 +767,7 @@ Consumes：无。Produces：无（用户可见文案与注释）。
 
 ## 备注（执行者须知）
 
+- **执行偏离回写（2026-08-29 审查 Minor-2）**：Task 1 步骤 2 的共享夹具（`homeSess`/`dockRaw`/`HomeTab` import）实际落在 **Task 2** 首次使用时（Task 1 落它们会触发 noUnusedLocals TS6133，与「每 task 收口 typecheck 绿」冲突）；Task 3 步骤 3(d) 日志键 `清除的外来悬浮窗 tab` 含空格，落地必须写成带引号的 `'清除的外来悬浮窗 tab': r.purged`（裸标识符是 TS1005）。零上下文重放按此两处执行，文件终态与计划一致。
 - Task 次序不能换：Task 3 的清除用例断言 `adopted === 0` 与 `tabs 长 0`，两者要求方案 1（Task 2）已在位；倒序执行者这两条会红——这是依赖信号，不是测试错误。
 - `useWorkbenchSync.test.ts` 与 `Shell.test.tsx` 对本卡改动是**兼容耦合**：前者 mock 形状宽松（`{ sessions: [] }`），后者锁「在服务端已经不存在了」子串——Task 5 文案保留该子串即可，两文件都无需改动。
 - 全量测试（`npx vitest run`）不属于任何单个 task；implement 三段律的集成全量在收口时跑。
