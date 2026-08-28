@@ -444,3 +444,9 @@
 - **B260 HTTP `task_states` / `relations` 蛇形化**：Web 已按 PascalCase 冻结（`proto.TaskStateRow` 注释 + `web/src/api/ledger.ts`）。要改得连 Web 一起改。来源：B278 spec / 源卡 B260。
 - **B251 存量带日期文件改名**：历史 spec 文件保持原名。来源：B278 spec / 源卡 B251。
 - **仓外 product-backlog skill 日期禁令**：`~/.grok/skills/product-backlog/SKILL.md` 仍只写「不要自己起描述性文件名」。B278 只改仓内 `skills/handoff/SKILL.md` 与 prompt。来源：B278 spec r1 / 审查 Important 8。
+
+## 来自 B271 spec（2026-08-28，本期不做）
+
+- **`resume --force` 给节点能认的终态**：今天只把 `task.state` 推到 `waiting_review` 并打 `progress`，不发 `completed`，charter 节点 `waitForTurnEnd` 不会自动过。不要用假 `completed` 冒充执行器。来源：B271 spec / B268 续。
+- **执行器写完终稿不发 `completed`**（B268 现场 grok）。属执行器卡，不是本机镜像身份。来源：同上。
+- **真远端镜像断线 vs 卡流滞后的可观测性**：现场容易把任务流还在走、卡流停住当成同一个 bug。本卡只拆本机自订。来源：B271 spec Out of Scope。
