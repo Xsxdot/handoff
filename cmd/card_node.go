@@ -115,7 +115,8 @@ func writeStepDispatchResult(w io.Writer, cardID, node string, snap ledger.Dispa
 // runStepDispatch 向本机 agentd 提交一次卡节点并在 202 后短等本机账本首态。
 //
 // 参数：cmd 提供 context、stdout/stderr；id 是卡号；node 是卡钉工作流节点名。
-// 返回：本机 endpoint 配置、HTTP 受理或 agentd 错误；成功只表示受理。
+// 返回：本机 endpoint 配置、HTTP 受理或 agentd 错误；202 后若观察到首态则输出
+// 派发决议，若短等超时则只表示请求已受理，不携带完整回合结论。
 // 注意：--target/--executor/--model/--extra 是请求覆盖项；--target 不改变本机
 // agentd 拨号端点；--plan 与 --step 组合直接拒绝，绝不读取或上传调用方文件。
 func runStepDispatch(cmd *cobra.Command, id, node string) error {

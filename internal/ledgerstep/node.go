@@ -149,8 +149,8 @@ func reviewReadOnlyViolations(paths []string) []string {
 	return violations
 }
 
-// RunOnce 跑一次本节点；成功抢救裁决时会为被丢弃字段写普通评论，写评论失败
-// 原样返回。
+// RunOnce 跑一次本节点；review 用途且裁决为 pass 时，会在裁决落账前用 Diff
+// 执行只读闸；成功抢救裁决时会为被丢弃字段写普通评论，写评论失败原样返回。
 //
 // 参数：cardID 卡。
 // 返回：Outcome（下一步动作 + 裁决 + 理由）；只有「本节点根本不该被执行」
