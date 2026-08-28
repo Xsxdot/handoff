@@ -67,6 +67,11 @@ func TestMirrorDiscoverOnceSubscribesActiveTasks(t *testing.T) {
 		Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pool := targetclient.NewPool(func() *config.Config { return cfg }, log)
+	cli, err := pool.For("devbox")
+	if err != nil {
+		t.Fatalf("取镜像 target client: %v", err)
+	}
+	testhttp.ConfigureClient(cli.HTTPClient())
 	defer pool.Close()
 	m := NewMirror(pool, localSt, hub, nil, log)
 
@@ -113,6 +118,11 @@ func TestMirrorDropsTerminalTasks(t *testing.T) {
 		Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pool := targetclient.NewPool(func() *config.Config { return cfg }, log)
+	cli, err := pool.For("devbox")
+	if err != nil {
+		t.Fatalf("取镜像 target client: %v", err)
+	}
+	testhttp.ConfigureClient(cli.HTTPClient())
 	defer pool.Close()
 	m := NewMirror(pool, localSt, hub, nil, log)
 
@@ -153,6 +163,11 @@ func TestMirrorDiscoverOnceSkipsSelfTarget(t *testing.T) {
 	}}
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	pool := targetclient.NewPool(func() *config.Config { return cfg }, log)
+	cli, err := pool.For("devbox")
+	if err != nil {
+		t.Fatalf("取镜像 target client: %v", err)
+	}
+	testhttp.ConfigureClient(cli.HTTPClient())
 	defer pool.Close()
 	m := NewMirror(pool, localStore, hub, func(name string) bool { return name == "local" }, log)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)

@@ -51,6 +51,20 @@ func TestIntegrationClientsUseFixtureTransportWrapper(t *testing.T) {
 	}
 }
 
+func TestMirrorPoolClientsUseFixtureTransport(t *testing.T) {
+	body, err := os.ReadFile("mirror_test.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if got := strings.Count(text, `pool.For("devbox")`); got != 3 {
+		t.Fatalf("mirror_test.go 中 pool.For(\"devbox\") 次数=%d，期望每个 NewPool 测试先取出 client", got)
+	}
+	if got := strings.Count(text, "testhttp.ConfigureClient(cli.HTTPClient())"); got != 3 {
+		t.Fatalf("mirror_test.go 中 testhttp.ConfigureClient 次数=%d，期望每个池 client 都配置 fixture transport", got)
+	}
+}
+
 func TestSockBufWebsocketClientUsesFixtureTransport(t *testing.T) {
 	body, err := os.ReadFile("ws_regression_round2_test.go")
 	if err != nil {
