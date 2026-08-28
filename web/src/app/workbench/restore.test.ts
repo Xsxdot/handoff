@@ -1,6 +1,6 @@
 // restore.test.ts —— 落盘工作台状态与服务端会话列表合成恢复结果的纯函数测试。
 //
-// 职责：覆盖死会话抹除、孤儿归组、悬浮窗现场恢复与坏数据降级。
+// 职责：覆盖死会话抹除、孤儿归组、悬浮窗现场恢复与坏数据降级；B283 红色回路的转正锁。
 // 边界：不测试 React、网络请求或项目树选中动作；这些由同步层和 Shell 负责。
 import { describe, expect, it } from 'vitest'
 import type { MachineStatus, PtySession, WorkbenchStateResp } from '../../api/types'
@@ -323,5 +323,52 @@ describe('buildRestore', () => {
     expect(r.dock!.activeId).toBe('h2')
     expect(r.purged).toBe(1)
     expect(r.dock!.windowOpen).toBe(true) // 没清空就不收窗
+  })
+})
+
+describe('B283 红色回路转正：同一份现场连续两次打开，tab 数与引用都不得漂移', () => {
+  it('两次打开之间悬浮窗 tab 数不增长，本地 tab 的引用保得住（修复前 1→2）', () => {
+    // 打开 N：快照里一个外来 tab（mac-02 的 H9，扇出没带回它——ok=false）＋一个
+    // 本机 tab（H1，活着且在名单里）。
+    const open1 = buildRestore({
+      state: state({
+        dock: dockRaw(
+          [
+            { id: 'u1', kind: 'terminal', seq: 1, machine: 'mac-02', sessionId: 'H9' },
+            { id: 'h1', kind: 'terminal', seq: 2, machine: '', sessionId: 'H1' },
+          ],
+          'u1',
+          true,
+        ),
+      }),
+      sessions: [homeSess('H1')],
+      machines: [machine('', true), machine('mac-02', false)],
+      ...VIEW,
+    })
+    // 外来 tab 整个清除（不是剥引用留壳），本机 tab 原样保引用——修复前这里是
+    // 「H9 被剥成壳 + H1 留引用」两个 tab，壳会在两次打开之间自建新会话。
+    expect(open1.dock!.tabs).toHaveLength(1)
+    expect(open1.dock!.tabs[0]).toMatchObject({ id: 'h1', sessionId: 'H1' }) // 保引用（反转自「被剥」）
+    expect(open1.dock!.activeId).toBe('h1') // u1 被清 → 显式置 null → 既有兜底重指
+    expect(open1.purged).toBe(1)
+    expect(open1.pruned).toBe(0) // mac-02 没答上来：恢复层没有把 H9 判死剥引用
+
+    // 两次打开之间：h1 有 sessionId 可 attach，TerminalTab 不自建（TerminalTab.tsx
+    // 的 `if (!id)` 支不进），u1 已随首次写回落盘消失。修复前的循环是：壳自建 H9'
+    // 写回 → 下一轮 H9 活着回来被当孤儿收编 → tab +1。
+
+    // 打开 N+1：H9（mac-02 home）活着回到列表——不收编（方案1：悬浮窗是本机面）。
+    const open2 = buildRestore({
+      state: state({
+        dock: dockRaw([{ id: 'h1', kind: 'terminal', seq: 2, machine: '', sessionId: 'H1' }], 'h1', true),
+      }),
+      sessions: [homeSess('H1'), homeSess('H9', 'mac-02')],
+      machines: [machine('', true), machine('mac-02', true)],
+      ...VIEW,
+    })
+    expect(open2.dock!.tabs).toHaveLength(1)
+    expect(open2.dock!.tabs[0].sessionId).toBe('H1')
+    expect(open2.adopted).toBe(0)
+    expect(open2.purged).toBe(0)
   })
 })
