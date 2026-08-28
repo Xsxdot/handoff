@@ -143,8 +143,14 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	seedAgentdLedger(t, st)
+	if _, err := st.PutDiscipline(discipline.NameReview, "本机测试审阅纪律"); err != nil {
+		t.Fatalf("准备本机测试纪律 %s: %v", discipline.NameReview, err)
+	}
 	env := newTestAgentdEnv(t)
 	env.srv.SetLedger(st)
+	// 空 target 的 card step 对本机 /api/status 探活；没 manager 会 503。
+	env.srv.SetManager(NewManager(env.st, env.srv.Hub(), nil, env.srv.conf(), nil, nil, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil))))
 	return &ledgerEnv{testAgentdEnv: env, ledger: st}
 }
 
