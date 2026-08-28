@@ -432,7 +432,7 @@
 
 ## 来自 B277 finish（2026-08-28）
 
-- ~~升 charter/graph 以挂 `flow`/`tree`~~ **B284 已升钉版（待合 main）**：`go.mod` 现为 `github.com/Xsxdot/charter/graph v0.10.0`（tag 在 charter `a35b9524`）。模块内 `go run … flow Manager.Dispatch` 为 `degraded=false` 93 步。查看器进正在跑的控制台仍要合主后 `handoff upgrade` / 重编 agentd；linux-01 当时 B281/B282 review 在飞，本卡不重启。来源：B284，承接 B277 finish。
+- ~~升 charter/graph 以挂 `flow`/`tree`~~ **已合 main（B284，2026-08-28）**：`go.mod` 现为 `github.com/Xsxdot/charter/graph v0.10.0`（tag 在 charter `a35b9524`）。模块内 `go run … flow Manager.Dispatch` 为 `degraded=false` 93 步。查看器进正在跑的控制台仍要合主后 `handoff upgrade` / 重编 agentd；linux-01 当时 B281/B282 review 在飞，本卡不重启。来源：B284，承接 B277 finish。
 - **TS/React flows 不做**：用户 2026-08-28 裁掉。查看器对 `.ts`/`.tsx` 入缝保持 degraded。来源：B277 spec Out of Scope。
 - **扫描器跳过/空流程**：`n_ledger_Store_EnsureDefaultTemplates`、`n_ledger_Store_EnsureDefaultWorkflows` 解析失败跳过；6 个键空 `steps`（无图内 call/可视控制流）；接口实现闭包第 2 轮后仍有 6 个二阶候选按计划上限未展开。来源：B277 扫描报告。
 - **全函数 CFG / SSA**：不在本卡。来源：B277 spec OOS，charter roadmap 27/32/53。
