@@ -1211,6 +1211,12 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, ErrWorkdirBusy):
 		s.log.Warn("dispatch 被拒：目标工作目录被占用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, errFetchRefLockContention):
+		s.log.Warn("dispatch 被拒：基线补拉遭遇远端 ref 锁竞争", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, errLocalBaseBranchDiverged):
+		s.log.Warn("dispatch 被拒：本地工作分支与 origin 分叉", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBaseCommitMissing):
 		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

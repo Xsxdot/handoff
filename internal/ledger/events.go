@@ -123,11 +123,15 @@ type DispatchSnapshot struct {
 	Target            string `json:"target"`
 	TaskID            string `json:"task_id"`
 	Branch            string `json:"branch"`
-	Executor          string `json:"executor"`
-	Model             string `json:"model"`
-	Purpose           string `json:"purpose,omitempty"` // implement|review|…：审阅轮不新开分支，靠它区分
-	PlanPath          string `json:"plan_path,omitempty"`
-	Actor             string `json:"-"`
+	// Base 是本次作为新任务起点来源的分支名；旧事件没有该键且不回填。
+	Base string `json:"base"`
+	// BaseCommit 是目标 agentd 返回的 Task.BaseCommit；旧事件没有该键且不回填。
+	BaseCommit string `json:"base_commit"`
+	Executor   string `json:"executor"`
+	Model      string `json:"model"`
+	Purpose    string `json:"purpose,omitempty"` // implement|review|…：审阅轮不新开分支，靠它区分
+	PlanPath   string `json:"plan_path,omitempty"`
+	Actor      string `json:"-"`
 }
 
 // WorkBranchInfo 是卡最近一次非审阅派发的工作分支及其目标机。

@@ -57,26 +57,27 @@ type dispatchRequest struct {
 
 // dispatchTransport 是派发前逻辑的测试缝。生产路径由
 // dispatchTransportWithOpts 走 client.Dispatch；保留这个四参数缝是为了让
-// 单测只关心 prompt、分支、目标机与项目四个派发前事实。
-var dispatchTransport = func(prompt, branch, target, project string) (string, error) {
+// 单测只关心 prompt、分支、目标机与项目四个派发前事实；返回值仍携带目标
+// agentd 原样回传的 BaseCommit。
+var dispatchTransport = func(prompt, branch, target, project string) (string, string, error) {
 	cl, done, err := targetClient(target)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer done()
 	task, err := cl.Dispatch(context.Background(), client.DispatchOpts{
 		Prompt: prompt, NewBranch: branch, Target: target, ProjectName: project,
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return task.ID, nil
+	return task.ID, task.BaseCommit, nil
 }
 
-var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
+var dispatchTransportWithOpts = func(req dispatchRequest) (string, string, error) {
 	cl, done, err := targetClient(req.target)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	defer done()
 	task, err := cl.Dispatch(context.Background(), client.DispatchOpts{
@@ -92,9 +93,9 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		NewWorktree:        req.newWorktree,
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return task.ID, nil
+	return task.ID, task.BaseCommit, nil
 }
 
 // cliTransport 把 CLI 的派发通道适配成 ledgerstep.Transport。
@@ -102,7 +103,7 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 // 保留 dispatchTransportWithOpts 这层间接：它是 cmd 包既有的测试缝
 // （swapDispatchTransport / swapDispatchTransportWithOpts），认领与租约的
 // 用例还挂在上面。
-func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {
+func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, string, error) {
 	return dispatchTransportWithOpts(dispatchRequest{
 		prompt: opts.Prompt, branch: opts.Branch, target: opts.Target, project: opts.Project,
 		executor: opts.Executor, model: opts.Model, planB64: opts.PlanB64,
@@ -118,11 +119,11 @@ func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, er
 }
 
 // swapDispatchTransport 替换网络派发段；测试恢复原实现。
-func swapDispatchTransport(fn func(prompt, branch, target, project string) (string, error)) func() {
+func swapDispatchTransport(fn func(prompt, branch, target, project string) (string, string, error)) func() {
 	old := dispatchTransport
 	oldWithOpts := dispatchTransportWithOpts
 	dispatchTransport = fn
-	dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
+	dispatchTransportWithOpts = func(req dispatchRequest) (string, string, error) {
 		return dispatchTransport(req.prompt, req.branch, req.target, req.project)
 	}
 	return func() {
@@ -136,7 +137,7 @@ func swapDispatchTransport(fn func(prompt, branch, target, project string) (stri
 // 为什么不复用 swapDispatchTransport：那条缝刻意只暴露 prompt/branch/target/project
 // 四个标量（见它的注释），纪律块名字这类新字段到不了回调手上。两条缝并存，
 // 各测各的关注面，既有用例不必为新字段改回调。
-func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, error)) func() {
+func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, string, error)) func() {
 	old := dispatchTransportWithOpts
 	dispatchTransportWithOpts = fn
 	return func() { dispatchTransportWithOpts = old }

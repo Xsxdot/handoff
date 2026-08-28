@@ -162,9 +162,9 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	}
 
 	var gotPrompt, gotProject string
-	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
 		gotPrompt, gotProject = prompt, project
-		return "T-fake-1", nil
+		return "T-fake-1", "", nil
 	})
 	defer restore()
 
@@ -230,9 +230,9 @@ func TestCardDispatchGuardFollowsOwnership(t *testing.T) {
 		t.Fatalf("预占: %v", err)
 	}
 	st.Close()
-	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
 		t.Fatal("他主持有时不应走到派发")
-		return "", nil
+		return "", "", nil
 	})
 	defer restore()
 	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", c.ID,
@@ -275,9 +275,9 @@ func TestCardDispatchSameOwnerReentryIdempotent(t *testing.T) {
 	_ = st.Close()
 	n := 0
 	for i := 0; i < 2; i++ {
-		restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
 			n++
-			return fmt.Sprintf("T-reentry-%d", n), nil
+			return fmt.Sprintf("T-reentry-%d", n), "", nil
 		})
 		if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
 			"--template", "feature-impl", "--target", "fake-01"); err != nil {
@@ -303,9 +303,9 @@ func TestCardDispatchExecutorModelFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		got = req
-		return "T-cli-executor-model", nil
+		return "T-cli-executor-model", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
@@ -373,8 +373,8 @@ func TestCardDispatchFailureReleasesLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
-		return "", errors.New("起点在任务仓库中不存在")
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
+		return "", "", errors.New("起点在任务仓库中不存在")
 	})
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
 		"--template", "feature-impl", "--target", "mac-02", "--discipline-override", "implement"); err == nil {
@@ -394,8 +394,8 @@ func TestCardDispatchFailureReleasesLease(t *testing.T) {
 	}
 
 	// 真正的判据：换一个会话（新进程即新会话）能立刻重派
-	restore = swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
-		return "T-retry-1", nil
+	restore = swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
+		return "T-retry-1", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
@@ -421,9 +421,9 @@ func TestCardDispatchExtraReachesPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		got = req
-		return "T-extra-1", nil
+		return "T-extra-1", "", nil
 	})
 	defer restore()
 	const extra = "本轮只修 F1，不要重跑整卡"
@@ -728,9 +728,9 @@ func TestCardDispatchStepNoLocalFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		called = true
-		return "T-local-fallback", nil
+		return "T-local-fallback", "", nil
 	})
 	defer restore()
 	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中", "--target", "mac-02")
@@ -758,9 +758,9 @@ func TestCardDispatchWithoutExtraHasNoSupplementSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		got = req
-		return "T-noextra-1", nil
+		return "T-noextra-1", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
@@ -823,9 +823,9 @@ func TestCardDispatchDeliversResolvedDiscipline(t *testing.T) {
 	_ = st.Close()
 
 	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		got = req
-		return "T-cli-discipline", nil
+		return "T-cli-discipline", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
@@ -881,9 +881,9 @@ func TestCardDispatchRefusesUnsupportedTargetBeforeClaim(t *testing.T) {
 	}
 	_ = st.Close()
 
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		t.Fatal("拒发时不应发出任何派发请求")
-		return "", nil
+		return "", "", nil
 	})
 	defer restore()
 	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID,

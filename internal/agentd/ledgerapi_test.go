@@ -686,6 +686,54 @@ func TestLedgerAPI(t *testing.T) {
 	}
 }
 
+func TestLedgerAPIDetailKeepsPascalCaseProjection(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "HTTP 投影卡")
+	other := seedChildCard(t, env, card.ID, "HTTP 关系目标")
+	if err := env.ledger.AddRelation(card.ID, other.ID, ledger.RelRelates, "test"); err != nil {
+		t.Fatalf("加关系: %v", err)
+	}
+	if err := env.ledger.LinkTask(card.ID, "mac-02", "T-http-wire-260", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatalf("挂 task: %v", err)
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+card.ID)
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/cards/%s: %d %s", card.ID, code, body)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatalf("解码 GET /api/cards/%s: %v", card.ID, err)
+	}
+	relations, ok := detail["relations"].([]any)
+	if !ok || len(relations) != 1 {
+		t.Fatalf("GET /api/cards/%s relations 不符合预期: %v", card.ID, detail["relations"])
+	}
+	relation, ok := relations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("GET /api/cards/%s relations[0] 非对象: %v", card.ID, relations[0])
+	}
+	if _, ok := relation["From"]; !ok {
+		t.Fatalf("GET /api/cards/%s relations[0] 缺 PascalCase From: %v", card.ID, relation)
+	}
+	if _, ok := relation["from"]; ok {
+		t.Fatalf("GET /api/cards/%s relations[0] 不应出现 snake from: %v", card.ID, relation)
+	}
+	taskStates, ok := detail["task_states"].([]any)
+	if !ok || len(taskStates) != 1 {
+		t.Fatalf("GET /api/cards/%s task_states 不符合预期: %v", card.ID, detail["task_states"])
+	}
+	taskState, ok := taskStates[0].(map[string]any)
+	if !ok {
+		t.Fatalf("GET /api/cards/%s task_states[0] 非对象: %v", card.ID, taskStates[0])
+	}
+	if _, ok := taskState["TaskID"]; !ok {
+		t.Fatalf("GET /api/cards/%s task_states[0] 缺 PascalCase TaskID: %v", card.ID, taskState)
+	}
+	if _, ok := taskState["task_id"]; ok {
+		t.Fatalf("GET /api/cards/%s task_states[0] 不应出现 snake task_id: %v", card.ID, taskState)
+	}
+}
+
 // TestCardsListWireCarriesChildrenCounts 锁住 CardView → HTTP wire 的接缝：
 // ledger.ListCards 正确不够，手搭响应 map 也必须把子卡计数传给看板。
 func TestCardsListWireCarriesChildrenCounts(t *testing.T) {

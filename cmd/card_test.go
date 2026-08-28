@@ -59,6 +59,79 @@ func TestCardAddListShowMove(t *testing.T) {
 	}
 }
 
+func TestCardShowLedgerWireUsesSnakeCase(t *testing.T) {
+	dir := t.TempDir()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "账本线格式", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatalf("add: %v", err)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &created); err != nil {
+		t.Fatalf("add 输出: %v", err)
+	}
+	st, err := ledger.Open(dir + "/ledger.db")
+	if err != nil {
+		t.Fatalf("打开账本: %v", err)
+	}
+	defer st.Close()
+	other, err := st.CreateCard(ledger.NewCard{Title: "关系目标", Project: "demo", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建关系目标: %v", err)
+	}
+	if err := st.LinkTask(created.ID, "mac-02", "T-wire-260", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatalf("挂 task: %v", err)
+	}
+	if err := st.AddRelation(created.ID, other.ID, ledger.RelRelates, "test"); err != nil {
+		t.Fatalf("加关系: %v", err)
+	}
+	out, _, err = runLedgerCLI(t, dir, "card", "show", created.ID)
+	if err != nil {
+		t.Fatalf("show: %v", err)
+	}
+	var shown map[string]any
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &shown); err != nil {
+		t.Fatalf("show 输出: %v", err)
+	}
+	tasks, ok := shown["tasks"].([]any)
+	if !ok || len(tasks) != 1 {
+		t.Fatalf("show.tasks 不符合预期，card=%s tasks=%v", created.ID, shown["tasks"])
+	}
+	task, ok := tasks[0].(map[string]any)
+	if !ok {
+		t.Fatalf("show.tasks[0] 不是对象，card=%s: %v", created.ID, tasks[0])
+	}
+	for _, key := range []string{"card_id", "target", "task_id", "purpose", "created_at"} {
+		if _, ok := task[key]; !ok {
+			t.Fatalf("card show tasks 缺 snake 键 %q，card=%s task=%v", key, created.ID, task)
+		}
+	}
+	for _, key := range []string{"CardID", "TaskID"} {
+		if _, ok := task[key]; ok {
+			t.Fatalf("card show tasks 不应有 PascalCase 键 %q，card=%s task=%v", key, created.ID, task)
+		}
+	}
+	relations, ok := shown["relations"].([]any)
+	if !ok || len(relations) != 1 {
+		t.Fatalf("show.relations 不符合预期，card=%s relations=%v", created.ID, shown["relations"])
+	}
+	relation, ok := relations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("show.relations[0] 不是对象，card=%s: %v", created.ID, relations[0])
+	}
+	for _, key := range []string{"from", "to", "type", "created_at"} {
+		if _, ok := relation[key]; !ok {
+			t.Fatalf("card show relations 缺 snake 键 %q，card=%s relation=%v", key, created.ID, relation)
+		}
+	}
+	for _, key := range []string{"From", "To", "Type"} {
+		if _, ok := relation[key]; ok {
+			t.Fatalf("card show relations 不应有 PascalCase 键 %q，card=%s relation=%v", key, created.ID, relation)
+		}
+	}
+}
+
 func TestCardUpdateAttachmentKindsAndDetachMessages(t *testing.T) {
 	var logOutput bytes.Buffer
 	previousLogger := slog.Default()
@@ -218,8 +291,8 @@ func TestCardUpdateBaseBranch(t *testing.T) {
 	if _, _, err := runLedgerCLI(t, dir, "card", "update", dispatched.ID, "--accept", "测试全绿"); err != nil {
 		t.Fatalf("设置派发判据: %v", err)
 	}
-	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
-		return "T-b205-update-base", nil
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
+		return "T-b205-update-base", "", nil
 	})
 	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", dispatched.ID,
 		"--template", "feature-impl", "--target", "mac-02", "--discipline-override", "implement")

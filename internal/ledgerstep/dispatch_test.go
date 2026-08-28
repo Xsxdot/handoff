@@ -85,9 +85,9 @@ func TestViaTemplateExecutorModelOverridesAndPairRule(t *testing.T) {
 			st, card := dispatchTestCard(t)
 			setTemplateModel(t, st, target, "template-model")
 			var got DispatchOpts
-			d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+			d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 				got = opts
-				return "T-override", nil
+				return "T-override", "", nil
 			}}
 			if _, err := d.ViaTemplate(context.Background(), card, tc.req); err != nil {
 				t.Fatalf("ViaTemplate: %v", err)
@@ -106,9 +106,9 @@ func TestViaTemplateSameExecutorKeepsTemplateModel(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	setTemplateModel(t, st, target, "template-model")
 	var got DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		got = opts
-		return "T-same-executor", nil
+		return "T-same-executor", "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
 		Template: "feature-impl", Target: target, ExecutorOverride: "opencode",
@@ -123,8 +123,8 @@ func TestViaTemplateSameExecutorKeepsTemplateModel(t *testing.T) {
 // TestViaTemplateSnapshotRecordsExecutorModel 穿过真实 dispatched JSON 边界验证执行器和模型快照。
 func TestViaTemplateSnapshotRecordsExecutorModel(t *testing.T) {
 	st, card := dispatchTestCard(t)
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
-		return "T-snapshot-executor-model", nil
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+		return "T-snapshot-executor-model", "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
 		Template: "feature-impl", Target: "mac-02", ExecutorOverride: "grok", ModelOverride: "grok-model",
@@ -151,6 +151,56 @@ func TestViaTemplateSnapshotRecordsExecutorModel(t *testing.T) {
 	t.Fatal("缺 dispatched 事件")
 }
 
+// TestViaTemplateCarriesTransportBaseCommitIntoResultAndSnapshot 钉住目标 agentd
+// 返回的 Task.BaseCommit 必须原样穿过 Transport、结果和 dispatched 事件；空 base
+// 也必须显式落账，不能由协调者本地猜 SHA。
+func TestViaTemplateCarriesTransportBaseCommitIntoResultAndSnapshot(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	wantBaseCommit := strings.Repeat("1", 40)
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+		return "task-wire", wantBaseCommit, nil
+	}}
+
+	got, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02",
+	})
+	if err != nil {
+		t.Fatalf("ViaTemplate: %v", err)
+	}
+	if got.Task != "task-wire" || got.Base != "" || got.BaseCommit != wantBaseCommit {
+		t.Fatalf("结果 task/base/base_commit=%q/%q/%q，期望 task-wire/空/%s",
+			got.Task, got.Base, got.BaseCommit, wantBaseCommit)
+	}
+
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	for _, event := range events {
+		if event.Type != ledger.EvDispatched {
+			continue
+		}
+		var raw map[string]json.RawMessage
+		if err := json.Unmarshal(event.Payload, &raw); err != nil {
+			t.Fatalf("解 dispatched payload: %v", err)
+		}
+		for _, key := range []string{"base", "base_commit"} {
+			if _, ok := raw[key]; !ok {
+				t.Fatalf("dispatched payload 缺少 %q: %s", key, event.Payload)
+			}
+		}
+		var snap ledger.DispatchSnapshot
+		if err := json.Unmarshal(event.Payload, &snap); err != nil {
+			t.Fatalf("解 dispatched snapshot: %v", err)
+		}
+		if snap.Base != "" || snap.BaseCommit != wantBaseCommit {
+			t.Fatalf("快照 base/base_commit=%q/%q，期望空/%s", snap.Base, snap.BaseCommit, wantBaseCommit)
+		}
+		return
+	}
+	t.Fatal("缺 dispatched 事件")
+}
+
 // TestViaTemplateStopsSnapshotAfterWriteGateCloses 覆盖挂账成功后、快照写入前
 // 失去运行锁的窗口：已有 card_tasks 行保留，但不得再落 dispatched 事件。
 func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
@@ -161,8 +211,8 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 	}
 
 	gateCalls := 0
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
-		return "T-write-gate", nil
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+		return "T-write-gate", "", nil
 	}}
 	_, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
 		Template: "feature-impl", Target: "mac-02",
@@ -209,9 +259,9 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 func TestViaTemplateSendsDisciplineName(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var got DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		got = opts
-		return "T-fake-1", nil
+		return "T-fake-1", "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card,
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -229,9 +279,9 @@ func TestViaTemplateMarksEmptyBaseForTargetResolution(t *testing.T) {
 	t.Run("空基线标记目标侧解析", func(t *testing.T) {
 		st, card := dispatchTestCard(t)
 		var got DispatchOpts
-		d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 			got = opts
-			return "T-default-base", nil
+			return "T-default-base", "", nil
 		}}
 		if _, err := d.ViaTemplate(context.Background(), card,
 			TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -259,9 +309,9 @@ func TestViaTemplateMarksEmptyBaseForTargetResolution(t *testing.T) {
 			t.Fatal(err)
 		}
 		var got DispatchOpts
-		d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 			got = opts
-			return "T-explicit-base", nil
+			return "T-explicit-base", "", nil
 		}}
 		if _, err := d.ViaTemplate(context.Background(), card,
 			TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -279,9 +329,9 @@ func TestViaTemplateMarksEmptyBaseForTargetResolution(t *testing.T) {
 func TestViaTemplateNoDisciplineInPrompt(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var got DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		got = opts
-		return "T-fake-2", nil
+		return "T-fake-2", "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card,
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -302,9 +352,9 @@ func TestViaTemplateNoDisciplineInPrompt(t *testing.T) {
 func TestViaTemplateOverrideReplacesName(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var got DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		got = opts
-		return "T-fake-3", nil
+		return "T-fake-3", "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card,
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02", DisciplineOverride: "review"}); err != nil {
@@ -320,8 +370,8 @@ func TestViaTemplateOverrideReplacesName(t *testing.T) {
 // 但那个问题本身没消失，答案换成名字。
 func TestViaTemplateSnapshotRecordsDisciplineName(t *testing.T) {
 	st, card := dispatchTestCard(t)
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
-		return "T-fake-4", nil
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+		return "T-fake-4", "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card,
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -348,9 +398,9 @@ func TestViaTemplateSnapshotRecordsDisciplineName(t *testing.T) {
 func TestViaTemplateSecondRoundGetsNumberedBranch(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var branches []string
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		branches = append(branches, opts.Branch)
-		return fmt.Sprintf("T-impl-%d", len(branches)), nil
+		return fmt.Sprintf("T-impl-%d", len(branches)), "", nil
 	}}
 	for i := 0; i < 2; i++ {
 		if _, err := d.ViaTemplate(context.Background(), card,
@@ -378,9 +428,9 @@ func TestViaTemplateSecondRoundGetsNumberedBranch(t *testing.T) {
 func TestViaTemplateContinuationUsesLocalWorkBranch(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var dispatched []DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		dispatched = append(dispatched, opts)
-		return fmt.Sprintf("T-continuation-%d", len(dispatched)), nil
+		return fmt.Sprintf("T-continuation-%d", len(dispatched)), "", nil
 	}}
 	for i := 0; i < 2; i++ {
 		if _, err := d.ViaTemplate(context.Background(), card,
@@ -404,9 +454,9 @@ func TestViaTemplateContinuationUsesLocalWorkBranch(t *testing.T) {
 func TestViaTemplateRejectsCrossTargetBeforeTransport(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	transportCalls := 0
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		transportCalls++
-		return fmt.Sprintf("T-cross-%d", transportCalls), nil
+		return fmt.Sprintf("T-cross-%d", transportCalls), "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card,
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -441,9 +491,9 @@ func TestViaTemplateRejectsCrossTargetBeforeTransport(t *testing.T) {
 func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var dispatched []DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		dispatched = append(dispatched, opts)
-		return fmt.Sprintf("T-purpose-%d", len(dispatched)), nil
+		return fmt.Sprintf("T-purpose-%d", len(dispatched)), "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card,
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -490,9 +540,9 @@ func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
 func TestViaTemplateWithoutPurposeOverrideKeepsTemplatePurpose(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var got DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		got = opts
-		return "T-template-purpose", nil
+		return "T-template-purpose", "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card,
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -530,9 +580,9 @@ func TestViaTemplateOmitAcceptanceWithholdsCriteria(t *testing.T) {
 				t.Fatalf("GetCard: %v", err)
 			}
 			var got DispatchOpts
-			d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+			d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 				got = opts
-				return "T-acceptance", nil
+				return "T-acceptance", "", nil
 			}}
 			if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
 				Template: "feature-impl", Target: "mac-02", CarryCardContext: true,
@@ -616,6 +666,8 @@ func TestBuildPromptIncludesOutputPathWithoutCardContext(t *testing.T) {
 		"## 本节点产出物",
 		"docs/b201-plan.md",
 		"请把本节点产出物写到该路径，不要另起文件名",
+		"不要加日期前缀",
+		"带 YYYY-MM-DD- 的是历史文件，不是本节点法定产出",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("缺产出路径段 %q:\n%s", want, got)

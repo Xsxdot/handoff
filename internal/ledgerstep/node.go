@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -268,9 +269,18 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		if declaredPath == "" || !containsPath(changedPaths, declaredPath) {
 			body := "本节点要求的产出物路径：\n" + declaredPath +
 				"\n本轮实际改动文件：\n" + changedPathsText(changedPaths)
-			logger.Warn("法定产出物未出现在本轮改动",
-				"kind", output.Kind, "declared_path", declaredPath,
-				"changed_paths", changedPaths)
+			if actualPath, ok := datePrefixedDeclaredPath(declaredPath, changedPaths); ok {
+				body += "\n检测到日期前缀文件名：" + actualPath +
+					"；这是日期前缀，请改名为：" + declaredPath
+				logger.Warn("检测到日期前缀法定产出",
+					"kind", output.Kind, "declared_path", declaredPath,
+					"changed_paths", changedPaths, "actual_path", actualPath,
+					"cause", "产出路径必须逐字匹配")
+			} else {
+				logger.Warn("法定产出物未出现在本轮改动",
+					"kind", output.Kind, "declared_path", declaredPath,
+					"changed_paths", changedPaths, "cause", "未找到精确路径或日期前缀版本")
+			}
 			return n.haltForHuman(cardID, "缺少约定产出物", body)
 		}
 		if err := n.gatedWrite("挂附件"); err != nil {
@@ -307,4 +317,40 @@ func containsPath(paths []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// datePrefixedDeclaredPath 只识别与 declaredPath 同目录、且 basename 形如
+// YYYY-MM-DD-+声明 basename 的改名错误；其它日期文件仍按普通缺失处理。
+func datePrefixedDeclaredPath(declaredPath string, changedPaths []string) (actualPath string, ok bool) {
+	if declaredPath == "" {
+		return "", false
+	}
+	declaredDir := filepath.Dir(declaredPath)
+	declaredBase := filepath.Base(declaredPath)
+	const datePrefixLength = len("YYYY-MM-DD-")
+	for _, changedPath := range changedPaths {
+		if filepath.Dir(changedPath) != declaredDir {
+			continue
+		}
+		actualBase := filepath.Base(changedPath)
+		if len(actualBase) != datePrefixLength+len(declaredBase) ||
+			actualBase[datePrefixLength:] != declaredBase ||
+			actualBase[4] != '-' || actualBase[7] != '-' || actualBase[10] != '-' {
+			continue
+		}
+		validDigits := true
+		for i := 0; i < 10; i++ {
+			if i == 4 || i == 7 {
+				continue
+			}
+			if actualBase[i] < '0' || actualBase[i] > '9' {
+				validDigits = false
+				break
+			}
+		}
+		if validDigits {
+			return changedPath, true
+		}
+	}
+	return "", false
 }

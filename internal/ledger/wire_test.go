@@ -56,6 +56,52 @@ func TestWireFieldNames(t *testing.T) {
 	}
 }
 
+func TestLedgerLinkAndRelationZeroValuesKeepSnakeKeys(t *testing.T) {
+	cases := []struct {
+		name  string
+		value any
+		keys  []string
+	}{
+		{name: "task link", value: TaskLink{}, keys: []string{"card_id", "target", "task_id", "purpose", "created_at"}},
+		{name: "relation", value: Relation{}, keys: []string{"from", "to", "type", "created_at"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(tc.value)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var fields map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &fields); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			for _, key := range tc.keys {
+				value, ok := fields[key]
+				if !ok {
+					t.Fatalf("零值线格式缺键 %q: %s", key, raw)
+				}
+				if key == "created_at" {
+					var timestamp time.Time
+					if err := json.Unmarshal(value, &timestamp); err != nil {
+						t.Fatalf("%s 不是时间值: %v", key, err)
+					}
+					if !timestamp.IsZero() {
+						t.Fatalf("零值 %s 应保持零时间: %v", key, timestamp)
+					}
+					continue
+				}
+				var text string
+				if err := json.Unmarshal(value, &text); err != nil {
+					t.Fatalf("%s 不是字符串值: %v", key, err)
+				}
+				if text != "" {
+					t.Fatalf("零值 %s 应为空字符串: %q", key, text)
+				}
+			}
+		})
+	}
+}
+
 // 评论事件的返回值必须带真实时间戳——零值会让机器消费方读到 0001-01-01。
 func TestCommentEventCarriesTimestamp(t *testing.T) {
 	s := seedStore(t)

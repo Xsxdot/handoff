@@ -945,8 +945,8 @@ func TestDispatchTwoNewWorktreesNotBlocked(t *testing.T) {
 }
 
 // TestDispatchWireLocalBaseBranchEndToEnd 穿过 client map、HTTP DTO、server→manager
-// 映射与真实本地 resolver：origin 是不可达的占位地址，只有完整 wire 上的
-// local_base_branch=true 才能在不 fetch 的情况下从 work 分支创建任务。
+// 映射与真实本地 resolver：origin 是不可达的占位地址，完整 wire 上的
+// local_base_branch=true 会探测失败并回退到 work 分支本地尖端。
 func TestDispatchWireLocalBaseBranchEndToEnd(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	runGit(t, env.repo, "branch", "work")
@@ -962,6 +962,9 @@ func TestDispatchWireLocalBaseBranchEndToEnd(t *testing.T) {
 	}
 	if task.BaseCommit != wantBase {
 		t.Fatalf("任务实际起点=%q，期望本地 work 尖端=%q", task.BaseCommit, wantBase)
+	}
+	if got := strings.TrimSpace(runGit(t, env.repo, "rev-parse", "refs/heads/work^{commit}")); got != wantBase {
+		t.Fatalf("origin 不可达回退不应移动本地 work ref: got=%q want=%q", got, wantBase)
 	}
 }
 

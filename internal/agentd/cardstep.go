@@ -175,7 +175,7 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 	return res, nil
 }
 
-func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {
+func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, string, error) {
 	// 走 target 客户端池而不是自己 client.New：relay 形态的机器没有 addr，
 	// 直连构造对它们恒失败（见 internal/targetclient 与 nodirectclient_test）。
 	s.log.Info("agentd 节点派发请求", "target", opts.Target, "executor", opts.Executor,
@@ -185,7 +185,7 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 	cl, err := s.pool.For(opts.Target)
 	if err != nil {
 		s.log.Warn("取得节点派发客户端失败", "target", opts.Target, "cause", err)
-		return "", err
+		return "", "", err
 	}
 	task, err := cl.Dispatch(ctx, client.DispatchOpts{
 		Prompt: opts.Prompt, Target: opts.Target,
@@ -202,10 +202,11 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 	if err != nil {
 		s.log.Warn("agentd 节点派发失败", "target", opts.Target, "executor", opts.Executor,
 			"model", opts.Model, "cause", err)
-		return "", err
+		return "", "", err
 	}
-	s.log.Info("agentd 节点派发已受理", "target", opts.Target, "task", task.ID)
-	return task.ID, nil
+	s.log.Info("agentd 节点派发已受理", "target", opts.Target, "task", task.ID,
+		"base_commit", task.BaseCommit)
+	return task.ID, task.BaseCommit, nil
 }
 
 // requiresInlineLocalFile 判断一次 step 请求是否要求把调用方 CWD 的本地文件

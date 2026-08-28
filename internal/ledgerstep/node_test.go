@@ -481,6 +481,119 @@ func TestNodeStepAttachesDeclaredOutputAndRoutes(t *testing.T) {
 	}
 }
 
+func TestNodeStepDatePrefixedDeclaredOutputMarksNeedsHuman(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "breakdown", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next: ledger.StatusReview, OnFail: ledger.StatusDoing,
+			Produces: &ledger.NodeOutput{Kind: "doc", Path: "docs/b249-breakdown.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-date-prefixed", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			return nodePassMessage(), nil
+		},
+		OutputPath: func() string { return "docs/b249-breakdown.md" },
+		Diff: func(context.Context, string, string) ([]string, error) {
+			return []string{"docs/2026-08-25-b249-breakdown.md"}, nil
+		},
+		Attach: func(string, string, string, string) error {
+			t.Fatal("日期前缀产出不应挂附件")
+			return nil
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("日期前缀产出执行出错: %v", err)
+	}
+	if out.Action != ActionNeedsHuman {
+		t.Fatalf("Action = %q, want %q", out.Action, ActionNeedsHuman)
+	}
+	assertHaltOnCard(t, st, card.ID, "请改名为：docs/b249-breakdown.md")
+	assertHaltOnCard(t, st, card.ID, "docs/2026-08-25-b249-breakdown.md")
+	got, err := st.GetCard(card.ID)
+	if err != nil {
+		t.Fatalf("读卡: %v", err)
+	}
+	if got.Status == ledger.StatusDoing {
+		t.Fatalf("日期前缀错误不得路由到 on_fail: status=%q", got.Status)
+	}
+}
+
+func TestNodeStepExactDeclaredOutputWinsOverDatePrefixedPath(t *testing.T) {
+	st, card := nodeLedger(t)
+	attached := false
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "breakdown", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next: ledger.StatusReview, OnFail: ledger.StatusDoing,
+			Produces: &ledger.NodeOutput{Kind: "doc", Path: "docs/b249-breakdown.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-exact-date", nil
+		},
+		Await:      func(context.Context, string, string) (string, error) { return nodePassMessage(), nil },
+		OutputPath: func() string { return "docs/b249-breakdown.md" },
+		Diff: func(context.Context, string, string) ([]string, error) {
+			return []string{"docs/b249-breakdown.md", "docs/2026-08-25-b249-breakdown.md"}, nil
+		},
+		Attach: func(cardID, kind, path, actor string) error {
+			attached = true
+			_, err := st.AttachFile(cardID, kind, path, actor)
+			return err
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionPass {
+		t.Fatalf("精确路径同时存在时应通过: err=%v out=%+v", err, out)
+	}
+	if !attached {
+		t.Fatal("精确路径通过时应挂法定附件")
+	}
+}
+
+func TestNodeStepUnrelatedDatePrefixedOutputRemainsOrdinaryMissing(t *testing.T) {
+	st, card := nodeLedger(t)
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "breakdown", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next: ledger.StatusReview, OnFail: ledger.StatusDoing,
+			Produces: &ledger.NodeOutput{Kind: "doc", Path: "docs/b249-breakdown.md"},
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "linux-01", "task-unrelated-date", nil
+		},
+		Await:      func(context.Context, string, string) (string, error) { return nodePassMessage(), nil },
+		OutputPath: func() string { return "docs/b249-breakdown.md" },
+		Diff: func(context.Context, string, string) ([]string, error) {
+			return []string{"docs/2026-08-25-other.md"}, nil
+		},
+		Attach: func(string, string, string, string) error {
+			t.Fatal("普通缺失不应挂附件")
+			return nil
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil || out.Action != ActionNeedsHuman {
+		t.Fatalf("无关日期文件应普通等人: err=%v out=%+v", err, out)
+	}
+	assertHaltOnCard(t, st, card.ID, "本轮实际改动文件")
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 1000)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == ledger.EvComment && strings.Contains(string(event.Payload), "请改名为：") {
+			t.Fatal("无关日期文件不应出现改名提示")
+		}
+	}
+}
+
 func TestNodeStepMissingDeclaredOutputMarksNeedsHumanWithDiffList(t *testing.T) {
 	st, card := nodeLedger(t)
 	step := &NodeStep{

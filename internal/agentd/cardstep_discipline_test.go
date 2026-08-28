@@ -18,6 +18,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -56,7 +57,7 @@ func newFakeTargetMachine(t *testing.T, capSupported *bool) *fakeTargetMachine {
 			ftm.dispatches++
 			ftm.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"id":"T-fake-01","state":"running"}`)
+			fmt.Fprint(w, `{"id":"T-fake-01","state":"running","base_commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -139,6 +140,28 @@ func TestCardStepDeliversResolvedDiscipline(t *testing.T) {
 	if sent["discipline"] != discipline.NameImplement {
 		t.Fatalf("审计名字 discipline = %v, want %q", sent["discipline"], discipline.NameImplement)
 	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, eventErr := env.ledger.EventsFromAsc([]string{card.ID}, 0, 100)
+		if eventErr == nil {
+			for _, event := range events {
+				if event.Type != ledger.EvDispatched {
+					continue
+				}
+				var payload map[string]any
+				if err := json.Unmarshal(event.Payload, &payload); err != nil {
+					t.Fatalf("解 dispatched payload: %v", err)
+				}
+				if payload["base_commit"] != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+					t.Fatalf("stepTransport 回填的 base_commit=%v，期望目标 Task.BaseCommit", payload["base_commit"])
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("未等到带 base_commit 的 dispatched 事件")
 }
 
 // TestStartCardStepRejectsUnsupportedTarget 三态能力位 nil/false 都必须拒发：
