@@ -127,6 +127,7 @@ export function WorkbenchPage({
     }
     const { target, requestedZone, canAddPane } = calculation
     setDropWarning('')
+    // 半区预览必须覆盖真实落点，列满时上下区才退化为 center 替换，因为没有第三格可插入。
     if ((requestedZone === 'top' || requestedZone === 'bottom') && !canAddPane) {
       setDropWarning('这一列最多两格，已替换当前窗格')
       console.warn('workbench.drop.pane_limit', {
@@ -147,19 +148,27 @@ export function WorkbenchPage({
     }
     const taskId = types.includes(DRAG_TASK_MIME) ? event.dataTransfer.getData(DRAG_TASK_MIME) : ''
     const hasDirectoryMime = types.includes(DRAG_DIR_MIME)
+    const hasBaseMime = types.includes(DRAG_BASE_MIME)
     const directoryBase = hasDirectoryMime ? readDragBase(event.dataTransfer.getData(DRAG_DIR_MIME)) : null
+    const taskBase = hasBaseMime ? readDragBase(event.dataTransfer.getData(DRAG_BASE_MIME)) : null
     const draggedBase = hasDirectoryMime
       ? directoryBase
-      : readDragBase(event.dataTransfer.getData(DRAG_BASE_MIME)) ?? base
-    if (draggedBase === null || (types.includes(DRAG_TASK_MIME) && taskId === '')) {
+      : taskBase
+    const invalidTaskBase = types.includes(DRAG_TASK_MIME) && (!hasBaseMime || taskBase === null)
+    const invalidDirectoryBase = hasDirectoryMime && directoryBase === null
+    if (invalidTaskBase || invalidDirectoryBase || draggedBase === null || (types.includes(DRAG_TASK_MIME) && taskId === '')) {
       console.warn('workbench.drop.invalid_source', {
         ...dropContext(draggedBase ?? base),
         groupId,
         column,
         row,
         zone: target.zone,
-        reason: draggedBase === null
-          ? (hasDirectoryMime ? 'directory MIME payload is missing or invalid' : 'directory/base MIME payload is missing or invalid')
+        reason: invalidDirectoryBase
+          ? 'directory MIME payload is missing or invalid'
+          : invalidTaskBase
+            ? 'task/base MIME payload is missing or invalid'
+            : draggedBase === null
+              ? 'directory/base MIME payload is missing or invalid'
           : 'task MIME payload has no task id',
       })
       return

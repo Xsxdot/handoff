@@ -416,6 +416,9 @@ export function Shell() {
     }
     if (target !== null) wb.select(target)
     wb.openOrFocus({ kind: 'tui', taskId }, target ?? wb.base ?? undefined)
+    console.debug('shell.task.open', {
+      project: target?.projectName ?? '', machine: target?.machine ?? '', baseKey: target?.key ?? '', path: target?.path ?? '', taskId,
+    })
   }
 
   const selectProject = (project: ProjectNode) => {

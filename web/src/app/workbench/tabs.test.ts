@@ -173,6 +173,22 @@ describe('group lifecycle and projection', () => {
     expect(closePane(wb, 'g1', 9, 0)).toBe(before)
   })
 
+  it('关闭仍有内容时也压缩残留空列并重映射焦点', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    const groupId = wb.activeGroupId
+    wb = addColumn(wb)
+    wb = placeSource(wb, { kind: 'new', base: aim, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId, column: 1, row: 0, zone: 'center',
+    })
+    wb = addColumn(wb)
+
+    wb = closePane(wb, groupId, 0, 0)
+
+    expect(wb.groups[0].columns).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'tui', taskId: 'B' })
+    expect(wb.groups[0].focus).toEqual([0, 0])
+  })
+
   it('closeGroup 最后一组重置为空组', () => {
     let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
     const groupId = wb.activeGroupId

@@ -306,7 +306,7 @@ export function closePane(wb: Workbench, groupId: string, column: number, row: n
     ? oldFocus[0] - 1
     : Math.min(oldFocus[0], group.columns.length - 1)
   group.focus = [focusColumn, Math.min(oldFocus[1], group.columns[focusColumn].panes.length - 1)]
-  return next
+  return normalizeWorkbench(next)
 }
 
 /** 关闭指定 group 内的 tab；找到后复用坐标关闭的收列/收组生命周期。 */

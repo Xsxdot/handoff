@@ -1,7 +1,7 @@
 import { act, createEvent, fireEvent, render, renderHook, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkbenchPage } from './WorkbenchPage'
-import { DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
 import { useWorkbench, type BaseDir } from './useWorkbench'
 
 const local: BaseDir = { key: '/local', kind: 'workspace', path: '/local', label: 'local', projectName: 'handoff', machine: '' }
@@ -178,7 +178,7 @@ describe('WorkbenchPage', () => {
     const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
     setRect(pane, 400, 400)
     const dataTransfer = {
-      types: [DRAG_TASK_MIME],
+      types: [DRAG_TASK_MIME, DRAG_BASE_MIME],
       getData: (key: string) => key === DRAG_TASK_MIME ? 'TASK-R' : JSON.stringify(remote),
       setData: vi.fn(), effectAllowed: '', dropEffect: '',
     }
@@ -196,6 +196,36 @@ describe('WorkbenchPage', () => {
     expect(hook.result.current.wb.groups[0].columns[1].panes[0]).toMatchObject({
       base: remote, content: { kind: 'tui', taskId: 'TASK-R' },
     })
+  })
+
+  it.each([
+    { label: '缺失', types: [DRAG_TASK_MIME], basePayload: '' },
+    { label: '损坏', types: [DRAG_TASK_MIME, DRAG_BASE_MIME], basePayload: '{bad-json' },
+  ])('任务 MIME 的 DRAG_BASE_MIME $label 时拒绝放置，不回退到当前选中目录', ({ types, basePayload }) => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.select(local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const event = createEvent.drop(pane, {
+      dataTransfer: {
+        types,
+        getData: (key: string) => key === DRAG_TASK_MIME ? 'TASK-BAD-BASE' : basePayload,
+        setData: vi.fn(),
+        dropEffect: '',
+      },
+    })
+    Object.defineProperty(event, 'clientX', { value: 200 })
+    Object.defineProperty(event, 'clientY', { value: 200 })
+
+    fireEvent(pane, event)
+
+    expect(hook.result.current.wb.groups[0].columns[0].panes[0]).toBeNull()
+    expect(warn).toHaveBeenCalledWith('workbench.drop.invalid_source', expect.objectContaining({
+      project: 'handoff', machine: '', path: '/local',
+    }))
+    warn.mockRestore()
   })
 
   it('空 pane 的关闭按钮穿过 WorkbenchPage 并删除该格', () => {

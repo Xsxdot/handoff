@@ -266,6 +266,19 @@ describe('Shell 三栏外框', () => {
     await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
   })
 
+  it('左栏开任务日志带项目、机器、路径和 taskId', async () => {
+    const debug = vi.spyOn(console, 'debug').mockImplementation(() => {})
+    renderShell()
+
+    fireEvent.click(await screen.findByText('重构工单通道'))
+
+    await waitFor(() => expect(screen.getByRole('tab', { name: '组 2' })).toBeInTheDocument())
+    expect(debug).toHaveBeenCalledWith('shell.task.open', expect.objectContaining({
+      project: 'handoff', machine: '', path: '/w/b2-b3', taskId: 'T1',
+    }))
+    debug.mockRestore()
+  })
+
   it('再次点左栏已打开任务只聚焦原组，不新增标签组', async () => {
     renderShell()
     fireEvent.click(await screen.findByText('重构工单通道'))
