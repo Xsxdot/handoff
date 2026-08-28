@@ -216,14 +216,12 @@ FlowStep 字段：
 | body | `loop` 必填 | 循环体步骤 id 列表 |
 | iface | 否 | 为真表示 `to` 是接口方法、本调用点是动态分派。实现清单从 `implements` 段 join，**禁止在 flows 里复制实现清单** |
 
-**只给承重函数建 flow**，不要给全部节点建。承重函数 = 下列并集：
+**只给承重函数建 flow**，不要给全部节点建。C17 承重集合是下列并集：
 
-1. 所有 `kind=="entry"` 的节点（入口 handler；Cobra 分组命令零出边的仍建一条空 steps 或只有 return 的 flow，并在交付说明列出——不要省略键让查看器当「没扫到」）；
-2. 入口的第一跳真实 handler（entry 的直接 callee，不含兜底桶噪声）；
-3. 跨域入缝符号：被其他领域节点调用、且自身容器 kind **不是**兜底桶的 func/方法；
-4. 编排单元：跨域出边 ≥ 3 的非兜底桶函数（一次调用里把几块域串起来的那种）。
+1. 未折叠跨域入缝：`edges` 两端叶子领域不同，`to.kind=="func"`，且 `to.file` 以 `.go` 结尾；
+2. 这些 flow 中 `iface:true` 调用所指接口的 Go 实现方法（从 `implements` join）。
 
-兜底桶（`函数组` / `TypeScript 函数组`）且可被 ≥10 个程序入口到达的符号是噪声，**不建 flow**。拿不准就宁缺：缺席走查看器降级，假流程比没有更糟。
+兜底桶（`函数组` / `TypeScript 函数组`）且从 `kind=="entry"` BFS 到达复用度 ≥10 的符号是折叠噪声，**不建 flow**。`kind=="entry"` **不是默认键**，通道残留不建 flow。本轮只扫 Go；`.ts`/`.tsx` 一律跳过。拿不准就宁缺：缺席走查看器降级，假流程比没有更糟。
 
 步骤纪律：
 
@@ -231,7 +229,7 @@ FlowStep 字段：
 - 接口方法调用标 `iface: true`，`to` 写接口节点，不猜具体实现。
 - `branch`/`loop` 的 `cond` 抄源码，不要改写成「如果失败」。
 - 不要把测试、日志、纯格式化小函数展开成 step。
-- 入口只建一跳是上轮的已知病（162 入口里 137 个出边=1）。本轮 entry 的 flow 与 edges 都必须沿 handler 往下走到编排层，不能在 `cmd.RunE → 一个函数` 处停住。
+- 本轮不为入口节点建 flow；入口只作为折叠复用度 BFS 的起点，不能把入口通道名当 flow 主语。
 
 ### codegraph/diffs/<视图名>.json
 
@@ -391,8 +389,8 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
   `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . validate`（零 issues），再执行
   `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . domains` 目视领域树是否符合真实架构，
   并抽查 5 个节点的 file:line。
-- **C12 键自检（validate 罩不住）**：旧版 `codegraph validate` 会忽略未知键
-  `flows`/`channel` 并照样全绿。交付前必须用下面这段核对 JSON 文件本身，不能只看
+- **C17 键自检（validate 罩不住）**：旧版 `codegraph validate` 会忽略未知键
+  `flows` 并照样全绿。交付前必须用下面这段核对 JSON 文件本身，不能只看
   validate 退出码：
 
   ```
@@ -401,17 +399,22 @@ doc 注释的事实转录（允许紧缩，不得改变原意），不是扫描�
   g = json.load(open("codegraph/baseline.json"))
   flows = g.get("flows") or {}
   nodes = g["nodes"]
-  entries = [(i, n) for i, n in nodes.items() if n.get("kind") == "entry"]
-  missing_ch = [i for i, n in entries if not n.get("channel")]
-  bad_ch = [i for i, n in entries if n.get("channel") not in (None, "cli", "http", "ws", "web")]
-  dangling = [fid for fid, fl in flows.items() if fid not in nodes]
-  print("flows", len(flows), "entries", len(entries),
-        "missing_channel", len(missing_ch), "packages", len(g.get("packages") or {}))
+  bad = []
   if not flows:
-      sys.exit("FAIL: baseline 没有 flows（C12 本轮必产）")
-  if missing_ch:
-      sys.exit("FAIL: entry 缺 channel " + ",".join(missing_ch[:8]))
-  if dangling:
-      sys.exit("FAIL: flows 键不是已定义节点 " + ",".join(dangling[:8]))
+      sys.exit("FAIL: baseline 没有 flows（C17 本轮必产）")
+  for fid in flows:
+      node = nodes.get(fid)
+      if not node:
+          bad.append("dangling " + fid)
+          continue
+      if node.get("kind") == "entry":
+          bad.append("entry key " + fid)
+      if not str(node.get("file", "")).endswith(".go"):
+          bad.append("non-go " + fid)
+  print("flows", len(flows), "bad", len(bad))
+  for item in bad[:20]:
+      print(" ", item)
+  if bad:
+      sys.exit(1)
   PY
   ```

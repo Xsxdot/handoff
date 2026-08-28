@@ -1,0 +1,13 @@
+{
+  "nodes": {
+    "n_run": {"kind": "func", "container": "c_svc", "name": "Server.Run", "file": "svc/store.go", "line": 11},
+    "n_save": {"kind": "func", "container": "c_svc", "name": "Server.Save", "file": "svc/store.go", "line": 18},
+    "n_put_iface": {"kind": "func", "container": "c_svc", "name": "Store.Put", "file": "svc/store.go", "line": 4},
+    "n_put_mem": {"kind": "func", "container": "c_svc", "name": "Memory.Put", "file": "svc/store.go", "line": 8}
+  },
+  "containers": {
+    "c_svc": {"kind": "类型方法", "domain": "d_a"}
+  },
+  "edges": [["n_run", "n_put_iface"], ["n_run", "n_save"]],
+  "implements": [["n_put_mem", "n_put_iface"]]
+}
