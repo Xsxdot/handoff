@@ -97,3 +97,7 @@
   断言全部瞄准窗格头（组关闭钮同名歧义消除）。
 - 红绿：launchers.test 基线逐字恢复（红：组拖动告警）+ TabBar.test 重写 8 支（红 6 支）
   → 绿；workbench 235/235、shell 50/50、tree+shell+workbench 424/424，typecheck 绿。
+- T4-rev 完成：落点预览五区全部 1:1 原型——top（inset 0 0 50% 0 + inset 0 4px 0 #2563eb）、
+  bottom（inset 50% 0 0 0 + inset 0 -4px 0 #2563eb）补全；另实现原型 .pane.pane-term.drop-*
+  变体（终端窗格遮罩 rgba(147,197,253,0.5)，问题 2「黑底终端看不出落点」的主场景）。
+  WorkbenchPage.test 新增 2 支（top/bottom 断言、终端窗格浅蓝断言），红→绿 19/19。
