@@ -246,7 +246,7 @@ describe('Shell 三栏外框', () => {
     expect(screen.queryByLabelText('当前位置')).toBeNull()
   })
 
-  it('左栏开目录终端创建新组，焦点面包屑跟当前 pane 而非 selected tree', async () => {
+  it('左栏开目录终端落在当前组的新列，焦点面包屑跟当前 pane 而非 selected tree', async () => {
     renderShell()
     await openBranch()
     fireEvent.click(await screen.findByText('重构工单通道'))
@@ -699,6 +699,38 @@ describe('Shell 三栏外框', () => {
     expect(frame?.getAttribute('src')).toBe(
       `/codegraph/app/?project=${encodeURIComponent(projectName)}`,
     )
+  })
+
+  it('openItems 顺序：当前基准的已打开行排最前；点已打开行走 focusTab 切基准并激活', async () => {
+    renderShell()
+    await openBranch()
+    // 在 /w/b2-b3 开 file tab
+    fireEvent.click(await screen.findByText('go.mod'))
+    const project = await screen.findByTestId('project-node-p1')
+    // 选中 /w（主目录）并在那里开终端
+    fireEvent.click(within(project).getByText('主目录'))
+    fireEvent.click(within(project).getByRole('button', { name: '打开主目录终端' }))
+    // 当前基准 /w 的已打开行排最前
+    await waitFor(() => expect(
+      screen.getAllByTestId('open-item-name').map((el) => el.textContent),
+    ).toEqual(['bash · 主目录', 'go.mod']))
+    // 点 go.mod 已打开行：focusTab 切回 /w/b2-b3 并激活对应 tab
+    fireEvent.click(screen.getAllByTestId('open-item-row').find((row) => row.textContent?.includes('go.mod'))!)
+    await waitFor(() => expect(
+      screen.getAllByTestId('open-item-name').map((el) => el.textContent),
+    ).toEqual(['go.mod', 'bash · 主目录']))
+    await waitFor(() => expect(screen.getByRole('tab', { name: /go\.mod/ })).toHaveAttribute('aria-selected', 'true'))
+  })
+
+  it('面包屑第三段随激活 tab 变化', async () => {
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    expect(screen.getByLabelText('当前位置')).toHaveTextContent('go.mod')
+    // 激活切到终端 tab：第三段跟终端标题
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(screen.getByLabelText('当前位置')).toHaveTextContent('bash · integration/b2-b3'))
   })
 
   it('/codegraph 同时隐藏 Breadcrumb/FileTree，回到工作台后恢复', async () => {

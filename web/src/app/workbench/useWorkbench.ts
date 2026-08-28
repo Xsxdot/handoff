@@ -48,6 +48,10 @@ export interface WorkbenchApi {
   openTerminal: (base?: BaseDir, groupId?: string, rel?: string) => void
   close: (groupId: string, tabId: string) => void
   activate: (groupId: string, tabId: string) => void
+  // focusTab 是左栏「已打开行」的聚焦入口：切基准 + 激活 tab 一次完成。
+  // 为什么不用 open：open 的去重键对无会话终端是 null，重复 open 会开出第二个
+  // 终端而不是聚焦——聚焦必须走 activateTab 语义。
+  focusTab: (b: BaseDir, group: string, tabId: string) => void
   activateGroup: (groupId: string) => void
   setContent: (groupId: string, tabId: string, content: TabContent) => void
   addGroup: () => void
@@ -112,6 +116,12 @@ export function useWorkbench(): WorkbenchApi {
 
   const close = useCallback((groupId: string, tabId: string) => setWb((current) => closeTab(current, groupId, tabId)), [])
   const activate = useCallback((groupId: string, tabId: string) => setWb((current) => activateTab(current, groupId, tabId)), [])
+  // focusTab：先切基准再激活，两个状态更新在同一次点击事件里批处理完成
+  const focusTab = useCallback((b: BaseDir, group: string, tabId: string) => {
+    select(b)
+    setWb((current) => activateTab(current, group, tabId))
+    console.debug('workbench.focus_tab', { baseKey: b.key, groupId: group, tabId })
+  }, [select])
   const activateGroup = useCallback((groupId: string) => setWb((current) => activateGroupLayout(current, groupId)), [])
   const setContent = useCallback((groupId: string, tabId: string, content: TabContent) => setWb((current) => setTabContent(current, groupId, tabId, content)), [])
   const addGroup = useCallback(() => setWb((current) => createGroup(current)), [])
@@ -139,7 +149,7 @@ export function useWorkbench(): WorkbenchApi {
   const hydrate = useCallback((next: Workbench) => setWb(next), [])
 
   return {
-    base, wb, select, open, openOrFocus, openTerminal, close, activate, activateGroup,
+    base, wb, select, open, openOrFocus, openTerminal, close, activate, focusTab, activateGroup,
     setContent, addGroup, closeGroup, place, closePane, closeById, resize, restoreTerminal,
     hydrate, openedItems: openedWorkbenchItems(wb),
   }

@@ -2,7 +2,7 @@
 //
 // 职责：顶部标签栏（TabBar）、每列最多两格的 pane，以及 task/dir/tab 的 MIME 投放。
 // 边界：内容由 renderContent 注入；布局迁移交给 WorkbenchApi/tabs.ts；不按 BaseDir 切换布局。
-import { Fragment, useCallback, useEffect, useState, type ReactNode } from 'react'
+import { Fragment, useEffect, useState, type ReactNode } from 'react'
 import { BlankTab, type PickKind } from './BlankTab'
 import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
@@ -12,7 +12,6 @@ import { MAX_PANES_PER_COLUMN, MIN_PANE_PX, nextTerminalSeq, tabTitle, type Base
 import type { Launcher, ProjectTreeResp, Task } from '../../api/types'
 import type { WorkbenchApi } from './useWorkbench'
 import { createUntitledFile } from './newFile'
-import { taskDisplayName } from '../lib/taskName'
 import { errorMessage } from '../lib/format'
 import { cn } from '@/lib/utils'
 
@@ -26,6 +25,9 @@ export interface WorkbenchPageProps {
   tasks: Task[]
   onFileCreated?: () => void
   launchers?: Launcher[]
+  // taskName 把 tui 的 taskId 解析成任务原名，由持有任务流的 Shell 构建
+  // 下传（单一口径：标签条、窗格标题、面包屑共用）；省略时 tabTitle 自己回退。
+  taskName?: (taskId: string) => string | undefined
 }
 
 type DragOver = {
@@ -36,7 +38,7 @@ type DragOver = {
 }
 
 export function WorkbenchPage({
-  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [],
+  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName,
 }: WorkbenchPageProps) {
   const { wb, base } = api
   const activeGroup = wb.groups.find((group) => group.id === wb.activeGroupId) ?? wb.groups[0]
@@ -64,13 +66,6 @@ export function WorkbenchPage({
       window.removeEventListener('drop', reset)
     }
   }, [])
-
-  // taskName 把 tui 的 taskId 解析成任务原名（与左栏任务行同口径）；解析不到时
-  // tabTitle 自己回退 TUI · 前 8 位。T7 会把这份解析上移到 Shell，与面包屑共用
-  const taskName = useCallback((id: string) => {
-    const t = tasks.find((x) => x.id === id)
-    return t ? taskDisplayName(t) : undefined
-  }, [tasks])
 
   const dropContext = (source: BaseDir | null | undefined = base) => ({
     project: source?.projectName ?? '',

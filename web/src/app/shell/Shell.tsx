@@ -44,7 +44,7 @@ import { useHomeDock } from '../homedock/useHomeDock'
 import type { DockSnapshot } from '../homedock/dockPersist'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
-import { nextTerminalSeq, tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
+import { tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
 import { taskDisplayName } from '../lib/taskName'
 import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
 import { BoardOverlay } from '../overlay/BoardOverlay'
@@ -403,23 +403,20 @@ export function Shell() {
     console.debug('shell.directory.open', { project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path })
   }
 
-  const openDirectoryTerminal = (base: BaseDir) => {
+  // openWorkbenchItem 是左栏「已打开行」的聚焦入口（onFocusOpenItem）。
+  // focusTab 而不是 open：无会话终端等内容没有去重键，open 会开出第二个 tab。
+  const openWorkbenchItem = (item: OpenItem) => {
     backToWorkbench()
-    wb.select(base)
-    wb.openOrFocus({ kind: 'terminal', seq: nextTerminalSeq(wb.wb) }, base)
-    console.debug('shell.directory.terminal.new_group', {
-      project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
-    })
+    wb.focusTab(item.base, item.group, item.tabId)
+    console.debug('shell.workbench_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, groupId: item.group, tabId: item.tabId })
   }
 
-  // openWorkbenchItem 是左栏「已打开行」的聚焦入口（onFocusOpenItem）。
-  // T7 起改走 wb.focusTab（对无会话终端等去重键为空的内容，open 会开出第二个
-  // tab 而不是聚焦，所以聚焦必须走 activateTab 语义——T7 落地）。
-  const openWorkbenchItem = (item: { base: BaseDir; group: string; tabId: string }) => {
+  // openTerminalAt 是左栏机器行/工作树子行终端钮的入口：显式基准开终端，
+  // 不依赖也不改动当前选中的基准。
+  const openTerminalAt = (base: BaseDir) => {
     backToWorkbench()
-    wb.select(item.base)
-    wb.activate(item.group, item.tabId)
-    console.debug('shell.workbench_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, groupId: item.group, tabId: item.tabId })
+    wb.openTerminal(base)
+    console.debug('shell.terminal.open_at', { project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path })
   }
 
   // openTaskTui 是「点一个任务 → 在它所在目录开 TUI tab」的唯一实现。
@@ -467,27 +464,33 @@ export function Shell() {
     return { ...item, base: nextBase, label: tabTitle(item.content, nextBase.label, taskNameResolver) }
   }), [wb.openedItems, treeState.data, taskNameResolver])
 
-  // openItems 是左栏「已打开行」的投影。T6b 先直接从 openedItems 摊平；
-  // T7 会把排序收紧为「当前基准在前」并把 tui 命名换成任务原名。
-  const openItems: OpenItem[] = useMemo(() => openedItems
-    .filter((item) => item.content.kind !== 'blank')
-    .map((item) => ({
-      key: `${item.base.key}\x1f${item.tabId}`,
-      kind: item.content.kind === 'tui' ? 'tui' : item.content.kind === 'terminal' ? 'terminal' : 'file',
-      name: item.label,
-      taskId: item.content.kind === 'tui' ? item.content.taskId : undefined,
-      machine: item.base.machine,
-      base: item.base,
-      group: item.groupId,
-      tabId: item.tabId,
-      detail: item.content.kind === 'file'
-        ? item.content.rel
-        : item.content.kind === 'terminal'
+  // openItems 是左栏「已打开行」的投影：当前基准的项排最前（组序、组内 tab 序
+  // 不变），其余按组序跟上。名字统一经 tabTitle + 任务名 resolver——tui 显示
+  // 任务原名，解析不到（任务已删除）时由 tabTitle 回退 TUI · 前 8 位。
+  const openItems: OpenItem[] = useMemo(() => {
+    const all = openedItems
+      .filter((item) => item.content.kind !== 'blank')
+      .map((item): OpenItem => ({
+        key: `${item.base.key}\x1f${item.tabId}`,
+        kind: item.content.kind === 'tui' ? 'tui' : item.content.kind === 'terminal' ? 'terminal' : 'file',
+        name: item.label,
+        taskId: item.content.kind === 'tui' ? item.content.taskId : undefined,
+        machine: item.base.machine,
+        base: item.base,
+        group: item.groupId,
+        tabId: item.tabId,
+        detail: item.content.kind === 'file'
           ? item.content.rel
-          : item.content.kind === 'tui'
-            ? item.content.taskId
-            : undefined,
-    })), [openedItems])
+          : item.content.kind === 'terminal'
+            ? item.content.rel
+            : item.content.kind === 'tui'
+              ? item.content.taskId
+              : undefined,
+      }))
+    const currentKey = wb.base?.key
+    if (!currentKey) return all
+    return [...all.filter((item) => item.base.key === currentKey), ...all.filter((item) => item.base.key !== currentKey)]
+  }, [openedItems, wb.base])
 
   // currentTaskId 是当前目录上「最该看的那个任务」，只用于右栏 M 角标的数据源。
   // 一个目录下可能有多个任务，取第一个正在跑的，没有就取第一个——角标是装饰，
@@ -553,7 +556,7 @@ export function Shell() {
             openItems={openItems}
             focusedTaskId={focusedTaskId}
             onFocusOpenItem={openWorkbenchItem}
-            onOpenTerminalAt={openDirectoryTerminal}
+            onOpenTerminalAt={openTerminalAt}
             onOpenDirectory={openDirectory}
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
@@ -595,6 +598,7 @@ export function Shell() {
               onAddProject={() => setWizardOpen(true)}
               tree={treeState.data}
               tasks={tasks}
+              taskName={taskNameResolver}
               onFileCreated={() => setFileTreeNonce((n) => n + 1)}
               terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
               launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
