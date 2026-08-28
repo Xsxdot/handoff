@@ -497,8 +497,177 @@
       }
 
       .workspace {
+        display: flex;
         flex: 1;
         min-width: 0;
+        min-height: 100vh;
+        flex-direction: column;
+        background: var(--background);
+      }
+
+      /* 右侧只保留标签栏的视觉样式；下面的工作区保持空白，避免把原型范围扩成真实内容页。 */
+      .workspace-chrome {
+        flex: 0 0 auto;
+        border-bottom: 1px solid #e7e7e7;
+        background: #ffffff;
+      }
+
+      .workspace-context {
+        display: flex;
+        min-width: 0;
+        height: 28px;
+        align-items: center;
+        border-bottom: 1px solid #e7e7e7;
+        padding: 0 18px;
+        background: #ffffff;
+        color: #7c7c7c;
+        font-size: 13px;
+        line-height: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .workspace-tabbar {
+        display: flex;
+        min-width: 0;
+        height: 44px;
+        align-items: stretch;
+        gap: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 0 8px;
+        background: #fafaf9;
+        scrollbar-width: none;
+      }
+
+      .workspace-tabbar::-webkit-scrollbar { display: none; }
+
+      .workspace-tab {
+        position: relative;
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+        height: 100%;
+        border: 0;
+        border-right: 0;
+        padding: 0 15px;
+        background: transparent;
+        color: #6f6f6f;
+        font-size: 14px;
+        font-weight: 450;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: background 140ms ease, color 140ms ease;
+      }
+
+      .workspace-tab:hover {
+        background: #efefee;
+        color: #333333;
+      }
+
+      /* 参考图使用的是短的节奏线，不是把 tab 切成一格一格的完整边框。 */
+      .workspace-tab::after {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        width: 1px;
+        height: 20px;
+        transform: translateY(-50%);
+        background: #e1e1e1;
+        content: "";
+      }
+
+      .workspace-tab.is-active {
+        align-self: stretch;
+        height: 100%;
+        padding: 0 18px;
+        background: transparent;
+        color: #2a2a2a;
+        font-weight: 600;
+      }
+
+      .workspace-tab-surface {
+        display: inline-flex;
+        height: calc(100% - 12px);
+        align-items: center;
+        gap: 9px;
+        border-radius: 10px;
+        padding: 0 9px;
+        background: #f0f0ef;
+      }
+
+      /* 鼠标点击后的焦点不应变成第二层边框；激活态本身已经承担状态表达。 */
+      .workspace-tab:focus { outline: none; }
+
+      .workspace-tab .tab-icon {
+        display: inline-flex;
+        flex: 0 0 15px;
+        width: 15px;
+        height: 15px;
+        align-items: center;
+        justify-content: center;
+        opacity: 0.85;
+      }
+
+      .workspace-tab .tab-icon img {
+        width: 15px;
+        height: 15px;
+        object-fit: contain;
+      }
+
+      .workspace-tab-label {
+        max-width: 230px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .workspace-tab-close {
+        display: inline-flex;
+        flex: 0 0 15px;
+        width: 15px;
+        height: 15px;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: #777777;
+        cursor: pointer;
+        opacity: 0.9;
+      }
+
+      .workspace-tab-close:hover { color: #222222; }
+
+      .workspace-tab-close .icon {
+        width: 13px;
+        height: 13px;
+      }
+
+      .workspace-tab-add {
+        display: inline-flex;
+        flex: 0 0 42px;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: #737373;
+        cursor: pointer;
+      }
+
+      .workspace-tab-add:hover { background: #f1f1f0; color: #2f2f2f; }
+
+      .workspace-tab-add .icon {
+        width: 16px;
+        height: 16px;
+      }
+
+      .workspace-empty {
+        flex: 1;
+        min-height: 0;
         background: var(--background);
       }
 
@@ -678,13 +847,63 @@
         </div>
       </aside>
 
-      <main class="workspace" aria-label="空白工作区"></main>
+      <main class="workspace" aria-label="空白工作区">
+        <div class="workspace-chrome">
+          <div class="workspace-context" title="本机 / handoff / B264 标签组与分屏以及中央工作台列表模型确认">
+            本机 / handoff / B264 标签组与分屏以及中央工作台列表模型确认
+          </div>
+          <nav class="workspace-tabbar" aria-label="工作区标签">
+            <button class="workspace-tab is-active" type="button" aria-current="page" data-workspace-tab>
+              <span class="workspace-tab-surface">
+                <span class="tab-icon icon" data-icon="dispatch-task" aria-hidden="true"></span>
+                <span class="workspace-tab-label">审 B264</span>
+                <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                  <span class="icon" data-icon="close" aria-hidden="true"></span>
+                </span>
+              </span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab>
+              <span class="tab-icon icon" data-icon="terminal" aria-hidden="true"></span>
+              <span class="workspace-tab-label">handoff · 项目导航</span>
+              <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                <span class="icon" data-icon="close" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab>
+              <span class="tab-icon icon" data-icon="terminal" aria-hidden="true"></span>
+              <span class="workspace-tab-label">handoff · 项目导航</span>
+              <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                <span class="icon" data-icon="close" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab>
+              <span class="tab-icon icon" data-icon="file-text" aria-hidden="true"></span>
+              <span class="workspace-tab-label">已生成图像 1.png</span>
+              <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                <span class="icon" data-icon="close" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab>
+              <span class="tab-icon icon" data-icon="monitor" aria-hidden="true"></span>
+              <span class="workspace-tab-label">审阅</span>
+              <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                <span class="icon" data-icon="close" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button class="workspace-tab-add" type="button" aria-label="新增标签">
+              <span class="icon" data-icon="plus" aria-hidden="true"></span>
+            </button>
+          </nav>
+        </div>
+        <div class="workspace-empty" aria-hidden="true"></div>
+      </main>
     </div>
 
     <script>
       const iconAssets = {
         "chevron-down": "chevron-down.svg",
         "chevron-right": "chevron-right.svg",
+        close: "close.svg",
         "dispatch-task": "dispatch-task.png",
         "file-text": "file-text.svg",
         folder: "folder.svg",
@@ -774,6 +993,18 @@
           task.classList.add("is-selected");
           task.classList.add("is-open");
           task.setAttribute("aria-current", "true");
+        });
+      });
+
+      document.querySelectorAll("[data-workspace-tab]").forEach((tab) => {
+        tab.addEventListener("click", (event) => {
+          if (event.target.closest("[data-tab-close]")) return;
+          document.querySelectorAll("[data-workspace-tab].is-active").forEach((activeTab) => {
+            activeTab.classList.remove("is-active");
+            activeTab.removeAttribute("aria-current");
+          });
+          tab.classList.add("is-active");
+          tab.setAttribute("aria-current", "page");
         });
       });
 
