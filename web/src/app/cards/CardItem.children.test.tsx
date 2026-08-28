@@ -29,3 +29,20 @@ describe('CardItem 子卡徽标', () => {
     expect(screen.getByText('待审阅')).toBeInTheDocument()
   })
 })
+
+describe('CardItem 状态唯一化（B287）', () => {
+  it('节点标签只出现在右上角 chip 一处，下方标签行不再重复', () => {
+    // 多节点列时 nodeLabelFor 返回状态名本身（nodeTag === status）——
+    // 这正是用户截图里的「spec 两遍」形态，重复只发生在同文本时。
+    render(<CardItem card={{ ...base, status: '待审阅' }} onOpen={vi.fn()} nodeTag="待审阅" />)
+    expect(screen.getAllByText('待审阅')).toHaveLength(1)
+    const chip = screen.getAllByText('待审阅')[0]!
+    expect(chip.className).toContain('bg-slate-900')
+  })
+
+  it('无节点标签时右上角显示状态名，同样只出现一次', () => {
+    render(<CardItem card={base} onOpen={vi.fn()} />)
+    expect(screen.getAllByText('进行中')).toHaveLength(1)
+    expect(screen.getAllByText('进行中')[0]!.className).toContain('bg-slate-900')
+  })
+})
