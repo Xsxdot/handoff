@@ -101,3 +101,8 @@
   bottom（inset 50% 0 0 0 + inset 0 -4px 0 #2563eb）补全；另实现原型 .pane.pane-term.drop-*
   变体（终端窗格遮罩 rgba(147,197,253,0.5)，问题 2「黑底终端看不出落点」的主场景）。
   WorkbenchPage.test 新增 2 支（top/bottom 断言、终端窗格浅蓝断言），红→绿 19/19。
+- T8-rev 收尾全量：npm test → 112 files / 1135 tests 全绿；npm run typecheck → tsc -b
+  零错误；npm run lint → 23 problems（5 errors, 18 warnings）与基线一致（本卡零新增）；
+  npm run build → 成功（✓ built in 2.06s，chunk 警告为基线既有）。
+  重做后组语义核对：组标签条激活/关闭/拖动/新建、autoName 组显焦点任务原名、
+  五区落点 1:1、T1/T3/T5/T6a/T6b/T7 产出保留。未 push，未跑 handoff。
