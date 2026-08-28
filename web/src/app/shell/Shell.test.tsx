@@ -283,9 +283,11 @@ describe('Shell 三栏外框', () => {
     renderShell()
     fireEvent.click(await screen.findByText('重构工单通道'))
     const sidebar = within(screen.getByRole('complementary'))
-    await waitFor(() => expect(sidebar.getByText('TUI · T1')).toBeInTheDocument())
+    // 左栏已打开行与顶部 chrome 同名：任务原名（不再显示 TUI · T1）
+    await waitFor(() => expect(sidebar.getAllByText('重构工单通道').length).toBeGreaterThanOrEqual(1))
     expect(screen.getAllByRole('tab')).toHaveLength(1)
-    fireEvent.click(sidebar.getByText('TUI · T1'))
+    // 已打开行已带 aria-current（焦点态），点击后仍是聚焦且不新增
+    fireEvent.click(sidebar.getAllByText('重构工单通道')[0])
     await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toHaveAttribute('aria-selected', 'true'))
     expect(screen.getAllByRole('tab')).toHaveLength(1)
   })

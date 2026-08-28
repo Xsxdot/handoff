@@ -14,8 +14,18 @@
 // 组件里只能靠渲染断言间接测。仓库既有同款模式——board/filter.ts（看板
 // 筛选）、tree/counts.ts（树计数）都是「纯函数 + 独立测试文件」。
 import type { ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
+import type { BaseDir } from '../workbench/useWorkbench'
 import { archivedKey, archivedTasks } from './archived'
-import type { OpenedWorkbenchItem } from '../workbench/tabs'
+
+// OpenedSearchItem 是「已打开项」参与搜索所需的最小形状（ProjectTree 的 OpenItem
+// 的结构子集）：name 是展示名，detail 是内容定位线索（文件相对路径 / 终端 rel /
+// taskId）——用户记得的往往是路径不是 tab 名。
+export interface OpenedSearchItem {
+  base: BaseDir
+  name: string
+  machine: string
+  detail?: string
+}
 // TreeFilter 是一次过滤的完整结果。projects 已按可见性裁剪，
 // 调用方直接遍历即可，不需要再判一次。
 export interface TreeFilter {
@@ -53,18 +63,18 @@ function taskText(t: Task): string {
   return t.name || t.plan_summary || '（无名称）'
 }
 
-// openedText 把工作台项的可见标题与内容自身的定位字段合在一起。
+// taskMatchesQuery 是任务行的搜索谓词：任务名命中即算匹配。
+// 导出给 ProjectTree 的任务组复用——filterTree 的裁剪与行级过滤必须同一条
+// 判据，否则会出现「filterTree 留下了项目、行却因另一套谓词而不见」的裂缝。
+export function taskMatchesQuery(t: Task, q: string): boolean {
+  return hit(taskText(t), q)
+}
+
+// openedText 把已打开项的可见名与内容定位字段合在一起。
 // 文件 tab 的标题可能被用户入口改写，但相对路径仍是左栏搜索应能找到的真实祖先线索；
-// 终端的 rel 与 TUI taskId 同理。只读投影数据，不改变 tab 或树节点。
-function openedText(item: OpenedWorkbenchItem): string {
-  const detail = item.content.kind === 'file'
-    ? item.content.rel
-    : item.content.kind === 'terminal'
-      ? item.content.rel ?? ''
-      : item.content.kind === 'tui'
-        ? item.content.taskId
-        : ''
-  return [item.label, detail, item.base.key, item.base.path, item.base.label, machineText(item.base.machine)].join(' ')
+// 终端 rel 与 taskId 同理。只读投影数据，不改变 tab 或树节点。
+function openedText(item: OpenedSearchItem): string {
+  return [item.name, item.detail ?? '', item.base.key, item.base.path, item.base.label, machineText(item.base.machine)].join(' ')
 }
 
 // tasksOfWorkspace 挑出挂在某个目录下的任务。
@@ -98,7 +108,7 @@ export function filterTree(
   tree: ProjectTreeResp,
   tasks: Task[],
   rawQuery: string,
-  openedItems: ReadonlyArray<OpenedWorkbenchItem> = [],
+  openedItems: ReadonlyArray<OpenedSearchItem> = [],
 ): TreeFilter {
   const q = rawQuery.trim().toLowerCase()
   const unassignedAll = tasks.filter((t) => t.project_id === '')

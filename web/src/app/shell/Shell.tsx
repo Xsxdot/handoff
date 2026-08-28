@@ -16,7 +16,7 @@
 // 关于 ShellContext 的移除：W3 用 <Outlet context> 给三个子页面下发共享数据。
 // 新 IA 里中央不再是路由页面而是 tab，Outlet 没有了消费者；看板与工单改为弹层，
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
-import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
 import { fetchCards, fetchDecisions } from '../../api/ledger'
@@ -33,7 +33,7 @@ import { isDesktopShell } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
-import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase } from '../tree/ProjectTree'
+import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase, type OpenItem } from '../tree/ProjectTree'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
@@ -87,6 +87,12 @@ export function Shell() {
   const treeState = useProjectTree()
   const tasks = useMemo(() => tasksState.data ?? [], [tasksState.data])
   const wb = useWorkbench()
+  // crumbTaskName 把 taskId 解析成任务原名（与左栏任务行同口径）；解析不到时
+  // tabTitle 自己回退 TUI · 前 8 位。标签条、面包屑、左栏已打开行共用同一份口径。
+  const taskNameResolver = useCallback((id: string) => {
+    const t = tasks.find((x) => x.id === id)
+    return t ? taskDisplayName(t) : undefined
+  }, [tasks])
   const navigate = useNavigate()
   const location = useLocation()
   const [routeParams] = useSearchParams()
@@ -406,11 +412,14 @@ export function Shell() {
     })
   }
 
-  const openWorkbenchItem = (item: { base: BaseDir; groupId: string; tabId: string }) => {
+  // openWorkbenchItem 是左栏「已打开行」的聚焦入口（onFocusOpenItem）。
+  // T7 起改走 wb.focusTab（对无会话终端等去重键为空的内容，open 会开出第二个
+  // tab 而不是聚焦，所以聚焦必须走 activateTab 语义——T7 落地）。
+  const openWorkbenchItem = (item: { base: BaseDir; group: string; tabId: string }) => {
     backToWorkbench()
     wb.select(item.base)
-    wb.activate(item.groupId, item.tabId)
-    console.debug('shell.workbench_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, groupId: item.groupId, tabId: item.tabId })
+    wb.activate(item.group, item.tabId)
+    console.debug('shell.workbench_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, groupId: item.group, tabId: item.tabId })
   }
 
   // openTaskTui 是「点一个任务 → 在它所在目录开 TUI tab」的唯一实现。
@@ -455,8 +464,30 @@ export function Shell() {
   const openedItems = useMemo(() => wb.openedItems.map((item) => {
     const fresh = treeState.data ? findBaseByKey(treeState.data, item.base.key) : null
     const nextBase = fresh ?? item.base
-    return { ...item, base: nextBase, label: tabTitle(item.content, nextBase.label) }
-  }), [wb.openedItems, treeState.data])
+    return { ...item, base: nextBase, label: tabTitle(item.content, nextBase.label, taskNameResolver) }
+  }), [wb.openedItems, treeState.data, taskNameResolver])
+
+  // openItems 是左栏「已打开行」的投影。T6b 先直接从 openedItems 摊平；
+  // T7 会把排序收紧为「当前基准在前」并把 tui 命名换成任务原名。
+  const openItems: OpenItem[] = useMemo(() => openedItems
+    .filter((item) => item.content.kind !== 'blank')
+    .map((item) => ({
+      key: `${item.base.key}\x1f${item.tabId}`,
+      kind: item.content.kind === 'tui' ? 'tui' : item.content.kind === 'terminal' ? 'terminal' : 'file',
+      name: item.label,
+      taskId: item.content.kind === 'tui' ? item.content.taskId : undefined,
+      machine: item.base.machine,
+      base: item.base,
+      group: item.groupId,
+      tabId: item.tabId,
+      detail: item.content.kind === 'file'
+        ? item.content.rel
+        : item.content.kind === 'terminal'
+          ? item.content.rel
+          : item.content.kind === 'tui'
+            ? item.content.taskId
+            : undefined,
+    })), [openedItems])
 
   // currentTaskId 是当前目录上「最该看的那个任务」，只用于右栏 M 角标的数据源。
   // 一个目录下可能有多个任务，取第一个正在跑的，没有就取第一个——角标是装饰，
@@ -487,17 +518,15 @@ export function Shell() {
   // 浏览器里 desktop 为 false，这条不渲染，布局与从前一模一样。
   const desktop = isDesktopShell()
   const focusedBase = focusedPaneBase(wb.wb)
+  // focusedTab：焦点窗格里的 tab 本体。面包屑第三段（内容名）与左栏焦点态共用。
+  const focusedTab = focusedTabOf(wb.wb)
   // 面包屑第三段跟焦点窗格的内容名（spec §3）：tui=任务原名、file=文件名、
   // terminal=终端标题；空白窗格或没有焦点内容时不传，行里回落目录名。
-  // crumbTaskName 与 T2 的 WorkbenchPage resolver 同口径，T7 收口成一份下传
-  const crumbTaskName = (id: string) => {
-    const t = tasks.find((x) => x.id === id)
-    return t ? taskDisplayName(t) : undefined
-  }
-  const focusedTab = focusedTabOf(wb.wb)
   const crumbTail = focusedBase && focusedTab && focusedTab.content.kind !== 'blank'
-    ? tabTitle(focusedTab.content, focusedBase.label, crumbTaskName)
+    ? tabTitle(focusedTab.content, focusedBase.label, taskNameResolver)
     : undefined
+  // focusedTaskId：焦点窗格是 tui 内容时的 taskId，左栏任务行据此画焦点态。
+  const focusedTaskId = focusedTab && focusedTab.content.kind === 'tui' ? focusedTab.content.taskId : null
 
   return (
     <div className="flex h-dvh flex-col bg-background">
@@ -521,10 +550,11 @@ export function Shell() {
             selectedKey={fileDrawer?.key ?? wb.base?.key ?? null}
             ticketCount={tickets.count}
             ticketsByDir={tickets.byWorkDir}
-            openedItems={openedItems}
+            openItems={openItems}
+            focusedTaskId={focusedTaskId}
+            onFocusOpenItem={openWorkbenchItem}
+            onOpenTerminalAt={openDirectoryTerminal}
             onOpenDirectory={openDirectory}
-            onOpenDirectoryTerminal={openDirectoryTerminal}
-            onOpenItem={openWorkbenchItem}
             onOpenTask={openTaskTui}
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}

@@ -5,7 +5,7 @@
 // 这条规则的四个层级与两个方向。
 import { describe, expect, it } from 'vitest'
 import type { ProjectTreeResp, Task } from '../../api/types'
-import type { OpenedWorkbenchItem } from '../workbench/tabs'
+import type { OpenedSearchItem } from './search'
 import { filterTree } from './search'
 
 function task(over: Partial<Task>): Task {
@@ -132,16 +132,14 @@ describe('filterTree', () => {
   })
 
   it('打开的文件/终端/TUI 也能把项目、机器和目录祖先带入搜索结果', () => {
-    const opened: OpenedWorkbenchItem[] = [
+    const opened: OpenedSearchItem[] = [
       {
-        tabId: 'file-1', groupId: 'g1', column: 0, row: 0,
         base: { key: '/srv/n', kind: 'workspace', path: '/srv/n', label: 'main', projectName: 'nova', machine: 'devbox' },
-        content: { kind: 'file', rel: 'src/opened-file.ts' }, label: 'src/opened-file.ts',
+        name: 'opened-file.ts', machine: 'devbox', detail: 'src/opened-file.ts',
       },
       {
-        tabId: 'term-1', groupId: 'g1', column: 1, row: 0,
         base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
-        content: { kind: 'terminal', seq: 0 }, label: '终端 · opened-terminal',
+        name: '终端 · opened-terminal', machine: '',
       },
     ]
     const byFile = filterTree(tree, tasks, 'opened-file', opened)
@@ -154,13 +152,12 @@ describe('filterTree', () => {
   })
 
   it('打开文件的相对路径参与搜索，即使任务行标题不是文件名', () => {
-    const opened: OpenedWorkbenchItem[] = [{
-      tabId: 'file-2', groupId: 'g1', column: 0, row: 0,
+    const opened: OpenedSearchItem[] = [{
       base: {
         key: '/srv/n', kind: 'workspace', path: '/srv/n', label: 'main',
         projectName: 'nova', machine: 'devbox',
       },
-      content: { kind: 'file', rel: 'src/relative-only.ts' }, label: '已打开文件',
+      name: '已打开文件', machine: 'devbox', detail: 'src/relative-only.ts',
     }]
     const result = filterTree(tree, tasks, 'relative-only', opened)
     expect(result.projects[0].name).toBe('nova')
