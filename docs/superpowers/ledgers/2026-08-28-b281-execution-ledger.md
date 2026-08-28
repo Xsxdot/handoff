@@ -70,3 +70,4 @@
 - 2026-08-28：集成构建执行 `cd web && npm run build`；原始结果为 `✓ built in 2.15s`，退出码 0；Vite 输出既有 chunk 大小 warning（`Some chunks are larger than 500 kB after minification`）。
 - 2026-08-28：提交前审计执行 `git diff --check`，退出码 0、无输出；`git status --short --branch` 显示仅 3 个文件改动，统计为台账 14 行、WorkbenchPage 测试 30 行、WorkbenchPage 实现 12 行新增/3 行删除；旧的 `readDragBase(DRAG_DIR_MIME) ??` 回退链检索无输出。
 - 2026-08-28：已显式暂存本轮 3 个产物文件；`git diff --cached --check` 退出码 0、无输出，暂存统计为 54 insertions(+), 3 deletions(-)。
+- 2026-08-28：执行 `git commit -m "fix B281 invalid directory drop"` 成功，原始输出为 `[cards/B281-charter-8 caab40dc] fix B281 invalid directory drop`；完整提交 hash 为 `caab40dc1f3337c45f525aa5fd37c5fa561619f5`。
