@@ -265,3 +265,45 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 		t.Fatalf("缺少含 resume/重建 原因的 needs_human 事件")
 	}
 }
+
+// TestAutomationWakeFailureAdvancesCursor 唤醒失败必须推进 cursor，不得对
+// 同一条用户消息无限 Launch（B274：空 spec + 失败不推 cursor + kick = 指针洪流）。
+func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	env.srv.SetupAutomation(env.ledger)
+	if err := env.srv.Scheduling().PutCarrier(scheduling.Carrier{
+		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
+		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
+		Name: "coord", Role: scheduling.RoleCoordinator, Members: []string{"coord-carrier"}, MaxConcurrency: 1,
+	}, 0); err != nil {
+		t.Fatal(err)
+	}
+	runner := &fallbackConsumerRunner{failLaunch: true}
+	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	cardID := createCoordCard(t, env)
+	appendUserMessage(t, env.ledger, cardID, "用户留言", false)
+
+	_, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err == nil {
+		t.Fatal("无绑定且 Launch 失败时期望 err")
+	}
+	first := runner.launches
+	if first < 1 {
+		t.Fatal("至少应尝试一次 Launch")
+	}
+	env.srv.automationMu.Lock()
+	cursor := env.srv.automationCursor
+	env.srv.automationMu.Unlock()
+	if cursor == 0 {
+		t.Fatal("唤醒失败后 cursor 仍为 0，同一条消息会被再消费")
+	}
+
+	_, _, _ = env.srv.consumeAutomationEventsOnce(context.Background())
+	if runner.launches != first {
+		t.Fatalf("失败后不得对同一条再 Launch：%d → %d", first, runner.launches)
+	}
+}

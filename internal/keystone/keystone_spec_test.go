@@ -63,3 +63,24 @@ func TestLaunchForCardConsumesSessionSpec(t *testing.T) {
 		t.Fatalf("spec.Env 长度不符：%d vs %d", len(got.Env), len(want.Env))
 	}
 }
+
+// TestWakeWithoutSessionConsumesSpec 无绑定时 Wake 必须把组装点解析的 spec
+// 交给 Launch，不得自造空 spec（B274：CLI "" 未实装 → 指针洪流）。
+func TestWakeWithoutSessionConsumesSpec(t *testing.T) {
+	rec := &specRecorder{}
+	svc := New(rec, nil, stubLedgerView{}, nil)
+	want := keysclient.SessionSpec{CLI: "opencode", HomeDir: "/home/coord", Model: "fast", Workdir: "/w"}
+	if _, err := svc.Wake(context.Background(), "B1", []WakeEvent{
+		{Kind: WakeMessage, Card: "B1", Summary: "用户留言"},
+	}, want); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if len(rec.launches) != 1 {
+		t.Fatalf("无绑定 Wake 应 Launch 一次，got %d", len(rec.launches))
+	}
+	got := rec.launches[0]
+	if got.CLI != want.CLI || got.HomeDir != want.HomeDir ||
+		got.Model != want.Model || got.Workdir != want.Workdir {
+		t.Fatalf("无绑定 Wake spec 未消费：\n got=%+v\nwant=%+v", got, want)
+	}
+}

@@ -123,25 +123,34 @@ func (s *Service) Pointer(roomID string, msg proto.RoomMessage) (int64, error) {
 	return seq, nil
 }
 
-// History 读房间历史：seq 游标分页（beforeSeq 排他、升序截尾），只返回
-// type=room_message 的事件。limit<=0 取 historyDefaultLimit。
+// History 读房间历史：只返回 type=room_message 的事件，升序截尾。
+//
+// beforeSeq<=0 表示无上界，返回该房间最新 limit 条；beforeSeq>0 是排他上界
+// （seq < beforeSeq），与 HTTP query `before` 同名。limit<=0 取 historyDefaultLimit。
+//
+// 必须读完整事件流再从尾部截：从最老一侧 break 会让新消息永远进不了窗口
+// （B274 真机：发送 200 列表不动）。ReadAllEvents 已按 1000 翻页，这里不再把
+// beforeSeq 误当成 from 游标。
 func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
-	events, err := room.ReadAllEvents(s.lc, beforeSeq)
+	events, err := room.ReadAllEvents(s.lc, 0)
 	if err != nil {
 		return nil, err
 	}
-	out := make([]proto.LedgerEvent, 0, len(events))
+	out := make([]proto.LedgerEvent, 0, limit)
 	for _, ev := range events {
 		if ev.Type != room.RoomEventType || !room.SameRoom(ev, roomID) {
 			continue
 		}
-		out = append(out, ev)
-		if len(out) >= limit {
-			break
+		if beforeSeq > 0 && ev.Seq >= beforeSeq {
+			continue
 		}
+		out = append(out, ev)
+	}
+	if n := len(out); n > limit {
+		out = out[n-limit:]
 	}
 	return out, nil
 }

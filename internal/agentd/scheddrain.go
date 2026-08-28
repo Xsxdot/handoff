@@ -221,9 +221,20 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 		return zero, &coordinatorAdmissionError{squad: squad.Name, err: err}
 	}
 	defer s.releaseSchedulingBinding(card, binding)
+	carrier, err := s.scheduling.Carrier(binding.Carrier)
+	if err != nil {
+		s.log.Error("读协调者载体失败", "card", card,
+			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
+		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
+	}
+	spec := keysclient.SessionSpec{
+		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
+		Workdir: s.resolveCoordWorkdir(card),
+	}
 	s.log.Info("自动化唤醒协调者回合", "card", card,
-		"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier)
-	result, err := s.keystone.Wake(ctx, card, evs)
+		"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier,
+		"cli", spec.CLI, "home_dir", spec.HomeDir)
+	result, err := s.keystone.Wake(ctx, card, evs, spec)
 	if err != nil {
 		s.log.Error("自动化唤醒协调者回合失败", "card", card,
 			"event_count", len(evs), "squad", binding.Squad,

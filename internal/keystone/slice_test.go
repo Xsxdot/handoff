@@ -220,7 +220,7 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 	wake, err := ks.Wake(ctx, card.ID, []keystone.WakeEvent{
 		{Kind: keystone.WakeTaskTerminal, Card: card.ID, Summary: "contract 到 waiting_review"},
 		{Kind: keystone.WakeTicket, Card: card.ID, Summary: "go build 权限请求"},
-	})
+	}, keysclient.SessionSpec{CLI: "opencode"})
 	if err != nil {
 		t.Fatalf("唤醒回合失败: %v", err)
 	}
@@ -245,7 +245,7 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 
 	// 兜底降级链第一段：resume 失败 → 换载体重建（房间落「载体已更换」指针）。
 	runner.failNext = 99
-	rebuilt, wakeErr := ks.Wake(ctx, card.ID, []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: card.ID}})
+	rebuilt, wakeErr := ks.Wake(ctx, card.ID, []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: card.ID}}, keysclient.SessionSpec{CLI: "opencode"})
 	if wakeErr != nil {
 		t.Fatalf("resume 失败后重建应成功: %v", wakeErr)
 	}
@@ -261,7 +261,7 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 
 	// 兜底降级链终点：重建也失败 → 转等人 + 看板亮。
 	runner.failLaunches = true
-	if _, err := ks.Wake(ctx, card.ID, []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: card.ID}}); err == nil {
+	if _, err := ks.Wake(ctx, card.ID, []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: card.ID}}, keysclient.SessionSpec{CLI: "opencode"}); err == nil {
 		t.Fatalf("resume 与重建均不可用时唤醒应报错")
 	}
 	if len(view.needs) == 0 || view.needs[0] != card.ID {

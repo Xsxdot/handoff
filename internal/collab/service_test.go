@@ -424,6 +424,47 @@ func TestHistoryFiltersNonRoomEvents(t *testing.T) {
 	}
 }
 
+// TestHistoryReturnsNewestWindow 钉住「升序截尾」：无 before 时取最新 limit 条，
+// 不是从最老一侧截断。B274 真机：发送已 200 却永远看不见新消息。
+func TestHistoryReturnsNewestWindow(t *testing.T) {
+	svc, st := newFixture(t)
+	card := mustAnyCard(t, svc, st)
+	bodyOf := func(ev proto.LedgerEvent) string {
+		var msg proto.RoomMessage
+		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+			t.Fatalf("解码 History 载荷: %v", err)
+		}
+		return msg.Body
+	}
+	for i := 1; i <= 5; i++ {
+		if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "m" + itoa(i)}, "user:sy"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := svc.History(card.ID, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("无 before 应截最新 2 条，got %d", len(got))
+	}
+	if bodyOf(got[0]) != "m4" || bodyOf(got[1]) != "m5" {
+		t.Fatalf("应升序返回最新两条 m4,m5，got %q %q", bodyOf(got[0]), bodyOf(got[1]))
+	}
+	older, err := svc.History(card.ID, got[0].Seq, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(older) != 2 {
+		t.Fatalf("before=最新窗首 seq 应再取 2 条，got %d", len(older))
+	}
+	if bodyOf(older[0]) != "m2" || bodyOf(older[1]) != "m3" {
+		t.Fatalf("before 上界应取更早的 m2,m3，got %q %q", bodyOf(older[0]), bodyOf(older[1]))
+	}
+}
+
+func itoa(n int) string { return string(rune('0' + n)) }
+
 func TestMentionsFiltersByMember(t *testing.T) {
 	svc, st := newFixture(t)
 	mustAnyCard(t, svc, st)

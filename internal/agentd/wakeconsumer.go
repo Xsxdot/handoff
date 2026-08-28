@@ -158,6 +158,14 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		if wakeErr != nil {
 			s.log.Error("自动化事件批次唤醒失败", "card", card,
 				"event_count", len(evs), "cause", wakeErr)
+			// 失败也推进游标：同一条用户消息重试会反复 launchRound，失败前若
+			// 再落指针就把房间刷爆（B274）。attach 暂缓走上面的 early return，
+			// 不经过这里。
+			s.automationMu.Lock()
+			if maxProcessed > s.automationCursor {
+				s.automationCursor = maxProcessed
+			}
+			s.automationMu.Unlock()
 			return processed, escalated || result.Escalated, wakeErr
 		}
 		if s.automationRoundHook != nil {

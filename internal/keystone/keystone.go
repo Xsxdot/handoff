@@ -87,24 +87,32 @@ func (s *Service) Decide(ev WakeEvent) Decision {
 // Wake 跑一个唤醒回合：同卡积压事件合并为一回合，先读账对齐现场（以 ledger
 // 为准不信记忆），再无头续会话送入开场简报。失败兜底降级链（spec §5.4）：
 // resume 失败 → 新载体承接同一身份（重建四步）→ 仍失败 → 转等人。
-func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent) (RoundResult, error) {
+//
+// spec 由组装点解析（小队 → LaunchAdmit → 载体）。无绑定时必须带着它去
+// launchRound——空 spec 会让承载门面报「CLI "" 未实装」，再叠加失败前落指针、
+// 失败不推 cursor，就会把房间刷成指针洪流（B274）。
+func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec keysclient.SessionSpec) (RoundResult, error) {
 	var zero RoundResult
 	if len(evs) == 0 {
 		return zero, errors.New("keystone: 唤醒回合没有事件")
 	}
 	sort.Slice(evs, func(i, j int) bool { return evs[i].Kind < evs[j].Kind })
+	s.mu.Lock()
 	ref, ok := s.sessions[card]
+	s.mu.Unlock()
 	prompt := s.briefing(card, evs)
 	if !ok {
-		return s.launchRound(card, prompt, keysclient.SessionSpec{})
+		return s.launchRound(card, prompt, spec, false)
 	}
 	result, err := s.runner.Resume(ref, prompt)
 	if err == nil {
 		return RoundResult{Woke: true, SessionID: result.SessionID, Output: result.Output}, nil
 	}
-	// resume 失败：换载体承接同一协调者身份，房间落「载体已更换」指针。
-	// 重建 spec 保留原会话的 CLI（其余字段此刻不可得，由 K5 唤醒重建路径补齐）。
-	rebuilt, launchErr := s.launchRound(card, prompt, keysclient.SessionSpec{CLI: ref.CLI})
+	rebuildSpec := spec
+	if rebuildSpec.CLI == "" {
+		rebuildSpec.CLI = ref.CLI
+	}
+	rebuilt, launchErr := s.launchRound(card, prompt, rebuildSpec, true)
 	if launchErr != nil {
 		_ = s.ledger.MarkNeedsHuman(card, "协调者唤醒失败：resume 与重建均不可用", "keystone")
 		return RoundResult{Escalated: true}, fmt.Errorf("resume: %v; 重建: %w", err, launchErr)
@@ -116,7 +124,7 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent) (Round
 // LaunchForCard 拉起一张卡的协调者并绑定。source 记录拉起来源（card_create =
 // 开卡即绑；manual = 卡上一键拉起），两入口共用同一实现（spec §5.1）。
 func (s *Service) LaunchForCard(ctx context.Context, card, source string, spec keysclient.SessionSpec) (RoundResult, error) {
-	result, err := s.launchRound(card, "", spec)
+	result, err := s.launchRound(card, "", spec, false)
 	if err != nil {
 		return RoundResult{}, fmt.Errorf("拉起协调者（来源 %s）失败: %w", source, err)
 	}
@@ -159,10 +167,7 @@ func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error) {
 // （协调者小队 → LaunchAdmit → Binding → Carrier 读 HomeDir，契约 §15 澄清 2），
 // 不再自造空 spec——骨架期忽略入参的欠账已补齐，防空 spec 回潮。重建四步的
 // 输入由开场简报携带：读卡 → 会话史（账本事件流）→ timeline → 仓内文档指针。
-func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec) (RoundResult, error) {
-	if s.narrator != nil {
-		_ = s.narrator.Say(card, "载体已更换：新载体承接同一协调者身份（重建四步已执行）")
-	}
+func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec, rebuild bool) (RoundResult, error) {
 	result, err := s.runner.Launch(spec, s.briefing(card, nil)+extra)
 	if err != nil {
 		return RoundResult{}, err
@@ -171,6 +176,11 @@ func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec) (
 	s.mu.Lock()
 	s.sessions[card] = ref
 	s.mu.Unlock()
+	// 指针只在重建成功后落：失败前落「载体已更换」会在每次重试写一行，
+	// 合上房间 History 的最老窗就把发送看起来修成了「没反应」（B274）。
+	if rebuild && s.narrator != nil {
+		_ = s.narrator.Say(card, "载体已更换：新载体承接同一协调者身份（重建四步已执行）")
+	}
 	return RoundResult{Woke: true, SessionID: result.SessionID, Rebuilt: true, Output: result.Output}, nil
 }
 
