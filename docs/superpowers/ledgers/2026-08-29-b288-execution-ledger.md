@@ -62,3 +62,15 @@
   改为在 wb.groups 摊平结果上按 base.key 分组排序；OpenItem.group 取 string。
   Shell.test 新增 2 支（openItems 顺序+focusTab 链路、tail 随激活 tab 变化），
   1 支标题更新；Shell 41/41 绿，persist/restore/useWorkbenchSync/useWorkbench 29/29 绿。
+- T8 收尾全量（2026-08-29）：
+  npm test → 112 files / 1130 tests 全绿。
+  npm run typecheck → tsc -b 零错误。
+  npm run lint → 23 problems（5 errors, 18 warnings）——与基线 f770304b0 完全一致
+  （api/pty.ts no-case-declarations、flows/NodeEditor.test prefer-const、
+  workbench/terminalHostResponse no-control-regex ×3），本卡零新增。
+  npm run build → tsc -b + vite build 成功（chunk >500kB 警告为基线既有）。
+  功能保留清单逐条核过：搜索/⌘K、树偏好菜单、机器行右键菜单、未归属分组、
+  底部 dock、任务拖拽（含 data-drag-task 放行链路）、断连徽标与原因、
+  确认弹层（终端会话/草稿文件，标签条关闭钮也过确认闸）、新建工作树弹层、
+  计数内部使用（排序/折叠）——全部有测试支撑且绿。
+  真机截图对照原型属验收节点动作，不在本 executor 范围。
