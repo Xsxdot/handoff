@@ -4,9 +4,10 @@
 （先读，含硬规则与 Out of Scope）。**样式真源是两份原型文件，数值一律对照移植，
 本计划不复述像素值**（声明见「占位符扫描」节）。
 
-- 命令（都在 `web/` 下跑）：单文件测试 `pnpm vitest run src/app/...`；
-  全量 `pnpm test`；类型 `pnpm typecheck`。基线（commit 0145fa6dd）上这两条全绿，
-  每个 task 动手前先跑对应单文件确认绿，再写红测试。
+- 命令（都在 `web/` 下跑，包管理器是 **npm**，锁文件 package-lock.json）：
+  单文件测试 `npx vitest run src/app/...`；全量 `npm test`；类型 `npm run typecheck`。
+  基线（commit 0145fa6dd）上这两条全绿，每个 task 动手前先跑对应单文件确认绿，
+  再写红测试。依赖未装时先 `npm install`。
 - 提交纪律：每个 task 一个 commit，消息 `feat(B288): <task 标题>` 或
   `test(B288): ...`；红绿 task 先测试后实现同一提交。
 - 禁改：`prototypes/`、`DesktopTitleBar.tsx` 样式、后端 Go 代码、wire 类型。
@@ -66,7 +67,7 @@ export function breadcrumbSegments(base: BaseDir, tail?: string): string[]
 **Files**：新增 `web/src/app/lib/taskName.ts`、`web/src/app/lib/taskName.test.ts`；
 改 `web/src/app/workbench/tabs.ts`、`web/src/app/workbench/tabs.test.ts`。
 
-1. 基线复核：`cd web && pnpm vitest run src/app/workbench/tabs.test.ts` 全绿。
+1. 基线复核：`cd web && npx vitest run src/app/workbench/tabs.test.ts` 全绿。
 2. 红：tabs.test.ts 追加用例（照抄文件内既有 describe 风格）：
    - `tabTitle({kind:'tui',taskId:'f22ed520abc'}, 'handoff', () => '审 B264')` === `'审 B264'`
    - resolver 返回 `undefined` / 空串 → `'TUI · f22ed520'`
@@ -301,7 +302,7 @@ export function breadcrumbSegments(base: BaseDir, tail?: string): string[]
 
 ## T8 收尾全量
 
-`cd web && pnpm test && pnpm typecheck && pnpm lint` 全绿；`pnpm build` 成功。
+`cd web && npm test && npm run typecheck && npm run lint` 全绿；`npm run build` 成功。
 逐条过一遍「功能保留清单」。分批未竟事项清零后，最终提交（如有零星修复）。
 
 ## 五项检查结论
