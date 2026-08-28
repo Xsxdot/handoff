@@ -16,7 +16,7 @@
 // 关于 ShellContext 的移除：W3 用 <Outlet context> 给三个子页面下发共享数据。
 // 新 IA 里中央不再是路由页面而是 tab，Outlet 没有了消费者；看板与工单改为弹层，
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
 import { fetchCards, fetchDecisions } from '../../api/ledger'
@@ -374,9 +374,10 @@ export function Shell() {
 
   // backToWorkbench 把中央区换回工作台。
   //
-  // why 每个「改工作台状态」的入口都得先调它：工作台挂在 path="*" 上，停在
-  // /cards、/flows、/settings 时它根本没渲染。只改状态不换路由的后果是——
-  // 面包屑跟着变了，中央还是原来那一页，看着像点击没反应（2026-08-19 真机踩到）。
+  // why 每个「改工作台状态」的入口都得先调它：设置/工作项等是盖在工作台上的
+  // 整页，URL 还停在 /cards 时用户看见的仍是那一页。只改状态不换路由的后果
+  // 是面包屑跟着变了、中央还是原来那一页，看着像点击没反应（2026-08-19 真机
+  // 踩到）。工作台本身常驻不卸（B280），但盖住它的那一层要靠导航拿掉。
   // 已在 / 上时不导航，避免往历史里塞无意义的同址条目。
   const backToWorkbench = () => {
     if (location.pathname !== '/') navigate('/')
@@ -476,94 +477,95 @@ export function Shell() {
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
         {wb.base && !desktop && !fullPageRoute && <Breadcrumb base={wb.base} />}
-        <main className="min-h-0 flex-1">
+        <main className="relative min-h-0 flex-1">
+          {/* 工作台常驻。整页路由盖在上面，不走 path="*" 卸载——卸了 xterm
+              会断 WS 再重放 1004h，OpenTUI/Grok 卡死（B270 的病在整页入口复发）。
+              不用 display:none / invisible / pointer-events-none：那些会捏尺寸
+              或让 WKWebView 命中回不来。 */}
+          <div className="h-full">
+            <WorkbenchPage
+              api={wb}
+              onAddProject={() => setWizardOpen(true)}
+              tree={treeState.data}
+              tasks={tasks}
+              onFileCreated={() => setFileTreeNonce((n) => n + 1)}
+              terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
+              launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
+              onBeforeClose={beforeCloseTab}
+              renderContent={(c, base, group, tabId, active = true) => {
+                switch (c.kind) {
+                  case 'terminal': {
+                    const note = ptyNote(base.machine)
+                    if (note !== '') {
+                      return <p className="p-4 text-sm text-muted-foreground">{note}</p>
+                    }
+                    const launcher = c.launcher
+                      ? launchersData?.launchers.find((item) => item.name === c.launcher)
+                      : undefined
+                    return (
+                      <TerminalTab
+                        base={base}
+                        seq={c.seq}
+                        sessionId={c.sessionId}
+                        rel={c.rel}
+                        envFile={launcher?.env_file}
+                        initCommand={launcher?.command}
+                        incompatible={c.incompatible}
+                        active={active && !fullPageRoute}
+                        // 会话 id 必须写回这个 tab：不写回的话切一次 tab
+                        // 就会再建一个会话，用户每切一次多留一个 shell
+                        onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
+                      />
+                    )
+                  }
+                  case 'file':
+                    return (
+                      <FileTab
+                        base={base}
+                        rel={c.rel}
+                        initial={
+                          c.draft !== undefined && c.baseSha !== undefined
+                            ? { draft: c.draft, baseSha: c.baseSha }
+                            : undefined
+                        }
+                        // 草稿必须写回这个 tab：不写回的话切一次 tab 就把改动
+                        // 丢了（WorkbenchPage 只渲染 activeTab，切走即卸载）
+                        onDraftChange={(d) =>
+                          wb.setContent(group, tabId, {
+                            kind: 'file',
+                            rel: c.rel,
+                            draft: d?.draft,
+                            baseSha: d?.baseSha,
+                          })
+                        }
+                      />
+                    )
+                  case 'tui':
+                    return <TuiTab taskId={c.taskId} />
+                  default:
+                    return null
+                }
+              }}
+            />
+          </div>
           <Routes>
             {ledgerEnabled && (
               <>
-                <Route path="/cards" element={<CardsPage />} />
-                <Route path="/flows" element={<FlowsPage />} />
+                <Route path="/cards" element={<FullPageCover><CardsPage /></FullPageCover>} />
+                <Route path="/flows" element={<FullPageCover><FlowsPage /></FullPageCover>} />
               </>
             )}
             <Route
               path="/settings"
-              element={<SettingsPage onClose={() => navigate('/')} />}
+              element={<FullPageCover><SettingsPage onClose={() => navigate('/')} /></FullPageCover>}
             />
             {/* /codegraph 的 viewer 唯一来源是同源 iframe；它不在 Shell 内复制取数或凭据。 */}
             <Route
               path="/codegraph"
-              element={<CodegraphFrame project={wb.base?.projectName ?? ''} />}
+              element={<FullPageCover><CodegraphFrame project={wb.base?.projectName ?? ''} /></FullPageCover>}
             />
             <Route path="/machines" element={<Navigate to="/settings" replace />} />
-            <Route path="/tasks/:id" element={<TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} />} />
-            <Route
-              path="*"
-              element={
-                <WorkbenchPage
-                  api={wb}
-                  onAddProject={() => setWizardOpen(true)}
-                  tree={treeState.data}
-                  tasks={tasks}
-                  onFileCreated={() => setFileTreeNonce((n) => n + 1)}
-                  terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
-                  launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
-                  onBeforeClose={beforeCloseTab}
-                  renderContent={(c, base, group, tabId, active = true) => {
-                    switch (c.kind) {
-                      case 'terminal': {
-                        const note = ptyNote(base.machine)
-                        if (note !== '') {
-                          return <p className="p-4 text-sm text-muted-foreground">{note}</p>
-                        }
-                        const launcher = c.launcher
-                          ? launchersData?.launchers.find((item) => item.name === c.launcher)
-                          : undefined
-                        return (
-                          <TerminalTab
-                            base={base}
-                            seq={c.seq}
-                            sessionId={c.sessionId}
-                            rel={c.rel}
-                            envFile={launcher?.env_file}
-                            initCommand={launcher?.command}
-                            incompatible={c.incompatible}
-                            active={active}
-                            // 会话 id 必须写回这个 tab：不写回的话切一次 tab
-                            // 就会再建一个会话，用户每切一次多留一个 shell
-                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
-                          />
-                        )
-                      }
-                      case 'file':
-                        return (
-                          <FileTab
-                            base={base}
-                            rel={c.rel}
-                            initial={
-                              c.draft !== undefined && c.baseSha !== undefined
-                                ? { draft: c.draft, baseSha: c.baseSha }
-                                : undefined
-                            }
-                            // 草稿必须写回这个 tab：不写回的话切一次 tab 就把改动
-                            // 丢了（WorkbenchPage 只渲染 activeTab，切走即卸载）
-                            onDraftChange={(d) =>
-                              wb.setContent(group, tabId, {
-                                kind: 'file',
-                                rel: c.rel,
-                                draft: d?.draft,
-                                baseSha: d?.baseSha,
-                              })
-                            }
-                          />
-                        )
-                      case 'tui':
-                        return <TuiTab taskId={c.taskId} />
-                      default:
-                        return null
-                    }
-                  }}
-                />
-              }
-            />
+            <Route path="/tasks/:id" element={<FullPageCover><TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} /></FullPageCover>} />
           </Routes>
         </main>
       </div>
@@ -699,6 +701,13 @@ export function Shell() {
       />
     </div>
   )
+}
+
+// FullPageCover 把设置/工作项等整页盖在常驻工作台上。
+// 不透明底 + 更高 z-index，观感仍是「中央换成整页」；工作台在下面保持
+// 原尺寸，避免 xterm 被卸掉或捏成 0。
+function FullPageCover({ children }: { children: ReactNode }) {
+  return <div className="absolute inset-0 z-20 overflow-auto bg-background">{children}</div>
 }
 
 // TaskDeepLink 承接 /tasks/:id 这条 W3b 留下的深链。

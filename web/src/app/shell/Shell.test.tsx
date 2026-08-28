@@ -9,7 +9,7 @@
 //
 // 注意：本文件依赖 Task 12-15 的组件（BoardOverlay / TicketsOverlay /
 // useGlobalTickets / SettingsPage），在那些任务落地前无法运行，属预期的全期红。
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
@@ -312,8 +312,8 @@ describe('Shell 三栏外框', () => {
     expect(screen.getByLabelText('当前位置')).toHaveTextContent('integration/b2-b3')
   })
 
-  // 停在 /cards 或 /flows 时，工作台挂在 path="*" 上根本没渲染——侧栏点任务
-  // 只改了工作台状态，中央还是看板，面包屑却已经跟着变了。真机实测踩到。
+  // 停在 /cards 或 /flows 时，整页盖在工作台上——侧栏点任务只改工作台状态
+  // 不换路由的话，用户看见的还是看板。真机实测踩到。
   it('停在 /cards 时点左栏任务，中央换回工作台并开 TUI tab', async () => {
     renderShell('/cards')
     fireEvent.click(await screen.findByText('重构工单通道'))
@@ -345,6 +345,25 @@ describe('Shell 三栏外框', () => {
     renderShell('/cards')
     fireEvent.click(await screen.findByText('integration/b2-b3'))
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
+  })
+
+  // B270 只让 WorkbenchPage 内部切 tab 不卸 xterm。左栏 dock 的设置/工作项
+  // 走整页路由，工作台挂在 path="*" 上会被卸掉，回来重放 1004h，TUI 再卡死。
+  it.each(['设置', '工作项'] as const)('整页路由（%s）不卸载已打开的终端', async (entry) => {
+    renderShell()
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    fireEvent.click(screen.getByRole('button', { name: '新建标签页' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    const host = await screen.findByTestId('pty-host')
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    fireEvent.click(screen.getByLabelText(entry))
+    await waitFor(() => expect(screen.getByTestId('pty-host')).toBe(host))
+    expect(host).toBeInTheDocument()
+
+    fireEvent.click(within(screen.getByRole('complementary')).getByText('integration/b2-b3'))
+    await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
+    expect(screen.getByTestId('pty-host')).toBe(host)
   })
 
   it('顶部 tab 条已删除', async () => {
@@ -447,7 +466,7 @@ describe('Shell 三栏外框', () => {
     expect(screen.queryByText('文件')).not.toBeInTheDocument()
     expect(screen.queryByLabelText('当前位置')).not.toBeInTheDocument()
 
-    fireEvent.click(screen.getByText('integration/b2-b3'))
+    fireEvent.click(within(screen.getByRole('complementary')).getByText('integration/b2-b3'))
     await waitFor(() => expect(screen.getByText('文件')).toBeInTheDocument())
     expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
   })
