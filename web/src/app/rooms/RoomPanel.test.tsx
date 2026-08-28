@@ -301,3 +301,21 @@ describe('RoomPanel 浮窗几何（B287）', () => {
     expect(restored.style.top).toBe(`${stored.y}px`)
   })
 })
+
+describe('RoomPanel 常驻栏独立开合（B287 返修）', () => {
+  it('浮窗收起不牵连工作项页常驻栏；常驻栏自己可收起、可由悬浮球重开', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    const user = userEvent.setup()
+    const view = render(<RoomPanel workbench={workbench()} persistent={false} />)
+    await screen.findByTestId('room-panel')
+    await user.click(screen.getByRole('button', { name: '收起房间面板' }))
+    expect(screen.queryByTestId('room-panel')).toBeNull()
+    // 切到工作项页（persistent=true）：常驻栏应仍开着——两种形态状态分账
+    view.rerender(<RoomPanel workbench={workbench()} persistent />)
+    expect(screen.getByTestId('room-panel')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '收起房间面板' }))
+    expect(screen.queryByTestId('room-panel')).toBeNull()
+    await user.click(screen.getByRole('button', { name: '打开房间面板' }))
+    expect(screen.getByTestId('room-panel')).toBeInTheDocument()
+  })
+})

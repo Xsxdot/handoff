@@ -115,7 +115,13 @@ function PanelHeader({ title, onCollapse, onDragDown }: { title: string; onColla
 export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps) {
   const [view, setView] = useState<RoomPanelView>('list')
   const [roomID, setRoomID] = useState('')
-  const [collapsed, setCollapsed] = useState(false)
+  // 常驻栏与浮窗的开合状态分账（B287 返修）：Shell 挂的是同一个实例、
+  // persistent 随路由切换——收起状态若共用，在工作项页之外收起浮窗会连带
+  // 藏掉工作项页的常驻栏。两种形态各记各的，切形态互不可见。
+  const [collapsedFloating, setCollapsedFloating] = useState(false)
+  const [collapsedRail, setCollapsedRail] = useState(false)
+  const collapsed = persistent ? collapsedRail : collapsedFloating
+  const setCollapsed = persistent ? setCollapsedRail : setCollapsedFloating
   const [project, setProject] = useState('')
   const [needsOnly, setNeedsOnly] = useState(false)
   const [attachConfirm, setAttachConfirm] = useState(false)
