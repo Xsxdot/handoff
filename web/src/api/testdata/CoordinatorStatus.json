@@ -1,0 +1,9 @@
+{
+  "bound": true,
+  "attach_active": false,
+  "attach": {
+    "machine": "",
+    "dir": "/repo/handoff",
+    "command": "opencode --session sess-coord"
+  }
+}

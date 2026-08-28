@@ -7,10 +7,14 @@ package agentd
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -67,6 +71,19 @@ func newNoPTYCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	runner := &fakeCoordRunner{}
 	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
 	return env, runner
+}
+
+func setCoordForwardTarget(t *testing.T, env *ledgerEnv, name, addr string) {
+	t.Helper()
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	if err := env.srv.swapConf(func(cfg *config.Config) error {
+		cfg.Targets = map[string]config.Target{
+			name: {Addr: addr, Token: testToken},
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("登记转发 target: %v", err)
+	}
 }
 
 // createCoordCard 建一张协调者测试卡（project=handoff，attachment-gates 流）。
@@ -132,7 +149,7 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 	facade := env.srv.autoLedger
 	for key, want := range map[string]int{"squad/coord": 0, "carrier/c1": 0} {
 		if n := runningCountIn(t, facade, key); n != want {
-			t.Fatalf("协调者回合结束后计数 %s=%d，want %d", key, n, want)
+			t.Fatalf("计数 %s=%d，want %d", key, n, want)
 		}
 	}
 	// 铁律：拉起路径全程不产生 task（竖切断言延伸到 gateway 层）。
@@ -267,8 +284,12 @@ func TestCoordAttachTakeoverMutesWake(t *testing.T) {
 // TestCoordStatusEndpoint 缝⑤×缝②：GET coordinator 的绑定/接管态三态推进
 // （未拉 → bound=false；拉起 → bound=true；接管 → attach_active=true）。
 func TestCoordStatusEndpoint(t *testing.T) {
-	env, _ := newCoordEnv(t)
+	env, _ := newNoPTYCoordEnv(t)
 	seedCoordinatorSquad(t, env)
+	if err := env.st.CreateProjectLocation(&proto.ProjectLocation{
+		Name: "handoff", Path: "/repo/handoff"}); err != nil {
+		t.Fatalf("登记项目位置: %v", err)
+	}
 	cardID := createCoordCard(t, env)
 
 	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
@@ -280,6 +301,16 @@ func TestCoordStatusEndpoint(t *testing.T) {
 			t.Fatalf("未绑定态缺 %s：%s", want, body)
 		}
 	}
+	var status proto.CoordinatorStatus
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		t.Fatalf("未绑定态解析失败: %v body=%s", err, body)
+	}
+	if status.Bound || status.AttachActive || status.Attach != nil {
+		t.Fatalf("未绑定态异常: %+v", status)
+	}
+	if !strings.Contains(body, `"attach":null`) {
+		t.Fatalf("未绑定态必须显式返回 attach:null: %s", body)
+	}
 	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`); code != http.StatusOK {
 		t.Fatalf("拉起失败：%d %s", code, body)
 	}
@@ -287,12 +318,98 @@ func TestCoordStatusEndpoint(t *testing.T) {
 	if code != http.StatusOK || !strings.Contains(body, `"bound":true`) || strings.Contains(body, `"attach_active":true`) {
 		t.Fatalf("绑定态异常：%d %s", code, body)
 	}
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		t.Fatalf("绑定态解析失败: %v body=%s", err, body)
+	}
+	if status.Attach == nil || status.Attach.Dir != "/repo/handoff" || status.Attach.Machine != "" {
+		t.Fatalf("绑定态定位三元组异常: %+v", status.Attach)
+	}
+	if !strings.Contains(body, `"machine":""`) {
+		t.Fatalf("绑定态必须保留 machine 空串: %s", body)
+	}
 	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/attach", `{"active":true}`); code != http.StatusOK {
 		t.Fatalf("attach 失败：%d %s", code, body)
 	}
 	code, body = ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
 	if code != http.StatusOK || !strings.Contains(body, `"attach_active":true`) {
 		t.Fatalf("接管态未反映：%d %s", code, body)
+	}
+}
+
+func TestCoordAttachMissingActive(t *testing.T) {
+	env, _ := newNoPTYCoordEnv(t)
+	cardID := createCoordCard(t, env)
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/attach", `{}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("缺 active 应 400，状态=%d body=%s", code, body)
+	}
+	if !strings.Contains(body, "active 必填") {
+		t.Fatalf("缺 active 的错误应保留原文: %s", body)
+	}
+	if env.srv.keystone.AttachState(cardID) {
+		t.Fatal("缺 active 不得改变接管态")
+	}
+}
+
+func TestCoordAttachLocateFailureRollsBack(t *testing.T) {
+	env, _ := newNoPTYCoordEnv(t)
+	cardID := createCoordCard(t, env)
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/attach",
+		`{"active":true,"workdir":"/repo/handoff"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("未绑定 attach 应 400，状态=%d body=%s", code, body)
+	}
+	if !strings.Contains(body, "没有绑定") {
+		t.Fatalf("定位错误应保留没有绑定原文: %s", body)
+	}
+	if env.srv.keystone.AttachState(cardID) {
+		t.Fatal("定位失败后接管态必须回滚")
+	}
+}
+
+func TestCoordAttachForwardsMachineQuery(t *testing.T) {
+	type received struct {
+		method string
+		path   string
+		body   string
+		header string
+	}
+	got := make(chan received, 1)
+	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := io.ReadAll(r.Body)
+		if err != nil {
+			http.Error(w, "read body", http.StatusInternalServerError)
+			return
+		}
+		got <- received{method: r.Method, path: r.URL.RequestURI(), body: string(data), header: r.Header.Get(forwardedHeader)}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"remote":"ok"}`))
+	}))
+	t.Cleanup(remote.Close)
+
+	env, _ := newNoPTYCoordEnv(t)
+	cardID := createCoordCard(t, env)
+	env.srv.keystone.SetAttach(cardID, true)
+	setCoordForwardTarget(t, env, "devbox", remote.URL)
+
+	code, body := ledgerPost(t, env.testAgentdEnv,
+		"/api/cards/"+cardID+"/attach?machine=devbox", `{"active":false}`)
+	if code != http.StatusOK || body != `{"remote":"ok"}` {
+		t.Fatalf("转发响应应原样返回，状态=%d body=%q", code, body)
+	}
+	select {
+	case request := <-got:
+		if request.method != http.MethodPost || request.path != "/api/cards/"+cardID+"/attach" ||
+			request.body != `{"active":false}` || request.header != "1" {
+			t.Fatalf("远端请求异常: %+v", request)
+		}
+	default:
+		t.Fatal("远端没有收到 attach 转发")
+	}
+	if !env.srv.keystone.AttachState(cardID) {
+		t.Fatal("转发请求不得在本地执行 release")
 	}
 }
 

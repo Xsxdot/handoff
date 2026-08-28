@@ -169,27 +169,38 @@ func (s *Server) resolveCoordWorkdir(cardID string) string {
 	return loc.Path
 }
 
-// coordinatorStatusResp 是 GET /api/cards/{id}/coordinator 的响应（绑定与接管态）。
-// attach 为 null 即未绑定协调者会话（bound=false）。K6 按本形状镜像。
-type coordinatorStatusResp struct {
-	Bound        bool                   `json:"bound"`
-	AttachActive bool                   `json:"attach_active"`
-	Attach       *keysclient.AttachInfo `json:"attach,omitempty"`
+// coordinatorAttachInfo 将 keystone 定位器的结果投影到 agentd wire DTO。
+// 不修改服务端返回值、不拼接命令；命令仍由 locator 产生，Machine 为空串仍表示本机。
+func coordinatorAttachInfo(info keysclient.AttachInfo) proto.CoordinatorAttachInfo {
+	return proto.CoordinatorAttachInfo{
+		Machine: info.Machine,
+		Dir:     info.Dir,
+		Command: info.Command,
+	}
 }
 
 func (s *Server) handleCoordStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	s.log.Info("读取协调者状态", "card", id)
 	if _, err := s.ledger.GetCard(id); err != nil {
 		ledgerErr(w, err)
 		return
 	}
 	active := s.keystone.AttachState(id)
-	var attach *keysclient.AttachInfo
-	if info, err := s.keystone.Locate(id, ""); err == nil {
-		attach = &info
+	var attach *proto.CoordinatorAttachInfo
+	workdir := s.resolveCoordWorkdir(id)
+	if info, err := s.keystone.Locate(id, workdir); err != nil {
+		s.log.Warn("协调者状态定位失败", "card", id, "workdir", workdir, "cause", err)
+	} else {
+		mapped := coordinatorAttachInfo(info)
+		attach = &mapped
+		s.log.Info("协调者状态已读", "card", id, "bound", true,
+			"attach_active", active, "dir", mapped.Dir)
 	}
-	s.log.Debug("协调者状态读出", "card", id, "bound", attach != nil, "attach_active", active)
-	writeJSON(w, http.StatusOK, coordinatorStatusResp{
+	if attach == nil {
+		s.log.Info("协调者状态已读", "card", id, "bound", false, "attach_active", active)
+	}
+	writeJSON(w, http.StatusOK, proto.CoordinatorStatus{
 		Bound: attach != nil, AttachActive: active, Attach: attach,
 	})
 }
@@ -204,6 +215,7 @@ func (s *Server) handleCoordAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	id := r.PathValue("id")
+	s.log.Info("处理协调者 attach", "card", id)
 	var body struct {
 		Active  *bool  `json:"active"`
 		Workdir string `json:"workdir"`
@@ -213,6 +225,7 @@ func (s *Server) handleCoordAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Active == nil {
+		s.log.Warn("协调者 attach 请求缺少 active", "card", id, "reason", "active_missing")
 		writeErr(w, http.StatusBadRequest, fmt.Errorf("active 必填（true=接管，false=交回无头）"))
 		return
 	}
@@ -221,19 +234,22 @@ func (s *Server) handleCoordAttach(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if *body.Active {
+		s.log.Info("协调者 attach 定位开始", "card", id, "workdir", body.Workdir)
 		s.keystone.SetAttach(id, true)
 		info, err := s.keystone.Locate(id, body.Workdir)
 		if err != nil {
 			s.keystone.SetAttach(id, false) // 回滚：没有终端可接管，不得留下静默占用
-			s.log.Warn("attach 定位失败，接管态已回滚", "card", id, "cause", err)
+			s.log.Warn("attach 定位失败，接管态已回滚", "card", id, "workdir", body.Workdir, "cause", err)
 			writeErr(w, http.StatusBadRequest, err)
 			return
 		}
-		s.log.Info("attach 接管", "card", id, "machine", info.Machine, "dir", info.Dir, "command", info.Command)
-		writeJSON(w, http.StatusOK, info)
+		mapped := coordinatorAttachInfo(info)
+		// command 只返回给请求方，不写日志：它包含 resume session id。
+		s.log.Info("attach 接管完成", "card", id, "machine", mapped.Machine, "dir", mapped.Dir)
+		writeJSON(w, http.StatusOK, mapped)
 		return
 	}
 	s.keystone.SetAttach(id, false)
 	s.log.Info("attach 交回", "card", id)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeJSON(w, http.StatusOK, proto.CoordinatorAttachReleaseResp{OK: true})
 }

@@ -109,9 +109,13 @@ import type {
 import squadsFixture from './testdata/SquadsResp.json'
 import queueFixture from './testdata/QueueResp.json'
 import coordinatorLaunchFixture from './testdata/CoordinatorLaunchResp.json'
+import coordinatorStatusFixture from './testdata/CoordinatorStatus.json'
+import coordinatorAttachReleaseFixture from './testdata/CoordinatorAttachReleaseResp.json'
 import {
   type CarrierView,
   type CoordinatorLaunchResp,
+  type CoordinatorStatus,
+  type CoordinatorAttachReleaseResp,
   type QueueEntry,
   type SquadView,
 } from './scheduling'
@@ -564,5 +568,23 @@ describe('scheduling wire', () => {
     const r: CoordinatorLaunchResp = coordinatorLaunchFixture
     expect(r.woke).toBe(true)
     expect(typeof r.session_id).toBe('string')
+  })
+  it('CoordinatorStatus 保留 attach 三元组、machine 空串与 null 未绑定态', () => {
+    const r: CoordinatorStatus = coordinatorStatusFixture
+    expect(r.bound).toBe(true)
+    expect(r.attach_active).toBe(false)
+    expect(Object.keys(r.attach!)).toEqual(['machine', 'dir', 'command'])
+    expect(r.attach!.machine).toBe('')
+    expect(r.attach!.dir).toBe('/repo/handoff')
+    expect(r.attach!.command).toContain('sess-coord')
+
+    const unbound: CoordinatorStatus = { bound: false, attach_active: false, attach: null }
+    expect(unbound.attach).toBeNull()
+    expect(Object.prototype.hasOwnProperty.call(unbound, 'attach')).toBe(true)
+    expect(Object.prototype.hasOwnProperty.call({ bound: false, attach_active: false }, 'attach')).toBe(false)
+  })
+  it('CoordinatorAttachReleaseResp 保留 ok=true', () => {
+    const r: CoordinatorAttachReleaseResp = coordinatorAttachReleaseFixture
+    expect(r.ok).toBe(true)
   })
 })

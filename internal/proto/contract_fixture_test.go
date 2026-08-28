@@ -158,6 +158,13 @@ func TestContractFixtures(t *testing.T) {
 			Woke: true, SessionID: "sess-01HX", Rebuilt: false, Escalated: false,
 			Output: "开场评估完成",
 		}},
+		{"CoordinatorStatus", CoordinatorStatus{
+			Bound: true, AttachActive: false,
+			Attach: &CoordinatorAttachInfo{
+				Machine: "", Dir: "/repo/handoff", Command: "opencode --session sess-coord",
+			},
+		}},
+		{"CoordinatorAttachReleaseResp", CoordinatorAttachReleaseResp{OK: true}},
 	}
 
 	dir := fixtureDir(t)
