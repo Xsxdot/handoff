@@ -87,27 +87,57 @@
   }
   .proj-head .proj-name { flex: 1; min-width: 0; }
   .hover-actions { display: none; gap: 2px; flex-shrink: 0; margin-left: auto; }
-  .proj-head:hover .hover-actions, .mach-head:hover .hover-actions { display: flex; }
+  .proj-head:hover .hover-actions, .mach-row:hover .hover-actions { display: flex; }
   .hover-actions button, .hover-actions a {
     border: none; background: none; cursor: pointer; color: var(--muted-foreground);
     padding: 1px 5px; border-radius: 4px; font-size: 11px; text-decoration: none;
   }
   .hover-actions button:hover, .hover-actions a:hover { background: var(--muted); color: var(--foreground); }
-  .mach-block { margin: 0 0 6px; padding: 0 0 4px; }
-  .mach-head {
-    display: flex; align-items: center; gap: 6px;
-    padding: 4px 8px 4px 8px; font-size: 12px; font-weight: 500;
-    color: var(--muted-foreground);
-  }
-  .mach-head .mach-name { flex: 1; }
-  .task-row {
+  .mach-row {
     display: flex; align-items: center; gap: 6px;
     padding: 4px 8px 4px 32px; border-radius: 6px;
     font-size: 13px; cursor: grab; user-select: none;
   }
+  .mach-row:hover { background: var(--muted); }
+  .mach-row .mach-name { flex: 1; min-width: 0; }
+  .mach-row .chev { width: 12px; font-size: 10px; color: var(--muted-foreground); }
+  .task-row {
+    display: flex; align-items: center; gap: 8px;
+    padding: 5px 8px 5px 28px; border-radius: 6px;
+    font-size: 13px; cursor: grab; user-select: none; min-width: 0;
+  }
   .task-row:hover { background: var(--muted); }
-  .task-row.on { background: #e8e8e8; font-weight: 500; }
-  .task-row .sub { margin-left: 6px; font-size: 11px; color: var(--muted-foreground); }
+  .task-row.on { background: #e8e8e8; }
+  .task-row .t-title {
+    flex: 1; min-width: 0;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .task-row.on .t-title { font-weight: 500; }
+  .scheme-tag { font-size: 10px; font-weight: 400; color: var(--muted-foreground); margin-left: 6px; }
+  .avatar-wrap { position: relative; width: 22px; height: 22px; flex-shrink: 0; }
+  .avatar-wrap svg.avatar { display: block; width: 22px; height: 22px; border-radius: 50%; }
+  .type-avatar {
+    width: 22px; height: 22px; border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    background: #e7e7e7; color: #404040;
+  }
+  .type-avatar svg { width: 13px; height: 13px; display: block; }
+  .avatar-wrap .status {
+    position: absolute; right: -1px; bottom: -1px;
+    width: 8px; height: 8px; border-radius: 50%;
+    border: 1.5px solid var(--sidebar);
+    background: #a3a3a3;
+  }
+  .task-row:hover .avatar-wrap .status { border-color: var(--muted); }
+  .task-row.on .avatar-wrap .status { border-color: #e8e8e8; }
+  .avatar-wrap .status.green { background: var(--green); }
+  .avatar-wrap .status.amber { background: var(--amber); }
+  .type-ic { width: 16px; height: 16px; flex-shrink: 0; color: var(--muted-foreground); display: block; }
+  .mach-name-r {
+    flex-shrink: 0; max-width: 56px;
+    font-size: 11px; color: var(--muted-foreground);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
   .dot.amber { background: var(--amber); }
   .dot.mute { background: #a3a3a3; }
@@ -139,7 +169,7 @@
   .peer-group { margin: 0; }
   .sec-head {
     display: flex; align-items: center; gap: 6px;
-    padding: 4px 8px 4px 20px; font-size: 12px; font-weight: 600;
+    padding: 4px 8px 4px 12px; font-size: 12px; font-weight: 600;
     color: var(--foreground); user-select: none;
   }
   .sec-head.tog { cursor: pointer; }
@@ -147,7 +177,7 @@
   .sec-head:hover .hover-actions { display: flex; }
   .dir-row {
     display: flex; align-items: center; gap: 6px;
-    padding: 4px 8px 4px 32px; border-radius: 6px;
+    padding: 4px 8px 4px 48px; border-radius: 6px;
     font-size: 13px; cursor: pointer; user-select: none;
   }
   .dir-row:hover { background: var(--muted); }
@@ -198,7 +228,7 @@
   <div class="main">
     <div class="breadcrumb" id="crumb">本机 / handoff</div>
     <div class="tabbar" id="groupBar"></div>
-    <div class="morph-hint">已打开的任务点一下跳过去 · 目录默认折着 · 点目录出文件抽屉 · 拖目录按该路径开终端</div>
+    <div class="morph-hint">handoff / charter / aim 三个项目是三种任务行方案 · 长标题省略</div>
     <div class="layout-strip" id="layoutStrip"></div>
     <main class="content">
       <div class="cols" id="cols"></div>
@@ -269,15 +299,16 @@
 
 <script>
 const TASKS = [
-  { id: "h-b264", kind: "executor", title: "B264 标签组与分屏", project: "handoff", machine: "本机", status: "running" },
+  { id: "h-b264", kind: "executor", title: "B264 标签组与分屏以及中央工作台列模型确认", project: "handoff", machine: "本机", status: "running" },
   { id: "h-b270", kind: "executor", title: "B270 四卡聚合", project: "handoff", machine: "本机", status: "review" },
   { id: "h-term1", kind: "terminal", title: "终端 1", project: "handoff", machine: "本机" },
   { id: "h-tabs", kind: "file", title: "tabs.ts", project: "handoff", machine: "本机", file: "tabs.ts" },
   { id: "h-b93", kind: "executor", title: "B93 基准评测", project: "handoff", machine: "linux-01", status: "running" },
-  { id: "c-using", kind: "file", title: "using-charter.md", project: "charter", machine: "本机", file: "using-charter.md" },
+  { id: "c-using", kind: "file", title: "using-charter.md · 会话入口与节点地图", project: "charter", machine: "本机", file: "using-charter.md" },
   { id: "c-c19", kind: "executor", title: "C1.9 图下钻", project: "charter", machine: "本机", status: "running" },
   { id: "a-term", kind: "terminal", title: "终端", project: "aim", machine: "mac-02" },
-  { id: "a-eval", kind: "executor", title: "评测跑批", project: "aim", machine: "mac-02", status: "running" },
+  { id: "a-notes", kind: "file", title: "notes.md 评测记录和失败样本", project: "aim", machine: "mac-02", file: "notes.md" },
+  { id: "a-eval", kind: "executor", title: "评测跑批 batch3 全量回归还在跑", project: "aim", machine: "mac-02", status: "running" },
   { id: "s-schema", kind: "file", title: "schema.sql", project: "sq", machine: "本机", file: "schema.sql" }
 ];
 
@@ -651,23 +682,78 @@ function renderDrawer() {
   });
 }
 
+
+const TASK_SCHEME = { handoff: 1, charter: 2, aim: 3, sq: 1 };
+const SCHEME_HINT = { 1: "方案一 · 机头像", 2: "方案二 · 类型头像", 3: "方案三 · 右机头像" };
+
+function hashStr(s) {
+  let h = 2166136261;
+  for (let i = 0; i < s.length; i++) h = Math.imul(h ^ s.charCodeAt(i), 16777619);
+  return h >>> 0;
+}
+function machineAvatarSvg(name) {
+  const h = hashStr(name);
+  const uid = "c" + h.toString(16);
+  const h1 = h % 360, h2 = (h >> 8) % 360, h3 = (h >> 16) % 360;
+  const x1 = 6 + (h % 10), y1 = 8 + ((h >> 4) % 8);
+  const x2 = 18 + ((h >> 8) % 8), y2 = 18 + ((h >> 12) % 6);
+  return '<svg class="avatar" viewBox="0 0 32 32" aria-hidden="true">' +
+    '<defs><clipPath id="' + uid + '"><circle cx="16" cy="16" r="16"/></clipPath></defs>' +
+    '<g clip-path="url(#' + uid + ')">' +
+    '<rect width="32" height="32" fill="hsl(' + h1 + ',42%,74%)"/>' +
+    '<circle cx="' + x1 + '" cy="' + y1 + '" r="13" fill="hsl(' + h2 + ',48%,62%)"/>' +
+    '<circle cx="' + x2 + '" cy="' + y2 + '" r="11" fill="hsl(' + h3 + ',40%,54%)"/>' +
+    "</g></svg>";
+}
+function typeIconSvg(kind, cls) {
+  const c = cls || "type-ic";
+  if (kind === "terminal") {
+    return '<svg class="' + c + '" viewBox="0 0 16 16" aria-hidden="true"><rect x="1.5" y="3" width="13" height="10" rx="2" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M4.5 7.5 L7 9 L4.5 10.5" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M8.5 10.5h3" stroke="currentColor" stroke-width="1.3"/></svg>';
+  }
+  if (kind === "file") {
+    return '<svg class="' + c + '" viewBox="0 0 16 16" aria-hidden="true"><path d="M5 2.5h4.5L12.5 6v7.5H5z" fill="none" stroke="currentColor" stroke-width="1.3"/><path d="M9.5 2.5V6h3" fill="none" stroke="currentColor" stroke-width="1.3"/></svg>';
+  }
+  return '<svg class="' + c + '" viewBox="0 0 16 16" aria-hidden="true"><circle cx="8" cy="6" r="2.4" fill="currentColor"/><path d="M4 13c0-2.2 1.8-4 4-4s4 1.8 4 4" fill="none" stroke="currentColor" stroke-width="1.4"/></svg>';
+}
+function statusClass(tsk) {
+  if (tsk.status === "review") return "amber";
+  if (tsk.kind === "executor" && tsk.status === "running") return "green";
+  return "mute";
+}
+function taskRowHTML(tsk, scheme) {
+  const st = statusClass(tsk);
+  const title = '<span class="t-title" title="' + esc(tsk.title) + '">' + esc(tsk.title) + "</span>";
+  if (scheme === 1) {
+    return '<span class="avatar-wrap">' + machineAvatarSvg(tsk.machine) +
+      '<span class="status ' + st + '"></span></span>' + title + typeIconSvg(tsk.kind);
+  }
+  if (scheme === 2) {
+    return '<span class="avatar-wrap"><span class="type-avatar">' + typeIconSvg(tsk.kind) +
+      '</span><span class="status ' + st + '"></span></span>' + title +
+      '<span class="mach-name-r">' + esc(tsk.machine) + "</span>";
+  }
+  return typeIconSvg(tsk.kind) + title +
+    '<span class="avatar-wrap">' + machineAvatarSvg(tsk.machine) +
+    '<span class="status ' + st + '"></span></span>';
+}
+
 function renderTree() {
   const q = (document.getElementById("treeSearch").value || "").trim().toLowerCase();
   const focused = focusedTask();
   const byProj = {};
-  function ensure(proj, mach) {
-    (byProj[proj] ||= {});
-    (byProj[proj][mach] ||= []);
+  function ensure(proj) {
+    return (byProj[proj] ||= { tasks: [], machines: {} });
   }
   TASKS.forEach(t => {
     if (q && !(t.project + t.machine + t.title).toLowerCase().includes(q)) return;
-    ensure(t.project, t.machine);
-    byProj[t.project][t.machine].push(t);
+    const bucket = ensure(t.project);
+    bucket.tasks.push(t);
+    bucket.machines[t.machine] = true;
   });
   Object.keys(DIRS).forEach(k => {
     const [proj, mach] = k.split("|");
     if (q && !(proj + mach).toLowerCase().includes(q)) return;
-    ensure(proj, mach);
+    ensure(proj).machines[mach] = true;
   });
   const root = document.getElementById("taskTree");
   root.innerHTML = "";
@@ -682,86 +768,89 @@ function renderTree() {
       '<a href="pages/codegraph.html?project=' + encodeURIComponent(proj) + '" title="代码图">◈</a>' +
       "</span>";
     wrap.appendChild(head);
-    Object.keys(byProj[proj]).forEach(mach => {
-      const block = document.createElement("div");
-      block.className = "mach-block";
-      const mh = document.createElement("div");
-      mh.className = "mach-head";
-      mh.innerHTML = '<span class="mach-name">' + esc(mach) + "</span>";
-      block.appendChild(mh);
 
-      const taskGroup = document.createElement("div");
-      taskGroup.className = "peer-group";
-      const taskHead = document.createElement("div");
-      taskHead.className = "sec-head";
-      taskHead.innerHTML = "<span>任务</span>";
-      taskGroup.appendChild(taskHead);
+    const taskGroup = document.createElement("div");
+    taskGroup.className = "peer-group";
+    const taskHead = document.createElement("div");
+    const scheme = TASK_SCHEME[proj] || 1;
+    taskHead.className = "sec-head";
+    taskHead.innerHTML = "<span>任务</span><span class=\"scheme-tag\">" + SCHEME_HINT[scheme] + "</span>";
+    taskGroup.appendChild(taskHead);
+    byProj[proj].tasks.forEach(tsk => {
+      const row = document.createElement("div");
+      row.className = "task-row" + (focused && focused.id === tsk.id ? " on" : "");
+      row.draggable = true;
+      row.innerHTML = taskRowHTML(tsk, scheme);
+      row.addEventListener("click", () => { if (!suppressClick) openOrFocus(tsk.id); });
+      bindDrag(row, "task:" + tsk.id);
+      taskGroup.appendChild(row);
+    });
+    wrap.appendChild(taskGroup);
 
-      byProj[proj][mach].forEach(tsk => {
-        const row = document.createElement("div");
-        row.className = "task-row" + (focused && focused.id === tsk.id ? " on" : "");
-        row.draggable = true;
-        const glyph = tsk.kind === "executor"
-          ? '<span class="dot' + (tsk.status === "review" ? " amber" : "") + '"></span>'
-          : '<span class="dot mute"></span>';
-        const extra = tsk.status === "review"
-          ? '<span class="chip">待审</span>'
-          : '<span class="sub">' + (tsk.kind === "terminal" ? "终端" : tsk.kind === "file" ? "文件" : (tsk.status === "running" ? "运行中" : "")) + "</span>";
-        row.innerHTML = glyph + "<span>" + esc(tsk.title) + "</span>" + extra;
-        row.addEventListener("click", () => { if (!suppressClick) openOrFocus(tsk.id); });
-        bindDrag(row, "task:" + tsk.id);
-        taskGroup.appendChild(row);
-      });
-      block.appendChild(taskGroup);
+    const dirGroup = document.createElement("div");
+    dirGroup.className = "peer-group";
+    const dirHead = document.createElement("div");
+    dirHead.className = "sec-head";
+    dirHead.innerHTML = "<span>目录</span>";
+    dirGroup.appendChild(dirHead);
 
+    Object.keys(byProj[proj].machines).forEach(mach => {
       const key = dirKey(proj, mach);
       const expanded = !!dirOpen[key];
       const pack = dirsOf(proj, mach);
-      const dirGroup = document.createElement("div");
-      dirGroup.className = "peer-group";
-      const dirHead = document.createElement("div");
-      dirHead.className = "sec-head tog";
-      dirHead.innerHTML = '<span class="chev">' + (expanded ? "▾" : "▸") + '</span><span>目录</span>' +
-        '<span class="hover-actions"><button type="button" title="新建工作树">＋</button></span>';
-      dirHead.addEventListener("click", ev => {
+      const mh = document.createElement("div");
+      mh.className = "mach-row";
+      mh.draggable = true;
+      mh.innerHTML = '<span class="chev">' + (expanded ? "▾" : "▸") + '</span>' +
+        '<span class="mach-name">' + esc(mach) + "</span>" +
+        '<span class="hover-actions">' +
+        '<button type="button" data-act="term" title="打开主目录终端">⌘</button>' +
+        '<button type="button" data-act="wt" title="新建工作树">＋</button>' +
+        "</span>";
+      mh.addEventListener("click", ev => {
+        if (suppressClick) return;
         if (ev.target.closest("button")) return;
-        dirOpen[key] = !expanded; renderTree();
+        dirOpen[key] = !expanded;
+        renderTree();
       });
-      dirHead.querySelector("button").addEventListener("click", ev => {
+      mh.querySelector('[data-act="term"]').addEventListener("click", ev => {
+        ev.stopPropagation();
+        openOrFocus(spawnTerminal(proj, mach, pack.main.path, pack.main.label));
+      });
+      mh.querySelector('[data-act="wt"]').addEventListener("click", ev => {
         ev.stopPropagation();
         wtTarget = { project: proj, machine: mach };
-        const d = dirsOf(proj, mach);
         document.getElementById("newWtCtx").textContent = mach + " / " + proj;
-        document.getElementById("newWtPath").value = d.main.path;
+        document.getElementById("newWtPath").value = pack.main.path;
         document.getElementById("newWtFeedback").hidden = true;
         document.getElementById("newWtDialog").showModal();
       });
-      dirGroup.appendChild(dirHead);
+      bindDrag(mh, "dirterm:" + proj + ":" + mach + ":" + encodeURIComponent(pack.main.path) + ":" + encodeURIComponent(pack.main.label));
+      dirGroup.appendChild(mh);
 
-      function addDirRow(dir) {
-        const row = document.createElement("div");
-        const isOn = drawer && drawer.project === proj && drawer.machine === mach && drawer.dir.path === dir.path;
-        row.className = "dir-row" + (isOn ? " on" : "");
-        row.draggable = true;
-        row.innerHTML = "<span>" + esc(dir.branch || dir.label) +
-          '</span><span class="hover-actions"><button type="button" title="在此打开终端">⌘</button></span>';
-        row.addEventListener("click", ev => {
-          if (suppressClick) return;
-          if (ev.target.closest("button")) return;
-          openDrawer(proj, mach, dir);
+      if (expanded) {
+        [pack.main].concat(pack.trees).forEach(dir => {
+          const row = document.createElement("div");
+          const isOn = drawer && drawer.project === proj && drawer.machine === mach && drawer.dir.path === dir.path;
+          row.className = "dir-row" + (isOn ? " on" : "");
+          row.draggable = true;
+          row.innerHTML = "<span>" + esc(dir.branch || dir.label) +
+            '</span><span class="hover-actions"><button type="button" title="在此打开终端">⌘</button></span>';
+          row.addEventListener("click", ev => {
+            if (suppressClick) return;
+            if (ev.target.closest("button")) return;
+            openDrawer(proj, mach, dir);
+          });
+          row.querySelector("button").addEventListener("click", ev => {
+            ev.stopPropagation();
+            openOrFocus(spawnTerminal(proj, mach, dir.path, dir.label));
+          });
+          bindDrag(row, "dirterm:" + proj + ":" + mach + ":" + encodeURIComponent(dir.path) + ":" + encodeURIComponent(dir.label));
+          dirGroup.appendChild(row);
         });
-        row.querySelector("button").addEventListener("click", ev => {
-          ev.stopPropagation();
-          openOrFocus(spawnTerminal(proj, mach, dir.path, dir.label));
-        });
-        bindDrag(row, "dirterm:" + proj + ":" + mach + ":" + encodeURIComponent(dir.path) + ":" + encodeURIComponent(dir.label));
-        dirGroup.appendChild(row);
       }
-      const allDirs = [pack.main].concat(pack.trees);
-      (expanded ? allDirs : allDirs.slice(0, 1)).forEach(addDirRow);
-      block.appendChild(dirGroup);
-      wrap.appendChild(block);
     });
+    wrap.appendChild(dirGroup);
     root.appendChild(wrap);
   });
 }
