@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: 用 handoff CLI 以协调者身份把实现计划派发给独立 executor（opencode / claude / grok / codex）执行并盯完全程。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
+description: 用 handoff CLI 以协调者身份把实现计划派发给独立 executor（opencode / claude / grok / codex / agy）执行并盯完全程。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
 ---
 
 <!--
@@ -608,7 +608,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 
 - `~/.handoff/agentd.log`：agentd 主日志。`HANDOFF_LOG_LEVEL=debug` 可调低级别。
 - `~/.handoff/tasks/<完整 task-id>/render.log`：模型回合正文实况，`handoff attach` 流式读取的就是它。
-- 同目录下按 executor 分：opencode / grok / codex 是 `serve.log` + `proc.json`（连接凭据与探活依据）；claude 是 `claude.log`（stderr）+ `out.jsonl`（stdout 事件流）+ `proc.json`。`shim.log` 是进程承载层日志，`proc.lock` 是存活锁。
+- 同目录下按 executor 分：opencode / grok / codex 是 `serve.log` + `proc.json`（连接凭据与探活依据）；claude 是 `claude.log`（stderr）+ `out.jsonl`（stdout 事件流）+ `perm.sock` + `proc.json`；agy 是 `agy.log`（stderr）+ `out.jsonl`（stdout 事件流）+ `perm.sock` + `proc.json`。`shim.log` 是进程承载层日志，`proc.lock` 是存活锁。
 
 ## 红旗——想到这些说明你在偷懒
 
@@ -641,7 +641,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 这份 skill 只覆盖协调者回路。以下不在范围内，需要时读仓库文档：
 
 - **agentd 部署、`config.yaml` 各段、分级审批链、env 注入**：仓库 `README.md`。
-- **各 executor 的差异与就绪判据（opencode / claude / grok / codex）**：`README.md` 的「各 executor 须知」。
+- **各 executor 的差异与就绪判据（opencode / claude / grok / codex / agy）**：`README.md` 的「各 executor 须知」。
 - **架构与协议设计**：`docs/superpowers/specs/2026-08-07-handoff-design.md`。
 - **协调者回路之外的子命令**（`frames` 结构化回合帧、`footprint` 进程足迹体检、
   `machines` / `project` 机器与项目登记、`console` / `sessions` Web 控制台、

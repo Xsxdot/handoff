@@ -138,10 +138,8 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 func agyArgv(req StartProcReq) []string {
 	argv := []string{
 		"agy",
-		"--dangerously-skip-permissions",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
-		"--print=",
 	}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)

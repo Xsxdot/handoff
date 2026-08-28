@@ -30,7 +30,7 @@ import (
 // 由 TestAdaptersForSkipsGrokWhenSymlinkUnavailable 单独覆盖。
 func TestAdapterRegistryHasAlwaysAvailableExecutors(t *testing.T) {
 	ads := defaultAdapters(slog.Default())
-	for _, want := range []string{"opencode", "claude", "codex", "fake"} {
+	for _, want := range []string{"opencode", "claude", "codex", "agy", "fake"} {
 		if _, ok := ads[want]; !ok {
 			names := make([]string, 0, len(ads))
 			for n := range ads {

@@ -3,8 +3,10 @@ package agy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/rawtap"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
+	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/google/uuid"
 )
@@ -21,6 +24,7 @@ import (
 const (
 	progressThrottle   = 30 * time.Second
 	persistOffsetEvery = 5 * time.Second
+	permTextHardLimit  = 64 * 1024
 )
 
 // Adapter 是 agy 的 executor.Adapter 实现。
@@ -28,6 +32,30 @@ type Adapter struct {
 	log  *slog.Logger
 	mu   sync.Mutex
 	runs map[string]*runState
+}
+
+// managedTaskTmpEnv derives the task-private environment from TaskDir.
+func managedTaskTmpEnv(taskDir, taskID string) (string, []string) {
+	dataDir := filepath.Dir(filepath.Dir(taskDir))
+	if filepath.Base(filepath.Dir(taskDir)) != "tasks" {
+		dataDir = filepath.Dir(taskDir)
+	}
+	tmpDir := executor.TaskTmpDir(dataDir, taskID)
+	return tmpDir, []string{
+		"TMPDIR=" + tmpDir,
+		"GOTMPDIR=" + tmpDir,
+		"GOCACHE=" + filepath.Join(tmpDir, "gocache"),
+	}
+}
+
+// ensureTaskTmp creates the task-private directory immediately before a new process is started.
+func ensureTaskTmp(taskID, tmpDir string, log *slog.Logger) error {
+	if err := os.MkdirAll(tmpDir, 0700); err != nil {
+		log.Error("创建任务临时目录失败", "task", taskID, "tmp_dir", tmpDir, "cause", err)
+		return err
+	}
+	log.Info("任务临时目录已就绪", "task", taskID, "tmp_dir", tmpDir)
+	return nil
 }
 
 // New 创建 agy adapter。
@@ -43,7 +71,9 @@ type runState struct {
 	taskDir      string
 	repoPath     string
 	session      string
+	actualModel  string
 	proc         *Proc
+	permSrv      *permServer
 	runCtx       context.Context
 	runCancel    context.CancelFunc
 	evCh         chan executor.AdapterEvent
@@ -124,8 +154,12 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	a.reportTiming(r, r.seg.BeginTurn(r.frames.Turn()))
 	r.textPart = r.frames.NextPart()
 	r.session = sessionID
+	r.actualModel = req.Task.Model
 
 	rollback := func() {
+		if r.permSrv != nil {
+			_ = r.permSrv.Close()
+		}
 		if r.proc != nil {
 			r.proc.Kill()
 		}
@@ -133,10 +167,31 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		a.drop(req.Task.ID)
 	}
 
-	promptText, err := turn.RenderPrompt(req.Task.ID, req.PlanContent, req.Discipline)
+	tmpDir, managedEnv := managedTaskTmpEnv(req.TaskDir, req.Task.ID)
+	if err := ensureTaskTmp(req.Task.ID, tmpDir, a.log); err != nil {
+		rollback()
+		return fmt.Errorf("创建任务临时目录 %s: %w", tmpDir, err)
+	}
+	env := append(append([]string{}, req.Env...), managedEnv...)
+
+	sockPath := filepath.Join(req.TaskDir, "perm.sock")
+	permSrv, err := newPermServerFn(sockPath, a.log, func(ask permAsk) {
+		a.onPermissionAsk(r, ask)
+	})
 	if err != nil {
 		rollback()
-		return fmt.Errorf("渲染 prompt: %w", err)
+		return fmt.Errorf("启动权限服务端: %w", err)
+	}
+	r.permSrv = permSrv
+
+	selfExe, err := os.Executable()
+	if err != nil {
+		selfExe = "handoff"
+	}
+	_, promptText, err := WriteTaskEnv(req.Task.Workdir(), req.TaskDir, req.Task.ID, req.PlanContent, sockPath, selfExe, req.Discipline)
+	if err != nil {
+		rollback()
+		return fmt.Errorf("准备任务环境: %w", err)
 	}
 
 	proc, err := startProc(ctx, StartProcReq{
@@ -145,8 +200,8 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		TaskDir:   req.TaskDir,
 		SessionID: sessionID,
 		Model:     req.Task.Model,
-		Env:       req.Env,
-		MarkRoot:  "",
+		Env:       env,
+		MarkRoot:  prochost.ResolveMarkRoot(req.Task.Workdir(), req.Task.WorktreeManaged),
 	}, a.log)
 	if err != nil {
 		rollback()
@@ -177,7 +232,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}
 
 	r.captureStartCommit(a)
-	a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.session, Text: "会话就绪"})
+	a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.session, ActualModel: r.actualModel, Text: "会话就绪"})
 	return nil
 }
 
@@ -240,8 +295,46 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	if r == nil {
 		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
 	}
-	// agy 启用了 --dangerously-skip-permissions，如收到响应按普通续接/确认处理
-	return nil
+	if r.permSrv == nil {
+		return fmt.Errorf("任务 %s 没有活动的权限服务端", taskID)
+	}
+	return r.permSrv.Respond(permID, decision, reason)
+}
+
+func (a *Adapter) onPermissionAsk(r *runState, ask permAsk) {
+	text, req := permTextAndRequest(ask.ToolName, ask.Input)
+	if strings.TrimSpace(text) == "" {
+		text = "agy 权限请求（" + ask.ToolUseID + "）"
+	}
+	a.emit(r, executor.AdapterEvent{
+		Type:         "permission",
+		PermissionID: ask.ToolUseID,
+		Text:         turn.TruncateMarked(text, permTextHardLimit),
+		Perm:         req,
+	})
+}
+
+func permTextAndRequest(toolName string, input json.RawMessage) (string, *executor.PermRequest) {
+	if toolName == "run_command" {
+		var in struct {
+			CommandLine string `json:"CommandLine"`
+			Command     string `json:"command"`
+		}
+		_ = json.Unmarshal(input, &in)
+		cmd := in.CommandLine
+		if cmd == "" {
+			cmd = in.Command
+		}
+		text := "run_command: " + cmd
+		return text, &executor.PermRequest{
+			Tool:    executor.PermToolBash,
+			Command: cmd,
+		}
+	}
+	text := fmt.Sprintf("%s: %s", toolName, turn.TruncateRunes(string(input), 200))
+	return text, &executor.PermRequest{
+		Tool: executor.NormalizePermTool(toolName),
+	}
 }
 
 // Stop 终止任务执行并回收资源。
@@ -262,6 +355,9 @@ func (a *Adapter) Stop(taskID string) (err error) {
 		close(r.stopCh)
 		r.runCancel()
 	})
+	if r.permSrv != nil {
+		_ = r.permSrv.Close()
+	}
 	if r.proc != nil {
 		if kerr := r.proc.Kill(); kerr != nil {
 			return kerr
@@ -357,9 +453,12 @@ func (a *Adapter) mapMessage(r *runState, m streamMsg) {
 		if m.ConversationID != "" {
 			r.session = m.ConversationID
 		}
+		if m.Init != nil && m.Init.Model != "" {
+			r.actualModel = m.Init.Model
+		}
 		a.log.Info("agy 会话就绪", "task", r.taskID, "session", r.session)
 		r.markReady()
-		a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.session, Text: "会话就绪"})
+		a.emit(r, executor.AdapterEvent{Type: "progress", SessionID: r.session, ActualModel: r.actualModel, Text: "会话就绪"})
 	case m.Event == "step_update" && m.StepUpdate != nil:
 		a.mapStepUpdate(r, m.StepUpdate)
 	case m.Event == "result" && m.Result != nil:
@@ -388,7 +487,7 @@ func (a *Adapter) mapStepUpdate(r *runState, su *agyStepUpdateData) {
 		}
 		if su.State == "DONE" && su.Usage != nil {
 			if u := ParseUsage(su.Usage); u != nil {
-				a.emit(r, executor.AdapterEvent{Type: "usage", Usage: u})
+				a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: r.actualModel, Usage: u})
 			}
 		}
 	case "tool":
@@ -429,8 +528,14 @@ func (a *Adapter) mapResult(r *runState, res *agyResultData) {
 	if res.ConversationID != "" {
 		r.session = res.ConversationID
 	}
-	if u := ParseUsage(res.Usage); u != nil {
-		a.emit(r, executor.AdapterEvent{Type: "usage", Usage: u})
+	u := ParseUsage(res.Usage)
+	spend, hasSpend := parseSpend(res.Usage, r.session, res.NumTurns)
+	var spendPtr *proto.SpendEntry
+	if hasSpend {
+		spendPtr = &spend
+	}
+	if u != nil || spendPtr != nil {
+		a.emit(r, executor.AdapterEvent{Type: "usage", ActualModel: r.actualModel, Usage: u, Spend: spendPtr})
 	}
 	if res.Status != "SUCCESS" {
 		fail := res.Error
@@ -478,92 +583,93 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 		if err != nil {
 			a.log.Error("git 兜底查询失败", "task", r.taskID, "cause", err)
 		}
-		if strings.TrimSpace(text) == "" {
-			a.log.Warn("回合零文本且无新提交，转失败结果交协调者", "task", r.taskID)
-			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session,
-				Result: &executor.Result{
-					OK: false, SessionID: r.session,
-					FailReason: "回合结束但零文本产出；executor 仍在线，可 continue 续接重试",
-					VoidReason: executor.VoidReasonTurnDiscipline,
-				}})
-			return
-		}
-		a.emit(r, executor.AdapterEvent{Type: "question", Text: turn.ClampQuestion(text)})
+		failReason := turn.NoTrailerFailReason(branch, commit, text)
+		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
+			OK: false, Branch: branch, CommitHash: commit,
+			SessionID: r.session, FailReason: failReason,
+			FinalText: turn.FinalText(text),
+		}})
 		return
 	}
-	a.log.Warn("兜底判定有新提交，但模型未宣布完成，转失败交协调者裁决",
-		"task", r.taskID, "branch", branch, "commit", commit)
-	a.emit(r, executor.AdapterEvent{Type: "result",
-		Result: turn.NoTrailerResult(r.session, branch, commit, text)})
+	a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK: true, Branch: branch, CommitHash: commit,
+		Summary: "根据 git 提交历史自动收尾", SessionID: r.session,
+		FinalText: turn.FinalText(text),
+	}})
 }
 
 func (a *Adapter) mapExit(r *runState, m streamMsg) {
-	if m.ExitCode == 0 && r.turnEnded {
-		a.log.Info("agy 进程正常退出", "task", r.taskID, "code", m.ExitCode)
-	} else {
-		tail := agyLogTail(r.taskDir)
-		a.log.Error("agy 进程退出", "task", r.taskID, "code", m.ExitCode, "stderr_tail", tail)
-		a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
-			OK: false, SessionID: r.session,
-			FailReason: fmt.Sprintf("agy 进程退出（code=%d）: %s", m.ExitCode, tail),
-		}})
-	}
 	r.exitHandled = true
-	if r.proc != nil {
-		if kerr := r.proc.Kill(); kerr != nil {
-			a.log.Warn("哨兵后回收执行者进程失败", "task", r.taskID, "cause", kerr)
+	r.markReady()
+	a.log.Info("agy 进程已退出", "task", r.taskID, "exit_code", m.ExitCode)
+	if !r.turnEnded {
+		if m.ExitCode == 0 {
+			r.turnMu.Lock()
+			text := r.turnBuf.String()
+			r.turnMu.Unlock()
+			a.fallbackClassify(r, text)
+		} else {
+			tail := agyLogTail(r.taskDir)
+			a.emit(r, executor.AdapterEvent{Type: "result", Result: &executor.Result{
+				OK: false, SessionID: r.session,
+				FailReason: fmt.Sprintf("agy 异常退出 (code %d): %s", m.ExitCode, tail),
+			}})
 		}
-	}
-	r.runCancel()
-}
-
-func (a *Adapter) maybeProgress(r *runState) {
-	now := time.Now()
-	if now.Sub(r.lastProgress) < progressThrottle {
-		return
-	}
-	r.lastProgress = now
-	r.turnMu.Lock()
-	text := r.turnBuf.String()
-	r.turnMu.Unlock()
-	a.emit(r, executor.AdapterEvent{Type: "progress", Text: turn.TailRunes(text, 200)})
-}
-
-func (a *Adapter) reportTiming(r *runState, entries []proto.TimingEntry) {
-	for i := range entries {
-		e := entries[i]
-		if !a.emit(r, executor.AdapterEvent{Type: "usage", Timing: &e}) {
-			return
-		}
+		r.clearTurn()
+		r.turnEnded = true
 	}
 }
 
 func (r *runState) clearTurn() {
 	r.turnMu.Lock()
 	r.turnBuf.Reset()
+	r.lastProgress = time.Time{}
 	r.turnMu.Unlock()
 }
 
-func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) bool {
+func (a *Adapter) maybeProgress(r *runState) {
+	r.turnMu.Lock()
+	defer r.turnMu.Unlock()
+	now := time.Now()
+	if now.Sub(r.lastProgress) < progressThrottle {
+		return
+	}
+	r.lastProgress = now
+	text := turn.TruncateRunes(r.turnBuf.String(), 200)
+	a.emit(r, executor.AdapterEvent{
+		Type:      "progress",
+		SessionID: r.session,
+		Text:      text,
+	})
+}
+
+func (a *Adapter) reportTiming(r *runState, entries []proto.TimingEntry) {
+	for i := range entries {
+		e := entries[i]
+		a.emit(r, executor.AdapterEvent{
+			Type:   "usage",
+			Timing: &e,
+		})
+	}
+}
+
+func (a *Adapter) emit(r *runState, ev executor.AdapterEvent) {
 	r.emitMu.Lock()
 	defer r.emitMu.Unlock()
 	if r.evClosed {
-		return false
+		return
 	}
 	select {
 	case r.evCh <- ev:
-		return true
 	case <-r.stopCh:
-		return false
 	}
 }
 
 func (r *runState) closeEvents() {
 	r.emitMu.Lock()
 	defer r.emitMu.Unlock()
-	if r.evClosed {
-		return
+	if !r.evClosed {
+		r.evClosed = true
+		close(r.evCh)
 	}
-	r.evClosed = true
-	close(r.evCh)
 }

@@ -174,16 +174,16 @@ var agentdCmd = &cobra.Command{
 			// PTY 是附属能力，扫描失败不应阻断任务派发主服务；broken 条目由日志留给人工处理。
 			logger.Error("启动时认领 PTY 会话失败，继续提供服务", "err", err)
 		}
-		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
+		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex/agy
 		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
 		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
 				if runtime.GOOS == "windows" {
-					return fmt.Errorf("未知 executor %q（Windows 支持 opencode/codex/fake）", executorFlag)
+					return fmt.Errorf("未知 executor %q（Windows 支持 opencode/claude/codex/agy/fake）", executorFlag)
 				}
-				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/codex/fake）", executorFlag)
+				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/codex/agy/fake）", executorFlag)
 			}
 			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
 			// 全部可用——老任务按各自 executor 名仍能路由到对应 adapter

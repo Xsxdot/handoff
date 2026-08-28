@@ -522,16 +522,17 @@ Write targets outside the task's workspace — including shell redirect targets 
 
 ## Executor Notes
 
-`--executor` accepts `opencode` (default) / `claude` / `grok` / `codex` / `fake` (a
+`--executor` accepts `opencode` (default) / `claude` / `grok` / `codex` / `agy` / `fake` (a
 dependency-free scripted demo). Readiness checks and caveats:
 
-Windows 执行机上四个执行器的现状：
+Windows 执行机上执行器的现状：
 
 | 执行器 | 状态 | 说明 |
 |---|---|---|
 | opencode | 可用 | B37 真机验收通过 |
 | codex | 可用 | B123 真机验收通过 |
 | claude | 可用 | 输入通道走命名管道 + 中继，裁决 socket 走 AF_UNIX（Windows 原生支持） |
+| agy | 可用 | 输入通道走命名管道 + 中继，裁决 socket 走 AF_UNIX（PreToolUse hook 动态裁决） |
 | grok | 取决于部署形态 | 需要创建符号链接的权限：agentd 以管理员身份运行，或开启开发者模式。agentd 启动时会探测并在日志里说明 |
 
 - **opencode**: install [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) on the executor
@@ -561,6 +562,9 @@ Windows 执行机上四个执行器的现状：
     session comes up, the task shows running, but the model produces not a single token,
     and the only trace is `failed to refresh available models` scrolling in the task
     directory's `serve.log`.
+- **agy** (Antigravity CLI): the executor machine has installed and logged into `agy` (`agy -p "hi"` produces output).
+  - Permission model: dynamically routes `PreToolUse` hooks in `.agents/hooks.json` to the task's `perm.sock`, ensuring all sensitive tool calls (such as `run_command`) are intercepted and evaluated by Handoff's permission pipeline.
+  - Task artifacts: task directory contains `in.fifo` (input channel), `out.jsonl` (event stream), `agy.log` (stderr log), `perm.sock` (permission socket), and `proc.json` (recovery credentials).
 
 ## Upgrading
 

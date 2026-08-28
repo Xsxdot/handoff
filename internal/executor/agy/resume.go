@@ -75,11 +75,26 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		if rerr := rotateOutJSONL(req.TaskDir); rerr != nil {
 			a.log.Warn("轮转 out.jsonl 失败，仍尝试冷恢复", "task", req.TaskID, "cause", rerr)
 		}
+
+		tmpDir, managedEnv := managedTaskTmpEnv(req.TaskDir, req.TaskID)
+		if terr := ensureTaskTmp(req.TaskID, tmpDir, a.log); terr != nil {
+			return executor.ResumeOutcome{Alive: false,
+				Note: fmt.Sprintf("创建临时目录失败：%v", terr)}, nil
+		}
+		env := append(append([]string{}, req.Env...), managedEnv...)
+
+		sockPath := filepath.Join(req.TaskDir, "perm.sock")
+		selfExe, _ := os.Executable()
+		if selfExe == "" {
+			selfExe = "handoff"
+		}
+		_, _, _ = WriteTaskEnv(req.RepoPath, req.TaskDir, req.TaskID, "", sockPath, selfExe, "")
+
 		a.log.Info("agy 已不在，进入冷恢复", "task", req.TaskID, "session", req.SessionID)
 		newProc, err := startProc(context.Background(), StartProcReq{
 			RepoPath: req.RepoPath, TaskID: req.TaskID, TaskDir: req.TaskDir,
 			SessionID: req.SessionID, Model: req.Model,
-			Env: req.Env, MarkRoot: req.MarkRoot, Resume: true,
+			Env: env, MarkRoot: req.MarkRoot, Resume: true,
 		}, a.log)
 		if err != nil {
 			a.log.Warn("冷恢复重起 agy 失败，判不可恢复", "task", req.TaskID, "cause", err)
@@ -93,6 +108,16 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	r := a.newRun(req.TaskID, req.TaskDir, req.RepoPath)
 	r.session = req.SessionID
 	r.proc = proc
+
+	sockPath := filepath.Join(req.TaskDir, "perm.sock")
+	if ps, perr := newPermServerFn(sockPath, a.log, func(ask permAsk) {
+		a.onPermissionAsk(r, ask)
+	}); perr == nil {
+		r.permSrv = ps
+	} else {
+		a.log.Warn("恢复权限服务端失败", "task", req.TaskID, "cause", perr)
+	}
+
 	if mode == executor.ResumeModeCold {
 		r.startOffset = 0
 	} else {

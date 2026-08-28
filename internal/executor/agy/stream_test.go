@@ -88,3 +88,65 @@ func TestStreamLoopEndTurn(t *testing.T) {
 		}
 	}
 }
+
+func TestStreamGoldenTurnSuccess(t *testing.T) {
+	tmpDir := t.TempDir()
+	outPath := filepath.Join(tmpDir, outFileName)
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+
+	goldenData, err := os.ReadFile(filepath.Join("testdata", "turn_success.jsonl"))
+	if err != nil {
+		t.Fatalf("读取 testdata/turn_success.jsonl 失败: %v", err)
+	}
+	if err := os.WriteFile(outPath, goldenData, 0600); err != nil {
+		t.Fatalf("写入 out.jsonl 失败: %v", err)
+	}
+
+	ad := New(logger)
+	r := ad.newRun("T1", tmpDir, tmpDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	tl := newTailer(outPath, 0, logger)
+	go func() {
+		_ = tl.Run(ctx, func(m streamMsg) {
+			ad.mapMessage(r, m)
+		})
+	}()
+
+	select {
+	case <-r.ready:
+	case <-time.After(time.Second):
+		t.Fatalf("未就绪")
+	}
+
+	var gotResult bool
+	var gotUsage bool
+	for {
+		select {
+		case ev := <-r.evCh:
+			if ev.Type == "usage" && ev.Spend != nil {
+				gotUsage = true
+				if ev.Spend.InputTokens != 220 || ev.Spend.OutputTokens != 65 {
+					t.Fatalf("spend 数据不符合预期: %+v", ev.Spend)
+				}
+			}
+			if ev.Type == "result" {
+				if !ev.Result.OK || ev.Result.Branch != "feature-1" || ev.Result.CommitHash != "abcdef12" {
+					t.Fatalf("result 数据不符合预期: %+v", ev.Result)
+				}
+				gotResult = true
+				break
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("等待事件超时")
+		}
+		if gotResult {
+			break
+		}
+	}
+	if !gotUsage {
+		t.Fatalf("未收到 usage/spend 事件")
+	}
+}

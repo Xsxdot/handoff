@@ -30,6 +30,7 @@ type agyInitData struct {
 	CWD            string   `json:"cwd"`
 	Tools          []string `json:"tools"`
 	PermissionMode string   `json:"permission_mode"`
+	Model          string   `json:"model"`
 }
 
 type agyToolInfo struct {
@@ -42,8 +43,9 @@ type agyToolInfo struct {
 type agyStepUpdateData struct {
 	ConversationID  string          `json:"conversation_id"`
 	StepIndex       int             `json:"step_index"`
-	State           string          `json:"state"` // "ACTIVE", "DONE", "ERROR"
+	State           string          `json:"state"`     // "ACTIVE", "DONE", "ERROR"
 	StepType        string          `json:"step_type"` // "user_input", "agent_response", "tool", "system_message"
+	Model           string          `json:"model"`
 	TextDelta       string          `json:"text_delta"`
 	ToolName        string          `json:"tool_name"`
 	ToolInfo        *agyToolInfo    `json:"tool_info"`

@@ -320,7 +320,7 @@ PATH=${PATH}:/usr/local/go/bin             # ${VAR} 单层展开，单引号内�
 
 ## 各 executor 须知
 
-`--executor` 可选 `opencode`（默认）/ `claude` / `grok` / `codex` / `fake`（无依赖的脚本演示）。就绪判据与注意事项：
+`--executor` 可选 `opencode`（默认）/ `claude` / `grok` / `codex` / `agy` / `fake`（无依赖的脚本演示）。就绪判据与注意事项：
 
 - **opencode**：执行机安装 [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) 并配好模型凭证（这是邀请链接：经它注册，你我各得 $5 额度）。
 - **claude**（Claude Code）：执行机已登录（`claude -p "hi"` 能出结果）。任务级权限策略是纯策略文件、不含凭证；凭证由 claude 自己从用户配置读。
@@ -329,6 +329,9 @@ PATH=${PATH}:/usr/local/go/bin             # ${VAR} 单层展开，单引号内�
   - 建议清理 `~/.codex/AGENTS.md`、`~/.codex/hooks.json`、`config.toml` 的 `[mcp_servers]`——它们会改变 executor 行为（agentd 启动时会 WARN）。`config.toml` 里的 `model` / `sandbox_mode` 等**不用**清理，handoff 协议级钉死、压得过它们。
   - 权限模型不同：工作区内操作（含 `rm -rf`）由 OS 沙箱自动放行不进审批，联网操作按配置放行**不经过任何人**——同样的命令在 claude/grok 上会走审批链。
   - 执行机需代理出网时，**必须**经 `env` 段给 codex 配代理文件——agentd 从非交互上下文启动，继承不到 shell 的代理变量。漏配的症状很迷惑：会话建得起来、任务显示 running，但模型一个 token 都不产，只有任务目录 `serve.log` 里刷 `failed to refresh available models`。
+- **agy**（Antigravity CLI）：执行机安装 `agy` 并完成登录（`agy -p "hi"` 能出结果）。
+  - 权限模型：通过工作区 `.agents/hooks.json` 的 `PreToolUse` 钩子动态连接到任务的 `perm.sock`，所有 `run_command` 等敏感工具调用均经 Handoff 审批链判定与把关。
+  - 任务物料：任务目录内生成 `in.fifo`（指令输入通道）、`out.jsonl`（事件输出流）、`agy.log`（标准错误日志）、`perm.sock`（权限裁决套接字）及 `proc.json`（进程恢复凭据）。
 
 ## 升级
 

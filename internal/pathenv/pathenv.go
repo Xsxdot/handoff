@@ -55,8 +55,9 @@ var homeRelDirs = []string{
 	".opencode/bin",   // opencode 官方安装器（B71 故障现场）
 	".grok/bin",       // grok CLI
 	".claude/local",   // Claude Code 本地安装（migrate installer 落点）
-	".local/bin",      // Claude Code native install / pipx / handoff 自己
-	"bin",             // 传统用户 bin
+	".local/bin",                  // Claude Code native install / pipx / handoff 自己
+	".gemini/antigravity-cli/bin", // Antigravity CLI
+	"bin",                         // 传统用户 bin
 	".bun/bin",        // bun 全局
 	".npm-global/bin", // npm 自定义 prefix 的常见落点
 	".cargo/bin",      // rust

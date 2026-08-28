@@ -15,7 +15,7 @@ import "fmt"
 // OneShotArgs 返回执行者的一次性调用 argv（prompt 作为末位参数）。
 //
 // 参数：
-//   - executorName: 执行者名，目前支持 opencode / claude / grok；未知名字返回错误
+//   - executorName: 执行者名，目前支持 opencode / claude / grok / agy；未知名字返回错误
 //   - model: 模型名；空表示让执行者用自身默认模型（省略对应参数）
 //   - prompt: 一次性 prompt 原文，作为命令的最后一个参数
 //
