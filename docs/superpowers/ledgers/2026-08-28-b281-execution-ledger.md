@@ -1,5 +1,22 @@
 # B281 执行节点台账
 
+- 2026-08-28：本轮起点核对为当前分支 `cards/B281-charter-6`，HEAD 为 `fd8cb4467c72eb17b1cec9a8f7188987b9298fa`，工作树初始干净。
+- 2026-08-28：执行 `git fetch origin feat/B281-workbench-ia`，原始输出为 `* branch              feat/B281-workbench-ia -> FETCH_HEAD`，退出码 0。
+- 2026-08-28：从 `3a1aca73e` 恢复 `docs/superpowers/specs/b281.md` 与 `prototypes/b264-tab-groups/`；原型目录仍受 `prototypes/.gitignore` 忽略，收尾将使用 `git add -f` 纳入。
+- 2026-08-28：回写 `docs/superpowers/plans/b281-plan.md` 标题、Task 4 最小实现第 1–2 条、ProjectTree 真机清单、用户故事 4 与验收层级，使左栏统一为项目下「任务」「目录」、目录内按机器；Task 1–3 中央列模型未改。
+- 2026-08-28：依赖缺失时按 `web/package-lock.json` 执行 `npm ci --ignore-scripts`，原始输出为 `added 290 packages`、`found 0 vulnerabilities`，退出码 0；依赖未纳入提交。
+- 2026-08-28：恢复依赖后重跑 `npm test -- --run src/app/shell/Shell.test.tsx src/app/workbench/WorkbenchPage.test.tsx`，原始结果为 `Test Files  2 passed (2)`、`Tests  38 passed (38)`，退出码 0。
+- 2026-08-28：新增 `WorkbenchPage` 已打开 Tab 的 `DRAG_TAB_MIME` 消费 seam 测试初次失败是测试事件夹具未透传 `dataTransfer`，原始错误为 `TypeError: Cannot read properties of undefined (reading 'types')`；改用既有 `fireEvent(target, createEvent.drop(...))` 夹具后测试通过，原始结果为 `Test Files  1 passed (1)`、`Tests  1 passed | 4 skipped (5)`，退出码 0。
+- 2026-08-28：新增主目录原地任务 diff seam 测试在生产代码修改前失败，原始断言为 `Expected the element to have class: text-state-intervention-text Received: truncate`；修复 `Shell.tsx` 后重跑，原始结果为 `Test Files  1 passed (1)`、`Tests  1 passed | 34 skipped (35)`，退出码 0。
+- 2026-08-28：Task 收尾首次并行执行局部测试与 `npm run typecheck`；局部测试原始结果为 `Test Files  2 passed (2)`、`Tests  40 passed (40)`，类型检查失败原文为 `src/app/shell/Shell.tsx(472,29): error TS18048: 'project' is possibly 'undefined'.`；补充 `if (!project) return null` 后重跑 `npm run typecheck` 退出码 0，局部测试再次为 `Test Files  2 passed (2)`、`Tests  40 passed (40)`，退出码 0。
+- 2026-08-28：变异前以 `rg -n -F "(t.work_dir === taskBase.path || (isMainDirectory && t.work_dir === ''))," web/src/app/shell/Shell.tsx | wc -l` 确认命中数为 `1`；将 `isMainDirectory` 取反后先跑 `npm run typecheck`，退出码 0；再跑主目录原地任务行为用例，原始结果为 `1 failed | 34 skipped (35)`，断言原文为 `Expected the element to have class: text-state-intervention-text Received: truncate`，确认测试拦住语义变异；已恢复原实现。
+- 2026-08-28：恢复原实现后分别重跑主目录原地任务用例与 `DRAG_TAB_MIME` seam 用例，原始结果分别为 `Test Files  1 passed (1)` / `Tests  1 passed | 34 skipped (35)`、`Test Files  1 passed (1)` / `Tests  1 passed | 4 skipped (5)`，均退出码 0；并重跑 `npm run typecheck`，退出码 0。
+- 2026-08-28：集成门禁执行 `npm test`，原始结果为 `Test Files  109 passed (109)`、`Tests  1082 passed (1082)`，退出码 0；输出含既存提示 `Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package`。
+- 2026-08-28：执行 `npm run build`，原始结果为 `✓ built in 5.11s`，退出码 0；Vite 输出既存 chunk 大小 warning（`Some chunks are larger than 500 kB after minification`）。
+- 2026-08-28：执行 `git diff --check`，退出码 0；旧左栏层级检索无输出。
+- 2026-08-28：已 `git add` 计划、spec、台账、Shell 修复/测试与 `WorkbenchPage` seam 测试，并用 `git add -f prototypes/b264-tab-groups` 纳入 8 个原型文件；`git diff --cached --check` 退出码 0，暂存区共 14 个文件。
+- 2026-08-28：执行 `git commit -m "fix B281 review 2 regressions"` 成功，原始输出为 `[cards/B281-charter-6 a162bb36] fix B281 review 2 regressions`；随后将本提交事实写回台账并 amend 同一提交。
+
 - 2026-08-28：当前分支为 `cards/B281-charter-5`，HEAD 为 `c9cefe28`（父提交包含 `6fb38d67`）；`git status --short --branch` 初始仅输出分支信息，无工作区改动。
 - 2026-08-28：按计划运行 `npm test -- --run src/app/workbench/tabs.test.ts src/app/workbench/paneDrop.test.ts`；原始输出为 `sh: 1: vitest: not found`，退出码 127。
 - 2026-08-28：按 `web/package-lock.json` 执行 `npm ci --ignore-scripts`；原始输出为 `added 290 packages, and audited 291 packages in 3s`、`found 0 vulnerabilities`，退出码 0；依赖未纳入提交。

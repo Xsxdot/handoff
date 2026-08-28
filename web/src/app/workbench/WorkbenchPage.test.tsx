@@ -1,7 +1,7 @@
 import { act, createEvent, fireEvent, render, renderHook, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkbenchPage } from './WorkbenchPage'
-import { DRAG_DIR_MIME } from './paneDrop'
+import { DRAG_DIR_MIME, DRAG_TAB_MIME } from './paneDrop'
 import { useWorkbench, type BaseDir } from './useWorkbench'
 
 const local: BaseDir = { key: '/local', kind: 'workspace', path: '/local', label: 'local', projectName: 'handoff', machine: '' }
@@ -57,6 +57,43 @@ describe('WorkbenchPage', () => {
     expect(hook.result.current.wb.groups[0].columns.flatMap((column) => column.panes).some((pane) =>
       pane?.base.projectName === 'aim' && pane.content.kind === 'terminal' && pane.content.rel === undefined,
     )).toBe(true)
+  })
+
+  it('消费已打开 Tab 的 DRAG_TAB_MIME 并把 pane 移到目标窗格', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.select(local))
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const sourceGroupId = hook.result.current.wb.activeGroupId
+    act(() => hook.result.current.addGroup())
+    const targetGroupId = hook.result.current.wb.activeGroupId
+    const sourceTab = hook.result.current.wb.groups
+      .find((group) => group.id === sourceGroupId)!.columns[0].panes[0]!
+
+    const view = render(page(hook.result.current))
+    const panes = view.container.querySelectorAll('[data-testid="workbench-pane"]')
+    const sourcePane = Array.from(panes).find((pane) => pane.querySelector(`[draggable="true"]`)) as HTMLElement
+    const targetPane = Array.from(panes).find((pane) => pane !== sourcePane) as HTMLElement
+    expect(sourcePane).not.toBeUndefined()
+    expect(targetPane).not.toBeUndefined()
+    setRect(targetPane)
+
+    const dataTransfer = {
+      types: [DRAG_TAB_MIME],
+      getData: (key: string) => key === DRAG_TAB_MIME
+        ? JSON.stringify({ groupId: sourceGroupId, tabId: sourceTab.id })
+        : '',
+      setData: vi.fn(),
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    const event = createEvent.drop(targetPane, { dataTransfer })
+    Object.defineProperty(event, 'clientX', { value: 200 })
+    Object.defineProperty(event, 'clientY', { value: 200 })
+    fireEvent(targetPane, event)
+
+    const targetGroup = hook.result.current.wb.groups.find((group) => group.id === targetGroupId)!
+    expect(targetGroup.columns[0].panes[0]).toMatchObject({ id: sourceTab.id, content: { kind: 'terminal', seq: 1 } })
+    expect(hook.result.current.wb.groups.find((group) => group.id === sourceGroupId)!.columns[0].panes[0]).toBeNull()
   })
 
   it('窗格下半边最多增加第二格，第三次投放替换而不增加第三格', () => {

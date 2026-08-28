@@ -356,6 +356,25 @@ describe('Shell 三栏外框', () => {
     expect(fetchTaskDiff).toHaveBeenLastCalledWith('right-task')
   })
 
+  it('文件抽屉打开主目录时，work_dir 为空的原地任务仍命中 diff', async () => {
+    const inPlaceTask = { ...t1, id: 'in-place-task', name: '主目录任务', work_dir: '', repo_path: '/r/handoff' }
+    vi.mocked(fetchTasks).mockResolvedValue([inPlaceTask])
+    vi.mocked(fetchWorkspaceDir).mockResolvedValue({
+      entries: [{ name: 'root.go', is_dir: false, size: 1 }],
+    })
+    vi.mocked(fetchTaskDiff).mockResolvedValue({ diff: 'diff --git a/root.go b/root.go' })
+    vi.mocked(fetchTaskDiff).mockClear()
+
+    renderShell()
+    const project = await screen.findByTestId('project-node-p1')
+    const machineRow = within(project).getAllByTestId('directory-machine-row')[0]
+    fireEvent.click(within(machineRow).getByTestId('machine-row'))
+    fireEvent.click(await within(project).findByText('主目录'))
+
+    await waitFor(() => expect(screen.getByText('root.go')).toHaveClass('text-state-intervention-text'))
+    expect(fetchTaskDiff).toHaveBeenLastCalledWith('in-place-task')
+  })
+
   it('切到另一个目录再切回来，两边的 tab 组各自保持', async () => {
     renderShell()
     await openBranch()

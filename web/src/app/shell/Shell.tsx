@@ -464,10 +464,19 @@ export function Shell() {
   const currentTaskId = useMemo(() => {
     const taskBase = fileDrawer ?? wb.base
     if (!taskBase || taskBase.kind !== 'workspace') return null
-    const projectId = treeState.data?.projects.find((project) => project.name === taskBase.projectName)?.project_id
-    if (projectId === undefined) return null
+    const project = treeState.data?.projects.find((candidate) => candidate.name === taskBase.projectName)
+    if (!project) return null
+    const projectId = project.project_id
+    // 与 ProjectTree.tasksOfWorkspace 保持同一归属口径：空 work_dir 只代表主目录的原地任务，
+    // 不能按非空路径比较，否则主目录文件抽屉拿不到对应 diff。
+    const isMainDirectory = project.locations.some((location) =>
+      location.machine === taskBase.machine && location.workspaces.some((workspace) =>
+        workspace.is_main && workspace.path === taskBase.path,
+      ),
+    )
     const under = tasks.filter((t) =>
-      t.project_id === projectId && t.machine === taskBase.machine && t.work_dir === taskBase.path,
+      t.project_id === projectId && t.machine === taskBase.machine &&
+      (t.work_dir === taskBase.path || (isMainDirectory && t.work_dir === '')),
     )
     return under.find((t) => t.state === 'running')?.id ?? under[0]?.id ?? null
   }, [tasks, fileDrawer, wb.base, treeState.data])

@@ -1,4 +1,4 @@
-# B281 工作台 IA：左栏项目×机器 + 中央标签组分屏实施计划
+# B281 工作台 IA：左栏项目→任务/目录 + 中央标签组分屏实施计划
 
 ## 0. 依据、边界与执行顺序
 
@@ -6,7 +6,7 @@
 `7e13dd0bb` 中 `prototypes/b264-tab-groups/index.html` 为形态基准。原型中
 `.cols` / `.col` / `.pane` 的结构在该文件第 40–65 行，中央组栏、布局条、可关闭文件抽屉
 在第 198–208 行，全球查找/新组/目录终端在第 397–460 行，四向投放在第 485–546 行，
-项目→机器→「任务」「目录」双同级组在第 654–767 行，组栏在第 769–801 行，列与窗格在
+项目→「任务」「目录」双同级组、目录内机器分组在第 654–767 行，组栏在第 769–801 行，列与窗格在
 第 821–872 行。原型第 564–567 行的固定 `g4` 形状不实现，因为 B281 已明确弃选五/六宫格。
 
 不改 `internal/agentd`、`internal/proto`、PTY/TUI 协议、账本、跨机同步协议、HomeDock、
@@ -827,7 +827,7 @@ cd web && npm run typecheck
 复制；组关闭最后一组回到空组；终端 keep-alive；自定义 launcher 仍通过 BlankTab/`+` 同一
 过滤；`⌘D` 仍只响应 meta、不抢 Ctrl+D EOF。Task 完成后将真实输出写入台账。
 
-## Task 4：项目×机器双 peer group、可关闭文件抽屉、项目路由与 Shell 接线
+## Task 4：项目下任务/目录双 peer group、目录按机器分组、可关闭文件抽屉与 Shell 接线
 
 ### 文件范围
 
@@ -996,15 +996,16 @@ useEffect(() => {
 
 ### 2. 最小实现、结构与日志
 
-1. ProjectTree 维持项目→机器的展开/断开/偏好/排序现状；machine 内按原型增加两个同级 peer
-   group：先「任务」，后「目录」，都缩进在 machine 下。任务组内容为该 base 上的 openedItems
-   加后端 tasks；同 taskId 的 opened TUI 替代重复的 executor row，terminal/file 以打开项额外
-   一行显示。打开项点击调 `onOpenItem`，后端任务点击仍调 `onOpenTask(base,taskId)`。
-2. 目录 peer group 单独用 `directoryOpen` 集合，初始收起；收起只渲染 `loc.workspaces[0]`
-   （主目录按既有排序取第一），展开平铺所有 workspace，行文案只用 `dirLabel(ws)`，不显示绝对
-   路径。组头最右 hover `＋` 调 `onWorktreeCreated` 同一 `NewWorktreeDialog` 路径；目录行 hover
-   terminal icon 调 `onOpenDirectoryTerminal(base)`；目录行 draggable 写 `DRAG_DIR_MIME` 的
-   `JSON.stringify(base)`；点击调 `onOpenDirectory(base)`。
+1. ProjectTree 维持项目展开/断开/偏好/排序现状；项目内先渲染两个同级 peer group：先「任务」，
+   后「目录」。任务组跨机器平铺该项目的 openedItems 与后端 tasks；同 taskId 的 opened TUI
+   替代重复的 executor row，terminal/file 以打开项额外一行显示。打开项点击调 `onOpenItem`，
+   后端任务点击仍调 `onOpenTask(base,taskId)`。
+2. 目录 peer group 单独用 `directoryOpen` 集合，初始收起；组内再按机器分组。机器收起时只渲染
+   该机的主目录，展开后平铺该机所有 workspace，行文案只用 `dirLabel(ws)`，不显示绝对路径。
+   机器行最右侧 hover 的 `＋` 调 `onWorktreeCreated`，沿用同一 `NewWorktreeDialog` 路径；机器
+   行终端 icon 打开该机主目录，目录行 hover terminal icon 调 `onOpenDirectoryTerminal(base)`；
+   机器与目录行 draggable 均写 `DRAG_DIR_MIME` 的 `JSON.stringify(base)`，点击目录调
+   `onOpenDirectory(base)`。
 3. 项目标题行保持展开按钮，但包在一个相对定位 wrapper 中；hover 右端显示“工作项”和“代码图”
    两个不嵌套于 button 的按钮，分别回调 `onOpenProjectCards(project)` 与
    `onOpenProjectCodegraph(project)`。底部全局工作项/代码图按钮仍保留原回调，不能因项目入口而
@@ -1051,8 +1052,8 @@ cd web && npm run typecheck
 
 行为验收：
 
-- 项目→机器→任务/目录的层级与缩进符合原型；目录默认一行、展开平铺 branch；任务/目录 hover
-  行为和真实 BaseDir 对齐。
+- 项目下任务/目录双 peer group、目录内按机器分组且缩进符合原型；目录默认一行、展开平铺 branch；
+  任务/目录 hover 行为和真实 BaseDir 对齐。
 - 左栏已打开任务只 focus 旧 cell；未打开任务 openOrFocus 新 group；不同项目/机器可以同组并排。
 - 目录 icon 创建 cwd 正确的 terminal；目录拖到底部得到同列第二格且最多两格；路径点击只打开
   可关闭 FileTree 抽屉，固定右栏消失；整页路由覆盖时不显示 drawer，但回到 `/` 可恢复且终端
@@ -1107,8 +1108,8 @@ cd web && npm run typecheck
 
 - `tabs.ts/useWorkbench`：opened TUI focus、未打开 task 新 group、不同 project/machine 同组、
   center replace、left/right column、top/bottom 2-pane、第三格退化、close/group/focus/persist。
-- `ProjectTree`：项目/机器/任务/目录层级；目录折叠、branch-only、hover plus、terminal icon、
-  directory drag cwd；已打开项 focus；远端 machine 不串。
+- `ProjectTree`：项目下任务/目录双 peer group、目录内按机器分组；目录折叠、branch-only、机器
+  hover plus、terminal icon、directory drag cwd；已打开项 focus；远端 machine 不串。
 - `Shell`：本机 TUI + linux-01 terminal 同组；切 selected base 不切 layout；drawer open/close；
   `/cards?project=` 与 `/codegraph?project=` 选项目；full-page cover 下 TerminalTab 不卸载。
 - 浏览器/桌面壳：Chromium 与 WKWebView/Wails 各实拖 HTML5 DataTransfer；窄宽度横向 overflow
@@ -1137,7 +1138,7 @@ cd web && npm run typecheck
 1. 本机 handoff TUI + linux-01 另一项目终端同组并排：Task 1 跨项目模型、Task 3 pane drop、Task 4 Shell/ProjectTree DataTransfer 回归。
 2. 点击已打开任务只跳原格：Task 2 `openOrFocus`、Task 4 openedItems focus、Shell 回归。
 3. 工作树拖下半边产生同列第二格且终端 cwd 正确：Task 1 two-pane invariant、Task 3 四向 drop、Task 4 directory MIME/TerminalTab props。
-4. 目录组 hover plus 走既有 NewWorktreeDialog：Task 4 ProjectTree peer group 与既有 dialog 回调。
+4. 机器行 hover plus 走既有 NewWorktreeDialog；拖机器开该机主目录终端：Task 4 ProjectTree peer group 与既有 dialog/terminal 回调。
 5. 项目旁工作项/代码图进入目标页且项目已选中：Task 4 `selectProject`、CardsPage query、CodegraphFrame query。
 
 最终门禁由协调者执行，不派发：
