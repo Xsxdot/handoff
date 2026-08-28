@@ -77,3 +77,28 @@ describe('SchedulingPage', () => {
     expect(screen.getByRole('dialog')).toBeVisible()
   })
 })
+
+describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
+  it('label 语义后缀、角色中文选项、政策位与 role hint、弹窗宽度逐项对齐 settings.html', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getSquads).mockResolvedValue({
+      carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', healthy: true, version: 3 }],
+      squads: [{ name: 'coord', role: 'coordinator', members: [], version: 1 }],
+    })
+    render(<SchedulingPage />)
+    await user.click(await screen.findByRole('button', { name: '编辑' }))
+    expect(screen.getByText('小队名（唯一）')).toBeVisible()
+    expect(screen.getByText('角色（不混编）')).toBeVisible()
+    expect(screen.getByRole('option', { name: '执行者队' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '协调者队' })).toBeInTheDocument()
+    expect(screen.getByText('成员载体（按勾选顺序解析：第一个健康且有空的载体领活）')).toBeVisible()
+    expect(screen.getByText('并发上限（政策位；0 / 留空 = 不限）')).toBeVisible()
+    expect(screen.getByText(/协调者队成员必须落在协调机；执行者队成员可以是任何执行机。/)).toBeVisible()
+    expect(screen.getByRole('dialog').querySelector('form')?.className).toContain('max-w-[440px]')
+    await user.click(screen.getByRole('button', { name: '取消' }))
+    await user.click(await screen.findByRole('button', { name: '编辑 mbp' }))
+    expect(screen.getByText('载体名（唯一，登记后不可改）')).toBeVisible()
+    expect(screen.getByText('模型（留空 = CLI 默认）')).toBeVisible()
+    expect(screen.getByRole('dialog').querySelector('form')?.className).toContain('max-w-[480px]')
+  })
+})
