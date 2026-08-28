@@ -53,3 +53,12 @@
      「隐藏文件夹数量」偏好测试改写为「行上不再渲染计数控件」。
   5) 项目行悬停「工作项/代码图」既有入口保留（out-of-scope 弃选的是原型新增项，
      移除现存入口属于功能回退，超出本卡授权）。
+- T7 完成：useWorkbench 新增 focusTab(b, group, tabId)（select + activateTab 一次事件，
+  接口注释写明为什么不用 open）；Shell 的 onFocusOpenItem 改走 focusTab，
+  onOpenTerminalAt 改走 wb.openTerminal(base)（不再 select 基准、不再强制新组）；
+  openItems 排序收紧为「当前基准的项在最前，其余按组序」；taskName resolver 上移
+  Shell（taskNameResolver）经 props 下传 WorkbenchPage（窗格标题+标签条继续透传）。
+  plan 偏离：T7 文中 wb.byBase/Object.entries(byBase) 在现模型不存在——按语义
+  改为在 wb.groups 摊平结果上按 base.key 分组排序；OpenItem.group 取 string。
+  Shell.test 新增 2 支（openItems 顺序+focusTab 链路、tail 随激活 tab 变化），
+  1 支标题更新；Shell 41/41 绿，persist/restore/useWorkbenchSync/useWorkbench 29/29 绿。
