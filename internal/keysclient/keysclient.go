@@ -36,7 +36,11 @@ type TurnResult struct {
 // Runner 是协调者会话承载缝（进程承载半段经 hostapi 门面实现，spec §7.0）：
 // 无头拉起一个 CLI 会话、喂 prompt、收回合输出。没有派发状态机的任何概念。
 type Runner interface {
-	// Launch 新建会话并送入第一回合（prompt 为空表示只建立会话）。
+	// Launch 新建会话并送入第一回合。**prompt 必须非空**——原注释曾承诺
+	// 「prompt 为空表示只建立会话」，2026-08-26 在 opencode 上实证该形态无原生
+	// 支撑（run 形态空 prompt 直接 exit 1），且该承诺从未出现在 spec / 契约 /
+	// 拆解任一文档里，是注释单方面发明的契约，故删除。实现方对空 prompt 必须
+	// 响报（带标记词的可行动错误），不得静默兜底成「只建会话」。
 	Launch(spec SessionSpec, prompt string) (TurnResult, error)
 	// Resume 在既有会话上无头续一回合——事件唤醒的常规路径。
 	Resume(ref SessionRef, prompt string) (TurnResult, error)

@@ -33,6 +33,11 @@ const (
 // 是消费执行产出的那一环，被数据面饿死会让整条流水线停摆（spec §3 台账⑨）。
 var QueueKinds = []string{KindLaunchQueue, KindIgnitionQueue}
 
+// maxCASAttempts 是单次计数变更的 CAS 重试上限。并发规模 N≤16 时实测该预算内
+// 能收敛但偶有耗尽（plan 基线探针：N=16 打容量 4，出现「连续冲突」型失败）；
+// 耗尽以 ErrRetryExhausted 外露，验收翻红先查预算再查语义。
+const maxCASAttempts = 8
+
 // CredentialSource 是载体的凭据来源两值（spec §3）。
 type CredentialSource string
 
@@ -99,6 +104,17 @@ var (
 	ErrNoSlot       = errors.New("scheduling: 小队或载体并发已满")
 	ErrRoleMismatch = errors.New("scheduling: 小队角色不符")
 	ErrNoHealthy    = errors.New("scheduling: 小队内没有健康且有空的载体")
+
+	// ErrRetryExhausted 表示运行计数的 CAS 连续冲突超出重试预算。它与 ErrNoSlot
+	// 的分流是并发验收的排查序：先预算后语义（岔口三附加约束，plan §D5.3）。
+	ErrRetryExhausted = errors.New("scheduling: 运行计数连续冲突")
+
+	// ErrInvalid 表示登记输入未过校验（名字缺失、凭据来源词表外、角色词表外、
+	// 成员引用不存在）。gateway 据此把用户输入错（400）与 registry 故障（500）
+	// 分流；哨兵住 scheduling 包——校验规则与词表常量都在本包（B156.3 K3）。
+	// PutCarrier/PutSquad 的四处校验 return 均以 %w 包它（B156.3.3 修复轮
+	// Major-3 + 协调者白名单扩容：plan §D4 原文本就如此）。
+	ErrInvalid = errors.New("scheduling: 登记校验未过")
 )
 
 // Service 是编制域的规则引擎本体。全部状态经 Registry 持久（agentd 重启
@@ -114,10 +130,10 @@ func New(repo schedclient.Registry) *Service { return &Service{repo: repo} }
 // 本期没有探测手段，「未探测」不得表现为「不健康」把载体饿死。
 func (s *Service) PutCarrier(c Carrier, expect int) error {
 	if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Machine) == "" || strings.TrimSpace(c.CLI) == "" {
-		return fmt.Errorf("载体登记不完整：name/machine/cli 必填")
+		return fmt.Errorf("%w: 载体登记不完整：name/machine/cli 必填", ErrInvalid)
 	}
 	if c.Credential != CredentialStandalone && c.Credential != CredentialMainHomeSync {
-		return fmt.Errorf("载体 %s 的凭据来源只能是 standalone 或 main_home_sync", c.Name)
+		return fmt.Errorf("%w: 载体 %s 的凭据来源只能是 standalone 或 main_home_sync", ErrInvalid, c.Name)
 	}
 	if !c.Healthy {
 		c.Healthy = true
@@ -150,10 +166,10 @@ func (s *Service) Carriers() ([]Carrier, error) {
 // PutSquad 以 CAS 写小队定义（expect=0 新建）。成员引用必须指向已存在的载体。
 func (s *Service) PutSquad(q Squad, expect int) error {
 	if strings.TrimSpace(q.Name) == "" {
-		return fmt.Errorf("小队名不能为空")
+		return fmt.Errorf("%w: 小队名不能为空", ErrInvalid)
 	}
 	if q.Role != RoleExecutor && q.Role != RoleCoordinator {
-		return fmt.Errorf("小队 %s 角色只能是 executor 或 coordinator", q.Name)
+		return fmt.Errorf("%w: 小队 %s 角色只能是 executor 或 coordinator", ErrInvalid, q.Name)
 	}
 	for _, m := range q.Members {
 		if _, err := s.Carrier(m); err != nil {
@@ -181,14 +197,7 @@ func (s *Service) Admit(req IgnitionRequest) (Binding, error) {
 	if q.Role != RoleExecutor {
 		return Binding{}, fmt.Errorf("%w: %s 是协调者小队", ErrRoleMismatch, q.Name)
 	}
-	binding, carrier, err := s.resolve(q, req)
-	if err != nil {
-		return Binding{}, err
-	}
-	if err := s.acquire(q, carrier); err != nil {
-		return Binding{}, err
-	}
-	return binding, nil
+	return s.admitInto(q, req)
 }
 
 // LaunchAdmit 对一次协调者拉起做两级准入（协调者小队的成员载体必须在协调机上，
@@ -201,15 +210,7 @@ func (s *Service) LaunchAdmit(squadName string) (Binding, error) {
 	if q.Role != RoleCoordinator {
 		return Binding{}, fmt.Errorf("%w: %s 是执行者小队", ErrRoleMismatch, q.Name)
 	}
-	req := IgnitionRequest{Squad: q.Name}
-	binding, carrier, err := s.resolve(q, req)
-	if err != nil {
-		return Binding{}, err
-	}
-	if err := s.acquire(q, carrier); err != nil {
-		return Binding{}, err
-	}
-	return binding, nil
+	return s.admitInto(q, IgnitionRequest{Squad: q.Name})
 }
 
 // Release 归还一个已结束回合占用的两级名额。幂等：计数到 0 后不再下探。
@@ -325,81 +326,145 @@ func (r IgnitionRequest) orderRank() int {
 	}
 }
 
-// resolve 按小队成员顺序挑第一个健康且有空的载体，产出有效三元组：
-// 一次性覆盖 > 载体缺省（spec §3：--target/--executor/--model 降级为载体字段覆盖）。
-// 全部成员都满员返回 ErrNoSlot（调用方转排队），没有健康载体才报 ErrNoHealthy
-// ——两种失败处置不同：前者是常态排队，后者是配置或限额问题。
-func (s *Service) resolve(q Squad, req IgnitionRequest) (Binding, Carrier, error) {
-	capacityBlocked := false
+// errMemberFull 是 admitInto 的内部分流哨兵：单个成员满员不是终局，调用方
+// 换下一成员继续；它绝不外露，外露的满员语义只有 ErrNoSlot。
+var errMemberFull = errors.New("scheduling: 该成员并发已满")
+
+// admitInto 按成员声明顺序对每个健康载体尝试原子准入：某成员满员不终局，
+// 换下一个继续；健康成员全部满员才 ErrNoSlot，一个健康成员都没有才
+// ErrNoHealthy（两种失败处置不同：前者是常态排队，后者是配置或限额问题）。
+//
+// 为什么按成员循环而不是「先挑一个成员、再对它 +1」：两步之间隔着若干次共享
+// 读，高争用下准入者拿着过时的成员选择撞上终局 ErrNoSlot——另一成员明明有位
+// 也报满员，违反冻结准入判据「小队有位 且 载体有位」（本卡台账实测：字面实现
+// N=16 打容量 4 只进 2~3 个）。权威裁决只在计数 CAS 里做，成员选择随之在同一
+// 趟里完成。
+func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error) {
+	anyHealthy := false
 	for _, name := range q.Members {
 		carrier, err := s.Carrier(name)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				continue
 			}
-			return Binding{}, Carrier{}, err
+			return Binding{}, err
 		}
 		if !carrier.Healthy {
 			continue
 		}
-		free, err := s.hasSlot(q, carrier)
-		if err != nil {
-			return Binding{}, Carrier{}, err
-		}
-		if !free {
-			capacityBlocked = true
+		anyHealthy = true
+		binding, err := s.acquire(q, carrier, req)
+		switch {
+		case err == nil:
+			return binding, nil
+		case errors.Is(err, errMemberFull):
 			continue
+		default:
+			return Binding{}, err
 		}
-		target := req.Target
-		if target == "" {
-			target = carrier.Machine
-		}
-		executor := req.Executor
-		if executor == "" {
-			executor = carrier.CLI
-		}
-		model := req.Model
-		if model == "" {
-			model = carrier.Model
-		}
-		return Binding{Squad: q.Name, Carrier: carrier.Name, Target: target, Executor: executor, Model: model}, carrier, nil
 	}
-	if capacityBlocked {
-		return Binding{}, Carrier{}, ErrNoSlot
+	if !anyHealthy {
+		return Binding{}, ErrNoHealthy
 	}
-	return Binding{}, Carrier{}, ErrNoHealthy
+	return Binding{}, ErrNoSlot
 }
 
-// hasSlot 报告两级并发是否都有位：小队有位 且 载体有位。
-func (s *Service) hasSlot(q Squad, c Carrier) (bool, error) {
-	squadRunning, err := s.running(kindSquad + "/" + q.Name)
-	if err != nil {
-		return false, err
+// acquire 对「小队 q + 载体 c」做一次原子准入尝试（B156.3 契约岔口三·方案A）：
+// 每次先读两级计数并各自对上限复核，任一级满员返回 errMemberFull，再以 CAS
+// 递增；冲突则带着新读数重试。两级上界判断只此一份——它是防超发的唯一执法
+// 闸，去掉它并发准入必超发（变异复验的靶子）。
+//
+// 计数键只有 squad/<名> 与 carrier/<名> 两类，按（角色,名字）二元组计数不按卡
+// （契约 §15 澄清 3），不得引入第三类。MaxConcurrency<=0 视为不设上限：两个
+// 上界分支恒不走时，本函数等价于无上界的 CAS 直增。
+//
+// 半程回滚：小队侧 +1 成功而载体侧失败时，用带符号减法回滚小队侧而不是按版本
+// 回写——期间可能有第三方又动了小队计数，按版本回写会把别人的增量踩掉。回滚
+// 失败只吞掉：计数偏高是保守方向（多拒不超发），偏低才会超发。
+func (s *Service) acquire(q Squad, c Carrier, req IgnitionRequest) (Binding, error) {
+	squadKey := kindSquad + "/" + q.Name
+	carrierKey := kindCarrier + "/" + c.Name
+	for attempt := 0; attempt < maxCASAttempts; attempt++ {
+		squadRunning, squadExpect, err := s.readCount(squadKey)
+		if err != nil {
+			return Binding{}, err
+		}
+		carrierRunning, carrierExpect, err := s.readCount(carrierKey)
+		if err != nil {
+			return Binding{}, err
+		}
+		if q.MaxConcurrency > 0 && squadRunning >= q.MaxConcurrency {
+			return Binding{}, errMemberFull
+		}
+		if c.MaxConcurrency > 0 && carrierRunning >= c.MaxConcurrency {
+			return Binding{}, errMemberFull
+		}
+		if err := s.casCount(squadKey, squadExpect, squadRunning+1); err != nil {
+			if errors.Is(err, schedclient.ErrCASConflict) {
+				continue
+			}
+			return Binding{}, err
+		}
+		if err := s.casCount(carrierKey, carrierExpect, carrierRunning+1); err != nil {
+			_ = s.stepRunning(squadKey, -1)
+			if errors.Is(err, schedclient.ErrCASConflict) {
+				continue
+			}
+			return Binding{}, err
+		}
+		return bindingFor(q, c, req), nil
 	}
-	if q.MaxConcurrency > 0 && squadRunning >= q.MaxConcurrency {
-		return false, nil
-	}
-	carrierRunning, err := s.running(kindCarrier + "/" + c.Name)
-	if err != nil {
-		return false, err
-	}
-	if c.MaxConcurrency > 0 && carrierRunning >= c.MaxConcurrency {
-		return false, nil
-	}
-	return true, nil
+	return Binding{}, fmt.Errorf("%w: %s 与 %s", ErrRetryExhausted, squadKey, carrierKey)
 }
 
-// acquire 两级计数各 +1。计数缺失视为 0。
-func (s *Service) acquire(q Squad, c Carrier) error {
-	if err := s.stepRunning(kindSquad+"/"+q.Name, +1); err != nil {
-		return err
+// bindingFor 产出有效三元组：一次性覆盖 > 载体缺省（spec §3：--target/--executor/
+// --model 降级为载体字段覆盖）。只在两级计数都成功递增后调用。
+func bindingFor(q Squad, c Carrier, req IgnitionRequest) Binding {
+	target := req.Target
+	if target == "" {
+		target = c.Machine
 	}
-	return s.stepRunning(kindCarrier+"/"+c.Name, +1)
+	executor := req.Executor
+	if executor == "" {
+		executor = c.CLI
+	}
+	model := req.Model
+	if model == "" {
+		model = c.Model
+	}
+	return Binding{Squad: q.Name, Carrier: c.Name, Target: target, Executor: executor, Model: model}
+}
+
+// readCount 读一条运行计数的当前值与 CAS 期望版本；缺失视为 0、期望版本 0
+// （agentd 重启后计数随用随建，权威状态在账本不在内存）。
+func (s *Service) readCount(id string) (count, expect int, err error) {
+	rec, err := s.repo.Get(kindRunning, id)
+	if err != nil {
+		if errors.Is(err, schedclient.ErrNotFound) {
+			return 0, 0, nil
+		}
+		return 0, 0, err
+	}
+	var body struct {
+		Count int `json:"count"`
+	}
+	if err := json.Unmarshal(rec.Body, &body); err != nil {
+		return 0, 0, fmt.Errorf("运行计数 %s 解码失败: %w", id, err)
+	}
+	return body.Count, rec.Version, nil
+}
+
+// casCount 以 CAS 把一条运行计数置为 next；冲突原样透传
+// schedclient.ErrCASConflict 供调用方重试。
+func (s *Service) casCount(id string, expect, next int) error {
+	bodyBytes, _ := json.Marshal(map[string]int{"count": next})
+	_, err := s.repo.Put(kindRunning, id, expect, bodyBytes, "scheduling")
+	return err
 }
 
 // stepRunning 对一条运行计数记录做带符号增量，CAS 重试读改写。
 func (s *Service) stepRunning(id string, delta int) error {
-	for attempt := 0; attempt < 8; attempt++ {
+	for attempt := 0; attempt < maxCASAttempts; attempt++ {
 		rec, err := s.repo.Get(kindRunning, id)
 		count := 0
 		expect := 0
@@ -428,26 +493,7 @@ func (s *Service) stepRunning(id string, delta int) error {
 		}
 		return nil
 	}
-	return fmt.Errorf("运行计数 %s 连续冲突", id)
-}
-
-// running 读一条运行计数；缺失 = 0（agentd 重启后计数随用随建，权威状态
-// 在账本不在内存）。
-func (s *Service) running(id string) (int, error) {
-	rec, err := s.repo.Get(kindRunning, id)
-	if err != nil {
-		if errors.Is(err, schedclient.ErrNotFound) {
-			return 0, nil
-		}
-		return 0, err
-	}
-	var body struct {
-		Count int `json:"count"`
-	}
-	if err := json.Unmarshal(rec.Body, &body); err != nil {
-		return 0, fmt.Errorf("运行计数 %s 解码失败: %w", id, err)
-	}
-	return body.Count, nil
+	return fmt.Errorf("%w: %s", ErrRetryExhausted, id)
 }
 
 // position 计算某请求在当前队序中的 1 基位置。

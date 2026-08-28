@@ -170,6 +170,18 @@
   **验收判据两条**：①行号比对脚本 mismatched 降到 0；②抽查若干新符号确实在图里
   ——不能只看 `check` 的 exit code，空壳基线照样 exit 0。
   来源：`specs/b156.3-contract-ledger.md`「图数据债」节。
+- **真重扫的验收判据要逐容器点数，不能抽查符号名**（2026-08-26 实测得出）：按「抽查
+  某个新符号在不在图里」验收会漏掉整张脸缺席的形态。实证：`internal/ledger/api` 包
+  `Facade` 的导出方法源码 **14 个**，图里 `n_ledger_api_Facade_*` 节点只有 **6 个**，
+  缺的 8 个正好是 B156.2 冻结的整张契约面（`GetCard`/`ListActiveCards`/`ListAllCards`/
+  `RecordRoomMessage`/`RecordMessageConsumed`/`EventsFromAsc`/`BindDriver`/`DriverLease`），
+  而 `graph check` 报 fails=0。行号错了还能靠 `graph sym` 再锚定；符号根本没进图就是
+  `sym` 查不到、`who-calls` 追不出。**判据两条**：①对新建容器逐个比对「源码该类型的
+  导出方法数 == 图里 `n_<容器>_*` 的节点数」；②接口节点比对「`m_*` 的 fields 长度 ==
+  源码 interface 的方法数」（接口方法在图里是 field，不是节点——按名字查必然落空）。
+  归属已查清：`125b5c360` 的 charter-2 视图里只声明了 `m_ledger_api_Facade` 类型节点与
+  `k_ledger_api_Facade` 容器，方法节点从未被声明，非某一轮 absorb 吞掉。
+  来源：`specs/b156.3-contract-ledger.md`，台账㊳。
 - **清掉陈旧域声明 `codegraph/domains/d_orchestration.json`**：它声明的域在图里不存在
   （图里叫 `d_coordination`）。仓内 `go run . graph validate`（`charter/graph v0.8.0`，
   `TestRepoContractGate` 用的那份）不报，较新的独立 `codegraph` 二进制会报
@@ -182,6 +194,33 @@
   **实现本身的迁移是后续的活**（绞杀式还债、升格随卡走）。与 B156.2 同源条目合流：
   存量 `d_gateway → d_ledger`（17）与 `d_cli → d_ledger`（4）直调债的清理同样在此
   队列里，两期都只保证不新增。来源：`specs/2026-08-26-b156.3-automation-keystone-design.md` §7.0。
+## 来自 B156.3.3 集成轮（2026-08-26）
+
+- **`cmd/service_test.go` 的 `TestResolveServiceBinFallsBackFromGoBuildCache` 对检出路径敏感**：
+  工作树位于 `os.TempDir()`（`$TMPDIR`）之下时，`isEphemeralBin` 会把仓库内的候选文件
+  （`cmd/service.go`）连同整个检出一起判成「临时产物」，回退臂永远不命中而假红。
+  实测：`TMPDIR=/root/.handoff/tmp/<id>` 且检出在其下 → 单测 FAIL；同一提交树检出在
+  `/root/.handoff/worktrees/<id>` 或以中性 `TMPDIR` 重跑 → ok。基线 `efc6f7d9` 上同位置
+  同样红（非 B156.3.3 引入）。修法方向：夹具不用仓内真实文件充当 durable 二进制，或
+  测试内显式固定 TempDir 探针。来源：2026-08-26 B156.3.3 集成轮全量档第一跑（台账：
+  `docs/superpowers/ledgers/2026-08-26-b156.3.3-integrate-ledger.md`）。
+## 来自 B156.3.4 集成轮（2026-08-26，review 核销项登记）
+
+review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记账（本轮集成不修业务
+代码；原文锚点在 acceptance 台账 §7，该提交未入集成分支，在此落痕防孤儿。台账：
+`docs/superpowers/ledgers/2026-08-26-b156.3.4-integrate-ledger.md`）：
+
+- **（major，建议归 K5）失败拉起后两级名额永久占用且 409 文案双重误导**：生产 launch
+  路径无 Release 臂——LaunchAdmit 成功→LaunchForCard 失败→502，名额挂回合终局而
+  失败拉起无回合可终局；coordapi.go:134-135 的「等现役回合结束名额自动回收」文案在
+  该场景误导。核销动作：修 409 文案＋立名额归还验收条目。
+- **（minor，K6 镜像时核销）GET /coordinator 的 attach 三元组 machine/dir 恒空串**：
+  coordapi.go:206 `Locate(id, "")` 的数据来源所致。
+- **（minor）handleCoordAttach 错误分支无测试锁**：active 缺失 400／定位失败回滚／
+  ?machine= 转发三条均无断言。
+- **（minor，流程偏差记账）Task 0 遇 K3 未并入直接 merge 而非按 plan 提问**：结果
+  正确零冲突，但越过了 plan 的停下提问纪律。
+
 ## 来自 B156.2 spec 定稿（2026-08-25，二期协作层的推迟项）
 
 - **三期承接（B156.3 的输入）**：规则引擎自动拉起协调者会话（本期拉起一律由用户执行）；

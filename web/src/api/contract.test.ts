@@ -106,6 +106,15 @@ import type {
   NodeDef,
   CardStepReq,
 } from './ledger'
+import squadsFixture from './testdata/SquadsResp.json'
+import queueFixture from './testdata/QueueResp.json'
+import coordinatorLaunchFixture from './testdata/CoordinatorLaunchResp.json'
+import {
+  type CarrierView,
+  type CoordinatorLaunchResp,
+  type QueueEntry,
+  type SquadView,
+} from './scheduling'
 
 describe('契约 fixture 与 TS 类型', () => {
 	it('CardStepReq：六字段可由 Go fixture 解析', () => {
@@ -532,5 +541,28 @@ describe('工作台状态契约', () => {
     expect(typeof state.dock).toBe('string')
     expect(Array.isArray(state.bases)).toBe(true)
     expect(typeof state.bases[0].payload).toBe('string')
+  })
+})
+
+describe('scheduling wire', () => {
+  it('SquadsResp 携带版本行与显式布尔', () => {
+    const c: CarrierView = squadsFixture.carriers[0]
+    expect(c.version).toBeGreaterThan(0)
+    expect(c.healthy).toBe(true)
+    expect(c.max_concurrency).toBe(2)
+    const s: SquadView = squadsFixture.squads[0]
+    expect(s.role).toBe('coordinator')
+    expect(s.max_concurrency).toBeUndefined() // omitempty：0 以键缺席表达
+  })
+  it('QueueEntry 的 ready=false 显式在场且位次为正', () => {
+    const e: QueueEntry = queueFixture.queue[0]
+    expect(e.ready).toBe(false) // 样本即 false；缺键会在 tsc/undefined 处暴露
+    expect(e.position).toBeGreaterThan(0)
+    expect(e.kind).toBe('ignition_queue')
+  })
+  it('CoordinatorLaunchResp 关键字段', () => {
+    const r: CoordinatorLaunchResp = coordinatorLaunchFixture
+    expect(r.woke).toBe(true)
+    expect(typeof r.session_id).toBe('string')
   })
 })

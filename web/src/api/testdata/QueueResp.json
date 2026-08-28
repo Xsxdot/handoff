@@ -1,0 +1,16 @@
+{
+  "queue": [
+    {
+      "kind": "ignition_queue",
+      "id": "B242|implement",
+      "card": "B242",
+      "node": "implement",
+      "squad": "exec",
+      "priority": "高",
+      "ready": false,
+      "actor": "cli:u@h",
+      "seq": 7,
+      "position": 1
+    }
+  ]
+}

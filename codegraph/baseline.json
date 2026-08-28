@@ -75981,7 +75981,7 @@
    "order": 0,
    "name": "AttachInfo",
    "file": "internal/keysclient/keysclient.go",
-   "line": 47,
+   "line": 51,
    "signature": "type AttachInfo",
    "fields": [
     [
@@ -76008,7 +76008,7 @@
    "order": 0,
    "name": "TerminalLocator",
    "file": "internal/keysclient/keysclient.go",
-   "line": 54,
+   "line": 58,
    "signature": "type TerminalLocator",
    "fields": [
     [
@@ -76025,7 +76025,7 @@
    "order": 0,
    "name": "Narrator",
    "file": "internal/keysclient/keysclient.go",
-   "line": 60,
+   "line": 64,
    "signature": "type Narrator",
    "fields": [
     [
@@ -76042,7 +76042,7 @@
    "order": 0,
    "name": "LedgerView",
    "file": "internal/keysclient/keysclient.go",
-   "line": 69,
+   "line": 73,
    "signature": "type LedgerView",
    "fields": [
     [
