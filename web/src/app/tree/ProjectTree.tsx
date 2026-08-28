@@ -254,7 +254,7 @@ export function findBaseByKey(tree: ProjectTreeResp, key: string): BaseDir | nul
 
 // taskRowClass 对应 option-1 的 .task-row：34px 高、8px 圆角、8px 间距；
 // is-open 与 hover 同为 #fafafa，is-selected 深一档 #ededed。
-const taskRowClass = 'flex min-h-[34px] w-full min-w-0 items-center gap-2 rounded-lg px-2 py-0.5 text-left'
+const taskRowClass = 'flex min-h-[34px] w-full min-w-0 items-center gap-2 rounded-lg px-2 py-0.5 text-left transition-[background,color] duration-[140ms]'
 const taskRowOpen = 'bg-[#fafafa]'
 const taskRowSelected = 'bg-[#ededed]'
 
@@ -573,10 +573,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   />
                   <span className="min-w-0 truncate">{project.name}</span>
                 </span>
-                <span className="flex shrink-0 items-center gap-2.5 text-[15px] font-medium text-muted-foreground">
+                <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">
                   <span data-testid="project-running-count" className="flex items-center gap-[7px]">
                     <img src={dispatchTaskUrl} className="size-4" alt="" />
-                    <span>{pCounts.running + pCounts.pending}</span>
+                    <span className="text-[16px]">{pCounts.running + pCounts.pending}</span>
                   </span>
                   {project.locations.length > 0 && <Arrow open={pOpen} onToggle={() => toggle(pKey)} />}
                 </span>
@@ -610,8 +610,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             </div>
 
             {pOpen && (
-              // option-1 的 .project-content：项目内层级整体缩进
-              <div className="ml-[7px] pl-4">
+              // option-1 的 .project-content：margin-left 7px、padding 6px 0 0 16px，
+              // 左轨线（::before，1px var(--rail)=#dedede，bottom 让位 25px）用真实元素实现
+              <div className="relative ml-[7px] pl-4 pt-[6px]">
+                <span aria-hidden className="absolute bottom-[25px] left-0 top-0 w-px bg-[#dedede]" />
                 <div data-testid="task-group">
                   {/* 「任务」小标题（option-1 .section-label） */}
                   <div data-testid="task-group-head" className="flex min-h-6 items-center gap-2 text-[15px] font-medium text-muted-foreground">
@@ -742,6 +744,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             type="button"
                             data-testid="workspace-row"
                             aria-current={dSelected ? 'true' : undefined}
+                            data-drag-task="1"
                             draggable
                             onClick={() => openDirectory(base)}
                             onDragStart={(e) => {
@@ -750,8 +753,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               e.dataTransfer.effectAllowed = 'copy'
                             }}
                             className={cn(
-                              'flex min-h-[30px] w-full min-w-0 items-center rounded-lg py-0.5 pl-[9px] pr-2 text-left text-[14px] text-muted-foreground hover:bg-[#fafafa]',
-                              dSelected && 'bg-[#ededed] font-medium text-foreground',
+                              'flex min-h-[30px] w-full min-w-0 items-center rounded-[7px] py-0.5 pl-[9px] pr-2 text-left text-[14px] text-muted-foreground hover:bg-[#fafafa]',
+                              dSelected && 'bg-[#fafafa]',
                             )}
                           >
                             <span className="min-w-0 flex-1 truncate font-mono">{dirLabel(ws)}</span>
@@ -796,7 +799,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(mainBase))
                               e.dataTransfer.effectAllowed = 'copy'
                             }}
-                            className="flex min-h-[32px] w-full min-w-0 items-center gap-2 rounded-lg py-0.5 pl-[6px] pr-2 text-left text-[13px] font-medium hover:bg-[#fafafa]"
+                            data-drag-task={mainBase !== null && problem === '' ? '1' : undefined}
+                            className="flex min-h-[32px] w-full min-w-0 items-center gap-2 rounded-[7px] py-0.5 pl-[6px] pr-2 text-left text-[13px] font-medium hover:bg-[#fafafa]"
                           >
                             <StateDot tone={problem !== '' ? 'failed' : 'active'} />
                             <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
@@ -851,7 +855,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                                   data-testid="hidden-dirs-row"
                                   aria-expanded={hiddenOpen}
                                   onClick={() => toggleHiddenDirs(mKey)}
-                                  className="flex min-h-[30px] w-full min-w-0 items-center rounded-lg px-2 py-0.5 text-left text-[14px] text-muted-foreground hover:bg-[#fafafa]"
+                                  className="flex min-h-[30px] w-full min-w-0 items-center rounded-[7px] px-2 py-0.5 text-left text-[14px] text-muted-foreground hover:bg-[#fafafa]"
                                 >
                                   <Arrow open={hiddenOpen} onToggle={() => toggleHiddenDirs(mKey)} />
                                   <span className="min-w-0 flex-1 truncate">已隐藏 {split.hidden.length} 个目录</span>

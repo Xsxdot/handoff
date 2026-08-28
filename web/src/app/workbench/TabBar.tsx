@@ -167,7 +167,7 @@ export function TabBar({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => onActivateGroup(group.id)}
                 className={cn(
-                  'inline-flex h-full min-w-0 shrink-0 items-center gap-[9px] whitespace-nowrap border-0 bg-transparent transition-colors outline-none hover:bg-[#efefee]',
+                  'inline-flex h-full min-w-0 shrink-0 items-center gap-[9px] whitespace-nowrap border-0 bg-transparent text-[14px] outline-none transition-[background,color] duration-[140ms] hover:bg-[#efefee]',
                   active
                     ? 'px-[18px] font-semibold text-[#2a2a2a]'
                     : 'px-[15px] font-[450] text-[#6f6f6f] hover:text-[#333333]',

@@ -106,3 +106,24 @@
   npm run build → 成功（✓ built in 2.06s，chunk 警告为基线既有）。
   重做后组语义核对：组标签条激活/关闭/拖动/新建、autoName 组显焦点任务原名、
   五区落点 1:1、T1/T3/T5/T6a/T6b/T7 产出保留。未 push，未跑 handoff。
+## review 修复轮（2026-08-29，裁决 pass + 1×P1 + 8×P2）
+
+- P2-7 勘误先行：首轮 T8 台账里「标签条关闭钮也过确认闸」一句**作废**——T2-rev 起标签条
+  关闭钮走基线语义（onCloseGroup 关整组，无确认闸），代码以 T2-rev 为准。
+- P1-1 完成：TabBar 组标签按钮加 text-[14px]（option-1 .workspace-tab font-size:14px）。
+- P2-1 完成：ProjectTree 工作树子行与机器行补 data-drag-task="1"（机器行随 draggable
+  同条件，非可拖态不带标记）；放行谓词不变，WorkbenchPage.test 既有放行用例照旧。
+  新增 ProjectTree.test 1 支（红→绿）钉住目录来源的放行标记。
+- P2-2 完成：TabBar 组标签 transition-colors → transition-[background,color] duration-[140ms]；
+  ProjectTree .task-row 加同款 140ms 过渡（option-1 :289-291）。
+- P2-3 完成：项目内容区补 padding-top 6px 与左轨线（::before 实体元素：1px #dedede、
+  top 0 / bottom 25px，option-1 .project-content :358-372）。
+- P2-4 完成：项目行右侧簇 gap 10px→7px（.project-meta），计数字号 15px→16px
+  （.project-number）。
+- P2-5 完成：工作树子行选中色 #ededed→#fafafa（.directory-child.is-selected，
+  同时去掉原型没有的 font-medium/text-foreground 叠加）；机器行/子行/已隐藏行圆角
+  8px→7px（.directory-row/.directory-child border-radius:7px）。任务行保持 8px
+  （.task-row 8px，不在本条范围）。
+- P2-6 完成：WorkbenchPage 内层列容器 overflow-x-auto → overflow-hidden（.cols）。
+  TabBar 自身的 overflow-x-auto 是原型 .workspace-tabbar 的既有属性，保留。
+- P2-8：tab-sep 位置取舍——维持备案不动（按裁决）。

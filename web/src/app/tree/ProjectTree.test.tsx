@@ -385,6 +385,17 @@ describe('ProjectTree 机器行与目录', () => {
     expect(onOpenTerminalAt).toHaveBeenLastCalledWith(expect.objectContaining({ path: '/w/b2-b3' }))
   })
 
+  it('目录来源（工作树子行与机器行）也带拖放放行标记 data-drag-task', () => {
+    // P2-1：拖目录到中央同样要关闭窗格内容层的 pointer-events（xterm 截事件），
+    // 放行谓词在 WorkbenchPage 只认 data-drag-task，所以机器行/子行也必须带标记
+    render(<ProjectTree {...props({})} />)
+    fireEvent.click(screen.getByTestId('machine-row'))
+    const workspaceRows = screen.getAllByTestId('workspace-row')
+    expect(workspaceRows.length).toBeGreaterThanOrEqual(2)
+    for (const row of workspaceRows) expect(row).toHaveAttribute('data-drag-task', '1')
+    expect(screen.getByTestId('machine-row')).toHaveAttribute('data-drag-task', '1')
+  })
+
   it('点子行选中目录，回调带完整 BaseDir；selectedKey 命中行带 aria-current', () => {
     const onOpenDirectory = vi.fn()
     const view = render(<ProjectTree {...props({ onOpenDirectory, selectedKey: '/w/b2-b3' })} />)

@@ -236,7 +236,8 @@ export function WorkbenchPage({
 
   const renderGroup = (group: typeof activeGroup, visible: boolean) => (
     <div className={cn('flex min-h-0 flex-1 flex-col', !visible && 'pointer-events-none absolute -left-[10000px] top-0 h-full w-full')} aria-hidden={!visible}>
-      <div className="flex min-h-0 flex-1 overflow-x-auto bg-border">
+      {/* 原型 .cols { overflow: hidden }：列压进容器，不出现横向滚动 */}
+      <div className="flex min-h-0 flex-1 overflow-hidden bg-border">
         {group.columns.map((column, columnIndex) => (
           <Fragment key={`${group.id}-column-${columnIndex}`}>
           {/* min-w-0 而非 240px 硬下限：列宽下限由拖拽分隔的 minRatio 夹紧负责，
