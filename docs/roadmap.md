@@ -429,3 +429,10 @@
 - **B258 镜像延迟**：任务已 `waiting_answer`、卡流数分钟零事件。来源：同上。
 - **B211 release CI 资产 hash 硬门**（管发布物，管不住手工 `go build`）。来源：B276 spec / 源卡 B211 弃选 C。
 - **charter 仓刀 0 别名销账**：handoff 侧已删除 `handoff graph`；charter 契约 §4 / charter skill / charter roadmap 第 6 条仍写别名观察期。来源：B276 spec r1 / 审查 Issue 3。
+
+## 来自 B277 finish（2026-08-28）
+
+- **升 charter/graph 以挂 `flow`/`tree`**：本卡锁 `github.com/Xsxdot/charter/graph v0.9.0`，该 tag 无 `flow` 子命令。C17 已合入 charter master，发新 graph tag 后 handoff `go.mod` 升级，模块内 `go run github.com/Xsxdot/charter/graph/cmd/codegraph flow` 才可用。与 charter roadmap 第 56、第 1i、第 6 条同族。来源：B277 implement 真机、C17 finish。
+- **TS/React flows 不做**：用户 2026-08-28 裁掉。查看器对 `.ts`/`.tsx` 入缝保持 degraded。来源：B277 spec Out of Scope。
+- **扫描器跳过/空流程**：`n_ledger_Store_EnsureDefaultTemplates`、`n_ledger_Store_EnsureDefaultWorkflows` 解析失败跳过；6 个键空 `steps`（无图内 call/可视控制流）；接口实现闭包第 2 轮后仍有 6 个二阶候选按计划上限未展开。来源：B277 扫描报告。
+- **全函数 CFG / SSA**：不在本卡。来源：B277 spec OOS，charter roadmap 27/32/53。
