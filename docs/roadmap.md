@@ -436,3 +436,10 @@
 - **TS/React flows 不做**：用户 2026-08-28 裁掉。查看器对 `.ts`/`.tsx` 入缝保持 degraded。来源：B277 spec Out of Scope。
 - **扫描器跳过/空流程**：`n_ledger_Store_EnsureDefaultTemplates`、`n_ledger_Store_EnsureDefaultWorkflows` 解析失败跳过；6 个键空 `steps`（无图内 call/可视控制流）；接口实现闭包第 2 轮后仍有 6 个二阶候选按计划上限未展开。来源：B277 扫描报告。
 - **全函数 CFG / SSA**：不在本卡。来源：B277 spec OOS，charter roadmap 27/32/53。
+
+## 来自 B278 spec（2026-08-28，本期不做）
+
+- **B235 不同名分支自动合并**：卡 `base_branch` 与工作分支历史分叉时，dispatch 自动 merge。B278 只警告。来源：B278 spec / 源卡 B235。
+- **B235 `card dispatch --step --base`**：显式覆盖节点起点。今天卡派发没有这条主路径。来源：同上。
+- **B260 HTTP `task_states` / `relations` 蛇形化**：Web 已按 PascalCase 冻结（`proto.TaskStateRow` 注释 + `web/src/api/ledger.ts`）。要改得连 Web 一起改。来源：B278 spec / 源卡 B260。
+- **B251 存量带日期文件改名**：历史 spec 文件保持原名。来源：B278 spec / 源卡 B251。
