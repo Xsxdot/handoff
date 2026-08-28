@@ -6,7 +6,35 @@ import userEvent from '@testing-library/user-event'
 import { attachCoordinator, getCoordinatorStatus, launchCoordinator, releaseCoordinator } from '../../api/scheduling'
 import type { CoordinatorStatus } from '../../api/scheduling'
 import { usePoll } from '../data/usePoll'
+import { TerminalTab } from '../workbench/TerminalTab'
+import { useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { CoordinatorPanel } from './CoordinatorPanel'
+
+const termInstance = {
+  cols: 100,
+  rows: 30,
+  open: vi.fn(),
+  write: vi.fn(),
+  writeln: vi.fn(),
+  clear: vi.fn(),
+  focus: vi.fn(),
+  dispose: vi.fn(),
+  loadAddon: vi.fn(),
+  onData: vi.fn(),
+  onResize: vi.fn(),
+}
+const createPtySession = vi.fn()
+const connectPty = vi.fn()
+
+vi.mock('@xterm/xterm', () => ({ Terminal: vi.fn(function () { return termInstance }) }))
+vi.mock('@xterm/xterm/css/xterm.css', () => ({}))
+vi.mock('@xterm/addon-fit', () => ({ FitAddon: vi.fn(function () { return { fit: vi.fn() } }) }))
+vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: vi.fn(function () { return { onContextLoss: vi.fn(), dispose: vi.fn() } }) }))
+vi.mock('../../api/client', () => ({
+  createPtySession: (...args: unknown[]) => createPtySession(...args),
+  deletePtySession: vi.fn(),
+}))
+vi.mock('../../api/pty', () => ({ connectPty: (...args: unknown[]) => connectPty(...args) }))
 
 vi.mock('../../api/scheduling', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/scheduling')>()),
@@ -21,6 +49,9 @@ vi.mock('../data/usePoll', () => ({ usePoll: vi.fn() }))
 const refresh = vi.fn()
 const unbound: CoordinatorStatus = { bound: false, attach_active: false, attach: null }
 const info = { machine: '', dir: '/repo/handoff', command: 'opencode --session sess-coord' }
+const coordinatorBase: BaseDir = {
+  key: '/repo/handoff', kind: 'workspace', path: '/repo/handoff', label: 'handoff', projectName: 'handoff', machine: '',
+}
 
 function pollState(data: CoordinatorStatus | null, over: Partial<{ disconnected: boolean; sessionExpired: boolean; errorText: string }> = {}) {
   return { data, disconnected: false, sessionExpired: false, errorText: '', refresh, ...over }
@@ -34,6 +65,13 @@ describe('协调者面板', () => {
     vi.mocked(launchCoordinator).mockResolvedValue({ woke: true, rebuilt: false, escalated: false, output: '协调者已拉起' })
     vi.mocked(attachCoordinator).mockResolvedValue(info)
     vi.mocked(releaseCoordinator).mockResolvedValue({ ok: true })
+    createPtySession.mockResolvedValue({ id: 'pty-coordinator' })
+    connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
+    globalThis.ResizeObserver = class {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    } as unknown as typeof ResizeObserver
   })
 
   it('maps unbound, bound, and attach-active status to the three prototype states', async () => {
@@ -60,6 +98,28 @@ describe('协调者面板', () => {
     await user.click(screen.getByRole('button', { name: '确认 attach' }))
     expect(attachCoordinator).toHaveBeenCalledWith('B1', '/repo/handoff')
     expect(onOpenTerminal).toHaveBeenCalledWith(info)
+  })
+
+  it('把 AttachInfo.command 穿透到终端 initCommand，再序列化为 init_command', async () => {
+    vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: false, attach: info }) as never)
+    function CoordinatorTerminalBridge() {
+      const workbench = useWorkbench()
+      const tab = workbench.wb.groups[0].tabs[0]
+      const content = tab?.content
+      return <>
+        <CoordinatorPanel cardId="B1" onOpenTerminal={(attached) => workbench.openTerminalWithCommand(attached.command, coordinatorBase)} />
+        {workbench.base && content?.kind === 'terminal' && <TerminalTab base={workbench.base} seq={content.seq} initCommand={content.initCommand} onSession={vi.fn()} />}
+      </>
+    }
+
+    render(<CoordinatorTerminalBridge />)
+    const user = userEvent.setup()
+    await user.click(await screen.findByRole('button', { name: '打开终端' }))
+    await user.click(screen.getByRole('button', { name: '确认 attach' }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledWith(
+      expect.objectContaining({ init_command: info.command }),
+      '',
+    ))
   })
 
   it('releases attach and exposes errors instead of pretending success', async () => {

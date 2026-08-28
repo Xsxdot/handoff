@@ -602,15 +602,25 @@ func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"workflows": flows, "templates": templates})
 }
 
-// handleFlowGet 取单条工作流的最新版本（含节点定义）。
+// handleFlowGet 取单条工作流的指定版本（含节点定义）；缺省 version 取最新版本。
 //
 // 老 def（只有 states）读出时会被补出等价的纯人工节点序列，所以前端永远
 // 只需要看 nodes 一个字段。
 func (s *Server) handleFlowGet(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	workflow, err := s.ledger.GetWorkflow(name, 0)
+	version := 0
+	if rawVersion := r.URL.Query().Get("version"); rawVersion != "" {
+		parsed, err := strconv.Atoi(rawVersion)
+		if err != nil || parsed <= 0 {
+			s.log.Warn("读取工作流版本参数无效", "name", name, "version", rawVersion)
+			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "version 必须是正整数"})
+			return
+		}
+		version = parsed
+	}
+	workflow, err := s.ledger.GetWorkflow(name, version)
 	if err != nil {
-		s.log.Warn("取工作流失败", "name", name, "cause", err)
+		s.log.Warn("取工作流失败", "name", name, "version", version, "cause", err)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
 		return
 	}

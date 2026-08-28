@@ -1,5 +1,5 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest'
-import { attachFile, createCard, detachFile, migrateCard, patchCard, putFlow, runCardStep } from './ledger'
+import { attachFile, createCard, detachFile, fetchFlow, migrateCard, patchCard, putFlow, runCardStep } from './ledger'
 
 // 直接打桩 fetch：这一层要验的是「方法、路径、请求体」，不是渲染。
 const calls: Array<{ url: string; init: RequestInit }> = []
@@ -76,5 +76,14 @@ describe('账本写操作的线格式', () => {
   it('节点执行接受任意节点名，不再只认 review|merge', async () => {
     await runCardStep('B1', '收尾合并')
     expect(bodyOf(0)).toEqual({ step: '收尾合并' })
+  })
+})
+
+describe('工作流读取的线格式', () => {
+  it('读取卡片钉住的版本时把 version query 放进完整 GET URL', async () => {
+    await fetchFlow('custom flow', 7)
+    expect(calls[0].url).toBe('/api/flows/custom%20flow?version=7')
+    expect(calls[0].init.method).toBeUndefined()
+    expect(calls[0].init.credentials).toBe('same-origin')
   })
 })

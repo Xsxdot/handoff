@@ -1092,6 +1092,31 @@ func TestFlowGetReturnsNodes(t *testing.T) {
 	}
 }
 
+func TestFlowGetAcceptsPinnedVersion(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	seedAgentdLedger(t, env.ledger, "feature")
+	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/feature", `{"nodes":[{"name":"旧节点"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("发布第二版 code = %d, body = %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/flows/feature?version=1")
+	if code != http.StatusOK {
+		t.Fatalf("读取指定版本 code = %d, body = %s", code, body)
+	}
+	var got struct {
+		Version int `json:"version"`
+		Nodes   []struct {
+			Name string `json:"name"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(body), &got); err != nil {
+		t.Fatalf("解码指定版本: %v（原文 %s）", err, body)
+	}
+	if got.Version != 1 || len(got.Nodes) == 0 || got.Nodes[0].Name == "旧节点" {
+		t.Fatalf("未返回卡片钉住的旧版本: %+v", got)
+	}
+}
+
 func TestFlowPutCreatesNewVersion(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedAgentdLedger(t, env.ledger, "feature")

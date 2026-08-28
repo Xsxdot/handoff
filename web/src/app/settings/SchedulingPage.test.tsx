@@ -19,6 +19,20 @@ beforeEach(() => {
 })
 
 describe('SchedulingPage', () => {
+  it('表单对齐原型：准入说明、机器/CLI/凭据枚举和主 HOME 同步提示完整', async () => {
+    const user = userEvent.setup()
+    render(<SchedulingPage />)
+    await user.click(screen.getByRole('button', { name: '登记载体' }))
+
+    expect(screen.getByText(/准入 = 小队有位.*载体有位/)).toBeVisible()
+    expect(screen.getByText(/协调者优先/)).toBeVisible()
+    expect(screen.getByRole('combobox', { name: '机器' })).toBeVisible()
+    expect(screen.getByRole('combobox', { name: 'CLI' })).toBeVisible()
+    expect(screen.getByRole('combobox', { name: '凭据来源' })).toBeVisible()
+    expect(screen.getByRole('option', { name: '主 HOME 同步' })).toBeVisible()
+    expect(screen.getByText(/主 HOME 同步 = 把主环境的认证态搬进隔离 HOME/)).toBeVisible()
+  })
+
   it('renders carrier and squad fields and empty-state guidance', async () => {
     vi.mocked(getSquads).mockResolvedValue({
       carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', healthy: true, version: 3 }],
@@ -37,12 +51,12 @@ describe('SchedulingPage', () => {
     render(<SchedulingPage />)
     await user.click(screen.getByRole('button', { name: '登记载体' }))
     await user.type(screen.getByLabelText('载体名'), 'mbp')
-    await user.type(screen.getByLabelText('机器'), 'local')
-    await user.type(screen.getByLabelText('CLI'), 'opencode')
+    await user.selectOptions(screen.getByLabelText('机器'), '本机')
+    await user.selectOptions(screen.getByLabelText('CLI'), 'opencode')
     await user.type(screen.getByLabelText('HOME 档案'), '/h')
-    await user.type(screen.getByLabelText('凭据来源'), 'standalone')
+    await user.selectOptions(screen.getByLabelText('凭据来源'), 'standalone')
     await user.click(screen.getByRole('button', { name: '保存' }))
-    expect(putCarrier).toHaveBeenCalledWith('mbp', 0, expect.objectContaining({ machine: 'local', home_dir: '/h' }))
+    expect(putCarrier).toHaveBeenCalledWith('mbp', 0, expect.objectContaining({ machine: '本机', home_dir: '/h' }))
     expect(vi.mocked(putCarrier).mock.calls[0]?.[2]).not.toHaveProperty('max_concurrency')
 
     vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [{ name: 'exec', role: 'executor', members: [], version: 7 }] })

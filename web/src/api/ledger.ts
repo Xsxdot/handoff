@@ -9,6 +9,8 @@ export interface CardView {
   priority: string
   project: string
   workflow: string
+  // 卡片建卡时钉住的工作流版本；缺席只兼容旧列表 fixture，不能回退借用最新版节点。
+  workflow_version?: number
   parent: string
   base_branch: string
   // 列表投影直接给出是否出现过 dispatched，避免建树弹层为每张卡拉详情事件流。
@@ -292,8 +294,8 @@ export const clearCardNeeds = (id: string) =>
 
 export const fetchFlows = () => request<FlowsResp>('/api/flows')
 
-export const fetchFlow = (name: string) =>
-  request<FlowDetail>(`/api/flows/${encodeURIComponent(name)}`)
+export const fetchFlow = (name: string, version?: number) =>
+  request<FlowDetail>(`/api/flows/${encodeURIComponent(name)}${version === undefined ? '' : `?version=${version}`}`)
 
 // putFlow 发布该工作流的**下一个版本**。工作流不可变版本化——保存不是「改」，
 // 已钉在老版本上的卡完全不受影响。

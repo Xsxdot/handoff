@@ -54,17 +54,16 @@ describe('工作流页可编辑', () => {
     expect(await screen.findByText(/Next 指向不存在的节点/)).toBeInTheDocument()
   })
 
-  it('编辑入口显示看板映射并随保存提交列序与状态映射', async () => {
+  it('只保留节点编排表作为看板映射编辑入口', async () => {
     const ledger = await import('../../api/ledger')
     render(<FlowsPage />)
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
-    const mapping = await screen.findByRole('region', { name: '看板列映射' })
-    fireEvent.change(within(mapping).getByRole('textbox', { name: '看板列名' }), {
-      target: { value: '收集,沟通,实现,验收,完成' },
-    })
+    expect(screen.queryByRole('region', { name: '看板列映射' })).not.toBeInTheDocument()
+    const orchestration = await screen.findByRole('region', { name: '节点编排' })
+    fireEvent.change(within(orchestration).getByRole('combobox', { name: '节点 待办 的看板列' }), { target: { value: '沟通中' } })
     fireEvent.click(await screen.findByRole('button', { name: '保存为新版本' }))
     await waitFor(() => expect(vi.mocked(ledger.putFlow)).toHaveBeenCalledWith(
-      'feature', expect.any(Array), expect.objectContaining({ columns: ['收集', '沟通', '实现', '验收', '完成'] }),
+      'feature', expect.any(Array), expect.objectContaining({ state_to_column: expect.objectContaining({ 待办: '沟通中' }) }),
     ))
   })
 

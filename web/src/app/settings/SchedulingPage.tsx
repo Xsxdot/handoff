@@ -15,6 +15,12 @@ type EntityDialog =
   | null
 
 const INPUT = 'h-8 rounded-md border bg-background px-2 text-xs'
+const MACHINE_OPTIONS = ['本机', 'mac-02', 'win-b37', 'linux-01']
+const CLI_OPTIONS = ['opencode', 'claude', 'codex', 'grok']
+const CREDENTIAL_OPTIONS = [
+  { value: 'standalone', label: '独立账号' },
+  { value: 'main_home_sync', label: '主 HOME 同步' },
+]
 
 // 空值和 0 都表示“不限”，服务端 wire 用字段缺席表达这个状态；正数才进入 CAS body。
 function optionalConcurrency(raw: string): number | undefined {
@@ -27,11 +33,11 @@ function optionalConcurrency(raw: string): number | undefined {
 function carrierDraft(row: CarrierView | null): CarrierDraft {
   return {
     name: row?.name ?? '',
-    machine: row?.machine ?? '',
-    cli: row?.cli ?? '',
+    machine: row?.machine ?? '本机',
+    cli: row?.cli ?? 'opencode',
     home_dir: row?.home_dir ?? '',
     model: row?.model ?? '',
-    credential: row?.credential ?? '',
+    credential: row?.credential ?? 'standalone',
     maxConcurrencyText: row?.max_concurrency?.toString() ?? '',
   }
 }
@@ -161,7 +167,7 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
     <div className="flex min-h-full flex-col gap-4 p-4" aria-busy={loading}>
       <div>
         <h2 className="text-sm font-semibold">自动化</h2>
-        <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">编制 = 自动化层的「谁来跑、能同时跑几个」。载体是物理承载：一台机器上一个可领活的 CLI 档案（HOME × 模型 × 凭据 × 并发上限）；小队是角色与并发政策：工作流节点绑小队，点火时由小队解析出具体载体。保存走 CAS：编辑前读到哪个版本，保存就钉哪个版本，期间被别人改过会拒收并要求刷新。</p>
+        <p className="mt-1 max-w-3xl text-xs leading-5 text-muted-foreground">编制 = 自动化层的「谁来跑、能同时跑几个」。载体是物理承载：一台机器上一个可领活的 CLI 档案（HOME × 模型 × 凭据 × 并发上限）；小队是角色与并发政策：工作流节点绑小队，点火时由小队解析出具体载体。准入 = 小队有位 且 载体有位；抢并发时协调者优先（只在准入排序生效，不抢占在跑任务）。保存走 CAS：编辑前读到哪个版本，保存就钉哪个版本，期间被别人改过会拒收并要求刷新。</p>
         {loadError && <p role="alert" className="mt-2 text-xs text-destructive">读取失败：{loadError} <button type="button" className="underline" onClick={() => void load()}>重试</button></p>}
       </div>
 
@@ -190,12 +196,13 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
           <div><h3 id="scheduling-dialog-title" className="text-sm font-semibold">{dialog.kind === 'carrier' ? (dialog.value ? `编辑载体 · ${dialog.value.name}` : '登记载体') : (dialog.value ? `编辑小队 · ${dialog.value.name}` : '建小队')}</h3><p className="mt-1 text-xs text-muted-foreground">{dialog.value ? `当前版本 v${dialog.value.version}，保存会校验此版本。` : '新建使用 expect=0。'}</p></div>
           {dialog.kind === 'carrier' ? <div className="grid gap-3 sm:grid-cols-2">
             <label className="space-y-1 text-xs">载体名<input aria-label="载体名" className={INPUT} readOnly={dialog.value !== null} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} /></label>
-            <label className="space-y-1 text-xs">机器<input aria-label="机器" className={INPUT} value={(draft as CarrierDraft).machine} onChange={(event) => updateDraft({ machine: event.target.value })} /></label>
-            <label className="space-y-1 text-xs">CLI<input aria-label="CLI" className={INPUT} value={(draft as CarrierDraft).cli} onChange={(event) => updateDraft({ cli: event.target.value })} /></label>
+            <label className="space-y-1 text-xs">机器<select aria-label="机器" className={INPUT} value={(draft as CarrierDraft).machine} onChange={(event) => updateDraft({ machine: event.target.value })}>{(draft as CarrierDraft).machine && !MACHINE_OPTIONS.includes((draft as CarrierDraft).machine) && <option value={(draft as CarrierDraft).machine}>{(draft as CarrierDraft).machine}</option>}{MACHINE_OPTIONS.map((machine) => <option key={machine} value={machine}>{machine}</option>)}</select></label>
+            <label className="space-y-1 text-xs">CLI<select aria-label="CLI" className={INPUT} value={(draft as CarrierDraft).cli} onChange={(event) => updateDraft({ cli: event.target.value })}>{CLI_OPTIONS.map((cli) => <option key={cli} value={cli}>{cli}</option>)}</select></label>
             <label className="space-y-1 text-xs">模型<input aria-label="模型" className={INPUT} value={(draft as CarrierDraft).model ?? ''} onChange={(event) => updateDraft({ model: event.target.value })} /></label>
-            <label className="space-y-1 text-xs sm:col-span-2">HOME 档案<input aria-label="HOME 档案" className={INPUT} value={(draft as CarrierDraft).home_dir} onChange={(event) => updateDraft({ home_dir: event.target.value })} /></label>
-            <label className="space-y-1 text-xs">凭据来源<input aria-label="凭据来源" className={INPUT} value={(draft as CarrierDraft).credential} onChange={(event) => updateDraft({ credential: event.target.value })} /></label>
+            <label className="space-y-1 text-xs sm:col-span-2">HOME 档案（隔离 HOME 路径；协调者 = 全套，执行者 = 干净会话）<input aria-label="HOME 档案" className={INPUT} value={(draft as CarrierDraft).home_dir} onChange={(event) => updateDraft({ home_dir: event.target.value })} /></label>
+            <label className="space-y-1 text-xs">凭据来源<select aria-label="凭据来源" className={INPUT} value={(draft as CarrierDraft).credential} onChange={(event) => updateDraft({ credential: event.target.value })}>{CREDENTIAL_OPTIONS.map((credential) => <option key={credential.value} value={credential.value}>{credential.label}</option>)}</select></label>
             <label className="space-y-1 text-xs">并发上限（0 / 留空 = 不限）<input aria-label="并发上限" className={INPUT} type="number" min="0" value={(draft as CarrierDraft).maxConcurrencyText} onChange={(event) => updateDraft({ maxConcurrencyText: event.target.value })} /></label>
+            <p className="text-[11px] leading-5 text-muted-foreground sm:col-span-2">主 HOME 同步 = 把主环境的认证态搬进隔离 HOME；两个同账户载体的真实限额共享，跨载体账户池的归属归 roadmap 的「限额探测」。</p>
           </div> : <div className="space-y-3">
             <label className="block space-y-1 text-xs">小队名<input aria-label="小队名" className={INPUT} readOnly={dialog.value !== null} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} /></label>
             <label className="block space-y-1 text-xs">角色<select aria-label="角色" className={INPUT} value={(draft as SquadDraft).role} onChange={(event) => updateDraft({ role: event.target.value })}><option value="executor">executor</option><option value="coordinator">coordinator</option></select></label>

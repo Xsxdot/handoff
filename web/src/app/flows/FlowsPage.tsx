@@ -54,14 +54,6 @@ function nodesFromStates(states: string[]): NodeDef[] {
   }))
 }
 
-function boardInput(columns: string[]): string {
-  return columns.join('，')
-}
-
-function parseBoardInput(value: string): string[] {
-  return value.split(/[，,、]/).map((column) => column.trim())
-}
-
 export type OrchestrationRow = {
   node: NodeDef
   boardColumn: string
@@ -177,78 +169,6 @@ function WorkflowCard({ workflow }: { workflow: WorkflowWire }) {
         {loadError !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">读取节点定义失败：{loadError}</p>}
         {saveError !== '' && <p className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 p-3 text-xs">{saveError}</p>}
         {loading && <p className="mt-3 text-xs text-muted-foreground">正在读取完整节点定义…</p>}
-        <section className="mt-3 rounded border p-3" aria-label="看板列映射">
-          <h4 className="text-xs font-semibold">看板列映射</h4>
-          <p className="mt-1 text-xs text-muted-foreground">五列顺序可配；列名用中文/英文逗号或顿号分隔。</p>
-          <label className="mt-2 block text-xs">
-            列名
-            <input
-              aria-label="看板列名"
-              value={boardInput(board.columns)}
-              onChange={(event) => setBoard((current) => {
-                const columns = parseBoardInput(event.target.value)
-                const fallback = columns.includes(current.fallback) ? current.fallback : (columns[0] ?? '')
-                const state_to_column = Object.fromEntries(
-                  Object.entries(current.state_to_column).map(([state, column]) => [state, columns.includes(column) ? column : fallback]),
-                )
-                return { ...current, columns, fallback, state_to_column }
-              })}
-              className="mt-1 w-full rounded border bg-background px-2 py-1.5 text-xs"
-            />
-          </label>
-          <div className="mt-2 space-y-1">
-            {board.columns.map((column, index) => (
-              <div key={`${column}-${index}`} className="flex items-center gap-1 text-xs">
-                <span className="min-w-0 flex-1 truncate">{column || '（空列）'}</span>
-                <button
-                  type="button"
-                  aria-label={`看板列${column || index + 1}上移`}
-                  disabled={index === 0}
-                  onClick={() => setBoard((current) => {
-                    if (index === 0) return current
-                    const columns = [...current.columns]
-                    ;[columns[index - 1], columns[index]] = [columns[index], columns[index - 1]]
-                    return { ...current, columns }
-                  })}
-                  className="rounded border px-1.5 py-0.5 disabled:opacity-50"
-                >上移</button>
-                <button
-                  type="button"
-                  aria-label={`看板列${column || index + 1}下移`}
-                  disabled={index === board.columns.length - 1}
-                  onClick={() => setBoard((current) => {
-                    if (index >= current.columns.length - 1) return current
-                    const columns = [...current.columns]
-                    ;[columns[index], columns[index + 1]] = [columns[index + 1], columns[index]]
-                    return { ...current, columns }
-                  })}
-                  className="rounded border px-1.5 py-0.5 disabled:opacity-50"
-                >下移</button>
-              </div>
-            ))}
-          </div>
-          <div className="mt-3 space-y-1.5">
-            {nodes.map((node) => (
-              <label key={node.name} className="flex items-center gap-2 text-xs">
-                <span className="w-20 shrink-0 truncate">{node.name}</span>
-                <select
-                  aria-label={`状态 ${node.name} 的看板列`}
-                  value={board.state_to_column[node.name] ?? board.fallback}
-                  onChange={(event) => setBoard((current) => ({ ...current, state_to_column: { ...current.state_to_column, [node.name]: event.target.value } }))}
-                  className="min-w-0 flex-1 rounded border bg-background px-1.5 py-1"
-                >
-                  {board.columns.map((column, index) => <option key={`${column}-${index}`} value={column}>{column || '（空列）'}</option>)}
-                </select>
-              </label>
-            ))}
-            <label className="flex items-center gap-2 text-xs">
-              <span className="w-20 shrink-0">兜底列</span>
-              <select aria-label="看板兜底列" value={board.fallback} onChange={(event) => setBoard((current) => ({ ...current, fallback: event.target.value }))} className="min-w-0 flex-1 rounded border bg-background px-1.5 py-1">
-                {board.columns.map((column, index) => <option key={`${column}-${index}`} value={column}>{column || '（空列）'}</option>)}
-              </select>
-            </label>
-          </div>
-        </section>
         <section className="mt-3 overflow-x-auto rounded border p-3" aria-label="节点编排">
           <h4 className="text-xs font-semibold">节点编排</h4>
           <p className="mt-1 text-xs text-muted-foreground">节点来自工作流版本，不能在此增删；小队只表达执行者归属，空值表示不派发。</p>

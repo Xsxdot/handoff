@@ -2,7 +2,7 @@
 // 建卡入口传下去的项目必须来自当前视图而不是列表首张卡（B179）；
 // 卡到任务深链的管线要真通（B181）。
 import { describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { Task } from '../../api/types'
 import { CardsPage } from './CardsPage'
@@ -17,6 +17,7 @@ vi.mock('../../api/ledger', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/ledger')>()),
   fetchCards: vi.fn().mockResolvedValue({ cards: [], unlinked: { count: 0, tasks: [], unknown_targets: [] } }),
   fetchCardDetail: vi.fn(),
+  fetchFlow: vi.fn(),
   fetchFlows: vi.fn().mockResolvedValue({ workflows: [], templates: [] }),
   fetchLedgerHealth: vi.fn().mockResolvedValue({ mirror: [] }),
   fetchDecisions: vi.fn().mockResolvedValue([
@@ -210,5 +211,38 @@ describe('可配置看板列入口', () => {
     fireEvent.change(screen.getByRole('combobox', { name: '工作流' }), { target: { value: 'custom' } })
     expect(await screen.findByText('收集')).toBeInTheDocument()
     expect(screen.getByText('完成')).toBeInTheDocument()
+  })
+})
+
+describe('卡片节点标签版本来源', () => {
+  it('按卡片钉住的工作流版本取节点集，不借用最新版给旧卡贴标签', async () => {
+    const ledger = await import('../../api/ledger')
+    const oldCard = {
+      id: 'B201', title: '旧版本卡', status: '待审阅', priority: '中', project: 'p', workflow: 'custom', workflow_version: 1,
+      parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [], merged_count: 0,
+      needs: '', open_decisions: 0, children_total: 0, children_done: 0, conflict: false, open_tickets: 0,
+    }
+    vi.mocked(ledger.fetchFlows).mockResolvedValue({
+      workflows: [{ name: 'custom', version: 2, def: { states: ['待办', '进行中', '待审阅'] } }],
+      templates: [],
+    })
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [oldCard],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    })
+    vi.mocked(ledger.fetchFlow).mockImplementation(async (name, version) => ({
+      name,
+      version: version ?? 0,
+      states: version === 1 ? ['待办', '进行中', '待审阅', '待合并'] : ['待办', '进行中', '待审阅'],
+      nodes: version === 1
+        ? [{ name: '待办' }, { name: '进行中' }, { name: '待审阅' }, { name: '待合并' }]
+        : [{ name: '待办' }, { name: '进行中' }, { name: '待审阅' }],
+    }))
+
+    renderPage()
+    const card = (await screen.findByText('旧版本卡')).closest('article')
+    expect(card).not.toBeNull()
+    await waitFor(() => expect(within(card!).getAllByText('待审阅')).toHaveLength(2))
+    expect(vi.mocked(ledger.fetchFlow)).toHaveBeenCalledWith('custom', 1)
   })
 })
