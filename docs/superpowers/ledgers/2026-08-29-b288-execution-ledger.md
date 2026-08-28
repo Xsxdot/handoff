@@ -28,3 +28,4 @@
   原型 .col{min-width:0} 改为 min-w-0，240px 下限改由拖拽 minRatio 夹紧承担
   （否则窄窗三列被裁切，违反验收场景）。tabs.test 2 支新支（三列夹紧 + 单侧夹紧保留）、
   WorkbenchPage 容器断言 1 支；workbench 232/232 绿，typecheck 绿。
+- T6a 完成：archivedKey 一个参数、archivedTasks(tasks) 不再收 tree（终态全收、顺序=任务流原序、未归属不收）；ARCHIVED_TITLE 改「已完成 / 已失败的任务」；ProjectTree 调用点随签名更新且已结束子行排除已打开 tui（openSet 语义）；search.ts 的 archivedHit 升为项目级（项目可见性用），search.test 1 支断言按新结构改写。tree 136/136 绿，typecheck 绿。
