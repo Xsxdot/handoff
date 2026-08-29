@@ -262,6 +262,18 @@ describe('Shell 三栏外框', () => {
     expect(screen.queryByRole('tab', { name: /feature\/preview/ })).toBeNull()
   })
 
+  it('Shell 保留 preview 汇总里的机器错误，不把失联 owner 静默掉', async () => {
+    vi.mocked(usePreviews).mockReturnValue({
+      data: {
+        sessions: [],
+        machines: [{ name: 'devbox', ok: false, error: 'dial tcp 10.0.0.8:7777: connect: connection refused', fetched_at: '2026-08-29T00:00:00Z' }],
+      }, error: '', refresh: vi.fn(), open: vi.fn().mockResolvedValue(undefined), isOpen: () => false,
+      openKeys: new Set(), openingKeys: new Set(),
+    })
+    renderShell()
+    expect(await screen.findByTestId('preview-machine-error-devbox')).toHaveTextContent('connection refused')
+  })
+
   it('未选中目录时右栏文件树不渲染，中央是全局空态', async () => {
     renderShell()
     await waitFor(() => expect(screen.getByText('handoff')).toBeInTheDocument())

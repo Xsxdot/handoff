@@ -201,6 +201,9 @@ export function previewEventsURL(): string {
 export interface PreviewWsOptions {
   onEvent: (event: import('./types').PreviewEvent) => void
   onError?: (message: string) => void
+  // beforeReconnect runs after backoff and before a new socket is created.
+  // The preview list owner uses it to replace the local projection first.
+  beforeReconnect?: () => Promise<void> | void
   create?: (url: string) => WsSocketLike
 }
 
@@ -212,6 +215,7 @@ export function connectPreviewEvents(options: PreviewWsOptions): { close: () => 
   let closedByUs = false
   let retryTimer: number | undefined
   let retryDelay = 300
+  let reconnecting = false
 
   const cleanup = () => {
     if (ws === null) return
@@ -227,7 +231,7 @@ export function connectPreviewEvents(options: PreviewWsOptions): { close: () => 
     retryTimer = window.setTimeout(open, retryDelay)
     retryDelay = Math.min(retryDelay * 2, 10000)
   }
-  const open = () => {
+  const connect = () => {
     if (closedByUs) return
     ws = (options.create ?? ((url: string) => new WebSocket(url)))(previewEventsURL())
     ws.onopen = () => { retryDelay = 300 }
@@ -250,7 +254,20 @@ export function connectPreviewEvents(options: PreviewWsOptions): { close: () => 
       schedule()
     }
   }
-  open()
+  const open = () => {
+    if (closedByUs) return
+    if (reconnecting) return
+    reconnecting = true
+    Promise.resolve(options.beforeReconnect?.())
+      .catch((err) => {
+        options.onError?.(`重连前刷新 preview 列表失败：${err instanceof Error ? err.message : String(err)}`)
+      })
+      .then(() => {
+        reconnecting = false
+        connect()
+      })
+  }
+  connect()
   return {
     close() {
       closedByUs = true

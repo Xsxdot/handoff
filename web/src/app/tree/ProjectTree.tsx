@@ -50,7 +50,7 @@ import { TreePrefsMenu } from './TreePrefsMenu'
 import { sortProjects, splitHiddenProjects, splitIdleWorkspaces } from './treePrefs'
 import { useTreePrefs } from './useTreePrefs'
 import { NewWorktreeDialog } from './NewWorktreeDialog'
-import { normalizePreviewOrigin, previewLabel } from '../data/usePreviews'
+import { normalizePreviewOrigin, previewKey, previewLabel } from '../data/usePreviews'
 
 // OpenItem 是左栏「已打开行」的一行数据，由 Shell 从工作台投影注入。
 // key 是去重/React 键；name 已是展示名（tui=任务原名，terminal/file=tabTitle 结果），
@@ -114,6 +114,7 @@ export interface ProjectTreeProps {
   // 与 onUnregister / onEdit 同一条规矩：没传就不给这个入口。
   onWorktreeCreated?: (project: ProjectNode, machine: string, ws: Workspace) => void
   previews?: PreviewSession[]
+  previewMachines?: MachineStatus[]
   previewOpenKeys?: ReadonlySet<string>
   previewOpeningKeys?: ReadonlySet<string>
   onOpenPreview?: (id: string, machine: string) => void
@@ -275,7 +276,7 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' 
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated, previews = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -391,7 +392,11 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   )
 
   const unassigned = filtered.unassignedTasks
-  const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0 || filtered.unassignedPreviews.length > 0
+  const previewMachineErrors = previewMachines.filter((machine) => !machine.ok || machine.error !== '')
+  const visiblePreviewMachineErrors = searching
+    ? previewMachineErrors.filter((machine) => `${machine.name} ${machine.error}`.toLowerCase().includes(filtered.query))
+    : previewMachineErrors
+  const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0 || filtered.unassignedPreviews.length > 0 || visiblePreviewMachineErrors.length > 0
 
   const taskName = (t: Task) => t.name || t.plan_summary || '（无名称）'
 
@@ -925,6 +930,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       {hasUnowned && (
         <div>
           <p className="px-3 pb-1 pt-2 text-[15px] font-medium text-muted-foreground">未归属</p>
+          {visiblePreviewMachineErrors.map((machine) => (
+            <p
+              key={`preview-machine-error:${machine.name}`}
+              data-testid={`preview-machine-error-${machine.name || 'local'}`}
+              className="px-3 py-1 text-[13px] text-amber-600"
+            >
+              预览机器 {machineLabel(machine.name)}：{machine.error || '机器不可达'}
+            </p>
+          ))}
           {unassigned.map((t) => (
             <TaskRow
               key={t.id}
@@ -1201,10 +1215,6 @@ function TaskRow({
       </span>
     </button>
   )
-}
-
-function previewKey(session: PreviewSession, machine: string): string {
-  return `${machine}\x1f${session.id}`
 }
 
 function previewBelongsToProject(session: PreviewSession, project: ProjectNode): boolean {

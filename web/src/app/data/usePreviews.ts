@@ -125,13 +125,21 @@ export function usePreviews(): {
       }
       setData((prev) => prev === null ? prev : mergeEvent(prev, event))
     }
+    const refreshSnapshot = async () => {
+      const next = await fetchPreviews('all')
+      if (!active) return
+      setData(next)
+      setError('')
+    }
     const load = async () => {
       try {
-        const next = await fetchPreviews('all')
+        await refreshSnapshot()
         if (!active) return
-        setData(next)
-        setError('')
-        const options: PreviewWsOptions = { onEvent, onError: (message) => active && setError(message) }
+        const options: PreviewWsOptions = {
+          onEvent,
+          onError: (message) => active && setError(message),
+          beforeReconnect: refreshSnapshot,
+        }
         connection = connectPreviewEvents(options)
       } catch (err) {
         if (active) setError(errorMessage(err))

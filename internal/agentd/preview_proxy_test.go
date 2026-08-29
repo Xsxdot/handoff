@@ -2,6 +2,7 @@ package agentd
 
 import (
 	"context"
+	"encoding/hex"
 	"io"
 	"log/slog"
 	"net"
@@ -70,14 +71,42 @@ func TestPreviewProxySOCKSConnectAppliesAllowlist(t *testing.T) {
 		t.Fatalf("socks greeting: %v", err)
 	}
 	method := make([]byte, 2)
-	if _, err := io.ReadFull(conn, method); err != nil || method[1] != 0 {
-		t.Fatalf("socks method=%v err=%v", method, err)
+	if _, err := io.ReadFull(conn, method); err != nil || method[1] != 0xff {
+		t.Fatalf("unauthenticated socks method=%v err=%v", method, err)
 	}
-	request := []byte{5, 1, 0, 3, byte(len("example.com"))}
-	request = append(request, []byte("example.com")...)
-	request = append(request, 0x01, 0xbb)
-	if _, err := conn.Write(request); err != nil {
-		t.Fatalf("socks connect: %v", err)
+	_ = conn.Close()
+
+	conn, err = net.Dial("tcp", proxy.Addr().String())
+	if err != nil {
+		t.Fatalf("dial authenticated proxy: %v", err)
+	}
+	defer conn.Close()
+	if _, err := conn.Write([]byte{5, 1, 2}); err != nil {
+		t.Fatalf("authenticated socks greeting: %v", err)
+	}
+	if _, err := io.ReadFull(conn, method); err != nil || method[1] != 2 {
+		t.Fatalf("authenticated socks method=%v err=%v", method, err)
+	}
+	password := hex.EncodeToString(proxy.Nonce())
+	auth := []byte{1, byte(len("handoff-preview"))}
+	auth = append(auth, []byte("handoff-preview")...)
+	auth = append(auth, byte(len(password)))
+	auth = append(auth, []byte(password)...)
+	if _, err := conn.Write(auth); err != nil {
+		t.Fatalf("socks credentials: %v", err)
+	}
+	result := make([]byte, 2)
+	if _, err := io.ReadFull(conn, result); err != nil || result[1] != 0 {
+		t.Fatalf("socks credentials result=%v err=%v", result, err)
+	}
+	if _, err := conn.Write([]byte{5, 1, 0, 3, byte(len("example.com"))}); err != nil {
+		t.Fatalf("socks connect header: %v", err)
+	}
+	if _, err := conn.Write([]byte("example.com")); err != nil {
+		t.Fatalf("socks connect host: %v", err)
+	}
+	if _, err := conn.Write([]byte{0x01, 0xbb}); err != nil {
+		t.Fatalf("socks connect port: %v", err)
 	}
 	reply := make([]byte, 10)
 	if _, err := io.ReadFull(conn, reply); err != nil || reply[1] != 0 {
@@ -92,8 +121,16 @@ func TestPreviewProxySOCKSConnectAppliesAllowlist(t *testing.T) {
 		t.Fatalf("dial denied proxy: %v", err)
 	}
 	defer denied.Close()
-	_, _ = denied.Write([]byte{5, 1, 0})
-	_, _ = io.ReadFull(denied, method)
+	_, _ = denied.Write([]byte{5, 1, 2})
+	if _, err := io.ReadFull(denied, method); err != nil || method[1] != 2 {
+		t.Fatalf("denied socks method=%v err=%v", method, err)
+	}
+	if _, err := denied.Write(auth); err != nil {
+		t.Fatalf("denied socks credentials: %v", err)
+	}
+	if _, err := io.ReadFull(denied, result); err != nil || result[1] != 0 {
+		t.Fatalf("denied socks credentials result=%v err=%v", result, err)
+	}
 	bad := []byte{5, 1, 0, 3, byte(len("other.example.com"))}
 	bad = append(bad, []byte("other.example.com")...)
 	bad = append(bad, 0x01, 0xbb)

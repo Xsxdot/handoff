@@ -64,6 +64,7 @@ type previewProcess struct {
 	userDataDir string
 	browser     PreviewBrowserHandle
 	cleanupOnce sync.Once
+	exitDone    chan struct{}
 }
 
 // PreviewOpenService owns the local desktop side of preview open. It keeps
@@ -161,7 +162,9 @@ func (o *PreviewOpenService) OpenPreview(ctx context.Context, id, machine string
 		}
 	}
 	pacPath := filepath.Join(profile, "preview.pac")
-	pac, err := RenderPreviewPAC("socks5://"+proxy.Addr().String(), proxy.allowlist)
+	proxyNonce := hex.EncodeToString(proxy.Nonce())
+	proxyURL := previewProxyURL(proxy.Addr().String(), proxyNonce)
+	pac, err := RenderPreviewPAC(proxyURL, proxy.allowlist)
 	if err == nil {
 		err = os.WriteFile(pacPath, pac, 0o600)
 	}
@@ -189,7 +192,7 @@ func (o *PreviewOpenService) OpenPreview(ctx context.Context, id, machine string
 		EntryURL:        session.EntryURL,
 		PACPath:         pacPath,
 		ProxyServer:     proxy.Addr().String(),
-		ProxyNonce:      hex.EncodeToString(proxy.Nonce()),
+		ProxyNonce:      proxyNonce,
 		ProxyBypassList: "<-loopback>",
 		UserDataDir:     profile,
 	}
@@ -201,7 +204,7 @@ func (o *PreviewOpenService) OpenPreview(ctx context.Context, id, machine string
 		o.log.Warn("preview 浏览器启动失败", "operation", "preview_open", "session", id, "machine", machine, "cause", err)
 		return resp, fmt.Errorf("启动 preview 浏览器: %w", err)
 	}
-	process := &previewProcess{proxy: proxy, pacPath: pacPath, userDataDir: profile, browser: browser}
+	process := &previewProcess{proxy: proxy, pacPath: pacPath, userDataDir: profile, browser: browser, exitDone: make(chan struct{})}
 	o.processes[key] = process
 	go o.watchProcess(key, process)
 	if machine == "" {
@@ -241,6 +244,12 @@ func (o *PreviewOpenService) Stop(ctx context.Context) error {
 	stopErr := o.launcher.Stop(ctx)
 	if stopErr != nil {
 		o.log.Warn("停止 preview 浏览器失败", "operation", "preview_stop", "cause", stopErr)
+	}
+	for _, process := range processes {
+		if err := waitPreviewProcess(ctx, process); err != nil {
+			stopErr = errors.Join(stopErr, err)
+			o.log.Warn("等待 preview 浏览器收尾失败", "operation", "preview_stop", "cause", err)
+		}
 	}
 	for _, process := range processes {
 		o.cleanupProcess("", "", process)
@@ -316,9 +325,11 @@ func (o *PreviewOpenService) rawDial(machine string, session proto.PreviewSessio
 
 func (o *PreviewOpenService) watchProcess(key string, process *previewProcess) {
 	if process.browser.Done == nil {
+		close(process.exitDone)
 		return
 	}
 	err := <-process.browser.Done
+	close(process.exitDone)
 	o.mu.Lock()
 	if o.processes[key] == process {
 		delete(o.processes, key)
@@ -330,6 +341,15 @@ func (o *PreviewOpenService) watchProcess(key string, process *previewProcess) {
 		return
 	}
 	o.log.Info("preview 浏览器退出，已回收本地资源", "operation", "preview_process_exit", "pid", process.browser.PID)
+}
+
+func waitPreviewProcess(ctx context.Context, process *previewProcess) error {
+	select {
+	case <-process.exitDone:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("等待 preview 浏览器退出: %w", ctx.Err())
+	}
 }
 
 func (o *PreviewOpenService) cleanupProcess(sessionID, machine string, process *previewProcess) {
@@ -360,12 +380,16 @@ func previewLaunchArgs(spec PreviewLaunchSpec) []string {
 	return []string{
 		"--user-data-dir=" + spec.UserDataDir,
 		"--proxy-pac-url=" + previewFileURL(spec.PACPath),
-		"--proxy-server=" + spec.ProxyServer,
+		"--proxy-server=" + previewProxyURL(spec.ProxyServer, spec.ProxyNonce),
 		"--proxy-bypass-list=" + spec.ProxyBypassList,
 		"--no-first-run",
 		"--no-default-browser-check",
 		spec.EntryURL,
 	}
+}
+
+func previewProxyURL(addr, nonce string) string {
+	return "socks5://" + previewProxyUsername + ":" + nonce + "@" + addr
 }
 
 func previewFileURL(path string) string {

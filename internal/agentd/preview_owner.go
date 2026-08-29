@@ -262,8 +262,17 @@ func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*p
 			o.log.Warn("预览端口未监听", "operation", "create", "port", req.Port, "cause", err)
 			return nil, &previewInputError{Operation: "create", Field: "port", Value: fmt.Sprint(req.Port), Reason: "端口未监听: " + err.Error()}
 		}
+		root, origin, branch, err := o.deps.ResolveWorkspace(ctx, "")
+		if err != nil {
+			o.log.Warn("读取 port 预览工作区元数据失败", "operation", "create", "port", req.Port, "cause", err)
+			return nil, fmt.Errorf("解析 port 预览工作区: %w", err)
+		}
 		session.EntryURL = fmt.Sprintf("http://localhost:%d", req.Port)
-		row.Source = store.PreviewSource{Kind: "port", Port: req.Port, WorkspaceRoot: cwd}
+		session.OriginURL, session.Branch = origin, branch
+		if root == "" {
+			root = cwd
+		}
+		row.Source = store.PreviewSource{Kind: "port", Port: req.Port, WorkspaceRoot: root}
 	} else {
 		root, origin, branch, err := o.deps.ResolveWorkspace(ctx, req.Path)
 		if err != nil {
@@ -283,17 +292,18 @@ func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*p
 		row.Source = store.PreviewSource{Kind: "path", WorkspaceRoot: root, RelativePath: rel}
 	}
 	row.Session = session
-	if err := o.st.InsertPreview(row); err != nil {
+	o.mu.Lock()
+	err = o.st.InsertPreview(row)
+	if err == nil && stop != nil {
+		o.staticStops[session.ID] = stop
+	}
+	o.mu.Unlock()
+	if err != nil {
 		if stop != nil {
 			_ = stop()
 		}
 		o.log.Error("预览会话持久化失败", "operation", "create", "session", session.ID, "cause", err)
 		return nil, err
-	}
-	if stop != nil {
-		o.mu.Lock()
-		o.staticStops[session.ID] = stop
-		o.mu.Unlock()
 	}
 	o.hub.Publish(proto.PreviewEvent{Type: proto.PreviewEventCreated, Session: session})
 	o.log.Info("预览会话创建成功", "operation", "create", "session", session.ID, "entry_url", session.EntryURL)
@@ -320,7 +330,14 @@ func (o *PreviewOwner) List(ctx context.Context) (*proto.PreviewListResp, error)
 // Close conditionally closes one owner session and publishes its full closed event once.
 func (o *PreviewOwner) Close(ctx context.Context, id string) (*proto.PreviewCloseResp, error) {
 	_ = ctx
+	o.mu.Lock()
 	row, changed, err := o.st.ClosePreview(id, o.deps.Now().UTC())
+	var stop func() error
+	if err == nil && changed {
+		stop = o.staticStops[id]
+		delete(o.staticStops, id)
+	}
+	o.mu.Unlock()
 	if err != nil {
 		o.log.Warn("关闭预览会话失败", "operation", "close", "session", id, "cause", err)
 		return nil, err
@@ -328,7 +345,11 @@ func (o *PreviewOwner) Close(ctx context.Context, id string) (*proto.PreviewClos
 	if !changed {
 		return nil, fmt.Errorf("预览会话 %s: %w", id, errPreviewClosed)
 	}
-	o.stopStatic(id)
+	if stop != nil {
+		if err := stop(); err != nil {
+			o.log.Warn("停止预览静态服务失败", "operation", "close", "session", id, "cause", err)
+		}
+	}
 	o.hub.Publish(proto.PreviewEvent{Type: proto.PreviewEventClosed, Session: row.Session})
 	o.log.Info("预览会话关闭成功", "operation", "close", "session", id)
 	return &proto.PreviewCloseResp{OK: true}, nil
@@ -377,14 +398,17 @@ func (o *PreviewOwner) Restore(ctx context.Context) error {
 			o.log.Error("恢复预览静态服务失败", "operation", "restore", "session", row.Session.ID, "cause", err)
 			continue
 		}
-		if err := o.st.UpdatePreviewEntry(row.Session.ID, entry); err != nil {
+		o.mu.Lock()
+		err = o.st.UpdatePreviewEntry(row.Session.ID, entry)
+		if err == nil {
+			o.staticStops[row.Session.ID] = stop
+		}
+		o.mu.Unlock()
+		if err != nil {
 			_ = stop()
 			o.log.Error("恢复预览 entry_url 写入失败", "operation", "restore", "session", row.Session.ID, "cause", err)
 			continue
 		}
-		o.mu.Lock()
-		o.staticStops[row.Session.ID] = stop
-		o.mu.Unlock()
 	}
 	o.startExpiry(ctx)
 	o.log.Info("预览 owner 恢复完成", "operation", "restore", "count", len(rows))

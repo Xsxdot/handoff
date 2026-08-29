@@ -11,7 +11,9 @@ package agentd
 import (
 	"context"
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/binary"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -25,6 +27,8 @@ import (
 
 // PreviewRawDial is the target-scoped upstream connection seam.
 type PreviewRawDial func(context.Context, string, string) (net.Conn, error)
+
+const previewProxyUsername = "handoff-preview"
 
 // PreviewAllowlist is the normalized session-local network policy.
 // loopback is always true; networks and domains contain only explicitly added targets.
@@ -97,11 +101,15 @@ func RenderPreviewPAC(socksURL string, allowlist PreviewAllowlist) ([]byte, erro
 	// Keep the explicit policy visible in the generated asset for diagnostics; actual
 	// authorization remains in SOCKS because PAC JavaScript cannot safely resolve IPs.
 	sortStrings(entries)
+	proxy := u.Host
+	if u.User != nil {
+		proxy = u.User.String() + "@" + u.Host
+	}
 	return []byte(fmt.Sprintf(`function FindProxyForURL(url, host) {
   // preview allowlist: %s
   return "SOCKS5 %s";
 }
-`, strings.Join(entries, ","), u.Host)), nil
+`, strings.Join(entries, ","), proxy)), nil
 }
 
 // PreviewProxy is a lifecycle-bound local SOCKS5 listener.
@@ -116,7 +124,8 @@ type PreviewProxy struct {
 }
 
 // NewPreviewProxy binds a random loopback port and creates a private capability nonce.
-// The nonce is kept for the launcher boundary and is never logged or sent as a wire field.
+// The nonce is used as the SOCKS RFC1929 password and is kept for the launcher boundary;
+// it is never logged.
 func NewPreviewProxy(ctx context.Context, sessionID string, via []string, dial PreviewRawDial, log *slog.Logger) (*PreviewProxy, error) {
 	if sessionID == "" {
 		return nil, errors.New("preview session ID 不能为空")
@@ -233,13 +242,50 @@ func (p *PreviewProxy) socksHandshake(conn net.Conn) error {
 		return err
 	}
 	for _, method := range methods {
-		if method == 0 {
-			_, err := conn.Write([]byte{5, 0})
-			return err
+		if method == 2 {
+			if _, err := conn.Write([]byte{5, 2}); err != nil {
+				return err
+			}
+			return p.socksUserPass(conn)
 		}
 	}
 	_, err := conn.Write([]byte{5, 0xff})
-	return fmt.Errorf("不支持 SOCKS 认证方法: %w", err)
+	if err != nil {
+		return err
+	}
+	return errors.New("不支持 SOCKS 认证方法：preview 必须使用 nonce 认证")
+}
+
+func (p *PreviewProxy) socksUserPass(conn net.Conn) error {
+	var header [2]byte
+	if _, err := io.ReadFull(conn, header[:]); err != nil {
+		return err
+	}
+	if header[0] != 1 {
+		return fmt.Errorf("SOCKS 用户名密码版本=%d", header[0])
+	}
+	username := make([]byte, int(header[1]))
+	if _, err := io.ReadFull(conn, username); err != nil {
+		return err
+	}
+	var passwordLength [1]byte
+	if _, err := io.ReadFull(conn, passwordLength[:]); err != nil {
+		return err
+	}
+	password := make([]byte, int(passwordLength[0]))
+	if _, err := io.ReadFull(conn, password); err != nil {
+		return err
+	}
+	expectedUser := []byte(previewProxyUsername)
+	expectedPassword := []byte(hex.EncodeToString(p.nonce))
+	valid := len(username) == len(expectedUser) && subtle.ConstantTimeCompare(username, expectedUser) == 1 &&
+		len(password) == len(expectedPassword) && subtle.ConstantTimeCompare(password, expectedPassword) == 1
+	if !valid {
+		_, _ = conn.Write([]byte{1, 1})
+		return errors.New("preview SOCKS nonce 认证失败")
+	}
+	_, err := conn.Write([]byte{1, 0})
+	return err
 }
 
 func readSOCKSRequest(conn net.Conn) (string, uint16, error) {

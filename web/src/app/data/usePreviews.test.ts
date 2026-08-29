@@ -93,6 +93,22 @@ describe('usePreviews', () => {
     expect(result.current.data).toEqual(before)
   })
 
+  it('preview WS 重连前重新拉取 all，替换 mirror 刷新后的投影', async () => {
+    const options: PreviewWsOptions[] = []
+    vi.mocked(connectPreviewEvents).mockImplementation((next) => {
+      options.push(next)
+      return { close: vi.fn() }
+    })
+    const { result } = renderHook(() => usePreviews())
+    await waitFor(() => expect(result.current.data?.sessions).toHaveLength(1))
+    vi.mocked(fetchPreviews).mockResolvedValueOnce({ sessions: [session({ id: 'p2', machine: 'devbox' })], machines: [] })
+
+    await act(async () => { await options[0].beforeReconnect?.() })
+    await waitFor(() => expect(result.current.data?.sessions.map((item) => item.id)).toEqual(['p2']))
+    expect(fetchPreviews).toHaveBeenCalledTimes(2)
+    expect(fetchPreviews).toHaveBeenLastCalledWith('all')
+  })
+
   it('origin 归一化与项目身份同口径，保留路径大小写', () => {
     expect(normalizePreviewOrigin('git@github.com:Xsxdot/handoff.git')).toBe('github.com/Xsxdot/handoff')
     expect(normalizePreviewOrigin(' HTTPS://github.com/Xsxdot/handoff/ ')).toBe('github.com/Xsxdot/handoff')

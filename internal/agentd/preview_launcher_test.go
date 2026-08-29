@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -67,8 +68,20 @@ func TestPreviewOpenServiceLaunchesIsolatedChromiumAndFocusesExisting(t *testing
 	}
 	spec := launcher.starts[0]
 	launcher.mu.Unlock()
-	if spec.SessionID != session.ID || spec.EntryURL != session.EntryURL || spec.ProxyBypassList != "<-loopback>" || spec.PACPath == "" || spec.UserDataDir == "" || !strings.HasPrefix(spec.ProxyServer, "127.0.0.1:") {
+	if spec.SessionID != session.ID || spec.EntryURL != session.EntryURL || spec.ProxyBypassList != "<-loopback>" || spec.PACPath == "" || spec.UserDataDir == "" || spec.ProxyNonce == "" || !strings.HasPrefix(spec.ProxyServer, "127.0.0.1:") {
 		t.Fatalf("launch spec=%+v", spec)
+	}
+	args := previewLaunchArgs(spec)
+	wantProxyArg := "--proxy-server=socks5://handoff-preview:" + spec.ProxyNonce + "@" + spec.ProxyServer
+	foundProxyArg := false
+	for _, arg := range args {
+		if arg == wantProxyArg {
+			foundProxyArg = true
+			break
+		}
+	}
+	if !foundProxyArg {
+		t.Fatalf("launch args missing nonce auth: %v", args)
 	}
 	resp, err = service.OpenPreview(context.Background(), session.ID, "")
 	if err != nil || resp == nil || !resp.Opened {
@@ -80,6 +93,7 @@ func TestPreviewOpenServiceLaunchesIsolatedChromiumAndFocusesExisting(t *testing
 	if starts != 1 || focuses != 1 {
 		t.Fatalf("starts=%d focuses=%d", starts, focuses)
 	}
+	close(launcher.done)
 	if err := service.Stop(context.Background()); err != nil {
 		t.Fatalf("stop: %v", err)
 	}
@@ -135,6 +149,36 @@ func TestPreviewOpenServiceStartFailureCleansProfile(t *testing.T) {
 		t.Fatalf("profile stat err=%v, want not exist", statErr)
 	}
 	_ = service.Stop(context.Background())
+}
+
+func TestPreviewOpenServiceStopWaitsForBrowserExit(t *testing.T) {
+	_, owner := newPreviewOwnerEnv(t)
+	session, err := owner.Create(context.Background(), protoPreviewPortReq())
+	if err != nil {
+		t.Fatalf("create owner session: %v", err)
+	}
+	done := make(chan error)
+	launcher := &previewLauncherStub{done: done}
+	service := NewPreviewOpenService(owner, nil, nil, launcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if resp, err := service.OpenPreview(context.Background(), session.ID, ""); err != nil || resp == nil || !resp.Opened {
+		t.Fatalf("open preview resp=%+v err=%v", resp, err)
+	}
+	finished := make(chan error, 1)
+	go func() { finished <- service.Stop(context.Background()) }()
+	select {
+	case err := <-finished:
+		t.Fatalf("stop returned before browser exit: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(done)
+	select {
+	case err := <-finished:
+		if err != nil {
+			t.Fatalf("stop after browser exit: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stop did not wait for browser exit")
+	}
 }
 
 func protoPreviewPortReq() proto.PreviewOpenReq { return proto.PreviewOpenReq{Port: 5173} }

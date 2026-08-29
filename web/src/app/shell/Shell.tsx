@@ -568,6 +568,7 @@ export function Shell() {
             onOpenDirectory={openDirectory}
             onOpenTask={openTaskTui}
             previews={previews}
+            previewMachines={previewsState.data?.machines ?? []}
             previewOpenKeys={previewsState.openKeys}
             previewOpeningKeys={previewsState.openingKeys}
             onOpenPreview={(id, machine) => { void previewsState.open(id, machine).catch(() => {}) }}

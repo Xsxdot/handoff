@@ -155,6 +155,26 @@ describe('connectPreviewEvents 连接生命周期', () => {
     expect(FakeWebSocket.instances[0].url).not.toContain('?')
     conn.close()
   })
+
+  it('断线重连前先刷新列表，再创建新的 preview WS', async () => {
+    vi.useFakeTimers()
+    const order: string[] = []
+    const beforeReconnect = vi.fn(async () => { order.push('list') })
+    const conn = connectPreviewEvents({
+      create: (url) => { order.push('ws'); return new FakeWebSocket(url) },
+      onEvent: () => {},
+      beforeReconnect,
+    })
+    expect(order).toEqual(['ws'])
+    FakeWebSocket.instances[0].emitClose(1006)
+    vi.advanceTimersByTime(300)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(beforeReconnect).toHaveBeenCalledTimes(1)
+    expect(order).toEqual(['ws', 'list', 'ws'])
+    conn.close()
+    vi.useRealTimers()
+  })
 })
 
 // wsCloseReason 的取信顺序：**服务端给了原因就用服务端的**。

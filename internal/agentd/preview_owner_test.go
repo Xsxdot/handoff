@@ -126,7 +126,7 @@ func TestPreviewOwnerHTTPCreateListClose(t *testing.T) {
 	if err := json.Unmarshal(body, &session); err != nil {
 		t.Fatalf("decode create: %v", err)
 	}
-	if session.ID != "preview-test" || session.EntryURL != "http://localhost:5173" || session.CWD == "" || session.TTLSeconds != 7200 || session.Machine != "" {
+	if session.ID != "preview-test" || session.EntryURL != "http://localhost:5173" || session.CWD == "" || session.OriginURL != "https://example.test/repo" || session.Branch != "feature/demo" || session.TTLSeconds != 7200 || session.Machine != "" {
 		t.Fatalf("session=%+v", session)
 	}
 	resp, body = previewRequest(t, env, http.MethodGet, "/api/previews")

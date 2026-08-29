@@ -154,8 +154,11 @@ func (l *previewOSLauncher) Stop(ctx context.Context) error {
 		if cmd.Process == nil {
 			continue
 		}
-		if err := cmd.Process.Kill(); err != nil && !errors.Is(err, os.ErrProcessDone) {
-			l.log.Warn("停止 preview Chromium 失败", "operation", "preview_stop", "pid", cmd.Process.Pid, "cause", err)
+		pid := cmd.Process.Pid
+		if err := exec.CommandContext(ctx, "taskkill", "/PID", fmt.Sprint(pid), "/T", "/F").Run(); err != nil {
+			if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+				l.log.Warn("停止 preview Chromium 进程树失败", "operation", "preview_stop", "pid", pid, "cause", err, "fallback_cause", killErr)
+			}
 		}
 	}
 	l.log.Info("preview Chromium 停止请求已发送", "operation", "preview_stop", "count", len(commands))
