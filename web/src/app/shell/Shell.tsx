@@ -46,6 +46,7 @@ import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench
 import { createUntitledFile } from '../workbench/newFile'
 import { nextTerminalSeq, tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
 import { taskDisplayName } from '../lib/taskName'
+import type { StateTone } from '../board/columns'
 import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -413,6 +414,19 @@ export function Shell() {
     console.debug('shell.workbench_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, groupId: item.group, tabId: item.tabId })
   }
 
+  // closeOpenItem 是左栏已打开行悬停 × 的关闭入口（onCloseOpenItem）。
+  // 必须与窗格 × 走同一条 beforeCloseTab 守卫：终端会话先确认（关闭即终止）、
+  // 脏草稿先确认（关掉就没）——左栏的 × 只是另一个入口，不是另一条规则。
+  // 放行后 closeById 自己反查坐标收格收组，不依赖 OpenItem 里的 group 快照
+  // （悬停期间布局可能已变）。
+  const closeOpenItem = (item: OpenItem) => {
+    const live = wb.openedItems.find((t) => t.tabId === item.tabId)
+    if (!live) return
+    if (!beforeCloseTab(live.content, live.tabId, live.base)) return
+    wb.closeById(live.tabId)
+    console.debug('shell.workbench_item.close', { project: live.base.projectName, machine: live.base.machine, baseKey: live.base.key, groupId: live.groupId, tabId: live.tabId })
+  }
+
   // openTerminalAt 是左栏机器行/工作树子行终端钮的入口（基线语义）：
   // 选中该基准并 openOrFocus 终端——终端无去重键，落进独立新组，不打散当前组。
   const openTerminalAt = (base: BaseDir) => {
@@ -469,13 +483,67 @@ export function Shell() {
     return { ...item, base: nextBase, label: tabTitle(item.content, nextBase.label, taskNameResolver) }
   }), [wb.openedItems, treeState.data, taskNameResolver])
 
-  // openItems 是左栏「已打开行」的投影：当前基准的项排最前（组序、组内 tab 序
-  // 不变），其余按组序跟上。名字统一经 tabTitle + 任务名 resolver——tui 显示
-  // 任务原名，解析不到（任务已删除）时由 tabTitle 回退 TUI · 前 8 位。
-  const openItems: OpenItem[] = useMemo(() => {
-    const all = openedItems
-      .filter((item) => item.content.kind !== 'blank')
-      .map((item): OpenItem => ({
+  // tabRowStatus 是左栏已打开行圆点的状态表（tabId → 终端连接 / 文件问题）。
+  // 数据由各 tab 内容组件经上报缝写入（TerminalTab.onConnection、
+  // FileTab.onStatus——它们是连接与冲突/删除这两件事的第一手知情者），
+  // Shell 只做聚合投影，不自己发请求。缺值的 tab 按健康显示：会话建立中的
+  // 终端不闪红，没读完的文件不闪灰。
+  const [tabRowStatus, setTabRowStatus] = useState<Map<string, { pty?: boolean; file?: 'conflict' | 'deleted' | 'ok' }>>(new Map())
+  const reportPtyConnection = useCallback((tabId: string, connected: boolean) => {
+    setTabRowStatus((prev) => {
+      const cur = prev.get(tabId)
+      if (cur?.pty === connected) return prev
+      const next = new Map(prev)
+      next.set(tabId, { ...cur, pty: connected })
+      return next
+    })
+  }, [])
+  const reportFileStatus = useCallback((tabId: string, file: 'conflict' | 'deleted' | 'ok') => {
+    setTabRowStatus((prev) => {
+      const cur = prev.get(tabId)
+      if (cur?.file === file) return prev
+      const next = new Map(prev)
+      next.set(tabId, { ...cur, file })
+      return next
+    })
+  }, [])
+  // tab 关掉后残值没有消费者，却会无限累积（长会话一天关几十个 tab）。
+  // openedItems 变化时修剪到仍存活的 tabId。
+  const liveTabIds = useMemo(
+    () => new Set(wb.openedItems.map((item) => item.tabId)),
+    [wb.openedItems],
+  )
+  useEffect(() => {
+    setTabRowStatus((prev) => {
+      let dropped = false
+      const next = new Map()
+      for (const [tabId, value] of prev) {
+        if (liveTabIds.has(tabId)) next.set(tabId, value)
+        else dropped = true
+      }
+      return dropped ? next : prev
+    })
+  }, [liveTabIds])
+
+  // openItems 是左栏「已打开行」的投影。顺序 = 组序×列序×格序（即打开顺序），
+  // **不做**「当前基准置顶」：打开一个任务会切基准，置顶分区等于每次打开都把
+  // 左栏洗一次牌（2026-08-29 裁定：顺序固定）。名字统一经 tabTitle + 任务名
+  // resolver——tui 显示任务原名，解析不到（任务已删除）时由 tabTitle 回退
+  // TUI · 前 8 位。terminal/file 行带 tone（终端=连接、文件=文件状态），
+  // tui 行不带——任务状态圆点由 ProjectTree 从任务流取。
+  const openItems: OpenItem[] = useMemo(() => openedItems
+    .filter((item) => item.content.kind !== 'blank')
+    .map((item): OpenItem => {
+      const status = tabRowStatus.get(item.tabId)
+      const tone: StateTone | undefined =
+        item.content.kind === 'terminal'
+          ? (status?.pty === false ? 'failed' : 'active')
+          : item.content.kind === 'file'
+            ? (status?.file === 'deleted' ? 'done'
+              : status?.file === 'conflict' ? 'failed'
+                : item.content.draft !== undefined ? 'intervention' : 'active')
+            : undefined
+      return {
         key: `${item.base.key}\x1f${item.tabId}`,
         kind: item.content.kind === 'tui' ? 'tui' : item.content.kind === 'terminal' ? 'terminal' : 'file',
         name: item.label,
@@ -491,11 +559,9 @@ export function Shell() {
             : item.content.kind === 'tui'
               ? item.content.taskId
               : undefined,
-      }))
-    const currentKey = wb.base?.key
-    if (!currentKey) return all
-    return [...all.filter((item) => item.base.key === currentKey), ...all.filter((item) => item.base.key !== currentKey)]
-  }, [openedItems, wb.base])
+        tone,
+      }
+    }), [openedItems, tabRowStatus])
 
   // currentTaskId 是当前目录上「最该看的那个任务」，只用于右栏 M 角标的数据源。
   // 一个目录下可能有多个任务，取第一个正在跑的，没有就取第一个——角标是装饰，
@@ -561,6 +627,7 @@ export function Shell() {
             openItems={openItems}
             focusedTaskId={focusedTaskId}
             onFocusOpenItem={openWorkbenchItem}
+            onCloseOpenItem={closeOpenItem}
             onOpenTerminalAt={openTerminalAt}
             onOpenDirectory={openDirectory}
             onOpenTask={openTaskTui}
@@ -631,6 +698,8 @@ export function Shell() {
                         // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                         // 就会再建一个会话，用户每切一次多留一个 shell
                         onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
+                        // 连接状态上报进左栏圆点（绿连红断，2026-08-29）
+                        onConnection={(connected) => reportPtyConnection(tabId, connected)}
                       />
                     )
                   }
@@ -663,6 +732,9 @@ export function Shell() {
                             baseSha: d?.baseSha,
                           })
                         }
+                        // 冲突/删除上报进左栏圆点（冲突红、删灰；已编辑由
+                        // 草稿有无在 openItems 投影处判，2026-08-29）
+                        onStatus={(status) => reportFileStatus(tabId, status)}
                       />
                     )
                   case 'tui':

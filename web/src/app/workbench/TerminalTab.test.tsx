@@ -133,6 +133,44 @@ describe('TerminalTab', () => {
     await waitFor(() => expect(onSession).toHaveBeenCalledWith('new-1'))
   })
 
+  it('连接状态上报：open 报连接、closed 报断开，connecting 不喊（2026-08-29 左栏圆点缝）', async () => {
+    const onConnection = vi.fn()
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} onConnection={onConnection} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0]
+    // 建立中的一瞬不上报：消费方按「连接」显示，不闪红
+    opts.onStatus('connecting')
+    expect(onConnection).not.toHaveBeenCalled()
+    opts.onStatus('open')
+    expect(onConnection).toHaveBeenCalledWith(true)
+    opts.onStatus('closed')
+    expect(onConnection).toHaveBeenCalledWith(false)
+    // 重连成功再报连接
+    opts.onStatus('open')
+    expect(onConnection).toHaveBeenLastCalledWith(true)
+  })
+
+  it('退出与判死上报断开；同值不重复喊（去重）', async () => {
+    const onConnection = vi.fn()
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} onConnection={onConnection} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0]
+    opts.onStatus('open')
+    expect(onConnection).toHaveBeenCalledWith(true)
+    opts.onExit(7)
+    expect(onConnection).toHaveBeenLastCalledWith(false)
+    const callsAfterExit = onConnection.mock.calls.length
+    // 已经是断开态，判死不再制造一次重复上报
+    opts.onTerminal({ message: '终端会话不存在', closeCode: 1008 })
+    expect(onConnection.mock.calls.length).toBe(callsAfterExit)
+  })
+
+  it('未传 onConnection 时无行为（浮窗等宿主不受影响）', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    expect(() => connectPty.mock.calls[0][0].onStatus('closed')).not.toThrow()
+  })
+
   it('已有会话 id 时直接接流，不再建第二个会话', async () => {
     render(<TerminalTab base={WS} seq={1} sessionId="old-9" onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())

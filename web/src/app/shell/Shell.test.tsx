@@ -74,13 +74,15 @@ const connectPty = vi.fn()
 vi.mock('../../api/pty', () => ({ connectPty: (...a: unknown[]) => connectPty(...a) }))
 
 // T1 挂在 /w/b2-b3 这个工作树上（project_id 'p1'、本机、running）。
+// plan_summary 与 name 不同文：taskDisplayName 口径下「名是摘要前缀」视为
+// prompt 回声、让位给分支（taskName.ts），夹具不能踩中这条。
 const t1: Task = {
   id: 'T1',
   target: '',
   repo_path: '/w/b2-b3',
   branch: 'integration/b2-b3',
   plan_path: '',
-  plan_summary: '重构工单通道',
+  plan_summary: '# 重构工单通道：把工单流挪出看板',
   executor_session: '',
   state: 'running',
   created_at: '2026-08-12T10:00:00+08:00',
@@ -106,7 +108,7 @@ const t2: Task = {
   repo_path: '/w/b2-b3',
   branch: 'integration/b2-b3',
   plan_path: '',
-  plan_summary: '等你批',
+  plan_summary: '# 等你批：允许往 go.mod 写依赖吗',
   executor_session: '',
   state: 'waiting_answer',
   created_at: '2026-08-12T10:00:00+08:00',
@@ -702,25 +704,48 @@ describe('Shell 三栏外框', () => {
     )
   })
 
-  it('openItems 顺序：当前基准的已打开行排最前；点已打开行走 focusTab 切基准并激活', async () => {
+  it('openItems 顺序固定：按打开顺序排列，不随当前基准重排（2026-08-29）；点已打开行 focusTab 切基准并激活', async () => {
     renderShell()
     await openBranch()
-    // 在 /w/b2-b3 开 file tab
+    // 在 /w/b2-b3 开 file tab（第一个已打开行）
     fireEvent.click(await screen.findByText('go.mod'))
     const project = await screen.findByTestId('project-node-p1')
-    // 选中 /w（主目录）并在那里开终端
+    // 选中 /w（主目录）并在那里开终端（第二个已打开行）
     fireEvent.click(within(project).getByText('主目录'))
     fireEvent.click(within(project).getByRole('button', { name: '打开主目录终端' }))
-    // 当前基准 /w 的已打开行排最前
-    await waitFor(() => expect(
-      screen.getAllByTestId('open-item-name').map((el) => el.textContent),
-    ).toEqual(['bash · 主目录', 'go.mod']))
-    // 点 go.mod 已打开行：focusTab 切回 /w/b2-b3 并激活对应 tab
-    fireEvent.click(screen.getAllByTestId('open-item-row').find((row) => row.textContent?.includes('go.mod'))!)
+    // 顺序 = 打开顺序（go.mod 先开）；随后切走基准（聚焦 go.mod 行）顺序**不变**
+    // ——「当前基准置顶」分区已删，左栏不再随打开动作洗牌
     await waitFor(() => expect(
       screen.getAllByTestId('open-item-name').map((el) => el.textContent),
     ).toEqual(['go.mod', 'bash · 主目录']))
-    await waitFor(() => expect(screen.getByRole('tab', { name: /go\.mod/ })).toHaveAttribute('aria-selected', 'true'))
+    fireEvent.click(screen.getAllByTestId('open-item-row').find((row) => row.textContent?.includes('bash · 主目录'))!)
+    await waitFor(() => expect(screen.getByRole('tab', { name: /bash · 主目录/ })).toHaveAttribute('aria-selected', 'true'))
+    expect(
+      screen.getAllByTestId('open-item-name').map((el) => el.textContent),
+    ).toEqual(['go.mod', 'bash · 主目录'])
+  })
+
+  it('左栏已打开行圆点按行类着色：文件有草稿→琥珀、终端连接正常→绿（2026-08-29）', async () => {
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    // 在文件里打字：草稿经 onDraftChangeLive 写回 tab 内容，左栏文件行圆点转琥珀。
+    // textarea 带 aria-label=rel；搜索框也是 textbox，先按角色收窄再按名字取
+    await waitFor(() => expect(screen.getAllByRole('textbox').some((el) => el.getAttribute('aria-label') === 'go.mod')).toBe(true))
+    const box = screen.getAllByRole('textbox').find((el) => el.getAttribute('aria-label') === 'go.mod')!
+    fireEvent.change(box, { target: { value: 'dirty' } })
+    await waitFor(() => {
+      const fileRow = screen.getAllByTestId('open-item-row').find((row) => row.textContent?.includes('go.mod'))!
+      expect(fileRow.querySelector('.bg-state-intervention')).not.toBeNull()
+    })
+    // 终端（会话建立中/连接正常，无断开上报）圆点保持绿
+    const project = await screen.findByTestId('project-node-p1')
+    fireEvent.click(within(project).getByText('主目录'))
+    fireEvent.click(within(project).getByRole('button', { name: '打开主目录终端' }))
+    await waitFor(() => {
+      const terminalRow = screen.getAllByTestId('open-item-row').find((row) => row.textContent?.includes('bash · 主目录'))!
+      expect(terminalRow.querySelector('.bg-state-active')).not.toBeNull()
+    })
   })
 
   it('面包屑第三段随激活 tab 变化', async () => {
@@ -799,6 +824,43 @@ describe('关闭带草稿的文件 tab 要二次确认', () => {
     fireEvent.click(within(cleanPane).getByRole('button', { name: /关闭 go.mod/ }))
     await waitFor(() => expect(screen.queryAllByRole('button', { name: /关闭 go.mod/ })).toHaveLength(0))
     expect(screen.queryByRole('heading', { name: '关闭未保存的文件' })).not.toBeInTheDocument()
+  })
+})
+
+// 左栏已打开行的悬停 ×（2026-08-29）：它是窗格 × 的**另一个入口**，不是另一条
+// 规则——守卫（终端会话确认 / 脏草稿确认）必须同一条，断言就钉在这条等价性上。
+describe('左栏已打开行的悬停 ×', () => {
+  it('干净的文件 tab 点左栏 × 直接关，不打扰', async () => {
+    renderShell()
+    await openBranch()
+    fireEvent.click(await screen.findByText('go.mod'))
+    await screen.findAllByRole('button', { name: /关闭 go.mod/ })
+
+    // 左栏 × 与窗格头 × 同名（关闭 go.mod），必须圈定在侧栏里点
+    const sidebar = within(screen.getAllByRole('complementary')[0])
+    fireEvent.click(sidebar.getByRole('button', { name: '关闭 go.mod' }))
+    await waitFor(() => expect(screen.queryAllByRole('button', { name: /关闭 go.mod/ })).toHaveLength(0))
+    expect(screen.queryByRole('heading', { name: '关闭未保存的文件' })).not.toBeInTheDocument()
+  })
+
+  it('带会话的终端点左栏 × 先弹确认，确认后删会话并关 tab', async () => {
+    // 探测答「会话已不在」→ 确认按钮是「关闭」而不是「关闭并终止」
+    vi.mocked(fetchPtySessions).mockResolvedValue({ sessions: [] })
+    renderShell()
+    await openBranch()
+    fireEvent.click(screen.getByRole('button', { name: '新建内容' }))
+    fireEvent.click(screen.getByRole('menuitem', { name: /新终端/ }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalled())
+
+    const sidebar = within(screen.getAllByRole('complementary')[0])
+    fireEvent.click(sidebar.getByRole('button', { name: /关闭 bash/ }))
+    expect(await screen.findByRole('heading', { name: '关闭终端会话' })).toBeInTheDocument()
+    // 守卫拦下了：tab 还在，× 也还在
+    expect(sidebar.getByTestId('open-item-row')).toBeInTheDocument()
+
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(deletePtySession).toHaveBeenCalledWith('new-1', undefined))
+    await waitFor(() => expect(sidebar.queryByTestId('open-item-row')).toBeNull())
   })
 })
 

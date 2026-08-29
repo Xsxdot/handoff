@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { archivedKey, archivedTasks, isTerminalState } from './archived'
+import { RECENT_TERMINAL_MS, archivedKey, archivedTasks, isTerminalState, recentlyCompleted } from './archived'
 import type { Task } from '../../api/types'
 
 // 任务夹具照抄 ProjectTree.test.tsx 的 task() 造法：只填必要字段。
@@ -66,5 +66,34 @@ describe('archivedTasks（B288 口径：项目内全部终态，不再看目录�
 
   it('archivedKey 键就是 projectID 本身', () => {
     expect(archivedKey('p1')).toBe('p1')
+  })
+})
+
+describe('recentlyCompleted（终态 30 分钟缓冲窗，2026-08-29）', () => {
+  // RFC3339Nano 例：updated_at 距 now 恰好 10 分钟。
+  const NOW = Date.parse('2026-08-29T12:00:00+08:00')
+  const ago = (ms: number) => new Date(NOW - ms).toISOString()
+
+  it('终态且在窗内（29 分钟）→ true：留在任务列表', () => {
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: ago(29 * 60_000) }), NOW)).toBe(true)
+    expect(recentlyCompleted(t({ state: 'failed', updated_at: ago(29 * 60_000) }), NOW)).toBe(true)
+  })
+
+  it('终态但已出窗（31 分钟）→ false：交给「已结束」', () => {
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: ago(31 * 60_000) }), NOW)).toBe(false)
+  })
+
+  it('窗界值本身（恰好 30 分钟）算出窗——「以内」是开区间', () => {
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: ago(RECENT_TERMINAL_MS) }), NOW)).toBe(false)
+  })
+
+  it('非终态一律 false（缓冲窗不是未终态任务的通行证）', () => {
+    expect(recentlyCompleted(t({ state: 'running', updated_at: ago(0) }), NOW)).toBe(false)
+    expect(recentlyCompleted(t({ state: 'waiting_review', updated_at: ago(0) }), NOW)).toBe(false)
+  })
+
+  it('updated_at 解析不了时按出窗处理：宁可早进已结束，不假留在列表', () => {
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: '' }), NOW)).toBe(false)
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: '不是时间' }), NOW)).toBe(false)
   })
 })

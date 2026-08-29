@@ -53,6 +53,43 @@ describe('FileTab', () => {
     )
   })
 
+  it('状态上报：读取正常报 ok，404 报 deleted，其他错误不报 deleted（2026-08-29 左栏圆点缝）', async () => {
+    const onStatus = vi.fn()
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'a', size: 1, sha256: 'sa' })
+    const { rerender } = render(<FileTab base={base} rel="a.txt" onStatus={onStatus} />)
+    await waitFor(() => expect(screen.getByRole('textbox')).toHaveValue('a'))
+    expect(onStatus).toHaveBeenLastCalledWith('ok')
+
+    vi.mocked(fetchWorkspaceFile).mockRejectedValue(new ApiError(404, '文件不存在'))
+    rerender(<FileTab base={base} rel="gone.txt" onStatus={onStatus} />)
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith('deleted'))
+
+    // 403 之类不是「被删」：不喊 deleted，保留上一次上报值
+    const calls = onStatus.mock.calls.length
+    vi.mocked(fetchWorkspaceFile).mockRejectedValue(new ApiError(403, '白名单外'))
+    rerender(<FileTab base={base} rel="secret.txt" onStatus={onStatus} />)
+    await waitFor(() => expect(screen.getByText(/白名单外/)).toBeInTheDocument())
+    expect(onStatus).not.toHaveBeenLastCalledWith('deleted')
+    expect(onStatus.mock.calls.length).toBeGreaterThanOrEqual(calls)
+  })
+
+  it('冲突（保存 409）报 conflict，解决（放弃改动）后回报 ok', async () => {
+    const onStatus = vi.fn()
+    vi.mocked(fetchWorkspaceFile).mockResolvedValue({ ...TEXT, sha256: 'old' })
+    vi.mocked(writeWorkspaceFile).mockRejectedValue(
+      new ApiError(409, '文件已在磁盘上变了', { current: { content: 'disk', size: 4, sha256: 'diskhash' } }),
+    )
+    render(<FileTab base={base} rel="go.mod" onStatus={onStatus} />)
+    const box = await screen.findByRole('textbox')
+    fireEvent.change(box, { target: { value: 'edited' } })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() => expect(screen.getByText(/已在磁盘上变了/)).toBeInTheDocument())
+    expect(onStatus).toHaveBeenLastCalledWith('conflict')
+
+    fireEvent.click(screen.getByRole('button', { name: /放弃我的改动/ }))
+    await waitFor(() => expect(onStatus).toHaveBeenLastCalledWith('ok'))
+  })
+
   it('换文件时重新取数', async () => {
     vi.mocked(fetchWorkspaceFile).mockResolvedValue({ content: 'a', size: 1, sha256: 'sa' })
     const { rerender } = render(<FileTab base={base} rel="a.txt" />)

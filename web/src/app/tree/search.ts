@@ -15,6 +15,7 @@
 // 筛选）、tree/counts.ts（树计数）都是「纯函数 + 独立测试文件」。
 import type { ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
+import { taskDisplayName } from '../lib/taskName'
 import { archivedKey, archivedTasks } from './archived'
 
 // OpenedSearchItem 是「已打开项」参与搜索所需的最小形状（ProjectTree 的 OpenItem
@@ -58,9 +59,10 @@ function dirText(ws: Workspace): string {
   return seg.length > 0 ? seg[seg.length - 1] : ws.path
 }
 
-// taskText 是任务参与匹配时的文本，口径与 ProjectTree 的 taskName 一致。
+// taskText 是任务参与匹配时的文本，口径与 ProjectTree 的 taskName 一致
+// （统一收口 taskDisplayName：name → branch → plan_summary）。
 function taskText(t: Task): string {
-  return t.name || t.plan_summary || '（无名称）'
+  return taskDisplayName(t)
 }
 
 // taskMatchesQuery 是任务行的搜索谓词：任务名命中即算匹配。

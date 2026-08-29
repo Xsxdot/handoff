@@ -2,13 +2,22 @@
 //
 // 层级（B288 重绘，形态真源 option-1 左栏 + b288-workbench-ux renderTree）：
 //   项目行（加粗名 + 进行中计数 + 右侧折叠箭头）
-//     ├「任务」小标题组：已打开项（Shell 注入的 openItems，在前）→ 未终态任务
-//     │  （任务流原序）→「已结束」行（项目内全部终态任务，默认收起）
+//     ├「任务」小标题组：终端/文件已打开行（Shell 注入的 openItems，在前，
+//     │  顺序=打开顺序，不随聚焦/切基准重排）→ 任务列表（created_at 降序的
+//     │  显式排序，聚合序不可信；已打开的 tui 原位呈现已打开态，不再置顶——
+//     │  2026-08-29 用户裁定：打开一个任务不许让别的行挪位置）→「已结束」行
+//     │  （项目内全部终态任务，默认收起；终态后 30 分钟缓冲窗内的任务留在
+//     │  上面任务列表，不进这组）
 //     └「目录」小标题组：机器行（绿点 + 机器名 + 右侧箭头 + 悬停动作）
 //        └ 工作树子行（紧凑、缩进；点击选中，不再列任务——任务已上移任务组）
 // 任务不再挂目录下：跨机器平铺在任务组里（同一项目的活一眼看全），目录组只
 // 回答「代码在哪台机器的哪个目录」。已打开项与任务的行名同源（taskDisplayName /
 // tabTitle），左栏与顶部 chrome 不会各说各话。
+//
+// 圆点语义（2026-08-29）：行右侧圆点按行类表达状态——任务行=任务状态
+// （stateTone：running 绿 / 等工单琥珀 / 终态灰红），终端行=PTY 连接
+// （绿连红断，Shell 上报），文件行=文件状态（净绿/改琥珀/冲突红/删灰）。
+// 机器行的圆点=可达性，语义独立，勿混。
 //
 // 诚实展示（spec §8）：
 //   - 不可达机器（machines[].ok===false 或 location.probe_error）保持可见、
@@ -19,7 +28,8 @@
 //   - 项目行：展开/收起项目；看板的筛选归看板自己的 FilterBar
 //   - 机器行：展开该机的主目录与工作树；悬停动作开主目录终端 / 新建工作树
 //   - 工作树子行：选中目录并打开可关闭的文件抽屉
-//   - 任务组已打开行：聚焦对应 tab（onFocusOpenItem，由 Shell 提供）
+//   - 任务组已打开行：聚焦对应 tab（onFocusOpenItem，由 Shell 提供）；悬停从
+//     右侧滑出 × 快速关闭该 tab（onCloseOpenItem，Shell 走与窗格 × 同一条守卫）
 //   - 任务组普通任务行：按其项目/机器开 TUI tab（onOpenTask）
 //   - 未归属任务没有基准目录，中央以当前选中目录开它的 TUI tab
 //
@@ -31,19 +41,21 @@
 // 原型把行留给了名字与机器归属（spec §5 功能保留清单）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Monitor, Plus, Search, Server, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow,
+  Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Monitor, Plus, Search, Server, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow, X,
 } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { filterTree, taskMatchesQuery } from './search'
 import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
 import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
+import { taskDisplayName } from '../lib/taskName'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage } from '../lib/format'
 import { ContextMenu } from '../shared/ContextMenu'
 import { countsForProject } from './counts'
-import { ARCHIVED_LABEL, ARCHIVED_TITLE, archivedKey, archivedTasks, isTerminalState } from './archived'
+import { ARCHIVED_LABEL, ARCHIVED_TITLE, archivedKey, archivedTasks, isTerminalState, recentlyCompleted } from './archived'
 import { StateDot } from '../board/StateDot'
+import { stateTone, type StateTone } from '../board/columns'
 import { cn } from '@/lib/utils'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 import { TreePrefsMenu } from './TreePrefsMenu'
@@ -54,6 +66,9 @@ import { NewWorktreeDialog } from './NewWorktreeDialog'
 // OpenItem 是左栏「已打开行」的一行数据，由 Shell 从工作台投影注入。
 // key 是去重/React 键；name 已是展示名（tui=任务原名，terminal/file=tabTitle 结果），
 // 本组件不做任何命名解析——持有任务流的层负责注入。
+// tone 是 terminal/file 行圆点的视觉基调（终端=连接状态、文件=文件状态，
+// 由 Shell 持有的上报缝计算）；省略时按连接正常/干净显示绿色。
+// tui 行不消费它——任务状态圆点由本组件从任务流取 stateTone。
 export interface OpenItem {
   key: string          // `${baseKey}\x1f${tabId}`
   kind: 'tui' | 'terminal' | 'file'
@@ -67,6 +82,7 @@ export interface OpenItem {
   // 没有额外定位字段。plan 的 OpenItem 形状没有它——补上是为了保住
   // 「按文件相对路径搜到已打开行」的既有搜索能力（search.ts openedText 口径）。
   detail?: string
+  tone?: StateTone
 }
 
 export interface ProjectTreeProps {
@@ -84,6 +100,9 @@ export interface ProjectTreeProps {
   // focusedTaskId 是焦点窗格里 tui 内容的 taskId，否则 null；命中行加 is-selected。
   focusedTaskId: string | null
   onFocusOpenItem: (item: OpenItem) => void
+  // onCloseOpenItem 是已打开行悬停 × 的关闭入口（终端/文件/tui 已打开行都有）。
+  // 没传就不渲染 ×——关闭语义由持有 workbench 的层实现，树只发信号。
+  onCloseOpenItem?: (item: OpenItem) => void
   // onOpenTerminalAt 在指定目录开终端（机器行悬停钮 / 工作树子行悬停钮共用）。
   onOpenTerminalAt: (base: BaseDir) => void
   onOpenDirectory: (base: BaseDir) => void
@@ -117,6 +136,18 @@ export interface ProjectTreeProps {
 // MACHINE_LABEL 给机器名做人话标签：""=本机。
 function machineLabel(machine: string): string {
   return machine === '' ? '本机' : machine
+}
+
+// createdDesc 是全部任务行列表（任务组 / 已结束 / 未归属）的统一排序键：
+// created_at 降序，解析不了的当最旧（稳定排序保证同键行保持原相对顺序）。
+// 不能信任务流原序：scope=all 的跨机聚合响应（真机读数 2026-08-29）既不是
+// 单机库里的 created_at DESC（store.go:416 只管单机查询），各机镜像拼接后
+// 同项目内的行序会随状态迁移漂移——「打开一个任务整个列表顺序就变」的
+// 另一半病根。created_at 恒定不跳，显式排序后行序只增不减。
+function createdDesc(a: Task, b: Task): number {
+  const ka = Date.parse(a.created_at)
+  const kb = Date.parse(b.created_at)
+  return (Number.isFinite(kb) ? kb : -Infinity) - (Number.isFinite(ka) ? ka : -Infinity)
 }
 
 // locationProblem 判定一个机器节点是否不可达：location 探测失败优先，否则看
@@ -269,7 +300,7 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' }) {
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -387,7 +418,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   const unassigned = filtered.unassignedTasks
   const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0
 
-  const taskName = (t: Task) => t.name || t.plan_summary || '（无名称）'
+  // 行名与 tab 标题同源：统一走 taskDisplayName（name → branch → plan_summary），
+  // 不再留本地副本——三处口径分叉正是「派发行认不出谁是谁」的帮凶之一。
 
   // archivedBase 给「已结束」任务挑一个打开时的基准目录：该位置的**主目录**。
   // 它们自己的工作目录已被回收，用主目录至少能落在同一个仓库上；连主目录都没有
@@ -523,35 +555,51 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         const allProject = tree.projects.find((candidate) => candidate.project_id === project.project_id) ?? project
         const allLocations = allProject.locations
 
-        // 本项目的已打开行（Shell 给的顺序即展示顺序）。搜索时按行名/机器/基准
-        // 字段放行——与 filterTree 留住项目祖先的口径互补。
+        // 本项目的已打开行（Shell 给的顺序即展示顺序 = 组序×格序的打开顺序，
+        // 不随聚焦/切基准重排）。搜索时按行名/机器/基准字段放行——与 filterTree
+        // 留住项目祖先的口径互补。
         const projectOpenRows = openItems.filter((item) =>
           item.base.projectName === project.name &&
           (!searching || projectHit || openItemMatches(item, filtered.query)),
         )
-        const openTuiIds = new Set(
-          projectOpenRows.flatMap((item) => item.kind === 'tui' && item.taskId ? [item.taskId] : []),
+        // 终端/文件已打开行留在任务组最前：它们不是任务流成员，没有「原位」可言，
+        // 顺序即打开顺序。tui 已打开行不在此列——它改在下面任务流原位渲染
+        // （2026-08-29 裁定：打开一个任务不许让其他行挪位置）。
+        const openChromeRows = projectOpenRows.filter((item) => item.kind !== 'tui')
+        const openTuiRows = projectOpenRows.flatMap((item) =>
+          item.kind === 'tui' && item.taskId ? [item] : [],
         )
-        // 任务组普通行 = 未终态且未打开的任务（任务流原序）；终态一律进已结束。
+        const openTuiById = new Map(openTuiRows.map((item) => [item.taskId as string, item]))
+        const openTuiIds = new Set(openTuiById.keys())
+        // 任务列表 = 显式 created_at 降序（排序键见模块级 createdDesc 的完整论证）
+        const now = Date.now()
         const projectTasks = tasks.filter((task) => {
-          if (task.project_id !== project.project_id || openTuiIds.has(task.id)) return false
-          if (isTerminalState(task.state)) return false
-          if (!searching || projectHit) return true
-          if (taskMatchesQuery(task, filtered.query)) return true
-          if (machineLabel(task.machine).toLowerCase().includes(filtered.query)) return true
-          return allLocations.some((loc) =>
-            loc.machine === task.machine &&
-            loc.workspaces.some((ws) =>
-              dirLabel(ws).toLowerCase().includes(filtered.query) && tasksOfWorkspace([task], project, loc.machine, ws).length > 0,
-            ),
-          )
-        })
+          if (task.project_id !== project.project_id) return false
+          if (searching && !projectHit) {
+            if (!taskMatchesQuery(task, filtered.query) &&
+                !machineLabel(task.machine).toLowerCase().includes(filtered.query) &&
+                !allLocations.some((loc) =>
+                  loc.machine === task.machine &&
+                  loc.workspaces.some((ws) =>
+                    dirLabel(ws).toLowerCase().includes(filtered.query) && tasksOfWorkspace([task], project, loc.machine, ws).length > 0,
+                  ),
+                )) return false
+          }
+          if (isTerminalState(task.state) && !recentlyCompleted(task, now) && !openTuiIds.has(task.id)) return false
+          return true
+        }).sort(createdDesc)
+        // 任务流里找不到的已打开 tui（任务刚派发尚未进流、已删、或挂在别的项目）：
+        // 追加在任务列表末尾——行不能因为流没到就闪没。
+        const orphanOpenTui = openTuiRows.filter((item) => !projectTasks.some((t) => t.id === item.taskId))
         const archivedForProject = archived.get(archivedKey(project.project_id)) ?? []
+        // 已结束子行与任务组同一个排序键（filter 已产出新数组，原地 sort 不碰
+        // archived useMemo 里的原数组）
         const visibleArchived = archivedForProject.filter((task) =>
           !openTuiIds.has(task.id) &&
+          !recentlyCompleted(task, now) &&
           (!searching || projectHit || taskMatchesQuery(task, filtered.query) ||
           machineLabel(task.machine).toLowerCase().includes(filtered.query)),
-        )
+        ).sort(createdDesc)
         const archiveKey = 'project-archive:' + project.project_id
         const archivedOpen = openArchived.has(archiveKey) || (searching && visibleArchived.length > 0)
 
@@ -639,16 +687,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                     <span>任务</span>
                   </div>
                   <div className="mt-[7px] mb-2">
-                    {/* 已打开项在前（Shell 注入顺序），其后是未终态任务 */}
-                    {projectOpenRows.map((item) => (
+                    {/* 终端/文件已打开行在前（Shell 注入顺序=打开顺序） */}
+                    {openChromeRows.map((item) => (
                       <TaskRow
                         key={item.key}
                         kind={item.kind}
                         label={item.name}
                         machine={item.machine}
+                        dotTone={item.tone ?? 'active'}
                         open
-                        selected={item.kind === 'tui' && item.taskId === focusedTaskId}
                         draggable
+                        onClose={onCloseOpenItem ? () => onCloseOpenItem(item) : undefined}
                         dragPayload={(e) => {
                           e.dataTransfer.setData(DRAG_TAB_MIME, JSON.stringify({ groupId: item.group, tabId: item.tabId }))
                           e.dataTransfer.effectAllowed = 'move'
@@ -668,14 +717,50 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         nameTestId="open-item-name"
                       />
                     ))}
+                    {/* 任务按任务流原序渲染；已打开的 tui 原位呈现已打开态
+                        （open-item testid 与聚焦/拖拽语义沿用），不再置顶 */}
                     {projectTasks.map((task) => {
+                      const opened = openTuiById.get(task.id)
                       const taskBase = baseForTask(task)
+                      if (opened) {
+                        return (
+                          <TaskRow
+                            key={opened.key}
+                            kind="tui"
+                            label={opened.name}
+                            machine={opened.machine}
+                            dotTone={stateTone(task.state)}
+                            open
+                            selected={opened.taskId === focusedTaskId}
+                            draggable
+                            onClose={onCloseOpenItem ? () => onCloseOpenItem(opened) : undefined}
+                            dragPayload={(e) => {
+                              e.dataTransfer.setData(DRAG_TAB_MIME, JSON.stringify({ groupId: opened.group, tabId: opened.tabId }))
+                              e.dataTransfer.effectAllowed = 'move'
+                              console.debug('project_tree.drag.tab', { tabId: opened.tabId, groupId: opened.group, project: opened.base.projectName, machine: opened.base.machine, path: opened.base.path })
+                            }}
+                            onClick={() => {
+                              console.debug('project_tree.opened_item.focus', {
+                                project: opened.base.projectName,
+                                machine: opened.machine,
+                                baseKey: opened.base.key,
+                                tabId: opened.tabId,
+                                groupId: opened.group,
+                              })
+                              onFocusOpenItem(opened)
+                            }}
+                            testId="open-item-row"
+                            nameTestId="open-item-name"
+                          />
+                        )
+                      }
                       return (
                         <TaskRow
                           key={'task:' + task.id}
                           kind="tui"
-                          label={taskName(task)}
+                          label={taskDisplayName(task)}
                           machine={task.machine}
+                          dotTone={stateTone(task.state)}
                           draggable
                           dragPayload={(e) => {
                             e.dataTransfer.setData(DRAG_TASK_MIME, task.id)
@@ -687,6 +772,37 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         />
                       )
                     })}
+                    {/* 流里还没有的已打开 tui：追加在末尾，保持可见不闪烁 */}
+                    {orphanOpenTui.map((item) => (
+                      <TaskRow
+                        key={item.key}
+                        kind="tui"
+                        label={item.name}
+                        machine={item.machine}
+                        dotTone="idle"
+                        open
+                        selected={item.taskId === focusedTaskId}
+                        draggable
+                        onClose={onCloseOpenItem ? () => onCloseOpenItem(item) : undefined}
+                        dragPayload={(e) => {
+                          e.dataTransfer.setData(DRAG_TAB_MIME, JSON.stringify({ groupId: item.group, tabId: item.tabId }))
+                          e.dataTransfer.effectAllowed = 'move'
+                          console.debug('project_tree.drag.tab', { tabId: item.tabId, groupId: item.group, project: item.base.projectName, machine: item.base.machine, path: item.base.path })
+                        }}
+                        onClick={() => {
+                          console.debug('project_tree.opened_item.focus', {
+                            project: item.base.projectName,
+                            machine: item.machine,
+                            baseKey: item.base.key,
+                            tabId: item.tabId,
+                            groupId: item.group,
+                          })
+                          onFocusOpenItem(item)
+                        }}
+                        testId="open-item-row"
+                        nameTestId="open-item-name"
+                      />
+                    ))}
                     {visibleArchived.length > 0 && !(prefs.hideArchived && !searching) && (
                       <div>
                       {/* 「已结束」行（b288 .archive-row）：label + 计数 + 右侧箭头 */}
@@ -709,8 +825,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                           <TaskRow
                             key={'archived:' + task.id}
                             kind="tui"
-                            label={taskName(task)}
+                            label={taskDisplayName(task)}
                             machine={task.machine}
+                            dotTone={stateTone(task.state)}
                             indent
                             draggable
                             dragPayload={(e) => {
@@ -899,12 +1016,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       {hasUnowned && (
         <div>
           <p className="px-3 pb-1 pt-2 text-[15px] font-medium text-muted-foreground">未归属</p>
-          {unassigned.map((t) => (
+          {/* 与任务组同一排序键：未归属也是任务行，聚合序一样不可信 */}
+          {[...unassigned].sort(createdDesc).map((t) => (
             <TaskRow
               key={t.id}
               kind="tui"
-              label={taskName(t)}
+              label={taskDisplayName(t)}
               machine={t.machine}
+              dotTone={stateTone(t.state)}
               draggable
               dragPayload={(e) => {
                 e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
@@ -1111,25 +1230,32 @@ function openItemMatches(item: OpenItem, q: string): boolean {
 }
 
 // TaskRow 是任务组/未归属分组的统一行（option-1 .task-row）：
-// 类型图标槽 + 名称 + 右侧机器簇（绿点 + 机器名）；任务状态不额外插入左侧圆点。
+// 类型图标槽 + 名称 + 右侧机器簇（状态圆点 + 机器名）。
+// 圆点语义随行类（2026-08-29）：任务行=任务状态基调（调用方传 stateTone 结果），
+// 终端行=PTY 连接（绿连红断），文件行=文件状态（净绿/改琥珀/冲突红/删灰）。
 // open = 已打开态（is-open，与 hover 同色），selected = 焦点态（is-selected，深一档）。
+// onClose 提供时行外套 group 壳，悬停从右侧滑出 × 快速关闭对应 tab——× 是行
+// button 的**兄弟**而非子元素（button 不能嵌套），点击也就不会触发行本身的聚焦；
+// 悬停期间机器名让位淡出（状态圆点保留），给 × 腾出位置。
 function TaskRow({
-  kind, label, machine, open = false, selected = false, indent = false,
-  draggable = false, dragPayload, onClick, testId = 'task-row', nameTestId,
+  kind, label, machine, dotTone = 'active', open = false, selected = false, indent = false,
+  draggable = false, dragPayload, onClose, onClick, testId = 'task-row', nameTestId,
 }: {
   kind: 'tui' | 'terminal' | 'file'
   label: string
   machine: string
+  dotTone?: StateTone
   open?: boolean
   selected?: boolean
   indent?: boolean
   draggable?: boolean
   dragPayload?: (e: React.DragEvent<HTMLButtonElement>) => void
+  onClose?: () => void
   onClick: () => void
   testId?: string
   nameTestId?: string
 }) {
-  return (
+  const row = (
     <button
       type="button"
       data-testid={testId}
@@ -1153,9 +1279,27 @@ function TaskRow({
         {label}
       </span>
       <span data-testid="task-machine" className="ml-auto flex max-w-[88px] shrink-0 items-center gap-[7px] truncate text-[14px] text-muted-foreground">
-        <StateDot tone="active" />
-        <span className="truncate">{machineLabel(machine)}</span>
+        <StateDot tone={dotTone} />
+        <span className={cn('truncate', onClose && 'transition-opacity duration-150 group-hover:opacity-0')}>
+          {machineLabel(machine)}
+        </span>
       </span>
     </button>
+  )
+  if (!onClose) return row
+  return (
+    <div className="group relative">
+      {row}
+      {/* × 在不透明度 0 时仍占位可聚焦，键盘用户 tab 到它时必须现身 */}
+      <button
+        type="button"
+        aria-label={`关闭 ${label}`}
+        title="关闭"
+        onClick={onClose}
+        className="absolute right-1 top-1/2 flex size-5 -translate-y-1/2 translate-x-1 items-center justify-center rounded text-muted-foreground opacity-0 transition-[opacity,transform] duration-150 hover:bg-accent/60 hover:text-foreground focus-visible:opacity-100 focus-visible:translate-x-0 group-hover:translate-x-0 group-hover:opacity-100"
+      >
+        <X className="size-3.5" />
+      </button>
+    </div>
   )
 }

@@ -54,6 +54,11 @@ export interface TerminalTabProps {
   // active=false 时本实例仍挂着（切 tab keep-alive），只是看不见。
   // 不能放进建连 effect 的依赖：放进去切走就会拆掉 xterm，等于没 keep-alive。
   active?: boolean
+  // onConnection 把数据通道的连接状态上抛（true=open，false=断开/判死/退出）。
+  // 消费方是左栏终端行的圆点（2026-08-29）：绿=连着，红=连不上。可缺席——
+  // 浮窗等不关心连接态的宿主不传即无行为。'connecting' 不上报：会话建立中的
+  // 一瞬不该闪红，首帧 open 的 true 才是第一份事实。
+  onConnection?: (connected: boolean) => void
 }
 
 // ptyBase 把一个基准目录翻译成建会话请求的两个字段。
@@ -100,7 +105,7 @@ function xtermDebugSnap(term: Terminal, host: HTMLElement): Record<string, unkno
 }
 
 export function TerminalTab({
-  base, seq, sessionId, rel, envFile, initCommand, incompatible = false, onSession, active = true,
+  base, seq, sessionId, rel, envFile, initCommand, incompatible = false, onSession, active = true, onConnection,
 }: TerminalTabProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -109,6 +114,10 @@ export function TerminalTab({
   const revealRef = useRef<() => void>(() => {})
   const activeRef = useRef(active)
   activeRef.current = active
+  // onConnection 走 ref：回调 identity 每渲染都变（Shell 闭包），不能进建连
+  // effect 的依赖；effect 内经 reportConn 读最新值。
+  const onConnectionRef = useRef(onConnection)
+  onConnectionRef.current = onConnection
   const cycleRef = useRef(0)
   const prevActiveRef = useRef(active)
   const lastWheelMissAt = useRef(0)
@@ -133,6 +142,14 @@ export function TerminalTab({
     // wsStatus 是数据通道的当前状态，供输入取证判断「这批输入发出去了没有」。
     // 用闭包变量而不是 React state：effect 里读 state 拿到的是挂载那一刻的旧值。
     let wsStatus: 'connecting' | 'open' | 'closed' = 'connecting'
+    // reportConn 把连接状态上抛给左栏圆点；去重到「变化才喊」，初值不喊
+    // ——消费方对「还没消息」按连接显示，会话建立中的一瞬不该闪红。
+    let lastConn: boolean | undefined = undefined
+    const reportConn = (connected: boolean) => {
+      if (lastConn === connected) return
+      lastConn = connected
+      onConnectionRef.current?.(connected)
+    }
     // label 只用于取证日志，让多个终端 tab 同时开着时分得清是哪一个
     const label = seq > 1 ? `${base.label} (${seq})` : base.label
 
@@ -373,6 +390,7 @@ export function TerminalTab({
       if (incompatibleLive) {
         setError('会话由不兼容的版本托管')
         setDead(true)
+        reportConn(false)
         return
       }
       if (!id) {
@@ -480,15 +498,20 @@ export function TerminalTab({
         },
         onExit: (code) => {
           setExit(code ?? null)
+          reportConn(false)
         },
         onStatus: (s) => {
           wsStatus = s
+          // open=连上；closed=断开（退避重连或终判）。connecting 不喊：重连
+          // 周期里圆点保持「断开」直到真正回到 open，不闪回绿色。
+          if (s !== 'connecting') reportConn(s === 'open')
         },
         onError: (message) => setError(message),
         onTerminal: ({ message }) => {
           // 判死 = 没有重连可等了，界面必须给出下一步动作，而不是只留一行红字
           setError(message)
           setDead(true)
+          reportConn(false)
         },
       })
       handleRef.current = handle
@@ -500,6 +523,7 @@ export function TerminalTab({
     start().catch((err: unknown) => {
       if (disposed) return
       setError(err instanceof Error ? err.message : String(err))
+      reportConn(false)
     })
 
     const ro = new ResizeObserver(() => {

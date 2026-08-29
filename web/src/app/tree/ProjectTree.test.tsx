@@ -46,6 +46,7 @@ function props(over: {
   openItems?: OpenItem[]
   focusedTaskId?: string | null
   onFocusOpenItem?: (item: OpenItem) => void
+  onCloseOpenItem?: (item: OpenItem) => void
   onOpenTerminalAt?: (b: BaseDir) => void
   onOpenDirectory?: (b: BaseDir) => void
   onOpenTask?: (b: BaseDir | null, id: string) => void
@@ -84,6 +85,8 @@ function props(over: {
     openItems: over.openItems ?? [],
     focusedTaskId: over.focusedTaskId ?? null,
     onFocusOpenItem: over.onFocusOpenItem ?? vi.fn(),
+    // 与 onUnregister 同理：onCloseOpenItem 也要能「没传」——没传就不给 ×
+    onCloseOpenItem: over.onCloseOpenItem,
     onOpenTerminalAt: over.onOpenTerminalAt ?? vi.fn(),
     onOpenDirectory: over.onOpenDirectory ?? vi.fn(),
     onOpenTask: over.onOpenTask ?? vi.fn(),
@@ -231,18 +234,35 @@ describe('ProjectTree 任务组', () => {
     expect(screen.getByText('原地任务')).toBeInTheDocument()
   })
 
-  it('任务行右端是机器簇（绿点 + 机器名），左侧不额外显示状态点', () => {
+  it('任务行圆点按任务状态着色：running 绿、waiting_answer 琥珀、completed 灰、failed 红（2026-08-29）', () => {
     const p = props({})
-    p.tasks.push(task({ id: 'T2', project_id: 'p1', machine: 'linux-01', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }))
+    p.tasks.push(
+      task({ id: 'T2', project_id: 'p1', machine: 'linux-01', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
+      task({ id: 'T3', project_id: 'p1', machine: '', work_dir: '/w', name: '刚跑完', state: 'completed', updated_at: new Date().toISOString() }),
+      task({ id: 'T4', project_id: 'p1', machine: '', work_dir: '/w', name: '跑挂了', state: 'failed', updated_at: new Date().toISOString() }),
+    )
     render(<ProjectTree {...p} />)
     const runningRow = screen.getByRole('button', { name: /重构工单通道/ })
     expect(within(runningRow).getByTestId('task-machine')).toHaveTextContent('本机')
+    expect(runningRow.querySelector('.bg-state-active')).not.toBeNull()
     const waitingRow = screen.getByRole('button', { name: /等你答复的活/ })
     expect(within(waitingRow).getByTestId('task-machine')).toHaveTextContent('linux-01')
-    // 任务状态只影响数据语义，不在任务图标与名称之间插入额外圆点；
-    // 机器簇保留自己的在线圆点。
-    expect(runningRow.querySelectorAll('.bg-state-active').length).toBeGreaterThanOrEqual(1)
-    expect(waitingRow.querySelectorAll('.bg-state-intervention')).toHaveLength(0)
+    expect(waitingRow.querySelector('.bg-state-intervention')).not.toBeNull()
+    // 30 分钟缓冲窗内的终态任务留在任务列表，圆点表达终态本身
+    expect(screen.getByRole('button', { name: /刚跑完/ }).querySelector('.bg-muted-foreground\\/45')).not.toBeNull()
+    expect(screen.getByRole('button', { name: /跑挂了/ }).querySelector('.bg-state-failed')).not.toBeNull()
+  })
+
+  it('无名任务行显示分支名；prompt 派生名（摘要前缀）也让位给分支', () => {
+    const p = props({})
+    p.tasks.push(
+      task({ id: 'T5', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '', branch: 'cards/B285-review-2', plan_summary: '你是 charter 流程的节点执行者。…' }),
+      task({ id: 'T6', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '你是 charter 流程的节点执行者。对卡 ', branch: 'cards/B293-charter-3', plan_summary: '你是 charter 流程的节点执行者。对卡 B293-charter-3\n' }),
+    )
+    render(<ProjectTree {...p} />)
+    expect(screen.getByText('cards/B285-review-2')).toBeInTheDocument()
+    expect(screen.getByText('cards/B293-charter-3')).toBeInTheDocument()
+    expect(screen.queryByText(/节点执行者/)).not.toBeInTheDocument()
   })
 })
 
@@ -309,6 +329,165 @@ describe('ProjectTree 已打开项', () => {
     expect(container.querySelector('img[src*="dispatch-task"]')).not.toBeNull()
     expect(container.querySelector('.lucide-terminal')).not.toBeNull()
     expect(container.querySelector('.lucide-file-text')).not.toBeNull()
+  })
+
+  it('没传 onCloseOpenItem 时已打开行没有 ×（关闭语义由持有 workbench 的层给）', () => {
+    const items = [openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9' })]
+    render(<ProjectTree {...props({ openItems: items })} />)
+    expect(screen.queryByRole('button', { name: '关闭 bash · main' })).toBeNull()
+  })
+
+  it('已打开 tui 原位渲染：打开任务不让其他行挪位置（2026-08-29 顺序固定）', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w', name: '第二个任务', state: 'waiting_review' }))
+    // 打开的是 T1（任务流里的前一条）。T1 的行仍应在 T2 之前——若已打开行整组
+    // 置顶，T1 会跳过 T2 上浮，这里当场抓住。
+    const items = [openItem({
+      key: '/w/b2-b3\x1ft11', kind: 'tui', name: '重构工单通道', taskId: 'T1',
+      base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+      tabId: 't11',
+    })]
+    render(<ProjectTree {...p} openItems={items} />)
+    const firstRow = screen.getByRole('button', { name: /重构工单通道/ })
+    const secondRow = screen.getByRole('button', { name: /第二个任务/ })
+    expect(firstRow).toHaveAttribute('data-open', 'true')
+    expect(firstRow.compareDocumentPosition(secondRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('任务组按 created_at 降序渲染（scope=all 聚合序不可信，2026-08-29 真机读数）', () => {
+    const p = props({})
+    // 故意用与 created_at 相反的流序喂入：聚合响应里新旧交错也会被显式排序纠正
+    p.tasks.push(
+      task({ id: 'T-old', project_id: 'p1', machine: '', work_dir: '/w', name: '最旧任务', created_at: '2026-08-01T00:00:00Z' }),
+      task({ id: 'T-new', project_id: 'p1', machine: '', work_dir: '/w', name: '最新任务', created_at: '2026-08-29T09:00:00Z' }),
+      task({ id: 'T-mid', project_id: 'p1', machine: '', work_dir: '/w', name: '中间任务', created_at: '2026-08-15T00:00:00Z' }),
+    )
+    render(<ProjectTree {...p} />)
+    // 夹具默认任务 T1（created_at 空串 = 解析不了 → 按最旧沉底）
+    const names = screen.getAllByTestId('task-row').map((row) => row.textContent)
+    expect(names).toEqual(['最新任务本机', '中间任务本机', '最旧任务本机', '重构工单通道本机'])
+  })
+
+  it('已结束子行与任务组同一个排序键（created_at 降序）', () => {
+    const p = props({})
+    // 流序故意与新旧相反：archivedTasks 原样保留流序，排序是展示层的责任
+    p.tasks.push(
+      task({ id: 'A1', state: 'completed', work_dir: '/w/gone', name: '旧完结', created_at: '2026-08-01T00:00:00Z' }),
+      task({ id: 'A2', state: 'completed', work_dir: '/w/gone', name: '新完结', created_at: '2026-08-20T00:00:00Z' }),
+    )
+    render(<ProjectTree {...p} />)
+    fireEvent.click(screen.getByTestId('archived-row'))
+    // 任务组里只有夹具 T1，其后是已结束子行：新完结在前
+    const names = screen.getAllByTestId('task-row').map((row) => row.textContent)
+    expect(names).toEqual(['重构工单通道本机', '新完结本机', '旧完结本机'])
+  })
+
+  it('任务流里找不到的已打开 tui 追加在任务列表末尾（不闪烁）', () => {
+    const items = [openItem({
+      key: '/w/b2-b3\x1ft12', kind: 'tui', name: '还没进流的任务', taskId: 'T-nope',
+      base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+      tabId: 't12',
+    })]
+    render(<ProjectTree {...props({ openItems: items })} />)
+    const ghostRow = screen.getByRole('button', { name: /还没进流的任务/ })
+    const taskRow = screen.getByRole('button', { name: /重构工单通道/ })
+    expect(taskRow.compareDocumentPosition(ghostRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(ghostRow).toHaveAttribute('data-open', 'true')
+  })
+
+  it('终端/文件已打开行的圆点消费注入的 tone（断开的终端=红）', () => {
+    const items = [
+      openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9', tone: 'failed' }),
+      openItem({ key: '/w\x1ft10', kind: 'file', name: 'go.mod', tabId: 't10', tone: 'intervention' }),
+    ]
+    render(<ProjectTree {...props({ openItems: items })} />)
+    const terminalRow = screen.getByText('bash · main').closest('button')!
+    expect(terminalRow.querySelector('.bg-state-failed')).not.toBeNull()
+    const fileRow = screen.getByText('go.mod').closest('button')!
+    expect(fileRow.querySelector('.bg-state-intervention')).not.toBeNull()
+  })
+})
+
+describe('ProjectTree 已打开行悬停关闭（2026-08-29）', () => {
+  // 悬停 × 的可达性是 CSS 的职责（group-hover）；单测钉的是「哪几行有 ×、
+  // 点了发给谁、没 tab 的行不给 ×」这三条语义。
+  it('终端/文件/tui 已打开行都有 ×，点击回调带整行 OpenItem', () => {
+    const onCloseOpenItem = vi.fn()
+    const tuiBase: BaseDir = { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' }
+    const items = [
+      openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9' }),
+      openItem({ key: '/w\x1ft10', kind: 'file', name: 'go.mod', tabId: 't10' }),
+      openItem({ key: '/w/b2-b3\x1ft11', kind: 'tui', name: '重构工单通道', taskId: 'T1', base: tuiBase, tabId: 't11' }),
+    ]
+    render(<ProjectTree {...props({ openItems: items, onCloseOpenItem })} />)
+    fireEvent.click(screen.getByRole('button', { name: '关闭 bash · main' }))
+    expect(onCloseOpenItem).toHaveBeenLastCalledWith(items[0])
+    fireEvent.click(screen.getByRole('button', { name: '关闭 go.mod' }))
+    expect(onCloseOpenItem).toHaveBeenLastCalledWith(items[1])
+    fireEvent.click(screen.getByRole('button', { name: '关闭 重构工单通道' }))
+    expect(onCloseOpenItem).toHaveBeenLastCalledWith(items[2])
+  })
+
+  it('普通任务行与已结束行没有 ×——它们没有 tab 可关', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-old', state: 'completed', work_dir: '/w/gone', name: '已回收的任务' }))
+    render(<ProjectTree {...p} onCloseOpenItem={vi.fn()} />)
+    // T1 未打开，行是普通任务行
+    expect(screen.queryByRole('button', { name: '关闭 重构工单通道' })).toBeNull()
+    fireEvent.click(screen.getByTestId('archived-row'))
+    expect(screen.queryByRole('button', { name: '关闭 已回收的任务' })).toBeNull()
+  })
+
+  it('× 是行 button 的兄弟而非子元素（button 不能嵌套），点击不触发行聚焦', () => {
+    const onCloseOpenItem = vi.fn()
+    const onFocusOpenItem = vi.fn()
+    const items = [openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9' })]
+    render(<ProjectTree {...props({ openItems: items, onCloseOpenItem, onFocusOpenItem })} />)
+    const close = screen.getByRole('button', { name: '关闭 bash · main' })
+    expect(close.closest('button')).toBe(close)
+    fireEvent.click(close)
+    expect(onCloseOpenItem).toHaveBeenCalledTimes(1)
+    expect(onFocusOpenItem).not.toHaveBeenCalled()
+  })
+})
+
+describe('ProjectTree 终态 30 分钟缓冲窗（2026-08-29）', () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+
+  it('窗内的终态任务留在任务列表原位，不出现在已结束', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-done', state: 'completed', work_dir: '/w/gone', name: '刚跑完的任务', updated_at: minutesAgo(10) }))
+    render(<ProjectTree {...p} />)
+    const row = screen.getByRole('button', { name: /刚跑完的任务/ })
+    expect(row).toBeInTheDocument()
+    expect(row).not.toHaveAttribute('data-open')
+    // 不进已结束：计数为 0 时整行「已结束」不渲染
+    expect(screen.queryByTestId('archived-row')).not.toBeInTheDocument()
+  })
+
+  it('出窗的终态任务回到已结束（现状口径不丢）', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-done', state: 'completed', work_dir: '/w/gone', name: '早跑完的任务', updated_at: minutesAgo(40) }))
+    render(<ProjectTree {...p} />)
+    expect(screen.queryByText('早跑完的任务')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('archived-row'))
+    expect(screen.getByText('早跑完的任务')).toBeInTheDocument()
+  })
+
+  it('tab 仍打开的终态任务无限期留在原位，行是已打开态', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-done', state: 'completed', work_dir: '/w/b2-b3', name: '看交付的任务', updated_at: minutesAgo(120) }))
+    const items = [openItem({
+      key: '/w/b2-b3\x1ft13', kind: 'tui', name: '看交付的任务', taskId: 'T-done',
+      base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+      tabId: 't13',
+    })]
+    render(<ProjectTree {...p} openItems={items} />)
+    const row = screen.getByRole('button', { name: /看交付的任务/ })
+    expect(row).toHaveAttribute('data-open', 'true')
+    // 灰点（done 基调）——完成但仍在看，一眼分于运行中
+    expect(row.querySelector('.bg-muted-foreground\\/45')).not.toBeNull()
+    expect(screen.queryByTestId('archived-row')).not.toBeInTheDocument()
   })
 })
 
@@ -523,6 +702,22 @@ describe('ProjectTree 未归属与搜索', () => {
     expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_BASE_MIME, 'null')
     fireEvent.click(screen.getByText('游离任务'))
     expect(onOpenTask).toHaveBeenCalledWith(null, 'u1')
+  })
+
+  it('未归属行与任务组同一个排序键（created_at 降序）', () => {
+    const tree: ProjectTreeResp = { projects: [], unowned: [] }
+    const tasks = [
+      task({ id: 'u1', project_id: '', machine: '', work_dir: '/x', name: '游离旧', created_at: '2026-08-01T00:00:00Z' }),
+      task({ id: 'u2', project_id: '', machine: '', work_dir: '/x', name: '游离新', created_at: '2026-08-29T00:00:00Z' }),
+    ]
+    render(
+      <ProjectTree
+        tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
+        openItems={[]} focusedTaskId={null} onFocusOpenItem={vi.fn()} onOpenTerminalAt={vi.fn()}
+        onOpenDirectory={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+      />,
+    )
+    expect(screen.getAllByTestId('task-row').map((row) => row.textContent)).toEqual(['游离新本机', '游离旧本机'])
   })
 
   it('渲染搜索框与「项目 N」，N 默认是项目总数', () => {
