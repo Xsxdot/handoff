@@ -204,3 +204,14 @@
     background: transparent;
   }
 }
+
+/* 彻底隐藏滚动条、只保留滚动能力（滚轮/触控板/键盘滚动不受影响）。给窄栏用：
+   左栏项目树在纯白底上即使细滑块也嫌突兀（2026-08-29 用户裁定），宁可无条。
+   两套写法与上面的全局弱化同一理由：Firefox/新 Chrome 吃 scrollbar-width，
+   Safari/旧 Chromium 吃 ::-webkit-scrollbar，缺一档就落回默认粗条 */
+@utility scrollbar-none {
+  scrollbar-width: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}

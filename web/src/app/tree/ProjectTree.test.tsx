@@ -125,9 +125,9 @@ describe('ProjectTree 层级', () => {
     expect(count.compareDocumentPosition(arrow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
 
-  it('「任务」「目录」两个小标题行存在', () => {
+  it('「任务」小标题已移除，「目录」小标题行存在（2026-08-29 用户裁定）', () => {
     render(<ProjectTree {...props({})} />)
-    expect(screen.getByTestId('task-group-head')).toHaveTextContent('任务')
+    expect(screen.queryByTestId('task-group-head')).not.toBeInTheDocument()
     expect(screen.getByTestId('dir-group-head')).toHaveTextContent('目录')
   })
 

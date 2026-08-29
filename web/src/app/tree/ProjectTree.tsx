@@ -1,15 +1,16 @@
 // ProjectTree —— 左栏项目树。
 //
 // 层级（B288 重绘，形态真源 option-1 左栏 + b288-workbench-ux renderTree）：
-//   项目行（加粗名 + 进行中计数 + 右侧折叠箭头）
-//     ├「任务」小标题组：终端/文件已打开行（Shell 注入的 openItems，在前，
-//     │  顺序=打开顺序，不随聚焦/切基准重排）→ 任务列表（created_at 降序的
-//     │  显式排序，聚合序不可信；已打开的 tui 原位呈现已打开态，不再置顶——
-//     │  2026-08-29 用户裁定：打开一个任务不许让别的行挪位置）→「已结束」行
-//     │  （项目内全部终态任务，默认收起；终态后 30 分钟缓冲窗内的任务留在
-//     │  上面任务列表，不进这组）
-//     └「目录」小标题组：机器行（绿点 + 机器名 + 右侧箭头 + 悬停动作）
-//        └ 工作树子行（紧凑、缩进；点击选中，不再列任务——任务已上移任务组）
+//   项目行（项目名 + 进行中计数 + 右侧折叠箭头）
+//     ├「任务」组（小标题已移除，2026-08-29 用户裁定）：终端/文件已打开行（Shell
+//     │  注入的 openItems，在前，顺序=打开顺序，不随聚焦/切基准重排）→ 任务列表
+//     │  （created_at 降序的显式排序，聚合序不可信；已打开的 tui 原位呈现已打开
+//     │  态，不再置顶——2026-08-29 用户裁定：打开一个任务不许让别的行挪位置）
+//     ├「目录」小标题组：机器行（绿点 + 机器名 + 右侧箭头 + 悬停动作）
+//     │  └ 工作树子行（紧凑、缩进；点击选中，不再列任务——任务已上移任务组）
+//     └「已结束」行：项目内全部终态任务，默认收起；终态后 30 分钟缓冲窗内的
+//        任务留在上面任务列表，不进这组。挂项目块最底（2026-08-29 用户裁定，
+//        不再夹在任务列表与目录之间）
 // 任务不再挂目录下：跨机器平铺在任务组里（同一项目的活一眼看全），目录组只
 // 回答「代码在哪台机器的哪个目录」。已打开项与任务的行名同源（taskDisplayName /
 // tabTitle），左栏与顶部 chrome 不会各说各话。
@@ -542,8 +543,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
         </span>
       </div>
 
-      {/* 第二段：只有它滚 */}
-      <div data-testid="tree-scroll" className="min-h-0 flex-1 overflow-y-auto">
+      {/* 第二段：只有它滚。scrollbar-none 隐藏滚动条（滚轮/触控板不受影响）：
+          2026-08-29 用户裁定细条在纯白左栏里仍嫌突兀，索性不显示 */}
+      <div data-testid="tree-scroll" className="scrollbar-none min-h-0 flex-1 overflow-y-auto">
         <div className="relative mt-[7px] pl-4">
           <span aria-hidden className="absolute bottom-[30px] left-0 top-4 w-px bg-[#dedede]" />
 
@@ -624,14 +626,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 projectIndex === 0 ? 'border-[#737373]' : 'border-[#a3a3a3]',
               )}
             />
-            {/* 项目行（option-1 .project-head）：加粗项目名，右侧簇 = 派发任务图标 +
+            {/* 项目行（option-1 .project-head）：常规字重项目名（2026-08-29 用户裁定
+                去掉加粗，18px 本身已有层级），右侧簇 = 派发任务图标 +
                 进行中计数 + 折叠箭头（箭头在计数之后，原型 chev 位置） */}
             <div className="group relative">
               <button
                 type="button"
                 aria-expanded={project.locations.length > 0 ? pOpen : undefined}
                 onClick={() => toggle(pKey)}
-                className="flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-semibold hover:bg-[#fafafa]"
+                className="flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-normal hover:bg-[#fafafa]"
               >
                 <span className="flex min-w-0 items-center gap-2.5">
                   <FolderGit2
@@ -682,10 +685,8 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               <div className="relative ml-[7px] pl-4 pt-[6px]">
                 <span aria-hidden className="absolute bottom-[25px] left-0 top-0 w-px bg-[#dedede]" />
                 <div data-testid="task-group">
-                  {/* 「任务」小标题（option-1 .section-label） */}
-                  <div data-testid="task-group-head" className="flex min-h-6 items-center gap-2 text-[15px] font-medium text-muted-foreground">
-                    <span>任务</span>
-                  </div>
+                  {/* 「任务」小标题已移除（2026-08-29 用户裁定）：项目名下直接列任务，
+                      行本身的名字与圆点已足够定位，小标题是多余一层 */}
                   <div className="mt-[7px] mb-2">
                     {/* 终端/文件已打开行在前（Shell 注入顺序=打开顺序） */}
                     {openChromeRows.map((item) => (
@@ -803,49 +804,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         nameTestId="open-item-name"
                       />
                     ))}
-                    {visibleArchived.length > 0 && !(prefs.hideArchived && !searching) && (
-                      <div>
-                      {/* 「已结束」行（b288 .archive-row）：label + 计数 + 右侧箭头 */}
-                      <button
-                        type="button"
-                        data-testid="archived-row"
-                        aria-expanded={archivedOpen}
-                        title={ARCHIVED_TITLE}
-                        onClick={() => toggleArchived(archiveKey)}
-                        className="flex min-h-[30px] w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[12px] text-muted-foreground hover:bg-accent/60"
-                      >
-                        <Archive className="size-3.5 shrink-0 opacity-70" />
-                        <span className="min-w-0 flex-1 truncate">{ARCHIVED_LABEL}</span>
-                        <span className="shrink-0 font-mono text-[11px] tabular-nums">{visibleArchived.length}</span>
-                        <Arrow open={archivedOpen} onToggle={() => toggleArchived(archiveKey)} />
-                      </button>
-                      {archivedOpen && visibleArchived.map((task) => {
-                        const taskBase = baseForTask(task)
-                        return (
-                          <TaskRow
-                            key={'archived:' + task.id}
-                            kind="tui"
-                            label={taskDisplayName(task)}
-                            machine={task.machine}
-                            dotTone={stateTone(task.state)}
-                            indent
-                            draggable
-                            dragPayload={(e) => {
-                              e.dataTransfer.setData(DRAG_TASK_MIME, task.id)
-                              e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(taskBase))
-                              e.dataTransfer.effectAllowed = 'copy'
-                              console.debug('project_tree.drag.task', { taskId: task.id, project: taskBase?.projectName ?? '', machine: task.machine, path: taskBase?.path ?? '' })
-                            }}
-                            onClick={() => onOpenTask(taskBase, task.id)}
-                          />
-                        )
-                      })}
-                      </div>
-                    )}
                   </div>
                 </div>
 
                 <div data-testid="directory-group" className="mt-[7px]">
+                  {/* 「目录」小标题（option-1 .section-label）：任务组不再有小标题，
+                      这行是组与组之间仅存的节奏锚 */}
                   <div data-testid="dir-group-head" className="flex min-h-6 items-center gap-2 text-[15px] font-medium text-muted-foreground">
                     <span>目录</span>
                   </div>
@@ -1007,6 +971,48 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   })}
                   </div>
                 </div>
+
+                {/* 「已结束」行（b288 .archive-row）：label + 计数 + 右侧箭头。
+                    2026-08-29 用户裁定挂项目块最底——目录组之后，不再夹在任务列表
+                    与目录之间 */}
+                {visibleArchived.length > 0 && !(prefs.hideArchived && !searching) && (
+                  <div className="mt-[7px]">
+                    <button
+                      type="button"
+                      data-testid="archived-row"
+                      aria-expanded={archivedOpen}
+                      title={ARCHIVED_TITLE}
+                      onClick={() => toggleArchived(archiveKey)}
+                      className="flex min-h-[30px] w-full min-w-0 items-center gap-1.5 rounded-lg px-2 py-1 text-left text-[12px] text-muted-foreground hover:bg-accent/60"
+                    >
+                      <Archive className="size-3.5 shrink-0 opacity-70" />
+                      <span className="min-w-0 flex-1 truncate">{ARCHIVED_LABEL}</span>
+                      <span className="shrink-0 font-mono text-[11px] tabular-nums">{visibleArchived.length}</span>
+                      <Arrow open={archivedOpen} onToggle={() => toggleArchived(archiveKey)} />
+                    </button>
+                    {archivedOpen && visibleArchived.map((task) => {
+                      const taskBase = baseForTask(task)
+                      return (
+                        <TaskRow
+                          key={'archived:' + task.id}
+                          kind="tui"
+                          label={taskDisplayName(task)}
+                          machine={task.machine}
+                          dotTone={stateTone(task.state)}
+                          indent
+                          draggable
+                          dragPayload={(e) => {
+                            e.dataTransfer.setData(DRAG_TASK_MIME, task.id)
+                            e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(taskBase))
+                            e.dataTransfer.effectAllowed = 'copy'
+                            console.debug('project_tree.drag.task', { taskId: task.id, project: taskBase?.projectName ?? '', machine: task.machine, path: taskBase?.path ?? '' })
+                          }}
+                          onClick={() => onOpenTask(taskBase, task.id)}
+                        />
+                      )
+                    })}
+                  </div>
+                )}
               </div>
             )}
           </div>
