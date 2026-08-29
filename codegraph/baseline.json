@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "acc/b156.2-156.3",
-  "commit": "1a02bb6f7ff90dcf0d234a38ffe6366a123c682b",
+  "commit": "a6e38947b72e94d49bb9937d4826410b507fe892",
   "scannedAt": "2026-08-26",
   "generator": "ox-alpha-codegraph-b156.3-narrator-rebind"
  },
@@ -1049,6 +1049,11 @@
   },
   "k_scheduling_Service": {
    "label": "scheduling.Service",
+   "kind": "类型方法",
+   "domain": "d_scheduling"
+  },
+  "k_scheduling_Squad": {
+   "label": "scheduling.Squad",
    "kind": "类型方法",
    "domain": "d_scheduling"
   },
@@ -2962,8 +2967,8 @@
    "order": 369,
    "name": "DispatchReq",
    "file": "internal/agentd/manager.go",
-   "line": 406,
-   "summary": "DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数。",
+   "line": 405,
+   "summary": "DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数；B293 增可空 HomeDir。",
    "fields": [
     [
      "ProjectID",
@@ -3001,9 +3006,29 @@
      ""
     ],
     [
+     "HomeDir",
+     "*string",
+     "nil=字段缺席；指向空串=显式空值；U5 执法"
+    ],
+    [
      "Executor",
      "string",
      ""
+    ],
+    [
+     "Discipline",
+     "string",
+     "点名角色名；正文由协调者下发"
+    ],
+    [
+     "DisciplineText",
+     "string",
+     "协调者侧缝 1 组装好的纪律正文；本机收文即用"
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     "命中的账本版本，随任务落盘供回放"
     ],
     [
      "Model",
@@ -3024,6 +3049,16 @@
      "Base",
      "string",
      ""
+    ],
+    [
+     "ResolveDefaultBase",
+     "bool",
+     "空基线时解析 origin/HEAD"
+    ],
+    [
+     "LocalBaseBranch",
+     "bool",
+     "本地工作分支起点；禁止补拉"
     ],
     [
      "Worktree",
@@ -3494,8 +3529,8 @@
    "order": 1050,
    "name": "dispatchRequest",
    "file": "internal/agentd/server.go",
-   "line": 1096,
-   "summary": "dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传）。",
+   "line": 1146,
+   "summary": "dispatchRequest 是 POST /api/tasks 的请求体；B293 增可空 home_dir。",
    "fields": [
     [
      "ProjectID",
@@ -3533,6 +3568,11 @@
      ""
     ],
     [
+     "HomeDir",
+     "*string",
+     "JSON home_dir；缺席与显式空串可区分"
+    ],
+    [
      "Executor",
      "string",
      ""
@@ -3545,7 +3585,7 @@
     [
      "DisciplineText",
      "string",
-     "协调者侧缝 1 组装好的纪律正文；本机收文即用不再解析"
+     "协调者侧缝 1 组装好的正文；本机收文即用不再解析"
     ],
     [
      "DisciplineVersion",
@@ -3575,12 +3615,12 @@
     [
      "ResolveDefaultBase",
      "bool",
-     ""
+     "空基线时由目标侧解析项目默认分支"
     ],
     [
      "LocalBaseBranch",
      "bool",
-     ""
+     "本地工作分支起点；禁止补拉"
     ],
     [
      "Worktree",
@@ -5042,8 +5082,8 @@
    "order": 700,
    "name": "DispatchOpts",
    "file": "internal/client/client.go",
-   "line": 715,
-   "summary": "DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应；B229 增正文下发三件套。",
+   "line": 717,
+   "summary": "DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应；B229 增正文下发三件套；B293 增可空 HomeDir。",
    "fields": [
     [
      "ProjectID",
@@ -5079,6 +5119,11 @@
      "Name",
      "string",
      ""
+    ],
+    [
+     "HomeDir",
+     "*string",
+     "nil=字段缺席；指向空串=显式空值"
     ],
     [
      "Executor",
@@ -5123,12 +5168,12 @@
     [
      "ResolveDefaultBase",
      "bool",
-     ""
+     "空基线时由目标侧解析项目默认分支"
     ],
     [
      "LocalBaseBranch",
      "bool",
-     ""
+     "本地工作分支起点；禁止补拉"
     ],
     [
      "Worktree",
@@ -5285,9 +5330,9 @@
    "order": 26,
    "name": "dispatchRequest",
    "file": "cmd/card_dispatch.go",
-   "line": 32,
+   "line": 34,
    "signature": "type dispatchRequest struct {",
-   "summary": "card dispatch 的派发前参数包（测试缝 dispatchTransportWithOpts 的入参）。",
+   "summary": "card dispatch 的派发前参数包（测试缝 dispatchTransportWithOpts 的入参）；B293 增可空 homeDir。",
    "fields": [
     [
      "prompt",
@@ -5358,6 +5403,11 @@
      "base",
      "string",
      ""
+    ],
+    [
+     "homeDir",
+     "*string",
+     "nil=字段缺席；指向空串=显式空值"
     ],
     [
      "resolveDefaultBase",
@@ -7971,6 +8021,53 @@
    "summary": "updateKind 是 ACP sessionUpdate 的帧归类。",
    "modelKind": "dto"
   },
+  "m_hostapi_ProbeReply": {
+   "kind": "model",
+   "container": "k_hostapi_model",
+   "order": 11,
+   "name": "ProbeReply",
+   "file": "internal/hostapi/probe.go",
+   "line": 38,
+   "signature": "type ProbeReply struct {",
+   "fields": [
+    [
+     "Kind",
+     "ProbeKind",
+     "empty | logged_in | occupied"
+    ],
+    [
+     "Detail",
+     "string",
+     "给人看"
+    ]
+   ]
+  },
+  "m_hostapi_ProbeRequest": {
+   "kind": "model",
+   "container": "k_hostapi_model",
+   "order": 10,
+   "name": "ProbeRequest",
+   "file": "internal/hostapi/probe.go",
+   "line": 31,
+   "signature": "type ProbeRequest struct {",
+   "fields": [
+    [
+     "Path",
+     "string",
+     ""
+    ],
+    [
+     "CLI",
+     "string",
+     ""
+    ],
+    [
+     "Credential",
+     "string",
+     "standalone | main_home_sync"
+    ]
+   ]
+  },
   "m_hostapi_TurnRequest": {
    "kind": "model",
    "container": "k_hostapi_model",
@@ -8022,6 +8119,64 @@
      "到点即判回合失败；0=包内缺省 30 分钟"
     ]
    ]
+  },
+  "m_hostapi_WakeReply": {
+   "kind": "model",
+   "container": "k_hostapi_model",
+   "order": 13,
+   "name": "WakeReply",
+   "file": "internal/hostapi/probe.go",
+   "line": 62,
+   "signature": "type WakeReply struct {",
+   "fields": [
+    [
+     "Outcome",
+     "WakeOutcome",
+     "ready | need_login | quota | unreachable"
+    ],
+    [
+     "Detail",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_hostapi_WakeRequest": {
+   "kind": "model",
+   "container": "k_hostapi_model",
+   "order": 12,
+   "name": "WakeRequest",
+   "file": "internal/hostapi/probe.go",
+   "line": 55,
+   "signature": "type WakeRequest struct {",
+   "fields": [
+    [
+     "CLI",
+     "string",
+     ""
+    ],
+    [
+     "HomeDir",
+     "string",
+     ""
+    ],
+    [
+     "Credential",
+     "string",
+     "standalone | main_home_sync；空=standalone"
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ],
+    [
+     "Timeout",
+     "time.Duration",
+     "0=DefaultDetectTimeout"
+    ]
+   ],
+   "modelKind": "dto"
   },
   "m_hostproc_Spec": {
    "kind": "model",
@@ -9951,7 +10106,7 @@
    "name": "DispatchOpts",
    "file": "internal/ledgerstep/dispatch.go",
    "line": 27,
-   "summary": "DispatchOpts 是 Transport 的完整派发请求；B229 增 DisciplineText/DisciplineVersion 下发通道。",
+   "summary": "DispatchOpts 是 Transport 的完整派发请求；B229 增 DisciplineText/DisciplineVersion 下发通道；B293 增可空 HomeDir。",
    "fields": [
     [
      "Prompt",
@@ -10009,6 +10164,11 @@
      "点名角色名；仅透传与记账"
     ],
     [
+     "HomeDir",
+     "*string",
+     "nil=字段缺席；指向空串=显式空值"
+    ],
+    [
      "DisciplineText",
      "string",
      "协调者侧缝 1 组装好的正文，随请求下发"
@@ -10031,12 +10191,12 @@
     [
      "ResolveDefaultBase",
      "bool",
-     ""
+     "空基线时由目标侧解析项目默认分支"
     ],
     [
      "LocalBaseBranch",
      "bool",
-     ""
+     "本地工作分支起点；禁止补拉"
     ]
    ],
    "modelKind": "dto"
@@ -12341,6 +12501,38 @@
    "projScanned": true,
    "modelKind": "dto"
   },
+  "m_proto_CarrierDetectResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 204,
+   "name": "CarrierDetectResp",
+   "file": "internal/proto/scheduling.go",
+   "line": 152,
+   "signature": "type CarrierDetectResp struct {",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     ""
+    ],
+    [
+     "LastError",
+     "string",
+     ""
+    ],
+    [
+     "Version",
+     "int",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_proto_CarrierInput": {
    "kind": "model",
    "container": "k_proto_model",
@@ -12389,6 +12581,23 @@
    ],
    "modelKind": "dto"
   },
+  "m_proto_CarrierRunCommandResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 205,
+   "name": "CarrierRunCommandResp",
+   "file": "internal/proto/scheduling.go",
+   "line": 161,
+   "signature": "type CarrierRunCommandResp struct {",
+   "fields": [
+    [
+     "Command",
+     "string",
+     "服务端生成，客户端只复制"
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_proto_CarrierView": {
    "kind": "model",
    "container": "k_proto_model",
@@ -12397,7 +12606,7 @@
    "file": "internal/proto/scheduling.go",
    "line": 11,
    "signature": "type CarrierView struct {",
-   "summary": "CarrierView 是载体登记行（GET /api/squads 返回元素）。Version 是 registry 行版本，CAS 编辑回路（GET 取版 → PUT ?expect=）的唯一权威来源。",
+   "summary": "载体登记行；B293 增 status/last_error",
    "fields": [
     [
      "Name",
@@ -12437,6 +12646,16 @@
     [
      "Healthy",
      "bool",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     "四态英文键"
+    ],
+    [
+     "LastError",
+     "string",
      ""
     ],
     [
@@ -13652,6 +13871,109 @@
     ]
    ],
    "projScanned": true,
+   "modelKind": "dto"
+  },
+  "m_proto_HomeProbeReq": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 200,
+   "name": "HomeProbeReq",
+   "file": "internal/proto/scheduling.go",
+   "line": 126,
+   "signature": "type HomeProbeReq struct {",
+   "fields": [
+    [
+     "CLI",
+     "string",
+     ""
+    ],
+    [
+     "Path",
+     "string",
+     ""
+    ],
+    [
+     "Credential",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_HomeProbeResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 201,
+   "name": "HomeProbeResp",
+   "file": "internal/proto/scheduling.go",
+   "line": 133,
+   "signature": "type HomeProbeResp struct {",
+   "fields": [
+    [
+     "Kind",
+     "string",
+     "empty | logged_in | occupied"
+    ],
+    [
+     "Detail",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_HomeWakeReq": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 202,
+   "name": "HomeWakeReq",
+   "file": "internal/proto/scheduling.go",
+   "line": 139,
+   "signature": "type HomeWakeReq struct {",
+   "fields": [
+    [
+     "CLI",
+     "string",
+     ""
+    ],
+    [
+     "HomeDir",
+     "string",
+     ""
+    ],
+    [
+     "Credential",
+     "string",
+     "JSON credential；空值 omitempty"
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_HomeWakeResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 203,
+   "name": "HomeWakeResp",
+   "file": "internal/proto/scheduling.go",
+   "line": 146,
+   "signature": "type HomeWakeResp struct {",
+   "fields": [
+    [
+     "Outcome",
+     "string",
+     ""
+    ],
+    [
+     "Detail",
+     "string",
+     ""
+    ]
+   ],
    "modelKind": "dto"
   },
   "m_proto_InboxItem": {
@@ -15239,9 +15561,9 @@
    "order": 52,
    "name": "SquadInput",
    "file": "internal/proto/scheduling.go",
-   "line": 52,
+   "line": 57,
    "signature": "type SquadInput struct {",
-   "summary": "SquadInput 是 PUT 小队的请求体。Members 为空合法（岔口四：先建空队再补成员）。",
+   "summary": "SquadInput 是 PUT 小队的请求体；成员政策位随成员对象提交",
    "fields": [
     [
      "Name",
@@ -15255,15 +15577,35 @@
     ],
     [
      "Members",
-     "[]string",
+     "[]SquadMember",
      ""
+    ]
+   ],
+   "projScanned": true,
+   "modelKind": "dto"
+  },
+  "m_proto_SquadMember": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 23,
+   "name": "SquadMember",
+   "file": "internal/proto/scheduling.go",
+   "line": 23,
+   "signature": "type SquadMember struct {",
+   "summary": "小队成员的 wire 对象；0=不限以键缺席表达",
+   "fields": [
+    [
+     "Carrier",
+     "string",
+     "具体载体名"
     ],
     [
      "MaxConcurrency",
      "int",
-     ""
+     "成员政策位；omitempty"
     ]
    ],
+   "projScanned": true,
    "modelKind": "dto"
   },
   "m_proto_SquadPutResp": {
@@ -15295,9 +15637,9 @@
    "order": 24,
    "name": "SquadView",
    "file": "internal/proto/scheduling.go",
-   "line": 24,
+   "line": 30,
    "signature": "type SquadView struct {",
-   "summary": "SquadView 是小队登记行。MaxConcurrency=0（不限）以键缺席表达。",
+   "summary": "SquadView 是小队登记行；政策位落在每个成员对象上",
    "fields": [
     [
      "Name",
@@ -15311,12 +15653,7 @@
     ],
     [
      "Members",
-     "[]string",
-     ""
-    ],
-    [
-     "MaxConcurrency",
-     "int",
+     "[]SquadMember",
      ""
     ],
     [
@@ -15325,6 +15662,7 @@
      ""
     ]
    ],
+   "projScanned": true,
    "modelKind": "dto"
   },
   "m_proto_SquadsResp": {
@@ -16637,9 +16975,9 @@
    "order": 1,
    "name": "Carrier",
    "file": "internal/scheduling/scheduling.go",
-   "line": 46,
+   "line": 51,
    "signature": "type Carrier",
-   "summary": "Carrier 是一台机器上一个可领活的 CLI 档案（spec §3 载体实体归并后的形状）",
+   "summary": "Carrier 是一台机器上一个可领活的 CLI 档案；B293 增 Status/LastError，Healthy 双字段兼容",
    "fields": [
     [
      "Name",
@@ -16679,7 +17017,53 @@
     [
      "Healthy",
      "bool",
-     "健康位形状；限额探测落 roadmap，登记缺省 true"
+     "B293 废止中：Ticket 0 双字段兼容"
+    ],
+    [
+     "Status",
+     "CarrierStatus",
+     "一等四态"
+    ],
+    [
+     "LastError",
+     "string",
+     "最近一次检测说明；不参与准入"
+    ]
+   ]
+  },
+  "m_scheduling_CarrierStatus": {
+   "kind": "model",
+   "container": "k_scheduling_model",
+   "order": 10,
+   "name": "CarrierStatus",
+   "file": "internal/scheduling/status.go",
+   "line": 18,
+   "signature": "type CarrierStatus string",
+   "summary": "载体一等状态英文键：pending/online/quota/unreachable"
+  },
+  "m_scheduling_DetectEvidence": {
+   "kind": "model",
+   "container": "k_scheduling_model",
+   "order": 11,
+   "name": "DetectEvidence",
+   "file": "internal/scheduling/status.go",
+   "line": 67,
+   "signature": "type DetectEvidence struct {",
+   "fields": [
+    [
+     "Reachable",
+     "bool",
+     "机器/进程够得着"
+    ],
+    [
+     "NeedLogin",
+     "bool",
+     "需要登录或未见凭据"
+    ],
+    [
+     "Quota",
+     "bool",
+     "额度用尽"
     ]
    ]
   },
@@ -16746,9 +17130,9 @@
    "order": 2,
    "name": "Squad",
    "file": "internal/scheduling/scheduling.go",
-   "line": 66,
-   "signature": "type Squad",
-   "summary": "Squad 是编制：角色 + 成员载体引用集 + 并发政策位",
+   "line": 77,
+   "signature": "type Squad struct {",
+   "summary": "Squad 是编制：角色 + 成员载体引用集；政策位落在每个成员上",
    "fields": [
     [
      "Name",
@@ -16762,15 +17146,34 @@
     ],
     [
      "Members",
-     "[]string",
-     "成员载体引用集"
+     "[]SquadMember",
+     "成员载体与成员政策位"
+    ]
+   ],
+   "projScanned": true
+  },
+  "m_scheduling_SquadMember": {
+   "kind": "model",
+   "container": "k_scheduling_model",
+   "order": 3,
+   "name": "SquadMember",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 71,
+   "signature": "type SquadMember struct {",
+   "summary": "小队对一个具体载体的政策位；0=不限",
+   "fields": [
+    [
+     "Carrier",
+     "string",
+     "具体载体名"
     ],
     [
      "MaxConcurrency",
      "int",
-     "并发政策位；0=不限"
+     "成员政策位；0=不限"
     ]
-   ]
+   ],
+   "projScanned": true
   },
   "m_selfupdate_CLICheck": {
    "kind": "model",
@@ -18289,6 +18692,37 @@
     ]
    ]
   },
+  "m_web_api_scheduling_CarrierDetectResp": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 42,
+   "name": "CarrierDetectResp",
+   "file": "web/src/api/scheduling.ts",
+   "line": 200,
+   "signature": "export interface CarrierDetectResp {",
+   "fields": [
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "status",
+     "CarrierStatus",
+     ""
+    ],
+    [
+     "last_error",
+     "string | undefined",
+     ""
+    ],
+    [
+     "version",
+     "number",
+     ""
+    ]
+   ]
+  },
   "m_web_api_scheduling_CarrierInput": {
    "kind": "model",
    "container": "k_web_api_scheduling_model",
@@ -18335,6 +18769,22 @@
     ]
    ],
    "modelKind": "dto"
+  },
+  "m_web_api_scheduling_CarrierRunCommandResp": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 43,
+   "name": "CarrierRunCommandResp",
+   "file": "web/src/api/scheduling.ts",
+   "line": 207,
+   "signature": "export interface CarrierRunCommandResp {",
+   "fields": [
+    [
+     "command",
+     "string",
+     ""
+    ]
+   ]
   },
   "m_web_api_scheduling_CarrierView": {
    "kind": "model",
@@ -18386,12 +18836,21 @@
      ""
     ],
     [
+     "status",
+     "CarrierStatus | undefined",
+     ""
+    ],
+    [
+     "last_error",
+     "string | undefined",
+     ""
+    ],
+    [
      "version",
      "number",
      ""
     ]
-   ],
-   "modelKind": "dto"
+   ]
   },
   "m_web_api_scheduling_CoordinatorAttachInfo": {
    "kind": "model",
@@ -18514,6 +18973,95 @@
    ],
    "modelKind": "dto"
   },
+  "m_web_api_scheduling_HomeProbeReq": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 40,
+   "name": "HomeProbeReq",
+   "file": "web/src/api/scheduling.ts",
+   "line": 176,
+   "signature": "export interface HomeProbeReq {",
+   "fields": [
+    [
+     "cli",
+     "string",
+     ""
+    ],
+    [
+     "path",
+     "string",
+     ""
+    ],
+    [
+     "credential",
+     "string | undefined",
+     ""
+    ],
+    [
+     "machine",
+     "string | undefined",
+     "只进 query"
+    ]
+   ]
+  },
+  "m_web_api_scheduling_HomeProbeResp": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 41,
+   "name": "HomeProbeResp",
+   "file": "web/src/api/scheduling.ts",
+   "line": 183,
+   "signature": "export interface HomeProbeResp {",
+   "fields": [
+    [
+     "kind",
+     "string",
+     ""
+    ],
+    [
+     "detail",
+     "string | undefined",
+     ""
+    ]
+   ]
+  },
+  "m_web_api_scheduling_HomeWakeReq": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 41,
+   "name": "HomeWakeReq",
+   "file": "web/src/api/scheduling.ts",
+   "line": 189,
+   "signature": "export interface HomeWakeReq {",
+   "fields": [
+    [
+     "cli",
+     "string",
+     ""
+    ],
+    [
+     "home_dir",
+     "string",
+     ""
+    ],
+    [
+     "credential",
+     "string | undefined",
+     "空值不进请求体"
+    ],
+    [
+     "model",
+     "string | undefined",
+     ""
+    ],
+    [
+     "machine",
+     "string | undefined",
+     "只进 query"
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_web_api_scheduling_QueueEntry": {
    "kind": "model",
    "container": "k_web_api_scheduling_model",
@@ -18614,8 +19162,7 @@
    "order": 41,
    "name": "SquadInput",
    "file": "web/src/api/scheduling.ts",
-   "line": 41,
-   "signature": "export interface SquadInput {",
+   "line": 45,
    "fields": [
     [
      "name",
@@ -18629,13 +19176,30 @@
     ],
     [
      "members",
-     "string[]",
+     "SquadMember[]",
      ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_web_api_scheduling_SquadMember": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 19,
+   "name": "SquadMember",
+   "file": "web/src/api/scheduling.ts",
+   "line": 25,
+   "signature": "export interface SquadMember {",
+   "fields": [
+    [
+     "carrier",
+     "string",
+     "具体载体名"
     ],
     [
      "max_concurrency",
      "number | undefined",
-     ""
+     "成员政策位；缺席=不限"
     ]
    ],
    "modelKind": "dto"
@@ -18669,7 +19233,6 @@
    "name": "SquadView",
    "file": "web/src/api/scheduling.ts",
    "line": 18,
-   "signature": "export interface SquadView {",
    "fields": [
     [
      "name",
@@ -18683,12 +19246,7 @@
     ],
     [
      "members",
-     "string[]",
-     ""
-    ],
-    [
-     "max_concurrency",
-     "number | undefined",
+     "SquadMember[]",
      ""
     ],
     [
@@ -28462,6 +29020,16 @@
    "signature": "func (s *Server) SetConfigPath(p string) { s.cfgPath = p }",
    "summary": "SetConfigPath 注入配置文件路径，供写配置时落盘。"
   },
+  "n_agentd_Server_SetHostAPI": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 404,
+   "name": "Server.SetHostAPI",
+   "file": "internal/agentd/server.go",
+   "line": 2283,
+   "signature": "func (s *Server) SetHostAPI(h *hostapi.Host)",
+   "summary": "测试缝：注入进程承载门面"
+  },
   "n_agentd_Server_SetKeystone": {
    "kind": "func",
    "container": "k_agentd_Server",
@@ -28542,7 +29110,7 @@
    "order": 60,
    "name": "Server.SetupAutomation",
    "file": "internal/agentd/server.go",
-   "line": 2236,
+   "line": 2261,
    "signature": "func (s *Server) SetupAutomation(st *ledger.Store)",
    "params": [
     [
@@ -28551,7 +29119,7 @@
      "cmd 侧打开的账本库"
     ]
    ],
-   "summary": "装配自动化层：构造账本门面与两域服务、绑定各出站端口；绑定代码只允许出现在 target.json assembly 登记文件"
+   "summary": "装配自动化层；B293 起构造 s.hostAPI 并与 coordinatorRunner 共用"
   },
   "n_agentd_Server_ShutdownPtySessions": {
    "kind": "func",
@@ -29227,6 +29795,26 @@
    "line": 165,
    "signature": "func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request)"
   },
+  "n_agentd_Server_handleCarrierDetect": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 402,
+   "name": "Server.handleCarrierDetect",
+   "file": "internal/agentd/schedapi.go",
+   "line": 183,
+   "signature": "func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request)",
+   "summary": "POST /api/squads/carriers/{name}/detect：协调机写状态，不整段转发"
+  },
+  "n_agentd_Server_handleCarrierRunCommand": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 403,
+   "name": "Server.handleCarrierRunCommand",
+   "file": "internal/agentd/schedapi.go",
+   "line": 213,
+   "signature": "func (s *Server) handleCarrierRunCommand(w http.ResponseWriter, r *http.Request)",
+   "summary": "GET /api/squads/carriers/{name}/run-command：返回服务端命令"
+  },
   "n_agentd_Server_handleConsole": {
    "kind": "func",
    "container": "k_agentd_Server",
@@ -29845,6 +30433,26 @@
      "file": "internal/agentd/watchers_test.go:42"
     }
    ]
+  },
+  "n_agentd_Server_handleHomeProbe": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 400,
+   "name": "Server.handleHomeProbe",
+   "file": "internal/agentd/hostprobe.go",
+   "line": 38,
+   "signature": "func (s *Server) handleHomeProbe(w http.ResponseWriter, r *http.Request)",
+   "summary": "POST /api/host/probe：?machine= 先转发，再调 ProbeHome"
+  },
+  "n_agentd_Server_handleHomeWake": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 401,
+   "name": "Server.handleHomeWake",
+   "file": "internal/agentd/hostprobe.go",
+   "line": 65,
+   "signature": "func (s *Server) handleHomeWake(w http.ResponseWriter, r *http.Request)",
+   "summary": "POST /api/host/wake：?machine= 先转发，再调 WakeHome"
   },
   "n_agentd_Server_handleInbox": {
    "kind": "func",
@@ -39200,7 +39808,7 @@
    "order": 729,
    "name": "Client.Dispatch",
    "file": "internal/client/client.go",
-   "line": 757,
+   "line": 759,
    "signature": "func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error)",
    "params": [
     [
@@ -39215,11 +39823,15 @@
     ]
    ],
    "returns": "*proto.Task, error",
-   "summary": "Dispatch 派发一个新任务到 agentd 执行。",
+   "summary": "Dispatch 派发一个新任务到 agentd 执行，并在手搭 JSON map 中保留 home_dir 三态。",
    "tests": [
     {
      "name": "TestDispatchErrorBodyNotTruncated",
      "file": "internal/client/client_test.go:560"
+    },
+    {
+     "name": "TestDispatchSerializesHomeDirThreeStates",
+     "file": "internal/client/client_test.go:618"
     }
    ]
   },
@@ -54320,6 +54932,49 @@
    "returns": "error",
    "summary": "writeProcInfo 落恢复凭据（0600：含 secret）。"
   },
+  "n_hostapi_DefaultDetectTimeout": {
+   "kind": "func",
+   "container": "k_hostapi_fn",
+   "order": 11,
+   "name": "DefaultDetectTimeout",
+   "file": "internal/hostapi/probe.go",
+   "line": 18,
+   "signature": "const DefaultDetectTimeout = 30 * time.Second",
+   "summary": "WakeHome 缺省超时"
+  },
+  "n_hostapi_DefaultTurnTimeout": {
+   "kind": "func",
+   "container": "k_hostapi_fn",
+   "order": 10,
+   "name": "DefaultTurnTimeout",
+   "file": "internal/hostapi/driver.go",
+   "line": 45,
+   "signature": "const DefaultTurnTimeout = 30 * time.Minute",
+   "summary": "RunTurn 缺省超时；检测不得使用"
+  },
+  "n_hostapi_Host_ProbeHome": {
+   "kind": "func",
+   "container": "k_hostapi_Host",
+   "order": 2,
+   "name": "Host.ProbeHome",
+   "file": "internal/hostapi/probe.go",
+   "line": 68,
+   "signature": "func (h *Host) ProbeHome(ctx context.Context, req ProbeRequest) (ProbeReply, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "生命周期"
+    ],
+    [
+     "req",
+     "ProbeRequest",
+     "路径与 CLI"
+    ]
+   ],
+   "returns": "ProbeReply, error",
+   "summary": "只读探测本机隔离 HOME；Ticket 0 恒返回 ErrUnavailable"
+  },
   "n_hostapi_Host_RunTurn": {
    "kind": "func",
    "container": "k_hostapi_Host",
@@ -54342,6 +54997,29 @@
    ],
    "returns": "TurnReply, error",
    "summary": "无头拉起/续接一个 CLI 会话进程喂 prompt 收回合输出；骨架期恒返回 ErrUnavailable。只暴露承载能力，派发状态机不经此门面"
+  },
+  "n_hostapi_Host_WakeHome": {
+   "kind": "func",
+   "container": "k_hostapi_Host",
+   "order": 3,
+   "name": "Host.WakeHome",
+   "file": "internal/hostapi/probe.go",
+   "line": 75,
+   "signature": "func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "生命周期"
+    ],
+    [
+     "req",
+     "WakeRequest",
+     "CLI 与 HOME"
+    ]
+   ],
+   "returns": "WakeReply, error",
+   "summary": "有时限唤起；不是 RunTurn；Ticket 0 恒返回 ErrUnavailable"
   },
   "n_hostapi_New": {
    "kind": "func",
@@ -67221,6 +67899,35 @@
    "signature": "func writeExtracted(r io.Reader, dest string) error {",
    "summary": "writeExtracted 把归档条目的内容写到 dest，带大小上限。"
   },
+  "n_scheduling_CarrierStatus_Label": {
+   "kind": "func",
+   "container": "k_scheduling_fn",
+   "order": 20,
+   "name": "CarrierStatus.Label",
+   "file": "internal/scheduling/status.go",
+   "line": 34,
+   "signature": "func (s CarrierStatus) Label() string",
+   "returns": "string",
+   "summary": "返回四态的用户可见中文名"
+  },
+  "n_scheduling_DefaultHomeDir": {
+   "kind": "func",
+   "container": "k_scheduling_fn",
+   "order": 21,
+   "name": "DefaultHomeDir",
+   "file": "internal/scheduling/status.go",
+   "line": 51,
+   "signature": "func DefaultHomeDir(name string) string",
+   "params": [
+    [
+     "name",
+     "string",
+     "载体名"
+    ]
+   ],
+   "returns": "string",
+   "summary": "用户可见默认 HOME 串 ~/.handoff/home/\u003c名\u003e；空白名字返回空串"
+  },
   "n_scheduling_New": {
    "kind": "func",
    "container": "k_scheduling_fn",
@@ -67239,6 +67946,47 @@
    "returns": "*Service",
    "summary": "用绑定的注册表端口构造编制域服务；内存里不留任何权威计数"
   },
+  "n_scheduling_PutCarrier": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 7,
+   "name": "Service.PutCarrier",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 133,
+   "signature": "func (s *Service) PutCarrier(c Carrier, expect int) error",
+   "params": [
+    [
+     "c",
+     "Carrier",
+     "载体"
+    ],
+    [
+     "expect",
+     "int",
+     "CAS 期望版本；0=新建"
+    ]
+   ],
+   "returns": "error",
+   "summary": "CAS 写载体；B293 废止 Healthy 翻真（实现票），Ticket 0 行为未改"
+  },
+  "n_scheduling_RunCommand": {
+   "kind": "func",
+   "container": "k_scheduling_fn",
+   "order": 22,
+   "name": "RunCommand",
+   "file": "internal/scheduling/status.go",
+   "line": 61,
+   "signature": "func RunCommand(c Carrier) string",
+   "params": [
+    [
+     "c",
+     "Carrier",
+     "载体"
+    ]
+   ],
+   "returns": "string",
+   "summary": "生成运行按钮要复制的命令 HOME=\u003chome_dir\u003e \u003ccli\u003e"
+  },
   "n_scheduling_Service_Admit": {
    "kind": "func",
    "container": "k_scheduling_Service",
@@ -67256,6 +68004,34 @@
    ],
    "returns": "Binding, error",
    "summary": "解析加两级准入：小队有位且载体有位才放行；满员返回 ErrNoSlot 调用方转排队"
+  },
+  "n_scheduling_Service_ApplyDetect": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 6,
+   "name": "Service.ApplyDetect",
+   "file": "internal/scheduling/status.go",
+   "line": 80,
+   "signature": "func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Carrier, error)",
+   "params": [
+    [
+     "name",
+     "string",
+     "载体名"
+    ],
+    [
+     "ev",
+     "DetectEvidence",
+     "本机观察"
+    ],
+    [
+     "detail",
+     "string",
+     "last_error 原文"
+    ]
+   ],
+   "returns": "Carrier, error",
+   "summary": "按四态表写载体状态；Ticket 0 恒返回 ErrDetectUnwired"
   },
   "n_scheduling_Service_Enqueue": {
    "kind": "func",
@@ -67322,7 +68098,7 @@
    "order": 3,
    "name": "Service.Release",
    "file": "internal/scheduling/scheduling.go",
-   "line": 216,
+   "line": 255,
    "signature": "func (s *Service) Release(squadName, carrierName string) error",
    "params": [
     [
@@ -67337,7 +68113,35 @@
     ]
    ],
    "returns": "error",
-   "summary": "归还两级名额；幂等，计数到 0 不再下探"
+   "summary": "按小队+载体成员政策键和载体物理键归还名额；幂等"
+  },
+  "n_scheduling_Squad_UnmarshalJSON": {
+   "kind": "func",
+   "container": "k_scheduling_Squad",
+   "order": 86,
+   "name": "Squad.UnmarshalJSON",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 86,
+   "signature": "func (q *Squad) UnmarshalJSON(data []byte) error {",
+   "params": [
+    [
+     "data",
+     "[]byte",
+     "JSON 字节"
+    ]
+   ],
+   "returns": "error",
+   "summary": "兼容 B156.3 的存量成员字符串形状。旧队级 max_concurrency 刻意不出现在目标形状中，因此由 encoding/json 忽略；旧成员逐个规范化为不限政策位。"
+  },
+  "n_scheduling_admitInto": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 8,
+   "name": "admitInto",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 343,
+   "signature": "func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error)",
+   "summary": "按成员顺序尝试原子准入；B293 改判 status==online（实现票），Ticket 0 仍读 Healthy"
   },
   "n_selfupdate_CLICheckPath": {
    "kind": "func",
@@ -73741,6 +74545,36 @@
    "returns": "Promise\u003cCoordinatorAttachInfo\u003e",
    "summary": "参数：完整 cardId 与 workdir；返回：AttachInfo；不改写服务端三元组。"
   },
+  "n_web_api_scheduling_defaultHomeDir": {
+   "kind": "func",
+   "container": "k_web_api_scheduling",
+   "order": 204,
+   "name": "defaultHomeDir",
+   "file": "web/src/api/scheduling.ts",
+   "line": 171,
+   "signature": "export function defaultHomeDir(name: string): string",
+   "summary": "与 scheduling.DefaultHomeDir 同一格式"
+  },
+  "n_web_api_scheduling_detectCarrier": {
+   "kind": "func",
+   "container": "k_web_api_scheduling",
+   "order": 202,
+   "name": "detectCarrier",
+   "file": "web/src/api/scheduling.ts",
+   "line": 148,
+   "signature": "export const detectCarrier = (name: string) =\u003e",
+   "summary": "POST /api/squads/carriers/{name}/detect"
+  },
+  "n_web_api_scheduling_getCarrierRunCommand": {
+   "kind": "func",
+   "container": "k_web_api_scheduling",
+   "order": 203,
+   "name": "getCarrierRunCommand",
+   "file": "web/src/api/scheduling.ts",
+   "line": 155,
+   "signature": "export const getCarrierRunCommand = (name: string) =\u003e",
+   "summary": "GET 运行命令；调用方只复制"
+  },
   "n_web_api_scheduling_getCoordinatorStatus": {
    "kind": "func",
    "container": "k_web_api_scheduling",
@@ -73810,8 +74644,8 @@
    "order": 109,
    "name": "omitZeroConcurrency",
    "file": "web/src/api/scheduling.ts",
-   "line": 109,
-   "signature": "function omitZeroConcurrency\u003cT extends CarrierInput | SquadInput\u003e(input: T): T {",
+   "line": 111,
+   "signature": "function omitZeroConcurrency\u003cT extends CarrierInput\u003e(input: T): T {",
    "params": [
     [
      "input",
@@ -73820,6 +74654,33 @@
     ]
    ],
    "returns": "T"
+  },
+  "n_web_api_scheduling_omitZeroSquadConcurrency": {
+   "kind": "func",
+   "container": "k_web_api_scheduling",
+   "order": 127,
+   "name": "omitZeroSquadConcurrency",
+   "file": "web/src/api/scheduling.ts",
+   "line": 127,
+   "signature": "function omitZeroSquadConcurrency(input: SquadInput): SquadInput {",
+   "params": [
+    [
+     "input",
+     "SquadInput",
+     ""
+    ]
+   ],
+   "returns": "SquadInput"
+  },
+  "n_web_api_scheduling_probeHome": {
+   "kind": "func",
+   "container": "k_web_api_scheduling",
+   "order": 200,
+   "name": "probeHome",
+   "file": "web/src/api/scheduling.ts",
+   "line": 132,
+   "signature": "export const probeHome = (input: HomeProbeReq) =\u003e",
+   "summary": "POST /api/host/probe；machine 走 query"
   },
   "n_web_api_scheduling_putCarrier": {
    "kind": "func",
@@ -73894,6 +74755,16 @@
    ],
    "returns": "Promise\u003cCoordinatorAttachReleaseResp\u003e",
    "summary": "参数：完整 cardId；返回：{ok:true}；路径段必须 encodeURIComponent。"
+  },
+  "n_web_api_scheduling_wakeHome": {
+   "kind": "func",
+   "container": "k_web_api_scheduling",
+   "order": 201,
+   "name": "wakeHome",
+   "file": "web/src/api/scheduling.ts",
+   "line": 140,
+   "signature": "export const wakeHome = (input: HomeWakeReq) =\u003e",
+   "summary": "POST /api/host/wake；machine 走 query"
   },
   "n_web_api_ws_connectEvents": {
    "kind": "func",
@@ -97897,10 +98768,6 @@
    "n_web_api_client_putJSON"
   ],
   [
-   "n_web_api_scheduling_putSquad",
-   "n_web_api_scheduling_omitZeroConcurrency"
-  ],
-  [
    "n_web_api_scheduling_launchCoordinator",
    "n_web_api_client_postJSON"
   ],
@@ -98027,6 +98894,50 @@
   [
    "n_web_app_shell_coordinatorBase",
    "n_web_app_tree_workspaceBase"
+  ],
+  [
+   "n_agentd_Server_handleHomeProbe",
+   "n_agentd_Server_forwardIfRequested"
+  ],
+  [
+   "n_agentd_Server_handleHomeProbe",
+   "n_hostapi_Host_ProbeHome"
+  ],
+  [
+   "n_agentd_Server_handleHomeWake",
+   "n_agentd_Server_forwardIfRequested"
+  ],
+  [
+   "n_agentd_Server_handleHomeWake",
+   "n_hostapi_Host_WakeHome"
+  ],
+  [
+   "n_agentd_Server_handleCarrierDetect",
+   "n_scheduling_Service_ApplyDetect"
+  ],
+  [
+   "n_agentd_Server_handleCarrierRunCommand",
+   "n_scheduling_RunCommand"
+  ],
+  [
+   "n_web_api_scheduling_probeHome",
+   "n_web_api_client_postJSON"
+  ],
+  [
+   "n_web_api_scheduling_wakeHome",
+   "n_web_api_client_postJSON"
+  ],
+  [
+   "n_web_api_scheduling_detectCarrier",
+   "n_web_api_client_postJSON"
+  ],
+  [
+   "n_web_api_scheduling_getCarrierRunCommand",
+   "n_web_api_client_request"
+  ],
+  [
+   "n_web_api_scheduling_putSquad",
+   "n_web_api_scheduling_omitZeroSquadConcurrency"
   ]
  ],
  "implements": [
@@ -100020,6 +100931,11 @@
   [
    "m_proto_CoordinatorAttachReleaseResp",
    "m_web_api_scheduling_CoordinatorAttachReleaseResp",
+   "twin"
+  ],
+  [
+   "m_proto_SquadMember",
+   "m_web_api_scheduling_SquadMember",
    "twin"
   ]
  ],
