@@ -13,6 +13,7 @@ import (
 // §15 澄清 2：launchRound 必须消费入参，防空 spec 回潮）。
 type specRecorder struct {
 	launches []keysclient.SessionSpec
+	resumes  []keysclient.SessionRef
 }
 
 func (r *specRecorder) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error) {
@@ -21,6 +22,7 @@ func (r *specRecorder) Launch(spec keysclient.SessionSpec, prompt string) (keysc
 }
 
 func (r *specRecorder) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error) {
+	r.resumes = append(r.resumes, ref)
 	return keysclient.TurnResult{SessionID: ref.SessionID, Output: "ok"}, nil
 }
 
@@ -82,5 +84,62 @@ func TestWakeWithoutSessionConsumesSpec(t *testing.T) {
 	if got.CLI != want.CLI || got.HomeDir != want.HomeDir ||
 		got.Model != want.Model || got.Workdir != want.Workdir {
 		t.Fatalf("无绑定 Wake spec 未消费：\n got=%+v\nwant=%+v", got, want)
+	}
+}
+
+// TestWakeResumeCarriesIsolatedHome 锁 B299：首次拉起不是重建；续接即使
+// Wake spec 没带 HOME，也必须沿用 Launch 写入 SessionRef 的隔离环境。
+// 真机二次唤醒刷「载体已更换」就是这条丢了。
+func TestWakeResumeCarriesIsolatedHome(t *testing.T) {
+	rec := &specRecorder{}
+	svc := New(rec, nil, stubLedgerView{}, nil)
+	want := keysclient.SessionSpec{CLI: "opencode", HomeDir: "/home/coord", Model: "fast", Workdir: "/w"}
+	opened, err := svc.LaunchForCard(context.Background(), "B1", "card_create", want)
+	if err != nil {
+		t.Fatalf("LaunchForCard: %v", err)
+	}
+	if opened.Rebuilt {
+		t.Fatalf("首次拉起 Rebuilt=%v，want false", opened.Rebuilt)
+	}
+	if _, err := svc.Wake(context.Background(), "B1", []WakeEvent{
+		{Kind: WakeMessage, Card: "B1", Summary: "hi"},
+	}, keysclient.SessionSpec{CLI: "opencode"}); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if len(rec.resumes) != 1 {
+		t.Fatalf("Resume 次数=%d，want 1", len(rec.resumes))
+	}
+	got := rec.resumes[0]
+	if got.SessionID != opened.SessionID {
+		t.Fatalf("续接 session=%q，want %q", got.SessionID, opened.SessionID)
+	}
+	if got.HomeDir != want.HomeDir || got.Workdir != want.Workdir || got.Model != want.Model {
+		t.Fatalf("续接丢了隔离环境：\n got=%+v\nwant HomeDir/Workdir/Model=%s/%s/%s",
+			got, want.HomeDir, want.Workdir, want.Model)
+	}
+}
+
+// TestWakeResumeOverlaysCurrentCarrierHome 当前载体 HOME 变了，续接跟 Wake
+// 入参走，不钉死第一次 Launch 的目录。
+func TestWakeResumeOverlaysCurrentCarrierHome(t *testing.T) {
+	rec := &specRecorder{}
+	svc := New(rec, nil, stubLedgerView{}, nil)
+	if _, err := svc.LaunchForCard(context.Background(), "B1", "card_create", keysclient.SessionSpec{
+		CLI: "opencode", HomeDir: "/old", Model: "a", Workdir: "/oldw",
+	}); err != nil {
+		t.Fatalf("LaunchForCard: %v", err)
+	}
+	fresh := keysclient.SessionSpec{CLI: "opencode", HomeDir: "/home/coord", Model: "fast", Workdir: "/w"}
+	if _, err := svc.Wake(context.Background(), "B1", []WakeEvent{
+		{Kind: WakeMessage, Card: "B1", Summary: "hi"},
+	}, fresh); err != nil {
+		t.Fatalf("Wake: %v", err)
+	}
+	if len(rec.resumes) != 1 {
+		t.Fatalf("Resume 次数=%d，want 1", len(rec.resumes))
+	}
+	got := rec.resumes[0]
+	if got.HomeDir != fresh.HomeDir || got.Workdir != fresh.Workdir || got.Model != fresh.Model {
+		t.Fatalf("Wake spec 未覆盖续接环境：%+v", got)
 	}
 }

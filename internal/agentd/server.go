@@ -2395,10 +2395,21 @@ func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (k
 }
 
 func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error) {
-	reply, err := r.h.RunTurn(context.Background(), hostapi.TurnRequest{
-		CLI: ref.CLI, SessionID: ref.SessionID, Prompt: prompt,
-	})
+	reply, err := r.h.RunTurn(context.Background(), resumeTurnRequest(ref, prompt))
 	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, err
+}
+
+// resumeTurnRequest 把 SessionRef 上的续接环境映射进 RunTurn。HOME 空时
+// 子进程继承 agentd 默认 HOME，隔离会话必然找不到——调用方必须带上。
+func resumeTurnRequest(ref keysclient.SessionRef, prompt string) hostapi.TurnRequest {
+	if ref.HomeDir == "" {
+		slog.Default().Warn("协调者续接未带隔离 HOME，将继承 agentd 默认 HOME",
+			"component", "agentd", "cli", ref.CLI, "session", ref.SessionID)
+	}
+	return hostapi.TurnRequest{
+		CLI: ref.CLI, SessionID: ref.SessionID, Prompt: prompt,
+		HomeDir: ref.HomeDir, Workdir: ref.Workdir, Model: ref.Model,
+	}
 }
 
 // roomNarrator 是叙事落点的房间实现：B156.2 房间制已落地，按 keysclient.Narrator

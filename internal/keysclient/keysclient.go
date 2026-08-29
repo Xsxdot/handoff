@@ -20,11 +20,16 @@ type SessionSpec struct {
 	Env     []string // 追加环境变量 KEY=VALUE（已解析已展开；值不得进日志）
 }
 
-// SessionRef 指向一个可 resume 的持久会话。
+// SessionRef 指向一个可 resume 的持久会话。HomeDir/Workdir/Model 是续接环境：
+// 会话文件落在隔离 HOME 里，丢掉它们 Resume 会在 agentd 默认 HOME 里找不到
+// session，每次唤醒都走重建（B299 真机）。
 type SessionRef struct {
 	CLI       string `json:"cli,omitempty"`
 	SessionID string `json:"session_id"`
 	Machine   string `json:"machine,omitempty"`
+	HomeDir   string `json:"home_dir,omitempty"`
+	Workdir   string `json:"workdir,omitempty"`
+	Model     string `json:"model,omitempty"`
 }
 
 // TurnResult 是一个唤醒回合的产出。

@@ -204,25 +204,7 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 		s.log.Warn("环节派发跳过纪律解析：目标机未定", "node", node.Name)
 		return discipline.ResolvedDiscipline{}, nil
 	}
-	var cap *bool
-	if isLocalMachine(target) {
-		yes := true
-		cap = &yes
-	} else {
-		cl, err := s.pool.For(target)
-		if err != nil {
-			s.log.Warn("环节派发前取得目标机客户端失败", "target", target, "cause", err)
-		} else {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-			defer cancel()
-			status, serr := cl.Status(ctx)
-			if serr != nil {
-				s.log.Warn("环节派发前能力位探活失败", "target", target, "cause", serr)
-			} else {
-				cap = status.DisciplinesSupported
-			}
-		}
-	}
+	cap := s.disciplineTargetCap(target)
 	lookup := func(n string) (int, string, error) {
 		d, gerr := s.ledger.GetDiscipline(n, 0)
 		if gerr != nil {
@@ -240,6 +222,32 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 	s.log.Info("环节派发纪律正文已就绪", "node", node.Name, "target", target,
 		"discipline", name, "version", res.Version, "bytes", len(res.Text))
 	return res, nil
+}
+
+// disciplineTargetCap 读目标机的 DisciplinesSupported。
+//
+// 本机（local / 本机 / 本机 hostname）就是当前进程：能力位与 Status 上报同源
+// （当前二进制恒 true）。"local" 不是 config.Targets 里的远程机，pool.For 会
+// 稳定报未登记；把 nil 当不支持会让本机点火被 B229 拒发闸误杀（B299 真机）。
+// 远程机仍走探活；失败保持 nil，按不支持处置。
+func (s *Server) disciplineTargetCap(target string) *bool {
+	if isLocalMachine(target) {
+		yes := true
+		return &yes
+	}
+	cl, err := s.pool.For(target)
+	if err != nil {
+		s.log.Warn("环节派发前取得目标机客户端失败", "target", target, "cause", err)
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	status, serr := cl.Status(ctx)
+	if serr != nil {
+		s.log.Warn("环节派发前能力位探活失败", "target", target, "cause", serr)
+		return nil
+	}
+	return status.DisciplinesSupported
 }
 
 func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {

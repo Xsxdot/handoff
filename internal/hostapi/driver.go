@@ -117,7 +117,7 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	cmd.Stderr = &stderr
 
 	log().Info("协调者回合开始", "cli", req.CLI, "mode", resumeOrNew(req),
-		"workdir", req.Workdir, "timeout", timeout.String(),
+		"home_dir", req.HomeDir, "workdir", req.Workdir, "timeout", timeout.String(),
 		"prompt_bytes", len(req.Prompt)) // 提示词与环境变量值永不进日志，只记长度
 	started := time.Now()
 	if err := cmd.Start(); err != nil {

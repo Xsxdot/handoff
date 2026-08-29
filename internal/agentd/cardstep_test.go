@@ -91,6 +91,19 @@ func waitFor(t *testing.T, predicate func() bool) {
 // TestStartCardStepRejectsSecondInFlight 同一张卡同时只允许一个环节在飞。
 // 为什么必须拦：两个 merge 环节并发跑同一个仓路径，会在同一个工作区里
 // 互相踩 git 状态——而那一侧的失败信息只会是一句莫名其妙的 git 报错。
+// TestDisciplineTargetCapLocalDoesNotNeedPool 本机不是 config.Targets 里的远程
+// 机。pool 未装配时若走 pool.For("local") 会炸或拿 nil 能力位，B229 拒发闸会
+// 把本机点火误杀。本机能力位与 Status 上报同源，恒 true。
+func TestDisciplineTargetCapLocalDoesNotNeedPool(t *testing.T) {
+	s := &Server{} // pool 故意不装
+	for _, name := range []string{"local", "本机"} {
+		cap := s.disciplineTargetCap(name)
+		if cap == nil || !*cap {
+			t.Fatalf("本机目标 %q 能力位 = %v，want true（不得依赖 target 池）", name, cap)
+		}
+	}
+}
+
 func TestStartCardStepRejectsSecondInFlight(t *testing.T) {
 	s := newStepTestServer(t)
 	release := holdCardStep(t, s, "B1")

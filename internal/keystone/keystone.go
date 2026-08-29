@@ -104,6 +104,10 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec k
 	if !ok {
 		return s.launchRound(card, prompt, spec, false)
 	}
+	ref = overlayResumeRef(ref, spec)
+	s.mu.Lock()
+	s.sessions[card] = ref
+	s.mu.Unlock()
 	result, err := s.runner.Resume(ref, prompt)
 	if err == nil {
 		return RoundResult{Woke: true, SessionID: result.SessionID, Output: result.Output}, nil
@@ -172,7 +176,10 @@ func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec, r
 	if err != nil {
 		return RoundResult{}, err
 	}
-	ref := keysclient.SessionRef{CLI: spec.CLI, SessionID: result.SessionID}
+	ref := keysclient.SessionRef{
+		CLI: spec.CLI, SessionID: result.SessionID,
+		HomeDir: spec.HomeDir, Workdir: spec.Workdir, Model: spec.Model,
+	}
 	s.mu.Lock()
 	s.sessions[card] = ref
 	s.mu.Unlock()
@@ -181,7 +188,25 @@ func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec, r
 	if rebuild && s.narrator != nil {
 		_ = s.narrator.Say(card, "载体已更换：新载体承接同一协调者身份（重建四步已执行）")
 	}
-	return RoundResult{Woke: true, SessionID: result.SessionID, Rebuilt: true, Output: result.Output}, nil
+	return RoundResult{Woke: true, SessionID: result.SessionID, Rebuilt: rebuild, Output: result.Output}, nil
+}
+
+// overlayResumeRef 把 Wake 入参里非空的续接环境盖到已绑定的 ref 上。
+// Launch 写入的 HOME 是底；组装点刚解析的当前载体 spec 优先。
+func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) keysclient.SessionRef {
+	if spec.CLI != "" {
+		ref.CLI = spec.CLI
+	}
+	if spec.HomeDir != "" {
+		ref.HomeDir = spec.HomeDir
+	}
+	if spec.Workdir != "" {
+		ref.Workdir = spec.Workdir
+	}
+	if spec.Model != "" {
+		ref.Model = spec.Model
+	}
+	return ref
 }
 
 // briefing 把开场评估要读的东西拼成回合简报：卡字段、基线新鲜度、本次积压
