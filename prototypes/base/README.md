@@ -105,6 +105,14 @@ agentd 拆 api/core 展示嵌套）。走查过程中的全局树+图/地铁图/
 样本落在 benchmarking 组，该组原单条任务行让位）；搜索期间不显示，全局
 「没有匹配」反馈已覆盖那层。
 
+「从浏览器打开」按钮（B266）已于 **2026-08-30** 直接回流进 `pages/board.html`
+（无 fork 副本——真实页面上的一枚既有工具条增量，走「真机验收通过后回灌基准」的路）。
+工具条右端新增一枚 `btn sm`（真实页里占 `ml-auto` 最右位、健康点跟在其后），标注
+**桌面 UA 专用**（`isDesktopShell()` 才渲染）：点它经桌面薄壳同源校验、向 agentd 签
+一次性 ticket，再用系统浏览器打开同一 `/cards` 整页（已登录），桌面仍停在本页；
+浏览器形态没有这枚按钮，健康点独占右端。静态原型无法切 UA，按钮画在页面上、
+HTML 注释与这里说明对照真实浏览器页时忽略它。
+
 ## 镜像基准
 
 `web/src/app/` 下：`shell/Shell.tsx`（三栏与路由）、`tree/{ProjectTree,TreePrefsMenu,NewWorktreeDialog}.tsx`

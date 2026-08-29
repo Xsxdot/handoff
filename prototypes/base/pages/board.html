@@ -208,6 +208,10 @@
           <input class="input sm" id="fSearch" placeholder="搜 B 号 / 标题" style="width:160px">
           <button class="btn sm" id="fNeeds" style="border-color:#fde68a;color:var(--amber)">⚑ 需要你 <span id="needsCnt">5</span></button>
           <div class="spacer"></div>
+          <!-- B266（2026-08-30 回流）：桌面 UA 专用（isDesktopShell()），占了真实页的 ml-auto 最右位；
+               点它经薄壳同源校验签一次性 ticket 后用系统浏览器打开同一 /cards 整页，桌面仍留本页。
+               浏览器形态无此按钮——对照真实浏览器页时忽略它，健康点独占右端。 -->
+          <button class="btn sm" id="openInBrowserBtn" title="从浏览器打开当前工作项页">从浏览器打开</button>
           <span class="health-dot" title="镜像正常 · 3 台在线（异常时此处会展开告警文字）"></span>
           <a class="btn sm" href="flows.html">⚙ 流程</a>
           <button class="btn sm primary" id="newItemBtn">＋ 新建工作项</button>
