@@ -53,7 +53,8 @@
    "legacyBudget": 1,
    "entries": [
     "proto 实体"
-   ]
+   ],
+   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。"
   },
   {
    "from": "d_cli",
@@ -123,7 +124,8 @@
    "legacyBudget": 0,
    "entries": [
     "proto 实体"
-   ]
+   ],
+   "legacyBudgetNote": "B294：agentd preview HTTP/WS 门面只消费冻结 DTO；owner truth 与编排实现留在 gateway。"
   },
   {
    "from": "d_gateway",
@@ -137,7 +139,11 @@
    "from": "d_gateway",
    "to": "d_transport",
    "legacyBudget": 9,
-   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。"
+   "entries": [
+    "targetclient.Pool",
+    "client.Client"
+   ],
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。"
   },
   {
    "from": "d_gateway",
@@ -227,7 +233,8 @@
    "legacyBudget": 0,
    "entries": [
     "proto 实体"
-   ]
+   ],
+   "legacyBudgetNote": "B294：transport Client 的 preview REST/WS 镜像只经 proto DTO；不反向依赖 gateway。"
   },
   {
    "from": "d_workspace",

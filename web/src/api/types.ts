@@ -198,6 +198,42 @@ export interface ProjectTreeResp {
   machines?: MachineStatus[]
 }
 
+// PreviewOpenReq 是执行机发布预览的请求；port/path 二选一，via 只作用于本会话。
+export interface PreviewOpenReq {
+  port?: number
+  path?: string
+  via?: string[]
+}
+
+// PreviewSession 是 owner 持久化字段的 TS 镜像；machine 由协调者给远端快照盖章。
+export interface PreviewSession {
+  id: string
+  entry_url: string
+  via?: string[]
+  cwd: string
+  origin_url?: string
+  branch?: string
+  created_at: string
+  ttl_seconds: number
+  machine?: string
+}
+
+export interface PreviewListResp {
+  sessions: PreviewSession[]
+  machines?: MachineStatus[]
+}
+
+export type PreviewEventType = 'preview.created' | 'preview.closed'
+
+export interface PreviewEvent {
+  type: PreviewEventType
+  session: PreviewSession
+  machine?: string
+}
+
+export interface PreviewOpenResp { opened: boolean }
+export interface PreviewCloseResp { ok: boolean }
+
 // ProjectBranch 是一个本地分支；worktree 非空表示已被那个工作树检出，
 // 不能再开第二棵树（git 的硬约束，不是我们加的规矩）。
 export interface ProjectBranch {

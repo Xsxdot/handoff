@@ -187,3 +187,10 @@ export function wsCloseReason(ev: CloseEvent): { message: string; code: number }
       return { message: `连接关闭（code ${ev.code}）`, code: ev.code }
   }
 }
+
+// previewEventsURL 是浏览器侧唯一的本机预览事件入口；不带 machine，浏览器永远
+// 连接当前 agentd，由它汇总 owner 事件。
+export function previewEventsURL(): string {
+  const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+  return `${proto}//${window.location.host}/ws/previews`
+}
