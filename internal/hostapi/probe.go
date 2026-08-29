@@ -1,36 +1,32 @@
-// probe.go —— 本机隔离 HOME 的路径探测与一次性唤起（B293）。
+// probe.go —— 本机隔离 HOME 的路径探测与检测回合（B293 探测 + B295 检测）。
 //
-// 职责：问本机某路径相对某 CLI 是空 / 已登录 / 非空无凭据；以及用该 HOME 有时限
-// 地唤起对应执行者一次（空白 HOME 落执行者自己的文件）。只暴露本机能力。
+// 职责：问本机某路径相对某 CLI 是空 / 已登录 / 非空无凭据；以及用该 HOME 走
+// RunTurn 发一条固定短消息，按回合结局写成 WakeOutcome。只暴露本机能力。
 //
-// 边界：不写编制域状态（那是 scheduling.ApplyDetect）；不发模型 prompt（不是
-// RunTurn）；不进入交互登录。跨机由 gateway 经 ?machine= 转发到对端同名端点。
+// 边界：不写编制域状态（那是 scheduling.ApplyDetect）；不绑卡、不经 keystone、
+// 不进派发状态机；不在控制台拉登录 TUI。跨机由 gateway 经 ?machine= 转发。
 package hostapi
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"time"
 )
 
 // DefaultDetectTimeout 是 WakeRequest.Timeout 为 0 时的缺省上界。
-// 长于各 CLI serve 就绪（opencode 10s / grok 15s / codex 20s），短于
-// DefaultTurnTimeout（30 分钟），避免把控制台卡在登录交互或一次付费回合里。
-const DefaultDetectTimeout = 30 * time.Second
+// B295 改为 3 分钟：真发一条消息，30s 经常回不来；仍远短于 DefaultTurnTimeout。
+const DefaultDetectTimeout = 3 * time.Minute
+
+// DetectPrompt 是检测回合的固定短消息。成功看回合有没有输出，不匹配回复原文。
+const DetectPrompt = "ping"
 
 // userHomeDir 是目标 Host 进程的 HOME 解析缝；测试替换它以证明 ~ 不由协调机
 // 预先展开。生产实现使用 os.UserHomeDir。
 var userHomeDir = os.UserHomeDir
-
-// commandContext 是 WakeHome 的进程启动缝；默认使用标准库的上下文进程，
-// 测试可替换它而不触碰 RunTurn。
-var commandContext = exec.CommandContext
 
 // ProbeKind 是路径探测的三类结果（与设置页提示一一对应）。
 type ProbeKind string
@@ -99,12 +95,12 @@ func (h *Host) ProbeHome(ctx context.Context, req ProbeRequest) (ProbeReply, err
 	return state.reply, nil
 }
 
-// WakeHome 用目标机展开后的隔离 HOME 唤起对应 CLI 一次。只在目标目录本身
-// empty 且 Credential 为 main_home_sync 时供给表内凭据；不进入 RunTurn、
-// 不发送 prompt、不等待交互登录。Timeout=0 使用 DefaultDetectTimeout。
+// WakeHome 用目标机展开后的隔离 HOME 跑一次检测回合。只在目标目录本身
+// empty 且 Credential 为 main_home_sync 时先拷表内凭据，再经 RunTurn 发
+// DetectPrompt。Timeout=0 使用 DefaultDetectTimeout。不进控制台登录 TUI。
 func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error) {
 	started := time.Now()
-	log().Info("开始唤起载体 HOME", "cli", req.CLI,
+	log().Info("开始检测载体 HOME", "cli", req.CLI,
 		"main_home_sync", req.Credential == "main_home_sync", "timeout", req.Timeout.String())
 	state, err := h.inspectHome(ctx, ProbeRequest{
 		Path: req.HomeDir, CLI: req.CLI, Credential: req.Credential,
@@ -126,13 +122,13 @@ func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error)
 		return WakeReply{}, fmt.Errorf("hostapi: 创建目标 HOME %q: %w", state.path, err)
 	}
 
-	reply, err := h.runWake(ctx, req, state.path, state.reply.Kind)
+	reply, err := h.runWake(ctx, req, state.path)
 	if err != nil {
-		log().Error("唤起载体 HOME 失败", "cli", req.CLI, "path", state.path,
+		log().Error("检测载体 HOME 失败", "cli", req.CLI, "path", state.path,
 			"elapsed", time.Since(started).String(), "cause", err)
 		return WakeReply{}, err
 	}
-	log().Info("唤起载体 HOME 完成", "cli", req.CLI, "path", state.path,
+	log().Info("检测载体 HOME 完成", "cli", req.CLI, "path", state.path,
 		"outcome", reply.Outcome, "elapsed", time.Since(started).String())
 	return reply, nil
 }
@@ -302,85 +298,46 @@ func (h *Host) copyMainCredential(ctx context.Context, targetHome, cli string) (
 	return true, nil
 }
 
-// runWake 执行元数据级、无 prompt 的 CLI 启动。成功后重新探测目标 HOME：有
-// 文件判据的 CLI 必须确实看到凭据；无判据的 CLI 则只能把命令成功作为 ready，
-// 而 ProbeHome 仍永远不会返回 logged_in。
-func (h *Host) runWake(ctx context.Context, req WakeRequest, targetHome string, before ProbeKind) (WakeReply, error) {
-	cli := filepath.Base(req.CLI)
-	if cli != "opencode" && cli != "claude" && cli != "grok" && cli != "codex" {
-		return WakeReply{}, fmt.Errorf("hostapi: 载体 CLI %q 未实装，无法无交互唤起", req.CLI)
-	}
-	args := []string{"--version"}
+// runWake 用隔离 HOME 走 RunTurn 发 DetectPrompt。凭据文件与 --version 不参与
+// 成败；未知错误和未实装都映射为 WakeReply，好让 detect 编排能 ApplyDetect。
+func (h *Host) runWake(ctx context.Context, req WakeRequest, targetHome string) (WakeReply, error) {
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = DefaultDetectTimeout
 	}
-	runCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	cmd := commandContext(runCtx, req.CLI, args...)
-	cmd.Env = buildEnv(TurnRequest{HomeDir: targetHome})
-	configureProcess(cmd)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout = &stdout
-	cmd.Stderr = &stderr
-	started := time.Now()
-	log().Info("启动无 prompt 载体探测", "cli", cli, "target", targetHome,
-		"timeout", timeout.String(), "before", before)
-	if err := cmd.Start(); err != nil {
-		return WakeReply{}, fmt.Errorf("hostapi: 拉起载体 CLI %q: %w", req.CLI, err)
-	}
-	done := make(chan struct{})
-	go watchDeadline(runCtx, cmd.Process, done)
-	waitErr := cmd.Wait()
-	close(done)
-	elapsed := time.Since(started)
-	if runCtx.Err() != nil {
-		return WakeReply{}, fmt.Errorf("hostapi: 唤起 CLI %q 超时/取消（elapsed=%s）: %w",
-			req.CLI, elapsed, runCtx.Err())
-	}
-	output := strings.TrimSpace(stdout.String() + "\n" + stderr.String())
-	if waitErr != nil {
-		return classifyWakeFailure(waitErr, output), nil
-	}
-	after, err := h.ProbeHome(ctx, ProbeRequest{Path: targetHome, CLI: req.CLI, Credential: req.Credential})
+	cli := filepath.Base(req.CLI)
+	log().Info("开始检测回合", "cli", cli, "target", targetHome, "timeout", timeout.String())
+	reply, err := h.RunTurn(ctx, TurnRequest{
+		CLI: req.CLI, HomeDir: targetHome, Model: req.Model,
+		Prompt: DetectPrompt, Timeout: timeout,
+	})
 	if err != nil {
-		return WakeReply{}, fmt.Errorf("hostapi: 唤起后探测 CLI %q: %w", req.CLI, err)
+		log().Warn("检测回合失败", "cli", cli, "target", targetHome, "cause", err)
+		return classifyTurnError(err), nil
 	}
-	if after.Kind == ProbeLoggedIn || !h.hasCredentialEvidence(req.CLI) {
-		return WakeReply{Outcome: WakeReady, Detail: after.Detail}, nil
+	if strings.TrimSpace(reply.Output) == "" {
+		log().Warn("检测回合无输出", "cli", cli, "session_id", reply.SessionID)
+		return WakeReply{Outcome: WakeUnreachable, Detail: "回合无输出"}, nil
 	}
-	return WakeReply{Outcome: WakeNeedLogin, Detail: after.Detail}, nil
+	log().Info("检测回合成功", "cli", cli, "session_id", reply.SessionID,
+		"output_bytes", len(reply.Output))
+	return WakeReply{Outcome: WakeReady, Detail: "回合成功"}, nil
 }
 
-// hasCredentialEvidence 与 ProbeHome 共用注入表，避免无文件判据的 CLI 被误报为
-// 未登录；这不改变 ProbeHome 对 claude/Windows opencode 的永不 logged_in 约束。
-func (h *Host) hasCredentialEvidence(cli string) bool {
-	_, ok := h.resolveCredentialPath(cli)
-	return ok
-}
-
-// classifyWakeFailure 将无 prompt CLI 的非零退出映射为白名单结局。未知文本保守
-// 归 unreachable；不把任何未知退出当 ready。
-func classifyWakeFailure(waitErr error, output string) WakeReply {
-	lower := strings.ToLower(output)
+// classifyTurnError 把 RunTurn 错误收成四态结局，不返回 error。未知文本保守
+// 归 unreachable；不把任何未知失败当 ready。
+func classifyTurnError(err error) WakeReply {
+	detail := err.Error()
+	if len(detail) > 1024 {
+		detail = detail[:1024]
+	}
+	lower := strings.ToLower(detail)
 	switch {
 	case strings.Contains(lower, "quota"), strings.Contains(lower, "rate limit"), strings.Contains(lower, "too many requests"):
-		return WakeReply{Outcome: WakeQuota, Detail: wakeDetail(output, waitErr)}
+		return WakeReply{Outcome: WakeQuota, Detail: detail}
 	case strings.Contains(lower, "login"), strings.Contains(lower, "auth"), strings.Contains(lower, "unauthorized"), strings.Contains(lower, "not authenticated"):
-		return WakeReply{Outcome: WakeNeedLogin, Detail: wakeDetail(output, waitErr)}
+		return WakeReply{Outcome: WakeNeedLogin, Detail: detail}
 	default:
-		return WakeReply{Outcome: WakeUnreachable, Detail: wakeDetail(output, waitErr)}
+		return WakeReply{Outcome: WakeUnreachable, Detail: detail}
 	}
-}
-
-// wakeDetail 限制 CLI 错误回显长度；日志不记录该内容，避免把凭据或 token 写入
-// 结构化日志。保留短摘要供控制台给出可行动反馈。
-func wakeDetail(output string, waitErr error) string {
-	if output == "" {
-		output = waitErr.Error()
-	}
-	if len(output) > 1024 {
-		output = output[:1024]
-	}
-	return output
 }

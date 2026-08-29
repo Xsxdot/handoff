@@ -97,7 +97,7 @@ var ErrDetectUnwired // Ticket 0 骨架哨兵；实现票接线后正常路径�
 ### 3.2 本机承载（`internal/hostapi/probe.go`）
 
 ```go
-const DefaultDetectTimeout = 30 * time.Second
+const DefaultDetectTimeout = 3 * time.Minute // B295 废止 30s：检测改为真发一条消息
 type ProbeKind string // empty | logged_in | occupied
 func (h *Host) ProbeHome(ctx context.Context, req ProbeRequest) (ProbeReply, error)
 func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error)
@@ -108,7 +108,7 @@ type WakeRequest struct {
 // Ticket 0 恒返回 hostapi.ErrUnavailable
 ```
 
-`WakeHome` **不是** `RunTurn`：不准喂模型 prompt、不准把控制台卡在登录交互。Timeout=0 用 `DefaultDetectTimeout`。
+`WakeHome` **经** `RunTurn` 发固定短消息 `ping`（B295）；仍不准在控制台拉登录 TUI。Timeout=0 用 `DefaultDetectTimeout`（3 分钟）。禁止 `--version`，禁止凭据文件存在当作 ready。
 
 ### 3.3 HTTP（gateway）
 
@@ -229,9 +229,9 @@ type DispatchReq struct {
 **检测 / 一次性唤起**
 
 33. `POST /api/squads/carriers/{name}/detect` 是写状态的入口（与按钮同一条）。
-34. 检测有时限；`WakeRequest.Timeout==0` 时用 `DefaultDetectTimeout`（30s）。
+34. 检测有时限；`WakeRequest.Timeout==0` 时用 `DefaultDetectTimeout`（3 分钟；B295 废止 30s）。
 35. 检测不得在控制台里进入交互登录。
-36. 检测不得调用 `hostapi.Host.RunTurn`（不准喂模型 prompt）。
+36. 检测必须调用 `hostapi.Host.RunTurn` 发 `DetectPrompt`（`ping`）；禁止 `--version`；禁止凭据文件存在当作 ready（B295）。
 37. 空白 HOME 被对应执行者落下自己的文件（边界型，真机补）。
 38. 能跑且凭据可用 → `status=online`。
 39. 识别为额度用尽 → `status=quota`。
@@ -293,7 +293,7 @@ type DispatchReq struct {
 5. **`main_home_sync` 供给收进既有 `WakeRequest`/`HomeWakeReq`，不另开 sync-creds 面。** 被否：导出 `Host.SyncMainHomeCreds` 并新增 `POST /api/host/sync-creds?machine=`。检测本来就是「供给（若需要）+ 唤起」的一次用户动作；新跨机端点会扩大网关与客户端面，且 probe 仍必须只读。后人看到读写分离会想拆开，但这会让同一动作多一条路由与编排状态。
 6. **小队 HOME 使用单个可空 `home_dir` 字段穿过既有派发链，不先造通用 env 通道。** 被否：把 HOME 塞进通用 `env` 列表。执行机没有编制账本，必须由协调者把载体 `HomeDir` 带过边界；可空指针同时保留缺席/显式空的三态，而通用 env 面更大、语义也更宽。
 
-`DefaultDetectTimeout=30s` 只满足「真取舍」，改数值不难逆转，不记拍板。
+`DefaultDetectTimeout=3m`（B295 从 30s 改来）：真发一条消息需要模型往返，30s 经常回不来。
 
 ## 8. 可执行冻结
 
