@@ -287,3 +287,14 @@ Ticket 0：probe/wake/detect 因空壳 → 503。
 - 金样本：`TestDefaultHomeDir` / `TestRunCommand` / `TestCarrierStatusLabels` / `TestCarrierRunCommandThroughWire` 含在上列 ok 中。
 - 图：`codegraph validate` issues=null；`codegraph check --view cards-B293-charter-3` fails=[]；`codegraph resolve --doc docs/superpowers/specs/b293-contract.md --view cards-B293-charter-3` 17 锚 0 坏（11 ok / 6 moved）。随本提交冻结。
 - 本轮未碰 handoff CLI、未起新 executor。
+
+## 12. 拆解节点边界澄清（2026-08-29 出稿，已拍板）
+
+核对中做出的边界澄清。拍板 2026-08-29，形状以 `docs/superpowers/specs/b293-breakdown.md` 稿首为准。本段**仍不新增冻结条目**——第 52 / 56 条的签名补冻归下一轮 contract。
+
+1. **`DetectEvidence` 标志互斥时的迁移优先级**（不退回、不新开字段）：按 §5 条 38–42 的顺序套用——`!Reachable` 先于 `Quota` 先于 `NeedLogin`，三者皆假且 `Reachable` → `online`。gateway 不得在编排层另写一份四态表。
+2. **凭据相对路径表仍只此一份**：探测必须调用 `internal/toolchain/detect.go#credRelPathFor`，禁止在 hostapi 另造表。该函数今日未导出；`target.json` 无 `d_execution → d_maintenance`。**拍板：组装点注入导出函数，不加 `d_execution → d_maintenance` 边。**
+3. **第 56 条供给动作无对应签名**：`WakeRequest` / `HomeWakeReq` 无 `Credential`，Host 无独立拷贝方法，HTTP 无 sync 端点。probe 只读（条 22–23）接不住。**拍板：退回 contract，方案 A——给 `WakeRequest` / `HomeWakeReq` 增加 `Credential`（空=standalone）；`WakeHome` 在隔离 empty 且 `credential=main_home_sync` 时先拷 §4 表内文件再唤起。不新开 HTTP 路径。occupied 永不覆盖。**
+4. **第 52 条小队派发消费 HomeDir 无传输字段**：协调者拉起已走 `scheddrain` 读载体；`startCardStep` 只用 Binding 三元组。`DispatchOpts` / `client.Dispatch` 手搭 map / `dispatchRequest` / `DispatchReq` 均无 `home_dir`。执行机 `Manager.Dispatch` 无编制账本，跨机无法反查。**拍板：退回 contract，方案 A——`POST /api/tasks` 增可空 `home_dir`（空/缺席=不覆写执行机 HOME），穿过手搭 map，用可空区分缺席 vs `""` vs 非空。**
+5. **空 `status` 存量行的准入语义未冻**：Ticket 0 双字段下现网行是 `Healthy=true` 且 `status` omitempty 缺席。**拍板：不退回。`admitInto` 把空 status 当 pending 跳过；GET 仍 omitempty 缺席；控制台把缺席画成未上线。不扫库写成 online。不违反条 12。**
+6. **`d_gateway` 图类型是 boundary**：本卡 HTTP 形状（handler 解码/编码、503/404）机内可闭环；跨机 `?machine=` 与 CLI 唤起的行为半边归真机清单。不改图类型。

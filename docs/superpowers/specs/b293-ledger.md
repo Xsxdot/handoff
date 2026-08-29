@@ -31,3 +31,20 @@
 - 2026-08-29 本轮未碰 handoff CLI、未起新 executor。
 - 2026-08-29 放弃：把 detect 塞进 PutCarrier（与 CAS 写绑超时进程）；给 detect 套 forwardIfRequested（会写错机账本）；默认 HOME 跟 DataDir（已登记串会漂）。
 
+## breakdown 开工（cards/B293-charter-4 @ 3921d60e）
+
+- 2026-08-29 上游核：spec 头部「已批准」；契约头部「随本提交冻结」+ 冻结提交 `3921d60e`（`git log -1` 原文 `contract(B293): freeze isolated HOME and four-state carrier`）。
+- 2026-08-29 法定产出：`docs/superpowers/specs/b293-breakdown.md`。轻档：序贯单元，不 card split；岔口一律待拍板。
+- 2026-08-29 图：`codegraph/best.json` 顶层 15 域。本卡触及 `d_scheduling`(logic) / `d_execution`(boundary，子域 host+adapters) / `d_gateway`(boundary) / `d_web`(logic) / `d_protocol`(logic) / `d_maintenance`(toolchain) / 条件触及 `d_ledger`+`d_transport`(DispatchOpts 透传)。`k_agentd_Server`→d_gateway，`k_agentd_Manager`→d_orchestration，`k_hostapi_*`→d_execution_host，`k_toolchain_*`→d_maintenance，`k_web_app_settings`→d_web_admin（parent d_web）。
+- 2026-08-29 `codegraph --view cards-B293-charter-3 sym n_scheduling_PutCarrier`：domain d_scheduling，file scheduling.go:133，status added。`sym ProbeHome` → `n_hostapi_Host_ProbeHome` d_execution_host probe.go:68。`entity CarrierView` twins proto↔web/src/api/scheduling.ts；`projScanned: false`（警告勿当序列化边界清单）。无 view 时 `sym scheduling.Service.PutCarrier` 报「不在图中」——Ticket 0 符号只在卡片视图。
+- 2026-08-29 包规模（亲自数）：`internal/agentd` 顶层非测试源文件 70、行 23147（递归 74 文件 / 23167 行）——命中实例化清单 20,000 行红线与「≥40 文件无子包」。scheduling 3 源+3 测；hostapi 5 源+1 测；codex 14 源；grok 13 源。
+- 2026-08-29 API 事实：`PutCarrier` 仍 `if !c.Healthy { c.Healthy = true }`（scheduling.go:140-142）；`admitInto` 仍跳过 `!carrier.Healthy`（:354-356）。`ApplyDetect` / `ProbeHome` / `WakeHome` Ticket 0 空壳。`handleCarrierDetect` 读载体后调 `ApplyDetect(name, DetectEvidence{}, "")`，不调 WakeHome、不填 Version。`WakeRequest`/`HomeWakeReq` 无 Credential。`credRelPathFor` 未导出，仅 `internal/toolchain/detect.go` 包内使用。`target.json` 有 `d_execution → d_protocol` 无 `d_execution → d_maintenance`。
+- 2026-08-29 API 事实：协调者拉起 `scheddrain.go` 已写 `carrier.HomeDir` 进 SessionSpec。`startCardStep` 只用 Binding 的 Target/Executor/Model，不读 HomeDir。`DispatchOpts` / `client.Dispatch` 手搭 map / `dispatchRequest` / `DispatchReq` 均无 home_dir。执行机 `Manager.Dispatch` 无编制账本。
+- 2026-08-29 判断：冻结 §5 条 56（main_home_sync 拷贝）无 Host 方法也无 HTTP 路径；条 52 小队派发消费 HomeDir 无传输字段。两处都是新接缝，拆解不私加，提案退回 contract。凭据表复用不得另造，且不能 hostapi import toolchain。
+- 2026-08-29 项目缺陷族清单 `2026-08-21-handoff-instantiation-checklist.md` §3：五族 + 序列化边界 + 枚举白名单 + webview 候选族。顶部**没有**「基线版本：charter@<commit>」——对不上基线标注，本拆解仍按项目清单加严答题（含承重安全属性）。
+- 2026-08-29 形态权威存在：`prototypes/b293-carrier-home/pages/settings.html` 四态药丸、检测/运行、默认 HOME、三类探测提示。
+- 2026-08-29 本轮未碰 handoff CLI、未起新 executor、未写实现代码。
+- 2026-08-29 grok `7fc06468` 出稿后 ACP `context canceled`，零提交；工作树残留未跟踪 `b293-breakdown.md` 与契约 §12 / 台账草稿。协调者回收并拍板。
+- 2026-08-29 拍板：岔口一 A（WakeRequest.Credential，退回 contract）、二 A（组装点注入，不改 target）、三 B（圈文件集，不插竖切）、四 A（进程 HOME=载体 HomeDir + grokhome 仍在）、五 空 status 当 pending 不扫库、六 A（POST /api/tasks home_dir，退回 contract）。
+- 2026-08-29 退回原因（API 事实，协调者复核）：`WakeRequest` 无 Credential（`internal/hostapi/probe.go`）；`HomeWakeReq` 无 Credential（`internal/proto/scheduling.go`）；`DispatchOpts`/`DispatchReq`/`client.Dispatch` 手搭 map 均无 home_dir；`startCardStep`/`stepTransport` 不读 `carrier.HomeDir`；`scheddrain` 拉起半边已写 HomeDir。
+
