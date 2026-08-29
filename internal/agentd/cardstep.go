@@ -205,17 +205,22 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 		return discipline.ResolvedDiscipline{}, nil
 	}
 	var cap *bool
-	cl, err := s.pool.For(target)
-	if err != nil {
-		s.log.Warn("环节派发前取得目标机客户端失败", "target", target, "cause", err)
+	if isLocalMachine(target) {
+		yes := true
+		cap = &yes
 	} else {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
-		status, serr := cl.Status(ctx)
-		if serr != nil {
-			s.log.Warn("环节派发前能力位探活失败", "target", target, "cause", serr)
+		cl, err := s.pool.For(target)
+		if err != nil {
+			s.log.Warn("环节派发前取得目标机客户端失败", "target", target, "cause", err)
 		} else {
-			cap = status.DisciplinesSupported
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			status, serr := cl.Status(ctx)
+			if serr != nil {
+				s.log.Warn("环节派发前能力位探活失败", "target", target, "cause", serr)
+			} else {
+				cap = status.DisciplinesSupported
+			}
 		}
 	}
 	lookup := func(n string) (int, string, error) {
