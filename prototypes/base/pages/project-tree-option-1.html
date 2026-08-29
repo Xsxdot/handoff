@@ -73,9 +73,9 @@
         min-height: 0;
         overflow-y: auto;
         padding: 13px 18px 20px 26px;
-        scrollbar-width: thin;
-        scrollbar-color: #d4d4d4 transparent;
+        scrollbar-width: none;
       }
+      .sidebar-scroll::-webkit-scrollbar { display: none; }
 
       .search {
         display: flex;
@@ -192,7 +192,7 @@
         padding: 0;
         border-radius: 8px;
         font-size: 18px;
-        font-weight: 700;
+        font-weight: 400;
       }
 
       .project-head:hover { background: #fafafa; }
@@ -707,7 +707,6 @@
                 <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">3</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
               </button>
               <div class="project-content">
-                <div class="section-label"><span>任务</span></div>
                 <div class="tasks-stack">
                   <button class="task-row is-selected is-open" type="button" aria-current="true" data-open="true" data-search="你是 charter 流程的节点 本机">
                     <span class="task-icon"><span class="icon" data-icon="dispatch-task" aria-hidden="true"></span></span>
@@ -762,7 +761,6 @@
                 <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">1</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
               </button>
               <div class="project-content">
-                <div class="section-label"><span>任务</span></div>
                 <div class="tasks-stack">
                   <button class="task-row" type="button" data-search="评测跑批 batch3 linux-01">
                     <span class="task-icon"><span class="icon" data-icon="dispatch-task" aria-hidden="true"></span></span>
@@ -805,7 +803,6 @@
                 <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">2</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
               </button>
               <div class="project-content">
-                <div class="section-label"><span>任务</span></div>
                 <div class="tasks-stack">
                   <button class="task-row" type="button" data-search="bash master 5 本机">
                     <span class="task-icon"><span class="icon" data-icon="terminal" aria-hidden="true"></span></span>

@@ -93,6 +93,15 @@ agentd 拆 api/core 展示嵌套）。走查过程中的全局树+图/地铁图/
 `hidden` 为 true、页面上照常显示，属性检查看不出来。同文件早先给
 `.running-line[hidden]` 打过同款补丁，这次按同一约定补齐。
 
+左栏三处形态已于 **2026-08-29** 直接回流进 `pages/project-tree-option-1.html`
+（无 fork 副本——用户在真机上逐项裁定后当场拍板，走的还是「真机验收通过后
+回灌基准」的路）：项目名 `font-weight: 700→400`（18px 字号本身已有层级，
+加粗在纯白左栏里过重）；「任务」小标题移除（项目名下直接列任务，行名与
+状态圆点已足够定位）；`.sidebar-scroll` 滚动条隐藏（细滑块在纯白底上仍嫌
+突兀，`scrollbar-width: none` + `::-webkit-scrollbar` 双写法，滚动能力保留）。
+「已结束」行及其挂项目块底的位置属 b288 fork（确认中），base 尚未镜像该行，
+随该 fork 的 finish 一并回流。
+
 ## 镜像基准
 
 `web/src/app/` 下：`shell/Shell.tsx`（三栏与路由）、`tree/{ProjectTree,TreePrefsMenu,NewWorktreeDialog}.tsx`
