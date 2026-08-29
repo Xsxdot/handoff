@@ -170,6 +170,58 @@ func TestConcurrentAdmitRespectsTwoLevelCaps(t *testing.T) {
 	}
 }
 
+// TestAdmitAcrossSquadsRespectsSharedCarrierCap 锁 S1 的跨小队物理上限：两支
+// 小队各自拥有同一载体的充足政策位，但载体物理位仍是全局封顶；成功数不能因
+// 政策位按小队拆开而超过 carrier/c1 的物理上限。
+func TestAdmitAcrossSquadsRespectsSharedCarrierCap(t *testing.T) {
+	t.Helper()
+	st, err := ledger.Open(filepath.Join(t.TempDir(), "shared-carrier.db"))
+	if err != nil {
+		t.Fatalf("打开临时账本: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	facade := ledgerapi.New(st)
+	svc := scheduling.New(facadeRegistry{f: facade})
+	if err := svc.PutCarrier(scheduling.Carrier{
+		Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 2,
+	}, 0); err != nil {
+		t.Fatalf("登记共享载体: %v", err)
+	}
+	for _, squad := range []string{"s1", "s2"} {
+		if err := svc.PutSquad(scheduling.Squad{
+			Name: squad, Role: scheduling.RoleExecutor,
+			Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}},
+		}, 0); err != nil {
+			t.Fatalf("登记小队 %s: %v", squad, err)
+		}
+	}
+
+	success := 0
+	for i := 0; i < 8; i++ {
+		squad := "s1"
+		if i%2 == 1 {
+			squad = "s2"
+		}
+		_, err := svc.Admit(scheduling.IgnitionRequest{
+			Card: fmt.Sprintf("B-shared-%d", i), Squad: squad, Actor: "test",
+		})
+		if err == nil {
+			success++
+			continue
+		}
+		if !errors.Is(err, scheduling.ErrNoSlot) {
+			t.Fatalf("小队 %s 第 %d 次准入: %v", squad, i+1, err)
+		}
+	}
+	if success != 2 {
+		t.Fatalf("共享载体成功数=%d，期望等于物理上限 2", success)
+	}
+	if got := runningCount(t, facade, "carrier/c1"); got != 2 {
+		t.Fatalf("共享载体物理计数=%d，want 2", got)
+	}
+}
+
 // TestSquadMemberWireShapeAndLegacyRead 可执行冻结成员政策位的 JSON 形状，并锁住
 // 存量 members:["carrier"] 的无损迁移：旧队级上限不进入新模型，旧成员政策按不限读入。
 func TestSquadMemberWireShapeAndLegacyRead(t *testing.T) {
@@ -218,11 +270,46 @@ func TestAdmissionAndReleaseLogsCarryCapacityContext(t *testing.T) {
 	if err := svc.Release(binding.Squad, binding.Carrier); err != nil {
 		t.Fatalf("释放: %v", err)
 	}
+	if err := svc.PutSquad(scheduling.Squad{
+		Name: "coord", Role: scheduling.RoleCoordinator,
+		Members: []scheduling.SquadMember{{Carrier: "c1"}},
+	}, 0); err != nil {
+		t.Fatalf("登记协调者小队: %v", err)
+	}
+	launchBinding, err := svc.LaunchAdmit("coord")
+	if err != nil {
+		t.Fatalf("协调者准入: %v", err)
+	}
+	if err := svc.Release(launchBinding.Squad, launchBinding.Carrier); err != nil {
+		t.Fatalf("释放协调者: %v", err)
+	}
 	output := logs.String()
-	for _, want := range []string{"squad=s1", "carrier=c1", "member_policy=0", "carrier_cap=2"} {
-		if !strings.Contains(output, want) {
-			t.Fatalf("日志缺少 %q: %s", want, output)
+	assertEvent := func(event, squad string) {
+		t.Helper()
+		start := strings.Index(output, event+" ")
+		if start < 0 {
+			t.Fatalf("日志缺少事件 %q: %s", event, output)
 		}
+		line := output[start:]
+		if end := strings.IndexByte(line, '\n'); end >= 0 {
+			line = line[:end]
+		}
+		for _, want := range []string{"squad=" + squad, "carrier=c1", "member_policy=0", "carrier_cap=2"} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("事件 %q 缺少 %q: %s", event, want, line)
+			}
+		}
+	}
+	for _, event := range []string{
+		"msg=scheduling.admit.start", "msg=scheduling.admit.success",
+		"msg=scheduling.release.start", "msg=scheduling.release.success",
+	} {
+		assertEvent(event, "s1")
+	}
+	for _, event := range []string{
+		"msg=scheduling.launch_admit.start", "msg=scheduling.launch_admit.success",
+	} {
+		assertEvent(event, "coord")
 	}
 }
 

@@ -170,7 +170,7 @@ func TestSquadCreateSurfacesActionableServerReject(t *testing.T) {
 // TD-4：list 表格/NDJSON 双形态；请求打 GET /api/squads。
 func TestSquadListRendersTableAndJSON(t *testing.T) {
 	dir := t.TempDir()
-	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"healthy":true,"version":1}],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1"}],"version":1}]}`
+	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"healthy":true,"version":1}],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1","max_concurrency":2}],"version":1}]}`
 	stubSquadAgentd(t, dir, http.StatusOK, fixture, func(r *http.Request, _ string) {
 		if r.URL.Path != "/api/squads" {
 			t.Errorf("list 应打 /api/squads，得 %s", r.URL.Path)
@@ -180,10 +180,20 @@ func TestSquadListRendersTableAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"载体", "c1", "小队", "sq", "executor"} {
+	for _, want := range []string{"载体", "c1", "小队", "sq", "executor", "c1/2"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("表格缺内容 %q：%s", want, out)
 		}
+	}
+	var squadLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "小队") {
+			squadLine = line
+			break
+		}
+	}
+	if squadLine == "" || !strings.Contains(squadLine, "-") {
+		t.Fatalf("小队行应明确队级总帽缺席并显示 -：%s", out)
 	}
 	out2, _, err := runLedgerCLI(t, dir, "squad", "list", "--json")
 	if err != nil {
@@ -199,6 +209,18 @@ func TestSquadListRendersTableAndJSON(t *testing.T) {
 	}
 	if head["name"] != "c1" {
 		t.Fatalf("首行应是载体 c1：%s", lines[0])
+	}
+	var squad map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &squad); err != nil {
+		t.Fatalf("第二行非 JSON: %v", err)
+	}
+	members, ok := squad["members"].([]any)
+	if squad["name"] != "sq" || !ok || len(members) != 1 ||
+		members[0].(map[string]any)["max_concurrency"] != float64(2) {
+		t.Fatalf("JSON 应显示成员政策位 /2：%s", lines[1])
+	}
+	if _, ok := squad["max_concurrency"]; ok {
+		t.Fatalf("JSON 小队行不应有队级总帽：%s", lines[1])
 	}
 }
 

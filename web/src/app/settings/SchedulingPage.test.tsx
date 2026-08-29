@@ -72,7 +72,7 @@ describe('SchedulingPage', () => {
     })
   })
 
-  it('非法成员政策在保存前阻断并显示合法示例', async () => {
+  it.each(['0', '-1', '1.5', 'abc', '9007199254740992'])('非法成员政策 %s 在保存前阻断并显示合法示例', async (raw) => {
     const user = userEvent.setup()
     vi.mocked(getSquads).mockResolvedValueOnce({
       carriers: [{ name: 'c1', machine: 'local', cli: 'opencode', home_dir: '/h', model: '', credential: 'standalone', healthy: true, version: 1 }],
@@ -84,10 +84,10 @@ describe('SchedulingPage', () => {
     await user.type(screen.getByLabelText('小队名'), 'exec')
     await user.click(screen.getByRole('checkbox', { name: /c1/ }))
     const policy = screen.getByRole('textbox', { name: /c1.*政策/ })
-    await user.type(policy, '0')
+    await user.type(policy, raw)
     await user.click(screen.getByRole('button', { name: '保存' }))
 
-    expect(await screen.findByRole('alert')).toHaveTextContent(/正整数.*合法示例：2/)
+    expect(await screen.findByRole('alert')).toHaveTextContent(/(正整数.*合法示例：2|安全整数范围)/)
     expect(putSquad).not.toHaveBeenCalled()
     expect(screen.getByRole('dialog')).toBeVisible()
   })
