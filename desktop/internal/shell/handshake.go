@@ -10,8 +10,10 @@ package shell
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"os"
 
 	"github.com/Xsxdot/handoff/internal/client"
@@ -59,4 +61,34 @@ func ConsoleURL(ctx context.Context, ep Endpoint, deviceName string) (string, er
 	// 只记过期时间，不记 URL：URL 里带一次性凭据
 	slog.Info("鉴权握手成功", "addr", ep.Addr, "expires_at", tk.ExpiresAt)
 	return tk.URL, nil
+}
+
+// ConsoleURLWithNext 换一张 ticket，并把受限的工作项相对路径编码进 /console。
+//
+// 参数：
+//   - ctx：取消与超时
+//   - ep：已解析的 agentd 地址与主令牌
+//   - deviceName：展示在会话列表里的设备名
+//   - next：只允许 /cards 或 /cards/ 前缀的相对 path/query
+//
+// 返回：带一次性 ticket 与 next query 的控制台 URL；URL 含凭据，不得写日志。
+// 注意：先校验 next 再请求 ticket，避免无效目标白白消费一次性凭据；不返回裸目标
+// 作为失败回退，防止在认证失败时绕过会话建立。
+func ConsoleURLWithNext(ctx context.Context, ep Endpoint, deviceName, next string) (string, error) {
+	if err := validateCardsNext(next); err != nil {
+		return "", errors.New("工作项跳转路径非法")
+	}
+	base, err := ConsoleURL(ctx, ep, deviceName)
+	if err != nil {
+		return "", err
+	}
+	parsed, err := url.Parse(base)
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+		return "", errors.New("agentd 返回的控制台 URL 非法")
+	}
+	query := parsed.Query()
+	query.Set("next", next)
+	parsed.RawQuery = query.Encode()
+	parsed.Fragment = ""
+	return parsed.String(), nil
 }

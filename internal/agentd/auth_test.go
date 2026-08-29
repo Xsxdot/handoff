@@ -200,6 +200,94 @@ func noRedirectClient(ts *httptest.Server) *http.Client {
 	return &c
 }
 
+// ticketURLWithNext 把 next 写进真实签发的 ticket URL，随后由 HTTP 路由验证白名单。
+func ticketURLWithNext(t *testing.T, ts *httptest.Server, next string) string {
+	t.Helper()
+	tk := issueTicket(t, ts, "桌面端")
+	parsed, err := url.Parse(tk.URL)
+	if err != nil {
+		t.Fatalf("解析 ticket URL: %v", err)
+	}
+	query := parsed.Query()
+	query.Set("next", next)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
+}
+
+func TestTicketNextRedirectsToCardsPathAndQuery(t *testing.T) {
+	_, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+	resp, err := noRedirectClient(ts).Get(
+		ticketURLWithNext(t, ts, "/cards?project=handoff"))
+	if err != nil {
+		t.Fatalf("兑换 ticket: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusFound {
+		t.Fatalf("status = %d, want 302", resp.StatusCode)
+	}
+	if loc := resp.Header.Get("Location"); loc != "/cards?project=handoff" {
+		t.Fatalf("Location = %q", loc)
+	}
+	cookieFound := false
+	for _, cookie := range resp.Cookies() {
+		if cookie.Name == sessionCookieName && cookie.Value != "" {
+			cookieFound = true
+		}
+	}
+	if !cookieFound {
+		t.Fatal("合法 next 兑换没有会话 cookie")
+	}
+}
+
+func TestTicketInvalidNextFallsBackToRoot(t *testing.T) {
+	cases := []struct {
+		name, next string
+	}{
+		{"empty", ""},
+		{"other path", "/other"},
+		{"prefix lookalike", "/cardsx"},
+		{"missing slash", "cards"},
+		{"network path", "//evil.example/cards"},
+		{"absolute scheme", "https://evil.example/cards"},
+		{"userinfo", "http://user@evil.example/cards"},
+		{"backslash", "/cards\\evil"},
+		{"fragment", "/cards#fragment"},
+		{"control", "/cards?x=\x01"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+			resp, err := noRedirectClient(ts).Get(
+				ticketURLWithNext(t, ts, tc.next))
+			if err != nil {
+				t.Fatalf("兑换 ticket: %v", err)
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode != http.StatusFound {
+				t.Fatalf("status = %d, want 302", resp.StatusCode)
+			}
+			if loc := resp.Header.Get("Location"); loc != "/" {
+				t.Fatalf("非法 next Location = %q", loc)
+			}
+		})
+	}
+}
+
+func TestTicketNextDoesNotLogTargetOrTicket(t *testing.T) {
+	_, ts, logs := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+	gotURL := ticketURLWithNext(t, ts, "/cards?ticket=next-secret")
+	resp, err := noRedirectClient(ts).Get(gotURL)
+	if err != nil {
+		t.Fatalf("兑换 ticket: %v", err)
+	}
+	resp.Body.Close()
+	if strings.Contains(logs.String(), "next-secret") ||
+		strings.Contains(logs.String(), gotURL) ||
+		strings.Contains(logs.String(), "ticket=") {
+		t.Fatalf("日志泄露 next/ticket/完整 URL：%q", logs.String())
+	}
+}
+
 // TestTicketToCookieHappyPath 钉死断言 3：有效 ticket 换得 cookie 并 302 到 /。
 func TestTicketToCookieHappyPath(t *testing.T) {
 	_, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
