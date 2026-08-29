@@ -164,8 +164,12 @@ func TestDefaultPreviewWorkspaceResolverReadsGitMetadata(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve workspace: %v", err)
 	}
-	if root != repo || origin != "git@github.com:Xsxdot/handoff.git" || branch != "feature/preview" {
-		t.Fatalf("workspace metadata root=%q origin=%q branch=%q", root, origin, branch)
+	wantRoot, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("eval repo: %v", err)
+	}
+	if root != wantRoot || origin != "git@github.com:Xsxdot/handoff.git" || branch != "feature/preview" {
+		t.Fatalf("workspace metadata root=%q origin=%q branch=%q want root=%q", root, origin, branch, wantRoot)
 	}
 }
 
