@@ -1,219 +1,108 @@
 import { describe, expect, it } from 'vitest'
 import { act, renderHook } from '@testing-library/react'
 import { HOME_BASE, useWorkbench, type BaseDir } from './useWorkbench'
-import type { Workbench } from './tabs'
 
-const wsA: BaseDir = {
-  key: '/home/dev/handoff',
-  kind: 'workspace',
-  path: '/home/dev/handoff',
-  label: 'main',
-  projectName: 'handoff',
-  machine: '',
+const a: BaseDir = {
+  key: '/a', kind: 'workspace', path: '/a', label: 'main', projectName: 'handoff', machine: '',
 }
-const wsB: BaseDir = {
-  key: '/home/dev/.handoff/worktrees/w1',
-  kind: 'workspace',
-  path: '/home/dev/.handoff/worktrees/w1',
-  label: 'w1',
-  projectName: 'handoff',
-  machine: '',
+const b: BaseDir = {
+  key: '/b@linux-01', kind: 'workspace', path: '/b', label: 'eval', projectName: 'aim', machine: 'linux-01',
 }
 
 describe('useWorkbench', () => {
-  it('初始未选中任何目录，tab 组为空', () => {
+  it('初始选中为空，中央保留一个空 pane', () => {
     const { result } = renderHook(() => useWorkbench())
     expect(result.current.base).toBeNull()
-    expect(result.current.wb.groups[0].tabs).toHaveLength(0)
+    expect(result.current.wb.groups[0].columns[0].panes).toEqual([null])
   })
 
-  it('切目录时中央整组 tab 一起切换，切回来原样恢复', () => {
+  it('切换左栏选中目录不会切换中央全局组，跨项目项仍在原 cell', () => {
     const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.open({ kind: 'file', rel: 'go.mod' }))
-    expect(result.current.wb.groups[0].tabs).toHaveLength(1)
-
-    act(() => result.current.select(wsB))
-    expect(result.current.wb.groups[0].tabs).toHaveLength(0)
-    act(() => result.current.open({ kind: 'tui', taskId: 'T1' }))
-
-    act(() => result.current.select(wsA))
-    expect(result.current.wb.groups[0].tabs).toHaveLength(1)
-    expect(result.current.wb.groups[0].tabs[0].content).toEqual({ kind: 'file', rel: 'go.mod' })
-
-    act(() => result.current.select(wsB))
-    expect(result.current.wb.groups[0].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
-  })
-
-  it('open 带基准目录参数时先切过去再开（左栏点任务、看板点卡片走这条）', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.open({ kind: 'tui', taskId: 'T9' }, wsB))
-    expect(result.current.base?.key).toBe(wsB.key)
-    expect(result.current.wb.groups[0].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T9' })
-  })
-
-  it('openTerminal 自动取下一个序号', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.openTerminal())
-    act(() => result.current.openTerminal())
-    const seqs = result.current.wb.groups[0].tabs.map((t) =>
-      t.content.kind === 'terminal' ? t.content.seq : -1,
-    )
-    expect(seqs).toEqual([1, 2])
-  })
-
-  it('home 是独立的一套 tab 组，与工作树互不干扰', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.openTerminal())
-    act(() => result.current.openTerminal(HOME_BASE))
-    expect(result.current.base?.kind).toBe('home')
-    expect(result.current.wb.groups[0].tabs).toHaveLength(1)
-    act(() => result.current.select(wsA))
-    expect(result.current.wb.groups[0].tabs).toHaveLength(1)
-  })
-
-  it('未选中目录时 open 是空操作，不静默造一个基准出来', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.open({ kind: 'file', rel: 'a.go' }))
-    expect(result.current.base).toBeNull()
-    expect(result.current.wb.groups[0].tabs).toHaveLength(0)
-  })
-
-  it('resize 只改当前基准的栏宽，切走再切回来比例还在', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.open({ kind: 'file', rel: 'a.go' }))
-    act(() => result.current.split())
-    act(() => result.current.resize(0, 0.1, 0.2))
-    const widened = result.current.wb.sizes[0]
-    expect(widened).toBeGreaterThan(result.current.wb.sizes[1])
-
-    act(() => result.current.select(wsB))
-    expect(result.current.wb.sizes).toEqual([1])
-
-    act(() => result.current.select(wsA))
-    expect(result.current.wb.sizes[0]).toBeCloseTo(widened)
-  })
-
-  it('closeById 按 tabId 关闭，不需要调用方知道它在哪一组', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.open({ kind: 'file', rel: 'a.go' }))
-    act(() => result.current.split())
-    act(() => result.current.open({ kind: 'file', rel: 'b.go' }, undefined, 1))
-    const firstId = result.current.wb.groups[0].tabs[0].id
-    const secondId = result.current.wb.groups[1].tabs[0].id
-
-    act(() => result.current.closeById(secondId))
-    expect(result.current.wb.groups.flatMap((g) => g.tabs).map((t) => t.id)).toEqual([firstId])
-    expect(result.current.wb.groups[0].tabs[0].content).toEqual({ kind: 'file', rel: 'a.go' })
-  })
-
-  it('closeById 对不存在的 id 是空操作，不抛错', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.open({ kind: 'file', rel: 'a.go' }))
-    const before = result.current.wb
-    act(() => result.current.closeById('missing'))
-    expect(result.current.wb).toBe(before)
-  })
-})
-
-describe('restoreTerminal', () => {
-  it('把会话恢复进目标目录的 tab 组，但**不切换当前基准**', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.restoreTerminal(wsB, 'sess-b'))
-    // 选中的仍是 A：页面加载时恢复一批会话，不该把用户的选择拽到最后一条上
-    expect(result.current.base?.key).toBe(wsA.key)
-    expect(result.current.wb.groups[0].tabs).toHaveLength(0)
-    act(() => result.current.select(wsB))
-    expect(result.current.wb.groups[0].tabs[0].content).toMatchObject({
-      kind: 'terminal', sessionId: 'sess-b',
+    act(() => result.current.select(a))
+    act(() => result.current.open({ kind: 'tui', taskId: 'local' }))
+    const groupId = result.current.wb.activeGroupId
+    act(() => result.current.place({
+      kind: 'new', base: b, content: { kind: 'terminal', seq: 1, rel: '' },
+    }, { groupId, column: 0, row: 0, zone: 'right' }))
+    act(() => result.current.select(b))
+    expect(result.current.wb.activeGroupId).toBe(groupId)
+    expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({
+      base: { projectName: 'handoff' }, content: { kind: 'tui', taskId: 'local' },
+    })
+    expect(result.current.wb.groups[0].columns[1].panes[0]).toMatchObject({
+      base: { projectName: 'aim', machine: 'linux-01' }, content: { kind: 'terminal', rel: '' },
     })
   })
 
-  it('同一个会话恢复两次只得到一个 tab（dedupKey 生效）', () => {
+  it('左栏未打开任务通过 openOrFocus 只新建一组，第二次点同一任务只聚焦', () => {
     const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.restoreTerminal(wsA, 's'))
-    act(() => result.current.restoreTerminal(wsA, 's'))
-    act(() => result.current.select(wsA))
-    expect(result.current.wb.groups[0].tabs).toHaveLength(1)
-  })
-
-  it('同目录两个会话各占一个 tab，序号递增', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.restoreTerminal(wsA, 's1'))
-    act(() => result.current.restoreTerminal(wsA, 's2'))
-    act(() => result.current.select(wsA))
-    const seqs = result.current.wb.groups[0].tabs.map((t) => (t.content as { seq: number }).seq)
-    expect(seqs).toEqual([1, 2])
-  })
-})
-
-describe('openInNewPane', () => {
-  it('内容没开过时：插入新栏并把它开在新栏里', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.openInNewPane({ kind: 'tui', taskId: 'T1' }, 1))
+    act(() => result.current.openOrFocus({ kind: 'tui', taskId: 'T1' }, a))
+    const firstGroup = result.current.wb.activeGroupId
+    act(() => result.current.openOrFocus({ kind: 'tui', taskId: 'T1' }, a))
     expect(result.current.wb.groups).toHaveLength(2)
-    expect(result.current.wb.groups[1].tabs).toHaveLength(1)
-    expect(result.current.wb.groups[1].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
+    expect(result.current.wb.activeGroupId).toBe(firstGroup)
   })
 
-  it('内容已在别的栏开着时**不分屏**，只激活已有的那个', () => {
-    // 走查实测的缺陷：先 splitAt 再 open 会因为跨组去重把已有 tab 在原栏激活，
-    // 新分出来的栏空在那儿——用户要的是「分屏并打开」，空栏比不分屏更糟
+  it('open 缺省使用选中 base，显式 base 只写 Tab 不强制切选中态', () => {
     const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.open({ kind: 'tui', taskId: 'T1' }))
-    act(() => result.current.openInNewPane({ kind: 'tui', taskId: 'T1' }, 1))
-    expect(result.current.wb.groups).toHaveLength(1)
-    expect(result.current.wb.groups[0].tabs).toHaveLength(1)
-  })
-
-  it('下标越界时夹到末尾，不抛错', () => {
-    const { result } = renderHook(() => useWorkbench())
-    act(() => result.current.select(wsA))
-    act(() => result.current.openInNewPane({ kind: 'tui', taskId: 'T1' }, Number.MAX_SAFE_INTEGER))
-    expect(result.current.wb.groups).toHaveLength(2)
-    expect(result.current.wb.groups[1].tabs[0].content).toEqual({ kind: 'tui', taskId: 'T1' })
-  })
-})
-
-describe('hydrate 与基准元数据', () => {
-  it('hydrate 灌入多个目录的 tab 组，且不改变当前选中', () => {
-    const { result } = renderHook(() => useWorkbench())
-    const a: BaseDir = { key: '/repo/a', kind: 'workspace', path: '/repo/a', label: 'a', projectName: 'p', machine: '' }
-    const b: BaseDir = { key: '/repo/b@m1', kind: 'workspace', path: '/repo/b', label: 'b', projectName: 'p', machine: 'm1' }
-    const wbA: Workbench = { groups: [{ tabs: [{ id: 't1', content: { kind: 'blank' } }], activeId: 't1' }], active: 0, sizes: [1] }
-    const wbB: Workbench = { groups: [{ tabs: [{ id: 't2', content: { kind: 'tui', taskId: 'T' } }], activeId: 't2' }], active: 0, sizes: [1] }
-
-    act(() => result.current.hydrate([{ base: a, wb: wbA }, { base: b, wb: wbB }]))
-
-    // 水合不选中任何目录——那要等项目树到位（spec §6）
-    expect(result.current.base).toBeNull()
-    expect(result.current.byBase['/repo/a']).toEqual(wbA)
-    expect(result.current.byBase['/repo/b@m1']).toEqual(wbB)
-    expect(result.current.baseDirs['/repo/b@m1']).toEqual(b)
-  })
-
-  it('baseDirs 会随 select / open 记住每个基准的元数据', () => {
-    const { result } = renderHook(() => useWorkbench())
-    const a: BaseDir = { key: '/repo/a', kind: 'workspace', path: '/repo/a', label: 'a', projectName: 'p', machine: '' }
     act(() => result.current.select(a))
-    expect(result.current.baseDirs['/repo/a']).toEqual(a)
+    act(() => result.current.open({ kind: 'file', rel: 'a.ts' }))
+    act(() => result.current.open({ kind: 'tui', taskId: 'remote' }, b))
+    expect(result.current.base).toEqual(a)
+    expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({ base: a })
+    expect(result.current.wb.groups[0].columns[1].panes[0]).toMatchObject({ base: b })
   })
 
-  it('restoreTerminal 也会登记 baseDirs（它写的是非当前基准）', () => {
+  it('openTerminal 序号递增且 home 可作为显式 Tab base', () => {
     const { result } = renderHook(() => useWorkbench())
-    const b: BaseDir = { key: '/repo/b@m1', kind: 'workspace', path: '/repo/b', label: 'b', projectName: '', machine: 'm1' }
+    act(() => result.current.select(a))
+    act(() => result.current.openTerminal())
+    act(() => result.current.openTerminal(HOME_BASE))
+    const panes = result.current.wb.groups[0].columns.flatMap((column) => column.panes).filter(Boolean)
+    expect(panes.map((tab) => tab?.content.kind === 'terminal' ? tab.content.seq : -1)).toEqual([1, 2])
+    expect(panes[1]?.base.kind).toBe('home')
+  })
+
+  it('closePane 暴露空 pane 关闭并委托统一布局生命周期', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(a))
+    act(() => result.current.open({ kind: 'tui', taskId: 'A' }, a))
+    act(() => result.current.place({ kind: 'new', base: b, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId: 'g1', column: 0, row: 0, zone: 'bottom',
+    }))
+    act(() => result.current.closePane('g1', 0, 1))
+    expect(result.current.wb.groups[0].columns[0].panes).toHaveLength(1)
+    expect(result.current.wb.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'tui', taskId: 'A' })
+  })
+
+  it('closeById 反查全局坐标，resize 只作用于目标 group', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(a))
+    act(() => result.current.open({ kind: 'file', rel: 'a.ts' }))
+    const groupId = result.current.wb.activeGroupId
+    act(() => result.current.place({ kind: 'new', base: a, content: { kind: 'file', rel: 'b.ts' } }, {
+      groupId, column: 0, row: 0, zone: 'right',
+    }))
+    act(() => result.current.resize(groupId, 0, 0.1, 0.2))
+    expect(result.current.wb.groups[0].sizes[0]).toBeGreaterThan(result.current.wb.groups[0].sizes[1])
+    const id = result.current.wb.groups[0].columns[0].panes[0]!.id
+    act(() => result.current.closeById(id))
+    expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({ content: { kind: 'file', rel: 'b.ts' } })
+    expect(result.current.wb.groups[0].sizes).toEqual([0.8])
+  })
+
+  it('restoreTerminal 不 select、不抢 active group，hydrate 整体替换布局', () => {
+    const { result } = renderHook(() => useWorkbench())
+    act(() => result.current.select(a))
     act(() => result.current.restoreTerminal(b, 'S1'))
-    expect(result.current.base).toBeNull()
-    expect(result.current.baseDirs['/repo/b@m1']).toEqual(b)
-    expect(result.current.byBase['/repo/b@m1'].groups[0].tabs).toHaveLength(1)
+    expect(result.current.base).toEqual(a)
+    expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({ base: b, content: { sessionId: 'S1' } })
+    act(() => result.current.hydrate({
+      groups: [{ id: 'g7', name: '恢复', autoName: false, columns: [{ panes: [{ id: 't7', base: b, content: { kind: 'tui', taskId: 'T7' } }] }], sizes: [1], focus: [0, 0] }],
+      activeGroupId: 'g7',
+    }))
+    expect(result.current.base).toEqual(a)
+    expect(result.current.wb.activeGroupId).toBe('g7')
+    expect(result.current.wb.groups[0].columns[0].panes[0]).toMatchObject({ base: b })
   })
 })

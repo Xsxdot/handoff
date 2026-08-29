@@ -1,254 +1,180 @@
-// restore.test.ts —— 落盘工作台状态与服务端会话列表合成恢复结果的纯函数测试。
-//
-// 职责：覆盖死会话抹除、孤儿归组、悬浮窗现场恢复与坏数据降级；B283 红色回路的转正锁。
-// 边界：不测试 React、网络请求或项目树选中动作；这些由同步层和 Shell 负责。
 import { describe, expect, it } from 'vitest'
 import type { MachineStatus, PtySession, WorkbenchStateResp } from '../../api/types'
-import type { HomeTab } from '../homedock/useHomeDock'
-import { encodeBase } from './persist'
 import { encodeDock } from '../homedock/dockPersist'
-import type { BaseDir } from './useWorkbench'
-import type { Workbench } from './tabs'
-import { buildRestore } from './restore'
+import type { HomeTab } from '../homedock/useHomeDock'
+import type { BaseDir, Workbench } from './tabs'
+import { encodeWorkbench } from './persist'
+import { baseOfSession, buildRestore } from './restore'
 
-const baseA: BaseDir = { key: '/repo/a', kind: 'workspace', path: '/repo/a', label: 'a', projectName: 'p', machine: '' }
-
-function wbWith(sessionId?: string): Workbench {
-  return {
-    groups: [{ tabs: [{ id: 't1', content: sessionId ? { kind: 'terminal', seq: 1, sessionId } : { kind: 'terminal', seq: 1 } }], activeId: 't1' }],
-    active: 0,
-    sizes: [1],
-  }
+const baseA: BaseDir = { key: '/repo/a', kind: 'workspace', path: '/repo/a', label: 'main', projectName: 'handoff', machine: '' }
+const baseM: BaseDir = { key: '/repo/m@mac-02', kind: 'workspace', path: '/repo/m', label: 'm', projectName: 'p', machine: 'mac-02' }
+const empty = (): Workbench => ({
+  activeGroupId: 'g1',
+  groups: [{ id: 'g1', name: '组 1', autoName: true, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] }],
+})
+const withSession = (id: string): Workbench => ({
+  activeGroupId: 'g1',
+  groups: [{ id: 'g1', name: '组 1', autoName: true, columns: [{ panes: [{ id: 't1', base: baseA, content: { kind: 'terminal', seq: 1, sessionId: id } }] }], sizes: [1], focus: [0, 0] }],
+})
+const withSessionOn = (base: BaseDir, id: string): Workbench => ({
+  activeGroupId: 'g1',
+  groups: [{ id: 'g1', name: '组 1', autoName: true, columns: [{ panes: [{ id: 't1', base, content: { kind: 'terminal', seq: 1, sessionId: id } }] }], sizes: [1], focus: [0, 0] }],
+})
+// machine 造一条扇出应答行。MachineStatus 四个字段全必填（types.ts:173-178）。
+function machine(name: string, ok: boolean): MachineStatus {
+  return { name, ok, fetched_at: '2026-08-28T00:00:00Z', error: '' }
 }
-
-function sess(id: string, over: Partial<PtySession> = {}): PtySession {
+// homeSess 造一条 home 会话；machineName 缺省 = 本机。
+function homeSess(id: string, machineName = ''): PtySession {
+  return session(id, { machine: machineName, base_kind: 'home', base_path: '' })
+}
+// dockRaw 把一组悬浮窗 tab 编成落盘 payload；activeId / windowOpen 可显式指定。
+function dockRaw(tabs: HomeTab[], activeId: string | null = tabs[0]?.id ?? null, windowOpen = false): string {
+  return encodeDock({ tabs, activeId, windowOpen, geom: { x: 10, y: 10, w: 620, h: 340 }, maximized: false })
+}
+function session(id: string, over: Partial<PtySession> = {}): PtySession {
   return {
     id, machine: '', base_path: '/repo/a', base_kind: 'workspace', shell: '/bin/bash',
     created_at: '2026-08-20T10:00:00+08:00', cols: 80, rows: 24, attached: 0,
     foreground: false, pid: 1, bytes_out: 0, incompatible: false, ...over,
   }
 }
-
 function state(over: Partial<WorkbenchStateResp> = {}): WorkbenchStateResp {
   return { selected: '', dock: '', bases: [], ...over }
 }
-
-const baseM: BaseDir = {
-  key: '/repo/m@mac-02',
-  kind: 'workspace',
-  path: '/repo/m',
-  label: 'm',
-  projectName: 'p',
-  machine: 'mac-02',
-}
-
-// machine 造一条扇出应答行。MachineStatus 四个字段全必填（types.ts:173-178）。
-function machine(name: string, ok: boolean): MachineStatus {
-  return { name, ok, fetched_at: '2026-08-28T00:00:00Z', error: '' }
-}
-
-// homeSess 造一条 home 会话；machineName 缺省 = 本机。
-function homeSess(id: string, machineName = ''): PtySession {
-  return sess(id, { machine: machineName, base_kind: 'home', base_path: '' })
-}
-
-// dockRaw 把一组悬浮窗 tab 编成落盘 payload；activeId / windowOpen 可显式指定。
-function dockRaw(tabs: HomeTab[], activeId: string | null = tabs[0]?.id ?? null, windowOpen = false): string {
-  return encodeDock({ tabs, activeId, windowOpen, geom: { x: 10, y: 10, w: 620, h: 340 }, maximized: false })
-}
-
 const VIEW = { vw: 1280, vh: 800, inset: 0 }
 
+describe('baseOfSession', () => {
+  it('同一路径的本机与远端有不同 key，home 也按 machine 区分', () => {
+    expect(baseOfSession(session('a')).key).toBe('/repo/a')
+    expect(baseOfSession(session('b', { machine: 'linux-01' })).key).toBe('/repo/a@linux-01')
+    expect(baseOfSession(session('h', { base_kind: 'home', base_path: '', machine: 'linux-01' }))).toMatchObject({ key: '~@linux-01', kind: 'home' })
+  })
+})
+
 describe('buildRestore', () => {
-  it('活着的会话原样保留', () => {
+  it('只解码 global 行，其它状态行进入 legacy，不拼旧布局', () => {
     const r = buildRestore({
-      state: state({ bases: [{ base_key: '/repo/a', payload: encodeBase(baseA, wbWith('S1')), updated_at: 1 }] }),
-      sessions: [sess('S1')],
-      ...VIEW,
+      state: state({ bases: [
+        { base_key: '__global_workbench__', payload: encodeWorkbench(withSession('S1')), updated_at: 1 },
+        { base_key: '/old', payload: encodeWorkbench(withSession('S2')), updated_at: 2 },
+      ] }),
+      sessions: [session('S1')], ...VIEW,
     })
-    expect(r.entries).toHaveLength(1)
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
-    expect(r.pruned).toBe(0)
-    expect(r.adopted).toBe(0)
+    expect(r.workbench.groups[0].columns[0].panes[0]!.content).toMatchObject({ sessionId: 'S1' })
+    expect(r.legacy).toEqual(['/old'])
   })
 
-  // 这一组是承重的：合并 A（PTY 出进程）时，协议错配的降级链路原本挂在
-  // usePtyRestore 上，而那个文件在 B 里被删掉了。链路重新落到本层之后，
-  // 它的判据必须跟着搬过来，否则「合并之后功能还在、测试没了」不会有人发现。
-  it('不兼容的会话打标记而不是抹 id——它还活着，抹了等于把旧 shell 丢在后台', () => {
-    const r = buildRestore({
-      state: state({ bases: [{ base_key: '/repo/a', payload: encodeBase(baseA, wbWith('S1')), updated_at: 1 }] }),
-      sessions: [sess('S1', { incompatible: true })],
-      ...VIEW,
-    })
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({
-      kind: 'terminal', seq: 1, sessionId: 'S1', incompatible: true,
-    })
-    // 它没死，所以不该被计进「抹掉的死会话」
-    expect(r.pruned).toBe(0)
+  it('坏 global payload 回到 EMPTY 并记录 dropped', () => {
+    const r = buildRestore({ state: state({ bases: [{ base_key: '__global_workbench__', payload: 'bad', updated_at: 1 }] }), sessions: [], ...VIEW })
+    expect(r.workbench).toEqual(empty())
+    expect(r.dropped).toEqual(['__global_workbench__'])
   })
 
-  it('补进来的孤儿会话不兼容时也带标记', () => {
+  it('死 session 清 id 留 pane，活着但 incompatible 保留 id 并打标', () => {
     const r = buildRestore({
-      state: state(),
-      sessions: [sess('S9', { incompatible: true })],
-      ...VIEW,
+      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(withSession('dead')), updated_at: 1 }] }),
+      sessions: [session('dead', { exit_code: 0 })], ...VIEW,
     })
-    expect(r.adopted).toBe(1)
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({
-      kind: 'terminal', seq: 1, sessionId: 'S9', incompatible: true,
-    })
-  })
-
-  it('悬浮窗里的不兼容会话同样打标记', () => {
-    const dock = encodeDock({
-      tabs: [{ id: 'h1', kind: 'terminal', seq: 1, sessionId: 'H1', machine: '' }],
-      activeId: 'h1', windowOpen: true, geom: { x: 100, y: 100, w: 400, h: 300 }, maximized: false,
-    })
-    const r = buildRestore({
-      state: state({ dock }),
-      sessions: [sess('H1', { base_kind: 'home', base_path: '', incompatible: true })],
-      ...VIEW,
-    })
-    expect(r.dock?.tabs[0].incompatible).toBe(true)
-    expect(r.dock?.tabs[0].sessionId).toBe('H1')
-  })
-
-  it('已退出的会话被抹掉 id，tab 留在原位', () => {
-    const r = buildRestore({
-      state: state({ bases: [{ base_key: '/repo/a', payload: encodeBase(baseA, wbWith('S1')), updated_at: 1 }] }),
-      sessions: [sess('S1', { exit_code: 0 })],
-      ...VIEW,
-    })
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1 })
+    expect(r.workbench.groups[0].columns[0].panes[0]!.content).toEqual({ kind: 'terminal', seq: 1 })
     expect(r.pruned).toBe(1)
-  })
 
-  it('列表里完全没有的会话同样被抹掉', () => {
-    const r = buildRestore({
-      state: state({ bases: [{ base_key: '/repo/a', payload: encodeBase(baseA, wbWith('S1')), updated_at: 1 }] }),
-      sessions: [],
-      ...VIEW,
+    const compatible = buildRestore({
+      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(withSession('live')), updated_at: 1 }] }),
+      sessions: [session('live', { incompatible: true })], ...VIEW,
     })
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1 })
-    expect(r.pruned).toBe(1)
+    expect(compatible.workbench.groups[0].columns[0].panes[0]!.content).toMatchObject({ sessionId: 'live', incompatible: true })
   })
 
-  it('孤儿工作树会话被补进对应目录', () => {
-    const r = buildRestore({ state: state(), sessions: [sess('S9')], ...VIEW })
-    expect(r.entries).toHaveLength(1)
-    expect(r.entries[0].base.key).toBe('/repo/a')
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toMatchObject({ kind: 'terminal', sessionId: 'S9' })
-    expect(r.adopted).toBe(1)
-  })
-
-  it('孤儿会话补进**已有**目录时不覆盖既有 tab', () => {
-    const r = buildRestore({
-      state: state({ bases: [{ base_key: '/repo/a', payload: encodeBase(baseA, wbWith('S1')), updated_at: 1 }] }),
-      sessions: [sess('S1'), sess('S9')],
-      ...VIEW,
-    })
-    expect(r.entries[0].wb.groups[0].tabs).toHaveLength(2)
-    expect(r.adopted).toBe(1)
-  })
-
-  it('home 会话不进工作台，落到悬浮窗', () => {
-    const dockRaw = encodeDock({ tabs: [], activeId: null, windowOpen: true, geom: { x: 10, y: 10, w: 620, h: 340 }, maximized: false })
-    const r = buildRestore({
-      state: state({ dock: dockRaw }),
-      sessions: [sess('H1', { base_kind: 'home', base_path: '' })],
-      ...VIEW,
-    })
-    expect(r.entries).toHaveLength(0)
-    expect(r.dock).not.toBeNull()
-    expect(r.dock!.tabs).toHaveLength(1)
-    expect(r.dock!.tabs[0]).toMatchObject({ kind: 'terminal', sessionId: 'H1' })
-    // 有 tab 就必须有激活项，否则浮窗一片空白
-    expect(r.dock!.activeId).toBe(r.dock!.tabs[0].id)
-    expect(r.dockOrphans).toHaveLength(0)
-  })
-
-  it('没有落盘的悬浮窗现场时，孤儿 home 会话走 dockOrphans（不 hydrate、不开窗）', () => {
-    const r = buildRestore({
-      state: state(),
-      sessions: [sess('H1', { base_kind: 'home', base_path: '' })],
-      ...VIEW,
-    })
-    expect(r.dock).toBeNull()
-    expect(r.dockOrphans).toHaveLength(1)
-    expect(r.dockOrphans[0].sessionId).toBe('H1')
-  })
-
-  it('悬浮窗几何按当前视口夹紧', () => {
-    const dockRaw = encodeDock({ tabs: [], activeId: null, windowOpen: true, geom: { x: 2000, y: 1400, w: 900, h: 700 }, maximized: false })
-    const r = buildRestore({ state: state({ dock: dockRaw }), sessions: [], ...VIEW })
-    expect(r.dock!.geom.x + r.dock!.geom.w).toBeLessThanOrEqual(1280)
-    expect(r.dock!.geom.y + r.dock!.geom.h).toBeLessThanOrEqual(800)
-  })
-
-  it('坏行整行丢弃，其余行照常恢复', () => {
-    const r = buildRestore({
-      state: state({
-        bases: [
-          { base_key: '/repo/bad', payload: 'not json', updated_at: 1 },
-          { base_key: '/repo/a', payload: encodeBase(baseA, wbWith()), updated_at: 2 },
+  it('恢复孤儿不填现有空列，每个工作区 PTY 独立成组', () => {
+    const layout: Workbench = {
+      activeGroupId: 'g1',
+      groups: [{
+        id: 'g1', name: '组 1', autoName: true,
+        columns: [
+          { panes: [{ id: 't1', base: baseA, content: { kind: 'terminal', seq: 1, sessionId: 'LIVE' } }] },
+          { panes: [null] },
         ],
-      }),
-      sessions: [],
-      ...VIEW,
+        sizes: [2, 1], focus: [0, 0],
+      }],
+    }
+    const r = buildRestore({
+      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(layout), updated_at: 1 }] }),
+      sessions: [session('LIVE'), session('S2', { base_path: '/repo/b' }), session('S3', { base_path: '/repo/c' })], ...VIEW,
     })
-    expect(r.dropped).toEqual(['/repo/bad'])
-    expect(r.entries).toHaveLength(1)
-    expect(r.entries[0].base.key).toBe('/repo/a')
+    expect(r.adopted).toBe(2)
+    expect(r.workbench.groups).toHaveLength(3)
+    expect(r.workbench.groups[0].columns).toHaveLength(1)
+    expect(r.workbench.groups[1].columns[0].panes[0]?.content).toMatchObject({ sessionId: 'S2' })
+    expect(r.workbench.groups[2].columns[0].panes[0]?.content).toMatchObject({ sessionId: 'S3' })
+    expect(r.workbench.groups.every((group) => group.columns.every((column) => column.panes.some(Boolean)))).toBe(true)
   })
 
-  it('坏的悬浮窗现场整份丢弃，不影响工作台', () => {
-    const r = buildRestore({
-      state: state({ dock: '{{{', bases: [{ base_key: '/repo/a', payload: encodeBase(baseA, wbWith()), updated_at: 1 }] }),
-      sessions: [],
-      ...VIEW,
-    })
-    expect(r.dock).toBeNull()
-    expect(r.entries).toHaveLength(1)
+  it('home session 继续走 dock，没 dock 现场进入 dockOrphans', () => {
+    const noDock = buildRestore({ state: state(), sessions: [session('H1', { base_kind: 'home', base_path: '' })], ...VIEW })
+    expect(noDock.workbench).toEqual(empty())
+    expect(noDock.dock).toBeNull()
+    expect(noDock.dockOrphans[0]).toMatchObject({ sessionId: 'H1' })
+
+    const raw = encodeDock({ tabs: [], activeId: null, windowOpen: true, geom: { x: 10, y: 10, w: 620, h: 340 }, maximized: false })
+    const withDock = buildRestore({ state: state({ dock: raw }), sessions: [session('H2', { base_kind: 'home', base_path: '' })], ...VIEW })
+    expect(withDock.dock?.tabs[0]).toMatchObject({ sessionId: 'H2' })
+    expect(withDock.dock?.activeId).toBe(withDock.dock?.tabs[0].id)
   })
 
   it('selected 原样透传', () => {
-    const r = buildRestore({ state: state({ selected: '/repo/a' }), sessions: [], ...VIEW })
-    expect(r.selected).toBe('/repo/a')
+    expect(buildRestore({ state: state({ selected: '/repo/a' }), sessions: [], ...VIEW }).selected).toBe('/repo/a')
   })
+})
 
-  it('机器扇出 ok 时本行死会话照常剥——门控只挡「没答上来」，不挡真死', () => {
+// —— B283 机器门控与外来 tab 清理（自逐行结构合并移植到全局结构，判据不变）——
+describe('B283 方案3：机器扇出没答上来时不做死亡判决', () => {
+  it('机器扇出 ok 时死会话照常剥——门控只挡「没答上来」，不挡真死', () => {
     const r = buildRestore({
-      state: state({ bases: [{ base_key: baseM.key, payload: encodeBase(baseM, wbWith('S1')), updated_at: 1 }] }),
-      sessions: [sess('S1', { machine: 'mac-02', base_path: '/repo/m', exit_code: 0 })],
+      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(withSessionOn(baseM, 'S1')), updated_at: 1 }] }),
+      sessions: [session('S1', { machine: 'mac-02', base_path: '/repo/m', exit_code: 0 })],
       machines: [machine('', true), machine('mac-02', true)],
       ...VIEW,
     })
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1 })
+    expect(r.workbench.groups[0].columns[0].panes[0]!.content).toEqual({ kind: 'terminal', seq: 1 })
     expect(r.pruned).toBe(1)
   })
 
-  it('机器扇出没答上来（ok=false）时它名下基准行的引用不剥——缺席不判死', () => {
+  it('机器扇出没答上来（ok=false）时它名下 tab 的引用不剥——缺席不判死', () => {
     const r = buildRestore({
-      state: state({ bases: [{ base_key: baseM.key, payload: encodeBase(baseM, wbWith('S1')), updated_at: 1 }] }),
+      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(withSessionOn(baseM, 'S1')), updated_at: 1 }] }),
       sessions: [], // mac-02 没答上来：S1 可能活着，只是没进名单
       machines: [machine('', true), machine('mac-02', false)],
       ...VIEW,
     })
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
+    expect(r.workbench.groups[0].columns[0].panes[0]!.content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
     expect(r.pruned).toBe(0)
   })
 
-  it('machines 整个缺席时同样保守：远端基准行的引用不剥', () => {
+  it('machines 整个缺席时同样保守：远端 tab 的引用不剥', () => {
     const r = buildRestore({
-      state: state({ bases: [{ base_key: baseM.key, payload: encodeBase(baseM, wbWith('S1')), updated_at: 1 }] }),
+      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(withSessionOn(baseM, 'S1')), updated_at: 1 }] }),
       sessions: [],
       ...VIEW,
     })
-    expect(r.entries[0].wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
+    expect(r.workbench.groups[0].columns[0].panes[0]!.content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
     expect(r.pruned).toBe(0)
   })
 
+  it('本机 tab 不受门控影响：机器没答上来只保远端，本机死会话照剥', () => {
+    const r = buildRestore({
+      state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench({ ...withSessionOn(baseM, 'S1'), groups: [...withSessionOn(baseM, 'S1').groups, { id: 'g2', name: '组 2', autoName: true, columns: [{ panes: [{ id: 't2', base: baseA, content: { kind: 'terminal', seq: 2, sessionId: 'L0' } }] }], sizes: [1], focus: [0, 0] }] }), updated_at: 1 }] }),
+      sessions: [],
+      machines: [machine('', true), machine('mac-02', false)],
+      ...VIEW,
+    })
+    expect(r.workbench.groups[0].columns[0].panes[0]!.content).toMatchObject({ sessionId: 'S1' }) // 远端：保
+    expect(r.workbench.groups[1].columns[0].panes[0]!.content).toEqual({ kind: 'terminal', seq: 2 }) // 本机：剥
+    expect(r.pruned).toBe(1)
+  })
+})
+
+describe('B283 方案1+2：悬浮窗是本机面', () => {
   it('home 收编仅限本机：外来机器的 home 会话不进悬浮窗，本机的照常收', () => {
     const r = buildRestore({
       state: state({ dock: dockRaw([], null, false) }),
@@ -298,7 +224,7 @@ describe('buildRestore', () => {
     expect(r.purged).toBe(2)
     // 清除是整个 tab 走，不是剥引用留壳：活着的 H1 也不计入 prune
     expect(r.pruned).toBe(0)
-    // 活着的外来 home 会话不再被收编回来（方案1，Task 2 已落地）
+    // 活着的外来 home 会话不再被收编回来（方案1）
     expect(r.adopted).toBe(0)
   })
 
@@ -326,6 +252,7 @@ describe('buildRestore', () => {
   })
 })
 
+// B283 红色回路转正：同一份现场连续两次打开，tab 数与引用都不得漂移
 describe('B283 红色回路转正：同一份现场连续两次打开，tab 数与引用都不得漂移', () => {
   it('两次打开之间悬浮窗 tab 数不增长，本地 tab 的引用保得住（修复前 1→2）', () => {
     // 打开 N：快照里一个外来 tab（mac-02 的 H9，扇出没带回它——ok=false）＋一个

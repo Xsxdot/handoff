@@ -103,6 +103,8 @@ export interface FileTreeProps {
   // 用 reload('') 而不是 refresh()：新文件建在根上，只有那一层需要重取；
   // refresh 会丢掉全部已展开层的缓存，用户展开的目录会全部塌回去。
   refreshKey?: number
+  // 抽屉模式的关闭入口；默认右栏不传，保持旧的固定右栏形态。
+  onClose?: () => void
 }
 
 // MenuEntry 是被右键的条目：菜单项按它算 dirOf 与可用的操作集合。
@@ -160,7 +162,21 @@ function isLoopbackHost(host: string): boolean {
   return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
 }
 
-export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey }: FileTreeProps) {
+// logOperationError 让服务端原文和现场坐标一起进入结构化错误日志；面板仍负责把
+// 原文展示给用户，日志额外保留 project/machine/path 供跨机问题定位。
+function logOperationError(operation: string, base: BaseDir, rel: string | undefined, error: unknown): string {
+  const message = errorMessage(error)
+  console.warn(`file_tree.${operation}.failed`, {
+    project: base.projectName,
+    machine: base.machine,
+    path: base.path,
+    ...(rel === undefined ? {} : { rel }),
+    reason: message,
+  })
+  return message
+}
+
+export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSupported, refreshKey, onClose }: FileTreeProps) {
   const dirs = useDirEntries(base)
   const changed = useChangedFiles(taskId)
   const firstRef = useRef(true)
@@ -246,7 +262,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
       setNameDlg(null)
     } catch (err) {
       // agentd 的中文错误原文透出，不缩略成「操作失败」
-      setNameError(errorMessage(err))
+      setNameError(logOperationError(nameDlg.mode, base, nameDlg.target, err))
     } finally {
       setNameBusy(false)
     }
@@ -261,7 +277,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
       dirs.reload(parentOf(deleteTarget.rel))
       setDeleteTarget(null)
     } catch (err) {
-      setDeleteError(errorMessage(err))
+      setDeleteError(logOperationError('delete', base, deleteTarget.rel, err))
     } finally {
       setDeleteBusy(false)
     }
@@ -272,7 +288,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
       await copyWorkspaceEntry(base.path, rel, base.machine)
       dirs.reload(parentOf(rel))
     } catch (err) {
-      setOpError(errorMessage(err))
+      setOpError(logOperationError('copy', base, rel, err))
     }
   }
 
@@ -283,7 +299,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
     try {
       await revealInFinder(base.path, rel)
     } catch (err) {
-      setOpError(errorMessage(err))
+      setOpError(logOperationError('reveal', base, rel, err))
     }
   }
 
@@ -301,7 +317,7 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
       const r = await searchWorkspace(base.path, search.dirOf, q, base.machine || undefined)
       setSearch((s) => (s ? { ...s, busy: false, hits: r.hits, truncated: r.truncated } : s))
     } catch (err) {
-      setSearch((s) => (s ? { ...s, busy: false, error: errorMessage(err) } : s))
+      setSearch((s) => (s ? { ...s, busy: false, error: logOperationError('search', base, search.dirOf, err) } : s))
     }
   }
 
@@ -388,6 +404,17 @@ export function FileTree({ base, taskId, onOpenFile, onOpenTerminal, revealSuppo
         >
           <RefreshCw className="size-3.5" />
         </button>
+        {onClose && (
+          <button
+            type="button"
+            aria-label="关闭文件抽屉"
+            title="关闭文件抽屉"
+            onClick={onClose}
+            className="rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"
+          >
+            <X className="size-3.5" />
+          </button>
+        )}
       </div>
 
       {opError !== '' && (

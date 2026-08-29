@@ -5,6 +5,7 @@
 // 这条规则的四个层级与两个方向。
 import { describe, expect, it } from 'vitest'
 import type { ProjectTreeResp, Task } from '../../api/types'
+import type { OpenedSearchItem } from './search'
 import { filterTree } from './search'
 
 function task(over: Partial<Task>): Task {
@@ -92,7 +93,7 @@ describe('filterTree', () => {
     expect(r.projects[0].locations[0].workspaces[0].path).toBe('/w/b2-b3')
   })
 
-  it('命中已结束任务名：祖先项目和机器仍可见（目录已被回收）', () => {
+  it('命中已结束任务名：项目仍可见（已结束行挂在项目任务组尾部，不再依赖机器行）', () => {
     const withArchived = [
       ...tasks,
       task({ id: 'T-old', state: 'completed', work_dir: '/w/gone', name: '已回收的任务' }),
@@ -100,7 +101,6 @@ describe('filterTree', () => {
     const r = filterTree(tree, withArchived, '已回收')
     expect(r.projectCount).toBe(1)
     expect(r.projects[0].name).toBe('handoff')
-    expect(r.projects[0].locations[0].machine).toBe('')
   })
 
   it('未归属分组参与过滤，且不计入 N', () => {
@@ -129,5 +129,38 @@ describe('filterTree', () => {
   it('大小写不敏感，首尾空白被 trim', () => {
     expect(filterTree(tree, tasks, '  HANDOFF  ').projectCount).toBe(1)
     expect(filterTree(tree, tasks, '  ').projectCount).toBe(2)   // 全空白等同空查询
+  })
+
+  it('打开的文件/终端/TUI 也能把项目、机器和目录祖先带入搜索结果', () => {
+    const opened: OpenedSearchItem[] = [
+      {
+        base: { key: '/srv/n', kind: 'workspace', path: '/srv/n', label: 'main', projectName: 'nova', machine: 'devbox' },
+        name: 'opened-file.ts', machine: 'devbox', detail: 'src/opened-file.ts',
+      },
+      {
+        base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+        name: '终端 · opened-terminal', machine: '',
+      },
+    ]
+    const byFile = filterTree(tree, tasks, 'opened-file', opened)
+    expect(byFile.projects[0].name).toBe('nova')
+    expect(byFile.projects[0].locations[0].machine).toBe('devbox')
+    expect(byFile.projects[0].locations[0].workspaces[0].path).toBe('/srv/n')
+    const byTerminal = filterTree(tree, tasks, 'opened-terminal', opened)
+    expect(byTerminal.projects[0].name).toBe('handoff')
+    expect(byTerminal.projects[0].locations[0].workspaces[0].path).toBe('/w/b2-b3')
+  })
+
+  it('打开文件的相对路径参与搜索，即使任务行标题不是文件名', () => {
+    const opened: OpenedSearchItem[] = [{
+      base: {
+        key: '/srv/n', kind: 'workspace', path: '/srv/n', label: 'main',
+        projectName: 'nova', machine: 'devbox',
+      },
+      name: '已打开文件', machine: 'devbox', detail: 'src/relative-only.ts',
+    }]
+    const result = filterTree(tree, tasks, 'relative-only', opened)
+    expect(result.projects[0].name).toBe('nova')
+    expect(result.projects[0].locations[0].workspaces[0].path).toBe('/srv/n')
   })
 })

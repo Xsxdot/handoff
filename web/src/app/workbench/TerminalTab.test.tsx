@@ -90,6 +90,12 @@ beforeEach(() => {
 })
 
 describe('TerminalTab', () => {
+  it('终端只提供 pty host，不重复渲染基准路径标题', () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    expect(screen.getByTestId('pty-host')).toBeInTheDocument()
+    expect(screen.queryByText(WS.path)).toBeNull()
+  })
+
   it('没有会话 id 时先建会话，参数取自基准目录与当前尺寸', async () => {
     render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
     await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))

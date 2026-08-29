@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
 import type { Decision, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
 import { usePoll } from '../data/usePoll'
@@ -62,13 +62,15 @@ function ProjectDecisions({ decisions }: { decisions: Decision[] }) {
 }
 
 export function CardsPage() {
+  const [searchParams] = useSearchParams()
+  const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
   const [needsOnly, setNeedsOnly] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
   const [migrateCardId, setMigrateCardId] = useState<string | null>(null)
   const [drawerFocus, setDrawerFocus] = useState<'merge' | undefined>()
-  const [project, setProject] = useState('')
+  const [project, setProject] = useState(projectFromUrl)
   const [workflow, setWorkflow] = useState('')
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
@@ -79,6 +81,7 @@ export function CardsPage() {
   const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
   const navigate = useNavigate()
+  useEffect(() => { setProject(projectFromUrl) }, [projectFromUrl])
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
   // 时给 undefined，抽屉按「计数不可知」显示旧标题，不谎报「0 个在跑」。

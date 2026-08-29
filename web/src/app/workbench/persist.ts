@@ -1,266 +1,199 @@
-// persist.ts —— 工作台状态的编解码层（2026-08-20 状态同步 spec §5.1）。
+// persist.ts —— 前端全局工作台 payload 的编解码。
 //
-// 职责：
-//   - Workbench + BaseDir ↔ 落盘用的 JSON 字符串
-//   - 读回来时逐字段校验，坏数据整行丢弃
-//   - 规则二（抹掉已死的 sessionId）与写回时的差分，两个纯函数
-//
-// 边界：
-//   - 不碰 React、不发请求、不认识 localStorage
-//   - **不落草稿**：file tab 的 draft / baseSha 在编码时被剥掉（spec §1.2 的明确决定）
-//   - 不认识「哪些会话是活的」：liveIds 由调用方给
-//
-// 为什么逐字段查类型而不是信 `as`：这份数据来自服务端，而服务端只是原样搬运
-// 前端**上一个版本**写进去的东西。字段改名、结构变形、用户手改数据库，
-// 三条路径都会让 `as` 在运行时炸在离现场很远的地方。这与 treePrefs.isPrefs 同款纪律。
-import { MAX_GROUPS, type Tab, type TabContent, type TabGroup, type Workbench } from './tabs'
-import type { BaseDir } from './useWorkbench'
+// 职责：严格校验/序列化全局 Workbench，并提供 session 清理与 payload 差分。
+// 边界：只处理前端 payload，不发 HTTP；draft/baseSha 与 incompatible 是运行时字段，不落盘。
+import {
+  isEmptyWorkbench as isEmptyLayout,
+  normalizeWorkbench,
+  type BaseDir,
+  type Tab,
+  type TabContent,
+  type TabGroup,
+  type Workbench,
+} from './tabs'
 
-// PERSIST_VERSION 是落盘格式版本。形状将来不兼容地变了就 +1，
-// 老数据在 decodeBase 里整份丢弃——迁移一份「工作现场」不值得，重开一下就有。
-export const PERSIST_VERSION = 1
+export const GLOBAL_WORKBENCH_KEY = '__global_workbench__'
+export const PERSIST_VERSION = 2
 
-// PersistedBase 是落在 payload 里的完整结构。
-//
-// 它同时装 BaseDir 元数据与 Workbench：只存 Workbench 的话，恢复时拿着一个 key
-// 却不知道面包屑该写什么——key 本身（path@machine）还原不出 label 与 projectName。
-// **不存 key**：key 是行的身份，由行本身提供；payload 里再存一份就有了两个真相。
-interface PersistedBase {
+interface PersistedWorkbench {
   v: number
-  base: Omit<BaseDir, 'key'>
   wb: Workbench
 }
 
-// encodeBase 把一个基准目录的现场序列化成 payload 字符串。
-//
-// 参数：base 是该目录的元数据；wb 是它的 tab 组。
-// 返回：JSON 字符串，直接作为 PUT 的 payload 发出。
-// 注意：file tab 的 draft / baseSha 会被剥掉，草稿继续留在 localStorage。
-export function encodeBase(base: BaseDir, wb: Workbench): string {
-  const payload: PersistedBase = {
-    v: PERSIST_VERSION,
-    base: { kind: base.kind, path: base.path, label: base.label, projectName: base.projectName, machine: base.machine },
-    wb: {
-      groups: wb.groups.map((g) => ({ tabs: g.tabs.map(stripTab), activeId: g.activeId })),
-      active: wb.active,
-      sizes: [...wb.sizes],
-    },
+function hasOnly(value: Record<string, unknown>, keys: string[]): boolean {
+  return Object.keys(value).every((key) => keys.includes(key))
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
+
+function isString(value: unknown): value is string { return typeof value === 'string' }
+function isFiniteNumber(value: unknown): value is number { return typeof value === 'number' && Number.isFinite(value) }
+
+function stripContent(content: TabContent): TabContent {
+  if (content.kind === 'file') return { kind: 'file', rel: content.rel }
+  if (content.kind === 'terminal') {
+    const out: Extract<TabContent, { kind: 'terminal' }> = { kind: 'terminal', seq: content.seq }
+    if (content.sessionId !== undefined) out.sessionId = content.sessionId
+    if (content.rel !== undefined) out.rel = content.rel
+    if (content.launcher !== undefined) out.launcher = content.launcher
+    return out
   }
+  return { ...content }
+}
+
+function stripTab(tab: Tab): Tab {
+  return { id: tab.id, base: { ...tab.base }, content: stripContent(tab.content) }
+}
+
+function stripWorkbench(wb: Workbench): Workbench {
+  return {
+    activeGroupId: wb.activeGroupId,
+    groups: wb.groups.map((group) => ({
+      id: group.id,
+      name: group.name,
+      autoName: group.autoName,
+      columns: group.columns.map((column) => ({ panes: column.panes.map((tab) => tab ? stripTab(tab) : null) })),
+      sizes: [...group.sizes],
+      focus: [...group.focus] as [number, number],
+    })),
+  }
+}
+
+/** 编码全局工作台；只去除运行时草稿/不兼容标记，不丢布局或 Tab 的 BaseDir。 */
+export function encodeWorkbench(wb: Workbench): string {
+  const payload: PersistedWorkbench = { v: PERSIST_VERSION, wb: stripWorkbench(wb) }
   return JSON.stringify(payload)
 }
 
-// stripTab 去掉一个 tab 里不该落盘的部分。
-//
-// 两类：file tab 的草稿两字段，以及 terminal tab 的 incompatible。
-// 写成一个独立函数而不是内联三元，是为了将来再多一种「不落盘字段」时只有一处要改。
-function stripTab(t: Tab): Tab {
-  if (t.content.kind === 'file') {
-    return { id: t.id, content: { kind: 'file', rel: t.content.rel } }
-  }
-  if (t.content.kind === 'terminal') {
-    // incompatible 是**服务端此刻**的结论，不是布局的一部分：换回兼容版本之后
-    // 它就该消失，存下来会让那个 tab 一直显示成不可用。其余字段逐项重建，避免
-    // 将本次新增的可选状态或未来的运行时字段顺手落盘。
-    const out: { kind: 'terminal'; seq: number; sessionId?: string; rel?: string; launcher?: string } = {
-      kind: 'terminal',
-      seq: t.content.seq,
-    }
-    if (t.content.sessionId !== undefined) out.sessionId = t.content.sessionId
-    if (t.content.rel !== undefined) out.rel = t.content.rel
-    if (t.content.launcher !== undefined) out.launcher = t.content.launcher
-    return { id: t.id, content: out }
-  }
-  return { id: t.id, content: t.content }
+function parseBase(raw: unknown): BaseDir | null {
+  if (!isObject(raw) || !hasOnly(raw, ['key', 'kind', 'path', 'label', 'projectName', 'machine'])) return null
+  if (!isString(raw.key) || !isString(raw.path) || !isString(raw.label) || !isString(raw.projectName) || !isString(raw.machine)) return null
+  if (raw.kind !== 'workspace' && raw.kind !== 'home' && raw.kind !== 'scratch') return null
+  return { key: raw.key, kind: raw.kind, path: raw.path, label: raw.label, projectName: raw.projectName, machine: raw.machine }
 }
 
-// decodeBase 把一行 payload 解回基准目录与它的 tab 组。
-//
-// 参数：
-//   - baseKey: 这一行的 key，直接作为返回 BaseDir 的 key
-//   - raw: 服务端存的 payload 字符串
-//
-// 返回：解析并校验通过时返回 { base, wb }；**任何一处不对就返回 null**
-//（调用方丢弃整行并 warn，绝不半信半疑地用一部分）。
-export function decodeBase(baseKey: string, raw: string): { base: BaseDir; wb: Workbench } | null {
-  let parsed: unknown
+function parseContent(raw: unknown): TabContent | null {
+  if (!isObject(raw) || !isString(raw.kind)) return null
+  switch (raw.kind) {
+    case 'blank':
+      return hasOnly(raw, ['kind']) ? { kind: 'blank' } : null
+    case 'file':
+      return hasOnly(raw, ['kind', 'rel']) && isString(raw.rel) ? { kind: 'file', rel: raw.rel } : null
+    case 'tui':
+      return hasOnly(raw, ['kind', 'taskId']) && isString(raw.taskId) ? { kind: 'tui', taskId: raw.taskId } : null
+    case 'terminal': {
+      if (!hasOnly(raw, ['kind', 'seq', 'sessionId', 'rel', 'launcher']) || !isFiniteNumber(raw.seq)) return null
+      if (raw.sessionId !== undefined && !isString(raw.sessionId)) return null
+      if (raw.rel !== undefined && !isString(raw.rel)) return null
+      if (raw.launcher !== undefined && !isString(raw.launcher)) return null
+      const out: Extract<TabContent, { kind: 'terminal' }> = { kind: 'terminal', seq: raw.seq }
+      if (raw.sessionId !== undefined) out.sessionId = raw.sessionId
+      if (raw.rel !== undefined) out.rel = raw.rel
+      if (raw.launcher !== undefined) out.launcher = raw.launcher
+      return out
+    }
+    default: return null
+  }
+}
+
+function parseWorkbench(raw: unknown): Workbench | null {
+  if (!isObject(raw) || !hasOnly(raw, ['groups', 'activeGroupId']) || !Array.isArray(raw.groups) || raw.groups.length === 0 || !isString(raw.activeGroupId)) return null
+  const groups: TabGroup[] = []
+  const groupIds = new Set<string>()
+  const tabIds = new Set<string>()
+  for (const value of raw.groups) {
+    if (!isObject(value) || !hasOnly(value, ['id', 'name', 'autoName', 'columns', 'sizes', 'focus'])) return null
+    if (!isString(value.id) || groupIds.has(value.id) || !isString(value.name) || typeof value.autoName !== 'boolean' ||
+        !Array.isArray(value.columns) || value.columns.length === 0 || !Array.isArray(value.sizes) ||
+        value.sizes.length !== value.columns.length || !value.sizes.every(isFiniteNumber) || value.sizes.some((size) => size <= 0) ||
+        !Array.isArray(value.focus) || value.focus.length !== 2 || !value.focus.every((n) => typeof n === 'number' && Number.isInteger(n))) return null
+    groupIds.add(value.id)
+    const columns = []
+    for (const columnValue of value.columns) {
+      if (!isObject(columnValue) || !hasOnly(columnValue, ['panes']) || !Array.isArray(columnValue.panes) || columnValue.panes.length < 1 || columnValue.panes.length > 2) return null
+      if (columnValue.panes.length === 2 && columnValue.panes.every((pane) => pane === null)) return null
+      const panes: Array<Tab | null> = []
+      for (const paneValue of columnValue.panes) {
+        if (paneValue === null) { panes.push(null); continue }
+        if (!isObject(paneValue) || !hasOnly(paneValue, ['id', 'base', 'content']) || !isString(paneValue.id) || tabIds.has(paneValue.id)) return null
+        const base = parseBase(paneValue.base)
+        const content = parseContent(paneValue.content)
+        if (base === null || content === null) return null
+        tabIds.add(paneValue.id)
+        panes.push({ id: paneValue.id, base, content })
+      }
+      columns.push({ panes })
+    }
+    const focus = value.focus as number[]
+    if (focus[0] < 0 || focus[0] >= columns.length || focus[1] < 0 || focus[1] >= columns[focus[0]].panes.length) return null
+    groups.push({ id: value.id, name: value.name, autoName: value.autoName, columns, sizes: value.sizes, focus: [focus[0], focus[1]] })
+  }
+  if (!groupIds.has(raw.activeGroupId)) return null
+  return { groups, activeGroupId: raw.activeGroupId }
+}
+
+/** 解码并压缩全局 payload；非法字段返回 null，合法空列/空组在渲染前统一删除。 */
+export function decodeWorkbench(raw: string): Workbench | null {
   try {
-    parsed = JSON.parse(raw)
+    const parsed: unknown = JSON.parse(raw)
+    if (!isObject(parsed) || !hasOnly(parsed, ['v', 'wb']) || parsed.v !== PERSIST_VERSION) return null
+    const workbench = parseWorkbench(parsed.wb)
+    return workbench === null ? null : normalizeWorkbench(workbench)
   } catch {
     return null
   }
-  if (!isObject(parsed)) return null
-  if (parsed.v !== PERSIST_VERSION) return null
-
-  const b = parsed.base
-  if (!isObject(b)) return null
-  if (b.kind !== 'workspace' && b.kind !== 'home' && b.kind !== 'scratch') return null
-  if (!isStr(b.path) || !isStr(b.label) || !isStr(b.projectName) || !isStr(b.machine)) return null
-
-  const wb = parseWorkbench(parsed.wb)
-  if (wb === null) return null
-
-  return {
-    base: { key: baseKey, kind: b.kind, path: b.path, label: b.label, projectName: b.projectName, machine: b.machine },
-    wb,
-  }
 }
 
-// parseWorkbench 校验并归一化一个 Workbench。返回 null = 形状不对。
-function parseWorkbench(raw: unknown): Workbench | null {
-  if (!isObject(raw)) return null
-  if (!Array.isArray(raw.groups) || raw.groups.length === 0 || raw.groups.length > MAX_GROUPS) return null
-  if (!Array.isArray(raw.sizes) || raw.sizes.length !== raw.groups.length) return null
-  if (!raw.sizes.every((n) => typeof n === 'number' && Number.isFinite(n) && n > 0)) return null
-  // active 越界会让渲染层去取 groups[5] —— 那是一次静默的 undefined，
-  // 表现为「中央区一片空白但左栏是选中的」，比整行丢弃难查得多
-  if (typeof raw.active !== 'number' || !Number.isInteger(raw.active)) return null
-  if (raw.active < 0 || raw.active >= raw.groups.length) return null
+/** 空布局判断的持久化层导出，空布局由同步层写成删除。 */
+export function isEmptyWorkbench(wb: Workbench): boolean { return isEmptyLayout(wb) }
 
-  const groups: TabGroup[] = []
-  for (const g of raw.groups) {
-    if (!isObject(g) || !Array.isArray(g.tabs)) return null
-    if (g.activeId !== null && !isStr(g.activeId)) return null
-    const tabs: Tab[] = []
-    for (const t of g.tabs) {
-      if (!isObject(t) || !isStr(t.id)) return null
-      const content = parseContent(t.content)
-      if (content === null) return null
-      tabs.push({ id: t.id, content })
-    }
-    // activeId 指向一个已经不在列表里的 tab 是坏数据：渲染层会显示空面板
-    if (g.activeId !== null && !tabs.some((t) => t.id === g.activeId)) return null
-    // 反过来，有 tab 却没有 activeId 也不成立（closeTab 保证了这条不变式）
-    if (g.activeId === null && tabs.length > 0) return null
-    groups.push({ tabs, activeId: g.activeId })
-  }
-  return { groups, active: raw.active, sizes: raw.sizes as number[] }
-}
-
-// parseContent 校验一个 tab 的内容。返回 null = 种类不认识或字段不对。
-function parseContent(raw: unknown): TabContent | null {
-  if (!isObject(raw)) return null
-  switch (raw.kind) {
-    case 'blank':
-      return { kind: 'blank' }
-    case 'terminal': {
-      if (typeof raw.seq !== 'number' || !Number.isFinite(raw.seq)) return null
-      const out: { kind: 'terminal'; seq: number; sessionId?: string; rel?: string; launcher?: string } = {
-        kind: 'terminal',
-        seq: raw.seq,
-      }
-      if (raw.sessionId !== undefined) {
-        if (!isStr(raw.sessionId)) return null
-        out.sessionId = raw.sessionId
-      }
-      if (raw.rel !== undefined) {
-        if (!isStr(raw.rel)) return null
-        out.rel = raw.rel
-      }
-      if (raw.launcher !== undefined) {
-        if (!isStr(raw.launcher)) return null
-        out.launcher = raw.launcher
-      }
-      return out
-    }
-    case 'file':
-      if (!isStr(raw.rel)) return null
-      // 草稿即使被塞进来了也不采信：编码时剥掉的东西，解码时也不认
-      return { kind: 'file', rel: raw.rel }
-    case 'tui':
-      if (!isStr(raw.taskId)) return null
-      return { kind: 'tui', taskId: raw.taskId }
-    default:
-      return null
-  }
-}
-
-function isObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v)
-}
-
-function isStr(v: unknown): v is string {
-  return typeof v === 'string'
-}
-
-// isEmptyWorkbench 判断一个工作台是不是一个 tab 都没有。
-//
-// 参数：wb 是要检查的工作台。
-// 返回：所有组都没有 tab 时为 true，否则为 false。
-// 注意：只看 tab 数量，不因 active 或 sizes 形状异常改变「空」的语义。
-// 用途：空的工作台**编码为删除**（PUT payload: null），不存一行空记录——
-// 用户把一个目录的 tab 全关掉就是不想再看见它，存空记录只会白占 50 行配额里的一格。
-export function isEmptyWorkbench(wb: Workbench): boolean {
-  return wb.groups.every((g) => g.tabs.length === 0)
-}
-
-// pruneDeadSessions 抹掉不在 liveIds 里的 sessionId（spec §2 规则二）。
-//
-// 参数：wb 是刚恢复出来的工作台；liveIds 是服务端会话列表里**还活着**的那些 id。
-// 返回：新的 Workbench；tab 一个都不删，只把死掉的 sessionId 字段去掉。
-//
-// 为什么留着 tab 而不是删掉：「我在这一栏放了个终端」本身就是布局的一部分。
-// 抹掉 id 之后 TerminalTab 挂载时会原地建一个新会话，位置不变。
-export function pruneDeadSessions(wb: Workbench, liveIds: Set<string>): Workbench {
+/**
+ * 清掉不在 liveIds 的终端 sessionId，但保留原 pane 位置与其它字段。
+ *
+ * keep 是可选的逐 tab 死亡判决门控（B283 方案3 的中央区侧）：返回 true 的 tab
+ * 即使 sessionId 不在 liveIds 也保留引用——机器扇出没答上来 ≠ 会话死亡。全局
+ * workbench 一个 payload 装着多台机器的 tab，门控粒度只能到 tab，按 tab.base.machine
+ * 判归属；不给 keep 时行为与旧两参形态逐字节一致。
+ */
+export function pruneDeadSessions(wb: Workbench, liveIds: ReadonlySet<string>, keep?: (tab: Tab) => boolean): Workbench {
   return {
     ...wb,
-    groups: wb.groups.map((g) => ({
-      ...g,
-      tabs: g.tabs.map((t) => {
-        if (t.content.kind !== 'terminal') return t
-        const id = t.content.sessionId
-        if (id === undefined || liveIds.has(id)) return t
-        const next: { kind: 'terminal'; seq: number; rel?: string; launcher?: string } = { kind: 'terminal', seq: t.content.seq }
-        if (t.content.rel !== undefined) next.rel = t.content.rel
-        if (t.content.launcher !== undefined) next.launcher = t.content.launcher
-        return { id: t.id, content: next }
-      }),
+    groups: wb.groups.map((group) => ({
+      ...group,
+      columns: group.columns.map((column) => ({
+        panes: column.panes.map((tab) => {
+          if (!tab || tab.content.kind !== 'terminal' || tab.content.sessionId === undefined || liveIds.has(tab.content.sessionId) || keep?.(tab)) return tab
+          const content = { ...tab.content }
+          delete content.sessionId
+          delete content.incompatible
+          return { ...tab, content }
+        }),
+      })),
     })),
   }
 }
 
-// markIncompatibleSessions 给指向「协议不兼容会话」的终端 tab 打上标记。
-//
-// 参数：wb 是刚恢复出来的工作台；ids 是服务端报为 incompatible 的会话 id。
-// 返回：新的 Workbench；不删 tab、不抹 sessionId，只加一个标记。
-//
-// 为什么不能像死会话那样直接抹掉 sessionId：那个会话**还活着**，抹掉 id
-// 等于让 TerminalTab 原地再建一个新 shell，而旧的还在后台跑着没人管得着。
-// 打标记之后 TerminalTab 不建连、不重连，直接给「重开一个终端」的出口，
-// 由用户决定要不要放弃它（A spec 的协议错配降级）。
-export function markIncompatibleSessions(wb: Workbench, ids: Set<string>): Workbench {
+/** 给仍存活但协议不兼容的终端加运行时标记，不改变 sessionId。 */
+export function markIncompatibleSessions(wb: Workbench, ids: ReadonlySet<string>): Workbench {
   if (ids.size === 0) return wb
   return {
     ...wb,
-    groups: wb.groups.map((g) => ({
-      ...g,
-      tabs: g.tabs.map((t) => {
-        if (t.content.kind !== 'terminal') return t
-        const id = t.content.sessionId
-        if (id === undefined || !ids.has(id)) return t
-        return { id: t.id, content: { ...t.content, incompatible: true } }
-      }),
+    groups: wb.groups.map((group) => ({
+      ...group,
+      columns: group.columns.map((column) => ({
+        panes: column.panes.map((tab) => tab && tab.content.kind === 'terminal' && tab.content.sessionId !== undefined && ids.has(tab.content.sessionId)
+          ? { ...tab, content: { ...tab.content, incompatible: true } }
+          : tab),
+      })),
     })),
   }
 }
 
-// diffPayloads 比较两份「key → payload 字符串」，分出要写的与要删的。
-//
-// 参数：prev 是上次已落盘的快照；next 是当前应该落盘的内容。
-// 返回：changed 是新增或内容变了的 key；removed 是 prev 有而 next 没有的 key。
-//
-// 为什么比字符串而不是比对象：payload 本来就要序列化成字符串才能发出去，
-// 顺手拿它当比较依据，就不必写一个深比较，也不会因为对象字段顺序不同而误判。
-export function diffPayloads(
-  prev: Record<string, string>,
-  next: Record<string, string>,
-): { changed: string[]; removed: string[] } {
-  const changed: string[] = []
-  for (const [k, v] of Object.entries(next)) {
-    if (prev[k] !== v) changed.push(k)
-  }
-  const removed: string[] = []
-  for (const k of Object.keys(prev)) {
-    if (!(k in next)) removed.push(k)
-  }
+/** 按序列化字符串区分 changed 与 removed，供同步层决定 PUT 内容。 */
+export function diffPayloads(previous: Record<string, string>, next: Record<string, string>): { changed: string[]; removed: string[] } {
+  const changed = Object.entries(next).filter(([key, value]) => previous[key] !== value).map(([key]) => key)
+  const removed = Object.keys(previous).filter((key) => !(key in next))
   return { changed, removed }
 }

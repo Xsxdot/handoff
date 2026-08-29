@@ -1,0 +1,2936 @@
+<!doctype html>
+<!--
+  代码图（/codegraph）—— 原型 v7（子系统化 + 领域语义页，roadmap 讨论稿）。
+  在 v6 定稿形态（领域图单一主线三级下钻）之上演进，本副本要确认的新形态：
+    ① 首层「架构全景」按子系统组织（target.json 的 subsystems，执法分区）；
+       领域归属子系统由派生得出（成员文件 × SubsystemOf），跨子系统领域带 ⧉ 警示——
+       两套分区正交、只派生不手抄，尊重契约 §7 拍板。
+    ② 组织方式可切换：按子系统（新默认）/ 按领域（v6 定稿形态原样保留）。
+    ③ 叶子领域升格为「领域页」，双 tab：
+       语义（新）= 领域声明 domains/*.json 的职责/不变式(测试锚)/状态机流程图/生命周期
+                  + baseline lifecycle 段的机械层（谁创建/谁写状态）；
+       结构 = v6 的树 + 竖向焦点链视图，原样保留。
+  数据：data/graph.js 由真实 handoff codegraph 数据生成（baseline + target + 声明），
+       file:// 直开即真数据；缺失时回落内嵌 mock（mock 无子系统数据，自动降级 v6 形态）。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · 代码图</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  .cg { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+  /* ---- 顶部工具条 ---- */
+  .cg-toolbar {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 12px; border-bottom: 1px solid var(--border); background: var(--sidebar);
+    font-size: 13px;
+  }
+  .cg-toolbar label { color: var(--muted-foreground); font-size: 12px; }
+  .cg-toolbar select {
+    padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border);
+    background: var(--background); font-size: 13px; color: var(--foreground);
+  }
+  .cg-toolbar .spacer { flex: 1; }
+  .cg-toolbar .search { width: 170px; }
+  .zoom-ctl { display: flex; align-items: center; gap: 2px; }
+  .zoom-ctl .btn { padding: 3px 9px; }
+  .zoom-ctl .pct { font-size: 12px; color: var(--muted-foreground); width: 42px; text-align: center; font-family: var(--font-mono); }
+
+  /* 组织方式切换：按子系统 / 按领域 */
+  .org-seg { display: inline-flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden; }
+  .org-seg button {
+    border: none; background: var(--background); color: var(--muted-foreground);
+    font-size: 12px; padding: 4px 11px; cursor: pointer;
+  }
+  .org-seg button + button { border-left: 1px solid var(--border); }
+  .org-seg button.active { background: var(--primary); color: var(--primary-foreground); }
+
+  .diff-chips { display: flex; gap: 6px; align-items: center; }
+  .chip {
+    display: inline-flex; align-items: center; gap: 4px;
+    padding: 1px 8px; border-radius: 999px; font-size: 12px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--background);
+  }
+  .chip.add { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
+  .chip.mod { color: var(--amber); border-color: #fde68a; background: #fffbeb; }
+  .chip.del { color: var(--destructive); border-color: #fecaca; background: #fef2f2; }
+
+  .cg-main { flex: 1; min-height: 0; display: flex; position: relative; }
+  #crumbHolder { position: absolute; top: 10px; left: 14px; z-index: 6; display: flex; gap: 8px; align-items: center; }
+  .crumb {
+    display: inline-flex; gap: 8px; align-items: center;
+    background: var(--background); border: 1px solid var(--border); border-radius: 999px;
+    padding: 4px 14px; font-size: 12px; box-shadow: 0 1px 4px rgba(0,0,0,.08);
+  }
+  .crumb a { cursor: pointer; color: var(--muted-foreground); }
+  .crumb a:hover { color: var(--foreground); text-decoration: underline; }
+  .crumb b { font-weight: 600; }
+  .crumb a.crumb-on { color: var(--primary); font-weight: 700; text-decoration: none; }
+
+  .graph-wrap { flex: 1; min-width: 0; overflow: auto; position: relative; background:
+    radial-gradient(circle, #ececec 1px, transparent 1px) 0 0 / 22px 22px; }
+
+  /* 差异状态小徽标（领域卡统计行 / 连线详情里通用） */
+  .st-mini { font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 999px; color: #fff; }
+  .st-mini.add { background: var(--green); }
+  .st-mini.mod { background: var(--amber); }
+  .st-mini.del { background: var(--destructive); }
+
+  /* ---- 全景卡（领域卡 + 子系统卡共用底座） ---- */
+  #domainPane { position: relative; }
+  .dcard {
+    position: absolute; width: 252px; cursor: grab; user-select: none; z-index: 2;
+    border: 2px solid #9a9a9a; border-radius: 14px; background: var(--background);
+    box-shadow: 0 3px 10px rgba(0,0,0,.10); font-size: 12px;
+  }
+  .dcard:active { cursor: grabbing; }
+  .dcard.selected { outline: 2.5px solid var(--primary); }
+  .dcard.dim { opacity: .3; }
+  .dcard .dc-head { padding: 9px 14px 5px; font-weight: 700; font-size: 13.5px; display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .dcard .dc-head .k { font-weight: 400; font-size: 10.5px; color: var(--muted-foreground); }
+  .dcard .dc-head .pfx { font-weight: 400; font-size: 10.5px; color: var(--muted-foreground); }
+  .dcard.has-entry .dc-head::before { content: "⚑"; color: var(--primary); font-size: 11px; }
+  .dcard .enter {
+    margin-left: auto; border: none; background: var(--muted); cursor: pointer;
+    font-size: 11px; padding: 2px 9px; border-radius: 6px; color: var(--foreground); white-space: nowrap;
+  }
+  .dcard .enter:hover { background: var(--primary); color: var(--primary-foreground); }
+  .dcard .dc-sum { padding: 0 14px 8px; color: var(--muted-foreground); font-size: 11.5px; line-height: 1.55; }
+  .dcard .dc-stats {
+    display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+    padding: 6px 14px 9px; border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--muted-foreground);
+  }
+  /* 本级之外的占位卡（虚线，点击横跳）：领域外 / 其他子系统通用 */
+  .dcard.ext { border-style: dashed; width: 196px; opacity: .92; }
+  .dcard.ext .dc-head { font-weight: 600; color: var(--muted-foreground); }
+  .dcard.ext:hover { border-color: var(--primary); }
+
+  /* 子系统卡：全景卡加宽 + 顶部色条 + 类型徽标 */
+  .dcard.scard { width: 300px; }
+  .dcard.scard::after {
+    content: ""; position: absolute; top: -2px; left: 14px; right: 14px; height: 3px;
+    border-radius: 0 0 3px 3px; background: var(--primary); opacity: .55;
+  }
+  .dcard.scard.t-boundary::after { background: var(--amber); }
+  .type-badge {
+    font-size: 9.5px; font-weight: 600; padding: 1px 7px; border-radius: 999px;
+    border: 1px solid var(--border); color: var(--muted-foreground); background: var(--muted);
+  }
+  .type-badge.t-logic { color: var(--primary); border-color: color-mix(in srgb, var(--primary) 40%, transparent); }
+  .type-badge.t-boundary { color: var(--amber); border-color: #fde68a; }
+  .dc-domchips { display: flex; flex-wrap: wrap; gap: 4px; padding: 0 14px 8px; }
+  .dom-chip {
+    font-size: 10.5px; padding: 1px 8px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--sidebar); color: var(--foreground);
+  }
+  .dom-chip:hover { border-color: var(--primary); }
+  .dom-chip .x { color: var(--amber); font-weight: 700; }
+  .cross-badge {
+    font-size: 10px; font-weight: 700; padding: 0 6px; border-radius: 999px;
+    color: var(--amber); border: 1px solid #fde68a; background: #fffbeb; cursor: default;
+  }
+  .decl-dot { font-size: 10px; color: var(--green); font-weight: 700; cursor: default; }
+
+  path.dedge { stroke: #a8a8a8; fill: none; cursor: pointer; }
+  path.dedge.hit { stroke: transparent; }
+  path.dedge.sel { stroke: var(--primary); }
+  path.dedge.st-added { stroke: var(--green); }
+  .dedge-label {
+    position: absolute; transform: translate(-50%, -50%); z-index: 3; cursor: pointer;
+    font-size: 10.5px; font-family: var(--font-mono); white-space: nowrap;
+    background: var(--background); border: 1px solid var(--border); border-radius: 999px; padding: 1px 9px;
+  }
+  .dedge-label:hover, .dedge-label.sel { border-color: var(--primary); color: var(--primary); }
+  .dedge-label .plus { color: var(--green); }
+
+  /* ---- 叶子领域 · 结构 tab：树+图视图 ---- */
+  #comboPane { height: 100%; flex: 1; min-width: 0; }
+  .combo-tree {
+    width: 320px; flex-shrink: 0; border-right: 1px solid var(--border);
+    overflow: auto; padding: 46px 8px 10px; background: var(--sidebar); font-size: 12.5px;
+  }
+  .combo-tree details { margin-left: 14px; }
+  .combo-tree > details { margin-left: 0; margin-bottom: 4px; }
+  .combo-tree summary {
+    list-style: none; display: flex; gap: 6px; align-items: center;
+    padding: 2px 4px; border-radius: 5px; cursor: pointer; white-space: nowrap;
+  }
+  .combo-tree summary:hover { background: var(--muted); }
+  .combo-tree summary::before { content: "▸"; width: 11px; color: var(--muted-foreground); flex-shrink: 0; }
+  .combo-tree details[open] > summary::before { content: "▾"; }
+  .combo-tree details.leaf > summary::before { content: "·"; }
+  .ct-name { font-family: var(--font-mono); font-size: 12px; cursor: pointer; padding: 0 4px; border-radius: 4px; }
+  .ct-name:hover { text-decoration: underline; }
+  .ct-name.focused { background: var(--primary); color: var(--primary-foreground); text-decoration: none; }
+  .ct-entry > summary .ct-name { font-weight: 700; }
+  .ct-test { font-size: 10px; color: var(--green); }
+  .ct-fan { font-size: 10px; color: var(--muted-foreground); font-family: var(--font-mono); }
+  .ct-pin { font-size: 10px; color: var(--primary); }
+  .ct-cycle { color: var(--muted-foreground); font-size: 11px; margin-left: 16px; }
+  .tr-badge { font-size: 9.5px; font-weight: 700; padding: 0 5px; border-radius: 999px; color: #fff; }
+  .tr-badge.add { background: var(--green); } .tr-badge.mod { background: var(--amber); } .tr-badge.del { background: var(--destructive); }
+
+  /* 中间画布：不滚动，空白处按住拖动平移 */
+  .combo-graph { flex: 1; overflow: hidden; position: relative; cursor: grab; }
+  .combo-graph.panning { cursor: grabbing; }
+  .fg-navctl {
+    position: absolute; top: 44px; left: 12px; right: 12px; z-index: 5;
+    display: flex; gap: 5px; align-items: center; flex-wrap: wrap; pointer-events: none;
+  }
+  .fg-navctl > * { pointer-events: auto; }
+  .fg-navctl button:disabled { opacity: .35; cursor: default; }
+  .fg-depth {
+    height: 24px; font-size: 11.5px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--background); color: var(--foreground); padding: 0 4px;
+  }
+  .fg-chip {
+    display: inline-flex; align-items: center; gap: 5px; padding: 2px 8px;
+    border-radius: 999px; font-size: 11px; font-family: var(--font-mono);
+    background: var(--primary); color: var(--primary-foreground);
+  }
+  .fg-chip b { cursor: pointer; font-weight: 700; opacity: .7; }
+  .fg-chip b:hover { opacity: 1; }
+  .fg-hint {
+    padding: 3px 10px; border-radius: 999px; white-space: nowrap;
+    font-size: 11px; color: var(--muted-foreground); background: var(--sidebar); border: 1px solid var(--border);
+  }
+  .fg-collab { position: absolute; font-size: 10.5px; letter-spacing: .08em; color: var(--muted-foreground); }
+  .fg-node {
+    position: absolute; width: 156px; cursor: pointer; z-index: 2;
+    border: 1px solid #cfcfcf; border-radius: 8px; background: var(--background);
+    padding: 5px 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06);
+  }
+  .fg-node:hover { border-color: #8a8a8a; }
+  .fg-node .nm { font-family: var(--font-mono); font-size: 11px; font-weight: 600; word-break: break-all; }
+  .fg-node .cls { font-size: 9.5px; color: var(--muted-foreground); display: flex; gap: 5px; }
+  .fg-node.focus { outline: 2.5px solid var(--primary); box-shadow: 0 3px 10px rgba(0,0,0,.14); }
+  .fg-node.kind-entry { background: var(--primary); border-color: var(--primary); border-radius: 999px; }
+  .fg-node.kind-entry .nm, .fg-node.kind-entry .cls { color: var(--primary-foreground); }
+  .fg-node.kind-model { border-style: dashed; background: #f4f0ff; }
+  .fg-node.st-added { border-color: var(--green); background: #f0fdf4; }
+  .fg-node.st-modified { border-color: var(--amber); background: #fffbeb; }
+  .fg-node.st-deleted { border-color: var(--destructive); border-style: dashed; }
+  .fg-node.st-deleted .nm { text-decoration: line-through; color: var(--muted-foreground); }
+  .fg-node.selected { outline: 2px solid #17171766; }
+  /* 链上撞到的领域外节点：虚线卡，点击横跳到它的领域 */
+  .fg-node.ext { border-style: dashed; background: var(--sidebar); }
+  .fg-node.ext .cls { color: var(--primary); }
+  path.fg-edge { stroke: #b8b8b8; stroke-width: 1.5; fill: none; }
+  path.fg-edge.touch { stroke: #404040; stroke-width: 2; }
+  path.fg-edge.st-added { stroke: var(--green); }
+  path.fg-edge.st-deleted { stroke: var(--destructive); stroke-dasharray: 5 4; }
+  path.fg-edge.backflow { stroke: #d4d4d4; stroke-dasharray: 4 4; }
+
+  /* 流程视图：容器级节点 / 被外部调用标记 */
+  .fg-node.fl-cont { width: 204px; border-width: 1.5px; }
+  .fg-node.fl-cont .nm { font-size: 11.5px; }
+  .fl-in {
+    font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 999px;
+    color: var(--primary); border: 1px solid color-mix(in srgb, var(--primary) 40%, transparent);
+    cursor: default;
+  }
+  .fg-node.selected-flow { outline: 2.5px solid var(--primary); }
+
+  /* 调用链视图（单入口 DFS 竖排 + 右侧端口列） */
+  .chain-scroll { flex: 1; min-width: 0; overflow: auto; position: relative; background:
+    radial-gradient(circle, #ececec 1px, transparent 1px) 0 0 / 22px 22px; }
+  .cv-canvas { position: relative; }
+  .cv-canvas svg { position: absolute; inset: 0; }
+  .cv-row {
+    position: absolute; width: 244px; z-index: 2; cursor: pointer;
+    border: 1px solid #cfcfcf; border-radius: 8px; background: var(--background);
+    padding: 4px 10px; box-shadow: 0 1px 3px rgba(0,0,0,.06); font-size: 11.5px;
+  }
+  .cv-row:hover { border-color: #8a8a8a; }
+  .cv-row.selected-flow { outline: 2.5px solid var(--primary); }
+  .cv-row .nm { font-family: var(--font-mono); font-size: 11px; font-weight: 600; word-break: break-all; }
+  .cv-row .meta { font-size: 9.5px; color: var(--muted-foreground); display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  .cv-row.root { background: var(--primary); border-color: var(--primary); border-radius: 999px; padding: 6px 14px; }
+  .cv-row.root .nm, .cv-row.root .meta { color: var(--primary-foreground); }
+  .cv-row.stub {
+    border-style: dashed; background: var(--sidebar); color: var(--muted-foreground);
+    box-shadow: none; font-size: 11px; padding: 3px 10px; width: 220px;
+  }
+  .cv-ent { font-size: 9.5px; font-family: var(--font-mono); padding: 0 5px; border-radius: 999px; }
+  .cv-ent.create { color: var(--green); border: 1px solid #bbf7d0; background: #f0fdf4; }
+  .cv-ent.write { color: #92400e; border: 1px solid #fde68a; background: #fffbeb; }
+  .cv-ent.touch { color: var(--muted-foreground); border: 1px solid var(--border); background: var(--sidebar); }
+  path.cv-guide { stroke: #c2c2c2; stroke-width: 1.3; fill: none; }
+  path.cv-ext { stroke: #c9c9c9; stroke-width: 1.1; fill: none; }
+  .cv-port {
+    position: absolute; width: 170px; z-index: 2; cursor: pointer;
+    border: 2px dashed #9a9a9a; border-radius: 12px; background: var(--sidebar);
+    padding: 7px 12px; font-size: 11px; color: var(--muted-foreground);
+  }
+  .cv-port:hover { border-color: var(--primary); color: var(--primary); }
+  .cv-port .nm { font-weight: 700; font-size: 12px; color: var(--foreground); }
+
+  /* 调用链 · 级联面板（Miller columns）：第一列=起点清单，点一行向右长出它的下一级 */
+  .chain-cols {
+    flex: 1; min-width: 0; display: flex; gap: 14px; align-items: stretch;
+    overflow: auto; padding: 48px 16px 16px;
+  }
+  .ccol {
+    width: 282px; flex-shrink: 0; display: flex; flex-direction: column;
+    border: 1px solid var(--border); border-radius: 12px; background: var(--background);
+    box-shadow: 0 1px 4px rgba(0,0,0,.05); max-height: 100%;
+  }
+  .ccol-head {
+    padding: 9px 12px; border-bottom: 1px solid var(--border); background: var(--sidebar);
+    border-radius: 12px 12px 0 0; flex-shrink: 0;
+  }
+  .ccol-head .nm { font-family: var(--font-mono); font-size: 12px; font-weight: 700; word-break: break-all; }
+  .ccol-head .meta { font-size: 10px; color: var(--muted-foreground); display: flex; gap: 5px; flex-wrap: wrap; align-items: center; margin-top: 2px; }
+  .ccol-head input { margin-top: 6px; width: 100%; font-size: 12px; }
+  .ccol-body { overflow-y: auto; padding: 6px; flex: 1; }
+  .ccol .group-label {
+    font-size: 10px; color: var(--muted-foreground); text-transform: uppercase;
+    letter-spacing: .05em; padding: 6px 6px 3px;
+  }
+  .crow {
+    border: 1px solid transparent; border-radius: 7px; padding: 4px 8px; margin-bottom: 2px;
+    font-size: 11.5px; cursor: pointer; display: flex; flex-direction: column; gap: 1px;
+  }
+  .crow:hover { background: var(--muted); }
+  .crow.on { border-color: var(--primary); background: var(--muted); }
+  .crow .rnm { font-family: var(--font-mono); font-size: 11px; font-weight: 600; word-break: break-all; display: flex; gap: 6px; align-items: baseline; }
+  .crow .rnm .kids { margin-left: auto; font-weight: 400; font-size: 10px; color: var(--muted-foreground); white-space: nowrap; }
+  .crow .rmeta { font-size: 9.5px; color: var(--muted-foreground); display: flex; gap: 5px; flex-wrap: wrap; align-items: center; }
+  .crow.ext { border: 1px dashed #b5b5b5; background: var(--sidebar); color: var(--muted-foreground); }
+  .crow.ext:hover { border-color: var(--primary); }
+  .crow.cycle { opacity: .55; cursor: default; }
+  .crow.leaf-end { cursor: default; }
+  .util-chip {
+    font-size: 9px; font-weight: 700; padding: 0 5px; border-radius: 999px;
+    color: var(--muted-foreground); border: 1px solid var(--border); background: var(--sidebar);
+  }
+
+  /* ---- 叶子领域 · 语义 tab ---- */
+  .sem-pane { flex: 1; min-width: 0; overflow: auto; padding: 50px 28px 34px; background:
+    radial-gradient(circle, #f1f1f1 1px, transparent 1px) 0 0 / 22px 22px; }
+  .sem-doc { max-width: 880px; }
+  .sem-head h2 { margin: 0; font-size: 19px; display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
+  .sem-head h2 .k { font-size: 12px; font-weight: 400; color: var(--muted-foreground); }
+  .sub-chips { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin: 8px 0 0; font-size: 11.5px; color: var(--muted-foreground); }
+  .sub-chip {
+    font-size: 11px; padding: 1px 9px; border-radius: 999px; cursor: pointer;
+    border: 1px solid var(--border); background: var(--background);
+  }
+  .sub-chip:hover { border-color: var(--primary); color: var(--primary); }
+  .cross-banner {
+    margin: 14px 0 0; padding: 9px 13px; border: 1px solid #fde68a; background: #fffbeb;
+    border-radius: 9px; font-size: 12.5px; line-height: 1.6; color: #92400e;
+  }
+  .sem-sec { margin-top: 22px; }
+  .sem-sec > .sem-h {
+    font-size: 11px; color: var(--muted-foreground); text-transform: uppercase;
+    letter-spacing: .05em; margin-bottom: 8px; display: flex; gap: 8px; align-items: baseline;
+  }
+  .sem-h .src { font-size: 10.5px; text-transform: none; letter-spacing: 0; opacity: .8; }
+  .sem-resp { font-size: 14.5px; line-height: 1.7; }
+  .sem-desc { font-size: 12.5px; line-height: 1.75; color: var(--muted-foreground); }
+  .inv-row {
+    display: flex; gap: 10px; align-items: baseline; padding: 8px 2px;
+    border-top: 1px solid var(--border); font-size: 13px; line-height: 1.6;
+  }
+  .inv-row:last-child { border-bottom: 1px solid var(--border); }
+  .inv-test {
+    flex-shrink: 0; font-family: var(--font-mono); font-size: 10.5px; color: var(--green);
+    border: 1px solid #bbf7d0; background: #f0fdf4; border-radius: 999px; padding: 1px 8px; white-space: nowrap;
+    cursor: default;
+  }
+  .sm-wrap {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--background);
+    overflow: auto; padding: 14px 10px 6px;
+  }
+  .sm-legend { display: flex; gap: 14px; flex-wrap: wrap; margin-top: 8px; font-size: 11px; color: var(--muted-foreground); align-items: center; }
+  .anchor-chip {
+    font-family: var(--font-mono); font-size: 10.5px; padding: 1px 9px; border-radius: 999px;
+    border: 1px solid var(--border); background: var(--sidebar); color: var(--foreground);
+  }
+  .anchor-chip.jump { cursor: pointer; }
+  .anchor-chip.jump:hover { border-color: var(--primary); color: var(--primary); }
+  .anchor-chip.dead { opacity: .65; cursor: default; }
+  .sm-state { fill: var(--background); stroke: #9a9a9a; stroke-width: 1.6; }
+  .sm-state.init { stroke: var(--primary); stroke-width: 2; }
+  .sm-state.terminal { stroke: var(--green); stroke-width: 2; }
+  .sm-name { font-family: var(--font-mono); font-size: 12px; fill: var(--foreground); text-anchor: middle; }
+  .sm-tag { font-size: 9px; fill: var(--green); text-anchor: middle; letter-spacing: .06em; }
+  path.sm-edge { stroke: #a8a8a8; stroke-width: 1.5; fill: none; }
+  path.sm-edge.back { stroke: #c2c2c2; }
+  .sm-back-mark { font-size: 10px; fill: var(--muted-foreground); font-family: var(--font-mono); }
+
+  .lc-strip {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    border: 1px solid var(--border); border-radius: 10px; background: var(--background);
+    padding: 12px 14px; font-size: 12.5px;
+  }
+  .lc-strip .arrow { flex: 1; min-width: 60px; height: 0; border-top: 1.5px solid #a8a8a8; position: relative; }
+  .chain-box {
+    border: 1px solid var(--border); border-radius: 10px; background: var(--background);
+    padding: 10px 14px; font-size: 12px; line-height: 2.1; overflow-x: auto;
+  }
+  .chain-node {
+    font-family: var(--font-mono); font-size: 11.5px; padding: 1px 7px;
+    border: 1px solid var(--border); border-radius: 6px; cursor: pointer;
+    color: var(--foreground); text-decoration: none; white-space: nowrap;
+  }
+  .chain-node:hover { border-color: var(--primary); color: var(--primary); }
+  .chain-node.ext { border-style: dashed; color: var(--muted-foreground); }
+  .chain-row.root { font-weight: 700; }
+  .chain-row.lvl1 { padding-left: 18px; }
+  .chain-l2 { color: var(--muted-foreground); }
+  .dim-row { color: var(--muted-foreground); font-size: 11.5px; }
+  .lc-strip .arrow::after { content: "▶"; position: absolute; right: -2px; top: -8px; font-size: 9px; color: #a8a8a8; }
+  .lc-dot.create { color: var(--primary); }
+  .lc-dot.end { color: var(--muted-foreground); }
+  table.lc-table { width: 100%; border-collapse: collapse; font-size: 12px; margin-top: 4px; }
+  table.lc-table th { text-align: left; color: var(--muted-foreground); font-weight: 500; font-size: 11px; padding: 3px 8px 3px 0; }
+  table.lc-table td { padding: 6px 8px 6px 0; vertical-align: top; border-top: 1px solid var(--border); line-height: 1.55; }
+  table.lc-table td.mono { font-family: var(--font-mono); font-size: 11.5px; word-break: break-all; }
+  .lc-model { cursor: pointer; color: var(--foreground); }
+  .lc-model:hover { text-decoration: underline; }
+  .lc-who { font-family: var(--font-mono); font-size: 11px; }
+  .lc-field { color: var(--amber); font-family: var(--font-mono); font-size: 11px; }
+  .decl-missing {
+    border: 1.5px dashed #c9c9c9; border-radius: 10px; padding: 14px 16px;
+    font-size: 12.5px; line-height: 1.7; color: var(--muted-foreground); background: var(--sidebar);
+  }
+  .decl-missing b { color: var(--foreground); }
+  .decl-missing code { font-family: var(--font-mono); font-size: 11.5px; }
+
+  /* ---- 右：详情面板 ---- */
+  .detail {
+    width: 340px; flex-shrink: 0; border-left: 1px solid var(--border);
+    overflow-y: auto; background: var(--background); padding: 14px;
+  }
+  .detail[hidden] { display: none; }
+  .detail h3 { margin: 0 0 2px; font-size: 14px; font-family: var(--font-mono); word-break: break-all; }
+  .detail .d-file { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-bottom: 10px; }
+  .detail .d-file a { color: inherit; }
+  .d-sec { margin-bottom: 14px; }
+  .d-sec .d-label { font-size: 11px; color: var(--muted-foreground); text-transform: uppercase; letter-spacing: .04em; margin-bottom: 4px; }
+  .d-sig { font-family: var(--font-mono); font-size: 11.5px; background: var(--muted); border-radius: 6px; padding: 8px 10px; white-space: pre-wrap; word-break: break-all; line-height: 1.5; }
+  .d-sig.old { text-decoration: line-through; opacity: .55; margin-bottom: 4px; }
+  .d-change { font-size: 12px; color: var(--amber); background: #fffbeb; border: 1px solid #fde68a; border-radius: 6px; padding: 6px 10px; margin-bottom: 6px; }
+  table.d-params { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.d-params th { text-align: left; color: var(--muted-foreground); font-weight: 500; font-size: 11px; padding: 2px 6px 2px 0; }
+  table.d-params td { padding: 3px 6px 3px 0; vertical-align: top; border-top: 1px solid var(--border); }
+  table.d-params td.mono { font-family: var(--font-mono); font-size: 11.5px; white-space: nowrap; }
+  .d-test { margin-bottom: 6px; }
+  .d-test summary { cursor: pointer; font-size: 12px; font-family: var(--font-mono); color: var(--green); list-style: none; }
+  .d-test summary::before { content: "▸ "; }
+  .d-test[open] summary::before { content: "▾ "; }
+  .d-test pre, .d-src pre {
+    margin: 4px 0 0; background: #18181b; color: #d4d4d8; border-radius: 6px;
+    padding: 10px; font-size: 11px; line-height: 1.55; overflow-x: auto; font-family: var(--font-mono);
+  }
+  .d-src summary { cursor: pointer; font-size: 12px; color: var(--muted-foreground); }
+  .d-callers a, .d-callees a { display: block; font-family: var(--font-mono); font-size: 12px; padding: 2px 0; color: var(--foreground); cursor: pointer; text-decoration: none; }
+  .d-callers a:hover, .d-callees a:hover { text-decoration: underline; }
+  .d-close { float: right; }
+
+  /* ---- 底部状态条 ---- */
+  .cg-status {
+    border-top: 1px solid var(--border); padding: 4px 12px; font-size: 11px;
+    color: var(--muted-foreground); font-family: var(--font-mono); background: var(--sidebar);
+    display: flex; gap: 14px; align-items: center; flex-wrap: wrap;
+  }
+  .cg-status .fresh { color: var(--green); }
+  .cg-status .stale { color: var(--amber); }
+
+  #mechDialog { max-width: 560px; }
+  #mechDialog .mech-body { padding: 18px 20px; font-size: 13px; line-height: 1.7; }
+  #mechDialog h3 { margin: 0 0 10px; font-size: 15px; }
+  #mechDialog pre { background: var(--muted); border-radius: 6px; padding: 10px 12px; font-size: 12px; overflow-x: auto; }
+  #mechDialog ol { padding-left: 20px; margin: 8px 0; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">handoff</div>
+    <div class="tree">
+      <div class="tree-group">
+        <div class="tree-label">本机</div>
+        <a class="tree-item selected">handoff</a>
+        <a class="tree-item">└ 7a8334f4（工作树）</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label">mac-02</div>
+        <a class="tree-item">gokit</a>
+      </div>
+    </div>
+    <div class="dock">
+      <button class="dock-btn" title="任务看板">▦</button>
+      <button class="dock-btn" title="工单">✉</button>
+      <a class="dock-btn" href="codegraph.html" title="代码图" style="background:var(--muted);color:var(--foreground)">⌘</a>
+      <a class="dock-btn" href="settings.html" title="设置">⚙</a>
+      <button class="dock-btn" title="添加项目">＋</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <main class="content">
+      <div class="cg">
+
+        <!-- 工具条 -->
+        <div class="cg-toolbar">
+          <label>项目</label>
+          <select id="cgProject">
+            <option value="handoff">handoff（本机）</option>
+            <option value="gokit">gokit（mac-02）</option>
+            <option value="charter">charter（本机）</option>
+            <option value="aim">aim（mac-02）</option>
+            <option value="sq">sq（本机）</option>
+          </select>
+          <label>视图</label>
+          <select id="viewSelect">
+            <option value="baseline">基准 · main</option>
+          </select>
+          <label>组织</label>
+          <div class="org-seg" id="orgSeg">
+            <button data-org="subsystem" class="active">按子系统</button>
+            <button data-org="domain">按领域</button>
+          </div>
+          <div class="diff-chips" id="diffChips" hidden></div>
+          <button class="btn sm" id="relayout" title="拖乱了就重排一次">重新布局</button>
+          <button class="btn sm" id="mechBtn" title="基准 + 差异的合成机制">ⓘ 数据机制</button>
+          <div class="spacer"></div>
+          <div class="zoom-ctl">
+            <button class="btn sm" id="zoomOut">−</button>
+            <span class="pct" id="zoomPct">100%</span>
+            <button class="btn sm" id="zoomIn">＋</button>
+          </div>
+          <input class="input search" id="searchInput" placeholder="搜索子系统 / 领域 / 方法…">
+        </div>
+
+        <div class="cg-main">
+          <div id="crumbHolder" style="display:none"></div>
+          <div class="graph-wrap" id="graphWrap">
+            <div id="domainPane"></div>
+          </div>
+          <div id="comboPane" style="display:none"></div>
+          <div id="semanticPane" class="sem-pane" style="display:none"></div>
+          <aside class="detail" id="detail" hidden></aside>
+        </div>
+
+        <div class="cg-status" id="statusBar"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- 数据机制说明 -->
+<dialog id="mechDialog">
+  <div class="mech-body">
+    <h3>基准 + 差异 + 声明：图数据怎么存、怎么合</h3>
+    <pre>codegraph/
+├── baseline.json          ← 基准图，随 main 演进（AI 扫描维护；含 lifecycle 段）
+├── target.json            ← 目标图：子系统清单 + 契约（人写，执法分区）
+├── domains/
+│   └── d_xxx.json         ← 领域声明：职责/不变式/状态机/生命周期锚（人写）
+└── diffs/
+    └── b164-….json        ← 分支/plan 差异：只记 加/改/删</pre>
+    <ol>
+      <li><strong>基准</strong>：main 上的完整图。领域层级（domains 段）与 lifecycle 段
+          （谁创建实体 / 谁写状态字段）都是扫描产出。</li>
+      <li><strong>子系统</strong>：target.json 的 subsystems 是人写的执法分区（契约方向、预算）。
+          领域归属子系统<strong>只派生不手抄</strong>：按成员文件路径算出，跨子系统领域标 ⧉ 作警示。</li>
+      <li><strong>领域声明</strong>：domains/*.json 存人写的职责、不变式（带测试锚，经 go/parser
+          核验）、状态机与生命周期锚；程序只读，在领域语义页与机械层合流展示。</li>
+      <li><strong>分支/plan 差异</strong>：AI 按 <code>git diff</code> 刷新分支自己的差异文件，
+          查看时与基准叠加渲染（绿=新增 / 琥珀=修改 / 红虚线=删除）。</li>
+      <li><strong>合并时收编</strong>：分支合回 main 后差异併入 baseline.json——和代码合并同一条 commit。</li>
+    </ol>
+    <div style="text-align:right;margin-top:10px"><button class="btn sm" id="mechClose">关闭</button></div>
+  </div>
+</dialog>
+
+<script src="../data/graph.js"></script>
+<script>
+/* ================= mock 数据（加载不到 data/graph.js 时的兜底） =================
+   结构与真实设计同构：BASELINE 基准图 + DIFFS 差异，渲染前 mergeView() 合成。
+   mock 无 domains/subsystems 段 → 页面自动降级为 v6 的按包名推导形态。 */
+
+const CONTAINERS = {
+  c_cli:      { label: "CLI 命令",         kind: "入口", entry: true, col: 0 },
+  c_http:     { label: "HTTP API",         kind: "入口", entry: true, col: 0 },
+  c_ws:       { label: "长连接",           kind: "入口", entry: true, col: 0 },
+  c_cmd:      { label: "cmd",              kind: "CLI 层", col: 1 },
+  c_client:   { label: "internal/client",  kind: "客户端", col: 2 },
+  c_agentd:   { label: "agentd.Server",    kind: "服务端", col: 3 },
+  c_store:    { label: "store.Store",      kind: "存储", col: 4 },
+  c_executor: { label: "executor.Host",    kind: "进程托管", col: 4 },
+  c_model:    { label: "model",            kind: "实体", col: 5 },
+};
+
+const BASELINE = {
+  commit: "2710515 (main)",
+  scannedAt: "2026-08-19 10:32",
+  nodes: {
+    e_dispatch: { kind: "entry", container: "c_cli", order: 0, name: "handoff dispatch", file: "cmd/dispatch.go", line: 24,
+      summary: "CLI 入口：把一份 plan 派发到目标机器的 executor。" },
+    e_pull: { kind: "entry", container: "c_cli", order: 1, name: "handoff pull", file: "cmd/pull.go", line: 19,
+      summary: "CLI 入口：把远端任务分支的改动拉回本地审。" },
+    e_apiCreate: { kind: "entry", container: "c_http", order: 0, name: "POST /api/tasks", file: "internal/agentd/server.go", line: 132,
+      summary: "HTTP 入口：创建任务（CLI dispatch 与控制台共用下游）。" },
+    n_runDispatch: { kind: "func", container: "c_cmd", order: 0, name: "runDispatch", file: "cmd/dispatch.go", line: 87,
+      signature: "func runDispatch(cmd *cobra.Command, args []string) error",
+      summary: "校验工作区干净、远端可 fetch，组装 DispatchRequest 后交给 client。" },
+    n_clientDispatch: { kind: "func", container: "c_client", order: 0, name: "Dispatch", file: "internal/client/dispatch.go", line: 33,
+      signature: "func Dispatch(ctx context.Context, req DispatchRequest) (*Task, error)",
+      summary: "对 agentd 发起 POST /api/tasks，处理鉴权与重连。" },
+    n_handleCreateTask: { kind: "func", container: "c_agentd", order: 0, name: "handleCreateTask", file: "internal/agentd/server.go", line: 214,
+      signature: "func (s *Server) handleCreateTask(w http.ResponseWriter, r *http.Request)",
+      summary: "HTTP 处理器：校验项目已登记 → 建 Task 落库 → 拉起 executor 进程。" },
+    n_createTask: { kind: "func", container: "c_store", order: 0, name: "CreateTask", file: "internal/store/task.go", line: 61,
+      signature: "func (s *Store) CreateTask(ctx context.Context, t *Task) (*Task, error)",
+      summary: "SQLite 落库，生成任务 ID 与初始 queued 状态。" },
+    n_spawn: { kind: "func", container: "c_executor", order: 0, name: "Spawn", file: "internal/executor/spawn.go", line: 45,
+      signature: "func (e *Host) Spawn(ctx context.Context, spec SpawnSpec) error",
+      summary: "按 spec 拉起 opencode/claude/grok/codex 进程并接管其事件流。" },
+    m_task: { kind: "model", container: "c_model", order: 0, name: "Task", file: "internal/store/model.go", line: 18,
+      summary: "任务实体：一次派发的全部状态。",
+      fields: [["ID", "string", "任务 ID"], ["State", "TaskState", "queued / running / …"], ["Branch", "string", "执行分支"]] },
+  },
+  edges: [
+    ["e_dispatch", "n_runDispatch"],
+    ["n_runDispatch", "n_clientDispatch"],
+    ["n_clientDispatch", "n_handleCreateTask"],
+    ["e_apiCreate", "n_handleCreateTask"],
+    ["n_handleCreateTask", "n_createTask"],
+    ["n_handleCreateTask", "n_spawn"],
+    ["n_createTask", "m_task"],
+  ],
+};
+
+/* ================= 数据源 =================
+   优先 window.CG_DATA（data/graph.js，真实扫描产物，file:// 直开可用）；
+   其次 fetch ../data/graph.json；都没有回落内嵌 mock，状态条标明来源。 */
+let DATA = null;
+
+function mockData() {
+  return {
+    meta: { project: "handoff", branch: "main", commit: BASELINE.commit,
+            scannedAt: BASELINE.scannedAt, source: "内嵌 mock（未找到 data/graph.js）" },
+    containers: CONTAINERS, nodes: BASELINE.nodes, edges: BASELINE.edges, diffs: {},
+  };
+}
+
+async function loadData() {
+  if (window.CG_DATA) {
+    DATA = window.CG_DATA;
+    DATA.diffs = DATA.diffs || {};
+    return;
+  }
+  try {
+    const resp = await fetch("../data/graph.json", { cache: "no-store" });
+    if (!resp.ok) throw new Error("HTTP " + resp.status);
+    const j = await resp.json();
+    j.meta = j.meta || {};
+    j.meta.source = "codegraph/data/graph.json";
+    j.diffs = j.diffs || {};
+    DATA = j;
+  } catch (e) {
+    DATA = mockData();   // 直开或无数据文件时的兜底，保证页面永远能看
+  }
+}
+
+/* 视图下拉按数据里实际有的 diff 重建 */
+function buildViewSelect() {
+  const sel = document.getElementById("viewSelect");
+  sel.innerHTML = `<option value="baseline">基准 · ${DATA.meta.branch || "main"}</option>`;
+  for (const [key, d] of Object.entries(DATA.diffs)) {
+    const opt = document.createElement("option");
+    opt.value = key;
+    opt.textContent = d.label || key;
+    sel.appendChild(opt);
+  }
+}
+
+/* ================= 视图合成（与真实设计同构） ================= */
+function mergeView(viewKey) {
+  const nodes = {}, edges = [];
+  for (const [id, n] of Object.entries(DATA.nodes)) nodes[id] = { ...n, status: "same" };
+  for (const [a, b] of DATA.edges) edges.push({ from: a, to: b, status: "same" });
+  const diff = DATA.diffs[viewKey];
+  if (diff) {
+    for (const [id, n] of Object.entries(diff.nodesAdded || {})) nodes[id] = { ...n, status: "added" };
+    for (const [id, patch] of Object.entries(diff.nodesModified || {})) {
+      nodes[id] = { ...nodes[id], modified: patch, status: "modified" };
+    }
+    for (const id of diff.nodesDeleted || []) if (nodes[id]) nodes[id].status = "deleted";
+    for (const [a, b] of diff.edgesAdded || []) edges.push({ from: a, to: b, status: "added" });
+    for (const [a, b] of diff.edgesDeleted || []) {
+      const e = edges.find(e => e.from === a && e.to === b);
+      if (e) e.status = "deleted";
+    }
+  }
+  return { nodes, edges, diff };
+}
+
+/* 已扫描入口列表（按稳定顺序） */
+function scannedEntries(view) {
+  return Object.keys(view.nodes).filter(id => view.nodes[id].kind === "entry" && !view.nodes[id].unscanned);
+}
+
+/* ================= 状态 ================= */
+const detail = document.getElementById("detail");
+let currentView = "baseline";
+let selectedNode = null;
+let zoom = 1;
+let orgMode = "domain";      // "subsystem" | "domain"，有子系统数据时默认前者
+let subsystemScope = null;   // 按子系统组织时：当前下钻的子系统 id
+let domainScope = null;      // 当前下钻的领域 id，null = 全景
+let leafTab = "sem";         // 叶子领域页 tab："sem" 语义 | "struct" 结构
+let structMode = "flow";     // 结构 tab 内部："flow" 多入口流程图 | "chain" 单入口调用链 | "focus" 树+焦点链
+let chainPath = [];          // 调用链级联的钻取路径：[起点, 一级子, 二级子, …]；空 = 自动取语义锚
+let chainFilter = "";        // 起点清单的过滤词（重渲染不丢）
+let selectedDomain = null;   // 全景选中的卡（领域 id 或 "s:"+子系统 id）
+let selectedDEdge = null;    // 全景选中的连线 key
+const domainPos = {};        // 卡片位置（可拖，重新布局按钮清空重排；子系统卡用 "s:" 前缀键）
+let comboFoci = [];          // 叶子领域树+图的焦点集合：单选一个，⌘/Ctrl+单击并集
+let comboDepth = 2;          // 上下游各看几级，Infinity = 全部
+const comboOpen = new Set(); // 左树展开状态（按节点 id 记，重渲染不丢）
+let comboHist = [];          // 焦点历史（后退/快进）
+let comboHistIdx = -1;
+let comboPan = null;         // 画布平移量；换焦点时置空 → 重新居中
+let comboZoom = 1;           // 画布缩放（ctrl+滚轮），换焦点时保留
+
+/* ================= 领域与子系统：数据驱动 =================
+   领域一律读数据的 domains 段（容器挂叶子领域、parent 串层级）；
+   子系统读 target 的 subsystems，领域归属子系统由生成器按成员文件派生（只派生不手抄）。
+   数据缺 domains 段时回落 v6 的按包名推导（mock 用）。 */
+
+function realDomains() { return DATA.domains && Object.keys(DATA.domains).length ? DATA.domains : null; }
+function hasSub() { return !!(realDomains() && DATA.subsystems && DATA.subsystems.length); }
+function subMeta(sid) {
+  return (DATA.subsystems || []).find(s => s.id === sid) || { id: sid || "", name: String(sid || "?").replace(/^d_/, ""), type: "", paths: [] };
+}
+function subTypeLabel(t) { return t === "logic" ? "逻辑型" : t === "boundary" ? "边界型" : ""; }
+function declOf(did) { return (DATA.decls || {})[did] || null; }
+/* 领域的主子系统：成员节点按文件归属投票，多数者为主属——领域只在主属子系统立正卡，
+   其余子系统里只给 ⧉ 引用卡（跨子系统 = 警示，不该让同一个域在每个子系统里都全量出现） */
+const domainPrimaryCache = {};
+function domainPrimaryOf(did) {
+  if (did in domainPrimaryCache) return domainPrimaryCache[did];
+  const cnt = {};
+  for (const n of Object.values(DATA.nodes)) {
+    const c = DATA.containers[n.container];
+    if (!c || c.domain !== did || !n.subsystem) continue;
+    cnt[n.subsystem] = (cnt[n.subsystem] || 0) + 1;
+  }
+  let best = null, bn = -1;
+  for (const [s, k] of Object.entries(cnt).sort()) if (k > bn) { best = s; bn = k; }
+  return domainPrimaryCache[did] = best;
+}
+function domainSubsOf(did) {
+  const dd = realDomains();
+  return (dd && dd[did] && dd[did].subsystems) || [];
+}
+
+/* 领域链：从顶层祖先到自身 */
+function domainChainOf(did) {
+  const dd = realDomains();
+  const chain = [did];
+  if (!dd) return chain;
+  let cur = dd[did], guard = 0;
+  while (cur && cur.parent && dd[cur.parent] && guard++ < 6) {
+    chain.unshift(cur.parent);
+    cur = dd[cur.parent];
+  }
+  return chain;
+}
+
+/* ---- v6 的按包名推导，仅 mock 兜底用 ---- */
+function pkgDomainOf(cid) {
+  if (cid === "c_cli") return "d_cmd";
+  if (cid === "c_http" || cid === "c_ws") return "d_agentd";
+  const m = cid.match(/^[ck]_([a-zA-Z0-9]+)/);
+  let pkg = m ? m[1] : cid;
+  if (pkg === "model") pkg = "proto";
+  return "d_" + pkg;
+}
+function pkgDomainPathOf(cid) {
+  const top = pkgDomainOf(cid);
+  if (top === "d_agentd") {
+    const api = cid === "c_http" || cid === "c_ws" || /agentd_(Server|Hub)/.test(cid);
+    return [top, api ? "d_agentd/api" : "d_agentd/core"];
+  }
+  return [top];
+}
+
+/* 容器 → 领域路径（顶层→叶子）。数据驱动优先。 */
+function domainPathOf(cid) {
+  const dd = realDomains();
+  if (dd) {
+    const c = DATA.containers[cid];
+    const leaf = c && c.domain;
+    return leaf && dd[leaf] ? domainChainOf(leaf) : [];
+  }
+  return pkgDomainPathOf(cid);
+}
+
+/* 某个领域的直接子领域（没有 = 叶子领域，内部用领域页展示） */
+function childDomainsOf(scope) {
+  const dd = realDomains();
+  if (dd) return Object.keys(dd).filter(k => dd[k].parent === scope).sort();
+  const kids = new Set();
+  for (const cid of Object.keys(DATA.containers)) {
+    const path = pkgDomainPathOf(cid);
+    const i = path.indexOf(scope);
+    if (i >= 0 && path[i + 1]) kids.add(path[i + 1]);
+  }
+  return [...kids];
+}
+
+/* 领域元信息（mock 兜底表，真实数据直接读 domains 段） */
+const DOMAIN_META = {
+  d_cmd:       { label: "cmd", kind: "CLI 命令层",
+    summary: "全部 handoff 子命令的入口：解析参数、校验本地前置条件，组装请求后交给 client。" },
+  d_client:    { label: "client", kind: "协调者客户端",
+    summary: "封装对 agentd 的全部通信：派发、跟随事件流、取 diff/bundle、审批工单。" },
+  d_agentd:    { label: "agentd", kind: "执行机守护进程",
+    summary: "常驻服务：接收任务、托管 executor 进程、推送事件流、把守权限门。" },
+  d_store:     { label: "store", kind: "存储", summary: "SQLite 持久化：任务、事件、ledger 的读写与迁移。" },
+  d_executor:  { label: "executor", kind: "进程托管", summary: "拉起并接管 codex/grok 等 executor 进程，解析其事件流。" },
+  d_proto:     { label: "proto", kind: "协议与实体", summary: "CLI 与 agentd 共享的请求/响应与任务实体定义。" },
+  "d_agentd/api":  { label: "api", kind: "对外接口层", summary: "HTTP 路由与 WS 推送：鉴权、参数解析。" },
+  "d_agentd/core": { label: "core", kind: "任务核心", summary: "任务生命周期与工作区管理。" },
+};
+function domainMeta(did) {
+  const key = did.startsWith("ext:") ? did.slice(4) : did;
+  const dd = realDomains();
+  if (dd && dd[key]) return dd[key];
+  return DOMAIN_META[key] ||
+    { label: key.replace(/^d_/, ""), kind: "领域", summary: "（该领域的职责说明由扫描产出，当前数据未包含。）", desc: "" };
+}
+
+/* 领域级聚合：成员归属、跨领域边（保留底层方法对，供连线详情）、对外接口表。
+   scope=null 是顶层全景；传子领域 scope 时展示它的直接子领域，
+   本级之外的容器聚合成「ext:顶层领域」占位卡（虚线，点击横跳）。 */
+function domainAgg(view, scope) {
+  const dispOf = (cid) => {
+    const path = domainPathOf(cid);
+    if (!path.length) return null;
+    if (!scope) return path[0];
+    const i = path.indexOf(scope);
+    if (i < 0) return "ext:" + path[0];
+    return path[i + 1] || null;   // null = 本级直属内容（叶子领域走领域页，不进全景）
+  };
+  const doms = {}, byC = {};
+  for (const cid of Object.keys(DATA.containers)) {
+    const did = dispOf(cid);
+    if (!did) continue;
+    (doms[did] = doms[did] || { id: did, containers: [], nodes: [], entries: [], ext: did.startsWith("ext:"), extKind: "domain" }).containers.push(cid);
+    byC[cid] = did;
+  }
+  for (const [id, n] of Object.entries(view.nodes)) {
+    const d = doms[byC[n.container]];
+    if (d) (n.kind === "entry" ? d.entries : d.nodes).push(id);
+  }
+  const edges = new Map();   // "dA|dB" → { from, to, pairs: [边对象…] }
+  const ifaces = {};         // did → Map(接口节点 id → Set(调用方领域))
+  for (const e of view.edges) {
+    const na = view.nodes[e.from], nb = view.nodes[e.to];
+    if (!na || !nb) continue;
+    const da = byC[na.container], db = byC[nb.container];
+    if (!da || !db || da === db) continue;
+    if (da.startsWith("ext:") && db.startsWith("ext:")) continue;   // 两端都在领域外的边不画
+    const k = da + "|" + db;
+    if (!edges.has(k)) edges.set(k, { from: da, to: db, pairs: [] });
+    edges.get(k).pairs.push(e);
+    if (e.status !== "deleted" && !db.startsWith("ext:")) {
+      ifaces[db] = ifaces[db] || new Map();
+      if (!ifaces[db].has(e.to)) ifaces[db].set(e.to, new Set());
+      ifaces[db].get(e.to).add(da);
+    }
+  }
+  return { doms, edges, ifaces };
+}
+
+/* 子系统内的领域全景聚合：卡片 = 派生归属含该子系统的叶子领域（跨子系统领域完整显示 + ⧉），
+   本子系统之外的节点聚合成「exts:子系统」占位卡（虚线，点击横跳到那个子系统）。 */
+function domainAggForSubsystem(view, sid) {
+  const dd = realDomains();
+  const derived = Object.keys(dd).filter(did => domainSubsOf(did).includes(sid));
+  const shown = new Set(derived.filter(did => domainPrimaryOf(did) === sid));
+  const refs = new Set(derived.filter(did => !shown.has(did)));   // 主属在别处：⧉ 引用卡
+  const doms = {};
+  const bucketOfNode = (n) => {
+    const path = domainPathOf(n.container);
+    const leaf = path[path.length - 1];
+    if (leaf && shown.has(leaf)) return leaf;
+    if (leaf && refs.has(leaf)) return "xref:" + leaf;
+    const s = n.subsystem || "";
+    return s && s !== sid ? "exts:" + s : null;   // 图外/未归属不画
+  };
+  for (const did of shown) doms[did] = { id: did, containers: [], nodes: [], entries: [], ext: false };
+  for (const cid of Object.keys(DATA.containers)) {
+    const leaf = DATA.containers[cid].domain;
+    if (leaf && doms[leaf]) doms[leaf].containers.push(cid);
+  }
+  const byN = {};
+  for (const [id, n] of Object.entries(view.nodes)) {
+    const key = bucketOfNode(n);
+    byN[id] = key;
+    if (!key) continue;
+    if (!doms[key]) doms[key] = { id: key, containers: [], nodes: [], entries: [], ext: true, extKind: key.startsWith("xref:") ? "xref" : "subsystem" };
+    (n.kind === "entry" ? doms[key].entries : doms[key].nodes).push(id);
+  }
+  const edges = new Map();
+  const ifaces = {};
+  for (const e of view.edges) {
+    const da = byN[e.from], db = byN[e.to];
+    if (!da || !db || da === db) continue;
+    if (da.startsWith("exts:") && db.startsWith("exts:")) continue;
+    const k = da + "|" + db;
+    if (!edges.has(k)) edges.set(k, { from: da, to: db, pairs: [] });
+    edges.get(k).pairs.push(e);
+    if (e.status !== "deleted" && !db.startsWith("exts:")) {
+      ifaces[db] = ifaces[db] || new Map();
+      if (!ifaces[db].has(e.to)) ifaces[db].set(e.to, new Set());
+      ifaces[db].get(e.to).add(da);
+    }
+  }
+  // 没有成员也没有边参与的占位卡不画
+  for (const key of Object.keys(doms)) {
+    if (doms[key].ext && !doms[key].nodes.length && !doms[key].entries.length) delete doms[key];
+  }
+  return { doms, edges, ifaces };
+}
+
+/* 卡片布局：小规模力导向（椭圆斥力 + 调用边弹簧 + 弱重力），确定性、无随机数 */
+function computeCardPositions(keys, springs) {
+  keys.forEach((k, i) => {
+    if (!domainPos[k]) domainPos[k] = [340 + ((i * 173) % 640), 90 + ((i * 257) % 420)];
+  });
+  for (let it = 0; it < 240; it++) {
+    const f = {};
+    keys.forEach(k => f[k] = [0, 0]);
+    for (let i = 0; i < keys.length; i++) for (let j = i + 1; j < keys.length; j++) {
+      const A = keys[i], B = keys[j];
+      const dx = domainPos[A][0] - domainPos[B][0], dy = domainPos[A][1] - domainPos[B][1];
+      const nd = Math.sqrt((dx / 340) ** 2 + (dy / 200) ** 2) || 0.01;   // 椭圆斥力：卡是宽扁的
+      if (nd < 1) {
+        const l = Math.sqrt(dx * dx + dy * dy) || 1, push = (1 - nd) * 46;
+        f[A][0] += dx / l * push; f[A][1] += dy / l * push;
+        f[B][0] -= dx / l * push; f[B][1] -= dy / l * push;
+      }
+    }
+    for (const [a, b, w] of springs) {
+      if (!(a in f) || !(b in f)) continue;
+      const dx = domainPos[b][0] - domainPos[a][0], dy = domainPos[b][1] - domainPos[a][1];
+      const len = Math.sqrt(dx * dx + dy * dy) || 1;
+      const pull = (len - 340) * 0.012 * w;
+      f[a][0] += dx / len * pull; f[a][1] += dy / len * pull;
+      f[b][0] -= dx / len * pull; f[b][1] -= dy / len * pull;
+    }
+    for (const k of keys) {
+      f[k][0] += (710 - domainPos[k][0]) * 0.004;   // 弱 x 居中
+      f[k][1] += (330 - domainPos[k][1]) * 0.005;   // 弱 y 重力
+    }
+    const damp = (it < 120 ? 1 : 0.5) * 0.5;
+    for (const k of keys) {
+      domainPos[k][0] = Math.max(30, domainPos[k][0] + f[k][0] * damp);
+      domainPos[k][1] = Math.max(64, domainPos[k][1] + f[k][1] * damp);
+    }
+  }
+}
+
+/* 连线端点：从卡片中心朝控制点方向走到卡片边框的交点（贴边不压卡） */
+function edgeAnchor(el, cx, cy, tx, ty) {
+  const dx = tx - cx, dy = ty - cy;
+  const hw = el.offsetWidth / 2 + 4, hh = el.offsetHeight / 2 + 4;
+  const s = Math.min(dx ? hw / Math.abs(dx) : 1e9, dy ? hh / Math.abs(dy) : 1e9);
+  return [cx + dx * s, cy + dy * s];
+}
+
+/* ================= 渲染入口 ================= */
+function paneKind() {
+  if (orgMode === "subsystem" && hasSub()) {
+    if (!subsystemScope && !domainScope) return "subsys";
+    if (!domainScope) return "pano";
+    return childDomainsOf(domainScope).length ? "pano" : "leaf";
+  }
+  return (!domainScope || childDomainsOf(domainScope).length) ? "pano" : "leaf";
+}
+
+function render() {
+  const view = mergeView(currentView);
+  const pane = paneKind();
+  document.getElementById("graphWrap").style.display = (pane === "subsys" || pane === "pano") ? "" : "none";
+  document.getElementById("comboPane").style.display = (pane === "leaf" && leafTab === "struct") ? "flex" : "none";
+  document.getElementById("semanticPane").style.display = (pane === "leaf" && leafTab === "sem") ? "" : "none";
+  document.getElementById("relayout").style.display = (pane === "subsys" || pane === "pano") ? "" : "none";
+  renderCrumb(pane);
+  if (pane === "subsys") renderSubsystems(view);
+  else if (pane === "pano") renderDomain(view, domainScope);
+  else if (leafTab === "struct") {
+    if (structMode === "flow") renderFlow(view);
+    else if (structMode === "chain") renderChain(view);
+    else renderCombo(view);
+  }
+  else { detail.hidden = true; renderSemantic(view, domainScope); }
+  renderChips(view);
+  renderStatus(view);
+}
+
+/* 面包屑：架构全景 ▸ 子系统 ▸ 领域（按子系统）/ 领域全景 ▸ …（按领域）；叶子页附 tab 切换 */
+function renderCrumb(pane) {
+  const holder = document.getElementById("crumbHolder");
+  holder.style.display = "";
+  let html = `<div class="crumb">`;
+  const subMode = orgMode === "subsystem" && hasSub();
+  if (subMode) {
+    if (pane === "subsys") {
+      html += `<b>架构全景</b><span style="color:var(--muted-foreground);font-size:11px">子系统 = 契约冻结与并行开发的单元 · 领域归属由派生 · 进入 ▸ 下钻</span>`;
+    } else {
+      html += `<a data-root="">◀ 架构全景</a>`;
+      const sm = subMeta(subsystemScope);
+      if (!domainScope) {
+        html += `<span style="color:var(--muted-foreground)">▸</span><b>${sm.name}</b>` +
+          `<span class="type-badge t-${sm.type}">${subTypeLabel(sm.type)}</span>` +
+          `<span style="color:var(--muted-foreground);font-size:11px">⧉ = 跨子系统领域 · 虚线卡 = 其他子系统</span>`;
+      } else {
+        const meta = domainMeta(domainScope);
+        html += `<span style="color:var(--muted-foreground)">▸</span><a data-sub="${subsystemScope}">${sm.name}</a>` +
+          `<span style="color:var(--muted-foreground)">▸</span><b>${meta.label}</b>` +
+          `<span style="color:var(--muted-foreground);font-size:11px">${meta.kind || "领域"}</span>`;
+      }
+    }
+  } else {
+    if (!domainScope) {
+      html += `<b>领域全景</b><span style="color:var(--muted-foreground);font-size:11px">点卡片看职责 · 点连线看谁调谁 · 进入 ▸ 下钻</span>`;
+    } else {
+      html += `<a data-up="">◀ 领域全景</a>`;
+      const chain = domainChainOf(domainScope);
+      for (let i = 0; i < chain.length; i++) {
+        const meta = domainMeta(chain[i]);
+        html += `<span style="color:var(--muted-foreground)">▸</span>` +
+          (i === chain.length - 1
+            ? `<b>${meta.label}</b><span style="color:var(--muted-foreground);font-size:11px">${meta.kind || ""}</span>`
+            : `<a data-up="${chain[i]}">${meta.label}</a>`);
+      }
+    }
+  }
+  html += `</div>`;
+  if (pane === "leaf") {
+    html += `<div class="crumb">` +
+      `<a data-tab="sem" class="${leafTab === "sem" ? "crumb-on" : ""}">语义</a>` +
+      `<span style="color:var(--muted-foreground)">·</span>` +
+      `<a data-tab="struct" class="${leafTab === "struct" ? "crumb-on" : ""}">结构</a></div>`;
+    if (leafTab === "struct") {
+      html += `<div class="crumb">` +
+        `<a data-smode="flow" class="${structMode === "flow" ? "crumb-on" : ""}">流程</a>` +
+        `<span style="color:var(--muted-foreground)">·</span>` +
+        `<a data-smode="chain" class="${structMode === "chain" ? "crumb-on" : ""}">调用链</a>` +
+        `<span style="color:var(--muted-foreground)">·</span>` +
+        `<a data-smode="focus" class="${structMode === "focus" ? "crumb-on" : ""}">焦点链</a></div>`;
+    }
+  }
+  holder.innerHTML = html;
+  holder.querySelectorAll("[data-up]").forEach(a => a.addEventListener("click", () => {
+    domainScope = a.dataset.up || null;
+    selectedNode = null; detail.hidden = true;
+    comboFoci = []; comboHist = []; comboHistIdx = -1; comboOpen.clear(); comboPan = null;
+    render();
+  }));
+  holder.querySelectorAll("[data-root]").forEach(a => a.addEventListener("click", () => {
+    subsystemScope = null; domainScope = null;
+    selectedNode = null; detail.hidden = true;
+    comboFoci = []; comboHist = []; comboHistIdx = -1; comboOpen.clear(); comboPan = null;
+    render();
+  }));
+  holder.querySelectorAll("[data-sub]").forEach(a => a.addEventListener("click", () => enterSubsystem(a.dataset.sub)));
+  holder.querySelectorAll("[data-tab]").forEach(a => a.addEventListener("click", () => {
+    leafTab = a.dataset.tab;
+    render();
+  }));
+  holder.querySelectorAll("[data-smode]").forEach(a => a.addEventListener("click", () => {
+    structMode = a.dataset.smode;
+    comboPan = null;
+    render();
+  }));
+}
+
+/* ================= 首层：架构全景（子系统） ================= */
+function renderSubsystems(view) {
+  const pane = document.getElementById("domainPane");
+  pane.innerHTML = "";
+  pane.style.zoom = zoom;
+  const subs = DATA.subsystems;
+  const posKey = (sid) => "s:" + sid;
+
+  // 成员统计（按节点的派生子系统）
+  const stat = {};
+  for (const n of Object.values(view.nodes)) {
+    const s = n.subsystem;
+    if (!s) continue;
+    const st = stat[s] = stat[s] || { funcs: 0, models: 0, entries: 0 };
+    if (n.kind === "entry") st.entries++;
+    else if (n.kind === "model") st.models++;
+    else st.funcs++;
+  }
+  // 每个子系统的成员领域（派生）
+  const domsOf = {};
+  for (const did of Object.keys(realDomains())) {
+    for (const s of domainSubsOf(did)) (domsOf[s] = domsOf[s] || []).push(did);
+  }
+  // 子系统间聚合边
+  const sedges = new Map();
+  for (const e of view.edges) {
+    const na = view.nodes[e.from], nb = view.nodes[e.to];
+    const sa = na && na.subsystem, sb = nb && nb.subsystem;
+    if (!sa || !sb || sa === sb) continue;
+    const k = sa + "|" + sb;
+    if (!sedges.has(k)) sedges.set(k, { from: sa, to: sb, count: 0, pairs: [] });
+    const se = sedges.get(k);
+    se.count++;
+    if (se.pairs.length < 30) se.pairs.push(e);
+  }
+
+  const keys = subs.map(s => posKey(s.id));
+  if (keys.some(k => !domainPos[k])) {
+    computeCardPositions(keys, [...sedges.values()].map(e =>
+      [posKey(e.from), posKey(e.to), Math.min(Math.ceil(e.count / 12), 4)]));
+  }
+
+  const W = Math.max(1500, ...keys.map(k => domainPos[k][0] + 460));
+  const H = Math.max(660, ...keys.map(k => domainPos[k][1] + 360));
+  pane.style.width = W + "px";
+  pane.style.height = H + "px";
+  const svgD = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svgD.setAttribute("width", W); svgD.setAttribute("height", H);
+  svgD.style.position = "absolute"; svgD.style.inset = "0";
+  pane.appendChild(svgD);
+
+  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+
+  const cardEls = {};
+  for (const s of subs) {
+    const key = posKey(s.id);
+    const st = stat[s.id] || { funcs: 0, models: 0, entries: 0 };
+    const doms = (domsOf[s.id] || []).sort();
+    const card = document.createElement("div");
+    card.className = "dcard scard t-" + (s.type || "logic") + (selectedDomain === key ? " selected" : "");
+    if (q && !(s.name.toLowerCase().includes(q) || s.id.toLowerCase().includes(q) ||
+               doms.some(d => (domainMeta(d).label || "").toLowerCase().includes(q)))) {
+      card.classList.add("dim");
+    }
+    card.style.left = domainPos[key][0] + "px";
+    card.style.top = domainPos[key][1] + "px";
+    const chips = doms.map(did => {
+      const m = domainMeta(did);
+      const cross = domainSubsOf(did).length > 1;
+      return `<span class="dom-chip" data-leaf="${did}" title="${cross ? "跨子系统领域：" + domainSubsOf(did).map(x => subMeta(x).name).join("、") : (m.kind || "领域")}">` +
+        `${m.label}${cross ? ' <span class="x">⧉</span>' : ""}</span>`;
+    }).join("");
+    card.innerHTML =
+      `<div class="dc-head">${s.name}<span class="type-badge t-${s.type}">${subTypeLabel(s.type)}</span>` +
+      `<button class="enter" title="下钻到子系统内的领域">进入 ▸</button></div>` +
+      `<div class="dc-sum">${s.note || (s.paths || []).join("、") || ""}</div>` +
+      (chips ? `<div class="dc-domchips">${chips}</div>` : "") +
+      `<div class="dc-stats"><span>${doms.length} 领域</span><span>${st.funcs} 方法</span>` +
+      `<span>${st.models} 实体</span>${st.entries ? `<span>⚑ ${st.entries} 入口</span>` : ""}</div>`;
+    card.querySelector(".enter").addEventListener("click", (ev) => { ev.stopPropagation(); enterSubsystem(s.id); });
+    card.addEventListener("dblclick", () => enterSubsystem(s.id));
+    card.querySelectorAll(".dom-chip").forEach(ch => ch.addEventListener("mousedown", (ev) => ev.stopPropagation()));
+    card.querySelectorAll(".dom-chip").forEach(ch => ch.addEventListener("click", (ev) => {
+      ev.stopPropagation();
+      enterLeafDomain(s.id, ch.dataset.leaf);
+    }));
+    attachDomainDrag(card, key, () => {
+      selectedDomain = key; selectedDEdge = null;
+      pane.querySelectorAll(".dcard").forEach(el => el.classList.toggle("selected", el === card));
+      renderSubsystemDetail(view, sedges, domsOf, stat, s.id);
+    });
+    pane.appendChild(card);
+    cardEls[key] = card;
+  }
+
+  /* 子系统间连线（线宽 = 调用处数） */
+  const selectSEdge = (key) => {
+    selectedDEdge = key; selectedDomain = null;
+    render();
+    renderSubsystemEdgeDetail(mergeView(currentView), key);
+  };
+  const ctr = (k) => [domainPos[k][0] + cardEls[k].offsetWidth / 2,
+                      domainPos[k][1] + cardEls[k].offsetHeight / 2];
+  for (const [key, se] of sedges) {
+    const ka = posKey(se.from), kb = posKey(se.to);
+    if (!cardEls[ka] || !cardEls[kb]) continue;
+    const [x1, y1] = ctr(ka), [x2, y2] = ctr(kb);
+    const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const mx = (x1 + x2) / 2 - dy / len * 30, my = (y1 + y2) / 2 + dx / len * 30;
+    const a1 = edgeAnchor(cardEls[ka], x1, y1, mx, my);
+    const a2 = edgeAnchor(cardEls[kb], x2, y2, mx, my);
+    const sel = selectedDEdge === key;
+    const dPath = `M ${a1[0]} ${a1[1]} Q ${mx} ${my} ${a2[0]} ${a2[1]}`;
+    for (const [cls, wpx] of [["dedge hit", 16], ["dedge" + (sel ? " sel" : ""), 1.5 + Math.min(se.count / 10, 8) * 0.45]]) {
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", dPath);
+      p.setAttribute("class", cls);
+      p.setAttribute("stroke-width", wpx);
+      p.style.pointerEvents = "stroke";
+      p.addEventListener("click", () => selectSEdge(key));
+      svgD.appendChild(p);
+    }
+    const ang = Math.atan2(a2[1] - my, a2[0] - mx);
+    const ah = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    ah.setAttribute("d", `M ${a2[0]} ${a2[1]} ` +
+      `L ${a2[0] - 11 * Math.cos(ang) - 5 * Math.sin(ang)} ${a2[1] - 11 * Math.sin(ang) + 5 * Math.cos(ang)} ` +
+      `L ${a2[0] - 11 * Math.cos(ang) + 5 * Math.sin(ang)} ${a2[1] - 11 * Math.sin(ang) - 5 * Math.cos(ang)} Z`);
+    ah.setAttribute("fill", sel ? "var(--primary)" : "#a8a8a8");
+    svgD.appendChild(ah);
+    const lab = document.createElement("div");
+    lab.className = "dedge-label" + (sel ? " sel" : "");
+    lab.style.left = mx + "px"; lab.style.top = my + "px";
+    lab.textContent = `${se.count} 处调用`;
+    lab.addEventListener("click", () => selectSEdge(key));
+    pane.appendChild(lab);
+  }
+}
+
+/* 子系统卡详情 */
+function renderSubsystemDetail(view, sedges, domsOf, stat, sid) {
+  const s = subMeta(sid);
+  const st = stat[sid] || { funcs: 0, models: 0, entries: 0 };
+  detail.hidden = false;
+  let html = `<button class="btn sm d-close" id="detailClose">×</button>` +
+    `<h3>${s.name} <span class="type-badge t-${s.type}" style="font-family:var(--font-sans)">${subTypeLabel(s.type)}</span></h3>` +
+    `<div class="d-file">子系统 · ${st.funcs} 方法 · ${st.models} 实体</div>`;
+  if (s.note) html += `<div class="d-sec"><div class="d-label">职责</div><div style="font-size:13px;line-height:1.6">${s.note}</div></div>`;
+  html += `<div class="d-sec"><div class="d-label">路径规则（target.json，人写）</div>` +
+    (s.paths || []).map(p => `<div style="font-family:var(--font-mono);font-size:11.5px;padding:1px 0">${p}</div>`).join("") + `</div>`;
+  const doms = (domsOf[sid] || []).sort();
+  html += `<div class="d-sec"><div class="d-label">成员领域（派生，只读）</div>`;
+  if (doms.length) {
+    for (const did of doms) {
+      const m = domainMeta(did);
+      const subs = domainSubsOf(did);
+      const cross = subs.length > 1;
+      html += `<a data-leaf="${did}" style="display:block;font-size:12.5px;padding:3px 0;cursor:pointer;color:var(--foreground);text-decoration:none">` +
+        `${m.label}${cross ? ` <span class="cross-badge">⧉ 跨 ${subs.length} 子系统</span>` : ""}` +
+        `${declOf(did) ? ' <span class="decl-dot" title="已有领域声明">§</span>' : ""}</a>`;
+    }
+  } else {
+    html += `<div class="dim" style="font-size:12px">该子系统的文件尚无领域成员（或全部未入图）。</div>`;
+  }
+  html += `</div>`;
+  const outs = [...sedges.values()].filter(e => e.from === sid).sort((a, b) => b.count - a.count).slice(0, 4);
+  const ins = [...sedges.values()].filter(e => e.to === sid).sort((a, b) => b.count - a.count).slice(0, 4);
+  if (outs.length) {
+    html += `<div class="d-sec"><div class="d-label">调用了（top）</div>` +
+      outs.map(e => `<div style="font-size:12px;padding:2px 0">→ ${subMeta(e.to).name} <span class="dim">${e.count} 处</span></div>`).join("") + `</div>`;
+  }
+  if (ins.length) {
+    html += `<div class="d-sec"><div class="d-label">被调用（top）</div>` +
+      ins.map(e => `<div style="font-size:12px;padding:2px 0">← ${subMeta(e.from).name} <span class="dim">${e.count} 处</span></div>`).join("") + `</div>`;
+  }
+  html += `<div class="d-sec"><button class="btn sm" id="enterSub">进入子系统 ▸</button></div>`;
+  detail.innerHTML = html;
+  document.getElementById("detailClose").addEventListener("click", () => { detail.hidden = true; selectedDomain = null; render(); });
+  document.getElementById("enterSub").addEventListener("click", () => enterSubsystem(sid));
+  detail.querySelectorAll("[data-leaf]").forEach(a => a.addEventListener("click", () => enterLeafDomain(sid, a.dataset.leaf)));
+}
+
+/* 子系统间连线详情：按领域对分组，示例调用可跳 */
+function renderSubsystemEdgeDetail(view, key) {
+  const [sa, sb] = key.split("|");
+  // 现算（与 renderSubsystems 同口径），避免跨渲染持有引用
+  const pairs = [];
+  let count = 0;
+  for (const e of view.edges) {
+    const na = view.nodes[e.from], nb = view.nodes[e.to];
+    if (!na || !nb || na.subsystem !== sa || nb.subsystem !== sb) continue;
+    count++;
+    if (pairs.length < 15) pairs.push(e);
+  }
+  detail.hidden = false;
+  let html = `<button class="btn sm d-close" id="detailClose">×</button>` +
+    `<h3>${subMeta(sa).name} → ${subMeta(sb).name}</h3>` +
+    `<div class="d-file">${count} 处跨子系统调用</div>`;
+  html += `<div class="d-sec"><div class="d-label">谁调用了谁${count > pairs.length ? `（示例 ${pairs.length} 处）` : ""}</div>`;
+  for (const p of pairs) {
+    html += `<div style="padding:5px 0;border-top:1px solid var(--border);font-size:12px">` +
+      nodeLink(view, p.from, "") +
+      `<div style="color:var(--muted-foreground);padding-left:8px;font-size:11px">↓ 调用</div>` +
+      nodeLink(view, p.to, "") + `</div>`;
+  }
+  html += `</div>`;
+  detail.innerHTML = html;
+  wireDomainDetailLinks();
+}
+
+/* ================= 领域全景（顶层与子领域层通用；子系统内层复用） ================= */
+function renderDomain(view, scope) {
+  const pane = document.getElementById("domainPane");
+  pane.innerHTML = "";
+  pane.style.zoom = zoom;
+  const subScoped = orgMode === "subsystem" && hasSub() && subsystemScope && !scope;
+  const agg = subScoped ? domainAggForSubsystem(view, subsystemScope) : domainAgg(view, scope);
+  const ids = Object.keys(agg.doms).filter(did => agg.doms[did].nodes.length + agg.doms[did].entries.length > 0);
+  if (ids.some(did => !domainPos[did])) {
+    computeCardPositions(ids, [...agg.edges.values()]
+      .filter(e => ids.includes(e.from) && ids.includes(e.to))
+      .map(e => [e.from, e.to, Math.min(e.pairs.length, 4)]));
+  }
+
+  const W = Math.max(1500, ...ids.map(d => domainPos[d][0] + 420));
+  const H = Math.max(660, ...ids.map(d => domainPos[d][1] + 340));
+  pane.style.width = W + "px";
+  pane.style.height = H + "px";
+  const svgD = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svgD.setAttribute("width", W); svgD.setAttribute("height", H);
+  svgD.style.position = "absolute"; svgD.style.inset = "0";
+  pane.appendChild(svgD);
+
+  const q = document.getElementById("searchInput").value.trim().toLowerCase();
+
+  /* ---- 领域卡 ---- */
+  const cardEls = {};
+  for (const did of ids) {
+    const d = agg.doms[did];
+    const card = document.createElement("div");
+    if (d.ext) {
+      /* 本级之外：虚线占位卡，点击横跳（领域 / 子系统 / 主属在别处的跨子系统领域） */
+      const isSub = did.startsWith("exts:");
+      const isRef = did.startsWith("xref:");
+      const refDid = isRef ? did.slice(5) : null;
+      const meta = isSub ? { label: subMeta(did.slice(5)).name, kind: "子系统" }
+                 : isRef ? domainMeta(refDid) : domainMeta(did);
+      card.className = "dcard ext";
+      card.style.left = domainPos[did][0] + "px";
+      card.style.top = domainPos[did][1] + "px";
+      const sum = isSub ? "其他子系统 · 点击进入"
+                : isRef ? `⧉ 跨子系统领域 · 主属 ${subMeta(domainPrimaryOf(refDid)).name} · 点击进入`
+                : "领域外 · 点击进入";
+      card.innerHTML = `<div class="dc-head">◇ ${meta.label}<span class="k">${meta.kind}</span></div>` +
+        `<div class="dc-sum">${sum}</div>`;
+      attachDomainDrag(card, did, () => {
+        if (isSub) enterSubsystem(did.slice(5));
+        else if (isRef) { subsystemScope = domainPrimaryOf(refDid) || subsystemScope; enterDomain(refDid); }
+        else enterDomain(did.slice(4));
+      });
+      pane.appendChild(card);
+      cardEls[did] = card;
+      continue;
+    }
+    const meta = domainMeta(did);
+    card.className = "dcard" + (d.entries.length ? " has-entry" : "") + (selectedDomain === did ? " selected" : "");
+    if (q && !(String(meta.label).toLowerCase().includes(q) ||
+               [...d.nodes, ...d.entries].some(id => view.nodes[id].name.toLowerCase().includes(q)))) {
+      card.classList.add("dim");
+    }
+    card.style.left = domainPos[did][0] + "px";
+    card.style.top = domainPos[did][1] + "px";
+    const funcs = d.nodes.filter(id => view.nodes[id].kind === "func").length;
+    const models = d.nodes.filter(id => view.nodes[id].kind === "model").length;
+    const ifaceCount = agg.ifaces[did] ? agg.ifaces[did].size : 0;
+    const clsCount = d.containers.filter(cid => !DATA.containers[cid].entry).length;
+    const all = [...d.nodes, ...d.entries];
+    const na = all.filter(id => view.nodes[id].status === "added").length;
+    const nm = all.filter(id => view.nodes[id].status === "modified").length;
+    const nd = all.filter(id => view.nodes[id].status === "deleted").length;
+    const badges = (na ? `<span class="st-mini add">+${na}</span>` : "") +
+                   (nm ? `<span class="st-mini mod">~${nm}</span>` : "") +
+                   (nd ? `<span class="st-mini del">-${nd}</span>` : "");
+    const scannedE = d.entries.filter(id => !view.nodes[id].unscanned).length;
+    const entryTxt = d.entries.length ? `<span>⚑ ${scannedE}/${d.entries.length} 入口</span>` : "";
+    const subs = domainSubsOf(did);
+    const crossBadge = subs.length > 1
+      ? `<span class="cross-badge" title="跨子系统领域：${subs.map(x => subMeta(x).name).join("、")}">⧉ ${subs.length}</span>` : "";
+    const declDot = declOf(did) ? `<span class="decl-dot" title="已有领域声明（职责/不变式/状态机）">§</span>` : "";
+    const pfx = (subScoped && meta.parent) ? `<span class="pfx">${domainMeta(meta.parent).label} ▸</span>` : "";
+    card.innerHTML =
+      `<div class="dc-head">${pfx}${meta.label}<span class="k">${meta.kind || ""}</span>${crossBadge}${declDot}` +
+      `<button class="enter" title="下钻到领域内部">进入 ▸</button></div>` +
+      `<div class="dc-sum">${meta.summary || ""}</div>` +
+      `<div class="dc-stats"><span>${clsCount} 类</span><span>${funcs} 方法</span>` +
+      (models ? `<span>${models} 实体</span>` : "") +
+      `<span>⇢ ${ifaceCount} 接口</span>${entryTxt}${badges}</div>`;
+    card.querySelector(".enter").addEventListener("click", (ev) => { ev.stopPropagation(); enterDomain(did); });
+    card.addEventListener("dblclick", () => enterDomain(did));
+    attachDomainDrag(card, did, () => {
+      selectedDomain = did; selectedDEdge = null;
+      pane.querySelectorAll(".dcard").forEach(el => el.classList.toggle("selected", el === card));
+      renderDomainDetail(view, agg, did);
+    });
+    pane.appendChild(card);
+    cardEls[did] = card;
+  }
+
+  /* ---- 领域间连线：线宽 = 调用处数；双向调用各弯向一侧；标签/线都可点开明细 ---- */
+  const selectDEdge = (key) => {
+    selectedDEdge = key; selectedDomain = null;
+    render();
+    const v2 = mergeView(currentView);
+    const agg2 = subScoped ? domainAggForSubsystem(v2, subsystemScope) : domainAgg(v2, scope);
+    renderDEdgeDetail(v2, agg2, key);
+  };
+  const ctr = (did) => [domainPos[did][0] + cardEls[did].offsetWidth / 2,
+                        domainPos[did][1] + cardEls[did].offsetHeight / 2];
+  for (const [key, de] of agg.edges) {
+    if (!cardEls[de.from] || !cardEls[de.to]) continue;
+    const [x1, y1] = ctr(de.from), [x2, y2] = ctr(de.to);
+    const dx = x2 - x1, dy = y2 - y1, len = Math.sqrt(dx * dx + dy * dy) || 1;
+    const mx = (x1 + x2) / 2 - dy / len * 30, my = (y1 + y2) / 2 + dx / len * 30;
+    const a1 = edgeAnchor(cardEls[de.from], x1, y1, mx, my);
+    const a2 = edgeAnchor(cardEls[de.to], x2, y2, mx, my);
+    const live = de.pairs.filter(p => p.status !== "deleted");
+    const allAdded = live.length > 0 && live.every(p => p.status === "added");
+    const sel = selectedDEdge === key;
+    const dPath = `M ${a1[0]} ${a1[1]} Q ${mx} ${my} ${a2[0]} ${a2[1]}`;
+    for (const [cls, wpx] of [["dedge hit", 16], ["dedge" + (allAdded ? " st-added" : "") + (sel ? " sel" : ""), 1.5 + Math.min(de.pairs.length, 8) * 0.45]]) {
+      const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+      p.setAttribute("d", dPath);
+      p.setAttribute("class", cls);
+      p.setAttribute("stroke-width", wpx);
+      p.style.pointerEvents = "stroke";
+      p.addEventListener("click", () => selectDEdge(key));
+      svgD.appendChild(p);
+    }
+    const ang = Math.atan2(a2[1] - my, a2[0] - mx);
+    const ah = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    ah.setAttribute("d", `M ${a2[0]} ${a2[1]} ` +
+      `L ${a2[0] - 11 * Math.cos(ang) - 5 * Math.sin(ang)} ${a2[1] - 11 * Math.sin(ang) + 5 * Math.cos(ang)} ` +
+      `L ${a2[0] - 11 * Math.cos(ang) + 5 * Math.sin(ang)} ${a2[1] - 11 * Math.sin(ang) - 5 * Math.cos(ang)} Z`);
+    ah.setAttribute("fill", allAdded ? "var(--green)" : sel ? "var(--primary)" : "#a8a8a8");
+    svgD.appendChild(ah);
+    const lab = document.createElement("div");
+    lab.className = "dedge-label" + (sel ? " sel" : "");
+    lab.style.left = mx + "px"; lab.style.top = my + "px";
+    const addN = de.pairs.filter(p => p.status === "added").length;
+    lab.innerHTML = `${de.pairs.length} 处调用${addN ? `<span class="plus"> +${addN}</span>` : ""}`;
+    lab.addEventListener("click", () => selectDEdge(key));
+    pane.appendChild(lab);
+  }
+}
+
+/* 卡片拖拽：>4px 是拖动（rAF 重渲染让连线跟手），否则是点击选中 */
+function attachDomainDrag(card, did, onClick) {
+  card.addEventListener("mousedown", (ev) => {
+    if (ev.target.closest(".enter")) return;
+    ev.preventDefault();
+    const start = { x: ev.clientX, y: ev.clientY };
+    const orig = [...domainPos[did]];
+    let dragged = false, raf = 0;
+    const move = (mv) => {
+      const dx = (mv.clientX - start.x) / zoom, dy = (mv.clientY - start.y) / zoom;
+      if (Math.abs(dx) > 4 || Math.abs(dy) > 4) dragged = true;
+      if (!dragged) return;
+      domainPos[did] = [Math.max(10, orig[0] + dx), Math.max(60, orig[1] + dy)];
+      if (!raf) raf = requestAnimationFrame(() => { raf = 0; render(); });
+    };
+    const up = () => {
+      document.removeEventListener("mousemove", move);
+      document.removeEventListener("mouseup", up);
+      if (!dragged && onClick) onClick();
+      else if (dragged) render();
+    };
+    document.addEventListener("mousemove", move);
+    document.addEventListener("mouseup", up);
+  });
+}
+
+/* 领域是否有生命周期数据（决定叶子页默认 tab） */
+function domainHasLifecycle(did) {
+  if (declOf(did)) return true;
+  if (!DATA.lifecycle || !DATA.lifecycle.length) return false;
+  for (const lr of DATA.lifecycle) {
+    const n = DATA.nodes[lr.model];
+    if (!n) continue;
+    const path = domainPathOf(n.container);
+    if (path[path.length - 1] === did) return true;
+  }
+  return false;
+}
+
+/* 进入子系统 / 领域 */
+function enterSubsystem(sid) {
+  subsystemScope = sid; domainScope = null;
+  selectedDomain = null; selectedDEdge = null; selectedNode = null;
+  detail.hidden = true;
+  comboFoci = []; comboHist = []; comboHistIdx = -1; comboOpen.clear(); comboPan = null;
+  render();
+}
+function enterLeafDomain(sid, did) {
+  subsystemScope = sid;
+  enterDomain(did);
+}
+
+/* 下钻进入领域：有子领域 → 再出一层领域全景；叶子领域 → 领域页（语义/结构双 tab）。
+   focusNode 可选：直接落到该节点所在的叶子领域并把它设为焦点（结构 tab）。 */
+function enterDomain(scopePath, focusNode) {
+  selectedDomain = null; selectedDEdge = null;
+  comboFoci = []; comboHist = []; comboHistIdx = -1; comboOpen.clear(); comboPan = null;
+  if (focusNode) {
+    const path = domainPathOf(mergeView(currentView).nodes[focusNode].container);
+    domainScope = path[path.length - 1] || null;
+    if (orgMode === "subsystem" && hasSub() && domainScope) {
+      const subs = domainSubsOf(domainScope);
+      if (subs.length && !subs.includes(subsystemScope)) subsystemScope = subs[0];
+      if (!subs.length) { orgMode = "domain"; }   // 无子系统归属的领域：退到按领域视角展示
+    }
+    leafTab = "struct";
+    structMode = "focus";   // 定位到具体节点：焦点链视图直接居中它
+    comboFoci = [focusNode];
+    selectedNode = focusNode;
+  } else {
+    domainScope = scopePath;
+    selectedNode = null;
+    detail.hidden = true;
+    // subsystem 模式下横跳/直达领域时对齐子系统上下文，面包屑才不撒谎
+    if (orgMode === "subsystem" && hasSub() && domainScope) {
+      const subs = domainSubsOf(domainScope);
+      if (!subs.length) orgMode = "domain";
+      else if (!subsystemScope || !subs.includes(subsystemScope)) subsystemScope = subs[0];
+    }
+    if (domainScope && !childDomainsOf(domainScope).length) {
+      leafTab = domainHasLifecycle(domainScope) ? "sem" : "struct";
+      structMode = "flow";   // 进领域缺省看流程全貌
+      chainPath = []; chainFilter = "";   // 调用链钻取路径随新领域重置
+    }
+  }
+  render();
+  if (focusNode) renderDetail(mergeView(currentView), focusNode);
+}
+
+/* 详情面板里的「进入领域并选中节点」跳转 + 关闭按钮 */
+function wireDomainDetailLinks() {
+  detail.querySelectorAll("[data-enter]").forEach(a => a.addEventListener("click", () => {
+    enterDomain(a.dataset.enter || null, a.dataset.node || null);
+  }));
+  const closeBtn = document.getElementById("detailClose");
+  if (closeBtn) closeBtn.addEventListener("click", () => {
+    detail.hidden = true; selectedDomain = null; selectedDEdge = null; render();
+  });
+}
+
+const nodeLink = (view, id, did) => {
+  const n = view.nodes[id];
+  const cls = DATA.containers[n.container] ? DATA.containers[n.container].label : "";
+  return `<a data-enter="${did}" data-node="${id}" style="display:block;font-family:var(--font-mono);font-size:12px;padding:2px 0;cursor:pointer;color:var(--foreground);text-decoration:none">` +
+    `${n.name}${n.kind === "func" ? "()" : ""} <span style="font-family:var(--font-sans);font-size:10.5px;color:var(--muted-foreground)">${cls}</span></a>`;
+};
+
+/* 领域卡详情：职责 / 子系统归属 / 声明状态 / 对外开放接口 / 入口 */
+function renderDomainDetail(view, agg, did) {
+  const meta = domainMeta(did), d = agg.doms[did];
+  detail.hidden = false;
+  let html = `<button class="btn sm d-close" id="detailClose">×</button>` +
+    `<h3>${meta.label} <span style="font-size:11px;color:var(--muted-foreground);font-family:var(--font-sans);font-weight:400">${meta.kind || ""}</span></h3>` +
+    `<div class="d-file">领域 · ${d.containers.filter(cid => !DATA.containers[cid].entry).length} 个类/分组</div>`;
+  html += `<div class="d-sec"><div class="d-label">职责</div><div style="font-size:13px;line-height:1.6">${meta.summary || ""}</div></div>`;
+  if (meta.desc) html += `<div class="d-sec"><div class="d-label">内部逻辑</div><div style="font-size:12.5px;line-height:1.7;color:var(--muted-foreground)">${meta.desc}</div></div>`;
+  const subs = domainSubsOf(did);
+  if (hasSub() && subs.length) {
+    html += `<div class="d-sec"><div class="d-label">所属子系统（派生）</div><div style="display:flex;gap:6px;flex-wrap:wrap">` +
+      subs.map(sid => `<span class="sub-chip" data-gosub="${sid}">${subMeta(sid).name}</span>`).join("") +
+      (subs.length > 1 ? ` <span class="cross-badge">⧉ 跨子系统</span>` : "") + `</div></div>`;
+  }
+  const dec = declOf(did);
+  if (dec) {
+    html += `<div class="d-sec"><div class="d-label">领域声明</div><div style="font-size:12px;line-height:1.6">` +
+      `<span class="decl-dot">§</span> 已声明 · ${(dec.invariants || []).length} 条不变式` +
+      `${dec.stateMachine ? ` · 状态机 ${dec.stateMachine.length} 迁移` : ""}</div></div>`;
+  } else if (realDomains() && !childDomainsOf(did).length) {
+    html += `<div class="d-sec"><div class="d-label">领域声明</div><div class="dim" style="font-size:12px">未声明（codegraph/domains/${did}.json）</div></div>`;
+  }
+  const kids = childDomainsOf(did);
+  if (kids.length) {
+    html += `<div class="d-sec"><div class="d-label">子领域</div>` +
+      kids.map(k => `<a data-enter="${k}" style="display:block;font-size:12.5px;padding:2px 0;cursor:pointer;color:var(--foreground);text-decoration:none">${domainMeta(k).label} <span class="dim" style="font-size:10.5px">${domainMeta(k).kind || ""}</span></a>`).join("") + `</div>`;
+  }
+  const ifs = agg.ifaces[did];
+  html += `<div class="d-sec"><div class="d-label">对外开放接口（被其他${orgMode === "subsystem" && subsystemScope && !domainScope ? "卡" : "领域"}调用）</div>`;
+  if (ifs && ifs.size) {
+    let cnt = 0;
+    for (const [nid, callers] of ifs) {
+      if (cnt++ >= 12) { html += `<div class="dim" style="font-size:11.5px;margin-top:4px">…共 ${ifs.size} 个接口</div>`; break; }
+      html += nodeLink(view, nid, did).replace("</a>",
+        ` <span style="font-family:var(--font-sans);font-size:10.5px;color:var(--muted-foreground)">← ${[...callers].map(c => c.startsWith("exts:") ? subMeta(c.slice(5)).name : c.startsWith("xref:") ? domainMeta(c.slice(5)).label : domainMeta(c).label).join("、")}</span></a>`);
+    }
+  } else {
+    html += `<div class="dim" style="font-size:12px">无——没有其他领域调用它的方法。</div>`;
+  }
+  html += `</div>`;
+  if (d.entries.length) {
+    const scanned = d.entries.filter(id => !view.nodes[id].unscanned);
+    html += `<div class="d-sec"><div class="d-label">对外入口（CLI / HTTP / WS）</div>`;
+    for (const id of scanned.slice(0, 10)) html += nodeLink(view, id, did);
+    if (scanned.length > 10) html += `<div class="dim" style="font-size:11.5px;margin-top:4px">…共 ${scanned.length} 个入口</div>`;
+    const uns = d.entries.length - scanned.length;
+    if (uns) html += `<div class="dim" style="font-size:11.5px;margin-top:4px">…另有 ${uns} 个未扫描入口</div>`;
+    html += `</div>`;
+  }
+  html += `<div class="d-sec"><button class="btn sm" data-enter="${did}">进入领域 ▸</button></div>`;
+  detail.innerHTML = html;
+  wireDomainDetailLinks();
+  detail.querySelectorAll("[data-gosub]").forEach(a => a.addEventListener("click", () => enterSubsystem(a.dataset.gosub)));
+}
+
+/* 领域间连线详情：谁调用了谁的接口，逐对列出，点任一端下钻 */
+function renderDEdgeDetail(view, agg, key) {
+  const de = agg.edges.get(key);
+  if (!de) { detail.hidden = true; return; }
+  const nameOf = (k) => k.startsWith("exts:") ? subMeta(k.slice(5)).name
+                      : k.startsWith("xref:") ? domainMeta(k.slice(5)).label : domainMeta(k).label;
+  detail.hidden = false;
+  let html = `<button class="btn sm d-close" id="detailClose">×</button>` +
+    `<h3>${nameOf(de.from)} → ${nameOf(de.to)}</h3>` +
+    `<div class="d-file">${de.pairs.length} 处跨界调用</div>`;
+  html += `<div class="d-sec"><div class="d-label">谁调用了谁的接口${de.pairs.length > 15 ? "（示例 15 处）" : ""}</div>`;
+  for (const p of de.pairs.slice(0, 15)) {
+    const stBadge = { added: ' <span class="st-mini add" style="position:static">加</span>',
+                      deleted: ' <span class="st-mini del" style="position:static">删</span>' }[p.status] || "";
+    html += `<div style="padding:5px 0;border-top:1px solid var(--border);font-size:12px">` +
+      nodeLink(view, p.from, "") +
+      `<div style="color:var(--muted-foreground);padding-left:8px;font-size:11px">↓ 调用${stBadge}</div>` +
+      nodeLink(view, p.to, "") + `</div>`;
+  }
+  html += `</div>`;
+  detail.innerHTML = html;
+  wireDomainDetailLinks();
+}
+
+/* ================= 叶子领域 · 语义页 =================
+   领域声明（domains/*.json，人写）+ baseline lifecycle 段（扫描产出）合流：
+   职责 / 不变式(测试锚) / 状态机流程图 / 生命周期（声明锚 + 谁创建谁写状态）。 */
+
+/* file#Symbol 锚 → 图内节点（能解析则可点跳结构 tab） */
+function resolveAnchorNode(anchor) {
+  const [file, sym] = (anchor || "").split("#");
+  if (!file || !sym) return null;
+  for (const [id, n] of Object.entries(DATA.nodes)) {
+    if (n.file !== file) continue;
+    if (n.name === sym) return id;
+    const last = String(n.name).split(/[.\s]/).pop();
+    if (last === sym) return id;
+  }
+  return null;
+}
+function anchorChip(anchor) {
+  const nid = resolveAnchorNode(anchor);
+  if (nid) return `<span class="anchor-chip jump" data-anchor-node="${nid}" title="点击在结构视图中定位">${anchor}</span>`;
+  return `<span class="anchor-chip dead" title="符号未单独入图（包级 var / 私有），锚仍受 validate 保鲜检查">${anchor}</span>`;
+}
+
+/* 状态机布局：初始层 = 无入边状态；正向边最长路分层，构成环的归为回边（左侧弧线） */
+function layoutStateMachine(transitions) {
+  const states = [];
+  const seen = new Set();
+  for (const t of transitions) for (const s of [t.from, t.to]) if (!seen.has(s)) { seen.add(s); states.push(s); }
+  const hasIncoming = new Set(transitions.map(t => t.to));
+  const inits = states.filter(s => !hasIncoming.has(s));
+  const layer = {};
+  (inits.length ? inits : [states[0]]).forEach(s => layer[s] = 0);
+  const kept = [], back = [];
+  const reaches = (a, b) => {   // kept 正向边上 a 是否可达 b
+    const st = [a], vis = new Set();
+    while (st.length) {
+      const x = st.pop();
+      if (x === b) return true;
+      if (vis.has(x)) continue;
+      vis.add(x);
+      for (const e of kept) if (e.from === x) st.push(e.to);
+    }
+    return false;
+  };
+  let changed = true, guard = 0;
+  while (changed && guard++ < states.length * transitions.length + 10) {
+    changed = false;
+    for (const t of transitions) {
+      if (back.includes(t)) continue;
+      if (!(t.from in layer)) continue;
+      if (t.to in layer && reaches(t.to, t.from)) { back.push(t); continue; }
+      if (!kept.includes(t)) kept.push(t);
+      const want = layer[t.from] + 1;
+      if (!(t.to in layer) || layer[t.to] < want) { layer[t.to] = want; changed = true; }
+    }
+  }
+  const outgoing = new Set(transitions.map(t => t.from));
+  return { states, layer, kept, back, inits: new Set(inits.length ? inits : [states[0]]), terminals: new Set(states.filter(s => !outgoing.has(s))) };
+}
+
+function stateMachineSVG(transitions) {
+  const { states, layer, kept, back, inits, terminals } = layoutStateMachine(transitions);
+  const rows = new Map();
+  for (const s of states) {
+    const l = layer[s] ?? 0;
+    if (!rows.has(l)) rows.set(l, []);
+    rows.get(l).push(s);
+  }
+  const order = [...rows.keys()].sort((a, b) => a - b);
+  const COLW = 186, ROWH = 96, PILL_H = 34, PADX = 70, PADY = 34;
+  const maxCnt = Math.max(...order.map(l => rows.get(l).length));
+  const W = PADX * 2 + maxCnt * COLW;
+  const H = PADY * 2 + (order.length - 1) * ROWH + PILL_H + 10;
+  const px = {}, py = {}, pw = {};
+  for (const l of order) {
+    const list = rows.get(l);   // 保持首次出现顺序（确定性）
+    const off = PADX + (maxCnt - list.length) * COLW / 2;
+    list.forEach((s, i) => {
+      pw[s] = Math.max(88, s.length * 7.4 + 28);
+      px[s] = off + i * COLW + (COLW - pw[s]) / 2;
+      py[s] = PADY + (l - order[0]) * ROWH;
+    });
+  }
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("width", W); svg.setAttribute("height", H);
+  svg.style.display = "block"; svg.style.margin = "0 auto";
+
+  // 正向边：底边中心 → 顶边中心；跨多层的向右弯出
+  for (const t of kept) {
+    const gap = (layer[t.to] ?? 0) - (layer[t.from] ?? 0);
+    const x1 = px[t.from] + pw[t.from] / 2, y1 = py[t.from] + PILL_H;
+    const x2 = px[t.to] + pw[t.to] / 2, y2 = py[t.to];
+    const bow = gap > 1 ? 56 + gap * 8 : 0;
+    const p = document.createElementNS(svgNS, "path");
+    p.setAttribute("d", `M ${x1} ${y1} C ${x1 + bow} ${y1 + 40}, ${x2 + bow} ${y2 - 40}, ${x2} ${y2}`);
+    p.setAttribute("class", "sm-edge");
+    const tt = document.createElementNS(svgNS, "title");
+    tt.textContent = `${t.from} → ${t.to} · ${t.anchor || ""}`;
+    p.appendChild(tt);
+    svg.appendChild(p);
+    const ang = Math.atan2(y2 - (y2 - 40), x2 - (x2 + bow)) || Math.PI / 2;
+    const ah = document.createElementNS(svgNS, "path");
+    ah.setAttribute("d", `M ${x2} ${y2} L ${x2 - 4.6} ${y2 - 9} L ${x2 + 4.6} ${y2 - 9} Z`);
+    ah.setAttribute("fill", "#a8a8a8");
+    svg.appendChild(ah);
+  }
+  // 回边：左侧弧线（↺），从源左边到目标左边
+  let backIdx = 0;
+  for (const t of back) {
+    const x1 = px[t.from], y1 = py[t.from] + PILL_H / 2;
+    const x2 = px[t.to], y2 = py[t.to] + PILL_H / 2;
+    const cx = Math.min(x1, x2) - 58 - backIdx * 22;
+    const p = document.createElementNS(svgNS, "path");
+    p.setAttribute("d", `M ${x1} ${y1} C ${cx} ${y1}, ${cx} ${y2}, ${x2 + 2} ${y2}`);
+    p.setAttribute("class", "sm-edge back");
+    const tt = document.createElementNS(svgNS, "title");
+    tt.textContent = `${t.from} → ${t.to}（回退/重试）· ${t.anchor || ""}`;
+    p.appendChild(tt);
+    svg.appendChild(p);
+    const ah = document.createElementNS(svgNS, "path");
+    ah.setAttribute("d", `M ${x2 + 2} ${y2} L ${x2 - 8} ${y2 - 4.6} L ${x2 - 8} ${y2 + 4.6} Z`);
+    ah.setAttribute("fill", "#c2c2c2");
+    svg.appendChild(ah);
+    const mk = document.createElementNS(svgNS, "text");
+    mk.setAttribute("x", cx + 10); mk.setAttribute("y", (y1 + y2) / 2 + 4);
+    mk.setAttribute("class", "sm-back-mark");
+    mk.textContent = "↺";
+    svg.appendChild(mk);
+    backIdx++;
+  }
+  // 初始入箭头
+  for (const s of inits) {
+    const x = px[s] + pw[s] / 2, y = py[s];
+    const dot = document.createElementNS(svgNS, "circle");
+    dot.setAttribute("cx", x); dot.setAttribute("cy", y - 22); dot.setAttribute("r", 3.5);
+    dot.setAttribute("fill", "var(--primary)");
+    svg.appendChild(dot);
+    const p = document.createElementNS(svgNS, "path");
+    p.setAttribute("d", `M ${x} ${y - 18} L ${x} ${y - 2}`);
+    p.setAttribute("class", "sm-edge");
+    svg.appendChild(p);
+    const ah = document.createElementNS(svgNS, "path");
+    ah.setAttribute("d", `M ${x} ${y} L ${x - 4.2} ${y - 8} L ${x + 4.2} ${y - 8} Z`);
+    ah.setAttribute("fill", "var(--primary)");
+    svg.appendChild(ah);
+  }
+  // 状态 pill
+  for (const s of states) {
+    const g = document.createElementNS(svgNS, "g");
+    const r = document.createElementNS(svgNS, "rect");
+    r.setAttribute("x", px[s]); r.setAttribute("y", py[s]);
+    r.setAttribute("width", pw[s]); r.setAttribute("height", PILL_H);
+    r.setAttribute("rx", 17);
+    r.setAttribute("class", "sm-state" + (inits.has(s) ? " init" : "") + (terminals.has(s) ? " terminal" : ""));
+    g.appendChild(r);
+    if (terminals.has(s)) {   // 终态双圈
+      const r2 = document.createElementNS(svgNS, "rect");
+      r2.setAttribute("x", px[s] + 3); r2.setAttribute("y", py[s] + 3);
+      r2.setAttribute("width", pw[s] - 6); r2.setAttribute("height", PILL_H - 6);
+      r2.setAttribute("rx", 14);
+      r2.setAttribute("fill", "none");
+      r2.setAttribute("stroke", "var(--green)");
+      r2.setAttribute("stroke-width", "1");
+      g.appendChild(r2);
+    }
+    const t = document.createElementNS(svgNS, "text");
+    t.setAttribute("x", px[s] + pw[s] / 2);
+    t.setAttribute("y", py[s] + PILL_H / 2 + 4);
+    t.setAttribute("class", "sm-name");
+    t.textContent = s;
+    g.appendChild(t);
+    svg.appendChild(g);
+  }
+  return svg;
+}
+
+/* 主调用链：创建锚 → 直接被调（按被调热度）→ 各自 top 被调。域外节点虚线 ↗。 */
+function mainChainHTML(view, did, rootNid) {
+  const inDom = (id) => {
+    const p = domainPathOf(view.nodes[id].container);
+    return p[p.length - 1] === did;
+  };
+  const adj = {}, fan = {};
+  for (const e of view.edges) {
+    if (e.status === "deleted") continue;
+    (adj[e.from] = adj[e.from] || []).push(e.to);
+    fan[e.to] = (fan[e.to] || 0) + 1;
+  }
+  const chip = (id) => {
+    const n = view.nodes[id];
+    const ext = !inDom(id);
+    return `<a class="chain-node${ext ? " ext" : ""}" data-jumpnode="${id}">${n.name}${n.kind === "func" ? "()" : ""}${ext ? " ↗" : ""}</a>`;
+  };
+  const ups = [...new Set(view.edges.filter(e => e.to === rootNid && e.status !== "deleted").map(e => e.from))].slice(0, 4);
+  const l1 = [...new Set(adj[rootNid] || [])].sort((a, b) => (fan[b] || 0) - (fan[a] || 0));
+  let html = `<div class="sem-sec"><div class="sem-h">主调用链（创建锚向下 2 级）` +
+    `<span class="src">按被调热度排序，由图派生 · 完整链在「结构」tab</span></div><div class="chain-box">`;
+  if (ups.length) html += `<div class="chain-row dim-row">上游 ${ups.map(chip).join(" ")} ↓</div>`;
+  html += `<div class="chain-row root">● ${chip(rootNid)}</div>`;
+  for (const t of l1.slice(0, 10)) {
+    html += `<div class="chain-row lvl1">├ ${chip(t)}`;
+    if (inDom(t)) {
+      const l2 = [...new Set(adj[t] || [])].sort((a, b) => (fan[b] || 0) - (fan[a] || 0)).slice(0, 3);
+      if (l2.length) html += ` <span class="chain-l2">→ ${l2.map(chip).join(" ")}</span>`;
+    }
+    html += `</div>`;
+  }
+  if (l1.length > 10) html += `<div class="chain-row dim-row">…另有 ${l1.length - 10} 个直接被调</div>`;
+  html += `</div></div>`;
+  return html;
+}
+
+/* 领域成员实体的机械生命周期（lifecycle 段） */
+function lifecycleForDomain(view, did) {
+  const byModel = {};
+  const modelIds = new Set();
+  for (const [id, n] of Object.entries(view.nodes)) {
+    if (n.kind !== "model") continue;
+    const path = domainPathOf(n.container);
+    if (path[path.length - 1] === did) modelIds.add(id);
+  }
+  for (const lr of DATA.lifecycle || []) {
+    if (!modelIds.has(lr.model)) continue;
+    (byModel[lr.model] = byModel[lr.model] || []).push(lr);
+  }
+  return { byModel, totalModels: modelIds.size };
+}
+
+function renderSemantic(view, did) {
+  const pane = document.getElementById("semanticPane");
+  const meta = domainMeta(did);
+  const dec = declOf(did);
+  const subs = domainSubsOf(did);
+  const { byModel, totalModels } = lifecycleForDomain(view, did);
+
+  let html = `<div class="sem-doc">`;
+  /* 头部 */
+  html += `<div class="sem-head"><h2>${meta.label}<span class="k">${meta.kind || "领域"} · ${did}</span></h2>`;
+  if (hasSub() && subs.length) {
+    html += `<div class="sub-chips">所属子系统（派生）:` +
+      subs.map(sid => `<span class="sub-chip" data-gosub="${sid}">${subMeta(sid).name}</span>`).join("") + `</div>`;
+  }
+  html += `</div>`;
+  if (subs.length > 1) {
+    html += `<div class="cross-banner">⧉ <b>跨子系统领域</b>——成员文件横跨 ${subs.map(s => subMeta(s).name).join("、")}。` +
+      `归属由成员文件派生（只派生不手抄）；这是契约警示，不是错误：改动此域时留意各子系统的契约面。</div>`;
+  }
+
+  /* 职责 */
+  html += `<div class="sem-sec"><div class="sem-h">职责 <span class="src">${dec ? "领域声明 domains/" + did + ".json" : "扫描 summary"}</span></div>` +
+    `<div class="sem-resp">${dec ? dec.responsibility : (meta.summary || "（无）")}</div></div>`;
+  if (meta.desc) {
+    html += `<div class="sem-sec"><div class="sem-h">内部逻辑 <span class="src">扫描 desc</span></div>` +
+      `<div class="sem-desc">${meta.desc}</div></div>`;
+  }
+
+  if (dec) {
+    /* 不变式 */
+    if (dec.invariants && dec.invariants.length) {
+      html += `<div class="sem-sec"><div class="sem-h">不变式（${dec.invariants.length}）<span class="src">testRef 经 go/parser 核验为真实测试函数</span></div>`;
+      for (const inv of dec.invariants) {
+        html += `<div class="inv-row"><div style="flex:1">${inv.text}</div>` +
+          (inv.testRef ? `<span class="inv-test" title="守护测试，validate 核验其存在">✓ ${inv.testRef}</span>` : "") + `</div>`;
+      }
+      html += `</div>`;
+    }
+    /* 状态机 */
+    if (dec.stateMachine && dec.stateMachine.length) {
+      const anchors = [...new Set(dec.stateMachine.map(t => t.anchor).filter(Boolean))];
+      html += `<div class="sem-sec"><div class="sem-h">状态机（${dec.stateMachine.length} 迁移）<span class="src">领域声明</span></div>` +
+        `<div class="sm-wrap" id="smWrap"></div>` +
+        `<div class="sm-legend"><span>● 初始</span><span>双圈 = 终态</span><span>↺ 左弧 = 回退/重试迁移</span>` +
+        `<span>迁移锚点:</span>${anchors.map(anchorChip).join(" ")}</div></div>`;
+    }
+    /* 声明的生命周期锚 */
+    if (dec.lifecycle) {
+      html += `<div class="sem-sec"><div class="sem-h">生命周期（领域级锚）<span class="src">领域声明 · validate 保鲜检查</span></div>` +
+        `<div class="lc-strip"><span class="lc-dot create">●</span> 创建 ${anchorChip(dec.lifecycle.from)}` +
+        `<span class="arrow"></span><span class="lc-dot end">○</span> 终结 ${anchorChip(dec.lifecycle.to)}</div></div>`;
+      /* 主调用链：从创建锚沿调用边向下展开——「快速理解这个领域怎么跑」的第一屏 */
+      const rootNid = resolveAnchorNode(dec.lifecycle.from);
+      if (rootNid) html += mainChainHTML(view, did, rootNid);
+    }
+  } else {
+    html += `<div class="sem-sec"><div class="decl-missing"><b>§ 该领域尚未落声明</b> —— <code>codegraph/domains/${did}.json</code><br>` +
+      `职责一句话、不变式（带测试锚）、状态机与生命周期锚都在声明里；人写、程序只读，validate 做锚保鲜与测试核验。` +
+      `当前项目已声明 ${Object.keys(DATA.decls || {}).length}/${Object.keys(realDomains() || {}).length} 域，其余按卡增量补写（roadmap 1a）。</div></div>`;
+  }
+
+  /* 机械层：谁创建 / 谁写状态 */
+  const models = Object.keys(byModel).sort((a, b) => byModel[b].length - byModel[a].length);
+  html += `<div class="sem-sec"><div class="sem-h">实体生命周期（机械层）<span class="src">baseline 的 lifecycle 段，扫描产出</span></div>`;
+  if (models.length) {
+    const row = (mid) => {
+      const n = view.nodes[mid];
+      const creators = byModel[mid].filter(x => x.kind === "creator");
+      const writers = byModel[mid].filter(x => x.kind === "writer");
+      const whoName = (w) => {
+        const wn = view.nodes[w];
+        return wn ? `<a class="lc-who lc-model" data-jumpnode="${w}">${wn.name}</a>` : `<span class="lc-who">${w.replace(/^n_/, "")}</span>`;
+      };
+      return `<tr><td class="mono"><a class="lc-model" data-jumpnode="${mid}">${n ? n.name : mid}</a></td>` +
+        `<td>${creators.length ? creators.map(c => "● " + whoName(c.who)).join("<br>") : '<span class="dim">—</span>'}</td>` +
+        `<td>${writers.length ? writers.map(w => `✎ <span class="lc-field">${w.field || "?"}</span> ← ${whoName(w.who)}`).join("<br>") : '<span class="dim">—</span>'}</td></tr>`;
+    };
+    const head = `<tr><th>实体</th><th>创建者</th><th>状态写入</th></tr>`;
+    const first = models.slice(0, 6), rest = models.slice(6);
+    html += `<table class="lc-table">${head}${first.map(row).join("")}</table>`;
+    if (rest.length) {
+      html += `<details style="margin-top:6px"><summary style="cursor:pointer;font-size:12px;color:var(--muted-foreground)">更多 ${rest.length} 个实体</summary>` +
+        `<table class="lc-table">${rest.map(row).join("")}</table></details>`;
+    }
+    html += `<div class="dim" style="font-size:11.5px;margin-top:8px">${models.length} 个实体带生命周期标注` +
+      (totalModels > models.length
+        ? ` · 另有 ${totalModels - models.length} 个 model 无标注（多为请求/响应 DTO、配置结构——有人创建、有人写状态的才是真实体）`
+        : "") + `</div>`;
+  } else {
+    html += `<div class="dim" style="font-size:12.5px">该领域的成员实体暂无 lifecycle 标注（扫描按配方对 model 节点补「谁创建/谁写状态」）。</div>`;
+  }
+  html += `</div>`;
+
+  html += `<div class="sem-sec"><button class="btn sm" id="gotoStruct">查看结构（树 + 焦点链）▸</button></div>`;
+  html += `</div>`;
+  pane.innerHTML = html;
+
+  if (dec && dec.stateMachine && dec.stateMachine.length) {
+    document.getElementById("smWrap").appendChild(stateMachineSVG(dec.stateMachine));
+  }
+  pane.querySelectorAll("[data-gosub]").forEach(a => a.addEventListener("click", () => enterSubsystem(a.dataset.gosub)));
+  pane.querySelectorAll("[data-jumpnode]").forEach(a => a.addEventListener("click", () => {
+    enterDomain(null, a.dataset.jumpnode);
+  }));
+  pane.querySelectorAll("[data-anchor-node]").forEach(a => a.addEventListener("click", () => {
+    enterDomain(null, a.dataset.anchorNode);
+  }));
+  document.getElementById("gotoStruct").addEventListener("click", () => { leafTab = "struct"; render(); });
+}
+
+/* ================= 叶子领域 · 结构 tab · 流程视图 =================
+   多入口流程图：入口/对外接口在最上（←N域 标注谁在调），内部逻辑按调用流程分层向下，
+   调用到外部领域的收拢成「一个领域一个虚线节点」，不展开外部细节，点击横跳。
+   分层用 Kahn 削层（环上的边降为回边，虚线画出）；成员 >150 时自动聚到容器级——
+   聚不动的巨无霸容器本身就是要拆的债，图如实画出来。 */
+
+/* Kahn 削层：入度 0 者先出（同层），环剩下时放行入度最小者，未定前驱的边视作回边不抬层 */
+function layerFlow(ids, edgePairs) {
+  const indeg = {}, adj = {}, radjDone = {};
+  ids.forEach(id => { indeg[id] = 0; });
+  for (const [a, b] of edgePairs) {
+    if (!(a in indeg) || !(b in indeg) || a === b) continue;
+    (adj[a] = adj[a] || []).push(b);
+    (radjDone[b] = radjDone[b] || []).push(a);
+    indeg[b]++;
+  }
+  const layer = {}, done = new Set();
+  let pending = ids.slice();
+  while (pending.length) {
+    let ready = pending.filter(id => indeg[id] === 0).sort();
+    if (!ready.length) {
+      pending.sort((a, b) => indeg[a] - indeg[b] || (a < b ? -1 : 1));
+      ready = [pending[0]];
+    }
+    for (const u of ready) {
+      let l = 0;
+      for (const p of radjDone[u] || []) if (done.has(p)) l = Math.max(l, layer[p] + 1);
+      layer[u] = l;
+      done.add(u);
+      for (const v of adj[u] || []) if (!done.has(v)) indeg[v]--;
+    }
+    pending = pending.filter(id => !done.has(id));
+  }
+  return layer;
+}
+
+function renderFlow(view) {
+  const pane = document.getElementById("comboPane");
+  pane.innerHTML = "";
+  const scope = domainScope;
+  const inScope = (id) => domainPathOf(view.nodes[id].container).includes(scope);
+  const leafOf = (id) => { const p = domainPathOf(view.nodes[id].container); return p[p.length - 1] || null; };
+
+  /* 流程图只画行为：实体/DTO 不是流程节点（●创建/✎写状态在语义页与步骤徽标里表达） */
+  const allMembers = Object.keys(view.nodes).filter(id => view.nodes[id].status !== "deleted" && inScope(id));
+  const modelCnt = allMembers.filter(id => view.nodes[id].kind === "model").length;
+  const inIds = allMembers.filter(id => view.nodes[id].kind !== "model");
+  const inSet = new Set(inIds);
+
+  /* 域内边 / 出边（按目标领域折叠）/ 入边（只给接口做 ←N域 标注） */
+  const callersOf = {};            // 域内节点 id -> Set(外部 leaf 域)
+  const pairCnt = new Map();       // "a|b" -> 调用数（b 可为 "x:域"）
+  const addPair = (a, b) => pairCnt.set(a + "|" + b, (pairCnt.get(a + "|" + b) || 0) + 1);
+  for (const e of view.edges) {
+    if (e.status === "deleted") continue;
+    const fi = inSet.has(e.from), ti = inSet.has(e.to);
+    if (fi && ti) addPair(e.from, e.to);
+    else if (fi && !ti) { const d = leafOf(e.to); if (d) addPair(e.from, "x:" + d); }
+    else if (!fi && ti) { const d = leafOf(e.from); if (d) (callersOf[e.to] = callersOf[e.to] || new Set()).add(d); }
+  }
+
+  /* 粒度：函数级（成员 ≤150）或容器级聚合 */
+  const containerLevel = inIds.length > 150;
+  let ids, pairs;   // pairs: [from, to, count]
+  const contOf = (id) => view.nodes[id].container;
+  const contCallers = {}, contStat = {};
+  if (!containerLevel) {
+    ids = inIds.slice();
+    pairs = [...pairCnt.entries()].map(([k, n]) => [...k.split("|"), n]).map(([a, b, n]) => [a, b, n]);
+  } else {
+    const agg = new Map();
+    for (const [k, n] of pairCnt) {
+      const [a, b] = k.split("|");
+      const ca = "c!" + contOf(a);
+      const cb = b.startsWith("x:") ? b : "c!" + contOf(b);
+      if (ca === cb) continue;
+      agg.set(ca + "|" + cb, (agg.get(ca + "|" + cb) || 0) + n);
+    }
+    pairs = [...agg.entries()].map(([k, n]) => [...k.split("|"), n]).map(([a, b, n]) => [a, b, n]);
+    const cset = new Set(inIds.map(id => "c!" + contOf(id)));
+    ids = [...cset];
+    for (const id of inIds) {
+      const ck = "c!" + contOf(id);
+      const st = contStat[ck] = contStat[ck] || { funcs: 0, models: 0, entries: 0, ifaces: 0 };
+      const n = view.nodes[id];
+      if (n.kind === "entry") st.entries++; else if (n.kind === "model") st.models++; else st.funcs++;
+      if (callersOf[id]) {
+        st.ifaces++;
+        (contCallers[ck] = contCallers[ck] || new Set());
+        callersOf[id].forEach(d => contCallers[ck].add(d));
+      }
+    }
+  }
+  const extIds = [...new Set(pairs.map(p => p[1]).filter(t => t.startsWith("x:")))];
+  ids = ids.concat(extIds);
+
+  /* 完全孤立的成员不进流程图，计数说明 */
+  const touched = new Set();
+  for (const [a, b] of pairs) { touched.add(a); touched.add(b); }
+  const called = new Set(Object.keys(callersOf).map(id => containerLevel ? "c!" + contOf(id) : id));
+  const isolated = ids.filter(id => !touched.has(id) && !called.has(id) && !id.startsWith("x:"));
+  const isoSet = new Set(isolated);
+  ids = ids.filter(id => !isoSet.has(id));
+
+  const layer = layerFlow(ids, pairs.map(p => [p[0], p[1]]));
+
+  /* 分层排布：0 层（入口/接口）按 入口→被外部调用热度 排，其余层邻居均值排减少交叉 */
+  const bands = new Map();
+  for (const id of ids) {
+    const l = layer[id] ?? 0;
+    if (!bands.has(l)) bands.set(l, []);
+    bands.get(l).push(id);
+  }
+  const order = [...bands.keys()].sort((a, b) => a - b);
+  const NODE_W = containerLevel ? 204 : 156, XSP = containerLevel ? 240 : 184, YSTEP = containerLevel ? 128 : 112, PADX = 60, PADY = 84;
+  const callerCnt = (id) => containerLevel ? (contCallers[id] ? contCallers[id].size : 0)
+                                           : (callersOf[id] ? callersOf[id].size : 0);
+  const entryish = (id) => !containerLevel && view.nodes[id] && view.nodes[id].kind === "entry" ? 0 : 1;
+  bands.get(order[0]).sort((a, b) => entryish(a) - entryish(b) || callerCnt(b) - callerCnt(a) || (a < b ? -1 : 1));
+  const adjP = {}, radjP = {};
+  for (const [a, b] of pairs) { (adjP[a] = adjP[a] || []).push(b); (radjP[b] = radjP[b] || []).push(a); }
+  const maxCnt = Math.max(...order.map(l => bands.get(l).length));
+  const W = PADX * 2 + maxCnt * XSP;
+  const H = PADY * 2 + (order.length - 1) * YSTEP + 46;
+  const px = {}, py = {};
+  const place = (l) => {
+    const list = bands.get(l);
+    const off = PADX + (maxCnt - list.length) * XSP / 2;
+    list.forEach((id, i) => { px[id] = off + i * XSP; py[id] = PADY + (l - order[0]) * YSTEP; });
+  };
+  const meanX = (id) => {
+    const nb = [...(adjP[id] || []), ...(radjP[id] || [])].filter(t => px[t] !== undefined);
+    return nb.length ? nb.reduce((s, t) => s + px[t], 0) / nb.length : 0;
+  };
+  place(order[0]);
+  for (const l of order.slice(1)) { bands.get(l).sort((a, b) => meanX(a) - meanX(b) || (a < b ? -1 : 1)); place(l); }
+  for (const l of order.slice(1)) { bands.get(l).sort((a, b) => meanX(a) - meanX(b) || (a < b ? -1 : 1)); place(l); }
+
+  /* ---- 画布（复用焦点链的平移/缩放交互） ---- */
+  const gwrap = document.createElement("div");
+  gwrap.className = "combo-graph";
+  pane.appendChild(gwrap);
+
+  const nav = document.createElement("div");
+  nav.className = "fg-navctl";
+  const hint = document.createElement("span");
+  hint.className = "fg-hint";
+  hint.textContent = (containerLevel ? `行为成员 ${inIds.length} 个，已聚合到容器级（细粒度待容器拆分）· ` : "") +
+    "流程视图：只画行为 · 入口/接口在上 · ←N域 = 被哪些外部领域调用 · 虚线 ◇ = 外部领域，点击横跳" +
+    (modelCnt ? ` · ${modelCnt} 个实体/DTO 不入流程（见语义页）` : "");
+  nav.appendChild(hint);
+  if (isolated.length) {
+    const iso = document.createElement("span");
+    iso.className = "fg-hint";
+    iso.textContent = `另有 ${isolated.length} 个孤立成员未进流程（无调用边）`;
+    nav.appendChild(iso);
+  }
+  gwrap.appendChild(nav);
+
+  const inner = document.createElement("div");
+  inner.style.position = "absolute";
+  inner.style.width = W + "px"; inner.style.height = H + "px";
+  inner.style.willChange = "transform";
+  gwrap.appendChild(inner);
+  const svgC = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svgC.setAttribute("width", W); svgC.setAttribute("height", H);
+  svgC.style.position = "absolute"; svgC.style.inset = "0";
+  inner.appendChild(svgC);
+
+  /* 边：正向下行曲线；回边（层不增）虚线绕行 */
+  for (const [a, b, n] of pairs) {
+    if (px[a] === undefined || px[b] === undefined) continue;
+    const back = (layer[b] ?? 0) <= (layer[a] ?? 0);
+    const x1 = px[a] + NODE_W / 2, y1 = py[a] + 44;
+    const x2 = px[b] + NODE_W / 2, y2 = py[b];
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    if (!back) {
+      p.setAttribute("d", `M ${x1} ${y1} C ${x1} ${y1 + 46}, ${x2} ${y2 - 46}, ${x2} ${y2}`);
+    } else {
+      const bow = 70 + Math.abs((layer[a] ?? 0) - (layer[b] ?? 0)) * 14;
+      p.setAttribute("d", `M ${x1} ${y1 - 44} C ${x1 - bow} ${y1 - 60}, ${x2 - bow} ${y2 + 16}, ${x2} ${y2 + 2}`);
+    }
+    p.setAttribute("class", "fg-edge" + (back ? " backflow" : ""));
+    if (containerLevel) p.setAttribute("stroke-width", 1 + Math.min(n / 8, 4));
+    const tt = document.createElementNS("http://www.w3.org/2000/svg", "title");
+    tt.textContent = `${n} 处调用${back ? "（回边）" : ""}`;
+    p.appendChild(tt);
+    svgC.appendChild(p);
+  }
+
+  /* 节点 */
+  const domLabel = (xid) => domainMeta(xid.slice(2)).label;
+  for (const id of ids) {
+    if (px[id] === undefined) continue;
+    const card = document.createElement("div");
+    card.style.left = px[id] + "px";
+    card.style.top = py[id] + "px";
+    if (id.startsWith("x:")) {
+      card.className = "fg-node ext";
+      card.innerHTML = `<div class="nm">◇ ${domLabel(id)}</div><div class="cls"><span>外部领域 · 点击横跳</span></div>`;
+      card.addEventListener("click", () => enterDomain(id.slice(2)));
+    } else if (containerLevel) {
+      const cid = id.slice(2);
+      const c = DATA.containers[cid] || { label: cid, kind: "" };
+      const st = contStat[id] || { funcs: 0, models: 0, entries: 0, ifaces: 0 };
+      const cc = contCallers[id];
+      card.className = "fg-node fl-cont" + (selectedNode === id ? " selected-flow" : "");
+      card.innerHTML = `<div class="nm">${c.label}</div><div class="cls">` +
+        `<span>${st.funcs} 方法${st.models ? " · " + st.models + " 实体" : ""}</span>` +
+        (cc && cc.size ? `<span class="fl-in" title="被外部领域调用：${[...cc].map(d => domainMeta(d).label).join("、")}">←${cc.size}域</span>` : "") + `</div>`;
+      card.addEventListener("click", () => {
+        selectedNode = id;
+        gwrap.querySelectorAll(".fg-node").forEach(el => el.classList.toggle("selected-flow", el === card));
+        renderFlowContainerDetail(view, cid, callersOf);
+      });
+    } else {
+      const n = view.nodes[id];
+      const cs = callersOf[id];
+      card.className = `fg-node kind-${n.kind} st-${n.status}` + (selectedNode === id ? " selected-flow" : "");
+      const cls = DATA.containers[n.container] ? DATA.containers[n.container].label : "";
+      const t = (n.tests && n.tests.length) ? `<span class="ct-test">✓${n.tests.length}</span>` : "";
+      card.innerHTML = `<div class="nm">${n.name}${n.kind === "func" ? "()" : ""}</div><div class="cls"><span>${cls}</span>${t}` +
+        (cs && cs.size ? `<span class="fl-in" title="被外部领域调用：${[...cs].map(d => domainMeta(d).label).join("、")}">←${cs.size}域</span>` : "") + `</div>`;
+      card.addEventListener("click", () => {
+        selectedNode = id;
+        gwrap.querySelectorAll(".fg-node").forEach(el => el.classList.toggle("selected-flow", el === card));
+        renderDetail(view, id);
+      });
+      card.addEventListener("dblclick", () => { chainPath = [id]; structMode = "chain"; render(); });
+      card.title = (view.nodes[id].file || "") + " · 双击看它的调用链";
+    }
+    inner.appendChild(card);
+  }
+
+  /* 平移/缩放：初始把入口层水平居中、贴顶 */
+  inner.style.transformOrigin = "0 0";
+  const applyPan = () => { inner.style.transform = `translate(${comboPan.x}px, ${comboPan.y}px) scale(${comboZoom})`; };
+  if (!comboPan) {
+    const l0 = bands.get(order[0]);
+    const cx = l0.reduce((s, id) => s + px[id], 0) / l0.length + NODE_W / 2;
+    comboPan = { x: gwrap.clientWidth / 2 - cx * comboZoom, y: 16 };
+  }
+  applyPan();
+  gwrap.addEventListener("mousedown", (ev) => {
+    if (ev.target.closest(".fg-node") || ev.target.closest(".fg-navctl")) return;
+    const sx = ev.clientX, sy = ev.clientY, ox = comboPan.x, oy = comboPan.y;
+    gwrap.classList.add("panning");
+    const move = (e2) => { comboPan.x = ox + e2.clientX - sx; comboPan.y = oy + e2.clientY - sy; applyPan(); };
+    const up = () => {
+      gwrap.classList.remove("panning");
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    ev.preventDefault();
+  });
+  gwrap.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    if (ev.ctrlKey || ev.metaKey) {
+      const r = gwrap.getBoundingClientRect();
+      const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+      const nz = Math.min(2.5, Math.max(0.2, comboZoom * Math.exp(-ev.deltaY * 0.0035)));
+      comboPan.x = mx - (mx - comboPan.x) * (nz / comboZoom);
+      comboPan.y = my - (my - comboPan.y) * (nz / comboZoom);
+      comboZoom = nz;
+    } else {
+      comboPan.x -= ev.deltaX; comboPan.y -= ev.deltaY;
+    }
+    applyPan();
+  }, { passive: false });
+}
+
+/* ================= 叶子领域 · 结构 tab · 调用链（级联面板） =================
+   Miller columns：第一列 = 起点清单（⚑ 真入口 / 对外接口，可过滤、按被调热度排），
+   点一行向右长出一块新面板 = 该函数的「下一级直接调用」，按源码出现序竖排——
+   每块面板都是一小张流程图样式的图，默认只看一级，想看谁就点谁。
+   同样的三条语法：只画行为（实体收成 ●/✎/◻ 徽标）、外部领域一域一虚线行（点击横跳）、
+   高扇入工具标 ←N 共用。↻ = 已在当前路径上（递归/回环），不再展开。 */
+function renderChain(view) {
+  const pane = document.getElementById("comboPane");
+  pane.innerHTML = "";
+  const scope = domainScope;
+  const inScope = (id) => domainPathOf(view.nodes[id].container).includes(scope);
+  const leafOf = (id) => { const p = domainPathOf(view.nodes[id].container); return p[p.length - 1] || null; };
+
+  const fanIn = {}, adj = {};
+  for (const e of view.edges) {
+    if (e.status === "deleted") continue;
+    fanIn[e.to] = (fanIn[e.to] || 0) + 1;
+    (adj[e.from] = adj[e.from] || []).push(e.to);
+  }
+  const lcByWho = {};
+  for (const lr of DATA.lifecycle || []) (lcByWho[lr.who] = lcByWho[lr.who] || []).push(lr);
+  const kidsCount = (id) => [...new Set(adj[id] || [])]
+    .filter(t => inScope(t) && view.nodes[t].kind !== "model").length;
+
+  /* 起点清单：真入口 + 对外接口（被外部领域调用的行为成员） */
+  const ifs = new Set();
+  for (const e of view.edges) {
+    if (e.status !== "deleted" && inScope(e.to) && !inScope(e.from) && view.nodes[e.to].kind !== "model") ifs.add(e.to);
+  }
+  const trueEntries = scannedEntries(view).filter(inScope);
+  const interfaces = [...ifs].filter(id => !trueEntries.includes(id))
+    .sort((a, b) => (kidsCount(b) ? 0 : 1) - (kidsCount(a) ? 0 : 1) ||
+                    (fanIn[b] || 0) - (fanIn[a] || 0) ||
+                    view.nodes[a].name.localeCompare(view.nodes[b].name));
+  const dec = declOf(scope);
+  let pin = null;
+  if (dec && dec.lifecycle) {
+    const nid = resolveAnchorNode(dec.lifecycle.from);
+    if (nid && inScope(nid)) pin = nid;
+  }
+  if (!chainPath.length && pin) chainPath = [pin];
+  chainPath = chainPath.filter(id => view.nodes[id]);   // 视图切换后失效节点剔除
+
+  /* 节点的行内徽标：lifecycle ●/✎ + 其余 model 引用 ◻ */
+  const entBadges = (id, cap) => {
+    const out = [], covered = new Set();
+    for (const lr of lcByWho[id] || []) {
+      const mn = view.nodes[lr.model];
+      if (!mn) continue;
+      covered.add(lr.model);
+      out.push(lr.kind === "creator"
+        ? `<span class="cv-ent create">● ${mn.name}</span>`
+        : `<span class="cv-ent write">✎ ${mn.name}.${lr.field || "?"}</span>`);
+    }
+    const touched = [...new Set((adj[id] || []).filter(t => view.nodes[t].kind === "model" && !covered.has(t)))];
+    for (const m of touched) {
+      if (out.length >= cap) { out.push(`<span class="cv-ent touch" title="共引用 ${touched.length} 个实体">◻ ×${touched.length}</span>`); break; }
+      out.push(`<span class="cv-ent touch">◻ ${view.nodes[m].name}</span>`);
+    }
+    return out.join("");
+  };
+
+  const cols = document.createElement("div");
+  cols.className = "chain-cols";
+  pane.appendChild(cols);
+
+  /* ---- 第一列：起点清单 ---- */
+  const rootsCol = document.createElement("div");
+  rootsCol.className = "ccol roots";
+  const q = chainFilter.trim().toLowerCase();
+  rootsCol.innerHTML = `<div class="ccol-head"><div class="nm">调用链 · 选起点</div>` +
+    `<div class="meta">⚑ 真入口 ${trueEntries.length} · 对外接口 ${interfaces.length}（被外部域调用；数字虚高=容器污染）</div>` +
+    `<input class="input" id="chainFilterInput" placeholder="过滤…" value="${chainFilter.replace(/"/g, "&quot;")}"></div>` +
+    `<div class="ccol-body" id="chainRootsBody"></div>`;
+  cols.appendChild(rootsCol);
+  const rootsBody = rootsCol.querySelector("#chainRootsBody");
+  const filterIn = rootsCol.querySelector("#chainFilterInput");
+  filterIn.addEventListener("input", () => {
+    chainFilter = filterIn.value;
+    render();
+    const el = document.getElementById("chainFilterInput");
+    if (el) { el.focus(); el.setSelectionRange(el.value.length, el.value.length); }
+  });
+  const rootRow = (id, mark) => {
+    const n = view.nodes[id];
+    if (q && !n.name.toLowerCase().includes(q)) return;
+    const row = document.createElement("div");
+    row.className = "crow" + (chainPath[0] === id ? " on" : "");
+    const kc = kidsCount(id);
+    row.innerHTML = `<div class="rnm">${mark}${n.name}${n.kind === "func" ? "()" : ""}` +
+      `<span class="kids">${kc ? kc + " ▸" : "末端"}</span></div>` +
+      `<div class="rmeta"><span>${(fanIn[id] || 0) > 1 ? "←" + fanIn[id] : ""}</span>` +
+      `<span>${DATA.containers[n.container] ? DATA.containers[n.container].label : ""}</span></div>`;
+    row.addEventListener("click", () => {
+      chainPath = [id];
+      selectedNode = id;
+      render();
+      renderDetail(mergeView(currentView), id);
+    });
+    rootsBody.appendChild(row);
+  };
+  if (pin && !q) {
+    const gl = document.createElement("div");
+    gl.className = "group-label"; gl.textContent = "⚓ 语义锚（声明的创建锚）";
+    rootsBody.appendChild(gl);
+    rootRow(pin, "⚓ ");
+  }
+  if (trueEntries.length) {
+    const gl = document.createElement("div");
+    gl.className = "group-label"; gl.textContent = "⚑ 真入口（CLI / HTTP / WS）";
+    rootsBody.appendChild(gl);
+    for (const id of trueEntries) rootRow(id, "⚑ ");
+  }
+  const gl2 = document.createElement("div");
+  gl2.className = "group-label"; gl2.textContent = "对外接口（被外部域调用）";
+  rootsBody.appendChild(gl2);
+  for (const id of interfaces) { if (id !== pin) rootRow(id, ""); }
+
+  /* ---- 后续列：路径上每个节点一块「下一级」面板 ---- */
+  chainPath.forEach((nd, pi) => {
+    const n = view.nodes[nd];
+    const col = document.createElement("div");
+    col.className = "ccol";
+    const callers = (fanIn[nd] || 0);
+    col.innerHTML = `<div class="ccol-head"><div class="nm">${pi === 0 ? "⚑ " : ""}${n.name}${n.kind === "func" ? "()" : ""}</div>` +
+      `<div class="meta"><span>${DATA.containers[n.container] ? DATA.containers[n.container].label : ""}</span>` +
+      ((n.tests && n.tests.length) ? `<span class="ct-test">✓${n.tests.length}</span>` : "") +
+      (callers > 1 ? `<span>←${callers}</span>` : "") +
+      `${entBadges(nd, 3)}</div></div>` +
+      `<div class="ccol-body"></div>`;
+    col.querySelector(".ccol-head").style.cursor = "pointer";
+    col.querySelector(".ccol-head").title = (n.file || "") + " · 点击看详情";
+    col.querySelector(".ccol-head").addEventListener("click", () => {
+      selectedNode = nd;
+      renderDetail(view, nd);
+    });
+    const body = col.querySelector(".ccol-body");
+
+    /* 下一级：按边的出现序；外部域去重保序；域内重复调用去重 */
+    const seenCall = new Set(), seenExt = new Set();
+    let rowsN = 0;
+    for (const t of adj[nd] || []) {
+      const tn = view.nodes[t];
+      if (!tn || tn.kind === "model") continue;   // 实体已收进头部徽标
+      if (!inScope(t)) {
+        const d = leafOf(t);
+        if (!d || seenExt.has(d)) continue;
+        seenExt.add(d);
+        const row = document.createElement("div");
+        row.className = "crow ext";
+        row.innerHTML = `<div class="rnm">◇ ${domainMeta(d).label}</div><div class="rmeta">外部领域 · 点击横跳</div>`;
+        row.addEventListener("click", () => enterDomain(d));
+        body.appendChild(row);
+        rowsN++;
+        continue;
+      }
+      if (seenCall.has(t)) continue;
+      seenCall.add(t);
+      const row = document.createElement("div");
+      const onPath = chainPath[pi + 1] === t;
+      const inPath = chainPath.slice(0, pi + 1).includes(t);
+      const kc = kidsCount(t);
+      const util = (fanIn[t] || 0) >= 12;
+      row.className = "crow" + (onPath ? " on" : "") + (inPath ? " cycle" : "") + (!kc && !inPath ? " leaf-end" : "");
+      row.innerHTML = `<div class="rnm">${inPath ? "↻ " : ""}${tn.name}${tn.kind === "func" ? "()" : ""}` +
+        `<span class="kids">${inPath ? "回环" : kc ? kc + " ▸" : "末端"}</span></div>` +
+        `<div class="rmeta">` +
+        (util ? `<span class="util-chip">←${fanIn[t]} 共用</span>` : "") +
+        ((tn.tests && tn.tests.length) ? `<span class="ct-test">✓${tn.tests.length}</span>` : "") +
+        `${entBadges(t, 2)}</div>`;
+      if (!inPath) {
+        row.addEventListener("click", () => {
+          chainPath = chainPath.slice(0, pi + 1);
+          chainPath.push(t);   // 末端也入路径：新面板显示「末端——没有下一级调用」
+          selectedNode = t;
+          render();
+          renderDetail(mergeView(currentView), t);
+        });
+      }
+      body.appendChild(row);
+      rowsN++;
+    }
+    if (!rowsN) {
+      const empty = document.createElement("div");
+      empty.className = "crow leaf-end";
+      empty.innerHTML = `<div class="rmeta">末端——没有下一级调用。</div>`;
+      body.appendChild(empty);
+    }
+    cols.appendChild(col);
+  });
+
+  /* 新面板出现时滚到最右 */
+  requestAnimationFrame(() => { cols.scrollLeft = cols.scrollWidth; });
+}
+
+/* 容器级流程节点的详情：容器信息 + 它的对外接口（点击进焦点链定位） */
+function renderFlowContainerDetail(view, cid, callersOf) {
+  const c = DATA.containers[cid] || { label: cid, kind: "" };
+  const members = Object.keys(view.nodes).filter(id => view.nodes[id].container === cid && view.nodes[id].status !== "deleted");
+  const ifaces = members.filter(id => callersOf[id]).sort((a, b) => callersOf[b].size - callersOf[a].size);
+  detail.hidden = false;
+  let html = `<button class="btn sm d-close" id="detailClose">×</button>` +
+    `<h3>${c.label}</h3>` +
+    `<div class="d-file">容器 · ${c.kind || ""} · ${members.length} 个成员</div>`;
+  html += `<div class="d-sec"><div class="d-label">被外部领域调用的成员（${ifaces.length}）</div>`;
+  if (ifaces.length) {
+    for (const id of ifaces.slice(0, 12)) {
+      html += nodeLink(view, id, "").replace("</a>",
+        ` <span style="font-family:var(--font-sans);font-size:10.5px;color:var(--muted-foreground)">← ${[...callersOf[id]].map(d => domainMeta(d).label).join("、")}</span></a>`);
+    }
+    if (ifaces.length > 12) html += `<div class="dim" style="font-size:11.5px;margin-top:4px">…共 ${ifaces.length} 个</div>`;
+  } else {
+    html += `<div class="dim" style="font-size:12px">无——纯内部实现。</div>`;
+  }
+  html += `</div><div class="dim" style="font-size:11.5px">点任一成员进焦点链视图定位；容器过大（如包级函数组）正是待拆的粒度债。</div>`;
+  detail.innerHTML = html;
+  wireDomainDetailLinks();
+}
+
+/* ================= 叶子领域 · 结构 tab：树+图视图 =================
+   左树导航（根 = 本域入口 + 对外接口），右图只画焦点集合的上下游（竖向）：
+   上游在上、焦点居中、下游在下，只展开到 comboDepth 级。
+   单击换焦点；⌘/Ctrl+单击并集；空白拖动平移、ctrl+滚轮缩放；◀ ▶ 历史焦点。
+   链上撞到领域外的节点：虚线卡 / ↗ 行，点击横跳到它的领域。 */
+function renderCombo(view) {
+  const pane = document.getElementById("comboPane");
+  pane.innerHTML = "";
+  const scope = domainScope;
+  const inScope = (id) => !scope || domainPathOf(view.nodes[id].container).includes(scope);
+  let entries;
+  if (scope) {
+    const ifs = new Set();
+    for (const e of view.edges) {
+      if (e.status !== "deleted" && inScope(e.to) && !inScope(e.from) && !view.nodes[e.to].unscanned) ifs.add(e.to);
+    }
+    entries = [...new Set([...scannedEntries(view).filter(inScope), ...ifs])];
+    if (!entries.length) {   // 没有入口也没人调它的领域：兜底拿第一个成员节点当根
+      entries = Object.keys(view.nodes).filter(id => inScope(id) && view.nodes[id].kind !== "entry").slice(0, 1);
+    }
+  } else {
+    entries = scannedEntries(view);
+  }
+  /* 树根排序：语义锚（领域声明的生命周期锚）置顶 → 真入口 → 其余按被调热度降序。
+     大领域的根几百个，主链先行，别让用户在字母序里捞重点。 */
+  const fanIn = {};
+  for (const e of view.edges) if (e.status !== "deleted") fanIn[e.to] = (fanIn[e.to] || 0) + 1;
+  const pinned = new Set();
+  const decHere = scope && declOf(scope);
+  if (decHere && decHere.lifecycle) {
+    for (const a of [decHere.lifecycle.from, decHere.lifecycle.to]) {
+      const nid = resolveAnchorNode(a);
+      if (nid && entries.includes(nid)) pinned.add(nid);
+    }
+  }
+  entries = [...entries].sort((a, b) => {
+    const pa = pinned.has(a) ? 0 : 1, pb = pinned.has(b) ? 0 : 1;
+    if (pa !== pb) return pa - pb;
+    const ea = view.nodes[a].kind === "entry" ? 0 : 1, eb = view.nodes[b].kind === "entry" ? 0 : 1;
+    if (ea !== eb) return ea - eb;
+    return (fanIn[b] || 0) - (fanIn[a] || 0) || view.nodes[a].name.localeCompare(view.nodes[b].name);
+  });
+  comboFoci = comboFoci.filter(id => view.nodes[id] && view.nodes[id].status !== "deleted");
+  if (!comboFoci.length) {
+    // 默认焦点：领域声明的创建锚优先（主链先行），否则取排序后的第一个根
+    let seed = null;
+    if (decHere && decHere.lifecycle) {
+      const nid = resolveAnchorNode(decHere.lifecycle.from);
+      if (nid && inScope(nid)) seed = nid;
+    }
+    comboFoci = [seed || entries[0]];
+  }
+  const fociSet = new Set(comboFoci);
+  if (!comboHist.length) { comboHist = [comboFoci.slice()]; comboHistIdx = 0; }   // 首次：当前焦点入历史
+  if (!comboOpen.size) entries.forEach(e => comboOpen.add(e));   // 首次：根层展开
+
+  const adj = {}, radj = {};
+  for (const e of view.edges) {
+    if (e.status === "deleted") continue;
+    if (view.nodes[e.from].status === "deleted" || view.nodes[e.to].status === "deleted") continue;
+    (adj[e.from] = adj[e.from] || []).push(e.to);
+    (radj[e.to] = radj[e.to] || []).push(e.from);
+  }
+
+  /* ---- 左：树导航 ---- */
+  const tree = document.createElement("nav");
+  tree.className = "combo-tree";
+  const setFoci = (foci, fromHist) => {
+    if (foci.join("|") === comboFoci.join("|")) return;
+    if (!fromHist) {
+      comboHist = comboHist.slice(0, comboHistIdx + 1);
+      comboHist.push(foci.slice());
+      comboHistIdx = comboHist.length - 1;
+    }
+    comboFoci = foci; selectedNode = foci[foci.length - 1]; comboPan = null;
+    render();
+  };
+  const focusOn = (id, ev) => {
+    if (scope && !inScope(id)) { enterDomain(null, id); return; }
+    if (ev && (ev.metaKey || ev.ctrlKey)) {
+      const s = comboFoci.includes(id) ? comboFoci.filter(x => x !== id) : [...comboFoci, id];
+      if (s.length) setFoci(s);
+    } else setFoci([id]);
+  };
+  function nameSpan(id) {
+    const n = view.nodes[id];
+    const s = document.createElement("span");
+    s.className = "ct-name" + (fociSet.has(id) ? " focused" : "");
+    s.textContent = n.name + (n.kind === "func" ? "()" : "");
+    s.addEventListener("click", (ev) => { ev.preventDefault(); ev.stopPropagation(); focusOn(id, ev); });
+    return s;
+  }
+  const badge = (n) => ({ added: '<span class="tr-badge add">加</span>', modified: '<span class="tr-badge mod">改</span>', deleted: '<span class="tr-badge del">删</span>' }[n.status] || "");
+  function build(id, path, depth) {
+    const n = view.nodes[id];
+    const kids = (adj[id] || []);
+    const det = document.createElement("details");
+    if (comboOpen.has(id)) det.open = true;
+    det.addEventListener("toggle", () => { det.open ? comboOpen.add(id) : comboOpen.delete(id); });
+    const sum = document.createElement("summary");
+    sum.appendChild(nameSpan(id));
+    const extra = document.createElement("span");
+    extra.innerHTML = badge(n) + ((n.tests && n.tests.length) ? `<span class="ct-test">✓${n.tests.length}</span>` : "") +
+      (depth === 0 && pinned.has(id) ? `<span class="ct-pin" title="领域声明的生命周期锚">⚓</span>` : "") +
+      (depth === 0 && (fanIn[id] || 0) > 1 ? `<span class="ct-fan" title="被调用 ${fanIn[id]} 处">←${fanIn[id]}</span>` : "");
+    sum.appendChild(extra);
+    det.appendChild(sum);
+    if (!kids.length || depth > 10) det.classList.add("leaf");
+    else for (const t of kids) {
+      if (scope && !inScope(t)) {
+        const ext = document.createElement("div");
+        ext.className = "ct-cycle";
+        ext.style.cursor = "pointer";
+        ext.textContent = `↗ ${view.nodes[t].name} · ${domainMeta(domainPathOf(view.nodes[t].container)[0] || "").label} 领域`;
+        ext.addEventListener("click", () => enterDomain(null, t));
+        det.appendChild(ext);
+      } else if (path.has(t)) {
+        const cyc = document.createElement("div");
+        cyc.className = "ct-cycle";
+        cyc.textContent = `↻ ${view.nodes[t].name}`;
+        det.appendChild(cyc);
+      } else {
+        path.add(t);
+        det.appendChild(build(t, path, depth + 1));
+        path.delete(t);
+      }
+    }
+    return det;
+  }
+  for (const e of entries) {
+    const det = build(e, new Set([e]), 0);
+    det.classList.add("ct-entry");
+    tree.appendChild(det);
+  }
+  pane.appendChild(tree);
+
+  /* ---- 中：焦点子图（竖向：上游在上、焦点居中、下游在下） ---- */
+  const gwrap = document.createElement("div");
+  gwrap.className = "combo-graph";
+  pane.appendChild(gwrap);
+
+  const nav = document.createElement("div");
+  nav.className = "fg-navctl";
+  const bk = document.createElement("button");
+  bk.className = "btn sm"; bk.textContent = "◀ 后退"; bk.title = "回到上一个焦点";
+  bk.disabled = comboHistIdx <= 0;
+  bk.addEventListener("click", () => { comboHistIdx--; setFoci(comboHist[comboHistIdx], true); });
+  const fw = document.createElement("button");
+  fw.className = "btn sm"; fw.textContent = "前进 ▶"; fw.title = "去到下一个焦点";
+  fw.disabled = comboHistIdx >= comboHist.length - 1;
+  fw.addEventListener("click", () => { comboHistIdx++; setFoci(comboHist[comboHistIdx], true); });
+  nav.appendChild(bk); nav.appendChild(fw);
+  const depthSel = document.createElement("select");
+  depthSel.className = "fg-depth"; depthSel.title = "上下游各展开几级";
+  [["1", "上下 1 级"], ["2", "上下 2 级"], ["3", "上下 3 级"], ["all", "全部层级"]].forEach(([v, t]) => {
+    const o = document.createElement("option");
+    o.value = v; o.textContent = t;
+    depthSel.appendChild(o);
+  });
+  depthSel.value = comboDepth === Infinity ? "all" : String(comboDepth);
+  depthSel.addEventListener("change", () => {
+    comboDepth = depthSel.value === "all" ? Infinity : Number(depthSel.value);
+    comboPan = null;
+    render();
+  });
+  nav.appendChild(depthSel);
+  if (comboFoci.length > 1) for (const fid of comboFoci) {
+    const chip = document.createElement("span");
+    chip.className = "fg-chip";
+    chip.innerHTML = `${view.nodes[fid].name}<b>×</b>`;
+    chip.querySelector("b").addEventListener("click", () => setFoci(comboFoci.filter(x => x !== fid)));
+    nav.appendChild(chip);
+  }
+  const hint = document.createElement("span");
+  hint.className = "fg-hint";
+  hint.textContent = comboFoci.length > 1 ? "并集视图：N 个焦点的链叠加显示"
+    : "单击：只看它的链 · ⌘+单击：加入并集 · 虚线卡=领域外，点击横跳 · 空白拖动 · ⌃滚轮缩放";
+  nav.appendChild(hint);
+  gwrap.appendChild(nav);
+
+  const dist = {};
+  for (const f of comboFoci) dist[f] = 0;
+  let frontier = comboFoci.slice();
+  while (frontier.length) {
+    const next = [];
+    for (const id of frontier) for (const t of adj[id] || []) {
+      if (!(t in dist) && dist[id] + 1 <= comboDepth) {
+        dist[t] = dist[id] + 1;
+        if (inScope(t)) next.push(t);
+      }
+    }
+    frontier = next;
+  }
+  frontier = comboFoci.slice();
+  while (frontier.length) {
+    const next = [];
+    for (const id of frontier) for (const t of radj[id] || []) {
+      if (!(t in dist) && dist[id] - 1 >= -comboDepth) {
+        dist[t] = dist[id] - 1;
+        if (inScope(t)) next.push(t);
+      }
+    }
+    frontier = next;
+  }
+
+  const bands = new Map();
+  for (const [id, d] of Object.entries(dist)) {
+    if (!bands.has(d)) bands.set(d, []);
+    bands.get(d).push(id);
+  }
+  const order = [...bands.keys()].sort((a, b) => a - b);
+  const NODE_W = 156, XSP = 180, YSTEP = 112, PADX = 60, PADY = 70;
+  const maxCnt = Math.max(...order.map(d => bands.get(d).length));
+  const W = PADX * 2 + maxCnt * XSP;
+  const H = PADY * 2 + (order.length - 1) * YSTEP + 46;
+  const px = {}, py = {};
+  const place = (d) => {
+    const list = bands.get(d);
+    const off = PADX + (maxCnt - list.length) * XSP / 2;
+    list.forEach((id, i) => { px[id] = off + i * XSP; py[id] = PADY + (d - order[0]) * YSTEP; });
+  };
+  const meanX = (id) => {
+    const nb = [...(adj[id] || []), ...(radj[id] || [])].filter(t => px[t] !== undefined);
+    return nb.length ? nb.reduce((s, t) => s + px[t], 0) / nb.length : 0;
+  };
+  order.forEach(d => bands.get(d).sort((a, b) => view.nodes[a].name.localeCompare(view.nodes[b].name)));
+  place(0);
+  for (let d = 1; d <= order[order.length - 1]; d++) if (bands.has(d)) { bands.get(d).sort((a, b) => meanX(a) - meanX(b)); place(d); }
+  for (let d = -1; d >= order[0]; d--) if (bands.has(d)) { bands.get(d).sort((a, b) => meanX(a) - meanX(b)); place(d); }
+
+  const inner = document.createElement("div");
+  inner.style.position = "absolute";
+  inner.style.width = W + "px"; inner.style.height = H + "px";
+  inner.style.willChange = "transform";
+  gwrap.appendChild(inner);
+  const svgC = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+  svgC.setAttribute("width", W); svgC.setAttribute("height", H);
+  svgC.style.position = "absolute"; svgC.style.inset = "0";
+  inner.appendChild(svgC);
+
+  if (order[0] < 0) {
+    const l = document.createElement("div");
+    l.className = "fg-collab"; l.style.left = PADX + "px"; l.style.top = (PADY - 34) + "px";
+    l.textContent = "↑ 上游（谁调用它）";
+    inner.appendChild(l);
+  }
+  if (order[order.length - 1] > 0) {
+    const l = document.createElement("div");
+    l.className = "fg-collab"; l.style.left = PADX + "px"; l.style.top = (H - 22) + "px";
+    l.textContent = "下游（它调用谁）↓";
+    inner.appendChild(l);
+  }
+
+  for (const e of view.edges) {
+    if (!(e.from in dist) || !(e.to in dist)) continue;
+    if (e.status === "deleted" && !(fociSet.has(e.from) || fociSet.has(e.to))) continue;
+    const x1 = px[e.from] + NODE_W / 2, y1 = py[e.from] + 44;
+    const x2 = px[e.to] + NODE_W / 2, y2 = py[e.to];
+    const p = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    p.setAttribute("d", `M ${x1} ${y1} C ${x1} ${y1 + 46}, ${x2} ${y2 - 46}, ${x2} ${y2}`);
+    const touch = fociSet.has(e.from) || fociSet.has(e.to) ? " touch" : "";
+    p.setAttribute("class", `fg-edge st-${e.status}${touch}`);
+    svgC.appendChild(p);
+  }
+
+  for (const id of Object.keys(dist)) {
+    const n = view.nodes[id];
+    const card = document.createElement("div");
+    const ext = scope && !inScope(id);
+    card.className = `fg-node kind-${n.kind} st-${n.status}` + (fociSet.has(id) ? " focus" : "") + (ext ? " ext" : "");
+    card.style.left = px[id] + "px";
+    card.style.top = py[id] + "px";
+    const cls = ext ? `◇ ${domainMeta(domainPathOf(n.container)[0] || "").label} 领域`
+                    : (DATA.containers[n.container] ? DATA.containers[n.container].label : "");
+    const t = (n.tests && n.tests.length) ? `<span class="ct-test">✓${n.tests.length}</span>` : "";
+    card.innerHTML = `<div class="nm">${n.name}${n.kind === "func" ? "()" : ""}</div><div class="cls"><span>${cls}</span>${t}</div>`;
+    card.addEventListener("click", (ev) => focusOn(id, ev));
+    inner.appendChild(card);
+  }
+
+  inner.style.transformOrigin = "0 0";
+  const applyPan = () => { inner.style.transform = `translate(${comboPan.x}px, ${comboPan.y}px) scale(${comboZoom})`; };
+  if (!comboPan) {
+    const anchor = comboFoci[comboFoci.length - 1];
+    comboPan = {
+      x: gwrap.clientWidth / 2 - (px[anchor] + NODE_W / 2) * comboZoom,
+      y: Math.min(gwrap.clientHeight / 2 - (py[anchor] + 22) * comboZoom, 24),
+    };
+  }
+  applyPan();
+  gwrap.addEventListener("mousedown", (ev) => {
+    if (ev.target.closest(".fg-node") || ev.target.closest(".fg-navctl")) return;
+    const sx = ev.clientX, sy = ev.clientY, ox = comboPan.x, oy = comboPan.y;
+    gwrap.classList.add("panning");
+    const move = (e2) => { comboPan.x = ox + e2.clientX - sx; comboPan.y = oy + e2.clientY - sy; applyPan(); };
+    const up = () => {
+      gwrap.classList.remove("panning");
+      window.removeEventListener("mousemove", move);
+      window.removeEventListener("mouseup", up);
+    };
+    window.addEventListener("mousemove", move);
+    window.addEventListener("mouseup", up);
+    ev.preventDefault();
+  });
+  gwrap.addEventListener("wheel", (ev) => {
+    ev.preventDefault();
+    if (ev.ctrlKey || ev.metaKey) {
+      const r = gwrap.getBoundingClientRect();
+      const mx = ev.clientX - r.left, my = ev.clientY - r.top;
+      const nz = Math.min(2.5, Math.max(0.3, comboZoom * Math.exp(-ev.deltaY * 0.0035)));
+      comboPan.x = mx - (mx - comboPan.x) * (nz / comboZoom);
+      comboPan.y = my - (my - comboPan.y) * (nz / comboZoom);
+      comboZoom = nz;
+    } else {
+      comboPan.x -= ev.deltaX; comboPan.y -= ev.deltaY;
+    }
+    applyPan();
+  }, { passive: false });
+
+  renderDetail(view, selectedNode && view.nodes[selectedNode] ? selectedNode : comboFoci[comboFoci.length - 1]);
+}
+
+/* ================= diff 徽标 / 状态条 ================= */
+function renderChips(view) {
+  const chips = document.getElementById("diffChips");
+  if (!view.diff) { chips.hidden = true; return; }
+  const na = Object.keys(view.diff.nodesAdded || {}).length;
+  const nm = Object.keys(view.diff.nodesModified || {}).length;
+  const nd = (view.diff.nodesDeleted || []).length;
+  chips.hidden = false;
+  chips.innerHTML =
+    `<span class="chip add" data-focus="added">＋ 新增 ${na}</span>` +
+    `<span class="chip mod" data-focus="modified">～ 修改 ${nm}</span>` +
+    `<span class="chip del" data-focus="deleted">－ 删除 ${nd}</span>`;
+  chips.querySelectorAll(".chip").forEach(c => c.addEventListener("click", () => {
+    const st = c.dataset.focus;
+    const hit = Object.entries(mergeView(currentView).nodes).find(([, n]) => n.status === st);
+    if (hit) enterDomain(null, hit[0]);
+  }));
+}
+
+function renderStatus(view) {
+  const bar = document.getElementById("statusBar");
+  let html = `<span>数据: ${DATA.meta.source} @ ${DATA.meta.commit || "?"}</span>` +
+             `<span class="fresh">扫描于 ${DATA.meta.scannedAt || "?"}${DATA.meta.generator ? " · " + DATA.meta.generator : ""}</span>`;
+  if (hasSub()) {
+    const dd = realDomains();
+    html += `<span>子系统 ${DATA.subsystems.length} · 领域 ${Object.keys(dd).length}` +
+      ` · 声明 ${Object.keys(DATA.decls || {}).length}/${Object.keys(dd).length}` +
+      ` · lifecycle ${(DATA.lifecycle || []).length} 条</span>`;
+  }
+  if (view.diff) html += `<span class="stale">叠加: ${view.diff.source}</span>`;
+  bar.innerHTML = html;
+}
+
+/* ---- 方法/实体详情面板 ---- */
+function renderDetail(view, id) {
+  const n = view.nodes[id];
+  if (!n) { detail.hidden = true; return; }
+  detail.hidden = false;
+  let html = `<button class="btn sm d-close" id="detailClose">×</button><h3>${n.name}</h3>`;
+  const cname = n.container && DATA.containers[n.container] ? DATA.containers[n.container].label : "";
+  html += `<div class="d-file"><a>${n.file || ""}${n.line ? ":" + n.line : ""}</a>${cname ? " · " + cname : ""}${n.status !== "same" ? " · " + { added: "本视图新增", modified: "本视图修改", deleted: "本视图删除" }[n.status] : ""}</div>`;
+
+  if (n.unscanned) {
+    html += `<div class="d-sec"><div class="d-label">状态</div><div style="font-size:13px;line-height:1.6">该入口尚未扫描入图。在项目里运行 codegraph skill 的增量扫描即可补上它的调用链。</div></div>`;
+  }
+  if (n.summary) html += `<div class="d-sec"><div class="d-label">职责</div><div style="font-size:13px;line-height:1.6">${n.summary}</div></div>`;
+
+  if (n.status === "modified" && n.modified) {
+    html += `<div class="d-sec"><div class="d-label">本视图的变更</div><div class="d-change">${n.modified.change}</div>`;
+    if (n.modified.signature) html += `<div class="d-sig old">${n.signature}</div><div class="d-sig">${n.modified.signature}</div>`;
+    html += `</div>`;
+  } else if (n.signature) {
+    html += `<div class="d-sec"><div class="d-label">签名</div><div class="d-sig">${n.signature}</div></div>`;
+  }
+
+  const params = (n.status === "modified" && n.modified && n.modified.params) || n.params;
+  if (params && params.length) {
+    html += `<div class="d-sec"><div class="d-label">参数</div><table class="d-params"><tr><th>名</th><th>类型</th><th>说明</th></tr>`;
+    for (const [pn, pt, pd] of params) html += `<tr><td class="mono">${pn}</td><td class="mono">${pt}</td><td>${pd}</td></tr>`;
+    html += `</table></div>`;
+  }
+  if (n.returns) html += `<div class="d-sec"><div class="d-label">返回</div><div class="d-sig">${n.returns}</div></div>`;
+
+  if (n.fields) {
+    html += `<div class="d-sec"><div class="d-label">字段</div><table class="d-params"><tr><th>名</th><th>类型</th><th>说明</th></tr>`;
+    for (const [fn, ft, fd] of n.fields) html += `<tr><td class="mono">${fn}</td><td class="mono">${ft}</td><td>${fd || ""}</td></tr>`;
+    html += `</table></div>`;
+  }
+
+  /* 实体节点：机械生命周期（谁创建 / 谁写状态） */
+  if (n.kind === "model" && DATA.lifecycle) {
+    const refs = DATA.lifecycle.filter(x => x.model === id);
+    if (refs.length) {
+      html += `<div class="d-sec"><div class="d-label">生命周期（lifecycle 段）</div>`;
+      for (const r of refs) {
+        const wn = view.nodes[r.who];
+        const who = wn ? `<a data-jump="${r.who}" style="cursor:pointer;font-family:var(--font-mono)">${wn.name}</a>` : `<span style="font-family:var(--font-mono)">${r.who}</span>`;
+        html += `<div style="font-size:12px;padding:2px 0">${r.kind === "creator" ? "● 创建" : `✎ 写 <span class="lc-field">${r.field || "?"}</span>`} ← ${who}</div>`;
+      }
+      html += `</div>`;
+    }
+  }
+
+  if (n.tests && n.tests.length) {
+    html += `<div class="d-sec"><div class="d-label">关联测试</div>`;
+    for (const t of n.tests) {
+      html += `<details class="d-test"><summary>${t.name} <span class="dim" style="font-family:var(--font-sans);font-size:11px">${t.file}</span></summary><pre>${t.snippet}</pre></details>`;
+    }
+    html += `</div>`;
+  } else if (n.kind === "func") {
+    html += `<div class="d-sec"><div class="d-label">关联测试</div><div class="dim" style="font-size:12px">无——这也是图能暴露的信息：该方法没有测试覆盖。</div></div>`;
+  }
+
+  const callers = view.edges.filter(e => e.to === id && e.status !== "deleted").map(e => e.from);
+  const callees = view.edges.filter(e => e.from === id && e.status !== "deleted").map(e => e.to);
+  if (callers.length) {
+    html += `<div class="d-sec d-callers"><div class="d-label">被谁调用</div>`;
+    for (const c of callers.slice(0, 20)) html += `<a data-jump="${c}">← ${view.nodes[c].name}</a>`;
+    if (callers.length > 20) html += `<div class="dim" style="font-size:11.5px">…共 ${callers.length} 处</div>`;
+    html += `</div>`;
+  }
+  if (callees.length) {
+    html += `<div class="d-sec d-callees"><div class="d-label">调用了</div>`;
+    for (const c of callees.slice(0, 20)) html += `<a data-jump="${c}">→ ${view.nodes[c].name}</a>`;
+    if (callees.length > 20) html += `<div class="dim" style="font-size:11.5px">…共 ${callees.length} 处</div>`;
+    html += `</div>`;
+  }
+
+  if (n.source) {
+    html += `<div class="d-sec d-src"><details><summary>查看源码（实时读自 ${n.file}${n.line ? ":" + n.line : ""}，非入库数据）</summary><pre>${n.source.replace(/</g, "&lt;")}</pre></details></div>`;
+  }
+
+  detail.innerHTML = html;
+  document.getElementById("detailClose").addEventListener("click", () => { detail.hidden = true; selectedNode = null; render(); });
+  detail.querySelectorAll("[data-jump]").forEach(a => a.addEventListener("click", () => {
+    const target = a.dataset.jump;
+    const tc = mergeView(currentView).nodes[target].container;
+    if (domainScope && !domainPathOf(tc).includes(domainScope)) {
+      enterDomain(null, target); return;
+    }
+    comboFoci = [target]; comboPan = null; selectedNode = target;
+    render();
+    renderDetail(mergeView(currentView), target);
+  }));
+}
+
+/* ---- 事件绑定 ---- */
+document.getElementById("viewSelect").addEventListener("change", (e) => {
+  currentView = e.target.value;
+  selectedNode = null; detail.hidden = true;
+  render();
+});
+document.getElementById("searchInput").addEventListener("input", () => render());
+document.getElementById("relayout").addEventListener("click", () => {
+  for (const k of Object.keys(domainPos)) delete domainPos[k];   // 清空触发重排
+  render();
+});
+document.getElementById("zoomIn").addEventListener("click", () => { zoom = Math.min(1.5, zoom + 0.1); document.getElementById("zoomPct").textContent = Math.round(zoom * 100) + "%"; render(); });
+document.getElementById("zoomOut").addEventListener("click", () => { zoom = Math.max(0.5, zoom - 0.1); document.getElementById("zoomPct").textContent = Math.round(zoom * 100) + "%"; render(); });
+const mech = document.getElementById("mechDialog");
+document.getElementById("mechBtn").addEventListener("click", () => mech.showModal());
+document.getElementById("mechClose").addEventListener("click", () => mech.close());
+document.querySelectorAll("#orgSeg button").forEach(b => b.addEventListener("click", () => {
+  if (orgMode === b.dataset.org) return;
+  orgMode = b.dataset.org;
+  document.querySelectorAll("#orgSeg button").forEach(x => x.classList.toggle("active", x === b));
+  subsystemScope = null; domainScope = null;
+  selectedDomain = null; selectedDEdge = null; selectedNode = null;
+  detail.hidden = true;
+  comboFoci = []; comboHist = []; comboHistIdx = -1; comboOpen.clear(); comboPan = null;
+  render();
+}));
+
+/* 启动：加载数据（graph.js → graph.json → mock 兜底），有子系统数据时默认按子系统组织 */
+loadData().then(() => {
+  if (hasSub()) {
+    orgMode = "subsystem";
+  } else {
+    orgMode = "domain";
+    document.getElementById("orgSeg").hidden = true;
+  }
+  document.querySelectorAll("#orgSeg button").forEach(x => x.classList.toggle("active", x.dataset.org === orgMode));
+  buildViewSelect();
+  render();
+});
+</script>
+<script>
+(function () {
+  const p = new URLSearchParams(location.search).get('project');
+  const sel = document.getElementById('cgProject');
+  if (!sel) return;
+  if (p) {
+    if (![...sel.options].some(o => o.value === p)) {
+      const o = document.createElement('option');
+      o.value = p; o.textContent = p;
+      sel.appendChild(o);
+    }
+    sel.value = p;
+  }
+})();
+</script>
+</body>

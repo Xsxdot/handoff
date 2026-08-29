@@ -1,169 +1,139 @@
-// persist.test.ts —— 工作台状态编解码、校验、会话清理与差分的纯函数测试。
-//
-// 职责：钉住落盘格式的往返、坏数据整行丢弃、草稿隔离、死会话清理与 payload 差分。
-// 边界：不测试 React、HTTP 或 localStorage；这些由状态容器和同步层负责。
 import { describe, expect, it } from 'vitest'
-import { EMPTY_WORKBENCH, type Workbench } from './tabs'
-import type { BaseDir } from './useWorkbench'
+import { EMPTY_WORKBENCH, type BaseDir, type Workbench } from './tabs'
 import {
+  GLOBAL_WORKBENCH_KEY,
   PERSIST_VERSION,
-  decodeBase,
+  decodeWorkbench,
   diffPayloads,
-  encodeBase,
+  encodeWorkbench,
   isEmptyWorkbench,
+  markIncompatibleSessions,
   pruneDeadSessions,
 } from './persist'
 
-const base: BaseDir = {
-  key: '/repo/a@linux-01',
-  kind: 'workspace',
-  path: '/repo/a',
-  label: 'feature/x',
-  projectName: 'handoff',
-  machine: 'linux-01',
-}
+const a: BaseDir = { key: '/repo/a', kind: 'workspace', path: '/repo/a', label: 'main', projectName: 'handoff', machine: '' }
+const b: BaseDir = { key: '/repo/a@linux-01', kind: 'workspace', path: '/repo/a', label: 'main', projectName: 'handoff', machine: 'linux-01' }
 
-// wbSample 造一个两栏、含三种 tab 的工作台。
-function wbSample(): Workbench {
+function sample(): Workbench {
   return {
-    groups: [
-      {
-        tabs: [
-          { id: 't1', content: { kind: 'terminal', seq: 1, sessionId: 'S1' } },
-          { id: 't2', content: { kind: 'file', rel: 'src/a.ts' } },
-        ],
-        activeId: 't2',
-      },
-      {
-        tabs: [
-          { id: 't3', content: { kind: 'tui', taskId: 'TASK-1' } },
-          { id: 't4', content: { kind: 'blank' } },
-        ],
-        activeId: 't3',
-      },
-    ],
-    active: 1,
-    sizes: [2, 1],
+    activeGroupId: 'g1',
+    groups: [{
+      id: 'g1', name: '组 1', autoName: true,
+      columns: [
+        { panes: [
+          { id: 't1', base: a, content: { kind: 'terminal', seq: 0, sessionId: '', rel: '', launcher: '跑测试', incompatible: true } },
+          { id: 't2', base: b, content: { kind: 'file', rel: 'same.ts', draft: '未保存', baseSha: 'sha' } },
+        ] },
+        { panes: [{ id: 't3', base: b, content: { kind: 'file', rel: 'same.ts' } }] },
+      ],
+      sizes: [2, 1], focus: [1, 0],
+    }],
   }
 }
 
-describe('encodeBase / decodeBase', () => {
-  it('往返之后逐字段相等', () => {
-    const raw = encodeBase(base, wbSample())
-    expect(typeof raw).toBe('string')
-    const out = decodeBase(base.key, raw)
-    expect(out).not.toBeNull()
-    expect(out!.base).toEqual(base)
-    expect(out!.wb).toEqual(wbSample())
+describe('encodeWorkbench / decodeWorkbench', () => {
+  it('真实 JSON roundtrip 保留 group、机器、空字符串、缺席字段与 launcher', () => {
+    const wb = sample()
+    const raw = encodeWorkbench(wb)
+    const json = JSON.parse(raw) as { v: number; wb: Workbench }
+    expect(json.v).toBe(PERSIST_VERSION)
+    expect(json.wb.groups[0].columns[0].panes[0]).toEqual({
+      id: 't1', base: a,
+      content: { kind: 'terminal', seq: 0, sessionId: '', rel: '', launcher: '跑测试' },
+    })
+    expect(json.wb.groups[0].columns[0].panes[1]).toEqual({ id: 't2', base: b, content: { kind: 'file', rel: 'same.ts' } })
+    expect(json.wb.groups[0].columns[0].panes[1]?.content).not.toHaveProperty('draft')
+    expect(decodeWorkbench(raw)).toEqual(wbWithPersistenceFieldsRemoved(wb))
   })
 
-  it('key 由行本身提供，不从 payload 里读', () => {
-    const raw = encodeBase(base, wbSample())
-    const out = decodeBase('/somewhere/else', raw)
-    // 存下来的 base 元数据照用，但 key 必须是调用方给的那个——
-    // key 是行的身份，payload 里再存一份就有了两个真相
-    expect(out!.base.key).toBe('/somewhere/else')
-    expect(out!.base.path).toBe('/repo/a')
+  it('文件 draft/baseSha 与终端 incompatible 不进入 raw 或 decode', () => {
+    const out = decodeWorkbench(encodeWorkbench(sample()))!
+    const panes = out.groups[0].columns.flatMap((column) => column.panes).filter(Boolean)
+    expect(panes[0]!.content).toEqual({ kind: 'terminal', seq: 0, sessionId: '', rel: '', launcher: '跑测试' })
+    expect(panes[1]!.content).toEqual({ kind: 'file', rel: 'same.ts' })
   })
 
-  it('文件 tab 的草稿不落盘', () => {
-    const wb: Workbench = {
-      groups: [{ tabs: [{ id: 't1', content: { kind: 'file', rel: 'a.ts', draft: '改了一半', baseSha: 'abc' } }], activeId: 't1' }],
-      active: 0,
-      sizes: [1],
+  it('解码先压缩空列空组，并区分缺失字段与零/空值', () => {
+    const source = {
+      v: PERSIST_VERSION,
+      wb: {
+        activeGroupId: 'g1',
+        groups: [
+          {
+            id: 'g1', name: '一组', autoName: true,
+            columns: [
+              { panes: [null] },
+              { panes: [{ id: 't1', base: { key: '', kind: 'workspace', path: '', label: '', projectName: '', machine: '' }, content: { kind: 'terminal', seq: 0, sessionId: '', rel: '', launcher: '' } }] },
+              { panes: [null] },
+            ],
+            sizes: [2, 3, 4], focus: [1, 0],
+          },
+          { id: 'g2', name: '空组', autoName: true, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] },
+        ],
+      },
     }
-    const out = decodeBase(base.key, encodeBase(base, wb))
-    const c = out!.wb.groups[0].tabs[0].content
-    expect(c).toEqual({ kind: 'file', rel: 'a.ts' })
+    const decoded = decodeWorkbench(JSON.stringify(source))!
+    expect(decoded.groups).toHaveLength(1)
+    expect(decoded.groups[0].columns).toHaveLength(1)
+    expect(decoded.groups[0].sizes).toEqual([3])
+    expect(decoded.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'terminal', seq: 0, sessionId: '', rel: '', launcher: '' })
+    expect(decoded.groups[0].columns[0].panes[0]?.base).toEqual({ key: '', kind: 'workspace', path: '', label: '', projectName: '', machine: '' })
   })
 
-  it('终端 tab 的 incompatible 不落盘——它是服务端此刻的结论，不是布局', () => {
-    const wb: Workbench = {
-      groups: [{ tabs: [{ id: 't1', content: { kind: 'terminal', seq: 1, sessionId: 'S1', incompatible: true } }], activeId: 't1' }],
-      active: 0,
-      sizes: [1],
-    }
-    // 直接看 payload 原文：解码端会丢掉不认识的字段，只比往返结果的话，
-    // 「写进去了但读不出来」这种情形会被盖住
-    expect(encodeBase(base, wb)).not.toContain('incompatible')
-    const out = decodeBase(base.key, encodeBase(base, wb))
-    expect(out!.wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
-  })
-
-  it('启动项终端经过真实 encode→decode 后仍保留 launcher 名字', () => {
-    const wb: Workbench = {
-      groups: [{ tabs: [{ id: 't1', content: { kind: 'terminal', seq: 1, launcher: '跑测试' } }], activeId: 't1' }],
-      active: 0,
-      sizes: [1],
-    }
-    const out = decodeBase(base.key, encodeBase(base, wb))
-    expect(out!.wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, launcher: '跑测试' })
+  it('所有解码后的组都为空时回到唯一空组', () => {
+    const raw = encodeWorkbench({
+      activeGroupId: 'g2',
+      groups: [
+        { id: 'g1', name: '一组', autoName: true, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] },
+        { id: 'g2', name: '二组', autoName: false, columns: [{ panes: [null] }], sizes: [1], focus: [0, 0] },
+      ],
+    })
+    expect(decodeWorkbench(raw)).toEqual(EMPTY_WORKBENCH)
   })
 
   it.each([
-    ['不是 JSON', 'not json at all'],
-    ['版本号不认识', JSON.stringify({ v: 99, base: {}, wb: EMPTY_WORKBENCH })],
-    ['缺 wb', JSON.stringify({ v: PERSIST_VERSION, base: { kind: 'workspace', path: '/a', label: 'a', projectName: '', machine: '' } })],
-    ['kind 不是三种之一', JSON.stringify({ v: PERSIST_VERSION, base: { kind: 'bogus', path: '/a', label: 'a', projectName: '', machine: '' }, wb: EMPTY_WORKBENCH })],
-    ['sizes 与 groups 不等长', JSON.stringify({ v: PERSIST_VERSION, base: { kind: 'workspace', path: '/a', label: 'a', projectName: '', machine: '' }, wb: { groups: [{ tabs: [], activeId: null }], active: 0, sizes: [1, 1] } })],
-    ['active 越界', JSON.stringify({ v: PERSIST_VERSION, base: { kind: 'workspace', path: '/a', label: 'a', projectName: '', machine: '' }, wb: { groups: [{ tabs: [], activeId: null }], active: 5, sizes: [1] } })],
-    ['tab content 种类不认识', JSON.stringify({ v: PERSIST_VERSION, base: { kind: 'workspace', path: '/a', label: 'a', projectName: '', machine: '' }, wb: { groups: [{ tabs: [{ id: 'x', content: { kind: 'video' } }], activeId: 'x' }], active: 0, sizes: [1] } })],
-  ])('坏数据「%s」整行丢弃', (_name, raw) => {
-    expect(decodeBase('/k', raw as string)).toBeNull()
+    JSON.stringify({ v: 1 }),
+    JSON.stringify({ v: PERSIST_VERSION, wb: { groups: [], activeGroupId: 'g1' } }),
+    JSON.stringify({ v: PERSIST_VERSION, wb: { groups: [{ id: 'g1', name: 'x', autoName: true, columns: [], sizes: [], focus: [0, 0] }], activeGroupId: 'g1' } }),
+    JSON.stringify({ v: PERSIST_VERSION, wb: { groups: [{ id: 'g1', name: 'x', autoName: true, columns: [{ panes: [{ id: 't1', base: a, content: { kind: 'file', rel: 1 } }] }], sizes: [1], focus: [0, 0] }], activeGroupId: 'g1' } }),
+  ])('坏 global payload 返回 null: %s', (raw) => {
+    expect(decodeWorkbench(raw)).toBeNull()
   })
 })
 
-describe('isEmptyWorkbench', () => {
-  it('所有组都没有 tab 才算空', () => {
+function wbWithPersistenceFieldsRemoved(wb: Workbench): Workbench {
+  return {
+    activeGroupId: wb.activeGroupId,
+    groups: wb.groups.map((group) => ({
+      ...group,
+      columns: group.columns.map((column) => ({
+        panes: column.panes.map((tab) => {
+          if (!tab) return null
+          if (tab.content.kind === 'file') return { ...tab, content: { kind: 'file', rel: tab.content.rel } }
+          if (tab.content.kind === 'terminal') {
+            const content = { ...tab.content }
+            delete content.incompatible
+            return { ...tab, content }
+          }
+          return tab
+        }),
+      })),
+    })),
+  }
+}
+
+describe('session cleanup and diff', () => {
+  it('死 session 清 id 但保留 pane，活着的 incompatible 只加标记', () => {
+    const dead = pruneDeadSessions(sample(), new Set<string>())
+    const deadTab = dead.groups[0].columns[0].panes[0]!
+    expect(deadTab!.content).toEqual({ kind: 'terminal', seq: 0, rel: '', launcher: '跑测试' })
+    const marked = markIncompatibleSessions(sample(), new Set(['']))
+    expect(marked.groups[0].columns[0].panes[0]!.content).toMatchObject({ sessionId: '', incompatible: true })
+  })
+
+  it('空判断和差分保持全局 key 语义', () => {
+    expect(GLOBAL_WORKBENCH_KEY).toBe('__global_workbench__')
     expect(isEmptyWorkbench(EMPTY_WORKBENCH)).toBe(true)
-    expect(isEmptyWorkbench({ groups: [{ tabs: [], activeId: null }, { tabs: [], activeId: null }], active: 0, sizes: [1, 1] })).toBe(true)
-    expect(isEmptyWorkbench(wbSample())).toBe(false)
-  })
-})
-
-describe('pruneDeadSessions', () => {
-  it('死会话的 id 被抹掉，tab 留在原位', () => {
-    const out = pruneDeadSessions(wbSample(), new Set<string>())
-    expect(out.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1 })
-    expect(out.groups[0].tabs).toHaveLength(2)
-    expect(out.groups[0].activeId).toBe('t2')
-  })
-
-  it('活会话原样保留', () => {
-    const out = pruneDeadSessions(wbSample(), new Set(['S1']))
-    expect(out.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
-  })
-
-  it('没有 sessionId 的 tab 与其它种类不受影响', () => {
-    const out = pruneDeadSessions(wbSample(), new Set<string>())
-    expect(out.groups[0].tabs[1].content).toEqual({ kind: 'file', rel: 'src/a.ts' })
-    expect(out.groups[1].tabs[0].content).toEqual({ kind: 'tui', taskId: 'TASK-1' })
-    expect(out.groups[1].tabs[1].content).toEqual({ kind: 'blank' })
-  })
-
-  it('抹掉死会话时保留启动项名字', () => {
-    const wb: Workbench = {
-      groups: [{ tabs: [{ id: 't1', content: { kind: 'terminal', seq: 1, sessionId: 'dead', launcher: '跑测试' } }], activeId: 't1' }],
-      active: 0,
-      sizes: [1],
-    }
-    expect(pruneDeadSessions(wb, new Set()).groups[0].tabs[0].content).toEqual({
-      kind: 'terminal', seq: 1, launcher: '跑测试',
-    })
-  })
-})
-
-describe('diffPayloads', () => {
-  it('分出新增、变更、删除三类', () => {
-    const prev = { a: '1', b: '2', c: '3' }
-    const next = { a: '1', b: '9', d: '4' }
-    const { changed, removed } = diffPayloads(prev, next)
-    expect(changed.sort()).toEqual(['b', 'd'])
-    expect(removed).toEqual(['c'])
-  })
-
-  it('完全相同时两边都是空数组', () => {
-    const same = { a: '1' }
-    expect(diffPayloads(same, { ...same })).toEqual({ changed: [], removed: [] })
+    expect(diffPayloads({ a: '1', b: '2' }, { a: '1', c: '3' })).toEqual({ changed: ['c'], removed: ['b'] })
   })
 })
