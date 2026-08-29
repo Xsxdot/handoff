@@ -122,11 +122,25 @@ export const putCarrier = (name: string, expect: number, input: CarrierInput) =>
     omitZeroConcurrency(input),
   )
 
-/** 按小队名和 CAS 版本更新小队；expect=0 表示新建。 */
+// 服务端用成员 max_concurrency 缺席表达「不限」；仅将调用方已经给出的 0
+// 投影为缺席，不能把非法文本在 API 层静默变成不限，页面负责输入校验。
+function omitZeroSquadConcurrency(input: SquadInput): SquadInput {
+  return {
+    ...input,
+    members: input.members.map((member) => {
+      if (member.max_concurrency !== 0) return member
+      const copy = { ...member }
+      delete copy.max_concurrency
+      return copy
+    }),
+  }
+}
+
+/** 按小队名和 CAS 版本更新小队；expect=0 表示新建，成员政策缺席表示不限。 */
 export const putSquad = (name: string, expect: number, input: SquadInput) =>
   putJSON<SquadPutResp>(
     `/api/squads/squads/${encodeURIComponent(name)}?expect=${expect}`,
-    input,
+    omitZeroSquadConcurrency(input),
   )
 
 export type CoordinatorLaunchSource = 'manual' | 'card_create'
