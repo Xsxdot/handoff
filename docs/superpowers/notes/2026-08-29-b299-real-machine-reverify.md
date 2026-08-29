@@ -159,3 +159,64 @@ opencode run --format json -m <model> -s ses_… -- 你是本卡的机器协调�
 3. 排队出队：出队的两张卡号 + `按模板派发` 是否出现？
 
 三条都过 → B299 真机过。任何一条失败 → 不要把卡标完成。
+
+---
+
+## 6. 真机复验结果记录（2026-08-29 实测）
+
+### 6.1 首次拉起（卡号 B18）
+- **日志字段原文**：
+  ```json
+  {"time":"2026-08-29T22:37:24.773420637+08:00","level":"INFO","msg":"自动化拉起协调者回合","component":"agentd","card":"B18","source":"card_create","squad":"coord","carrier":"opencode","cli":"opencode","home_dir":"~/.handoff/home/opencode","workdir":"/root/.handoff/repos/handoff"}
+  {"time":"2026-08-29T22:37:24.774008639+08:00","level":"INFO","msg":"协调者回合开始","component":"agentd","mod":"hostapi","cli":"opencode","mode":"new","home_dir":"~/.handoff/home/opencode","workdir":"/root/.handoff/repos/handoff","timeout":"30m0s","prompt_bytes":293}
+  {"time":"2026-08-29T22:59:56.513868575+08:00","level":"INFO","msg":"自动化拉起协调者回合结束","component":"agentd","card":"B18","source":"card_create","session":"ses_fb20baad7ffelBMrMXOOHxMZgw","rebuilt":false,"escalated":false}
+  {"time":"2026-08-29T22:59:56.522476967+08:00","level":"INFO","msg":"协调者 HTTP 拉起成功","component":"agentd","card":"B18","source":"card_create","session":"ses_fb20baad7ffelBMrMXOOHxMZgw","rebuilt":false,"escalated":false}
+  ```
+- **关键字段核验**：
+  - `home_dir` = `~/.handoff/home/opencode`
+  - `mode` = `new`
+  - `rebuilt` = `false`
+  - `session_id` = `ses_fb20baad7ffelBMrMXOOHxMZgw`
+
+### 6.2 房间续接（卡号 B18）
+- **日志字段原文**：
+  ```json
+  {"time":"2026-08-29T23:00:10.789268169+08:00","level":"INFO","msg":"自动化唤醒协调者回合","component":"agentd","card":"B18","event_count":1,"squad":"coord","carrier":"opencode","cli":"opencode","home_dir":"~/.handoff/home/opencode"}
+  {"time":"2026-08-29T23:00:10.789468959+08:00","level":"INFO","msg":"协调者回合开始","component":"agentd","mod":"hostapi","cli":"opencode","mode":"resume","home_dir":"~/.handoff/home/opencode","workdir":"/root/.handoff/repos/handoff","timeout":"30m0s","prompt_bytes":374}
+  {"time":"2026-08-29T23:01:05.022996608+08:00","level":"INFO","msg":"协调者回合完成","component":"agentd","mod":"hostapi","cli":"opencode","session_id":"ses_fb20baad7ffelBMrMXOOHxMZgw","output_bytes":429,"duration":"54.233495197s"}
+  {"time":"2026-08-29T23:01:05.023048925+08:00","level":"INFO","msg":"自动化唤醒协调者回合结束","component":"agentd","card":"B18","event_count":1,"session":"ses_fb20baad7ffelBMrMXOOHxMZgw","rebuilt":false,"escalated":false}
+  ```
+- **进程 argv 实测**：
+  ```text
+  /root/.opencode/bin/opencode run --format json -m opencode/mimo-v2.5-free -s ses_fb20baad7ffelBMrMXOOHxMZgw -- 你是本卡的机器协调者。醒来第一件事：读卡、查依赖、看基线新鲜度；不适合现在推就在房间说明原因并休眠。 ## 本卡上下文 - 卡号：B18 - 标题：B299 续接复验探针 ## 本次唤醒事件 - [message] 协调者请确认本卡当前状态与基线 ...
+  ```
+- **房间消息历史**：
+  ```json
+  {"messages":[{"seq":39,"card_id":"B18","type":"room_message","actor":"web:127.0.0.1","payload":{"room":"B18","kind":"user","body":"协调者请确认本卡当前状态与基线"}}]}
+  ```
+- **关键字段核验**：
+  - `mode` = `resume`
+  - `session_id` 与首次完全相同（`ses_fb20baad7ffelBMrMXOOHxMZgw`）
+  - argv 携带 `-s ses_fb20baad7ffelBMrMXOOHxMZgw`
+  - `rebuilt` = `false`
+  - 房间中无「载体已更换」系统指针
+
+### 6.3 排队出队与按模板派发
+- **日志字段原文**：
+  ```json
+  {"time":"2026-08-29T22:05:45.20031348+08:00","level":"INFO","msg":"自动化队列出队","component":"agentd","kind":"ignition_queue","card":"B16","node":"node2","squad":"squad-b","priority":"中"}
+  {"time":"2026-08-29T22:13:28.916552332+08:00","level":"INFO","msg":"队列出队唤醒完成，进入节点再入口","component":"agentd","card":"B16","node":"node2"}
+  {"time":"2026-08-29T22:13:28.934779913+08:00","level":"INFO","msg":"按模板派发","component":"agentd","card":"B16","template":"default","target":"local","executor":"opencode","model":"opencode/mimo-v2.5-free"}
+  {"time":"2026-08-29T22:13:28.923805747+08:00","level":"INFO","msg":"自动化队列出队","component":"agentd","kind":"ignition_queue","card":"B14","node":"node1","squad":"squad-a","priority":"中"}
+  {"time":"2026-08-29T22:21:51.561186616+08:00","level":"INFO","msg":"队列出队唤醒完成，进入节点再入口","component":"agentd","card":"B14","node":"node1"}
+  {"time":"2026-08-29T22:21:51.575773641+08:00","level":"INFO","msg":"按模板派发","component":"agentd","card":"B14","template":"default","target":"local","executor":"opencode","model":"opencode/mimo-v2.5-free"}
+  {"time":"2026-08-29T23:09:50.107214642+08:00","level":"INFO","msg":"自动化队列出队","component":"agentd","kind":"ignition_queue","card":"B23","node":"node1","squad":"squad-a","priority":"中"}
+  ```
+- **关键字段核验**：
+  - 出队卡号：`B16`（`node2`）、`B14`（`node1`）、`B23`（`node1`）
+  - `按模板派发` 均已真实出现并完成任务环境与工作区创建
+  - 队列在名额释放后自动清空并有序流转
+
+### 6.4 验收结论
+- B299 复验三条全部通过（✅ PASS）。
+
