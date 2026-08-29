@@ -118,7 +118,7 @@ func seedCoordinatorSquad(t *testing.T, env *ledgerEnv) {
 		CLI: "opencode", HomeDir: "/home/coordinator",
 		Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "coord", Role: scheduling.RoleCoordinator,
-		Members: []string{"c1"}, MaxConcurrency: 1}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 1}}}, 0); err != nil {
 		t.Fatalf("登记协调者小队: %v", err)
 	}
 }
@@ -158,7 +158,7 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 		t.Fatalf("工作目录应解析为项目位置根，got=%q", got.Workdir)
 	}
 	facade := env.srv.autoLedger
-	for key, want := range map[string]int{"squad/coord": 0, "carrier/c1": 0} {
+	for key, want := range map[string]int{"squad/coord/c1": 0, "carrier/c1": 0} {
 		if n := runningCountIn(t, facade, key); n != want {
 			t.Fatalf("计数 %s=%d，want %d", key, n, want)
 		}
@@ -206,7 +206,7 @@ func TestCoordLaunchNoSquadActionableError(t *testing.T) {
 		CLI: "opencode", Credential: scheduling.CredentialStandalone,
 		Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "exec", Role: scheduling.RoleExecutor,
-		Members: []string{"e1"}}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "e1"}}}, 0); err != nil {
 		t.Fatal(err)
 	}
 	cardID := createCoordCard(t, env)
@@ -233,8 +233,8 @@ func TestCoordLaunchAmbiguousSquadConflict(t *testing.T) {
 		putOnlineCarrier(t, svc, c)
 	}
 	for _, q := range []scheduling.Squad{
-		{Name: "coord-a", Role: scheduling.RoleCoordinator, Members: []string{"c1"}},
-		{Name: "coord-b", Role: scheduling.RoleCoordinator, Members: []string{"c2"}},
+		{Name: "coord-a", Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "c1"}}},
+		{Name: "coord-b", Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "c2"}}},
 	} {
 		if err := svc.PutSquad(q, 0); err != nil {
 			t.Fatal(err)
@@ -434,7 +434,7 @@ func TestCoordLaunchFailureReleasesCapacityAndKeeps502(t *testing.T) {
 	if !strings.Contains(body, "拉起协调者失败") || strings.Contains(body, "并发已满") {
 		t.Fatalf("LaunchForCard 失败的错误投影错误：%s", body)
 	}
-	for _, key := range []string{"squad/coord", "carrier/c1"} {
+	for _, key := range []string{"squad/coord/c1", "carrier/c1"} {
 		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
 			t.Fatalf("失败回合后计数 %s=%d，want 0", key, got)
 		}
@@ -445,7 +445,7 @@ func TestCoordLaunchFailureReleasesCapacityAndKeeps502(t *testing.T) {
 	if code != http.StatusOK {
 		t.Fatalf("归还名额后第二次拉起应成功，状态=%d body=%s", code, body)
 	}
-	for _, key := range []string{"squad/coord", "carrier/c1"} {
+	for _, key := range []string{"squad/coord/c1", "carrier/c1"} {
 		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
 			t.Fatalf("成功回合后计数 %s=%d，want 0", key, got)
 		}

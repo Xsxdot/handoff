@@ -177,7 +177,7 @@
    "entries": [
     "账本薄门面 Facade"
    ],
-   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。"
+    "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；B292 只改变编制域在 sched_running 中的成员政策键，不新增账本依赖或第三类 registry kind。本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。"
   },
   {
    "from": "d_gateway",
@@ -214,7 +214,7 @@
     "scheduling.Service",
     "scheduling（包级函数）"
    ],
-   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。"
+   "legacyBudgetNote": "B156.3：新方向。B292 沿用该唯一入站边，控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；成员政策位与载体物理位的规则仍只在 scheduling.Service 收口。预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。"
   },
   {
    "from": "d_gateway",

@@ -143,7 +143,7 @@ func TestAdmissionRequiresOnlineCarrierAndSeparatesNoHealthyFromNoSlot(t *testin
 		t.Fatalf("设置 online: %v", err)
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "exec", Role: scheduling.RoleExecutor,
-		Members: []string{"pending", "quota", "unreachable", "online"}}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "pending"}, {Carrier: "quota"}, {Carrier: "unreachable"}, {Carrier: "online"}}}, 0); err != nil {
 		t.Fatalf("登记执行者小队: %v", err)
 	}
 	got, err := svc.Admit(scheduling.IgnitionRequest{Card: "B293", Squad: "exec", Actor: "test"})
@@ -155,7 +155,7 @@ func TestAdmissionRequiresOnlineCarrierAndSeparatesNoHealthyFromNoSlot(t *testin
 	}
 
 	if err := svc.PutSquad(scheduling.Squad{Name: "none", Role: scheduling.RoleExecutor,
-		Members: []string{"pending", "quota", "unreachable"}}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "pending"}, {Carrier: "quota"}, {Carrier: "unreachable"}}}, 0); err != nil {
 		t.Fatalf("登记全非 online 小队: %v", err)
 	}
 	if _, err := svc.Admit(scheduling.IgnitionRequest{Card: "B295", Squad: "none", Actor: "test"}); !errors.Is(err, scheduling.ErrNoHealthy) {
@@ -166,7 +166,7 @@ func TestAdmissionRequiresOnlineCarrierAndSeparatesNoHealthyFromNoSlot(t *testin
 		t.Fatalf("释放执行者准入: %v", err)
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "coord", Role: scheduling.RoleCoordinator,
-		Members: []string{"online"}}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "online"}}}, 0); err != nil {
 		t.Fatalf("登记协调者小队: %v", err)
 	}
 	if got, err := svc.LaunchAdmit("coord"); err != nil || got.Carrier != "online" {

@@ -39,7 +39,7 @@ describe('SchedulingPage', () => {
   it('renders carrier and squad fields and empty-state guidance', async () => {
     vi.mocked(getSquads).mockResolvedValue({
       carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }],
-      squads: [{ name: 'coord', role: 'coordinator', members: ['mbp'], version: 2 }],
+      squads: [{ name: 'coord', role: 'coordinator', members: [{ carrier: 'mbp' }], version: 2 }],
     })
     render(<SchedulingPage />)
     expect(await screen.findByText('mbp')).toBeVisible()
@@ -86,6 +86,53 @@ describe('SchedulingPage', () => {
       cli: 'opencode', path: '~/.handoff/home/mbp', credential: 'standalone', machine: '本机',
     }))
     expect(await screen.findByText(/已发现该 CLI 凭据。 credential found/)).toBeVisible()
+  })
+
+  it('按载体行编辑小队成员政策并保留模型元信息', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getSquads).mockResolvedValueOnce({
+      carriers: [
+        { name: 'c1', machine: 'local', cli: 'opencode', home_dir: '/h1', model: '', credential: 'standalone', status: 'online', version: 1 },
+        { name: 'c2', machine: 'local', cli: 'opencode', home_dir: '/h2', model: 'flash', credential: 'standalone', status: 'online', version: 1 },
+      ],
+      squads: [],
+    })
+    render(<SchedulingPage />)
+    await screen.findByText('c1')
+    await user.click(screen.getByRole('button', { name: '建小队' }))
+    expect(screen.getAllByText('CLI 默认').length).toBeGreaterThan(0)
+    expect(screen.getAllByText('flash').length).toBeGreaterThan(0)
+
+    await user.type(screen.getByLabelText('小队名'), 'exec')
+    await user.click(screen.getByRole('checkbox', { name: /c1/ }))
+    await user.type(screen.getByRole('textbox', { name: /c1.*政策/ }), '2')
+    await user.click(screen.getByRole('checkbox', { name: /c2/ }))
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(putSquad).toHaveBeenCalledWith('exec', 0, {
+      name: 'exec', role: 'executor',
+      members: [{ carrier: 'c1', max_concurrency: 2 }, { carrier: 'c2' }],
+    })
+  })
+
+  it.each(['0', '-1', '1.5', 'abc', '9007199254740992'])('非法成员政策 %s 在保存前阻断并显示合法示例', async (raw) => {
+    const user = userEvent.setup()
+    vi.mocked(getSquads).mockResolvedValueOnce({
+      carriers: [{ name: 'c1', machine: 'local', cli: 'opencode', home_dir: '/h', model: '', credential: 'standalone', status: 'online', version: 1 }],
+      squads: [],
+    })
+    render(<SchedulingPage />)
+    await screen.findByText('c1')
+    await user.click(screen.getByRole('button', { name: '建小队' }))
+    await user.type(screen.getByLabelText('小队名'), 'exec')
+    await user.click(screen.getByRole('checkbox', { name: /c1/ }))
+    const policy = screen.getByRole('textbox', { name: /c1.*政策/ })
+    await user.type(policy, raw)
+    await user.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(await screen.findByRole('alert')).toHaveTextContent(/(正整数.*合法示例：2|安全整数范围)/)
+    expect(putSquad).not.toHaveBeenCalled()
+    expect(screen.getByRole('dialog')).toBeVisible()
   })
 
   it('creates with expect zero and edits with the row version', async () => {

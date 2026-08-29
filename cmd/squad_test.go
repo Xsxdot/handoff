@@ -7,8 +7,10 @@ package cmd
 // JSON 边界。
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"testing"
@@ -48,7 +50,7 @@ func TestSquadCreatePostsShapeAndRenders(t *testing.T) {
 			gotPath, gotMethod, gotQuery, gotBody = r.URL.Path, r.Method, r.URL.RawQuery, body
 		})
 	out, errOut, err := runLedgerCLI(t, dir, "squad", "create",
-		"--name", "coord", "--role", "coordinator", "--max-concurrency", "2")
+		"--name", "coord", "--role", "coordinator", "--member", "c1")
 	if err != nil {
 		t.Fatalf("create 失败: %v\nstderr=%s", err, errOut)
 	}
@@ -60,7 +62,9 @@ func TestSquadCreatePostsShapeAndRenders(t *testing.T) {
 	if err := json.Unmarshal([]byte(gotBody), &in); err != nil {
 		t.Fatalf("请求体非 JSON: %s", gotBody)
 	}
-	if in["role"] != "coordinator" || in["max_concurrency"] != float64(2) {
+	members, ok := in["members"].([]any)
+	if in["role"] != "coordinator" || !ok || len(members) != 1 ||
+		members[0].(map[string]any)["carrier"] != "c1" || in["max_concurrency"] != nil {
 		t.Fatalf("请求体字段不符: %s", gotBody)
 	}
 	if !strings.Contains(out, `"version":1`) {
@@ -68,6 +72,68 @@ func TestSquadCreatePostsShapeAndRenders(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "已登记小队 coord") {
 		t.Fatalf("stderr 应有人话回执: %s", errOut)
+	}
+}
+
+// TestSquadCreateParsesMemberPoliciesKeepsNamesExact 穿真实 Cobra create 接缝验收
+// P1：重复 --member 保留完整成员名，冒号后的政策位进入成员对象，且不生成队级总帽。
+func TestSquadCreateParsesMemberPoliciesKeepsNamesExact(t *testing.T) {
+	dir := t.TempDir()
+	var gotBody string
+	stubSquadAgentd(t, dir, http.StatusOK, `{"name":"sq","version":1}`,
+		func(_ *http.Request, body string) { gotBody = body })
+	if _, _, err := runLedgerCLI(t, dir, "squad", "create",
+		"--name", "sq", "--role", "executor", "--member", "c1:2",
+		"--member", "c2", "--member", "A B/中文"); err != nil {
+		t.Fatalf("合法成员政策应创建成功: %v", err)
+	}
+	var input struct {
+		Role    string           `json:"role"`
+		Members []map[string]any `json:"members"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &input); err != nil {
+		t.Fatalf("请求体非 JSON: %s", gotBody)
+	}
+	if input.Role != "executor" || len(input.Members) != 3 ||
+		input.Members[0]["carrier"] != "c1" || input.Members[0]["max_concurrency"] != float64(2) ||
+		input.Members[1]["carrier"] != "c2" || input.Members[1]["max_concurrency"] != nil ||
+		input.Members[2]["carrier"] != "A B/中文" || strings.Contains(gotBody, `"max_concurrency":0`) {
+		t.Fatalf("成员对象/名字/队级总帽不符: %s", gotBody)
+	}
+}
+
+// TestSquadCreateRejectsInvalidMemberPolicyBeforeDialing 锁本地 parser 的拒绝臂：
+// 非空政策必须是正整数，且任何失败都发生在 newTargetClient 之前。
+func TestSquadCreateRejectsInvalidMemberPolicyBeforeDialing(t *testing.T) {
+	for _, raw := range []string{"c1:0", "c1:-1", "c1:1.5", "c1:abc", "c1:", ":2", "c1:2:3"} {
+		t.Run(raw, func(t *testing.T) {
+			dir := t.TempDir()
+			dialed := false
+			stubSquadAgentd(t, dir, http.StatusOK, `{}`, func(*http.Request, string) { dialed = true })
+			_, _, err := runLedgerCLI(t, dir, "squad", "create", "--name", "sq",
+				"--role", "executor", "--member", raw)
+			if err == nil || !strings.Contains(err.Error(), "合法示例") || !strings.Contains(err.Error(), "--member") {
+				t.Fatalf("非法政策 %q 应给合法示例，得 %v", raw, err)
+			}
+			if dialed {
+				t.Fatal("非法成员政策不得拨号")
+			}
+		})
+	}
+}
+
+// TestSquadCreateRejectsRemovedMaxConcurrency 锁旧队级 flag 不再注册，避免 CLI
+// 继续把队级总帽发送到服务端。
+func TestSquadCreateRejectsRemovedMaxConcurrency(t *testing.T) {
+	dir := t.TempDir()
+	dialed := false
+	stubSquadAgentd(t, dir, http.StatusOK, `{}`, func(*http.Request, string) { dialed = true })
+	_, _, err := runLedgerCLI(t, dir, "squad", "create", "--name", "sq", "--role", "executor", "--max-concurrency", "2")
+	if err == nil || !strings.Contains(err.Error(), "unknown flag") {
+		t.Fatalf("旧队级 flag 应被 Cobra 拒绝，得 %v", err)
+	}
+	if dialed {
+		t.Fatal("旧队级 flag 被拒后不得拨号")
 	}
 }
 
@@ -104,7 +170,7 @@ func TestSquadCreateSurfacesActionableServerReject(t *testing.T) {
 // TD-4：list 表格/NDJSON 双形态；请求打 GET /api/squads。
 func TestSquadListRendersTableAndJSON(t *testing.T) {
 	dir := t.TempDir()
-	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"healthy":true,"version":1}],"squads":[{"name":"sq","role":"executor","members":["c1"],"version":1}]}`
+	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"version":1}],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1","max_concurrency":2}],"version":1}]}`
 	stubSquadAgentd(t, dir, http.StatusOK, fixture, func(r *http.Request, _ string) {
 		if r.URL.Path != "/api/squads" {
 			t.Errorf("list 应打 /api/squads，得 %s", r.URL.Path)
@@ -114,10 +180,20 @@ func TestSquadListRendersTableAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"载体", "c1", "小队", "sq", "executor"} {
+	for _, want := range []string{"载体", "c1", "小队", "sq", "executor", "c1/2"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("表格缺内容 %q：%s", want, out)
 		}
+	}
+	var squadLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "小队") {
+			squadLine = line
+			break
+		}
+	}
+	if squadLine == "" || !strings.Contains(squadLine, "-") {
+		t.Fatalf("小队行应明确队级总帽缺席并显示 -：%s", out)
 	}
 	out2, _, err := runLedgerCLI(t, dir, "squad", "list", "--json")
 	if err != nil {
@@ -133,6 +209,39 @@ func TestSquadListRendersTableAndJSON(t *testing.T) {
 	}
 	if head["name"] != "c1" {
 		t.Fatalf("首行应是载体 c1：%s", lines[0])
+	}
+	var squad map[string]any
+	if err := json.Unmarshal([]byte(lines[1]), &squad); err != nil {
+		t.Fatalf("第二行非 JSON: %v", err)
+	}
+	members, ok := squad["members"].([]any)
+	if squad["name"] != "sq" || !ok || len(members) != 1 ||
+		members[0].(map[string]any)["max_concurrency"] != float64(2) {
+		t.Fatalf("JSON 应显示成员政策位 /2：%s", lines[1])
+	}
+	if _, ok := squad["max_concurrency"]; ok {
+		t.Fatalf("JSON 小队行不应有队级总帽：%s", lines[1])
+	}
+}
+
+// TestSquadListLogsShape 锁住 list 外部调用前后的结构化上下文：列表不修改数据，
+// 但必须能说明成员/政策规模以及请求是否已拨号。
+func TestSquadListLogsShape(t *testing.T) {
+	dir := t.TempDir()
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+	stubSquadAgentd(t, dir, http.StatusOK,
+		`{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"version":1}],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1","max_concurrency":2}],"version":1}]}`,
+		nil)
+	if _, _, err := runLedgerCLI(t, dir, "squad", "list"); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"squad.list", "carrier_count=1", "squad_count=1", "member_count=1", "policy_count=1", "dialed=true"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("list 日志缺少 %q: %s", want, logs.String())
+		}
 	}
 }
 
@@ -214,7 +323,7 @@ func TestSquadSetEditLoopUsesReadVersion(t *testing.T) {
 	var gotMethod, gotPath, gotQuery, gotBody string
 	var putCount int
 	setStub(t, dir,
-		`{"carriers":[],"squads":[{"name":"sq","role":"executor","members":["c1"],"version":3}]}`,
+		`{"carriers":[],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1"}],"version":3}]}`,
 		func(w http.ResponseWriter, r *http.Request) {
 			putCount++
 			gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
@@ -223,7 +332,7 @@ func TestSquadSetEditLoopUsesReadVersion(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"name":"sq","version":4}`)
 		})
-	out, errOut, err := runLedgerCLI(t, dir, "squad", "set", "--name", "sq", "--max-concurrency", "5")
+	out, errOut, err := runLedgerCLI(t, dir, "squad", "set", "--name", "sq")
 	if err != nil {
 		t.Fatalf("set 失败: %v\nstderr=%s", err, errOut)
 	}
@@ -237,7 +346,9 @@ func TestSquadSetEditLoopUsesReadVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(gotBody), &in); err != nil {
 		t.Fatalf("请求体非 JSON: %s", gotBody)
 	}
-	if in["role"] != "executor" || in["max_concurrency"] != float64(5) {
+	members, ok := in["members"].([]any)
+	if in["role"] != "executor" || !ok || len(members) != 1 ||
+		members[0].(map[string]any)["carrier"] != "c1" || in["max_concurrency"] != nil {
 		t.Fatalf("未给字段应保持现状、给了字段应覆盖：%s", gotBody)
 	}
 	if !strings.Contains(out, `"version":4`) {

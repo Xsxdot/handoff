@@ -12,6 +12,7 @@ package agentd
 // 即其消费侧回归。
 
 import (
+	"bytes"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -43,6 +44,15 @@ func newSchedEnv(t *testing.T) *schedEnv {
 	env.srv.SetLedger(st)
 	env.srv.SetupAutomation(st)
 	return &schedEnv{testAgentdEnv: env, svc: env.srv.Scheduling()}
+}
+
+// newSchedNoPTYEnv 复用 no-PTY 真实账本夹具，保持 Handler/Bearer/JSON 链路不变；
+// 只绕开受限环境无法创建 PTY 测试根目录的无关门禁。
+func newSchedNoPTYEnv(t *testing.T) *schedEnv {
+	t.Helper()
+	env := newNoPTYLedgerEnv(t)
+	env.srv.SetupAutomation(env.ledger)
+	return &schedEnv{testAgentdEnv: env.testAgentdEnv, svc: env.srv.Scheduling()}
 }
 
 // schedReq 发一个带 Bearer 的任意方法请求，回 (状态码, 响应体)。
@@ -189,7 +199,7 @@ func TestCarrierRunCommandThroughWire(t *testing.T) {
 func TestSquadPutValidatesMembersAndRole(t *testing.T) {
 	env := newSchedEnv(t)
 	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/squads/sq?expect=0",
-		`{"role":"executor","members":["ghost"]}`)
+		`{"role":"executor","members":[{"carrier":"ghost"}]}`)
 	if code != http.StatusBadRequest || !strings.Contains(rb, "ghost") {
 		t.Fatalf("幽灵成员应 400 点名成员，得 %d：%s", code, rb)
 	}
@@ -205,7 +215,7 @@ func TestSquadPutValidatesMembersAndRole(t *testing.T) {
 		t.Fatalf("前置载体登记失败 %d", code)
 	}
 	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/squads/sq?expect=0",
-		`{"role":"coordinator","members":["c1"]}`)
+		`{"role":"coordinator","members":[{"carrier":"c1"}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("合法创建应 200，得 %d", code)
 	}
@@ -216,8 +226,69 @@ func TestSquadPutValidatesMembersAndRole(t *testing.T) {
 	}
 	if len(view.Squads) != 1 || view.Squads[0].Name != "sq" ||
 		view.Squads[0].Role != "coordinator" || len(view.Squads[0].Members) != 1 ||
-		view.Squads[0].Members[0] != "c1" || view.Squads[0].Version != 1 {
+		view.Squads[0].Members[0].Carrier != "c1" || view.Squads[0].Version != 1 {
 		t.Fatalf("小队行不符: %+v", view.Squads)
+	}
+}
+
+// TestSquadPutMemberPolicyRoundtripThroughWire 穿真实 Handler 验收成员政策对象：
+// 有值保留、缺席/零值不造键、旧队级 max_concurrency 被忽略，空成员数组不是 null。
+// 日志断言同时锁住成功出口的政策计数；本测试不直调 scheduling 投影 helper。
+func TestSquadPutMemberPolicyRoundtripThroughWire(t *testing.T) {
+	env := newSchedNoPTYEnv(t)
+	var logs bytes.Buffer
+	env.srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	for _, name := range []string{"c1", "c2"} {
+		code, body := schedReq(t, env, http.MethodPut, "/api/squads/carriers/"+name+"?expect=0",
+			`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+		if code != http.StatusOK {
+			t.Fatalf("登记载体 %s 失败 %d: %s", name, code, body)
+		}
+	}
+	code, body := schedReq(t, env, http.MethodPut, "/api/squads/squads/sq?expect=0",
+		`{"role":"executor","max_concurrency":9,"members":[{"carrier":"c1","max_concurrency":2},{"carrier":"c2"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("登记成员政策小队失败 %d: %s", code, body)
+	}
+	if !strings.Contains(logs.String(), "msg=小队登记成功") ||
+		!strings.Contains(logs.String(), "member_policy_count=1") || !strings.Contains(logs.String(), "empty_members=false") {
+		t.Fatalf("成功日志缺少成员政策上下文: %q", logs.String())
+	}
+
+	code, body = schedReq(t, env, http.MethodGet, "/api/squads", "")
+	if code != http.StatusOK {
+		t.Fatalf("读取小队失败 %d: %s", code, body)
+	}
+	var resp proto.SquadsResp
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("解码小队响应: %v", err)
+	}
+	if len(resp.Squads) != 1 || len(resp.Squads[0].Members) != 2 ||
+		resp.Squads[0].Members[0] != (proto.SquadMember{Carrier: "c1", MaxConcurrency: 2}) ||
+		resp.Squads[0].Members[1] != (proto.SquadMember{Carrier: "c2"}) {
+		t.Fatalf("成员政策往返不等: %+v", resp.Squads)
+	}
+	if strings.Contains(body, `"max_concurrency":9`) {
+		t.Fatalf("旧队级总帽不应出现在响应: %s", body)
+	}
+	if strings.Count(body, `"max_concurrency":2`) != 1 || strings.Count(body, `"max_concurrency"`) != 1 {
+		t.Fatalf("成员政策键出现次数不符: %s", body)
+	}
+
+	code, body = schedReq(t, env, http.MethodPut, "/api/squads/squads/empty?expect=0",
+		`{"role":"executor","members":[]}`)
+	if code != http.StatusOK {
+		t.Fatalf("空队登记失败 %d: %s", code, body)
+	}
+	code, body = schedReq(t, env, http.MethodGet, "/api/squads", "")
+	if code != http.StatusOK || !strings.Contains(body, `"members":[]`) || strings.Contains(body, `"members":null`) {
+		t.Fatalf("空队 wire 不符 %d: %s", code, body)
+	}
+
+	code, body = schedReq(t, env, http.MethodPut, "/api/squads/squads/ghost?expect=0",
+		`{"role":"executor","members":[{"carrier":"missing"}]}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "missing") {
+		t.Fatalf("幽灵成员仍应 400: %d %s", code, body)
 	}
 }
 

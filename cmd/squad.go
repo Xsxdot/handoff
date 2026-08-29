@@ -14,6 +14,8 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -30,7 +32,6 @@ var (
 	squadName    string
 	squadRole    string
 	squadMembers []string
-	squadMaxConc int
 	squadExpect  int
 	squadJSON    bool
 )
@@ -40,40 +41,70 @@ var squadCreateCmd = &cobra.Command{
 	Short: "登记小队（成员须指向已登记载体；空成员合法——先立队再补成员，岔口四）",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(squadName) == "" {
+			slog.Default().Warn("squad.create rejected", "reason", "missing_name")
 			return fmt.Errorf("--name 必填")
 		}
 		if squadRole != "executor" && squadRole != "coordinator" {
+			slog.Default().Warn("squad.create rejected", "reason", "invalid_role", "role", squadRole)
 			return fmt.Errorf("--role 只能是 executor 或 coordinator")
 		}
+		members, err := squadMemberInputs(squadMembers)
+		if err != nil {
+			slog.Default().Warn("squad.create rejected", "reason", "invalid_member", "cause", err)
+			return err
+		}
+		slog.Default().Info("squad.create", "name", squadName, "role", squadRole,
+			"member_count", len(members), "policy_count", countSquadPolicies(members), "dialed", false)
 		cl, done, err := newTargetClient()
 		if err != nil {
+			slog.Default().Error("squad.create dial failed", "name", squadName, "cause", err)
 			return err
 		}
 		defer done()
 		resp, err := cl.PutSquad(cmd.Context(), squadName, 0, proto.SquadInput{
-			Role: squadRole, Members: squadMembers, MaxConcurrency: squadMaxConc})
+			Role: squadRole, Members: members})
 		if err != nil {
+			slog.Default().Error("squad.create failed", "name", squadName,
+				"member_count", len(members), "cause", err)
 			return fmt.Errorf("登记小队被拒: %w", err)
 		}
+		slog.Default().Info("squad.create succeeded", "name", resp.Name,
+			"member_count", len(members), "policy_count", countSquadPolicies(members), "dialed", true)
 		fmt.Fprintf(cmd.ErrOrStderr(), "已登记小队 %s v%d\n", resp.Name, resp.Version)
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(resp)
 	},
 }
 
 var squadSetCmd = &cobra.Command{
-	Use:   "set --name <名> [--role ...] [--member ...] [--max-concurrency N] [--expect V]",
+	Use:   "set --name <名> [--role ...] [--member ...] [--expect V]",
 	Short: "修改小队（未给的字段保持现状；--member 给出即整体替换成员集）",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(squadName) == "" {
+			slog.Default().Warn("squad.set rejected", "reason", "missing_name")
 			return fmt.Errorf("--name 必填")
 		}
+		var members []proto.SquadMember
+		var err error
+		if cmd.Flags().Changed("member") {
+			members, err = squadMemberInputs(squadMembers)
+			if err != nil {
+				slog.Default().Warn("squad.set rejected", "name", squadName,
+					"reason", "invalid_member", "cause", err)
+				return err
+			}
+		}
+		slog.Default().Info("squad.set", "name", squadName,
+			"member_changed", cmd.Flags().Changed("member"),
+			"member_count", len(members), "policy_count", countSquadPolicies(members), "dialed", false)
 		cl, done, err := newTargetClient()
 		if err != nil {
+			slog.Default().Error("squad.set dial failed", "name", squadName, "cause", err)
 			return err
 		}
 		defer done()
 		cur, err := cl.Squads(cmd.Context())
 		if err != nil {
+			slog.Default().Error("squad.set read failed", "name", squadName, "cause", err)
 			return fmt.Errorf("读取现状失败（编辑回路需要当前版本）: %w", err)
 		}
 		var found *proto.SquadView
@@ -84,18 +115,15 @@ var squadSetCmd = &cobra.Command{
 			}
 		}
 		if found == nil {
+			slog.Default().Warn("squad.set rejected", "name", squadName, "reason", "not_found")
 			return fmt.Errorf("小队 %s 不存在（handoff squad list 查看）", squadName)
 		}
-		in := proto.SquadInput{Role: found.Role, Members: found.Members,
-			MaxConcurrency: found.MaxConcurrency}
+		in := proto.SquadInput{Role: found.Role, Members: found.Members}
 		if cmd.Flags().Changed("role") {
 			in.Role = squadRole
 		}
 		if cmd.Flags().Changed("member") {
-			in.Members = squadMembers
-		}
-		if cmd.Flags().Changed("max-concurrency") {
-			in.MaxConcurrency = squadMaxConc
+			in.Members = members
 		}
 		expect := found.Version
 		if cmd.Flags().Changed("expect") {
@@ -103,8 +131,12 @@ var squadSetCmd = &cobra.Command{
 		}
 		resp, err := cl.PutSquad(cmd.Context(), squadName, expect, in)
 		if err != nil {
+			slog.Default().Error("squad.set failed", "name", squadName,
+				"member_count", len(in.Members), "cause", err)
 			return fmt.Errorf("修改小队被拒: %w", err)
 		}
+		slog.Default().Info("squad.set succeeded", "name", resp.Name,
+			"member_count", len(in.Members), "policy_count", countSquadPolicies(in.Members), "dialed", true)
 		fmt.Fprintf(cmd.ErrOrStderr(), "已更新小队 %s v%d\n", resp.Name, resp.Version)
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(resp)
 	},
@@ -115,24 +147,37 @@ var squadListCmd = &cobra.Command{
 	Short: "列出载体与小队（缺省表格，--json 一行一对象；各行带 CAS 版本）",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, args []string) error {
+		slog.Default().Info("squad.list", "json", squadJSON, "dialed", false)
 		cl, done, err := newTargetClient()
 		if err != nil {
+			slog.Default().Error("squad.list dial failed", "cause", err)
 			return err
 		}
 		defer done()
 		resp, err := cl.Squads(cmd.Context())
 		if err != nil {
+			slog.Default().Error("squad.list failed", "cause", err)
 			return fmt.Errorf("读取登记面: %w", err)
 		}
+		policyCount, memberCount := 0, 0
+		for _, squad := range resp.Squads {
+			memberCount += len(squad.Members)
+			policyCount += countSquadPolicies(squad.Members)
+		}
+		slog.Default().Info("squad.list succeeded", "carrier_count", len(resp.Carriers),
+			"squad_count", len(resp.Squads), "member_count", memberCount,
+			"policy_count", policyCount, "dialed", true)
 		if squadJSON {
 			enc := json.NewEncoder(cmd.OutOrStdout())
 			for _, c := range resp.Carriers {
 				if err := enc.Encode(c); err != nil {
+					slog.Default().Error("squad.list render failed", "kind", "carrier", "cause", err)
 					return err
 				}
 			}
 			for _, s := range resp.Squads {
 				if err := enc.Encode(s); err != nil {
+					slog.Default().Error("squad.list render failed", "kind", "squad", "cause", err)
 					return err
 				}
 			}
@@ -145,10 +190,14 @@ var squadListCmd = &cobra.Command{
 				c.Name, c.Machine, c.CLI, c.MaxConcurrency, c.Version)
 		}
 		for _, s := range resp.Squads {
-			fmt.Fprintf(w, "小队\t%s\t%s\t%s\t%d\t%d\n",
-				s.Name, s.Role, strings.Join(s.Members, ","), s.MaxConcurrency, s.Version)
+			fmt.Fprintf(w, "小队\t%s\t%s\t%s\t-\t%d\n",
+				s.Name, s.Role, formatSquadMembers(s.Members), s.Version)
 		}
-		return w.Flush()
+		if err := w.Flush(); err != nil {
+			slog.Default().Error("squad.list render failed", "kind", "table", "cause", err)
+			return err
+		}
+		return nil
 	},
 }
 
@@ -156,19 +205,77 @@ func init() {
 	squadCreateCmd.Flags().StringVar(&squadName, "name", "", "小队名（必填）")
 	squadCreateCmd.Flags().StringVar(&squadRole, "role", "",
 		"executor|coordinator（必填；两种小队不混编）")
-	squadCreateCmd.Flags().StringSliceVar(&squadMembers, "member", nil,
-		"成员载体名（可重复；须已登记）")
-	squadCreateCmd.Flags().IntVar(&squadMaxConc, "max-concurrency", 0, "政策位并发上限（0=不限）")
+	squadCreateCmd.Flags().StringArrayVar(&squadMembers, "member", nil,
+		"成员载体及可选政策位（重复使用：carrier 或 carrier:N；须已登记）")
 	squadSetCmd.Flags().StringVar(&squadName, "name", "", "小队名（必填）")
 	squadSetCmd.Flags().StringVar(&squadRole, "role", "",
 		"executor|coordinator（不给则保持现状）")
-	squadSetCmd.Flags().StringSliceVar(&squadMembers, "member", nil,
-		"成员载体名（给出即整体替换；不给则保持）")
-	squadSetCmd.Flags().IntVar(&squadMaxConc, "max-concurrency", 0,
-		"并发上限（不给则保持；0=不限）")
+	squadSetCmd.Flags().StringArrayVar(&squadMembers, "member", nil,
+		"成员载体及可选政策位（给出即整体替换；格式 carrier 或 carrier:N）")
 	squadSetCmd.Flags().IntVar(&squadExpect, "expect", 0,
 		"乐观锁版本（不给则用刚读取的现状版本）")
 	squadListCmd.Flags().BoolVar(&squadJSON, "json", false, "以 NDJSON 输出")
 	squadCmd.AddCommand(squadCreateCmd, squadSetCmd, squadListCmd)
 	rootCmd.AddCommand(squadCmd)
+}
+
+// parseSquadMember 解析一个完整 --member 值。StringArray 保留空格、斜杠和中文
+// 成员名；只有整个政策值留空（即无冒号）才表示不限，避免把非法 0 静默规范化。
+func parseSquadMember(raw string) (proto.SquadMember, error) {
+	if strings.TrimSpace(raw) == "" {
+		return proto.SquadMember{}, fmt.Errorf("--member 不能为空；合法示例：--member c1 或 --member c1:2")
+	}
+	if strings.Count(raw, ":") > 1 {
+		return proto.SquadMember{}, fmt.Errorf("--member 载体名不能含冒号；合法示例：--member c1 或 --member c1:2")
+	}
+	carrier := raw
+	max := 0
+	if i := strings.IndexByte(raw, ':'); i >= 0 {
+		carrier = raw[:i]
+		rawMax := raw[i+1:]
+		if strings.TrimSpace(carrier) == "" {
+			return proto.SquadMember{}, fmt.Errorf("--member 必须先给载体名；合法示例：--member c1:2")
+		}
+		value, err := strconv.Atoi(rawMax)
+		if err != nil || value <= 0 {
+			return proto.SquadMember{}, fmt.Errorf("--member 政策必须是正整数；留空表示不限；合法示例：--member %s:2", carrier)
+		}
+		max = value
+	}
+	return proto.SquadMember{Carrier: carrier, MaxConcurrency: max}, nil
+}
+
+// squadMemberInputs 逐个解析重复 --member；遇到首个非法值即停止，调用方在
+// 创建 HTTP client 之前调用它，保证用户输入错误不会拨号。
+func squadMemberInputs(raw []string) ([]proto.SquadMember, error) {
+	members := make([]proto.SquadMember, 0, len(raw))
+	for _, value := range raw {
+		member, err := parseSquadMember(value)
+		if err != nil {
+			return nil, err
+		}
+		members = append(members, member)
+	}
+	return members, nil
+}
+
+func countSquadPolicies(members []proto.SquadMember) int {
+	count := 0
+	for _, member := range members {
+		if member.MaxConcurrency > 0 {
+			count++
+		}
+	}
+	return count
+}
+
+func formatSquadMembers(members []proto.SquadMember) string {
+	labels := make([]string, len(members))
+	for i, member := range members {
+		labels[i] = member.Carrier
+		if member.MaxConcurrency > 0 {
+			labels[i] += fmt.Sprintf("/%d", member.MaxConcurrency)
+		}
+	}
+	return strings.Join(labels, ",")
 }

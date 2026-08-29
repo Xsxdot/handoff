@@ -8,9 +8,13 @@ package scheduling_test
 // 见 plan §0 基线探针教训）。
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -83,18 +87,33 @@ func newCASFixture(t *testing.T) (*scheduling.Service, *ledgerapi.Facade) {
 		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 2},
 		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 2},
 	} {
-		if err := svc.PutCarrier(c, 0); err != nil {
-			t.Fatalf("登记载体 %s: %v", c.Name, err)
-		}
-		if _, err := svc.ApplyDetect(c.Name, scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
-			t.Fatalf("设置载体 %s online: %v", c.Name, err)
-		}
+		putOnlineCarrier(t, svc, c)
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "s1", Role: scheduling.RoleExecutor,
-		Members: []string{"c1", "c2"}, MaxConcurrency: 10}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "c1"}, {Carrier: "c2"}},
+	}, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)
 	}
 	return svc, facade
+}
+
+func putOnlineCarrier(t *testing.T, svc *scheduling.Service, c scheduling.Carrier) {
+	t.Helper()
+	if err := svc.PutCarrier(c, 0); err != nil {
+		t.Fatalf("登记载体 %s: %v", c.Name, err)
+	}
+	if _, err := svc.ApplyDetect(c.Name, scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("设置载体 %s online: %v", c.Name, err)
+	}
+}
+
+func currentRegistryVersion(t *testing.T, facade *ledgerapi.Facade, kind, id string) int {
+	t.Helper()
+	e, err := facade.Get(kind, id)
+	if err != nil {
+		t.Fatalf("读 %s/%s 版本: %v", kind, id, err)
+	}
+	return e.Version
 }
 
 // runningCount 直读一条 sched_running 计数（经真实门面，缺失=0）。
@@ -161,10 +180,217 @@ func TestConcurrentAdmitRespectsTwoLevelCaps(t *testing.T) {
 		t.Fatalf("成功数=%d，期望恰=%d（少=预算或成员轮转缺陷；多=上界执法失效）", got, m)
 	}
 	// 计数终值逐一相等，不用抽查：
-	for key, want := range map[string]int{"squad/s1": 4, "carrier/c1": 2, "carrier/c2": 2} {
+	for key, want := range map[string]int{"squad/s1/c1": 2, "squad/s1/c2": 2, "carrier/c1": 2, "carrier/c2": 2} {
 		if got := runningCount(t, facade, key); got != want {
 			t.Fatalf("计数 %s=%d，期望 %d", key, got, want)
 		}
+	}
+}
+
+// TestAdmitAcrossSquadsRespectsSharedCarrierCap 锁 S1 的跨小队物理上限：两支
+// 小队各自拥有同一载体的充足政策位，但载体物理位仍是全局封顶；成功数不能因
+// 政策位按小队拆开而超过 carrier/c1 的物理上限。
+func TestAdmitAcrossSquadsRespectsSharedCarrierCap(t *testing.T) {
+	t.Helper()
+	st, err := ledger.Open(filepath.Join(t.TempDir(), "shared-carrier.db"))
+	if err != nil {
+		t.Fatalf("打开临时账本: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	facade := ledgerapi.New(st)
+	svc := scheduling.New(facadeRegistry{f: facade})
+	putOnlineCarrier(t, svc, scheduling.Carrier{
+		Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 2,
+	})
+	for _, squad := range []string{"s1", "s2"} {
+		if err := svc.PutSquad(scheduling.Squad{
+			Name: squad, Role: scheduling.RoleExecutor,
+			Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}},
+		}, 0); err != nil {
+			t.Fatalf("登记小队 %s: %v", squad, err)
+		}
+	}
+
+	success := 0
+	for i := 0; i < 8; i++ {
+		squad := "s1"
+		if i%2 == 1 {
+			squad = "s2"
+		}
+		_, err := svc.Admit(scheduling.IgnitionRequest{
+			Card: fmt.Sprintf("B-shared-%d", i), Squad: squad, Actor: "test",
+		})
+		if err == nil {
+			success++
+			continue
+		}
+		if !errors.Is(err, scheduling.ErrNoSlot) {
+			t.Fatalf("小队 %s 第 %d 次准入: %v", squad, i+1, err)
+		}
+	}
+	if success != 2 {
+		t.Fatalf("共享载体成功数=%d，期望等于物理上限 2", success)
+	}
+	if got := runningCount(t, facade, "carrier/c1"); got != 2 {
+		t.Fatalf("共享载体物理计数=%d，want 2", got)
+	}
+}
+
+// TestSquadMemberWireShapeAndLegacyRead 可执行冻结成员政策位的 JSON 形状，并锁住
+// 存量 members:["carrier"] 的无损迁移：旧队级上限不进入新模型，旧成员政策按不限读入。
+func TestSquadMemberWireShapeAndLegacyRead(t *testing.T) {
+	q := scheduling.Squad{
+		Name: "sq", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 2}, {Carrier: "c2"}},
+	}
+	wire, err := json.Marshal(q)
+	if err != nil {
+		t.Fatalf("成员政策 JSON 编码: %v", err)
+	}
+	if got, want := string(wire), `{"name":"sq","role":"executor","members":[{"carrier":"c1","max_concurrency":2},{"carrier":"c2"}]}`; got != want {
+		t.Fatalf("成员政策 wire 不符:\n got=%s\nwant=%s", got, want)
+	}
+
+	var legacy scheduling.Squad
+	if err := json.Unmarshal([]byte(`{"name":"legacy","role":"executor","members":["c1","c2"],"max_concurrency":9}`), &legacy); err != nil {
+		t.Fatalf("存量小队读取: %v", err)
+	}
+	if len(legacy.Members) != 2 || legacy.Members[0].Carrier != "c1" || legacy.Members[1].Carrier != "c2" ||
+		legacy.Members[0].MaxConcurrency != 0 || legacy.Members[1].MaxConcurrency != 0 {
+		t.Fatalf("存量成员未规范化为不限政策: %+v", legacy.Members)
+	}
+}
+
+// TestAdmissionAndReleaseLogsCarryCapacityContext 锁公开准入/释放入口的可观测性：
+// 满员或计数异常时，排障必须能区分小队政策键与载体物理键；本测试只观察 slog
+// 默认出口，不把日志格式当作调度规则的第二份实现。
+func TestAdmissionAndReleaseLogsCarryCapacityContext(t *testing.T) {
+	svc, _ := newCASFixture(t)
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	binding, err := svc.Admit(scheduling.IgnitionRequest{
+		Card: "B-log", Squad: "s1", Target: "target-override",
+		Executor: "executor-override", Model: "model-override", Actor: "test",
+	})
+	if err != nil {
+		t.Fatalf("准入: %v", err)
+	}
+	if binding.Carrier != "c1" {
+		t.Fatalf("登记顺序应先选 c1，得 %+v", binding)
+	}
+	if err := svc.Release(binding.Squad, binding.Carrier); err != nil {
+		t.Fatalf("释放: %v", err)
+	}
+	if err := svc.PutSquad(scheduling.Squad{
+		Name: "coord", Role: scheduling.RoleCoordinator,
+		Members: []scheduling.SquadMember{{Carrier: "c1"}},
+	}, 0); err != nil {
+		t.Fatalf("登记协调者小队: %v", err)
+	}
+	launchBinding, err := svc.LaunchAdmit("coord")
+	if err != nil {
+		t.Fatalf("协调者准入: %v", err)
+	}
+	if err := svc.Release(launchBinding.Squad, launchBinding.Carrier); err != nil {
+		t.Fatalf("释放协调者: %v", err)
+	}
+	output := logs.String()
+	assertEvent := func(event, squad string) {
+		t.Helper()
+		start := strings.Index(output, event+" ")
+		if start < 0 {
+			t.Fatalf("日志缺少事件 %q: %s", event, output)
+		}
+		line := output[start:]
+		if end := strings.IndexByte(line, '\n'); end >= 0 {
+			line = line[:end]
+		}
+		for _, want := range []string{"squad=" + squad, "carrier=c1", "member_policy=0", "carrier_cap=2"} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("事件 %q 缺少 %q: %s", event, want, line)
+			}
+		}
+	}
+	for _, event := range []string{
+		"msg=scheduling.admit.start", "msg=scheduling.admit.success",
+		"msg=scheduling.release.start", "msg=scheduling.release.success",
+	} {
+		assertEvent(event, "s1")
+	}
+	for _, event := range []string{
+		"msg=scheduling.launch_admit.start", "msg=scheduling.launch_admit.success",
+	} {
+		assertEvent(event, "coord")
+	}
+}
+
+// TestMemberPolicyChoosesLaterMemberAndReleaseIsIdempotent 锁生产 Admit 的成员级
+// 选择：前成员政策位满时必须继续后成员；两级计数清零后重复 Release 不得变负，
+// registry 中只能出现 squad/<队>/<载体> 与 carrier/<载体> 两类键。
+func TestMemberPolicyChoosesLaterMemberAndReleaseIsIdempotent(t *testing.T) {
+	svc, facade := newCASFixture(t)
+	for _, carrier := range []scheduling.Carrier{
+		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 1},
+		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 3},
+	} {
+		if err := svc.PutCarrier(carrier, currentRegistryVersion(t, facade, "carrier", carrier.Name)); err != nil {
+			t.Fatalf("更新载体 %s 物理位: %v", carrier.Name, err)
+		}
+	}
+	if err := svc.PutSquad(scheduling.Squad{
+		Name: "s1", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{
+			{Carrier: "c1", MaxConcurrency: 2},
+			{Carrier: "c2", MaxConcurrency: 2},
+		},
+	}, currentRegistryVersion(t, facade, "squad", "s1")); err != nil {
+		t.Fatalf("更新成员政策: %v", err)
+	}
+	var bindings []scheduling.Binding
+	for i := 0; i < 3; i++ {
+		binding, err := svc.Admit(scheduling.IgnitionRequest{Card: fmt.Sprintf("B-member-%d", i), Squad: "s1", Actor: "test"})
+		if err != nil {
+			t.Fatalf("第 %d 次准入: %v", i+1, err)
+		}
+		bindings = append(bindings, binding)
+	}
+	if got := []string{bindings[0].Carrier, bindings[1].Carrier, bindings[2].Carrier}; !reflect.DeepEqual(got, []string{"c1", "c2", "c2"}) {
+		t.Fatalf("成员政策/登记顺序选择不符: %v", got)
+	}
+	if _, err := svc.Admit(scheduling.IgnitionRequest{Card: "B-member-full", Squad: "s1", Actor: "test"}); !errors.Is(err, scheduling.ErrNoSlot) {
+		t.Fatalf("两成员任一级满应 ErrNoSlot，得 %v", err)
+	}
+	for _, binding := range bindings {
+		if err := svc.Release(binding.Squad, binding.Carrier); err != nil {
+			t.Fatalf("释放 %s: %v", binding.Carrier, err)
+		}
+	}
+	for _, carrier := range []string{"c1", "c2"} {
+		if err := svc.Release("s1", carrier); err != nil {
+			t.Fatalf("重复释放 %s: %v", carrier, err)
+		}
+	}
+	for _, key := range []string{"squad/s1/c1", "squad/s1/c2", "carrier/c1", "carrier/c2"} {
+		if got := runningCount(t, facade, key); got != 0 {
+			t.Fatalf("释放后计数 %s=%d，want 0", key, got)
+		}
+	}
+	rows, err := facade.List("sched_running")
+	if err != nil {
+		t.Fatalf("列运行计数: %v", err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("运行计数键数量=%d，want 4: %+v", len(rows), rows)
+	}
+	for _, row := range rows {
+		if strings.HasPrefix(row.ID, "squad/s1/") || strings.HasPrefix(row.ID, "carrier/") {
+			continue
+		}
+		t.Fatalf("出现未声明运行计数键: %s", row.ID)
 	}
 }
 

@@ -14,6 +14,7 @@ package scheduling_test
 // 快照位次与逐个 PopReady 出队次序一致，两半漂移即翻红。
 
 import (
+	"encoding/json"
 	"errors"
 	"path/filepath"
 	"strings"
@@ -122,7 +123,7 @@ func TestRowsCarryVersionsForCASLock(t *testing.T) {
 		t.Fatalf("max_concurrency=0 应 omitempty 缺席：%s", rawZ)
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "sq", Role: scheduling.RoleExecutor,
-		Members: []string{"c1"}}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "c1"}}}, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)
 	}
 	sqRows, err := svc.SquadRows()
@@ -132,6 +133,59 @@ func TestRowsCarryVersionsForCASLock(t *testing.T) {
 	if len(sqRows) != 1 || sqRows[0].Version != 1 ||
 		sqRows[0].Squad.Role != scheduling.RoleExecutor {
 		t.Fatalf("小队行不符: %+v", sqRows)
+	}
+}
+
+// TestSquadRowsLegacyMembersRoundtripThroughRegistry 穿真实 registry JSON 验收存量
+// members:["carrier"] 的兼容读，以及成功写回后只保留新成员对象；旧队级
+// max_concurrency 不得复制到任何成员或重新出现。空 members 仍是合法空队。
+func TestSquadRowsLegacyMembersRoundtripThroughRegistry(t *testing.T) {
+	svc, facade := newRowsFixture(t)
+	for _, name := range []string{"c1", "c2"} {
+		if err := svc.PutCarrier(scheduling.Carrier{
+			Name: name, Machine: "m1", CLI: "opencode",
+			Credential: scheduling.CredentialStandalone,
+		}, 0); err != nil {
+			t.Fatalf("登记载体 %s: %v", name, err)
+		}
+	}
+	if _, err := facade.Put("squad", "legacy", 0, []byte(`{"name":"legacy","role":"executor","members":["c1","c2"],"max_concurrency":9}`), "test"); err != nil {
+		t.Fatalf("写入存量小队: %v", err)
+	}
+	if _, err := facade.Put("squad", "empty", 0, []byte(`{"name":"empty","role":"executor","members":[]}`), "test"); err != nil {
+		t.Fatalf("写入空小队: %v", err)
+	}
+
+	rows, err := svc.SquadRows()
+	if err != nil {
+		t.Fatalf("读取小队行: %v", err)
+	}
+	var legacy *scheduling.Squad
+	for _, row := range rows {
+		if row.Squad.Name == "legacy" {
+			copy := row.Squad
+			legacy = &copy
+		}
+	}
+	if legacy == nil || len(legacy.Members) != 2 || legacy.Members[0] != (scheduling.SquadMember{Carrier: "c1"}) || legacy.Members[1] != (scheduling.SquadMember{Carrier: "c2"}) {
+		t.Fatalf("存量成员未规范化为不限对象: %+v", legacy)
+	}
+	if err := svc.PutSquad(*legacy, 1); err != nil {
+		t.Fatalf("写回新成员形状: %v", err)
+	}
+	raw, err := facade.Get("squad", "legacy")
+	if err != nil {
+		t.Fatalf("读取写回小队: %v", err)
+	}
+	if strings.Contains(string(raw.Body), `"max_concurrency"`) || strings.Contains(string(raw.Body), `"members":["`) {
+		t.Fatalf("写回仍含旧队级/字符串成员形状: %s", raw.Body)
+	}
+	var empty scheduling.Squad
+	if err := json.Unmarshal([]byte(`{"name":"empty","role":"executor","members":[]}`), &empty); err != nil {
+		t.Fatalf("空队解码: %v", err)
+	}
+	if empty.Members == nil || len(empty.Members) != 0 {
+		t.Fatalf("空成员数组必须保持合法空切片: %+v", empty.Members)
 	}
 }
 
@@ -231,7 +285,7 @@ func TestPutValidationWrapsErrInvalid(t *testing.T) {
 	// 成员引用缺失仍以 ErrNotFound 链上浮（Major-1 判据的域侧半臂）：
 	// 网关 handleSquadPut 靠 errors.Is(ErrNotFound) 把它分到 400。
 	memberMissing := svc.PutSquad(scheduling.Squad{Name: "sq", Role: scheduling.RoleExecutor,
-		Members: []string{"ghost"}}, 0)
+		Members: []scheduling.SquadMember{{Carrier: "ghost"}}}, 0)
 	if !errors.Is(memberMissing, scheduling.ErrNotFound) {
 		t.Fatalf("成员引用缺失应包 ErrNotFound，得 %v", memberMissing)
 	}

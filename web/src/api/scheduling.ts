@@ -23,9 +23,13 @@ export type WakeOutcome = 'ready' | 'need_login' | 'quota' | 'unreachable'
 export interface SquadView {
   name: string
   role: string
-  members: string[]
-  max_concurrency?: number
+  members: SquadMember[]
   version: number
+}
+
+export interface SquadMember {
+  carrier: string
+  max_concurrency?: number
 }
 
 export interface SquadsResp {
@@ -46,8 +50,7 @@ export interface CarrierInput {
 export interface SquadInput {
   name?: string
   role: string
-  members: string[]
-  max_concurrency?: number
+  members: SquadMember[]
 }
 
 export interface SquadPutResp {
@@ -110,7 +113,7 @@ export const getQueue = () => request<QueueResp>('/api/queue')
 
 // 服务端用 max_concurrency 缺席表达「不限」；保护 API 边界不把调用方传入的
 // 0 序列化成另一种语义，尤其是表单从数字输入转换而来的零值。
-function omitZeroConcurrency<T extends CarrierInput | SquadInput>(input: T): T {
+function omitZeroConcurrency<T extends CarrierInput>(input: T): T {
   if (input.max_concurrency !== 0) return input
   const copy = { ...input }
   delete copy.max_concurrency
@@ -124,11 +127,25 @@ export const putCarrier = (name: string, expect: number, input: CarrierInput) =>
     omitZeroConcurrency(input),
   )
 
-/** 按小队名和 CAS 版本更新小队；expect=0 表示新建。 */
+// 服务端用成员 max_concurrency 缺席表达「不限」；仅将调用方已经给出的 0
+// 投影为缺席，不能把非法文本在 API 层静默变成不限，页面负责输入校验。
+function omitZeroSquadConcurrency(input: SquadInput): SquadInput {
+  return {
+    ...input,
+    members: input.members.map((member) => {
+      if (member.max_concurrency !== 0) return member
+      const copy = { ...member }
+      delete copy.max_concurrency
+      return copy
+    }),
+  }
+}
+
+/** 按小队名和 CAS 版本更新小队；expect=0 表示新建，成员政策缺席表示不限。 */
 export const putSquad = (name: string, expect: number, input: SquadInput) =>
   putJSON<SquadPutResp>(
     `/api/squads/squads/${encodeURIComponent(name)}?expect=${expect}`,
-    omitZeroConcurrency(input),
+    omitZeroSquadConcurrency(input),
   )
 
 /** 探测目标机路径；machine 走 query，不进 body。本函数不改写 kind。 */

@@ -8,6 +8,16 @@
       "credential": "standalone",
       "max_concurrency": 2,
       "version": 1
+    },
+    {
+      "name": "mac-01-opencode-flash",
+      "machine": "mac-01",
+      "cli": "opencode",
+      "home_dir": "/Users/dev/.handoff/homes/opencode-flash",
+      "model": "flash",
+      "credential": "standalone",
+      "max_concurrency": 1,
+      "version": 2
     }
   ],
   "squads": [
@@ -15,9 +25,21 @@
       "name": "coord",
       "role": "coordinator",
       "members": [
-        "mac-01-opencode"
+        {
+          "carrier": "mac-01-opencode",
+          "max_concurrency": 2
+        },
+        {
+          "carrier": "mac-01-opencode-flash"
+        }
       ],
       "version": 3
+    },
+    {
+      "name": "empty",
+      "role": "executor",
+      "members": [],
+      "version": 4
     }
   ]
 }

@@ -134,18 +134,26 @@ func TestContractFixtures(t *testing.T) {
 			Produces: &NodeOutput{Kind: "doc", Path: "docs/superpowers/plans/b201-plan.md"},
 		}},
 		{"FlowDetail", FlowDetail{Name: "triage", Version: 1, Nodes: []NodeDef{{Name: "待办", Next: "定性中"}, {Name: "定性中", Next: "已定性"}, {Name: "已定性"}}, States: []string{"待办", "定性中", "已定性"}, Board: &BoardLayout{Columns: []string{"代办", "沟通中", "进行中", "审核中", "结束"}, StateToColumn: map[string]string{"待办": "代办", "终止": "结束"}, Fallback: "进行中"}}},
-		// 编制域 wire 面（B156.3 K3）：样本刻意踩 omitempty 边界——载体 Model=""
-		// 缺席、小队 max_concurrency=0 缺席、载体 max_concurrency=2 在场、
+		// 编制域 wire 面（B292）：样本刻意踩模型与成员政策的 omitempty 边界——
+		// 一个载体走 CLI 默认、一个载体固定 flash；小队一个成员政策为 2，
+		// 一个成员政策缺席，并保留合法空队。该文件是 Go→TS 真实线格式，
+		// 不是 UI mock。
 		// QueueEntry 的 Ready=false 显式在场（「字段缺失 vs 值为零」可分辨）。
 		{"SquadsResp", SquadsResp{
 			Carriers: []CarrierView{{
 				Name: "mac-01-opencode", Machine: "mac-01", CLI: "opencode",
 				HomeDir: "/Users/dev/.handoff/homes/opencode", Model: "",
 				Credential: "standalone", MaxConcurrency: 2, Version: 1,
+			}, {
+				Name: "mac-01-opencode-flash", Machine: "mac-01", CLI: "opencode",
+				HomeDir: "/Users/dev/.handoff/homes/opencode-flash", Model: "flash",
+				Credential: "standalone", MaxConcurrency: 1, Version: 2,
 			}},
 			Squads: []SquadView{{
 				Name: "coord", Role: "coordinator",
-				Members: []string{"mac-01-opencode"}, MaxConcurrency: 0, Version: 3,
+				Members: []SquadMember{{Carrier: "mac-01-opencode", MaxConcurrency: 2}, {Carrier: "mac-01-opencode-flash"}}, Version: 3,
+			}, {
+				Name: "empty", Role: "executor", Members: []SquadMember{}, Version: 4,
 			}},
 		}},
 		{"QueueResp", QueueResp{Queue: []QueueEntry{{

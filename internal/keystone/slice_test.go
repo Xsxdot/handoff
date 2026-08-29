@@ -138,7 +138,7 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 		t.Fatalf("检测载体: %v", err)
 	}
 	execSquad := scheduling.Squad{Name: "exec-1", Role: scheduling.RoleExecutor,
-		Members: []string{"opencode-1"}, MaxConcurrency: 2}
+		Members: []scheduling.SquadMember{{Carrier: "opencode-1"}}}
 	if err := svc.PutSquad(execSquad, 0); err != nil {
 		t.Fatalf("登记执行者小队: %v", err)
 	}
