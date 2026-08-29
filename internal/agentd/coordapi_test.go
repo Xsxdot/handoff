@@ -73,6 +73,19 @@ func newNoPTYCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	return env, runner
 }
 
+// putOnlineCarrier 迁移旧 Healthy=true 夹具：PutCarrier 新建仍按契约落 pending，
+// 测试若要模拟旧夹具的已上线事实，必须再经过真实检测写回缝。
+func putOnlineCarrier(t *testing.T, svc *scheduling.Service, carrier scheduling.Carrier) {
+	t.Helper()
+	carrier.Status = scheduling.StatusOnline
+	if err := svc.PutCarrier(carrier, 0); err != nil {
+		t.Fatalf("登记载体 %s: %v", carrier.Name, err)
+	}
+	if _, err := svc.ApplyDetect(carrier.Name, scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("设置载体 %s online: %v", carrier.Name, err)
+	}
+}
+
 func setCoordForwardTarget(t *testing.T, env *ledgerEnv, name, addr string) {
 	t.Helper()
 	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
@@ -101,11 +114,9 @@ func createCoordCard(t *testing.T, env *ledgerEnv) string {
 func seedCoordinatorSquad(t *testing.T, env *ledgerEnv) {
 	t.Helper()
 	svc := env.srv.Scheduling()
-	if err := svc.PutCarrier(scheduling.Carrier{Name: "c1", Machine: "linux-01",
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "c1", Machine: "linux-01",
 		CLI: "opencode", HomeDir: "/home/coordinator",
-		Credential: scheduling.CredentialStandalone}, 0); err != nil {
-		t.Fatalf("登记载体: %v", err)
-	}
+		Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "coord", Role: scheduling.RoleCoordinator,
 		Members: []string{"c1"}, MaxConcurrency: 1}, 0); err != nil {
 		t.Fatalf("登记协调者小队: %v", err)
@@ -191,10 +202,9 @@ func TestCoordLaunchSourceFlowsIntoKeystone(t *testing.T) {
 func TestCoordLaunchNoSquadActionableError(t *testing.T) {
 	env, _ := newCoordEnv(t)
 	svc := env.srv.Scheduling()
-	if err := svc.PutCarrier(scheduling.Carrier{Name: "e1", Machine: "linux-01",
-		CLI: "opencode", Credential: scheduling.CredentialStandalone}, 0); err != nil {
-		t.Fatal(err)
-	}
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "e1", Machine: "linux-01",
+		CLI: "opencode", Credential: scheduling.CredentialStandalone,
+		Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "exec", Role: scheduling.RoleExecutor,
 		Members: []string{"e1"}}, 0); err != nil {
 		t.Fatal(err)
@@ -217,12 +227,10 @@ func TestCoordLaunchAmbiguousSquadConflict(t *testing.T) {
 	env, _ := newCoordEnv(t)
 	svc := env.srv.Scheduling()
 	for _, c := range []scheduling.Carrier{
-		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone},
-		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone},
+		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline},
+		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline},
 	} {
-		if err := svc.PutCarrier(c, 0); err != nil {
-			t.Fatal(err)
-		}
+		putOnlineCarrier(t, svc, c)
 	}
 	for _, q := range []scheduling.Squad{
 		{Name: "coord-a", Role: scheduling.RoleCoordinator, Members: []string{"c1"}},

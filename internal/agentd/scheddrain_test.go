@@ -58,12 +58,11 @@ func (r *queueTraceRunner) markDispatch() {
 func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	t.Helper()
 	svc := env.srv.Scheduling()
-	if err := svc.PutCarrier(scheduling.Carrier{
+	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
-	}, 0); err != nil {
-		t.Fatalf("登记协调者载体: %v", err)
-	}
+		Status: scheduling.StatusOnline,
+	})
 	if err := svc.PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator,
 		Members: []string{"coord-carrier"}, MaxConcurrency: 1,
@@ -90,12 +89,11 @@ func setupNoPTYSquadEnv(t *testing.T, carrierMax int) *ledgerEnv {
 	if ver := seedDisciplineOnLedger(t, env, discipline.NameImplement, "# 实现纪律\n完成即 commit\n"); ver < 1 {
 		t.Fatalf("纪律块版本异常: %d", ver)
 	}
-	if err := env.srv.Scheduling().PutCarrier(scheduling.Carrier{
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
 		Name: "c1", Machine: "ftm", CLI: "opencode",
 		Credential: scheduling.CredentialStandalone, MaxConcurrency: carrierMax,
-	}, 0); err != nil {
-		t.Fatalf("登记执行者载体: %v", err)
-	}
+		Status: scheduling.StatusOnline,
+	})
 	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
 		Name: "sq1", Role: scheduling.RoleExecutor, Members: []string{"c1"}, MaxConcurrency: 8,
 	}, 0); err != nil {

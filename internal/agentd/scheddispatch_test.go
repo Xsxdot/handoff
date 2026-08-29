@@ -75,11 +75,9 @@ func setupSquadEnv(t *testing.T, carrierMax int) (*ledgerEnv, *fakeTargetMachine
 		t.Fatalf("纪律块版本异常: %d", ver)
 	}
 	svc := env.srv.Scheduling()
-	if err := svc.PutCarrier(scheduling.Carrier{Name: "c1", Machine: "ftm",
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "c1", Machine: "ftm",
 		CLI: "opencode", Credential: scheduling.CredentialStandalone,
-		MaxConcurrency: carrierMax}, 0); err != nil {
-		t.Fatalf("登记载体: %v", err)
-	}
+		MaxConcurrency: carrierMax, Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "sq1",
 		Role: scheduling.RoleExecutor, Members: []string{"c1"},
 		MaxConcurrency: 8}, 0); err != nil {

@@ -123,15 +123,60 @@ func TestProbeHomeExpandsTildeOnTargetHomeAndNoFile判据IsOccupied(t *testing.T
 	}
 }
 
-func installWakeCLI(t *testing.T, body string) string {
+func replaceWakeCommandContext(t *testing.T, mode, recordPath string) {
 	t.Helper()
-	binDir := t.TempDir()
-	path := filepath.Join(binDir, "opencode")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body+"\n"), 0o755); err != nil {
-		t.Fatal(err)
+	old := commandContext
+	commandContext = func(ctx context.Context, name string, args ...string) *exec.Cmd {
+		if filepath.Base(name) != "opencode" {
+			t.Errorf("WakeHome 假 CLI 名称 = %q，want opencode", name)
+		}
+		fakeArgs := []string{"-test.run=^TestWakeHomeFakeProcess$", "--", "--wake-fake=" + mode}
+		if recordPath != "" {
+			fakeArgs = append(fakeArgs, "--wake-record="+recordPath)
+		}
+		fakeArgs = append(fakeArgs, args...)
+		// 使用测试二进制绝对路径，避免 PATH 上的真实 CLI 介入；runWake 随后
+		// 覆盖 cmd.Env，假进程仍可从 HOME 观察到 buildEnv 的最终结果。
+		return exec.CommandContext(ctx, os.Args[0], fakeArgs...)
 	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	return binDir
+	t.Cleanup(func() { commandContext = old })
+}
+
+func TestWakeHomeFakeProcess(t *testing.T) {
+	marker := "--wake-fake="
+	mode := ""
+	recordPath := ""
+	var cliArgs []string
+	for i, arg := range os.Args {
+		if arg != "--" {
+			continue
+		}
+		for _, childArg := range os.Args[i+1:] {
+			switch {
+			case strings.HasPrefix(childArg, marker):
+				mode = strings.TrimPrefix(childArg, marker)
+			case strings.HasPrefix(childArg, "--wake-record="):
+				recordPath = strings.TrimPrefix(childArg, "--wake-record=")
+			default:
+				cliArgs = append(cliArgs, childArg)
+			}
+		}
+		break
+	}
+	if mode == "" {
+		return
+	}
+	if mode == "block" {
+		// 保留一个计时器让测试二进制保持运行；纯 select{} 会被 Go
+		// runtime 立即判定为死锁，无法验证父进程的 context 终止。
+		<-time.After(time.Hour)
+	}
+	if recordPath != "" {
+		payload := strings.Join(append(cliArgs, "HOME="+os.Getenv("HOME")), "\n") + "\n"
+		if err := os.WriteFile(recordPath, []byte(payload), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
 }
 
 func TestWakeHomeSuppliesMainCredentialBeforeNoPromptCLI(t *testing.T) {
@@ -145,7 +190,7 @@ func TestWakeHomeSuppliesMainCredentialBeforeNoPromptCLI(t *testing.T) {
 		t.Fatal(err)
 	}
 	argvFile := filepath.Join(t.TempDir(), "argv")
-	installWakeCLI(t, `printf '%s\n' "$@" >"`+argvFile+`"; printf 'HOME=%s\n' "$HOME" >>"`+argvFile+`"; exit 0`)
+	replaceWakeCommandContext(t, "record", argvFile)
 	target := filepath.Join(t.TempDir(), "carrier-home")
 	h := newProbeHost()
 	got, err := h.WakeHome(context.Background(), WakeRequest{
@@ -181,7 +226,7 @@ func TestWakeHomeOccupiedNeverOverwrites(t *testing.T) {
 	if err := os.WriteFile(auth, []byte("main-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	installWakeCLI(t, "exit 0")
+	replaceWakeCommandContext(t, "record", "")
 	target := filepath.Join(t.TempDir(), "carrier-home")
 	if err := os.MkdirAll(target, 0o700); err != nil {
 		t.Fatal(err)
@@ -206,7 +251,7 @@ func TestWakeHomeOccupiedNeverOverwrites(t *testing.T) {
 
 func TestWakeHomeHonorsTimeoutWithoutRunTurn(t *testing.T) {
 	swapUserHomeDir(t, t.TempDir())
-	installWakeCLI(t, "sleep 5")
+	replaceWakeCommandContext(t, "block", "")
 	ctx := context.Background()
 	started := time.Now()
 	_, err := newProbeHost().WakeHome(ctx, WakeRequest{CLI: "opencode", HomeDir: t.TempDir(), Timeout: 40 * time.Millisecond})

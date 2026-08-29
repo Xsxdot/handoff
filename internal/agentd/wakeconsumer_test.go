@@ -223,12 +223,11 @@ func (r *fallbackConsumerRunner) Resume(keysclient.SessionRef, string) (keysclie
 func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
-	if err := env.srv.Scheduling().PutCarrier(scheduling.Carrier{
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
-	}, 0); err != nil {
-		t.Fatal(err)
-	}
+		Status: scheduling.StatusOnline,
+	})
 	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator, Members: []string{"coord-carrier"}, MaxConcurrency: 1,
 	}, 0); err != nil {
@@ -271,12 +270,11 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
-	if err := env.srv.Scheduling().PutCarrier(scheduling.Carrier{
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
-	}, 0); err != nil {
-		t.Fatal(err)
-	}
+		Status: scheduling.StatusOnline,
+	})
 	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator, Members: []string{"coord-carrier"}, MaxConcurrency: 1,
 	}, 0); err != nil {

@@ -127,3 +127,14 @@
 - 2026-08-29 Web 验证：检查输出 `web/node_modules absent`；未安装依赖，`SchedulingPage.test.tsx` 与 `contract.test.ts` 的 Vitest 结果未验证。
 - 2026-08-29 全量 agentd 结果保留失败事实：先前 `go test ./internal/agentd/ -count=1` 退出码 1，失败集中在未纳入 U5 封闭修改集合的旧 fixture（隐含 Healthy 的 cardstep/scheddrain/wakeconsumer 等测试）；本轮不修改计划外测试，handoff verdict 不将该结果伪报为全绿。
 - 2026-08-29 提交：已按计划创建实现提交，未 push；提交前暂存检查与 `git diff --cached --check` 均退出码 0。
+
+## implement 复验修复（cards/B293-charter-7）
+
+- 2026-08-29 复现：原 hostapi 两个 WakeHome 测试在本机 PATH 假 CLI 下均通过，但该形态仍可能命中协调者机真 `opencode`；按要求不把本机一次绿视为隔离证明。agentd 代表性复现命令 `go test ./internal/agentd/ -run 'TestCoordLaunchEndpointSuccess|TestAutomationQueueRestartReplay|TestAutomationFallbackResumeRebuildFailure' -count=1 -v` 退出码 1，原始失败为 `处理行数=1，want 3` 与 `resume/rebuild 双失败 processed=0 escalated=false err=协调者小队 coord 准入失败: scheduling: 小队内没有已上线且有空的载体`；其中 PTY 测试原始输出 `PTY 测试根目录不可用 ... read-only file system` 后 SKIP。
+- 2026-08-29 hostapi 测试修复：测试替换包内 `commandContext`，以 `os.Args[0]` 绝对路径启动 `TestWakeHomeFakeProcess`；record 模式立即退出并记录 argv/HOME，block 模式等待计时器、由父 context 终止。中途纯 `select{}` 假进程首红，原始输出为 `fatal error: all goroutines are asleep - deadlock!`，已改为带计时器的阻塞进程。
+- 2026-08-29 agentd 夹具修复：coordapi、scheddispatch、scheddrain、wakeconsumer 的旧 Healthy=true 语义载体补 `Status: scheduling.StatusOnline`，并经测试辅助函数调用真实 `ApplyDetect(Reachable:true)` 写回；未改生产准入语义。
+- 2026-08-29 hostapi 复验：`go test ./internal/hostapi/ -run 'TestWakeHomeFakeProcess|TestWakeHomeSuppliesMainCredentialBeforeNoPromptCLI|TestWakeHomeOccupiedNeverOverwrites|TestWakeHomeHonorsTimeoutWithoutRunTurn' -count=1 -v` 输出四测 PASS，timeout 原始日志含 `唤起 CLI "opencode" 超时/取消 ... context deadline exceeded`，包结果 `ok .../internal/hostapi 0.050s`，退出码 0。
+- 2026-08-29 agentd 夹具复验：`go test ./internal/agentd/ -run 'TestCoordLaunchEndpointSuccess|TestAutomationQueueRestartReplay|TestAutomationFallbackResumeRebuildFailure|TestAutomationWakeFailureAdvancesCursor' -count=1 -v` 输出 3 测 PASS、PTY 测试因 `read-only file system` SKIP，包结果 `ok .../internal/agentd 0.899s`，退出码 0。
+- 2026-08-29 指定最终测试一：`go test ./internal/hostapi/ ./internal/scheduling/ -count=1` 输出 `ok github.com/Xsxdot/handoff/internal/hostapi 0.362s`、`ok github.com/Xsxdot/handoff/internal/scheduling 1.619s`，退出码 0。
+- 2026-08-29 指定最终测试二：`go test ./internal/agentd/ -count=1` 输出 `ok github.com/Xsxdot/handoff/internal/agentd 202.506s`，退出码 0。
+- 2026-08-29 指定最终测试三：`go build ./...` 无标准输出，退出码 0。
