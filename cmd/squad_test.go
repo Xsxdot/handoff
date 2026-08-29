@@ -48,7 +48,7 @@ func TestSquadCreatePostsShapeAndRenders(t *testing.T) {
 			gotPath, gotMethod, gotQuery, gotBody = r.URL.Path, r.Method, r.URL.RawQuery, body
 		})
 	out, errOut, err := runLedgerCLI(t, dir, "squad", "create",
-		"--name", "coord", "--role", "coordinator", "--max-concurrency", "2")
+		"--name", "coord", "--role", "coordinator", "--member", "c1")
 	if err != nil {
 		t.Fatalf("create 失败: %v\nstderr=%s", err, errOut)
 	}
@@ -60,7 +60,9 @@ func TestSquadCreatePostsShapeAndRenders(t *testing.T) {
 	if err := json.Unmarshal([]byte(gotBody), &in); err != nil {
 		t.Fatalf("请求体非 JSON: %s", gotBody)
 	}
-	if in["role"] != "coordinator" || in["max_concurrency"] != float64(2) {
+	members, ok := in["members"].([]any)
+	if in["role"] != "coordinator" || !ok || len(members) != 1 ||
+		members[0].(map[string]any)["carrier"] != "c1" || in["max_concurrency"] != nil {
 		t.Fatalf("请求体字段不符: %s", gotBody)
 	}
 	if !strings.Contains(out, `"version":1`) {
@@ -104,7 +106,7 @@ func TestSquadCreateSurfacesActionableServerReject(t *testing.T) {
 // TD-4：list 表格/NDJSON 双形态；请求打 GET /api/squads。
 func TestSquadListRendersTableAndJSON(t *testing.T) {
 	dir := t.TempDir()
-	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"healthy":true,"version":1}],"squads":[{"name":"sq","role":"executor","members":["c1"],"version":1}]}`
+	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"healthy":true,"version":1}],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1"}],"version":1}]}`
 	stubSquadAgentd(t, dir, http.StatusOK, fixture, func(r *http.Request, _ string) {
 		if r.URL.Path != "/api/squads" {
 			t.Errorf("list 应打 /api/squads，得 %s", r.URL.Path)
@@ -214,7 +216,7 @@ func TestSquadSetEditLoopUsesReadVersion(t *testing.T) {
 	var gotMethod, gotPath, gotQuery, gotBody string
 	var putCount int
 	setStub(t, dir,
-		`{"carriers":[],"squads":[{"name":"sq","role":"executor","members":["c1"],"version":3}]}`,
+		`{"carriers":[],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1"}],"version":3}]}`,
 		func(w http.ResponseWriter, r *http.Request) {
 			putCount++
 			gotMethod, gotPath, gotQuery = r.Method, r.URL.Path, r.URL.RawQuery
@@ -223,7 +225,7 @@ func TestSquadSetEditLoopUsesReadVersion(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"name":"sq","version":4}`)
 		})
-	out, errOut, err := runLedgerCLI(t, dir, "squad", "set", "--name", "sq", "--max-concurrency", "5")
+	out, errOut, err := runLedgerCLI(t, dir, "squad", "set", "--name", "sq")
 	if err != nil {
 		t.Fatalf("set 失败: %v\nstderr=%s", err, errOut)
 	}
@@ -237,7 +239,9 @@ func TestSquadSetEditLoopUsesReadVersion(t *testing.T) {
 	if err := json.Unmarshal([]byte(gotBody), &in); err != nil {
 		t.Fatalf("请求体非 JSON: %s", gotBody)
 	}
-	if in["role"] != "executor" || in["max_concurrency"] != float64(5) {
+	members, ok := in["members"].([]any)
+	if in["role"] != "executor" || !ok || len(members) != 1 ||
+		members[0].(map[string]any)["carrier"] != "c1" || in["max_concurrency"] != nil {
 		t.Fatalf("未给字段应保持现状、给了字段应覆盖：%s", gotBody)
 	}
 	if !strings.Contains(out, `"version":4`) {

@@ -66,7 +66,7 @@ func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	}
 	if err := svc.PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator,
-		Members: []string{"coord-carrier"}, MaxConcurrency: 1,
+		Members: []scheduling.SquadMember{{Carrier: "coord-carrier", MaxConcurrency: 1}},
 	}, 0); err != nil {
 		t.Fatalf("登记协调者小队: %v", err)
 	}
@@ -97,7 +97,7 @@ func setupNoPTYSquadEnv(t *testing.T, carrierMax int) *ledgerEnv {
 		t.Fatalf("登记执行者载体: %v", err)
 	}
 	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
-		Name: "sq1", Role: scheduling.RoleExecutor, Members: []string{"c1"}, MaxConcurrency: 8,
+		Name: "sq1", Role: scheduling.RoleExecutor, Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}},
 	}, 0); err != nil {
 		t.Fatalf("登记执行者小队: %v", err)
 	}
@@ -205,8 +205,8 @@ func TestAutomationRoundReleasesCoordinatorCounters(t *testing.T) {
 				t.Fatalf("%s 回合: %v", tc.name, err)
 			}
 			for key := range map[string]struct{}{
-				"squad/coord":           {},
-				"carrier/coord-carrier": {},
+				"squad/coord/coord-carrier": {},
+				"carrier/coord-carrier":     {},
 			} {
 				if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
 					t.Fatalf("%s 后计数 %s=%d，want 0", tc.name, key, got)

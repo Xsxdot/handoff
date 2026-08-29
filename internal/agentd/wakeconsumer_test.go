@@ -230,7 +230,7 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
-		Name: "coord", Role: scheduling.RoleCoordinator, Members: []string{"coord-carrier"}, MaxConcurrency: 1,
+		Name: "coord", Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "coord-carrier", MaxConcurrency: 1}},
 	}, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -278,7 +278,7 @@ func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
-		Name: "coord", Role: scheduling.RoleCoordinator, Members: []string{"coord-carrier"}, MaxConcurrency: 1,
+		Name: "coord", Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "coord-carrier", MaxConcurrency: 1}},
 	}, 0); err != nil {
 		t.Fatal(err)
 	}

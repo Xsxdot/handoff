@@ -139,7 +139,12 @@ func (s *Server) handleSquadPut(w http.ResponseWriter, r *http.Request) {
 	}
 	squad := scheduling.Squad{
 		Name: name, Role: scheduling.SquadRole(in.Role),
-		Members: in.Members, MaxConcurrency: in.MaxConcurrency,
+		Members: make([]scheduling.SquadMember, len(in.Members)),
+	}
+	for i, member := range in.Members {
+		squad.Members[i] = scheduling.SquadMember{
+			Carrier: member.Carrier, MaxConcurrency: member.MaxConcurrency,
+		}
 	}
 	s.log.Info("登记小队", "name", name, "expect", expect,
 		"role", in.Role, "members", len(in.Members))
@@ -220,9 +225,14 @@ func carrierView(c scheduling.Carrier, version int) proto.CarrierView {
 
 // squadView 把小队实体投影成 wire DTO（来源同上）。
 func squadView(q scheduling.Squad, version int) proto.SquadView {
+	members := make([]proto.SquadMember, len(q.Members))
+	for i, member := range q.Members {
+		members[i] = proto.SquadMember{
+			Carrier: member.Carrier, MaxConcurrency: member.MaxConcurrency,
+		}
+	}
 	return proto.SquadView{
-		Name: q.Name, Role: string(q.Role), Members: q.Members,
-		MaxConcurrency: q.MaxConcurrency, Version: version,
+		Name: q.Name, Role: string(q.Role), Members: members, Version: version,
 	}
 }
 

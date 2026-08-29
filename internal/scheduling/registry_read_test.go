@@ -123,7 +123,7 @@ func TestRowsCarryVersionsForCASLock(t *testing.T) {
 		t.Fatalf("max_concurrency=0 应 omitempty 缺席：%s", rawZ)
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "sq", Role: scheduling.RoleExecutor,
-		Members: []string{"c1"}}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "c1"}}}, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)
 	}
 	sqRows, err := svc.SquadRows()
@@ -232,7 +232,7 @@ func TestPutValidationWrapsErrInvalid(t *testing.T) {
 	// 成员引用缺失仍以 ErrNotFound 链上浮（Major-1 判据的域侧半臂）：
 	// 网关 handleSquadPut 靠 errors.Is(ErrNotFound) 把它分到 400。
 	memberMissing := svc.PutSquad(scheduling.Squad{Name: "sq", Role: scheduling.RoleExecutor,
-		Members: []string{"ghost"}}, 0)
+		Members: []scheduling.SquadMember{{Carrier: "ghost"}}}, 0)
 	if !errors.Is(memberMissing, scheduling.ErrNotFound) {
 		t.Fatalf("成员引用缺失应包 ErrNotFound，得 %v", memberMissing)
 	}

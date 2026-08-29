@@ -16,7 +16,9 @@
       "name": "coord",
       "role": "coordinator",
       "members": [
-        "mac-01-opencode"
+        {
+          "carrier": "mac-01-opencode"
+        }
       ],
       "version": 3
     }

@@ -145,7 +145,7 @@ func TestContractFixtures(t *testing.T) {
 			}},
 			Squads: []SquadView{{
 				Name: "coord", Role: "coordinator",
-				Members: []string{"mac-01-opencode"}, MaxConcurrency: 0, Version: 3,
+				Members: []SquadMember{{Carrier: "mac-01-opencode"}}, Version: 3,
 			}},
 		}},
 		{"QueueResp", QueueResp{Queue: []QueueEntry{{

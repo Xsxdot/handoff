@@ -20,13 +20,18 @@ type CarrierView struct {
 	Version        int    `json:"version"`
 }
 
-// SquadView 是小队登记行。MaxConcurrency=0（不限）以键缺席表达。
+// SquadMember 是小队成员的 wire 形状。MaxConcurrency=0（不限）以键缺席表达。
+type SquadMember struct {
+	Carrier        string `json:"carrier"`
+	MaxConcurrency int    `json:"max_concurrency,omitempty"`
+}
+
+// SquadView 是小队登记行；政策位落在每个成员对象上。
 type SquadView struct {
-	Name           string   `json:"name"`
-	Role           string   `json:"role"`
-	Members        []string `json:"members"`
-	MaxConcurrency int      `json:"max_concurrency,omitempty"`
-	Version        int      `json:"version"`
+	Name    string        `json:"name"`
+	Role    string        `json:"role"`
+	Members []SquadMember `json:"members"`
+	Version int           `json:"version"`
 }
 
 // SquadsResp 是 GET /api/squads 的响应体。空库时两个字段是空数组而非 null
@@ -50,10 +55,9 @@ type CarrierInput struct {
 
 // SquadInput 是 PUT 小队的请求体。Members 为空合法（岔口四：先建空队再补成员）。
 type SquadInput struct {
-	Name           string   `json:"name,omitempty"`
-	Role           string   `json:"role"`
-	Members        []string `json:"members"`
-	MaxConcurrency int      `json:"max_concurrency,omitempty"`
+	Name    string        `json:"name,omitempty"`
+	Role    string        `json:"role"`
+	Members []SquadMember `json:"members"`
 }
 
 // SquadPutResp 是 PUT 成功响应：version 是本次写入产生的版本（expect+1）；

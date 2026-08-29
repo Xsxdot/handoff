@@ -3,12 +3,12 @@
 // 边界：不探活、不发现机器、不写 flow，也不决定协调者的服务端选择规则。
 import { useEffect, useState } from 'react'
 import type { ReactElement } from 'react'
-import type { CarrierInput, CarrierView, SquadInput, SquadView, SquadsResp } from '../../api/scheduling'
+import type { CarrierInput, CarrierView, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
 import { getSquads, putCarrier, putSquad } from '../../api/scheduling'
 import { errorMessage } from '../lib/format'
 
 type CarrierDraft = Omit<CarrierInput, 'max_concurrency'> & { name: string; maxConcurrencyText: string }
-type SquadDraft = Omit<SquadInput, 'max_concurrency'> & { name: string; maxConcurrencyText: string }
+type SquadDraft = Omit<SquadInput, 'name'> & { name: string }
 type EntityDialog =
   | { kind: 'carrier'; value: CarrierView | null }
   | { kind: 'squad'; value: SquadView | null }
@@ -46,8 +46,7 @@ function squadDraft(row: SquadView | null): SquadDraft {
   return {
     name: row?.name ?? '',
     role: row?.role === 'coordinator' ? 'coordinator' : 'executor',
-    members: row ? [...row.members] : [],
-    maxConcurrencyText: row?.max_concurrency?.toString() ?? '',
+    members: row ? row.members.map((member) => ({ ...member })) : [],
   }
 }
 
@@ -139,7 +138,6 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
           name,
           role: squad.role === 'coordinator' ? 'coordinator' : 'executor',
           members: squad.members,
-          ...(optionalConcurrency(squad.maxConcurrencyText) === undefined ? {} : { max_concurrency: optionalConcurrency(squad.maxConcurrencyText) }),
         })
         console.info('scheduling.save.done', { kind: 'squad', name, version: result.version })
       }
@@ -181,11 +179,11 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
       </section>
 
       <section className="space-y-2">
-        <div className="flex items-center gap-2"><h3 className="text-xs font-semibold">小队</h3><span className="text-[11px] text-muted-foreground">并发上限是政策位：按队计数</span><span className="flex-1" /><button type="button" className="rounded-md border px-2.5 py-1 text-xs" onClick={() => openSquad(null)}>建小队</button></div>
+        <div className="flex items-center gap-2"><h3 className="text-xs font-semibold">小队</h3><span className="text-[11px] text-muted-foreground">并发政策位按成员载体计数</span><span className="flex-1" /><button type="button" className="rounded-md border px-2.5 py-1 text-xs" onClick={() => openSquad(null)}>建小队</button></div>
         {snapshot.squads.map((row) => <article key={row.name} className="rounded-lg border p-3">
-          <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5">{row.role === 'coordinator' ? '协调者队' : '执行者队'}</span><span className="flex-1" /><span>在跑 — / {row.max_concurrency ?? '不限'} · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openSquad(row)}>编辑</button></div>
-          <div className="mt-2 flex flex-wrap gap-1.5">{row.members.length > 0 ? row.members.map((member) => <span key={member} className="rounded border px-2 py-1 text-xs" title={member}>成员：{member}</span>) : <span className="text-xs text-muted-foreground">空队合法：先建队再补成员</span>}</div>
-          <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd><dt className="text-muted-foreground">绑定对象</dt><dd>{row.role === 'coordinator' ? '拉起通道（开卡即绑 / 一键拉起）' : '工作流派发节点（flows 页配置）'}</dd></dl>
+          <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5">{row.role === 'coordinator' ? '协调者队' : '执行者队'}</span><span className="flex-1" /><span>成员政策 · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openSquad(row)}>编辑</button></div>
+          <div className="mt-2 flex flex-wrap gap-1.5">{row.members.length > 0 ? row.members.map((member) => <span key={member.carrier} className="rounded border px-2 py-1 text-xs" title={member.carrier}>成员：{member.carrier}{member.max_concurrency ? `/${member.max_concurrency}` : ''}</span>) : <span className="text-xs text-muted-foreground">空队合法：先建队再补成员</span>}</div>
+          <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">并发政策</dt><dd>每个成员载体独立设置；空缺或 0 = 不限</dd><dt className="text-muted-foreground">绑定对象</dt><dd>{row.role === 'coordinator' ? '拉起通道（开卡即绑 / 一键拉起）' : '工作流派发节点（flows 页配置）'}</dd></dl>
         </article>)}
         {snapshot.squads.length === 0 && <p className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">尚未登记小队，请创建 executor 或 coordinator 小队。</p>}
         <p className="text-[11px] text-muted-foreground">协调者队成员必须落在协调机；执行者队成员可以是任何执行机。</p>
@@ -206,8 +204,8 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
           </div> : <div className="space-y-3">
             <label className="block space-y-1 text-xs">小队名<input aria-label="小队名" className={INPUT} readOnly={dialog.value !== null} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} /></label>
             <label className="block space-y-1 text-xs">角色<select aria-label="角色" className={INPUT} value={(draft as SquadDraft).role} onChange={(event) => updateDraft({ role: event.target.value })}><option value="executor">executor</option><option value="coordinator">coordinator</option></select></label>
-            <fieldset><legend className="text-xs">成员载体（按勾选顺序写入）</legend><div className="mt-2 grid gap-2 sm:grid-cols-2">{snapshot.carriers.map((carrier) => <label key={carrier.name} className="text-xs"><input type="checkbox" checked={(draft as SquadDraft).members.includes(carrier.name)} onChange={(event) => { const members = (draft as SquadDraft).members; updateDraft({ members: event.target.checked ? [...members, carrier.name] : members.filter((member) => member !== carrier.name) }) }} /> {carrier.name}</label>)}</div></fieldset>
-            <label className="block space-y-1 text-xs">并发上限（0 / 留空 = 不限）<input aria-label="并发上限" className={INPUT} type="number" min="0" value={(draft as SquadDraft).maxConcurrencyText} onChange={(event) => updateDraft({ maxConcurrencyText: event.target.value })} /></label>
+            <fieldset><legend className="text-xs">成员载体（按勾选顺序写入）</legend><div className="mt-2 grid gap-2 sm:grid-cols-2">{snapshot.carriers.map((carrier) => <label key={carrier.name} className="text-xs"><input type="checkbox" checked={(draft as SquadDraft).members.some((member) => member.carrier === carrier.name)} onChange={(event) => { const members = (draft as SquadDraft).members; updateDraft({ members: event.target.checked ? [...members, { carrier: carrier.name } satisfies SquadMember] : members.filter((member) => member.carrier !== carrier.name) }) }} /> {carrier.name}</label>)}</div></fieldset>
+            <p className="text-[11px] leading-5 text-muted-foreground">每个成员的政策上限由 wire 成员对象的 max_concurrency 表达；缺席或 0 表示不限。载体物理上限仍跨小队共享。</p>
           </div>}
           {saveError && <p role="alert" className="break-words text-xs text-destructive">{saveError}</p>}
           <div className="flex justify-end gap-2"><button type="button" className="rounded-md border px-3 py-1.5 text-xs" disabled={saving} onClick={closeDialog}>取消</button><button type="submit" className="rounded-md bg-primary px-3 py-1.5 text-xs text-primary-foreground" disabled={saving}>保存</button></div>

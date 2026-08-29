@@ -557,7 +557,8 @@ describe('scheduling wire', () => {
     expect(c.max_concurrency).toBe(2)
     const s: SquadView = squadsFixture.squads[0]
     expect(s.role).toBe('coordinator')
-    expect(s.max_concurrency).toBeUndefined() // omitempty：0 以键缺席表达
+    expect(s.members[0].carrier).toBe('mac-01-opencode')
+    expect(s.members[0].max_concurrency).toBeUndefined() // omitempty：0 以键缺席表达
   })
   it('QueueEntry 的 ready=false 显式在场且位次为正', () => {
     const e: QueueEntry = queueFixture.queue[0]

@@ -166,7 +166,7 @@ func TestCardStepAdmittedRoundReleasesCapacity(t *testing.T) {
 		t.Fatal("执行者回合未返回")
 	}
 	waitFor(t, func() bool { return !env.srv.cardStepInFlight(cardID) })
-	for _, key := range []string{"squad/sq1", "carrier/c1"} {
+	for _, key := range []string{"squad/sq1/c1", "carrier/c1"} {
 		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
 			t.Fatalf("回合结束后计数 %s=%d，want 0", key, got)
 		}

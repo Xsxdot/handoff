@@ -164,7 +164,7 @@ func TestCarrierPutRoundtripThroughWire(t *testing.T) {
 func TestSquadPutValidatesMembersAndRole(t *testing.T) {
 	env := newSchedEnv(t)
 	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/squads/sq?expect=0",
-		`{"role":"executor","members":["ghost"]}`)
+		`{"role":"executor","members":[{"carrier":"ghost"}]}`)
 	if code != http.StatusBadRequest || !strings.Contains(rb, "ghost") {
 		t.Fatalf("幽灵成员应 400 点名成员，得 %d：%s", code, rb)
 	}
@@ -180,7 +180,7 @@ func TestSquadPutValidatesMembersAndRole(t *testing.T) {
 		t.Fatalf("前置载体登记失败 %d", code)
 	}
 	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/squads/sq?expect=0",
-		`{"role":"coordinator","members":["c1"]}`)
+		`{"role":"coordinator","members":[{"carrier":"c1"}]}`)
 	if code != http.StatusOK {
 		t.Fatalf("合法创建应 200，得 %d", code)
 	}
@@ -191,7 +191,7 @@ func TestSquadPutValidatesMembersAndRole(t *testing.T) {
 	}
 	if len(view.Squads) != 1 || view.Squads[0].Name != "sq" ||
 		view.Squads[0].Role != "coordinator" || len(view.Squads[0].Members) != 1 ||
-		view.Squads[0].Members[0] != "c1" || view.Squads[0].Version != 1 {
+		view.Squads[0].Members[0].Carrier != "c1" || view.Squads[0].Version != 1 {
 		t.Fatalf("小队行不符: %+v", view.Squads)
 	}
 }

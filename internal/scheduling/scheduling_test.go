@@ -88,7 +88,8 @@ func newCASFixture(t *testing.T) (*scheduling.Service, *ledgerapi.Facade) {
 		}
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "s1", Role: scheduling.RoleExecutor,
-		Members: []string{"c1", "c2"}, MaxConcurrency: 10}, 0); err != nil {
+		Members: []scheduling.SquadMember{{Carrier: "c1"}, {Carrier: "c2"}},
+	}, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)
 	}
 	return svc, facade
@@ -158,10 +159,35 @@ func TestConcurrentAdmitRespectsTwoLevelCaps(t *testing.T) {
 		t.Fatalf("成功数=%d，期望恰=%d（少=预算或成员轮转缺陷；多=上界执法失效）", got, m)
 	}
 	// 计数终值逐一相等，不用抽查：
-	for key, want := range map[string]int{"squad/s1": 4, "carrier/c1": 2, "carrier/c2": 2} {
+	for key, want := range map[string]int{"squad/s1/c1": 2, "squad/s1/c2": 2, "carrier/c1": 2, "carrier/c2": 2} {
 		if got := runningCount(t, facade, key); got != want {
 			t.Fatalf("计数 %s=%d，期望 %d", key, got, want)
 		}
+	}
+}
+
+// TestSquadMemberWireShapeAndLegacyRead 可执行冻结成员政策位的 JSON 形状，并锁住
+// 存量 members:["carrier"] 的无损迁移：旧队级上限不进入新模型，旧成员政策按不限读入。
+func TestSquadMemberWireShapeAndLegacyRead(t *testing.T) {
+	q := scheduling.Squad{
+		Name: "sq", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 2}, {Carrier: "c2"}},
+	}
+	wire, err := json.Marshal(q)
+	if err != nil {
+		t.Fatalf("成员政策 JSON 编码: %v", err)
+	}
+	if got, want := string(wire), `{"name":"sq","role":"executor","members":[{"carrier":"c1","max_concurrency":2},{"carrier":"c2"}]}`; got != want {
+		t.Fatalf("成员政策 wire 不符:\n got=%s\nwant=%s", got, want)
+	}
+
+	var legacy scheduling.Squad
+	if err := json.Unmarshal([]byte(`{"name":"legacy","role":"executor","members":["c1","c2"],"max_concurrency":9}`), &legacy); err != nil {
+		t.Fatalf("存量小队读取: %v", err)
+	}
+	if len(legacy.Members) != 2 || legacy.Members[0].Carrier != "c1" || legacy.Members[1].Carrier != "c2" ||
+		legacy.Members[0].MaxConcurrency != 0 || legacy.Members[1].MaxConcurrency != 0 {
+		t.Fatalf("存量成员未规范化为不限政策: %+v", legacy.Members)
 	}
 }
 

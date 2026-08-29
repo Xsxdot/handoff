@@ -118,7 +118,7 @@ func (s *Server) handleCoordLaunch(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case errors.As(err, &lookupErr) && errors.Is(lookupErr.err, errNoCoordinatorSquad):
 			writeErr(w, http.StatusBadRequest, fmt.Errorf(
-				"未登记协调者小队：先登记载体，再登记协调者小队（示例：handoff squad create --name coord --role coordinator --member coord-carrier --max-concurrency 1）"))
+				"未登记协调者小队：先登记载体，再登记协调者小队（示例：handoff squad create --name coord --role coordinator --member coord-carrier）"))
 		case errors.As(err, &lookupErr) && errors.Is(lookupErr.err, errAmbiguousCoordinatorSquad):
 			writeErr(w, http.StatusConflict, lookupErr.err)
 		case errors.As(err, &lookupErr):

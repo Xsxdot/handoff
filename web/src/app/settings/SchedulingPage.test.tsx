@@ -36,7 +36,7 @@ describe('SchedulingPage', () => {
   it('renders carrier and squad fields and empty-state guidance', async () => {
     vi.mocked(getSquads).mockResolvedValue({
       carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', healthy: true, version: 3 }],
-      squads: [{ name: 'coord', role: 'coordinator', members: ['mbp'], version: 2 }],
+      squads: [{ name: 'coord', role: 'coordinator', members: [{ carrier: 'mbp' }], version: 2 }],
     })
     render(<SchedulingPage />)
     expect(await screen.findByText('mbp')).toBeVisible()
@@ -59,7 +59,7 @@ describe('SchedulingPage', () => {
     expect(putCarrier).toHaveBeenCalledWith('mbp', 0, expect.objectContaining({ machine: '本机', home_dir: '/h' }))
     expect(vi.mocked(putCarrier).mock.calls[0]?.[2]).not.toHaveProperty('max_concurrency')
 
-    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [{ name: 'exec', role: 'executor', members: [], version: 7 }] })
+  vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [{ name: 'exec', role: 'executor', members: [], version: 7 }] })
     render(<SchedulingPage />)
     await user.click(await screen.findByRole('button', { name: '编辑' }))
     await user.click(screen.getByRole('button', { name: '保存' }))

@@ -81,8 +81,8 @@ func setupSquadEnv(t *testing.T, carrierMax int) (*ledgerEnv, *fakeTargetMachine
 		t.Fatalf("登记载体: %v", err)
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "sq1",
-		Role: scheduling.RoleExecutor, Members: []string{"c1"},
-		MaxConcurrency: 8}, 0); err != nil {
+		Role: scheduling.RoleExecutor, Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}},
+	}, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)
 	}
 	return env, ftm
@@ -189,7 +189,7 @@ func TestSquadNodeAdmitsAndDispatchesThroughBinding(t *testing.T) {
 		t.Fatalf("派发执行者=%v，want 载体 cli opencode", body["executor"])
 	}
 	facade := env.srv.autoLedger
-	for key, want := range map[string]int{"squad/sq1": 1, "carrier/c1": 1} {
+	for key, want := range map[string]int{"squad/sq1/c1": 1, "carrier/c1": 1} {
 		if got := runningCountIn(t, facade, key); got != want {
 			t.Fatalf("计数 %s=%d，want %d", key, got, want)
 		}
@@ -291,7 +291,7 @@ func TestSquadNodeRejectsAreDistinctFromQueueing(t *testing.T) {
 	t.Run("协调者小队报角色不符", func(t *testing.T) {
 		env, _ := setupSquadEnv(t, 2)
 		if err := env.srv.Scheduling().PutSquad(scheduling.Squad{Name: "coord",
-			Role: scheduling.RoleCoordinator, Members: []string{"c1"}}, 0); err != nil {
+			Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "c1"}}}, 0); err != nil {
 			t.Fatal(err)
 		}
 		cardID := seedSquadFlow(t, env, "coord", 1)[0]

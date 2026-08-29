@@ -4,7 +4,7 @@
 //
 // 冻结语义（契约 §3/§4，实现与测试同源）：
 //   - 准入判据 = 小队有位 且 载体有位；两级计数各自独立；
-//   - 载体上限是物理位（跨小队全局），小队上限是政策位（按队计数）；
+//   - 载体上限是物理位（跨小队全局），成员上限是政策位（按小队+载体计数）；
 //   - 抢并发时协调者优先：只作用于准入排序（先清协调者队再放执行者队），
 //     不抢占在跑任务；
 //   - 排队顺序 = 就绪度快照优先 → 卡优先级 → 入队先后（FIFO）。
@@ -67,12 +67,50 @@ const (
 	RoleCoordinator SquadRole = "coordinator" // 绑拉起通道
 )
 
-// Squad 是编制：角色 + 成员载体引用集 + 并发政策位。
+// SquadMember 是小队对一个具体载体的政策位。MaxConcurrency=0 表示不限。
+type SquadMember struct {
+	Carrier        string `json:"carrier"`
+	MaxConcurrency int    `json:"max_concurrency,omitempty"`
+}
+
+// Squad 是编制：角色 + 成员载体引用集；政策位落在每个成员上。
 type Squad struct {
-	Name           string    `json:"name"`
-	Role           SquadRole `json:"role"`
-	Members        []string  `json:"members"`
-	MaxConcurrency int       `json:"max_concurrency,omitempty"` // 政策位；0 = 不设上限
+	Name    string        `json:"name"`
+	Role    SquadRole     `json:"role"`
+	Members []SquadMember `json:"members"`
+}
+
+// UnmarshalJSON 兼容 B156.3 的存量成员字符串形状。旧队级 max_concurrency 刻意不
+// 出现在目标形状中，因此由 encoding/json 忽略；旧成员逐个规范化为不限政策位。
+func (q *Squad) UnmarshalJSON(data []byte) error {
+	type squadWire struct {
+		Name    string          `json:"name"`
+		Role    SquadRole       `json:"role"`
+		Members json.RawMessage `json:"members"`
+	}
+	var raw squadWire
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	q.Name, q.Role = raw.Name, raw.Role
+	if len(raw.Members) == 0 || string(raw.Members) == "null" {
+		q.Members = nil
+		return nil
+	}
+	var members []SquadMember
+	if err := json.Unmarshal(raw.Members, &members); err == nil {
+		q.Members = members
+		return nil
+	}
+	var legacy []string
+	if err := json.Unmarshal(raw.Members, &legacy); err != nil {
+		return json.Unmarshal(raw.Members, &members)
+	}
+	q.Members = make([]SquadMember, len(legacy))
+	for i, carrier := range legacy {
+		q.Members[i] = SquadMember{Carrier: carrier}
+	}
+	return nil
 }
 
 // IgnitionRequest 是一次点火/拉起请求。Priority 与 Ready 是入队时刻的卡状态
@@ -172,8 +210,8 @@ func (s *Service) PutSquad(q Squad, expect int) error {
 		return fmt.Errorf("%w: 小队 %s 角色只能是 executor 或 coordinator", ErrInvalid, q.Name)
 	}
 	for _, m := range q.Members {
-		if _, err := s.Carrier(m); err != nil {
-			return fmt.Errorf("小队 %s 成员 %s: %w", q.Name, m, err)
+		if _, err := s.Carrier(m.Carrier); err != nil {
+			return fmt.Errorf("小队 %s 成员 %s: %w", q.Name, m.Carrier, err)
 		}
 	}
 	return s.putEntity(kindSquad, q.Name, q, expect)
@@ -215,7 +253,7 @@ func (s *Service) LaunchAdmit(squadName string) (Binding, error) {
 
 // Release 归还一个已结束回合占用的两级名额。幂等：计数到 0 后不再下探。
 func (s *Service) Release(squadName, carrierName string) error {
-	if err := s.stepRunning(kindSquad+"/"+squadName, -1); err != nil {
+	if err := s.stepRunning(kindSquad+"/"+squadName+"/"+carrierName, -1); err != nil {
 		return err
 	}
 	return s.stepRunning(kindCarrier+"/"+carrierName, -1)
@@ -341,8 +379,8 @@ var errMemberFull = errors.New("scheduling: 该成员并发已满")
 // 趟里完成。
 func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error) {
 	anyHealthy := false
-	for _, name := range q.Members {
-		carrier, err := s.Carrier(name)
+	for _, member := range q.Members {
+		carrier, err := s.Carrier(member.Carrier)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				continue
@@ -353,7 +391,7 @@ func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error) {
 			continue
 		}
 		anyHealthy = true
-		binding, err := s.acquire(q, carrier, req)
+		binding, err := s.acquire(q, member, carrier, req)
 		switch {
 		case err == nil:
 			return binding, nil
@@ -369,20 +407,20 @@ func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error) {
 	return Binding{}, ErrNoSlot
 }
 
-// acquire 对「小队 q + 载体 c」做一次原子准入尝试（B156.3 契约岔口三·方案A）：
+// acquire 对「小队 q + 成员 m + 载体 c」做一次原子准入尝试（B156.3 契约岔口三·方案A）：
 // 每次先读两级计数并各自对上限复核，任一级满员返回 errMemberFull，再以 CAS
 // 递增；冲突则带着新读数重试。两级上界判断只此一份——它是防超发的唯一执法
 // 闸，去掉它并发准入必超发（变异复验的靶子）。
 //
-// 计数键只有 squad/<名> 与 carrier/<名> 两类，按（角色,名字）二元组计数不按卡
-// （契约 §15 澄清 3），不得引入第三类。MaxConcurrency<=0 视为不设上限：两个
+// 计数键仍只有 squad/<队>/<载体> 与 carrier/<载体> 两类，按（角色,名字）二元组计数不按卡
+// （B292 修订契约 §3），不得引入第三类。MaxConcurrency<=0 视为不设上限：两个
 // 上界分支恒不走时，本函数等价于无上界的 CAS 直增。
 //
 // 半程回滚：小队侧 +1 成功而载体侧失败时，用带符号减法回滚小队侧而不是按版本
 // 回写——期间可能有第三方又动了小队计数，按版本回写会把别人的增量踩掉。回滚
 // 失败只吞掉：计数偏高是保守方向（多拒不超发），偏低才会超发。
-func (s *Service) acquire(q Squad, c Carrier, req IgnitionRequest) (Binding, error) {
-	squadKey := kindSquad + "/" + q.Name
+func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRequest) (Binding, error) {
+	squadKey := kindSquad + "/" + q.Name + "/" + member.Carrier
 	carrierKey := kindCarrier + "/" + c.Name
 	for attempt := 0; attempt < maxCASAttempts; attempt++ {
 		squadRunning, squadExpect, err := s.readCount(squadKey)
@@ -393,7 +431,7 @@ func (s *Service) acquire(q Squad, c Carrier, req IgnitionRequest) (Binding, err
 		if err != nil {
 			return Binding{}, err
 		}
-		if q.MaxConcurrency > 0 && squadRunning >= q.MaxConcurrency {
+		if member.MaxConcurrency > 0 && squadRunning >= member.MaxConcurrency {
 			return Binding{}, errMemberFull
 		}
 		if c.MaxConcurrency > 0 && carrierRunning >= c.MaxConcurrency {

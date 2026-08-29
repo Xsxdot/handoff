@@ -30,7 +30,6 @@ var (
 	squadName    string
 	squadRole    string
 	squadMembers []string
-	squadMaxConc int
 	squadExpect  int
 	squadJSON    bool
 )
@@ -51,7 +50,7 @@ var squadCreateCmd = &cobra.Command{
 		}
 		defer done()
 		resp, err := cl.PutSquad(cmd.Context(), squadName, 0, proto.SquadInput{
-			Role: squadRole, Members: squadMembers, MaxConcurrency: squadMaxConc})
+			Role: squadRole, Members: squadMemberInputs(squadMembers)})
 		if err != nil {
 			return fmt.Errorf("登记小队被拒: %w", err)
 		}
@@ -61,7 +60,7 @@ var squadCreateCmd = &cobra.Command{
 }
 
 var squadSetCmd = &cobra.Command{
-	Use:   "set --name <名> [--role ...] [--member ...] [--max-concurrency N] [--expect V]",
+	Use:   "set --name <名> [--role ...] [--member ...] [--expect V]",
 	Short: "修改小队（未给的字段保持现状；--member 给出即整体替换成员集）",
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if strings.TrimSpace(squadName) == "" {
@@ -86,16 +85,12 @@ var squadSetCmd = &cobra.Command{
 		if found == nil {
 			return fmt.Errorf("小队 %s 不存在（handoff squad list 查看）", squadName)
 		}
-		in := proto.SquadInput{Role: found.Role, Members: found.Members,
-			MaxConcurrency: found.MaxConcurrency}
+		in := proto.SquadInput{Role: found.Role, Members: found.Members}
 		if cmd.Flags().Changed("role") {
 			in.Role = squadRole
 		}
 		if cmd.Flags().Changed("member") {
-			in.Members = squadMembers
-		}
-		if cmd.Flags().Changed("max-concurrency") {
-			in.MaxConcurrency = squadMaxConc
+			in.Members = squadMemberInputs(squadMembers)
 		}
 		expect := found.Version
 		if cmd.Flags().Changed("expect") {
@@ -145,8 +140,8 @@ var squadListCmd = &cobra.Command{
 				c.Name, c.Machine, c.CLI, c.MaxConcurrency, c.Version)
 		}
 		for _, s := range resp.Squads {
-			fmt.Fprintf(w, "小队\t%s\t%s\t%s\t%d\t%d\n",
-				s.Name, s.Role, strings.Join(s.Members, ","), s.MaxConcurrency, s.Version)
+			fmt.Fprintf(w, "小队\t%s\t%s\t%s\t-\t%d\n",
+				s.Name, s.Role, formatSquadMembers(s.Members), s.Version)
 		}
 		return w.Flush()
 	},
@@ -158,17 +153,33 @@ func init() {
 		"executor|coordinator（必填；两种小队不混编）")
 	squadCreateCmd.Flags().StringSliceVar(&squadMembers, "member", nil,
 		"成员载体名（可重复；须已登记）")
-	squadCreateCmd.Flags().IntVar(&squadMaxConc, "max-concurrency", 0, "政策位并发上限（0=不限）")
 	squadSetCmd.Flags().StringVar(&squadName, "name", "", "小队名（必填）")
 	squadSetCmd.Flags().StringVar(&squadRole, "role", "",
 		"executor|coordinator（不给则保持现状）")
 	squadSetCmd.Flags().StringSliceVar(&squadMembers, "member", nil,
 		"成员载体名（给出即整体替换；不给则保持）")
-	squadSetCmd.Flags().IntVar(&squadMaxConc, "max-concurrency", 0,
-		"并发上限（不给则保持；0=不限）")
 	squadSetCmd.Flags().IntVar(&squadExpect, "expect", 0,
 		"乐观锁版本（不给则用刚读取的现状版本）")
 	squadListCmd.Flags().BoolVar(&squadJSON, "json", false, "以 NDJSON 输出")
 	squadCmd.AddCommand(squadCreateCmd, squadSetCmd, squadListCmd)
 	rootCmd.AddCommand(squadCmd)
+}
+
+func squadMemberInputs(names []string) []proto.SquadMember {
+	members := make([]proto.SquadMember, len(names))
+	for i, name := range names {
+		members[i] = proto.SquadMember{Carrier: name}
+	}
+	return members
+}
+
+func formatSquadMembers(members []proto.SquadMember) string {
+	labels := make([]string, len(members))
+	for i, member := range members {
+		labels[i] = member.Carrier
+		if member.MaxConcurrency > 0 {
+			labels[i] += fmt.Sprintf("/%d", member.MaxConcurrency)
+		}
+	}
+	return strings.Join(labels, ",")
 }

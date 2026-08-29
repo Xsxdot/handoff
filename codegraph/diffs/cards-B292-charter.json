@@ -1,0 +1,146 @@
+{
+  "view": "cards/B292-charter",
+  "base": "5d06fce0",
+  "summary": "B292 Ticket 0：小队成员政策位与成员对象 wire 骨架",
+  "nodesAdded": {
+    "m_scheduling_SquadMember": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 3,
+      "name": "SquadMember",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 71,
+      "signature": "type SquadMember struct {",
+      "summary": "小队对一个具体载体的政策位；0=不限",
+      "fields": [
+        ["Carrier", "string", "具体载体名"],
+        ["MaxConcurrency", "int", "成员政策位；0=不限"]
+      ],
+      "projScanned": true
+    },
+    "m_proto_SquadMember": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 23,
+      "name": "SquadMember",
+      "file": "internal/proto/scheduling.go",
+      "line": 23,
+      "signature": "type SquadMember struct {",
+      "summary": "小队成员的 wire 对象；0=不限以键缺席表达",
+      "fields": [
+        ["Carrier", "string", "具体载体名"],
+        ["MaxConcurrency", "int", "成员政策位；omitempty"]
+      ],
+      "modelKind": "dto",
+      "projScanned": true
+    },
+    "m_web_api_scheduling_SquadMember": {
+      "kind": "model",
+      "container": "k_web_api_scheduling_model",
+      "order": 19,
+      "name": "SquadMember",
+      "file": "web/src/api/scheduling.ts",
+      "line": 25,
+      "signature": "export interface SquadMember {",
+      "fields": [
+        ["carrier", "string", "具体载体名"],
+        ["max_concurrency", "number | undefined", "成员政策位；缺席=不限"]
+      ],
+      "modelKind": "dto"
+    }
+  },
+  "nodesModified": {
+    "m_scheduling_Squad": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 2,
+      "name": "Squad",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 77,
+      "signature": "type Squad struct {",
+      "summary": "Squad 是编制：角色 + 成员载体引用集；政策位落在每个成员上",
+      "fields": [
+        ["Name", "string", "小队名"],
+        ["Role", "SquadRole", "executor 绑节点 / coordinator 绑拉起通道，不混编"],
+        ["Members", "[]SquadMember", "成员载体与成员政策位" ]
+      ],
+      "projScanned": true
+    },
+    "m_proto_SquadView": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 24,
+      "name": "SquadView",
+      "file": "internal/proto/scheduling.go",
+      "line": 30,
+      "signature": "type SquadView struct {",
+      "summary": "SquadView 是小队登记行；政策位落在每个成员对象上",
+      "fields": [
+        ["Name", "string", ""],
+        ["Role", "string", ""],
+        ["Members", "[]SquadMember", ""],
+        ["Version", "int", ""]
+      ],
+      "modelKind": "dto",
+      "projScanned": true
+    },
+    "m_proto_SquadInput": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 52,
+      "name": "SquadInput",
+      "file": "internal/proto/scheduling.go",
+      "line": 57,
+      "signature": "type SquadInput struct {",
+      "summary": "SquadInput 是 PUT 小队的请求体；成员政策位随成员对象提交",
+      "fields": [
+        ["Name", "string", ""],
+        ["Role", "string", ""],
+        ["Members", "[]SquadMember", ""]
+      ],
+      "modelKind": "dto",
+      "projScanned": true
+    },
+    "m_web_api_scheduling_SquadView": {
+      "kind": "model",
+      "container": "k_web_api_scheduling_model",
+      "order": 18,
+      "name": "SquadView",
+      "file": "web/src/api/scheduling.ts",
+      "line": 18,
+      "fields": [
+        ["name", "string", ""],
+        ["role", "string", ""],
+        ["members", "SquadMember[]", ""],
+        ["version", "number", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_web_api_scheduling_SquadInput": {
+      "kind": "model",
+      "container": "k_web_api_scheduling_model",
+      "order": 41,
+      "name": "SquadInput",
+      "file": "web/src/api/scheduling.ts",
+      "line": 45,
+      "fields": [
+        ["name", "string | undefined", ""],
+        ["role", "string", ""],
+        ["members", "SquadMember[]", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "n_scheduling_Service_Release": {
+      "kind": "func",
+      "container": "k_scheduling_Service",
+      "order": 3,
+      "name": "Service.Release",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 255,
+      "signature": "func (s *Service) Release(squadName, carrierName string) error",
+      "params": [["squadName", "string", "小队名"], ["carrierName", "string", "载体名"]],
+      "returns": "error",
+      "summary": "按小队+载体成员政策键和载体物理键归还名额；幂等"
+    }
+  }
+}

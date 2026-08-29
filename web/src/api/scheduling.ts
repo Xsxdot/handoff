@@ -18,9 +18,13 @@ export interface CarrierView {
 export interface SquadView {
   name: string
   role: string
-  members: string[]
-  max_concurrency?: number
+  members: SquadMember[]
   version: number
+}
+
+export interface SquadMember {
+  carrier: string
+  max_concurrency?: number
 }
 
 export interface SquadsResp {
@@ -41,8 +45,7 @@ export interface CarrierInput {
 export interface SquadInput {
   name?: string
   role: string
-  members: string[]
-  max_concurrency?: number
+  members: SquadMember[]
 }
 
 export interface SquadPutResp {
@@ -105,7 +108,7 @@ export const getQueue = () => request<QueueResp>('/api/queue')
 
 // 服务端用 max_concurrency 缺席表达「不限」；保护 API 边界不把调用方传入的
 // 0 序列化成另一种语义，尤其是表单从数字输入转换而来的零值。
-function omitZeroConcurrency<T extends CarrierInput | SquadInput>(input: T): T {
+function omitZeroConcurrency<T extends CarrierInput>(input: T): T {
   if (input.max_concurrency !== 0) return input
   const copy = { ...input }
   delete copy.max_concurrency
@@ -123,7 +126,7 @@ export const putCarrier = (name: string, expect: number, input: CarrierInput) =>
 export const putSquad = (name: string, expect: number, input: SquadInput) =>
   putJSON<SquadPutResp>(
     `/api/squads/squads/${encodeURIComponent(name)}?expect=${expect}`,
-    omitZeroConcurrency(input),
+    input,
   )
 
 export type CoordinatorLaunchSource = 'manual' | 'card_create'
