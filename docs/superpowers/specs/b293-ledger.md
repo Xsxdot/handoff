@@ -48,3 +48,20 @@
 - 2026-08-29 拍板：岔口一 A（WakeRequest.Credential，退回 contract）、二 A（组装点注入，不改 target）、三 B（圈文件集，不插竖切）、四 A（进程 HOME=载体 HomeDir + grokhome 仍在）、五 空 status 当 pending 不扫库、六 A（POST /api/tasks home_dir，退回 contract）。
 - 2026-08-29 退回原因（API 事实，协调者复核）：`WakeRequest` 无 Credential（`internal/hostapi/probe.go`）；`HomeWakeReq` 无 Credential（`internal/proto/scheduling.go`）；`DispatchOpts`/`DispatchReq`/`client.Dispatch` 手搭 map 均无 home_dir；`startCardStep`/`stepTransport` 不读 `carrier.HomeDir`；`scheddrain` 拉起半边已写 HomeDir。
 
+## contract 补冻开工（cards/B293-charter-5 @ 6fb74fce）
+
+- 2026-08-29 上游核：当前分支 `cards/B293-charter-5`，`git log -1` 为 `6fb74fce docs(B293): breakdown 出稿并拍板，退回 contract 补两条接缝`；spec 头部为「已批准」，breakdown 头部为「已拍板」；工作树开工时干净。
+- 2026-08-29 查证：`WakeRequest`/`HomeWakeReq`/`handleHomeWake` 尚无 Credential；派发链 `ledgerstep.DispatchOpts`、`client.DispatchOpts`、`agentd.dispatchRequest`、`agentd.DispatchReq` 与 `client.Dispatch` 手搭 map 尚无 home_dir；`startCardStep` 不读取载体 HomeDir，`scheddrain` 已满足协调者拉起半边。
+- 2026-08-29 判断：第 52 条采用 `*string` 可空字段，nil 表示 JSON 字段缺席，指向空串表示显式 `""`，非空指针表示载体 HomeDir；client 手搭 map 仅在指针非 nil 时写入 `home_dir`，避免 nil 被编码为 null。
+- 2026-08-29 落地：为 WakeRequest/HomeWakeReq/TS wake 镜像补 Credential，并由 `handleHomeWake` 透传；为 ledgerstep→cmd→client→POST /api/tasks→agentd request/DispatchReq 补 HomeDir 字段与透传；不改 `startCardStep`、`Manager.Dispatch` 的行为，不实现 U2/U5 肉。
+- 2026-08-29 尝试查图：`go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . check --view cards/B293-charter-5` 失败，原文：`Error: 读取视图 codegraph/diffs/cards/B293-charter-5.json: open codegraph/diffs/cards/B293-charter-5.json: no such file or directory`；`exit status 1`。现有视图文件命名为 `cards-B293-charter-3`，待生成本分支视图 diff 后复跑。
+- 2026-08-29 图视图补齐：`codegraph validate` 输出 `issues: null`、退出码 0；`codegraph check --view cards-B293-charter-5` 输出 `fails: []`、退出码 0；既有 warns 保留。
+- 2026-08-29 符号锚自检：修正契约表项为 `internal/scheduling/scheduling.go:133` 后，`codegraph resolve --doc docs/superpowers/specs/b293-contract.md --view cards-B293-charter-5` 退出码 0；输出无 `vanished`，本轮新增字段/签名锚均为 ok，其余既有锚为 ok/moved。
+- 2026-08-29 验证：`go build ./...` 退出码 0；`go vet ./internal/scheduling/ ./internal/hostapi/ ./internal/proto/ ./internal/ledgerstep/ ./internal/client/ ./internal/agentd/` 退出码 0；`gofmt -l` 无输出；`git diff --check` 退出码 0。
+- 2026-08-29 验证：`go test ./internal/hostapi/ ./internal/ledgerstep/ -count=1` 为 hostapi 0.313s、ledgerstep 7.336s 均 ok；`go test ./internal/agentd/ -count=1` 为 `ok github.com/Xsxdot/handoff/internal/agentd 248.787s`；均退出码 0。
+- 2026-08-29 验证：`go test ./internal/proto/ -run TestContractFixtures -update` 退出码 0，随后非 update fixture test 为 `ok .../internal/proto 0.005s`；`go test ./internal/client/ -run TestDispatchSerializesHomeDirThreeStates -count=1` 为 `ok .../internal/client 0.008s`；均退出码 0。
+- 2026-08-29 验证：补加 `TestHomeWakeReqOmitsEmptyCredential` 锁定 `credential` 空值因 `omitempty` 缺席；`go test ./internal/proto/ -run 'TestContractFixtures|TestHomeWakeReqOmitsEmptyCredential' -count=1` 为 `ok .../internal/proto 0.003s`，退出码 0。
+- 2026-08-29 验证：`go test ./... -run '^$' -count=1` 全仓测试包编译检查通过，退出码 0；各包输出 `[no tests to run]` 或无测试文件。
+- 2026-08-29 判断：按冻结清单原子化纪律，将第 52 条拆为发送、缺席/空值语义、不得覆写三条；将第 56 条拆为供给时序、不得搬技能/规则、claude 无文件空操作三条；原条号保留为主断言。
+- 2026-08-29 收口：契约正文、`codegraph/target.json`、`cards-B293-charter-5` 视图 diff、Ticket 0 字段/透传骨架、fixture/测试与本台账随本提交冻结；不 push。
+- 2026-08-29 判断：`web/node_modules` 不存在，vitest 未验证；契约声明该欠账，不把 TS 测试伪报为通过。

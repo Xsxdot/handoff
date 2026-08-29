@@ -234,6 +234,7 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		Prompt: opts.Prompt, Target: opts.Target,
 		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
 		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
+		HomeDir:           opts.HomeDir,
 		Discipline:        opts.Discipline,
 		DisciplineText:    opts.DisciplineText,
 		DisciplineVersion: opts.DisciplineVersion,

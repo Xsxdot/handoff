@@ -53,6 +53,7 @@ type dispatchRequest struct {
 	planB64            string
 	planName           string
 	base               string
+	homeDir            *string
 	resolveDefaultBase bool
 	localBaseBranch    bool
 }
@@ -85,6 +86,7 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		Prompt: req.prompt, Target: req.target,
 		NewBranch: req.branch, Branch: req.existingBranch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
+		HomeDir:           req.homeDir,
 		Discipline:        req.discipline,
 		DisciplineText:    req.disciplineText,
 		DisciplineVersion: req.disciplineVersion,
@@ -109,6 +111,7 @@ func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, er
 		prompt: opts.Prompt, branch: opts.Branch, target: opts.Target, project: opts.Project,
 		executor: opts.Executor, model: opts.Model, planB64: opts.PlanB64,
 		planName: opts.PlanName, base: opts.Base, existingBranch: opts.ExistingBranch,
+		homeDir:    opts.HomeDir,
 		discipline: opts.Discipline,
 		// B229：ViaTemplate 透传下来的缝 1 产物（Dispatcher 数据字段），原样上 wire。
 		disciplineText:     opts.DisciplineText,

@@ -417,6 +417,9 @@ type DispatchReq struct {
 	Prompt string
 	// Name 是任务展示名（空时从 plan 名/prompt 派生，见 deriveName）。
 	Name string
+	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
+	// Ticket 0 只保留字段，执行机覆写行为归实现票 U5。
+	HomeDir *string
 	// Executor 是任务选择的执行者名；空=缺省（cfg.Executor.Default）。
 	Executor string
 	// Discipline 是本次派发点名的纪律块**角色名**（如 review）；空=未点名。

@@ -50,12 +50,14 @@ const (
 	WakeUnreachable WakeOutcome = "unreachable"
 )
 
-// WakeRequest 描述一次有时限的本机唤起。Timeout=0 使用 DefaultDetectTimeout。
+// WakeRequest 描述一次有时限的本机唤起。Credential 取载体词表（standalone /
+// main_home_sync）；空 = standalone。Timeout=0 使用 DefaultDetectTimeout。
 type WakeRequest struct {
-	CLI     string
-	HomeDir string
-	Model   string
-	Timeout time.Duration
+	CLI        string
+	HomeDir    string
+	Credential string
+	Model      string
+	Timeout    time.Duration
 }
 
 // WakeReply 是唤起结局。Detail 给人看，原样交给 ApplyDetect 的 last_error。

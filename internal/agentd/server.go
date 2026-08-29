@@ -1153,7 +1153,9 @@ type dispatchRequest struct {
 	Target      string `json:"target"`
 	Prompt      string `json:"prompt"`
 	Name        string `json:"name"`
-	Executor    string `json:"executor"`
+	// HomeDir 是小队派发载体 HOME 的可空字段；缺席与显式空串必须可区分。
+	HomeDir  *string `json:"home_dir,omitempty"`
+	Executor string  `json:"executor"`
 	// Discipline 是派发点名的纪律块角色名；空=未点名（只注入平台层）。
 	// B229：正文由协调者侧组装后经 DisciplineText 下发，本机收文即用不再解析；
 	// DisciplineVersion 是命中的账本版本，随任务落盘供回放。
@@ -1196,6 +1198,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
 		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Discipline: req.Discipline, Model: req.Model,
+		HomeDir:           req.HomeDir,
 		DisciplineText:    req.DisciplineText,
 		DisciplineVersion: req.DisciplineVersion,
 		Branch:            req.Branch, NewBranch: req.NewBranch, Base: req.Base,

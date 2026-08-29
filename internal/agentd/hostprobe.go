@@ -79,7 +79,7 @@ func (s *Server) handleHomeWake(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("唤起隔离 HOME", "cli", in.CLI)
 	reply, err := s.hostAPI.WakeHome(r.Context(), hostapi.WakeRequest{
-		CLI: in.CLI, HomeDir: in.HomeDir, Model: in.Model,
+		CLI: in.CLI, HomeDir: in.HomeDir, Credential: in.Credential, Model: in.Model,
 	})
 	if err != nil {
 		s.hostProbeErr(w, err)

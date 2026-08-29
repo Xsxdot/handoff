@@ -596,6 +596,7 @@ describe('scheduling wire', () => {
     expect(probeResp.kind).toBe('empty')
     const wakeReq: HomeWakeReq = homeWakeReqFixture
     expect(wakeReq.home_dir).toBe('~/.handoff/home/mbp-codex')
+    expect(wakeReq.credential).toBe('main_home_sync')
     expect(wakeReq.model).toBeUndefined()
     const wakeResp: HomeWakeResp = homeWakeRespFixture
     expect(wakeResp.outcome).toBe('need_login')

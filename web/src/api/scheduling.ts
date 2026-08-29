@@ -140,6 +140,7 @@ export const probeHome = (input: HomeProbeReq) => {
 export const wakeHome = (input: HomeWakeReq) => {
   const q = input.machine ? `?machine=${encodeURIComponent(input.machine)}` : ''
   const body: HomeWakeReq = { cli: input.cli, home_dir: input.home_dir }
+  if (input.credential) body.credential = input.credential
   if (input.model) body.model = input.model
   return postJSON<HomeWakeResp>(`/api/host/wake${q}`, body)
 }
@@ -188,6 +189,7 @@ export interface HomeProbeResp {
 export interface HomeWakeReq {
   cli: string
   home_dir: string
+  credential?: string
   model?: string
   machine?: string
 }

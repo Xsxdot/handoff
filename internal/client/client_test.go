@@ -612,6 +612,56 @@ func TestDispatchSerializesCardDefaultBaseMarker(t *testing.T) {
 	}
 }
 
+// TestDispatchSerializesHomeDirThreeStates 钉住小队 HOME 字段穿过真实 JSON 的三态：
+// nil=字段缺席、指向空串=显式空值、指向非空串=载体 HOME。执行机据此区分普通派发
+// 与小队派发；客户端手搭 map 不得把 nil 编成 null，也不得丢掉显式空串。
+func TestDispatchSerializesHomeDirThreeStates(t *testing.T) {
+	stringPtr := func(s string) *string { return &s }
+	cases := []struct {
+		name        string
+		homeDir     *string
+		wantPresent bool
+		wantValue   string
+	}{
+		{name: "缺席", homeDir: nil},
+		{name: "显式空串", homeDir: stringPtr(""), wantPresent: true, wantValue: ""},
+		{name: "非空", homeDir: stringPtr("/isolated/home/team"), wantPresent: true, wantValue: "/isolated/home/team"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.Method != http.MethodPost || r.URL.Path != "/api/tasks" {
+					t.Errorf("request = %s %s, want POST /api/tasks", r.Method, r.URL.Path)
+				}
+				var got map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("解析 dispatch 请求: %v", err)
+				}
+				raw, present := got["home_dir"]
+				if present != tc.wantPresent {
+					t.Errorf("home_dir 是否出现 = %v, want %v; body=%s", present, tc.wantPresent, raw)
+				}
+				if present {
+					var value string
+					if err := json.Unmarshal(raw, &value); err != nil {
+						t.Errorf("home_dir 应为 JSON string: %v", err)
+					} else if value != tc.wantValue {
+						t.Errorf("home_dir = %q, want %q", value, tc.wantValue)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"T-home-dir"}`))
+			}))
+			defer ts.Close()
+			if _, err := client.New(ts.URL, testToken).Dispatch(context.Background(), client.DispatchOpts{
+				ProjectID: "deadbeefdeadbeef", Prompt: "home dir", HomeDir: tc.homeDir,
+			}); err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+		})
+	}
+}
+
 // TestCardStepSerializesAllFields 钉住卡节点请求的真实 HTTP 线格式、路径与认证头。
 func TestCardStepSerializesAllFields(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

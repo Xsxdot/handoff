@@ -94,7 +94,8 @@
    "entries": [
     "client 实体",
     "client.Client"
-   ]
+   ],
+   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。"
   },
   {
    "from": "d_cli",
@@ -229,7 +230,7 @@
    "from": "d_gateway",
    "to": "d_transport",
    "legacyBudget": 9,
-   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。"
   },
   {
    "from": "d_gateway",

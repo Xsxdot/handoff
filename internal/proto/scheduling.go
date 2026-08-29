@@ -137,9 +137,10 @@ type HomeProbeResp struct {
 
 // HomeWakeReq 是 POST /api/host/wake 的请求体（本机唤起，供检测编排转发）。
 type HomeWakeReq struct {
-	CLI     string `json:"cli"`
-	HomeDir string `json:"home_dir"`
-	Model   string `json:"model,omitempty"`
+	CLI        string `json:"cli"`
+	HomeDir    string `json:"home_dir"`
+	Credential string `json:"credential,omitempty"`
+	Model      string `json:"model,omitempty"`
 }
 
 // HomeWakeResp 是本机唤起结局。outcome 只允许 ready / need_login / quota / unreachable。

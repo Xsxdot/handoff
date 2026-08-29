@@ -167,7 +167,7 @@ func TestContractFixtures(t *testing.T) {
 		{"CoordinatorAttachReleaseResp", CoordinatorAttachReleaseResp{OK: true}},
 		{"HomeProbeReq", HomeProbeReq{CLI: "codex", Path: "~/.handoff/home/mbp-codex", Credential: "standalone"}},
 		{"HomeProbeResp", HomeProbeResp{Kind: "empty", Detail: "目录为空，保存后将自动创建并检测一次。"}},
-		{"HomeWakeReq", HomeWakeReq{CLI: "codex", HomeDir: "~/.handoff/home/mbp-codex", Model: ""}},
+		{"HomeWakeReq", HomeWakeReq{CLI: "codex", HomeDir: "~/.handoff/home/mbp-codex", Credential: "main_home_sync", Model: ""}},
 		{"HomeWakeResp", HomeWakeResp{Outcome: "need_login", Detail: "需要登录。"}},
 		{"CarrierDetectResp", CarrierDetectResp{Name: "mbp-codex", Status: "pending", LastError: "需要登录。", Version: 2}},
 		{"CarrierRunCommandResp", CarrierRunCommandResp{Command: "HOME=~/.handoff/home/mbp-codex codex"}},
@@ -202,6 +202,22 @@ func TestContractFixtures(t *testing.T) {
 		if !bytes.Equal(stored, data) {
 			t.Errorf("%s: 序列化结果与 fixture 不一致（契约已漂移，如需接受变更请用 -update）：\n--- 期望(已存) ---\n%s\n--- 实际(现生成) ---\n%s", c.name, stored, data)
 		}
+	}
+}
+
+// TestHomeWakeReqOmitsEmptyCredential 锁定 standalone 的空 Credential 不进 wire；
+// 非空 main_home_sync 由 HomeWakeReq fixture 锁定必须出现。
+func TestHomeWakeReqOmitsEmptyCredential(t *testing.T) {
+	data, err := json.Marshal(HomeWakeReq{CLI: "codex", HomeDir: "/isolated/home/codex"})
+	if err != nil {
+		t.Fatalf("marshal HomeWakeReq: %v", err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal HomeWakeReq: %v", err)
+	}
+	if _, ok := got["credential"]; ok {
+		t.Fatalf("empty credential unexpectedly serialized: %s", data)
 	}
 }
 

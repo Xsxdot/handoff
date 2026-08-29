@@ -1,4 +1,5 @@
 {
   "cli": "codex",
-  "home_dir": "~/.handoff/home/mbp-codex"
+  "home_dir": "~/.handoff/home/mbp-codex",
+  "credential": "main_home_sync"
 }

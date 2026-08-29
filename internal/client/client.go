@@ -724,7 +724,9 @@ type DispatchOpts struct {
 	Target      string
 	Prompt      string
 	Name        string
-	Executor    string
+	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
+	HomeDir  *string
+	Executor string
 	// Discipline 是本次派发点名的纪律块角色名；空=未点名。
 	// B229：名字仅作审计展示；正文由协调者侧缝 1 组装后经 DisciplineText 下发，
 	// 执行机不再解析。DisciplineText 与 DisciplineVersion 由 discipline.ResolveDispatch 产出；
@@ -757,7 +759,7 @@ type DispatchOpts struct {
 // 返回：
 //   - 创建后的任务（state=running）；服务端启动 executor 失败时返回错误
 func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error) {
-	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", map[string]any{
+	body := map[string]any{
 		"project_id": opts.ProjectID, "project_name": opts.ProjectName,
 		"plan_b64": opts.PlanB64, "plan_name": opts.PlanName, "target": opts.Target,
 		"prompt": opts.Prompt, "name": opts.Name, "executor": opts.Executor, "model": opts.Model,
@@ -768,7 +770,11 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"resolve_default_base": opts.ResolveDefaultBase,
 		"local_base_branch":    opts.LocalBaseBranch,
 		"worktree":             opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
-	})
+	}
+	if opts.HomeDir != nil {
+		body["home_dir"] = *opts.HomeDir
+	}
+	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", body)
 	if err != nil {
 		return nil, fmt.Errorf("dispatch 请求: %w", err)
 	}
