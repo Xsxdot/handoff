@@ -87,6 +87,7 @@ func TestWatchdogSyncsAuthOnNormalExit(t *testing.T) {
 	r := &runState{
 		taskID:  "t-closed",
 		taskDir: taskDir,
+		env:     []string{"HOME=" + os.Getenv("HOME")},
 		proc:    &Proc{TaskDir: taskDir, Port: deadPort(t)},
 		evCh:    make(chan executor.AdapterEvent, 64),
 	}
@@ -108,6 +109,7 @@ func TestWatchdogSyncsAuthOnDeathExit(t *testing.T) {
 	r := &runState{
 		taskID:  "t-dead",
 		taskDir: taskDir,
+		env:     []string{"HOME=" + os.Getenv("HOME")},
 		proc:    &Proc{TaskDir: taskDir, Port: deadPort(t)},
 		evCh:    make(chan executor.AdapterEvent, 64),
 		// 预置 lastAuthSync 让循环内的节流巡检**不触发**，这样本用例唯一可能
@@ -124,5 +126,40 @@ func TestWatchdogSyncsAuthOnDeathExit(t *testing.T) {
 	// 顺带确认判死路径本身没被改坏
 	if !r.evClosed {
 		t.Errorf("判死后事件通道应已关闭")
+	}
+}
+
+// TestSyncAuthOnceWithoutCarrierHomeDoesNotWriteMain 没有显式载体 HOME 时，
+// 看门狗不能把任务凭据写回机器主 HOME。
+func TestSyncAuthOnceWithoutCarrierHomeDoesNotWriteMain(t *testing.T) {
+	authPath, taskDir := wdSetup(t)
+	a := New(nil)
+	a.syncAuthOnce(&runState{taskID: "no-carrier", taskDir: taskDir})
+
+	if marker := wdMarker(t, authPath); marker != "authority" {
+		t.Fatalf("无载体 HOME 时不应写回机器主 HOME，key = %q", marker)
+	}
+}
+
+// TestSyncAuthOnceUsesCarrierHome 看门狗收编必须写回 req.Env 指定的权威副本。
+func TestSyncAuthOnceUsesCarrierHome(t *testing.T) {
+	_, taskDir := wdSetup(t)
+	carrierHome := t.TempDir()
+	carrierAuthDir := filepath.Join(carrierHome, ".grok")
+	if err := os.MkdirAll(carrierAuthDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	carrierAuth := filepath.Join(carrierAuthDir, authFileName)
+	if err := os.WriteFile(carrierAuth, wdAuthJSON(t, "2026-08-09T15:55:11.522980Z", "carrier-authority"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	a := New(nil)
+	r := &runState{taskID: "carrier-sync", taskDir: taskDir,
+		env: []string{"HOME=" + carrierHome}}
+	a.syncAuthOnce(r)
+
+	if marker := wdMarker(t, carrierAuth); marker != "task" {
+		t.Fatalf("载体权威凭据未收编更新，key = %q", marker)
 	}
 }

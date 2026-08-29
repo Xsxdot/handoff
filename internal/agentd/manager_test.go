@@ -1446,6 +1446,53 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 	}
 }
 
+// TestDispatchPersistsCarrierHome 锁定非空载体 HOME 同时进入 StartReq 与任务存储。
+func TestDispatchPersistsCarrierHome(t *testing.T) {
+	ad := &envRecordingAdapter{Adapter: fake.New(nil)}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	home := "/carrier/home"
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "载体 HOME 生命周期", HomeDir: &home,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if task.HomeDir != home {
+		t.Fatalf("返回任务 HomeDir = %q, want %q", task.HomeDir, home)
+	}
+	stored, err := st.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.HomeDir != home {
+		t.Fatalf("落库任务 HomeDir = %q, want %q", stored.HomeDir, home)
+	}
+	if len(ad.gotEnv) != 1 || ad.gotEnv[0] != "HOME="+home {
+		t.Fatalf("StartReq.Env 缺少精确载体 HOME: %v", ad.gotEnv)
+	}
+}
+
+// TestResumeTaskUsesPersistedCarrierHome 启动恢复必须从任务载体 HOME 重建 executor 环境。
+func TestResumeTaskUsesPersistedCarrierHome(t *testing.T) {
+	ad := &recordingRestorer{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	mustCreateTask(t, st, &proto.Task{ID: "carrier-resume", RepoPath: "/r", Executor: "fake",
+		HomeDir: "/carrier/home", State: proto.TaskStateRunning, ExecutorSession: "sess-1"})
+
+	if alive := m.ResumeTask("carrier-resume"); alive {
+		t.Fatalf("Resume 返回不存活时应为 false")
+	}
+	ad.mu.Lock()
+	got := ad.got
+	ad.mu.Unlock()
+	if len(got.Env) != 1 || got.Env[0] != "HOME=/carrier/home" {
+		t.Fatalf("启动恢复 Env 缺少精确载体 HOME: %v", got.Env)
+	}
+}
+
 // envRecordingAdapter 包一层 fake adapter，只为记录 Start 收到的 Env。
 type envRecordingAdapter struct {
 	executor.Adapter

@@ -413,6 +413,25 @@ func TestContinueColdResumesAndRetriesSend(t *testing.T) {
 	}
 }
 
+// TestContinueColdResumeUsesPersistedCarrierHome 续接冷恢复必须沿用任务载体 HOME。
+func TestContinueColdResumeUsesPersistedCarrierHome(t *testing.T) {
+	ad := &ladderAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		outcome: executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeCold, SessionID: "sess-1"}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	mustCreateTask(t, st, &proto.Task{ID: "carrier-continue", RepoPath: "/r", Executor: "fake",
+		HomeDir: "/carrier/home", State: proto.TaskStateWaitingReview, ExecutorSession: "sess-1"})
+
+	if err := m.Continue(context.Background(), "carrier-continue", "继续"); err != nil {
+		t.Fatalf("Continue: %v", err)
+	}
+	ad.mu.Lock()
+	got := ad.gotReq
+	ad.mu.Unlock()
+	if len(got.Env) != 1 || got.Env[0] != "HOME=/carrier/home" {
+		t.Fatalf("续接冷恢复 Env 缺少精确载体 HOME: %v", got.Env)
+	}
+}
+
 // TestContinueColdResumeEmitsProgressEvent 冷恢复/降级必须产出事件而不只是日志。
 // fresh 尤其重要：上下文断了是协调者需要知道的事实——它直接决定下一条指令
 // 要不要重述背景。只写日志等于让协调者在不知情的前提下继续对话。

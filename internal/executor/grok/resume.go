@@ -134,13 +134,15 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	}
 	// token 刷新期间软链可能已被干掉（spec §3.3 实测），重连前先修好
 	// （冷恢复路径同样要调：token 刷新期间软链可能已被干掉，见 B26）
-	if err := EnsureAuthLink(filepath.Join(taskDir, homeDirName)); err != nil {
+	carrierHome := nonEmptyEnvValue(req.Env, "HOME")
+	if err := ensureAuthLinkAt(filepath.Join(taskDir, homeDirName), carrierHome); err != nil {
 		a.log.Warn("修复 auth 软链失败，仍尝试重连", "task", taskID, "cause", err)
 	}
 
 	// 必须经 newRun：这里曾手搓字面量，于是 frames 与 seg 两次被漏掉，
 	// 恢复后的每一轮都不产结构化帧、不产耗时账目，且全程无声（见 newRun 注释）
 	r := a.newRun(taskID, taskDir, repoPath, proc)
+	r.env = append([]string(nil), req.Env...)
 	r.sessionID = sessionID
 
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
@@ -290,7 +292,13 @@ func (a *Adapter) syncAuthOnce(r *runState) {
 	if r.taskDir == "" {
 		return // 没有任务目录就没有任务级 home，无从巡检
 	}
-	if err := SyncAuthToAuthority(filepath.Join(r.taskDir, homeDirName),
+	carrierHome := nonEmptyEnvValue(r.env, "HOME")
+	if carrierHome == "" {
+		a.log.Warn("grok 凭据巡检跳过：任务没有载体 HOME，避免写回机器主 HOME",
+			"task", r.taskID)
+		return
+	}
+	if err := syncAuthToAuthorityAt(filepath.Join(r.taskDir, homeDirName), carrierHome,
 		a.log.With("task", r.taskID)); err != nil {
 		a.log.Warn("grok 凭据巡检未完成，下轮重试", "task", r.taskID, "cause", err)
 	}

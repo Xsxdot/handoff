@@ -175,3 +175,22 @@ func TestTaskDoneNoteJSON(t *testing.T) {
 		t.Fatalf("done_note 字段缺失或改名: %s", b)
 	}
 }
+
+// TestTaskHomeDirJSON 三态锁定载体 HOME 的任务线格式：非空落盘，空值省略。
+func TestTaskHomeDirJSON(t *testing.T) {
+	withHome, err := json.Marshal(Task{HomeDir: "/carrier/home"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(withHome), `"home_dir":"/carrier/home"`) {
+		t.Fatalf("非空 HomeDir 未进入 JSON: %s", withHome)
+	}
+
+	withoutHome, err := json.Marshal(Task{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(withoutHome), `"home_dir"`) {
+		t.Fatalf("空 HomeDir 不应进入 JSON: %s", withoutHome)
+	}
+}

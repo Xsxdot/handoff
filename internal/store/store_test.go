@@ -407,6 +407,30 @@ func TestCreateTaskPersistsPhase2Fields(t *testing.T) {
 	}
 }
 
+// TestCreateTaskPersistsCarrierHome 锁定载体 HOME 随任务落库并可在恢复前读回。
+func TestCreateTaskPersistsCarrierHome(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+
+	task := &proto.Task{
+		ID: "carrier-home", RepoPath: "/repo", HomeDir: "/carrier/home",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreateTask(task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.HomeDir != task.HomeDir {
+		t.Fatalf("HomeDir = %q, want %q", got.HomeDir, task.HomeDir)
+	}
+}
+
 // TestWorkdirFallsBackToRepoPath 验证 WorkDir 为空（原地模式）时 Workdir() 回退到 RepoPath。
 func TestWorkdirFallsBackToRepoPath(t *testing.T) {
 	tk := proto.Task{RepoPath: "/repo"}

@@ -134,6 +134,9 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 	if err := svc.PutCarrier(carrier, 0); err != nil {
 		t.Fatalf("登记载体: %v", err)
 	}
+	if _, err := svc.ApplyDetect(carrier.Name, scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("检测载体: %v", err)
+	}
 	execSquad := scheduling.Squad{Name: "exec-1", Role: scheduling.RoleExecutor,
 		Members: []string{"opencode-1"}, MaxConcurrency: 2}
 	if err := svc.PutSquad(execSquad, 0); err != nil {

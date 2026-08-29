@@ -138,3 +138,20 @@
 - 2026-08-29 指定最终测试一：`go test ./internal/hostapi/ ./internal/scheduling/ -count=1` 输出 `ok github.com/Xsxdot/handoff/internal/hostapi 0.362s`、`ok github.com/Xsxdot/handoff/internal/scheduling 1.619s`，退出码 0。
 - 2026-08-29 指定最终测试二：`go test ./internal/agentd/ -count=1` 输出 `ok github.com/Xsxdot/handoff/internal/agentd 202.506s`，退出码 0。
 - 2026-08-29 指定最终测试三：`go build ./...` 无标准输出，退出码 0。
+
+## implement 修复轮（cards/B293-charter-8 @ dd893479）
+
+- 2026-08-29 基线核：`git status --short --branch` 输出 `## cards/B293-charter-8`，`git log -1 --oneline` 输出 `dd893479 test(B293): isolate wake commands and migrate carrier fixtures`，工作树无变更。
+- 2026-08-29 基线测试：`go test ./internal/proto/ ./internal/store/ -count=1`、指定 agentd 恢复/派发测试、`go test ./internal/executor/grok/ -count=1` 均退出码 0；输出分别为 proto/store `ok`、agentd `ok github.com/Xsxdot/handoff/internal/agentd 0.347s`、grok `ok github.com/Xsxdot/handoff/internal/executor/grok 1.354s`。
+- 2026-08-29 Web 基线：检查输出 `web/node_modules absent`；从仓库根运行 `npm test -- --run web/src/app/settings/SchedulingPage.test.tsx` 退出码 1，原始错误为 `npm error enoent ... /root/.handoff/worktrees/fe1636a8/package.json`，页面测试未验证。
+- 2026-08-29 修复轮首红：新增 Task HomeDir、manager 两条恢复路径、store 持久化、grok 恢复/巡检及未知 status 页面断言后，Go 定向测试编译失败；原始关键错误包括 `unknown field HomeDir in struct literal of type Task`、`got.HomeDir undefined`、`unknown field env in struct literal of type runState`。判断：新接缝首红来自缺失字段，不是测试拼写错误；页面测试尚未因依赖缺席执行。
+- 2026-08-29 修复轮定向红转绿：首次行为测试中 manager 三测的原始失败为 `StartReq.Env 缺少精确载体 HOME: [HOME=/carrier/home]`、`启动恢复 Env 缺少精确载体 HOME: [HOME=/carrier/home]`、`续接冷恢复 Env 缺少精确载体 HOME: [HOME=/carrier/home]`；核实为测试断言错误（要求不存在的尾分隔符），修正断言后 proto/store/agentd/grok 定向测试均退出码 0。
+- 2026-08-29 grok 安全首红：新增 `TestSyncAuthOnceWithoutCarrierHomeDoesNotWriteMain` 实际失败，原始输出含 `无载体 HOME 时不应写回机器主 HOME，key = "task"`；加入无载体早退后，watchdog 正常退场/判死、无载体与载体 HOME 四测均 PASS。
+- 2026-08-29 触及包收尾：`go test ./internal/proto/ ./internal/store/ ./internal/executor/grok/ -count=1` 输出 proto `ok ... 0.005s`、store `ok ... 3.182s`、grok `ok ... 1.353s`；`go test ./internal/agentd/ -count=1` 输出 `ok github.com/Xsxdot/handoff/internal/agentd 200.701s`，均退出码 0。
+- 2026-08-29 变异自验：确认续接守卫锚点唯一（`续接恢复使用任务载体 HOME` 仅 manager.go:1340）；将该分支条件反转为 `task.HomeDir == ""` 后 `go build ./...` 退出码 0。先跑行为断言 `TestContinueColdResumeUsesPersistedCarrierHome`，原始失败为 `续接冷恢复 Env 缺少精确载体 HOME: []`；再跑三条 manager 载体 HOME 用例，Dispatch/启动恢复 PASS、续接失败 1 条。已恢复原条件。
+- 2026-08-29 集成补偿：首次 `go test ./... -count=1` 的唯一失败为旧 keystone 夹具未把 `PutCarrier` 后的载体检测为 online，原始错误 `首次准入被拒: scheduling: 小队内没有已上线且有空的载体`；仅在测试夹具补真实 `ApplyDetect(Reachable:true)` 后定向 `TestIgnitionVerticalSlice` PASS，未改 U1 生产语义。
+- 2026-08-29 集成复跑：第二次 `go test ./... -count=1` 除 keystone 外均完成，但 `internal/ledgermirror/TestMirrorDropsSubWhenMachineRemoved` 出现一次既有时序失败，原始日志期望机器消失原因而实际为 `本轮取不到该机器的客户端`；单独 `go test ./internal/ledgermirror/ -run TestMirrorDropsSubWhenMachineRemoved -count=1 -v` 随后 PASS，未改无关代码。
+- 2026-08-29 集成最终：第三次 `go test ./... -count=1` 退出码 0；agentd `ok ... 262.995s`、keystone `ok ... 0.151s`、ledgermirror `ok ... 2.457s`，其余有测试包均输出 `ok`，无测试包输出 `[no test files]`。
+- 2026-08-29 最终闸门：`go build ./...`、`go vet ./internal/proto/ ./internal/store/ ./internal/agentd/ ./internal/executor/grok/ ./internal/keystone/`、指定变更 Go 文件 `gofmt -l`、`git diff --check` 均退出码 0 且无输出。
+- 2026-08-29 Web 状态：`npm test -- --run src/app/settings/SchedulingPage.test.tsx` 在 `web/` 实际执行但退出码 127，原始错误 `sh: 1: vitest: not found`；因依赖缺失，页面用例未验证。
+- 2026-08-29 提交：已执行 `git commit -m "fix(B293): persist carrier HOME across resume"`，本轮修复未 push；随后为纳入本台账执行一次 `git commit --amend --no-edit`。

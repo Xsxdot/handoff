@@ -48,6 +48,19 @@ describe('SchedulingPage', () => {
     expect(screen.getByText('拉起通道（开卡即绑 / 一键拉起）')).toBeVisible()
   })
 
+  it('renders missing and unknown carrier statuses as 未上线', async () => {
+    vi.mocked(getSquads).mockResolvedValue({
+      carriers: [
+        { name: 'missing', machine: 'local', cli: 'opencode', home_dir: '/missing', credential: 'standalone', version: 1 },
+        { name: 'unknown', machine: 'local', cli: 'opencode', home_dir: '/unknown', credential: 'standalone', status: 'mystery' as never, version: 2 },
+      ],
+      squads: [],
+    })
+    render(<SchedulingPage />)
+    expect(await screen.findAllByText('未上线')).toHaveLength(2)
+    expect(screen.queryByText('undefined')).not.toBeInTheDocument()
+  })
+
   it('new carrier follows the default HOME until the user edits it', async () => {
     const user = userEvent.setup()
     render(<SchedulingPage />)

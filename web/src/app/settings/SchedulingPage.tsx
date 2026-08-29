@@ -3,7 +3,7 @@
 // 边界：只触发目标机探测/检测 API，不在浏览器发现机器、写 flow 或决定协调者选择规则。
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
-import type { CarrierInput, CarrierView, HomeProbeResp, SquadInput, SquadView, SquadsResp } from '../../api/scheduling'
+import type { CarrierInput, CarrierStatus, CarrierView, HomeProbeResp, SquadInput, SquadView, SquadsResp } from '../../api/scheduling'
 import { CARRIER_STATUS_LABEL, defaultHomeDir, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
 import { errorMessage } from '../lib/format'
 
@@ -56,6 +56,12 @@ function squadDraft(row: SquadView | null): SquadDraft {
 
 function draftName(dialog: EntityDialog, draft: CarrierDraft | SquadDraft): string {
   return draft.name.trim() || (dialog?.value?.name ?? '')
+}
+
+function carrierStatus(row: CarrierView): CarrierStatus {
+  return typeof row.status === 'string' && Object.prototype.hasOwnProperty.call(CARRIER_STATUS_LABEL, row.status)
+    ? row.status
+    : 'pending'
 }
 
 /** Props 为空；返回设置页的自动化编制区；保存失败时保留草稿和弹窗供处理。 */
@@ -282,7 +288,7 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
 
       <section className="space-y-2">
         <div className="flex items-center gap-2"><h3 className="text-xs font-semibold">载体</h3><span className="text-[11px] text-muted-foreground">并发上限是物理位：跨小队全局计数</span><span className="flex-1" /><button type="button" className="rounded-md border px-2.5 py-1 text-xs" onClick={() => openCarrier(null)}>登记载体</button></div>
-        {snapshot.carriers.map((row) => { const status = row.status ?? 'pending'; return <article key={row.name} className="rounded-lg border p-3">
+        {snapshot.carriers.map((row) => { const status = carrierStatus(row); return <article key={row.name} className="rounded-lg border p-3">
           <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5" data-status={status}>{CARRIER_STATUS_LABEL[status]}</span><span>{row.machine} · {row.cli}</span><span className="flex-1" /><span>在跑 — / {row.max_concurrency ?? '不限'} · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openCarrier(row)}>编辑 {row.name}</button><button type="button" className="rounded border px-2 py-1" disabled={detecting === row.name} onClick={() => void detect(row.name)}>{detecting === row.name ? '检测中…' : '检测'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => void runCarrier(row.name)}>运行</button></div>
           <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">HOME 档案</dt><dd className="font-mono">{row.home_dir}</dd><dt className="text-muted-foreground">模型</dt><dd>{row.model || <span className="text-muted-foreground">CLI 默认</span>}</dd><dt className="text-muted-foreground">凭据来源</dt><dd>{row.credential}</dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
           {row.last_error && <p className="mt-2 text-xs text-destructive">最近检测：{row.last_error}</p>}

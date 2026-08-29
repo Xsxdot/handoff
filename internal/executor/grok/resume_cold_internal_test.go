@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -92,6 +93,43 @@ func TestResumeColdRestartFailureIsNotAnError(t *testing.T) {
 	}
 	if out.Note == "" {
 		t.Fatalf("Note 必须写清为什么恢复不了，协调者要看到这句")
+	}
+}
+
+// TestResumeUsesCarrierHomeForAuthLink 锁定恢复修链使用 req.Env 的载体 HOME，
+// 不能退回执行机进程的主 HOME。
+func TestResumeUsesCarrierHomeForAuthLink(t *testing.T) {
+	dir := t.TempDir()
+	writeDeadServeInfo(t, dir)
+	if err := os.MkdirAll(filepath.Join(dir, homeDirName), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	repo := t.TempDir()
+	carrierHome := t.TempDir()
+	var startedEnv []string
+	restore := swapStartServe(func(ctx context.Context, repoPath, taskID, markRoot, taskDir, model string, env []string, log *slog.Logger) (*Proc, error) {
+		startedEnv = append([]string(nil), env...)
+		return &Proc{TaskDir: taskDir, Port: 1, Secret: "x"}, nil
+	})
+	defer restore()
+
+	a := New(quietLogger())
+	_, err := a.Resume(executor.ResumeReq{TaskID: "carrier-auth", TaskDir: dir,
+		RepoPath: repo, SessionID: "sess-1", Env: []string{"HOME=" + carrierHome}, Cold: true})
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if !strings.Contains("\x00"+strings.Join(startedEnv, "\x00"), "\x00HOME="+carrierHome+"\x00") {
+		t.Fatalf("冷恢复 startServe 未收到载体 HOME: %v", startedEnv)
+	}
+	link := filepath.Join(dir, homeDirName, authFileName)
+	target, err := os.Readlink(link)
+	if err != nil {
+		t.Fatalf("读取恢复后的 auth 软链: %v", err)
+	}
+	want := filepath.Join(carrierHome, ".grok", authFileName)
+	if target != want {
+		t.Fatalf("恢复 auth 软链 = %q, want %q", target, want)
 	}
 }
 

@@ -693,7 +693,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		"branch", req.Branch, "new_branch", req.NewBranch, "base", req.Base,
 		"base_commit", req.BaseCommit, "resolve_default_base", req.ResolveDefaultBase,
 		"local_base_branch", req.LocalBaseBranch,
-		"worktree", req.Worktree, "new_worktree", req.NewWorktree)
+		"worktree", req.Worktree, "new_worktree", req.NewWorktree,
+		"home_dir_set", req.HomeDir != nil && *req.HomeDir != "")
 	defer func() {
 		if err != nil {
 			m.log.Error("dispatch 失败",
@@ -938,10 +939,15 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 			"path", filepath.Join(taskDir, disciplineFileName), "bytes", len(discText))
 	}
 
+	taskHomeDir := ""
+	if req.HomeDir != nil && *req.HomeDir != "" {
+		taskHomeDir = *req.HomeDir
+	}
 	task = &proto.Task{
 		ID:       taskID,
 		Target:   req.Target,
 		RepoPath: repoPath,
+		HomeDir:  taskHomeDir,
 		// PlanPath 不在 SetTaskField 白名单，只能在创建时一并写入
 		PlanPath:  planPath,
 		State:     proto.TaskStatePending,
@@ -995,13 +1001,13 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
 	startEnv := envKVs
-	if req.HomeDir != nil && *req.HomeDir != "" {
+	if task.HomeDir != "" {
 		// HOME 是小队绑定载体的唯一运行时覆盖入口：env 文件仍可提供普通
 		// 变量，但不能把载体 HOME 压回去。空指针/空串保持 envKVs 原样，
 		// 因为普通派发必须继续使用 executor 自身继承的 process HOME。
-		startEnv = withCarrierHome(envKVs, *req.HomeDir)
+		startEnv = withCarrierHome(envKVs, task.HomeDir)
 		m.log.Info("载体 HOME 已覆盖 executor 环境", "task", taskID,
-			"home_override", true, "home_dir", *req.HomeDir)
+			"home_override", true, "home_dir", task.HomeDir)
 	}
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent),
 		TaskDir: taskDir, Env: startEnv, Discipline: discText}); err != nil {
@@ -1328,6 +1334,10 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	envKVs, eerr := m.env.For(execName)
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "cause", eerr)
+	}
+	if task.HomeDir != "" {
+		envKVs = withCarrierHome(envKVs, task.HomeDir)
+		m.log.Info("续接恢复使用任务载体 HOME", "task", taskID, "home_dir", task.HomeDir)
 	}
 	// 名字与正文都必须从落盘现场取：这里没有派发请求。B229 §2.5.2 续接不再
 	// 解析——首回合之后协调者侧的「最新版」可能已经变了，续接必须看到与会话
@@ -3513,6 +3523,10 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	envKVs, eerr := m.env.For(execName)
 	if eerr != nil {
 		m.log.Warn("恢复解析 env 失败，按空 env 继续", "task", taskID, "executor", execName, "cause", eerr)
+	}
+	if task.HomeDir != "" {
+		envKVs = withCarrierHome(envKVs, task.HomeDir)
+		m.log.Info("启动恢复使用任务载体 HOME", "task", taskID, "home_dir", task.HomeDir)
 	}
 	// 名字与正文都必须从落盘现场取（B229 §2.5.2，同 resumeForContinue）。
 	discText, derr := m.loadPersistedDiscipline(taskID)

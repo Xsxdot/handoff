@@ -107,6 +107,8 @@ type runState struct {
 	repoPath    string
 	sessionID   string
 	startCommit string
+	// env 保存启动时的环境快照，供恢复后的凭据巡检选择载体权威 HOME。
+	env []string
 
 	proc *Proc
 	cli  *ACPClient
@@ -239,6 +241,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 	}()
 
 	r := a.newRun(taskID, req.TaskDir, req.Task.Workdir(), proc)
+	r.env = append([]string(nil), env...)
 
 	cli, err := DialACP(ctx, proc.WSURL(), &acpHandler{a: a, r: r}, a.log)
 	if err != nil {

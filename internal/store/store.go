@@ -79,9 +79,11 @@ func Open(path string) (*Store, error) {
 	for _, ddl := range []string{
 		`CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, target TEXT NOT NULL DEFAULT '', repo_path TEXT NOT NULL,
+  home_dir TEXT NOT NULL DEFAULT '',
   branch TEXT NOT NULL DEFAULT '', plan_path TEXT NOT NULL DEFAULT '',
   plan_summary TEXT NOT NULL DEFAULT '', executor_session TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL,
+  -- home_dir 是显式载体派发的隔离 HOME；旧任务回读为空串。
   -- 二期新增列：name=展示名；executor/model=执行者与任务级模型；
   -- work_dir=工作区目录（原地模式=仓库路径，worktree 模式=工作树路径；
   --   旧库里原地模式曾存空串，读取时由 proto.Task.Workdir() 回退到 repo_path）；
@@ -247,12 +249,14 @@ func Open(path string) (*Store, error) {
 		db.Close()
 		return nil, fmt.Errorf("迁移 tickets.fingerprint: %w", err)
 	}
-	// 迁移：为旧库补 tasks 增量列（二期 name/executor/model/work_dir/worktree_managed + B35 base_commit/base_ahead）。
+	// 迁移：为旧库补 tasks 增量列（B293 home_dir、二期 name/executor/model/work_dir/worktree_managed、
+	// B35 base_commit/base_ahead）。
 	//
 	// why（逐列 ALTER + 容忍 duplicate column）：SQLite 的 ADD COLUMN 不支持
 	// IF NOT EXISTS，且不支持一次加多列，只能逐条 ALTER；已存在时报 duplicate
 	// column 属预期，忽略即可（与 tickets.delivered_at 的迁移写法保持一致）。
 	for col, typ := range map[string]string{
+		"home_dir":             "TEXT NOT NULL DEFAULT ''",
 		"name":                 "TEXT NOT NULL DEFAULT ''",
 		"executor":             "TEXT NOT NULL DEFAULT ''",
 		"model":                "TEXT NOT NULL DEFAULT ''",
@@ -303,10 +307,10 @@ func (s *Store) Close() error {
 //   - 状态迁移合法性由 UpdateTaskState 校验，此处仅原样入库，不含业务规则
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
-INSERT INTO tasks (id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+INSERT INTO tasks (id, target, repo_path, home_dir, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name, discipline_version)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Target, t.RepoPath, t.Branch, t.PlanPath, t.PlanSummary,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Target, t.RepoPath, t.HomeDir, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
 		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
 		t.BaseCommit, t.BaseAhead, t.RepoDirtyCount, t.RepoDirtyFiles, t.DisciplineName,
@@ -323,7 +327,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 //
 // 加一列要改**四处**：建表 DDL、迁移 map、INSERT（列清单 + 占位符 + 实参）、
 // 本常量 + scanTaskRow。原注释只提了后两处，照着做会漏掉前两处。
-const taskColumns = `id, target, repo_path, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+const taskColumns = `id, target, repo_path, home_dir, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note,
   actual_model, usage_context_tokens, usage_context_window, discipline_name, discipline_version`
 
@@ -345,7 +349,7 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 		ctxTokens       int
 		ctxWindow       int
 	)
-	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.Branch, &task.PlanPath,
+	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.HomeDir, &task.Branch, &task.PlanPath,
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
 		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,
