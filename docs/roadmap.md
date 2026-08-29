@@ -469,3 +469,8 @@
 - **悬浮窗开「远程机器 home 终端」的显式入口**：显式 UI 选机器，不走孤儿收编；`baseOfSession` 的 home@machine 分类保留待复用。来源：B283 spec Out of Scope。
 - **ptyhost 空闲会话回收/孤儿清扫**（服务端侧）：当前只在 shell 退出时回收，被收编循环甩下的孤儿会永久存活。来源：B283 spec Out of Scope。
 - **会话扇出部分失败的用户可见呈现**：`machines.ok=false` 目前只进日志与恢复判据，界面上机器缺席不可见。来源：B283 spec Out of Scope。
+
+## 来自 B266 finish（2026-08-30，残余）
+
+- **darwin 原生 WKWebView 通道的真机穿透未单独记录**：B266 的真机验证（点按钮 → 系统浏览器打开已登录 /cards 整页）在 linux-01 完成；darwin 侧只有 `wails3 task build` 装配门（2026-08-30 本机跑通）与分缝测试。darwin 的 `OriginInfo.Origin` 取 frame URL `absoluteString`（可能带 path/query），代码已按 scheme/host/有效端口同源比较处理——日常桌面使用点一次按钮确认后即可销账。来源：B266 验收。
+- **linux 上构建桌面端的工具链缺失**：linux-01 各轮 runner 无 `wails3` CLI、缺 `pkg-config`（webkit2gtk 系），装配门未在 linux 留证。要在 linux 出桌面包需先补工具链。来源：B266 实现台账（2026-08-29 多轮记录）。
