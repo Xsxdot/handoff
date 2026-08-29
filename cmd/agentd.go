@@ -169,6 +169,13 @@ var agentdCmd = &cobra.Command{
 
 		srv := agentd.NewServer(cfg, st, logger)
 		srv.SetConfigPath(p)
+		previewHub := agentd.NewPreviewHub(logger)
+		previewOwner := agentd.NewPreviewOwner(st, previewHub, agentd.PreviewOwnerDeps{}, logger)
+		previewMirror := agentd.NewPreviewMirror(srv.Pool(), previewOwner, previewHub, srv.IsSelfTarget, logger)
+		previewOpener := agentd.NewPreviewOpenService(previewOwner, previewMirror, srv.Pool(), nil, logger)
+		srv.SetPreviewOwner(previewOwner)
+		srv.SetPreviewMirror(previewMirror)
+		srv.SetPreviewOpener(previewOpener)
 		if err := srv.ReclaimPtySessions(); err != nil {
 			// PTY 是附属能力，扫描失败不应阻断任务派发主服务；broken 条目由日志留给人工处理。
 			logger.Error("启动时认领 PTY 会话失败，继续提供服务", "err", err)
@@ -216,6 +223,9 @@ var agentdCmd = &cobra.Command{
 		// 而数据库正要被关掉
 		wdCtx, wdCancel := context.WithCancel(context.Background())
 		defer wdCancel()
+		if err := srv.StartPreviewServices(wdCtx); err != nil {
+			return fmt.Errorf("启动预览服务: %w", err)
+		}
 		if cfg.Relay != nil {
 			// relay 出站与本地 listen 并存，是附加通道；不改变现有 agentd 路由。
 			listener := relay.NewListener(cfg.Relay.URL, cfg.Relay.Credential, cfg.Relay.Node,

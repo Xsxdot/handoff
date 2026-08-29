@@ -1,0 +1,7 @@
+{
+  "id": "preview-zero",
+  "entry_url": "http://localhost:0",
+  "cwd": "/tmp/preview",
+  "created_at": "2026-08-29T00:00:00Z",
+  "ttl_seconds": 0
+}

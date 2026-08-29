@@ -194,3 +194,68 @@ export function previewEventsURL(): string {
   const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
   return `${proto}//${window.location.host}/ws/previews`
 }
+
+// PreviewWsOptions is the browser-side preview event seam. Preview streams do
+// not carry a task cursor; callers refresh the aggregate list before a fresh
+// connection and use events only as a local projection.
+export interface PreviewWsOptions {
+  onEvent: (event: import('./types').PreviewEvent) => void
+  onError?: (message: string) => void
+  create?: (url: string) => WsSocketLike
+}
+
+// connectPreviewEvents opens the current agentd preview stream and reconnects
+// with bounded backoff. It never adds a machine query: the current agentd is
+// the single browser-side aggregation point.
+export function connectPreviewEvents(options: PreviewWsOptions): { close: () => void } {
+  let ws: WsSocketLike | null = null
+  let closedByUs = false
+  let retryTimer: number | undefined
+  let retryDelay = 300
+
+  const cleanup = () => {
+    if (ws === null) return
+    ws.onopen = null
+    ws.onmessage = null
+    ws.onerror = null
+    ws.onclose = null
+    ws.close()
+    ws = null
+  }
+  const schedule = () => {
+    if (closedByUs) return
+    retryTimer = window.setTimeout(open, retryDelay)
+    retryDelay = Math.min(retryDelay * 2, 10000)
+  }
+  const open = () => {
+    if (closedByUs) return
+    ws = (options.create ?? ((url: string) => new WebSocket(url)))(previewEventsURL())
+    ws.onopen = () => { retryDelay = 300 }
+    ws.onmessage = (message) => {
+      try {
+        const event = JSON.parse(String(message.data)) as import('./types').PreviewEvent
+        if (event.type !== 'preview.created' && event.type !== 'preview.closed') {
+          options.onError?.(`收到未知 preview 事件：${event.type}`)
+          return
+        }
+        options.onEvent(event)
+      } catch (err) {
+        options.onError?.(`收到无法解析的 preview 事件：${err instanceof Error ? err.message : String(err)}`)
+      }
+    }
+    ws.onerror = () => {}
+    ws.onclose = () => {
+      if (closedByUs) return
+      cleanup()
+      schedule()
+    }
+  }
+  open()
+  return {
+    close() {
+      closedByUs = true
+      if (retryTimer !== undefined) window.clearTimeout(retryTimer)
+      cleanup()
+    },
+  }
+}

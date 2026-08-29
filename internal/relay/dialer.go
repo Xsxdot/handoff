@@ -4,11 +4,14 @@ package relay
 
 import (
 	"context"
+	"encoding/binary"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 
 	"github.com/coder/websocket"
@@ -25,11 +28,19 @@ type Dialer struct {
 	account    string
 	log        *slog.Logger
 
-	mu      sync.Mutex
-	session *yamux.Session
-	raw     net.Conn
-	closed  bool
+	mu       sync.Mutex
+	session  *yamux.Session
+	raw      net.Conn
+	rawConns map[net.Conn]struct{}
+	closed   bool
 }
+
+const (
+	previewRawMagic   = "handoff-preview-raw-v1"
+	previewRawMaxPart = 4096
+	previewRawOK      = 0
+	previewRawError   = 1
+)
 
 // NewDialer constructs a lazy coordinator relay dialer. account may be empty:
 // the authenticated CONNECT_OK response supplies it before E2E setup.
@@ -39,8 +50,196 @@ func NewDialer(relayURL, credential, node, token, account string, log *slog.Logg
 	}
 	return &Dialer{
 		relayURL: relayURL, credential: credential, node: node,
-		token: token, account: account, log: log,
+		token: token, account: account, log: log, rawConns: make(map[net.Conn]struct{}),
 	}
+}
+
+// RawDialContext opens a target-side raw TCP stream for preview SOCKS.
+// Unlike DialContext, which returns an HTTP app-yamux stream, this method
+// opens a dedicated authenticated relay stream and asks the executor-side
+// listener to resolve and dial network/addr there. The caller owns the
+// returned connection; Close also reclaims any outstanding raw streams.
+func (d *Dialer) RawDialContext(ctx context.Context, network, addr string) (net.Conn, error) {
+	if network == "" || addr == "" {
+		return nil, errors.New("relay raw dial 缺少 network 或 addr")
+	}
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, errors.New("relay dialer is closed")
+	}
+	account := d.account
+	d.mu.Unlock()
+
+	d.log.Info("relay raw stream dialing", "node", d.node, "network", network, "addr", addr)
+	ws, _, err := websocket.Dial(ctx, d.relayURL, nil)
+	if err != nil {
+		d.log.Warn("relay raw websocket dial failed", "node", d.node, "cause", err)
+		return nil, fmt.Errorf("dial relay raw websocket: %w", err)
+	}
+	raw := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	closeRaw := func() { _ = raw.Close() }
+	if err := sendControl(ctx, ws, Frame{Type: Connect, Node: d.node, Credential: d.credential}); err != nil {
+		closeRaw()
+		return nil, fmt.Errorf("relay raw connect send: %w", err)
+	}
+	response, err := recvControl(ctx, ws)
+	if err != nil {
+		closeRaw()
+		return nil, fmt.Errorf("relay raw connect response: %w", err)
+	}
+	if response.Type != ConnectOK {
+		closeRaw()
+		return nil, fmt.Errorf("relay raw connect: expected %q, got %q", ConnectOK, response.Type)
+	}
+	if response.Account != "" {
+		account = response.Account
+		d.mu.Lock()
+		d.account = account
+		d.mu.Unlock()
+	}
+	if account == "" {
+		closeRaw()
+		return nil, errors.New("relay raw connect_ok missing account")
+	}
+	secure, err := SecureClient(ctx, raw, d.token, account, d.node)
+	if err != nil {
+		closeRaw()
+		return nil, fmt.Errorf("secure relay raw stream: %w", err)
+	}
+	keep := false
+	defer func() {
+		if !keep {
+			_ = secure.Close()
+		}
+	}()
+	if err := writePreviewRawRequest(secure, network, addr); err != nil {
+		return nil, fmt.Errorf("relay raw request: %w", err)
+	}
+	if err := readPreviewRawResponse(secure); err != nil {
+		return nil, err
+	}
+	d.mu.Lock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil, errors.New("relay dialer is closed")
+	}
+	d.rawConns[secure] = struct{}{}
+	d.mu.Unlock()
+	keep = true
+	return &trackedRawConn{Conn: secure, release: d.releaseRawConn}, nil
+}
+
+type trackedRawConn struct {
+	net.Conn
+	once    sync.Once
+	release func(net.Conn)
+}
+
+func (c *trackedRawConn) Close() error {
+	err := c.Conn.Close()
+	c.once.Do(func() { c.release(c.Conn) })
+	return err
+}
+
+func (d *Dialer) releaseRawConn(conn net.Conn) {
+	d.mu.Lock()
+	delete(d.rawConns, conn)
+	d.mu.Unlock()
+}
+
+func writePreviewRawRequest(w io.Writer, network, addr string) error {
+	if len(network) > previewRawMaxPart || len(addr) > previewRawMaxPart {
+		return fmt.Errorf("relay raw request 字段过长 network=%d addr=%d", len(network), len(addr))
+	}
+	if _, err := io.WriteString(w, previewRawMagic); err != nil {
+		return err
+	}
+	for _, part := range []string{network, addr} {
+		var size [2]byte
+		binary.BigEndian.PutUint16(size[:], uint16(len(part)))
+		if _, err := w.Write(size[:]); err != nil {
+			return err
+		}
+		if _, err := io.WriteString(w, part); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func readPreviewRawRequest(r io.Reader) (network, addr string, err error) {
+	magic := make([]byte, len(previewRawMagic))
+	if _, err := io.ReadFull(r, magic); err != nil {
+		return "", "", err
+	}
+	if string(magic) != previewRawMagic {
+		return "", "", fmt.Errorf("relay raw magic 非法: %q", magic)
+	}
+	parts := make([]string, 2)
+	for i := range parts {
+		var size [2]byte
+		if _, err := io.ReadFull(r, size[:]); err != nil {
+			return "", "", err
+		}
+		length := int(binary.BigEndian.Uint16(size[:]))
+		if length == 0 || length > previewRawMaxPart {
+			return "", "", fmt.Errorf("relay raw request 字段长度非法: %d", length)
+		}
+		part := make([]byte, length)
+		if _, err := io.ReadFull(r, part); err != nil {
+			return "", "", err
+		}
+		parts[i] = string(part)
+	}
+	return parts[0], parts[1], nil
+}
+
+func writePreviewRawResponse(w io.Writer, err error) error {
+	if err == nil {
+		_, writeErr := w.Write([]byte{previewRawOK})
+		return writeErr
+	}
+	message := err.Error()
+	if len(message) > previewRawMaxPart {
+		message = message[:previewRawMaxPart]
+	}
+	var size [2]byte
+	binary.BigEndian.PutUint16(size[:], uint16(len(message)))
+	if _, writeErr := w.Write([]byte{previewRawError}); writeErr != nil {
+		return writeErr
+	}
+	if _, writeErr := w.Write(size[:]); writeErr != nil {
+		return writeErr
+	}
+	_, writeErr := io.WriteString(w, message)
+	return writeErr
+}
+
+func readPreviewRawResponse(r io.Reader) error {
+	var status [1]byte
+	if _, err := io.ReadFull(r, status[:]); err != nil {
+		return fmt.Errorf("读取 relay raw 响应: %w", err)
+	}
+	if status[0] == previewRawOK {
+		return nil
+	}
+	if status[0] != previewRawError {
+		return fmt.Errorf("relay raw 响应状态非法: %d", status[0])
+	}
+	var size [2]byte
+	if _, err := io.ReadFull(r, size[:]); err != nil {
+		return fmt.Errorf("读取 relay raw 错误长度: %w", err)
+	}
+	length := int(binary.BigEndian.Uint16(size[:]))
+	if length > previewRawMaxPart {
+		return fmt.Errorf("relay raw 错误长度非法: %d", length)
+	}
+	message := make([]byte, length)
+	if _, err := io.ReadFull(r, message); err != nil {
+		return fmt.Errorf("读取 relay raw 错误: %w", err)
+	}
+	return fmt.Errorf("owner raw dial 失败: %s", strings.TrimSpace(string(message)))
 }
 
 func (d *Dialer) ensureTunnel(ctx context.Context) error {
@@ -168,18 +367,35 @@ func (d *Dialer) Transport() *http.Transport {
 // Close closes the current relay tunnel and prevents future lazy reconnects.
 func (d *Dialer) Close() error {
 	d.mu.Lock()
-	defer d.mu.Unlock()
+	if d.closed {
+		d.mu.Unlock()
+		return nil
+	}
 	d.closed = true
-	var err error
-	if d.session != nil {
-		err = d.session.Close()
-		d.session = nil
+	session := d.session
+	raw := d.raw
+	rawConns := make([]net.Conn, 0, len(d.rawConns))
+	for conn := range d.rawConns {
+		rawConns = append(rawConns, conn)
 	}
-	if d.raw != nil {
-		if closeErr := d.raw.Close(); err == nil {
-			err = closeErr
+	d.session = nil
+	d.raw = nil
+	d.rawConns = make(map[net.Conn]struct{})
+	d.mu.Unlock()
+
+	var closeErr error
+	if session != nil {
+		closeErr = session.Close()
+	}
+	if raw != nil {
+		if err := raw.Close(); closeErr == nil {
+			closeErr = err
 		}
-		d.raw = nil
 	}
-	return err
+	for _, conn := range rawConns {
+		if err := conn.Close(); closeErr == nil {
+			closeErr = err
+		}
+	}
+	return closeErr
 }

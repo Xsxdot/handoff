@@ -24,6 +24,7 @@ import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
+import { usePreviews } from '../data/usePreviews'
 import { useMachineCaps } from '../data/useMachineCaps'
 import { useLedgerEnabled } from '../data/useLedgerEnabled'
 import { usePoll } from '../data/usePoll'
@@ -87,6 +88,8 @@ export function Shell() {
   const tasksState = useTasks()
   const treeState = useProjectTree()
   const tasks = useMemo(() => tasksState.data ?? [], [tasksState.data])
+  const previewsState = usePreviews()
+  const previews = useMemo(() => previewsState.data?.sessions ?? [], [previewsState.data])
   const wb = useWorkbench()
   // crumbTaskName 把 taskId 解析成任务原名（与左栏任务行同口径）；解析不到时
   // tabTitle 自己回退 TUI · 前 8 位。标签条、面包屑、左栏已打开行共用同一份口径。
@@ -564,6 +567,10 @@ export function Shell() {
             onOpenTerminalAt={openTerminalAt}
             onOpenDirectory={openDirectory}
             onOpenTask={openTaskTui}
+            previews={previews}
+            previewOpenKeys={previewsState.openKeys}
+            previewOpeningKeys={previewsState.openingKeys}
+            onOpenPreview={(id, machine) => { void previewsState.open(id, machine).catch(() => {}) }}
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
             onOpenProjectCards={ledgerEnabled ? openProjectCards : undefined}

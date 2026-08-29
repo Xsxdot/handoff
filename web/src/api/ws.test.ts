@@ -9,7 +9,7 @@
 // 真 WebSocket 实现；退避定时器用 vi.useFakeTimers 控制。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Event } from './types'
-import { connectEvents, wsCloseReason, type WsStatus } from './ws'
+import { connectEvents, connectPreviewEvents, wsCloseReason, type WsStatus } from './ws'
 
 // FakeWebSocket 模拟浏览器 WebSocket 的最小可编程表面。
 class FakeWebSocket {
@@ -144,6 +144,16 @@ describe('connectEvents 连接生命周期', () => {
     vi.advanceTimersByTime(120000)
     expect(FakeWebSocket.instances).toHaveLength(1) // close 后不自动重连
     vi.useRealTimers()
+  })
+})
+
+describe('connectPreviewEvents 连接生命周期', () => {
+  it('浏览器 preview WS 只连接当前 agentd，不携带 machine query', () => {
+    const conn = connectPreviewEvents({ create, onEvent: () => {} })
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0].url).toContain('/ws/previews')
+    expect(FakeWebSocket.instances[0].url).not.toContain('?')
+    conn.close()
   })
 })
 

@@ -15,7 +15,10 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
+	"net/url"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +37,7 @@ type entry struct {
 	client *client.Client
 	// dialer 只在 relay 形态非 nil；预热要拿它主动建隧道。
 	dialer  *relay.Dialer
+	dial    func(context.Context, string, string) (net.Conn, error)
 	cleanup func()
 }
 
@@ -132,9 +136,67 @@ func (p *Pool) For(name string) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.entries[name] = &entry{target: t, client: c, dialer: dialer, cleanup: cleanup}
+	e := &entry{target: t, client: c, dialer: dialer, cleanup: cleanup}
+	if dialer != nil {
+		e.dial = dialer.RawDialContext
+	} else {
+		e.dial = directDialer(t)
+	}
+	p.entries[name] = e
 	p.log.Info("target 客户端已建立并入池", "target", name, "relay", t.IsRelay(), "pool_size", len(p.entries))
 	return c, nil
+}
+
+// DialContext opens a target-scoped raw upstream connection for preview proxy use.
+// The pool owns the client/dialer lifetime; callers own and close the returned conn.
+func (p *Pool) DialContext(ctx context.Context, targetName, network, addr string) (net.Conn, error) {
+	if _, err := p.For(targetName); err != nil {
+		p.log.Warn("预览 raw dial 取得 target 失败", "target", targetName, "addr", addr, "cause", err)
+		return nil, err
+	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("target 客户端池已关闭")
+	}
+	e := p.entries[targetName]
+	dial := e.dial
+	p.mu.Unlock()
+	if dial == nil {
+		return nil, fmt.Errorf("target %s 未配置 raw dial", targetName)
+	}
+	p.log.Info("预览 raw dial 开始", "target", targetName, "network", network, "addr", addr)
+	conn, err := dial(ctx, network, addr)
+	if err != nil {
+		p.log.Warn("预览 raw dial 失败", "target", targetName, "network", network, "addr", addr, "cause", err)
+		return nil, err
+	}
+	p.log.Info("预览 raw dial 成功", "target", targetName, "network", network, "addr", addr)
+	return conn, nil
+}
+
+func directDialer(target config.Target) func(context.Context, string, string) (net.Conn, error) {
+	targetHost := target.Addr
+	if u, err := url.Parse(targetHost); err == nil && u.Hostname() != "" {
+		targetHost = u.Hostname()
+	} else if host, _, err := net.SplitHostPort(targetHost); err == nil {
+		targetHost = host
+	}
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("preview raw dial 地址无端口 %q: %w", addr, err)
+		}
+		if targetHost != "" && (strings.EqualFold(host, "localhost") || isLoopbackHost(host)) {
+			addr = net.JoinHostPort(targetHost, port)
+		}
+		return (&net.Dialer{}).DialContext(ctx, network, addr)
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // drop 关掉并移出一条缓存条目；不存在时无副作用。

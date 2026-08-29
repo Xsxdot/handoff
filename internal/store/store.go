@@ -184,6 +184,21 @@ func Open(path string) (*Store, error) {
   created_at  TIMESTAMP NOT NULL,
   expires_at  TIMESTAMP NOT NULL,
   consumed_at TIMESTAMP)`,
+		`CREATE TABLE IF NOT EXISTS preview_sessions (
+  id              TEXT PRIMARY KEY,
+  entry_url       TEXT NOT NULL,
+  via_json        TEXT NOT NULL,
+  cwd             TEXT NOT NULL,
+  origin_url      TEXT NOT NULL,
+  branch          TEXT NOT NULL,
+  created_at      TIMESTAMP NOT NULL,
+  ttl_seconds     INTEGER NOT NULL,
+  source_kind     TEXT NOT NULL,
+  source_port     INTEGER NOT NULL,
+  workspace_root  TEXT NOT NULL,
+  relative_path   TEXT NOT NULL,
+  last_active_at  TIMESTAMP NOT NULL,
+  closed_at       TIMESTAMP)`,
 		// 镜像两表（W3a §6.2）：远端权威日志的**副本**，不是第二份真相。
 		// 可随时整表删掉，从远端按 from_seq=0 重建。
 		//

@@ -73,6 +73,12 @@ vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: vi.fn(function () { return { 
 const connectPty = vi.fn()
 vi.mock('../../api/pty', () => ({ connectPty: (...a: unknown[]) => connectPty(...a) }))
 
+vi.mock('../data/usePreviews', async () => {
+  const actual = await vi.importActual<typeof import('../data/usePreviews')>('../data/usePreviews')
+  return { ...actual, usePreviews: vi.fn() }
+})
+const { usePreviews } = await import('../data/usePreviews')
+
 // T1 挂在 /w/b2-b3 这个工作树上（project_id 'p1'、本机、running）。
 const t1: Task = {
   id: 'T1',
@@ -202,6 +208,10 @@ beforeEach(() => {
     foreground: false, incompatible: false, bytes_out: 0,
   })
   connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
+  vi.mocked(usePreviews).mockReturnValue({
+    data: { sessions: [], machines: [] }, error: '', refresh: vi.fn(), open: vi.fn().mockResolvedValue(undefined),
+    isOpen: () => false, openKeys: new Set(), openingKeys: new Set(),
+  })
 })
 
 function renderShell(path = '/') {
@@ -232,6 +242,26 @@ function dropAt(element: Element, dataTransfer: { types: string[]; getData: (typ
 }
 
 describe('Shell 三栏外框', () => {
+  it('Shell 把 preview 接到树的第四种行，点击不打开 workbench task tab', async () => {
+    const onOpen = vi.fn().mockResolvedValue(undefined)
+    vi.mocked(usePreviews).mockReturnValue({
+      data: {
+        sessions: [{ id: 'preview-1', entry_url: 'http://localhost:5173', cwd: '', origin_url: 'https://example.test/repo', branch: 'feature/preview', created_at: '', ttl_seconds: 7200 }],
+        machines: [],
+      }, error: '', refresh: vi.fn(), open: onOpen, isOpen: () => false, openKeys: new Set(), openingKeys: new Set(),
+    })
+    vi.mocked(fetchProjectTree).mockResolvedValueOnce({
+      ...tree,
+      projects: [{ ...tree.projects[0], origin_url: 'https://example.test/repo/' }],
+    })
+    renderShell()
+    const row = await screen.findByTestId('preview-row-preview-1')
+    expect(row).toHaveTextContent('feature/preview · localhost:5173')
+    fireEvent.click(row)
+    expect(onOpen).toHaveBeenCalledWith('preview-1', '')
+    expect(screen.queryByRole('tab', { name: /feature\/preview/ })).toBeNull()
+  })
+
   it('未选中目录时右栏文件树不渲染，中央是全局空态', async () => {
     renderShell()
     await waitFor(() => expect(screen.getByText('handoff')).toBeInTheDocument())
