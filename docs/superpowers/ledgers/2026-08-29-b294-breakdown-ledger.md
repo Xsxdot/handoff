@@ -55,3 +55,4 @@
 - [fact] 最终 staged stat 为 breakdown 349 行、台账 54 行、contract 17 行，共 420 行新增/修改；当前 staged 状态为 breakdown/台账新增、contract 修改。
 - [cmd] `git commit -m "breakdown(B294): propose preview session implementation split"`：退出码 0；原始输出 `[cards/B294-breakdown 3b7c1728] breakdown(B294): propose preview session implementation split`，提交 3 个文件、422 行，新增 breakdown 与台账并修改 contract。
 - [fact] `git commit --amend --no-edit`：退出码 0；原始输出 `[cards/B294-breakdown 930de221] breakdown(B294): propose preview session implementation split`，提交 3 个文件、423 行；本条台账已随 amend 纳入。后续最终 hash 以收尾 JSON 为准。
+- [judgment] 2026-08-29 协调者拍板：P0 本页投影、P1 TTL=7200 idle/附着续命、P2 Pool.DialContext、P3 复用 handoff.db、P4 独立 mirror + OS launcher、P5 via 原样。全部与已批准 spec 一致，不退回 contract。轻档维持 U0–U5 单轮 implement。

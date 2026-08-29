@@ -1,26 +1,26 @@
 # B294 拆解提案：远端预览会话与隔离 Chromium
 
-**状态：待拍板**（本稿为 `charter:breakdown` 提案，未替协调者裁决）
+**状态：已拍板（2026-08-29）**（协调者按已批准 spec 采纳全部推荐项；不退回 contract）
 **卡号：B294 ｜级别：L3 轻档 ｜分支：`cards/B294-breakdown`**
 **基线：** `1e45ff75c9b969db6ee3467779ad6261f8b3a029`；上游 spec 已批准，contract 已冻结。
 **配套台账：** `docs/superpowers/ledgers/2026-08-29-b294-breakdown-ledger.md`。
 
 本稿不写实现代码、不创建可独立派发的并行子卡。U0–U5 是同一轮 implement 的序贯有序单元，供协调者审阅和扇出；每个单元均有界到文件集合。契约边界澄清已回写 `b294-contract.md §1.3`，本稿不把新字段或新路由偷偷加入冻结面。
 
-## 0. 待拍板清单
+## 0. 拍板清单
 
-以下岔口集中列在稿首；在协调者裁决并回写本节、将头部状态改为「已拍板（日期）」前，不应按推荐项实现。
+以下岔口已由协调者于 2026-08-29 拍板。全部采纳推荐项；与已批准 spec 一致，不退回 contract。
 
-| 编号 | 岔口与提案 | 推荐项与取舍 |
+| 编号 | 岔口与提案 | 裁决 |
 | --- | --- | --- |
-| P0 | `is-open` 是本页收到 `OpenPreview` 成功后的短暂本地投影，还是刷新/Chromium 自行退出后仍可证明的权威附着态？ | **推荐本页投影。**冻结面只有 `PreviewOpenResp.Opened`，不够支持后者；选择权威附着态必须退回 contract 增加查询/事件字段，代价是扩大 wire。 |
-| P1 | TTL 精确值和 idle/attached 刷新规则。 | **推荐 `TTLSeconds=7200`，按 idle 过期、已附着 Chromium 刷新。**若采用别的值或规则，须先补入 contract；不能只写在实现常量里。 |
-| P2 | agentd 如何通过现有 target pool 为本机 SOCKS 提供任意上游 TCP：新增 pool-scoped raw `DialContext`，还是另造 owner 端点。 | **推荐在 `targetclient.Pool` 暴露受池生命周期管理的 raw dial 能力，复用 relay/direct 选路。**这是当前冻结面未精确冻结的新跨域 API；若不采纳，先退回 contract，不能改用 HTTP/CONNECT 或浏览器直连绕过既有选路。 |
-| P3 | owner session 表/Store 方法的命名与迁移位置。 | **推荐复用现有 `internal/store.Store` 的 `handoff.db`。**少一个数据库生命周期，代价是实际触及 `d_orchestration`；不得建立 coordinator 中央 truth。 |
-| P4 | preview mirror 是否独立于任务 `Mirror`，浏览器启动器是否按 OS 拆文件。 | **推荐独立 preview mirror、集中接口加 OS-specific launcher。**独立 mirror 避免误用任务 cursor；OS 文件隔离边界代码，代价是少量重复接线。 |
-| P5 | `via` 的匹配语法是否沿 spec 的 IP/CIDR/域名 allowlist 原样冻结。 | **推荐原样沿用 spec。**不增加通配符、正则或端口表达式；如需扩展必须退回 contract。 |
+| P0 | `is-open` 是本页收到 `OpenPreview` 成功后的短暂本地投影，还是刷新/Chromium 自行退出后仍可证明的权威附着态？ | **本页投影。**关窗不删 owner 会话，行回到未打开；刷新后也不宣称 Chromium 仍在。权威附着态会扩 wire，不做。 |
+| P1 | TTL 精确值和 idle/attached 刷新规则。 | **`TTLSeconds=7200`，idle 过期、本机已附着 Chromium 则续命。**与 spec「默认 2 小时空闲」一致。 |
+| P2 | agentd 如何通过现有 target pool 为本机 SOCKS 提供任意上游 TCP：新增 pool-scoped raw `DialContext`，还是另造 owner 端点。 | **`targetclient.Pool` 上受池生命周期管理的 raw `DialContext`，复用 relay/direct。**这是既有隧道的内部拨号，不是给浏览器的新 HTTP 面，不退回 contract。禁止 HTTP/CONNECT 绕过、禁止浏览器直连 owner。 |
+| P3 | owner session 表/Store 方法的命名与迁移位置。 | **复用 `internal/store.Store` 的 `handoff.db`。**触及 `d_orchestration` 只表示 SQLite 文件归属，不新增跨域 wire。 |
+| P4 | preview mirror 是否独立于任务 `Mirror`，浏览器启动器是否按 OS 拆文件。 | **独立 preview mirror；launcher 集中接口 + OS 文件。**不复用任务 cursor。 |
+| P5 | `via` 的匹配语法是否沿 spec 的 IP/CIDR/域名 allowlist 原样冻结。 | **原样沿用 spec。**不加通配符/正则/端口表达式。 |
 
-P0、P1、P2 是实现前置门。尤其 P2 是本轮从“复用 transport”落到“需要任意 TCP 拨号能力”时发现的接缝；本稿不假定现有 `Client` 的 HTTP transport 可以安全地冒充 SOCKS 上游拨号器。
+P2 落成 `Pool.DialContext` 时必须绑 session/machine 生命周期，不能变成任意 TCP 代理。轻档维持：U0–U5 同一轮 implement 序贯，不扇出并行子卡。
 
 ## 1. 触及子系统与派卡资格
 
@@ -38,7 +38,7 @@ P0、P1、P2 是实现前置门。尤其 P2 是本轮从“复用 transport”�
 ### 1.1 四条派卡资格核对
 
 1. **有界文件集：通过。**每个域已给出文件级范围；`internal/agentd` 虽是 61 文件平铺包，但功能面可圈为 preview 文件、`Server.Handler`/生命周期接线、mirror/proxy/browser 文件，故不插竖切还债卡。若实现中必须改出该范围，先停止并补竖切卡。
-2. **契约可枚举：有条件通过。**contract §3.1 的 50 条断言可逐条归属 U0–U5；P0/P1/P2 尚有待拍板门，不能把它们当已冻结签名。
+2. **契约可枚举：通过。**contract §3.1 的 50 条断言可逐条归属 U0–U5；P0/P1/P2 已按推荐项拍板，P2 落成 Pool 内部 DialContext，不新增浏览器可见 wire。
 3. **依赖可排序：通过。**持久化/协议先于 owner，owner/transport 先于镜像和本机开窗，数据消费先于 web；见 §4 DAG。
 4. **独立可验：有条件通过。**逻辑域有测试闭环；`d_gateway`、`d_transport` 的真实 Chromium、桌面、跨机器行为属于边界事实，见各卡验收与 §6「未验证，需真机」。
 
@@ -54,7 +54,7 @@ P0、P1、P2 是实现前置门。尤其 P2 是本轮从“复用 transport”�
 
 ### 2.2 50 条冻结断言逐条归属
 
-“保持”表示 implement 只能让现有 Ticket 0 壳替换为满足该断言的行为，不得改断言本身；“门”表示受 §0 对应待拍板项约束。
+“保持”表示 implement 只能让现有 Ticket 0 壳替换为满足该断言的行为，不得改断言本身。§0 各项已拍板，implement 按裁决落地。
 
 | # | 核对结论 | 归属 |
 | ---: | --- | --- |
@@ -109,7 +109,7 @@ P0、P1、P2 是实现前置门。尤其 P2 是本轮从“复用 transport”�
 | 49 | Ticket 0 不生成 PAC/SOCKS nonce；实现 open 需生成受生命周期管理的临时能力 | U3 |
 | 50 | 保持既有 `tui|terminal|file` TaskRow/workbench closure 不回归 | U4 |
 
-结论：除 P0/P1/P2 三个显式门外，未发现需要新增跨子系统 DTO、路由或事件。发现 P2 后没有边拆边加 seam；已在本稿和台账记录为 contract gate。
+结论：P0/P1/P2 已拍板。未发现需要新增跨子系统 DTO、路由或事件。P2 落成既有隧道上的 Pool.DialContext，不另造 owner HTTP 端点。
 
 ## 3. 产品行为闭环
 
@@ -342,7 +342,7 @@ U1 owner API/events/lifecycle -----> U2 mirror + transport
 ## 8. 交棒与收口自检
 
 - 四样产出齐全：域清单带 logic/boundary 类型；50 条契约逐条核对；U0–U5 四段式子卡与 DAG；每张相关子卡逐族回答缺陷族。
-- 所有岔口集中在 §0；P0/P1/P2 明确是实现前置门，P3/P4/P5 明确是组织选择，未在正文暗中自批。
+- 所有岔口集中在 §0 并已拍板（2026-08-29）。
 - §6 汇总所有“未验证，需真机”行为事实。
 - 每张子卡文件集有界；`internal/agentd` 大包已完成范围核对，无需竖切还债卡。
 - §3 每行具备触发者、权威事实/载体、消费者、可观察结果、归属子卡五格。
