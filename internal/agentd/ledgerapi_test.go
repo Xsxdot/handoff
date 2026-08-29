@@ -143,9 +143,6 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	seedAgentdLedger(t, st)
-	if _, err := st.PutDiscipline(discipline.NameReview, "本机测试审阅纪律"); err != nil {
-		t.Fatalf("准备本机测试纪律 %s: %v", discipline.NameReview, err)
-	}
 	env := newTestAgentdEnv(t)
 	env.srv.SetLedger(st)
 	// 空 target 的 card step 对本机 /api/status 探活；没 manager 会 503。
@@ -906,6 +903,7 @@ func TestCardAcceptUnknownCard404(t *testing.T) {
 func TestCardStepReturns202(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -943,6 +941,7 @@ func TestCardStepSecondReturns409(t *testing.T) {
 func TestCardStepAcceptsImplementWithoutInlineFile(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedImplementCardWithProject(t, env.srv, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -969,6 +968,7 @@ func TestCardStepAcceptsImplementWithoutInlineFile(t *testing.T) {
 func TestCardStepLegacyActorFallback(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -1042,6 +1042,7 @@ func TestCardStepRejectsEmptyStep(t *testing.T) {
 func TestCardStepIgnoresUnknownFields(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -1535,6 +1536,7 @@ func TestCardStepBodySizeLimitBoundary(t *testing.T) {
 	t.Run("恰好等于上限放行", func(t *testing.T) {
 		env := newLedgerEnv(t)
 		seedCardWithProject(t, env.srv, "handoff")
+		seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 		env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) {}
 		code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step", build(maxCardStepBody))
 		if code != http.StatusAccepted {

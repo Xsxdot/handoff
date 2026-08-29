@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -103,10 +104,12 @@ func TestStartCardStepRejectsSecondInFlight(t *testing.T) {
 // TestStartCardStepReleasesSlotOnFinish 环节跑完要把位子让出来，
 // 否则一张卡审一次之后就再也审不了了——而且这个 bug 要等到第二次点才发现。
 func TestStartCardStepReleasesSlotOnFinish(t *testing.T) {
-	s := newStepTestServer(t)
+	env := newLedgerEnv(t)
+	s := env.srv
 	// 用 handoff 项目让建出的卡确实是 B1（前缀取项目名首字母）：B229 起
 	// startCardStep 同步段会解析卡与节点，卡号必须真实存在。
 	seedCardWithProject(t, s, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	done := make(chan struct{})
 	s.runStepFn = func(ctx context.Context, runner *ledgerstep.StepRunner, cardID, step string) {
 		select {
