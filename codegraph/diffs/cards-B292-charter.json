@@ -2,6 +2,13 @@
   "view": "cards/B292-charter",
   "base": "5d06fce0",
   "summary": "B292 Ticket 0：小队成员政策位与成员对象 wire 骨架",
+  "containersAdded": {
+    "k_scheduling_Squad": {
+      "label": "scheduling.Squad",
+      "kind": "类型方法",
+      "domain": "d_scheduling"
+    }
+  },
   "nodesAdded": {
     "m_scheduling_SquadMember": {
       "kind": "model",
@@ -17,6 +24,18 @@
         ["MaxConcurrency", "int", "成员政策位；0=不限"]
       ],
       "projScanned": true
+    },
+    "n_scheduling_Squad_UnmarshalJSON": {
+      "kind": "func",
+      "container": "k_scheduling_Squad",
+      "order": 86,
+      "name": "Squad.UnmarshalJSON",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 86,
+      "signature": "func (q *Squad) UnmarshalJSON(data []byte) error {",
+      "params": [["data", "[]byte", "JSON 字节"]],
+      "returns": "error",
+      "summary": "兼容 B156.3 的存量成员字符串形状。旧队级 max_concurrency 刻意不出现在目标形状中，因此由 encoding/json 忽略；旧成员逐个规范化为不限政策位。"
     },
     "m_proto_SquadMember": {
       "kind": "model",
@@ -47,6 +66,17 @@
         ["max_concurrency", "number | undefined", "成员政策位；缺席=不限"]
       ],
       "modelKind": "dto"
+    },
+    "n_web_api_scheduling_omitZeroSquadConcurrency": {
+      "kind": "func",
+      "container": "k_web_api_scheduling",
+      "order": 127,
+      "name": "omitZeroSquadConcurrency",
+      "file": "web/src/api/scheduling.ts",
+      "line": 127,
+      "signature": "function omitZeroSquadConcurrency(input: SquadInput): SquadInput {",
+      "params": [["input", "SquadInput", ""]],
+      "returns": "SquadInput"
     }
   },
   "nodesModified": {
@@ -141,6 +171,26 @@
       "params": [["squadName", "string", "小队名"], ["carrierName", "string", "载体名"]],
       "returns": "error",
       "summary": "按小队+载体成员政策键和载体物理键归还名额；幂等"
+    },
+    "n_web_api_scheduling_omitZeroConcurrency": {
+      "kind": "func",
+      "container": "k_web_api_scheduling",
+      "order": 109,
+      "name": "omitZeroConcurrency",
+      "file": "web/src/api/scheduling.ts",
+      "line": 111,
+      "signature": "function omitZeroConcurrency<T extends CarrierInput>(input: T): T {",
+      "params": [["input", "T", ""]],
+      "returns": "T"
     }
-  }
+  },
+  "edgesAdded": [
+    ["n_web_api_scheduling_putSquad", "n_web_api_scheduling_omitZeroSquadConcurrency"]
+  ],
+  "edgesDeleted": [
+    ["n_web_api_scheduling_putSquad", "n_web_api_scheduling_omitZeroConcurrency"]
+  ],
+  "projectionsAdded": [
+    ["m_proto_SquadMember", "m_web_api_scheduling_SquadMember", "twin"]
+  ]
 }
