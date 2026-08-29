@@ -61,7 +61,8 @@ type PreviewStaticServer interface {
 	Start(ctx context.Context, workspaceRoot, relativePath string) (entryURL string, stop func() error, err error)
 }
 
-// PreviewWorkspaceResolver supplies the owner workspace metadata for path previews.
+// PreviewWorkspaceResolver supplies owner workspace metadata. The string argument
+// is the creation working directory and is the root for resolving the request.
 type PreviewWorkspaceResolver func(context.Context, string) (workspaceRoot, originURL, branch string, err error)
 
 // PreviewOwnerDeps are the side effects at the owner boundary.
@@ -185,8 +186,12 @@ func NewPreviewOwner(st *store.Store, hub *PreviewHub, deps PreviewOwnerDeps, lo
 		deps.ProbePort = probePreviewPort
 	}
 	if deps.ResolveWorkspace == nil {
-		deps.ResolveWorkspace = func(ctx context.Context, _ string) (string, string, string, error) {
-			return defaultPreviewWorkspaceResolver(ctx, deps.Getwd)
+		deps.ResolveWorkspace = func(ctx context.Context, workspaceCWD string) (string, string, string, error) {
+			getwd := deps.Getwd
+			if workspaceCWD != "" {
+				getwd = func() (string, error) { return workspaceCWD, nil }
+			}
+			return defaultPreviewWorkspaceResolver(ctx, getwd)
 		}
 	}
 	if deps.ValidateVia == nil {
@@ -241,13 +246,20 @@ func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*p
 	if err := o.deps.ValidateVia(req.Via); err != nil {
 		return nil, &previewInputError{Operation: "create", Field: "via", Value: strings.Join(req.Via, ","), Reason: err.Error()}
 	}
-	cwd, err := o.deps.Getwd()
-	if err != nil {
-		o.log.Error("创建预览无法取得工作目录", "operation", "create", "cause", err)
-		return nil, fmt.Errorf("取得工作目录: %w", err)
+	cwd := req.CWD
+	var err error
+	if cwd == "" {
+		cwd, err = o.deps.Getwd()
+		if err != nil {
+			o.log.Error("创建预览无法取得工作目录", "operation", "create", "cause", err)
+			return nil, fmt.Errorf("取得工作目录: %w", err)
+		}
+	} else {
+		o.log.Info("创建预览使用请求工作目录", "operation", "create", "requested_cwd", cwd)
 	}
 	cwd, err = filepath.EvalSymlinks(cwd)
 	if err != nil {
+		o.log.Error("创建预览工作目录解析失败", "operation", "create", "cwd", cwd, "cause", err)
 		return nil, fmt.Errorf("解析工作目录: %w", err)
 	}
 
@@ -262,9 +274,9 @@ func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*p
 			o.log.Warn("预览端口未监听", "operation", "create", "port", req.Port, "cause", err)
 			return nil, &previewInputError{Operation: "create", Field: "port", Value: fmt.Sprint(req.Port), Reason: "端口未监听: " + err.Error()}
 		}
-		root, origin, branch, err := o.deps.ResolveWorkspace(ctx, "")
+		root, origin, branch, err := o.deps.ResolveWorkspace(ctx, cwd)
 		if err != nil {
-			o.log.Warn("读取 port 预览工作区元数据失败", "operation", "create", "port", req.Port, "cause", err)
+			o.log.Warn("读取 port 预览工作区元数据失败", "operation", "create", "port", req.Port, "cwd", cwd, "cause", err)
 			return nil, fmt.Errorf("解析 port 预览工作区: %w", err)
 		}
 		session.EntryURL = fmt.Sprintf("http://localhost:%d", req.Port)
@@ -274,12 +286,14 @@ func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*p
 		}
 		row.Source = store.PreviewSource{Kind: "port", Port: req.Port, WorkspaceRoot: root}
 	} else {
-		root, origin, branch, err := o.deps.ResolveWorkspace(ctx, req.Path)
+		root, origin, branch, err := o.deps.ResolveWorkspace(ctx, cwd)
 		if err != nil {
+			o.log.Warn("读取 path 预览工作区元数据失败", "operation", "create", "cwd", cwd, "path", req.Path, "cause", err)
 			return nil, fmt.Errorf("解析预览工作区 path=%q: %w", req.Path, err)
 		}
 		rel, err := validatePreviewRelativePath(root, req.Path)
 		if err != nil {
+			o.log.Warn("预览 path 校验失败", "operation", "create", "cwd", cwd, "workspace", root, "path", req.Path, "cause", err)
 			return nil, &previewInputError{Operation: "create", Field: "path", Value: req.Path, Reason: err.Error()}
 		}
 		entry, cleanup, err := o.deps.Static.Start(ctx, root, rel)

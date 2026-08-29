@@ -203,6 +203,7 @@ export interface PreviewOpenReq {
   port?: number
   path?: string
   via?: string[]
+  cwd?: string
 }
 
 // PreviewSession 是 owner 持久化字段的 TS 镜像；machine 由协调者给远端快照盖章。

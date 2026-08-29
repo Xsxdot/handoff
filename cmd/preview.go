@@ -3,6 +3,9 @@ package cmd
 import (
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"os"
+	"path/filepath"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
@@ -24,17 +27,31 @@ var previewOpenCmd = &cobra.Command{
 	Short: "发布一个远端预览会话",
 	Args:  cobra.NoArgs,
 	RunE: func(cmd *cobra.Command, _ []string) error {
+		cwd, err := os.Getwd()
+		if err != nil {
+			slog.Error("preview open 无法取得 CLI 工作目录", "operation", "preview_open", "cause", err)
+			return fmt.Errorf("取得 CLI 工作目录: %w", err)
+		}
+		cwd, err = filepath.EvalSymlinks(cwd)
+		if err != nil {
+			slog.Error("preview open 无法解析 CLI 工作目录", "operation", "preview_open", "cwd", cwd, "cause", err)
+			return fmt.Errorf("解析 CLI 工作目录: %w", err)
+		}
+		slog.Info("preview open 准备创建会话", "operation", "preview_open", "cwd", cwd, "port", previewPort, "path", previewPath)
 		cl, cleanup, err := newTargetClient()
 		if err != nil {
+			slog.Error("preview open 创建客户端失败", "operation", "preview_open", "cwd", cwd, "cause", err)
 			return err
 		}
 		defer cleanup()
 		session, err := cl.CreatePreview(cmd.Context(), proto.PreviewOpenReq{
-			Port: previewPort, Path: previewPath, Via: previewVia,
+			Port: previewPort, Path: previewPath, Via: previewVia, CWD: cwd,
 		})
 		if err != nil {
+			slog.Error("preview open 创建会话失败", "operation", "preview_open", "cwd", cwd, "cause", err)
 			return err
 		}
+		slog.Info("preview open 创建会话成功", "operation", "preview_open", "cwd", cwd, "session", session.ID)
 		_, err = fmt.Fprintf(cmd.OutOrStdout(), "预览已发到桌面，在对应项目任务组点开（%s）\n", session.ID)
 		return err
 	},

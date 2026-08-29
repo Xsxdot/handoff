@@ -175,7 +175,7 @@ func TestContractFixtures(t *testing.T) {
 }
 
 func previewOpenReqSample() PreviewOpenReq {
-	return PreviewOpenReq{Port: 4173, Via: []string{"10.0.0.0/8", "api.internal"}}
+	return PreviewOpenReq{Port: 4173, Via: []string{"10.0.0.0/8", "api.internal"}, CWD: "/Users/dev/code/handoff"}
 }
 
 func previewSessionSample(now time.Time) PreviewSession {

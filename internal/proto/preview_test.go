@@ -67,7 +67,7 @@ func TestPreviewRequestPortPathWireShape(t *testing.T) {
 		want []string
 	}{
 		{name: "port", req: PreviewOpenReq{Port: 5173}, want: []string{`"port":5173`}},
-		{name: "path", req: PreviewOpenReq{Path: "dist/index.html", Via: []string{"127.0.0.1"}}, want: []string{`"path":"dist/index.html"`, `"via":["127.0.0.1"]`}},
+		{name: "path", req: PreviewOpenReq{Path: "dist/index.html", Via: []string{"127.0.0.1"}, CWD: "/workspace"}, want: []string{`"path":"dist/index.html"`, `"via":["127.0.0.1"]`, `"cwd":"/workspace"`}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

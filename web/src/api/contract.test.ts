@@ -547,11 +547,12 @@ describe('工作台状态契约', () => {
 })
 
 describe('远端预览会话契约', () => {
-  it('创建请求保留 port/via，path 与空 via 可缺席', () => {
+  it('创建请求保留 port/via/cwd，path 可缺席', () => {
     const req: PreviewOpenReq = previewOpenReqFixture
     expect(req.port).toBe(4173)
     expect(req.path).toBeUndefined()
     expect(req.via).toEqual(['10.0.0.0/8', 'api.internal'])
+    expect(req.cwd).toBe('/Users/dev/code/handoff')
   })
 
   it('owner 会话与 coordinator 列表共享同一字段形状', () => {

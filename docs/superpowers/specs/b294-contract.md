@@ -1,5 +1,7 @@
 # B294 契约增量：远端预览会话与隔离 Chromium
 
+**修订：r1（2026-08-30）**：`PreviewOpenReq` 增加 `cwd`，冻结 CLI 工作目录传递与 owner 回落语义。
+
 **上游状态：已批准**（源 spec：`docs/superpowers/specs/b294.md`，头部状态行已核对）
 **级别：L3 ｜选档：轻档**（单条主旅程；直通竖切归重档，本节点落空壳与直通镜像）
 **冻结物：**本文档、`codegraph/best.json`、`codegraph/target.json`、
@@ -79,6 +81,7 @@ type PreviewOpenReq struct {
     Port int      `json:"port,omitempty"`
     Path string   `json:"path,omitempty"`
     Via  []string `json:"via,omitempty"`
+    CWD  string   `json:"cwd,omitempty"`
 }
 
 type PreviewSession struct {
@@ -115,7 +118,8 @@ type PreviewCloseResp struct { OK bool `json:"ok"` }
 
 现状出处（本提交）：`internal/proto/preview.go:5-56`。`Machine` 仅是 coordinator
 投影字段；owner 返回空串时因 `omitempty` 缺席。`Via` 缺席表示 loopback 全端口默认
-投影；非空值才扩展 IP/CIDR/域名 allowlist。`TTLSeconds` 是线上的秒数，不把 Go
+投影；非空值才扩展 IP/CIDR/域名 allowlist。`CWD` 是发布该会话的 CLI 工作目录，
+owner 用它作为创建时工作目录；空值表示回落 owner 进程 `Getwd`。`TTLSeconds` 是线上的秒数，不把 Go
 `time.Duration` 直接暴露给 TS。
 
 ### 2.2 owner/coordinator HTTP 与 WS
@@ -234,6 +238,9 @@ web 类型镜像已在 `web/src/api/types.ts#PreviewOpenReq`（现状 :202）、
 48. Ticket 0 不启动 Chromium。
 49. Ticket 0 不生成 PAC 或 SOCKS nonce。
 50. Ticket 0 不改变 `TaskRow` 的现有 `tui|terminal|file` 闭集。
+51. `PreviewOpenReq.cwd` 缺席或空串时 owner 回落自身 `Getwd`。
+52. `PreviewOpenReq.cwd` 非空时 `PreviewSession.cwd` 是该路径经 `EvalSymlinks` 的结果，而不是 agentd 进程 cwd。
+53. origin、branch 与 path 相对路径都相对该创建工作目录解析。
 
 ### 3.2 三重闸门拍板记录
 

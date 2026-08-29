@@ -3,11 +3,13 @@ package proto
 import "time"
 
 // PreviewOpenReq is the owner-side request for a remote preview session.
-// Exactly one of Port and Path is set; Via is a session-local allowlist.
+// Exactly one of Port and Path is set; Via is a session-local allowlist. CWD is
+// the CLI working directory used by the owner when creating the session.
 type PreviewOpenReq struct {
 	Port int      `json:"port,omitempty"`
 	Path string   `json:"path,omitempty"`
 	Via  []string `json:"via,omitempty"`
+	CWD  string   `json:"cwd,omitempty"`
 }
 
 // PreviewSession is the persisted owner truth plus the coordinator's machine

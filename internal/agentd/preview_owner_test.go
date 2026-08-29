@@ -173,6 +173,37 @@ func TestDefaultPreviewWorkspaceResolverReadsGitMetadata(t *testing.T) {
 	}
 }
 
+func TestPreviewOwnerPathUsesRequestCWDForWorkspace(t *testing.T) {
+	repo := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/handoff.git")
+	gitAt(t, repo, "checkout", "-q", "-b", "feature/preview")
+	nonRepo := t.TempDir()
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "handoff.db"))
+	if err != nil {
+		t.Fatalf("open preview store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	owner := NewPreviewOwner(st, NewPreviewHub(previewTestLogger(t)), PreviewOwnerDeps{
+		Now:    func() time.Time { return time.Date(2026, 8, 30, 1, 2, 3, 0, time.UTC) },
+		NewID:  func() string { return "preview-request-cwd" },
+		Getwd:  func() (string, error) { return nonRepo, nil },
+		Static: &previewStaticStub{},
+	}, previewTestLogger(t))
+	t.Cleanup(func() { _ = owner.Stop(context.Background()) })
+
+	session, err := owner.Create(context.Background(), proto.PreviewOpenReq{CWD: repo, Path: "README.md"})
+	if err != nil {
+		t.Fatalf("create preview from request cwd: %v", err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(repo)
+	if err != nil {
+		t.Fatalf("eval repo: %v", err)
+	}
+	if session.CWD != wantRoot || session.OriginURL != "git@github.com:Xsxdot/handoff.git" || session.Branch != "feature/preview" {
+		t.Fatalf("session cwd/origin/branch=(%q,%q,%q), want (%q,%q,%q)", session.CWD, session.OriginURL, session.Branch, wantRoot, "git@github.com:Xsxdot/handoff.git", "feature/preview")
+	}
+}
+
 func TestPreviewOwnerRejectsInvalidCreate(t *testing.T) {
 	env, _ := newPreviewOwnerEnv(t)
 	for _, tc := range []struct {
