@@ -64,6 +64,8 @@ const termInstance = {
   onData: vi.fn(() => ({ dispose: vi.fn() })),
   onResize: vi.fn(),
   attachCustomWheelEventHandler: vi.fn(),
+  // B300 起 TerminalTab 挂载即注册 OSC 52 handler，替身必须提供 parser 键
+  parser: { registerOscHandler: vi.fn(() => ({ dispose: vi.fn() })) },
 }
 vi.mock('@xterm/xterm', () => ({ Terminal: vi.fn(function () { return termInstance }) }))
 vi.mock('@xterm/xterm/css/xterm.css', () => ({}))

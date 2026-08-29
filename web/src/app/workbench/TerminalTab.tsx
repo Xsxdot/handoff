@@ -29,10 +29,11 @@ import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 import { createPtySession, deletePtySession } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
-import { describeElement, logTermFocus, logTermHost, logTermInput, logTermKeepalive, logTermResize, logTermWheel, logTermWheelBypass, terminalDebugEnabled } from './terminalDebug'
+import { describeElement, logTermFocus, logTermHost, logTermInput, logTermKeepalive, logTermOsc52, logTermResize, logTermWheel, logTermWheelBypass, terminalDebugEnabled } from './terminalDebug'
 import { isTerminalHostResponse, takeLeadingFocusReport } from './terminalHostResponse'
 import { altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelection, wheelPixelDeltaY } from './terminalWheel'
 import { installTerminalInputFix } from './terminalInput'
+import { parseOsc52 } from './terminalOsc52'
 import { registerFileDropTarget, shellQuote } from '../lib/desktopFileDrop'
 import type { BaseDir } from './useWorkbench'
 
@@ -127,6 +128,9 @@ export function TerminalTab({
   // dead：这条订阅被服务端判死（close 1008），api/pty.ts 不会再重连。
   // 与 error 分开存：普通断线也会写 error，但那时还在退避重连，不该给重开入口。
   const [dead, setDead] = useState(false)
+  // copyNotice 是 OSC 52 复制失败的用户提示（B300）。成功不提示——TUI 自带
+  // 复制反馈，再加成功提示是噪声；失败必须出声，否则就是「以为复制了」的老问题。
+  const [copyNotice, setCopyNotice] = useState<string | null>(null)
   // discarded 是用户已经放弃的那个会话 id。不清空上层的 sessionId（那是 tab 的
   // 状态，本组件不持有），而是在本地把它「划掉」：liveId 因此回到 undefined，
   // 挂载路径原样走一遍建会话 + onSession 回报，不必给上层加新的写入口。
@@ -221,6 +225,8 @@ export function TerminalTab({
     // reassertPending = 「这条连接的尺寸还欠服务端一次」。onAttached 撞上
     // 未成型的容器时置位，由容器成型后的第一次量兑现。
     let reassertPending = false
+    // noticeTimer 是 OSC 52 复制失败提示的自动消失定时器 id；0 表示没有挂着的定时器。
+    let noticeTimer = 0
     // fitIfMeasured 只在容器成型后量。没量成时什么都不做——ResizeObserver
     // 会在容器拿到盒子的那一刻再来一次。
     const fitIfMeasured = (): boolean => {
@@ -293,6 +299,58 @@ export function TerminalTab({
       }
       logTermInput(label, rest, wsStatus)
       handle?.send(new TextEncoder().encode(rest))
+    })
+
+    // OSC 52：TUI（grok / opencode 等）复制时发的「终端，请写剪贴板」序列。
+    // xterm 默认丢弃它——这就是「TUI 说复制了、本机剪贴板没变」的根因（B300）。
+    // 门按序：replay 门（积压重放里的历史复制不许改写现在的剪贴板；旧服务端
+    // 'drop-all' 说明不了回放长度，按 spec 不设门）→ active 门（后台 keep-alive
+    // 的 tab 不许动用户剪贴板）→ 载荷门（'?' / 空载荷在 parseOsc52 里拦截）。
+    // 写失败必须给用户可见提示：静默失败等于「以为复制了」。
+    //
+    // showCopyFailure 是「写不进本机剪贴板」的唯一出口：writeText 拒绝与
+    // clipboard 缺席（非安全上下文）都汇到它——两条失败路径共用同一份提示与
+    // 自动消失定时器，谁也不许另起一套（另起的那套迟早被忘掉，变回静默失败）。
+    // 打点 write-fail：观测三态里「浏览器拒了」的那一态。
+    const showCopyFailure = () => {
+      logTermOsc52(label, 'write-fail', { 原因: 'clipboard' })
+      const msg = '复制到本机剪贴板失败（浏览器未授权或页面未聚焦），可选中文字后用右键复制'
+      setCopyNotice(msg)
+      if (noticeTimer !== 0) window.clearTimeout(noticeTimer)
+      noticeTimer = window.setTimeout(() => {
+        noticeTimer = 0
+        setCopyNotice(null)
+      }, 6000)
+    }
+    const osc52 = term.parser.registerOscHandler(52, (data) => {
+      if (hostReply === 'replay') {
+        logTermOsc52(label, 'skip', { 原因: 'replay' })
+        return true
+      }
+      if (!activeRef.current) {
+        logTermOsc52(label, 'skip', { 原因: 'inactive' })
+        return true
+      }
+      const parsed = parseOsc52(data)
+      if (parsed === null) {
+        // 门挡下也要留痕，不然「TUI 说复制了、剪贴板没变」分不清是序列没到
+        // 还是门挡了（观测三态里「门挡了」的那一态）。
+        logTermOsc52(label, 'skip', { 原因: 'payload' })
+        return true
+      }
+      logTermOsc52(label, 'copy', { selection: parsed.selection, 字符数: parsed.text.length })
+      // 非安全上下文（http://<局域网 IP>，如经 Tailscale 访问）navigator.clipboard
+      // 是 undefined：直接摸 writeText 会在 xterm 解析器里同步抛 TypeError——
+      // 既打断 chunk 处理，又绕过失败提示。缺席按「浏览器拒了」同一条路径处置。
+      if (!navigator.clipboard) {
+        showCopyFailure()
+        return true
+      }
+      navigator.clipboard.writeText(parsed.text).then(
+        () => setCopyNotice(null),
+        showCopyFailure,
+      )
+      return true
     })
 
     // 鼠标追踪开启时，xterm 每个 DOM wheel 只发一格报告，触控板一甩的像素
@@ -546,6 +604,9 @@ export function TerminalTab({
       ta?.removeEventListener('focus', onFocusEvt)
       ta?.removeEventListener('blur', onBlurEvt)
       inputFix.dispose()
+      // OSC 52 失败提示的定时器随 effect 一起清，不许越过卸载触发 setState
+      window.clearTimeout(noticeTimer)
+      osc52.dispose()
       unregisterDrop()
       // 只断连接，不发 DELETE：服务端会话继续跑
       handle?.close()
@@ -636,6 +697,11 @@ export function TerminalTab({
               重开一个终端
             </button>
           )}
+        </div>
+      )}
+      {copyNotice !== null && (
+        <div data-testid="copy-notice" className="border-t px-3 py-1.5 text-xs text-destructive">
+          {copyNotice}
         </div>
       )}
       {exit !== undefined && (

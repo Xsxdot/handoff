@@ -161,3 +161,16 @@ export function logTermKeepalive(label: string, event: string, extra?: Record<st
   if (!terminalDebugEnabled()) return
   console.debug('[DEBUG-b270]', { 终端: label, 事件: event, ...extra })
 }
+
+// logTermOsc52 记一次 OSC 52 的处置结果（B300）。
+//
+// 参数：label 是终端标识；event 是短名（copy = 发起写入 / skip = 门挡下，
+// 原因 replay / inactive / payload / write-fail = 浏览器拒了——writeText
+// reject 或非安全上下文 clipboard 缺席）；extra 带 selection、字符数或拦截原因。
+// skip 与 write-fail 都必须打：「TUI 说复制了、本机剪贴板没变」要能分清是
+// 序列没到、门挡了、还是浏览器拒了——三者的处置完全不同。成功路径维持静默：
+// TUI 自带复制反馈，再打一条是噪声。
+export function logTermOsc52(label: string, event: string, extra?: Record<string, unknown>): void {
+  if (!terminalDebugEnabled()) return
+  console.debug('[term:osc52]', { 终端: label, 事件: event, ...extra })
+}
