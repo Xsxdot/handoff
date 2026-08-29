@@ -469,3 +469,11 @@
 - **悬浮窗开「远程机器 home 终端」的显式入口**：显式 UI 选机器，不走孤儿收编；`baseOfSession` 的 home@machine 分类保留待复用。来源：B283 spec Out of Scope。
 - **ptyhost 空闲会话回收/孤儿清扫**（服务端侧）：当前只在 shell 退出时回收，被收编循环甩下的孤儿会永久存活。来源：B283 spec Out of Scope。
 - **会话扇出部分失败的用户可见呈现**：`machines.ok=false` 目前只进日志与恢复判据，界面上机器缺席不可见。来源：B283 spec Out of Scope。
+
+## 来自 B298 spec（2026-08-29，本期不做）
+
+- **开发机详情展示 DataDir 占用，并提供与 `handoff gc` 同语义的预览/确认清理**。B298 不做前端：清理是一次性删盘，不是设置页的持久配置。来源：B298 spec Out of Scope。
+- **`agentd.log` 轮转或截断**。B298 只收构建缓存与残留 managed 工作树；linux-01 该文件 297M，不是 150G 主体。来源：同上。
+- **按保留期删除整棵任务目录 / `render.log`**。B298 明确保留排查素材。来源：同上。
+- **`reclaim` 无参批量收树**。今天仍是一任务一次；B298 只在 gc 能力内部调单任务回收。来源：同上。
+- **磁盘上没有任务行的孤儿 tmp 目录**。任务表只增不删，B298 只按终态行删两处叶子，禁止 `RemoveAll` 整个 DataDir `tmp` 根。来源：B298 spec 审查 I3。
