@@ -141,7 +141,7 @@ func TestContractFixtures(t *testing.T) {
 			Carriers: []CarrierView{{
 				Name: "mac-01-opencode", Machine: "mac-01", CLI: "opencode",
 				HomeDir: "/Users/dev/.handoff/homes/opencode", Model: "",
-				Credential: "standalone", MaxConcurrency: 2, Healthy: true, Version: 1,
+				Credential: "standalone", MaxConcurrency: 2, Version: 1,
 			}},
 			Squads: []SquadView{{
 				Name: "coord", Role: "coordinator",

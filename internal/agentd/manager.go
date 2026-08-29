@@ -994,8 +994,17 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("plan 摘要已生成", "task", taskID, "summary", truncateRunes(summary, 40))
 	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
+	startEnv := envKVs
+	if req.HomeDir != nil && *req.HomeDir != "" {
+		// HOME 是小队绑定载体的唯一运行时覆盖入口：env 文件仍可提供普通
+		// 变量，但不能把载体 HOME 压回去。空指针/空串保持 envKVs 原样，
+		// 因为普通派发必须继续使用 executor 自身继承的 process HOME。
+		startEnv = withCarrierHome(envKVs, *req.HomeDir)
+		m.log.Info("载体 HOME 已覆盖 executor 环境", "task", taskID,
+			"home_override", true, "home_dir", *req.HomeDir)
+	}
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent),
-		TaskDir: taskDir, Env: envKVs, Discipline: discText}); err != nil {
+		TaskDir: taskDir, Env: startEnv, Discipline: discText}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，协调者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
@@ -1027,6 +1036,23 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		"source", discSource, "bytes", len(discText))
 	go m.mediate(taskID)
 	return task, nil
+}
+
+// withCarrierHome 返回带有唯一显式 HOME 行的 env。它只处理 Manager 已经解析
+// 完成的 executor env，不改变通用 env JSON 或 StartReq 形状。
+//
+// 为什么删除所有旧 HOME：环境文件允许重复键，若只追加载体值，最终生效值会
+// 依赖 prochost/exec 的重复键处理顺序；先过滤再追加把覆盖优先级固定为载体。
+func withCarrierHome(env []string, homeDir string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, kv := range env {
+		key, _, ok := strings.Cut(kv, "=")
+		if ok && key == "HOME" {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "HOME="+homeDir)
 }
 
 // guardWorkdirBusy 拒绝把任务派到已被活跃任务占用的工作目录（B42）。

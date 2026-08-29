@@ -160,9 +160,12 @@ func StartServe(ctx context.Context, repoPath, taskID, markRoot, taskDir, model 
 	if err != nil {
 		return nil, err
 	}
-	if err := EnsureAuthLink(homeDir); err != nil {
+	carrierHome := nonEmptyEnvValue(env, "HOME")
+	if err := ensureAuthLinkAt(homeDir, carrierHome); err != nil {
+		log.Error("grok auth 软链建立失败", "task", taskID, "home", carrierHome != "", "cause", err)
 		return nil, err
 	}
+	log.Info("grok auth 权威路径已选择", "task", taskID, "carrier_home", carrierHome != "")
 	port, err := freePort()
 	if err != nil {
 		return nil, err
@@ -270,6 +273,18 @@ func serveSpec(repoPath, taskDir, model string, port int, secret string, env []s
 		InfoPath: filepath.Join(taskDir, procInfoFileName),
 		Sentinel: true,
 	}
+}
+
+// nonEmptyEnvValue 读取 manager 传来的单一环境键；不 trim HOME，保证载体路径
+// 的逐字节语义，且空值不误触发隔离凭据例外。
+func nonEmptyEnvValue(env []string, key string) string {
+	for _, kv := range env {
+		name, value, ok := strings.Cut(kv, "=")
+		if ok && name == key && value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 // grokServeArgv 组 grok agent serve 的 argv（命令形态沿用旧启动脚本，原样搬运）。

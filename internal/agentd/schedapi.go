@@ -25,8 +25,10 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
 	"strconv"
 
+	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
@@ -178,11 +180,12 @@ func (s *Server) handleQueueGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleCarrierDetect POST /api/squads/carriers/{name}/detect：检测写状态。
-// 协调机持有 registry，本端点不整段 forwardIfRequested。Ticket 0 空壳只调
-// ApplyDetect（恒 ErrDetectUnwired → 503）；实现票在此编排本机/跨机 WakeHome。
+// 协调机持有 registry，本端点不整段 forwardIfRequested；本机或目标机只负责
+// WakeHome，ApplyDetect 始终回到协调机写状态。
 func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
-	if _, err := s.scheduling.Carrier(name); err != nil {
+	carrier, err := s.scheduling.Carrier(name)
+	if err != nil {
 		if errors.Is(err, scheduling.ErrNotFound) {
 			writeErr(w, http.StatusNotFound, err)
 			return
@@ -191,21 +194,144 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.log.Info("检测载体", "name", name)
-	c, err := s.scheduling.ApplyDetect(name, scheduling.DetectEvidence{}, "")
+	if s.hostAPI == nil {
+		err := fmt.Errorf("载体 %s 的 hostapi 未装配", name)
+		s.log.Error("载体检测失败", "name", name, "machine", carrier.Machine, "cause", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("检测载体开始", "name", name, "machine", carrier.Machine, "path", r.URL.Path)
+	var wake proto.HomeWakeResp
+	if isLocalMachine(carrier.Machine) {
+		reply, wakeErr := s.hostAPI.WakeHome(r.Context(), hostapi.WakeRequest{
+			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Credential: string(carrier.Credential), Model: carrier.Model,
+		})
+		if wakeErr != nil {
+			s.log.Error("本机载体唤起失败", "name", name, "machine", carrier.Machine, "cause", wakeErr)
+			s.hostProbeErr(w, wakeErr)
+			return
+		}
+		wake = proto.HomeWakeResp{Outcome: string(reply.Outcome), Detail: reply.Detail}
+	} else {
+		target, ok := s.conf().Targets[carrier.Machine]
+		if !ok {
+			err := fmt.Errorf("载体 %s 的机器 %q 未在 targets 中定义", name, carrier.Machine)
+			s.log.Error("远程载体检测失败：目标未定义", "name", name, "machine", carrier.Machine, "cause", err)
+			writeErr(w, http.StatusBadGateway, err)
+			return
+		}
+		targetClient, poolErr := s.pool.For(carrier.Machine)
+		if poolErr != nil {
+			s.log.Error("远程载体检测失败：目标客户端不可用", "name", name, "machine", carrier.Machine, "cause", poolErr)
+			writeErr(w, http.StatusBadGateway, poolErr)
+			return
+		}
+		body, marshalErr := json.Marshal(proto.HomeWakeReq{
+			CLI: carrier.CLI, HomeDir: carrier.HomeDir, Credential: string(carrier.Credential), Model: carrier.Model,
+		})
+		if marshalErr != nil {
+			s.log.Error("远程载体检测失败：编码唤起请求", "name", name, "machine", carrier.Machine, "cause", marshalErr)
+			writeErr(w, http.StatusInternalServerError, marshalErr)
+			return
+		}
+		forwardReq := r.Clone(r.Context())
+		u := *r.URL
+		u.Path, u.RawPath, u.RawQuery = "/api/host/wake", "", ""
+		forwardReq.URL = &u
+		status, headers, payload, forwardErr := s.forwardJSON(forwardReq, carrier.Machine,
+			targetClient, target.Token, body)
+		if forwardErr != nil {
+			s.log.Error("远程载体检测失败：转发唤起", "name", name, "machine", carrier.Machine, "cause", forwardErr)
+			writeErr(w, http.StatusBadGateway, forwardErr)
+			return
+		}
+		if status < http.StatusOK || status >= http.StatusMultipleChoices {
+			s.log.Warn("远程载体检测收到唤起错误", "name", name, "machine", carrier.Machine, "status", status)
+			copyForwardHeaders(w, headers)
+			w.WriteHeader(status)
+			if _, err := w.Write(payload); err != nil {
+				s.log.Warn("回送远程检测错误失败", "name", name, "machine", carrier.Machine, "status", status, "cause", err)
+			}
+			return
+		}
+		if err := json.Unmarshal(payload, &wake); err != nil {
+			s.log.Error("远程载体检测失败：唤起响应解码", "name", name, "machine", carrier.Machine, "cause", err)
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("目标唤起响应无法解析: %w", err))
+			return
+		}
+	}
+	ev, ok := detectEvidence(wake.Outcome)
+	if !ok {
+		err := fmt.Errorf("载体 %s 的 wake outcome %q 未知", name, wake.Outcome)
+		s.log.Error("载体检测失败：未知唤起结果", "name", name, "machine", carrier.Machine,
+			"outcome", wake.Outcome, "cause", err)
+		writeErr(w, http.StatusBadGateway, err)
+		return
+	}
+	c, err := s.scheduling.ApplyDetect(name, ev, wake.Detail)
 	if err != nil {
 		if errors.Is(err, scheduling.ErrDetectUnwired) {
-			s.log.Warn("载体检测尚未接线", "name", name)
+			s.log.Warn("载体检测尚未接线", "name", name, "machine", carrier.Machine, "outcome", wake.Outcome)
 			writeErr(w, http.StatusServiceUnavailable, err)
 			return
 		}
-		s.log.Error("载体检测失败", "name", name, "cause", err)
+		s.log.Error("载体检测写状态失败", "name", name, "machine", carrier.Machine,
+			"outcome", wake.Outcome, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	rows, rowsErr := s.scheduling.CarrierRows()
+	if rowsErr != nil {
+		s.log.Error("载体检测读取新版本失败", "name", name, "machine", carrier.Machine, "cause", rowsErr)
+		writeErr(w, http.StatusInternalServerError, rowsErr)
+		return
+	}
+	version := 0
+	for _, row := range rows {
+		if row.Carrier.Name == name {
+			version = row.Version
+			break
+		}
+	}
+	if version == 0 {
+		err := fmt.Errorf("载体 %s 检测写入后无法读取版本", name)
+		s.log.Error("载体检测版本缺失", "name", name, "machine", carrier.Machine, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.log.Info("载体检测完成", "name", name, "machine", carrier.Machine,
+		"outcome", wake.Outcome, "status", c.Status, "version", version)
 	writeJSON(w, http.StatusOK, proto.CarrierDetectResp{
 		Name: c.Name, Status: string(c.Status), LastError: c.LastError,
+		Version: version,
 	})
+}
+
+// isLocalMachine 统一本机 carrier 的三种登记写法；其他值必须走 target 池，
+// 从而检测状态仍只落在协调机 registry。
+func isLocalMachine(machine string) bool {
+	if machine == "" || machine == "local" || machine == "本机" {
+		return true
+	}
+	hostname, err := os.Hostname()
+	return err == nil && machine == hostname
+}
+
+// detectEvidence 是 detect handler 唯一的 wake outcome 白名单。未知值不落库，
+// 防止新增/拼错 outcome 误走 default online。
+func detectEvidence(outcome string) (scheduling.DetectEvidence, bool) {
+	switch outcome {
+	case string(hostapi.WakeReady):
+		return scheduling.DetectEvidence{Reachable: true}, true
+	case string(hostapi.WakeNeedLogin):
+		return scheduling.DetectEvidence{Reachable: true, NeedLogin: true}, true
+	case string(hostapi.WakeQuota):
+		return scheduling.DetectEvidence{Reachable: true, Quota: true}, true
+	case string(hostapi.WakeUnreachable):
+		return scheduling.DetectEvidence{Reachable: false}, true
+	default:
+		return scheduling.DetectEvidence{}, false
+	}
 }
 
 // handleCarrierRunCommand GET /api/squads/carriers/{name}/run-command：
@@ -267,8 +393,8 @@ func carrierView(c scheduling.Carrier, version int) proto.CarrierView {
 	return proto.CarrierView{
 		Name: c.Name, Machine: c.Machine, CLI: c.CLI, HomeDir: c.HomeDir,
 		Model: c.Model, Credential: string(c.Credential),
-		MaxConcurrency: c.MaxConcurrency, Healthy: c.Healthy,
-		Status: string(c.Status), LastError: c.LastError, Version: version,
+		MaxConcurrency: c.MaxConcurrency,
+		Status:         string(c.Status), LastError: c.LastError, Version: version,
 	}
 }
 

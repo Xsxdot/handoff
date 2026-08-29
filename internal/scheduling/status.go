@@ -1,17 +1,21 @@
 // status.go —— 载体一等状态、默认隔离 HOME、运行命令与检测写状态入口（B293）。
 //
 // 职责：冻结四态词表、用户可见默认 HOME 串、运行命令格式，以及检测结果写回
-// 载体状态的入站面。PutCarrier / admitInto 的旧 Healthy 翻真与按位准入仍在
-// scheduling.go，实现票按契约废止并改接本文件的状态面。
+// 载体状态的入站面。PutCarrier / admitInto 的四态接线与按位准入规则分别落在
+// scheduling.go，本文件集中维护状态迁移和用户可见的派生字符串。
 //
 // 边界：不探文件系统、不拉起 CLI——那是 hostapi.ProbeHome / WakeHome；本文件
 // 只拥有编制域数据（status / last_error）和由载体字段派生、对侧可见的字符串。
 package scheduling
 
 import (
+	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
+
+	"github.com/Xsxdot/handoff/internal/schedclient"
 )
 
 // CarrierStatus 是载体一等状态的英文键（wire `status`）。用户可见中文名见 Label。
@@ -74,11 +78,58 @@ type DetectEvidence struct {
 // gateway 映射 503；实现票接线后正常路径不再返回它。
 var ErrDetectUnwired = errors.New("scheduling: 载体检测写状态尚未接线")
 
-// ApplyDetect 按四态表把一次检测结果写进载体。Ticket 0 空壳：不写库，恒返回
-// ErrDetectUnwired。实现票必须：读当前状态 → 按契约迁移表写入 status/last_error
-// → CAS 推进 version。
+// ApplyDetect 按「不可达优先、限额次之、需登录再次之、否则上线」的四态表把
+// 一次检测结果写进载体。它读取 registry 当前版本并以一次 CAS 写回；CAS、读取
+// 或解码失败都保留旧状态并返回带载体名上下文的错误。online 清空 LastError，
+// 其他状态原样保存 detail（包括空 detail）。
 func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Carrier, error) {
-	statusLog().Warn("ApplyDetect 尚未接线", "name", name, "reachable", ev.Reachable,
+	statusLog().Info("开始写入载体检测", "name", name, "reachable", ev.Reachable,
 		"need_login", ev.NeedLogin, "quota", ev.Quota, "detail_bytes", len(detail))
-	return Carrier{}, ErrDetectUnwired
+	rec, err := s.repo.Get(kindCarrier, name)
+	if err != nil {
+		statusLog().Error("读取载体检测目标失败", "name", name, "cause", err)
+		if errors.Is(err, schedclient.ErrNotFound) {
+			return Carrier{}, fmt.Errorf("载体 %s 不存在: %w", name, ErrNotFound)
+		}
+		return Carrier{}, fmt.Errorf("载体 %s 读取失败: %w", name, err)
+	}
+	var carrier Carrier
+	if err := json.Unmarshal(rec.Body, &carrier); err != nil {
+		statusLog().Error("解码载体检测目标失败", "name", name, "version", rec.Version, "cause", err)
+		return Carrier{}, fmt.Errorf("载体 %s/%d 解码失败: %w", name, rec.Version, err)
+	}
+	previous := carrier.Status
+	switch {
+	case !ev.Reachable:
+		if previous == StatusOnline || previous == StatusQuota || previous == StatusUnreachable {
+			carrier.Status = StatusUnreachable
+		} else {
+			carrier.Status = StatusPending
+		}
+	case ev.Quota:
+		carrier.Status = StatusQuota
+	case ev.NeedLogin:
+		carrier.Status = StatusPending
+	default:
+		carrier.Status = StatusOnline
+	}
+	if carrier.Status == StatusOnline {
+		carrier.LastError = ""
+	} else {
+		carrier.LastError = detail
+	}
+	body, err := json.Marshal(carrier)
+	if err != nil {
+		statusLog().Error("编码载体检测结果失败", "name", name, "version", rec.Version, "cause", err)
+		return Carrier{}, fmt.Errorf("载体 %s 检测结果编码失败: %w", name, err)
+	}
+	version, err := s.repo.Put(kindCarrier, name, rec.Version, body, "scheduling.detect")
+	if err != nil {
+		statusLog().Error("写入载体检测结果失败", "name", name, "version", rec.Version,
+			"next_status", carrier.Status, "cause", err)
+		return Carrier{}, fmt.Errorf("载体 %s 检测写入冲突: %w", name, err)
+	}
+	statusLog().Info("写入载体检测结果成功", "name", name, "version", version,
+		"previous_status", previous, "status", carrier.Status)
+	return carrier, nil
 }

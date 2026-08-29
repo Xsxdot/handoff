@@ -9,7 +9,8 @@
 //     （spec §2「配置下发：全部协议级，不碰任何 config 文件」），写配置文件会
 //     让「代码钉死安全边界」这条保证多出一个可被绕过的入口
 //   - env 注入不再经启动脚本：改由 proc.go 的 Spec.Env 直传（B19 覆盖语义不变，
-//     droppedEnvKeys 的丢弃逻辑随脚本一并移入 StartServe 的 env 处理）
+//     droppedEnvKeys 的丢弃逻辑随脚本一并移入 StartServe 的 env 处理）。普通派发
+//     丢弃用户 CODEX_HOME；小队载体有非空 HOME 时，显式保留它以使用载体凭据。
 package codex
 
 const (
@@ -17,12 +18,13 @@ const (
 	renderLogName = "render.log"
 )
 
-// droppedEnvKeys 是 env 文件里出现即**丢弃**的变量。
+// droppedEnvKeys 是普通派发中 env 文件里出现即**丢弃**的变量。
 //
-// 为什么是丢弃而不是像 grok 那样靠 env 顺序覆盖：codex adapter 自身从不
-// 设置 CODEX_HOME（本设计刻意复用用户级 ~/.codex，spec §1.3），没有「后写的
-// 那行」可以压过它。一旦生效，executor 会换到一个空 home 跑——凭据、插件、
-// sessions 全部落空，任务以「未登录」形态失败且原因极难追。
+// 为什么是丢弃而不是像 grok 那样靠 env 顺序覆盖：codex adapter 自身在普通派发
+// 中从不设置 CODEX_HOME（本设计刻意复用用户级 ~/.codex，spec §1.3），没有「后
+// 写的那行」可以压过它。一旦生效，executor 会换到一个空 home 跑——凭据、插件、
+// sessions 全部落空，任务以「未登录」形态失败且原因极难追。只有 manager 已注入
+// 非空载体 HOME 时才走显式例外。
 var droppedEnvKeys = map[string]bool{
 	"CODEX_HOME": true,
 }

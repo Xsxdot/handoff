@@ -210,10 +210,19 @@ func StartServe(ctx context.Context, repoPath, taskID, markRoot, taskDir string,
 // 只有 serve.log 里刷 failed to refresh available models（见 README codex 章节）。
 func serveSpec(repoPath, taskDir string, port int, env []string) prochost.Spec {
 	serveLog := filepath.Join(taskDir, serveLogName)
-	// 丢弃 CODEX_HOME（droppedEnvKeys）：spec.Env 是直传的完整环境，若把用户 env
-	// 文件里的 CODEX_HOME 也放进去，executor 会换到空 home 跑——与旧启动脚本的
-	// 丢弃语义必须保持一致（见 taskenv.go droppedEnvKeys 的 why）
-	full := append(os.Environ(), filterEnv(env, droppedEnvKeys)...)
+	// 普通派发丢弃 CODEX_HOME，避免 env 文件把 executor 换到不含用户凭据的
+	// 空 home；小队派发的 manager 已经把非空 carrier HOME 写入 env，此时载体
+	// 的 CODEX_HOME 是有意的隔离凭据，必须保留。只移除这一项，未来新增的
+	// dropped 键仍保持普通过滤语义。
+	dropped := droppedEnvKeys
+	if hasNonEmptyEnv(env, "HOME") {
+		dropped = make(map[string]bool, len(droppedEnvKeys))
+		for key, drop := range droppedEnvKeys {
+			dropped[key] = drop
+		}
+		delete(dropped, "CODEX_HOME")
+	}
+	full := append(os.Environ(), filterEnv(env, dropped)...)
 	return prochost.Spec{
 		Argv:     codexServeArgv(port), // 沿用既有命令形态，原样搬运
 		Dir:      repoPath,
@@ -224,6 +233,19 @@ func serveSpec(repoPath, taskDir string, port int, env []string) prochost.Spec {
 		InfoPath: filepath.Join(taskDir, procInfoFileName),
 		Sentinel: true,
 	}
+}
+
+// hasNonEmptyEnv 判断 manager 是否明确提供了载体 HOME。空值不触发 CODEX_HOME
+// 例外，避免显式空 HOME 被误当成隔离档案；不 trim 是因为 HOME 的值必须逐字节
+// 传给目标进程，字符串可能合法地含 ~ 或空格。
+func hasNonEmptyEnv(env []string, key string) bool {
+	for _, kv := range env {
+		name, value, ok := strings.Cut(kv, "=")
+		if ok && name == key && value != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // filterEnv 过滤掉 dropped 的 KEY=VALUE 条目，其余原样保留。

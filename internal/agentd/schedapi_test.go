@@ -124,7 +124,7 @@ func TestCarrierPutRoundtripThroughWire(t *testing.T) {
 	c := view.Carriers[0]
 	want := proto.CarrierView{Name: "c1", Machine: "m1", CLI: "opencode",
 		HomeDir: "/h", Credential: "standalone", MaxConcurrency: 2,
-		Healthy: true, Version: 1}
+		Status: "pending", Version: 1}
 	if c != want {
 		t.Fatalf("往返不等:\n got=%+v\nwant=%+v", c, want)
 	}

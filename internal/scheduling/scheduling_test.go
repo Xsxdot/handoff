@@ -86,6 +86,9 @@ func newCASFixture(t *testing.T) (*scheduling.Service, *ledgerapi.Facade) {
 		if err := svc.PutCarrier(c, 0); err != nil {
 			t.Fatalf("登记载体 %s: %v", c.Name, err)
 		}
+		if _, err := svc.ApplyDetect(c.Name, scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+			t.Fatalf("设置载体 %s online: %v", c.Name, err)
+		}
 	}
 	if err := svc.PutSquad(scheduling.Squad{Name: "s1", Role: scheduling.RoleExecutor,
 		Members: []string{"c1", "c2"}, MaxConcurrency: 10}, 0); err != nil {

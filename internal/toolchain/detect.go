@@ -104,6 +104,12 @@ func credRelPathFor(name string) (string, bool) {
 	return rel, ok
 }
 
+// CredRelPathFor 暴露既有凭据表的只读包装，供组装点注入 hostapi。表本身仍只
+// 在本包维护，避免执行域复制 opencode/grok/codex 的相对路径或平台规则。
+func CredRelPathFor(name string) (string, bool) {
+	return credRelPathFor(name)
+}
+
 // order 固定探测与返回顺序，让 init 的表格每次长得一样。
 var order = []string{"opencode", "claude", "grok", "codex"}
 

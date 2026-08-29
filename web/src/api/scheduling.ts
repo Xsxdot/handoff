@@ -11,11 +11,14 @@ export interface CarrierView {
   model?: string
   credential: string
   max_concurrency?: number
-  healthy: boolean
-  status?: 'pending' | 'online' | 'quota' | 'unreachable'
+  status?: CarrierStatus
   last_error?: string
   version: number
 }
+
+export type CarrierStatus = 'pending' | 'online' | 'quota' | 'unreachable'
+export type ProbeKind = 'empty' | 'logged_in' | 'occupied'
+export type WakeOutcome = 'ready' | 'need_login' | 'quota' | 'unreachable'
 
 export interface SquadView {
   name: string
@@ -158,8 +161,6 @@ export const getCarrierRunCommand = (name: string) =>
     `/api/squads/carriers/${encodeURIComponent(name)}/run-command`,
   )
 
-export type CarrierStatus = 'pending' | 'online' | 'quota' | 'unreachable'
-
 /** 四态英文键 → 用户可见中文名；与 scheduling.CarrierStatus.Label 同一份词表。 */
 export const CARRIER_STATUS_LABEL: Record<CarrierStatus, string> = {
   pending: '未上线',
@@ -182,7 +183,7 @@ export interface HomeProbeReq {
 }
 
 export interface HomeProbeResp {
-  kind: 'empty' | 'logged_in' | 'occupied'
+  kind: ProbeKind
   detail?: string
 }
 
@@ -195,7 +196,7 @@ export interface HomeWakeReq {
 }
 
 export interface HomeWakeResp {
-  outcome: 'ready' | 'need_login' | 'quota' | 'unreachable'
+  outcome: WakeOutcome
   detail?: string
 }
 

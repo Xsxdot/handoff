@@ -7,7 +7,6 @@
       "home_dir": "/Users/dev/.handoff/homes/opencode",
       "credential": "standalone",
       "max_concurrency": 2,
-      "healthy": true,
       "version": 1
     }
   ],

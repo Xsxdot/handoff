@@ -65,6 +65,41 @@ func setTemplateModel(t *testing.T, st *ledger.Store, target, model string) {
 	}
 }
 
+// TestViaTemplateCarriesHomeDirPointer 钉住小队载体 HOME 从 Dispatcher 到
+// Transport 的三态：nil 缺席、空指针显式空串、非空指针原样透传。
+func TestViaTemplateCarriesHomeDirPointer(t *testing.T) {
+	stringPtr := func(s string) *string { return &s }
+	for _, tc := range []struct {
+		name string
+		home *string
+	}{
+		{name: "缺席", home: nil},
+		{name: "显式空串", home: stringPtr("")},
+		{name: "非空", home: stringPtr("~/.handoff/home/exec")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			st, card := dispatchTestCard(t)
+			var got DispatchOpts
+			d := &Dispatcher{St: st, Actor: "tester", HomeDir: tc.home,
+				Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+					got = opts
+					return "T-home-dir", nil
+				}}
+			if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+				t.Fatalf("ViaTemplate: %v", err)
+			}
+			if (got.HomeDir == nil) != (tc.home == nil) {
+				t.Fatalf("HomeDir 是否缺席 = %v，want %v", got.HomeDir == nil, tc.home == nil)
+			}
+			if tc.home != nil && got.HomeDir == nil {
+				t.Fatal("非 nil HomeDir 不得在 Transport 前丢失")
+			} else if tc.home != nil && *got.HomeDir != *tc.home {
+				t.Fatalf("HomeDir = %q，want %q", *got.HomeDir, *tc.home)
+			}
+		})
+	}
+}
+
 // TestViaTemplateExecutorModelOverridesAndPairRule 钉住 CLI/节点共用的模板装配语义：
 // 同层 executor 覆盖时，model 不能从模板下层漏下来；两者都不覆盖时则保持旧值。
 func TestViaTemplateExecutorModelOverridesAndPairRule(t *testing.T) {

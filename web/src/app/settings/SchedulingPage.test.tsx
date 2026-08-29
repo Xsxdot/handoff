@@ -1,19 +1,22 @@
 // SchedulingPage.test.tsx —— 自动化编制公开组件的 CAS 接缝测试。
 // 边界：每条断言都从页面按钮/表单进入 scheduling API；不直接测试草稿 helper。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { getSquads, putCarrier, putSquad } from '../../api/scheduling'
+import { detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
 import { SchedulingPage } from './SchedulingPage'
 
 vi.mock('../../api/scheduling', async () => {
   const actual = await vi.importActual<typeof import('../../api/scheduling')>('../../api/scheduling')
-  return { ...actual, getSquads: vi.fn(), putCarrier: vi.fn(), putSquad: vi.fn() }
+  return { ...actual, detectCarrier: vi.fn(), getCarrierRunCommand: vi.fn(), getSquads: vi.fn(), probeHome: vi.fn(), putCarrier: vi.fn(), putSquad: vi.fn() }
 })
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [] })
+  vi.mocked(detectCarrier).mockResolvedValue({ name: 'mbp', status: 'online', version: 1 })
+  vi.mocked(getCarrierRunCommand).mockResolvedValue({ command: 'HOME=/h opencode' })
+  vi.mocked(probeHome).mockResolvedValue({ kind: 'empty' })
   vi.mocked(putCarrier).mockResolvedValue({ name: 'mbp', version: 1 })
   vi.mocked(putSquad).mockResolvedValue({ name: 'exec', version: 8 })
 })
@@ -35,7 +38,7 @@ describe('SchedulingPage', () => {
 
   it('renders carrier and squad fields and empty-state guidance', async () => {
     vi.mocked(getSquads).mockResolvedValue({
-      carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', healthy: true, version: 3 }],
+      carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }],
       squads: [{ name: 'coord', role: 'coordinator', members: ['mbp'], version: 2 }],
     })
     render(<SchedulingPage />)
@@ -43,6 +46,33 @@ describe('SchedulingPage', () => {
     expect(screen.getByText('/h')).toBeVisible()
     expect(screen.getByText('coord')).toBeVisible()
     expect(screen.getByText('拉起通道（开卡即绑 / 一键拉起）')).toBeVisible()
+  })
+
+  it('new carrier follows the default HOME until the user edits it', async () => {
+    const user = userEvent.setup()
+    render(<SchedulingPage />)
+    await user.click(screen.getByRole('button', { name: '登记载体' }))
+    const name = screen.getByLabelText('载体名')
+    const home = screen.getByLabelText('HOME 档案')
+    await user.type(name, 'exec')
+    expect(home).toHaveValue('~/.handoff/home/exec')
+    await user.clear(home)
+    await user.type(home, '/custom/home')
+    await user.clear(name)
+    await user.type(name, 'renamed')
+    expect(home).toHaveValue('/custom/home')
+  })
+
+  it('probes the current draft through the API and renders the result', async () => {
+    const user = userEvent.setup()
+    vi.mocked(probeHome).mockResolvedValue({ kind: 'logged_in', detail: 'credential found' })
+    render(<SchedulingPage />)
+    await user.click(screen.getByRole('button', { name: '登记载体' }))
+    await user.type(screen.getByLabelText('载体名'), 'mbp')
+    await waitFor(() => expect(probeHome).toHaveBeenCalledWith({
+      cli: 'opencode', path: '~/.handoff/home/mbp', credential: 'standalone', machine: '本机',
+    }))
+    expect(await screen.findByText(/已发现该 CLI 凭据。 credential found/)).toBeVisible()
   })
 
   it('creates with expect zero and edits with the row version', async () => {
@@ -53,10 +83,12 @@ describe('SchedulingPage', () => {
     await user.type(screen.getByLabelText('载体名'), 'mbp')
     await user.selectOptions(screen.getByLabelText('机器'), '本机')
     await user.selectOptions(screen.getByLabelText('CLI'), 'opencode')
+    await user.clear(screen.getByLabelText('HOME 档案'))
     await user.type(screen.getByLabelText('HOME 档案'), '/h')
     await user.selectOptions(screen.getByLabelText('凭据来源'), 'standalone')
     await user.click(screen.getByRole('button', { name: '保存' }))
     expect(putCarrier).toHaveBeenCalledWith('mbp', 0, expect.objectContaining({ machine: '本机', home_dir: '/h' }))
+    expect(detectCarrier).toHaveBeenCalledTimes(1)
     expect(vi.mocked(putCarrier).mock.calls[0]?.[2]).not.toHaveProperty('max_concurrency')
 
     vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [{ name: 'exec', role: 'executor', members: [], version: 7 }] })
@@ -68,12 +100,13 @@ describe('SchedulingPage', () => {
 
   it('shows an actionable CAS conflict and retains the modal', async () => {
     const user = userEvent.setup()
-    vi.mocked(getSquads).mockResolvedValue({ carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', healthy: true, version: 3 }], squads: [] })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }], squads: [] })
     vi.mocked(putCarrier).mockRejectedValue(new Error('409: 版本冲突，请刷新后重试'))
     render(<SchedulingPage />)
     await user.click(await screen.findByRole('button', { name: '编辑 mbp' }))
     await user.click(screen.getByRole('button', { name: '保存' }))
     expect(await screen.findByText(/版本冲突/)).toBeVisible()
     expect(screen.getByRole('dialog')).toBeVisible()
+    expect(detectCarrier).not.toHaveBeenCalled()
   })
 })

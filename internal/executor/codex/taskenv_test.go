@@ -38,3 +38,20 @@ func TestServeSpecShape(t *testing.T) {
 		t.Fatalf("LockPath/InfoPath/Sentinel 必填: %+v", spec)
 	}
 }
+
+func TestServeSpecKeepsCodexHomeWhenCarrierHomeIsPresent(t *testing.T) {
+	spec := codex.ServeSpecForTest("/repo", "/task", 47777, []string{
+		"HOME=~/.handoff/home/exec",
+		"CODEX_HOME=/isolated/codex",
+	})
+	var got bool
+	for _, kv := range spec.Env {
+		if kv == "CODEX_HOME=/isolated/codex" {
+			got = true
+			break
+		}
+	}
+	if !got {
+		t.Fatalf("载体 HOME 非空时必须保留 CODEX_HOME: %v", spec.Env)
+	}
+}

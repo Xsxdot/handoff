@@ -3,7 +3,8 @@
 // 职责：
 //   - WriteTaskEnv：建 <taskDir>/grokhome 并写 config.toml（钉死 permission_mode
 //     与第 0 层分级规则、注入任务级模型）
-//   - EnsureAuthLink：幂等地把 grokhome/auth.json 指向真实 ~/.grok/auth.json
+//   - EnsureAuthLink：普通派发幂等地把 grokhome/auth.json 指向真实 ~/.grok/auth.json；
+//     StartServe 的载体派发路径可把权威副本切到载体 HOME 下的 .grok/auth.json
 //     （serve 启动脚本与 secret 注入已随 tmux 拆除，改由 proc.go 的 Spec.Env 承担）
 //
 // 边界：
@@ -183,22 +184,5 @@ func WriteTaskEnv(taskDir, model string) (homeDir string, err error) {
 // 为什么用软链而非拷贝：拷贝会让每个任务 home 各自持有凭据并独立刷新，而刷新
 // 令牌轮换可能反噬用户本人的登录态——凭据只应有一个权威副本。
 func EnsureAuthLink(homeDir string) error {
-	target, err := authorityAuthPath()
-	if err != nil {
-		return err
-	}
-	link := filepath.Join(homeDir, authFileName)
-
-	if cur, err := os.Readlink(link); err == nil && cur == target {
-		return nil // 已就位
-	}
-	// 断链、被替换成普通文件、或根本不存在：一律移除后重建
-	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("清理旧 auth 链接 %s: %w", link, err)
-	}
-	if err := os.Symlink(target, link); err != nil {
-		return fmt.Errorf("建立 auth 软链 %s -> %s: %w", link, target, err)
-	}
-	slog.Default().Info("grok auth 软链已就位", "link", link)
-	return nil
+	return ensureAuthLinkAt(homeDir, "")
 }

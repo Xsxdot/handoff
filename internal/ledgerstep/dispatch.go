@@ -65,6 +65,9 @@ type Dispatcher struct {
 	St        *ledger.Store
 	Transport Transport
 	Actor     string
+	// HomeDir 是小队绑定载体 HOME 的可空原指针；nil 表示普通派发，指向空串
+	// 表示显式不覆盖目标进程 HOME。ledgerstep 不展开、清理或改写该字符串。
+	HomeDir *string
 
 	// B229 缝 1 产物（数据字段，不是解析函数）：调用方装配时经
 	// discipline.ResolveDispatch 解析好的纪律正文与账本版本号。未点名模板的
@@ -270,6 +273,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	taskID, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
+		HomeDir:    d.HomeDir,
 		OutputPath: req.OutputPath,
 		PlanName:   planName, Base: base, NewWorktree: true,
 		ExistingBranch: existingBranch, Discipline: disciplineName,

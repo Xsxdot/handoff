@@ -58,6 +58,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/Xsxdot/handoff/internal/webui"
 	"github.com/coder/websocket"
 )
@@ -2268,7 +2269,9 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	s.rooms = collab.New(facade)
 	s.rooms.SetCursorStore(cursor.New(filepath.Join(s.conf().DataDir, "room-cursors.json")))
 	s.rebind = facadeBindAdapter{f: facade}
-	s.hostAPI = hostapi.New()
+	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
+	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
+	s.hostAPI = hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
 	runner := coordinatorRunner{h: s.hostAPI}
 	s.keystone = keystone.New(runner, roomNarrator{c: s.rooms}, facade, attachLocator{})
 	if s.pty != nil {

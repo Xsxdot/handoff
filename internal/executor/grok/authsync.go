@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 )
@@ -122,7 +123,7 @@ const authFileName = "auth.json"
 // 压到 rename 前的几微秒且方向安全（只会少写一次，不会写旧覆盖新）。
 var authorityMu sync.Mutex
 
-// authorityAuthPath 返回权威副本路径 ~/.grok/auth.json。
+// authorityAuthPath 返回普通派发的权威副本路径 ~/.grok/auth.json。
 //
 // 抽出来是为了让 EnsureAuthLink 与本文件共用同一个真相来源——两处各拼一遍
 // 路径，将来改动时漏掉一处就会让软链指向和写回目标错开。
@@ -132,6 +133,51 @@ func authorityAuthPath() (string, error) {
 		return "", fmt.Errorf("解析用户主目录: %w", err)
 	}
 	return filepath.Join(home, ".grok", authFileName), nil
+}
+
+// authorityAuthPathFor 返回指定进程 HOME 下的权威副本路径。非空 carrier HOME
+// 来自协调者的显式环境行，必须在目标机解析；因此只展开开头的 `~/`，不对中间
+// 字符串做 shell 级重写，也不把这个选择泄漏回 client/manager。
+func authorityAuthPathFor(homeDir string) (string, error) {
+	if homeDir == "" {
+		return authorityAuthPath()
+	}
+	if homeDir == "~" || strings.HasPrefix(homeDir, "~/") {
+		base, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("解析载体 HOME %q: %w", homeDir, err)
+		}
+		if homeDir == "~" {
+			homeDir = base
+		} else {
+			homeDir = filepath.Join(base, homeDir[2:])
+		}
+	}
+	return filepath.Join(homeDir, ".grok", authFileName), nil
+}
+
+// ensureAuthLinkAt 是 StartServe 的带 authority home 路径。普通调用者继续走
+// EnsureAuthLink 并使用机器主 HOME，只有 manager 注入了非空 carrier HOME 时才
+// 把权威凭据定位到该隔离 HOME。
+func ensureAuthLinkAt(homeDir, authorityHome string) error {
+	target, err := authorityAuthPathFor(authorityHome)
+	if err != nil {
+		return err
+	}
+	link := filepath.Join(homeDir, authFileName)
+
+	if cur, err := os.Readlink(link); err == nil && cur == target {
+		return nil // 已就位
+	}
+	// 断链、被替换成普通文件、或根本不存在：一律移除后重建
+	if err := os.Remove(link); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("清理旧 auth 链接 %s: %w", link, err)
+	}
+	if err := os.Symlink(target, link); err != nil {
+		return fmt.Errorf("建立 auth 软链 %s -> %s: %w", link, target, err)
+	}
+	slog.Default().Info("grok auth 软链已就位", "link", link, "authority_home_set", authorityHome != "")
+	return nil
 }
 
 // SyncAuthToAuthority 跑一轮凭据巡检：把任务 home 里 grok 自行刷新出的新凭据
@@ -152,6 +198,12 @@ func authorityAuthPath() (string, error) {
 //     哪怕本轮没收编到任何东西（陈旧拷贝留着会让任务下次临期必死）。两处例外
 //     写在下面的分支注释里。
 func SyncAuthToAuthority(homeDir string, log *slog.Logger) error {
+	return syncAuthToAuthorityAt(homeDir, "", log)
+}
+
+// syncAuthToAuthorityAt 是可指定权威 HOME 的巡检路径，供载体 HOME 运行边界
+// 使用；旧导出函数保留主 HOME 语义，避免改变 resume/既有调用者的接口。
+func syncAuthToAuthorityAt(homeDir, authorityHome string, log *slog.Logger) error {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -168,7 +220,7 @@ func SyncAuthToAuthority(homeDir string, log *slog.Logger) error {
 	authorityMu.Lock()
 	defer authorityMu.Unlock()
 
-	authPath, err := authorityAuthPath()
+	authPath, err := authorityAuthPathFor(authorityHome)
 	if err != nil {
 		log.Error("grok 凭据巡检无法定位权威副本", "cause", err)
 		return nil

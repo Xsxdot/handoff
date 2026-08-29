@@ -16,8 +16,7 @@ type CarrierView struct {
 	Model          string `json:"model,omitempty"`
 	Credential     string `json:"credential"`
 	MaxConcurrency int    `json:"max_concurrency,omitempty"`
-	Healthy        bool   `json:"healthy"`
-	Status         string `json:"status,omitempty"`     // B293：四态英文键；空=尚未回填
+	Status         string `json:"status,omitempty"`     // B293：四态英文键；空=存量行未回填
 	LastError      string `json:"last_error,omitempty"` // 最近一次检测说明；不参与准入
 	Version        int    `json:"version"`
 }

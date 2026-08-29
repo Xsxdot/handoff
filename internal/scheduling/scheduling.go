@@ -47,7 +47,8 @@ const (
 )
 
 // Carrier 是一台机器上一个可领活的 CLI 档案（spec §3 载体实体归并后的形状）。
-// 健康位本期只留形状：限额探测落 roadmap，构造即 true。
+// Status 是唯一的运行状态真相：新建或 HOME 改变为 pending，检测可迁移到
+// online/quota/unreachable；LastError 只保存最近一次非 online 结果的说明。
 type Carrier struct {
 	Name           string           `json:"name"`
 	Machine        string           `json:"machine"`
@@ -56,9 +57,8 @@ type Carrier struct {
 	Model          string           `json:"model,omitempty"`
 	Credential     CredentialSource `json:"credential"`
 	MaxConcurrency int              `json:"max_concurrency,omitempty"` // 物理位；0 = 不设上限
-	Healthy        bool             `json:"healthy"`                   // B293 废止中：Ticket 0 双字段兼容，实现票删除
-	Status         CarrierStatus    `json:"status,omitempty"`          // 一等四态；空 = 尚未由实现票回填
-	LastError      string           `json:"last_error,omitempty"`      // 最近一次检测说明；不参与准入
+	Status         CarrierStatus    `json:"status,omitempty"`
+	LastError      string           `json:"last_error,omitempty"` // 最近一次检测说明；不参与准入
 }
 
 // SquadRole 区分两种不混编的小队。
@@ -105,7 +105,7 @@ var (
 	ErrNotFound     = errors.New("scheduling: 实体不存在")
 	ErrNoSlot       = errors.New("scheduling: 小队或载体并发已满")
 	ErrRoleMismatch = errors.New("scheduling: 小队角色不符")
-	ErrNoHealthy    = errors.New("scheduling: 小队内没有健康且有空的载体")
+	ErrNoHealthy    = errors.New("scheduling: 小队内没有已上线且有空的载体")
 
 	// ErrRetryExhausted 表示运行计数的 CAS 连续冲突超出重试预算。它与 ErrNoSlot
 	// 的分流是并发验收的排查序：先预算后语义（岔口三附加约束，plan §D5.3）。
@@ -128,19 +128,62 @@ type Service struct {
 // New 用组装点绑定的注册表端口构造服务。
 func New(repo schedclient.Registry) *Service { return &Service{repo: repo} }
 
-// PutCarrier 以 CAS 写载体定义（expect=0 新建）。Healthy 为零值时视为 true：
-// 本期没有探测手段，「未探测」不得表现为「不健康」把载体饿死。
+// PutCarrier 以 CAS 写载体定义（expect=0 新建）。新建时忽略输入状态并落
+// pending；更新时 HOME 变化会清掉旧错误并回到 pending，HOME 未变则保留旧
+// 状态。这避免登记请求伪造上线，也避免编辑无关字段抹掉检测结果。
 func (s *Service) PutCarrier(c Carrier, expect int) error {
 	if strings.TrimSpace(c.Name) == "" || strings.TrimSpace(c.Machine) == "" || strings.TrimSpace(c.CLI) == "" {
+		statusLog().Error("载体登记校验失败", "name", c.Name, "expect", expect, "cause", "name/machine/cli 必填")
 		return fmt.Errorf("%w: 载体登记不完整：name/machine/cli 必填", ErrInvalid)
 	}
 	if c.Credential != CredentialStandalone && c.Credential != CredentialMainHomeSync {
+		statusLog().Error("载体登记校验失败", "name", c.Name, "expect", expect, "cause", "credential 来源非法")
 		return fmt.Errorf("%w: 载体 %s 的凭据来源只能是 standalone 或 main_home_sync", ErrInvalid, c.Name)
 	}
-	if !c.Healthy {
-		c.Healthy = true
+	homeChanged := false
+	if expect == 0 {
+		c.Status = StatusPending
+		c.LastError = ""
+	} else {
+		rec, err := s.repo.Get(kindCarrier, c.Name)
+		if err != nil {
+			statusLog().Error("读取载体旧记录失败", "name", c.Name, "expect", expect, "cause", err)
+			if errors.Is(err, schedclient.ErrNotFound) {
+				return fmt.Errorf("载体 %s 旧记录不存在: %w", c.Name, ErrNotFound)
+			}
+			return fmt.Errorf("载体 %s 读取旧记录失败: %w", c.Name, err)
+		}
+		var previous Carrier
+		if err := json.Unmarshal(rec.Body, &previous); err != nil {
+			statusLog().Error("解码载体旧记录失败", "name", c.Name, "expect", expect, "version", rec.Version, "cause", err)
+			return fmt.Errorf("载体 %s/%d 解码失败: %w", c.Name, rec.Version, err)
+		}
+		homeChanged = previous.HomeDir != c.HomeDir
+		if homeChanged {
+			c.Status = StatusPending
+			c.LastError = ""
+		} else {
+			// HOME 未变时保留旧检测结果；否则仅编辑 CLI 就会把可见状态重置，
+			// 而登记请求本身没有足够证据重新判定运行状态。
+			c.Status = previous.Status
+			c.LastError = previous.LastError
+		}
 	}
-	return s.putEntity(kindCarrier, c.Name, c, expect)
+	statusLog().Info("写入载体", "name", c.Name, "expect", expect, "home_changed", homeChanged,
+		"status", c.Status, "last_error_bytes", len(c.LastError))
+	body, err := json.Marshal(c)
+	if err != nil {
+		statusLog().Error("编码载体失败", "name", c.Name, "expect", expect, "cause", err)
+		return err
+	}
+	version, err := s.repo.Put(kindCarrier, c.Name, expect, body, "scheduling")
+	if err != nil {
+		statusLog().Error("写入载体失败", "name", c.Name, "expect", expect, "version", version, "cause", err)
+		return err
+	}
+	statusLog().Info("写入载体成功", "name", c.Name, "expect", expect, "version", version,
+		"home_changed", homeChanged, "status", c.Status)
+	return nil
 }
 
 // Carrier 读一个载体。
@@ -342,19 +385,20 @@ var errMemberFull = errors.New("scheduling: 该成员并发已满")
 // N=16 打容量 4 只进 2~3 个）。权威裁决只在计数 CAS 里做，成员选择随之在同一
 // 趟里完成。
 func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error) {
-	anyHealthy := false
+	anyOnline := false
 	for _, name := range q.Members {
 		carrier, err := s.Carrier(name)
 		if err != nil {
 			if errors.Is(err, ErrNotFound) {
 				continue
 			}
+			statusLog().Error("读取准入载体失败", "squad", q.Name, "carrier", name, "cause", err)
 			return Binding{}, err
 		}
-		if !carrier.Healthy {
+		if carrier.Status != StatusOnline {
 			continue
 		}
-		anyHealthy = true
+		anyOnline = true
 		binding, err := s.acquire(q, carrier, req)
 		switch {
 		case err == nil:
@@ -362,12 +406,15 @@ func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error) {
 		case errors.Is(err, errMemberFull):
 			continue
 		default:
+			statusLog().Error("准入载体失败", "squad", q.Name, "carrier", name, "cause", err)
 			return Binding{}, err
 		}
 	}
-	if !anyHealthy {
+	if !anyOnline {
+		statusLog().Warn("准入无已上线载体", "squad", q.Name, "members", len(q.Members))
 		return Binding{}, ErrNoHealthy
 	}
+	statusLog().Info("准入无空槽", "squad", q.Name)
 	return Binding{}, ErrNoSlot
 }
 

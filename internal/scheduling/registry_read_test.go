@@ -80,9 +80,8 @@ func mustBody(t *testing.T, f *ledgerapi.Facade, kind, id string) []byte {
 }
 
 // TestRowsCarryVersionsForCASLock 缝①读半边：登记两次（新建+更新）后行版本
-// 单调，且 omitempty 边界按线约定存活——max_concurrency=0 键缺席、healthy
-// 恒显式 true（PutCarrier 的防饿死翻真）。这是「字段缺失 vs 值为零」分辨的
-// registry 侧半边（wire 侧半边在 Task C 的 TC2）。
+// 单调，且 omitempty 边界按线约定存活——max_concurrency=0 键缺席；状态字段由
+// 检测/登记规则负责。这是「字段缺失 vs 值为零」分辨的 registry 侧半边。
 func TestRowsCarryVersionsForCASLock(t *testing.T) {
 	svc, facade := newRowsFixture(t)
 	c1 := scheduling.Carrier{Name: "c1", Machine: "m1", CLI: "opencode",
@@ -103,12 +102,12 @@ func TestRowsCarryVersionsForCASLock(t *testing.T) {
 	}
 	r := rows[0]
 	if r.Version != 2 || r.Carrier.HomeDir != "/home/c1" ||
-		r.Carrier.MaxConcurrency != 2 || !r.Carrier.Healthy {
+		r.Carrier.MaxConcurrency != 2 || r.Carrier.Status != scheduling.StatusPending {
 		t.Fatalf("载体行不符: %+v", r)
 	}
 	raw := string(mustBody(t, facade, "carrier", "c1"))
-	if !strings.Contains(raw, `"healthy":true`) {
-		t.Fatalf("healthy 键应显式出现：%s", raw)
+	if strings.Contains(raw, `"healthy"`) {
+		t.Fatalf("healthy 键不得出现：%s", raw)
 	}
 	if !strings.Contains(raw, `"max_concurrency":2`) {
 		t.Fatalf("max_concurrency=2 应显式出现：%s", raw)

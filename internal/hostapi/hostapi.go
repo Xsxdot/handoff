@@ -39,11 +39,27 @@ type TurnReply struct {
 	Output    string
 }
 
-// Host 是进程承载门面的服务句柄。
-type Host struct{}
+// Host 是进程承载门面的服务句柄。resolveCredential 由组装点注入，保持
+// hostapi 不直接依赖 toolchain；测试和 New 使用无凭据解析器。
+type Host struct {
+	resolveCredential func(string) (string, bool)
+}
 
-// New 构造承载门面。
-func New() *Host { return &Host{} }
+// New 构造承载门面。默认不提供凭据文件判据，因此只适合不需要探测凭据的
+// 调用方；生产自动化组装点使用 NewWithCredentialPathFor 注入既有表的包装。
+func New() *Host {
+	return NewWithCredentialPathFor(func(string) (string, bool) { return "", false })
+}
+
+// NewWithCredentialPathFor 构造带凭据相对路径解析器的 Host。resolve 返回相对
+// HOME 的凭据路径；false 表示该 CLI 没有可靠的文件判据。探测不会由此构造、
+// 删除或修改任何路径。
+func NewWithCredentialPathFor(resolve func(string) (string, bool)) *Host {
+	if resolve == nil {
+		resolve = func(string) (string, bool) { return "", false }
+	}
+	return &Host{resolveCredential: resolve}
+}
 
 // RunTurn 执行一回合（实装本体见 driver.go：run 形态驱动 + JSONL 解析 +
 // 超时执法）。签名是契约 §7 冻结面，一字不改。

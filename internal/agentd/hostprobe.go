@@ -50,7 +50,8 @@ func (s *Server) handleHomeProbe(w http.ResponseWriter, r *http.Request) {
 			"error": "cli 与 path 必填"})
 		return
 	}
-	s.log.Info("探测隔离 HOME", "cli", in.CLI, "credential", in.Credential)
+	s.log.Info("探测隔离 HOME", "cli", in.CLI, "path", in.Path,
+		"main_home_sync", in.Credential == "main_home_sync")
 	reply, err := s.hostAPI.ProbeHome(r.Context(), hostapi.ProbeRequest{
 		Path: in.Path, CLI: in.CLI, Credential: in.Credential,
 	})

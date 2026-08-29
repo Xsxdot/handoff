@@ -564,10 +564,11 @@ describe('工作台状态契约', () => {
 })
 
 describe('scheduling wire', () => {
-  it('SquadsResp 携带版本行与显式布尔', () => {
+  it('SquadsResp 携带版本行与四态可选字段', () => {
     const c: CarrierView = squadsFixture.carriers[0]
     expect(c.version).toBeGreaterThan(0)
-    expect(c.healthy).toBe(true)
+    expect(c.status).toBeUndefined() // 存量空 status 以缺席表达，消费方按 pending
+    expect(Object.prototype.hasOwnProperty.call(c, 'healthy')).toBe(false)
     expect(c.max_concurrency).toBe(2)
     const s: SquadView = squadsFixture.squads[0]
     expect(s.role).toBe('coordinator')
