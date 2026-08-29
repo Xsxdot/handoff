@@ -113,6 +113,30 @@ func TestHandleExternalBrowserMessage(t *testing.T) {
 		})
 	}
 
+	t.Run("畸形目标 URL 的拒绝日志不泄露 query 或 token", func(t *testing.T) {
+		logs.Reset()
+		malformed := "http://[::1?token=secret"
+		issued, opened := false, false
+		consumed := shell.HandleExternalBrowserMessage(
+			log, shell.ExternalBrowserMessagePrefix+malformed, source,
+			func(string) (string, error) {
+				issued = true
+				return browserURL, nil
+			},
+			func(string) error {
+				opened = true
+				return nil
+			},
+		)
+		if !consumed || issued || opened {
+			t.Fatalf("畸形目标结果 consumed=%v issued=%v opened=%v", consumed, issued, opened)
+		}
+		if strings.Contains(logs.String(), "token=secret") ||
+			strings.Contains(logs.String(), malformed) {
+			t.Fatalf("拒绝日志泄露畸形目标 URL 或 token: %q", logs.String())
+		}
+	})
+
 	t.Run("签票失败不回退裸 target 且日志不泄露", func(t *testing.T) {
 		logs.Reset()
 		opened := false
