@@ -58,6 +58,7 @@ import { needsAttention } from '../cards/columns'
 import { UpdateToasts } from '../update/UpdateToasts'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
+import { ResizableSidebar } from './ResizableSidebar'
 
 // OverlayKind 是当前打开的弹层。同时只允许一个（spec §0）：两个叠在一起时
 // Esc 该关哪个会变得含糊。
@@ -542,7 +543,7 @@ export function Shell() {
       {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
           min-h-0 是必须的——flex 子项默认 min-height:auto，缺它内部的
           overflow-y-auto 不会生效，树会把父容器撑高、footer 照样被顶出去 */}
-      <aside role="complementary" className="flex min-h-0 w-[260px] shrink-0 flex-col border-r bg-sidebar">
+      <ResizableSidebar>
         {treeState.sessionExpired && <SessionExpiredBanner />}
         {treeState.disconnected && !treeState.sessionExpired && (
           <DisconnectedBanner message={treeState.errorText} compact />
@@ -585,7 +586,7 @@ export function Shell() {
             }}
           />
         )}
-      </aside>
+      </ResizableSidebar>
 
       <div className="flex min-w-0 flex-1 flex-col">
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，

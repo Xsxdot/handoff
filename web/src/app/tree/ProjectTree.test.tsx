@@ -111,11 +111,13 @@ describe('ProjectTree 层级', () => {
     const { container } = render(<ProjectTree {...props({})} />)
     const node = container.querySelector('[data-testid="project-node-p1"]') as HTMLElement
     const head = within(node).getByRole('button', { name: /handoff/ })
+    const marker = within(node).getByTestId('project-marker-p1')
     const count = within(head).getByTestId('project-running-count')
     // 默认全展开，箭头语义是「收起」
     const arrow = within(head).getByLabelText('收起')
     expect(head.contains(count)).toBe(true)
     expect(head.contains(arrow)).toBe(true)
+    expect(marker).toHaveClass('absolute', '-left-[15px]', 'top-[11px]', 'size-[9px]')
     // 箭头在计数之后：计数在箭头前面
     expect(count.compareDocumentPosition(arrow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
   })
@@ -229,7 +231,7 @@ describe('ProjectTree 任务组', () => {
     expect(screen.getByText('原地任务')).toBeInTheDocument()
   })
 
-  it('任务行右端是机器簇（绿点 + 机器名），状态点跟随任务状态', () => {
+  it('任务行右端是机器簇（绿点 + 机器名），左侧不额外显示状态点', () => {
     const p = props({})
     p.tasks.push(task({ id: 'T2', project_id: 'p1', machine: 'linux-01', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }))
     render(<ProjectTree {...p} />)
@@ -237,9 +239,10 @@ describe('ProjectTree 任务组', () => {
     expect(within(runningRow).getByTestId('task-machine')).toHaveTextContent('本机')
     const waitingRow = screen.getByRole('button', { name: /等你答复的活/ })
     expect(within(waitingRow).getByTestId('task-machine')).toHaveTextContent('linux-01')
-    // 状态点：running 行有 active 圆点，waiting_answer 行有 intervention 圆点
+    // 任务状态只影响数据语义，不在任务图标与名称之间插入额外圆点；
+    // 机器簇保留自己的在线圆点。
     expect(runningRow.querySelectorAll('.bg-state-active').length).toBeGreaterThanOrEqual(1)
-    expect(waitingRow.querySelectorAll('.bg-state-intervention')).toHaveLength(1)
+    expect(waitingRow.querySelectorAll('.bg-state-intervention')).toHaveLength(0)
   })
 })
 
@@ -527,6 +530,9 @@ describe('ProjectTree 未归属与搜索', () => {
     expect(screen.getByPlaceholderText('搜索项目、机器或任务')).toBeInTheDocument()
     expect(screen.getByText('项目')).toBeInTheDocument()
     expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('project-overview')).toBeVisible()
+    expect(screen.getByRole('button', { name: '添加项目' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '显示偏好' })).toBeVisible()
   })
 
   it('搜任务名：该任务可见，无关目录不可见', () => {
@@ -662,12 +668,11 @@ describe('ProjectTree 结构细节', () => {
     expect(container.querySelector('[data-testid="machine-row"]')?.textContent).not.toContain('开发目录')
   })
 
-  it('项目图标带取色标记，同名项目刷新后同色', () => {
-    const { unmount } = render(<ProjectTree {...props()} />)
-    const first = document.querySelector('[data-project-color]')!.getAttribute('data-project-color')
-    unmount()
+  it('项目图标统一使用原型绿色', () => {
     render(<ProjectTree {...props()} />)
-    expect(document.querySelector('[data-project-color]')!.getAttribute('data-project-color')).toBe(first)
+    const icons = Array.from(document.querySelectorAll('[data-project-color]'))
+    expect(icons.length).toBeGreaterThan(0)
+    expect(new Set(icons.map((icon) => icon.getAttribute('data-project-color')))).toEqual(new Set(['green']))
   })
 
   it('右键机器行弹出菜单，含「编辑」「注销」两项', () => {

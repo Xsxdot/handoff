@@ -31,7 +31,7 @@
 // 原型把行留给了名字与机器归属（spec §5 功能保留清单）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Plus, Search, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow,
+  Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Monitor, Plus, Search, Server, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow,
 } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { filterTree, taskMatchesQuery } from './search'
@@ -43,9 +43,7 @@ import { errorMessage } from '../lib/format'
 import { ContextMenu } from '../shared/ContextMenu'
 import { countsForProject } from './counts'
 import { ARCHIVED_LABEL, ARCHIVED_TITLE, archivedKey, archivedTasks, isTerminalState } from './archived'
-import { stateTone, type StateTone } from '../board/columns'
 import { StateDot } from '../board/StateDot'
-import { projectColorClass } from './projectColor'
 import { cn } from '@/lib/utils'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 import { TreePrefsMenu } from './TreePrefsMenu'
@@ -451,14 +449,14 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
     // 三段式：顶部（导航+搜索+标题）不滚 · 中间树独滚 · 底部入口钉死。
     // 为什么不让整个 aside 滚：项目一多，「添加项目」会被推到 scrollHeight
     // 的最下面（实测 top:1100 / 视口 1024），要滚到底才找得到入口
-    <div className="flex min-h-0 flex-1 flex-col py-2">
+    <div className="flex min-h-0 flex-1 flex-col py-[13px] pr-[18px] pl-[26px]">
       {/* 第一段：不滚——搜索框 + 「项目 N」。 */}
 
       {/* 搜索框与「项目 N」。N 跟随过滤，搜索时它就是「找到几个」的即时反馈；
           「未归属」不计入——它不是项目，是收纳箱 */}
-      <div className="mb-1 px-2">
-        <label className="flex items-center gap-1.5 rounded-md border bg-background px-2 py-1">
-          <Search className="size-3.5 shrink-0 text-muted-foreground" />
+      <div className="mb-0 px-0">
+        <label className="flex min-h-[39px] items-center gap-[9px] rounded-[9px] border bg-background px-[10px] py-0">
+          <Search className="size-[17px] shrink-0 text-[#525252]" />
           <input
             ref={searchRef}
             value={query}
@@ -471,13 +469,16 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               }
             }}
             placeholder="搜索项目、机器或任务"
-            className="min-w-0 flex-1 bg-transparent text-[13px] outline-none placeholder:text-muted-foreground"
+            className="min-w-0 flex-1 bg-transparent text-[14px] outline-none placeholder:text-muted-foreground"
           />
-          <kbd className="shrink-0 rounded border px-1 text-[10px] text-muted-foreground">⌘K</kbd>
+          <kbd className="flex min-h-[22px] shrink-0 items-center rounded-[5px] border px-[6px] text-[12px] leading-none text-muted-foreground">⌘K</kbd>
         </label>
       </div>
 
-      <div className="flex items-center gap-1 px-3 pb-1 pt-1 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+      <div
+        data-testid="project-overview"
+        className="mt-[7px] flex min-h-[31px] items-center gap-1 px-0 text-[15px] font-medium text-muted-foreground"
+      >
         <span>项目</span>
         <span data-testid="project-count" className="font-normal text-muted-foreground/70">
           {orderedProjects.length}
@@ -511,8 +512,10 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
 
       {/* 第二段：只有它滚 */}
       <div data-testid="tree-scroll" className="min-h-0 flex-1 overflow-y-auto">
+        <div className="relative mt-[7px] pl-4">
+          <span aria-hidden className="absolute bottom-[30px] left-0 top-4 w-px bg-[#dedede]" />
 
-      {orderedProjects.map((project) => {
+      {orderedProjects.map((project, projectIndex) => {
         const pKey = 'p:' + project.project_id
         const pOpen = expanded(pKey)
         const pCounts = countsForProject(tasks, project)
@@ -556,7 +559,23 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           findBaseOfTask(tree, tasks, task.id) ?? archivedBase(project, task.machine)
 
         return (
-          <div key={pKey} data-testid={'project-node-' + project.project_id}>
+          <div
+            key={pKey}
+            data-testid={'project-node-' + project.project_id}
+            className={cn(
+              'relative mb-[7px] border-b border-border pb-[9px]',
+              projectIndex === orderedProjects.length - 1 && 'mb-0 border-b-0 pb-0',
+            )}
+          >
+            {/* 项目圆点把主树干锚定到项目行；没有它，竖线会被误读成普通分隔线。 */}
+            <span
+              aria-hidden
+              data-testid={'project-marker-' + project.project_id}
+              className={cn(
+                'absolute -left-[15px] top-[11px] size-[9px] rounded-full border-2 bg-background',
+                projectIndex === 0 ? 'border-[#737373]' : 'border-[#a3a3a3]',
+              )}
+            />
             {/* 项目行（option-1 .project-head）：加粗项目名，右侧簇 = 派发任务图标 +
                 进行中计数 + 折叠箭头（箭头在计数之后，原型 chev 位置） */}
             <div className="group relative">
@@ -564,12 +583,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 type="button"
                 aria-expanded={project.locations.length > 0 ? pOpen : undefined}
                 onClick={() => toggle(pKey)}
-                className="flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-2 text-left text-[18px] font-bold hover:bg-[#fafafa]"
+                className="flex min-h-[31px] w-full items-center justify-between gap-2.5 rounded-lg px-0 text-left text-[18px] font-semibold hover:bg-[#fafafa]"
               >
                 <span className="flex min-w-0 items-center gap-2.5">
                   <FolderGit2
-                    data-project-color={projectColorClass(project.project_id)}
-                    className={cn('size-[17px] shrink-0', projectColorClass(project.project_id))}
+                    data-project-color="green"
+                    className="size-[17px] shrink-0 text-[#16a34a]"
                   />
                   <span className="min-w-0 truncate">{project.name}</span>
                 </span>
@@ -619,58 +638,57 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   <div data-testid="task-group-head" className="flex min-h-6 items-center gap-2 text-[15px] font-medium text-muted-foreground">
                     <span>任务</span>
                   </div>
-                  {/* 已打开项在前（Shell 注入顺序），其后是未终态任务 */}
-                  {projectOpenRows.map((item) => (
-                    <TaskRow
-                      key={item.key}
-                      kind={item.kind}
-                      label={item.name}
-                      machine={item.machine}
-                      tone={item.kind === 'tui' ? 'intervention' : item.kind === 'terminal' ? 'active' : 'idle'}
-                      open
-                      selected={item.kind === 'tui' && item.taskId === focusedTaskId}
-                      draggable
-                      dragPayload={(e) => {
-                        e.dataTransfer.setData(DRAG_TAB_MIME, JSON.stringify({ groupId: item.group, tabId: item.tabId }))
-                        e.dataTransfer.effectAllowed = 'move'
-                        console.debug('project_tree.drag.tab', { tabId: item.tabId, groupId: item.group, project: item.base.projectName, machine: item.base.machine, path: item.base.path })
-                      }}
-                      onClick={() => {
-                        console.debug('project_tree.opened_item.focus', {
-                          project: item.base.projectName,
-                          machine: item.base.machine,
-                          baseKey: item.base.key,
-                          tabId: item.tabId,
-                          groupId: item.group,
-                        })
-                        onFocusOpenItem(item)
-                      }}
-                      testId="open-item-row"
-                      nameTestId="open-item-name"
-                    />
-                  ))}
-                  {projectTasks.map((task) => {
-                    const taskBase = baseForTask(task)
-                    return (
+                  <div className="mt-[7px] mb-2">
+                    {/* 已打开项在前（Shell 注入顺序），其后是未终态任务 */}
+                    {projectOpenRows.map((item) => (
                       <TaskRow
-                        key={'task:' + task.id}
-                        kind="tui"
-                        label={taskName(task)}
-                        machine={task.machine}
-                        tone={stateTone(task.state)}
+                        key={item.key}
+                        kind={item.kind}
+                        label={item.name}
+                        machine={item.machine}
+                        open
+                        selected={item.kind === 'tui' && item.taskId === focusedTaskId}
                         draggable
                         dragPayload={(e) => {
-                          e.dataTransfer.setData(DRAG_TASK_MIME, task.id)
-                          e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(taskBase))
-                          e.dataTransfer.effectAllowed = 'copy'
-                          console.debug('project_tree.drag.task', { taskId: task.id, project: taskBase?.projectName ?? '', machine: task.machine, path: taskBase?.path ?? '' })
+                          e.dataTransfer.setData(DRAG_TAB_MIME, JSON.stringify({ groupId: item.group, tabId: item.tabId }))
+                          e.dataTransfer.effectAllowed = 'move'
+                          console.debug('project_tree.drag.tab', { tabId: item.tabId, groupId: item.group, project: item.base.projectName, machine: item.base.machine, path: item.base.path })
                         }}
-                        onClick={() => onOpenTask(taskBase, task.id)}
+                        onClick={() => {
+                          console.debug('project_tree.opened_item.focus', {
+                            project: item.base.projectName,
+                            machine: item.machine,
+                            baseKey: item.base.key,
+                            tabId: item.tabId,
+                            groupId: item.group,
+                          })
+                          onFocusOpenItem(item)
+                        }}
+                        testId="open-item-row"
+                        nameTestId="open-item-name"
                       />
-                    )
-                  })}
-                  {visibleArchived.length > 0 && !(prefs.hideArchived && !searching) && (
-                    <div>
+                    ))}
+                    {projectTasks.map((task) => {
+                      const taskBase = baseForTask(task)
+                      return (
+                        <TaskRow
+                          key={'task:' + task.id}
+                          kind="tui"
+                          label={taskName(task)}
+                          machine={task.machine}
+                          draggable
+                          dragPayload={(e) => {
+                            e.dataTransfer.setData(DRAG_TASK_MIME, task.id)
+                            e.dataTransfer.setData(DRAG_BASE_MIME, JSON.stringify(taskBase))
+                            e.dataTransfer.effectAllowed = 'copy'
+                            console.debug('project_tree.drag.task', { taskId: task.id, project: taskBase?.projectName ?? '', machine: task.machine, path: taskBase?.path ?? '' })
+                          }}
+                          onClick={() => onOpenTask(taskBase, task.id)}
+                        />
+                      )
+                    })}
+                    {visibleArchived.length > 0 && !(prefs.hideArchived && !searching) && (
+                      <div>
                       {/* 「已结束」行（b288 .archive-row）：label + 计数 + 右侧箭头 */}
                       <button
                         type="button"
@@ -693,7 +711,6 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                             kind="tui"
                             label={taskName(task)}
                             machine={task.machine}
-                            tone={stateTone(task.state)}
                             indent
                             draggable
                             dragPayload={(e) => {
@@ -706,14 +723,16 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                           />
                         )
                       })}
-                    </div>
-                  )}
+                      </div>
+                    )}
+                  </div>
                 </div>
 
                 <div data-testid="directory-group" className="mt-[7px]">
                   <div data-testid="dir-group-head" className="flex min-h-6 items-center gap-2 text-[15px] font-medium text-muted-foreground">
                     <span>目录</span>
                   </div>
+                  <div className="mt-2 rounded-[11px] bg-[#f7f7f7] px-[9px] pb-[5px] pt-1">
                   {project.locations.map((loc) => {
                     const mKey = 'm:' + project.project_id + ':' + loc.machine
                     const mOpen = directoryOpen.has(mKey) || searching
@@ -800,16 +819,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                               e.dataTransfer.effectAllowed = 'copy'
                             }}
                             data-drag-task={mainBase !== null && problem === '' ? '1' : undefined}
-                            className="flex min-h-[32px] w-full min-w-0 items-center gap-2 rounded-[7px] py-0.5 pl-[6px] pr-2 text-left text-[13px] font-medium hover:bg-[#fafafa]"
+                            className="flex min-h-[32px] w-full min-w-0 items-center gap-2 rounded-[7px] px-1 py-0.5 text-left text-[15px] font-medium hover:bg-[rgba(255,255,255,0.82)]"
                           >
+                            {hasChildren && problem === '' ? (
+                              <Arrow open={mOpen} onToggle={() => toggleDirectory(mKey)} />
+                            ) : (
+                              <span className="size-4 shrink-0" aria-hidden />
+                            )}
+                            {loc.machine === '' ? <Monitor className="size-[17px] shrink-0 text-[#666666]" /> : <Server className="size-[17px] shrink-0 text-[#666666]" />}
                             <StateDot tone={problem !== '' ? 'failed' : 'active'} />
                             <span className="min-w-0 flex-1 truncate">{machineLabel(loc.machine)}</span>
                             {problem !== '' && <DisconnectedBadge />}
-                            {hasChildren && problem === '' && (
-                              <span className="group-hover:invisible">
-                                <Arrow open={mOpen} onToggle={() => toggleDirectory(mKey)} />
-                              </span>
-                            )}
                           </button>
                           {/* 悬停动作簇（option-1 .directory-actions）：开主目录终端 /
                               新建工作树；主目录不存在或机器断连时对应钮不渲染 */}
@@ -868,6 +888,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                       </div>
                     )
                   })}
+                  </div>
                 </div>
               </div>
             )}
@@ -884,7 +905,6 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               kind="tui"
               label={taskName(t)}
               machine={t.machine}
-              tone={stateTone(t.state)}
               draggable
               dragPayload={(e) => {
                 e.dataTransfer.setData(DRAG_TASK_MIME, t.id)
@@ -907,6 +927,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       {filtered.isEmpty && searching && (
         <p className="px-3 py-4 text-[13px] text-muted-foreground">没有匹配的项目或任务</p>
       )}
+        </div>
       </div>
 
       {/* 第三段：钉在底部 */}
@@ -1090,16 +1111,15 @@ function openItemMatches(item: OpenItem, q: string): boolean {
 }
 
 // TaskRow 是任务组/未归属分组的统一行（option-1 .task-row）：
-// 类型图标槽 + 状态点 + 名称 + 右侧机器簇（绿点 + 机器名）。
+// 类型图标槽 + 名称 + 右侧机器簇（绿点 + 机器名）；任务状态不额外插入左侧圆点。
 // open = 已打开态（is-open，与 hover 同色），selected = 焦点态（is-selected，深一档）。
 function TaskRow({
-  kind, label, machine, tone, open = false, selected = false, indent = false,
+  kind, label, machine, open = false, selected = false, indent = false,
   draggable = false, dragPayload, onClick, testId = 'task-row', nameTestId,
 }: {
   kind: 'tui' | 'terminal' | 'file'
   label: string
   machine: string
-  tone: StateTone
   open?: boolean
   selected?: boolean
   indent?: boolean
@@ -1129,7 +1149,6 @@ function TaskRow({
       )}
     >
       <TaskIconSlot kind={kind} />
-      <StateDot tone={tone} />
       <span data-testid={nameTestId} className="min-w-0 flex-1 truncate text-[15px] font-medium">
         {label}
       </span>

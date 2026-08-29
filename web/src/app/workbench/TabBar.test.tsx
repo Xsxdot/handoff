@@ -80,19 +80,20 @@ describe('TabBar（组标签条）', () => {
     expect(view.container.querySelector('.lucide-plus')).not.toBeNull()
   })
 
-  it('激活组有药丸面 tab-surface，非激活组没有', () => {
+  it('所有标签都有状态面，只有激活组使用深一档药丸色', () => {
     const hook = renderHook(() => useWorkbench())
     act(() => hook.result.current.open({ kind: 'file', rel: 'a.ts' }, local))
     act(() => hook.result.current.addGroup())
 
     const view = renderBar(hook.result.current)
     const surfaces = view.getAllByTestId('tab-surface')
-    expect(surfaces).toHaveLength(1)
+    expect(surfaces).toHaveLength(2)
     // 激活组是最后新建的空组
-    expect(surfaces[0].textContent).toContain('组 2')
+    expect(surfaces.find((surface) => surface.dataset.active === 'true')?.textContent).toContain('组 2')
+    expect(surfaces.find((surface) => surface.dataset.active === 'false')).toBeInTheDocument()
   })
 
-  it('3 个组时组间短分隔线为 2 条，行尾 + 钮前没有', () => {
+  it('3 个组时组间短分隔线为 2 条，标签栏不渲染 + 按钮', () => {
     const hook = renderHook(() => useWorkbench())
     act(() => hook.result.current.open({ kind: 'file', rel: 'a.ts' }, local))
     act(() => hook.result.current.addGroup())
@@ -100,15 +101,16 @@ describe('TabBar（组标签条）', () => {
 
     const view = renderBar(hook.result.current)
     expect(view.getAllByTestId('tab-sep')).toHaveLength(2)
+    expect(view.getByRole('button', { name: '新建标签组' })).toHaveClass('sr-only')
+    expect(view.getAllByRole('button', { name: '新建内容' }).every((button) => button.classList.contains('sr-only'))).toBe(true)
   })
 
-  it('点击组触发激活回调；组关闭钮与行尾新建标签组回调正确', () => {
+  it('点击组触发激活回调；关闭钮位于标签状态面内', () => {
     const hook = renderHook(() => useWorkbench())
     act(() => hook.result.current.open({ kind: 'file', rel: 'a.ts' }, local))
     act(() => hook.result.current.addGroup())
     const onActivateGroup = vi.fn()
     const onCloseGroup = vi.fn()
-    const onNewGroup = vi.fn()
     render(
       <TabBar
         groups={hook.result.current.wb.groups}
@@ -117,19 +119,19 @@ describe('TabBar（组标签条）', () => {
         onActivateGroup={onActivateGroup}
         onCloseGroup={onCloseGroup}
         onNew={vi.fn()}
-        onNewGroup={onNewGroup}
+        onNewGroup={vi.fn()}
         onMoveGroup={vi.fn()}
       />,
     )
     // 第一组是 autoName 且焦点内容是 a.ts：标签显示 a.ts
     fireEvent.click(screen.getByRole('tab', { name: 'a.ts' }))
     expect(onActivateGroup).toHaveBeenCalledWith('g1')
-    fireEvent.click(screen.getByRole('button', { name: '关闭 a.ts' }))
+    const close = screen.getByRole('button', { name: '关闭 a.ts' })
+    expect(close.closest('[data-testid="tab-surface"]')).not.toBeNull()
+    fireEvent.click(close)
     expect(onCloseGroup).toHaveBeenCalledWith('g1')
-    fireEvent.click(screen.getByRole('button', { name: '新建标签组' }))
-    expect(onNewGroup).toHaveBeenCalled()
-    // 每组仍有「新建内容」菜单入口
-    expect(screen.getAllByRole('button', { name: '新建内容' }).length).toBe(2)
+    expect(screen.getByRole('button', { name: '新建标签组' })).toHaveClass('sr-only')
+    expect(screen.getAllByRole('button', { name: '新建内容' }).every((button) => button.classList.contains('sr-only'))).toBe(true)
   })
 
   it('组拖动写入 DRAG_GROUP_MIME；多窗格来源投放显示告警，不调用 onMoveGroup', () => {
