@@ -54,11 +54,16 @@ describe('scheduling fetch seam', () => {
     })
 
     const squadFetchMock = mockFetchJSON({ name: 'squad-a', version: 1 })
-    await putSquad('squad a/特殊', 0, { role: 'executor', members: [] })
+    await putSquad('squad a/特殊', 0, {
+      role: 'executor',
+      members: [{ carrier: 'c1', max_concurrency: 2 }, { carrier: 'c2', max_concurrency: 0 }],
+    })
     const [squadURL, squadInit] = squadFetchMock.mock.calls[0] as [string, RequestInit]
     expect(squadURL).toBe('/api/squads/squads/squad%20a%2F%E7%89%B9%E6%AE%8A?expect=0')
     expect(squadInit.method).toBe('PUT')
-    expect(JSON.parse(String(squadInit.body))).toEqual({ role: 'executor', members: [] })
+    expect(JSON.parse(String(squadInit.body))).toEqual({
+      role: 'executor', members: [{ carrier: 'c1', max_concurrency: 2 }, { carrier: 'c2' }],
+    })
   })
 
   it('keeps manual launch body empty but serializes card-create source', async () => {

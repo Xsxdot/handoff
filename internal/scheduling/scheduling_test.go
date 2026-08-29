@@ -8,9 +8,13 @@ package scheduling_test
 // 见 plan §0 基线探针教训）。
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -188,6 +192,103 @@ func TestSquadMemberWireShapeAndLegacyRead(t *testing.T) {
 	if len(legacy.Members) != 2 || legacy.Members[0].Carrier != "c1" || legacy.Members[1].Carrier != "c2" ||
 		legacy.Members[0].MaxConcurrency != 0 || legacy.Members[1].MaxConcurrency != 0 {
 		t.Fatalf("存量成员未规范化为不限政策: %+v", legacy.Members)
+	}
+}
+
+// TestAdmissionAndReleaseLogsCarryCapacityContext 锁公开准入/释放入口的可观测性：
+// 满员或计数异常时，排障必须能区分小队政策键与载体物理键；本测试只观察 slog
+// 默认出口，不把日志格式当作调度规则的第二份实现。
+func TestAdmissionAndReleaseLogsCarryCapacityContext(t *testing.T) {
+	svc, _ := newCASFixture(t)
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	binding, err := svc.Admit(scheduling.IgnitionRequest{
+		Card: "B-log", Squad: "s1", Target: "target-override",
+		Executor: "executor-override", Model: "model-override", Actor: "test",
+	})
+	if err != nil {
+		t.Fatalf("准入: %v", err)
+	}
+	if binding.Carrier != "c1" {
+		t.Fatalf("登记顺序应先选 c1，得 %+v", binding)
+	}
+	if err := svc.Release(binding.Squad, binding.Carrier); err != nil {
+		t.Fatalf("释放: %v", err)
+	}
+	output := logs.String()
+	for _, want := range []string{"squad=s1", "carrier=c1", "member_policy=0", "carrier_cap=2"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("日志缺少 %q: %s", want, output)
+		}
+	}
+}
+
+// TestMemberPolicyChoosesLaterMemberAndReleaseIsIdempotent 锁生产 Admit 的成员级
+// 选择：前成员政策位满时必须继续后成员；两级计数清零后重复 Release 不得变负，
+// registry 中只能出现 squad/<队>/<载体> 与 carrier/<载体> 两类键。
+func TestMemberPolicyChoosesLaterMemberAndReleaseIsIdempotent(t *testing.T) {
+	svc, facade := newCASFixture(t)
+	for _, carrier := range []scheduling.Carrier{
+		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 1},
+		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone, MaxConcurrency: 3},
+	} {
+		if err := svc.PutCarrier(carrier, 1); err != nil {
+			t.Fatalf("更新载体 %s 物理位: %v", carrier.Name, err)
+		}
+	}
+	if err := svc.PutSquad(scheduling.Squad{
+		Name: "s1", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{
+			{Carrier: "c1", MaxConcurrency: 2},
+			{Carrier: "c2", MaxConcurrency: 2},
+		},
+	}, 1); err != nil {
+		t.Fatalf("更新成员政策: %v", err)
+	}
+	var bindings []scheduling.Binding
+	for i := 0; i < 3; i++ {
+		binding, err := svc.Admit(scheduling.IgnitionRequest{Card: fmt.Sprintf("B-member-%d", i), Squad: "s1", Actor: "test"})
+		if err != nil {
+			t.Fatalf("第 %d 次准入: %v", i+1, err)
+		}
+		bindings = append(bindings, binding)
+	}
+	if got := []string{bindings[0].Carrier, bindings[1].Carrier, bindings[2].Carrier}; !reflect.DeepEqual(got, []string{"c1", "c2", "c2"}) {
+		t.Fatalf("成员政策/登记顺序选择不符: %v", got)
+	}
+	if _, err := svc.Admit(scheduling.IgnitionRequest{Card: "B-member-full", Squad: "s1", Actor: "test"}); !errors.Is(err, scheduling.ErrNoSlot) {
+		t.Fatalf("两成员任一级满应 ErrNoSlot，得 %v", err)
+	}
+	for _, binding := range bindings {
+		if err := svc.Release(binding.Squad, binding.Carrier); err != nil {
+			t.Fatalf("释放 %s: %v", binding.Carrier, err)
+		}
+	}
+	for _, carrier := range []string{"c1", "c2"} {
+		if err := svc.Release("s1", carrier); err != nil {
+			t.Fatalf("重复释放 %s: %v", carrier, err)
+		}
+	}
+	for _, key := range []string{"squad/s1/c1", "squad/s1/c2", "carrier/c1", "carrier/c2"} {
+		if got := runningCount(t, facade, key); got != 0 {
+			t.Fatalf("释放后计数 %s=%d，want 0", key, got)
+		}
+	}
+	rows, err := facade.List("sched_running")
+	if err != nil {
+		t.Fatalf("列运行计数: %v", err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("运行计数键数量=%d，want 4: %+v", len(rows), rows)
+	}
+	for _, row := range rows {
+		if strings.HasPrefix(row.ID, "squad/s1/") || strings.HasPrefix(row.ID, "carrier/") {
+			continue
+		}
+		t.Fatalf("出现未声明运行计数键: %s", row.ID)
 	}
 }
 

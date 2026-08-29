@@ -8,7 +8,10 @@ import { getSquads, putCarrier, putSquad } from '../../api/scheduling'
 import { errorMessage } from '../lib/format'
 
 type CarrierDraft = Omit<CarrierInput, 'max_concurrency'> & { name: string; maxConcurrencyText: string }
-type SquadDraft = Omit<SquadInput, 'name'> & { name: string }
+type SquadDraft = Omit<SquadInput, 'name'> & {
+  name: string
+  memberConcurrencyText: Record<string, string>
+}
 type EntityDialog =
   | { kind: 'carrier'; value: CarrierView | null }
   | { kind: 'squad'; value: SquadView | null }
@@ -43,11 +46,41 @@ function carrierDraft(row: CarrierView | null): CarrierDraft {
 }
 
 function squadDraft(row: SquadView | null): SquadDraft {
+  const members = row ? row.members.map((member) => ({ ...member })) : []
+  const memberConcurrencyText: Record<string, string> = {}
+  for (const member of members) {
+    memberConcurrencyText[member.carrier] = member.max_concurrency?.toString() ?? ''
+  }
   return {
     name: row?.name ?? '',
     role: row?.role === 'coordinator' ? 'coordinator' : 'executor',
-    members: row ? row.members.map((member) => ({ ...member })) : [],
+    members,
+    memberConcurrencyText,
   }
+}
+
+// 保留输入文本直到保存，避免浏览器把非法值先转成 0 或 NaN；空串才是不限。
+function parseSquadPolicy(raw: string): number | undefined {
+  if (raw === '') return undefined
+  if (!/^[1-9][0-9]*$/.test(raw)) {
+    throw new Error('小队成员政策必须是正整数；留空表示不限；合法示例：2')
+  }
+  const value = Number(raw)
+  if (!Number.isSafeInteger(value)) {
+    throw new Error('小队成员政策超出安全整数范围；请使用较小的正整数或留空表示不限')
+  }
+  return value
+}
+
+// 参数是当前小队草稿；返回只包含已勾选成员的 wire 对象，政策空值省略 max_concurrency。
+function squadMembersForSave(draft: SquadDraft): SquadMember[] {
+  return draft.members.map((member) => {
+    const max = parseSquadPolicy(draft.memberConcurrencyText[member.carrier] ?? '')
+    return max === undefined ? { carrier: member.carrier } : {
+      carrier: member.carrier,
+      max_concurrency: max,
+    }
+  })
 }
 
 function draftName(dialog: EntityDialog, draft: CarrierDraft | SquadDraft): string {
@@ -113,10 +146,24 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
     if (dialog === null || draft === null) return
     const name = draftName(dialog, draft)
     if (name === '') {
+      console.warn('scheduling.save.validation', { kind: dialog.kind, name, reason: 'missing_name' })
       setSaveError('名称不能为空')
       return
     }
     const expect = dialog.value?.version ?? 0 // CAS 必须使用打开弹窗时的行快照版本。
+    let squadMembers: SquadMember[] | undefined
+    if (dialog.kind === 'squad') {
+      try {
+        squadMembers = squadMembersForSave(draft as SquadDraft)
+      } catch (cause) {
+        const message = errorMessage(cause)
+        console.warn('scheduling.save.validation', {
+          kind: dialog.kind, name, expect, member_count: (draft as SquadDraft).members.length, cause,
+        })
+        setSaveError(message)
+        return
+      }
+    }
     setSaving(true)
     setSaveError('')
     try {
@@ -137,9 +184,13 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
         const result = await putSquad(name, expect, {
           name,
           role: squad.role === 'coordinator' ? 'coordinator' : 'executor',
-          members: squad.members,
+          members: squadMembers ?? [],
         })
-        console.info('scheduling.save.done', { kind: 'squad', name, version: result.version })
+        console.info('scheduling.save.done', {
+          kind: 'squad', name, version: result.version,
+          member_count: squadMembers?.length ?? 0,
+          policy_count: squadMembers?.filter((member) => member.max_concurrency !== undefined).length ?? 0,
+        })
       }
       setDialog(null)
       setDraft(null)
@@ -147,9 +198,15 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
     } catch (cause) {
       const message = errorMessage(cause)
       if (message.includes('409') || message.includes('冲突')) {
-        console.warn('scheduling.save.conflict', { kind: dialog.kind, name, expect, cause })
+        console.warn('scheduling.save.conflict', {
+          kind: dialog.kind, name, expect,
+          member_count: dialog.kind === 'squad' ? (draft as SquadDraft).members.length : 0, cause,
+        })
       } else {
-        console.error('scheduling.save.error', { kind: dialog.kind, name, expect, cause })
+        console.error('scheduling.save.error', {
+          kind: dialog.kind, name, expect,
+          member_count: dialog.kind === 'squad' ? (draft as SquadDraft).members.length : 0, cause,
+        })
       }
       setSaveError(message)
     } finally {
@@ -204,7 +261,22 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
           </div> : <div className="space-y-3">
             <label className="block space-y-1 text-xs">小队名<input aria-label="小队名" className={INPUT} readOnly={dialog.value !== null} value={draft.name} onChange={(event) => updateDraft({ name: event.target.value })} /></label>
             <label className="block space-y-1 text-xs">角色<select aria-label="角色" className={INPUT} value={(draft as SquadDraft).role} onChange={(event) => updateDraft({ role: event.target.value })}><option value="executor">executor</option><option value="coordinator">coordinator</option></select></label>
-            <fieldset><legend className="text-xs">成员载体（按勾选顺序写入）</legend><div className="mt-2 grid gap-2 sm:grid-cols-2">{snapshot.carriers.map((carrier) => <label key={carrier.name} className="text-xs"><input type="checkbox" checked={(draft as SquadDraft).members.some((member) => member.carrier === carrier.name)} onChange={(event) => { const members = (draft as SquadDraft).members; updateDraft({ members: event.target.checked ? [...members, { carrier: carrier.name } satisfies SquadMember] : members.filter((member) => member.carrier !== carrier.name) }) }} /> {carrier.name}</label>)}</div></fieldset>
+            <fieldset><legend className="text-xs">成员载体（按勾选顺序写入）</legend><div className="mt-2 grid gap-2">{snapshot.carriers.map((carrier) => {
+              const squad = draft as SquadDraft
+              const selected = squad.members.some((member) => member.carrier === carrier.name)
+              return <div key={carrier.name} className="grid gap-1 rounded border p-2 text-xs sm:grid-cols-[max-content_minmax(0,1fr)_minmax(8rem,12rem)] sm:items-center">
+                <label><input type="checkbox" aria-label={`成员 ${carrier.name}`} checked={selected} onChange={(event) => {
+                  const members = squad.members
+                  const memberConcurrencyText = { ...squad.memberConcurrencyText }
+                  updateDraft({
+                    members: event.target.checked ? [...members, { carrier: carrier.name } satisfies SquadMember] : members.filter((member) => member.carrier !== carrier.name),
+                    memberConcurrencyText,
+                  })
+                }} /> {carrier.name}</label>
+                <span className="text-muted-foreground">{carrier.model || 'CLI 默认'}</span>
+                <label>政策并发<input aria-label={`${carrier.name} 政策并发`} className={INPUT} type="text" inputMode="numeric" disabled={!selected} value={squad.memberConcurrencyText[carrier.name] ?? ''} onChange={(event) => updateDraft({ memberConcurrencyText: { ...squad.memberConcurrencyText, [carrier.name]: event.target.value } })} placeholder="留空 = 不限" /></label>
+              </div>
+            })}</div></fieldset>
             <p className="text-[11px] leading-5 text-muted-foreground">每个成员的政策上限由 wire 成员对象的 max_concurrency 表达；缺席或 0 表示不限。载体物理上限仍跨小队共享。</p>
           </div>}
           {saveError && <p role="alert" className="break-words text-xs text-destructive">{saveError}</p>}

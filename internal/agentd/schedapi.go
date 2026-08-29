@@ -146,8 +146,15 @@ func (s *Server) handleSquadPut(w http.ResponseWriter, r *http.Request) {
 			Carrier: member.Carrier, MaxConcurrency: member.MaxConcurrency,
 		}
 	}
+	memberPolicyCount := 0
+	for _, member := range squad.Members {
+		if member.MaxConcurrency > 0 {
+			memberPolicyCount++
+		}
+	}
 	s.log.Info("登记小队", "name", name, "expect", expect,
-		"role", in.Role, "members", len(in.Members))
+		"role", in.Role, "members", len(in.Members),
+		"member_policy_count", memberPolicyCount, "empty_members", len(in.Members) == 0)
 	if err := s.scheduling.PutSquad(squad, expect); err != nil {
 		if errors.Is(err, scheduling.ErrNotFound) {
 			// 成员引用不存在是唯一会从 PutSquad 带出 NotFound 的路径：
@@ -159,6 +166,10 @@ func (s *Server) handleSquadPut(w http.ResponseWriter, r *http.Request) {
 		s.schedPutErr(w, "小队", name, err)
 		return
 	}
+	s.log.Info("小队登记成功", "name", name, "expect", expect,
+		"role", in.Role, "members", len(in.Members),
+		"member_policy_count", memberPolicyCount, "empty_members", len(in.Members) == 0,
+		"version", expect+1)
 	writeJSON(w, http.StatusOK, proto.SquadPutResp{Name: name, Version: expect + 1})
 }
 

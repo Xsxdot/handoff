@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"strings"
 
@@ -228,35 +229,67 @@ func (s *Service) Squad(name string) (Squad, error) {
 
 // Admit 对一次执行者点火做解析加两级准入。满员返回 ErrNoSlot，调用方转 Enqueue。
 func (s *Service) Admit(req IgnitionRequest) (Binding, error) {
+	slog.Default().Info("scheduling.admit.start", "squad", req.Squad, "card", req.Card,
+		"node", req.Node, "target", req.Target, "executor", req.Executor, "model", req.Model)
 	q, err := s.Squad(req.Squad)
 	if err != nil {
+		slog.Default().Error("scheduling.admit.error", "squad", req.Squad,
+			"error_kind", "squad_lookup", "cause", err)
 		return Binding{}, err
 	}
 	if q.Role != RoleExecutor {
-		return Binding{}, fmt.Errorf("%w: %s 是协调者小队", ErrRoleMismatch, q.Name)
+		err := fmt.Errorf("%w: %s 是协调者小队", ErrRoleMismatch, q.Name)
+		slog.Default().Error("scheduling.admit.error", "squad", q.Name,
+			"error_kind", "role_mismatch", "cause", err)
+		return Binding{}, err
 	}
-	return s.admitInto(q, req)
+	binding, err := s.admitInto(q, req)
+	if err != nil {
+		slog.Default().Error("scheduling.admit.error", "squad", q.Name,
+			"error_kind", admissionErrorKind(err), "cause", err)
+	}
+	return binding, err
 }
 
 // LaunchAdmit 对一次协调者拉起做两级准入（协调者小队的成员载体必须在协调机上，
 // 该约束由配置审核保证，本域只管计数）。
 func (s *Service) LaunchAdmit(squadName string) (Binding, error) {
+	slog.Default().Info("scheduling.launch_admit.start", "squad", squadName)
 	q, err := s.Squad(squadName)
 	if err != nil {
+		slog.Default().Error("scheduling.launch_admit.error", "squad", squadName,
+			"error_kind", "squad_lookup", "cause", err)
 		return Binding{}, err
 	}
 	if q.Role != RoleCoordinator {
-		return Binding{}, fmt.Errorf("%w: %s 是执行者小队", ErrRoleMismatch, q.Name)
+		err := fmt.Errorf("%w: %s 是执行者小队", ErrRoleMismatch, q.Name)
+		slog.Default().Error("scheduling.launch_admit.error", "squad", q.Name,
+			"error_kind", "role_mismatch", "cause", err)
+		return Binding{}, err
 	}
-	return s.admitInto(q, IgnitionRequest{Squad: q.Name})
+	binding, err := s.admitInto(q, IgnitionRequest{Squad: q.Name})
+	if err != nil {
+		slog.Default().Error("scheduling.launch_admit.error", "squad", q.Name,
+			"error_kind", admissionErrorKind(err), "cause", err)
+	}
+	return binding, err
 }
 
 // Release 归还一个已结束回合占用的两级名额。幂等：计数到 0 后不再下探。
 func (s *Service) Release(squadName, carrierName string) error {
+	slog.Default().Info("scheduling.release.start", "squad", squadName, "carrier", carrierName)
 	if err := s.stepRunning(kindSquad+"/"+squadName+"/"+carrierName, -1); err != nil {
+		slog.Default().Error("scheduling.release.error", "squad", squadName,
+			"carrier", carrierName, "error_kind", "squad_counter", "cause", err)
 		return err
 	}
-	return s.stepRunning(kindCarrier+"/"+carrierName, -1)
+	if err := s.stepRunning(kindCarrier+"/"+carrierName, -1); err != nil {
+		slog.Default().Error("scheduling.release.error", "squad", squadName,
+			"carrier", carrierName, "error_kind", "carrier_counter", "cause", err)
+		return err
+	}
+	slog.Default().Info("scheduling.release.success", "squad", squadName, "carrier", carrierName)
+	return nil
 }
 
 // Enqueue 把一次满员的点火请求持久入队。同一（卡，节点）重复排队按更新处理
@@ -425,22 +458,37 @@ func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRe
 	for attempt := 0; attempt < maxCASAttempts; attempt++ {
 		squadRunning, squadExpect, err := s.readCount(squadKey)
 		if err != nil {
+			slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
+				"carrier", c.Name, "member_policy", member.MaxConcurrency,
+				"carrier_cap", c.MaxConcurrency, "error_kind", "member_counter_read", "cause", err)
 			return Binding{}, err
 		}
 		carrierRunning, carrierExpect, err := s.readCount(carrierKey)
 		if err != nil {
+			slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
+				"carrier", c.Name, "member_policy", member.MaxConcurrency,
+				"carrier_cap", c.MaxConcurrency, "error_kind", "carrier_counter_read", "cause", err)
 			return Binding{}, err
 		}
 		if member.MaxConcurrency > 0 && squadRunning >= member.MaxConcurrency {
+			slog.Default().Warn("scheduling.acquire.member_full", "squad", q.Name,
+				"carrier", c.Name, "member_policy", member.MaxConcurrency,
+				"carrier_cap", c.MaxConcurrency, "error_kind", "member_full")
 			return Binding{}, errMemberFull
 		}
 		if c.MaxConcurrency > 0 && carrierRunning >= c.MaxConcurrency {
+			slog.Default().Warn("scheduling.acquire.carrier_full", "squad", q.Name,
+				"carrier", c.Name, "member_policy", member.MaxConcurrency,
+				"carrier_cap", c.MaxConcurrency, "error_kind", "carrier_full")
 			return Binding{}, errMemberFull
 		}
 		if err := s.casCount(squadKey, squadExpect, squadRunning+1); err != nil {
 			if errors.Is(err, schedclient.ErrCASConflict) {
 				continue
 			}
+			slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
+				"carrier", c.Name, "member_policy", member.MaxConcurrency,
+				"carrier_cap", c.MaxConcurrency, "error_kind", "member_counter_write", "cause", err)
 			return Binding{}, err
 		}
 		if err := s.casCount(carrierKey, carrierExpect, carrierRunning+1); err != nil {
@@ -448,11 +496,36 @@ func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRe
 			if errors.Is(err, schedclient.ErrCASConflict) {
 				continue
 			}
+			slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
+				"carrier", c.Name, "member_policy", member.MaxConcurrency,
+				"carrier_cap", c.MaxConcurrency, "error_kind", "carrier_counter_write", "cause", err)
 			return Binding{}, err
 		}
-		return bindingFor(q, c, req), nil
+		binding := bindingFor(q, c, req)
+		slog.Default().Info("scheduling.acquire.success", "squad", q.Name,
+			"carrier", c.Name, "member_policy", member.MaxConcurrency,
+			"carrier_cap", c.MaxConcurrency, "target", binding.Target,
+			"executor", binding.Executor, "model", binding.Model)
+		return binding, nil
 	}
-	return Binding{}, fmt.Errorf("%w: %s 与 %s", ErrRetryExhausted, squadKey, carrierKey)
+	err := fmt.Errorf("%w: %s 与 %s", ErrRetryExhausted, squadKey, carrierKey)
+	slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
+		"carrier", c.Name, "member_policy", member.MaxConcurrency,
+		"carrier_cap", c.MaxConcurrency, "error_kind", "retry_exhausted", "cause", err)
+	return Binding{}, err
+}
+
+func admissionErrorKind(err error) string {
+	switch {
+	case errors.Is(err, ErrNoSlot):
+		return "no_slot"
+	case errors.Is(err, ErrNoHealthy):
+		return "no_healthy"
+	case errors.Is(err, ErrRetryExhausted):
+		return "retry_exhausted"
+	default:
+		return "admission"
+	}
 }
 
 // bindingFor 产出有效三元组：一次性覆盖 > 载体缺省（spec §3：--target/--executor/

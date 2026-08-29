@@ -81,17 +81,39 @@ func (s *Server) runAutomationPass(ctx context.Context) {
 	}
 }
 
-// drainQueuesOnce 按 QueueKinds 法定顺序最多处理 100 行；失败行回填并停止当前 kind。
+// drainQueuesOnce 按 QueueKinds 法定顺序最多处理 100 行。局部 deferred 只在本次
+// 清队轮次存活，且只延后协调者 ErrNoSlot 请求；轮末统一回填这些请求后才返回，
+// 因而一个载体暂时无位不会阻断其它载体的执行者请求。
 func (s *Server) drainQueuesOnce(ctx context.Context) (processed int, err error) {
 	if s.scheduling == nil {
 		s.log.Error("自动化队列清队失败：编制域未装配")
 		return 0, errors.New("自动化队列清队：编制域未装配")
 	}
+	type deferredLaunch struct {
+		req   scheduling.IgnitionRequest
+		cause error
+	}
+	deferred := make([]deferredLaunch, 0)
+	flushDeferred := func() int {
+		count := len(deferred)
+		for _, item := range deferred {
+			s.requeueAutomation(item.req, scheduling.KindLaunchQueue, item.cause)
+		}
+		deferred = nil
+		if count > 0 {
+			s.log.Info("协调者无位请求已回填", "kind", scheduling.KindLaunchQueue,
+				"deferred_count", count)
+		}
+		return count
+	}
 	for _, kind := range scheduling.QueueKinds {
 		for processed < automationBatchLimit {
 			req, ok, popErr := s.scheduling.PopReady(kind)
 			if popErr != nil {
+				requeued := flushDeferred()
 				s.log.Error("自动化队列出队失败", "kind", kind, "cause", popErr)
+				s.log.Warn("自动化队列清队提前结束", "kind", kind,
+					"deferred_count", requeued, "cause", popErr)
 				return processed, fmt.Errorf("出队 %s 失败: %w", kind, popErr)
 			}
 			if !ok {
@@ -103,16 +125,30 @@ func (s *Server) drainQueuesOnce(ctx context.Context) (processed int, err error)
 			switch kind {
 			case scheduling.KindLaunchQueue:
 				if _, launchErr := s.launchCoordinatorRound(ctx, req.Card, "manual"); launchErr != nil {
+					if errors.Is(launchErr, scheduling.ErrNoSlot) {
+						deferred = append(deferred, deferredLaunch{req: req, cause: launchErr})
+						s.log.Warn("协调者准入无位，延后到本轮末回填", "kind", kind,
+							"card", req.Card, "node", req.Node,
+							"deferred_count", len(deferred), "cause", launchErr)
+						continue
+					}
 					s.requeueAutomation(req, kind, launchErr)
+					flushDeferred()
+					s.log.Warn("协调者清队因非无位错误停止", "kind", kind,
+						"card", req.Card, "node", req.Node, "cause", launchErr)
 					return processed, nil
 				}
 			case scheduling.KindIgnitionQueue:
 				if drainErr := s.drainIgnitionRequest(ctx, req); drainErr != nil {
 					s.requeueAutomation(req, kind, drainErr)
+					flushDeferred()
+					s.log.Warn("执行者清队因错误停止", "kind", kind,
+						"card", req.Card, "node", req.Node, "cause", drainErr)
 					return processed, nil
 				}
 			default:
 				s.log.Error("自动化清队遇到未声明 kind", "kind", kind, "card", req.Card)
+				flushDeferred()
 				return processed, fmt.Errorf("清队遇到未声明 kind %q", kind)
 			}
 		}
@@ -120,6 +156,7 @@ func (s *Server) drainQueuesOnce(ctx context.Context) (processed int, err error)
 			break
 		}
 	}
+	flushDeferred()
 	return processed, nil
 }
 

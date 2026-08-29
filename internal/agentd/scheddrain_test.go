@@ -17,6 +17,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
@@ -61,6 +62,7 @@ func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	if err := svc.PutCarrier(scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 1,
 	}, 0); err != nil {
 		t.Fatalf("登记协调者载体: %v", err)
 	}
@@ -73,6 +75,102 @@ func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	runner := &queueTraceRunner{}
 	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
 	return runner
+}
+
+// firstCoordinatorSlotFullRegistry 让第一次协调者准入观察到载体 A 满员，随后
+// 还原真实 registry。这样同一轮的 ignition 请求能在真实 wake→dispatch 链上
+// 使用载体 B，测试只注入边界读数，不复制 scheduling 的准入规则。
+type firstCoordinatorSlotFullRegistry struct {
+	inner schedclient.Registry
+	full  bool
+}
+
+func (r *firstCoordinatorSlotFullRegistry) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
+	return r.inner.Put(kind, id, expectVersion, body, actor)
+}
+
+func (r *firstCoordinatorSlotFullRegistry) Get(kind, id string) (schedclient.Record, error) {
+	if r.full && kind == "sched_running" && id == "squad/coord/coord-carrier" {
+		r.full = false
+		return schedclient.Record{ID: id, Version: 1, Body: []byte(`{"count":1}`)}, nil
+	}
+	return r.inner.Get(kind, id)
+}
+
+func (r *firstCoordinatorSlotFullRegistry) List(kind string) ([]schedclient.Record, error) {
+	return r.inner.List(kind)
+}
+
+func (r *firstCoordinatorSlotFullRegistry) Delete(kind, id string, expectVersion int, actor string) error {
+	return r.inner.Delete(kind, id, expectVersion, actor)
+}
+
+// TestDrainQueuesDefersCoordinatorNoSlotAndContinues 锁 P2：launch queue 的协调者
+// 请求本次 ErrNoSlot 时只回填当前行，清队继续穿过 ignition queue，并让另一载体
+// 的执行者真实进入 Wake-before-dispatch。该 runner 只证明机内清队接缝，不证明
+// agentd 重启或 SQLite 多进程恢复。
+func TestDrainQueuesDefersCoordinatorNoSlotAndContinues(t *testing.T) {
+	env := setupNoPTYSquadEnv(t, 1)
+	runner := seedQueueCoordinator(t, env)
+	svc := env.srv.Scheduling()
+	if err := svc.PutCarrier(scheduling.Carrier{
+		Name: "c2", Machine: "ftm", CLI: "opencode", HomeDir: "/tmp/c2-home",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+	}, 0); err != nil {
+		t.Fatalf("登记载体 c2: %v", err)
+	}
+	if err := svc.PutSquad(scheduling.Squad{
+		Name: "sq2", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "c2", MaxConcurrency: 1}},
+	}, 0); err != nil {
+		t.Fatalf("登记小队 sq2: %v", err)
+	}
+	env.srv.SetScheduling(scheduling.New(&firstCoordinatorSlotFullRegistry{
+		inner: facadeAsRegistry{f: env.srv.autoLedger}, full: true,
+	}))
+	ids := seedSquadFlow(t, env, "sq2", 1)
+	coordCard := createCoordCard(t, env)
+	if _, err := env.srv.Scheduling().Enqueue(scheduling.IgnitionRequest{
+		Card: coordCard, Squad: "coord", Actor: "test", Ready: true,
+	}, scheduling.KindLaunchQueue); err != nil {
+		t.Fatalf("入队协调者: %v", err)
+	}
+	if _, err := env.srv.Scheduling().Enqueue(scheduling.IgnitionRequest{
+		Card: ids[0], Squad: "sq2", Node: "implement", Actor: "test", Ready: true,
+	}, scheduling.KindIgnitionQueue); err != nil {
+		t.Fatalf("入队执行者: %v", err)
+	}
+	env.srv.runStepFn = func(context.Context, *ledgerstep.StepRunner, string, string) {
+		runner.markDispatch()
+	}
+
+	processed, err := env.srv.drainQueuesOnce(context.Background())
+	if err != nil || processed != 2 {
+		t.Fatalf("协调者无位后应继续清队，processed=%d err=%v", processed, err)
+	}
+	waitFor(t, func() bool {
+		_, _, trace := runner.snapshot()
+		for _, event := range trace {
+			if event == "dispatch" && !env.srv.cardStepInFlight(ids[0]) {
+				return true
+			}
+		}
+		return false
+	})
+	rows, err := env.srv.Scheduling().QueueSnapshot()
+	if err != nil {
+		t.Fatalf("读回填队列: %v", err)
+	}
+	if len(rows) != 1 || rows[0].Kind != scheduling.KindLaunchQueue || rows[0].Req.Card != coordCard {
+		t.Fatalf("协调者请求应在队列、执行者应已消费: %+v", rows)
+	}
+	_, _, trace := runner.snapshot()
+	for _, event := range trace {
+		if event == "dispatch" {
+			return
+		}
+	}
+	t.Fatalf("另一载体执行者未穿过派发入口: %v", trace)
 }
 
 func setupNoPTYSquadEnv(t *testing.T, carrierMax int) *ledgerEnv {
