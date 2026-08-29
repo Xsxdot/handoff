@@ -118,7 +118,8 @@
     "executor（包级函数）",
     "hostapi.Host",
     "hostapi（包级函数）"
-   ]
+   ],
+   "legacyBudgetNote": "B293：hostapi.Host 增 ProbeHome / WakeHome（本机隔离 HOME 探测与一次性唤起）。不新开方向；检测写状态仍走 d_scheduling。"
   },
   {
    "from": "d_gateway",
@@ -212,7 +213,7 @@
     "scheduling.Service",
     "scheduling（包级函数）"
    ],
-   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；预算 0 = 一律走门面，穿透内部即违法。"
+   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。"
   },
   {
    "from": "d_gateway",

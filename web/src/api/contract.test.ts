@@ -111,13 +111,27 @@ import queueFixture from './testdata/QueueResp.json'
 import coordinatorLaunchFixture from './testdata/CoordinatorLaunchResp.json'
 import coordinatorStatusFixture from './testdata/CoordinatorStatus.json'
 import coordinatorAttachReleaseFixture from './testdata/CoordinatorAttachReleaseResp.json'
+import homeProbeReqFixture from './testdata/HomeProbeReq.json'
+import homeProbeRespFixture from './testdata/HomeProbeResp.json'
+import homeWakeReqFixture from './testdata/HomeWakeReq.json'
+import homeWakeRespFixture from './testdata/HomeWakeResp.json'
+import carrierDetectRespFixture from './testdata/CarrierDetectResp.json'
+import carrierRunCommandRespFixture from './testdata/CarrierRunCommandResp.json'
 import {
+  type CarrierDetectResp,
+  type CarrierRunCommandResp,
   type CarrierView,
   type CoordinatorLaunchResp,
   type CoordinatorStatus,
   type CoordinatorAttachReleaseResp,
+  type HomeProbeReq,
+  type HomeProbeResp,
+  type HomeWakeReq,
+  type HomeWakeResp,
   type QueueEntry,
   type SquadView,
+  CARRIER_STATUS_LABEL,
+  defaultHomeDir,
 } from './scheduling'
 
 describe('契约 fixture 与 TS 类型', () => {
@@ -573,6 +587,25 @@ describe('scheduling wire', () => {
     expect(typeof r.session_id).toBe('string')
     expect(r.rebuilt).toBe(false)
     expect(r.escalated).toBe(false)
+  })
+  it('B293 probe/detect/run-command fixture 键与默认 HOME/四态词表', () => {
+    const probeReq: HomeProbeReq = homeProbeReqFixture
+    expect(probeReq.cli).toBe('codex')
+    expect(probeReq.path).toBe('~/.handoff/home/mbp-codex')
+    const probeResp: HomeProbeResp = homeProbeRespFixture
+    expect(probeResp.kind).toBe('empty')
+    const wakeReq: HomeWakeReq = homeWakeReqFixture
+    expect(wakeReq.home_dir).toBe('~/.handoff/home/mbp-codex')
+    expect(wakeReq.model).toBeUndefined()
+    const wakeResp: HomeWakeResp = homeWakeRespFixture
+    expect(wakeResp.outcome).toBe('need_login')
+    const detect: CarrierDetectResp = carrierDetectRespFixture
+    expect(detect.status).toBe('pending')
+    expect(detect.version).toBe(2)
+    const run: CarrierRunCommandResp = carrierRunCommandRespFixture
+    expect(run.command).toBe('HOME=~/.handoff/home/mbp-codex codex')
+    expect(defaultHomeDir('mbp-codex')).toBe('~/.handoff/home/mbp-codex')
+    expect(CARRIER_STATUS_LABEL[detect.status]).toBe('未上线')
   })
   it('CoordinatorStatus 保留 attach 三元组、machine 空串与 null 未绑定态', () => {
     const r: CoordinatorStatus = coordinatorStatusFixture

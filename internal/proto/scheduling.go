@@ -17,6 +17,8 @@ type CarrierView struct {
 	Credential     string `json:"credential"`
 	MaxConcurrency int    `json:"max_concurrency,omitempty"`
 	Healthy        bool   `json:"healthy"`
+	Status         string `json:"status,omitempty"`     // B293：四态英文键；空=尚未回填
+	LastError      string `json:"last_error,omitempty"` // 最近一次检测说明；不参与准入
 	Version        int    `json:"version"`
 }
 
@@ -36,8 +38,8 @@ type SquadsResp struct {
 	Squads   []SquadView   `json:"squads"`
 }
 
-// CarrierInput 是 PUT 载体的请求体。刻意不含 healthy：本期无探测手段，
-// 服务端会把 false 静默翻真（防饿死），收了就是恒假承诺。
+// CarrierInput 是 PUT 载体的请求体。刻意不含 status / last_error / healthy：
+// 状态只由创建、home_dir 变更与检测写入，登记请求不得设置（B293 废止 PutCarrier 翻真）。
 type CarrierInput struct {
 	Name           string `json:"name,omitempty"`
 	Machine        string `json:"machine"`
@@ -117,4 +119,45 @@ type CoordinatorStatus struct {
 // CoordinatorAttachReleaseResp 是 active=false 交回无头后的成功回执。
 type CoordinatorAttachReleaseResp struct {
 	OK bool `json:"ok"`
+}
+
+// HomeProbeReq 是 POST /api/host/probe 的请求体。machine 走 query（?machine=），
+// 不进 body——转发基座靠 query 选路。Credential 空 = standalone。
+type HomeProbeReq struct {
+	CLI        string `json:"cli"`
+	Path       string `json:"path"`
+	Credential string `json:"credential,omitempty"`
+}
+
+// HomeProbeResp 是路径探测的三类结果。kind 只允许 empty / logged_in / occupied。
+type HomeProbeResp struct {
+	Kind   string `json:"kind"`
+	Detail string `json:"detail,omitempty"`
+}
+
+// HomeWakeReq 是 POST /api/host/wake 的请求体（本机唤起，供检测编排转发）。
+type HomeWakeReq struct {
+	CLI     string `json:"cli"`
+	HomeDir string `json:"home_dir"`
+	Model   string `json:"model,omitempty"`
+}
+
+// HomeWakeResp 是本机唤起结局。outcome 只允许 ready / need_login / quota / unreachable。
+type HomeWakeResp struct {
+	Outcome string `json:"outcome"`
+	Detail  string `json:"detail,omitempty"`
+}
+
+// CarrierDetectResp 是 POST /api/squads/carriers/{name}/detect 成功后的投影。
+type CarrierDetectResp struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	LastError string `json:"last_error,omitempty"`
+	Version   int    `json:"version"`
+}
+
+// CarrierRunCommandResp 是 GET /api/squads/carriers/{name}/run-command 的回执。
+// command 由服务端生成，客户端只复制。
+type CarrierRunCommandResp struct {
+	Command string `json:"command"`
 }

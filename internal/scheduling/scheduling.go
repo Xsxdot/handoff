@@ -56,7 +56,9 @@ type Carrier struct {
 	Model          string           `json:"model,omitempty"`
 	Credential     CredentialSource `json:"credential"`
 	MaxConcurrency int              `json:"max_concurrency,omitempty"` // 物理位；0 = 不设上限
-	Healthy        bool             `json:"healthy"`
+	Healthy        bool             `json:"healthy"`                   // B293 废止中：Ticket 0 双字段兼容，实现票删除
+	Status         CarrierStatus    `json:"status,omitempty"`          // 一等四态；空 = 尚未由实现票回填
+	LastError      string           `json:"last_error,omitempty"`      // 最近一次检测说明；不参与准入
 }
 
 // SquadRole 区分两种不混编的小队。

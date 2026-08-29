@@ -165,6 +165,12 @@ func TestContractFixtures(t *testing.T) {
 			},
 		}},
 		{"CoordinatorAttachReleaseResp", CoordinatorAttachReleaseResp{OK: true}},
+		{"HomeProbeReq", HomeProbeReq{CLI: "codex", Path: "~/.handoff/home/mbp-codex", Credential: "standalone"}},
+		{"HomeProbeResp", HomeProbeResp{Kind: "empty", Detail: "目录为空，保存后将自动创建并检测一次。"}},
+		{"HomeWakeReq", HomeWakeReq{CLI: "codex", HomeDir: "~/.handoff/home/mbp-codex", Model: ""}},
+		{"HomeWakeResp", HomeWakeResp{Outcome: "need_login", Detail: "需要登录。"}},
+		{"CarrierDetectResp", CarrierDetectResp{Name: "mbp-codex", Status: "pending", LastError: "需要登录。", Version: 2}},
+		{"CarrierRunCommandResp", CarrierRunCommandResp{Command: "HOME=~/.handoff/home/mbp-codex codex"}},
 	}
 
 	dir := fixtureDir(t)

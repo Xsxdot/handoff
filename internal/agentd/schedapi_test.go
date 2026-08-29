@@ -128,6 +128,31 @@ func TestCarrierPutRoundtripThroughWire(t *testing.T) {
 	if c != want {
 		t.Fatalf("往返不等:\n got=%+v\nwant=%+v", c, want)
 	}
+}
+
+// B293：运行命令由服务端按已存 HOME×CLI 生成，客户端不得拼接。
+func TestCarrierRunCommandThroughWire(t *testing.T) {
+	env := newSchedEnv(t)
+	body := `{"machine":"m1","cli":"codex","home_dir":"~/.handoff/home/c1","credential":"standalone"}`
+	code, respBody := schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=0", body)
+	if code != http.StatusOK {
+		t.Fatalf("新建应 200，得 %d：%s", code, respBody)
+	}
+	code, respBody = schedReq(t, env, http.MethodGet, "/api/squads/carriers/c1/run-command", "")
+	if code != http.StatusOK {
+		t.Fatalf("run-command 应 200，得 %d：%s", code, respBody)
+	}
+	var got proto.CarrierRunCommandResp
+	if err := json.Unmarshal([]byte(respBody), &got); err != nil {
+		t.Fatalf("解码: %v", err)
+	}
+	if got.Command != "HOME=~/.handoff/home/c1 codex" {
+		t.Fatalf("command = %q", got.Command)
+	}
+	code, respBody = schedReq(t, env, http.MethodGet, "/api/squads/carriers/missing/run-command", "")
+	if code != http.StatusNotFound {
+		t.Fatalf("缺失载体应 404，得 %d：%s", code, respBody)
+	}
 	// 更新：expect=1 → version=2。
 	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=1",
 		`{"machine":"m1","cli":"opencode","home_dir":"/h2","credential":"standalone"}`)

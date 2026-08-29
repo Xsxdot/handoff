@@ -38,6 +38,9 @@ func (s *Server) registerSchedulingRoutes(api *http.ServeMux) {
 	api.HandleFunc("PUT /api/squads/carriers/{name}", s.withScheduling(s.handleCarrierPut))
 	api.HandleFunc("PUT /api/squads/squads/{name}", s.withScheduling(s.handleSquadPut))
 	api.HandleFunc("GET /api/queue", s.withScheduling(s.handleQueueGet))
+	api.HandleFunc("POST /api/squads/carriers/{name}/detect", s.withScheduling(s.handleCarrierDetect))
+	api.HandleFunc("GET /api/squads/carriers/{name}/run-command", s.withScheduling(s.handleCarrierRunCommand))
+	s.registerHostProbeRoutes(api)
 }
 
 // withScheduling 与 withLedger 同形：编制域未装配时 503 并给出可行动原因。
@@ -174,6 +177,56 @@ func (s *Server) handleQueueGet(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, resp)
 }
 
+// handleCarrierDetect POST /api/squads/carriers/{name}/detect：检测写状态。
+// 协调机持有 registry，本端点不整段 forwardIfRequested。Ticket 0 空壳只调
+// ApplyDetect（恒 ErrDetectUnwired → 503）；实现票在此编排本机/跨机 WakeHome。
+func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if _, err := s.scheduling.Carrier(name); err != nil {
+		if errors.Is(err, scheduling.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		s.log.Error("读载体失败", "name", name, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.log.Info("检测载体", "name", name)
+	c, err := s.scheduling.ApplyDetect(name, scheduling.DetectEvidence{}, "")
+	if err != nil {
+		if errors.Is(err, scheduling.ErrDetectUnwired) {
+			s.log.Warn("载体检测尚未接线", "name", name)
+			writeErr(w, http.StatusServiceUnavailable, err)
+			return
+		}
+		s.log.Error("载体检测失败", "name", name, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, proto.CarrierDetectResp{
+		Name: c.Name, Status: string(c.Status), LastError: c.LastError,
+	})
+}
+
+// handleCarrierRunCommand GET /api/squads/carriers/{name}/run-command：
+// 服务端生成复制命令，客户端不得拼接。
+func (s *Server) handleCarrierRunCommand(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	c, err := s.scheduling.Carrier(name)
+	if err != nil {
+		if errors.Is(err, scheduling.ErrNotFound) {
+			writeErr(w, http.StatusNotFound, err)
+			return
+		}
+		s.log.Error("读载体失败", "name", name, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	cmd := scheduling.RunCommand(c)
+	s.log.Info("生成载体运行命令", "name", name, "command_bytes", len(cmd))
+	writeJSON(w, http.StatusOK, proto.CarrierRunCommandResp{Command: cmd})
+}
+
 // expectVersion 解析 ?expect= 版本参数。缺席/非整数/负数都是 400：版本语义
 // 不设隐含默认，防止「没带就当 0」把更新静默变新建。
 func expectVersion(r *http.Request) (int, bool, error) {
@@ -214,7 +267,8 @@ func carrierView(c scheduling.Carrier, version int) proto.CarrierView {
 	return proto.CarrierView{
 		Name: c.Name, Machine: c.Machine, CLI: c.CLI, HomeDir: c.HomeDir,
 		Model: c.Model, Credential: string(c.Credential),
-		MaxConcurrency: c.MaxConcurrency, Healthy: c.Healthy, Version: version,
+		MaxConcurrency: c.MaxConcurrency, Healthy: c.Healthy,
+		Status: string(c.Status), LastError: c.LastError, Version: version,
 	}
 }
 

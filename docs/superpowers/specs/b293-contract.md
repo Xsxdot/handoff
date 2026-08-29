@@ -1,0 +1,289 @@
+# B293 契约增量：隔离 HOME 生命周期 + 载体四态
+
+**上游状态：已批准**（源 spec：`docs/superpowers/specs/2026-08-29-b293-isolated-home-carrier-status-design.md`，
+头部状态行「已批准（用户 2026-08-29：非空无凭据选方案 1；检测按钮；四态含不可达与限额中；原型形态「可以」）」）
+**级别：L3 ｜ 选档：轻档**（单条用户旅程，不值并行子卡。直通竖切归重档，本节点只落空壳与直通镜像。）
+**冻结物**：本文档、`codegraph/target.json`、`codegraph/best.json`（补挂 `k_web_api_scheduling*`）、
+`codegraph/diffs/cards-B293-charter-3.json` 与本提交 Ticket 0 骨架，**随本提交冻结**。
+**形态权威**：`prototypes/b293-carrier-home/pages/settings.html`。
+**本节点**：charter / contract；交棒：breakdown。
+**废止**：B156.3 契约 §4.1「健康位本期只有形状、登记缺省 Healthy=true」。
+
+## 1. 现状查证
+
+| 契约事实 | 代码出处 | 本卡关系 |
+| --- | --- | --- |
+| `PutCarrier` 把 `!Healthy` 翻 `true` | `internal/scheduling/scheduling.go#Service.PutCarrier` | 废止；新建/改 HOME 落未上线 |
+| `admitInto` 跳过 `!Healthy`；全无健康 → `ErrNoHealthy` | `internal/scheduling/scheduling.go#admitInto` | 改判 `status==online`；哨兵名沿用 |
+| `CarrierInput` 不含 healthy | `internal/proto/scheduling.go#CarrierInput` | 继续不含 status / last_error / healthy |
+| `CarrierView.healthy` 手写投影 | `internal/agentd/schedapi.go#carrierView` | 加 `status`/`last_error`；implement 删 healthy |
+| 登记 HTTP 不做跨机转发 | `internal/agentd/schedapi.go` 包注释 | 探测可转发；检测写状态不能整段转发 |
+| `?machine=` 一跳搬运、防环头 | `internal/agentd/forward.go#Server.forwardIfRequested` | 探测/唤起走它 |
+| `HomeDir` 非空覆写进程 `HOME` 且赢过 env 同名行 | `internal/hostapi/driver.go#buildEnv` | 保持；执行者任务必须同样消费载体 HomeDir |
+| 凭据相对路径表 | `internal/toolchain/detect.go#credRelPath` / `credRelPathFor` | 探测「已登录」判据；见 §4 |
+| claude 无文件判据 | 同文件 `Detect` 的 claude 分支 | 探测永不报 logged_in |
+| Windows opencode 无文件判据 | `credRelPathFor` | 同左 |
+| 默认数据目录 `~/.handoff` | `internal/config/config.go#defaultDataDir` | 默认 HOME **不**跟可改 DataDir |
+| 项目仓库默认 `<DataDir>/repos` | `internal/config/config.go#Load` 补 RepoRoot | 「同款管理」只指落点形态，不是共用 DataDir |
+| 协调者拉起已写 `carrier.HomeDir` | `internal/agentd/scheddrain.go#launchCoordinatorRound` | 执行者任务路径尚未消费 |
+| codex 丢弃 `CODEX_HOME` 复用 `~/.codex` | `internal/executor/codex/taskenv.go#droppedEnvKeys` | 载体 HomeDir 非空时禁止再这么做 |
+| grok 任务级 grokhome 软链主 HOME 凭据 | `internal/executor/grok/taskenv.go#EnsureAuthLink` | 沙箱仍合法；凭据不得指回主 HOME（除非本轮 main_home_sync 供给） |
+| `hostapi.RunTurn` 缺省 30 分钟、会喂 prompt | `internal/hostapi/hostapi.go#TurnRequest` / `internal/hostapi/driver.go#DefaultTurnTimeout` | 检测**不是** RunTurn |
+| 设置页仍画 health 点 | `web/src/app/settings/SchedulingPage.tsx` | 对照原型改四态药丸 + 检测/运行 |
+
+对侧常量执法：
+
+| 常量 | 生产者 | 消费者 | 结论 |
+| --- | --- | --- | --- |
+| `ErrNoHealthy` | `admitInto` | `internal/agentd/scheddispatch.go` 与测试 | 活跃；不改名，语义收窄为「没有已上线且有空的载体」 |
+| `healthy` JSON 键 | `PutCarrier` 翻真 + `carrierView` | web `CarrierView.healthy`、fixture `SquadsResp.json` | Ticket 0 双字段兼容；implement 删除前仍是活跃键 |
+| `credRelPath` 三键 | 仅 `Detect` / `credRelPathFor` | `cmd/init.go` 表格 | 活跃；探测复用，不另造表 |
+| `droppedEnvKeys["CODEX_HOME"]` | `serveSpec` | 任务启动 env | 活跃；本卡改变其在「载体 HomeDir 非空」时的执法 |
+| proto `healthy:true` fixture | `TestContractFixtures` | `web/src/api/contract.test.ts` | 活跃；omitempty 的 `status` 不进现有样本 |
+
+依赖库既成行为（与签名同等承重）：
+
+| 既成行为 | 出处 | 约束 |
+| --- | --- | --- |
+| `forwardIfRequested`：空 machine / 已转发头 = 本机；未知机器 400；失败 502 不重试 | `internal/agentd/forward.go#Server.forwardIfRequested` | 探测/唤起不得自造第二套选路 |
+| 转发体上限 1MB | 同文件 `forwardBodyLimit` | probe/wake body 远小于此 |
+| `os.Stat` 不存在即 err | 标准库；`toolchain` 用 `statFile` 包装 | 探测「不存在」= empty |
+| `json omitempty`：空串缺席、false 仍在场 | Go 标准库；`TestRowsCarryVersionsForCASLock` 钉 healthy 显式 true | status 空不进 GET；last_error 空缺席 |
+
+## 2. 架构决定
+
+不新开子系统。状态机与登记规则仍归 `d_scheduling`；本机文件系统/进程归 `d_execution_host`（`hostapi.Host`）；HTTP 编排归 `d_gateway`；设置页归 `d_web`。
+
+不新开 target.json 方向：
+
+```
+d_gateway → d_scheduling   entries: scheduling.Service / scheduling（包级函数）  ← 加 ApplyDetect / DefaultHomeDir / RunCommand
+d_gateway → d_execution    entries: hostapi.Host / hostapi（包级函数）          ← 加 ProbeHome / WakeHome
+```
+
+编制域继续零 import 执行域。检测编排（读载体 → 本机或 `?machine=` 唤起 → `ApplyDetect`）只允许出现在 gateway（`handleCarrierDetect`），实现票填肉。
+
+架构形态声明（沿用 B156.3）：按子系统分域的平铺领域包，无横向 controller/service/dao 分层。
+
+## 3. 精确签名
+
+### 3.1 编制域（`internal/scheduling/status.go`）
+
+```go
+type CarrierStatus string
+const (
+    StatusPending     CarrierStatus = "pending"     // 未上线
+    StatusOnline      CarrierStatus = "online"      // 已上线
+    StatusQuota       CarrierStatus = "quota"       // 限额中
+    StatusUnreachable CarrierStatus = "unreachable" // 不可达
+)
+const IsolatedHomeRoot = "~/.handoff/home"
+func (s CarrierStatus) Label() string
+func DefaultHomeDir(name string) string          // 空/空白 → ""
+func RunCommand(c Carrier) string                // "HOME="+HomeDir+" "+CLI
+type DetectEvidence struct{ Reachable, NeedLogin, Quota bool }
+func (s *Service) ApplyDetect(name string, ev DetectEvidence, detail string) (Carrier, error)
+var ErrDetectUnwired // Ticket 0 骨架哨兵；实现票接线后正常路径不再返回
+```
+
+`Carrier` 增 `Status` / `LastError`（`internal/scheduling/scheduling.go#Carrier`）。Ticket 0 仍保留 `Healthy` 以免存量测试红；实现票删除 `Healthy` 并改 `PutCarrier` / `admitInto`。
+
+### 3.2 本机承载（`internal/hostapi/probe.go`）
+
+```go
+const DefaultDetectTimeout = 30 * time.Second
+type ProbeKind string // empty | logged_in | occupied
+func (h *Host) ProbeHome(ctx context.Context, req ProbeRequest) (ProbeReply, error)
+func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error)
+// Ticket 0 恒返回 hostapi.ErrUnavailable
+```
+
+`WakeHome` **不是** `RunTurn`：不准喂模型 prompt、不准把控制台卡在登录交互。Timeout=0 用 `DefaultDetectTimeout`。
+
+### 3.3 HTTP（gateway）
+
+| 方法 | 路径 | 转发 | 请求 | 响应 |
+| --- | --- | --- | --- | --- |
+| POST | `/api/host/probe?machine=` | 是 | `HomeProbeReq` | `HomeProbeResp` |
+| POST | `/api/host/wake?machine=` | 是 | `HomeWakeReq` | `HomeWakeResp` |
+| POST | `/api/squads/carriers/{name}/detect` | **否** | 空对象 | `CarrierDetectResp` |
+| GET | `/api/squads/carriers/{name}/run-command` | 否 | 无 | `CarrierRunCommandResp` |
+| PUT | `/api/squads/carriers/{name}?expect=` | 否 | `CarrierInput`（仍不含 status） | `SquadPutResp` |
+| GET | `/api/squads` | 否 | 无 | `CarrierView` 增 status/last_error |
+
+DTO：`internal/proto/scheduling.go#HomeProbeReq` 等。TS 镜像：`web/src/api/scheduling.ts`。
+`machine` 只走 query，不进 body。缺失载体：detect / run-command → 404。
+Ticket 0：probe/wake/detect 因空壳 → 503。
+
+### 3.4 控制台派生串（假缝不占冻结名额，但跨语言同值）
+
+`web/src/api/scheduling.ts#defaultHomeDir` 与 `CARRIER_STATUS_LABEL` 必须与 Go `DefaultHomeDir` / `Label` 逐字相同。
+
+## 4. 凭据文件表（探测「已登录」）
+
+权威是 `internal/toolchain/detect.go#credRelPath`，相对**被探测的 HOME**（隔离路径展开后），不是进程主 HOME——除非 `credential=main_home_sync` 去读主 HOME 作对照。
+
+| CLI | 相对路径 | 无文件判据时 |
+| --- | --- | --- |
+| opencode | `.local/share/opencode/auth.json` | Windows：`credRelPathFor` 返回 false → 永不 `logged_in` |
+| grok | `.grok/auth.json` | — |
+| codex | `.codex/auth.json` | — |
+| claude | （无） | 永不 `logged_in` |
+
+既有锁：`internal/toolchain/detect_test.go`。探测实现必须调用同一 `credRelPathFor`，禁止另造路径表。
+
+`main_home_sync` 且隔离路径为 empty、主 HOME 对该 CLI 已登录 → 探测报 `logged_in`（仍不修改隔离目录）。保存后的供给动作把表内文件拷进隔离 HOME；不搬技能/规则树。claude 无文件可拷 = 供给空操作。
+
+## 5. 冻结清单（一条 = 一支可独立判 pass/fail 的断言）
+
+**状态词表**
+
+1. wire `status` 值 `pending` 的用户可见名是「未上线」。
+2. `online` 的用户可见名是「已上线」。
+3. `quota` 的用户可见名是「限额中」。
+4. `unreachable` 的用户可见名是「不可达」。
+5. `CarrierInput` JSON 不得出现 `status`、`last_error`、`healthy` 键的写入语义（请求设置无效，服务端忽略或不收该字段）。
+6. GET 载体投影携带 `status`；空 status 以 omitempty 缺席。
+7. GET 载体投影携带 `last_error`；空则以 omitempty 缺席。
+8. `last_error` 不参与准入。
+
+**PutCarrier（实现票改行为；Ticket 0 仍翻 Healthy）**
+
+9. `expect=0` 新建后 `status=pending`。
+10. 保存且 `home_dir` 相对上一版变化后 `status=pending`。
+11. 第 10 条同时清空 `last_error`。
+12. 保存且 `home_dir` 未变则不改 `status`。
+13. 保存且 `home_dir` 未变则不改 `last_error`。
+14. `PutCarrier` 不得再把零值/false 写成已上线（废止 `if !c.Healthy { c.Healthy = true }`）。
+
+**准入**
+
+15. 仅 `status==online` 且该载体有空位时，`admitInto` 可选中该成员。
+16. `pending` 成员被跳过。
+17. `quota` 成员被跳过。
+18. `unreachable` 成员被跳过。
+19. 小队里没有任何 `online` 成员 → 返回 `ErrNoHealthy`（配置/状态问题，不是满员）。
+20. 有 `online` 成员但都满员 → 返回 `ErrNoSlot`。
+21. `Admit` / `LaunchAdmit` / `Release` / 清队循环不写 `status`。
+
+**路径探测**
+
+22. `POST /api/host/probe` 不创建目录。
+23. `POST /api/host/probe` 不覆盖/删除已有文件。
+24. 路径不存在 → `kind=empty`。
+25. 路径存在且目录无任何条目 → `kind=empty`。
+26. 目标 HOME 内 `credRelPathFor` 命中的文件 `Stat` 成功 → `kind=logged_in`。
+27. 目录非空且未见该 CLI 凭据（含无文件判据的 CLI）→ `kind=occupied`。
+28. `credential=main_home_sync` 且隔离路径 empty 且主 HOME 已登录 → `kind=logged_in`。
+29. claude 的探测结果不得为 `logged_in`。
+30. Windows 上 opencode 的探测结果不得为 `logged_in`。
+31. 请求里的 `~` 在**目标机**展开。
+32. 非空 `?machine=` 走 `forwardIfRequested`，本机不解释对端文件系统。
+
+**检测 / 一次性唤起**
+
+33. `POST /api/squads/carriers/{name}/detect` 是写状态的入口（与按钮同一条）。
+34. 检测有时限；`WakeRequest.Timeout==0` 时用 `DefaultDetectTimeout`（30s）。
+35. 检测不得在控制台里进入交互登录。
+36. 检测不得调用 `hostapi.Host.RunTurn`（不准喂模型 prompt）。
+37. 空白 HOME 被对应执行者落下自己的文件（边界型，真机补）。
+38. 能跑且凭据可用 → `status=online`。
+39. 识别为额度用尽 → `status=quota`。
+40. 机器/网络不够着，且检测前状态是 `online`/`quota`/`unreachable` → `status=unreachable`。
+41. 机器/网络不够着，且检测前状态是 `pending`（从未上过线）→ `status=pending`。
+42. 需要登录或未见凭据 → `status=pending`。
+43. `PutCarrier` 成功路径不调用 detect。
+44. 控制台在新建或 `home_dir` 变更的 PUT 成功后必须立刻再 POST detect 一次。
+
+**运行命令**
+
+45. `GET /api/squads/carriers/{name}/run-command` 返回服务端命令。
+46. 命令格式精确为 `HOME=<carrier.home_dir> <carrier.cli>`（home_dir 用已存串，可含 `~`）。
+47. 客户端不得拼接或改写该命令。
+48. 载体不存在 → 404。
+
+**默认路径**
+
+49. 用户可见默认串精确为 `~/.handoff/home/<trim(载体名)>`。
+50. 载体名为空或纯空白时默认串为空串。
+
+**运行时 HOME**
+
+51. `hostapi.buildEnv`：`HomeDir` 非空覆写进程 `HOME`，且赢过 `req.Env` 里的 HOME 行（保持现状）。
+52. 该载体此后的协调者拉起与小队派发，账户/凭据以载体 `HomeDir` 为准。
+53. 载体 `HomeDir` 非空时，codex 不得再丢弃 `CODEX_HOME` 去复用用户级 `~/.codex`。
+54. grok 任务级 `grokhome`（permission_mode）仍合法。
+55. 第 54 条的凭据不得软链/指向机器主 HOME，除非本轮凭据来源是 `main_home_sync` 的供给动作。
+
+**供给与永不做**
+
+56. `main_home_sync` 保存后只拷贝 §4 表内凭据文件进隔离 HOME，不搬技能/规则树。
+57. `kind=occupied` 的目录不得被当成空目录清空或覆盖。
+
+## 6. Ticket 0（本提交）
+
+空壳与直通镜像已落：
+
+- 类型/常量：`CarrierStatus` 四值、`IsolatedHomeRoot`、probe/wake 词表、proto DTO、TS 镜像。
+- 可执行冻结：`DefaultHomeDir` / `Label` / `RunCommand` 有测试；run-command HTTP 穿过 `Handler()`；fixture 六份新类型进 `TestContractFixtures`。
+- 直通镜像：`handleHomeProbe` → `ProbeHome`；`handleHomeWake` → `WakeHome`；`handleCarrierDetect` → `ApplyDetect`；`handleCarrierRunCommand` → `RunCommand`；`SetupAutomation` 装配 `s.hostAPI` 并与 `coordinatorRunner` 共用。
+- 空壳：`ProbeHome`/`WakeHome` 返回 `ErrUnavailable`；`ApplyDetect` 返回 `ErrDetectUnwired`（HTTP 503）。
+- **未改**（留给实现票，否则会无测试地改变准入）：`PutCarrier` 仍翻 Healthy；`admitInto` 仍读 Healthy。
+
+轻档：无直通竖切。越过空壳的可观测行为（默认串、四态中文名、运行命令格式）均有能变红的测试。
+
+## 7. 三重闸门拍板记录
+
+命中四项（难逆转 × 无上下文会惊讶 × 真取舍）：
+
+1. **四态取代 `Healthy bool`，而不是并行第二真相。** 被否：继续用 bool（创建/登录/限额/网络失败动作不同）。后人看到 `status` 字符串会想改回 bool。改回去要动编制域、wire、控制台、准入。
+2. **PUT 不调用 detect；自动检测是控制台在新建/改 HOME 后的第二次调用。** 被否：PUT 内同步检测（CAS 写与有时限远程进程绑在一起，失败语义分不清）。反过来写（把 detect 塞进 PutCarrier）不会让 Ticket 0 的测试变红——故立字据。
+3. **用户可见默认 HOME 固定 `~/.handoff/home/<名>`，不跟 `cfg.DataDir`。** 被否：`<DataDir>/home/<名>`（DataDir 可改，已登记串会漂）。`~` 的展开是目标机的事。
+4. **探测/唤起可 `?machine=` 转发；detect 不能整段转发。** 被否：给 detect 套 `forwardIfRequested`（状态写在协调机 registry，整段转发会写到执行机的空账本或 404）。后人看到「别的本机端点都 forward」会顺手套上。
+
+`DefaultDetectTimeout=30s` 只满足「真取舍」，改数值不难逆转，不记拍板。
+
+## 8. 可执行冻结
+
+- **命中**：默认 HOME 串、运行命令格式、四态英文键与中文名——Go `internal/scheduling/status_test.go`、HTTP `TestCarrierRunCommandThroughWire`、fixture 六类型。凭据相对路径由既有 `internal/toolchain/detect_test.go` 锁，本卡不另造表。
+- **无命中**：哈希 / 密钥派生。无新编码格式算法。
+- 本轮跑过：见 §11。
+
+## 9. 移交 plan 附区
+
+（实现级，不占冻结名额，不参与逐条打勾）
+
+- 「目录为空」：`ReadDir` 零条目；是否忽略 `.DS_Store` 归实现票，默认不忽略（冻结清单把「无任何条目」当 empty）。
+- `WakeHome` 各 CLI 的 argv（如何初始化空白 HOME、如何识别 quota/need_login）归实现票；禁 RunTurn、禁交互登录已冻。
+- Windows 上 `RunCommand` 是否另附 `USERPROFILE=`：命令格式冻的是 `HOME=...`；USERPROFILE 叠层归实现票。
+- 路径含空格时是否加引号：冻的是无引号拼接；有空格的 HOME 归实现票加测试后才能改格式（改格式=契约变更）。
+- `ApplyDetect` 成功响应的 `version`：从 registry 行读取，Ticket 0 成功路径未接通。
+- Ticket 0 双字段：实现票删除 `Healthy`、改 `admitInto`/`PutCarrier`、刷新 `SquadsResp` fixture 与 `SchedulingPage`。
+- 设置页对照原型：四态药丸、检测/运行按钮、改路径即时探测、默认 HOME 随名字走直到用户改过。假缝（是否等于上一份默认）不占冻结。
+- `handleCarrierDetect` 编排：本机直接 `WakeHome`；跨机 POST 对端 `/api/host/wake?machine=`（或对端本机、由对方 forward），再 `ApplyDetect`。
+- 非空无凭据允许保存为未上线：PutCarrier 不因 occupied 拒绝。
+- 执行者任务注入隔离 HOME 的具体 env 键（HOME vs `CODEX_HOME` vs `GROK_HOME`）在不违反 §5 条 52–55 的前提下由实现票选择。
+
+## 10. 图覆盖债与欠账
+
+**图覆盖债（基线已有代码、无节点）**：`Service.PutCarrier` / `admitInto` / `Carrier` 读方法、`handleCarrierPut` / `handleSquadsGet` 等 B156.3 后期符号未进 `baseline.json`。本卡不回灌全量。Ticket 0 新符号进 `codegraph/diffs/cards-B293-charter-3.json`。`k_web_api_scheduling*` 原在 baseline 有、best 未归属，本提交补挂到 `d_web_contract`。
+
+**本节点欠账**：
+
+- PutCarrier 翻真、admitInto 按 Healthy：实现票，测试锁 §5 条 9–20。
+- ProbeHome / WakeHome / ApplyDetect 空壳：实现票。
+- 轻档无直通竖切。
+- vitest：本工作树无 `web/node_modules`，TS 侧测试**未验证**；线格式由 Go `TestContractFixtures` 与 `TestCarrierRunCommandThroughWire` 锁。
+
+「欠账：无」与「已实现但零测试」不并存：本提交越过空壳的行为均有测试。
+
+## 11. 本轮验证记录
+
+- `gofmt -l` 触碰包：无输出。
+- `go vet ./internal/scheduling/ ./internal/hostapi/ ./internal/proto/ ./internal/agentd/` 退出码 0。
+- `go build ./...` 退出码 0。
+- `go test ./internal/scheduling/ ./internal/hostapi/ ./internal/proto/ ./internal/agentd/ -count=1`：ok（agentd 63.8s）。
+- `go test ./internal/proto/ -run TestContractFixtures -update`：新六份 fixture 入 `web/src/api/testdata/`。
+- 金样本：`TestDefaultHomeDir` / `TestRunCommand` / `TestCarrierStatusLabels` / `TestCarrierRunCommandThroughWire` 含在上列 ok 中。
+- 图：`codegraph validate` issues=null；`codegraph check --view cards-B293-charter-3` fails=[]；`codegraph resolve --doc docs/superpowers/specs/b293-contract.md --view cards-B293-charter-3` 17 锚 0 坏（11 ok / 6 moved）。随本提交冻结。
+- 本轮未碰 handoff CLI、未起新 executor。

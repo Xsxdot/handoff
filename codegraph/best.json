@@ -334,6 +334,8 @@
     "k_web_api_rooms_model": "d_web_contract",
     "k_web_api_pty": "d_web_contract",
     "k_web_api_pty_model": "d_web_contract",
+    "k_web_api_scheduling": "d_web_contract",
+    "k_web_api_scheduling_model": "d_web_contract",
     "k_web_api_types_model": "d_web_contract",
     "k_web_api_ws": "d_web_contract",
     "k_web_api_ws_model": "d_web_contract",

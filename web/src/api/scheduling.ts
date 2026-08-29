@@ -12,6 +12,8 @@ export interface CarrierView {
   credential: string
   max_concurrency?: number
   healthy: boolean
+  status?: 'pending' | 'online' | 'quota' | 'unreachable'
+  last_error?: string
   version: number
 }
 
@@ -125,6 +127,86 @@ export const putSquad = (name: string, expect: number, input: SquadInput) =>
     `/api/squads/squads/${encodeURIComponent(name)}?expect=${expect}`,
     omitZeroConcurrency(input),
   )
+
+/** 探测目标机路径；machine 走 query，不进 body。本函数不改写 kind。 */
+export const probeHome = (input: HomeProbeReq) => {
+  const q = input.machine ? `?machine=${encodeURIComponent(input.machine)}` : ''
+  const body: HomeProbeReq = { cli: input.cli, path: input.path }
+  if (input.credential) body.credential = input.credential
+  return postJSON<HomeProbeResp>(`/api/host/probe${q}`, body)
+}
+
+/** 本机/目标机有时限唤起；machine 走 query。控制台不应直接调，检测编排才用。 */
+export const wakeHome = (input: HomeWakeReq) => {
+  const q = input.machine ? `?machine=${encodeURIComponent(input.machine)}` : ''
+  const body: HomeWakeReq = { cli: input.cli, home_dir: input.home_dir }
+  if (input.model) body.model = input.model
+  return postJSON<HomeWakeResp>(`/api/host/wake${q}`, body)
+}
+
+/** 对已登记载体做一次检测写状态。 */
+export const detectCarrier = (name: string) =>
+  postJSON<CarrierDetectResp>(
+    `/api/squads/carriers/${encodeURIComponent(name)}/detect`,
+    {},
+  )
+
+/** 取服务端生成的运行命令；调用方只复制，不拼接。 */
+export const getCarrierRunCommand = (name: string) =>
+  request<CarrierRunCommandResp>(
+    `/api/squads/carriers/${encodeURIComponent(name)}/run-command`,
+  )
+
+export type CarrierStatus = 'pending' | 'online' | 'quota' | 'unreachable'
+
+/** 四态英文键 → 用户可见中文名；与 scheduling.CarrierStatus.Label 同一份词表。 */
+export const CARRIER_STATUS_LABEL: Record<CarrierStatus, string> = {
+  pending: '未上线',
+  online: '已上线',
+  quota: '限额中',
+  unreachable: '不可达',
+}
+
+/** 登记弹窗默认 HOME 串；空名字返回空串。与 scheduling.DefaultHomeDir 同一格式。 */
+export function defaultHomeDir(name: string): string {
+  const trimmed = name.trim()
+  return trimmed ? `~/.handoff/home/${trimmed}` : ''
+}
+
+export interface HomeProbeReq {
+  cli: string
+  path: string
+  credential?: string
+  machine?: string
+}
+
+export interface HomeProbeResp {
+  kind: 'empty' | 'logged_in' | 'occupied'
+  detail?: string
+}
+
+export interface HomeWakeReq {
+  cli: string
+  home_dir: string
+  model?: string
+  machine?: string
+}
+
+export interface HomeWakeResp {
+  outcome: 'ready' | 'need_login' | 'quota' | 'unreachable'
+  detail?: string
+}
+
+export interface CarrierDetectResp {
+  name: string
+  status: CarrierStatus
+  last_error?: string
+  version: number
+}
+
+export interface CarrierRunCommandResp {
+  command: string
+}
 
 export type CoordinatorLaunchSource = 'manual' | 'card_create'
 

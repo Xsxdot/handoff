@@ -163,6 +163,7 @@ type Server struct {
 	keystone   *keystone.Service
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
+	hostAPI    *hostapi.Host
 	// B156.2 协作房间：入站门面实例与换绑端口，SetupAutomation 装配。
 	rooms  *collab.Service
 	rebind rebindPort
@@ -2264,7 +2265,8 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	s.rooms = collab.New(facade)
 	s.rooms.SetCursorStore(cursor.New(filepath.Join(s.conf().DataDir, "room-cursors.json")))
 	s.rebind = facadeBindAdapter{f: facade}
-	runner := coordinatorRunner{h: hostapi.New()}
+	s.hostAPI = hostapi.New()
+	runner := coordinatorRunner{h: s.hostAPI}
 	s.keystone = keystone.New(runner, roomNarrator{c: s.rooms}, facade, attachLocator{})
 	if s.pty != nil {
 		s.ptyGate = ptyapi.New(s.pty)
@@ -2276,6 +2278,9 @@ func (s *Server) PtyAPI() *ptyapi.Host { return s.ptyGate }
 
 // SetScheduling 注入编制域服务（测试缝：整体替换单测构造的实例）。
 func (s *Server) SetScheduling(svc *scheduling.Service) { s.scheduling = svc }
+
+// SetHostAPI 注入进程承载门面（测试缝）。
+func (s *Server) SetHostAPI(h *hostapi.Host) { s.hostAPI = h }
 
 // SetKeystone 注入 keystone 域服务（测试缝：同上）。
 func (s *Server) SetKeystone(svc *keystone.Service) { s.keystone = svc }

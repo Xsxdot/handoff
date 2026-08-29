@@ -7,11 +7,16 @@ import {
   attachCoordinator,
   getCoordinatorStatus,
   getQueue,
+  defaultHomeDir,
+  detectCarrier,
+  getCarrierRunCommand,
   getSquads,
   launchCoordinator,
+  probeHome,
   putCarrier,
   putSquad,
   releaseCoordinator,
+  CARRIER_STATUS_LABEL,
 } from './scheduling'
 
 afterEach(() => vi.unstubAllGlobals())
@@ -98,5 +103,37 @@ describe('scheduling fetch seam', () => {
     expect(releaseFetchMock.mock.calls[0][0]).toBe('/api/cards/B%2F1%20%E7%89%B9%E6%AE%8A/attach')
     expect((releaseFetchMock.mock.calls[0][1] as RequestInit).method).toBe('POST')
     expect(JSON.parse(String((releaseFetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({ active: false })
+  })
+
+  it('serializes B293 probe/detect/run-command without splicing commands', async () => {
+    const probeMock = mockFetchJSON({ kind: 'empty' })
+    await probeHome({ cli: 'codex', path: '~/.handoff/home/x', credential: 'standalone', machine: 'linux-01' })
+    const [probeURL, probeInit] = probeMock.mock.calls[0] as [string, RequestInit]
+    expect(probeURL).toBe('/api/host/probe?machine=linux-01')
+    expect(probeInit.method).toBe('POST')
+    expect(JSON.parse(String(probeInit.body))).toEqual({
+      cli: 'codex', path: '~/.handoff/home/x', credential: 'standalone',
+    })
+
+    const detectMock = mockFetchJSON({ name: 'c a/特', status: 'pending', version: 1 })
+    await detectCarrier('c a/特')
+    expect(detectMock.mock.calls[0][0]).toBe('/api/squads/carriers/c%20a%2F%E7%89%B9/detect')
+    expect((detectMock.mock.calls[0][1] as RequestInit).method).toBe('POST')
+
+    const runMock = mockFetchJSON({ command: 'HOME=~/.handoff/home/x codex' })
+    await expect(getCarrierRunCommand('c a/特')).resolves.toEqual({
+      command: 'HOME=~/.handoff/home/x codex',
+    })
+    expect(runMock.mock.calls[0][0]).toBe('/api/squads/carriers/c%20a%2F%E7%89%B9/run-command')
+    expect((runMock.mock.calls[0][1] as RequestInit).method ?? 'GET').toBe('GET')
+  })
+
+  it('locks default HOME string and status labels', () => {
+    expect(defaultHomeDir('mbp-opencode')).toBe('~/.handoff/home/mbp-opencode')
+    expect(defaultHomeDir('  ')).toBe('')
+    expect(CARRIER_STATUS_LABEL.pending).toBe('未上线')
+    expect(CARRIER_STATUS_LABEL.online).toBe('已上线')
+    expect(CARRIER_STATUS_LABEL.quota).toBe('限额中')
+    expect(CARRIER_STATUS_LABEL.unreachable).toBe('不可达')
   })
 })
