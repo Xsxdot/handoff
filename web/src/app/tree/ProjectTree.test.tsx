@@ -131,6 +131,16 @@ describe('ProjectTree 层级', () => {
     expect(screen.getByTestId('dir-group-head')).toHaveTextContent('目录')
   })
 
+  it('项目没有进行中任务时渲染空状态行；有任务或搜索时不渲染', () => {
+    const empty = props({})
+    const { unmount } = render(<ProjectTree {...empty} tasks={[]} />)
+    expect(screen.getByTestId('task-empty-row')).toHaveTextContent('暂无进行中的任务')
+    unmount()
+
+    render(<ProjectTree {...props({})} />)
+    expect(screen.queryByTestId('task-empty-row')).not.toBeInTheDocument()
+  })
+
   it('目录默认收起，点击机器行后展开工作树子行', () => {
     render(<ProjectTree {...props({})} />)
     expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()

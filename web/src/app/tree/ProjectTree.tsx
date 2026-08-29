@@ -6,6 +6,8 @@
 //     │  注入的 openItems，在前，顺序=打开顺序，不随聚焦/切基准重排）→ 任务列表
 //     │  （created_at 降序的显式排序，聚合序不可信；已打开的 tui 原位呈现已打开
 //     │  态，不再置顶——2026-08-29 用户裁定：打开一个任务不许让别的行挪位置）
+//     │  → 空状态行（组里一个进行中的东西都没有时显示「暂无进行中的任务」，
+//     │  2026-08-29 用户裁定；搜索期间不显示）
 //     ├「目录」小标题组：机器行（绿点 + 机器名 + 右侧箭头 + 悬停动作）
 //     │  └ 工作树子行（紧凑、缩进；点击选中，不再列任务——任务已上移任务组）
 //     └「已结束」行：项目内全部终态任务，默认收起；终态后 30 分钟缓冲窗内的
@@ -804,6 +806,17 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                         nameTestId="open-item-name"
                       />
                     ))}
+                    {/* 空状态行：没有任何进行中的东西（无已打开行、无任务流任务）时，
+                        一段空白会被读成「渲染缺了什么」。搜索期间不显示——搜索有
+                        全局「没有匹配」的反馈，逐项目再报一遍是噪音 */}
+                    {!searching && openChromeRows.length === 0 && projectTasks.length === 0 && orphanOpenTui.length === 0 && (
+                      <p
+                        data-testid="task-empty-row"
+                        className="flex min-h-[30px] items-center px-2 text-[13px] text-muted-foreground/70"
+                      >
+                        暂无进行中的任务
+                      </p>
+                    )}
                   </div>
                 </div>
 
