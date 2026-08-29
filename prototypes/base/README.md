@@ -12,7 +12,7 @@ TUI tab 是任务会话主视图。
 | 页面 | 对应功能 | 来源路由 | 确认状态 |
 |------|---------|---------|---------|
 | index.html | 工作台（三栏 + TUI tab 对话式形态 + 看板/工单/偏好/建树弹层 + home 悬浮窗） | `*` | 已确认 |
-| pages/settings.html | 设置页（开发机/执行纪律/**自动化**/常规/Env/更新；`?section=automation` 直达编制卡） | `/settings` | 已确认（自动化分区 2026-08-28 B282 回流） |
+| pages/settings.html | 设置页（开发机/执行纪律/**自动化**/常规/Env/更新；`?section=automation` 直达编制卡） | `/settings` | 确认中（B292 小队成员政策位：fork `prototypes/b292-squad-concurrency/`，2026-08-29 走查确认；真实页面对照验收前保持确认中。B282 自动化分区骨架仍有效） |
 | （未建页） | 任务深链：按任务 id 直接打开它的 TUI | `/tasks/:id` | — |
 | （无需页） | `/machines` → 重定向到 `/settings` | `/machines` | — |
 | pages/board.html | 工作项账本看板（统一任务卡 + 排队横带/卡 chip + 抽屉协调者三态 + 开卡即绑） | `/cards` | 已确认（排队/协调者 2026-08-28 B282 回流） |

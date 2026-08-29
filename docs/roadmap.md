@@ -533,3 +533,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **顺序拉起填不满 `launch_queue`**：协调者小队 `max_concurrency=1` 时，第一次 `POST coordinator/launch` 200 后立即第二次仍 200 新 session，`GET /api/queue` 空。名额在 launch HTTP 返回时就归还（K5 `releaseSchedulingBinding` 与 implement 无 Verdict 同款）。排队 UI 能呈现快照，但顺序满员不会入队。要验「横带有行」得并发双发或改占用寿命。来源：B282 acceptance 真机。
 - **`TestWriteTaskEnvOmitsModelSectionWhenEmpty` 吃本机 grok 配置**：host grok 的 `[models] default=grok-4.6` / `default_reasoning_effort` 漏进任务级 config.toml（日志 `default_from=authority`）。acc 基线同红，linux-01 无此配置故绿。不是 B282 引入，测试未隔离权威 grok 配置。
 - **`best.json` 未声明 `k_web_api_scheduling` / `k_web_api_scheduling_model`**：B282 视图 absorb 后 `check` fails 仍空，多 2 条 `container-unplaced`。L3 轻档零新增契约，不改 best.json；归属下次 contract/best 标定。
+
+## 来自 B292 spec（2026-08-29）——本期不做、后续要做
+
+- **CLI 限额探测与账户池**：同 HOME / 同凭据的多个载体共享真实账户额度，载体级物理上限管不到跨载体的账户池。B156.3 已记为已知缝（健康位只留形状），B292 调度仍按各载体物理上限保守计数。来源：`docs/superpowers/specs/2026-08-26-b156.3-automation-keystone-design.md` roadmap；`docs/superpowers/specs/2026-08-29-b292-squad-member-concurrency-design.md` Out of Scope。
+- **隔离 HOME 默认路径 / 改路径探测 / 建载体后唤起 / 不健康不派发**：B293。
