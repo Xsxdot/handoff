@@ -11,7 +11,6 @@ package shell
 
 import (
 	"errors"
-	"fmt"
 	"log/slog"
 	"net/url"
 	"strings"
@@ -74,7 +73,7 @@ func validateExternalBrowserURL(rawTarget, sourceFrameURL string) (*url.URL, err
 	}
 	target, err := url.Parse(rawTarget)
 	if err != nil {
-		return nil, fmt.Errorf("目标 URL 无法解析: %w", err)
+		return nil, errors.New("目标 URL 无法解析")
 	}
 	source, err := url.Parse(sourceFrameURL)
 	if err != nil {

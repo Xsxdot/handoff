@@ -3,9 +3,11 @@
 package shell_test
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/desktop/internal/shell"
@@ -95,6 +97,25 @@ func TestHandleExternalBrowserMessage(t *testing.T) {
 		}
 		if !called {
 			t.Fatal("有效 URL 必须尝试调用 opener")
+		}
+	})
+
+	t.Run("畸形目标 URL 的拒绝日志不泄露 query 或 token", func(t *testing.T) {
+		var logs bytes.Buffer
+		requestLog := slog.New(slog.NewTextHandler(&logs, nil))
+		malformedTarget := "http://[::1?token=secret"
+
+		consumed := shell.HandleExternalBrowserMessage(
+			requestLog,
+			shell.ExternalBrowserMessagePrefix+malformedTarget,
+			sourceFrameURL,
+			func(string) error { return nil },
+		)
+		if !consumed {
+			t.Fatal("已识别协议的畸形目标消息仍必须被消费")
+		}
+		if strings.Contains(logs.String(), "token=secret") || strings.Contains(logs.String(), "secret") {
+			t.Fatalf("拒绝日志泄露畸形目标 URL 或 token: %q", logs.String())
 		}
 	})
 }
