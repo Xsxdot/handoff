@@ -71,6 +71,10 @@ type previewProcess struct {
 	exitDone    chan struct{}
 }
 
+// previewProcessStopTimeout bounds owner-close cleanup so an uncooperative
+// child cannot stall event consumption or service shutdown forever.
+const previewProcessStopTimeout = 5 * time.Second
+
 // PreviewOpenService owns the local desktop side of preview open. It keeps
 // browser resources in memory only; owner session truth remains in Store and
 // the coordinator projection remains in PreviewMirror.
@@ -86,6 +90,7 @@ type PreviewOpenService struct {
 	stopped      bool
 	eventCancels []func()
 	eventWG      sync.WaitGroup
+	cleanupWG    sync.WaitGroup
 }
 
 // NewPreviewOpenService constructs the local open boundary. A nil launcher
@@ -225,7 +230,9 @@ func (o *PreviewOpenService) OpenPreview(ctx context.Context, id, machine string
 	if machine == "" {
 		if err := o.owner.Touch(ctx, id, o.owner.deps.Now()); err != nil {
 			delete(o.processes, key)
-			o.cleanupProcess(id, machine, process)
+			if cleanupErr := o.stopAndCleanupProcess(ctx, id, machine, process); cleanupErr != nil {
+				o.log.Warn("preview 浏览器启动后续命失败且本地回收不完整", "operation", "preview_touch_cleanup", "session", id, "machine", machine, "pid", browser.PID, "cause", cleanupErr)
+			}
 			o.log.Warn("preview 浏览器启动后续命失败", "operation", "preview_touch", "session", id, "machine", machine, "pid", browser.PID, "cause", err)
 			return resp, fmt.Errorf("续命 preview 会话: %w", err)
 		}
@@ -266,6 +273,7 @@ func (o *PreviewOpenService) Stop(ctx context.Context) error {
 		}
 	}
 	o.eventWG.Wait()
+	o.cleanupWG.Wait()
 	for _, process := range processes {
 		o.cleanupProcess("", "", process)
 	}
@@ -288,21 +296,36 @@ func (o *PreviewOpenService) watchOwnerEvents(events <-chan proto.PreviewEvent) 
 		}
 		o.mu.Unlock()
 		if process != nil {
-			o.stopAndCleanupProcess(context.Background(), event.Session.ID, machine, process)
-			o.log.Info("owner 关闭后回收本地 preview 资源", "operation", "preview_owner_close", "session", event.Session.ID, "machine", machine, "pid", process.browser.PID)
+			o.cleanupWG.Add(1)
+			go func(event proto.PreviewEvent, machine string, process *previewProcess) {
+				defer o.cleanupWG.Done()
+				if err := o.stopAndCleanupProcess(context.TODO(), event.Session.ID, machine, process); err != nil {
+					o.log.Warn("owner 关闭后回收本地 preview 资源不完整", "operation", "preview_owner_close", "session", event.Session.ID, "machine", machine, "pid", process.browser.PID, "cause", err)
+					return
+				}
+				o.log.Info("owner 关闭后回收本地 preview 资源", "operation", "preview_owner_close", "session", event.Session.ID, "machine", machine, "pid", process.browser.PID)
+			}(event, machine, process)
 		}
 	}
 }
 
-func (o *PreviewOpenService) stopAndCleanupProcess(ctx context.Context, sessionID, machine string, process *previewProcess) {
-	if err := o.launcher.StopPID(ctx, process.browser.PID); err != nil {
+func (o *PreviewOpenService) stopAndCleanupProcess(ctx context.Context, sessionID, machine string, process *previewProcess) error {
+	if ctx == nil {
+		ctx = context.TODO()
+	}
+	stopCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), previewProcessStopTimeout)
+	defer cancel()
+	var stopErr error
+	if err := o.launcher.StopPID(stopCtx, process.browser.PID); err != nil {
+		stopErr = fmt.Errorf("停止 preview 浏览器进程组: %w", err)
 		o.log.Warn("停止 preview 浏览器进程组失败", "operation", "preview_stop_pid", "session", sessionID, "machine", machine, "pid", process.browser.PID, "cause", err)
 	}
-	if err := waitPreviewProcess(ctx, process); err != nil {
+	if err := waitPreviewProcess(stopCtx, process); err != nil {
 		o.log.Warn("等待 preview 浏览器退出失败，保留本地资源", "operation", "preview_stop_pid", "session", sessionID, "machine", machine, "pid", process.browser.PID, "cause", err)
-		return
+		return errors.Join(stopErr, err)
 	}
 	o.cleanupProcess(sessionID, machine, process)
+	return stopErr
 }
 
 func (o *PreviewOpenService) resolveSession(ctx context.Context, id, machine string) (proto.PreviewSession, error) {

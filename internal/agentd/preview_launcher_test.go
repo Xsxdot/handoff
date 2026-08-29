@@ -15,16 +15,19 @@ import (
 )
 
 type previewLauncherStub struct {
-	mu         sync.Mutex
-	starts     []PreviewLaunchSpec
-	focuses    []int
-	stopPIDs   []int
-	findErr    error
-	startErr   error
-	focusErr   error
-	stopPIDErr error
-	stopCalls  int
-	done       chan error
+	mu          sync.Mutex
+	starts      []PreviewLaunchSpec
+	focuses     []int
+	stopPIDs    []int
+	startPIDs   []int
+	findErr     error
+	startErr    error
+	focusErr    error
+	stopPIDErr  error
+	stopCalls   int
+	done        chan error
+	startHook   func()
+	stopPIDHook func(int)
 }
 
 func (f *previewLauncherStub) FindExecutable(context.Context) (string, error) {
@@ -33,11 +36,19 @@ func (f *previewLauncherStub) FindExecutable(context.Context) (string, error) {
 func (f *previewLauncherStub) Start(_ context.Context, _ string, spec PreviewLaunchSpec) (PreviewBrowserHandle, error) {
 	f.mu.Lock()
 	f.starts = append(f.starts, spec)
+	pid := 42
+	if index := len(f.starts) - 1; index < len(f.startPIDs) {
+		pid = f.startPIDs[index]
+	}
+	startHook := f.startHook
 	f.mu.Unlock()
 	if f.startErr != nil {
 		return PreviewBrowserHandle{}, f.startErr
 	}
-	return PreviewBrowserHandle{PID: 42, Done: f.done}, nil
+	if startHook != nil {
+		startHook()
+	}
+	return PreviewBrowserHandle{PID: pid, Done: f.done}, nil
 }
 func (f *previewLauncherStub) Focus(_ context.Context, pid int) error {
 	f.mu.Lock()
@@ -48,7 +59,11 @@ func (f *previewLauncherStub) Focus(_ context.Context, pid int) error {
 func (f *previewLauncherStub) StopPID(_ context.Context, pid int) error {
 	f.mu.Lock()
 	f.stopPIDs = append(f.stopPIDs, pid)
+	stopPIDHook := f.stopPIDHook
 	f.mu.Unlock()
+	if stopPIDHook != nil {
+		stopPIDHook(pid)
+	}
 	return f.stopPIDErr
 }
 func (f *previewLauncherStub) Stop(context.Context) error {
@@ -157,6 +172,71 @@ func TestPreviewOpenServiceStartFailureCleansProfile(t *testing.T) {
 		t.Fatalf("profile stat err=%v, want not exist", statErr)
 	}
 	_ = service.Stop(context.Background())
+}
+
+func TestPreviewOpenServiceTouchFailureStopsPIDBeforeCleanup(t *testing.T) {
+	_, owner := newPreviewOwnerEnv(t)
+	session, err := owner.Create(context.Background(), protoPreviewPortReq())
+	if err != nil {
+		t.Fatalf("create owner session: %v", err)
+	}
+	done := make(chan error)
+	stopPIDCalled := make(chan struct{})
+	launcher := &previewLauncherStub{done: done}
+	launcher.startHook = func() {
+		if _, _, err := owner.st.ClosePreview(session.ID, owner.deps.Now()); err != nil {
+			t.Errorf("close owner session in start hook: %v", err)
+		}
+	}
+	launcher.stopPIDHook = func(pid int) {
+		if pid != 42 {
+			t.Errorf("stopped pid=%d, want 42", pid)
+		}
+		close(stopPIDCalled)
+	}
+	service := NewPreviewOpenService(owner, nil, nil, launcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer func() {
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
+		_ = service.Stop(context.Background())
+	}()
+
+	result := make(chan error, 1)
+	go func() {
+		resp, err := service.OpenPreview(context.Background(), session.ID, "")
+		if resp == nil || resp.Opened {
+			result <- errors.New("touch failure reported opened")
+			return
+		}
+		result <- err
+	}()
+	select {
+	case <-stopPIDCalled:
+	case <-time.After(time.Second):
+		t.Fatal("Touch failure did not stop browser PID")
+	}
+	launcher.mu.Lock()
+	profile := launcher.starts[0].UserDataDir
+	launcher.mu.Unlock()
+	if _, err := os.Stat(profile); err != nil {
+		t.Fatalf("profile removed before browser exit: %v", err)
+	}
+	close(done)
+	select {
+	case err := <-result:
+		if err == nil || !strings.Contains(err.Error(), "续命 preview 会话") {
+			t.Fatalf("open error=%v, want Touch failure", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("open did not return after browser exit")
+	}
+	waitForPreviewCondition(t, func() bool {
+		_, err := os.Stat(profile)
+		return errors.Is(err, os.ErrNotExist)
+	})
 }
 
 func TestPreviewOpenServiceStopWaitsForBrowserExit(t *testing.T) {
@@ -312,6 +392,55 @@ func TestPreviewOpenServiceUsesMirrorHubForRemoteClose(t *testing.T) {
 	waitForPreviewCondition(t, func() bool {
 		_, err := os.Stat(profile)
 		return errors.Is(err, os.ErrNotExist)
+	})
+}
+
+func TestPreviewOpenServiceClosedEventsDoNotBlockOnFirstBrowser(t *testing.T) {
+	_, owner := newPreviewOwnerEnv(t)
+	first, err := owner.Create(context.Background(), protoPreviewPortReq())
+	if err != nil {
+		t.Fatalf("create first owner session: %v", err)
+	}
+	owner.deps.NewID = func() string { return "preview-second" }
+	second, err := owner.Create(context.Background(), protoPreviewPortReq())
+	if err != nil {
+		t.Fatalf("create second owner session: %v", err)
+	}
+	done := make(chan error)
+	launcher := &previewLauncherStub{done: done, startPIDs: []int{101, 102}}
+	service := NewPreviewOpenService(owner, nil, nil, launcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer func() {
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
+		_ = service.Stop(context.Background())
+	}()
+	for _, session := range []*proto.PreviewSession{first, second} {
+		if resp, err := service.OpenPreview(context.Background(), session.ID, ""); err != nil || resp == nil || !resp.Opened {
+			t.Fatalf("open session=%s resp=%+v err=%v", session.ID, resp, err)
+		}
+	}
+	if _, err := owner.Close(context.Background(), first.ID); err != nil {
+		t.Fatalf("close first owner session: %v", err)
+	}
+	waitForPreviewCondition(t, func() bool {
+		launcher.mu.Lock()
+		defer launcher.mu.Unlock()
+		return len(launcher.stopPIDs) == 1 && launcher.stopPIDs[0] == 101
+	})
+	if _, err := owner.Close(context.Background(), second.ID); err != nil {
+		t.Fatalf("close second owner session: %v", err)
+	}
+	waitForPreviewCondition(t, func() bool {
+		launcher.mu.Lock()
+		defer launcher.mu.Unlock()
+		if len(launcher.stopPIDs) != 2 {
+			return false
+		}
+		return (launcher.stopPIDs[0] == 101 && launcher.stopPIDs[1] == 102) ||
+			(launcher.stopPIDs[0] == 102 && launcher.stopPIDs[1] == 101)
 	})
 }
 
