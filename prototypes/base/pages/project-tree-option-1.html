@@ -283,6 +283,17 @@
         margin: 7px 0 8px;
       }
 
+      /* 任务组空状态：没有任何进行中的东西时占住节奏，别让空白像渲染缺了什么 */
+      .task-empty {
+        display: flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 0 8px;
+        color: var(--muted-foreground);
+        opacity: 0.7;
+        font-size: 13px;
+      }
+
       .task-row {
         display: flex;
         align-items: center;
@@ -751,21 +762,18 @@
               </div>
             </section>
 
-            <section class="project-group" data-project-group data-search="benchmarking 评测跑批 batch3 linux-01 本机">
+            <section class="project-group" data-project-group data-search="benchmarking linux-01 本机">
               <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
                 <span class="project-node" aria-hidden="true"></span>
                 <span class="project-head-main">
                   <span class="icon" data-icon="folder" aria-hidden="true"></span>
                   <span>benchmarking</span>
                 </span>
-                <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">1</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
+                <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">0</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
               </button>
               <div class="project-content">
                 <div class="tasks-stack">
-                  <button class="task-row" type="button" data-search="评测跑批 batch3 linux-01">
-                    <span class="task-icon"><span class="icon" data-icon="dispatch-task" aria-hidden="true"></span></span>
-                    <span class="task-copy"><span class="task-name">评测跑批 batch3</span><span class="machine-meta"><span class="status-dot" aria-hidden="true"></span><span>linux-01</span></span></span>
-                  </button>
+                  <p class="task-empty">暂无进行中的任务</p>
                 </div>
                 <div class="directory-group">
                   <div class="section-label"><span>目录</span></div>
