@@ -1,698 +1,839 @@
-# B266 实现计划：桌面端从浏览器打开工作项整页
+# B266 增量实现计划：桌面端带会话打开工作项整页
 
-读者：对仓库零上下文的执行者。依据已批准的 `docs/superpowers/specs/b266.md`；本节点读取的是 `origin/main` 的提交 `6630abeb2`，基线工作树为 `5e8826f7338fed52e8a45017f8555de0675fc2c8`。不要在实现分支补写或改动 spec。
+读者：对仓库零上下文的执行者。依据已批准的 docs/superpowers/specs/b266.md 和本卡补充的验收增量。本节点只写计划，不写实现代码。
 
-范围只覆盖桌面 CardsPage 的按钮、WebKit raw message 与桌面系统浏览器打开。不要改 agentd HTTP/账本/工作流/IM/B265、不要改标题栏高度、不要把按钮放进 `DesktopTitleBar`、不要把按钮扩展到普通浏览器。
+## 0. 起点、范围与冻结接口
 
-## 基线与已核对事实
+### 0.1 起点
 
-### 基线判据
+实现者必须以 cards/B266-charter-5 的提交 1a40bd82c409def43509c6f2f7b556c33db9a7d1 为代码起点做增量；当前执行分支 cards/B266-charter-6 的 HEAD 正是该提交。不要从没有按钮的 origin/main 重做。
 
-动手前已运行以下命令：
+该提交已经包含且本计划不重做：
 
-```sh
+- CardsPage 桌面 UA 按钮、普通浏览器隐藏、标题栏外布局；
+- desktopShell.ts 的 handoff:open-browser: + 当前 origin/pathname/search raw wire；
+- desktop/internal/shell/external_browser.go 的同源 http(s) 校验；
+- desktop/main.go 的 Wails RawMessageHandler、Origin/TopOrigin 回退和 app.Browser.OpenURL；
+- 真机已证明按钮能打开浏览器，但目标是无会话 /cards 并停在登录页。
+
+本轮只补：同源校验通过后签发 IssueAuthTicket，打开带 ticket 和 next 的 /console；agentd 兑换成功后安全地 302 到 /cards path/query。
+
+### 0.2 依据与明确排除
+
+当前 checkout 的 origin/main 为 c23e53a0a20c8aeeddeb33a2d02c49e8d8c925be，B266 spec 文件存在，最后改动提交为 6630abeb；用户消息中的 d098dae7f 在本地对象库不存在，计划不伪造该 hash，按现有 origin/main 文件执行。
+
+允许修改的源码/测试文件：
+
+- desktop/internal/shell/external_browser.go
+- desktop/internal/shell/external_browser_test.go
+- desktop/internal/shell/handshake.go
+- desktop/internal/shell/handshake_test.go
+- desktop/main.go
+- internal/agentd/authroutes.go
+- internal/agentd/auth_test.go
+
+本节点同时更新：
+
+- docs/superpowers/plans/b266-plan.md
+- docs/superpowers/ledgers/2026-08-29-b266-plan-ledger.md
+
+不修改 web/src/app/cards/CardsPage.tsx、web/src/app/lib/desktopShell.ts、web/src/app/shell/DesktopTitleBar.tsx、web/src/app/shell/Shell.tsx、internal/client、internal/proto、store schema、server.go 路由注册或任何新的 HTTP endpoint。Wails E2E、真实机器 postMessage 穿透、系统浏览器真开不属于本卡计划项；B296 台账 hash 自洽问题忽略。
+
+### 0.3 行为冻结
+
+输入仍是已有前端 raw wire：
+
+~~~text
+handoff:open-browser:http://127.0.0.1:7777/cards?project=handoff
+~~~
+
+桌面侧处理顺序固定为：
+
+1. 识别固定前缀；
+2. 校验 target 和 sourceFrameURL 的 http(s) 同源、有效端口、无 userinfo；
+3. 将已校验 target 投影为相对 next：/cards?project=handoff；
+4. 调用 IssueAuthTicket；
+5. 在 agentd 返回的 /console ticket query 上设置 URL query next；
+6. 只把最终 /console URL 交给 app.Browser.OpenURL。
+
+IssueAuthTicket 失败、配置未就绪、opener 缺失和 opener 失败都消费 raw message，绝不调用 opener(target)，绝不回退裸 /cards。
+
+next 允许 /cards 或 /cards/ 前缀的相对 path/query；拒绝空值、/other、/cardsx、无首斜杠、// 网络路径、scheme、host、userinfo、fragment、反斜杠和控制字符。agentd 自己再次执行这条白名单，不能只信桌面端。
+
+## 1. 基线与查图事实
+
+### 1.1 本节点实跑基线
+
+前端既有三缝回归：
+
+~~~text
 cd web
 npx vitest run src/app/cards/CardsPage.test.tsx src/app/lib/desktopShell.test.ts src/app/shell/DesktopTitleBar.test.tsx
-```
+~~~
 
-实际结果：`Test Files  3 passed (3)`、`Tests  16 passed (16)`。
+输出：Test Files 3 passed (3)，Tests 20 passed (20)。
 
-```sh
+~~~text
 cd web
 npm run typecheck
 npx eslint src/app/cards/CardsPage.tsx src/app/cards/CardsPage.test.tsx src/app/lib/desktopShell.ts src/app/lib/desktopShell.test.ts src/app/shell/DesktopTitleBar.test.tsx
-```
+~~~
 
-实际结果：`npm run typecheck` 的 `tsc -b` 退出 0；定向 eslint 无输出、退出 0。
+实际：tsc -b 退出 0；定向 eslint 无输出、退出 0。node_modules 由 npm ci --cache /root/.handoff/tmp/6597ae3a/npm-cache 安装到忽略目录，输出 added 290 packages、found 0 vulnerabilities，不得 staged。
 
-桌面包的可复用基线命令为：
+桌面既有 shell 回归：
 
-```sh
+~~~text
 cd desktop
-go test ./internal/shell/... -run '^(TestResolve|TestNormalizeProjectDir|TestAwaitWebviewReady|TestConsoleURL|TestDefaultDeviceName|TestBuildForm|TestApplyAnswers)'
-```
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go test ./internal/shell/... -run '^(TestHandleExternalBrowserMessage|TestConsoleURL|TestDefaultDeviceName)$' -count=1
+~~~
 
-实际结果：`ok  github.com/Xsxdot/handoff/desktop/internal/shell  0.065s`。同样已运行但未通过的整包命令是 `go test ./internal/shell/...`；原始失败为既有同步夹具向 `/tmp/handoff` 写入时的 `open /tmp/.handoff-sync-2211604910: read-only file system`，不是本卡断言。实现后优先运行新增定向测试；具备 Wails 工具链的环境再运行装配构建：
+输出：ok github.com/Xsxdot/handoff/desktop/internal/shell 0.002s。
 
-```sh
+agentd 既有认证/路由回归：
+
+~~~text
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go test ./internal/agentd -run '^(TestTicketToCookieHappyPath|TestTicketSingleUseOverHTTP|TestExpiredTicketRejected|TestConsoleRouteRegistered|TestDeepLinkRouteFallsBack)$' -count=1
+~~~
+
+输出：ok github.com/Xsxdot/handoff/internal/agentd 3.553s。
+
+Wails 装配门：
+
+~~~text
 cd desktop
 wails3 task build
-```
+~~~
 
-本节点运行该构建得到原始结果 `/bin/bash: line 1: wails3: command not found`，所以不把装配编译写成已验证；`desktop/README.md` 已规定该命令负责生成 `frontend/dist` 后再构建嵌套模块。
+原始输出：/bin/bash: line 1: wails3: command not found。实现后仍运行该命令；不可用时台账保留原文并写“未验证”，不能写 pass。
 
-### 图查询与覆盖债
+### 1.2 已核对的接口
 
-项目有 `codegraph/`，已按最优树词表运行：
+- internal/client/client.go:1231：
+  func (c *Client) IssueAuthTicket(ctx context.Context, deviceName string) (*proto.AuthTicketResp, error)
+- desktop/internal/shell/handshake.go:47：
+  func ConsoleURL(ctx context.Context, ep Endpoint, deviceName string) (string, error)
+- desktop/internal/shell/endpoint.go:59：
+  func Resolve(path string) (Endpoint, ConfigState, error)
+- internal/agentd/authroutes.go:132：
+  func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request)
+- internal/agentd/server.go:615 已注册 GET /console，保持注册不动。
 
-```sh
-GOMODCACHE=/root/.handoff/tmp/347d1589/chart-gomodcache go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . context d_web_cards
-```
+### 1.3 查图与覆盖债
 
-结果是 `view: baseline`、`truncated: false`、`unscannedEntries: 6`。最优领域是 `d_web_cards`（账本看板），但 `k_web_app_cards`、`k_web_app_cards_model`、`k_web_app_flows`、`k_web_app_flows_model` 今日实际落在 `d_web`，四项均为 misplaced。`CardsPage`、`DesktopTitleBar` 在图中没有图内调用方，不能据此断言没有调用方；这 6 个未扫描入口是覆盖债，交给实现后的 review 与真机验证。
+按项目不变量运行 codegraph context d_web_cards，结果 truncated=false、unscannedEntries=6、best 领域无实体/边；4 个 web 容器实际在 d_web。sym CardsPage 定位到 web/src/app/cards/CardsPage.tsx:64；sym consoleURL 定位到 func consoleURL(r *http.Request, ticket string) string；sym handleConsole 定位到 Server.handleConsole；flow consoleURL 返回 degraded=true、steps=[]，不能当流程图；who-calls consoleURL 显示 handleIssueTicket 和 POST /api/auth/tickets。
 
-已核对的图符号和源码窗口：
+下列两个完整命令的 sym 查询均返回：
 
-- `CardsPage`：`web/src/app/cards/CardsPage.tsx:64`，当前 `useSearchParams()` 只读 `project`，`useNavigate()` 只用于任务深链，顶栏健康点在 `ml-auto`。
-- `isDesktopShell`：`web/src/app/lib/desktopShell.ts:29`，按 UA 中 `handoff-desktop` 判断。
-- `requestTitlebarZoom`：`web/src/app/lib/desktopShell.ts:61`，通过 `window.webkit.messageHandlers.external.postMessage(string)` 发送 `wails:drag:doubleclick`。
-- `DesktopTitleBar`：`web/src/app/shell/DesktopTitleBar.tsx:36`，高度为 `DESKTOP_TOP_INSET`，既有测试断言标题栏没有任何 button/link/input/select/textarea。
-- `Shell`：`web/src/app/shell/Shell.tsx:679` 将 `/cards` 放进 `FullPageCover`；`FullPageCover` 在 `:838-840` 为整页覆盖层。因此 CardsPage 顶栏天然位于 28px `DesktopTitleBar` 下方，本卡不改 Shell 的布局。
+~~~text
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . sym HandleExternalBrowserMessage
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . sym ConsoleURL
+Error: 符号 "HandleExternalBrowserMessage" 不在图中（图未覆盖或名字有误）
+Error: 符号 "ConsoleURL" 不在图中（图未覆盖或名字有误）
+~~~
 
-### Wails 依赖行为依据
+新增 desktop shell raw handler/握手是图覆盖债；6 个未扫描入口不能证明没有消费者，调用面以源码和本计划文件清单为准。
 
-`desktop/go.mod` 钉的是 `github.com/wailsapp/wails/v3 v3.0.0-beta.8`。已读取该版本源码并记录出处：
+## 2. Task 1：桌面 shell 认证打开
 
-- `pkg/application/application_options.go:96-98`：raw 回调精确签名为 `func(window Window, message string, originInfo *OriginInfo)`。
-- `pkg/application/application.go:271-275`：`OriginInfo` 字段为 `Origin string`、`TopOrigin string`、`IsMainFrame bool`。
-- `pkg/application/application.go:852-859`：`wails:` 消息走 Wails 内置分发，其他消息才进入 `Options.RawMessageHandler`。
-- `pkg/application/webview_window_darwin.m:599-613`：Darwin 将 frame URL 的 `absoluteString` 放入 `OriginInfo.Origin`，所以它可能包含 `/console?ticket=...`，来源校验必须比较 scheme/host/有效端口，不能全串比较，也不能把完整来源写日志。
-- `pkg/application/browser_manager.go:19-22`：`func (bm *BrowserManager) OpenURL(url string) error` 调用默认浏览器实现；`internal/browser/browser_darwin.go:7-17`、`browser_other.go:7-17`、`browser_windows.go:7-17` 分别以 `exec.Command("open", target)`、`exec.Command("xdg-open", target)`、`exec.Command("rundll32", "url.dll,FileProtocolHandler", target)` 传递单独参数。
-- `pkg/application/urlvalidator.go:11-49` 的 `ValidateAndSanitizeURL` 只在 Wails runtime Browser 消息处理链中出现；`BrowserManager.OpenURL` 源码没有调用它。因此本卡在交给 `App.Browser.OpenURL` 前自行限制 http(s)、来源同源、无 userinfo、无控制字符，再由 Wails 平台实现打开。
+### 2.1 文件与接口
 
-## Task 1 — CardsPage 桌面可见性与 WebKit 消息
+修改五个文件：
 
-**锁缝：** spec 接缝 1（`isDesktopShell` / CardsPage 渲染）、接缝 2（点击发出当前页 URL 宿主消息）和接缝 4 的前端半边（标题栏之外、浏览器布局不变）。
+- desktop/internal/shell/external_browser.go
+- desktop/internal/shell/external_browser_test.go
+- desktop/internal/shell/handshake.go
+- desktop/internal/shell/handshake_test.go
+- desktop/main.go
 
-**允许修改的文件：**
+新增精确接口：
 
-- `web/src/app/lib/desktopShell.ts`
-- `web/src/app/lib/desktopShell.test.ts`
-- `web/src/app/cards/CardsPage.tsx`
-- `web/src/app/cards/CardsPage.test.tsx`
+~~~go
+func ConsoleURLWithNext(ctx context.Context, ep Endpoint, deviceName, next string) (string, error)
 
-不要修改 `web/src/app/shell/DesktopTitleBar.tsx`、`web/src/app/shell/Shell.tsx` 或任何 API 文件。
+func HandleExternalBrowserMessage(
+    log *slog.Logger,
+    message, sourceFrameURL string,
+    issue func(next string) (string, error),
+    open func(string) error,
+) bool
+~~~
 
-**Consumes：**
+ConsoleURLWithNext 先校验 next，再复用 ConsoleURL，也就是既有 IssueAuthTicket；用 net/url 的 Query.Set 编码 next，保留 ticket，返回带凭据的 /console URL但不记录它。
 
-- `navigator.userAgent: string`，由既有 `isDesktopShell(ua?: string): boolean` 判断桌面壳。
-- `window.location.origin: string`、`window.location.pathname: string`、`window.location.search: string`。
-- `window.webkit?.messageHandlers?.external?.postMessage: (msg: string) => void`。
-- CardsPage 既有 `useSearchParams(): URLSearchParams`、`useNavigate(): NavigateFunction` 以及健康点顶栏 DOM。
+HandleExternalBrowserMessage 的 issue 只在同源且 next 白名单通过后调用；issue 返回最终带 ticket/next 的 console URL，open 接收该最终 URL。非协议返回 false；已识别协议即使拒绝、签票失败、opener 缺失或 opener 失败也返回 true。
 
-**Produces：**
+### 2.2 Step 1：重跑基线、写红测、跑红
 
-```ts
-export const OPEN_BROWSER_MESSAGE_PREFIX: string = 'handoff:open-browser:'
+先运行 1.1 的桌面 shell 命令。然后把既有 external_browser_test.go 的四参数调用改成五参数，并替换测试主体为下列锁缝断言；复用既有 slog、opener spy，不直接调用私有 validator。
 
-export function requestOpenCurrentPageInBrowser(): boolean
-```
-
-`requestOpenCurrentPageInBrowser` 不接受 URL 参数，避免调用方把任意地址送入宿主；它只拼接 `${window.location.origin}${window.location.pathname}${window.location.search}`，用 `OPEN_BROWSER_MESSAGE_PREFIX + currentURL` 通过已有 `external.postMessage` 发送。没有 bridge 时返回 `false` 且不抛异常；发送成功返回 `true`。协议字面量必须与 Task 2 的 Go 常量逐字符相同：`handoff:open-browser:`。
-
-**最小测试范围：**
-
-```sh
-cd web
-npx vitest run src/app/cards/CardsPage.test.tsx src/app/lib/desktopShell.test.ts src/app/shell/DesktopTitleBar.test.tsx
-npm run typecheck
-npx eslint src/app/cards/CardsPage.tsx src/app/cards/CardsPage.test.tsx src/app/lib/desktopShell.ts src/app/lib/desktopShell.test.ts src/app/shell/DesktopTitleBar.test.tsx
-```
-
-不跑全量 Vitest；不把浏览器真实打开交给 jsdom。
-
-### 基线复核（已于动手前完成）
-
-已先运行上面的前端三文件 Vitest，结果为 `Test Files  3 passed (3)`、`Tests  16 passed (16)`；`npm run typecheck` 的 `tsc -b` 退出 0；定向 eslint 无输出、退出 0。下面的红测不能以改变这些既有判据为代价。
-
-### Step 1 — 先写前端锁缝红测并跑红
-
-在 `web/src/app/lib/desktopShell.test.ts` 的既有 import 中加入 `OPEN_BROWSER_MESSAGE_PREFIX` 与 `requestOpenCurrentPageInBrowser`，并追加以下完整测试块。它从声明缝入口调用 `requestOpenCurrentPageInBrowser`，检查 bridge 缺失、当前路径和 query 都在真实 wire 字符串里：
-
-```ts
-describe('requestOpenCurrentPageInBrowser', () => {
-  const bridge = () => (window as unknown as { webkit?: unknown })
-
-  afterEach(() => {
-    delete bridge().webkit
-    window.history.replaceState({}, '', '/')
-  })
-
-  it('发送固定协议前缀和当前页面的 path/query', () => {
-    const postMessage = vi.fn()
-    bridge().webkit = { messageHandlers: { external: { postMessage } } }
-    window.history.replaceState({}, '', '/cards?project=handoff')
-
-    expect(requestOpenCurrentPageInBrowser()).toBe(true)
-    expect(OPEN_BROWSER_MESSAGE_PREFIX).toBe('handoff:open-browser:')
-    expect(postMessage).toHaveBeenCalledWith(
-      `${OPEN_BROWSER_MESSAGE_PREFIX}${window.location.origin}/cards?project=handoff`,
-    )
-  })
-
-  it('没有 external bridge 时返回 false 且不抛异常', () => {
-    expect(requestOpenCurrentPageInBrowser()).toBe(false)
-  })
-})
-```
-
-运行上面的 Vitest 命令；此时应因新导出不存在而红。测试未变红时，先检查它确实调用了新入口和固定 wire 字符串；禁止弱化为直接调用内部拼接函数。
-
-### Step 2 — 实现 bridge helper
-
-在 `web/src/app/lib/desktopShell.ts` 的既有 `WebkitBridge` 与 `requestTitlebarZoom` 附近增加以下完整代码。`OPEN_BROWSER_MESSAGE_PREFIX` 必须是唯一协议名；不要复用 `wails:` 前缀，因为 Wails 会把 `wails:` 消息拦给内置窗口处理而不进入 raw handler。
-
-```ts
-// OPEN_BROWSER_MESSAGE_PREFIX 是 CardsPage 发给桌面宿主的原始消息前缀。
-// 必须避开 wails:：Wails 会把 wails: 消息交给自己的窗口手势处理器，不会送到
-// RawMessageHandler。URL 作为同一条字符串的后缀传输，桌面侧再做同源校验。
-export const OPEN_BROWSER_MESSAGE_PREFIX = 'handoff:open-browser:'
-
-// requestOpenCurrentPageInBrowser 请求桌面宿主用系统浏览器打开当前整页。
-// 参数：无；URL 只能从当前 window.location 产生，调用方不能注入任意地址。
-// 返回：找到并发出 external bridge 时为 true，否则为 false。
-// 注意：它不导航、不改变当前页面状态；浏览器分支没有 bridge 时是安静空操作。
-export function requestOpenCurrentPageInBrowser(): boolean {
-  const bridge = window as unknown as WebkitBridge
-  const post = bridge.webkit?.messageHandlers?.external?.postMessage
-  if (!post) return false
-  const currentURL = `${window.location.origin}${window.location.pathname}${window.location.search}`
-  post.call(bridge.webkit!.messageHandlers!.external, `${OPEN_BROWSER_MESSAGE_PREFIX}${currentURL}`)
-  return true
-}
-```
-
-### Step 3 — 把按钮接在 CardsPage 顶栏右侧
-
-在 `web/src/app/cards/CardsPage.tsx` 增加：
-
-```ts
-import { isDesktopShell, requestOpenCurrentPageInBrowser } from '../lib/desktopShell'
-```
-
-在 `CardsPage` 的现有 `useNavigate()` 附近增加桌面可见性快照：
-
-```ts
-  const showOpenInBrowser = isDesktopShell()
-```
-
-把现有顶栏中从健康点开始的代码替换为以下完整 JSX。按钮紧挨右侧健康点但位于其前面；`ml-auto` 只在桌面转移到按钮，浏览器分支仍给健康点保留原有 `ml-auto`，因此普通浏览器布局不变：
-
-```tsx
-        {showOpenInBrowser && (
-          <button
-            type="button"
-            aria-label="从浏览器打开"
-            title="从浏览器打开当前工作项页"
-            onClick={() => { requestOpenCurrentPageInBrowser() }}
-            className="ml-auto rounded-md border px-2.5 py-1 text-xs"
-          >
-            从浏览器打开
-          </button>
-        )}
-        <span className={`${showOpenInBrowser ? '' : 'ml-auto'} flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
-```
-
-不要把 `view`、`needsOnly`、`workflow`、`search` 或 `includeArchived` 新编码进 query：基线只有 `project` 是既有 URL 查询参数，本卡按 spec 发送当前地址的 path/query，不发明新的路由状态契约；点击也不调用 `navigate`，所以桌面仍停在 `/cards`。
-
-实现后补齐 `web/src/app/cards/CardsPage.test.tsx` 的 import 和以下完整 describe。沿用文件已有的 `renderPage`、ledger mocks 与 `DesktopTitleBar` 独立测试；用真实 UA 判定与真实 bridge spy，不 mock `isDesktopShell`，并用 `window.location.origin` 避免把 jsdom 端口写死：
-
-```tsx
-import { afterEach, describe, expect, it, vi } from 'vitest'
-```
-
-```tsx
-const DESKTOP_UA = 'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 handoff-desktop'
-const BROWSER_UA = 'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Safari/605.1.15'
-
-function setUA(ua: string): void {
-  Object.defineProperty(navigator, 'userAgent', { value: ua, configurable: true })
-}
-
-function bridge(): { webkit?: unknown } {
-  return window as unknown as { webkit?: unknown }
-}
-
-describe('CardsPage 从浏览器打开', () => {
-  afterEach(() => {
-    delete bridge().webkit
-    setUA(BROWSER_UA)
-    window.history.replaceState({}, '', '/')
-  })
-
-  it('桌面 UA 显示按钮，点击发送当前 /cards query 且不离开页面', async () => {
-    setUA(DESKTOP_UA)
-    window.history.replaceState({}, '', '/cards?project=handoff')
-    const postMessage = vi.fn()
-    bridge().webkit = { messageHandlers: { external: { postMessage } } }
-
-    renderPage('/cards?project=handoff')
-    const button = screen.getByRole('button', { name: '从浏览器打开' })
-    expect(button).toHaveClass('ml-auto')
-    expect(screen.getByTitle('镜像正常')).not.toHaveClass('ml-auto')
-
-    fireEvent.click(button)
-
-    expect(postMessage).toHaveBeenCalledTimes(1)
-    expect(postMessage).toHaveBeenCalledWith(
-      `handoff:open-browser:${window.location.origin}/cards?project=handoff`,
-    )
-    expect(window.location.pathname + window.location.search).toBe('/cards?project=handoff')
-    expect(screen.getByText('工作项')).toBeInTheDocument()
-  })
-
-  it('普通浏览器不渲染按钮且健康点仍占右侧', async () => {
-    setUA(BROWSER_UA)
-    renderPage('/cards?project=handoff')
-
-    expect(screen.queryByRole('button', { name: '从浏览器打开' })).toBeNull()
-    expect(screen.getByTitle('镜像正常')).toHaveClass('ml-auto')
-  })
-})
-```
-
-### Step 4 — 跑 Task 1 绿测并检查标题栏回归
-
-运行 Task 1 的最小测试、typecheck、定向 eslint。预期三份 Vitest 文件全绿，新增桌面 UA 用例能找到按钮并收到包含 `/cards?project=handoff` 的完整字符串，普通 UA 查询不到按钮，既有 `DesktopTitleBar.test.tsx` 的“标题栏里一个可点元素都不能有”继续通过。失败时保留实际输出，不能改测为 `queryByText` 等更弱断言。
-
-### Step 5 — 前端注释与可观测性
-
-保留 `desktopShell.ts` 文件头对“外链页面 + UA + external bridge”的职责/边界说明，并为新导出的常量和函数保留上面的参数、返回值、协议避让注释；在 `CardsPage` 的 URL 发送处补一句为什么只取 origin/pathname/search、为什么不 `navigate`。前端没有本卡专用结构化 logger，不新增 `console.log`/`console.warn`；宿主接收、拒绝、调用系统浏览器、调用失败的结构化日志由 Task 2 统一负责。
-
-## Task 2 — 桌面 raw handler 的同源校验、系统打开与 Wails 接线
-
-**锁缝：** spec 接缝 3（薄壳同源 URL 打开、非同源/非 http(s) 拒绝）和接缝 2 的宿主半边。此 task 不新增 agentd HTTP，不把 Wails 依赖导入 `desktop/internal/shell`。
-
-**允许修改的文件：**
-
-- `desktop/internal/shell/external_browser.go`（新增，完整文件）
-- `desktop/internal/shell/external_browser_test.go`（新增，完整文件）
-- `desktop/main.go`（仅 `application.Options` 装配块）
-
-**Consumes：**
-
-- `message: string`：Wails `Options.RawMessageHandler` 收到的 raw message。
-- `sourceFrameURL: string`：主程序从 `application.OriginInfo.Origin` 取值；为空时回退 `TopOrigin`。该值可能是带路径/query 的完整 frame URL。
-- `open: func(string) error`：生产中为 `app.Browser.OpenURL`，测试中为 spy。
-- `log: *slog.Logger`：生产中为包级 `logger`，记录结构化入口、拒绝、打开前后和错误分支。
-
-**Produces：**
-
-```go
-const ExternalBrowserMessagePrefix = "handoff:open-browser:"
-
-func HandleExternalBrowserMessage(log *slog.Logger, message, sourceFrameURL string, open func(string) error) bool
-```
-
-返回值含义：不是该协议前缀时返回 `false`，让 main 记录“未识别 raw message”；一旦是该协议，即使 URL 被拒绝或系统打开失败也返回 `true`，表示该消息已消费，不让它落入别的逻辑。允许调用的 target 必须是 http/https、含 host、无 userinfo、无控制字符，并与来源 frame 的 scheme/hostname/有效端口同源；通过后只把规范化 URL交给 `open`。
-
-**最小测试范围：**
-
-```sh
-cd desktop
-go test ./internal/shell/... -run '^TestHandleExternalBrowserMessage$'
-```
-
-再以同一包命令加上已通过的基线 regex，避免既有 `/tmp/handoff` 同步夹具遮蔽本卡结果：
-
-```sh
-cd desktop
-go test ./internal/shell/... -run '^(TestHandleExternalBrowserMessage|TestResolve|TestNormalizeProjectDir|TestAwaitWebviewReady|TestConsoleURL|TestDefaultDeviceName|TestBuildForm|TestApplyAnswers)'
-```
-
-具备 Wails CLI 和构建依赖后，还必须运行 `cd desktop && wails3 task build`，以编译 `desktop/main.go` 的 RawMessageHandler 接线；构建产物不得提交。
-
-### 基线复核（已于动手前完成）
-
-已先运行不触发既有 `/tmp/handoff` 同步夹具的桌面 shell 基线 regex，结果为 `ok  github.com/Xsxdot/handoff/desktop/internal/shell  0.065s`。整包 `go test ./internal/shell/...` 也已运行，但在既有 `TestSyncOnOpenOrderIsLoadBearing` 处因 `open /tmp/.handoff-sync-2211604910: read-only file system` 失败；该环境失败不改变 B266 的定向判据。Wails 装配基线已执行但当前 runner 返回 `/bin/bash: line 1: wails3: command not found`，不能写成已通过。
-
-### Step 1 — 写桌面接缝红测并跑红
-
-新建 `desktop/internal/shell/external_browser_test.go`，完整内容如下。第一条用例喂入与前端实际发送形状相同的完整 raw 字符串，并使用带一次性 ticket 的来源 frame URL，证明来源比较忽略路径/query 而不泄露它；负向表逐条断言 opener 没有被调用。所有断言均从导出的 `HandleExternalBrowserMessage` 声明缝进入，不直接测内部解析函数。
-
-```go
-// 本文件覆盖桌面 raw message 到系统浏览器的接缝：协议字面量、来源同源校验、
-// 非 http(s) 拒绝与 opener 失败消费。它不启动真实浏览器。
-package shell_test
-
-import (
-	"errors"
-	"io"
-	"log/slog"
-	"testing"
-
-	"github.com/Xsxdot/handoff/desktop/internal/shell"
-)
-
+~~~go
 func TestHandleExternalBrowserMessage(t *testing.T) {
-	log := slog.New(slog.NewTextHandler(io.Discard, nil))
-	const sourceFrameURL = "http://127.0.0.1:7777/console?ticket=secret"
-	const targetURL = "http://127.0.0.1:7777/cards?project=handoff"
+    var logs bytes.Buffer
+    log := slog.New(slog.NewTextHandler(&logs, nil))
+    const source = "http://127.0.0.1:7777/console?ticket=source-secret"
+    const target = "http://127.0.0.1:7777/cards?project=handoff"
+    const browserURL = "http://127.0.0.1:7777/console?ticket=issued-secret&next=%2Fcards%3Fproject%3Dhandoff"
 
-	if shell.ExternalBrowserMessagePrefix != "handoff:open-browser:" {
-		t.Fatalf("ExternalBrowserMessagePrefix = %q", shell.ExternalBrowserMessagePrefix)
-	}
+    if shell.ExternalBrowserMessagePrefix != "handoff:open-browser:" {
+        t.Fatalf("prefix = %q", shell.ExternalBrowserMessagePrefix)
+    }
 
-	t.Run("同源 cards query 通过 wire 串交给 opener", func(t *testing.T) {
-		var opened string
-		consumed := shell.HandleExternalBrowserMessage(
-			log,
-			"handoff:open-browser:http://127.0.0.1:7777/cards?project=handoff",
-			sourceFrameURL,
-			func(url string) error { opened = url; return nil },
-		)
-		if !consumed {
-			t.Fatal("同协议消息必须被消费")
-		}
-		if opened != targetURL {
-			t.Fatalf("opener URL = %q, want %q", opened, targetURL)
-		}
-	})
+    t.Run("同源先签票再打开 console", func(t *testing.T) {
+        var gotNext, opened string
+        consumed := shell.HandleExternalBrowserMessage(
+            log, shell.ExternalBrowserMessagePrefix+target, source,
+            func(next string) (string, error) {
+                gotNext = next
+                return browserURL, nil
+            },
+            func(url string) error {
+                opened = url
+                return nil
+            },
+        )
+        if !consumed {
+            t.Fatal("协议消息必须被消费")
+        }
+        if gotNext != "/cards?project=handoff" {
+            t.Fatalf("issue next = %q", gotNext)
+        }
+        if opened != browserURL {
+            t.Fatalf("opened = %q, want %q", opened, browserURL)
+        }
+    })
 
-	t.Run("未知协议不消费", func(t *testing.T) {
-		called := false
-		consumed := shell.HandleExternalBrowserMessage(log, "other:message", sourceFrameURL, func(string) error {
-			called = true
-			return nil
-		})
-		if consumed {
-			t.Fatal("未知协议不应被消费")
-		}
-		if called {
-			t.Fatal("未知协议不应调用 opener")
-		}
-	})
+    invalid := []struct {
+        name, target, source string
+    }{
+        {"javascript", "javascript:alert(1)", source},
+        {"file", "file:///tmp/cards", source},
+        {"ftp", "ftp://127.0.0.1:7777/cards", source},
+        {"host", "http://evil.example/cards", source},
+        {"port", "http://127.0.0.1:7778/cards", source},
+        {"scheme", "https://127.0.0.1:7777/cards", source},
+        {"userinfo", "http://user@127.0.0.1:7777/cards", source},
+        {"source missing", target, ""},
+        {"wrong path", "http://127.0.0.1:7777/other", source},
+        {"prefix lookalike", "http://127.0.0.1:7777/cardsx", source},
+        {"backslash", "http://127.0.0.1:7777/cards\\evil", source},
+        {"fragment", "http://127.0.0.1:7777/cards#fragment", source},
+        {"encoded control", "http://127.0.0.1:7777/cards?x=%01", source},
+    }
+    for _, tc := range invalid {
+        t.Run(tc.name, func(t *testing.T) {
+            issued, opened := false, false
+            consumed := shell.HandleExternalBrowserMessage(
+                log, shell.ExternalBrowserMessagePrefix+tc.target, tc.source,
+                func(string) (string, error) {
+                    issued = true
+                    return browserURL, nil
+                },
+                func(string) error {
+                    opened = true
+                    return nil
+                },
+            )
+            if !consumed {
+                t.Fatal("已识别的拒绝消息必须被消费")
+            }
+            if issued || opened {
+                t.Fatalf("拒绝消息不应签票/打开：issued=%v opened=%v", issued, opened)
+            }
+        })
+    }
 
-	invalid := []struct {
-		name   string
-		target string
-		source string
-	}{
-		{name: "javascript scheme", target: "javascript:alert(1)", source: sourceFrameURL},
-		{name: "file scheme", target: "file:///tmp/cards", source: sourceFrameURL},
-		{name: "ftp scheme", target: "ftp://127.0.0.1:7777/cards", source: sourceFrameURL},
-		{name: "different host", target: "http://evil.example/cards", source: sourceFrameURL},
-		{name: "different port", target: "http://127.0.0.1:7778/cards", source: sourceFrameURL},
-		{name: "different scheme", target: "https://127.0.0.1:7777/cards", source: sourceFrameURL},
-		{name: "userinfo", target: "http://user@127.0.0.1:7777/cards", source: sourceFrameURL},
-		{name: "missing source", target: targetURL, source: ""},
-	}
-	for _, tc := range invalid {
-		t.Run(tc.name, func(t *testing.T) {
-			called := false
-			consumed := shell.HandleExternalBrowserMessage(
-				log,
-				shell.ExternalBrowserMessagePrefix+tc.target,
-				tc.source,
-				func(string) error { called = true; return nil },
-			)
-			if !consumed {
-				t.Fatal("已识别协议的拒绝消息仍必须被消费")
-			}
-			if called {
-				t.Fatal("被拒绝 URL 不得交给 opener")
-			}
-		})
-	}
+    t.Run("签票失败不回退裸 target 且日志不泄露", func(t *testing.T) {
+        opened := false
+        consumed := shell.HandleExternalBrowserMessage(
+            log, shell.ExternalBrowserMessagePrefix+target, source,
+            func(string) (string, error) {
+                return "", errors.New("agentd unavailable ticket=issued-secret")
+            },
+            func(string) error {
+                opened = true
+                return nil
+            },
+        )
+        if !consumed || opened {
+            t.Fatalf("签票失败结果 consumed=%v opened=%v", consumed, opened)
+        }
+        if strings.Contains(logs.String(), "issued-secret") ||
+            strings.Contains(logs.String(), target) ||
+            strings.Contains(logs.String(), source) {
+            t.Fatalf("日志泄露 URL/ticket：%q", logs.String())
+        }
+    })
 
-	t.Run("opener 错误仍被消费", func(t *testing.T) {
-		called := false
-		consumed := shell.HandleExternalBrowserMessage(
-			log,
-			shell.ExternalBrowserMessagePrefix+targetURL,
-			sourceFrameURL,
-			func(string) error { called = true; return errors.New("browser unavailable") },
-		)
-		if !consumed {
-			t.Fatal("opener 失败的协议消息仍必须被消费")
-		}
-		if !called {
-			t.Fatal("有效 URL 必须尝试调用 opener")
-		}
-	})
+    t.Run("opener 失败仍消费且日志不泄露", func(t *testing.T) {
+        logs.Reset()
+        consumed := shell.HandleExternalBrowserMessage(
+            log, shell.ExternalBrowserMessagePrefix+target, source,
+            func(string) (string, error) { return browserURL, nil },
+            func(string) error { return errors.New("browser unavailable ticket=issued-secret") },
+        )
+        if !consumed {
+            t.Fatal("opener 失败消息必须被消费")
+        }
+        if strings.Contains(logs.String(), "issued-secret") ||
+            strings.Contains(logs.String(), target) ||
+            strings.Contains(logs.String(), source) {
+            t.Fatalf("日志泄露 URL/ticket：%q", logs.String())
+        }
+    })
 }
-```
+~~~
 
-运行 `go test ./internal/shell/... -run '^TestHandleExternalBrowserMessage$'`；在 helper 尚不存在的基线预期编译失败。若出现既有 sync 测试失败，确认命令带了精确 `-run`，不要放宽为整包成功。
+在 handshake_test.go 追加下列真实 HTTP 序列化锁；复用现有 httptest Server 形态：
 
-### Step 2 — 实现可测试的协议与 URL 校验
+~~~go
+func TestConsoleURLWithNextPreservesTicketAndEscapesNext(t *testing.T) {
+    ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+        if r.URL.Path != "/api/auth/tickets" {
+            t.Fatalf("path = %q", r.URL.Path)
+        }
+        w.Header().Set("Content-Type", "application/json")
+        _, _ = io.WriteString(w,
+            "{\"url\":\"http://127.0.0.1:7777/console?ticket=deadbeef\",\"expires_at\":\"2030-01-01T00:00:00Z\"}")
+    }))
+    defer ts.Close()
 
-新建 `desktop/internal/shell/external_browser.go`，完整内容如下。实现不 import Wails，因而同一包普通 `go test` 能锁住桌面安全缝；`effectivePort` 把 http/https 的默认端口纳入 same-origin 判定；日志只记录字节数、scheme/host/path，不记录带 ticket 的来源完整 URL或完整 query。
-
-```go
-// 本文件负责把控制台外链页面发来的 raw message 安全地交给系统浏览器。
-//
-// 职责：识别 handoff:open-browser: 协议、校验目标与发送 frame 的 http(s) 同源，
-//       再调用注入的 opener。
-// 边界：不 import Wails、不启动浏览器、不导航 webview；main.go 只负责把
-//       application.OriginInfo 与 app.Browser.OpenURL 接进来。
-package shell
-
-import (
-	"errors"
-	"fmt"
-	"log/slog"
-	"net/url"
-	"strings"
-)
-
-// ExternalBrowserMessagePrefix 是前端 desktopShell.ts 与 Wails raw handler 共用的
-// 协议前缀。不要改成 wails: 开头，否则 Wails 会先走内置窗口消息分发。
-const ExternalBrowserMessagePrefix = "handoff:open-browser:"
-
-// HandleExternalBrowserMessage 消费一条从外链控制台送来的系统浏览器请求。
-//
-// 参数：
-//   - log：结构化日志入口；传 nil 时使用 slog.Default()
-//   - message：WebKit external handler 传入的原始字符串
-//   - sourceFrameURL：Wails OriginInfo.Origin，可能是带 path/query 的完整 frame URL
-//   - open：系统浏览器 opener；生产实现为 app.Browser.OpenURL，测试注入 spy
-//
-// 返回：非本协议消息为 false；本协议消息无论校验拒绝或 opener 失败均为 true。
-// 注意：只允许目标和 sourceFrameURL 的 scheme、hostname、有效端口相同，且目标必须
-//       是 http(s) URL；来源/目标 URL 的完整内容不得写日志，避免泄露 ticket。
-func HandleExternalBrowserMessage(log *slog.Logger, message, sourceFrameURL string, open func(string) error) bool {
-	if !strings.HasPrefix(message, ExternalBrowserMessagePrefix) {
-		return false
-	}
-	if log == nil {
-		log = slog.Default()
-	}
-	log.Info("收到从控制台打开系统浏览器请求", "message_bytes", len(message))
-
-	rawTarget := strings.TrimPrefix(message, ExternalBrowserMessagePrefix)
-	target, err := validateExternalBrowserURL(rawTarget, sourceFrameURL)
-	if err != nil {
-		log.Warn("拒绝从控制台打开系统浏览器请求", "cause", err)
-		return true
-	}
-	if open == nil {
-		log.Error("系统浏览器 opener 未装配", "scheme", target.Scheme, "host", target.Hostname(), "path", target.EscapedPath())
-		return true
-	}
-
-	log.Debug("调用系统浏览器", "scheme", target.Scheme, "host", target.Hostname(), "path", target.EscapedPath())
-	if err := open(target.String()); err != nil {
-		log.Error("调用系统浏览器失败", "scheme", target.Scheme, "host", target.Hostname(), "path", target.EscapedPath(), "cause", err)
-		return true
-	}
-	log.Info("已调用系统浏览器", "scheme", target.Scheme, "host", target.Hostname(), "path", target.EscapedPath())
-	return true
+    ep := Endpoint{Addr: strings.TrimPrefix(ts.URL, "http://"), Token: "tok"}
+    got, err := ConsoleURLWithNext(context.Background(), ep, "我的 mac", "/cards?project=handoff")
+    if err != nil {
+        t.Fatalf("ConsoleURLWithNext: %v", err)
+    }
+    parsed, err := url.Parse(got)
+    if err != nil {
+        t.Fatalf("parse URL: %v", err)
+    }
+    if parsed.Query().Get("ticket") != "deadbeef" {
+        t.Fatalf("ticket changed: %q", parsed.Query().Get("ticket"))
+    }
+    if parsed.Query().Get("next") != "/cards?project=handoff" {
+        t.Fatalf("next = %q", parsed.Query().Get("next"))
+    }
+    if strings.Contains(got, "project=handoff") {
+        t.Fatalf("next 未编码: %q", got)
+    }
 }
+~~~
 
-func validateExternalBrowserURL(rawTarget, sourceFrameURL string) (*url.URL, error) {
-	if rawTarget == "" {
-		return nil, errors.New("目标 URL 为空")
-	}
-	if strings.IndexFunc(rawTarget, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
-		return nil, errors.New("目标 URL 含控制字符")
-	}
-	target, err := url.Parse(rawTarget)
-	if err != nil {
-		return nil, fmt.Errorf("目标 URL 无法解析: %w", err)
-	}
-	source, err := url.Parse(sourceFrameURL)
-	if err != nil {
-		return nil, errors.New("来源 frame URL 无法解析")
-	}
-	if !isHTTPURL(target) {
-		return nil, errors.New("目标 URL 必须是带 host 的 http(s) 地址")
-	}
-	if !isHTTPURL(source) {
-		return nil, errors.New("来源 frame URL 必须是带 host 的 http(s) 地址")
-	}
-	if target.User != nil || source.User != nil {
-		return nil, errors.New("URL 不允许 userinfo")
-	}
-	if !sameOrigin(target, source) {
-		return nil, errors.New("目标 URL 与来源 frame 不同源")
-	}
-	target.Scheme = strings.ToLower(target.Scheme)
-	return target, nil
-}
+运行：
 
-func isHTTPURL(candidate *url.URL) bool {
-	scheme := strings.ToLower(candidate.Scheme)
-	return (scheme == "http" || scheme == "https") && candidate.Hostname() != ""
-}
-
-func sameOrigin(left, right *url.URL) bool {
-	return strings.EqualFold(left.Scheme, right.Scheme) &&
-		strings.EqualFold(left.Hostname(), right.Hostname()) &&
-		effectivePort(left) == effectivePort(right)
-}
-
-func effectivePort(candidate *url.URL) string {
-	if port := candidate.Port(); port != "" {
-		return port
-	}
-	switch strings.ToLower(candidate.Scheme) {
-	case "http":
-		return "80"
-	case "https":
-		return "443"
-	default:
-		return ""
-	}
-}
-```
-
-运行 Step 1 的 Go 红测至绿，再运行 Task 2 的带基线 regex 命令。必须逐条看到：同源 `/cards?project=handoff` 交给 opener；`javascript:`, `file:`, `ftp:`, 跨 host、跨 port、跨 scheme、userinfo、空来源都不调用 opener；未知前缀返回 false；opener 错误不 panic 且消息被消费。
-
-### Step 3 — 在 `desktop/main.go` 装配 Wails raw handler
-
-把当前 `app := application.New(application.Options{...})` 整块替换为下列完整代码；其它窗口尺寸、`MacTitleBarHidden`、`InvisibleTitleBarHeight`、事件与启动序列不动。预声明 `app` 是为了让回调安全捕获同一个 `App` 指针；回调只会在 `application.New` 返回并进入运行态后由 Wails 投递。`Origin` 为空时回退 `TopOrigin`，两者都为空时让 shell helper 明确拒绝。
-
-```go
-	var app *application.App
-	app = application.New(application.Options{
-		Name:        "handoff-desktop",
-		Description: "handoff 控制台桌面壳",
-		Assets:      application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
-		Mac: application.MacOptions{
-			// 承重：关掉最后一个窗口时进程必须活着，托盘才谈得上常驻
-			ApplicationShouldTerminateAfterLastWindowClosed: false,
-		},
-		// 外链控制台没有 Wails 前端 runtime 的公开 binding；这里只接收
-		// desktopShell.ts 的固定 raw 协议，URL 的同源/http(s) 校验在 shell 包完成。
-		RawMessageHandler: func(_ application.Window, message string, originInfo *application.OriginInfo) {
-			sourceFrameURL := ""
-			if originInfo != nil {
-				sourceFrameURL = originInfo.Origin
-				if sourceFrameURL == "" {
-					sourceFrameURL = originInfo.TopOrigin
-				}
-			}
-			if !shell.HandleExternalBrowserMessage(logger, message, sourceFrameURL, app.Browser.OpenURL) {
-				logger.Debug("忽略未识别的原始宿主消息", "message_bytes", len(message))
-			}
-		},
-	})
-```
-
-这里使用 `app.Browser.OpenURL`，不使用 `window.SetURL`，所以桌面 webview 的 `/cards` 路由和滚动位置不变；也不调用 `app.Quit`、`win.SetURL` 或任何 agentd API。raw handler 只处理 `handoff:open-browser:`，现有 `wails:drag:doubleclick` 仍由 Wails beta.8 内置分发处理。
-
-### Step 4 — 编译装配并跑桌面绿测
-
-先运行：
-
-```sh
+~~~text
 cd desktop
-go test ./internal/shell/... -run '^TestHandleExternalBrowserMessage$'
-go test ./internal/shell/... -run '^(TestHandleExternalBrowserMessage|TestResolve|TestNormalizeProjectDir|TestAwaitWebviewReady|TestConsoleURL|TestDefaultDeviceName|TestBuildForm|TestApplyAnswers)'
-```
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go test ./internal/shell/... -run '^(TestHandleExternalBrowserMessage|TestConsoleURLWithNext|TestConsoleURL|TestDefaultDeviceName)$' -count=1
+~~~
 
-然后在有 Wails CLI 的环境按仓库 README 运行：
+红判据：现有 handler 参数不足或 ConsoleURLWithNext 未定义导致真实编译/测试失败；首个原始红输出追加台账，不能把预期红写成已验证通过。
 
-```sh
+### 2.3 Step 2：最小实现
+
+在 handshake.go 既有 ConsoleURL 后加入以下完整导出函数；新增 errors、net/url import。先校验 next，是为了不白白消费一次性 ticket。
+
+~~~go
+// ConsoleURLWithNext 换一张 ticket，并把受限的工作项相对路径编码进 /console。
+// next 只允许 /cards 或 /cards/ 前缀的 path/query；返回 URL 含 ticket，不能记录。
+func ConsoleURLWithNext(ctx context.Context, ep Endpoint, deviceName, next string) (string, error) {
+    if err := validateCardsNext(next); err != nil {
+        return "", errors.New("工作项跳转路径非法")
+    }
+    base, err := ConsoleURL(ctx, ep, deviceName)
+    if err != nil {
+        return "", err
+    }
+    parsed, err := url.Parse(base)
+    if err != nil || parsed.Scheme == "" || parsed.Host == "" || parsed.User != nil {
+        return "", errors.New("agentd 返回的控制台 URL 非法")
+    }
+    query := parsed.Query()
+    query.Set("next", next)
+    parsed.RawQuery = query.Encode()
+    parsed.Fragment = ""
+    return parsed.String(), nil
+}
+~~~
+
+在 external_browser.go 中保留已有同源函数，并使导出 handler 完整符合下列控制流：
+
+~~~go
+func HandleExternalBrowserMessage(
+    log *slog.Logger,
+    message, sourceFrameURL string,
+    issue func(next string) (string, error),
+    open func(string) error,
+) bool {
+    if !strings.HasPrefix(message, ExternalBrowserMessagePrefix) {
+        return false
+    }
+    if log == nil {
+        log = slog.Default()
+    }
+    log.Info("收到从控制台打开系统浏览器请求", "message_bytes", len(message))
+
+    rawTarget := strings.TrimPrefix(message, ExternalBrowserMessagePrefix)
+    target, err := validateExternalBrowserURL(rawTarget, sourceFrameURL)
+    if err != nil {
+        log.Warn("拒绝从控制台打开系统浏览器请求",
+            "result", "invalid_target", "cause", err)
+        return true
+    }
+    next, err := nextFromTarget(target)
+    if err != nil {
+        log.Warn("拒绝从控制台打开系统浏览器请求",
+            "result", "invalid_next", "cause", err)
+        return true
+    }
+    if issue == nil {
+        log.Error("打开系统浏览器失败",
+            "result", "issuer_unconfigured", "path", target.EscapedPath())
+        return true
+    }
+    if open == nil {
+        log.Error("打开系统浏览器失败",
+            "result", "opener_unconfigured", "path", target.EscapedPath())
+        return true
+    }
+
+    browserURL, err := issue(next)
+    if err != nil || browserURL == "" {
+        log.Error("打开系统浏览器失败",
+            "result", "issue_auth_ticket_failed", "path", target.EscapedPath())
+        return true
+    }
+    log.Debug("调用系统浏览器",
+        "result", "opening", "path", target.EscapedPath())
+    if err := open(browserURL); err != nil {
+        log.Error("调用系统浏览器失败",
+            "result", "open_failed", "path", target.EscapedPath())
+        return true
+    }
+    log.Info("已调用系统浏览器",
+        "result", "opened", "path", target.EscapedPath())
+    return true
+}
+~~~
+
+日志不写 issue/open error 原文、browserURL、target.String()、sourceFrameURL；path 不带 query，可保留用于排障。
+
+加入下列包内投影/白名单函数；它们只生成 path/query，不把完整 target 交给 opener：
+
+~~~go
+func nextFromTarget(target *url.URL) (string, error) {
+    if target.Fragment != "" {
+        return "", errors.New("目标 URL 不允许 fragment")
+    }
+    next := target.EscapedPath()
+    if next == "" {
+        next = "/"
+    }
+    if target.RawQuery != "" {
+        next += "?" + target.RawQuery
+    }
+    if err := validateCardsNext(next); err != nil {
+        return "", err
+    }
+    return next, nil
+}
+
+func validateCardsNext(next string) error {
+    if next == "" {
+        return errors.New("next 为空")
+    }
+    if strings.IndexFunc(next, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+        return errors.New("next 含控制字符")
+    }
+    if strings.Contains(next, "\\") || strings.HasPrefix(next, "//") {
+        return errors.New("next 含禁止字符")
+    }
+    parsed, err := url.Parse(next)
+    if err != nil || parsed.IsAbs() || parsed.Scheme != "" ||
+        parsed.Host != "" || parsed.User != nil || parsed.Fragment != "" {
+        return errors.New("next 必须是无 host 的相对 path")
+    }
+    if strings.Contains(parsed.Path, "\\") ||
+        strings.IndexFunc(parsed.Path, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+        return errors.New("next path 含禁止字符")
+    }
+    for _, values := range parsed.Query() {
+        for _, value := range values {
+            if strings.Contains(value, "\\") ||
+                strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+                return errors.New("next query 含禁止字符")
+            }
+        }
+    }
+    if parsed.Path != "/cards" && !strings.HasPrefix(parsed.Path, "/cards/") {
+        return errors.New("next 不是 /cards 前缀")
+    }
+    return nil
+}
+~~~
+
+### 2.4 Step 3：main.go 装配
+
+在 application.New 前增加闭包；在已有 RawMessageHandler 中把它作为 issue 参数，并保留既有 Origin 优先、TopOrigin 回退。闭包完整形态：
+
+~~~go
+issueExternalBrowserURL := func(next string) (string, error) {
+    ep, state, err := shell.Resolve("")
+    if err != nil {
+        logger.Error("读取 agentd 配置失败",
+            "result", "resolve_failed", "cause", err)
+        return "", err
+    }
+    if state != shell.StateConfigured {
+        err := fmt.Errorf("agentd 尚未配置")
+        logger.Error("打开系统浏览器失败",
+            "result", "agentd_unconfigured", "state", state.String())
+        return "", err
+    }
+    ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+    defer cancel()
+    return shell.ConsoleURLWithNext(ctx, ep, shell.DefaultDeviceName(), next)
+}
+
+var app *application.App
+app = application.New(application.Options{
+    Name:        "handoff-desktop",
+    Description: "handoff 控制台桌面壳",
+    Assets:      application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
+    Mac: application.MacOptions{
+        ApplicationShouldTerminateAfterLastWindowClosed: false,
+    },
+    RawMessageHandler: func(_ application.Window, message string, originInfo *application.OriginInfo) {
+        sourceFrameURL := ""
+        if originInfo != nil {
+            sourceFrameURL = originInfo.Origin
+            if sourceFrameURL == "" {
+                sourceFrameURL = originInfo.TopOrigin
+            }
+        }
+        if !shell.HandleExternalBrowserMessage(
+            logger, message, sourceFrameURL,
+            issueExternalBrowserURL, app.Browser.OpenURL,
+        ) {
+            logger.Debug("忽略未识别的原始宿主消息",
+                "message_bytes", len(message))
+        }
+    },
+})
+~~~
+
+这段必须合并现有 Options，不得覆盖窗口配置。app.Browser.OpenURL 是唯一系统浏览器出口；不使用 win.SetURL、app.Quit、agentd 新 API。Wails E2E 不补入计划。
+
+### 2.5 Step 4：Task 1 绿测和注释/日志门
+
+~~~text
 cd desktop
-wails3 task build
-```
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go test ./internal/shell/... -run '^(TestHandleExternalBrowserMessage|TestConsoleURLWithNext|TestConsoleURL|TestDefaultDeviceName)$' -count=1
+gofmt -d internal/shell/external_browser.go internal/shell/external_browser_test.go internal/shell/handshake.go internal/shell/handshake_test.go
+rg -n 'fmt\.Print|log\.Print|println|target\.String\(\)|browserURL|sourceFrameURL' internal/shell/external_browser.go desktop/main.go
+~~~
 
-预期：helper 两条命令退出 0；Wails Taskfile 成功生成并编译桌面程序。`desktop/frontend/dist/`、`desktop/bin/` 等构建产物保持被忽略，不加入提交。若环境仍没有 `wails3` 或整包被既有 `/tmp/handoff` 夹具阻断，台账记录原始错误，不把它改写成业务失败或通过。
+测试必须真实退出 0；gofmt 无输出；rg 命中时逐项确认不是把 URL/ticket 放入生产日志。文件头和导出函数注释写清职责、边界、参数、返回、为什么先校验 next 和为什么不 fallback 裸 target。每个入口、拒绝、签票失败、opener 缺失/失败、成功路径都有 slog。
 
-### Step 5 — 桌面日志、注释和边界检查
+## 3. Task 2：agentd /console next redirect
 
-确认新文件头、`HandleExternalBrowserMessage`、`validateExternalBrowserURL` 的注释完整说明职责、输入/返回/注意事项和“为什么比较有效端口而不是来源 URL 全串”。检查每个新分支都有结构化 slog：协议入口带 message 字节数，URL 拒绝带 cause，opener 缺失带 scheme/host/path，调用前后与调用失败带 scheme/host/path；不使用 `fmt.Print*`、`log.Print*` 或 `println`。来源完整 URL、query 与消息 payload 不写日志，避免把一次性 ticket 带出。
+### 3.1 文件与接口
 
-## 跨 task 接口逐字核对
+修改：
 
-Task 1 的 Produces 与 Task 2 的 Consumes 必须保持下列逐字符关系：
+- internal/agentd/authroutes.go
+- internal/agentd/auth_test.go
 
-```text
-web/src/app/lib/desktopShell.ts:
-  OPEN_BROWSER_MESSAGE_PREFIX = 'handoff:open-browser:'
-  requestOpenCurrentPageInBrowser(): boolean
-  postMessage(`${OPEN_BROWSER_MESSAGE_PREFIX}${window.location.origin}${window.location.pathname}${window.location.search}`)
+保持 GET /console 注册、ticket 原子消费、会话建立、Set-Cookie、失败 401 全部不变。增加：
 
-desktop/internal/shell/external_browser.go:
-  ExternalBrowserMessagePrefix = "handoff:open-browser:"
-  HandleExternalBrowserMessage(log *slog.Logger, message, sourceFrameURL string, open func(string) error) bool
-```
+~~~go
+func validConsoleNext(next string) bool
+~~~
 
-Task 2 的 `main.go` 将 `sourceFrameURL` 取自 `OriginInfo.Origin`，空值回退 `TopOrigin`，将 `app.Browser.OpenURL` 作为 `open`；不存在新 HTTP endpoint、JSON DTO、账本字段或 Wails binding 名称。
+唯一允许条件：next 非空、无 raw/解码控制字符、无反斜杠、不以 // 开头；url.Parse 成功且无绝对 scheme、host、userinfo、fragment；parsed.Path 是 /cards 或 /cards/ 前缀。验证 query 解码值中的控制字符和反斜杠。它是浏览器直接构造 /console 时的最终 open-redirect 防线。
 
-## 五项自审与验收栏
+### 3.2 Step 1：基线、红测
 
-### 1. spec 故事覆盖
+先运行 1.1 的 agentd 命令。然后在 auth_test.go 复用 newHostTestEnv、issueTicket、noRedirectClient 追加下列完整测试；每支经真实 GET /console，不直接调用 validator：
 
-| spec 故事 / 判据 | 负责 task | 锁点 |
+~~~go
+func ticketURLWithNext(t *testing.T, ts *httptest.Server, next string) string {
+    t.Helper()
+    tk := issueTicket(t, ts, "桌面端")
+    parsed, err := url.Parse(tk.URL)
+    if err != nil {
+        t.Fatalf("解析 ticket URL: %v", err)
+    }
+    query := parsed.Query()
+    query.Set("next", next)
+    parsed.RawQuery = query.Encode()
+    return parsed.String()
+}
+
+func TestTicketNextRedirectsToCardsPathAndQuery(t *testing.T) {
+    _, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+    resp, err := noRedirectClient(ts).Get(
+        ticketURLWithNext(t, ts, "/cards?project=handoff"))
+    if err != nil {
+        t.Fatalf("兑换 ticket: %v", err)
+    }
+    defer resp.Body.Close()
+    if resp.StatusCode != http.StatusFound {
+        t.Fatalf("status = %d, want 302", resp.StatusCode)
+    }
+    if loc := resp.Header.Get("Location"); loc != "/cards?project=handoff" {
+        t.Fatalf("Location = %q", loc)
+    }
+    cookieFound := false
+    for _, cookie := range resp.Cookies() {
+        if cookie.Name == sessionCookieName && cookie.Value != "" {
+            cookieFound = true
+        }
+    }
+    if !cookieFound {
+        t.Fatal("合法 next 兑换没有会话 cookie")
+    }
+}
+
+func TestTicketInvalidNextFallsBackToRoot(t *testing.T) {
+    cases := []struct {
+        name, next string
+    }{
+        {"empty", ""},
+        {"other path", "/other"},
+        {"prefix lookalike", "/cardsx"},
+        {"missing slash", "cards"},
+        {"network path", "//evil.example/cards"},
+        {"absolute scheme", "https://evil.example/cards"},
+        {"userinfo", "http://user@evil.example/cards"},
+        {"backslash", "/cards\\evil"},
+        {"fragment", "/cards#fragment"},
+        {"control", "/cards?x=\x01"},
+    }
+    for _, tc := range cases {
+        t.Run(tc.name, func(t *testing.T) {
+            _, ts, _ := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+            resp, err := noRedirectClient(ts).Get(
+                ticketURLWithNext(t, ts, tc.next))
+            if err != nil {
+                t.Fatalf("兑换 ticket: %v", err)
+            }
+            defer resp.Body.Close()
+            if resp.StatusCode != http.StatusFound {
+                t.Fatalf("status = %d, want 302", resp.StatusCode)
+            }
+            if loc := resp.Header.Get("Location"); loc != "/" {
+                t.Fatalf("非法 next Location = %q", loc)
+            }
+        })
+    }
+}
+
+func TestTicketNextDoesNotLogTargetOrTicket(t *testing.T) {
+    _, ts, logs := newHostTestEnv(t, &config.Config{Token: hostTestToken})
+    gotURL := ticketURLWithNext(t, ts, "/cards?ticket=next-secret")
+    resp, err := noRedirectClient(ts).Get(gotURL)
+    if err != nil {
+        t.Fatalf("兑换 ticket: %v", err)
+    }
+    resp.Body.Close()
+    if strings.Contains(logs.String(), "next-secret") ||
+        strings.Contains(logs.String(), gotURL) ||
+        strings.Contains(logs.String(), "ticket=") {
+        t.Fatalf("日志泄露 next/ticket/完整 URL：%q", logs.String())
+    }
+}
+~~~
+
+运行：
+
+~~~text
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go test ./internal/agentd -run '^(TestTicketNextRedirectsToCardsPathAndQuery|TestTicketInvalidNextFallsBackToRoot|TestTicketNextDoesNotLogTargetOrTicket|TestTicketToCookieHappyPath)$' -count=1
+~~~
+
+现状应在合法 next 用例上因 Location 仍为 / 而红；记录实际原文。旧 TestTicketToCookieHappyPath 必须继续锁缺省 next 的 /。
+
+### 3.3 Step 2：实现白名单与 redirect
+
+在 authroutes.go 的 handleConsole 前加入：
+
+~~~go
+func validConsoleNext(next string) bool {
+    if next == "" {
+        return false
+    }
+    if strings.IndexFunc(next, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+        return false
+    }
+    if strings.Contains(next, "\\") || strings.HasPrefix(next, "//") {
+        return false
+    }
+    parsed, err := url.Parse(next)
+    if err != nil || parsed.IsAbs() || parsed.Scheme != "" ||
+        parsed.Host != "" || parsed.User != nil || parsed.Fragment != "" {
+        return false
+    }
+    if strings.Contains(parsed.Path, "\\") ||
+        strings.IndexFunc(parsed.Path, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+        return false
+    }
+    for _, values := range parsed.Query() {
+        for _, value := range values {
+            if strings.Contains(value, "\\") ||
+                strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+                return false
+            }
+        }
+    }
+    return parsed.Path == "/cards" || strings.HasPrefix(parsed.Path, "/cards/")
+}
+~~~
+
+在既有 Set-Cookie 后、http.Redirect 前替换固定根跳转：
+
+~~~go
+http.SetCookie(w, sessionCookie(r, token, int(time.Until(sess.ExpiresAt).Seconds())))
+
+redirect := "/"
+next := r.URL.Query().Get("next")
+if next != "" {
+    if validConsoleNext(next) {
+        redirect = next
+    } else {
+        s.log.Warn("ticket 兑换 next 非法，回落根路径",
+            "result", "invalid_next",
+            "next_present", true,
+        )
+    }
+}
+http.Redirect(w, r, redirect, http.StatusFound)
+~~~
+
+缺省 next 不打 warning；非法 next 只打固定 result，不打 next/ticket/Location；既有成功日志继续只打 session/device/expires_at。更新文件头和 handleConsole 注释，写清“ticket 兑换后合法 next 或 /”。
+
+### 3.4 Step 3：绿测、格式与日志门
+
+~~~text
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go test ./internal/agentd -run '^(TestTicketNextRedirectsToCardsPathAndQuery|TestTicketInvalidNextFallsBackToRoot|TestTicketNextDoesNotLogTargetOrTicket|TestTicketToCookieHappyPath|TestTicketSingleUseOverHTTP|TestExpiredTicketRejected|TestConsoleRouteRegistered|TestDeepLinkRouteFallsBack)$' -count=1
+gofmt -d internal/agentd/authroutes.go internal/agentd/auth_test.go
+rg -n 'r\.URL\.String\(\)|ticket.*URL|next.*value|http\.Redirect' internal/agentd/authroutes.go
+~~~
+
+测试真实退出 0；合法 Location 精确为 /cards?project=handoff；所有非法表项精确回 /；ticket/cookie/过期 401 旧行为不变；gofmt 无输出。rg 命中 http.Redirect 是预期，必须确认它用的是已验证 redirect 变量；不得有完整 URL/ticket 日志。
+
+## 4. 跨 task 接口、序列化边界与自审
+
+### 4.1 逐字符接口核对
+
+~~~text
+ConsoleURLWithNext(ctx context.Context, ep Endpoint, deviceName, next string) (string, error)
+
+HandleExternalBrowserMessage(
+    log *slog.Logger,
+    message, sourceFrameURL string,
+    issue func(next string) (string, error),
+    open func(string) error,
+) bool
+
+issueExternalBrowserURL := func(next string) (string, error)
+app.Browser.OpenURL has type func(string) error
+validConsoleNext(next string) bool
+~~~
+
+wire 必须是：
+
+~~~text
+existing CardsPage raw
+  -> HandleExternalBrowserMessage
+  -> next=/cards?project=handoff
+  -> ConsoleURLWithNext -> IssueAuthTicket
+  -> /console?ticket=固定测试票值&next=%2Fcards%3Fproject%3Dhandoff
+  -> GET /console
+  -> Location=/cards?project=handoff
+~~~
+
+### 4.2 序列化边界
+
+1. 前端已有 origin/pathname/search 到 raw 字符串：本卡不改 producer，既有 20 项前端回归保留。
+2. raw target 到 relative next：nextFromTarget 只拼 EscapedPath + RawQuery；handler 测试断言完整 /cards query。
+3. ticket response URL 到 console query：ConsoleURLWithNext 用 URL.Query.Set；handshake 测试读回 ticket/next，区分缺失与空值。
+4. OriginInfo.Origin/TopOrigin 到 sourceFrameURL：main 优先 Origin、空值回退 TopOrigin，不写完整来源。
+5. /console query 到 redirect Location：agentd HTTP 测试经真实路由断言合法/非法结果和日志哨兵。
+
+### 4.3 缺陷族对抗审查
+
+| 缺陷族 | 结论与锁点 |
+|---|---|
+| 生命周期/状态机中断 | handler 识别消息后消费；签票失败不 open、不裸回退；每次点击重新签票；agentd 保留一次性/过期 401；桌面不导航。 |
+| 静默失败/误导报错 | resolve/config、拒绝、签票、opener 缺失/失败、成功均有结构化日志；不宣称签票/打开成功。 |
+| 跨平台假设 | 继续使用 Wails Origin/TopOrigin、App.Browser.OpenURL、scheme/hostname/effectivePort；Wails E2E 明确排除，不能拿 macOS 结果补它。 |
+| 假红/假绿 | handler 入口测试 issue/open 顺序；handshake 穿真实 httptest；agentd 穿真实 GET /console；不以私有 validator 测试替代接缝。 |
+| 门禁绕过 | raw 与 agentd 两次 /cards 相对路径白名单；无 open redirect；签票失败无 fallback；无新 HTTP endpoint。 |
+| 序列化边界 | raw、URL query、HTTP Query/Location 各有 exact 断言；控制字符经编码再解码测试；日志不带敏感值。 |
+| 新枚举值白名单 | 不新增 proto/store/state/kind 枚举，本族不适用。 |
+| webview/平台边界 | frame URL 带 /console?ticket 时只比较 origin；不改 CardsPage、Shell、DesktopTitleBar；Wails E2E/真机穿透排除。 |
+
+### 4.4 上下文预算、类型与接缝双向覆盖
+
+Task 1 固定 5 个源码/测试文件，Task 2 固定 2 个；main.go 只改 raw handler 装配块。发现清单外文件必须先追加台账并停在协调者审阅，不默默扩散。
+
+边界类型固定为：
+
+- Wails callback：func(application.Window, string, *application.OriginInfo)；
+- shell：string、func(string) (string,error)、func(string) error、bool；
+- ConsoleURLWithNext：context.Context、Endpoint、string、(string,error)；
+- agentd validator：string、bool。
+
+接缝矩阵：
+
+| 接缝 | 测试入口 | 锁点 |
 |---|---|---|
-| 桌面 `/cards` 右上角有按钮，点击系统浏览器打开同一 `/cards` 整页，桌面仍停留 | Task 1 + Task 2 | `CardsPage 从浏览器打开` 的桌面 UA 点击测试断言完整 path/query、原地址仍在；Go 同源用例断言 opener 收到同一 URL；Wails 装配使用 `App.Browser.OpenURL`，不导航 webview |
-| Chrome/Safari 普通浏览器没有按钮，布局与今天一致 | Task 1 | 普通 UA `queryByRole` 为 null，健康点保留 `ml-auto`；`requestOpenCurrentPageInBrowser` 无 bridge 返回 false |
-| 按钮在标题栏拖动区之外，第一次按下是点击而非拖窗 | Task 1 | `Shell.tsx` 既有 `/cards` → `FullPageCover` 位于 `DesktopTitleBar` 下方；按钮属于 CardsPage header；既有 `DesktopTitleBar.test.tsx` 继续断言标题栏无可点元素，未把按钮加入标题栏 |
-| 仅同源 http(s) 打开，其他 URL 拒绝 | Task 2 | `HandleExternalBrowserMessage` 的同源/有效端口/http(s)/userinfo/控制字符校验与逐条负向表 |
+| raw 同源 → next → issue → open | TestHandleExternalBrowserMessage → HandleExternalBrowserMessage | 同源成功、未知协议、http(s)/host/port/scheme/userinfo/source/path/lookalike/network/backslash/fragment/control 拒绝，签票失败不 open，opener 失败消费 |
+| ticket URL query | TestConsoleURLWithNextPreservesTicketAndEscapesNext → ConsoleURLWithNext | 真实 IssueAuthTicket HTTP 请求、ticket 保留、next decode roundtrip、未记录凭据 |
+| /console 合法 next | TestTicketNextRedirectsToCardsPathAndQuery → GET /console | 302 Location 精确 path+query、cookie 存在 |
+| /console 缺省/非法 next | 既有 TestTicketToCookieHappyPath + TestTicketInvalidNextFallsBackToRoot | 全部 302 /，无外部 Location |
+| 日志边界 | 两个入口的日志哨兵测试 | 不出现 source/target/issued ticket/next 值/回调 error 原文 |
 
-### 2. 缺陷族对抗审查
+TestConsoleURLWithNext 是唯一附加内部锁：手写 query 投影无法在不列入本卡的 Wails E2E 中到达；它不能替代 raw handler 和真实 /console 两条声明缝。其他测试均从声明缝入口进入。
 
-依据 `docs/superpowers/specs/2026-08-21-handoff-instantiation-checklist.md:78-89` 的通用五族、序列化边界族与 webview/平台族：
+## 5. 收口与提交
 
-| 缺陷族 | 反问 | 本计划结论与锁点 |
-|---|---|---|
-| 生命周期 / 状态机中断 | 点击后是否导航、关窗、等待异步状态，导致桌面页消失或重复动作？ | 前端 helper 只发 raw message，不 `navigate`、不改 CardsPage state；每次点击只调用一次 bridge；Go opener 失败被消费并记录，不影响 webview。真机重复点击列入清单。 |
-| 静默失败 / 误导报错 | bridge 缺失、来源缺失、URL 拒绝、系统 opener 失败是否都能解释？ | 前端无 bridge 返回 false；Go 入口、拒绝、nil opener、调用前后和错误均 slog，消息仍消费；不把“系统浏览器已打开”写在调用失败分支。 |
-| 跨平台假设 | 一个 WKWebView 绿是否能推广到 Chromium/Windows/Linux？ | `Origin` 按 frame URL 解析而非 Darwin 全串；`App.Browser.OpenURL` 委托 Wails 三平台实现；真机清单分别覆盖 macOS WKWebView 与可用的 Linux/Windows 构建，Linux/Windows 不能用 macOS 结果代替。 |
-| 假红测试 | 测试是否只测 helper 或合成事件，漏掉真实按钮到 bridge 的线？ | CardsPage 测试真实渲染、真实 UA、真实 `postMessage` spy、真实 click；Go 测试从 `HandleExternalBrowserMessage` 入口进入；两边都不直接测未导出的内部函数。 |
-| 门禁绕过 | 是否绕开同源校验、引入新 HTTP/API 或把按钮藏进不可点击标题栏？ | 只有固定 raw prefix 进入 helper；非 http(s)/跨 origin 不调用 opener；无 agentd HTTP；DesktopTitleBar 与 28px 常量不改；`wails3 task build` 是 main 接线的装配门。 |
-| 序列化边界 | 前端发出的字符串和 Go 消费的 prefix/URL 是否漂移，空值/零值是否混淆？ | 不引入 DTO；wire 是固定前缀+当前 URL 字符串。前端测试断言完整 `postMessage` 字符串，Go 测试用同一完整 literal 穿过 raw handler 并断言 opener URL，形成一条真实字符串边界回归；空来源与空目标分别有拒绝断言。 |
-| 新增枚举值白名单 | 是否新增 state/kind 但忘了既有 switch？ | 不新增枚举、账本字段或 API 值；本族不适用。 |
-| webview / 平台表现差异 | 标题栏吞点击、外链来源格式、系统打开方式是否只在单一环境成立？ | `FullPageCover` 与 `DesktopTitleBar` 源码/既有测试锁几何边界；Wails Origin 依赖源码已核对；三平台 opener 依赖出处已写明；必须执行下面的真机清单。 |
+只跑触及包和已有前端回归，不跑全仓测试：
 
-### 3. 序列化边界清单
+~~~text
+cd desktop
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go test ./internal/shell/... -run '^(TestHandleExternalBrowserMessage|TestConsoleURLWithNext|TestConsoleURL|TestDefaultDeviceName)$' -count=1
 
-1. `web/src/app/lib/desktopShell.ts`：`window.location.origin/pathname/search` 手工投影为 `handoff:open-browser:` + URL 字符串；`desktopShell.test.ts` 断言完整消息。
-2. Wails `external.postMessage` → `Options.RawMessageHandler`：Wails 将非 `wails:` 字符串原样传给 Go；`external_browser_test.go` 用同一 wire literal 作为 handler 输入。
-3. `desktop/main.go`：`OriginInfo.Origin`/`TopOrigin` 手工投影为 `sourceFrameURL`；Go 测试以带 `/console?ticket=secret` 的 source URL 验证 path/query 不参与 origin 判定且不被 opener/log 输出。
-4. `desktop/internal/shell/external_browser.go`：raw suffix 解析为 `url.URL`，只把校验后的 `target.String()` 交给 `app.Browser.OpenURL`；成功用例断言 exact target，负向用例断言 opener 零调用。
+cd ../
+GOMODCACHE=/root/.handoff/tmp/6597ae3a/go-mod-cache GOCACHE=/root/.handoff/tmp/6597ae3a/go-cache go test ./internal/agentd -run '^(TestTicketNextRedirectsToCardsPathAndQuery|TestTicketInvalidNextFallsBackToRoot|TestTicketNextDoesNotLogTargetOrTicket|TestTicketToCookieHappyPath|TestTicketSingleUseOverHTTP|TestExpiredTicketRejected|TestConsoleRouteRegistered|TestDeepLinkRouteFallsBack)$' -count=1
 
-### 4. 类型标注与真机清单
-
-边界类型已钉死：前端 bridge 的 `postMessage(msg: string) => void`、Go raw callback 的 `message string`、`sourceFrameURL string`、`open func(string) error`、Wails `OriginInfo` 三字段；不要以 `unknown` 或类型断言绕过这些接口，`unknown` 只保留在已有的 `window as unknown as WebkitBridge` bridge 边界。
-
-具备桌面工具链后，由协调者或实现者逐项在真实机器执行并记录结果：
-
-1. macOS Wails：加载登录后的 `/cards?project=handoff`，UA 含 `handoff-desktop`；按钮出现在 `DesktopTitleBar` 的 28px 下方顶栏右侧，首次点击后系统默认浏览器出现同源 `/cards?project=handoff`，桌面 webview 仍显示该 CardsPage，滚动位置未被导航重置。
-2. macOS Wails：点击按钮的坐标不在顶部 28px 原生拖动区；另做一次标题栏双击，既有 `wails:drag:doubleclick` 最大化/还原行为仍在，按钮没有拖窗副作用。
-3. Chrome 与 Safari：同源 `/cards?project=handoff` 页面没有“从浏览器打开”按钮，健康点与既有控件保持右对齐，页面无 raw bridge 依赖报错。
-4. 可用的 Linux Wails 与 Windows Wails：分别确认 frame source URL 能通过同源比较、默认浏览器被调用；同源之外的 host/port/scheme 不调用系统 opener。若平台工具链不可用，记录“未验证”及原始构建错误，不用另一平台结果代替。
-
-### 5. 接缝双向覆盖
-
-| spec 接缝 | 测试入口（测试 → 缝） | 反向覆盖（缝 → 测试） |
-|---|---|---|
-| `isDesktopShell` / CardsPage 渲染 | `CardsPage 从浏览器打开` → `renderPage` → `CardsPage`；真实 UA 分支 | 桌面按钮存在、普通浏览器不存在两条断言 |
-| 点击 → 当前 URL raw message | `CardsPage 从浏览器打开` → `fireEvent.click(button)`；`requestOpenCurrentPageInBrowser` → `postMessage` | `desktopShell.test.ts` 断言固定 prefix/path/query；CardsPage 测试断言真实点击只发一次 |
-| 薄壳校验 → 系统浏览器 | `TestHandleExternalBrowserMessage` → `HandleExternalBrowserMessage` → 注入 `open` | 同源成功、非 http(s)、跨 host/port/scheme、userinfo、空来源和 opener 错误均在同一声明缝锁住 |
-| 标题栏回归 / 几何隔离 | `DesktopTitleBar.test.tsx` → `DesktopTitleBar` | 既有“标题栏里一个可点元素都不能有”继续通过；CardsPage 桌面按钮用 `ml-auto`，不改标题栏 |
-
-没有内部锁替代声明缝断言：URL 解析的所有负向例都通过导出的 raw handler 入口；bridge 测试也不直接调用内部 URL 拼接函数。
-
-## 收口门禁
-
-实现者完成 Task 1、Task 2 后，在变更工作树运行：
-
-```sh
 cd web
 npx vitest run src/app/cards/CardsPage.test.tsx src/app/lib/desktopShell.test.ts src/app/shell/DesktopTitleBar.test.tsx
 npm run typecheck
 npx eslint src/app/cards/CardsPage.tsx src/app/cards/CardsPage.test.tsx src/app/lib/desktopShell.ts src/app/lib/desktopShell.test.ts src/app/shell/DesktopTitleBar.test.tsx
 
-cd ../desktop
-go test ./internal/shell/... -run '^(TestHandleExternalBrowserMessage|TestResolve|TestNormalizeProjectDir|TestAwaitWebviewReady|TestConsoleURL|TestDefaultDeviceName|TestBuildForm|TestApplyAnswers)'
-```
+cd ..
+gofmt -d desktop/internal/shell/external_browser.go desktop/internal/shell/external_browser_test.go desktop/internal/shell/handshake.go desktop/internal/shell/handshake_test.go internal/agentd/authroutes.go internal/agentd/auth_test.go
+git diff --check
+~~~
 
-在 Wails CLI 可用的 runner 再执行 `cd desktop && wails3 task build`。检查 `git diff --check`；检查改动只落在本计划允许的四个前端文件、三个桌面源文件及本计划/台账；检查 `desktop/frontend/dist` 与 `desktop/bin` 未被 staged。全量 Vitest、全仓 Go test、跨卡独立审计和真实机器验收不属于单个实现 task 的替代，由协调者在集成阶段执行。
+具备工具链时再跑：
 
-## Spec 归属与跨卡审计边界
+~~~text
+cd desktop
+wails3 task build
+~~~
 
-B266 的三个用户故事与四条测试接缝全部归属本计划的 Task 1/Task 2，B265、B266 之外的标题栏改造、B266 以外的浏览器新窗口按钮均不归属本计划。不存在需要 Task 1/Task 2 之间再发明别名的接口；跨卡冻结物逐条核对、其他卡 Produces/Consumes 逐字比对与全 spec 故事总归属由协调者在全部子卡 plan 齐稿后独立审计，本节点不宣称已完成该跨卡审计。
+构建不可用时写原始错误和“未验证”；frontend/dist、desktop/bin 不 staged。收口检查只允许 7 个源码文件、计划、台账变化；禁止 Wails E2E/真机 postMessage 测试项、前端修改、agentd 新 endpoint、裸 URL fallback、完整 URL/ticket 日志。
+
+本计划的测试复用例外仅为既有 httptest、newHostTestEnv、issueTicket、noRedirectClient、slog/opener spy；每条断言已在测试代码块和接缝矩阵逐条列全，不用骨架测试代替。
+
+实现者收尾命令：
+
+~~~text
+git status --short
+git diff --check
+git add desktop/internal/shell/external_browser.go desktop/internal/shell/external_browser_test.go desktop/internal/shell/handshake.go desktop/internal/shell/handshake_test.go desktop/main.go internal/agentd/authroutes.go internal/agentd/auth_test.go
+git commit -m "fix(desktop): open cards in browser with auth ticket"
+~~~
+
+本节点只提交计划和台账，不实现上述源码；实现代码由后续 implement 节点从 1a40bd82 增量完成。
