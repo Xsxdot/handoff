@@ -3,8 +3,10 @@ package shell
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -43,6 +45,37 @@ func TestConsoleURLReturnsIssuedURL(t *testing.T) {
 	}
 	if gotDevice != "我的 mac" {
 		t.Errorf("device_name = %q, want 我的 mac", gotDevice)
+	}
+}
+
+func TestConsoleURLWithNextPreservesTicketAndEscapesNext(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/auth/tickets" {
+			t.Fatalf("path = %q", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w,
+			`{"url":"http://127.0.0.1:7777/console?ticket=deadbeef","expires_at":"2030-01-01T00:00:00Z"}`)
+	}))
+	defer ts.Close()
+
+	ep := Endpoint{Addr: strings.TrimPrefix(ts.URL, "http://"), Token: "tok"}
+	got, err := ConsoleURLWithNext(context.Background(), ep, "我的 mac", "/cards?project=handoff")
+	if err != nil {
+		t.Fatalf("ConsoleURLWithNext: %v", err)
+	}
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatalf("parse URL: %v", err)
+	}
+	if parsed.Query().Get("ticket") != "deadbeef" {
+		t.Fatalf("ticket changed: %q", parsed.Query().Get("ticket"))
+	}
+	if parsed.Query().Get("next") != "/cards?project=handoff" {
+		t.Fatalf("next = %q", parsed.Query().Get("next"))
+	}
+	if strings.Contains(got, "project=handoff") {
+		t.Fatalf("next 未编码: %q", got)
 	}
 }
 

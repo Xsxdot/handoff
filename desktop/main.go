@@ -106,6 +106,24 @@ func main() {
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logger.Info("桌面薄壳启动")
 
+	issueExternalBrowserURL := func(next string) (string, error) {
+		ep, state, err := shell.Resolve("")
+		if err != nil {
+			logger.Error("读取 agentd 配置失败",
+				"result", "resolve_failed", "cause", err)
+			return "", err
+		}
+		if state != shell.StateConfigured {
+			err := fmt.Errorf("agentd 尚未配置")
+			logger.Error("打开系统浏览器失败",
+				"result", "agentd_unconfigured", "state", state.String())
+			return "", err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return shell.ConsoleURLWithNext(ctx, ep, shell.DefaultDeviceName(), next)
+	}
+
 	var app *application.App
 	app = application.New(application.Options{
 		Name:        "handoff-desktop",
@@ -125,7 +143,10 @@ func main() {
 					sourceFrameURL = originInfo.TopOrigin
 				}
 			}
-			if !shell.HandleExternalBrowserMessage(logger, message, sourceFrameURL, app.Browser.OpenURL) {
+			if !shell.HandleExternalBrowserMessage(
+				logger, message, sourceFrameURL,
+				issueExternalBrowserURL, app.Browser.OpenURL,
+			) {
 				logger.Debug("忽略未识别的原始宿主消息", "message_bytes", len(message))
 			}
 		},
