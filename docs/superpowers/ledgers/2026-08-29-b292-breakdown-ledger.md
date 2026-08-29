@@ -84,5 +84,6 @@
 - 2026-08-29：计划 Task B 代码块、Task C–E 代码块与 §4–§6 自审内容读回无额外修改需求；单独 `git diff --check` 退出码 0、无输出。
 - 2026-08-29：`git add docs/superpowers/plans/b292-plan.md docs/superpowers/ledgers/2026-08-29-b292-breakdown-ledger.md` 退出码 0；随后 `git diff --cached --check` 退出码 0、无输出；`git diff --cached --name-status` 原始输出仅为 ledger `M` 与法定 plan `A`，统计为 `2 files changed, 581 insertions(+)`。
 - 2026-08-29：补记台账后重新暂存；`git diff --cached --check` 退出码 0、无输出，`git diff --cached --name-status` 仍仅列 ledger `M` 与法定 plan `A`，最新统计为 `2 files changed, 582 insertions(+)`。
+- 2026-08-29：`git commit -m "docs(b292): add implementation plan"` 退出码 0；原始输出为 `[cards/B292-charter-3 52861015] docs(b292): add implementation plan`、`2 files changed, 583 insertions(+)`，仅提交法定计划与本台账，未 push。
 - 2026-08-29：按计划初次执行 `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . resolve --doc docs/superpowers/plans/b292-plan.md --view cards-B292-charter-3` 失败；原始错误为 `Error: 读取视图 codegraph/diffs/cards-B292-charter-3.json: open codegraph/diffs/cards-B292-charter-3.json: no such file or directory`，并输出 resolve 用法及 `exit status 1`。未据此宣称计划锚点通过；已将文档命令改为仓内已存在的 `cards-B292-charter` 视图。
 - 2026-08-29：`go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . views` 退出码 0，原始 JSON 的可用视图包含 `cards-B292-charter`；因此计划收口使用该实际视图名。
