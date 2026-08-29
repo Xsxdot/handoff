@@ -88,7 +88,7 @@ if [ -n "$AUTO_REV" ] && [ "$AUTO_REV" != "$REV" ]; then
   echo "提示：Go 自动戳是 ${AUTO_REV:0:12}（主工作树），已被注入值 ${REV:0:12} 覆盖"
 fi
 
-echo "OK：$OUT（$(du -h "$OUT" | cut -f1)），版本 $STAMP"
+echo "OK：${OUT}（$(du -h "$OUT" | cut -f1)），版本 $STAMP"
 echo
 echo "部署到执行机时记得：运行中的 exe 会被占用，必须先停 agentd 再覆盖。"
 echo "Windows 上 schtasks /end 只杀外层 cmd.exe，agentd 孙进程不会跟着退——"
