@@ -131,10 +131,26 @@ func (l *previewOSLauncher) Stop(ctx context.Context) error {
 	}
 	l.mu.Unlock()
 	for _, pid := range pids {
-		if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		if err := l.StopPID(ctx, pid); err != nil {
 			l.log.Warn("停止 preview Chromium 进程组失败", "operation", "preview_stop", "pid", pid, "cause", err)
 		}
 	}
 	l.log.Info("preview Chromium 进程组停止请求已发送", "operation", "preview_stop", "count", len(pids))
+	return nil
+}
+
+// StopPID terminates one managed Chromium process group. Unix browsers are
+// started with Setpgid so descendants are collected without touching siblings.
+func (l *previewOSLauncher) StopPID(ctx context.Context, pid int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if pid <= 0 {
+		return fmt.Errorf("preview Chromium pid=%d 非法", pid)
+	}
+	if err := syscall.Kill(-pid, syscall.SIGTERM); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return fmt.Errorf("停止 preview Chromium 进程组 pid=%d: %w", pid, err)
+	}
+	l.log.Info("preview Chromium 进程组停止请求已发送", "operation", "preview_stop_pid", "pid", pid)
 	return nil
 }

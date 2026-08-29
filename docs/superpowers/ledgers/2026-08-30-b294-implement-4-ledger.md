@@ -1,0 +1,23 @@
+# B294 implement-4 台账
+
+- 2026-08-30：当前分支为 `cards/B294-implement-4`，基线 HEAD 为 `96ea80bd68b76b245f58bb9fe2b0f26d174e3ad5`；工作区初始干净。
+- 2026-08-30：审查现状确认 `PreviewLauncher` 只有全局 `Stop`；`PreviewOpenService.watchOwnerEvents` 仅订 owner hub 且只做 proxy/profile cleanup；`PreviewMirror.refreshTarget` 和 `refreshAll` 对列表收敛掉的旧 session 不发布 `preview.closed`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/3da7945a/gomodcache go test ./internal/agentd ./internal/targetclient ./internal/relay -run 'Preview|Dial' -count=1`，原始输出：`ok  github.com/Xsxdot/handoff/internal/agentd 1.051s`、`ok  github.com/Xsxdot/handoff/internal/targetclient 0.106s`、`ok  github.com/Xsxdot/handoff/internal/relay 0.007s`。
+- 2026-08-30：新增 close/expire/mirror-hub/list-convergence 行为测试先红；修正测试自身的 `proto` 缺失导入、Duration 类型和不可比较 struct 后，四条红均为断言失败：分别 `preview condition did not become true`、`mirror did not publish closed event for dropped session`。
+- 2026-08-30：实现按 PID 停止及等待退出后 cleanup、owner/mirror 双 hub 订阅、成功列表收敛 closed 发布，并让列表失败保留旧 session；新增四条测试原始输出：`ok  github.com/Xsxdot/handoff/internal/agentd 0.250s`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/3da7945a/gomodcache go test ./internal/agentd -run 'Preview|Dial' -count=1`，原始输出：`ok  github.com/Xsxdot/handoff/internal/agentd 1.394s`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/3da7945a/gomodcache go test -race ./internal/agentd -run 'Preview|Dial' -count=1`，原始输出：`ok  github.com/Xsxdot/handoff/internal/agentd 3.182s`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/3da7945a/gomodcache go build ./...`，原始输出为空且退出码 0。
+- 2026-08-30：变异前 `rg -F -n 'o.launcher.StopPID(ctx, process.browser.PID)' internal/agentd/preview_launcher.go | wc -l` 原始输出 `1`；将唯一语义点改为 `PID+1` 后 `go build ./...` 退出码 0，单条行为断言原始输出为 `--- FAIL: TestPreviewOpenServiceOwnerCloseStopsPIDBeforeCleanup`；四条完整回归均失败（close/expire/remote/list convergence 各一条 `preview condition did not become true`），证明变异命中且测试有牙；随后已恢复原实现。
+- 2026-08-30：恢复后局部测试原始输出：`ok  github.com/Xsxdot/handoff/internal/agentd 0.859s`。
+- 2026-08-30：`go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . --help` 首次因默认缓存目录只读失败，原始错误含 `go: writing go.mod cache: open /root/go/pkg/mod/cache/download/...: read-only file system`；改用本任务缓存后 help 退出码 0。随后运行 `GOMODCACHE=/root/.handoff/tmp/3da7945a/gomodcache go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . check` 退出码 0，原始结果 `"fails": []`，仅有既有 warnings。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/3da7945a/gomodcache go test ./internal/agentd ./internal/targetclient ./internal/relay -run 'Preview|Dial' -count=1`，原始输出：`ok  github.com/Xsxdot/handoff/internal/agentd 29.514s`、`ok  github.com/Xsxdot/handoff/internal/targetclient 0.138s`、`ok  github.com/Xsxdot/handoff/internal/relay 0.040s`。
+- 2026-08-30：Windows 交叉编译首次因共享缓存只读失败，原始错误含 `mkdir /root/.handoff/tmp/3da7945a/gomodcache/cache/download/...: read-only file system`；改用 `/root/.handoff/tmp/6b80cedc/gomodcache` 后 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache GOOS=windows GOARCH=amd64 go test -c ./internal/agentd -o /root/.handoff/tmp/6b80cedc/agentd.test.exe` 退出码 0。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test ./... -count=1`，退出码 0；原始输出各包均为 `ok`，其中 `internal/agentd 248.112s`、`internal/client 11.520s`、`internal/store 31.364s`，无失败包。
+- 2026-08-30：运行 `npm ci --ignore-scripts`，原始输出 `added 290 packages, and audited 291 packages in 2s`、`found 0 vulnerabilities`；首次 `npm run typecheck` 原始错误为 `sh: 1: tsc: not found`，安装后再次运行原始输出为 `> web@0.0.0 typecheck`、`> tsc -b`，退出码 0。
+- 2026-08-30：为真实 owner HTTP/WS→mirror→opener 回归补 fake browser Done/StopPID 断言；运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test ./internal/agentd -run 'Preview|Dial' -count=1`，原始输出：`ok  github.com/Xsxdot/handoff/internal/agentd 1.702s`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test -race ./internal/agentd -run 'Preview|Dial' -count=1`，原始输出：`ok  github.com/Xsxdot/handoff/internal/agentd 2.918s`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go build ./...`，原始输出为空且退出码 0。
+- 2026-08-30：最新运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test ./... -count=1`，退出码 0；根包、`cmd`、`internal/agentd`（`193.970s`）及其余 Go 包原始输出均为 `ok`，无失败包。
+- 2026-08-30：最终运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go build ./...`，原始输出为空且退出码 0；最终运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . check`，退出码 0，原始结果仍为 `"fails": []`，仅既有 warnings。
+- 2026-08-30：运行 `git commit -m "fix: reclaim preview browser on session close"`，原始输出为 `[cards/B294-implement-4 200fd3f6] fix: reclaim preview browser on session close`、`8 files changed, 386 insertions(+), 30 deletions(-)`；随后仅为记录本提交事实追加本行并 amend，最终 hash 以收尾命令实测为准。

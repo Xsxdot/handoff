@@ -169,13 +169,35 @@ func (l *previewOSLauncher) Stop(ctx context.Context) error {
 		if cmd.Process == nil {
 			continue
 		}
-		pid := cmd.Process.Pid
-		if err := exec.CommandContext(ctx, "taskkill", "/PID", fmt.Sprint(pid), "/T", "/F").Run(); err != nil {
-			if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
-				l.log.Warn("停止 preview Chromium 进程树失败", "operation", "preview_stop", "pid", pid, "cause", err, "fallback_cause", killErr)
-			}
+		if err := l.StopPID(ctx, cmd.Process.Pid); err != nil {
+			l.log.Warn("停止 preview Chromium 进程树失败", "operation", "preview_stop", "pid", cmd.Process.Pid, "cause", err)
 		}
 	}
 	l.log.Info("preview Chromium 停止请求已发送", "operation", "preview_stop", "count", len(commands))
+	return nil
+}
+
+// StopPID terminates one Chromium process tree. taskkill's /T is required on
+// Windows because Chromium forks helper processes outside the direct child.
+func (l *previewOSLauncher) StopPID(ctx context.Context, pid int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if pid <= 0 {
+		return fmt.Errorf("preview Chromium pid=%d 非法", pid)
+	}
+	if err := exec.CommandContext(ctx, "taskkill", "/PID", fmt.Sprint(pid), "/T", "/F").Run(); err != nil {
+		l.mu.Lock()
+		cmd := l.commands[pid]
+		l.mu.Unlock()
+		if cmd != nil && cmd.Process != nil {
+			if killErr := cmd.Process.Kill(); killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+				return fmt.Errorf("停止 preview Chromium 进程树 pid=%d: taskkill: %w; fallback: %v", pid, err, killErr)
+			}
+		} else {
+			return fmt.Errorf("停止 preview Chromium 进程树 pid=%d: %w", pid, err)
+		}
+	}
+	l.log.Info("preview Chromium 进程树停止请求已发送", "operation", "preview_stop_pid", "pid", pid)
 	return nil
 }

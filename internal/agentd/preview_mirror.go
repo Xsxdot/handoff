@@ -154,6 +154,7 @@ func (m *PreviewMirror) refreshAll(ctx context.Context) {
 	now := time.Now().UTC()
 	nextSessions := make(map[string]proto.PreviewSession)
 	nextMachines := make(map[string]proto.MachineStatus)
+	listedMachines := make(map[string]bool)
 	if m.owner != nil {
 		resp, err := m.owner.List(ctx)
 		status := proto.MachineStatus{Name: "", FetchedAt: now, Ok: err == nil}
@@ -161,6 +162,7 @@ func (m *PreviewMirror) refreshAll(ctx context.Context) {
 			status.Error = err.Error()
 			m.log.Warn("preview 本机列表失败", "machine", "", "cause", err)
 		} else {
+			listedMachines[""] = true
 			for _, session := range resp.Sessions {
 				session.Machine = ""
 				nextSessions[previewSessionKey("", session.ID)] = session
@@ -180,6 +182,7 @@ func (m *PreviewMirror) refreshAll(ctx context.Context) {
 				err = callErr
 				if err == nil {
 					status.Ok = true
+					listedMachines[name] = true
 					for _, session := range resp.Sessions {
 						session.Machine = name
 						nextSessions[previewSessionKey(name, session.ID)] = session
@@ -194,8 +197,15 @@ func (m *PreviewMirror) refreshAll(ctx context.Context) {
 		}
 	}
 	m.mu.Lock()
+	for key, session := range m.sessions {
+		if !listedMachines[session.Machine] {
+			nextSessions[key] = session
+		}
+	}
+	closed := previewClosedEvents(m.sessions, nextSessions)
 	m.sessions, m.machines = nextSessions, nextMachines
 	m.mu.Unlock()
+	m.publishClosedEvents(closed, "preview mirror 列表收敛关闭事件")
 	m.log.Info("preview mirror 列表刷新成功", "sessions", len(nextSessions), "machines", len(nextMachines))
 }
 
@@ -272,9 +282,17 @@ func (m *PreviewMirror) refreshTarget(ctx context.Context, name string, c interf
 		m.setMachineFailure(name, err)
 		return err
 	}
+	listed := make(map[string]struct{}, len(resp.Sessions))
+	for _, session := range resp.Sessions {
+		listed[session.ID] = struct{}{}
+	}
 	m.mu.Lock()
+	closed := make([]proto.PreviewEvent, 0)
 	for key, session := range m.sessions {
 		if session.Machine == name {
+			if _, ok := listed[session.ID]; !ok {
+				closed = append(closed, proto.PreviewEvent{Type: proto.PreviewEventClosed, Session: session, Machine: name})
+			}
 			delete(m.sessions, key)
 		}
 	}
@@ -284,6 +302,7 @@ func (m *PreviewMirror) refreshTarget(ctx context.Context, name string, c interf
 	}
 	m.machines[name] = proto.MachineStatus{Name: name, Ok: true, FetchedAt: time.Now().UTC()}
 	m.mu.Unlock()
+	m.publishClosedEvents(closed, "preview mirror 目标列表收敛关闭事件")
 	return nil
 }
 
@@ -309,12 +328,25 @@ func (m *PreviewMirror) applyRemoteEvent(name string, event proto.PreviewEvent) 
 func (m *PreviewMirror) setMachineFailure(name string, err error) {
 	m.mu.Lock()
 	m.machines[name] = proto.MachineStatus{Name: name, FetchedAt: time.Now().UTC(), Error: err.Error()}
-	for key, session := range m.sessions {
-		if session.Machine == name {
-			delete(m.sessions, key)
-		}
-	}
 	m.mu.Unlock()
+}
+
+func previewClosedEvents(before, after map[string]proto.PreviewSession) []proto.PreviewEvent {
+	closed := make([]proto.PreviewEvent, 0)
+	for key, session := range before {
+		if _, ok := after[key]; ok {
+			continue
+		}
+		closed = append(closed, proto.PreviewEvent{Type: proto.PreviewEventClosed, Session: session, Machine: session.Machine})
+	}
+	return closed
+}
+
+func (m *PreviewMirror) publishClosedEvents(events []proto.PreviewEvent, reason string) {
+	for _, event := range events {
+		m.hub.Publish(event)
+		m.log.Info(reason, "operation", "preview_closed", "machine", event.Machine, "session", event.Session.ID)
+	}
 }
 
 func waitPreviewBackoff(ctx context.Context, delay time.Duration) bool {

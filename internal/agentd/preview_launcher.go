@@ -55,6 +55,10 @@ type PreviewLauncher interface {
 	FindExecutable(context.Context) (string, error)
 	Start(context.Context, string, PreviewLaunchSpec) (PreviewBrowserHandle, error)
 	Focus(context.Context, int) error
+	// StopPID requests termination of one managed browser process and its child
+	// process group/tree. The caller waits for PreviewBrowserHandle.Done before
+	// deleting the proxy and profile.
+	StopPID(context.Context, int) error
 	Stop(context.Context) error
 }
 
@@ -77,11 +81,11 @@ type PreviewOpenService struct {
 	launcher PreviewLauncher
 	log      *slog.Logger
 
-	mu          sync.Mutex
-	processes   map[string]*previewProcess
-	stopped     bool
-	eventCancel func()
-	eventWG     sync.WaitGroup
+	mu           sync.Mutex
+	processes    map[string]*previewProcess
+	stopped      bool
+	eventCancels []func()
+	eventWG      sync.WaitGroup
 }
 
 // NewPreviewOpenService constructs the local open boundary. A nil launcher
@@ -98,9 +102,20 @@ func NewPreviewOpenService(owner *PreviewOwner, mirror *PreviewMirror, pool *tar
 		owner: owner, mirror: mirror, pool: pool, launcher: launcher, log: log,
 		processes: make(map[string]*previewProcess),
 	}
+	hubs := make([]*PreviewHub, 0, 2)
 	if owner != nil && owner.hub != nil {
+		hubs = append(hubs, owner.hub)
+	}
+	if mirror != nil && mirror.hub != nil && (owner == nil || mirror.hub != owner.hub) {
+		// Remote events are published by PreviewMirror, so this subscription is
+		// required even when the local owner uses a separate hub.
+		hubs = append(hubs, mirror.hub)
+	}
+	for _, hub := range hubs {
 		var events <-chan proto.PreviewEvent
-		events, service.eventCancel = owner.hub.Subscribe()
+		var cancel func()
+		events, cancel = hub.Subscribe()
+		service.eventCancels = append(service.eventCancels, cancel)
 		service.eventWG.Add(1)
 		go service.watchOwnerEvents(events)
 	}
@@ -236,14 +251,13 @@ func (o *PreviewOpenService) Stop(ctx context.Context) error {
 	}
 	o.processes = make(map[string]*previewProcess)
 	o.mu.Unlock()
-	if o.eventCancel != nil {
-		o.eventCancel()
-		o.eventWG.Wait()
-	}
 
 	stopErr := o.launcher.Stop(ctx)
 	if stopErr != nil {
 		o.log.Warn("停止 preview 浏览器失败", "operation", "preview_stop", "cause", stopErr)
+	}
+	for _, cancel := range o.eventCancels {
+		cancel()
 	}
 	for _, process := range processes {
 		if err := waitPreviewProcess(ctx, process); err != nil {
@@ -251,6 +265,7 @@ func (o *PreviewOpenService) Stop(ctx context.Context) error {
 			o.log.Warn("等待 preview 浏览器收尾失败", "operation", "preview_stop", "cause", err)
 		}
 	}
+	o.eventWG.Wait()
 	for _, process := range processes {
 		o.cleanupProcess("", "", process)
 	}
@@ -273,10 +288,21 @@ func (o *PreviewOpenService) watchOwnerEvents(events <-chan proto.PreviewEvent) 
 		}
 		o.mu.Unlock()
 		if process != nil {
-			o.cleanupProcess(event.Session.ID, machine, process)
+			o.stopAndCleanupProcess(context.Background(), event.Session.ID, machine, process)
 			o.log.Info("owner 关闭后回收本地 preview 资源", "operation", "preview_owner_close", "session", event.Session.ID, "machine", machine, "pid", process.browser.PID)
 		}
 	}
+}
+
+func (o *PreviewOpenService) stopAndCleanupProcess(ctx context.Context, sessionID, machine string, process *previewProcess) {
+	if err := o.launcher.StopPID(ctx, process.browser.PID); err != nil {
+		o.log.Warn("停止 preview 浏览器进程组失败", "operation", "preview_stop_pid", "session", sessionID, "machine", machine, "pid", process.browser.PID, "cause", err)
+	}
+	if err := waitPreviewProcess(ctx, process); err != nil {
+		o.log.Warn("等待 preview 浏览器退出失败，保留本地资源", "operation", "preview_stop_pid", "session", sessionID, "machine", machine, "pid", process.browser.PID, "cause", err)
+		return
+	}
+	o.cleanupProcess(sessionID, machine, process)
 }
 
 func (o *PreviewOpenService) resolveSession(ctx context.Context, id, machine string) (proto.PreviewSession, error) {

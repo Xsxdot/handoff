@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
 	"reflect"
 	"testing"
 	"time"
@@ -29,7 +30,8 @@ func TestPreviewCloseEventReclaimsLocalBrowserResources(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create preview: %v", err)
 	}
-	launcher := &previewLauncherStub{done: make(chan error)}
+	done := make(chan error)
+	launcher := &previewLauncherStub{done: done}
 	service := NewPreviewOpenService(owner, nil, nil, launcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := service.OpenPreview(context.Background(), session.ID, ""); err != nil {
 		t.Fatalf("open preview: %v", err)
@@ -53,6 +55,7 @@ func TestPreviewCloseEventReclaimsLocalBrowserResources(t *testing.T) {
 	if remaining != 0 {
 		t.Fatalf("processes after owner close=%d", remaining)
 	}
+	close(done)
 	resp, err := service.OpenPreview(context.Background(), session.ID, "")
 	if !errors.Is(err, store.ErrNotFound) || resp == nil || resp.Opened {
 		t.Fatalf("reopen closed preview resp=%+v err=%v", resp, err)
@@ -137,7 +140,8 @@ func TestPreviewRegressionOwnerMirrorProjection(t *testing.T) {
 	defer pool.Close()
 	mirror := NewPreviewMirror(pool, localOwner, localOwner.hub, nil, previewTestLogger(t))
 	localEnv.srv.SetPreviewMirror(mirror)
-	launcher := &previewLauncherStub{}
+	done := make(chan error)
+	launcher := &previewLauncherStub{done: done}
 	opener := NewPreviewOpenService(localOwner, mirror, pool, launcher, previewTestLogger(t))
 	localEnv.srv.SetPreviewOpener(opener)
 	defer func() { _ = opener.Stop(context.Background()) }()
@@ -187,6 +191,22 @@ func TestPreviewRegressionOwnerMirrorProjection(t *testing.T) {
 	if _, ok := mirror.Resolve(active.ID, "devbox"); ok {
 		t.Fatal("mirror retained closed session")
 	}
+	waitForPreviewCondition(t, func() bool {
+		launcher.mu.Lock()
+		defer launcher.mu.Unlock()
+		return len(launcher.stopPIDs) == 1 && launcher.stopPIDs[0] == 42
+	})
+	launcher.mu.Lock()
+	profile := launcher.starts[0].UserDataDir
+	launcher.mu.Unlock()
+	if _, err := os.Stat(profile); err != nil {
+		t.Fatalf("profile removed before remote browser exit: %v", err)
+	}
+	close(done)
+	waitForPreviewCondition(t, func() bool {
+		_, err := os.Stat(profile)
+		return errors.Is(err, os.ErrNotExist)
+	})
 	mirror.Stop()
 }
 

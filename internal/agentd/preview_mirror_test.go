@@ -3,16 +3,32 @@ package agentd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
 )
+
+type previewListStub struct {
+	sessions []proto.PreviewSession
+	err      error
+}
+
+func (s previewListStub) ListPreviews(context.Context) (*proto.PreviewListResp, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return &proto.PreviewListResp{Sessions: s.sessions}, nil
+}
 
 func TestPreviewMirrorListAndEvents(t *testing.T) {
 	remote, _ := newPreviewOwnerEnv(t)
@@ -126,5 +142,61 @@ func TestPreviewMirrorStopExitsRunAndPreventsRestart(t *testing.T) {
 	remote.mu.RUnlock()
 	if loopCount != 0 {
 		t.Fatal("stopped mirror must not restart target loops")
+	}
+}
+
+func TestPreviewMirrorListConvergencePublishesClosedForDroppedSession(t *testing.T) {
+	hub := NewPreviewHub(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mirror := NewPreviewMirror(nil, nil, hub, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	session := proto.PreviewSession{ID: "preview-dropped", EntryURL: "http://localhost:5173", Machine: "devbox"}
+	mirror.mu.Lock()
+	mirror.sessions[previewSessionKey("devbox", session.ID)] = session
+	mirror.mu.Unlock()
+	done := make(chan error)
+	launcher := &previewLauncherStub{done: done}
+	service := NewPreviewOpenService(nil, mirror, nil, launcher, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer func() {
+		select {
+		case <-done:
+		default:
+			close(done)
+		}
+		_ = service.Stop(context.Background())
+	}()
+	if resp, err := service.OpenPreview(context.Background(), session.ID, "devbox"); err != nil || resp == nil || !resp.Opened {
+		t.Fatalf("open remote preview resp=%+v err=%v", resp, err)
+	}
+	launcher.mu.Lock()
+	profile := launcher.starts[0].UserDataDir
+	launcher.mu.Unlock()
+	events, cancel := hub.Subscribe()
+	defer cancel()
+
+	if err := mirror.refreshTarget(context.Background(), "devbox", previewListStub{}); err != nil {
+		t.Fatalf("refresh target: %v", err)
+	}
+	select {
+	case event := <-events:
+		if event.Type != proto.PreviewEventClosed || !reflect.DeepEqual(event.Session, session) || event.Machine != "devbox" {
+			t.Fatalf("closed event=%+v, want session=%+v", event, session)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("mirror did not publish closed event for dropped session")
+	}
+	waitForPreviewCondition(t, func() bool {
+		launcher.mu.Lock()
+		defer launcher.mu.Unlock()
+		return len(launcher.stopPIDs) == 1 && launcher.stopPIDs[0] == 42
+	})
+	if _, err := os.Stat(profile); err != nil {
+		t.Fatalf("profile removed before dropped browser exit: %v", err)
+	}
+	close(done)
+	waitForPreviewCondition(t, func() bool {
+		_, err := os.Stat(profile)
+		return errors.Is(err, os.ErrNotExist)
+	})
+	if _, ok := mirror.Resolve(session.ID, "devbox"); ok {
+		t.Fatal("dropped session remained in mirror")
 	}
 }
