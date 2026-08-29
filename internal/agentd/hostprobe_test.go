@@ -53,7 +53,7 @@ func newDirectSchedEnv(t *testing.T, cfg *config.Config) *schedEnv {
 
 func TestCarrierDetectThroughHandlerWritesCoordinatorState(t *testing.T) {
 	target := filepath.Join(t.TempDir(), "carrier-home")
-	installDetectCLI(t, `mkdir -p "$HOME/.local/share/opencode"; printf token >"$HOME/.local/share/opencode/auth.json"; exit 0`)
+	installDetectCLI(t, `printf '%s\n' '{"type":"text","sessionID":"ses_detect","part":{"type":"text","text":"ok"}}'`)
 	env := newDirectSchedEnv(t, &config.Config{Token: testToken, DataDir: t.TempDir()})
 	code, body := schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=0",
 		`{"machine":"local","cli":"opencode","home_dir":"`+target+`","credential":"standalone"}`)

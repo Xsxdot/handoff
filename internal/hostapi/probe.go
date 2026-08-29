@@ -28,6 +28,12 @@ const DetectPrompt = "ping"
 // 预先展开。生产实现使用 os.UserHomeDir。
 var userHomeDir = os.UserHomeDir
 
+// detectTurn 是检测回合入口。生产走 RunTurn；测试替换以锁 Timeout=0 的默认
+// 上界和 Workdir=隔离 HOME，避免假 CLI 睡眠三分钟。
+var detectTurn = func(h *Host, ctx context.Context, req TurnRequest) (TurnReply, error) {
+	return h.RunTurn(ctx, req)
+}
+
 // ProbeKind 是路径探测的三类结果（与设置页提示一一对应）。
 type ProbeKind string
 
@@ -100,13 +106,18 @@ func (h *Host) ProbeHome(ctx context.Context, req ProbeRequest) (ProbeReply, err
 // DetectPrompt。Timeout=0 使用 DefaultDetectTimeout。不进控制台登录 TUI。
 func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error) {
 	started := time.Now()
+	timeout := req.Timeout
+	if timeout <= 0 {
+		timeout = DefaultDetectTimeout
+	}
+	req.Timeout = timeout
 	log().Info("开始检测载体 HOME", "cli", req.CLI,
-		"main_home_sync", req.Credential == "main_home_sync", "timeout", req.Timeout.String())
+		"main_home_sync", req.Credential == "main_home_sync", "timeout", timeout.String())
 	state, err := h.inspectHome(ctx, ProbeRequest{
 		Path: req.HomeDir, CLI: req.CLI, Credential: req.Credential,
 	})
 	if err != nil {
-		log().Error("唤起前探测失败", "cli", req.CLI, "path", req.HomeDir,
+		log().Error("检测前探测失败", "cli", req.CLI, "path", req.HomeDir,
 			"elapsed", time.Since(started).String(), "cause", err)
 		return WakeReply{}, err
 	}
@@ -307,13 +318,16 @@ func (h *Host) runWake(ctx context.Context, req WakeRequest, targetHome string) 
 	}
 	cli := filepath.Base(req.CLI)
 	log().Info("开始检测回合", "cli", cli, "target", targetHome, "timeout", timeout.String())
-	reply, err := h.RunTurn(ctx, TurnRequest{
-		CLI: req.CLI, HomeDir: targetHome, Model: req.Model,
+	// Workdir 与 HOME 同指隔离目录：检测没有项目仓库，相对路径不得落到 agentd cwd。
+	reply, err := detectTurn(h, ctx, TurnRequest{
+		CLI: req.CLI, HomeDir: targetHome, Workdir: targetHome, Model: req.Model,
 		Prompt: DetectPrompt, Timeout: timeout,
 	})
 	if err != nil {
-		log().Warn("检测回合失败", "cli", cli, "target", targetHome, "cause", err)
-		return classifyTurnError(err), nil
+		mapped := classifyTurnError(err)
+		// 不把 RunTurn 的 stderr 尾部打进 slog：里面可能有凭据。结局进 outcome。
+		log().Warn("检测回合失败", "cli", cli, "target", targetHome, "outcome", mapped.Outcome)
+		return mapped, nil
 	}
 	if strings.TrimSpace(reply.Output) == "" {
 		log().Warn("检测回合无输出", "cli", cli, "session_id", reply.SessionID)

@@ -12,3 +12,4 @@
 - 2026-08-29 基线 `go test ./internal/hostapi/ -count=1` → `ok github.com/Xsxdot/handoff/internal/hostapi 1.769s`。plan 落盘 `docs/superpowers/plans/b295-plan.md`。
 - 2026-08-29 implement 本地（未派发）。先改测试后实现：`TestWakeHome` 首红含 `--version` 仍在 argv、超时返回 error、grok 被标 ready。改 `runWake` 调 `RunTurn` + `classifyTurnError` 后 `go test ./internal/hostapi/ -count=1` → `ok 2.290s`。`DefaultDetectTimeout=3m`，`DetectPrompt=ping`。B293 契约条 34/36 文案已改。真机未验。
 - 2026-08-29 变异：`Prompt: DetectPrompt` 唯一命中 1，改为 `Prompt: "--version"`，`go build ./internal/hostapi/` 退出 0；`TestWakeHomeSuppliesMainCredentialBeforeTurn` 红，原文 `检测不得跑 --version: "run\n--format\njson\n--\n--version"`。还原后该测绿；`go build ./...` 退出 0。
+- 2026-08-29 独立审查 Important 就地修（用户：不开新卡）：① Timeout=0 经 detectTurn 缝锁成 DefaultDetectTimeout 且不得落入 30m；② 失败日志只打 outcome，不把 RunTurn stderr 当 cause；③ RunTurn.Workdir=隔离 HOME；④ 契约条 38 / §9 与条 36 对齐。顺手修 agentd 检测夹具：假 CLI 改为 JSONL 回合（B295 后 --version 脚本会 pending）。

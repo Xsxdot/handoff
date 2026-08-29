@@ -269,3 +269,36 @@ func TestWakeHomeReadyRequiresTurnOutputNotCredFile(t *testing.T) {
 		t.Fatalf("有凭据文件但回合失败 Outcome = %q，want need_login", got.Outcome)
 	}
 }
+
+func TestWakeHomeZeroTimeoutUsesDetectDefaultAndWorkdirIsHome(t *testing.T) {
+	swapUserHomeDir(t, t.TempDir())
+	installFakeCLI(t)
+	withArgvCapture(t)
+	target := filepath.Join(t.TempDir(), "carrier-home")
+	var captured TurnRequest
+	old := detectTurn
+	detectTurn = func(h *Host, ctx context.Context, req TurnRequest) (TurnReply, error) {
+		captured = req
+		return old(h, ctx, req)
+	}
+	t.Cleanup(func() { detectTurn = old })
+
+	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+		CLI: "opencode", HomeDir: target, Timeout: 0,
+	})
+	if err != nil || got.Outcome != WakeReady {
+		t.Fatalf("WakeHome = %+v/%v，want ready/nil", got, err)
+	}
+	if captured.Timeout != DefaultDetectTimeout {
+		t.Fatalf("Timeout=0 传给 RunTurn 的上界 = %s，want %s", captured.Timeout, DefaultDetectTimeout)
+	}
+	if captured.Timeout == DefaultTurnTimeout {
+		t.Fatal("检测超时不得落入 DefaultTurnTimeout")
+	}
+	if captured.Workdir != target || captured.HomeDir != target {
+		t.Fatalf("Workdir/HomeDir = %q/%q，want 都是隔离 HOME %q", captured.Workdir, captured.HomeDir, target)
+	}
+	if captured.Prompt != DetectPrompt {
+		t.Fatalf("Prompt = %q，want %q", captured.Prompt, DetectPrompt)
+	}
+}

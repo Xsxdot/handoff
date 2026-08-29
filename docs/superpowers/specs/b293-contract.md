@@ -233,7 +233,7 @@ type DispatchReq struct {
 35. 检测不得在控制台里进入交互登录。
 36. 检测必须调用 `hostapi.Host.RunTurn` 发 `DetectPrompt`（`ping`）；禁止 `--version`；禁止凭据文件存在当作 ready（B295）。
 37. 空白 HOME 被对应执行者落下自己的文件（边界型，真机补）。
-38. 能跑且凭据可用 → `status=online`。
+38. 这一回合成功（`RunTurn` 无错且有输出）→ `status=online`（B295：不再用凭据文件当健康）。
 39. 识别为额度用尽 → `status=quota`。
 40. 机器/网络不够着，且检测前状态是 `online`/`quota`/`unreachable` → `status=unreachable`。
 41. 机器/网络不够着，且检测前状态是 `pending`（从未上过线）→ `status=pending`。
@@ -306,7 +306,7 @@ type DispatchReq struct {
 （实现级，不占冻结名额，不参与逐条打勾）
 
 - 「目录为空」：`ReadDir` 零条目；是否忽略 `.DS_Store` 归实现票，默认不忽略（冻结清单把「无任何条目」当 empty）。
-- `WakeHome` 各 CLI 的 argv（如何初始化空白 HOME、如何识别 quota/need_login）归实现票；禁 RunTurn、禁交互登录已冻。
+- `WakeHome` 经 `RunTurn` 发 `DetectPrompt`（B295 废止「禁 RunTurn」）；仍禁控制台交互登录。cwd 与 HOME 同为隔离目录。
 - Windows 上 `RunCommand` 是否另附 `USERPROFILE=`：命令格式冻的是 `HOME=...`；USERPROFILE 叠层归实现票。
 - 路径含空格时是否加引号：冻的是无引号拼接；有空格的 HOME 归实现票加测试后才能改格式（改格式=契约变更）。
 - `ApplyDetect` 成功响应的 `version`：从 registry 行读取，Ticket 0 成功路径未接通。
