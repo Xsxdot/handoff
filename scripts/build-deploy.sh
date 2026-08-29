@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
-# 构建一个**版本戳可信**的部署二进制。
+# 构建一个**版本戳可信**的部署二进制（内嵌前端产物）。
 #
-# 职责：按当前工作树（而不是主工作树）的真实 HEAD 与脏状态注入版本信息，
-#       交叉编译出可直接部署到执行机的二进制。
+# 职责：按当前工作树（而不是主工作树）的真实 HEAD 与脏状态注入版本信息；
+#       构建前端并经 embedweb 标签嵌进二进制，交叉编译出可直接部署到执行机的
+#       完整产物——部署机不用再另起一份前端静态文件。
 # 边界：只构建，不上传、不停服务、不换版——换版是操作者的动作，见 README。
-#       不修改工作区里的任何被跟踪文件。
+#       不修改工作区里的任何被跟踪文件（internal/webui/dist 与 /dist/ 都在
+#       .gitignore 里，前端产物落进去不算弄脏工作区）。
 #
 # 为什么需要这个脚本（B146）：`go build` 的 VCS 自动戳在 **linked git
 # worktree** 里读的是**主工作树**的 HEAD 与脏状态，不是当前 worktree 的。
@@ -60,6 +62,22 @@ mkdir -p "$(dirname "$OUT")"
 MODIFIED=false
 [ "$DIRTY_COUNT" != "0" ] && MODIFIED=true
 
+echo "==> 构建前端"
+cd "$ROOT/web"
+# node_modules 在就直接增量构建（npm ci 会全量重装，部署构建要快）；
+# 缺了才退回 ci 保证一次装齐
+if [ ! -d node_modules ]; then
+  npm ci
+fi
+npm run build
+[ -f "$ROOT/web/dist/index.html" ] || { echo "前端产物缺 index.html" >&2; exit 1; }
+
+echo "==> 把产物拷进 internal/webui/dist/"
+# embed.go 的 go:embed 只认这个路径；它在 .gitignore 里，拷进去不算脏工作区
+rm -rf "$ROOT/internal/webui/dist"
+cp -R "$ROOT/web/dist" "$ROOT/internal/webui/dist"
+cd "$ROOT"
+
 echo "==> 构建 $GOOS/$GOARCH  版本 $STAMP  提交 ${REV:0:12} ($COMMIT_TIME)  modified=$MODIFIED"
 # 四个注入点缺一不可：releaseVersion 填「版本号」这一格（自动戳给不出），
 # releaseRevision / releaseModified / releaseTime 则是**纠正**自动戳——它非空
@@ -67,6 +85,7 @@ echo "==> 构建 $GOOS/$GOARCH  版本 $STAMP  提交 ${REV:0:12} ($COMMIT_TIME)
 B=github.com/Xsxdot/handoff/internal/buildinfo
 CGO_ENABLED=0 GOOS="$GOOS" GOARCH="$GOARCH" go build \
   -trimpath \
+  -tags embedweb \
   -ldflags "-s -w -X $B.releaseVersion=$STAMP -X $B.releaseRevision=$REV -X $B.releaseModified=$MODIFIED -X $B.releaseTime=$COMMIT_TIME" \
   -o "$OUT" .
 
@@ -87,6 +106,11 @@ AUTO_REV="$(go version -m "$OUT" 2>/dev/null | grep -o 'vcs\.revision=[0-9a-f]*'
 if [ -n "$AUTO_REV" ] && [ "$AUTO_REV" != "$REV" ]; then
   echo "提示：Go 自动戳是 ${AUTO_REV:0:12}（主工作树），已被注入值 ${REV:0:12} 覆盖"
 fi
+
+echo "==> 自检：前端产物必须真的嵌入"
+# go:embed 一个只有空壳的 dist 也能编译过，光「编译过了」不代表前端在里面；
+# embedweb 下的 webui 测试就是这道门（与 release 流水线同一判据）
+CGO_ENABLED=0 go test -tags embedweb ./internal/webui/...
 
 echo "OK：${OUT}（$(du -h "$OUT" | cut -f1)），版本 $STAMP"
 echo
