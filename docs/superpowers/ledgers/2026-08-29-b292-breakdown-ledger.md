@@ -130,3 +130,4 @@
 - 2026-08-29：提交前范围核对 `git status --short --branch && git diff --name-only && git diff --check`；当前分支为 `cards/B292-charter-4`，仅 16 个计划代码/测试/fixture 文件与本台账变更，`git diff --check` 无输出。
 - 2026-08-29：暂存区核对 `git add ... && git diff --cached --check && git diff --cached --name-only` 退出码 0；暂存文件清单与上述 17 个路径完全一致，空白检查无输出。
 - 2026-08-29：首个实现提交 `ff8348421ddfe333a531066a73936a3fb002981d` 已创建；提交后 `git status --short --branch` 原始输出显示 `M web/src/api/scheduling.ts`，核对 `git diff` 证实其正是本卡成员 0→缺席投影改动，原因是首轮显式暂存清单漏列该路径，现补入后续提交。
+- 2026-08-29：补齐遗漏 wire 文件后提交 `0c4b023a6e886b175da2ddc085a40eb536c5c2ec`；`git status --short --branch` 原始输出仅为 `## cards/B292-charter-4`，工作树干净，最近两次提交为 `0c4b023a fix(b292): include squad wire projection` 与 `ff834842 feat(b292): enforce squad member concurrency`。
