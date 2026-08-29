@@ -53,6 +53,23 @@
 零使用的 preview 常量不能反过来作为“已有生产/消费事实”；它们只在本提交的可执行
 fixture 中先冻结线格式，真正生产/消费由 implement 节点接线。
 
+### 1.3 breakdown 边界澄清（2026-08-29）
+
+- 本轮执行上下文复核：有效基线由任务交棒指定为 `cards/B294-charter-2@1e45ff75c9b969db6ee3467779ad6261f8b3a029`；本节以下述任务基线和当前工作树实测为准，覆盖 §1 中遗留的 `5e8826f7` 历史开工记录，不改变冻结 DTO/路由/事件。
+- owner 会话持久化提案复用现有 `internal/store.Store` 的 `handoff.db`，不另开
+  coordinator ledger，也不改变 owner/coordinator 的 DTO、路由或事件方向。按本提交
+  随附的 `codegraph/best.json`，`internal/store` 的 `k_store_*` 归顶层
+  `d_orchestration`（logic）；因此 breakdown 的实际触及域在原 §1 现状列表之外增加
+  `d_orchestration`，只表示本机 SQLite 持久化文件的域归属，不表示新增跨域接缝。
+- `internal/agentd` 中的 owner handler、preview mirror、SOCKS/PAC/Chromium 编排仍归
+  `d_gateway`（boundary）；`internal/client`/`targetclient` 仍归 `d_transport`
+ （boundary）。`d_protocol` 仅消费本冻结 DTO，不在 implement 改字段；`d_cli` 与
+  `d_web` 分别承接 CLI 与左栏投影。
+- `is-open` 的页面态若仅表示当前页面收到本机 `OpenPreview` 成功确认，可由 web 本地
+  投影承载，不新增 wire；若要求页面刷新后、或 Chromium 自行退出后仍有可证明的实时
+  附着态，则当前冻结面没有该事实的查询/事件字段，必须先退回 contract，不能在
+  breakdown/implement 私自加字段。该分歧列入 breakdown 首部待拍板清单。
+
 ## 2. 精确签名与端点
 
 ### 2.1 协议 DTO（`internal/proto/preview.go`）
