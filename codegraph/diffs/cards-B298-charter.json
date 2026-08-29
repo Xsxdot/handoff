@@ -1,0 +1,183 @@
+{
+  "view": "cards/B298-charter",
+  "base": "b0a1ac44ab01875ed8a290ac00cb22dc1327800c",
+  "summary": "B298 Ticket 0：机器级 gc DTO、HTTP/client/CLI 镜像与 agentd 路由空壳",
+  "nodesAdded": {
+    "m_proto_GCRequest": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 360,
+      "name": "GCRequest",
+      "file": "internal/proto/gc.go",
+      "line": 16,
+      "signature": "type GCRequest struct {",
+      "modelKind": "dto",
+      "fields": [["Force", "bool", "POST 执行请求的脏 managed worktree 强删开关"]]
+    },
+    "m_proto_GCCacheRow": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 361,
+      "name": "GCCacheRow",
+      "file": "internal/proto/gc.go",
+      "line": 35,
+      "signature": "type GCCacheRow struct {",
+      "modelKind": "dto",
+      "fields": [
+        ["TaskID", "string", "来源终态任务 id"],
+        ["Path", "string", "被报告的 cache leaf"],
+        ["Bytes", "int64", "该 leaf 的字节数"],
+        ["Status", "GCItemStatus", "planned/deleted/skipped/failed"],
+        ["Error", "string", "失败或跳过原因"]
+      ]
+    },
+    "m_proto_GCWorktreeRow": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 362,
+      "name": "GCWorktreeRow",
+      "file": "internal/proto/gc.go",
+      "line": 47,
+      "signature": "type GCWorktreeRow struct {",
+      "modelKind": "dto",
+      "fields": [
+        ["TaskID", "string", "来源终态任务 id"],
+        ["Name", "string", "任务名"],
+        ["State", "string", "任务状态"],
+        ["Branch", "string", "任务分支"],
+        ["WorkDir", "string", "managed worktree 路径"],
+        ["Worktree", "WorktreeState", "复用 reclaim 工作树判定"],
+        ["DirtyCount", "int", "脏文件数量"],
+        ["Note", "string", "判定说明"],
+        ["Status", "GCItemStatus", "planned/deleted/skipped/failed"],
+        ["Error", "string", "失败原因"]
+      ]
+    },
+    "m_proto_GCResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 363,
+      "name": "GCResp",
+      "file": "internal/proto/gc.go",
+      "line": 64,
+      "signature": "type GCResp struct {",
+      "modelKind": "dto",
+      "fields": [
+        ["Preview", "bool", "GET 预览为 true"],
+        ["Force", "bool", "本次 force 选择"],
+        ["ReleasableBytes", "*int64", "可缺席与明确为零可区分"],
+        ["CacheRows", "[]GCCacheRow", "缓存叶子报告"],
+        ["WorktreeRows", "[]GCWorktreeRow", "残留 managed worktree 报告"],
+        ["Scanned", "int", "扫描的终态任务数"],
+        ["Failures", "int", "本应删除但失败的条目数"]
+      ]
+    },
+    "n_agentd_Manager_GC": {
+      "kind": "func",
+      "container": "k_agentd_Manager",
+      "order": 1500,
+      "name": "Manager.GC",
+      "file": "internal/agentd/gc.go",
+      "line": 36,
+      "signature": "func (m *Manager) GC(ctx context.Context, force, execute bool) (resp *proto.GCResp, err error)",
+      "params": [
+        ["ctx", "context.Context", "HTTP 请求生命周期"],
+        ["force", "bool", "脏 managed worktree 强删开关"],
+        ["execute", "bool", "false=预览，true=执行"]
+      ],
+      "returns": "resp *proto.GCResp, err error",
+      "summary": "统一判定并报告机器级缓存与残留工作树清理；Ticket 0 空壳"
+    },
+    "n_agentd_Server_handleGC": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 900,
+      "name": "Server.handleGC",
+      "file": "internal/agentd/gc.go",
+      "line": 52,
+      "signature": "func (s *Server) handleGC(w http.ResponseWriter, r *http.Request)",
+      "summary": "GET/POST /api/gc；Ticket 0 503 空壳"
+    },
+    "n_agentd_jsonDecode": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 1500,
+      "name": "jsonDecode",
+      "file": "internal/agentd/gc.go",
+      "line": 79,
+      "signature": "func jsonDecode(r *http.Request, dst any) error",
+      "returns": "error",
+      "summary": "gc 请求体解码接线空壳"
+    },
+    "n_client_Client_GCPreview": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 650,
+      "name": "Client.GCPreview",
+      "file": "internal/client/gc.go",
+      "line": 35,
+      "signature": "func (c *Client) GCPreview(ctx context.Context, force bool) (*proto.GCResp, error)",
+      "params": [["ctx", "context.Context", "请求生命周期"], ["force", "bool", "脏 managed worktree 预览开关"]],
+      "returns": "*proto.GCResp, error",
+      "summary": "GET /api/gc[?force=true]"
+    },
+    "n_client_Client_GC": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 651,
+      "name": "Client.GC",
+      "file": "internal/client/gc.go",
+      "line": 75,
+      "signature": "func (c *Client) GC(ctx context.Context, force bool) (*proto.GCResp, error)",
+      "params": [["ctx", "context.Context", "请求生命周期"], ["force", "bool", "脏 managed worktree 执行开关"]],
+      "returns": "*proto.GCResp, error",
+      "summary": "POST /api/gc；404 时补探测 GET /api/gc"
+    },
+    "n_cmd_gcCmd_RunE": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 650,
+      "name": "gcCmd.RunE",
+      "file": "cmd/gc.go",
+      "line": 34,
+      "signature": "func(cmd *cobra.Command, _ []string) error",
+      "summary": "handoff gc [--target] [--force] [--yes] [--json]"
+    },
+    "n_cmd_runGC": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 651,
+      "name": "runGC",
+      "file": "cmd/gc.go",
+      "line": 57,
+      "signature": "func runGC(cmd *cobra.Command, cl *client.Client, addr string) error",
+      "params": [["cmd", "*cobra.Command", "命令上下文"], ["cl", "*client.Client", "目标 agentd 客户端"], ["addr", "string", "旧版本提示地址"]],
+      "returns": "error",
+      "summary": "按 --yes 选择 gc 预览或执行并渲染报告"
+    },
+    "n_cmd_renderGC": {
+      "kind": "func",
+      "container": "k_cmd_fn",
+      "order": 652,
+      "name": "renderGC",
+      "file": "cmd/gc.go",
+      "line": 95,
+      "signature": "func renderGC(w io.Writer, resp *proto.GCResp)",
+      "summary": "渲染 gc 报告空壳"
+    }
+  },
+  "edgesAdded": [
+    ["n_agentd_Server_handleGC", "n_agentd_Manager_GC"],
+    ["n_agentd_Server_handleGC", "n_agentd_jsonDecode"],
+    ["n_client_Client_GCPreview", "n_client_Client_do"],
+    ["n_client_Client_GCPreview", "n_client_Client_httpError"],
+    ["n_client_Client_GC", "n_client_Client_do"],
+    ["n_client_Client_GC", "n_client_Client_httpError"],
+    ["n_client_Client_GC", "n_client_Client_GCPreview"],
+    ["n_cmd_gcCmd_RunE", "n_cmd_newTargetClient"],
+    ["n_cmd_gcCmd_RunE", "n_cmd_runGC"],
+    ["n_cmd_runGC", "n_client_Client_GCPreview"],
+    ["n_cmd_runGC", "n_client_Client_GC"],
+    ["n_cmd_runGC", "n_cmd_renderGC"]
+  ]
+}
