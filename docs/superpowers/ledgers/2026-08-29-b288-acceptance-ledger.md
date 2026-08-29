@@ -73,3 +73,29 @@
   `sym tabTitle --view` 显示修改后签名。focusTab 以 WorkbenchApi 字段记录
   （字段不进 sym 索引，按 schema 放 model.fields）。
 - **裁决：pass**。只动了 codegraph/diffs/，未触 baseline/target/best。
+
+## Finish（合并与回灌，2026-08-29）
+
+- **合并**：用户拍板本地合并。合并前分支树新鲜全量 1136 绿（npm test，112 文件）。
+  main 与分支已分叉（main 侧有 B283 悬浮窗终端 tab 累积修复，分支切出后合入），
+  5 个文件两侧都动过：restore.ts / restore.test.ts / useWorkbenchSync.ts /
+  TerminalTab.tsx / Shell.tsx。
+- **解冲突原则**：以分支重写后的全局 workbench 结构为基，把 B283 三段恢复语义
+  重新移植上去——①机器扇出门控 prune（原逐行跳过改为逐 tab 谓词，
+  `pruneDeadSessions` 加可选 `keep` 参数，按 `tab.base.machine` 判归属）；
+  ②外来悬浮窗 tab 一次性清除（`purged` 统计、activeId 兜底、windowOpen 收窗）；
+  ③外来机器 home 会话不收编。Shell.tsx / TerminalTab.tsx 的 main 侧注释勘误
+  （会话跨 agentd 重启存活）逐处保留。
+- **合并后全量**：npm test 1145 绿（1136 + 9 条 B283 用例移植到全局结构，含新增
+  「本机 tab 不受门控」一条）；typecheck 零错；build 过。合并提交 3a4e6e845。
+- **图回灌**：absorb `cards-B285-review-2`（+4 ~9，基线 3640 节点）→ 补
+  `merge-b283-port` 视图记录合并解冲突增量（machineOkSet 新增 + 4 节点修改，
+  absorb 后基线 3641 节点 @3a4e6e845，meta 刷到 HEAD）。validate 终验 12 issues
+  / unscannedEntries 6，与分支轮逐项相同（全 `[decl d_*]` 基线既有，零新增）；
+  `check` 无违规。
+- **图覆盖债（承自 B281 轮，非本卡引入）**：B281 重写恢复管道时改名的函数
+  （liveSessionIds→liveIds、collectUsedSessionIds→usedSessionIds、
+  countTerminalsWithSession→countSessions、orphanTerminal→orphanContent）在
+  baseline 仍留旧名节点；本次 merge-b283-port 已把 buildRestore /
+  pruneDeadSessions / RestoreInput / RestoreResult / machineOkSet 五节点刷到
+  合并后现状，改名四对的旧节点留待下一轮图扫描统一收编。
