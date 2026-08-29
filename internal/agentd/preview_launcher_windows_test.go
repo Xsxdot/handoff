@@ -49,3 +49,18 @@ func TestFocusPreviewWindowUsesManagedProcessWindow(t *testing.T) {
 		t.Fatalf("restored=%d foreground=%d, want both 7", restored, foreground)
 	}
 }
+
+func TestWindowsPreviewBrowserCandidatesIncludeFamilies(t *testing.T) {
+	for _, want := range []string{"chrome.exe", "msedge.exe", "arc.exe", "brave.exe", "chromium.exe"} {
+		found := false
+		for _, candidate := range previewBrowserCandidates() {
+			if candidate == want {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("browser candidate %q is missing", want)
+		}
+	}
+}

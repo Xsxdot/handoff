@@ -202,6 +202,8 @@ describe('ProjectTree 任务组', () => {
     fireEvent.click(local)
     expect(onOpenPreview).toHaveBeenCalledWith('local-preview', '')
     expect(p.onOpenTask).not.toHaveBeenCalled()
+    expect(local.querySelector('.lucide-app-window')).not.toBeNull()
+    expect(local.querySelector('.lucide-monitor')).toBeNull()
     expect(screen.getByTestId('preview-row-remote-preview')).toHaveTextContent('devbox')
   })
 

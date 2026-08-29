@@ -187,7 +187,10 @@ func directDialer(target config.Target) func(context.Context, string, string) (n
 		if err != nil {
 			return nil, fmt.Errorf("preview raw dial 地址无端口 %q: %w", addr, err)
 		}
-		if targetHost != "" && (strings.EqualFold(host, "localhost") || isLoopbackHost(host)) {
+		if !strings.EqualFold(host, "localhost") && !isLoopbackHost(host) {
+			return nil, fmt.Errorf("direct target 不提供非 loopback preview raw dial: %q", addr)
+		}
+		if targetHost != "" {
 			addr = net.JoinHostPort(targetHost, port)
 		}
 		return (&net.Dialer{}).DialContext(ctx, network, addr)

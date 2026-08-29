@@ -31,14 +31,16 @@ type PreviewMirror struct {
 	isSelfTarget func(string) bool
 	log          *slog.Logger
 
-	mu       sync.RWMutex
-	sessions map[string]proto.PreviewSession
-	machines map[string]proto.MachineStatus
-	cancels  map[string]context.CancelFunc
-	started  bool
-	stopOnce sync.Once
-	stopDone chan struct{}
-	wg       sync.WaitGroup
+	mu        sync.RWMutex
+	sessions  map[string]proto.PreviewSession
+	machines  map[string]proto.MachineStatus
+	cancels   map[string]context.CancelFunc
+	started   bool
+	stopped   bool
+	runCancel context.CancelFunc
+	stopOnce  sync.Once
+	stopDone  chan struct{}
+	wg        sync.WaitGroup
 }
 
 // NewPreviewMirror constructs a projection with no persistent coordinator state.
@@ -63,24 +65,28 @@ func NewPreviewMirror(pool *targetclient.Pool, owner *PreviewOwner, hub *Preview
 // Run performs an initial list-before-WS projection and supervises target streams.
 func (m *PreviewMirror) Run(ctx context.Context) {
 	m.mu.Lock()
-	if m.started {
+	if m.started || m.stopped {
 		m.mu.Unlock()
 		return
 	}
 	m.started = true
+	runCtx, runCancel := context.WithCancel(ctx)
+	m.runCancel = runCancel
 	m.mu.Unlock()
-	m.refreshAll(ctx)
-	m.ensureLoops(ctx)
+	m.refreshAll(runCtx)
+	m.ensureLoops(runCtx)
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
 		select {
-		case <-ctx.Done():
+		case <-runCtx.Done():
 			m.Stop()
 			return
+		case <-m.stopDone:
+			return
 		case <-ticker.C:
-			m.refreshAll(ctx)
-			m.ensureLoops(ctx)
+			m.refreshAll(runCtx)
+			m.ensureLoops(runCtx)
 		}
 	}
 }
@@ -89,6 +95,10 @@ func (m *PreviewMirror) Run(ctx context.Context) {
 func (m *PreviewMirror) Stop() {
 	m.stopOnce.Do(func() {
 		m.mu.Lock()
+		m.stopped = true
+		if m.runCancel != nil {
+			m.runCancel()
+		}
 		for name, cancel := range m.cancels {
 			cancel()
 			delete(m.cancels, name)
@@ -96,6 +106,7 @@ func (m *PreviewMirror) Stop() {
 		m.mu.Unlock()
 		m.wg.Wait()
 		close(m.stopDone)
+		m.log.Info("preview mirror 已停止", "operation", "preview_mirror_stop")
 	})
 }
 
@@ -134,6 +145,12 @@ func (m *PreviewMirror) Resolve(id, machine string) (proto.PreviewSession, bool)
 func previewSessionKey(machine, id string) string { return machine + "\x1f" + id }
 
 func (m *PreviewMirror) refreshAll(ctx context.Context) {
+	m.mu.RLock()
+	stopped := m.stopped
+	m.mu.RUnlock()
+	if stopped {
+		return
+	}
 	now := time.Now().UTC()
 	nextSessions := make(map[string]proto.PreviewSession)
 	nextMachines := make(map[string]proto.MachineStatus)
@@ -186,19 +203,29 @@ func (m *PreviewMirror) ensureLoops(parent context.Context) {
 	if m.pool == nil {
 		return
 	}
+	m.mu.RLock()
+	stopped := m.stopped
+	m.mu.RUnlock()
+	if stopped {
+		return
+	}
 	for _, name := range m.pool.Names() {
 		if m.isSelfTarget != nil && m.isSelfTarget(name) {
 			continue
 		}
 		m.mu.Lock()
+		if m.stopped {
+			m.mu.Unlock()
+			return
+		}
 		if _, exists := m.cancels[name]; exists {
 			m.mu.Unlock()
 			continue
 		}
 		ctx, cancel := context.WithCancel(parent)
 		m.cancels[name] = cancel
-		m.mu.Unlock()
 		m.wg.Add(1)
+		m.mu.Unlock()
 		go m.runTarget(ctx, name)
 	}
 }

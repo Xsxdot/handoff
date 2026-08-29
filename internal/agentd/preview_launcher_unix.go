@@ -9,7 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
+	"path/filepath"
+	"runtime"
 	"sync"
 	"syscall"
 )
@@ -29,7 +32,7 @@ func (l *previewOSLauncher) FindExecutable(ctx context.Context) (string, error) 
 		return "", err
 	}
 	var last error
-	for _, candidate := range []string{"chromium", "chromium-browser", "google-chrome", "google-chrome-stable"} {
+	for _, candidate := range previewBrowserCandidates() {
 		path, err := exec.LookPath(candidate)
 		if err == nil {
 			l.log.Info("preview 浏览器可执行文件探测成功", "operation", "preview_find", "executable", path)
@@ -42,6 +45,38 @@ func (l *previewOSLauncher) FindExecutable(ctx context.Context) (string, error) 
 	}
 	l.log.Warn("preview 浏览器可执行文件探测失败", "operation", "preview_find", "cause", last)
 	return "", fmt.Errorf("Unix Chromium 未找到: %w", last)
+}
+
+func previewBrowserCandidates() []string {
+	candidates := []string{
+		"google-chrome",
+		"google-chrome-stable",
+		"chrome",
+		"microsoft-edge",
+		"microsoft-edge-stable",
+		"msedge",
+		"arc",
+		"brave-browser",
+		"brave-browser-stable",
+		"brave",
+		"chromium",
+		"chromium-browser",
+	}
+	if runtime.GOOS == "darwin" {
+		for _, app := range []string{
+			"Google Chrome.app/Contents/MacOS/Google Chrome",
+			"Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+			"Arc.app/Contents/MacOS/Arc",
+			"Brave Browser.app/Contents/MacOS/Brave Browser",
+			"Chromium.app/Contents/MacOS/Chromium",
+		} {
+			candidates = append(candidates, filepath.Join("/Applications", app))
+			if home, err := os.UserHomeDir(); err == nil {
+				candidates = append(candidates, filepath.Join(home, "Applications", app))
+			}
+		}
+	}
+	return candidates
 }
 
 func (l *previewOSLauncher) Start(ctx context.Context, executable string, spec PreviewLaunchSpec) (PreviewBrowserHandle, error) {

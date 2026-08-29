@@ -54,7 +54,7 @@ func (l *previewOSLauncher) FindExecutable(ctx context.Context) (string, error) 
 		return "", err
 	}
 	var last error
-	for _, candidate := range []string{"chrome.exe", "chromium.exe", "msedge.exe", "chrome"} {
+	for _, candidate := range previewBrowserCandidates() {
 		path, err := exec.LookPath(candidate)
 		if err == nil {
 			l.log.Info("preview 浏览器可执行文件探测成功", "operation", "preview_find", "executable", path)
@@ -67,6 +67,21 @@ func (l *previewOSLauncher) FindExecutable(ctx context.Context) (string, error) 
 	}
 	l.log.Warn("preview 浏览器可执行文件探测失败", "operation", "preview_find", "cause", last)
 	return "", fmt.Errorf("Windows Chromium 未找到: %w", last)
+}
+
+func previewBrowserCandidates() []string {
+	return []string{
+		"chrome.exe",
+		"google-chrome.exe",
+		"msedge.exe",
+		"microsoft-edge.exe",
+		"arc.exe",
+		"Arc.exe",
+		"brave.exe",
+		"brave-browser.exe",
+		"chromium.exe",
+		"chromium-browser.exe",
+	}
 }
 
 func (l *previewOSLauncher) Start(ctx context.Context, executable string, spec PreviewLaunchSpec) (PreviewBrowserHandle, error) {

@@ -76,3 +76,55 @@ func TestPreviewMirrorListAndEvents(t *testing.T) {
 	}
 	mirror.Stop()
 }
+
+func TestPreviewMirrorStopExitsRunAndPreventsRestart(t *testing.T) {
+	mirror := NewPreviewMirror(nil, nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	parent := context.Background()
+	runDone := make(chan struct{})
+	go func() {
+		mirror.Run(parent)
+		close(runDone)
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		mirror.mu.RLock()
+		started := mirror.started
+		mirror.mu.RUnlock()
+		if started {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("mirror Run did not start")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	mirror.Stop()
+	select {
+	case <-runDone:
+	case <-time.After(time.Second):
+		t.Fatal("mirror Run must exit after Stop while parent context remains active")
+	}
+
+	select {
+	case <-mirror.stopDone:
+	default:
+		t.Fatal("mirror stop signal must be closed after Stop")
+	}
+
+	// A stopped mirror must not register a new target loop when a caller reaches
+	// the ticker path concurrently with the shutdown sequence.
+	remote := NewPreviewMirror(targetclient.NewPool(func() *config.Config {
+		return &config.Config{Targets: map[string]config.Target{"remote": {Addr: "http://127.0.0.1:1"}}}
+	}, slog.New(slog.NewTextHandler(io.Discard, nil))), nil, nil, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	defer remote.pool.Close()
+	remote.Stop()
+	remote.ensureLoops(context.Background())
+	remote.mu.RLock()
+	loopCount := len(remote.cancels)
+	remote.mu.RUnlock()
+	if loopCount != 0 {
+		t.Fatal("stopped mirror must not restart target loops")
+	}
+}

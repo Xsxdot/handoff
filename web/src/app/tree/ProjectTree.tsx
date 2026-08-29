@@ -31,7 +31,7 @@
 // 原型把行留给了名字与机器归属（spec §5 功能保留清单）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Monitor, Plus, Search, Server, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow,
+  AppWindow, Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Monitor, Plus, Search, Server, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow,
 } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { filterTree, taskMatchesQuery } from './search'
@@ -271,7 +271,7 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' 
       {kind === 'tui' && <img src={dispatchTaskUrl} className="size-[17px]" alt="" />}
       {kind === 'terminal' && <Terminal className="size-[17px]" />}
       {kind === 'file' && <FileText className="size-[17px]" />}
-      {kind === 'preview' && <Monitor className="size-[17px]" />}
+      {kind === 'preview' && <AppWindow className="size-[17px]" />}
     </span>
   )
 }
