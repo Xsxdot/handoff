@@ -245,3 +245,12 @@ Ticket 0 已落新成员类型、成员对象 wire 与成员计数键接线；�
   中并入视图。调度关键函数仍以本轮实读的 `file:line` 锚引用。
 - 欠账：清队 `ErrNoSlot` 继续本轮、CLI 成员政策字符串解析仍交实现节点；本节点已完成成员
   类型/wire/键接线骨架并有本轮 Go/TS 编译与测试证据。`best.json` 结构树不变。
+
+## 10. 拆解节点边界修订记录
+
+- **2026-08-29（B292 breakdown）**：`codegraph/best.json` 中 parent 为空的顶层
+  `d_coordination` 覆盖本卡实际触及的 `d_coordination_api`、`d_coordination_task`、
+  `d_coordination_cli`；spec/target 文字中的 `d_gateway`、`d_orchestration`、`d_cli`
+  是这些既有控制面职责的别名，不是本卡新增领域或依赖方向。`internal/client` 的
+  既有客户端面只承接已冻结 wire，不新增 `d_transport` 接缝。该澄清只校正图层级与
+  契约面归属，不改变 §1–§9 的冻结语义，不退回 contract。
