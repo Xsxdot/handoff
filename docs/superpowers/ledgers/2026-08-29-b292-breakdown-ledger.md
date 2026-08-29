@@ -37,3 +37,4 @@
 - 2026-08-29：`rg -n '^## |^### |^#### |待拍板|触及子系统|派卡资格|契约增量核对|缺陷族|追加设问|真机清单|入口符号|有界文件集' docs/superpowers/specs/b292-breakdown.md` 退出码 0；原始输出命中稿首 P1/P2/P3、四个顶层领域、§1–§5、B292-I0 四段式和真机清单。
 - 2026-08-29：`git diff --check` 退出码 0，无输出；`git status --short --branch` 原始输出为当前分支加 1 个已修改 contract、2 个预期新增 breakdown/ledger 文件；工作树内无其它路径。
 - 2026-08-29：`git add docs/superpowers/specs/b292-contract.md docs/superpowers/specs/b292-breakdown.md docs/superpowers/ledgers/2026-08-29-b292-breakdown-ledger.md && git diff --cached --check && git diff --cached --stat && git diff --cached --name-status` 退出码 0；原始统计为 `3 files changed, 492 insertions(+)`，仅列上述 3 个预期文件，暂存区空白检查无输出。
+- 2026-08-29：`git add docs/superpowers/ledgers/2026-08-29-b292-breakdown-ledger.md && git diff --cached --check && git commit -m "docs(b292): add concurrency breakdown"` 退出码 0；原始输出为 `[cards/B292-charter-2 75287d6b] docs(b292): add concurrency breakdown`、`3 files changed, 493 insertions(+)`，未 push。
