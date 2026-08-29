@@ -46,6 +46,24 @@ interface WebkitBridge {
   webkit?: { messageHandlers?: { external?: { postMessage: (msg: string) => void } } }
 }
 
+// OPEN_BROWSER_MESSAGE_PREFIX 是 CardsPage 发给桌面宿主的原始消息前缀。
+// 必须避开 wails:：Wails 会把 wails: 消息交给自己的窗口手势处理器，不会送到
+// RawMessageHandler。URL 作为同一条字符串的后缀传输，桌面侧再做同源校验。
+export const OPEN_BROWSER_MESSAGE_PREFIX = 'handoff:open-browser:'
+
+// requestOpenCurrentPageInBrowser 请求桌面宿主用系统浏览器打开当前整页。
+// 参数：无；URL 只能从当前 window.location 产生，调用方不能注入任意地址。
+// 返回：找到并发出 external bridge 时为 true，否则为 false。
+// 注意：它不导航、不改变当前页面状态；浏览器分支没有 bridge 时是安静空操作。
+export function requestOpenCurrentPageInBrowser(): boolean {
+  const bridge = window as unknown as WebkitBridge
+  const post = bridge.webkit?.messageHandlers?.external?.postMessage
+  if (!post) return false
+  const currentURL = `${window.location.origin}${window.location.pathname}${window.location.search}`
+  post.call(bridge.webkit!.messageHandlers!.external, `${OPEN_BROWSER_MESSAGE_PREFIX}${currentURL}`)
+  return true
+}
+
 // requestTitlebarZoom 请求薄壳把窗口在「最大化 / 还原」之间切换，返回是否发出去了。
 //
 // 为什么需要它：**双击标题栏最大化在 Wails 里是 JS 实现的，不是原生的**。

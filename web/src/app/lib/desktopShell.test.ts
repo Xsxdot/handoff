@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DESKTOP_TOP_INSET, isDesktopShell, requestTitlebarZoom, topInset } from './desktopShell'
+import { DESKTOP_TOP_INSET, isDesktopShell, OPEN_BROWSER_MESSAGE_PREFIX, requestOpenCurrentPageInBrowser, requestTitlebarZoom, topInset } from './desktopShell'
 
 describe('desktopShell', () => {
   it('UA 带薄壳标记时判为桌面壳，并让出顶部拖动区', () => {
@@ -41,5 +41,30 @@ describe('requestTitlebarZoom', () => {
   it('桥不在时安静返回 false，不抛异常', () => {
     // 浏览器里打开控制台就是这条路径：双击顶栏本来也没有语义，不能因此炸掉页面
     expect(requestTitlebarZoom()).toBe(false)
+  })
+})
+
+describe('requestOpenCurrentPageInBrowser', () => {
+  const bridge = () => (window as unknown as { webkit?: unknown })
+
+  afterEach(() => {
+    delete bridge().webkit
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('发送固定协议前缀和当前页面的 path/query', () => {
+    const postMessage = vi.fn()
+    bridge().webkit = { messageHandlers: { external: { postMessage } } }
+    window.history.replaceState({}, '', '/cards?project=handoff')
+
+    expect(requestOpenCurrentPageInBrowser()).toBe(true)
+    expect(OPEN_BROWSER_MESSAGE_PREFIX).toBe('handoff:open-browser:')
+    expect(postMessage).toHaveBeenCalledWith(
+      `${OPEN_BROWSER_MESSAGE_PREFIX}${window.location.origin}/cards?project=handoff`,
+    )
+  })
+
+  it('没有 external bridge 时返回 false 且不抛异常', () => {
+    expect(requestOpenCurrentPageInBrowser()).toBe(false)
   })
 })

@@ -4,6 +4,7 @@ import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetc
 import type { Decision, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
 import { usePoll } from '../data/usePoll'
 import { useTasks } from '../data/useTasks'
+import { isDesktopShell, requestOpenCurrentPageInBrowser } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
@@ -81,6 +82,7 @@ export function CardsPage() {
   const decisionsPoll = usePoll(() => fetchDecisions(true), POLL_MS)
   const healthPoll = usePoll(fetchLedgerHealth, POLL_MS)
   const navigate = useNavigate()
+  const showOpenInBrowser = isDesktopShell()
   useEffect(() => { setProject(projectFromUrl) }, [projectFromUrl])
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
@@ -172,7 +174,19 @@ export function CardsPage() {
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="w-40 rounded-md border bg-background px-2 py-1 text-xs" />
         <button type="button" onClick={() => setNewCardOpen(true)} className="rounded-md border px-2.5 py-1 text-xs">+ 新建</button>
         <button type="button" onClick={() => setNeedsOnly((current) => !current)} className={`rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}>⚑ 需要你 {attentionCount}</button>
-        <span className={`ml-auto flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
+        {showOpenInBrowser && (
+          <button
+            type="button"
+            aria-label="从浏览器打开"
+            title="从浏览器打开当前工作项页"
+            // 只发送当前地址的 origin/path/query，并不 navigate，保证桌面仍停在本页。
+            onClick={() => { requestOpenCurrentPageInBrowser() }}
+            className="ml-auto rounded-md border px-2.5 py-1 text-xs"
+          >
+            从浏览器打开
+          </button>
+        )}
+        <span className={`${showOpenInBrowser ? '' : 'ml-auto'} flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
       </header>
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}

@@ -1,7 +1,7 @@
 // 账本页的呈现契约：项目级请示要说得清自己是谁、且不能藏在筛选后面；
 // 建卡入口传下去的项目必须来自当前视图而不是列表首张卡（B179）；
 // 卡到任务深链的管线要真通（B181）。
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import type { Task } from '../../api/types'
@@ -146,5 +146,53 @@ describe('事件流滞后灯', () => {
     })
     renderPage()
     expect(await screen.findByText('事件流滞后: linux-01')).toBeInTheDocument()
+  })
+})
+
+const DESKTOP_UA = 'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 handoff-desktop'
+const BROWSER_UA = 'Mozilla/5.0 (Macintosh) AppleWebKit/605.1.15 Safari/605.1.15'
+
+function setUA(ua: string): void {
+  Object.defineProperty(navigator, 'userAgent', { value: ua, configurable: true })
+}
+
+function bridge(): { webkit?: unknown } {
+  return window as unknown as { webkit?: unknown }
+}
+
+describe('CardsPage 从浏览器打开', () => {
+  afterEach(() => {
+    delete bridge().webkit
+    setUA(BROWSER_UA)
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('桌面 UA 显示按钮，点击发送当前 /cards query 且不离开页面', async () => {
+    setUA(DESKTOP_UA)
+    window.history.replaceState({}, '', '/cards?project=handoff')
+    const postMessage = vi.fn()
+    bridge().webkit = { messageHandlers: { external: { postMessage } } }
+
+    renderPage('/cards?project=handoff')
+    const button = screen.getByRole('button', { name: '从浏览器打开' })
+    expect(button).toHaveClass('ml-auto')
+    expect(screen.getByTitle('镜像正常')).not.toHaveClass('ml-auto')
+
+    fireEvent.click(button)
+
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(postMessage).toHaveBeenCalledWith(
+      `handoff:open-browser:${window.location.origin}/cards?project=handoff`,
+    )
+    expect(window.location.pathname + window.location.search).toBe('/cards?project=handoff')
+    expect(screen.getByText('工作项')).toBeInTheDocument()
+  })
+
+  it('普通浏览器不渲染按钮且健康点仍占右侧', async () => {
+    setUA(BROWSER_UA)
+    renderPage('/cards?project=handoff')
+
+    expect(screen.queryByRole('button', { name: '从浏览器打开' })).toBeNull()
+    expect(screen.getByTitle('镜像正常')).toHaveClass('ml-auto')
   })
 })
