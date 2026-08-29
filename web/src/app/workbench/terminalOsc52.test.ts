@@ -25,11 +25,18 @@ describe('parseOsc52', () => {
   // roundtrip 属性测试：TextEncoder→btoa 编码 ∘ parseOsc52 解码对随机文本恒等，
   // 一条属性覆盖多字节、代理对、控制字符一整族序列化边界（缺陷族·序列化边界）。
   it('roundtrip：任意文本经 base64 编码后解码恒等', () => {
-    const alphabet = 'aZ0 九;q✓\x1b]52;. '
+    // 𝄞（U+1D11E）是增补平面字符，UTF-16 下占两个码元——代理对由此真被生成
+    //（旧 alphabet 全是 BMP 字符，注释声称的「代理对」从未出现）。
+    const alphabet = 'aZ0 九;q✓𝄞\x1b]52;. '
+    // 按码点取样（[...] 切 code point），不按码元索引：按码元索引会把 𝄞 拆成
+    // 半个代理对，样本成了「非法文本」——TextEncoder 只能把它替成 U+FFFD，
+    // 恒等必破。那条路径在真实序列里不存在：xterm 交给 handler 的串恒由
+    // 合法 UTF-8 解出，不含孤立代理。
+    const chars = [...alphabet]
     for (let i = 0; i < 200; i++) {
       let s = ''
       const n = 1 + Math.floor(Math.random() * 80)
-      for (let j = 0; j < n; j++) s += alphabet[Math.floor(Math.random() * alphabet.length)]
+      for (let j = 0; j < n; j++) s += chars[Math.floor(Math.random() * chars.length)]
       const bytes = new TextEncoder().encode(s)
       let bin = ''
       for (const b of bytes) bin += String.fromCharCode(b)

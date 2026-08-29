@@ -672,6 +672,24 @@ describe('TerminalTab', () => {
     await waitFor(() => expect(screen.getByTestId('copy-notice')).toHaveTextContent('失败'))
   })
 
+  // 非安全上下文（如经 Tailscale / 局域网 IP 的 http 访问）navigator.clipboard 是
+  // undefined：守卫缺席时 handler 必须走失败提示路径，而不是在 xterm 解析器里
+  // 同步抛 TypeError——抛出去既打断 chunk 处理，又绕过了失败提示，两条都是伤害。
+  it('navigator.clipboard 缺席时不抛异常、给出失败提示（非安全上下文）', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    try {
+      render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+      await waitFor(() => expect(connectPty).toHaveBeenCalled())
+      connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+      expect(() => osc52Handler!('c;aGVsbG8=')).not.toThrow()
+      expect(await screen.findByTestId('copy-notice')).toHaveTextContent('失败')
+      expect(writeText).not.toHaveBeenCalled()
+    } finally {
+      // 还原成文件顶部 beforeAll 定义的替身，别让后续用例跟着缺席
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    }
+  })
+
   it('写入成功不出提示（成功提示是噪声，TUI 自带反馈）', async () => {
     render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())

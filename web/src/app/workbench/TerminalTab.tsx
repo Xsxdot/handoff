@@ -307,6 +307,21 @@ export function TerminalTab({
     // 'drop-all' 说明不了回放长度，按 spec 不设门）→ active 门（后台 keep-alive
     // 的 tab 不许动用户剪贴板）→ 载荷门（'?' / 空载荷在 parseOsc52 里拦截）。
     // 写失败必须给用户可见提示：静默失败等于「以为复制了」。
+    //
+    // showCopyFailure 是「写不进本机剪贴板」的唯一出口：writeText 拒绝与
+    // clipboard 缺席（非安全上下文）都汇到它——两条失败路径共用同一份提示与
+    // 自动消失定时器，谁也不许另起一套（另起的那套迟早被忘掉，变回静默失败）。
+    // 打点 write-fail：观测三态里「浏览器拒了」的那一态。
+    const showCopyFailure = () => {
+      logTermOsc52(label, 'write-fail', { 原因: 'clipboard' })
+      const msg = '复制到本机剪贴板失败（浏览器未授权或页面未聚焦），可选中文字后用右键复制'
+      setCopyNotice(msg)
+      if (noticeTimer !== 0) window.clearTimeout(noticeTimer)
+      noticeTimer = window.setTimeout(() => {
+        noticeTimer = 0
+        setCopyNotice(null)
+      }, 6000)
+    }
     const osc52 = term.parser.registerOscHandler(52, (data) => {
       if (hostReply === 'replay') {
         logTermOsc52(label, 'skip', { 原因: 'replay' })
@@ -317,19 +332,23 @@ export function TerminalTab({
         return true
       }
       const parsed = parseOsc52(data)
-      if (parsed === null) return true
+      if (parsed === null) {
+        // 门挡下也要留痕，不然「TUI 说复制了、剪贴板没变」分不清是序列没到
+        // 还是门挡了（观测三态里「门挡了」的那一态）。
+        logTermOsc52(label, 'skip', { 原因: 'payload' })
+        return true
+      }
       logTermOsc52(label, 'copy', { selection: parsed.selection, 字符数: parsed.text.length })
+      // 非安全上下文（http://<局域网 IP>，如经 Tailscale 访问）navigator.clipboard
+      // 是 undefined：直接摸 writeText 会在 xterm 解析器里同步抛 TypeError——
+      // 既打断 chunk 处理，又绕过失败提示。缺席按「浏览器拒了」同一条路径处置。
+      if (!navigator.clipboard) {
+        showCopyFailure()
+        return true
+      }
       navigator.clipboard.writeText(parsed.text).then(
         () => setCopyNotice(null),
-        () => {
-          const msg = '复制到本机剪贴板失败（浏览器未授权或页面未聚焦），可选中文字后用右键复制'
-          setCopyNotice(msg)
-          if (noticeTimer !== 0) window.clearTimeout(noticeTimer)
-          noticeTimer = window.setTimeout(() => {
-            noticeTimer = 0
-            setCopyNotice(null)
-          }, 6000)
-        },
+        showCopyFailure,
       )
       return true
     })
