@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "main",
-  "commit": "3a4e6e8458dc13d2e922fc5fc7bd6ab58fa95d7c",
+  "commit": "a57726bd9fa60465f65a8aaf4849efc6702c8322",
   "scannedAt": "2026-08-28",
   "generator": "codegraph-flows-b277-go"
  },
@@ -20662,6 +20662,27 @@
    "signature": "export interface LauncherItem {",
    "summary": "LauncherItem 是面板上的一条启动项。",
    "modelKind": "dto"
+  },
+  "m_web_app_workbench_Osc52Copy": {
+   "kind": "model",
+   "container": "k_web_app_workbench",
+   "order": 372,
+   "name": "Osc52Copy",
+   "file": "web/src/app/workbench/terminalOsc52.ts",
+   "line": 10,
+   "signature": "interface Osc52Copy",
+   "fields": [
+    [
+     "selection",
+     "string",
+     "TUI 声明的目标选择区 c/s/p；浏览器只有一个剪贴板，三种都写"
+    ],
+    [
+     "text",
+     "string",
+     "解码出的待写入 UTF-8 文本"
+    ]
+   ]
   },
   "m_web_app_workbench_PersistedBase": {
    "kind": "model",
@@ -73740,6 +73761,34 @@
    "returns": "void { if (!terminalDebugEnabled()) return if (wsStatus !== ) { console.warn( , { 终端: label, 状态: wsStatus, 字符数: data.length, 原文: JSON.stringify(data), }) return } console.debug( , { 终端: label, 字符数: data.length, 原文: JSON.stringify(data) }) } export function logTermFocus(label: string, kind: | , active: string): void",
    "summary": "logTermInput 记一次终端输入（③ 的主要读数）。"
   },
+  "n_web_app_workbench_logTermOsc52": {
+   "kind": "func",
+   "container": "k_web_app_workbench",
+   "order": 374,
+   "name": "logTermOsc52",
+   "file": "web/src/app/workbench/terminalDebug.ts",
+   "line": 173,
+   "signature": "function logTermOsc52(label: string, event: string, extra?: Record\u003cstring, unknown\u003e): void",
+   "params": [
+    [
+     "label",
+     "string",
+     "终端标识"
+    ],
+    [
+     "event",
+     "string",
+     "短名：copy = 发起写入 / skip = 门挡下 / write-fail = 浏览器拒了或缺 clipboard"
+    ],
+    [
+     "extra",
+     "Record\u003cstring, unknown\u003e | undefined",
+     "selection、字符数或拦截原因"
+    ]
+   ],
+   "returns": "void",
+   "summary": "记一次 OSC 52 的处置结果（B300）；被门挡下与写失败也必须打，供分清序列没到、门挡了、浏览器拒了三种情形"
+  },
   "n_web_app_workbench_logTermResize": {
    "kind": "func",
    "container": "k_web_app_workbench",
@@ -73907,6 +73956,24 @@
    "line": 140,
    "signature": "function parseContent(raw: unknown): TabContent | null {",
    "summary": "parseContent 校验一个 tab 的内容。返回 null = 种类不认识或字段不对。"
+  },
+  "n_web_app_workbench_parseOsc52": {
+   "kind": "func",
+   "container": "k_web_app_workbench",
+   "order": 373,
+   "name": "parseOsc52",
+   "file": "web/src/app/workbench/terminalOsc52.ts",
+   "line": 19,
+   "signature": "function parseOsc52(data: string): Osc52Copy | null",
+   "params": [
+    [
+     "data",
+     "string",
+     "registerOscHandler(52, cb) 交给 cb 的载荷原文（`52;` 之后）"
+    ]
+   ],
+   "returns": "Osc52Copy | null",
+   "summary": "解析 OSC 52 载荷为待写入文本；读查询（?）、空载荷（清剪贴板）、坏 base64 与坏 UTF-8 一律返回 null，不产生剪贴板写入"
   },
   "n_web_app_workbench_parseWorkbench": {
    "kind": "func",
