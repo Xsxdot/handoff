@@ -1,0 +1,592 @@
+<!doctype html>
+<!--
+  设置页（/settings）—— 真实控制台的形态镜像。
+
+  「更新」分区的形态由 B166 确认并已实现（2026-08-19 走查、2026-08-20 回流）：
+    1. 分区导航含「更新」，支持 ?section=update 直达（右下角提示框的「查看详情」跳这里）；
+    2. 三块：桌面应用自更新 / 同步状态（提示框消失后的常驻落点）/ 执行机版本与一键升级；
+    3. 桌面应用块只到「下载 + 校验 + 打开安装包」为止——自我替换要求一条控制台→薄壳的
+       指令通道，比它服务的动作还贵，已在 spec §5 排除，最后一下留给用户。
+  其余分区仍是占位：形态还没设计过，别把占位当成基准。
+
+  B279（B156.3 前端控制台）新增「自动化」分区（?section=automation 直达）。
+  B293 在载体卡上把 health 点换成四态（未上线/已上线/限额中/不可达），加检测/运行，
+  登记弹窗默认 HOME 为 ~/.handoff/home/<名>，改路径即时探测提示。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · 设置</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  .settings { display: flex; height: 100%; }
+  .settings nav { width: 180px; border-right: 1px solid var(--border); padding: 12px 8px; display: flex; flex-direction: column; gap: 2px; }
+  .settings nav a { padding: 6px 10px; border-radius: 6px; font-size: 13px; cursor: pointer; color: var(--foreground); text-decoration: none; display: flex; align-items: center; gap: 6px; }
+  .settings nav a.active { background: var(--muted); font-weight: 500; }
+  .settings nav a .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--amber); margin-left: auto; }
+  .settings .body { flex: 1; padding: 20px; overflow-y: auto; }
+  .sec-title { margin: 0 0 12px; font-size: 16px; }
+  .sub-title { margin: 24px 0 8px; font-size: 13px; font-weight: 600; }
+  .sub-title:first-child { margin-top: 0; }
+  .hint { font-size: 12px; color: var(--muted-foreground); margin: 4px 0 0; line-height: 1.6; }
+
+  /* 桌面应用自更新卡：一张卡把「我是谁、有没有新的、点一下会发生什么」讲完 */
+  .upd-hero { padding: 16px; display: flex; align-items: flex-start; gap: 14px; }
+  .upd-hero .icon { font-size: 26px; line-height: 1; margin-top: 2px; }
+  .upd-hero .grow { flex: 1; min-width: 0; }
+  .upd-hero .vline { display: flex; align-items: center; gap: 8px; font-size: 13.5px; font-weight: 600; }
+  .upd-hero .actions { display: flex; align-items: center; gap: 8px; margin-top: 12px; }
+  .progress { height: 6px; border-radius: 999px; background: var(--muted); overflow: hidden; margin-top: 12px; }
+  .progress > i { display: block; height: 100%; width: 0; background: var(--primary); transition: width .25s linear; }
+  /* 变更摘要默认折起：更新页不是发布说明页，展开才看 */
+  details.notes { margin-top: 10px; font-size: 12.5px; }
+  details.notes summary { cursor: pointer; color: var(--muted-foreground); }
+  details.notes ul { margin: 8px 0 0; padding-left: 18px; line-height: 1.8; color: var(--foreground); }
+
+  /* 同步状态：toast 会消失，这里是它唯一的常驻落点 */
+  .status-row { display: flex; align-items: center; gap: 10px; padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--border); }
+  .status-row:last-child { border-bottom: none; }
+  .status-row .grow { flex: 1; min-width: 0; }
+
+  table.machines { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.machines th { text-align: left; font-weight: 500; font-size: 12px; color: var(--muted-foreground); padding: 0 10px 6px; }
+  table.machines td { padding: 9px 10px; border-top: 1px solid var(--border); }
+  table.machines tr td:last-child { text-align: right; }
+
+  /* 菜单栏图标菜单的形态参考：不是网页，只是画出来给人对一眼 */
+  .traymock { width: 260px; padding: 5px; font-size: 13px; }
+  .traymock .mi { padding: 5px 10px; border-radius: 5px; }
+  .traymock .mi:hover { background: var(--muted); }
+  .traymock .sep { height: 1px; background: var(--border); margin: 4px 8px; }
+  .traymock .gone { color: var(--muted-foreground); text-decoration: line-through; }
+
+  /* ===================== B279：自动化编制分区 ===================== */
+  .sec-head { display: flex; align-items: baseline; gap: 10px; margin: 24px 0 8px; }
+  .sec-head:first-child { margin-top: 0; }
+  .sec-head .sub-title { margin: 0; }
+  .sec-head .spacer { flex: 1; }
+  .entity-card { border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; margin-bottom: 10px; background: var(--background); }
+  .entity-card .e-head { display: flex; align-items: center; gap: 8px; margin-bottom: 8px; }
+  .entity-card .e-name { font-family: var(--font-mono); font-size: 13px; font-weight: 600; }
+  .entity-card .e-head .spacer { flex: 1; }
+  .entity-card .e-usage { font-size: 12px; color: var(--muted-foreground); }
+  .health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+  .health-dot.unknown { background: #d4d4d4; }
+  .status-pill { font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 500; border: 1px solid var(--border); }
+  .status-pill.online { background: #ecfdf5; color: #047857; border-color: #a7f3d0; }
+  .status-pill.pending { background: var(--muted); color: var(--muted-foreground); }
+  .status-pill.quota { background: #fef3c7; color: var(--amber); border-color: #fde68a; }
+  .status-pill.unreachable { background: #fef2f2; color: var(--destructive); border-color: #fecaca; }
+  .e-actions { display: flex; gap: 6px; align-items: center; }
+  .probe-hint { font-size: 12px; line-height: 1.5; margin: 6px 0 0; }
+  .probe-hint.ok { color: #047857; }
+  .probe-hint.warn { color: var(--amber); }
+  .probe-hint.bad { color: var(--destructive); }
+  .copy-toast { font-size: 12px; color: var(--muted-foreground); margin: 8px 0 0; }
+  .last-err { font-size: 11.5px; color: var(--muted-foreground); margin: 6px 0 0; }
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 14px; font-size: 12.5px; margin: 0; }
+  .kv dt { color: var(--muted-foreground); }
+  .kv dd { margin: 0; }
+  .member-chips { display: flex; gap: 6px; flex-wrap: wrap; margin: 2px 0 6px; }
+  .member-chip { display: inline-flex; align-items: center; gap: 4px; font-family: var(--font-mono); font-size: 11.5px; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); background: var(--sidebar); }
+  .member-chip .mdot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .role-badge { font-size: 11px; padding: 1px 8px; border-radius: 999px; font-weight: 500; }
+  .role-badge.coordinator { background: #fef3c7; color: var(--amber); border: 1px solid #fde68a; }
+  .role-badge.executor { background: var(--muted); color: var(--foreground); border: 1px solid var(--border); }
+  /* 编辑弹窗表单 */
+  .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 12px; margin-bottom: 12px; }
+  .form-grid .full { grid-column: 1 / -1; }
+  .form-grid label { display: block; font-size: 12px; color: var(--muted-foreground); margin-bottom: 4px; }
+  .check-list { display: flex; flex-direction: column; gap: 4px; max-height: 140px; overflow-y: auto; border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; font-size: 12.5px; }
+  .check-list label { display: flex; align-items: center; gap: 6px; color: var(--foreground); margin: 0; }
+  .mock-ok { font-size: 12px; color: var(--green); margin: 10px 0 0; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">
+      <span>handoff</span>
+      <button class="icon-btn" title="显示偏好">☰</button>
+    </div>
+    <div class="tree-search">
+      <input class="input sm" placeholder="搜索项目、机器或任务">
+      <kbd class="kbd">⌘K</kbd>
+    </div>
+    <div class="tree">
+      <div class="tree-group">
+        <div class="tree-label machine-row"><span>本机</span></div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item">└ 7a8334f4（工作树）</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label machine-row"><span>mac-02</span></div>
+        <a class="tree-item">gokit</a>
+      </div>
+    </div>
+    <div class="dock">
+      <a class="dock-btn" href="../index.html" title="任务看板">▦</a>
+      <a class="dock-btn" href="../index.html" title="工单">✉<span class="badge dock-badge">2</span></a>
+      <button class="dock-btn" style="background:var(--muted);color:var(--foreground)" title="设置">⚙<span class="dot amber"></span></button>
+      <a class="dock-btn" href="../index.html" title="home 基准终端">▭</a>
+      <button class="dock-btn" title="添加项目">＋</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <main class="content">
+      <div class="settings">
+        <nav>
+          <a data-tab="machines">开发机</a>
+          <a data-tab="discipline">执行纪律</a>
+          <a class="active" data-tab="automation">自动化</a>
+          <a data-tab="general">常规</a>
+          <a data-tab="env">Env 文件</a>
+          <!-- 有可用更新时挂一个琥珀点：不打断，但进设置页就能看见 -->
+          <a data-tab="update">更新<span class="dot"></span></a>
+        </nav>
+        <div class="body">
+
+          <!-- ===================== 更新 ===================== -->
+          <div class="panel-sec" data-panel="update" hidden>
+            <h2 class="sec-title">更新</h2>
+
+            <div class="sub-title">桌面应用</div>
+            <div class="card upd-hero" id="heroCard">
+              <div class="icon">⬆︎</div>
+              <div class="grow">
+                <div class="vline">
+                  <span id="heroTitle">有新版 v0.3.4 可用</span>
+                  <span class="badge amber" id="heroBadge">可更新</span>
+                </div>
+                <p class="hint" id="heroSub">当前 v0.3.3 · 2026-08-20 发布 · 11.4 MB。下载并校验后会自动打开安装包；把新版拖进「应用程序」再重开一次，agentd 随之同步到同一版本。</p>
+                <details class="notes" id="heroNotes">
+                  <summary>本次变更（4 项）</summary>
+                  <ul>
+                    <li>修复 macOS 桌面端控制台停在「需要登录」</li>
+                    <li>Windows 拉起 agentd 不再重建计划任务</li>
+                    <li>更新提示从菜单栏移到控制台内</li>
+                    <li>升级执行机可在控制台一键完成</li>
+                  </ul>
+                </details>
+                <div class="progress" id="heroProg" hidden><i id="heroBar"></i></div>
+                <div class="actions">
+                  <button class="btn primary" id="heroBtn">下载安装包</button>
+                  <button class="btn sm" id="heroRecheck">重新检查</button>
+                </div>
+              </div>
+            </div>
+            <p class="hint">应用每天检查一次；这里的「重新检查」会立刻问一次，不受每天一次的缓存限制。</p>
+
+            <div class="sub-title">同步状态</div>
+            <div class="card">
+              <div class="status-row">
+                <span class="badge amber">待应用</span>
+                <span class="grow">有更新待应用 —— <strong>2 个任务进行中</strong>，会在它们结束后自动应用。想立刻应用就重开一次桌面端。</span>
+              </div>
+              <div class="status-row">
+                <span class="badge">上次同步</span>
+                <span class="grow dim">2026-08-20 11:46 · 成功 · agentd v0.3.2 → v0.3.3</span>
+              </div>
+            </div>
+            <p class="hint">这些状态原来只在菜单栏里能看到。提示框会自己消失，这里是它们的常驻落点。不给「立即应用」按钮——重开一次桌面端就会重走同步，不必再造第二个入口。</p>
+
+            <div class="sub-title">执行机</div>
+            <div class="card">
+              <table class="machines">
+                <thead>
+                  <tr><th style="width:26%">机器</th><th style="width:20%">agentd 版本</th><th>状态</th><th></th></tr>
+                </thead>
+                <tbody id="machineRows"></tbody>
+              </table>
+            </div>
+            <p class="hint">升级会在对应机器上拉取发布物并重启 agentd；有任务在跑的机器会等它跑完。这条能力原来只有 <code class="mono">handoff upgrade</code> 命令行有，浏览器里够不着。</p>
+
+            <div class="sub-title">参考：菜单栏图标菜单（改造后）</div>
+            <div class="card traymock">
+              <div class="mi">打开控制台</div>
+              <div class="sep"></div>
+              <div class="mi gone">有更新待应用（2 个任务进行中）</div>
+              <div class="mi gone">上次同步失败，查看详情</div>
+              <div class="mi gone">有新版 v0.3.4 可下载</div>
+              <div class="mi gone">升级执行机…</div>
+              <div class="mi gone">（面板里的「强制同步」一并去掉）</div>
+              <div class="sep"></div>
+              <div class="mi">退出（agentd 继续运行）</div>
+            </div>
+            <p class="hint">划掉的移走或删除：三条动态提示改为控制台右下角提示框，「升级执行机」并入本页，强制同步入口直接删掉（重开桌面端等效）。菜单只剩两项，图标本身也换成 logo（现在显示的是「handoff」四个字）。</p>
+          </div>
+
+          <!-- ===================== 其它分区（占位，保持基准形态） ===================== -->
+          <div class="panel-sec" data-panel="machines" hidden>
+            <h2 class="sec-title">开发机</h2>
+            <div class="card" style="padding:12px;margin-bottom:8px;display:flex;align-items:center;gap:10px">
+              <span class="badge solid">在线</span><strong style="font-size:13px">本机</strong><span class="dim mono" style="font-size:12px">127.0.0.1:7466</span>
+            </div>
+            <div class="card" style="padding:12px;display:flex;align-items:center;gap:10px">
+              <span class="badge solid">在线</span><strong style="font-size:13px">mac-02</strong><span class="dim mono" style="font-size:12px">192.168.1.42:7466</span>
+              <button class="btn sm" style="margin-left:auto">编辑</button>
+            </div>
+          </div>
+          <div class="panel-sec" data-panel="discipline" hidden>
+            <h2 class="sec-title">执行纪律</h2>
+            <p class="hint">A/B 版纪律块正文与机器级映射（占位）。</p>
+          </div>
+
+          <!-- ===================== 自动化编制（B279 / B156.3） ===================== -->
+          <div class="panel-sec" data-panel="automation">
+            <h2 class="sec-title">自动化</h2>
+            <p class="hint" style="margin-bottom:14px">编制 = 自动化层的「谁来跑、能同时跑几个」。<b>载体</b>是物理承载：一台机器上一个可领活的 CLI 档案（HOME × 模型 × 凭据 × 并发上限）。状态四态：<b>未上线</b>（刚创建或还没登录）／<b>已上线</b>（唯一进派发）／<b>限额中</b>（可恢复，自动查询后续做）／<b>不可达</b>（曾经上线，现在探不到）。创建后自动检测一次；之后用「检测」刷新，「运行」只复制一条 TUI 命令。</p>
+
+            <div class="sec-head">
+              <span class="sub-title">载体</span>
+              <span class="hint" style="margin:0">并发上限是物理位：同一载体跨小队全局计数</span>
+              <span class="spacer"></span>
+              <button class="btn sm" id="carrierNew">＋ 登记载体</button>
+            </div>
+            <div id="carrierList"></div>
+
+            <div class="sec-head">
+              <span class="sub-title">小队</span>
+              <span class="hint" style="margin:0">并发上限是政策位：按队计数；一个小队不混编两种角色</span>
+              <span class="spacer"></span>
+              <button class="btn sm" id="squadNew">＋ 建小队</button>
+            </div>
+            <div id="squadList"></div>
+            <p class="hint">协调者小队的成员载体必须落在协调机（账本凭据所在的机器）——协调者干活的方式就是读写账本。执行者小队成员可以是任何执行机。</p>
+          </div>
+
+          <div class="panel-sec" data-panel="general" hidden>
+            <h2 class="sec-title">常规</h2>
+            <p class="hint">常规配置项（占位）。</p>
+          </div>
+          <div class="panel-sec" data-panel="env" hidden>
+            <h2 class="sec-title">Env 文件</h2>
+            <p class="hint">Env 文件管理（占位）。</p>
+          </div>
+
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- B279：载体 编辑/登记弹窗（同一表单，新建时名字可填） -->
+<dialog id="carrierDialog">
+  <form id="carrierForm" style="padding:18px 20px;width:480px;max-width:92vw">
+    <h3 style="margin:0 0 12px;font-size:15px" id="carrierDialogTitle">编辑载体</h3>
+    <div class="form-grid">
+      <div><label>载体名（唯一，登记后不可改）</label><input class="input mono" id="cfName" placeholder="如 mbp-opencode" required></div>
+      <div><label>机器</label><select class="input" id="cfMachine"><option>本机</option><option>mac-02</option><option>win-b37</option><option>linux-01</option></select></div>
+      <div><label>CLI</label><select class="input" id="cfCli"><option>opencode</option><option>claude</option><option>codex</option><option>grok</option></select></div>
+      <div><label>模型（留空 = CLI 默认）</label><input class="input mono" id="cfModel" placeholder="如 gpt-5.6-luna"></div>
+      <div class="full"><label>HOME 档案（隔离 HOME；默认 ~/.handoff/home/&lt;载体名&gt;，可改）</label><input class="input mono" id="cfHome" placeholder="~/.handoff/home/…" required>
+        <p class="probe-hint" id="cfProbe"></p>
+      </div>
+      <div><label>凭据来源</label><select class="input" id="cfCredential"><option value="standalone">独立账号</option><option value="main_home_sync">主 HOME 同步</option></select></div>
+      <div><label>并发上限（0 / 留空 = 不限）</label><input class="input" id="cfConc" type="number" min="0" placeholder="不限"></div>
+    </div>
+    <p class="hint">主 HOME 同步 = 把主环境的认证态搬进隔离 HOME。改路径会探测：空目录或已登录 → 保存后自动创建；非空且无凭据 → 不覆盖，可保存为未上线。</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button type="button" class="btn sm" id="cfCancel">取消</button>
+      <button type="submit" class="btn sm primary">保存</button>
+    </div>
+    <p class="mock-ok" id="cfFeedback" hidden>已保存（mock）。创建后状态为未上线，正在自动检测一次。</p>
+  </form>
+</dialog>
+
+<!-- B279：小队 编辑/新建弹窗 -->
+<dialog id="squadDialog">
+  <form id="squadForm" style="padding:18px 20px;width:440px;max-width:92vw">
+    <h3 style="margin:0 0 12px;font-size:15px" id="squadDialogTitle">编辑小队</h3>
+    <div class="form-grid">
+      <div><label>小队名（唯一）</label><input class="input mono" id="sfName" placeholder="如 coordinators" required></div>
+      <div><label>角色（不混编）</label><select class="input" id="sfRole"><option value="executor">执行者队</option><option value="coordinator">协调者队</option></select></div>
+      <div class="full"><label>成员载体（按勾选顺序解析：第一个健康且有空的载体领活）</label><div class="check-list" id="sfMembers"></div></div>
+      <div><label>并发上限（政策位；0 / 留空 = 不限）</label><input class="input" id="sfConc" type="number" min="0" placeholder="不限"></div>
+    </div>
+    <p class="hint" id="sfRoleHint">协调者队成员必须落在协调机；执行者队成员可以是任何执行机。</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button type="button" class="btn sm" id="sfCancel">取消</button>
+      <button type="submit" class="btn sm primary">保存</button>
+    </div>
+    <p class="mock-ok" id="sfFeedback" hidden>已保存（mock）：PUT /api/squads/squads/&lt;name&gt;?expect=&lt;version&gt;，版本 +1。</p>
+  </form>
+</dialog>
+
+<script>
+  // ---- 分区切换；?section=xxx 支持从 toast 的「查看详情」直达 ----
+  function activate(name) {
+    const tab = document.querySelector(`.settings nav a[data-tab="${name}"]`);
+    if (!tab) return;
+    document.querySelectorAll('.settings nav a').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.panel-sec').forEach(p => p.hidden = true);
+    tab.classList.add('active');
+    document.querySelector(`.panel-sec[data-panel="${name}"]`).hidden = false;
+  }
+  document.querySelectorAll('.settings nav a').forEach(tab => {
+    tab.addEventListener('click', () => activate(tab.dataset.tab));
+  });
+  activate(new URLSearchParams(location.search).get('section') || 'automation');
+
+  // ---- mock 数据：执行机版本 ----
+  // 四行覆盖四种真实状态。后两种是 2026-08-20 真机走查补上的：
+  //   incomparable —— 开发构建的版本戳是提交号，比不出来。它**不是**「已是最新」，
+  //     那样写等于把「我不知道」显示成「你没事」，还会顺手藏掉升级入口
+  //   failing —— 升级会失败（如那台机器出不了网）。失败必须有出口：清掉「升级中」
+  //     并原样显示原因，否则界面会永远转下去
+  const machines = [
+    { name: '本机',     addr: '127.0.0.1:7466',    ver: 'v0.3.3',      state: 'bundled' },
+    { name: 'mac-02',   addr: '192.168.1.42:7466', ver: 'v0.3.1',      state: 'outdated', failing: true },
+    { name: 'win-b37',  addr: '192.168.1.37:7466', ver: 'v0.2.9',      state: 'outdated' },
+    { name: 'linux-01', addr: '192.168.1.11:7466', ver: '7dec31185aaa', state: 'incomparable' },
+  ];
+  const tbody = document.getElementById('machineRows');
+  machines.forEach((m, i) => {
+    const tr = document.createElement('tr');
+    const right = m.state === 'bundled'
+      ? '<span class="dim" style="font-size:12px">随桌面应用一起更新</span>'
+      : `<button class="btn sm" data-up="${i}">升级到 v0.3.4</button>`;
+    const badge = m.state === 'bundled'
+      ? '<span class="badge">与本机应用绑定</span>'
+      : m.state === 'incomparable'
+        ? '<span class="badge">版本无法比较</span>'
+        : '<span class="badge amber">可升级</span>';
+    tr.innerHTML = `<td><strong>${m.name}</strong><div class="dim mono" style="font-size:11.5px">${m.addr}</div></td>
+                    <td class="mono">${m.ver}</td><td>${badge}</td><td>${right}</td>`;
+    tbody.appendChild(tr);
+  });
+  // 升级执行机：原型只走状态动画，不发真实请求
+  tbody.addEventListener('click', e => {
+    const btn = e.target.closest('button[data-up]');
+    if (!btn) return;
+    const row = btn.closest('tr');
+    btn.disabled = true; btn.textContent = '升级中…';
+    const m = machines[Number(btn.dataset.up)];
+    setTimeout(() => {
+      if (m.failing) {
+        // 失败出口：版本不变，按钮回到可点，原因与处置就地摊开
+        row.children[3].innerHTML =
+          `<button class="btn sm" data-up="${machines.indexOf(m)}">升级到 v0.3.4</button>` +
+          '<div style="color:var(--destructive);font-size:11.5px;margin-top:4px;text-align:right">' +
+          '下载 checksums.txt: 尝试 3 次仍失败: i/o timeout</div>';
+        return;
+      }
+      row.children[1].textContent = 'v0.3.4';
+      row.children[2].innerHTML = '<span class="badge">已是最新</span>';
+      row.children[3].innerHTML = '<span class="dim" style="font-size:12px">刚刚升级</span>';
+    }, 1400);
+  });
+
+  // ---- 桌面应用自更新：下载 → 进度 → 即将重启 ----
+  const btn = document.getElementById('heroBtn');
+  const prog = document.getElementById('heroProg'), bar = document.getElementById('heroBar');
+  btn.addEventListener('click', () => {
+    if (btn.dataset.done) { location.reload(); return; }
+    btn.disabled = true; btn.textContent = '下载中…';
+    document.getElementById('heroRecheck').hidden = true;
+    prog.hidden = false;
+    let p = 0;
+    const t = setInterval(() => {
+      p += 9 + Math.floor(Math.random() * 12);
+      bar.style.width = Math.min(p, 100) + '%';
+      if (p >= 100) {
+        clearInterval(t);
+        document.getElementById('heroTitle').textContent = '已下载 v0.3.4';
+        document.getElementById('heroBadge').outerHTML = '<span class="badge solid">待安装</span>';
+        document.getElementById('heroSub').innerHTML = '已校验并在访达中打开：<code class="mono">~/.handoff/downloads/handoff-desktop_v0.3.4_darwin_arm64.dmg</code>。把新版拖进「应用程序」，再重开一次即可。';
+        document.getElementById('heroNotes').hidden = true;
+        btn.textContent = '再次打开'; btn.disabled = false; btn.dataset.done = '1';
+      }
+    }, 260);
+  });
+  document.getElementById('heroRecheck').addEventListener('click', function () {
+    this.disabled = true; this.textContent = '检查中…';
+    setTimeout(() => { this.disabled = false; this.textContent = '重新检查'; }, 900);
+  });
+
+  // ===================== B293：载体四态 + 默认 HOME + 检测/运行（mock） =====================
+  const STATUS = {
+    pending:     { label: '未上线', cls: 'pending', dispatch: false },
+    online:      { label: '已上线', cls: 'online', dispatch: true },
+    quota:       { label: '限额中', cls: 'quota', dispatch: false },
+    unreachable: { label: '不可达', cls: 'unreachable', dispatch: false },
+  };
+  const carriers = [
+    { name: 'mbp-opencode', machine: '本机', cli: 'opencode', home_dir: '~/.handoff/home/mbp-opencode', model: '', credential: 'standalone', max_concurrency: 2, status: 'online', last_error: '', version: 3, running: 1 },
+    { name: 'mbp-claude-main', machine: '本机', cli: 'claude', home_dir: '~/.handoff/home/mbp-claude-main', model: 'claude-sonnet-4.5', credential: 'main_home_sync', max_concurrency: 1, status: 'quota', last_error: '账户额度已用尽（自动查询后续做）', version: 1, running: 0 },
+    { name: 'linux01-codex', machine: 'linux-01', cli: 'codex', home_dir: '~/.handoff/home/linux01-codex', model: 'gpt-5.6-luna', credential: 'standalone', max_concurrency: 2, status: 'unreachable', last_error: 'dial tcp：连接被拒绝', version: 5, running: 0 },
+    { name: 'win37-claude', machine: 'win-b37', cli: 'claude', home_dir: 'C:\\Users\\dev\\.handoff\\home\\win37-claude', model: '', credential: 'standalone', max_concurrency: 0, status: 'pending', last_error: '需要登录。点「运行」复制命令，在该机 TUI 登录后再点「检测」。', version: 1, running: 0 },
+  ];
+  const squads = [
+    { name: 'executors-default', role: 'executor', members: ['linux01-codex', 'mbp-opencode'], max_concurrency: 3, version: 2, running: 1 },
+    { name: 'coordinators', role: 'coordinator', members: ['mbp-opencode'], max_concurrency: 1, version: 4, running: 1 },
+  ];
+  const CRED_TEXT = { standalone: '独立账号', main_home_sync: '主 HOME 同步' };
+  function defaultHome(name) {
+    return name.trim() ? `~/.handoff/home/${name.trim()}` : '';
+  }
+  function runCommand(c) {
+    return `HOME=${c.home_dir} ${c.cli}`;
+  }
+  function probeHome(path) {
+    const p = (path || '').trim();
+    if (!p) return { kind: 'empty', text: '将填入默认路径。目录为空时，保存后自动创建并检测一次。', cls: 'ok' };
+    if (/Documents|occupied/i.test(p)) return { kind: 'occupied', text: '目录非空且未见该执行者凭据，不会覆盖。可保存为未上线。', cls: 'bad' };
+    if (carriers.some(c => c.home_dir === p && (c.status === 'online' || c.status === 'quota'))) {
+      return { kind: 'logged_in', text: '已登录，保存后将按此档案自动创建（不覆盖现有凭据）。', cls: 'ok' };
+    }
+    return { kind: 'empty', text: '目录为空，保存后将自动创建并检测一次。', cls: 'ok' };
+  }
+
+  function renderCarriers() {
+    document.getElementById('carrierList').innerHTML = carriers.map((c, i) => {
+      const st = STATUS[c.status];
+      return `
+      <div class="entity-card">
+        <div class="e-head">
+          <span class="e-name">${c.name}</span>
+          <span class="status-pill ${st.cls}">${st.label}</span>
+          <span class="dim" style="font-size:12px">${c.machine} · ${c.cli}${st.dispatch ? '' : ' · 不进派发'}</span>
+          <span class="spacer"></span>
+          <span class="e-usage">在跑 ${c.running} / ${c.max_concurrency || '不限'} · v${c.version}</span>
+          <span class="e-actions">
+            <button class="btn sm" data-detect="${i}">检测</button>
+            <button class="btn sm" data-run="${i}">运行</button>
+            <button class="btn sm" data-ce="${i}">编辑</button>
+          </span>
+        </div>
+        <dl class="kv">
+          <dt>HOME 档案</dt><dd class="mono">${c.home_dir}</dd>
+          <dt>模型</dt><dd>${c.model ? `<span class="mono">${c.model}</span>` : '<span class="dim">CLI 默认</span>'}</dd>
+          <dt>凭据来源</dt><dd>${CRED_TEXT[c.credential]}</dd>
+          <dt>并发上限</dt><dd>${c.max_concurrency || '不限'}<span class="dim">（物理位 · 跨小队全局计数）</span></dd>
+        </dl>
+        ${c.last_error ? `<p class="last-err">${c.last_error}</p>` : ''}
+        <p class="copy-toast" id="copy-${i}" hidden></p>
+      </div>`;
+    }).join('');
+    document.querySelectorAll('[data-ce]').forEach(b => b.addEventListener('click', () => openCarrierDialog(carriers[Number(b.dataset.ce)])));
+    document.querySelectorAll('[data-detect]').forEach(b => b.addEventListener('click', () => {
+      const i = Number(b.dataset.detect);
+      const c = carriers[i];
+      b.disabled = true; b.textContent = '检测中…';
+      setTimeout(() => {
+        if (c.status === 'quota') {
+          c.last_error = '仍在限额中。自动查询后续做；现在只能再点检测。';
+        } else if (c.status === 'pending' || c.status === 'unreachable') {
+          c.status = 'online';
+          c.last_error = '';
+        } else {
+          c.last_error = '';
+        }
+        renderCarriers();
+      }, 700);
+    }));
+    document.querySelectorAll('[data-run]').forEach(b => b.addEventListener('click', () => {
+      const i = Number(b.dataset.run);
+      const el = document.getElementById('copy-' + i);
+      el.hidden = false;
+      el.textContent = '已复制（mock）：' + runCommand(carriers[i]) + '  —— 在该载体所在机器的终端里跑，用来登录或排障。';
+    }));
+  }
+
+  function renderSquads() {
+    document.getElementById('squadList').innerHTML = squads.map((s, i) => `
+      <div class="entity-card">
+        <div class="e-head">
+          <span class="e-name">${s.name}</span>
+          <span class="role-badge ${s.role}">${s.role === 'coordinator' ? '协调者队' : '执行者队'}</span>
+          <span class="spacer"></span>
+          <span class="e-usage">在跑 ${s.running} / ${s.max_concurrency || '不限'} · v${s.version}</span>
+          <button class="btn sm" data-se="${i}">编辑</button>
+        </div>
+        <div class="member-chips">
+          ${s.members.map(m => {
+            const c = carriers.find(x => x.name === m);
+            return `<span class="member-chip" title="${c ? `${c.machine} · ${c.cli} · ${c.status === 'online' ? '已上线' : STATUS[c.status].label}` : ''}"><span class="mdot" style="${c && c.status !== 'online' ? 'background:#d4d4d4' : ''}"></span>${m}</span>`;
+          }).join('') || '<span class="dim" style="font-size:12px">空队合法：先建队再补成员</span>'}
+        </div>
+        <dl class="kv">
+          <dt>并发上限</dt><dd>${s.max_concurrency || '不限'}<span class="dim">（政策位 · 按队计数）</span></dd>
+          <dt>绑定对象</dt><dd>${s.role === 'coordinator' ? '拉起通道（开卡即绑 / 一键拉起）' : '工作流派发节点（flows 页配置）'}</dd>
+        </dl>
+      </div>`).join('');
+    document.querySelectorAll('[data-se]').forEach(b => b.addEventListener('click', () => openSquadDialog(squads[Number(b.dataset.se)])));
+  }
+
+  // ---- 载体弹窗：编辑与登记同一表单；保存走 CAS（expect=当前 version）----
+  const carrierDialog = document.getElementById('carrierDialog');
+  let homeTouched = false;
+  let lastAutoHome = '';
+  function refreshProbe() {
+    const hint = probeHome(document.getElementById('cfHome').value);
+    const el = document.getElementById('cfProbe');
+    el.textContent = hint.text;
+    el.className = 'probe-hint ' + hint.cls;
+  }
+  function openCarrierDialog(c) {
+    document.getElementById('carrierDialogTitle').textContent = c ? `编辑载体 · ${c.name}（v${c.version}）` : '登记载体';
+    document.getElementById('cfName').value = c ? c.name : '';
+    document.getElementById('cfName').readOnly = !!c;
+    document.getElementById('cfMachine').value = c ? c.machine : '本机';
+    document.getElementById('cfCli').value = c ? c.cli : 'opencode';
+    document.getElementById('cfModel').value = c ? c.model : '';
+    const auto = c ? c.home_dir : defaultHome('');
+    document.getElementById('cfHome').value = auto;
+    lastAutoHome = c ? c.home_dir : '';
+    homeTouched = !!c;
+    document.getElementById('cfCredential').value = c ? c.credential : 'standalone';
+    document.getElementById('cfConc').value = c && c.max_concurrency ? c.max_concurrency : '';
+    document.getElementById('cfFeedback').hidden = true;
+    refreshProbe();
+    carrierDialog.showModal();
+  }
+  document.getElementById('cfName').addEventListener('input', () => {
+    if (document.getElementById('cfName').readOnly) return;
+    const next = defaultHome(document.getElementById('cfName').value);
+    const cur = document.getElementById('cfHome').value;
+    if (!homeTouched || cur === '' || cur === lastAutoHome) {
+      document.getElementById('cfHome').value = next;
+      lastAutoHome = next;
+      homeTouched = false;
+      refreshProbe();
+    }
+  });
+  document.getElementById('cfHome').addEventListener('input', () => {
+    homeTouched = true;
+    refreshProbe();
+  });
+  document.getElementById('carrierNew').addEventListener('click', () => openCarrierDialog(null));
+  document.getElementById('cfCancel').addEventListener('click', () => carrierDialog.close());
+  document.getElementById('carrierForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    document.getElementById('cfFeedback').hidden = false;
+  });
+
+  // ---- 小队弹窗 ----
+  const squadDialog = document.getElementById('squadDialog');
+  function openSquadDialog(s) {
+    document.getElementById('squadDialogTitle').textContent = s ? `编辑小队 · ${s.name}（v${s.version}）` : '建小队';
+    document.getElementById('sfName').value = s ? s.name : '';
+    document.getElementById('sfName').readOnly = !!s;
+    document.getElementById('sfRole').value = s ? s.role : 'executor';
+    document.getElementById('sfConc').value = s && s.max_concurrency ? s.max_concurrency : '';
+    document.getElementById('sfMembers').innerHTML = carriers.map(c =>
+      `<label><input type="checkbox" value="${c.name}" ${s && s.members.includes(c.name) ? 'checked' : ''}> <span class="mono">${c.name}</span> <span class="dim">${c.machine} · ${c.cli}</span></label>`).join('');
+    document.getElementById('sfFeedback').hidden = true;
+    squadDialog.showModal();
+  }
+  document.getElementById('squadNew').addEventListener('click', () => openSquadDialog(null));
+  document.getElementById('sfCancel').addEventListener('click', () => squadDialog.close());
+  document.getElementById('squadForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    document.getElementById('sfFeedback').hidden = false;
+  });
+
+  renderCarriers();
+  renderSquads();
+</script>
+</body>
+</html>

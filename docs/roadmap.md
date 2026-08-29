@@ -528,6 +528,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **K6 旧 web UI 的可用资产回收评估**：QueuePanel 的全屏队列视图、CoordinatorPanel 的
   部分测试用例可能在「调度可视化扩展」卡里复用；形态本身已裁决不复活（B279 spec 弃选）。
 
+## 来自 B293 spec（2026-08-29，隔离 HOME 与载体四态）
+
+- **自动限额查询**：周期探测账户额度，把载体状态在「已上线」↔「限额中」之间自动迁移，不必人点检测。B156.3 已把「CLI 限额探测」推进 roadmap，本卡只把「限额中」状态位落地并允许检测写入。来源：B293 spec Out of Scope。
+- **不经检测写入不可达**：派发失败或后台探活把「已上线」改成「不可达」。本期状态写入点只有创建/改 HOME 与检测。来源：同上。
+
 ## 来自 B282 finish（2026-08-28）
 
 - **顺序拉起填不满 `launch_queue`**：协调者小队 `max_concurrency=1` 时，第一次 `POST coordinator/launch` 200 后立即第二次仍 200 新 session，`GET /api/queue` 空。名额在 launch HTTP 返回时就归还（K5 `releaseSchedulingBinding` 与 implement 无 Verdict 同款）。排队 UI 能呈现快照，但顺序满员不会入队。要验「横带有行」得并发双发或改占用寿命。来源：B282 acceptance 真机。
