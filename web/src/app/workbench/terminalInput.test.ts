@@ -190,6 +190,74 @@ describe('② 中文输入法下的标点', () => {
   })
 })
 
+async function enterAlternateBuffer(r: Rig): Promise<void> {
+  await new Promise<void>((resolve) => {
+    r.term.write('\x1b[?1049h', () => resolve())
+  })
+  expect(r.term.buffer.active.type).toBe('alternate')
+}
+
+function dispatchEnter(
+  r: Rig,
+  modifiers: { shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } = {},
+): KeyboardEvent {
+  const ev = key('keydown', { key: 'Enter', keyCode: 13, ...modifiers })
+  vi.spyOn(ev, 'stopPropagation')
+  r.ta.dispatchEvent(ev)
+  return ev
+}
+
+describe('B302：alt-screen 的 Shift+Enter', () => {
+  it('交替屏 Shift+Enter 发 CSI u，不再让 xterm 发 CR', async () => {
+    rig = makeRig(true)
+    await enterAlternateBuffer(rig)
+    const input = vi.spyOn(rig.term, 'input')
+
+    const ev = dispatchEnter(rig, { shiftKey: true })
+
+    expect(input).toHaveBeenCalledTimes(1)
+    expect(input).toHaveBeenCalledWith('\x1b[13;2u')
+    expect(rig.data).toEqual(['\x1b[13;2u'])
+    expect(rig.data).not.toContain('\r')
+    expect(ev.defaultPrevented).toBe(true)
+    expect(ev.stopPropagation).toHaveBeenCalledTimes(1)
+  })
+
+  it('主屏 Shift+Enter 不走补发，仍由 xterm 产生 CR', () => {
+    rig = makeRig(true)
+    const input = vi.spyOn(rig.term, 'input')
+
+    dispatchEnter(rig, { shiftKey: true })
+
+    expect(input).not.toHaveBeenCalled()
+    expect(rig.data).toEqual(['\r'])
+  })
+
+  it('交替屏裸 Enter 仍走 xterm 的 CR', async () => {
+    rig = makeRig(true)
+    await enterAlternateBuffer(rig)
+    const input = vi.spyOn(rig.term, 'input')
+
+    dispatchEnter(rig)
+
+    expect(input).not.toHaveBeenCalled()
+    expect(rig.data).toEqual(['\r'])
+  })
+
+  it('交替屏 Alt+Enter、Ctrl+Enter 与带额外 Meta 的组合都不走补发', async () => {
+    rig = makeRig(true)
+    await enterAlternateBuffer(rig)
+    const input = vi.spyOn(rig.term, 'input')
+
+    dispatchEnter(rig, { altKey: true })
+    dispatchEnter(rig, { ctrlKey: true })
+    dispatchEnter(rig, { shiftKey: true, metaKey: true })
+
+    expect(input).not.toHaveBeenCalled()
+    expect(rig.data).toEqual(['\x1b\r', '\r', '\r'])
+  })
+})
+
 // 没坏的路径必须原样不动。这一组是补漏的「不许越界」边界。
 describe('原有输入路径不受影响', () => {
   it('普通字母仍由 xterm 的 keydown 直接发出，且只发一次', () => {

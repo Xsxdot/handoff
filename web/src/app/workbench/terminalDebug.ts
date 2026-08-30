@@ -115,13 +115,14 @@ export function logTermResize(label: string, cols: number, rows: number, reason:
 //     会一直是这一条，是「没有双发」的现场判据）；
 //     '拦下注入键事件' = 认出了 espanso 那种「整串塞进一个键事件」的形状；
 //     '⌘← 行首' / '⌘→ 行尾' / '⌘K 清屏' = 本模块转发的 mac 终端键；
-//     'Option Meta' = WKWebView 下 Option+字母（key 是 ∫/ƒ、keyCode 常为 0）按物理键发 ESC+字母
+//     'Option Meta' = WKWebView 下 Option+字母（key 是 ∫/ƒ、keyCode 常为 0）按物理键发 ESC+字母；
+//     'Shift+Enter 换行' = alternate buffer 中转发给 TUI 的 CSI u
 //   - text: 涉及的原文
 //
 // 注意：出现大量「补发」是正常的——WebKit 下中文标点每敲一下就是一条。
 // 真正要警惕的是同一次输入既有「补发」又有「让给 xterm」，那说明判据串了，
 // 用户会看到重复字符。
-export function logTermFix(label: string, kind: '补发' | '让给 xterm' | '拦下注入键事件' | '⌘← 行首' | '⌘→ 行尾' | '⌘K 清屏' | 'Option Meta', text: string): void {
+export function logTermFix(label: string, kind: '补发' | '让给 xterm' | '拦下注入键事件' | '⌘← 行首' | '⌘→ 行尾' | '⌘K 清屏' | 'Option Meta' | 'Shift+Enter 换行', text: string): void {
   if (!terminalDebugEnabled()) return
   console.debug('[term:fix]', { 终端: label, 动作: kind, 原文: JSON.stringify(text) })
 }
