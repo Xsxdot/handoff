@@ -438,6 +438,7 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - GET  /api/status                    agentd 可用性与身份
 //   - GET  /api/footprint                 全任务进程足迹体检
 //   - GET  /api/reclaim                    终态任务 managed worktree 残留体检
+//   - GET/POST /api/gc                    终态缓存与残留 managed worktree 预览/执行
 //   - GET  /api/tasks                   任务列表
 //   - POST /api/tasks                   派发新任务（dispatch）
 //   - GET  /api/tasks/{id}              任务详情（attach 数据源）
@@ -494,6 +495,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/status", s.handleStatus)
 	api.HandleFunc("GET /api/footprint", s.handleFootprint)
 	api.HandleFunc("GET /api/reclaim", s.handleReclaimList)
+	api.HandleFunc("GET /api/gc", s.handleGC)
+	api.HandleFunc("POST /api/gc", s.handleGC)
 	api.HandleFunc("GET /api/tasks", s.handleListTasks)
 	api.HandleFunc("POST /api/tasks", s.handleDispatch)
 	// /api/tasks/{id} 系列按任务归属包一层 byTask：本机没有就查镜像索引转发

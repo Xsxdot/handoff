@@ -107,6 +107,9 @@
    "from": "d_gateway",
    "to": "d_orchestration",
    "legacyBudget": 321,
+   "entries": [
+    "agentd.Manager"
+   ],
    "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。"
   },
   {
