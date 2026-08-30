@@ -6,7 +6,9 @@
 //       只补漏，不接管：xterm 自己发得出去的字符一律不碰。
 // 边界：
 //   - 可打印文本怎么进 PTY。控制键（方向键/Enter/Ctrl-C）、
-//     输入法合成（compositionstart/end）、粘贴，全部原样留给 xterm
+//     输入法合成（compositionstart/end）、粘贴，全部原样留给 xterm；唯一例外是
+//     alternate buffer 中无额外修饰的 Shift+Enter，转发 CSI u，避免主屏裸 LF/CR
+//     被行编辑器当成 accept-line；这不是完整 Kitty keyboard protocol
 //   - ⌘K 是仿真器本地清屏，禁止因此往 PTY 写任何 CSI/C0
 //   - 不直接往 WS 写字节。补发一律走 `term.input()`，让补发的字符与用户
 //     手敲的字符走同一条 onData —— 上层的取证日志、尺寸逻辑因此不必知道本模块存在
@@ -207,6 +209,10 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   // 「摘除」接口，dispose 时若不自己失效，拦截会在补漏已经卸掉之后继续生效——
   // keypress 被拦、又没人补发，字符就凭空消失了。不用「dispose 时重新 attach
   // 一个恒真处理器」来复位，是因为那会连带覆盖掉别人后来挂上去的处理器。
+  // TUI 约定的单键 CSI u：13 是 Enter，2 是 Shift；只在 alternate buffer 发送。
+  // 这是一个单键兼容补漏，不是完整 Kitty keyboard protocol。
+  const TUI_SHIFT_ENTER = '\x1b[13;2u'
+
   let disposed = false
   term.attachCustomKeyEventHandler((ev) => {
     if (disposed) return true
@@ -220,6 +226,20 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
       }
     }
     if (ev.type === 'keydown') {
+      if (
+        ev.key === 'Enter' &&
+        ev.shiftKey &&
+        !ev.altKey &&
+        !ev.ctrlKey &&
+        !ev.metaKey &&
+        term.buffer.active.type === 'alternate'
+      ) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        logTermFix(label, 'Shift+Enter 换行', TUI_SHIFT_ENTER)
+        term.input(TUI_SHIFT_ENTER)
+        return false
+      }
       const metaLetter = optionMetaLetter(ev)
       if (metaLetter !== null) {
         ev.preventDefault()
