@@ -477,3 +477,8 @@
 - **按保留期删除整棵任务目录 / `render.log`**。B298 明确保留排查素材。来源：同上。
 - **`reclaim` 无参批量收树**。今天仍是一任务一次；B298 只在 gc 能力内部调单任务回收。来源：同上。
 - **磁盘上没有任务行的孤儿 tmp 目录**。任务表只增不删，B298 只按终态行删两处叶子，禁止 `RemoveAll` 整个 DataDir `tmp` 根。来源：B298 spec 审查 I3。
+
+## 来自 B298 finish（2026-08-30，合入并升级 agentd 后补）
+
+- **linux-01 真机清盘**：升级该机 agentd 后跑 `handoff gc --target linux-01` 预览真实缓存字节与脏树 skip，再 `--yes`（必要时 `--force`）清终态叶子；另 `done` 一个跑过 `go test` 的任务，确认 gocache 叶子消失且 `handoff attach` 仍可读。来源：B298 真机清单 1/2/4，验收时对端仍过旧。
+- **Windows 文件占用导致的删除失败**：若仍在支持矩阵，gc 冒烟须呈现为报告 failed 行/日志、命令不崩溃。来源：B298 真机清单 5，本期无 Windows 机。
