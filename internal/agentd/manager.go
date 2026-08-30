@@ -1096,6 +1096,9 @@ func (m *Manager) compensateWorkspace(ctx context.Context, taskID string, repo s
 	if ws.WorkDir == "" {
 		return
 	}
+	// B298 C-2：工作树删除/切回失败会提前 return；用 defer 保证缓存删除仍被尝试。
+	// 顺序仍是「先尝试工作树处置，再删缓存」（defer 在函数返回时运行）。
+	defer m.purgeTaskCache(taskID)
 	m.log.Warn("dispatch 后续失败，补偿复原工作区", "repo", repo, "workdir", ws.WorkDir,
 		"managed", ws.Managed, "branch", ws.Branch, "prev_ref", ws.PrevRef)
 
@@ -1474,6 +1477,9 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 			m.log.Info("managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
 		}
 	}
+	// B298：工作树处置尝试之后再删任务私有缓存。失败只记日志，不阻断归档。
+	// 重试入口是 gc，不是重发 done（已 completed 会短路）。
+	m.purgeTaskCache(taskID)
 	return nil
 }
 
@@ -1581,6 +1587,8 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 			m.log.Info("stop managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
 		}
 	}
+	// B298：stop 工作树处置尝试之后删缓存；失败不阻断 stop。
+	m.purgeTaskCache(taskID)
 	m.hub.Publish(evt)
 	return worktreeRemoved, nil
 }

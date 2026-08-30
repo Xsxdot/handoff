@@ -9,9 +9,15 @@
 package agentd
 
 import (
+	"bytes"
+	"context"
+	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -108,5 +114,196 @@ func TestSumRegularFileBytesIgnoresDirSymlinkAndNonRegular(t *testing.T) {
 	missing, err := sumRegularFileBytes(filepath.Join(root, "nope"))
 	if err != nil || missing != 0 {
 		t.Fatalf("缺失目录应 0,nil，实得 %d %v", missing, err)
+	}
+}
+
+func writeCacheLeaves(t *testing.T, dataDir, id string) (active, legacy, taskDir string) {
+	t.Helper()
+	active = executor.TaskTmpDir(dataDir, id)
+	if err := os.MkdirAll(filepath.Join(active, "gocache"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(active, "gocache", "obj"), []byte("cache-bytes"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	taskDir = filepath.Join(dataDir, "tasks", id)
+	legacy = filepath.Join(taskDir, "tmp")
+	if err := os.MkdirAll(legacy, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(legacy, "old"), []byte("legacy"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"render.log", "frames.jsonl", "proc.json"} {
+		if err := os.WriteFile(filepath.Join(taskDir, name), []byte(name+"-keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return active, legacy, taskDir
+}
+
+func seedTaskWithCache(t *testing.T, m *Manager, id string, state proto.TaskState) (active, legacy, taskDir string) {
+	t.Helper()
+	now := time.Now().UTC()
+	mustCreateTask(t, m.st, &proto.Task{
+		ID: id, Target: "local", Executor: "fake",
+		State: state, CreatedAt: now, UpdatedAt: now,
+	})
+	return writeCacheLeaves(t, m.cfg.DataDir, id)
+}
+
+func assertGone(t *testing.T, path string) {
+	t.Helper()
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("%s 应已删除: %v", path, err)
+	}
+}
+
+func assertKeptFile(t *testing.T, path, want string) {
+	t.Helper()
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("读 %s: %v", path, err)
+	}
+	if string(b) != want {
+		t.Fatalf("%s = %q want %q", path, b, want)
+	}
+}
+
+func TestDonePurgesBothCacheLeavesAndKeepsTaskDir(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	id := "11111111-0000-4000-8000-000000000001"
+	active, legacy, taskDir := seedTaskWithCache(t, m, id, proto.TaskStateWaitingReview)
+	mustDone(t, m, id, "")
+	assertGone(t, active)
+	assertGone(t, legacy)
+	assertKeptFile(t, filepath.Join(taskDir, "render.log"), "render.log-keep")
+	assertKeptFile(t, filepath.Join(taskDir, "frames.jsonl"), "frames.jsonl-keep")
+	assertKeptFile(t, filepath.Join(taskDir, "proc.json"), "proc.json-keep")
+	if _, err := os.Lstat(taskDir); err != nil {
+		t.Fatalf("任务目录必须保留: %v", err)
+	}
+	cur, err := st.GetTask(id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cur.State != proto.TaskStateCompleted {
+		t.Fatalf("state=%s want completed", cur.State)
+	}
+}
+
+func TestStopPurgesBothCacheLeaves(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	id := "22222222-0000-4000-8000-000000000002"
+	active, legacy, taskDir := seedTaskWithCache(t, m, id, proto.TaskStateRunning)
+	if _, err := m.Stop(context.Background(), id); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	assertGone(t, active)
+	assertGone(t, legacy)
+	assertKeptFile(t, filepath.Join(taskDir, "render.log"), "render.log-keep")
+	cur, _ := st.GetTask(id)
+	if cur.State != proto.TaskStateFailed {
+		t.Fatalf("state=%s want failed", cur.State)
+	}
+}
+
+func TestDoneKeepsActiveLeafWhenOtherNonTerminalSharesID8(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	self := "deadbeef-0000-4000-8000-aaaaaaaaaaaa"
+	other := "deadbeef-0000-4000-8000-bbbbbbbbbbbb"
+	active, legacy, _ := seedTaskWithCache(t, m, self, proto.TaskStateWaitingReview)
+	now := time.Now().UTC()
+	mustCreateTask(t, m.st, &proto.Task{
+		ID: other, Target: "local", Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now,
+	})
+	mustDone(t, m, self, "")
+	if _, err := os.Lstat(active); err != nil {
+		t.Fatalf("被占用的现役叶子必须保留: %v", err)
+	}
+	assertGone(t, legacy)
+}
+
+func TestDoneLegacyLeafIgnoresShortIDOccupancy(t *testing.T) {
+	// 与上一则共用形状：遗留叶子按完整 id，必须删。已在 TestDoneKeepsActiveLeafWhenOtherNonTerminalSharesID8 钉死。
+	// 本则再钉：占用者不存在时两条都删（对照）。
+	m, _, _, _ := newTestManager(t)
+	id := "feedfeed-0000-4000-8000-000000000009"
+	active, legacy, _ := seedTaskWithCache(t, m, id, proto.TaskStateWaitingReview)
+	mustDone(t, m, id, "")
+	assertGone(t, active)
+	assertGone(t, legacy)
+}
+
+func TestDoneOnRunningDoesNotPurgeCache(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	id := "33333333-0000-4000-8000-000000000003"
+	active, legacy, _ := seedTaskWithCache(t, m, id, proto.TaskStateRunning)
+	if err := m.Done(context.Background(), id, ""); err == nil {
+		t.Fatal("running 走 Done 必须失败")
+	}
+	if _, err := os.Lstat(active); err != nil {
+		t.Fatalf("非终态不得删现役叶子: %v", err)
+	}
+	if _, err := os.Lstat(legacy); err != nil {
+		t.Fatalf("非终态不得删遗留叶子: %v", err)
+	}
+}
+
+func TestDonePurgeFailureDoesNotBlockArchive(t *testing.T) {
+	var buf bytes.Buffer
+	m, st, _, _ := newTestManager(t)
+	m.log = slog.New(slog.NewTextHandler(&buf, nil))
+	id := "44444444-0000-4000-8000-000000000004"
+	active, _, _ := seedTaskWithCache(t, m, id, proto.TaskStateWaitingReview)
+	m.removeCacheLeafFn = func(path string) error {
+		return errors.New("injected-remove-fail")
+	}
+	mustDone(t, m, id, "")
+	cur, _ := st.GetTask(id)
+	if cur.State != proto.TaskStateCompleted {
+		t.Fatalf("删除失败不得阻断归档，state=%s", cur.State)
+	}
+	logs := buf.String()
+	for _, want := range []string{id, active, "injected-remove-fail"} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("失败日志缺少 %q，实得 %s", want, logs)
+		}
+	}
+}
+
+func TestCompensatePurgesCacheWhenWorktreeRemoveFails(t *testing.T) {
+	repo := initTestRepo(t)
+	gitT(t, repo, "branch", "e2e/stuck-cache")
+	tip := gitOut(t, repo, "rev-parse", "refs/heads/e2e/stuck-cache")
+	m := compensateOnlyManager(t)
+	id := "2c58bbb7-0000-0000-0000-000000000000"
+	active, legacy, taskDir := seedTaskWithCache(t, m, id, proto.TaskStateFailed)
+	m.compensateWorkspace(context.Background(), id, repo, Workspace{
+		Branch: "e2e/stuck-cache", WorkDir: filepath.Join(t.TempDir(), "not-a-worktree"),
+		Managed: true, NewBranchTip: tip,
+	})
+	assertGone(t, active)
+	assertGone(t, legacy)
+	assertKeptFile(t, filepath.Join(taskDir, "render.log"), "render.log-keep")
+	if !branchExists(t, repo, "e2e/stuck-cache") {
+		t.Fatal("工作树删除失败时分支必须保留（回归 TestCompensateKeepsBranchWhenWorktreeRemoveFails）")
+	}
+}
+
+func TestPurgeRefusesTmpRootEvenIfCalledDirectly(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	root := cacheTmpRoot(m.cfg.DataDir)
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(root, "keep-me")
+	if err := os.WriteFile(marker, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	m.purgeTaskCache("")
+	if _, err := os.Lstat(marker); err != nil {
+		t.Fatalf("tmp 根内文件必须幸存: %v", err)
 	}
 }
