@@ -220,6 +220,7 @@ handoff dispatch --target devbox --new-worktree plan.md
 | `handoff pull <task>` | 远程任务分支同步到本地（只 fetch 不 checkout） | — |
 | `handoff project add\|ls\|rm` | 项目登记管理 | `--target <机器>`；add 可 `--path <已有路径>` |
 | `handoff reclaim` | 回收终态任务残留的 managed worktree（不删分支） | — |
+| `handoff gc` | 预览或清理目标 agentd 上终态任务的缓存叶子（`tmp/<id8>` 与 `tasks/<id>/tmp`）和残留 managed 工作树 | `--yes` 执行；`--force` 仅脏树；`--json`；`--target` |
 | `handoff footprint` | 各任务进程占用与本机进程余量 | — |
 | `handoff status` | agentd 能不能用、版本、活跃任务与 executor 存活 | `--target <名>`；`--json`；退出码 0=能用 1=够不着 |
 | `handoff upgrade` | 巡检/升级本机与全部 target | `--now`；`--target <名>`；`--force`；`--rollback` |

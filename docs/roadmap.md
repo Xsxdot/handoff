@@ -474,3 +474,16 @@
 
 - **darwin 原生 WKWebView 通道的真机穿透未单独记录**：B266 的真机验证（点按钮 → 系统浏览器打开已登录 /cards 整页）在 linux-01 完成；darwin 侧只有 `wails3 task build` 装配门（2026-08-30 本机跑通）与分缝测试。darwin 的 `OriginInfo.Origin` 取 frame URL `absoluteString`（可能带 path/query），代码已按 scheme/host/有效端口同源比较处理——日常桌面使用点一次按钮确认后即可销账。来源：B266 验收。
 - **linux 上构建桌面端的工具链缺失**：linux-01 各轮 runner 无 `wails3` CLI、缺 `pkg-config`（webkit2gtk 系），装配门未在 linux 留证。要在 linux 出桌面包需先补工具链。来源：B266 实现台账（2026-08-29 多轮记录）。
+
+## 来自 B298 spec（2026-08-29，本期不做）
+
+- **开发机详情展示 DataDir 占用，并提供与 `handoff gc` 同语义的预览/确认清理**。B298 不做前端：清理是一次性删盘，不是设置页的持久配置。来源：B298 spec Out of Scope。
+- **`agentd.log` 轮转或截断**。B298 只收构建缓存与残留 managed 工作树；linux-01 该文件 297M，不是 150G 主体。来源：同上。
+- **按保留期删除整棵任务目录 / `render.log`**。B298 明确保留排查素材。来源：同上。
+- **`reclaim` 无参批量收树**。今天仍是一任务一次；B298 只在 gc 能力内部调单任务回收。来源：同上。
+- **磁盘上没有任务行的孤儿 tmp 目录**。任务表只增不删，B298 只按终态行删两处叶子，禁止 `RemoveAll` 整个 DataDir `tmp` 根。来源：B298 spec 审查 I3。
+
+## 来自 B298 finish（2026-08-30，合入并升级 agentd 后补）
+
+- **linux-01 真机清盘**：升级该机 agentd 后跑 `handoff gc --target linux-01` 预览真实缓存字节与脏树 skip，再 `--yes`（必要时 `--force`）清终态叶子；另 `done` 一个跑过 `go test` 的任务，确认 gocache 叶子消失且 `handoff attach` 仍可读。来源：B298 真机清单 1/2/4，验收时对端仍过旧。
+- **Windows 文件占用导致的删除失败**：若仍在支持矩阵，gc 冒烟须呈现为报告 failed 行/日志、命令不崩溃。来源：B298 真机清单 5，本期无 Windows 机。
