@@ -631,6 +631,32 @@ describe('TerminalTab', () => {
     await waitFor(() => expect(writeText).toHaveBeenCalledWith('hello'))
   })
 
+  it('桌面壳里先走同步复制，避免 WKWebView 拒绝异步 writeText（B300 回归）', async () => {
+    let selected = ''
+    const execCommand = vi.fn(() => {
+      const el = document.querySelector('textarea')
+      if (el) selected = el.value
+      return true
+    })
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    writeText.mockRejectedValueOnce(new Error('NotAllowedError'))
+
+    try {
+      render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+      await waitFor(() => expect(connectPty).toHaveBeenCalled())
+      connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+
+      osc52Handler!('c;aGVsbG8=')
+
+      expect(execCommand).toHaveBeenCalledWith('copy')
+      expect(selected).toBe('hello')
+      expect(writeText).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('copy-notice')).toBeNull()
+    } finally {
+      delete (document as { execCommand?: unknown }).execCommand
+    }
+  })
+
   it('积压重放期间不写、回放结束恢复写（B300 重放门）', async () => {
     render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())

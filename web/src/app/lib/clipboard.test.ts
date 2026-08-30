@@ -5,15 +5,34 @@
 //   - writeText 拒绝时不抛未处理 rejection——复制保持尽力而为
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { copyToClipboard } from './clipboard'
+import { NATIVE_CLIPBOARD_MESSAGE_PREFIX, NATIVE_CLIPBOARD_RESULT_EVENT } from './desktopShell'
 
 afterEach(() => {
   vi.restoreAllMocks()
   // jsdom 的 document.execCommand 本来不存在，测试里挂上去的要清掉
   delete (document as { execCommand?: unknown }).execCommand
+  delete (window as unknown as { webkit?: unknown }).webkit
 })
 
 describe('copyToClipboard', () => {
-  it('execCommand 成功时同步复制，不再调用 writeText', () => {
+  it('桌面宿主桥成功时使用原生剪贴板，不碰浏览器 API', async () => {
+    const writeText = vi.fn(() => Promise.resolve())
+    vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
+    const postMessage = vi.fn((message: string) => {
+      const requestID = message.slice(NATIVE_CLIPBOARD_MESSAGE_PREFIX.length).split(':', 1)[0]
+      window.dispatchEvent(new CustomEvent(NATIVE_CLIPBOARD_RESULT_EVENT, {
+        detail: { requestId: requestID, ok: true },
+      }))
+    })
+    ;(window as unknown as { webkit?: unknown }).webkit = { messageHandlers: { external: { postMessage } } }
+
+    await expect(copyToClipboard('native text')).resolves.toBe(true)
+
+    expect(postMessage).toHaveBeenCalledTimes(1)
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('execCommand 成功时同步复制，不再调用 writeText', async () => {
     let selected = ''
     ;(document as { execCommand?: unknown }).execCommand = vi.fn(() => {
       // execCommand('copy') 复制的是当前选区；jsdom 里 select() 不动 activeElement，
@@ -25,7 +44,7 @@ describe('copyToClipboard', () => {
     const writeText = vi.fn(() => Promise.resolve())
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
 
-    copyToClipboard('/some/abs/path')
+    await expect(copyToClipboard('/some/abs/path')).resolves.toBe(true)
 
     expect(selected).toBe('/some/abs/path')
     expect(writeText).not.toHaveBeenCalled()
@@ -37,7 +56,7 @@ describe('copyToClipboard', () => {
     const writeText = vi.fn(() => Promise.resolve())
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
 
-    copyToClipboard('rel/path')
+    void copyToClipboard('rel/path')
 
     expect(writeText).toHaveBeenCalledWith('rel/path')
   })
@@ -47,22 +66,22 @@ describe('copyToClipboard', () => {
     const writeText = vi.fn(() => Promise.resolve())
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
 
-    copyToClipboard('x')
+    void copyToClipboard('x')
 
     expect(writeText).toHaveBeenCalledWith('x')
   })
 
-  it('writeText 拒绝时静默（无未处理 rejection）', async () => {
+  it('writeText 拒绝时返回失败且无未处理 rejection', async () => {
     const writeText = vi.fn(() => Promise.reject(new DOMException('denied', 'NotAllowedError')))
     vi.stubGlobal('navigator', { ...navigator, clipboard: { writeText } })
 
-    expect(() => copyToClipboard('y')).not.toThrow()
+    await expect(copyToClipboard('y')).resolves.toBe(false)
     // 让微任务里的 rejection 落定；未捕获的话 vitest 会把它记为测试失败
     await new Promise((r) => setTimeout(r, 0))
   })
 
-  it('navigator.clipboard 不存在时不抛错', () => {
+  it('navigator.clipboard 不存在时返回失败而不抛错', async () => {
     vi.stubGlobal('navigator', { ...navigator, clipboard: undefined })
-    expect(() => copyToClipboard('z')).not.toThrow()
+    await expect(copyToClipboard('z')).resolves.toBe(false)
   })
 })

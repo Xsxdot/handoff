@@ -35,6 +35,7 @@ import { altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelecti
 import { installTerminalInputFix } from './terminalInput'
 import { parseOsc52 } from './terminalOsc52'
 import { registerFileDropTarget, shellQuote } from '../lib/desktopFileDrop'
+import { copyToClipboard } from '../lib/clipboard'
 import type { BaseDir } from './useWorkbench'
 
 export interface TerminalTabProps {
@@ -308,7 +309,7 @@ export function TerminalTab({
     // 的 tab 不许动用户剪贴板）→ 载荷门（'?' / 空载荷在 parseOsc52 里拦截）。
     // 写失败必须给用户可见提示：静默失败等于「以为复制了」。
     //
-    // showCopyFailure 是「写不进本机剪贴板」的唯一出口：writeText 拒绝与
+    // showCopyFailure 是「写不进本机剪贴板」的唯一出口：两条复制路径都失败与
     // clipboard 缺席（非安全上下文）都汇到它——两条失败路径共用同一份提示与
     // 自动消失定时器，谁也不许另起一套（另起的那套迟早被忘掉，变回静默失败）。
     // 打点 write-fail：观测三态里「浏览器拒了」的那一态。
@@ -339,17 +340,15 @@ export function TerminalTab({
         return true
       }
       logTermOsc52(label, 'copy', { selection: parsed.selection, 字符数: parsed.text.length })
-      // 非安全上下文（http://<局域网 IP>，如经 Tailscale 访问）navigator.clipboard
-      // 是 undefined：直接摸 writeText 会在 xterm 解析器里同步抛 TypeError——
-      // 既打断 chunk 处理，又绕过失败提示。缺席按「浏览器拒了」同一条路径处置。
-      if (!navigator.clipboard) {
+      // 不能直接调用异步 writeText：桌面壳 WKWebView 会拒绝它，而且拒绝落定
+      // 时已经离开同步调用栈。公共入口先同步尝试 execCommand，再报告最终结果。
+      void copyToClipboard(parsed.text).then((ok) => {
+        if (ok) {
+          setCopyNotice(null)
+          return
+        }
         showCopyFailure()
-        return true
-      }
-      navigator.clipboard.writeText(parsed.text).then(
-        () => setCopyNotice(null),
-        showCopyFailure,
-      )
+      })
       return true
     })
 
