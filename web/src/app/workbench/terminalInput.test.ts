@@ -197,6 +197,13 @@ async function enterAlternateBuffer(r: Rig): Promise<void> {
   expect(r.term.buffer.active.type).toBe('alternate')
 }
 
+async function exitAlternateBuffer(r: Rig): Promise<void> {
+  await new Promise<void>((resolve) => {
+    r.term.write('\x1b[?1049l', () => resolve())
+  })
+  expect(r.term.buffer.active.type).toBe('normal')
+}
+
 function dispatchEnter(
   r: Rig,
   modifiers: { shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } = {},
@@ -225,6 +232,18 @@ describe('B302：alt-screen 的 Shift+Enter', () => {
 
   it('主屏 Shift+Enter 不走补发，仍由 xterm 产生 CR', () => {
     rig = makeRig(true)
+    const input = vi.spyOn(rig.term, 'input')
+
+    dispatchEnter(rig, { shiftKey: true })
+
+    expect(input).not.toHaveBeenCalled()
+    expect(rig.data).toEqual(['\r'])
+  })
+
+  it('交替屏退出后 Shift+Enter 不走补发，仍由 xterm 产生 CR', async () => {
+    rig = makeRig(true)
+    await enterAlternateBuffer(rig)
+    await exitAlternateBuffer(rig)
     const input = vi.spyOn(rig.term, 'input')
 
     dispatchEnter(rig, { shiftKey: true })
