@@ -56,8 +56,7 @@ func init() {
 
 // runGC 调用目标 agentd 的单次预览或执行入口。
 func runGC(cmd *cobra.Command, cl *client.Client, addr string) error {
-	slog.Default().Info("CLI gc 进入", "target", addr, "force", gcForce, "execute", gcYes,
-		"json", gcJSON)
+	slog.Default().Info("CLI gc 进入", "target", addr, "force", gcForce, "execute", gcYes, "json", gcJSON)
 	var (
 		resp *proto.GCResp
 		err  error
@@ -76,22 +75,23 @@ func runGC(cmd *cobra.Command, cl *client.Client, addr string) error {
 		slog.Default().Error("CLI gc 请求失败", "target", addr, "cause", err)
 		return err
 	}
+	out := cmd.OutOrStdout()
 	if gcJSON {
-		if err := json.NewEncoder(cmd.OutOrStdout()).Encode(resp); err != nil {
+		if err := json.NewEncoder(out).Encode(resp); err != nil {
 			slog.Default().Error("CLI gc JSON 输出失败", "target", addr, "cause", err)
 			return err
 		}
-		slog.Default().Info("CLI gc 完成", "target", addr, "preview", resp.Preview,
-			"failures", resp.Failures)
-		return nil
+	} else {
+		renderGC(out, resp)
 	}
-	renderGC(cmd.OutOrStdout(), resp)
-	slog.Default().Info("CLI gc 完成", "target", addr, "preview", resp.Preview,
-		"failures", resp.Failures)
+	if !resp.Preview && resp.Failures > 0 {
+		slog.Default().Error("CLI gc 执行有失败项", "target", addr, "failures", resp.Failures)
+		return fmt.Errorf("gc 有 %d 项本应删除但失败", resp.Failures)
+	}
+	slog.Default().Info("CLI gc 完成", "target", addr, "preview", resp.Preview, "failures", resp.Failures)
 	return nil
 }
 
-// renderGC 输出 Ticket 0 报告形状；字节量的详细人读文案由实现节点补齐。
 func renderGC(w io.Writer, resp *proto.GCResp) {
 	mode := "预览"
 	if !resp.Preview {
@@ -104,4 +104,38 @@ func renderGC(w io.Writer, resp *proto.GCResp) {
 	}
 	fmt.Fprintf(w, "缓存     %d 行；工作树 %d 行；失败 %d\n",
 		len(resp.CacheRows), len(resp.WorktreeRows), resp.Failures)
+	fmt.Fprintf(w, "共扫     %d 个终态任务\n", resp.Scanned)
+	for _, row := range resp.CacheRows {
+		fmt.Fprintf(w, "  缓存  %s  %s  %d  %s", short8(row.TaskID), gcItemLabel(row.Status), row.Bytes, row.Path)
+		if row.Error != "" {
+			fmt.Fprintf(w, "  %s", row.Error)
+		}
+		fmt.Fprintln(w)
+	}
+	for _, row := range resp.WorktreeRows {
+		fmt.Fprintf(w, "  工作树 %s  %s  %s  %s", short8(row.TaskID), gcItemLabel(row.Status), string(row.Worktree), row.WorkDir)
+		if row.Note != "" {
+			fmt.Fprintf(w, "  %s", row.Note)
+		}
+		if row.Error != "" {
+			fmt.Fprintf(w, "  %s", row.Error)
+		}
+		fmt.Fprintln(w)
+	}
+}
+
+// gcItemLabel 把四态投影成人读词；JSON 仍走 --json 的枚举原值。
+func gcItemLabel(s proto.GCItemStatus) string {
+	switch s {
+	case proto.GCItemPlanned:
+		return "将删"
+	case proto.GCItemDeleted:
+		return "已删"
+	case proto.GCItemSkipped:
+		return "跳过"
+	case proto.GCItemFailed:
+		return "失败"
+	default:
+		return string(s)
+	}
 }
