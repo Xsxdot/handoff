@@ -185,6 +185,9 @@ type Manager struct {
 	// 这条顺序性质需要能在磁盘层面之外注入失败（权限位无法在任务目录创建后、
 	// 写入前的窗口里稳定制造），函数注入是唯一可靠的失败源。
 	writeTaskFile func(dir, name string, data []byte) error
+	// removeCacheLeafFn 是缓存叶子删除的测试缝（B298）。**生产路径恒为 nil**，
+	// 由 removeCacheLeaf 退回 os.RemoveAll；非测试代码不得赋值。
+	removeCacheLeafFn func(path string) error
 	// usageMu 保护 lastUsage：usage 事件的去重指纹（Task 2 通路）。
 	usageMu   sync.Mutex
 	lastUsage map[string]string // taskID → 上一次上报的用量指纹，去重用
