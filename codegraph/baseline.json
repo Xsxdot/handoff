@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "main",
-  "commit": "399a2873e6bc3953bf18996f882ac76b30a0ace2",
+  "commit": "48434b743e7faa0ec9d864d4be4df408c1dd3045",
   "scannedAt": "2026-08-28",
   "generator": "codegraph-flows-b277-go"
  },
@@ -1097,6 +1097,11 @@
   "k_web_api_ledger_model": {
    "label": "api/ledger wire 实体",
    "kind": "TypeScript 实体",
+   "domain": "d_web"
+  },
+  "k_web_api_preview": {
+   "label": "api/preview API 函数",
+   "kind": "TypeScript 函数组",
    "domain": "d_web"
   },
   "k_web_api_pty": {
@@ -13451,6 +13456,173 @@
    "projScanned": true,
    "modelKind": "dto"
   },
+  "m_proto_PreviewCloseResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 305,
+   "name": "PreviewCloseResp",
+   "file": "internal/proto/preview.go",
+   "line": 54,
+   "signature": "type PreviewCloseResp struct {",
+   "fields": [
+    [
+     "OK",
+     "bool",
+     "owner 已确认关闭"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_PreviewEvent": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 303,
+   "name": "PreviewEvent",
+   "file": "internal/proto/preview.go",
+   "line": 42,
+   "signature": "type PreviewEvent struct {",
+   "fields": [
+    [
+     "Type",
+     "string",
+     "preview.created 或 preview.closed"
+    ],
+    [
+     "Session",
+     "PreviewSession",
+     "完整会话投影"
+    ],
+    [
+     "Machine",
+     "string",
+     "coordinator 投影机器名"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_PreviewListResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 302,
+   "name": "PreviewListResp",
+   "file": "internal/proto/preview.go",
+   "line": 30,
+   "signature": "type PreviewListResp struct {",
+   "fields": [
+    [
+     "Sessions",
+     "[]PreviewSession",
+     "会话列表"
+    ],
+    [
+     "Machines",
+     "[]MachineStatus",
+     "scope=all 时的机器应答"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_PreviewOpenReq": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 300,
+   "name": "PreviewOpenReq",
+   "file": "internal/proto/preview.go",
+   "line": 7,
+   "signature": "type PreviewOpenReq struct {",
+   "fields": [
+    [
+     "Port",
+     "int",
+     "port 与 path 二选一"
+    ],
+    [
+     "Path",
+     "string",
+     "workspace-relative 路径"
+    ],
+    [
+     "Via",
+     "[]string",
+     "会话级 allowlist"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_PreviewOpenResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 304,
+   "name": "PreviewOpenResp",
+   "file": "internal/proto/preview.go",
+   "line": 49,
+   "signature": "type PreviewOpenResp struct {",
+   "fields": [
+    [
+     "Opened",
+     "bool",
+     "已打开或聚焦"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_PreviewSession": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 301,
+   "name": "PreviewSession",
+   "file": "internal/proto/preview.go",
+   "line": 16,
+   "signature": "type PreviewSession struct {",
+   "fields": [
+    [
+     "ID",
+     "string",
+     "owner 会话 id"
+    ],
+    [
+     "EntryURL",
+     "string",
+     "入口 URL"
+    ],
+    [
+     "Via",
+     "[]string",
+     "会话级 allowlist"
+    ],
+    [
+     "CWD",
+     "string",
+     "owner cwd"
+    ],
+    [
+     "OriginURL",
+     "string",
+     "可选 git origin"
+    ],
+    [
+     "Branch",
+     "string",
+     "可选分支"
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     "创建时间"
+    ],
+    [
+     "TTLSeconds",
+     "int64",
+     "TTL 秒数"
+    ],
+    [
+     "Machine",
+     "string",
+     "coordinator 投影机器名"
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_proto_ProcUsage": {
    "kind": "model",
    "container": "k_proto_model",
@@ -18533,6 +18705,153 @@
     ]
    ],
    "modelKind": "dto"
+  },
+  "m_web_api_types_PreviewCloseResp": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 305,
+   "name": "PreviewCloseResp",
+   "file": "web/src/api/types.ts",
+   "line": 235,
+   "signature": "export interface PreviewCloseResp { ok: boolean }"
+  },
+  "m_web_api_types_PreviewEvent": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 303,
+   "name": "PreviewEvent",
+   "file": "web/src/api/types.ts",
+   "line": 228,
+   "signature": "export interface PreviewEvent {",
+   "fields": [
+    [
+     "type",
+     "PreviewEventType",
+     "preview.created 或 preview.closed"
+    ],
+    [
+     "session",
+     "PreviewSession",
+     "完整会话投影"
+    ],
+    [
+     "machine",
+     "string | undefined",
+     "coordinator 投影机器名"
+    ]
+   ]
+  },
+  "m_web_api_types_PreviewListResp": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 302,
+   "name": "PreviewListResp",
+   "file": "web/src/api/types.ts",
+   "line": 221,
+   "signature": "export interface PreviewListResp {",
+   "fields": [
+    [
+     "sessions",
+     "PreviewSession[]",
+     "会话列表"
+    ],
+    [
+     "machines",
+     "MachineStatus[] | undefined",
+     "scope=all 机器应答"
+    ]
+   ]
+  },
+  "m_web_api_types_PreviewOpenReq": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 300,
+   "name": "PreviewOpenReq",
+   "file": "web/src/api/types.ts",
+   "line": 202,
+   "signature": "export interface PreviewOpenReq {",
+   "fields": [
+    [
+     "port",
+     "number | undefined",
+     "port 与 path 二选一"
+    ],
+    [
+     "path",
+     "string | undefined",
+     "workspace-relative 路径"
+    ],
+    [
+     "via",
+     "string[] | undefined",
+     "会话级 allowlist"
+    ]
+   ]
+  },
+  "m_web_api_types_PreviewOpenResp": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 304,
+   "name": "PreviewOpenResp",
+   "file": "web/src/api/types.ts",
+   "line": 234,
+   "signature": "export interface PreviewOpenResp { opened: boolean }"
+  },
+  "m_web_api_types_PreviewSession": {
+   "kind": "model",
+   "container": "k_web_api_types_model",
+   "order": 301,
+   "name": "PreviewSession",
+   "file": "web/src/api/types.ts",
+   "line": 209,
+   "signature": "export interface PreviewSession {",
+   "fields": [
+    [
+     "id",
+     "string",
+     "owner 会话 id"
+    ],
+    [
+     "entry_url",
+     "string",
+     "入口 URL"
+    ],
+    [
+     "via",
+     "string[] | undefined",
+     "会话级 allowlist"
+    ],
+    [
+     "cwd",
+     "string",
+     "owner cwd"
+    ],
+    [
+     "origin_url",
+     "string | undefined",
+     "可选 git origin"
+    ],
+    [
+     "branch",
+     "string | undefined",
+     "可选分支"
+    ],
+    [
+     "created_at",
+     "string",
+     "RFC3339 时间"
+    ],
+    [
+     "ttl_seconds",
+     "number",
+     "TTL 秒数"
+    ],
+    [
+     "machine",
+     "string | undefined",
+     "coordinator 投影机器名"
+    ]
+   ]
   },
   "m_web_api_types_ProjectBranch": {
    "kind": "model",
@@ -28159,6 +28478,56 @@
    ],
    "summary": "handleMachines 处理 GET /api/machines。"
   },
+  "n_agentd_Server_handlePreviewClose": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 502,
+   "name": "Server.handlePreviewClose",
+   "file": "internal/agentd/preview.go",
+   "line": 20,
+   "signature": "func (s *Server) handlePreviewClose(w http.ResponseWriter, r *http.Request)",
+   "summary": "DELETE /api/previews/{id}；Ticket 0 503 空壳"
+  },
+  "n_agentd_Server_handlePreviewCreate": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 500,
+   "name": "Server.handlePreviewCreate",
+   "file": "internal/agentd/preview.go",
+   "line": 12,
+   "signature": "func (s *Server) handlePreviewCreate(w http.ResponseWriter, r *http.Request)",
+   "summary": "POST /api/previews；Ticket 0 503 空壳"
+  },
+  "n_agentd_Server_handlePreviewList": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 501,
+   "name": "Server.handlePreviewList",
+   "file": "internal/agentd/preview.go",
+   "line": 16,
+   "signature": "func (s *Server) handlePreviewList(w http.ResponseWriter, r *http.Request)",
+   "summary": "GET /api/previews；Ticket 0 503 空壳"
+  },
+  "n_agentd_Server_handlePreviewOpen": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 503,
+   "name": "Server.handlePreviewOpen",
+   "file": "internal/agentd/preview.go",
+   "line": 24,
+   "signature": "func (s *Server) handlePreviewOpen(w http.ResponseWriter, r *http.Request)",
+   "summary": "POST /api/previews/{id}/open；Ticket 0 503 空壳"
+  },
+  "n_agentd_Server_handlePreviewWS": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 504,
+   "name": "Server.handlePreviewWS",
+   "file": "internal/agentd/preview.go",
+   "line": 28,
+   "signature": "func (s *Server) handlePreviewWS(w http.ResponseWriter, r *http.Request)",
+   "summary": "GET /ws/previews；Ticket 0 503 空壳"
+  },
   "n_agentd_Server_handleProjectAdd": {
    "kind": "func",
    "container": "k_agentd_Server",
@@ -37370,6 +37739,29 @@
     }
    ]
   },
+  "n_client_Client_ClosePreview": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 304,
+   "name": "Client.ClosePreview",
+   "file": "internal/client/preview.go",
+   "line": 60,
+   "signature": "func (c *Client) ClosePreview(ctx context.Context, id string) (*proto.PreviewCloseResp, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "请求生命周期"
+    ],
+    [
+     "id",
+     "string",
+     "owner 会话 id"
+    ]
+   ],
+   "returns": "*proto.PreviewCloseResp, error",
+   "summary": "DELETE /api/previews/{id}"
+  },
   "n_client_Client_Continue": {
    "kind": "func",
    "container": "k_client_Client",
@@ -37397,6 +37789,29 @@
    ],
    "returns": "error",
    "summary": "Continue 向任务续发修改指令（要求任务处于 waiting_review，指令原样透传 executor）。"
+  },
+  "n_client_Client_CreatePreview": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 300,
+   "name": "Client.CreatePreview",
+   "file": "internal/client/preview.go",
+   "line": 16,
+   "signature": "func (c *Client) CreatePreview(ctx context.Context, req proto.PreviewOpenReq) (*proto.PreviewSession, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "请求生命周期"
+    ],
+    [
+     "req",
+     "proto.PreviewOpenReq",
+     "owner 发布参数"
+    ]
+   ],
+   "returns": "*proto.PreviewSession, error",
+   "summary": "POST /api/previews"
   },
   "n_client_Client_Diff": {
    "kind": "func",
@@ -37822,6 +38237,42 @@
    "returns": "*proto.AuthTicketResp, error",
    "summary": "IssueAuthTicket 请求 agentd 签发一次性 ticket，返回可直接打开的兑换 URL。"
   },
+  "n_client_Client_ListPreviews": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 301,
+   "name": "Client.ListPreviews",
+   "file": "internal/client/preview.go",
+   "line": 33,
+   "signature": "func (c *Client) ListPreviews(ctx context.Context) (*proto.PreviewListResp, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "请求生命周期"
+    ]
+   ],
+   "returns": "*proto.PreviewListResp, error",
+   "summary": "GET /api/previews"
+  },
+  "n_client_Client_ListPreviewsAll": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 302,
+   "name": "Client.ListPreviewsAll",
+   "file": "internal/client/preview.go",
+   "line": 39,
+   "signature": "func (c *Client) ListPreviewsAll(ctx context.Context) (*proto.PreviewListResp, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "请求生命周期"
+    ]
+   ],
+   "returns": "*proto.PreviewListResp, error",
+   "summary": "GET /api/previews?scope=all"
+  },
   "n_client_Client_ListSessions": {
    "kind": "func",
    "container": "k_client_Client",
@@ -37919,6 +38370,34 @@
    "line": 370,
    "signature": "func (c *Client) NoRedirect() *Client {",
    "summary": "NoRedirect 返回一个副本，其 HTTP 客户端不跟随重定向。"
+  },
+  "n_client_Client_OpenPreview": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 305,
+   "name": "Client.OpenPreview",
+   "file": "internal/client/preview.go",
+   "line": 79,
+   "signature": "func (c *Client) OpenPreview(ctx context.Context, id, machine string) (*proto.PreviewOpenResp, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "请求生命周期"
+    ],
+    [
+     "id",
+     "string",
+     "会话 id"
+    ],
+    [
+     "machine",
+     "string",
+     "owner 机器名"
+    ]
+   ],
+   "returns": "*proto.PreviewOpenResp, error",
+   "summary": "POST /api/previews/{id}/open?machine="
   },
   "n_client_Client_PatchProject": {
    "kind": "func",
@@ -38488,6 +38967,29 @@
     }
    ]
   },
+  "n_client_Client_StreamPreviewEventsOnce": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 306,
+   "name": "Client.StreamPreviewEventsOnce",
+   "file": "internal/client/preview.go",
+   "line": 102,
+   "signature": "func (c *Client) StreamPreviewEventsOnce(ctx context.Context, onEvent func(proto.PreviewEvent) error) error",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "连接生命周期"
+    ],
+    [
+     "onEvent",
+     "func(proto.PreviewEvent) error",
+     "逐帧回调"
+    ]
+   ],
+   "returns": "error",
+   "summary": "GET /ws/previews；不持游标、不重连"
+  },
   "n_client_Client_WaitArchived": {
    "kind": "func",
    "container": "k_client_Client",
@@ -38790,6 +39292,16 @@
    ],
    "returns": "error",
    "summary": "httpError 把非 2xx 响应转成错误，并按状态码分级记录日志。"
+  },
+  "n_client_Client_listPreviews": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 303,
+   "name": "Client.listPreviews",
+   "file": "internal/client/preview.go",
+   "line": 43,
+   "signature": "func (c *Client) listPreviews(ctx context.Context, path, op string) (*proto.PreviewListResp, error)",
+   "returns": "*proto.PreviewListResp, error"
   },
   "n_client_Client_log": {
    "kind": "func",
@@ -42234,6 +42746,36 @@
    ],
    "returns": "error",
    "summary": "pickAttachTask 无参 attach：列出任务并让用户选择进入实况。"
+  },
+  "n_cmd_previewCloseCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 502,
+   "name": "previewCloseCmd.RunE",
+   "file": "cmd/preview.go",
+   "line": 71,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "summary": "handoff preview close \u003cid\u003e"
+  },
+  "n_cmd_previewListCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 501,
+   "name": "previewListCmd.RunE",
+   "file": "cmd/preview.go",
+   "line": 47,
+   "signature": "func(cmd *cobra.Command, _ []string) error",
+   "summary": "handoff preview list"
+  },
+  "n_cmd_previewOpenCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 500,
+   "name": "previewOpenCmd.RunE",
+   "file": "cmd/preview.go",
+   "line": 26,
+   "signature": "func(cmd *cobra.Command, _ []string) error",
+   "summary": "handoff preview open --port/--path --via"
   },
   "n_cmd_printAttachSuggestions": {
    "kind": "func",
@@ -70520,6 +71062,50 @@
    ],
    "summary": "runCardStep 发起一个卡环节。step 是**节点名**（= 看板列名），由卡钉住的"
   },
+  "n_web_api_preview_closePreview": {
+   "kind": "func",
+   "container": "k_web_api_preview",
+   "order": 502,
+   "name": "closePreview",
+   "file": "web/src/api/preview.ts",
+   "line": 19,
+   "signature": "export function closePreview(id: string): Promise\u003cPreviewCloseResp\u003e",
+   "returns": "Promise\u003cPreviewCloseResp\u003e",
+   "summary": "DELETE /api/previews/{id}"
+  },
+  "n_web_api_preview_createPreview": {
+   "kind": "func",
+   "container": "k_web_api_preview",
+   "order": 501,
+   "name": "createPreview",
+   "file": "web/src/api/preview.ts",
+   "line": 15,
+   "signature": "export function createPreview(req: PreviewOpenReq): Promise\u003cPreviewSession\u003e",
+   "returns": "Promise\u003cPreviewSession\u003e",
+   "summary": "POST /api/previews"
+  },
+  "n_web_api_preview_fetchPreviews": {
+   "kind": "func",
+   "container": "k_web_api_preview",
+   "order": 500,
+   "name": "fetchPreviews",
+   "file": "web/src/api/preview.ts",
+   "line": 11,
+   "signature": "export function fetchPreviews(scope: 'all' | undefined = 'all'): Promise\u003cPreviewListResp\u003e",
+   "returns": "Promise\u003cPreviewListResp\u003e",
+   "summary": "GET /api/previews[?scope=all]"
+  },
+  "n_web_api_preview_openPreview": {
+   "kind": "func",
+   "container": "k_web_api_preview",
+   "order": 503,
+   "name": "openPreview",
+   "file": "web/src/api/preview.ts",
+   "line": 23,
+   "signature": "export function openPreview(id: string, machine = ''): Promise\u003cPreviewOpenResp\u003e",
+   "returns": "Promise\u003cPreviewOpenResp\u003e",
+   "summary": "POST /api/previews/{id}/open?machine="
+  },
   "n_web_api_pty_connectPty": {
    "kind": "func",
    "container": "k_web_api_pty",
@@ -70563,6 +71149,17 @@
    ],
    "returns": "{ close: () =\u003e void }",
    "summary": "connectEvents 打开一条事件订阅，返回可手动关闭连接的句柄。"
+  },
+  "n_web_api_ws_previewEventsURL": {
+   "kind": "func",
+   "container": "k_web_api_ws",
+   "order": 500,
+   "name": "previewEventsURL",
+   "file": "web/src/api/ws.ts",
+   "line": 193,
+   "signature": "export function previewEventsURL(): string",
+   "returns": "string",
+   "summary": "同源本机 GET /ws/previews"
   },
   "n_web_api_ws_wsCloseReason": {
    "kind": "func",
@@ -94584,6 +95181,90 @@
   [
    "n_cmd_renderGC",
    "n_cmd_short8"
+  ],
+  [
+   "n_cmd_previewOpenCmd_RunE",
+   "n_cmd_newTargetClient"
+  ],
+  [
+   "n_cmd_previewOpenCmd_RunE",
+   "n_client_Client_CreatePreview"
+  ],
+  [
+   "n_cmd_previewListCmd_RunE",
+   "n_cmd_newTargetClient"
+  ],
+  [
+   "n_cmd_previewListCmd_RunE",
+   "n_client_Client_ListPreviews"
+  ],
+  [
+   "n_cmd_previewCloseCmd_RunE",
+   "n_cmd_newTargetClient"
+  ],
+  [
+   "n_cmd_previewCloseCmd_RunE",
+   "n_client_Client_ClosePreview"
+  ],
+  [
+   "n_client_Client_CreatePreview",
+   "n_client_Client_do"
+  ],
+  [
+   "n_client_Client_CreatePreview",
+   "n_client_Client_httpError"
+  ],
+  [
+   "n_client_Client_ListPreviews",
+   "n_client_Client_listPreviews"
+  ],
+  [
+   "n_client_Client_ListPreviewsAll",
+   "n_client_Client_listPreviews"
+  ],
+  [
+   "n_client_Client_listPreviews",
+   "n_client_Client_do"
+  ],
+  [
+   "n_client_Client_listPreviews",
+   "n_client_Client_httpError"
+  ],
+  [
+   "n_client_Client_ClosePreview",
+   "n_client_Client_do"
+  ],
+  [
+   "n_client_Client_ClosePreview",
+   "n_client_Client_httpError"
+  ],
+  [
+   "n_client_Client_OpenPreview",
+   "n_client_Client_do"
+  ],
+  [
+   "n_client_Client_OpenPreview",
+   "n_client_Client_httpError"
+  ],
+  [
+   "n_client_Client_StreamPreviewEventsOnce",
+   "n_client_Client_wsDialOptions"
+  ],
+  [
+   "n_web_api_preview_fetchPreviews",
+   "n_web_api_client_request"
+  ],
+  [
+   "n_web_api_preview_createPreview",
+   "n_web_api_client_postJSON"
+  ],
+  [
+   "n_web_api_preview_closePreview",
+   "n_web_api_client_deleteJSON"
+  ],
+  [
+   "n_web_api_preview_openPreview",
+   "n_web_api_client_postJSON"
   ]
  ],
  "implements": [
