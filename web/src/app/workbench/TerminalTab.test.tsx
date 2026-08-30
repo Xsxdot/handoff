@@ -8,6 +8,10 @@ import type { BaseDir } from './useWorkbench'
 // 「什么时候建会话、拿什么参数连、收到帧之后往终端写什么」，
 // 不是 xterm 自己的渲染——那是上游的测试职责。
 let termOnData: ((d: string) => void) | undefined
+// osc52Handler 收着组件注册的 OSC 52 回调，测试直接喂它来驱动各道门。
+let osc52Handler: ((data: string) => boolean) | undefined
+// writeText 替身：clipboard 写入的观测点（jsdom 没有 navigator.clipboard）。
+const writeText = vi.fn(() => Promise.resolve())
 const termInstance = {
   cols: 100,
   rows: 30,
@@ -32,6 +36,12 @@ const termInstance = {
   }),
   onResize: vi.fn(),
   attachCustomWheelEventHandler: vi.fn(),
+  parser: {
+    registerOscHandler: vi.fn((ident: number, cb: (data: string) => boolean) => {
+      if (ident === 52) osc52Handler = cb
+      return { dispose: vi.fn() }
+    }),
+  },
 }
 // Terminal 用常规 function 而不是箭头函数：组件以 `new Terminal(...)` 实例化它，
 // 箭头函数不是构造函数，`new` 会直接抛 TypeError。function 是构造的，且 `new`
@@ -75,11 +85,15 @@ beforeAll(() => {
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
+  // jsdom 没有 navigator.clipboard，defineProperty 可覆盖只读属性
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
 })
 
 beforeEach(() => {
   vi.clearAllMocks()
   termOnData = undefined
+  osc52Handler = undefined
+  writeText.mockClear()
   termInstance.buffer.active.type = 'normal'
   termInstance.modes.mouseTrackingMode = 'none'
   termInstance.modes.sendFocusMode = false
@@ -599,6 +613,116 @@ describe('TerminalTab', () => {
     expect(handler({ deltaY: -160, clientX: 50, clientY: 50 })).toBe(true)
     expect(termInstance.input).not.toHaveBeenCalled()
     spy.mockRestore()
+  })
+
+  it('挂载即注册 52 号 OSC handler（B300）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    expect(termInstance.parser.registerOscHandler).toHaveBeenCalledWith(52, expect.any(Function))
+    expect(osc52Handler).toBeTypeOf('function')
+  })
+
+  it('活流 + 激活 + 合法载荷 → 写本机剪贴板（B300）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0]
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    osc52Handler!('c;aGVsbG8=')
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('hello'))
+  })
+
+  it('桌面壳里先走同步复制，避免 WKWebView 拒绝异步 writeText（B300 回归）', async () => {
+    let selected = ''
+    const execCommand = vi.fn(() => {
+      const el = document.querySelector('textarea')
+      if (el) selected = el.value
+      return true
+    })
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    writeText.mockRejectedValueOnce(new Error('NotAllowedError'))
+
+    try {
+      render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+      await waitFor(() => expect(connectPty).toHaveBeenCalled())
+      connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+
+      osc52Handler!('c;aGVsbG8=')
+
+      expect(execCommand).toHaveBeenCalledWith('copy')
+      expect(selected).toBe('hello')
+      expect(writeText).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('copy-notice')).toBeNull()
+    } finally {
+      delete (document as { execCommand?: unknown }).execCommand
+    }
+  })
+
+  it('积压重放期间不写、回放结束恢复写（B300 重放门）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0]
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 10 })
+    osc52Handler!('c;aGVsbG8=')
+    expect(writeText).not.toHaveBeenCalled()
+    // 回放的最后一帧：write 的完成回调把 hostReply 转成 live——替身必须替它调
+    termInstance.write.mockImplementationOnce((_data: unknown, cb?: () => void) => { cb?.() })
+    opts.onData(new Uint8Array(10))
+    osc52Handler!('c;aGVsbG8=')
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('hello'))
+  })
+
+  it('后台 tab 的 keep-alive 解析不写剪贴板（B300 active 门）', async () => {
+    render(<TerminalTab base={WS} seq={1} active={false} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    osc52Handler!('c;aGVsbG8=')
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('读查询与清剪贴板请求都不写（B300 载荷门）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    osc52Handler!('c;?')
+    osc52Handler!('c;')
+    osc52Handler!('nosemi')
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('写入失败给出可见提示（B300 静默失败族）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    writeText.mockRejectedValueOnce(new Error('denied'))
+    osc52Handler!('c;aGVsbG8=')
+    await waitFor(() => expect(screen.getByTestId('copy-notice')).toHaveTextContent('失败'))
+  })
+
+  // 非安全上下文（如经 Tailscale / 局域网 IP 的 http 访问）navigator.clipboard 是
+  // undefined：守卫缺席时 handler 必须走失败提示路径，而不是在 xterm 解析器里
+  // 同步抛 TypeError——抛出去既打断 chunk 处理，又绕过了失败提示，两条都是伤害。
+  it('navigator.clipboard 缺席时不抛异常、给出失败提示（非安全上下文）', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    try {
+      render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+      await waitFor(() => expect(connectPty).toHaveBeenCalled())
+      connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+      expect(() => osc52Handler!('c;aGVsbG8=')).not.toThrow()
+      expect(await screen.findByTestId('copy-notice')).toHaveTextContent('失败')
+      expect(writeText).not.toHaveBeenCalled()
+    } finally {
+      // 还原成文件顶部 beforeAll 定义的替身，别让后续用例跟着缺席
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    }
+  })
+
+  it('写入成功不出提示（成功提示是噪声，TUI 自带反馈）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    osc52Handler!('c;aGVsbG8=')
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(screen.queryByTestId('copy-notice')).toBeNull()
   })
 })
 

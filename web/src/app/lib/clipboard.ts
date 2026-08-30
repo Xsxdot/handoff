@@ -9,9 +9,11 @@
 // 「先 writeText、失败再兜底」救不回来——所以兜底必须**在手势内同步先行**。
 //
 // 边界：
-//   - 尽力而为：两条路径都失败只 console.warn，不打扰用户（与既有语义一致）
+//   - 尽力而为：两条路径都失败只 console.warn，并把失败交给调用方决定是否提示用户
 //   - execCommand 已废弃但 WebKit/Chromium 均仍支持；jsdom 等环境没有它，
 //     此时自动退回 writeText
+
+import { requestNativeClipboard } from './desktopShell'
 
 // execCommandCopy 用临时 textarea + execCommand('copy') 同步复制。
 // 返回是否成功。必须在用户手势的同步调用栈内执行。
@@ -37,16 +39,53 @@ function execCommandCopy(text: string): boolean {
   return ok
 }
 
-// copyToClipboard 把 text 写入系统剪贴板：同步 execCommand 优先，
-// 不可用或失败时退回 navigator.clipboard.writeText。
-export function copyToClipboard(text: string): void {
-  if (execCommandCopy(text)) return
-  const p = navigator.clipboard?.writeText(text)
+// copyWithBrowserAPIs 是非桌面桥路径，以及原生桥失败后的浏览器兜底。
+// 必须把 execCommand 放在函数同步部分：它是唯一可能继承当前用户手势的复制方式。
+function copyWithBrowserAPIs(text: string): Promise<boolean> {
+  if (execCommandCopy(text)) return Promise.resolve(true)
+
+  let p: Promise<void> | undefined
+  try {
+    p = navigator.clipboard?.writeText(text)
+  } catch (err) {
+    console.warn('复制失败：调用 navigator.clipboard.writeText 抛错', err)
+    return Promise.resolve(false)
+  }
   if (!p) {
     console.warn('复制失败：execCommand 与 navigator.clipboard 均不可用')
-    return
+    return Promise.resolve(false)
   }
-  p.catch((err) => {
-    console.warn('复制失败：', err)
-  })
+  return p.then(
+    () => true,
+    (err) => {
+      console.warn('复制失败：', err)
+      return false
+    },
+  )
+}
+
+// copyToClipboard 把 text 写入系统剪贴板：同步 execCommand 优先，
+// 不可用或失败时退回 navigator.clipboard.writeText。
+//
+// 参数：
+//   - text: 要写入系统剪贴板的文本
+//
+// 返回：
+//   - Promise<boolean>：true 表示已写入，false 表示两条路径都失败
+//
+// 注意：
+//   - execCommand 必须在调用方的同步调用栈里先执行；WKWebView 的异步
+//     writeText 被拒绝后，原来的用户手势已经过期，无法再靠异步兜底。
+export function copyToClipboard(text: string): Promise<boolean> {
+  const native = requestNativeClipboard(text)
+  if (native !== null) {
+    return native.then(
+      (ok) => (ok ? true : copyWithBrowserAPIs(text)),
+      (err) => {
+        console.warn('复制失败：桌面宿主桥接抛错', err)
+        return copyWithBrowserAPIs(text)
+      },
+    )
+  }
+  return copyWithBrowserAPIs(text)
 }
