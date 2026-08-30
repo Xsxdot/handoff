@@ -1,6 +1,6 @@
 import { createEvent, fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
+import type { PreviewSession, ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { ProjectTree, type OpenItem } from './ProjectTree'
 import { __resetTreePrefsForTest } from './useTreePrefs'
@@ -60,6 +60,10 @@ function props(over: {
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
+  previews?: PreviewSession[]
+  previewOpenKeys?: ReadonlySet<string>
+  previewOpeningKeys?: ReadonlySet<string>
+  onOpenPreview?: (id: string, machine: string) => void
 } = {}) {
   const tree: ProjectTreeResp = {
     projects: [{
@@ -105,6 +109,10 @@ function props(over: {
     // 与 onUnregister 同理：onEdit 也要能显式传 undefined，验证「没传就不给
     // 编辑入口」的分支
     onEdit: 'onEdit' in over ? over.onEdit : vi.fn(),
+    previews: over.previews ?? [],
+    previewOpenKeys: over.previewOpenKeys ?? new Set<string>(),
+    previewOpeningKeys: over.previewOpeningKeys ?? new Set<string>(),
+    onOpenPreview: over.onOpenPreview ?? vi.fn(),
   }
   return p
 }
@@ -185,6 +193,33 @@ describe('ProjectTree 层级', () => {
 })
 
 describe('ProjectTree 任务组', () => {
+  it('preview 是第四种不可拖放任务行，点击只调用 onOpenPreview 并显示本机 open 投影', () => {
+    const onOpenPreview = vi.fn()
+    const previews: PreviewSession[] = [
+      {
+        id: 'local-preview', entry_url: 'http://localhost:5173', cwd: '',
+        origin_url: 'https://example.test/repo', branch: 'feature/preview', created_at: '', ttl_seconds: 7200,
+      },
+      {
+        id: 'remote-preview', entry_url: 'http://localhost:5174', cwd: '',
+        origin_url: 'https://example.test/repo', created_at: '', ttl_seconds: 7200, machine: 'devbox',
+      },
+    ]
+    const p = props({ previews, onOpenPreview, previewOpenKeys: new Set(['\x1flocal-preview']) })
+    p.tree.projects[0].origin_url = 'https://example.test/repo/'
+    render(<ProjectTree {...p} />)
+    const local = screen.getByTestId('preview-row-local-preview')
+    expect(local).toHaveTextContent('feature/preview · localhost:5173')
+    expect(local).toHaveAttribute('data-open', 'true')
+    expect(local).not.toHaveAttribute('data-drag-task')
+    fireEvent.click(local)
+    expect(onOpenPreview).toHaveBeenCalledWith('local-preview', '')
+    expect(p.onOpenTask).not.toHaveBeenCalled()
+    expect(local.querySelector('.lucide-app-window')).not.toBeNull()
+    expect(local.querySelector('.lucide-monitor')).toBeNull()
+    expect(screen.getByTestId('preview-row-remote-preview')).toHaveTextContent('devbox')
+  })
+
   it('未终态任务出现在任务组；completed / failed 不在任务组、只在已结束子行', () => {
     const p = props({})
     p.tasks.push(

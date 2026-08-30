@@ -4,7 +4,7 @@
 // 整棵子树都显示（搜项目名要能看到它下面的全部内容）。这些用例逐条钉住
 // 这条规则的四个层级与两个方向。
 import { describe, expect, it } from 'vitest'
-import type { ProjectTreeResp, Task } from '../../api/types'
+import type { PreviewSession, ProjectTreeResp, Task } from '../../api/types'
 import type { OpenedSearchItem } from './search'
 import { filterTree } from './search'
 
@@ -162,5 +162,21 @@ describe('filterTree', () => {
     const result = filterTree(tree, tasks, 'relative-only', opened)
     expect(result.projects[0].name).toBe('nova')
     expect(result.projects[0].locations[0].workspaces[0].path).toBe('/srv/n')
+  })
+
+  it('预览的机器、端口和分支参与过滤，且保留项目祖先', () => {
+    const previewTree = {
+      ...tree,
+      projects: tree.projects.map((project) => project.project_id === 'p1'
+        ? { ...project, origin_url: 'https://example.test/repo' }
+        : project),
+    }
+    const previews: PreviewSession[] = [{
+      id: 'preview-1', entry_url: 'http://localhost:5173', cwd: '',
+      origin_url: 'https://example.test/repo/', branch: 'feature/preview', created_at: '', ttl_seconds: 7200, machine: 'devbox',
+    }]
+    expect(filterTree(previewTree, tasks, '5173', [], previews).projects[0].name).toBe('handoff')
+    expect(filterTree(previewTree, tasks, 'feature/preview', [], previews).projects[0].name).toBe('handoff')
+    expect(filterTree(previewTree, tasks, 'devbox', [], previews).projects.map((p) => p.name)).toEqual(['handoff', 'nova'])
   })
 })

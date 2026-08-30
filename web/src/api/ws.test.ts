@@ -9,7 +9,7 @@
 // 真 WebSocket 实现；退避定时器用 vi.useFakeTimers 控制。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Event } from './types'
-import { connectEvents, wsCloseReason, type WsStatus } from './ws'
+import { connectEvents, connectPreviewEvents, wsCloseReason, type WsStatus } from './ws'
 
 // FakeWebSocket 模拟浏览器 WebSocket 的最小可编程表面。
 class FakeWebSocket {
@@ -143,6 +143,36 @@ describe('connectEvents 连接生命周期', () => {
     conn.close()
     vi.advanceTimersByTime(120000)
     expect(FakeWebSocket.instances).toHaveLength(1) // close 后不自动重连
+    vi.useRealTimers()
+  })
+})
+
+describe('connectPreviewEvents 连接生命周期', () => {
+  it('浏览器 preview WS 只连接当前 agentd，不携带 machine query', () => {
+    const conn = connectPreviewEvents({ create, onEvent: () => {} })
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(FakeWebSocket.instances[0].url).toContain('/ws/previews')
+    expect(FakeWebSocket.instances[0].url).not.toContain('?')
+    conn.close()
+  })
+
+  it('断线重连前先刷新列表，再创建新的 preview WS', async () => {
+    vi.useFakeTimers()
+    const order: string[] = []
+    const beforeReconnect = vi.fn(async () => { order.push('list') })
+    const conn = connectPreviewEvents({
+      create: (url) => { order.push('ws'); return new FakeWebSocket(url) },
+      onEvent: () => {},
+      beforeReconnect,
+    })
+    expect(order).toEqual(['ws'])
+    FakeWebSocket.instances[0].emitClose(1006)
+    vi.advanceTimersByTime(300)
+    await Promise.resolve()
+    await Promise.resolve()
+    expect(beforeReconnect).toHaveBeenCalledTimes(1)
+    expect(order).toEqual(['ws', 'list', 'ws'])
+    conn.close()
     vi.useRealTimers()
   })
 })

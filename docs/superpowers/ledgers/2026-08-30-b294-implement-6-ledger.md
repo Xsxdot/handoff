@@ -1,0 +1,25 @@
+# B294 implement-6 台账
+
+- 2026-08-30：当前分支为 `cards/B294-implement-6`，工作树初始干净；基线 HEAD 为 `12de1ca6aedaa7ed692d72895b2a5e0851d5f899`。
+- 2026-08-30：本轮范围仅处理 owner 创建工作目录来源：CLI 将进程 cwd 交给 owner，owner 优先请求 cwd，空值回落自身 Getwd；同步冻结契约与 TS 类型，不改 SOCKS/PAC/launcher/StopPID/web create。
+- 2026-08-30：新增 owner 与 CLI 两条接缝测试后首次运行 `GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache go test ./internal/agentd -run '^TestPreviewOwnerPathUsesRequestCWDForWorkspace$' -count=1` 与 `GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache go test ./cmd -run '^TestPreviewOpenPassesCLIWorkingDirectory$' -count=1`，两者均编译红；原始错误分别为 `unknown field CWD in struct literal of type proto.PreviewOpenReq`、`got.CWD undefined (type proto.PreviewOpenReq has no field or method CWD)`，确认是新 DTO 符号缺席而非断言结论。
+- 2026-08-30：仅加入 `PreviewOpenReq.CWD` DTO 空壳后重跑两条测试，均进入断言红；owner 原始错误为 `preview create field=path value="README.md": path 不存在或无法解析: lstat .../002/README.md: no such file or directory`，CLI 原始错误为 `preview create cwd="", want CLI cwd after EvalSymlinks ...`，确认接缝测试确实拦截功能缺失。
+- 2026-08-30：实现 owner 优先请求 cwd、CLI 取 cwd 并 EvalSymlinks 后，重跑两条接缝测试实际退出码 0，原始输出分别为 `ok github.com/Xsxdot/handoff/internal/agentd 0.089s`、`ok github.com/Xsxdot/handoff/cmd 0.005s`。
+- 2026-08-30：更新契约样本后运行 go test ./internal/proto -run TestContractFixtures -count=1（使用任务 GOMODCACHE），实际断言红；原始输出为 PreviewOpenReq 序列化结果与 fixture 不一致，实际 JSON 比已存 fixture 多 \"cwd\": \"/Users/dev/code/handoff\"。
+- 2026-08-30：运行 npm test -- --run src/api/contract.test.ts（web）未启动，原始输出为 sh: 1: vitest: not found；依赖缺失，未将其当作 Web 测试结论。
+- 2026-08-30：按仓库显式更新命令刷新 `web/src/api/testdata/PreviewOpenReq.json`，随后运行 `GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache go test ./internal/proto -run '^TestContractFixtures$' -count=1`，实际退出码 0，原始输出为 `ok github.com/Xsxdot/handoff/internal/proto 0.004s`。
+- 2026-08-30：运行 `npm ci --ignore-scripts`（web），实际退出码 0；原始输出为 `added 290 packages, and audited 291 packages in 2s`、`found 0 vulnerabilities`，恢复前端测试依赖。
+- 2026-08-30：变异前唯一命中核对：`cwd := req.CWD` 与 `CWD: cwd,` 各为 `1`。
+- 2026-08-30：owner 变异将唯一 `cwd := req.CWD` 改为 `cwd := \"\"`；`GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache go build ./...` 实际退出码 0、无输出，确认变异可编译；随后单条 owner 测试实际变红，原始错误为 `path 不存在或无法解析: lstat .../002/README.md: no such file or directory`，已恢复。
+- 2026-08-30：CLI 变异删除唯一 `CWD: cwd` 字段；`GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache go build ./...` 实际退出码 0、无输出；随后单条 CLI 测试实际变红，原始断言为 `preview create cwd=\"\", want CLI cwd after EvalSymlinks ...`，已恢复。
+- 2026-08-30：恢复变异后局部回归 `GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache go test ./internal/proto ./internal/client ./internal/agentd ./cmd -run 'Preview|ContractFixtures' -count=1` 实际退出码 0；原始输出为 proto/client/agentd/cmd 均 `ok`。
+- 2026-08-30：恢复变异后运行 `npm test -- --run src/api/contract.test.ts`（web）实际退出码 0，原始汇总为 `Test Files 1 passed (1)`、`Tests 39 passed (39)`；`npm run typecheck` 实际退出码 0，原始输出为 `> tsc -b`。
+- 2026-08-30：运行 `git diff --check` 实际退出码 0、无输出。
+- 2026-08-30：收尾 Go 全量 `GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache go test ./... -count=1` 实际退出码 0；原始输出列出 root/cmd、internal/agentd `228.708s`、internal/client `10.176s`、internal/proto、internal/store、internal/targetclient 等全部 `ok`，另有既有 `web/node_modules/flatted/golang/pkg/flatted [no test files]`，无 `FAIL`。
+- 2026-08-30：收尾 Web 全量 `npm test` 实际退出码 0；原始汇总为 `Test Files 115 passed (115)`、`Tests 1165 passed (1165)`，仅有既有 `Not implemented: HTMLCanvasElement's getContext()` 提示。
+- 2026-08-30：收尾 `GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache go build ./...` 与 `GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache GOOS=windows GOARCH=amd64 go build ./...` 均实际退出码 0、无输出。
+- 2026-08-30：收尾运行 `GOMODCACHE=/root/.handoff/tmp/5908fbfa/gomodcache GOSUMDB=off GOPROXY=direct go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . check`，实际退出码 0；原始 JSON 首部为 `{\n \"fails\": [],`，其余为既有 anchor-off-domain、best-dangling、container-misplaced、legacy、oversized-package、prefix-family warnings。
+- 2026-08-30：触及包 race 回归分两组实际退出码均为 0：`go test -race ./internal/agentd -run 'Preview|ContractFixtures' -count=1` 原始输出 `ok github.com/Xsxdot/handoff/internal/agentd 3.475s`；`go test -race ./internal/proto ./internal/client ./cmd -run 'Preview|ContractFixtures' -count=1` 原始输出三包均 `ok`。
+- 2026-08-30：最终格式/差异审计 `gofmt -l`（本轮 Go 文件）与 `git diff --check` 实际均退出码 0、无输出。
+- 2026-08-30：执行 `git add` 后 `git commit -m "fix: use CLI cwd for B294 preview owner"` 实际创建提交 `b8eda180`（12 files changed, 197 insertions, 17 deletions），未 push；本行随台账 amend，最终 hash 以收尾命令实测为准。
+- 2026-08-30：补充 `PreviewWorkspaceResolver` 参数边界注释与 port 工作区失败日志上下文后，局部 Go 预览/fixture 测试实际全部 `ok`；Web contract `Test Files 1 passed`、`Tests 39 passed`，`npm run typecheck` 退出码 0；`gofmt -l` 与 `git diff --check` 无输出。

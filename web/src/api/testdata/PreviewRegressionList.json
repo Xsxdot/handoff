@@ -1,0 +1,22 @@
+{
+  "sessions": [
+    {
+      "id": "remote-preview",
+      "entry_url": "http://localhost:5173",
+      "cwd": "/workspace/handoff",
+      "origin_url": "https://example.test/repo",
+      "branch": "feature/preview",
+      "created_at": "2026-08-29T01:02:03Z",
+      "ttl_seconds": 7200,
+      "machine": "devbox"
+    }
+  ],
+  "machines": [
+    {
+      "name": "offline",
+      "ok": false,
+      "fetched_at": "2026-08-29T01:02:03Z",
+      "error": "dial tcp 10.0.0.8:7777: connect: connection refused"
+    }
+  ]
+}

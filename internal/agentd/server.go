@@ -70,6 +70,13 @@ const eventReplayLimit = 10000
 // 断开是无损的。
 const liveBufferLimit = 1000
 
+// PreviewOpener is the local desktop boundary for explicit preview open actions.
+// Create/list/close never call it; Chromium is launched only after a local click.
+type PreviewOpener interface {
+	OpenPreview(ctx context.Context, id, machine string) (*proto.PreviewOpenResp, error)
+	Stop(ctx context.Context) error
+}
+
 // maxUpdateBytes 是换版接口单个请求体的上限，与 release 侧 maxAssetBytes 同量级。
 //
 // 上限本身是防线：被劫持或出错的请求不该把内存吃光——换版 body 是整包
@@ -162,7 +169,10 @@ type Server struct {
 	// 为什么在 NewServer 里自建而不是靠注入：NewServer 有约 50 个调用点，
 	// 靠注入必然漏，而漏掉的表现是运行时空指针。池的构造零成本（不发请求），
 	// 自建没有代价。
-	pool *targetclient.Pool
+	pool          *targetclient.Pool
+	previewOwner  *PreviewOwner
+	previewOpener PreviewOpener
+	previewMirror *PreviewMirror
 	// cardStepMu / cardStepFlight 守「同一张卡同时只允许一个环节在飞」。
 	// 进程内状态：重启即清空，见 cardstep.go 的边界说明。
 	cardStepMu     sync.Mutex
@@ -377,6 +387,51 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 // 两个池等于两套隧道，relay 侧会看到重复的节点连接。
 func (s *Server) Pool() *targetclient.Pool { return s.pool }
 
+// SetPreviewOwner injects the owner-side preview authority before serving HTTP.
+func (s *Server) SetPreviewOwner(owner *PreviewOwner) { s.previewOwner = owner }
+
+// SetPreviewOpener injects the explicit local desktop open boundary.
+func (s *Server) SetPreviewOpener(opener PreviewOpener) { s.previewOpener = opener }
+
+// SetPreviewMirror injects the independent coordinator preview projection.
+func (s *Server) SetPreviewMirror(mirror *PreviewMirror) { s.previewMirror = mirror }
+
+// StartPreviewServices restores persisted path previews and starts owner lifecycle work.
+func (s *Server) StartPreviewServices(ctx context.Context) error {
+	if s.previewOwner != nil {
+		if err := s.previewOwner.Restore(ctx); err != nil {
+			return err
+		}
+	}
+	if s.previewMirror != nil {
+		go s.previewMirror.Run(ctx)
+	}
+	if s.previewOwner == nil && s.previewMirror == nil {
+		s.log.Info("preview owner 未配置，跳过启动", "operation", "preview_start")
+	}
+	return nil
+}
+
+// StopPreviewServices stops the local opener before owner persistence closes.
+func (s *Server) StopPreviewServices(ctx context.Context) error {
+	var stopErr error
+	if s.previewOpener != nil {
+		if err := s.previewOpener.Stop(ctx); err != nil {
+			stopErr = errors.Join(stopErr, err)
+			s.log.Warn("preview opener 收口失败，继续关闭其余服务", "operation", "preview_stop", "cause", err)
+		}
+	}
+	if s.previewMirror != nil {
+		s.previewMirror.Stop()
+	}
+	if s.previewOwner != nil {
+		if err := s.previewOwner.Stop(ctx); err != nil {
+			stopErr = errors.Join(stopErr, err)
+		}
+	}
+	return stopErr
+}
+
 // CloseTargets 关掉池内全部客户端与 relay 隧道。
 //
 // 注意：只在进程退出路径调用。池关了就不再复活（relay.Dialer.Close 是终态）。
@@ -572,12 +627,18 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
 	api.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
+	api.HandleFunc("POST /api/previews", s.handlePreviewCreate)
+	api.HandleFunc("GET /api/previews", s.handlePreviewList)
+	api.HandleFunc("DELETE /api/previews/{id}", s.handlePreviewClose)
+	api.HandleFunc("POST /api/previews/{id}/open", s.handlePreviewOpen)
 	api.HandleFunc("POST /api/update", s.handleUpdate)
 	api.HandleFunc("GET /api/update/latest", s.handleUpdateLatest)
 	api.HandleFunc("POST /api/update/desktop/download", s.handleDesktopDownloadStart)
 	api.HandleFunc("GET /api/update/desktop/download", s.handleDesktopDownloadState)
 	api.HandleFunc("GET /ws/events", s.handleEvents)
 	api.HandleFunc("GET /ws/pty", s.handlePtyWS)
+	api.HandleFunc("GET /ws/previews", s.handlePreviewWS)
+	api.HandleFunc("GET /ws/preview-raw", s.handlePreviewRawWS)
 	api.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
 	api.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
 	api.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)

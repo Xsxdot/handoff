@@ -68,6 +68,12 @@ func TestContractFixtures(t *testing.T) {
 		{"Ticket", ticketSample(now, taskID)},
 		{"ProjectLocation", projectLocationSample(now)},
 		{"ProjectTreeResp", projectTreeSample()},
+		{"PreviewOpenReq", previewOpenReqSample()},
+		{"PreviewSession", previewSessionSample(now)},
+		{"PreviewListResp", previewListSample(now)},
+		{"PreviewEvent", previewEventSample(now)},
+		{"PreviewOpenResp", PreviewOpenResp{Opened: true}},
+		{"PreviewCloseResp", PreviewCloseResp{OK: true}},
 		{"WorkspaceCardResults", Workspace{
 			Path:   "/home/dev/.handoff/worktrees/manual/feat-b205",
 			Branch: "feat/b205-baseline", Head: "482aab1", Managed: true,
@@ -166,6 +172,30 @@ func TestContractFixtures(t *testing.T) {
 			t.Errorf("%s: 序列化结果与 fixture 不一致（契约已漂移，如需接受变更请用 -update）：\n--- 期望(已存) ---\n%s\n--- 实际(现生成) ---\n%s", c.name, stored, data)
 		}
 	}
+}
+
+func previewOpenReqSample() PreviewOpenReq {
+	return PreviewOpenReq{Port: 4173, Via: []string{"10.0.0.0/8", "api.internal"}, CWD: "/Users/dev/code/handoff"}
+}
+
+func previewSessionSample(now time.Time) PreviewSession {
+	return PreviewSession{
+		ID: "pvw-01", EntryURL: "http://localhost:4173",
+		Via: []string{"10.0.0.0/8", "api.internal"}, CWD: "/Users/dev/code/handoff",
+		OriginURL: "git@github.com:example/handoff.git", Branch: "feat/b294-preview",
+		CreatedAt: now, TTLSeconds: 7200, Machine: "mac-02",
+	}
+}
+
+func previewListSample(now time.Time) PreviewListResp {
+	return PreviewListResp{
+		Sessions: []PreviewSession{previewSessionSample(now)},
+		Machines: []MachineStatus{{Name: "", Ok: true, FetchedAt: now}, {Name: "mac-02", Ok: true, FetchedAt: now}},
+	}
+}
+
+func previewEventSample(now time.Time) PreviewEvent {
+	return PreviewEvent{Type: PreviewEventCreated, Session: previewSessionSample(now), Machine: "mac-02"}
 }
 
 // workbenchBaseSample 是一行基准状态的代表性样本。

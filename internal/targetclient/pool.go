@@ -15,7 +15,9 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -34,6 +36,7 @@ type entry struct {
 	client *client.Client
 	// dialer 只在 relay 形态非 nil；预热要拿它主动建隧道。
 	dialer  *relay.Dialer
+	dial    func(context.Context, string, string) (net.Conn, error)
 	cleanup func()
 }
 
@@ -132,9 +135,66 @@ func (p *Pool) For(name string) (*client.Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.entries[name] = &entry{target: t, client: c, dialer: dialer, cleanup: cleanup}
+	e := &entry{target: t, client: c, dialer: dialer, cleanup: cleanup}
+	if dialer != nil {
+		e.dial = dialer.RawDialContext
+	} else {
+		e.dial = directOwnerRawDial(c)
+	}
+	p.entries[name] = e
 	p.log.Info("target 客户端已建立并入池", "target", name, "relay", t.IsRelay(), "pool_size", len(p.entries))
 	return c, nil
+}
+
+// DialContext opens a target-scoped raw upstream connection for preview proxy use.
+// The pool owns the client/dialer lifetime; callers own and close the returned conn.
+func (p *Pool) DialContext(ctx context.Context, targetName, network, addr string) (net.Conn, error) {
+	if _, err := p.For(targetName); err != nil {
+		p.log.Warn("预览 raw dial 取得 target 失败", "target", targetName, "addr", addr, "cause", err)
+		return nil, err
+	}
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil, fmt.Errorf("target 客户端池已关闭")
+	}
+	e := p.entries[targetName]
+	dial := e.dial
+	p.mu.Unlock()
+	if dial == nil {
+		return nil, fmt.Errorf("target %s 未配置 raw dial", targetName)
+	}
+	p.log.Info("预览 raw dial 开始", "target", targetName, "network", network, "addr", addr)
+	conn, err := dial(ctx, network, addr)
+	if err != nil {
+		p.log.Warn("预览 raw dial 失败", "target", targetName, "network", network, "addr", addr, "cause", err)
+		return nil, err
+	}
+	p.log.Info("预览 raw dial 成功", "target", targetName, "network", network, "addr", addr)
+	return conn, nil
+}
+
+// directOwnerRawDial asks the owner agentd to dial dest on the owner's host.
+// Loopback spellings are normalized to 127.0.0.1 so owner static servers bound
+// only to 127.0.0.1 are reachable. The coordinator never rewrites dest onto
+// target.Addr's host — that was the Tailscale IP leak (B301).
+func directOwnerRawDial(c *client.Client) func(context.Context, string, string) (net.Conn, error) {
+	return func(ctx context.Context, network, addr string) (net.Conn, error) {
+		host, port, err := net.SplitHostPort(addr)
+		if err != nil {
+			return nil, fmt.Errorf("preview raw dial 地址无端口 %q: %w", addr, err)
+		}
+		dest := addr
+		if strings.EqualFold(host, "localhost") || isLoopbackHost(host) {
+			dest = net.JoinHostPort("127.0.0.1", port)
+		}
+		return c.DialPreviewRaw(ctx, network, dest)
+	}
+}
+
+func isLoopbackHost(host string) bool {
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // drop 关掉并移出一条缓存条目；不存在时无副作用。

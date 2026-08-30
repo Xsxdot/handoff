@@ -2,6 +2,7 @@ package relay
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -50,6 +51,61 @@ func TestListenerServesHandlerThroughFakeRelay(t *testing.T) {
 	}
 	if string(body) != "pong" {
 		t.Fatalf("got %q", body)
+	}
+}
+
+func TestListenerRawDialThroughFakeRelay(t *testing.T) {
+	relayURL, cleanup := startBridgeRelay(t, "tok", "acc1", "devbox")
+	defer cleanup()
+	upstream, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer upstream.Close()
+	serverDone := make(chan error, 1)
+	go func() {
+		conn, err := upstream.Accept()
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer conn.Close()
+		buf := make([]byte, len("ping"))
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			serverDone <- err
+			return
+		}
+		if string(buf) != "ping" {
+			serverDone <- fmt.Errorf("upstream got %q", buf)
+			return
+		}
+		_, err = io.WriteString(conn, "pong")
+		serverDone <- err
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	l := NewListener(relayURL, "cred", "devbox", "tok", "acc1", http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}), slog.Default())
+	go l.RunWithReconnect(ctx)
+	d := NewDialer(relayURL, "cred", "devbox", "tok", "acc1", slog.Default())
+	defer d.Close()
+	conn, err := d.RawDialContext(ctx, "tcp", upstream.Addr().String())
+	if err != nil {
+		t.Fatalf("raw dial: %v", err)
+	}
+	defer conn.Close()
+	if _, err := io.WriteString(conn, "ping"); err != nil {
+		t.Fatalf("write raw stream: %v", err)
+	}
+	got := make([]byte, len("pong"))
+	if _, err := io.ReadFull(conn, got); err != nil {
+		t.Fatalf("read raw stream: %v", err)
+	}
+	if string(got) != "pong" {
+		t.Fatalf("raw response=%q", got)
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("upstream: %v", err)
 	}
 }
 

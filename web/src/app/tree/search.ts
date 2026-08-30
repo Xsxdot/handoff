@@ -13,9 +13,10 @@
 // 为什么单独成文件而不塞进 ProjectTree.tsx：可见性是一条递归规则，塞在
 // 组件里只能靠渲染断言间接测。仓库既有同款模式——board/filter.ts（看板
 // 筛选）、tree/counts.ts（树计数）都是「纯函数 + 独立测试文件」。
-import type { ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
+import type { PreviewSession, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { taskDisplayName } from '../lib/taskName'
+import { normalizePreviewOrigin, previewLabel } from '../data/usePreviews'
 import { archivedKey, archivedTasks } from './archived'
 
 // OpenedSearchItem 是「已打开项」参与搜索所需的最小形状（ProjectTree 的 OpenItem
@@ -35,6 +36,7 @@ export interface TreeFilter {
   projectCount: number
   unassignedTasks: Task[]
   unownedNames: string[]
+  unassignedPreviews: PreviewSession[]
   isEmpty: boolean
 }
 
@@ -63,6 +65,16 @@ function dirText(ws: Workspace): string {
 // （统一收口 taskDisplayName：name → branch → plan_summary）。
 function taskText(t: Task): string {
   return taskDisplayName(t)
+}
+
+function previewText(session: PreviewSession): string {
+  return [previewLabel(session), session.entry_url, session.branch ?? '', session.machine ?? '', machineText(session.machine ?? '')].join(' ')
+}
+
+function previewBelongsToProject(session: PreviewSession, project: ProjectNode): boolean {
+  const origin = normalizePreviewOrigin(session.origin_url ?? '')
+  const projectOrigin = normalizePreviewOrigin(project.origin_url)
+  return origin !== '' && projectOrigin !== '' && origin === projectOrigin
 }
 
 // taskMatchesQuery 是任务行的搜索谓词：任务名命中即算匹配。
@@ -111,6 +123,7 @@ export function filterTree(
   tasks: Task[],
   rawQuery: string,
   openedItems: ReadonlyArray<OpenedSearchItem> = [],
+  previews: ReadonlyArray<PreviewSession> = [],
 ): TreeFilter {
   const q = rawQuery.trim().toLowerCase()
   const unassignedAll = tasks.filter((t) => t.project_id === '')
@@ -122,7 +135,8 @@ export function filterTree(
       projectCount: tree.projects.length,
       unassignedTasks: unassignedAll,
       unownedNames: tree.unowned,
-      isEmpty: tree.projects.length === 0 && unassignedAll.length === 0 && tree.unowned.length === 0,
+      unassignedPreviews: previews.filter((session) => !tree.projects.some((project) => previewBelongsToProject(session, project))),
+      isEmpty: tree.projects.length === 0 && unassignedAll.length === 0 && tree.unowned.length === 0 && previews.length === 0,
     }
   }
 
@@ -133,6 +147,8 @@ export function filterTree(
   const projects: ProjectNode[] = []
   for (const project of tree.projects) {
     const projectHit = hit(project.name, q)
+    const projectPreviews = previews.filter((session) => previewBelongsToProject(session, project))
+    const previewHit = projectPreviews.some((session) => hit(previewText(session), q))
     const archivedHit = (archived.get(archivedKey(project.project_id)) ?? [])
       .some((t) => hit(taskText(t), q))
     const locations: ProjectLocationNode[] = []
@@ -166,11 +182,14 @@ export function filterTree(
       }
     }
 
-    if (projectHit || archivedHit || locations.length > 0) projects.push({ ...project, locations })
+    if (projectHit || archivedHit || previewHit || locations.length > 0) projects.push({ ...project, locations })
   }
 
   const unassignedTasks = unassignedAll.filter((t) => hit(taskText(t), q))
   const unownedNames = tree.unowned.filter((name) => hit(name, q))
+  const unassignedPreviews = previews.filter((session) =>
+    !tree.projects.some((project) => previewBelongsToProject(session, project)) && hit(previewText(session), q),
+  )
 
   return {
     query: q,
@@ -178,6 +197,7 @@ export function filterTree(
     projectCount: projects.length,
     unassignedTasks,
     unownedNames,
-    isEmpty: projects.length === 0 && unassignedTasks.length === 0 && unownedNames.length === 0,
+    unassignedPreviews,
+    isEmpty: projects.length === 0 && unassignedTasks.length === 0 && unownedNames.length === 0 && unassignedPreviews.length === 0,
   }
 }

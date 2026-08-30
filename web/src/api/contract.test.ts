@@ -58,6 +58,12 @@ import cardViewFixture from './testdata/CardView.json'
 import cardDetailFixture from './testdata/CardDetail.json'
 import nodeDefFixture from './testdata/NodeDef.json'
 import flowDetailFixture from './testdata/FlowDetail.json'
+import previewOpenReqFixture from './testdata/PreviewOpenReq.json'
+import previewSessionFixture from './testdata/PreviewSession.json'
+import previewListFixture from './testdata/PreviewListResp.json'
+import previewEventFixture from './testdata/PreviewEvent.json'
+import previewOpenRespFixture from './testdata/PreviewOpenResp.json'
+import previewCloseRespFixture from './testdata/PreviewCloseResp.json'
 import {
   type ActiveTask,
   type AuthTicketResp,
@@ -91,6 +97,12 @@ import {
   type TaskPlan,
   type TasksResp,
   type Ticket,
+  type PreviewOpenReq,
+  type PreviewSession,
+  type PreviewListResp,
+  type PreviewEvent,
+  type PreviewOpenResp,
+  type PreviewCloseResp,
   type WorkbenchBaseRow,
   type WorkbenchStateResp,
 } from './types'
@@ -531,5 +543,34 @@ describe('工作台状态契约', () => {
     expect(typeof state.dock).toBe('string')
     expect(Array.isArray(state.bases)).toBe(true)
     expect(typeof state.bases[0].payload).toBe('string')
+  })
+})
+
+describe('远端预览会话契约', () => {
+  it('创建请求保留 port/via/cwd，path 可缺席', () => {
+    const req: PreviewOpenReq = previewOpenReqFixture
+    expect(req.port).toBe(4173)
+    expect(req.path).toBeUndefined()
+    expect(req.via).toEqual(['10.0.0.0/8', 'api.internal'])
+    expect(req.cwd).toBe('/Users/dev/code/handoff')
+  })
+
+  it('owner 会话与 coordinator 列表共享同一字段形状', () => {
+    const session: PreviewSession = previewSessionFixture
+    const list: PreviewListResp = previewListFixture
+    expect(session.entry_url).toBe('http://localhost:4173')
+    expect(session.ttl_seconds).toBe(7200)
+    expect(list.sessions[0]).toEqual(session)
+    expect(list.machines?.map((m) => m.name)).toEqual(['', 'mac-02'])
+  })
+
+  it('事件与本机打开/owner 关闭确认使用冻结字面值', () => {
+    const event = previewEventFixture as PreviewEvent
+    const opened: PreviewOpenResp = previewOpenRespFixture
+    const closed: PreviewCloseResp = previewCloseRespFixture
+    expect(event.type).toBe('preview.created')
+    expect(event.session.id).toBe('pvw-01')
+    expect(opened.opened).toBe(true)
+    expect(closed.ok).toBe(true)
   })
 })

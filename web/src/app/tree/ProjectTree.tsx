@@ -44,12 +44,12 @@
 // 原型把行留给了名字与机器归属（spec §5 功能保留清单）。
 import { useEffect, useMemo, useRef, useState } from 'react'
 import {
-  Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Monitor, Plus, Search, Server, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow, X,
+  AppWindow, Archive, ChevronRight, FileText, FolderGit2, GitBranch, LayoutGrid, Monitor, Plus, Search, Server, Settings, SquareKanban, Terminal, Ticket, WifiOff, Workflow, X,
 } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { filterTree, taskMatchesQuery } from './search'
 import { sortWorkspaces, type WorkspaceMetrics } from './sortWorkspaces'
-import type { MachineStatus, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
+import type { MachineStatus, PreviewSession, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
 import { taskDisplayName } from '../lib/taskName'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
@@ -65,6 +65,7 @@ import { TreePrefsMenu } from './TreePrefsMenu'
 import { sortProjects, splitHiddenProjects, splitIdleWorkspaces } from './treePrefs'
 import { useTreePrefs } from './useTreePrefs'
 import { NewWorktreeDialog } from './NewWorktreeDialog'
+import { normalizePreviewOrigin, previewKey, previewLabel } from '../data/usePreviews'
 
 // OpenItem 是左栏「已打开行」的一行数据，由 Shell 从工作台投影注入。
 // key 是去重/React 键；name 已是展示名（tui=任务原名，terminal/file=tabTitle 结果），
@@ -134,6 +135,11 @@ export interface ProjectTreeProps {
   // onWorktreeCreated 建完树后回调，由 Shell 刷新树并把新目录选为当前基准目录。
   // 与 onUnregister / onEdit 同一条规矩：没传就不给这个入口。
   onWorktreeCreated?: (project: ProjectNode, machine: string, ws: Workspace) => void
+  previews?: PreviewSession[]
+  previewMachines?: MachineStatus[]
+  previewOpenKeys?: ReadonlySet<string>
+  previewOpeningKeys?: ReadonlySet<string>
+  onOpenPreview?: (id: string, machine: string) => void
 }
 
 // MACHINE_LABEL 给机器名做人话标签：""=本机。
@@ -293,17 +299,18 @@ const taskRowSelected = 'bg-[#ededed]'
 // taskIconSlot 对应 option-1 的 .task-icon：22px 槽位、图标 17px、#666666。
 // tui 用 dispatch-task 资产图标（与顶部 chrome、项目行计数同一资产），
 // terminal/file 用 lucide 线性图标。
-function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' }) {
+function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' }) {
   return (
     <span className="flex size-[22px] shrink-0 items-center justify-center text-[#666666]">
       {kind === 'tui' && <img src={dispatchTaskUrl} className="size-[17px]" alt="" />}
       {kind === 'terminal' && <Terminal className="size-[17px]" />}
       {kind === 'file' && <FileText className="size-[17px]" />}
+      {kind === 'preview' && <AppWindow className="size-[17px]" />}
     </span>
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -324,7 +331,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   const searchRef = useRef<HTMLInputElement>(null)
 
   // 过滤结果。tasks 每 2.5s 刷新一次，useMemo 避免每次任务流心跳都重算整棵树。
-  const filtered = useMemo(() => filterTree(tree, tasks, query, openItems), [tree, tasks, query, openItems])
+  const filtered = useMemo(() => filterTree(tree, tasks, query, openItems, previews), [tree, tasks, query, openItems, previews])
   const searching = filtered.query !== ''
 
   // 「已结束」分组的数据源：项目内全部终态任务（B288 口径，见 archived.ts 文件头）。
@@ -412,14 +419,18 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
   const orderedProjects = sortProjects(
     projectSplit.shown,
     (p) => {
-      const c = countsForProject(tasks, p)
-      return { active: c.running + c.pending, updatedAt: lastActivity(p.project_id), name: p.name }
+      const c = countsForProject(tasks, p, previews)
+      return { active: c.running + c.pending + c.previews, updatedAt: lastActivity(p.project_id), name: p.name }
     },
     prefs.projectSort,
   )
 
   const unassigned = filtered.unassignedTasks
-  const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0
+  const previewMachineErrors = previewMachines.filter((machine) => !machine.ok || machine.error !== '')
+  const visiblePreviewMachineErrors = searching
+    ? previewMachineErrors.filter((machine) => `${machine.name} ${machine.error}`.toLowerCase().includes(filtered.query))
+    : previewMachineErrors
+  const hasUnowned = unassigned.length > 0 || filtered.unownedNames.length > 0 || filtered.unassignedPreviews.length > 0 || visiblePreviewMachineErrors.length > 0
 
   // 行名与 tab 标题同源：统一走 taskDisplayName（name → branch → plan_summary），
   // 不再留本地副本——三处口径分叉正是「派发行认不出谁是谁」的帮凶之一。
@@ -554,8 +565,12 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       {orderedProjects.map((project, projectIndex) => {
         const pKey = 'p:' + project.project_id
         const pOpen = expanded(pKey)
-        const pCounts = countsForProject(tasks, project)
+        const pCounts = countsForProject(tasks, project, previews)
         const projectHit = searching && project.name.toLowerCase().includes(filtered.query)
+        const projectPreviews = previews.filter((session) => previewBelongsToProject(session, project))
+        const visibleProjectPreviews = projectPreviews.filter((session) =>
+          !searching || projectHit || previewMatches(session, filtered.query),
+        )
         const allProject = tree.projects.find((candidate) => candidate.project_id === project.project_id) ?? project
         const allLocations = allProject.locations
 
@@ -648,7 +663,7 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                 <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">
                   <span data-testid="project-running-count" className="flex items-center gap-[7px]">
                     <img src={dispatchTaskUrl} className="size-4" alt="" />
-                    <span className="text-[16px]">{pCounts.running + pCounts.pending}</span>
+                    <span className="text-[16px]">{pCounts.running + pCounts.pending + pCounts.previews}</span>
                   </span>
                   {project.locations.length > 0 && <Arrow open={pOpen} onToggle={() => toggle(pKey)} />}
                 </span>
@@ -722,6 +737,22 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                     ))}
                     {/* 任务按任务流原序渲染；已打开的 tui 原位呈现已打开态
                         （open-item testid 与聚焦/拖拽语义沿用），不再置顶 */}
+                    {visibleProjectPreviews.map((session) => {
+                      const machine = session.machine ?? ''
+                      const key = previewKey(session, machine)
+                      return (
+                        <TaskRow
+                          key={'preview:' + key}
+                          kind="preview"
+                          label={previewLabel(session)}
+                          machine={machine}
+                          open={previewOpenKeys.has(key)}
+                          opening={previewOpeningKeys.has(key)}
+                          onClick={() => onOpenPreview(session.id, machine)}
+                          testId={'preview-row-' + session.id}
+                        />
+                      )
+                    })}
                     {projectTasks.map((task) => {
                       const opened = openTuiById.get(task.id)
                       const taskBase = baseForTask(task)
@@ -1035,6 +1066,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
       {hasUnowned && (
         <div>
           <p className="px-3 pb-1 pt-2 text-[15px] font-medium text-muted-foreground">未归属</p>
+          {visiblePreviewMachineErrors.map((machine) => (
+            <p
+              key={`preview-machine-error:${machine.name}`}
+              data-testid={`preview-machine-error-${machine.name || 'local'}`}
+              className="px-3 py-1 text-[13px] text-amber-600"
+            >
+              预览机器 {machineLabel(machine.name)}：{machine.error || '机器不可达'}
+            </p>
+          ))}
           {/* 与任务组同一排序键：未归属也是任务行，聚合序一样不可信 */}
           {[...unassigned].sort(createdDesc).map((t) => (
             <TaskRow
@@ -1058,6 +1098,21 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
               {name}（未登记为项目）
             </p>
           ))}
+          {filtered.unassignedPreviews.map((session) => {
+            const machine = session.machine ?? ''
+            return (
+              <TaskRow
+                key={'preview-unassigned:' + previewKey(session, machine)}
+                kind="preview"
+                label={previewLabel(session)}
+                machine={machine}
+                open={previewOpenKeys.has(previewKey(session, machine))}
+                opening={previewOpeningKeys.has(previewKey(session, machine))}
+                onClick={() => onOpenPreview(session.id, machine)}
+                testId={'preview-row-' + session.id}
+              />
+            )
+          })}
         </div>
       )}
 
@@ -1258,15 +1313,16 @@ function openItemMatches(item: OpenItem, q: string): boolean {
 // 悬停期间机器名让位淡出（状态圆点保留），给 × 腾出位置。
 function TaskRow({
   kind, label, machine, dotTone = 'active', open = false, selected = false, indent = false,
-  draggable = false, dragPayload, onClose, onClick, testId = 'task-row', nameTestId,
+  opening = false, draggable = false, dragPayload, onClose, onClick, testId = 'task-row', nameTestId,
 }: {
-  kind: 'tui' | 'terminal' | 'file'
+  kind: 'tui' | 'terminal' | 'file' | 'preview'
   label: string
   machine: string
   dotTone?: StateTone
   open?: boolean
   selected?: boolean
   indent?: boolean
+  opening?: boolean
   draggable?: boolean
   dragPayload?: (e: React.DragEvent<HTMLButtonElement>) => void
   onClose?: () => void
@@ -1279,6 +1335,7 @@ function TaskRow({
       type="button"
       data-testid={testId}
       data-open={open ? 'true' : undefined}
+      aria-busy={opening ? 'true' : undefined}
       data-drag-task={draggable ? '1' : undefined}
       draggable={draggable || undefined}
       onDragStart={dragPayload}
@@ -1320,5 +1377,17 @@ function TaskRow({
         <X className="size-3.5" />
       </button>
     </div>
+  )
+}
+
+function previewBelongsToProject(session: PreviewSession, project: ProjectNode): boolean {
+  const origin = normalizePreviewOrigin(session.origin_url ?? '')
+  const projectOrigin = normalizePreviewOrigin(project.origin_url)
+  return origin !== '' && projectOrigin !== '' && origin === projectOrigin
+}
+
+function previewMatches(session: PreviewSession, query: string): boolean {
+  return [previewLabel(session), session.entry_url, session.branch ?? '', session.machine ?? ''].some((value) =>
+    value.toLowerCase().includes(query),
   )
 }

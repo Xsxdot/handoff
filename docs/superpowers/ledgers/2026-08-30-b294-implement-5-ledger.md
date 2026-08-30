@@ -1,0 +1,23 @@
+# B294 implement-5 台账
+
+- 2026-08-30：当前分支为 `cards/B294-implement-5`，工作区初始干净；基线 HEAD 为 `510adfb8da0f316be41e9e197807345bcc42c3e7`。
+- 2026-08-30：本轮仅处理 review b79878cc 的两条 finding：Start 成功后 Touch 失败必须 StopPID 后等待退出再清理；owner closed 事件回收不得阻塞事件循环，等待必须有界。
+- 2026-08-30：现状核验：`OpenPreview` 在 Touch 失败分支直接 `cleanupProcess`；`watchOwnerEvents` 同步调用 `stopAndCleanupProcess(context.Background(), ...)`，该路径会等待 `Done`。
+- 2026-08-30：先行新增两个 seam 测试并运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test ./internal/agentd -run 'TestPreviewOpenServiceTouchFailureStopsPIDBeforeCleanup|TestPreviewOpenServiceClosedEventsDoNotBlockOnFirstBrowser' -count=1`；原始输出为 `--- FAIL: TestPreviewOpenServiceTouchFailureStopsPIDBeforeCleanup ... Touch failure did not stop browser PID`、`--- FAIL: TestPreviewOpenServiceClosedEventsDoNotBlockOnFirstBrowser ... preview condition did not become true`，退出码 1。两条均直接暴露既有行为缺失而非编译/拼写错误。
+- 2026-08-30：实现后运行同一双测试命令，原始输出为 `ok github.com/Xsxdot/handoff/internal/agentd 0.159s`。
+- 2026-08-30：运行 `git diff --check` 通过；运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test ./internal/agentd -run 'Preview|Dial' -count=1`，原始输出为 `ok github.com/Xsxdot/handoff/internal/agentd 1.924s`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test -race ./internal/agentd -run 'Preview|Dial' -count=1`，原始输出为 `ok github.com/Xsxdot/handoff/internal/agentd 3.443s`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go build ./...`，原始输出为空且退出码 0。
+- 2026-08-30：首次运行 `(cd web && npm run typecheck)` 失败，原始输出为 `> web@0.0.0 typecheck`、`> tsc -b`、`sh: 1: tsc: not found`，退出码 127；当前工作树缺少 web 依赖，未将其当作 typecheck 结论。
+- 2026-08-30：运行 `(cd web && npm ci --ignore-scripts)`，原始输出为 `added 290 packages, and audited 291 packages in 2s`、`found 0 vulnerabilities`，退出码 0。
+- 2026-08-30：安装依赖后运行 `(cd web && npm run typecheck)`，原始输出为 `> web@0.0.0 typecheck`、`> tsc -b`，退出码 0。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . check`，退出码 0，原始结果 `fails: []`；输出仅含既有 anchor-off-domain、best-dangling、container-misplaced、legacy、oversized-package、prefix-family warnings。
+- 2026-08-30：变异自验第一发先用唯一锚点 `if err := waitPreviewProcess(stopCtx, process); err != nil {`（命中数实测为 `1`）取反；`go build ./...` 退出码 0，但单条 `TestPreviewOpenServiceOwnerCloseStopsPIDBeforeCleanup` 仍输出 `ok ... 0.059s`，因 `watchProcess` 的独立退出回收仍能清理资源，故该发按纪律判为未打中唯一守卫，已恢复，不计入存活结论。
+- 2026-08-30：第二发用唯一锚点将 closed 回收 goroutine 的 `go func` 改为同步调用；`go build ./...` 原始输出为空且退出码 0；单条 `TestPreviewOpenServiceClosedEventsDoNotBlockOnFirstBrowser` 原始输出为 `--- FAIL: ... preview condition did not become true`，退出码 1；触及包全量 Preview/Dial 回归同样只有该失败，`grep -c '^--- FAIL'` 原始输出为 `1`。变异命中且测试有牙，随后已恢复实现。
+- 2026-08-30：恢复实现后最终运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test ./internal/agentd -run 'Preview|Dial' -count=1`，原始输出为 `ok github.com/Xsxdot/handoff/internal/agentd 1.905s`。
+- 2026-08-30：恢复实现后最终运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test -race ./internal/agentd -run 'Preview|Dial' -count=1`，原始输出为 `ok github.com/Xsxdot/handoff/internal/agentd 3.389s`。
+- 2026-08-30：运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test ./... -count=1`，退出码 0；原始输出包含 `ok github.com/Xsxdot/handoff/internal/agentd 212.740s`、`ok github.com/Xsxdot/handoff/internal/client 22.817s`、`ok github.com/Xsxdot/handoff/internal/store 17.676s`、`ok github.com/Xsxdot/handoff/internal/targetclient 0.260s` 及其余包均 `ok`，无失败包。
+- 2026-08-30：运行新增两条 finding 测试 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go test ./internal/agentd -run 'TestPreviewOpenServiceTouchFailureStopsPIDBeforeCleanup|TestPreviewOpenServiceClosedEventsDoNotBlockOnFirstBrowser' -count=20`，原始输出为 `ok github.com/Xsxdot/handoff/internal/agentd 4.099s`。
+- 2026-08-30：收尾运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go build ./...`，原始输出为空且退出码 0。
+- 2026-08-30：收尾运行 `(cd web && npm run typecheck)`，原始输出为 `> web@0.0.0 typecheck`、`> tsc -b`，退出码 0。
+- 2026-08-30：收尾运行 `GOMODCACHE=/root/.handoff/tmp/6b80cedc/gomodcache go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . check`，退出码 0，原始结果 `fails: []`，仅有既有 warnings。
