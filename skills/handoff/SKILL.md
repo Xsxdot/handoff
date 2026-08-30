@@ -33,7 +33,7 @@ handoff 把「写计划的人」和「干活的人」拆成两个进程：
 
 ### 铁律：一切经 CLI
 
-需要看 executor 在干什么，用 `handoff attach`（经 agentd 的 render 流，远程也不需要 ssh）。需要看代码，用 `handoff diff` / `fetch` / `run`。需要回收，用 `handoff done` / `stop`；归档后残留的 managed worktree 用 `handoff reclaim` 清。
+需要看 executor 在干什么，用 `handoff attach`（经 agentd 的 render 流，远程也不需要 ssh）。需要看代码，用 `handoff diff` / `fetch` / `run`。需要回收，用 `handoff done` / `stop`；归档后残留的 managed worktree 用 `handoff reclaim` 清；终态任务的 tmp/gocache 叶子和残留 managed 树用 `handoff gc`（默认预览，`--yes` 才删）。
 
 **唯一例外**：任务已经彻底死了、CLI 三条路（`resume` / `continue` / `done`）全被拒，此时按任务目录 `proc.json` 里的 `handle.pid` 手工 kill shim 进程是兜底。但那是排障，不是日常。
 

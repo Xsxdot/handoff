@@ -183,11 +183,12 @@
   {
    "from": "d_orchestration",
    "to": "d_protocol",
-   "legacyBudget": 1,
+   "legacyBudget": 5,
    "entries": [
     "proto 实体",
     "proto.Task"
-   ]
+   ],
+   "legacyBudgetNote": "B298 absorb：Manager.GC / appendGCWorktreesPreview / appendGCWorktreesExecute / activeLeafOccupied 直调 TaskState.IsTerminal（+4）；既有 1 条为 Store.UpdateTaskState→CanTransit。"
   },
   {
    "from": "d_orchestration",
