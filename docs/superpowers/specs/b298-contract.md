@@ -1,6 +1,6 @@
 # B298 终态任务释放构建缓存，并提供机器级清理命令：契约冻结
 
-状态：**已批准**（引用 `docs/superpowers/specs/b298.md`，2026-08-29）
+状态：**已冻结**（2026-08-29，提交 26e2ab7fb5；上游 spec `docs/superpowers/specs/b298.md` 2026-08-29 已批准。拆解期仅允许头部状态元数据与 §8 修订记录追加，冻结正文不改——b229 先例）
 
 本文件是 B298 的契约增量与 Ticket 0 冻结物。冻结随本提交落盘：
 
@@ -304,3 +304,14 @@ func renderGC(w io.Writer, resp *proto.GCResp)
 - 图 baseline 的既有 stale/decl-domain warnings 未由本卡修复；本分支 view diff 与 target.json 已落盘冻结。
 
 无命中：无其他需要在本节点拍板的三重闸门决定。
+
+## 8. 拆解期修订记录（breakdown 节点，2026-08-30 出稿）
+
+以下为拆解核对期做出的边界澄清，依 b229 先例（「拆解期仅允许头部状态元数据与 §8 修订记录追加」）回写于此；冻结正文（§1–§7）未改动一字。
+
+- C-0 头部状态位修正：原头部只写「已批准」（指上游 spec 的批准），缺本文件自身的冻结标记，冻结状态曾只活在会话记忆与提交信息里；已改为「已冻结（2026-08-29，提交 26e2ab7fb5）」。
+- C-1 边界澄清（面归属）：收口 helper 调 `executor.TaskTmpDir` 走的是 target.json 已在册的 `d_orchestration → d_execution` 契约面（contracts[22]，manager.go 现状即 import `internal/executor`），不属契约增量；`internal/executor` 的 `TaskTmpDir` 是包内 API 复用，不是本卡新契约面。
+- C-2 边界澄清（收口顺序的补全）：断言 42/43/44 的「在现有 managed worktree 清理之后」指收口流程中工作树处置**尝试**之后（不论成败）——工作树清理失败不豁免缓存叶子删除尝试。现状 `Manager.Done`/`Manager.Stop` 的工作树清理失败本就不提前返回；`compensateWorkspace` 的失败分支有提前 return，implement 不得让缓存删除被这些 return 截走。记录 E 只钉了先后顺序，本条补「不被失败路径抑制」；spec 测试决定 1 的「补偿路径漏接必须能被测试抓住」按本条口径出题。
+- C-3 边界澄清（附区吸收落点）：~~§6 移交 plan 附区的「plan 文档头标注吸收」义务，因本卡无独立 plan 节点（spec 路由 contract → breakdown →（单轮）implement），落点改为 implement 卡的执行文档头。~~ **（前提有误，已由 C-4 更正作废）**
+- C-4 更正（2026-08-30 拍板）：C-3 前提有误——账本 charter v9 流含 plan 列（`breakdown.next=plan`），plan 为派发列、法定产出 `docs/superpowers/plans/b298-plan.md`，implement 门验 plan/breakdown 附件。本卡 L3 轻档仍走 plan 节点；§6 附区吸收标注落点回归 **plan 文档头**。
+- 已拍板（2026-08-30，协调者）：`GCResp.scanned` 语义取「本轮判定读过的任务表终态任务行数」（对齐 `ReclaimListResp.scanned` 既有语义，拆解稿岔口 1 候选 (a)）；implement 落实现时以测试钉死，本条由「待拍板」转「已拍板」。
