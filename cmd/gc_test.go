@@ -249,6 +249,22 @@ func TestGCCmdReusesRootTargetFlag(t *testing.T) {
 	}
 }
 
+func TestRunGCRenderPreservesAbsentVsZeroThroughClient(t *testing.T) {
+	withGCFlags(t, false, false, false)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"preview":true,"force":false,"cache_rows":[],"worktree_rows":[],"scanned":0,"failures":0}`))
+	}))
+	t.Cleanup(ts.Close)
+	cmd, out := newRunGCCmd(t)
+	if err := runGC(cmd, client.New(ts.URL, "tok"), ts.URL); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "将释放字节：未计算") {
+		t.Fatalf("缺席必须显示未计算：%s", out.String())
+	}
+}
+
 func TestRenderGCShowsFourStatuses(t *testing.T) {
 	var buf bytes.Buffer
 	zero := int64(1)
