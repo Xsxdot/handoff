@@ -1,7 +1,7 @@
 //go:build !windows
 
 // 本文件实现 Unix 侧 Chromium launcher：可执行文件探测、独立进程组启动、
-// xdotool 聚焦和进程组停止。它不调用系统默认浏览器，也不复用用户 profile。
+// 进程组停止。聚焦按 OS 拆到 preview_launcher_focus_*.go。它不调用系统默认浏览器，也不复用用户 profile。
 package agentd
 
 import (
@@ -103,24 +103,6 @@ func (l *previewOSLauncher) Start(ctx context.Context, executable string, spec P
 	}()
 	l.log.Info("preview Chromium 已启动", "operation", "preview_start", "pid", pid, "entry_url", spec.EntryURL)
 	return PreviewBrowserHandle{PID: pid, Done: done}, nil
-}
-
-func (l *previewOSLauncher) Focus(ctx context.Context, pid int) error {
-	l.mu.Lock()
-	cmd := l.commands[pid]
-	l.mu.Unlock()
-	if cmd == nil || cmd.Process == nil {
-		return fmt.Errorf("preview Chromium pid=%d 不在托管集合", pid)
-	}
-	tool, err := exec.LookPath("xdotool")
-	if err != nil {
-		return fmt.Errorf("聚焦 preview Chromium pid=%d 需要 xdotool: %w", pid, err)
-	}
-	if err := exec.CommandContext(ctx, tool, "search", "--pid", fmt.Sprint(pid), "windowactivate", "--sync").Run(); err != nil {
-		return fmt.Errorf("聚焦 preview Chromium pid=%d: %w", pid, err)
-	}
-	l.log.Info("preview Chromium 聚焦成功", "operation", "preview_focus", "pid", pid)
-	return nil
 }
 
 func (l *previewOSLauncher) Stop(ctx context.Context) error {

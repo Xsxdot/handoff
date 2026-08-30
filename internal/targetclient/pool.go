@@ -16,7 +16,6 @@ import (
 	"fmt"
 	"log/slog"
 	"net"
-	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -140,7 +139,7 @@ func (p *Pool) For(name string) (*client.Client, error) {
 	if dialer != nil {
 		e.dial = dialer.RawDialContext
 	} else {
-		e.dial = directDialer(t)
+		e.dial = directOwnerRawDial(c)
 	}
 	p.entries[name] = e
 	p.log.Info("target 客户端已建立并入池", "target", name, "relay", t.IsRelay(), "pool_size", len(p.entries))
@@ -175,25 +174,21 @@ func (p *Pool) DialContext(ctx context.Context, targetName, network, addr string
 	return conn, nil
 }
 
-func directDialer(target config.Target) func(context.Context, string, string) (net.Conn, error) {
-	targetHost := target.Addr
-	if u, err := url.Parse(targetHost); err == nil && u.Hostname() != "" {
-		targetHost = u.Hostname()
-	} else if host, _, err := net.SplitHostPort(targetHost); err == nil {
-		targetHost = host
-	}
+// directOwnerRawDial asks the owner agentd to dial dest on the owner's host.
+// Loopback spellings are normalized to 127.0.0.1 so owner static servers bound
+// only to 127.0.0.1 are reachable. The coordinator never rewrites dest onto
+// target.Addr's host — that was the Tailscale IP leak (B301).
+func directOwnerRawDial(c *client.Client) func(context.Context, string, string) (net.Conn, error) {
 	return func(ctx context.Context, network, addr string) (net.Conn, error) {
 		host, port, err := net.SplitHostPort(addr)
 		if err != nil {
 			return nil, fmt.Errorf("preview raw dial 地址无端口 %q: %w", addr, err)
 		}
-		if !strings.EqualFold(host, "localhost") && !isLoopbackHost(host) {
-			return nil, fmt.Errorf("direct target 不提供非 loopback preview raw dial: %q", addr)
+		dest := addr
+		if strings.EqualFold(host, "localhost") || isLoopbackHost(host) {
+			dest = net.JoinHostPort("127.0.0.1", port)
 		}
-		if targetHost != "" {
-			addr = net.JoinHostPort(targetHost, port)
-		}
-		return (&net.Dialer{}).DialContext(ctx, network, addr)
+		return c.DialPreviewRaw(ctx, network, dest)
 	}
 }
 

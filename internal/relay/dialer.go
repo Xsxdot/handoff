@@ -77,7 +77,9 @@ func (d *Dialer) RawDialContext(ctx context.Context, network, addr string) (net.
 		d.log.Warn("relay raw websocket dial failed", "node", d.node, "cause", err)
 		return nil, fmt.Errorf("dial relay raw websocket: %w", err)
 	}
-	raw := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+	// Same net.Dial contract as Client.DialPreviewRaw: ctx covers handshake
+	// only. SOCKS cancel()s the dial ctx immediately after Dial returns.
+	raw := websocket.NetConn(context.Background(), ws, websocket.MessageBinary)
 	closeRaw := func() { _ = raw.Close() }
 	if err := sendControl(ctx, ws, Frame{Type: Connect, Node: d.node, Credential: d.credential}); err != nil {
 		closeRaw()
@@ -146,6 +148,26 @@ func (d *Dialer) releaseRawConn(conn net.Conn) {
 	d.mu.Lock()
 	delete(d.rawConns, conn)
 	d.mu.Unlock()
+}
+
+// WritePreviewRawRequest frames one owner/coordinator preview-raw request.
+func WritePreviewRawRequest(w io.Writer, network, addr string) error {
+	return writePreviewRawRequest(w, network, addr)
+}
+
+// ReadPreviewRawRequest parses one preview-raw request after the stream is authenticated.
+func ReadPreviewRawRequest(r io.Reader) (network, addr string, err error) {
+	return readPreviewRawRequest(r)
+}
+
+// WritePreviewRawResponse writes the one-byte status plus optional error text.
+func WritePreviewRawResponse(w io.Writer, err error) error {
+	return writePreviewRawResponse(w, err)
+}
+
+// ReadPreviewRawResponse consumes the preview-raw handshake reply.
+func ReadPreviewRawResponse(r io.Reader) error {
+	return readPreviewRawResponse(r)
 }
 
 func writePreviewRawRequest(w io.Writer, network, addr string) error {

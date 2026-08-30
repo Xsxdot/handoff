@@ -222,6 +222,11 @@ func (l *Listener) serveRawSession(ctx context.Context, secure net.Conn, reader 
 	l.log.Info("relay raw session closed", "node", l.node, "network", network, "addr", addr)
 }
 
+// BridgePreviewRaw copies both directions until either side closes.
+func BridgePreviewRaw(a, b net.Conn) {
+	bridgeRelayRaw(a, b)
+}
+
 func bridgeRelayRaw(a, b net.Conn) {
 	done := make(chan struct{}, 2)
 	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()

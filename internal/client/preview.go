@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/coder/websocket"
 )
 
@@ -94,6 +96,47 @@ func (c *Client) OpenPreview(ctx context.Context, id, machine string) (*proto.Pr
 		return nil, fmt.Errorf("解析打开预览会话响应: %w", err)
 	}
 	return &out, nil
+}
+
+// DialPreviewRaw opens an authenticated owner preview-raw stream and asks
+// the owner to dial network/addr on its own host. The caller owns the conn.
+func (c *Client) DialPreviewRaw(ctx context.Context, network, addr string) (net.Conn, error) {
+	if err := c.checkInit(); err != nil {
+		return nil, err
+	}
+	if network == "" || addr == "" {
+		return nil, fmt.Errorf("preview raw dial 缺少 network 或 addr")
+	}
+	wsScheme := "ws"
+	if strings.HasPrefix(c.baseURL, "https://") {
+		wsScheme = "wss"
+	}
+	host := strings.TrimPrefix(strings.TrimPrefix(c.baseURL, "http://"), "https://")
+	wsURL := wsScheme + "://" + host + "/ws/preview-raw"
+	dialCtx, cancel := context.WithTimeout(ctx, dialTimeout)
+	conn, resp, err := websocket.Dial(dialCtx, wsURL, c.wsDialOptions())
+	cancel()
+	if err != nil {
+		if resp != nil {
+			return nil, fmt.Errorf("预览 raw WS 拨号失败 status=%d: %w", resp.StatusCode, err)
+		}
+		return nil, fmt.Errorf("预览 raw WS 拨号失败: %w", err)
+	}
+	// NetConn must not inherit the Dial timeout: SOCKS cancels that ctx the
+	// moment Dial returns (net.Dial contract). Binding the pipe to it closed
+	// the stream before the first HTTP byte — live empty reply on B301 U5.
+	raw := websocket.NetConn(context.Background(), conn, websocket.MessageBinary)
+	if err := relay.WritePreviewRawRequest(raw, network, addr); err != nil {
+		_ = raw.Close()
+		conn.CloseNow()
+		return nil, fmt.Errorf("写预览 raw 请求: %w", err)
+	}
+	if err := relay.ReadPreviewRawResponse(raw); err != nil {
+		_ = raw.Close()
+		conn.CloseNow()
+		return nil, fmt.Errorf("读预览 raw 响应: %w", err)
+	}
+	return raw, nil
 }
 
 // StreamPreviewEventsOnce consumes one live owner/coordinator WS connection.

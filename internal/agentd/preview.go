@@ -1,14 +1,19 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
+	"net"
 	"net/http"
+	"strings"
 
 	"github.com/coder/websocket"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
@@ -100,6 +105,54 @@ func (s *Server) handlePreviewOpen(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (s *Server) handlePreviewRawWS(w http.ResponseWriter, r *http.Request) {
+	conn, err := websocket.Accept(w, r, nil)
+	if err != nil {
+		s.log.Warn("预览 raw WS 握手失败", "operation", "preview_raw", "path", r.URL.Path, "cause", err)
+		return
+	}
+	defer conn.CloseNow()
+	// Pipe lifetime is this handler (Bridge + defer CloseNow), not the HTTP
+	// request ctx — that can fire independently of the hijacked WS.
+	raw := websocket.NetConn(context.Background(), conn, websocket.MessageBinary)
+	network, addr, err := relay.ReadPreviewRawRequest(raw)
+	if err != nil {
+		s.log.Warn("预览 raw 请求读取失败", "operation", "preview_raw", "cause", err)
+		_ = relay.WritePreviewRawResponse(raw, err)
+		return
+	}
+	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+		err = fmt.Errorf("不支持 raw network=%q", network)
+		s.log.Warn("预览 raw network 拒绝", "operation", "preview_raw", "network", network, "addr", addr, "cause", err)
+		_ = relay.WritePreviewRawResponse(raw, err)
+		return
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		s.log.Warn("预览 raw 地址非法", "operation", "preview_raw", "addr", addr, "cause", err)
+		_ = relay.WritePreviewRawResponse(raw, err)
+		return
+	}
+	if strings.EqualFold(host, "localhost") || host == "::1" {
+		addr = net.JoinHostPort("127.0.0.1", port)
+	}
+	s.log.Info("预览 raw owner 拨号开始", "operation", "preview_raw", "network", network, "addr", addr)
+	upstream, err := (&net.Dialer{}).DialContext(r.Context(), network, addr)
+	if err != nil {
+		s.log.Warn("预览 raw owner 拨号失败", "operation", "preview_raw", "network", network, "addr", addr, "cause", err)
+		_ = relay.WritePreviewRawResponse(raw, err)
+		return
+	}
+	defer upstream.Close()
+	if err := relay.WritePreviewRawResponse(raw, nil); err != nil {
+		s.log.Warn("预览 raw 成功响应失败", "operation", "preview_raw", "addr", addr, "cause", err)
+		return
+	}
+	s.log.Info("预览 raw owner 拨号成功", "operation", "preview_raw", "network", network, "addr", addr)
+	relay.BridgePreviewRaw(raw, upstream)
+	s.log.Info("预览 raw 会话结束", "operation", "preview_raw", "addr", addr)
 }
 
 func (s *Server) handlePreviewWS(w http.ResponseWriter, r *http.Request) {

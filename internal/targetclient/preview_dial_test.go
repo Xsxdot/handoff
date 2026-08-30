@@ -4,10 +4,12 @@ import (
 	"bufio"
 	"context"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -17,70 +19,45 @@ import (
 	"github.com/coder/websocket"
 )
 
-func TestPoolDialContextUsesRegisteredTarget(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, err := listener.Accept()
-		if err == nil {
-			accepted <- conn
+func TestPoolDialContextDirectNonLoopbackIsSentToOwner(t *testing.T) {
+	got := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/preview-raw" {
+			http.NotFound(w, r)
+			return
 		}
-	}()
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		raw := websocket.NetConn(r.Context(), ws, websocket.MessageBinary)
+		_, addr, err := relay.ReadPreviewRawRequest(raw)
+		if err != nil {
+			return
+		}
+		got <- addr
+		_ = relay.WritePreviewRawResponse(raw, fmt.Errorf("via dest recorded"))
+	}))
+	defer server.Close()
+	ownerURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse owner url: %v", err)
+	}
 	p := NewPool(confOf(map[string]config.Target{
-		"owner": {Addr: listener.Addr().String(), Token: "tok"},
+		"remote": {Addr: ownerURL.Host, Token: "tok"},
 	}), nil)
 	defer p.Close()
-	conn, err := p.DialContext(context.Background(), "owner", "tcp", listener.Addr().String())
-	if err != nil {
-		t.Fatalf("DialContext: %v", err)
+	_, err = p.DialContext(context.Background(), "remote", "tcp", "8.8.8.8:443")
+	if err == nil {
+		t.Fatal("expected owner-side error after recording dest")
 	}
-	defer conn.Close()
 	select {
-	case serverConn := <-accepted:
-		serverConn.Close()
-	case <-context.Background().Done():
-		t.Fatal("unreachable")
-	}
-	if _, err := io.WriteString(conn, "probe"); err != nil {
-		t.Fatalf("write through raw dial: %v", err)
-	}
-}
-
-func TestPoolDialContextRejectsDirectNonLoopbackDestination(t *testing.T) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	defer listener.Close()
-	accepted := make(chan net.Conn, 1)
-	go func() {
-		conn, err := listener.Accept()
-		if err == nil {
-			accepted <- conn
+	case addr := <-got:
+		if addr != "8.8.8.8:443" {
+			t.Fatalf("owner dest=%q, want 8.8.8.8:443 (coordinator must not rewrite or locally dial)", addr)
 		}
-	}()
-	p := NewPool(confOf(map[string]config.Target{
-		"remote": {Addr: listener.Addr().String(), Token: "tok"},
-	}), nil)
-	defer p.Close()
-
-	_, port, err := net.SplitHostPort(listener.Addr().String())
-	if err != nil {
-		t.Fatalf("split listener address: %v", err)
-	}
-	if conn, err := p.DialContext(context.Background(), "remote", "tcp", net.JoinHostPort("0.0.0.0", port)); err == nil {
-		conn.Close()
-		t.Fatal("direct remote raw dial must fail closed for non-loopback destination")
-	}
-	select {
-	case conn := <-accepted:
-		conn.Close()
-		t.Fatal("direct remote raw dial must not connect to coordinator-side listener")
-	case <-time.After(100 * time.Millisecond):
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner did not receive non-loopback dest")
 	}
 }
 
@@ -189,6 +166,108 @@ func startRawDialRelay(t *testing.T, token string, destinations chan<- string) (
 		}
 	}))
 	return "ws" + strings.TrimPrefix(server.URL, "http"), server.Close
+}
+
+func TestPoolDialContextDirectDialsOwnerLoopback(t *testing.T) {
+	content, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("content listen: %v", err)
+	}
+	defer content.Close()
+	contentHits := make(chan struct{}, 1)
+	go func() {
+		conn, err := content.Accept()
+		if err != nil {
+			return
+		}
+		defer conn.Close()
+		contentHits <- struct{}{}
+		buf := make([]byte, 5)
+		if _, err := io.ReadFull(conn, buf); err != nil {
+			return
+		}
+		_, _ = conn.Write(buf)
+	}()
+
+	ownerHits := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/preview-raw" {
+			http.NotFound(w, r)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer tok" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+		ws, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		ctx := r.Context()
+		raw := websocket.NetConn(ctx, ws, websocket.MessageBinary)
+		network, addr, err := relay.ReadPreviewRawRequest(raw)
+		if err != nil {
+			return
+		}
+		ownerHits <- network + " " + addr
+		upstream, err := net.Dial("tcp", addr)
+		if err != nil {
+			_ = relay.WritePreviewRawResponse(raw, err)
+			return
+		}
+		defer upstream.Close()
+		if err := relay.WritePreviewRawResponse(raw, nil); err != nil {
+			return
+		}
+		go func() { _, _ = io.Copy(raw, upstream); _ = raw.Close() }()
+		_, _ = io.Copy(upstream, raw)
+	}))
+	defer server.Close()
+
+	ownerURL, err := url.Parse(server.URL)
+	if err != nil {
+		t.Fatalf("parse owner url: %v", err)
+	}
+	_, contentPort, err := net.SplitHostPort(content.Addr().String())
+	if err != nil {
+		t.Fatalf("split content: %v", err)
+	}
+
+	p := NewPool(confOf(map[string]config.Target{
+		"linux-01": {Addr: ownerURL.Host, Token: "tok"},
+	}), nil)
+	defer p.Close()
+
+	conn, err := p.DialContext(context.Background(), "linux-01", "tcp", net.JoinHostPort("localhost", contentPort))
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	defer conn.Close()
+
+	select {
+	case got := <-ownerHits:
+		want := "tcp " + net.JoinHostPort("127.0.0.1", contentPort)
+		if got != want {
+			t.Fatalf("owner dest=%q, want %q (must not rewrite to target host)", got, want)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("owner /ws/preview-raw was not used; directDialer still coordinator-dials content")
+	}
+	if _, err := io.WriteString(conn, "probe"); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	echo := make([]byte, 5)
+	if _, err := io.ReadFull(conn, echo); err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(echo) != "probe" {
+		t.Fatalf("echo=%q", string(echo))
+	}
+	select {
+	case <-contentHits:
+	case <-time.After(2 * time.Second):
+		t.Fatal("content listener was not reached via owner")
+	}
 }
 
 func TestPoolDialContextRejectsUnknownOrClosedTarget(t *testing.T) {

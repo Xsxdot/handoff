@@ -635,6 +635,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /ws/events", s.handleEvents)
 	api.HandleFunc("GET /ws/pty", s.handlePtyWS)
 	api.HandleFunc("GET /ws/previews", s.handlePreviewWS)
+	api.HandleFunc("GET /ws/preview-raw", s.handlePreviewRawWS)
 	api.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
 	api.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
 	api.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
