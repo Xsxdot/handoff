@@ -16,4 +16,5 @@
   2. 归一条件 `localhost`→`not-localhost`：`TestPoolDialContextDirectDialsOwnerLoopback` 红 `owner dest="tcp localhost:…", want "tcp 127.0.0.1:…"`；还原绿。
   3. Darwin `LookPath("osascript")`→`xdotool`：`TestPreviewDarwinFocusDoesNotUseXdotool` 红 `darwin focus used xdotool`；还原绿。
 - 触及包：`go test ./internal/agentd -run TestPreviewRawWS|TestPreviewDarwinFocus` ok；`./internal/targetclient ./internal/client ./internal/relay` ok；`go build ./...` ok。
+- review（只读，7dedb64d）：Critical 无。Important：① Direct Dial 测试 owner/content 同为 127.0.0.1 可假绿；② NetConn/dial-ctx 契约未回写冻结物。已修：owner httptest 绑 `::1`（Darwin 无 127.0.0.2）；spec 修订 1 + 接缝 4；`JoinHostPort("::1")` 变异红 dest 不匹配后还原绿。
 - 不合 main。B294 不 reopen。

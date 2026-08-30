@@ -135,7 +135,7 @@ func (s *Server) handlePreviewRawWS(w http.ResponseWriter, r *http.Request) {
 		_ = relay.WritePreviewRawResponse(raw, err)
 		return
 	}
-	if strings.EqualFold(host, "localhost") || host == "::1" {
+	if ip := net.ParseIP(host); strings.EqualFold(host, "localhost") || (ip != nil && ip.IsLoopback()) {
 		addr = net.JoinHostPort("127.0.0.1", port)
 	}
 	s.log.Info("预览 raw owner 拨号开始", "operation", "preview_raw", "network", network, "addr", addr)

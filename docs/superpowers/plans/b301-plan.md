@@ -6,10 +6,11 @@
 
 | 缝 | 测试 |
 |---|---|
-| `Pool.DialContext` direct | `TestPoolDialContextDirectDialsOwnerLoopback`：owner HTTP 在 `127.0.0.2:ownerPort`（或等价「target host ≠ content host」），content 在 `127.0.0.1:contentPort`。`DialContext(ctx,"dev","tcp","localhost:"+contentPort)` 必须拿到 content 上的 echo。旧实现会拨 `127.0.0.2:contentPort` 失败——本测试先红。 |
-| 同上负例 | 改写 `TestPoolDialContextRejectsDirectNonLoopbackDestination`：非 loopback dest 不得在协调者本机直拨；应送到 owner raw（owner mock 记录收到的 dest）。0.0.0.0 仍可在 owner 侧拒。 |
+| `Pool.DialContext` direct | `TestPoolDialContextDirectDialsOwnerLoopback`：owner HTTP 在 `::1` 或 `127.0.0.2`（target host ≠ content host；Darwin 常绑不上 `127.0.0.2`），content 在 `127.0.0.1:contentPort`。`DialContext(...,"localhost:"+contentPort)` 必须拿到 content echo。改写 `JoinHostPort(targetHost, contentPort)` 必须红。 |
+| 同上负例 | `TestPoolDialContextDirectNonLoopbackIsSentToOwner`：非 loopback dest 不得在协调者本机直拨；应送到 owner raw（owner mock 记录收到的 dest）。 |
 | owner WS | `TestPreviewRawWSRequiresAuth` 无 Bearer → 非 101；`TestPreviewRawWSDialsLoopback` Bearer + localhost dest → 桥接到本机 listener。 |
-| Darwin Focus | `TestPreviewDarwinFocusDoesNotUseXdotool`（`//go:build darwin`）：`LookPath`/`命令` 不包含 xdotool；用 osascript。 |
+| Dial 超时 ctx | `TestPreviewRawWSSurvivesDialContextCancel`：Dial 返回后立刻 cancel，pipe 仍能 echo。relay `RawDialContext` 的 NetConn 同样不得绑 dial ctx。 |
+| Darwin Focus | `TestPreviewDarwinFocusDoesNotUseXdotool`（`//go:build darwin`）：`LookPath` 为 osascript，错误/命令不含 xdotool。 |
 
 ## 任务
 

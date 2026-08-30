@@ -21,6 +21,9 @@ func TestPreviewDarwinFocusDoesNotUseXdotool(t *testing.T) {
 	if strings.Contains(err.Error(), "xdotool") {
 		t.Fatalf("darwin focus must not mention xdotool: %v", err)
 	}
+	if _, err := exec.LookPath("osascript"); err != nil {
+		t.Fatalf("darwin focus requires osascript: %v", err)
+	}
 
 	cmd := exec.Command("sleep", "30")
 	if err := cmd.Start(); err != nil {

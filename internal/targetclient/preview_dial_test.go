@@ -190,7 +190,7 @@ func TestPoolDialContextDirectDialsOwnerLoopback(t *testing.T) {
 	}()
 
 	ownerHits := make(chan string, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := startOwnerOnDistinctLoopback(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ws/preview-raw" {
 			http.NotFound(w, r)
 			return
@@ -222,11 +222,17 @@ func TestPoolDialContextDirectDialsOwnerLoopback(t *testing.T) {
 		go func() { _, _ = io.Copy(raw, upstream); _ = raw.Close() }()
 		_, _ = io.Copy(upstream, raw)
 	}))
-	defer server.Close()
 
 	ownerURL, err := url.Parse(server.URL)
 	if err != nil {
 		t.Fatalf("parse owner url: %v", err)
+	}
+	targetHost, _, err := net.SplitHostPort(ownerURL.Host)
+	if err != nil {
+		t.Fatalf("split owner host: %v", err)
+	}
+	if targetHost == "127.0.0.1" {
+		t.Fatal("owner host must differ from content 127.0.0.1 so JoinHostPort(targetHost, contentPort) cannot false-green")
 	}
 	_, contentPort, err := net.SplitHostPort(content.Addr().String())
 	if err != nil {
@@ -239,20 +245,22 @@ func TestPoolDialContextDirectDialsOwnerLoopback(t *testing.T) {
 	defer p.Close()
 
 	conn, err := p.DialContext(context.Background(), "linux-01", "tcp", net.JoinHostPort("localhost", contentPort))
-	if err != nil {
-		t.Fatalf("DialContext: %v", err)
-	}
-	defer conn.Close()
-
 	select {
 	case got := <-ownerHits:
 		want := "tcp " + net.JoinHostPort("127.0.0.1", contentPort)
 		if got != want {
-			t.Fatalf("owner dest=%q, want %q (must not rewrite to target host)", got, want)
+			t.Fatalf("owner dest=%q, want %q (must not rewrite to target host %q)", got, want, targetHost)
+		}
+		if strings.Contains(got, targetHost) {
+			t.Fatalf("owner dest %q still carries target host %q", got, targetHost)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("owner /ws/preview-raw was not used; directDialer still coordinator-dials content")
 	}
+	if err != nil {
+		t.Fatalf("DialContext: %v", err)
+	}
+	defer conn.Close()
 	if _, err := io.WriteString(conn, "probe"); err != nil {
 		t.Fatalf("write: %v", err)
 	}
@@ -268,6 +276,32 @@ func TestPoolDialContextDirectDialsOwnerLoopback(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("content listener was not reached via owner")
 	}
+}
+
+// startOwnerOnDistinctLoopback binds the owner httptest off 127.0.0.1 so a
+// regression that does JoinHostPort(targetHost, contentPort) cannot masquerade
+// as the normalized loopback dest. Darwin often cannot bind 127.0.0.2; [::1]
+// is the equivalent "target host ≠ content host" split.
+func startOwnerOnDistinctLoopback(t *testing.T, h http.Handler) *httptest.Server {
+	t.Helper()
+	for _, addr := range []string{"[::1]:0", "127.0.0.2:0"} {
+		ln, err := net.Listen("tcp", addr)
+		if err != nil {
+			continue
+		}
+		host, _, err := net.SplitHostPort(ln.Addr().String())
+		if err != nil || host == "127.0.0.1" {
+			_ = ln.Close()
+			continue
+		}
+		server := httptest.NewUnstartedServer(h)
+		server.Listener = ln
+		server.Start()
+		t.Cleanup(server.Close)
+		return server
+	}
+	t.Fatal("need owner listener host ≠ 127.0.0.1 ([::1] or 127.0.0.2)")
+	return nil
 }
 
 func TestPoolDialContextRejectsUnknownOrClosedTarget(t *testing.T) {
