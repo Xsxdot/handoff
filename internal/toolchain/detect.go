@@ -111,12 +111,12 @@ func CredRelPathFor(name string) (string, bool) {
 }
 
 // order 固定探测与返回顺序，让 init 的表格每次长得一样。
-var order = []string{"opencode", "claude", "grok", "codex"}
+var order = []string{"opencode", "claude", "grok", "codex", "agy"}
 
-// Detect 探测四家 executor 的状态。
+// Detect 探测各家 executor 的状态。
 //
 // 返回：
-//   - 固定四项，顺序恒为 opencode / claude / grok / codex
+//   - 固定项，顺序恒为 opencode / claude / grok / codex / agy
 //
 // 注意：
 //   - 取不到 HOME 时，装了的执行者一律报 StateAuthUnknown。它既不是 StateMissing
@@ -135,8 +135,8 @@ func Detect() []Result {
 			continue
 		}
 		r.Path = p
-		if name == "claude" {
-			// claude 没有可靠的轻量判据，如实报「不知道」
+		if name == "claude" || name == "agy" {
+			// claude 与 agy 没有可靠的轻量静态文件判据，如实报「不知道」
 			r.State = StateAuthUnknown
 			out = append(out, r)
 			continue

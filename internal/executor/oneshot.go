@@ -15,7 +15,7 @@ import "fmt"
 // OneShotArgs 返回执行者的一次性调用 argv（prompt 作为末位参数）。
 //
 // 参数：
-//   - executorName: 执行者名，目前支持 opencode / claude / grok；未知名字返回错误
+//   - executorName: 执行者名，目前支持 opencode / claude / grok / agy；未知名字返回错误
 //   - model: 模型名；空表示让执行者用自身默认模型（省略对应参数）
 //   - prompt: 一次性 prompt 原文，作为命令的最后一个参数
 //
@@ -47,7 +47,14 @@ func OneShotArgs(executorName, model, prompt string) ([]string, error) {
 			return []string{"grok", "--effort", "low", "-m", model, "-p", prompt}, nil
 		}
 		return []string{"grok", "--effort", "low", "-p", prompt}, nil
+	case "agy":
+		// why 参数顺序不能抄 claude：agy 的 -p/--print/--prompt 是取值旗。
+		// -p 必须紧挨 prompt，其它旗排在 -p 之前，否则 -p 会把 --model 当成 prompt。
+		if model != "" {
+			return []string{"agy", "--model", model, "-p", prompt}, nil
+		}
+		return []string{"agy", "-p", prompt}, nil
 	default:
-		return nil, fmt.Errorf("未知执行者 %q（one-shot 支持 opencode/claude/grok）", executorName)
+		return nil, fmt.Errorf("未知执行者 %q（one-shot 支持 opencode/claude/grok/agy）", executorName)
 	}
 }

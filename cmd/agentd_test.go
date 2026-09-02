@@ -30,7 +30,7 @@ import (
 // 由 TestAdaptersForSkipsGrokWhenSymlinkUnavailable 单独覆盖。
 func TestAdapterRegistryHasAlwaysAvailableExecutors(t *testing.T) {
 	ads := defaultAdapters(slog.Default())
-	for _, want := range []string{"opencode", "claude", "codex", "fake"} {
+	for _, want := range []string{"opencode", "claude", "codex", "agy", "fake"} {
 		if _, ok := ads[want]; !ok {
 			names := make([]string, 0, len(ads))
 			for n := range ads {
@@ -52,6 +52,16 @@ func TestAdaptersForRegistersClaudeOnAllPlatforms(t *testing.T) {
 	}
 }
 
+// TestAdaptersForRegistersAgyOnAllPlatforms 确保 agy 在所有平台注册。
+func TestAdaptersForRegistersAgyOnAllPlatforms(t *testing.T) {
+	for _, goos := range []string{"darwin", "linux", "windows"} {
+		ads := adaptersForWithProbe(goos, slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
+		if _, ok := ads["agy"]; !ok {
+			t.Fatalf("goos=%s 时 agy 未注册", goos)
+		}
+	}
+}
+
 // TestAdaptersForSkipsGrokWhenSymlinkUnavailable 钉住 grok 走能力探测：
 // 探测目录不可用时必须不注册，而不是注册了等运行期炸。
 func TestAdaptersForSkipsGrokWhenSymlinkUnavailable(t *testing.T) {
@@ -61,7 +71,7 @@ func TestAdaptersForSkipsGrokWhenSymlinkUnavailable(t *testing.T) {
 		t.Fatalf("符号链接不可用时 grok 仍被注册")
 	}
 	// 其余执行器不受影响：一个执行器不可用不该拖垮整张注册表
-	for _, name := range []string{"opencode", "codex", "claude", "fake"} {
+	for _, name := range []string{"opencode", "codex", "claude", "agy", "fake"} {
 		if _, ok := ads[name]; !ok {
 			t.Fatalf("%s 被误伤，未注册", name)
 		}
@@ -177,7 +187,7 @@ func TestLogExecutorDetectionQuietForFake(t *testing.T) {
 // TestAdaptersForAlwaysAvailableKeepsAll 钉住平台能力探测不误伤始终可用的执行器。
 func TestAdaptersForAlwaysAvailableKeepsAll(t *testing.T) {
 	got := adaptersForWithProbe("darwin", slog.New(slog.NewTextHandler(io.Discard, nil)), t.TempDir())
-	for _, name := range []string{"opencode", "claude", "codex", "fake"} {
+	for _, name := range []string{"opencode", "claude", "codex", "agy", "fake"} {
 		if _, ok := got[name]; !ok {
 			t.Errorf("应注册 %s", name)
 		}

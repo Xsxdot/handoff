@@ -38,8 +38,8 @@ func TestInstallSkipsMissingAgentDirs(t *testing.T) {
 	if installed != 2 { // 基准副本 + .claude
 		t.Fatalf("已装落点 = %d，期望 2", installed)
 	}
-	if skipped != 3 {
-		t.Fatalf("跳过落点 = %d，期望 3", skipped)
+	if skipped != 4 {
+		t.Fatalf("跳过落点 = %d，期望 4", skipped)
 	}
 }
 
@@ -47,7 +47,7 @@ func TestInstallSkipsMissingAgentDirs(t *testing.T) {
 // 升级路径每次都会调它，不幂等就会在第二次升级时炸。
 func TestInstallIsIdempotent(t *testing.T) {
 	home := t.TempDir()
-	for _, d := range []string{".claude", ".codex", ".config/opencode", ".grok"} {
+	for _, d := range []string{".claude", ".codex", ".config/opencode", ".grok", ".gemini/antigravity-cli"} {
 		os.MkdirAll(filepath.Join(home, d), 0o755)
 	}
 	if _, err := Install("v1", home); err != nil {
@@ -62,12 +62,12 @@ func TestInstallIsIdempotent(t *testing.T) {
 	}
 }
 
-// TestInstallWritesRealCopies 锁住落点形态：四家各自一份实体副本，内容与
+// TestInstallWritesRealCopies 锁住落点形态：五家各自一份实体副本，内容与
 // 基准一致。软链已废弃——它在 Windows 上需要管理员特权，而它买的
 // 「改一处生效四处」在 go:embed + 每次全量重写的模型里收益为零（B84）。
 func TestInstallWritesRealCopies(t *testing.T) {
 	home := t.TempDir()
-	for _, d := range []string{".claude", ".codex", ".config/opencode", ".grok"} {
+	for _, d := range []string{".claude", ".codex", ".config/opencode", ".grok", ".gemini/antigravity-cli"} {
 		if err := os.MkdirAll(filepath.Join(home, d), 0o755); err != nil {
 			t.Fatal(err)
 		}
@@ -76,7 +76,7 @@ func TestInstallWritesRealCopies(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{
-		".claude/skills", ".codex/skills", ".config/opencode/skills", ".grok/skills",
+		".claude/skills", ".codex/skills", ".config/opencode/skills", ".grok/skills", ".gemini/antigravity-cli/skills",
 	} {
 		p := filepath.Join(home, rel, "handoff", "SKILL.md")
 		fi, err := os.Lstat(filepath.Join(home, rel, "handoff"))

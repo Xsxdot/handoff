@@ -304,5 +304,5 @@ func warnIfNotReady(w io.Writer, rs []toolchain.Result, name string) {
 		}
 		return
 	}
-	fmt.Fprintf(w, "  ⚠ %s 不在已知的四家里（opencode/claude/grok/codex），派发时会报未注册。\n", name)
+	fmt.Fprintf(w, "  ⚠ %s 不在已知的五家里（opencode/claude/grok/codex/agy），派发时会报未注册。\n", name)
 }

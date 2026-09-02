@@ -147,6 +147,10 @@ func printDetection(w io.Writer, rs []toolchain.Result, addedDirs []string) {
 			fmt.Fprintln(w, "\n  claude 的登录凭据存在系统 Keychain 里，本机判据够不着，所以只报「登录态未知」。")
 			fmt.Fprintln(w, "  想确认是否可用，自己跑一次 claude -p \"hi\" 看有没有输出。")
 		}
+		if r.Name == "agy" && r.State == toolchain.StateAuthUnknown {
+			fmt.Fprintln(w, "\n  agy 的登录凭据存在本地配置中，静态判据不直接断言，所以报「登录态未知」。")
+			fmt.Fprintln(w, "  想确认是否可用，自己跑一次 agy -p \"hi\" 看有没有输出。")
+		}
 	}
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "执行者若需要代理、私有 registry 或额外 PATH，把变量写进 ~/.handoff/env/<名字>.env，再在 config.yaml 的 env 段挂上（如 codex: codex.env）。init 不创建、不修改这些文件。")
