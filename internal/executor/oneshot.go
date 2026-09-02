@@ -48,8 +48,10 @@ func OneShotArgs(executorName, model, prompt string) ([]string, error) {
 		}
 		return []string{"grok", "--effort", "low", "-p", prompt}, nil
 	case "agy":
+		// why 参数顺序不能抄 claude：agy 的 -p/--print/--prompt 是取值旗。
+		// -p 必须紧挨 prompt，其它旗排在 -p 之前，否则 -p 会把 --model 当成 prompt。
 		if model != "" {
-			return []string{"agy", "-p", "--model", model, prompt}, nil
+			return []string{"agy", "--model", model, "-p", prompt}, nil
 		}
 		return []string{"agy", "-p", prompt}, nil
 	default:
