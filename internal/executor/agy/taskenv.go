@@ -2,6 +2,7 @@
 //
 // 职责：
 //   - 在 workdir/.agents 下生成 hooks.json（把 PreToolUse 钩子挂到本任务的 perm.sock 上）
+//   - 在 taskDir/agyhome 下生成 headless agy 读取的 hooks、原生 allow 策略与登录凭据
 //   - 渲染首回合 prompt（带任务 ID、计划内容与纪律块）
 //   - 用 taskDir sidecar 保存并恢复 hooks.json 的原文、skip-worktree 与 exclude 状态
 //
@@ -26,7 +27,42 @@ const (
 	agentsDirName   = ".agents"
 	hooksFileName   = "hooks.json"
 	restoreFileName = "agy-hooks-restore.json"
+	agyHomeDirName  = "agyhome"
 )
+
+// nativeCommandAllow 是 agy 原生策略允许的命令前缀。
+//
+// 这里刻意不使用 command(*)：agy 的全匹配项会绕过 PreToolUse 的 deny 结果。
+var nativeCommandAllow = []string{
+	"command(go)",
+	"command(git)",
+	"command(echo)",
+	"command(make)",
+	"command(npm)",
+	"command(npx)",
+	"command(pnpm)",
+	"command(yarn)",
+	"command(node)",
+	"command(python)",
+	"command(python3)",
+	"command(pip)",
+	"command(pip3)",
+	"command(cargo)",
+	"command(bash)",
+	"command(sh)",
+	"command(ls)",
+	"command(cat)",
+	"command(grep)",
+	"command(sed)",
+	"command(find)",
+	"command(mkdir)",
+	"command(chmod)",
+	"command(head)",
+	"command(tail)",
+	"command(rg)",
+	"command(gofmt)",
+	"command(handoff)",
+}
 
 type hooksRestoreState struct {
 	Workdir        string `json:"workdir"`
@@ -52,7 +88,11 @@ type hookNamedConfig struct {
 	PreToolUse []hookGroup `json:"PreToolUse"`
 }
 
-// WriteTaskEnv 在 workdir 下准备 .agents/hooks.json 并渲染首回合 prompt。
+// WriteTaskEnv 在 workdir 下准备 workspace 与任务 HOME 的 agy 策略物料，并渲染首回合 prompt。
+//
+// 参数：workdir 为任务工作区；taskDir 为任务专属目录；sockPath 为权限裁决套接字；
+// 其余参数用于 prompt 与 hooks 命令。返回 workspace hooks 路径和首回合 prompt；
+// oauth 凭据缺失或任一物料写入失败时返回错误。
 func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (hooksPath, promptText string, err error) {
 	log := slog.Default()
 	hooksPath = filepath.Join(workdir, agentsDirName, hooksFileName)
@@ -135,6 +175,82 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 		log.Error("agy 写 hooks.json 失败", "path", hooksPath, "cause", err)
 		return hooksPath, "", fmt.Errorf("写入 %s: %w", hooksPath, err)
 	}
+
+	agyHome := filepath.Join(taskDir, agyHomeDirName)
+	agyGeminiDir := filepath.Join(agyHome, ".gemini")
+	agyConfigDir := filepath.Join(agyGeminiDir, "config")
+	agyCLIDir := filepath.Join(agyGeminiDir, "antigravity-cli")
+	if err := os.MkdirAll(agyConfigDir, 0700); err != nil {
+		log.Error("创建 agy 任务 HOME config 目录失败", "task", taskID, "path", agyConfigDir, "cause", err)
+		return hooksPath, "", fmt.Errorf("创建 %s: %w", agyConfigDir, err)
+	}
+	if err := os.MkdirAll(agyCLIDir, 0700); err != nil {
+		log.Error("创建 agy 任务 HOME antigravity-cli 目录失败", "task", taskID, "path", agyCLIDir, "cause", err)
+		return hooksPath, "", fmt.Errorf("创建 %s: %w", agyCLIDir, err)
+	}
+	for _, dir := range []string{agyHome, agyGeminiDir, agyConfigDir, agyCLIDir} {
+		if err := os.Chmod(dir, 0700); err != nil {
+			log.Error("设置 agy 任务 HOME 目录权限失败", "task", taskID, "path", dir, "cause", err)
+			return hooksPath, "", fmt.Errorf("设置 %s 权限: %w", dir, err)
+		}
+	}
+	log.Info("agy 任务 HOME 目录已就绪", "task", taskID, "path", agyHome)
+
+	userHome, err := os.UserHomeDir()
+	if err != nil {
+		log.Error("解析 agy oauth 用户 HOME 失败", "task", taskID, "cause", err)
+		return hooksPath, "", fmt.Errorf("解析用户 HOME: %w", err)
+	}
+	sourceOAuth := filepath.Join(userHome, ".gemini", "antigravity-cli", "antigravity-oauth-token")
+	oauthData, err := os.ReadFile(sourceOAuth)
+	if err != nil {
+		log.Error("读取 agy oauth token 失败", "task", taskID, "source", sourceOAuth, "cause", err)
+		return hooksPath, "", fmt.Errorf("读取 agy oauth token %s: %w", sourceOAuth, err)
+	}
+	destOAuth := filepath.Join(agyCLIDir, "antigravity-oauth-token")
+	if err := os.WriteFile(destOAuth, oauthData, 0600); err != nil {
+		log.Error("拷贝 agy oauth token 失败", "task", taskID, "source", sourceOAuth, "destination", destOAuth, "cause", err)
+		return hooksPath, "", fmt.Errorf("写入 agy oauth token %s: %w", destOAuth, err)
+	}
+	log.Info("agy oauth token 已拷贝到任务 HOME", "task", taskID, "source", sourceOAuth, "destination", destOAuth, "bytes", len(oauthData))
+
+	originalOAuth := sourceOAuth + ".orig-google-oauth"
+	if originalData, readErr := os.ReadFile(originalOAuth); readErr == nil {
+		destOriginal := filepath.Join(agyCLIDir, "antigravity-oauth-token.orig-google-oauth")
+		if err := os.WriteFile(destOriginal, originalData, 0600); err != nil {
+			log.Error("拷贝 agy 原始 oauth token 失败", "task", taskID, "source", originalOAuth, "destination", destOriginal, "cause", err)
+			return hooksPath, "", fmt.Errorf("写入 agy 原始 oauth token %s: %w", destOriginal, err)
+		}
+		log.Info("agy 原始 oauth token 已拷贝到任务 HOME", "task", taskID, "source", originalOAuth, "destination", destOriginal, "bytes", len(originalData))
+	} else if !os.IsNotExist(readErr) {
+		log.Error("读取 agy 原始 oauth token 失败", "task", taskID, "source", originalOAuth, "cause", readErr)
+		return hooksPath, "", fmt.Errorf("读取 agy 原始 oauth token %s: %w", originalOAuth, readErr)
+	}
+
+	settings := struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}{}
+	settings.Permissions.Allow = append([]string(nil), nativeCommandAllow...)
+	settingsJSON, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		log.Error("序列化 agy 原生权限策略失败", "task", taskID, "path", filepath.Join(agyCLIDir, "settings.json"), "cause", err)
+		return hooksPath, "", fmt.Errorf("序列化 agy settings.json: %w", err)
+	}
+	settingsPath := filepath.Join(agyCLIDir, "settings.json")
+	if err := os.WriteFile(settingsPath, append(settingsJSON, '\n'), 0600); err != nil {
+		log.Error("写 agy 原生权限策略失败", "task", taskID, "path", settingsPath, "cause", err)
+		return hooksPath, "", fmt.Errorf("写入 %s: %w", settingsPath, err)
+	}
+	log.Info("agy 原生权限策略已写入任务 HOME", "task", taskID, "path", settingsPath, "allow_count", len(nativeCommandAllow))
+
+	taskHooksPath := filepath.Join(agyConfigDir, hooksFileName)
+	if err := os.WriteFile(taskHooksPath, append(hooksJSON, '\n'), 0600); err != nil {
+		log.Error("写 agy 任务 HOME hooks.json 失败", "task", taskID, "path", taskHooksPath, "cause", err)
+		return hooksPath, "", fmt.Errorf("写入 %s: %w", taskHooksPath, err)
+	}
+	log.Info("agy 任务 HOME hooks.json 已写入", "task", taskID, "path", taskHooksPath, "sock", sockPath)
 
 	if tracked {
 		needsSkipWorktree := !state.SkipWorktree

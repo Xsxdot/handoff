@@ -45,6 +45,7 @@ func managedTaskTmpEnv(taskDir, taskID string) (string, []string) {
 		"TMPDIR=" + tmpDir,
 		"GOTMPDIR=" + tmpDir,
 		"GOCACHE=" + filepath.Join(tmpDir, "gocache"),
+		"HOME=" + filepath.Join(taskDir, agyHomeDirName),
 	}
 }
 

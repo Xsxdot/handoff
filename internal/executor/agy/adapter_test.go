@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -58,6 +59,28 @@ func TestAdapterStop(t *testing.T) {
 	// lookup 应该已为 nil
 	if ad.lookup("T1") != nil {
 		t.Fatalf("Stop 后任务应已注销")
+	}
+}
+
+func TestManagedTaskTmpEnvHome(t *testing.T) {
+	taskDir := t.TempDir()
+	_, env := managedTaskTmpEnv(taskDir, "t1")
+	wantHome := "HOME=" + filepath.Join(taskDir, agyHomeDirName)
+	hasHome := false
+	hasTmp := false
+	for _, item := range env {
+		if item == wantHome {
+			hasHome = true
+		}
+		if strings.HasPrefix(item, "TMPDIR=") {
+			hasTmp = true
+		}
+	}
+	if !hasHome {
+		t.Fatalf("env 缺任务级 HOME=%q: %v", wantHome, env)
+	}
+	if !hasTmp {
+		t.Fatalf("env 缺 TMPDIR: %v", env)
 	}
 }
 

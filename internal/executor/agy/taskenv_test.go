@@ -9,6 +9,29 @@ import (
 	"testing"
 )
 
+func TestMain(m *testing.M) {
+	home, err := os.MkdirTemp("", "agy-test-home-")
+	if err != nil {
+		panic(err)
+	}
+	oauthDir := filepath.Join(home, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(oauthDir, 0700); err != nil {
+		_ = os.RemoveAll(home)
+		panic(err)
+	}
+	if err := os.WriteFile(filepath.Join(oauthDir, "antigravity-oauth-token"), []byte("test-token"), 0600); err != nil {
+		_ = os.RemoveAll(home)
+		panic(err)
+	}
+	if err := os.Setenv("HOME", home); err != nil {
+		_ = os.RemoveAll(home)
+		panic(err)
+	}
+	code := m.Run()
+	_ = os.RemoveAll(home)
+	os.Exit(code)
+}
+
 func initTestGitRepo(t *testing.T, workDir string) {
 	t.Helper()
 	commands := [][]string{
@@ -103,6 +126,121 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 	if hook.Timeout != 86400 {
 		t.Fatalf("timeout 不符合预期: got %d, want 86400", hook.Timeout)
+	}
+}
+
+func TestWriteTaskEnvAgyHome(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	initTestGitRepo(t, workDir)
+
+	fakeUserHome := t.TempDir()
+	t.Setenv("HOME", fakeUserHome)
+	oauthDir := filepath.Join(fakeUserHome, ".gemini", "antigravity-cli")
+	if err := os.MkdirAll(oauthDir, 0700); err != nil {
+		t.Fatalf("创建 fake oauth 目录失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oauthDir, "antigravity-oauth-token"), []byte("token-b305"), 0600); err != nil {
+		t.Fatalf("写 fake oauth token 失败: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(oauthDir, "antigravity-oauth-token.orig-google-oauth"), []byte("orig-token-b305"), 0600); err != nil {
+		t.Fatalf("写 fake 原始 oauth token 失败: %v", err)
+	}
+
+	sockPath := filepath.Join(taskDir, "perm.sock")
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-agy-home", "# Plan", sockPath, "/bin/handoff", ""); err != nil {
+		t.Fatalf("WriteTaskEnv 失败: %v", err)
+	}
+
+	agyHome := filepath.Join(taskDir, agyHomeDirName)
+	taskHooksPath := filepath.Join(agyHome, ".gemini", "config", "hooks.json")
+	hooksData, err := os.ReadFile(taskHooksPath)
+	if err != nil {
+		t.Fatalf("读取任务 HOME hooks.json 失败: %v", err)
+	}
+	if !strings.Contains(string(hooksData), "handoff-safety-gate") || !strings.Contains(string(hooksData), sockPath) {
+		t.Fatalf("任务 HOME hooks.json 缺 gate 或 perm.sock: %s", hooksData)
+	}
+	workspaceHooks, err := os.ReadFile(filepath.Join(workDir, agentsDirName, hooksFileName))
+	if err != nil {
+		t.Fatalf("读取 workspace hooks.json 失败: %v", err)
+	}
+	if !strings.Contains(string(workspaceHooks), "handoff-safety-gate") {
+		t.Fatalf("workspace hooks.json 缺 handoff-safety-gate: %s", workspaceHooks)
+	}
+
+	settingsPath := filepath.Join(agyHome, ".gemini", "antigravity-cli", "settings.json")
+	settingsData, err := os.ReadFile(settingsPath)
+	if err != nil {
+		t.Fatalf("读取任务 settings.json 失败: %v", err)
+	}
+	var settings struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}
+	if err := json.Unmarshal(settingsData, &settings); err != nil {
+		t.Fatalf("解析任务 settings.json 失败: %v", err)
+	}
+	allowGo := false
+	for _, item := range settings.Permissions.Allow {
+		if item == "command(go)" {
+			allowGo = true
+		}
+		if item == "command(*)" {
+			t.Fatalf("任务 settings.json 禁止 command(*): %s", settingsData)
+		}
+	}
+	if !allowGo {
+		t.Fatalf("任务 settings.json 缺 command(go): %s", settingsData)
+	}
+	if strings.Contains(string(settingsData), "always-proceed") {
+		t.Fatalf("任务 settings.json 禁止 always-proceed: %s", settingsData)
+	}
+	if strings.Contains(string(settingsData), "toolPermission") {
+		t.Fatalf("任务 settings.json 不应写 toolPermission: %s", settingsData)
+	}
+	for _, dir := range []string{agyHome, filepath.Join(agyHome, ".gemini"), filepath.Dir(taskHooksPath), filepath.Dir(settingsPath)} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("读取任务 HOME 目录权限失败 %s: %v", dir, err)
+		}
+		if got := info.Mode().Perm(); got != 0700 {
+			t.Fatalf("任务 HOME 目录权限错误 %s: got %o, want 700", dir, got)
+		}
+	}
+
+	tokenData, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "antigravity-cli", "antigravity-oauth-token"))
+	if err != nil {
+		t.Fatalf("读取任务 oauth token 失败: %v", err)
+	}
+	if string(tokenData) != "token-b305" {
+		t.Fatalf("任务 oauth token 不匹配: got %q", tokenData)
+	}
+	originalTokenData, err := os.ReadFile(filepath.Join(agyHome, ".gemini", "antigravity-cli", "antigravity-oauth-token.orig-google-oauth"))
+	if err != nil {
+		t.Fatalf("读取任务原始 oauth token 失败: %v", err)
+	}
+	if string(originalTokenData) != "orig-token-b305" {
+		t.Fatalf("任务原始 oauth token 不匹配: got %q", originalTokenData)
+	}
+	if _, err := os.Stat(filepath.Join(fakeUserHome, ".gemini", "config", hooksFileName)); !os.IsNotExist(err) {
+		t.Fatalf("用户 HOME 不应出现 hooks.json，实得: %v", err)
+	}
+}
+
+func TestWriteTaskEnvMissingOAuth(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	emptyHome := t.TempDir()
+	t.Setenv("HOME", emptyHome)
+
+	_, _, err := WriteTaskEnv(workDir, taskDir, "T-missing-oauth", "# Plan", filepath.Join(taskDir, "perm.sock"), "/bin/handoff", "")
+	if err == nil {
+		t.Fatal("缺少 oauth token 时 WriteTaskEnv 应失败")
+	}
+	if !strings.Contains(err.Error(), "antigravity-oauth-token") {
+		t.Fatalf("缺少 oauth token 的错误应包含源文件名，实得: %v", err)
 	}
 }
 

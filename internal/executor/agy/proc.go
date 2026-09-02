@@ -141,7 +141,9 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 //   - --print-timeout 24h: 避免受默认 5m 打印等待墙截断。
 //   - 不传 --sandbox：agy 的 OS 级别 sandbox 会严格限制只写工作区，与 handoff 分配在
 //     任务目录下（~/.handoff/tasks/<id>/tmp）的 TMPDIR/GOCACHE 互斥，会导致构建与测试报错；
-//     写安全由工作区 .agents/hooks.json PreToolUse 权限钩子与 handoff 审批链统一把关。
+//     headless 不读 workspace .agents/hooks.json，写安全由任务 HOME 的 hooks.json
+//     PreToolUse 权限钩子与 settings.allow 命令前缀及 handoff 审批链统一把关；不传
+//     --dangerously-skip-permissions。
 func agyArgv(req StartProcReq) []string {
 	argv := []string{
 		"agy",

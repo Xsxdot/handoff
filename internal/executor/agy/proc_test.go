@@ -41,6 +41,11 @@ func TestAgyArgv(t *testing.T) {
 			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("got %v, want %v", got, c.want)
 			}
+			for _, arg := range got {
+				if arg == "--dangerously-skip-permissions" {
+					t.Fatalf("agy argv 禁止 --dangerously-skip-permissions: %v", got)
+				}
+			}
 		})
 	}
 }
