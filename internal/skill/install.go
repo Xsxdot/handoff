@@ -47,6 +47,7 @@ var agentDirs = []string{
 	".codex/skills",
 	".config/opencode/skills",
 	".grok/skills",
+	".gemini/antigravity-cli/skills",
 }
 
 // skillDirName 是落点目录在各家 skills 目录下的名字。

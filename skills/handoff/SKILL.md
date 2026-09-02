@@ -1,6 +1,6 @@
 ---
 name: handoff
-description: 用 handoff CLI 以协调者身份把实现计划派发给独立 executor（opencode / claude / grok / codex）执行并盯完全程。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
+description: 用 handoff CLI 以协调者身份把实现计划派发给独立 executor（opencode / claude / grok / codex / agy）执行并盯完全程。只要涉及「把这个 plan 交给远程开发机跑」「派发任务给 executor 执行」「盯 handoff 任务进度」「想写个轮询/sleep 循环等 handoff 任务」「任务卡在 running / waiting_review」「reply 返回 502 / continue 报 409 / done 报 404」「wait 返回了旧事件」「新会话接管一个已经在跑的 handoff 任务」，哪怕用户一个字没提「handoff」，也必须先读这份 skill——handoff 的状态机对操作顺序有硬约束，凭印象敲命令会撞 404/409，并把任务卡成没人收的孤儿。
 ---
 
 <!--
@@ -99,6 +99,8 @@ handoff wait <task> --notify --timeout 1h
   （codemod、跨文件重命名、依赖升级修编译）。
 - **grok**：快、挖 bug 能挖到根——根因排查（复现、加日志、二分定位）、真机烟测、
   tool 调用多的纯执行。根因后分流：一两行小修顺手修掉，架构级修复回本地走流程。
+- **claude**：重构、细粒度设计、复杂推理或多文件协同排查。
+- **agy**（Antigravity CLI）：适用于基于 Google Antigravity / Gemini 的工程任务与复杂子代理编排，权限门通过 PreToolUse 钩子挂载。
 - **opencode**：备选，codex 不可用时顶上。
 - **一律不传 `--model`**，除非要点名某个具体模型：缺省执行者用机器默认模型；
   改派非缺省执行器时留空、由其自身默认接管。模型名**按机器不同**，跨机/跨执行器
@@ -282,7 +284,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 
 `--approve` 批的是**这一条**操作，不是一类操作的长期授权。两个自动化例外要心里有数：同一任务内**等价**的权限请求会自动复用你先前的 allow——判等不是逐字比对，而是三域指纹（命令域 / 路径域 / 全文域，B91），同一条命令换个包装也会命中（`permission_reuse` 事件留痕，跨任务不复用）；还有一档**静态规则自动放行**，根本不会来问你，B249 起覆盖三类：**落在任务范围内的写入**（任务工作区、任务私有目录、任务临时目录三个根；共享的 `/tmp/<executor>` **不在**范围内，写它照旧升级）、**已知安全命令**（`go build|test|vet`、`gofmt`、`npm test|run`、`make`、`ls|cat|grep`、`git status|diff|log`，以及 charter 台账纪律的法定动作 `git add <范围内路径> && git commit --amend --no-edit`）、**handoff 自身的只读子命令**。白名单匹配命令主体形态而非子串，`echo "go test"` 不会被放行；未登记的 `handoff` 子命令一律 fail-closed。命令白名单的每次放行都**补一条事件**，所以「这一段静默放行了什么」能从事件流查到，不必开 Debug 日志。
 
-**`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。理由是否送达的留痕分执行器：claude 的理由与裁决**同帧送达**，事件历史里**不会**有留痕事件——没有留痕不等于没送达，反而是送得更早；其余 executor（opencode / grok / codex）走带外注入，事件历史里有 `deny_guidance_relayed` / `deny_guidance_dropped`。
+**`--deny` 一定要带 `--reason`**。理由会随应答回到模型手里；不给理由，模型只知道「被拒了」，下一步大概率原地再试一次同样的操作，白烧一轮。理由是否送达的留痕分执行器：claude **与 agy** 的理由与裁决**同帧送达**，事件历史里**不会**有留痕事件——没有留痕不等于没送达，反而是送得更早；其余 executor（opencode / grok / codex）走带外注入，事件历史里有 `deny_guidance_relayed` / `deny_guidance_dropped`。
 
 ```bash
 handoff reply <task> --ticket <id> --deny --reason "别装全局包，加到 go.mod 里"
@@ -613,7 +615,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 
 - `~/.handoff/agentd.log`：agentd 主日志。`HANDOFF_LOG_LEVEL=debug` 可调低级别。
 - `~/.handoff/tasks/<完整 task-id>/render.log`：模型回合正文实况，`handoff attach` 流式读取的就是它。
-- 同目录下按 executor 分：opencode / grok / codex 是 `serve.log` + `proc.json`（连接凭据与探活依据）；claude 是 `claude.log`（stderr）+ `out.jsonl`（stdout 事件流）+ `proc.json`。`shim.log` 是进程承载层日志，`proc.lock` 是存活锁。
+- 同目录下按 executor 分：opencode / grok / codex 是 `serve.log` + `proc.json`（连接凭据与探活依据）；claude 是 `claude.log`（stderr）+ `out.jsonl`（stdout 事件流）+ `perm.sock` + `proc.json`；agy 是 `agy.log`（stderr）+ `out.jsonl`（stdout 事件流）+ `perm.sock` + `proc.json`。`shim.log` 是进程承载层日志，`proc.lock` 是存活锁。
 
 ## 红旗——想到这些说明你在偷懒
 
@@ -646,7 +648,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 这份 skill 只覆盖协调者回路。以下不在范围内，需要时读仓库文档：
 
 - **agentd 部署、`config.yaml` 各段、分级审批链、env 注入**：仓库 `README.md`。
-- **各 executor 的差异与就绪判据（opencode / claude / grok / codex）**：`README.md` 的「各 executor 须知」。
+- **各 executor 的差异与就绪判据（opencode / claude / grok / codex / agy）**：`README.md` 的「各 executor 须知」。
 - **架构与协议设计**：`docs/superpowers/specs/2026-08-07-handoff-design.md`。
 - **协调者回路之外的子命令**（`frames` 结构化回合帧、`footprint` 进程足迹体检、
   `machines` / `project` 机器与项目登记、`console` / `sessions` Web 控制台、

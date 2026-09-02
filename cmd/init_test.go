@@ -197,11 +197,11 @@ func TestInitNonInteractiveWritesDefaults(t *testing.T) {
 	}
 }
 
-// 探测表必须打印，且四家都在。
+// 探测表必须打印，且各家都在。
 func TestInitPrintsDetectionTable(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "config.yaml")
 	out, _ := runInit(t, p, false, "")
-	for _, n := range []string{"opencode", "claude", "grok", "codex"} {
+	for _, n := range []string{"opencode", "claude", "grok", "codex", "agy"} {
 		if !strings.Contains(out, n) {
 			t.Errorf("探测表缺 %s:\n%s", n, out)
 		}

@@ -44,14 +44,14 @@ func byName(t *testing.T, rs []Result, name string) Result {
 	return Result{}
 }
 
-// 四家都没装：全部 StateMissing，且顺序稳定。
+// 五家都没装：全部 StateMissing，且顺序稳定。
 func TestDetectAllMissing(t *testing.T) {
 	withStubs(t, "/home/u", nil, nil, "darwin")
 	rs := Detect()
-	if len(rs) != 4 {
-		t.Fatalf("应返回 4 项，得到 %d", len(rs))
+	if len(rs) != 5 {
+		t.Fatalf("应返回 5 项，得到 %d", len(rs))
 	}
-	want := []string{"opencode", "claude", "grok", "codex"}
+	want := []string{"opencode", "claude", "grok", "codex", "agy"}
 	for i, w := range want {
 		if rs[i].Name != w {
 			t.Fatalf("第 %d 项应是 %s，得到 %s", i, w, rs[i].Name)
@@ -59,6 +59,21 @@ func TestDetectAllMissing(t *testing.T) {
 		if rs[i].State != StateMissing {
 			t.Errorf("%s 应为 StateMissing，得到 %v", w, rs[i].State)
 		}
+	}
+}
+
+func TestDetectAgyIsAlwaysAuthUnknownWhenInstalled(t *testing.T) {
+	home := "/home/u"
+	withStubs(t, home, map[string]bool{"agy": true}, nil, "darwin")
+	r := byName(t, Detect(), "agy")
+	if r.State != StateAuthUnknown {
+		t.Fatalf("agy 装了就应是 StateAuthUnknown，得到 %v", r.State)
+	}
+	if r.Ready() {
+		t.Fatal("StateAuthUnknown 的 Ready() 必须为 false")
+	}
+	if r.Path == "" {
+		t.Fatal("装了就该带上可执行文件路径")
 	}
 }
 

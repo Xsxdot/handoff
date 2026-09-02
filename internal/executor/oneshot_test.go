@@ -22,6 +22,8 @@ func TestOneShotArgs(t *testing.T) {
 			[]string{"grok", "--effort", "low", "-m", "grok-4.5", "-p", "p"}, false},
 		{"grok 不带模型", "grok", "", "p",
 			[]string{"grok", "--effort", "low", "-p", "p"}, false},
+		{"agy 带模型", "agy", "claude-3-5-sonnet", "p", []string{"agy", "--model", "claude-3-5-sonnet", "-p", "p"}, false},
+		{"agy 无模型", "agy", "", "p", []string{"agy", "-p", "p"}, false},
 		{"未知执行者", "gemini", "", "p", nil, true},
 	}
 	for _, c := range cases {

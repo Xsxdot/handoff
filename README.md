@@ -523,16 +523,17 @@ Write targets outside the task's workspace — including shell redirect targets 
 
 ## Executor Notes
 
-`--executor` accepts `opencode` (default) / `claude` / `grok` / `codex` / `fake` (a
+`--executor` accepts `opencode` (default) / `claude` / `grok` / `codex` / `agy` / `fake` (a
 dependency-free scripted demo). Readiness checks and caveats:
 
-Windows 执行机上四个执行器的现状：
+Windows 执行机上执行器的现状：
 
 | 执行器 | 状态 | 说明 |
 |---|---|---|
 | opencode | 可用 | B37 真机验收通过 |
 | codex | 可用 | B123 真机验收通过 |
 | claude | 可用 | 输入通道走命名管道 + 中继，裁决 socket 走 AF_UNIX（Windows 原生支持） |
+| agy | 可用（见说明） | 输入通道可用；权限门取决于 PreToolUse 是否触发（AF_UNIX 套接字裁决） |
 | grok | 取决于部署形态 | 需要创建符号链接的权限：agentd 以管理员身份运行，或开启开发者模式。agentd 启动时会探测并在日志里说明 |
 
 - **opencode**: install [opencode](https://opencode.ai/go?ref=3AMC8DKNGP) on the executor
@@ -562,6 +563,8 @@ Windows 执行机上四个执行器的现状：
     session comes up, the task shows running, but the model produces not a single token,
     and the only trace is `failed to refresh available models` scrolling in the task
     directory's `serve.log`.
+  - Permission model: headless `agy` reads `$HOME/.gemini/config/hooks.json`. handoff injects a task-local `HOME=<taskDir>/agyhome`, copies only the login token into it, and never writes the user's global config. The task HOME's `handoff-safety-gate` `PreToolUse` hook routes `run_command`, file write/edits, and network tools to the task's `perm.sock` and Handoff's permission pipeline. agy's native `permissions.allow` is an explicit command-prefix list, not `command(*)`; handoff does not pass `always-proceed` or `--dangerously-skip-permissions`. When the task ends (Stop, failed-start rollback, or Reap), workspace `.agents/hooks.json` is restored as before; task HOME remains inside `taskDir` and follows that task directory's lifecycle. During a task, tracked workspace hooks use `skip-worktree`; untracked hooks exclude only `.agents/hooks.json`, and both protections are rolled back at task end. Tools without a Handoff hook (such as MCP/browser tools) follow agy's native policy. By default `--sandbox` is not passed to ensure task-private `TMPDIR`/`GOCACHE` directories remain writable for builds and test suites.
+  - Task artifacts: task directory contains `in.fifo` (input channel), `out.jsonl` (event stream), `agy.log` (stderr log), `perm.sock` (permission socket), and `proc.json` (recovery credentials).
 
 ## Upgrading
 

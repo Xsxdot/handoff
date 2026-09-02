@@ -29,6 +29,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/agy"
 	"github.com/Xsxdot/handoff/internal/executor/claudecode"
 	"github.com/Xsxdot/handoff/internal/executor/codex"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
@@ -180,16 +181,16 @@ var agentdCmd = &cobra.Command{
 			// PTY 是附属能力，扫描失败不应阻断任务派发主服务；broken 条目由日志留给人工处理。
 			logger.Error("启动时认领 PTY 会话失败，继续提供服务", "err", err)
 		}
-		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex
+		// 支持的执行者都注册：dispatch --executor 可按名选择；opencode/claude/grok/codex/agy
 		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
 		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
 				if runtime.GOOS == "windows" {
-					return fmt.Errorf("未知 executor %q（Windows 支持 opencode/codex/fake）", executorFlag)
+					return fmt.Errorf("未知 executor %q（Windows 支持 opencode/claude/codex/agy/fake）", executorFlag)
 				}
-				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/codex/fake）", executorFlag)
+				return fmt.Errorf("未知 executor %q（支持 opencode/claude/grok/codex/agy/fake）", executorFlag)
 			}
 			// --executor 语义是「覆盖缺省执行者」：只改 cfg 的缺省名，注册表保持
 			// 全部可用——老任务按各自 executor 名仍能路由到对应 adapter
@@ -383,6 +384,7 @@ func adaptersForWithProbe(goos string, logger *slog.Logger, probeDir string) map
 		"opencode": opencode.New(logger),
 		"codex":    codex.New(logger),
 		"claude":   claudecode.New(logger),
+		"agy":      agy.New(logger),
 		"fake":     fake.New(nil),
 	}
 	if supported, reason := grok.SymlinkCapability(probeDir); supported {
@@ -426,13 +428,13 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 }
 
 // executorFlag 覆盖 cfg.Executor.Default：opencode（默认，真实执行）| claude | grok |
-// codex | fake（脚本演示）；Windows 上 grok 是否注册取决于符号链接能力探测。
+// codex | agy | fake（脚本演示）；Windows 上 grok 是否注册取决于符号链接能力探测。
 var executorFlag string
 
 func init() {
 	rootCmd.AddCommand(agentdCmd)
 	agentdCmd.Flags().StringVar(&executorFlag, "executor", "",
-		"覆盖默认执行者：opencode（默认）| claude | grok | codex | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
+		"覆盖默认执行者：opencode（默认）| claude | grok | codex | agy | fake（注册表保留全部，dispatch --executor 仍可按名选择）")
 }
 
 // setupLedger 打开账本库并挂载镜像子系统。

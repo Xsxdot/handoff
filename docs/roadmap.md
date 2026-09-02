@@ -437,6 +437,10 @@
 - **扫描器跳过/空流程**：`n_ledger_Store_EnsureDefaultTemplates`、`n_ledger_Store_EnsureDefaultWorkflows` 解析失败跳过；6 个键空 `steps`（无图内 call/可视控制流）；接口实现闭包第 2 轮后仍有 6 个二阶候选按计划上限未展开。来源：B277 扫描报告。
 - **全函数 CFG / SSA**：不在本卡。来源：B277 spec OOS，charter roadmap 27/32/53。
 
+## 来自 B305 spec（2026-09-02，本期不做）
+
+- **agy 1.1.24 `command(uname)` 原生 deny 不生效**：`permissions.allow: ["command(uname)"]` 时 PreToolUse deny hook 仍让 `uname -s` 跑出 `Linux`。B305 allow 清单故意不收录它。要修得跟 agy 版本走。来源：B305 spec OOS / linux-01 真机台账。
+
 ## 来自 B278 spec（2026-08-28，本期不做）
 
 - **B235 不同名分支自动合并**：卡 `base_branch` 与工作分支历史分叉时，dispatch 自动 merge。B278 只警告。来源：B278 spec / 源卡 B235。
