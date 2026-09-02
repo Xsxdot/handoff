@@ -22,7 +22,7 @@ import (
 func launcherShell(t *testing.T) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "launcher-shell")
-	script := "#!/bin/sh\nprintf 'MARK=%s TERM=%s\\n' \"$LAUNCHER_MARK\" \"$TERM\"\nwhile IFS= read -r line; do printf 'GOT:%s\\n' \"$line\"; done\n"
+	script := "#!/bin/sh\nprintf 'MARK=%s TERM=%s SINK=%s\\n' \"$LAUNCHER_MARK\" \"$TERM\" \"$GROK_OSC52_SINK\"\nwhile IFS= read -r line; do printf 'GOT:%s\\n' \"$line\"; done\n"
 	if err := os.WriteFile(path, []byte(script), 0o700); err != nil {
 		t.Fatalf("写测试 shell: %v", err)
 	}
@@ -95,6 +95,9 @@ func TestCreatePtySessionNoLauncherFieldsUnchanged(t *testing.T) {
 	if !attachmentWait(t, env, sess.ID, "TERM=xterm-256color", 5*time.Second) {
 		t.Fatal("不带启动项字段时基础 sessionEnv 未保持原行为")
 	}
+	if !attachmentWait(t, env, sess.ID, "SINK=1", 5*time.Second) {
+		t.Fatal("不带启动项字段时 PTY 进程环境必须带 GROK_OSC52_SINK=1")
+	}
 	if attachmentWait(t, env, sess.ID, "GOT:", 300*time.Millisecond) {
 		t.Fatal("不带启动项字段时不得向 PTY 写入命令")
 	}
@@ -126,6 +129,35 @@ func TestCreatePtySessionBoth(t *testing.T) {
 	}
 	if !attachmentWait(t, env, sess.ID, "GOT:echo both", 5*time.Second) {
 		t.Fatal("env_file 与 init_command 同时存在时命令未透传")
+	}
+}
+
+// TestPinGrokOsc52SinkStripsDuplicates execve/getenv 取首次出现。输入里
+// 已有 0 时只 append 会留下 0 在前；必须剥掉同名键再钉 1。
+func TestPinGrokOsc52SinkStripsDuplicates(t *testing.T) {
+	got := pinGrokOsc52Sink([]string{"A=1", "GROK_OSC52_SINK=0", "B=2", "GROK_OSC52_SINK="})
+	var sinks []string
+	for _, e := range got {
+		if strings.HasPrefix(e, "GROK_OSC52_SINK=") {
+			sinks = append(sinks, e)
+		}
+	}
+	if len(sinks) != 1 || sinks[0] != "GROK_OSC52_SINK=1" {
+		t.Fatalf("钉死结果=%v sinks=%v，want 恰好一个 GROK_OSC52_SINK=1", got, sinks)
+	}
+}
+
+// TestCreatePtySessionPinsGrokOsc52Sink 锁 B303：GROK_OSC52_SINK=1 写死在
+// PTY 进程环境末尾，launcher env_file 把它写成 0 也不能关。
+func TestCreatePtySessionPinsGrokOsc52Sink(t *testing.T) {
+	env, dataDir, _ := newLauncherPtyEnv(t)
+	writeLauncherEnv(t, dataDir, "nosink.env", "GROK_OSC52_SINK=0\n")
+	sess := createLauncherSession(t, env, `{"base_kind":"home","env_file":"nosink.env"}`)
+	if !attachmentWait(t, env, sess.ID, "SINK=1", 5*time.Second) {
+		t.Fatal("env_file 把 GROK_OSC52_SINK 写成 0 时仍必须是 1")
+	}
+	if attachmentWait(t, env, sess.ID, "SINK=0", 300*time.Millisecond) {
+		t.Fatal("进程环境不得留下 GROK_OSC52_SINK=0")
 	}
 }
 
