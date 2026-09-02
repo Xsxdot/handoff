@@ -12,6 +12,8 @@
 
 ### 新增
 
+- **协作房间 + 小队编制 + 隔离 HOME。** 卡可以绑协调者小队、按载体（机 × CLI × HOME × 模型）排队点火；房间消息、收件箱和协调者 attach 进控制台。检测用隔离 HOME 里一次真实 ping 回合，不再用 `--version`。
+- **agy（Antigravity CLI）可作为执行者。** `dispatch --executor agy`；任务 HOME 权限闸与 hooks 生命周期随任务起停。
 - **工作台新开的终端默认带 `GROK_OSC52_SINK=1`。** Grok 在 PTY 里选中文字会发 OSC 52，B300 已经接到本机剪贴板；以前要自己 export 或改 `~/.zshrc`。现在目标机 agentd 开 PTY 时写死这颗变量（启动项 env 文件关不掉）。跑终端的那台 agentd 升级后生效。
 - **远端预览：左栏第四种任务行，点开独立 Chromium。** 执行机 `handoff preview open --path` / `--port` 发布会话；协调者桌面点行会起隔离 Chromium（经本机 SOCKS 打 owner 回环，不再把 localhost 改写成机器 Tailscale IP）。再点已开行在 macOS 上聚焦窗口，不再依赖 xdotool。不自动弹窗，也不进工作台 tab。
 - **工作台终端里 TUI 的复制能落到本机剪贴板了。** grok / opencode 等终端 UI 里选中的文字（它们发 OSC 52 转义序列让终端写剪贴板）现在由工作台前端接住并写入本机系统剪贴板，⌘V 即可粘贴。写入只发生在当前激活的终端标签；刷新 / 重连时历史缓冲里的旧复制不会改写你的剪贴板；远端的「读剪贴板」查询与「清空剪贴板」请求一律不响应；写入被浏览器拒绝时终端下方给出失败提示。
