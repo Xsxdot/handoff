@@ -487,3 +487,10 @@
 
 - **linux-01 真机清盘**：升级该机 agentd 后跑 `handoff gc --target linux-01` 预览真实缓存字节与脏树 skip，再 `--yes`（必要时 `--force`）清终态叶子；另 `done` 一个跑过 `go test` 的任务，确认 gocache 叶子消失且 `handoff attach` 仍可读。来源：B298 真机清单 1/2/4，验收时对端仍过旧。
 - **Windows 文件占用导致的删除失败**：若仍在支持矩阵，gc 冒烟须呈现为报告 failed 行/日志、命令不崩溃。来源：B298 真机清单 5，本期无 Windows 机。
+
+## 来自 B303 spec（2026-09-02，本期不做）
+
+- **Windows ConPTY**。PTY 仍报不支持；本卡不补。来源：B303 spec Out of Scope。
+- **`CreatePtySessionReq` 增加通用 env 字段或桌面标记**。本卡写死在目标机 Env 末尾，不改 HTTP 契约。来源：同上。
+- **给已经在跑的 PTY 补注入**。重开终端。来源：同上。
+- **未升级的旧 agentd 上让 Grok 发 OSC 52**。注入发生在目标机 fork；旧二进制没有这颗变量。来源：同上。
