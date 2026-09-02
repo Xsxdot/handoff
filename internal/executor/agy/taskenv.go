@@ -142,17 +142,25 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 		log.Info("agy hooks.json 已设置 skip-worktree", "task", taskID, "workdir", workdir)
 	} else {
 		pattern := filepath.ToSlash(filepath.Join(agentsDirName, hooksFileName))
-		if err := ensureGitExclude(workdir, pattern); err != nil {
+		added, excludeErr := ensureGitExclude(workdir, pattern)
+		if added {
+			state.ExcludePattern = pattern
+		}
+		if excludeErr != nil {
 			// exclude 只负责隐藏未跟踪 hooks；失败不阻断任务，Restore 仍会清理文件。
 			log.Error("追加 agy hooks exclude 失败，继续任务", "task", taskID, "workdir", workdir,
-				"pattern", pattern, "cause", err)
+				"pattern", pattern, "cause", excludeErr)
 		} else {
-			state.ExcludePattern = pattern
 			log.Info("agy hooks exclude 已就绪", "task", taskID, "workdir", workdir,
 				"pattern", pattern)
 		}
 		if err := writeHooksRestoreState(taskDir, state); err != nil {
 			log.Error("记录 hooks exclude 状态失败", "task", taskID, "cause", err)
+			if state.ExcludePattern != "" {
+				if removeErr := removeGitExclude(workdir, state.ExcludePattern); removeErr != nil {
+					log.Error("记录 hooks exclude 失败后撤销规则也失败", "task", taskID, "cause", removeErr)
+				}
+			}
 			if restoreErr := RestoreTaskEnv(taskDir); restoreErr != nil {
 				log.Error("记录 hooks exclude 失败后还原 agy hooks 也失败", "task", taskID, "cause", restoreErr)
 			}
@@ -306,45 +314,45 @@ func gitInfoExcludePath(workdir string) (string, error) {
 // ensureGitExclude 将 pattern 追加写入 workdir 对应 git 仓库的 info/exclude 文件，
 // 避免未跟踪的 hooks.json 导致 git status --porcelain 变脏或触发 ensureCleanWorktree 拦截。
 // info/exclude 仅对本地工作树生效，不影响 git 追踪历史，不会被提交或推送到远端。
-func ensureGitExclude(workdir, pattern string) error {
+func ensureGitExclude(workdir, pattern string) (bool, error) {
 	log := slog.Default()
 	excludePath, err := gitInfoExcludePath(workdir)
 	if err != nil {
 		log.Error("解析 git info/exclude 路径失败", "workdir", workdir, "pattern", pattern, "cause", err)
-		return err
+		return false, err
 	}
 	data, err := os.ReadFile(excludePath)
 	if err == nil {
 		lines := strings.Split(string(data), "\n")
 		for _, line := range lines {
 			if strings.TrimSpace(line) == pattern {
-				return nil
+				return false, nil
 			}
 		}
 	} else if !os.IsNotExist(err) {
 		log.Error("读取 git info/exclude 失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", err)
-		return fmt.Errorf("读取 %s: %w", excludePath, err)
+		return false, fmt.Errorf("读取 %s: %w", excludePath, err)
 	}
 	if err := os.MkdirAll(filepath.Dir(excludePath), 0755); err != nil {
 		log.Error("创建 git info/exclude 目录失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", err)
-		return fmt.Errorf("创建 %s: %w", filepath.Dir(excludePath), err)
+		return false, fmt.Errorf("创建 %s: %w", filepath.Dir(excludePath), err)
 	}
 	f, err := os.OpenFile(excludePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		log.Error("打开 git info/exclude 失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", err)
-		return fmt.Errorf("打开 %s: %w", excludePath, err)
+		return false, fmt.Errorf("打开 %s: %w", excludePath, err)
 	}
 	_, writeErr := f.WriteString("\n" + pattern + "\n")
 	closeErr := f.Close()
 	if writeErr != nil {
 		log.Error("写 git info/exclude 失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", writeErr)
-		return fmt.Errorf("写 %s: %w", excludePath, writeErr)
+		return true, fmt.Errorf("写 %s: %w", excludePath, writeErr)
 	}
 	if closeErr != nil {
 		log.Error("关闭 git info/exclude 失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", closeErr)
-		return fmt.Errorf("关闭 %s: %w", excludePath, closeErr)
+		return true, fmt.Errorf("关闭 %s: %w", excludePath, closeErr)
 	}
-	return nil
+	return true, nil
 }
 
 func removeGitExclude(workdir, pattern string) error {

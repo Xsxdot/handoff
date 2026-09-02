@@ -283,6 +283,41 @@ func TestRestoreNewHooks(t *testing.T) {
 	}
 }
 
+func TestRestorePreservesExistingHooksExclude(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	initTestGitRepo(t, workDir)
+	excludePath := testGitExcludePath(t, workDir)
+	excludeData, err := os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("读取初始 info/exclude 失败: %v", err)
+	}
+	if err := os.WriteFile(excludePath, append(excludeData, []byte("\n.agents/hooks.json\n")...), 0644); err != nil {
+		t.Fatalf("写入既有 hooks exclude 失败: %v", err)
+	}
+
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-existing-exclude", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+		t.Fatalf("WriteTaskEnv 失败: %v", err)
+	}
+	if err := RestoreTaskEnv(taskDir); err != nil {
+		t.Fatalf("RestoreTaskEnv 失败: %v", err)
+	}
+
+	excludeData, err = os.ReadFile(excludePath)
+	if err != nil {
+		t.Fatalf("读取还原后的 info/exclude 失败: %v", err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(excludeData), "\n") {
+		if strings.TrimSpace(line) == ".agents/hooks.json" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Fatalf("Restore 不应删除任务前已有的 hooks exclude，实得 %d 条:\n%s", count, excludeData)
+	}
+}
+
 func TestRestoreMissingSidecarIsIdempotent(t *testing.T) {
 	if err := RestoreTaskEnv(t.TempDir()); err != nil {
 		t.Fatalf("缺 sidecar 的 Restore 应幂等成功: %v", err)
