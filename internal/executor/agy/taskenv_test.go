@@ -232,6 +232,23 @@ func TestWriteTaskEnvAgyHome(t *testing.T) {
 	}
 }
 
+func TestNativeCommandAllowCoversCompoundFirstTokens(t *testing.T) {
+	have := make(map[string]bool, len(nativeCommandAllow))
+	for _, item := range nativeCommandAllow {
+		have[item] = true
+		if item == "command(*)" || item == "command(uname)" {
+			t.Fatalf("nativeCommandAllow 禁止 %s", item)
+		}
+	}
+	// agy 按命令行首词匹配 command(<target>)。跑分 denied 全是「pwd && …」；
+	// 以 git/ls/find 开头的复合命令已能过。cd 与 pwd 同类。
+	for _, want := range []string{"command(pwd)", "command(cd)"} {
+		if !have[want] {
+			t.Fatalf("nativeCommandAllow 缺 %s：复合 run_command 会被原生 soft-deny", want)
+		}
+	}
+}
+
 func TestWriteTaskEnvMissingOAuth(t *testing.T) {
 	workDir := t.TempDir()
 	taskDir := t.TempDir()

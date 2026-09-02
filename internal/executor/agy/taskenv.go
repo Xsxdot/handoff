@@ -33,9 +33,13 @@ const (
 // nativeCommandAllow 是 agy 原生策略允许的命令前缀。
 //
 // 这里刻意不使用 command(*)：agy 的全匹配项会绕过 PreToolUse 的 deny 结果。
+// agy 按命令行首词匹配 command(<target>)：command(git) 能放行 `git status && …`，
+// 但放行不了 `pwd && git status`。pwd/cd 是跑分复合命令的常见首词。
 var nativeCommandAllow = []string{
 	"command(go)",
 	"command(git)",
+	"command(pwd)",
+	"command(cd)",
 	"command(echo)",
 	"command(make)",
 	"command(npm)",
