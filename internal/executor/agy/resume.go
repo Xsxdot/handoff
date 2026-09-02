@@ -10,6 +10,9 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 )
 
+// writeTaskEnvFn 是冷恢复准备任务环境的测试缝，用于覆盖写入后失败的回滚路径。
+var writeTaskEnvFn = WriteTaskEnv
+
 // Resume 恢复 agentd 重启前已在执行的任务。
 func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, err error) {
 	a.log.Info("agy adapter 恢复任务执行", "task", req.TaskID, "session", req.SessionID)
@@ -111,12 +114,20 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		if selfExe == "" {
 			selfExe = "handoff"
 		}
-		if _, _, werr := WriteTaskEnv(req.RepoPath, req.TaskDir, req.TaskID, "", sockPath, selfExe, ""); werr != nil {
+		if _, _, werr := writeTaskEnvFn(req.RepoPath, req.TaskDir, req.TaskID, "", sockPath, selfExe, ""); werr != nil {
 			_ = ps.Close()
+			restoreErr := RestoreTaskEnv(req.TaskDir)
 			a.drop(req.TaskID)
 			a.log.Error("冷恢复更新 hooks.json 失败", "task", req.TaskID, "cause", werr)
+			if restoreErr != nil {
+				a.log.Error("冷恢复更新 hooks.json 失败后还原也失败", "task", req.TaskID, "cause", restoreErr)
+			}
+			note := fmt.Sprintf("准备任务环境失败：%v", werr)
+			if restoreErr != nil {
+				note += fmt.Sprintf("；还原 hooks 失败：%v", restoreErr)
+			}
 			return executor.ResumeOutcome{Alive: false,
-				Note: fmt.Sprintf("准备任务环境失败：%v", werr)}, nil
+				Note: note}, nil
 		}
 
 		a.log.Info("agy 已不在，进入冷恢复", "task", req.TaskID, "session", req.SessionID)
@@ -127,10 +138,18 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		}, a.log)
 		if err != nil {
 			_ = ps.Close()
+			restoreErr := RestoreTaskEnv(req.TaskDir)
 			a.drop(req.TaskID)
 			a.log.Warn("冷恢复重起 agy 失败，判不可恢复", "task", req.TaskID, "cause", err)
+			if restoreErr != nil {
+				a.log.Error("冷恢复重起 agy 失败后还原 hooks 也失败", "task", req.TaskID, "cause", restoreErr)
+			}
+			note := fmt.Sprintf("重起 agy 失败：%v", err)
+			if restoreErr != nil {
+				note += fmt.Sprintf("；还原 hooks 失败：%v", restoreErr)
+			}
 			return executor.ResumeOutcome{Alive: false,
-				Note: fmt.Sprintf("重起 agy 失败：%v", err)}, nil
+				Note: note}, nil
 		}
 		proc = newProc
 		mode = executor.ResumeModeCold

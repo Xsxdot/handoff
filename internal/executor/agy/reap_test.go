@@ -55,3 +55,23 @@ func TestReapRestoresHooks(t *testing.T) {
 		t.Fatalf("Reap 后新建 hooks.json 应被删除，实得: %v", err)
 	}
 }
+
+func TestReapMissingProcInfoRestoresHooks(t *testing.T) {
+	taskDir := t.TempDir()
+	workDir := t.TempDir()
+	ad := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-reap-no-proc", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+		t.Fatalf("WriteTaskEnv 失败: %v", err)
+	}
+	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)
+	if _, err := os.Stat(hooksPath); err != nil {
+		t.Fatalf("WriteTaskEnv 未生成 hooks.json: %v", err)
+	}
+
+	if err := ad.Reap("T-reap-no-proc", taskDir); err == nil {
+		t.Fatal("proc.json 缺失时 Reap 应报告读取错误")
+	}
+	if _, err := os.Stat(hooksPath); !os.IsNotExist(err) {
+		t.Fatalf("proc.json 缺失时 Reap 仍应恢复并删除新建 hooks.json，实得: %v", err)
+	}
+}

@@ -248,6 +248,121 @@ func TestRestoreTrackedHooks(t *testing.T) {
 	}
 }
 
+func TestWriteTaskEnvRepeatRestoresOriginalHooks(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	initTestGitRepo(t, workDir)
+
+	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)
+	original := []byte("{\"user-linter\":{}}\n")
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0755); err != nil {
+		t.Fatalf("创建 .agents 目录失败: %v", err)
+	}
+	if err := os.WriteFile(hooksPath, original, 0644); err != nil {
+		t.Fatalf("写原始 hooks.json 失败: %v", err)
+	}
+	for _, args := range [][]string{{"add", ".agents/hooks.json"}, {"commit", "-q", "-m", "add hooks"}} {
+		if out, err := exec.Command("git", append([]string{"-C", workDir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v 失败: %v\n%s", args, err, out)
+		}
+	}
+
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-repeat-1", "# Plan", "/tmp/first-perm.sock", "/bin/handoff", ""); err != nil {
+		t.Fatalf("第一次 WriteTaskEnv 失败: %v", err)
+	}
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-repeat-2", "# Plan", "/tmp/second-perm.sock", "/bin/handoff", ""); err != nil {
+		t.Fatalf("第二次 WriteTaskEnv 失败: %v", err)
+	}
+	if err := RestoreTaskEnv(taskDir); err != nil {
+		t.Fatalf("RestoreTaskEnv 失败: %v", err)
+	}
+
+	data, err := os.ReadFile(hooksPath)
+	if err != nil {
+		t.Fatalf("读取重复写入后的 hooks.json 失败: %v", err)
+	}
+	if string(data) != string(original) {
+		t.Fatalf("重复 WriteTaskEnv 后必须恢复第一次之前的原文，got %q want %q", data, original)
+	}
+}
+
+func TestWriteTaskEnvRecordsSkipWorktreeBeforeGit(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	initTestGitRepo(t, workDir)
+
+	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)
+	if err := os.MkdirAll(filepath.Dir(hooksPath), 0755); err != nil {
+		t.Fatalf("创建 .agents 目录失败: %v", err)
+	}
+	if err := os.WriteFile(hooksPath, []byte("{\"user-linter\":{}}\n"), 0644); err != nil {
+		t.Fatalf("写 hooks.json 失败: %v", err)
+	}
+	for _, args := range [][]string{{"add", ".agents/hooks.json"}, {"commit", "-q", "-m", "add hooks"}} {
+		if out, err := exec.Command("git", append([]string{"-C", workDir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v 失败: %v\n%s", args, err, out)
+		}
+	}
+
+	oldUpdate := updateHooksSkipWorktreeFn
+	defer func() { updateHooksSkipWorktreeFn = oldUpdate }()
+	called := false
+	updateHooksSkipWorktreeFn = func(dir string, skip bool) error {
+		called = true
+		data, err := os.ReadFile(filepath.Join(taskDir, restoreFileName))
+		if err != nil {
+			t.Fatalf("git 操作前读取 sidecar 失败: %v", err)
+		}
+		var state hooksRestoreState
+		if err := json.Unmarshal(data, &state); err != nil {
+			t.Fatalf("解析 git 操作前 sidecar 失败: %v", err)
+		}
+		if !state.SkipWorktree {
+			t.Errorf("执行 git skip-worktree 前 sidecar 必须已记录 SkipWorktree")
+		}
+		return updateHooksSkipWorktree(dir, skip)
+	}
+
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-sidecar-skip", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+		t.Fatalf("WriteTaskEnv 失败: %v", err)
+	}
+	if !called {
+		t.Fatal("WriteTaskEnv 未执行 skip-worktree 操作")
+	}
+}
+
+func TestWriteTaskEnvRecordsExcludeBeforeGit(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	initTestGitRepo(t, workDir)
+
+	oldEnsure := ensureGitExcludeFn
+	defer func() { ensureGitExcludeFn = oldEnsure }()
+	called := false
+	ensureGitExcludeFn = func(dir, pattern string) (bool, error) {
+		called = true
+		data, err := os.ReadFile(filepath.Join(taskDir, restoreFileName))
+		if err != nil {
+			t.Fatalf("git 操作前读取 sidecar 失败: %v", err)
+		}
+		var state hooksRestoreState
+		if err := json.Unmarshal(data, &state); err != nil {
+			t.Fatalf("解析 git 操作前 sidecar 失败: %v", err)
+		}
+		if state.ExcludePattern != pattern {
+			t.Errorf("执行 git exclude 前 sidecar 必须已记录 ExcludePattern=%q，实得 %q", pattern, state.ExcludePattern)
+		}
+		return ensureGitExclude(dir, pattern)
+	}
+
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-sidecar-exclude", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+		t.Fatalf("WriteTaskEnv 失败: %v", err)
+	}
+	if !called {
+		t.Fatal("WriteTaskEnv 未执行 exclude 操作")
+	}
+}
+
 func TestRestoreNewHooks(t *testing.T) {
 	workDir := t.TempDir()
 	taskDir := t.TempDir()

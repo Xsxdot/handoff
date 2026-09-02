@@ -2,9 +2,11 @@ package agy
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -60,6 +62,91 @@ func TestResumeCold(t *testing.T) {
 	}
 	if !started {
 		t.Fatalf("冷恢复未调用 startProc")
+	}
+}
+
+func TestResumeColdWriteTaskEnvFailureRestoresHooks(t *testing.T) {
+	taskDir := t.TempDir()
+	repoDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ad := New(logger)
+	writeDeadProcInfo(t, taskDir, 9999999, "sess-cold-write-fail")
+
+	oldWrite := writeTaskEnvFn
+	oldStart := startProc
+	defer func() {
+		writeTaskEnvFn = oldWrite
+		startProc = oldStart
+	}()
+	writeTaskEnvFn = func(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (string, string, error) {
+		path, prompt, err := WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock)
+		if err != nil {
+			return path, prompt, err
+		}
+		return path, prompt, errors.New("cold WriteTaskEnv test failure")
+	}
+	startProc = func(context.Context, StartProcReq, *slog.Logger) (*Proc, error) {
+		return nil, errors.New("startProc should not be called after WriteTaskEnv failure")
+	}
+
+	out, err := ad.Resume(executor.ResumeReq{
+		TaskID: "T-cold-write-fail", TaskDir: taskDir, RepoPath: repoDir,
+		SessionID: "sess-cold-write-fail", Cold: true,
+	})
+	if err != nil {
+		t.Fatalf("Resume 不应抛硬 error，实得 %v", err)
+	}
+	if out.Alive {
+		t.Fatalf("WriteTaskEnv 失败时 Resume 不应报告存活: %+v", out)
+	}
+	assertHooksAbsent(t, repoDir)
+}
+
+func TestResumeColdStartProcFailureRestoresHooks(t *testing.T) {
+	taskDir := t.TempDir()
+	repoDir := t.TempDir()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ad := New(logger)
+	writeDeadProcInfo(t, taskDir, 9999999, "sess-cold-start-fail")
+
+	oldWrite := writeTaskEnvFn
+	oldStart := startProc
+	defer func() {
+		writeTaskEnvFn = oldWrite
+		startProc = oldStart
+	}()
+	writeTaskEnvFn = WriteTaskEnv
+	startProc = func(context.Context, StartProcReq, *slog.Logger) (*Proc, error) {
+		return nil, errors.New("cold startProc test failure")
+	}
+
+	out, err := ad.Resume(executor.ResumeReq{
+		TaskID: "T-cold-start-fail", TaskDir: taskDir, RepoPath: repoDir,
+		SessionID: "sess-cold-start-fail", Cold: true,
+	})
+	if err != nil {
+		t.Fatalf("Resume 不应抛硬 error，实得 %v", err)
+	}
+	if out.Alive {
+		t.Fatalf("startProc 失败时 Resume 不应报告存活: %+v", out)
+	}
+	assertHooksAbsent(t, repoDir)
+}
+
+func writeDeadProcInfo(t *testing.T, taskDir string, pid int, sessionID string) {
+	t.Helper()
+	if err := writeProcInfo(taskDir, &procInfo{
+		Handle:    prochost.Handle{PID: pid, LockPath: filepath.Join(taskDir, lockFileName)},
+		SessionID: sessionID,
+	}); err != nil {
+		t.Fatalf("写 proc.json 失败: %v", err)
+	}
+}
+
+func assertHooksAbsent(t *testing.T, repoDir string) {
+	t.Helper()
+	if _, err := os.Stat(filepath.Join(repoDir, agentsDirName, hooksFileName)); !os.IsNotExist(err) {
+		t.Fatalf("恢复失败后新建 hooks.json 应不存在，实得: %v", err)
 	}
 }
 

@@ -9,10 +9,15 @@ import (
 
 // Reap 在没有内存运行态时按 proc.json 兜底回收 executor 侧资源。
 func (a *Adapter) Reap(taskID, taskDir string) error {
-	pi, err := readProcInfo(taskDir)
-	if err != nil {
-		a.log.Error("读恢复凭据失败，无法兜底回收", "task", taskID, "cause", err)
-		return fmt.Errorf("兜底回收任务 %s: %w", taskID, err)
+	pi, readErr := readProcInfo(taskDir)
+	if readErr != nil {
+		a.log.Error("读恢复凭据失败，仍尝试还原 agy hooks", "task", taskID, "cause", readErr)
+		restoreErr := RestoreTaskEnv(taskDir)
+		if restoreErr != nil {
+			a.log.Error("读恢复凭据失败且还原 agy hooks 失败", "task", taskID, "cause", restoreErr)
+			return fmt.Errorf("兜底回收任务 %s: read proc: %w; restore hooks: %v", taskID, readErr, restoreErr)
+		}
+		return fmt.Errorf("兜底回收任务 %s: %w", taskID, readErr)
 	}
 	a.log.Info("兜底回收 executor 资源", "task", taskID, "shim_pid", pi.Handle.PID)
 	killErr := prochost.Kill(pi.Handle)
