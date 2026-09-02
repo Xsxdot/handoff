@@ -32,8 +32,13 @@ func TestStartOrderingAndTaskEnv(t *testing.T) {
 	lookAgyPath = func() (string, error) { return "/mock/agy", nil }
 
 	var capturedSpec prochost.Spec
+	var hooksContent string
 	startProcHost = func(spec prochost.Spec, selfExe string, extra ...string) (prochost.Handle, error) {
 		capturedSpec = spec
+		data, err := os.ReadFile(filepath.Join(workDir, ".agents", "hooks.json"))
+		if err == nil {
+			hooksContent = string(data)
+		}
 		return prochost.Handle{PID: 1234, LockPath: spec.LockPath}, nil
 	}
 
@@ -75,20 +80,20 @@ func TestStartOrderingAndTaskEnv(t *testing.T) {
 		t.Fatalf("Env 未包含隔离 TMPDIR: %v", capturedSpec.Env)
 	}
 
-	// 3. 断言 hooks.json 被生成且包含正确的 matcher 与命令
-	hooksPath := filepath.Join(workDir, ".agents", "hooks.json")
-	data, err := os.ReadFile(hooksPath)
-	if err != nil {
-		t.Fatalf("未能生成 .agents/hooks.json: %v", err)
+	// 3. startProcHost 调用时 hooks.json 已生成；Start 失败后的 rollback 会将其清理。
+	if hooksContent == "" {
+		t.Fatal("startProcHost 被调用时 .agents/hooks.json 尚未生成")
 	}
-	content := string(data)
-	if !strings.Contains(content, "permission-hook --sock") {
-		t.Fatalf("hooks.json 缺 permission-hook 命令: %s", content)
+	if !strings.Contains(hooksContent, "permission-hook --sock") {
+		t.Fatalf("hooks.json 缺 permission-hook 命令: %s", hooksContent)
 	}
-	if !strings.Contains(content, "run_command|write_to_file") {
-		t.Fatalf("hooks.json 缺多工具 matcher: %s", content)
+	if !strings.Contains(hooksContent, "run_command|write_to_file") {
+		t.Fatalf("hooks.json 缺多工具 matcher: %s", hooksContent)
 	}
-	if !strings.Contains(content, "\"timeout\": 86400") {
-		t.Fatalf("hooks.json 缺 24h 超时: %s", content)
+	if !strings.Contains(hooksContent, "\"timeout\": 86400") {
+		t.Fatalf("hooks.json 缺 24h 超时: %s", hooksContent)
+	}
+	if _, err := os.Stat(filepath.Join(workDir, ".agents", "hooks.json")); !os.IsNotExist(err) {
+		t.Fatalf("Start rollback 后 hooks.json 应清理，实得: %v", err)
 	}
 }

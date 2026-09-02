@@ -15,9 +15,21 @@ func (a *Adapter) Reap(taskID, taskDir string) error {
 		return fmt.Errorf("兜底回收任务 %s: %w", taskID, err)
 	}
 	a.log.Info("兜底回收 executor 资源", "task", taskID, "shim_pid", pi.Handle.PID)
-	if err := prochost.Kill(pi.Handle); err != nil {
-		a.log.Error("兜底回收失败", "task", taskID, "shim_pid", pi.Handle.PID, "cause", err)
-		return err
+	killErr := prochost.Kill(pi.Handle)
+	if killErr != nil {
+		a.log.Error("兜底回收失败", "task", taskID, "shim_pid", pi.Handle.PID, "cause", killErr)
+	}
+	restoreErr := RestoreTaskEnv(taskDir)
+	if restoreErr != nil {
+		a.log.Error("兜底回收后还原 agy hooks 失败", "task", taskID, "task_dir", taskDir, "cause", restoreErr)
+	}
+	switch {
+	case killErr != nil && restoreErr != nil:
+		return fmt.Errorf("兜底回收任务 %s: kill: %w; restore hooks: %v", taskID, killErr, restoreErr)
+	case killErr != nil:
+		return killErr
+	case restoreErr != nil:
+		return restoreErr
 	}
 	a.log.Info("兜底回收完成", "task", taskID)
 	return nil

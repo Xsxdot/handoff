@@ -5,9 +5,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func TestAdapterNotRunning(t *testing.T) {
@@ -55,5 +58,49 @@ func TestAdapterStop(t *testing.T) {
 	// lookup 应该已为 nil
 	if ad.lookup("T1") != nil {
 		t.Fatalf("Stop 后任务应已注销")
+	}
+}
+
+func TestStopRestoresHooks(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-stop", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
+		t.Fatalf("WriteTaskEnv 失败: %v", err)
+	}
+	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)
+	if _, err := os.Stat(hooksPath); err != nil {
+		t.Fatalf("WriteTaskEnv 未生成 hooks.json: %v", err)
+	}
+
+	ad := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ad.newRun("T-stop", taskDir, workDir)
+	if err := ad.Stop("T-stop"); err != nil {
+		t.Fatalf("Stop 失败: %v", err)
+	}
+	if _, err := os.Stat(hooksPath); !os.IsNotExist(err) {
+		t.Fatalf("Stop 后新建 hooks.json 应被删除，实得: %v", err)
+	}
+}
+
+func TestStartRollbackRestoresHooks(t *testing.T) {
+	workDir := t.TempDir()
+	taskDir := t.TempDir()
+	oldStart := startProc
+	defer func() { startProc = oldStart }()
+	startProc = func(context.Context, StartProcReq, *slog.Logger) (*Proc, error) {
+		return nil, errors.New("start proc test failure")
+	}
+
+	ad := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	err := ad.Start(context.Background(), executor.StartReq{
+		Task:    proto.Task{ID: "T-start-rollback", WorkDir: workDir},
+		TaskDir: taskDir,
+	})
+	if err == nil {
+		t.Fatal("startProc 失败桩下 Start 应失败")
+	}
+	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)
+	if _, statErr := os.Stat(hooksPath); !os.IsNotExist(statErr) {
+		t.Fatalf("Start rollback 后新建 hooks.json 应被删除，实得: %v", statErr)
 	}
 }

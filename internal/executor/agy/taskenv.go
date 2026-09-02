@@ -3,10 +3,14 @@
 // 职责：
 //   - 在 workdir/.agents 下生成 hooks.json（把 PreToolUse 钩子挂到本任务的 perm.sock 上）
 //   - 渲染首回合 prompt（带任务 ID、计划内容与纪律块）
+//   - 用 taskDir sidecar 保存并恢复 hooks.json 的原文、skip-worktree 与 exclude 状态
+//
+// 边界：Stop、Start rollback 与 Reap 必须调用 RestoreTaskEnv；本文件不负责启停进程。
 package agy
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -19,9 +23,19 @@ import (
 )
 
 const (
-	agentsDirName = ".agents"
-	hooksFileName = "hooks.json"
+	agentsDirName   = ".agents"
+	hooksFileName   = "hooks.json"
+	restoreFileName = "agy-hooks-restore.json"
 )
+
+type hooksRestoreState struct {
+	Workdir        string `json:"workdir"`
+	HooksPath      string `json:"hooks_path"`
+	CreatedFile    bool   `json:"created_file"`
+	OriginalJSON   []byte `json:"original_json,omitempty"`
+	SkipWorktree   bool   `json:"skip_worktree"`
+	ExcludePattern string `json:"exclude_pattern,omitempty"`
+}
 
 type hookHandler struct {
 	Type    string `json:"type,omitempty"`
@@ -41,10 +55,26 @@ type hookNamedConfig struct {
 // WriteTaskEnv 在 workdir 下准备 .agents/hooks.json 并渲染首回合 prompt。
 func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (hooksPath, promptText string, err error) {
 	log := slog.Default()
+	hooksPath = filepath.Join(workdir, agentsDirName, hooksFileName)
+	tracked := hooksTracked(workdir)
+	log.Info("agy 准备任务环境", "task", taskID, "task_dir", taskDir, "workdir", workdir,
+		"hooks", hooksPath, "tracked", tracked)
 
-	// 写入 .git/info/exclude 避免工作区被判定为脏（原地任务 409 拦截）
-	ensureGitExclude(workdir, ".agents/hooks.json")
-	ensureGitExclude(workdir, ".agents/")
+	state := hooksRestoreState{Workdir: workdir, HooksPath: hooksPath}
+	original, readErr := os.ReadFile(hooksPath)
+	switch {
+	case readErr == nil:
+		state.OriginalJSON = original
+	case os.IsNotExist(readErr):
+		state.CreatedFile = true
+	default:
+		log.Error("读取既有 hooks.json 失败", "task", taskID, "path", hooksPath, "cause", readErr)
+		return hooksPath, "", fmt.Errorf("读取 %s: %w", hooksPath, readErr)
+	}
+	if err := writeHooksRestoreState(taskDir, state); err != nil {
+		log.Error("写 agy hooks 恢复凭据失败", "task", taskID, "task_dir", taskDir, "cause", err)
+		return hooksPath, "", err
+	}
 
 	agentsDir := filepath.Join(workdir, agentsDirName)
 	if err := os.MkdirAll(agentsDir, 0755); err != nil {
@@ -52,8 +82,8 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 		return "", "", fmt.Errorf("创建 %s: %w", agentsDir, err)
 	}
 
-	hooksPath = filepath.Join(agentsDir, hooksFileName)
-	log.Info("agy 生成任务环境", "task", taskID, "workdir", workdir, "hooks", hooksPath, "sock", sockPath)
+	log.Info("agy 生成任务环境", "task", taskID, "workdir", workdir, "hooks", hooksPath, "sock", sockPath,
+		"tracked", tracked)
 
 	cfg := make(map[string]any)
 	if data, err := os.ReadFile(hooksPath); err == nil {
@@ -90,6 +120,46 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 		return hooksPath, "", fmt.Errorf("写入 %s: %w", hooksPath, err)
 	}
 
+	if tracked {
+		if err := updateHooksSkipWorktree(workdir, true); err != nil {
+			log.Error("设置 hooks.json skip-worktree 失败", "task", taskID, "workdir", workdir, "cause", err)
+			if restoreErr := RestoreTaskEnv(taskDir); restoreErr != nil {
+				log.Error("skip-worktree 失败后还原 agy hooks 也失败", "task", taskID, "cause", restoreErr)
+			}
+			return hooksPath, "", fmt.Errorf("设置 %s skip-worktree: %w", hooksPath, err)
+		}
+		state.SkipWorktree = true
+		if err := writeHooksRestoreState(taskDir, state); err != nil {
+			log.Error("记录 hooks skip-worktree 状态失败", "task", taskID, "cause", err)
+			if clearErr := updateHooksSkipWorktree(workdir, false); clearErr != nil {
+				log.Error("记录 skip-worktree 失败后清除状态也失败", "task", taskID, "cause", clearErr)
+			}
+			if restoreErr := RestoreTaskEnv(taskDir); restoreErr != nil {
+				log.Error("记录 skip-worktree 失败后还原 agy hooks 也失败", "task", taskID, "cause", restoreErr)
+			}
+			return hooksPath, "", fmt.Errorf("记录 %s skip-worktree: %w", hooksPath, err)
+		}
+		log.Info("agy hooks.json 已设置 skip-worktree", "task", taskID, "workdir", workdir)
+	} else {
+		pattern := filepath.ToSlash(filepath.Join(agentsDirName, hooksFileName))
+		if err := ensureGitExclude(workdir, pattern); err != nil {
+			// exclude 只负责隐藏未跟踪 hooks；失败不阻断任务，Restore 仍会清理文件。
+			log.Error("追加 agy hooks exclude 失败，继续任务", "task", taskID, "workdir", workdir,
+				"pattern", pattern, "cause", err)
+		} else {
+			state.ExcludePattern = pattern
+			log.Info("agy hooks exclude 已就绪", "task", taskID, "workdir", workdir,
+				"pattern", pattern)
+		}
+		if err := writeHooksRestoreState(taskDir, state); err != nil {
+			log.Error("记录 hooks exclude 状态失败", "task", taskID, "cause", err)
+			if restoreErr := RestoreTaskEnv(taskDir); restoreErr != nil {
+				log.Error("记录 hooks exclude 失败后还原 agy hooks 也失败", "task", taskID, "cause", restoreErr)
+			}
+			return hooksPath, "", fmt.Errorf("记录 %s exclude: %w", hooksPath, err)
+		}
+	}
+
 	promptText, err = turn.RenderPrompt(taskID, planContent, disciplineBlock)
 	if err != nil {
 		return hooksPath, "", err
@@ -97,36 +167,213 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 	return hooksPath, promptText, nil
 }
 
-// ensureGitExclude 将 pattern 追加写入 workdir 对应 git 仓库的 info/exclude 文件，
-// 避免生成的任务物料（如 .agents/hooks.json）导致 git status --porcelain 变脏或触发 ensureCleanWorktree 拦截。
-// info/exclude 仅对本地工作树生效，不影响 git 追踪历史，不会被提交或推送到远端。
-func ensureGitExclude(workdir, pattern string) {
-	out, err := exec.Command("git", "-C", workdir, "rev-parse", "--git-path", "info/exclude").Output()
+// RestoreTaskEnv 从 taskDir 的 sidecar 恢复 agy hooks 物料。
+//
+// 参数：taskDir 为任务专属目录，sidecar 位于其中。
+// 返回：所有恢复动作成功时返回 nil；缺少 sidecar 视为幂等成功。
+// 注意：workdir 被回收时跳过文件恢复；已跟踪 hooks 的 skip-worktree 必须清除。
+func RestoreTaskEnv(taskDir string) (err error) {
+	log := slog.Default()
+	sidecarPath := filepath.Join(taskDir, restoreFileName)
+	log.Info("agy 开始还原任务 hooks", "task_dir", taskDir, "sidecar", sidecarPath)
+	data, err := os.ReadFile(sidecarPath)
+	if os.IsNotExist(err) {
+		log.Info("agy hooks 无恢复凭据，按幂等路径返回", "task_dir", taskDir)
+		return nil
+	}
 	if err != nil {
-		return
+		log.Error("读取 agy hooks 恢复凭据失败", "task_dir", taskDir, "cause", err)
+		return fmt.Errorf("读取 %s: %w", sidecarPath, err)
 	}
-	relOrAbs := strings.TrimSpace(string(out))
-	if relOrAbs == "" {
-		return
+	var state hooksRestoreState
+	if err := json.Unmarshal(data, &state); err != nil {
+		log.Error("解析 agy hooks 恢复凭据失败", "task_dir", taskDir, "cause", err)
+		return fmt.Errorf("解析 %s: %w", sidecarPath, err)
 	}
-	excludePath := relOrAbs
-	if !filepath.IsAbs(excludePath) {
-		excludePath = filepath.Join(workdir, relOrAbs)
+	if state.Workdir == "" || state.HooksPath == "" {
+		err := fmt.Errorf("恢复凭据字段不完整")
+		log.Error("agy hooks 恢复凭据无工作区路径", "task_dir", taskDir, "cause", err)
+		return err
+	}
+
+	if _, statErr := os.Stat(state.Workdir); os.IsNotExist(statErr) {
+		log.Info("工作区已不在，跳过 hooks 还原", "task_dir", taskDir, "workdir", state.Workdir)
+		if removeErr := os.Remove(sidecarPath); removeErr != nil {
+			log.Error("工作区已回收但删除 agy hooks 恢复凭据失败", "task_dir", taskDir, "cause", removeErr)
+			return fmt.Errorf("删除 %s: %w", sidecarPath, removeErr)
+		}
+		log.Info("agy hooks 恢复凭据已清理", "task_dir", taskDir, "workdir", state.Workdir)
+		return nil
+	} else if statErr != nil {
+		log.Error("检查 agy hooks 工作区失败", "task_dir", taskDir, "workdir", state.Workdir, "cause", statErr)
+		return fmt.Errorf("检查工作区 %s: %w", state.Workdir, statErr)
+	}
+
+	var restoreErr error
+	addRestoreError := func(operation string, cause error) {
+		if cause == nil {
+			return
+		}
+		log.Error("agy hooks 恢复步骤失败", "task_dir", taskDir, "workdir", state.Workdir,
+			"operation", operation, "cause", cause)
+		restoreErr = errors.Join(restoreErr, fmt.Errorf("%s: %w", operation, cause))
+	}
+	if state.CreatedFile {
+		if removeErr := os.Remove(state.HooksPath); removeErr != nil && !os.IsNotExist(removeErr) {
+			addRestoreError("删除新建 hooks.json", removeErr)
+		}
+	} else if writeErr := os.WriteFile(state.HooksPath, state.OriginalJSON, 0644); writeErr != nil {
+		addRestoreError("写回 hooks.json 原文", writeErr)
+	}
+
+	if state.SkipWorktree {
+		if clearErr := updateHooksSkipWorktree(state.Workdir, false); clearErr != nil {
+			addRestoreError("清除 hooks.json skip-worktree", clearErr)
+		} else {
+			log.Info("agy hooks.json skip-worktree 已清除", "task_dir", taskDir, "workdir", state.Workdir)
+		}
+	}
+	if state.ExcludePattern != "" {
+		if excludeErr := removeGitExclude(state.Workdir, state.ExcludePattern); excludeErr != nil {
+			addRestoreError("撤销 hooks exclude", excludeErr)
+		} else {
+			log.Info("agy hooks exclude 已撤销", "task_dir", taskDir, "workdir", state.Workdir,
+				"pattern", state.ExcludePattern)
+		}
+	}
+	if restoreErr != nil {
+		log.Error("agy hooks 还原未完成，保留恢复凭据供重试", "task_dir", taskDir, "workdir", state.Workdir,
+			"cause", restoreErr)
+		return fmt.Errorf("还原 agy hooks: %w", restoreErr)
+	}
+	if err := os.Remove(sidecarPath); err != nil {
+		log.Error("删除 agy hooks 恢复凭据失败", "task_dir", taskDir, "cause", err)
+		return fmt.Errorf("删除 %s: %w", sidecarPath, err)
+	}
+	log.Info("agy hooks 还原完成", "task_dir", taskDir, "workdir", state.Workdir,
+		"created_file", state.CreatedFile, "skip_worktree", state.SkipWorktree)
+	return nil
+}
+
+func writeHooksRestoreState(taskDir string, state hooksRestoreState) error {
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("序列化 hooks 恢复凭据: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(taskDir, restoreFileName), data, 0600); err != nil {
+		return fmt.Errorf("写 hooks 恢复凭据: %w", err)
+	}
+	return nil
+}
+
+func hooksTracked(workdir string) bool {
+	return exec.Command("git", "-C", workdir, "ls-files", "--error-unmatch", filepath.ToSlash(filepath.Join(agentsDirName, hooksFileName))).Run() == nil
+}
+
+func updateHooksSkipWorktree(workdir string, skip bool) error {
+	mode := "--no-skip-worktree"
+	if skip {
+		mode = "--skip-worktree"
+	}
+	path := filepath.ToSlash(filepath.Join(agentsDirName, hooksFileName))
+	if out, err := exec.Command("git", "-C", workdir, "update-index", mode, "--", path).CombinedOutput(); err != nil {
+		if text := strings.TrimSpace(string(out)); text != "" {
+			return fmt.Errorf("git update-index %s: %w: %s", mode, err, text)
+		}
+		return fmt.Errorf("git update-index %s: %w", mode, err)
+	}
+	return nil
+}
+
+func gitInfoExcludePath(workdir string) (string, error) {
+	out, err := exec.Command("git", "-C", workdir, "rev-parse", "--git-path", "info/exclude").CombinedOutput()
+	if err != nil {
+		if text := strings.TrimSpace(string(out)); text != "" {
+			return "", fmt.Errorf("git rev-parse info/exclude: %w: %s", err, text)
+		}
+		return "", fmt.Errorf("git rev-parse info/exclude: %w", err)
+	}
+	path := strings.TrimSpace(string(out))
+	if path == "" {
+		return "", fmt.Errorf("git rev-parse info/exclude 返回空路径")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(workdir, path)
+	}
+	return path, nil
+}
+
+// ensureGitExclude 将 pattern 追加写入 workdir 对应 git 仓库的 info/exclude 文件，
+// 避免未跟踪的 hooks.json 导致 git status --porcelain 变脏或触发 ensureCleanWorktree 拦截。
+// info/exclude 仅对本地工作树生效，不影响 git 追踪历史，不会被提交或推送到远端。
+func ensureGitExclude(workdir, pattern string) error {
+	log := slog.Default()
+	excludePath, err := gitInfoExcludePath(workdir)
+	if err != nil {
+		log.Error("解析 git info/exclude 路径失败", "workdir", workdir, "pattern", pattern, "cause", err)
+		return err
 	}
 	data, err := os.ReadFile(excludePath)
 	if err == nil {
 		lines := strings.Split(string(data), "\n")
 		for _, line := range lines {
 			if strings.TrimSpace(line) == pattern {
-				return
+				return nil
 			}
 		}
+	} else if !os.IsNotExist(err) {
+		log.Error("读取 git info/exclude 失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", err)
+		return fmt.Errorf("读取 %s: %w", excludePath, err)
 	}
-	_ = os.MkdirAll(filepath.Dir(excludePath), 0755)
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0755); err != nil {
+		log.Error("创建 git info/exclude 目录失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", err)
+		return fmt.Errorf("创建 %s: %w", filepath.Dir(excludePath), err)
+	}
 	f, err := os.OpenFile(excludePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
-		return
+		log.Error("打开 git info/exclude 失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", err)
+		return fmt.Errorf("打开 %s: %w", excludePath, err)
 	}
-	defer f.Close()
-	_, _ = f.WriteString("\n" + pattern + "\n")
+	_, writeErr := f.WriteString("\n" + pattern + "\n")
+	closeErr := f.Close()
+	if writeErr != nil {
+		log.Error("写 git info/exclude 失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", writeErr)
+		return fmt.Errorf("写 %s: %w", excludePath, writeErr)
+	}
+	if closeErr != nil {
+		log.Error("关闭 git info/exclude 失败", "workdir", workdir, "path", excludePath, "pattern", pattern, "cause", closeErr)
+		return fmt.Errorf("关闭 %s: %w", excludePath, closeErr)
+	}
+	return nil
+}
+
+func removeGitExclude(workdir, pattern string) error {
+	excludePath, err := gitInfoExcludePath(workdir)
+	if err != nil {
+		return err
+	}
+	data, err := os.ReadFile(excludePath)
+	if os.IsNotExist(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("读取 %s: %w", excludePath, err)
+	}
+	lines := strings.Split(string(data), "\n")
+	kept := make([]string, 0, len(lines))
+	removed := false
+	for _, line := range lines {
+		if strings.TrimSpace(line) == pattern {
+			removed = true
+			continue
+		}
+		kept = append(kept, line)
+	}
+	if !removed {
+		return nil
+	}
+	if err := os.WriteFile(excludePath, []byte(strings.Join(kept, "\n")), 0644); err != nil {
+		return fmt.Errorf("写回 %s: %w", excludePath, err)
+	}
+	return nil
 }

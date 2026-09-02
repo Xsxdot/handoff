@@ -563,7 +563,7 @@ Windows 执行机上执行器的现状：
     and the only trace is `failed to refresh available models` scrolling in the task
     directory's `serve.log`.
 - **agy** (Antigravity CLI): the executor machine has installed and logged into `agy` (`agy -p "hi"` produces output).
-  - Permission model: dynamically routes `PreToolUse` hooks in `.agents/hooks.json` to the task's `perm.sock`, intercepting `run_command`, file write/edits, and network tools into Handoff's permission pipeline. Hook configuration `.agents/hooks.json` is automatically excluded in `.git/info/exclude` to keep git status clean. By default `--sandbox` is not passed to ensure task-private `TMPDIR`/`GOCACHE` directories remain writable for builds and test suites.
+  - Permission model: dynamically routes `PreToolUse` hooks in `.agents/hooks.json` to the task's `perm.sock`, intercepting `run_command`, file write/edits, and network tools into Handoff's permission pipeline. When the task ends (Stop, failed-start rollback, or Reap), the `handoff-safety-gate` hook is removed and the original file content is restored. During a task, tracked hooks use `skip-worktree`; untracked hooks exclude only `.agents/hooks.json`, and both protections are rolled back at task end. Tools without a Handoff hook (such as MCP/browser tools) follow agy's native policy. By default `--sandbox` is not passed to ensure task-private `TMPDIR`/`GOCACHE` directories remain writable for builds and test suites.
   - Task artifacts: task directory contains `in.fifo` (input channel), `out.jsonl` (event stream), `agy.log` (stderr log), `perm.sock` (permission socket), and `proc.json` (recovery credentials).
 
 ## Upgrading

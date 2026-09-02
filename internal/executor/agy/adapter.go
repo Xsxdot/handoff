@@ -163,6 +163,9 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		if r.proc != nil {
 			r.proc.Kill()
 		}
+		if restoreErr := RestoreTaskEnv(req.TaskDir); restoreErr != nil {
+			a.log.Error("agy 启动回滚还原 hooks 失败", "task", req.Task.ID, "task_dir", req.TaskDir, "cause", restoreErr)
+		}
 		r.runCancel()
 		a.drop(req.Task.ID)
 	}
@@ -418,12 +421,24 @@ func (a *Adapter) Stop(taskID string) (err error) {
 	if r.permSrv != nil {
 		_ = r.permSrv.Close()
 	}
+	var killErr error
 	if r.proc != nil {
 		if kerr := r.proc.Kill(); kerr != nil {
-			return kerr
+			a.log.Error("agy 终止执行者失败", "task", taskID, "cause", kerr)
+			killErr = kerr
 		}
 	}
+	restoreErr := RestoreTaskEnv(r.taskDir)
+	if killErr != nil {
+		if restoreErr != nil {
+			a.log.Error("agy 终止失败且 hooks 还原失败", "task", taskID, "cause", restoreErr)
+		}
+		return killErr
+	}
 	a.drop(taskID)
+	if restoreErr != nil {
+		return restoreErr
+	}
 	return nil
 }
 
