@@ -39,6 +39,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/prochost"
@@ -203,6 +204,94 @@ func gitProbe(ctx context.Context, repo string, args ...string) (stdout, stderr 
 // 调用链上大部分环节与网络无关，把 proxy 串进每个签名会污染一大片无关代码。
 // 这与本包 log() 用运行时取值而非依赖注入是同一个权衡。
 var gitProxy string
+
+// runNetFetch 是仅供基线 fetch 路径使用的测试缝；默认实现仍直接走 gitRunNet。
+// clone 调用方不经过该变量，确保 fetch 锁不会扩散到项目克隆。
+var runNetFetch = func(ctx context.Context, repo string, args ...string) (string, string, error) {
+	return gitRunNet(ctx, repo, args...)
+}
+
+var (
+	repoFetchLocksMu sync.Mutex
+	repoFetchLocks   = make(map[string]*sync.Mutex)
+
+	// errFetchRefLockContention 表示同一仓库的远端 ref 锁竞争重试已耗尽；它
+	// 与 ErrBaseCommitMissing 分离，避免把远端并发故障误导成缺失基线。
+	errFetchRefLockContention = errors.New("基线补拉失败（远端 ref 锁竞争）")
+	// errLocalBaseBranchDiverged 表示工作分支本地尖端与 origin 同名分支各自
+	// 有独有提交；不能静默选边，交由协调者先合并。
+	errLocalBaseBranchDiverged = errors.New("工作分支本地与 origin 已分叉，先合并再派")
+)
+
+// withRepoFetchLock 串行化同一仓库的出网 fetch 及其紧随的目标 ref 读取。
+//
+// 参数：repo 为任务仓库路径；fn 必须把 fetch 和读取本次目标 ref 的完整序列
+// 放在闭包中。锁键使用 filepath.Clean(repo)，不同仓库仍可并发；clone 不经过
+// 此函数，因此不会被基线 fetch 拖住。
+func withRepoFetchLock(repo string, fn func() error) error {
+	key := filepath.Clean(repo)
+	repoFetchLocksMu.Lock()
+	lock := repoFetchLocks[key]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		repoFetchLocks[key] = lock
+	}
+	repoFetchLocksMu.Unlock()
+
+	log().Debug("等待仓库 fetch 锁", "repo", repo, "lock_key", key)
+	lock.Lock()
+	defer lock.Unlock()
+	log().Debug("取得仓库 fetch 锁", "repo", repo, "lock_key", key)
+	if err := fn(); err != nil {
+		log().Warn("仓库 fetch 锁内操作失败", "repo", repo, "lock_key", key, "cause", err)
+		return err
+	}
+	log().Debug("释放仓库 fetch 锁", "repo", repo, "lock_key", key)
+	return nil
+}
+
+// isFetchRefLockFailure 识别 git 在远端跟踪 ref 上的锁竞争；只对该类错误
+// 重试，避免把认证、网络或真正缺失分支的失败延迟后再报。
+func isFetchRefLockFailure(stderr string) bool {
+	return strings.Contains(stderr, "cannot lock ref")
+}
+
+// runFetchWithRetry 在一个 FetchTimeout 总截止时间内执行 fetch，最多重试两次
+// ref 锁竞争。返回值保留最后一次 fetch 的原始 stdout/stderr，供缺失与锁竞争
+// 两条错误分支给协调者定位。
+func runFetchWithRetry(ctx context.Context, repo string, args ...string) (stdout, stderr string, err error) {
+	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
+	defer cancel()
+
+	const maxAttempts = 3
+	const retryDelay = 100 * time.Millisecond
+	var lastErr error
+	for attempt := 1; attempt <= maxAttempts; attempt++ {
+		started := time.Now()
+		log().Info("开始基线 fetch", "repo", repo, "args", args, "attempt", attempt, "of", maxAttempts)
+		stdout, stderr, lastErr = runNetFetch(fctx, repo, args...)
+		log().Info("基线 fetch 完成", "repo", repo, "args", args, "attempt", attempt,
+			"elapsed_ms", time.Since(started).Milliseconds(), "stderr", truncateRunes(strings.TrimSpace(stderr), 500),
+			"cause", lastErr)
+		if lastErr == nil {
+			return stdout, stderr, nil
+		}
+		if !isFetchRefLockFailure(stderr) || attempt == maxAttempts {
+			break
+		}
+		select {
+		case <-fctx.Done():
+			lastErr = fctx.Err()
+			attempt = maxAttempts
+		case <-time.After(retryDelay):
+		}
+	}
+	if isFetchRefLockFailure(stderr) {
+		return stdout, stderr, fmt.Errorf("%w：fetch %v 重试耗尽（最后一次输出：%s）",
+			errFetchRefLockContention, args, strings.TrimSpace(stderr))
+	}
+	return stdout, stderr, lastErr
+}
 
 // SetGitProxy 设置出网 git 使用的代理，由 agentd bootstrap 调用一次。
 //
@@ -1006,7 +1095,8 @@ func needsBaseBranchSync(ctx context.Context, repo, rev string) bool {
 }
 
 // resolveDispatchBase 按 --base 的形态选择旧 commit-ish 解析或 D2 分支补拉。
-// localBaseBranch 为真时只解析目标机本地 refs/heads，不得进入 D2 的远端补拉路径。
+// localBaseBranch 为真时进入工作分支路径：允许在同一锁内探测 origin 同名分支，
+// 但不得进入普通基线的 ResolveBaseBranch D2 路径。
 // 返回值 fetched 供 manager 日志标记是否真的走过 origin fetch。
 func resolveDispatchBase(ctx context.Context, repo, rev string, localBaseBranch bool) (resolved string, fetched bool, err error) {
 	if localBaseBranch {
@@ -1020,13 +1110,16 @@ func resolveDispatchBase(ctx context.Context, repo, rev string, localBaseBranch 
 	return resolved, true, err
 }
 
-// resolveLocalBaseBranch 把工作分支名固定解析为目标机本地 refs/heads 下的提交号。
+// resolveLocalBaseBranch 把工作分支名解析为本地 refs/heads 与 origin 同名跟踪
+// ref 的快进并集。
 //
 // 参数：repo 为目标机登记的项目仓库；branch 为不带 refs/heads/ 前缀的本地分支名。
-// 返回：本地分支尖端 SHA、fetched=false；本地 ref 缺失时返回 ErrBadWorkspaceReq。
+// 返回：可作为新分支起点的 SHA、是否成功探测 origin、错误。只有本地 ref 缺失
+// 或两边分叉拒发；origin 缺失/不可达时保留本地尖端并成功返回。
 //
-// 注意：这里故意不用 ResolveBaseBranch，也不检查远程跟踪 ref。工作分支只存在于
-// 创建它的目标机上，拿 origin 的陈旧镜像替代它会把接续节点悄悄带回错误代码。
+// 注意：快进并集只能选择 origin 严格领先的尖端，不能移动本地工作分支 ref；
+// origin 失败时回退本地。fetch 与远程 ref 读取及祖先比较共用同一仓库锁，不能
+// 使用 FETCH_HEAD。
 func resolveLocalBaseBranch(ctx context.Context, repo, branch string) (string, bool, error) {
 	log().Info("解析本地工作分支", "repo", repo, "branch", branch, "ref", "refs/heads/"+branch)
 	if branch == "" || strings.HasPrefix(branch, "-") || strings.HasPrefix(branch, "refs/") {
@@ -1049,9 +1142,60 @@ func resolveLocalBaseBranch(ctx context.Context, repo, branch string) (string, b
 		return "", false, fmt.Errorf("%w: 工作分支只存在于创建它的那台机器，本地 %s 不存在；请先 push 到 origin，再用显式 --base 指定",
 			ErrBadWorkspaceReq, ref)
 	}
+	localStart := resolved
+	resolved = localStart
+	fetched := false
+	lockErr := withRepoFetchLock(repo, func() error {
+		remoteRef := "refs/remotes/origin/" + branch
+		_, fetchStderr, fetchErr := runFetchWithRetry(ctx, repo, "fetch", "origin", branch)
+		if fetchErr != nil {
+			log().Warn("origin 工作分支探测失败，保留本地尖端", "repo", repo, "branch", branch,
+				"ref", remoteRef, "stderr", truncateRunes(strings.TrimSpace(fetchStderr), 500), "cause", fetchErr)
+			return nil
+		}
+		out, readStderr, readErr := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", remoteRef+"^{commit}")
+		originStart := strings.TrimSpace(out)
+		if readErr != nil || originStart == "" {
+			log().Warn("origin 工作分支跟踪 ref 不可读，保留本地尖端", "repo", repo, "branch", branch,
+				"ref", remoteRef, "stderr", truncateRunes(strings.TrimSpace(readStderr), 300), "cause", readErr)
+			return nil
+		}
+		fetched = true
+		localAncestor := isAncestor(ctx, repo, localStart, originStart)
+		originAncestor := isAncestor(ctx, repo, originStart, localStart)
+		switch {
+		case localAncestor && originAncestor:
+			resolved = localStart
+			log().Info("本地与 origin 工作分支相等，保留本地尖端", "repo", repo, "branch", branch,
+				"start", resolved, "fetched", fetched)
+		case localAncestor:
+			resolved = originStart
+			log().Info("origin 工作分支快进领先，使用 origin 尖端", "repo", repo, "branch", branch,
+				"local_start", localStart, "origin_start", originStart, "fetched", fetched)
+		case originAncestor:
+			resolved = localStart
+			log().Info("本地工作分支领先 origin，保留本地尖端", "repo", repo, "branch", branch,
+				"local_start", localStart, "origin_start", originStart, "fetched", fetched)
+		default:
+			log().Warn("本地与 origin 工作分支已分叉，拒绝派发", "repo", repo, "branch", branch,
+				"local_start", localStart, "origin_start", originStart)
+			return fmt.Errorf("%w：本地=%s，origin=%s", errLocalBaseBranchDiverged, localStart, originStart)
+		}
+		return nil
+	})
+	if lockErr != nil {
+		return "", fetched, lockErr
+	}
 	log().Info("本地工作分支解析完成", "repo", repo, "branch", branch, "ref", ref, "start", resolved,
-		"fetched", false)
-	return resolved, false, nil
+		"fetched", fetched)
+	return resolved, fetched, nil
+}
+
+// isAncestor 检查 ancestor 是否为 descendant 的祖先。两边都不是祖先时由调用
+// 方视为分叉；输入来自已成功读取的提交 ref，因此非零只代表不是祖先关系。
+func isAncestor(ctx context.Context, repo, ancestor, descendant string) bool {
+	_, _, err := gitProbe(ctx, repo, "merge-base", "--is-ancestor", ancestor, descendant)
+	return err == nil
 }
 
 // baseBranchRemote 为 D2 选择真正持有分支的远端：本地分支优先看其配置的
@@ -1092,8 +1236,8 @@ func baseBranchRemote(ctx context.Context, repo, branch string) string {
 //     都答得出来，包括 --no-sync-check 那条——今天那条路上基线是纯粹的空白
 //   - 「命中才不 fetch」是刻意设计：常态下远程并不落后，cat-file 是纯本地对象库
 //     查询（微秒级），只有真落后时才付网络代价
-//   - fetch 失败（无凭证/网络不通）不单独成一类错误，一并归入 ErrBaseCommitMissing：
-//     对调用方而言结论都是「这次派不出去，先解决远程仓库」，stderr 原文已带出根因
+//   - fetch 与随后对象检查处于同一按仓库互斥内；锁竞争耗尽单独归因，其他失败
+//     保留 ErrBaseCommitMissing。锁只覆盖 fetch 与目标对象读取，不覆盖整个 dispatch。
 func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 	if sha == "" {
 		head := headCommit(ctx, repo)
@@ -1107,20 +1251,33 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 	fetched := false
 	if !hasCommit(ctx, repo, sha) {
 		log().Info("基线提交缺失，补拉远端", "repo", repo, "base_commit", sha, "timeout", FetchTimeout)
-		fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
-		defer cancel()
-		_, stderr, ferr := gitRunNet(fctx, repo, "fetch", "--all", "--prune")
-		if ferr != nil {
-			log().Error("补拉远端失败", "repo", repo, "base_commit", sha,
-				"stderr", truncateRunes(stderr, 500), "cause", ferr)
+		err := withRepoFetchLock(repo, func() error {
+			if hasCommit(ctx, repo, sha) {
+				return nil
+			}
+			fetched = true
+			_, stderr, ferr := runFetchWithRetry(ctx, repo, "fetch", "--all", "--prune")
+			if ferr != nil {
+				if errors.Is(ferr, errFetchRefLockContention) {
+					log().Error("基线补拉因远端 ref 锁竞争耗尽", "repo", repo, "base_commit", sha,
+						"stderr", truncateRunes(strings.TrimSpace(stderr), 500), "cause", ferr)
+					return ferr
+				}
+				log().Error("补拉远端失败", "repo", repo, "base_commit", sha,
+					"stderr", truncateRunes(strings.TrimSpace(stderr), 500), "cause", ferr)
+			}
+			if !hasCommit(ctx, repo, sha) {
+				log().Warn("基线提交补拉后仍缺失，拒绝派发", "repo", repo, "base_commit", sha,
+					"fetch_stderr", truncateRunes(strings.TrimSpace(stderr), 300))
+				return fmt.Errorf("%w: %s（任务仓库 %s 落后于本地；fetch 输出：%s）；请先在本地 git push，或用 --no-sync-check 跳过校验",
+					ErrBaseCommitMissing, sha, repo, strings.TrimSpace(truncateRunes(stderr, 300)))
+			}
+			log().Info("补拉远端后基线提交已就位", "repo", repo, "base_commit", sha)
+			return nil
+		})
+		if err != nil {
+			return Baseline{}, err
 		}
-		fetched = true
-		if !hasCommit(ctx, repo, sha) {
-			log().Warn("基线提交补拉后仍缺失，拒绝派发", "repo", repo, "base_commit", sha)
-			return Baseline{}, fmt.Errorf("%w: %s（任务仓库 %s 落后于本地；fetch 输出：%s）；请先在本地 git push，或用 --no-sync-check 跳过校验",
-				ErrBaseCommitMissing, sha, repo, strings.TrimSpace(truncateRunes(stderr, 300)))
-		}
-		log().Info("补拉远端后基线提交已就位", "repo", repo, "base_commit", sha)
 	}
 	bl := Baseline{Start: sha, Ahead: countAhead(ctx, repo, sha), Fetched: fetched}
 	log().Info("基线决议完成", "repo", repo, "start", bl.Start, "ahead", bl.Ahead, "fetched", bl.Fetched)
@@ -1147,22 +1304,37 @@ func ResolveBaseBranch(ctx context.Context, repo, remote, branch string) (string
 		}
 	}
 	log().Info("解析基线分支，补拉远端", "repo", repo, "remote", remote, "branch", branch, "timeout", FetchTimeout)
-	fctx, cancel := context.WithTimeout(ctx, FetchTimeout)
-	defer cancel()
-	if _, stderr, err := gitRunNet(fctx, repo, "fetch", remote, branch); err != nil {
-		log().Error("基线分支补拉失败", "repo", repo, "remote", remote, "branch", branch,
-			"stderr", truncateRunes(stderr, 500), "cause", err)
-		return "", fmt.Errorf("%w: 基线分支 %q 从远端 %q 补拉失败（fetch 输出：%s）",
-			ErrBaseCommitMissing, branch, remote, strings.TrimSpace(truncateRunes(stderr, 300)))
-	}
-	out, stderr, err := gitRun(ctx, repo, "rev-parse", "FETCH_HEAD")
+	var sha string
+	err := withRepoFetchLock(repo, func() error {
+		_, fetchStderr, fetchErr := runFetchWithRetry(ctx, repo, "fetch", remote, branch)
+		if fetchErr != nil {
+			if errors.Is(fetchErr, errFetchRefLockContention) {
+				log().Error("基线分支补拉因远端 ref 锁竞争耗尽", "repo", repo, "remote", remote,
+					"branch", branch, "stderr", truncateRunes(strings.TrimSpace(fetchStderr), 500), "cause", fetchErr)
+				return fetchErr
+			}
+			log().Error("基线分支补拉失败", "repo", repo, "remote", remote, "branch", branch,
+				"stderr", truncateRunes(strings.TrimSpace(fetchStderr), 500), "cause", fetchErr)
+			return fmt.Errorf("%w: 基线分支 %q 从远端 %q 补拉失败（fetch 输出：%s）",
+				ErrBaseCommitMissing, branch, remote, strings.TrimSpace(truncateRunes(fetchStderr, 300)))
+		}
+		remoteRef := "refs/remotes/" + remote + "/" + branch
+		out, readStderr, readErr := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", remoteRef+"^{commit}")
+		sha = strings.TrimSpace(out)
+		if readErr != nil || sha == "" {
+			log().Warn("基线分支目标远端 ref 读取失败", "repo", repo, "remote", remote,
+				"branch", branch, "ref", remoteRef, "stderr", truncateRunes(strings.TrimSpace(readStderr), 300),
+				"cause", readErr)
+			return fmt.Errorf("%w: 基线分支 %q 在远端 %q 上不存在（目标 ref %s；fetch 输出：%s）",
+				ErrBaseCommitMissing, branch, remote, remoteRef, strings.TrimSpace(truncateRunes(readStderr, 300)))
+		}
+		log().Info("基线分支解析完成", "repo", repo, "remote", remote, "branch", branch,
+			"ref", remoteRef, "start", sha)
+		return nil
+	})
 	if err != nil {
-		log().Warn("基线分支解析失败", "repo", repo, "remote", remote, "branch", branch,
-			"stderr", truncateRunes(stderr, 300))
-		return "", fmt.Errorf("%w: 基线分支 %q 在远端 %q 上不存在", ErrBaseCommitMissing, branch, remote)
+		return "", err
 	}
-	sha := strings.TrimSpace(out)
-	log().Info("基线分支解析完成", "repo", repo, "remote", remote, "branch", branch, "start", sha)
 	return sha, nil
 }
 

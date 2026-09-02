@@ -1,0 +1,4 @@
+{
+  "domain": "d_transport",
+  "responsibility": "为协调者与执行机建立可靠通道：目标选择与客户端复用、直连与 relay 隧道、代理配置翻译。"
+}

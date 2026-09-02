@@ -404,7 +404,7 @@ func canonicalPayloadForTest(t *testing.T, raw json.RawMessage) string {
 var legacyGolden = []string{
 	`GOLDEN|1|card_created|test|[{"title":"环节测试卡"},{"workflow":"bug"},{"workflow_version":1}]`,
 	`GOLDEN|2|comment|web:test|[{"body":"挂账 task T-fake-01@ftm（implement）"},{"kind":"普通"}]`,
-	`GOLDEN|3|dispatched|web:test|[{"branch":"cards/B1-implement"},{"discipline_name":"implement"},{"discipline_version":1},{"executor":"opencode"},{"model":""},{"purpose":"implement"},{"target":"ftm"},{"task_id":"T-fake-01"},{"template":"feature-impl"},{"template_version":2}]`,
+	`GOLDEN|3|dispatched|web:test|[{"base":""},{"base_commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},{"branch":"cards/B1-implement"},{"discipline_name":"implement"},{"discipline_version":1},{"executor":"opencode"},{"model":""},{"purpose":"implement"},{"target":"ftm"},{"task_id":"T-fake-01"},{"template":"feature-impl"},{"template_version":2}]`,
 }
 
 func TestLegacyNodeEventSequenceUnchanged(t *testing.T) {

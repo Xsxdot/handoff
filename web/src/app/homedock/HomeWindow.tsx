@@ -5,8 +5,9 @@
 //   - 标题栏上有「最大化 / 还原」：铺满时忽略 geom 改用四边定位，拖动与拉伸
 //     一并停掉（那两个动作在铺满状态下只会造出中间态）
 //   - 拖动标题栏改位置、拉右下角改尺寸，都通过 onGeom 回报给上层
-//   - 只渲染激活 tab 的内容；非激活的终端卸载 = 断开 WS 但会话继续活着，
-//     文件 tab 的草稿则由 useHomeDock 寄存，切回来时由调用方恢复
+//   - 终端 tab 切走不卸载（下层 z-index，不用 pointer-events-none）：
+//     卸了会重放 1004h；pointer-events-none 在 WKWebView 去掉后经常不恢复命中。
+//     文件 tab 仍只渲染激活项，草稿由 useHomeDock 寄存
 //   - onKill 只向上抛 id，真的删服务端会话是调用方的事
 //
 // 边界：
@@ -33,7 +34,7 @@ export interface HomeWindowProps {
   // maximized = 铺满视口。为真时忽略 geom，且拖动与拉伸都停掉（没有意义）
   maximized?: boolean
   onToggleMaximize?: () => void
-  renderTab: (t: HomeTab) => ReactNode // 内容由调用方给，本组件不认识 TerminalTab
+  renderTab: (t: HomeTab, active?: boolean) => ReactNode // 内容由调用方给，本组件不认识 TerminalTab
 }
 
 // tabLabel 给一个浮窗 tab 出标题：终端按序号，文件按 scratch 根下的文件名。
@@ -79,8 +80,6 @@ export function HomeWindow({
     const from = { ...geom }
     grab(event, (dx, dy) => onGeom({ w: Math.max(360, from.w + dx), h: Math.max(200, from.h + dy) }))
   }
-
-  const active = tabs.find((t) => t.id === activeId) ?? null
 
   // 铺满时用四边定位（left/top/right/bottom + width:auto）而不是 100vw/100vh：
   // vw 含滚动条宽度，会让右沿溢出一点点。顶部还要让开桌面薄壳的窗口拖动区，
@@ -175,6 +174,10 @@ export function HomeWindow({
             >
               <button
                 type="button"
+                onMouseDown={(e) => {
+                  // 同工作台 TabBar：mousedown 抢焦点会让 1004 的 TUI 收到 [O]。
+                  e.preventDefault()
+                }}
                 onClick={() => onActivate(tab.id)}
                 className="inline-flex cursor-pointer items-center gap-1 px-2 py-0.5 font-mono text-[10.5px] whitespace-nowrap hover:bg-[#1a2430]"
               >
@@ -208,7 +211,27 @@ export function HomeWindow({
           className="my-auto ml-0.5 inline-flex shrink-0 cursor-pointer rounded p-1 text-[#8e9bab] hover:bg-[#1a2430] hover:text-[#d7dde5]"
         />
       </div>
-      <div className="min-h-0 flex-1 overflow-hidden">{active ? renderTab(active) : null}</div>
+      <div className="relative min-h-0 flex-1 overflow-hidden">
+        {tabs.map((t) => {
+          if (t.kind === 'terminal') {
+            const isActive = t.id === activeId
+            return (
+              <div
+                key={t.id}
+                className={isActive ? 'absolute inset-0 z-10 bg-[#0b0b0c]' : 'absolute inset-0 z-0 bg-[#0b0b0c]'}
+              >
+                {renderTab(t, isActive)}
+              </div>
+            )
+          }
+          if (t.id !== activeId) return null
+          return (
+            <div key={t.id} className="absolute inset-0 z-10 bg-[#0c1622]">
+              {renderTab(t, true)}
+            </div>
+          )
+        })}
+      </div>
       {/* 铺满时不给拉伸角：它只会把窗口拉成一个既不是全屏又不是 geom 的中间态 */}
       {!maximized && (
         <span

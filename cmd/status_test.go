@@ -124,6 +124,50 @@ func TestStatusJSON(t *testing.T) {
 	}
 }
 
+func TestStatusWebEmbeddedJSONAndTextStates(t *testing.T) {
+	cases := []struct {
+		name       string
+		field      string
+		wantStub   bool
+		wantJSON   string
+		absentJSON bool
+	}{
+		{name: "false", field: `,"web_embedded":false`, wantStub: true, wantJSON: `"web_embedded":false`},
+		{name: "true", field: `,"web_embedded":true`, wantJSON: `"web_embedded":true`},
+		{name: "nil", absentJSON: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				body := `{"listen":"l","data_dir":"d","task_counts":{},"active":[]` + tc.field + `}`
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(body))
+			}))
+			t.Cleanup(ts.Close)
+
+			human, err := runStatus(t, writeStatusConfig(t), ts.URL)
+			if err != nil {
+				t.Fatalf("human status: %v", err)
+			}
+			if strings.Contains(human, "stub") != tc.wantStub {
+				t.Fatalf("human stub 行存在=%v，want %v；输出：%s",
+					strings.Contains(human, "stub"), tc.wantStub, human)
+			}
+			jsonOut, err := runStatus(t, writeStatusConfig(t), ts.URL, "--json")
+			if err != nil {
+				t.Fatalf("json status: %v", err)
+			}
+			if tc.absentJSON {
+				if strings.Contains(jsonOut, "web_embedded") {
+					t.Fatalf("nil/缺键不得投影 web_embedded：%s", jsonOut)
+				}
+			} else if !strings.Contains(jsonOut, tc.wantJSON) {
+				t.Fatalf("JSON 缺少 %q：%s", tc.wantJSON, jsonOut)
+			}
+		})
+	}
+}
+
 // --json 遇上老 agentd：reachable=true 且 degraded=true。
 func TestStatusJSONDegraded(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

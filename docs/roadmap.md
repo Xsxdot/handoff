@@ -492,8 +492,8 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
   `graph/codegraph/check.go`：逐条比对 `Container.Label`，无跳过分支）。后果是必然在
   review 阶段撞 dead-entry、多烧一整轮 implement + review。基线里其余 9 条 entries
   全是容器级形态（`ledger.Store`、`proto 实体`、`ptyhost 实体` 等），无一函数符号。
-  **归属 charter 仓**（`~/workspace/charter` 的 contract 节点 skill 该给出这条判据，
-  改完跑 `scripts/regen_discipline.py`），不是 handoff 仓的改动。
+  **归属 charter 仓 = C13**（2026-08-25 建卡，待办）：contract 节点 skill 该给出这条判据，
+  改完跑 `scripts/regen_discipline.py` 同步纪律块。不是 handoff 仓的改动。
 - **（已有卡，不重复取号）** 审批者对沙箱层级完全失明 = **B252**；`card --attach`
   按 path 去重忽略 kind = **B250，已于 2026-08-25 合入 main**（附件身份改 (kind, path)）；
   执行者隔离层 = **B247**。
@@ -543,3 +543,84 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **CLI 限额探测与账户池**：同 HOME / 同凭据的多个载体共享真实账户额度，载体级物理上限管不到跨载体的账户池。B156.3 已记为已知缝（健康位只留形状），B292 调度仍按各载体物理上限保守计数。来源：`docs/superpowers/specs/2026-08-26-b156.3-automation-keystone-design.md` roadmap；`docs/superpowers/specs/2026-08-29-b292-squad-member-concurrency-design.md` Out of Scope。
 - **隔离 HOME 默认路径 / 改路径探测 / 建载体后唤起 / 不健康不派发**：B293。
+
+## 来自 B273 spec（2026-08-27，本期不做）
+
+- **生产侧不再发没有 `final_text` 的半成品 `completed`**：今天同一处发射点会先发残缺再补全文，是为了重启丢终态时能补回报文。消费侧 B273 用「等带 final_text 的 completed + 秒级宽限」止血。改生产侧等于重议那条补报文决议，另开卡。来源：B273 spec Out of Scope / 源卡 B243。
+- **裁决块 notes 改走围栏 / heredoc**：执行者不再把自由文本塞进裸 JSON 字符串。B273 先做解析容错。来源：B273 spec / 源卡 B242 弃选 a。
+- **trailer 允许 `commit` 为空、由 agentd 填 HEAD**：只读节点完全不提交。要核 completed/turn_failed 对空 commit 的容忍度。B273 只改铁律原文，schema 不动。来源：B273 spec / 源卡 B244 弃选 c。
+- **只读节点变异自验走 `git archive` 写进角色纪律**：B229.1 review 执行者摸出来的正当出口。属于角色纪律正文，不是回合协议铁律。来源：B273 spec / 源卡 B244 旁证。
+
+## 来自 B276 spec（2026-08-28，本期不做）
+
+- **B261 方向 2：轮次进行中把新判据送到当前执行者**。今天 `--extra` 只在 dispatch 注入，`continue` 只在 `waiting_review`。来源：B276 spec / 源卡 B261。
+- **B261 方向 3：纪律块要求执行者收尾回读卡上的判据**。来源：同上。
+- **B258 服务端分码**：工单未注册 vs 已消耗拆成不同 HTTP 状态，不再共用 404「工单不存在」。来源：B276 spec / 源卡 B258。
+- **B258 镜像延迟**：任务已 `waiting_answer`、卡流数分钟零事件。来源：同上。
+- **B211 release CI 资产 hash 硬门**（管发布物，管不住手工 `go build`）。来源：B276 spec / 源卡 B211 弃选 C。
+- **charter 仓刀 0 别名销账**：handoff 侧已删除 `handoff graph`；charter 契约 §4 / charter skill / charter roadmap 第 6 条仍写别名观察期。来源：B276 spec r1 / 审查 Issue 3。
+
+## 来自 B277 finish（2026-08-28）
+
+- ~~升 charter/graph 以挂 `flow`/`tree`~~ **已合 main（B284，2026-08-28）**：`go.mod` 现为 `github.com/Xsxdot/charter/graph v0.10.0`（tag 在 charter `a35b9524`）。模块内 `go run … flow Manager.Dispatch` 为 `degraded=false` 93 步。查看器进正在跑的控制台仍要合主后 `handoff upgrade` / 重编 agentd；linux-01 当时 B281/B282 review 在飞，本卡不重启。来源：B284，承接 B277 finish。
+- **TS/React flows 不做**：用户 2026-08-28 裁掉。查看器对 `.ts`/`.tsx` 入缝保持 degraded。来源：B277 spec Out of Scope。
+- **扫描器跳过/空流程**：`n_ledger_Store_EnsureDefaultTemplates`、`n_ledger_Store_EnsureDefaultWorkflows` 解析失败跳过；6 个键空 `steps`（无图内 call/可视控制流）；接口实现闭包第 2 轮后仍有 6 个二阶候选按计划上限未展开。来源：B277 扫描报告。
+- **全函数 CFG / SSA**：不在本卡。来源：B277 spec OOS，charter roadmap 27/32/53。
+
+## 来自 B278 spec（2026-08-28，本期不做）
+
+- **B235 不同名分支自动合并**：卡 `base_branch` 与工作分支历史分叉时，dispatch 自动 merge。B278 只警告。来源：B278 spec / 源卡 B235。
+- **B235 `card dispatch --step --base`**：显式覆盖节点起点。今天卡派发没有这条主路径。来源：同上。
+- **B260 HTTP `task_states` / `relations` 蛇形化**：Web 已按 PascalCase 冻结（`proto.TaskStateRow` 注释 + `web/src/api/ledger.ts`）。要改得连 Web 一起改。来源：B278 spec / 源卡 B260。
+- **B251 存量带日期文件改名**：历史 spec 文件保持原名。来源：B278 spec / 源卡 B251。
+- **仓外 product-backlog skill 日期禁令**：`~/.grok/skills/product-backlog/SKILL.md` 仍只写「不要自己起描述性文件名」。B278 只改仓内 `skills/handoff/SKILL.md` 与 prompt。来源：B278 spec r1 / 审查 Important 8。
+
+## 来自 B271 spec（2026-08-28，本期不做）
+
+- **`resume --force` 给节点能认的终态**：今天只把 `task.state` 推到 `waiting_review` 并打 `progress`，不发 `completed`，charter 节点 `waitForTurnEnd` 不会自动过。不要用假 `completed` 冒充执行器。来源：B271 spec / B268 续。
+- **执行器写完终稿不发 `completed`**（B268 现场 grok）。属执行器卡，不是本机镜像身份。来源：同上。
+- **真远端镜像断线 vs 卡流滞后的可观测性**：现场容易把任务流还在走、卡流停住当成同一个 bug。本卡只拆本机自订。来源：B271 spec Out of Scope。
+
+## 来自 B234 spec（2026-08-28，本期不做）
+
+- **把测试 HTTP helper 迁到全仓其余 `httptest.NewServer`**（executor / release / cmd）。B234 只收口 `internal/agentd`。来源：B234 spec 族一弃选 / OOS。
+- **Darwin 全量 `go test ./...` 在未迁包上仍可能以族一形状伪装成业务断言**。识别纪律：同一次跑里有没有 `can't assign requested address`。来源：B234 spec / B193 note。
+
+## 来自 B286 spec（2026-08-28，本期不做）
+
+- **review 闸在新 agentd 全员部署后撤掉台账白名单**。linux-01 现役二进制仍可能拿到旧平台层「落台账」句。来源：B286 spec / C8。
+- **`--step` 把「领先 N 个提交，新分支不含它们」打到 CLI**。任务级 dispatch 已有；卡级 20s 短等未必能拿到执行机领先读数。来源：B286 spec / C7。
+- **入口失败（认领被拒、运行锁被占）是否在 CLI 复述 `haltEntrypoint` 原文**。B239 已落卡；B286 只收 ViaTemplate 之后那族。来源：B286 spec / C7。
+- **执行机 `FetchTimeout` 内的「基线提交在任务仓库中不存在」让 CLI 非 0**。20s 短等盖不住 2min fetch。来源：B286 spec r1。
+- **`DispatchSnapshot` 是否补 `local_base_branch`**。B286 成功行不打该标签。来源：B286 spec r1 I1。
+
+## 来自 B283 spec（2026-08-28，本期不做）
+
+- **悬浮窗开「远程机器 home 终端」的显式入口**：显式 UI 选机器，不走孤儿收编；`baseOfSession` 的 home@machine 分类保留待复用。来源：B283 spec Out of Scope。
+- **ptyhost 空闲会话回收/孤儿清扫**（服务端侧）：当前只在 shell 退出时回收，被收编循环甩下的孤儿会永久存活。来源：B283 spec Out of Scope。
+- **会话扇出部分失败的用户可见呈现**：`machines.ok=false` 目前只进日志与恢复判据，界面上机器缺席不可见。来源：B283 spec Out of Scope。
+
+## 来自 B266 finish（2026-08-30，残余）
+
+- **darwin 原生 WKWebView 通道的真机穿透未单独记录**：B266 的真机验证（点按钮 → 系统浏览器打开已登录 /cards 整页）在 linux-01 完成；darwin 侧只有 `wails3 task build` 装配门（2026-08-30 本机跑通）与分缝测试。darwin 的 `OriginInfo.Origin` 取 frame URL `absoluteString`（可能带 path/query），代码已按 scheme/host/有效端口同源比较处理——日常桌面使用点一次按钮确认后即可销账。来源：B266 验收。
+- **linux 上构建桌面端的工具链缺失**：linux-01 各轮 runner 无 `wails3` CLI、缺 `pkg-config`（webkit2gtk 系），装配门未在 linux 留证。要在 linux 出桌面包需先补工具链。来源：B266 实现台账（2026-08-29 多轮记录）。
+
+## 来自 B298 spec（2026-08-29，本期不做）
+
+- **开发机详情展示 DataDir 占用，并提供与 `handoff gc` 同语义的预览/确认清理**。B298 不做前端：清理是一次性删盘，不是设置页的持久配置。来源：B298 spec Out of Scope。
+- **`agentd.log` 轮转或截断**。B298 只收构建缓存与残留 managed 工作树；linux-01 该文件 297M，不是 150G 主体。来源：同上。
+- **按保留期删除整棵任务目录 / `render.log`**。B298 明确保留排查素材。来源：同上。
+- **`reclaim` 无参批量收树**。今天仍是一任务一次；B298 只在 gc 能力内部调单任务回收。来源：同上。
+- **磁盘上没有任务行的孤儿 tmp 目录**。任务表只增不删，B298 只按终态行删两处叶子，禁止 `RemoveAll` 整个 DataDir `tmp` 根。来源：B298 spec 审查 I3。
+
+## 来自 B298 finish（2026-08-30，合入并升级 agentd 后补）
+
+- **linux-01 真机清盘**：升级该机 agentd 后跑 `handoff gc --target linux-01` 预览真实缓存字节与脏树 skip，再 `--yes`（必要时 `--force`）清终态叶子；另 `done` 一个跑过 `go test` 的任务，确认 gocache 叶子消失且 `handoff attach` 仍可读。来源：B298 真机清单 1/2/4，验收时对端仍过旧。
+- **Windows 文件占用导致的删除失败**：若仍在支持矩阵，gc 冒烟须呈现为报告 failed 行/日志、命令不崩溃。来源：B298 真机清单 5，本期无 Windows 机。
+
+## 来自 B303 spec（2026-09-02，本期不做）
+
+- **Windows ConPTY**。PTY 仍报不支持；本卡不补。来源：B303 spec Out of Scope。
+- **`CreatePtySessionReq` 增加通用 env 字段或桌面标记**。本卡写死在目标机 Env 末尾，不改 HTTP 契约。来源：同上。
+- **给已经在跑的 PTY 补注入**。重开终端。来源：同上。
+- **未升级的旧 agentd 上让 Grok 发 OSC 52**。注入发生在目标机 fork；旧二进制没有这颗变量。来源：同上。

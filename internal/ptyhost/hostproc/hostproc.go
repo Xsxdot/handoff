@@ -127,8 +127,15 @@ func Run(specPath string) (runErr error) {
 			srv.stopNow()
 		}
 		if eng != nil && engineID != "" {
+			closeStarted := time.Now()
+			log.Info("ptyhost 收摊：等待 Engine reap", "session", spec.ID,
+				"engine_id", engineID, "phase", "engine_close")
 			if err := eng.Close(engineID); err != nil && !errors.Is(err, ptyhost.ErrNoSession) {
-				log.Warn("ptyhost 收摊时关闭会话失败", "session", spec.ID, "err", err)
+				log.Warn("ptyhost 收摊时关闭会话失败", "session", spec.ID,
+					"engine_id", engineID, "phase", "engine_close", "elapsed", time.Since(closeStarted), "err", err)
+			} else {
+				log.Info("ptyhost 收摊：Engine reap 已完成", "session", spec.ID,
+					"engine_id", engineID, "phase", "engine_close", "elapsed", time.Since(closeStarted))
 			}
 		}
 		if ln != nil {
@@ -136,7 +143,7 @@ func Run(specPath string) (runErr error) {
 		}
 		_ = os.Remove(sessdir.SockPath(spec.Root, spec.ID))
 		if !cleaned {
-			log.Info("ptyhost 收摊完成", "session", spec.ID)
+			log.Info("ptyhost 收摊完成", "session", spec.ID, "engine_id", engineID, "phase", "socket_close")
 		}
 		if err := logFile.Close(); err != nil && runErr == nil {
 			runErr = fmt.Errorf("关闭 ptyhost 日志 %s: %w", logPath, err)
@@ -234,7 +241,7 @@ func (s *server) unregisterConn(conn net.Conn) {
 	s.connMu.Unlock()
 }
 
-// stopNow 关闭监听器和所有订阅连接，但不杀 PTY；杀会话由 Run 的统一收摊路径完成。
+// stopNow 只关闭监听器和所有订阅连接，不杀 PTY；杀会话由 Run 的统一收摊路径完成。
 func (s *server) stopNow() {
 	s.stopOnce.Do(func() {
 		close(s.stop)

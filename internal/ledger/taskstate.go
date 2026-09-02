@@ -16,6 +16,66 @@ type TaskStateRow struct {
 	LastSeq                           int64
 }
 
+// mirrorTaskTerminal 镜像视角的任务终态：订阅应退订、心跳不再要求活连接。
+// completed / turn_failed 进 waiting_review，还会再来事件，不算终态。
+func mirrorTaskTerminal(typ string) bool {
+	return typ == "archived" || typ == "failed"
+}
+
+// LiveMirrorTargets 仍有非终态挂账的 target 集合。
+//
+// 一条挂账算「在飞」当且仅当：还从未镜像过，或最后一条镜像事件不是
+// archived/failed。看板用它把「全归档后的静默」从「断链滞后」里剔出去；
+// 镜像对账用它决定要不要空 touch 心跳。
+func (s *Store) LiveMirrorTargets() (map[string]bool, error) {
+	links, err := s.AllTaskLinks()
+	if err != nil {
+		return nil, err
+	}
+	if len(links) == 0 {
+		return map[string]bool{}, nil
+	}
+	rows, err := s.db.Query(s.q(`SELECT e.source_target, e.source_task, e.payload
+		FROM card_events e
+		INNER JOIN (
+			SELECT source_target, source_task, MAX(source_seq) AS max_seq
+			FROM card_events
+			WHERE source_target IS NOT NULL
+			GROUP BY source_target, source_task
+		) last ON e.source_target = last.source_target
+			AND e.source_task = last.source_task
+			AND e.source_seq = last.max_seq`))
+	if err != nil {
+		return nil, fmt.Errorf("读各 task 末条镜像: %w", err)
+	}
+	defer rows.Close()
+	lastType := map[string]string{}
+	for rows.Next() {
+		var target, task, raw string
+		if err := rows.Scan(&target, &task, &raw); err != nil {
+			return nil, fmt.Errorf("扫各 task 末条镜像: %w", err)
+		}
+		var payload struct {
+			TaskType string `json:"task_type"`
+		}
+		if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+			return nil, fmt.Errorf("解码末条镜像 %s@%s: %w", task, target, err)
+		}
+		lastType[target+"/"+task] = payload.TaskType
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("读各 task 末条镜像: %w", err)
+	}
+	live := map[string]bool{}
+	for _, link := range links {
+		typ, ok := lastType[link.Target+"/"+link.TaskID]
+		if !ok || !mirrorTaskTerminal(typ) {
+			live[link.Target] = true
+		}
+	}
+	return live, nil
+}
+
 // LatestTaskStates 一张卡全部挂账 task 的实况。
 func (s *Store) LatestTaskStates(cardID string) ([]TaskStateRow, error) {
 	links, err := s.TasksOf(cardID)

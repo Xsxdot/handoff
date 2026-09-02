@@ -42,7 +42,7 @@ func TestSetupLedgerMountsWithRetiredEnabledFlag(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
-	stop, err := setupLedger(cfg, srv, ctx, discardLogger())
+	stop, err := setupLedger(cfg, srv, taskStore, ctx, discardLogger())
 	if err != nil {
 		t.Fatalf("enabled 已退休，启动账本路径应恒可用: %v", err)
 	}

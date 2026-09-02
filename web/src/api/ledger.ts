@@ -320,7 +320,7 @@ export interface LedgerHealth {
   // enabled 账本域总开关。未启用时后端只回这一个字段（恒 200，不是 503——
   // 503 在浏览器侧与网络错无法区分，那样前端只能靠猜）。
   enabled: boolean
-  mirror?: { Target: string; LastSeq: number; UpdatedAt: string }[]
+  mirror?: { Target: string; LastSeq: number; UpdatedAt: string; Live?: boolean }[]
 }
 
 export const fetchLedgerHealth = () =>

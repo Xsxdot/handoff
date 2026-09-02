@@ -16,7 +16,7 @@ import (
 )
 
 func TestCloseAllKillsLiveSessions(t *testing.T) {
-	root, _, id, done := startClientHost(t)
+	root, _, id, done, late := startClientHostWithExitMarker(t)
 
 	closed, err := ptyhost.CloseAll(root, testLog(), 3*time.Second)
 	if err != nil {
@@ -24,6 +24,9 @@ func TestCloseAllKillsLiveSessions(t *testing.T) {
 	}
 	if closed != 1 {
 		t.Fatalf("closed = %d，期望 1", closed)
+	}
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("CloseAll 返回后 late marker 不存在: %v", err)
 	}
 
 	// ptyhost 自己收摊：进程退出且目录清掉，才算真的停了

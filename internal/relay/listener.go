@@ -3,9 +3,12 @@
 package relay
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -152,7 +155,17 @@ func (l *Listener) serveSession(ctx context.Context, stream net.Conn) {
 		return
 	}
 	l.log.Info("e2e established", "node", l.node, "account", l.account, "role", "responder")
-	appMux, err := yamux.Server(secure, relayYamuxConfig())
+	reader := bufio.NewReader(secure)
+	prefix, err := reader.Peek(len(previewRawMagic))
+	if err != nil {
+		l.log.Warn("relay session mode read failed", "node", l.node, "account", l.account, "cause", err)
+		return
+	}
+	if bytes.Equal(prefix, []byte(previewRawMagic)) {
+		l.serveRawSession(ctx, secure, reader)
+		return
+	}
+	appMux, err := yamux.Server(&bufferedRelayConn{Conn: secure, reader: reader}, relayYamuxConfig())
 	if err != nil {
 		l.log.Error("relay app yamux setup failed", "node", l.node, "cause", err)
 		return
@@ -170,6 +183,58 @@ func (l *Listener) serveSession(ctx context.Context, stream net.Conn) {
 	close(serveDone)
 	_ = app.Close()
 	l.log.Info("relay session closed", "node", l.node, "account", l.account)
+}
+
+type bufferedRelayConn struct {
+	net.Conn
+	reader *bufio.Reader
+}
+
+func (c *bufferedRelayConn) Read(p []byte) (int, error) { return c.reader.Read(p) }
+
+func (l *Listener) serveRawSession(ctx context.Context, secure net.Conn, reader io.Reader) {
+	network, addr, err := readPreviewRawRequest(reader)
+	if err != nil {
+		l.log.Warn("relay raw request read failed", "node", l.node, "account", l.account, "cause", err)
+		_ = writePreviewRawResponse(secure, err)
+		return
+	}
+	if network != "tcp" && network != "tcp4" && network != "tcp6" {
+		err = fmt.Errorf("不支持 raw network=%q", network)
+		_ = writePreviewRawResponse(secure, err)
+		l.log.Warn("relay raw network rejected", "node", l.node, "network", network, "addr", addr, "cause", err)
+		return
+	}
+	l.log.Info("relay raw upstream dialing", "node", l.node, "network", network, "addr", addr)
+	upstream, err := (&net.Dialer{}).DialContext(ctx, network, addr)
+	if err != nil {
+		_ = writePreviewRawResponse(secure, err)
+		l.log.Warn("relay raw upstream dial failed", "node", l.node, "network", network, "addr", addr, "cause", err)
+		return
+	}
+	defer upstream.Close()
+	if err := writePreviewRawResponse(secure, nil); err != nil {
+		l.log.Warn("relay raw response write failed", "node", l.node, "network", network, "addr", addr, "cause", err)
+		return
+	}
+	l.log.Info("relay raw upstream connected", "node", l.node, "network", network, "addr", addr)
+	bridgeRelayRaw(secure, upstream)
+	l.log.Info("relay raw session closed", "node", l.node, "network", network, "addr", addr)
+}
+
+// BridgePreviewRaw copies both directions until either side closes.
+func BridgePreviewRaw(a, b net.Conn) {
+	bridgeRelayRaw(a, b)
+}
+
+func bridgeRelayRaw(a, b net.Conn) {
+	done := make(chan struct{}, 2)
+	go func() { _, _ = io.Copy(a, b); done <- struct{}{} }()
+	go func() { _, _ = io.Copy(b, a); done <- struct{}{} }()
+	<-done
+	_ = a.Close()
+	_ = b.Close()
+	<-done
 }
 
 func closeSessionOnContext(ctx context.Context, session *yamux.Session) func() {

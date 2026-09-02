@@ -1,5 +1,15 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { DESKTOP_TOP_INSET, isDesktopShell, requestTitlebarZoom, topInset } from './desktopShell'
+import {
+  DESKTOP_TOP_INSET,
+  isDesktopShell,
+  NATIVE_CLIPBOARD_MESSAGE_PREFIX,
+  NATIVE_CLIPBOARD_RESULT_EVENT,
+  OPEN_BROWSER_MESSAGE_PREFIX,
+  requestNativeClipboard,
+  requestOpenCurrentPageInBrowser,
+  requestTitlebarZoom,
+  topInset,
+} from './desktopShell'
 
 describe('desktopShell', () => {
   it('UA 带薄壳标记时判为桌面壳，并让出顶部拖动区', () => {
@@ -41,5 +51,62 @@ describe('requestTitlebarZoom', () => {
   it('桥不在时安静返回 false，不抛异常', () => {
     // 浏览器里打开控制台就是这条路径：双击顶栏本来也没有语义，不能因此炸掉页面
     expect(requestTitlebarZoom()).toBe(false)
+  })
+})
+
+describe('requestOpenCurrentPageInBrowser', () => {
+  const bridge = () => (window as unknown as { webkit?: unknown })
+
+  afterEach(() => {
+    delete bridge().webkit
+    window.history.replaceState({}, '', '/')
+  })
+
+  it('发送固定协议前缀和当前页面的 path/query', () => {
+    const postMessage = vi.fn()
+    bridge().webkit = { messageHandlers: { external: { postMessage } } }
+    window.history.replaceState({}, '', '/cards?project=handoff')
+
+    expect(requestOpenCurrentPageInBrowser()).toBe(true)
+    expect(OPEN_BROWSER_MESSAGE_PREFIX).toBe('handoff:open-browser:')
+    expect(postMessage).toHaveBeenCalledWith(
+      `${OPEN_BROWSER_MESSAGE_PREFIX}${window.location.origin}/cards?project=handoff`,
+    )
+  })
+
+  it('没有 external bridge 时返回 false 且不抛异常', () => {
+    expect(requestOpenCurrentPageInBrowser()).toBe(false)
+  })
+})
+
+describe('requestNativeClipboard', () => {
+  const bridge = () => (window as unknown as { webkit?: unknown })
+
+  afterEach(() => {
+    delete bridge().webkit
+  })
+
+  it('桥在时发送 UTF-8 base64 请求，并按 requestId 接收成功结果', async () => {
+    const postMessage = vi.fn((message: string) => {
+      const requestID = message.slice(NATIVE_CLIPBOARD_MESSAGE_PREFIX.length).split(':', 1)[0]
+      window.dispatchEvent(new CustomEvent(NATIVE_CLIPBOARD_RESULT_EVENT, {
+        detail: { requestId: requestID, ok: true },
+      }))
+    })
+    bridge().webkit = { messageHandlers: { external: { postMessage } } }
+
+    const result = requestNativeClipboard('你好\nhello')
+
+    expect(result).not.toBeNull()
+    expect(postMessage).toHaveBeenCalledWith(expect.stringMatching(
+      new RegExp(`^${NATIVE_CLIPBOARD_MESSAGE_PREFIX}\\d+:`),
+    ))
+    const message = postMessage.mock.calls[0][0]
+    expect(message.endsWith('5L2g5aW9CmhlbGxv')).toBe(true)
+    await expect(result).resolves.toBe(true)
+  })
+
+  it('没有 external bridge 时返回 null，让调用方走浏览器路径', () => {
+    expect(requestNativeClipboard('text')).toBeNull()
   })
 })

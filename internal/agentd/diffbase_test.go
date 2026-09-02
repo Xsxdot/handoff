@@ -8,7 +8,6 @@ package agentd
 import (
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -17,6 +16,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // TestDiffBaseForPrefersTaskBaseCommit 钉住优先级：BaseCommit 非空即用它。
@@ -59,8 +59,7 @@ func TestBranchesEndpointReportsTaskBase(t *testing.T) {
 	}
 
 	srv := NewServer(&config.Config{Token: token, DataDir: t.TempDir()}, st, discardLogger())
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/tasks/t1/branches", nil)
 	req.Header.Set("Authorization", "Bearer "+token)

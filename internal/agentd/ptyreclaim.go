@@ -75,18 +75,26 @@ func (s *Server) ReclaimPtySessions() error { return s.reclaimPtySessions() }
 // GracefulShutdownCleanup 返回 agentd 通用优雅关停使用的 cleanup 闭包。
 //
 // 参数：wdCancel 是后台看门狗与镜像循环的取消函数。
-// 返回：只取消这些 agentd 内部后台循环的 cleanup；不会关闭任何 PTY 会话。
+// 返回：先按 opener→preview mirror→owner 顺序收口，再取消后台循环；不会关闭任何 PTY 会话。
 // 注意：信号关停与进程内 Trigger 走同一条 Shutdown 路径，包含升级换版；显式停止
 // PTY 必须由独立的显式 stop 入口调用 ShutdownPtySessions，不能挂在这里。
 func (s *Server) GracefulShutdownCleanup(wdCancel context.CancelFunc) func() {
-	return func() { wdCancel() }
+	return func() {
+		ctx, cancel := context.WithTimeout(context.Background(), ptyShutdownWait)
+		defer cancel()
+		if err := s.StopPreviewServices(ctx); err != nil {
+			s.log.Warn("预览服务收口失败", "operation", "preview_shutdown", "cause", err)
+		}
+		wdCancel()
+	}
 }
 
 // shutdownPtySessions 显式停止全部已登记的 PTY 会话。
 //
 // 参数：ctx 是 agentd 关停上下文；函数会在最多 ptyShutdownWait 后返回。
 // 返回：无；单个会话关闭失败与整体超时都只记日志，不能阻塞 agentd 退出。
-// 注意：这是唯一的批量 kill 路径；agentd 崩溃与升级不调用它。
+// 注意：每个 Host.Close 会等待自身的 ptyhost/PTY 收摊；这里仍保留 2 秒总预算，
+// 到点只记录 Warn 并继续退出。这是唯一的批量 kill 路径；agentd 崩溃与升级不调用它。
 func (s *Server) shutdownPtySessions(ctx context.Context) {
 	ctx, cancel := context.WithTimeout(ctx, ptyShutdownWait)
 	defer cancel()
@@ -99,12 +107,15 @@ func (s *Server) shutdownPtySessions(ctx context.Context) {
 	var wg sync.WaitGroup
 	for _, sess := range list {
 		id := sess.ID
+		pid := sess.PID
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
 			if err := s.pty.Close(id); err != nil {
-				s.log.Warn("停止 PTY 会话失败", "session", id, "err", err)
+				s.log.Warn("停止 PTY 会话失败", "session", id, "pid", pid, "cause", err)
+				return
 			}
+			s.log.Info("停止 PTY 会话完成", "session", id, "pid", pid)
 		}()
 	}
 	done := make(chan struct{})
@@ -116,7 +127,7 @@ func (s *Server) shutdownPtySessions(ctx context.Context) {
 	case <-done:
 		s.log.Info("PTY 会话收口完成", "count", len(list))
 	case <-ctx.Done():
-		s.log.Warn("PTY 会话收口超时，继续退出", "count", len(list), "wait", ptyShutdownWait)
+		s.log.Warn("PTY 会话收口超时，继续退出", "count", len(list), "wait", ptyShutdownWait, "cause", ctx.Err())
 	}
 }
 

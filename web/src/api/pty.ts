@@ -41,8 +41,9 @@ export interface PtyOptions {
   since?: number
   onData: (bytes: Uint8Array) => void
   // onAttached 在**每次**建连时触发（含重连）。truncated=true 表示中间丢了一段，
-  // 调用方必须先清屏再灌，否则同一段输出会被重复画。
-  onAttached: (info: { since: number; truncated: boolean }) => void
+  // 调用方必须先清屏再灌，否则同一段输出会被重复画。backlog_bytes 缺席时表示
+  // 旧服务端，调用方不能把缺席填成 0。
+  onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
   // onExit：shell 已退出。exitCode 可能缺席（对端没给），此时不要显示成 0。
   onExit: (exitCode?: number) => void
   onStatus?: (status: WsStatus) => void
@@ -55,6 +56,8 @@ export interface PtyHandle {
   close: () => void
   send: (bytes: Uint8Array) => void
   resize: (cols: number, rows: number) => void
+  // debug 把一条取证记到 agentd 日志（type=debug 控制帧），不进 PTY。
+  debug: (message: string) => void
 }
 
 function ptyUrl(sessionId: string, since: number, machine?: string): string {
@@ -76,6 +79,8 @@ export function connectPty(options: PtyOptions): PtyHandle {
   let terminal = false
   let retryDelay = 300
   let retryTimer: number | undefined
+  let opened = false
+  const pendingDebug: string[] = []
 
   function cleanup() {
     if (!ws) return
@@ -107,7 +112,13 @@ export function connectPty(options: PtyOptions): PtyHandle {
         // 服务端说它从哪个字节开始给：以**它**的口径为准推进游标。
         // 用本地的猜测会在 truncated 时把游标停在一个环里已经没有的位置。
         cursor = ctrl.since
-        options.onAttached({ since: ctrl.since, truncated: ctrl.truncated })
+        const info: { since: number; truncated: boolean; backlog_bytes?: number } = {
+          since: ctrl.since,
+          truncated: ctrl.truncated,
+        }
+        // 缺键表示旧服务端；不要填 0，否则调用方会误把旧录像当成没有旧录像。
+        if (typeof ctrl.backlog_bytes === 'number') info.backlog_bytes = ctrl.backlog_bytes
+        options.onAttached(info)
         return
       case 'exit':
         terminal = true
@@ -125,14 +136,26 @@ export function connectPty(options: PtyOptions): PtyHandle {
 
   function open() {
     if (closedByUs || terminal) return
+    opened = false
     ws = (options.create ?? ((url: string) => new WebSocket(url) as unknown as PtySocketLike))(
       ptyUrl(options.sessionId, cursor, options.machine),
     )
     // 必须在任何消息到达之前设：blob 模式下 onmessage 拿到的是需要 await 的对象
     ws.binaryType = 'arraybuffer'
     ws.onopen = () => {
+      opened = true
       retryDelay = 300
       options.onStatus?.('open')
+      while (pendingDebug.length > 0) {
+        const message = pendingDebug.shift()
+        if (message !== undefined) {
+          try {
+            ws?.send(JSON.stringify({ type: 'debug', message }))
+          } catch {
+            break
+          }
+        }
+      }
     }
     ws.onmessage = (msg) => {
       if (typeof msg.data === 'string') {
@@ -185,6 +208,17 @@ export function connectPty(options: PtyOptions): PtyHandle {
     },
     resize(cols, rows) {
       ws?.send(JSON.stringify({ type: 'resize', cols, rows }))
+    },
+    debug(message) {
+      if (!opened) {
+        if (pendingDebug.length < 50) pendingDebug.push(message)
+        return
+      }
+      try {
+        ws?.send(JSON.stringify({ type: 'debug', message }))
+      } catch {
+        // 通道未就绪时取证丢失，不能把诊断路径变成输入故障
+      }
     },
   }
 }

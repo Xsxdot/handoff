@@ -1,0 +1,4 @@
+{
+  "domain": "d_execution_host",
+  "responsibility": "为 detached 执行进程提供跨平台的启动、锁与凭据、资源围栏采样和进程树回收原语。"
+}

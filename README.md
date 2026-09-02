@@ -394,6 +394,7 @@ log states which path this run used.
 | `handoff pull <task>` | Sync a remote task branch to the local repo (fetch only, no checkout) | — |
 | `handoff project add\|ls\|rm` | Manage project registrations | `--target <machine>`; add takes `--path <existing path>` |
 | `handoff reclaim` | Clean up managed worktrees left by terminal-state tasks (branches kept) | — |
+| `handoff gc` | Preview or delete terminal-task cache leaves (`tmp/<id8>` and `tasks/<id>/tmp`) and leftover managed worktrees on the target agentd | `--yes` (apply); `--force` (dirty trees only); `--json`; `--target` |
 | `handoff footprint` | Per-task process usage and this machine's process headroom | — |
 | `handoff status` | Is agentd usable, version, active tasks, executor liveness | `--target <name>`; `--json`; exit code 0=usable 1=unreachable |
 | `handoff upgrade` | Survey/upgrade this machine and all targets | `--now`; `--target <name>`; `--force`; `--rollback` |

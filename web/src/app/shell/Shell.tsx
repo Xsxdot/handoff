@@ -16,8 +16,8 @@
 // 关于 ShellContext 的移除：W3 用 <Outlet context> 给三个子页面下发共享数据。
 // 新 IA 里中央不再是路由页面而是 tab，Outlet 没有了消费者；看板与工单改为弹层，
 // 它们要的数据直接由 Shell 以 props 传下去。留一个没人用的 context 只会误导。
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Navigate, Route, Routes, useLocation, useNavigate, useParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
+import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
 import { fetchCards, fetchDecisions } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
@@ -25,6 +25,7 @@ import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import { useMachines } from '../data/useMachines'
 import { useProjectTree } from '../data/useProjectTree'
 import { useTasks } from '../data/useTasks'
+import { usePreviews } from '../data/usePreviews'
 import { useMachineCaps } from '../data/useMachineCaps'
 import { useLedgerEnabled } from '../data/useLedgerEnabled'
 import { usePoll } from '../data/usePoll'
@@ -34,7 +35,7 @@ import { isDesktopShell } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { AddProjectWizard } from '../projects/AddProjectWizard'
 import { ProjectEditDialog } from '../projects/ProjectEditDialog'
-import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase } from '../tree/ProjectTree'
+import { findBaseByKey, findBaseOfTask, ProjectTree, workspaceBase, type OpenItem } from '../tree/ProjectTree'
 import { FileTree } from '../files/FileTree'
 import { WorkbenchPage } from '../workbench/WorkbenchPage'
 import { TerminalTab } from '../workbench/TerminalTab'
@@ -45,7 +46,9 @@ import { useHomeDock } from '../homedock/useHomeDock'
 import type { DockSnapshot } from '../homedock/dockPersist'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
-import { type TabContent } from '../workbench/tabs'
+import { nextTerminalSeq, tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
+import { taskDisplayName } from '../lib/taskName'
+import type { StateTone } from '../board/columns'
 import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
 import { BoardOverlay } from '../overlay/BoardOverlay'
 import { TicketsOverlay } from '../overlay/TicketsOverlay'
@@ -58,6 +61,7 @@ import { RoomPanel } from '../rooms/RoomPanel'
 import { needsAttention } from '../cards/columns'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
+import { ResizableSidebar } from './ResizableSidebar'
 
 // OverlayKind 是当前打开的弹层。同时只允许一个（spec §0）：两个叠在一起时
 // Esc 该关哪个会变得含糊。
@@ -82,20 +86,49 @@ export function coordinatorBase(tree: ProjectTreeResp | null, info: CoordinatorA
   }
 }
 
+// focusedPaneBase 是顶部展示的单向投影：左树 selected base 仍服务于打开新内容，
+// 顶部则必须回答用户正在看的 pane 属于哪个目录。越界或空 pane 代表当前没有内容，
+// 不猜测 selected base，避免左栏点击后顶栏与中央画面脱节。
+function focusedPaneBase(workbench: Workbench): BaseDir | null {
+  const group = workbench.groups.find((candidate) => candidate.id === workbench.activeGroupId)
+  if (!group) return null
+  const [column, row] = group.focus
+  return group.columns[column]?.panes[row]?.base ?? null
+}
+
+// focusedTab 是顶部展示的另一个单向投影：焦点窗格里的 tab 本体，
+// 面包屑第三段（内容名）与左栏焦点态都要用它。
+function focusedTabOf(workbench: Workbench): Tab | null {
+  const group = workbench.groups.find((candidate) => candidate.id === workbench.activeGroupId)
+  if (!group) return null
+  const [column, row] = group.focus
+  return group.columns[column]?.panes[row] ?? null
+}
+
 export function Shell() {
   const tasksState = useTasks()
   const treeState = useProjectTree()
   const tasks = useMemo(() => tasksState.data ?? [], [tasksState.data])
+  const previewsState = usePreviews()
+  const previews = useMemo(() => previewsState.data?.sessions ?? [], [previewsState.data])
   const wb = useWorkbench()
+  // crumbTaskName 把 taskId 解析成任务原名（与左栏任务行同口径）；解析不到时
+  // tabTitle 自己回退 TUI · 前 8 位。标签条、面包屑、左栏已打开行共用同一份口径。
+  const taskNameResolver = useCallback((id: string) => {
+    const t = tasks.find((x) => x.id === id)
+    return t ? taskDisplayName(t) : undefined
+  }, [tasks])
   const navigate = useNavigate()
   const location = useLocation()
   const openCoordinatorTerminal = useCallback((info: CoordinatorAttachInfo) => {
     console.info('coordinator.terminal.open', { machine: info.machine, dir: info.dir, opened: true, cause: 'attach' })
     wb.openTerminalWithCommand(info.command, coordinatorBase(treeState.data, info))
   }, [treeState.data, wb])
+  const [routeParams] = useSearchParams()
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
+  const [fileDrawer, setFileDrawer] = useState<BaseDir | null>(null)
   // fileTreeNonce 是右栏刷新的触发器。中央区新建文件后递增它。
   // 用计数器而不是把 FileTree 的 refresh 传上来：那会把中央区与右栏焊死，
   // 而它们现在互不认识
@@ -149,31 +182,6 @@ export function Shell() {
   const [scratchError, setScratchError] = useState('')
   // home 终端的浮窗状态完全独立于 wb：home 终端不挂在任何目录上（见 useHomeDock）
   const dock = useHomeDock()
-  const split = wb.split
-  // ⌘D 分屏。
-  //
-  // 挂 window 而不是像 BlankTab 的 ⌘T 那样挂面板：那里必须区分「按的是哪一栏的
-  // 空白面板」，window 级会让一次 ⌘T 开出两个终端（BlankTab.tsx:75）。⌘D 没有这个
-  // 问题——它只作用于当前焦点组，全局唯一。
-  //
-  // **只认 metaKey，绝不接 ctrlKey**：Ctrl+D 在终端里是 EOF，绑上去等于让用户
-  // 没法退出 shell。这与 BlankTab.tsx:44 已确立的口径一致（本控制台只在 macOS 用，
-  // 将来上 Windows 时这两处要一起改，而且要另选一个不撞 EOF 的键）。
-  //
-  // 必须 preventDefault：macOS 浏览器的 ⌘D 是「加入书签」，不拦会在分屏的同时弹
-  // 书签面板。不排除输入框——⌘D 在 input/textarea 里没有默认语义，排除它只会让
-  // 「光标在 Composer 里时 ⌘D 不好使」变成一个要解释的例外。
-  //
-  // 冒泡阶段监听（第三参不传 true），与 ProjectTree 的 ⌘K 同一条让位次序。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.ctrlKey || e.key.toLowerCase() !== 'd') return
-      e.preventDefault()
-      split()
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [split])
   // dockSnapshot 把悬浮窗的五份状态收成一个对象，供落盘层做差分。
   // 必须 useMemo：不 memo 的话每次渲染都是新引用，写回 effect 会每帧重排一次去抖
   const dockSnapshot: DockSnapshot = useMemo(
@@ -187,8 +195,7 @@ export function Shell() {
   // adoptDockTab 仍用 dock.adopt 而不是别的入口：adopt 不打开浮窗、不抢焦点——
   // 页面一加载就弹出浮窗，等于替用户点了一下
   const sync = useWorkbenchSync({
-    byBase: wb.byBase,
-    baseDirs: wb.baseDirs,
+    workbench: wb.wb,
     selectedKey: wb.base?.key ?? '',
     dockSnapshot,
     hydrateWorkbench: wb.hydrate,
@@ -238,9 +245,10 @@ export function Shell() {
   const [closeError, setCloseError] = useState('')
   // closingBusyProc：这个会话里是不是还有前台命令。null = 还没问出来
   const [closingBusyProc, setClosingBusyProc] = useState<boolean | null>(null)
-  // closingGone：服务端已经查不到这个会话了（最常见是 agentd 重启把内存里的会话
-  // 全清了）。只影响措辞——弹层不能一边说「会终止里面正在运行的命令」，一边
-  // 关的其实是一个早就没了的会话。null = 还没问出来，按「可能还活着」说话
+  // closingGone：服务端已经查不到这个会话了（PTY 会话由 ptyhost 持有、跨 agentd
+  // 重启存活——查不到说明它真的消失了：机器重启、退出 shell 或显式停止）。只影响
+  // 措辞——弹层不能一边说「会终止里面正在运行的命令」，一边关的其实是一个早就
+  // 没了的会话。null = 还没问出来，按「可能还活着」说话
   const [closingGone, setClosingGone] = useState<boolean | null>(null)
   // closingDirtyFile 记「哪个有草稿的文件 tab 正在等确认」。只记位置不记草稿：
   // 草稿仍活在 tab 内容里，确认「不保存，关闭」时 wb.close 会把它一起带走
@@ -270,7 +278,7 @@ export function Shell() {
   // 这里只要是带会话的终端 tab 就弹。关闭即终止是不可逆操作，而「有没有前台
   // 进程」这个判据在用户点下 × 的那一瞬间可能刚好过期——宁可多问一句，也不
   // 静默杀掉跑了整个晚上的 build（这正是本设计不做空闲回收的同一条理由）。
-  const beforeCloseTab = (c: TabContent, tabId: string): boolean => {
+  const beforeCloseTab = (c: TabContent, tabId: string, tabBase: BaseDir): boolean => {
     // 有草稿的文件 tab：关掉就是把用户唯一一份未保存的输入丢掉，且没有回收站。
     // 与终端那条分支同一个理由——不可逆操作先问一句。
     //
@@ -282,7 +290,7 @@ export function Shell() {
     }
     if (c.kind !== 'terminal' || !c.sessionId) return true
     // machine 在这一刻定下来：此刻显示的正是这个 tab 所属基准的工作台
-    setClosingPty({ tabId, sessionId: c.sessionId, machine: wb.base?.machine || '' })
+    setClosingPty({ tabId, sessionId: c.sessionId, machine: tabBase.machine })
     setCloseError('')
     probeClosingSession(c.sessionId)
     return false
@@ -291,10 +299,10 @@ export function Shell() {
   // probeClosingSession 向服务端问一句「这个会话还在吗、忙不忙」，答案只用于
   // 弹层措辞，**不阻塞弹层出现**，也不影响能不能确认。
   //
-  // 查不到 = 会话已经不在（agentd 重启是最常见的一种）：那句「会终止正在运行的
-  // 命令」对它是假话，而假话会让用户以为自己正在杀掉什么东西。问不出来
-  // （请求本身失败）时一律退回 null，按「可能还活着」说话——宁可吓一跳，不可
-  // 骗人说没事
+  // 查不到 = 会话已经不在（会话跨 agentd 重启存活，所以「不在」是真的不在——
+  // 机器重启、退出 shell 或显式停止）：那句「会终止正在运行的命令」对它是假话，
+  // 而假话会让用户以为自己正在杀掉什么东西。问不出来（请求本身失败）时一律退回
+  // null，按「可能还活着」说话——宁可吓一跳，不可骗人说没事
   const probeClosingSession = (sessionId: string) => {
     setClosingBusyProc(null)
     setClosingGone(null)
@@ -322,11 +330,11 @@ export function Shell() {
       await deletePtySession(sessionId, machine)
       return true
     } catch (err) {
-      // 404 是**成功**的一种：服务端根本没有这个会话，最常见的是 agentd 重启后
-      // 内存里的会话全没了。此时「不许吞错误」那条纪律护的东西（别把还活着的
-      // shell 从视野里抹掉）根本不存在——已经没有 shell 可留。照旧当失败处理的
-      // 代价是这个 tab 被焊死：确认弹层每次都红字报「会话不存在」，关不掉，也
-      // 没有第二个出口。删除对这一路是幂等的
+      // 404 是**成功**的一种：服务端根本没有这个会话。PTY 会话跨 agentd 重启存活，
+      // 「没有」只能是机器重启、退出 shell 或显式停止之后的真消失。此时「不许吞
+      // 错误」那条纪律护的东西（别把还活着的 shell 从视野里抹掉）根本不存在——
+      // 已经没有 shell 可留。照旧当失败处理的代价是这个 tab 被焊死：确认弹层每次
+      // 都红字报「会话不存在」，关不掉，也没有第二个出口。删除对这一路是幂等的
       if (err instanceof ApiError && err.status === 404) return true
       onError(errorMessage(err))
       return false
@@ -398,9 +406,10 @@ export function Shell() {
 
   // backToWorkbench 把中央区换回工作台。
   //
-  // why 每个「改工作台状态」的入口都得先调它：工作台挂在 path="*" 上，停在
-  // /cards、/flows、/settings 时它根本没渲染。只改状态不换路由的后果是——
-  // 面包屑跟着变了，中央还是原来那一页，看着像点击没反应（2026-08-19 真机踩到）。
+  // why 每个「改工作台状态」的入口都得先调它：设置/工作项等是盖在工作台上的
+  // 整页，URL 还停在 /cards 时用户看见的仍是那一页。只改状态不换路由的后果
+  // 是面包屑跟着变了、中央还是原来那一页，看着像点击没反应（2026-08-19 真机
+  // 踩到）。工作台本身常驻不卸（B280），但盖住它的那一层要靠导航拿掉。
   // 已在 / 上时不导航，避免往历史里塞无意义的同址条目。
   const backToWorkbench = () => {
     if (location.pathname !== '/') navigate('/')
@@ -416,10 +425,45 @@ export function Shell() {
     .some((path) => location.pathname.startsWith(path))
   const cardsRoute = location.pathname.startsWith('/cards')
 
-  // selectDir 是「点一个目录」的唯一实现：换回工作台 + 选中。
-  const selectDir = (base: BaseDir) => {
+  // onOpenDirectory 是左栏目录的完整入口：选中基准并打开可关闭的文件抽屉。
+  // 抽屉自己的文件点击只开 tab，不清掉 drawer，直到用户明确点 X。
+  const openDirectory = (base: BaseDir) => {
     backToWorkbench()
     wb.select(base)
+    setFileDrawer(base)
+    console.debug('shell.directory.open', { project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path })
+  }
+
+  // openWorkbenchItem 是左栏「已打开行」的聚焦入口（onFocusOpenItem）。
+  // focusTab 而不是 open：无会话终端等内容没有去重键，open 会开出第二个 tab。
+  const openWorkbenchItem = (item: OpenItem) => {
+    backToWorkbench()
+    wb.focusTab(item.base, item.group, item.tabId)
+    console.debug('shell.workbench_item.focus', { project: item.base.projectName, machine: item.base.machine, baseKey: item.base.key, groupId: item.group, tabId: item.tabId })
+  }
+
+  // closeOpenItem 是左栏已打开行悬停 × 的关闭入口（onCloseOpenItem）。
+  // 必须与窗格 × 走同一条 beforeCloseTab 守卫：终端会话先确认（关闭即终止）、
+  // 脏草稿先确认（关掉就没）——左栏的 × 只是另一个入口，不是另一条规则。
+  // 放行后 closeById 自己反查坐标收格收组，不依赖 OpenItem 里的 group 快照
+  // （悬停期间布局可能已变）。
+  const closeOpenItem = (item: OpenItem) => {
+    const live = wb.openedItems.find((t) => t.tabId === item.tabId)
+    if (!live) return
+    if (!beforeCloseTab(live.content, live.tabId, live.base)) return
+    wb.closeById(live.tabId)
+    console.debug('shell.workbench_item.close', { project: live.base.projectName, machine: live.base.machine, baseKey: live.base.key, groupId: live.groupId, tabId: live.tabId })
+  }
+
+  // openTerminalAt 是左栏机器行/工作树子行终端钮的入口（基线语义）：
+  // 选中该基准并 openOrFocus 终端——终端无去重键，落进独立新组，不打散当前组。
+  const openTerminalAt = (base: BaseDir) => {
+    backToWorkbench()
+    wb.select(base)
+    wb.openOrFocus({ kind: 'terminal', seq: nextTerminalSeq(wb.wb) }, base)
+    console.debug('shell.directory.terminal.new_group', {
+      project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
+    })
   }
 
   // openTaskTui 是「点一个任务 → 在它所在目录开 TUI tab」的唯一实现。
@@ -433,32 +477,167 @@ export function Shell() {
     if (target === null && treeState.data) {
       target = findBaseOfTask(treeState.data, tasks, taskId)
     }
-    wb.open({ kind: 'tui', taskId }, target ?? undefined)
+    if (target !== null) wb.select(target)
+    wb.openOrFocus({ kind: 'tui', taskId }, target ?? wb.base ?? undefined)
+    console.debug('shell.task.open', {
+      project: target?.projectName ?? '', machine: target?.machine ?? '', baseKey: target?.key ?? '', path: target?.path ?? '', taskId,
+    })
   }
+
+  const selectProject = (project: ProjectNode) => {
+    const location = project.locations.find((loc) => {
+      const machineDown = treeState.data?.machines?.some((machine) => machine.name === loc.machine && !machine.ok) ?? false
+      return loc.probe_error === '' && !machineDown && loc.workspaces.some((ws) => ws.is_main)
+    })
+    const main = location?.workspaces.find((ws) => ws.is_main)
+    if (location && main) wb.select(workspaceBase(project, location.machine, main))
+  }
+
+  const openProjectCards = (project: ProjectNode) => {
+    selectProject(project)
+    navigate(`/cards?project=${encodeURIComponent(project.name)}`)
+    console.debug('shell.project_route', { project: project.name, route: 'cards' })
+  }
+
+  const openProjectCodegraph = (project: ProjectNode) => {
+    selectProject(project)
+    navigate(`/codegraph?project=${encodeURIComponent(project.name)}`)
+    console.debug('shell.project_route', { project: project.name, route: 'codegraph' })
+  }
+
+  const openedItems = useMemo(() => wb.openedItems.map((item) => {
+    const fresh = treeState.data ? findBaseByKey(treeState.data, item.base.key) : null
+    const nextBase = fresh ?? item.base
+    return { ...item, base: nextBase, label: tabTitle(item.content, nextBase.label, taskNameResolver) }
+  }), [wb.openedItems, treeState.data, taskNameResolver])
+
+  // tabRowStatus 是左栏已打开行圆点的状态表（tabId → 终端连接 / 文件问题）。
+  // 数据由各 tab 内容组件经上报缝写入（TerminalTab.onConnection、
+  // FileTab.onStatus——它们是连接与冲突/删除这两件事的第一手知情者），
+  // Shell 只做聚合投影，不自己发请求。缺值的 tab 按健康显示：会话建立中的
+  // 终端不闪红，没读完的文件不闪灰。
+  const [tabRowStatus, setTabRowStatus] = useState<Map<string, { pty?: boolean; file?: 'conflict' | 'deleted' | 'ok' }>>(new Map())
+  const reportPtyConnection = useCallback((tabId: string, connected: boolean) => {
+    setTabRowStatus((prev) => {
+      const cur = prev.get(tabId)
+      if (cur?.pty === connected) return prev
+      const next = new Map(prev)
+      next.set(tabId, { ...cur, pty: connected })
+      return next
+    })
+  }, [])
+  const reportFileStatus = useCallback((tabId: string, file: 'conflict' | 'deleted' | 'ok') => {
+    setTabRowStatus((prev) => {
+      const cur = prev.get(tabId)
+      if (cur?.file === file) return prev
+      const next = new Map(prev)
+      next.set(tabId, { ...cur, file })
+      return next
+    })
+  }, [])
+  // tab 关掉后残值没有消费者，却会无限累积（长会话一天关几十个 tab）。
+  // openedItems 变化时修剪到仍存活的 tabId。
+  const liveTabIds = useMemo(
+    () => new Set(wb.openedItems.map((item) => item.tabId)),
+    [wb.openedItems],
+  )
+  useEffect(() => {
+    setTabRowStatus((prev) => {
+      let dropped = false
+      const next = new Map()
+      for (const [tabId, value] of prev) {
+        if (liveTabIds.has(tabId)) next.set(tabId, value)
+        else dropped = true
+      }
+      return dropped ? next : prev
+    })
+  }, [liveTabIds])
+
+  // openItems 是左栏「已打开行」的投影。顺序 = 组序×列序×格序（即打开顺序），
+  // **不做**「当前基准置顶」：打开一个任务会切基准，置顶分区等于每次打开都把
+  // 左栏洗一次牌（2026-08-29 裁定：顺序固定）。名字统一经 tabTitle + 任务名
+  // resolver——tui 显示任务原名，解析不到（任务已删除）时由 tabTitle 回退
+  // TUI · 前 8 位。terminal/file 行带 tone（终端=连接、文件=文件状态），
+  // tui 行不带——任务状态圆点由 ProjectTree 从任务流取。
+  const openItems: OpenItem[] = useMemo(() => openedItems
+    .filter((item) => item.content.kind !== 'blank')
+    .map((item): OpenItem => {
+      const status = tabRowStatus.get(item.tabId)
+      const tone: StateTone | undefined =
+        item.content.kind === 'terminal'
+          ? (status?.pty === false ? 'failed' : 'active')
+          : item.content.kind === 'file'
+            ? (status?.file === 'deleted' ? 'done'
+              : status?.file === 'conflict' ? 'failed'
+                : item.content.draft !== undefined ? 'intervention' : 'active')
+            : undefined
+      return {
+        key: `${item.base.key}\x1f${item.tabId}`,
+        kind: item.content.kind === 'tui' ? 'tui' : item.content.kind === 'terminal' ? 'terminal' : 'file',
+        name: item.label,
+        taskId: item.content.kind === 'tui' ? item.content.taskId : undefined,
+        machine: item.base.machine,
+        base: item.base,
+        group: item.groupId,
+        tabId: item.tabId,
+        detail: item.content.kind === 'file'
+          ? item.content.rel
+          : item.content.kind === 'terminal'
+            ? item.content.rel
+            : item.content.kind === 'tui'
+              ? item.content.taskId
+              : undefined,
+        tone,
+      }
+    }), [openedItems, tabRowStatus])
 
   // currentTaskId 是当前目录上「最该看的那个任务」，只用于右栏 M 角标的数据源。
   // 一个目录下可能有多个任务，取第一个正在跑的，没有就取第一个——角标是装饰，
   // 选谁都不影响正确性，但要稳定（不随渲染抖动）。
   const currentTaskId = useMemo(() => {
-    if (!wb.base || wb.base.kind !== 'workspace') return null
-    const under = tasks.filter((t) => t.work_dir === wb.base?.path)
+    const taskBase = fileDrawer ?? wb.base
+    if (!taskBase || taskBase.kind !== 'workspace') return null
+    const project = treeState.data?.projects.find((candidate) => candidate.name === taskBase.projectName)
+    if (!project) return null
+    const projectId = project.project_id
+    // 与 ProjectTree.tasksOfWorkspace 保持同一归属口径：空 work_dir 只代表主目录的原地任务，
+    // 不能按非空路径比较，否则主目录文件抽屉拿不到对应 diff。
+    const isMainDirectory = project.locations.some((location) =>
+      location.machine === taskBase.machine && location.workspaces.some((workspace) =>
+        workspace.is_main && workspace.path === taskBase.path,
+      ),
+    )
+    const under = tasks.filter((t) =>
+      t.project_id === projectId && t.machine === taskBase.machine &&
+      (t.work_dir === taskBase.path || (isMainDirectory && t.work_dir === '')),
+    )
     return under.find((t) => t.state === 'running')?.id ?? under[0]?.id ?? null
-  }, [tasks, wb.base])
+  }, [tasks, fileDrawer, wb.base, treeState.data])
 
   // 薄壳里窗口顶部那 28px 是 AppKit 的隐形拖动区（左键被拿去拖窗口，传不到
   // 页面）。与其空着，不如让它承担面包屑那一行的展示职责——面包屑本来就零
   // 交互，落在吞点击的区域里零代价，页面反而省下原来那一整行。
   // 浏览器里 desktop 为 false，这条不渲染，布局与从前一模一样。
   const desktop = isDesktopShell()
+  const focusedBase = focusedPaneBase(wb.wb)
+  // focusedTab：焦点窗格里的 tab 本体。面包屑第三段（内容名）与左栏焦点态共用。
+  const focusedTab = focusedTabOf(wb.wb)
+  // 面包屑第三段跟焦点窗格的内容名（spec §3）：tui=任务原名、file=文件名、
+  // terminal=终端标题；空白窗格或没有焦点内容时不传，行里回落目录名。
+  const crumbTail = focusedBase && focusedTab && focusedTab.content.kind !== 'blank'
+    ? tabTitle(focusedTab.content, focusedBase.label, taskNameResolver)
+    : undefined
+  // focusedTaskId：焦点窗格是 tui 内容时的 taskId，左栏任务行据此画焦点态。
+  const focusedTaskId = focusedTab && focusedTab.content.kind === 'tui' ? focusedTab.content.taskId : null
 
   return (
     <div className="flex h-dvh flex-col bg-background">
-      {desktop && <DesktopTitleBar base={wb.base} />}
+      {desktop && <DesktopTitleBar base={focusedBase} />}
       <div className="flex min-h-0 flex-1">
       {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
           min-h-0 是必须的——flex 子项默认 min-height:auto，缺它内部的
           overflow-y-auto 不会生效，树会把父容器撑高、footer 照样被顶出去 */}
-      <aside role="complementary" className="flex min-h-0 w-[260px] shrink-0 flex-col border-r bg-sidebar">
+      <ResizableSidebar>
         {treeState.sessionExpired && <SessionExpiredBanner />}
         {treeState.disconnected && !treeState.sessionExpired && (
           <DisconnectedBanner message={treeState.errorText} compact />
@@ -470,13 +649,24 @@ export function Shell() {
           <ProjectTree
             tree={treeState.data}
             tasks={tasks}
-            selectedKey={wb.base?.key ?? null}
+            selectedKey={fileDrawer?.key ?? wb.base?.key ?? null}
             ticketCount={tickets.count}
             ticketsByDir={tickets.byWorkDir}
-            onSelectDir={selectDir}
+            openItems={openItems}
+            focusedTaskId={focusedTaskId}
+            onFocusOpenItem={openWorkbenchItem}
+            onCloseOpenItem={closeOpenItem}
+            onOpenTerminalAt={openTerminalAt}
+            onOpenDirectory={openDirectory}
             onOpenTask={openTaskTui}
+            previews={previews}
+            previewMachines={previewsState.data?.machines ?? []}
+            previewOpenKeys={previewsState.openKeys}
+            previewOpeningKeys={previewsState.openingKeys}
+            onOpenPreview={(id, machine) => { void previewsState.open(id, machine).catch(() => {}) }}
             onOpenBoard={() => setOverlay('board')}
             onOpenCards={() => navigate('/cards')}
+            onOpenProjectCards={ledgerEnabled ? openProjectCards : undefined}
             onOpenFlows={() => navigate('/flows')}
             ledgerEnabled={ledgerEnabled}
             cardNeedsCount={cardNeedsCount}
@@ -484,6 +674,7 @@ export function Shell() {
             onOpenTickets={() => setOverlay('tickets')}
             onOpenSettings={() => navigate('/settings')}
             onOpenCodegraph={() => navigate('/codegraph')}
+            onOpenProjectCodegraph={openProjectCodegraph}
             onAddProject={() => setWizardOpen(true)}
             onEdit={(p) => setEditProject(p)}
             onUnregister={onUnregister}
@@ -495,114 +686,135 @@ export function Shell() {
             }}
           />
         )}
-      </aside>
+      </ResizableSidebar>
 
       <div className={`relative flex min-w-0 flex-1 ${cardsRoute ? 'flex-row' : 'flex-col'}`}>
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
-        {wb.base && !desktop && !fullPageRoute && <Breadcrumb base={wb.base} />}
-        <main className="min-h-0 min-w-0 flex-1">
+        {focusedBase && !desktop && !fullPageRoute && <Breadcrumb base={focusedBase} tail={crumbTail} />}
+        <main className="relative min-h-0 flex-1">
+          {/* 工作台常驻。整页路由盖在上面，不走 path="*" 卸载——卸了 xterm
+              会断 WS 再重放 1004h，OpenTUI/Grok 卡死（B270 的病在整页入口复发）。
+              不用 display:none / invisible / pointer-events-none：那些会捏尺寸
+              或让 WKWebView 命中回不来。 */}
+          <div className="h-full">
+            <WorkbenchPage
+              api={wb}
+              onAddProject={() => setWizardOpen(true)}
+              tree={treeState.data}
+              tasks={tasks}
+              taskName={taskNameResolver}
+              onFileCreated={() => setFileTreeNonce((n) => n + 1)}
+              terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
+              launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
+              onBeforeClose={beforeCloseTab}
+              renderContent={(c, base, group, tabId, active = true) => {
+                switch (c.kind) {
+                  case 'terminal': {
+                    const note = ptyNote(base.machine)
+                    if (note !== '') {
+                      return <p className="p-4 text-sm text-muted-foreground">{note}</p>
+                    }
+                    const launcher = c.launcher
+                      ? launchersData?.launchers.find((item) => item.name === c.launcher)
+                      : undefined
+                    return (
+                      <TerminalTab
+                        base={base}
+                        seq={c.seq}
+                        sessionId={c.sessionId}
+                        rel={c.rel}
+                        envFile={launcher?.env_file}
+                        initCommand={c.initCommand ?? launcher?.command}
+                        incompatible={c.incompatible}
+                        active={active && !fullPageRoute}
+                        // 会话 id 必须写回这个 tab：不写回的话切一次 tab
+                        // 就会再建一个会话，用户每切一次多留一个 shell
+                        onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
+                        // 连接状态上报进左栏圆点（绿连红断，2026-08-29）
+                        onConnection={(connected) => reportPtyConnection(tabId, connected)}
+                      />
+                    )
+                  }
+                  case 'file':
+                    return (
+                      <FileTab
+                        base={base}
+                        rel={c.rel}
+                        initial={
+                          c.draft !== undefined && c.baseSha !== undefined
+                            ? { draft: c.draft, baseSha: c.baseSha }
+                            : undefined
+                        }
+                        // 草稿在 pane 常驻时不能等卸载才寄存：分屏切焦点不会卸载
+                        // FileTab，live 缝保证关闭入口能看到最新未保存内容；卸载回调
+                        // 仍保留，覆盖切换 group/整页路由的路径
+                        onDraftChange={(d) =>
+                          wb.setContent(group, tabId, {
+                            kind: 'file',
+                            rel: c.rel,
+                            draft: d?.draft,
+                            baseSha: d?.baseSha,
+                          })
+                        }
+                        onDraftChangeLive={(d) =>
+                          wb.setContent(group, tabId, {
+                            kind: 'file',
+                            rel: c.rel,
+                            draft: d?.draft,
+                            baseSha: d?.baseSha,
+                          })
+                        }
+                        // 冲突/删除上报进左栏圆点（冲突红、删灰；已编辑由
+                        // 草稿有无在 openItems 投影处判，2026-08-29）
+                        onStatus={(status) => reportFileStatus(tabId, status)}
+                      />
+                    )
+                  case 'tui':
+                    return <TuiTab taskId={c.taskId} />
+                  default:
+                    return null
+                }
+              }}
+            />
+          </div>
           <Routes>
             {ledgerEnabled && (
               <>
-                <Route path="/cards" element={<CardsPage onOpenCoordinatorTerminal={openCoordinatorTerminal} />} />
-                <Route path="/flows" element={<FlowsPage />} />
+                <Route path="/cards" element={<FullPageCover><CardsPage onOpenCoordinatorTerminal={openCoordinatorTerminal} /></FullPageCover>} />
+                <Route path="/flows" element={<FullPageCover><FlowsPage /></FullPageCover>} />
               </>
             )}
             <Route
               path="/settings"
-              element={<SettingsPage onClose={() => navigate('/')} />}
+              element={<FullPageCover><SettingsPage onClose={() => navigate('/')} /></FullPageCover>}
             />
             {/* /codegraph 的 viewer 唯一来源是同源 iframe；它不在 Shell 内复制取数或凭据。 */}
             <Route
               path="/codegraph"
-              element={<CodegraphFrame project={wb.base?.projectName ?? ''} />}
+              element={<FullPageCover><CodegraphFrame project={routeParams.get('project') ?? wb.base?.projectName ?? ''} /></FullPageCover>}
             />
             <Route path="/machines" element={<Navigate to="/settings" replace />} />
-            <Route path="/tasks/:id" element={<TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} />} />
-            <Route
-              path="*"
-              element={
-                <WorkbenchPage
-                  api={wb}
-                  onAddProject={() => setWizardOpen(true)}
-                  tree={treeState.data}
-                  tasks={tasks}
-                  onFileCreated={() => setFileTreeNonce((n) => n + 1)}
-                  terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
-                  launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
-                  onBeforeClose={beforeCloseTab}
-                  renderContent={(c, base, group, tabId) => {
-                    switch (c.kind) {
-                      case 'terminal': {
-                        const note = ptyNote(base.machine)
-                        if (note !== '') {
-                          return <p className="p-4 text-sm text-muted-foreground">{note}</p>
-                        }
-                        const launcher = c.launcher
-                          ? launchersData?.launchers.find((item) => item.name === c.launcher)
-                          : undefined
-                        return (
-                          <TerminalTab
-                            base={base}
-                            seq={c.seq}
-                            sessionId={c.sessionId}
-                            rel={c.rel}
-                            envFile={launcher?.env_file}
-                            initCommand={c.initCommand ?? launcher?.command}
-                            incompatible={c.incompatible}
-                            // 会话 id 必须写回这个 tab：不写回的话切一次 tab
-                            // 就会再建一个会话，用户每切一次多留一个 shell
-                            onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}
-                          />
-                        )
-                      }
-                      case 'file':
-                        return (
-                          <FileTab
-                            base={base}
-                            rel={c.rel}
-                            initial={
-                              c.draft !== undefined && c.baseSha !== undefined
-                                ? { draft: c.draft, baseSha: c.baseSha }
-                                : undefined
-                            }
-                            // 草稿必须写回这个 tab：不写回的话切一次 tab 就把改动
-                            // 丢了（WorkbenchPage 只渲染 activeTab，切走即卸载）
-                            onDraftChange={(d) =>
-                              wb.setContent(group, tabId, {
-                                kind: 'file',
-                                rel: c.rel,
-                                draft: d?.draft,
-                                baseSha: d?.baseSha,
-                              })
-                            }
-                          />
-                        )
-                      case 'tui':
-                        return <TuiTab taskId={c.taskId} />
-                      default:
-                        return null
-                    }
-                  }}
-                />
-              }
-            />
+            <Route path="/tasks/:id" element={<FullPageCover><TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} /></FullPageCover>} />
           </Routes>
         </main>
         {ledgerEnabled && <RoomPanel workbench={wb} persistent={cardsRoute} onOpenCard={(id) => navigate(`/cards?card=${encodeURIComponent(id)}`)} />}
       </div>
 
       {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}
-      {wb.base && wb.base.kind === 'workspace' && !fullPageRoute && (
+      {fileDrawer !== null && !fullPageRoute && (
         <div className="w-[280px] shrink-0">
           <FileTree
-            base={wb.base}
+            base={fileDrawer}
             refreshKey={fileTreeNonce}
             taskId={currentTaskId}
-            onOpenFile={(rel) => wb.open({ kind: 'file', rel })}
-            onOpenTerminal={(rel) => wb.openTerminal(undefined, undefined, rel)}
+            onOpenFile={(rel) => wb.open({ kind: 'file', rel }, fileDrawer)}
+            onOpenTerminal={(rel) => wb.openTerminal(fileDrawer, undefined, rel)}
             revealSupported={caps.reveal('')}
+            onClose={() => {
+              setFileDrawer(null)
+              console.debug('shell.directory.close', { project: fileDrawer.projectName, machine: fileDrawer.machine, baseKey: fileDrawer.key, path: fileDrawer.path })
+            }}
           />
         </div>
       )}
@@ -615,7 +827,7 @@ export function Shell() {
           dock={dock}
           onKill={killHomeSession}
           onNewFile={scratchRoot === '' ? undefined : newScratchFile}
-          renderTab={(t) =>
+          renderTab={(t, active = true) =>
             t.kind === 'file' ? (
               <FileTab
                 base={scratchBase(scratchRoot, t.machine)}
@@ -629,10 +841,12 @@ export function Shell() {
               />
             ) : (
               <TerminalTab
+                key={t.id}
                 base={HOME_BASE}
                 seq={t.seq}
                 sessionId={t.sessionId}
                 incompatible={t.incompatible}
+                active={active}
                 onSession={(id) => dock.setSession(t.id, id)}
               />
             )
@@ -670,7 +884,7 @@ export function Shell() {
         description={
           closingGone === true
             ? // 会话已经不在了：没有东西可终止，这一步只是把 tab 收掉
-              '这个终端会话在服务端已经不存在了（agentd 重启会清掉所有会话）。\n' +
+              '这个终端会话在服务端已经不存在了（终端会话跨 agentd 重启存活，只有机器重启、退出 shell 或显式停止才会让它消失）。\n' +
               '关闭只是把这个 tab 收起来，不会再终止什么。'
             : '关闭会终止这个终端会话，里面正在运行的命令会被一并结束。\n' +
               '只是想切走的话直接切到别的 tab——会话会继续在后台跑。' +
@@ -719,6 +933,13 @@ export function Shell() {
       />
     </div>
   )
+}
+
+// FullPageCover 把设置/工作项等整页盖在常驻工作台上。
+// 不透明底 + 更高 z-index，观感仍是「中央换成整页」；工作台在下面保持
+// 原尺寸，避免 xterm 被卸掉或捏成 0。
+function FullPageCover({ children }: { children: ReactNode }) {
+  return <div className="absolute inset-0 z-20 overflow-auto bg-background">{children}</div>
 }
 
 // TaskDeepLink 承接 /tasks/:id 这条 W3b 留下的深链。

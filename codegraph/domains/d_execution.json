@@ -1,0 +1,4 @@
+{
+  "domain": "d_execution",
+  "responsibility": "把任务在执行机上真正跑起来：按统一契约驱动各家模型执行器、把输出收敛成回合协议、承载 detached 进程树并保证残留可回收。"
+}

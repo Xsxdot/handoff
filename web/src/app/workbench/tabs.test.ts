@@ -1,385 +1,285 @@
 import { describe, expect, it, vi } from 'vitest'
 import {
   EMPTY_WORKBENCH,
-  MAX_GROUPS,
   MIN_PANE_PX,
-  activateTab,
+  addColumn,
   availablePaneWidth,
+  closePane,
+  closeGroup,
   closeTab,
+  createGroup,
   dedupKey,
-  isAlreadyOpen,
+  isEmptyWorkbench,
   nextTerminalSeq,
+  openOrFocus,
   openTab,
-  resizeGroups,
-  setTabContent,
-  splitGroup,
-  splitGroupAt,
+  openedWorkbenchItems,
+  placeSource,
+  resizeColumns,
   tabTitle,
-  type Workbench,
+  type BaseDir,
 } from './tabs'
 
+const handoff: BaseDir = {
+  key: '/repo/handoff', kind: 'workspace', path: '/repo/handoff', label: 'main',
+  projectName: 'handoff', machine: '',
+}
+const aim: BaseDir = {
+  key: '/srv/aim@linux-01', kind: 'workspace', path: '/srv/aim', label: 'eval',
+  projectName: 'aim', machine: 'linux-01',
+}
+
 describe('dedupKey', () => {
-  it('文件与 TUI 按目标去重，终端与空白不去重', () => {
-    expect(dedupKey({ kind: 'file', rel: 'go.mod' })).toBe('file:go.mod')
-    expect(dedupKey({ kind: 'tui', taskId: 'T1' })).toBe('tui:T1')
-    expect(dedupKey({ kind: 'terminal', seq: 2 })).toBeNull()
-    expect(dedupKey({ kind: 'blank' })).toBeNull()
-  })
-
-  it('file tab 的去重键只看 rel，草稿不参与——同一个文件不该因为改了字就开出第二个 tab', () => {
-    expect(dedupKey({ kind: 'file', rel: 'a.go', draft: 'x', baseSha: 'h' })).toBe(
-      dedupKey({ kind: 'file', rel: 'a.go' }),
-    )
+  it('按 base key 区分文件，TUI 和有 session 的终端按全局身份去重', () => {
+    expect(dedupKey('/a', { kind: 'file', rel: 'go.mod' })).toBe('file:/a:go.mod')
+    expect(dedupKey('/b', { kind: 'file', rel: 'go.mod' })).toBe('file:/b:go.mod')
+    expect(dedupKey('/a', { kind: 'tui', taskId: 'T1' })).toBe('tui:T1')
+    expect(dedupKey('/a', { kind: 'terminal', seq: 2 })).toBeNull()
+    expect(dedupKey('/a', { kind: 'terminal', seq: 2, sessionId: 'S1' })).toBe('pty:S1')
+    expect(dedupKey('/a', { kind: 'blank' })).toBeNull()
   })
 })
 
-describe('openTab', () => {
-  it('开一个 tab 并自动激活它', () => {
-    const wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'go.mod' })
-    expect(wb.groups[0].tabs).toHaveLength(1)
-    expect(wb.groups[0].activeId).toBe(wb.groups[0].tabs[0].id)
-  })
-
-  it('同身份不重复打开，已存在则激活', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'go.mod' })
-    const firstId = wb.groups[0].tabs[0].id
-    wb = openTab(wb, { kind: 'tui', taskId: 'T1' })
-    wb = openTab(wb, { kind: 'file', rel: 'go.mod' })
-    expect(wb.groups[0].tabs).toHaveLength(2)
-    expect(wb.groups[0].activeId).toBe(firstId)
-  })
-
-  it('终端可以在同一目录开多个', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
-    wb = openTab(wb, { kind: 'terminal', seq: 2 })
-    expect(wb.groups[0].tabs).toHaveLength(2)
-  })
-
-  it('去重跨组生效：另一组已有同身份 tab 时激活它而不是再开一个', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
-    wb = splitGroup(wb)
-    wb = openTab(wb, { kind: 'file', rel: 'a.go' }, 1)
-    wb = openTab(wb, { kind: 'tui', taskId: 'T1' }, 1)
-    expect(wb.groups[0].tabs).toHaveLength(1)
-    expect(wb.groups[1].tabs).toHaveLength(1)
-    expect(wb.active).toBe(0)
-    expect(wb.groups[0].activeId).toBe(wb.groups[0].tabs[0].id)
-  })
-
-  it('tab id 在整个 workbench 内唯一', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
-    wb = splitGroup(wb)
-    wb = openTab(wb, { kind: 'terminal', seq: 2 }, 1)
-    const ids = wb.groups.flatMap((g) => g.tabs.map((t) => t.id))
-    expect(new Set(ids).size).toBe(ids.length)
-  })
-})
-
-describe('closeTab', () => {
-  it('关掉激活 tab 后激活右邻，没有右邻则左邻', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    wb = openTab(wb, { kind: 'file', rel: 'b.go' })
-    wb = openTab(wb, { kind: 'file', rel: 'c.go' })
-    const [a, b, c] = wb.groups[0].tabs
-    wb = activateTab(wb, 0, b.id)
-    wb = closeTab(wb, 0, b.id)
-    expect(wb.groups[0].activeId).toBe(c.id)
-    wb = closeTab(wb, 0, c.id)
-    expect(wb.groups[0].activeId).toBe(a.id)
-  })
-
-  it('关掉非激活 tab 不改变激活项', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    wb = openTab(wb, { kind: 'file', rel: 'b.go' })
-    const [a, b] = wb.groups[0].tabs
-    expect(wb.groups[0].activeId).toBe(b.id)
-    wb = closeTab(wb, 0, a.id)
-    expect(wb.groups[0].activeId).toBe(b.id)
-  })
-
-  it('两组时关掉一组的最后一个 tab，该组消失，另一组占满', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    wb = splitGroup(wb)
-    wb = openTab(wb, { kind: 'file', rel: 'b.go' }, 1)
-    const bId = wb.groups[1].tabs[0].id
-    wb = closeTab(wb, 1, bId)
-    expect(wb.groups).toHaveLength(1)
-    expect(wb.active).toBe(0)
-    expect(wb.groups[0].tabs[0].content).toEqual({ kind: 'file', rel: 'a.go' })
-  })
-
-  it('三组时关空最右一组，焦点接替相邻组而不是跳回最左，sizes 重新等分', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    wb = splitGroup(wb)
-    wb = openTab(wb, { kind: 'file', rel: 'b.go' }, 1)
-    wb = splitGroup(wb)
-    wb = openTab(wb, { kind: 'file', rel: 'c.go' }, 2)
-    const cId = wb.groups[2].tabs[0].id
-
-    wb = closeTab(wb, 2, cId)
-
-    expect(wb.groups).toHaveLength(2)
-    expect(wb.active).toBe(1)
-    expect(wb.sizes).toEqual([1, 1])
-  })
-
-  it('单组时关掉最后一个 tab，组保留但变空', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    wb = closeTab(wb, 0, wb.groups[0].tabs[0].id)
-    expect(wb.groups).toHaveLength(1)
-    expect(wb.groups[0].tabs).toHaveLength(0)
-    expect(wb.groups[0].activeId).toBeNull()
-  })
-})
-
-describe('setTabContent', () => {
-  it('空白 tab 选了种类后原地变成对应内容，位置与 id 不变', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'blank' })
-    const id = wb.groups[0].tabs[0].id
-    wb = setTabContent(wb, 0, id, { kind: 'terminal', seq: 1 })
-    expect(wb.groups[0].tabs).toHaveLength(1)
-    expect(wb.groups[0].tabs[0].id).toBe(id)
-    expect(wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1 })
-  })
-
-  it('选中的目标已在别的 tab 里打开时，合并到那个 tab 并关掉空白 tab', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    const existing = wb.groups[0].tabs[0].id
-    wb = openTab(wb, { kind: 'blank' })
-    const blank = wb.groups[0].tabs[1].id
-    wb = setTabContent(wb, 0, blank, { kind: 'file', rel: 'a.go' })
-    expect(wb.groups[0].tabs).toHaveLength(1)
-    expect(wb.groups[0].activeId).toBe(existing)
-  })
-
-  it('回写内容不抢焦点——这是「点不进新标签页」的根因', () => {
-    // why：setTabContent 是「换这个 tab 的内容」，不是「切到这个 tab」。
-    // 焊在一起的话，FileTab 卸载时回写草稿（Shell.tsx onDraftChange）
-    // 会把焦点从用户刚点开的空白 tab 拽回文件 tab
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'go.mod' })
-    const fileId = wb.groups[0].tabs[0].id
-    wb = openTab(wb, { kind: 'blank' })
-    const blankId = wb.groups[0].tabs[1].id
-    expect(wb.groups[0].activeId).toBe(blankId)
-
-    // 模拟 FileTab 卸载时的草稿回写：写的是**非激活**的那个 tab
-    wb = setTabContent(wb, 0, fileId, { kind: 'file', rel: 'go.mod', draft: 'x', baseSha: 'h' })
-
-    expect(wb.groups[0].activeId).toBe(blankId)
-    expect(wb.groups[0].tabs[0].content).toEqual({
-      kind: 'file',
-      rel: 'go.mod',
-      draft: 'x',
-      baseSha: 'h',
+describe('openTab and openOrFocus', () => {
+  it('不同项目的 TUI 与终端可以落在同一全局组的左右两列', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'B281' })
+    wb = addColumn(wb)
+    const groupId = wb.activeGroupId
+    wb = placeSource(wb, {
+      kind: 'new', base: aim, content: { kind: 'terminal', seq: 1, rel: '' },
+    }, { groupId, column: 1, row: 0, zone: 'center' })
+    expect(wb.groups[0].columns[0].panes[0]).toMatchObject({
+      base: { projectName: 'handoff', machine: '' }, content: { kind: 'tui', taskId: 'B281' },
+    })
+    expect(wb.groups[0].columns[1].panes[0]).toMatchObject({
+      base: { projectName: 'aim', machine: 'linux-01' }, content: { kind: 'terminal', rel: '' },
     })
   })
 
-  it('回写非焦点组的内容不把焦点组抢过去', () => {
-    // why：终端会话 id 回写（Shell.tsx onSession）可能发生在用户已经切到
-    // 另一组之后。next.active 一起改掉的话，分屏时焦点会莫名跳组
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
-    const termId = wb.groups[0].tabs[0].id
-    wb = splitGroup(wb)
-    wb = openTab(wb, { kind: 'blank' }, 1)
-    expect(wb.active).toBe(1)
-
-    wb = setTabContent(wb, 0, termId, { kind: 'terminal', seq: 1, sessionId: 'S1' })
-
-    expect(wb.active).toBe(1)
-    expect(wb.groups[0].tabs[0].content).toEqual({ kind: 'terminal', seq: 1, sessionId: 'S1' })
+  it('普通 open 只在目标 group 的 focus 空 pane 落点', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a.go' })
+    wb = createGroup(wb, '第二组')
+    wb = openTab(wb, aim, { kind: 'tui', taskId: 'T2' }, 'g2')
+    expect(wb.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'file', rel: 'a.go' })
+    expect(wb.groups[1].columns[0].panes[0]?.content).toEqual({ kind: 'tui', taskId: 'T2' })
   })
-})
 
-describe('splitGroup', () => {
-  it('连续分屏到三组封顶，第四次是空操作', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    wb = splitGroup(wb)
+  it('openOrFocus 命中全局已有 tab，不创建新组', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    wb = createGroup(wb, '第二组')
+    const before = wb.groups.length
+    wb = openOrFocus(wb, handoff, { kind: 'tui', taskId: 'A' })
+    expect(wb.groups).toHaveLength(before)
+    expect(wb.activeGroupId).toBe('g1')
+    expect(wb.groups[0].focus).toEqual([0, 0])
+  })
+
+  it('未命中 openOrFocus 新建组，且新 Tab 自带 BaseDir', () => {
+    const wb = openOrFocus(EMPTY_WORKBENCH, aim, { kind: 'tui', taskId: 'new' })
     expect(wb.groups).toHaveLength(2)
-    expect(wb.active).toBe(1)
-    wb = splitGroup(wb)
-    expect(wb.groups).toHaveLength(3)
-    expect(wb.active).toBe(2)
-    // 到顶时原样返回同一个对象引用：调用方据此可以跳过一次无谓的 setState
-    const again = splitGroup(wb)
-    expect(again).toBe(wb)
+    expect(wb.groups[1].columns[0].panes[0]).toMatchObject({ base: aim })
   })
 
-  it('每次分屏后 sizes 与 groups 等长且等分', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    expect(wb.sizes).toEqual([1])
-    wb = splitGroup(wb)
-    expect(wb.sizes).toEqual([1, 1])
-    wb = splitGroup(wb)
-    expect(wb.sizes).toEqual([1, 1, 1])
+  it('没有列数上限，连续加列仍保留每列最小宽度所需的权重', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'terminal', seq: 1 })
+    wb = addColumn(wb)
+    wb = addColumn(wb)
+    wb = addColumn(wb)
+    expect(wb.groups[0].columns).toHaveLength(4)
+    expect(wb.groups[0].sizes).toEqual([1, 1, 1, 1])
   })
 })
 
-describe('splitGroupAt', () => {
-  it('在指定下标处插入空栏并聚焦它', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
-    wb = splitGroupAt(wb, 0)
-    expect(wb.groups).toHaveLength(2)
-    expect(wb.groups[0].tabs).toHaveLength(0)   // 新栏插在最前
-    expect(wb.groups[1].tabs).toHaveLength(1)   // 原来那栏被推到后面
-    expect(wb.active).toBe(0)
+describe('placeSource', () => {
+  it('一列最多上下两格，第三次上下投放替换目标格', () => {
+    const baseA: BaseDir = { key: '/a', kind: 'workspace', path: '/a', label: 'a', projectName: 'A', machine: '' }
+    const baseB: BaseDir = { key: '/b', kind: 'workspace', path: '/b', label: 'b', projectName: 'B', machine: '' }
+    let wb = openTab(EMPTY_WORKBENCH, baseA, { kind: 'tui', taskId: 'A' })
+    const groupId = wb.activeGroupId
+    wb = placeSource(wb, { kind: 'new', base: baseB, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId, column: 0, row: 0, zone: 'bottom',
+    })
+    wb = placeSource(wb, { kind: 'new', base: baseA, content: { kind: 'tui', taskId: 'C' } }, {
+      groupId, column: 0, row: 1, zone: 'bottom',
+    })
+    expect(wb.groups[0].columns[0].panes).toHaveLength(2)
+    expect(wb.groups[0].columns[0].panes[1]).toMatchObject({ content: { kind: 'tui', taskId: 'C' } })
   })
 
-  it('插到末尾等价于 splitGroup', () => {
-    const wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
-    expect(splitGroupAt(wb, wb.groups.length)).toEqual(splitGroup(wb))
+  it('跨列 center 拖走 tab 后移除空源列并替换目标 pane', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    wb = placeSource(wb, { kind: 'new', base: aim, content: { kind: 'terminal', seq: 1 } }, {
+      groupId: 'g1', column: 0, row: 0, zone: 'right',
+    })
+    const tab = wb.groups[0].columns[0].panes[0]
+    expect(tab).not.toBeNull()
+    wb = placeSource(wb, { kind: 'tab', groupId: 'g1', tabId: tab!.id }, {
+      groupId: 'g1', column: 1, row: 0, zone: 'center',
+    })
+    expect(wb.groups[0].columns).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes[0]).toMatchObject({ content: { kind: 'tui', taskId: 'A' } })
   })
 
-  it('下标越界时夹到合法范围，不抛错', () => {
-    const wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
-    expect(splitGroupAt(wb, -5).groups).toHaveLength(2)
-    expect(splitGroupAt(wb, 99).groups).toHaveLength(2)
-    expect(splitGroupAt(wb, -5).groups[0].tabs).toHaveLength(0)
-    expect(splitGroupAt(wb, 99).groups[1].tabs).toHaveLength(0)
-  })
+  it('源列仍有另一格时跨列拖动不递减未移除的源列索引', () => {
+    const baseB: BaseDir = { key: '/b', kind: 'workspace', path: '/b', label: 'b', projectName: 'B', machine: '' }
+    const baseC: BaseDir = { key: '/c', kind: 'workspace', path: '/c', label: 'c', projectName: 'C', machine: '' }
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    wb = placeSource(wb, { kind: 'new', base: baseB, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId: 'g1', column: 0, row: 0, zone: 'bottom',
+    })
+    const moved = wb.groups[0].columns[0].panes[1]!
+    wb = addColumn(wb)
+    wb = placeSource(wb, { kind: 'new', base: baseC, content: { kind: 'tui', taskId: 'C' } }, {
+      groupId: 'g1', column: 1, row: 0, zone: 'center',
+    })
+    wb = placeSource(wb, { kind: 'tab', groupId: 'g1', tabId: moved.id }, {
+      groupId: 'g1', column: 1, row: 0, zone: 'center',
+    })
 
-  it('已到 MAX_GROUPS 时原样返回同一个对象', () => {
-    let wb = EMPTY_WORKBENCH
-    while (wb.groups.length < MAX_GROUPS) wb = splitGroup(wb)
-    expect(splitGroupAt(wb, 1)).toBe(wb)
-  })
-
-  it('sizes 与 groups 等长这条不变式在插入后仍成立', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
-    wb = splitGroupAt(wb, 0)
-    wb = splitGroupAt(wb, 1)
-    expect(wb.sizes).toHaveLength(wb.groups.length)
+    expect(wb.groups[0].columns).toHaveLength(2)
+    expect(wb.groups[0].columns[0].panes[0]).toMatchObject({ content: { kind: 'tui', taskId: 'A' } })
+    expect(wb.groups[0].columns[0].panes[1]).toBeNull()
+    expect(wb.groups[0].columns[1].panes[0]).toMatchObject({ content: { kind: 'tui', taskId: 'B' } })
   })
 })
 
-describe('resizeGroups', () => {
-  // 两栏起手：sizes 是 [1, 1]，总和 2，各占一半
-  const twoGroups = () => splitGroup(openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' }))
-
-  it('分隔条右移，左栏变宽右栏变窄，权重总和不变', () => {
-    const wb = resizeGroups(twoGroups(), 0, 0.1, 0.2)
-    expect(wb.sizes[0]).toBeCloseTo(1.2)
-    expect(wb.sizes[1]).toBeCloseTo(0.8)
-    expect(wb.sizes[0] + wb.sizes[1]).toBeCloseTo(2)
+describe('group lifecycle and projection', () => {
+  it('关闭 pane 收列、收组，唯一组只重置为空组', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    const groupId = wb.activeGroupId
+    wb = addColumn(wb)
+    wb = placeSource(wb, { kind: 'new', base: aim, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId, column: 1, row: 0, zone: 'center',
+    })
+    wb = closeTab(wb, groupId, 't1')
+    expect(wb.groups[0].columns).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes[0]).toMatchObject({ content: { kind: 'tui', taskId: 'B' } })
+    wb = closeTab(wb, groupId, 't2')
+    expect(wb.groups).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes).toEqual([null])
+    expect(wb.activeGroupId).toBe(groupId)
   })
 
-  it('拖过头时夹在 minRatio，不把一栏压成一条缝', () => {
-    // 从各占 0.5 出发想推 0.9 过去，右栏会变成 -0.4——必须被夹回 0.2
-    const wb = resizeGroups(twoGroups(), 0, 0.9, 0.2)
-    const total = wb.sizes[0] + wb.sizes[1]
-    expect(wb.sizes[1] / total).toBeCloseTo(0.2)
-    expect(wb.sizes[0] / total).toBeCloseTo(0.8)
+  it('空 pane 也可关，关闭非法坐标不改变布局', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    wb = placeSource(wb, { kind: 'new', base: aim, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId: 'g1', column: 0, row: 0, zone: 'bottom',
+    })
+    wb = closePane(wb, 'g1', 0, 1)
+    expect(wb.groups[0].columns[0].panes).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'tui', taskId: 'A' })
+    const before = wb
+    expect(closePane(wb, 'g1', 9, 0)).toBe(before)
   })
 
-  it('已经贴着下限还继续往同一方向拖，是空操作（返回同一个对象）', () => {
-    const wb = resizeGroups(twoGroups(), 0, 0.9, 0.2)
-    expect(resizeGroups(wb, 0, 0.5, 0.2)).toBe(wb)
+  it('关闭仍有内容时也压缩残留空列并重映射焦点', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'tui', taskId: 'A' })
+    const groupId = wb.activeGroupId
+    wb = addColumn(wb)
+    wb = placeSource(wb, { kind: 'new', base: aim, content: { kind: 'tui', taskId: 'B' } }, {
+      groupId, column: 1, row: 0, zone: 'center',
+    })
+    wb = addColumn(wb)
+
+    wb = closePane(wb, groupId, 0, 0)
+
+    expect(wb.groups[0].columns).toHaveLength(1)
+    expect(wb.groups[0].columns[0].panes[0]?.content).toEqual({ kind: 'tui', taskId: 'B' })
+    expect(wb.groups[0].focus).toEqual([0, 0])
   })
 
-  it('容器窄到两栏都放不下 minRatio 时，拒绝改动而不是算出负宽度', () => {
-    const wb = twoGroups()
-    expect(resizeGroups(wb, 0, 0.1, 0.6)).toBe(wb)
+  it('closeGroup 最后一组重置为空组', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
+    const groupId = wb.activeGroupId
+    wb = closeGroup(wb, groupId)
+    expect(wb.groups).toHaveLength(1)
+    expect(wb.activeGroupId).toBe('g1')
   })
 
-  it('越界的 dividerIndex 是空操作并留下一条 warn', () => {
+  it('openedWorkbenchItems 返回全局坐标与带 base 的内容', () => {
+    const wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'README.md' })
+    expect(openedWorkbenchItems(wb)).toEqual([expect.objectContaining({
+      tabId: 't1', groupId: 'g1', column: 0, row: 0, base: handoff, label: 'README.md',
+    })])
+  })
+})
+
+describe('resize and helpers', () => {
+  it('只调整同一 group 的相邻 column', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
+    wb = addColumn(wb)
+    wb = resizeColumns(wb, 'g1', 0, 0.1, 0.2)
+    expect(wb.groups[0].sizes[0]).toBeCloseTo(1.2)
+    expect(wb.groups[0].sizes[1]).toBeCloseTo(0.8)
+  })
+
+  it('min*2 超过两栏现有份额时不再整体早退，仍夹紧到可行解', () => {
+    // 三列窄窗口：minRatio=0.45 时两栏最小和 0.9 > 现有 0.67，现状直接早退
+    // 返回原对象（容器只能横滑）；新行为把两栏夹到可行解，右栏=下限，左栏拿余量
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
+    wb = addColumn(wb)
+    wb = addColumn(wb)
+    const before = wb
+    const next = resizeColumns(wb, 'g1', 0, -0.3, 0.45)
+    expect(next).not.toBe(before)
+    expect(next.groups[0].sizes).toHaveLength(3)
+    expect(next.groups[0].sizes[1] / 3).toBeCloseTo(0.45)
+    expect(next.groups[0].sizes[0] + next.groups[0].sizes[1]).toBeCloseTo(2)
+    expect(next.groups[0].sizes[2]).toBe(1)
+  })
+
+  it('单侧夹紧保留：delta 把一栏压穿下限时该栏停在下限', () => {
+    let wb = openTab(EMPTY_WORKBENCH, handoff, { kind: 'file', rel: 'a' })
+    wb = addColumn(wb)
+    const next = resizeColumns(wb, 'g1', 0, -0.45, 0.45)
+    expect(next.groups[0].sizes[0] / 2).toBeCloseTo(0.45)
+    expect(next.groups[0].sizes[1] / 2).toBeCloseTo(0.55)
+  })
+
+  it('非法目标记录上下文并返回原对象', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
-    const wb = twoGroups()
-    expect(resizeGroups(wb, 1, 0.1, 0.2)).toBe(wb)
+    expect(placeSource(EMPTY_WORKBENCH, { kind: 'new', base: handoff, content: { kind: 'blank' } }, {
+      groupId: 'missing', column: 0, row: 0, zone: 'center',
+    })).toBe(EMPTY_WORKBENCH)
     expect(warn).toHaveBeenCalled()
     warn.mockRestore()
   })
 
-  it('三栏拖到底时，扣除两条 5px 分隔条后被挤栏仍至少 240px', () => {
-    const containerWidth = 1060
-    const paneWidth = availablePaneWidth(containerWidth, [5, 5])
-    expect(paneWidth).toBe(1050)
-
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'file', rel: 'a.go' })
-    wb = splitGroup(wb)
-    wb = splitGroup(wb)
-    wb = resizeGroups(wb, 1, 1, MIN_PANE_PX / paneWidth)
-
-    const total = wb.sizes.reduce((a, b) => a + b, 0)
-    const squeezedPanePx = (wb.sizes[2] / total) * paneWidth
-    expect(squeezedPanePx).toBeGreaterThanOrEqual(MIN_PANE_PX)
-    expect(squeezedPanePx).toBeCloseTo(MIN_PANE_PX)
-  })
-})
-
-describe('nextTerminalSeq', () => {
-  it('从 1 起，跨组取最大值 +1', () => {
+  it('空工作台、序号、宽度与标题保持契约', () => {
+    expect(isEmptyWorkbench(EMPTY_WORKBENCH)).toBe(true)
     expect(nextTerminalSeq(EMPTY_WORKBENCH)).toBe(1)
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
-    wb = splitGroup(wb)
-    wb = openTab(wb, { kind: 'terminal', seq: 4 }, 1)
-    expect(nextTerminalSeq(wb)).toBe(5)
+    expect(availablePaneWidth(1060, [5, 5])).toBe(1050)
+    expect(MIN_PANE_PX).toBe(240)
+    expect(tabTitle({ kind: 'terminal', seq: 2 }, 'main')).toBe('bash · main (2)')
   })
 })
 
-describe('tabTitle', () => {
-  it('终端带基准目录名，文件取路径末段，TUI 带短 id，空白是「新建标签页」', () => {
-    expect(tabTitle({ kind: 'terminal', seq: 2 }, 'b2-b3')).toBe('bash · b2-b3 (2)')
-    expect(tabTitle({ kind: 'terminal', seq: 1 }, 'b2-b3')).toBe('bash · b2-b3')
-    expect(tabTitle({ kind: 'file', rel: 'internal/agentd/server.go' }, 'b2-b3')).toBe('server.go')
-    expect(tabTitle({ kind: 'tui', taskId: '7ec762e7-3bd2-412c-a39c-e4cf8b4057ad' }, 'b2-b3')).toBe('TUI · 7ec762e7')
-    expect(tabTitle({ kind: 'blank' }, 'b2-b3')).toBe('新建标签页')
+describe('tabTitle with task name resolver', () => {
+  it('tui 用 resolver 解析出的任务原名', () => {
+    expect(tabTitle({ kind: 'tui', taskId: 'f22ed520abc' }, 'handoff', () => '审 B264')).toBe('审 B264')
   })
 
-  it('启动项终端标题使用启动项名字', () => {
-    expect(tabTitle({ kind: 'terminal', seq: 3, launcher: '跑测试' }, 'main')).toBe('跑测试')
+  it('resolver 返回 undefined 或空串时回退 TUI · 前 8 位', () => {
+    expect(tabTitle({ kind: 'tui', taskId: 'f22ed520abc' }, 'handoff', () => undefined)).toBe('TUI · f22ed520')
+    expect(tabTitle({ kind: 'tui', taskId: 'f22ed520abc' }, 'handoff', () => '')).toBe('TUI · f22ed520')
+  })
+
+  it('不传 resolver 时保持现状格式（回归）', () => {
+    expect(tabTitle({ kind: 'tui', taskId: 'f22ed520abc' }, 'handoff')).toBe('TUI · f22ed520')
+  })
+
+  it('terminal 与 file 标题不因 resolver 改变', () => {
+    expect(tabTitle({ kind: 'terminal', seq: 2 }, 'main', () => '审 B264')).toBe('bash · main (2)')
+    expect(tabTitle({ kind: 'file', rel: 'web/src/app/go.mod' }, 'main', () => '审 B264')).toBe('go.mod')
   })
 })
 
-// 不可变性：所有写入函数都必须返回新对象，否则 React 不会重渲染
-describe('不可变性', () => {
-  it('openTab 不修改入参', () => {
-    const before: Workbench = EMPTY_WORKBENCH
-    const after = openTab(before, { kind: 'blank' })
-    expect(before.groups[0].tabs).toHaveLength(0)
+describe('immutability', () => {
+  it('写入不修改入参', () => {
+    const before = EMPTY_WORKBENCH
+    const after = openTab(before, handoff, { kind: 'blank' })
+    expect(before.groups[0].columns[0].panes).toEqual([null])
     expect(after).not.toBe(before)
-  })
-})
-
-describe('终端 tab 的会话身份', () => {
-  it('还没建出会话的终端仍然永不去重——再点一次就是真的想要第二个', () => {
-    expect(dedupKey({ kind: 'terminal', seq: 1 })).toBeNull()
-    expect(dedupKey({ kind: 'terminal', seq: 2 })).toBeNull()
-  })
-
-  it('已有会话 id 的终端按会话去重：刷新恢复不该长出两个同一会话的 tab', () => {
-    expect(dedupKey({ kind: 'terminal', seq: 1, sessionId: 'abc' })).toBe('pty:abc')
-  })
-
-  it('重复 openTab 同一个会话只得到一个 tab', () => {
-    let wb = EMPTY_WORKBENCH
-    wb = openTab(wb, { kind: 'terminal', seq: 1, sessionId: 'abc' })
-    wb = openTab(wb, { kind: 'terminal', seq: 2, sessionId: 'abc' })
-    expect(wb.groups[0].tabs).toHaveLength(1)
-  })
-
-  it('不同会话各占一个 tab', () => {
-    let wb = EMPTY_WORKBENCH
-    wb = openTab(wb, { kind: 'terminal', seq: 1, sessionId: 'a' })
-    wb = openTab(wb, { kind: 'terminal', seq: 2, sessionId: 'b' })
-    expect(wb.groups[0].tabs).toHaveLength(2)
-  })
-
-  it('nextTerminalSeq 不受 sessionId 影响', () => {
-    let wb = EMPTY_WORKBENCH
-    wb = openTab(wb, { kind: 'terminal', seq: 1, sessionId: 'a' })
-    expect(nextTerminalSeq(wb)).toBe(2)
-  })
-})
-
-describe('isAlreadyOpen', () => {
-  it('认得出另一组里已经开着的同身份 tab', () => {
-    let wb = openTab(EMPTY_WORKBENCH, { kind: 'tui', taskId: 'T1' })
-    wb = splitGroup(wb)
-    expect(isAlreadyOpen(wb, { kind: 'tui', taskId: 'T1' })).toBe(true)
-    expect(isAlreadyOpen(wb, { kind: 'tui', taskId: 'T2' })).toBe(false)
-  })
-
-  it('永不去重的内容恒为 false——没有会话的终端本来就该开出第二个', () => {
-    const wb = openTab(EMPTY_WORKBENCH, { kind: 'terminal', seq: 1 })
-    expect(isAlreadyOpen(wb, { kind: 'terminal', seq: 2 })).toBe(false)
   })
 })

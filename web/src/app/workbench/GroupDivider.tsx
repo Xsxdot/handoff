@@ -6,7 +6,7 @@
 //
 // 边界：
 //   - **不认识分栏模型**：不知道自己是第几条、两侧是谁、有没有到下限。它只报
-//     「移动了多少」，夹紧与分配都在 tabs.ts 的 resizeGroups 里
+//     「移动了多少」，夹紧与分配都在 tabs.ts 的 resizeColumns 里
 //   - 不持有宽度状态：宽度的唯一真相在 Workbench.sizes
 //
 // 为什么量的是 parentElement 的宽度：分隔条自己只有 5px，换算比例要的是**容器**
@@ -56,7 +56,7 @@ export function GroupDivider({ onResize }: GroupDividerProps) {
       onPointerMove={(e) => {
         const d = drag.current
         if (d === null) return
-        // 派发**增量**而不是「相对起点的总位移」：增量在被 resizeGroups 夹住之后
+        // 派发**增量**而不是「相对起点的总位移」：增量在被 resizeColumns 夹住之后
         // 不会累积出一个看不见的欠账，往回拖立刻就有反应
         if (d.width > 0) onResize((e.clientX - d.lastX) / d.width, d.width)
         d.lastX = e.clientX

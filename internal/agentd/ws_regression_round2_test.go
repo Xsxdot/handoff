@@ -30,6 +30,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 const wsTestToken = "ws-test-token"
@@ -93,18 +94,18 @@ func newWSTestEnvWithSockBuf(t *testing.T, sockBuf int) *wsTestEnv {
 		env.truncationDiagnosed <- verdict
 	}
 	if sockBuf <= 0 {
-		env.ts = httptest.NewServer(env.srv.Handler())
+		env.ts = testhttp.NewServer(t, env.srv.Handler())
 	} else {
 		// 换掉 httptest 自带的 listener：accept 出来的每条连接都在交给 http.Server
 		// 之前把发送缓冲调小。SetWriteBuffer 是 net 包的可移植封装（底层 SO_SNDBUF），
 		// 不用 syscall——GOOS=windows go vet ./... 连测试文件一起看，platform split
 		// 会在那道门上现形。
-		ts := httptest.NewUnstartedServer(env.srv.Handler())
+		ts := testhttp.NewUnstartedServer(t, env.srv.Handler())
 		ts.Listener = &sockBufListener{Listener: ts.Listener, writeBuf: sockBuf}
 		ts.Start()
+		testhttp.ConfigureClient(ts.Client())
 		env.ts = ts
 	}
-	t.Cleanup(env.ts.Close)
 	return env
 }
 
@@ -137,7 +138,7 @@ func (e *wsTestEnv) dialWS(t *testing.T, taskID string, fromSeq int64) *websocke
 	}
 	if e.sockBuf > 0 {
 		buf := e.sockBuf
-		opts.HTTPClient = &http.Client{Transport: &http.Transport{
+		httpClient := &http.Client{Transport: &http.Transport{
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 				c, err := (&net.Dialer{}).DialContext(ctx, network, addr)
 				if err != nil {
@@ -149,6 +150,8 @@ func (e *wsTestEnv) dialWS(t *testing.T, taskID string, fromSeq int64) *websocke
 				return c, nil
 			},
 		}}
+		testhttp.ConfigureClient(httpClient)
+		opts.HTTPClient = httpClient
 	}
 	conn, _, err := websocket.Dial(context.Background(), url, opts)
 	if err != nil {

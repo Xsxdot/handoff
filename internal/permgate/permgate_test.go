@@ -69,9 +69,11 @@ func TestJudgeSafeCommandRejectsMimicsAndConnectors(t *testing.T) {
 
 func TestJudgeUnknownGraphSubcommandFailsClosed(t *testing.T) {
 	g := newTestGate(t)
-	v := g.Judge(Request{Tool: "bash", Command: "handoff graph inspect --doc docs/spec.md"}, Scope{Workdir: t.TempDir()})
-	if v.Action != Escalate || v.Rule != RuleSelfCommand {
-		t.Fatalf("unknown graph subcommand verdict = %#v, want Escalate/self-command", v)
+	for _, sub := range []string{"resolve", "inspect"} {
+		v := g.Judge(Request{Tool: "bash", Command: "handoff graph " + sub + " --doc docs/spec.md"}, Scope{Workdir: t.TempDir()})
+		if v.Action != Escalate || v.Rule != RuleSelfCommand {
+			t.Fatalf("removed graph subcommand %s verdict = %#v, want Escalate/self-command", sub, v)
+		}
 	}
 }
 

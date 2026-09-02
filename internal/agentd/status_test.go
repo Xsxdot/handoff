@@ -158,6 +158,17 @@ func TestStatusTaskCountsAlwaysHaveSixKeys(t *testing.T) {
 	}
 }
 
+func TestStatusReportsWebEmbeddedStubOverHTTP(t *testing.T) {
+	env := newStatusEnv(t, &probeStub{alive: true})
+	got := env.getStatus(t)
+	if got.WebEmbedded == nil {
+		t.Fatal("默认构建的真实 /api/status 必须带 web_embedded=false")
+	}
+	if *got.WebEmbedded {
+		t.Fatal("默认构建不应报告已嵌入 Web 控制台")
+	}
+}
+
 // 探活为 alive 时 Live=alive、Note 为空。
 func TestStatusProbeAlive(t *testing.T) {
 	env := newStatusEnv(t, &probeStub{alive: true})

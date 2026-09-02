@@ -1,11 +1,17 @@
 import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Terminal } from '@xterm/xterm'
 import { TerminalTab } from './TerminalTab'
 import type { BaseDir } from './useWorkbench'
 
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身：本测试关心的是
 // 「什么时候建会话、拿什么参数连、收到帧之后往终端写什么」，
 // 不是 xterm 自己的渲染——那是上游的测试职责。
+let termOnData: ((d: string) => void) | undefined
+// osc52Handler 收着组件注册的 OSC 52 回调，测试直接喂它来驱动各道门。
+let osc52Handler: ((data: string) => boolean) | undefined
+// writeText 替身：clipboard 写入的观测点（jsdom 没有 navigator.clipboard）。
+const writeText = vi.fn(() => Promise.resolve())
 const termInstance = {
   cols: 100,
   rows: 30,
@@ -14,10 +20,28 @@ const termInstance = {
   writeln: vi.fn(),
   clear: vi.fn(),
   focus: vi.fn(),
+  blur: vi.fn(),
   dispose: vi.fn(),
   loadAddon: vi.fn(),
-  onData: vi.fn(),
+  refresh: vi.fn(),
+  input: vi.fn(),
+  buffer: { active: { type: 'normal' as 'normal' | 'alternate' } },
+  modes: {
+    mouseTrackingMode: 'none' as 'none' | 'x10' | 'vt200' | 'drag' | 'any',
+    sendFocusMode: false,
+  },
+  onData: vi.fn((cb: (d: string) => void) => {
+    termOnData = cb
+    return { dispose: vi.fn() }
+  }),
   onResize: vi.fn(),
+  attachCustomWheelEventHandler: vi.fn(),
+  parser: {
+    registerOscHandler: vi.fn((ident: number, cb: (data: string) => boolean) => {
+      if (ident === 52) osc52Handler = cb
+      return { dispose: vi.fn() }
+    }),
+  },
 }
 // Terminal 用常规 function 而不是箭头函数：组件以 `new Terminal(...)` 实例化它，
 // 箭头函数不是构造函数，`new` 会直接抛 TypeError。function 是构造的，且 `new`
@@ -61,10 +85,18 @@ beforeAll(() => {
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
+  // jsdom 没有 navigator.clipboard，defineProperty 可覆盖只读属性
+  Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
 })
 
 beforeEach(() => {
   vi.clearAllMocks()
+  termOnData = undefined
+  osc52Handler = undefined
+  writeText.mockClear()
+  termInstance.buffer.active.type = 'normal'
+  termInstance.modes.mouseTrackingMode = 'none'
+  termInstance.modes.sendFocusMode = false
   roCallbacks.length = 0
   createPtySession.mockResolvedValue({ id: 'new-1', base_path: WS.path })
   deletePtySession.mockResolvedValue({ ok: true })
@@ -72,6 +104,12 @@ beforeEach(() => {
 })
 
 describe('TerminalTab', () => {
+  it('终端只提供 pty host，不重复渲染基准路径标题', () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    expect(screen.getByTestId('pty-host')).toBeInTheDocument()
+    expect(screen.queryByText(WS.path)).toBeNull()
+  })
+
   it('没有会话 id 时先建会话，参数取自基准目录与当前尺寸', async () => {
     render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
     await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
@@ -79,6 +117,10 @@ describe('TerminalTab', () => {
       { base_kind: 'workspace', base_path: '/home/dev/handoff', cols: 100, rows: 30 },
       '',
     )
+    expect(Terminal).toHaveBeenCalledWith(expect.objectContaining({
+      macOptionIsMeta: true,
+      macOptionClickForcesSelection: true,
+    }))
   })
 
   it('启动项字段写入建会话请求，普通终端不增加字段', async () => {
@@ -103,6 +145,44 @@ describe('TerminalTab', () => {
     const onSession = vi.fn()
     render(<TerminalTab base={WS} seq={1} onSession={onSession} />)
     await waitFor(() => expect(onSession).toHaveBeenCalledWith('new-1'))
+  })
+
+  it('连接状态上报：open 报连接、closed 报断开，connecting 不喊（2026-08-29 左栏圆点缝）', async () => {
+    const onConnection = vi.fn()
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} onConnection={onConnection} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0]
+    // 建立中的一瞬不上报：消费方按「连接」显示，不闪红
+    opts.onStatus('connecting')
+    expect(onConnection).not.toHaveBeenCalled()
+    opts.onStatus('open')
+    expect(onConnection).toHaveBeenCalledWith(true)
+    opts.onStatus('closed')
+    expect(onConnection).toHaveBeenCalledWith(false)
+    // 重连成功再报连接
+    opts.onStatus('open')
+    expect(onConnection).toHaveBeenLastCalledWith(true)
+  })
+
+  it('退出与判死上报断开；同值不重复喊（去重）', async () => {
+    const onConnection = vi.fn()
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} onConnection={onConnection} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0]
+    opts.onStatus('open')
+    expect(onConnection).toHaveBeenCalledWith(true)
+    opts.onExit(7)
+    expect(onConnection).toHaveBeenLastCalledWith(false)
+    const callsAfterExit = onConnection.mock.calls.length
+    // 已经是断开态，判死不再制造一次重复上报
+    opts.onTerminal({ message: '终端会话不存在', closeCode: 1008 })
+    expect(onConnection.mock.calls.length).toBe(callsAfterExit)
+  })
+
+  it('未传 onConnection 时无行为（浮窗等宿主不受影响）', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    expect(() => connectPty.mock.calls[0][0].onStatus('closed')).not.toThrow()
   })
 
   it('已有会话 id 时直接接流，不再建第二个会话', async () => {
@@ -240,6 +320,409 @@ describe('TerminalTab', () => {
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     unmount()
     expect(deletePtySession).not.toHaveBeenCalled()
+  })
+
+  it('xterm 的设备回包不上送 PTY——那是查询应答，不是用户按键', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    expect(termOnData).toBeTypeOf('function')
+    termOnData!('\x1b[>0;276;0c')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('backlog_bytes 为 0 时设备回包上送——新终端没有旧录像', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn(), debug: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
+    }
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    termOnData!('\x1b[>0;276;0c')
+    expect(new TextDecoder().decode(send.mock.calls[0][0])).toBe('\x1b[>0;276;0c')
+  })
+
+  it('缺 backlog_bytes 时设备回包仍不上送——旧服务端维持全丢', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn(), debug: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
+    }
+    opts.onAttached({ since: 0, truncated: false })
+    termOnData!('\x1b[>0;276;0c')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('回放字节未灌完时 DA 不上送，灌完且 write 回调之后才上送', async () => {
+    const send = vi.fn()
+    let writeCb: (() => void) | undefined
+    termInstance.write.mockImplementation((_data: unknown, cb?: () => void) => {
+      writeCb = cb
+    })
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn(), debug: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
+      onData: (bytes: Uint8Array) => void
+    }
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 4 })
+    opts.onData(new TextEncoder().encode('abcd'))
+    termOnData!('\x1b[>0;276;0c')
+    expect(send).not.toHaveBeenCalled()
+    writeCb?.()
+    send.mockClear()
+    termOnData!('\x1b[>0;276;0c')
+    expect(new TextDecoder().decode(send.mock.calls[0][0])).toBe('\x1b[>0;276;0c')
+  })
+
+  it('backlog_bytes 为 0 时 [I]/[O] 仍然不上送', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn(), debug: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean; backlog_bytes?: number }) => void
+    }
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    termOnData!('\x1b[O')
+    termOnData!('\x1b[I')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('用户按键仍然上送', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    termOnData!('ls\r')
+    expect(send).toHaveBeenCalledTimes(1)
+    expect(new TextDecoder().decode(send.mock.calls[0][0])).toBe('ls\r')
+  })
+
+  it('alt-screen 鼠标追踪：按像素连发指针格子上的 SGR，不改方向键', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800, height: 480, x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 480,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: { deltaY: number; clientX: number; clientY: number }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    expect(handler({ deltaY: -80, clientX: 50, clientY: 50 })).toBe(false)
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[<64;7;4M'.repeat(5))
+    spy.mockRestore()
+  })
+
+  it('Option（Mac 划词）时不拦截滚轮', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: {
+      deltaY: number; altKey?: boolean; shiftKey?: boolean; deltaX?: number
+      clientX?: number; clientY?: number
+    }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    const mac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent)
+    if (mac) {
+      expect(handler({ deltaY: -160, altKey: true, clientX: 50, clientY: 50 })).toBe(true)
+      expect(termInstance.input).not.toHaveBeenCalled()
+    } else {
+      expect(handler({ deltaY: -16, shiftKey: true, clientX: 50, clientY: 50 })).toBe(true)
+      expect(termInstance.input).not.toHaveBeenCalled()
+    }
+  })
+
+  it('横滑发 66', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800, height: 480, x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 480,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: {
+      deltaX: number; deltaY: number; clientX: number; clientY: number
+    }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    expect(handler({ deltaX: -80, deltaY: 0, clientX: 50, clientY: 50 })).toBe(false)
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[<66;7;4M'.repeat(8))
+    spy.mockRestore()
+  })
+
+  it('环形缓冲回放期间，xterm 因 1004h 发出的 ESC [O] / [I] 都不上送', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    termInstance.write.mockImplementation((_data: unknown, cb?: () => void) => {
+      termInstance.modes.sendFocusMode = true
+      termOnData!('\x1b[O')
+      termOnData!('\x1b[I')
+      cb?.()
+    })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean }) => void
+      onData: (bytes: Uint8Array) => void
+    }
+    opts.onAttached({ since: 0, truncated: false })
+    opts.onData(new TextEncoder().encode('\x1b[?1004h'))
+    const payloads = send.mock.calls.map((c) => new TextDecoder().decode(c[0] as Uint8Array))
+    expect(payloads).not.toContain('\x1b[O')
+    expect(payloads).not.toContain('\x1b[I')
+  })
+
+  it('keep-alive 隐藏时 [O] 不上送——TUI 收到会关掉鼠标追踪', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    termInstance.write.mockImplementation((_data: unknown, cb?: () => void) => { cb?.() })
+    const { rerender } = render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean }) => void
+      onData: (bytes: Uint8Array) => void
+    }
+    opts.onAttached({ since: 0, truncated: false })
+    opts.onData(new Uint8Array())
+    send.mockClear()
+    rerender(<TerminalTab base={WS} seq={1} sessionId="s" active={false} onSession={vi.fn()} />)
+    termOnData!('\x1b[O')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('回放结束后若交替屏鼠标追踪已关，nudge 一次尺寸逼 TUI 重开', async () => {
+    const resize = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize })
+    termInstance.write.mockImplementation((_data: unknown, cb?: () => void) => {
+      termInstance.buffer.active.type = 'alternate'
+      termInstance.modes.mouseTrackingMode = 'none'
+      cb?.()
+    })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean }) => void
+      onData: (bytes: Uint8Array) => void
+    }
+    resize.mockClear()
+    opts.onAttached({ since: 0, truncated: false })
+    opts.onData(new TextEncoder().encode('\x1b[?1049h'))
+    expect(resize.mock.calls).toEqual(expect.arrayContaining([[100, 29], [100, 30]]))
+  })
+
+  it('本 tab 仍激活时的 [O] / [I] 也不上送——切 tab 的 blur 发生在 active 翻转之前', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    termInstance.write.mockImplementation((_data: unknown, cb?: () => void) => { cb?.() })
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean }) => void
+      onData: (bytes: Uint8Array) => void
+    }
+    opts.onAttached({ since: 0, truncated: false })
+    opts.onData(new Uint8Array())
+    send.mockClear()
+    termOnData!('\x1b[O')
+    termOnData!('\x1b[I')
+    expect(send).not.toHaveBeenCalled()
+  })
+
+  it('keep-alive 切回时丢掉配对的 [I]——没把 [O] 送给 TUI 就不能再喂 [I]', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    termInstance.write.mockImplementation((_data: unknown, cb?: () => void) => { cb?.() })
+    const { rerender } = render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0] as {
+      onAttached: (info: { since: number; truncated: boolean }) => void
+      onData: (bytes: Uint8Array) => void
+    }
+    opts.onAttached({ since: 0, truncated: false })
+    opts.onData(new Uint8Array())
+    const cycle = () => {
+      send.mockClear()
+      rerender(<TerminalTab base={WS} seq={1} sessionId="s" active={false} onSession={vi.fn()} />)
+      termOnData!('\x1b[O')
+      expect(send).not.toHaveBeenCalled()
+      rerender(<TerminalTab base={WS} seq={1} sessionId="s" active onSession={vi.fn()} />)
+      send.mockClear()
+      termOnData!('\x1b[I')
+      expect(send).not.toHaveBeenCalled()
+    }
+    cycle()
+    cycle()
+  })
+
+  it('从隐藏回到可见时 focus，不额外往 PTY 塞 [I]', async () => {
+    const send = vi.fn()
+    connectPty.mockReturnValue({ close: vi.fn(), send, resize: vi.fn() })
+    const { rerender } = render(
+      <TerminalTab base={WS} seq={1} sessionId="s" active={false} onSession={vi.fn()} />,
+    )
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    expect(termInstance.focus).not.toHaveBeenCalled()
+    send.mockClear()
+    rerender(<TerminalTab base={WS} seq={1} sessionId="s" active onSession={vi.fn()} />)
+    await waitFor(() => expect(termInstance.focus).toHaveBeenCalled())
+    const payloads = send.mock.calls.map((c) => new TextDecoder().decode(c[0] as Uint8Array))
+    expect(payloads).not.toContain('\x1b[I')
+  })
+
+  it('没开鼠标追踪时不拦截，交给 xterm', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: { deltaY: number }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'none'
+    expect(handler({ deltaY: -48 })).toBe(true)
+    expect(termInstance.input).not.toHaveBeenCalled()
+  })
+
+  it('滚轮挂在 host 捕获阶段——不依赖 xterm 在 1000h 时才绑定的 listener', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800, height: 480, x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 480,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    const host = screen.getByTestId('pty-host')
+    fireEvent.wheel(host, { deltaY: -80, clientX: 50, clientY: 50 })
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[<64;7;4M'.repeat(5))
+    spy.mockRestore()
+  })
+
+  it('量不出格子时不吞滚轮——否则切回后画面没量到就再也不能滑', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 0, height: 0, x: 0, y: 0, top: 0, left: 0, right: 0, bottom: 0,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: { deltaY: number; clientX: number; clientY: number }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    expect(handler({ deltaY: -160, clientX: 50, clientY: 50 })).toBe(true)
+    expect(termInstance.input).not.toHaveBeenCalled()
+    spy.mockRestore()
+  })
+
+  it('挂载即注册 52 号 OSC handler（B300）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    expect(termInstance.parser.registerOscHandler).toHaveBeenCalledWith(52, expect.any(Function))
+    expect(osc52Handler).toBeTypeOf('function')
+  })
+
+  it('活流 + 激活 + 合法载荷 → 写本机剪贴板（B300）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0]
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    osc52Handler!('c;aGVsbG8=')
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('hello'))
+  })
+
+  it('桌面壳里先走同步复制，避免 WKWebView 拒绝异步 writeText（B300 回归）', async () => {
+    let selected = ''
+    const execCommand = vi.fn(() => {
+      const el = document.querySelector('textarea')
+      if (el) selected = el.value
+      return true
+    })
+    Object.defineProperty(document, 'execCommand', { value: execCommand, configurable: true })
+    writeText.mockRejectedValueOnce(new Error('NotAllowedError'))
+
+    try {
+      render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+      await waitFor(() => expect(connectPty).toHaveBeenCalled())
+      connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+
+      osc52Handler!('c;aGVsbG8=')
+
+      expect(execCommand).toHaveBeenCalledWith('copy')
+      expect(selected).toBe('hello')
+      expect(writeText).not.toHaveBeenCalled()
+      expect(screen.queryByTestId('copy-notice')).toBeNull()
+    } finally {
+      delete (document as { execCommand?: unknown }).execCommand
+    }
+  })
+
+  it('积压重放期间不写、回放结束恢复写（B300 重放门）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const opts = connectPty.mock.calls[0][0]
+    opts.onAttached({ since: 0, truncated: false, backlog_bytes: 10 })
+    osc52Handler!('c;aGVsbG8=')
+    expect(writeText).not.toHaveBeenCalled()
+    // 回放的最后一帧：write 的完成回调把 hostReply 转成 live——替身必须替它调
+    termInstance.write.mockImplementationOnce((_data: unknown, cb?: () => void) => { cb?.() })
+    opts.onData(new Uint8Array(10))
+    osc52Handler!('c;aGVsbG8=')
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith('hello'))
+  })
+
+  it('后台 tab 的 keep-alive 解析不写剪贴板（B300 active 门）', async () => {
+    render(<TerminalTab base={WS} seq={1} active={false} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    osc52Handler!('c;aGVsbG8=')
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('读查询与清剪贴板请求都不写（B300 载荷门）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    osc52Handler!('c;?')
+    osc52Handler!('c;')
+    osc52Handler!('nosemi')
+    expect(writeText).not.toHaveBeenCalled()
+  })
+
+  it('写入失败给出可见提示（B300 静默失败族）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    writeText.mockRejectedValueOnce(new Error('denied'))
+    osc52Handler!('c;aGVsbG8=')
+    await waitFor(() => expect(screen.getByTestId('copy-notice')).toHaveTextContent('失败'))
+  })
+
+  // 非安全上下文（如经 Tailscale / 局域网 IP 的 http 访问）navigator.clipboard 是
+  // undefined：守卫缺席时 handler 必须走失败提示路径，而不是在 xterm 解析器里
+  // 同步抛 TypeError——抛出去既打断 chunk 处理，又绕过了失败提示，两条都是伤害。
+  it('navigator.clipboard 缺席时不抛异常、给出失败提示（非安全上下文）', async () => {
+    Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
+    try {
+      render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+      await waitFor(() => expect(connectPty).toHaveBeenCalled())
+      connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+      expect(() => osc52Handler!('c;aGVsbG8=')).not.toThrow()
+      expect(await screen.findByTestId('copy-notice')).toHaveTextContent('失败')
+      expect(writeText).not.toHaveBeenCalled()
+    } finally {
+      // 还原成文件顶部 beforeAll 定义的替身，别让后续用例跟着缺席
+      Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true })
+    }
+  })
+
+  it('写入成功不出提示（成功提示是噪声，TUI 自带反馈）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
+    osc52Handler!('c;aGVsbG8=')
+    await waitFor(() => expect(writeText).toHaveBeenCalled())
+    expect(screen.queryByTestId('copy-notice')).toBeNull()
   })
 })
 

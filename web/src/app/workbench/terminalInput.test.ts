@@ -8,7 +8,7 @@
 //
 // 每个缺口都配一条「不装补漏」的对照断言。没有对照，这些用例明天被改成永远
 // 为真也没人看得出来——它们断言的恰恰是「xterm 自己会漏」。
-import { beforeAll, beforeEach, describe, expect, it } from 'vitest'
+import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { Terminal } from '@xterm/xterm'
 import { installTerminalInputFix, type TerminalInputFix } from './terminalInput'
 
@@ -64,12 +64,20 @@ function makeRig(withFix: boolean): Rig {
 // 判分支的依据，写不进去测试就会假绿。
 function key(
   type: 'keydown' | 'keypress' | 'keyup',
-  init: { key: string; keyCode: number; charCode?: number; shiftKey?: boolean },
+  init: {
+    key: string; keyCode: number; charCode?: number
+    shiftKey?: boolean; metaKey?: boolean; ctrlKey?: boolean; altKey?: boolean
+    code?: string
+  },
 ): KeyboardEvent {
   const charCode = init.charCode ?? 0
   const ev = new KeyboardEvent(type, {
     key: init.key,
+    code: init.code ?? '',
     shiftKey: init.shiftKey ?? false,
+    metaKey: init.metaKey ?? false,
+    ctrlKey: init.ctrlKey ?? false,
+    altKey: init.altKey ?? false,
     bubbles: true,
     cancelable: true,
     composed: true,
@@ -89,13 +97,13 @@ function key(
 // input 造一个 InputEvent，并顺手把文本写进 textarea——WebKit 是先改
 // textarea 再派事件的，CompositionHelper 的 `_handleAnyTextareaChanges`
 // 正是靠比对 textarea 前后值判断该不该补发，少了这一步就不是真实现场。
-function input(ta: HTMLTextAreaElement, data: string): InputEvent {
+function input(ta: HTMLTextAreaElement, data: string, composed = true): InputEvent {
   ta.value += data
   return new InputEvent('input', {
     data,
     inputType: 'insertText',
     bubbles: true,
-    composed: true,
+    composed,
   })
 }
 
@@ -182,6 +190,93 @@ describe('② 中文输入法下的标点', () => {
   })
 })
 
+async function enterAlternateBuffer(r: Rig): Promise<void> {
+  await new Promise<void>((resolve) => {
+    r.term.write('\x1b[?1049h', () => resolve())
+  })
+  expect(r.term.buffer.active.type).toBe('alternate')
+}
+
+async function exitAlternateBuffer(r: Rig): Promise<void> {
+  await new Promise<void>((resolve) => {
+    r.term.write('\x1b[?1049l', () => resolve())
+  })
+  expect(r.term.buffer.active.type).toBe('normal')
+}
+
+function dispatchEnter(
+  r: Rig,
+  modifiers: { shiftKey?: boolean; altKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } = {},
+): KeyboardEvent {
+  const ev = key('keydown', { key: 'Enter', keyCode: 13, ...modifiers })
+  vi.spyOn(ev, 'stopPropagation')
+  r.ta.dispatchEvent(ev)
+  return ev
+}
+
+describe('B302：alt-screen 的 Shift+Enter', () => {
+  it('交替屏 Shift+Enter 发 CSI u，不再让 xterm 发 CR', async () => {
+    rig = makeRig(true)
+    await enterAlternateBuffer(rig)
+    const input = vi.spyOn(rig.term, 'input')
+
+    const ev = dispatchEnter(rig, { shiftKey: true })
+
+    expect(input).toHaveBeenCalledTimes(1)
+    expect(input).toHaveBeenCalledWith('\x1b[13;2u')
+    expect(rig.data).toEqual(['\x1b[13;2u'])
+    expect(rig.data).not.toContain('\r')
+    expect(ev.defaultPrevented).toBe(true)
+    expect(ev.stopPropagation).toHaveBeenCalledTimes(1)
+  })
+
+  it('主屏 Shift+Enter 不走补发，仍由 xterm 产生 CR', () => {
+    rig = makeRig(true)
+    const input = vi.spyOn(rig.term, 'input')
+
+    dispatchEnter(rig, { shiftKey: true })
+
+    expect(input).not.toHaveBeenCalled()
+    expect(rig.data).toEqual(['\r'])
+  })
+
+  it('交替屏退出后 Shift+Enter 不走补发，仍由 xterm 产生 CR', async () => {
+    rig = makeRig(true)
+    await enterAlternateBuffer(rig)
+    await exitAlternateBuffer(rig)
+    const input = vi.spyOn(rig.term, 'input')
+
+    dispatchEnter(rig, { shiftKey: true })
+
+    expect(input).not.toHaveBeenCalled()
+    expect(rig.data).toEqual(['\r'])
+  })
+
+  it('交替屏裸 Enter 仍走 xterm 的 CR', async () => {
+    rig = makeRig(true)
+    await enterAlternateBuffer(rig)
+    const input = vi.spyOn(rig.term, 'input')
+
+    dispatchEnter(rig)
+
+    expect(input).not.toHaveBeenCalled()
+    expect(rig.data).toEqual(['\r'])
+  })
+
+  it('交替屏 Alt+Enter、Ctrl+Enter 与带额外 Meta 的组合都不走补发', async () => {
+    rig = makeRig(true)
+    await enterAlternateBuffer(rig)
+    const input = vi.spyOn(rig.term, 'input')
+
+    dispatchEnter(rig, { altKey: true })
+    dispatchEnter(rig, { ctrlKey: true })
+    dispatchEnter(rig, { shiftKey: true, metaKey: true })
+
+    expect(input).not.toHaveBeenCalled()
+    expect(rig.data).toEqual(['\x1b\r', '\r', '\r'])
+  })
+})
+
 // 没坏的路径必须原样不动。这一组是补漏的「不许越界」边界。
 describe('原有输入路径不受影响', () => {
   it('普通字母仍由 xterm 的 keydown 直接发出，且只发一次', () => {
@@ -243,5 +338,75 @@ describe('dispose 之后不再插手', () => {
     rig.ta.dispatchEvent(key('keypress', { key: 'git status', keyCode: 103, charCode: 103 }))
     rig.ta.dispatchEvent(input(rig.ta, 'git status'))
     expect(rig.data).toEqual(['g'])
+  })
+})
+
+describe('mac 终端键：⌘←/⌘→/⌘K', () => {
+  it('⌘← 发出 0x01，⌘→ 发出 0x05，且不经普通字母路径双发', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: 'ArrowLeft', keyCode: 37, metaKey: true }))
+    rig.ta.dispatchEvent(key('keydown', { key: 'ArrowRight', keyCode: 39, metaKey: true }))
+    expect(rig.data).toEqual(['\x01', '\x05'])
+  })
+
+  it('⌘K 调用 clear 且 onData 没有任何字节', () => {
+    rig = makeRig(true)
+    const clear = vi.spyOn(rig.term, 'clear')
+    const ev = key('keydown', { key: 'k', keyCode: 75, metaKey: true })
+    rig.ta.dispatchEvent(ev)
+    expect(clear).toHaveBeenCalledTimes(1)
+    expect(rig.data).toEqual([])
+    expect(ev.defaultPrevented).toBe(true)
+  })
+
+  it('Ctrl+K 不走清屏（readline 删到行尾仍归 xterm）', () => {
+    rig = makeRig(true)
+    const clear = vi.spyOn(rig.term, 'clear')
+    rig.ta.dispatchEvent(key('keydown', { key: 'k', keyCode: 75, ctrlKey: true }))
+    expect(clear).not.toHaveBeenCalled()
+  })
+})
+
+describe('Option 当 Meta：WKWebView 的 key 是符号、keyCode 经常是 0', () => {
+  it('Option+B / Option+F 发出 ESC+b / ESC+f，即使 key 是 ∫/ƒ 且 keyCode=0', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    rig.ta.dispatchEvent(key('keydown', { key: 'ƒ', keyCode: 0, altKey: true, code: 'KeyF' }))
+    expect(rig.data).toEqual(['\x1bb', '\x1bf'])
+  })
+
+  it('随后的 insertText（∫）不得再补发——否则 zsh 收到 ESC+b 又吃一个符号', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    rig.ta.dispatchEvent(input(rig.ta, '∫'))
+    expect(rig.data).toEqual(['\x1bb'])
+  })
+
+  // xterm `_inputEvent` 准入是 `!composed || !_keyDownSeen`。WKWebView 的
+  // Option 符号经常 composed=false，xterm 会自己再发一遍 ∫；只拦我们的补发不够。
+  it('insertText composed=false 时 xterm 自己发的 ∫ 也必须吞掉', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    rig.ta.dispatchEvent(input(rig.ta, '∫', false))
+    expect(rig.data).toEqual(['\x1bb'])
+  })
+
+  // 可打印键的标准三件套：keydown / keypress / input。macOptionIsMeta 下
+  // keypress 若没带 altKey，xterm 会把 charCode 当成普通字发出去。
+  it('随后的 keypress（charCode=∫、altKey=false）不得再出符号', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    rig.ta.dispatchEvent(key('keypress', { key: '∫', keyCode: 8747, charCode: 8747, code: 'KeyB' }))
+    expect(rig.data).toEqual(['\x1bb'])
+  })
+
+  // Option 先按下时 WebKit 可能先丢 insertText，字母 keydown 还没到。
+  // 补发路径会把 ∫ 喂进去，然后 keydown 再发 ESC+b——真机就是「跳词了但出现 ∫」。
+  it('Option 按下后、字母 keydown 前的 insertText 不得补发', () => {
+    rig = makeRig(true)
+    rig.ta.dispatchEvent(key('keydown', { key: 'Alt', keyCode: 18, altKey: true, code: 'AltLeft' }))
+    rig.ta.dispatchEvent(input(rig.ta, '∫'))
+    rig.ta.dispatchEvent(key('keydown', { key: '∫', keyCode: 0, altKey: true, code: 'KeyB' }))
+    expect(rig.data).toEqual(['\x1bb'])
   })
 })

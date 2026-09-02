@@ -54,6 +54,7 @@ func (b *safeBuf) String() string {
 type fakeMachines struct {
 	mu      sync.Mutex
 	clients map[string]*client.Client
+	calls   []string
 }
 
 func newFakeMachines() *fakeMachines {
@@ -84,11 +85,18 @@ func (f *fakeMachines) Names() []string {
 func (f *fakeMachines) For(name string) (*client.Client, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls = append(f.calls, name)
 	c, ok := f.clients[name]
 	if !ok {
 		return nil, fmt.Errorf("target %s 未在配置中登记", name)
 	}
 	return c, nil
+}
+
+func (f *fakeMachines) forCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
 }
 
 // set 登记或替换一台机器的客户端（替换 = 配置被改，池重建了实例）。

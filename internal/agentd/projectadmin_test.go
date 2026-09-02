@@ -257,6 +257,49 @@ func TestRegisterProjectClonesWhenNoPath(t *testing.T) {
 	}
 }
 
+// TestCloneDoesNotWaitForRepoFetchLock 持有克隆目标路径对应的 fetch 锁时仍允许
+// clone 完成，锁只保护 fetch 与目标 ref 读取，不扩散到项目登记的 clone。
+func TestCloneDoesNotWaitForRepoFetchLock(t *testing.T) {
+	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	src := initGitRepo(t)
+	root := filepath.Join(t.TempDir(), "repos")
+	m.cfg.RepoRoot = root
+	dest := filepath.Join(root, "clone")
+
+	type result struct {
+		loc proto.ProjectLocation
+		err error
+	}
+	resultCh := make(chan result, 1)
+	err := withRepoFetchLock(dest, func() error {
+		go func() {
+			loc, cloneErr := m.cloneAndRegisterProject(context.Background(), RegisterProjectReq{
+				OriginURL: src,
+				Name:      "clone",
+			})
+			resultCh <- result{loc: loc, err: cloneErr}
+		}()
+		select {
+		case got := <-resultCh:
+			if got.err != nil {
+				return fmt.Errorf("cloneAndRegisterProject: %w", got.err)
+			}
+			if got.loc.Path != dest {
+				return fmt.Errorf("clone path=%q, want %q", got.loc.Path, dest)
+			}
+		case <-time.After(5 * time.Second):
+			return fmt.Errorf("clone 在 fetch 锁持有期间未完成")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("fetch 锁不应阻塞 clone: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, ".git")); err != nil {
+		t.Fatalf("clone 目标应存在 .git: %v", err)
+	}
+}
+
 // TestRegisterProjectClaimExistingDest 验证克隆落点已存在且就是本项目时**认领**
 // 成功：直接登记不 clone。origin 指向一个必然 clone 失败的位置（不存在的本地目录），
 // 成功本身即证明认领路径没去 clone（project rm 只删登记不动磁盘，这是「rm 后再派发

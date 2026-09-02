@@ -105,6 +105,22 @@ func waitSock(t *testing.T, path string) {
 	t.Fatalf("socket 迟迟没出现: %s", path)
 }
 
+func waitFile(t *testing.T, path string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("文件迟迟没出现: %s", path)
+		}
+		<-ticker.C
+	}
+}
+
 // TestMetaWrittenWithPidAndVersion 起来之后 meta.json 必须齐活。
 func TestMetaWrittenWithPidAndVersion(t *testing.T) {
 	root, id := startHost(t)
@@ -274,13 +290,17 @@ func TestDetachDoesNotKill(t *testing.T) {
 func TestKillEndsProcessAndCleansDir(t *testing.T) {
 	root := shortTempDir(t)
 	id := "k1"
+	home := t.TempDir()
+	ready := filepath.Join(home, "b234-ready")
+	late := filepath.Join(home, "b234-late")
 	if err := sessdir.Create(root, id); err != nil {
 		t.Fatal(err)
 	}
 	spec := hostproc.Spec{
 		Root: root, ID: id, BasePath: root, BaseKind: "workspace", Cwd: root,
-		Shell: "/bin/sh", Env: []string{"PATH=/usr/bin:/bin", "TERM=xterm-256color"},
+		Shell: "/bin/sh", Env: []string{"PATH=/usr/bin:/bin", "TERM=xterm-256color", "HOME=" + home},
 		Cols: 80, Rows: 24,
+		InitCommand: `trap 'exit 0' TERM; trap 'printf late > "$HOME/b234-late"' EXIT; : > "$HOME/b234-ready"; while :; do :; done`,
 	}
 	body, _ := json.Marshal(spec)
 	specPath := filepath.Join(root, id, "spec.json")
@@ -290,6 +310,7 @@ func TestKillEndsProcessAndCleansDir(t *testing.T) {
 	done := make(chan error, 1)
 	go func() { done <- hostproc.Run(specPath) }()
 	waitSock(t, sessdir.SockPath(root, id))
+	waitFile(t, ready)
 
 	c, err := net.Dial("unix", sessdir.SockPath(root, id))
 	if err != nil {
@@ -310,6 +331,9 @@ func TestKillEndsProcessAndCleansDir(t *testing.T) {
 	}
 	if _, err := os.Stat(sessdir.Dir(root, id)); !os.IsNotExist(err) {
 		t.Fatalf("kill 之后会话目录应被清掉: %v", err)
+	}
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("Run 返回后 late marker 不存在: %v", err)
 	}
 }
 

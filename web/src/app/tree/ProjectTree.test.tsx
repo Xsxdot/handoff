@@ -1,9 +1,10 @@
-import { fireEvent, render, screen, within } from '@testing-library/react'
+import { createEvent, fireEvent, render, screen, within } from '@testing-library/react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
+import type { PreviewSession, ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { BaseDir } from '../workbench/useWorkbench'
-import { ProjectTree } from './ProjectTree'
+import { ProjectTree, type OpenItem } from './ProjectTree'
 import { __resetTreePrefsForTest } from './useTreePrefs'
+import { DRAG_BASE_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 beforeEach(() => {
   localStorage.clear()
@@ -21,9 +22,18 @@ function task(over: Partial<Task>): Task {
   }
 }
 
+// openItem 造一行「已打开项」（Shell 注入的 OpenItem 投影）。
+function openItem(over: Partial<OpenItem> = {}): OpenItem {
+  const base: BaseDir = { key: '/w', kind: 'workspace', path: '/w', label: 'main', projectName: 'handoff', machine: '' }
+  return {
+    key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', taskId: undefined,
+    machine: '', base, group: 'g1', tabId: 't9', ...over,
+  }
+}
+
 // props 返回一套完整可用的 <ProjectTree> props，默认树为一个项目 handoff（p1）、
 // 一台本机、主目录 /w + 工作树 /w/b2-b3，目录下挂任务 T1。over 可覆写
-// 分支 / 选中目录 / 工单数 / 是否带原地任务与全部回调。
+// 分支 / 选中目录 / 工单数 / 已打开项与全部回调。
 // 为什么这里只构造 props 不自己 render：调用方统一用
 // `render(<ProjectTree {...props({...})} />)`，若在工厂里也 render 一次，
 // 单测内会出现两棵树、getByRole/getByText 报 multiple matches。
@@ -33,16 +43,27 @@ function props(over: {
   ticketCount?: number
   inPlaceTask?: boolean
   ticketsByDir?: Map<string, number>
-  onSelectDir?: (b: BaseDir) => void
+  openItems?: OpenItem[]
+  focusedTaskId?: string | null
+  onFocusOpenItem?: (item: OpenItem) => void
+  onCloseOpenItem?: (item: OpenItem) => void
+  onOpenTerminalAt?: (b: BaseDir) => void
+  onOpenDirectory?: (b: BaseDir) => void
   onOpenTask?: (b: BaseDir | null, id: string) => void
   onOpenBoard?: () => void
   ledgerEnabled?: boolean
   onOpenTickets?: () => void
   onOpenSettings?: () => void
   onOpenFlows?: () => void
+  onOpenProjectCards?: (project: ProjectNode) => void
+  onOpenProjectCodegraph?: (project: ProjectNode) => void
   onAddProject?: () => void
   onUnregister?: (name: string, machine: string) => Promise<void> | void
   onEdit?: (project: ProjectNode) => void
+  previews?: PreviewSession[]
+  previewOpenKeys?: ReadonlySet<string>
+  previewOpeningKeys?: ReadonlySet<string>
+  onOpenPreview?: (id: string, machine: string) => void
 } = {}) {
   const tree: ProjectTreeResp = {
     projects: [{
@@ -65,7 +86,13 @@ function props(over: {
     selectedKey: over.selectedKey ?? null,
     ticketCount: over.ticketCount ?? 0,
     ticketsByDir: over.ticketsByDir ?? new Map(),
-    onSelectDir: over.onSelectDir ?? vi.fn(),
+    openItems: over.openItems ?? [],
+    focusedTaskId: over.focusedTaskId ?? null,
+    onFocusOpenItem: over.onFocusOpenItem ?? vi.fn(),
+    // 与 onUnregister 同理：onCloseOpenItem 也要能「没传」——没传就不给 ×
+    onCloseOpenItem: over.onCloseOpenItem,
+    onOpenTerminalAt: over.onOpenTerminalAt ?? vi.fn(),
+    onOpenDirectory: over.onOpenDirectory ?? vi.fn(),
     onOpenTask: over.onOpenTask ?? vi.fn(),
     onOpenBoard: over.onOpenBoard ?? vi.fn(),
     // 这组 dock 回归测试覆盖账本已启用时的既有入口；未启用门控另由专项用例覆盖。
@@ -73,6 +100,8 @@ function props(over: {
     onOpenTickets: over.onOpenTickets ?? vi.fn(),
     onOpenSettings: over.onOpenSettings ?? vi.fn(),
     onOpenFlows: over.onOpenFlows ?? vi.fn(),
+    onOpenProjectCards: over.onOpenProjectCards,
+    onOpenProjectCodegraph: over.onOpenProjectCodegraph,
     onAddProject: over.onAddProject ?? vi.fn(),
     // 「显式传 undefined」与「没传」要区分开：右键菜单测试需要 onUnregister
     // 真的是 undefined，`?? vi.fn()` 会把显式 undefined 兜底成 mock
@@ -80,11 +109,434 @@ function props(over: {
     // 与 onUnregister 同理：onEdit 也要能显式传 undefined，验证「没传就不给
     // 编辑入口」的分支
     onEdit: 'onEdit' in over ? over.onEdit : vi.fn(),
+    previews: over.previews ?? [],
+    previewOpenKeys: over.previewOpenKeys ?? new Set<string>(),
+    previewOpeningKeys: over.previewOpeningKeys ?? new Set<string>(),
+    onOpenPreview: over.onOpenPreview ?? vi.fn(),
   }
   return p
 }
 
-describe('ProjectTree', () => {
+describe('ProjectTree 层级', () => {
+  it('项目行存在，折叠箭头在进行中计数之后（DOM 顺序）', () => {
+    const { container } = render(<ProjectTree {...props({})} />)
+    const node = container.querySelector('[data-testid="project-node-p1"]') as HTMLElement
+    const head = within(node).getByRole('button', { name: /handoff/ })
+    const marker = within(node).getByTestId('project-marker-p1')
+    const count = within(head).getByTestId('project-running-count')
+    // 默认全展开，箭头语义是「收起」
+    const arrow = within(head).getByLabelText('收起')
+    expect(head.contains(count)).toBe(true)
+    expect(head.contains(arrow)).toBe(true)
+    expect(marker).toHaveClass('absolute', '-left-[15px]', 'top-[11px]', 'size-[9px]')
+    // 箭头在计数之后：计数在箭头前面
+    expect(count.compareDocumentPosition(arrow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('「任务」小标题已移除，「目录」小标题行存在（2026-08-29 用户裁定）', () => {
+    render(<ProjectTree {...props({})} />)
+    expect(screen.queryByTestId('task-group-head')).not.toBeInTheDocument()
+    expect(screen.getByTestId('dir-group-head')).toHaveTextContent('目录')
+  })
+
+  it('项目没有进行中任务时渲染空状态行；有任务或搜索时不渲染', () => {
+    const empty = props({})
+    const { unmount } = render(<ProjectTree {...empty} tasks={[]} />)
+    expect(screen.getByTestId('task-empty-row')).toHaveTextContent('暂无进行中的任务')
+    unmount()
+
+    render(<ProjectTree {...props({})} />)
+    expect(screen.queryByTestId('task-empty-row')).not.toBeInTheDocument()
+  })
+
+  it('目录默认收起，点击机器行后展开工作树子行', () => {
+    render(<ProjectTree {...props({})} />)
+    expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('machine-row'))
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+  })
+
+  it('项目下任务组跨机器平铺，目录组内再按机器分组', () => {
+    const tree: ProjectTreeResp = {
+      projects: [{
+        project_id: 'p1', origin_url: '', name: 'handoff',
+        locations: [
+          {
+            machine: '', name: 'handoff', path: '/w', probe_error: '',
+            workspaces: [{ path: '/w', branch: 'main', head: 'a', is_main: true, managed: false, created_at: '' }],
+          },
+          {
+            machine: 'linux-01', name: 'handoff', path: '/srv/w', probe_error: '',
+            workspaces: [{ path: '/srv/w', branch: 'main', head: 'b', is_main: true, managed: false, created_at: '' }],
+          },
+        ],
+      }],
+      unowned: [],
+    }
+    const tasks = [
+      task({ id: 'local-task', project_id: 'p1', machine: '', work_dir: '/w', name: '本机任务' }),
+      task({ id: 'remote-task', project_id: 'p1', machine: 'linux-01', work_dir: '/srv/w', name: '远端任务' }),
+    ]
+    render(
+      <ProjectTree
+        {...props({})}
+        tree={tree}
+        tasks={tasks}
+      />,
+    )
+    expect(screen.getAllByTestId('task-group')).toHaveLength(1)
+    expect(screen.getAllByTestId('directory-group')).toHaveLength(1)
+    expect(screen.getAllByTestId('directory-machine-row')).toHaveLength(2)
+    expect(screen.getByText('本机任务')).toBeInTheDocument()
+    expect(screen.getByText('远端任务')).toBeInTheDocument()
+  })
+})
+
+describe('ProjectTree 任务组', () => {
+  it('preview 是第四种不可拖放任务行，点击只调用 onOpenPreview 并显示本机 open 投影', () => {
+    const onOpenPreview = vi.fn()
+    const previews: PreviewSession[] = [
+      {
+        id: 'local-preview', entry_url: 'http://localhost:5173', cwd: '',
+        origin_url: 'https://example.test/repo', branch: 'feature/preview', created_at: '', ttl_seconds: 7200,
+      },
+      {
+        id: 'remote-preview', entry_url: 'http://localhost:5174', cwd: '',
+        origin_url: 'https://example.test/repo', created_at: '', ttl_seconds: 7200, machine: 'devbox',
+      },
+    ]
+    const p = props({ previews, onOpenPreview, previewOpenKeys: new Set(['\x1flocal-preview']) })
+    p.tree.projects[0].origin_url = 'https://example.test/repo/'
+    render(<ProjectTree {...p} />)
+    const local = screen.getByTestId('preview-row-local-preview')
+    expect(local).toHaveTextContent('feature/preview · localhost:5173')
+    expect(local).toHaveAttribute('data-open', 'true')
+    expect(local).not.toHaveAttribute('data-drag-task')
+    fireEvent.click(local)
+    expect(onOpenPreview).toHaveBeenCalledWith('local-preview', '')
+    expect(p.onOpenTask).not.toHaveBeenCalled()
+    expect(local.querySelector('.lucide-app-window')).not.toBeNull()
+    expect(local.querySelector('.lucide-monitor')).toBeNull()
+    expect(screen.getByTestId('preview-row-remote-preview')).toHaveTextContent('devbox')
+  })
+
+  it('未终态任务出现在任务组；completed / failed 不在任务组、只在已结束子行', () => {
+    const p = props({})
+    p.tasks.push(
+      task({ id: 'T-done', state: 'completed', work_dir: '/w/gone', name: '已完成任务' }),
+      task({ id: 'T-fail', state: 'failed', work_dir: '/w/gone2', name: '已失败任务' }),
+    )
+    render(<ProjectTree {...p} />)
+    expect(screen.getByText('重构工单通道')).toBeInTheDocument()
+    expect(screen.queryByText('已完成任务')).not.toBeInTheDocument()
+    expect(screen.queryByText('已失败任务')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('archived-row'))
+    expect(screen.getByText('已完成任务')).toBeInTheDocument()
+    expect(screen.getByText('已失败任务')).toBeInTheDocument()
+  })
+
+  it('已结束行默认收起、计数正确、点击展开；搜索命中时旁路展开', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-old', state: 'completed', work_dir: '/w/gone', name: '已回收的任务' }))
+    const view = render(<ProjectTree {...p} />)
+    const row = screen.getByTestId('archived-row')
+    expect(row).toHaveAttribute('aria-expanded', 'false')
+    expect(within(row).getByText('1')).toBeInTheDocument()
+    expect(screen.queryByText('已回收的任务')).not.toBeInTheDocument()
+    fireEvent.click(row)
+    expect(screen.getByText('已回收的任务')).toBeInTheDocument()
+
+    // 搜索旁路：重新挂载后直接搜任务名，已结束子行自动展开
+    view.unmount()
+    render(<ProjectTree {...p} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: '已回收' } })
+    expect(screen.getByText('已回收的任务')).toBeInTheDocument()
+  })
+
+  it('任务行 mousedown 不阻断原生拖放，拖拽写入任务与基准 MIME', () => {
+    const onOpenTask = vi.fn()
+    render(<ProjectTree {...props({ onOpenTask })} />)
+    const row = screen.getByRole('button', { name: /重构工单通道/ })
+    const ev = createEvent.mouseDown(row)
+    fireEvent(row, ev)
+    expect(ev.defaultPrevented).toBe(false)
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '' }
+    fireEvent.dragStart(row, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_TASK_MIME, 'T1')
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_BASE_MIME, expect.any(String))
+    expect(row).toHaveAttribute('data-drag-task', '1')
+  })
+
+  it('点任务行同时给出它所在目录与任务 id', () => {
+    const onOpenTask = vi.fn()
+    render(<ProjectTree {...props({ onOpenTask })} />)
+    fireEvent.click(screen.getByText('重构工单通道'))
+    expect(onOpenTask).toHaveBeenCalledWith(expect.objectContaining({ key: '/w/b2-b3' }), 'T1')
+  })
+
+  it('work_dir 为空的任务（原地模式）出现在任务组', () => {
+    render(<ProjectTree {...props({ inPlaceTask: true })} />)
+    expect(screen.getByText('原地任务')).toBeInTheDocument()
+  })
+
+  it('任务行圆点按任务状态着色：running 绿、waiting_answer 琥珀、completed 灰、failed 红（2026-08-29）', () => {
+    const p = props({})
+    p.tasks.push(
+      task({ id: 'T2', project_id: 'p1', machine: 'linux-01', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
+      task({ id: 'T3', project_id: 'p1', machine: '', work_dir: '/w', name: '刚跑完', state: 'completed', updated_at: new Date().toISOString() }),
+      task({ id: 'T4', project_id: 'p1', machine: '', work_dir: '/w', name: '跑挂了', state: 'failed', updated_at: new Date().toISOString() }),
+    )
+    render(<ProjectTree {...p} />)
+    const runningRow = screen.getByRole('button', { name: /重构工单通道/ })
+    expect(within(runningRow).getByTestId('task-machine')).toHaveTextContent('本机')
+    expect(runningRow.querySelector('.bg-state-active')).not.toBeNull()
+    const waitingRow = screen.getByRole('button', { name: /等你答复的活/ })
+    expect(within(waitingRow).getByTestId('task-machine')).toHaveTextContent('linux-01')
+    expect(waitingRow.querySelector('.bg-state-intervention')).not.toBeNull()
+    // 30 分钟缓冲窗内的终态任务留在任务列表，圆点表达终态本身
+    expect(screen.getByRole('button', { name: /刚跑完/ }).querySelector('.bg-muted-foreground\\/45')).not.toBeNull()
+    expect(screen.getByRole('button', { name: /跑挂了/ }).querySelector('.bg-state-failed')).not.toBeNull()
+  })
+
+  it('无名任务行显示分支名；prompt 派生名（摘要前缀）也让位给分支', () => {
+    const p = props({})
+    p.tasks.push(
+      task({ id: 'T5', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '', branch: 'cards/B285-review-2', plan_summary: '你是 charter 流程的节点执行者。…' }),
+      task({ id: 'T6', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '你是 charter 流程的节点执行者。对卡 ', branch: 'cards/B293-charter-3', plan_summary: '你是 charter 流程的节点执行者。对卡 B293-charter-3\n' }),
+    )
+    render(<ProjectTree {...p} />)
+    expect(screen.getByText('cards/B285-review-2')).toBeInTheDocument()
+    expect(screen.getByText('cards/B293-charter-3')).toBeInTheDocument()
+    expect(screen.queryByText(/节点执行者/)).not.toBeInTheDocument()
+  })
+})
+
+describe('ProjectTree 已打开项', () => {
+  it('openItems 渲染在任务组最前，名字用注入的 name，点击回调带整行数据', () => {
+    const onFocusOpenItem = vi.fn()
+    const items = [
+      openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9' }),
+      openItem({ key: '/w\x1ft10', kind: 'file', name: 'go.mod', tabId: 't10' }),
+    ]
+    render(<ProjectTree {...props({ openItems: items, onFocusOpenItem })} />)
+    const names = screen.getAllByTestId('open-item-name').map((el) => el.textContent)
+    expect(names).toEqual(['bash · main', 'go.mod'])
+    // 已打开行在普通任务行之前
+    const firstOpen = screen.getAllByTestId('open-item-row')[0]
+    const taskRow = screen.getByRole('button', { name: /重构工单通道/ })
+    expect(firstOpen.compareDocumentPosition(taskRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    fireEvent.click(screen.getByText('bash · main'))
+    expect(onFocusOpenItem).toHaveBeenCalledWith(items[0])
+  })
+
+  it('tui 打开项与同 id 任务只出现一行，带 is-open 态；焦点命中行带 is-selected', () => {
+    const items = [openItem({
+      key: '/w/b2-b3\x1ft11', kind: 'tui', name: '重构工单通道', taskId: 'T1',
+      base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+      tabId: 't11',
+    })]
+    const { container } = render(<ProjectTree {...props({ openItems: items, focusedTaskId: 'T1' })} />)
+    // 只有已打开行一处出现（普通任务行不再重复）
+    expect(screen.getAllByText('重构工单通道')).toHaveLength(1)
+    const openRow = screen.getByTestId('open-item-row')
+    expect(openRow).toHaveAttribute('data-open', 'true')
+    // 焦点态：focusedTaskId 命中 → 行带 aria-current（is-selected 深一档底色）
+    expect(openRow).toHaveAttribute('aria-current', 'true')
+    expect(openRow.className).toContain('bg-[#ededed]')
+    expect(container).toBeTruthy()
+  })
+
+  it('已打开终端/文件行生产可投放到中央的 tab MIME', () => {
+    const items = [
+      openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9', group: 'g2' }),
+      openItem({ key: '/w\x1ft10', kind: 'file', name: 'README.md', tabId: 't10', group: 'g2' }),
+    ]
+    render(<ProjectTree {...props({ openItems: items })} />)
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '' }
+    const terminalRow = screen.getByText('bash · main').closest('button')!
+    const fileRow = screen.getByText('README.md').closest('button')!
+    expect(terminalRow).toHaveAttribute('draggable', 'true')
+    expect(fileRow).toHaveAttribute('draggable', 'true')
+    fireEvent.dragStart(terminalRow, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_TAB_MIME, JSON.stringify({ groupId: 'g2', tabId: 't9' }))
+    expect(dataTransfer.effectAllowed).toBe('move')
+    fireEvent.dragStart(fileRow, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenLastCalledWith(DRAG_TAB_MIME, JSON.stringify({ groupId: 'g2', tabId: 't10' }))
+  })
+
+  it('已打开行使用类型图标：tui=资产图、terminal/file=线性图标', () => {
+    const items = [
+      openItem({ key: '/w\x1ft9', kind: 'tui', name: '审 B264', taskId: 'T1' }),
+      openItem({ key: '/w\x1ft10', kind: 'terminal', name: 'bash · main', tabId: 't10' }),
+      openItem({ key: '/w\x1ft11', kind: 'file', name: 'go.mod', tabId: 't11' }),
+    ]
+    const { container } = render(<ProjectTree {...props({ openItems: items })} />)
+    expect(container.querySelector('img[src*="dispatch-task"]')).not.toBeNull()
+    expect(container.querySelector('.lucide-terminal')).not.toBeNull()
+    expect(container.querySelector('.lucide-file-text')).not.toBeNull()
+  })
+
+  it('没传 onCloseOpenItem 时已打开行没有 ×（关闭语义由持有 workbench 的层给）', () => {
+    const items = [openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9' })]
+    render(<ProjectTree {...props({ openItems: items })} />)
+    expect(screen.queryByRole('button', { name: '关闭 bash · main' })).toBeNull()
+  })
+
+  it('已打开 tui 原位渲染：打开任务不让其他行挪位置（2026-08-29 顺序固定）', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w', name: '第二个任务', state: 'waiting_review' }))
+    // 打开的是 T1（任务流里的前一条）。T1 的行仍应在 T2 之前——若已打开行整组
+    // 置顶，T1 会跳过 T2 上浮，这里当场抓住。
+    const items = [openItem({
+      key: '/w/b2-b3\x1ft11', kind: 'tui', name: '重构工单通道', taskId: 'T1',
+      base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+      tabId: 't11',
+    })]
+    render(<ProjectTree {...p} openItems={items} />)
+    const firstRow = screen.getByRole('button', { name: /重构工单通道/ })
+    const secondRow = screen.getByRole('button', { name: /第二个任务/ })
+    expect(firstRow).toHaveAttribute('data-open', 'true')
+    expect(firstRow.compareDocumentPosition(secondRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+  })
+
+  it('任务组按 created_at 降序渲染（scope=all 聚合序不可信，2026-08-29 真机读数）', () => {
+    const p = props({})
+    // 故意用与 created_at 相反的流序喂入：聚合响应里新旧交错也会被显式排序纠正
+    p.tasks.push(
+      task({ id: 'T-old', project_id: 'p1', machine: '', work_dir: '/w', name: '最旧任务', created_at: '2026-08-01T00:00:00Z' }),
+      task({ id: 'T-new', project_id: 'p1', machine: '', work_dir: '/w', name: '最新任务', created_at: '2026-08-29T09:00:00Z' }),
+      task({ id: 'T-mid', project_id: 'p1', machine: '', work_dir: '/w', name: '中间任务', created_at: '2026-08-15T00:00:00Z' }),
+    )
+    render(<ProjectTree {...p} />)
+    // 夹具默认任务 T1（created_at 空串 = 解析不了 → 按最旧沉底）
+    const names = screen.getAllByTestId('task-row').map((row) => row.textContent)
+    expect(names).toEqual(['最新任务本机', '中间任务本机', '最旧任务本机', '重构工单通道本机'])
+  })
+
+  it('已结束子行与任务组同一个排序键（created_at 降序）', () => {
+    const p = props({})
+    // 流序故意与新旧相反：archivedTasks 原样保留流序，排序是展示层的责任
+    p.tasks.push(
+      task({ id: 'A1', state: 'completed', work_dir: '/w/gone', name: '旧完结', created_at: '2026-08-01T00:00:00Z' }),
+      task({ id: 'A2', state: 'completed', work_dir: '/w/gone', name: '新完结', created_at: '2026-08-20T00:00:00Z' }),
+    )
+    render(<ProjectTree {...p} />)
+    fireEvent.click(screen.getByTestId('archived-row'))
+    // 任务组里只有夹具 T1，其后是已结束子行：新完结在前
+    const names = screen.getAllByTestId('task-row').map((row) => row.textContent)
+    expect(names).toEqual(['重构工单通道本机', '新完结本机', '旧完结本机'])
+  })
+
+  it('任务流里找不到的已打开 tui 追加在任务列表末尾（不闪烁）', () => {
+    const items = [openItem({
+      key: '/w/b2-b3\x1ft12', kind: 'tui', name: '还没进流的任务', taskId: 'T-nope',
+      base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+      tabId: 't12',
+    })]
+    render(<ProjectTree {...props({ openItems: items })} />)
+    const ghostRow = screen.getByRole('button', { name: /还没进流的任务/ })
+    const taskRow = screen.getByRole('button', { name: /重构工单通道/ })
+    expect(taskRow.compareDocumentPosition(ghostRow) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(ghostRow).toHaveAttribute('data-open', 'true')
+  })
+
+  it('终端/文件已打开行的圆点消费注入的 tone（断开的终端=红）', () => {
+    const items = [
+      openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9', tone: 'failed' }),
+      openItem({ key: '/w\x1ft10', kind: 'file', name: 'go.mod', tabId: 't10', tone: 'intervention' }),
+    ]
+    render(<ProjectTree {...props({ openItems: items })} />)
+    const terminalRow = screen.getByText('bash · main').closest('button')!
+    expect(terminalRow.querySelector('.bg-state-failed')).not.toBeNull()
+    const fileRow = screen.getByText('go.mod').closest('button')!
+    expect(fileRow.querySelector('.bg-state-intervention')).not.toBeNull()
+  })
+})
+
+describe('ProjectTree 已打开行悬停关闭（2026-08-29）', () => {
+  // 悬停 × 的可达性是 CSS 的职责（group-hover）；单测钉的是「哪几行有 ×、
+  // 点了发给谁、没 tab 的行不给 ×」这三条语义。
+  it('终端/文件/tui 已打开行都有 ×，点击回调带整行 OpenItem', () => {
+    const onCloseOpenItem = vi.fn()
+    const tuiBase: BaseDir = { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' }
+    const items = [
+      openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9' }),
+      openItem({ key: '/w\x1ft10', kind: 'file', name: 'go.mod', tabId: 't10' }),
+      openItem({ key: '/w/b2-b3\x1ft11', kind: 'tui', name: '重构工单通道', taskId: 'T1', base: tuiBase, tabId: 't11' }),
+    ]
+    render(<ProjectTree {...props({ openItems: items, onCloseOpenItem })} />)
+    fireEvent.click(screen.getByRole('button', { name: '关闭 bash · main' }))
+    expect(onCloseOpenItem).toHaveBeenLastCalledWith(items[0])
+    fireEvent.click(screen.getByRole('button', { name: '关闭 go.mod' }))
+    expect(onCloseOpenItem).toHaveBeenLastCalledWith(items[1])
+    fireEvent.click(screen.getByRole('button', { name: '关闭 重构工单通道' }))
+    expect(onCloseOpenItem).toHaveBeenLastCalledWith(items[2])
+  })
+
+  it('普通任务行与已结束行没有 ×——它们没有 tab 可关', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-old', state: 'completed', work_dir: '/w/gone', name: '已回收的任务' }))
+    render(<ProjectTree {...p} onCloseOpenItem={vi.fn()} />)
+    // T1 未打开，行是普通任务行
+    expect(screen.queryByRole('button', { name: '关闭 重构工单通道' })).toBeNull()
+    fireEvent.click(screen.getByTestId('archived-row'))
+    expect(screen.queryByRole('button', { name: '关闭 已回收的任务' })).toBeNull()
+  })
+
+  it('× 是行 button 的兄弟而非子元素（button 不能嵌套），点击不触发行聚焦', () => {
+    const onCloseOpenItem = vi.fn()
+    const onFocusOpenItem = vi.fn()
+    const items = [openItem({ key: '/w\x1ft9', kind: 'terminal', name: 'bash · main', tabId: 't9' })]
+    render(<ProjectTree {...props({ openItems: items, onCloseOpenItem, onFocusOpenItem })} />)
+    const close = screen.getByRole('button', { name: '关闭 bash · main' })
+    expect(close.closest('button')).toBe(close)
+    fireEvent.click(close)
+    expect(onCloseOpenItem).toHaveBeenCalledTimes(1)
+    expect(onFocusOpenItem).not.toHaveBeenCalled()
+  })
+})
+
+describe('ProjectTree 终态 30 分钟缓冲窗（2026-08-29）', () => {
+  const minutesAgo = (m: number) => new Date(Date.now() - m * 60_000).toISOString()
+
+  it('窗内的终态任务留在任务列表原位，不出现在已结束', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-done', state: 'completed', work_dir: '/w/gone', name: '刚跑完的任务', updated_at: minutesAgo(10) }))
+    render(<ProjectTree {...p} />)
+    const row = screen.getByRole('button', { name: /刚跑完的任务/ })
+    expect(row).toBeInTheDocument()
+    expect(row).not.toHaveAttribute('data-open')
+    // 不进已结束：计数为 0 时整行「已结束」不渲染
+    expect(screen.queryByTestId('archived-row')).not.toBeInTheDocument()
+  })
+
+  it('出窗的终态任务回到已结束（现状口径不丢）', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-done', state: 'completed', work_dir: '/w/gone', name: '早跑完的任务', updated_at: minutesAgo(40) }))
+    render(<ProjectTree {...p} />)
+    expect(screen.queryByText('早跑完的任务')).not.toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('archived-row'))
+    expect(screen.getByText('早跑完的任务')).toBeInTheDocument()
+  })
+
+  it('tab 仍打开的终态任务无限期留在原位，行是已打开态', () => {
+    const p = props({})
+    p.tasks.push(task({ id: 'T-done', state: 'completed', work_dir: '/w/b2-b3', name: '看交付的任务', updated_at: minutesAgo(120) }))
+    const items = [openItem({
+      key: '/w/b2-b3\x1ft13', kind: 'tui', name: '看交付的任务', taskId: 'T-done',
+      base: { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' },
+      tabId: 't13',
+    })]
+    render(<ProjectTree {...p} openItems={items} />)
+    const row = screen.getByRole('button', { name: /看交付的任务/ })
+    expect(row).toHaveAttribute('data-open', 'true')
+    // 灰点（done 基调）——完成但仍在看，一眼分于运行中
+    expect(row.querySelector('.bg-muted-foreground\\/45')).not.toBeNull()
+    expect(screen.queryByTestId('archived-row')).not.toBeInTheDocument()
+  })
+})
+
+describe('ProjectTree 机器行与目录', () => {
   it('目录行按工单 → 任务 → 时间排序，主工作树恒第一', () => {
     const tree: ProjectTreeResp = {
       projects: [{
@@ -113,25 +565,82 @@ describe('ProjectTree', () => {
         selectedKey={null}
         ticketCount={1}
         ticketsByDir={new Map([['/r/blocked', 1]])}
-        onSelectDir={vi.fn()}
+        openItems={[]}
+        focusedTaskId={null}
+        onFocusOpenItem={vi.fn()}
+        onOpenTerminalAt={vi.fn()}
+        onOpenDirectory={vi.fn()}
         onOpenTask={vi.fn()}
         onOpenBoard={vi.fn()}
         onOpenTickets={vi.fn()}
         onOpenSettings={vi.fn()}
       />,
     )
+    fireEvent.click(screen.getByTestId('machine-row'))
     expect(screen.getAllByTestId('workspace-row').map((row) => row.textContent?.replace(/\d+$/, ''))).toEqual([
       'main', 'blocked', 'busy', 'quiet',
     ])
   })
 
-  it('层级是 项目 → 机器 → 目录 → 任务', () => {
-    render(<ProjectTree {...props({ inPlaceTask: true })} />)
-    expect(screen.getByText('handoff')).toBeInTheDocument()
-    expect(screen.getByText('本机')).toBeInTheDocument()
-    expect(screen.getByText('main')).toBeInTheDocument()
-    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
-    expect(screen.getByText('原地任务')).toBeInTheDocument()
+  it('机器行悬停动作：主目录存在时两钮齐全', () => {
+    render(<ProjectTree {...props({})} onWorktreeCreated={vi.fn()} />)
+    expect(screen.getByRole('button', { name: '打开主目录终端' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '新建工作树' })).toBeInTheDocument()
+  })
+
+  it('机器行悬停动作：主目录不存在时终端钮不渲染', () => {
+    const p = props({})
+    const tree: ProjectTreeResp = {
+      projects: [{
+        ...p.tree.projects[0],
+        locations: [{ ...p.tree.projects[0].locations[0], workspaces: [] }],
+      }],
+      unowned: [],
+    }
+    render(<ProjectTree {...p} tree={tree} onWorktreeCreated={vi.fn()} />)
+    expect(screen.queryByRole('button', { name: '打开主目录终端' })).toBeNull()
+    expect(screen.getByRole('button', { name: '新建工作树' })).toBeInTheDocument()
+  })
+
+  it('悬停终端钮回调带主目录基准；子行悬停终端钮回调带该目录', () => {
+    const onOpenTerminalAt = vi.fn()
+    render(<ProjectTree {...props({ onOpenTerminalAt })} />)
+    fireEvent.click(screen.getByTestId('machine-row'))
+    fireEvent.click(screen.getByRole('button', { name: '打开主目录终端' }))
+    expect(onOpenTerminalAt).toHaveBeenCalledWith(expect.objectContaining({ path: '/w', label: 'main' }))
+    fireEvent.click(screen.getAllByRole('button', { name: '在此打开终端' }).at(-1)!)
+    expect(onOpenTerminalAt).toHaveBeenLastCalledWith(expect.objectContaining({ path: '/w/b2-b3' }))
+  })
+
+  it('目录来源（工作树子行与机器行）也带拖放放行标记 data-drag-task', () => {
+    // P2-1：拖目录到中央同样要关闭窗格内容层的 pointer-events（xterm 截事件），
+    // 放行谓词在 WorkbenchPage 只认 data-drag-task，所以机器行/子行也必须带标记
+    render(<ProjectTree {...props({})} />)
+    fireEvent.click(screen.getByTestId('machine-row'))
+    const workspaceRows = screen.getAllByTestId('workspace-row')
+    expect(workspaceRows.length).toBeGreaterThanOrEqual(2)
+    for (const row of workspaceRows) expect(row).toHaveAttribute('data-drag-task', '1')
+    expect(screen.getByTestId('machine-row')).toHaveAttribute('data-drag-task', '1')
+  })
+
+  it('点子行选中目录，回调带完整 BaseDir；selectedKey 命中行带 aria-current', () => {
+    const onOpenDirectory = vi.fn()
+    const view = render(<ProjectTree {...props({ onOpenDirectory, selectedKey: '/w/b2-b3' })} />)
+    fireEvent.click(screen.getByTestId('machine-row'))
+    fireEvent.click(screen.getByText('integration/b2-b3'))
+    expect(onOpenDirectory).toHaveBeenCalledWith({
+      key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '',
+    })
+    expect(screen.getByRole('button', { name: /integration\/b2-b3/ })).toHaveAttribute('aria-current', 'true')
+    view.unmount()
+  })
+
+  it('detached 的目录用目录名兜底作为 label', () => {
+    const onOpenDirectory = vi.fn()
+    render(<ProjectTree {...props({ onOpenDirectory, branch: '' })} />)
+    fireEvent.click(screen.getByTestId('machine-row'))
+    fireEvent.click(screen.getByText('b2-b3'))
+    expect(onOpenDirectory).toHaveBeenCalledWith(expect.objectContaining({ label: 'b2-b3' }))
   })
 
   it('不可达机器保持可见、标已断开、且不可展开', () => {
@@ -151,7 +660,8 @@ describe('ProjectTree', () => {
     render(
       <ProjectTree
         tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
-        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+        openItems={[]} focusedTaskId={null} onFocusOpenItem={vi.fn()} onOpenTerminalAt={vi.fn()}
+        onOpenDirectory={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
     const row = screen.getByRole('button', { name: /devbox/ })
@@ -170,7 +680,7 @@ describe('ProjectTree', () => {
       }],
       unowned: [],
     }
-    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    render(<ProjectTree tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} openItems={[]} focusedTaskId={null} onFocusOpenItem={vi.fn()} onOpenTerminalAt={vi.fn()} onOpenDirectory={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
     expect(screen.getByText('已断开')).toBeInTheDocument()
     expect(document.querySelector('.bg-state-failed')).not.toBeNull()
   })
@@ -192,7 +702,8 @@ describe('ProjectTree', () => {
     render(
       <ProjectTree
         tree={tree} tasks={[]} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
-        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+        openItems={[]} focusedTaskId={null} onFocusOpenItem={vi.fn()} onOpenTerminalAt={vi.fn()}
+        onOpenDirectory={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
     expect(screen.getByText('目录不存在')).toBeInTheDocument()
@@ -200,135 +711,58 @@ describe('ProjectTree', () => {
     expect(screen.getByText('alpha')).toBeInTheDocument()
   })
 
-  it('未归属任务挂在末尾的「未归属」分组，不被吞掉', () => {
+  it('点项目行只展开折叠，不再写筛选', () => {
+    const onOpenDirectory = vi.fn()
+    render(<ProjectTree {...props({ onOpenDirectory })} />)
+    fireEvent.click(screen.getByTestId('machine-row'))
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+    // 折叠项目后其下的目录行消失
+    fireEvent.click(screen.getByText('handoff'))
+    expect(onOpenDirectory).not.toHaveBeenCalled()
+    expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()
+    // 再点一次恢复展开；机器行的展开态在 project 收起期间原样保留
+    fireEvent.click(screen.getByText('handoff'))
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
+  })
+})
+
+describe('ProjectTree 未归属与搜索', () => {
+  it('未归属任务挂在末尾的「未归属」分组，不被吞掉，可拖拽', () => {
     const tree: ProjectTreeResp = { projects: [], unowned: [] }
     const tasks = [task({ id: 'u1', project_id: '', machine: '', work_dir: '/x', name: '游离任务' })]
+    const onOpenTask = vi.fn()
     render(
       <ProjectTree
         tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
-        onSelectDir={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+        openItems={[]} focusedTaskId={null} onFocusOpenItem={vi.fn()} onOpenTerminalAt={vi.fn()}
+        onOpenDirectory={vi.fn()} onOpenTask={onOpenTask} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
       />,
     )
     expect(screen.getByText('未归属')).toBeInTheDocument()
     expect(screen.getByText('游离任务')).toBeInTheDocument()
-  })
-
-  it('点项目行只展开折叠，不再写筛选', () => {
-    const onSelectDir = vi.fn()
-    render(<ProjectTree {...props({ onSelectDir })} />)
-    fireEvent.click(screen.getByText('handoff'))
-    expect(onSelectDir).not.toHaveBeenCalled()
-    // 折叠后其下的目录行消失
-    expect(screen.queryByText('integration/b2-b3')).not.toBeInTheDocument()
-  })
-
-  it('点目录行选中它，回调带完整 BaseDir', () => {
-    const onSelectDir = vi.fn()
-    render(<ProjectTree {...props({ onSelectDir })} />)
-    fireEvent.click(screen.getByText('integration/b2-b3'))
-    expect(onSelectDir).toHaveBeenCalledWith({
-      key: '/w/b2-b3',
-      kind: 'workspace',
-      path: '/w/b2-b3',
-      label: 'integration/b2-b3',
-      projectName: 'handoff',
-      machine: '',
-    })
-  })
-
-  it('detached 的目录用目录名兜底作为 label', () => {
-    const onSelectDir = vi.fn()
-    render(<ProjectTree {...props({ onSelectDir, branch: '' })} />)
-    fireEvent.click(screen.getByText('b2-b3'))
-    expect(onSelectDir).toHaveBeenCalledWith(expect.objectContaining({ label: 'b2-b3' }))
-  })
-
-  it('selectedKey 命中的目录行带 aria-current', () => {
-    render(<ProjectTree {...props({ selectedKey: '/w/b2-b3' })} />)
-    expect(screen.getByRole('button', { name: /integration\/b2-b3/ })).toHaveAttribute('aria-current', 'true')
-  })
-
-  it('点任务行同时给出它所在目录与任务 id', () => {
-    const onOpenTask = vi.fn()
-    render(<ProjectTree {...props({ onOpenTask })} />)
-    fireEvent.click(screen.getByText('重构工单通道'))
-    expect(onOpenTask).toHaveBeenCalledWith(expect.objectContaining({ key: '/w/b2-b3' }), 'T1')
-  })
-
-  it('work_dir 为空的任务挂到主目录（原地模式）', () => {
-    render(<ProjectTree {...props({ inPlaceTask: true })} />)
-    // 主目录行下应出现这条任务
-    expect(screen.getByText('原地任务')).toBeInTheDocument()
-  })
-
-  it('任务看板入口在底部图标区，不在顶部；也没有开发机入口', () => {
-    // why：看板 / 工单 / 设置是同一类东西——都是「离开这棵树去别处看」的全局
-    // 入口。看板原先单独钉在顶部，那个位置让它看起来像是树的一部分
-    const onOpenBoard = vi.fn()
-    const { container } = render(<ProjectTree {...props({ onOpenBoard })} />)
-    const board = screen.getByRole('button', { name: /任务看板/ })
-    const footer = container.querySelector('.border-t')
-    expect(footer?.contains(board)).toBe(true)
-    fireEvent.click(board)
-    expect(onOpenBoard).toHaveBeenCalled()
-    expect(screen.queryByRole('button', { name: '开发机' })).not.toBeInTheDocument()
-  })
-
-  it('账本未启用时任务看板标题不带未挂账', () => {
-    render(<ProjectTree {...props({ ledgerEnabled: false })} />)
-    const board = screen.getByRole('button', { name: '任务看板' })
-    expect(board).toHaveAttribute('title', '任务看板')
-    expect(board.getAttribute('title')).not.toContain('未挂账')
-  })
-
-  it('「添加项目」在「项目 N」标题行里，不在底部入口区', () => {
-    // why：它改变树本身，与底部那排「离开这棵树去别处看」的跳转入口不是一类
-    // 东西；且原先钉在底部时离它作用的对象（项目列表）一屏远
-    const onAddProject = vi.fn()
-    const { container } = render(<ProjectTree {...props({ onAddProject })} />)
-    const add = screen.getByRole('button', { name: '添加项目' })
-    const header = container.querySelector('[data-testid="project-count"]')!.parentElement!
-    expect(header.contains(add)).toBe(true)
-    const footer = container.querySelector('.border-t')
-    expect(footer?.contains(add)).toBe(false)
-    fireEvent.click(add)
-    expect(onAddProject).toHaveBeenCalled()
-  })
-
-  it('底部入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
-    render(<ProjectTree {...props({ ticketCount: 0 })} />)
-    expect(screen.getByRole('button', { name: /任务看板/ })).toBeInTheDocument()
-    // 任务名「重构工单通道」里含「工单」子串，正则用 ^$ 锚定到角标按钮本身
-    const ticketBtn = screen.getByRole('button', { name: /^工单$/ })
-    expect(ticketBtn).toBeInTheDocument()
-    expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
-    // 角标只在 ticketCount>0 时渲染。不能靠 queryByText('0')：RowCounts 改图标形态后
-    // 目录行会把值为 0 的计数渲染成可见的「0」，这里按角标自己的 token 查
-    expect(ticketBtn.querySelector('.bg-state-intervention')).toBeNull()
-  })
-
-  it('工单数大于 0 时显示角标并可点开', () => {
-    const onOpenTickets = vi.fn()
-    render(<ProjectTree {...props({ ticketCount: 3, onOpenTickets })} />)
-    expect(screen.getByText('3')).toBeInTheDocument()
-    fireEvent.click(screen.getByRole('button', { name: /^工单$/ }))
-    expect(onOpenTickets).toHaveBeenCalled()
-  })
-
-  it('设置入口可点', () => {
-    const onOpenSettings = vi.fn()
-    render(<ProjectTree {...props({ onOpenSettings })} />)
-    fireEvent.click(screen.getByRole('button', { name: '设置' }))
-    expect(onOpenSettings).toHaveBeenCalled()
-  })
-
-  it('未归属任务行回调的首参是 null（没有基准目录）', () => {
-    const onOpenTask = vi.fn()
-    const tree: ProjectTreeResp = { projects: [], unowned: [] }
-    const tasks = [task({ id: 'U1', project_id: '', machine: '', work_dir: '/x', name: '游离任务' })]
-    render(<ProjectTree tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()} onSelectDir={vi.fn()} onOpenTask={onOpenTask} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()} />)
+    expect(screen.getByTestId('task-machine')).toHaveTextContent('本机')
+    const dataTransfer = { setData: vi.fn(), effectAllowed: '' }
+    fireEvent.dragStart(screen.getByText('游离任务').closest('button')!, { dataTransfer })
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_TASK_MIME, 'u1')
+    expect(dataTransfer.setData).toHaveBeenCalledWith(DRAG_BASE_MIME, 'null')
     fireEvent.click(screen.getByText('游离任务'))
-    expect(onOpenTask).toHaveBeenCalledWith(null, 'U1')
+    expect(onOpenTask).toHaveBeenCalledWith(null, 'u1')
+  })
+
+  it('未归属行与任务组同一个排序键（created_at 降序）', () => {
+    const tree: ProjectTreeResp = { projects: [], unowned: [] }
+    const tasks = [
+      task({ id: 'u1', project_id: '', machine: '', work_dir: '/x', name: '游离旧', created_at: '2026-08-01T00:00:00Z' }),
+      task({ id: 'u2', project_id: '', machine: '', work_dir: '/x', name: '游离新', created_at: '2026-08-29T00:00:00Z' }),
+    ]
+    render(
+      <ProjectTree
+        tree={tree} tasks={tasks} selectedKey={null} ticketCount={0} ticketsByDir={new Map()}
+        openItems={[]} focusedTaskId={null} onFocusOpenItem={vi.fn()} onOpenTerminalAt={vi.fn()}
+        onOpenDirectory={vi.fn()} onOpenTask={vi.fn()} onOpenBoard={vi.fn()} onOpenTickets={vi.fn()} onOpenSettings={vi.fn()}
+      />,
+    )
+    expect(screen.getAllByTestId('task-row').map((row) => row.textContent)).toEqual(['游离新本机', '游离旧本机'])
   })
 
   it('渲染搜索框与「项目 N」，N 默认是项目总数', () => {
@@ -336,6 +770,9 @@ describe('ProjectTree', () => {
     expect(screen.getByPlaceholderText('搜索项目、机器或任务')).toBeInTheDocument()
     expect(screen.getByText('项目')).toBeInTheDocument()
     expect(screen.getByTestId('project-count')).toHaveTextContent('1')
+    expect(screen.getByTestId('project-overview')).toBeVisible()
+    expect(screen.getByRole('button', { name: '添加项目' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '显示偏好' })).toBeVisible()
   })
 
   it('搜任务名：该任务可见，无关目录不可见', () => {
@@ -345,6 +782,30 @@ describe('ProjectTree', () => {
     })
     expect(screen.getByText('重构工单通道')).toBeInTheDocument()
     expect(screen.queryByText('main')).not.toBeInTheDocument()
+  })
+
+  it('搜机器名：该机器行与它的任务可见', () => {
+    const p = props({})
+    const tree: ProjectTreeResp = {
+      projects: [{
+        ...p.tree.projects[0],
+        locations: [
+          ...p.tree.projects[0].locations,
+          {
+            machine: 'linux-01', name: 'handoff', path: '/srv/w', probe_error: '',
+            workspaces: [{ path: '/srv/w', branch: 'main', head: 'b', is_main: true, managed: false, created_at: '' }],
+          },
+        ],
+      }],
+      unowned: [],
+    }
+    const tasks = [
+      ...p.tasks,
+      task({ id: 'T2', project_id: 'p1', machine: 'linux-01', work_dir: '/srv/w', name: '远端的活' }),
+    ]
+    render(<ProjectTree {...p} tree={tree} tasks={tasks} />)
+    fireEvent.change(screen.getByPlaceholderText('搜索项目、机器或任务'), { target: { value: 'linux-01' } })
+    expect(screen.getByText('远端的活')).toBeInTheDocument()
   })
 
   it('搜项目名：N 仍是 1，整棵子树可见', () => {
@@ -373,15 +834,15 @@ describe('ProjectTree', () => {
 
     // 先手动折叠项目 handoff
     fireEvent.click(screen.getByText('handoff'))
-    expect(screen.queryByText('main')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('machine-row')).not.toBeInTheDocument()
 
     // 搜索期间强制展开
     fireEvent.change(input, { target: { value: 'handoff' } })
-    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByTestId('machine-row')).toBeInTheDocument()
 
     // 清空后折叠态原样回来
     fireEvent.change(input, { target: { value: '' } })
-    expect(screen.queryByText('main')).not.toBeInTheDocument()
+    expect(screen.queryByTestId('machine-row')).not.toBeInTheDocument()
   })
 
   it('⌘K 聚焦搜索框', () => {
@@ -390,6 +851,19 @@ describe('ProjectTree', () => {
     expect(document.activeElement).not.toBe(input)
     fireEvent.keyDown(window, { key: 'k', metaKey: true })
     expect(document.activeElement).toBe(input)
+  })
+
+  it('焦点在 xterm textarea 时 ⌘K 不抢搜索', () => {
+    render(<ProjectTree {...props()} />)
+    const ta = document.createElement('textarea')
+    ta.className = 'xterm-helper-textarea'
+    document.body.appendChild(ta)
+    ta.focus()
+    const search = screen.getByPlaceholderText('搜索项目、机器或任务')
+    fireEvent.keyDown(window, { key: 'k', metaKey: true })
+    expect(document.activeElement).toBe(ta)
+    expect(document.activeElement).not.toBe(search)
+    ta.remove()
   })
 
   it('Ctrl+K 同样聚焦（非 mac）', () => {
@@ -415,48 +889,30 @@ describe('ProjectTree', () => {
     fireEvent.keyDown(window, { key: 'k' })
     expect(document.activeElement).not.toBe(input)
   })
+})
 
-  it('左栏任务行的圆点跟随任务状态', () => {
-    const p = props()
-    p.tasks = [
-      task({ id: 'T1', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '跑测试', state: 'running' }),
-      task({ id: 'T2', project_id: 'p1', machine: '', work_dir: '/w/b2-b3', name: '等你答复的活', state: 'waiting_answer' }),
-    ]
-    const { container } = render(<ProjectTree {...p} />)
-    // 2 个 active：本机行一个连接态圆点 + 任务行 running 一个
-    expect(container.querySelectorAll('.bg-state-active')).toHaveLength(2)
-    expect(container.querySelectorAll('.bg-state-intervention')).toHaveLength(1)
+describe('ProjectTree 结构细节', () => {
+  it('树独立滚动，底部入口不在滚动区内', () => {
+    const { container } = render(<ProjectTree {...props()} />)
+    const scroller = container.querySelector('[data-testid="tree-scroll"]')!
+    expect(scroller.className).toMatch(/overflow-y-auto/)
+    expect(scroller.className).toMatch(/min-h-0/)
+    const addBtn = screen.getByRole('button', { name: /添加项目/ })
+    expect(scroller.contains(addBtn)).toBe(false)
   })
 
-  it('工单角标用状态 token，不用裸 amber', () => {
-    const { container } = render(<ProjectTree {...props({ ticketCount: 3 })} />)
-    const badge = screen.getByText('3')
-    expect(badge.className).toContain('bg-state-intervention')
-    expect(container.innerHTML).not.toContain('bg-amber-500')
+  it('行上不再渲染计数控件（计数只用于排序与折叠判据的内部使用）', () => {
+    const onAddProject = vi.fn()
+    const { container } = render(<ProjectTree {...props({ onAddProject })} />)
+    expect(screen.queryByTitle('开发目录')).toBeNull()
+    expect(container.querySelector('[data-testid="machine-row"]')?.textContent).not.toContain('开发目录')
   })
 
-  it('「项目 N」的标签与数字之间有间隔，数字更浅', () => {
+  it('项目图标统一使用原型绿色', () => {
     render(<ProjectTree {...props()} />)
-    const count = screen.getByTestId('project-count')
-    // 数字与标签必须是两个可区分的元素，且数字带独立的浅色类
-    expect(count.className).toMatch(/text-muted-foreground|opacity/)
-    // 间隔靠父容器的 gap 或数字自身的 margin，两者取一即可
-    const parent = count.parentElement!
-    expect(parent.className + count.className).toMatch(/gap-|ml-/)
-  })
-
-  it('机器行右端只剩计数，没有常驻的注销按钮压在上面', () => {
-    // why：absolute right-2 的注销按钮与同一行右端的 RowCounts 抢位置。
-    // 08-14 只修了垂直（定位上下文从 578px 子树收进机器行），水平仍然重叠
-    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
-    expect(container.querySelector('[aria-label="注销"]')).toBeNull()
-  })
-
-  it('右键机器行弹出菜单，含「注销」', () => {
-    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
-    const row = container.querySelector('[data-testid="machine-row"]')!
-    fireEvent.contextMenu(row)
-    expect(screen.getByRole('menuitem', { name: '注销' })).toBeInTheDocument()
+    const icons = Array.from(document.querySelectorAll('[data-project-color]'))
+    expect(icons.length).toBeGreaterThan(0)
+    expect(new Set(icons.map((icon) => icon.getAttribute('data-project-color')))).toEqual(new Set(['green']))
   })
 
   it('右键机器行弹出菜单，含「编辑」「注销」两项', () => {
@@ -497,34 +953,71 @@ describe('ProjectTree', () => {
     fireEvent.contextMenu(container.querySelector('[data-testid="machine-row"]')!)
     expect(screen.queryByRole('menu')).toBeNull()
   })
-
-  it('树独立滚动，底部入口不在滚动区内', () => {
-    const { container } = render(<ProjectTree {...props()} />)
-    const scroller = container.querySelector('[data-testid="tree-scroll"]')!
-    expect(scroller.className).toMatch(/overflow-y-auto/)
-    expect(scroller.className).toMatch(/min-h-0/) // 缺这句 overflow 在 flex 子项里不生效
-    // 「添加项目」必须在滚动容器之外
-    const addBtn = screen.getByRole('button', { name: /添加项目/ })
-    expect(scroller.contains(addBtn)).toBe(false)
-  })
-
-  it('项目图标带取色标记，同名项目刷新后同色', () => {
-    const { unmount } = render(<ProjectTree {...props()} />)
-    const first = document.querySelector('[data-project-color]')!.getAttribute('data-project-color')
-    unmount()
-    render(<ProjectTree {...props()} />)
-    expect(document.querySelector('[data-project-color]')!.getAttribute('data-project-color')).toBe(first)
-  })
 })
 
 describe('dock 入口', () => {
-  // 流程页以前只能手敲 URL——dock 上没有它的按钮，而 spec §5 写的是
-  // 「入口挂底部 dock」（2026-08-19 真机找不到）。
-  it('有流程页入口', () => {
+  it('任务看板入口在底部图标区；流程入口可点；设置可点', () => {
+    const onOpenBoard = vi.fn()
     const onOpenFlows = vi.fn()
-    render(<ProjectTree {...props({ onOpenFlows })} />)
+    const onOpenSettings = vi.fn()
+    const { container } = render(<ProjectTree {...props({ onOpenBoard, onOpenFlows, onOpenSettings })} />)
+    const board = screen.getByRole('button', { name: /任务看板/ })
+    const footer = container.querySelector('.border-t')
+    expect(footer?.contains(board)).toBe(true)
+    fireEvent.click(board)
+    expect(onOpenBoard).toHaveBeenCalled()
     fireEvent.click(screen.getByLabelText('流程'))
     expect(onOpenFlows).toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: '设置' }))
+    expect(onOpenSettings).toHaveBeenCalled()
+  })
+
+  it('账本未启用时任务看板标题不带未挂账', () => {
+    render(<ProjectTree {...props({ ledgerEnabled: false })} />)
+    const board = screen.getByRole('button', { name: '任务看板' })
+    expect(board).toHaveAttribute('title', '任务看板')
+    expect(board.getAttribute('title')).not.toContain('未挂账')
+  })
+
+  it('「添加项目」在「项目 N」标题行里，不在底部入口区', () => {
+    const onAddProject = vi.fn()
+    const { container } = render(<ProjectTree {...props({ onAddProject })} />)
+    const add = screen.getByRole('button', { name: '添加项目' })
+    const header = container.querySelector('[data-testid="project-count"]')!.parentElement!
+    expect(header.contains(add)).toBe(true)
+    const footer = container.querySelector('.border-t')
+    expect(footer?.contains(add)).toBe(false)
+    fireEvent.click(add)
+    expect(onAddProject).toHaveBeenCalled()
+  })
+
+  it('底部入口都在；工单数为 0 时按钮仍在但不显示角标', () => {
+    render(<ProjectTree {...props({ ticketCount: 0 })} />)
+    expect(screen.getByRole('button', { name: /任务看板/ })).toBeInTheDocument()
+    const ticketBtn = screen.getByRole('button', { name: /^工单$/ })
+    expect(ticketBtn).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: '设置' })).toBeInTheDocument()
+    expect(ticketBtn.querySelector('.bg-state-intervention')).toBeNull()
+  })
+
+  it('工单数大于 0 时显示角标并可点开', () => {
+    const onOpenTickets = vi.fn()
+    render(<ProjectTree {...props({ ticketCount: 3, onOpenTickets })} />)
+    expect(screen.getByText('3')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: /^工单$/ }))
+    expect(onOpenTickets).toHaveBeenCalled()
+  })
+
+  it('工单角标用状态 token，不用裸 amber', () => {
+    const { container } = render(<ProjectTree {...props({ ticketCount: 3 })} />)
+    const badge = screen.getByText('3')
+    expect(badge.className).toContain('bg-state-intervention')
+    expect(container.innerHTML).not.toContain('bg-amber-500')
+  })
+
+  it('机器行右端没有常驻的注销按钮', () => {
+    const { container } = render(<ProjectTree {...props({ onUnregister: vi.fn() })} />)
+    expect(container.querySelector('[aria-label="注销"]')).toBeNull()
   })
 })
 
@@ -539,13 +1032,12 @@ describe('显示偏好', () => {
   })
 
   it('开「隐藏无活跃任务的工作树」后，没有活跃任务的目录收进「已隐藏」行，点开还能看到', () => {
-    // 默认树里 /w 是主目录（豁免），/w/b2-b3 挂着一条 running 任务。
-    // 把那条任务改成 done，它就成了空闲目录
     const p = props({})
     const tasks = p.tasks.map((t) => ({ ...t, state: 'done' }))
     render(<ProjectTree {...p} tasks={tasks} />)
     fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏无活跃任务的工作树/ }))
+    fireEvent.click(screen.getByTestId('machine-row'))
     expect(screen.queryByText('integration/b2-b3')).toBeNull()
     fireEvent.click(screen.getByText(/已隐藏 1 个目录/))
     expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
@@ -557,8 +1049,9 @@ describe('显示偏好', () => {
     render(<ProjectTree {...p} tasks={tasks} />)
     fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
     fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏无活跃任务的工作树/ }))
-    expect(screen.getByText('main')).toBeInTheDocument()          // 主目录
-    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument() // 选中目录
+    fireEvent.click(screen.getByTestId('machine-row'))
+    expect(screen.getByText('main')).toBeInTheDocument()
+    expect(screen.getByText('integration/b2-b3')).toBeInTheDocument()
     expect(screen.queryByText(/已隐藏/)).toBeNull()
   })
 
@@ -577,15 +1070,6 @@ describe('显示偏好', () => {
     expect(screen.getByRole('menuitemcheckbox', { name: /handoff/ })).toBeInTheDocument()
     expect(screen.queryByRole('menuitem', { name: '全选' })).toBeNull()
     expect(screen.queryByRole('menuitem', { name: '全不选' })).toBeNull()
-  })
-
-  it('默认不显示文件夹数量；取消勾选后项目行出现开发目录', () => {
-    render(<ProjectTree {...props({})} />)
-    expect(screen.queryByTitle('开发目录')).toBeNull()
-    fireEvent.click(screen.getByRole('button', { name: '显示偏好' }))
-    fireEvent.click(screen.getByRole('menuitemcheckbox', { name: /隐藏文件夹数量/ }))
-    // 项目行和机器行都会画出这一段
-    expect(screen.getAllByTitle('开发目录').length).toBeGreaterThan(0)
   })
 
   it('开「隐藏已结束分组」后，「已结束」行不再出现', () => {

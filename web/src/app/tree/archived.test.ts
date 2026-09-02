@@ -1,41 +1,16 @@
 import { describe, expect, it } from 'vitest'
-import { archivedKey, archivedTasks, isTerminalState } from './archived'
-import type { ProjectTreeResp, Task } from '../../api/types'
+import { RECENT_TERMINAL_MS, archivedKey, archivedTasks, isTerminalState, recentlyCompleted } from './archived'
+import type { Task } from '../../api/types'
 
-// tree 造一棵只含必要字段的树：一个项目、两台机器。
-function tree(): ProjectTreeResp {
-  return {
-    projects: [
-      {
-        project_id: 'p1',
-        name: 'handoff',
-        locations: [
-          {
-            machine: '',
-            name: 'handoff',
-            path: '/repo',
-            probe_error: '',
-            workspaces: [
-              { path: '/repo', branch: 'main', head: 'aaaaaaa', is_main: true, managed: false, created_at: '' },
-              { path: '/wt/live', branch: 'feat', head: 'bbbbbbb', is_main: false, managed: true, created_at: '' },
-            ],
-          },
-          {
-            machine: 'mac-02',
-            name: 'handoff',
-            path: '/remote',
-            probe_error: '',
-            workspaces: [],
-          },
-        ],
-      },
-    ],
-    unowned: [],
-  } as unknown as ProjectTreeResp
-}
-
+// 任务夹具照抄 ProjectTree.test.tsx 的 task() 造法：只填必要字段。
 function t(x: Partial<Task>): Task {
-  return { id: 'id', project_id: 'p1', machine: '', work_dir: '', state: 'completed', name: 'n', ...x } as Task
+  return {
+    id: 'i', target: '', repo_path: '', branch: '', plan_path: '', plan_summary: '',
+    executor_session: '', state: 'completed', created_at: '', updated_at: '', name: 'n',
+    executor: 'opencode', model: '', work_dir: '', worktree_managed: false,
+    base_commit: '', base_ahead: 0, repo_dirty_count: 0, repo_dirty_files: '',
+    done_note: '', machine: '', project_id: 'p1', ...x,
+  } as Task
 }
 
 describe('isTerminalState', () => {
@@ -47,40 +22,78 @@ describe('isTerminalState', () => {
   })
 })
 
-describe('archivedTasks', () => {
-  it('目录已被回收的终态任务按 项目+机器 归集', () => {
-    const tasks = [
-      t({ id: 'gone', work_dir: '/wt/removed' }),
-      t({ id: 'gone-failed', work_dir: '/wt/removed2', state: 'failed' }),
-      t({ id: 'remote', machine: 'mac-02', work_dir: '/remote/wt/x' }),
-    ]
-    const out = archivedTasks(tree(), tasks)
-    expect(out.get(archivedKey('p1', ''))?.map((x) => x.id)).toEqual(['gone', 'gone-failed'])
-    expect(out.get(archivedKey('p1', 'mac-02'))?.map((x) => x.id)).toEqual(['remote'])
+describe('archivedTasks（B288 口径：项目内全部终态，不再看目录）', () => {
+  it('completed 任务目录还在（原地/工作树健在）也收进', () => {
+    const out = archivedTasks([t({ id: 'live', work_dir: '/w/live' })])
+    expect(out.get(archivedKey('p1'))?.map((x) => x.id)).toEqual(['live'])
   })
 
-  it('目录还在的终态任务不收——它照常挂在目录行下面', () => {
-    const out = archivedTasks(tree(), [t({ id: 'live', work_dir: '/wt/live' })])
+  it('completed 任务目录已被回收（orphan）同样收进（现状回归）', () => {
+    const out = archivedTasks([t({ id: 'gone', work_dir: '/w/gone' })])
+    expect(out.get(archivedKey('p1'))?.map((x) => x.id)).toEqual(['gone'])
+  })
+
+  it('failed 同收；running 与 waiting_* 不收', () => {
+    const out = archivedTasks([
+      t({ id: 'f', state: 'failed' }),
+      t({ id: 'r', state: 'running' }),
+      t({ id: 'w1', state: 'waiting_answer' }),
+      t({ id: 'w2', state: 'waiting_review' }),
+    ])
+    expect(out.get(archivedKey('p1'))?.map((x) => x.id)).toEqual(['f'])
+  })
+
+  it('未归属任务（project_id 为空）不收', () => {
+    const out = archivedTasks([t({ id: 'orphan', project_id: '' })])
     expect(out.size).toBe(0)
   })
 
-  it('原地任务（work_dir 为空）在主目录还在时不收', () => {
-    const out = archivedTasks(tree(), [t({ id: 'inplace', work_dir: '' })])
-    expect(out.size).toBe(0)
+  it('同项目两台机器的终态归进同一个键，值内顺序 = 任务流原顺序', () => {
+    const out = archivedTasks([
+      t({ id: 'a', machine: '' }),
+      t({ id: 'b', machine: 'mac-02', state: 'failed' }),
+      t({ id: 'c', machine: '' }),
+    ])
+    const list = out.get(archivedKey('p1'))
+    expect(list).toHaveLength(3)
+    expect(list!.map((x) => x.id)).toEqual(['a', 'b', 'c'])
   })
 
-  it('非终态任务一律不收，哪怕目录已经不在', () => {
-    const out = archivedTasks(tree(), [t({ id: 'run', state: 'running', work_dir: '/wt/removed' })])
-    expect(out.size).toBe(0)
+  it('没有终态任务的项目不出键（调用方按「取不到就不渲染」处理）', () => {
+    const out = archivedTasks([t({ id: 'r', state: 'running' })])
+    expect(out.has(archivedKey('p1'))).toBe(false)
   })
 
-  it('未归属任务不收（树末尾的「未归属」分组管它们）', () => {
-    const out = archivedTasks(tree(), [t({ id: 'orphan', project_id: '', work_dir: '/wt/removed' })])
-    expect(out.size).toBe(0)
+  it('archivedKey 键就是 projectID 本身', () => {
+    expect(archivedKey('p1')).toBe('p1')
+  })
+})
+
+describe('recentlyCompleted（终态 30 分钟缓冲窗，2026-08-29）', () => {
+  // RFC3339Nano 例：updated_at 距 now 恰好 10 分钟。
+  const NOW = Date.parse('2026-08-29T12:00:00+08:00')
+  const ago = (ms: number) => new Date(NOW - ms).toISOString()
+
+  it('终态且在窗内（29 分钟）→ true：留在任务列表', () => {
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: ago(29 * 60_000) }), NOW)).toBe(true)
+    expect(recentlyCompleted(t({ state: 'failed', updated_at: ago(29 * 60_000) }), NOW)).toBe(true)
   })
 
-  it('项目在该机器上没有位置时不收——缺的是整个位置，不是一个目录', () => {
-    const out = archivedTasks(tree(), [t({ id: 'nowhere', machine: 'mac-99', work_dir: '/x' })])
-    expect(out.size).toBe(0)
+  it('终态但已出窗（31 分钟）→ false：交给「已结束」', () => {
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: ago(31 * 60_000) }), NOW)).toBe(false)
+  })
+
+  it('窗界值本身（恰好 30 分钟）算出窗——「以内」是开区间', () => {
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: ago(RECENT_TERMINAL_MS) }), NOW)).toBe(false)
+  })
+
+  it('非终态一律 false（缓冲窗不是未终态任务的通行证）', () => {
+    expect(recentlyCompleted(t({ state: 'running', updated_at: ago(0) }), NOW)).toBe(false)
+    expect(recentlyCompleted(t({ state: 'waiting_review', updated_at: ago(0) }), NOW)).toBe(false)
+  })
+
+  it('updated_at 解析不了时按出窗处理：宁可早进已结束，不假留在列表', () => {
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: '' }), NOW)).toBe(false)
+    expect(recentlyCompleted(t({ state: 'completed', updated_at: '不是时间' }), NOW)).toBe(false)
   })
 })

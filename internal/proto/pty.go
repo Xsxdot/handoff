@@ -70,6 +70,7 @@ const (
 	PtyCtrlExit     = "exit"     // 服务端 → 客户端，shell 已退出
 	PtyCtrlError    = "error"    // 服务端 → 客户端
 	PtyCtrlResize   = "resize"   // 客户端 → 服务端
+	PtyCtrlDebug    = "debug"    // 客户端 → 服务端，B270 取证，不进 PTY
 )
 
 // PtyControl 是 /ws/pty 上双向共用的控制帧。
@@ -85,8 +86,11 @@ type PtyControl struct {
 	Type      string `json:"type"`
 	Since     uint64 `json:"since"`
 	Truncated bool   `json:"truncated"`
-	ExitCode  *int   `json:"exit_code,omitempty"`
-	Message   string `json:"message,omitempty"`
-	Cols      int    `json:"cols,omitempty"`
-	Rows      int    `json:"rows,omitempty"`
+	// BacklogBytes 是 attached 建连帧中旧录像的字节数；不带 omitempty，
+	// 因为 0 与旧服务端缺少该键必须能被前端区分。
+	BacklogBytes uint64 `json:"backlog_bytes"`
+	ExitCode     *int   `json:"exit_code,omitempty"`
+	Message      string `json:"message,omitempty"`
+	Cols         int    `json:"cols,omitempty"`
+	Rows         int    `json:"rows,omitempty"`
 }

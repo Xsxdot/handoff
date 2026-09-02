@@ -1,0 +1,4 @@
+{
+  "domain": "d_execution_contract",
+  "responsibility": "定义 executor 挂载契约（Adapter 接口、事件与结果类型）与教模型用的回合帧协议，是执行域对编排域的唯一承诺面。"
+}

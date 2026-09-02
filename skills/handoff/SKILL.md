@@ -33,7 +33,7 @@ handoff 把「写计划的人」和「干活的人」拆成两个进程：
 
 ### 铁律：一切经 CLI
 
-需要看 executor 在干什么，用 `handoff attach`（经 agentd 的 render 流，远程也不需要 ssh）。需要看代码，用 `handoff diff` / `fetch` / `run`。需要回收，用 `handoff done` / `stop`；归档后残留的 managed worktree 用 `handoff reclaim` 清。
+需要看 executor 在干什么，用 `handoff attach`（经 agentd 的 render 流，远程也不需要 ssh）。需要看代码，用 `handoff diff` / `fetch` / `run`。需要回收，用 `handoff done` / `stop`；归档后残留的 managed worktree 用 `handoff reclaim` 清；终态任务的 tmp/gocache 叶子和残留 managed 树用 `handoff gc`（默认预览，`--yes` 才删）。
 
 **唯一例外**：任务已经彻底死了、CLI 三条路（`resume` / `continue` / `done`）全被拒，此时按任务目录 `proc.json` 里的 `handle.pid` 手工 kill shim 进程是兜底。但那是排障，不是日常。
 
@@ -175,7 +175,7 @@ stdout 上本来就只有 JSON 事件——要静音用 `2>/dev/null`，一个�
   交付，要看历史只能 `handoff show`。一次性 `wait`（不带 `--follow`）没有对账机制，
   会从本机游标（换机接管时即 seq 0）起逐条重放。
 
-这不是 bug，是「事件即信号、show 即权威」分工的推论。所以纪律固定为：**醒来先 show**。历史 question 的 ticket 已被消耗，补 reply 会 404——正常，跳过即可；历史 completed 也不代表当前在 `waiting_review`，state 说了算。
+这不是 bug，是「事件即信号、show 即权威」分工的推论。所以纪律固定为：醒来先 show。发现 reply 返回 404 后，必须用任务实际所在机器执行 `handoff show <task> --target <机器>`，读取 `pending_tickets`：ticket 仍在列表就原样重发 reply；不在列表才按已消耗处理。历史 completed 是否代表当前状态仍由 state 决定。
 
 ## 远程派发：代码怎么过去，改动怎么回来
 
@@ -251,7 +251,7 @@ handoff「代码在那台机器的哪个目录」——那是它自己的事。�
 
 - **`actionable` 是权威的「你还欠什么」**，每张带完整请求原文，可直接
   `reply --ticket <id>`。它**不限于间隙内**——断网前你就看见过、一直没答的也在里面。
-- `stale` 是间隙里已被审批链答掉的工单数，补 `reply` 会 404，跳过即可。
+- `stale` 只是间隙里已经被审批链答掉的工单数，不能单独决定某个 404 是否可跳过。遇到 404，先在任务实际所在机器执行 `handoff show <task> --target <机器>`，检查 `pending_tickets`；仍在列表就原样重发，列表没有才跳过。不要把 backlog_summary 的计数当成当前欠办清单。
 - `missed_truncated` 为 `true` 时，`missed` / `stale` 的语义是「**至少**这么多」
   ——快照的事件窗口没覆盖到 cursor。此时 `actionable` 仍然精确。
 - 摘要行**不是**事件，`agentd` 不存这个类型；它只在客户端合成。
@@ -379,6 +379,8 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 | **你（主会话）** | 逐节点点火 `card dispatch --step`（**连点就是跳过协调者检查点**）；人工列（spec / acceptance / finish）做完后自己 `card move`；定级跳边 |
 | **人** | 答裁决、批工单、合 main、推「已完成」 |
 
+- 节点声明的法定产出路径必须逐字使用；不要在 basename 前加 `YYYY-MM-DD-` 日期前缀。带日期前缀的是历史文件，不是本节点的法定产出；写错时按 prompt 给出的法定路径改名。
+
 一期你就是那台发动机。三期规则引擎接手「按按钮」的活，调的是同一个环节执行体。
 
 ### 1. 唤醒先查账，不信会话记忆
@@ -436,11 +438,16 @@ handoff card wait <id> [--subtree] [--timeout 3h]
 - `--step` 会自动做三件事：**认领卡的驱动权**（只写 `driver_session`，**不改卡的状态**；
   纯人工节点直接跳过认领）、把 task 回链到卡、把模板版本与纪律块 hash 快照进派发事件。
   **「挂卡」不是一个你要单独做的动作。**
-- **`--step` 提交后立刻返回**（202 受理）：CLI 只把请求交给本机 agentd，编排在
-  agentd 里跑完；进展看 `card wait` 或看板，**命令返回值不带回合结论**。卡号或
-  节点名打错当场 404 / 400。**两条硬前提**：本机 agentd 必须活着（够不着就干净
-  失败，不回落本地直跑）；CLI 与 agentd 必须**同批升级**（新 CLI 的覆盖项旧
-  agentd 不认，每次派发都以「目标机未定」失败）。
+- **`--step` 提交后先短等首态**：CLI 只把请求交给本机 agentd，HTTP 仍是 202，编排仍在
+  agentd 里异步运行。CLI 在 POST 前记下本机账本 seq 水位，最多短等约 20 秒，只看这次水位
+  之后的卡事件：看到 `dispatched` 就在 stdout 打出目标机、新分支 `branch`、起点分支
+  `base`、起点短号和纪律块名；看到 reason=`派发失败` 的 `needs_human` 就把卡上
+  `haltForHuman` 的 comment 正文写到 stderr 并以非零退出。HTTP 202 之前的 404/400/409、
+  纪律探活/拒发闸 400 仍当场失败。短等窗口内没有这两类首态时，stdout 打「已受理，首态未到；
+  进展见 handoff card wait」，退出 0；命令返回值不带回合结论。不要用 task WS 或卡上历史
+  `dispatched` 推断这一次派发。CLI 与 agentd 必须同批升级。
+- 本机卡派发省略 `--target`；不要在 `targets` 登记指向本机 loopback 的自机。`--target 本机`
+  不是合法键；版本不一致时的「目标机未定」仍是版本 skew 文案，不表示本机 target 缺失。
 - 裁决落在卡的事件流（`review_verdict`）：pass 自动进下一列，fail 退回上一节点
   再来一轮；裁决解析失败或超轮打 `needs_human`，人工裁决后把结论 `note` 落卡，
   重派前 `card needs <id> --clear`。
@@ -677,14 +684,14 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重开**，它不会自己好 |
 | 远程任务的 `wait` / `show` / `reply` 报 `task not found`（1008 / StatusPolicyViolation），id 明明是刚 dispatch 出来的 | **漏了 `--target`**，命令打到了本机 agentd——任务在执行机上，本机当然没有 | 看 stderr 里的 `addr=`：是 `127.0.0.1` 就是漏了 `--target`。补上重发即可，任务本身没事 |
 | `wait` 一直不返回 | 通常只是还没有事件 | 正常。stderr 的重连日志也正常。加 `--timeout` 兜底 |
-| 重开 follow 后吐出旧事件 | cursor 只在 wait 交付时推进；show/reply 不推进，换机接管从 0 起 | 正常。以 `show` 为准处置；历史 ticket 补 reply 404 也正常，跳过 |
+| 重开 follow 后吐出旧事件 | cursor 只在 wait 交付时推进；show/reply 不推进，换机接管从 0 起 | 以 show 为准；若 reply 404，先在任务实际所在机器执行 `handoff show <task> --target <机器>` 并检查 `pending_tickets`；仍在列表就原样重发，不在列表才跳过 |
 | `dispatch` 报「工作区不干净」 | **执行机上**的任务仓库有未提交/未跟踪改动 | 在执行机上提交或 stash 后重试（`--new-worktree` 可绕开主工作区的脏检查，但主仓库仍需可用） |
 | `dispatch` 报「本地工作区有 N 处未提交的已跟踪改动」 | **你本地**（不是执行机）有改动没提交，远程派发的基线不含它们，executor 会基于旧代码开工 | `git commit` 或 `git stash` 后重试；确认这些改动与本次任务无关时加 `--allow-dirty`（放行仍会打印被忽略的文件） |
 | `dispatch` 报 400「基线提交在任务仓库中不存在」 | 本地 HEAD 没 push，或执行机 fetch 不到（无凭证/网络不通） | `git push` 后重试；报文里的 fetch stderr 是根因原文。确实是不同仓库才用 `--no-sync-check` |
 | 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「分支 …，起点 …」行就是实际起点 |
 | `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复阶梯」看走到哪一级 |
 | 任务归档后有残留（worktree / executor 进程） | 回收失败（事件里会带残留提示） | worktree 用 `handoff reclaim` 回收；进程按事件提示处置，彻底死透按 `proc.json` 的 `handle.pid` 手工 kill shim |
-| `card dispatch --step` 打印「已受理」，但卡上零事件、看板毫无动静 | **驱动权泄漏**：上一轮编排异常中断（如 agentd 重启）没走到 `defer` 的释放，持有者会话早已死亡；而认领**永不因心跳僵死而失效**（`internal/ledger/tasks.go` 明写）。`--step` 是 202 受理，失败只进 agentd.log，卡上不留任何事件 | `grep 驱动认领被拒 ~/.handoff/agentd.log` 取真因（带 holder / claimer）。处置：`card takeover <id>` 显式接管，驱动归属落到人名下（不带 PID，不随本次调用结束失效），随后正常 `--step` 派发即可。`card release` 只对当前持有者生效，非持有者调用会失败并告知谁在持有——用它确认持有方，不要指望它替你解锁。（B239 前 takeover/release 均不可用，旧描述已作废）|
+| `card dispatch --step` 已受理后短等超时、卡上仍无 `dispatched`/`派发失败` 首态 | 202 只代表请求已受理；编排仍在 agentd 异步运行，正常首态可能在约 20 秒窗口外；入口认领拒绝/运行锁占用会在卡上 comment + `needs_human` 留痕，ViaTemplate 派发失败也会落卡 | stdout 的「已受理，首态未到；进展见 card wait」是正常短等超时，跟 `card wait`；若短等捕获 reason=`派发失败`，stderr 会有卡上 comment 正文且命令非 0。认领/运行锁问题先读卡上 comment 的 holder/reason；需要接管时用 `card takeover`，不要把 agentd.log 当成唯一证据。|
 
 **日志在哪**（在 executor 所在机器上）：
 

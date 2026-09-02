@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"embed"
+	"encoding/json"
 	"fmt"
 	"log"
 	"log/slog"
@@ -106,13 +107,66 @@ func main() {
 	logger = slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	logger.Info("桌面薄壳启动")
 
-	app := application.New(application.Options{
+	issueExternalBrowserURL := func(next string) (string, error) {
+		ep, state, err := shell.Resolve("")
+		if err != nil {
+			logger.Error("读取 agentd 配置失败",
+				"result", "resolve_failed", "cause", err)
+			return "", err
+		}
+		if state != shell.StateConfigured {
+			err := fmt.Errorf("agentd 尚未配置")
+			logger.Error("打开系统浏览器失败",
+				"result", "agentd_unconfigured", "state", state.String())
+			return "", err
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		return shell.ConsoleURLWithNext(ctx, ep, shell.DefaultDeviceName(), next)
+	}
+
+	var app *application.App
+	app = application.New(application.Options{
 		Name:        "handoff-desktop",
 		Description: "handoff 控制台桌面壳",
 		Assets:      application.AssetOptions{Handler: application.AssetFileServerFS(assets)},
 		Mac: application.MacOptions{
 			// 承重：关掉最后一个窗口时进程必须活着，托盘才谈得上常驻
 			ApplicationShouldTerminateAfterLastWindowClosed: false,
+		},
+		// 外链控制台没有 Wails 前端 runtime 的公开 binding；这里只接收
+		// desktopShell.ts 的固定 raw 协议，URL 的同源/http(s) 校验在 shell 包完成。
+		RawMessageHandler: func(window application.Window, message string, originInfo *application.OriginInfo) {
+			sourceFrameURL := ""
+			if originInfo != nil {
+				sourceFrameURL = originInfo.Origin
+				if sourceFrameURL == "" {
+					sourceFrameURL = originInfo.TopOrigin
+				}
+			}
+			if shell.HandleExternalClipboardMessage(
+				logger, message, sourceFrameURL,
+				func(text string) bool {
+					logger.Info("原生剪贴板写入开始", "bytes", len(text))
+					ok := app.Clipboard.SetText(text)
+					if !ok {
+						logger.Warn("原生剪贴板写入失败", "bytes", len(text))
+					}
+					logger.Info("原生剪贴板写入完成", "bytes", len(text), "ok", ok)
+					return ok
+				},
+				func(requestID string, ok bool) {
+					emitClipboardResult(window, requestID, ok)
+				},
+			) {
+				return
+			}
+			if !shell.HandleExternalBrowserMessage(
+				logger, message, sourceFrameURL,
+				issueExternalBrowserURL, app.Browser.OpenURL,
+			) {
+				logger.Debug("忽略未识别的原始宿主消息", "message_bytes", len(message))
+			}
 		},
 	})
 
@@ -318,6 +372,20 @@ func main() {
 		log.Fatal(err)
 	}
 	logger.Info("薄壳正常退出；agentd 未被触碰")
+}
+
+// emitClipboardResult 把原生剪贴板写入结果回传给当前外链页面。
+//
+// requestID 只来自 shell 包已经校验过的短 ASCII 标识；这里仍使用 JSON 编码，
+// 让回传脚本的字符串边界由编码器保证，而不是依赖手写转义。
+func emitClipboardResult(window application.Window, requestID string, ok bool) {
+	eventName, _ := json.Marshal(shell.ExternalClipboardResultEvent)
+	id, _ := json.Marshal(requestID)
+	script := fmt.Sprintf(
+		"window.dispatchEvent(new CustomEvent(%s,{detail:{requestId:%s,ok:%t}}));",
+		eventName, id, ok,
+	)
+	window.ExecJS(script)
 }
 
 // rebuildTray 构建托盘菜单。

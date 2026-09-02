@@ -1,0 +1,4 @@
+{
+  "domain": "d_web_contract",
+  "responsibility": "后端 wire 契约在 TS 侧的镜像与请求函数：HTTP 客户端、WS 帧、PTY 与账本 API。"
+}

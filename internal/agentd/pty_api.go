@@ -3,7 +3,7 @@
 // 职责：
 //   - REST 三个端点：列会话（含 ?scope=all 扇出）、建会话、显式关会话
 //   - 把 base_path / base_kind 归一化成 ptyhost.OpenOptions
-//   - 组装会话环境：基础环境 + env_forward 解析结果
+//   - 组装会话环境：基础环境 + env_forward 解析结果 + 写死 GROK_OSC52_SINK（B303）
 //
 // 边界：
 //   - **不持有任何会话状态**，全部转交 s.pty（internal/ptyhost）
@@ -57,6 +57,24 @@ func (s *Server) launcherEnv(name string) ([]string, error) {
 		return nil, nil
 	}
 	return envfile.LoadFile(envfile.Dir(s.conf().DataDir), name, s.log)
+}
+
+// grokOsc52SinkEnv 是 Grok 在 PTY 里发 OSC 52 所需的环境变量（B303）。
+const grokOsc52SinkEnv = "GROK_OSC52_SINK=1"
+
+// pinGrokOsc52Sink 把 GROK_OSC52_SINK=1 钉进会话环境。
+//
+// 先剥掉同名键再放在末尾：execve/getenv 取首次出现，只 append 挡不住
+// sessionEnv 继承或 env_file 写在前面的 0/空。B303 写死，文件不能关。
+func pinGrokOsc52Sink(env []string) []string {
+	out := make([]string, 0, len(env)+1)
+	for _, e := range env {
+		if strings.HasPrefix(e, "GROK_OSC52_SINK=") {
+			continue
+		}
+		out = append(out, e)
+	}
+	return append(out, grokOsc52SinkEnv)
 }
 
 // resolvePtyBase 把请求里的 base_kind/base_path/rel 归一化成实际 cwd。
@@ -141,7 +159,7 @@ func (s *Server) handleCreatePtySession(w http.ResponseWriter, r *http.Request) 
 	}
 	sess, err := s.pty.Open(ptyhost.OpenOptions{
 		BasePath: base, BaseKind: kind, Shell: shell,
-		Env: append(s.sessionEnv(), extraEnv...), Cols: req.Cols, Rows: req.Rows,
+		Env: pinGrokOsc52Sink(append(s.sessionEnv(), extraEnv...)), Cols: req.Cols, Rows: req.Rows,
 		InitCommand: req.InitCommand,
 	})
 	if errors.Is(err, ptyhost.ErrNotSupported) {
@@ -154,7 +172,8 @@ func (s *Server) handleCreatePtySession(w http.ResponseWriter, r *http.Request) 
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "开终端失败: " + err.Error()})
 		return
 	}
-	s.log.Info("终端会话已建立", "session", sess.ID, "pid", sess.PID, "cwd", base, "base_kind", kind)
+	s.log.Info("终端会话已建立", "session", sess.ID, "pid", sess.PID, "cwd", base, "base_kind", kind,
+		"grok_osc52_sink", true)
 	writeJSON(w, http.StatusOK, ptySessionView(sess, ""))
 }
 

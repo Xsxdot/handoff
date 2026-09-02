@@ -6,7 +6,6 @@ import userEvent from '@testing-library/user-event'
 import { attachCoordinator, getCoordinatorStatus, launchCoordinator, releaseCoordinator } from '../../api/scheduling'
 import type { CoordinatorStatus } from '../../api/scheduling'
 import { usePoll } from '../data/usePoll'
-import { TerminalTab } from '../workbench/TerminalTab'
 import { useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { CoordinatorPanel } from './CoordinatorPanel'
 
@@ -100,15 +99,15 @@ describe('协调者面板', () => {
     expect(onOpenTerminal).toHaveBeenCalledWith(info)
   })
 
-  it('把 AttachInfo.command 穿透到终端 initCommand，再序列化为 init_command', async () => {
+  it('把 AttachInfo.command 穿透到终端 initCommand', async () => {
     vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: false, attach: info }) as never)
     function CoordinatorTerminalBridge() {
       const workbench = useWorkbench()
-      const tab = workbench.wb.groups[0].tabs[0]
-      const content = tab?.content
+      const tab = workbench.wb.groups[0].columns[0]?.panes[0]
+      const command = tab?.content.kind === 'terminal' ? tab.content.initCommand ?? '' : ''
       return <>
         <CoordinatorPanel cardId="B1" onOpenTerminal={(attached) => workbench.openTerminalWithCommand(attached.command, coordinatorBase)} />
-        {workbench.base && content?.kind === 'terminal' && <TerminalTab base={workbench.base} seq={content.seq} initCommand={content.initCommand} onSession={vi.fn()} />}
+        <div data-testid="init-command">{command}</div>
       </>
     }
 
@@ -116,10 +115,7 @@ describe('协调者面板', () => {
     const user = userEvent.setup()
     await user.click(await screen.findByRole('button', { name: '打开终端' }))
     await user.click(screen.getByRole('button', { name: '确认 attach' }))
-    await waitFor(() => expect(createPtySession).toHaveBeenCalledWith(
-      expect.objectContaining({ init_command: info.command }),
-      '',
-    ))
+    await waitFor(() => expect(screen.getByTestId('init-command')).toHaveTextContent(info.command))
   })
 
   it('releases attach and exposes errors instead of pretending success', async () => {

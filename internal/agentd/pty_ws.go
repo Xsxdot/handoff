@@ -3,7 +3,7 @@
 // 职责：
 //   - 建连：按 session/since 订阅 ptyhost，首帧回 attached（含 since 与 truncated）
 //   - 下行：binary 帧搬 PTY 原始字节，text 帧搬 exit / error 控制信息
-//   - 上行：binary 帧是用户按键，text 帧是 resize
+//   - 上行：binary 帧是用户按键，text 帧是 resize；debug 取证帧只记日志不进 PTY
 //
 // 边界：
 //   - 不持有会话状态，全部转交 s.pty
@@ -55,6 +55,7 @@ func (s *Server) handlePtyWS(w http.ResponseWriter, r *http.Request) {
 	// 把同一段输出重复画一遍（spec §5.3）。
 	if err := writeCtrl(ctx, conn, proto.PtyControl{
 		Type: proto.PtyCtrlAttached, Since: att.Since, Truncated: att.Truncated,
+		BacklogBytes: uint64(len(att.Backlog)),
 	}); err != nil {
 		s.log.Warn("终端 WS 首帧写失败", "session", id, "cause", err)
 		_ = conn.Close(websocket.StatusInternalError, "首帧写失败")
@@ -125,6 +126,10 @@ func (s *Server) pumpPtyUplink(ctx context.Context, conn *websocket.Conn, att *p
 		var ctrl proto.PtyControl
 		if err := json.Unmarshal(data, &ctrl); err != nil {
 			s.log.Warn("终端 WS 控制帧无法解析", "session", id, "cause", err)
+			continue
+		}
+		if ctrl.Type == proto.PtyCtrlDebug {
+			s.log.Debug("[DEBUG-b270] 前端", "session", id, "msg", ctrl.Message)
 			continue
 		}
 		if ctrl.Type != proto.PtyCtrlResize {

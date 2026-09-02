@@ -1,0 +1,18 @@
+{
+  "type": "preview.created",
+  "session": {
+    "id": "pvw-01",
+    "entry_url": "http://localhost:4173",
+    "via": [
+      "10.0.0.0/8",
+      "api.internal"
+    ],
+    "cwd": "/Users/dev/code/handoff",
+    "origin_url": "git@github.com:example/handoff.git",
+    "branch": "feat/b294-preview",
+    "created_at": "2026-08-11T10:30:00+08:00",
+    "ttl_seconds": 7200,
+    "machine": "mac-02"
+  },
+  "machine": "mac-02"
+}

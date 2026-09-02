@@ -20,6 +20,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 func installDetectCLI(t *testing.T, script string) {
@@ -46,8 +47,7 @@ func newDirectSchedEnv(t *testing.T, cfg *config.Config) *schedEnv {
 	t.Cleanup(func() { _ = dataStore.Close(); _ = ledgerStore.Close() })
 	srv := NewServer(cfg, dataStore, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	srv.SetupAutomation(ledgerStore)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	return &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: dataStore, token: cfg.Token}, svc: srv.Scheduling()}
 }
 
@@ -88,7 +88,7 @@ func TestCarrierDetectThroughHandlerWritesCoordinatorState(t *testing.T) {
 
 func newRemoteSchedEnv(t *testing.T, handler http.Handler) (*schedEnv, *httptest.Server) {
 	t.Helper()
-	remote := httptest.NewServer(handler)
+	remote := testhttp.NewServer(t, handler)
 	st, err := ledger.Open(t.TempDir() + "/ledger.db")
 	if err != nil {
 		remote.Close()
@@ -109,8 +109,7 @@ func newRemoteSchedEnv(t *testing.T, handler http.Handler) (*schedEnv, *httptest
 	t.Cleanup(func() { _ = dataStore.Close() })
 	srv := NewServer(cfg, dataStore, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	srv.SetupAutomation(st)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	return &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: nil, token: cfg.Token}, svc: srv.Scheduling()}, remote
 }
 

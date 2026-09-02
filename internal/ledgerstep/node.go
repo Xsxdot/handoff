@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -138,7 +139,37 @@ func (n *NodeStep) routeTo(cardID, to string) error {
 	return n.St.MoveCard(cardID, to, card.Status, n.actor())
 }
 
-// RunOnce 跑一次本节点。
+var reviewLedgerPathPrefixes = [...]string{
+	"docs/superpowers/ledgers",
+	"docs/ledgers",
+}
+
+// isReviewLedgerPath 只允许审阅节点写入两类台账目录自身或其 POSIX 子路径。
+// 使用字符串边界而非 filepath，是因为 Diff 契约传的是仓内 POSIX 路径，不能让执行平台
+// 的分隔符转换改变白名单；尾斜杠边界也防止 docs/ledgers-extra 越过目录边界。
+func isReviewLedgerPath(path string) bool {
+	for _, prefix := range reviewLedgerPathPrefixes {
+		if path == prefix || strings.HasPrefix(path, prefix+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+// reviewReadOnlyViolations 按 Diff 返回顺序保留全部白名单外路径，不去重、不排序，供
+// review 节点在裁决落账前形成可审计的普通评论。
+func reviewReadOnlyViolations(paths []string) []string {
+	violations := make([]string, 0)
+	for _, path := range paths {
+		if !isReviewLedgerPath(path) {
+			violations = append(violations, path)
+		}
+	}
+	return violations
+}
+
+// RunOnce 跑一次本节点；review 用途且裁决为 pass 时，会在裁决落账前用 Diff
+// 执行只读闸；成功抢救裁决时会为被丢弃字段写普通评论，写评论失败原样返回。
 //
 // 参数：cardID 卡。
 // 返回：Outcome（下一步动作 + 裁决 + 理由）；只有「本节点根本不该被执行」
@@ -248,6 +279,63 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		logger.Info("裁决解析失败转等人", "cause", parseErr)
 		return n.haltForHuman(cardID, "裁决解析失败", "裁决解析失败，报文原文：\n"+message)
 	}
+	if verdict.salvaged && (verdict.notesDropped || verdict.findingsDropped) {
+		dropped := make([]string, 0, 2)
+		if verdict.notesDropped {
+			dropped = append(dropped, "notes")
+		}
+		if verdict.findingsDropped {
+			dropped = append(dropped, "findings")
+		}
+		body := fmt.Sprintf("裁决 JSON 已抢救，仍按 %t 路由；以下字段因 JSON 损坏被丢弃：%s。Raw 保留在裁决事件中。",
+			verdict.Pass, strings.Join(dropped, "、"))
+		if err := n.gatedWrite("裁决抢救留痕"); err != nil {
+			return Outcome{}, err
+		}
+		if _, err := n.St.AddComment(cardID, body, "普通", n.actor()); err != nil {
+			logger.Warn("裁决抢救留痕失败", "dropped", dropped, "cause", err)
+			return Outcome{}, err
+		}
+		logger.Warn("裁决抢救字段已丢弃并留普通评论", "dropped", dropped)
+	}
+	// review 节点的只读闸必须在 RecordReviewVerdict 前取 Diff：Diff 失败不应
+	// 消耗轮次，越界则把内存 verdict 改为 fail 后走已有 on_fail 路由。
+	if verdict.Pass && n.Node.Override.Purpose == ledger.PurposeReview {
+		logger.Info("开始校验 review 节点只读改动", "target", target, "task", taskID)
+		if n.Diff == nil {
+			err := fmt.Errorf("review 节点 diff 依赖未装配")
+			logger.Error("读取审阅改动失败", "target", target, "task", taskID, "cause", err)
+			return n.haltForHuman(cardID, "读取审阅改动失败",
+				"本节点无法确认审阅轮是否只读：\n"+err.Error())
+		}
+		changedPaths, diffErr := n.Diff(ctx, target, taskID)
+		if diffErr != nil {
+			logger.Warn("读取审阅改动失败", "target", target, "task", taskID, "cause", diffErr)
+			return n.haltForHuman(cardID, "读取审阅改动失败",
+				"本节点无法确认审阅轮是否只读：\n"+diffErr.Error())
+		}
+		violations := reviewReadOnlyViolations(changedPaths)
+		if len(violations) == 0 {
+			logger.Info("review 节点只读改动通过", "target", target, "task", taskID,
+				"changed_paths", changedPaths)
+		} else {
+			verdict.Pass = false
+			body := "审阅节点检测到白名单外改动，按 fail 处理；越界路径：\n" +
+				strings.Join(violations, "\n")
+			if err := n.gatedWrite("审阅只读违规留痕"); err != nil {
+				logger.Warn("审阅只读违规留痕被写闸拒绝", "target", target, "task", taskID,
+					"paths", violations, "cause", err)
+				return Outcome{}, err
+			}
+			if _, err := n.St.AddComment(cardID, body, "普通", n.actor()); err != nil {
+				logger.Warn("审阅只读违规评论写入失败", "target", target, "task", taskID,
+					"paths", violations, "cause", err)
+				return Outcome{}, err
+			}
+			logger.Warn("review 节点只读闸未通过，按 fail 路由", "target", target, "task", taskID,
+				"out_of_scope_paths", violations)
+		}
+	}
 	if err := n.gatedWrite("裁决落账"); err != nil {
 		return Outcome{}, err
 	}
@@ -297,9 +385,18 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		if declaredPath == "" || !containsPath(changedPaths, declaredPath) {
 			body := "本节点要求的产出物路径：\n" + declaredPath +
 				"\n本轮实际改动文件：\n" + changedPathsText(changedPaths)
-			logger.Warn("法定产出物未出现在本轮改动",
-				"kind", output.Kind, "declared_path", declaredPath,
-				"changed_paths", changedPaths)
+			if actualPath, ok := datePrefixedDeclaredPath(declaredPath, changedPaths); ok {
+				body += "\n检测到日期前缀文件名：" + actualPath +
+					"；这是日期前缀，请改名为：" + declaredPath
+				logger.Warn("检测到日期前缀法定产出",
+					"kind", output.Kind, "declared_path", declaredPath,
+					"changed_paths", changedPaths, "actual_path", actualPath,
+					"cause", "产出路径必须逐字匹配")
+			} else {
+				logger.Warn("法定产出物未出现在本轮改动",
+					"kind", output.Kind, "declared_path", declaredPath,
+					"changed_paths", changedPaths, "cause", "未找到精确路径或日期前缀版本")
+			}
 			return n.haltForHuman(cardID, "缺少约定产出物", body)
 		}
 		if err := n.gatedWrite("挂附件"); err != nil {
@@ -336,4 +433,40 @@ func containsPath(paths []string, want string) bool {
 		}
 	}
 	return false
+}
+
+// datePrefixedDeclaredPath 只识别与 declaredPath 同目录、且 basename 形如
+// YYYY-MM-DD-+声明 basename 的改名错误；其它日期文件仍按普通缺失处理。
+func datePrefixedDeclaredPath(declaredPath string, changedPaths []string) (actualPath string, ok bool) {
+	if declaredPath == "" {
+		return "", false
+	}
+	declaredDir := filepath.Dir(declaredPath)
+	declaredBase := filepath.Base(declaredPath)
+	const datePrefixLength = len("YYYY-MM-DD-")
+	for _, changedPath := range changedPaths {
+		if filepath.Dir(changedPath) != declaredDir {
+			continue
+		}
+		actualBase := filepath.Base(changedPath)
+		if len(actualBase) != datePrefixLength+len(declaredBase) ||
+			actualBase[datePrefixLength:] != declaredBase ||
+			actualBase[4] != '-' || actualBase[7] != '-' || actualBase[10] != '-' {
+			continue
+		}
+		validDigits := true
+		for i := 0; i < 10; i++ {
+			if i == 4 || i == 7 {
+				continue
+			}
+			if actualBase[i] < '0' || actualBase[i] > '9' {
+				validDigits = false
+				break
+			}
+		}
+		if validDigits {
+			return changedPath, true
+		}
+	}
+	return "", false
 }

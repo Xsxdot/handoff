@@ -16,6 +16,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -23,6 +24,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/ptytestroot"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // testToken 是白盒测试的固定访问令牌（与 server_test.go 的同名常量同值不同包）。
@@ -87,8 +89,12 @@ func newTestAgentdEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logg
 			decision.Cleanup()
 		})
 	}
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
+	// 空 target 的节点派发现在对本机 Status 探活。测试服必须把 Listen 回填成
+	// httptest 地址，否则 LocalDialAddr 会拼出没有主机的 http://。
+	if strings.TrimSpace(cfg.Listen) == "" {
+		cfg.Listen = strings.TrimPrefix(ts.URL, "http://")
+	}
 	return &testAgentdEnv{srv: srv, ts: ts, st: st, token: cfg.Token}
 }
 

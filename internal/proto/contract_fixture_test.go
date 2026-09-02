@@ -68,6 +68,12 @@ func TestContractFixtures(t *testing.T) {
 		{"Ticket", ticketSample(now, taskID)},
 		{"ProjectLocation", projectLocationSample(now)},
 		{"ProjectTreeResp", projectTreeSample()},
+		{"PreviewOpenReq", previewOpenReqSample()},
+		{"PreviewSession", previewSessionSample(now)},
+		{"PreviewListResp", previewListSample(now)},
+		{"PreviewEvent", previewEventSample(now)},
+		{"PreviewOpenResp", PreviewOpenResp{Opened: true}},
+		{"PreviewCloseResp", PreviewCloseResp{OK: true}},
 		{"WorkspaceCardResults", Workspace{
 			Path:   "/home/dev/.handoff/worktrees/manual/feat-b205",
 			Branch: "feat/b205-baseline", Head: "482aab1", Managed: true,
@@ -227,6 +233,30 @@ func TestHomeWakeReqOmitsEmptyCredential(t *testing.T) {
 	if _, ok := got["credential"]; ok {
 		t.Fatalf("empty credential unexpectedly serialized: %s", data)
 	}
+}
+
+func previewOpenReqSample() PreviewOpenReq {
+	return PreviewOpenReq{Port: 4173, Via: []string{"10.0.0.0/8", "api.internal"}, CWD: "/Users/dev/code/handoff"}
+}
+
+func previewSessionSample(now time.Time) PreviewSession {
+	return PreviewSession{
+		ID: "pvw-01", EntryURL: "http://localhost:4173",
+		Via: []string{"10.0.0.0/8", "api.internal"}, CWD: "/Users/dev/code/handoff",
+		OriginURL: "git@github.com:example/handoff.git", Branch: "feat/b294-preview",
+		CreatedAt: now, TTLSeconds: 7200, Machine: "mac-02",
+	}
+}
+
+func previewListSample(now time.Time) PreviewListResp {
+	return PreviewListResp{
+		Sessions: []PreviewSession{previewSessionSample(now)},
+		Machines: []MachineStatus{{Name: "", Ok: true, FetchedAt: now}, {Name: "mac-02", Ok: true, FetchedAt: now}},
+	}
+}
+
+func previewEventSample(now time.Time) PreviewEvent {
+	return PreviewEvent{Type: PreviewEventCreated, Session: previewSessionSample(now), Machine: "mac-02"}
 }
 
 // workbenchBaseSample 是一行基准状态的代表性样本。
@@ -537,6 +567,7 @@ func activeTaskSample(taskID string) ActiveTask {
 func statusSample(now time.Time, taskID string) StatusResp {
 	ptyOK := true
 	revealOK := true
+	webOK := false // 默认构建不嵌入 Web 控制台，线格式必须显式保留 false。
 	return StatusResp{
 		Version:         buildSample(),
 		Listen:          "127.0.0.1:7777",
@@ -557,6 +588,7 @@ func statusSample(now time.Time, taskID string) StatusResp {
 		PtySupported:         &ptyOK,
 		RevealSupported:      &revealOK,
 		DisciplinesSupported: &revealOK, // B229：能力位进 fixture，缺席/置值的线格式由 web 侧承接
+		WebEmbedded:          &webOK,
 	}
 }
 

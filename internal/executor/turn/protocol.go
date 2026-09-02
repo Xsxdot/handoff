@@ -2,7 +2,7 @@
 // 解析模型输出的 trailer、回合取证与文本工具。
 //
 // 职责：
-//   - RenderPrompt：把实现计划渲染成带回合纪律（提问/收尾/不切分支）的启动 prompt
+//   - RenderPrompt：把实现计划渲染成带回合纪律（提问/条件化收尾/不切分支）的启动 prompt
 //   - ParseTrailer：从回合末文本宽容提取协议 JSON（ask/finish）
 //   - GitTurnStatus：trailer 缺失时以「是否有新提交」作事实裁决
 //   - 文本截断与 render.log 追加等两 adapter 共用的小工具
@@ -11,7 +11,7 @@
 //   - 不认识任何具体 executor（opencode/grok/claude），不发请求、不起进程
 //   - 不做状态机迁移、不写 store：只做纯变换与两个受限 I/O（git 只读、日志追加）
 //
-// 为什么 prompt 模板与 ParseTrailer 必须同包：教模型协议的 prompt 与解析协议的
+// 为什么 ProtocolRules 与 RenderPrompt 必须同包：教模型协议的 prompt 与解析协议的
 // 代码是同一契约的两半，分居两处必然出现「改纪律只改一半」的漂移——两个 executor
 // 的协调者会看到不一样的东西。
 package turn
@@ -40,8 +40,10 @@ type Trailer struct {
 const ProtocolRules = `1. 提问纪律：任何需要人决策的问题，输出单行 JSON {"ask":"<问题>"}
    然后结束本回合。协调者的回答会作为下一条消息发给你。
    禁止自行假设，禁止用其它格式提问。
-2. 收尾纪律：全部完成后必须 git add 并 commit（不要 push），
-   然后输出单行 JSON：{"branch":"<分支>","commit":"<hash>","summary":"<50字内摘要>"}
+2. 收尾纪律：是否提交听角色纪律。
+   角色禁止修改工作树时，不创建新提交，commit 填当前 HEAD；无新提交时 commit 仍填当前 HEAD，不能为空。
+   角色要求提交时，必须 git add 并 commit（不要 push）。
+   无论是否创建新提交，都必须输出单行 JSON：{"branch":"<分支>","commit":"<hash>","summary":"<50字内摘要>"}
    作为本回合最后一行。
 3. 只在当前分支工作，不切分支、不改 git 配置。`
 

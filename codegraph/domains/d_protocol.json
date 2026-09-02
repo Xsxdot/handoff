@@ -1,0 +1,4 @@
+{
+  "domain": "d_protocol",
+  "responsibility": "为控制面、执行器与控制台定义跨进程交换的数据契约与任务状态迁移表，是 wire 类型的唯一定义处。"
+}

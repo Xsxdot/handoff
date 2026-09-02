@@ -1,10 +1,15 @@
 // terminalInput —— 补上 xterm 输入路径在 WebKit 上的两个漏字符缺口。
 //
 // 职责：在**不 fork xterm** 的前提下，把两类被 xterm 静默丢弃的可打印输入
-//       重新喂回终端。只补漏，不接管：xterm 自己发得出去的字符一律不碰。
+//       重新喂回终端；并在同一槽位转发 ⌘←/⌘→/⌘K 和 Option 当 Meta
+//      （WKWebView 的 Option+B 给的是 ∫ / keyCode=0，xterm 认不到）。
+//       只补漏，不接管：xterm 自己发得出去的字符一律不碰。
 // 边界：
-//   - 只管「可打印文本怎么进 PTY」。控制键（方向键/Enter/Ctrl-C）、
-//     输入法合成（compositionstart/end）、粘贴，全部原样留给 xterm
+//   - 可打印文本怎么进 PTY。控制键（方向键/Enter/Ctrl-C）、
+//     输入法合成（compositionstart/end）、粘贴，全部原样留给 xterm；唯一例外是
+//     alternate buffer 中无额外修饰的 Shift+Enter，转发 CSI u，避免主屏裸 LF/CR
+//     被行编辑器当成 accept-line；这不是完整 Kitty keyboard protocol
+//   - ⌘K 是仿真器本地清屏，禁止因此往 PTY 写任何 CSI/C0
 //   - 不直接往 WS 写字节。补发一律走 `term.input()`，让补发的字符与用户
 //     手敲的字符走同一条 onData —— 上层的取证日志、尺寸逻辑因此不必知道本模块存在
 //   - 独占 `attachCustomKeyEventHandler`（xterm 只有一个槽位）。将来若有别处
@@ -79,6 +84,19 @@ function isInjectedText(ev: KeyboardEvent): boolean {
   return charCode > 0 && ev.key.codePointAt(0) === charCode
 }
 
+// optionMetaLetter 把 Option+字母换成 readline 认识的 Meta 字母。
+//
+// WKWebView 上 Option+B 的 key 是「∫」、keyCode 经常是 0，xterm 的
+// macOptionIsMeta 靠 keyCode 65–90 判，走不到 ESC+b，符号就当普通字打进去。
+// 物理键 ev.code（KeyB）在这条路径上是稳的。
+function optionMetaLetter(ev: KeyboardEvent): string | null {
+  if (!ev.altKey || ev.metaKey || ev.ctrlKey) return null
+  if (!ev.code.startsWith('Key') || ev.code.length !== 4) return null
+  const letter = ev.code.slice(3)
+  if (letter < 'A' || letter > 'Z') return null
+  return ev.shiftKey ? letter : letter.toLowerCase()
+}
+
 // installTerminalInputFix 给一个已经 open 过的终端装上补漏逻辑。
 //
 // 参数：
@@ -108,20 +126,47 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   // 它是 input 事件的免打扰位：大写字母（xterm 的 CapsLock HACK 把 A-Z 交给
   // keypress 处理）走的正是这条路，此时 input 事件里那份 data 是重复的，补发即双字。
   let keypressEmitted = false
+  // optionMetaConsumed：刚用物理键发过 ESC+字母。WKWebView 仍可能再丢
+  // keypress / insertText（∫/ƒ），两条路径都必须闭嘴。
+  let optionMetaConsumed = false
+  // optionHeld：Option 已经按下。字母 keydown 还没到时 WebKit 可能先丢
+  // insertText；此时 optionMetaConsumed 还是 false，补发会先打出 ∫ 再跳词。
+  let optionHeld = false
   // seqBeforeKeypress / seqBeforeInput 是 xterm 看到该事件之前的计数快照。
   let seqBeforeKeypress = 0
   let seqBeforeInput = 0
 
+  const isAltKey = (ev: KeyboardEvent): boolean =>
+    ev.key === 'Alt' || ev.code === 'AltLeft' || ev.code === 'AltRight'
+
   // 一次新的按键链开始：清掉上一链的残留状态。
   // 注意 ② 那条路径里 input 排在 keydown 之前，此处的复位对它是无害的空操作。
-  const onKeyDownCapture = (): void => {
+  const onKeyDownCapture = (ev: KeyboardEvent): void => {
     keypressEmitted = false
+    optionMetaConsumed = false
+    if (ev.altKey || isAltKey(ev)) optionHeld = true
+  }
+  const onKeyUpCapture = (ev: KeyboardEvent): void => {
+    if (isAltKey(ev)) optionHeld = false
   }
   const onKeyPressCapture = (): void => {
     seqBeforeKeypress = dataSeq
   }
-  const onInputCapture = (): void => {
+  // xterm 的 input 监听挂在 textarea capture，比 host capture 晚。
+  // `_inputEvent` 在 `!composed` 时会自己 triggerDataEvent——只在事后不补发
+  // 拦不住已经发出去的 ∫，必须在下传到 textarea 之前停掉。
+  const dropOptionGeneratedText = (ie: InputEvent): boolean => {
+    if (ie.inputType !== 'insertText' || ie.isComposing || !ie.data) return false
+    return optionMetaConsumed || optionHeld
+  }
+  const onInputCapture = (ev: Event): void => {
     seqBeforeInput = dataSeq
+    const ie = ev as InputEvent
+    const text = ie.data
+    if (!text || !dropOptionGeneratedText(ie)) return
+    ev.stopPropagation()
+    ev.preventDefault()
+    logTermFix(label, 'Option Meta', text)
   }
 
   // xterm 处理完 keypress 之后：它发了东西没有？
@@ -136,6 +181,10 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
     // 合成落定（insertFromComposition）、粘贴（insertFromPaste）、删除，
     // 都有 xterm 自己的通道，插手只会重复。
     if (ie.inputType !== 'insertText' || ie.isComposing || !ie.data) return
+    if (optionMetaConsumed || optionHeld) {
+      optionMetaConsumed = false
+      return
+    }
     if (keypressEmitted) {
       // keypress 已经把这段文本发过了（大写字母那条路），这里的 data 是同一份。
       keypressEmitted = false
@@ -156,15 +205,74 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   // 的位置恰在 `_keyPressHandled = true` **之前**——xterm 因此既不发首字符，也不会
   // 给随后的 input 事件留下「已处理」的标记，补发路径才走得通。
   //
-  // keydown / keyup 一律放行：本模块只挑 keypress 的刺。
-  //
   // disposed 这道闸不能省：`attachCustomKeyEventHandler` 只有一个槽位、也没有
   // 「摘除」接口，dispose 时若不自己失效，拦截会在补漏已经卸掉之后继续生效——
   // keypress 被拦、又没人补发，字符就凭空消失了。不用「dispose 时重新 attach
   // 一个恒真处理器」来复位，是因为那会连带覆盖掉别人后来挂上去的处理器。
+  // TUI 约定的单键 CSI u：13 是 Enter，2 是 Shift；只在 alternate buffer 发送。
+  // 这是一个单键兼容补漏，不是完整 Kitty keyboard protocol。
+  const TUI_SHIFT_ENTER = '\x1b[13;2u'
+
   let disposed = false
   term.attachCustomKeyEventHandler((ev) => {
     if (disposed) return true
+    if (ev.type === 'keypress') {
+      // macOptionIsMeta 只在 keypress.altKey 时跳过；WKWebView 翻译成 ∫ 后
+      // 可能不再带 altKey，xterm 会按 charCode 再发一个符号。
+      if (optionMetaConsumed || optionHeld || optionMetaLetter(ev) !== null) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        return false
+      }
+    }
+    if (ev.type === 'keydown') {
+      if (
+        ev.key === 'Enter' &&
+        ev.shiftKey &&
+        !ev.altKey &&
+        !ev.ctrlKey &&
+        !ev.metaKey &&
+        term.buffer.active.type === 'alternate'
+      ) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        logTermFix(label, 'Shift+Enter 换行', TUI_SHIFT_ENTER)
+        term.input(TUI_SHIFT_ENTER)
+        return false
+      }
+      const metaLetter = optionMetaLetter(ev)
+      if (metaLetter !== null) {
+        ev.preventDefault()
+        ev.stopPropagation()
+        optionMetaConsumed = true
+        logTermFix(label, 'Option Meta', metaLetter)
+        term.input(`\x1b${metaLetter}`)
+        return false
+      }
+      if (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === 'ArrowLeft') {
+        ev.preventDefault()
+        ev.stopPropagation()
+        logTermFix(label, '⌘← 行首', '\x01')
+        term.input('\x01')
+        return false
+      }
+      if (ev.metaKey && !ev.ctrlKey && !ev.altKey && ev.key === 'ArrowRight') {
+        ev.preventDefault()
+        ev.stopPropagation()
+        logTermFix(label, '⌘→ 行尾', '\x05')
+        term.input('\x05')
+        return false
+      }
+      // 不上送 \x0c：TUI 会当成输入（B267 方向键同类）。term.clear() 把当前行
+      // 留作第 0 行并丢掉 scrollback（xterm Terminal.clear）。
+      if (ev.metaKey && !ev.ctrlKey && !ev.shiftKey && ev.key.toLowerCase() === 'k') {
+        ev.preventDefault()
+        ev.stopPropagation()
+        logTermFix(label, '⌘K 清屏', '')
+        term.clear()
+        return false
+      }
+    }
     if (ev.type !== 'keypress') return true
     if (!isInjectedText(ev)) return true
     logTermFix(label, '拦下注入键事件', ev.key)
@@ -172,6 +280,7 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
   })
 
   host.addEventListener('keydown', onKeyDownCapture, true)
+  host.addEventListener('keyup', onKeyUpCapture, true)
   host.addEventListener('keypress', onKeyPressCapture, true)
   host.addEventListener('input', onInputCapture, true)
   ta.addEventListener('keypress', onKeyPressAfter, true)
@@ -181,6 +290,7 @@ export function installTerminalInputFix(term: Terminal, host: HTMLElement, label
     dispose: () => {
       disposed = true
       host.removeEventListener('keydown', onKeyDownCapture, true)
+      host.removeEventListener('keyup', onKeyUpCapture, true)
       host.removeEventListener('keypress', onKeyPressCapture, true)
       host.removeEventListener('input', onInputCapture, true)
       ta.removeEventListener('keypress', onKeyPressAfter, true)

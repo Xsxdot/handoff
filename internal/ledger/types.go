@@ -125,10 +125,13 @@ type Card struct {
 	UpdatedAt          time.Time    `json:"updated_at"`
 }
 
-// Relation 类型化关系边。
+// Relation 类型化关系边。JSON tag 服务直接编码账本结构的 CLI；HTTP 详情使用
+// proto 投影并刻意保留 PascalCase 线格式。
 type Relation struct {
-	From, To, Type string
-	CreatedAt      time.Time
+	From      string    `json:"from"`
+	To        string    `json:"to"`
+	Type      string    `json:"type"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // Event 账本单流事件。镜像事件三个 Source 字段非空，其余事件为空。

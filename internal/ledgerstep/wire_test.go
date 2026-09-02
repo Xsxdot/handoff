@@ -3,8 +3,10 @@ package ledgerstep
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -121,6 +123,9 @@ func TestWaitForTurnEndSkipsNonTerminalEvents(t *testing.T) {
 	calls := 0
 	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
 		ev := &proto.Event{Type: seq[calls]}
+		if ev.Type == proto.EventTypeCompleted {
+			ev.Payload = json.RawMessage("{\"final_text\":\"\\u0060\\u0060\\u0060handoff-verdict\\n{\\\"verdict\\\":\\\"pass\\\"}\\n\\u0060\\u0060\\u0060\"}")
+		}
 		calls++
 		return ev, nil
 	})
@@ -129,6 +134,120 @@ func TestWaitForTurnEndSkipsNonTerminalEvents(t *testing.T) {
 	}
 	if calls != len(seq) {
 		t.Fatalf("应一直等到 completed（%d 次），实际 %d 次", len(seq), calls)
+	}
+}
+
+func TestWaitForTurnEndWaitsForCompletedFinalText(t *testing.T) {
+	events := []*proto.Event{
+		{Type: proto.EventTypeCompleted, Payload: json.RawMessage(`{"summary":"早到摘要"}`)},
+		{Type: proto.EventTypeCompleted, Payload: json.RawMessage("{\"summary\":\"最终摘要\",\"final_text\":\"\\u0060\\u0060\\u0060handoff-verdict\\n{\\\"verdict\\\":\\\"pass\\\"}\\n\\u0060\\u0060\\u0060\"}")},
+	}
+	calls := 0
+	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+		event := events[calls]
+		calls++
+		return event, nil
+	})
+	if err != nil {
+		t.Fatalf("waitForTurnEnd() error = %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("wait calls = %d, want 2", calls)
+	}
+}
+
+func TestWaitForTurnEndGraceDeadlineReturnsSuccess(t *testing.T) {
+	first := &proto.Event{Type: proto.EventTypeCompleted, Payload: json.RawMessage(`{"summary":"唯一摘要"}`)}
+	oldGrace := turnEndGrace
+	turnEndGrace = time.Nanosecond
+	defer func() { turnEndGrace = oldGrace }()
+	calls := 0
+	deadlineSeen := make(chan bool, 1)
+	err := waitForTurnEnd(context.Background(), func(ctx context.Context) (*proto.Event, error) {
+		calls++
+		if calls == 1 {
+			return first, nil
+		}
+		_, ok := ctx.Deadline()
+		deadlineSeen <- ok
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	if err != nil {
+		t.Fatalf("deadline grace error = %v", err)
+	}
+	if !<-deadlineSeen {
+		t.Fatal("grace wait context has no deadline")
+	}
+}
+
+func TestWaitForTurnEndDoesNotSwallowParentCancellation(t *testing.T) {
+	parent, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	first := &proto.Event{Type: proto.EventTypeCompleted, Payload: json.RawMessage(`{"summary":"摘要"}`)}
+	calls := 0
+	err := waitForTurnEnd(parent, func(ctx context.Context) (*proto.Event, error) {
+		calls++
+		if calls == 1 {
+			return first, nil
+		}
+		cancel()
+		<-ctx.Done()
+		return nil, ctx.Err()
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+}
+
+func TestWaitForTurnEndIgnoresFailureDuringGrace(t *testing.T) {
+	first := &proto.Event{Type: proto.EventTypeCompleted, Payload: json.RawMessage(`{"summary":"摘要"}`)}
+	failed := &proto.Event{Type: proto.EventTypeFailed, Payload: json.RawMessage(`{"error":"late failure"}`)}
+	turnFailed := &proto.Event{Type: proto.EventTypeTurnFailed, Payload: json.RawMessage(`{"error":"late turn failure"}`)}
+	second := &proto.Event{Type: proto.EventTypeCompleted, Payload: json.RawMessage("{\"final_text\":\"\\u0060\\u0060\\u0060handoff-verdict\\n{\\\"verdict\\\":\\\"pass\\\"}\\n\\u0060\\u0060\\u0060\"}")}
+	events := []*proto.Event{first, failed, turnFailed, second}
+	calls := 0
+	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+		event := events[calls]
+		calls++
+		return event, nil
+	})
+	if err != nil {
+		t.Fatalf("grace failure error = %v", err)
+	}
+	if calls != 4 {
+		t.Fatalf("wait calls = %d, want 4", calls)
+	}
+}
+
+func TestWaitForTurnEndReturnsFailureWithoutCompleted(t *testing.T) {
+	for _, eventType := range []proto.EventType{proto.EventTypeFailed, proto.EventTypeTurnFailed} {
+		t.Run(string(eventType), func(t *testing.T) {
+			event := &proto.Event{Type: eventType, Payload: json.RawMessage(`{"error":"failed"}`)}
+			calls := 0
+			if err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+				calls++
+				return event, nil
+			}); err != nil {
+				t.Fatalf("waitForTurnEnd() error = %v", err)
+			} else if calls != 1 {
+				t.Fatalf("wait calls = %d, want 1", calls)
+			}
+		})
+	}
+}
+
+func TestFinalMessageUsesNonEmptyFinalTextAcrossCompletedEvents(t *testing.T) {
+	events := []proto.Event{
+		{Type: proto.EventTypeCompleted, Payload: json.RawMessage(`{"summary":"first summary"}`)},
+		{Type: proto.EventTypeCompleted, Payload: json.RawMessage("{\"summary\":\"second summary\",\"final_text\":\"\\u0060\\u0060\\u0060handoff-verdict\\n{\\\"verdict\\\":\\\"pass\\\"}\\n\\u0060\\u0060\\u0060\"}")},
+	}
+	got, err := finalMessageFromEvents(events)
+	if err != nil {
+		t.Fatalf("finalMessageFromEvents() error = %v", err)
+	}
+	if !strings.Contains(got, "handoff-verdict") {
+		t.Fatalf("message = %q, want final_text", got)
 	}
 }
 

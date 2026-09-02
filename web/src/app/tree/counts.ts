@@ -7,12 +7,14 @@
 //   - dirs：该项目所有机器下的 workspace 总数（探测失败的 location 视为 0）
 //   - running：running 状态的任务数（按 project_id + machine 归集）
 //   - pending：waiting_answer + waiting_review 的任务数
-import type { ProjectLocationNode, ProjectNode, Task } from '../../api/types'
+import type { PreviewSession, ProjectLocationNode, ProjectNode, Task } from '../../api/types'
+import { normalizePreviewOrigin } from '../data/usePreviews'
 
 export interface NodeCounts {
   dirs: number
   running: number
   pending: number
+  previews: number
 }
 
 // workspacesOf 汇总一个位置下的工作树目录数；探测失败的位置没有 workspaces。
@@ -21,23 +23,31 @@ function workspacesOf(loc: ProjectLocationNode): number {
 }
 
 // countsForProject 返回一个项目跨所有机器的聚合计数。
-export function countsForProject(tasks: Task[], project: ProjectNode): NodeCounts {
+export function countsForProject(tasks: Task[], project: ProjectNode, previews: ReadonlyArray<PreviewSession> = []): NodeCounts {
   const dirs = project.locations.reduce((n, loc) => n + workspacesOf(loc), 0)
   const mine = tasks.filter((t) => t.project_id === project.project_id)
+  const projectOrigin = normalizePreviewOrigin(project.origin_url)
+  const previewCount = projectOrigin === '' ? 0 : previews.filter((p) => normalizePreviewOrigin(p.origin_url ?? '') === projectOrigin).length
   return {
     dirs,
     running: mine.filter((t) => t.state === 'running').length,
     pending: mine.filter((t) => t.state === 'waiting_answer' || t.state === 'waiting_review').length,
+    previews: previewCount,
   }
 }
 
 // countsForMachine 返回一个项目在某台机器上的计数（machine ""=本机）。
-export function countsForMachine(tasks: Task[], project: ProjectNode, machine: string): NodeCounts {
+export function countsForMachine(tasks: Task[], project: ProjectNode, machine: string, previews: ReadonlyArray<PreviewSession> = []): NodeCounts {
   const loc = project.locations.find((l) => l.machine === machine)
   const mine = tasks.filter((t) => t.project_id === project.project_id && t.machine === machine)
+  const projectOrigin = normalizePreviewOrigin(project.origin_url)
+  const previewCount = projectOrigin === '' ? 0 : previews.filter((p) =>
+    (p.machine ?? '') === machine && normalizePreviewOrigin(p.origin_url ?? '') === projectOrigin,
+  ).length
   return {
     dirs: loc ? workspacesOf(loc) : 0,
     running: mine.filter((t) => t.state === 'running').length,
     pending: mine.filter((t) => t.state === 'waiting_answer' || t.state === 'waiting_review').length,
+    previews: previewCount,
   }
 }

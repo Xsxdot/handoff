@@ -80,9 +80,9 @@ func TestViaTemplateCarriesResolvedDiscipline(t *testing.T) {
 		St: st, Actor: "tester",
 		DisciplineText:    res.Text,
 		DisciplineVersion: res.Version,
-		Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 			got = opts
-			return "T-b229-named", nil
+			return "T-b229-named", "", nil
 		},
 	}
 	result, err := d.ViaTemplate(context.Background(), card,
@@ -130,9 +130,9 @@ func TestViaTemplateUnnamedStillPlatforms(t *testing.T) {
 		St: st, Actor: "tester",
 		DisciplineText:    res.Text,
 		DisciplineVersion: res.Version,
-		Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 			got = opts
-			return "T-b229-unnamed", nil
+			return "T-b229-unnamed", "", nil
 		},
 	}
 	if _, err := d.ViaTemplate(context.Background(), card,
@@ -186,8 +186,8 @@ func TestViaTemplateLogOmitsBodyText(t *testing.T) {
 		St: st, Actor: "tester",
 		DisciplineText:    res.Text,
 		DisciplineVersion: res.Version,
-		Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
-			return "T-b229-log", nil
+		Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+			return "T-b229-log", "", nil
 		},
 	}
 	if _, err := d.ViaTemplate(context.Background(), card,

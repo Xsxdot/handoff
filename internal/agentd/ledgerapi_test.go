@@ -7,7 +7,6 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
@@ -19,6 +18,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 func ledgerGet(t *testing.T, env *testAgentdEnv, path string) (int, string) {
@@ -145,6 +145,9 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	seedAgentdLedger(t, st)
 	env := newTestAgentdEnv(t)
 	env.srv.SetLedger(st)
+	// 空 target 的 card step 对本机 /api/status 探活；没 manager 会 503。
+	env.srv.SetManager(NewManager(env.st, env.srv.Hub(), nil, env.srv.conf(), nil, nil, nil,
+		slog.New(slog.NewTextHandler(io.Discard, nil))))
 	return &ledgerEnv{testAgentdEnv: env, ledger: st}
 }
 
@@ -158,16 +161,28 @@ func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	}
 	t.Cleanup(func() { _ = ledgerStore.Close() })
 	seedAgentdLedger(t, ledgerStore)
+	for name, body := range map[string]string{
+		discipline.NameImplement: "本机测试实现纪律",
+		discipline.NameReview:    "本机测试审阅纪律",
+	} {
+		if _, err := ledgerStore.PutDiscipline(name, body); err != nil {
+			t.Fatalf("准备本机测试纪律 %s: %v", name, err)
+		}
+	}
 	backend, err := store.Open(t.TempDir() + "/handoff.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = backend.Close() })
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir()}
-	srv := NewServer(cfg, backend, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := NewServer(cfg, backend, log)
 	srv.SetLedger(ledgerStore)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	srv.SetManager(NewManager(backend, srv.Hub(), nil, cfg, nil, nil, nil, log))
+	ts := testhttp.NewServer(t, srv.Handler())
+	// Task 3 的本机纪律探活走真实 HTTP；把临时服务地址回填为本机监听地址，
+	// 避免零值 Listen 被误当成 relay 的空端点。
+	cfg.Listen = strings.TrimPrefix(ts.URL, "http://")
 	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore}
 }
 
@@ -725,6 +740,54 @@ func TestLedgerAPI(t *testing.T) {
 	}
 }
 
+func TestLedgerAPIDetailKeepsPascalCaseProjection(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "HTTP 投影卡")
+	other := seedChildCard(t, env, card.ID, "HTTP 关系目标")
+	if err := env.ledger.AddRelation(card.ID, other.ID, ledger.RelRelates, "test"); err != nil {
+		t.Fatalf("加关系: %v", err)
+	}
+	if err := env.ledger.LinkTask(card.ID, "mac-02", "T-http-wire-260", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatalf("挂 task: %v", err)
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+card.ID)
+	if code != http.StatusOK {
+		t.Fatalf("GET /api/cards/%s: %d %s", card.ID, code, body)
+	}
+	var detail map[string]any
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatalf("解码 GET /api/cards/%s: %v", card.ID, err)
+	}
+	relations, ok := detail["relations"].([]any)
+	if !ok || len(relations) != 1 {
+		t.Fatalf("GET /api/cards/%s relations 不符合预期: %v", card.ID, detail["relations"])
+	}
+	relation, ok := relations[0].(map[string]any)
+	if !ok {
+		t.Fatalf("GET /api/cards/%s relations[0] 非对象: %v", card.ID, relations[0])
+	}
+	if _, ok := relation["From"]; !ok {
+		t.Fatalf("GET /api/cards/%s relations[0] 缺 PascalCase From: %v", card.ID, relation)
+	}
+	if _, ok := relation["from"]; ok {
+		t.Fatalf("GET /api/cards/%s relations[0] 不应出现 snake from: %v", card.ID, relation)
+	}
+	taskStates, ok := detail["task_states"].([]any)
+	if !ok || len(taskStates) != 1 {
+		t.Fatalf("GET /api/cards/%s task_states 不符合预期: %v", card.ID, detail["task_states"])
+	}
+	taskState, ok := taskStates[0].(map[string]any)
+	if !ok {
+		t.Fatalf("GET /api/cards/%s task_states[0] 非对象: %v", card.ID, taskStates[0])
+	}
+	if _, ok := taskState["TaskID"]; !ok {
+		t.Fatalf("GET /api/cards/%s task_states[0] 缺 PascalCase TaskID: %v", card.ID, taskState)
+	}
+	if _, ok := taskState["task_id"]; ok {
+		t.Fatalf("GET /api/cards/%s task_states[0] 不应出现 snake task_id: %v", card.ID, taskState)
+	}
+}
+
 // TestCardsListWireCarriesChildrenCounts 锁住 CardView → HTTP wire 的接缝：
 // ledger.ListCards 正确不够，手搭响应 map 也必须把子卡计数传给看板。
 func TestCardsListWireCarriesChildrenCounts(t *testing.T) {
@@ -925,6 +988,7 @@ func TestCardAcceptUnknownCard404(t *testing.T) {
 func TestCardStepReturns202(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -962,6 +1026,7 @@ func TestCardStepSecondReturns409(t *testing.T) {
 func TestCardStepAcceptsImplementWithoutInlineFile(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedImplementCardWithProject(t, env.srv, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -988,6 +1053,7 @@ func TestCardStepAcceptsImplementWithoutInlineFile(t *testing.T) {
 func TestCardStepLegacyActorFallback(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -1061,6 +1127,7 @@ func TestCardStepRejectsEmptyStep(t *testing.T) {
 func TestCardStepIgnoresUnknownFields(t *testing.T) {
 	env := newLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
+	seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 	card, err := env.ledger.GetCard("B1")
 	if err != nil {
 		t.Fatal(err)
@@ -1217,6 +1284,76 @@ func TestFlowNodeProducesRoundTripsThroughHTTPWire(t *testing.T) {
 		got.Nodes[1].Produces.Kind != "doc" ||
 		got.Nodes[1].Produces.Path != "docs/b201-breakdown.md" {
 		t.Fatalf("produces wire round-trip 失败: %+v", got.Nodes[1].Produces)
+	}
+}
+
+func TestFlowNodePurposeSurvivesHTTPGetPutGet(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	if _, err := env.ledger.PutWorkflow("charter", ledger.WorkflowDef{
+		Nodes: []ledger.NodeDef{{Name: "review"}, {Name: "done"}},
+	}); err != nil {
+		t.Fatalf("seed charter workflow: %v", err)
+	}
+	initial := []byte("{\"nodes\":[{\"name\":\"review\",\"override\":{\"purpose\":\"review\"}},{\"name\":\"done\"}]}")
+	code, body := ledgerPut(t, env.testAgentdEnv, "/api/flows/charter", string(initial))
+	if code != http.StatusOK {
+		t.Fatalf("initial put code = %d, body = %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/flows/charter")
+	if code != http.StatusOK {
+		t.Fatalf("first get code = %d, body = %s", code, body)
+	}
+	var first struct {
+		Nodes []json.RawMessage `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(body), &first); err != nil {
+		t.Fatalf("decode first get: %v", err)
+	}
+	if len(first.Nodes) != 2 {
+		t.Fatalf("first nodes = %d, want 2", len(first.Nodes))
+	}
+	var review struct {
+		Override struct {
+			Purpose string `json:"purpose"`
+		} `json:"override"`
+	}
+	if err := json.Unmarshal(first.Nodes[0], &review); err != nil {
+		t.Fatalf("decode review: %v", err)
+	}
+	if review.Override.Purpose != "review" {
+		t.Fatalf("first purpose = %q", review.Override.Purpose)
+	}
+	putBody := "{\"nodes\":[" + string(first.Nodes[0]) + "," + string(first.Nodes[1]) + "]}"
+	code, body = ledgerPut(t, env.testAgentdEnv, "/api/flows/charter", putBody)
+	if code != http.StatusOK {
+		t.Fatalf("read-modify-write code = %d, body = %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/flows/charter")
+	if code != http.StatusOK {
+		t.Fatalf("second get code = %d, body = %s", code, body)
+	}
+	var second struct {
+		Nodes []struct {
+			Override struct {
+				Purpose string `json:"purpose"`
+			} `json:"override"`
+		} `json:"nodes"`
+	}
+	if err := json.Unmarshal([]byte(body), &second); err != nil {
+		t.Fatalf("decode second get: %v", err)
+	}
+	if len(second.Nodes) != 2 || second.Nodes[0].Override.Purpose != "review" {
+		t.Fatalf("purpose lost after GET PUT GET: %+v", second.Nodes)
+	}
+}
+
+func TestLedgerNodeWireOmitsZeroPurpose(t *testing.T) {
+	raw, err := json.Marshal(ledgerNodeWire(ledger.NodeDef{Name: "legacy"}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(raw, []byte(`"purpose"`)) {
+		t.Fatalf("zero purpose must be omitted: %s", raw)
 	}
 }
 
@@ -1509,6 +1646,7 @@ func TestCardStepBodySizeLimitBoundary(t *testing.T) {
 	t.Run("恰好等于上限放行", func(t *testing.T) {
 		env := newLedgerEnv(t)
 		seedCardWithProject(t, env.srv, "handoff")
+		seedDisciplineOnLedger(t, env, discipline.NameReview, "本机测试审阅纪律")
 		env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) {}
 		code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step", build(maxCardStepBody))
 		if code != http.StatusAccepted {

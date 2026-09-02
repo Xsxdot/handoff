@@ -39,6 +39,7 @@ import (
 
 	charterwebui "github.com/Xsxdot/charter/graph/webui"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/config"
@@ -78,6 +79,13 @@ const eventReplayLimit = 10000
 // 越限即断开连接：所有广播事件都已落库，客户端凭 cursor 重连即可完整补拉，
 // 断开是无损的。
 const liveBufferLimit = 1000
+
+// PreviewOpener is the local desktop boundary for explicit preview open actions.
+// Create/list/close never call it; Chromium is launched only after a local click.
+type PreviewOpener interface {
+	OpenPreview(ctx context.Context, id, machine string) (*proto.PreviewOpenResp, error)
+	Stop(ctx context.Context) error
+}
 
 // maxUpdateBytes 是换版接口单个请求体的上限，与 release 侧 maxAssetBytes 同量级。
 //
@@ -196,7 +204,10 @@ type Server struct {
 	// 为什么在 NewServer 里自建而不是靠注入：NewServer 有约 50 个调用点，
 	// 靠注入必然漏，而漏掉的表现是运行时空指针。池的构造零成本（不发请求），
 	// 自建没有代价。
-	pool *targetclient.Pool
+	pool          *targetclient.Pool
+	previewOwner  *PreviewOwner
+	previewOpener PreviewOpener
+	previewMirror *PreviewMirror
 	// cardStepMu / cardStepFlight 守「同一张卡同时只允许一个环节在飞」。
 	// 进程内状态：重启即清空，见 cardstep.go 的边界说明。
 	cardStepMu     sync.Mutex
@@ -336,6 +347,57 @@ func (s *Server) SetManager(m *Manager) {
 // 因此读者看到的始终是一份自洽的配置，而不是改到一半的状态。
 func (s *Server) conf() *config.Config { return s.cfg.Load() }
 
+// IsSelfTarget 判断登记名是否指向本 agentd。
+//
+// 空串是本机的规范身份；非空登记名只有在活配置中存在、且其直连地址经
+// config.IsSelfTarget 判定为本机时才算本机。relay 与未知登记名都不是本机，
+// 后者交给 target client 池保留既有的未登记错误。
+func (s *Server) IsSelfTarget(name string) bool {
+	if name == "" {
+		return true
+	}
+	cfg := s.conf()
+	if cfg == nil {
+		return false
+	}
+	target, ok := cfg.Targets[name]
+	return ok && config.IsSelfTarget(cfg.Listen, target)
+}
+
+// CanonicalTarget 把本机身份归一为空串，保留远端与未知名称原值。
+//
+// 返回值会写入派发请求、任务挂账与快照；调用方不应继续使用归一前的登记名
+// 作为身份。空串与配置中指向本机的登记名共用本机 client。
+func (s *Server) CanonicalTarget(name string) string {
+	if s.IsSelfTarget(name) {
+		return ""
+	}
+	return name
+}
+
+// clientForTarget 按规范目标取得 agentd client。
+//
+// 空串或配置中指向本机的登记名返回本机直连 client；该 client 不由调用方关闭。
+// 远端和未知名称交给 target client 池，池保留既有的配置校验与 relay 生命周期。
+func (s *Server) clientForTarget(target string) (*client.Client, error) {
+	canonical := s.CanonicalTarget(target)
+	if canonical == "" {
+		cfg := s.conf()
+		if cfg == nil || cfg.Token == "" {
+			err := fmt.Errorf("本机客户端缺少配置或 token")
+			s.log.Error("取得本机客户端失败", "target", target,
+				"canonical_target", canonical, "cause", err)
+			return nil, err
+		}
+		s.log.Info("采用本机节点客户端", "target", target,
+			"canonical_target", canonical)
+		return targetclient.NewLocal(config.LocalDialAddr(cfg.Listen), cfg.Token), nil
+	}
+	s.log.Info("采用远端节点客户端", "target", target,
+		"canonical_target", canonical)
+	return s.pool.For(canonical)
+}
+
 // DisciplineMapping 返回当前配置里的 executor 名 → 纪律块文件名映射。
 //
 // B229 后它只服务 /api/discipline 端点的回显与 mapping PUT 的整段替换
@@ -362,6 +424,51 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 // 用途：cmd/agentd.go 起预热循环、给 Mirror 注入同一个池——**必须是同一个**，
 // 两个池等于两套隧道，relay 侧会看到重复的节点连接。
 func (s *Server) Pool() *targetclient.Pool { return s.pool }
+
+// SetPreviewOwner injects the owner-side preview authority before serving HTTP.
+func (s *Server) SetPreviewOwner(owner *PreviewOwner) { s.previewOwner = owner }
+
+// SetPreviewOpener injects the explicit local desktop open boundary.
+func (s *Server) SetPreviewOpener(opener PreviewOpener) { s.previewOpener = opener }
+
+// SetPreviewMirror injects the independent coordinator preview projection.
+func (s *Server) SetPreviewMirror(mirror *PreviewMirror) { s.previewMirror = mirror }
+
+// StartPreviewServices restores persisted path previews and starts owner lifecycle work.
+func (s *Server) StartPreviewServices(ctx context.Context) error {
+	if s.previewOwner != nil {
+		if err := s.previewOwner.Restore(ctx); err != nil {
+			return err
+		}
+	}
+	if s.previewMirror != nil {
+		go s.previewMirror.Run(ctx)
+	}
+	if s.previewOwner == nil && s.previewMirror == nil {
+		s.log.Info("preview owner 未配置，跳过启动", "operation", "preview_start")
+	}
+	return nil
+}
+
+// StopPreviewServices stops the local opener before owner persistence closes.
+func (s *Server) StopPreviewServices(ctx context.Context) error {
+	var stopErr error
+	if s.previewOpener != nil {
+		if err := s.previewOpener.Stop(ctx); err != nil {
+			stopErr = errors.Join(stopErr, err)
+			s.log.Warn("preview opener 收口失败，继续关闭其余服务", "operation", "preview_stop", "cause", err)
+		}
+	}
+	if s.previewMirror != nil {
+		s.previewMirror.Stop()
+	}
+	if s.previewOwner != nil {
+		if err := s.previewOwner.Stop(ctx); err != nil {
+			stopErr = errors.Join(stopErr, err)
+		}
+	}
+	return stopErr
+}
 
 // CloseTargets 关掉池内全部客户端与 relay 隧道。
 //
@@ -424,6 +531,7 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - GET  /api/status                    agentd 可用性与身份
 //   - GET  /api/footprint                 全任务进程足迹体检
 //   - GET  /api/reclaim                    终态任务 managed worktree 残留体检
+//   - GET/POST /api/gc                    终态缓存与残留 managed worktree 预览/执行
 //   - GET  /api/tasks                   任务列表
 //   - POST /api/tasks                   派发新任务（dispatch）
 //   - GET  /api/tasks/{id}              任务详情（attach 数据源）
@@ -480,6 +588,8 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/status", s.handleStatus)
 	api.HandleFunc("GET /api/footprint", s.handleFootprint)
 	api.HandleFunc("GET /api/reclaim", s.handleReclaimList)
+	api.HandleFunc("GET /api/gc", s.handleGC)
+	api.HandleFunc("POST /api/gc", s.handleGC)
 	api.HandleFunc("GET /api/tasks", s.handleListTasks)
 	api.HandleFunc("POST /api/tasks", s.handleDispatch)
 	// /api/tasks/{id} 系列按任务归属包一层 byTask：本机没有就查镜像索引转发
@@ -555,12 +665,18 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
 	api.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
+	api.HandleFunc("POST /api/previews", s.handlePreviewCreate)
+	api.HandleFunc("GET /api/previews", s.handlePreviewList)
+	api.HandleFunc("DELETE /api/previews/{id}", s.handlePreviewClose)
+	api.HandleFunc("POST /api/previews/{id}/open", s.handlePreviewOpen)
 	api.HandleFunc("POST /api/update", s.handleUpdate)
 	api.HandleFunc("GET /api/update/latest", s.handleUpdateLatest)
 	api.HandleFunc("POST /api/update/desktop/download", s.handleDesktopDownloadStart)
 	api.HandleFunc("GET /api/update/desktop/download", s.handleDesktopDownloadState)
 	api.HandleFunc("GET /ws/events", s.handleEvents)
 	api.HandleFunc("GET /ws/pty", s.handlePtyWS)
+	api.HandleFunc("GET /ws/previews", s.handlePreviewWS)
+	api.HandleFunc("GET /ws/preview-raw", s.handlePreviewRawWS)
 	api.HandleFunc("POST /api/auth/tickets", s.handleIssueTicket)
 	api.HandleFunc("GET /api/auth/sessions", s.handleListSessions)
 	api.HandleFunc("DELETE /api/auth/sessions/{id}", s.handleRevokeSession)
@@ -605,7 +721,13 @@ func (s *Server) Handler() http.Handler {
 	// 这份二进制有没有前端，是「控制台打不开」时第一个要排除的可能。
 	// 不打这一行的话，运维只能靠猜：是构建时漏了 -tags embedweb，
 	// 还是运行时路由坏了，两者现象完全一样。
-	s.log.Info("控制台前端", "embedded", webui.Embedded())
+	embedded := webui.Embedded()
+	if embedded {
+		s.log.Info("控制台前端", "embedded", true)
+	} else {
+		s.log.Warn("控制台前端是 stub：请使用带 -tags embedweb 的发布构建",
+			"embedded", false, "consequence", "当前控制台页面只是说明页")
+	}
 	s.log.Info("Host 白名单已生效", "hosts", sortedKeys(s.allowedHosts()))
 	return s.hostGuard(root)
 }
@@ -747,6 +869,8 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	revealOK := revealSupportedOS
 	resp.RevealSupported = &revealOK
 	resp.ScratchRoot = s.scratchRoot()
+	webEmbedded := webui.Embedded()
+	resp.WebEmbedded = &webEmbedded
 	// 会话数是读一个内存 map 的长度，不枚举进程——status 必须保持快
 	if s.pty != nil {
 		n := len(s.pty.List())
@@ -1246,6 +1370,12 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, ErrWorkdirBusy):
 		s.log.Warn("dispatch 被拒：目标工作目录被占用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+	case errors.Is(err, errFetchRefLockContention):
+		s.log.Warn("dispatch 被拒：基线补拉遭遇远端 ref 锁竞争", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, errLocalBaseBranchDiverged):
+		s.log.Warn("dispatch 被拒：本地工作分支与 origin 分叉", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBaseCommitMissing):
 		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

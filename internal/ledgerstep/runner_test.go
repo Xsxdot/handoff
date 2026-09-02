@@ -6,15 +6,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/coder/websocket"
 	_ "modernc.org/sqlite"
 )
 
-func dispatchRunner(t *testing.T, st *ledger.Store, transport func(context.Context, DispatchOpts) (string, error)) *StepRunner {
+func dispatchRunner(t *testing.T, st *ledger.Store, transport func(context.Context, DispatchOpts) (string, string, error)) *StepRunner {
 	t.Helper()
 	return &StepRunner{
 		St: st, Session: "session-runner", Target: "mac-02",
@@ -91,9 +98,9 @@ func TestRunnerPassesNodePurposeAndAcceptanceSwitch(t *testing.T) {
 	}
 
 	var dispatched []DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		dispatched = append(dispatched, opts)
-		return fmt.Sprintf("T-runner-%d", len(dispatched)), nil
+		return fmt.Sprintf("T-runner-%d", len(dispatched)), "", nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card,
 		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
@@ -122,10 +129,10 @@ func TestRunnerExecutorModelOverridePriorityAndPairRule(t *testing.T) {
 	setTemplateModel(t, st, target, "template-model")
 	var got DispatchOpts
 	call := 0
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		got = opts
 		call++
-		return fmt.Sprintf("T-runner-override-%d", call), nil
+		return fmt.Sprintf("T-runner-override-%d", call), "", nil
 	}}
 	node := ledger.NodeDef{
 		Name: "进行中", Dispatch: true, Template: "feature-impl",
@@ -184,9 +191,9 @@ func TestRunnerSameExecutorKeepsNodeModel(t *testing.T) {
 	const target = "mac-02"
 	st, card := dispatchTestCard(t)
 	var got DispatchOpts
-	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		got = opts
-		return "T-runner-same-executor", nil
+		return "T-runner-same-executor", "", nil
 	}}
 	node := ledger.NodeDef{
 		Name: "进行中", Dispatch: true, Template: "feature-impl",
@@ -208,10 +215,10 @@ func TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun(t *testing.T) {
 	st, card := nodeLedger(t)
 	started := make(chan struct{})
 	finish := make(chan struct{})
-	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		close(started)
 		<-finish
-		return "T-driver", nil
+		return "T-driver", "", nil
 	})
 
 	done := make(chan error, 1)
@@ -256,9 +263,9 @@ func TestRunnerRejectsActiveDriverAndReportsHolder(t *testing.T) {
 	if err := st.ClaimCard(card.ID, "cli:holder@h"); err != nil {
 		t.Fatalf("预先认领: %v", err)
 	}
-	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		t.Fatalf("冲突时不应派发")
-		return "", nil
+		return "", "", nil
 	})
 
 	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
@@ -276,8 +283,8 @@ func TestRunnerRejectsActiveDriverAndReportsHolder(t *testing.T) {
 
 func TestRunnerKeepsOwnershipAfterDispatchFailure(t *testing.T) {
 	st, card := nodeLedger(t)
-	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
-		return "", fmt.Errorf("目标机不可达")
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+		return "", "", fmt.Errorf("目标机不可达")
 	})
 
 	if _, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing); err != nil {
@@ -319,9 +326,9 @@ func TestRunnerRendersDeclaredOutputPathAndInjectsPrompt(t *testing.T) {
 	var opts DispatchOpts
 	d := &Dispatcher{
 		St: st, Actor: "runner-test",
-		Transport: func(ctx context.Context, got DispatchOpts) (string, error) {
+		Transport: func(ctx context.Context, got DispatchOpts) (string, string, error) {
 			opts = got
-			return "task-output-runner", nil
+			return "task-output-runner", "", nil
 		},
 	}
 	runner := &StepRunner{
@@ -396,9 +403,9 @@ func TestRunnerRunLockRefusalReportsWhoNodeExpiry(t *testing.T) {
 	if _, acq, err := st.AcquireRunLock(card.ID, ledger.StatusDoing, "run:other-host#7#7", ledger.RunLockTTL); err != nil || !acq {
 		t.Fatalf("预占运行锁: %v %v", acq, err)
 	}
-	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		t.Fatal("运行锁被拒时不得派发")
-		return "", nil
+		return "", "", nil
 	})
 	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
 	if err == nil || !strings.Contains(err.Error(), "run:other-host#7#7") || !strings.Contains(err.Error(), ledger.StatusDoing) {
@@ -416,9 +423,9 @@ func TestRunnerOwnershipRefusalHaltsWithCardEvent(t *testing.T) {
 	if err := st.ClaimCard(card.ID, "cli:holder@h"); err != nil {
 		t.Fatalf("预占归属: %v", err)
 	}
-	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		t.Fatal("归属被拒时不得派发")
-		return "", nil
+		return "", "", nil
 	})
 	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
 	if err == nil || !strings.Contains(err.Error(), "cli:holder@h") {
@@ -435,10 +442,10 @@ func TestRunRenewsLockRowOnBeat(t *testing.T) {
 	st, card := nodeLedger(t)
 	started, release := make(chan struct{}), make(chan struct{})
 	beats := make(chan time.Time, 8)
-	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, error) {
+	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		close(started)
 		<-release
-		return "T-beat", nil
+		return "T-beat", "", nil
 	})
 	runner.RenewBeat = beats
 	done := make(chan error, 1)
@@ -496,10 +503,10 @@ func TestRunnerStopsCardWritesAfterLosingWriteGate(t *testing.T) {
 	}
 	started, release := make(chan struct{}), make(chan struct{})
 	runner := &StepRunner{St: st, Session: "session-runner", Target: "mac-02", RunHolder: "run:loser#9#9", RenewBeat: make(chan time.Time, 8),
-		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 			close(started)
 			<-release
-			return "T-gate", nil
+			return "T-gate", "", nil
 		}}}
 	done := make(chan error, 1)
 	go func() { _, err := runner.Run(context.Background(), card.ID, "审阅"); done <- err }()
@@ -570,10 +577,10 @@ func TestRunnerLossCommentNamesCurrentRunLockHolder(t *testing.T) {
 
 	started, release := make(chan struct{}), make(chan struct{})
 	runner := &StepRunner{St: st, Session: "session-runner", Target: "mac-02", RunHolder: "run:runner-a#1#1", RenewBeat: make(chan time.Time, 8),
-		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 			close(started)
 			<-release
-			return "T-holder-a", nil
+			return "T-holder-a", "", nil
 		}}}
 	done := make(chan error, 1)
 	go func() { _, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing); done <- err }()
@@ -640,10 +647,10 @@ func TestRunnerLossCommentReportsRunLockReadError(t *testing.T) {
 	started, release := make(chan struct{}), make(chan struct{})
 	const holderA = "run:runner-read-error#1#1"
 	runner := &StepRunner{St: st, Session: "session-runner", Target: "mac-02", RunHolder: holderA, RenewBeat: make(chan time.Time, 8),
-		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, error) {
+		Dispatcher: &Dispatcher{St: st, Actor: "runner-actor", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 			close(started)
 			<-release
-			return "T-read-error", nil
+			return "T-read-error", "", nil
 		}}}
 	done := make(chan error, 1)
 	go func() { _, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing); done <- err }()
@@ -689,6 +696,95 @@ func TestRunnerLossCommentReportsRunLockReadError(t *testing.T) {
 		return
 	}
 	t.Fatal("未找到失权读错说明 comment")
+}
+
+// TestRunnerLocalClientUsesWaitAndDiffWire 锁住节点生产 Run 路径的本机 client
+// 接线：await 仍走 /ws/events + Attach + Done，产出校验仍走 Diff；二者收到的
+// target 都是空串，不读本机 ledger 冒充远端协议。
+func TestRunnerLocalClientUsesWaitAndDiffWire(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	const taskID = "task-local-runner"
+	const finalText = "```handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n```"
+	var wsHits, attachHits, doneHits, diffHits atomic.Int32
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.URL.Path == "/ws/events":
+			wsHits.Add(1)
+			conn, err := websocket.Accept(w, r, nil)
+			if err != nil {
+				t.Errorf("Accept WS: %v", err)
+				return
+			}
+			event := proto.Event{
+				Seq: 1, TaskID: taskID, Type: proto.EventTypeCompleted,
+				Payload:   json.RawMessage(fmt.Sprintf(`{"final_text":%q}`, finalText)),
+				CreatedAt: time.Now().UTC(),
+			}
+			body, _ := json.Marshal(event)
+			if err := conn.Write(r.Context(), websocket.MessageText, body); err != nil {
+				t.Errorf("写 completed WS: %v", err)
+			}
+		case r.URL.Path == "/api/tasks/"+taskID && r.Method == http.MethodGet:
+			attachHits.Add(1)
+			_, _ = io.WriteString(w, fmt.Sprintf(`{"recent_events":[{"type":"completed","payload":{"final_text":%q}}]}`, finalText))
+		case r.URL.Path == "/api/tasks/"+taskID+"/done" && r.Method == http.MethodPost:
+			doneHits.Add(1)
+			_, _ = io.WriteString(w, `{"ok":true}`)
+		case r.URL.Path == "/api/tasks/"+taskID+"/diff" && r.Method == http.MethodGet:
+			diffHits.Add(1)
+			_, _ = io.WriteString(w, `{"diff":"diff --git a/docs/out.md b/docs/out.md\n--- a/docs/out.md\n+++ b/docs/out.md\n"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(ts.Close)
+
+	st, _ := dispatchTestCard(t)
+	if _, err := st.PutWorkflow("local-runner", ledger.WorkflowDef{Nodes: []ledger.NodeDef{
+		{Name: ledger.StatusTodo, Next: "审阅"},
+		{Name: "审阅", Dispatch: true, Verdict: true, Template: "feature-impl"},
+	}}); err != nil {
+		t.Fatalf("写本机 runner 工作流: %v", err)
+	}
+	card, err := st.CreateCard(ledger.NewCard{Title: "本机 runner", Project: "demo", Workflow: "local-runner", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建本机 runner 卡: %v", err)
+	}
+	var transportCalls atomic.Int32
+	runner := &StepRunner{
+		St: st, Session: "runner-local", Target: "", RunHolder: "run:local#1#1",
+		Dispatcher: &Dispatcher{St: st, Actor: "runner-local", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+			transportCalls.Add(1)
+			if opts.Target != "" {
+				t.Fatalf("本机 Transport target = %q，期望空串", opts.Target)
+			}
+			return taskID, "", nil
+		}},
+		Clients: func(target string) (*client.Client, error) {
+			if target != "" {
+				return nil, fmt.Errorf("本机 runner 收到非空 target %q", target)
+			}
+			return client.New(ts.URL, "test-token"), nil
+		},
+	}
+	outcome, err := runner.Run(context.Background(), card.ID, "审阅")
+	if err != nil {
+		t.Fatalf("本机 runner Run: %v", err)
+	}
+	if outcome.Action != ActionPass || transportCalls.Load() != 1 {
+		t.Fatalf("本机 runner outcome/calls = %+v/%d", outcome, transportCalls.Load())
+	}
+	paths, err := runner.diffNode()(context.Background(), "", taskID)
+	if err != nil {
+		t.Fatalf("本机 runner Diff: %v", err)
+	}
+	if len(paths) != 1 || paths[0] != "docs/out.md" {
+		t.Fatalf("本机 runner changed paths = %v，期望 [docs/out.md]", paths)
+	}
+	if wsHits.Load() != 1 || attachHits.Load() != 1 || doneHits.Load() != 1 || diffHits.Load() != 1 {
+		t.Fatalf("本机 runner HTTP hits ws/attach/done/diff = %d/%d/%d/%d，期望均 1",
+			wsHits.Load(), attachHits.Load(), doneHits.Load(), diffHits.Load())
+	}
 }
 
 func stMustNode(t *testing.T, st *ledger.Store, cardID, name string) ledger.NodeDef {

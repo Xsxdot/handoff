@@ -14,6 +14,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 	"github.com/Xsxdot/handoff/internal/upgrade"
 )
 
@@ -21,7 +22,7 @@ func boolPtrMachineUpgrade(b bool) *bool { return &b }
 
 func machineStatusServer(t *testing.T, status proto.StatusResp) *httptest.Server {
 	t.Helper()
-	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/api/status" {
 			http.NotFound(w, r)
 			return
@@ -57,7 +58,6 @@ func postMachineUpgrade(t *testing.T, env *testAgentdEnv, name string, force boo
 func configureMachineUpgrade(t *testing.T, env *testAgentdEnv, name string, status proto.StatusResp) {
 	t.Helper()
 	remote := machineStatusServer(t, status)
-	t.Cleanup(remote.Close)
 	env.srv.cfg.Store(&config.Config{
 		Token:   testToken,
 		DataDir: env.srv.conf().DataDir,

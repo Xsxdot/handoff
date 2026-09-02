@@ -1,0 +1,4 @@
+{
+  "domain": "d_web_shell",
+  "responsibility": "应用壳、布局、共用组件与数据钩子、工具函数，以及静态资产的 Go 侧打包形态。"
+}

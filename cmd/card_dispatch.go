@@ -13,6 +13,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
@@ -60,30 +61,39 @@ type dispatchRequest struct {
 
 // dispatchTransport 是派发前逻辑的测试缝。生产路径由
 // dispatchTransportWithOpts 走 client.Dispatch；保留这个四参数缝是为了让
-// 单测只关心 prompt、分支、目标机与项目四个派发前事实。
-var dispatchTransport = func(prompt, branch, target, project string) (string, error) {
-	cl, done, err := targetClient(target)
+// 单测只关心 prompt、分支、目标机与项目四个派发前事实；返回值仍携带目标
+// agentd 原样回传的 BaseCommit。
+var dispatchTransport = func(prompt, branch, target, project string) (string, string, error) {
+	canonical, err := canonicalCLITarget(target)
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+	cl, done, err := targetClient(canonical)
+	if err != nil {
+		return "", "", err
 	}
 	defer done()
 	task, err := cl.Dispatch(context.Background(), client.DispatchOpts{
-		Prompt: prompt, NewBranch: branch, Target: target, ProjectName: project,
+		Prompt: prompt, NewBranch: branch, Target: canonical, ProjectName: project,
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return task.ID, nil
+	return task.ID, task.BaseCommit, nil
 }
 
-var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
-	cl, done, err := targetClient(req.target)
+var dispatchTransportWithOpts = func(req dispatchRequest) (string, string, error) {
+	canonical, err := canonicalCLITarget(req.target)
 	if err != nil {
-		return "", err
+		return "", "", err
+	}
+	cl, done, err := targetClient(canonical)
+	if err != nil {
+		return "", "", err
 	}
 	defer done()
 	task, err := cl.Dispatch(context.Background(), client.DispatchOpts{
-		Prompt: req.prompt, Target: req.target,
+		Prompt: req.prompt, Target: canonical,
 		NewBranch: req.branch, Branch: req.existingBranch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
 		HomeDir:           req.homeDir,
@@ -96,9 +106,9 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 		NewWorktree:        req.newWorktree,
 	})
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return task.ID, nil
+	return task.ID, task.BaseCommit, nil
 }
 
 // cliTransport 把 CLI 的派发通道适配成 ledgerstep.Transport。
@@ -106,7 +116,7 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
 // 保留 dispatchTransportWithOpts 这层间接：它是 cmd 包既有的测试缝
 // （swapDispatchTransport / swapDispatchTransportWithOpts），认领与租约的
 // 用例还挂在上面。
-func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {
+func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, string, error) {
 	return dispatchTransportWithOpts(dispatchRequest{
 		prompt: opts.Prompt, branch: opts.Branch, target: opts.Target, project: opts.Project,
 		executor: opts.Executor, model: opts.Model, planB64: opts.PlanB64,
@@ -123,11 +133,11 @@ func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, er
 }
 
 // swapDispatchTransport 替换网络派发段；测试恢复原实现。
-func swapDispatchTransport(fn func(prompt, branch, target, project string) (string, error)) func() {
+func swapDispatchTransport(fn func(prompt, branch, target, project string) (string, string, error)) func() {
 	old := dispatchTransport
 	oldWithOpts := dispatchTransportWithOpts
 	dispatchTransport = fn
-	dispatchTransportWithOpts = func(req dispatchRequest) (string, error) {
+	dispatchTransportWithOpts = func(req dispatchRequest) (string, string, error) {
 		return dispatchTransport(req.prompt, req.branch, req.target, req.project)
 	}
 	return func() {
@@ -141,7 +151,7 @@ func swapDispatchTransport(fn func(prompt, branch, target, project string) (stri
 // 为什么不复用 swapDispatchTransport：那条缝刻意只暴露 prompt/branch/target/project
 // 四个标量（见它的注释），纪律块名字这类新字段到不了回调手上。两条缝并存，
 // 各测各的关注面，既有用例不必为新字段改回调。
-func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, error)) func() {
+func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, string, error)) func() {
 	old := dispatchTransportWithOpts
 	dispatchTransportWithOpts = fn
 	return func() { dispatchTransportWithOpts = old }
@@ -153,17 +163,48 @@ func swapDispatchTransportWithOpts(fn func(dispatchRequest) (string, error)) fun
 // addr**，直连构造对它们恒失败（会退化成一个没有 Host 的 URL）。选路判据
 // 只允许有一份，在 internal/targetclient，CLI 与 agentd 共用。
 //
-// 返回的 cleanup 关闭本次可能建立的 relay 隧道，调用方必须调用（直连形态
-// 是 no-op）。target 为空视为未指定，直接报错而不是退回本机——环节派发的
-// 目标机由 --target 或模板给出，静默换一台机器是更坏的失败。
-func targetClient(target string) (*client.Client, func(), error) {
+// canonicalCLITarget 把已登记且指向本机的 target 归一为空串。
+//
+// 空串本身就是本机；未知名称保留原名并返回可行动错误，不增加“本机”或
+// “localhost”魔法别名。
+func canonicalCLITarget(target string) (string, error) {
 	if target == "" {
-		return nil, func() {}, fmt.Errorf("未指定目标机（--target 或模板 target 至少一个）")
+		return "", nil
 	}
-	if _, ok := loadCLIConfig().Targets[target]; !ok {
-		return nil, func() {}, fmt.Errorf("目标机 %s 未登记（handoff init/机器登记先行）", target)
+	cfg, err := config.Load(effectiveConfigPath())
+	if err != nil {
+		return "", fmt.Errorf("加载配置: %w", err)
 	}
-	return newTargetClientNamed(target)
+	t, ok := cfg.Targets[target]
+	if !ok {
+		return target, fmt.Errorf("目标机 %s 未登记（handoff init/机器登记先行）", target)
+	}
+	if config.IsSelfTarget(cfg.Listen, t) {
+		return "", nil
+	}
+	return target, nil
+}
+
+// targetClient 按规范目标取得一个可用的 agentd 客户端。
+//
+// 返回的 cleanup 关闭本次可能建立的 relay 隧道，调用方必须调用（直连形态
+// 是 no-op）。target 为空或登记到本机的 loopback 地址都走 LocalEndpoint；
+// 未登记名称仍原样拒绝。
+func targetClient(target string) (*client.Client, func(), error) {
+	canonical, err := canonicalCLITarget(target)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	if canonical == "" {
+		addr, token, err := LocalEndpoint()
+		if err != nil {
+			return nil, func() {}, err
+		}
+		slog.Info("CLI 采用本机客户端", "target", target, "canonical_target", canonical)
+		return client.New(addr, token), func() {}, nil
+	}
+	slog.Info("CLI 采用远端客户端", "target", canonical, "canonical_target", canonical)
+	return newTargetClientNamed(canonical)
 }
 
 // resolveCardDispatchTemplate 按账本解析裸 card dispatch 的模板。
@@ -199,8 +240,9 @@ func resolveCardDispatchTemplate(st *ledger.Store) (string, error) {
 
 // resolveCardDispatchDiscipline 是 CLI 模板派发的缝 1 收口（B229 契约 §2.2）：
 // 绑账本 lookup 与目标机能力位探活各一次，经 discipline.ResolveDispatch 产出
-// 随派发下发的正文三元组。探活失败按「不支持」处置（缺席=nil 的保守方向同向，
-// §2.4）；未点名模板的产物是纯平台层正文、版本 0（§3.1 拒发闸覆盖一切带正文派发）。
+// 随派发下发的正文三元组。探活失败保留网络/认证 cause 并停止派发；只有探活成功
+// 但能力位缺席=nil 或 false 才产生「升级」拒发文案。未点名模板的产物是纯平台层
+// 正文、版本 0（§3.1 拒发闸覆盖一切带正文派发）。
 func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, target string) (discipline.ResolvedDiscipline, error) {
 	lookup := func(n string) (int, string, error) {
 		d, err := st.GetDiscipline(n, 0)
@@ -212,16 +254,18 @@ func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, 
 	var cap *bool
 	cl, done, err := targetClient(target)
 	if err != nil {
-		slog.Warn("派发前取得目标机客户端失败", "target", target, "cause", err)
-	} else {
-		defer done()
-		status, serr := cl.Status(ctx)
-		if serr != nil {
-			slog.Warn("派发前能力位探活失败，按不支持处置", "target", target, "cause", serr)
-		} else {
-			cap = status.DisciplinesSupported
-		}
+		slog.Error("模板派发前取得目标机客户端失败", "target", target, "cause", err)
+		return discipline.ResolvedDiscipline{}, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
 	}
+	defer done()
+	status, err := cl.Status(ctx)
+	if err != nil {
+		slog.Error("模板派发前目标机探活失败", "target", target, "cause", err)
+		return discipline.ResolvedDiscipline{}, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
+	}
+	cap = status.DisciplinesSupported
 	res, err := discipline.ResolveDispatch(lookup, discipline.DisciplineRef{Name: name},
 		loadCLIConfig().PlatformInvariantsEnabled(), cap)
 	if err != nil {
@@ -263,20 +307,21 @@ var cardDispatchCmd = &cobra.Command{
 			ctx = context.Background()
 		}
 		// B229 缝 1：解析在认领之前完成——拒发发生在任何状态迁移之前，零半状态。
-		// 有效（角色名，目标机）与 ViaTemplate 同序（共用 PreflightDiscipline）；
-		// 目标机未定时不抢答，放给 ViaTemplate 的既有错误路径。
+		// 有效（角色名，目标机）与 ViaTemplate 同序（共用 PreflightDiscipline）。
 		discName, discTarget, err := ledgerstep.PreflightDiscipline(st, templateName, cardDispatchDiscipline, cardDispatchTarget)
 		if err != nil {
 			return err
 		}
+		discTarget, err = canonicalCLITarget(discTarget)
+		if err != nil {
+			return err
+		}
 		var resolved discipline.ResolvedDiscipline
-		if discTarget != "" {
-			resolved, err = resolveCardDispatchDiscipline(ctx, st, discName, discTarget)
-			if err != nil {
-				slog.Warn("裸卡派发被拒发闸拦下", "card", id, "discipline", discName,
-					"target", discTarget, "cause", err)
-				return err
-			}
+		resolved, err = resolveCardDispatchDiscipline(ctx, st, discName, discTarget)
+		if err != nil {
+			slog.Warn("裸卡派发被拒发闸拦下", "card", id, "discipline", discName,
+				"target", discTarget, "cause", err)
+			return err
 		}
 		// B239 认领只写归属、不动状态列（运行互斥归账本运行锁）；
 		// B229 的拒发闸在它之前完成，所以拒发时零半状态这条仍然成立。
@@ -287,6 +332,14 @@ var cardDispatchCmd = &cobra.Command{
 			St: st, Transport: cliTransport, Actor: actor,
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
+			NormalizeTarget: func(target string) string {
+				canonical, err := canonicalCLITarget(target)
+				if err != nil {
+					slog.Warn("CLI 派发目标归一失败，保留原值", "target", target, "cause", err)
+					return target
+				}
+				return canonical
+			},
 		}
 		result, err := dispatcher.ViaTemplate(ctx, card, ledgerstep.TemplateDispatch{
 			Template:           templateName,

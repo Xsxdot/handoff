@@ -1,0 +1,806 @@
+<!doctype html>
+<!--
+  工作项看板 v2（fork 副本：workbench-ledger）—— 按形态差距分析修订。
+  v2 相对 v1 的核心倒转：知识流（spec 批次/验收/引用/评论）升主视觉，
+  保真信号（镜像/lease/驱动心跳）默认沉默、异常才显形。
+  本页回答的形态问题：
+  ① 一等页面，dock「▤」进入；与 task 看板弹层并存；
+  ② 列 = 用户真实生命周期：待办 → 已出spec(插入) → 进行中 → 待审阅 → 待合并(插入) → 已完成；
+  ③ 「需要你」= 工具条筛选（等人⛔ + 裁决⚖ 合一），点击就地过滤，项目级裁决在
+     筛选态以细条出现在列区上方——不设常驻横条、不弹层；
+  ④ 卡片主信息：优先级 / spec 附件徽标 / 已验·待真机验 / 承载卡「⊕ 并入 N」；
+  ⑤ 统一任务卡模型：合并 = merged_into 关系，被并卡跟随承载卡、不在看板单独
+     成卡（列表可见）；承载卡抽屉内有专属并入区（验收各自保留、可拆回），
+     不弹独立合并面板；批次视图已退役；
+  ⑥ 抽屉：验收区（判据+已验开关+证据）、关系区（阻塞/发现自/拆分自/关联，双向）、
+     分层 timeline（评论=气泡主视觉，系统事件=浅色 meta 行，镜像折叠成组，可过滤）、
+     评论框支持 #B142 引用自动成链；
+  ⑦ 看板/列表双视图，列表复刻 markdown 总账列（考古与领活入口，含归档）；
+  ⑧ 工具条「⚙ 流程」进工作流/派发模板管理页（flows.html）。
+  交互遵循 light-interaction.md：零依赖、纯 mock、file:// 直开。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · 工作项</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  .board-page { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+
+  /* ---- 顶部工具条 ---- */
+  .toolbar { display: flex; align-items: center; gap: 10px; padding: 10px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+  .toolbar .page-title { font-weight: 600; font-size: 14px; white-space: nowrap; flex-shrink: 0; }
+  .toolbar select { padding: 4px 8px; border-radius: 6px; border: 1px solid var(--border); background: var(--background); font-size: 12.5px; color: var(--foreground); }
+  .toolbar .spacer { flex: 1; }
+  .view-toggle { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; }
+  .view-toggle button { border: none; background: var(--background); padding: 4px 12px; font-size: 12px; cursor: pointer; color: var(--muted-foreground); }
+  .view-toggle button.on { background: var(--primary); color: var(--primary-foreground); }
+  /* 保真信号收敛为一颗小点：正常沉默，异常才展开文字 */
+  .health-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--green); flex-shrink: 0; }
+
+  /* ---- 等人条 ---- */
+  .needs-human { display: flex; align-items: center; gap: 10px; margin: 10px 16px 0; padding: 8px 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 8px; }
+  .needs-human .nh-label { font-size: 12.5px; font-weight: 600; color: var(--amber); flex-shrink: 0; }
+  .needs-human .nh-cards { display: flex; gap: 8px; overflow-x: auto; }
+  .nh-card { display: flex; align-items: center; gap: 8px; flex-shrink: 0; padding: 5px 10px; border: 1px solid #fde68a; border-radius: 6px; background: var(--background); font-size: 12.5px; cursor: pointer; }
+  .nh-card:hover { border-color: var(--amber); }
+  .nh-card .reason { color: var(--amber); }
+
+  /* 项目级裁决细条：display:flex 会盖掉 UA 的 [hidden]，必须自己再声明一次 */
+  #projDecs { margin: 10px 16px 0; display: flex; flex-direction: column; gap: 6px; }
+  #projDecs[hidden] { display: none; }
+
+  /* ---- 看板列区 ---- */
+  .cols { flex: 1; min-height: 0; display: flex; gap: 10px; padding: 12px 16px; overflow-x: auto; }
+  .col { width: 236px; flex-shrink: 0; display: flex; flex-direction: column; min-height: 0; }
+  .col-head { display: flex; align-items: center; gap: 6px; padding: 2px 4px 8px; font-size: 12.5px; font-weight: 600; }
+  .col-head .cnt { color: var(--muted-foreground); font-weight: 400; }
+  .col-head .anchor-tag { font-size: 10px; color: var(--muted-foreground); border: 1px dashed var(--border); border-radius: 4px; padding: 0 4px; font-weight: 400; }
+  .col-body { flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-bottom: 8px; }
+
+  /* ---- 卡片：知识流优先 ---- */
+  .wcard { border: 1px solid var(--border); border-radius: 8px; background: var(--background); padding: 8px 10px; cursor: pointer; font-size: 12.5px; }
+  .wcard:hover { border-color: #a3a3a3; }
+  .wcard.needs { border-color: var(--amber); border-left: 3px solid var(--amber); }
+  .wcard.conflict { border-color: var(--destructive); border-left: 3px solid var(--destructive); }
+  .wcard.blocked { opacity: .55; }
+  .wcard .wid-row { display: flex; align-items: center; gap: 6px; }
+  .wcard .wid { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
+  .wcard .wtitle { margin: 2px 0 6px; line-height: 1.45; }
+  .wcard .wmeta { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  .chip { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted-foreground); }
+  /* display:inline-flex 会盖掉 UA 的 [hidden]{display:none}，必须自己再声明一次 */
+  .chip[hidden] { display: none; }
+  .chip.amber { background: #fef3c7; border-color: #fde68a; color: var(--amber); }
+  .chip.red { background: #fef2f2; border-color: #fecaca; color: var(--destructive); }
+  .chip.green { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
+  .chip.spec { cursor: pointer; color: var(--foreground); }
+  .chip.spec:hover { border-color: #a3a3a3; background: var(--muted); }
+  .chip.prio-高 { border-color: #fecaca; color: var(--destructive); }
+
+  /* ---- 列表视图 ---- */
+  .list-wrap { flex: 1; min-height: 0; overflow: auto; padding: 12px 16px; }
+  .list-wrap table { border-collapse: collapse; width: 100%; font-size: 12.5px; }
+  .list-wrap th { text-align: left; font-size: 11.5px; color: var(--muted-foreground); font-weight: 500; padding: 4px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .list-wrap td { padding: 6px 10px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  .list-wrap tr:hover td { background: var(--muted); cursor: pointer; }
+  .list-wrap .mono-sm { font-family: var(--font-mono); font-size: 11px; }
+
+  /* ---- 未挂账（收窄为一行，点开展开） ---- */
+  .orphans { border-top: 1px solid var(--border); padding: 6px 16px; background: var(--sidebar); font-size: 12px; }
+  .orphans summary { cursor: pointer; color: var(--muted-foreground); list-style: none; }
+  .orphans .o-row { display: flex; gap: 8px; overflow-x: auto; padding: 8px 0 4px; }
+  .o-card { display: flex; align-items: center; gap: 8px; flex-shrink: 0; border: 1px dashed var(--border); border-radius: 6px; background: var(--background); padding: 5px 10px; font-size: 12px; }
+
+  /* ---- 详情抽屉 ---- */
+  .drawer { position: fixed; top: 0; right: 0; bottom: 0; width: 560px; max-width: 92vw; background: var(--background); border-left: 1px solid var(--border); box-shadow: -8px 0 24px rgba(0,0,0,.08); z-index: 20; display: flex; flex-direction: column; min-height: 0; }
+  .drawer[hidden] { display: none; }
+  .drawer .d-head { padding: 12px 16px 10px; border-bottom: 1px solid var(--border); }
+  .drawer .d-head .row1 { display: flex; align-items: center; gap: 8px; }
+  .drawer .d-head .close { margin-left: auto; border: none; background: none; cursor: pointer; color: var(--muted-foreground); font-size: 14px; }
+  .drawer .d-head h3 { margin: 4px 0 0; font-size: 14.5px; }
+  .drawer .d-body { flex: 1; overflow-y: auto; padding: 12px 16px; }
+  .d-sec { margin-bottom: 16px; }
+  .d-sec .s-title { font-size: 12px; font-weight: 600; color: var(--muted-foreground); margin-bottom: 6px; }
+
+  .pipeline { display: flex; align-items: center; gap: 4px; font-size: 11.5px; flex-wrap: wrap; }
+  .pipeline .st { padding: 2px 8px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted-foreground); }
+  .pipeline .st.cur { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .pipeline .st.ins { border-style: dashed; }
+  .pipeline .arr { color: var(--muted-foreground); }
+
+  .kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; font-size: 12.5px; }
+  .kv dt { color: var(--muted-foreground); }
+  .kv dd { margin: 0; }
+
+  /* 验收区 */
+  .accept { border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; font-size: 12.5px; }
+  .accept .a-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+  .accept .a-crit { line-height: 1.6; }
+  .accept .a-evi { margin-top: 6px; padding: 6px 10px; border-left: 2px solid var(--border); color: var(--muted-foreground); font-size: 12px; line-height: 1.6; }
+
+  /* 关系区 */
+  .rel-group { margin-bottom: 6px; font-size: 12.5px; }
+  .rel-group .rtype { color: var(--muted-foreground); font-size: 11.5px; margin-right: 6px; }
+  .rel-link { color: var(--foreground); text-decoration: underline; text-decoration-color: var(--border); cursor: pointer; font-family: var(--font-mono); font-size: 12px; }
+  .rel-link:hover { text-decoration-color: var(--foreground); }
+
+  .sub-row, .task-row { display: flex; align-items: center; gap: 8px; font-size: 12.5px; padding: 4px 8px; border: 1px solid var(--border); border-radius: 6px; margin-bottom: 4px; }
+  .task-row a { margin-left: auto; font-size: 11.5px; color: var(--foreground); }
+  .actions-row { display: flex; gap: 6px; flex-wrap: wrap; }
+
+  /* ---- 分层 timeline ---- */
+  .tl-filters { display: flex; gap: 4px; margin-bottom: 8px; }
+  .tl-filters .tf { border: 1px solid var(--border); background: var(--background); border-radius: 999px; padding: 1px 10px; font-size: 11px; cursor: pointer; color: var(--muted-foreground); }
+  .tl-filters .tf.on { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .tl { margin-left: 2px; }
+  /* 评论：气泡主视觉 */
+  .tl .c-bubble { background: var(--muted); border-radius: 10px; padding: 8px 12px; margin: 10px 0; font-size: 13px; line-height: 1.6; }
+  .tl .c-bubble .who { font-size: 11px; color: var(--muted-foreground); margin-bottom: 2px; }
+  .tl .c-bubble.correction { border-left: 3px solid var(--amber); }
+  /* 系统事件：浅色 meta 行 */
+  .tl .m-line { margin: 4px 0; font-size: 12px; color: var(--muted-foreground); display: flex; gap: 8px; align-items: baseline; }
+  .tl .m-line .t { font-family: var(--font-mono); font-size: 11px; flex-shrink: 0; }
+  .tl .m-line.warn { color: var(--amber); }
+  .tl .m-line b { color: var(--foreground); font-weight: 500; }
+  .tl .m-line.warn b { color: var(--amber); }
+  /* 镜像执行组：折叠 */
+  .tl details.mgroup { margin: 4px 0; font-size: 12px; color: var(--muted-foreground); }
+  .tl details.mgroup summary { cursor: pointer; list-style: none; }
+  .tl details.mgroup summary::before { content: "▸ "; }
+  .tl details.mgroup[open] summary::before { content: "▾ "; }
+  .tl details.mgroup .members { margin: 4px 0 4px 8px; padding-left: 10px; border-left: 2px solid var(--border); }
+  .tl .ref { color: var(--foreground); text-decoration: underline; text-decoration-color: var(--border); cursor: pointer; }
+
+  .note-row { display: flex; gap: 6px; margin-top: 8px; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand">handoff</div>
+    <div class="tree">
+      <div class="tree-group">
+        <div class="tree-label">本机（协调机）</div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item tree-task">└ 7a8334f4（工作树）</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label">mac-02</div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item">gokit</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label">win-b37</div>
+        <a class="tree-item">handoff</a>
+      </div>
+    </div>
+    <div class="dock">
+      <a class="dock-btn" style="background:var(--muted);color:var(--foreground)" href="board.html" title="工作项账本" aria-current="page">▤<span class="badge dock-badge">3</span></a>
+      <a class="dock-btn" href="../index.html" title="任务看板（task 级弹层在工作台内）">▦</a>
+      <button class="dock-btn" title="工单">✉<span class="badge dock-badge">1</span></button>
+      <a class="dock-btn" href="settings.html" title="设置">⚙</a>
+      <button class="dock-btn" title="home 基准终端">▭</button>
+      <button class="dock-btn" title="添加项目">＋</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <main class="content">
+      <div class="board-page">
+        <div class="toolbar">
+          <span class="page-title">工作项</span>
+          <div class="view-toggle">
+            <button class="on" id="vBoard">看板</button>
+            <button id="vList">列表</button>
+          </div>
+          <select id="fProject">
+            <option value="">全部项目</option>
+            <option>handoff</option>
+            <option>charter</option>
+            <option>aim</option>
+            <option>sq</option>
+            <option>tk/server</option>
+          </select>
+          <select id="fWorkflow">
+            <option value="">全部工作流</option>
+            <option>feature 流 v2</option>
+            <option>bug 流 v1</option>
+          </select>
+          <input class="input sm" id="fSearch" placeholder="搜 B 号 / 标题" style="width:160px">
+          <button class="btn sm" id="fNeeds" style="border-color:#fde68a;color:var(--amber)">⚑ 需要你 <span id="needsCnt">5</span></button>
+          <div class="spacer"></div>
+          <span class="health-dot" title="镜像正常 · 3 台在线（异常时此处会展开告警文字）"></span>
+          <a class="btn sm" href="flows.html">⚙ 流程</a>
+          <button class="btn sm primary" id="newItemBtn">＋ 新建工作项</button>
+        </div>
+
+        <!-- 项目级裁决（无卡可挂）：只在「需要你」筛选态出现，平时不占位 -->
+        <div id="projDecs" hidden></div>
+
+        <div class="cols" id="cols"></div>
+
+        <div class="list-wrap" id="listWrap" hidden>
+          <div style="display:flex;align-items:center;gap:12px;margin-bottom:8px;font-size:12.5px">
+            <label><input type="checkbox" id="fArchived"> 含归档（已完成 / 终止·搁置）</label>
+            <span class="dim">列表视图复刻 markdown 总账——领活与考古入口</span>
+          </div>
+          <table>
+            <thead><tr><th>ID</th><th>标题</th><th>状态</th><th>验收</th><th>优先级</th><th>Spec</th><th>备注</th></tr></thead>
+            <tbody id="listBody"></tbody>
+          </table>
+        </div>
+
+        <details class="orphans">
+          <summary>未挂账任务 · 2（裸 dispatch 的孤儿，点开处理）</summary>
+          <div class="o-row">
+            <div class="o-card"><span class="mono dim">mac-02 · t-2d4a</span> bench/b93-codex-luna <span class="chip green">running</span><button class="btn sm">挂账…</button></div>
+            <div class="o-card"><span class="mono dim">mac-02 · t-b7e9</span> claude/hotfix-doc <span class="chip">waiting_review</span><button class="btn sm">挂账…</button></div>
+          </div>
+        </details>
+      </div>
+    </main>
+  </div>
+</div>
+
+<!-- 详情抽屉 -->
+<aside class="drawer" id="drawer" hidden>
+  <div class="d-head">
+    <div class="row1">
+      <span class="wid mono dim" id="dId"></span>
+      <span class="badge" id="dStatus"></span>
+      <span class="chip green" id="dVerified" hidden>已验</span>
+      <span class="chip amber" id="dNeeds" hidden>等人</span>
+      <button class="close" id="drawerClose" title="关闭">✕</button>
+    </div>
+    <h3 id="dTitle"></h3>
+  </div>
+  <div class="d-body">
+    <div class="d-sec"><div class="pipeline" id="dPipeline"></div></div>
+    <div class="d-sec"><dl class="kv" id="dKv"></dl></div>
+    <div class="d-sec">
+      <div class="s-title">验收</div>
+      <div class="accept" id="dAccept"></div>
+    </div>
+    <div class="d-sec" id="dMergeSec">
+      <div class="s-title">⊕ 并入本卡（状态跟随，验收各自保留）</div>
+      <div id="dMerge"></div>
+      <p class="dim" id="mgFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
+    </div>
+    <div class="d-sec">
+      <div class="s-title">关系</div>
+      <div id="dRels"></div>
+    </div>
+    <div class="d-sec" id="dSubsSec">
+      <div class="s-title">子任务</div>
+      <div id="dSubs"></div>
+    </div>
+    <div class="d-sec" id="dTasksSec">
+      <div class="s-title">关联执行（task）</div>
+      <div id="dTasks"></div>
+    </div>
+    <div class="d-sec">
+      <div class="s-title">节点动作（与主会话共用同一节点定义）</div>
+      <div class="actions-row">
+        <button class="btn sm" id="actDispatch">▶ 派发实现</button>
+        <button class="btn sm">⇆ 派发审阅</button>
+        <button class="btn sm">⇣ 合入集成分支</button>
+        <button class="btn sm">→ 转移状态…</button>
+      </div>
+      <p class="dim" id="actFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
+    </div>
+    <div class="d-sec">
+      <div class="s-title">Timeline</div>
+      <div class="tl-filters" id="tlFilters">
+        <button class="tf on" data-f="all">全部</button>
+        <button class="tf" data-f="comment">评论</button>
+        <button class="tf" data-f="verdict">裁决</button>
+        <button class="tf" data-f="system">系统</button>
+      </div>
+      <div class="tl" id="dTl"></div>
+      <div class="note-row">
+        <input class="input sm" id="noteInput" placeholder="写评论… 用 #B142 引用其他工作项（自动成关系边）">
+        <button class="btn sm" id="noteBtn">发布</button>
+      </div>
+      <p class="dim" id="noteFeedback" style="font-size:12px;margin:6px 0 0" hidden></p>
+    </div>
+  </div>
+</aside>
+
+<!-- 裁决答复弹窗：主会话回合末落的请示，就地答复，答复落 timeline、会话唤醒可读 -->
+<dialog id="decisionDialog">
+  <div style="padding:18px 20px;width:460px;max-width:92vw">
+    <h3 style="margin:0 0 4px;font-size:15px">⚖ 裁决 · <span id="dcId" class="mono" style="font-size:13px"></span></h3>
+    <p class="dim" style="font-size:12px;margin:0 0 10px" id="dcFrom"></p>
+    <p style="font-size:13px;line-height:1.6;margin:0 0 12px" id="dcText"></p>
+    <div id="dcOptions" style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px"></div>
+    <textarea class="input" id="dcAnswer" rows="2" placeholder="或写文字答复…"></textarea>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">
+      <button class="btn sm" id="dcCancel">关闭</button>
+      <button class="btn sm primary" id="dcOk">答复</button>
+    </div>
+    <p class="dim" id="dcFeedback" style="font-size:12px;margin:10px 0 0" hidden></p>
+  </div>
+</dialog>
+
+<!-- 派发确认弹窗 -->
+<dialog id="dispatchDialog">
+  <div style="padding:18px 20px;width:440px;max-width:92vw">
+    <h3 style="margin:0 0 10px;font-size:15px">派发实现 · <span id="dpItem" class="mono"></span></h3>
+    <dl class="kv" style="margin-bottom:12px">
+      <dt>目标机</dt><dd>mac-02</dd>
+      <dt>执行器</dt><dd>opencode（默认模型）</dd>
+      <dt>派发模板</dt><dd class="mono">feature-impl v3</dd>
+      <dt>纪律块</dt><dd class="mono">A 版 @1f3c9d（subagent 版）</dd>
+      <dt>分支策略</dt><dd class="mono">--new-worktree --new-branch …</dd>
+      <dt>前置检查</dt><dd>✓ 探活 · ✓ 远端可 fetch · ✓ 工作区干净</dd>
+    </dl>
+    <p class="dim" style="font-size:12px;margin:0 0 14px">确认后走现有 dispatch 通道；task 回链本工作项，模板版本与纪律块 hash 快照进事件。</p>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button class="btn sm" id="dpCancel">取消</button>
+      <button class="btn sm primary" id="dpOk">确认派发</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- 新建工作项弹窗 -->
+<dialog id="newItemDialog">
+  <form id="newItemForm" style="padding:18px 20px;width:420px;max-width:92vw">
+    <h3 style="margin:0 0 12px;font-size:15px">新建工作项</h3>
+    <label class="dim" style="font-size:12px">标题</label>
+    <input class="input" style="margin:4px 0 10px" placeholder="一句话说清要做什么" required>
+    <div style="display:flex;gap:8px;margin-bottom:10px">
+      <div style="flex:1"><label class="dim" style="font-size:12px">项目</label>
+        <select class="input" style="margin-top:4px"><option>handoff</option><option>tk/server</option></select></div>
+      <div style="flex:1"><label class="dim" style="font-size:12px">工作流</label>
+        <select class="input" style="margin-top:4px"><option>feature 流 v2</option><option>bug 流 v1</option></select></div>
+    </div>
+    <div style="display:flex;gap:8px;margin-bottom:14px">
+      <div style="flex:1"><label class="dim" style="font-size:12px">父工作项（可选）</label>
+        <input class="input" style="margin-top:4px" placeholder="如 B141"></div>
+      <div style="flex:1"><label class="dim" style="font-size:12px">优先级</label>
+        <select class="input" style="margin-top:4px"><option>高</option><option selected>中</option><option>低</option></select></div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button type="button" class="btn sm" id="niCancel">取消</button>
+      <button type="submit" class="btn sm primary">创建</button>
+    </div>
+    <p class="dim" id="niFeedback" style="font-size:12px;margin:10px 0 0" hidden>已创建（mock），数据未真正发送。</p>
+  </form>
+</dialog>
+
+<script>
+  // ---- mock：工作项账本。字段对齐 phase1 spec：优先级/spec/验收(判据+已验)/关系(带类型)/搁置 ----
+  const STATES = ['待办', '已出 spec', '进行中', '待审阅', '待合并', '已完成'];
+  const INSERTED = { '已出 spec': 'feature 流插入', '待合并': 'feature 流插入' };
+  const SPECS = {
+    'workbench-phase1': { file: 'specs/2026-08-18-workbench-phase1-design.md', note: '' },
+    'ledger-cleanup':   { file: 'specs/2026-08-20-ledger-cleanup-design.md',
+      note: '批次公共验收：go build + go vet + gofmt -l 无输出 + go test ./... 全绿，两台执行机各独立跑一次；以下各条只记专属真机判据。' },
+    'verdict-schema':   { file: 'specs/2026-08-21-verdict-schema-design.md', note: '' },
+    'b95-grok':         { file: 'specs/2026-08-15-b92-grok-continue-drops-events-design.md', note: '' },
+    'b119-sweep':       { file: 'specs/2026-08-17-b119-sweep-refusal-and-terminal-cleanup-design.md', note: '' },
+    'b115-selfcmd':     { file: 'specs/2026-08-18-b115-executor-self-command-gate-design.md', note: '' },
+  };
+  const ITEMS = [
+    { id: 'B141', title: '工作台一期：账本 + 看板 + 主会话驱动', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '进行中', rollup: '1/5', driver: '主会话 @ mbp-work', spec: 'workbench-phase1',
+      accept: { crit: '标准例（1→2→(3∥4)→5）真机上主会话全程一个 wait 推完；人工只出现在审 spec / 整功能验收 / 合 main', verified: null } },
+    { id: 'B141.1', parent: 'B141', title: '账本数据模型与存量迁移', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '已完成', spec: 'workbench-phase1',
+      accept: { crit: '迁移后抽查 20 条历史条目字段无损；B 号→item id 映射可反查', verified: true,
+        evi: '已验 08-22：抽查证据取自迁移日志原文而非推断——20/20 字段比对一致，映射反查含撞号顺延的 B59' } },
+    { id: 'B141.2', parent: 'B141', title: 'CLI 命令面（item / workflow / wait）', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '进行中', driver: '主会话 @ mbp-work', tickets: 1, round: '审 1/3', spec: 'workbench-phase1',
+      tasks: [{ target: 'mac-02', tid: 't-8f31', state: 'running' }],
+      rels: [{ type: '由此发现', id: 'B142' }],
+      accept: { crit: 'item add/move/dispatch/wait 全链路真机跑通；并发 dispatch 同一 item 恰一个成功', verified: null } },
+    { id: 'B141.3', parent: 'B141', title: '事件镜像子系统', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '待办', blockedBy: ['B141.2'], spec: 'workbench-phase1',
+      accept: { crit: '镜像断链→看板亮滞后标记，恢复后按来源 seq 幂等补齐', verified: null } },
+    { id: 'B141.4', parent: 'B141', title: '工作项看板页', project: 'handoff', wf: 'feature 流 v2', prio: '中',
+      status: '待办', blockedBy: ['B141.2'], spec: 'workbench-phase1',
+      accept: { crit: '对照 workbench-ledger 原型确认形态验收', verified: null } },
+    { id: 'B141.5', parent: 'B141', title: '账本单流多路 wait', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '待办', blockedBy: ['B141.3', 'B141.4'], spec: 'workbench-phase1',
+      accept: { crit: 'wait 挂起期间新派发 task 的事件不漏（对照账本单流 seq）', verified: null } },
+    { id: 'B142', title: '审阅裁决 schema 与解析失败兜底', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '已出 spec', spec: 'verdict-schema', rels: [{ type: '发现自', id: 'B141.2' }],
+      accept: { crit: '裁决解析失败不猜，转等人（reason=裁决解析失败）可复现', verified: null } },
+    // 合并示例：三张平级卡并入一张承载卡（一份 spec 一个 plan 一起做，看板只有承载卡流动）
+    { id: 'B147', title: '账本清扫一揽子', project: 'handoff', wf: 'bug 流 v1', prio: '中',
+      status: '进行中', driver: '主会话 @ mbp-work', spec: 'ledger-cleanup',
+      accept: { crit: '批次公共验收：go build + go vet + gofmt -l 无输出 + go test ./... 全绿，两台执行机各独立跑一次；各被并卡另有专属真机判据', verified: null } },
+    { id: 'B144', title: '孤儿 worktree 清扫', project: 'handoff', wf: 'bug 流 v1', prio: '中',
+      status: '进行中', mergedInto: 'B147',
+      accept: { crit: '清扫后 footprint 名册与磁盘实况一致', verified: true, evi: '已验 08-20：mac-02 真机清扫 7 个孤儿目录，名册点名逐一比对' } },
+    { id: 'B145', title: 'stale lease 回收', project: 'handoff', wf: 'bug 流 v1', prio: '中',
+      status: '进行中', mergedInto: 'B147',
+      accept: { crit: '杀掉持有者进程后 lease 在超时窗内被接管', verified: null } },
+    { id: 'B146', title: '归档任务列表分页', project: 'handoff', wf: 'bug 流 v1', prio: '低',
+      status: '进行中', mergedInto: 'B147',
+      accept: { crit: '1000 条归档下列表首屏 < 200ms', verified: null } },
+    { id: 'B120', title: 'Windows claude executor 接入', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '待审阅', round: '审 2/3', driver: '主会话 @ mbp-work', spec: 'workbench-phase1',
+      tasks: [{ target: 'win-b37', tid: 't-77ab', state: 'waiting_review' }, { target: 'mac-02', tid: 't-91c2 审阅', state: 'running' }],
+      accept: { crit: 'win-b37 真机 attach/权限升级/continue 三链路', verified: null } },
+    { id: 'B95', title: 'grok continue 丢事件修复', project: 'handoff', wf: 'bug 流 v1', prio: '高',
+      status: '待合并', spec: 'b95-grok',
+      accept: { crit: 'continue 后 wait 收到全部事件，无空洞（对照 journal seq）', verified: true, evi: '已验 08-19：真机 3 轮 continue 无丢失' } },
+    { id: 'B128', title: 'win-b37 引导脚本整固', project: 'handoff', wf: 'bug 流 v1', prio: '中',
+      status: '待审阅', needs: '审阅 3/3 轮未过', round: '审 3/3', spec: 'b95-grok',
+      accept: { crit: '全新 Windows 账户跑通引导', verified: null } },
+    { id: 'B98', title: '导出报表接口拆分', project: 'tk/server', wf: 'feature 流 v2', prio: '中',
+      status: '待办', needs: '前置 B97 已取消',
+      accept: { crit: '—', verified: null } },
+    { id: 'B102', title: '订单导出超时优化', project: 'tk/server', wf: 'bug 流 v1', prio: '高',
+      status: '进行中', conflict: '关联 task 已 failed · 驱动 2h 无心跳',
+      tasks: [{ target: 'mac-02', tid: 't-c3d1', state: 'failed' }],
+      accept: { crit: '10w 行导出 < 30s', verified: null } },
+    { id: 'B119', title: 'Sweep 清扫的全有全无', project: 'handoff', wf: 'bug 流 v1', prio: '高',
+      status: '已完成', spec: 'b119-sweep',
+      accept: { crit: '强制回收先停源头；执行者存活时降级名册点名', verified: false,
+        evi: '总回归与变异测试已绿；真机复验交接说明见 plan——待真机验' } },
+    { id: 'B115', title: 'executor 自指令收口', project: 'handoff', wf: 'feature 流 v2', prio: '高',
+      status: '已完成', spec: 'b115-selfcmd',
+      accept: { crit: 'handoff 变更命令一律升级人工；白名单只读放行', verified: true, evi: '已验 08-18：变异测试 + 真机拦截取证' } },
+    { id: 'B53', title: 'agentd 内嵌 TUI 面板', project: 'handoff', wf: 'feature 流 v2', prio: '低',
+      status: '终止', shelved: true, archNote: '搁置 · 可复活——被 Web 控制台形态决策覆盖',
+      accept: { crit: '—', verified: null } },
+  ];
+
+  // 裁决项：主会话回合末落的请示，open 期间常亮在等人条，可就地答复
+  const DECISIONS = [
+    { id: 'D-31', item: 'B141', from: '主会话 @ mbp-work · 14:03',
+      text: 'web-console 本地领先 origin 47 个提交（18 个是合并前积的旧账）。推不推？这台机器派发要靠 origin 能 fetch 到。',
+      options: ['推', '先看 diff', '暂缓'] },
+    { id: 'D-32', item: null, from: '主会话 @ mbp-work · 13:10',
+      text: 'win-b37 已到位，W5b-3「无 Windows 机可验」的前提过期——要不要补「桌面端 Windows 薄壳」需求行？',
+      options: ['开新工作项', '不做'] },
+  ];
+
+  // B141.2 的分层 timeline：评论(气泡) / 裁决 / 系统(meta) / 镜像(折叠组)
+  const TIMELINE = {
+    'B141.2': [
+      { k: 'system', t: '10:02', html: '<b>派发</b> → mac-02 · opencode · 主会话 · <span class="mono" style="font-size:11px">模板 feature-impl v3 · 纪律块 A@1f3c9d</span>' },
+      { k: 'system', t: '10:02', html: '状态 待办 → 进行中（CAS 认领 · 主会话@mbp-work）' },
+      { k: 'mirror', t: '10:03–13:22', title: 'task t-8f31 本次执行 · 4 条事件（镜像 · mac-02）', members: [
+        '10:03 running', '11:40 permission_request：git push --force-with-lease → 工单 #T-291 升级人工',
+        '12:31 progress ×37（已折叠）', '13:22 completed（原 seq 412）'] },
+      { k: 'comment', t: '12:05', who: '用户', html: 'CLI 命名对齐双聚合——workflow 管状态形状，template 管派发配方。' },
+      { k: 'comment', t: '12:40', who: '用户', html: '做的时候发现裁决 schema 压根没定，拆出 <span class="ref" data-ref="B142">#B142</span> 单独跟进（已建关系边：由此发现）。' },
+      { k: 'verdict', t: '13:23', html: '<b>审阅裁决 fail</b>（第 1/3 轮）：错误分支缺上下文日志；gofmt 未跑 · 审阅执行者 t-9a02' },
+      { k: 'system', t: '13:24', html: '自动 continue，带发现项原文 · 节点执行器' },
+      { k: 'comment', t: '13:30', who: '用户', kind: 'correction', html: '更正：验收判据里「并发 dispatch」要写明是跨协调机并发，不只是同机双会话。' },
+    ],
+    'B128': [
+      { k: 'verdict', t: '09:12', html: '<b>审阅裁决 fail</b>（第 3/3 轮）：测试仍有 2 处假绿 · 审阅执行者' },
+      { k: 'system', t: '09:12', html: '<b>转等人</b>：审阅超轮（3/3），自动回路停止 · 节点执行器' },
+    ],
+  };
+
+  const $ = (s) => document.querySelector(s);
+  const byId = (id) => ITEMS.find(x => x.id === id);
+  let view = 'board';
+
+  function acceptChip(it) {
+    if (it.status !== '已完成') return '';
+    if (it.accept && it.accept.verified === true) return '<span class="chip green">已验</span>';
+    return '<span class="chip amber">待真机验</span>';
+  }
+  function chipHtml(it) {
+    const chips = [];
+    chips.push(`<span class="chip prio-${it.prio}">${it.prio}</span>`);
+    if (it.spec) chips.push(`<span class="chip" title="spec 附件：docs/superpowers/${(SPECS[it.spec] || {}).file || ''}">▤ ${it.spec}</span>`);
+    const merged = ITEMS.filter(x => x.mergedInto === it.id);
+    if (merged.length) chips.push(`<span class="chip spec merge" data-merge="${it.id}" title="承载卡：点开抽屉的并入区">⊕ 并入 ${merged.length}</span>`);
+    const dec = DECISIONS.filter(d => d.item === it.id);
+    if (dec.length) chips.push(`<span class="chip amber dec" data-dec="${dec[0].id}" title="有待答复的裁决">⚖ 裁决 ${dec.length}</span>`);
+    const ac = acceptChip(it); if (ac) chips.push(ac);
+    if (it.blockedBy) chips.push(`<span class="chip" title="被 ${it.blockedBy.join('、')} 阻塞">⛓ ${it.blockedBy.join('、')}</span>`);
+    if (it.needs) chips.push(`<span class="chip amber">⚑ ${it.needs}</span>`);
+    if (it.conflict) chips.push(`<span class="chip red">✕ 状态冲突</span>`);
+    if (it.tickets) chips.push(`<span class="chip amber">✉ 工单 ${it.tickets}</span>`);
+    if (it.round) chips.push(`<span class="chip">${it.round}</span>`);
+    if (it.rollup) chips.push(`<span class="chip">子任务 ${it.rollup}</span>`);
+    // 保真信号沉默原则：驱动正常不显示；只有「进行中却无人驱动」才亮红
+    if (!it.driver && it.status === '进行中' && !it.conflict) chips.push(`<span class="chip red">无驱动会话</span>`);
+    chips.push(`<span class="chip">${it.project}</span>`);
+    return chips.join('');
+  }
+
+  let needsOnly = false;
+  function visibleItems() {
+    const fp = $('#fProject').value, fw = $('#fWorkflow').value, fs = $('#fSearch').value.trim();
+    return ITEMS.filter(it =>
+      (!fp || it.project === fp) && (!fw || it.wf === fw) &&
+      (!needsOnly || it.needs || it.conflict || DECISIONS.some(d => d.item === it.id)) &&
+      (!fs || it.id.includes(fs) || it.title.includes(fs)));
+  }
+
+  function bindCardEvents(root) {
+    // 「⊕ 并入」点开抽屉并定位到并入区——卡的信息只在抽屉一处看，不另开面板
+    root.querySelectorAll('.chip.merge').forEach(el => el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const it = byId(el.dataset.merge);
+      if (it) { openDrawer(it); $('#dMergeSec').scrollIntoView({ block: 'nearest' }); }
+    }));
+    root.querySelectorAll('.chip.dec').forEach(el => el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const d = DECISIONS.find(x => x.id === el.dataset.dec);
+      if (d) openDecision(d);
+    }));
+  }
+
+  function render() {
+    const vis = visibleItems();
+    // 需要你 = 等人/冲突卡 + open 裁决（卡上是标签，这里只是筛选按钮的数字）
+    $('#needsCnt').textContent = ITEMS.filter(it => it.needs || it.conflict).length + DECISIONS.length;
+
+    // 项目级裁决细条：只在筛选态出现
+    const pd = $('#projDecs');
+    if (view === 'board' && needsOnly) {
+      pd.hidden = false;
+      pd.innerHTML = DECISIONS.filter(d => !d.item).map(d =>
+        `<div class="sub-row" style="cursor:pointer;border-color:#fde68a;background:#fffbeb" data-dec="${d.id}">
+           <span>⚖</span><span class="mono dim">项目级</span><span style="flex:1">${d.text}</span>
+           <button class="btn sm">答复…</button></div>`).join('');
+      pd.querySelectorAll('[data-dec]').forEach(el => el.addEventListener('click', () =>
+        openDecision(DECISIONS.find(x => x.id === el.dataset.dec))));
+    } else pd.hidden = true;
+
+    if (view === 'board') {
+      $('#cols').hidden = false; $('#listWrap').hidden = true;
+      const cols = $('#cols'); cols.innerHTML = '';
+      STATES.forEach(st => {
+        // 被并卡不在看板单独成卡——只有承载卡在流动（列表视图与合并面板可见）
+        const inCol = vis.filter(it => it.status === st && !it.mergedInto);
+        const col = document.createElement('div');
+        col.className = 'col';
+        const anchor = INSERTED[st] ? `<span class="anchor-tag">插入 · ${INSERTED[st].replace('插入','')}</span>` : '';
+        col.innerHTML = `<div class="col-head">${st} <span class="cnt">${inCol.length}</span>${anchor}</div><div class="col-body"></div>`;
+        const body = col.querySelector('.col-body');
+        inCol.forEach(it => {
+          const el = document.createElement('div');
+          el.className = 'wcard' + (it.needs ? ' needs' : '') + (it.conflict ? ' conflict' : '') + (it.blockedBy ? ' blocked' : '');
+          el.innerHTML = `<div class="wid-row"><span class="wid">${it.id}${it.parent ? ` · 父 ${it.parent}` : ''}</span></div>
+            <div class="wtitle">${it.title}</div><div class="wmeta">${chipHtml(it)}</div>`;
+          el.addEventListener('click', () => openDrawer(it));
+          bindCardEvents(el);
+          body.appendChild(el);
+        });
+        cols.appendChild(col);
+      });
+    } else {
+      $('#cols').hidden = true; $('#listWrap').hidden = false;
+      const showArch = $('#fArchived').checked;
+      const rows = vis.filter(it => showArch || (it.status !== '已完成' && it.status !== '终止'));
+      const tb = $('#listBody'); tb.innerHTML = '';
+      rows.forEach(it => {
+        const tr = document.createElement('tr');
+        const acc = it.status === '已完成' ? (it.accept?.verified ? '✅ 已验' : '🟡 待真机验') : (it.accept?.crit && it.accept.crit !== '—' ? '有判据' : '—');
+        tr.innerHTML = `<td class="mono-sm">${it.id}</td><td>${it.title}</td>
+          <td>${it.mergedInto ? `跟随 ${it.mergedInto}` : it.status}${it.shelved ? '（搁置·可复活）' : ''}${it.needs ? ' ⚑' : ''}${it.conflict ? ' ✕' : ''}</td>
+          <td>${acc}</td><td>${it.prio}</td>
+          <td class="mono-sm">${it.spec ? '▤ ' + it.spec : '—'}</td>
+          <td class="dim" style="font-size:12px">${it.archNote || it.needs || it.conflict || (it.rollup ? '子任务 ' + it.rollup : '') || ''}</td>`;
+        tr.addEventListener('click', () => openDrawer(it));
+        tb.appendChild(tr);
+      });
+    }
+  }
+
+  // ---- 「需要你」筛选：就地过滤，不弹层 ----
+  $('#fNeeds').addEventListener('click', () => {
+    needsOnly = !needsOnly;
+    $('#fNeeds').style.background = needsOnly ? '#fef3c7' : '';
+    render();
+  });
+
+  // ---- 裁决答复 ----
+  let curDecision = null;
+  function openDecision(d) {
+    curDecision = d;
+    $('#dcId').textContent = `${d.id}${d.item ? ' · 挂 ' + d.item : ' · 项目级'}`;
+    $('#dcFrom').textContent = d.from;
+    $('#dcText').textContent = d.text;
+    $('#dcOptions').innerHTML = d.options.map(o => `<button class="btn sm dc-opt">${o}</button>`).join('');
+    $('#dcOptions').querySelectorAll('.dc-opt').forEach(b =>
+      b.addEventListener('click', () => { $('#dcAnswer').value = b.textContent; }));
+    $('#dcAnswer').value = '';
+    $('#dcFeedback').hidden = true;
+    $('#decisionDialog').showModal();
+  }
+  $('#dcCancel').addEventListener('click', () => $('#decisionDialog').close());
+  $('#dcOk').addEventListener('click', () => {
+    const fb = $('#dcFeedback');
+    fb.textContent = `已答复（mock）：「${$('#dcAnswer').value || '（空）'}」落 ${curDecision.item || '项目'} timeline，会话下次唤醒 decision list 可读；此卡从等人条消失。`;
+    fb.hidden = false;
+  });
+
+  // ---- 抽屉 ----
+  function relGroups(it) {
+    const groups = {};
+    if (it.mergedInto) (groups['并入'] = []).push(it.mergedInto);
+    // 「承载着」不进关系区——被并卡清单在抽屉的专属并入区展示（带验收与拆回）
+    (it.blockedBy || []).forEach(b => (groups['被阻塞于'] = groups['被阻塞于'] || []).push(b));
+    ITEMS.filter(x => (x.blockedBy || []).includes(it.id)).forEach(x => (groups['阻塞着'] = groups['阻塞着'] || []).push(x.id));
+    (it.rels || []).forEach(r => (groups[r.type] = groups[r.type] || []).push(r.id));
+    // 反向关系：别人指向我
+    ITEMS.forEach(x => (x.rels || []).forEach(r => {
+      if (r.id !== it.id || x.id === it.id) return;
+      const rev = { '发现自': '由此发现', '由此发现': '发现自', '拆分自': '拆出了', '关联': '关联' }[r.type] || '关联';
+      const g = (groups[rev] = groups[rev] || []);
+      if (!g.includes(x.id)) g.push(x.id);
+    }));
+    return groups;
+  }
+
+  function openDrawer(it) {
+    $('#dId').textContent = it.id;
+    $('#dStatus').textContent = it.status + (it.shelved ? '（搁置·可复活）' : '');
+    $('#dTitle').textContent = it.title;
+    const v = $('#dVerified');
+    v.hidden = !(it.status === '已完成');
+    if (!v.hidden) {
+      v.className = 'chip ' + (it.accept?.verified ? 'green' : 'amber');
+      v.textContent = it.accept?.verified ? '已验' : '待真机验';
+    }
+    const needs = $('#dNeeds');
+    needs.hidden = !(it.needs || it.conflict);
+    needs.textContent = '⚑ ' + (it.needs || it.conflict || '');
+
+    $('#dPipeline').innerHTML = STATES.map(s =>
+      `<span class="st${s === it.status ? ' cur' : ''}${INSERTED[s] ? ' ins' : ''}">${s}</span>`
+    ).join('<span class="arr">→</span>');
+
+    $('#dKv').innerHTML = `
+      <dt>项目</dt><dd>${it.project} · ${it.prio}优先级</dd>
+      <dt>工作流</dt><dd>${it.wf}（钉版本）</dd>
+      <dt>附件</dt><dd>${it.spec ? `▤ ${it.spec}（spec） · <span class="dim">plan 挂派发事件</span>` : '<span class="dim">无——要不要 spec 由工作流 gate 决定</span>'}</dd>
+      <dt>驱动</dt><dd>${it.mergedInto ? `<span class="badge">跟随 ${it.mergedInto}</span>` : (it.driver ? it.driver : (it.status === '进行中' ? '<span class="chip red">无驱动会话</span>' : '<span class="dim">—</span>'))}</dd>
+      ${it.parent ? `<dt>父卡</dt><dd class="mono">${it.parent}</dd>` : ''}`;
+
+    // 验收区
+    const a = it.accept || { crit: '—', verified: null };
+    $('#dAccept').innerHTML = `
+      <div class="a-row">
+        <span class="chip ${a.verified === true ? 'green' : (it.status === '已完成' ? 'amber' : '')}">${a.verified === true ? '已验' : (it.status === '已完成' ? '待真机验' : '未验')}</span>
+        <button class="btn sm" style="margin-left:auto">标记已验…</button>
+      </div>
+      <div class="a-crit">${a.crit}</div>
+      ${a.evi ? `<div class="a-evi">${a.evi}</div>` : ''}`;
+
+    // 并入区：承载卡的被并卡清单就地展示（状态跟随、验收各自保留、可拆回），不弹独立面板
+    const members = ITEMS.filter(x => x.mergedInto === it.id);
+    $('#dMergeSec').style.display = members.length ? '' : 'none';
+    $('#dMerge').innerHTML = members.map(m => {
+      const acc = m.accept?.verified === true ? '<span class="chip green">已验</span>' : '<span class="chip">未验</span>';
+      return `<div class="sub-row"><span class="mono dim">${m.id}</span> ${m.title}
+        <span style="margin-left:auto;display:flex;gap:4px;align-items:center">${acc}
+        <span class="badge">跟随</span>
+        <button class="btn sm" data-unmerge="${m.id}">拆回</button></span></div>`;
+    }).join('');
+    $('#dMerge').querySelectorAll('[data-unmerge]').forEach(b =>
+      b.addEventListener('click', () => {
+        const fb = $('#mgFeedback');
+        fb.textContent = `已拆回（mock）：${b.dataset.unmerge} 解除 merged_into，恢复自主状态流转，验收记录无损；落 timeline。`;
+        fb.hidden = false;
+      }));
+    $('#mgFeedback').hidden = true;
+
+    // 关系区
+    const groups = relGroups(it);
+    const keys = Object.keys(groups);
+    $('#dRels').innerHTML = keys.length
+      ? keys.map(k => `<div class="rel-group"><span class="rtype">${k}</span>${groups[k].map(id =>
+          `<span class="rel-link" data-item="${id}">${id}</span>`).join('　')}</div>`).join('')
+        + (it.needs && it.needs.includes('前置') ? `<div class="rel-group"><span class="chip amber">⚑ 前置 B97 已「终止」——不自动解锁，等你裁决：改依赖 or 一并取消</span></div>` : '')
+      : '<span class="dim" style="font-size:12.5px">无</span>';
+    $('#dRels').querySelectorAll('[data-item]').forEach(el =>
+      el.addEventListener('click', () => { const t = byId(el.dataset.item); if (t) openDrawer(t); }));
+
+    const subs = ITEMS.filter(x => x.parent === it.id);
+    $('#dSubsSec').style.display = subs.length ? '' : 'none';
+    $('#dSubs').innerHTML = subs.map(s =>
+      `<div class="sub-row"><span class="mono dim">${s.id}</span> ${s.title}
+       <span class="badge" style="margin-left:auto">${s.status}</span></div>`).join('');
+
+    const tasks = it.tasks || [];
+    $('#dTasksSec').style.display = tasks.length ? '' : 'none';
+    $('#dTasks').innerHTML = tasks.map(t =>
+      `<div class="task-row"><span class="mono dim">${t.target} · ${t.tid}</span>
+       <span class="chip${t.state === 'failed' ? ' red' : t.state === 'running' ? ' green' : ''}">${t.state}</span>
+       <a href="../index.html">打开 TUI →</a></div>`).join('');
+
+    renderTimeline(it, 'all');
+    $('#actFeedback').hidden = true;
+    $('#noteFeedback').hidden = true;
+    $('#drawer').hidden = false;
+  }
+
+  function renderTimeline(it, filter) {
+    const evs = TIMELINE[it.id] || [];
+    const tl = $('#dTl');
+    if (!evs.length) { tl.innerHTML = '<span class="dim" style="font-size:12px">（此条目的事件流占位）</span>'; return; }
+    tl.innerHTML = evs.filter(e => filter === 'all' || e.k === filter || (filter === 'system' && e.k === 'mirror')).map(e => {
+      if (e.k === 'comment')
+        return `<div class="c-bubble${e.kind === 'correction' ? ' correction' : ''}"><div class="who">${e.who} · ${e.t}${e.kind === 'correction' ? ' · 更正' : ''}</div>${e.html}</div>`;
+      if (e.k === 'mirror')
+        return `<details class="mgroup"><summary>${e.title}</summary><div class="members">${e.members.map(m => `<div class="m-line"><span>${m}</span></div>`).join('')}</div></details>`;
+      return `<div class="m-line${e.k === 'verdict' ? ' warn' : ''}"><span class="t">${e.t}</span><span>${e.html}</span></div>`;
+    }).join('');
+    tl.querySelectorAll('.ref').forEach(el =>
+      el.addEventListener('click', () => { const t = byId(el.dataset.ref); if (t) openDrawer(t); }));
+    tl.dataset.item = it.id;
+  }
+
+  // ---- 交互接线 ----
+  ['fProject', 'fWorkflow'].forEach(id => $('#' + id).addEventListener('change', render));
+  $('#fSearch').addEventListener('input', render);
+  $('#fArchived').addEventListener('change', render);
+  $('#vBoard').addEventListener('click', () => { view = 'board'; $('#vBoard').classList.add('on'); $('#vList').classList.remove('on'); render(); });
+  $('#vList').addEventListener('click', () => { view = 'list'; $('#vList').classList.add('on'); $('#vBoard').classList.remove('on'); render(); });
+  $('#drawerClose').addEventListener('click', () => $('#drawer').hidden = true);
+
+  $('#tlFilters').addEventListener('click', (e) => {
+    const b = e.target.closest('.tf'); if (!b) return;
+    document.querySelectorAll('.tf').forEach(x => x.classList.remove('on'));
+    b.classList.add('on');
+    const it = byId($('#dTl').dataset.item || $('#dId').textContent);
+    if (it) renderTimeline(it, b.dataset.f);
+  });
+
+  $('#actDispatch').addEventListener('click', () => {
+    $('#dpItem').textContent = $('#dId').textContent;
+    $('#dispatchDialog').showModal();
+  });
+  $('#dpCancel').addEventListener('click', () => $('#dispatchDialog').close());
+  $('#dpOk').addEventListener('click', () => {
+    $('#dispatchDialog').close();
+    const fb = $('#actFeedback');
+    fb.textContent = '已派发（mock）：task 回链本工作项，模板 v3 + 纪律块 hash 已快照进事件。';
+    fb.hidden = false;
+  });
+
+  $('#noteBtn').addEventListener('click', () => {
+    const v = $('#noteInput').value.trim();
+    if (!v) return;
+    const refs = [...v.matchAll(/#(B\d+(?:\.\d+)?)/g)].map(m => m[1]);
+    const html = v.replace(/#(B\d+(?:\.\d+)?)/g, '<span class="ref" data-ref="$1">#$1</span>');
+    const div = document.createElement('div');
+    div.className = 'c-bubble';
+    div.innerHTML = `<div class="who">用户 · 刚刚</div>${html}`;
+    $('#dTl').appendChild(div);
+    div.querySelectorAll('.ref').forEach(el =>
+      el.addEventListener('click', () => { const t = byId(el.dataset.ref); if (t) openDrawer(t); }));
+    $('#noteInput').value = '';
+    if (refs.length) {
+      const fb = $('#noteFeedback');
+      fb.textContent = `已建立关系边（mock）：${refs.map(r => `本项 —关联→ ${r}`).join('；')}，对方抽屉可见反向边。`;
+      fb.hidden = false;
+    }
+  });
+
+  $('#newItemBtn').addEventListener('click', () => $('#newItemDialog').showModal());
+  $('#niCancel').addEventListener('click', () => $('#newItemDialog').close());
+  $('#newItemForm').addEventListener('submit', (e) => {
+    e.preventDefault(); // 原型不连后端
+    $('#niFeedback').hidden = false;
+  });
+
+  const qp = new URLSearchParams(location.search).get('project');
+  if (qp) {
+    const sel = $('#fProject');
+    if (![...sel.options].some(o => o.value === qp || o.textContent === qp)) {
+      const o = document.createElement('option');
+      o.value = qp; o.textContent = qp;
+      sel.appendChild(o);
+    }
+    sel.value = qp;
+  }
+  render();
+</script>
+</body>
+</html>

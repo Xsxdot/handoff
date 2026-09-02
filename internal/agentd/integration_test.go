@@ -37,6 +37,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // newTestGate 造一个只带内置黑名单的判据网关（agentd_test 包的统一装配）。
@@ -68,6 +69,15 @@ func newIntegEnv(t *testing.T, script []fake.Step) *integEnv {
 	return newIntegEnvCfg(t, script, nil)
 }
 
+// newConfiguredClient 构造连接 httptest 的测试 client，并把其独立 Transport 接到
+// testhttp 的 linger 与 loopback 拨号重试。生产 client.New 的默认 Transport 不在这里改动。
+func newConfiguredClient(t *testing.T, baseURL, token string) *client.Client {
+	t.Helper()
+	cli := client.New(baseURL, token)
+	testhttp.ConfigureClient(cli.HTTPClient())
+	return cli
+}
+
 // newIntegEnvCfg 组装测试环境，cfgMut 可在构造 manager 前调整配置（如 RepoRoot）。
 func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config)) *integEnv {
 	t.Helper()
@@ -83,13 +93,12 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 		cfgMut(cfg)
 	}
 	srv := agentd.NewServer(cfg, st, logger)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	f := fake.New(script)
 	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
 	quiesceOnCleanup(t, st, mgr)
-	return &integEnv{srv: srv, ts: ts, st: st, fake: f, mgr: mgr, cli: client.New(ts.URL, testToken), repo: newTestRepo(t)}
+	return &integEnv{srv: srv, ts: ts, st: st, fake: f, mgr: mgr, cli: newConfiguredClient(t, ts.URL, testToken), repo: newTestRepo(t)}
 }
 
 // quiesceOnCleanup 让用例结束时先把写方停干净，再让 testing 去删沙箱目录。
@@ -422,7 +431,7 @@ func TestRecoverMidTask(t *testing.T) {
 	questionTicket := payloadMap(t, ev)["ticket_id"].(string)
 
 	// 全新协调者会话：新 client，与前面的 wait/reply 调用完全无关
-	recoverCli := client.New(env.ts.URL, testToken)
+	recoverCli := newConfiguredClient(t, env.ts.URL, testToken)
 
 	// tasks：看到任务且状态为 waiting_answer（正在等人回答）
 	tasks, err := recoverCli.ListTasks(context.Background())
@@ -697,8 +706,7 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "opencode"}}
 	srv := agentd.NewServer(cfg, st, logger)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
 
@@ -711,7 +719,7 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 		t.Fatalf("RegisterProject: %v", rerr)
 	}
 	plan := base64.StdEncoding.EncodeToString([]byte("加个文件"))
-	_, err = client.New(ts.URL, testToken).Dispatch(context.Background(), client.DispatchOpts{
+	_, err = newConfiguredClient(t, ts.URL, testToken).Dispatch(context.Background(), client.DispatchOpts{
 		ProjectID: loc.ProjectID, PlanB64: plan, PlanName: "plan.md", Target: "local",
 	})
 	if err == nil {
@@ -945,8 +953,8 @@ func TestDispatchTwoNewWorktreesNotBlocked(t *testing.T) {
 }
 
 // TestDispatchWireLocalBaseBranchEndToEnd 穿过 client map、HTTP DTO、server→manager
-// 映射与真实本地 resolver：origin 是不可达的占位地址，只有完整 wire 上的
-// local_base_branch=true 才能在不 fetch 的情况下从 work 分支创建任务。
+// 映射与真实本地 resolver：origin 是不可达的占位地址，完整 wire 上的
+// local_base_branch=true 会探测失败并回退到 work 分支本地尖端。
 func TestDispatchWireLocalBaseBranchEndToEnd(t *testing.T) {
 	env := newIntegEnv(t, nil)
 	runGit(t, env.repo, "branch", "work")
@@ -962,6 +970,9 @@ func TestDispatchWireLocalBaseBranchEndToEnd(t *testing.T) {
 	}
 	if task.BaseCommit != wantBase {
 		t.Fatalf("任务实际起点=%q，期望本地 work 尖端=%q", task.BaseCommit, wantBase)
+	}
+	if got := strings.TrimSpace(runGit(t, env.repo, "rev-parse", "refs/heads/work^{commit}")); got != wantBase {
+		t.Fatalf("origin 不可达回退不应移动本地 work ref: got=%q want=%q", got, wantBase)
 	}
 }
 

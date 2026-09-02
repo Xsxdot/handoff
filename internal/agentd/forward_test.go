@@ -16,6 +16,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // TestForwardProjectAddToNamedMachine 断言：带 ?machine= 的登记请求被原样搬到
@@ -49,13 +50,12 @@ func TestForwardProjectAddToNamedMachine(t *testing.T) {
 // TestForwardPreservesHandoffHeaders 断言：流式端点依赖的 X-Handoff-* 响应头
 // 穿过 agentd 反代后仍可见；Content-Length 等本地重编码相关头不在此契约内。
 func TestForwardPreservesHandoffHeaders(t *testing.T) {
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/x-ndjson")
 		w.Header().Set("X-Handoff-Frames-Size", "1725")
 		w.Header().Set("X-Handoff-Render-Size", "2048")
 		_, _ = w.Write([]byte("ok\n"))
 	}))
-	t.Cleanup(remote.Close)
 
 	local := newTestAgentdEnvWithCfg(t, &config.Config{
 		Token:   testToken,
@@ -86,7 +86,7 @@ func TestForwardStreamsChunks(t *testing.T) {
 	var allowSecondOnce sync.Once
 	defer allowSecondOnce.Do(func() { close(allowSecond) })
 
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		flusher, ok := w.(http.Flusher)
 		if !ok {
 			t.Error("上游 ResponseWriter 不支持 Flush")
@@ -102,7 +102,6 @@ func TestForwardStreamsChunks(t *testing.T) {
 		flusher.Flush()
 		close(secondWritten)
 	}))
-	t.Cleanup(remote.Close)
 
 	local := newTestAgentdEnvWithCfg(t, &config.Config{
 		Token:   testToken,
@@ -215,7 +214,7 @@ func TestForwardWorktreeStripsCardIDsAndAttachesLocally(t *testing.T) {
 		Body map[string]json.RawMessage
 	}
 	received := make(chan receivedRequest, 1)
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
@@ -229,7 +228,6 @@ func TestForwardWorktreeStripsCardIDsAndAttachesLocally(t *testing.T) {
 		received <- receivedRequest{Body: object}
 		_ = json.NewEncoder(w).Encode(proto.Workspace{Path: "/remote/manual/feat-relay", Branch: "feat/relay", Managed: true})
 	}))
-	t.Cleanup(remote.Close)
 	local := newTestAgentdEnvWithCfg(t, &config.Config{
 		Token:   testToken,
 		Targets: map[string]config.Target{"devbox": {Addr: remote.URL, Token: testToken}},
@@ -289,12 +287,11 @@ func TestForwardWorktreeStripsCardIDsAndAttachesLocally(t *testing.T) {
 
 func TestForwardWorktreeErrorAndCancel(t *testing.T) {
 	t.Run("target error is unchanged and does not attach", func(t *testing.T) {
-		remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusInternalServerError)
 			_, _ = w.Write([]byte(`{"error":"target boom"}`))
 		}))
-		t.Cleanup(remote.Close)
 		local := newTestAgentdEnvWithCfg(t, &config.Config{
 			Token:   testToken,
 			Targets: map[string]config.Target{"devbox": {Addr: remote.URL, Token: testToken}},
@@ -326,10 +323,9 @@ func TestForwardWorktreeErrorAndCancel(t *testing.T) {
 	})
 
 	t.Run("cancel does not attach", func(t *testing.T) {
-		remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			<-r.Context().Done()
 		}))
-		t.Cleanup(remote.Close)
 		local := newTestAgentdEnvWithCfg(t, &config.Config{
 			Token:   testToken,
 			Targets: map[string]config.Target{"devbox": {Addr: remote.URL, Token: testToken}},

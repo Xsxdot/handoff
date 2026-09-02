@@ -8,7 +8,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -271,11 +273,17 @@ func TestIsEphemeralBin(t *testing.T) {
 
 // go run 的缓存路径不能写进服务单元；有已安装的手持二进制时改用它。
 func TestResolveServiceBinFallsBackFromGoBuildCache(t *testing.T) {
-	// 候选不能落在 t.TempDir：那是临时目录，会被 isEphemeralBin 跳过。
-	// 用仓库内一份真实文件充当「已安装二进制」，测的是选型，不是安装。
-	durable, err := filepath.Abs("service.go")
-	if err != nil {
+	dir, cleanup := makeDurableServiceFixture(t)
+	defer cleanup()
+	durable := filepath.Join(dir, "handoff")
+	if err := os.WriteFile(durable, []byte("ordinary service fixture"), 0o644); err != nil {
 		t.Fatal(err)
+	}
+	if !regularFileExists(durable) {
+		t.Fatalf("稳定候选不是普通文件：%q", durable)
+	}
+	if isEphemeralBin(durable) {
+		t.Fatalf("稳定候选仍被判为临时文件：%q；不能用它覆盖 /tmp 回退判据", durable)
 	}
 	got, err := resolveServiceBinFrom("/Users/x/Library/Caches/go-build/44/aa-d/handoff", []string{durable})
 	if err != nil {
@@ -287,6 +295,68 @@ func TestResolveServiceBinFallsBackFromGoBuildCache(t *testing.T) {
 	}
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// makeDurableServiceFixture 找一个不受 isEphemeralBin 判定的可写根目录。
+// 不使用仓源文件、t.TempDir 或 HOME：回退候选必须像安装产物一样是普通文件，
+// 才能真实验证 Linux 仓位于 /tmp 时仍会选择稳定候选。
+func makeDurableServiceFixture(t *testing.T) (string, func()) {
+	t.Helper()
+	var roots []string
+	switch runtime.GOOS {
+	case "linux":
+		// /dev/shm is a system-backed, non-temporary filesystem available in
+		// restricted Linux test sandboxes where /var/cache is read-only.
+		roots = []string{"/var/cache/handoff-b256-fixture", "/dev/shm/handoff-b256-fixture"}
+	case "darwin":
+		roots = []string{"/Library/Application Support/handoff-b256-fixture", "/var/cache/handoff-b256-fixture"}
+	case "windows":
+		roots = []string{`C:\ProgramData\handoff-b256-fixture`}
+	default:
+		roots = []string{"/var/cache/handoff-b256-fixture"}
+	}
+	if cache := os.Getenv("GOCACHE"); filepath.IsAbs(cache) {
+		roots = append(roots, filepath.Join(cache, "handoff-b256-fixture"))
+	}
+	if parent := filepath.Dir(filepath.Clean(os.TempDir())); parent != "/" {
+		roots = append(roots, filepath.Join(parent, "handoff-b256-fixture"))
+	}
+	for _, root := range roots {
+		if err := os.MkdirAll(root, 0o755); err != nil {
+			continue
+		}
+		if isEphemeralBin(root) {
+			continue
+		}
+		dir, err := os.MkdirTemp(root, "case-")
+		if err != nil {
+			continue
+		}
+		return dir, func() { _ = os.RemoveAll(dir) }
+	}
+	t.Fatalf("找不到不在临时目录且可写的服务夹具根；os.TempDir=%q", os.TempDir())
+	return "", func() {}
+}
+
+func TestResolveServiceBinSkipsTempFallback(t *testing.T) {
+	durable := filepath.Join(t.TempDir(), "go-build-b256", "handoff")
+	if err := os.MkdirAll(filepath.Dir(durable), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(durable, []byte("temporary service fixture"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if !regularFileExists(durable) {
+		t.Fatalf("临时候选不是普通文件：%q", durable)
+	}
+	if !isEphemeralBin(durable) {
+		t.Fatalf("t.TempDir 候选未被判为临时文件：%q", durable)
+	}
+	if _, err := resolveServiceBinFrom("/Users/x/Library/Caches/go-build/44/aa-d/handoff", []string{durable}); err == nil {
+		t.Fatal("临时目录候选必须被跳过")
+	} else if !strings.Contains(err.Error(), "临时") && !strings.Contains(err.Error(), "go run") {
+		t.Fatalf("跳过临时候选时错误应说明临时编译产物：%v", err)
 	}
 }
 

@@ -29,6 +29,9 @@ class FakePtySocket implements PtySocketLike {
   emitClose(code: number) {
     this.onclose?.({ code } as CloseEvent)
   }
+  emitOpen() {
+    this.onopen?.({} as Event)
+  }
 }
 
 function harness(overrides: Partial<Parameters<typeof connectPty>[0]> = {}) {
@@ -63,6 +66,20 @@ describe('connectPty', () => {
     expect(onAttached).toHaveBeenCalledWith({ since: 0, truncated: false })
     sockets[0].emitBinary('hi')
     expect(new TextDecoder().decode(onData.mock.calls[0][0])).toBe('hi')
+  })
+
+  it('attached 带 backlog_bytes:0 时原样传给回调——0 不是缺席', () => {
+    const { sockets, onAttached } = harness()
+    sockets[0].emitText({ type: 'attached', since: 0, truncated: false, backlog_bytes: 0 })
+    expect(onAttached).toHaveBeenCalledWith({ since: 0, truncated: false, backlog_bytes: 0 })
+  })
+
+  it('attached 不带 backlog_bytes 时回调没有该键——旧服务端', () => {
+    const { sockets, onAttached } = harness()
+    sockets[0].emitText({ type: 'attached', since: 0, truncated: false })
+    expect(onAttached).toHaveBeenCalledWith({ since: 0, truncated: false })
+    const info = onAttached.mock.calls[0][0] as { backlog_bytes?: number }
+    expect('backlog_bytes' in info).toBe(false)
   })
 
   it('重连时按已收字节数续传，不重复请求已看过的输出', () => {
@@ -105,6 +122,23 @@ describe('connectPty', () => {
     handle.resize(120, 40)
     expect(sockets[0].sent[0]).toBeInstanceOf(ArrayBuffer)
     expect(JSON.parse(String(sockets[0].sent[1]))).toEqual({ type: 'resize', cols: 120, rows: 40 })
+  })
+
+  it('debug 走 JSON 文本帧，不走二进制——取证不能进 PTY', () => {
+    const { sockets, handle } = harness()
+    sockets[0].emitOpen()
+    handle.debug('active cycle=1 mouse=vt200')
+    expect(JSON.parse(String(sockets[0].sent[0]))).toEqual({
+      type: 'debug', message: 'active cycle=1 mouse=vt200',
+    })
+  })
+
+  it('open 之前的 debug 在 open 后补发，切 tab 取证不能丢在 CONNECTING', () => {
+    const { sockets, handle } = harness()
+    handle.debug('mount')
+    expect(sockets[0].sent).toHaveLength(0)
+    sockets[0].emitOpen()
+    expect(JSON.parse(String(sockets[0].sent[0]))).toEqual({ type: 'debug', message: 'mount' })
   })
 
   it('machine 非空时进查询串——远程终端由本机 agentd 反代', () => {

@@ -10,11 +10,15 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -142,6 +146,20 @@ func commitOnOrigin(t *testing.T, origin, name, content string) string {
 	gitAt(t, writer, "config", "user.name", "handoff test")
 	sha := writeAndCommit(t, writer, name, content)
 	gitAt(t, writer, "push", "-q", "origin", "main")
+	return sha
+}
+
+// commitOnOriginBranch 在指定远端分支上追加提交，供工作分支快进并集夹具使用。
+func commitOnOriginBranch(t *testing.T, origin, branch, name, content string) string {
+	t.Helper()
+	writerParent := t.TempDir()
+	writer := filepath.Join(writerParent, "writer")
+	gitAt(t, writerParent, "clone", "-q", origin, writer)
+	gitAt(t, writer, "checkout", "-q", branch)
+	gitAt(t, writer, "config", "user.email", "test@handoff.dev")
+	gitAt(t, writer, "config", "user.name", "handoff test")
+	sha := writeAndCommit(t, writer, name, content)
+	gitAt(t, writer, "push", "-q", "origin", branch)
 	return sha
 }
 
@@ -1350,6 +1368,276 @@ func TestResolveBaseBranchMissingBranch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "no-such-branch") {
 		t.Fatalf("错误里应带分支名: %v", err)
+	}
+}
+
+// TestResolveLocalBaseBranchUsesLocalTipWhenLocalIsAhead 验证本地未 push 的工作
+// 分支不会被 origin 的旧跟踪 ref 顶替，且本地 ref 不移动。
+func TestResolveLocalBaseBranchUsesLocalTipWhenLocalIsAhead(t *testing.T) {
+	_, clone := newOriginAndClone(t)
+	gitAt(t, clone, "checkout", "-q", "-b", "work")
+	gitAt(t, clone, "push", "-q", "-u", "origin", "work")
+	localSHA := writeAndCommit(t, clone, "local.txt", "local")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "work", true)
+	if err != nil {
+		t.Fatalf("resolveDispatchBase(local ahead): %v", err)
+	}
+	if !fetched {
+		t.Fatal("origin 同名分支存在时应完成远端探测")
+	}
+	if got != localSHA {
+		t.Fatalf("本地领先时起点=%s，期望本地=%s", got, localSHA)
+	}
+	if refSHA := gitOut(t, clone, "rev-parse", "refs/heads/work^{commit}"); refSHA != localSHA {
+		t.Fatalf("工作分支 ref 被移动为 %s，期望仍为 %s", refSHA, localSHA)
+	}
+}
+
+// TestResolveLocalBaseBranchUsesOriginTipWhenOriginIsAhead 验证 origin 同名工作
+// 分支快进领先时，新分支起点取 origin 尖端而不改本地工作分支 ref。
+func TestResolveLocalBaseBranchUsesOriginTipWhenOriginIsAhead(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	gitAt(t, clone, "checkout", "-q", "-b", "work")
+	gitAt(t, clone, "push", "-q", "-u", "origin", "work")
+	baseSHA := gitOut(t, clone, "rev-parse", "refs/heads/work^{commit}")
+	originSHA := commitOnOriginBranch(t, origin, "work", "origin.txt", "origin")
+
+	got, fetched, err := resolveDispatchBase(context.Background(), clone, "work", true)
+	if err != nil {
+		t.Fatalf("resolveDispatchBase(origin ahead): %v", err)
+	}
+	if !fetched {
+		t.Fatal("origin 同名分支快进时应标记已完成远端探测")
+	}
+	if got != originSHA {
+		t.Fatalf("origin 领先时起点=%s，期望 origin=%s", got, originSHA)
+	}
+	if refSHA := gitOut(t, clone, "rev-parse", "refs/heads/work^{commit}"); refSHA != baseSHA {
+		t.Fatalf("本地工作分支 ref 被移动为 %s，期望仍为 %s", refSHA, baseSHA)
+	}
+}
+
+// TestResolveLocalBaseBranchFallsBackWhenOriginUnavailable 验证本地工作分支存在
+// 时 origin 不可达不会拒发，也不会把失败探测伪报成成功。
+func TestResolveLocalBaseBranchFallsBackWhenOriginUnavailable(t *testing.T) {
+	repo := initTestRepo(t)
+	gitAt(t, repo, "checkout", "-q", "-b", "work")
+	localSHA := writeAndCommit(t, repo, "local.txt", "local")
+	gitAt(t, repo, "remote", "add", "origin", filepath.Join(t.TempDir(), "missing-origin.git"))
+
+	got, fetched, err := resolveDispatchBase(context.Background(), repo, "work", true)
+	if err != nil {
+		t.Fatalf("origin 不可达时应回退本地: %v", err)
+	}
+	if fetched {
+		t.Fatal("origin fetch 失败时 fetched 不应伪报成功")
+	}
+	if got != localSHA {
+		t.Fatalf("origin 不可达时起点=%s，期望本地=%s", got, localSHA)
+	}
+}
+
+// TestResolveLocalBaseBranchRejectsDivergedTips 验证同名工作分支两边都有独有
+// 提交时拒发并暴露两枚完整 SHA，不能静默选边或误归为基线缺失。
+func TestResolveLocalBaseBranchRejectsDivergedTips(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	gitAt(t, clone, "checkout", "-q", "-b", "work")
+	gitAt(t, clone, "push", "-q", "-u", "origin", "work")
+	localSHA := writeAndCommit(t, clone, "local.txt", "local")
+	originSHA := commitOnOriginBranch(t, origin, "work", "origin.txt", "origin")
+
+	_, fetched, err := resolveDispatchBase(context.Background(), clone, "work", true)
+	if !fetched {
+		t.Fatal("分叉探测应先成功 fetch origin")
+	}
+	if !errors.Is(err, errLocalBaseBranchDiverged) {
+		t.Fatalf("分叉应返回独立 sentinel，实得 %v", err)
+	}
+	if errors.Is(err, ErrBaseCommitMissing) {
+		t.Fatalf("分叉不得误归为基线缺失: %v", err)
+	}
+	for _, want := range []string{localSHA, originSHA, "工作分支本地与 origin 已分叉，先合并再派"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("分叉错误缺少 %q: %v", want, err)
+		}
+	}
+	if refSHA := gitOut(t, clone, "rev-parse", "refs/heads/work^{commit}"); refSHA != localSHA {
+		t.Fatalf("分叉拒发不应移动本地 ref: got=%s want=%s", refSHA, localSHA)
+	}
+}
+
+// TestResolveBaseBranchConcurrentFetchUsesRemoteRef 以真实 origin 验证同仓并发分支
+// 补拉：两次调用都必须得到同一远程跟踪 ref 的尖端，且不能把锁竞争误报成基线缺失。
+func TestResolveBaseBranchConcurrentFetchUsesRemoteRef(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	want := commitOnOrigin(t, origin, "concurrent.txt", "concurrent")
+
+	var mu sync.Mutex
+	var stderrSeen []string
+	oldFetch := runNetFetch
+	runNetFetch = func(ctx context.Context, repo string, args ...string) (string, string, error) {
+		out, stderr, err := gitRunNet(ctx, repo, args...)
+		mu.Lock()
+		stderrSeen = append(stderrSeen, stderr)
+		mu.Unlock()
+		return out, stderr, err
+	}
+	t.Cleanup(func() { runNetFetch = oldFetch })
+
+	type result struct {
+		sha string
+		err error
+	}
+	results := make(chan result, 2)
+	for range 2 {
+		go func() {
+			sha, err := ResolveBaseBranch(context.Background(), clone, "origin", "main")
+			results <- result{sha: sha, err: err}
+		}()
+	}
+	for range 2 {
+		select {
+		case got := <-results:
+			if got.err != nil {
+				t.Fatalf("并发 ResolveBaseBranch: %v", got.err)
+			}
+			if got.sha != want {
+				t.Fatalf("并发分支起点=%s，期望远程尖端=%s", got.sha, want)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("并发 ResolveBaseBranch 超时")
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	for _, stderr := range stderrSeen {
+		if strings.Contains(stderr, "cannot lock ref") {
+			t.Fatalf("并发 fetch 不应出现 ref 锁竞争: %q", stderr)
+		}
+	}
+}
+
+// TestResolveBaselineAndBranchShareRepoFetchLock 让 fetch --all 与指定分支 fetch
+// 同时发生，确认各自读取自己的目标 ref/对象而不被 FETCH_HEAD 覆盖。
+func TestResolveBaselineAndBranchShareRepoFetchLock(t *testing.T) {
+	origin, clone := newOriginAndClone(t)
+	want := commitOnOrigin(t, origin, "shared-lock.txt", "shared-lock")
+
+	type result struct {
+		baseline Baseline
+		branch   string
+		err      error
+	}
+	results := make(chan result, 2)
+	go func() {
+		baseline, err := ResolveBaseline(context.Background(), clone, want)
+		results <- result{baseline: baseline, err: err}
+	}()
+	go func() {
+		branch, err := ResolveBaseBranch(context.Background(), clone, "origin", "main")
+		results <- result{branch: branch, err: err}
+	}()
+
+	var gotBaseline, gotBranch bool
+	for range 2 {
+		select {
+		case got := <-results:
+			if got.err != nil {
+				t.Fatalf("并发基线补拉: %v", got.err)
+			}
+			if got.branch != "" {
+				gotBranch = true
+				if got.branch != want {
+					t.Fatalf("分支补拉读取=%s，期望=%s", got.branch, want)
+				}
+			} else {
+				gotBaseline = true
+				if got.baseline.Start != want {
+					t.Fatalf("提交补拉起点=%s，期望=%s", got.baseline.Start, want)
+				}
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("并发 ResolveBaseline/ResolveBaseBranch 超时")
+		}
+	}
+	if !gotBaseline || !gotBranch {
+		t.Fatalf("并发结果不完整: baseline=%v branch=%v", gotBaseline, gotBranch)
+	}
+}
+
+// TestResolveBaseBranchLockContentionHasIndependentSentinel 验证耗尽 ref 锁竞争
+// 后的错误归因独立于真正的基线缺失，且保留最后一次 fetch 原文。
+func TestResolveBaseBranchLockContentionHasIndependentSentinel(t *testing.T) {
+	var calls int
+	oldFetch := runNetFetch
+	runNetFetch = func(context.Context, string, ...string) (string, string, error) {
+		calls++
+		return "", "fatal: cannot lock ref refs/remotes/origin/main", errors.New("exit status 1")
+	}
+	t.Cleanup(func() { runNetFetch = oldFetch })
+
+	_, err := ResolveBaseBranch(context.Background(), t.TempDir(), "origin", "main")
+	if !errors.Is(err, errFetchRefLockContention) {
+		t.Fatalf("锁竞争应返回独立 sentinel，实得 %v", err)
+	}
+	if errors.Is(err, ErrBaseCommitMissing) {
+		t.Fatalf("锁竞争不得包装 ErrBaseCommitMissing: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("锁竞争应尝试 3 次，实得 %d", calls)
+	}
+	if !strings.Contains(err.Error(), "cannot lock ref refs/remotes/origin/main") {
+		t.Fatalf("错误应保留最后一次 fetch 原文: %v", err)
+	}
+}
+
+// TestWriteDispatchErrorKeepsFetchLockContentionDistinct 验证远端 ref 锁竞争是
+// 可行动的 400，而不是误导成「基线不存在」或「请先 push」。
+func TestWriteDispatchErrorKeepsFetchLockContentionDistinct(t *testing.T) {
+	srv := &Server{log: slog.Default()}
+	lockErr := fmt.Errorf("%w: fatal: cannot lock ref refs/remotes/origin/main", errFetchRefLockContention)
+
+	lockResp := httptest.NewRecorder()
+	srv.writeDispatchError(lockResp, "project-lock", lockErr)
+	lockBody := lockResp.Body.String()
+	if lockResp.Code != http.StatusBadRequest {
+		t.Fatalf("锁竞争状态码=%d，期望 400；body=%s", lockResp.Code, lockBody)
+	}
+	for _, want := range []string{"基线补拉失败（远端 ref 锁竞争）", "cannot lock ref"} {
+		if !strings.Contains(lockBody, want) {
+			t.Errorf("锁竞争 body 缺少 %q: %s", want, lockBody)
+		}
+	}
+	for _, forbidden := range []string{"基线提交在任务仓库中不存在", "请先在本地 git push"} {
+		if strings.Contains(lockBody, forbidden) {
+			t.Errorf("锁竞争 body 不应含 %q: %s", forbidden, lockBody)
+		}
+	}
+
+	divergedResp := httptest.NewRecorder()
+	divergedErr := fmt.Errorf("%w：本地=%s，origin=%s", errLocalBaseBranchDiverged,
+		strings.Repeat("2", 40), strings.Repeat("3", 40))
+	srv.writeDispatchError(divergedResp, "project-diverged", divergedErr)
+	if divergedResp.Code != http.StatusBadRequest {
+		t.Fatalf("分叉状态码=%d，期望 400；body=%s", divergedResp.Code, divergedResp.Body.String())
+	}
+	for _, want := range []string{strings.Repeat("2", 40), strings.Repeat("3", 40), "先合并再派"} {
+		if !strings.Contains(divergedResp.Body.String(), want) {
+			t.Errorf("分叉 body 缺少 %q: %s", want, divergedResp.Body.String())
+		}
+	}
+
+	missingResp := httptest.NewRecorder()
+	missingErr := fmt.Errorf("%w: abc；请先在本地 git push", ErrBaseCommitMissing)
+	srv.writeDispatchError(missingResp, "project-missing", missingErr)
+	if missingResp.Code != http.StatusBadRequest {
+		t.Fatalf("真缺失状态码=%d，期望 400；body=%s", missingResp.Code, missingResp.Body.String())
+	}
+	for _, want := range []string{"基线提交在任务仓库中不存在", "请先在本地 git push"} {
+		if !strings.Contains(missingResp.Body.String(), want) {
+			t.Errorf("真缺失 body 缺少 %q: %s", want, missingResp.Body.String())
+		}
 	}
 }
 

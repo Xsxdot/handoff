@@ -10,10 +10,14 @@ import (
 	"time"
 )
 
-// TaskLink card_tasks 一行。
+// TaskLink card_tasks 一行。JSON tag 服务直接编码账本结构的 CLI；HTTP 详情使用
+// proto 投影并刻意保留 PascalCase 线格式。
 type TaskLink struct {
-	CardID, Target, TaskID, Purpose string
-	CreatedAt                       time.Time
+	CardID    string    `json:"card_id"`
+	Target    string    `json:"target"`
+	TaskID    string    `json:"task_id"`
+	Purpose   string    `json:"purpose"`
+	CreatedAt time.Time `json:"created_at"`
 }
 
 // LinkTask 把 (target, task) 挂到卡上。purpose ∈ {implement, review, merge}

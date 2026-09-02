@@ -16,7 +16,6 @@ import (
 	"os"
 	"os/exec"
 	"sort"
-	"strings"
 	"testing"
 	"time"
 
@@ -124,15 +123,11 @@ type Endpoint struct {
 // 已知代价（spec §3.3，接受）：新 CLI + 旧 agentd（无辅助监听）且 listen 为
 // 单网卡 IP 时本机命令连接拒绝，升级 agentd 即愈。
 func localDialAddr(listen string) string {
-	if cls, lo := config.ClassifyListen(listen); cls != config.ListenLoopback {
+	if cls, _ := config.ClassifyListen(listen); cls != config.ListenLoopback {
 		// Debug 留痕：连接拒绝排障时第一个要回答的就是「它到底拨了哪」
-		slog.Debug("本机拨号地址改写", "listen", listen, "dial", lo)
-		listen = lo
+		slog.Debug("本机拨号地址改写", "listen", listen, "dial", config.LocalDialAddr(listen))
 	}
-	if !strings.Contains(listen, "://") {
-		listen = "http://" + listen
-	}
-	return listen
+	return config.LocalDialAddr(listen)
 }
 
 // Endpoints 返回要处理的机器清单。

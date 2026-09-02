@@ -239,8 +239,9 @@ var serviceRestartCmd = &cobra.Command{
 
 // ptyCloseBudget 是显式停止时留给 PTY 收口的总时间。
 //
-// 2 秒的来由：与 agentd 侧同名预算一致；kill 是一次本机 unix socket 往返，
-// 正常在毫秒级，2 秒足够覆盖几十个会话，又不会让 stop 明显变慢。
+// 2 秒的来由：与 agentd 侧同名预算一致；这是 CloseAll 的 stop 调用方总预算。
+// 单个 Host.Close 会等待自身 ptyhost/PTY 收摊，但 CloseAll 到点仍返回并只记录 Warn，
+// 不把 stop 阻塞在某个异常会话上；2 秒足够覆盖几十个正常会话，又不会让 stop 明显变慢。
 const ptyCloseBudget = 2 * time.Second
 
 // closePtySessionsForStop 在显式停止服务前杀掉本机全部 PTY 会话。

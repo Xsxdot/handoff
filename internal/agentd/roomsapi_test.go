@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +17,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // webUserMember 是测试环境里控制台已认证主体的成员标识：httptest.NewServer 固定
@@ -241,10 +241,9 @@ func TestRoomsListWireIncludesZeroUnread(t *testing.T) {
 func TestRoomsListAttachTimeoutDoesNotBlockMainList(t *testing.T) {
 	env := newRoomsEnv(t)
 	card := seedCard(t, env, "慢目标卡")
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		time.Sleep(300 * time.Millisecond)
 	}))
-	t.Cleanup(remote.Close)
 	env.srv.conf().Targets = map[string]config.Target{
 		"slow": {Addr: remote.URL, Token: "remote-token"},
 	}
@@ -286,7 +285,7 @@ func TestRoomsListUsesBackgroundAttachCache(t *testing.T) {
 	var once sync.Once
 	var mu sync.Mutex
 	calls := 0
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		calls++
 		call := calls
@@ -302,7 +301,6 @@ func TestRoomsListUsesBackgroundAttachCache(t *testing.T) {
 		}
 		http.Error(w, "unexpected second remote lookup", http.StatusInternalServerError)
 	}))
-	t.Cleanup(remote.Close)
 	env.srv.conf().Targets = map[string]config.Target{
 		"relay": {Addr: remote.URL, Token: "remote-token"},
 	}
@@ -356,7 +354,7 @@ func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
 	}
 	var mu sync.Mutex
 	calls := 0
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		mu.Lock()
 		calls++
 		call := calls
@@ -370,7 +368,6 @@ func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
 		}
 		http.Error(w, "remote attach unavailable", http.StatusBadGateway)
 	}))
-	t.Cleanup(remote.Close)
 	env.srv.conf().Targets = map[string]config.Target{
 		"relay": {Addr: remote.URL, Token: "remote-token"},
 	}

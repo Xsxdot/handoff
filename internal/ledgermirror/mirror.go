@@ -37,10 +37,21 @@ type Source func(ctx context.Context, c *client.Client, taskID string, fromSeq i
 
 // Options 子系统参数。零值取生产默认。
 type Options struct {
-	Holder   string
-	Tick     time.Duration
-	LeaseTTL time.Duration
-	Source   Source
+	Holder       string
+	Tick         time.Duration
+	LeaseTTL     time.Duration
+	Source       Source
+	LocalSource  Source
+	IsSelfTarget func(target string) bool
+}
+
+// LocalEventStore is the persisted-event boundary used by the local source.
+//
+// The local source replays task events from the exclusive store and waits on its
+// task-scoped doorbell; it deliberately does not use a Hub or a network client.
+type LocalEventStore interface {
+	EventsFromAsc(taskID string, fromSeq int64, limit int) ([]proto.Event, error)
+	SubscribeEventDoorbell(taskID string) (<-chan struct{}, func())
 }
 
 // Machines 是账本镜像对「有哪些机器、怎么连它」的唯一依赖。
@@ -79,6 +90,79 @@ type subscription struct {
 func DefaultSource(ctx context.Context, c *client.Client, taskID string, fromSeq int64,
 	onEvent func(proto.Event) error) error {
 	return c.MarkForwarded().StreamEventsOnce(ctx, taskID, fromSeq, onEvent)
+}
+
+const localSourceBatchSize = 100
+
+// NewLocalSource creates a source that reads persisted events from the local store.
+//
+// 参数：
+//   - events: 本机事件库；必须同时提供按 seq 升序的排他回放和 task 门铃
+//   - log: 结构化日志器；nil 时使用默认日志器
+//
+// 返回：
+//   - 本机事件源。调用时 c 必须为 nil；fromSeq 是排他的，事件按 seq 升序回放，
+//     函数阻塞至 ctx 取消或事件回调失败
+//
+// 注意：本机路径不读取 c、不订阅 Hub；门铃只提示有新事件，真实事件每次都从
+// store 读取，以避免 Hub 的有限缓冲造成事件缺口。
+func NewLocalSource(events LocalEventStore, logger *slog.Logger) Source {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	return func(ctx context.Context, _ *client.Client, taskID string, fromSeq int64,
+		onEvent func(proto.Event) error) error {
+		if events == nil {
+			err := errors.New("本机事件源缺少 store")
+			logger.Warn("本机账本源无法启动", "task", taskID, "from_seq", fromSeq, "cause", err)
+			return err
+		}
+		if onEvent == nil {
+			err := errors.New("本机事件源缺少事件回调")
+			logger.Warn("本机账本源无法启动", "task", taskID, "from_seq", fromSeq, "cause", err)
+			return err
+		}
+		wake, cancel := events.SubscribeEventDoorbell(taskID)
+		defer cancel()
+		cursor := fromSeq
+		logger.Info("本机账本源启动", "task", taskID, "from_seq", fromSeq)
+		for {
+			if err := ctx.Err(); err != nil {
+				logger.Info("本机账本源退出", "task", taskID, "from_seq", cursor, "cause", err)
+				return err
+			}
+			batch, err := events.EventsFromAsc(taskID, cursor, localSourceBatchSize)
+			if err != nil {
+				logger.Warn("本机账本源回放失败", "task", taskID, "from_seq", cursor, "cause", err)
+				return err
+			}
+			if len(batch) > 0 {
+				logger.Debug("本机账本源回放事件", "task", taskID, "from_seq", cursor, "count", len(batch))
+				for _, event := range batch {
+					if err := ctx.Err(); err != nil {
+						logger.Info("本机账本源退出", "task", taskID, "from_seq", cursor, "cause", err)
+						return err
+					}
+					if err := onEvent(event); err != nil {
+						logger.Warn("本机账本源交付失败", "task", taskID,
+							"seq", event.Seq, "type", event.Type, "cause", err)
+						return err
+					}
+					cursor = event.Seq
+					logger.Debug("本机账本源事件已交付", "task", taskID,
+						"seq", event.Seq, "type", event.Type)
+				}
+				continue
+			}
+			select {
+			case <-ctx.Done():
+				logger.Info("本机账本源退出", "task", taskID, "from_seq", cursor, "cause", ctx.Err())
+				return ctx.Err()
+			case <-wake:
+				logger.Debug("本机账本源收到门铃", "task", taskID, "from_seq", cursor)
+			}
+		}
+	}
 }
 
 var mirrorSkip = map[proto.EventType]bool{
@@ -140,6 +224,10 @@ func (m *Mirror) setConn(key string, ok bool) {
 	m.mu.Lock()
 	m.conn[key] = ok
 	m.mu.Unlock()
+}
+
+func (m *Mirror) isLocalTarget(target string) bool {
+	return target == "" || m.opt.IsSelfTarget != nil && m.opt.IsSelfTarget(target)
 }
 
 // Holding 当前是否持有镜像 lease（测试与状态面用）。
@@ -226,9 +314,14 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		m.log.Warn("读挂账表失败", "err", err)
 		return
 	}
+	live, err := m.st.LiveMirrorTargets()
+	if err != nil {
+		m.log.Warn("读在飞镜像 target 失败", "err", err)
+		return
+	}
 	want := map[string]ledger.TaskLink{}
 	for _, link := range links {
-		if !registered[link.Target] {
+		if link.Target != "" && !registered[link.Target] && !m.isLocalTarget(link.Target) {
 			continue
 		}
 		want[link.Target+"/"+link.TaskID] = link
@@ -238,6 +331,9 @@ func (m *Mirror) reconcile(ctx context.Context) {
 	// 取不到就当这台机器本轮不可用——For 的错误是配置性的，重试没有意义。
 	clients := map[string]*client.Client{}
 	for _, link := range want {
+		if m.isLocalTarget(link.Target) {
+			continue
+		}
 		if _, ok := clients[link.Target]; ok {
 			continue
 		}
@@ -258,9 +354,11 @@ func (m *Mirror) reconcile(ctx context.Context) {
 			m.dropSubLocked(key, sub, "机器或挂账已不在")
 			// 挂账/机器都没了，终态记忆一并忘掉：将来它再回来时按新的一轮处理
 			delete(m.ended, key)
-		case clients[link.Target] == nil:
+		case m.isLocalTarget(link.Target) && sub.client != nil:
+			m.dropSubLocked(key, sub, "本机目标形态变更，退订重订")
+		case !m.isLocalTarget(link.Target) && clients[link.Target] == nil:
 			m.dropSubLocked(key, sub, "本轮取不到该机器的客户端")
-		case clients[link.Target] != sub.client:
+		case !m.isLocalTarget(link.Target) && clients[link.Target] != sub.client:
 			m.dropSubLocked(key, sub, "机器配置已变更，退订重订")
 		}
 	}
@@ -275,7 +373,7 @@ func (m *Mirror) reconcile(ctx context.Context) {
 			continue
 		}
 		c := clients[link.Target]
-		if c == nil {
+		if !m.isLocalTarget(link.Target) && c == nil {
 			continue
 		}
 		subCtx, cancel := context.WithCancel(ctx)
@@ -287,25 +385,54 @@ func (m *Mirror) reconcile(ctx context.Context) {
 		m.log.Info("起订", "sub", key, "target", link.Target)
 	}
 
-	hasSub := map[string]bool{}
+	// 活连接按「还没归档的订阅」计。已 archived 的挂账行仍在 card_tasks 里，
+	// 但订阅已退——再拿它们挡空 touch，心跳会停在最后一条镜像上，看板把
+	// 「没东西可镜像」画成断链（mac-02 本机全归档后亮「事件流滞后」就是这个）。
 	alive := map[string]bool{}
 	for key := range want {
+		if m.ended[key] {
+			continue
+		}
 		separator := strings.IndexByte(key, '/')
 		if separator < 0 {
 			continue
 		}
 		target := key[:separator]
-		hasSub[target] = true
 		if m.conn[key] {
 			alive[target] = true
 		}
 	}
 	for _, name := range names {
-		if hasSub[name] && !alive[name] {
+		if m.isLocalTarget(name) {
+			continue
+		}
+		// 仍有非终态挂账、但当前一条活连接都没有 → 真断链，不刷新心跳。
+		if live[name] && !alive[name] {
 			continue
 		}
 		if err := m.st.TouchMirrorHealth(name, 0); err != nil {
 			m.log.Warn("touch 健康失败", "target", name, "err", err)
+		}
+	}
+	// 配置里已经没有、只剩 cursor 的名字：全归档就空 touch（旧看板只看
+	// updated_at）；仍有在飞挂账则不碰——订不到，应当亮灯。
+	rows, err := m.st.MirrorHealth()
+	if err != nil {
+		m.log.Warn("读镜像健康失败", "err", err)
+		return
+	}
+	for _, row := range rows {
+		if m.isLocalTarget(row.Target) {
+			continue
+		}
+		if registered[row.Target] {
+			continue
+		}
+		if live[row.Target] {
+			continue
+		}
+		if err := m.st.TouchMirrorHealth(row.Target, 0); err != nil {
+			m.log.Warn("touch 健康失败", "target", row.Target, "err", err)
 		}
 	}
 }
@@ -349,29 +476,57 @@ func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c *client.
 			continue
 		}
 		m.setConn(key, true)
-		err = m.opt.Source(ctx, c, link.TaskID, wm, func(e proto.Event) error {
-			if mirrorSkip[e.Type] {
-				return nil
+		var source Source
+		if m.isLocalTarget(link.Target) {
+			source = m.opt.LocalSource
+			if source == nil {
+				err = errors.New("本机账本源未配置")
+				m.log.Warn("本机订阅无法建立", "target", link.Target, "task", link.TaskID,
+					"from_seq", wm, "cause", err)
+			} else {
+				m.log.Info("建立本机账本订阅", "target", link.Target, "task", link.TaskID, "from_seq", wm)
 			}
-			wrote, err := m.st.AppendMirroredEvent(link.CardID, ledger.MirroredEvent{
-				Target: link.Target, Task: link.TaskID, SourceSeq: e.Seq,
-				Type: string(e.Type), Payload: e.Payload, CreatedAt: e.CreatedAt,
-			})
-			if err != nil {
-				return err
+		} else {
+			if c == nil {
+				err = errors.New("远端客户端缺失")
+				m.log.Warn("远端订阅无法建立", "target", link.Target, "task", link.TaskID,
+					"from_seq", wm, "cause", err)
+			} else {
+				source = m.opt.Source
+				m.log.Info("建立远端账本订阅", "target", link.Target, "task", link.TaskID, "from_seq", wm)
 			}
-			if wrote {
-				m.log.Debug("镜像事件", "target", link.Target, "task", link.TaskID,
-					"seq", e.Seq, "type", e.Type)
-				if err := m.st.TouchMirrorHealth(link.Target, e.Seq); err != nil {
-					m.log.Warn("touch 健康失败", "target", link.Target, "err", err)
+		}
+		if source != nil {
+			err = source(ctx, c, link.TaskID, wm, func(e proto.Event) error {
+				if mirrorSkip[e.Type] {
+					m.log.Debug("账本镜像过滤事件", "target", link.Target, "task", link.TaskID,
+						"seq", e.Seq, "type", e.Type)
+					return nil
 				}
-			}
-			if e.Type == proto.EventTypeArchived {
-				return errMirrorArchived
-			}
-			return nil
-		})
+				wrote, err := m.st.AppendMirroredEvent(link.CardID, ledger.MirroredEvent{
+					Target: link.Target, Task: link.TaskID, SourceSeq: e.Seq,
+					Type: string(e.Type), Payload: e.Payload, CreatedAt: e.CreatedAt,
+				})
+				if err != nil {
+					m.log.Warn("账本镜像落库失败", "target", link.Target, "task", link.TaskID,
+						"seq", e.Seq, "type", e.Type, "cause", err)
+					return err
+				}
+				if wrote {
+					m.log.Debug("账本镜像事件已落账", "target", link.Target, "task", link.TaskID,
+						"seq", e.Seq, "type", e.Type)
+					if !m.isLocalTarget(link.Target) {
+						if err := m.st.TouchMirrorHealth(link.Target, e.Seq); err != nil {
+							m.log.Warn("touch 健康失败", "target", link.Target, "err", err)
+						}
+					}
+				}
+				if e.Type == proto.EventTypeArchived {
+					return errMirrorArchived
+				}
+				return nil
+			})
+		}
 		m.setConn(key, false)
 		if ctx.Err() != nil {
 			return

@@ -46,6 +46,85 @@ interface WebkitBridge {
   webkit?: { messageHandlers?: { external?: { postMessage: (msg: string) => void } } }
 }
 
+// OPEN_BROWSER_MESSAGE_PREFIX 是 CardsPage 发给桌面宿主的原始消息前缀。
+// 必须避开 wails:：Wails 会把 wails: 消息交给自己的窗口手势处理器，不会送到
+// RawMessageHandler。URL 作为同一条字符串的后缀传输，桌面侧再做同源校验。
+export const OPEN_BROWSER_MESSAGE_PREFIX = 'handoff:open-browser:'
+
+// NATIVE_CLIPBOARD_MESSAGE_PREFIX 是终端 OSC 52 交给桌面壳原生剪贴板的协议前缀。
+// 不使用 wails:：外链控制台没有 Wails 公开 runtime，且 wails: 会被内置窗口消息
+// 分发器截走。请求格式为「前缀 + requestId + ':' + UTF-8 base64」。
+export const NATIVE_CLIPBOARD_MESSAGE_PREFIX = 'handoff:clipboard-write:'
+
+// NATIVE_CLIPBOARD_RESULT_EVENT 是桌面壳通过 ExecJS 回传原生剪贴板结果的事件名。
+// requestId 用来隔离快速连续的两个 OSC 52 请求，避免后到的结果唤醒错的 Promise。
+export const NATIVE_CLIPBOARD_RESULT_EVENT = 'handoff-native-clipboard-result'
+
+let nativeClipboardRequestID = 0
+
+// requestOpenCurrentPageInBrowser 请求桌面宿主用系统浏览器打开当前整页。
+// 参数：无；URL 只能从当前 window.location 产生，调用方不能注入任意地址。
+// 返回：找到并发出 external bridge 时为 true，否则为 false。
+// 注意：它不导航、不改变当前页面状态；浏览器分支没有 bridge 时是安静空操作。
+export function requestOpenCurrentPageInBrowser(): boolean {
+  const bridge = window as unknown as WebkitBridge
+  const post = bridge.webkit?.messageHandlers?.external?.postMessage
+  if (!post) return false
+  const currentURL = `${window.location.origin}${window.location.pathname}${window.location.search}`
+  post.call(bridge.webkit!.messageHandlers!.external, `${OPEN_BROWSER_MESSAGE_PREFIX}${currentURL}`)
+  return true
+}
+
+// requestNativeClipboard 请求桌面宿主把文本写入系统剪贴板。
+//
+// 参数：
+//   - text: 要写入系统剪贴板的文本
+//
+// 返回：
+//   - Promise<boolean>：存在桌面桥且宿主已回报结果时返回；true 表示写入成功
+//   - null：当前页面没有桌面桥，调用方应继续走浏览器复制路径
+//
+// 注意：
+//   - 文本先按 UTF-8 编码再 base64，避免换行、冒号和非 ASCII 字符破坏 raw message
+//   - 宿主没有及时回报时按失败结束，调用方仍可尝试其它复制路径
+export function requestNativeClipboard(text: string): Promise<boolean> | null {
+  const bridge = window as unknown as WebkitBridge
+  const post = bridge.webkit?.messageHandlers?.external?.postMessage
+  if (!post) return null
+
+  const requestId = String(++nativeClipboardRequestID)
+  const bytes = new TextEncoder().encode(text)
+  let binary = ''
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  const encoded = btoa(binary)
+
+  return new Promise((resolve) => {
+    let settled = false
+    const finish = (ok: boolean) => {
+      if (settled) return
+      settled = true
+      window.clearTimeout(timeout)
+      window.removeEventListener(NATIVE_CLIPBOARD_RESULT_EVENT, onResult)
+      resolve(ok)
+    }
+    const onResult = (event: Event) => {
+      const detail = (event as CustomEvent<{ requestId?: unknown; ok?: unknown }>).detail
+      if (detail?.requestId !== requestId || typeof detail.ok !== 'boolean') return
+      finish(detail.ok)
+    }
+    const timeout = window.setTimeout(() => finish(false), 2000)
+    window.addEventListener(NATIVE_CLIPBOARD_RESULT_EVENT, onResult)
+    try {
+      post.call(
+        bridge.webkit!.messageHandlers!.external,
+        `${NATIVE_CLIPBOARD_MESSAGE_PREFIX}${requestId}:${encoded}`,
+      )
+    } catch {
+      finish(false)
+    }
+  })
+}
+
 // requestTitlebarZoom 请求薄壳把窗口在「最大化 / 还原」之间切换，返回是否发出去了。
 //
 // 为什么需要它：**双击标题栏最大化在 Wails 里是 JS 实现的，不是原生的**。

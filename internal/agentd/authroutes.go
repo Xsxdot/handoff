@@ -2,13 +2,13 @@
 //
 // 职责：
 //   - POST /api/auth/tickets      主令牌签发一次性 ticket，返回可打开的 /console URL
-//   - GET  /console?ticket=<t>    原子消费 ticket → Set-Cookie → 302 到 /
+//   - GET  /console?ticket=<t>    原子消费 ticket → Set-Cookie → 302 到合法 next 或 /
 //   - GET  /api/auth/sessions     列出会话（含已吊销，供人判断）
 //   - DELETE /api/auth/sessions/{id}  吊销指定会话
 //   - POST /api/auth/logout       吊销当前 cookie 会话并清除 cookie
 //
 // 边界：
-//   - **本文件不负责 / 上有什么**：302 的目标固定是 /，至于 / 返回什么由
+//   - **本文件不负责 / 上有什么**：无 next 或非法 next 时 302 的目标是 /，至于 / 返回什么由
 //     server.go 挂在 / 上的 SPA handler（webui）决定。W5a 之后 / 伺服的是真实控制台；
 //     不带 embedweb 标签构建时是一份说明用途的 stub 页。两种情况本文件都不需要知道，
 //     也不得为了迁就其中一种去改 302 的目标
@@ -91,6 +91,41 @@ func consoleURL(r *http.Request, ticket string) string {
 	return scheme + "://" + r.Host + "/console?ticket=" + url.QueryEscape(ticket)
 }
 
+// validConsoleNext 判断 ticket 兑换后的站内跳转目标。
+//
+// 只允许 /cards 或其子路径，且目标必须是无 scheme、host、userinfo、fragment 的
+// 相对 URL。raw 值与 query 解码值都检查控制字符和反斜杠，避免浏览器把它解释成
+// 外部或另一种路径；非法值由调用方回落到根路径。
+func validConsoleNext(next string) bool {
+	if next == "" {
+		return false
+	}
+	if strings.IndexFunc(next, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return false
+	}
+	if strings.Contains(next, "\\") || strings.HasPrefix(next, "//") {
+		return false
+	}
+	parsed, err := url.Parse(next)
+	if err != nil || parsed.IsAbs() || parsed.Scheme != "" ||
+		parsed.Host != "" || parsed.User != nil || parsed.Fragment != "" {
+		return false
+	}
+	if strings.Contains(parsed.Path, "\\") ||
+		strings.IndexFunc(parsed.Path, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+		return false
+	}
+	for _, values := range parsed.Query() {
+		for _, value := range values {
+			if strings.Contains(value, "\\") ||
+				strings.IndexFunc(value, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 {
+				return false
+			}
+		}
+	}
+	return parsed.Path == "/cards" || strings.HasPrefix(parsed.Path, "/cards/")
+}
+
 // handleIssueTicket 由主令牌签发一次性 ticket。
 func (s *Server) handleIssueTicket(w http.ResponseWriter, r *http.Request) {
 	if id := identityFrom(r.Context()); id.session != "" {
@@ -126,7 +161,7 @@ func (s *Server) handleIssueTicket(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proto.AuthTicketResp{URL: consoleURL(r, plain), ExpiresAt: expires})
 }
 
-// handleConsole 兑换 ticket：原子消费 → 建会话 → Set-Cookie → 302 到 /。
+// handleConsole 兑换 ticket：原子消费 → 建会话 → Set-Cookie → 302 到合法 next 或 /。
 //
 // 这是唯一不经主令牌/cookie 的路由——ticket 本身就是它的凭据。
 func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
@@ -174,8 +209,20 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("消费 ticket 成功", "result", "成功", "session", sess.ID)
 	s.log.Info("会话建立", "session", sess.ID, "device_name", sess.DeviceName, "expires_at", sess.ExpiresAt)
 	http.SetCookie(w, sessionCookie(r, token, int(time.Until(sess.ExpiresAt).Seconds())))
-	// 302 到 /：cookie 此时已设好，/ 上是控制台还是 stub 说明页由 webui 决定，与本处无关
-	http.Redirect(w, r, "/", http.StatusFound)
+	redirect := "/"
+	next := r.URL.Query().Get("next")
+	if next != "" {
+		if validConsoleNext(next) {
+			redirect = next
+		} else {
+			s.log.Warn("ticket 兑换 next 非法，回落根路径",
+				"result", "invalid_next",
+				"next_present", true,
+			)
+		}
+	}
+	// cookie 此时已设好，合法 next 可直接进入工作项页；无效值回到根路径。
+	http.Redirect(w, r, redirect, http.StatusFound)
 }
 
 // writeTicketError 输出兑换失败的说明。

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import type { Task } from '../../api/types'
+import type { PreviewSession, Task } from '../../api/types'
 import { countsForMachine, countsForProject } from './counts'
 
 function t(over: Partial<Task>): Task {
@@ -45,5 +45,16 @@ describe('聚合计数', () => {
       { machine: '', name: 'alpha', path: '/a', probe_error: '目录不存在', workspaces: [] } ] }
     const tasks = [t({ project_id: 'p1', machine: '', state: 'running' })]
     expect(countsForProject(tasks, project)).toMatchObject({ dirs: 0, running: 1 })
+  })
+
+  it('预览按归一化 origin 与机器归集，并计入 running 总数', () => {
+    const project = { project_id: 'p1', origin_url: 'HTTPS://example.test/repo/', name: 'alpha', locations: [] }
+    const previews: PreviewSession[] = [
+      { id: 'local', entry_url: 'http://localhost:5173', cwd: '', origin_url: 'https://example.test/repo', created_at: '', ttl_seconds: 7200 },
+      { id: 'remote', entry_url: 'http://localhost:5174', cwd: '', origin_url: 'https://example.test/repo/', created_at: '', ttl_seconds: 7200, machine: 'devbox' },
+      { id: 'other', entry_url: 'http://localhost:5175', cwd: '', origin_url: 'https://other.test/repo', created_at: '', ttl_seconds: 7200 },
+    ]
+    expect(countsForProject([], project, previews)).toMatchObject({ running: 0, previews: 2 })
+    expect(countsForMachine([], project, 'devbox', previews)).toMatchObject({ running: 0, previews: 1 })
   })
 })

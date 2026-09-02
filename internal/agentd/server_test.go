@@ -20,6 +20,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 	"github.com/coder/websocket"
 )
 
@@ -66,9 +67,41 @@ func newTestEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logger) *t
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := agentd.NewServer(cfg, st, logger)
-	ts := httptest.NewServer(srv.Handler())
-	t.Cleanup(ts.Close)
+	ts := testhttp.NewServer(t, srv.Handler())
 	return &testEnv{srv: srv, ts: ts, st: st, token: cfg.Token}
+}
+
+func TestHandlerWarnsWhenWebConsoleIsStub(t *testing.T) {
+	records := make(chan slog.Record, 1)
+	env := newTestEnvWithLogger(t, slog.New(&signalHandler{
+		h: slog.NewTextHandler(io.Discard, nil),
+		on: func(record slog.Record) {
+			if strings.Contains(record.Message, "控制台前端") {
+				records <- record
+			}
+		},
+	}))
+	_ = env
+	select {
+	case record := <-records:
+		if record.Level != slog.LevelWarn ||
+			!strings.Contains(record.Message, "stub") ||
+			!strings.Contains(record.Message, "-tags embedweb") {
+			t.Fatalf("stub 应记录带构建处置的 WARN，得到 level=%s message=%q", record.Level, record.Message)
+		}
+		embedded := true
+		record.Attrs(func(attr slog.Attr) bool {
+			if attr.Key == "embedded" {
+				embedded = attr.Value.Bool()
+			}
+			return true
+		})
+		if embedded {
+			t.Fatal("stub WARN 必须带 embedded=false")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Handler 构造时未记录控制台前端日志")
+	}
 }
 
 // signalHandler 是测试专用 slog.Handler：全量放行（含 Debug），每条日志先触发 on 回调

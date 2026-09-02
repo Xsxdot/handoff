@@ -95,7 +95,7 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		homeDir := carrier.HomeDir
 		dispatchHomeDir = &homeDir
 	}
-	resolved, err := s.resolveStepDiscipline(node, target)
+	resolved, target, err := s.resolveStepDiscipline(node, target)
 	if err != nil {
 		s.releaseCardStep(cardID)
 		if binding.Squad != "" {
@@ -117,15 +117,16 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 			HomeDir:           dispatchHomeDir,
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
+			NormalizeTarget:   s.CanonicalTarget,
 		},
-		Clients:  s.pool.For,
-		Target:   req.Target,
+		Clients:  s.clientForTarget,
+		Target:   target,
 		Executor: req.Executor,
 		Model:    req.Model,
 		Extra:    req.Extra,
 	}
 	s.log.Info("卡节点装配完成", "card", cardID, "node", req.Step,
-		"actor", req.Actor, "target", req.Target, "executor", req.Executor,
+		"actor", req.Actor, "target", req.Target, "canonical_target", target, "executor", req.Executor,
 		"model", req.Model, "run_holder", runner.RunHolder,
 		"has_extra", strings.TrimSpace(req.Extra) != "")
 	if binding.Squad != "" {
@@ -189,22 +190,39 @@ func (s *Server) cardStepInFlight(cardID string) bool {
 // 经 discipline.ResolveDispatch 产出随派发下发的正文三元组。未点名模板同样过闸，
 // 产物是纯平台层正文、版本 0（§3.1：拒发闸覆盖一切带正文派发）。
 //
-// 为什么探活失败也按不支持处置：能力位缺席(nil)的保守方向由失败的可见性决定
-// （契约 §2.4），网络错误时放行等于把「不知道」当成「支持」——那是缺陷三的
-// 静默降级换马甲。探活的错误原因带上下文记 Warn，拒发文案本身含升级指引。
-func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (discipline.ResolvedDiscipline, error) {
+// 为什么探活失败不能按不支持处置：能力位缺席(nil)只表示探活成功后对端未上报，
+// 网络/认证错误必须保留 cause 并停止派发；只有 nil/false 能力位才进入升级拒发。
+func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (discipline.ResolvedDiscipline, string, error) {
 	name, target, err := ledgerstep.PreflightDiscipline(s.ledger, node.Template, node.Override.Discipline, reqTarget)
 	if err != nil {
-		return discipline.ResolvedDiscipline{}, err
+		return discipline.ResolvedDiscipline{}, "", err
 	}
-	if target == "" {
-		// 目标机未定：这次派发必然在 ViaTemplate 处失败（既有异步语义，错误落
-		// 卡的事件流）。这里不抢答也不放探活——没有目标机就没有闸可过；返回空
-		// 产物让流程走原有失败路径，避免把既有 202 合约改成 400。
-		s.log.Warn("环节派发跳过纪律解析：目标机未定", "node", node.Name)
-		return discipline.ResolvedDiscipline{}, nil
+	target = s.CanonicalTarget(target)
+	if isLocalMachine(target) {
+		// "local"/"本机"/hostname 不是 config.Targets 里的远程机；CanonicalTarget
+		// 只认空串和指向 Listen 的登记名。归一成空串后走 clientForTarget 的本机
+		// 直连，不再 pool.For("local") fail-closed（B299）。
+		target = ""
 	}
-	cap := s.disciplineTargetCap(target)
+	cl, err := s.clientForTarget(target)
+	if err != nil {
+		s.log.Error("环节纪律探活取得客户端失败", "node", node.Name, "target", target,
+			"canonical_target", target, "cause", err)
+		return discipline.ResolvedDiscipline{}, target, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	status, err := cl.Status(ctx)
+	if err != nil {
+		s.log.Error("环节纪律探活失败", "node", node.Name, "target", target,
+			"canonical_target", target, "cause", err)
+		return discipline.ResolvedDiscipline{}, target, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
+	}
+	s.log.Info("环节纪律探活完成", "node", node.Name, "target", target,
+		"canonical_target", target, "cap_absent", status.DisciplinesSupported == nil)
+	cap := status.DisciplinesSupported
 	lookup := func(n string) (int, string, error) {
 		d, gerr := s.ledger.GetDiscipline(n, 0)
 		if gerr != nil {
@@ -217,11 +235,11 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 	if err != nil {
 		s.log.Warn("环节派发被拒发闸拦下", "node", node.Name, "target", target,
 			"discipline", name, "cap_absent", cap == nil, "cause", err)
-		return discipline.ResolvedDiscipline{}, fmt.Errorf("环节 %s 派发前纪律解析失败: %w", node.Name, err)
+		return discipline.ResolvedDiscipline{}, target, fmt.Errorf("环节 %s 派发前纪律解析失败: %w", node.Name, err)
 	}
 	s.log.Info("环节派发纪律正文已就绪", "node", node.Name, "target", target,
 		"discipline", name, "version", res.Version, "bytes", len(res.Text))
-	return res, nil
+	return res, target, nil
 }
 
 // disciplineTargetCap 读目标机的 DisciplinesSupported。
@@ -229,7 +247,8 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 // 本机（local / 本机 / 本机 hostname）就是当前进程：能力位与 Status 上报同源
 // （当前二进制恒 true）。"local" 不是 config.Targets 里的远程机，pool.For 会
 // 稳定报未登记；把 nil 当不支持会让本机点火被 B229 拒发闸误杀（B299 真机）。
-// 远程机仍走探活；失败保持 nil，按不支持处置。
+// 远程机仍走探活；失败保持 nil，按不支持处置。生产派发走 resolveStepDiscipline
+// 的探活失败硬红路径；本函数只服务本机短路单测。
 func (s *Server) disciplineTargetCap(target string) *bool {
 	if isLocalMachine(target) {
 		yes := true
@@ -250,20 +269,26 @@ func (s *Server) disciplineTargetCap(target string) *bool {
 	return status.DisciplinesSupported
 }
 
-func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {
-	// 走 target 客户端池而不是自己 client.New：relay 形态的机器没有 addr，
-	// 直连构造对它们恒失败（见 internal/targetclient 与 nodirectclient_test）。
-	s.log.Info("agentd 节点派发请求", "target", opts.Target, "executor", opts.Executor,
+func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, string, error) {
+	canonical := s.CanonicalTarget(opts.Target)
+	if isLocalMachine(canonical) {
+		canonical = ""
+	}
+	// 远端仍走 target 客户端池以保留 relay；本机则直连当前 agentd，避免把
+	// loopback 登记名当成远端再次进入镜像/WS 路径。
+	s.log.Info("agentd 节点派发请求", "target", opts.Target, "canonical_target", canonical,
+		"executor", opts.Executor,
 		"model", opts.Model, "prompt_bytes", len(opts.Prompt),
 		"discipline", opts.Discipline, "discipline_version", opts.DisciplineVersion,
 		"discipline_bytes", len(opts.DisciplineText))
-	cl, err := s.pool.For(opts.Target)
+	cl, err := s.clientForTarget(canonical)
 	if err != nil {
-		s.log.Warn("取得节点派发客户端失败", "target", opts.Target, "cause", err)
-		return "", err
+		s.log.Warn("取得节点派发客户端失败", "target", opts.Target,
+			"canonical_target", canonical, "cause", err)
+		return "", "", err
 	}
 	task, err := cl.Dispatch(ctx, client.DispatchOpts{
-		Prompt: opts.Prompt, Target: opts.Target,
+		Prompt: opts.Prompt, Target: canonical,
 		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
 		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
 		HomeDir:           opts.HomeDir,
@@ -276,12 +301,14 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		NewWorktree:        opts.NewWorktree,
 	})
 	if err != nil {
-		s.log.Warn("agentd 节点派发失败", "target", opts.Target, "executor", opts.Executor,
+		s.log.Warn("agentd 节点派发失败", "target", opts.Target, "canonical_target", canonical,
+			"executor", opts.Executor,
 			"model", opts.Model, "cause", err)
-		return "", err
+		return "", "", err
 	}
-	s.log.Info("agentd 节点派发已受理", "target", opts.Target, "task", task.ID)
-	return task.ID, nil
+	s.log.Info("agentd 节点派发已受理", "target", opts.Target, "canonical_target", canonical, "task", task.ID,
+		"base_commit", task.BaseCommit)
+	return task.ID, task.BaseCommit, nil
 }
 
 // requiresInlineLocalFile 判断一次 step 请求是否要求把调用方 CWD 的本地文件

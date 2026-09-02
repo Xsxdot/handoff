@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -46,6 +47,105 @@ func TestClientOpenList(t *testing.T) {
 	list := h.List()
 	if len(list) != 1 || list[0].ID != sess.ID || list[0].BasePath != root || list[0].PID != sess.PID {
 		t.Fatalf("List = %+v", list)
+	}
+}
+
+func waitClientFile(path string, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	ticker := time.NewTicker(10 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		if _, err := os.Stat(path); err == nil {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		<-ticker.C
+	}
+}
+
+func releaseClientFIFO(t *testing.T, path string) {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		f, err := os.OpenFile(path, os.O_WRONLY, 0)
+		if err != nil {
+			done <- err
+			return
+		}
+		_, writeErr := f.WriteString("release\n")
+		closeErr := f.Close()
+		if writeErr != nil {
+			done <- writeErr
+			return
+		}
+		done <- closeErr
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("释放 ptyhost shell trap FIFO: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("ptyhost shell trap 未打开 release FIFO")
+	}
+}
+
+func TestClientOpenCloseWaitsForPtyhostAndShell(t *testing.T) {
+	root := shortRoot(t)
+	home := t.TempDir()
+	release := filepath.Join(home, "b234-release")
+	h := ptyhost.New(root, buildHandoff(t), testLog())
+	sess, err := h.Open(ptyhost.OpenOptions{
+		BasePath: home, BaseKind: "home", Shell: "/bin/sh",
+		Env: append(os.Environ(), "HOME="+home), Cols: 80, Rows: 24,
+		InitCommand: `mkfifo "$HOME/b234-release"; trap 'exit 0' TERM; trap 'cat "$HOME/b234-release" >/dev/null; printf late > "$HOME/b234-late"' EXIT; : > "$HOME/b234-ready"; while :; do :; done`,
+	})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if sess.PID <= 0 {
+		t.Fatalf("Open PID=%d，期望真实 ptyhost 子进程", sess.PID)
+	}
+	if !waitClientFile(filepath.Join(home, "b234-ready"), 3*time.Second) {
+		t.Fatal("Open InitCommand 未建立 ready marker")
+	}
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- h.Close(sess.ID) }()
+	early := false
+	select {
+	case err := <-closeDone:
+		early = true
+		if err != nil {
+			t.Fatalf("提前返回的 Close 错误: %v", err)
+		}
+	case <-time.After(250 * time.Millisecond):
+	}
+	if early {
+		releaseClientFIFO(t, release)
+		if !waitClientFile(filepath.Join(home, "b234-late"), time.Second) {
+			t.Fatal("提前返回的 Close 后 EXIT trap 仍未写入 late marker")
+		}
+		t.Fatal("Host.Close 在 EXIT trap 写入 late marker 前返回")
+	}
+	releaseClientFIFO(t, release)
+	select {
+	case err := <-closeDone:
+		if err != nil {
+			t.Fatalf("Close: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("Close 未等待 ptyhost 与 shell 收摊")
+	}
+	if _, err := os.Stat(filepath.Join(home, "b234-late")); err != nil {
+		t.Fatalf("Close 返回后 late marker 不存在: %v", err)
+	}
+	if _, err := os.Stat(sessdir.Dir(root, sess.ID)); !os.IsNotExist(err) {
+		t.Fatalf("Close 后会话目录仍存在: %v", err)
+	}
+	if list := h.List(); len(list) != 0 {
+		t.Fatalf("Close 后 Host.List=%+v", list)
 	}
 }
 
@@ -140,9 +240,12 @@ func TestClientDetachKeepsSession(t *testing.T) {
 }
 
 func TestClientCloseRemovesSession(t *testing.T) {
-	_, h, id, done := startClientHost(t)
+	_, h, id, done, late := startClientHostWithExitMarker(t)
 	if err := h.Close(id); err != nil {
 		t.Fatalf("Close: %v", err)
+	}
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("Close 返回后 late marker 不存在: %v", err)
 	}
 	if list := h.List(); len(list) != 0 {
 		t.Fatalf("Close 后 List = %+v", list)
@@ -152,8 +255,190 @@ func TestClientCloseRemovesSession(t *testing.T) {
 		if err != nil {
 			t.Fatalf("hostproc.Run: %v", err)
 		}
-	case <-time.After(time.Second):
+	case <-time.After(3 * time.Second):
 		t.Fatal("ptyhost 未在 Close 后退出")
+	}
+}
+
+func TestCloseDoesNotTreatControlEOFAsSuccess(t *testing.T) {
+	root := shortRoot(t)
+	id := "b234-eof"
+	if err := sessdir.Create(root, id); err != nil {
+		t.Fatal(err)
+	}
+	meta := sessdir.Meta{
+		ID: id, BasePath: root, BaseKind: "workspace", Cwd: root,
+		Shell: "/bin/sh", CreatedAt: time.Now(), PID: os.Getpid(), ProtoVersion: wire.ProtoVersion,
+	}
+	if err := sessdir.WriteMeta(root, meta); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sessdir.SockPath(root, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDone := make(chan struct{})
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			_, _, _, _ = wire.ReadFrame(conn)
+			_ = conn.Close()
+		}
+		close(serverDone)
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		_ = sessdir.Remove(root, id)
+	})
+	h := ptyhost.New(root, "", testLog())
+	h.Adopt([]sessdir.Entry{{ID: id, Meta: meta, State: sessdir.StateLive}})
+	err = h.Close(id)
+	if err == nil {
+		t.Fatal("control EOF 且会话目录仍在时 Close 不得返回成功")
+	}
+	if !strings.Contains(err.Error(), id) && !strings.Contains(err.Error(), "超时") {
+		t.Fatalf("Close 错误缺少 session/wait 上下文: %v", err)
+	}
+	if list := h.List(); len(list) != 0 {
+		t.Fatalf("失败 Close 后登记未清除: %+v", list)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("fake control server 未消费 CtrlKill")
+	}
+}
+
+func TestCloseDoesNotTreatControlTimeoutAsSuccess(t *testing.T) {
+	root := shortRoot(t)
+	id := "b234-timeout"
+	if err := sessdir.Create(root, id); err != nil {
+		t.Fatal(err)
+	}
+	meta := sessdir.Meta{
+		ID: id, BasePath: root, BaseKind: "workspace", Cwd: root,
+		Shell: "/bin/sh", CreatedAt: time.Now(), PID: os.Getpid(), ProtoVersion: wire.ProtoVersion,
+	}
+	if err := sessdir.WriteMeta(root, meta); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sessdir.SockPath(root, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	controlRead := make(chan struct{})
+	allowServerClose := make(chan struct{})
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		conn, acceptErr := ln.Accept()
+		if acceptErr != nil {
+			return
+		}
+		defer conn.Close()
+		_, _, _, readErr := wire.ReadFrame(conn)
+		if readErr != nil {
+			return
+		}
+		close(controlRead)
+		<-allowServerClose
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		_ = sessdir.Remove(root, id)
+	})
+	h := ptyhost.New(root, "", testLog())
+	h.Adopt([]sessdir.Entry{{ID: id, Meta: meta, State: sessdir.StateLive}})
+	closeDone := make(chan error, 1)
+	go func() { closeDone <- h.Close(id) }()
+	select {
+	case <-controlRead:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake control server 未消费 CtrlKill")
+	}
+	select {
+	case err = <-closeDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Host.Close 未在 control timeout 后返回")
+	}
+	if err == nil {
+		t.Fatal("control timeout 且会话目录仍在时 Close 不得返回成功")
+	}
+	if !strings.Contains(err.Error(), id) && !strings.Contains(err.Error(), "超时") {
+		t.Fatalf("Close 错误缺少 session/wait 上下文: %v", err)
+	}
+	if list := h.List(); len(list) != 0 {
+		t.Fatalf("失败 Close 后登记未清除: %+v", list)
+	}
+	close(allowServerClose)
+	select {
+	case <-serverDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fake control server 未在 Close 返回错误后收摊")
+	}
+}
+
+func TestCloseMissingSessionLogsPhaseAndElapsed(t *testing.T) {
+	var logs bytes.Buffer
+	h := ptyhost.New(t.TempDir(), "", slog.New(slog.NewTextHandler(&logs, nil)))
+	if err := h.Close("b234-missing"); !errors.Is(err, ptyhost.ErrNoSession) {
+		t.Fatalf("Close missing session err=%v, want ErrNoSession", err)
+	}
+	line := logs.String()
+	for _, field := range []string{"session=b234-missing", "phase=lookup", "elapsed=", "cause="} {
+		if !strings.Contains(line, field) {
+			t.Fatalf("Close 早期错误日志缺少 %q: %q", field, line)
+		}
+	}
+}
+
+func TestCloseSuccessLogsPhaseAndElapsed(t *testing.T) {
+	root := shortRoot(t)
+	id := "b234-success-log"
+	if err := sessdir.Create(root, id); err != nil {
+		t.Fatal(err)
+	}
+	meta := sessdir.Meta{
+		ID: id, BasePath: root, BaseKind: "workspace", Cwd: root,
+		Shell: "/bin/sh", CreatedAt: time.Now(), PID: os.Getpid(), ProtoVersion: wire.ProtoVersion,
+	}
+	if err := sessdir.WriteMeta(root, meta); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := net.Listen("unix", sessdir.SockPath(root, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serverDone := make(chan struct{})
+	go func() {
+		conn, acceptErr := ln.Accept()
+		if acceptErr == nil {
+			_, _, _, _ = wire.ReadFrame(conn)
+			_ = conn.Close()
+			_ = sessdir.Remove(root, id)
+		}
+		close(serverDone)
+	}()
+	t.Cleanup(func() {
+		_ = ln.Close()
+		_ = sessdir.Remove(root, id)
+	})
+	var logs bytes.Buffer
+	h := ptyhost.New(root, "", slog.New(slog.NewTextHandler(&logs, nil)))
+	h.Adopt([]sessdir.Entry{{ID: id, Meta: meta, State: sessdir.StateLive}})
+	if err := h.Close(id); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	select {
+	case <-serverDone:
+	case <-time.After(time.Second):
+		t.Fatal("fake control server 未消费 CtrlKill")
+	}
+	line := logs.String()
+	for _, field := range []string{"session=" + id, "pid=", "wait_path=session_dir", "phase=complete", "elapsed="} {
+		if !strings.Contains(line, field) {
+			t.Fatalf("Close 成功日志缺少 %q: %q", field, line)
+		}
 	}
 }
 
@@ -202,16 +487,41 @@ func TestClientOpenTimeoutCleansDirectory(t *testing.T) {
 
 // startClientHost 起一个真实 hostproc，并让客户端从扫描结果登记它。
 func startClientHost(t *testing.T) (root string, h *ptyhost.Host, id string, done chan error) {
+	return startClientHostWithSpec(t, hostproc.Spec{
+		BasePath: "", BaseKind: "workspace", Cwd: "",
+		Shell: "/bin/sh", Env: []string{"PATH=/usr/bin:/bin", "TERM=xterm-256color", "PS1=$ "},
+		Cols: 80, Rows: 24,
+	})
+}
+
+func startClientHostWithExitMarker(t *testing.T) (root string, h *ptyhost.Host, id string, done chan error, late string) {
+	home := t.TempDir()
+	root, h, id, done = startClientHostWithSpec(t, hostproc.Spec{
+		BasePath: home, BaseKind: "home", Cwd: home,
+		Shell: "/bin/sh", Env: []string{"HOME=" + home, "PATH=/usr/bin:/bin", "TERM=xterm-256color"},
+		Cols: 80, Rows: 24,
+		InitCommand: `trap 'exit 0' TERM; trap 'printf late > "$HOME/b234-late"' EXIT; : > "$HOME/b234-ready"; while :; do :; done`,
+	})
+	if !waitClientFile(filepath.Join(home, "b234-ready"), 3*time.Second) {
+		t.Fatalf("startClientHostWithExitMarker: InitCommand 未建立 ready marker")
+	}
+	return root, h, id, done, filepath.Join(home, "b234-late")
+}
+
+func startClientHostWithSpec(t *testing.T, spec hostproc.Spec) (root string, h *ptyhost.Host, id string, done chan error) {
 	t.Helper()
 	root = shortRoot(t)
 	id = "s1"
+	spec.Root = root
+	spec.ID = id
+	if spec.BasePath == "" {
+		spec.BasePath = root
+	}
+	if spec.Cwd == "" {
+		spec.Cwd = root
+	}
 	if err := sessdir.Create(root, id); err != nil {
 		t.Fatal(err)
-	}
-	spec := hostproc.Spec{
-		Root: root, ID: id, BasePath: root, BaseKind: "workspace", Cwd: root,
-		Shell: "/bin/sh", Env: []string{"PATH=/usr/bin:/bin", "TERM=xterm-256color", "PS1=$ "},
-		Cols: 80, Rows: 24,
 	}
 	body, err := json.Marshal(spec)
 	if err != nil {

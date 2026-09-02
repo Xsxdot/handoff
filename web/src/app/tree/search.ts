@@ -13,9 +13,21 @@
 // 为什么单独成文件而不塞进 ProjectTree.tsx：可见性是一条递归规则，塞在
 // 组件里只能靠渲染断言间接测。仓库既有同款模式——board/filter.ts（看板
 // 筛选）、tree/counts.ts（树计数）都是「纯函数 + 独立测试文件」。
-import type { ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
+import type { PreviewSession, ProjectLocationNode, ProjectNode, ProjectTreeResp, Task, Workspace } from '../../api/types'
+import type { BaseDir } from '../workbench/useWorkbench'
+import { taskDisplayName } from '../lib/taskName'
+import { normalizePreviewOrigin, previewLabel } from '../data/usePreviews'
 import { archivedKey, archivedTasks } from './archived'
 
+// OpenedSearchItem 是「已打开项」参与搜索所需的最小形状（ProjectTree 的 OpenItem
+// 的结构子集）：name 是展示名，detail 是内容定位线索（文件相对路径 / 终端 rel /
+// taskId）——用户记得的往往是路径不是 tab 名。
+export interface OpenedSearchItem {
+  base: BaseDir
+  name: string
+  machine: string
+  detail?: string
+}
 // TreeFilter 是一次过滤的完整结果。projects 已按可见性裁剪，
 // 调用方直接遍历即可，不需要再判一次。
 export interface TreeFilter {
@@ -24,6 +36,7 @@ export interface TreeFilter {
   projectCount: number
   unassignedTasks: Task[]
   unownedNames: string[]
+  unassignedPreviews: PreviewSession[]
   isEmpty: boolean
 }
 
@@ -48,9 +61,34 @@ function dirText(ws: Workspace): string {
   return seg.length > 0 ? seg[seg.length - 1] : ws.path
 }
 
-// taskText 是任务参与匹配时的文本，口径与 ProjectTree 的 taskName 一致。
+// taskText 是任务参与匹配时的文本，口径与 ProjectTree 的 taskName 一致
+// （统一收口 taskDisplayName：name → branch → plan_summary）。
 function taskText(t: Task): string {
-  return t.name || t.plan_summary || '（无名称）'
+  return taskDisplayName(t)
+}
+
+function previewText(session: PreviewSession): string {
+  return [previewLabel(session), session.entry_url, session.branch ?? '', session.machine ?? '', machineText(session.machine ?? '')].join(' ')
+}
+
+function previewBelongsToProject(session: PreviewSession, project: ProjectNode): boolean {
+  const origin = normalizePreviewOrigin(session.origin_url ?? '')
+  const projectOrigin = normalizePreviewOrigin(project.origin_url)
+  return origin !== '' && projectOrigin !== '' && origin === projectOrigin
+}
+
+// taskMatchesQuery 是任务行的搜索谓词：任务名命中即算匹配。
+// 导出给 ProjectTree 的任务组复用——filterTree 的裁剪与行级过滤必须同一条
+// 判据，否则会出现「filterTree 留下了项目、行却因另一套谓词而不见」的裂缝。
+export function taskMatchesQuery(t: Task, q: string): boolean {
+  return hit(taskText(t), q)
+}
+
+// openedText 把已打开项的可见名与内容定位字段合在一起。
+// 文件 tab 的标题可能被用户入口改写，但相对路径仍是左栏搜索应能找到的真实祖先线索；
+// 终端 rel 与 taskId 同理。只读投影数据，不改变 tab 或树节点。
+function openedText(item: OpenedSearchItem): string {
+  return [item.name, item.detail ?? '', item.base.key, item.base.path, item.base.label, machineText(item.base.machine)].join(' ')
 }
 
 // tasksOfWorkspace 挑出挂在某个目录下的任务。
@@ -80,7 +118,13 @@ function tasksOfWorkspace(tasks: Task[], project: ProjectNode, machine: string, 
 //     机器、目录、任务，而不是只看到一个光秃秃的项目行。
 //   - 「未归属」分组参与过滤但**不计入 projectCount**：它不是一个项目，
 //     是个收纳箱。算进去会出现「项目 3」但下面只有 2 个能展开的项目行。
-export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: string): TreeFilter {
+export function filterTree(
+  tree: ProjectTreeResp,
+  tasks: Task[],
+  rawQuery: string,
+  openedItems: ReadonlyArray<OpenedSearchItem> = [],
+  previews: ReadonlyArray<PreviewSession> = [],
+): TreeFilter {
   const q = rawQuery.trim().toLowerCase()
   const unassignedAll = tasks.filter((t) => t.project_id === '')
 
@@ -91,23 +135,28 @@ export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: strin
       projectCount: tree.projects.length,
       unassignedTasks: unassignedAll,
       unownedNames: tree.unowned,
-      isEmpty: tree.projects.length === 0 && unassignedAll.length === 0 && tree.unowned.length === 0,
+      unassignedPreviews: previews.filter((session) => !tree.projects.some((project) => previewBelongsToProject(session, project))),
+      isEmpty: tree.projects.length === 0 && unassignedAll.length === 0 && tree.unowned.length === 0 && previews.length === 0,
     }
   }
 
-  // 已结束任务的目录已被回收，不在任何 workspace 下，但它们仍是机器节点的后代。
-  // 不算进去的话，搜一个已回收任务名会得到「没有匹配」——分组存在的意义就没了。
-  const archived = archivedTasks(tree, tasks)
+  // 已结束任务（B288 起为项目内全部终态）按项目归集。它们可能不再挂任何
+  // workspace，但搜到它们时项目行必须可见——「已结束」行就挂在项目任务组尾部。
+  const archived = archivedTasks(tasks)
 
   const projects: ProjectNode[] = []
   for (const project of tree.projects) {
     const projectHit = hit(project.name, q)
-
+    const projectPreviews = previews.filter((session) => previewBelongsToProject(session, project))
+    const previewHit = projectPreviews.some((session) => hit(previewText(session), q))
+    const archivedHit = (archived.get(archivedKey(project.project_id)) ?? [])
+      .some((t) => hit(taskText(t), q))
     const locations: ProjectLocationNode[] = []
     for (const loc of project.locations) {
+      const machineOpenedHit = openedItems.some((item) =>
+        item.base.projectName === project.name && item.base.machine === loc.machine && hit(openedText(item), q),
+      )
       const machineHit = projectHit || hit(machineText(loc.machine), q)
-      const archivedHit = (archived.get(archivedKey(project.project_id, loc.machine)) ?? [])
-        .some((t) => hit(taskText(t), q))
 
       // 项目或机器自身命中 → 整层目录原样保留；否则逐个目录判
       const workspaces = machineHit
@@ -117,14 +166,30 @@ export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: strin
             tasksOfWorkspace(tasks, project, loc.machine, ws).some((t) => hit(taskText(t), q)),
           )
 
-      if (machineHit || workspaces.length > 0 || archivedHit) locations.push({ ...loc, workspaces })
+      const openedWorkspaces = loc.workspaces.filter((ws) =>
+        openedItems.some((item) =>
+          item.base.projectName === project.name && item.base.machine === loc.machine && item.base.path === ws.path && (
+            hit(openedText(item), q)
+          ),
+        ),
+      )
+      const mergedWorkspaces = machineHit
+        ? workspaces
+        : [...workspaces, ...openedWorkspaces.filter((ws) => !workspaces.some((visible) => visible.path === ws.path))]
+
+      if (machineHit || machineOpenedHit || mergedWorkspaces.length > 0) {
+        locations.push({ ...loc, workspaces: mergedWorkspaces })
+      }
     }
 
-    if (projectHit || locations.length > 0) projects.push({ ...project, locations })
+    if (projectHit || archivedHit || previewHit || locations.length > 0) projects.push({ ...project, locations })
   }
 
   const unassignedTasks = unassignedAll.filter((t) => hit(taskText(t), q))
   const unownedNames = tree.unowned.filter((name) => hit(name, q))
+  const unassignedPreviews = previews.filter((session) =>
+    !tree.projects.some((project) => previewBelongsToProject(session, project)) && hit(previewText(session), q),
+  )
 
   return {
     query: q,
@@ -132,6 +197,7 @@ export function filterTree(tree: ProjectTreeResp, tasks: Task[], rawQuery: strin
     projectCount: projects.length,
     unassignedTasks,
     unownedNames,
-    isEmpty: projects.length === 0 && unassignedTasks.length === 0 && unownedNames.length === 0,
+    unassignedPreviews,
+    isEmpty: projects.length === 0 && unassignedTasks.length === 0 && unownedNames.length === 0 && unassignedPreviews.length === 0,
   }
 }

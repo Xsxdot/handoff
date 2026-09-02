@@ -1,0 +1,4 @@
+{
+  "domain": "d_gateway",
+  "responsibility": "为 CLI 与浏览器把本机能力经 HTTP/WS 暴露出去：鉴权、路由、参数校验、响应编排与跨机转发；不含业务决策。"
+}

@@ -44,15 +44,20 @@ type DispatchOpts struct {
 	LocalBaseBranch bool
 }
 
-// Transport 是注入的派发传输。返回 agentd 生成的 task id；实现不关心传输协议。
-type Transport func(ctx context.Context, opts DispatchOpts) (taskID string, err error)
+// Transport 是注入的派发传输。返回 agentd 生成的 task id 与 Task.BaseCommit；
+// BaseCommit 必须原样来自目标 agentd，ledgerstep 不在协调者仓库猜测起点。
+type Transport func(ctx context.Context, opts DispatchOpts) (taskID string, baseCommit string, err error)
 
 // DispatchResult 是模板派发完成后的回显与审计信息。
 type DispatchResult struct {
-	Card            string `json:"card"`
-	Task            string `json:"task"`
-	Target          string `json:"target"`
-	Branch          string `json:"branch"`
+	Card   string `json:"card"`
+	Task   string `json:"task"`
+	Target string `json:"target"`
+	Branch string `json:"branch"`
+	// Base 是本次传给 agentd 的起点分支名；它不是卡的 effective base_branch。
+	Base string `json:"base"`
+	// BaseCommit 是目标 agentd Task.BaseCommit 的原样回传值。
+	BaseCommit      string `json:"base_commit"`
 	Template        string `json:"template"`
 	TemplateVersion int    `json:"template_version"`
 	DisciplineName  string `json:"discipline_name"`
@@ -68,6 +73,9 @@ type Dispatcher struct {
 	// HomeDir 是小队绑定载体 HOME 的可空原指针；nil 表示普通派发，指向空串
 	// 表示显式不覆盖目标进程 HOME。ledgerstep 不展开、清理或改写该字符串。
 	HomeDir *string
+	// NormalizeTarget 把调用方已确认的自机登记名归一成空串；nil 等价于恒等
+	// 函数。未知目标名不得在此处改写，目标身份判断归组装点负责。
+	NormalizeTarget func(target string) string
 
 	// B229 缝 1 产物（数据字段，不是解析函数）：调用方装配时经
 	// discipline.ResolveDispatch 解析好的纪律正文与账本版本号。未点名模板的
@@ -110,7 +118,7 @@ type TemplateDispatch struct {
 // ViaTemplate 按模板把一张卡派出去。
 //
 // 参数：c 卡；req 模板名、目标机、可选 plan 路径与纪律块角色名覆盖。
-// 返回：派发结果（含 task id、分支、模板版本、纪律块角色名）。
+// 返回：派发结果（含 task id、起点分支、agentd Task.BaseCommit、模板版本、纪律块角色名）。
 //
 // 注意：不含认领语义。实现类派发在调用前自行 CAS 认领；环节派发
 // （审阅/合并）刻意不认领——它们是待审阅卡上的动作，认领会把卡拉回进行中。
@@ -121,6 +129,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	var zero DispatchResult
 	tpl, err := d.St.GetTemplate(req.Template, 0)
 	if err != nil {
+		slog.Default().Warn("取模板失败", "card", c.ID, "template", req.Template, "cause", err)
 		return zero, fmt.Errorf("取模板: %w", err)
 	}
 	// 有效目标机与纪律角色名：请求覆盖 > 模板缺省。两个调用方装配处的缝 1
@@ -130,13 +139,16 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if target == "" {
 		target = tpl.Def.Target
 	}
+	rawTarget := target
+	if d.NormalizeTarget != nil {
+		target = d.NormalizeTarget(target)
+	}
 	disciplineName := tpl.Def.Discipline
 	if req.DisciplineOverride != "" {
 		disciplineName = req.DisciplineOverride
 	}
-	if target == "" {
-		return zero, fmt.Errorf("目标机未定：--target 或模板 target 至少一个")
-	}
+	slog.Default().Info("模板派发目标已归一", "card", c.ID, "template", req.Template,
+		"raw_target", rawTarget, "target", target)
 
 	// 有效用途：节点覆盖优先于模板。下面**所有**按用途裁决的地方都读它，
 	// 不再直接读取模板用途字段——漏掉任何一处都会让节点只对了一半（例如分支
@@ -153,14 +165,23 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	workInfo, workErr := d.St.WorkBranch(c.ID)
 	hasWorkBranch := workErr == nil
 	if workErr != nil && !errors.Is(workErr, ledger.ErrNotFound) {
-		slog.Default().Error("读取卡工作分支失败", "card", c.ID, "target", target, "cause", workErr)
+		slog.Default().Error("读取卡工作分支失败", "card", c.ID, "target", target,
+			"previous_target", "", "branch", "", "cause", workErr)
 		return zero, fmt.Errorf("取卡工作分支: %w", workErr)
 	}
-	if hasWorkBranch && (workInfo.Target == "" || workInfo.Target != target) {
+	previousTarget := ""
+	if hasWorkBranch {
+		previousTarget = workInfo.Target
+		if d.NormalizeTarget != nil {
+			previousTarget = d.NormalizeTarget(previousTarget)
+		}
+	}
+	if hasWorkBranch && previousTarget != target {
 		slog.Default().Warn("工作分支跨目标机，拒绝接续", "card", c.ID,
-			"branch", workInfo.Branch, "previous_target", workInfo.Target, "target", target)
+			"branch", workInfo.Branch, "previous_target", previousTarget, "target", target,
+			"cause", "目标机身份不一致")
 		return zero, fmt.Errorf("工作分支只存在于创建它的那台机器：上次目标机 %q，本次目标机 %q；请先 push 到 origin（git push origin %s），再用显式 --base 指定",
-			workInfo.Target, target, workInfo.Branch)
+			previousTarget, target, workInfo.Branch)
 	}
 
 	// 判据被收起时不留空冒号：模板正文里「验收判据：{{ACCEPT}}」后面跟一片
@@ -213,6 +234,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	base, err := d.St.EffectiveBaseBranch(c.ID)
 	if err != nil {
+		slog.Default().Warn("取有效基线失败", "card", c.ID, "target", target,
+			"previous_target", previousTarget, "branch", "", "cause", err)
 		return zero, fmt.Errorf("取有效基线: %w", err)
 	}
 	localBaseBranch := false
@@ -226,6 +249,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	// 因此这里重新取一次而不是复用上面的 base。
 	cardBase, err := d.St.EffectiveBaseBranch(c.ID)
 	if err != nil {
+		slog.Default().Warn("取卡上下文基线失败", "card", c.ID, "target", target,
+			"previous_target", previousTarget, "branch", branch, "cause", err)
 		return zero, fmt.Errorf("取卡上下文基线: %w", err)
 	}
 	prompt := buildPrompt(body, c, cardBase, req.CarryCardContext, req.OmitAcceptance, req.Extra, req.OutputPath)
@@ -270,7 +295,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"prompt_bytes", len(prompt))
 	slog.Default().Info("派发前已确定节点产出路径", "card", c.ID, "template", req.Template,
 		"target", target, "output_path", req.OutputPath)
-	taskID, err := d.Transport(ctx, DispatchOpts{
+	taskID, baseCommit, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
 		HomeDir:    d.HomeDir,
@@ -284,8 +309,12 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		LocalBaseBranch:    localBaseBranch,
 	})
 	if err != nil {
+		slog.Default().Warn("模板派发传输失败", "card", c.ID, "target", target,
+			"branch", branch, "base", base, "cause", err)
 		return zero, fmt.Errorf("派发: %w", err)
 	}
+	slog.Default().Info("模板派发传输已返回", "card", c.ID, "target", target,
+		"task", taskID, "base", base, "base_commit", baseCommit)
 	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "template", req.Template,
 		"discipline", disciplineName, "overridden", req.DisciplineOverride != "")
 	snapshotBranch := branch
@@ -298,6 +327,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		return zero, err
 	}
 	if err := d.St.LinkTask(c.ID, target, taskID, purpose, d.Actor); err != nil {
+		slog.Default().Warn("模板派发回链挂账失败", "card", c.ID, "target", target,
+			"task", taskID, "cause", err)
 		return zero, fmt.Errorf("回链挂账: %w", err)
 	}
 	if req.WriteGate != nil && !req.WriteGate() {
@@ -309,9 +340,12 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,
 		Target:            target, TaskID: taskID, Branch: snapshotBranch,
+		Base: base, BaseCommit: baseCommit,
 		Executor: executor, Model: model,
 		Purpose: purpose, PlanPath: req.PlanPath, Actor: d.Actor,
 	}); err != nil {
+		slog.Default().Warn("模板派发快照落账失败", "card", c.ID, "target", target,
+			"task", taskID, "base", base, "base_commit", baseCommit, "cause", err)
 		return zero, fmt.Errorf("快照落账: %w", err)
 	}
 	slog.Default().Info("模板派发完成", "card", c.ID, "template", tpl.Name,
@@ -319,6 +353,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"branch", snapshotBranch, "discipline", disciplineName)
 	return DispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
+		Base: base, BaseCommit: baseCommit,
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,
 	}, nil
@@ -372,7 +407,8 @@ func PreflightDiscipline(st *ledger.Store, templateName, overrideName, reqTarget
 //   - carry: 是否拼入卡上下文段（节点的 CarryCardContext 开关）
 //   - omitAccept: 是否**不**注入整卡验收判据（节点的 OmitAcceptance 开关）
 //   - extra: 本次派发的临时补充说明，可为空
-//   - outputPath: 本节点声明路径；独立于 carry，即使不带卡上下文也必须注入
+//   - outputPath: 本节点声明路径；独立于 carry，即使不带卡上下文也必须注入。
+//     这是机器精确匹配键；日期前缀只作为历史文件提示，不是合法变体。
 //
 // 返回：拼好的 prompt。三段之间用空行分隔，缺席的段不留空标题。
 //
@@ -416,7 +452,8 @@ func buildPrompt(body string, c ledger.Card, base string, carry, omitAccept bool
 	if strings.TrimSpace(outputPath) != "" {
 		sections = append(sections,
 			"## 本节点产出物\n\n- 法定路径："+outputPath+
-				"\n- 请把本节点产出物写到该路径，不要另起文件名。")
+				"\n- 请把本节点产出物写到该路径，不要另起文件名。"+
+				"不要加日期前缀；带 YYYY-MM-DD- 的是历史文件，不是本节点法定产出。")
 	}
 	return strings.Join(sections, "\n\n")
 }

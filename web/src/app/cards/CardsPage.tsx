@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { useLocation, useNavigate } from 'react-router-dom'
+import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../../api/client'
 import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
 import { getQueue } from '../../api/scheduling'
@@ -8,6 +8,7 @@ import type { QueueEntry } from '../../api/scheduling'
 import type { CardView, Decision, FlowDetail, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
 import { usePoll } from '../data/usePoll'
 import { useTasks } from '../data/useTasks'
+import { isDesktopShell, requestOpenCurrentPageInBrowser } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
@@ -79,13 +80,15 @@ export interface CardsPageProps {
 
 /** 参数：协调者终端回调；返回：工作项看板/列表与抽屉。 */
 export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
+  const [searchParams] = useSearchParams()
+  const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
   const [needsOnly, setNeedsOnly] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
   const [migrateCardId, setMigrateCardId] = useState<string | null>(null)
   const [drawerFocus, setDrawerFocus] = useState<'merge' | undefined>()
-  const [project, setProject] = useState('')
+  const [project, setProject] = useState(projectFromUrl)
   const [workflow, setWorkflow] = useState('')
   const [search, setSearch] = useState('')
   const [includeArchived, setIncludeArchived] = useState(false)
@@ -115,6 +118,8 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
       throw cause
     }
   }, 5000)
+  const showOpenInBrowser = isDesktopShell()
+  useEffect(() => { setProject(projectFromUrl) }, [projectFromUrl])
   // 任务实况走页面级那条 2.5s 流（useTasks），抽屉只吃结果、不自起轮询：
   // 同页两条流会各自跳动，卡上与看板会在不同时刻更新（spec §5）。首拉未回
   // 时给 undefined，抽屉按「计数不可知」显示旧标题，不谎报「0 个在跑」。
@@ -148,9 +153,11 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
   const displayedColumns = useMemo(() => boardColumns(workflowStates, boardLayout), [boardLayout, workflowStates])
   const healthRows = healthPoll.data?.mirror ?? []
   // 滞后要点名是哪台：判据⑦ 判的是「断链期看板该 target 亮事件流滞后」，
-  // 只报一个全局「镜像异常」等于告诉你「有台机器哑了，自己猜是哪台」
+  // 只报一个全局「镜像异常」等于告诉你「有台机器哑了，自己猜是哪台」。
+  // Live === false 是「挂账全归档、没东西可镜像」——心跳停在最后一条是正常静默，
+  // 不当断链。字段缺席（旧 agentd）按仍在飞处理，避免把真断链藏掉。
   const staleTargets = healthRows
-    .filter((row) => Date.now() - Date.parse(row.UpdatedAt) > 60_000)
+    .filter((row) => row.Live !== false && Date.now() - Date.parse(row.UpdatedAt) > 60_000)
     .map((row) => row.Target)
   const healthStale = healthPoll.disconnected || staleTargets.length > 0
   const healthLabel = healthPoll.disconnected
@@ -254,7 +261,19 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="w-40 rounded-md border bg-background px-2 py-1 text-xs" />
         <button type="button" onClick={() => setNewCardOpen(true)} className="rounded-md border px-2.5 py-1 text-xs">+ 新建</button>
         <button type="button" onClick={() => setNeedsOnly((current) => !current)} className={`rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}>⚑ 需要你 {attentionCount}</button>
-        <span className={`ml-auto flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
+        {showOpenInBrowser && (
+          <button
+            type="button"
+            aria-label="从浏览器打开"
+            title="从浏览器打开当前工作项页"
+            // 只发送当前地址的 origin/path/query，并不 navigate，保证桌面仍停在本页。
+            onClick={() => { requestOpenCurrentPageInBrowser() }}
+            className="ml-auto rounded-md border px-2.5 py-1 text-xs"
+          >
+            从浏览器打开
+          </button>
+        )}
+        <span className={`${showOpenInBrowser ? '' : 'ml-auto'} flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
       </header>
       <QueuePanel
         entries={queueEntries}

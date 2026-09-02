@@ -27,11 +27,20 @@ export function FileTab({
   rel,
   initial,
   onDraftChange,
+  onDraftChangeLive,
+  onStatus,
 }: {
   base: BaseDir
   rel: string
   initial?: { draft: string; baseSha: string }
   onDraftChange?: (d: { draft: string; baseSha: string } | null) => void
+  /** 分屏工作台的内存寄存缝；仅由需要在 pane 常驻时保持脏态的宿主传入。 */
+  onDraftChangeLive?: (d: { draft: string; baseSha: string } | null) => void
+  /** 文件问题上报缝（2026-08-29）：'conflict'=存在未解决的写入冲突（保存 409 /
+   * 草稿基线过期），'deleted'=文件已从磁盘消失（读取 404），'ok'=两者皆无。
+   * 消费方是左栏文件行的圆点（冲突红/删灰；已编辑与干净由宿主按草稿有无自判，
+   * 不经本缝）。可缺席；组件卸载后宿主保留最后上报值，重开即刷新。 */
+  onStatus?: (status: 'conflict' | 'deleted' | 'ok') => void
 }) {
   const [read, setRead] = useState<FileRead | null>(
     // initial 命中时用草稿造一个临时的 read，让「editable + dirty」从第一帧就成立，
@@ -40,6 +49,9 @@ export function FileTab({
     initial === undefined ? null : { content: '', size: 0, sha256: initial.baseSha },
   )
   const [error, setError] = useState<string | null>(null)
+  // missing = 磁盘上已经没有这个文件（读取 404）。与 error 分开存：error 只留
+  // 文案，而上报缝要的是「删除」这个可判定的结论；保存/草稿等其他失败不改变它。
+  const [missing, setMissing] = useState(false)
   // 草稿初值也来自 initial：网络回来之前 textarea 里就该是切走之前的内容
   const [draft, setDraft] = useState(initial?.draft ?? '')
   // baseSha 是「我这份草稿是从哪一版改出来的」。initial 带回来的是草稿当时存的基线；
@@ -72,6 +84,7 @@ export function FileTab({
     )
     setError(null)
     setSaveError('')
+    setMissing(false)
     fetchWorkspaceFile(base.path, rel, base.machine || undefined)
       .then((r) => {
         if (cancelled) return
@@ -102,7 +115,10 @@ export function FileTab({
         }
       })
       .catch((err) => {
-        if (!cancelled) setError(errorMessage(err))
+        if (!cancelled) {
+          setError(errorMessage(err))
+          setMissing(err instanceof ApiError && err.status === 404)
+        }
       })
     return () => {
       cancelled = true
@@ -113,6 +129,16 @@ export function FileTab({
   // 前端不再按扩展名或大小另判一次——两边各判一次早晚会分叉
   const editable = read !== null && baseSha !== ''
   const dirty = editable && draft !== read.content
+
+  // fileStatus 是上报缝的当前结论（删除 > 冲突 > 干净）。放 effect 上报：
+  // 回调 identity 每渲染都变，与 TerminalTab 的 onConnection 同一条 ref 纪律。
+  const fileStatus: 'conflict' | 'deleted' | 'ok' =
+    missing ? 'deleted' : conflict !== null ? 'conflict' : 'ok'
+  const onStatusRef = useRef(onStatus)
+  onStatusRef.current = onStatus
+  useEffect(() => {
+    onStatusRef.current?.(fileStatus)
+  }, [fileStatus])
 
   // draftRef 记住最新草稿，卸载时一次性刷出去。
   //
@@ -292,7 +318,13 @@ export function FileTab({
             className="h-full w-full resize-none whitespace-pre p-4 font-mono text-xs leading-relaxed outline-none"
             spellCheck={false}
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              const nextDraft = e.target.value
+              setDraft(nextDraft)
+              // 分屏 pane 不会因焦点切换而卸载，宿主必须在输入时寄存脏态，
+              // 否则用户随后关闭文件时，外层看不到这份尚未落盘的内容。
+              onDraftChangeLive?.(nextDraft === read.content ? null : { draft: nextDraft, baseSha })
+            }}
           />
         ) : (
           <pre className="p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap">{read.content}</pre>

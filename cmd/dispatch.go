@@ -174,8 +174,8 @@ func baselineLine(task *proto.Task, userBase string) string {
 // resolveBareDiscipline 是裸派发的缝 1 收口（B229 契约 §2.2/§3.1）：未点名只注入
 // 平台层正文（版本 0）；--discipline-file 把文件内容作 RawText 直通（不落库、版本 0，
 // 服务 spec 用户故事 3 的「临时捏一份下发」）。无论哪种形态都先探目标机能力位——
-// 探活失败按「不支持」处置（能力位缺席=nil 的保守方向同向，§2.4），把「不知道」
-// 当成「支持」正是缺陷三的静默降级换马甲。
+// 探活失败必须保留网络/认证 cause 并停止派发；只有探活成功但能力位缺席=nil 或
+// false 才交给 ResolveDispatch 产生「升级」拒发文案。
 //
 // 参数：cli 已装配的目标机客户端（探活用）；rawFile --discipline-file 路径（空=未点名）。
 // 返回：随派发下发的正文三元组；文件不可读或拒发闸拦下时返回错误。
@@ -192,10 +192,11 @@ func resolveBareDiscipline(ctx context.Context, cli *client.Client, rawFile stri
 	var cap *bool
 	status, err := cli.Status(ctx)
 	if err != nil {
-		slog.Warn("派发前能力位探活失败，按不支持处置", "target", targetName, "cause", err)
-	} else {
-		cap = status.DisciplinesSupported
+		slog.Error("裸派发前目标机探活失败", "target", targetName, "cause", err)
+		return discipline.ResolvedDiscipline{}, fmt.Errorf(
+			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
 	}
+	cap = status.DisciplinesSupported
 	res, err := discipline.ResolveDispatch(nil, ref, loadCLIConfig().PlatformInvariantsEnabled(), cap)
 	if err != nil {
 		slog.Warn("裸派发被拒发闸拦下", "target", targetName,

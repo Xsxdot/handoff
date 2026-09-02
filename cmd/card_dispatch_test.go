@@ -115,6 +115,61 @@ func cardStepString(t *testing.T, body map[string]json.RawMessage, key string) s
 	return value
 }
 
+func setStepFirstStateTestWindow(t *testing.T) {
+	t.Helper()
+	oldTimeout := stepFirstStateTimeout
+	oldPoll := stepFirstStatePollInterval
+	stepFirstStateTimeout = 40 * time.Millisecond
+	stepFirstStatePollInterval = time.Millisecond
+	t.Cleanup(func() {
+		stepFirstStateTimeout = oldTimeout
+		stepFirstStatePollInterval = oldPoll
+	})
+}
+
+func createStepTestCard(t *testing.T, dir, title string) string {
+	t.Helper()
+	out, _, err := runLedgerCLI(t, dir, "card", "add", title, "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatalf("建 card step 测试卡: %v", err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatalf("解码 card step 测试卡: %v", err)
+	}
+	return card.ID
+}
+
+func appendStepDispatchForTest(t *testing.T, dir, cardID string, snap ledger.DispatchSnapshot) {
+	t.Helper()
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("打开 card step 测试账本: %v", err)
+	}
+	defer st.Close()
+	snap.Actor = "node:test"
+	if err := st.RecordDispatch(cardID, snap); err != nil {
+		t.Fatalf("写 dispatched 测试事件: %v", err)
+	}
+}
+
+func appendStepDispatchFailureForTest(t *testing.T, dir, cardID, body string) {
+	t.Helper()
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("打开 card step 失败账本: %v", err)
+	}
+	defer st.Close()
+	if _, err := st.AddComment(cardID, body, "普通", "node:进行中"); err != nil {
+		t.Fatalf("写派发失败 comment: %v", err)
+	}
+	if err := st.MarkNeedsHuman(cardID, "派发失败", "node:进行中"); err != nil {
+		t.Fatalf("写派发失败 needs_human: %v", err)
+	}
+}
+
 // setupDisciplineGateFixture 预写 B229 拒发闸前提：假目标机 mac-02 按 statusBody
 // 应答 /api/status，模板点名的角色正文已入账本。裸卡派发自接线起在认领前过闸，
 // 既有用例钉的是各自关注面，闸的前提在此统一满足。
@@ -164,9 +219,9 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	}
 
 	var gotPrompt, gotProject string
-	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
 		gotPrompt, gotProject = prompt, project
-		return "T-fake-1", nil
+		return "T-fake-1", "", nil
 	})
 	defer restore()
 
@@ -232,9 +287,9 @@ func TestCardDispatchGuardFollowsOwnership(t *testing.T) {
 		t.Fatalf("预占: %v", err)
 	}
 	st.Close()
-	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
 		t.Fatal("他主持有时不应走到派发")
-		return "", nil
+		return "", "", nil
 	})
 	defer restore()
 	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", c.ID,
@@ -277,9 +332,9 @@ func TestCardDispatchSameOwnerReentryIdempotent(t *testing.T) {
 	_ = st.Close()
 	n := 0
 	for i := 0; i < 2; i++ {
-		restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
+		restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
 			n++
-			return fmt.Sprintf("T-reentry-%d", n), nil
+			return fmt.Sprintf("T-reentry-%d", n), "", nil
 		})
 		if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
 			"--template", "feature-impl", "--target", "fake-01"); err != nil {
@@ -305,9 +360,9 @@ func TestCardDispatchExecutorModelFlags(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		got = req
-		return "T-cli-executor-model", nil
+		return "T-cli-executor-model", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
@@ -328,6 +383,7 @@ func TestCardDispatchExecutorModelFlags(t *testing.T) {
 
 // TestCardDispatchStepExecutorModelFlags 验证 --step 与模板路径共用同一对 CLI flag。
 func TestCardDispatchStepExecutorModelFlags(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -375,8 +431,8 @@ func TestCardDispatchFailureReleasesLease(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
-		return "", errors.New("起点在任务仓库中不存在")
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
+		return "", "", errors.New("起点在任务仓库中不存在")
 	})
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
 		"--template", "feature-impl", "--target", "mac-02", "--discipline-override", "implement"); err == nil {
@@ -396,8 +452,8 @@ func TestCardDispatchFailureReleasesLease(t *testing.T) {
 	}
 
 	// 真正的判据：换一个会话（新进程即新会话）能立刻重派
-	restore = swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
-		return "T-retry-1", nil
+	restore = swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
+		return "T-retry-1", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
@@ -423,9 +479,9 @@ func TestCardDispatchExtraReachesPrompt(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		got = req
-		return "T-extra-1", nil
+		return "T-extra-1", "", nil
 	})
 	defer restore()
 	const extra = "本轮只修 F1，不要重跑整卡"
@@ -444,6 +500,7 @@ func TestCardDispatchExtraReachesPrompt(t *testing.T) {
 // TestCardDispatchStepExtraReachesPrompt --step 与模板路径必须共用同一个 flag，
 // 否则「给某一轮补一句话」在节点派发上仍然无解——而节点派发正是它最需要的地方。
 func TestCardDispatchStepExtraReachesPrompt(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -473,6 +530,7 @@ func TestCardDispatchStepExtraReachesPrompt(t *testing.T) {
 
 // TestCardDispatchStepSubmitsToLocalAgentd verifies the step request uses the local endpoint and real client wire.
 func TestCardDispatchStepSubmitsToLocalAgentd(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -498,40 +556,149 @@ func TestCardDispatchStepSubmitsToLocalAgentd(t *testing.T) {
 	}
 }
 
-// TestCardDispatchStepReturnsImmediately verifies the 202 stdout contract instead of a runner outcome.
+// TestCardDispatchStepReturnsImmediately verifies the 202 short-wait stdout contract instead of a runner outcome.
 func TestCardDispatchStepReturnsImmediately(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = cardStepBody(t, r)
 		w.WriteHeader(http.StatusAccepted)
 		_, _ = w.Write([]byte(`{"ok":true}`))
 	}))
-	out, _, err := runLedgerCLI(t, dir, "card", "add", "即时返回卡", "--project", "demo", "--workflow", "bug")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var card struct {
-		ID string `json:"id"`
-	}
-	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
-		t.Fatal(err)
-	}
-	out, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中")
+	cardID := createStepTestCard(t, dir, "即时返回卡")
+	out, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中")
 	if err != nil {
 		t.Fatalf("card dispatch --step: %v", err)
 	}
-	for _, want := range []string{card.ID, "进行中", "handoff card wait " + card.ID} {
+	for _, want := range []string{cardID, "进行中", "已受理", "handoff card wait " + cardID} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("stdout = %q, want %q", out, want)
 		}
+	}
+	if !strings.Contains(out, "首态未到") {
+		t.Fatalf("无新首态时 stdout 必须说明短等结束: %q", out)
 	}
 	if strings.Contains(out, "Outcome") || strings.Contains(out, "T-") {
 		t.Fatalf("stdout 不应包含旧 Outcome/task id：%q", out)
 	}
 }
 
+func TestCardDispatchStepReportsNewDispatchFailure(t *testing.T) {
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	cardID := createStepTestCard(t, dir, "新派发失败卡")
+	appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+		TaskID: "old-task", Branch: "cards/old", Base: "old-base",
+		BaseCommit: "oldcommit123456789012345678901234567890", DisciplineName: "old-discipline",
+	})
+	const comment = "本节点派发失败：\n工作分支跨机：cause-42"
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = cardStepBody(t, r)
+		appendStepDispatchFailureForTest(t, dir, cardID, comment)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, stderr, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中")
+	if err == nil {
+		t.Fatal("水位之后的派发失败首态必须使 CLI 非零退出")
+	}
+	if !strings.Contains(stderr, comment) {
+		t.Fatalf("stderr 必须包含 haltForHuman comment 正文 %q，实际 %q", comment, stderr)
+	}
+	if strings.Contains(out+stderr, "oldcomm") {
+		t.Fatalf("不得把水位之前旧 dispatched 的短号打印成这次结果: out=%q stderr=%q", out, stderr)
+	}
+}
+
+func TestCardDispatchStepReportsNewDispatchSnapshot(t *testing.T) {
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	cardID := createStepTestCard(t, dir, "新派发成功卡")
+	appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+		TaskID: "old-task", Branch: "cards/old", Base: "old-base",
+		BaseCommit: "oldcommit123456789012345678901234567890", DisciplineName: "old-discipline",
+	})
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = cardStepBody(t, r)
+		appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+			Target: "", TaskID: "new-task", Branch: "cards/new", Base: "main",
+			BaseCommit: "1234567890abcdef1234567890abcdef12345678", DisciplineName: "charter-implement",
+		})
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, stderr, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中")
+	if err != nil {
+		t.Fatalf("card dispatch --step: %v stderr=%q", err, stderr)
+	}
+	for _, want := range []string{cardID, "进行中", "本机", "cards/new", "main", "1234567", "charter-implement"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("成功首态 stdout = %q，缺少 %q", out, want)
+		}
+	}
+	for _, forbidden := range []string{"oldcomm", "目标机未定", "本地 ref", "origin"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("成功首态 stdout 不应包含 %q: %q", forbidden, out)
+		}
+	}
+}
+
+func TestCardDispatchStepFormatsEmptyBaseCommit(t *testing.T) {
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	cardID := createStepTestCard(t, dir, "空基线首态卡")
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_ = cardStepBody(t, r)
+		appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+			Target: "", TaskID: "empty-base-task", Branch: "cards/empty", Base: "",
+			BaseCommit: "", DisciplineName: "charter-review",
+		})
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中")
+	if err != nil {
+		t.Fatalf("card dispatch --step: %v", err)
+	}
+	for _, want := range []string{"无起点分支", "无 sha", "cards/empty", "charter-review"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("空基线首态 stdout = %q，缺少 %q", out, want)
+		}
+	}
+}
+
+func TestCardDispatchStepExecutorWithoutTargetUsesLocalFirstState(t *testing.T) {
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	var got map[string]json.RawMessage
+	cardID := createStepTestCard(t, dir, "只覆盖执行器卡")
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = cardStepBody(t, r)
+		appendStepDispatchForTest(t, dir, cardID, ledger.DispatchSnapshot{
+			Target: "", TaskID: "executor-only-task", Branch: "cards/executor-only", Base: "main",
+			BaseCommit: "abcdef0123456789abcdef0123456789abcdef01", DisciplineName: "charter-implement",
+		})
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	out, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中", "--executor", "codex")
+	if err != nil {
+		t.Fatalf("只覆盖 executor 的 card dispatch --step: %v", err)
+	}
+	if _, present := got["target"]; present {
+		t.Fatalf("空 target 应保持缺席语义，wire 不应凭空写目标机：%v", got)
+	}
+	if gotExecutor := cardStepString(t, got, "executor"); gotExecutor != "codex" {
+		t.Fatalf("executor = %q, want codex", gotExecutor)
+	}
+	if !strings.Contains(out, "本机") || strings.Contains(out, "目标机未定") {
+		t.Fatalf("只覆盖 executor 仍应显示本机而非版本错文案: %q", out)
+	}
+}
+
 // TestCardDispatchStepCarriesOverrides locks all four CLI override values at the local agentd wire.
 func TestCardDispatchStepCarriesOverrides(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -562,6 +729,7 @@ func TestCardDispatchStepCarriesOverrides(t *testing.T) {
 
 // TestCardDispatchStepUsesActorIdentity verifies step requests carry human-scale identity.
 func TestCardDispatchStepUsesActorIdentity(t *testing.T) {
+	setStepFirstStateTestWindow(t)
 	dir := t.TempDir()
 	var got map[string]json.RawMessage
 	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -730,9 +898,9 @@ func TestCardDispatchStepNoLocalFallback(t *testing.T) {
 		t.Fatal(err)
 	}
 	called := false
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		called = true
-		return "T-local-fallback", nil
+		return "T-local-fallback", "", nil
 	})
 	defer restore()
 	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID, "--step", "进行中", "--target", "mac-02")
@@ -760,9 +928,9 @@ func TestCardDispatchWithoutExtraHasNoSupplementSection(t *testing.T) {
 		t.Fatal(err)
 	}
 	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		got = req
-		return "T-noextra-1", nil
+		return "T-noextra-1", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
@@ -825,9 +993,9 @@ func TestCardDispatchDeliversResolvedDiscipline(t *testing.T) {
 	_ = st.Close()
 
 	var got dispatchRequest
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		got = req
-		return "T-cli-discipline", nil
+		return "T-cli-discipline", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
@@ -883,9 +1051,9 @@ func TestCardDispatchRefusesUnsupportedTargetBeforeClaim(t *testing.T) {
 	}
 	_ = st.Close()
 
-	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, error) {
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
 		t.Fatal("拒发时不应发出任何派发请求")
-		return "", nil
+		return "", "", nil
 	})
 	defer restore()
 	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", card.ID,
@@ -905,12 +1073,6 @@ func TestCardDispatchRefusesUnsupportedTargetBeforeClaim(t *testing.T) {
 	}
 }
 
-// TestCardDispatchWritesPointerLine 欠账 #11 派发指针（判据一，成功路径）：
-// 断言必须去账本里查那一行真的在（type=room_message ∧ kind=pointer ∧
-// by_system=true ∧ 正文含卡号与模板名）——不得只断言 dispatch 没报错（Pointer
-// 出错时返回 error、成功时返回 nil，「没报错」区分不出「真写了」与「什么都没写」）。
-// 存在式断言：不数行数（keystone 叙事 roomNarrator 也在写同款指针行且现在
-// 就活着，计数式断言会偶发红，而它红的时候指的并不是本卡的缺陷）。
 func TestCardDispatchWritesPointerLine(t *testing.T) {
 	dir := t.TempDir()
 	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
@@ -927,8 +1089,8 @@ func TestCardDispatchWritesPointerLine(t *testing.T) {
 	if _, _, err := runLedgerCLI(t, dir, "card", "update", c.ID, "--accept", "测试全绿"); err != nil {
 		t.Fatal(err)
 	}
-	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
-		return "T-pointer-1", nil
+	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
+		return "T-pointer-1", "", nil
 	})
 	defer restore()
 	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", c.ID,
@@ -986,8 +1148,8 @@ func TestCardDispatchPointerFailureDoesNotInterrupt(t *testing.T) {
 	if _, _, err := runLedgerCLI(t, dir, "card", "update", c.ID, "--accept", "测试全绿"); err != nil {
 		t.Fatal(err)
 	}
-	restoreTransport := swapDispatchTransport(func(prompt, branch, target, project string) (string, error) {
-		return "T-pointer-fail", nil
+	restoreTransport := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
+		return "T-pointer-fail", "", nil
 	})
 	defer restoreTransport()
 	restorePointer := swapRoomPointer(func(_ *collab.Service, roomID, body string) error {
@@ -1001,5 +1163,96 @@ func TestCardDispatchPointerFailureDoesNotInterrupt(t *testing.T) {
 	}
 	if !strings.Contains(out, "T-pointer-fail") {
 		t.Fatalf("stdout 应含 task id: %q", out)
+	}
+}
+
+type probeErrorCardTarget struct {
+	ts         *httptest.Server
+	dispatches int32
+}
+
+func newProbeErrorCardTarget(t *testing.T) *probeErrorCardTarget {
+	t.Helper()
+	target := &probeErrorCardTarget{}
+	target.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/status" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not-json"))
+			return
+		}
+		if r.URL.Path == "/api/tasks" && r.Method == http.MethodPost {
+			atomic.AddInt32(&target.dispatches, 1)
+			http.Error(w, "probe failure test must not dispatch", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	t.Cleanup(target.ts.Close)
+	return target
+}
+
+func setupCardDispatchProbeErrorFixture(t *testing.T, dir string, target *probeErrorCardTarget) {
+	t.Helper()
+	c := &config.Config{
+		Listen: "127.0.0.1:0", Token: testToken, DataDir: dir, StallTimeout: 2 * time.Hour,
+		Ledger: config.LedgerConfig{Enabled: true},
+		Targets: map[string]config.Target{
+			"mac-02": {Addr: strings.TrimPrefix(target.ts.URL, "http://"), Token: testToken},
+		},
+	}
+	if err := config.Save(filepath.Join(dir, "config.yaml"), c); err != nil {
+		t.Fatalf("写探活错误测试配置: %v", err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, err := st.PutDiscipline("implement", "测试角色正文"); err != nil {
+		t.Fatalf("种纪律块: %v", err)
+	}
+}
+
+func TestCardDispatchProbeFailureDoesNotClaimUnsupported(t *testing.T) {
+	dir := t.TempDir()
+	target := newProbeErrorCardTarget(t)
+	setupCardDispatchProbeErrorFixture(t, dir, target)
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "探活错误卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	var created struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &created); err != nil {
+		t.Fatalf("解码建卡: %v", err)
+	}
+	_, errOut, err := runLedgerCLI(t, dir, "card", "dispatch", created.ID,
+		"--template", "feature-impl", "--target", "mac-02")
+	if err == nil {
+		t.Fatal("Status 失败时模板卡派发必须返回错误")
+	}
+	joined := err.Error() + errOut
+	if !strings.Contains(joined, "探活失败") || !strings.Contains(joined, "invalid character") {
+		t.Fatalf("错误必须含探活语义和 cause：%s", joined)
+	}
+	if strings.Contains(joined, "升级到同批版本") {
+		t.Fatalf("探活失败不得归因成版本升级：%s", joined)
+	}
+	if got := atomic.LoadInt32(&target.dispatches); got != 0 {
+		t.Fatalf("探活失败不得发送任务，实际 %d 次", got)
+	}
+	show, _, err := runLedgerCLI(t, dir, "card", "show", created.ID)
+	if err != nil {
+		t.Fatalf("读回卡: %v", err)
+	}
+	var card struct {
+		DriverSession string `json:"driver_session"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(show)), &card); err != nil {
+		t.Fatalf("解码卡: %v", err)
+	}
+	if card.DriverSession != "" {
+		t.Fatalf("探活失败不得认领卡，driver_session=%q", card.DriverSession)
 	}
 }

@@ -14,6 +14,7 @@
 //     状态机（那是重新实现一遍状态机，两份必然漂移）
 //   - 不改 CLI wait：--target 直拨照旧。镜像跑稳后再谈让 wait 走本机
 //   - 副本不是真相：整表删掉可从 from_seq=0 重建
+//   - 本机任务已在本机 Store/Hub，不进入 mirror_tasks，也不通过 loopback 自订
 package agentd
 
 import (
@@ -67,6 +68,9 @@ type Mirror struct {
 	st   *store.Store
 	hub  *Hub
 	log  *slog.Logger
+	// isSelfTarget identifies configured names that point back to this agentd.
+	// A nil predicate preserves the old behavior and filters no configured name.
+	isSelfTarget func(name string) bool
 
 	mu    sync.Mutex
 	subs  map[string]context.CancelFunc // task_id → 取消订阅
@@ -81,21 +85,43 @@ type Mirror struct {
 //   - pool: target 客户端池（同时提供客户端与活的 target 清单）
 //   - st: 本机存储（mirror_events / mirror_tasks 的落点）
 //   - hub: 本机实时路由（镜像事件经它 Publish，让 /ws/events 订阅者立刻收到）
+//   - isSelfTarget: 自机登记名判定；nil 表示不额外过滤名称
 //   - log: 本镜像的日志入口
-func NewMirror(pool *targetclient.Pool, st *store.Store, hub *Hub, log *slog.Logger) *Mirror {
+func NewMirror(pool *targetclient.Pool, st *store.Store, hub *Hub,
+	isSelfTarget func(name string) bool, log *slog.Logger) *Mirror {
 	return &Mirror{
-		pool:  pool,
-		st:    st,
-		hub:   hub,
-		log:   log,
-		subs:  map[string]context.CancelFunc{},
-		ring:  map[string]chan struct{}{},
-		loops: map[string]struct{}{},
+		pool:         pool,
+		st:           st,
+		hub:          hub,
+		log:          log,
+		isSelfTarget: isSelfTarget,
+		subs:         map[string]context.CancelFunc{},
+		ring:         map[string]chan struct{}{},
+		loops:        map[string]struct{}{},
 	}
 }
 
 // machineNames 返回当前要镜像的机器名，已排序。判据只有一处：池。
 func (m *Mirror) machineNames() []string { return m.pool.Names() }
+
+// remoteMachineNames returns configured names that are eligible for discovery.
+// The complete pool list remains available through machineNames for UI and
+// health consumers; only task discovery excludes self-target aliases.
+func (m *Mirror) remoteMachineNames() []string {
+	names := m.machineNames()
+	if m.isSelfTarget == nil {
+		return names
+	}
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		if m.isSelfTarget(name) {
+			m.log.Debug("跳过本机任务镜像", "machine", name)
+			continue
+		}
+		out = append(out, name)
+	}
+	return out
+}
 
 // Run 启动发现循环：先立刻跑一轮，然后按 mirrorDiscoveryTick 周期跑，
 // ctx 取消时收掉全部订阅与门铃 goroutine。
@@ -125,7 +151,7 @@ func (m *Mirror) Run(ctx context.Context) {
 // 运行期新增 target 也必须有消费者：否则事件虽会落库，ringBell 却没有循环来
 // 防抖刷新任务快照，新增机器的状态会停在首次发现的旧值。
 func (m *Mirror) ensureSnapshotLoops(ctx context.Context) {
-	for _, name := range m.machineNames() {
+	for _, name := range m.remoteMachineNames() {
 		m.mu.Lock()
 		if _, ok := m.loops[name]; ok {
 			m.mu.Unlock()
@@ -155,7 +181,7 @@ func (m *Mirror) Stop() {
 // discoverOnce 跑一轮发现：对每台 target 拉任务列表，快照进 mirror_tasks，
 // 活跃任务开订阅、终态任务收订阅。单台失败不影响其余。
 func (m *Mirror) discoverOnce(ctx context.Context) {
-	names := m.machineNames()
+	names := m.remoteMachineNames()
 
 	fanCtx, cancel := context.WithTimeout(ctx, mirrorDiscoverBudget)
 	defer cancel()

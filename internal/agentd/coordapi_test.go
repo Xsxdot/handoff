@@ -9,7 +9,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -20,6 +19,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // fakeCoordRunner 记录 Launch 收到的 SessionSpec 与次数（防「spec 回潮」的 agentd
@@ -385,7 +385,7 @@ func TestCoordAttachForwardsMachineQuery(t *testing.T) {
 		header string
 	}
 	got := make(chan received, 1)
-	remote := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, err := io.ReadAll(r.Body)
 		if err != nil {
 			http.Error(w, "read body", http.StatusInternalServerError)
@@ -395,7 +395,6 @@ func TestCoordAttachForwardsMachineQuery(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"remote":"ok"}`))
 	}))
-	t.Cleanup(remote.Close)
 
 	env, _ := newNoPTYCoordEnv(t)
 	cardID := createCoordCard(t, env)

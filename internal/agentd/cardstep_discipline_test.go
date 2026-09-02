@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -17,7 +18,9 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 // fakeTargetMachine 是一台 httptest 假目标机：/api/status 按给定能力位应答，
@@ -33,7 +36,7 @@ type fakeTargetMachine struct {
 func newFakeTargetMachine(t *testing.T, capSupported *bool) *fakeTargetMachine {
 	t.Helper()
 	ftm := &fakeTargetMachine{capSupported: capSupported}
-	ftm.ts = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	ftm.ts = testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case r.URL.Path == "/api/status":
 			w.Header().Set("Content-Type", "application/json")
@@ -55,12 +58,11 @@ func newFakeTargetMachine(t *testing.T, capSupported *bool) *fakeTargetMachine {
 			ftm.dispatches++
 			ftm.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprint(w, `{"id":"T-fake-01","state":"running"}`)
+			fmt.Fprint(w, `{"id":"T-fake-01","state":"running","base_commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`)
 		default:
 			http.NotFound(w, r)
 		}
 	}))
-	t.Cleanup(ftm.ts.Close)
 	return ftm
 }
 
@@ -138,6 +140,28 @@ func TestCardStepDeliversResolvedDiscipline(t *testing.T) {
 	if sent["discipline"] != discipline.NameImplement {
 		t.Fatalf("审计名字 discipline = %v, want %q", sent["discipline"], discipline.NameImplement)
 	}
+
+	deadline = time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		events, eventErr := env.ledger.EventsFromAsc([]string{card.ID}, 0, 100)
+		if eventErr == nil {
+			for _, event := range events {
+				if event.Type != ledger.EvDispatched {
+					continue
+				}
+				var payload map[string]any
+				if err := json.Unmarshal(event.Payload, &payload); err != nil {
+					t.Fatalf("解 dispatched payload: %v", err)
+				}
+				if payload["base_commit"] != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+					t.Fatalf("stepTransport 回填的 base_commit=%v，期望目标 Task.BaseCommit", payload["base_commit"])
+				}
+				return
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("未等到带 base_commit 的 dispatched 事件")
 }
 
 // TestStartCardStepRejectsUnsupportedTarget 三态能力位 nil/false 都必须拒发：
@@ -188,6 +212,80 @@ func TestStartCardStepRejectsUnsupportedTarget(t *testing.T) {
 				t.Fatalf("HTTP 路径同样不得发出任务，实际 %d 次", n)
 			}
 		})
+	}
+}
+
+type probeErrorTargetMachine struct {
+	ts         *httptest.Server
+	mu         sync.Mutex
+	dispatches int
+}
+
+func newProbeErrorTargetMachine(t *testing.T) *probeErrorTargetMachine {
+	t.Helper()
+	target := &probeErrorTargetMachine{}
+	target.ts = testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/status" {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte("not-json"))
+			return
+		}
+		if r.URL.Path == "/api/tasks" && r.Method == http.MethodPost {
+			target.mu.Lock()
+			target.dispatches++
+			target.mu.Unlock()
+			http.Error(w, "probe failure test must not dispatch", http.StatusInternalServerError)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	return target
+}
+
+func registerProbeErrorTarget(t *testing.T, s *Server, target *probeErrorTargetMachine) {
+	t.Helper()
+	addr := strings.TrimPrefix(target.ts.URL, "http://")
+	if err := s.swapConf(func(c *config.Config) error {
+		c.Targets["probe-error"] = config.Target{Addr: addr, Token: testToken}
+		return nil
+	}); err != nil {
+		t.Fatalf("登记探活错误目标: %v", err)
+	}
+}
+
+func (target *probeErrorTargetMachine) dispatchCount() int {
+	target.mu.Lock()
+	defer target.mu.Unlock()
+	return target.dispatches
+}
+
+func TestCardStepProbeFailureDoesNotClaimUnsupported(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	seedCardWithProject(t, env.srv, "handoff")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedDisciplineOnLedger(t, env, discipline.NameImplement, "探活失败不应下发")
+	target := newProbeErrorTargetMachine(t)
+	registerProbeErrorTarget(t, env.srv, target)
+
+	err = env.srv.startCardStep(card.ID, proto.CardStepReq{
+		Step: "进行中", Target: "probe-error", Actor: "test",
+	})
+	if err == nil {
+		t.Fatal("Status 失败时环节派发必须返回错误")
+	}
+	if !strings.Contains(err.Error(), "探活失败") ||
+		!strings.Contains(err.Error(), "invalid character") {
+		t.Fatalf("错误必须含探活语义和 cause：%v", err)
+	}
+	if strings.Contains(err.Error(), "升级到同批版本") {
+		t.Fatalf("探活失败不得归因成版本升级：%v", err)
+	}
+	if got := target.dispatchCount(); got != 0 {
+		t.Fatalf("探活失败不得发送任务，实际 %d 次", got)
 	}
 }
 

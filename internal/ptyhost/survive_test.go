@@ -18,7 +18,7 @@ import (
 )
 
 func TestSurviveAgentdClientRestart(t *testing.T) {
-	root, h1, id, _ := startClientHost(t)
+	root, h1, id, _, late := startClientHostWithExitMarker(t)
 	att1, err := h1.Attach(id, 0)
 	if err != nil {
 		t.Fatalf("h1 Attach: %v", err)
@@ -69,6 +69,9 @@ func TestSurviveAgentdClientRestart(t *testing.T) {
 
 	if err := h2.Close(id); err != nil {
 		t.Fatalf("h2 Close: %v", err)
+	}
+	if _, err := os.Stat(late); err != nil {
+		t.Fatalf("h2.Close 返回后 late marker 不存在: %v", err)
 	}
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {

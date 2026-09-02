@@ -288,6 +288,24 @@ func TestUsagePrintedOnlyForArgErrors(t *testing.T) {
 	})
 }
 
+func TestRootRejectsDeletedGraphCommand(t *testing.T) {
+	resetAllFlags(rootCmd)
+	rootCmd.SetArgs([]string{"graph", "--help"})
+	var out, errBuf bytes.Buffer
+	rootCmd.SetOut(&out)
+	rootCmd.SetErr(&errBuf)
+	t.Cleanup(func() {
+		rootCmd.SetArgs(nil)
+		rootCmd.SetOut(nil)
+		rootCmd.SetErr(nil)
+	})
+
+	err := Execute()
+	if err == nil || !strings.Contains(strings.ToLower(err.Error()), "unknown command") {
+		t.Fatalf("删除 graph 后应拒绝未知命令，err=%v stdout=%q stderr=%q", err, out.String(), errBuf.String())
+	}
+}
+
 // TestWaitTimeout 覆盖 wait 的 --timeout：到点必须报错（RunE 返回 error，cobra
 // 以非 0 退出），与「事件到达退出 0」可区分——这是 P0-2 修复的最后一层防线
 // （配置错误/打错 task-id 已改为立即报错，--timeout 兜底剩余的无事件挂起场景）。
