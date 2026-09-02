@@ -13,3 +13,4 @@
 - 2026-09-02：变异（均编译过、命中唯一、复原）：
   1. `GROK_OSC52_SINK=1` → `=0`：上述两支 HTTP 缝测试红。
   2. `pinGrokOsc52Sink` 改为只 append 不剥：`TestPinGrokOsc52SinkStripsDuplicates` 红（留下 0 与空串）。HTTP 缝在 Darwin sh 上仍绿（last-wins），故剥键以切片断言为牙。
+- 2026-09-02：隔离真机 127.0.0.1:7783（独立 datadir /tmp/b303-iso，生产 7777 pid 25057 未动）。POST /api/pty/sessions base_kind=home init_command 把 `$GROK_OSC52_SINK` 写到 /tmp/b303-sink.out → 内容 `1`；agentd.log `终端会话已建立 grok_osc52_sink=true` session=086505fb pid=88495。Grok TUI 选中复制未在本轮重跑（B300 已在 GROK_OSC52_SINK=1 下真机过）；合入后目标机升级才对工作台生效。
