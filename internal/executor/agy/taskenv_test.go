@@ -182,17 +182,20 @@ func TestWriteTaskEnvAgyHome(t *testing.T) {
 	if err := json.Unmarshal(settingsData, &settings); err != nil {
 		t.Fatalf("解析任务 settings.json 失败: %v", err)
 	}
-	allowGo := false
-	for _, item := range settings.Permissions.Allow {
-		if item == "command(go)" {
-			allowGo = true
-		}
-		if item == "command(*)" {
-			t.Fatalf("任务 settings.json 禁止 command(*): %s", settingsData)
+	if len(settings.Permissions.Allow) != len(nativeCommandAllow) {
+		t.Fatalf("任务 settings.json allow 长度 %d，要与 nativeCommandAllow %d 一致: %s",
+			len(settings.Permissions.Allow), len(nativeCommandAllow), settingsData)
+	}
+	for i, want := range nativeCommandAllow {
+		if settings.Permissions.Allow[i] != want {
+			t.Fatalf("任务 settings.json allow[%d]=%q, want %q: %s",
+				i, settings.Permissions.Allow[i], want, settingsData)
 		}
 	}
-	if !allowGo {
-		t.Fatalf("任务 settings.json 缺 command(go): %s", settingsData)
+	for _, item := range settings.Permissions.Allow {
+		if item == "command(*)" || item == "command(uname)" {
+			t.Fatalf("任务 settings.json 禁止 %s: %s", item, settingsData)
+		}
 	}
 	if strings.Contains(string(settingsData), "always-proceed") {
 		t.Fatalf("任务 settings.json 禁止 always-proceed: %s", settingsData)
