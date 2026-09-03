@@ -1,7 +1,8 @@
-// coordapi.go 实现协调者生命周期接线（B156.3 K4）：三个端点——
+// coordapi.go 实现协调者生命周期接线（B312）：控制面端点——
 //
-//	POST /api/cards/{id}/coordinator/launch  一键拉起（source=manual，看板按钮）
+//	POST /api/cards/{id}/coordinator/launch  叫机器人并占 coordinate 席位
 //	GET  /api/cards/{id}/coordinator         绑定与接管态
+//	POST /api/cards/{id}/coordinator/rebind  叫机器人换绑
 //	POST /api/cards/{id}/attach              attach 接管/交回（人工接管互斥的牙齿）
 //
 // 职责：组装点在此解析协调者小队产出 SessionSpec（契约 §15 澄清 2——SquadRows
@@ -24,6 +25,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/keysclient"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
@@ -38,6 +40,7 @@ var errAmbiguousCoordinatorSquad = errors.New("协调者小队不唯一")
 func (s *Server) registerCoordRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/cards/{id}/coordinator/launch", s.withLedger(s.withCoordinator(s.handleCoordLaunch)))
 	api.HandleFunc("GET /api/cards/{id}/coordinator", s.withLedger(s.withCoordinator(s.handleCoordStatus)))
+	api.HandleFunc("POST /api/cards/{id}/coordinator/rebind", s.withLedger(s.withCoordinator(s.handleCoordRebind)))
 	api.HandleFunc("POST /api/cards/{id}/attach", s.withLedger(s.withCoordinator(s.handleCoordAttach)))
 }
 
@@ -84,9 +87,9 @@ func (s *Server) resolveCoordinatorSquad() (scheduling.Squad, error) {
 	}
 }
 
-// handleCoordLaunch POST /api/cards/{id}/coordinator/launch：一键拉起协调者并绑定
-// （spec §5.1 入口 2）。source 记录拉起来源（manual=看板按钮，card_create=开卡即绑），
-// 只进审计；两入口共用 keystone.LaunchForCard 单一实现（§6.2）。
+// handleCoordLaunch POST /api/cards/{id}/coordinator/launch：叫机器人并绑定
+// coordinate 席位（spec §5.1 入口 2）。source 只允许 coordinate；旧 manual/card_create
+// 来源不再接受。
 //
 // 行为顺序：source 校验 → 卡存在 → 协调者小队识别（0→400 指路 / ≥2→409 歧义）→
 // LaunchAdmit 两级准入（满→409）→ 载体读 HomeDir → 组装 SessionSpec → LaunchForCard。
@@ -101,10 +104,11 @@ func (s *Server) handleCoordLaunch(w http.ResponseWriter, r *http.Request) {
 	}
 	source := body.Source
 	if source == "" {
-		source = "manual"
+		source = "coordinate"
 	}
-	if source != "manual" && source != "card_create" {
-		writeErr(w, http.StatusBadRequest, fmt.Errorf("source 只能是 manual 或 card_create，收到 %q", source))
+	if source != "coordinate" {
+		s.log.Warn("协调者拉起被拒：来源已退役", "card", id, "source", source)
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("source 只能是 coordinate，收到 %q", source))
 		return
 	}
 	if _, err := s.ledger.GetCard(id); err != nil {
@@ -115,7 +119,15 @@ func (s *Server) handleCoordLaunch(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		var admissionErr *coordinatorAdmissionError
 		var lookupErr *coordinatorLookupError
+		var seatErr *coordinatorSeatConflict
 		switch {
+		case errors.As(err, &seatErr):
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":      "协调者已启动但席位 CAS 冲突；新会话未自动终止，请人工回收",
+				"session_id": seatErr.result.SessionID,
+			})
+		case errors.Is(err, ledger.ErrCASConflict):
+			writeErr(w, http.StatusConflict, err)
 		case errors.As(err, &lookupErr) && errors.Is(lookupErr.err, errNoCoordinatorSquad):
 			writeErr(w, http.StatusBadRequest, fmt.Errorf(
 				"未登记协调者小队：先登记载体，再登记协调者小队（示例：handoff squad create --name coord --role coordinator --member coord-carrier）"))
@@ -146,6 +158,78 @@ func (s *Server) handleCoordLaunch(w http.ResponseWriter, r *http.Request) {
 		Woke: result.Woke, SessionID: result.SessionID, Rebuilt: result.Rebuilt,
 		Escalated: result.Escalated, Output: result.Output,
 	})
+}
+
+// handleCoordRebind 只接受 mode=launch。mode=self 与 identity 均不属于 HTTP
+// 可信输入：当前会话坐下由 CLI 本机账本完成，机器人换绑则由本端重新 Launch。
+func (s *Server) handleCoordRebind(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req proto.CoordinatorRebindReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析协调者换绑请求: %w", err))
+		return
+	}
+	if req.Mode == "self" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("mode=self 仅支持 CLI：handoff card rebind %s --self", id))
+		return
+	}
+	if req.Mode != "launch" || req.Identity != "" {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("协调者 HTTP 换绑只接受 {\"mode\":\"launch\"}"))
+		return
+	}
+	card, err := s.ledger.GetCard(id)
+	if err != nil {
+		ledgerErr(w, err)
+		return
+	}
+	if card.DriverSession == "" && card.DriverSource == "" {
+		writeErr(w, http.StatusConflict, fmt.Errorf("卡 %s 为空座，请使用 card bind 或 card coordinate", id))
+		return
+	}
+	if card.DriverSession == "" {
+		err := fmt.Errorf("卡 %s 的旧席位缺少身份，不能直接换绑", id)
+		s.log.Warn("协调者换绑被拒：存量席位身份为空", "card", id, "source", card.DriverSource, "cause", err)
+		writeErr(w, http.StatusConflict, err)
+		return
+	}
+	result, err := s.launchCoordinatorRoundForRebind(r.Context(), id, "coordinate", card.DriverSession)
+	if err != nil {
+		var admissionErr *coordinatorAdmissionError
+		var lookupErr *coordinatorLookupError
+		var seatErr *coordinatorSeatConflict
+		switch {
+		case errors.As(err, &seatErr):
+			writeJSON(w, http.StatusConflict, map[string]string{
+				"error":      "协调者已启动但席位 CAS 冲突；新会话未自动终止，请人工回收",
+				"session_id": seatErr.result.SessionID,
+			})
+		case errors.Is(err, ledger.ErrCASConflict):
+			writeErr(w, http.StatusConflict, err)
+		case errors.As(err, &lookupErr) && errors.Is(lookupErr.err, errNoCoordinatorSquad):
+			writeErr(w, http.StatusBadRequest, fmt.Errorf(
+				"未登记协调者小队：先登记载体，再登记协调者小队（示例：handoff squad create --name coord --role coordinator --member coord-carrier）"))
+		case errors.As(err, &lookupErr) && errors.Is(lookupErr.err, errAmbiguousCoordinatorSquad):
+			writeErr(w, http.StatusConflict, lookupErr.err)
+		case errors.As(err, &lookupErr):
+			s.log.Error("协调者换绑小队识别失败", "card", id, "source", "coordinate", "cause", lookupErr.err)
+			writeErr(w, http.StatusInternalServerError, lookupErr.err)
+		case errors.As(err, &admissionErr) && errors.Is(admissionErr.err, scheduling.ErrNoSlot):
+			writeErr(w, http.StatusConflict, fmt.Errorf(
+				"协调者并发已满（小队 %s）：等现役回合结束名额自动回收后重试，或先 attach 现有会话",
+				admissionErr.squad))
+		case errors.As(err, &admissionErr):
+			s.log.Error("协调者换绑准入被拒", "card", id, "source", "coordinate",
+				"squad", admissionErr.squad, "cause", admissionErr.err)
+			writeErr(w, http.StatusBadRequest, fmt.Errorf("协调者准入被拒: %w", admissionErr.err))
+		default:
+			s.log.Error("协调者换绑回合失败", "card", id, "source", "coordinate", "cause", err)
+			writeErr(w, http.StatusBadGateway, fmt.Errorf("换绑协调者失败: %w", err))
+		}
+		return
+	}
+	s.log.Info("协调者 HTTP 换绑成功", "card", id, "source", "coordinate", "session", result.SessionID)
+	writeJSON(w, http.StatusOK, proto.CoordinatorLaunchResp{Woke: result.Woke, SessionID: result.SessionID,
+		Rebuilt: result.Rebuilt, Escalated: result.Escalated, Output: result.Output})
 }
 
 // resolveCoordWorkdir 尽力解析卡所属项目在本机的位置根作为会话工作目录
@@ -182,10 +266,12 @@ func coordinatorAttachInfo(info keysclient.AttachInfo) proto.CoordinatorAttachIn
 func (s *Server) handleCoordStatus(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
 	s.log.Info("读取协调者状态", "card", id)
-	if _, err := s.ledger.GetCard(id); err != nil {
+	card, err := s.ledger.GetCard(id)
+	if err != nil {
 		ledgerErr(w, err)
 		return
 	}
+	validSeat := card.DriverSession != "" && proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) == nil
 	active := s.keystone.AttachState(id)
 	var attach *proto.CoordinatorAttachInfo
 	workdir := s.resolveCoordWorkdir(id)
@@ -194,15 +280,13 @@ func (s *Server) handleCoordStatus(w http.ResponseWriter, r *http.Request) {
 	} else {
 		mapped := coordinatorAttachInfo(info)
 		attach = &mapped
-		s.log.Info("协调者状态已读", "card", id, "bound", true,
+		s.log.Info("协调者状态已读", "card", id, "bound", validSeat,
 			"attach_active", active, "dir", mapped.Dir)
 	}
 	if attach == nil {
 		s.log.Info("协调者状态已读", "card", id, "bound", false, "attach_active", active)
 	}
-	writeJSON(w, http.StatusOK, proto.CoordinatorStatus{
-		Bound: attach != nil, AttachActive: active, Attach: attach,
-	})
+	writeJSON(w, http.StatusOK, proto.CoordinatorStatus{Bound: validSeat, AttachActive: active, Attach: attach})
 }
 
 // handleCoordAttach POST /api/cards/{id}/attach：attach 深聊的接管/交回同一端点

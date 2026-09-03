@@ -1,7 +1,6 @@
-// 绑定席位与驱动活性租约（B156.2）。权威在账本域卡上（拍板记录 5.1）：
-// 绑定 = cards.driver_session + 新列 driver_carrier，CAS 语义与派发即认领
-// （ClaimCard）同源；心跳 = 新表 driver_leases 按 session 全局一行，租期
-// 模式照抄运行锁但互不代写（runlock.go 文件头边界）。
+// 绑定席位与驱动活性租约（B312）。权威在账本域卡上：席位身份和来源是
+// cards.driver_session/driver_source，所有新占用与换绑都经本文件的两个原子写面；
+// driver_carrier 与 driver_leases 仅保留兼容语义，不能成为席位的第二真源。
 package ledger
 
 import (
@@ -9,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // DriverLease 驱动活性租约一行：哪个协调者会话、活到几点。
@@ -24,92 +25,110 @@ const (
 	DriverLeaseRenewInterval = 2 * time.Minute
 )
 
-// ClaimCardAs 认领归属并登记载体标识（B156.2 契约 §3.2）。语义与 ClaimCard
-// 完全一致：归属判定与归属写入同一事务（move.go 文件头警告的两写窗口）、
-// 不改状态列、不落事件、终态拒绝 ErrBadState、他主持有拒绝 ErrCASConflict、
-// 同 owner 重入幂等；另写 driver_carrier 列。
-//
-// carrier 是不透明载体标识（breakdown 澄清一，2026-08-26 定稿）：本期只存
-// 不解释——不解析、不校验、不假设格式；空串含义是「未登记载体」。既有
-// ClaimCard 保持签名不变、内部转调本方法传空串：老调用方零改动，显式认领
-// 同时把历史载体归零为未登记（权威在本次认领动作本身）。
-func (s *Store) ClaimCardAs(id, owner, carrier string) error {
-	log().Info("开始认领归属", "card", id, "owner", owner)
-	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
-		if owner == "" {
-			log().Warn("认领被拒：owner 为空", "card", id)
-			return fmt.Errorf("认领被拒：owner 为空")
-		}
+// BindSeat 只把空座原子地占为规范 identity/source，不落事件也不写
+// driver_carrier。读、判空、写入在同一个账本事务内完成。
+func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error {
+	log().Info("开始坐下", "card", id, "source", source)
+	if identity == "" {
+		err := fmt.Errorf("坐下需要当前会话席位身份: %w", ErrBadState)
+		log().Warn("坐下被拒：身份为空", "card", id, "source", source, "cause", err)
+		return err
+	}
+	if err := proto.ValidateSeat(identity, source); err != nil {
+		wrapped := fmt.Errorf("坐下席位无效: %w", err)
+		log().Warn("坐下被拒：席位无效", "card", id, "source", source, "cause", wrapped)
+		return wrapped
+	}
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
-			return fmt.Errorf("认领: 卡 %s: %w", id, err)
+			return fmt.Errorf("坐下读卡 %s: %w", id, err)
 		}
-		if card.Status == StatusDone || card.Status == StatusClosed {
-			log().Warn("认领被拒：终态卡", "card", id, "status", card.Status)
-			return fmt.Errorf("卡 %s 已处于终态 %s: %w", id, card.Status, ErrBadState)
+		if card.DriverSession != "" || card.DriverSource != "" {
+			err := fmt.Errorf("卡 %s 已有席位，请使用 rebind: %w", id, ErrCASConflict)
+			log().Warn("坐下被拒：席位非空", "card", id, "source", source, "cause", err)
+			return err
 		}
-		if card.DriverSession != "" && card.DriverSession != owner {
-			log().Warn("认领被拒：他主持有", "card", id,
-				"holder", card.DriverSession, "claimer", owner)
-			return fmt.Errorf("卡 %s 已由 %s 认领: %w", id, card.DriverSession, ErrCASConflict)
-		}
-		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_carrier = ?,
-			driver_heartbeat_at = ? WHERE id = ?`),
-			owner, carrier, s.tval(s.timeNow()), id); err != nil {
-			return fmt.Errorf("认领写归属: %w", err)
+		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_heartbeat_at = ? WHERE id = ?`),
+			identity, source, s.tval(s.timeNow()), id); err != nil {
+			return fmt.Errorf("坐下写席位 %s: %w", id, err)
 		}
 		return nil
 	})
 	if err != nil {
-		log().Warn("认领归属失败", "card", id, "owner", owner, "cause", err)
+		log().Warn("坐下失败", "card", id, "source", source, "cause", err)
 		return err
 	}
-	log().Info("归属已认领", "card", id, "owner", owner)
+	log().Info("坐下成功", "card", id, "source", source)
 	return nil
 }
 
-// RebindDriver 换绑（契约 §3.2）：expect=当前绑定前值（CAS，不符返回
-// ErrCASConflict）；expect="" 与「前值为空」统一比较——即要求当前无绑定。
-// 成功=同事务覆写 driver_session+driver_carrier（并按 TakeoverCard 先例
-// 刷新 driver_heartbeat_at＝新认领时刻）且落恰一条 EvDriverTakeover
-// payload{from,to}、actor=新会话（运行锁抢占同位先例 runlock.go:89）。
-// 复用活跃事件类型，不新增绑定事件类型。写权检查读当前值：旧会话对该
-// 房间的一切后续判定随覆写自然剥权（C4 Send 执法依赖这一点）。
-// 终态卡不在拒绝之列：冻结语义无此条（房间面只读由 ReadOnly 执法）。
-func (s *Store) RebindDriver(id, toSession, carrier, expect string) error {
-	log().Info("开始换绑驱动", "card", id, "to", toSession, "expect", expect)
-	prev := ""
+// RebindSeat 以 expect 原始字节值 CAS 覆写非空席位，并在同一事务落恰一条
+// EvDriverTakeover。expect 由服务层从账本读出，不来自用户可控 flag。
+func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect string) error {
+	log().Info("开始换绑席位", "card", id, "source", source, "has_expect", expect != "")
+	if identity == "" {
+		err := fmt.Errorf("换绑需要目标会话席位身份: %w", ErrBadState)
+		log().Warn("换绑被拒：身份为空", "card", id, "source", source, "cause", err)
+		return err
+	}
+	if err := proto.ValidateSeat(identity, source); err != nil {
+		wrapped := fmt.Errorf("换绑席位无效: %w", err)
+		log().Warn("换绑被拒：席位无效", "card", id, "source", source, "cause", wrapped)
+		return wrapped
+	}
+	var old string
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
-		if toSession == "" {
-			log().Warn("换绑被拒：目标会话为空", "card", id)
-			return fmt.Errorf("换绑被拒：目标会话为空")
-		}
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
-			return fmt.Errorf("换绑: 卡 %s: %w", id, err)
+			return fmt.Errorf("换绑读卡 %s: %w", id, err)
+		}
+		if card.DriverSession == "" && card.DriverSource == "" {
+			err := fmt.Errorf("卡 %s 为空座，请使用 bind 或 coordinate: %w", id, ErrCASConflict)
+			log().Warn("换绑被拒：空座", "card", id, "source", source, "cause", err)
+			return err
+		}
+		if card.DriverSession == "" {
+			err := fmt.Errorf("卡 %s 的旧席位缺少身份，不能直接换绑: %w", id, ErrBadState)
+			log().Warn("换绑被拒：存量席位身份为空", "card", id, "source", source, "cause", err)
+			return err
 		}
 		if card.DriverSession != expect {
-			log().Warn("换绑被拒：CAS 冲突", "card", id, "expect", expect, "actual", card.DriverSession)
-			return fmt.Errorf("卡 %s 当前绑定 %q 非 %q: %w", id, card.DriverSession, expect, ErrCASConflict)
+			err := fmt.Errorf("卡 %s 当前席位与期望不符，请重读后换绑: %w", id, ErrCASConflict)
+			log().Warn("换绑被拒：CAS 冲突", "card", id, "source", source, "cause", err)
+			return err
 		}
-		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_carrier = ?,
-			driver_heartbeat_at = ? WHERE id = ?`),
-			toSession, carrier, s.tval(s.timeNow()), id); err != nil {
-			return fmt.Errorf("换绑写归属: %w", err)
+		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_heartbeat_at = ? WHERE id = ?`),
+			identity, source, s.tval(s.timeNow()), id); err != nil {
+			return fmt.Errorf("换绑写席位 %s: %w", id, err)
 		}
-		if _, err := s.appendEvent(tx, sink, id, EvDriverTakeover, toSession,
-			map[string]string{"from": card.DriverSession, "to": toSession}); err != nil {
-			return fmt.Errorf("换绑落事件: %w", err)
+		if _, err := s.appendEvent(tx, sink, id, EvDriverTakeover, identity,
+			map[string]string{"from": card.DriverSession, "to": identity}); err != nil {
+			return fmt.Errorf("换绑落事件 %s: %w", id, err)
 		}
-		prev = card.DriverSession
+		old = card.DriverSession
 		return nil
 	})
 	if err != nil {
-		log().Warn("换绑驱动失败", "card", id, "to", toSession, "cause", err)
+		log().Warn("换绑席位失败", "card", id, "source", source, "cause", err)
 		return err
 	}
-	log().Info("驱动已换绑", "card", id, "from", prev, "to", toSession)
+	log().Info("换绑席位成功", "card", id, "source", source, "had_old", old != "")
 	return nil
+}
+
+// ClaimCardAs 保留旧签名以兼容编译，但不再占用协调者席位。
+// carrier 只是历史兼容参数；新流程必须使用 BindSeat 或 RebindSeat。
+func (s *Store) ClaimCardAs(id, owner, carrier string) error {
+	log().Warn("旧认领入口已停用", "card", id, "has_owner", owner != "", "has_carrier", carrier != "")
+	return fmt.Errorf("卡 %s 不再通过 dispatch/ClaimCardAs 占座，请使用 bind、coordinate 或 rebind: %w", id, ErrBadState)
+}
+
+// RebindDriver 保留旧签名以兼容编译，但已停用；新的协调者换绑必须使用
+// RebindSeat，以便显式携带席位来源并在统一写面完成 CAS。
+func (s *Store) RebindDriver(id, toSession, carrier, expect string) error {
+	log().Warn("旧驱动换绑入口已停用", "card", id, "has_target", toSession != "", "has_expect", expect != "", "has_carrier", carrier != "")
+	return fmt.Errorf("卡 %s 不再通过 RebindDriver 占座，请使用 RebindSeat: %w", id, ErrBadState)
 }
 
 // RenewDriverLease 续租/首建该 session 的租约行（upsert，session 全局一行：

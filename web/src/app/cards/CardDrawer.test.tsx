@@ -87,8 +87,18 @@ describe('抽屉协调者接缝', () => {
     })
     render(<CardDrawer id="B282" onClose={() => {}} onOpenCard={() => {}} nodes={[{ name: '进行中', dispatch: true }] as never} />)
     expect(await screen.findByText('未绑定')).toBeVisible()
-    expect(screen.getByRole('button', { name: '▶ 拉起协调者' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '▶ 叫机器人' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /跑「/ })).not.toBeInTheDocument()
+  })
+
+  it('抽屉把未知席位来源标成席位异常', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: card({ id: 'B283', title: '异常席位', driver_session: 'cli:old#session', driver_source: 'manual' as never }),
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '', children: [],
+    })
+    render(<CardDrawer id="B283" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText('席位异常')).toBeInTheDocument()
   })
 })
 

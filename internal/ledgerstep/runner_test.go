@@ -211,7 +211,7 @@ func TestRunnerSameExecutorKeepsNodeModel(t *testing.T) {
 	}
 }
 
-func TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun(t *testing.T) {
+func TestRunnerKeepsRunLockWithoutChangingSeat(t *testing.T) {
 	st, card := nodeLedger(t)
 	started := make(chan struct{})
 	finish := make(chan struct{})
@@ -231,8 +231,8 @@ func TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读运行中卡: %v", err)
 	}
-	if claimed.DriverSession != runner.Session {
-		t.Fatalf("运行中应记录驱动会话 %q，实际 %q", runner.Session, claimed.DriverSession)
+	if claimed.DriverSession != "" || claimed.DriverSource != "" {
+		t.Fatalf("运行中不得写协调者席位: %+v", claimed)
 	}
 	lockRow, ok, err := st.RunLockOf(card.ID)
 	if err != nil || !ok || lockRow.Holder != runner.RunHolder {
@@ -253,35 +253,33 @@ func TestRunnerKeepsOwnershipAndReleasesRunLockAfterRun(t *testing.T) {
 	if _, ok, _ := st.RunLockOf(card.ID); ok {
 		t.Fatal("回合结束运行锁行应消失")
 	}
-	if released.DriverSession != runner.Session || released.DriverHeartbeatAt.IsZero() {
-		t.Fatalf("回合结束应保持归属，实际 session=%q heartbeat=%v", released.DriverSession, released.DriverHeartbeatAt)
+	if released.DriverSession != "" || released.DriverSource != "" {
+		t.Fatalf("回合结束不得写协调者席位: %+v", released)
 	}
 }
 
-func TestRunnerRejectsActiveDriverAndReportsHolder(t *testing.T) {
+func TestRunnerDoesNotOverwriteExistingSeat(t *testing.T) {
 	st, card := nodeLedger(t)
-	if err := st.ClaimCard(card.ID, "cli:holder@h"); err != nil {
+	if err := st.BindSeat(card.ID, "cli:codex#holder", proto.SeatSourceBind); err != nil {
 		t.Fatalf("预先认领: %v", err)
 	}
 	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
-		t.Fatalf("冲突时不应派发")
-		return "", "", nil
+		return "T-existing-seat", "", nil
 	})
 
-	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
-	if err == nil || !strings.Contains(err.Error(), "cli:holder@h") {
-		t.Fatalf("拒绝应报告当前持有者，实际: %v", err)
+	if _, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing); err != nil {
+		t.Fatalf("已有席位不应阻止运行锁节点: %v", err)
 	}
 	stillHeld, getErr := st.GetCard(card.ID)
 	if getErr != nil {
 		t.Fatalf("读冲突卡: %v", getErr)
 	}
-	if stillHeld.DriverSession != "cli:holder@h" {
-		t.Fatalf("冲突方不应改写驱动，实际 %q", stillHeld.DriverSession)
+	if stillHeld.DriverSession != "cli:codex#holder" || stillHeld.DriverSource != string(proto.SeatSourceBind) {
+		t.Fatalf("节点执行不应改写既有席位: %+v", stillHeld)
 	}
 }
 
-func TestRunnerKeepsOwnershipAfterDispatchFailure(t *testing.T) {
+func TestRunnerKeepsEmptySeatAfterDispatchFailure(t *testing.T) {
 	st, card := nodeLedger(t)
 	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		return "", "", fmt.Errorf("目标机不可达")
@@ -297,8 +295,8 @@ func TestRunnerKeepsOwnershipAfterDispatchFailure(t *testing.T) {
 	if _, ok, _ := st.RunLockOf(card.ID); ok {
 		t.Fatal("失败回合运行锁行也应消失")
 	}
-	if got.DriverSession != runner.Session {
-		t.Fatalf("失败回合归属也应保持，实际 session=%q", got.DriverSession)
+	if got.DriverSession != "" || got.DriverSource != "" {
+		t.Fatalf("失败回合不得写协调者席位: %+v", got)
 	}
 }
 
@@ -415,26 +413,6 @@ func TestRunnerRunLockRefusalReportsWhoNodeExpiry(t *testing.T) {
 	got, _ := st.GetCard(card.ID)
 	if got.DriverSession != "" {
 		t.Fatalf("运行锁被拒时不得认领归属: %q", got.DriverSession)
-	}
-}
-
-func TestRunnerOwnershipRefusalHaltsWithCardEvent(t *testing.T) {
-	st, card := nodeLedger(t)
-	if err := st.ClaimCard(card.ID, "cli:holder@h"); err != nil {
-		t.Fatalf("预占归属: %v", err)
-	}
-	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
-		t.Fatal("归属被拒时不得派发")
-		return "", "", nil
-	})
-	_, err := runner.Run(context.Background(), card.ID, ledger.StatusDoing)
-	if err == nil || !strings.Contains(err.Error(), "cli:holder@h") {
-		t.Fatalf("报错应点名持有者: %v", err)
-	}
-	assertHaltOnCard(t, st, card.ID, "cli:holder@h")
-	stillHeld, _ := st.GetCard(card.ID)
-	if stillHeld.DriverSession != "cli:holder@h" {
-		t.Fatalf("冲突方不得改写归属: %q", stillHeld.DriverSession)
 	}
 }
 

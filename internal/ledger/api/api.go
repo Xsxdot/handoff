@@ -91,8 +91,8 @@ func (f *Facade) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]pr
 }
 
 func (f *Facade) BindDriver(id, session, carrier, expect string) error {
-	// expect 语义在账本侧 RebindDriver 落地（B156.2 欠账 #4）：expect=当前
-	// 绑定前值 CAS；空 expect=要求当前无绑定。本方法保持直通镜像零业务判断。
+	// 保留旧协作接口以兼容编译；协调者席位写入必须走 Store.BindSeat/
+	// Store.RebindSeat，本旧入口不再修改席位。
 	return f.st.RebindDriver(id, session, carrier, expect)
 }
 
@@ -124,6 +124,7 @@ func cardWire(v ledger.CardView) proto.Card {
 		BaseBranch:         c.BaseBranch,
 		Following:          v.Following,
 		DriverSession:      c.DriverSession,
+		DriverSource:       c.DriverSource,
 		DriverHeartbeatAt:  c.DriverHeartbeatAt,
 		CreatedAt:          c.CreatedAt,
 		UpdatedAt:          c.UpdatedAt,

@@ -4,8 +4,8 @@
 //
 // 边界：本文件是 gateway 对 d_collab 入站 api 门面的消费侧（spec 测试接缝清单
 // #1 的调用方）；不得 import internal/collab 之外的门面（internal/ledger/api），
-// 账本能力经 s.ledger 既有直调面（岔口二方案 A，仅既有能力）或 rebindPort
-// 端口（组装点注入适配器）触达。actor/成员标识服务端注入，不经请求体。
+// 账本能力经 s.ledger 既有直调面（岔口二方案 A，仅既有能力）触达；席位
+// 绑定由 coordinator 控制面负责。actor/成员标识服务端注入，不经请求体。
 package agentd
 
 import (
@@ -483,39 +483,4 @@ func ticketTitle(tk proto.Ticket) string {
 		return "权限工单待答复"
 	}
 	return "提问工单待答复"
-}
-
-// handleCardRebind POST /api/cards/{id}/rebind {to_session,carrier,expect} → 换绑。
-// 走 rebindPort 端口（岔口二条件 2/4：换绑是本期新增账本能力、一律经门面，而
-// gateway handler 不得引用门面——端口接口定义在此、具体绑定由组装点注入）。
-// CAS 冲突由账本哨兵映射 409（ledgerErr）。
-func (s *Server) handleCardRebind(w http.ResponseWriter, r *http.Request) {
-	id := r.PathValue("id")
-	var req struct {
-		ToSession string `json:"to_session"`
-		Carrier   string `json:"carrier"`
-		Expect    string `json:"expect"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
-		return
-	}
-	if s.rebind == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "换绑端口未装配"})
-		return
-	}
-	if err := s.rebind.Rebind(id, req.ToSession, req.Carrier, req.Expect); err != nil {
-		s.log.Warn("换绑失败", "card", id, "to", req.ToSession, "cause", err)
-		ledgerErr(w, err)
-		return
-	}
-	s.log.Info("已换绑", "card", id, "to", req.ToSession, "carrier", req.Carrier)
-	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
-}
-
-// rebindPort 是 gateway 房间 handler 对换绑能力的消费侧端口（岔口二条件 4 的
-// 「另一个子系统消费侧端口」按此窄读：接口定义在 gateway 消费侧、实现适配器
-// 只出现在组装点 server.go）。实现为 facadeBindAdapter（server.go）。
-type rebindPort interface {
-	Rebind(id, toSession, carrier, expect string) error
 }

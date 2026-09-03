@@ -51,7 +51,6 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/rooms/{id}/messages", s.withRooms(s.handleRoomSend))
 	api.HandleFunc("POST /api/rooms/{id}/read", s.withRooms(s.handleRoomRead))
 	api.HandleFunc("GET /api/inbox", s.withRooms(s.handleInbox))
-	api.HandleFunc("POST /api/cards/{id}/rebind", s.withRooms(s.handleCardRebind))
 	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
 	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
 	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)
@@ -104,7 +103,7 @@ func ledgerCardWire(card ledger.Card) proto.Card {
 		Priority: card.Priority, Project: card.Project, ParentID: card.ParentID,
 		WorkflowName: card.WorkflowName, WorkflowVersion: card.WorkflowVersion, Attachments: attachments,
 		AcceptanceCriteria: card.AcceptanceCriteria, BaseBranch: card.BaseBranch,
-		DriverSession: card.DriverSession, DriverHeartbeatAt: card.DriverHeartbeatAt,
+		DriverSession: card.DriverSession, DriverSource: card.DriverSource, DriverHeartbeatAt: card.DriverHeartbeatAt,
 		CreatedAt: card.CreatedAt, UpdatedAt: card.UpdatedAt,
 	}
 }
@@ -159,6 +158,7 @@ func ledgerCardViewWire(view ledger.CardView, conflict bool, openTickets int) pr
 		BaseFrozen: view.BaseFrozen, BlockedBy: view.BlockedBy, MergedCount: view.MergedCount, Needs: view.NeedsReason,
 		OpenDecisions: view.OpenDecisions, ChildrenTotal: view.ChildrenTotal, ChildrenDone: view.ChildrenDone,
 		Conflict: conflict, OpenTickets: openTickets,
+		DriverSession: view.DriverSession, DriverSource: view.DriverSource,
 	}
 }
 
@@ -427,7 +427,7 @@ const maxCardStepBody = 1 << 20
 // JSON 对**未知字段**宽松（忽略，避免版本错配把新可选字段变成 400），但对**尾随
 // 内容**严格：整段读进来用 json.Unmarshal 解，多出的字节一律 400。Decoder.Decode
 // 只吃第一个 JSON 值，被截断又重发的请求体会被它当成合法请求受理——而受理是有
-// 副作用的（认领驱动、派任务），不能建立在只看了前半句上。
+// 副作用的（取得运行锁、派任务），不能建立在只看了前半句上。
 //
 // 受理前只做四件事：解出规范请求、校验 step/actor 非空、拒掉要求内联本地文件的
 // 请求、确认卡与节点都解得开（卡不存在 404，节点名不对 400）。其余一切——门是否

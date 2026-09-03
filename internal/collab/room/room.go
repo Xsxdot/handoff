@@ -135,6 +135,11 @@ func VerifyWriter(r *Room, kind, actor string) error {
 			log().Warn("协调者类被拒：群房间无绑定席位可比", "room", r.ID, "kind", kind)
 			return ErrNotWriter
 		}
+		if err := proto.ValidateSeat(r.Card.DriverSession, proto.SeatSource(r.Card.DriverSource)); err != nil {
+			log().Warn("协调者类被拒：卡席位不是规范身份", "room", r.ID,
+				"card", r.CardID, "kind", kind, "cause", err)
+			return ErrNotWriter
+		}
 		if actor != r.Card.DriverSession {
 			log().Warn("协调者类被拒：非当前绑定者", "room", r.ID,
 				"card", r.CardID, "kind", kind, "actor", actor,

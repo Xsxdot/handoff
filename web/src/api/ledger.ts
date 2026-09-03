@@ -2,6 +2,8 @@
 // 与 client.ts 同一 request/postJSON 底座；类型字段名与 Go 侧 wire map 一字不差。
 import { deleteJSON, patchJSON, postJSON, putJSON, request } from './client'
 
+export type SeatSource = 'bind' | 'coordinate'
+
 export interface CardView {
   id: string
   title: string
@@ -26,6 +28,8 @@ export interface CardView {
   children_done: number // 已完结（含终止），与聚合闸同一把尺
   conflict: boolean
   open_tickets: number
+  driver_session?: string
+  driver_source?: SeatSource
 }
 
 export interface Attachment {
@@ -47,6 +51,7 @@ export interface Card {
   acceptance_criteria?: string
   base_branch?: string
   driver_session?: string
+  driver_source?: SeatSource
   driver_heartbeat_at?: string
   created_at: string
   updated_at: string

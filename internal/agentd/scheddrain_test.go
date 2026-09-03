@@ -17,6 +17,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/schedclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
@@ -235,8 +236,8 @@ func TestAutomationQueueRestartReplay(t *testing.T) {
 		t.Fatalf("重放后仍有 %d 行队列: %+v", len(rows), rows)
 	}
 	launches, resumes, _ := runner.snapshot()
-	if launches != 3 || len(resumes) != 0 {
-		t.Fatalf("协调者回合数 launch=%d resume=%d，want 3/0", launches, len(resumes))
+	if launches != 1 || len(resumes) != 0 {
+		t.Fatalf("仅协调者队列应拉起机器人，执行者空座不应自动 Launch：launch=%d resume=%d，want 1/0", launches, len(resumes))
 	}
 }
 
@@ -244,8 +245,16 @@ func TestAutomationIgnitionDrainWakesBeforeTrueDispatch(t *testing.T) {
 	env := setupNoPTYSquadEnv(t, 2)
 	runner := seedQueueCoordinator(t, env)
 	ids := seedSquadFlow(t, env, "sq1", 2)
-	if _, err := env.srv.keystone.LaunchForCard(context.Background(), ids[1], "test", keysclient.SessionSpec{CLI: "opencode"}); err != nil {
+	result, err := env.srv.keystone.LaunchForCard(context.Background(), ids[1], "coordinate", keysclient.SessionSpec{CLI: "opencode"})
+	if err != nil {
 		t.Fatalf("预绑定协调者会话: %v", err)
+	}
+	identity, err := proto.EncodeSeatIdentity("opencode", result.SessionID)
+	if err != nil {
+		t.Fatalf("编码预绑定协调者席位: %v", err)
+	}
+	if err := env.ledger.BindSeat(ids[1], identity, proto.SeatSourceCoordinate); err != nil {
+		t.Fatalf("写预绑定协调者席位: %v", err)
 	}
 	if _, err := env.srv.Scheduling().Enqueue(scheduling.IgnitionRequest{
 		Card: ids[1], Squad: "sq1", Node: "implement", Executor: "opencode", Actor: "test", Ready: true,
@@ -285,7 +294,7 @@ func TestAutomationRoundReleasesCoordinatorCounters(t *testing.T) {
 		call func() error
 	}{
 		{name: "launch", call: func() error {
-			_, err := env.srv.launchCoordinatorRound(context.Background(), cardID, "test")
+			_, err := env.srv.launchCoordinatorRound(context.Background(), cardID, "coordinate")
 			return err
 		}},
 		{name: "wake", call: func() error {
@@ -319,7 +328,7 @@ func TestAutomationReleaseKicksDrain(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
 	seedQueueCoordinator(t, env)
-	if _, err := env.srv.launchCoordinatorRound(context.Background(), createCoordCard(t, env), "test"); err != nil {
+	if _, err := env.srv.launchCoordinatorRound(context.Background(), createCoordCard(t, env), "coordinate"); err != nil {
 		t.Fatalf("拉起回合: %v", err)
 	}
 	select {

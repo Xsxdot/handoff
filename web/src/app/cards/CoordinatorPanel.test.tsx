@@ -79,7 +79,7 @@ describe('协调者面板', () => {
       .mockReturnValueOnce(pollState({ bound: true, attach_active: false, attach: info }) as never)
     const { rerender } = render(<CoordinatorPanel cardId="B1" onOpenTerminal={vi.fn()} />)
     expect(await screen.findByText('未绑定')).toBeVisible()
-    expect(screen.getByRole('button', { name: '▶ 拉起协调者' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '▶ 叫机器人' })).toBeVisible()
     rerender(<CoordinatorPanel cardId="B2" onOpenTerminal={vi.fn()} />)
     expect(await screen.findByText('已绑定')).toBeVisible()
     expect(screen.getByRole('button', { name: '打开终端' })).toBeVisible()

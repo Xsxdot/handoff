@@ -12,6 +12,7 @@ import (
 	"sync"
 
 	"github.com/Xsxdot/handoff/internal/keysclient"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // WakeKind 是唤醒事件种类。progress / 心跳类事件不在清单里 = 不唤醒
@@ -85,49 +86,84 @@ func (s *Service) Decide(ev WakeEvent) Decision {
 }
 
 // Wake 跑一个唤醒回合：同卡积压事件合并为一回合，先读账对齐现场（以 ledger
-// 为准不信记忆），再无头续会话送入开场简报。失败兜底降级链（spec §5.4）：
-// resume 失败 → 新载体承接同一身份（重建四步）→ 仍失败 → 转等人。
+// 为准不信记忆），再为 coordinate 席位无头续会话送入开场简报。bind 席位属于
+// 当前终端，不拥有可供 agentd 续接的会话，因此必须 no-op；空座和非法旧值也
+// 不能被误判成可拉起的新机器人。resume 失败才进入重建四步，最终失败转等人。
 //
-// spec 由组装点解析（小队 → LaunchAdmit → 载体）。无绑定时必须带着它去
-// launchRound——空 spec 会让承载门面报「CLI "" 未实装」，再叠加失败前落指针、
-// 失败不推 cursor，就会把房间刷成指针洪流（B274）。
+// spec 由组装点解析（小队 → LaunchAdmit → 载体）。它只补齐账本身份没有持久化
+// 的承载环境，不决定席位来源。
 func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec keysclient.SessionSpec) (RoundResult, error) {
 	var zero RoundResult
 	if len(evs) == 0 {
 		return zero, errors.New("keystone: 唤醒回合没有事件")
 	}
 	sort.Slice(evs, func(i, j int) bool { return evs[i].Kind < evs[j].Kind })
+	if s.ledger == nil {
+		return zero, errors.New("keystone: 唤醒无法读取账本席位")
+	}
+	seat, err := s.ledger.GetCard(card)
+	if err != nil {
+		return zero, fmt.Errorf("keystone: 读取卡 %s 席位: %w", card, err)
+	}
+	if seat.DriverSession == "" && seat.DriverSource == "" {
+		s.Forget(card)
+		return zero, nil
+	}
+	if seat.DriverSource == string(proto.SeatSourceBind) {
+		s.Forget(card)
+		return zero, nil
+	}
+	if err := proto.ValidateSeat(seat.DriverSession, proto.SeatSource(seat.DriverSource)); err != nil {
+		s.Forget(card)
+		return zero, fmt.Errorf("keystone: 卡 %s 席位非法: %w", card, err)
+	}
+	cli, sessionID, err := proto.ParseSeatIdentity(seat.DriverSession)
+	if err != nil {
+		s.Forget(card)
+		return zero, fmt.Errorf("keystone: 解析卡 %s 席位: %w", card, err)
+	}
 	s.mu.Lock()
 	ref, ok := s.sessions[card]
 	s.mu.Unlock()
-	prompt := s.briefing(card, evs)
-	if !ok {
-		return s.launchRound(card, prompt, spec, false)
-	}
+	ref.CLI = cli
+	ref.SessionID = sessionID
 	ref = overlayResumeRef(ref, spec)
 	s.mu.Lock()
 	s.sessions[card] = ref
 	s.mu.Unlock()
+	prompt := s.briefing(card, evs)
+	if !ok {
+		result, resumeErr := s.runner.Resume(ref, prompt)
+		if resumeErr == nil {
+			return RoundResult{Woke: true, SessionID: result.SessionID, Output: result.Output}, nil
+		}
+		return s.rebuildAfterResumeFailure(card, prompt, spec, ref, resumeErr)
+	}
 	result, err := s.runner.Resume(ref, prompt)
 	if err == nil {
 		return RoundResult{Woke: true, SessionID: result.SessionID, Output: result.Output}, nil
 	}
+	return s.rebuildAfterResumeFailure(card, prompt, spec, ref, err)
+}
+
+func (s *Service) rebuildAfterResumeFailure(card, prompt string, spec keysclient.SessionSpec, ref keysclient.SessionRef, resumeErr error) (RoundResult, error) {
 	rebuildSpec := spec
-	if rebuildSpec.CLI == "" {
-		rebuildSpec.CLI = ref.CLI
-	}
+	rebuildSpec.CLI = ref.CLI
 	rebuilt, launchErr := s.launchRound(card, prompt, rebuildSpec, true)
 	if launchErr != nil {
 		_ = s.ledger.MarkNeedsHuman(card, "协调者唤醒失败：resume 与重建均不可用", "keystone")
-		return RoundResult{Escalated: true}, fmt.Errorf("resume: %v; 重建: %w", err, launchErr)
+		return RoundResult{Escalated: true}, fmt.Errorf("resume: %v; 重建: %w", resumeErr, launchErr)
 	}
 	rebuilt.Rebuilt = true
 	return rebuilt, nil
 }
 
-// LaunchForCard 拉起一张卡的协调者并绑定。source 记录拉起来源（card_create =
-// 开卡即绑；manual = 卡上一键拉起），两入口共用同一实现（spec §5.1）。
+// LaunchForCard 仅承接 coordinate 来源的机器人新会话。席位由 agentd 组装点在
+// 回合成功后通过账本 CAS 写入；bind 当前终端不能进入此方法。
 func (s *Service) LaunchForCard(ctx context.Context, card, source string, spec keysclient.SessionSpec) (RoundResult, error) {
+	if source != string(proto.SeatSourceCoordinate) {
+		return RoundResult{}, fmt.Errorf("拉起协调者来源必须是 coordinate，收到 %q", source)
+	}
 	result, err := s.launchRound(card, "", spec, false)
 	if err != nil {
 		return RoundResult{}, fmt.Errorf("拉起协调者（来源 %s）失败: %w", source, err)
@@ -157,14 +193,35 @@ func (s *Service) SetAttach(card string, active bool) {
 
 // Locate 产出 attach 定位信息（机器 → 目录 → resume 命令）。
 func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error) {
+	s.mu.Lock()
 	ref, ok := s.sessions[card]
+	s.mu.Unlock()
 	if !ok {
-		return keysclient.AttachInfo{}, errors.New("keystone: 该卡没有绑定的协调者会话")
+		if s.ledger == nil {
+			return keysclient.AttachInfo{}, errors.New("keystone: 该卡没有绑定的协调者会话")
+		}
+		seat, err := s.ledger.GetCard(card)
+		if err != nil || seat.DriverSource != string(proto.SeatSourceCoordinate) {
+			return keysclient.AttachInfo{}, errors.New("keystone: 该卡没有绑定的协调者会话")
+		}
+		cli, sessionID, err := proto.ParseSeatIdentity(seat.DriverSession)
+		if err != nil {
+			return keysclient.AttachInfo{}, fmt.Errorf("keystone: 解析卡 %s 席位: %w", card, err)
+		}
+		ref = keysclient.SessionRef{CLI: cli, SessionID: sessionID, Workdir: workdir}
 	}
 	if s.locator == nil {
 		return keysclient.AttachInfo{}, errors.New("keystone: attach 定位未装配")
 	}
 	return s.locator.Locate(ref, workdir)
+}
+
+// Forget 清除进程内的旧会话引用。账本是席位真相；bind/self 换绑成功或读到
+// 空座、bind、非法旧值时必须调用它，防止旧机器人在下一轮被 Resume。
+func (s *Service) Forget(card string) {
+	s.mu.Lock()
+	delete(s.sessions, card)
+	s.mu.Unlock()
 }
 
 // launchRound 用新载体承接同一协调者身份并绑定。spec 由组装点解析后传入
@@ -191,12 +248,9 @@ func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec, r
 	return RoundResult{Woke: true, SessionID: result.SessionID, Rebuilt: rebuild, Output: result.Output}, nil
 }
 
-// overlayResumeRef 把 Wake 入参里非空的续接环境盖到已绑定的 ref 上。
-// Launch 写入的 HOME 是底；组装点刚解析的当前载体 spec 优先。
+// overlayResumeRef 把 Wake 入参里非空的承载环境盖到已绑定的 ref 上；CLI 不在
+// 此处覆盖，因为 CLI/session identity 已由账本席位决定，spec 只描述当前载体。
 func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) keysclient.SessionRef {
-	if spec.CLI != "" {
-		ref.CLI = spec.CLI
-	}
 	if spec.HomeDir != "" {
 		ref.HomeDir = spec.HomeDir
 	}

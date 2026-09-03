@@ -162,7 +162,10 @@ describe('契约 fixture 与 TS 类型', () => {
 		const migrate: MigrateCardReq = migrateCardReqFixture
 		const response: MigrateCardResp = migrateCardRespFixture
 		const event: LedgerEvent = ledgerEventFixture
-		const view: CardView = cardViewFixture
+			const view: CardView = {
+				...cardViewFixture,
+				driver_source: cardViewFixture.driver_source as CardView['driver_source'],
+			}
 		const detail: CardDetail = cardDetailFixture
 		const node: NodeDef = nodeDefFixture
 		const flow: FlowDetail = flowDetailFixture

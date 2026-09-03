@@ -5,6 +5,7 @@ package agentd
 // （SquadRows→LaunchAdmit→Carrier），keystone 侧注入 fake 端口记录 spec。
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"io"
@@ -29,6 +30,7 @@ type fakeCoordRunner struct {
 	launches   []keysclient.SessionSpec
 	resumes    []string
 	failLaunch bool
+	launchID   string
 }
 
 func (r *fakeCoordRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error) {
@@ -36,7 +38,10 @@ func (r *fakeCoordRunner) Launch(spec keysclient.SessionSpec, prompt string) (ke
 	if r.failLaunch {
 		return keysclient.TurnResult{}, errors.New("承载不可用")
 	}
-	return keysclient.TurnResult{SessionID: "sess-coord", Output: "ok"}, nil
+	if r.launchID == "" {
+		r.launchID = "sess-coord"
+	}
+	return keysclient.TurnResult{SessionID: r.launchID, Output: "ok"}, nil
 }
 
 func (r *fakeCoordRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error) {
@@ -123,7 +128,7 @@ func seedCoordinatorSquad(t *testing.T, env *ledgerEnv) {
 	}
 }
 
-// TestCoordLaunchEndpointSuccess 缝⑤×缝①×缝②：一键拉起（source=manual）走真实
+// TestCoordLaunchEndpointSuccess 缝⑤×缝①×缝②：一键拉起（空对象默认 coordinate）走真实
 // 编制域解析出非空 SessionSpec（CLI/HomeDir/Workdir 逐一断言——钉澄清 2，防空
 // spec 回潮）；拉起恰一次 Launch；两级计数各 +1；全程不产生 task。
 func TestCoordLaunchEndpointSuccess(t *testing.T) {
@@ -136,7 +141,7 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 	cardID := createCoordCard(t, env)
 
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch",
-		`{"source":"manual"}`)
+		`{}`)
 	if code != http.StatusOK {
 		t.Fatalf("launch 状态=%d body=%s", code, body)
 	}
@@ -149,6 +154,13 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 	}
 	if len(runner.launches) != 1 {
 		t.Fatalf("Launch 次数=%d，want 恰 1", len(runner.launches))
+	}
+	card, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatalf("读回协调者席位: %v", err)
+	}
+	if card.DriverSession != "cli:opencode#sess-coord" || card.DriverSource != "coordinate" {
+		t.Fatalf("拉起后席位不符: session=%q source=%q", card.DriverSession, card.DriverSource)
 	}
 	got := runner.launches[0]
 	if got.CLI != "opencode" || got.HomeDir != "/home/coordinator" {
@@ -170,30 +182,123 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 	}
 }
 
-// TestCoordLaunchSourceFlowsIntoKeystone 缝⑤×缝②：source 参数原样进 LaunchForCard
-// （来源只进审计与错误包装——承载失败时错误原文含「来源 <source>」）。两值各验一遍，
-// 每次拉起恰触发一次 Launch。
+// TestCoordLaunchSourceFlowsIntoKeystone 锁住来源执法：manual/card_create 等旧值和
+// 未知值均在 Launch 前 400，不能借来源字段绕过 coordinate 席位规则。
 func TestCoordLaunchSourceFlowsIntoKeystone(t *testing.T) {
 	env, runner := newCoordEnv(t)
 	seedCoordinatorSquad(t, env)
-	runner.failLaunch = true
 	cardID := createCoordCard(t, env)
 
-	for _, tc := range []struct{ src, want string }{
-		{"manual", "来源 manual"},
-		{"card_create", "来源 card_create"},
-	} {
+	for _, src := range []string{"manual", "card_create", "unknown"} {
 		code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch",
-			`{"source":"`+tc.src+`"}`)
-		if code != http.StatusBadGateway {
-			t.Fatalf("[%s] 承载失败应 502，状态=%d body=%s", tc.src, code, body)
+			`{"source":"`+src+`"}`)
+		if code != http.StatusBadRequest {
+			t.Fatalf("[%s] 退役来源应 400，状态=%d body=%s", src, code, body)
 		}
-		if !strings.Contains(body, tc.want) {
-			t.Fatalf("[%s] 来源未进 LaunchForCard：body=%s", tc.src, body)
+		if !strings.Contains(body, "coordinate") {
+			t.Fatalf("[%s] 错误应指向 coordinate：body=%s", src, body)
 		}
 	}
-	if len(runner.launches) != 2 {
-		t.Fatalf("两次拉起应各触发恰一次 Launch，实际 %d", len(runner.launches))
+	if len(runner.launches) != 0 {
+		t.Fatalf("退役来源不得触发 Launch，实际 %d", len(runner.launches))
+	}
+	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`); code != http.StatusOK {
+		t.Fatalf("coordinate 来源应成功，状态=%d body=%s", code, body)
+	}
+	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`); code != http.StatusConflict {
+		t.Fatalf("已有席位不得二次 Launch，状态=%d body=%s", code, body)
+	}
+	if len(runner.launches) != 1 {
+		t.Fatalf("重复拉起不得触发第二次 Launch，实际 %d", len(runner.launches))
+	}
+}
+
+func TestCoordRebindLaunchHTTPContract(t *testing.T) {
+	env, runner := newNoPTYCoordEnv(t)
+	seedCoordinatorSquad(t, env)
+	cardID := createCoordCard(t, env)
+	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`); code != http.StatusOK {
+		t.Fatalf("初次拉起失败：%d %s", code, body)
+	}
+	runner.launchID = "sess-rebound"
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/rebind", `{"mode":"launch"}`)
+	if code != http.StatusOK {
+		t.Fatalf("launch rebind 应 200：%d %s", code, body)
+	}
+	var resp proto.CoordinatorLaunchResp
+	if err := json.Unmarshal([]byte(body), &resp); err != nil || resp.SessionID != "sess-rebound" || !resp.Woke {
+		t.Fatalf("launch rebind 响应异常：%s err=%v", body, err)
+	}
+	card, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatalf("读回换绑席位：%v", err)
+	}
+	if card.DriverSession != "cli:opencode#sess-rebound" || card.DriverSource != "coordinate" {
+		t.Fatalf("换绑席位不符：session=%q source=%q", card.DriverSession, card.DriverSource)
+	}
+	for _, payload := range []string{`{"mode":"self"}`, `{"mode":"launch","identity":"cli:forged#id"}`} {
+		code, body = ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/rebind", payload)
+		if code != http.StatusBadRequest {
+			t.Fatalf("非法 rebind body=%s 应 400：%d %s", payload, code, body)
+		}
+	}
+}
+
+func TestCoordRebindEmptySeatConflicts(t *testing.T) {
+	env, runner := newNoPTYCoordEnv(t)
+	seedCoordinatorSquad(t, env)
+	cardID := createCoordCard(t, env)
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/rebind", `{"mode":"launch"}`)
+	if code != http.StatusConflict || !strings.Contains(body, "空座") {
+		t.Fatalf("空座 launch rebind 应 409 指向坐下/叫机器人：%d %s", code, body)
+	}
+	if len(runner.launches) != 0 {
+		t.Fatalf("空座 rebind 不得启动机器人，Launch=%d", len(runner.launches))
+	}
+}
+
+func TestCoordRebindNoSquadIsActionableBadRequest(t *testing.T) {
+	env, runner := newNoPTYCoordEnv(t)
+	cardID := createCoordCard(t, env)
+	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-old", proto.SeatSourceCoordinate); err != nil {
+		t.Fatalf("预置协调者席位: %v", err)
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/rebind", `{"mode":"launch"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("无协调者小队的 rebind 应 400，状态=%d body=%s", code, body)
+	}
+	if !strings.Contains(body, "handoff squad create") {
+		t.Fatalf("rebind 错误应包含登记小队指引：%s", body)
+	}
+	if len(runner.launches) != 0 {
+		t.Fatalf("无协调者小队不得启动机器人，Launch=%d", len(runner.launches))
+	}
+}
+
+func TestCoordRebindSourceOnlySeatDoesNotLaunch(t *testing.T) {
+	env, runner := newNoPTYCoordEnv(t)
+	seedCoordinatorSquad(t, env)
+	cardID := createCoordCard(t, env)
+	raw, err := sql.Open("sqlite", env.ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := raw.Exec(`UPDATE cards SET driver_source = ? WHERE id = ?`, string(proto.SeatSourceCoordinate), cardID); err != nil {
+		raw.Close()
+		t.Fatal(err)
+	}
+	if err := raw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/rebind", `{"mode":"launch"}`)
+	if code != http.StatusConflict {
+		t.Fatalf("source-only 旧席位 rebind 应 409，状态=%d body=%s", code, body)
+	}
+	if !strings.Contains(body, "身份") {
+		t.Fatalf("source-only 错误应说明身份缺失：%s", body)
+	}
+	if len(runner.launches) != 0 {
+		t.Fatalf("source-only 旧席位不得启动机器人，Launch=%d", len(runner.launches))
 	}
 }
 

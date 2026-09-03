@@ -13,7 +13,6 @@
 //   - 项目与基线分支**建卡后不可改**：表单上写明，而不是让人建完才发现改不了
 import { useEffect, useRef, useState } from 'react'
 import { createCard } from '../../api/ledger'
-import { launchCoordinator } from '../../api/scheduling'
 import { ApiError, fetchProjectBranches, fetchProjects } from '../../api/client'
 import type { ProjectBranchesResp } from '../../api/types'
 import { errorMessage } from '../lib/format'
@@ -79,7 +78,6 @@ export function NewCardDialog({
   const [priority, setPriority] = useState('中')
   const [baseBranch, setBaseBranch] = useState('')
   const [busy, setBusy] = useState(false)
-  const [coordinate, setCoordinate] = useState(false)
   // picked 是用户手动动过的选择；null = 还没动过，让位给三档预选派生
   const [picked, setPicked] = useState<string | null>(null)
   const [registered, setRegistered] = useState<string[]>([])
@@ -89,7 +87,7 @@ export function NewCardDialog({
   const [branchDefault, setBranchDefault] = useState('')
   const [branchHint, setBranchHint] = useState('')
   const [result, setResult] = useState<{
-    succeeded: { title: string; id: string; coordinator?: 'launched' | 'failed'; coordinatorError?: string }[]
+    succeeded: { title: string; id: string }[]
     failed: { title: string; reason: string }[]
   } | null>(null)
 
@@ -115,7 +113,7 @@ export function NewCardDialog({
   useEffect(() => {
     if (!open) {
       // 关闭即复位：下次打开重新按三档预选，不带上一轮的残值
-      setPicked(null); setTitle(''); setBaseBranch(''); setResult(null); setCoordinate(false)
+      setPicked(null); setTitle(''); setBaseBranch(''); setResult(null)
       setBranchOptions([]); setBranchDefault(''); setBranchHint('')
       branchSeq.current++
     }
@@ -170,8 +168,8 @@ export function NewCardDialog({
     if (titles.length === 0 || projectValue === '') return
     setBusy(true)
     setResult(null)
-    console.info('card-create.start', { count: titles.length, coordinate })
-    const succeeded: { title: string; id: string; coordinator?: 'launched' | 'failed'; coordinatorError?: string }[] = []
+    console.info('card-create.start', { count: titles.length })
+    const succeeded: { title: string; id: string }[] = []
     const failed: { title: string; reason: string }[] = []
     // 串行不并发：并发会让卡号顺序与用户写下顺序对不上，而 B 号顺序是人读
     // 账本时的隐含线索（spec §5）。逐条提交逐条记账，已成功的不回滚。
@@ -185,20 +183,8 @@ export function NewCardDialog({
           ...(parent ? { parent } : {}),
           ...(baseBranch.trim() ? { base_branch: baseBranch.trim() } : {}),
         })
-        if (!coordinate) {
-          console.info('card-create.done', { card: created.id, coordinator: 'skipped' })
-          succeeded.push({ title: one, id: created.id })
-          continue
-        }
-        try {
-          await launchCoordinator(created.id, 'card_create')
-          console.info('card-create.done', { card: created.id, coordinator: 'launched' })
-          succeeded.push({ title: one, id: created.id, coordinator: 'launched' })
-        } catch (cause) {
-          const reason = errorMessage(cause)
-          console.warn('card-create.coordinator.error', { card: created.id, cause })
-          succeeded.push({ title: one, id: created.id, coordinator: 'failed', coordinatorError: reason })
-        }
+        console.info('card-create.done', { card: created.id })
+        succeeded.push({ title: one, id: created.id })
       } catch (err) {
         console.error('card-create.error', { title: one, cause: err })
         failed.push({ title: one, reason: errorMessage(err) })
@@ -206,8 +192,7 @@ export function NewCardDialog({
     }
     setBusy(false)
     if (succeeded.length > 0) saveLastProject(projectValue)
-    const coordinatorFailures = succeeded.some((row) => row.coordinator === 'failed')
-    if (failed.length > 0 || coordinatorFailures) {
+    if (failed.length > 0) {
       // 有失败就留在原地展示结果：成功列卡号、失败列原因；用户改掉失败那几行
       // 直接再点一次，不用从头重来（spec 故事 7）
       setResult({ succeeded, failed })
@@ -282,14 +267,10 @@ export function NewCardDialog({
         <p className="mt-1 text-xs text-muted-foreground">
           这张卡的合并目标。<b>建卡后不可改</b>——已派出去的任务会按它工作。
         </p>
-        <label className="mt-3 flex items-start gap-2 text-xs text-muted-foreground">
-          <input type="checkbox" aria-label="创建后拉起协调者并绑定（开卡即绑）" checked={coordinate} onChange={(event) => setCoordinate(event.target.checked)} />
-          <span><span className="font-medium text-foreground">创建后拉起协调者并绑定（开卡即绑）</span><br />先创建工作项，再逐张调用协调者拉起；拉起失败不会回滚已建卡。</span>
-        </label>
         {result !== null && (
           <div className="mt-3 space-y-1 rounded border p-2 text-xs">
             {result.succeeded.map((row, i) => (
-              <p key={`${row.id}-${i}`}>已建 <span className="font-mono">{row.id}</span> · {row.title}{row.coordinator === 'failed' && <span className="text-destructive"> · 协调者失败：{row.coordinatorError}</span>}</p>
+              <p key={`${row.id}-${i}`}>已建 <span className="font-mono">{row.id}</span> · {row.title}</p>
             ))}
             {result.failed.map((row, i) => (
               <p key={`${row.title}-${i}`} className="text-destructive">「{row.title}」未建成：{row.reason}</p>

@@ -24,8 +24,8 @@ import (
 type StepRunner struct {
 	St         *ledger.Store
 	Dispatcher *Dispatcher
-	// Session 是本次节点运行的发起方**归属身份**（人尺度，cli:user@host 档）。
-	// 它只用于认领「这张卡归谁在推」，不再承担运行互斥——互斥归 RunLock。
+	// Session 是本次节点运行的发起方审计身份；它不代表协调者席位，也不承担
+	// 运行互斥。互斥归 RunLock，协调者席位由 bind/coordinate/rebind 管理。
 	Session string
 	// RunHolder 是承载本次编排的那次运行的标识，由 agentd 在每次启动编排时
 	// 生成（全局唯一、含机器线索）；它是卡运行锁的持有者。空 = 未装配，
@@ -89,8 +89,8 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 		return r.dispatchNodeWithGate(&outputPath, nodeStep.WriteGate)(ctx, card, node)
 	}
 	if !node.Dispatch {
-		// 纯人工列没有执行能力，不应因为被误点而留下驱动归属。
-		logger.Info("纯人工节点跳过锁与认领")
+		// 纯人工列没有执行能力，不应因为被误点而取得运行锁或派发任务。
+		logger.Info("纯人工节点跳过运行锁与派发")
 		return nodeStep.RunOnce(ctx, cardID)
 	}
 
@@ -145,16 +145,7 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 		logger.Info("运行锁已释放", "holder", r.RunHolder)
 	}()
 
-	if err := r.St.ClaimCard(cardID, session); err != nil {
-		logger.Warn("归属认领被拒", "session", session, "cause", err)
-		o, haltErr := r.haltEntrypoint(cardID, nodeName, "归属认领被拒",
-			fmt.Sprintf("以 %s 认领这张卡被拒：\n%s", session, err.Error()))
-		if haltErr != nil {
-			return Outcome{}, haltErr
-		}
-		return o, fmt.Errorf("认领归属: %w", err)
-	}
-	logger.Info("归属已认领", "session", session)
+	logger.Info("节点执行继续：席位不由派发占用", "session", session)
 
 	done := make(chan struct{})
 	finished := make(chan struct{})
@@ -274,7 +265,7 @@ func (r *StepRunner) haltEntrypoint(cardID, nodeName, reason, body string) (Outc
 // 返回：卡不存在时原样透传 ledger.ErrNotFound（调用方据此映射 404）；工作流取不到、
 // 或节点名不在该工作流里，返回带卡号与工作流版本的描述性错误。
 //
-// 为什么导出：受理一个节点请求是有副作用的（认领驱动、派任务），而编排跑在后台
+// 为什么导出：受理一个节点请求是有副作用的（取得运行锁、派任务），而编排跑在后台
 // goroutine 里——HTTP 层必须能在受理之前用同一份判断拒掉无效输入，否则卡号或节点名
 // 打错只会换来一句「已受理」，失败连一条卡事件都留不下。两处必须查同一个真相源，
 // 各查各的迟早漂移。

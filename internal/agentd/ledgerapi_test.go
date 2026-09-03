@@ -132,12 +132,14 @@ func ledgerDelete(t *testing.T, env *testAgentdEnv, path, body string) (int, str
 
 type ledgerEnv struct {
 	*testAgentdEnv
-	ledger *ledger.Store
+	ledger     *ledger.Store
+	ledgerPath string
 }
 
 func newLedgerEnv(t *testing.T) *ledgerEnv {
 	t.Helper()
-	st, err := ledger.Open(t.TempDir() + "/ledger.db")
+	ledgerPath := filepath.Join(t.TempDir(), "ledger.db")
+	st, err := ledger.Open(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -148,14 +150,15 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	// 空 target 的 card step 对本机 /api/status 探活；没 manager 会 503。
 	env.srv.SetManager(NewManager(env.st, env.srv.Hub(), nil, env.srv.conf(), nil, nil, nil,
 		slog.New(slog.NewTextHandler(io.Discard, nil))))
-	return &ledgerEnv{testAgentdEnv: env, ledger: st}
+	return &ledgerEnv{testAgentdEnv: env, ledger: st, ledgerPath: ledgerPath}
 }
 
 // newNoPTYLedgerEnv 只装配 ledger HTTP 面；这些 B239 测试不触碰 PTY，
 // 因而不应因受限环境无法创建 PTY 根目录而整支跳过。
 func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	t.Helper()
-	ledgerStore, err := ledger.Open(t.TempDir() + "/ledger.db")
+	ledgerPath := filepath.Join(t.TempDir(), "ledger.db")
+	ledgerStore, err := ledger.Open(ledgerPath)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -183,7 +186,7 @@ func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	// Task 3 的本机纪律探活走真实 HTTP；把临时服务地址回填为本机监听地址，
 	// 避免零值 Listen 被误当成 relay 的空端点。
 	cfg.Listen = strings.TrimPrefix(ts.URL, "http://")
-	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore}
+	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore, ledgerPath: ledgerPath}
 }
 
 func TestFlowBoardLayoutEndpointRoundTripAndValidation(t *testing.T) {

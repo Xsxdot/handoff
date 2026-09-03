@@ -30,6 +30,7 @@ type Card struct {
 	// omitempty = 缺席不出键，既有契约 fixture 不受扰（B156.2 岔口一微修订）。
 	Following         string    `json:"following,omitempty"`
 	DriverSession     string    `json:"driver_session,omitempty"`
+	DriverSource      string    `json:"driver_source,omitempty"`
 	DriverHeartbeatAt time.Time `json:"driver_heartbeat_at,omitempty"`
 	CreatedAt         time.Time `json:"created_at"`
 	UpdatedAt         time.Time `json:"updated_at"`
@@ -148,6 +149,8 @@ type CardView struct {
 	ChildrenDone    int          `json:"children_done"`
 	Conflict        bool         `json:"conflict"`
 	OpenTickets     int          `json:"open_tickets"`
+	DriverSession   string       `json:"driver_session,omitempty"`
+	DriverSource    string       `json:"driver_source,omitempty"`
 }
 
 // CardDetail 是卡片详情的 wire DTO。

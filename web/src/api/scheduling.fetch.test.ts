@@ -71,18 +71,13 @@ describe('scheduling fetch seam', () => {
     })
   })
 
-  it('keeps manual launch body empty but serializes card-create source', async () => {
+  it('keeps coordinator launch body empty without legacy source', async () => {
     const fetchMock = mockFetchJSON({ woke: true, rebuilt: false, escalated: false })
     await launchCoordinator('B/1 特殊')
     expect(fetchMock.mock.calls[0][0]).toBe('/api/cards/B%2F1%20%E7%89%B9%E6%AE%8A/coordinator/launch')
     expect((fetchMock.mock.calls[0][1] as RequestInit).method).toBe('POST')
     expect((fetchMock.mock.calls[0][1] as RequestInit).body).toBe('{}')
 
-    const cardCreateFetchMock = mockFetchJSON({ woke: true, rebuilt: false, escalated: false })
-    await launchCoordinator('B/1 特殊', 'card_create')
-    expect(cardCreateFetchMock.mock.calls[0][0]).toBe('/api/cards/B%2F1%20%E7%89%B9%E6%AE%8A/coordinator/launch')
-    expect((cardCreateFetchMock.mock.calls[0][1] as RequestInit).method).toBe('POST')
-    expect(JSON.parse(String((cardCreateFetchMock.mock.calls[0][1] as RequestInit).body))).toEqual({ source: 'card_create' })
   })
 
   it('preserves attach null, false, zero-like and service-generated command', async () => {
