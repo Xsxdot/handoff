@@ -22774,10 +22774,6 @@
    "n_claudecode_permServer_serveConn_2"
   ],
   [
-   "n_agentd_Manager_ReclaimList",
-   "n_agentd_DirtyWorktreeError_Error"
-  ],
-  [
    "n_opencode_Adapter_Reconcile_2",
    "n_opencode_Adapter_classifyReconciled_2"
   ],
@@ -23000,10 +22996,6 @@
   [
    "n_agentd_Server_handleProjectWorktreeCreate",
    "n_agentd_Server_attachCardBaseBranches"
-  ],
-  [
-   "n_agentd_atomicReplace",
-   "n_agentd_runOutputBuffer_Write"
   ],
   [
    "n_codex_Client_Call_2",
