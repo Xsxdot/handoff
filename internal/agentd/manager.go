@@ -1834,6 +1834,9 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 		// step_N 再连一次 perm.sock；审计事件当幂等标记会吞掉第二次
 		// onAsk 且不再 Respond，PreToolUse 挂到 86400s。重放仍须回传 once。
 		m.respondAutoAllowReplay(taskID, ev)
+		// 审批链/人工 allow 走工单而非 auto-allow 审计。B310 只补了审计
+		// 路径，已答工单重放仍空回——git / go run 冻 ACTIVE。按工单再写一次。
+		m.respondAnsweredTicketReplay(taskID, ev, ticketID)
 		return
 	}
 	// 判据前置分流（B23/B27）：结构化判据先判，三个出口对应三条既有路径。
@@ -2403,6 +2406,41 @@ func (m *Manager) respondAutoAllowReplay(taskID string, ev executor.AdapterEvent
 		return
 	}
 	m.log.Info("自动放行重放已回传 executor", "task", taskID, "perm", ev.PermissionID)
+}
+
+// respondAnsweredTicketReplay 把已答 gate 工单的裁决再送到当前 pending 连接。
+// 第一次 Respond 已从 pending 删掉该 step_N；第二条 PreToolUse 再连时
+// isPermissionReplay 见 tk.Answer 就跳过中介。不补工单、不改状态。
+func (m *Manager) respondAnsweredTicketReplay(taskID string, ev executor.AdapterEvent, ticketID string) {
+	if ev.PermissionID == "" {
+		return
+	}
+	tk, err := m.st.GetTicket(ticketID)
+	if errors.Is(err, store.ErrNotFound) {
+		return
+	}
+	if err != nil {
+		m.log.Error("已答工单重放：读取工单失败", "task", taskID, "perm", ev.PermissionID,
+			"ticket", ticketID, "cause", err)
+		return
+	}
+	if tk.Kind != "gate" || tk.Answer == nil {
+		return
+	}
+	decision, reason := gateDecision(*tk.Answer)
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("已答工单重放：解析执行者失败", "task", taskID, "perm", ev.PermissionID, "cause", err)
+		return
+	}
+	actx, acancel := unaryCtx(context.Background())
+	defer acancel()
+	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, decision, reason); err != nil {
+		m.log.Error("已答工单重放回传 executor 失败（pending 已空则为 SSE 重放）",
+			"task", taskID, "perm", ev.PermissionID, "decision", decision, "cause", err)
+		return
+	}
+	m.log.Info("已答工单重放已回传 executor", "task", taskID, "perm", ev.PermissionID, "decision", decision)
 }
 
 func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {

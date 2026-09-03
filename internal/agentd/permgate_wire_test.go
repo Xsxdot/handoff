@@ -76,6 +76,58 @@ func TestSafeCommandPermissionAuditsOnceWithoutTicket(t *testing.T) {
 	}
 }
 
+// TestAnsweredTicketReplayStillResponds 锁死 B314：审批链已答之后，
+// 同一 PermissionID 的第二次 PreToolUse 仍须按工单回写（agy HOME+workspace 双 hook）。
+// 命令故意用白名单拒掉的连接符形态，避免漏回写时误走 AutoAllow 假绿。
+func TestAnsweredTicketReplayStillResponds(t *testing.T) {
+	cases := []struct {
+		name, answer, want string
+	}{
+		{"allow", "allow", "step_2:once"},
+		{"deny", "deny: 太危险", "step_2:reject"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			m, st, _, adapter := newTestManager(t)
+			taskID := "agy-approve-replay-" + tc.name
+			now := time.Now().UTC()
+			mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: t.TempDir(), Executor: "fake",
+				State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+			permID := "step_2"
+			ticketID := taskID + ":" + permID
+			command := "git status && git rev-parse HEAD"
+			if _, err := st.CreateTicket(&proto.Ticket{
+				ID: ticketID, TaskID: taskID, Kind: "gate",
+				Request:   json.RawMessage(`{"kind":"gate","permission":"run_command: ` + command + `"}`),
+				CreatedAt: now,
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if err := st.AnswerTicket(ticketID, tc.answer); err != nil {
+				t.Fatal(err)
+			}
+			ev := executor.AdapterEvent{
+				Type: "permission", PermissionID: permID, Text: "run_command: " + command,
+				Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+			}
+			m.handlePermission(context.Background(), taskID, ev)
+			if got := adapter.recordedPerms(); len(got) != 1 || got[0] != tc.want {
+				t.Fatalf("answered replay responses = %v, want [%s]", got, tc.want)
+			}
+			if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 0 {
+				t.Fatalf("replay must not mint auto-allow audit, got %d", got)
+			}
+			task, err := st.GetTask(taskID)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if task.State != proto.TaskStateRunning {
+				t.Fatalf("task state = %s, want running", task.State)
+			}
+		})
+	}
+}
+
 // TestSafeCommandAuditFailureStillResponds verifies Store append failure does
 // not leave the executor waiting for its once response.
 func TestSafeCommandAuditFailureStillResponds(t *testing.T) {
