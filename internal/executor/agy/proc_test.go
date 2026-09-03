@@ -34,6 +34,11 @@ func TestAgyArgv(t *testing.T) {
 			req:  StartProcReq{SessionID: "sess-123", Resume: true},
 			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--conversation", "sess-123"},
 		},
+		{
+			name: "有 RepoPath 必须 --add-dir，否则 run_command 落 scratch",
+			req:  StartProcReq{RepoPath: "/worktrees/T1"},
+			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--add-dir", "/worktrees/T1"},
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

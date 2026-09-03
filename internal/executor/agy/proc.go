@@ -109,7 +109,7 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 	}
 	spec.TaskID = req.TaskID
 	spec.MarkRoot = req.MarkRoot
-	l.Info("启动 agy 执行者", "bin", bin, "repo", req.RepoPath, "resume", req.Resume)
+	l.Info("启动 agy 执行者", "bin", bin, "repo", req.RepoPath, "add_dir", req.RepoPath != "", "resume", req.Resume)
 	handle, err := startProcHost(spec, selfExe)
 	if err != nil {
 		l.Error("拉起 agy 执行者失败", "cause", err)
@@ -139,6 +139,9 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 // 说明：
 //   - --input-format / --output-format stream-json: 启用双向流式 stdin/stdout 协议。
 //   - --print-timeout 24h: 避免受默认 5m 打印等待墙截断。
+//   - --add-dir <RepoPath>：隔离 HOME 后 run_command 的默认 cwd 是
+//     $HOME/.gemini/antigravity-cli/scratch，不是进程 Dir。5530b65b 实测 init.cwd
+//     已是 worktree，pwd 仍打出 scratch。必须把 worktree 登记成 workspace。
 //   - 不传 --sandbox：agy 的 OS 级别 sandbox 会严格限制只写工作区，与 handoff 分配在
 //     任务目录下（~/.handoff/tasks/<id>/tmp）的 TMPDIR/GOCACHE 互斥，会导致构建与测试报错；
 //     headless 不读 workspace .agents/hooks.json，写安全由任务 HOME 的 hooks.json
@@ -150,6 +153,9 @@ func agyArgv(req StartProcReq) []string {
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--print-timeout", "24h",
+	}
+	if req.RepoPath != "" {
+		argv = append(argv, "--add-dir", req.RepoPath)
 	}
 	if req.Model != "" {
 		argv = append(argv, "--model", req.Model)
