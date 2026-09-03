@@ -393,7 +393,8 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 不要再挂）。叫机器人由那边的无头会话收消息。
 
 `--step` **不占座、不换座**。空座可以派；有人则出示必须等于席位，否则拒绝并提示
-`rebind`。`takeover` / `release` 不再改席位；席位非空会失败并指向 `rebind`。
+`rebind`。`takeover` 一律失败并指向 bind / coordinate / rebind。`release` 空座幂等
+成功，有席位失败并指向 `rebind`。
 
 协调者 kind 的 `room send`（`escalation` / `closing` 等）也要出示这场席位；出示
 失败改 `--kind user`，或先 `bind` / `rebind --self`。
@@ -437,13 +438,7 @@ handoff card list --project <项目>     # 落在执行列（既非「待办」�
 （2026-08-24 实测；这是文档腐烂里最阴的一种，它不报错）。
 
 真撞上了通常不会出事：`--step` 派发前先取得运行锁，第二个会话干净失败并报出持有者。席位仍按「占座」节，不在这里写入。
-但**认领失败在 `--step` 下是静默的**——见排障表最后一行。
-
-> **B239 已修，等部署**（2026-08-25 合入 main）：节点入口的失败（认领被拒、运行锁被
-> 他方持有、派发失败）现在一律落到卡的事件流上——一条带原因原文的 comment ＋ 一条
-> `needs_human`，`card wait` 实时收得到，不再只进 `agentd.log`。**但这要各机重新构建
-> 并重启 agentd 才生效**；在那之前上面这条「静默」仍然成立。判断手上是新是旧：造一次
-> 入口失败，卡上有没有那两条事件。
+入口失败（运行锁占用、派发失败）落卡事件：comment + `needs_human`，`card wait` 收得到。
 
 ### 3. 外层派发与等待
 
@@ -452,19 +447,8 @@ handoff card dispatch <id> --step <节点名>   # 走工作流节点（节点名
 handoff card wait <id> [--subtree] [--timeout 3h]
 ```
 
-- **裸 `card dispatch`（不带 `--step`）在 charter 流上必然失败，不要用**
-  （B237，2026-08-24 实测）：它的「派发即认领」把卡 CAS 到硬编码的「进行中」
-  （`internal/ledger/types.go`），而现役唯一的流没有这一列。报文是
-  `认领失败（可能被并发抢先）: 状态 "进行中" 不在工作流 charter v9 中`
-  ——**前半句是错误归因**（当时并没有并发），真因在后半句，排查时别往 CAS 冲突方向找。
-  卡驱动一律走 `--step`。
-
-  > **B239 已修，等部署**（2026-08-25 合入 main）：认领已一分为二——归属锁（人尺度，
-  > 写 `driver_session`，**不再改卡的状态**）与运行锁（运行尺度，带租期）。裸
-  > `card dispatch` 因此不再把卡挪去「进行中」，在 charter 流上能正常派发。
-  > 同样**要重新构建并重启 agentd 才生效**，部署前上面这条仍然成立。
-  > 即便修好之后，卡驱动仍推荐走 `--step`——它才带节点语义（自动挂卡、模板与纪律块快照、
-  > 裁决路由）。
+- **裸 `card dispatch`（不带 `--step`）不要用在卡驱动上。** 卡驱动一律走 `--step`
+  ——它才带节点语义（自动挂卡、模板与纪律块快照、裁决路由）。占座只走「占座」三颗按钮。
 - `--step` 会自动做三件事：**取得运行锁**（**不写席位**；有席位则出示必须等于席位，
   否则拒绝并指向 `rebind`；纯人工节点跳过运行锁）、把 task 回链到卡、把模板版本与
   纪律块 hash 快照进派发事件。**「挂卡」不是一个你要单独做的动作。** 占座只走上面
@@ -730,11 +714,13 @@ handoff card rebind <id> --launch    # 新叫机器人接班
 | 远程派发成功，但 executor 基于旧代码开工 | 改动只 commit 没 push——校验拿 HEAD 比，HEAD 不含未提交改动，会静默通过 | 派发前先 `git push`。起点本身不用管：新分支自动落在你派发时的 HEAD 上，stderr 的「分支 …，起点 …」行就是实际起点 |
 | `continue` 报 500 / 恢复失败 | executor 进程死了但 agentd 记的运行态是陈的 | 先 `handoff show` 确认状态；`agentd.log` 里搜「恢复阶梯」看走到哪一级 |
 | 任务归档后有残留（worktree / executor 进程） | 回收失败（事件里会带残留提示） | worktree 用 `handoff reclaim` 回收；进程按事件提示处置，彻底死透按 `proc.json` 的 `handle.pid` 手工 kill shim |
-| `card dispatch --step` 已受理后短等超时、卡上仍无 `dispatched`/`派发失败` 首态 | 202 只代表请求已受理；编排仍在 agentd 异步运行，正常首态可能在约 20 秒窗口外；入口认领拒绝/运行锁占用会在卡上 comment + `needs_human` 留痕，ViaTemplate 派发失败也会落卡 | stdout 的「已受理，首态未到；进展见 card wait」是正常短等超时，跟 `card wait`；若短等捕获 reason=`派发失败`，stderr 会有卡上 comment 正文且命令非 0。运行锁问题先读卡上 comment 的 holder/reason。席位用 `bind` / `coordinate` / `rebind`，`takeover` 不再占座。 |
+| `card dispatch --step` 已受理后短等超时、卡上仍无 `dispatched`/`派发失败` 首态 | 202 只代表请求已受理；编排仍在 agentd 异步运行，正常首态可能在约 20 秒窗口外；运行锁占用会在卡上 comment + `needs_human` 留痕，ViaTemplate 派发失败也会落卡 | stdout 的「已受理，首态未到；进展见 card wait」是正常短等超时，跟 `card wait`；若短等捕获 reason=`派发失败`，stderr 会有卡上 comment 正文且命令非 0。运行锁问题先读卡上 comment 的 holder/reason。席位用 `bind` / `coordinate` / `rebind`，`takeover` 不再占座。 |
 | `card add --coordinate` 失败 | 建卡不占座，该 flag 已废止 | 先建卡，再 `card bind` 或 `card coordinate` |
 | `card rebind --to` 报 unknown flag | 任意 session id 已废止 | `--self` 或 `--launch` 二选一 |
 | `card bind` / `rebind --self` 报未出示席位身份 | 普通终端没有注入的会话身份 | 到 grok/claude 这场对话里再按；空座叫机器人用 `card coordinate` |
-| `card bind` / `coordinate` 报已有席位 | 桌子上有人（含旧人尺度席位） | `rebind --self` 或 `--launch` |
+| `card bind` 报已有席位 | 桌子上有人（含旧人尺度席位） | `rebind --self` 或 `--launch` |
+| `card coordinate` 报席位状态不适合此操作 / 409 | 空座才叫机器人；有人不能再 launch | `rebind --launch` 或 `--self` |
+| `card takeover` 失败 | 不再通过 takeover 占座 | 空座 `bind` 或 `coordinate`；有人 `rebind` |
 | `room send --kind escalation` 报书写者与房间身份不符 | 协调者 kind 要比对账本席位，不是 `cli:user@host` | 未入座用 `--kind user`；本对话发简报/收口先 `bind` 或 `rebind --self` |
 
 **日志在哪**（在 executor 所在机器上）：
