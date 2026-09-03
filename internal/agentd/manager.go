@@ -2139,9 +2139,13 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	// 只入库不 Publish：approve 路径无人可唤醒（已自动放行），escalate 路径的
 	// 唤醒由紧随其后的 permission_request 完成；approver_decision 是审计记录，
 	// 协调者经 show 可见
+	reason := d.Reason
+	if reason == "" && d.Err != nil {
+		reason = d.Err.Error()
+	}
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
 		TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
-		Reason: d.Reason, ElapsedMS: d.ElapsedMS,
+		Reason: reason, ElapsedMS: d.ElapsedMS,
 	}); err != nil {
 		m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 	}

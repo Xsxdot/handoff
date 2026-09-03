@@ -21,6 +21,13 @@ func TestPermTextAndRequestViewFileInScopePath(t *testing.T) {
 	}
 }
 
+func TestPermTextAndRequestFindByNameSearchDirectory(t *testing.T) {
+	_, req := permTextAndRequest("find_by_name", json.RawMessage(`{"Pattern":"*.go","SearchDirectory":"/work"}`))
+	if req == nil || req.Tool != executor.PermToolEdit || len(req.Paths) != 1 || req.Paths[0] != "/work" {
+		t.Fatalf("find_by_name 必须带 SearchDirectory 走范围内自动放行，req=%#v", req)
+	}
+}
+
 func TestPermTextAndRequestListDirPath(t *testing.T) {
 	_, req := permTextAndRequest("list_dir", json.RawMessage(`{"DirectoryPath":"/work"}`))
 	if req == nil || req.Tool != executor.PermToolEdit || len(req.Paths) != 1 || req.Paths[0] != "/work" {

@@ -381,7 +381,7 @@ func permTextAndRequest(toolName string, input json.RawMessage) (string, *execut
 			}
 		}
 	case "view_file", "read_file", "grep_search", "find_by_name", "list_dir":
-		p := permPathFromInput(input, "AbsolutePath", "TargetFile", "SearchPath", "DirectoryPath", "Path", "path")
+		p := permPathFromInput(input, "AbsolutePath", "TargetFile", "SearchPath", "SearchDirectory", "DirectoryPath", "Path", "path")
 		if p != "" {
 			return fmt.Sprintf("%s: %s", toolName, p), &executor.PermRequest{
 				Tool:  executor.PermToolEdit,

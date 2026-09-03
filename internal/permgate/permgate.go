@@ -321,14 +321,9 @@ func safeCommandID(command string) (id string, ok bool) {
 	if fields[0] == "make" {
 		return "make", true
 	}
-	if fields[0] == "ls" {
-		return "ls", true
-	}
-	if fields[0] == "cat" {
-		return "cat", true
-	}
-	if fields[0] == "grep" {
-		return "grep", true
+	switch fields[0] {
+	case "ls", "cat", "grep", "which", "pwd", "head", "tail", "wc":
+		return fields[0], true
 	}
 	if len(fields) >= 2 && fields[0] == "git" {
 		switch fields[1] {
@@ -341,6 +336,21 @@ func safeCommandID(command string) (id string, ok bool) {
 			return "git-diff", true
 		case "log":
 			return "git-log", true
+		case "grep":
+			return "git-grep", true
+		case "show":
+			if hasGitDiffOutput(fields) {
+				return "", false
+			}
+			return "git-show", true
+		case "blame":
+			return "git-blame", true
+		case "cat-file":
+			return "git-cat-file", true
+		case "rev-parse":
+			return "git-rev-parse", true
+		case "ls-files":
+			return "git-ls-files", true
 		}
 	}
 	return "", false

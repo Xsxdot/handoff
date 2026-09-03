@@ -186,7 +186,7 @@ type SyncConfig struct {
 // ApproverConfig 描述审批链的廉价模型审批者。
 //
 // 参数语义：
-//   - Executor：审批者执行者名（如 opencode/claude/grok）；空=不启用审批链
+//   - Executor：审批者执行者名（如 opencode/claude/grok/agy/codex）；空=不启用审批链
 //   - Model：审批者模型名；空=用执行者自身默认模型
 //   - Timeout：单次裁决超时，超时按 escalate 处理（fail-closed）
 //   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工协调者

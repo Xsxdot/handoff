@@ -372,6 +372,44 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	}
 }
 
+// TestApproverDecisionErrorRecordsCause 验证裁决命令失败时 approver_decision
+// 的 reason 带上 Err 原文（B316 配额失败事件 reason 为空，界面上看不见）。
+func TestApproverDecisionErrorRecordsCause(t *testing.T) {
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+	if aerr != nil {
+		t.Fatal(aerr)
+	}
+	ap.runCmd = func(ctx context.Context, argv []string) (string, error) {
+		return "You've reached your 5-hour usage limit", errors.New("exit status 1")
+	}
+	fk := fake.New(nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	task := mustApproverDispatch(t, m)
+	m.handlePermission(context.Background(), task.ID,
+		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "go run ./...",
+			Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "go run ./..."}})
+	var reason string
+	waitCondition(t, "approver_decision 带失败原因", func() bool {
+		for _, e := range mustEvents(t, st, task.ID) {
+			if e.Type != proto.EventTypeApproverDecision {
+				continue
+			}
+			var p approverDecisionPayload
+			if json.Unmarshal(e.Payload, &p) != nil {
+				continue
+			}
+			if p.Decision == "error" && strings.Contains(p.Reason, "exit status 1") {
+				reason = p.Reason
+				return true
+			}
+		}
+		return false
+	})
+	if reason == "" {
+		t.Fatal("error 事件 reason 应含 exit status 1")
+	}
+}
+
 // TestApproverApprovedTicketAnswerIsExactAllow 验证审批者批准写入的工单 answer
 // 是精确 "allow"（P0-2）：理由已落在 approver_decision 事件的 Reason 字段，
 // 不塞进 answer 串——否则 gate 翻译规则（answer 严格等于 "allow" 才放行）会把

@@ -15,7 +15,7 @@ import "fmt"
 // OneShotArgs 返回执行者的一次性调用 argv（prompt 作为末位参数）。
 //
 // 参数：
-//   - executorName: 执行者名，目前支持 opencode / claude / grok / agy；未知名字返回错误
+//   - executorName: 执行者名，目前支持 opencode / claude / grok / agy / codex；未知名字返回错误
 //   - model: 模型名；空表示让执行者用自身默认模型（省略对应参数）
 //   - prompt: 一次性 prompt 原文，作为命令的最后一个参数
 //
@@ -54,7 +54,20 @@ func OneShotArgs(executorName, model, prompt string) ([]string, error) {
 			return []string{"agy", "--model", model, "-p", prompt}, nil
 		}
 		return []string{"agy", "-p", prompt}, nil
+	case "codex":
+		// why exec 不是裸 `codex`：交互 TUI 会挂起；审批者要的是非交互一次性输出。
+		// why 这组旗：审批者 cwd 往往不是 git 仓（--skip-git-repo-check）；
+		// 不落会话文件（--ephemeral）；ANSI 会污染 parseDecision（--color never）；
+		// 只判 JSON、不该改盘（--sandbox read-only）；避开用户 MCP/hooks
+		// （--ignore-user-config，鉴权仍走 CODEX_HOME）。-p 在 codex 是 profile，
+		// 不是 prompt——prompt 必须是末位位置参数。
+		argv := []string{"codex", "exec", "--skip-git-repo-check", "--ephemeral",
+			"--color", "never", "--sandbox", "read-only", "--ignore-user-config"}
+		if model != "" {
+			argv = append(argv, "-m", model)
+		}
+		return append(argv, prompt), nil
 	default:
-		return nil, fmt.Errorf("未知执行者 %q（one-shot 支持 opencode/claude/grok/agy）", executorName)
+		return nil, fmt.Errorf("未知执行者 %q（one-shot 支持 opencode/claude/grok/agy/codex）", executorName)
 	}
 }

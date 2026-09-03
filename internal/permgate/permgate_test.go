@@ -31,6 +31,17 @@ func TestJudgeSafeCommandTable(t *testing.T) {
 		{"git-status", "git status --short"},
 		{"git-diff", "git diff --stat"},
 		{"git-log", "git log -5"},
+		{"git-grep", `git grep -i "agy" internal/`},
+		{"git-show", "git show --stat HEAD"},
+		{"git-blame", "git blame README.md"},
+		{"git-cat-file", "git cat-file -p HEAD"},
+		{"git-rev-parse", "git rev-parse HEAD"},
+		{"git-ls-files", "git ls-files internal/"},
+		{"which", "which codegraph"},
+		{"pwd", "pwd"},
+		{"head", "head -n 20 README.md"},
+		{"tail", "tail -n 5 go.mod"},
+		{"wc", "wc -l README.md"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -54,6 +65,9 @@ func TestJudgeSafeCommandRejectsMimicsAndConnectors(t *testing.T) {
 		"go test ./...; cat file",
 		"go test ./...\ncat file",
 		"git status && git log",
+		"git log -S HANDOFF_SESSION_CLI --oneline || true",
+		"git show --output=/tmp/x HEAD",
+		"go run ./...",
 		"handoff graph dispatch --doc x",
 		"handoff graph unknown --doc x",
 	} {
