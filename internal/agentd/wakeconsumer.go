@@ -161,6 +161,27 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			// 失败也推进游标：同一条用户消息重试会反复 launchRound，失败前若
 			// 再落指针就把房间刷爆（B274）。attach 暂缓走上面的 early return，
 			// 不经过这里。
+			// 双失败会在账本里落一条 needs_human；它是本轮失败的结果，不是
+			// 新的唤醒请求。把这条自生事件一并标记，避免转等人后立即再次
+			// Launch 形成自激重试；其它并发事件仍留给下一轮读取。
+			if result.Escalated {
+				generated, readErr := s.autoLedger.EventsFromAsc(nil, maxProcessed, 500)
+				if readErr != nil {
+					s.log.Warn("升级后读取自生等人事件失败", "card", card, "cause", readErr)
+				} else {
+					for _, generatedEvent := range generated {
+						if generatedEvent.Type != ledger.EvNeedsHuman || generatedEvent.CardID != card {
+							continue
+						}
+						s.automationMu.Lock()
+						s.automationSeen[generatedEvent.Seq] = struct{}{}
+						s.automationMu.Unlock()
+						if generatedEvent.Seq > maxProcessed {
+							maxProcessed = generatedEvent.Seq
+						}
+					}
+				}
+			}
 			s.automationMu.Lock()
 			if maxProcessed > s.automationCursor {
 				s.automationCursor = maxProcessed

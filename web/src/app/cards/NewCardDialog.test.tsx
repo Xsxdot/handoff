@@ -165,33 +165,29 @@ describe('基线分支', () => {
 })
 
 describe('标题批量', () => {
-  it('开卡即绑不把 coordinate 写入 createCard，并在每张成功卡后拉起协调者', async () => {
+  it('建卡不提供开卡即绑，也不隐式拉起协调者', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.createCard)
       .mockResolvedValueOnce({ id: 'B1' })
       .mockResolvedValueOnce({ id: 'B2' })
-    vi.mocked(launchCoordinator).mockResolvedValue({ woke: true, rebuilt: false, escalated: false })
     render(<NewCardDialog {...props} project="handoff" onCreated={() => {}} />)
-    fireEvent.click(screen.getByRole('checkbox', { name: /开卡即绑/ }))
+    expect(screen.queryByRole('checkbox', { name: /开卡即绑/ })).not.toBeInTheDocument()
     fireEvent.change(screen.getByLabelText('标题'), { target: { value: '一\n二' } })
     fireEvent.click(screen.getByRole('button', { name: '建卡' }))
     await waitFor(() => expect(vi.mocked(ledger.createCard)).toHaveBeenCalledTimes(2))
     expect(vi.mocked(ledger.createCard).mock.calls[0][0]).not.toHaveProperty('coordinate')
-    expect(launchCoordinator).toHaveBeenNthCalledWith(1, 'B1', 'card_create')
-    expect(launchCoordinator).toHaveBeenNthCalledWith(2, 'B2', 'card_create')
+    expect(launchCoordinator).not.toHaveBeenCalled()
   })
 
-  it('协调者拉起失败不回滚已建卡，并逐条显示失败原因', async () => {
+  it('建卡成功后由调用方决定是否叫机器人', async () => {
     const ledger = await import('../../api/ledger')
     vi.mocked(ledger.createCard).mockResolvedValue({ id: 'B3' })
-    vi.mocked(launchCoordinator).mockRejectedValue(new Error('409: 协调者队列已满'))
-    render(<NewCardDialog {...props} project="handoff" onCreated={() => {}} />)
-    fireEvent.click(screen.getByRole('checkbox', { name: /开卡即绑/ }))
+    const onCreated = vi.fn()
+    render(<NewCardDialog {...props} project="handoff" onCreated={onCreated} />)
     fireEvent.change(screen.getByLabelText('标题'), { target: { value: '保留已建卡' } })
     fireEvent.click(screen.getByRole('button', { name: '建卡' }))
-    expect(await screen.findByText(/B3/)).toBeVisible()
-    expect(screen.getByText(/协调者失败/)).toBeVisible()
-    expect(screen.getByText(/队列已满/)).toBeVisible()
+    await waitFor(() => expect(onCreated).toHaveBeenCalledWith('B3'))
+    expect(launchCoordinator).not.toHaveBeenCalled()
   })
 
   it('parseTitles：列表前缀、空行、trim；负数样标题不被误伤', () => {

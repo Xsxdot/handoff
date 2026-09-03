@@ -368,6 +368,7 @@ export function CardDrawer({
   const nodeLabel = nodes ? nodeLabelFor(status, nodes.map((node) => node.name), resolvedBoardLayout) : undefined
   const following = value(card, 'following', '')
   const driverSession = value(card, 'driver_session', '')
+  const driverSource = value<string>(card, 'driver_source', '')
   const heartbeat = value(card, 'driver_heartbeat_at', '')
   const driverStale = Boolean(driverSession) && (!heartbeat || Number.isNaN(Date.parse(heartbeat)) || Date.now() - Date.parse(heartbeat) > 5 * 60 * 1000)
   const acceptanceInfo = detail ? acceptance(detail) : { criteria: '', verified: false, evidence: '' }
@@ -606,10 +607,10 @@ export function CardDrawer({
   return (
     <aside className="absolute inset-y-0 right-0 z-40 flex w-[560px] max-w-[92vw] flex-col border-l bg-background shadow-xl" role="dialog" aria-label="工作项详情">
       <header className="border-b px-4 py-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" data-testid="card-drawer-header">
           <span className="font-mono text-xs text-muted-foreground">{value(card, 'id', id)}</span>
-          <span className="rounded-full border px-2 py-0.5 text-xs">{status || '加载中'}</span>
-          {nodeLabel && <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{nodeLabel}</span>}
+          {/* B287：头部状态只渲染一次——单枚深色 chip，节点标签优先、状态回落。 */}
+          <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{nodeLabel ?? (status || '加载中')}</span>
           {acceptanceInfo.verified && <span className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-[10px] text-green-700">已验</span>}
           <button type="button" aria-label="关闭" onClick={onClose} className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><X className="size-4" /></button>
         </div>
@@ -640,6 +641,13 @@ export function CardDrawer({
         {detail && (
           <>
             <CoordinatorPanel cardId={id} onOpenTerminal={onOpenCoordinatorTerminal ?? (() => undefined)} />
+
+            <section className="mb-5 rounded-lg border p-3">
+              <h3 className="mb-1.5 text-xs font-semibold text-muted-foreground">协调者席位</h3>
+              {driverSession
+                ? <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-3 gap-y-1 text-xs"><dt className="text-muted-foreground">身份</dt><dd className="break-all font-mono">{driverSession}</dd><dt className="text-muted-foreground">来源</dt><dd>{driverSource === 'bind' ? '坐下' : driverSource === 'coordinate' ? '叫机器人' : '席位异常'}</dd></dl>
+                : <p className="text-xs text-muted-foreground">空座：可选择“叫机器人”启动协调者。</p>}
+            </section>
 
             <section className="mb-5">
               <div className="flex flex-wrap items-center gap-1.5 text-[11px]">

@@ -225,21 +225,6 @@
    "kind": "实体",
    "domain": "d_coordination_cli"
   },
-  "k_codegraph_Target": {
-   "label": "codegraph.Target",
-   "kind": "类型方法",
-   "domain": "d_coordination_task"
-  },
-  "k_codegraph_fn": {
-   "label": "codegraph（包级函数）",
-   "kind": "函数组",
-   "domain": "d_coordination_graph"
-  },
-  "k_codegraph_model": {
-   "label": "codegraph 实体",
-   "kind": "实体",
-   "domain": "d_coordination_graph"
-  },
   "k_codex_Adapter": {
    "label": "codex.Adapter",
    "kind": "类型方法",
@@ -321,11 +306,6 @@
    "kind": "go",
    "domain": "d_collab"
   },
-  "k_collab_model": {
-   "label": "collab 数据模型",
-   "kind": "go",
-   "domain": "d_collab"
-  },
   "k_collab_room_fn": {
    "label": "collab.room 包级函数",
    "kind": "函数组",
@@ -359,11 +339,6 @@
   "k_config_model": {
    "label": "config 实体",
    "kind": "实体",
-   "domain": "d_runtime_config"
-  },
-  "k_discipline_Resolver": {
-   "label": "discipline.Resolver",
-   "kind": "类型方法",
    "domain": "d_runtime_config"
   },
   "k_discipline_fn": {
@@ -1022,16 +997,6 @@
    "kind": "实体",
    "domain": "d_coordination_task"
   },
-  "k_svc_Server": {
-   "label": "svc.Server",
-   "kind": "类型方法",
-   "domain": "d_coordination_task"
-  },
-  "k_svc_model": {
-   "label": "svc 实体",
-   "kind": "实体",
-   "domain": "d_coordination_task"
-  },
   "k_targetclient_Pool": {
    "label": "targetclient.Pool",
    "kind": "类型方法",
@@ -1150,11 +1115,6 @@
   "k_web_api_pty_model": {
    "label": "api/pty 类型",
    "kind": "TypeScript 模型",
-   "domain": "d_web"
-  },
-  "k_web_api_rooms": {
-   "label": "房间 API 请求函数",
-   "kind": "ts",
    "domain": "d_web"
   },
   "k_web_api_rooms_model": {
@@ -1365,11 +1325,6 @@
   "k_web_components_ui_model": {
    "label": "/components/ui 类型",
    "kind": "TypeScript 模型",
-   "domain": "d_web"
-  },
-  "k_web_model": {
-   "label": "web 实体",
-   "kind": "实体",
    "domain": "d_web"
   },
   "k_web_utils": {
@@ -23629,6 +23584,114 @@
   [
    "e_http_post_api_cards_id_step",
    "n_agentd_Server_handleCardStep"
+  ],
+  [
+   "e_http_post_api_cards_id_coordinator_rebind",
+   "n_agentd_Server_handleCoordRebind"
+  ],
+  [
+   "e_http_post_api_cards_id_coordinator_forget",
+   "n_agentd_Server_handleCoordForget"
+  ],
+  [
+   "n_cmd_cardBindCmd_RunE",
+   "n_cmd_currentSeatIdentity"
+  ],
+  [
+   "n_cmd_cardBindCmd_RunE",
+   "n_ledger_Store_BindSeat"
+  ],
+  [
+   "n_proto_ValidateSeat",
+   "n_proto_ParseSeatIdentity"
+  ],
+  [
+   "n_proto_EncodeSeatIdentity",
+   "n_proto_validateSeatPart"
+  ],
+  [
+   "n_proto_ParseSeatIdentity",
+   "n_proto_validateSeatPart"
+  ],
+  [
+   "n_ledger_Store_BindSeat",
+   "n_proto_ValidateSeat"
+  ],
+  [
+   "n_ledger_Store_RebindSeat",
+   "n_proto_ValidateSeat"
+  ],
+  [
+   "n_keystone_Service_Wake",
+   "n_proto_ValidateSeat"
+  ],
+  [
+   "n_keystone_Service_Wake",
+   "n_proto_ParseSeatIdentity"
+  ],
+  [
+   "n_keystone_Service_Wake",
+   "n_keystone_Service_Forget"
+  ],
+  [
+   "n_keystone_Service_Wake",
+   "n_keystone_Service_rebuildAfterResumeFailure"
+  ],
+  [
+   "n_collab_room_VerifyWriter",
+   "n_proto_ValidateSeat"
+  ],
+  [
+   "n_client_Client_CoordinatorRebind",
+   "n_client_Client_do"
+  ],
+  [
+   "n_client_Client_CoordinatorRebind",
+   "n_client_Client_httpError"
+  ],
+  [
+   "n_client_Client_CoordinatorForget",
+   "n_client_Client_do"
+  ],
+  [
+   "n_client_Client_CoordinatorForget",
+   "n_client_Client_httpError"
+  ],
+  [
+   "n_web_api_scheduling_rebindCoordinatorLaunch",
+   "n_web_api_client_postJSON"
+  ],
+  [
+   "n_agentd_Server_handleCoordRebind",
+   "n_agentd_Server_launchCoordinatorRoundForRebind"
+  ],
+  [
+   "n_agentd_Server_handleCoordForget",
+   "n_keystone_Service_Forget"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundForRebind",
+   "n_agentd_Server_launchCoordinatorRoundWithExpect"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_agentd_Server_coordinatorLock"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_ledger_Store_BindSeat"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_ledger_Store_RebindSeat"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_proto_EncodeSeatIdentity"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_keystone_Service_LaunchForCard"
   ]
  ],
  "flows": {
@@ -57021,7 +57084,7 @@
    "order": 1287,
    "name": "continueRequest",
    "file": "internal/agentd/server.go",
-   "line": 1532,
+   "line": 1551,
    "summary": "continueRequest 是 POST /api/tasks/{id}/continue 的请求体。",
    "fields": [
     [
@@ -57098,7 +57161,7 @@
    "order": 1050,
    "name": "dispatchRequest",
    "file": "internal/agentd/server.go",
-   "line": 1271,
+   "line": 1290,
    "summary": "dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传）。",
    "fields": [
     [
@@ -57210,7 +57273,7 @@
    "order": 1326,
    "name": "doneRequest",
    "file": "internal/agentd/server.go",
-   "line": 1571,
+   "line": 1590,
    "summary": "doneRequest 是归档请求的可选请求体。",
    "fields": [
     [
@@ -57227,7 +57290,7 @@
    "order": 1335,
    "name": "doneResult",
    "file": "internal/agentd/server.go",
-   "line": 1580,
+   "line": 1599,
    "summary": "doneResult 是归档响应。",
    "fields": [
     [
@@ -57469,7 +57532,7 @@
    "order": 1174,
    "name": "projectAddRequest",
    "file": "internal/agentd/server.go",
-   "line": 1419,
+   "line": 1438,
    "summary": "projectAddRequest 是 POST /api/projects 的请求体。",
    "fields": [
     [
@@ -57589,7 +57652,7 @@
    "order": 881,
    "name": "replyRequest",
    "file": "internal/agentd/server.go",
-   "line": 1098,
+   "line": 1117,
    "summary": "replyRequest 是 POST /api/tasks/{id}/reply 的请求体。",
    "fields": [
     [
@@ -57611,7 +57674,7 @@
    "order": 891,
    "name": "replyResult",
    "file": "internal/agentd/server.go",
-   "line": 1108,
+   "line": 1127,
    "summary": "replyResult 是 reply 接口的响应体。",
    "fields": [
     [
@@ -57703,7 +57766,7 @@
    "order": 1710,
    "name": "runRequest",
    "file": "internal/agentd/server.go",
-   "line": 1955,
+   "line": 1974,
    "summary": "runRequest 是 POST /api/tasks/{id}/run 的请求体。",
    "fields": [
     [
@@ -57720,7 +57783,7 @@
    "order": 1715,
    "name": "runResponse",
    "file": "internal/agentd/server.go",
-   "line": 1960,
+   "line": 1979,
    "summary": "runResponse 是 run 接口的响应体（合并输出 + 退出码）。",
    "fields": [
     [
@@ -57775,7 +57838,7 @@
    "order": 873,
    "name": "taskDetail",
    "file": "internal/agentd/server.go",
-   "line": 1090,
+   "line": 1109,
    "summary": "taskDetail 是 GET /api/tasks/{id} 的响应体（attach 数据源）。",
    "fields": [
     [
@@ -62867,7 +62930,7 @@
    "order": 900,
    "name": "DriverLease",
    "file": "internal/ledger/binding.go",
-   "line": 13,
+   "line": 16,
    "summary": "驱动活性租约一行：哪个协调者会话、活到几点",
    "fields": [
     [
@@ -66149,7 +66212,7 @@
    "order": 187,
    "name": "CardCreateResp",
    "file": "internal/proto/ledger.go",
-   "line": 218,
+   "line": 221,
    "summary": "CardCreateResp 是建卡响应。",
    "fields": [
     [
@@ -66167,7 +66230,7 @@
    "order": 133,
    "name": "CardDetail",
    "file": "internal/proto/ledger.go",
-   "line": 154,
+   "line": 157,
    "summary": "CardDetail 是卡片详情的 wire DTO。",
    "fields": [
     [
@@ -66370,7 +66433,7 @@
    "order": 170,
    "name": "CardWorkflowLocation",
    "file": "internal/proto/ledger.go",
-   "line": 201,
+   "line": 204,
    "summary": "CardWorkflowLocation 是迁移响应中的卡位置。",
    "fields": [
     [
@@ -66403,7 +66466,7 @@
    "order": 204,
    "name": "CarrierDetectResp",
    "file": "internal/proto/scheduling.go",
-   "line": 156,
+   "line": 163,
    "signature": "type CarrierDetectResp struct {",
    "fields": [
     [
@@ -66435,7 +66498,7 @@
    "order": 41,
    "name": "CarrierInput",
    "file": "internal/proto/scheduling.go",
-   "line": 47,
+   "line": 54,
    "signature": "type CarrierInput struct {",
    "summary": "CarrierInput 是 PUT 载体的请求体。刻意不含 healthy：本期无探测手段，服务端会把 false 静默翻真（防饿死），收了就是恒假承诺。",
    "fields": [
@@ -66483,7 +66546,7 @@
    "order": 205,
    "name": "CarrierRunCommandResp",
    "file": "internal/proto/scheduling.go",
-   "line": 165,
+   "line": 172,
    "signature": "type CarrierRunCommandResp struct {",
    "fields": [
     [
@@ -66500,7 +66563,7 @@
    "order": 11,
    "name": "CarrierView",
    "file": "internal/proto/scheduling.go",
-   "line": 11,
+   "line": 18,
    "signature": "type CarrierView struct {",
    "summary": "载体登记行；B293 增 status/last_error",
    "fields": [
@@ -66568,7 +66631,7 @@
    "order": 103,
    "name": "CoordinatorAttachInfo",
    "file": "internal/proto/scheduling.go",
-   "line": 108,
+   "line": 115,
    "signature": "type CoordinatorAttachInfo struct {",
    "summary": "CoordinatorAttachInfo 是协调者会话的定位三元组；Machine 允许为空串表示本机。Dir 与 Command 均由服务端定位器产生，客户端不得自行拼接或改写。",
    "fields": [
@@ -66596,7 +66659,7 @@
    "order": 118,
    "name": "CoordinatorAttachReleaseResp",
    "file": "internal/proto/scheduling.go",
-   "line": 123,
+   "line": 130,
    "signature": "type CoordinatorAttachReleaseResp struct {",
    "summary": "CoordinatorAttachReleaseResp 是 active=false 交回无头后的成功回执。",
    "fields": [
@@ -66614,7 +66677,7 @@
    "order": 93,
    "name": "CoordinatorLaunchResp",
    "file": "internal/proto/scheduling.go",
-   "line": 98,
+   "line": 105,
    "signature": "type CoordinatorLaunchResp struct {",
    "summary": "CoordinatorLaunchResp 是 POST /api/cards/{id}/coordinator/launch 的成功响应（keystone.RoundResult 的 wire 投影，K4 的 handler 产出、K3 的 CLI 消费——形状以此处为准，K4 不得另行发明字段）。",
    "fields": [
@@ -66652,7 +66715,7 @@
    "order": 111,
    "name": "CoordinatorStatus",
    "file": "internal/proto/scheduling.go",
-   "line": 116,
+   "line": 123,
    "signature": "type CoordinatorStatus struct {",
    "summary": "CoordinatorStatus 是 GET coordinator 的状态；Attach=nil 序列化为 null 表示未绑定。attach_active 是进程内的人工接管态，与 Attach 三元组是否存在是两件事。",
    "fields": [
@@ -67548,7 +67611,7 @@
    "order": 145,
    "name": "FlowDetail",
    "file": "internal/proto/ledger.go",
-   "line": 174,
+   "line": 177,
    "summary": "FlowDetail 是工作流详情的 wire DTO。",
    "fields": [
     [
@@ -67973,7 +68036,7 @@
    "order": 200,
    "name": "HomeProbeReq",
    "file": "internal/proto/scheduling.go",
-   "line": 126,
+   "line": 136,
    "signature": "type HomeProbeReq struct {",
    "fields": [
     [
@@ -68000,7 +68063,7 @@
    "order": 201,
    "name": "HomeProbeResp",
    "file": "internal/proto/scheduling.go",
-   "line": 136,
+   "line": 143,
    "signature": "type HomeProbeResp struct {",
    "fields": [
     [
@@ -68022,7 +68085,7 @@
    "order": 202,
    "name": "HomeWakeReq",
    "file": "internal/proto/scheduling.go",
-   "line": 142,
+   "line": 149,
    "signature": "type HomeWakeReq struct {",
    "fields": [
     [
@@ -68054,7 +68117,7 @@
    "order": 203,
    "name": "HomeWakeResp",
    "file": "internal/proto/scheduling.go",
-   "line": 150,
+   "line": 157,
    "signature": "type HomeWakeResp struct {",
    "fields": [
     [
@@ -68447,7 +68510,7 @@
    "order": 163,
    "name": "MigrateCardReq",
    "file": "internal/proto/ledger.go",
-   "line": 194,
+   "line": 197,
    "summary": "MigrateCardReq 是显式目标工作流、落点列和可选版本的迁移请求。",
    "fields": [
     [
@@ -68475,7 +68538,7 @@
    "order": 178,
    "name": "MigrateCardResp",
    "file": "internal/proto/ledger.go",
-   "line": 209,
+   "line": 212,
    "summary": "MigrateCardResp 是跨流迁移响应。",
    "fields": [
     [
@@ -69270,7 +69333,7 @@
    "order": 69,
    "name": "QueueEntry",
    "file": "internal/proto/scheduling.go",
-   "line": 74,
+   "line": 81,
    "signature": "type QueueEntry struct {",
    "summary": "QueueEntry 是 GET /api/queue 的元素。Kind/ID/Seq/Position 来自队列元数据，其余九个字段逐一来自入队时刻的 IgnitionRequest 快照（拍板记录②：出队前不重读卡）。Position 是清队顺序下的全局 1 基位次。",
    "fields": [
@@ -69348,7 +69411,7 @@
    "order": 86,
    "name": "QueueResp",
    "file": "internal/proto/scheduling.go",
-   "line": 91,
+   "line": 98,
    "signature": "type QueueResp struct {",
    "summary": "QueueResp 是 GET /api/queue 的响应体；空队列 = \"queue\":[]。",
    "fields": [
@@ -69817,7 +69880,7 @@
    "order": 52,
    "name": "SquadInput",
    "file": "internal/proto/scheduling.go",
-   "line": 57,
+   "line": 65,
    "signature": "type SquadInput struct {",
    "summary": "SquadInput 是 PUT 小队的请求体；成员政策位随成员对象提交",
    "fields": [
@@ -69846,7 +69909,7 @@
    "order": 23,
    "name": "SquadMember",
    "file": "internal/proto/scheduling.go",
-   "line": 23,
+   "line": 32,
    "signature": "type SquadMember struct {",
    "summary": "小队成员的 wire 对象；0=不限以键缺席表达",
    "fields": [
@@ -69870,7 +69933,7 @@
    "order": 61,
    "name": "SquadPutResp",
    "file": "internal/proto/scheduling.go",
-   "line": 66,
+   "line": 73,
    "signature": "type SquadPutResp struct {",
    "summary": "SquadPutResp 是 PUT 成功响应：version 是本次写入产生的版本（expect+1）；他人的并发写会再推进，编辑回路每次 GET 重取。",
    "fields": [
@@ -69893,7 +69956,7 @@
    "order": 24,
    "name": "SquadView",
    "file": "internal/proto/scheduling.go",
-   "line": 30,
+   "line": 38,
    "signature": "type SquadView struct {",
    "summary": "SquadView 是小队登记行；政策位落在每个成员对象上",
    "fields": [
@@ -69927,7 +69990,7 @@
    "order": 34,
    "name": "SquadsResp",
    "file": "internal/proto/scheduling.go",
-   "line": 40,
+   "line": 47,
    "signature": "type SquadsResp struct {",
    "summary": "SquadsResp 是 GET /api/squads 的响应体。空库时两个字段是空数组而非 null ——「什么都没配」是合法态，前端据此渲染引导文案而不是报错。",
    "fields": [
@@ -71934,7 +71997,7 @@
    "order": 27,
    "name": "Attachment",
    "file": "web/src/api/ledger.ts",
-   "line": 31,
+   "line": 35,
    "signature": "interface Attachment",
    "fields": [
     [
@@ -71956,7 +72019,7 @@
    "order": 32,
    "name": "Card",
    "file": "web/src/api/ledger.ts",
-   "line": 36,
+   "line": 40,
    "signature": "interface Card",
    "fields": [
     [
@@ -72048,7 +72111,7 @@
    "order": 73,
    "name": "CardBrief",
    "file": "web/src/api/ledger.ts",
-   "line": 75,
+   "line": 82,
    "signature": "interface CardBrief",
    "summary": "CardBrief 是子任务区一行的最小三元组，字段名与 Go 侧 ledger.CardBrief 一字不差。",
    "fields": [
@@ -72076,7 +72139,7 @@
    "order": 139,
    "name": "CardCreateResp",
    "file": "web/src/api/ledger.ts",
-   "line": 175,
+   "line": 180,
    "signature": "interface CardCreateResp",
    "fields": [
     [
@@ -72093,7 +72156,7 @@
    "order": 79,
    "name": "CardDetail",
    "file": "web/src/api/ledger.ts",
-   "line": 83,
+   "line": 88,
    "signature": "interface CardDetail",
    "fields": [
     [
@@ -72145,7 +72208,7 @@
    "order": 238,
    "name": "CardPatch",
    "file": "web/src/api/ledger.ts",
-   "line": 274,
+   "line": 279,
    "signature": "export interface CardPatch {",
    "fields": [
     [
@@ -72176,7 +72239,7 @@
    "order": 5,
    "name": "CardView",
    "file": "web/src/api/ledger.ts",
-   "line": 5,
+   "line": 7,
    "signature": "interface CardView",
    "fields": [
     [
@@ -72283,7 +72346,7 @@
    "order": 149,
    "name": "CardWorkflowLocation",
    "file": "web/src/api/ledger.ts",
-   "line": 185,
+   "line": 190,
    "signature": "interface CardWorkflowLocation",
    "fields": [
     [
@@ -72315,7 +72378,7 @@
    "order": 173,
    "name": "Decision",
    "file": "web/src/api/ledger.ts",
-   "line": 209,
+   "line": 214,
    "signature": "interface Decision",
    "fields": [
     [
@@ -72377,7 +72440,7 @@
    "order": 123,
    "name": "FlowDetail",
    "file": "web/src/api/ledger.ts",
-   "line": 147,
+   "line": 152,
    "signature": "interface FlowDetail",
    "fields": [
     [
@@ -72409,7 +72472,7 @@
    "order": 198,
    "name": "FlowsResp",
    "file": "web/src/api/ledger.ts",
-   "line": 234,
+   "line": 239,
    "signature": "export interface FlowsResp {",
    "modelKind": "dto"
   },
@@ -72419,7 +72482,7 @@
    "order": 101,
    "name": "Gate",
    "file": "web/src/api/ledger.ts",
-   "line": 109,
+   "line": 114,
    "signature": "interface Gate",
    "fields": [
     [
@@ -72446,7 +72509,7 @@
    "order": 164,
    "name": "LedgerEvent",
    "file": "web/src/api/ledger.ts",
-   "line": 200,
+   "line": 205,
    "signature": "interface LedgerEvent",
    "fields": [
     [
@@ -72488,7 +72551,7 @@
    "order": 279,
    "name": "LedgerHealth",
    "file": "web/src/api/ledger.ts",
-   "line": 319,
+   "line": 324,
    "signature": "export interface LedgerHealth {",
    "modelKind": "dto"
   },
@@ -72498,7 +72561,7 @@
    "order": 143,
    "name": "MigrateCardReq",
    "file": "web/src/api/ledger.ts",
-   "line": 179,
+   "line": 184,
    "signature": "interface MigrateCardReq",
    "fields": [
     [
@@ -72525,7 +72588,7 @@
    "order": 156,
    "name": "MigrateCardResp",
    "file": "web/src/api/ledger.ts",
-   "line": 192,
+   "line": 197,
    "signature": "interface MigrateCardResp",
    "fields": [
     [
@@ -72562,7 +72625,7 @@
    "order": 130,
    "name": "NewCardReq",
    "file": "web/src/api/ledger.ts",
-   "line": 155,
+   "line": 160,
    "signature": "interface NewCardReq",
    "fields": [
     [
@@ -72604,7 +72667,7 @@
    "order": 109,
    "name": "NodeDef",
    "file": "web/src/api/ledger.ts",
-   "line": 124,
+   "line": 129,
    "signature": "interface NodeDef",
    "summary": "NodeDef 工作流的一个节点：看板的一列 + 卡走到这列时的执行规矩。",
    "fields": [
@@ -72672,7 +72735,7 @@
    "order": 94,
    "name": "NodeOverride",
    "file": "web/src/api/ledger.ts",
-   "line": 96,
+   "line": 103,
    "signature": "interface NodeOverride",
    "summary": "NodeOverride 节点对模板的单字段覆盖；省略的字段 = 沿用模板。",
    "fields": [
@@ -72705,7 +72768,7 @@
    "order": 51,
    "name": "Relation",
    "file": "web/src/api/ledger.ts",
-   "line": 55,
+   "line": 60,
    "signature": "interface Relation",
    "fields": [
     [
@@ -72737,7 +72800,7 @@
    "order": 58,
    "name": "TaskStateRow",
    "file": "web/src/api/ledger.ts",
-   "line": 62,
+   "line": 67,
    "signature": "interface TaskStateRow",
    "fields": [
     [
@@ -72774,7 +72837,7 @@
    "order": 192,
    "name": "TemplateWire",
    "file": "web/src/api/ledger.ts",
-   "line": 228,
+   "line": 233,
    "signature": "export interface TemplateWire {",
    "modelKind": "dto"
   },
@@ -72784,7 +72847,7 @@
    "order": 66,
    "name": "UnlinkedSummary",
    "file": "web/src/api/ledger.ts",
-   "line": 70,
+   "line": 75,
    "signature": "export interface UnlinkedSummary {",
    "modelKind": "dto"
   },
@@ -72794,7 +72857,7 @@
    "order": 186,
    "name": "WorkflowWire",
    "file": "web/src/api/ledger.ts",
-   "line": 222,
+   "line": 227,
    "signature": "export interface WorkflowWire {",
    "modelKind": "dto"
   },
@@ -73203,16 +73266,6 @@
      ""
     ]
    ],
-   "modelKind": "dto"
-  },
-  "m_web_api_scheduling_CoordinatorLaunchSource": {
-   "kind": "model",
-   "container": "k_web_api_scheduling_model",
-   "order": 129,
-   "name": "CoordinatorLaunchSource",
-   "file": "web/src/api/scheduling.ts",
-   "line": 231,
-   "signature": "export type CoordinatorLaunchSource = 'manual' | 'card_create'",
    "modelKind": "dto"
   },
   "m_web_api_scheduling_CoordinatorStatus": {
@@ -77442,7 +77495,7 @@
    "order": 59,
    "name": "SchedulingPageProps",
    "file": "web/src/app/settings/SchedulingPage.tsx",
-   "line": 100,
+   "line": 103,
    "signature": "export type SchedulingPageProps = Record\u003cstring, never\u003e",
    "summary": "Props 为空；返回设置页的自动化编制区；保存失败时保留草稿和弹窗供处理。",
    "modelKind": "dto"
@@ -83624,7 +83677,7 @@
    "order": 323,
    "name": "Server.CloseTargets",
    "file": "internal/agentd/server.go",
-   "line": 476,
+   "line": 495,
    "signature": "func (s *Server) CloseTargets() error { return s.pool.Close() }",
    "summary": "CloseTargets 关掉池内全部客户端与 relay 隧道。"
   },
@@ -83634,7 +83687,7 @@
    "order": 298,
    "name": "Server.DisciplineMapping",
    "file": "internal/agentd/server.go",
-   "line": 406,
+   "line": 425,
    "signature": "func (s *Server) DisciplineMapping() map[string]string { return s.conf().Discipline }",
    "summary": "DisciplineMapping 返回当前配置里的 executor 名 → 纪律块文件名映射。"
   },
@@ -83644,7 +83697,7 @@
    "order": 304,
    "name": "Server.EnvMapping",
    "file": "internal/agentd/server.go",
-   "line": 412,
+   "line": 431,
    "signature": "func (s *Server) EnvMapping() map[string]string { return s.conf().Env }",
    "summary": "EnvMapping 返回当前配置里的 agent 名 → env 文件名映射。"
   },
@@ -83664,7 +83717,7 @@
    "order": 426,
    "name": "Server.Handler",
    "file": "internal/agentd/server.go",
-   "line": 583,
+   "line": 602,
    "signature": "func (s *Server) Handler() http.Handler {",
    "summary": "Handler 返回带 Host 白名单 + 鉴权两层中间件的完整路由，便于 httptest 直接挂载。"
   },
@@ -83674,7 +83727,7 @@
    "order": 241,
    "name": "Server.Hub",
    "file": "internal/agentd/server.go",
-   "line": 298,
+   "line": 317,
    "signature": "func (s *Server) Hub() *Hub {",
    "summary": "Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。"
   },
@@ -83684,7 +83737,7 @@
    "order": 318,
    "name": "Server.Pool",
    "file": "internal/agentd/server.go",
-   "line": 426,
+   "line": 445,
    "signature": "func (s *Server) Pool() *targetclient.Pool { return s.pool }",
    "summary": "Pool 返回 target 客户端复用池。"
   },
@@ -83694,7 +83747,7 @@
    "order": 61,
    "name": "Server.PtyAPI",
    "file": "internal/agentd/server.go",
-   "line": 2413,
+   "line": 2431,
    "signature": "func (s *Server) PtyAPI() *ptyapi.Host",
    "returns": "*ptyapi.Host",
    "summary": "返回终端 PTY 薄门面；宿主未装配时返回 nil"
@@ -83715,7 +83768,7 @@
    "order": 312,
    "name": "Server.SetConfigPath",
    "file": "internal/agentd/server.go",
-   "line": 420,
+   "line": 439,
    "signature": "func (s *Server) SetConfigPath(p string) { s.cfgPath = p }",
    "summary": "SetConfigPath 注入配置文件路径，供写配置时落盘。"
   },
@@ -83725,7 +83778,7 @@
    "order": 404,
    "name": "Server.SetHostAPI",
    "file": "internal/agentd/server.go",
-   "line": 2419,
+   "line": 2437,
    "signature": "func (s *Server) SetHostAPI(h *hostapi.Host)",
    "summary": "测试缝：注入进程承载门面"
   },
@@ -83735,7 +83788,7 @@
    "order": 63,
    "name": "Server.SetKeystone",
    "file": "internal/agentd/server.go",
-   "line": 2422,
+   "line": 2440,
    "signature": "func (s *Server) SetKeystone(svc *keystone.Service)",
    "params": [
     [
@@ -83762,7 +83815,7 @@
    "order": 279,
    "name": "Server.SetManager",
    "file": "internal/agentd/server.go",
-   "line": 336,
+   "line": 355,
    "signature": "func (s *Server) SetManager(m *Manager) {",
    "summary": "SetManager 把任务管理器挂到 Server 上。"
   },
@@ -83772,7 +83825,7 @@
    "order": 265,
    "name": "Server.SetRestart",
    "file": "internal/agentd/server.go",
-   "line": 322,
+   "line": 341,
    "signature": "func (s *Server) SetRestart(fn func(reason string) bool) { s.restart = fn }",
    "summary": "SetRestart 注入优雅关停的触发函数（Shutdown.Trigger）。"
   },
@@ -83782,7 +83835,7 @@
    "order": 62,
    "name": "Server.SetScheduling",
    "file": "internal/agentd/server.go",
-   "line": 2416,
+   "line": 2434,
    "signature": "func (s *Server) SetScheduling(svc *scheduling.Service)",
    "params": [
     [
@@ -83799,7 +83852,7 @@
    "order": 269,
    "name": "Server.SetUpdateDeps",
    "file": "internal/agentd/server.go",
-   "line": 326,
+   "line": 345,
    "signature": "func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }",
    "summary": "SetUpdateDeps 替换换版接口的外部依赖。**仅供测试**：这些依赖会真的"
   },
@@ -83809,7 +83862,7 @@
    "order": 60,
    "name": "Server.SetupAutomation",
    "file": "internal/agentd/server.go",
-   "line": 2395,
+   "line": 2414,
    "signature": "func (s *Server) SetupAutomation(st *ledger.Store)",
    "params": [
     [
@@ -83898,7 +83951,7 @@
    "order": 547,
    "name": "Server.auth",
    "file": "internal/agentd/server.go",
-   "line": 575,
+   "line": 770,
    "signature": "func (s *Server) auth(next http.Handler) http.Handler",
    "params": [
     [
@@ -84068,7 +84121,7 @@
    "order": 274,
    "name": "Server.conf",
    "file": "internal/agentd/server.go",
-   "line": 348,
+   "line": 367,
    "signature": "func (s *Server) conf() *config.Config",
    "returns": "*config.Config",
    "summary": "conf 返回当前配置快照。",
@@ -84384,7 +84437,7 @@
    "order": 430,
    "name": "Server.handleCardAccept",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 526,
+   "line": 542,
    "signature": "func (s *Server) handleCardAccept(w http.ResponseWriter, r *http.Request) {",
    "summary": "handleCardAccept 记一条「已真机验」验收，body 只收证据。"
   },
@@ -84394,7 +84447,7 @@
    "order": 780,
    "name": "Server.handleCardAttach",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 901,
+   "line": 917,
    "signature": "func (s *Server) handleCardAttach(w http.ResponseWriter, r *http.Request) {",
    "summary": "handleCardAttach 给卡挂一个附件（同 path 幂等）。kind 只认 spec|plan|doc|contract。"
   },
@@ -84404,7 +84457,7 @@
    "order": 652,
    "name": "Server.handleCardCreate",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 759,
+   "line": 775,
    "signature": "func (s *Server) handleCardCreate(w http.ResponseWriter, r *http.Request)",
    "summary": "handleCardCreate 建卡。"
   },
@@ -84414,7 +84467,7 @@
    "order": 809,
    "name": "Server.handleCardDetach",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 930,
+   "line": 946,
    "signature": "func (s *Server) handleCardDetach(w http.ResponseWriter, r *http.Request) {",
    "summary": "handleCardDetach 摘掉卡上指定路径的附件（不存在也返回 ok，摘除天然幂等）。"
   },
@@ -84433,7 +84486,7 @@
    "order": 685,
    "name": "Server.handleCardMigrate",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 792,
+   "line": 808,
    "signature": "func (s *Server) handleCardMigrate(w http.ResponseWriter, r *http.Request)",
    "summary": "handleCardMigrate 是跨流迁移的控制面骨架：只解码显式目标、调用账本并翻译错误。"
   },
@@ -84452,7 +84505,7 @@
    "order": 464,
    "name": "Server.handleCardNeedsClear",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 560,
+   "line": 576,
    "signature": "func (s *Server) handleCardNeedsClear(w http.ResponseWriter, r *http.Request) {",
    "summary": "handleCardNeedsClear 人工撤回卡上的「需要你 · 等人」标记。"
   },
@@ -84471,7 +84524,7 @@
    "order": 731,
    "name": "Server.handleCardPatch",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 838,
+   "line": 854,
    "signature": "func (s *Server) handleCardPatch(w http.ResponseWriter, r *http.Request) {",
    "summary": "handleCardPatch 改卡的标题 / 优先级 / 验收判据 / 显式基线。"
   },
@@ -84548,7 +84601,7 @@
    "order": 1296,
    "name": "Server.handleContinue",
    "file": "internal/agentd/server.go",
-   "line": 1541,
+   "line": 1560,
    "signature": "func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -84592,7 +84645,7 @@
    "order": 604,
    "name": "Server.handleDecisionAnswer",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 711,
+   "line": 727,
    "signature": "func (s *Server) handleDecisionAnswer(w http.ResponseWriter, r *http.Request) {"
   },
   "n_agentd_Server_handleDecisions": {
@@ -84601,7 +84654,7 @@
    "order": 595,
    "name": "Server.handleDecisions",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 702,
+   "line": 718,
    "signature": "func (s *Server) handleDecisions(w http.ResponseWriter, r *http.Request) {"
   },
   "n_agentd_Server_handleDeleteMachine": {
@@ -84830,7 +84883,7 @@
    "order": 566,
    "name": "Server.handleDisciplineNames",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 691,
+   "line": 707,
    "signature": "func (s *Server) handleDisciplineNames(w http.ResponseWriter, r *http.Request) {",
    "summary": "handleDisciplineNames 列出可选的纪律块名：B229 起权威副本在账本，经 ListDisciplineNames 返回；账本读不了如实 500。"
   },
@@ -84840,7 +84893,7 @@
    "order": 1075,
    "name": "Server.handleDispatch",
    "file": "internal/agentd/server.go",
-   "line": 1309,
+   "line": 1328,
    "signature": "func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -84862,7 +84915,7 @@
    "order": 1341,
    "name": "Server.handleDone",
    "file": "internal/agentd/server.go",
-   "line": 1586,
+   "line": 1605,
    "signature": "func (s *Server) handleDone(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -84994,7 +85047,7 @@
    "order": 1814,
    "name": "Server.handleEvents",
    "file": "internal/agentd/server.go",
-   "line": 2059,
+   "line": 2078,
    "signature": "func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85060,7 +85113,7 @@
    "order": 510,
    "name": "Server.handleFlowGet",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 611,
+   "line": 627,
    "signature": "func (s *Server) handleFlowGet(w http.ResponseWriter, r *http.Request)",
    "summary": "handleFlowGet 取单条工作流的最新版本（含节点定义）。"
   },
@@ -85070,7 +85123,7 @@
    "order": 533,
    "name": "Server.handleFlowPut",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 649,
+   "line": 665,
    "signature": "func (s *Server) handleFlowPut(w http.ResponseWriter, r *http.Request) {",
    "summary": "handleFlowPut 发布该工作流的**下一个版本**。"
   },
@@ -85080,7 +85133,7 @@
    "order": 476,
    "name": "Server.handleFlows",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 572,
+   "line": 588,
    "signature": "func (s *Server) handleFlows(w http.ResponseWriter, r *http.Request)"
   },
   "n_agentd_Server_handleFootprint": {
@@ -85089,7 +85142,7 @@
    "order": 670,
    "name": "Server.handleFootprint",
    "file": "internal/agentd/server.go",
-   "line": 887,
+   "line": 906,
    "signature": "func (s *Server) handleFootprint(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85143,7 +85196,7 @@
    "order": 824,
    "name": "Server.handleGetTask",
    "file": "internal/agentd/server.go",
-   "line": 1041,
+   "line": 1060,
    "signature": "func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85243,7 +85296,7 @@
    "order": 626,
    "name": "Server.handleLedgerHealth",
    "file": "internal/agentd/ledgerapi.go",
-   "line": 733,
+   "line": 749,
    "signature": "func (s *Server) handleLedgerHealth(w http.ResponseWriter, r *http.Request) {",
    "summary": "handleLedgerHealth 账本健康探针：恒 200。未启用时只回 {\"enabled\":false}，"
   },
@@ -85297,7 +85350,7 @@
    "order": 770,
    "name": "Server.handleListTasks",
    "file": "internal/agentd/server.go",
-   "line": 987,
+   "line": 1006,
    "signature": "func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85435,7 +85488,7 @@
    "order": 1181,
    "name": "Server.handleProjectAdd",
    "file": "internal/agentd/server.go",
-   "line": 1426,
+   "line": 1445,
    "signature": "func (s *Server) handleProjectAdd(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85523,7 +85576,7 @@
    "order": 1209,
    "name": "Server.handleProjectList",
    "file": "internal/agentd/server.go",
-   "line": 1454,
+   "line": 1473,
    "signature": "func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85567,7 +85620,7 @@
    "order": 1228,
    "name": "Server.handleProjectRemove",
    "file": "internal/agentd/server.go",
-   "line": 1473,
+   "line": 1492,
    "signature": "func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85687,7 +85740,7 @@
    "order": 712,
    "name": "Server.handleReclaim",
    "file": "internal/agentd/server.go",
-   "line": 929,
+   "line": 948,
    "signature": "func (s *Server) handleReclaim(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85709,7 +85762,7 @@
    "order": 689,
    "name": "Server.handleReclaimList",
    "file": "internal/agentd/server.go",
-   "line": 906,
+   "line": 925,
    "signature": "func (s *Server) handleReclaimList(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85731,7 +85784,7 @@
    "order": 922,
    "name": "Server.handleReply",
    "file": "internal/agentd/server.go",
-   "line": 1139,
+   "line": 1158,
    "signature": "func (s *Server) handleReply(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85843,7 +85896,7 @@
    "order": 631,
    "name": "Server.handleStatus",
    "file": "internal/agentd/server.go",
-   "line": 835,
+   "line": 854,
    "signature": "func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85875,7 +85928,7 @@
    "order": 1391,
    "name": "Server.handleStop",
    "file": "internal/agentd/server.go",
-   "line": 1636,
+   "line": 1655,
    "signature": "func (s *Server) handleStop(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85897,7 +85950,7 @@
    "order": 1637,
    "name": "Server.handleTaskBranches",
    "file": "internal/agentd/server.go",
-   "line": 1882,
+   "line": 1901,
    "signature": "func (s *Server) handleTaskBranches(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85919,7 +85972,7 @@
    "order": 1577,
    "name": "Server.handleTaskBundle",
    "file": "internal/agentd/server.go",
-   "line": 1822,
+   "line": 1841,
    "signature": "func (s *Server) handleTaskBundle(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85941,7 +85994,7 @@
    "order": 1511,
    "name": "Server.handleTaskDiff",
    "file": "internal/agentd/server.go",
-   "line": 1756,
+   "line": 1775,
    "signature": "func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -85963,7 +86016,7 @@
    "order": 1663,
    "name": "Server.handleTaskFile",
    "file": "internal/agentd/server.go",
-   "line": 1908,
+   "line": 1927,
    "signature": "func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -86071,7 +86124,7 @@
    "order": 1725,
    "name": "Server.handleTaskRun",
    "file": "internal/agentd/server.go",
-   "line": 1970,
+   "line": 1989,
    "signature": "func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -86852,7 +86905,7 @@
    "order": 1019,
    "name": "Server.resumeIfIdle",
    "file": "internal/agentd/server.go",
-   "line": 1240,
+   "line": 1259,
    "signature": "func (s *Server) resumeIfIdle(taskID string)",
    "params": [
     [
@@ -87117,7 +87170,7 @@
    "order": 322,
    "name": "Server.swapConf",
    "file": "internal/agentd/server.go",
-   "line": 492,
+   "line": 511,
    "signature": "func (s *Server) swapConf(mutate func(*config.Config) error) error",
    "params": [
     [
@@ -87174,7 +87227,7 @@
    "order": 1474,
    "name": "Server.taskOrErr",
    "file": "internal/agentd/server.go",
-   "line": 1719,
+   "line": 1738,
    "signature": "func (s *Server) taskOrErr(w http.ResponseWriter, taskID string) (*proto.Task, bool)",
    "params": [
     [
@@ -87197,7 +87250,7 @@
    "order": 1496,
    "name": "Server.taskRepoOrErr",
    "file": "internal/agentd/server.go",
-   "line": 1741,
+   "line": 1760,
    "signature": "func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo string, ok bool)",
    "params": [
     [
@@ -87329,7 +87382,7 @@
    "order": 1126,
    "name": "Server.writeDispatchError",
    "file": "internal/agentd/server.go",
-   "line": 1365,
+   "line": 1384,
    "signature": "func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error)",
    "params": [
     [
@@ -87456,7 +87509,7 @@
    "order": 1764,
    "name": "Server.writeManagerError",
    "file": "internal/agentd/server.go",
-   "line": 2009,
+   "line": 2028,
    "signature": "func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err error)",
    "params": [
     [
@@ -87488,7 +87541,7 @@
    "order": 1260,
    "name": "Server.writeProjectError",
    "file": "internal/agentd/server.go",
-   "line": 1505,
+   "line": 1524,
    "signature": "func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error)",
    "params": [
     [
@@ -87515,7 +87568,7 @@
    "order": 738,
    "name": "Server.writeReclaimError",
    "file": "internal/agentd/server.go",
-   "line": 955,
+   "line": 974,
    "signature": "func (s *Server) writeReclaimError(w http.ResponseWriter, taskID string, err error)",
    "params": [
     [
@@ -87868,7 +87921,7 @@
    "order": 579,
    "name": "bearerToken",
    "file": "internal/agentd/server.go",
-   "line": 783,
+   "line": 802,
    "signature": "func bearerToken(r *http.Request) (string, bool)",
    "params": [
     [
@@ -88297,7 +88350,7 @@
    "order": 701,
    "name": "coordinatorRunner.Resume",
    "file": "internal/agentd/server.go",
-   "line": 2527,
+   "line": 2530,
    "signature": "func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error)",
    "params": [
     [
@@ -88808,7 +88861,7 @@
    "order": 700,
    "name": "facadeAsRegistry.Get",
    "file": "internal/agentd/server.go",
-   "line": 2473,
+   "line": 2476,
    "signature": "func (a facadeAsRegistry) Get(kind, id string) (schedclient.Record, error)",
    "params": [
     [
@@ -90095,7 +90148,7 @@
    "order": 1411,
    "name": "parseForce",
    "file": "internal/agentd/server.go",
-   "line": 1656,
+   "line": 1675,
    "signature": "func parseForce(r *http.Request) bool",
    "params": [
     [
@@ -91254,7 +91307,7 @@
    "order": 250,
    "name": "resolvedExecutable",
    "file": "internal/agentd/server.go",
-   "line": 307,
+   "line": 326,
    "signature": "func resolvedExecutable() (string, error) {",
    "summary": "resolvedExecutable 返回当前二进制的真实路径。"
   },
@@ -91313,7 +91366,7 @@
    "container": "k_agentd_roomNarrator",
    "name": "roomNarrator.Say",
    "file": "internal/agentd/server.go",
-   "line": 2565,
+   "line": 2572,
    "signature": "func (n roomNarrator) Say(cardID, text string) error",
    "params": [
     [
@@ -92230,7 +92283,7 @@
    "order": 2123,
    "name": "truncateRunes",
    "file": "internal/agentd/server.go",
-   "line": 2378,
+   "line": 2397,
    "signature": "func truncateRunes(s string, n int) string",
    "params": [
     [
@@ -92499,7 +92552,7 @@
    "order": 607,
    "name": "wantsHTML",
    "file": "internal/agentd/server.go",
-   "line": 811,
+   "line": 830,
    "signature": "func wantsHTML(r *http.Request) bool",
    "params": [
     [
@@ -92696,7 +92749,7 @@
    "order": 2101,
    "name": "writeEvent",
    "file": "internal/agentd/server.go",
-   "line": 2356,
+   "line": 2375,
    "signature": "func writeEvent(ctx context.Context, conn *websocket.Conn, ev proto.Event) error",
    "params": [
     [
@@ -92724,7 +92777,7 @@
    "order": 2112,
    "name": "writeJSON",
    "file": "internal/agentd/server.go",
-   "line": 2367,
+   "line": 2386,
    "signature": "func writeJSON(w http.ResponseWriter, status int, v any)",
    "params": [
     [
@@ -92751,7 +92804,7 @@
    "order": 615,
    "name": "writeUnauthorized",
    "file": "internal/agentd/server.go",
-   "line": 819,
+   "line": 838,
    "signature": "func writeUnauthorized(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -98647,7 +98700,7 @@
    "order": 219,
    "name": "cardCloseCmd.RunE",
    "file": "cmd/card.go",
-   "line": 256,
+   "line": 251,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98692,7 +98745,7 @@
    "order": 390,
    "name": "cardExportCmd.RunE",
    "file": "cmd/card.go",
-   "line": 427,
+   "line": 422,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98736,7 +98789,7 @@
    "order": 263,
    "name": "cardLinkCmd.RunE",
    "file": "cmd/card.go",
-   "line": 300,
+   "line": 295,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98758,7 +98811,7 @@
    "order": 55,
    "name": "cardListCmd.RunE",
    "file": "cmd/card.go",
-   "line": 67,
+   "line": 62,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98780,7 +98833,7 @@
    "order": 299,
    "name": "cardMergeCmd.RunE",
    "file": "cmd/card.go",
-   "line": 336,
+   "line": 331,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98824,7 +98877,7 @@
    "order": 188,
    "name": "cardMoveCmd.RunE",
    "file": "cmd/card.go",
-   "line": 225,
+   "line": 220,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98868,7 +98921,7 @@
    "order": 360,
    "name": "cardNoteCmd.RunE",
    "file": "cmd/card.go",
-   "line": 397,
+   "line": 392,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98912,7 +98965,7 @@
    "order": 16,
    "name": "cardReleaseCmd.RunE",
    "file": "cmd/card_driver.go",
-   "line": 18,
+   "line": 48,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98934,7 +98987,7 @@
    "order": 245,
    "name": "cardReviveCmd.RunE",
    "file": "cmd/card.go",
-   "line": 282,
+   "line": 277,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98956,7 +99009,7 @@
    "order": 103,
    "name": "cardShowCmd.RunE",
    "file": "cmd/card.go",
-   "line": 115,
+   "line": 110,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -98978,7 +99031,7 @@
    "order": 342,
    "name": "cardSplitCmd.RunE",
    "file": "cmd/card.go",
-   "line": 379,
+   "line": 374,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -99000,7 +99053,7 @@
    "order": 40,
    "name": "cardTakeoverCmd.RunE",
    "file": "cmd/card_driver.go",
-   "line": 41,
+   "line": 71,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -99022,7 +99075,7 @@
    "order": 281,
    "name": "cardUnlinkCmd.RunE",
    "file": "cmd/card.go",
-   "line": 318,
+   "line": 313,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -99044,7 +99097,7 @@
    "order": 324,
    "name": "cardUnmergeCmd.RunE",
    "file": "cmd/card.go",
-   "line": 361,
+   "line": 356,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -99066,7 +99119,7 @@
    "order": 140,
    "name": "cardUpdateCmd.RunE",
    "file": "cmd/card.go",
-   "line": 152,
+   "line": 147,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -99088,7 +99141,7 @@
    "order": 422,
    "name": "cardViewWire",
    "file": "cmd/card.go",
-   "line": 517,
+   "line": 511,
    "signature": "func cardViewWire(view ledger.CardView) map[string]any",
    "returns": "map[string]any",
    "summary": "cardViewWire 列表行的线格式（字段名稳定，看板/脚本共用词汇）。"
@@ -101551,7 +101604,7 @@
    "order": 652,
    "name": "roomInboxCmd.RunE",
    "file": "cmd/room.go",
-   "line": 145,
+   "line": 153,
    "signature": "func(cmd *cobra.Command, _ []string) error",
    "returns": "error"
   },
@@ -103386,7 +103439,7 @@
    "order": 417,
    "name": "printCardJSON",
    "file": "cmd/card.go",
-   "line": 512,
+   "line": 506,
    "signature": "func printCardJSON(cmd *cobra.Command, card ledger.Card) error {",
    "summary": "printCardJSON stdout 单行卡 JSON（机器契约）。"
   },
@@ -106170,7 +106223,7 @@
    "order": 15,
    "name": "Service.Consume",
    "file": "internal/collab/service.go",
-   "line": 204,
+   "line": 237,
    "signature": "func (s *Service) Consume(seq int64, consumer string) error",
    "params": [
     [
@@ -106193,7 +106246,7 @@
    "order": 13,
    "name": "Service.History",
    "file": "internal/collab/service.go",
-   "line": 134,
+   "line": 167,
    "signature": "func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error)",
    "params": [
     [
@@ -106221,7 +106274,7 @@
    "order": 17,
    "name": "Service.ListRooms",
    "file": "internal/collab/service.go",
-   "line": 264,
+   "line": 297,
    "signature": "func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error)",
    "params": [
     [
@@ -106239,7 +106292,7 @@
    "order": 18,
    "name": "Service.ListRoomsForMember",
    "file": "internal/collab/service.go",
-   "line": 270,
+   "line": 303,
    "signature": "func (s *Service) ListRoomsForMember(project, member string) ([]proto.RoomSummary, error)",
    "params": [
     [
@@ -106262,7 +106315,7 @@
    "order": 19,
    "name": "Service.MarkRead",
    "file": "internal/collab/service.go",
-   "line": 417,
+   "line": 450,
    "signature": "func (s *Service) MarkRead(member, roomID string, uptoSeq int64) error",
    "params": [
     [
@@ -106290,7 +106343,7 @@
    "order": 16,
    "name": "Service.Mentions",
    "file": "internal/collab/service.go",
-   "line": 230,
+   "line": 263,
    "signature": "func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.LedgerEvent, error)",
    "params": [
     [
@@ -106318,7 +106371,7 @@
    "order": 14,
    "name": "Service.Pending",
    "file": "internal/collab/service.go",
-   "line": 162,
+   "line": 195,
    "signature": "func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error)",
    "params": [
     [
@@ -106387,7 +106440,7 @@
    "order": 20,
    "name": "Service.Unread",
    "file": "internal/collab/service.go",
-   "line": 428,
+   "line": 461,
    "signature": "func (s *Service) Unread(member, roomID string) (int, error)",
    "params": [
     [
@@ -106517,7 +106570,7 @@
    "order": 21,
    "name": "ConsumedSeqs",
    "file": "internal/collab/room/room.go",
-   "line": 246,
+   "line": 251,
    "signature": "func ConsumedSeqs(events []proto.LedgerEvent, consumer string) map[int64]bool",
    "params": [
     [
@@ -106540,7 +106593,7 @@
    "order": 14,
    "name": "IsTerminalStatus",
    "file": "internal/collab/room/room.go",
-   "line": 161,
+   "line": 166,
    "signature": "func IsTerminalStatus(status string) bool",
    "params": [
     [
@@ -106558,7 +106611,7 @@
    "order": 13,
    "name": "KindAllowed",
    "file": "internal/collab/room/room.go",
-   "line": 149,
+   "line": 154,
    "signature": "func KindAllowed(kind string) bool",
    "params": [
     [
@@ -106576,7 +106629,7 @@
    "order": 18,
    "name": "MentionsMember",
    "file": "internal/collab/room/room.go",
-   "line": 200,
+   "line": 205,
    "signature": "func MentionsMember(ev proto.LedgerEvent, member string) bool",
    "params": [
     [
@@ -106599,7 +106652,7 @@
    "order": 23,
    "name": "MessageKind",
    "file": "internal/collab/room/room.go",
-   "line": 281,
+   "line": 286,
    "signature": "func MessageKind(ev proto.LedgerEvent) string",
    "params": [
     [
@@ -106663,7 +106716,7 @@
    "order": 22,
    "name": "RoomIDOf",
    "file": "internal/collab/room/room.go",
-   "line": 269,
+   "line": 274,
    "signature": "func RoomIDOf(ev proto.LedgerEvent) string",
    "params": [
     [
@@ -106681,7 +106734,7 @@
    "order": 17,
    "name": "SameRoom",
    "file": "internal/collab/room/room.go",
-   "line": 188,
+   "line": 193,
    "signature": "func SameRoom(ev proto.LedgerEvent, roomID string) bool",
    "params": [
     [
@@ -106704,7 +106757,7 @@
    "order": 19,
    "name": "UnmarshalMessage",
    "file": "internal/collab/room/room.go",
-   "line": 214,
+   "line": 219,
    "signature": "func UnmarshalMessage(raw json.RawMessage, msg *proto.RoomMessage) error",
    "params": [
     [
@@ -106755,7 +106808,7 @@
    "order": 16,
    "name": "groupRoomKind",
    "file": "internal/collab/room/room.go",
-   "line": 173,
+   "line": 178,
    "signature": "func groupRoomKind(roomID string) (kind, name string)"
   },
   "n_collab_room_isGroupRoom": {
@@ -106764,7 +106817,7 @@
    "order": 15,
    "name": "isGroupRoom",
    "file": "internal/collab/room/room.go",
-   "line": 166,
+   "line": 171,
    "signature": "func isGroupRoom(roomID string) bool"
   },
   "n_collab_room_log": {
@@ -111608,7 +111661,7 @@
    "order": 3,
    "name": "Service.LaunchForCard",
    "file": "internal/keystone/keystone.go",
-   "line": 130,
+   "line": 163,
    "signature": "func (s *Service) LaunchForCard(ctx context.Context, card, source string, spec keysclient.SessionSpec) (RoundResult, error)",
    "params": [
     [
@@ -111641,7 +111694,7 @@
    "order": 5,
    "name": "Service.Locate",
    "file": "internal/keystone/keystone.go",
-   "line": 159,
+   "line": 195,
    "signature": "func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error)",
    "params": [
     [
@@ -111664,7 +111717,7 @@
    "order": 4,
    "name": "Service.SetAttach",
    "file": "internal/keystone/keystone.go",
-   "line": 152,
+   "line": 188,
    "signature": "func (s *Service) SetAttach(card string, active bool)",
    "params": [
     [
@@ -111960,7 +112013,7 @@
    "order": 708,
    "name": "Store.AllDriverLeases",
    "file": "internal/ledger/binding.go",
-   "line": 193,
+   "line": 212,
    "signature": "func (s *Store) AllDriverLeases() ([]DriverLease, error)",
    "returns": "([]DriverLease, error)",
    "summary": "全部租约行（看板批量判活用）。Ticket 0 空壳"
@@ -112136,7 +112189,7 @@
    "order": 139,
    "name": "Store.ClaimCard",
    "file": "internal/ledger/move.go",
-   "line": 143,
+   "line": 140,
    "signature": "func (s *Store) ClaimCard(id, owner string) error",
    "params": [
     [
@@ -112159,7 +112212,7 @@
    "order": 703,
    "name": "Store.ClaimCardAs",
    "file": "internal/ledger/binding.go",
-   "line": 36,
+   "line": 122,
    "signature": "func (s *Store) ClaimCardAs(id, owner, carrier string) error",
    "params": [
     [
@@ -112336,7 +112389,7 @@
    "order": 707,
    "name": "Store.DriverLeaseOf",
    "file": "internal/ledger/binding.go",
-   "line": 176,
+   "line": 195,
    "signature": "func (s *Store) DriverLeaseOf(session string) (DriverLease, bool, error)",
    "params": [
     [
@@ -112354,7 +112407,7 @@
    "order": 706,
    "name": "Store.DropDriverLease",
    "file": "internal/ledger/binding.go",
-   "line": 149,
+   "line": 168,
    "signature": "func (s *Store) DropDriverLease(session string) error",
    "params": [
     [
@@ -113090,7 +113143,7 @@
    "order": 704,
    "name": "Store.RebindDriver",
    "file": "internal/ledger/binding.go",
-   "line": 79,
+   "line": 129,
    "signature": "func (s *Store) RebindDriver(id, toSession, carrier, expect string) error",
    "params": [
     [
@@ -113441,7 +113494,7 @@
    "order": 170,
    "name": "Store.ReleaseCard",
    "file": "internal/ledger/move.go",
-   "line": 154,
+   "line": 147,
    "signature": "func (s *Store) ReleaseCard(id, session string) error",
    "params": [
     [
@@ -113515,7 +113568,7 @@
    "order": 705,
    "name": "Store.RenewDriverLease",
    "file": "internal/ledger/binding.go",
-   "line": 120,
+   "line": 139,
    "signature": "func (s *Store) RenewDriverLease(session string, ttl time.Duration) (bool, error)",
    "params": [
     [
@@ -114208,7 +114261,7 @@
    "order": 185,
    "name": "Store.getWorkflowTx",
    "file": "internal/ledger/move.go",
-   "line": 187,
+   "line": 172,
    "signature": "func (s *Store) getWorkflowTx(tx *sql.Tx, name string, version int) (Workflow, error)",
    "params": [
     [
@@ -115306,7 +115359,7 @@
    "order": 107,
    "name": "StepRunner.awaitNode",
    "file": "internal/ledgerstep/runner.go",
-   "line": 406,
+   "line": 397,
    "signature": "func (r *StepRunner) awaitNode() func(context.Context, string, string) (string, error)",
    "returns": "func(context.Context, string, string) (string, error)",
    "summary": "awaitNode 生产 NodeStep.Await：等回合终态并取最终报文，取到后归档该 task。"
@@ -115317,7 +115370,7 @@
    "order": 200,
    "name": "StepRunner.diffNode",
    "file": "internal/ledgerstep/runner.go",
-   "line": 380,
+   "line": 371,
    "signature": "func (r *StepRunner) diffNode() func(context.Context, string, string) ([]string, error)",
    "returns": "func(context.Context, string, string) ([]string, error)",
    "summary": "diffNode 只通过已装配的 Client.Diff 取得本轮改动，再投影成路径清单。"
@@ -115328,7 +115381,7 @@
    "order": 84,
    "name": "StepRunner.dispatchNode",
    "file": "internal/ledgerstep/runner.go",
-   "line": 305,
+   "line": 296,
    "signature": "func (r *StepRunner) dispatchNode() func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error)",
    "returns": "func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error)",
    "summary": "dispatchNode 生产 NodeStep.Dispatch：按节点的模板引用 + 单字段覆盖派发。"
@@ -115339,7 +115392,7 @@
    "order": 88,
    "name": "StepRunner.dispatchNodeWithGate",
    "file": "internal/ledgerstep/runner.go",
-   "line": 310,
+   "line": 302,
    "signature": "func (r *StepRunner) dispatchNodeWithGate(outputPath *string, writeGate func() bool) func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error)",
    "params": [
     [
@@ -115362,7 +115415,7 @@
    "order": 48,
    "name": "StepRunner.haltEntrypoint",
    "file": "internal/ledgerstep/runner.go",
-   "line": 252,
+   "line": 244,
    "signature": "func (r *StepRunner) haltEntrypoint(cardID, nodeName, reason, body string) (Outcome, error)",
    "params": [
     [
@@ -115395,7 +115448,7 @@
    "order": 64,
    "name": "StepRunner.nodeFor",
    "file": "internal/ledgerstep/runner.go",
-   "line": 300,
+   "line": 291,
    "signature": "func (r *StepRunner) nodeFor(cardID, nodeName string) (ledger.NodeDef, error)",
    "params": [
     [
@@ -130332,7 +130385,7 @@
    "order": 219,
    "name": "acceptCard",
    "file": "web/src/api/ledger.ts",
-   "line": 255,
+   "line": 260,
    "signature": "export const acceptCard = (id: string, evidence: string)",
    "params": [
     [
@@ -130354,7 +130407,7 @@
    "order": 276,
    "name": "answerDecision",
    "file": "web/src/api/ledger.ts",
-   "line": 316,
+   "line": 321,
    "signature": "export const answerDecision = (id: number, answer: string)",
    "params": [
     [
@@ -130375,7 +130428,7 @@
    "order": 247,
    "name": "attachFile",
    "file": "web/src/api/ledger.ts",
-   "line": 284,
+   "line": 289,
    "signature": "export const attachFile = (id: string, kind: string, path: string)",
    "params": [
     [
@@ -130401,7 +130454,7 @@
    "order": 255,
    "name": "clearCardNeeds",
    "file": "web/src/api/ledger.ts",
-   "line": 292,
+   "line": 297,
    "signature": "export const clearCardNeeds = (id: string)",
    "params": [
     [
@@ -130418,7 +130471,7 @@
    "order": 229,
    "name": "createCard",
    "file": "web/src/api/ledger.ts",
-   "line": 265,
+   "line": 270,
    "signature": "export const createCard = (req: NewCardReq)",
    "params": [
     [
@@ -130435,7 +130488,7 @@
    "order": 250,
    "name": "detachFile",
    "file": "web/src/api/ledger.ts",
-   "line": 287,
+   "line": 292,
    "signature": "export const detachFile = (id: string, path: string)",
    "params": [
     [
@@ -130456,7 +130509,7 @@
    "order": 208,
    "name": "fetchCardDetail",
    "file": "web/src/api/ledger.ts",
-   "line": 244,
+   "line": 249,
    "signature": "export const fetchCardDetail = (id: string)",
    "params": [
     [
@@ -130472,7 +130525,7 @@
    "order": 203,
    "name": "fetchCards",
    "file": "web/src/api/ledger.ts",
-   "line": 239,
+   "line": 244,
    "signature": "export const fetchCards = (params = '')",
    "params": [
     [
@@ -130488,7 +130541,7 @@
    "order": 271,
    "name": "fetchDecisions",
    "file": "web/src/api/ledger.ts",
-   "line": 311,
+   "line": 316,
    "signature": "export const fetchDecisions = (openOnly: boolean)",
    "params": [
     [
@@ -130504,7 +130557,7 @@
    "order": 268,
    "name": "fetchDisciplineNames",
    "file": "web/src/api/ledger.ts",
-   "line": 308,
+   "line": 313,
    "signature": "export const fetchDisciplineNames = ()"
   },
   "n_web_api_ledger_fetchFlow": {
@@ -130513,7 +130566,7 @@
    "order": 260,
    "name": "fetchFlow",
    "file": "web/src/api/ledger.ts",
-   "line": 297,
+   "line": 302,
    "signature": "export const fetchFlow = (name: string)",
    "params": [
     [
@@ -130529,7 +130582,7 @@
    "order": 258,
    "name": "fetchFlows",
    "file": "web/src/api/ledger.ts",
-   "line": 295,
+   "line": 300,
    "signature": "export const fetchFlows = ()"
   },
   "n_web_api_ledger_fetchLedgerHealth": {
@@ -130538,7 +130591,7 @@
    "order": 286,
    "name": "fetchLedgerHealth",
    "file": "web/src/api/ledger.ts",
-   "line": 326,
+   "line": 331,
    "signature": "export const fetchLedgerHealth = ()"
   },
   "n_web_api_ledger_migrateCard": {
@@ -130547,7 +130600,7 @@
    "order": 232,
    "name": "migrateCard",
    "file": "web/src/api/ledger.ts",
-   "line": 268,
+   "line": 273,
    "signature": "export const migrateCard = (id: string, req: MigrateCardReq)",
    "params": [
     [
@@ -130568,7 +130621,7 @@
    "order": 211,
    "name": "moveCard",
    "file": "web/src/api/ledger.ts",
-   "line": 247,
+   "line": 252,
    "signature": "export const moveCard = (id: string, to: string)",
    "params": [
     [
@@ -130589,7 +130642,7 @@
    "order": 214,
    "name": "noteCard",
    "file": "web/src/api/ledger.ts",
-   "line": 250,
+   "line": 255,
    "signature": "export const noteCard = (id: string, body: string, kind = '普通')",
    "params": [
     [
@@ -130615,7 +130668,7 @@
    "order": 244,
    "name": "patchCard",
    "file": "web/src/api/ledger.ts",
-   "line": 281,
+   "line": 286,
    "signature": "export const patchCard = (id: string, patch: CardPatch)",
    "params": [
     [
@@ -130636,7 +130689,7 @@
    "order": 265,
    "name": "putFlow",
    "file": "web/src/api/ledger.ts",
-   "line": 302,
+   "line": 307,
    "signature": "export const putFlow = (name: string, nodes: NodeDef[])",
    "params": [
     [
@@ -130658,7 +130711,7 @@
    "order": 225,
    "name": "runCardStep",
    "file": "web/src/api/ledger.ts",
-   "line": 261,
+   "line": 266,
    "signature": "export const runCardStep = (id: string, step: string)",
    "params": [
     [
@@ -130750,7 +130803,7 @@
    "order": 146,
    "name": "attachCoordinator",
    "file": "web/src/api/scheduling.ts",
-   "line": 248,
+   "line": 257,
    "signature": "export const attachCoordinator = (cardId: string, workdir: string) =\u003e",
    "params": [
     [
@@ -130803,7 +130856,7 @@
    "order": 142,
    "name": "getCoordinatorStatus",
    "file": "web/src/api/scheduling.ts",
-   "line": 244,
+   "line": 253,
    "signature": "export const getCoordinatorStatus = (cardId: string) =\u003e",
    "params": [
     [
@@ -130843,7 +130896,7 @@
    "order": 135,
    "name": "launchCoordinator",
    "file": "web/src/api/scheduling.ts",
-   "line": 237,
+   "line": 232,
    "signature": "export const launchCoordinator = (cardId: string, source?: CoordinatorLaunchSource) =\u003e",
    "params": [
     [
@@ -130966,7 +131019,7 @@
    "order": 153,
    "name": "releaseCoordinator",
    "file": "web/src/api/scheduling.ts",
-   "line": 255,
+   "line": 264,
    "signature": "export const releaseCoordinator = (cardId: string) =\u003e",
    "params": [
     [
@@ -131278,7 +131331,7 @@
    "order": 30,
    "name": "CardItem",
    "file": "web/src/app/cards/CardItem.tsx",
-   "line": 32,
+   "line": 34,
    "signature": "export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_count, verified }: CardItemProps) {"
   },
   "n_web_app_cards_CardsPage": {
@@ -131296,7 +131349,7 @@
    "order": 14,
    "name": "Chip",
    "file": "web/src/app/cards/CardItem.tsx",
-   "line": 16,
+   "line": 18,
    "signature": "function Chip({ children, className, title, onClick }: {"
   },
   "n_web_app_cards_CoordinatorPanel": {
@@ -136970,7 +137023,7 @@
    "order": 3196,
    "name": "errAmbiguousCoordinatorSquad",
    "file": "internal/agentd/coordapi.go",
-   "line": 36,
+   "line": 39,
    "summary": "errAmbiguousCoordinatorSquad 表示存在多个协调者小队，拉起目标不唯一。",
    "modelKind": "dto"
   },
@@ -139475,7 +139528,7 @@
    "order": 1865,
    "name": "Server.CanonicalTarget",
    "file": "internal/agentd/server.go",
-   "line": 371,
+   "line": 390,
    "signature": "func (s *Server) CanonicalTarget(name string) string",
    "params": [
     [
@@ -139493,7 +139546,7 @@
    "order": 1864,
    "name": "Server.IsSelfTarget",
    "file": "internal/agentd/server.go",
-   "line": 355,
+   "line": 374,
    "signature": "func (s *Server) IsSelfTarget(name string) bool",
    "params": [
     [
@@ -139511,7 +139564,7 @@
    "order": 1877,
    "name": "Server.Keystone",
    "file": "internal/agentd/server.go",
-   "line": 2459,
+   "line": 2462,
    "signature": "func (s *Server) Keystone() *keystone.Service",
    "returns": "*keystone.Service",
    "summary": "Keystone 返回 keystone 域服务。"
@@ -139522,7 +139575,7 @@
    "order": 1876,
    "name": "Server.Scheduling",
    "file": "internal/agentd/server.go",
-   "line": 2456,
+   "line": 2459,
    "signature": "func (s *Server) Scheduling() *scheduling.Service",
    "returns": "*scheduling.Service",
    "summary": "Scheduling 返回编制域服务；未装配返回 nil（handler 据此降级 503，同 withLedger）。"
@@ -139533,7 +139586,7 @@
    "order": 1869,
    "name": "Server.SetPreviewMirror",
    "file": "internal/agentd/server.go",
-   "line": 435,
+   "line": 454,
    "signature": "func (s *Server) SetPreviewMirror(mirror *PreviewMirror)",
    "params": [
     [
@@ -139550,7 +139603,7 @@
    "order": 1868,
    "name": "Server.SetPreviewOpener",
    "file": "internal/agentd/server.go",
-   "line": 432,
+   "line": 451,
    "signature": "func (s *Server) SetPreviewOpener(opener PreviewOpener)",
    "params": [
     [
@@ -139567,7 +139620,7 @@
    "order": 1867,
    "name": "Server.SetPreviewOwner",
    "file": "internal/agentd/server.go",
-   "line": 429,
+   "line": 448,
    "signature": "func (s *Server) SetPreviewOwner(owner *PreviewOwner)",
    "params": [
     [
@@ -139578,30 +139631,13 @@
    ],
    "summary": "SetPreviewOwner injects the owner-side preview authority before serving HTTP."
   },
-  "n_agentd_Server_SetRebind": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 1874,
-   "name": "Server.SetRebind",
-   "file": "internal/agentd/server.go",
-   "line": 2428,
-   "signature": "func (s *Server) SetRebind(p rebindPort)",
-   "params": [
-    [
-     "p",
-     "rebindPort",
-     ""
-    ]
-   ],
-   "summary": "SetRebind 注入换绑端口（测试缝：同 SetRooms）。"
-  },
   "n_agentd_Server_SetRooms": {
    "kind": "func",
    "container": "k_agentd_Server",
    "order": 1873,
    "name": "Server.SetRooms",
    "file": "internal/agentd/server.go",
-   "line": 2425,
+   "line": 2443,
    "signature": "func (s *Server) SetRooms(svc *collab.Service)",
    "params": [
     [
@@ -139618,7 +139654,7 @@
    "order": 1854,
    "name": "Server.StartAutomation",
    "file": "internal/agentd/scheddrain.go",
-   "line": 44,
+   "line": 51,
    "signature": "func (s *Server) StartAutomation(ctx context.Context)",
    "params": [
     [
@@ -139635,7 +139671,7 @@
    "order": 1870,
    "name": "Server.StartPreviewServices",
    "file": "internal/agentd/server.go",
-   "line": 438,
+   "line": 457,
    "signature": "func (s *Server) StartPreviewServices(ctx context.Context) error",
    "params": [
     [
@@ -139653,7 +139689,7 @@
    "order": 1871,
    "name": "Server.StopPreviewServices",
    "file": "internal/agentd/server.go",
-   "line": 454,
+   "line": 473,
    "signature": "func (s *Server) StopPreviewServices(ctx context.Context) error",
    "params": [
     [
@@ -139727,7 +139763,7 @@
    "order": 1855,
    "name": "Server.automationLoop",
    "file": "internal/agentd/scheddrain.go",
-   "line": 58,
+   "line": 65,
    "signature": "func (s *Server) automationLoop(ctx context.Context)",
    "params": [
     [
@@ -139761,7 +139797,7 @@
    "order": 1866,
    "name": "Server.clientForTarget",
    "file": "internal/agentd/server.go",
-   "line": 382,
+   "line": 401,
    "signature": "func (s *Server) clientForTarget(target string) (*client.Client, error)",
    "params": [
     [
@@ -139814,7 +139850,7 @@
    "order": 1858,
    "name": "Server.drainIgnitionRequest",
    "file": "internal/agentd/scheddrain.go",
-   "line": 163,
+   "line": 170,
    "signature": "func (s *Server) drainIgnitionRequest(ctx context.Context, req scheduling.IgnitionRequest) error",
    "params": [
     [
@@ -139931,28 +139967,6 @@
    "returns": "bool",
    "summary": "forwardWorktreeIfRequested 是建树请求专用的 ?machine 转发路径。 为什么建树不能走通用的 forwardIfRequested：card_ids 指的是**协调者这台机器的 账本**里的卡。通用转发原样搬运请求体，目标机会拿一批它不认识的卡号去写自己的 账本——要么全部失败，要么在目标机没挂账本时静默成空操作（树建好了、卡一张没挂、 card_results 还因 omitempty 被省略，界面上看不出异常）。所以这里的分工是： **目标机只建树，回来之后由本端用返回的 ws.Branch 挂卡。**"
   },
-  "n_agentd_Server_handleCardRebind": {
-   "kind": "func",
-   "container": "k_agentd_Server",
-   "order": 1845,
-   "name": "Server.handleCardRebind",
-   "file": "internal/agentd/roomsapi.go",
-   "line": 492,
-   "signature": "func (s *Server) handleCardRebind(w http.ResponseWriter, r *http.Request)",
-   "params": [
-    [
-     "w",
-     "http.ResponseWriter",
-     ""
-    ],
-    [
-     "r",
-     "*http.Request",
-     ""
-    ]
-   ],
-   "summary": "handleCardRebind POST /api/cards/{id}/rebind {to_session,carrier,expect} → 换绑。 走 rebindPort 端口（岔口二条件 2/4：换绑是本期新增账本能力、一律经门面，而 gateway handler 不得引用门面——端口接口定义在此、具体绑定由组装点注入）。 CAS 冲突由账本哨兵映射 409（ledgerErr）。"
-  },
   "n_agentd_Server_handleCarrierPut": {
    "kind": "func",
    "container": "k_agentd_Server",
@@ -139981,7 +139995,7 @@
    "order": 1828,
    "name": "Server.handleCoordAttach",
    "file": "internal/agentd/coordapi.go",
-   "line": 213,
+   "line": 316,
    "signature": "func (s *Server) handleCoordAttach(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -140025,7 +140039,7 @@
    "order": 1827,
    "name": "Server.handleCoordStatus",
    "file": "internal/agentd/coordapi.go",
-   "line": 182,
+   "line": 285,
    "signature": "func (s *Server) handleCoordStatus(w http.ResponseWriter, r *http.Request)",
    "params": [
     [
@@ -140171,7 +140185,7 @@
    "order": 1863,
    "name": "Server.kickAutomation",
    "file": "internal/agentd/scheddrain.go",
-   "line": 302,
+   "line": 386,
    "signature": "func (s *Server) kickAutomation()"
   },
   "n_agentd_Server_launchCoordinatorRound": {
@@ -140180,7 +140194,7 @@
    "order": 1860,
    "name": "Server.launchCoordinatorRound",
    "file": "internal/agentd/scheddrain.go",
-   "line": 212,
+   "line": 219,
    "signature": "func (s *Server) launchCoordinatorRound(ctx context.Context, card, source string) (keystone.RoundResult, error)",
    "params": [
     [
@@ -140236,7 +140250,7 @@
    "order": 1872,
    "name": "Server.noteTruncationDiagnosed",
    "file": "internal/agentd/server.go",
-   "line": 2349,
+   "line": 2368,
    "signature": "func (s *Server) noteTruncationDiagnosed(verdict string)",
    "params": [
     [
@@ -140253,7 +140267,7 @@
    "order": 1822,
    "name": "Server.registerCoordRoutes",
    "file": "internal/agentd/coordapi.go",
-   "line": 38,
+   "line": 41,
    "signature": "func (s *Server) registerCoordRoutes(api *http.ServeMux)",
    "params": [
     [
@@ -140302,7 +140316,7 @@
    "order": 1862,
    "name": "Server.releaseSchedulingBinding",
    "file": "internal/agentd/scheddrain.go",
-   "line": 288,
+   "line": 372,
    "signature": "func (s *Server) releaseSchedulingBinding(card string, binding scheduling.Binding)",
    "params": [
     [
@@ -140324,7 +140338,7 @@
    "order": 1859,
    "name": "Server.requeueAutomation",
    "file": "internal/agentd/scheddrain.go",
-   "line": 199,
+   "line": 206,
    "signature": "func (s *Server) requeueAutomation(req scheduling.IgnitionRequest, kind string, cause error)",
    "params": [
     [
@@ -140350,7 +140364,7 @@
    "order": 1826,
    "name": "Server.resolveCoordWorkdir",
    "file": "internal/agentd/coordapi.go",
-   "line": 154,
+   "line": 257,
    "signature": "func (s *Server) resolveCoordWorkdir(cardID string) string",
    "params": [
     [
@@ -140368,7 +140382,7 @@
    "order": 1824,
    "name": "Server.resolveCoordinatorSquad",
    "file": "internal/agentd/coordapi.go",
-   "line": 60,
+   "line": 65,
    "signature": "func (s *Server) resolveCoordinatorSquad() (scheduling.Squad, error)",
    "returns": "scheduling.Squad, error",
    "summary": "resolveCoordinatorSquad 找出唯一的协调者小队（SquadRows 过滤 role=coordinator）。 0 → errNoCoordinatorSquad；≥2 → errAmbiguousCoordinatorSquad（错误带全部候选名）。 SquadRows 由 K3 交付（internal/scheduling/registry_read.go），开工前已确认并入。"
@@ -140506,7 +140520,7 @@
    "order": 1861,
    "name": "Server.wakeCoordinatorRound",
    "file": "internal/agentd/scheddrain.go",
-   "line": 249,
+   "line": 297,
    "signature": "func (s *Server) wakeCoordinatorRound(ctx context.Context, card string, evs []keystone.WakeEvent) (keystone.RoundResult, error)",
    "params": [
     [
@@ -140569,7 +140583,7 @@
    "order": 1875,
    "name": "Server.withRooms",
    "file": "internal/agentd/server.go",
-   "line": 2431,
+   "line": 2446,
    "signature": "func (s *Server) withRooms(h http.HandlerFunc) http.HandlerFunc",
    "params": [
     [
@@ -140636,7 +140650,7 @@
    "order": 1,
    "name": "attachLocator.Locate",
    "file": "internal/agentd/server.go",
-   "line": 2574,
+   "line": 2581,
    "signature": "func (attachLocator) Locate(ref keysclient.SessionRef, workdir string) (keysclient.AttachInfo, error)",
    "params": [
     [
@@ -140696,7 +140710,7 @@
    "order": 2824,
    "name": "coordinatorAttachInfo",
    "file": "internal/agentd/coordapi.go",
-   "line": 174,
+   "line": 277,
    "signature": "func coordinatorAttachInfo(info keysclient.AttachInfo) proto.CoordinatorAttachInfo",
    "params": [
     [
@@ -140734,7 +140748,7 @@
    "order": 1,
    "name": "coordinatorRunner.Launch",
    "file": "internal/agentd/server.go",
-   "line": 2519,
+   "line": 2522,
    "signature": "func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error)",
    "params": [
     [
@@ -140801,7 +140815,7 @@
    "order": 3,
    "name": "facadeAsRegistry.Delete",
    "file": "internal/agentd/server.go",
-   "line": 2493,
+   "line": 2496,
    "signature": "func (a facadeAsRegistry) Delete(kind, id string, expectVersion int, actor string) error",
    "params": [
     [
@@ -140833,7 +140847,7 @@
    "order": 2,
    "name": "facadeAsRegistry.List",
    "file": "internal/agentd/server.go",
-   "line": 2481,
+   "line": 2484,
    "signature": "func (a facadeAsRegistry) List(kind string) ([]schedclient.Record, error)",
    "params": [
     [
@@ -140850,7 +140864,7 @@
    "order": 1,
    "name": "facadeAsRegistry.Put",
    "file": "internal/agentd/server.go",
-   "line": 2468,
+   "line": 2471,
    "signature": "func (a facadeAsRegistry) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error)",
    "params": [
     [
@@ -140880,38 +140894,6 @@
     ]
    ],
    "returns": "int, error"
-  },
-  "n_agentd_facadeBindAdapter_Rebind": {
-   "kind": "func",
-   "container": "k_agentd_facadeBindAdapter",
-   "order": 1,
-   "name": "facadeBindAdapter.Rebind",
-   "file": "internal/agentd/server.go",
-   "line": 2451,
-   "signature": "func (a facadeBindAdapter) Rebind(id, toSession, carrier, expect string) error",
-   "params": [
-    [
-     "id",
-     "string",
-     ""
-    ],
-    [
-     "toSession",
-     "string",
-     ""
-    ],
-    [
-     "carrier",
-     "string",
-     ""
-    ],
-    [
-     "expect",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "error"
   },
   "n_agentd_focusPreviewWindow": {
    "kind": "func",
@@ -141652,34 +141634,6 @@
    "returns": "*proto.CoordinatorLaunchResp, error",
    "summary": "CoordinatorLaunch 一键拉起绑定协调者（POST coordinator/launch，端点本体归 K4；未登记协调者小队时服务端 400 报文含 handoff squad create 指路——岔口四）。"
   },
-  "n_client_Client_CoordinatorLaunchAs": {
-   "kind": "func",
-   "container": "k_client_Client",
-   "order": 1852,
-   "name": "Client.CoordinatorLaunchAs",
-   "file": "internal/client/coordinator.go",
-   "line": 19,
-   "signature": "func (c *Client) CoordinatorLaunchAs(ctx context.Context, cardID, source string) (*proto.CoordinatorLaunchResp, error)",
-   "params": [
-    [
-     "ctx",
-     "context.Context",
-     ""
-    ],
-    [
-     "cardID",
-     "string",
-     ""
-    ],
-    [
-     "source",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "*proto.CoordinatorLaunchResp, error",
-   "summary": "CoordinatorLaunchAs 以指定 source 拉起并绑定协调者（POST /api/cards/{id}/ coordinator/launch）。source 只进审计：manual=看板按钮、card_create=开卡即绑。"
-  },
   "n_client_Client_DialPreviewRaw": {
    "kind": "func",
    "container": "k_client_Client",
@@ -141839,7 +141793,7 @@
    "order": 654,
    "name": "cardCoordinateCmd.RunE",
    "file": "cmd/card.go",
-   "line": 466,
+   "line": 460,
    "signature": "func(cmd *cobra.Command, args []string) error",
    "params": [
     [
@@ -141854,29 +141808,6 @@
     ]
    ],
    "returns": "error"
-  },
-  "n_cmd_coordinateAfterCreate": {
-   "kind": "func",
-   "container": "k_cmd_fn",
-   "order": 655,
-   "name": "coordinateAfterCreate",
-   "file": "cmd/card_coordinate.go",
-   "line": 21,
-   "signature": "func coordinateAfterCreate(cmd *cobra.Command, cardID string) error",
-   "params": [
-    [
-     "cmd",
-     "*cobra.Command",
-     ""
-    ],
-    [
-     "cardID",
-     "string",
-     ""
-    ]
-   ],
-   "returns": "error",
-   "summary": "coordinateAfterCreate 在卡创建成功后拉起并绑定协调者（source=card_create）。 返回错误由调用方降级呈现（不回滚建卡）；拨号目标固定本机 agentd——开卡动作 发生在哪台机器，绑定就落哪台机器的账本与自动化层。"
   },
   "n_cmd_countSquadPolicies": {
    "kind": "func",
@@ -142059,7 +141990,7 @@
    "order": 22,
    "name": "Service.listRooms",
    "file": "internal/collab/service.go",
-   "line": 274,
+   "line": 307,
    "signature": "func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error)",
    "params": [
     [
@@ -142413,7 +142344,7 @@
    "order": 7,
    "name": "Service.AttachActive",
    "file": "internal/keystone/keystone.go",
-   "line": 142,
+   "line": 178,
    "signature": "func (s *Service) AttachActive(card string) bool",
    "params": [
     [
@@ -142431,7 +142362,7 @@
    "order": 6,
    "name": "Service.AttachState",
    "file": "internal/keystone/keystone.go",
-   "line": 139,
+   "line": 175,
    "signature": "func (s *Service) AttachState(card string) bool",
    "params": [
     [
@@ -142449,7 +142380,7 @@
    "order": 9,
    "name": "Service.briefing",
    "file": "internal/keystone/keystone.go",
-   "line": 214,
+   "line": 268,
    "signature": "func (s *Service) briefing(card string, evs []WakeEvent) string",
    "params": [
     [
@@ -142472,7 +142403,7 @@
    "order": 8,
    "name": "Service.launchRound",
    "file": "internal/keystone/keystone.go",
-   "line": 174,
+   "line": 231,
    "signature": "func (s *Service) launchRound(card, extra string, spec keysclient.SessionSpec, rebuild bool) (RoundResult, error)",
    "params": [
     [
@@ -142930,7 +142861,7 @@
    "order": 268,
    "name": "ResolveNode",
    "file": "internal/ledgerstep/runner.go",
-   "line": 281,
+   "line": 272,
    "signature": "func ResolveNode(st *ledger.Store, cardID, nodeName string) (ledger.NodeDef, error)",
    "params": [
     [
@@ -142958,7 +142889,7 @@
    "order": 201,
    "name": "StepRunner.now",
    "file": "internal/ledgerstep/runner.go",
-   "line": 364,
+   "line": 355,
    "signature": "func (r *StepRunner) now() time.Time",
    "returns": "time.Time",
    "summary": "now 返回路径渲染使用的时钟；可注入固定时间以保证同一运行的测试和审计稳定。"
@@ -144793,6 +144724,523 @@
    "line": 26,
    "signature": "export function wheelPixelDeltaY(ev: WheelDelta, cellHeight: number, rows: number): number",
    "summary": "wheelPixelDeltaY 把一次滚轮的 deltaY 统一成像素。  参数：ev 至少有 deltaY；cellHeight 一行像素；rows 一页行数（页模式用）。 返回：与触控板像素 delta 同一量纲的有符号像素，上负下正。"
+  },
+  "e_http_post_api_cards_id_coordinator_forget": {
+   "kind": "entry",
+   "container": "c_http",
+   "order": 51,
+   "name": "POST /api/cards/{id}/coordinator/forget",
+   "file": "internal/agentd/coordapi.go",
+   "line": 6,
+   "channel": "http"
+  },
+  "e_http_post_api_cards_id_coordinator_rebind": {
+   "kind": "entry",
+   "container": "c_http",
+   "order": 50,
+   "name": "POST /api/cards/{id}/coordinator/rebind",
+   "file": "internal/agentd/coordapi.go",
+   "line": 5,
+   "channel": "http"
+  },
+  "m_proto_CoordinatorRebindReq": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 10,
+   "name": "CoordinatorRebindReq",
+   "file": "internal/proto/scheduling.go",
+   "line": 11,
+   "signature": "type CoordinatorRebindReq struct {",
+   "summary": "协调者换绑请求。HTTP 控制面只接受 mode=launch；mode=self 由 CLI 本机账本路径执行，identity 不属于 HTTP 可信输入。",
+   "fields": [
+    [
+     "Mode",
+     "string",
+     ""
+    ],
+    [
+     "Identity",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_SeatSource": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 400,
+   "name": "SeatSource",
+   "file": "internal/proto/seat.go",
+   "line": 10,
+   "signature": "type SeatSource string",
+   "summary": "卡上协调者席位来源：bind 或 coordinate",
+   "modelKind": "entity"
+  },
+  "m_web_api_ledger_SeatSource": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 3,
+   "name": "SeatSource",
+   "file": "web/src/api/ledger.ts",
+   "line": 5,
+   "signature": "export type SeatSource = 'bind' | 'coordinate'",
+   "modelKind": "dto"
+  },
+  "m_web_api_scheduling_CoordinatorRebindMode": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 129,
+   "name": "CoordinatorRebindMode",
+   "file": "web/src/api/scheduling.ts",
+   "line": 238,
+   "signature": "export type CoordinatorRebindMode = 'self' | 'launch'",
+   "modelKind": "dto"
+  },
+  "m_web_api_scheduling_CoordinatorRebindReq": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 130,
+   "name": "CoordinatorRebindReq",
+   "file": "web/src/api/scheduling.ts",
+   "line": 240,
+   "signature": "export interface CoordinatorRebindReq {",
+   "fields": [
+    [
+     "mode",
+     "CoordinatorRebindMode",
+     ""
+    ],
+    [
+     "identity",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "n_agentd_Server_coordinatorLock": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1004,
+   "name": "Server.coordinatorLock",
+   "file": "internal/agentd/server.go",
+   "line": 302,
+   "signature": "func (s *Server) coordinatorLock(card string) *sync.Mutex",
+   "params": [
+    [
+     "card",
+     "string",
+     "卡号"
+    ]
+   ],
+   "returns": "*sync.Mutex",
+   "summary": "返回一张卡的控制面串行锁；锁只覆盖控制段，不把不同卡的 Launch 串成全局队列。"
+  },
+  "n_agentd_Server_handleCoordForget": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1001,
+   "name": "Server.handleCoordForget",
+   "file": "internal/agentd/coordapi.go",
+   "line": 241,
+   "signature": "func (s *Server) handleCoordForget(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "清除 agentd 进程内的旧协调者会话引用；账本席位由调用方先完成 CAS。"
+  },
+  "n_agentd_Server_handleCoordRebind": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1000,
+   "name": "Server.handleCoordRebind",
+   "file": "internal/agentd/coordapi.go",
+   "line": 167,
+   "signature": "func (s *Server) handleCoordRebind(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "只接受 mode=launch；当前会话坐下由 CLI 本机账本完成，机器人换绑由本端重新 Launch。"
+  },
+  "n_agentd_Server_launchCoordinatorRoundForRebind": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1002,
+   "name": "Server.launchCoordinatorRoundForRebind",
+   "file": "internal/agentd/scheddrain.go",
+   "line": 223,
+   "signature": "func (s *Server) launchCoordinatorRoundForRebind(ctx context.Context, card, source, expect string) (keystone.RoundResult, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "source",
+     "string",
+     "拉起来源"
+    ],
+    [
+     "expect",
+     "string",
+     "旧席位身份"
+    ]
+   ],
+   "returns": "keystone.RoundResult, error"
+  },
+  "n_agentd_Server_launchCoordinatorRoundWithExpect": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1003,
+   "name": "Server.launchCoordinatorRoundWithExpect",
+   "file": "internal/agentd/scheddrain.go",
+   "line": 227,
+   "signature": "func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, source, expect string, rebind bool) (keystone.RoundResult, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "source",
+     "string",
+     "拉起来源"
+    ],
+    [
+     "expect",
+     "string",
+     "旧席位身份"
+    ],
+    [
+     "rebind",
+     "bool",
+     "是否换绑"
+    ]
+   ],
+   "returns": "keystone.RoundResult, error"
+  },
+  "n_client_Client_CoordinatorForget": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 1001,
+   "name": "Client.CoordinatorForget",
+   "file": "internal/client/coordinator.go",
+   "line": 36,
+   "signature": "func (c *Client) CoordinatorForget(ctx context.Context, cardID string) error",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "请求上下文"
+    ],
+    [
+     "cardID",
+     "string",
+     "卡号"
+    ]
+   ],
+   "returns": "error",
+   "summary": "通知本机 agentd 丢弃卡的旧协调者会话引用；该方法不写账本，席位 CAS 由调用方先完成。"
+  },
+  "n_client_Client_CoordinatorRebind": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 1000,
+   "name": "Client.CoordinatorRebind",
+   "file": "internal/client/coordinator.go",
+   "line": 16,
+   "signature": "func (c *Client) CoordinatorRebind(ctx context.Context, cardID string, req proto.CoordinatorRebindReq) (*proto.CoordinatorLaunchResp, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "cardID",
+     "string",
+     "卡号"
+    ],
+    [
+     "req",
+     "proto.CoordinatorRebindReq",
+     "换绑请求"
+    ]
+   ],
+   "returns": "*proto.CoordinatorLaunchResp, error",
+   "summary": "通过协调者控制面请求机器人接班；调用方只应提供 mode=launch。"
+  },
+  "n_cmd_cardBindCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 16,
+   "name": "cardBindCmd.RunE",
+   "file": "cmd/card_driver.go",
+   "line": 20,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+    [
+     "cmd",
+     "*cobra.Command",
+     ""
+    ],
+    [
+     "args",
+     "[]string",
+     ""
+    ]
+   ],
+   "returns": "error"
+  },
+  "n_cmd_currentSeatIdentity": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 435,
+   "name": "currentSeatIdentity",
+   "file": "cmd/card_seat.go",
+   "line": 18,
+   "signature": "func currentSeatIdentity() (string, error)",
+   "returns": "string, error",
+   "summary": "从当前执行环境读取规范席位身份。两个 HANDOFF_SESSION_* 键缺一不可；缺失时返回可行动错误，绝不从人尺度 actor、主机名或浏览器地址推导会话。"
+  },
+  "n_keystone_Service_Forget": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 6,
+   "name": "Service.Forget",
+   "file": "internal/keystone/keystone.go",
+   "line": 221,
+   "signature": "func (s *Service) Forget(card string)",
+   "params": [
+    [
+     "card",
+     "string",
+     "卡号"
+    ]
+   ],
+   "summary": "清除进程内的旧会话引用。账本是席位真相；bind/self 换绑成功或读到空座、bind、非法旧值时必须调用它，防止旧机器人在下一轮被 Resume。"
+  },
+  "n_keystone_Service_rebuildAfterResumeFailure": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 7,
+   "name": "Service.rebuildAfterResumeFailure",
+   "file": "internal/keystone/keystone.go",
+   "line": 149,
+   "signature": "func (s *Service) rebuildAfterResumeFailure(card, prompt string, spec keysclient.SessionSpec, ref keysclient.SessionRef, resumeErr error) (RoundResult, error)",
+   "params": [
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "prompt",
+     "string",
+     "开场简报"
+    ],
+    [
+     "spec",
+     "keysclient.SessionSpec",
+     "承载环境"
+    ],
+    [
+     "ref",
+     "keysclient.SessionRef",
+     "旧会话引用"
+    ],
+    [
+     "resumeErr",
+     "error",
+     "续接错误"
+    ]
+   ],
+   "returns": "RoundResult, error"
+  },
+  "n_ledger_Store_BindSeat": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 701,
+   "name": "Store.BindSeat",
+   "file": "internal/ledger/binding.go",
+   "line": 30,
+   "signature": "func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error",
+   "params": [
+    [
+     "id",
+     "string",
+     "卡号"
+    ],
+    [
+     "identity",
+     "string",
+     "规范席位身份"
+    ],
+    [
+     "source",
+     "proto.SeatSource",
+     "席位来源"
+    ]
+   ],
+   "returns": "error",
+   "summary": "只把空座原子地占为规范 identity/source，不落事件也不写 driver_carrier；读、判空、写入在同一个账本事务内完成。"
+  },
+  "n_ledger_Store_RebindSeat": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 702,
+   "name": "Store.RebindSeat",
+   "file": "internal/ledger/binding.go",
+   "line": 68,
+   "signature": "func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     "卡号"
+    ],
+    [
+     "identity",
+     "string",
+     "目标席位身份"
+    ],
+    [
+     "source",
+     "proto.SeatSource",
+     "席位来源"
+    ],
+    [
+     "expect",
+     "string",
+     "账本中的旧席位身份"
+    ]
+   ],
+   "returns": "error",
+   "summary": "以 expect 原始字节值 CAS 覆写非空席位，并在同一事务落恰一条 EvDriverTakeover；expect 由服务层从账本读出，不来自用户可控 flag。"
+  },
+  "n_proto_EncodeSeatIdentity": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 401,
+   "name": "EncodeSeatIdentity",
+   "file": "internal/proto/seat.go",
+   "line": 41,
+   "signature": "func EncodeSeatIdentity(cli, sessionID string) (string, error)",
+   "params": [
+    [
+     "cli",
+     "string",
+     "CLI 物种名"
+    ],
+    [
+     "sessionID",
+     "string",
+     "会话 id"
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "编码账本与房间共用的当前会话席位身份"
+  },
+  "n_proto_ParseSeatIdentity": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 402,
+   "name": "ParseSeatIdentity",
+   "file": "internal/proto/seat.go",
+   "line": 53,
+   "signature": "func ParseSeatIdentity(raw string) (cli, sessionID string, err error)",
+   "params": [
+    [
+     "raw",
+     "string",
+     "编码后的席位身份"
+    ]
+   ],
+   "returns": "cli, sessionID string, err error",
+   "summary": "校验并解码当前会话席位身份，拒绝旧格式"
+  },
+  "n_proto_ValidateSeat": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 400,
+   "name": "ValidateSeat",
+   "file": "internal/proto/seat.go",
+   "line": 20,
+   "signature": "func ValidateSeat(identity string, source SeatSource) error",
+   "params": [
+    [
+     "identity",
+     "string",
+     "席位身份"
+    ],
+    [
+     "source",
+     "SeatSource",
+     "席位来源"
+    ]
+   ],
+   "returns": "error",
+   "summary": "检查席位身份与来源是否构成可占用的规范席位。identity 为空时仅允许 source 为空；非空 identity 必须能被 ParseSeatIdentity 解码，来源只能是 bind 或 coordinate。"
+  },
+  "n_proto_validateSeatPart": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 403,
+   "name": "validateSeatPart",
+   "file": "internal/proto/seat.go",
+   "line": 73,
+   "signature": "func validateSeatPart(name, value string, cli bool) error",
+   "returns": "error",
+   "summary": "校验席位编码分段"
+  },
+  "n_web_api_scheduling_rebindCoordinatorLaunch": {
+   "kind": "func",
+   "container": "k_web_api_scheduling",
+   "order": 139,
+   "name": "rebindCoordinatorLaunch",
+   "file": "web/src/api/scheduling.ts",
+   "line": 246,
+   "signature": "export const rebindCoordinatorLaunch = (cardId: string) =\u003e",
+   "params": [
+    [
+     "cardId",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Promise\u003cCoordinatorLaunchResp\u003e",
+   "summary": "叫机器人换绑；浏览器只发送 launch 模式，不伪造当前会话身份。"
   }
  },
  "projections": [

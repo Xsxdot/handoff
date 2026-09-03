@@ -3,7 +3,7 @@
 // 原生终端打开由 Workbench/Shell 接缝负责。
 import { useState } from 'react'
 import type { ReactElement } from 'react'
-import { attachCoordinator, getCoordinatorStatus, launchCoordinator, releaseCoordinator } from '../../api/scheduling'
+import { attachCoordinator, getCoordinatorStatus, launchCoordinator, rebindCoordinatorLaunch, releaseCoordinator } from '../../api/scheduling'
 import type { CoordinatorAttachInfo, CoordinatorStatus } from '../../api/scheduling'
 import { usePoll } from '../data/usePoll'
 import { DisconnectedBanner, LoadFailed, SessionExpiredBanner } from '../lib/Banners'
@@ -21,7 +21,8 @@ type CoordinatorView = 'unbound' | 'bound' | 'attach-active' | 'invalid'
 
 function coordinatorView(status: CoordinatorStatus): CoordinatorView {
   if (!status.bound && !status.attach_active && status.attach === null) return 'unbound'
-  if (status.bound && !status.attach_active && status.attach !== null) return 'bound'
+  // bind 席位没有 agentd 内存中的 SessionRef，因此合法 bound 可以没有 attach。
+  if (status.bound && !status.attach_active) return 'bound'
   if (status.bound && status.attach_active && status.attach !== null) return 'attach-active'
   return 'invalid'
 }
@@ -46,7 +47,7 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
       throw cause
     }
   }, 5000)
-  const [busy, setBusy] = useState<'launch' | 'attach' | 'release' | null>(null)
+  const [busy, setBusy] = useState<'launch' | 'rebind' | 'attach' | 'release' | null>(null)
   const [actionError, setActionError] = useState('')
   const [launchOutput, setLaunchOutput] = useState('')
   const [attachConfirm, setAttachConfirm] = useState(false)
@@ -55,15 +56,33 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
     setBusy('launch')
     setActionError('')
     setLaunchOutput('')
-    console.info('coordinator.launch.start', { card: cardId, active: false, source: 'manual' })
+    console.info('coordinator.launch.start', { card: cardId, active: false })
     try {
-      const result = await launchCoordinator(cardId, 'manual')
+      const result = await launchCoordinator(cardId)
       console.info('coordinator.launch.done', { card: cardId, active: false, woke: result.woke, rebuilt: result.rebuilt, escalated: result.escalated })
       setLaunchOutput(result.output ?? (result.escalated ? '协调者已转人工处理' : '协调者已拉起'))
       state.refresh()
     } catch (cause) {
       console.error('coordinator.launch.error', { card: cardId, active: false, cause })
       setActionError(errorMessage(cause))
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const rebind = async (): Promise<void> => {
+    setBusy('rebind')
+    setActionError('')
+    setLaunchOutput('')
+    console.info('coordinator.rebind.start', { card: cardId, mode: 'launch' })
+    try {
+      const result = await rebindCoordinatorLaunch(cardId)
+      console.info('coordinator.rebind.done', { card: cardId, mode: 'launch', session: result.session_id })
+      setLaunchOutput(result.output ?? '协调者已换绑')
+      state.refresh()
+    } catch (cause) {
+      console.error('coordinator.rebind.error', { card: cardId, mode: 'launch', cause })
+      setActionError(`叫机器人换绑失败：${errorMessage(cause)}`)
     } finally {
       setBusy(null)
     }
@@ -124,8 +143,8 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
         <span className="text-xs">{statusText(view)}</span>
       </div>
       {state.disconnected && <DisconnectedBanner compact message={state.errorText} />}
-      {view === 'unbound' && <Button className="mt-2" size="sm" disabled={disabled} onClick={() => void launch()}>▶ 拉起协调者</Button>}
-      {view === 'bound' && <Button className="mt-2" size="sm" variant="outline" disabled={disabled} onClick={() => { setActionError(''); setAttachConfirm(true) }}>打开终端</Button>}
+      {view === 'unbound' && <Button className="mt-2" size="sm" disabled={disabled} onClick={() => void launch()}>▶ 叫机器人</Button>}
+      {view === 'bound' && <div className="mt-2 flex gap-2">{info && <Button size="sm" variant="outline" disabled={disabled} onClick={() => { setActionError(''); setAttachConfirm(true) }}>打开终端</Button>}<Button size="sm" variant="outline" disabled={disabled} onClick={() => void rebind()}>换绑：叫机器人</Button></div>}
       {view === 'attach-active' && <Button className="mt-2" size="sm" variant="outline" disabled={disabled} onClick={() => void release()}>交回无头</Button>}
       {view === 'invalid' && <p role="alert" className="mt-2 text-xs text-destructive">服务端协调者状态不一致，请刷新重试。</p>}
       {launchOutput && <p className="mt-2 break-words text-xs text-muted-foreground">{launchOutput}</p>}

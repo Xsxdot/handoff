@@ -93,30 +93,12 @@ func (s *Store) CardOfTask(target, taskID string) (string, error) {
 	return cardID, nil
 }
 
-// TakeoverCard 显式替换卡的驱动归属，并在同一事务写可审计事件。
-// 参数：id 卡号；session 新驱动会话；actor 发起接管的人/入口标识。
-// 注意：这是有意覆盖现有驱动的独立动作，不读取认领时刻，也不自动改变卡状态。
+// TakeoverCard 保留旧的人尺度命令签名，但不再改变协调者席位或落
+// EvDriverTakeover；请使用 BindSeat/RebindSeat 完成三颗按钮语义。
 func (s *Store) TakeoverCard(id, session, actor string) error {
-	log().Info("开始接管驱动", "card", id, "session", session, "actor", actor)
-	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
-		card, err := getCardTx(s, tx, id)
-		if err != nil {
-			return fmt.Errorf("接管驱动: 卡 %s: %w", id, err)
-		}
-		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_heartbeat_at = ? WHERE id = ?`),
-			session, s.tval(time.Now()), id); err != nil {
-			return fmt.Errorf("接管写驱动: %w", err)
-		}
-		if _, err := s.appendEvent(tx, sink, id, EvDriverTakeover, actor,
-			map[string]string{"from": card.DriverSession, "to": session}); err != nil {
-			return fmt.Errorf("接管落事件: %w", err)
-		}
-		return nil
-	})
-	if err != nil {
-		log().Warn("接管驱动失败", "card", id, "session", session, "actor", actor, "cause", err)
-		return err
+	log().Warn("旧接管入口已停用", "card", id, "has_session", session != "", "has_actor", actor != "")
+	if _, err := s.GetCard(id); err != nil {
+		return fmt.Errorf("接管驱动: 卡 %s: %w", id, err)
 	}
-	log().Info("驱动已接管", "card", id, "session", session, "actor", actor)
-	return nil
+	return fmt.Errorf("卡 %s 不再通过 takeover 占座，请使用 bind、coordinate 或 rebind: %w", id, ErrBadState)
 }

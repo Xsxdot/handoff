@@ -62,10 +62,10 @@ func mustCardWithParent(t *testing.T, s *Service, st *ledger.Store, title, paren
 	return card
 }
 
-// mustBind 用 ClaimCardAs 给卡绑一个协调者会话。
+// mustBind 用规范 coordinate 席位给测试卡绑定协调者会话。
 func mustBind(t *testing.T, st *ledger.Store, id, owner string) {
 	t.Helper()
-	if err := st.ClaimCardAs(id, owner, ""); err != nil {
+	if err := st.BindSeat(id, owner, proto.SeatSourceCoordinate); err != nil {
 		t.Fatalf("绑定 %s→%s: %v", id, owner, err)
 	}
 }
@@ -189,11 +189,11 @@ func TestSendCoordinatorKindsRequireBinding(t *testing.T) {
 	for _, kind := range []string{proto.RoomMsgEscalation, proto.RoomMsgDeviation,
 		proto.RoomMsgClosing, proto.RoomMsgReply} {
 		card := mustCard(t, svc, st, "协调者执法卡")
-		if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: kind, Body: "x"}, "cli:a@h"); err != ErrNotWriter {
+		if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: kind, Body: "x"}, "cli:codex#a"); err != ErrNotWriter {
 			t.Fatalf("kind %s 非绑定者必须 ErrNotWriter，got %v", kind, err)
 		}
-		mustBind(t, st, card.ID, "cli:a@h")
-		seq, err := svc.Send(card.ID, proto.RoomMessage{Kind: kind, Body: "x"}, "cli:a@h")
+		mustBind(t, st, card.ID, "cli:codex#a")
+		seq, err := svc.Send(card.ID, proto.RoomMessage{Kind: kind, Body: "x"}, "cli:codex#a")
 		if err != nil || seq <= 0 {
 			t.Fatalf("kind %s 当前绑定者可发，got err=%v seq=%d", kind, err, seq)
 		}
@@ -206,12 +206,12 @@ func TestSendRelayAllowsDirectParentWriter(t *testing.T) {
 	svc, st := newFixture(t)
 	parent := mustCard(t, svc, st, "父卡")
 	child := mustCardWithParent(t, svc, st, "子卡", parent.ID)
-	mustBind(t, st, parent.ID, "cli:p@h")
-	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "衔接"}, "cli:p@h"); err != nil {
+	mustBind(t, st, parent.ID, "cli:codex#p")
+	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "衔接"}, "cli:codex#p"); err != nil {
 		t.Fatalf("直接父绑定者 relay 必须可发，got %v", err)
 	}
-	mustBind(t, st, child.ID, "cli:c@h")
-	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "衔接"}, "cli:c@h"); err != nil {
+	mustBind(t, st, child.ID, "cli:codex#c")
+	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "衔接"}, "cli:codex#c"); err != nil {
 		t.Fatalf("本卡绑定者 relay 必须可发，got %v", err)
 	}
 }
@@ -223,9 +223,9 @@ func TestSendRelayRejectsGrandparentAndUnrelated(t *testing.T) {
 	gp := mustCard(t, svc, st, "祖父卡")
 	parent := mustCardWithParent(t, svc, st, "父卡", gp.ID)
 	child := mustCardWithParent(t, svc, st, "子卡", parent.ID)
-	mustBind(t, st, gp.ID, "cli:g@h")
-	mustBind(t, st, parent.ID, "cli:p@h")
-	for _, actor := range []string{"cli:g@h", "cli:unrelated@h"} {
+	mustBind(t, st, gp.ID, "cli:codex#g")
+	mustBind(t, st, parent.ID, "cli:codex#p")
+	for _, actor := range []string{"cli:codex#g", "cli:codex#unrelated"} {
 		if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "x"}, actor); err != ErrNotWriter {
 			t.Fatalf("relay actor=%s 必须 ErrNotWriter，got %v", actor, err)
 		}
@@ -237,8 +237,8 @@ func TestSendRelayRejectsGrandparentAndUnrelated(t *testing.T) {
 func TestSendUserRejectsCardBinding(t *testing.T) {
 	svc, st := newFixture(t)
 	card := mustCard(t, svc, st, "绑定卡")
-	mustBind(t, st, card.ID, "cli:a@h")
-	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "cli:a@h"); err != ErrNotWriter {
+	mustBind(t, st, card.ID, "cli:codex#a")
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "cli:codex#a"); err != ErrNotWriter {
 		t.Fatalf("user actor==绑定值必须 ErrNotWriter，got %v", err)
 	}
 	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy"); err != nil {
@@ -252,8 +252,8 @@ func TestSendUserRejectsParentBinding(t *testing.T) {
 	svc, st := newFixture(t)
 	parent := mustCard(t, svc, st, "父卡")
 	child := mustCardWithParent(t, svc, st, "子卡", parent.ID)
-	mustBind(t, st, parent.ID, "cli:p@h")
-	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "cli:p@h"); err != ErrNotWriter {
+	mustBind(t, st, parent.ID, "cli:codex#p")
+	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "cli:codex#p"); err != ErrNotWriter {
 		t.Fatalf("user actor==直接父绑定值必须 ErrNotWriter，got %v", err)
 	}
 	if _, err := svc.Send(child.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy"); err != nil {
@@ -280,17 +280,17 @@ func TestSendRejectsMergedCardRoom(t *testing.T) {
 func TestSendRebindRevokesOldSession(t *testing.T) {
 	svc, st := newFixture(t)
 	card := mustCard(t, svc, st, "换绑卡")
-	mustBind(t, st, card.ID, "cli:old@h")
-	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:old@h"); err != nil {
+	mustBind(t, st, card.ID, "cli:codex#old")
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:codex#old"); err != nil {
 		t.Fatalf("换绑前旧会话可发，got %v", err)
 	}
-	if err := st.RebindDriver(card.ID, "cli:new@h", "", "cli:old@h"); err != nil {
+	if err := st.RebindSeat(card.ID, "cli:codex#new", proto.SeatSourceCoordinate, "cli:codex#old"); err != nil {
 		t.Fatalf("换绑: %v", err)
 	}
-	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:old@h"); err != ErrNotWriter {
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:codex#old"); err != ErrNotWriter {
 		t.Fatalf("换绑后旧会话必须 ErrNotWriter，got %v", err)
 	}
-	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:new@h"); err != nil {
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "x"}, "cli:codex#new"); err != nil {
 		t.Fatalf("换绑后新会话可发，got %v", err)
 	}
 }
@@ -510,5 +510,42 @@ func TestRoomStatusLiteralMatchesLedger(t *testing.T) {
 	}
 	if room.IsTerminalStatus(ledger.StatusDoing) {
 		t.Fatalf("进行中不应判终态")
+	}
+}
+
+// TestSendConsumesRoomMentions B287：用户回复即消费该房间 @本人 的未消费提及；
+// 别的卡房间的提及不受牵连。缝级断言，入口 Service.Send。
+func TestSendConsumesRoomMentions(t *testing.T) {
+	svc, st := newFixture(t)
+	card := mustAnyCard(t, svc, st)
+	other := mustCard(t, svc, st, "另一张卡")
+	mustBind(t, st, card.ID, "cli:codex#s1")
+	mustBind(t, st, other.ID, "cli:codex#s2")
+	// 协调者侧 @用户：relay 类必须由绑定者书写（room.VerifyWriter 矩阵）。
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "看一下这个", Mentions: []string{"user:sy"}}, "cli:codex#s1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Send(other.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "那边也看一下", Mentions: []string{"user:sy"}}, "cli:codex#s2"); err != nil {
+		t.Fatal(err)
+	}
+	pending, err := svc.Mentions("user:sy", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 2 {
+		t.Fatalf("发送前应有两处未消费提及，got %d", len(pending))
+	}
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "收到"}, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	pending, err = svc.Mentions("user:sy", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pending) != 1 {
+		t.Fatalf("回复后本房间提及应清零、他卡提及保留，got %d", len(pending))
+	}
+	if pending[0].CardID != other.ID {
+		t.Fatalf("保留的应是另一张卡的提及，got card %s", pending[0].CardID)
 	}
 }

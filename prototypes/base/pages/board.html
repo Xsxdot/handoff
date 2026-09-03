@@ -20,9 +20,9 @@
   B279（B156.3 前端控制台）增量：
     ⑨ 工具条「⧗ 排队中 N」开关展开调度横带（行=位次/卡号/类型 badge/节点·小队/
        优先级/就绪态/入队 actor，镜像 QueueEntry；launch 恒先于 ignition）；
-    ⑩ 抽屉「协调者」区三态：未绑定（拉起）/绑定中（打开终端）/人工接管中（交回无头），
-       拉起走 coordinator/launch，attach 弹确认框说明与自动唤醒互斥；
-    ⑪ 新建工作项弹层加「创建后拉起协调者并绑定（开卡即绑）」；
+    ⑩ 抽屉「协调者」区：空座「叫机器人」；有席位展示来源（坐下/叫机器人）并可「换绑：叫机器人」；
+       浏览器不能坐下。launch 走 coordinator/launch，attach 弹确认框说明与自动唤醒互斥；
+    ⑪ 新建工作项弹层不占座（无开卡即绑勾选）；
     ⑫ 卡面节点标签：只在「列答不出节点」时显形——当前仅 审核中 列（含 待审阅/待合并
        两个节点），卡右上角出深色胶囊示节点名（mock：B120/B128 = 待审阅）；列与节点
        一一对应时列本身就是标签（沉默原则）。抽屉头部同规则。节点 = 工作流状态机里
@@ -674,13 +674,7 @@
       <div style="flex:1"><label class="dim" style="font-size:12px">优先级</label>
         <select class="input" style="margin-top:4px"><option>高</option><option selected>中</option><option>低</option></select></div>
     </div>
-    <!-- B279：开卡即绑（B156.3 拉起入口一；CLI 对应 card add --coordinate） -->
-    <label style="display:flex;align-items:flex-start;gap:8px;font-size:12.5px;margin-bottom:14px;cursor:pointer">
-      <input type="checkbox" id="niCoord" style="margin-top:2px">
-      <span>创建后拉起协调者并绑定（开卡即绑）<br>
-        <span class="dim" style="font-size:11.5px;line-height:1.5">协调者醒来先读卡、查依赖、看基线新鲜度；判「现在不适合推」会在房间说一句原因并休眠。之后房间留言、挂账 task 到终态、工单、排队出队都会唤醒它。</span>
-      </span>
-    </label>
+    <p class="dim" style="font-size:12px;margin:0 0 14px">建卡不占座。卡建好后在抽屉里「叫机器人」，或在 grok/claude 里 <span class="mono">card bind</span>。</p>
     <div style="display:flex;gap:8px;justify-content:flex-end">
       <button type="button" class="btn sm" id="niCancel">取消</button>
       <button type="submit" class="btn sm primary">创建</button>
@@ -1111,11 +1105,11 @@
     if (!c) {
       body.innerHTML = `
         <div class="coord-unbound">
-          <p class="dim" style="margin:0 0 10px">本卡尚未绑定协调者。拉起后它休眠在事件上等唤醒：房间留言、挂账 task 到终态、工单、排队出队。</p>
-          <button class="btn sm primary" id="coordLaunch">▶ 拉起协调者</button>
+          <p class="dim" style="margin:0 0 10px">空座。叫机器人从协调者小队拉起并占席；浏览器不能坐下。</p>
+          <button class="btn sm primary" id="coordLaunch">▶ 叫机器人</button>
         </div>`;
       body.querySelector('#coordLaunch').addEventListener('click', () => {
-        fb.textContent = `已拉起（mock）：POST /api/cards/${it.id}/coordinator/launch → woke=true。协调者醒来先读卡、查依赖、看基线新鲜度，随后休眠等事件唤醒。`;
+        fb.textContent = `已叫机器人（mock）：POST /api/cards/${it.id}/coordinator/launch → woke=true。`;
         fb.hidden = false;
       });
       return;
@@ -1134,6 +1128,7 @@
           ${c.attachActive
             ? '<button class="btn sm" id="coordRelease">交回无头</button>'
             : '<button class="btn sm" id="coordAttach">打开终端</button>'}
+          <button class="btn sm" id="coordRebind">换绑：叫机器人</button>
         </div>
         <p class="cc-hint">${c.attachActive
           ? '人工接管中：自动唤醒静音（同一会话不许两个驾驶员）。聊完点「交回无头」恢复事件唤醒；终端里说的凡承重必须落账。'
@@ -1145,6 +1140,11 @@
     const releaseBtn = body.querySelector('#coordRelease');
     if (releaseBtn) releaseBtn.addEventListener('click', () => {
       fb.textContent = `已交回无头（mock）：POST /api/cards/${it.id}/attach {active:false} → 自动唤醒恢复，事件重新敲醒协调者。`;
+      fb.hidden = false;
+    });
+    const rebindBtn = body.querySelector('#coordRebind');
+    if (rebindBtn) rebindBtn.addEventListener('click', () => {
+      fb.textContent = `已换绑叫机器人（mock）：POST /api/cards/${it.id}/coordinator/rebind {mode:launch}。`;
       fb.hidden = false;
     });
   }

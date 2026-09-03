@@ -96,8 +96,41 @@ func (s *Service) Send(roomID string, msg proto.RoomMessage, actor string) (int6
 	if err != nil {
 		return 0, err
 	}
+	if msg.Kind == proto.RoomMsgUser {
+		// B287：用户回复即清该房间的提及类待回复。best-effort：发送已成功，
+		// 消费失败只告警不回滚（回滚要新账本事务面，超出本卡契约零增量约束）。
+		s.consumeRoomMentions(roomID, actor)
+	}
 	log().Info("房间消息已落账", "room", roomID, "kind", msg.Kind, "actor", actor, "seq", seq)
 	return seq, nil
+}
+
+// consumeRoomMentions 用户消息落房后，把该房间内 @本人 且未消费的提及一并消费
+// （B287 拍板「回复即清提及类」）。只处理卡房间：mentions 角标面只认 card_id
+// （agentd handleInbox 用 ev.CardID 亮房间），群级提及本就不进角标；裁决与
+// 工单两源不受影响——它们要求显式审批/答复，不因一句话消掉。
+//
+// 消费身份 = 发送 actor，与收件箱 mention 源（agentd handleInbox 的
+// rooms.Mentions(s.roomUserActor(r),…)）同标识，保证「发前亮、回复后灭」
+// 同一把尺子。幂等由 Consume 兜底；失败逐条告警，下次回复自然重试。
+func (s *Service) consumeRoomMentions(roomID, member string) {
+	events, err := room.ReadAllEvents(s.lc, 0)
+	if err != nil {
+		log().Warn("回复后清理提及失败：读事件流", "room", roomID, "member", member, "cause", err)
+		return
+	}
+	consumed := room.ConsumedSeqs(events, member)
+	for _, ev := range events {
+		if ev.Type != room.RoomEventType || ev.CardID != roomID || consumed[ev.Seq] {
+			continue
+		}
+		if !room.MentionsMember(ev, member) {
+			continue
+		}
+		if err := s.Consume(ev.Seq, member); err != nil {
+			log().Warn("回复后清理提及失败：消费落账", "room", roomID, "member", member, "seq", ev.Seq, "cause", err)
+		}
+	}
 }
 
 // Pointer 系统组件写指针行的专用入口；HTTP/CLI 面不得路由它（冻结清单有

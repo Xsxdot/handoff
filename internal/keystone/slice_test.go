@@ -213,9 +213,16 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 
 	// 开卡即绑：拉起并绑定（两入口之一），随后同卡两个积压事件合并成一回合。
 	ctx := context.Background()
-	opened, err := ks.LaunchForCard(ctx, card.ID, "card_create", keysclient.SessionSpec{CLI: "opencode"})
+	opened, err := ks.LaunchForCard(ctx, card.ID, "coordinate", keysclient.SessionSpec{CLI: "opencode"})
 	if err != nil || opened.Rebuilt || opened.SessionID != "sess-new" {
 		t.Fatalf("开卡拉起失败: %+v err=%v（首次拉起 Rebuilt 应为 false）", opened, err)
+	}
+	identity, err := proto.EncodeSeatIdentity("opencode", opened.SessionID)
+	if err != nil {
+		t.Fatalf("编码协调者席位: %v", err)
+	}
+	if err := st.BindSeat(card.ID, identity, proto.SeatSourceCoordinate); err != nil {
+		t.Fatalf("记录协调者席位: %v", err)
 	}
 	if len(runner.launches) != 1 {
 		t.Fatalf("拉起应恰好一次 Launch，实际 %d", len(runner.launches))

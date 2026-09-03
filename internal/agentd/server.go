@@ -174,8 +174,10 @@ type Server struct {
 	ptyGate    *ptyapi.Host
 	hostAPI    *hostapi.Host
 	// B156.2 协作房间：入站门面实例与换绑端口，SetupAutomation 装配。
-	rooms  *collab.Service
-	rebind rebindPort
+	rooms *collab.Service
+	// coordLocks 串行化同一卡的 Launch→席位 CAS；每张卡独立，避免不同卡互相阻塞。
+	coordLocksMu sync.Mutex
+	coordLocks   map[string]*sync.Mutex
 	// automationStartOnce/automationKick protect the single host automation loop.
 	automationStartOnce sync.Once
 	automationKick      chan struct{}
@@ -271,6 +273,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		machineUpgradeInstaller: inst,
 		cardStepFlight:          make(map[string]bool),
 		roomAttachCache:         make(map[string]roomAttachCacheEntry),
+		coordLocks:              make(map[string]*sync.Mutex),
 		automationKick:          make(chan struct{}, 1),
 		automationSeen:          make(map[int64]struct{}),
 	}
@@ -292,6 +295,22 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	// 事件落库即派生一条 event 引用帧，让帧流能表达控制面事件的时序
 	s.registerEventFrameHook()
 	return s
+}
+
+// coordinatorLock 返回一张卡的控制面串行锁。锁只覆盖控制段，不把不同卡的
+// Launch 人为串成全局队列。
+func (s *Server) coordinatorLock(card string) *sync.Mutex {
+	s.coordLocksMu.Lock()
+	defer s.coordLocksMu.Unlock()
+	if s.coordLocks == nil {
+		s.coordLocks = make(map[string]*sync.Mutex)
+	}
+	lock := s.coordLocks[card]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.coordLocks[card] = lock
+	}
+	return lock
 }
 
 // Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
@@ -2398,7 +2417,6 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	s.scheduling = scheduling.New(facadeAsRegistry{f: facade})
 	s.rooms = collab.New(facade)
 	s.rooms.SetCursorStore(cursor.New(filepath.Join(s.conf().DataDir, "room-cursors.json")))
-	s.rebind = facadeBindAdapter{f: facade}
 	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
 	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
 	s.hostAPI = hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
@@ -2424,9 +2442,6 @@ func (s *Server) SetKeystone(svc *keystone.Service) { s.keystone = svc }
 // SetRooms 注入协作房间服务（测试缝：整体替换 SetupAutomation 构造的实例）。
 func (s *Server) SetRooms(svc *collab.Service) { s.rooms = svc }
 
-// SetRebind 注入换绑端口（测试缝：同 SetRooms）。
-func (s *Server) SetRebind(p rebindPort) { s.rebind = p }
-
 // withRooms 守卫房间面端点：账本与会话服务未装配时 503（与 withLedger 同款降级）。
 func (s *Server) withRooms(h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -2438,18 +2453,6 @@ func (s *Server) withRooms(h http.HandlerFunc) http.HandlerFunc {
 		}
 		h(w, r)
 	}
-}
-
-// facadeBindAdapter 把账本薄门面的换绑能力适配成 gateway 的 rebindPort（岔口二
-// 条件 4 机械判据：单一 Facade 字段、方法体只做转调、由组装点注入消费端口）。
-// 定义在组装点文件（server.go = target.json assembly 登记点），它 →Facade 的
-// 调用边走组装点豁免（graph check），不构成 gateway 自身引用门面。
-type facadeBindAdapter struct {
-	f *ledgerapi.Facade
-}
-
-func (a facadeBindAdapter) Rebind(id, toSession, carrier, expect string) error {
-	return a.f.BindDriver(id, toSession, carrier, expect)
 }
 
 // Scheduling 返回编制域服务；未装配返回 nil（handler 据此降级 503，同 withLedger）。
@@ -2534,11 +2537,15 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 func resumeTurnRequest(ref keysclient.SessionRef, prompt string) hostapi.TurnRequest {
 	if ref.HomeDir == "" {
 		slog.Default().Warn("协调者续接未带隔离 HOME，将继承 agentd 默认 HOME",
-			"component", "agentd", "cli", ref.CLI, "session", ref.SessionID)
+			"component", "agentd", "has_cli", ref.CLI != "", "has_session", ref.SessionID != "")
 	}
 	return hostapi.TurnRequest{
 		CLI: ref.CLI, SessionID: ref.SessionID, Prompt: prompt,
 		HomeDir: ref.HomeDir, Workdir: ref.Workdir, Model: ref.Model,
+		Env: []string{
+			"HANDOFF_SESSION_CLI=" + ref.CLI,
+			"HANDOFF_SESSION_ID=" + ref.SessionID,
+		},
 	}
 }
 

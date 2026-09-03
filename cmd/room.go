@@ -128,6 +128,14 @@ var roomSendCmd = &cobra.Command{
 			Kind: roomSendKind, Body: strings.Join(args[1:], " "),
 			Refs: roomSendRefs, Mentions: roomSendMention,
 		}
+		if msg.Kind != proto.RoomMsgUser {
+			var err error
+			actor, err = currentSeatIdentity()
+			if err != nil {
+				slog.Default().Warn("CLI 协调者房间消息身份出示失败", "room", args[0], "kind", msg.Kind, "cause", err)
+				return err
+			}
+		}
 		seq, err := svc.Send(args[0], msg, actor)
 		if err != nil {
 			slog.Default().Warn("CLI 房间消息发送失败", "room", args[0], "kind", msg.Kind, "actor", actor, "cause", err)

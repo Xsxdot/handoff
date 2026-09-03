@@ -228,16 +228,25 @@ export interface CarrierRunCommandResp {
   command: string
 }
 
-export type CoordinatorLaunchSource = 'manual' | 'card_create'
-
-/**
- * 拉起协调者回合；省略 source 时发送空对象以保留服务端 manual 默认值，
- * card_create 只用于开卡即绑审计。返回的回合结果由服务端产生。
- */
-export const launchCoordinator = (cardId: string, source?: CoordinatorLaunchSource) =>
+/** 叫机器人拉起协调者回合；服务端从空对象按 coordinate 处理。 */
+export const launchCoordinator = (cardId: string) =>
   postJSON<CoordinatorLaunchResp>(
     `/api/cards/${encodeURIComponent(cardId)}/coordinator/launch`,
-    source === undefined ? {} : { source },
+    {},
+  )
+
+export type CoordinatorRebindMode = 'self' | 'launch'
+
+export interface CoordinatorRebindReq {
+  mode: CoordinatorRebindMode
+  identity?: string
+}
+
+/** 叫机器人换绑；浏览器只发送 launch 模式，不伪造当前会话身份。 */
+export const rebindCoordinatorLaunch = (cardId: string) =>
+  postJSON<CoordinatorLaunchResp>(
+    `/api/cards/${encodeURIComponent(cardId)}/coordinator/rebind`,
+    { mode: 'launch' } satisfies CoordinatorRebindReq,
   )
 
 /** 参数：完整 cardId；返回：GET coordinator wire；路径段必须 encodeURIComponent。 */

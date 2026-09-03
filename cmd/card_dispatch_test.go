@@ -252,9 +252,8 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	if card.Status != ledger.StatusTodo {
 		t.Fatalf("裸 dispatch 不得挪列，实际 %q", card.Status)
 	}
-	if card.DriverSession == "" || strings.Contains(card.DriverSession, "#") ||
-		!strings.HasPrefix(card.DriverSession, "cli:") {
-		t.Fatalf("归属应为人尺度身份: %q", card.DriverSession)
+	if card.DriverSession != "" || card.DriverSource != "" {
+		t.Fatalf("裸 dispatch 不得写协调者席位: session=%q source=%q", card.DriverSession, card.DriverSource)
 	}
 	st.Close()
 	show, _, err := runLedgerCLI(t, dir, "card", "show", c.ID)
@@ -266,9 +265,10 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	}
 }
 
-// TestCardDispatchGuardFollowsOwnership 断言裸 dispatch 的守卫只看归属锁。
+// TestCardDispatchDoesNotOverwriteSeat 断言裸 dispatch 只取得运行锁，不写协调者席位。
 func TestCardDispatchGuardFollowsOwnership(t *testing.T) {
 	dir := t.TempDir()
+	setupDisciplineGateFixture(t, dir, `{"disciplines_supported":true}`)
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "守卫卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
 		t.Fatal(err)
@@ -283,19 +283,26 @@ func TestCardDispatchGuardFollowsOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ClaimCard(c.ID, "cli:other@remote-host"); err != nil {
+	if err := st.BindSeat(c.ID, "cli:codex#other", proto.SeatSourceBind); err != nil {
 		t.Fatalf("预占: %v", err)
 	}
 	st.Close()
 	restore := swapDispatchTransport(func(prompt, branch, target, project string) (string, string, error) {
-		t.Fatal("他主持有时不应走到派发")
-		return "", "", nil
+		return "T-seat-preserved", "", nil
 	})
 	defer restore()
-	_, _, err = runLedgerCLI(t, dir, "card", "dispatch", c.ID,
-		"--template", "feature-impl", "--target", "mac-02")
-	if err == nil || !strings.Contains(err.Error(), "cli:other@remote-host") {
-		t.Fatalf("他主持有应拒且点名持有者: %v", err)
+	if _, _, err = runLedgerCLI(t, dir, "card", "dispatch", c.ID,
+		"--template", "feature-impl", "--target", "mac-02"); err != nil {
+		t.Fatalf("已有席位不应阻止裸 dispatch: %v", err)
+	}
+	st, err = ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	got, err := st.GetCard(c.ID)
+	if err != nil || got.DriverSession != "cli:codex#other" || got.DriverSource != string(proto.SeatSourceBind) {
+		t.Fatalf("裸 dispatch 不得改写席位: err=%v card=%+v", err, got)
 	}
 }
 
@@ -782,8 +789,8 @@ func TestCardDispatchStepRejectsPlan(t *testing.T) {
 	}
 }
 
-// TestCardReleaseRejectsNonHolderAndSucceedsForOwner 断言 release 的可见失败与闭环。
-func TestCardReleaseRejectsNonHolderAndSucceedsForOwner(t *testing.T) {
+// TestCardReleaseRejectsOccupiedSeat 断言 release 不再清除协调者席位。
+func TestCardReleaseRejectsOccupiedSeat(t *testing.T) {
 	dir := t.TempDir()
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "释放卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
@@ -799,7 +806,7 @@ func TestCardReleaseRejectsNonHolderAndSucceedsForOwner(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.ClaimCard(c.ID, "cli:someone-else@far-away"); err != nil {
+	if err := st.BindSeat(c.ID, "cli:codex#someone-else", proto.SeatSourceBind); err != nil {
 		t.Fatalf("预占: %v", err)
 	}
 	st.Close()
@@ -807,20 +814,13 @@ func TestCardReleaseRejectsNonHolderAndSucceedsForOwner(t *testing.T) {
 	if err == nil {
 		t.Fatal("非持有者 release 必须失败")
 	}
-	if !strings.Contains(stderr+err.Error(), "cli:someone-else@far-away") {
+	if !strings.Contains(stderr+err.Error(), "rebind") {
 		t.Fatalf("失败报文必须点名持有者: stderr=%q err=%v", stderr, err)
-	}
-	if _, _, err := runLedgerCLI(t, dir, "card", "takeover", c.ID); err != nil {
-		t.Fatalf("takeover: %v", err)
-	}
-	stdout, _, err := runLedgerCLI(t, dir, "card", "release", c.ID)
-	if err != nil || !strings.Contains(stdout, `{"ok":true}`) {
-		t.Fatalf("持有者 release 应成功: %q %v", stdout, err)
 	}
 }
 
-// TestCardTakeoverAssignsHumanIdentity 断言 takeover 的 from/to payload 仍可审计。
-func TestCardTakeoverAssignsHumanIdentity(t *testing.T) {
+// TestCardTakeoverDoesNotWriteSeat 断言 takeover 只保留命令面，不再写席位。
+func TestCardTakeoverDoesNotWriteSeat(t *testing.T) {
 	dir := t.TempDir()
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "接管卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
@@ -837,42 +837,25 @@ func TestCardTakeoverAssignsHumanIdentity(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	if err := st.ClaimCard(c.ID, "cli:prev@h1"); err != nil {
-		t.Fatalf("预占: %v", err)
-	}
-	if _, _, err := runLedgerCLI(t, dir, "card", "takeover", c.ID); err != nil {
-		t.Fatalf("takeover: %v", err)
+	if _, _, err := runLedgerCLI(t, dir, "card", "takeover", c.ID); err == nil {
+		t.Fatal("takeover 必须失败且不得写席位")
 	}
 	card, err := st.GetCard(c.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if card.DriverSession != ledgerActor() {
-		t.Fatalf("takeover 后归属应是本 CLI 人尺度身份: %q want %q", card.DriverSession, ledgerActor())
+	if card.DriverSession != "" || card.DriverSource != "" {
+		t.Fatalf("takeover 后不得有席位: %+v", card)
 	}
 	events, err := st.EventsFromAsc([]string{c.ID}, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
-	found := false
 	for _, e := range events {
 		if e.Type != ledger.EvDriverTakeover {
 			continue
 		}
-		var payload struct {
-			From string `json:"from"`
-			To   string `json:"to"`
-		}
-		if err := json.Unmarshal(e.Payload, &payload); err != nil {
-			t.Fatalf("payload 解码: %v", err)
-		}
-		if payload.From != "cli:prev@h1" || payload.To != ledgerActor() {
-			t.Fatalf("takeover payload from/to = %q/%q", payload.From, payload.To)
-		}
-		found = true
-	}
-	if !found {
-		t.Fatal("takeover 必须落 driver_takeover 事件")
+		t.Fatalf("takeover 不得落 driver_takeover 事件: %+v", e)
 	}
 }
 

@@ -8,37 +8,37 @@
   "internal/agentd/server.go",
   "internal/agentd/codegraph.go"
  ],
-  "contracts": [
-   {
-    "from": "d_collab",
-    "to": "d_protocol",
-    "legacyBudget": 0,
-    "entries": [
-     "proto 实体"
-    ],
-    "legacyBudgetNote": "B156.2：新增方向。房间消息/收件箱/会话列表的 wire DTO 在 proto 唯一定义处（internal/proto/rooms.go）；竖切路径 Service.Send/History/Mentions 已有真实引用边。"
-   },
-   {
-    "from": "d_ledger",
-    "to": "d_protocol",
-    "legacyBudget": 0,
-    "entries": [
-     "proto 实体"
-    ],
-    "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。"
-   },
-   {
-    "from": "d_collab",
-    "to": "d_ledger",
-    "legacyBudget": 0,
-    "interfaces": [
-     "LedgerClient"
-    ],
-    "legacyBudgetNote": "B156.2：出站 client 接口缝（会话→账本）。接口定义在会话侧 internal/collab/client，实现 ledger/api.Facade 由组装点绑定；本方向零调用预算——collab 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红，穿透禁令由此执法。"
-   },
-   {
-    "from": "d_cli",
-    "to": "d_gateway",
+ "contracts": [
+  {
+   "from": "d_collab",
+   "to": "d_protocol",
+   "legacyBudget": 1,
+   "entries": [
+    "proto 实体"
+   ],
+   "legacyBudgetNote": "B156.2：新增方向。房间消息/收件箱/会话列表的 wire DTO 在 proto 唯一定义处（internal/proto/rooms.go）；竖切路径 Service.Send/History/Mentions 已有真实引用边。B312：卡 DTO 的 driver_session/driver_source 仍经 proto 唯一投影；席位身份编码 helper 归 d_protocol，不在 collab 复制。 B312 finish：席位 helper 真实引用边 1，预算 0→1。"
+  },
+  {
+   "from": "d_ledger",
+   "to": "d_protocol",
+   "legacyBudget": 2,
+   "entries": [
+    "proto 实体"
+   ],
+   "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。 B312 finish：席位 helper 真实引用边 2，预算 0→2。"
+  },
+  {
+   "from": "d_collab",
+   "to": "d_ledger",
+   "legacyBudget": 0,
+   "interfaces": [
+    "LedgerClient"
+   ],
+   "legacyBudgetNote": "B156.2：出站 client 接口缝（会话→账本）。接口定义在会话侧 internal/collab/client，实现 ledger/api.Facade 由组装点绑定；本方向零调用预算——collab 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红，穿透禁令由此执法。B312：collab 继续只消费 proto.Card 的规范席位字符串，不新增直接账本调用。"
+  },
+  {
+   "from": "d_cli",
+   "to": "d_gateway",
    "legacyBudget": 1,
    "legacyBudgetNote": "B229：补记既存方向，非新增依赖。基线 e24b9a31:cmd/agentd.go:273 已有 srv.SetLedger(lst)，T5 仅将其提取为具名函数 setupLedger，调用未变；baseline.json 中 n_cmd_agentdCmd_RunE→n_agentd_* 既有 12 条边。此前契约缺席是建模缺口（内联调用未建节点），提取后边才显形。"
   },
@@ -54,7 +54,7 @@
    "entries": [
     "ledger.Store"
    ],
-   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。"
+   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。B312：card bind/rebind 的席位写入仍复用既有 ledger.Store 容器，CAS 与来源校验不下沉到 CLI。"
   },
   {
    "from": "d_cli",
@@ -81,7 +81,7 @@
    "entries": [
     "proto 实体"
    ],
-   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。"
+   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。"
   },
   {
    "from": "d_cli",
@@ -131,7 +131,7 @@
     "keystone.Service",
     "keystone（包级函数）"
    ],
-   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调 keystone 域（拉起/唤醒/互斥/attach 定位）；预算 0 = 一律走门面，穿透内部即违法。"
+   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调 keystone 域（拉起/唤醒/互斥/attach 定位）；预算 0 = 一律走门面，穿透内部即违法。B312：coordinate/rebind--launch 仍只经 keystone.Service；座位落账由同一控制面组装点完成。"
   },
   {
    "from": "d_keystone",
@@ -143,7 +143,7 @@
    "entries": [
     "账本薄门面 Facade"
    ],
-   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（keystone→账本）。LedgerView 定义在会话承载侧 internal/keysclient，实现 internal/ledger/api.Facade 由组装点按结构化类型注入；本方向零调用预算——keystone 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。两份门面归一后与 d_collab 共用同一 Facade，三方互不 import。"
+   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（keystone→账本）。LedgerView 定义在会话承载侧 internal/keysclient，实现 internal/ledger/api.Facade 由组装点按结构化类型注入；本方向零调用预算——keystone 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。两份门面归一后与 d_collab 共用同一 Facade，三方互不 import。B312：Wake/Locate 只经 LedgerView.GetCard 读取 driver_session/driver_source；不新增 keystone→ledger 直调。"
   },
   {
    "from": "d_keystone",
@@ -158,6 +158,15 @@
    "legacyBudgetNote": "B156.3 叙事换绑轮：出站接口缝（keystone→协作房间）。Narrator 定义在使用方侧 internal/keysclient，具体绑定在组装点 roomNarrator——它转调 d_collab 入站门面的指针专用入口 Service.Pointer（kind/BySystem 由 Pointer 自置，房间解析与只读判定归 collab），keystone 生产代码零 import collab；本方向零调用预算。声明与本轮首个消费边同提交落地。"
   },
   {
+   "from": "d_keystone",
+   "to": "d_protocol",
+   "legacyBudget": 2,
+   "entries": [
+    "proto 实体"
+   ],
+   "legacyBudgetNote": "B312：Wake 读账本席位后来源执法调用 proto.ParseSeatIdentity/ValidateSeat；helper 归 d_protocol，不在 keystone 复制。"
+  },
+  {
    "from": "d_gateway",
    "to": "d_ledger",
    "legacyBudget": 17,
@@ -166,8 +175,8 @@
     "ledgerstep.StepRunner",
     "账本薄门面 Facade"
    ],
-    "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经账本薄门面（entries 内的 账本薄门面 Facade 容器，internal/ledger/api），不扩大直调债；门面归一轮起 internal/ledgerapi 已退役，两份门面归一为 internal/ledger/api 一份。"
-   },
+   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经账本薄门面（entries 内的 账本薄门面 Facade 容器，internal/ledger/api），不扩大直调债；门面归一轮起 internal/ledgerapi 已退役，两份门面归一为 internal/ledger/api 一份。B312：控制面新增的 BindSeat/RebindSeat 仍属于 ledger.Store 权威写面，协作/keystone 不穿透。"
+  },
   {
    "from": "d_scheduling",
    "to": "d_ledger",
@@ -178,7 +187,7 @@
    "entries": [
     "账本薄门面 Facade"
    ],
-    "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；B292 只改变编制域在 sched_running 中的成员政策键，不新增账本依赖或第三类 registry kind。本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。"
+   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；B292 只改变编制域在 sched_running 中的成员政策键，不新增账本依赖或第三类 registry kind。本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。"
   },
   {
    "from": "d_gateway",
@@ -205,11 +214,11 @@
   {
    "from": "d_gateway",
    "to": "d_protocol",
-   "legacyBudget": 0,
+   "legacyBudget": 1,
    "entries": [
     "proto 实体"
    ],
-   "legacyBudgetNote": "B294：agentd preview HTTP/WS 门面只消费冻结 DTO；owner truth 与编排实现留在 gateway。"
+   "legacyBudgetNote": "B294：agentd preview HTTP/WS 门面只消费冻结 DTO；owner truth 与编排实现留在 gateway。 B312 finish：席位 helper 真实引用边 1，预算 0→1。"
   },
   {
    "from": "d_gateway",

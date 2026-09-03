@@ -14,6 +14,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
@@ -39,6 +40,12 @@ func (e *coordinatorLookupError) Error() string {
 }
 
 func (e *coordinatorLookupError) Unwrap() error { return e.err }
+
+type coordinatorSeatConflict struct{ result keystone.RoundResult }
+
+func (e *coordinatorSeatConflict) Error() string {
+	return fmt.Sprintf("协调者已启动但席位 CAS 冲突：session=%s", e.result.SessionID)
+}
 
 // StartAutomation 启动 agentd 生命周期内唯一的自动化循环；依赖未装配时只记录可行动告警。
 func (s *Server) StartAutomation(ctx context.Context) {
@@ -124,7 +131,7 @@ func (s *Server) drainQueuesOnce(ctx context.Context) (processed int, err error)
 				"node", req.Node, "squad", req.Squad, "priority", req.Priority)
 			switch kind {
 			case scheduling.KindLaunchQueue:
-				if _, launchErr := s.launchCoordinatorRound(ctx, req.Card, "manual"); launchErr != nil {
+				if _, launchErr := s.launchCoordinatorRound(ctx, req.Card, "coordinate"); launchErr != nil {
 					if errors.Is(launchErr, scheduling.ErrNoSlot) {
 						deferred = append(deferred, deferredLaunch{req: req, cause: launchErr})
 						s.log.Warn("协调者准入无位，延后到本轮末回填", "kind", kind,
@@ -184,12 +191,12 @@ func (s *Server) drainIgnitionRequest(ctx context.Context, req scheduling.Igniti
 	if err != nil {
 		return fmt.Errorf("队列出队唤醒失败: %w", err)
 	}
-	if !result.Woke {
-		s.log.Error("队列出队唤醒未运行协调者回合", "card", req.Card, "node", req.Node)
-		return errors.New("队列出队唤醒未运行协调者回合")
+	if result.Woke {
+		s.log.Info("队列出队唤醒完成，进入节点再入口", "card", req.Card, "node", req.Node)
+	} else {
+		s.log.Info("队列出队无协调者席位，直接进入节点再入口", "card", req.Card, "node", req.Node)
 	}
 	// K2/K5 的唯一再入口：不得把 req 直接转成 runner。
-	s.log.Info("队列出队唤醒完成，进入节点再入口", "card", req.Card, "node", req.Node)
 	return s.startCardStep(req.Card, proto.CardStepReq{
 		Step: req.Node, Target: req.Target, Executor: req.Executor,
 		Model: req.Model, Actor: req.Actor,
@@ -210,7 +217,31 @@ func (s *Server) requeueAutomation(req scheduling.IgnitionRequest, kind string, 
 // launchCoordinatorRound 是 HTTP 手动拉起与 launch_queue 共用的入口。
 // 只有 LaunchAdmit 错误使用 coordinatorAdmissionError，LaunchForCard 失败仍为 502。
 func (s *Server) launchCoordinatorRound(ctx context.Context, card, source string) (keystone.RoundResult, error) {
+	return s.launchCoordinatorRoundWithExpect(ctx, card, source, "", false)
+}
+
+func (s *Server) launchCoordinatorRoundForRebind(ctx context.Context, card, source, expect string) (keystone.RoundResult, error) {
+	return s.launchCoordinatorRoundWithExpect(ctx, card, source, expect, true)
+}
+
+func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, source, expect string, rebind bool) (keystone.RoundResult, error) {
 	var zero keystone.RoundResult
+	if source != "coordinate" {
+		return zero, fmt.Errorf("协调者拉起来源必须是 coordinate，收到 %q", source)
+	}
+	lock := s.coordinatorLock(card)
+	lock.Lock()
+	defer lock.Unlock()
+	current, err := s.ledger.GetCard(card)
+	if err != nil {
+		return zero, err
+	}
+	occupied := current.DriverSession != "" || current.DriverSource != ""
+	if (!rebind && occupied) || (rebind && !occupied) {
+		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
+		s.log.Warn("协调者拉起在 Launch 前被席位拦截", "card", card, "source", source, "rebind", rebind, "cause", err)
+		return zero, err
+	}
 	squad, err := s.resolveCoordinatorSquad()
 	if err != nil {
 		return zero, &coordinatorLookupError{err: err}
@@ -239,6 +270,23 @@ func (s *Server) launchCoordinatorRound(ctx context.Context, card, source string
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
 		return result, fmt.Errorf("拉起协调者回合失败: %w", err)
 	}
+	identity, err := proto.EncodeSeatIdentity(spec.CLI, result.SessionID)
+	if err != nil {
+		s.log.Error("协调者拉起返回了不可用席位身份", "card", card, "source", source, "cause", err)
+		return result, fmt.Errorf("编码协调者席位: %w", err)
+	}
+	if rebind {
+		err = s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, expect)
+	} else {
+		err = s.ledger.BindSeat(card, identity, proto.SeatSourceCoordinate)
+	}
+	if err != nil {
+		if errors.Is(err, ledger.ErrCASConflict) {
+			s.log.Error("协调者拉起后席位 CAS 冲突，新会话保留待人工回收", "card", card, "source", source, "rebind", rebind, "session", result.SessionID, "cause", err)
+			return result, &coordinatorSeatConflict{result: result}
+		}
+		return result, fmt.Errorf("写协调者席位: %w", err)
+	}
 	s.log.Info("自动化拉起协调者回合结束", "card", card, "source", source,
 		"session", result.SessionID, "rebuilt", result.Rebuilt, "escalated", result.Escalated)
 	return result, nil
@@ -249,6 +297,23 @@ func (s *Server) launchCoordinatorRound(ctx context.Context, card, source string
 func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 	evs []keystone.WakeEvent) (keystone.RoundResult, error) {
 	var zero keystone.RoundResult
+	current, err := s.ledger.GetCard(card)
+	if err != nil {
+		return zero, fmt.Errorf("读取唤醒席位: %w", err)
+	}
+	if current.DriverSession == "" && current.DriverSource == "" {
+		s.keystone.Forget(card)
+		s.log.Info("空座跳过协调者唤醒", "card", card, "event_count", len(evs))
+		return zero, nil
+	}
+	if current.DriverSource == string(proto.SeatSourceBind) {
+		s.keystone.Forget(card)
+		s.log.Info("bind 席位跳过协调者唤醒", "card", card, "event_count", len(evs))
+		return zero, nil
+	}
+	if err := proto.ValidateSeat(current.DriverSession, proto.SeatSource(current.DriverSource)); err != nil {
+		return zero, fmt.Errorf("唤醒席位非法: %w", err)
+	}
 	squad, err := s.resolveCoordinatorSquad()
 	if err != nil {
 		return zero, &coordinatorLookupError{err: err}
@@ -277,6 +342,25 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 			"event_count", len(evs), "squad", binding.Squad,
 			"carrier", binding.Carrier, "cause", err)
 		return result, fmt.Errorf("唤醒协调者回合失败: %w", err)
+	}
+	if result.Rebuilt && result.SessionID != "" && result.SessionID != current.DriverSession {
+		cli, _, parseErr := proto.ParseSeatIdentity(current.DriverSession)
+		if parseErr != nil {
+			return result, fmt.Errorf("重建后解析旧席位: %w", parseErr)
+		}
+		identity, encodeErr := proto.EncodeSeatIdentity(cli, result.SessionID)
+		if encodeErr != nil {
+			return result, fmt.Errorf("重建后编码新席位: %w", encodeErr)
+		}
+		if rebindErr := s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, current.DriverSession); rebindErr != nil {
+			if errors.Is(rebindErr, ledger.ErrCASConflict) {
+				s.log.Error("协调者重建后席位 CAS 冲突，新会话保留待人工回收", "card", card,
+					"event_count", len(evs), "session", result.SessionID, "cause", rebindErr)
+				return result, &coordinatorSeatConflict{result: result}
+			}
+			return result, fmt.Errorf("重建后写协调者席位: %w", rebindErr)
+		}
+		s.log.Info("协调者重建后席位已更新", "card", card, "event_count", len(evs), "session", result.SessionID)
 	}
 	s.log.Info("自动化唤醒协调者回合结束", "card", card,
 		"event_count", len(evs), "session", result.SessionID,

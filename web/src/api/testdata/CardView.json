@@ -24,5 +24,7 @@
   "children_total": 0,
   "children_done": 0,
   "conflict": false,
-  "open_tickets": 0
+  "open_tickets": 0,
+  "driver_session": "cli:codex#thread-01",
+  "driver_source": "bind"
 }

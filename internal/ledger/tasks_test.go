@@ -1,10 +1,8 @@
 package ledger
 
 import (
-	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 )
 
 func TestLinkTask(t *testing.T) {
@@ -36,90 +34,38 @@ func TestLinkTask(t *testing.T) {
 	}
 }
 
-func TestClaimCardDoesNotExpire(t *testing.T) {
+func TestClaimCardIsDisabled(t *testing.T) {
 	s := seedStore(t)
 	card := mk(t, s, "卡")
-	if err := s.ClaimCard(card.ID, "session-A"); err != nil {
-		t.Fatalf("claim A: %v", err)
+	if err := s.ClaimCard(card.ID, "session-A"); !errors.Is(err, ErrBadState) {
+		t.Fatalf("旧认领入口应停用: %v", err)
 	}
-	old := time.Now().Add(-24 * time.Hour)
-	if _, err := s.db.Exec(s.q(`UPDATE cards SET driver_heartbeat_at = ? WHERE id = ?`),
-		s.tval(old), card.ID); err != nil {
-		t.Fatalf("做旧认领时刻: %v", err)
+	got, err := s.GetCard(card.ID)
+	if err != nil || got.DriverSession != "" || got.DriverSource != "" {
+		t.Fatalf("旧认领不得写席位: %v %+v", err, got)
 	}
-	if err := s.ClaimCard(card.ID, "session-B"); !errors.Is(err, ErrCASConflict) {
-		t.Fatalf("旧认领时刻也必须拒绝他会话: %v", err)
+}
+
+func TestTakeoverCardIsDisabled(t *testing.T) {
+	s := seedStore(t)
+	card := mk(t, s, "卡")
+	if err := s.TakeoverCard(card.ID, "session-new", "cli:test@example"); !errors.Is(err, ErrBadState) {
+		t.Fatalf("旧接管入口应停用: %v", err)
 	}
 	got, err := s.GetCard(card.ID)
 	if err != nil {
 		t.Fatalf("读卡: %v", err)
 	}
-	if got.DriverSession != "session-A" {
-		t.Fatalf("冲突认领不得改写驱动: %q", got.DriverSession)
-	}
-	if err := s.ClaimCard(card.ID, "session-A"); err != nil {
-		t.Fatalf("同会话重入必须放行: %v", err)
-	}
-}
-
-func TestReleaseCardOnlyOwnerCanClearAndOtherCanClaim(t *testing.T) {
-	s := seedStore(t)
-	card := mk(t, s, "卡")
-	if err := s.ClaimCard(card.ID, "session-A"); err != nil {
-		t.Fatalf("claim: %v", err)
-	}
-	if err := s.ReleaseCard(card.ID, "session-B"); !errors.Is(err, ErrCASConflict) {
-		t.Fatalf("非持有者 release 应可见失败: %v", err)
-	}
-	got, _ := s.GetCard(card.ID)
-	if got.DriverSession != "session-A" || got.DriverHeartbeatAt.IsZero() {
-		t.Fatalf("非持有者不得清空驱动或认领时刻: session=%q at=%v", got.DriverSession, got.DriverHeartbeatAt)
-	}
-	if err := s.ReleaseCard(card.ID, "session-A"); err != nil {
-		t.Fatalf("owner release: %v", err)
-	}
-	if err := s.ClaimCard(card.ID, "session-B"); err != nil {
-		t.Fatalf("release 后应可被新会话认领: %v", err)
-	}
-}
-
-func TestTakeoverCardWritesDriverAndRoundTripsPayload(t *testing.T) {
-	s := seedStore(t)
-	card := mk(t, s, "卡")
-	if err := s.ClaimCard(card.ID, "session-old"); err != nil {
-		t.Fatalf("claim old: %v", err)
-	}
-	if err := s.TakeoverCard(card.ID, "session-new", "cli:test@example"); err != nil {
-		t.Fatalf("takeover: %v", err)
-	}
-	got, err := s.GetCard(card.ID)
-	if err != nil {
-		t.Fatalf("读接管后卡: %v", err)
-	}
-	if got.DriverSession != "session-new" || got.DriverHeartbeatAt.IsZero() {
-		t.Fatalf("接管必须写新驱动与认领时刻: session=%q at=%v", got.DriverSession, got.DriverHeartbeatAt)
+	if got.DriverSession != "" || got.DriverSource != "" {
+		t.Fatalf("旧接管不得写席位: %+v", got)
 	}
 	events, err := s.EventsFromAsc([]string{card.ID}, 0, 100)
 	if err != nil {
-		t.Fatalf("读事件: %v", err)
+		t.Fatal(err)
 	}
-	var found Event
 	for _, event := range events {
 		if event.Type == EvDriverTakeover {
-			found = event
+			t.Fatalf("旧接管不得落事件: %+v", event)
 		}
-	}
-	if found.Type != EvDriverTakeover || found.Actor != "cli:test@example" {
-		t.Fatalf("接管事件类型/actor 错误: %+v", found)
-	}
-	var payload struct {
-		From *string `json:"from"`
-		To   *string `json:"to"`
-	}
-	if err := json.Unmarshal(found.Payload, &payload); err != nil {
-		t.Fatalf("解码接管 payload: %v", err)
-	}
-	if payload.From == nil || payload.To == nil || *payload.From != "session-old" || *payload.To != "session-new" {
-		t.Fatalf("接管 payload 必须保留 from/to 字段: %+v", payload)
 	}
 }

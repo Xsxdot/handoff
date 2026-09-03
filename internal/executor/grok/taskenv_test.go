@@ -61,6 +61,7 @@ func TestWriteTaskEnvGeneratesPinnedPermissionConfig(t *testing.T) {
 }
 
 func TestWriteTaskEnvOmitsModelSectionWhenEmpty(t *testing.T) {
+	fakeAuthorityConfig(t, "") // 隔离真实 ~/.grok：权威有 default/旋钮时 [models] 必然出现
 	dir := t.TempDir()
 	home, err := grok.WriteTaskEnv(dir, "")
 	if err != nil {
