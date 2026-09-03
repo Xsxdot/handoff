@@ -351,7 +351,7 @@ func TestStatusReportsLedgerHealthWithRetiredEnabledFlag(t *testing.T) {
 	if err := lst.LinkTask(card.ID, "", "task-ledger-1", "implement", "t"); err != nil {
 		t.Fatalf("挂账: %v", err)
 	}
-	if err := lst.ClaimCard(card.ID, "sess-retired"); err != nil {
+	if err := lst.BindSeat(card.ID, "cli:codex#sess-retired", proto.SeatSourceBind); err != nil {
 		t.Fatalf("认领驱动: %v", err)
 	}
 	// 先关库：status 会以进程内第二次 Open 打开同一路径。
@@ -376,9 +376,9 @@ func TestStatusReportsLedgerHealthWithRetiredEnabledFlag(t *testing.T) {
 		t.Fatalf("status 应成功: %v", err)
 	}
 	wantCard := "无人订阅（卡 " + card.ID
-	if !strings.Contains(out, wantCard) || !strings.Contains(out, "sess-retired") {
+	if !strings.Contains(out, wantCard) || !strings.Contains(out, "cli:codex#sess-retired") {
 		t.Fatalf("enabled 退休后 status 应从账本报出卡与驱动（want 含 %q 与 %q）:\n%s",
-			wantCard, "sess-retired", out)
+			wantCard, "cli:codex#sess-retired", out)
 	}
 }
 

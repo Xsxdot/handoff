@@ -1,7 +1,7 @@
 // RoomPanel 接缝测试：从统一面板入口验证列表/房间/详情三态、轮询数据流、写入守卫与 attach。
 // 边界：不测 CSS 像素；这里只锁定 API 调用、可见状态和 Workbench 开 tab 的契约。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ApiError } from '../../api/client'
 import { fetchCardDetail } from '../../api/ledger'
@@ -231,5 +231,91 @@ describe('RoomPanel', () => {
 
     expect(await screen.findByText('（还没有消息）')).toBeInTheDocument()
     expect(screen.queryByText('正在读取…')).not.toBeInTheDocument()
+  })
+})
+
+describe('RoomPanel 发送后刷新（B287）', () => {
+  it('refresh 不复用旧 nonce 的在飞请求：发送后收件箱立即重取，不等下一轮周期', async () => {
+    // 收件箱首拉故意挂起不放行：制造「发送那一刻有一个旧 nonce 在飞请求」的现场。
+    // 无修复时 refresh 会采纳这个旧请求（内容不可能含新事实），不发新调用；
+    // 有修复时 nonce 变更触发第二只真实请求。
+    let releaseInbox!: (value: Awaited<ReturnType<typeof fetchInbox>>) => void
+    vi.mocked(fetchInbox).mockImplementation(
+      () => new Promise((resolve) => { releaseInbox = resolve }),
+    )
+    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    const user = userEvent.setup()
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    await user.click(await screen.findByRole('button', { name: /会话 B1/ }))
+    await user.type(await screen.findByLabelText('发送消息'), 'hi')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(vi.mocked(fetchInbox).mock.calls.length).toBeGreaterThanOrEqual(2))
+    releaseInbox([])
+  })
+})
+
+describe('RoomPanel 悬浮球（B287）', () => {
+  it('收起球上移错开 + 球：bottom-[104px]（+球占 44–88px，净距 16px）', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue([])
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    const fab = await screen.findByRole('button', { name: '打开房间面板' })
+    expect(fab.className).toContain('bottom-[104px]')
+    expect(fab.className).not.toContain('bottom-20')
+  })
+})
+
+describe('RoomPanel 浮窗几何（B287）', () => {
+  it('浮窗按 geom 摆位：拖标题栏改 left/top，拉角落改宽高，最小尺寸钳制', async () => {
+    window.localStorage.setItem('handoff:room-panel-geom.v1', JSON.stringify({ x: 100, y: 80, w: 360, h: 520 }))
+    vi.mocked(fetchRooms).mockResolvedValue([])
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    const panel = await screen.findByTestId('room-panel')
+    expect(panel.style.left).toBe('100px')
+    expect(panel.style.top).toBe('80px')
+    fireEvent.pointerDown(screen.getByTestId('room-panel-title'), { clientX: 10, clientY: 10 })
+    fireEvent.pointerMove(document, { clientX: 40, clientY: 30 })
+    fireEvent.pointerUp(document)
+    expect(panel.style.left).toBe('130px')
+    expect(panel.style.top).toBe('100px')
+    fireEvent.pointerDown(screen.getByTestId('room-panel-corner'), { clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(document, { clientX: -500, clientY: -500 })
+    fireEvent.pointerUp(document)
+    expect(panel.style.width).toBe('320px')
+    expect(panel.style.height).toBe('360px')
+  })
+
+  it('几何本机持久化：拖动后写入 localStorage，重挂载恢复摆法', async () => {
+    window.localStorage.clear()
+    vi.mocked(fetchRooms).mockResolvedValue([])
+    const view = render(<RoomPanel workbench={workbench()} persistent={false} />)
+    await screen.findByTestId('room-panel')
+    fireEvent.pointerDown(screen.getByTestId('room-panel-title'), { clientX: 0, clientY: 0 })
+    fireEvent.pointerMove(document, { clientX: 15, clientY: 10 })
+    fireEvent.pointerUp(document)
+    const stored = JSON.parse(window.localStorage.getItem('handoff:room-panel-geom.v1') ?? '{}')
+    expect(stored).toMatchObject({ w: 360, h: 520 })
+    view.unmount()
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    const restored = await screen.findByTestId('room-panel')
+    expect(restored.style.left).toBe(`${stored.x}px`)
+    expect(restored.style.top).toBe(`${stored.y}px`)
+  })
+})
+
+describe('RoomPanel 常驻栏独立开合（B287 返修）', () => {
+  it('浮窗收起不牵连工作项页常驻栏；常驻栏自己可收起、可由悬浮球重开', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    const user = userEvent.setup()
+    const view = render(<RoomPanel workbench={workbench()} persistent={false} />)
+    await screen.findByTestId('room-panel')
+    await user.click(screen.getByRole('button', { name: '收起房间面板' }))
+    expect(screen.queryByTestId('room-panel')).toBeNull()
+    // 切到工作项页（persistent=true）：常驻栏应仍开着——两种形态状态分账
+    view.rerender(<RoomPanel workbench={workbench()} persistent />)
+    expect(screen.getByTestId('room-panel')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: '收起房间面板' }))
+    expect(screen.queryByTestId('room-panel')).toBeNull()
+    await user.click(screen.getByRole('button', { name: '打开房间面板' }))
+    expect(screen.getByTestId('room-panel')).toBeInTheDocument()
   })
 })

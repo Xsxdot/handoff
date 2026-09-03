@@ -1,7 +1,7 @@
 // SchedulingPage.test.tsx —— 自动化编制公开组件的 CAS 接缝测试。
 // 边界：每条断言都从页面按钮/表单进入 scheduling API；不直接测试草稿 helper。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { render, screen, waitFor } from '@testing-library/react'
+import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
 import { SchedulingPage } from './SchedulingPage'
@@ -45,7 +45,7 @@ describe('SchedulingPage', () => {
     expect(await screen.findByText('mbp')).toBeVisible()
     expect(screen.getByText('/h')).toBeVisible()
     expect(screen.getByText('coord')).toBeVisible()
-    expect(screen.getByText('拉起通道（开卡即绑 / 一键拉起）')).toBeVisible()
+    expect(screen.getByText('拉起通道（坐下 / 叫机器人）')).toBeVisible()
   })
 
   it('renders missing and unknown carrier statuses as 未上线', async () => {
@@ -168,5 +168,33 @@ describe('SchedulingPage', () => {
     expect(await screen.findByText(/版本冲突/)).toBeVisible()
     expect(screen.getByRole('dialog')).toBeVisible()
     expect(detectCarrier).not.toHaveBeenCalled()
+  })
+})
+
+describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
+  it('label 语义后缀、角色中文选项、政策位与 role hint、弹窗宽度逐项对齐 settings.html', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getSquads).mockResolvedValue({
+      carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }],
+      squads: [{ name: 'coord', role: 'coordinator', members: [], version: 1 }],
+    })
+    render(<SchedulingPage />)
+    await user.click(await screen.findByRole('button', { name: '编辑' }))
+    expect(screen.getByText('小队名（唯一）')).toBeVisible()
+    expect(screen.getByText('角色（不混编）')).toBeVisible()
+    expect(screen.getByRole('option', { name: '执行者队' })).toBeInTheDocument()
+    expect(screen.getByRole('option', { name: '协调者队' })).toBeInTheDocument()
+    expect(screen.getByText('成员载体（按勾选顺序解析：第一个健康且有空的载体领活）')).toBeVisible()
+    // 成员行带 机器 · CLI 元信息（原型 check-list 每行形态）
+    expect(within(screen.getByRole('dialog')).getByText('local · opencode')).toBeVisible()
+    expect(screen.getByLabelText('mbp 政策并发')).toBeVisible()
+    // role hint 在弹窗内新增；页面小队区块本就有一条同文提示，故圈定弹窗内断言。
+    expect(within(screen.getByRole('dialog')).getByText(/协调者队成员必须落在协调机；执行者队成员可以是任何执行机。/)).toBeVisible()
+    expect(screen.getByRole('dialog').querySelector('form')?.className).toContain('max-w-[440px]')
+    await user.click(screen.getByRole('button', { name: '取消' }))
+    await user.click(await screen.findByRole('button', { name: '编辑 mbp' }))
+    expect(screen.getByText('载体名（唯一，登记后不可改）')).toBeVisible()
+    expect(screen.getByText('模型（留空 = CLI 默认）')).toBeVisible()
+    expect(screen.getByRole('dialog').querySelector('form')?.className).toContain('max-w-[480px]')
   })
 })

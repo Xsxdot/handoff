@@ -1,7 +1,6 @@
 // card dispatch：按模板拼装 prompt，纪律块正文由协调者按角色名从账本组装、
-// 派发时随请求下发（B229），走既有 dispatch 通道；
-// 派发即认领归属（不动状态列；运行互斥归账本运行锁）；
-// task 回链 + 模板版本/纪律角色名快照落事件。
+// 派发时随请求下发（B229），走既有 dispatch 通道；运行互斥归账本运行锁，
+// 派发不占用协调者席位；task 回链 + 模板版本/纪律角色名快照落事件。
 package cmd
 
 import (
@@ -278,7 +277,7 @@ func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, 
 
 var cardDispatchCmd = &cobra.Command{
 	Use:   "dispatch <id>",
-	Short: "按模板派发（派发即认领；--step 走工作流节点）",
+	Short: "按模板派发（不占协调者席位；--step 走工作流节点）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
@@ -299,14 +298,11 @@ var cardDispatchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
-		if card.DriverSession != "" && card.DriverSession != actor {
-			return fmt.Errorf("卡 %s 已由 %s 认领: %w", id, card.DriverSession, ledger.ErrCASConflict)
-		}
 		ctx := cmd.Context()
 		if ctx == nil {
 			ctx = context.Background()
 		}
-		// B229 缝 1：解析在认领之前完成——拒发发生在任何状态迁移之前，零半状态。
+		// B229 缝 1：解析在派发之前完成——拒发发生在任何状态迁移之前，零半状态。
 		// 有效（角色名，目标机）与 ViaTemplate 同序（共用 PreflightDiscipline）。
 		discName, discTarget, err := ledgerstep.PreflightDiscipline(st, templateName, cardDispatchDiscipline, cardDispatchTarget)
 		if err != nil {
@@ -323,11 +319,8 @@ var cardDispatchCmd = &cobra.Command{
 				"target", discTarget, "cause", err)
 			return err
 		}
-		// B239 认领只写归属、不动状态列（运行互斥归账本运行锁）；
-		// B229 的拒发闸在它之前完成，所以拒发时零半状态这条仍然成立。
-		if err := st.ClaimCard(id, actor); err != nil {
-			return fmt.Errorf("认领失败: %w", err)
-		}
+		// 派发只取得运行锁；协调者席位由 bind/coordinate/rebind 专门管理，
+		// 不让普通派发入口把人尺度 actor 写进席位。
 		dispatcher := &ledgerstep.Dispatcher{
 			St: st, Transport: cliTransport, Actor: actor,
 			DisciplineText:    resolved.Text,
@@ -351,9 +344,6 @@ var cardDispatchCmd = &cobra.Command{
 			Extra:              cardDispatchExtra,
 		})
 		if err != nil {
-			// 回滚只退归属；没有状态转移需要回退，归属不带 pid，
-			// 同一人换个进程也能自己清掉。
-			_ = st.ReleaseCard(id, actor)
 			return err
 		}
 		// B156.2 欠账 #11 派发指针（岔口八本期唯一机械触点）：派发成功即落

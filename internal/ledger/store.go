@@ -208,7 +208,7 @@ func ddlStatements(pg bool) []string {
 				project TEXT NOT NULL, parent_id TEXT REFERENCES cards(id),
 				workflow_name TEXT NOT NULL, workflow_version INT NOT NULL,
 				attachments JSONB NOT NULL DEFAULT '[]', acceptance_criteria TEXT,
-				base_branch TEXT, driver_session TEXT, driver_heartbeat_at TIMESTAMPTZ,
+				base_branch TEXT, driver_session TEXT, driver_source TEXT, driver_heartbeat_at TIMESTAMPTZ,
 				created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(project, status)`,
 			`CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent_id)`,
@@ -287,7 +287,7 @@ func ddlStatements(pg bool) []string {
 				project TEXT NOT NULL, parent_id TEXT REFERENCES cards(id),
 				workflow_name TEXT NOT NULL, workflow_version INTEGER NOT NULL,
 				attachments TEXT NOT NULL DEFAULT '[]', acceptance_criteria TEXT,
-				base_branch TEXT, driver_session TEXT, driver_heartbeat_at TEXT,
+				base_branch TEXT, driver_session TEXT, driver_source TEXT, driver_heartbeat_at TEXT,
 				created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
 			`CREATE INDEX IF NOT EXISTS idx_cards_board ON cards(project, status)`,
 			`CREATE INDEX IF NOT EXISTS idx_cards_parent ON cards(parent_id)`,
@@ -360,7 +360,7 @@ func ddlStatements(pg bool) []string {
 
 // ensureSchema 幂等建表。与 internal/store 相同的策略：CREATE IF NOT
 // EXISTS 列表顺序执行，无版本号——幂等即契约；后续加列走「ALTER +
-// 容忍 duplicate column」（现在还没有第二版，留到真需要时加）。
+// 容忍 duplicate column」。
 func (s *Store) ensureSchema() error {
 	for _, stmt := range ddlStatements(s.dialect == dialectPG) {
 		if _, err := s.db.Exec(stmt); err != nil {
@@ -371,7 +371,7 @@ func (s *Store) ensureSchema() error {
 			return fmt.Errorf("执行 DDL %q: %w", short, err)
 		}
 	}
-	// B156.2 绑定席位加列迁移：CREATE IF NOT EXISTS 不会给已存在的表补列，
+	// B156.2/B312 绑定席位加列迁移：CREATE IF NOT EXISTS 不会给已存在的表补列，
 	// 加列走「ALTER + 容忍重复列」（store.go 文件头预留的第二版形态；
 	// internal/store 先例 store.go:232-249）。ADD COLUMN 两方言语法同形，
 	// 但重复列报错文案不同：SQLite 是 duplicate column name（modernc.org/sqlite
@@ -387,6 +387,16 @@ func (s *Store) ensureSchema() error {
 		log().Info("cards.driver_carrier 列已存在，跳过加列")
 	} else {
 		log().Info("账本加列迁移完成", "table", "cards", "column", "driver_carrier")
+	}
+	if _, err := s.db.Exec(`ALTER TABLE cards ADD COLUMN driver_source TEXT`); err != nil {
+		msg := err.Error()
+		if !strings.Contains(msg, "duplicate column") && !strings.Contains(msg, "already exists") {
+			log().Warn("账本加列迁移失败", "table", "cards", "column", "driver_source", "dialect", map[bool]string{true: "postgres", false: "sqlite"}[s.dialect == dialectPG], "cause", err)
+			return fmt.Errorf("迁移 cards.driver_source: %w", err)
+		}
+		log().Info("cards.driver_source 列已存在，跳过加列")
+	} else {
+		log().Info("账本加列迁移完成", "table", "cards", "column", "driver_source")
 	}
 	return nil
 }

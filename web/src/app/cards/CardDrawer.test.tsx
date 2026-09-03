@@ -87,8 +87,33 @@ describe('抽屉协调者接缝', () => {
     })
     render(<CardDrawer id="B282" onClose={() => {}} onOpenCard={() => {}} nodes={[{ name: '进行中', dispatch: true }] as never} />)
     expect(await screen.findByText('未绑定')).toBeVisible()
-    expect(screen.getByRole('button', { name: '▶ 拉起协调者' })).toBeVisible()
+    expect(screen.getByRole('button', { name: '▶ 叫机器人' })).toBeVisible()
     expect(screen.queryByRole('button', { name: /跑「/ })).not.toBeInTheDocument()
+  })
+
+  it('抽屉把未知席位来源标成席位异常', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: card({ id: 'B283', title: '异常席位', driver_session: 'cli:old#session', driver_source: 'manual' as never }),
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '', children: [],
+    })
+    render(<CardDrawer id="B283" onClose={() => {}} onOpenCard={() => {}} />)
+    expect(await screen.findByText('席位异常')).toBeInTheDocument()
+  })
+
+  it('坐下席位没有机器人 attach 时仍可见换绑按钮，不显示状态不一致', async () => {
+    const ledger = await import('../../api/ledger')
+    const scheduling = await import('../../api/scheduling')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: card({ id: 'B-bind', title: '坐下席位', driver_session: 'cli:codex#thread-bind', driver_source: 'bind' }),
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '', children: [],
+    })
+    vi.mocked(scheduling.getCoordinatorStatus).mockResolvedValue({ bound: true, attach_active: false, attach: null })
+    render(<CardDrawer id="B-bind" onClose={() => {}} onOpenCard={() => {}} />)
+
+    expect(await screen.findByText('坐下')).toBeVisible()
+    expect(await screen.findByRole('button', { name: '换绑：叫机器人' })).toBeVisible()
+    expect(screen.queryByText('服务端协调者状态不一致，请刷新重试。')).not.toBeInTheDocument()
   })
 })
 
@@ -614,5 +639,35 @@ describe('抽屉里的任务跳转', () => {
     )
     fireEvent.click(await screen.findByRole('button', { name: /^task-tk/ }))
     expect(await screen.findByText('这里要用哪个基线？')).toBeInTheDocument()
+  })
+})
+
+describe('抽屉头部状态唯一化（B287）', () => {
+  // 断言圈定在头部（data-testid）：抽屉正文里的看板列条/timeline 也可能出现
+  // 同名状态词，全文计数会误伤。夹具复用本文件 card() 与 fetchCardDetail mock。
+  it('无节点标签时头部状态只渲染一枚深色 chip', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: card({ id: 'B287', title: '状态唯一化', status: '进行中' }),
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '', children: [],
+    })
+    render(<CardDrawer id="B287" onClose={() => {}} onOpenCard={() => {}} />)
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    const header = within(drawer).getByTestId('card-drawer-header')
+    expect(within(header).getAllByText('进行中')).toHaveLength(1)
+    expect(within(header).getAllByText('进行中')[0]!.className).toContain('bg-slate-900')
+  })
+
+  it('多节点列时 chip 显示节点标签，头部同样只有一枚', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: card({ id: 'B287b', title: '多节点列', status: '进行中' }),
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '', children: [],
+    })
+    render(<CardDrawer id="B287b" onClose={() => {}} onOpenCard={() => {}} nodes={[{ name: '起草' }, { name: '进行中' }] as never} />)
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    const header = within(drawer).getByTestId('card-drawer-header')
+    expect(within(header).getAllByText('进行中')).toHaveLength(1)
+    expect(within(header).queryAllByText('起草')).toHaveLength(0)
   })
 })

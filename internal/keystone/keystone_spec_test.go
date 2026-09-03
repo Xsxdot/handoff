@@ -26,12 +26,12 @@ func (r *specRecorder) Resume(ref keysclient.SessionRef, prompt string) (keyscli
 	return keysclient.TurnResult{SessionID: ref.SessionID, Output: "ok"}, nil
 }
 
-// stubLedgerView 让 briefing 的读账路径返回「未找到」而非崩溃——launchRound 会
-// 拼开场简报，nil 接口直接 panic。
+// stubLedgerView 为无状态的协调者单测提供一个账本 coordinate 席位；Wake 的
+// 来源判定必须仍然经过这个读面，不能只看 keystone 内存。
 type stubLedgerView struct{}
 
 func (stubLedgerView) GetCard(string) (proto.Card, error) {
-	return proto.Card{}, errors.New("not found")
+	return proto.Card{DriverSession: "cli:opencode#sess-new", DriverSource: "coordinate"}, nil
 }
 func (stubLedgerView) EventsFromAsc([]string, int64, int) ([]proto.LedgerEvent, error) {
 	return nil, nil
@@ -49,7 +49,7 @@ func TestLaunchForCardConsumesSessionSpec(t *testing.T) {
 	rec := &specRecorder{}
 	svc := New(rec, nil, stubLedgerView{}, nil)
 	want := keysclient.SessionSpec{CLI: "opencode", HomeDir: "/home/coord", Model: "fast", Workdir: "/w"}
-	if _, err := svc.LaunchForCard(context.Background(), "B1", "card_create", want); err != nil {
+	if _, err := svc.LaunchForCard(context.Background(), "B1", "coordinate", want); err != nil {
 		t.Fatalf("LaunchForCard: %v", err)
 	}
 	if len(rec.launches) != 1 {
@@ -66,8 +66,8 @@ func TestLaunchForCardConsumesSessionSpec(t *testing.T) {
 	}
 }
 
-// TestWakeWithoutSessionConsumesSpec 无绑定时 Wake 必须把组装点解析的 spec
-// 交给 Launch，不得自造空 spec（B274：CLI "" 未实装 → 指针洪流）。
+// TestWakeWithoutSessionResumesLedgerSeat 进程重启丢失 keystone 内存时，Wake 仍
+// 必须从账本 coordinate 席位恢复并 Resume，不能把合法席位误判为空座再 Launch。
 func TestWakeWithoutSessionConsumesSpec(t *testing.T) {
 	rec := &specRecorder{}
 	svc := New(rec, nil, stubLedgerView{}, nil)
@@ -77,13 +77,13 @@ func TestWakeWithoutSessionConsumesSpec(t *testing.T) {
 	}, want); err != nil {
 		t.Fatalf("Wake: %v", err)
 	}
-	if len(rec.launches) != 1 {
-		t.Fatalf("无绑定 Wake 应 Launch 一次，got %d", len(rec.launches))
+	if len(rec.launches) != 0 || len(rec.resumes) != 1 {
+		t.Fatalf("账本有 coordinate 席位时应 Resume 一次且不 Launch：launch=%d resume=%d", len(rec.launches), len(rec.resumes))
 	}
-	got := rec.launches[0]
-	if got.CLI != want.CLI || got.HomeDir != want.HomeDir ||
+	got := rec.resumes[0]
+	if got.CLI != "opencode" || got.SessionID != "sess-new" || got.HomeDir != want.HomeDir ||
 		got.Model != want.Model || got.Workdir != want.Workdir {
-		t.Fatalf("无绑定 Wake spec 未消费：\n got=%+v\nwant=%+v", got, want)
+		t.Fatalf("账本席位/续接 spec 未消费：\n got=%+v\nwant=%+v", got, want)
 	}
 }
 
@@ -94,7 +94,7 @@ func TestWakeResumeCarriesIsolatedHome(t *testing.T) {
 	rec := &specRecorder{}
 	svc := New(rec, nil, stubLedgerView{}, nil)
 	want := keysclient.SessionSpec{CLI: "opencode", HomeDir: "/home/coord", Model: "fast", Workdir: "/w"}
-	opened, err := svc.LaunchForCard(context.Background(), "B1", "card_create", want)
+	opened, err := svc.LaunchForCard(context.Background(), "B1", "coordinate", want)
 	if err != nil {
 		t.Fatalf("LaunchForCard: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestWakeResumeCarriesIsolatedHome(t *testing.T) {
 func TestWakeResumeOverlaysCurrentCarrierHome(t *testing.T) {
 	rec := &specRecorder{}
 	svc := New(rec, nil, stubLedgerView{}, nil)
-	if _, err := svc.LaunchForCard(context.Background(), "B1", "card_create", keysclient.SessionSpec{
+	if _, err := svc.LaunchForCard(context.Background(), "B1", "coordinate", keysclient.SessionSpec{
 		CLI: "opencode", HomeDir: "/old", Model: "a", Workdir: "/oldw",
 	}); err != nil {
 		t.Fatalf("LaunchForCard: %v", err)
@@ -141,5 +141,42 @@ func TestWakeResumeOverlaysCurrentCarrierHome(t *testing.T) {
 	got := rec.resumes[0]
 	if got.HomeDir != fresh.HomeDir || got.Workdir != fresh.Workdir || got.Model != fresh.Model {
 		t.Fatalf("Wake spec 未覆盖续接环境：%+v", got)
+	}
+}
+
+type bindLedgerView struct{}
+
+func (bindLedgerView) GetCard(string) (proto.Card, error) {
+	return proto.Card{DriverSession: "cli:codex#thread-01", DriverSource: "bind"}, nil
+}
+func (bindLedgerView) EventsFromAsc([]string, int64, int) ([]proto.LedgerEvent, error) {
+	return nil, nil
+}
+func (bindLedgerView) EffectiveBaseBranch(string) (string, error)  { return "", errors.New("not found") }
+func (bindLedgerView) MarkNeedsHuman(string, string, string) error { return nil }
+
+func TestWakeBindSeatIsNoOpAndForgetsStaleSession(t *testing.T) {
+	rec := &specRecorder{}
+	svc := New(rec, nil, bindLedgerView{}, nil)
+	if _, err := svc.LaunchForCard(context.Background(), "B1", "coordinate", keysclient.SessionSpec{CLI: "opencode"}); err != nil {
+		t.Fatalf("seed memory session: %v", err)
+	}
+	result, err := svc.Wake(context.Background(), "B1", []WakeEvent{{Kind: WakeMessage, Card: "B1", Summary: "hi"}}, keysclient.SessionSpec{CLI: "opencode"})
+	if err != nil {
+		t.Fatalf("bind Wake: %v", err)
+	}
+	if result.Woke || len(rec.resumes) != 0 || len(rec.launches) != 1 {
+		t.Fatalf("bind 席位必须 no-op（仅有 seed Launch）：result=%+v launches=%d resumes=%d", result, len(rec.launches), len(rec.resumes))
+	}
+}
+
+func TestLaunchForCardRejectsNonCoordinateSource(t *testing.T) {
+	rec := &specRecorder{}
+	svc := New(rec, nil, stubLedgerView{}, nil)
+	if _, err := svc.LaunchForCard(context.Background(), "B1", "manual", keysclient.SessionSpec{CLI: "opencode"}); err == nil {
+		t.Fatal("退役 source 必须被拒绝")
+	}
+	if len(rec.launches) != 0 {
+		t.Fatalf("退役 source 不得调用 Runner，Launch=%d", len(rec.launches))
 	}
 }

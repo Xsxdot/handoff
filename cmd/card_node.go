@@ -135,6 +135,24 @@ func runStepDispatch(cmd *cobra.Command, id, node string) error {
 		return err
 	}
 	defer st.Close()
+	card, err := st.GetCard(id)
+	if err != nil {
+		slog.Default().Warn("读取 card step 席位失败", "card", id, "node", node, "cause", err)
+		return err
+	}
+	actor := ledgerActor()
+	if card.DriverSession != "" || card.DriverSource != "" {
+		actor, err = currentSeatIdentity()
+		if err != nil {
+			slog.Default().Warn("card step 无法出示协调者席位", "card", id, "node", node, "cause", err)
+			return err
+		}
+		if actor != card.DriverSession {
+			err := fmt.Errorf("卡 %s 当前席位不是本会话，请使用 rebind 接班", id)
+			slog.Default().Warn("card step 席位不匹配", "card", id, "node", node, "cause", err)
+			return err
+		}
+	}
 	watermark, err := st.MaxSeq()
 	if err != nil {
 		slog.Default().Warn("读取 card step POST 前水位失败", "card", id, "node", node, "cause", err)
@@ -149,7 +167,7 @@ func runStepDispatch(cmd *cobra.Command, id, node string) error {
 	cl := client.New(addr, token)
 	req := proto.CardStepReq{
 		Step: node, Target: cardDispatchTarget, Executor: cardDispatchExecutor,
-		Model: cardDispatchModel, Extra: cardDispatchExtra, Actor: ledgerActor(),
+		Model: cardDispatchModel, Extra: cardDispatchExtra, Actor: actor,
 	}
 	slog.Default().Info("CLI 提交卡节点", "card", id, "node", node, "agentd", cl.BaseURL(),
 		"target", req.Target, "executor", req.Executor, "model", req.Model,

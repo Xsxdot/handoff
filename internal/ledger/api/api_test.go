@@ -34,8 +34,8 @@ func mustBugWorkflow(t *testing.T, st *ledger.Store) {
 	}
 }
 
-// 换绑 CAS 与租约存在性从声明缝上可见的行为全集。
-func TestFacadeBindDriverAndLeaseThroughClientSeam(t *testing.T) {
+// 旧协作门面仍保留编译契约，但不得成为新席位的写入口；租约镜像仍可用。
+func TestFacadeLegacyBindDriverDisabledAndLeaseThroughClientSeam(t *testing.T) {
 	st, lc := newFacadeStore(t)
 	mustBugWorkflow(t, st)
 	card, err := st.CreateCard(ledger.NewCard{Title: "缝级", Project: "p", Workflow: "bug", Actor: "t"})
@@ -43,15 +43,12 @@ func TestFacadeBindDriverAndLeaseThroughClientSeam(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := lc.BindDriver(card.ID, "sess-a", "car-a", ""); err != nil {
-		t.Fatalf("无绑定卡 expect=\"\" 应成功: %v", err)
+	if err := lc.BindDriver(card.ID, "sess-a", "car-a", ""); !errors.Is(err, ledger.ErrBadState) {
+		t.Fatalf("旧门面写入口应停用: %v", err)
 	}
 	got, err := lc.GetCard(card.ID)
-	if err != nil || got.DriverSession != "sess-a" {
-		t.Fatalf("GetCard 应见新绑定: %v %+v", err, got)
-	}
-	if err := lc.BindDriver(card.ID, "sess-b", "car-b", "not-current"); !errors.Is(err, ledger.ErrCASConflict) {
-		t.Fatalf("expect 不符应透传 ErrCASConflict: %v", err)
+	if err != nil || got.DriverSession != "" || got.DriverSource != "" {
+		t.Fatalf("旧门面不得写入新席位: %v %+v", err, got)
 	}
 
 	if _, ok, _ := lc.DriverLease("sess-a"); ok {

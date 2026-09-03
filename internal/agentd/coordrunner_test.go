@@ -20,4 +20,8 @@ func TestResumeTurnRequestCarriesIsolatedHome(t *testing.T) {
 	if req.HomeDir != ref.HomeDir || req.Workdir != ref.Workdir || req.Model != ref.Model {
 		t.Fatalf("续接丢了隔离环境: %+v", req)
 	}
+	if len(req.Env) != 2 || req.Env[0] != "HANDOFF_SESSION_CLI="+ref.CLI ||
+		req.Env[1] != "HANDOFF_SESSION_ID="+ref.SessionID {
+		t.Fatalf("续接缺少当前会话出示环境: %+v", req.Env)
+	}
 }

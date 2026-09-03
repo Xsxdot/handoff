@@ -20,9 +20,8 @@ func (s *Store) MoveCard(id, to, expect, actor string) error {
 	})
 }
 
-// moveCardTx 事务内的转移实现。抽出来是为了让「认领」把转状态与落驱动
-// 并进同一个事务（见 ClaimCard）——分成两次写会留出一个「进行中但没有
-// 驱动」的窗口，并发输家恰好读到它时就报不出认领者是谁。
+// moveCardTx 事务内的转移实现。状态读取、workflow gate 与状态写入必须共用
+// 一个事务，避免并发转移依据过期状态放行。
 func (s *Store) moveCardTx(tx *sql.Tx, sink *eventSink, id, to, expect, actor string) error {
 	{
 		card, err := getCardTx(s, tx, id)
@@ -137,20 +136,14 @@ func (s *Store) pendingChildrenTx(tx *sql.Tx, id string) ([]string, error) {
 	return pending, rows.Err()
 }
 
-// ClaimCard 认领卡的归属锁（人尺度）。归属判定与归属写入在同一事务完成，
-// 不改变状态列、不落认领事件；冲突返回 ErrCASConflict，归属不因时间流逝转移。
-// 同一 owner 重入幂等成功。
-//
-// B156.2 起：实现转调 ClaimCardAs(id, owner, "")（契约 §3.2 条2——行为
-// 逐字节不变；空载体含义=未登记载体，显式认领会把历史载体值归零）。
+// ClaimCard 保留人尺度旧签名，但不再改变协调者席位；新流程使用 BindSeat。
 func (s *Store) ClaimCard(id, owner string) error {
 	return s.ClaimCardAs(id, owner, "")
 }
 
 // ReleaseCard 释放驱动归属（幂等；只动自己持有的那份）。
 //
-// 参数：id 卡号；session 驱动持有者标识，与 ClaimCard 传的同一个。
-// 非持有者调用返回 ErrCASConflict 并保留归属；无主卡释放仍是幂等成功。
+// 参数：id 卡号；session 仅用于兼容日志。空座幂等成功，非空席位拒绝且保留原值。
 func (s *Store) ReleaseCard(id, session string) error {
 	log().Info("开始释放归属", "card", id, "session", session)
 	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
@@ -159,21 +152,13 @@ func (s *Store) ReleaseCard(id, session string) error {
 			return fmt.Errorf("释放: 卡 %s: %w", id, err)
 		}
 		switch {
-		case card.DriverSession == "":
+		case card.DriverSession == "" && card.DriverSource == "":
 			log().Info("释放无操作：卡无主", "card", id)
 			return nil
-		case card.DriverSession == session:
-			if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_heartbeat_at = ?
-				WHERE id = ?`), s.tval(time.Time{}), id); err != nil {
-				return fmt.Errorf("释放归属: %w", err)
-			}
-			log().Info("归属已释放", "card", id, "session", session)
-			return nil
 		default:
-			log().Warn("释放被拒：非持有者", "card", id,
-				"holder", card.DriverSession, "caller", session)
-			return fmt.Errorf("卡 %s 由 %s 持有：%s 无权释放: %w",
-				id, card.DriverSession, session, ErrCASConflict)
+			err := fmt.Errorf("卡 %s 当前有席位，请使用 rebind（release 不清席位）: %w", id, ErrBadState)
+			log().Warn("释放被拒：席位由新流程管理", "card", id, "has_session", card.DriverSession != "", "has_source", card.DriverSource != "", "cause", err)
+			return err
 		}
 	})
 	if err != nil {

@@ -8,11 +8,12 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // 锁 Open 的迁移义务：旧库（无 driver_carrier 列）升级后可读可写、
@@ -68,6 +69,110 @@ func TestOpenMigratesLegacyCardsForCarrierAndLeaseTable(t *testing.T) {
 		t.Fatalf("二次 Open 应幂等: %v", err)
 	}
 	s2.Close()
+}
+
+func TestBindSeatAndRebindSeatUseAtomicSeatContract(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "席位", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	first, err := proto.EncodeSeatIdentity("codex", "thread-01")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindSeat(c.ID, first, proto.SeatSourceBind); err != nil {
+		t.Fatalf("空座 bind: %v", err)
+	}
+	got, err := s.GetCard(c.ID)
+	if err != nil || got.DriverSession != first || got.DriverSource != string(proto.SeatSourceBind) || got.DriverHeartbeatAt.IsZero() {
+		t.Fatalf("bind 应写规范身份、来源和时间: err=%v card=%+v", err, got)
+	}
+	if evs := countTakeoverEvents(t, s, c.ID); len(evs) != 0 {
+		t.Fatalf("bind 不应落 takeover 事件: %+v", evs)
+	}
+	second, _ := proto.EncodeSeatIdentity("opencode", "thread-02")
+	if err := s.BindSeat(c.ID, second, proto.SeatSourceCoordinate); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("已有合法席位 bind 应冲突: %v", err)
+	}
+	if after, _ := s.GetCard(c.ID); after.DriverSession != first || after.DriverSource != string(proto.SeatSourceBind) {
+		t.Fatalf("bind 冲突不得修改席位: %+v", after)
+	}
+	if err := s.RebindSeat(c.ID, second, proto.SeatSourceCoordinate, "wrong"); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("expect 不符应冲突: %v", err)
+	}
+	unchanged, _ := s.GetCard(c.ID)
+	if unchanged.DriverSession != first || unchanged.DriverSource != string(proto.SeatSourceBind) {
+		t.Fatalf("CAS 冲突不得修改身份和来源: %+v", unchanged)
+	}
+	if err := s.RebindSeat(c.ID, second, proto.SeatSourceCoordinate, first); err != nil {
+		t.Fatalf("正确 expect 换绑: %v", err)
+	}
+	final, _ := s.GetCard(c.ID)
+	if final.DriverSession != second || final.DriverSource != string(proto.SeatSourceCoordinate) {
+		t.Fatalf("换绑应覆盖身份和来源: %+v", final)
+	}
+	evs := countTakeoverEvents(t, s, c.ID)
+	if len(evs) != 1 || evs[0].Actor != second {
+		t.Fatalf("换绑应恰落一条新身份 actor 事件: %+v", evs)
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(evs[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 2 || payload["from"] != first || payload["to"] != second {
+		t.Fatalf("换绑事件 payload 应精确 from/to: %v", payload)
+	}
+}
+
+func TestBindSeatRejectsLegacyAndRebindRejectsEmptySeat(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "旧席位", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE cards SET driver_session = ? WHERE id = ?`, "cli:old@host", c.ID); err != nil {
+		t.Fatal(err)
+	}
+	identity, _ := proto.EncodeSeatIdentity("codex", "thread-03")
+	if err := s.BindSeat(c.ID, identity, proto.SeatSourceBind); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("非法旧席位也应视为占用: %v", err)
+	}
+	legacy, _ := s.GetCard(c.ID)
+	if legacy.DriverSession != "cli:old@host" || legacy.DriverSource != "" {
+		t.Fatalf("非法旧席位必须原样保留: %+v", legacy)
+	}
+	if err := s.RebindSeat(c.ID, identity, proto.SeatSourceBind, ""); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("空座 rebind 应拒绝: %v", err)
+	}
+	if err := s.RebindSeat("missing", identity, proto.SeatSourceBind, "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("未知卡应返回 ErrNotFound: %v", err)
+	}
+}
+
+func TestRebindSeatRejectsSourceOnlyLegacySeat(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "来源孤儿席位", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.Exec(`UPDATE cards SET driver_source = ? WHERE id = ?`, string(proto.SeatSourceCoordinate), c.ID); err != nil {
+		t.Fatal(err)
+	}
+	before, err := s.GetCard(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RebindSeat(c.ID, "cli:codex#replacement", proto.SeatSourceBind, ""); !errors.Is(err, ErrBadState) {
+		t.Fatalf("仅来源席位应拒绝换绑并返回状态错误: %v", err)
+	}
+	after, err := s.GetCard(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DriverSession != before.DriverSession || after.DriverSource != before.DriverSource {
+		t.Fatalf("非法旧席位拒绝时不得改动: before=%+v after=%+v", before, after)
+	}
 }
 
 // leaseExpires 直查租约行，供断言「库里的真实值」而非经被测方法的读回。
@@ -211,66 +316,38 @@ func countTakeoverEvents(t *testing.T, s *Store, id string) []Event {
 	return out
 }
 
-// §4 条1：ClaimCardAs 与 ClaimCard 同语义全集＋另写 driver_carrier 列。
-func TestClaimCardAsWritesCarrierColumns(t *testing.T) {
+// 兼容入口不得再写协调者席位或 carrier。
+func TestClaimCardAsDoesNotWriteSeat(t *testing.T) {
 	s := seedStore(t)
 	c, _ := s.CreateCard(NewCard{Title: "载体认领", Project: "p", Workflow: "bug", Actor: "t"})
 	before, _ := s.GetCard(c.ID)
 
-	if err := s.ClaimCardAs("B99999", "cli:a@h", "console:x"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("不存在卡应 ErrNotFound: %v", err)
+	if err := s.ClaimCardAs("B99999", "cli:a@h", "console:x"); !errors.Is(err, ErrBadState) {
+		t.Fatalf("旧入口应明确停用: %v", err)
 	}
-	if err := s.ClaimCardAs(c.ID, "", "console:x"); err == nil {
-		t.Fatal("空 owner 应被拒")
-	}
-	if err := s.ClaimCardAs(c.ID, "cli:a@h", "console:macbook"); err != nil {
-		t.Fatalf("首次认领: %v", err)
+	if err := s.ClaimCardAs(c.ID, "cli:a@h", "console:macbook"); !errors.Is(err, ErrBadState) {
+		t.Fatalf("旧入口应明确停用: %v", err)
 	}
 	got, _ := s.GetCard(c.ID)
-	if got.Status != before.Status || got.DriverSession != "cli:a@h" || got.DriverHeartbeatAt.IsZero() {
-		t.Fatalf("语义应与 ClaimCard 一致（不改状态、写认领时刻）: %+v", got)
+	if got.Status != before.Status || got.DriverSession != before.DriverSession || !got.DriverHeartbeatAt.Equal(before.DriverHeartbeatAt) {
+		t.Fatalf("旧入口不得改变席位: before=%+v after=%+v", before, got)
 	}
-	if gotCarrier := carrierOf(t, s, c.ID); gotCarrier != "console:macbook" {
-		t.Fatalf("carrier 应落列: %q", gotCarrier)
+	if gotCarrier := carrierOf(t, s, c.ID); gotCarrier != "" {
+		t.Fatalf("旧入口不得写 carrier: %q", gotCarrier)
 	}
 	if evs := countTakeoverEvents(t, s, c.ID); len(evs) != 0 {
-		t.Fatalf("认领不落事件: %+v", evs)
-	}
-	if err := s.ClaimCardAs(c.ID, "cli:b@h", "other"); !errors.Is(err, ErrCASConflict) {
-		t.Fatalf("他主持有应 CAS 冲突: %v", err)
-	}
-	if gotCarrier := carrierOf(t, s, c.ID); gotCarrier != "console:macbook" {
-		t.Fatalf("冲突路径不得动 carrier: %q", gotCarrier)
-	}
-	if err := s.ClaimCardAs(c.ID, "cli:a@h", "console:macbook"); err != nil {
-		t.Fatalf("同 owner 重入应幂等: %v", err)
-	}
-	_ = s.MoveCard(c.ID, StatusDone, "", "t")
-	if err := s.ClaimCardAs(c.ID, "cli:c@h", "x"); !errors.Is(err, ErrBadState) {
-		t.Fatalf("终态卡认领应 ErrBadState: %v", err)
+		t.Fatalf("停用入口不落事件: %+v", evs)
 	}
 }
 
-// §4 条2：既有 ClaimCard 行为逐字节不变＋内部转调传空载体。
-// 变异靶：把 ClaimCard 恢复成旧体内联 UPDATE（不写 carrier）→ 归零断言红。
-func TestLegacyClaimCardDelegatesWithEmptyCarrier(t *testing.T) {
+func TestLegacyClaimCardDoesNotWriteSeat(t *testing.T) {
 	s := seedStore(t)
 	c, _ := s.CreateCard(NewCard{Title: "转调", Project: "p", Workflow: "bug", Actor: "t"})
-	if err := s.ClaimCardAs(c.ID, "cli:a@h", "desktop:y"); err != nil {
-		t.Fatalf("预置载体认领: %v", err)
+	if err := s.ClaimCard(c.ID, "cli:a@h"); !errors.Is(err, ErrBadState) {
+		t.Fatalf("既有 ClaimCard 应明确停用: %v", err)
 	}
-	if gotCarrier := carrierOf(t, s, c.ID); gotCarrier != "desktop:y" { // 前置非空，防断言空转
-		t.Fatalf("前置载体应已落列: %q", gotCarrier)
-	}
-	// 老 API 重入（同 owner 幂等）：走转调路径，空载体覆盖历史值＝未登记载体。
-	if err := s.ClaimCard(c.ID, "cli:a@h"); err != nil {
-		t.Fatalf("既有 ClaimCard 重入: %v", err)
-	}
-	if gotCarrier := carrierOf(t, s, c.ID); gotCarrier != "" {
-		t.Fatalf("ClaimCard 转调应传空载体: %q", gotCarrier)
-	}
-	if got, _ := s.GetCard(c.ID); got.DriverSession != "cli:a@h" || got.DriverHeartbeatAt.IsZero() {
-		t.Fatalf("既有语义不得变: %+v", got)
+	if got, _ := s.GetCard(c.ID); got.DriverSession != "" || !got.DriverHeartbeatAt.IsZero() {
+		t.Fatalf("既有 ClaimCard 不得改变席位: %+v", got)
 	}
 }
 
@@ -279,13 +356,10 @@ func TestLegacyClaimCardDelegatesWithEmptyCarrier(t *testing.T) {
 func TestRebindDriverConflictKeepsEverything(t *testing.T) {
 	s := seedStore(t)
 	c, _ := s.CreateCard(NewCard{Title: "换绑冲突", Project: "p", Workflow: "bug", Actor: "t"})
-	if err := s.RebindDriver(c.ID, "sess-b", "car-b", ""); err != nil {
-		t.Fatalf("无绑定卡 expect=\"\" 应成功: %v", err)
-	}
 	before, _ := s.GetCard(c.ID)
 	beforeCarrier := carrierOf(t, s, c.ID)
-	if err := s.RebindDriver(c.ID, "sess-c", "car-c", "wrong"); !errors.Is(err, ErrCASConflict) {
-		t.Fatalf("expect 不符应 CAS 冲突: %v", err)
+	if err := s.RebindDriver(c.ID, "sess-c", "car-c", "wrong"); !errors.Is(err, ErrBadState) {
+		t.Fatalf("旧换绑入口应明确停用: %v", err)
 	}
 	after, _ := s.GetCard(c.ID)
 	if after.DriverSession != before.DriverSession || !after.DriverHeartbeatAt.Equal(before.DriverHeartbeatAt) {
@@ -294,17 +368,8 @@ func TestRebindDriverConflictKeepsEverything(t *testing.T) {
 	if carrierOf(t, s, c.ID) != beforeCarrier {
 		t.Fatalf("冲突路径不得改任何列: carrier %q → %q", beforeCarrier, carrierOf(t, s, c.ID))
 	}
-	if evs := countTakeoverEvents(t, s, c.ID); len(evs) != 1 {
+	if evs := countTakeoverEvents(t, s, c.ID); len(evs) != 0 {
 		t.Fatalf("冲突不得追加事件: %d", len(evs))
-	}
-	if err := s.RebindDriver("B99999", "x", "y", ""); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("不存在卡应 ErrNotFound: %v", err)
-	}
-	if err := s.RebindDriver(c.ID, "", "car", "sess-b"); err == nil {
-		t.Fatal("目标会话为空应被拒")
-	}
-	if after2, _ := s.GetCard(c.ID); after2.DriverSession != "sess-b" {
-		t.Fatalf("空目标被拒后绑定不变: %q", after2.DriverSession)
 	}
 }
 
@@ -313,72 +378,61 @@ func TestRebindDriverConflictKeepsEverything(t *testing.T) {
 func TestRebindDriverSuccessGoldPayload(t *testing.T) {
 	s := seedStore(t)
 	c, _ := s.CreateCard(NewCard{Title: "换绑金样本", Project: "p", Workflow: "bug", Actor: "t"})
-	if err := s.ClaimCardAs(c.ID, "sess-old", "car-old"); err != nil {
+	if err := s.BindSeat(c.ID, "cli:codex#sess-old", proto.SeatSourceCoordinate); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RebindDriver(c.ID, "sess-new", "car-new", "sess-old"); err != nil {
+	if err := s.RebindSeat(c.ID, "cli:codex#sess-new", proto.SeatSourceCoordinate, "cli:codex#sess-old"); err != nil {
 		t.Fatalf("正确前值应成功: %v", err)
 	}
 	got, _ := s.GetCard(c.ID)
-	if got.DriverSession != "sess-new" {
+	if got.DriverSession != "cli:codex#sess-new" || got.DriverSource != string(proto.SeatSourceCoordinate) {
 		t.Fatalf("新绑定未覆写: %q", got.DriverSession)
 	}
-	if gotCarrier := carrierOf(t, s, c.ID); gotCarrier != "car-new" {
-		t.Fatalf("新载体未覆写: %q", gotCarrier)
+	if gotCarrier := carrierOf(t, s, c.ID); gotCarrier != "" {
+		t.Fatalf("新流程不得覆写 carrier: %q", gotCarrier)
 	}
 	evs := countTakeoverEvents(t, s, c.ID)
 	if len(evs) != 1 {
 		t.Fatalf("应恰一条 takeover: %d", len(evs))
 	}
-	if evs[0].Actor != "sess-new" {
+	if evs[0].Actor != "cli:codex#sess-new" {
 		t.Fatalf("actor 应为新会话: %q", evs[0].Actor)
 	}
 	var payload map[string]string
 	if err := json.Unmarshal(evs[0].Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	if len(payload) != 2 || payload["from"] != "sess-old" || payload["to"] != "sess-new" {
+	if len(payload) != 2 || payload["from"] != "cli:codex#sess-old" || payload["to"] != "cli:codex#sess-new" {
 		t.Fatalf("payload 应恰有 from/to 两键: %v", payload)
 	}
 }
 
-// expect="" 分派销账（api.go Facade.BindDriver 注释遗留）：要求当前无绑定。
 func TestRebindDriverEmptyExpectRequiresUnbound(t *testing.T) {
 	s := seedStore(t)
 	c, _ := s.CreateCard(NewCard{Title: "空期望", Project: "p", Workflow: "bug", Actor: "t"})
-	if err := s.RebindDriver(c.ID, "first", "car1", ""); err != nil {
-		t.Fatalf("无绑定时空 expect 应成功: %v", err)
+	if err := s.RebindSeat(c.ID, "cli:codex#first", proto.SeatSourceBind, ""); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("空座换绑应 CAS 冲突: %v", err)
 	}
-	if err := s.RebindDriver(c.ID, "second", "car2", ""); !errors.Is(err, ErrCASConflict) {
-		t.Fatalf("有绑定时空 expect 应 CAS 冲突: %v", err)
+	if err := s.BindSeat(c.ID, "cli:codex#first", proto.SeatSourceBind); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.RebindSeat(c.ID, "cli:codex#second", proto.SeatSourceBind, ""); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("有绑定但 expect 为空应 CAS 冲突: %v", err)
 	}
 }
 
-// 澄清一反面断言：carrier 只存不解释——空格/斜杠/Unicode/超长串原样存取。
+// 澄清一反面断言：旧 carrier 列仍可读取，但新席位写面不触碰它。
 func TestCarrierOpaqueRoundTrip(t *testing.T) {
 	s := seedStore(t)
-	carriers := []string{
-		"",
-		"with space",
-		"slash/ed/path",
-		"控制台·桌面🚀",
-		strings.Repeat("x", 4096),
-		"key:value; semi=eq&more",
+	c, _ := s.CreateCard(NewCard{Title: "不透明", Project: "p", Workflow: "bug", Actor: "t"})
+	carrier := strings.Repeat("x", 4096)
+	if _, err := s.db.Exec(s.q(`UPDATE cards SET driver_carrier = ? WHERE id = ?`), carrier, c.ID); err != nil {
+		t.Fatal(err)
 	}
-	for i, carrier := range carriers {
-		c, _ := s.CreateCard(NewCard{Title: fmt.Sprintf("不透明%d", i), Project: "p", Workflow: "bug", Actor: "t"})
-		sess := fmt.Sprintf("sess-%d", i)
-		if err := s.ClaimCardAs(c.ID, sess, carrier); err != nil {
-			t.Fatalf("carrier %q 认领: %v", carrier, err)
-		}
-		if got := carrierOf(t, s, c.ID); got != carrier {
-			t.Fatalf("carrier 存取不改写: got %q(len %d) want %q(len %d)", got, len(got), carrier, len(carrier))
-		}
-		if err := s.RebindDriver(c.ID, sess+"-next", carrier+"|rebind", sess); err != nil {
-			t.Fatalf("carrier %q 换绑: %v", carrier, err)
-		}
-		if got := carrierOf(t, s, c.ID); got != carrier+"|rebind" {
-			t.Fatalf("换绑 carrier 不改写: got %q want %q", got, carrier+"|rebind")
-		}
+	if err := s.BindSeat(c.ID, "cli:codex#opaque", proto.SeatSourceBind); err != nil {
+		t.Fatal(err)
+	}
+	if got := carrierOf(t, s, c.ID); got != carrier {
+		t.Fatalf("新席位写面不得改 carrier: got len=%d want len=%d", len(got), len(carrier))
 	}
 }

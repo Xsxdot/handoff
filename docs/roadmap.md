@@ -506,9 +506,8 @@ review 对目标 75607559 的 1 major + 3 minor 全部作为后续核销项记�
 _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 事件流 10:11–10:31 与 11:17 四条
 协调者实测 note。本期不处理，逐条待归属：
 
-- **@提及进收件箱后永远清不掉**：`collab.Service.Mentions` 源写入收件箱后无消费路径——
-  `Consume`/`Pending`/`Unread` 三法生产命中全 0（测试 10/3/10）。根因：恰好一次的消费面只
-  覆盖了决策源，提及源没人领。形态危险点：只报「有/无消费方」时它与「有消费方」长得一样。
+- **（已修，留痕）@提及进收件箱后永远清不掉**：`collab.Service.Mentions` 源写入收件箱后无消费路径。
+  B287 用户消息入房即消费本房间提及（`consumeRoomMentions`），2026-09-03 合入 main。
 - **`driver_carrier` 在 wire 上无载体**：澄清一要求房间面原样展示 carrier，但
   `proto.RoomSummary`/`InboxItem` 均无该字段——carrier 只活在账本 SQL 与 CLI。冻结的展示
   义务没有传输载体，控制台拿不到。需一次契约补字段（小卡量级）。
@@ -622,9 +621,29 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **linux-01 真机清盘**：升级该机 agentd 后跑 `handoff gc --target linux-01` 预览真实缓存字节与脏树 skip，再 `--yes`（必要时 `--force`）清终态叶子；另 `done` 一个跑过 `go test` 的任务，确认 gocache 叶子消失且 `handoff attach` 仍可读。来源：B298 真机清单 1/2/4，验收时对端仍过旧。
 - **Windows 文件占用导致的删除失败**：若仍在支持矩阵，gc 冒烟须呈现为报告 failed 行/日志、命令不崩溃。来源：B298 真机清单 5，本期无 Windows 机。
 
+## 来自 B312 finish（2026-09-03，合入 acc 后补）
+
+- **plan §9.3 现网真机**：linux-01 实装本分支二进制后验 env 注入 `cli:codex#<session>`、真实协调者小队 launch/rebind-launch、CAS 409 不 kill、agentd 重启后 status/Wake 以账本为准、浏览器/WK/Wails 能叫机器人与换绑机器人不能 self。验收只跑了缝测与变异。来源：B312 plan §9.3 与 acceptance note。
+- **`rebind --self` 在 CAS 成功后 Forget 返回非不可达错误（503/401）时 CLI 把成功换绑报失败**：审查 Minor，本节点未改。来源：B312 官方 review。
+
+## 来自 B307 spec（2026-09-03，本期不做）
+
+
+- **把 `RunTurn` 接到 grok/claude/codex**：叫机器人仍受 hostapi 已支持 CLI 限制。来源：B307 spec Out of Scope。
+- **换绑任意 session id**：本期只有「当前对话」和「新叫机器人」两种接班。来源：同上。
+- **人尺度 `takeover`/`release` 与协调者席位合并或删除**：本期两者拆开，占座只走三颗按钮。来源：同上。
+- **`driver_leases` 活性心跳接新席位身份**：本期不把租约键接到 `(cli, session_id)`。来源：同上。
+
 ## 来自 B303 spec（2026-09-02，本期不做）
 
 - **Windows ConPTY**。PTY 仍报不支持；本卡不补。来源：B303 spec Out of Scope。
 - **`CreatePtySessionReq` 增加通用 env 字段或桌面标记**。本卡写死在目标机 Env 末尾，不改 HTTP 契约。来源：同上。
 - **给已经在跑的 PTY 补注入**。重开终端。来源：同上。
 - **未升级的旧 agentd 上让 Grok 发 OSC 52**。注入发生在目标机 fork；旧二进制没有这颗变量。来源：同上。
+
+## 来自 B289 残余（2026-08-28，B274 移植轮登记）——本期不做、后续要做
+
+- **会话历史翻页**：房间消息只保证最新窗口可见（现值 200 条，含系统行）；更早历史
+  需要前端「加载更多」（服务端 `before` 排他上界游标已由 B274/B289 备好，缺的是
+  UI 与调用）。B289 spec 未记此残余，由 B287 spec 侦查期间补记。来源：B289
+  （`24be42238`）修复后的形态；`docs/superpowers/specs/b289.md`。

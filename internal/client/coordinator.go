@@ -1,9 +1,7 @@
-// coordinator.go —— 协调者拉起拨号方法（B156.3 K4）。
+// coordinator.go —— 协调者换绑拨号方法。
 //
-// 与 K3 的 CoordinatorLaunch 同底座（do/httpError/decodeWire）；差别只在带 source：
-// K3 版 POST {}（服务端缺省 manual，供看板/控制台按钮），本版显式带 source，供 CLI
-// 开卡即绑（card add --coordinate → source=card_create）。两条拨号并存的原因见 plan
-// §D5.4 / §6 待拍板 ④。
+// 协调者的 launch 拨号位于 squads.go；本文件只提供 launch-only rebind，保持
+// HTTP body 与服务端契约一致，不把浏览器或 CLI 提供的 identity 当作可信席位。
 package client
 
 import (
@@ -14,22 +12,36 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
-// CoordinatorLaunchAs 以指定 source 拉起并绑定协调者（POST /api/cards/{id}/
-// coordinator/launch）。source 只进审计：manual=看板按钮、card_create=开卡即绑。
-func (c *Client) CoordinatorLaunchAs(ctx context.Context, cardID, source string) (*proto.CoordinatorLaunchResp, error) {
+// CoordinatorRebind 通过协调者控制面请求机器人接班；调用方只应提供 mode=launch。
+func (c *Client) CoordinatorRebind(ctx context.Context, cardID string, req proto.CoordinatorRebindReq) (*proto.CoordinatorLaunchResp, error) {
 	resp, err := c.do(ctx, http.MethodPost,
-		"/api/cards/"+url.PathEscape(cardID)+"/coordinator/launch",
-		map[string]string{"source": source})
+		"/api/cards/"+url.PathEscape(cardID)+"/coordinator/rebind", req)
 	if err != nil {
 		return nil, err
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, c.httpError("coordinator launch", resp)
+		return nil, c.httpError("coordinator rebind", resp)
 	}
 	var out proto.CoordinatorLaunchResp
 	if err := decodeWire(resp, &out); err != nil {
 		return nil, err
 	}
 	return &out, nil
+}
+
+// CoordinatorForget 通知本机 agentd 丢弃卡的旧协调者会话引用。
+// 参数：ctx 控制请求；cardID 是卡号。返回：agentd 返回 200 才为 nil。
+// 注意：该方法不写账本；席位 CAS 由 CLI 或 agentd 控制面先完成。
+func (c *Client) CoordinatorForget(ctx context.Context, cardID string) error {
+	resp, err := c.do(ctx, http.MethodPost,
+		"/api/cards/"+url.PathEscape(cardID)+"/coordinator/forget", struct{}{})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("coordinator forget", resp)
+	}
+	return nil
 }

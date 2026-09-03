@@ -348,22 +348,22 @@ func (s *Store) ImportCard(id, source string, nc NewCard) (Card, error) {
 // cardColumns 与 scanCard 配对——加列只改这两处（照抄 store 的 taskColumns 模式）。
 const cardColumns = `id, title, status, terminate_reason, priority, project, parent_id,
 	workflow_name, workflow_version, attachments, acceptance_criteria, base_branch,
-	driver_session, driver_heartbeat_at, created_at, updated_at`
+	driver_session, driver_source, driver_heartbeat_at, created_at, updated_at`
 
 type rowScanner interface{ Scan(dest ...any) error }
 
 func scanCard(row rowScanner) (Card, error) {
 	var card Card
-	var terminateReason, parentID, acceptanceCriteria, baseBranch, driverSession sql.NullString
+	var terminateReason, parentID, acceptanceCriteria, baseBranch, driverSession, driverSource sql.NullString
 	var attachments string
 	var heartbeatAt, createdAt, updatedAt any
 	if err := row.Scan(&card.ID, &card.Title, &card.Status, &terminateReason, &card.Priority,
 		&card.Project, &parentID, &card.WorkflowName, &card.WorkflowVersion, &attachments,
-		&acceptanceCriteria, &baseBranch, &driverSession, &heartbeatAt, &createdAt, &updatedAt); err != nil {
+		&acceptanceCriteria, &baseBranch, &driverSession, &driverSource, &heartbeatAt, &createdAt, &updatedAt); err != nil {
 		return Card{}, err
 	}
 	card.TerminateReason, card.ParentID, card.AcceptanceCriteria = terminateReason.String, parentID.String, acceptanceCriteria.String
-	card.BaseBranch, card.DriverSession = baseBranch.String, driverSession.String
+	card.BaseBranch, card.DriverSession, card.DriverSource = baseBranch.String, driverSession.String, driverSource.String
 	if err := json.Unmarshal([]byte(attachments), &card.Attachments); err != nil {
 		return Card{}, fmt.Errorf("解码附件: %w", err)
 	}

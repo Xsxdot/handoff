@@ -446,7 +446,7 @@
         </div>
         <dl class="kv">
           <dt>并发上限</dt><dd>${s.max_concurrency || '不限'}<span class="dim">（政策位 · 按队计数）</span></dd>
-          <dt>绑定对象</dt><dd>${s.role === 'coordinator' ? '拉起通道（开卡即绑 / 一键拉起）' : '工作流派发节点（flows 页配置）'}</dd>
+          <dt>绑定对象</dt><dd>${s.role === 'coordinator' ? '叫机器人 / 换绑：叫机器人（浏览器不能坐下）' : '工作流派发节点（flows 页配置）'}</dd>
         </dl>
       </div>`).join('');
     document.querySelectorAll('[data-se]').forEach(b => b.addEventListener('click', () => openSquadDialog(squads[Number(b.dataset.se)])));

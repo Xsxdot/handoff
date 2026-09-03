@@ -13,6 +13,8 @@ export interface CardItemProps {
   nodeTag?: string
 }
 
+// 状态在卡片上只渲染一次（B287）：右上角 chip，文案 = 节点标签（多对一列显形，
+// B279 语义不变）缺省回落状态名；下方标签行不再出现状态。
 function Chip({ children, className, title, onClick }: {
   children: ReactNode
   className?: string
@@ -53,7 +55,7 @@ export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_co
     >
       <div className="flex items-center gap-2">
         <span className="font-mono text-[11px] text-muted-foreground">{card.id}</span>
-        <span className="ml-auto truncate text-[10px] text-muted-foreground">{card.status}</span>
+        <span className="ml-auto shrink-0 rounded-full bg-slate-900 px-1.5 py-0.5 text-[10px] text-white">{nodeTag ?? card.status}</span>
         {onMigrate && <button
           type="button"
           aria-label={`迁移 ${card.id}`}
@@ -81,7 +83,6 @@ export function CardItem({ card, onOpen, onMigrate, mergedCount = card.merged_co
         {card.open_tickets > 0 && <Chip className="border-amber-300 bg-amber-50 text-amber-700">🄠 工单 {card.open_tickets}</Chip>}
         {verified !== undefined && <Chip className="border-green-300 bg-green-50 text-green-700">{verified ? '已验' : '待真机验'}</Chip>}
         {queuePosition !== undefined && <Chip className="border-sky-300 bg-sky-50 text-sky-700">⧗ 排队 #{queuePosition}</Chip>}
-        {nodeTag && <span className="rounded-full bg-slate-900 px-1.5 text-[10px] text-white">{nodeTag}</span>}
         {blockedBy.length > 0 && <Chip className="text-muted-foreground">⛓ {blockedBy.join(', ')}</Chip>}
         {card.needs && <Chip className="border-amber-300 bg-amber-50 text-amber-700">⚑ {card.needs}</Chip>}
         {card.conflict && <Chip className="border-destructive/40 bg-destructive/5 text-destructive">✕ 状态冲突</Chip>}
