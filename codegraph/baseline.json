@@ -52723,8 +52723,8 @@
   }
  ],
  "meta": {
-  "branch": "codegraph-scan-20260903",
-  "commit": "dd9cd6aaa25b553ea561e7bc1ab751ad704a1186",
+  "branch": "main",
+  "commit": "bd53e526cb48fe9420091046e55927a640167f72",
   "generator": "handoff-executor/Muse Spark + codegraph-flows-b277-go",
   "project": "handoff",
   "scannedAt": "2026-09-03"
