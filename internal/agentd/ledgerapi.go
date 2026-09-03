@@ -477,6 +477,22 @@ func (s *Server) handleCardStep(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "actor 不能为空"})
 		return
 	}
+	card, err := s.ledger.GetCard(id)
+	if err != nil {
+		s.log.Warn("卡节点请求读取席位失败", "card", id, "node", req.Step, "actor", req.Actor, "cause", err)
+		ledgerErr(w, err)
+		return
+	}
+	if card.DriverSession != "" || card.DriverSource != "" {
+		if req.Actor != card.DriverSession {
+			err := fmt.Errorf("卡 %s 当前席位要求出示 %q", id, card.DriverSession)
+			s.log.Warn("卡节点请求被拒：席位 actor 不匹配", "card", id, "node", req.Step,
+				"actor", req.Actor, "has_seat", true, "cause", err)
+			writeJSON(w, http.StatusForbidden, map[string]string{"error": err.Error()})
+			return
+		}
+		s.log.Info("卡节点席位出示通过", "card", id, "node", req.Step, "actor", req.Actor)
+	}
 	if requiresInlineLocalFile(req) {
 		s.log.Warn("卡节点请求被拒：要求内联本地文件", "card", id, "node", req.Step,
 			"actor", req.Actor)

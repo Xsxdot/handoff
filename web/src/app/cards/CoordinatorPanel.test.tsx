@@ -40,6 +40,7 @@ vi.mock('../../api/scheduling', async (importOriginal) => ({
   attachCoordinator: vi.fn(),
   getCoordinatorStatus: vi.fn(),
   launchCoordinator: vi.fn(),
+  rebindCoordinatorLaunch: vi.fn(),
   releaseCoordinator: vi.fn(),
 }))
 
@@ -97,6 +98,16 @@ describe('协调者面板', () => {
     await user.click(screen.getByRole('button', { name: '确认 attach' }))
     expect(attachCoordinator).toHaveBeenCalledWith('B1', '/repo/handoff')
     expect(onOpenTerminal).toHaveBeenCalledWith(info)
+  })
+
+  it('bind 席位没有机器人 attach 时仍显示已绑定和换绑，不显示打开终端', async () => {
+    vi.mocked(usePoll).mockReturnValue(pollState({ bound: true, attach_active: false, attach: null }) as never)
+    render(<CoordinatorPanel cardId="B-bind" onOpenTerminal={vi.fn()} />)
+
+    expect(await screen.findByText('已绑定')).toBeVisible()
+    expect(screen.getByRole('button', { name: '换绑：叫机器人' })).toBeVisible()
+    expect(screen.queryByRole('button', { name: '打开终端' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('alert')).not.toBeInTheDocument()
   })
 
   it('把 AttachInfo.command 穿透到终端 initCommand', async () => {

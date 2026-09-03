@@ -29,3 +29,19 @@ func (c *Client) CoordinatorRebind(ctx context.Context, cardID string, req proto
 	}
 	return &out, nil
 }
+
+// CoordinatorForget 通知本机 agentd 丢弃卡的旧协调者会话引用。
+// 参数：ctx 控制请求；cardID 是卡号。返回：agentd 返回 200 才为 nil。
+// 注意：该方法不写账本；席位 CAS 由 CLI 或 agentd 控制面先完成。
+func (c *Client) CoordinatorForget(ctx context.Context, cardID string) error {
+	resp, err := c.do(ctx, http.MethodPost,
+		"/api/cards/"+url.PathEscape(cardID)+"/coordinator/forget", struct{}{})
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("coordinator forget", resp)
+	}
+	return nil
+}

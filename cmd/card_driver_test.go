@@ -4,10 +4,13 @@ package cmd
 
 import (
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
@@ -188,6 +191,60 @@ func TestCardRebindSelfAndTakeoverEvent(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("CLI 换绑必须落 driver_takeover 事件")
+	}
+}
+
+// TestCardRebindSelfEvictsAgentdSession 要求本机账本 self 换绑成功后通知本机
+// agentd 清掉旧 keystone 内存；CLI 只走 HTTP 接缝，不直接 import keystone。
+func TestCardRebindSelfEvictsAgentdSession(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HANDOFF_SESSION_CLI", "codex")
+	t.Setenv("HANDOFF_SESSION_ID", "old")
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "self 驱逐卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatalf("card add: %v", err)
+	}
+	var c struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &c); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "card", "bind", c.ID); err != nil {
+		t.Fatal(err)
+	}
+
+	forgetSeen := make(chan string, 1)
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost && r.URL.Path == "/api/cards/"+c.ID+"/coordinator/forget" {
+			forgetSeen <- r.URL.Path
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"ok":true}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer ts.Close()
+	cfg, err := config.Load(filepath.Join(dir, "config.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.Listen = strings.TrimPrefix(ts.URL, "http://")
+	if err := config.Save(filepath.Join(dir, "config.yaml"), cfg); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("HANDOFF_SESSION_ID", "new")
+	if _, _, err := runLedgerCLI(t, dir, "card", "rebind", c.ID, "--self"); err != nil {
+		t.Fatalf("rebind --self: %v", err)
+	}
+	select {
+	case path := <-forgetSeen:
+		if path != "/api/cards/"+c.ID+"/coordinator/forget" {
+			t.Fatalf("agentd 驱逐路径 = %q", path)
+		}
+	default:
+		t.Fatal("self 换绑成功后必须通知 agentd Forget")
 	}
 }
 

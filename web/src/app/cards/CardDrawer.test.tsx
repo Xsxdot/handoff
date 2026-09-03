@@ -100,6 +100,21 @@ describe('抽屉协调者接缝', () => {
     render(<CardDrawer id="B283" onClose={() => {}} onOpenCard={() => {}} />)
     expect(await screen.findByText('席位异常')).toBeInTheDocument()
   })
+
+  it('坐下席位没有机器人 attach 时仍可见换绑按钮，不显示状态不一致', async () => {
+    const ledger = await import('../../api/ledger')
+    const scheduling = await import('../../api/scheduling')
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: card({ id: 'B-bind', title: '坐下席位', driver_session: 'cli:codex#thread-bind', driver_source: 'bind' }),
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '', children: [],
+    })
+    vi.mocked(scheduling.getCoordinatorStatus).mockResolvedValue({ bound: true, attach_active: false, attach: null })
+    render(<CardDrawer id="B-bind" onClose={() => {}} onOpenCard={() => {}} />)
+
+    expect(await screen.findByText('坐下')).toBeVisible()
+    expect(screen.getByRole('button', { name: '换绑：叫机器人' })).toBeVisible()
+    expect(screen.queryByText('服务端协调者状态不一致，请刷新重试。')).not.toBeInTheDocument()
+  })
 })
 
 describe('抽屉里的裁决', () => {

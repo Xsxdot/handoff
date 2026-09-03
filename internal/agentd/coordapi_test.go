@@ -5,6 +5,7 @@ package agentd
 // （SquadRows→LaunchAdmit→Carrier），keystone 侧注入 fake 端口记录 spec。
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -446,6 +447,40 @@ func TestCoordStatusEndpoint(t *testing.T) {
 	code, body = ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
 	if code != http.StatusOK || !strings.Contains(body, `"attach_active":true`) {
 		t.Fatalf("接管态未反映：%d %s", code, body)
+	}
+}
+
+// TestCoordForgetAfterSelfRebindClearsStaleSession 锁 CLI self 换绑后的跨进程边界：
+// 账本已经改成 bind 后，agentd 必须 Forget 旧 coordinate 内存，否则 status 会继续
+// 暴露不存在的机器人 attach 目录。
+func TestCoordForgetAfterSelfRebindClearsStaleSession(t *testing.T) {
+	env, runner := newNoPTYCoordEnv(t)
+	cardID := createCoordCard(t, env)
+	runner.launchID = "sess-old"
+	if _, err := env.srv.keystone.LaunchForCard(context.Background(), cardID, "coordinate", keysclient.SessionSpec{CLI: "opencode"}); err != nil {
+		t.Fatalf("准备旧 coordinate 会话: %v", err)
+	}
+	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-old", proto.SeatSourceCoordinate); err != nil {
+		t.Fatalf("准备旧 coordinate 席位: %v", err)
+	}
+	if err := env.ledger.RebindSeat(cardID, "cli:codex#sess-new", proto.SeatSourceBind, "cli:opencode#sess-old"); err != nil {
+		t.Fatalf("模拟 self 换绑: %v", err)
+	}
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/forget", `{}`)
+	if code != http.StatusOK || !strings.Contains(body, `"ok":true`) {
+		t.Fatalf("Forget 应 200/ok，实得 %d %s", code, body)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
+	if code != http.StatusOK {
+		t.Fatalf("读取 self 换绑后状态失败: %d %s", code, body)
+	}
+	var status proto.CoordinatorStatus
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		t.Fatalf("状态解码失败: %v body=%s", err, body)
+	}
+	if !status.Bound || status.Attach != nil {
+		t.Fatalf("bind 席位驱逐旧内存后应 bound=true 且 attach=null: %+v", status)
 	}
 }
 

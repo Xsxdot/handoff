@@ -21,7 +21,8 @@ type CoordinatorView = 'unbound' | 'bound' | 'attach-active' | 'invalid'
 
 function coordinatorView(status: CoordinatorStatus): CoordinatorView {
   if (!status.bound && !status.attach_active && status.attach === null) return 'unbound'
-  if (status.bound && !status.attach_active && status.attach !== null) return 'bound'
+  // bind 席位没有 agentd 内存中的 SessionRef，因此合法 bound 可以没有 attach。
+  if (status.bound && !status.attach_active) return 'bound'
   if (status.bound && status.attach_active && status.attach !== null) return 'attach-active'
   return 'invalid'
 }
@@ -143,7 +144,7 @@ export function CoordinatorPanel({ cardId, onOpenTerminal }: CoordinatorPanelPro
       </div>
       {state.disconnected && <DisconnectedBanner compact message={state.errorText} />}
       {view === 'unbound' && <Button className="mt-2" size="sm" disabled={disabled} onClick={() => void launch()}>▶ 叫机器人</Button>}
-      {view === 'bound' && <div className="mt-2 flex gap-2"><Button size="sm" variant="outline" disabled={disabled} onClick={() => { setActionError(''); setAttachConfirm(true) }}>打开终端</Button><Button size="sm" variant="outline" disabled={disabled} onClick={() => void rebind()}>换绑：叫机器人</Button></div>}
+      {view === 'bound' && <div className="mt-2 flex gap-2">{info && <Button size="sm" variant="outline" disabled={disabled} onClick={() => { setActionError(''); setAttachConfirm(true) }}>打开终端</Button>}<Button size="sm" variant="outline" disabled={disabled} onClick={() => void rebind()}>换绑：叫机器人</Button></div>}
       {view === 'attach-active' && <Button className="mt-2" size="sm" variant="outline" disabled={disabled} onClick={() => void release()}>交回无头</Button>}
       {view === 'invalid' && <p role="alert" className="mt-2 text-xs text-destructive">服务端协调者状态不一致，请刷新重试。</p>}
       {launchOutput && <p className="mt-2 break-words text-xs text-muted-foreground">{launchOutput}</p>}

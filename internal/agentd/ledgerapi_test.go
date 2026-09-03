@@ -17,6 +17,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/testhttp"
 )
@@ -1565,6 +1566,66 @@ func TestCardStepRejectsUnknownNode(t *testing.T) {
 	case <-called:
 		t.Fatal("未知节点不应启动 runner")
 	default:
+	}
+}
+
+// TestCardStepRejectsSeatActorMismatch 钉住 HTTP step 与 CLI 相同的席位出示规则：
+// 有席位时 actor 必须逐字等于账本 driver_session，拒绝必须发生在异步 runner 启动前。
+func TestCardStepRejectsSeatActorMismatch(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	seedCardWithProject(t, env.srv, "handoff")
+	if err := env.ledger.BindSeat("B1", "cli:codex#bound", proto.SeatSourceBind); err != nil {
+		t.Fatalf("准备坐下席位: %v", err)
+	}
+	called := make(chan struct{}, 1)
+	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/B1/step",
+		`{"step":"待审阅","actor":"cli:codex#other"}`)
+	if code != http.StatusForbidden {
+		t.Fatalf("席位 actor 不匹配应 403，实得 %d（%s）", code, body)
+	}
+	if !strings.Contains(body, "当前席位") {
+		t.Fatalf("拒绝报文应指出席位原因，实得 %s", body)
+	}
+	select {
+	case <-called:
+		t.Fatal("席位 actor 不匹配不得启动 runner")
+	default:
+	}
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.DriverSession != "cli:codex#bound" || card.DriverSource != string(proto.SeatSourceBind) {
+		t.Fatalf("拒绝 step 不得改席位: %+v", card)
+	}
+}
+
+// TestCardStepEmptySeatKeepsLegacyAcceptance 钉住空座仍可通过 HTTP 受理，且不会
+// 因 step 的普通审计 actor 把协调者席位写回账本。
+func TestCardStepEmptySeatKeepsLegacyAcceptance(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	card := seedCard(t, env, "空座 step 卡")
+	called := make(chan struct{}, 1)
+	env.srv.runStepFn = func(_ context.Context, _ *ledgerstep.StepRunner, _, _ string) { called <- struct{}{} }
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step",
+		`{"step":"进行中","actor":"web:test"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("空座 step 应 202，实得 %d（%s）", code, body)
+	}
+	select {
+	case <-called:
+	case <-time.After(2 * time.Second):
+		t.Fatal("空座 step 应启动 runner")
+	}
+	got, err := env.ledger.GetCard(card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.DriverSession != "" || got.DriverSource != "" {
+		t.Fatalf("空座 step 不得写协调者席位: %+v", got)
 	}
 }
 

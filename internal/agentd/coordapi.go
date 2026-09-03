@@ -3,6 +3,7 @@
 //	POST /api/cards/{id}/coordinator/launch  叫机器人并占 coordinate 席位
 //	GET  /api/cards/{id}/coordinator         绑定与接管态
 //	POST /api/cards/{id}/coordinator/rebind  叫机器人换绑
+//	POST /api/cards/{id}/coordinator/forget  驱逐进程内旧会话引用
 //	POST /api/cards/{id}/attach              attach 接管/交回（人工接管互斥的牙齿）
 //
 // 职责：组装点在此解析协调者小队产出 SessionSpec（契约 §15 澄清 2——SquadRows
@@ -41,6 +42,7 @@ func (s *Server) registerCoordRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/cards/{id}/coordinator/launch", s.withLedger(s.withCoordinator(s.handleCoordLaunch)))
 	api.HandleFunc("GET /api/cards/{id}/coordinator", s.withLedger(s.withCoordinator(s.handleCoordStatus)))
 	api.HandleFunc("POST /api/cards/{id}/coordinator/rebind", s.withLedger(s.withCoordinator(s.handleCoordRebind)))
+	api.HandleFunc("POST /api/cards/{id}/coordinator/forget", s.withLedger(s.withCoordinator(s.handleCoordForget)))
 	api.HandleFunc("POST /api/cards/{id}/attach", s.withLedger(s.withCoordinator(s.handleCoordAttach)))
 }
 
@@ -230,6 +232,23 @@ func (s *Server) handleCoordRebind(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("协调者 HTTP 换绑成功", "card", id, "source", "coordinate", "session", result.SessionID)
 	writeJSON(w, http.StatusOK, proto.CoordinatorLaunchResp{Woke: result.Woke, SessionID: result.SessionID,
 		Rebuilt: result.Rebuilt, Escalated: result.Escalated, Output: result.Output})
+}
+
+// handleCoordForget 清除 agentd 进程内的旧协调者会话引用。
+// 参数：请求路径中的 id 是卡号；请求体忽略。返回：成功时 {"ok":true}。
+// 注意：账本席位由调用方先完成 CAS；本端点只调用 keystone 的唯一 Forget 面，
+// 不复制或修改席位真相。
+func (s *Server) handleCoordForget(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	s.log.Info("驱逐协调者旧内存入口", "card", id)
+	if _, err := s.ledger.GetCard(id); err != nil {
+		s.log.Warn("驱逐协调者旧内存前读取卡失败", "card", id, "cause", err)
+		ledgerErr(w, err)
+		return
+	}
+	s.keystone.Forget(id)
+	s.log.Info("协调者旧内存已驱逐", "card", id)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // resolveCoordWorkdir 尽力解析卡所属项目在本机的位置根作为会话工作目录

@@ -4,9 +4,11 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
 )
@@ -114,6 +116,20 @@ var cardRebindCmd = &cobra.Command{
 			if err := st.RebindSeat(id, identity, proto.SeatSourceBind, card.DriverSession); err != nil {
 				slog.Default().Warn("CLI self 换绑失败", "card", id, "cause", err)
 				return fmt.Errorf("换绑卡 %s: %w", id, err)
+			}
+			addr, token, err := LocalEndpoint()
+			if err != nil {
+				slog.Default().Warn("CLI self 换绑读取本机 agentd 端点失败", "card", id, "cause", err)
+				return fmt.Errorf("换绑卡 %s 后驱逐 agentd 内存: %w", id, err)
+			}
+			if err := client.New(addr, token).CoordinatorForget(cmd.Context(), id); err != nil {
+				if !errors.Is(err, client.ErrUnreachable) {
+					slog.Default().Warn("CLI self 换绑驱逐 agentd 内存失败", "card", id, "cause", err)
+					return fmt.Errorf("换绑卡 %s 后驱逐 agentd 内存: %w", id, err)
+				}
+				slog.Default().Warn("CLI self 换绑后 agentd 不可达，保留本机 CAS 结果", "card", id, "cause", err)
+			} else {
+				slog.Default().Info("CLI self 换绑已驱逐 agentd 内存", "card", id)
 			}
 		} else {
 			cl, done, err := newTargetClient()
