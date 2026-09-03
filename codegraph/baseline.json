@@ -55094,8 +55094,8 @@
   }
  ],
  "meta": {
-  "branch": "codegraph-coverage-20260903",
-  "commit": "64309d14a726a828249b8e2ac32d04ef0d9ed658",
+  "branch": "main",
+  "commit": "985041e470d8e8e889099f26e0214a3334242ebd",
   "generator": "handoff-executor/coverage-fill-20260903",
   "project": "handoff",
   "scannedAt": "2026-09-03"
