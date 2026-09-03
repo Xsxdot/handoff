@@ -1,0 +1,53 @@
+{
+  "view": "cards/B312-charter",
+  "base": "5f8b71b3",
+  "summary": "B312 Ticket 0：当前会话席位身份编码骨架与金样本",
+  "nodesAdded": {
+    "m_proto_SeatSource": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 400,
+      "name": "SeatSource",
+      "file": "internal/proto/seat.go",
+      "line": 10,
+      "signature": "type SeatSource string",
+      "summary": "卡上协调者席位来源：bind 或 coordinate",
+      "modelKind": "entity"
+    },
+    "n_proto_EncodeSeatIdentity": {
+      "kind": "func",
+      "container": "k_proto_fn",
+      "order": 400,
+      "name": "EncodeSeatIdentity",
+      "file": "internal/proto/seat.go",
+      "line": 20,
+      "signature": "func EncodeSeatIdentity(cli, sessionID string) (string, error)",
+      "params": [["cli", "string", "CLI 物种名"], ["sessionID", "string", "会话 id"]],
+      "returns": "string, error",
+      "summary": "编码账本与房间共用的当前会话席位身份"
+    },
+    "n_proto_ParseSeatIdentity": {
+      "kind": "func",
+      "container": "k_proto_fn",
+      "order": 401,
+      "name": "ParseSeatIdentity",
+      "file": "internal/proto/seat.go",
+      "line": 32,
+      "signature": "func ParseSeatIdentity(raw string) (cli, sessionID string, err error)",
+      "params": [["raw", "string", "编码后的席位身份"]],
+      "returns": "cli, sessionID string, err error",
+      "summary": "校验并解码当前会话席位身份，拒绝旧格式"
+    },
+    "n_proto_validateSeatPart": {
+      "kind": "func",
+      "container": "k_proto_fn",
+      "order": 402,
+      "name": "validateSeatPart",
+      "file": "internal/proto/seat.go",
+      "line": 52,
+      "signature": "func validateSeatPart(name, value string, cli bool) error",
+      "returns": "error",
+      "summary": "校验席位编码分段"
+    }
+  }
+}
