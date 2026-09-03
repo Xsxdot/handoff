@@ -30,42 +30,14 @@ const (
 	agyHomeDirName  = "agyhome"
 )
 
-// nativeCommandAllow 是 agy 原生策略允许的命令前缀。
+// nativeCommandAllow 是写入任务 HOME settings.json 的 agy 原生 allow。
 //
-// 这里刻意不使用 command(*)：agy 的全匹配项会绕过 PreToolUse 的 deny 结果。
-// agy 按命令行首词匹配 command(<target>)：command(git) 能放行 `git status && …`，
-// 但放行不了 `pwd && git status`。pwd/cd 是跑分复合命令的常见首词。
+// command(*) 是 command 命名空间通配：消掉 headless 对未知首词的 soft-deny。
+// 它不跳过 PreToolUse；handoff-safety-gate 的 deny 仍是否决门（B308 隔离 canary）。
+// 不用前缀清单：新首词会再挂、再编译、再重启 agentd。
+// 不用 command(.*)：1.1.24 上它是合法 grant，但消不掉 native soft-deny。
 var nativeCommandAllow = []string{
-	"command(go)",
-	"command(git)",
-	"command(pwd)",
-	"command(cd)",
-	"command(echo)",
-	"command(make)",
-	"command(npm)",
-	"command(npx)",
-	"command(pnpm)",
-	"command(yarn)",
-	"command(node)",
-	"command(python)",
-	"command(python3)",
-	"command(pip)",
-	"command(pip3)",
-	"command(cargo)",
-	"command(bash)",
-	"command(sh)",
-	"command(ls)",
-	"command(cat)",
-	"command(grep)",
-	"command(sed)",
-	"command(find)",
-	"command(mkdir)",
-	"command(chmod)",
-	"command(head)",
-	"command(tail)",
-	"command(rg)",
-	"command(gofmt)",
-	"command(handoff)",
+	"command(*)",
 }
 
 type hooksRestoreState struct {

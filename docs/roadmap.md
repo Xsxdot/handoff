@@ -569,7 +569,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ## 来自 B305 spec（2026-09-02，本期不做）
 
-- **agy 1.1.24 `command(uname)` 原生 deny 不生效**：`permissions.allow: ["command(uname)"]` 时 PreToolUse deny hook 仍让 `uname -s` 跑出 `Linux`。B305 allow 清单故意不收录它。要修得跟 agy 版本走。来源：B305 spec OOS / linux-01 真机台账。
+- ~~agy 1.1.24 `command(uname)` 原生 deny 不生效~~ **B308 证伪（2026-09-03）**：B305 把 `-p` 模型终稿里的 `Linux` 当成命令 stdout。隔离 canary：deny + `command(*)` / skip-permissions 下 `uname -s && touch` 文件不存在。本项不再跟 agy 修。来源：B305 OOS，B308 台账。
 
 ## 来自 B278 spec（2026-08-28，本期不做）
 

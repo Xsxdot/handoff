@@ -7,3 +7,21 @@
 - 2026-09-02 首红 `go test ./internal/executor/agy -count=1 -run TestNativeCommandAllowCoversCompoundFirstTokens`：`nativeCommandAllow 缺 command(pwd)`，退出 1。
 - 2026-09-02 加入 `command(pwd)`/`command(cd)` 后同测试 `ok`。包测试跳过预存 macOS perm.sock sun_path：`go test ./internal/executor/agy -count=1 -skip 'TestAdapterRespondPermission|TestPermServer'` → `ok … 1.390s`。`go build ./...` 退出 0。
 - 2026-09-02 变异：`command(pwd)`→`command(pwx)` 唯一处；`TestNativeCommandAllowCoversCompoundFirstTokens` 断言缺 pwd，退出 1；还原后 `ok`。
+- 2026-09-03 正则实验（隔离假 HOME，不写用户 ~/.gemini，不重启生产 agentd）：
+  - `command(.+)` / `command(.*)` 都能进 Allow（不是 invalid grant）。
+  - deny hook + `command(.+)`：stdout 为 `tool call denied by pre-tool hook: b308-regex-deny`，`b308-regex` 未跑出。**deny 仍有效，不是 command(*) 那一档。**
+  - allow hook + `command(.+)` / `command(.*)` / `command(pwd)`：均为 print-mode soft-deny RunCommand。transcript 里模型把 CommandLine 加成 `"pwd && echo b308-regex"`（带引号）。`command(.*)` 按文档应匹配任意首词，仍 soft-deny → **1.1.24 上正则盖不住原生 command 门，不能替代名单。**
+  - 官方文档：`command` 按空白 token 做锚定正则；`command(*)` 才是命名空间通配。
+- 2026-09-03 隔离 canary `/tmp/b309-canary`（agy 1.1.24，假 HOME，`--add-dir` git ws，不写用户 `~/.gemini`，生产 agentd pid 1741628 未动）：
+  - deny + `--dangerously-skip-permissions` + `touch …/skip_deny`：文件 ABSENT；stdout `tool call denied by pre-tool hook: b309-canary-deny`；日志 `auto-approving all tool permissions`；hook stdin `CommandLine=touch …/skip_deny`。
+  - deny + `command(*)` + `touch …/star_deny`：文件 ABSENT；同样 hook deny；settings `Allow:[command(*)]`。
+  - allow + skip-permissions + `touch …/skip_allow`：文件 EXISTS；退出码 0。
+  - deny + `command(*)` + `uname -s && touch …`：文件 ABSENT；stdout 是 hook deny，不是 `Linux`。
+  - deny + skip-permissions + `uname -s && touch …`：文件 ABSENT。
+  - allow + `command(*)` + `touch …/star_allow`：文件 EXISTS；`CommandLine` 无额外引号。
+  - changelog「matching every command and silently auto-approving」指零词 allow 项，不是 `command(*)`。
+  - 用户全局 hooks 仍不存在；用户 settings 不含 `command(*)`。
+- 2026-09-03 用户「走A吧」。spec 改为任务 allow 精确 `["command(*)"]`；不 reopen B305。
+- 2026-09-03 方案 A 首红 `go test ./internal/executor/agy -count=1 -run 'TestNativeCommandAllowIsNamespaceWildcard|TestWriteTaskEnvAgyHome'`：`nativeCommandAllow 必须精确为 [command(*)]，实得` 30 项前缀清单（含 pwd/cd）；`TestWriteTaskEnvAgyHome` 同样断言失败。退出 1。
+- 2026-09-03 `nativeCommandAllow` 收成 `command(*)` 后同测试 `ok … 0.856s`。包测试 `go test ./internal/executor/agy -count=1 -skip 'TestAdapterRespondPermission|TestPermServer'` → `ok … 1.467s`。`gofmt` + `go build ./...` 退出 0。
+- 2026-09-03 变异：`taskenv.go` 唯一切片项 `"command(*)"`→`"command(go)"`；`go build ./internal/executor/agy` 退出 0；`TestNativeCommandAllowIsNamespaceWildcard` 断言 `实得 []string{"command(go)"}`，退出 1；还原后同测试 `ok`。

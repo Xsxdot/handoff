@@ -192,10 +192,8 @@ func TestWriteTaskEnvAgyHome(t *testing.T) {
 				i, settings.Permissions.Allow[i], want, settingsData)
 		}
 	}
-	for _, item := range settings.Permissions.Allow {
-		if item == "command(*)" || item == "command(uname)" {
-			t.Fatalf("任务 settings.json 禁止 %s: %s", item, settingsData)
-		}
+	if len(settings.Permissions.Allow) != 1 || settings.Permissions.Allow[0] != "command(*)" {
+		t.Fatalf("任务 settings.json allow 必须精确为 [command(*)]，实得: %s", settingsData)
 	}
 	if strings.Contains(string(settingsData), "always-proceed") {
 		t.Fatalf("任务 settings.json 禁止 always-proceed: %s", settingsData)
@@ -232,20 +230,11 @@ func TestWriteTaskEnvAgyHome(t *testing.T) {
 	}
 }
 
-func TestNativeCommandAllowCoversCompoundFirstTokens(t *testing.T) {
-	have := make(map[string]bool, len(nativeCommandAllow))
-	for _, item := range nativeCommandAllow {
-		have[item] = true
-		if item == "command(*)" || item == "command(uname)" {
-			t.Fatalf("nativeCommandAllow 禁止 %s", item)
-		}
-	}
-	// agy 按命令行首词匹配 command(<target>)。跑分 denied 全是「pwd && …」；
-	// 以 git/ls/find 开头的复合命令已能过。cd 与 pwd 同类。
-	for _, want := range []string{"command(pwd)", "command(cd)"} {
-		if !have[want] {
-			t.Fatalf("nativeCommandAllow 缺 %s：复合 run_command 会被原生 soft-deny", want)
-		}
+func TestNativeCommandAllowIsNamespaceWildcard(t *testing.T) {
+	// command(*) 消 headless native soft-deny；PreToolUse deny 仍是否决门。
+	// 前缀清单会在新首词上再挂；command(.*) 在 1.1.24 上消不掉 soft-deny。
+	if len(nativeCommandAllow) != 1 || nativeCommandAllow[0] != "command(*)" {
+		t.Fatalf("nativeCommandAllow 必须精确为 [command(*)]，实得 %#v", nativeCommandAllow)
 	}
 }
 
