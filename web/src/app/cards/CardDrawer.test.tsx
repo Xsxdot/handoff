@@ -112,7 +112,7 @@ describe('抽屉协调者接缝', () => {
     render(<CardDrawer id="B-bind" onClose={() => {}} onOpenCard={() => {}} />)
 
     expect(await screen.findByText('坐下')).toBeVisible()
-    expect(screen.getByRole('button', { name: '换绑：叫机器人' })).toBeVisible()
+    expect(await screen.findByRole('button', { name: '换绑：叫机器人' })).toBeVisible()
     expect(screen.queryByText('服务端协调者状态不一致，请刷新重试。')).not.toBeInTheDocument()
   })
 })
