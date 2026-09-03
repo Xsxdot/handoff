@@ -519,18 +519,13 @@ func TestSendConsumesRoomMentions(t *testing.T) {
 	svc, st := newFixture(t)
 	card := mustAnyCard(t, svc, st)
 	other := mustCard(t, svc, st, "另一张卡")
-	lc := ledgerapi.New(st)
-	if err := lc.BindDriver(card.ID, "agent:s1", "car-a", ""); err != nil {
-		t.Fatal(err)
-	}
-	if err := lc.BindDriver(other.ID, "agent:s2", "car-b", ""); err != nil {
-		t.Fatal(err)
-	}
+	mustBind(t, st, card.ID, "cli:codex#s1")
+	mustBind(t, st, other.ID, "cli:codex#s2")
 	// 协调者侧 @用户：relay 类必须由绑定者书写（room.VerifyWriter 矩阵）。
-	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "看一下这个", Mentions: []string{"user:sy"}}, "agent:s1"); err != nil {
+	if _, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "看一下这个", Mentions: []string{"user:sy"}}, "cli:codex#s1"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Send(other.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "那边也看一下", Mentions: []string{"user:sy"}}, "agent:s2"); err != nil {
+	if _, err := svc.Send(other.ID, proto.RoomMessage{Kind: proto.RoomMsgRelay, Body: "那边也看一下", Mentions: []string{"user:sy"}}, "cli:codex#s2"); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := svc.Mentions("user:sy", 0, 0)
