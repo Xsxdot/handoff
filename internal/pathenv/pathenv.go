@@ -52,16 +52,16 @@ type Options struct {
 // homeRelDirs 是相对 HOME 的已知安装目录。每一条都对应一个真实的安装落点，
 // 不是「顺手加上」——加一条前先确认它是哪个工具的官方落点。
 var homeRelDirs = []string{
-	".opencode/bin",   // opencode 官方安装器（B71 故障现场）
-	".grok/bin",       // grok CLI
-	".claude/local",   // Claude Code 本地安装（migrate installer 落点）
+	".opencode/bin",               // opencode 官方安装器（B71 故障现场）
+	".grok/bin",                   // grok CLI
+	".claude/local",               // Claude Code 本地安装（migrate installer 落点）
 	".local/bin",                  // Claude Code native install / pipx / handoff 自己
 	".gemini/antigravity-cli/bin", // Antigravity CLI
 	"bin",                         // 传统用户 bin
-	".bun/bin",        // bun 全局
-	".npm-global/bin", // npm 自定义 prefix 的常见落点
-	".cargo/bin",      // rust
-	"go/bin",          // go
+	".bun/bin",                    // bun 全局
+	".npm-global/bin",             // npm 自定义 prefix 的常见落点
+	".cargo/bin",                  // rust
+	"go/bin",                      // go
 }
 
 // loginShellGOOS 是平台判定的测试缝。**生产路径恒为 runtime.GOOS**，
