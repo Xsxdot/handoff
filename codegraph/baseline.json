@@ -1,8 +1,8 @@
 {
  "meta": {
   "project": "handoff",
-  "branch": "acc/b156.2-156.3",
-  "commit": "1d992ceddec1c3dee0cf43f78f4fa1dfd696d363",
+  "branch": "main",
+  "commit": "ba345fac2d882e2131daa7909cae2841d9ed8198",
   "scannedAt": "2026-08-28",
   "generator": "codegraph-flows-b277-go"
  },

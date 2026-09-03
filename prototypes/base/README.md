@@ -18,7 +18,7 @@ TUI tab 是任务会话主视图。
 | pages/settings.html | 设置页（开发机/执行纪律/**自动化**/常规/Env/更新；`?section=automation` 直达编制卡） | `/settings` | 自动化分区骨架已确认（2026-08-28 B282 回流）。确认中：B292 小队成员政策位（`prototypes/b292-squad-concurrency/`）；B293 载体四态/检测/运行/默认 HOME（`prototypes/b293-carrier-home/`） |
 | （未建页） | 任务深链：按任务 id 直接打开它的 TUI | `/tasks/:id` | — |
 | （无需页） | `/machines` → 重定向到 `/settings` | `/machines` | — |
-| pages/board.html | 工作项账本看板（统一任务卡 + 排队横带/卡 chip + 抽屉协调者三态 + 开卡即绑） | `/cards` | 已确认（排队/协调者 2026-08-28 B282 回流） |
+| pages/board.html | 工作项账本看板（统一任务卡 + 排队横带/卡 chip + 抽屉叫机器人/换绑，建卡不占座） | `/cards` | 已确认（排队/协调者 2026-08-28 B282 回流；占座文案 2026-09-03 B312 finish 回流） |
 | pages/flows.html | 流程管理页（状态形状 + **节点编排**表：看板列·小队；拉起通道只展示协调者队） | `/flows` | 已确认（节点编排 2026-08-28 B282 回流） |
 | pages/codegraph.html | 代码图页（理想树全景：子系统卡 + gap 读数 + 契约边；C1.3 一期已按此形态上线 charter graph/webui）；二期下钻（领域页双 tab / 泳道 / 级联）仍在规划 | `/codegraph` | 已确认（一期全景 + 二期嵌套同构下钻/迁移视角/欠账读数，2026-08-24；二期真实页面 C1.9 已合入 charter graph/webui 并经真数据走查对照）。**注意本页 HTML 尚未镜像二期下钻形态**——形态确认走的是轻量 fork `codegraph-phase2/pages/codegraph2.html`（294 行，专门只演示嵌套递归），本页仍是一期的真数据版；两者在下钻形态上已漂移，重镜像见 roadmap |
 
@@ -31,7 +31,8 @@ B263+B264 工作台 IA 经 fork 副本 `b264-tab-groups/` 走查确认（2026-08
 （2026-08-19，B156.1）。
 
 B282（B156.3 前端调度控制台）于 2026-08-28 把走查定稿的 `prototypes/b279-automation-proto/`
-回流进本基准：设置页「自动化」分区、看板排队横带/卡 chip/抽屉协调者三态/开卡即绑、
+回流进本基准：设置页「自动化」分区、看板排队横带/卡 chip/抽屉协调者三态、
+B312 finish 把开卡即绑改成建卡不占座 + 叫机器人 / 换绑：叫机器人、
 flows 节点编排表。未整份覆盖 `index.html`（外壳在 fork 之后另有改动）。fork 副本仍入库
 （spec 形态权威），日常以本目录为准。
 
