@@ -23,7 +23,7 @@ export function ListView({
       <table className="w-full border-collapse text-xs">
         <thead>
           <tr className="border-b text-left text-[11px] text-muted-foreground">
-            {['ID', '标题', '状态', '验收', '优先级', '附件', '备注'].map((label) => <th key={label} className="whitespace-nowrap px-2 py-1.5 font-medium">{label}</th>)}
+            {['ID', '标题', '状态', '协调者', '验收', '优先级', '附件', '备注'].map((label) => <th key={label} className="whitespace-nowrap px-2 py-1.5 font-medium">{label}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -35,6 +35,7 @@ export function ListView({
                 {card.following && <div className="text-[11px] text-muted-foreground">跟随 {card.following}</div>}
               </td>
               <td className="whitespace-nowrap px-2 py-2">{card.status}</td>
+              <td className="max-w-[16rem] px-2 py-2">{card.driver_session ? <><div className="truncate font-mono text-[11px]">{card.driver_session}</div><div className="text-[11px] text-muted-foreground">{card.driver_source === 'bind' ? '坐下' : card.driver_source === 'coordinate' ? '叫机器人' : '席位异常'}</div></> : <span className="text-muted-foreground">空座</span>}</td>
               <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">待真机验</td>
               <td className="whitespace-nowrap px-2 py-2">{card.priority || '—'}</td>
               <td className="whitespace-nowrap px-2 py-2 text-muted-foreground">{card.attachments?.length || '—'}</td>

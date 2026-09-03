@@ -143,6 +143,29 @@ func TestListTasksAndAttach(t *testing.T) {
 	}
 }
 
+func TestCoordinatorRebindSendsLaunchOnlyRequest(t *testing.T) {
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod, gotPath = r.Method, r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"woke":true,"session_id":"sess-new"}`)
+	}))
+	defer srv.Close()
+	cl := client.New(srv.URL, testToken)
+	resp, err := cl.CoordinatorRebind(context.Background(), "B42", proto.CoordinatorRebindReq{Mode: "launch"})
+	if err != nil {
+		t.Fatalf("CoordinatorRebind: %v", err)
+	}
+	if resp.SessionID != "sess-new" || gotMethod != http.MethodPost || gotPath != "/api/cards/B42/coordinator/rebind" {
+		t.Fatalf("请求或响应不符: method=%s path=%s resp=%+v", gotMethod, gotPath, resp)
+	}
+	if gotBody != `{"mode":"launch"}` {
+		t.Fatalf("rebind body = %q, want %q", gotBody, `{"mode":"launch"}`)
+	}
+}
+
 // TestWaitEventSkipsProgress 覆盖 cursor 语义与 progress 不唤醒：
 // 预置 progress + question 两条事件，WaitEvent 应跳过 progress、返回 question，
 // 且 cursor 落盘为 question 的 seq（下次 wait 从该 seq 之后继续，不重不丢）。

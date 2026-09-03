@@ -75,8 +75,8 @@ func (c *Client) PutSquad(ctx context.Context, name string, expect int, in proto
 		"/api/squads/squads/"+url.PathEscape(name)+"?expect="+fmt.Sprint(expect), in)
 }
 
-// CoordinatorLaunch 一键拉起绑定协调者（POST coordinator/launch，端点本体归
-// K4；未登记协调者小队时服务端 400 报文含 handoff squad create 指路——岔口四）。
+// CoordinatorLaunch 叫机器人占 coordinate 席位（POST coordinator/launch，端点本体
+// 归 K4；未登记协调者小队时服务端 400 报文含 handoff squad create 指路）。
 func (c *Client) CoordinatorLaunch(ctx context.Context, cardID string) (*proto.CoordinatorLaunchResp, error) {
 	resp, err := c.do(ctx, http.MethodPost,
 		"/api/cards/"+url.PathEscape(cardID)+"/coordinator/launch", struct{}{})

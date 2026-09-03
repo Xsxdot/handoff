@@ -33,6 +33,11 @@ var cardAddCmd = &cobra.Command{
 	Short: "建卡（按项目分配带前缀卡号；--parent 建子卡）",
 	Args:  cobra.MinimumNArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		if cardAddCoordinate {
+			err := fmt.Errorf("--coordinate 已废止：建卡不占座，请改用 card coordinate <id>")
+			slog.Default().Warn("建卡被拒：废止的 coordinate flag", "cause", err)
+			return err
+		}
 		st, err := openLedger()
 		if err != nil {
 			return err
@@ -45,16 +50,6 @@ var cardAddCmd = &cobra.Command{
 		})
 		if err != nil {
 			return fmt.Errorf("建卡: %w", err)
-		}
-		// 开卡即绑（spec §5.1 入口 1）：拉起失败不阻断建卡（见 card_coordinate.go 文件头）。
-		if cardAddCoordinate {
-			if err := coordinateAfterCreate(cmd, card.ID); err != nil {
-				slog.Default().Warn("开卡即绑拉起失败（卡已创建，可稍后控制台一键拉起）",
-					"card", card.ID, "cause", err)
-				fmt.Fprintf(cmd.ErrOrStderr(),
-					"注意：协调者拉起失败（%v）——卡 %s 已创建，可稍后从控制台或 card coordinate 拉起\n",
-					err, card.ID)
-			}
 		}
 		return printCardJSON(cmd, card)
 	},
@@ -455,13 +450,12 @@ var cardExportCmd = &cobra.Command{
 	},
 }
 
-// cardCoordinateCmd 一键拉起该卡的绑定协调者（B156.3 K3）。与 squad 族同走
-// agentd HTTP（依赖方向论证见 squad.go 文件头）；launch 端点本体归 K4，接通前
-// 打到 404 会原样呈现——诚实但不友好，K4 合入即愈。服务端 400 的指路文案
-// （未登记协调者小队 → handoff squad create）经 httpStatusError 原样透传。
+// cardCoordinateCmd 叫机器人为该卡占 coordinate 席位。与 squad 族同走 agentd
+// HTTP；服务端 400 的指路文案（未登记协调者小队 → handoff squad create）经
+// httpStatusError 原样透传。
 var cardCoordinateCmd = &cobra.Command{
 	Use:   "coordinate <卡号>",
-	Short: "一键拉起该卡的绑定协调者（POST coordinator/launch；未登记小队时按报文指路 squad create）",
+	Short: "叫机器人占该卡的 coordinate 席位（POST coordinator/launch；未登记小队时按报文指路 squad create）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		cl, done, err := newTargetClient()
@@ -515,13 +509,20 @@ func printCardJSON(cmd *cobra.Command, card ledger.Card) error {
 
 // cardViewWire 列表行的线格式（字段名稳定，看板/脚本共用词汇）。
 func cardViewWire(view ledger.CardView) map[string]any {
-	return map[string]any{
+	out := map[string]any{
 		"id": view.ID, "title": view.Title, "status": view.Status, "priority": view.Priority,
 		"project": view.Project, "parent": view.ParentID, "base_branch": view.BaseBranch,
 		"base_frozen": view.BaseFrozen,
 		"following":   view.Following, "blocked": view.Blocked, "blocked_by": view.BlockedBy,
 		"needs": view.NeedsReason, "open_decisions": view.OpenDecisions,
 	}
+	if view.DriverSession != "" {
+		out["driver_session"] = view.DriverSession
+	}
+	if view.DriverSource != "" {
+		out["driver_source"] = view.DriverSource
+	}
+	return out
 }
 
 func init() {
@@ -530,7 +531,7 @@ func init() {
 	cardAddCmd.Flags().StringVar(&cardAddParent, "parent", "", "父卡 id（建子卡）")
 	cardAddCmd.Flags().StringVar(&cardAddWorkflow, "workflow", "", "工作流名（空=账本唯一流自动解析）")
 	cardAddCmd.Flags().StringVar(&cardAddBase, "base-branch", "", "基线分支（空=继承/主线）")
-	cardAddCmd.Flags().BoolVar(&cardAddCoordinate, "coordinate", false, "开卡即绑：创建成功后拉起并绑定协调者")
+	cardAddCmd.Flags().BoolVar(&cardAddCoordinate, "coordinate", false, "已废止：建卡不占座；请改用 card coordinate <id>")
 	_ = cardAddCmd.MarkFlagRequired("project")
 
 	cardListCmd.Flags().StringVar(&cardListProject, "project", "", "按项目过滤")

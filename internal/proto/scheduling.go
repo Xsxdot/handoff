@@ -6,6 +6,13 @@
 // → View 的手写投影在 agentd（schedapi.go），该边界由其 wire 往返测试锁。
 package proto
 
+// CoordinatorRebindReq 是协调者换绑请求。HTTP 控制面只接受 mode=launch；
+// mode=self 由 CLI 本机账本路径执行，identity 不属于 HTTP 可信输入。
+type CoordinatorRebindReq struct {
+	Mode     string `json:"mode"`
+	Identity string `json:"identity,omitempty"`
+}
+
 // CarrierView 是载体登记行（GET /api/squads 返回元素）。Version 是 registry
 // 行版本，CAS 编辑回路（GET 取版 → PUT ?expect=）的唯一权威来源。
 type CarrierView struct {

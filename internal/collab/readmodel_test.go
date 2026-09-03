@@ -239,9 +239,9 @@ func countConsumedFor(t *testing.T, st *ledger.Store, consumer string) int {
 // consumer 的未消费群消息进 Pending；消费后消失；未提及的不进。
 func TestPendingGroupMentionAndConsume(t *testing.T) {
 	svc, _ := newFixture(t)
-	consumer := "cli:a@h"
+	consumer := "cli:codex#a"
 	seq, err := svc.Send("project:handoff",
-		proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@cli:a@h 看", Mentions: []string{consumer}}, "user:sy")
+		proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@cli:codex#a 看", Mentions: []string{consumer}}, "user:sy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -272,11 +272,11 @@ func TestPendingGroupMentionAndConsume(t *testing.T) {
 // 未绑定卡房间的留言不进；协调者类消息（非 user 留言）不进。
 func TestPendingCardRoomUserMessages(t *testing.T) {
 	svc, st := newFixture(t)
-	consumer := "cli:a@h"
+	consumer := "cli:codex#a"
 	bound := mustCard(t, svc, st, "绑定卡")
 	other := mustCard(t, svc, st, "非绑定卡")
 	mustBind(t, st, bound.ID, consumer)
-	mustBind(t, st, other.ID, "cli:b@h")
+	mustBind(t, st, other.ID, "cli:codex#b")
 
 	msgSeq, err := svc.Send(bound.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "给我留言"}, "user:sy")
 	if err != nil {
@@ -305,7 +305,7 @@ func TestConsumeIdempotentSameArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	consumer := "cli:a@h"
+	consumer := "cli:codex#a"
 	if err := svc.Consume(seq, consumer); err != nil {
 		t.Fatal(err)
 	}
@@ -323,16 +323,16 @@ func TestConsumeSecondConsumerOwnMarker(t *testing.T) {
 	svc, st := newFixture(t)
 	card := mustAnyCard(t, svc, st)
 	seq, _ := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy")
-	if err := svc.Consume(seq, "cli:a@h"); err != nil {
+	if err := svc.Consume(seq, "cli:codex#a"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Consume(seq, "cli:b@h"); err != nil {
+	if err := svc.Consume(seq, "cli:codex#b"); err != nil {
 		t.Fatalf("他人已消费的同一条对新消费者是首次写入，got %v", err)
 	}
-	if n := countConsumedFor(t, st, "cli:a@h"); n != 1 {
+	if n := countConsumedFor(t, st, "cli:codex#a"); n != 1 {
 		t.Fatalf("A 应恰一条: %d", n)
 	}
-	if n := countConsumedFor(t, st, "cli:b@h"); n != 1 {
+	if n := countConsumedFor(t, st, "cli:codex#b"); n != 1 {
 		t.Fatalf("B 应恰一条: %d", n)
 	}
 }
@@ -346,7 +346,7 @@ func TestConsumeInvalidSeq(t *testing.T) {
 	if _, err := st.AddComment(card.ID, "普通评论", "普通", "t"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.Consume(999999, "cli:a@h"); err != nil {
+	if err := svc.Consume(999999, "cli:codex#a"); err != nil {
 		t.Fatalf("不存在的 seq 应幂等 nil，got %v", err)
 	}
 	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
@@ -359,10 +359,10 @@ func TestConsumeInvalidSeq(t *testing.T) {
 			commentSeq = ev.Seq
 		}
 	}
-	if err := svc.Consume(commentSeq, "cli:a@h"); err != nil {
+	if err := svc.Consume(commentSeq, "cli:codex#a"); err != nil {
 		t.Fatalf("非 room_message seq 应幂等 nil，got %v", err)
 	}
-	if n := countConsumedFor(t, st, "cli:a@h"); n != 0 {
+	if n := countConsumedFor(t, st, "cli:codex#a"); n != 0 {
 		t.Fatalf("无效 seq 不得落标记: %d", n)
 	}
 }
@@ -372,7 +372,7 @@ func TestConsumePayloadTwoKeys(t *testing.T) {
 	svc, st := newFixture(t)
 	card := mustAnyCard(t, svc, st)
 	seq, _ := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy")
-	if err := svc.Consume(seq, "cli:a@h"); err != nil {
+	if err := svc.Consume(seq, "cli:codex#a"); err != nil {
 		t.Fatal(err)
 	}
 	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
@@ -387,7 +387,7 @@ func TestConsumePayloadTwoKeys(t *testing.T) {
 		if err := json.Unmarshal(ev.Payload, &m); err != nil {
 			t.Fatal(err)
 		}
-		if len(m) != 2 || m["message_seq"] != float64(seq) || m["consumer"] != "cli:a@h" {
+		if len(m) != 2 || m["message_seq"] != float64(seq) || m["consumer"] != "cli:codex#a" {
 			t.Fatalf("消费标记 payload 应恰 message_seq/consumer 两键: %v", m)
 		}
 		return
@@ -540,9 +540,9 @@ func TestListRoomsLiveFlip(t *testing.T) {
 
 	fake := &fakeLC{
 		cards: []proto.Card{
-			{ID: "B1", Title: "绑定卡", Status: "进行中", Project: "p1", DriverSession: "cli:a@h", CreatedAt: base, UpdatedAt: base},
+			{ID: "B1", Title: "绑定卡", Status: "进行中", Project: "p1", DriverSession: "cli:codex#a", CreatedAt: base, UpdatedAt: base},
 		},
-		leases: map[string]time.Time{"cli:a@h": base.Add(5 * time.Minute)},
+		leases: map[string]time.Time{"cli:codex#a": base.Add(5 * time.Minute)},
 	}
 	svc := New(fake)
 
@@ -554,7 +554,7 @@ func TestListRoomsLiveFlip(t *testing.T) {
 	for _, r := range rooms {
 		byID[r.ID] = r
 	}
-	if !byID["B1"].Live || byID["B1"].BoundSession != "cli:a@h" {
+	if !byID["B1"].Live || byID["B1"].BoundSession != "cli:codex#a" {
 		t.Fatalf("租约未过期应 live=true: %+v", byID["B1"])
 	}
 	cur = base.Add(10 * time.Minute) // 同一可拨源前拨
@@ -576,7 +576,7 @@ func TestListRoomsLiveFlip(t *testing.T) {
 func TestListRoomsLiveRealStore(t *testing.T) {
 	svc, st := newFixture(t)
 	card := mustAnyCard(t, svc, st)
-	mustBind(t, st, card.ID, "cli:a@h")
+	mustBind(t, st, card.ID, "cli:codex#a")
 
 	rooms, err := svc.ListRooms("")
 	if err != nil {
@@ -589,7 +589,7 @@ func TestListRoomsLiveRealStore(t *testing.T) {
 	if byID[card.ID].Live {
 		t.Fatal("未续租应 live=false")
 	}
-	if ok, err := st.RenewDriverLease("cli:a@h", 5*time.Minute); err != nil || !ok {
+	if ok, err := st.RenewDriverLease("cli:codex#a", 5*time.Minute); err != nil || !ok {
 		t.Fatalf("续租: %v %v", ok, err)
 	}
 	rooms2, err := svc.ListRooms("")
@@ -603,7 +603,7 @@ func TestListRoomsLiveRealStore(t *testing.T) {
 	if !byID2[card.ID].Live {
 		t.Fatal("有效租约应 live=true")
 	}
-	if ok, err := st.RenewDriverLease("cli:a@h", -time.Minute); err != nil || !ok {
+	if ok, err := st.RenewDriverLease("cli:codex#a", -time.Minute); err != nil || !ok {
 		t.Fatalf("负 TTL 造过期行: %v %v", ok, err)
 	}
 	rooms3, err := svc.ListRooms("")
@@ -717,7 +717,7 @@ func TestMarkReadPerRoomAndMember(t *testing.T) {
 	if n, _ := svc.Unread("user:sy", cardB.ID); n != 1 {
 		t.Fatalf("卡B 未读应 1: %d", n)
 	}
-	if n, _ := svc.Unread("cli:a@h", cardA.ID); n != 1 {
+	if n, _ := svc.Unread("cli:codex#a", cardA.ID); n != 1 {
 		t.Fatalf("另一成员游标独立，应 1: %d", n)
 	}
 }

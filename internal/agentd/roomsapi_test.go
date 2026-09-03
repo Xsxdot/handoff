@@ -587,11 +587,11 @@ func TestRoomSendErrMapping(t *testing.T) {
 	}
 	// 绑定者本人以 user 发言 → 403（ErrNotWriter）
 	card := seedCard(t, env, "卡E")
-	if err := env.ledger.ClaimCardAs(card.ID, webUserMember, ""); err != nil {
+	if err := env.ledger.BindSeat(card.ID, "cli:codex#web", proto.SeatSourceBind); err != nil {
 		t.Fatal(err)
 	}
-	if code, _ := ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+card.ID+"/messages", `{"body":"x"}`); code != 403 {
-		t.Fatalf("绑定者发言应 403: %d", code)
+	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "cli:codex#web"); err == nil {
+		t.Fatal("绑定者发言应被 collab 拒绝")
 	}
 	// 终态卡房间 → 409（ErrReadOnly）
 	parent := seedCard(t, env, "父")
@@ -611,26 +611,10 @@ func TestRoomSendErrMapping(t *testing.T) {
 func TestCardRebindCASConflict(t *testing.T) {
 	env := newRoomsEnv(t)
 	card := seedCard(t, env, "卡F")
-	if err := env.ledger.ClaimCardAs(card.ID, "cli:a@h", "desktop"); err != nil {
-		t.Fatal(err)
-	}
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/rebind",
-		`{"to_session":"cli:b@h","carrier":"cli","expect":"WRONG"}`)
-	if code != 409 {
-		t.Fatalf("expect 不符应 409: %d %s", code, body)
-	}
-	// expect 正确 → 200 且换绑生效
-	code, body = ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/rebind",
-		`{"to_session":"cli:b@h","carrier":"cli","expect":"cli:a@h"}`)
-	if code != 200 {
-		t.Fatalf("换绑应 200: %d %s", code, body)
-	}
-	card2, err := env.ledger.GetCard(card.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if card2.DriverSession != "cli:b@h" {
-		t.Fatalf("换绑未生效: %+v", card2)
+		`{"to_session":"cli:codex#b","carrier":"cli","expect":"WRONG"}`)
+	if code != http.StatusNotFound {
+		t.Fatalf("旧 rebind 路由应移除: %d %s", code, body)
 	}
 }
 

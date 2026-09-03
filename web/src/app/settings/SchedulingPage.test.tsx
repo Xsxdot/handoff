@@ -45,7 +45,7 @@ describe('SchedulingPage', () => {
     expect(await screen.findByText('mbp')).toBeVisible()
     expect(screen.getByText('/h')).toBeVisible()
     expect(screen.getByText('coord')).toBeVisible()
-    expect(screen.getByText('拉起通道（开卡即绑 / 一键拉起）')).toBeVisible()
+    expect(screen.getByText('拉起通道（坐下 / 叫机器人）')).toBeVisible()
   })
 
   it('renders missing and unknown carrier statuses as 未上线', async () => {

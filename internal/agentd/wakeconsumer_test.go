@@ -44,8 +44,16 @@ func appendMirroredForConsumer(t *testing.T, st *ledger.Store, cardID, task, typ
 
 func prebindConsumerSession(t *testing.T, env *ledgerEnv, cardID string) {
 	t.Helper()
-	if _, err := env.srv.keystone.LaunchForCard(context.Background(), cardID, "test", keysclient.SessionSpec{CLI: "opencode"}); err != nil {
+	result, err := env.srv.keystone.LaunchForCard(context.Background(), cardID, "coordinate", keysclient.SessionSpec{CLI: "opencode"})
+	if err != nil {
 		t.Fatalf("预绑定协调者会话: %v", err)
+	}
+	identity, err := proto.EncodeSeatIdentity("opencode", result.SessionID)
+	if err != nil {
+		t.Fatalf("编码预绑定协调者席位: %v", err)
+	}
+	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate); err != nil {
+		t.Fatalf("写预绑定协调者席位: %v", err)
 	}
 }
 
@@ -236,8 +244,16 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	runner := &fallbackConsumerRunner{}
 	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
 	cardID := createCoordCard(t, env)
-	if _, err := env.srv.keystone.LaunchForCard(context.Background(), cardID, "test", keysclient.SessionSpec{CLI: "opencode"}); err != nil {
+	result, err := env.srv.keystone.LaunchForCard(context.Background(), cardID, "coordinate", keysclient.SessionSpec{CLI: "opencode"})
+	if err != nil {
 		t.Fatalf("建立既有会话: %v", err)
+	}
+	identity, err := proto.EncodeSeatIdentity("opencode", result.SessionID)
+	if err != nil {
+		t.Fatalf("编码既有会话席位: %v", err)
+	}
+	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate); err != nil {
+		t.Fatalf("写既有会话席位: %v", err)
 	}
 	runner.failResume = true
 	runner.failLaunch = true
@@ -283,6 +299,10 @@ func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 	runner := &fallbackConsumerRunner{failLaunch: true}
 	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
 	cardID := createCoordCard(t, env)
+	runner.failLaunch = false
+	prebindConsumerSession(t, env, cardID)
+	runner.failLaunch = true
+	runner.failResume = true
 	appendUserMessage(t, env.ledger, cardID, "用户留言", false)
 
 	_, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
