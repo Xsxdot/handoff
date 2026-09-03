@@ -1830,6 +1830,10 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	// （adapter 契约，见 waitPermission/RelayAnswer）
 	ticketID := taskID + ":" + ev.PermissionID
 	if m.isPermissionReplay(taskID, ev.PermissionID, ticketID) {
+		// AutoAllow 无工单。agy 在 HOME + workspace 双 hooks 下会对同一
+		// step_N 再连一次 perm.sock；审计事件当幂等标记会吞掉第二次
+		// onAsk 且不再 Respond，PreToolUse 挂到 86400s。重放仍须回传 once。
+		m.respondAutoAllowReplay(taskID, ev)
 		return
 	}
 	// 判据前置分流（B23/B27）：结构化判据先判，三个出口对应三条既有路径。
@@ -2355,30 +2359,58 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 //     永不产生、状态停在 running、无等待者，协调者的 wait 永远不触发（N-4）——
 //     此处放行以补发事件，CreateTicket 本身幂等，不会产生第二张工单
 //   - 工单存在且事件也在 → 真重放，跳过（P1-7 的幂等承诺）
+func (m *Manager) hasPermissionAutoAllow(taskID, permID string) bool {
+	events, err := m.st.EventsFrom(taskID, 0, 1000)
+	if err != nil {
+		m.log.Error("查询权限自动放行审计事件失败", "task", taskID, "perm", permID, "cause", err)
+		return false
+	}
+	for _, event := range events {
+		if event.Type != proto.EventTypePermissionAutoAllow {
+			continue
+		}
+		var payload struct {
+			PermissionID string `json:"permission_id"`
+		}
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			m.log.Error("解析权限自动放行审计事件失败", "task", taskID,
+				"perm", permID, "seq", event.Seq, "cause", err)
+			continue
+		}
+		if payload.PermissionID == permID {
+			return true
+		}
+	}
+	return false
+}
+
+// respondAutoAllowReplay 把已审计过的 auto-allow 再送到当前 pending 连接。
+// SSE 重放时 pending 已空，Respond 失败只记日志。
+func (m *Manager) respondAutoAllowReplay(taskID string, ev executor.AdapterEvent) {
+	if ev.PermissionID == "" || !m.hasPermissionAutoAllow(taskID, ev.PermissionID) {
+		return
+	}
+	ad, err := m.adapterFor(taskID)
+	if err != nil {
+		m.log.Error("自动放行重放：解析执行者失败", "task", taskID, "perm", ev.PermissionID, "cause", err)
+		return
+	}
+	actx, acancel := unaryCtx(context.Background())
+	defer acancel()
+	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, "once", ""); err != nil {
+		m.log.Error("自动放行重放回传 executor 失败（pending 已空则为 SSE 重放）",
+			"task", taskID, "perm", ev.PermissionID, "cause", err)
+		return
+	}
+	m.log.Info("自动放行重放已回传 executor", "task", taskID, "perm", ev.PermissionID)
+}
+
 func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {
 	// Safe-command AutoAllow deliberately has no ticket, so its audit event is
 	// the durable idempotency marker for replayed permission notifications.
-	if events, err := m.st.EventsFrom(taskID, 0, 1000); err != nil {
-		m.log.Error("查询权限自动放行审计事件失败", "task", taskID, "perm", permID, "cause", err)
-	} else {
-		for _, event := range events {
-			if event.Type != proto.EventTypePermissionAutoAllow {
-				continue
-			}
-			var payload struct {
-				PermissionID string `json:"permission_id"`
-			}
-			if err := json.Unmarshal(event.Payload, &payload); err != nil {
-				m.log.Error("解析权限自动放行审计事件失败", "task", taskID,
-					"perm", permID, "seq", event.Seq, "cause", err)
-				continue
-			}
-			if payload.PermissionID == permID {
-				m.log.Debug("权限自动放行请求重放，跳过中介", "task", taskID,
-					"perm", permID, "seq", event.Seq)
-				return true
-			}
-		}
+	if m.hasPermissionAutoAllow(taskID, permID) {
+		m.log.Debug("权限自动放行请求重放，跳过中介", "task", taskID, "perm", permID)
+		return true
 	}
 	tk, err := m.st.GetTicket(ticketID)
 	if errors.Is(err, store.ErrNotFound) {

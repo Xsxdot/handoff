@@ -64,10 +64,12 @@ func TestSafeCommandPermissionAuditsOnceWithoutTicket(t *testing.T) {
 		t.Fatalf("task state = %s, want running", task.State)
 	}
 
-	// Replaying the same permission id is idempotent at the Manager seam.
+	// Replaying the same permission id must still deliver once: agy may
+	// fire a second PreToolUse hook (HOME + workspace) after the first
+	// allow already cleared pending. Audit stays unique.
 	m.handlePermission(context.Background(), taskID, ev)
-	if got := adapter.recordedPerms(); len(got) != 1 {
-		t.Fatalf("replayed response count = %d, want 1", len(got))
+	if got := adapter.recordedPerms(); len(got) != 2 || got[1] != "safe-1:once" {
+		t.Fatalf("replayed responses = %v, want two once deliveries", got)
 	}
 	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 1 {
 		t.Fatalf("replayed audit count = %d, want 1", got)
