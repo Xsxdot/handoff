@@ -5,6 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { CarrierInput, CarrierStatus, CarrierView, HomeProbeResp, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
 import { CARRIER_STATUS_LABEL, defaultHomeDir, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
+import { copyToClipboard } from '../lib/clipboard'
 import { errorMessage } from '../lib/format'
 
 type CarrierDraft = Omit<CarrierInput, 'max_concurrency'> & { name: string; maxConcurrencyText: string; homeAuto: boolean }
@@ -226,7 +227,8 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
     console.info({ event: 'scheduling.run.start', name })
     try {
       const result = await getCarrierRunCommand(name)
-      await navigator.clipboard.writeText(result.command)
+      const ok = await copyToClipboard(result.command)
+      if (!ok) throw new Error('复制到剪贴板失败，请手动复制：' + result.command)
       console.info({ event: 'scheduling.run.success', name, elapsed: performance.now() - started })
       setRunState({ name, message: '运行命令已复制', error: '' })
     } catch (cause) {

@@ -90,7 +90,7 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	if timeout <= 0 {
 		timeout = DefaultTurnTimeout
 	}
-	bin, err := exec.LookPath(req.CLI)
+	bin, err := lookPathWithFallback(req.CLI)
 	if err != nil {
 		log().Error("找不到载体 CLI", "cli", req.CLI, "cause", err)
 		return TurnReply{}, fmt.Errorf("hostapi: 找不到载体 CLI %q: %w", req.CLI, err)
@@ -266,6 +266,40 @@ func consumeEvents(r io.Reader) (TurnReply, error) {
 	}
 	reply.Output = strings.Join(texts, "\n")
 	return reply, nil
+}
+
+// lookPathWithFallback 先走 PATH，失败时尝试常见安装位，避免 agentd 的最小 PATH
+// 导致已安装的 opencode 找不到（mac-02 实测：~/.opencode/bin 不在 launchd PATH）。
+func lookPathWithFallback(cli string) (string, error) {
+	if bin, err := exec.LookPath(cli); err == nil {
+		return bin, nil
+	} else {
+		// 若本身就是路径（带 /），不再兜底。
+		if cli != filepath.Base(cli) {
+			return "", err
+		}
+		// 仅对已支持的 CLI 兜底，未实装的直接返回原错，不静默试其它二进制。
+		if !supportedCLIs[filepath.Base(cli)] {
+			return "", err
+		}
+		candidates := make([]string, 0, 4)
+		if home, herr := os.UserHomeDir(); herr == nil && home != "" {
+			candidates = append(candidates,
+				filepath.Join(home, ".opencode", "bin", cli),
+				filepath.Join(home, ".local", "bin", cli),
+			)
+		}
+		candidates = append(candidates,
+			"/opt/homebrew/bin/"+cli,
+			"/usr/local/bin/"+cli,
+		)
+		for _, cand := range candidates {
+			if _, serr := os.Stat(cand); serr == nil {
+				return cand, nil
+			}
+		}
+		return "", err
+	}
 }
 
 // tailBytes 返回缓冲区末尾至多 n 字节；按字节切可能切开 UTF-8，只进错误消息
