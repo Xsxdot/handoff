@@ -622,6 +622,13 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **linux-01 真机清盘**：升级该机 agentd 后跑 `handoff gc --target linux-01` 预览真实缓存字节与脏树 skip，再 `--yes`（必要时 `--force`）清终态叶子；另 `done` 一个跑过 `go test` 的任务，确认 gocache 叶子消失且 `handoff attach` 仍可读。来源：B298 真机清单 1/2/4，验收时对端仍过旧。
 - **Windows 文件占用导致的删除失败**：若仍在支持矩阵，gc 冒烟须呈现为报告 failed 行/日志、命令不崩溃。来源：B298 真机清单 5，本期无 Windows 机。
 
+## 来自 B307 spec（2026-09-03，本期不做）
+
+- **把 `RunTurn` 接到 grok/claude/codex**：叫机器人仍受 hostapi 已支持 CLI 限制。来源：B307 spec Out of Scope。
+- **换绑任意 session id**：本期只有「当前对话」和「新叫机器人」两种接班。来源：同上。
+- **人尺度 `takeover`/`release` 与协调者席位合并或删除**：本期两者拆开，占座只走三颗按钮。来源：同上。
+- **`driver_leases` 活性心跳接新席位身份**：本期不把租约键接到 `(cli, session_id)`。来源：同上。
+
 ## 来自 B303 spec（2026-09-02，本期不做）
 
 - **Windows ConPTY**。PTY 仍报不支持；本卡不补。来源：B303 spec Out of Scope。
