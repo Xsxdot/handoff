@@ -1,10 +1,11 @@
 // taskenv.go —— agy 任务级运行环境与策略物料生成。
 //
 // 职责：
-//   - 在 workdir/.agents 下生成 hooks.json（把 PreToolUse 钩子挂到本任务的 perm.sock 上）
-//   - 在 taskDir/agyhome 下生成 headless agy 读取的 hooks、原生 allow 策略与登录凭据
+//   - 在 taskDir/agyhome 下生成 headless agy 读取的 hooks（matcher=*）、原生 allow 与登录凭据
 //   - 渲染首回合 prompt（带任务 ID、计划内容与纪律块）
-//   - 用 taskDir sidecar 保存并恢复 hooks.json 的原文、skip-worktree 与 exclude 状态
+//   - RestoreTaskEnv 仍能清掉历史任务写进 workspace 的 gate sidecar
+//
+// 不写 workdir/.agents/hooks.json：那份会被 --add-dir 再加载，与 HOME 双开火。
 //
 // 边界：Stop、Start rollback 与 Reap 必须调用 RestoreTaskEnv；本文件不负责启停进程。
 package agy
@@ -24,10 +25,11 @@ import (
 )
 
 const (
-	agentsDirName   = ".agents"
-	hooksFileName   = "hooks.json"
-	restoreFileName = "agy-hooks-restore.json"
-	agyHomeDirName  = "agyhome"
+	agentsDirName     = ".agents"
+	hooksFileName     = "hooks.json"
+	restoreFileName   = "agy-hooks-restore.json"
+	agyHomeDirName    = "agyhome"
+	preToolUseMatcher = "*"
 )
 
 // nativeCommandAllow 是写入任务 HOME settings.json 的 agy 原生 allow。
@@ -64,94 +66,17 @@ type hookNamedConfig struct {
 	PreToolUse []hookGroup `json:"PreToolUse"`
 }
 
-// WriteTaskEnv 在 workdir 下准备 workspace 与任务 HOME 的 agy 策略物料，并渲染首回合 prompt。
+// WriteTaskEnv 在任务 HOME 落下 agy 策略物料，并渲染首回合 prompt。
 //
-// 参数：workdir 为任务工作区；taskDir 为任务专属目录；sockPath 为权限裁决套接字；
-// 其余参数用于 prompt 与 hooks 命令。返回 workspace hooks 路径和首回合 prompt；
-// oauth 凭据缺失或任一物料写入失败时返回错误。
+// 参数：workdir 为任务工作区（本函数不再往其中写 gate）；taskDir 为任务专属目录；
+// sockPath 为权限裁决套接字；其余参数用于 prompt 与 hooks 命令。
+// 返回任务 HOME 内 hooks.json 路径和首回合 prompt；oauth 凭据缺失或任一物料
+// 写入失败时返回错误。
+//
+// 不写 workspace .agents/hooks.json：headless 读的是 HOME；B309 --add-dir 会
+// 再加载 workspace 那份，双写同一 gate 导致同一 step_N 打两次（B310/B314）。
 func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (hooksPath, promptText string, err error) {
 	log := slog.Default()
-	hooksPath = filepath.Join(workdir, agentsDirName, hooksFileName)
-	tracked := hooksTracked(workdir)
-	log.Info("agy 准备任务环境", "task", taskID, "task_dir", taskDir, "workdir", workdir,
-		"hooks", hooksPath, "tracked", tracked)
-
-	state, sidecarExists, stateErr := readHooksRestoreState(taskDir)
-	if stateErr != nil {
-		log.Error("读取 agy hooks 恢复凭据失败", "task", taskID, "task_dir", taskDir, "cause", stateErr)
-		return hooksPath, "", stateErr
-	}
-	if sidecarExists {
-		if state.Workdir != workdir || state.HooksPath != hooksPath {
-			err := fmt.Errorf("恢复凭据工作区不匹配: got %s/%s, want %s/%s", state.Workdir, state.HooksPath, workdir, hooksPath)
-			log.Error("agy hooks 恢复凭据与任务环境不匹配", "task", taskID, "task_dir", taskDir, "cause", err)
-			return hooksPath, "", err
-		}
-		log.Info("agy 复用既有 hooks 恢复凭据", "task", taskID, "task_dir", taskDir,
-			"created_file", state.CreatedFile, "skip_worktree", state.SkipWorktree,
-			"exclude_pattern", state.ExcludePattern)
-	} else {
-		state = hooksRestoreState{Workdir: workdir, HooksPath: hooksPath}
-		original, readErr := os.ReadFile(hooksPath)
-		switch {
-		case readErr == nil:
-			state.OriginalJSON = original
-		case os.IsNotExist(readErr):
-			state.CreatedFile = true
-		default:
-			log.Error("读取既有 hooks.json 失败", "task", taskID, "path", hooksPath, "cause", readErr)
-			return hooksPath, "", fmt.Errorf("读取 %s: %w", hooksPath, readErr)
-		}
-		if err := writeHooksRestoreState(taskDir, state); err != nil {
-			log.Error("写 agy hooks 恢复凭据失败", "task", taskID, "task_dir", taskDir, "cause", err)
-			return hooksPath, "", err
-		}
-	}
-
-	agentsDir := filepath.Join(workdir, agentsDirName)
-	if err := os.MkdirAll(agentsDir, 0755); err != nil {
-		log.Error("创建 .agents 目录失败", "workdir", workdir, "cause", err)
-		return "", "", fmt.Errorf("创建 %s: %w", agentsDir, err)
-	}
-
-	log.Info("agy 生成任务环境", "task", taskID, "workdir", workdir, "hooks", hooksPath, "sock", sockPath,
-		"tracked", tracked)
-
-	cfg := make(map[string]any)
-	if data, err := os.ReadFile(hooksPath); err == nil {
-		if err := json.Unmarshal(data, &cfg); err != nil {
-			log.Warn("解析既有 hooks.json 失败，将被覆盖", "path", hooksPath, "cause", err)
-			cfg = make(map[string]any)
-		}
-	}
-
-	gateCfg := hookNamedConfig{
-		PreToolUse: []hookGroup{
-			{
-				Matcher: "run_command|write_to_file|replace_file_content|multi_replace_file_content|sed_file|read_url_content|search_web|invoke_subagent",
-				Hooks: []hookHandler{
-					{
-						Type:    "command",
-						Command: fmt.Sprintf("%s permission-hook --sock %s", strconv.Quote(handoffBin), strconv.Quote(sockPath)),
-						Timeout: 86400,
-					},
-				},
-			},
-		},
-	}
-	cfg["handoff-safety-gate"] = gateCfg
-
-	hooksJSON, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		log.Error("agy 序列化 hooks.json 失败", "task", taskID, "cause", err)
-		return hooksPath, "", fmt.Errorf("序列化 hooks.json: %w", err)
-	}
-
-	if err := os.WriteFile(hooksPath, append(hooksJSON, '\n'), 0644); err != nil {
-		log.Error("agy 写 hooks.json 失败", "path", hooksPath, "cause", err)
-		return hooksPath, "", fmt.Errorf("写入 %s: %w", hooksPath, err)
-	}
-
 	agyHome := filepath.Join(taskDir, agyHomeDirName)
 	agyGeminiDir := filepath.Join(agyHome, ".gemini")
 	agyConfigDir := filepath.Join(agyGeminiDir, "config")
@@ -170,7 +95,7 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 			return hooksPath, "", fmt.Errorf("设置 %s 权限: %w", dir, err)
 		}
 	}
-	log.Info("agy 任务 HOME 目录已就绪", "task", taskID, "path", agyHome)
+	log.Info("agy 准备任务环境", "task", taskID, "task_dir", taskDir, "workdir", workdir, "path", agyHome)
 
 	userHome, err := os.UserHomeDir()
 	if err != nil {
@@ -221,67 +146,33 @@ func WriteTaskEnv(workdir, taskDir, taskID, planContent, sockPath, handoffBin, d
 	}
 	log.Info("agy 原生权限策略已写入任务 HOME", "task", taskID, "path", settingsPath, "allow_count", len(nativeCommandAllow))
 
-	taskHooksPath := filepath.Join(agyConfigDir, hooksFileName)
-	if err := os.WriteFile(taskHooksPath, append(hooksJSON, '\n'), 0600); err != nil {
-		log.Error("写 agy 任务 HOME hooks.json 失败", "task", taskID, "path", taskHooksPath, "cause", err)
-		return hooksPath, "", fmt.Errorf("写入 %s: %w", taskHooksPath, err)
+	gateCfg := map[string]any{
+		"handoff-safety-gate": hookNamedConfig{
+			PreToolUse: []hookGroup{
+				{
+					Matcher: preToolUseMatcher,
+					Hooks: []hookHandler{
+						{
+							Type:    "command",
+							Command: fmt.Sprintf("%s permission-hook --sock %s", strconv.Quote(handoffBin), strconv.Quote(sockPath)),
+							Timeout: 86400,
+						},
+					},
+				},
+			},
+		},
 	}
-	log.Info("agy 任务 HOME hooks.json 已写入", "task", taskID, "path", taskHooksPath, "sock", sockPath)
-
-	if tracked {
-		needsSkipWorktree := !state.SkipWorktree
-		if needsSkipWorktree {
-			// 先记恢复动作，再改 index；进程若在两步之间退出，Reap 仍能清掉标记。
-			state.SkipWorktree = true
-			if err := writeHooksRestoreState(taskDir, state); err != nil {
-				log.Error("记录 hooks skip-worktree 状态失败", "task", taskID, "cause", err)
-				return hooksPath, "", fmt.Errorf("记录 %s skip-worktree: %w", hooksPath, err)
-			}
-		}
-		if err := updateHooksSkipWorktreeFn(workdir, true); err != nil {
-			log.Error("设置 hooks.json skip-worktree 失败", "task", taskID, "workdir", workdir, "cause", err)
-			if restoreErr := RestoreTaskEnv(taskDir); restoreErr != nil {
-				log.Error("skip-worktree 失败后还原 agy hooks 也失败", "task", taskID, "cause", restoreErr)
-			}
-			return hooksPath, "", fmt.Errorf("设置 %s skip-worktree: %w", hooksPath, err)
-		}
-		if needsSkipWorktree {
-			log.Info("agy hooks.json 已设置 skip-worktree", "task", taskID, "workdir", workdir)
-		} else {
-			log.Info("agy hooks.json skip-worktree 已确认", "task", taskID, "workdir", workdir)
-		}
-	} else {
-		pattern := filepath.ToSlash(filepath.Join(agentsDirName, hooksFileName))
-		if state.ExcludePattern == "" {
-			alreadyExcluded, checkErr := gitExcludeContains(workdir, pattern)
-			if checkErr != nil {
-				// 无法确认 exclude 状态时不冒险写入；exclude 只是清洁 porcelain 的优化。
-				log.Error("检查 agy hooks exclude 失败，继续任务", "task", taskID, "workdir", workdir,
-					"pattern", pattern, "cause", checkErr)
-			} else if alreadyExcluded {
-				log.Info("agy hooks exclude 已由任务前配置提供", "task", taskID, "workdir", workdir,
-					"pattern", pattern)
-			} else {
-				// 先记恢复动作，再写 exclude；这样崩溃不会留下无法追踪的本地规则。
-				state.ExcludePattern = pattern
-				if err := writeHooksRestoreState(taskDir, state); err != nil {
-					log.Error("记录 hooks exclude 状态失败", "task", taskID, "cause", err)
-					return hooksPath, "", fmt.Errorf("记录 %s exclude: %w", hooksPath, err)
-				}
-			}
-		}
-		if state.ExcludePattern != "" {
-			_, excludeErr := ensureGitExcludeFn(workdir, pattern)
-			if excludeErr != nil {
-				// exclude 只负责隐藏未跟踪 hooks；失败不阻断任务，Restore 仍会清理文件。
-				log.Error("追加 agy hooks exclude 失败，继续任务", "task", taskID, "workdir", workdir,
-					"pattern", pattern, "cause", excludeErr)
-			} else {
-				log.Info("agy hooks exclude 已就绪", "task", taskID, "workdir", workdir,
-					"pattern", pattern)
-			}
-		}
+	hooksJSON, err := json.MarshalIndent(gateCfg, "", "  ")
+	if err != nil {
+		log.Error("agy 序列化 hooks.json 失败", "task", taskID, "cause", err)
+		return hooksPath, "", fmt.Errorf("序列化 hooks.json: %w", err)
 	}
+	hooksPath = filepath.Join(agyConfigDir, hooksFileName)
+	if err := os.WriteFile(hooksPath, append(hooksJSON, '\n'), 0600); err != nil {
+		log.Error("写 agy 任务 HOME hooks.json 失败", "task", taskID, "path", hooksPath, "cause", err)
+		return hooksPath, "", fmt.Errorf("写入 %s: %w", hooksPath, err)
+	}
+	log.Info("agy 任务 HOME hooks.json 已写入", "task", taskID, "path", hooksPath, "sock", sockPath, "matcher", preToolUseMatcher)
 
 	promptText, err = turn.RenderPrompt(taskID, planContent, disciplineBlock)
 	if err != nil {

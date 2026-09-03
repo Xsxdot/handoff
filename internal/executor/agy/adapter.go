@@ -351,7 +351,7 @@ func permTextAndRequest(toolName string, input json.RawMessage) (string, *execut
 				}
 			}
 		}
-	case "write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file":
+	case "write_file", "write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file":
 		var in struct {
 			TargetFile   string `json:"TargetFile"`
 			AbsolutePath string `json:"AbsolutePath"`
@@ -371,13 +371,21 @@ func permTextAndRequest(toolName string, input json.RawMessage) (string, *execut
 			}
 			if p != "" {
 				toolType := executor.PermToolWrite
-				if strings.ToLower(toolName) != "write_to_file" {
+				if strings.ToLower(toolName) != "write_to_file" && strings.ToLower(toolName) != "write_file" {
 					toolType = executor.PermToolEdit
 				}
 				return fmt.Sprintf("%s: %s", toolName, p), &executor.PermRequest{
 					Tool:  toolType,
 					Paths: []string{p},
 				}
+			}
+		}
+	case "view_file", "read_file", "grep_search", "find_by_name", "list_dir":
+		p := permPathFromInput(input, "AbsolutePath", "TargetFile", "SearchPath", "DirectoryPath", "Path", "path")
+		if p != "" {
+			return fmt.Sprintf("%s: %s", toolName, p), &executor.PermRequest{
+				Tool:  executor.PermToolEdit,
+				Paths: []string{p},
 			}
 		}
 	case "read_url_content", "search_web":
@@ -398,7 +406,20 @@ func permTextAndRequest(toolName string, input json.RawMessage) (string, *execut
 		}
 	}
 	text := fmt.Sprintf("%s: %s", toolName, turn.TruncateRunes(string(input), 200))
-	return text, nil
+	return text, &executor.PermRequest{Tool: executor.PermToolOther}
+}
+
+func permPathFromInput(input json.RawMessage, keys ...string) string {
+	var raw map[string]any
+	if json.Unmarshal(input, &raw) != nil {
+		return ""
+	}
+	for _, k := range keys {
+		if v, ok := raw[k].(string); ok && v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // Stop 终止任务执行并回收资源。

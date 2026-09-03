@@ -22,22 +22,22 @@ func TestAgyArgv(t *testing.T) {
 		{
 			name: "普通启动无模型",
 			req:  StartProcReq{},
-			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h"},
+			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--dangerously-skip-permissions"},
 		},
 		{
 			name: "带模型",
 			req:  StartProcReq{Model: "claude-3-5-sonnet"},
-			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--model", "claude-3-5-sonnet"},
+			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--dangerously-skip-permissions", "--model", "claude-3-5-sonnet"},
 		},
 		{
 			name: "恢复会话",
 			req:  StartProcReq{SessionID: "sess-123", Resume: true},
-			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--conversation", "sess-123"},
+			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--dangerously-skip-permissions", "--conversation", "sess-123"},
 		},
 		{
 			name: "有 RepoPath 必须 --add-dir，否则 run_command 落 scratch",
 			req:  StartProcReq{RepoPath: "/worktrees/T1"},
-			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--add-dir", "/worktrees/T1"},
+			want: []string{"agy", "--input-format", "stream-json", "--output-format", "stream-json", "--print-timeout", "24h", "--dangerously-skip-permissions", "--add-dir", "/worktrees/T1"},
 		},
 	}
 	for _, c := range cases {
@@ -46,10 +46,14 @@ func TestAgyArgv(t *testing.T) {
 			if !reflect.DeepEqual(got, c.want) {
 				t.Fatalf("got %v, want %v", got, c.want)
 			}
+			found := false
 			for _, arg := range got {
 				if arg == "--dangerously-skip-permissions" {
-					t.Fatalf("agy argv 禁止 --dangerously-skip-permissions: %v", got)
+					found = true
 				}
+			}
+			if !found {
+				t.Fatalf("agy argv 必须带 --dangerously-skip-permissions（原生通放，否决在 hook）: %v", got)
 			}
 		})
 	}

@@ -142,17 +142,17 @@ func StartProc(ctx context.Context, req StartProcReq, log *slog.Logger) (*Proc, 
 //   - --add-dir <RepoPath>：隔离 HOME 后 run_command 的默认 cwd 是
 //     $HOME/.gemini/antigravity-cli/scratch，不是进程 Dir。5530b65b 实测 init.cwd
 //     已是 worktree，pwd 仍打出 scratch。必须把 worktree 登记成 workspace。
+//   - --dangerously-skip-permissions：只跳过原生 print-mode 确认（B308 canary：
+//     deny hook 仍拦住 touch）。否决权在 PreToolUse matcher=*。不写 always-proceed。
 //   - 不传 --sandbox：agy 的 OS 级别 sandbox 会严格限制只写工作区，与 handoff 分配在
-//     任务目录下（~/.handoff/tasks/<id>/tmp）的 TMPDIR/GOCACHE 互斥，会导致构建与测试报错；
-//     headless 不读 workspace .agents/hooks.json，写安全由任务 HOME 的 hooks.json
-//     PreToolUse 权限钩子与 settings.allow 的 command(*)（只消 native soft-deny）
-//     及 handoff 审批链统一把关；不传 --dangerously-skip-permissions（会放行未挂钩工具）。
+//     任务目录下（~/.handoff/tasks/<id>/tmp）的 TMPDIR/GOCACHE 互斥。
 func agyArgv(req StartProcReq) []string {
 	argv := []string{
 		"agy",
 		"--input-format", "stream-json",
 		"--output-format", "stream-json",
 		"--print-timeout", "24h",
+		"--dangerously-skip-permissions",
 	}
 	if req.RepoPath != "" {
 		argv = append(argv, "--add-dir", req.RepoPath)

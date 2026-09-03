@@ -35,7 +35,7 @@ func TestStartOrderingAndTaskEnv(t *testing.T) {
 	var hooksContent string
 	startProcHost = func(spec prochost.Spec, selfExe string, extra ...string) (prochost.Handle, error) {
 		capturedSpec = spec
-		data, err := os.ReadFile(filepath.Join(workDir, ".agents", "hooks.json"))
+		data, err := os.ReadFile(filepath.Join(tmpDir, agyHomeDirName, ".gemini", "config", hooksFileName))
 		if err == nil {
 			hooksContent = string(data)
 		}
@@ -87,8 +87,8 @@ func TestStartOrderingAndTaskEnv(t *testing.T) {
 	if !strings.Contains(hooksContent, "permission-hook --sock") {
 		t.Fatalf("hooks.json 缺 permission-hook 命令: %s", hooksContent)
 	}
-	if !strings.Contains(hooksContent, "run_command|write_to_file") {
-		t.Fatalf("hooks.json 缺多工具 matcher: %s", hooksContent)
+	if !strings.Contains(hooksContent, `"matcher": "*"`) {
+		t.Fatalf("hooks.json matcher 必须是 *: %s", hooksContent)
 	}
 	if !strings.Contains(hooksContent, "\"timeout\": 86400") {
 		t.Fatalf("hooks.json 缺 24h 超时: %s", hooksContent)

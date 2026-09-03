@@ -330,7 +330,7 @@ PATH=${PATH}:/usr/local/go/bin             # ${VAR} 单层展开，单引号内�
   - 建议清理 `~/.codex/AGENTS.md`、`~/.codex/hooks.json`、`config.toml` 的 `[mcp_servers]`——它们会改变 executor 行为（agentd 启动时会 WARN）。`config.toml` 里的 `model` / `sandbox_mode` 等**不用**清理，handoff 协议级钉死、压得过它们。
   - 权限模型不同：工作区内操作（含 `rm -rf`）由 OS 沙箱自动放行不进审批，联网操作按配置放行**不经过任何人**——同样的命令在 claude/grok 上会走审批链。
   - 执行机需代理出网时，**必须**经 `env` 段给 codex 配代理文件——agentd 从非交互上下文启动，继承不到 shell 的代理变量。漏配的症状很迷惑：会话建得起来、任务显示 running，但模型一个 token 都不产，只有任务目录 `serve.log` 里刷 `failed to refresh available models`。
-  - 权限模型：headless `agy` 读取 `$HOME/.gemini/config/hooks.json`。handoff 注入任务级 `HOME=<taskDir>/agyhome`，只把登录 token 拷入其中，不写用户全局配置。任务 HOME 内的 `handoff-safety-gate` `PreToolUse` 钩子连接任务 `perm.sock`，把 `run_command`、文件写/编辑与联网工具送入 Handoff 审批链。agy 原生 `permissions.allow` 为 `command(*)`，避免 headless 对未知命令首词 soft-deny；否决权仍在 PreToolUse。handoff 不传 `always-proceed` 或 `--dangerously-skip-permissions`。任务结束（Stop、启动失败回滚或 Reap）时，工作区 `.agents/hooks.json` 仍按原流程恢复；任务 HOME 留在 `taskDir` 内，随任务目录生命周期处理。任务期间，已跟踪 workspace hooks 走 `skip-worktree`；未跟踪文件只排除 `.agents/hooks.json`，两种保护都会在任务结束时回滚。未挂钩工具（如 MCP/browser）仍走 agy 原生策略；默认不传 `--sandbox` 以保障任务外部私有 `TMPDIR`/`GOCACHE` 可写。
+  - 权限模型：headless `agy` 读取 `$HOME/.gemini/config/hooks.json`。handoff 注入任务级 `HOME=<taskDir>/agyhome`，只把登录 token 拷入其中，不写用户全局配置。任务 HOME 内的 `handoff-safety-gate` 用 PreToolUse matcher `*`，所有工具进任务 `perm.sock` 和 Handoff 审批链。`--dangerously-skip-permissions` 只跳过原生 print-mode 确认，hook deny 仍是否决。不写 `always-proceed`。gate 只写任务 HOME，不写 workspace `.agents/hooks.json`（`--add-dir` 会再加载那一份）。任务 HOME 留在 `taskDir`。默认不传 `--sandbox`，保证任务私有 `TMPDIR`/`GOCACHE` 可写。
   - 任务物料：任务目录内生成 `in.fifo`（指令输入通道）、`out.jsonl`（事件输出流）、`agy.log`（标准错误日志）、`perm.sock`（权限裁决套接字）及 `proc.json`（进程恢复凭据）。
 
 ## 升级

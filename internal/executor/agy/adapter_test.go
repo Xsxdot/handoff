@@ -91,8 +91,8 @@ func TestStopRestoresHooks(t *testing.T) {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 	hooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)
-	if _, err := os.Stat(hooksPath); err != nil {
-		t.Fatalf("WriteTaskEnv 未生成 hooks.json: %v", err)
+	if _, err := os.Stat(hooksPath); !os.IsNotExist(err) {
+		t.Fatalf("WriteTaskEnv 不得写 workspace hooks.json，stat=%v", err)
 	}
 
 	ad := New(slog.New(slog.NewTextHandler(io.Discard, nil)))
@@ -101,7 +101,7 @@ func TestStopRestoresHooks(t *testing.T) {
 		t.Fatalf("Stop 失败: %v", err)
 	}
 	if _, err := os.Stat(hooksPath); !os.IsNotExist(err) {
-		t.Fatalf("Stop 后新建 hooks.json 应被删除，实得: %v", err)
+		t.Fatalf("Stop 后仍不得出现 workspace hooks.json，stat=%v", err)
 	}
 }
 

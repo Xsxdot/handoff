@@ -121,8 +121,8 @@ func TestWriteTaskEnv(t *testing.T) {
 	if hook.Command != expectedCmd {
 		t.Fatalf("command 不符合预期: got %s, want %s", hook.Command, expectedCmd)
 	}
-	if parsed.HandoffSafetyGate.PreToolUse[0].Matcher != "run_command|write_to_file|replace_file_content|multi_replace_file_content|sed_file|read_url_content|search_web|invoke_subagent" {
-		t.Fatalf("matcher 不符合预期: %s", parsed.HandoffSafetyGate.PreToolUse[0].Matcher)
+	if parsed.HandoffSafetyGate.PreToolUse[0].Matcher != "*" {
+		t.Fatalf("matcher 必须是 *（所有工具进 hook），实得 %s", parsed.HandoffSafetyGate.PreToolUse[0].Matcher)
 	}
 	if hook.Timeout != 86400 {
 		t.Fatalf("timeout 不符合预期: got %d, want 86400", hook.Timeout)
@@ -161,12 +161,9 @@ func TestWriteTaskEnvAgyHome(t *testing.T) {
 	if !strings.Contains(string(hooksData), "handoff-safety-gate") || !strings.Contains(string(hooksData), sockPath) {
 		t.Fatalf("任务 HOME hooks.json 缺 gate 或 perm.sock: %s", hooksData)
 	}
-	workspaceHooks, err := os.ReadFile(filepath.Join(workDir, agentsDirName, hooksFileName))
-	if err != nil {
-		t.Fatalf("读取 workspace hooks.json 失败: %v", err)
-	}
-	if !strings.Contains(string(workspaceHooks), "handoff-safety-gate") {
-		t.Fatalf("workspace hooks.json 缺 handoff-safety-gate: %s", workspaceHooks)
+	workspaceHooksPath := filepath.Join(workDir, agentsDirName, hooksFileName)
+	if _, err := os.Stat(workspaceHooksPath); !os.IsNotExist(err) {
+		t.Fatalf("headless 不得往 workspace 写 gate（--add-dir 会双开火），stat=%v", err)
 	}
 
 	settingsPath := filepath.Join(agyHome, ".gemini", "antigravity-cli", "settings.json")
@@ -263,26 +260,27 @@ func TestWriteTaskEnvMergesExistingHooks(t *testing.T) {
 	existingContent := `{"user-linter":{"PostToolUse":[{"matcher":"run_command","hooks":[{"command":"./lint.sh"}]}]}}`
 	_ = os.WriteFile(existingPath, []byte(existingContent), 0644)
 
-	hooksPath, _, err := WriteTaskEnv(workDir, taskDir, "T2", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
+	homeHooks, _, err := WriteTaskEnv(workDir, taskDir, "T2", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 
-	data, err := os.ReadFile(hooksPath)
+	kept, err := os.ReadFile(existingPath)
 	if err != nil {
-		t.Fatalf("读取 hooks.json 失败: %v", err)
+		t.Fatalf("读取既有 workspace hooks.json 失败: %v", err)
 	}
-
-	var parsed map[string]any
-	if err := json.Unmarshal(data, &parsed); err != nil {
-		t.Fatalf("解析 hooks.json 失败: %v", err)
+	if !strings.Contains(string(kept), "user-linter") {
+		t.Fatalf("不得改写既有 workspace hooks: %s", kept)
 	}
-
-	if _, ok := parsed["user-linter"]; !ok {
-		t.Fatalf("既有 user-linter 钩子被覆盖丢失")
+	if strings.Contains(string(kept), "handoff-safety-gate") {
+		t.Fatalf("不得把 gate 写进 workspace hooks: %s", kept)
 	}
-	if _, ok := parsed["handoff-safety-gate"]; !ok {
-		t.Fatalf("handoff-safety-gate 钩子未写入")
+	homeData, err := os.ReadFile(homeHooks)
+	if err != nil {
+		t.Fatalf("读取任务 HOME hooks.json 失败: %v", err)
+	}
+	if !strings.Contains(string(homeData), "handoff-safety-gate") {
+		t.Fatalf("任务 HOME 缺 handoff-safety-gate: %s", homeData)
 	}
 }
 
@@ -310,26 +308,9 @@ func TestWriteTaskEnvGitExcludeCleanStatus(t *testing.T) {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
 
-	// 验证 .git/info/exclude 是否包含了 .agents 规则
-	excludeOut, err := exec.Command("git", "-C", workDir, "rev-parse", "--git-path", "info/exclude").CombinedOutput()
-	if err != nil {
-		t.Fatalf("获取 info/exclude 路径失败: %v", err)
+	if _, err := os.Stat(filepath.Join(workDir, agentsDirName, hooksFileName)); !os.IsNotExist(err) {
+		t.Fatalf("不得创建 workspace .agents/hooks.json，stat=%v", err)
 	}
-	excludePath := strings.TrimSpace(string(excludeOut))
-	if !filepath.IsAbs(excludePath) {
-		excludePath = filepath.Join(workDir, excludePath)
-	}
-	excludeData, err := os.ReadFile(excludePath)
-	if err != nil || !strings.Contains(string(excludeData), ".agents/hooks.json") {
-		t.Fatalf("info/exclude 缺少排除规则: %v\n%s", err, excludeData)
-	}
-	for _, line := range strings.Split(string(excludeData), "\n") {
-		if strings.TrimSpace(line) == ".agents/" {
-			t.Fatalf("info/exclude 不应隐藏整个 .agents/ 目录:\n%s", excludeData)
-		}
-	}
-
-	// 关键断言：WriteTaskEnv 生成 .agents/hooks.json 之后，git status --porcelain 必须完全干净！
 	outAfter, err := exec.Command("git", "-C", workDir, "status", "--porcelain").CombinedOutput()
 	if err != nil {
 		t.Fatalf("git status 失败: %v", err)
@@ -358,41 +339,17 @@ func TestRestoreTrackedHooks(t *testing.T) {
 		}
 	}
 
-	gotPath, _, err := WriteTaskEnv(workDir, taskDir, "T-tracked", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
-	if err != nil {
+	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-tracked", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
-	if gotPath != hooksPath {
-		t.Fatalf("hooks 路径不符合预期: got %s, want %s", gotPath, hooksPath)
-	}
-	if err := RestoreTaskEnv(taskDir); err != nil {
-		t.Fatalf("RestoreTaskEnv 失败: %v", err)
-	}
-
 	data, err := os.ReadFile(hooksPath)
 	if err != nil {
-		t.Fatalf("读取还原后的 hooks.json 失败: %v", err)
+		t.Fatalf("读取 workspace hooks.json 失败: %v", err)
 	}
-	if strings.Contains(string(data), "perm.sock") {
-		t.Fatalf("还原后的 hooks.json 仍含 perm.sock: %s", data)
-	}
-	if !strings.Contains(string(data), "user-linter") {
-		t.Fatalf("还原后的 hooks.json 丢失 user-linter: %s", data)
+	if string(data) != string(original) {
+		t.Fatalf("不得改写已跟踪的 workspace hooks.json，got %q want %q", data, original)
 	}
 	assertGitStatusEmpty(t, workDir)
-	if err := os.WriteFile(hooksPath, append(data, []byte("x\n")...), 0644); err != nil {
-		t.Fatalf("修改还原后的 hooks.json 失败: %v", err)
-	}
-	out, err := exec.Command("git", "-C", workDir, "status", "--porcelain").CombinedOutput()
-	if err != nil {
-		t.Fatalf("再次 git status 失败: %v\n%s", err, out)
-	}
-	if len(out) == 0 {
-		t.Fatal("清除 skip-worktree 后再次修改 hooks.json 应可见")
-	}
-	if _, err := os.Stat(filepath.Join(taskDir, restoreFileName)); !os.IsNotExist(err) {
-		t.Fatalf("Restore 后 sidecar 应不存在，实得: %v", err)
-	}
 }
 
 func TestWriteTaskEnvRepeatRestoresOriginalHooks(t *testing.T) {
@@ -420,16 +377,12 @@ func TestWriteTaskEnvRepeatRestoresOriginalHooks(t *testing.T) {
 	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-repeat-2", "# Plan", "/tmp/second-perm.sock", "/bin/handoff", ""); err != nil {
 		t.Fatalf("第二次 WriteTaskEnv 失败: %v", err)
 	}
-	if err := RestoreTaskEnv(taskDir); err != nil {
-		t.Fatalf("RestoreTaskEnv 失败: %v", err)
-	}
-
 	data, err := os.ReadFile(hooksPath)
 	if err != nil {
-		t.Fatalf("读取重复写入后的 hooks.json 失败: %v", err)
+		t.Fatalf("读取 workspace hooks.json 失败: %v", err)
 	}
 	if string(data) != string(original) {
-		t.Fatalf("重复 WriteTaskEnv 后必须恢复第一次之前的原文，got %q want %q", data, original)
+		t.Fatalf("重复 WriteTaskEnv 不得改 workspace hooks，got %q want %q", data, original)
 	}
 }
 
@@ -473,8 +426,8 @@ func TestWriteTaskEnvRecordsSkipWorktreeBeforeGit(t *testing.T) {
 	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-sidecar-skip", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
-	if !called {
-		t.Fatal("WriteTaskEnv 未执行 skip-worktree 操作")
+	if called {
+		t.Fatal("headless 不得对 workspace hooks 设 skip-worktree")
 	}
 }
 
@@ -505,8 +458,8 @@ func TestWriteTaskEnvRecordsExcludeBeforeGit(t *testing.T) {
 	if _, _, err := WriteTaskEnv(workDir, taskDir, "T-sidecar-exclude", "# Plan", "/tmp/perm.sock", "/bin/handoff", ""); err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
-	if !called {
-		t.Fatal("WriteTaskEnv 未执行 exclude 操作")
+	if called {
+		t.Fatal("headless 不得给 workspace hooks 写 exclude")
 	}
 }
 
@@ -515,34 +468,18 @@ func TestRestoreNewHooks(t *testing.T) {
 	taskDir := t.TempDir()
 	initTestGitRepo(t, workDir)
 
-	hooksPath, _, err := WriteTaskEnv(workDir, taskDir, "T-new", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
+	homeHooks, _, err := WriteTaskEnv(workDir, taskDir, "T-new", "# Plan", "/tmp/perm.sock", "/bin/handoff", "")
 	if err != nil {
 		t.Fatalf("WriteTaskEnv 失败: %v", err)
 	}
-	if _, err := os.Stat(hooksPath); err != nil {
-		t.Fatalf("WriteTaskEnv 应创建 hooks.json: %v", err)
-	}
-	data, err := os.ReadFile(hooksPath)
+	data, err := os.ReadFile(homeHooks)
 	if err != nil || !strings.Contains(string(data), "handoff-safety-gate") {
-		t.Fatalf("新建 hooks.json 缺 handoff-safety-gate: %v\n%s", err, data)
+		t.Fatalf("任务 HOME hooks.json 缺 handoff-safety-gate: %v\n%s", err, data)
 	}
-
-	if err := RestoreTaskEnv(taskDir); err != nil {
-		t.Fatalf("RestoreTaskEnv 失败: %v", err)
-	}
-	if _, err := os.Stat(hooksPath); !os.IsNotExist(err) {
-		t.Fatalf("Restore 新建 hooks 后文件应不存在，实得: %v", err)
+	if _, err := os.Stat(filepath.Join(workDir, agentsDirName, hooksFileName)); !os.IsNotExist(err) {
+		t.Fatalf("不得创建 workspace hooks.json，stat=%v", err)
 	}
 	assertGitStatusEmpty(t, workDir)
-	excludeData, err := os.ReadFile(testGitExcludePath(t, workDir))
-	if err != nil {
-		t.Fatalf("读取 info/exclude 失败: %v", err)
-	}
-	for _, line := range strings.Split(string(excludeData), "\n") {
-		if strings.TrimSpace(line) == ".agents/" || strings.TrimSpace(line) == ".agents/hooks.json" {
-			t.Fatalf("Restore 后不应保留本轮 exclude 规则 %q:\n%s", strings.TrimSpace(line), excludeData)
-		}
-	}
 }
 
 func TestRestorePreservesExistingHooksExclude(t *testing.T) {
