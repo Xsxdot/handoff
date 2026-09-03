@@ -622,7 +622,13 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **linux-01 真机清盘**：升级该机 agentd 后跑 `handoff gc --target linux-01` 预览真实缓存字节与脏树 skip，再 `--yes`（必要时 `--force`）清终态叶子；另 `done` 一个跑过 `go test` 的任务，确认 gocache 叶子消失且 `handoff attach` 仍可读。来源：B298 真机清单 1/2/4，验收时对端仍过旧。
 - **Windows 文件占用导致的删除失败**：若仍在支持矩阵，gc 冒烟须呈现为报告 failed 行/日志、命令不崩溃。来源：B298 真机清单 5，本期无 Windows 机。
 
+## 来自 B312 finish（2026-09-03，合入 acc 后补）
+
+- **plan §9.3 现网真机**：linux-01 实装本分支二进制后验 env 注入 `cli:codex#<session>`、真实协调者小队 launch/rebind-launch、CAS 409 不 kill、agentd 重启后 status/Wake 以账本为准、浏览器/WK/Wails 能叫机器人与换绑机器人不能 self。验收只跑了缝测与变异。来源：B312 plan §9.3 与 acceptance note。
+- **`rebind --self` 在 CAS 成功后 Forget 返回非不可达错误（503/401）时 CLI 把成功换绑报失败**：审查 Minor，本节点未改。来源：B312 官方 review。
+
 ## 来自 B307 spec（2026-09-03，本期不做）
+
 
 - **把 `RunTurn` 接到 grok/claude/codex**：叫机器人仍受 hostapi 已支持 CLI 限制。来源：B307 spec Out of Scope。
 - **换绑任意 session id**：本期只有「当前对话」和「新叫机器人」两种接班。来源：同上。

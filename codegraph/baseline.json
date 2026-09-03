@@ -1,8 +1,8 @@
 {
  "meta": {
   "project": "handoff",
-  "branch": "main",
-  "commit": "d32667a401fc83cce0dad96a440c7102ce7f455f",
+  "branch": "acc/b156.2-156.3",
+  "commit": "1d992ceddec1c3dee0cf43f78f4fa1dfd696d363",
   "scannedAt": "2026-08-28",
   "generator": "codegraph-flows-b277-go"
  },
@@ -1600,6 +1600,15 @@
    "file": "cmd/card.go",
    "line": 29
   },
+  "e_cli_card_bind": {
+   "kind": "entry",
+   "container": "c_cli",
+   "order": 66,
+   "name": "handoff card bind",
+   "file": "cmd/card_driver.go",
+   "line": 16,
+   "channel": "cli"
+  },
   "e_cli_card_close": {
    "kind": "entry",
    "container": "c_cli",
@@ -2672,6 +2681,24 @@
    "name": "POST /api/auth/tickets",
    "file": "internal/agentd/server.go",
    "line": 515
+  },
+  "e_http_post_api_cards_id_coordinator_forget": {
+   "kind": "entry",
+   "container": "c_http",
+   "order": 51,
+   "name": "POST /api/cards/{id}/coordinator/forget",
+   "file": "internal/agentd/coordapi.go",
+   "line": 45,
+   "channel": "http"
+  },
+  "e_http_post_api_cards_id_coordinator_rebind": {
+   "kind": "entry",
+   "container": "c_http",
+   "order": 50,
+   "name": "POST /api/cards/{id}/coordinator/rebind",
+   "file": "internal/agentd/coordapi.go",
+   "line": 44,
+   "channel": "http"
   },
   "e_http_post_api_gc": {
    "kind": "entry",
@@ -9015,7 +9042,7 @@
    "order": 97,
    "name": "Card",
    "file": "internal/ledger/types.go",
-   "line": 98,
+   "line": 109,
    "summary": "Card 任务卡。字段语义见 spec §2；零值时间用 IsZero 判空。",
    "fields": [
     [
@@ -9080,6 +9107,11 @@
     ],
     [
      "DriverSession",
+     "string",
+     ""
+    ],
+    [
+     "DriverSource",
      "string",
      ""
     ],
@@ -12596,7 +12628,17 @@
      ""
     ],
     [
+     "Following",
+     "string",
+     ""
+    ],
+    [
      "DriverSession",
+     "string",
+     ""
+    ],
+    [
+     "DriverSource",
      "string",
      ""
     ],
@@ -12793,7 +12835,7 @@
    "order": 110,
    "name": "CardView",
    "file": "internal/proto/ledger.go",
-   "line": 122,
+   "line": 130,
    "summary": "CardView 是列表卡片及查询期派生标记的 wire DTO。",
    "fields": [
     [
@@ -12889,6 +12931,16 @@
     [
      "OpenTickets",
      "int",
+     ""
+    ],
+    [
+     "DriverSession",
+     "string",
+     ""
+    ],
+    [
+     "DriverSource",
+     "string",
      ""
     ]
    ],
@@ -13171,6 +13223,29 @@
     ],
     [
      "Output",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_proto_CoordinatorRebindReq": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 10,
+   "name": "CoordinatorRebindReq",
+   "file": "internal/proto/scheduling.go",
+   "line": 11,
+   "signature": "type CoordinatorRebindReq struct {",
+   "summary": "协调者换绑请求。HTTP 控制面只接受 mode=launch；mode=self 由 CLI 本机账本路径执行，identity 不属于 HTTP 可信输入。",
+   "fields": [
+    [
+     "Mode",
+     "string",
+     ""
+    ],
+    [
+     "Identity",
      "string",
      ""
     ]
@@ -16256,6 +16331,17 @@
    "projScanned": true,
    "modelKind": "dto"
   },
+  "m_proto_SeatSource": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 400,
+   "name": "SeatSource",
+   "file": "internal/proto/seat.go",
+   "line": 10,
+   "signature": "type SeatSource string",
+   "summary": "卡上协调者席位来源：bind 或 coordinate",
+   "modelKind": "entity"
+  },
   "m_proto_SessionInfo": {
    "kind": "model",
    "container": "k_proto_model",
@@ -18487,7 +18573,7 @@
    "order": 32,
    "name": "Card",
    "file": "web/src/api/ledger.ts",
-   "line": 34,
+   "line": 40,
    "signature": "interface Card",
    "fields": [
     [
@@ -18553,6 +18639,11 @@
     [
      "driver_session",
      "string",
+     ""
+    ],
+    [
+     "driver_source",
+     "SeatSource",
      ""
     ],
     [
@@ -18707,7 +18798,7 @@
    "order": 5,
    "name": "CardView",
    "file": "web/src/api/ledger.ts",
-   "line": 5,
+   "line": 7,
    "signature": "interface CardView",
    "fields": [
     [
@@ -18803,6 +18894,16 @@
     [
      "open_tickets",
      "number",
+     ""
+    ],
+    [
+     "driver_session",
+     "string",
+     ""
+    ],
+    [
+     "driver_source",
+     "SeatSource",
      ""
     ]
    ],
@@ -19260,6 +19361,16 @@
      ""
     ]
    ],
+   "modelKind": "dto"
+  },
+  "m_web_api_ledger_SeatSource": {
+   "kind": "model",
+   "container": "k_web_api_ledger_model",
+   "order": 3,
+   "name": "SeatSource",
+   "file": "web/src/api/ledger.ts",
+   "line": 5,
+   "signature": "export type SeatSource = 'bind' | 'coordinate'",
    "modelKind": "dto"
   },
   "m_web_api_ledger_TaskStateRow": {
@@ -19736,14 +19847,36 @@
    ],
    "modelKind": "dto"
   },
-  "m_web_api_scheduling_CoordinatorLaunchSource": {
+  "m_web_api_scheduling_CoordinatorRebindMode": {
    "kind": "model",
    "container": "k_web_api_scheduling_model",
    "order": 129,
-   "name": "CoordinatorLaunchSource",
+   "name": "CoordinatorRebindMode",
    "file": "web/src/api/scheduling.ts",
-   "line": 129,
-   "signature": "export type CoordinatorLaunchSource = 'manual' | 'card_create'",
+   "line": 238,
+   "signature": "export type CoordinatorRebindMode = 'self' | 'launch'",
+   "modelKind": "dto"
+  },
+  "m_web_api_scheduling_CoordinatorRebindReq": {
+   "kind": "model",
+   "container": "k_web_api_scheduling_model",
+   "order": 130,
+   "name": "CoordinatorRebindReq",
+   "file": "web/src/api/scheduling.ts",
+   "line": 240,
+   "signature": "export interface CoordinatorRebindReq {",
+   "fields": [
+    [
+     "mode",
+     "CoordinatorRebindMode",
+     ""
+    ],
+    [
+     "identity",
+     "string",
+     ""
+    ]
+   ],
    "modelKind": "dto"
   },
   "m_web_api_scheduling_CoordinatorStatus": {
@@ -30695,6 +30828,24 @@
     }
    ]
   },
+  "n_agentd_Server_coordinatorLock": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1004,
+   "name": "Server.coordinatorLock",
+   "file": "internal/agentd/server.go",
+   "line": 302,
+   "signature": "func (s *Server) coordinatorLock(card string) *sync.Mutex",
+   "params": [
+    [
+     "card",
+     "string",
+     "卡号"
+    ]
+   ],
+   "returns": "*sync.Mutex",
+   "summary": "返回一张卡的控制面串行锁；锁只覆盖控制段，不把不同卡的 Launch 串成全局队列。"
+  },
   "n_agentd_Server_desktopDownloadSnapshot": {
    "kind": "func",
    "container": "k_agentd_Server",
@@ -31135,6 +31286,50 @@
     ]
    ],
    "summary": "handleContinue 向任务续发修改指令（要求任务处于 waiting_review）。"
+  },
+  "n_agentd_Server_handleCoordForget": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1001,
+   "name": "Server.handleCoordForget",
+   "file": "internal/agentd/coordapi.go",
+   "line": 241,
+   "signature": "func (s *Server) handleCoordForget(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "清除 agentd 进程内的旧协调者会话引用；账本席位由调用方先完成 CAS。"
+  },
+  "n_agentd_Server_handleCoordRebind": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1000,
+   "name": "Server.handleCoordRebind",
+   "file": "internal/agentd/coordapi.go",
+   "line": 167,
+   "signature": "func (s *Server) handleCoordRebind(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "只接受 mode=launch；当前会话坐下由 CLI 本机账本完成，机器人换绑由本端重新 Launch。"
   },
   "n_agentd_Server_handleCreatePtySession": {
    "kind": "func",
@@ -33046,6 +33241,75 @@
    "line": 162,
    "signature": "func (s *Server) hostGuard(next http.Handler) http.Handler {",
    "summary": "hostGuard 是 Host 白名单中间件，必须包在 auth 之外（先于鉴权执行）。"
+  },
+  "n_agentd_Server_launchCoordinatorRoundForRebind": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1002,
+   "name": "Server.launchCoordinatorRoundForRebind",
+   "file": "internal/agentd/scheddrain.go",
+   "line": 223,
+   "signature": "func (s *Server) launchCoordinatorRoundForRebind(ctx context.Context, card, source, expect string) (keystone.RoundResult, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "source",
+     "string",
+     "拉起来源"
+    ],
+    [
+     "expect",
+     "string",
+     "旧席位身份"
+    ]
+   ],
+   "returns": "keystone.RoundResult, error"
+  },
+  "n_agentd_Server_launchCoordinatorRoundWithExpect": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1003,
+   "name": "Server.launchCoordinatorRoundWithExpect",
+   "file": "internal/agentd/scheddrain.go",
+   "line": 227,
+   "signature": "func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, source, expect string, rebind bool) (keystone.RoundResult, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "source",
+     "string",
+     "拉起来源"
+    ],
+    [
+     "expect",
+     "string",
+     "旧席位身份"
+    ],
+    [
+     "rebind",
+     "bool",
+     "是否换绑"
+    ]
+   ],
+   "returns": "keystone.RoundResult, error"
   },
   "n_agentd_Server_launcherEnv": {
    "kind": "func",
@@ -42197,6 +42461,57 @@
    "returns": "error",
    "summary": "Continue 向任务续发修改指令（要求任务处于 waiting_review，指令原样透传 executor）。"
   },
+  "n_client_Client_CoordinatorForget": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 1001,
+   "name": "Client.CoordinatorForget",
+   "file": "internal/client/coordinator.go",
+   "line": 36,
+   "signature": "func (c *Client) CoordinatorForget(ctx context.Context, cardID string) error",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     "请求上下文"
+    ],
+    [
+     "cardID",
+     "string",
+     "卡号"
+    ]
+   ],
+   "returns": "error",
+   "summary": "通知本机 agentd 丢弃卡的旧协调者会话引用；该方法不写账本，席位 CAS 由调用方先完成。"
+  },
+  "n_client_Client_CoordinatorRebind": {
+   "kind": "func",
+   "container": "k_client_Client",
+   "order": 1000,
+   "name": "Client.CoordinatorRebind",
+   "file": "internal/client/coordinator.go",
+   "line": 16,
+   "signature": "func (c *Client) CoordinatorRebind(ctx context.Context, cardID string, req proto.CoordinatorRebindReq) (*proto.CoordinatorLaunchResp, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "cardID",
+     "string",
+     "卡号"
+    ],
+    [
+     "req",
+     "proto.CoordinatorRebindReq",
+     "换绑请求"
+    ]
+   ],
+   "returns": "*proto.CoordinatorLaunchResp, error",
+   "summary": "通过协调者控制面请求机器人接班；调用方只应提供 mode=launch。"
+  },
   "n_client_Client_CreatePreview": {
    "kind": "func",
    "container": "k_client_Client",
@@ -45213,6 +45528,28 @@
    ],
    "returns": "error"
   },
+  "n_cmd_cardBindCmd_RunE": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 16,
+   "name": "cardBindCmd.RunE",
+   "file": "cmd/card_driver.go",
+   "line": 20,
+   "signature": "func(cmd *cobra.Command, args []string) error",
+   "params": [
+    [
+     "cmd",
+     "*cobra.Command",
+     ""
+    ],
+    [
+     "args",
+     "[]string",
+     ""
+    ]
+   ],
+   "returns": "error"
+  },
   "n_cmd_cardCloseCmd_RunE": {
    "kind": "func",
    "container": "k_cmd_fn",
@@ -45945,6 +46282,17 @@
    "signature": "func currentBinary() (string, error)",
    "returns": "string, error",
    "summary": "currentBinary 返回当前二进制的真实路径。"
+  },
+  "n_cmd_currentSeatIdentity": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 435,
+   "name": "currentSeatIdentity",
+   "file": "cmd/card_seat.go",
+   "line": 18,
+   "signature": "func currentSeatIdentity() (string, error)",
+   "returns": "string, error",
+   "summary": "从当前执行环境读取规范席位身份。两个 HANDOFF_SESSION_* 键缺一不可；缺失时返回可行动错误，绝不从人尺度 actor、主机名或浏览器地址推导会话。"
   },
   "n_cmd_decAnswerCmd_RunE": {
    "kind": "func",
@@ -58174,6 +58522,23 @@
    "returns": "Decision",
    "summary": "判定一条事件该不该敲醒绑定协调者；attach 人工接管中恒判不醒（spec §4.4 互斥）"
   },
+  "n_keystone_Service_Forget": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 6,
+   "name": "Service.Forget",
+   "file": "internal/keystone/keystone.go",
+   "line": 221,
+   "signature": "func (s *Service) Forget(card string)",
+   "params": [
+    [
+     "card",
+     "string",
+     "卡号"
+    ]
+   ],
+   "summary": "清除进程内的旧会话引用。账本是席位真相；bind/self 换绑成功或读到空座、bind、非法旧值时必须调用它，防止旧机器人在下一轮被 Resume。"
+  },
   "n_keystone_Service_LaunchForCard": {
    "kind": "func",
    "container": "k_keystone_Service",
@@ -58279,6 +58644,43 @@
    ],
    "returns": "RoundResult, error",
    "summary": "跑一个唤醒回合：先读账对齐现场再无头续会话；失败兜底链 resume→重建四步→转等人（spec §5.4）"
+  },
+  "n_keystone_Service_rebuildAfterResumeFailure": {
+   "kind": "func",
+   "container": "k_keystone_Service",
+   "order": 7,
+   "name": "Service.rebuildAfterResumeFailure",
+   "file": "internal/keystone/keystone.go",
+   "line": 149,
+   "signature": "func (s *Service) rebuildAfterResumeFailure(card, prompt string, spec keysclient.SessionSpec, ref keysclient.SessionRef, resumeErr error) (RoundResult, error)",
+   "params": [
+    [
+     "card",
+     "string",
+     "卡号"
+    ],
+    [
+     "prompt",
+     "string",
+     "开场简报"
+    ],
+    [
+     "spec",
+     "keysclient.SessionSpec",
+     "承载环境"
+    ],
+    [
+     "ref",
+     "keysclient.SessionRef",
+     "旧会话引用"
+    ],
+    [
+     "resumeErr",
+     "error",
+     "续接错误"
+    ]
+   ],
+   "returns": "RoundResult, error"
   },
   "n_launcher_Dir": {
    "kind": "func",
@@ -58642,6 +59044,34 @@
    ],
    "returns": "error",
    "summary": "AttachFile 挂附件（同 path 幂等）；落 comment 事件记录动作，附件本体"
+  },
+  "n_ledger_Store_BindSeat": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 701,
+   "name": "Store.BindSeat",
+   "file": "internal/ledger/binding.go",
+   "line": 30,
+   "signature": "func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error",
+   "params": [
+    [
+     "id",
+     "string",
+     "卡号"
+    ],
+    [
+     "identity",
+     "string",
+     "规范席位身份"
+    ],
+    [
+     "source",
+     "proto.SeatSource",
+     "席位来源"
+    ]
+   ],
+   "returns": "error",
+   "summary": "只把空座原子地占为规范 identity/source，不落事件也不写 driver_carrier；读、判空、写入在同一个账本事务内完成。"
   },
   "n_ledger_Store_CardOfTask": {
    "kind": "func",
@@ -59710,6 +60140,39 @@
    ],
    "returns": "error",
    "summary": "换绑：CAS 校验后覆写并落 EvDriverTakeover 审计。Ticket 0 空壳"
+  },
+  "n_ledger_Store_RebindSeat": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 702,
+   "name": "Store.RebindSeat",
+   "file": "internal/ledger/binding.go",
+   "line": 68,
+   "signature": "func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect string) error",
+   "params": [
+    [
+     "id",
+     "string",
+     "卡号"
+    ],
+    [
+     "identity",
+     "string",
+     "目标席位身份"
+    ],
+    [
+     "source",
+     "proto.SeatSource",
+     "席位来源"
+    ],
+    [
+     "expect",
+     "string",
+     "账本中的旧席位身份"
+    ]
+   ],
+   "returns": "error",
+   "summary": "以 expect 原始字节值 CAS 覆写非空席位，并在同一事务落恰一条 EvDriverTakeover；expect 由服务层从账本读出，不来自用户可控 flag。"
   },
   "n_ledger_Store_RecordAcceptance": {
    "kind": "func",
@@ -68524,6 +68987,47 @@
     }
    ]
   },
+  "n_proto_EncodeSeatIdentity": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 401,
+   "name": "EncodeSeatIdentity",
+   "file": "internal/proto/seat.go",
+   "line": 41,
+   "signature": "func EncodeSeatIdentity(cli, sessionID string) (string, error)",
+   "params": [
+    [
+     "cli",
+     "string",
+     "CLI 物种名"
+    ],
+    [
+     "sessionID",
+     "string",
+     "会话 id"
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "编码账本与房间共用的当前会话席位身份"
+  },
+  "n_proto_ParseSeatIdentity": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 402,
+   "name": "ParseSeatIdentity",
+   "file": "internal/proto/seat.go",
+   "line": 53,
+   "signature": "func ParseSeatIdentity(raw string) (cli, sessionID string, err error)",
+   "params": [
+    [
+     "raw",
+     "string",
+     "编码后的席位身份"
+    ]
+   ],
+   "returns": "cli, sessionID string, err error",
+   "summary": "校验并解码当前会话席位身份，拒绝旧格式"
+  },
   "n_proto_TaskState_IsTerminal": {
    "kind": "func",
    "container": "k_proto_TaskState",
@@ -68543,6 +69047,40 @@
    "line": 328,
    "signature": "func (t *Task) Workdir() string {",
    "summary": "Workdir 返回 executor cwd 与审阅命令的统一取值点：WorkDir 非空返回它"
+  },
+  "n_proto_ValidateSeat": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 400,
+   "name": "ValidateSeat",
+   "file": "internal/proto/seat.go",
+   "line": 20,
+   "signature": "func ValidateSeat(identity string, source SeatSource) error",
+   "params": [
+    [
+     "identity",
+     "string",
+     "席位身份"
+    ],
+    [
+     "source",
+     "SeatSource",
+     "席位来源"
+    ]
+   ],
+   "returns": "error",
+   "summary": "检查席位身份与来源是否构成可占用的规范席位。identity 为空时仅允许 source 为空；非空 identity 必须能被 ParseSeatIdentity 解码，来源只能是 bind 或 coordinate。"
+  },
+  "n_proto_validateSeatPart": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 403,
+   "name": "validateSeatPart",
+   "file": "internal/proto/seat.go",
+   "line": 73,
+   "signature": "func validateSeatPart(name, value string, cli bool) error",
+   "returns": "error",
+   "summary": "校验席位编码分段"
   },
   "n_proxycfg_GitArgs": {
    "kind": "func",
@@ -77437,22 +77975,17 @@
    "order": 135,
    "name": "launchCoordinator",
    "file": "web/src/api/scheduling.ts",
-   "line": 135,
-   "signature": "export const launchCoordinator = (cardId: string, source?: CoordinatorLaunchSource) =\u003e",
+   "line": 232,
+   "signature": "export const launchCoordinator = (cardId: string) =\u003e",
    "params": [
     [
      "cardId",
      "string",
      ""
-    ],
-    [
-     "source",
-     "CoordinatorLaunchSource | undefined",
-     ""
     ]
    ],
    "returns": "Promise\u003cCoordinatorLaunchResp\u003e",
-   "summary": "拉起协调者回合；省略 source 时发送空对象以保留服务端 manual 默认值，card_create 只用于开卡即绑审计。返回的回合结果由服务端产生。"
+   "summary": "叫机器人拉起协调者回合；服务端从空对象按 coordinate 处理。"
   },
   "n_web_api_scheduling_omitZeroConcurrency": {
    "kind": "func",
@@ -77553,6 +78086,24 @@
    ],
    "returns": "Promise\u003cSquadPutResp\u003e",
    "summary": "按小队名和 CAS 版本更新小队；expect=0 表示新建。"
+  },
+  "n_web_api_scheduling_rebindCoordinatorLaunch": {
+   "kind": "func",
+   "container": "k_web_api_scheduling",
+   "order": 139,
+   "name": "rebindCoordinatorLaunch",
+   "file": "web/src/api/scheduling.ts",
+   "line": 246,
+   "signature": "export const rebindCoordinatorLaunch = (cardId: string) =\u003e",
+   "params": [
+    [
+     "cardId",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "Promise\u003cCoordinatorLaunchResp\u003e",
+   "summary": "叫机器人换绑；浏览器只发送 launch 模式，不伪造当前会话身份。"
   },
   "n_web_api_scheduling_releaseCoordinator": {
    "kind": "func",
@@ -102548,6 +103099,118 @@
   [
    "n_web_api_scheduling_putSquad",
    "n_web_api_scheduling_omitZeroSquadConcurrency"
+  ],
+  [
+   "e_cli_card_bind",
+   "n_cmd_cardBindCmd_RunE"
+  ],
+  [
+   "e_http_post_api_cards_id_coordinator_rebind",
+   "n_agentd_Server_handleCoordRebind"
+  ],
+  [
+   "e_http_post_api_cards_id_coordinator_forget",
+   "n_agentd_Server_handleCoordForget"
+  ],
+  [
+   "n_cmd_cardBindCmd_RunE",
+   "n_cmd_currentSeatIdentity"
+  ],
+  [
+   "n_cmd_cardBindCmd_RunE",
+   "n_ledger_Store_BindSeat"
+  ],
+  [
+   "n_proto_ValidateSeat",
+   "n_proto_ParseSeatIdentity"
+  ],
+  [
+   "n_proto_EncodeSeatIdentity",
+   "n_proto_validateSeatPart"
+  ],
+  [
+   "n_proto_ParseSeatIdentity",
+   "n_proto_validateSeatPart"
+  ],
+  [
+   "n_ledger_Store_BindSeat",
+   "n_proto_ValidateSeat"
+  ],
+  [
+   "n_ledger_Store_RebindSeat",
+   "n_proto_ValidateSeat"
+  ],
+  [
+   "n_keystone_Service_Wake",
+   "n_proto_ValidateSeat"
+  ],
+  [
+   "n_keystone_Service_Wake",
+   "n_proto_ParseSeatIdentity"
+  ],
+  [
+   "n_keystone_Service_Wake",
+   "n_keystone_Service_Forget"
+  ],
+  [
+   "n_keystone_Service_Wake",
+   "n_keystone_Service_rebuildAfterResumeFailure"
+  ],
+  [
+   "n_collab_room_VerifyWriter",
+   "n_proto_ValidateSeat"
+  ],
+  [
+   "n_client_Client_CoordinatorRebind",
+   "n_client_Client_do"
+  ],
+  [
+   "n_client_Client_CoordinatorRebind",
+   "n_client_Client_httpError"
+  ],
+  [
+   "n_client_Client_CoordinatorForget",
+   "n_client_Client_do"
+  ],
+  [
+   "n_client_Client_CoordinatorForget",
+   "n_client_Client_httpError"
+  ],
+  [
+   "n_web_api_scheduling_rebindCoordinatorLaunch",
+   "n_web_api_client_postJSON"
+  ],
+  [
+   "n_agentd_Server_handleCoordRebind",
+   "n_agentd_Server_launchCoordinatorRoundForRebind"
+  ],
+  [
+   "n_agentd_Server_handleCoordForget",
+   "n_keystone_Service_Forget"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundForRebind",
+   "n_agentd_Server_launchCoordinatorRoundWithExpect"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_agentd_Server_coordinatorLock"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_ledger_Store_BindSeat"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_ledger_Store_RebindSeat"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_proto_EncodeSeatIdentity"
+  ],
+  [
+   "n_agentd_Server_launchCoordinatorRoundWithExpect",
+   "n_keystone_Service_LaunchForCard"
   ]
  ],
  "implements": [
@@ -104546,6 +105209,16 @@
    "n_cmd_renderGC",
    "m_proto_GCResp",
    "typed"
+  ],
+  [
+   "m_proto_SeatSource",
+   "m_web_api_ledger_SeatSource",
+   "twin"
+  ],
+  [
+   "m_proto_CoordinatorRebindReq",
+   "m_web_api_scheduling_CoordinatorRebindReq",
+   "twin"
   ]
  ],
  "lifecycle": [
