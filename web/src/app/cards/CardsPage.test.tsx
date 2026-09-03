@@ -269,7 +269,10 @@ describe('卡片节点标签版本来源', () => {
     renderPage()
     const card = (await screen.findByText('旧版本卡')).closest('article')
     expect(card).not.toBeNull()
-    await waitFor(() => expect(within(card!).getAllByText('待审阅')).toHaveLength(2))
+    // B287 状态唯一化：右上角单枚 chip 承载节点标签（v1 节点集多对一列 → 显形），
+    // 标签行不再重复——旧断言数到 2（右上角文本 + 标签行 pill）已随本卡变更。
+    await waitFor(() => expect(within(card!).getAllByText('待审阅')).toHaveLength(1))
+    expect(within(card!).getAllByText('待审阅')[0]!.className).toContain('bg-slate-900')
     expect(vi.mocked(ledger.fetchFlow)).toHaveBeenCalledWith('custom', 1)
   })
 

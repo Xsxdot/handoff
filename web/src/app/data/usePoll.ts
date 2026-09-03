@@ -42,6 +42,10 @@ export function usePoll<T>(
   // 避免上一轮慢请求尚未结束时又启动同一数据流的下一轮。新的 effect 可订阅同一
   // Promise，兼容 StrictMode 的 effect 重放而不丢首拉结果。
   const inFlightRef = useRef<Promise<T> | null>(null)
+  // 在飞请求所属的 nonce。refresh（nonce+1）之后，旧 nonce 的在飞请求内容
+  // 不含有本次要看的变更，等它等于把新数据推迟一个周期——显式刷新改起一只
+  // 新请求；旧请求走完后由各自 effect 的 stopped 守卫丢弃，不重复 setData。
+  const inFlightNonceRef = useRef(0)
   const [nonce, setNonce] = useState(0)
 
   const refresh = useCallback(() => setNonce((n) => n + 1), [])
@@ -55,10 +59,12 @@ export function usePoll<T>(
     const poll = async (subscribe = false) => {
       let request = inFlightRef.current
       if (request && !subscribe) return
+      if (request && inFlightNonceRef.current !== nonce) request = null
       try {
         if (!request) {
           request = fetcherRef.current()
           inFlightRef.current = request
+          inFlightNonceRef.current = nonce
         }
         const v = await request
         if (stopped) return

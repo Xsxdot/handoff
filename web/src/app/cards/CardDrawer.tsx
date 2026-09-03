@@ -607,10 +607,10 @@ export function CardDrawer({
   return (
     <aside className="absolute inset-y-0 right-0 z-40 flex w-[560px] max-w-[92vw] flex-col border-l bg-background shadow-xl" role="dialog" aria-label="工作项详情">
       <header className="border-b px-4 py-3">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2" data-testid="card-drawer-header">
           <span className="font-mono text-xs text-muted-foreground">{value(card, 'id', id)}</span>
-          <span className="rounded-full border px-2 py-0.5 text-xs">{status || '加载中'}</span>
-          {nodeLabel && <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{nodeLabel}</span>}
+          {/* B287：头部状态只渲染一次——单枚深色 chip，节点标签优先、状态回落。 */}
+          <span className="rounded-full bg-slate-900 px-2 py-0.5 text-xs text-white">{nodeLabel ?? (status || '加载中')}</span>
           {acceptanceInfo.verified && <span className="rounded-full border border-green-300 bg-green-50 px-2 py-0.5 text-[10px] text-green-700">已验</span>}
           <button type="button" aria-label="关闭" onClick={onClose} className="ml-auto rounded p-1 text-muted-foreground hover:bg-accent hover:text-foreground"><X className="size-4" /></button>
         </div>
