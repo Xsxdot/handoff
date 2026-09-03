@@ -134,7 +134,7 @@ func StartServe(ctx context.Context, repoPath, taskID, markRoot, taskDir, config
 		}
 		l.Info("注入 env 变量到 serve 进程", "keys", keys, "count", len(keys))
 	}
-	bin, err := exec.LookPath("opencode")
+	bin, err := lookPathOpencode()
 	if err != nil {
 		l.Error("opencode 未安装", "cause", err)
 		return nil, fmt.Errorf("opencode 未安装: %w", err)
@@ -391,6 +391,31 @@ func randomPassword() (string, error) {
 		return "", err
 	}
 	return hex.EncodeToString(b), nil
+}
+
+// lookPathOpencode 先走 PATH，失败时尝试常见安装位，避免 launchd 最小 PATH 找不到已安装的二进制。
+func lookPathOpencode() (string, error) {
+	if bin, err := exec.LookPath("opencode"); err == nil {
+		return bin, nil
+	} else {
+		candidates := make([]string, 0, 4)
+		if home, herr := os.UserHomeDir(); herr == nil && home != "" {
+			candidates = append(candidates,
+				filepath.Join(home, ".opencode", "bin", "opencode"),
+				filepath.Join(home, ".local", "bin", "opencode"),
+			)
+		}
+		candidates = append(candidates,
+			"/opt/homebrew/bin/opencode",
+			"/usr/local/bin/opencode",
+		)
+		for _, cand := range candidates {
+			if _, serr := os.Stat(cand); serr == nil {
+				return cand, nil
+			}
+		}
+		return "", err
+	}
 }
 
 // tail 返回字符串尾部最多 n 个字符（按字节截断，日志用，不追求多字节安全——

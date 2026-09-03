@@ -321,7 +321,7 @@ func (h *Host) runWake(ctx context.Context, req WakeRequest, targetHome string) 
 	// Workdir 与 HOME 同指隔离目录：检测没有项目仓库，相对路径不得落到 agentd cwd。
 	reply, err := detectTurn(h, ctx, TurnRequest{
 		CLI: req.CLI, HomeDir: targetHome, Workdir: targetHome, Model: req.Model,
-		Prompt: DetectPrompt, Timeout: timeout,
+		Prompt: DetectPrompt, Timeout: timeout, Env: wakeProxyEnv(cli),
 	})
 	if err != nil {
 		mapped := classifyTurnError(err)
@@ -336,6 +336,61 @@ func (h *Host) runWake(ctx context.Context, req WakeRequest, targetHome string) 
 	log().Info("检测回合成功", "cli", cli, "session_id", reply.SessionID,
 		"output_bytes", len(reply.Output))
 	return WakeReply{Outcome: WakeReady, Detail: "回合成功"}, nil
+}
+
+// wakeProxyEnv 为检测回合注入代理环境，确保 launchd 最小 PATH 下的 agentd 仍能联网。
+// 优先使用进程环境已有的代理，缺失时尝试读取 ~/.handoff/env 下的常见 env 文件。
+func wakeProxyEnv(cli string) []string {
+	keys := []string{"https_proxy", "http_proxy", "HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "NO_PROXY", "no_proxy"}
+	var out []string
+	seen := map[string]bool{}
+	for _, k := range keys {
+		if v := os.Getenv(k); v != "" {
+			out = append(out, k+"="+v)
+			seen[k] = true
+		}
+	}
+	// 若进程环境没有代理，尝试从 env 文件补齐（兼容历史配置分散）。
+	if len(out) == 0 {
+		candidates := []string{"opencode.env", "proxy.env"}
+		home, _ := os.UserHomeDir()
+		for _, name := range candidates {
+			path := filepath.Join(home, ".handoff", "env", name)
+			data, err := os.ReadFile(path)
+			if err != nil {
+				continue
+			}
+			for _, line := range strings.Split(string(data), "\n") {
+				line = strings.TrimSpace(line)
+				if line == "" || strings.HasPrefix(line, "#") || !strings.Contains(line, "=") {
+					continue
+				}
+				k, v, _ := strings.Cut(line, "=")
+				k = strings.TrimSpace(k)
+				v = strings.TrimSpace(v)
+				if k == "" || v == "" || seen[k] {
+					continue
+				}
+				// 处理 $NO_PROXY 展开
+				if strings.Contains(v, "$NO_PROXY") {
+					// 读取已有 NO_PROXY 或文件中的 NO_PROXY
+					if np := os.Getenv("NO_PROXY"); np != "" {
+						v = strings.ReplaceAll(v, "$NO_PROXY", np)
+					} else {
+						v = strings.ReplaceAll(v, "$NO_PROXY", "localhost,127.0.0.1,127.0.0.0/8,::1,10.0.0.0/8,100.64.0.0/10,169.254.0.0/16,172.16.0.0/12,192.168.0.0/16,fc00::/7,fe80::/10,.local")
+					}
+				}
+				if k == "https_proxy" || k == "http_proxy" || k == "HTTPS_PROXY" || k == "HTTP_PROXY" || k == "ALL_PROXY" || k == "NO_PROXY" || k == "no_proxy" {
+					out = append(out, k+"="+v)
+					seen[k] = true
+				}
+			}
+			if len(out) > 0 {
+				break
+			}
+		}
+	}
+	return out
 }
 
 // classifyTurnError 把 RunTurn 错误收成四态结局，不返回 error。未知文本保守
