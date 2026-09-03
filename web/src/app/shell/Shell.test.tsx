@@ -1010,6 +1010,13 @@ describe('统一房间面板挂载', () => {
     expect(await screen.findByTestId('room-panel')).toBeInTheDocument()
   })
 
+  it('/cards 房间栏父级带 min-h-0，高度约束不断', async () => {
+    renderShell('/cards')
+    const panel = await screen.findByTestId('room-panel')
+    expect(panel.className).toMatch(/min-h-0/)
+    expect(panel.parentElement?.className).toMatch(/min-h-0/)
+  })
+
   it('其它页面显示浮动房间入口，旧 rooms/inbox 页面不再由路由渲染', async () => {
     renderShell('/settings')
     expect(await screen.findByRole('button', { name: '打开房间面板' })).toBeInTheDocument()

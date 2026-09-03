@@ -188,6 +188,12 @@ describe('RoomPanel', () => {
     expect(logRoom).toHaveBeenCalledWith('debug', 'card_open_requested', { room: 'B1', view: 'detail' })
   })
 
+  it('常驻栏带 min-h-0，会话列表不能把整页撑高', async () => {
+    render(<RoomPanel workbench={workbench()} persistent />)
+    const panel = await screen.findByTestId('room-panel')
+    expect(panel.className).toMatch(/min-h-0/)
+  })
+
   it('常驻面板收起后保留 FAB，并可重新打开', async () => {
     const user = userEvent.setup()
     render(<RoomPanel workbench={workbench()} persistent />)

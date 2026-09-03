@@ -418,7 +418,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
     <>
       {(!persistent || collapsed) && <button type="button" aria-label="打开房间面板" title="打开房间面板" onClick={() => setCollapsed((current) => !current)} className="fixed bottom-[104px] right-5 z-40 flex size-11 items-center justify-center rounded-full bg-slate-900 text-white shadow-lg">◌</button>}
       {!collapsed && (persistent
-        ? <aside data-testid="room-panel" className="flex h-full w-[360px] shrink-0 flex-col border-l bg-background">{content}</aside>
+        ? <aside data-testid="room-panel" className="flex h-full min-h-0 w-[360px] shrink-0 flex-col border-l bg-background">{content}</aside>
         : panelGeom !== null && <aside data-testid="room-panel" className="fixed z-40 flex flex-col overflow-hidden rounded-2xl border bg-background shadow-xl" style={{ left: panelGeom.x, top: panelGeom.y, width: panelGeom.w, height: panelGeom.h }}>{content}<span data-testid="room-panel-corner" onPointerDown={onCornerDown} aria-hidden="true" className="absolute bottom-0 right-0 size-[15px] cursor-nwse-resize" style={{ background: 'linear-gradient(135deg, transparent 50%, #71717a 50%)' }} /></aside>)}
       <ConfirmDialog open={attachConfirm} title="确认 attach" description={selectedRoom?.attach ? `${selectedRoom.attach.task_id} · ${selectedRoom.attach.work_dir}\n将在对应工作目录打开终端。` : '暂无可 attach 的任务'} confirmLabel="确认 attach" busy={stepBusy} onConfirm={confirmAttach} onCancel={() => setAttachConfirm(false)} />
     </>

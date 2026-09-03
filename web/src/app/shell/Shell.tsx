@@ -688,7 +688,10 @@ export function Shell() {
         )}
       </ResizableSidebar>
 
-      <div className={`relative flex min-w-0 flex-1 ${cardsRoute ? 'flex-row' : 'flex-col'}`}>
+      {/* min-h-0 与左栏同一条：flex 子项默认 min-height:auto。/cards 把
+          RoomPanel 挂成这一列的横向 sibling 之后，会话列表的固有高度会把
+          整列撑破 h-dvh，空白处滚轮冒泡成整页滚动。 */}
+      <div className={`relative flex min-h-0 min-w-0 flex-1 ${cardsRoute ? 'flex-row' : 'flex-col'}`}>
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
         {focusedBase && !desktop && !fullPageRoute && <Breadcrumb base={focusedBase} tail={crumbTail} />}
