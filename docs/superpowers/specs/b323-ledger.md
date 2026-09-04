@@ -14,3 +14,22 @@
   - `config.DefaultPath` = `UserHomeDir()/.handoff/config.yaml`。
 - 2026-09-04 分流：架构级（隔离 HOME 供给+使用同一路径）走本卡 spec，不在排查现场改。不镜像 Output 进房间。
 - 2026-09-04：独立审查 `docs/superpowers/reviews/b323-spec-review.md`。无 Critical，维持 L2。吸收 I1–I6 为 r1 即批准。I5 选叫机器人补缺失表内 CLI 凭据（已存在不覆盖）。
+- 2026-09-04 10:01：基线命令 `go test ./internal/hostapi -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/hostapi  0.790s`，退出码 0。
+- 2026-09-04 10:01：基线命令 `go test ./internal/keystone -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/keystone  0.151s`，退出码 0。
+- 2026-09-04 10:01：基线命令 `go test ./internal/agentd -run 'Test(Coord|Wake|ResumeTurnRequest)' -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/agentd  2.347s`，退出码 0。
+- 2026-09-04 10:01：基线命令 `go test ./internal/config ./internal/toolchain ./internal/skill -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/config 0.101s`; `ok   github.com/Xsxdot/handoff/internal/toolchain 0.022s`; `ok   github.com/Xsxdot/handoff/internal/skill 0.008s`，退出码 0。
+- 2026-09-04 10:01：基线命令 `go build ./...` 原始结果：标准输出为空，退出码 0。
+- 2026-09-04 10:04：代码图 `context agentd` 原始失败：`ERROR context domain not found domain=agentd`，候选 best 领域包含 `d_execution_host`、`d_keystone`、`d_gateway` 等；按错误提示改查 `context d_execution_host`，命中 `internal/hostapi` / `internal/prochost` 及 `n_hostapi_Host_RunTurn`。
+- 2026-09-04 10:04：代码图 `sym RunTurn` 命中 `n_hostapi_Host_RunTurn`，签名为 `func (h *Host) RunTurn(ctx context.Context, req TurnRequest) (TurnReply, error)`，文件 `internal/hostapi/hostapi.go:66`；`flow n_hostapi_Host_RunTurn` 仅返回 `return runTurn(ctx, req)`，并报告 `coordinatorRunner.Resume` 调用者，未覆盖 Launch 链路。
+- 2026-09-04 10:04：代码图对 `keystone.Service.Locate`、`attachLocator`、`coordinatorRunner` 的直接符号查询分别未命中/仅给近似候选；随后用候选节点确认 `attachLocator.Locate` 位于 `internal/agentd/server.go:2581`，`coordinatorRunner.Launch/Resume` 位于 `internal/agentd/server.go:2522/2530`。判断：B323 计划标注 keystone/agentd runner/locator 的图覆盖债，源码核对作为补充。
+- 2026-09-04 10:07：`internal/ledger/store.go:49-60` 证实 DSN 以 `postgres://`/`postgresql://` 开头才走 PG，否则直接作为 SQLite 文件路径；计划因此要求隔离配置中的相对 SQLite DSN 先 `filepath.Abs`，URL DSN 原样保留。
+- 2026-09-04 10:07：序列化边界核对：`internal/proto/contract_fixture_test.go:176-180` 与 `web/src/api/testdata/CoordinatorStatus.json:1-9` 仍写旧 attach 命令 `opencode --session sess-coord`；`web/src/api/scheduling.fetch.test.ts:83-99` 与 `web/src/api/contract.test.ts:632-645` 也逐字锁该旧样例。判断：计划只更新协调者 attach fixture/测试期望，不改 `CarrierRunCommandResp` 的既有 `HOME=~` 合约。
+- 2026-09-04 10:10：基线命令 `go test ./internal/proto -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/proto 0.003s`，退出码 0。
+- 2026-09-04 10:10：`web/package.json` 现有脚本为 `test: vitest run`、`typecheck: tsc -b`、`build: tsc -b && vite build`；计划把协调者状态 fixture 回归限定到 `npm test -- --run src/api/scheduling.fetch.test.ts src/api/contract.test.ts` 与 `npm run typecheck`，不触碰前端字段类型。
+- 2026-09-04 10:11：基线前端命令 `npm test -- --run src/api/scheduling.fetch.test.ts src/api/contract.test.ts`（cwd `web`）失败，原始输出为 `> web@0.0.0 test`、`> vitest run --run src/api/scheduling.fetch.test.ts src/api/contract.test.ts`、`sh: 1: vitest: not found`。
+- 2026-09-04 10:11：基线前端命令 `npm run typecheck`（cwd `web`）失败，原始输出为 `> web@0.0.0 typecheck`、`> tsc -b`、`sh: 1: tsc: not found`；计划保留该命令作为实现后验收，当前只能记未验证。
+- 2026-09-04 10:18：B323 计划写入 `docs/superpowers/plans/b323-plan.md`。计划决定 coordinator 全套采用普通文件/目录复制，源/目标 symlink 用 `Lstat` 拒绝；只写 `.handoff/config.yaml`、`.config/opencode/AGENTS.md`、`.config/opencode/skills/` 和缺失的表内凭据，绝不整树 `RemoveAll` 或改写 session db。
+- 2026-09-04 10:18：计划决定冷 `Locate` 通过 keystone 进程内 `SessionRefResolver` 在 locator 前补 HOME；agentd 读取唯一 coordinator squad 的成员声明顺序，复用已上线过滤和 `Carrier` 只读，不调用 `LaunchAdmit`，HTTP 测试比较 GET 前后 squad/carrier running 计数均为 0。
+- 2026-09-04 10:18：计划决定 `Host.RunTurn` 的展开失败通过公开 RunTurn 两支测试锁住，`buildEnv` 返回展开结果给 driver 日志；attach 采用服务端 shell word，带空格路径单引号并用 `sh -n` 经 HTTP 缝校验，`SessionSpec`/`SessionRef`/HTTP 字段形状不变。
+- 2026-09-04 10:18：计划自审通过：spec 故事 1→Task 1/3，故事 2→Task 3/keystone 保持 rebuild，故事 3→Task 2/3，故事 4→Task 1/3，故事 5→Task 1/3；占位符扫描无 `TBD`/`TODO`/“同 Task”；web 依赖缺失的两条基线命令已按原始报错记为未验证。
+- 2026-09-04 10:23：提交计划与台账命令 `git commit -m "docs(b323): 编写协调者隔离 HOME 实现计划"` 原始输出：`[cards/B323-charter 1d26f29e] docs(b323): 编写协调者隔离 HOME 实现计划`；`2 files changed, 1047 insertions(+)`；`create mode 100644 docs/superpowers/plans/b323-plan.md`。
