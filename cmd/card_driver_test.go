@@ -323,6 +323,26 @@ func TestCardBindUsesGrokSessionEnvironment(t *testing.T) {
 	}
 }
 
+func TestCardBindUsesClaudeSessionEnvironment(t *testing.T) {
+	clearSeatSourceEnv(t)
+	t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-bind")
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "claude 环境坐下卡")
+	out, _, err := runLedgerCLI(t, dir, "card", "bind", id)
+	if err != nil || strings.TrimSpace(out) != `{"ok":true}` {
+		t.Fatalf("claude bind: out=%q err=%v", out, err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.GetCard(id)
+	if err != nil || card.DriverSession != "cli:claude#claude-bind" || card.DriverSource != "bind" {
+		t.Fatalf("claude bind seat = %+v, err=%v", card, err)
+	}
+}
+
 func TestCardRebindSelfUsesLocalLedger(t *testing.T) {
 	clearSeatSourceEnv(t)
 	dir := t.TempDir()
