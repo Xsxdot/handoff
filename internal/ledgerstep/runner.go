@@ -49,6 +49,8 @@ type StepRunner struct {
 	Extra string
 	// Now 只为路径日期提供可注入时钟；nil 使用 time.Now。
 	Now func() time.Time
+	// PublishWorkBranch 把工作分支推到 origin；nil 则 pass 后不发布。
+	PublishWorkBranch func(ctx context.Context, target, branch, taskID string) error
 }
 
 // Run 跑一次节点。
@@ -84,6 +86,7 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 			_, err := r.St.AttachFile(cardID, kind, path, actor)
 			return err
 		},
+		PublishWorkBranch: r.PublishWorkBranch,
 	}
 	nodeStep.Dispatch = func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (string, string, error) {
 		return r.dispatchNodeWithGate(&outputPath, nodeStep.WriteGate)(ctx, card, node)

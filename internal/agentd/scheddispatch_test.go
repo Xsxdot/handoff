@@ -202,7 +202,7 @@ func TestSquadNodeFullQueuesWithoutTrace(t *testing.T) {
 	holdAfterSquadRound(t, env)
 	ids := seedSquadFlow(t, env, "sq1", 2)
 	if err := env.srv.startCardStep(ids[0], proto.CardStepReq{
-		Step: "implement", Actor: "web:test", Executor: "grok"}); err != nil {
+		Step: "implement", Actor: "web:test"}); err != nil {
 		t.Fatalf("首卡受理: %v", err)
 	}
 	waitFor(t, func() bool {
@@ -216,7 +216,7 @@ func TestSquadNodeFullQueuesWithoutTrace(t *testing.T) {
 	}
 	before := countCardEvents(t, env.ledger, ids[1])
 	if err := env.srv.startCardStep(ids[1], proto.CardStepReq{
-		Step: "implement", Actor: "web:test", Executor: "grok"}); err != nil {
+		Step: "implement", Actor: "web:test"}); err != nil {
 		t.Fatalf("满员受理应静默排队（返回 nil），实得 %v", err)
 	}
 	select {
@@ -231,14 +231,8 @@ func TestSquadNodeFullQueuesWithoutTrace(t *testing.T) {
 	if got := runningCountIn(t, facade, "carrier/c1"); got != 1 {
 		t.Fatalf("排队不应改计数：carrier/c1=%d，want 1", got)
 	}
-	// 队列行快照 vs 独立 oracle（手写裁决，不调 effectiveCovers）：
-	// IgnitionRequest 的 Target/Executor/Model 在契约里标注为「一次性覆盖」
-	// （contract §4.1），载体字段的解析只发生在准入时刻（§4.2 条 8）；出队后
-	// 「再次走同一步入口」重新准入（§5），所以队列行必须携带**未解析的原始覆盖**
-	// 而不是某个载体的投影——满员时根本没有命中的载体可投影。plan 的 T2 oracle
-	// 在此写成 Target="ftm"，与契约冲突，按契约改判：req.Executor="grok" 压过
-	// 一切、Target 空（请求与节点都没填）、Model 空串（换执行器切断下层模型）、
-	// Priority 取卡默认「中」、Ready 恒 true（plan §D4）。
+	// B335：小队节点禁止请求点名执行器。队列行快照因此是空 Target/Executor，
+	// 出队后再次 Admit 才解析载体。Priority 取卡默认「中」、Ready 恒 true。
 	e, err := facade.Get(scheduling.KindIgnitionQueue, ids[1]+"|implement")
 	if err != nil {
 		t.Fatalf("读队列行: %v", err)
@@ -257,7 +251,7 @@ func TestSquadNodeFullQueuesWithoutTrace(t *testing.T) {
 	}
 	r := row.Req
 	want := map[string]any{"Card": ids[1], "Squad": "sq1", "Node": "implement",
-		"Target": "", "Executor": "grok", "Model": "",
+		"Target": "", "Executor": "", "Model": "",
 		"Priority": "中", "Ready": true, "Actor": "web:test"}
 	got := map[string]any{"Card": r.Card, "Squad": r.Squad, "Node": r.Node,
 		"Target": r.Target, "Executor": r.Executor, "Model": r.Model,
@@ -273,6 +267,21 @@ func TestSquadNodeFullQueuesWithoutTrace(t *testing.T) {
 // 小队=配置问题）与角色不符都以受理错误上浮（HTTP default 分支→400），与满员的
 // 静默排队形态可区分（T2 已锁另一侧）。条件恒假的回答（判据形状要求4）：
 // ErrNoHealthy 恒不触发的机器上，本支退化为只锁角色不符——两条子用例独立成立。
+func TestSquadNodeRejectsNamedTargetAndExecutor(t *testing.T) {
+	env, _ := setupSquadEnv(t, 2)
+	cardID := seedSquadFlow(t, env, "sq1", 1)[0]
+	err := env.srv.startCardStep(cardID, proto.CardStepReq{
+		Step: "implement", Actor: "web:test", Target: "linux-01"})
+	if err == nil || !strings.Contains(err.Error(), "--target") || !strings.Contains(err.Error(), "sq1") {
+		t.Fatalf("点名机器应被拒，实得 %v", err)
+	}
+	err = env.srv.startCardStep(cardID, proto.CardStepReq{
+		Step: "implement", Actor: "web:test", Executor: "grok"})
+	if err == nil || !strings.Contains(err.Error(), "--executor") || !strings.Contains(err.Error(), "sq1") {
+		t.Fatalf("点名执行器应被拒，实得 %v", err)
+	}
+}
+
 func TestSquadNodeRejectsAreDistinctFromQueueing(t *testing.T) {
 	t.Run("空成员小队报ErrNoHealthy", func(t *testing.T) {
 		env, _ := setupSquadEnv(t, 2)

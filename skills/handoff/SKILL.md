@@ -466,10 +466,14 @@ handoff card wait <id> [--subtree] [--timeout 3h]
   `dispatched` 推断这一次派发。CLI 与 agentd 必须同批升级。
 - 本机卡派发省略 `--target`；不要在 `targets` 登记指向本机 loopback 的自机。`--target 本机`
   不是合法键；版本不一致时的「目标机未定」仍是版本 skew 文案，不表示本机 target 缺失。
+- **节点绑了小队（charter 派发列的 runner）时，禁止 `--target` / `--executor`。**
+  机器和 CLI 由 Admit 选。点名会被代码拒绝，不是纪律劝告。pass 后执行机把工作分支
+  `git push origin`；下一台 fetch 续接。没推上去就跨机，仍走原来的跨机锁并
+  `needs_human`。日常不要用 `--base` 当跨机逃生口。
 - 裁决落在卡的事件流（`review_verdict`）：pass 自动进下一列，fail 退回上一节点
   再来一轮；裁决解析失败或超轮打 `needs_human`，人工裁决后把结论 `note` 落卡，
   重派前 `card needs <id> --clear`。
-- 一次性覆盖：`--executor` / `--model`（B203）、`--extra "<本轮补充>"`（进 prompt
+- 一次性覆盖：绑小队的节点不能 `--executor`；`--model`（B203）、`--extra "<本轮补充>"`（进 prompt
   的「本次补充」小节，不落卡、不影响后续轮次）、`--discipline-override <角色>`（应急）。
 - `card wait` 跟的是**账本单流**（卡或整棵子树的事件，含镜像进来的 task 事件），
   不是 task 集合——所以挂起期间新拆的子卡、新派的任务天然进流，没有动态成员问题。

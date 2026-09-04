@@ -58,6 +58,9 @@ type NodeStep struct {
 	Attach func(cardID, kind, path, actor string) error
 	// WriteGate 是生产编排注入的卡写闸；nil 表示不设闸。
 	WriteGate func() bool
+	// PublishWorkBranch 把工作分支推到 origin。nil 表示本轮不发布（单测）。
+	// 失败必须 needs_human，不得假装下一台已经能 fetch。
+	PublishWorkBranch func(ctx context.Context, target, branch, taskID string) error
 }
 
 // maxRounds 返回本节点的轮次封顶：节点没配就用包内默认。
@@ -408,6 +411,41 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		} else {
 			logger.Info("节点产出物已挂载",
 				"kind", output.Kind, "path", declaredPath, "actor", n.actor())
+		}
+	}
+
+	if verdict.Pass && n.PublishWorkBranch != nil {
+		info, workErr := n.St.WorkBranch(cardID)
+		if workErr != nil && !errors.Is(workErr, ledger.ErrNotFound) {
+			logger.Error("pass 后读取工作分支失败", "cause", workErr)
+			return n.haltForHuman(cardID, "读取工作分支失败",
+				"裁决已通过，但无法读取工作分支去推 origin：\n"+workErr.Error())
+		}
+		if workErr == nil && info.Branch != "" {
+			pushTarget, pushTask := info.Target, info.TaskID
+			if pushTarget == "" {
+				pushTarget = target
+			}
+			if pushTask == "" {
+				pushTask = taskID
+			}
+			logger.Info("开始把工作分支推到 origin", "branch", info.Branch,
+				"target", pushTarget, "task", pushTask)
+			if pubErr := n.PublishWorkBranch(ctx, pushTarget, info.Branch, pushTask); pubErr != nil {
+				logger.Error("工作分支未能推到 origin", "branch", info.Branch,
+					"target", pushTarget, "task", pushTask, "cause", pubErr)
+				return n.haltForHuman(cardID, "工作分支未能推到 origin",
+					"裁决已通过，但 git push origin "+info.Branch+" 失败：\n"+pubErr.Error())
+			}
+			if err := n.gatedWrite("工作分支 origin 发布落账"); err != nil {
+				return Outcome{}, err
+			}
+			if recErr := n.St.RecordWorkBranchPublished(cardID, info.Branch, pushTarget, pushTask, n.actor()); recErr != nil {
+				logger.Error("工作分支发布落账失败", "branch", info.Branch, "cause", recErr)
+				return n.haltForHuman(cardID, "工作分支发布落账失败",
+					"origin 已推送，但账本未能记下发布事件：\n"+recErr.Error())
+			}
+			logger.Info("工作分支已发布到 origin", "branch", info.Branch, "target", pushTarget)
 		}
 	}
 

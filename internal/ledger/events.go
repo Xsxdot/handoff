@@ -139,6 +139,7 @@ type DispatchSnapshot struct {
 type WorkBranchInfo struct {
 	Branch string
 	Target string
+	TaskID string
 }
 
 // RecordDispatch 落派发事件。
@@ -491,13 +492,58 @@ func (s *Store) WorkBranch(cardID string) (WorkBranchInfo, error) {
 			continue
 		}
 		if snapshot.Branch != "" {
-			info = WorkBranchInfo{Branch: snapshot.Branch, Target: snapshot.Target}
+			info = WorkBranchInfo{Branch: snapshot.Branch, Target: snapshot.Target, TaskID: snapshot.TaskID}
 		}
 	}
 	if info.Branch == "" {
 		return zero, fmt.Errorf("卡 %s 没有非审阅的 dispatched 快照（还没派过实现轮？）: %w", cardID, ErrNotFound)
 	}
 	return info, nil
+}
+
+// WorkBranchPublishedSnap 是 origin 交接成功的快照。
+type WorkBranchPublishedSnap struct {
+	Branch string `json:"branch"`
+	Target string `json:"target"`
+	TaskID string `json:"task_id,omitempty"`
+	Actor  string `json:"-"`
+}
+
+// RecordWorkBranchPublished 记下工作分支已出现在 origin。
+func (s *Store) RecordWorkBranchPublished(cardID, branch, target, taskID, actor string) error {
+	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			return fmt.Errorf("工作分支发布落账: 卡 %s: %w", cardID, err)
+		}
+		_, err := s.appendEvent(tx, sink, cardID, EvWorkBranchPublished, actor, WorkBranchPublishedSnap{
+			Branch: branch, Target: target, TaskID: taskID, Actor: actor,
+		})
+		return err
+	})
+}
+
+// WorkBranchPublished 报告该卡当前工作分支是否已有 origin 发布事件。
+func (s *Store) WorkBranchPublished(cardID, branch string) (bool, error) {
+	if branch == "" {
+		return false, nil
+	}
+	events, err := s.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		return false, fmt.Errorf("读卡 origin 发布事件: %w", err)
+	}
+	for _, event := range events {
+		if event.Type != EvWorkBranchPublished {
+			continue
+		}
+		var snap WorkBranchPublishedSnap
+		if err := json.Unmarshal(event.Payload, &snap); err != nil {
+			continue
+		}
+		if snap.Branch == branch {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // PurposeRounds 数该卡已派出的指定 purpose 轮数（只增不减，用于给重跑轮的

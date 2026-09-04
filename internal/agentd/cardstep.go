@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -54,6 +55,22 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 	if err != nil {
 		s.releaseCardStep(cardID)
 		return err
+	}
+	if node.Override.Squad != "" {
+		if named := strings.TrimSpace(req.Target); named != "" {
+			s.releaseCardStep(cardID)
+			s.log.Warn("小队节点拒绝点名机器", "card", cardID, "node", node.Name,
+				"squad", node.Override.Squad, "target", named)
+			return fmt.Errorf("节点 %s 已绑小队 %q，禁止 --target %s；由 Admit 选机器",
+				node.Name, node.Override.Squad, named)
+		}
+		if named := strings.TrimSpace(req.Executor); named != "" {
+			s.releaseCardStep(cardID)
+			s.log.Warn("小队节点拒绝点名执行器", "card", cardID, "node", node.Name,
+				"squad", node.Override.Squad, "executor", named)
+			return fmt.Errorf("节点 %s 已绑小队 %q，禁止 --executor %s；由 Admit 选载体 CLI",
+				node.Name, node.Override.Squad, named)
+		}
 	}
 	// B156.3 K2：节点绑小队时编制域先裁决本次派发（解析层插在纪律解析之前——
 	// 有效目标机要等 Binding 出来才知道，能力位探活必须打 Binding.Target）。
@@ -124,6 +141,9 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		Executor: req.Executor,
 		Model:    req.Model,
 		Extra:    req.Extra,
+		PublishWorkBranch: func(ctx context.Context, target, branch, taskID string) error {
+			return s.pushWorkBranchOrigin(ctx, target, branch, taskID)
+		},
 	}
 	s.log.Info("卡节点装配完成", "card", cardID, "node", req.Step,
 		"actor", req.Actor, "target", req.Target, "canonical_target", target, "executor", req.Executor,
@@ -146,6 +166,39 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		s.log.Info("卡节点回合返回", "card", cardID, "node", req.Step,
 			"squad", binding.Squad, "carrier", binding.Carrier)
 	}()
+	return nil
+}
+
+// pushWorkBranchOrigin 在持有工作分支的那台机把分支推到 origin。
+// 走任务仓库的 git push，失败由调用方打 needs_human。
+func (s *Server) pushWorkBranchOrigin(ctx context.Context, target, branch, taskID string) error {
+	if strings.TrimSpace(branch) == "" {
+		return fmt.Errorf("工作分支名为空，无法 push origin")
+	}
+	if strings.TrimSpace(taskID) == "" {
+		return fmt.Errorf("没有任务 id，无法在执行机 push origin %s", branch)
+	}
+	canonical := s.CanonicalTarget(target)
+	cl, err := s.clientForTarget(canonical)
+	if err != nil {
+		s.log.Error("取得 push origin 客户端失败", "target", target, "canonical_target", canonical,
+			"branch", branch, "task", taskID, "cause", err)
+		return fmt.Errorf("取得 %s 客户端去 push origin: %w", target, err)
+	}
+	cmd := "git push origin " + strconv.Quote(branch)
+	s.log.Info("推送工作分支到 origin", "target", canonical, "branch", branch, "task", taskID)
+	out, code, runErr := cl.Run(ctx, taskID, cmd)
+	if runErr != nil {
+		s.log.Error("推送工作分支请求失败", "target", canonical, "branch", branch,
+			"task", taskID, "cause", runErr)
+		return runErr
+	}
+	if code != 0 {
+		s.log.Error("推送工作分支非零退出", "target", canonical, "branch", branch,
+			"task", taskID, "exit", code)
+		return fmt.Errorf("git push origin %s 退出码 %d：%s", branch, code, strings.TrimSpace(out))
+	}
+	s.log.Info("工作分支已推到 origin", "target", canonical, "branch", branch, "task", taskID)
 	return nil
 }
 

@@ -176,12 +176,24 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 			previousTarget = d.NormalizeTarget(previousTarget)
 		}
 	}
+	originReady := false
 	if hasWorkBranch && previousTarget != target {
-		slog.Default().Warn("工作分支跨目标机，拒绝接续", "card", c.ID,
-			"branch", workInfo.Branch, "previous_target", previousTarget, "target", target,
-			"cause", "目标机身份不一致")
-		return zero, fmt.Errorf("工作分支只存在于创建它的那台机器：上次目标机 %q，本次目标机 %q；请先 push 到 origin（git push origin %s），再用显式 --base 指定",
-			previousTarget, target, workInfo.Branch)
+		published, pubErr := d.St.WorkBranchPublished(c.ID, workInfo.Branch)
+		if pubErr != nil {
+			slog.Default().Error("读取工作分支 origin 发布失败", "card", c.ID,
+				"branch", workInfo.Branch, "cause", pubErr)
+			return zero, fmt.Errorf("取工作分支 origin 发布: %w", pubErr)
+		}
+		if !published {
+			slog.Default().Warn("工作分支跨目标机且未发布 origin，拒绝接续", "card", c.ID,
+				"branch", workInfo.Branch, "previous_target", previousTarget, "target", target,
+				"cause", "目标机身份不一致且 origin 未见该分支")
+			return zero, fmt.Errorf("工作分支只存在于创建它的那台机器：上次目标机 %q，本次目标机 %q；请先在上一台 git push origin %s（失败则 needs_human）。日常路径不使用 --base",
+				previousTarget, target, workInfo.Branch)
+		}
+		originReady = true
+		slog.Default().Info("工作分支已在 origin，跨机接续", "card", c.ID,
+			"branch", workInfo.Branch, "previous_target", previousTarget, "target", target)
 	}
 
 	// 判据被收起时不留空冒号：模板正文里「验收判据：{{ACCEPT}}」后面跟一片
@@ -240,8 +252,10 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	localBaseBranch := false
 	if hasWorkBranch {
-		base = workInfo.Branch // 后续节点从同机工作分支起，不是从卡合并基线起
-		localBaseBranch = true
+		base = workInfo.Branch // 后续节点从工作分支起，不是从卡合并基线起
+		if !originReady {
+			localBaseBranch = true
+		}
 	}
 	resolveDefaultBase := base == ""
 	// 三段拼装要用到有效基线，所以必须排在 base 算完之后。审阅轮的 base 被

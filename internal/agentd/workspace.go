@@ -1131,7 +1131,7 @@ func resolveLocalBaseBranch(ctx context.Context, repo, branch string) (string, b
 	if _, stderr, err := gitProbe(ctx, repo, "show-ref", "--verify", "--quiet", ref); err != nil {
 		log().Warn("本地工作分支不存在，拒绝派发", "repo", repo, "branch", branch,
 			"ref", ref, "stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
-		return "", false, fmt.Errorf("%w: 工作分支只存在于创建它的那台机器，本地 %s 不存在；请先 push 到 origin，再用显式 --base 指定",
+		return "", false, fmt.Errorf("%w: 工作分支只存在于创建它的那台机器，本地 %s 不存在；请先 push 到 origin（失败则 needs_human）。日常路径不使用 --base",
 			ErrBadWorkspaceReq, ref)
 	}
 	out, stderr, err := gitProbe(ctx, repo, "rev-parse", "--verify", "--quiet", ref+"^{commit}")
@@ -1139,7 +1139,7 @@ func resolveLocalBaseBranch(ctx context.Context, repo, branch string) (string, b
 	if err != nil || resolved == "" {
 		log().Warn("本地工作分支不存在，拒绝派发", "repo", repo, "branch", branch,
 			"ref", ref, "stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
-		return "", false, fmt.Errorf("%w: 工作分支只存在于创建它的那台机器，本地 %s 不存在；请先 push 到 origin，再用显式 --base 指定",
+		return "", false, fmt.Errorf("%w: 工作分支只存在于创建它的那台机器，本地 %s 不存在；请先 push 到 origin（失败则 needs_human）。日常路径不使用 --base",
 			ErrBadWorkspaceReq, ref)
 	}
 	localStart := resolved

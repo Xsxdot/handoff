@@ -675,6 +675,39 @@ func TestViaTemplateRejectsCrossTargetBeforeTransport(t *testing.T) {
 	}
 }
 
+// TestViaTemplateAllowsCrossTargetAfterOriginPublish 锁 B335：工作分支发布到
+// origin 后，下一台机器可以接续，且不得再走本地-only 基线。
+func TestViaTemplateAllowsCrossTargetAfterOriginPublish(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var dispatched []DispatchOpts
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
+		dispatched = append(dispatched, opts)
+		return fmt.Sprintf("T-origin-%d", len(dispatched)), "", nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "mac-02"}); err != nil {
+		t.Fatalf("首轮 ViaTemplate: %v", err)
+	}
+	wb, err := st.WorkBranch(card.ID)
+	if err != nil {
+		t.Fatalf("WorkBranch: %v", err)
+	}
+	if err := st.RecordWorkBranchPublished(card.ID, wb.Branch, "mac-02", "T-origin-1", "tester"); err != nil {
+		t.Fatalf("发布工作分支: %v", err)
+	}
+	if _, err := d.ViaTemplate(context.Background(), card,
+		TemplateDispatch{Template: "feature-impl", Target: "linux-01"}); err != nil {
+		t.Fatalf("已发布后跨机应放行: %v", err)
+	}
+	if len(dispatched) != 2 {
+		t.Fatalf("跨机接续应再调 Transport，实际 %d", len(dispatched))
+	}
+	if dispatched[1].Base != wb.Branch || dispatched[1].LocalBaseBranch || dispatched[1].Target != "linux-01" {
+		t.Fatalf("跨机 origin 接续：base=%q local=%v target=%q", dispatched[1].Base,
+			dispatched[1].LocalBaseBranch, dispatched[1].Target)
+	}
+}
+
 func TestViaTemplateNodePurposeTakesReviewPath(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	var dispatched []DispatchOpts
