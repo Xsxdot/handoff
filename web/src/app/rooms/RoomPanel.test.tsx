@@ -188,10 +188,12 @@ describe('RoomPanel', () => {
     expect(logRoom).toHaveBeenCalledWith('debug', 'card_open_requested', { room: 'B1', view: 'detail' })
   })
 
-  it('常驻栏带 min-h-0，会话列表不能把整页撑高', async () => {
+  it('常驻栏带 min-h-0、relative 与 overflow-hidden，阻断内部定位元素逃逸撑高整页', async () => {
     render(<RoomPanel workbench={workbench()} persistent />)
     const panel = await screen.findByTestId('room-panel')
     expect(panel.className).toMatch(/min-h-0/)
+    expect(panel.className).toMatch(/relative/)
+    expect(panel.className).toMatch(/overflow-hidden/)
   })
 
   it('常驻面板收起后保留 FAB，并可重新打开', async () => {

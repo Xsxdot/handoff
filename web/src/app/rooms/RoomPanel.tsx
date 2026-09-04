@@ -68,7 +68,7 @@ function ListRow({ room, needsReply, onOpen }: { room: RoomSummary; needsReply: 
       type="button"
       aria-label={`会话 ${room.title}`}
       onClick={() => onOpen(room.id)}
-      className={`flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors ${needsReply ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-accent/60'}`}
+      className={`relative flex w-full items-center gap-2.5 rounded-xl px-2.5 py-2 text-left transition-colors ${needsReply ? 'bg-amber-50 hover:bg-amber-100' : 'hover:bg-accent/60'}`}
     >
       <span className="relative flex size-11 shrink-0 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold text-slate-700">
         {roomInitials(room)}
@@ -351,7 +351,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
           <button type="button" className="underline" onClick={() => { roomsPoll.refresh(); inboxPoll.refresh() }}>重试</button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div className="relative min-h-0 flex-1 overflow-y-auto p-2">
         {roomsPoll.data === null && !roomsPoll.disconnected && !roomsPoll.sessionExpired ? <p className="p-2 text-sm text-muted-foreground">正在读取…</p> : visible.length === 0 && roomsPoll.data !== null ? <p className="p-2 text-sm text-muted-foreground">（暂无会话）</p> : visible.map((room) => <ListRow key={room.id} room={room} needsReply={roomNeedsReply(room, needRoomIDs)} onOpen={openRoom} />)}
       </div>
     </>
@@ -363,7 +363,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
         <button type="button" aria-label="更多" onPointerDown={(event) => event.stopPropagation()} onClick={() => setView('detail')} className="rounded-md px-2 py-1 text-xs hover:bg-accent">•••</button>
       </header>
       {(historyPoll.disconnected || historyPoll.sessionExpired || readError !== '') && <p role="alert" className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-800">{readError !== '' ? `已读失败：${readError}` : historyPoll.sessionExpired ? '消息会话已过期，请重新登录。' : `消息流已断开：${historyPoll.errorText}`}</p>}
-      <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50/60 p-3">
+      <div className="relative min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50/60 p-3">
         {historyPoll.data === null && !historyPoll.disconnected && !historyPoll.sessionExpired ? <p className="text-sm text-muted-foreground">正在读取…</p> : history.length === 0 ? <p className="text-sm text-muted-foreground">（还没有消息）</p> : history.map((event) => <MessageBubble key={event.seq} event={event} />)}
       </div>
       <footer className="shrink-0 border-t bg-background p-2.5">
@@ -382,7 +382,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
         <span className="min-w-0 flex-1 truncate text-sm font-semibold">房间详情</span>
         <button type="button" aria-label="更多" onPointerDown={(event) => event.stopPropagation()} onClick={() => setView('list')} className="rounded-md px-2 py-1 text-xs hover:bg-accent">•••</button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto p-3">
+      <div className="relative min-h-0 flex-1 overflow-y-auto p-3">
         <section className="rounded-2xl border bg-white/65 p-3 shadow-sm" aria-label="协调者">
           <div className="flex items-center gap-2">
             <button type="button" aria-label="房间头像" onClick={openAttachConfirm} disabled={!selectedRoom?.attach} title={!selectedRoom?.attach ? '暂无可 attach 的任务' : undefined} className="flex size-10 items-center justify-center rounded-full bg-slate-200 text-xs font-semibold disabled:opacity-50">{selectedRoom ? roomInitials(selectedRoom) : '?'}</button>
@@ -418,7 +418,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
     <>
       {(!persistent || collapsed) && <button type="button" aria-label="打开房间面板" title="打开房间面板" onClick={() => setCollapsed((current) => !current)} className="fixed bottom-[104px] right-5 z-40 flex size-11 items-center justify-center rounded-full bg-slate-900 text-white shadow-lg">◌</button>}
       {!collapsed && (persistent
-        ? <aside data-testid="room-panel" className="flex h-full min-h-0 w-[360px] shrink-0 flex-col border-l bg-background">{content}</aside>
+        ? <aside data-testid="room-panel" className="relative flex h-full min-h-0 w-[360px] shrink-0 flex-col overflow-hidden border-l bg-background">{content}</aside>
         : panelGeom !== null && <aside data-testid="room-panel" className="fixed z-40 flex flex-col overflow-hidden rounded-2xl border bg-background shadow-xl" style={{ left: panelGeom.x, top: panelGeom.y, width: panelGeom.w, height: panelGeom.h }}>{content}<span data-testid="room-panel-corner" onPointerDown={onCornerDown} aria-hidden="true" className="absolute bottom-0 right-0 size-[15px] cursor-nwse-resize" style={{ background: 'linear-gradient(135deg, transparent 50%, #71717a 50%)' }} /></aside>)}
       <ConfirmDialog open={attachConfirm} title="确认 attach" description={selectedRoom?.attach ? `${selectedRoom.attach.task_id} · ${selectedRoom.attach.work_dir}\n将在对应工作目录打开终端。` : '暂无可 attach 的任务'} confirmLabel="确认 attach" busy={stepBusy} onConfirm={confirmAttach} onCancel={() => setAttachConfirm(false)} />
     </>
