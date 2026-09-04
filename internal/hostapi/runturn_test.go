@@ -239,3 +239,25 @@ func TestRunTurnEmptyPromptRejected(t *testing.T) {
 		t.Fatalf("错误应指明 prompt 问题: %v", err)
 	}
 }
+
+// TestBuildEnvExpandsTildeHomeDir 是 2026-09-04 字面量 ~/ 事故的回归锁：
+// TurnRequest.HomeDir 含 ~ 时，子进程 HOME 必须是目标机展开后的绝对路径，
+// 不得透传字面量（否则子进程相对 cwd 建出 ./~/.handoff/... 垃圾目录）。
+func TestBuildEnvExpandsTildeHomeDir(t *testing.T) {
+	fakeHome := t.TempDir()
+	swapUserHomeDir(t, fakeHome)
+	env := buildEnv(TurnRequest{HomeDir: "~/.handoff/home/c1"})
+	want := "HOME=" + filepath.Join(fakeHome, ".handoff/home/c1")
+	found := false
+	for _, kv := range env {
+		if kv == "HOME=~/.handoff/home/c1" {
+			t.Fatalf("HOME 字面量 ~ 被透传给子进程: %v", env)
+		}
+		if kv == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("展开后的 HOME 缺席，want %q, got %v", want, env)
+	}
+}

@@ -1061,7 +1061,25 @@ func withCarrierHome(env []string, homeDir string) []string {
 		}
 		out = append(out, kv)
 	}
-	return append(out, "HOME="+homeDir)
+	return append(out, "HOME="+expandCarrierHome(homeDir))
+}
+
+// expandCarrierHome 把载体 HomeDir 的前导 ~ 在本机展开为绝对路径。
+// 登记串是跨机可认的用户可见形态（含 ~，见 scheduling.IsolatedHomeRoot）；
+// 进子进程 HOME 前必须展开，否则子进程把 $HOME 系文件相对 cwd 落盘，
+// 在仓库下建出 ./~/.handoff/... 垃圾目录（2026-09-04 实测 2.2G）。
+// 展开失败时原样返回（os.UserHomeDir 失败属极罕见，保持原行为不阻断派发）。
+func expandCarrierHome(homeDir string) string {
+	if homeDir != "~" && !strings.HasPrefix(homeDir, "~/") && !strings.HasPrefix(homeDir, `~\`) {
+		return homeDir
+	}
+	if base, err := os.UserHomeDir(); err == nil && base != "" {
+		if homeDir == "~" {
+			return base
+		}
+		return filepath.Join(base, strings.TrimLeft(homeDir[1:], `/\`))
+	}
+	return homeDir
 }
 
 // guardWorkdirBusy 拒绝把任务派到已被活跃任务占用的工作目录（B42）。

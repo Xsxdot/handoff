@@ -29,3 +29,7 @@ prototypes/desktop-update/
 
 # build-deploy.sh 的默认输出落点；构建产物不进仓库
 /dist/
+
+# 字面量 ~ 目录：载体 HOME 的 ~ 未展开时，子进程会把 $HOME 系文件相对 cwd 落盘
+# （如 ./~/.handoff/home/...），属运行事故产物，永不入库（2026-09-04 实测 2.2G）
+/~/

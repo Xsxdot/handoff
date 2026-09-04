@@ -1493,6 +1493,24 @@ func TestResumeTaskUsesPersistedCarrierHome(t *testing.T) {
 	}
 }
 
+// TestWithCarrierHomeExpandsTilde 是 2026-09-04 字面量 ~/ 事故的回归锁：
+// 载体 HomeDir 以 ~/ 开头时，注入 executor 环境的 HOME 必须是展开后的绝对路径，
+// 不得把 ~ 字面量透传给子进程（子进程会相对 cwd 建出 ./~/.handoff/... 垃圾目录）。
+func TestWithCarrierHomeExpandsTilde(t *testing.T) {
+	fakeHome := t.TempDir()
+	t.Setenv("HOME", fakeHome)
+	got := withCarrierHome(nil, "~/.handoff/home/muse")
+	want := "HOME=" + filepath.Join(fakeHome, ".handoff/home/muse")
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("withCarrierHome(~) = %q, want [%q]", got, want)
+	}
+	abs := filepath.Join(fakeHome, "carrier", "home")
+	gotAbs := withCarrierHome([]string{"FOO=1"}, abs)
+	if len(gotAbs) != 2 || gotAbs[0] != "FOO=1" || gotAbs[1] != "HOME="+abs {
+		t.Fatalf("绝对路径 HomeDir 不得改写: %q", gotAbs)
+	}
+}
+
 // envRecordingAdapter 包一层 fake adapter，只为记录 Start 收到的 Env。
 type envRecordingAdapter struct {
 	executor.Adapter

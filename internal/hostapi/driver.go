@@ -230,9 +230,21 @@ func buildEnv(req TurnRequest) []string {
 		out = append(out, kv)
 	}
 	if homeSet {
-		out = append(out, "HOME="+req.HomeDir)
+		out = append(out, "HOME="+expandTurnHomeDir(req.HomeDir))
 	}
 	return out
+}
+
+// expandTurnHomeDir 把 TurnRequest.HomeDir 的前导 ~ 在目标机展开为绝对路径。
+// 载体登记串是跨机可认的用户可见形态（含 ~）；进子进程 HOME 前必须展开，
+// 否则子进程把 $HOME 系文件相对 Workdir 落盘，在仓库下建出
+// ./~/.handoff/... 垃圾目录（2026-09-04 实测 2.2G）。
+// 复用 expandHomePath 的展开语义；展开失败时原样返回，保持原行为不阻断回合。
+func expandTurnHomeDir(homeDir string) string {
+	if expanded, err := expandHomePath(homeDir); err == nil {
+		return expanded
+	}
+	return homeDir
 }
 
 // consumeEvents 流式消费 JSONL 事件行直到 EOF：sessionID 取首个非空值，
