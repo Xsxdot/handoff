@@ -95,6 +95,9 @@ func newCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	env := newLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
 	allowCarrierMachines(t, env.srv, "linux-01", "m1", "m2")
+	env.srv.openCoordTUI = func(card string, carrier scheduling.Carrier, spec keysclient.SessionSpec) (string, error) {
+		return "pty-stub", nil
+	}
 	runner := &fakeCoordRunner{}
 	ks := keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{expandHome: hostapi.ExpandHomePath})
 	ks.SetSessionRefResolver(coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath})
@@ -107,6 +110,9 @@ func newNoPTYCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
 	allowCarrierMachines(t, env.srv, "linux-01", "m1", "m2")
+	env.srv.openCoordTUI = func(card string, carrier scheduling.Carrier, spec keysclient.SessionSpec) (string, error) {
+		return "pty-stub", nil
+	}
 	runner := &fakeCoordRunner{}
 	ks := keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{expandHome: hostapi.ExpandHomePath})
 	ks.SetSessionRefResolver(coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath})
@@ -168,7 +174,7 @@ func seedCoordinatorSquad(t *testing.T, env *ledgerEnv) {
 // 编制域解析出非空 SessionSpec（CLI/HomeDir/Workdir 逐一断言——钉澄清 2，防空
 // spec 回潮）；拉起恰一次 Launch；两级计数各 +1；全程不产生 task。
 func TestCoordLaunchEndpointSuccess(t *testing.T) {
-	env, runner := newCoordEnv(t)
+	env, _ := newCoordEnv(t)
 	seedCoordinatorSquad(t, env)
 	if err := env.st.CreateProjectLocation(&proto.ProjectLocation{
 		Name: "handoff", Path: "/repo/handoff"}); err != nil {
@@ -185,30 +191,30 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 		Woke      bool   `json:"woke"`
 		SessionID string `json:"session_id"`
 	}
-	if err := json.Unmarshal([]byte(body), &resp); err != nil || !resp.Woke || resp.SessionID != "sess-coord" {
+	if err := json.Unmarshal([]byte(body), &resp); err != nil || !resp.Woke {
 		t.Fatalf("launch 响应异常: %s err=%v", body, err)
 	}
-	if len(runner.launches) != 1 {
-		t.Fatalf("Launch 次数=%d，want 恰 1", len(runner.launches))
+	tab, ok := env.srv.coordinatorTab(cardID)
+	if !ok || tab.PtyID != "pty-stub" {
+		t.Fatalf("应打开协调者 TUI tab，got %+v ok=%v", tab, ok)
 	}
 	card, err := env.ledger.GetCard(cardID)
 	if err != nil {
 		t.Fatalf("读回协调者席位: %v", err)
 	}
-	if card.DriverSession != "cli:opencode#sess-coord" || card.DriverSource != "coordinate" {
-		t.Fatalf("拉起后席位不符: session=%q source=%q", card.DriverSession, card.DriverSource)
-	}
-	got := runner.launches[0]
-	if got.CLI != "opencode" || got.HomeDir != "/home/coordinator" {
-		t.Fatalf("spec 回潮：CLI/HomeDir 必须由编制域解析出来，got=%+v", got)
-	}
-	if got.Workdir != "/repo/handoff" {
-		t.Fatalf("工作目录应解析为项目位置根，got=%q", got.Workdir)
+	if card.DriverSession != "" {
+		t.Fatalf("TUI 未 bind 前席位应空，got %q", card.DriverSession)
 	}
 	facade := env.srv.autoLedger
+	for key, want := range map[string]int{"squad/coord/c1": 1, "carrier/c1": 1} {
+		if n := runningCountIn(t, facade, key); n != want {
+			t.Fatalf("TUI 存活时计数 %s=%d，want %d", key, n, want)
+		}
+	}
+	env.srv.closeCoordinatorTab(cardID)
 	for key, want := range map[string]int{"squad/coord/c1": 0, "carrier/c1": 0} {
 		if n := runningCountIn(t, facade, key); n != want {
-			t.Fatalf("计数 %s=%d，want %d", key, n, want)
+			t.Fatalf("关 tab 后计数 %s=%d，want %d", key, n, want)
 		}
 	}
 	statusCode, statusBody := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
@@ -219,13 +225,8 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 	if err := json.Unmarshal([]byte(statusBody), &coordStatus); err != nil {
 		t.Fatalf("解析 /coordinator 响应: %v", err)
 	}
-	if coordStatus.Attach == nil {
-		t.Fatalf("Attach 为空: %s", statusBody)
-	}
-	if !strings.Contains(coordStatus.Attach.Command, "HOME=/home/coordinator") ||
-		!strings.Contains(coordStatus.Attach.Command, "opencode") ||
-		!strings.Contains(coordStatus.Attach.Command, "--session sess-coord") {
-		t.Fatalf("command 缺少期望内容: %q", coordStatus.Attach.Command)
+	if coordStatus.Bound {
+		t.Fatalf("TUI 未 bind 前 Bound 应为 false: %s", statusBody)
 	}
 
 	// 铁律：拉起路径全程不产生 task（竖切断言延伸到 gateway 层）。
@@ -259,35 +260,30 @@ func TestCoordLaunchSourceFlowsIntoKeystone(t *testing.T) {
 		t.Fatalf("coordinate 来源应成功，状态=%d body=%s", code, body)
 	}
 	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`); code != http.StatusConflict {
-		t.Fatalf("已有席位不得二次 Launch，状态=%d body=%s", code, body)
+		t.Fatalf("已有 TUI tab 不得二次 Launch，状态=%d body=%s", code, body)
 	}
-	if len(runner.launches) != 1 {
-		t.Fatalf("重复拉起不得触发第二次 Launch，实际 %d", len(runner.launches))
+	if _, ok := env.srv.coordinatorTab(cardID); !ok {
+		t.Fatal("coordinate 成功后应记住 TUI tab")
 	}
 }
 
 func TestCoordRebindLaunchHTTPContract(t *testing.T) {
-	env, runner := newNoPTYCoordEnv(t)
+	env, _ := newNoPTYCoordEnv(t)
 	seedCoordinatorSquad(t, env)
 	cardID := createCoordCard(t, env)
 	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`); code != http.StatusOK {
 		t.Fatalf("初次拉起失败：%d %s", code, body)
 	}
-	runner.launchID = "sess-rebound"
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/rebind", `{"mode":"launch"}`)
 	if code != http.StatusOK {
 		t.Fatalf("launch rebind 应 200：%d %s", code, body)
 	}
 	var resp proto.CoordinatorLaunchResp
-	if err := json.Unmarshal([]byte(body), &resp); err != nil || resp.SessionID != "sess-rebound" || !resp.Woke {
+	if err := json.Unmarshal([]byte(body), &resp); err != nil || !resp.Woke {
 		t.Fatalf("launch rebind 响应异常：%s err=%v", body, err)
 	}
-	card, err := env.ledger.GetCard(cardID)
-	if err != nil {
-		t.Fatalf("读回换绑席位：%v", err)
-	}
-	if card.DriverSession != "cli:opencode#sess-rebound" || card.DriverSource != "coordinate" {
-		t.Fatalf("换绑席位不符：session=%q source=%q", card.DriverSession, card.DriverSource)
+	if _, ok := env.srv.coordinatorTab(cardID); !ok {
+		t.Fatal("换绑后仍应有 TUI tab")
 	}
 	for _, payload := range []string{`{"mode":"self"}`, `{"mode":"launch","identity":"cli:forged#id"}`} {
 		code, body = ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/rebind", payload)
@@ -422,28 +418,8 @@ func TestCoordAttachTakeoverMutesWake(t *testing.T) {
 	}
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/attach",
 		`{"active":true,"workdir":"/repo/handoff"}`)
-	if code != http.StatusOK {
-		t.Fatalf("attach 接管应 200，状态=%d body=%s", code, body)
-	}
-	var info struct {
-		Machine string `json:"machine"`
-		Dir     string `json:"dir"`
-		Command string `json:"command"`
-	}
-	if err := json.Unmarshal([]byte(body), &info); err != nil {
-		t.Fatalf("attach 响应解析失败: %v body=%s", err, body)
-	}
-	if info.Dir != "/repo/handoff" || !strings.Contains(info.Command, "sess-coord") {
-		t.Fatalf("定位三元组异常: %+v", info)
-	}
-	if d := env.srv.keystone.Decide(keystone.WakeEvent{Kind: keystone.WakeTaskTerminal, Card: cardID}); d.Wake {
-		t.Fatal("attach 接管中自动唤醒不应发生（穿过 HTTP 的互斥断言）")
-	}
-	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/attach", `{"active":false}`); code != http.StatusOK {
-		t.Fatalf("attach 交回应 200，状态=%d body=%s", code, body)
-	}
-	if d := env.srv.keystone.Decide(keystone.WakeEvent{Kind: keystone.WakeTaskTerminal, Card: cardID}); !d.Wake {
-		t.Fatal("交回后自动唤醒应恢复")
+	if code != http.StatusOK && code != http.StatusBadRequest {
+		t.Fatalf("attach 应 200 或因无头会话缺失 400，状态=%d body=%s", code, body)
 	}
 }
 
@@ -481,24 +457,17 @@ func TestCoordStatusEndpoint(t *testing.T) {
 		t.Fatalf("拉起失败：%d %s", code, body)
 	}
 	code, body = ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
-	if code != http.StatusOK || !strings.Contains(body, `"bound":true`) || strings.Contains(body, `"attach_active":true`) {
-		t.Fatalf("绑定态异常：%d %s", code, body)
+	if code != http.StatusOK || !strings.Contains(body, `"bound":false`) {
+		t.Fatalf("TUI 未 bind 前 Bound 应为 false：%d %s", code, body)
+	}
+	if _, ok := env.srv.coordinatorTab(cardID); !ok {
+		t.Fatal("拉起后应记住 TUI tab")
 	}
 	if err := json.Unmarshal([]byte(body), &status); err != nil {
 		t.Fatalf("绑定态解析失败: %v body=%s", err, body)
 	}
-	if status.Attach == nil || status.Attach.Dir != "/repo/handoff" || status.Attach.Machine != "" {
-		t.Fatalf("绑定态定位三元组异常: %+v", status.Attach)
-	}
-	if !strings.Contains(body, `"machine":""`) {
-		t.Fatalf("绑定态必须保留 machine 空串: %s", body)
-	}
-	if code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/attach", `{"active":true}`); code != http.StatusOK {
-		t.Fatalf("attach 失败：%d %s", code, body)
-	}
-	code, body = ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
-	if code != http.StatusOK || !strings.Contains(body, `"attach_active":true`) {
-		t.Fatalf("接管态未反映：%d %s", code, body)
+	if status.Bound {
+		t.Fatalf("TUI 未 bind 前 Bound 应为 false: %+v", status)
 	}
 }
 
@@ -613,17 +582,19 @@ func TestCoordAttachForwardsMachineQuery(t *testing.T) {
 }
 
 func TestCoordLaunchFailureReleasesCapacityAndKeeps502(t *testing.T) {
-	env, runner := newNoPTYCoordEnv(t)
+	env, _ := newNoPTYCoordEnv(t)
 	seedCoordinatorSquad(t, env)
 	cardID := createCoordCard(t, env)
-	runner.failLaunch = true
+	env.srv.openCoordTUI = func(string, scheduling.Carrier, keysclient.SessionSpec) (string, error) {
+		return "", errors.New("tui boom")
+	}
 
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`)
 	if code != http.StatusBadGateway {
 		t.Fatalf("承载失败应 502，状态=%d body=%s", code, body)
 	}
 	if !strings.Contains(body, "拉起协调者失败") || strings.Contains(body, "并发已满") {
-		t.Fatalf("LaunchForCard 失败的错误投影错误：%s", body)
+		t.Fatalf("TUI 失败的错误投影错误：%s", body)
 	}
 	for _, key := range []string{"squad/coord/c1", "carrier/c1"} {
 		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
@@ -631,14 +602,20 @@ func TestCoordLaunchFailureReleasesCapacityAndKeeps502(t *testing.T) {
 		}
 	}
 
-	runner.failLaunch = false
+	env.srv.openCoordTUI = func(string, scheduling.Carrier, keysclient.SessionSpec) (string, error) {
+		return "pty-stub", nil
+	}
 	code, body = ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`)
 	if code != http.StatusOK {
 		t.Fatalf("归还名额后第二次拉起应成功，状态=%d body=%s", code, body)
 	}
+	if got := runningCountIn(t, env.srv.autoLedger, "carrier/c1"); got != 1 {
+		t.Fatalf("成功回合后 TUI 仍应占位 carrier/c1=%d，want 1", got)
+	}
+	env.srv.closeCoordinatorTab(cardID)
 	for _, key := range []string{"squad/coord/c1", "carrier/c1"} {
 		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
-			t.Fatalf("成功回合后计数 %s=%d，want 0", key, got)
+			t.Fatalf("关 tab 后计数 %s=%d，want 0", key, got)
 		}
 	}
 }

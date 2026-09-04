@@ -184,11 +184,12 @@ func (s *Server) handleCoordRebind(w http.ResponseWriter, r *http.Request) {
 		ledgerErr(w, err)
 		return
 	}
-	if card.DriverSession == "" && card.DriverSource == "" {
+	_, tabLive := s.coordinatorTab(id)
+	if card.DriverSession == "" && card.DriverSource == "" && !tabLive {
 		writeErr(w, http.StatusConflict, fmt.Errorf("卡 %s 为空座，请使用 card bind 或 card coordinate", id))
 		return
 	}
-	if card.DriverSession == "" {
+	if card.DriverSession == "" && !tabLive {
 		err := fmt.Errorf("卡 %s 的旧席位缺少身份，不能直接换绑", id)
 		s.log.Warn("协调者换绑被拒：存量席位身份为空", "card", id, "source", card.DriverSource, "cause", err)
 		writeErr(w, http.StatusConflict, err)

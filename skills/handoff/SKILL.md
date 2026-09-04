@@ -370,7 +370,7 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 | 搁置 / 复活 / 终止 | `handoff card close <id> --reason 搁置\|取消\|废弃` / `handoff card revive <id>` |
 | 工作流形状 | `handoff workflow show <流>`——**列序与门以账本为准，任何文档都不复制** |
 | 坐下 | `handoff card bind <id>`（空座；见「占座」） |
-| 叫机器人 | `handoff card coordinate <id>`（空座；未登记小队按报文去 `squad create`） |
+| 叫机器人 | `handoff card coordinate <id>`（空座；在 leader 载体机器的项目主工作树打开控制台 TUI tab；TUI 用宿主 session 自己 bind） |
 | 换绑 | `handoff card rebind <id> --self` 或 `--launch`（有人；见「占座」） |
 
 ### 占座：三颗按钮，建卡不占座

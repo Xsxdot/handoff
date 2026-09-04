@@ -72,6 +72,15 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 			Kind: keystone.WakeMessage, Card: ev.CardID,
 			Summary: truncateRunes(msg.Body, 400),
 		}, true, nil
+	case ledger.EvStatusMoved:
+		var moved struct {
+			To string `json:"to"`
+		}
+		if err := json.Unmarshal(ev.Payload, &moved); err == nil {
+			// 终态关 TUI 在消费循环里做，不经 Wake。
+			return keystone.WakeEvent{}, false, nil
+		}
+		return keystone.WakeEvent{}, false, nil
 	case ledger.EvNeedsHuman, ledger.EvNeedsCleared:
 		return keystone.WakeEvent{
 			Kind: keystone.WakeTaskTerminal, Card: ev.CardID,
@@ -118,6 +127,14 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				maxProcessed = ev.Seq
 			}
 			continue
+		}
+		if ev.Type == ledger.EvStatusMoved && ev.CardID != "" {
+			var moved struct {
+				To string `json:"to"`
+			}
+			if json.Unmarshal(ev.Payload, &moved) == nil {
+				s.closeCoordinatorTabIfTerminal(ev.CardID, moved.To)
+			}
 		}
 		wake, yes, mapErr := automationWakeEvent(ev)
 		if mapErr != nil {

@@ -59,6 +59,9 @@ func (r *queueTraceRunner) markDispatch() {
 
 func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	t.Helper()
+	env.srv.openCoordTUI = func(card string, carrier scheduling.Carrier, spec keysclient.SessionSpec) (string, error) {
+		return "pty-stub", nil
+	}
 	allowCarrierMachines(t, env.srv, "ftm")
 	svc := env.srv.Scheduling()
 	putOnlineCarrier(t, svc, scheduling.Carrier{
@@ -210,8 +213,8 @@ func TestAutomationQueueRestartReplay(t *testing.T) {
 		kind string
 	}{
 		{req: scheduling.IgnitionRequest{Card: ids[0], Squad: "coord", Actor: "test", Ready: true}, kind: scheduling.KindLaunchQueue},
-		{req: scheduling.IgnitionRequest{Card: ids[1], Squad: "sq1", Node: "implement", Executor: "opencode", Actor: "test", Ready: true}, kind: scheduling.KindIgnitionQueue},
-		{req: scheduling.IgnitionRequest{Card: ids[2], Squad: "sq1", Node: "implement", Executor: "opencode", Actor: "test", Ready: true}, kind: scheduling.KindIgnitionQueue},
+		{req: scheduling.IgnitionRequest{Card: ids[1], Squad: "sq1", Node: "implement", Actor: "test", Ready: true}, kind: scheduling.KindIgnitionQueue},
+		{req: scheduling.IgnitionRequest{Card: ids[2], Squad: "sq1", Node: "implement", Actor: "test", Ready: true}, kind: scheduling.KindIgnitionQueue},
 	} {
 		if _, err := env.srv.Scheduling().Enqueue(req.req, req.kind); err != nil {
 			t.Fatalf("入队 %s: %v", req.kind, err)
@@ -236,9 +239,12 @@ func TestAutomationQueueRestartReplay(t *testing.T) {
 	if len(rows) != 0 {
 		t.Fatalf("重放后仍有 %d 行队列: %+v", len(rows), rows)
 	}
-	launches, resumes, _ := runner.snapshot()
-	if launches != 1 || len(resumes) != 0 {
-		t.Fatalf("仅协调者队列应拉起机器人，执行者空座不应自动 Launch：launch=%d resume=%d，want 1/0", launches, len(resumes))
+	if _, ok := env.srv.coordinatorTab(ids[0]); !ok {
+		t.Fatal("协调者队列应打开 TUI tab")
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 0 {
+		t.Fatalf("执行者空座不应自动 Resume：resume=%d", len(resumes))
 	}
 }
 
@@ -258,7 +264,7 @@ func TestAutomationIgnitionDrainWakesBeforeTrueDispatch(t *testing.T) {
 		t.Fatalf("写预绑定协调者席位: %v", err)
 	}
 	if _, err := env.srv.Scheduling().Enqueue(scheduling.IgnitionRequest{
-		Card: ids[1], Squad: "sq1", Node: "implement", Executor: "opencode", Actor: "test", Ready: true,
+		Card: ids[1], Squad: "sq1", Node: "implement", Actor: "test", Ready: true,
 	}, scheduling.KindIgnitionQueue); err != nil {
 		t.Fatalf("入队: %v", err)
 	}
@@ -288,7 +294,7 @@ func TestAutomationIgnitionDrainWakesBeforeTrueDispatch(t *testing.T) {
 func TestAutomationRoundReleasesCoordinatorCounters(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
-	runner := seedQueueCoordinator(t, env)
+	_ = seedQueueCoordinator(t, env)
 	cardID := createCoordCard(t, env)
 	for _, tc := range []struct {
 		name string
@@ -309,19 +315,22 @@ func TestAutomationRoundReleasesCoordinatorCounters(t *testing.T) {
 			if err := tc.call(); err != nil {
 				t.Fatalf("%s 回合: %v", tc.name, err)
 			}
+			want := 0
+			if tc.name == "launch" {
+				want = 1
+			}
 			for key := range map[string]struct{}{
 				"squad/coord/coord-carrier": {},
 				"carrier/coord-carrier":     {},
 			} {
-				if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
-					t.Fatalf("%s 后计数 %s=%d，want 0", tc.name, key, got)
+				if got := runningCountIn(t, env.srv.autoLedger, key); got != want {
+					t.Fatalf("%s 后计数 %s=%d，want %d", tc.name, key, got, want)
 				}
 			}
+			if tc.name == "launch" {
+				env.srv.closeCoordinatorTab(cardID)
+			}
 		})
-	}
-	launches, resumes, _ := runner.snapshot()
-	if launches != 1 || len(resumes) != 1 {
-		t.Fatalf("回合调用 launch=%d resume=%d，want 1/1", launches, len(resumes))
 	}
 }
 
@@ -329,12 +338,14 @@ func TestAutomationReleaseKicksDrain(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
 	seedQueueCoordinator(t, env)
-	if _, err := env.srv.launchCoordinatorRound(context.Background(), createCoordCard(t, env), "coordinate"); err != nil {
+	cardID := createCoordCard(t, env)
+	if _, err := env.srv.launchCoordinatorRound(context.Background(), cardID, "coordinate"); err != nil {
 		t.Fatalf("拉起回合: %v", err)
 	}
+	env.srv.closeCoordinatorTab(cardID)
 	select {
 	case <-env.srv.automationKick:
 	default:
-		t.Fatal("释放名额后没有收到清队唤醒信号")
+		t.Fatal("关闭 TUI 归还名额后没有收到清队唤醒信号")
 	}
 }

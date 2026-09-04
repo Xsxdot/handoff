@@ -237,10 +237,19 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 		return zero, err
 	}
 	occupied := current.DriverSession != "" || current.DriverSource != ""
-	if (!rebind && occupied) || (rebind && !occupied) {
+	_, tabLive := s.coordinatorTab(card)
+	if !rebind && (occupied || tabLive) {
 		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
 		s.log.Warn("协调者拉起在 Launch 前被席位拦截", "card", card, "source", source, "rebind", rebind, "cause", err)
 		return zero, err
+	}
+	if rebind && !occupied && !tabLive {
+		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
+		s.log.Warn("协调者换绑在 Launch 前被席位拦截", "card", card, "source", source, "cause", err)
+		return zero, err
+	}
+	if rebind {
+		s.closeCoordinatorTab(card)
 	}
 	squad, err := s.resolveCoordinatorSquad()
 	if err != nil {
@@ -250,11 +259,11 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	if err != nil {
 		return zero, &coordinatorAdmissionError{squad: squad.Name, err: err}
 	}
-	defer s.releaseSchedulingBinding(card, binding)
 	carrier, err := s.scheduling.Carrier(binding.Carrier)
 	if err != nil {
 		s.log.Error("读协调者载体失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
+		s.releaseSchedulingBinding(card, binding)
 		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
 	}
 	spec := keysclient.SessionSpec{
@@ -265,38 +274,28 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	if err != nil {
 		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
+		s.releaseSchedulingBinding(card, binding)
 		return zero, err
 	}
 	spec = normalized
-	s.log.Info("自动化拉起协调者回合", "card", card, "source", source,
+	s.log.Info("自动化拉起协调者 TUI", "card", card, "source", source,
 		"squad", binding.Squad, "carrier", binding.Carrier,
-		"cli", spec.CLI, "home_dir", spec.HomeDir, "workdir", spec.Workdir)
-	result, err := s.keystone.LaunchForCard(ctx, card, source, spec)
+		"cli", spec.CLI, "home_dir", spec.HomeDir, "workdir", spec.Workdir,
+		"machine", carrier.Machine)
+	ptyID, err := s.openCoordinatorTUI(card, carrier, spec)
 	if err != nil {
-		s.log.Error("自动化拉起协调者回合失败", "card", card, "source", source,
+		s.releaseSchedulingBinding(card, binding)
+		s.log.Error("打开协调者 TUI 失败", "card", card, "source", source,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		return result, fmt.Errorf("拉起协调者回合失败: %w", err)
+		return zero, fmt.Errorf("拉起协调者回合失败: %w", err)
 	}
-	identity, err := proto.EncodeSeatIdentity(spec.CLI, result.SessionID)
-	if err != nil {
-		s.log.Error("协调者拉起返回了不可用席位身份", "card", card, "source", source, "cause", err)
-		return result, fmt.Errorf("编码协调者席位: %w", err)
-	}
-	if rebind {
-		err = s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, expect)
-	} else {
-		err = s.ledger.BindSeat(card, identity, proto.SeatSourceCoordinate)
-	}
-	if err != nil {
-		if errors.Is(err, ledger.ErrCASConflict) {
-			s.log.Error("协调者拉起后席位 CAS 冲突，新会话保留待人工回收", "card", card, "source", source, "rebind", rebind, "session", result.SessionID, "cause", err)
-			return result, &coordinatorSeatConflict{result: result}
-		}
-		return result, fmt.Errorf("写协调者席位: %w", err)
-	}
-	s.log.Info("自动化拉起协调者回合结束", "card", card, "source", source,
-		"session", result.SessionID, "rebuilt", result.Rebuilt, "escalated", result.Escalated)
-	return result, nil
+	s.rememberCoordinatorTab(card, coordinatorLiveTab{
+		Binding: binding, PtyID: ptyID, Machine: carrier.Machine, Card: card,
+	})
+	// 席位由 TUI 进程用宿主 session 自己 bind；agentd 不伪造 session id。
+	s.log.Info("自动化拉起协调者 TUI 结束", "card", card, "source", source,
+		"pty", ptyID, "rebind", rebind)
+	return keystone.RoundResult{Woke: true}, nil
 }
 
 // wakeCoordinatorRound 为 Wake 临时占用协调者回合名额，Wake 返回后释放。
