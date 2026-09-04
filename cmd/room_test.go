@@ -138,6 +138,57 @@ func TestRoomSendCoordinatorAcceptsExplicitSeatFlags(t *testing.T) {
 	t.Fatalf("没有找到 seq=%d 的 room_message", response.Seq)
 }
 
+// TestRoomSendCoordinatorKindUsesGrokHostSession 缝：room send --kind reply 的
+// 席位来自 GROK_SESSION_ID（grok 宿主键分支），而非手填 --cli/--session。
+// card bind 无 flag 落座 cli:grok#grok-room，随后 room send --kind reply 无
+// flag 复用同一出示路径，落账 actor=cli:grok#grok-room、kind=reply、body 逐字一致。
+func TestRoomSendCoordinatorKindUsesGrokHostSession(t *testing.T) {
+	clearSeatSourceEnv(t)
+	t.Setenv("GROK_SESSION_ID", "grok-room")
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "grok 宿主房间协调者卡")
+	out, _, err := runLedgerCLI(t, dir, "card", "bind", id)
+	if err != nil || strings.TrimSpace(out) != `{"ok":true}` {
+		t.Fatalf("card bind: out=%q err=%v", out, err)
+	}
+	out, _, err = runLedgerCLI(t, dir, "room", "send", id, "grok 宿主回复", "--kind", "reply")
+	if err != nil {
+		t.Fatalf("room send --kind reply with grok host session: %v", err)
+	}
+	var resp struct {
+		Seq int64 `json:"seq"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &resp); err != nil || resp.Seq <= 0 {
+		t.Fatalf("room send stdout = %q, err=%v", out, err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	events, err := st.EventsFromAsc([]string{id}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Seq != resp.Seq {
+			continue
+		}
+		if event.Actor != "cli:grok#grok-room" {
+			t.Fatalf("room actor = %q, want cli:grok#grok-room", event.Actor)
+		}
+		var message proto.RoomMessage
+		if err := json.Unmarshal(event.Payload, &message); err != nil {
+			t.Fatal(err)
+		}
+		if message.Kind != "reply" || message.Body != "grok 宿主回复" {
+			t.Fatalf("room message = %+v", message)
+		}
+		return
+	}
+	t.Fatalf("没有找到 seq=%d 的 room_message", resp.Seq)
+}
+
 func TestRoomSendUserRejectsSeatFlagsWithoutSideEffects(t *testing.T) {
 	clearSeatSourceEnv(t)
 	dir := t.TempDir()
