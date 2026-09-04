@@ -33,3 +33,7 @@
 - 2026-09-04 10:18：计划决定 `Host.RunTurn` 的展开失败通过公开 RunTurn 两支测试锁住，`buildEnv` 返回展开结果给 driver 日志；attach 采用服务端 shell word，带空格路径单引号并用 `sh -n` 经 HTTP 缝校验，`SessionSpec`/`SessionRef`/HTTP 字段形状不变。
 - 2026-09-04 10:18：计划自审通过：spec 故事 1→Task 1/3，故事 2→Task 3/keystone 保持 rebuild，故事 3→Task 2/3，故事 4→Task 1/3，故事 5→Task 1/3；占位符扫描无 `TBD`/`TODO`/“同 Task”；web 依赖缺失的两条基线命令已按原始报错记为未验证。
 - 2026-09-04 10:23：提交计划与台账命令 `git commit -m "docs(b323): 编写协调者隔离 HOME 实现计划"` 原始输出：`[cards/B323-charter 1d26f29e] docs(b323): 编写协调者隔离 HOME 实现计划`；`2 files changed, 1047 insertions(+)`；`create mode 100644 docs/superpowers/plans/b323-plan.md`。
+- 2026-09-04 本执行节点核对：当前分支为 `cards/B323-charter-2`，HEAD 为 `7e2e9fb18a9dfb9a5bf68a7e3c8a2ae6f03044b6`，工作树初始为空；`b323-plan.md` 末尾明确本节点只提交计划与同步台账，不实现代码、不派发、不调用 handoff CLI、不起 executor。
+- 2026-09-04 本执行节点判断：本回合不新增生产代码或测试；法定产出是保留已提交的 B323 spec/plan，并把本节点核对事实写入同一台账。
+- 2026-09-04 本执行节点验证：命令 `git diff --check` 退出码 0，标准输出为空。
+- 2026-09-04 本执行节点提交命令 `git add docs/superpowers/specs/b323-ledger.md && git commit -m "docs(b323): 记录计划节点核对"` 原始输出：`[cards/B323-charter-2 2714b308] docs(b323): 记录计划节点核对`；`1 file changed, 3 insertions(+)`。
