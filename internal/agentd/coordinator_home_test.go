@@ -175,6 +175,37 @@ func TestCoordinatorHomeSupplierRejectsExpansionFailure(t *testing.T) {
 	}
 }
 
+func TestRejectCoordinatorSymlinkPathAllowsSystemVolumeVarAlias(t *testing.T) {
+	aliasTarget := t.TempDir()
+	alias := filepath.Join(t.TempDir(), "var")
+	if err := os.Symlink(aliasTarget, alias); err != nil {
+		t.Skipf("创建 symlink 不可用: %v", err)
+	}
+	aliasInfo, err := os.Lstat(alias)
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldLstat, oldEval := coordinatorLstat, coordinatorEvalSymlinks
+	t.Cleanup(func() { coordinatorLstat, coordinatorEvalSymlinks = oldLstat, oldEval })
+	coordinatorLstat = func(path string) (os.FileInfo, error) {
+		if path == string(filepath.Separator)+"var" {
+			return aliasInfo, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	coordinatorEvalSymlinks = func(path string) (string, error) {
+		if path == string(filepath.Separator)+"var" {
+			return string(filepath.Separator) + "private" + string(filepath.Separator) + "var", nil
+		}
+		return "", os.ErrNotExist
+	}
+
+	path := filepath.Join(string(filepath.Separator), "var", "folders", "test")
+	if err := rejectCoordinatorSymlinkPath(path); err != nil {
+		t.Fatalf("系统卷 /var 别名不应被判为供给越界: %v", err)
+	}
+}
+
 func TestNormalizeCoordinatorSpecRequiresAbsoluteHome(t *testing.T) {
 	if _, err := normalizeCoordinatorSpec(keysclient.SessionSpec{CLI: "opencode"}); err == nil ||
 		!strings.Contains(err.Error(), "HomeDir") {

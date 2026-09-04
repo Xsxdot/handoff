@@ -303,6 +303,14 @@ func safeCoordinatorRelativePath(path string) bool {
 	return clean != "." && clean != ".." && !strings.HasPrefix(clean, ".."+string(filepath.Separator))
 }
 
+// coordinatorLstat and coordinatorEvalSymlinks are path-checking test seams.
+// They keep the platform alias case deterministic without weakening the real
+// filesystem check used by coordinator HOME supply.
+var (
+	coordinatorLstat        = os.Lstat
+	coordinatorEvalSymlinks = filepath.EvalSymlinks
+)
+
 func rejectCoordinatorSymlinkPath(path string) error {
 	clean := filepath.Clean(path)
 	root := string(filepath.Separator)
@@ -322,18 +330,29 @@ func rejectCoordinatorSymlinkPath(path string) error {
 			continue
 		}
 		current = filepath.Join(current, part)
-		info, statErr := os.Lstat(current)
+		info, statErr := coordinatorLstat(current)
 		if errors.Is(statErr, os.ErrNotExist) {
 			return nil
 		}
 		if statErr != nil {
 			return fmt.Errorf("检查协调者路径 %q: %w", current, statErr)
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if info.Mode()&os.ModeSymlink != 0 && !isCoordinatorSystemVolumeAlias(root, current) {
 			return fmt.Errorf("协调者路径含 symlink %q", current)
 		}
 	}
 	return nil
+}
+
+// isCoordinatorSystemVolumeAlias allows macOS's immutable /var alias, which
+// points at /private/var and is used by t.TempDir. Other symlinks remain denied;
+// the exact resolved target keeps this exception from becoming path traversal.
+func isCoordinatorSystemVolumeAlias(root, current string) bool {
+	if root != string(filepath.Separator) || current != filepath.Join(root, "var") {
+		return false
+	}
+	resolved, err := coordinatorEvalSymlinks(current)
+	return err == nil && filepath.Clean(resolved) == filepath.Join(root, "private", "var")
 }
 
 type coordinatorSessionRefResolver struct {
