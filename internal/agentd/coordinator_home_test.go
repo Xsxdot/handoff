@@ -1,12 +1,6 @@
-// coordinator_home_test.go —— 协调者隔离 HOME 的 Launch/Resume 供给缝测试。
-//
-// 职责：从 coordinatorRunner 入口验证配置、规则、缺失凭据与子进程 HOME 的真实
-// 文件/进程边界；不测试 WakeHome 的检测供给路径。
-// 边界：只使用临时主 HOME、隔离 HOME 和 fake opencode，不代表真实 CLI 登录行为。
 package agentd
 
 import (
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -40,212 +34,245 @@ printf '%s\n' '{"type":"step_finish","sessionID":"runner-sess","part":{"type":"s
 	return capture
 }
 
-func requireFileContent(t *testing.T, path, want string) {
-	t.Helper()
-	got, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("读取 %s: %v", path, err)
-	}
-	if string(got) != want {
-		t.Fatalf("%s 内容=%q，want %q", path, got, want)
-	}
-}
-
-func TestCoordinatorHomeLaunchAndResumeSupplyFullHome(t *testing.T) {
+func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 	capture := installCoordinatorFakeCLI(t)
+
 	mainHome := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mainHome, ".config", "opencode", "skills", "plan"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mainHome, ".config", "opencode", "AGENTS.md"), []byte("agents"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(mainHome, ".config", "opencode", "AGENTS.md"), []byte("agents-doc"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mainHome, ".config", "opencode", "skills", "plan", "SKILL.md"), []byte("skill"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(mainHome, ".config", "opencode", "skills", "plan", "SKILL.md"), []byte("skill-plan"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	auth := filepath.Join(mainHome, ".local", "share", "opencode", "auth.json")
-	if err := os.MkdirAll(filepath.Dir(auth), 0o700); err != nil {
+	if err := os.MkdirAll(filepath.Join(mainHome, ".local", "share", "opencode"), 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(auth, []byte("auth-live"), 0o600); err != nil {
+	if err := os.WriteFile(filepath.Join(mainHome, ".local", "share", "opencode", "auth.json"), []byte("main-auth-token"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(mainHome, ".local", "share", "opencode", "other.db"), []byte("do-not-copy"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(t.TempDir(), "muse")
-	dataDir := filepath.Join(t.TempDir(), "agentd-data")
-	cfg := &config.Config{
+
+	liveDataDir := t.TempDir()
+	liveCfg := &config.Config{
 		Token:        "agentd-live",
-		DataDir:      dataDir,
-		StallTimeout: time.Hour,
-		Ledger:       config.LedgerConfig{DSN: "ledger.sqlite"},
+		DataDir:      liveDataDir,
+		StallTimeout: 2 * time.Hour,
+		Ledger:       config.LedgerConfig{DSN: "ledger.db"},
 	}
+
+	targetDir := t.TempDir()
+	expandHome := func(p string) (string, error) {
+		if p == "~/.handoff/home/muse" {
+			return targetDir, nil
+		}
+		return hostapi.ExpandHomePath(p)
+	}
+
 	supplier := coordinatorHomeSupplier{
-		currentConfig:  func() *config.Config { return cfg },
+		currentConfig:  func() *config.Config { return liveCfg },
 		userHomeDir:    func() (string, error) { return mainHome, nil },
-		expandHomeDir:  func(string) (string, error) { return target, nil },
+		expandHomeDir:  expandHome,
 		credentialPath: toolchain.CredRelPathFor,
 	}
-	runner := coordinatorRunner{h: hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor), prepareHome: supplier.Prepare}
 
-	spec := keysclient.SessionSpec{CLI: "opencode", HomeDir: "~/.handoff/home/muse", Workdir: t.TempDir()}
-	launch, err := runner.Launch(spec, "first")
-	if err != nil {
-		t.Fatalf("Launch: %v", err)
-	}
-	if launch.SessionID != "runner-sess" || launch.Output != "runner-ok" {
-		t.Fatalf("Launch result=%+v", launch)
-	}
-	loaded, err := config.Load(filepath.Join(target, ".handoff", "config.yaml"))
-	if err != nil {
-		t.Fatalf("回读隔离配置: %v", err)
-	}
-	absDSN, err := filepath.Abs("ledger.sqlite")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.Token != "agentd-live" || loaded.DataDir != dataDir || loaded.Ledger.DSN != absDSN {
-		t.Fatalf("隔离配置投影错误: token=%q data=%q dsn=%q", loaded.Token, loaded.DataDir, loaded.Ledger.DSN)
-	}
-	requireFileContent(t, filepath.Join(target, ".config", "opencode", "AGENTS.md"), "agents")
-	requireFileContent(t, filepath.Join(target, ".config", "opencode", "skills", "plan", "SKILL.md"), "skill")
-	requireFileContent(t, filepath.Join(target, ".local", "share", "opencode", "auth.json"), "auth-live")
-	if _, err := os.Stat(filepath.Join(target, ".local", "share", "opencode", "other.db")); !os.IsNotExist(err) {
-		t.Fatalf("白名单外的 opencode 数据不得同步: stat err=%v", err)
-	}
-	if lines, readErr := os.ReadFile(capture); readErr != nil || !strings.Contains(string(lines), "env:HOME="+target) || strings.Contains(string(lines), "env:HOME=~") {
-		t.Fatalf("fake CLI HOME 证据错误: %q/%v", lines, readErr)
+	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	runner := coordinatorRunner{h: h, prepareHome: supplier.Prepare}
+
+	spec := keysclient.SessionSpec{
+		CLI:     "opencode",
+		HomeDir: "~/.handoff/home/muse",
+		Workdir: t.TempDir(),
 	}
 
-	occupied := filepath.Join(t.TempDir(), "occupied")
-	if err := os.MkdirAll(filepath.Join(occupied, ".local", "share", "opencode"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := config.Save(filepath.Join(occupied, ".handoff", "config.yaml"), &config.Config{Token: "first-run", DataDir: dataDir, StallTimeout: time.Hour}); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(occupied, ".local", "share", "opencode", "sessions.db"), []byte("session-sentinel"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(occupied, ".local", "share", "opencode", "auth.json"), []byte("old-auth"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	occupiedSupplier := supplier
-	occupiedSupplier.expandHomeDir = func(string) (string, error) { return occupied, nil }
-	occupiedRunner := coordinatorRunner{h: hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor), prepareHome: occupiedSupplier.Prepare}
-	if _, err := occupiedRunner.Launch(spec, "occupied"); err != nil {
-		t.Fatalf("occupied Launch: %v", err)
-	}
-	occupiedConfig, err := config.Load(filepath.Join(occupied, ".handoff", "config.yaml"))
+	res, err := runner.Launch(spec, "测试启动")
 	if err != nil {
-		t.Fatalf("回读 occupied 配置: %v", err)
+		t.Fatalf("runner.Launch: %v", err)
 	}
-	if occupiedConfig.Token != "agentd-live" {
-		t.Fatalf("occupied first-run token 未覆盖: %q", occupiedConfig.Token)
+	if res.SessionID != "runner-sess" {
+		t.Fatalf("SessionID=%q, want runner-sess", res.SessionID)
 	}
-	requireFileContent(t, filepath.Join(occupied, ".local", "share", "opencode", "sessions.db"), "session-sentinel")
-	requireFileContent(t, filepath.Join(occupied, ".local", "share", "opencode", "auth.json"), "old-auth")
 
-	resume, err := runner.Resume(keysclient.SessionRef{CLI: "opencode", SessionID: "runner-sess", HomeDir: "~/.handoff/home/muse", Workdir: t.TempDir()}, "resume")
+	cfgPath := filepath.Join(targetDir, ".handoff", "config.yaml")
+	loaded, err := config.Load(cfgPath)
 	if err != nil {
-		t.Fatalf("Resume: %v", err)
+		t.Fatalf("config.Load(%s): %v", cfgPath, err)
 	}
-	if resume.SessionID != "runner-sess" {
-		t.Fatalf("Resume result=%+v", resume)
+	if loaded.Token != "agentd-live" {
+		t.Fatalf("loaded.Token = %q, want agentd-live", loaded.Token)
 	}
-	resumeEvidence, err := os.ReadFile(capture)
-	if err != nil {
-		t.Fatal(err)
+	absData, _ := filepath.Abs(liveDataDir)
+	if loaded.DataDir != absData {
+		t.Fatalf("loaded.DataDir = %q, want %q", loaded.DataDir, absData)
 	}
-	if !strings.Contains(string(resumeEvidence), "arg:-s\narg:runner-sess") {
-		t.Fatalf("Resume 未携带 session argv: %q", resumeEvidence)
+	absDSN, _ := filepath.Abs("ledger.db")
+	if loaded.Ledger.DSN != absDSN {
+		t.Fatalf("loaded.Ledger.DSN = %q, want %q", loaded.Ledger.DSN, absDSN)
 	}
-}
 
-func TestCoordinatorHomeSupplierRejectsExpansionFailure(t *testing.T) {
-	p := coordinatorHomeSupplier{
-		currentConfig: func() *config.Config { return &config.Config{Token: "x", DataDir: t.TempDir()} },
-		userHomeDir:   func() (string, error) { return "", errors.New("home unavailable") },
-		expandHomeDir: func(string) (string, error) { return "", errors.New("expand unavailable") },
+	if b, err := os.ReadFile(filepath.Join(targetDir, ".config", "opencode", "AGENTS.md")); err != nil || string(b) != "agents-doc" {
+		t.Fatalf("AGENTS.md = %q/%v, want agents-doc", b, err)
 	}
-	_, err := p.Prepare(keysclient.SessionSpec{CLI: "opencode", HomeDir: "~/muse"})
-	if err == nil || !strings.Contains(err.Error(), "展开协调者供给 HOME") || !strings.Contains(err.Error(), "~/muse") {
-		t.Fatalf("供给展开失败错误缺上下文: %v", err)
+	if b, err := os.ReadFile(filepath.Join(targetDir, ".config", "opencode", "skills", "plan", "SKILL.md")); err != nil || string(b) != "skill-plan" {
+		t.Fatalf("SKILL.md = %q/%v, want skill-plan", b, err)
 	}
-}
+	if b, err := os.ReadFile(filepath.Join(targetDir, ".local", "share", "opencode", "auth.json")); err != nil || string(b) != "main-auth-token" {
+		t.Fatalf("auth.json = %q/%v, want main-auth-token", b, err)
+	}
 
-func TestRejectCoordinatorSymlinkPathAllowsSystemVolumeVarAlias(t *testing.T) {
-	aliasTarget := t.TempDir()
-	alias := filepath.Join(t.TempDir(), "var")
-	if err := os.Symlink(aliasTarget, alias); err != nil {
-		t.Skipf("创建 symlink 不可用: %v", err)
-	}
-	aliasInfo, err := os.Lstat(alias)
+	rawCapture, err := os.ReadFile(capture)
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("读 capture: %v", err)
 	}
-	oldLstat, oldEval := coordinatorLstat, coordinatorEvalSymlinks
-	t.Cleanup(func() { coordinatorLstat, coordinatorEvalSymlinks = oldLstat, oldEval })
-	coordinatorLstat = func(path string) (os.FileInfo, error) {
-		if path == string(filepath.Separator)+"var" {
-			return aliasInfo, nil
+	lines := strings.Split(strings.TrimSpace(string(rawCapture)), "\n")
+	wantHome := "env:HOME=" + targetDir
+	found := false
+	for _, l := range lines {
+		if strings.HasPrefix(l, "env:HOME=~") {
+			t.Fatalf("字面 ~ 进入子进程: %v", lines)
 		}
-		return nil, os.ErrNotExist
-	}
-	coordinatorEvalSymlinks = func(path string) (string, error) {
-		if path == string(filepath.Separator)+"var" {
-			return string(filepath.Separator) + "private" + string(filepath.Separator) + "var", nil
+		if l == wantHome {
+			found = true
 		}
-		return "", os.ErrNotExist
+	}
+	if !found {
+		t.Fatalf("未找到子进程绝对 HOME=%q，捕获行: %v", wantHome, lines)
 	}
 
-	path := filepath.Join(string(filepath.Separator), "var", "folders", "test")
-	if err := rejectCoordinatorSymlinkPath(path); err != nil {
-		t.Fatalf("系统卷 /var 别名不应被判为供给越界: %v", err)
-	}
-}
+	t.Run("OccupiedTargetOverwritesConfigPreservesSessionAndAuth", func(t *testing.T) {
+		occupiedTarget := t.TempDir()
+		if err := os.MkdirAll(filepath.Join(occupiedTarget, ".handoff"), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		firstRunCfg := &config.Config{Token: "first-run-stale-token", DataDir: "/stale", StallTimeout: 2 * time.Hour}
+		if err := config.Save(filepath.Join(occupiedTarget, ".handoff", "config.yaml"), firstRunCfg); err != nil {
+			t.Fatal(err)
+		}
 
-func TestNormalizeCoordinatorSpecRequiresAbsoluteHome(t *testing.T) {
-	if _, err := normalizeCoordinatorSpec(keysclient.SessionSpec{CLI: "opencode"}); err == nil ||
-		!strings.Contains(err.Error(), "HomeDir") {
-		t.Fatalf("空 HomeDir 必须被拒绝: %v", err)
-	}
-	if _, err := normalizeCoordinatorSpec(keysclient.SessionSpec{CLI: "opencode", HomeDir: "relative-home"}); err == nil ||
-		!strings.Contains(err.Error(), "绝对路径") {
-		t.Fatalf("相对 HomeDir 必须被拒绝: %v", err)
-	}
-}
+		opencodeDir := filepath.Join(occupiedTarget, ".local", "share", "opencode")
+		if err := os.MkdirAll(opencodeDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		sentinelPath := filepath.Join(opencodeDir, "sessions.db")
+		if err := os.WriteFile(sentinelPath, []byte("sentinel-sessions-db"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		existingAuth := filepath.Join(opencodeDir, "auth.json")
+		if err := os.WriteFile(existingAuth, []byte("existing-auth-token"), 0o600); err != nil {
+			t.Fatal(err)
+		}
 
-func TestCoordinatorHomeSupplierRejectsSymlinkedRuleParent(t *testing.T) {
-	mainHome := t.TempDir()
-	source := filepath.Join(t.TempDir(), "opencode-source")
-	if err := os.MkdirAll(source, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(source, "AGENTS.md"), []byte("agents"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(filepath.Join(mainHome, ".config"), 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Symlink(source, filepath.Join(mainHome, ".config", "opencode")); err != nil {
-		t.Skipf("创建 symlink 不可用: %v", err)
-	}
-	target := filepath.Join(t.TempDir(), "muse")
-	p := coordinatorHomeSupplier{
-		currentConfig: func() *config.Config {
-			return &config.Config{Token: "x", DataDir: t.TempDir(), StallTimeout: time.Hour}
-		},
-		userHomeDir:    func() (string, error) { return mainHome, nil },
-		expandHomeDir:  func(string) (string, error) { return target, nil },
-		credentialPath: toolchain.CredRelPathFor,
-	}
-	if _, err := p.Prepare(keysclient.SessionSpec{CLI: "opencode", HomeDir: "~/muse"}); err == nil ||
-		!strings.Contains(err.Error(), "symlink") {
-		t.Fatalf("规则父路径 symlink 必须被拒绝: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(target, ".config", "opencode", "AGENTS.md")); !os.IsNotExist(err) {
-		t.Fatalf("拒绝 symlink 后不得在目标写规则: stat err=%v", err)
-	}
+		occupiedSupplier := coordinatorHomeSupplier{
+			currentConfig: func() *config.Config { return liveCfg },
+			userHomeDir:   func() (string, error) { return mainHome, nil },
+			expandHomeDir: func(p string) (string, error) {
+				if p == "~/.handoff/home/occupied" {
+					return occupiedTarget, nil
+				}
+				return hostapi.ExpandHomePath(p)
+			},
+			credentialPath: toolchain.CredRelPathFor,
+		}
+		occRunner := coordinatorRunner{h: h, prepareHome: occupiedSupplier.Prepare}
+
+		occSpec := keysclient.SessionSpec{
+			CLI:     "opencode",
+			HomeDir: "~/.handoff/home/occupied",
+			Workdir: t.TempDir(),
+		}
+		if _, err := occRunner.Launch(occSpec, "occupied launch"); err != nil {
+			t.Fatalf("occRunner.Launch: %v", err)
+		}
+
+		occLoaded, err := config.Load(filepath.Join(occupiedTarget, ".handoff", "config.yaml"))
+		if err != nil {
+			t.Fatalf("config.Load occupied: %v", err)
+		}
+		if occLoaded.Token != "agentd-live" {
+			t.Fatalf("occupied token 未被 live token 覆盖，got %q", occLoaded.Token)
+		}
+
+		if sent, err := os.ReadFile(sentinelPath); err != nil || string(sent) != "sentinel-sessions-db" {
+			t.Fatalf("sessions.db sentinel 被破坏: %q/%v", sent, err)
+		}
+		if auth, err := os.ReadFile(existingAuth); err != nil || string(auth) != "existing-auth-token" {
+			t.Fatalf("已有 auth.json 被覆盖: %q/%v", auth, err)
+		}
+
+		entries, err := os.ReadDir(opencodeDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entryNames := make(map[string]bool)
+		for _, e := range entries {
+			entryNames[e.Name()] = true
+		}
+		if len(entries) != 2 || !entryNames["sessions.db"] || !entryNames["auth.json"] {
+			t.Fatalf(".local/share/opencode 下出现额外条目: %v", entries)
+		}
+	})
+
+	t.Run("ResumeAlsoSuppliesAndPassesArgvSession", func(t *testing.T) {
+		resumeTarget := t.TempDir()
+		resumeSupplier := coordinatorHomeSupplier{
+			currentConfig: func() *config.Config { return liveCfg },
+			userHomeDir:   func() (string, error) { return mainHome, nil },
+			expandHomeDir: func(p string) (string, error) {
+				if p == "~/.handoff/home/resume" {
+					return resumeTarget, nil
+				}
+				return hostapi.ExpandHomePath(p)
+			},
+			credentialPath: toolchain.CredRelPathFor,
+		}
+		resRunner := coordinatorRunner{h: h, prepareHome: resumeSupplier.Prepare}
+
+		ref := keysclient.SessionRef{
+			CLI:       "opencode",
+			SessionID: "runner-sess",
+			HomeDir:   "~/.handoff/home/resume",
+			Workdir:   t.TempDir(),
+		}
+
+		_ = os.Remove(capture)
+
+		resResult, err := resRunner.Resume(ref, "resume prompt")
+		if err != nil {
+			t.Fatalf("resRunner.Resume: %v", err)
+		}
+		if resResult.SessionID != "runner-sess" {
+			t.Fatalf("SessionID=%q, want runner-sess", resResult.SessionID)
+		}
+
+		resLoaded, err := config.Load(filepath.Join(resumeTarget, ".handoff", "config.yaml"))
+		if err != nil {
+			t.Fatalf("Resume 未供给 config: %v", err)
+		}
+		if resLoaded.Token != "agentd-live" {
+			t.Fatalf("Resume token 不对: %q", resLoaded.Token)
+		}
+		if b, err := os.ReadFile(filepath.Join(resumeTarget, ".config", "opencode", "AGENTS.md")); err != nil || string(b) != "agents-doc" {
+			t.Fatalf("Resume 缺少 AGENTS.md: %q/%v", b, err)
+		}
+
+		capData, err := os.ReadFile(capture)
+		if err != nil {
+			t.Fatalf("读 capture: %v", err)
+		}
+		capLines := strings.Split(strings.TrimSpace(string(capData)), "\n")
+		hasResumeArg := false
+		hasSessArg := false
+		for i, l := range capLines {
+			if l == "arg:-s" {
+				hasResumeArg = true
+				if i+1 < len(capLines) && capLines[i+1] == "arg:runner-sess" {
+					hasSessArg = true
+				}
+			}
+		}
+		if !hasResumeArg || !hasSessArg {
+			t.Fatalf("fake CLI 未收到 -s runner-sess 参数: %v", capLines)
+		}
+	})
 }

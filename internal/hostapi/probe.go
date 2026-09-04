@@ -219,11 +219,9 @@ func (h *Host) applyMainHomeSync(ctx context.Context, req ProbeRequest, state ho
 	return state, nil
 }
 
-// ExpandHomePath 只展开当前用户的 ~ 与 ~/ 前缀；其他相对路径按目标 Host 的
-// 当前工作目录解释，绝不使用协调机预先传来的 HOME。
-//
-// 返回：目标 Host 上展开并清理后的路径；目标 Host 的 userHomeDir 失败时返回错误。
-// 注意：这里使用的是目标机的用户目录读取函数，不读取协调机预先传来的 HOME。
+// ExpandHomePath 只展开当前用户的 ~、~/ 与 ~\ 前缀为目标机绝对路径；
+// 其他相对路径按目标 Host 的当前工作目录解释，绝不使用协调机预先传来的 HOME。
+// path 为空时返回错误；展开后通过 filepath.Clean 返回规范路径。
 func ExpandHomePath(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("hostapi: 目标 HOME 路径不能为空")

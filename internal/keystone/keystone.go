@@ -49,8 +49,10 @@ type RoundResult struct {
 	Output    string // 回合输出原文
 }
 
-// SessionRefResolver 是把会话引用交给终端定位器前补齐运行环境的进程内端口。
-// 它不进入 SessionRef 的持久化或 HTTP wire 结构。
+func log() *slog.Logger { return slog.Default().With("mod", "keystone") }
+
+// SessionRefResolver 是进程内端口：在 SessionRef 交给 TerminalLocator 之前
+// 补齐并展开 HomeDir。这是进程内端口，非持久化与 wire 字段。
 type SessionRefResolver interface {
 	ResolveSessionRef(card string, ref keysclient.SessionRef) (keysclient.SessionRef, error)
 }
@@ -199,9 +201,11 @@ func (s *Service) SetAttach(card string, active bool) {
 	s.takeover[card] = active
 }
 
-// SetSessionRefResolver 安装 Locate 使用的会话引用补全端口。
-// 必须在 HTTP handler 启动前调用；这是进程内测试/组装端口，不是持久化或 wire 字段。
+// SetSessionRefResolver 设置协调者会话引用解析器。
+// 必须在 HTTP handler 启动前调用；这是进程内端口，非持久化/wire 字段。
 func (s *Service) SetSessionRefResolver(resolver SessionRefResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.refResolver = resolver
 }
 
@@ -209,48 +213,42 @@ func (s *Service) SetSessionRefResolver(resolver SessionRefResolver) {
 func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error) {
 	s.mu.Lock()
 	ref, ok := s.sessions[card]
+	resolver := s.refResolver
 	s.mu.Unlock()
-	slog.Default().Info("协调者 attach 定位开始", "card", card, "hot", ok,
-		"has_session", ref.SessionID != "", "has_home", ref.HomeDir != "", "workdir", workdir)
 	if !ok {
 		if s.ledger == nil {
-			slog.Default().Warn("协调者 attach 定位缺少账本", "card", card, "hot", false)
 			return keysclient.AttachInfo{}, errors.New("keystone: 该卡没有绑定的协调者会话")
 		}
 		seat, err := s.ledger.GetCard(card)
 		if err != nil || seat.DriverSource != string(proto.SeatSourceCoordinate) {
-			slog.Default().Warn("协调者 attach 冷读未找到 coordinate 席位", "card", card,
-				"cause", err, "source", seat.DriverSource)
 			return keysclient.AttachInfo{}, errors.New("keystone: 该卡没有绑定的协调者会话")
 		}
 		cli, sessionID, err := proto.ParseSeatIdentity(seat.DriverSession)
 		if err != nil {
-			slog.Default().Error("协调者 attach 冷读席位解析失败", "card", card, "cause", err)
 			return keysclient.AttachInfo{}, fmt.Errorf("keystone: 解析卡 %s 席位: %w", card, err)
 		}
 		ref = keysclient.SessionRef{CLI: cli, SessionID: sessionID, Workdir: workdir}
 	}
-	if s.refResolver != nil {
-		resolved, err := s.refResolver.ResolveSessionRef(card, ref)
+	if resolver != nil {
+		resolved, err := resolver.ResolveSessionRef(card, ref)
 		if err != nil {
-			slog.Default().Error("协调者 attach 会话引用解析失败", "card", card, "hot", ok,
+			log().Error("解析协调者 SessionRef 失败", "card", card, "hot", ok,
 				"has_session", ref.SessionID != "", "has_home", ref.HomeDir != "", "cause", err)
 			return keysclient.AttachInfo{}, err
 		}
 		ref = resolved
 	}
 	if s.locator == nil {
-		slog.Default().Error("协调者 attach 定位器未装配", "card", card, "hot", ok)
 		return keysclient.AttachInfo{}, errors.New("keystone: attach 定位未装配")
 	}
+	log().Info("出站 locator 开始", "card", card, "hot", ok, "cli", ref.CLI,
+		"has_home", ref.HomeDir != "", "workdir", workdir)
 	info, err := s.locator.Locate(ref, workdir)
 	if err != nil {
-		slog.Default().Error("协调者 attach 定位失败", "card", card, "hot", ok,
-			"has_session", ref.SessionID != "", "has_home", ref.HomeDir != "", "workdir", workdir, "cause", err)
+		log().Error("出站 locator 失败", "card", card, "cause", err)
 		return keysclient.AttachInfo{}, err
 	}
-	slog.Default().Info("协调者 attach 定位完成", "card", card, "hot", ok,
-		"has_session", ref.SessionID != "", "has_home", ref.HomeDir != "", "workdir", workdir)
+	log().Info("出站 locator 成功", "card", card, "machine", info.Machine, "dir", info.Dir)
 	return info, nil
 }
 

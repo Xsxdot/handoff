@@ -247,11 +247,15 @@ func TestRunTurnEmptyPromptRejected(t *testing.T) {
 func TestBuildEnvExpandsTildeHomeDir(t *testing.T) {
 	fakeHome := t.TempDir()
 	swapUserHomeDir(t, fakeHome)
-	env, _, err := buildEnv(TurnRequest{HomeDir: "~/.handoff/home/c1"})
+	env, expandedHome, err := buildEnv(TurnRequest{HomeDir: "~/.handoff/home/c1"})
 	if err != nil {
 		t.Fatalf("buildEnv: %v", err)
 	}
-	want := "HOME=" + filepath.Join(fakeHome, ".handoff/home/c1")
+	wantHome := filepath.Join(fakeHome, ".handoff/home/c1")
+	if expandedHome != wantHome {
+		t.Fatalf("expandedHome = %q, want %q", expandedHome, wantHome)
+	}
+	want := "HOME=" + wantHome
 	found := false
 	for _, kv := range env {
 		if kv == "HOME=~/.handoff/home/c1" {

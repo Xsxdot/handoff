@@ -7,7 +7,8 @@
 //     可行动错误，绝不静默兜底到 opencode）
 //   - argv/env 组装：model 透传、`-s` 即 resume、`--` 防横杠开头消息被当
 //     flag（b156.3.1-plan §三 F6）、隔离 HOME 确定性注入（HomeDir 字段是 HOME 的
-//     语义所有者，赢过 req.Env 里的同名行）
+//     语义所有者，赢过 req.Env 里的同名行；进子进程前必须展开为绝对路径，展开失败
+//     fail-closed 阻断拉起，防止字面 ~ 进入子进程污染工作区）
 //   - 超时执法：到点杀整棵进程树（unix 进程组 / 其余平台直接子进程），
 //     回合判失败不挂死
 //   - JSONL 解析：sessionID 取首个非空值；text part 按到达序拼接为 Output
@@ -95,9 +96,10 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 		log().Error("找不到载体 CLI", "cli", req.CLI, "cause", err)
 		return TurnReply{}, fmt.Errorf("hostapi: 找不到载体 CLI %q: %w", req.CLI, err)
 	}
+
 	env, expandedHome, err := buildEnv(req)
 	if err != nil {
-		log().Error("协调者回合展开 HOME 失败", "cli", req.CLI, "home_dir", req.HomeDir,
+		log().Error("展开回合环境失败", "cli", req.CLI, "home_dir", req.HomeDir,
 			"workdir", req.Workdir, "cause", err)
 		return TurnReply{}, err
 	}
@@ -204,24 +206,36 @@ func buildArgv(bin string, req TurnRequest) []string {
 	return append(args, "--", req.Prompt)
 }
 
-// buildEnv 合成子进程环境：基础环境剔除被覆盖键 → 按 req.Env 原序追加 →
+// expandTurnHomeDir 把 TurnRequest.HomeDir 的前导 ~ 在目标机展开为绝对路径。
+// 载体登记串是跨机可认的用户可见形态（含 ~）；进子进程 HOME 前必须展开，
+// 否则子进程把 $HOME 系文件相对 Workdir 落盘，在仓库下建出
+// ./~/.handoff/... 垃圾目录（2026-09-04 实测 2.2G）。
+// 复用 ExpandHomePath 的展开语义；展开失败必须 fail-closed 返回错误，绝不回退为原串，
+// 避免字面 ~ 进入子进程。
+func expandTurnHomeDir(homeDir string) (string, error) {
+	if homeDir == "" {
+		return "", nil
+	}
+	return ExpandHomePath(homeDir)
+}
+
+// buildEnv 合成子进程环境与展开后的 HOME 路径：基础环境剔除被覆盖键 → 按 req.Env 原序追加 →
 // HomeDir 非空时覆写 HOME（spec §4.3：隔离 HOME 是物种边界的环境执法；
 // HomeDir 字段赢过 env 清单里的同名行——env 文件不该有能力偷换物种边界）。
-// 返回值还携带日志使用的展开 HOME；展开失败必须在启动子进程前返回，不能把
-// 字面 ~ 交给子进程。值永不进日志。
+// 进子进程前必须完成 ~ 展开，展开失败 fail-closed 返回错误；值永不进日志。
 func buildEnv(req TurnRequest) ([]string, string, error) {
 	expandedHome, err := expandTurnHomeDir(req.HomeDir)
 	if err != nil {
 		return nil, "", err
 	}
+
 	override := map[string]bool{}
 	for _, kv := range req.Env {
 		if k, _, ok := strings.Cut(kv, "="); ok && k != "" {
 			override[k] = true
 		}
 	}
-	homeSet := expandedHome != ""
-	if homeSet {
+	if expandedHome != "" {
 		override["HOME"] = true
 	}
 	out := make([]string, 0, len(os.Environ())+len(req.Env)+1)
@@ -233,29 +247,17 @@ func buildEnv(req TurnRequest) ([]string, string, error) {
 		out = append(out, kv)
 	}
 	for _, kv := range req.Env {
-		if homeSet {
+		if expandedHome != "" {
 			if k, _, _ := strings.Cut(kv, "="); k == "HOME" {
 				continue
 			}
 		}
 		out = append(out, kv)
 	}
-	if homeSet {
+	if expandedHome != "" {
 		out = append(out, "HOME="+expandedHome)
 	}
 	return out, expandedHome, nil
-}
-
-// expandTurnHomeDir 把 TurnRequest.HomeDir 的前导 ~ 在目标机展开为绝对路径。
-// 载体登记串是跨机可认的用户可见形态（含 ~）；进子进程 HOME 前必须展开，
-// 否则子进程把 $HOME 系文件相对 Workdir 落盘，在仓库下建出
-// ./~/.handoff/... 垃圾目录（2026-09-04 实测 2.2G）。
-// 复用 ExpandHomePath 的展开语义；展开失败必须阻断回合，避免错误路径进入子进程。
-func expandTurnHomeDir(homeDir string) (string, error) {
-	if homeDir == "" {
-		return "", nil
-	}
-	return ExpandHomePath(homeDir)
 }
 
 // consumeEvents 流式消费 JSONL 事件行直到 EOF：sessionID 取首个非空值，

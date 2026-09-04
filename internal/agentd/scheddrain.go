@@ -261,12 +261,13 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
 		Workdir: s.resolveCoordWorkdir(card),
 	}
-	spec, err = normalizeCoordinatorSpec(spec)
+	normalized, err := normalizeCoordinatorSpec(spec)
 	if err != nil {
-		s.log.Error("自动化拉起协调者 HOME 展开失败", "card", card,
+		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
 		return zero, err
 	}
+	spec = normalized
 	s.log.Info("自动化拉起协调者回合", "card", card, "source", source,
 		"squad", binding.Squad, "carrier", binding.Carrier,
 		"cli", spec.CLI, "home_dir", spec.HomeDir, "workdir", spec.Workdir)
@@ -339,12 +340,13 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
 		Workdir: s.resolveCoordWorkdir(card),
 	}
-	spec, err = normalizeCoordinatorSpec(spec)
+	normalized, err := normalizeCoordinatorSpec(spec)
 	if err != nil {
-		s.log.Error("自动化唤醒协调者 HOME 展开失败", "card", card,
+		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
 		return zero, err
 	}
+	spec = normalized
 	s.log.Info("自动化唤醒协调者回合", "card", card,
 		"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier,
 		"cli", spec.CLI, "home_dir", spec.HomeDir)

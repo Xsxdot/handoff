@@ -67,3 +67,5 @@
 - 2026-09-04 本执行节点平台编译：命令 `GOOS=darwin GOARCH=arm64 go test ./internal/agentd -run '^Test(CoordinatorHomeLaunchAndResumeSupplyFullHome|CoordinatorHomeSupplierRejectsSymlinkedRuleParent|RejectCoordinatorSymlinkPathAllowsSystemVolumeVarAlias)$' -count=1 -c -o /root/.handoff/tmp/605ea58a/agentd-darwin.test` 退出码 0，标准输出为空；仅验证 Darwin arm64 测试二进制可编译，未在本机执行 Darwin 二进制。
 - 2026-09-04 本执行节点收口检查：恢复后 `go build ./...` 退出码 0、标准输出为空；`git diff --check` 退出码 0、标准输出为空；`gofmt -l internal/agentd/coordinator_home.go internal/agentd/coordinator_home_test.go` 退出码 0、标准输出为空。待提交改动仅为本台账、路径检查修复及回归测试。
 - 2026-09-04 本执行节点提交命令 `git commit -m "fix(b323): tolerate macOS system var alias"` 原始输出：`[cards/B323-charter-4 8bbddc05] fix(b323): tolerate macOS system var alias`；`3 files changed, 60 insertions(+), 2 deletions(-)`。
+- 2026-09-04 本执行节点补充：按质量对照要求改用 `origin/cards/B323-impl-agy @ 8b876dc` 指定文件，覆盖后不保留旧系统卷别名路径符号。
+- 2026-09-04 本执行节点提交命令 `git add docs/superpowers/specs/b323-ledger.md && git commit -m "chore(b323): adopt agy implementation comparison"` 原始输出：`[cards/B323-charter-5 68f1c925] chore(b323): adopt agy implementation comparison`；`10 files changed, 509 insertions(+), 518 deletions(-)`。
