@@ -13,6 +13,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
+var cardBindCLI, cardBindSession string
+var cardRebindCLI, cardRebindSession string
+
 var cardBindCmd = &cobra.Command{
 	Use:   "bind <id>",
 	Short: "让当前会话坐下成为这张卡的协调者",
@@ -20,7 +23,7 @@ var cardBindCmd = &cobra.Command{
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
 		slog.Default().Info("CLI 坐下入口", "card", id)
-		identity, err := currentSeatIdentity()
+		identity, err := currentSeatIdentity(cardBindCLI, cardBindSession)
 		if err != nil {
 			slog.Default().Warn("CLI 坐下身份出示失败", "card", id, "cause", err)
 			return err
@@ -96,9 +99,15 @@ var cardRebindCmd = &cobra.Command{
 			return fmt.Errorf("--self 与 --launch 必须二选一")
 		}
 		id := args[0]
+		flagsProvided := cmd.Flags().Changed("cli") || cmd.Flags().Changed("session")
+		if cardRebindLaunch && flagsProvided {
+			err := fmt.Errorf("card rebind --launch 不接受 --cli/--session：机器人会话由 --launch 自己创建")
+			slog.Default().Warn("CLI 机器人换绑拒绝身份 flag", "card", id, "mode", "launch", "cause", err)
+			return err
+		}
 		slog.Default().Info("CLI 换绑入口", "card", id, "mode", map[bool]string{true: "self", false: "launch"}[cardRebindSelf])
 		if cardRebindSelf {
-			identity, err := currentSeatIdentity()
+			identity, err := currentSeatIdentity(cardRebindCLI, cardRebindSession)
 			if err != nil {
 				slog.Default().Warn("CLI self 换绑身份出示失败", "card", id, "cause", err)
 				return err
@@ -151,7 +160,11 @@ var cardRebindCmd = &cobra.Command{
 var cardRebindSelf, cardRebindLaunch bool
 
 func init() {
+	cardBindCmd.Flags().StringVar(&cardBindCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
+	cardBindCmd.Flags().StringVar(&cardBindSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
 	cardRebindCmd.Flags().BoolVar(&cardRebindSelf, "self", false, "当前会话接班")
 	cardRebindCmd.Flags().BoolVar(&cardRebindLaunch, "launch", false, "叫机器人接班")
+	cardRebindCmd.Flags().StringVar(&cardRebindCLI, "cli", "", "手填接班会话物种名（仅 --self，需与 --session 成对）")
+	cardRebindCmd.Flags().StringVar(&cardRebindSession, "session", "", "手填接班会话 id（仅 --self，需与 --cli 成对）")
 	cardCmd.AddCommand(cardBindCmd, cardReleaseCmd, cardTakeoverCmd, cardRebindCmd)
 }

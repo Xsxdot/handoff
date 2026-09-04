@@ -386,6 +386,9 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 | 换人 | `handoff card rebind <id> --self` 或 `--launch` | 拒绝，用上面两颗 | `--self` 这场对话接班；`--launch` 新叫机器人接班 |
 
 `--self` 与 `--launch` 必须二选一。没有 `--to` / `--carrier` / `--expect`。
+`--cli` / `--session` 是命令本地 flag，仅属于 `card bind`、`card rebind --self`、
+已有席位的 `card dispatch --step` 和 `kind != user` 的 `room send`；两项必须成对。
+`card rebind --launch` 与 `card coordinate` 不接受这两个 flag。
 坐下 / `--self` 不查小队；叫机器人 / `--launch` 才查。普通终端出示不出会话身份时，
 `bind` / `rebind --self` 失败，空座上仍可 `coordinate`。浏览器页不能坐下。
 
@@ -396,7 +399,7 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 `rebind`。`takeover` 一律失败并指向 bind / coordinate / rebind。`release` 空座幂等
 成功，有席位失败并指向 `rebind`。
 
-协调者 kind 的 `room send`（`escalation` / `closing` 等）也要出示这场席位；出示
+`kind != user` 的 `room send`（`escalation` / `closing` 等）也要出示这场席位；出示
 失败改 `--kind user`，或先 `bind` / `rebind --self`。
 
 ### 状态不会自己流转
@@ -717,11 +720,11 @@ handoff card rebind <id> --launch    # 新叫机器人接班
 | `card dispatch --step` 已受理后短等超时、卡上仍无 `dispatched`/`派发失败` 首态 | 202 只代表请求已受理；编排仍在 agentd 异步运行，正常首态可能在约 20 秒窗口外；运行锁占用会在卡上 comment + `needs_human` 留痕，ViaTemplate 派发失败也会落卡 | stdout 的「已受理，首态未到；进展见 card wait」是正常短等超时，跟 `card wait`；若短等捕获 reason=`派发失败`，stderr 会有卡上 comment 正文且命令非 0。运行锁问题先读卡上 comment 的 holder/reason。席位用 `bind` / `coordinate` / `rebind`，`takeover` 不再占座。 |
 | `card add --coordinate` 失败 | 建卡不占座，该 flag 已废止 | 先建卡，再 `card bind` 或 `card coordinate` |
 | `card rebind --to` 报 unknown flag | 任意 session id 已废止 | `--self` 或 `--launch` 二选一 |
-| `card bind` / `rebind --self` 报未出示席位身份 | 普通终端没有注入的会话身份 | 到 grok/claude 这场对话里再按；空座叫机器人用 `card coordinate` |
+| `card bind` / `rebind --self` 报未出示席位身份 | 当前来源依次是完整 HANDOFF_SESSION_CLI/ID、单独的 GROK_SESSION_ID 或 CLAUDE_CODE_SESSION_ID；普通终端/已关会话没有来源，或环境残缺、双宿主、手填与当前来源不一致 | 在 grok/claude 对话里直接重试；没有当前来源时在同一命令带 `--cli <物种> --session <id>`，两项必须成对且与当前来源一致。完整 HANDOFF 对优先；不要用 `USER`/hostname/PID，不要给 `rebind --launch` 或 coordinate 带这两个 flag。`--step`/非 user room send 也沿用同一对。 |
 | `card bind` 报已有席位 | 桌子上有人（含旧人尺度席位） | `rebind --self` 或 `--launch` |
 | `card coordinate` 报席位状态不适合此操作 / 409 | 空座才叫机器人；有人不能再 launch | `rebind --launch` 或 `--self` |
 | `card takeover` 失败 | 不再通过 takeover 占座 | 空座 `bind` 或 `coordinate`；有人 `rebind` |
-| `room send --kind escalation` 报书写者与房间身份不符 | 协调者 kind 要比对账本席位，不是 `cli:user@host` | 未入座用 `--kind user`；本对话发简报/收口先 `bind` 或 `rebind --self` |
+| `room send --kind escalation` 报书写者与房间身份不符 | `kind != user` 要比对账本席位，不是 `cli:user@host` | 未入座用 `--kind user`；本对话发简报/收口先 `bind` 或 `rebind --self` |
 
 **日志在哪**（在 executor 所在机器上）：
 

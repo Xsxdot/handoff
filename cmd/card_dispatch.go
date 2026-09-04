@@ -29,6 +29,8 @@ var (
 	cardDispatchExecutor   string
 	cardDispatchModel      string
 	cardDispatchExtra      string
+	cardDispatchCLI        string
+	cardDispatchSession    string
 )
 
 type dispatchRequest struct {
@@ -281,8 +283,14 @@ var cardDispatchCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		id := args[0]
+		flagsProvided := cmd.Flags().Changed("cli") || cmd.Flags().Changed("session")
 		if cardDispatchStep != "" {
 			return runStepDispatch(cmd, id, cardDispatchStep)
+		}
+		if flagsProvided {
+			err := fmt.Errorf("不带 --step 的 card dispatch 不接受 --cli/--session：它不走当前会话出示")
+			slog.Default().Warn("裸卡派发拒绝席位 flag", "card", id, "cause", err)
+			return err
 		}
 		st, err := openLedger()
 		if err != nil {
@@ -359,6 +367,8 @@ func init() {
 	cardDispatchCmd.Flags().StringVar(&cardDispatchTarget, "target", "", "目标机（覆盖模板）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchPlan, "plan", "", "plan 文件路径（挂派发事件）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchExtra, "extra", "", "本次派发的一次性补充说明（进 prompt 的「本次补充」小节；不落卡，不影响后续轮次）")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
+	cardDispatchCmd.Flags().StringVar(&cardDispatchSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchDiscipline, "discipline-override", "", "覆盖模板指定的纪律块角色名（如 review；测试/应急）")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchStep, "step", "", "节点名（= 看板列名），从卡钉住的工作流里查；不给则不跑节点")
 	cardDispatchCmd.Flags().StringVar(&cardDispatchExecutor, "executor", "", "一次性覆盖模板/节点的执行器")

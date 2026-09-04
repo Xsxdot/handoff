@@ -111,6 +111,8 @@ var (
 	roomSendKind    string
 	roomSendRefs    []string
 	roomSendMention []string
+	roomSendCLI     string
+	roomSendSession string
 )
 
 var roomSendCmd = &cobra.Command{
@@ -118,30 +120,38 @@ var roomSendCmd = &cobra.Command{
 	Short: "发消息（--kind 默认 user；--ref/--mention 可重复）",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		flagsProvided := cmd.Flags().Changed("cli") || cmd.Flags().Changed("session")
+		if roomSendKind == proto.RoomMsgUser && flagsProvided {
+			err := fmt.Errorf("room send --kind user 不接受 --cli/--session：user 发言继续使用人尺度 actor")
+			slog.Default().Warn("CLI user 房间消息拒绝席位 flag", "room", args[0], "kind", roomSendKind, "cause", err)
+			return err
+		}
 		svc, st, err := openRoomService()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
 		actor := ledgerActor()
+		actorSource := "ledger"
 		msg := proto.RoomMessage{
 			Kind: roomSendKind, Body: strings.Join(args[1:], " "),
 			Refs: roomSendRefs, Mentions: roomSendMention,
 		}
 		if msg.Kind != proto.RoomMsgUser {
 			var err error
-			actor, err = currentSeatIdentity()
+			actor, err = currentSeatIdentity(roomSendCLI, roomSendSession)
 			if err != nil {
 				slog.Default().Warn("CLI 协调者房间消息身份出示失败", "room", args[0], "kind", msg.Kind, "cause", err)
 				return err
 			}
+			actorSource = "seat"
 		}
 		seq, err := svc.Send(args[0], msg, actor)
 		if err != nil {
-			slog.Default().Warn("CLI 房间消息发送失败", "room", args[0], "kind", msg.Kind, "actor", actor, "cause", err)
+			slog.Default().Warn("CLI 房间消息发送失败", "room", args[0], "kind", msg.Kind, "actor_source", actorSource, "cause", err)
 			return fmt.Errorf("发送到 %s: %w", args[0], err)
 		}
-		slog.Default().Info("CLI 房间消息已发送", "room", args[0], "kind", msg.Kind, "actor", actor, "seq", seq)
+		slog.Default().Info("CLI 房间消息已发送", "room", args[0], "kind", msg.Kind, "actor_source", actorSource, "seq", seq)
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"ok": true, "seq": seq})
 	},
 }
@@ -176,6 +186,8 @@ func init() {
 	roomListCmd.Flags().StringVar(&roomListProject, "project", "", "按项目过滤")
 	roomReadCmd.Flags().Int64Var(&roomReadAfter, "after", 0, "只读 seq 大于此值的消息（排他）")
 	roomSendCmd.Flags().StringVar(&roomSendKind, "kind", proto.RoomMsgUser, "消息 kind（默认 user）")
+	roomSendCmd.Flags().StringVar(&roomSendCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
+	roomSendCmd.Flags().StringVar(&roomSendSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
 	roomSendCmd.Flags().StringArrayVar(&roomSendRefs, "ref", nil, "引用锚（git 路径/timeline 锚/卡号/附件路径，可重复）")
 	roomSendCmd.Flags().StringArrayVar(&roomSendMention, "mention", nil, "@成员（可重复）")
 	roomCmd.AddCommand(roomListCmd, roomReadCmd, roomSendCmd, roomInboxCmd)

@@ -141,8 +141,10 @@ func runStepDispatch(cmd *cobra.Command, id, node string) error {
 		return err
 	}
 	actor := ledgerActor()
+	actorSource := "ledger"
+	flagsProvided := cmd.Flags().Changed("cli") || cmd.Flags().Changed("session")
 	if card.DriverSession != "" || card.DriverSource != "" {
-		actor, err = currentSeatIdentity()
+		actor, err = currentSeatIdentity(cardDispatchCLI, cardDispatchSession)
 		if err != nil {
 			slog.Default().Warn("card step 无法出示协调者席位", "card", id, "node", node, "cause", err)
 			return err
@@ -152,6 +154,11 @@ func runStepDispatch(cmd *cobra.Command, id, node string) error {
 			slog.Default().Warn("card step 席位不匹配", "card", id, "node", node, "cause", err)
 			return err
 		}
+		actorSource = "seat"
+	} else if flagsProvided {
+		err := fmt.Errorf("空座 card dispatch --step 不接受 --cli/--session：--step 不负责坐下，请先 card bind")
+		slog.Default().Warn("空座 card step 拒绝席位 flag", "card", id, "node", node, "cause", err)
+		return err
 	}
 	watermark, err := st.MaxSeq()
 	if err != nil {
@@ -171,7 +178,7 @@ func runStepDispatch(cmd *cobra.Command, id, node string) error {
 	}
 	slog.Default().Info("CLI 提交卡节点", "card", id, "node", node, "agentd", cl.BaseURL(),
 		"target", req.Target, "executor", req.Executor, "model", req.Model,
-		"has_extra", strings.TrimSpace(req.Extra) != "", "actor", req.Actor)
+		"has_extra", strings.TrimSpace(req.Extra) != "", "actor_source", actorSource)
 	if err := cl.CardStep(ctx, id, req); err != nil {
 		slog.Default().Warn("CLI 卡节点未受理", "card", id, "node", node, "cause", err)
 		return err

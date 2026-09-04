@@ -762,6 +762,82 @@ func TestCardDispatchStepUsesActorIdentity(t *testing.T) {
 	}
 }
 
+func TestCardDispatchStepAcceptsExplicitSeatFlagsForOccupiedCard(t *testing.T) {
+	clearSeatSourceEnv(t)
+	setStepFirstStateTestWindow(t)
+	dir := t.TempDir()
+	var got map[string]json.RawMessage
+	newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		got = cardStepBody(t, r)
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte(`{"ok":true}`))
+	}))
+	cardID := createStepTestCard(t, dir, "手填写绑 step 卡")
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindSeat(cardID, "cli:grok#step-seat", proto.SeatSourceBind); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	st.Close()
+
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中",
+		"--cli", "grok", "--session", "step-seat"); err != nil {
+		t.Fatalf("occupied card dispatch --step with explicit identity: %v", err)
+	}
+	if actor := cardStepString(t, got, "actor"); actor != "cli:grok#step-seat" {
+		t.Fatalf("wire actor = %q, want cli:grok#step-seat", actor)
+	}
+}
+
+func TestSeatFlagsRejectedByNonPresentingPaths(t *testing.T) {
+	t.Run("empty seat step", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		dir := t.TempDir()
+		var requests int32
+		newCardStepCLIEndpoint(t, dir, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			atomic.AddInt32(&requests, 1)
+			w.WriteHeader(http.StatusAccepted)
+		}))
+		cardID := createStepTestCard(t, dir, "空座 step 禁用 flag 卡")
+		if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--step", "进行中", "--cli", "grok"); err == nil {
+			t.Fatal("空座 step 带身份 flag 必须失败")
+		}
+		if got := atomic.LoadInt32(&requests); got != 0 {
+			t.Fatalf("空座 step 拒绝前不应请求 agentd，requests=%d", got)
+		}
+		st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		card, err := st.GetCard(cardID)
+		if err != nil || card.DriverSession != "" || card.DriverSource != "" {
+			t.Fatalf("空座 step 拒绝后席位变化: %+v, err=%v", card, err)
+		}
+	})
+
+	t.Run("bare dispatch", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		dir := t.TempDir()
+		cardID := createStepTestCard(t, dir, "裸 dispatch 禁用 flag 卡")
+		if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", cardID, "--cli", "grok", "--session", "bare"); err == nil {
+			t.Fatal("裸 dispatch 带身份 flag 必须失败")
+		}
+		st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		card, err := st.GetCard(cardID)
+		if err != nil || card.DriverSession != "" || card.DriverSource != "" {
+			t.Fatalf("裸 dispatch 拒绝后席位变化: %+v, err=%v", card, err)
+		}
+	})
+}
+
 // TestCardDispatchStepRejectsPlan rejects local files before endpoint lookup or HTTP.
 func TestCardDispatchStepRejectsPlan(t *testing.T) {
 	dir := t.TempDir()

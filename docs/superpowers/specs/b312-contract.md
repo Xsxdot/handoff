@@ -33,7 +33,7 @@
 | `func VerifyWriter(r *Room, kind, actor string) error` | `internal/collab/room/room.go#VerifyWriter`（`:102-146`） | 签名和矩阵不变；比较值改为规范席位字符串 |
 | `func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error)` | `internal/collab/service.go#Service.Pending`（`:162-201`） | consumer 改为规范席位字符串；`@B号` 仍按该卡当前席位入队 |
 | `func (s *Service) Consume(seq int64, consumer string) error` | `internal/collab/service.go#Service.Consume`（`:204-224`） | 签名不变，消费者使用同一规范席位字符串 |
-| `func ledgerActor() string` | `cmd/ledgercli.go#ledgerActor`（`:42-50`） | 仍可用于人尺度事件审计；禁止用于 bind/rebind-self/有席位 step/协调者 kind 的席位出示 |
+| `func ledgerActor() string` | `cmd/ledgercli.go#ledgerActor`（`:42-50`） | 仍可用于人尺度事件审计；禁止用于 bind/rebind-self/有席位 step/`kind != user` 的席位出示 |
 | `func (s *Server) launchCoordinatorRound(ctx context.Context, card, source string) (keystone.RoundResult, error)` | `internal/agentd/scheddrain.go:212-246`（图未提供该符号锚） | 保留调度编排；成功后由同组装点把返回 `SessionID` 与 `spec.CLI` 写成 `coordinate` 席位 |
 | `func (s *Server) handleCoordLaunch(w http.ResponseWriter, r *http.Request)` | `internal/agentd/coordapi.go:93-148`（图未提供该符号锚） | 端点语义收窄为“叫机器人”；空座才拉起并写席位，`manual/card_create` 均退役 |
 | `export const launchCoordinator = (cardId: string, source?: CoordinatorLaunchSource)` | `web/src/api/scheduling.ts#launchCoordinator`（`:231-241`） | 去掉 `manual/card_create` source；新建卡不再调用，抽屉按钮改叫“叫机器人” |
@@ -61,7 +61,7 @@ cli:<cli>#<session_id>
 规则逐条冻结：
 
 1. `cli` 是 hostapi/RunTurn 使用的物种名，如 `codex`、`claude`、`grok`、`opencode`；不是载体登记名，不是 `cli:<USER>@<hostname>`。
-2. `session_id` 是该 CLI 返回/继续使用的会话 id；不得由用户通过 `--to` 等 flag 任意输入。
+2. `session_id` 是该 CLI 返回/继续使用的会话 id。用户不得通过 `--to` 式接班者指定别人的会话；允许在 card bind、rebind --self、已有席位的 card dispatch --step 和 kind != user 的 room send 上以 --cli/--session 出示自己的这一对。编码仍严格遵守本节 EncodeSeatIdentity 规则。
 3. `cli` 与 `session_id` 均非空、无首尾空白、无 Unicode 空白；两者均不得含 `#`；`cli` 不得含 `:`。
 4. 编码结果必须是 `cli:` 前缀、一个 `#` 分隔符和两段原值；同一对原值的规范字符串按字节相等。
 5. `cli:user@host`、缺少 `#`、空分段、多个 `#` 都是非法旧席位；不能自动迁移、不能当空座。
@@ -124,8 +124,8 @@ HANDOFF_SESSION_ID
 
 规则如下：
 
-1. `cmd` 的 `currentSeatIdentity() (string, error)` 读取这两个键，校验非空后调用 `proto.EncodeSeatIdentity`；缺任一键都失败，不回退 `USER`、hostname、PID、`ledgerActor()` 或 `web:<addr>`。
-2. CLI `bind`、`rebind --self`、卡已有席位时的 `card dispatch --step`、协调者 kind 的 `room send` 共用这一函数；它们不各自拼接字符串。
+1. `cmd` 的 `func currentSeatIdentity(flagCLI, flagSession string) (string, error)` 先看本命令 --cli/--session：两者非空才编码 flag 对，只非空一个即失败，不与环境拼接。再看 HANDOFF_SESSION_CLI/HANDOFF_SESSION_ID：完整非空对编码为注入对；一段非空而另一段缺失或为空即失败，不回退宿主；两段都空才继续宿主来源。完整注入对存在时忽略 GROK_SESSION_ID/CLAUDE_CODE_SESSION_ID。只有注入对不存在时，单独的非空 GROK_SESSION_ID 编为 cli:grok#(GROK_SESSION_ID 的值)，单独的非空 CLAUDE_CODE_SESSION_ID 编为 cli:claude#(CLAUDE_CODE_SESSION_ID 的值)；两者同时非空即失败；不认 CLAUDE_CODE_REMOTE_SESSION_ID。没有来源时失败文案同时给出 grok/claude、--cli、--session。flag 对与环境候选都存在时，编码不一致失败，一致通过。四个生产入口共用本函数，不从 USER、hostname、PID、ledgerActor 或 web actor 推导席位。
+2. card bind、rebind --self、已有席位的 card dispatch --step 和 kind != user 的 room send 都把本命令的 flag 值传给同一个函数。card dispatch 无 --step、空座 --step、kind=user 的 room send、rebind --launch 带身份 flag 都拒绝且不改 actor、席位或事件；card coordinate 不注册这两个 flag。
 3. `coordinatorRunner.Resume` 从 `SessionRef{CLI,SessionID}` 为子进程追加同名两个环境键，值不得写日志；这样叫机器人席位在后续无头 handoff 回合能再次出示。
 4. Fresh `Launch` 返回的会话 id 只能在回合结束后落座；首回合不因无法预知新 id 而伪造席位。之后 Resume 使用 `SessionRef` 注入同一对。
 5. 浏览器页面没有当前 agent 会话注入；Web 的 bind/rebind-self 必须禁用或返回与普通终端相同的缺失身份错误。Web 只能叫机器人、rebind-launch、读席位。
@@ -251,7 +251,7 @@ export const rebindCoordinatorLaunch: (cardId: string) => Promise<CoordinatorLau
 
 `VerifyWriter`、`Service.Send`、`Pending`、`Consume` 签名不变，矩阵只替换比较值：
 
-1. 协调者类 kind 仅允许 `actor == card.DriverSession`，且该值必须是合法席位身份。
+1. `kind != user` 仅允许 `actor == card.DriverSession`，且该值必须是合法席位身份。
 2. `relay` 仍允许本卡席位或直接父卡席位；平级卡继续拒绝。
 3. `user`、群房间非空 actor 规则不变；`web:<addr>` 可以继续是普通 Web 用户/审计 actor，但不是协调者席位。
 4. `Pending(consumer)` 与 `ListAllCards` 比较同一个规范字符串；`@B号` 仍把消息投给该卡席位，跨卡平级仍走项目群。
@@ -325,7 +325,7 @@ export const rebindCoordinatorLaunch: (cardId: string) => Promise<CoordinatorLau
 50. `Wake` 读到 `coordinate` 来源时内存有 ref 走 `Runner.Resume`。
 51. `Wake` 读到 `coordinate` 来源时 Resume 失败才允许 `Runner.Launch`。
 52. `Pending` 用同一席位字符串匹配 consumer。
-53. 另一张卡席位发本卡协调者 kind 返回 `ErrNotWriter`。
+53. 另一张卡席位发本卡 `kind != user` 返回 `ErrNotWriter`。
 54. 一级父卡席位仍可发子卡 `relay`。
 55. 平级卡席位发本卡 `relay` 返回 `ErrNotWriter`。
 56. 有席位的 `--step` 出示不匹配时拒绝。
@@ -360,7 +360,7 @@ go test ./internal/proto/... -run 'TestSeatIdentity' -count=1
 
 1. **复用 `driver_session` 作为规范身份字符串，并以 `#` 编码 CLI/session 对。** 这会同时牵动账本 DDL/投影、房间比较、step actor、CLI 和 Web，回改需要多域迁移；没有本上下文时后人会自然新增 `driver_cli`/`driver_session_id` 或保留人尺度字符串；被否方案是新席位表和双真相字段，它们会让 CAS、房间和列表再次分叉。不做第二席位真相源，不自动迁移 `cli:user@host`。
 2. **叫机器人先 Launch、成功后以返回 session id 做账本 CAS，坐下完全不经小队。** 新会话的 id 由承载 CLI 在 Launch 后产生，无法在启动前用当前人身份预占；这个时序跨调度、keystone、账本和失败回收，后人看到“空座仍需先 Launch”会想把它改成隐式 reserve；被否方案是预写载体名/占位 session 或让坐下走小队。不做用户可见任意 session id；冲突以账本 CAS 和控制面错误呈现。
-3. **当前会话只由 `HANDOFF_SESSION_CLI` + `HANDOFF_SESSION_ID` 注入，不从 USER/hostname/PID 推导。** 这是 CLI、无头机器人后续 handoff 和房间写权的跨进程身份边界；没有本上下文时复用 `ledgerActor()` 看似兼容但会让同机多会话碰撞；被否方案是人尺度 actor、`web:<addr>` 或隐式 PID。不做浏览器伪造席位，不做第三种 wait-only 投递身份。
+3. **当前会话按 flag → 完整 `HANDOFF_SESSION_CLI` + `HANDOFF_SESSION_ID` → 受控宿主键出示，不从 USER/hostname/PID 推导。** 这是 CLI、无头机器人后续 handoff 和房间写权的跨进程身份边界；完整注入对优先并忽略继承的宿主键，没有本上下文时复用 `ledgerActor()` 看似兼容但会让同机多会话碰撞；被否方案是人尺度 actor、`web:<addr>` 或隐式 PID。不做浏览器伪造席位，不做第三种 wait-only 投递身份。
 
 ## 12. 图与移交 plan 附区
 

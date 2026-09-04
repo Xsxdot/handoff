@@ -85,6 +85,95 @@ func TestRoomSendLandsRoomMessageWithUserKind(t *testing.T) {
 	}
 }
 
+func TestRoomSendCoordinatorAcceptsExplicitSeatFlags(t *testing.T) {
+	clearSeatSourceEnv(t)
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "手填房间协调者卡")
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindSeat(id, "cli:claude#room-seat", proto.SeatSourceBind); err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	st.Close()
+
+	out, _, err := runLedgerCLI(t, dir, "room", "send", id, "协调者正文", "--kind", "reply",
+		"--cli", "claude", "--session", "room-seat")
+	if err != nil {
+		t.Fatalf("room send with explicit identity: %v", err)
+	}
+	var response struct {
+		Seq int64 `json:"seq"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &response); err != nil || response.Seq <= 0 {
+		t.Fatalf("room send stdout = %q, err=%v", out, err)
+	}
+	st, err = ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	events, err := st.EventsFromAsc([]string{id}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, event := range events {
+		if event.Seq != response.Seq {
+			continue
+		}
+		if event.Actor != "cli:claude#room-seat" {
+			t.Fatalf("room actor = %q, want cli:claude#room-seat", event.Actor)
+		}
+		var message proto.RoomMessage
+		if err := json.Unmarshal(event.Payload, &message); err != nil {
+			t.Fatal(err)
+		}
+		if message.Kind != "reply" || message.Body != "协调者正文" {
+			t.Fatalf("room message = %+v", message)
+		}
+		return
+	}
+	t.Fatalf("没有找到 seq=%d 的 room_message", response.Seq)
+}
+
+func TestRoomSendUserRejectsSeatFlagsWithoutSideEffects(t *testing.T) {
+	clearSeatSourceEnv(t)
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "user 禁用 flag 卡")
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := st.EventsFromAsc([]string{id}, 0, 100)
+	if err != nil {
+		st.Close()
+		t.Fatal(err)
+	}
+	st.Close()
+
+	if _, _, err := runLedgerCLI(t, dir, "room", "send", id, "不应落账", "--kind", "user", "--cli", "grok"); err == nil {
+		t.Fatal("kind=user 带身份 flag 必须失败")
+	}
+	st, err = ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	after, err := st.EventsFromAsc([]string{id}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("user flag 拒绝不应增加事件: before=%d after=%d", len(before), len(after))
+	}
+	card, err := st.GetCard(id)
+	if err != nil || card.DriverSession != "" || card.DriverSource != "" {
+		t.Fatalf("user flag 拒绝不应改变席位: %+v, err=%v", card, err)
+	}
+}
+
 // TestRoomSendCarriesRefAndMention --ref/--mention 可重复、进载荷。
 func TestRoomSendCarriesRefAndMention(t *testing.T) {
 	dir := t.TempDir()

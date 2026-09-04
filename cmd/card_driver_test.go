@@ -12,22 +12,266 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/spf13/cobra"
 )
 
+func clearSeatSourceEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"HANDOFF_SESSION_CLI",
+		"HANDOFF_SESSION_ID",
+		"GROK_SESSION_ID",
+		"CLAUDE_CODE_SESSION_ID",
+		"CLAUDE_CODE_REMOTE_SESSION_ID",
+	} {
+		t.Setenv(key, "")
+	}
+}
+
 func TestCurrentSeatIdentityRequiresInjectedPair(t *testing.T) {
+	clearSeatSourceEnv(t)
 	t.Setenv("HANDOFF_SESSION_CLI", "codex")
 	t.Setenv("HANDOFF_SESSION_ID", "thread-01")
-	if got, err := currentSeatIdentity(); err != nil || got != "cli:codex#thread-01" {
+	if got, err := currentSeatIdentity("", ""); err != nil || got != "cli:codex#thread-01" {
 		t.Fatalf("当前席位身份 = %q, err=%v", got, err)
 	}
 	t.Setenv("HANDOFF_SESSION_ID", "")
 	t.Setenv("USER", "fallback-user")
-	if _, err := currentSeatIdentity(); err == nil {
+	if _, err := currentSeatIdentity("", ""); err == nil {
 		t.Fatal("缺 session id 不得回退 USER")
 	}
 }
 
+func TestCurrentSeatIdentitySourceOrder(t *testing.T) {
+	t.Run("grok host session", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("GROK_SESSION_ID", "grok-01")
+		got, err := currentSeatIdentity("", "")
+		if err != nil || got != "cli:grok#grok-01" {
+			t.Fatalf("grok identity = %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("claude host session ignores remote", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-01")
+		t.Setenv("CLAUDE_CODE_REMOTE_SESSION_ID", "remote-01")
+		got, err := currentSeatIdentity("", "")
+		if err != nil || got != "cli:claude#claude-01" {
+			t.Fatalf("claude identity = %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("complete injected pair wins over host", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("HANDOFF_SESSION_CLI", "opencode")
+		t.Setenv("HANDOFF_SESSION_ID", "agent-01")
+		t.Setenv("GROK_SESSION_ID", "parent-01")
+		got, err := currentSeatIdentity("", "")
+		if err != nil || got != "cli:opencode#agent-01" {
+			t.Fatalf("injected identity = %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("partial injected cli blocks host", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("HANDOFF_SESSION_CLI", "opencode")
+		t.Setenv("GROK_SESSION_ID", "parent-01")
+		got, err := currentSeatIdentity("", "")
+		if err == nil || got != "" || !strings.Contains(err.Error(), "HANDOFF_SESSION_ID") {
+			t.Fatalf("partial injected cli = %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("partial injected session blocks host", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("HANDOFF_SESSION_ID", "agent-01")
+		t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-01")
+		got, err := currentSeatIdentity("", "")
+		if err == nil || got != "" || !strings.Contains(err.Error(), "HANDOFF_SESSION_CLI") {
+			t.Fatalf("partial injected session = %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("no source does not fall back to user", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("USER", "fallback-user")
+		got, err := currentSeatIdentity("", "")
+		if err == nil || got != "" {
+			t.Fatalf("no source identity = %q, err=%v", got, err)
+		}
+		for _, want := range []string{"grok/claude", "--cli", "--session"} {
+			if !strings.Contains(err.Error(), want) {
+				t.Fatalf("no source error %q missing %q", err, want)
+			}
+		}
+	})
+
+	t.Run("two host sessions are ambiguous", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("GROK_SESSION_ID", "grok-01")
+		t.Setenv("CLAUDE_CODE_SESSION_ID", "claude-01")
+		got, err := currentSeatIdentity("", "")
+		if err == nil || got != "" || !strings.Contains(err.Error(), "去掉其中一个") || !strings.Contains(err.Error(), "--cli") {
+			t.Fatalf("ambiguous hosts = %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("complete flags without environment", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		got, err := currentSeatIdentity("grok", "grok-flag")
+		if err != nil || got != "cli:grok#grok-flag" {
+			t.Fatalf("flag identity = %q, err=%v", got, err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name         string
+		cli, session string
+	}{
+		{name: "only cli", cli: "grok"},
+		{name: "only session", session: "grok-flag"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearSeatSourceEnv(t)
+			got, err := currentSeatIdentity(tc.cli, tc.session)
+			if err == nil || got != "" {
+				t.Fatalf("partial flags identity = %q, err=%v", got, err)
+			}
+		})
+	}
+
+	t.Run("flags must match host", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("GROK_SESSION_ID", "grok-01")
+		if got, err := currentSeatIdentity("grok", "other"); err == nil || got != "" {
+			t.Fatalf("mismatched host flags = %q, err=%v", got, err)
+		}
+		if got, err := currentSeatIdentity("grok", "grok-01"); err != nil || got != "cli:grok#grok-01" {
+			t.Fatalf("matching host flags = %q, err=%v", got, err)
+		}
+	})
+
+	t.Run("flags must match injected pair and injected ignores host", func(t *testing.T) {
+		clearSeatSourceEnv(t)
+		t.Setenv("HANDOFF_SESSION_CLI", "opencode")
+		t.Setenv("HANDOFF_SESSION_ID", "agent-01")
+		t.Setenv("GROK_SESSION_ID", "parent-01")
+		if got, err := currentSeatIdentity("grok", "parent-01"); err == nil || got != "" {
+			t.Fatalf("mismatched injected flags = %q, err=%v", got, err)
+		}
+		if got, err := currentSeatIdentity("opencode", "agent-01"); err != nil || got != "cli:opencode#agent-01" {
+			t.Fatalf("matching injected flags = %q, err=%v", got, err)
+		}
+	})
+
+	for _, tc := range []struct {
+		name         string
+		cli, session string
+	}{
+		{name: "cli separator", cli: "gro:k", session: "id"},
+		{name: "session separator", cli: "grok", session: "id#part"},
+		{name: "cli leading whitespace", cli: " grok", session: "id"},
+		{name: "session trailing whitespace", cli: "grok", session: "id "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearSeatSourceEnv(t)
+			if got, err := currentSeatIdentity(tc.cli, tc.session); err == nil || got != "" {
+				t.Fatalf("invalid flags identity = %q, err=%v", got, err)
+			}
+		})
+	}
+}
+
+func TestCardBindAcceptsExplicitSeatFlags(t *testing.T) {
+	clearSeatSourceEnv(t)
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "手填坐下卡")
+	out, _, err := runLedgerCLI(t, dir, "card", "bind", id, "--cli", "grok", "--session", "manual-bind")
+	if err != nil || strings.TrimSpace(out) != `{"ok":true}` {
+		t.Fatalf("bind with explicit identity: out=%q err=%v", out, err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.GetCard(id)
+	if err != nil || card.DriverSession != "cli:grok#manual-bind" || card.DriverSource != "bind" {
+		t.Fatalf("explicit bind seat = %+v, err=%v", card, err)
+	}
+}
+
+func TestCardRebindSelfAcceptsExplicitSeatFlags(t *testing.T) {
+	clearSeatSourceEnv(t)
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "手填写绑卡")
+	if _, _, err := runLedgerCLI(t, dir, "card", "bind", id, "--cli", "grok", "--session", "old-seat"); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "card", "rebind", id, "--self", "--cli", "claude", "--session", "manual-rebind")
+	if err != nil || strings.TrimSpace(out) != `{"ok":true}` {
+		t.Fatalf("rebind with explicit identity: out=%q err=%v", out, err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.GetCard(id)
+	if err != nil || card.DriverSession != "cli:claude#manual-rebind" || card.DriverSource != "bind" {
+		t.Fatalf("explicit rebind seat = %+v, err=%v", card, err)
+	}
+}
+
+func TestSeatIdentityFlagsAreLocalToPresentingCommands(t *testing.T) {
+	for _, command := range []*cobra.Command{cardBindCmd, cardRebindCmd, cardDispatchCmd, roomSendCmd} {
+		for _, name := range []string{"cli", "session"} {
+			if command.Flags().Lookup(name) == nil {
+				t.Fatalf("%s 缺少本地 --%s", command.Use, name)
+			}
+		}
+	}
+	for _, command := range []*cobra.Command{rootCmd, cardCmd} {
+		for _, name := range []string{"cli", "session"} {
+			if command.PersistentFlags().Lookup(name) != nil {
+				t.Fatalf("%s 不应注册 persistent --%s", command.Use, name)
+			}
+		}
+	}
+	if cardCoordinateCmd.Flags().Lookup("cli") != nil || cardCoordinateCmd.Flags().Lookup("session") != nil {
+		t.Fatal("card coordinate 不应注册席位 flag")
+	}
+}
+
+func TestRebindLaunchRejectsSeatFlags(t *testing.T) {
+	clearSeatSourceEnv(t)
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "launch 禁用 flag 卡")
+	if _, _, err := runLedgerCLI(t, dir, "card", "rebind", id, "--launch", "--cli", "grok", "--session", "manual"); err == nil || !strings.Contains(err.Error(), "--launch") {
+		t.Fatalf("rebind --launch with seat flags should fail: %v", err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.GetCard(id)
+	if err != nil || card.DriverSession != "" || card.DriverSource != "" {
+		t.Fatalf("launch flag rejection changed seat: %+v, err=%v", card, err)
+	}
+}
+
+func TestCoordinateRejectsSeatFlags(t *testing.T) {
+	clearSeatSourceEnv(t)
+	dir := t.TempDir()
+	if _, _, err := runLedgerCLI(t, dir, "card", "coordinate", "B329", "--cli", "grok", "--session", "manual"); err == nil || !strings.Contains(err.Error(), "unknown flag: --cli") {
+		t.Fatalf("card coordinate with seat flags should fail at Cobra: %v", err)
+	}
+}
+
 func TestCardBindUsesCurrentSeat(t *testing.T) {
+	clearSeatSourceEnv(t)
 	dir := t.TempDir()
 	t.Setenv("HANDOFF_SESSION_CLI", "codex")
 	t.Setenv("HANDOFF_SESSION_ID", "thread-bind")
@@ -59,7 +303,28 @@ func TestCardBindUsesCurrentSeat(t *testing.T) {
 	}
 }
 
+func TestCardBindUsesGrokSessionEnvironment(t *testing.T) {
+	clearSeatSourceEnv(t)
+	t.Setenv("GROK_SESSION_ID", "grok-bind")
+	dir := t.TempDir()
+	id := mustAddCard(t, dir, "grok 环境坐下卡")
+	out, _, err := runLedgerCLI(t, dir, "card", "bind", id)
+	if err != nil || strings.TrimSpace(out) != `{"ok":true}` {
+		t.Fatalf("grok bind: out=%q err=%v", out, err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	card, err := st.GetCard(id)
+	if err != nil || card.DriverSession != "cli:grok#grok-bind" || card.DriverSource != "bind" {
+		t.Fatalf("grok bind seat = %+v, err=%v", card, err)
+	}
+}
+
 func TestCardRebindSelfUsesLocalLedger(t *testing.T) {
+	clearSeatSourceEnv(t)
 	dir := t.TempDir()
 	t.Setenv("HANDOFF_SESSION_CLI", "codex")
 	t.Setenv("HANDOFF_SESSION_ID", "thread-old")
@@ -93,6 +358,7 @@ func TestCardRebindSelfUsesLocalLedger(t *testing.T) {
 }
 
 func TestCardDriverCommandsTakeoverAndRelease(t *testing.T) {
+	clearSeatSourceEnv(t)
 	dir := t.TempDir()
 	out, _, err := runLedgerCLI(t, dir, "card", "add", "驱动卡", "--project", "demo", "--workflow", "bug")
 	if err != nil {
@@ -135,6 +401,7 @@ func TestCardDriverCommandsTakeoverAndRelease(t *testing.T) {
 // TestCardRebindSelfAndTakeoverEvent 换绑成功：只接受当前会话出示，且落恰一条
 // EvDriverTakeover（payload from/to 穿过真实 JSON 序列化）。
 func TestCardRebindSelfAndTakeoverEvent(t *testing.T) {
+	clearSeatSourceEnv(t)
 	dir := t.TempDir()
 	t.Setenv("HANDOFF_SESSION_CLI", "codex")
 	t.Setenv("HANDOFF_SESSION_ID", "old")
@@ -197,6 +464,7 @@ func TestCardRebindSelfAndTakeoverEvent(t *testing.T) {
 // TestCardRebindSelfEvictsAgentdSession 要求本机账本 self 换绑成功后通知本机
 // agentd 清掉旧 keystone 内存；CLI 只走 HTTP 接缝，不直接 import keystone。
 func TestCardRebindSelfEvictsAgentdSession(t *testing.T) {
+	clearSeatSourceEnv(t)
 	dir := t.TempDir()
 	t.Setenv("HANDOFF_SESSION_CLI", "codex")
 	t.Setenv("HANDOFF_SESSION_ID", "old")
