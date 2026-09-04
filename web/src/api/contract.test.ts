@@ -636,7 +636,7 @@ describe('scheduling wire', () => {
     expect(Object.keys(r.attach!)).toEqual(['machine', 'dir', 'command'])
     expect(r.attach!.machine).toBe('')
     expect(r.attach!.dir).toBe('/repo/handoff')
-    expect(r.attach!.command).toContain('sess-coord')
+    expect(r.attach!.command).toBe('HOME=/repo/coordinator opencode --session sess-coord')
 
     const unbound: CoordinatorStatus = { bound: false, attach_active: false, attach: null }
     expect(unbound.attach).toBeNull()

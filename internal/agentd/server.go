@@ -2420,8 +2420,17 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
 	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
 	s.hostAPI = hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
-	runner := coordinatorRunner{h: s.hostAPI}
-	s.keystone = keystone.New(runner, roomNarrator{c: s.rooms}, facade, attachLocator{})
+	supplier := coordinatorHomeSupplier{
+		currentConfig:  s.conf,
+		userHomeDir:    os.UserHomeDir,
+		expandHomeDir:  hostapi.ExpandHomePath,
+		credentialPath: toolchain.CredRelPathFor,
+	}
+	runner := coordinatorRunner{h: s.hostAPI, prepareHome: supplier.Prepare}
+	ks := keystone.New(runner, roomNarrator{c: s.rooms}, facade,
+		attachLocator{expandHome: hostapi.ExpandHomePath})
+	ks.SetSessionRefResolver(coordinatorSessionRefResolver{server: s, expandHomeDir: hostapi.ExpandHomePath})
+	s.keystone = ks
 	if s.pty != nil {
 		s.ptyGate = ptyapi.New(s.pty)
 	}
@@ -2513,23 +2522,74 @@ func translateRegistryErr(err error) error {
 	}
 }
 
-// coordinatorRunner 把进程承载门面适配成 keystone 的会话承载缝。骨架期
-// RunTurn 直通镜像转发，宿主实现落地后自动生效。
+// coordinatorRunner 把进程承载门面适配成 keystone 的会话承载缝，并在每次
+// Launch/Resume 前补齐协调者隔离 HOME。prepareHome 是组装点注入的供给端口；
+// nil 仅为既有单元测试构造的替身保留旧的直通形态。
 type coordinatorRunner struct {
-	h *hostapi.Host
+	h           *hostapi.Host
+	prepareHome func(keysclient.SessionSpec) (string, error)
 }
 
 func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error) {
+	slog.Default().Info("协调者 runner Launch 开始", "cli", spec.CLI, "home_dir", spec.HomeDir,
+		"workdir", spec.Workdir, "prompt_bytes", len(prompt))
+	if r.h == nil {
+		return keysclient.TurnResult{}, errors.New("协调者 runner 缺少 hostapi")
+	}
+	if r.prepareHome != nil {
+		home, err := r.prepareHome(spec)
+		if err != nil {
+			slog.Default().Error("协调者 runner Launch 供给 HOME 失败", "cli", spec.CLI,
+				"home_dir", spec.HomeDir, "workdir", spec.Workdir, "cause", err)
+			return keysclient.TurnResult{}, err
+		}
+		spec.HomeDir = home
+	}
+	slog.Default().Info("协调者 runner Launch 调用 hostapi", "cli", spec.CLI,
+		"home_dir", spec.HomeDir, "workdir", spec.Workdir)
 	reply, err := r.h.RunTurn(context.Background(), hostapi.TurnRequest{
 		CLI: spec.CLI, HomeDir: spec.HomeDir, Workdir: spec.Workdir,
 		Model: spec.Model, Prompt: prompt, Env: spec.Env,
 	})
+	if err != nil {
+		slog.Default().Error("协调者 runner Launch 失败", "cli", spec.CLI,
+			"home_dir", spec.HomeDir, "workdir", spec.Workdir, "cause", err)
+		return keysclient.TurnResult{}, err
+	}
+	slog.Default().Info("协调者 runner Launch 完成", "cli", spec.CLI,
+		"has_session", reply.SessionID != "", "output_bytes", len(reply.Output))
 	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, err
 }
 
 func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error) {
-	reply, err := r.h.RunTurn(context.Background(), resumeTurnRequest(ref, prompt))
-	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, err
+	slog.Default().Info("协调者 runner Resume 开始", "cli", ref.CLI, "home_dir", ref.HomeDir,
+		"workdir", ref.Workdir, "has_session", ref.SessionID != "", "prompt_bytes", len(prompt))
+	if r.h == nil {
+		return keysclient.TurnResult{}, errors.New("协调者 runner 缺少 hostapi")
+	}
+	if r.prepareHome != nil {
+		spec := keysclient.SessionSpec{CLI: ref.CLI, HomeDir: ref.HomeDir,
+			Model: ref.Model, Workdir: ref.Workdir}
+		home, err := r.prepareHome(spec)
+		if err != nil {
+			slog.Default().Error("协调者 runner Resume 供给 HOME 失败", "cli", ref.CLI,
+				"home_dir", ref.HomeDir, "workdir", ref.Workdir, "cause", err)
+			return keysclient.TurnResult{}, err
+		}
+		ref.HomeDir = home
+	}
+	request := resumeTurnRequest(ref, prompt)
+	slog.Default().Info("协调者 runner Resume 调用 hostapi", "cli", ref.CLI,
+		"home_dir", ref.HomeDir, "workdir", ref.Workdir)
+	reply, err := r.h.RunTurn(context.Background(), request)
+	if err != nil {
+		slog.Default().Error("协调者 runner Resume 失败", "cli", ref.CLI,
+			"home_dir", ref.HomeDir, "workdir", ref.Workdir, "cause", err)
+		return keysclient.TurnResult{}, err
+	}
+	slog.Default().Info("协调者 runner Resume 完成", "cli", ref.CLI,
+		"has_session", reply.SessionID != "", "output_bytes", len(reply.Output))
+	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, nil
 }
 
 // resumeTurnRequest 把 SessionRef 上的续接环境映射进 RunTurn。HOME 空时
@@ -2574,16 +2634,50 @@ func (n roomNarrator) Say(cardID, text string) error {
 	return err
 }
 
-// attachLocator 是 attach 定位缝的骨架实现：命令形态按 CLI 拼装，终端 tab
-// 本体仍由 PTY 域承载。实现票接 ptyapi 后在此补充存在性校验。
-type attachLocator struct{}
+// attachLocator 生成在项目目录执行的 POSIX shell 命令。HOME 必须使用与无头
+// 回合相同的绝对展开结果；命令本身是唯一的 attach 环境承载，不改 PTY wire。
+type attachLocator struct {
+	expandHome func(string) (string, error)
+}
 
-func (attachLocator) Locate(ref keysclient.SessionRef, workdir string) (keysclient.AttachInfo, error) {
+func (l attachLocator) Locate(ref keysclient.SessionRef, workdir string) (keysclient.AttachInfo, error) {
 	if ref.SessionID == "" {
 		return keysclient.AttachInfo{}, errors.New("该卡没有绑定的协调者会话")
 	}
-	return keysclient.AttachInfo{
-		Machine: ref.Machine, Dir: workdir,
-		Command: strings.TrimSpace(ref.CLI + " --session " + ref.SessionID),
-	}, nil
+	if ref.CLI == "" {
+		return keysclient.AttachInfo{}, errors.New("协调者 attach 缺少 CLI")
+	}
+	if ref.HomeDir == "" {
+		return keysclient.AttachInfo{}, errors.New("协调者 attach 缺少隔离 HOME")
+	}
+	expand := l.expandHome
+	if expand == nil {
+		expand = hostapi.ExpandHomePath
+	}
+	home, err := expand(ref.HomeDir)
+	if err != nil {
+		slog.Default().Error("协调者 attach HOME 展开失败", "workdir", workdir,
+			"has_session", true, "cause", err)
+		return keysclient.AttachInfo{}, fmt.Errorf("展开协调者 attach HOME %q: %w", ref.HomeDir, err)
+	}
+	if !filepath.IsAbs(home) {
+		err := fmt.Errorf("协调者 attach HOME 未展开为绝对路径: %q", home)
+		slog.Default().Error("协调者 attach HOME 不是绝对路径", "workdir", workdir, "cause", err)
+		return keysclient.AttachInfo{}, err
+	}
+	command := "HOME=" + posixShellWord(home) + " " + posixShellWord(ref.CLI) +
+		" --session " + posixShellWord(ref.SessionID)
+	slog.Default().Info("协调者 attach 命令生成完成", "workdir", workdir,
+		"has_home", true, "has_session", true)
+	return keysclient.AttachInfo{Machine: ref.Machine, Dir: workdir, Command: command}, nil
+}
+
+func posixShellWord(value string) string {
+	if value != "" && strings.IndexFunc(value, func(r rune) bool {
+		return !(r >= 'A' && r <= 'Z') && !(r >= 'a' && r <= 'z') &&
+			!(r >= '0' && r <= '9') && !strings.ContainsRune("_+-.,/:@%", r)
+	}) == -1 {
+		return value
+	}
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }

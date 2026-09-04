@@ -4,6 +4,6 @@
   "attach": {
     "machine": "",
     "dir": "/repo/handoff",
-    "command": "opencode --session sess-coord"
+    "command": "HOME=/repo/coordinator opencode --session sess-coord"
   }
 }

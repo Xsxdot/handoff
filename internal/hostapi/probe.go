@@ -158,7 +158,7 @@ func (h *Host) inspectHome(ctx context.Context, req ProbeRequest) (homeProbeStat
 	if err := ctx.Err(); err != nil {
 		return homeProbeState{}, fmt.Errorf("hostapi: 探测 HOME 被取消: %w", err)
 	}
-	path, err := expandHomePath(req.Path)
+	path, err := ExpandHomePath(req.Path)
 	if err != nil {
 		return homeProbeState{}, err
 	}
@@ -219,9 +219,12 @@ func (h *Host) applyMainHomeSync(ctx context.Context, req ProbeRequest, state ho
 	return state, nil
 }
 
-// expandHomePath 只展开当前用户的 ~ 与 ~/ 前缀；其他相对路径按目标 Host 的
+// ExpandHomePath 只展开当前用户的 ~ 与 ~/ 前缀；其他相对路径按目标 Host 的
 // 当前工作目录解释，绝不使用协调机预先传来的 HOME。
-func expandHomePath(path string) (string, error) {
+//
+// 返回：目标 Host 上展开并清理后的路径；目标 Host 的 userHomeDir 失败时返回错误。
+// 注意：这里使用的是目标机的用户目录读取函数，不读取协调机预先传来的 HOME。
+func ExpandHomePath(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("hostapi: 目标 HOME 路径不能为空")
 	}

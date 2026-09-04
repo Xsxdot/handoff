@@ -84,7 +84,7 @@ describe('scheduling fetch seam', () => {
     const status = {
       bound: true,
       attach_active: false,
-      attach: { machine: '', dir: '/repo/handoff', command: 'opencode --session sess-coord' },
+      attach: { machine: '', dir: '/repo/handoff', command: 'HOME=/repo/coordinator opencode --session sess-coord' },
     }
     const statusFetchMock = mockFetchJSON(status)
     await expect(getCoordinatorStatus('B/1 特殊')).resolves.toEqual(status)

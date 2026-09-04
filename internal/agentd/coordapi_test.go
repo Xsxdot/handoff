@@ -11,11 +11,13 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -66,7 +68,10 @@ func newCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	env := newLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
 	runner := &fakeCoordRunner{}
-	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	ks := keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger,
+		attachLocator{expandHome: hostapi.ExpandHomePath})
+	ks.SetSessionRefResolver(coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath})
+	env.srv.SetKeystone(ks)
 	return env, runner
 }
 
@@ -75,7 +80,10 @@ func newNoPTYCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
 	runner := &fakeCoordRunner{}
-	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	ks := keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger,
+		attachLocator{expandHome: hostapi.ExpandHomePath})
+	ks.SetSessionRefResolver(coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath})
+	env.srv.SetKeystone(ks)
 	return env, runner
 }
 
@@ -169,6 +177,18 @@ func TestCoordLaunchEndpointSuccess(t *testing.T) {
 	}
 	if got.Workdir != "/repo/handoff" {
 		t.Fatalf("工作目录应解析为项目位置根，got=%q", got.Workdir)
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
+	if code != http.StatusOK {
+		t.Fatalf("拉起后读取 coordinator status 失败: %d %s", code, body)
+	}
+	var status proto.CoordinatorStatus
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		t.Fatalf("拉起后状态解析失败: %v body=%s", err, body)
+	}
+	if status.Attach == nil || !strings.Contains(status.Attach.Command, "HOME=/home/coordinator") ||
+		!strings.Contains(status.Attach.Command, "opencode") || !strings.Contains(status.Attach.Command, "--session sess-coord") {
+		t.Fatalf("拉起后 attach command 缺 HOME/CLI/session: %+v", status.Attach)
 	}
 	facade := env.srv.autoLedger
 	for key, want := range map[string]int{"squad/coord/c1": 0, "carrier/c1": 0} {
@@ -514,6 +534,86 @@ func TestCoordAttachLocateFailureRollsBack(t *testing.T) {
 	}
 	if env.srv.keystone.AttachState(cardID) {
 		t.Fatal("定位失败后接管态必须回滚")
+	}
+}
+
+func TestCoordStatusColdLocateUsesRegisteredHomeWithoutAdmission(t *testing.T) {
+	env, _ := newNoPTYCoordEnv(t)
+	seedCoordinatorSquad(t, env)
+	cardID := createCoordCard(t, env)
+	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-cold", proto.SeatSourceCoordinate); err != nil {
+		t.Fatalf("绑定 cold coordinate 席位: %v", err)
+	}
+	beforeSquad := runningCountIn(t, env.srv.autoLedger, "squad/coord/c1")
+	beforeCarrier := runningCountIn(t, env.srv.autoLedger, "carrier/c1")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
+	if code != http.StatusOK {
+		t.Fatalf("cold coordinator status=%d body=%s", code, body)
+	}
+	var status proto.CoordinatorStatus
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		t.Fatalf("cold status 解码失败: %v body=%s", err, body)
+	}
+	if status.Attach == nil || !strings.Contains(status.Attach.Command, "HOME=/home/coordinator") ||
+		!strings.Contains(status.Attach.Command, "--session sess-cold") {
+		t.Fatalf("cold attach command 未带登记 HOME/session: %+v", status.Attach)
+	}
+	if got := runningCountIn(t, env.srv.autoLedger, "squad/coord/c1"); got != beforeSquad {
+		t.Fatalf("cold Locate 改变 squad running 计数: before=%d after=%d", beforeSquad, got)
+	}
+	if got := runningCountIn(t, env.srv.autoLedger, "carrier/c1"); got != beforeCarrier {
+		t.Fatalf("cold Locate 改变 carrier running 计数: before=%d after=%d", beforeCarrier, got)
+	}
+}
+
+func TestCoordStatusQuotesHomePathWithSpaces(t *testing.T) {
+	env, _ := newNoPTYCoordEnv(t)
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+		Name: "c-space", Machine: "linux-01", CLI: "opencode", HomeDir: "/home/coord docs",
+		Credential: scheduling.CredentialStandalone,
+	})
+	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{Name: "coord-space", Role: scheduling.RoleCoordinator,
+		Members: []scheduling.SquadMember{{Carrier: "c-space", MaxConcurrency: 1}}}, 0); err != nil {
+		t.Fatal(err)
+	}
+	cardID := createCoordCard(t, env)
+	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-cold", proto.SeatSourceCoordinate); err != nil {
+		t.Fatalf("绑定 cold coordinate 席位: %v", err)
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator")
+	if code != http.StatusOK {
+		t.Fatalf("space coordinator status=%d body=%s", code, body)
+	}
+	var status proto.CoordinatorStatus
+	if err := json.Unmarshal([]byte(body), &status); err != nil {
+		t.Fatalf("space status 解码失败: %v body=%s", err, body)
+	}
+	if status.Attach == nil || status.Attach.Command != "HOME='/home/coord docs' opencode --session sess-cold" {
+		t.Fatalf("带空格 HOME 的 command 错误: %+v", status.Attach)
+	}
+	if err := exec.Command("sh", "-n", "-c", status.Attach.Command).Run(); err != nil {
+		t.Fatalf("attach command 不是合法 POSIX shell: %v", err)
+	}
+}
+
+func TestCoordAttachHomeExpansionFailureReturns400(t *testing.T) {
+	env, runner := newNoPTYCoordEnv(t)
+	cardID := createCoordCard(t, env)
+	ks := keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger,
+		attachLocator{expandHome: func(string) (string, error) { return "", errors.New("home unavailable") }})
+	ks.SetSessionRefResolver(coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath})
+	env.srv.SetKeystone(ks)
+	if _, err := env.srv.keystone.LaunchForCard(context.Background(), cardID, "coordinate", keysclient.SessionSpec{
+		CLI: "opencode", HomeDir: "/home/coordinator", Workdir: "/repo/handoff"}); err != nil {
+		t.Fatalf("准备 hot coordinator 会话: %v", err)
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/attach",
+		`{"active":true,"workdir":"/repo/handoff"}`)
+	if code != http.StatusBadRequest || !strings.Contains(body, "home unavailable") {
+		t.Fatalf("HOME 展开失败应 400 并带错误: %d %s", code, body)
+	}
+	if env.srv.keystone.AttachState(cardID) {
+		t.Fatal("HOME 展开失败后接管态必须回滚")
 	}
 }
 

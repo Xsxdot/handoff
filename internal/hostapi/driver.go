@@ -95,6 +95,12 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 		log().Error("找不到载体 CLI", "cli", req.CLI, "cause", err)
 		return TurnReply{}, fmt.Errorf("hostapi: 找不到载体 CLI %q: %w", req.CLI, err)
 	}
+	env, expandedHome, err := buildEnv(req)
+	if err != nil {
+		log().Error("协调者回合展开 HOME 失败", "cli", req.CLI, "home_dir", req.HomeDir,
+			"workdir", req.Workdir, "cause", err)
+		return TurnReply{}, err
+	}
 
 	ctx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
@@ -106,7 +112,7 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	// 见台账探针 P0）。
 	cmd.Args = buildArgv(bin, req)
 	cmd.Dir = req.Workdir // 空 = 继承 agentd cwd；生产调用方的 Workdir 非空语义由组装点（K4，澄清 2）保证
-	cmd.Env = buildEnv(req)
+	cmd.Env = env
 	configureProcess(cmd)
 
 	stdout, err := cmd.StdoutPipe()
@@ -117,7 +123,7 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	cmd.Stderr = &stderr
 
 	log().Info("协调者回合开始", "cli", req.CLI, "mode", resumeOrNew(req),
-		"home_dir", req.HomeDir, "workdir", req.Workdir, "timeout", timeout.String(),
+		"home_dir", expandedHome, "workdir", req.Workdir, "timeout", timeout.String(),
 		"prompt_bytes", len(req.Prompt)) // 提示词与环境变量值永不进日志，只记长度
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -201,15 +207,20 @@ func buildArgv(bin string, req TurnRequest) []string {
 // buildEnv 合成子进程环境：基础环境剔除被覆盖键 → 按 req.Env 原序追加 →
 // HomeDir 非空时覆写 HOME（spec §4.3：隔离 HOME 是物种边界的环境执法；
 // HomeDir 字段赢过 env 清单里的同名行——env 文件不该有能力偷换物种边界）。
-// 值永不进日志。
-func buildEnv(req TurnRequest) []string {
+// 返回值还携带日志使用的展开 HOME；展开失败必须在启动子进程前返回，不能把
+// 字面 ~ 交给子进程。值永不进日志。
+func buildEnv(req TurnRequest) ([]string, string, error) {
+	expandedHome, err := expandTurnHomeDir(req.HomeDir)
+	if err != nil {
+		return nil, "", err
+	}
 	override := map[string]bool{}
 	for _, kv := range req.Env {
 		if k, _, ok := strings.Cut(kv, "="); ok && k != "" {
 			override[k] = true
 		}
 	}
-	homeSet := req.HomeDir != ""
+	homeSet := expandedHome != ""
 	if homeSet {
 		override["HOME"] = true
 	}
@@ -230,21 +241,21 @@ func buildEnv(req TurnRequest) []string {
 		out = append(out, kv)
 	}
 	if homeSet {
-		out = append(out, "HOME="+expandTurnHomeDir(req.HomeDir))
+		out = append(out, "HOME="+expandedHome)
 	}
-	return out
+	return out, expandedHome, nil
 }
 
 // expandTurnHomeDir 把 TurnRequest.HomeDir 的前导 ~ 在目标机展开为绝对路径。
 // 载体登记串是跨机可认的用户可见形态（含 ~）；进子进程 HOME 前必须展开，
 // 否则子进程把 $HOME 系文件相对 Workdir 落盘，在仓库下建出
 // ./~/.handoff/... 垃圾目录（2026-09-04 实测 2.2G）。
-// 复用 expandHomePath 的展开语义；展开失败时原样返回，保持原行为不阻断回合。
-func expandTurnHomeDir(homeDir string) string {
-	if expanded, err := expandHomePath(homeDir); err == nil {
-		return expanded
+// 复用 ExpandHomePath 的展开语义；展开失败必须阻断回合，避免错误路径进入子进程。
+func expandTurnHomeDir(homeDir string) (string, error) {
+	if homeDir == "" {
+		return "", nil
 	}
-	return homeDir
+	return ExpandHomePath(homeDir)
 }
 
 // consumeEvents 流式消费 JSONL 事件行直到 EOF：sessionID 取首个非空值，

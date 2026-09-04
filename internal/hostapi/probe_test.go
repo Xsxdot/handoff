@@ -156,7 +156,7 @@ func TestWakeHomeSuppliesMainCredentialBeforeTurn(t *testing.T) {
 	if err != nil || string(copied) != "token" {
 		t.Fatalf("凭据未按原文供给: %q/%v", copied, err)
 	}
-	if _, err := os.Stat(filepath.Join(target, ".config/skills")); !os.IsNotExist(err) {
+	if _, err := os.Stat(filepath.Join(target, ".config", "opencode", "skills")); !os.IsNotExist(err) {
 		t.Fatalf("供给不得搬技能树，stat err=%v", err)
 	}
 	joined := strings.Join(readArgvLines(t, capture), "\n")
