@@ -69,3 +69,17 @@
 - 2026-09-04 本执行节点提交命令 `git commit -m "fix(b323): tolerate macOS system var alias"` 原始输出：`[cards/B323-charter-4 8bbddc05] fix(b323): tolerate macOS system var alias`；`3 files changed, 60 insertions(+), 2 deletions(-)`。
 - 2026-09-04 本执行节点补充：按质量对照要求改用 `origin/cards/B323-impl-agy @ 8b876dc` 指定文件，覆盖后不保留旧系统卷别名路径符号。
 - 2026-09-04 本执行节点提交命令 `git add docs/superpowers/specs/b323-ledger.md && git commit -m "chore(b323): adopt agy implementation comparison"` 原始输出：`[cards/B323-charter-5 68f1c925] chore(b323): adopt agy implementation comparison`；`10 files changed, 509 insertions(+), 518 deletions(-)`。
+- 2026-09-04 本执行节点复核：当前分支 `cards/B323-charter-6`，HEAD `6e1985f3`，工作树初始为空；现实现的 `Prepare` 在 `MkdirAll` 前未检查 targetHome 白名单路径，且 `projectCoordinatorConfig` 额外把 `StallTimeout<=0` 改为 2h。
+- 2026-09-04 本执行节点 TDD：新增 targetHome symlink 与 targetHome/.config symlink 两条 Prepare 缝测试，并补 Resume fake CLI 的 `env:HOME=<resumeTarget>` 断言；运行 `go test ./internal/agentd -run '^TestCoordinatorHomeSupplierRejectsSymlinked(TargetHome|ConfigParent)$' -count=1`，两支真实断言红：`targetHome 是 symlink 时 Prepare 必须失败`、`targetHome/.config 是 symlink 时 Prepare 必须失败`，退出码 1。
+- 2026-09-04 本执行节点修复：`Prepare` 在任何 `MkdirAll/WriteFile` 前仅对隔离 HOME 根及 `.handoff`、`.config/opencode`、`.local/share/opencode`、表内凭据路径等白名单项做 `os.Lstat`，任一 symlink 失败；移除 `projectCoordinatorConfig` 对 `StallTimeout<=0` 的额外 2h 改写。`gofmt` 后 `go test ./internal/agentd -run '^TestCoordinatorHome(SupplyOnLaunchAndResume|SupplierRejectsSymlinked(TargetHome|ConfigParent))$' -count=1` 原始结果：`ok github.com/Xsxdot/handoff/internal/agentd 0.010s`，退出码 0。
+- 2026-09-04 本执行节点 Minor TDD：临时恢复 `StallTimeout<=0`→2h 并新增 `TestProjectCoordinatorConfigPreservesStallTimeout`；`go test ./internal/agentd -run '^TestProjectCoordinatorConfigPreservesStallTimeout$' -count=1` 真实断言红：`projectCoordinatorConfig 改写了 StallTimeout: got 2h0m0s, want 0`，退出码 1。
+- 2026-09-04 本执行节点 Minor 修复验证：移除该默认改写和 `time` 依赖；`gofmt` 后运行 `go test ./internal/agentd -run '^Test(CoordinatorHome(SupplyOnLaunchAndResume|SupplierRejectsSymlinked(TargetHome|ConfigParent))|ProjectCoordinatorConfigPreservesStallTimeout)$' -count=1`，原始结果：`ok github.com/Xsxdot/handoff/internal/agentd 0.008s`，退出码 0。
+- 2026-09-04 本执行节点修复后全量编译验证：`go build ./...` 退出码 0，标准输出为空。
+- 2026-09-04 本执行节点变异自验：守卫条件文本命中唯一；取反后 `go build ./...` 退出码 0，单条 `TestCoordinatorHomeSupplierRejectsSymlinkedTargetHome` 真实断言红：`targetHome 是 symlink 时 Prepare 必须失败`；变异版 `go test ./internal/agentd -count=1` 退出码 1，原始失败为 `TestCoordinatorHomeSupplyOnLaunchAndResume`（临时目录被误判 symlink）与该 targetHome 测试，耗时 167.576s。已恢复 `ModeSymlink != 0` 语义。
+- 2026-09-04 本执行节点恢复后验证：`gofmt` 后运行供给/Resume/symlink/StallTimeout 四支测试，原始结果：`ok github.com/Xsxdot/handoff/internal/agentd 0.011s`，退出码 0。
+- 2026-09-04 本执行节点按补充要求运行 `go test ./internal/hostapi ./internal/keystone ./internal/agentd ./internal/proto -count=1`，原始结果：hostapi `ok ... 0.631s`、keystone `ok ... 0.081s`、agentd `ok ... 166.476s`、proto `ok ... 0.004s`，退出码 0。
+- 2026-09-04 本执行节点收口编译：`go build ./...` 退出码 0，标准输出为空。
+- 2026-09-04 本执行节点架构图闸：`go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . check` 退出码 0，原始 JSON 顶层 `"fails": []`；其余为既有 warns，本轮未改图文件。
+- 2026-09-04 本执行节点格式检查：`gofmt -l internal/agentd/coordinator_home.go internal/agentd/coordinator_home_test.go` 标准输出为空，退出码 0。
+- 2026-09-04 本执行节点差异检查：`git diff --check` 标准输出为空，退出码 0。
+- 2026-09-04 本执行节点提交命令 `git commit -m "fix(b323): reject isolated home symlink paths"` 原始输出：`[cards/B323-charter-6 6a16aaa9] fix(b323): reject isolated home symlink paths`；`3 files changed, 140 insertions(+), 4 deletions(-)`。

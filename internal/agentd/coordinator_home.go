@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/hostapi"
@@ -49,6 +48,11 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 	}
 	if !filepath.IsAbs(targetHome) {
 		return "", fmt.Errorf("协调者供给 HOME 未展开为绝对路径: %q", targetHome)
+	}
+	if err := rejectCoordinatorHomeSymlinks(targetHome); err != nil {
+		slog.Default().Error("检查协调者隔离 HOME 白名单失败", "cli", spec.CLI,
+			"target", targetHome, "cause", err)
+		return "", err
 	}
 	if p.userHomeDir == nil {
 		return "", errors.New("协调者供给缺少主 HOME 读取函数")
@@ -115,10 +119,42 @@ func projectCoordinatorConfig(cfg *config.Config) (config.Config, error) {
 			return config.Config{}, fmt.Errorf("解析 SQLite ledger DSN %q: %w", dsn, err)
 		}
 	}
-	if projected.StallTimeout <= 0 {
-		projected.StallTimeout = 2 * time.Hour
-	}
 	return projected, nil
+}
+
+// rejectCoordinatorHomeSymlinks 只检查隔离 HOME 根和供给白名单中的路径。
+// 不向上遍历文件系统祖先：那会把主机卷别名或其他无关路径误当成隔离 HOME 的风险，
+// 而真正需要防护的是即将被 MkdirAll/WriteFile 使用的白名单路径不能跟随链接越界。
+func rejectCoordinatorHomeSymlinks(targetHome string) error {
+	paths := []string{
+		targetHome,
+		filepath.Join(targetHome, ".handoff"),
+		filepath.Join(targetHome, ".handoff", "config.yaml"),
+		filepath.Join(targetHome, ".config"),
+		filepath.Join(targetHome, ".config", "opencode"),
+		filepath.Join(targetHome, ".config", "opencode", "AGENTS.md"),
+		filepath.Join(targetHome, ".config", "opencode", "skills"),
+		filepath.Join(targetHome, ".local"),
+		filepath.Join(targetHome, ".local", "share"),
+		filepath.Join(targetHome, ".local", "share", "opencode"),
+		filepath.Join(targetHome, ".local", "share", "opencode", "auth.json"),
+		filepath.Join(targetHome, ".grok"),
+		filepath.Join(targetHome, ".grok", "auth.json"),
+		filepath.Join(targetHome, ".codex"),
+		filepath.Join(targetHome, ".codex", "auth.json"),
+	}
+	for _, path := range paths {
+		info, err := os.Lstat(path)
+		switch {
+		case errors.Is(err, os.ErrNotExist):
+			continue
+		case err != nil:
+			return fmt.Errorf("检查协调者隔离 HOME 白名单路径 %q: %w", path, err)
+		case info.Mode()&os.ModeSymlink != 0:
+			return fmt.Errorf("协调者隔离 HOME 白名单路径是 symlink %q", path)
+		}
+	}
+	return nil
 }
 
 // copyMissingCoordinatorCredential 仅拷贝该 CLI 缺失的单文件登录凭据。

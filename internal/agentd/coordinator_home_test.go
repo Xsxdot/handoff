@@ -274,5 +274,92 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 		if !hasResumeArg || !hasSessArg {
 			t.Fatalf("fake CLI 未收到 -s runner-sess 参数: %v", capLines)
 		}
+		wantResumeHome := "env:HOME=" + resumeTarget
+		hasResumeHome := false
+		for _, line := range capLines {
+			if strings.HasPrefix(line, "env:HOME=~") {
+				t.Fatalf("Resume 把字面 ~ 传给 fake CLI: %v", capLines)
+			}
+			if line == wantResumeHome {
+				hasResumeHome = true
+			}
+		}
+		if !hasResumeHome {
+			t.Fatalf("Resume 未收到展开后的 HOME=%q，捕获行: %v", wantResumeHome, capLines)
+		}
 	})
+}
+
+func TestCoordinatorHomeSupplierRejectsSymlinkedTargetHome(t *testing.T) {
+	mainHome := t.TempDir()
+	targetOutside := t.TempDir()
+	targetHome := filepath.Join(t.TempDir(), "target-home")
+	if err := os.Symlink(targetOutside, targetHome); err != nil {
+		t.Skipf("当前平台不支持 symlink: %v", err)
+	}
+
+	supplier := coordinatorHomeSupplier{
+		currentConfig: func() *config.Config {
+			return &config.Config{Token: "agentd-live", DataDir: t.TempDir(), StallTimeout: time.Hour}
+		},
+		userHomeDir:   func() (string, error) { return mainHome, nil },
+		expandHomeDir: func(string) (string, error) { return targetHome, nil },
+	}
+
+	if _, err := supplier.Prepare(keysclient.SessionSpec{CLI: "opencode", HomeDir: "~/target"}); err == nil {
+		t.Fatal("targetHome 是 symlink 时 Prepare 必须失败")
+	}
+	entries, err := os.ReadDir(targetOutside)
+	if err != nil {
+		t.Fatalf("读取 targetHome symlink 对面: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("targetHome symlink 对面不应被写入: %v", entries)
+	}
+}
+
+func TestCoordinatorHomeSupplierRejectsSymlinkedConfigParent(t *testing.T) {
+	mainHome := t.TempDir()
+	sourceRoot := filepath.Join(mainHome, ".config", "opencode")
+	if err := os.MkdirAll(sourceRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sourceRoot, "AGENTS.md"), []byte("agents-doc"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	targetHome := t.TempDir()
+	targetOutside := t.TempDir()
+	if err := os.Symlink(targetOutside, filepath.Join(targetHome, ".config")); err != nil {
+		t.Skipf("当前平台不支持 symlink: %v", err)
+	}
+
+	supplier := coordinatorHomeSupplier{
+		currentConfig: func() *config.Config {
+			return &config.Config{Token: "agentd-live", DataDir: t.TempDir(), StallTimeout: time.Hour}
+		},
+		userHomeDir:   func() (string, error) { return mainHome, nil },
+		expandHomeDir: func(string) (string, error) { return targetHome, nil },
+	}
+
+	if _, err := supplier.Prepare(keysclient.SessionSpec{CLI: "opencode", HomeDir: "~/target"}); err == nil {
+		t.Fatal("targetHome/.config 是 symlink 时 Prepare 必须失败")
+	}
+	entries, err := os.ReadDir(targetOutside)
+	if err != nil {
+		t.Fatalf("读取 .config symlink 对面: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf(".config symlink 对面不应被写入: %v", entries)
+	}
+}
+
+func TestProjectCoordinatorConfigPreservesStallTimeout(t *testing.T) {
+	got, err := projectCoordinatorConfig(&config.Config{DataDir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("projectCoordinatorConfig: %v", err)
+	}
+	if got.StallTimeout != 0 {
+		t.Fatalf("projectCoordinatorConfig 改写了 StallTimeout: got %s, want 0", got.StallTimeout)
+	}
 }
