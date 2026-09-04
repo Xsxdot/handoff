@@ -639,6 +639,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **人尺度 `takeover`/`release` 与协调者席位合并或删除**：本期两者拆开，占座只走三颗按钮。来源：同上。
 - **`driver_leases` 活性心跳接新席位身份**：本期不把租约键接到 `(cli, session_id)`。来源：同上。
 
+## 来自 B330 spec（2026-09-04，本期不做）
+
+- **下一张新 charter 卡真机走满「满员入队 → 出队」**：本卡只 put 接线，不拿在飞卡或本卡自己 `--step` 当试纸。来源：B330 spec Out of Scope。
+- **给 runner 加成员**（例如 linux-01/codex）：编制是用户的，本卡只把节点接到已有小队。来源：同上。
+
 ## 来自 B303 spec（2026-09-02，本期不做）
 
 - **Windows ConPTY**。PTY 仍报不支持；本卡不补。来源：B303 spec Out of Scope。

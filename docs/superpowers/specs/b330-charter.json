@@ -1,0 +1,225 @@
+{
+  "states": [
+    "待办",
+    "spec",
+    "contract",
+    "breakdown",
+    "plan",
+    "implement",
+    "review",
+    "acceptance",
+    "integrate",
+    "图对账",
+    "finish",
+    "已完成"
+  ],
+  "gates": {
+    "breakdown": {
+      "require_attachment": "contract"
+    },
+    "contract": {
+      "require_attachment": "spec"
+    },
+    "implement": {
+      "require_attachment_any": [
+        "plan",
+        "breakdown"
+      ]
+    },
+    "plan": {
+      "require_attachment": "spec"
+    }
+  },
+  "nodes": [
+    {
+      "name": "待办",
+      "override": {},
+      "next": "spec",
+      "gate": {}
+    },
+    {
+      "name": "spec",
+      "override": {},
+      "next": "contract",
+      "gate": {}
+    },
+    {
+      "name": "contract",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-contract",
+        "squad": "runner"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "omit_acceptance": true,
+      "produces": {
+        "kind": "contract",
+        "path": "docs/superpowers/specs/{{CARD_LOWER}}-contract.md"
+      },
+      "next": "breakdown",
+      "on_fail": "spec",
+      "gate": {
+        "require_attachment": "spec"
+      }
+    },
+    {
+      "name": "breakdown",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-breakdown",
+        "squad": "runner"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "omit_acceptance": true,
+      "produces": {
+        "kind": "breakdown",
+        "path": "docs/superpowers/specs/{{CARD_LOWER}}-breakdown.md"
+      },
+      "next": "plan",
+      "on_fail": "contract",
+      "gate": {
+        "require_attachment": "contract"
+      }
+    },
+    {
+      "name": "plan",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-plan",
+        "squad": "runner"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "omit_acceptance": true,
+      "produces": {
+        "kind": "plan",
+        "path": "docs/superpowers/plans/{{CARD_LOWER}}-plan.md"
+      },
+      "next": "implement",
+      "on_fail": "breakdown",
+      "gate": {
+        "require_attachment": "spec"
+      }
+    },
+    {
+      "name": "implement",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-implement",
+        "squad": "runner"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "review",
+      "on_fail": "plan",
+      "gate": {
+        "require_attachment_any": [
+          "plan",
+          "breakdown"
+        ]
+      }
+    },
+    {
+      "name": "review",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-review",
+        "purpose": "review",
+        "squad": "runner"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "acceptance",
+      "on_fail": "implement",
+      "gate": {}
+    },
+    {
+      "name": "acceptance",
+      "override": {},
+      "next": "integrate",
+      "gate": {}
+    },
+    {
+      "name": "integrate",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-integrate",
+        "squad": "runner"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 3,
+      "next": "图对账",
+      "on_fail": "acceptance",
+      "gate": {}
+    },
+    {
+      "name": "图对账",
+      "template": "charter-default",
+      "override": {
+        "discipline": "charter-recon",
+        "squad": "runner"
+      },
+      "dispatch": true,
+      "verdict": true,
+      "carry_card_context": true,
+      "max_rounds": 2,
+      "next": "finish",
+      "gate": {}
+    },
+    {
+      "name": "finish",
+      "override": {},
+      "next": "已完成",
+      "gate": {}
+    },
+    {
+      "name": "已完成",
+      "override": {},
+      "gate": {}
+    }
+  ],
+  "board": {
+    "columns": [
+      "代办",
+      "沟通中",
+      "进行中",
+      "审核中",
+      "结束"
+    ],
+    "state_to_column": {
+      "acceptance": "审核中",
+      "breakdown": "进行中",
+      "contract": "进行中",
+      "finish": "结束",
+      "implement": "进行中",
+      "integrate": "审核中",
+      "plan": "进行中",
+      "review": "审核中",
+      "spec": "沟通中",
+      "图对账": "审核中",
+      "已出 spec": "沟通中",
+      "已出spec": "沟通中",
+      "已完成": "结束",
+      "待办": "代办",
+      "待合并": "审核中",
+      "待审阅": "审核中",
+      "终止": "结束",
+      "进行中": "进行中"
+    },
+    "fallback": "进行中"
+  }
+}
