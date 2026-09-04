@@ -28,16 +28,40 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { createPtySession, deletePtySession } from '../../api/client'
+import { createPtySession, deletePtySession, uploadDropFile } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
-import { describeElement, logTermFocus, logTermHost, logTermInput, logTermKeepalive, logTermOsc52, logTermResize, logTermWheel, logTermWheelBypass, terminalDebugEnabled } from './terminalDebug'
+import { describeElement, logTermDrop, logTermFocus, logTermHost, logTermInput, logTermKeepalive, logTermOsc52, logTermResize, logTermWheel, logTermWheelBypass, terminalDebugEnabled } from './terminalDebug'
 import { isTerminalHostResponse, takeLeadingFocusReport } from './terminalHostResponse'
 import { altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelection, wheelPixelDeltaY } from './terminalWheel'
 import { installTerminalInputFix } from './terminalInput'
 import { parseOsc52 } from './terminalOsc52'
 import { registerFileDropTarget, shellQuote } from '../lib/desktopFileDrop'
 import { copyToClipboard } from '../lib/clipboard'
+import { errorMessage } from '../lib/format'
 import type { BaseDir } from './useWorkbench'
+
+const DROP_MAX_BYTES = 32 * 1024 * 1024
+
+function isLoopbackHost(host: string): boolean {
+  return host === 'localhost' || host === '127.0.0.1' || host === '::1' || host === '[::1]'
+}
+
+// isRemoteTerminal：文件所在电脑 ≠ PTY 所在电脑。machine 非空优先，不论 origin。
+function isRemoteTerminal(base: BaseDir): boolean {
+  if (base.machine) return true
+  if (typeof window === 'undefined') return false
+  return !isLoopbackHost(window.location.hostname)
+}
+
+function dataTransferHasDirectory(dt: DataTransfer): boolean {
+  const items = dt.items
+  if (!items) return false
+  for (let i = 0; i < items.length; i++) {
+    const item = items[i] as DataTransferItem & { webkitGetAsEntry?: () => { isDirectory?: boolean } | null }
+    if (item.webkitGetAsEntry?.()?.isDirectory) return true
+  }
+  return false
+}
 
 export interface TerminalTabProps {
   base: BaseDir
@@ -135,6 +159,7 @@ export function TerminalTab({
   // copyNotice 是 OSC 52 复制失败的用户提示（B300）。成功不提示——TUI 自带
   // 复制反馈，再加成功提示是噪声；失败必须出声，否则就是「以为复制了」的老问题。
   const [copyNotice, setCopyNotice] = useState<string | null>(null)
+  const [dropNotice, setDropNotice] = useState<{ kind: 'progress' | 'error'; text: string } | null>(null)
   // discarded 是用户已经放弃的那个会话 id。不清空上层的 sessionId（那是 tab 的
   // 状态，本组件不持有），而是在本地把它「划掉」：liveId 因此回到 undefined，
   // 挂载路径原样走一遍建会话 + onSession 回报，不必给上层加新的写入口。
@@ -433,19 +458,68 @@ export function TerminalTab({
     //
     // 走 term.input() 而不是直接 handle.send()：路径因此与手敲的输入合流到同一条
     // onData，取证日志与 WS 未就绪的告警都照常适用，不必在这里重复一遍那些判断。
+    const remote = isRemoteTerminal(base)
     const unregisterDrop = registerFileDropTarget({
       host,
       accept: (paths) => {
+        if (remote) {
+          logTermDrop(label, 'native-skip', { 原因: 'remote' })
+          return
+        }
         term.focus()
         term.input(`${paths.map(shellQuote).join(' ')} `)
       },
     })
+
+    const onDragOver = (ev: DragEvent) => {
+      if (!ev.dataTransfer?.types.includes('Files')) return
+      ev.preventDefault()
+      ev.dataTransfer.dropEffect = 'copy'
+    }
+    const onFileDrop = (ev: DragEvent) => {
+      const dt = ev.dataTransfer
+      if (!dt?.files?.length) return
+      ev.preventDefault()
+      ev.stopPropagation()
+      if (!remote) return
+      if (dataTransferHasDirectory(dt)) {
+        logTermDrop(label, 'reject', { 原因: 'directory' })
+        setDropNotice({ kind: 'error', text: '不能上传目录' })
+        return
+      }
+      const files = Array.from(dt.files)
+      logTermDrop(label, 'start', { 个数: files.length, machine: base.machine })
+      setDropNotice({ kind: 'progress', text: '正在传到对端…' })
+      void (async () => {
+        let lastError: string | null = null
+        for (const file of files) {
+          if (file.size > DROP_MAX_BYTES) {
+            lastError = `${file.name} 超过 32 MiB`
+            logTermDrop(label, 'reject', { 原因: 'too-large', name: file.name, bytes: file.size })
+            continue
+          }
+          try {
+            const res = await uploadDropFile(file.name, file, base.machine || undefined)
+            term.focus()
+            term.input(`${shellQuote(res.path)} `)
+            logTermDrop(label, 'ok', { path: res.path, bytes: res.bytes })
+          } catch (err) {
+            lastError = errorMessage(err)
+            logTermDrop(label, 'fail', { name: file.name, 原因: lastError })
+          }
+        }
+        setDropNotice(lastError ? { kind: 'error', text: lastError } : null)
+      })()
+    }
+    host.addEventListener('dragover', onDragOver)
+    host.addEventListener('drop', onFileDrop)
 
     const ta = term.textarea
     const onFocusEvt = () => logTermFocus(label, 'focus', describeElement(document.activeElement))
     const onBlurEvt = (ev: FocusEvent) => logTermFocus(label, 'blur', describeElement(ev.relatedTarget as Element | null))
     ta?.addEventListener('focus', onFocusEvt)
     ta?.addEventListener('blur', onBlurEvt)
+    // drop 监听在 host 上，cleanup 与 unregisterDrop 一起。
 
     fitIfMeasured()
 
@@ -620,6 +694,8 @@ export function TerminalTab({
       // OSC 52 失败提示的定时器随 effect 一起清，不许越过卸载触发 setState
       window.clearTimeout(noticeTimer)
       osc52.dispose()
+      host.removeEventListener('dragover', onDragOver)
+      host.removeEventListener('drop', onFileDrop)
       unregisterDrop()
       // 只断连接，不发 DELETE：服务端会话继续跑
       handle?.close()
@@ -716,6 +792,14 @@ export function TerminalTab({
       {copyNotice !== null && (
         <div data-testid="copy-notice" className="border-t px-3 py-1.5 text-xs text-destructive">
           {copyNotice}
+        </div>
+      )}
+      {dropNotice !== null && (
+        <div
+          data-testid="drop-notice"
+          className={`border-t px-3 py-1.5 text-xs ${dropNotice.kind === 'error' ? 'text-destructive' : 'text-muted-foreground'}`}
+        >
+          {dropNotice.text}
         </div>
       )}
       {exit !== undefined && (

@@ -541,6 +541,12 @@ export interface FileWriteResp {
   size: number
 }
 
+// DropPutResp 是 POST /api/drop 成功时的响应：对端写成的绝对路径与字节数。
+export interface DropPutResp {
+  path: string
+  bytes: number
+}
+
 // FileConflictResp 是 409 的响应体，current 是磁盘现状。
 export interface FileConflictResp {
   error: string
