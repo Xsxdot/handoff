@@ -194,6 +194,12 @@ describe('RoomPanel', () => {
     expect(panel.className).toMatch(/min-h-0/)
   })
 
+  it('常驻栏 overflow-hidden，列表溢出不泄漏成文档滚动', async () => {
+    render(<RoomPanel workbench={workbench()} persistent />)
+    const panel = await screen.findByTestId('room-panel')
+    expect(panel.className).toMatch(/overflow-hidden/)
+  })
+
   it('常驻面板收起后保留 FAB，并可重新打开', async () => {
     const user = userEvent.setup()
     render(<RoomPanel workbench={workbench()} persistent />)

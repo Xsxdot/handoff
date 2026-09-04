@@ -1017,6 +1017,18 @@ describe('统一房间面板挂载', () => {
     expect(panel.parentElement?.className).toMatch(/min-h-0/)
   })
 
+  it('/cards 的 main 与常驻栏切断固有宽，文档不能被工作台撑出横向滚动', async () => {
+    renderShell('/cards')
+    const panel = await screen.findByTestId('room-panel')
+    expect(panel.className).toMatch(/overflow-hidden/)
+    const main = panel.previousElementSibling
+    expect(main?.tagName).toBe('MAIN')
+    expect(main?.className).toMatch(/min-w-0/)
+    expect(main?.className).toMatch(/overflow-hidden/)
+    const shell = panel.closest('.h-dvh')
+    expect(shell?.className).toMatch(/overflow-hidden/)
+  })
+
   it('其它页面显示浮动房间入口，旧 rooms/inbox 页面不再由路由渲染', async () => {
     renderShell('/settings')
     expect(await screen.findByRole('button', { name: '打开房间面板' })).toBeInTheDocument()

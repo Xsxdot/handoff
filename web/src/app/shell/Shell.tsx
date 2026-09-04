@@ -631,7 +631,7 @@ export function Shell() {
   const focusedTaskId = focusedTab && focusedTab.content.kind === 'tui' ? focusedTab.content.taskId : null
 
   return (
-    <div className="flex h-dvh flex-col bg-background">
+    <div className="flex h-dvh flex-col overflow-hidden bg-background">
       {desktop && <DesktopTitleBar base={focusedBase} />}
       <div className="flex min-h-0 flex-1">
       {/* 左栏自身不滚：滚动交给 ProjectTree 内部的树区，好让底部入口钉在底部。
@@ -688,19 +688,22 @@ export function Shell() {
         )}
       </ResizableSidebar>
 
-      {/* min-h-0 与左栏同一条：flex 子项默认 min-height:auto。/cards 把
-          RoomPanel 挂成这一列的横向 sibling 之后，会话列表的固有高度会把
-          整列撑破 h-dvh，空白处滚轮冒泡成整页滚动。 */}
-      <div className={`relative flex min-h-0 min-w-0 flex-1 ${cardsRoute ? 'flex-row' : 'flex-col'}`}>
+      {/* min-h-0 / min-w-0 与左栏同一条：flex 子项默认 min-size:auto。
+          B318 只补了高度——常驻栏不再被会话列表撑高。无头 Chrome 在 /cards
+          上仍量到 document.scrollWidth=22486（视口 1440）：工作台常驻在 main
+          里，min-width:auto 按终端画布固有宽把 main 撑到两万像素，常驻栏被
+          推到 x=22126，空白处横滑 scrollLeft 带动左栏一起走。overflow-hidden
+          把泄漏切断在壳内，不让它变成窗口滚动条。 */}
+      <div className={`relative flex min-h-0 min-w-0 flex-1 overflow-hidden ${cardsRoute ? 'flex-row' : 'flex-col'}`}>
         {/* 薄壳里这一行不画：同样的内容已经在窗口顶部那条 28px 上，
             两处都画就是把一行重复了两遍 */}
         {focusedBase && !desktop && !fullPageRoute && <Breadcrumb base={focusedBase} tail={crumbTail} />}
-        <main className="relative min-h-0 flex-1">
+        <main className="relative min-h-0 min-w-0 flex-1 overflow-hidden">
           {/* 工作台常驻。整页路由盖在上面，不走 path="*" 卸载——卸了 xterm
               会断 WS 再重放 1004h，OpenTUI/Grok 卡死（B270 的病在整页入口复发）。
               不用 display:none / invisible / pointer-events-none：那些会捏尺寸
               或让 WKWebView 命中回不来。 */}
-          <div className="h-full">
+          <div className="h-full min-w-0 overflow-hidden">
             <WorkbenchPage
               api={wb}
               onAddProject={() => setWizardOpen(true)}
