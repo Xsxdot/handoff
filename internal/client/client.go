@@ -1289,19 +1289,29 @@ func (c *Client) RevokeSession(ctx context.Context, id string) error {
 // 进程内快照，CLI 本地重算会让所有等待工单全量误上浮）。三源聚合在服务端
 // 编排单元（C6），本方法只做传输与解码，不含业务判断。
 func (c *Client) Inbox(ctx context.Context) ([]proto.InboxItem, error) {
+	c.log().Debug("拉取 agentd 收件箱", "url", c.baseURL, "path", "/api/inbox")
 	resp, err := c.do(ctx, http.MethodGet, "/api/inbox", nil)
 	if err != nil {
+		c.log().Warn("拉取 agentd 收件箱失败", "url", c.baseURL, "cause", err)
 		return nil, fmt.Errorf("连接 agentd %s 失败（它在运行吗？可先执行 handoff status 确认）: %w", c.baseURL, err)
 	}
 	defer resp.Body.Close()
+	c.log().Debug("agentd 收件箱响应已收到", "url", c.baseURL, "status", resp.StatusCode)
 	if resp.StatusCode != http.StatusOK {
 		return nil, c.httpError("拉收件箱", resp)
 	}
-	var out []proto.InboxItem
+	var out struct {
+		Items []proto.InboxItem `json:"items"`
+	}
 	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		c.log().Warn("解析 agentd 收件箱失败", "url", c.baseURL, "status", resp.StatusCode, "cause", err)
 		return nil, fmt.Errorf("解析收件箱: %w", err)
 	}
-	return out, nil
+	if out.Items == nil {
+		out.Items = []proto.InboxItem{}
+	}
+	c.log().Info("agentd 收件箱已解码", "url", c.baseURL, "count", len(out.Items))
+	return out.Items, nil
 }
 
 // doStream 发送带 Bearer token 的流式 GET 请求，返回不关闭 body 的响应。

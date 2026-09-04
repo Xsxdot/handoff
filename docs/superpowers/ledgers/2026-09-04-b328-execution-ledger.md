@@ -1,0 +1,18 @@
+# B328 执行节点台账
+
+- 2026-09-04：本轮起点为工作树 `/root/.handoff/worktrees/79e19fdf`、分支 `cards/B328-charter`；`git status --short --branch` 原始输出为 `## cards/B328-charter`，工作树初始干净。
+- 2026-09-04：读取 `docs/superpowers/specs/b328.md` 确认实现边界：客户端 `Client.Inbox` 对齐 `/api/inbox` 的 `{"items":...}` 信封，CLI mock 改为对象信封，并覆盖空信封与非空字段输出；不改服务端。
+- 2026-09-04：代码核对确认 `internal/client/client.go:1300` 当前声明 `var out []proto.InboxItem` 并直接 Decode；`cmd/room_test.go` 的 `TestRoomInboxWalksAgentdHTTP` 当前 mock 编码顶层数组。
+- 2026-09-04：新增 `internal/client/inbox_test.go` 的 `TestInboxDecodesEmptyEnvelope` 后执行 `go test ./internal/client -run '^TestInboxDecodesEmptyEnvelope$' -count=1`；原始输出为 `Inbox: 解析收件箱: json: cannot unmarshal object into Go value of type []proto.InboxItem`，测试失败，退出码 1；失败原因与对象信封功能缺失一致，非测试拼写错误。
+- 2026-09-04：按最小方案将 `Client.Inbox` 改为解码 `{items}` 并将 nil 规范为空切片；`TestRoomInboxWalksAgentdHTTP` mock 改为对象信封并补齐 origin/title/ref_id 断言。执行 `gofmt -w internal/client/client.go internal/client/inbox_test.go cmd/room_test.go && go test ./internal/client -run '^TestInboxDecodesEmptyEnvelope$' -count=1 && go test ./cmd -run '^TestRoomInboxWalksAgentdHTTP$' -count=1`，原始输出为 `ok github.com/Xsxdot/handoff/internal/client 0.004s`、`ok github.com/Xsxdot/handoff/cmd 0.006s`，退出码 0。
+- 2026-09-04：task 收尾验证 `go build ./...` 实际退出码 0、标准输出为空；`go test ./internal/client ./cmd -count=1` 实际退出码 0，原始输出为 `ok github.com/Xsxdot/handoff/internal/client 9.324s`、`ok github.com/Xsxdot/handoff/cmd 14.276s`。
+- 2026-09-04：变异前执行 `rg -n -F 'Items []proto.InboxItem `json:"items"`' internal/client/client.go | wc -l`，原始输出为 `1`，确认锚点唯一；将 tag 变异为 `json:"items_v2"`。
+- 2026-09-04：变异态先执行 `go build ./...`，实际退出码 0、标准输出为空，变异计数有效；随后先跑空信封 client 用例，`go test ./internal/client -run '^TestInboxDecodesEmptyEnvelope$' -count=1` 实际退出码 0，原始输出为 `ok github.com/Xsxdot/handoff/internal/client 0.004s`。该读数未证明变异存活：nil→空切片规范化掩盖了错误 tag，已继续跑非空 CLI seam。
+- 2026-09-04：变异态执行 `go test ./cmd -run '^TestRoomInboxWalksAgentdHTTP$' -count=1`，实际退出码 1；原始失败为 `--- FAIL: TestRoomInboxWalksAgentdHTTP`、`room_test.go:221: inbox 输出缺 decision 条目: ""`，并可见 client 日志 `agentd 收件箱已解码 ... count=0`；确认非空映射断言拦住语义变异。
+- 2026-09-04：变异态随后执行 `go test ./internal/client ./cmd -count=1`，实际退出码 1；原始输出因 20,245 token 上限被工具截断，但包含 `ok github.com/Xsxdot/handoff/internal/client 9.504s`、`FAIL`、`FAIL github.com/Xsxdot/handoff/cmd 14.667s`；变异已恢复。
+- 2026-09-04：恢复正式 tag 后再次执行 `go build ./...`，实际退出码 0、标准输出为空；再次执行 `go test ./internal/client ./cmd -count=1`，实际退出码 0，原始输出为 `ok github.com/Xsxdot/handoff/internal/client 9.523s`、`ok github.com/Xsxdot/handoff/cmd 15.015s`。
+- 2026-09-04：执行实际验收命令 `go run . room inbox`，实际退出码 0；原始 stderr 日志包含 `agentd 收件箱已解码 url=http://127.0.0.1:7777 count=0`、`CLI 收件箱已输出 count=0`，stdout 为空。
+- 2026-09-04：集成全量执行 `go test ./... -count=1`，实际退出码 1；唯一失败原始输出为 `--- FAIL: TestWatchdogRefiresStalledAfterReply (0.38s)`、`watchdog_test.go:234: 无活动后 stalled 应保持 2 条，实际 3（二次告警刷屏）`、`FAIL github.com/Xsxdot/handoff/internal/agentd 211.544s`；其余已执行包均为 `ok` 或 `[no test files]`。该失败未触及本卡文件，未验证其是否为本轮前既存问题。
+- 2026-09-04：提交前将新测试 HTTP handler 内的 `t.Fatalf` 改为 `t.Errorf` 加 return，避免非测试 goroutine 调用 FailNow；执行 `gofmt -w internal/client/inbox_test.go && go test ./internal/client -run '^TestInboxDecodesEmptyEnvelope$' -count=1`，实际退出码 0，原始输出为 `ok github.com/Xsxdot/handoff/internal/client 0.004s`。
+- 2026-09-04：提交前最终执行 `go build ./...`，实际退出码 0、标准输出为空；执行 `go test ./internal/client ./cmd -count=1`，实际退出码 0，原始输出为 `ok github.com/Xsxdot/handoff/internal/client 9.541s`、`ok github.com/Xsxdot/handoff/cmd 15.788s`；`git diff --check` 实际退出码 0、标准输出为空。
+- 2026-09-04：执行 `git commit -m "fix B328 inbox envelope decoding"`，实际退出码 0；原始输出为 `[cards/B328-charter 612a4463] fix B328 inbox envelope decoding`、`4 files changed, 70 insertions(+), 6 deletions(-)`，随后按规则仅 amend 一次收录本提交事实。

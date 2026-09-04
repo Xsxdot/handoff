@@ -193,10 +193,12 @@ func TestRoomInboxWalksAgentdHTTP(t *testing.T) {
 			t.Errorf("Authorization = %q, want Bearer %s", got, testToken)
 		}
 		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode([]proto.InboxItem{
+		if err := json.NewEncoder(w).Encode(struct {
+			Items []proto.InboxItem `json:"items"`
+		}{Items: []proto.InboxItem{
 			{Origin: proto.InboxOriginDecision, Title: "推翻级简报", CardID: "B1", RefID: "7"},
 			{Origin: proto.InboxOriginTicket, Title: "等待人工工单", RefID: "T-1"},
-		}); err != nil {
+		}}); err != nil {
 			t.Errorf("mock 编码: %v", err)
 		}
 	}))
@@ -215,10 +217,10 @@ func TestRoomInboxWalksAgentdHTTP(t *testing.T) {
 	if err != nil {
 		t.Fatalf("room inbox: %v", err)
 	}
-	if !strings.Contains(out, `"origin":"decision"`) || !strings.Contains(out, `"ref_id":"7"`) {
+	if !strings.Contains(out, `"origin":"decision"`) || !strings.Contains(out, `"title":"推翻级简报"`) || !strings.Contains(out, `"ref_id":"7"`) {
 		t.Fatalf("inbox 输出缺 decision 条目: %q", out)
 	}
-	if !strings.Contains(out, `"origin":"ticket"`) || !strings.Contains(out, `"ref_id":"T-1"`) {
+	if !strings.Contains(out, `"origin":"ticket"`) || !strings.Contains(out, `"title":"等待人工工单"`) || !strings.Contains(out, `"ref_id":"T-1"`) {
 		t.Fatalf("inbox 输出缺 ticket 条目: %q", out)
 	}
 }
