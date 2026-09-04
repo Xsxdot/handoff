@@ -1,0 +1,106 @@
+{
+  "view": "cards/B272-charter",
+  "base": "100f409a65c7f53e60c6076aa89cb572c6ed0870",
+  "summary": "B272：POST /api/drop 原字节写入 ~/.handoff/drop，dropdir.Put 唯一名与 32MiB，控制台跨机拖放上传",
+  "containersAdded": {
+    "k_dropdir_fn": {
+      "label": "dropdir（包级函数）",
+      "kind": "函数组",
+      "domain": "d_coordination_api"
+    }
+  },
+  "packagesAdded": {
+    "internal/dropdir": {
+      "summary": "把拖入的文件写到本机用户的 ~/.handoff/drop/ 收件箱。"
+    }
+  },
+  "nodesAdded": {
+    "e_http_post_api_drop": {
+      "kind": "entry",
+      "container": "c_http",
+      "order": 115,
+      "name": "POST /api/drop",
+      "file": "internal/agentd/server.go",
+      "line": 687,
+      "summary": "把未编码文件字节写入 ~/.handoff/drop/",
+      "channel": "http"
+    },
+    "n_agentd_Server_handleDropPut": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1879,
+      "name": "Server.handleDropPut",
+      "file": "internal/agentd/drop.go",
+      "line": 30,
+      "signature": "func (s *Server) handleDropPut(w http.ResponseWriter, r *http.Request)",
+      "summary": "处理 POST /api/drop：解参、限体、调用 dropdir.Put、映射错误。",
+      "tests": [{"name": "TestDropPutWritesHomeInbox", "file": "internal/agentd/drop_test.go:40"}]
+    },
+    "n_agentd_Server_forwardDropIfRequested": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1880,
+      "name": "Server.forwardDropIfRequested",
+      "file": "internal/agentd/drop.go",
+      "line": 89,
+      "signature": "func (s *Server) forwardDropIfRequested(w http.ResponseWriter, r *http.Request) bool",
+      "summary": "machine 非空时按 32MiB 上限整包转发，超限拒绝不截断。",
+      "tests": [{"name": "TestDropForwardDeliversBytesToRemote", "file": "internal/agentd/drop_test.go:101"}]
+    },
+    "n_dropdir_Dir": {
+      "kind": "func",
+      "container": "k_dropdir_fn",
+      "order": 1,
+      "name": "Dir",
+      "file": "internal/dropdir/dropdir.go",
+      "line": 46,
+      "signature": "func Dir(home string) string",
+      "summary": "返回该 HOME 下的 drop 收件箱路径。"
+    },
+    "n_dropdir_Put": {
+      "kind": "func",
+      "container": "k_dropdir_fn",
+      "order": 2,
+      "name": "Put",
+      "file": "internal/dropdir/dropdir.go",
+      "line": 58,
+      "signature": "func Put(home, originalName string, r io.Reader) (string, int64, error)",
+      "summary": "按 basename 写入 ~/.handoff/drop/，同名加后缀，上限 32MiB。",
+      "tests": [{"name": "TestPutNewFile", "file": "internal/dropdir/dropdir_test.go:13"}]
+    },
+    "m_proto_DropPutResp": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 1005,
+      "name": "DropPutResp",
+      "file": "internal/proto/projects.go",
+      "line": 328,
+      "signature": "type DropPutResp struct {",
+      "summary": "POST /api/drop 成功时的响应：绝对路径与未编码字节数。",
+      "modelKind": "dto",
+      "fields": [
+        ["Path", "string", "写成的绝对路径"],
+        ["Bytes", "int64", "未编码内容长度"]
+      ],
+      "projScanned": true
+    },
+    "n_web_api_client_uploadDropFile": {
+      "kind": "func",
+      "container": "k_web_api_client",
+      "order": 668,
+      "name": "uploadDropFile",
+      "file": "web/src/api/client.ts",
+      "line": 157,
+      "signature": "export function uploadDropFile(name: string, data: Blob, machine?: string): Promise<DropPutResp>",
+      "summary": "把未编码文件字节写到 PTY 所在机器的 ~/.handoff/drop/。"
+    }
+  },
+  "edgesAdded": [
+    ["e_http_post_api_drop", "n_agentd_Server_handleDropPut"],
+    ["n_agentd_Server_handleDropPut", "n_agentd_Server_forwardDropIfRequested"],
+    ["n_agentd_Server_handleDropPut", "n_dropdir_Put"],
+    ["n_dropdir_Put", "n_dropdir_Dir"]
+  ],
+  "projectionsAdded": [],
+  "lifecycleAdded": []
+}
