@@ -3,8 +3,14 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
+import { fetchMachines } from '../../api/client'
 import { detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
 import { SchedulingPage } from './SchedulingPage'
+
+vi.mock('../../api/client', async () => {
+  const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
+  return { ...actual, fetchMachines: vi.fn() }
+})
 
 vi.mock('../../api/scheduling', async () => {
   const actual = await vi.importActual<typeof import('../../api/scheduling')>('../../api/scheduling')
@@ -19,6 +25,12 @@ beforeEach(() => {
   vi.mocked(probeHome).mockResolvedValue({ kind: 'empty' })
   vi.mocked(putCarrier).mockResolvedValue({ name: 'mbp', version: 1 })
   vi.mocked(putSquad).mockResolvedValue({ name: 'exec', version: 8 })
+  vi.mocked(fetchMachines).mockResolvedValue({
+    machines: [
+      { name: '', addr: '', reachable: true, version: 'test', executors: [], default_executor: '', probe_ms: 0, active_tasks: 0, error: '' },
+      { name: 'linux-01', addr: '100.1.1.1:7777', reachable: true, version: 'test', executors: [], default_executor: '', probe_ms: 1, active_tasks: 0, error: '' },
+    ],
+  })
 })
 
 describe('SchedulingPage', () => {
@@ -61,19 +73,33 @@ describe('SchedulingPage', () => {
     expect(screen.queryByText('undefined')).not.toBeInTheDocument()
   })
 
-  it('new carrier follows the default HOME until the user edits it', async () => {
+  it('new carrier HOME stays empty when the name is typed', async () => {
     const user = userEvent.setup()
     render(<SchedulingPage />)
     await user.click(screen.getByRole('button', { name: '登记载体' }))
     const name = screen.getByLabelText('载体名')
     const home = screen.getByLabelText('HOME 档案')
     await user.type(name, 'exec')
-    expect(home).toHaveValue('~/.handoff/home/exec')
-    await user.clear(home)
+    expect(home).toHaveValue('')
     await user.type(home, '/custom/home')
     await user.clear(name)
     await user.type(name, 'renamed')
     expect(home).toHaveValue('/custom/home')
+  })
+
+  it('lists 主 HOME and skips probe when HOME is empty', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getSquads).mockResolvedValue({
+      carriers: [{ name: 'plain', machine: '本机', cli: 'grok', home_dir: '', credential: 'standalone', status: 'online', version: 1 }],
+      squads: [],
+    })
+    render(<SchedulingPage />)
+    expect(await screen.findByText('主 HOME')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '登记载体' }))
+    await user.type(screen.getByLabelText('载体名'), 'mbp')
+    await waitFor(() => expect(fetchMachines).toHaveBeenCalled())
+    expect(probeHome).not.toHaveBeenCalled()
+    expect(screen.getByRole('option', { name: 'linux-01' })).toBeInTheDocument()
   })
 
   it('probes the current draft through the API and renders the result', async () => {
@@ -81,7 +107,7 @@ describe('SchedulingPage', () => {
     vi.mocked(probeHome).mockResolvedValue({ kind: 'logged_in', detail: 'credential found' })
     render(<SchedulingPage />)
     await user.click(screen.getByRole('button', { name: '登记载体' }))
-    await user.type(screen.getByLabelText('载体名'), 'mbp')
+    await user.type(screen.getByLabelText('HOME 档案'), '~/.handoff/home/mbp')
     await waitFor(() => expect(probeHome).toHaveBeenCalledWith({
       cli: 'opencode', path: '~/.handoff/home/mbp', credential: 'standalone', machine: '本机',
     }))

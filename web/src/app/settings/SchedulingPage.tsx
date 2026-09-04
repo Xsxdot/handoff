@@ -4,11 +4,12 @@
 import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { CarrierInput, CarrierStatus, CarrierView, HomeProbeResp, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
-import { CARRIER_STATUS_LABEL, defaultHomeDir, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
+import { fetchMachines } from '../../api/client'
+import { CARRIER_STATUS_LABEL, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
 import { copyToClipboard } from '../lib/clipboard'
 import { errorMessage } from '../lib/format'
 
-type CarrierDraft = Omit<CarrierInput, 'max_concurrency'> & { name: string; maxConcurrencyText: string; homeAuto: boolean }
+type CarrierDraft = Omit<CarrierInput, 'max_concurrency'> & { name: string; maxConcurrencyText: string }
 type SquadDraft = Omit<SquadInput, 'name'> & {
   name: string
   memberConcurrencyText: Record<string, string>
@@ -22,7 +23,6 @@ type EntityDialog =
 const INPUT = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
 // 原型 .form-grid label：块级、12px、muted、下缘 4px——标签在控件上方。
 const FIELD_LABEL = 'mb-1 block text-xs text-muted-foreground'
-const MACHINE_OPTIONS = ['本机', 'mac-02', 'win-b37', 'linux-01']
 const CLI_OPTIONS = ['opencode', 'claude', 'codex', 'grok']
 const CREDENTIAL_OPTIONS = [
   { value: 'standalone', label: '独立账号' },
@@ -38,18 +38,25 @@ function optionalConcurrency(raw: string): number | undefined {
 }
 
 function carrierDraft(row: CarrierView | null): CarrierDraft {
-  const name = row?.name ?? ''
-  const home = row?.home_dir ?? defaultHomeDir(name)
   return {
-    name,
+    name: row?.name ?? '',
     machine: row?.machine ?? '本机',
     cli: row?.cli ?? 'opencode',
-    home_dir: home,
+    home_dir: row?.home_dir ?? '',
     model: row?.model ?? '',
     credential: row?.credential ?? 'standalone',
     maxConcurrencyText: row?.max_concurrency?.toString() ?? '',
-    homeAuto: row === null || home === defaultHomeDir(name),
   }
+}
+
+function machineOptionNames(machines: { name: string }[]): string[] {
+  const names = ['本机']
+  for (const machine of machines) {
+    if (machine.name !== '' && machine.name !== '本机' && machine.name !== 'local' && !names.includes(machine.name)) {
+      names.push(machine.name)
+    }
+  }
+  return names
 }
 
 function squadDraft(row: SquadView | null): SquadDraft {
@@ -120,6 +127,7 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
   const [detecting, setDetecting] = useState('')
   const [detectError, setDetectError] = useState<Record<string, string>>({})
   const [runState, setRunState] = useState({ name: '', message: '', error: '' })
+  const [machineOptions, setMachineOptions] = useState<string[]>(['本机'])
   const probeSequence = useRef(0)
 
   const load = async (): Promise<void> => {
@@ -140,6 +148,14 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
 
   useEffect(() => {
     void load()
+  }, [])
+
+  useEffect(() => {
+    void fetchMachines().then((resp) => {
+      setMachineOptions(machineOptionNames(resp.machines))
+    }).catch((cause: unknown) => {
+      console.error({ event: 'scheduling.machines.failure', cause })
+    })
   }, [])
 
   const openCarrier = (row: CarrierView | null): void => {
@@ -330,12 +346,7 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
   }
 
   const updateCarrierName = (name: string): void => {
-    setDraft((current) => {
-      if (current === null || !('homeAuto' in current)) return current
-      const carrier = current as CarrierDraft
-      const followsDefault = carrier.homeAuto && carrier.home_dir === defaultHomeDir(carrier.name)
-      return { ...carrier, name, home_dir: followsDefault ? defaultHomeDir(name) : carrier.home_dir, homeAuto: followsDefault }
-    })
+    setDraft((current) => current === null || !('home_dir' in current) ? current : { ...current, name })
   }
 
   return (
@@ -350,7 +361,7 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
         <div className="flex items-center gap-2"><h3 className="text-xs font-semibold">载体</h3><span className="text-[11px] text-muted-foreground">并发上限是物理位：跨小队全局计数</span><span className="flex-1" /><button type="button" className="rounded-md border px-2.5 py-1 text-xs" onClick={() => openCarrier(null)}>登记载体</button></div>
         {snapshot.carriers.map((row) => { const status = carrierStatus(row); return <article key={row.name} className="rounded-lg border p-3">
           <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5" data-status={status}>{CARRIER_STATUS_LABEL[status]}</span><span>{row.machine} · {row.cli}</span><span className="flex-1" /><span>在跑 — / {row.max_concurrency ?? '不限'} · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openCarrier(row)}>编辑 {row.name}</button><button type="button" className="rounded border px-2 py-1" disabled={detecting === row.name} onClick={() => void detect(row.name)}>{detecting === row.name ? '检测中…' : '检测'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => void runCarrier(row.name)}>运行</button></div>
-          <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">HOME 档案</dt><dd className="font-mono">{row.home_dir}</dd><dt className="text-muted-foreground">模型</dt><dd>{row.model || <span className="text-muted-foreground">CLI 默认</span>}</dd><dt className="text-muted-foreground">凭据来源</dt><dd>{row.credential}</dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
+          <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">HOME 档案</dt><dd className="font-mono">{row.home_dir || <span className="text-muted-foreground">主 HOME</span>}</dd><dt className="text-muted-foreground">模型</dt><dd>{row.model || <span className="text-muted-foreground">CLI 默认</span>}</dd><dt className="text-muted-foreground">凭据来源</dt><dd>{row.credential}</dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
           {row.last_error && <p className="mt-2 text-xs text-destructive">最近检测：{row.last_error}</p>}
           {detectError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">检测失败：{detectError[row.name]}；请修正 HOME/登录后重试。</p>}
           {runState.name === row.name && (runState.message || runState.error) && <p role={runState.error ? 'alert' : undefined} className="mt-2 text-xs">{runState.message || `复制运行命令失败：${runState.error}`}</p>}
@@ -374,11 +385,11 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
           <div><h3 id="scheduling-dialog-title" className="text-sm font-semibold">{dialog.kind === 'carrier' ? (dialog.value ? `编辑载体 · ${dialog.value.name}（v${dialog.value.version}）` : '登记载体') : (dialog.value ? `编辑小队 · ${dialog.value.name}（v${dialog.value.version}）` : '建小队')}</h3></div>
           {dialog.kind === 'carrier' ? <div className="grid gap-x-3 gap-y-2.5 sm:grid-cols-2">
             <div><label htmlFor="sched-carrier-name" className={FIELD_LABEL}>载体名（唯一，登记后不可改）</label><input id="sched-carrier-name" aria-label="载体名" className={INPUT} readOnly={dialog.value !== null} value={draft.name} onChange={(event) => updateCarrierName(event.target.value)} /></div>
-            <div><label htmlFor="sched-carrier-machine" className={FIELD_LABEL}>机器</label><select id="sched-carrier-machine" aria-label="机器" className={INPUT} value={(draft as CarrierDraft).machine} onChange={(event) => updateDraft({ machine: event.target.value })}>{(draft as CarrierDraft).machine && !MACHINE_OPTIONS.includes((draft as CarrierDraft).machine) && <option value={(draft as CarrierDraft).machine}>{(draft as CarrierDraft).machine}</option>}{MACHINE_OPTIONS.map((machine) => <option key={machine} value={machine}>{machine}</option>)}</select></div>
+            <div><label htmlFor="sched-carrier-machine" className={FIELD_LABEL}>机器</label><select id="sched-carrier-machine" aria-label="机器" className={INPUT} value={(draft as CarrierDraft).machine} onChange={(event) => updateDraft({ machine: event.target.value })}>{(draft as CarrierDraft).machine && !machineOptions.includes((draft as CarrierDraft).machine) && <option value={(draft as CarrierDraft).machine}>{(draft as CarrierDraft).machine}</option>}{machineOptions.map((machine) => <option key={machine} value={machine}>{machine}</option>)}</select></div>
             <div><label htmlFor="sched-carrier-cli" className={FIELD_LABEL}>CLI</label><select id="sched-carrier-cli" aria-label="CLI" className={INPUT} value={(draft as CarrierDraft).cli} onChange={(event) => updateDraft({ cli: event.target.value })}>{CLI_OPTIONS.map((cli) => <option key={cli} value={cli}>{cli}</option>)}</select></div>
             <div><label htmlFor="sched-carrier-model" className={FIELD_LABEL}>模型（留空 = CLI 默认）</label><input id="sched-carrier-model" aria-label="模型" className={INPUT} value={(draft as CarrierDraft).model ?? ''} onChange={(event) => updateDraft({ model: event.target.value })} /></div>
-            <div className="sm:col-span-2"><label htmlFor="sched-carrier-home" className={FIELD_LABEL}>HOME 档案（隔离 HOME 路径；协调者 = 全套，执行者 = 干净会话）</label><input id="sched-carrier-home" aria-label="HOME 档案" className={INPUT} value={(draft as CarrierDraft).home_dir} onChange={(event) => updateDraft({ home_dir: event.target.value, homeAuto: false })} /></div>
-            <div><label htmlFor="sched-carrier-cred" className={FIELD_LABEL}>凭据来源</label><select id="sched-carrier-cred" aria-label="凭据来源" className={INPUT} value={(draft as CarrierDraft).credential} onChange={(event) => updateDraft({ credential: event.target.value })}>{CREDENTIAL_OPTIONS.map((credential) => <option key={credential.value} value={credential.value}>{credential.label}</option>)}</select></div>
+            <div className="sm:col-span-2"><label htmlFor="sched-carrier-home" className={FIELD_LABEL}>HOME 档案（选填；空 = 该机主 HOME。只在要隔离时填写）</label><input id="sched-carrier-home" aria-label="HOME 档案" className={INPUT} placeholder="空 = 主 HOME" value={(draft as CarrierDraft).home_dir} onChange={(event) => updateDraft({ home_dir: event.target.value })} /></div>
+            <div><label htmlFor="sched-carrier-cred" className={FIELD_LABEL}>凭据来源（选填；空 = 独立账号）</label><select id="sched-carrier-cred" aria-label="凭据来源" className={INPUT} value={(draft as CarrierDraft).credential} onChange={(event) => updateDraft({ credential: event.target.value })}>{CREDENTIAL_OPTIONS.map((credential) => <option key={credential.value} value={credential.value}>{credential.label}</option>)}</select></div>
             <div><label htmlFor="sched-carrier-conc" className={FIELD_LABEL}>并发上限（0 / 留空 = 不限）</label><input id="sched-carrier-conc" aria-label="并发上限" className={INPUT} type="number" min="0" value={(draft as CarrierDraft).maxConcurrencyText} onChange={(event) => updateDraft({ maxConcurrencyText: event.target.value })} /></div>
             <p className="text-[11px] leading-5 text-muted-foreground sm:col-span-2">主 HOME 同步 = 把主环境的认证态搬进隔离 HOME；两个同账户载体的真实限额共享，跨载体账户池的归属归 roadmap 的「限额探测」。</p>
             {probing && <p className="text-[11px] text-muted-foreground sm:col-span-2">正在检测目标机 HOME…</p>}

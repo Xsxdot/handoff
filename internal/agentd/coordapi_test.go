@@ -63,10 +63,38 @@ func (n *fakeCoordNarrator) Say(cardID, text string) error {
 // newCoordEnv 装配真实编制域（SetupAutomation 全真接线：facadeAsRegistry +
 // scheduling.Service）+ 注入 fake 端口的真实 keystone（fakeCoordRunner 记录 spec）。
 // launch 的 SessionSpec 组装必须真实穿过编制域解析（SquadRows→LaunchAdmit→Carrier）。
+// allowCarrierMachines 把测试用机器名写进活配置 targets，让 PutCarrier 的
+// B334 闸放过夹具载体。本机别名跳过。cfgPath 空时先落一份临时配置。
+func allowCarrierMachines(t *testing.T, s *Server, names ...string) {
+	t.Helper()
+	if s.cfgPath == "" {
+		p := t.TempDir() + "/config.yaml"
+		if err := config.Save(p, s.conf()); err != nil {
+			t.Fatalf("准备配置: %v", err)
+		}
+		s.SetConfigPath(p)
+	}
+	if err := s.swapConf(func(c *config.Config) error {
+		for _, name := range names {
+			if scheduling.IsLocalMachine(name) {
+				continue
+			}
+			if _, ok := c.Targets[name]; ok {
+				continue
+			}
+			c.Targets[name] = config.Target{Addr: "127.0.0.1:1", Token: testToken}
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("测试 targets %v: %v", names, err)
+	}
+}
+
 func newCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	t.Helper()
 	env := newLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
+	allowCarrierMachines(t, env.srv, "linux-01", "m1", "m2")
 	runner := &fakeCoordRunner{}
 	ks := keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{expandHome: hostapi.ExpandHomePath})
 	ks.SetSessionRefResolver(coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath})
@@ -78,6 +106,7 @@ func newNoPTYCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	t.Helper()
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
+	allowCarrierMachines(t, env.srv, "linux-01", "m1", "m2")
 	runner := &fakeCoordRunner{}
 	ks := keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{expandHome: hostapi.ExpandHomePath})
 	ks.SetSessionRefResolver(coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath})

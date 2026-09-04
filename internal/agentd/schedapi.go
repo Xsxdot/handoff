@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"os"
 	"strconv"
 
 	"github.com/Xsxdot/handoff/internal/hostapi"
@@ -323,14 +322,10 @@ func (s *Server) handleCarrierDetect(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// isLocalMachine 统一本机 carrier 的三种登记写法；其他值必须走 target 池，
-// 从而检测状态仍只落在协调机 registry。
+// isLocalMachine 统一本机 carrier 的登记写法；其他值必须走 target 池，
+// 从而检测状态仍只落在协调机 registry。词表与 PutCarrier 同源。
 func isLocalMachine(machine string) bool {
-	if machine == "" || machine == "local" || machine == "本机" {
-		return true
-	}
-	hostname, err := os.Hostname()
-	return err == nil && machine == hostname
+	return scheduling.IsLocalMachine(machine)
 }
 
 // detectEvidence 是 detect handler 唯一的 wake outcome 白名单。未知值不落库，

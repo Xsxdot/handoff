@@ -207,4 +207,18 @@ func TestRunCommand(t *testing.T) {
 	if got != "HOME=~/.handoff/home/x codex" {
 		t.Fatalf("RunCommand = %q", got)
 	}
+	if got := scheduling.RunCommand(scheduling.Carrier{CLI: "grok"}); got != "grok" {
+		t.Fatalf("空 HOME 应得裸 CLI，得 %q", got)
+	}
+}
+
+func TestIsLocalMachine(t *testing.T) {
+	for _, name := range []string{"", "local", "本机", "  本机  "} {
+		if !scheduling.IsLocalMachine(name) {
+			t.Fatalf("%q 应为本机别名", name)
+		}
+	}
+	if scheduling.IsLocalMachine("linux-01") {
+		t.Fatal("linux-01 不应被当成空 targets 下的本机别名")
+	}
 }

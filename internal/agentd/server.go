@@ -2415,6 +2415,14 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	facade := ledgerapi.New(st)
 	s.autoLedger = facade
 	s.scheduling = scheduling.New(facadeAsRegistry{f: facade})
+	s.scheduling.SetKnownMachines(func(name string) bool {
+		cfg := s.conf()
+		if cfg == nil {
+			return false
+		}
+		_, ok := cfg.Targets[name]
+		return ok
+	})
 	s.rooms = collab.New(facade)
 	s.rooms.SetCursorStore(cursor.New(filepath.Join(s.conf().DataDir, "room-cursors.json")))
 	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免

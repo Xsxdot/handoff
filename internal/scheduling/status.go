@@ -50,8 +50,8 @@ func (s CarrierStatus) Label() string {
 	}
 }
 
-// DefaultHomeDir 返回登记弹窗的默认 HOME 串：`~/.handoff/home/<载体名>`。
-// 名字空（含纯空白）返回空串，避免拼出无主目录。
+// DefaultHomeDir 返回隔离 HOME 的用户可见配方：`~/.handoff/home/<载体名>`。
+// 名字空（含纯空白）返回空串。B334 起登记弹窗不再预填它；空 HOME = 主 HOME。
 func DefaultHomeDir(name string) string {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -61,8 +61,11 @@ func DefaultHomeDir(name string) string {
 }
 
 // RunCommand 返回「运行」按钮要复制的那条命令。客户端不得再拼接。
-// 格式冻结为 `HOME=<home_dir> <cli>`，home_dir 用载体已存字符串（可含 ~）。
+// 有隔离 HOME 时为 `HOME=<home_dir> <cli>`；空 HOME 只输出 CLI，沿用该机主 HOME。
 func RunCommand(c Carrier) string {
+	if strings.TrimSpace(c.HomeDir) == "" {
+		return c.CLI
+	}
 	return "HOME=" + c.HomeDir + " " + c.CLI
 }
 

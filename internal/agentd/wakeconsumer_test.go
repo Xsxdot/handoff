@@ -231,6 +231,7 @@ func (r *fallbackConsumerRunner) Resume(keysclient.SessionRef, string) (keysclie
 func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
+	allowCarrierMachines(t, env.srv, "ftm")
 	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
@@ -286,6 +287,7 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	env.srv.SetupAutomation(env.ledger)
+	allowCarrierMachines(t, env.srv, "ftm")
 	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,

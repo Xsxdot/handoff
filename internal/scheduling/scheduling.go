@@ -15,6 +15,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
 	"strings"
 
@@ -161,11 +162,28 @@ var (
 // Service 是编制域的规则引擎本体。全部状态经 Registry 持久（agentd 重启
 // 不丢），内存里不留任何权威计数。
 type Service struct {
-	repo schedclient.Registry
+	repo          schedclient.Registry
+	knownMachines func(string) bool // nil：不拦远程名（编制单测）；生产注入 targets 键
 }
 
 // New 用组装点绑定的注册表端口构造服务。
 func New(repo schedclient.Registry) *Service { return &Service{repo: repo} }
+
+// SetKnownMachines 注入「这台机器现在能不能派到」的查询。生产绑
+// conf().Targets 的键；本机别名不走这张表。fn 为 nil 时只放行本机别名之外的
+// 任意名——单测不持 agentd 配置时用，生产组装点必须注入。
+func (s *Service) SetKnownMachines(fn func(string) bool) { s.knownMachines = fn }
+
+// IsLocalMachine 报告 carrier.machine 是否为本机别名。空串、local、本机、
+// 以及当前进程 hostname 都算本机；其余名字必须出现在 targets 里才能登记。
+func IsLocalMachine(machine string) bool {
+	name := strings.TrimSpace(machine)
+	if name == "" || name == "local" || name == "本机" {
+		return true
+	}
+	hostname, err := os.Hostname()
+	return err == nil && name == hostname
+}
 
 // PutCarrier 以 CAS 写载体定义（expect=0 新建）。新建时忽略输入状态并落
 // pending；更新时 HOME 变化会清掉旧错误并回到 pending，HOME 未变则保留旧
@@ -175,9 +193,15 @@ func (s *Service) PutCarrier(c Carrier, expect int) error {
 		statusLog().Error("载体登记校验失败", "name", c.Name, "expect", expect, "cause", "name/machine/cli 必填")
 		return fmt.Errorf("%w: 载体登记不完整：name/machine/cli 必填", ErrInvalid)
 	}
+	if strings.TrimSpace(string(c.Credential)) == "" {
+		c.Credential = CredentialStandalone
+	}
 	if c.Credential != CredentialStandalone && c.Credential != CredentialMainHomeSync {
 		statusLog().Error("载体登记校验失败", "name", c.Name, "expect", expect, "cause", "credential 来源非法")
 		return fmt.Errorf("%w: 载体 %s 的凭据来源只能是 standalone 或 main_home_sync", ErrInvalid, c.Name)
+	}
+	if err := s.checkKnownMachine(c.Name, c.Machine, expect); err != nil {
+		return err
 	}
 	homeChanged := false
 	if expect == 0 {
@@ -221,8 +245,24 @@ func (s *Service) PutCarrier(c Carrier, expect int) error {
 		return err
 	}
 	statusLog().Info("写入载体成功", "name", c.Name, "expect", expect, "version", version,
-		"home_changed", homeChanged, "status", c.Status)
+		"home_changed", homeChanged, "status", c.Status, "machine", c.Machine,
+		"credential", string(c.Credential), "home_empty", strings.TrimSpace(c.HomeDir) == "")
 	return nil
+}
+
+func (s *Service) checkKnownMachine(name, machine string, expect int) error {
+	if IsLocalMachine(machine) {
+		return nil
+	}
+	if s.knownMachines == nil {
+		return nil
+	}
+	key := strings.TrimSpace(machine)
+	if s.knownMachines(key) {
+		return nil
+	}
+	statusLog().Error("载体登记校验失败", "name", name, "machine", key, "expect", expect, "cause", "machine 不在 targets")
+	return fmt.Errorf("%w: 载体机器 %q 未在 targets 中定义", ErrInvalid, key)
 }
 
 // Carrier 读一个载体。

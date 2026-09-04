@@ -290,3 +290,38 @@ func TestPutValidationWrapsErrInvalid(t *testing.T) {
 		t.Fatalf("成员引用缺失应包 ErrNotFound，得 %v", memberMissing)
 	}
 }
+
+// TestPutCarrierDefaultsCredentialAndRequiresKnownMachine 锁 B334：空凭据落
+// standalone；注入 known-machines 后，本机别名与表内键可通过，未知机器包
+// ErrInvalid。未注入时（本文件其它用例）不拦远程名，避免单测绑 agentd 配置。
+func TestPutCarrierDefaultsCredentialAndRequiresKnownMachine(t *testing.T) {
+	svc, _ := newRowsFixture(t)
+	svc.SetKnownMachines(func(name string) bool { return name == "linux-01" })
+
+	if err := svc.PutCarrier(scheduling.Carrier{Name: "local-cli", Machine: "本机", CLI: "grok"}, 0); err != nil {
+		t.Fatalf("本机+空凭据应通过: %v", err)
+	}
+	got, err := svc.Carrier("local-cli")
+	if err != nil {
+		t.Fatalf("读本机载体: %v", err)
+	}
+	if got.Credential != scheduling.CredentialStandalone {
+		t.Fatalf("空凭据应落 standalone，得 %q", got.Credential)
+	}
+
+	if err := svc.PutCarrier(scheduling.Carrier{
+		Name: "runner", Machine: "linux-01", CLI: "opencode",
+		Credential: scheduling.CredentialStandalone,
+	}, 0); err != nil {
+		t.Fatalf("targets 内机器应通过: %v", err)
+	}
+
+	unknown := svc.PutCarrier(scheduling.Carrier{
+		Name: "ghost", Machine: "ghost-box", CLI: "opencode",
+		Credential: scheduling.CredentialStandalone,
+	}, 0)
+	if !errors.Is(unknown, scheduling.ErrInvalid) || !strings.Contains(unknown.Error(), "ghost-box") ||
+		!strings.Contains(unknown.Error(), "targets") {
+		t.Fatalf("未知机器应包 ErrInvalid 并点名机器与 targets，得 %v", unknown)
+	}
+}

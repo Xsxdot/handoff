@@ -59,6 +59,7 @@ func (r *queueTraceRunner) markDispatch() {
 
 func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	t.Helper()
+	allowCarrierMachines(t, env.srv, "ftm")
 	svc := env.srv.Scheduling()
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",

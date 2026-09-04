@@ -31,6 +31,27 @@ func newProbeHost() *Host {
 	})
 }
 
+func TestProbeHomeEmptyPathUsesMainHome(t *testing.T) {
+	mainHome := t.TempDir()
+	swapUserHomeDir(t, mainHome)
+	auth := filepath.Join(mainHome, ".local/share/opencode/auth.json")
+	if err := os.MkdirAll(filepath.Dir(auth), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(auth, []byte("token"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h := newProbeHost()
+	got, err := h.ProbeHome(context.Background(), ProbeRequest{Path: "", CLI: "opencode"})
+	if err != nil || got.Kind != ProbeLoggedIn {
+		t.Fatalf("空 path 应打到主 HOME 凭据: %+v/%v", got, err)
+	}
+	isolated := filepath.Join(mainHome, ".handoff", "home")
+	if _, err := os.Stat(isolated); !os.IsNotExist(err) {
+		t.Fatalf("空 path 不得创建隔离 HOME 根: %v", err)
+	}
+}
+
 func TestProbeHomeClassifiesFilesystemWithoutWriting(t *testing.T) {
 	mainHome := t.TempDir()
 	swapUserHomeDir(t, mainHome)

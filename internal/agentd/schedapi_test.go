@@ -39,8 +39,13 @@ func newSchedEnv(t *testing.T) *schedEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	env := newTestAgentdEnvWithCfg(t, &config.Config{Token: testToken},
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token: testToken,
+		Targets: map[string]config.Target{
+			"m1": {Addr: "127.0.0.1:1", Token: testToken},
+			"m":  {Addr: "127.0.0.1:1", Token: testToken},
+		},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetLedger(st)
 	env.srv.SetupAutomation(st)
 	return &schedEnv{testAgentdEnv: env, svc: env.srv.Scheduling()}
@@ -51,7 +56,19 @@ func newSchedEnv(t *testing.T) *schedEnv {
 func newSchedNoPTYEnv(t *testing.T) *schedEnv {
 	t.Helper()
 	env := newNoPTYLedgerEnv(t)
+	configPath := t.TempDir() + "/config.yaml"
+	if err := config.Save(configPath, env.srv.conf()); err != nil {
+		t.Fatalf("准备配置: %v", err)
+	}
+	env.srv.SetConfigPath(configPath)
 	env.srv.SetupAutomation(env.ledger)
+	if err := env.srv.swapConf(func(c *config.Config) error {
+		c.Targets["m1"] = config.Target{Addr: "127.0.0.1:1", Token: testToken}
+		c.Targets["m"] = config.Target{Addr: "127.0.0.1:1", Token: testToken}
+		return nil
+	}); err != nil {
+		t.Fatalf("测试 targets: %v", err)
+	}
 	return &schedEnv{testAgentdEnv: env.testAgentdEnv, svc: env.srv.Scheduling()}
 }
 
@@ -406,6 +423,29 @@ func TestCarrierPutMissingRequiredFieldsIs400(t *testing.T) {
 		if code != http.StatusBadRequest || !strings.Contains(rb, "登记校验未过") {
 			t.Fatalf("%s 应 400 且源自域校验，得 %d：%s", name, code, rb)
 		}
+	}
+}
+
+func TestCarrierPutUnknownMachineIs400(t *testing.T) {
+	env := newSchedEnv(t)
+	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/ghost?expect=0",
+		`{"machine":"ghost-box","cli":"opencode","credential":"standalone"}`)
+	if code != http.StatusBadRequest || !strings.Contains(rb, "登记校验未过") ||
+		!strings.Contains(rb, "ghost-box") || !strings.Contains(rb, "targets") {
+		t.Fatalf("未知机器应 400 点名机器与 targets，得 %d：%s", code, rb)
+	}
+}
+
+func TestCarrierPutEmptyCredentialDefaultsStandalone(t *testing.T) {
+	env := newSchedEnv(t)
+	code, rb := schedReq(t, env, http.MethodPut, "/api/squads/carriers/plain?expect=0",
+		`{"machine":"本机","cli":"grok"}`)
+	if code != http.StatusOK {
+		t.Fatalf("空凭据本机载体应 200，得 %d：%s", code, rb)
+	}
+	_, body := schedReq(t, env, http.MethodGet, "/api/squads", "")
+	if !strings.Contains(body, `"name":"plain"`) || !strings.Contains(body, `"credential":"standalone"`) {
+		t.Fatalf("空凭据应落 standalone：%s", body)
 	}
 }
 

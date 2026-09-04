@@ -158,9 +158,23 @@ func (h *Host) inspectHome(ctx context.Context, req ProbeRequest) (homeProbeStat
 	if err := ctx.Err(); err != nil {
 		return homeProbeState{}, fmt.Errorf("hostapi: 探测 HOME 被取消: %w", err)
 	}
-	path, err := ExpandHomePath(req.Path)
-	if err != nil {
-		return homeProbeState{}, err
+	path := strings.TrimSpace(req.Path)
+	if path == "" {
+		home, err := userHomeDir()
+		if err != nil {
+			return homeProbeState{}, fmt.Errorf("hostapi: 空 HOME 回落到主 HOME 失败: %w", err)
+		}
+		if home == "" {
+			return homeProbeState{}, fmt.Errorf("hostapi: 空 HOME 回落到主 HOME 失败: 主 HOME 为空")
+		}
+		log().Info("空 HOME 按主 HOME 探测", "cli", req.CLI)
+		path = filepath.Clean(home)
+	} else {
+		expanded, err := ExpandHomePath(req.Path)
+		if err != nil {
+			return homeProbeState{}, err
+		}
+		path = expanded
 	}
 	info, err := os.Stat(path)
 	if err != nil {
