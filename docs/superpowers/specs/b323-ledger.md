@@ -33,3 +33,13 @@
 - 2026-09-04 10:18：计划决定 `Host.RunTurn` 的展开失败通过公开 RunTurn 两支测试锁住，`buildEnv` 返回展开结果给 driver 日志；attach 采用服务端 shell word，带空格路径单引号并用 `sh -n` 经 HTTP 缝校验，`SessionSpec`/`SessionRef`/HTTP 字段形状不变。
 - 2026-09-04 10:18：计划自审通过：spec 故事 1→Task 1/3，故事 2→Task 3/keystone 保持 rebuild，故事 3→Task 2/3，故事 4→Task 1/3，故事 5→Task 1/3；占位符扫描无 `TBD`/`TODO`/“同 Task”；web 依赖缺失的两条基线命令已按原始报错记为未验证。
 - 2026-09-04 10:23：提交计划与台账命令 `git commit -m "docs(b323): 编写协调者隔离 HOME 实现计划"` 原始输出：`[cards/B323-charter 1d26f29e] docs(b323): 编写协调者隔离 HOME 实现计划`；`2 files changed, 1047 insertions(+)`；`create mode 100644 docs/superpowers/plans/b323-plan.md`。
+- 2026-09-04 12:38：Task 1 实现完成。`ExpandHomePath` 导出并 fail-closed，`buildEnv` 返回展开绝对路径并用于 driver 日志。命令 `go test ./internal/hostapi -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/hostapi  0.645s`，退出码 0。
+- 2026-09-04 12:39：Task 2 实现完成。keystone 增加进程内 `SessionRefResolver`，`Locate` 在 locator 前调用 resolver 补齐并展开 HomeDir。命令 `go test ./internal/keystone -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/keystone  0.103s`，退出码 0。
+- 2026-09-04 12:45：Task 3 实现完成。agentd 新增 `coordinator_home.go` 落实全套白名单供给（config/AGENTS/skills/缺失凭据）、冷 Locate 已上线载体解析（不走 LaunchAdmit）；runner Launch/Resume 接入供给，attachLocator 服务端生成绝对 HOME shell word。命令 `go test ./internal/agentd -run 'Test(Coord|Wake|ResumeTurnRequest|CoordinatorHome)' -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/agentd  5.687s`，退出码 0；`go test ./internal/agentd -run 'Test(Coord|Wake|ResumeTurnRequest)' -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/agentd  3.522s`，退出码 0。
+- 2026-09-04 12:46：Task 4 实现完成。proto fixture 更新命令 `go test ./internal/proto/ -run TestContractFixtures -update` 原始结果：`ok   github.com/Xsxdot/handoff/internal/proto  0.004s`，退出码 0；`web/src/api/testdata/CoordinatorStatus.json` 刷新后 command 为 `HOME=/repo/coordinator opencode --session sess-coord`；TS fetch/contract 测试断言强化为精确 command。命令 `go test ./internal/proto -run TestContractFixtures -count=1` 原始结果：`ok   github.com/Xsxdot/handoff/internal/proto  0.006s`，退出码 0。
+- 2026-09-04 12:46：web 前端命令 `npm test -- --run src/api/scheduling.fetch.test.ts src/api/contract.test.ts`（cwd `web`）原始失败：`sh: 1: vitest: not found`，退出码 127，记为「未验证」。
+- 2026-09-04 12:46：web 前端命令 `npm run typecheck`（cwd `web`）原始失败：`sh: 1: tsc: not found`，退出码 127，记为「未验证」。
+- 2026-09-04 12:47：收口 `gofmt -w` 完成，`gofmt -l` 触及包无输出，退出码 0。
+- 2026-09-04 12:50：触及包全量回归 `go test ./internal/hostapi ./internal/keystone ./internal/agentd ./internal/proto ./internal/config ./internal/toolchain ./internal/skill -count=1` 原始结果：七包全 `ok`，退出码 0。
+- 2026-09-04 12:50：构建命令 `go build ./...` 原始结果：标准输出为空，退出码 0。
+- 2026-09-04 12:50：合 main 真机门（本机 `card coordinate`）按纪律标「由协调者执行，本回合不跑」。

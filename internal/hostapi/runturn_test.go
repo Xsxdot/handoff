@@ -9,6 +9,7 @@ package hostapi
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -246,8 +247,15 @@ func TestRunTurnEmptyPromptRejected(t *testing.T) {
 func TestBuildEnvExpandsTildeHomeDir(t *testing.T) {
 	fakeHome := t.TempDir()
 	swapUserHomeDir(t, fakeHome)
-	env := buildEnv(TurnRequest{HomeDir: "~/.handoff/home/c1"})
-	want := "HOME=" + filepath.Join(fakeHome, ".handoff/home/c1")
+	env, expandedHome, err := buildEnv(TurnRequest{HomeDir: "~/.handoff/home/c1"})
+	if err != nil {
+		t.Fatalf("buildEnv: %v", err)
+	}
+	wantHome := filepath.Join(fakeHome, ".handoff/home/c1")
+	if expandedHome != wantHome {
+		t.Fatalf("expandedHome = %q, want %q", expandedHome, wantHome)
+	}
+	want := "HOME=" + wantHome
 	found := false
 	for _, kv := range env {
 		if kv == "HOME=~/.handoff/home/c1" {
@@ -259,5 +267,74 @@ func TestBuildEnvExpandsTildeHomeDir(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("展开后的 HOME 缺席，want %q, got %v", want, env)
+	}
+}
+
+func TestRunTurnExpandsTildeHomeDirAtSeam(t *testing.T) {
+	installFakeCLI(t)
+	capture := withArgvCapture(t)
+	fakeHome := t.TempDir()
+	swapUserHomeDir(t, fakeHome)
+	workdir := t.TempDir()
+
+	_, err := New().RunTurn(context.Background(), TurnRequest{
+		CLI: "opencode", HomeDir: "~/handoff-home-x", Workdir: workdir, Prompt: "x",
+	})
+	if err != nil {
+		t.Fatalf("RunTurn: %v", err)
+	}
+	lines := readLines(t, capture)
+	want := "env:HOME=" + filepath.Join(fakeHome, "handoff-home-x")
+	found := false
+	for _, line := range lines {
+		if line == "env:HOME=~/handoff-home-x" {
+			t.Fatalf("字面 HOME 进入子进程: %v", lines)
+		}
+		if line == want {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("缺展开后的 HOME=%q: %v", want, lines)
+	}
+	entries, err := os.ReadDir(workdir)
+	if err != nil {
+		t.Fatalf("读 workdir: %v", err)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "~" {
+			t.Fatalf("workdir 下出现字面 ~ 目录")
+		}
+	}
+}
+
+func TestRunTurnHomeExpansionFailureDoesNotLaunch(t *testing.T) {
+	installFakeCLI(t)
+	capture := withArgvCapture(t)
+	previous := userHomeDir
+	userHomeDir = func() (string, error) { return "", errors.New("home unavailable") }
+	t.Cleanup(func() { userHomeDir = previous })
+	workdir := t.TempDir()
+
+	_, err := New().RunTurn(context.Background(), TurnRequest{
+		CLI: "opencode", HomeDir: "~/handoff-home-x", Workdir: workdir, Prompt: "x",
+	})
+	if err == nil || !strings.Contains(err.Error(), "展开目标 HOME") ||
+		!strings.Contains(err.Error(), "~/handoff-home-x") {
+		t.Fatalf("展开失败必须带原串，err=%v", err)
+	}
+	if raw, readErr := os.ReadFile(capture); readErr == nil && len(raw) != 0 {
+		t.Fatalf("展开失败后不应启动 fake CLI，证据=%q", raw)
+	} else if readErr != nil && !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("读 fake CLI 证据: %v", readErr)
+	}
+	entries, readErr := os.ReadDir(workdir)
+	if readErr != nil {
+		t.Fatalf("读 workdir: %v", readErr)
+	}
+	for _, entry := range entries {
+		if entry.Name() == "~" {
+			t.Fatalf("失败路径仍创建了字面 ~ 目录")
+		}
 	}
 }

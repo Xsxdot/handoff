@@ -180,3 +180,62 @@ func TestLaunchForCardRejectsNonCoordinateSource(t *testing.T) {
 		t.Fatalf("退役 source 不得调用 Runner，Launch=%d", len(rec.launches))
 	}
 }
+
+type resolveRefFunc func(string, keysclient.SessionRef) (keysclient.SessionRef, error)
+
+func (f resolveRefFunc) ResolveSessionRef(card string, ref keysclient.SessionRef) (keysclient.SessionRef, error) {
+	return f(card, ref)
+}
+
+type recordingLocator struct{ Ref keysclient.SessionRef }
+
+func (l *recordingLocator) Locate(ref keysclient.SessionRef, workdir string) (keysclient.AttachInfo, error) {
+	l.Ref = ref
+	return keysclient.AttachInfo{
+		Dir:     workdir,
+		Command: "HOME=" + ref.HomeDir + " " + ref.CLI + " --session " + ref.SessionID,
+	}, nil
+}
+
+func TestLocateHotRefResolvesHomeBeforeLocator(t *testing.T) {
+	rec := &specRecorder{}
+	loc := &recordingLocator{}
+	svc := New(rec, nil, stubLedgerView{}, loc)
+	svc.SetSessionRefResolver(resolveRefFunc(func(card string, ref keysclient.SessionRef) (keysclient.SessionRef, error) {
+		if card != "B1" || ref.HomeDir != "~/hot" {
+			t.Fatalf("hot ref 未原样交给 resolver: card=%q ref=%+v", card, ref)
+		}
+		ref.HomeDir = "/abs/hot"
+		return ref, nil
+	}))
+	if _, err := svc.LaunchForCard(context.Background(), "B1", "coordinate",
+		keysclient.SessionSpec{CLI: "opencode", HomeDir: "~/hot", Workdir: "/w"}); err != nil {
+		t.Fatalf("seed LaunchForCard: %v", err)
+	}
+	got, err := svc.Locate("B1", "/w")
+	if err != nil {
+		t.Fatalf("Locate hot: %v", err)
+	}
+	if got.Command != "HOME=/abs/hot opencode --session sess-new" || loc.Ref.HomeDir != "/abs/hot" {
+		t.Fatalf("hot locator 未消费展开 HomeDir: got=%+v ref=%+v", got, loc.Ref)
+	}
+}
+
+func TestLocateColdRefResolvesRegisteredHomeBeforeLocator(t *testing.T) {
+	loc := &recordingLocator{}
+	svc := New(&specRecorder{}, nil, stubLedgerView{}, loc)
+	svc.SetSessionRefResolver(resolveRefFunc(func(card string, ref keysclient.SessionRef) (keysclient.SessionRef, error) {
+		if card != "B1" || ref.HomeDir != "" || ref.SessionID != "sess-new" {
+			t.Fatalf("cold ref 形状错误: card=%q ref=%+v", card, ref)
+		}
+		ref.HomeDir = "/abs/cold"
+		return ref, nil
+	}))
+	got, err := svc.Locate("B1", "/w")
+	if err != nil {
+		t.Fatalf("Locate cold: %v", err)
+	}
+	if got.Command != "HOME=/abs/cold opencode --session sess-new" || loc.Ref.HomeDir != "/abs/cold" {
+		t.Fatalf("cold locator 未消费登记 HomeDir: got=%+v ref=%+v", got, loc.Ref)
+	}
+}

@@ -176,7 +176,7 @@ func TestContractFixtures(t *testing.T) {
 		{"CoordinatorStatus", CoordinatorStatus{
 			Bound: true, AttachActive: false,
 			Attach: &CoordinatorAttachInfo{
-				Machine: "", Dir: "/repo/handoff", Command: "opencode --session sess-coord",
+				Machine: "", Dir: "/repo/handoff", Command: "HOME=/repo/coordinator opencode --session sess-coord",
 			},
 		}},
 		{"CoordinatorAttachReleaseResp", CoordinatorAttachReleaseResp{OK: true}},

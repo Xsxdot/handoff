@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"sort"
 	"sync"
 
@@ -48,15 +49,24 @@ type RoundResult struct {
 	Output    string // 回合输出原文
 }
 
+func log() *slog.Logger { return slog.Default().With("mod", "keystone") }
+
+// SessionRefResolver 是进程内端口：在 SessionRef 交给 TerminalLocator 之前
+// 补齐并展开 HomeDir。这是进程内端口，非持久化与 wire 字段。
+type SessionRefResolver interface {
+	ResolveSessionRef(card string, ref keysclient.SessionRef) (keysclient.SessionRef, error)
+}
+
 // Service 是 keystone 域的编排本体。
 type Service struct {
-	mu       sync.Mutex
-	takeover map[string]bool // 卡号 → 人工接管中（attach 与自动唤醒互斥）
-	runner   keysclient.Runner
-	locator  keysclient.TerminalLocator
-	narrator keysclient.Narrator
-	ledger   keysclient.LedgerView
-	sessions map[string]keysclient.SessionRef // 卡号 → 绑定的协调者会话引用
+	mu          sync.Mutex
+	takeover    map[string]bool // 卡号 → 人工接管中（attach 与自动唤醒互斥）
+	runner      keysclient.Runner
+	locator     keysclient.TerminalLocator
+	narrator    keysclient.Narrator
+	ledger      keysclient.LedgerView
+	sessions    map[string]keysclient.SessionRef // 卡号 → 绑定的协调者会话引用
+	refResolver SessionRefResolver
 }
 
 // New 组装四条出站端口。locator 允许 nil（attach 入口未装配时定位报错而非崩溃）。
@@ -191,10 +201,19 @@ func (s *Service) SetAttach(card string, active bool) {
 	s.takeover[card] = active
 }
 
+// SetSessionRefResolver 设置协调者会话引用解析器。
+// 必须在 HTTP handler 启动前调用；这是进程内端口，非持久化/wire 字段。
+func (s *Service) SetSessionRefResolver(resolver SessionRefResolver) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.refResolver = resolver
+}
+
 // Locate 产出 attach 定位信息（机器 → 目录 → resume 命令）。
 func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error) {
 	s.mu.Lock()
 	ref, ok := s.sessions[card]
+	resolver := s.refResolver
 	s.mu.Unlock()
 	if !ok {
 		if s.ledger == nil {
@@ -210,10 +229,27 @@ func (s *Service) Locate(card, workdir string) (keysclient.AttachInfo, error) {
 		}
 		ref = keysclient.SessionRef{CLI: cli, SessionID: sessionID, Workdir: workdir}
 	}
+	if resolver != nil {
+		resolved, err := resolver.ResolveSessionRef(card, ref)
+		if err != nil {
+			log().Error("解析协调者 SessionRef 失败", "card", card, "hot", ok,
+				"has_session", ref.SessionID != "", "has_home", ref.HomeDir != "", "cause", err)
+			return keysclient.AttachInfo{}, err
+		}
+		ref = resolved
+	}
 	if s.locator == nil {
 		return keysclient.AttachInfo{}, errors.New("keystone: attach 定位未装配")
 	}
-	return s.locator.Locate(ref, workdir)
+	log().Info("出站 locator 开始", "card", card, "hot", ok, "cli", ref.CLI,
+		"has_home", ref.HomeDir != "", "workdir", workdir)
+	info, err := s.locator.Locate(ref, workdir)
+	if err != nil {
+		log().Error("出站 locator 失败", "card", card, "cause", err)
+		return keysclient.AttachInfo{}, err
+	}
+	log().Info("出站 locator 成功", "card", card, "machine", info.Machine, "dir", info.Dir)
+	return info, nil
 }
 
 // Forget 清除进程内的旧会话引用。账本是席位真相；bind/self 换绑成功或读到
