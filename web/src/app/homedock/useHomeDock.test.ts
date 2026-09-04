@@ -7,6 +7,7 @@ describe('useHomeDock', () => {
     const { result } = renderHook(() => useHomeDock())
     act(() => result.current.newTerminal())
     expect(result.current.tabs).toHaveLength(1)
+    expect(result.current.tabs[0].spawn).toBe(true)
     expect(result.current.activeId).toBe(result.current.tabs[0].id)
     expect(result.current.windowOpen).toBe(true)
   })

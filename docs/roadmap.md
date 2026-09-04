@@ -25,6 +25,11 @@
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
 
+## 来自 B322 spec（2026-09-04）
+
+- **无引用 PTY 的空闲回收**：修复后 workspace 活会话不再被收编成 tab，ptyhost 里可能留下没人点开的 shell。自动杀掉会误伤后台任务，需要单独的产品闸（空闲多久、是否提示）。来源：`docs/superpowers/specs/b322.md` Out of Scope。
+- **非当前组 TerminalTab 懒挂载**：WorkbenchPage 会挂载所有含终端的组，恢复时同时打满 xterm。B322 修的是泵本身，不改 B270 keep-alive。来源：同上。
+
 ## 来自 C1.11 spec（2026-08-25，声明迁移欠账）
 
 - **d_protocol invariant 欠账**：补回“任务状态只能沿 `transitTable` 登记的迁移边变化，completed 无后继而 failed 可重试回 running。”，守护测试为 `TestCanTransit`。该承诺从 `d_coordination_task` 迁出，本期不伪挂到 `d_orchestration`。

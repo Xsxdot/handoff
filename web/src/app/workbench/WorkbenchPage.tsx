@@ -8,7 +8,7 @@ import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
 import { TaskPickerDialog } from './TaskPickerDialog'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME, dropZoneAt, readDragBase, readDragTab, type DropZone } from './paneDrop'
-import { MAX_PANES_PER_COLUMN, MIN_PANE_PX, nextTerminalSeq, tabTitle, type BaseDir, type PaneTarget, type Tab, type TabContent } from './tabs'
+import { MAX_PANES_PER_COLUMN, MIN_PANE_PX, nextTerminalSeq, spawnTerminalContent, tabTitle, type BaseDir, type PaneTarget, type Tab, type TabContent } from './tabs'
 import type { Launcher, ProjectTreeResp, Task } from '../../api/types'
 import type { WorkbenchApi } from './useWorkbench'
 import { createUntitledFile } from './newFile'
@@ -81,7 +81,7 @@ export function WorkbenchPage({
 
   const pickForTab = (groupId: string, tab: Tab, kind: PickKind) => {
     if (kind === 'terminal') {
-      if (!terminalUnavailable) api.setContent(groupId, tab.id, { kind: 'terminal', seq: nextTerminalSeq(wb) })
+      if (!terminalUnavailable) api.setContent(groupId, tab.id, spawnTerminalContent(nextTerminalSeq(wb)))
     } else if (kind === 'tui') {
       setPicking({ groupId, tabId: tab.id })
     } else if (base !== null) {
@@ -109,7 +109,7 @@ export function WorkbenchPage({
   }
 
   const openLauncher = (groupId: string, name: string) => {
-    if (base !== null && !terminalUnavailable) api.open({ kind: 'terminal', seq: nextTerminalSeq(wb), launcher: name }, base, groupId)
+    if (base !== null && !terminalUnavailable) api.open(spawnTerminalContent(nextTerminalSeq(wb), { launcher: name }), base, groupId)
   }
 
   const closeTab = (groupId: string, tab: Tab) => {
@@ -198,7 +198,7 @@ export function WorkbenchPage({
     }
     const content: TabContent = types.includes(DRAG_TASK_MIME)
       ? { kind: 'tui', taskId }
-      : { kind: 'terminal', seq: nextTerminalSeq(wb) }
+      : spawnTerminalContent(nextTerminalSeq(wb))
     api.place({ kind: 'new', base: draggedBase, content }, target)
     console.debug('workbench.drop.new', {
       ...dropContext(draggedBase), groupId, column, row, zone: target.zone, baseKey: draggedBase.key,
@@ -229,7 +229,7 @@ export function WorkbenchPage({
     }
     const active = wb.activeGroupId === groupId && activeGroup.focus[0] === column && activeGroup.focus[1] === row
     if (tab.content.kind === 'blank') {
-      return <BlankTab base={tab.base} onPick={(kind) => pickForTab(groupId, tab, kind)} launchers={launcherItems} onPickLauncher={(name) => api.setContent(groupId, tab.id, { kind: 'terminal', seq: nextTerminalSeq(wb), launcher: name })} terminalUnavailable={terminalUnavailable} />
+      return <BlankTab base={tab.base} onPick={(kind) => pickForTab(groupId, tab, kind)} launchers={launcherItems} onPickLauncher={(name) => api.setContent(groupId, tab.id, spawnTerminalContent(nextTerminalSeq(wb), { launcher: name }))} terminalUnavailable={terminalUnavailable} />
     }
     return renderContent(tab.content, tab.base, groupId, tab.id, active)
   }

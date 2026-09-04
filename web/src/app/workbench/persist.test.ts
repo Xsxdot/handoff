@@ -46,6 +46,20 @@ describe('encodeWorkbench / decodeWorkbench', () => {
     expect(decodeWorkbench(raw)).toEqual(wbWithPersistenceFieldsRemoved(wb))
   })
 
+  it('终端 spawn 是运行时字段，不进入 raw 或 decode（B322）', () => {
+    const wb: Workbench = {
+      activeGroupId: 'g1',
+      groups: [{
+        id: 'g1', name: '组 1', autoName: true,
+        columns: [{ panes: [{ id: 't1', base: a, content: { kind: 'terminal', seq: 1, spawn: true } }] }],
+        sizes: [1], focus: [0, 0],
+      }],
+    }
+    const out = decodeWorkbench(encodeWorkbench(wb))!
+    expect(out.groups[0].columns[0].panes[0]!.content).toEqual({ kind: 'terminal', seq: 1 })
+    expect(out.groups[0].columns[0].panes[0]!.content).not.toHaveProperty('spawn')
+  })
+
   it('文件 draft/baseSha 与终端 incompatible 不进入 raw 或 decode', () => {
     const out = decodeWorkbench(encodeWorkbench(sample()))!
     const panes = out.groups[0].columns.flatMap((column) => column.panes).filter(Boolean)

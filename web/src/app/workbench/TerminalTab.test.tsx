@@ -105,13 +105,13 @@ beforeEach(() => {
 
 describe('TerminalTab', () => {
   it('终端只提供 pty host，不重复渲染基准路径标题', () => {
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     expect(screen.getByTestId('pty-host')).toBeInTheDocument()
     expect(screen.queryByText(WS.path)).toBeNull()
   })
 
   it('没有会话 id 时先建会话，参数取自基准目录与当前尺寸', async () => {
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
     expect(createPtySession).toHaveBeenCalledWith(
       { base_kind: 'workspace', base_path: '/home/dev/handoff', cols: 100, rows: 30 },
@@ -123,8 +123,22 @@ describe('TerminalTab', () => {
     }))
   })
 
+  it('没有 sessionId 且没有 spawn 时不建会话，给出重开入口（B322）', async () => {
+    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    expect(await screen.findByRole('button', { name: '重开一个终端' })).toBeInTheDocument()
+    expect(createPtySession).not.toHaveBeenCalled()
+  })
+
+  it('无 id 的死 tab 点重开才建会话（B322）', async () => {
+    const onSession = vi.fn()
+    render(<TerminalTab base={WS} seq={1} onSession={onSession} />)
+    fireEvent.click(await screen.findByRole('button', { name: '重开一个终端' }))
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    expect(onSession).toHaveBeenCalledWith('new-1')
+  })
+
   it('启动项字段写入建会话请求，普通终端不增加字段', async () => {
-    render(<TerminalTab base={WS} seq={1} envFile="proxy.env" initCommand="echo hello" onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn envFile="proxy.env" initCommand="echo hello" onSession={vi.fn()} />)
     await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
     expect(createPtySession).toHaveBeenCalledWith(
       {
@@ -136,14 +150,14 @@ describe('TerminalTab', () => {
   })
 
   it('home 基准不把 "~" 发给后端——那不是一个服务端认识的路径', async () => {
-    render(<TerminalTab base={HOME} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={HOME} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
     expect(createPtySession.mock.calls[0][0]).toMatchObject({ base_kind: 'home', base_path: '' })
   })
 
   it('建成后把会话 id 回报给上层，供 tab 记住', async () => {
     const onSession = vi.fn()
-    render(<TerminalTab base={WS} seq={1} onSession={onSession} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={onSession} />)
     await waitFor(() => expect(onSession).toHaveBeenCalledWith('new-1'))
   })
 
@@ -233,7 +247,7 @@ describe('TerminalTab', () => {
 
   it('建会话失败时说实话，不是白屏', async () => {
     createPtySession.mockRejectedValue(new Error('该 agentd 所在平台不支持 PTY 终端'))
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     expect(await screen.findByText(/不支持 PTY 终端/)).toBeInTheDocument()
   })
 
@@ -264,7 +278,7 @@ describe('TerminalTab', () => {
   it('建会话的过程中被卸载：把这个没人知道的会话删掉，不留孤儿 shell', async () => {
     let resolveCreate!: (v: unknown) => void
     createPtySession.mockReturnValue(new Promise((r) => { resolveCreate = r }))
-    const { unmount } = render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    const { unmount } = render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(createPtySession).toHaveBeenCalled())
     unmount()
     resolveCreate({ id: 'orphan-1', base_path: WS.path })
@@ -616,14 +630,14 @@ describe('TerminalTab', () => {
   })
 
   it('挂载即注册 52 号 OSC handler（B300）', async () => {
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     expect(termInstance.parser.registerOscHandler).toHaveBeenCalledWith(52, expect.any(Function))
     expect(osc52Handler).toBeTypeOf('function')
   })
 
   it('活流 + 激活 + 合法载荷 → 写本机剪贴板（B300）', async () => {
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     const opts = connectPty.mock.calls[0][0]
     opts.onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
@@ -642,7 +656,7 @@ describe('TerminalTab', () => {
     writeText.mockRejectedValueOnce(new Error('NotAllowedError'))
 
     try {
-      render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+      render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
       await waitFor(() => expect(connectPty).toHaveBeenCalled())
       connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
 
@@ -658,7 +672,7 @@ describe('TerminalTab', () => {
   })
 
   it('积压重放期间不写、回放结束恢复写（B300 重放门）', async () => {
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     const opts = connectPty.mock.calls[0][0]
     opts.onAttached({ since: 0, truncated: false, backlog_bytes: 10 })
@@ -672,7 +686,7 @@ describe('TerminalTab', () => {
   })
 
   it('后台 tab 的 keep-alive 解析不写剪贴板（B300 active 门）', async () => {
-    render(<TerminalTab base={WS} seq={1} active={false} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn active={false} onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
     osc52Handler!('c;aGVsbG8=')
@@ -680,7 +694,7 @@ describe('TerminalTab', () => {
   })
 
   it('读查询与清剪贴板请求都不写（B300 载荷门）', async () => {
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
     osc52Handler!('c;?')
@@ -690,7 +704,7 @@ describe('TerminalTab', () => {
   })
 
   it('写入失败给出可见提示（B300 静默失败族）', async () => {
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
     writeText.mockRejectedValueOnce(new Error('denied'))
@@ -704,7 +718,7 @@ describe('TerminalTab', () => {
   it('navigator.clipboard 缺席时不抛异常、给出失败提示（非安全上下文）', async () => {
     Object.defineProperty(navigator, 'clipboard', { value: undefined, configurable: true })
     try {
-      render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+      render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
       await waitFor(() => expect(connectPty).toHaveBeenCalled())
       connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
       expect(() => osc52Handler!('c;aGVsbG8=')).not.toThrow()
@@ -717,7 +731,7 @@ describe('TerminalTab', () => {
   })
 
   it('写入成功不出提示（成功提示是噪声，TUI 自带反馈）', async () => {
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
     connectPty.mock.calls[0][0].onAttached({ since: 0, truncated: false, backlog_bytes: 0 })
     osc52Handler!('c;aGVsbG8=')
@@ -823,7 +837,7 @@ describe('TerminalTab 建连时重申尺寸', () => {
     const resize = vi.fn()
     connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize })
 
-    render(<TerminalTab base={WS} seq={1} onSession={vi.fn()} />)
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalledTimes(1))
     attachOf()({ since: 0, truncated: false })
     expect(resize).toHaveBeenCalledWith(termInstance.cols, termInstance.rows)

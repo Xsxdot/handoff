@@ -86,7 +86,7 @@ describe('buildRestore', () => {
     expect(compatible.workbench.groups[0].columns[0].panes[0]!.content).toMatchObject({ sessionId: 'live', incompatible: true })
   })
 
-  it('恢复孤儿不填现有空列，每个工作区 PTY 独立成组', () => {
+  it('workspace 活孤儿不再收编成新组——B322 泵', () => {
     const layout: Workbench = {
       activeGroupId: 'g1',
       groups: [{
@@ -102,12 +102,9 @@ describe('buildRestore', () => {
       state: state({ bases: [{ base_key: '__global_workbench__', payload: encodeWorkbench(layout), updated_at: 1 }] }),
       sessions: [session('LIVE'), session('S2', { base_path: '/repo/b' }), session('S3', { base_path: '/repo/c' })], ...VIEW,
     })
-    expect(r.adopted).toBe(2)
-    expect(r.workbench.groups).toHaveLength(3)
-    expect(r.workbench.groups[0].columns).toHaveLength(1)
-    expect(r.workbench.groups[1].columns[0].panes[0]?.content).toMatchObject({ sessionId: 'S2' })
-    expect(r.workbench.groups[2].columns[0].panes[0]?.content).toMatchObject({ sessionId: 'S3' })
-    expect(r.workbench.groups.every((group) => group.columns.every((column) => column.panes.some(Boolean)))).toBe(true)
+    expect(r.adopted).toBe(0)
+    expect(r.workbench.groups).toHaveLength(1)
+    expect(r.workbench.groups[0].columns[0].panes[0]?.content).toMatchObject({ sessionId: 'LIVE' })
   })
 
   it('home session 继续走 dock，没 dock 现场进入 dockOrphans', () => {

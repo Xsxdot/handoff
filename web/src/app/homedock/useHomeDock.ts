@@ -22,6 +22,7 @@ export interface HomeTab {
   kind: 'terminal' | 'file'
   seq: number // 第几个浮窗 tab，用于终端标题 'bash · home N'
   sessionId?: string // 服务端会话 id；建成之前是 undefined
+  spawn?: boolean // 用户点 + 新建；恢复剥掉的 tab 不带这个字段，TerminalTab 不得静默建会话
   incompatible?: boolean // 服务端仍活着但协议不兼容，终端只显示重开出口
   machine: string // '' = 本机
   rel?: string // file tab 在 scratch 根下的相对路径
@@ -141,7 +142,7 @@ export function useHomeDock(): HomeDockApi {
 
   const newTerminal = useCallback((machine?: string) => {
     const id = `h${++tabIdCounter.current}`
-    const tab: HomeTab = { id, kind: 'terminal', seq: ++seqCounter.current, machine: machine ?? '' }
+    const tab: HomeTab = { id, kind: 'terminal', seq: ++seqCounter.current, machine: machine ?? '', spawn: true }
     setTabs((prev) => [...prev, tab])
     setActiveId(id)
     openWindow()

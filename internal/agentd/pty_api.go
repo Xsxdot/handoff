@@ -208,6 +208,14 @@ func (s *Server) ptySessionsAll(r *http.Request, local []proto.PtySession) proto
 		Machines: []proto.MachineStatus{{Name: "", Ok: true, FetchedAt: time.Now().UTC()}},
 	}
 	names := s.pool.Names()
+	remote := make([]string, 0, len(names))
+	for _, name := range names {
+		if s.IsSelfTarget(name) {
+			s.log.Info("终端会话扇出：跳过本机回环 target", "machine", name)
+			continue
+		}
+		remote = append(remote, name)
+	}
 
 	ctx, cancel := context.WithTimeout(r.Context(), ptyFanoutBudget)
 	defer cancel()
@@ -216,9 +224,9 @@ func (s *Server) ptySessionsAll(r *http.Request, local []proto.PtySession) proto
 		status proto.MachineStatus
 		resp   *proto.PtySessionsResp
 	}
-	results := make([]result, len(names))
+	results := make([]result, len(remote))
 	var wg sync.WaitGroup
-	for i, name := range names {
+	for i, name := range remote {
 		wg.Add(1)
 		go func(i int, name string) {
 			defer wg.Done()

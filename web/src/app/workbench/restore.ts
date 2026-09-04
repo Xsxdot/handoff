@@ -17,7 +17,7 @@ import {
   markIncompatibleSessions,
   pruneDeadSessions,
 } from './persist'
-import { appendRestoredTab, EMPTY_WORKBENCH, nextTerminalSeq, type BaseDir, type TabContent, type Workbench } from './tabs'
+import { EMPTY_WORKBENCH, type BaseDir, type Workbench } from './tabs'
 import { HOME_BASE } from './useWorkbench'
 
 export interface RestoreInput {
@@ -81,11 +81,6 @@ function usedSessionIds(wb: Workbench, dock: DockSnapshot | null): Set<string> {
   }
   for (const tab of dock?.tabs ?? []) if (tab.sessionId !== undefined) ids.add(tab.sessionId)
   return ids
-}
-
-function orphanContent(session: PtySession, seq: number): TabContent {
-  const content: TabContent = { kind: 'terminal', seq, sessionId: session.id }
-  return session.incompatible ? { ...content, incompatible: true } : content
 }
 
 // machineOkSet 把扇出应答折成「本次答上来了」的机器名集合——B283 方案3 两处 prune 的门控表。
@@ -183,23 +178,17 @@ export function buildRestore(input: RestoreInput): RestoreResult {
   let dockSeq = Math.max(0, ...(dock?.tabs ?? []).map((tab) => tab.seq))
   for (const session of input.sessions) {
     if (!live.has(session.id) || used.has(session.id)) continue
-    // B283 方案1：悬浮窗是本机面。外来机器的 home 会话归它自己机器的悬浮窗管，不收编
-    // ——跨机收编正是 B283「tab 只增不减」的放大器。中央区（workspace）会话的
-    // 收编语义不变（2026-08-20 状态同步 spec 的既有决定）。baseOfSession 的
-    // home@machine 分类分支保留不动：它分类的是 wire 事实，将来「显式远程 home
-    // 入口」（roadmap）直接复用。
-    if (session.base_kind === 'home' && session.machine !== '') continue
+    // B322：只收本机 home。workspace 活孤儿收成新组是「打开一次多一组」的泵
+    // ——剥 id 后 TerminalTab 再建会话，下一轮这些会话又被收编。B283 已经挡住
+    // 外来 home；本期连 workspace 收编一起停。无 tab 的 workspace 会话留在
+    // ptyhost，用户要开终端走「新终端」。baseOfSession 的 home@machine 分支仍
+    // 保留（分类的是 wire 事实，roadmap 的远程 home 入口会用到）。
+    if (session.base_kind !== 'home' || session.machine !== '') continue
     adopted++
-    const base = baseOfSession(session)
-    if (base.kind === 'home') {
-      const tab: HomeTab = { id: session.id, kind: 'terminal', seq: ++dockSeq, sessionId: session.id, machine: session.machine }
-      if (session.incompatible) tab.incompatible = true
-      if (dock === null) dockOrphans.push(tab)
-      else dock = { ...dock, tabs: [...dock.tabs, tab] }
-      continue
-    }
-    workbench = appendRestoredTab(workbench, base, orphanContent(session, nextTerminalSeq(workbench)))
-    used.add(session.id)
+    const tab: HomeTab = { id: session.id, kind: 'terminal', seq: ++dockSeq, sessionId: session.id, machine: session.machine }
+    if (session.incompatible) tab.incompatible = true
+    if (dock === null) dockOrphans.push(tab)
+    else dock = { ...dock, tabs: [...dock.tabs, tab] }
   }
   if (dock !== null && dock.activeId === null && dock.tabs.length > 0) dock = { ...dock, activeId: dock.tabs[0].id }
 

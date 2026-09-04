@@ -2,7 +2,8 @@
 //
 // 职责：
 //   - 挂 xterm，把一个服务端 PTY 会话的字节流画出来
-//   - 没有会话时先建一个，并把 id 回报给 tab（onSession）
+//   - 用户点的新终端（spawn）没有会话时先建一个，并把 id 回报给 tab（onSession）
+//   - 恢复剥掉的死引用不静默建会话，只给重开出口（B322）
 //   - 按键上送、尺寸上送、断线重连（重连逻辑在 api/pty.ts，这里只消费）
 //   - shell 退出后在下方显示退出码，tab 留着等用户自己关
 //   - 只提供 PTY host 与运行态出口；pane 标题由 WorkbenchPage 统一负责
@@ -41,8 +42,10 @@ import type { BaseDir } from './useWorkbench'
 export interface TerminalTabProps {
   base: BaseDir
   seq: number
-  // sessionId 缺席 = 这个 tab 还没有会话，挂载时建一个。
+  // sessionId 缺席且 spawn 为真 = 用户刚点的新终端，挂载时建一个。
+  // 缺席且 spawn 不为真 = 恢复剥掉的死引用，只给重开出口，不静默建会话（B322）。
   sessionId?: string
+  spawn?: boolean
   // incompatible = 服务端会话仍活着但本版协议无法接入；不应发起连接或重连。
   incompatible?: boolean
   // rel 是终端要起的工作树子目录；空串/缺席 = 工作树根。
@@ -107,7 +110,7 @@ function xtermDebugSnap(term: Terminal, host: HTMLElement): Record<string, unkno
 }
 
 export function TerminalTab({
-  base, seq, sessionId, rel, envFile, initCommand, incompatible = false, onSession, active = true, onConnection,
+  base, seq, sessionId, spawn = false, rel, envFile, initCommand, incompatible = false, onSession, active = true, onConnection,
 }: TerminalTabProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -136,7 +139,11 @@ export function TerminalTab({
   // 状态，本组件不持有），而是在本地把它「划掉」：liveId 因此回到 undefined，
   // 挂载路径原样走一遍建会话 + onSession 回报，不必给上层加新的写入口。
   const [discarded, setDiscarded] = useState<string | undefined>(undefined)
+  // forceSpawn：用户点了「重开」。无 sessionId 的死 tab 点重开时 liveId 本来就是
+  // undefined，必须靠这个状态让 effect 再跑一遍，不能只 setDiscarded。
+  const [forceSpawn, setForceSpawn] = useState(false)
   const liveId = sessionId !== undefined && sessionId !== discarded ? sessionId : undefined
+  const shouldSpawn = spawn || forceSpawn
   const incompatibleLive = incompatible && liveId !== undefined
 
   useEffect(() => {
@@ -451,6 +458,13 @@ export function TerminalTab({
         return
       }
       if (!id) {
+        if (!shouldSpawn) {
+          // 恢复剥掉的死引用：tab 留着等用户点重开。这里建会话就是 B322 的泵。
+          setError('没有可接上的终端会话')
+          setDead(true)
+          reportConn(false)
+          return
+        }
         const created = await createPtySession(
           { ...ptyBase(base, rel), ...launcherFields(envFile, initCommand), cols: term.cols, rows: term.rows },
           base.machine,
@@ -618,7 +632,7 @@ export function TerminalTab({
     // 依赖故意只有会话身份与基准：base.label 之类的展示字段变化不该重建终端。
     // rel 参与身份：改 rel 就该在新的子目录里重建会话。
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [liveId, incompatibleLive, base.key, base.machine, rel])
+  }, [liveId, incompatibleLive, shouldSpawn, base.key, base.machine, rel])
 
   useEffect(() => {
     // 切 tab 只抢键盘焦点、把渲染器从 IntersectionObserver 暂停里拉回来。
@@ -684,10 +698,11 @@ export function TerminalTab({
               type="button"
               className="rounded border px-2 py-0.5 text-muted-foreground hover:text-foreground"
               onClick={() => {
-                // 划掉旧 id → liveId 变 undefined → effect 重跑，在同一基准目录建新会话。
-                // 老会话不发 DELETE：它在服务端要么已经不存在（机器重启 / 退出 shell /
-                // 显式停止之后），要么是被判死的另一条订阅，替用户去删一个可能还活着
-                // 的 shell 不是这个按钮的职责。
+                // 划掉旧 id → liveId 变 undefined；forceSpawn 让无 id 的死 tab 也能
+                // 再跑一遍建会话。老会话不发 DELETE：它在服务端要么已经不存在，要么
+                // 是被判死的另一条订阅，替用户去删一个可能还活着的 shell 不是这个
+                // 按钮的职责。
+                setForceSpawn(true)
                 setDiscarded(sessionId)
                 setError(null)
                 setDead(false)

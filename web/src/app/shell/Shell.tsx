@@ -46,7 +46,7 @@ import { useHomeDock } from '../homedock/useHomeDock'
 import type { DockSnapshot } from '../homedock/dockPersist'
 import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
-import { nextTerminalSeq, tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
+import { nextTerminalSeq, spawnTerminalContent, tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
 import { taskDisplayName } from '../lib/taskName'
 import type { StateTone } from '../board/columns'
 import { useWorkbenchSync } from '../workbench/useWorkbenchSync'
@@ -460,7 +460,7 @@ export function Shell() {
   const openTerminalAt = (base: BaseDir) => {
     backToWorkbench()
     wb.select(base)
-    wb.openOrFocus({ kind: 'terminal', seq: nextTerminalSeq(wb.wb) }, base)
+    wb.openOrFocus(spawnTerminalContent(nextTerminalSeq(wb.wb)), base)
     console.debug('shell.directory.terminal.new_group', {
       project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path,
     })
@@ -729,6 +729,7 @@ export function Shell() {
                         base={base}
                         seq={c.seq}
                         sessionId={c.sessionId}
+                        spawn={c.spawn === true}
                         rel={c.rel}
                         envFile={launcher?.env_file}
                         initCommand={c.initCommand ?? launcher?.command}
@@ -851,6 +852,7 @@ export function Shell() {
                 base={HOME_BASE}
                 seq={t.seq}
                 sessionId={t.sessionId}
+                spawn={t.spawn === true}
                 incompatible={t.incompatible}
                 active={active}
                 onSession={(id) => dock.setSession(t.id, id)}

@@ -9,7 +9,7 @@ import { fetchCardDetail } from '../../api/ledger'
 import type { CardDetail } from '../../api/ledger'
 import { fetchInbox, fetchRoomMessages, fetchRooms, markRoomRead, sendRoomMessage } from '../../api/rooms'
 import type { RoomHistoryItem, RoomSummary } from '../../api/rooms'
-import { nextTerminalSeq } from '../workbench/tabs'
+import { nextTerminalSeq, spawnTerminalContent } from '../workbench/tabs'
 import type { WorkbenchApi } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { errorMessage, formatRelative } from '../lib/format'
@@ -321,7 +321,7 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
     }
     setStepBusy(true)
     logRoom('debug', 'attach_confirmed', { room: roomID, request: 'workbench.open', task: selectedRoom.attach.task_id })
-    workbench.open({ kind: 'terminal', seq: nextTerminalSeq(workbench.wb), initCommand: selectedRoom.attach.command }, base)
+    workbench.open(spawnTerminalContent(nextTerminalSeq(workbench.wb), { initCommand: selectedRoom.attach.command }), base)
     setStepBusy(false)
     setAttachConfirm(false)
   }

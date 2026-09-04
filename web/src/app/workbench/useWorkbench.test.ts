@@ -69,7 +69,7 @@ describe('useWorkbench', () => {
     act(() => result.current.openTerminalWithCommand('opencode --session sess-coord', a))
     const pane = result.current.wb.groups[0].columns[0].panes[0]
     expect(pane?.content).toEqual({
-      kind: 'terminal', seq: 1, initCommand: 'opencode --session sess-coord',
+      kind: 'terminal', seq: 1, spawn: true, initCommand: 'opencode --session sess-coord',
     })
   })
 

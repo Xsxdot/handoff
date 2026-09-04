@@ -138,7 +138,7 @@ describe('RoomPanel', () => {
     await user.click(screen.getByRole('button', { name: 'attach' }))
     await user.click(screen.getByRole('button', { name: '确认 attach' }))
     await waitFor(() => expect(open).toHaveBeenCalledWith(
-      { kind: 'terminal', seq: 1, initCommand: 'handoff attach T1' },
+      { kind: 'terminal', seq: 1, spawn: true, initCommand: 'handoff attach T1' },
       expect.objectContaining({ path: '/w/B1', machine: '' }),
     ))
   })

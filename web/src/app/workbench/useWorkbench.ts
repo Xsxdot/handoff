@@ -19,6 +19,7 @@ import {
   placeSource,
   resizeColumns,
   setTabContent,
+  spawnTerminalContent,
   type BaseDir,
   type OpenedWorkbenchItem,
   type PaneTarget,
@@ -111,9 +112,7 @@ export function useWorkbench(): WorkbenchApi {
       console.warn('workbench.open_terminal.missing_base', { groupId, rel })
       return
     }
-    setWb((current) => openTab(current, target, {
-      kind: 'terminal', seq: nextTerminalSeq(current), ...(rel === undefined ? {} : { rel }),
-    }, groupId))
+    setWb((current) => openTab(current, target, spawnTerminalContent(nextTerminalSeq(current), rel === undefined ? {} : { rel }), groupId))
   }, [])
 
   const openTerminalWithCommand = useCallback((command: string, explicitBase?: BaseDir, groupId?: string) => {
@@ -122,9 +121,7 @@ export function useWorkbench(): WorkbenchApi {
       console.warn('workbench.open_terminal_with_command.missing_base', { groupId })
       return
     }
-    setWb((current) => openTab(current, target, {
-      kind: 'terminal', seq: nextTerminalSeq(current), initCommand: command,
-    }, groupId))
+    setWb((current) => openTab(current, target, spawnTerminalContent(nextTerminalSeq(current), { initCommand: command }), groupId))
   }, [])
 
   const close = useCallback((groupId: string, tabId: string) => setWb((current) => closeTab(current, groupId, tabId)), [])

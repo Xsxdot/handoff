@@ -16,9 +16,17 @@ export interface BaseDir {
 
 export type TabContent =
   | { kind: 'blank' }
-  | { kind: 'terminal'; seq: number; sessionId?: string; rel?: string; incompatible?: boolean; launcher?: string; initCommand?: string }
+  | { kind: 'terminal'; seq: number; sessionId?: string; rel?: string; incompatible?: boolean; launcher?: string; initCommand?: string; spawn?: boolean }
   | { kind: 'file'; rel: string; draft?: string; baseSha?: string }
   | { kind: 'tui'; taskId: string }
+
+/** 用户点出来的新终端：挂载时才允许建会话。spawn 是运行时字段，不落盘。 */
+export function spawnTerminalContent(
+  seq: number,
+  extra: Partial<Omit<Extract<TabContent, { kind: 'terminal' }>, 'kind' | 'seq' | 'spawn'>> = {},
+): Extract<TabContent, { kind: 'terminal' }> {
+  return { kind: 'terminal', seq, spawn: true, ...extra }
+}
 
 export interface Tab {
   id: string
