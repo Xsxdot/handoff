@@ -656,7 +656,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **coordinate 把本机 target 名当远端**：leader 载体 muse 登记 `machine=mac-02`，该键的 addr 就是本机 `100.73.238.21:7777`，hostname 是 `sycmdeMacBook-Air.local`。`IsLocalMachine("mac-02")` 为假，`openCoordinatorTUI` 在开 tab 前报「远端载体 TUI 转发尚未接线」。工作目录已解析到项目主工作树 `/Users/sycm/.handoff/repos/handoff`，名额随后归还。产品冻死是「本机 leader 可用」。缺口卡 B338。来源：B337 真机 `card coordinate` 502。
 - **远端载体 TUI 转发仍未接线**：`?machine=` 开协调者 tab 的路径本卡未做。linux-01 上的 leader 仍然走不通。来源：B336 OOS / 收口残余，真机未打到这条。
-- **B335 工作分支经 origin 交接未真机**：本轮只验了 squad 节点 `--target`/`--executor` 被拒。pass 后 `git push origin`、下一台 fetch 续接，要一张真实 runner implement 过线才验。来源：B335 用户故事 2/3。
+- **B335 跨机 fetch 真机**：编制 runner 目前只有 muse@mac-02 一台，没有第二台成员做「下一台 fetch」。B340 已把 `cards/B340-charter` 推上 origin（`8f42fe3d`）。来源：B341 spec OOS。
 
 ## 来自 B303 spec（2026-09-02，本期不做）
 

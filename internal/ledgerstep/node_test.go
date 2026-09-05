@@ -660,6 +660,52 @@ func nodePassMessage() string {
 	return fence + "handoff-verdict\n{\"verdict\":\"pass\",\"findings\":[]}\n" + fence
 }
 
+// TestNodeStepPublishesWorkBranchBeforeFinishTask 锁 B341：pass 发布 origin
+// 必须发生在归档 task 之前，否则 managed worktree 已被 Done 回收。
+func TestNodeStepPublishesWorkBranchBeforeFinishTask(t *testing.T) {
+	st, card := nodeLedger(t)
+	if err := st.RecordDispatch(card.ID, ledger.DispatchSnapshot{
+		Template: "feature-impl", Target: "mac-02", TaskID: "task-b341",
+		Branch: "cards/B341-charter", Purpose: "implement", Actor: "tester",
+	}); err != nil {
+		t.Fatalf("RecordDispatch: %v", err)
+	}
+	var order []string
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "implement", Dispatch: true, Verdict: true, Template: "feature-impl",
+			Next: ledger.StatusReview, OnFail: ledger.StatusDoing,
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "mac-02", "task-b341", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			order = append(order, "await")
+			return nodePassMessage(), nil
+		},
+		PublishWorkBranch: func(context.Context, string, string, string) error {
+			order = append(order, "publish")
+			return nil
+		},
+		FinishTask: func(context.Context, string, string) error {
+			order = append(order, "done")
+			return nil
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if out.Action != ActionPass && out.Action != ActionNeedsHuman {
+		t.Fatalf("unexpected action %+v", out)
+	}
+	want := []string{"await", "publish", "done"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("顺序 = %v，want %v（publish 必须在 done 前）", order, want)
+	}
+}
+
 func TestNodeStepAttachesDeclaredOutputAndRoutes(t *testing.T) {
 	st, card := nodeLedger(t)
 	attached := 0

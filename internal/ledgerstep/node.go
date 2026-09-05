@@ -61,6 +61,9 @@ type NodeStep struct {
 	// PublishWorkBranch 把工作分支推到 origin。nil 表示本轮不发布（单测）。
 	// 失败必须 needs_human，不得假装下一台已经能 fetch。
 	PublishWorkBranch func(ctx context.Context, target, branch, taskID string) error
+	// FinishTask 归档本轮 task。必须在 PublishWorkBranch 之后调用：Done 会回收
+	// managed worktree，先归档再 push 会 400「工作目录不存在」。
+	FinishTask func(ctx context.Context, target, taskID string) error
 }
 
 // maxRounds 返回本节点的轮次封顶：节点没配就用包内默认。
@@ -276,6 +279,15 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 	if err != nil {
 		logger.Warn("未取到报文，转等人", "cause", err)
 		return n.haltForHuman(cardID, "未取到裁决报文", "本节点未取到裁决报文：\n"+err.Error())
+	}
+	if n.FinishTask != nil {
+		defer func() {
+			if finErr := n.FinishTask(ctx, target, taskID); finErr != nil {
+				logger.Warn("归档节点 task 失败（报文已取到）", "cause", finErr)
+			} else {
+				logger.Info("节点 task 已归档")
+			}
+		}()
 	}
 	verdict, parseErr := ParseVerdict(message)
 	if parseErr != nil {

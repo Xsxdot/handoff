@@ -87,6 +87,7 @@ func (r *StepRunner) Run(ctx context.Context, cardID, nodeName string) (Outcome,
 			return err
 		},
 		PublishWorkBranch: r.PublishWorkBranch,
+		FinishTask:        r.finishTask(),
 	}
 	nodeStep.Dispatch = func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (string, string, error) {
 		return r.dispatchNodeWithGate(&outputPath, nodeStep.WriteGate)(ctx, card, node)
@@ -396,7 +397,8 @@ func (r *StepRunner) diffNode() func(context.Context, string, string) ([]string,
 	}
 }
 
-// awaitNode 生产 NodeStep.Await：等回合终态并取最终报文，取到后归档该 task。
+// awaitNode 生产 NodeStep.Await：等回合终态并取最终报文。归档在 FinishTask，
+// 必须排在 PublishWorkBranch 之后。
 func (r *StepRunner) awaitNode() func(context.Context, string, string) (string, error) {
 	return func(ctx context.Context, target, taskID string) (string, error) {
 		logger := slog.Default().With("target", target, "task", taskID)
@@ -425,13 +427,26 @@ func (r *StepRunner) awaitNode() func(context.Context, string, string) (string, 
 			logger.Warn("节点读取最终报文失败", "cause", err)
 			return "", err
 		}
-		// 报文已经拿到，归档只是回收资源；失败不该把报文丢掉，所以带着报文一起返回错误。
-		if _, err := cl.Done(ctx, taskID, ""); err != nil {
-			logger.Warn("归档节点 task 失败（报文已取到）", "cause", err)
-		} else {
-			logger.Info("节点 task 已归档")
-		}
 		logger.Info("节点等待完成", "message_bytes", len(message))
 		return message, nil
+	}
+}
+
+// finishTask 生产 NodeStep.FinishTask：在发布工作分支之后归档，避免 Done 先回收 worktree。
+func (r *StepRunner) finishTask() func(context.Context, string, string) error {
+	return func(ctx context.Context, target, taskID string) error {
+		logger := slog.Default().With("target", target, "task", taskID)
+		if r.Clients == nil {
+			return fmt.Errorf("节点归档客户端未装配")
+		}
+		cl, err := r.Clients(target)
+		if err != nil {
+			logger.Warn("取得节点归档客户端失败", "cause", err)
+			return err
+		}
+		if _, err := cl.Done(ctx, taskID, ""); err != nil {
+			return err
+		}
+		return nil
 	}
 }

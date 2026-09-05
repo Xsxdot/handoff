@@ -677,7 +677,7 @@ func TestRunnerLossCommentReportsRunLockReadError(t *testing.T) {
 }
 
 // TestRunnerLocalClientUsesWaitAndDiffWire 锁住节点生产 Run 路径的本机 client
-// 接线：await 仍走 /ws/events + Attach + Done，产出校验仍走 Diff；二者收到的
+// 接线：await 走 /ws/events + Attach，归档走 Done（在 Publish 之后），产出校验仍走 Diff；二者收到的
 // target 都是空串，不读本机 ledger 冒充远端协议。
 func TestRunnerLocalClientUsesWaitAndDiffWire(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
