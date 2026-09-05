@@ -1,0 +1,24 @@
+# B348 台账
+
+- 2026-09-05 定级 L1。卡 B348：删除未入队载体（清 b334-probe）。
+- 2026-09-05 基线检查：`go test ./internal/scheduling -count=1` 通过；`npm --prefix web test` 通过。
+- 2026-09-05 缝 1（Service.DeleteCarrier）：
+  - 测试先红：TestDeleteCarrier 编译红（DeleteCarrier undefined）；落地空壳后断言红（5 个子测试均失败）；
+  - 实现绿：检查 name 非空、小队成员引用（防悬空）、存在性检查、CAS repo.Delete；
+  - 变异自验：取反小队成员检查 `false && m.Carrier == name`，编译通过，TestDeleteCarrier 失败（打中小队拒绝断言）；还原后测试全绿。
+- 2026-09-05 缝 2（DELETE /api/squads/carriers/{name}）：
+  - 测试先红：TestCarrierDeleteSeam 测试 6 支子测试报 405 Method Not Allowed；
+  - 实现绿：注册 DELETE /api/squads/carriers/{name} 路由，expect 必填校验，域错误映射（400 校验/在队，404 不存在，409 CAS 冲突，500 故障），返回 {name, version}；
+  - 变异自验：将 404 映射改为 400，编译通过，TestCarrierDeleteSeam/载体不存在_404 失败；还原后测试全绿。
+- 2026-09-05 缝 3（设置页删除按钮与 deleteCarrier）：
+  - 测试先红：scheduling.fetch.test.ts 导入 deleteCarrier 报未导出 TypeError；SchedulingPage.test.tsx 断言删除按钮不存在报 getByRole 失败；
+  - 实现绿：web/src/api/scheduling.ts 导出 deleteCarrier 走 DELETE；SchedulingPage.tsx 载体行添加「删除」按钮并绑定 removeCarrier，请求失败展示错误于该行；
+  - 变异自验：deleteCarrier 请求方法变异为 POST，scheduling.fetch.test.ts 捕获红；removeCarrier 传参变异为 row.version+1，SchedulingPage.test.tsx 捕获红；还原后测试全绿。
+- 2026-09-05 全量检查与自审：
+  - `go build ./...` 编译全量通过；
+  - `go test ./internal/scheduling ./internal/agentd -count=1` 触及包测试全绿；
+  - `npm --prefix web run typecheck` 类型检查 0 错误；
+  - `npm --prefix web test src/api/scheduling.fetch.test.ts src/app/settings/SchedulingPage.test.tsx` 24/24 测试全绿。
+- 2026-09-05 提交事实：
+  - 命令：`git add ... && git commit -m "feat(scheduling): 支持 CAS 删除未入队载体（B348）"`
+  - 原始输出：`[cards/B348-charter b53845a4] feat(scheduling): 支持 CAS 删除未入队载体（B348）`

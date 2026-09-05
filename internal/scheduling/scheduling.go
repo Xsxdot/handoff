@@ -250,6 +250,54 @@ func (s *Service) PutCarrier(c Carrier, expect int) error {
 	return nil
 }
 
+// DeleteCarrier 以 CAS 语义删除未入队载体。
+// 若载体名为空或仍在任一小队成员中，拒绝删除返回 ErrInvalid；
+// 若载体不存在返回 ErrNotFound；若版本不匹配返回 ErrCASConflict。
+func (s *Service) DeleteCarrier(name string, expect int) error {
+	statusLog().Info("删除载体请求", "name", name, "expect", expect)
+	if strings.TrimSpace(name) == "" {
+		statusLog().Warn("删除载体校验失败", "name", name, "expect", expect, "cause", "name 必填")
+		return fmt.Errorf("%w: 载体名不能为空", ErrInvalid)
+	}
+
+	// 遍历所有小队：若仍在任一小队的成员清单中，拒绝删除以防小队引用悬空。
+	squadRecs, err := s.repo.List(kindSquad)
+	if err != nil {
+		statusLog().Error("读取小队列表失败", "name", name, "expect", expect, "cause", err)
+		return fmt.Errorf("读取小队列表失败: %w", err)
+	}
+	for _, rec := range squadRecs {
+		var q Squad
+		if err := json.Unmarshal(rec.Body, &q); err != nil {
+			statusLog().Error("解码小队记录失败", "id", rec.ID, "cause", err)
+			return fmt.Errorf("squad/%s 解码失败: %w", rec.ID, err)
+		}
+		for _, m := range q.Members {
+			if m.Carrier == name {
+				statusLog().Warn("删除载体被拒：仍在小队中", "name", name, "expect", expect, "squad", q.Name)
+				return fmt.Errorf("%w: 载体 %s 仍在小队 %s 中，请先从小队移除", ErrInvalid, name, q.Name)
+			}
+		}
+	}
+
+	// 检查载体是否存在，区分 NotFound 与 CAS 版本冲突。
+	if _, err := s.repo.Get(kindCarrier, name); err != nil {
+		if errors.Is(err, schedclient.ErrNotFound) {
+			statusLog().Warn("删除载体未找到", "name", name, "expect", expect)
+			return fmt.Errorf("载体 %s 旧记录不存在: %w", name, ErrNotFound)
+		}
+		statusLog().Error("读取载体记录失败", "name", name, "expect", expect, "cause", err)
+		return fmt.Errorf("读取载体 %s 失败: %w", name, err)
+	}
+
+	if err := s.repo.Delete(kindCarrier, name, expect, "scheduling"); err != nil {
+		statusLog().Error("删除载体失败", "name", name, "expect", expect, "cause", err)
+		return err
+	}
+	statusLog().Info("删除载体成功", "name", name, "expect", expect)
+	return nil
+}
+
 func (s *Service) checkKnownMachine(name, machine string, expect int) error {
 	if IsLocalMachine(machine) {
 		return nil

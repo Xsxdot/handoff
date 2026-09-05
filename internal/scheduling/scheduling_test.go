@@ -455,3 +455,62 @@ func TestIgnitionRequestRoundtripThroughRegistry(t *testing.T) {
 		t.Fatalf("空队列应 (false,nil)，实得 ok=%v err=%v", ok, err)
 	}
 }
+
+func TestDeleteCarrier(t *testing.T) {
+	svc, facade := newCASFixture(t)
+	// 准备一个不在任何小队的未入队载体 c3
+	c3 := scheduling.Carrier{Name: "c3", Machine: "m3", CLI: "opencode", Credential: scheduling.CredentialStandalone}
+	if err := svc.PutCarrier(c3, 0); err != nil {
+		t.Fatalf("登记 c3: %v", err)
+	}
+	c3Ver := currentRegistryVersion(t, facade, "carrier", "c3")
+
+	t.Run("name 为空拒绝", func(t *testing.T) {
+		err := svc.DeleteCarrier("", 1)
+		if !errors.Is(err, scheduling.ErrInvalid) {
+			t.Fatalf("期望 ErrInvalid，实得 %v", err)
+		}
+	})
+
+	t.Run("仍在小队中拒绝删除且文案带小队名", func(t *testing.T) {
+		c1Ver := currentRegistryVersion(t, facade, "carrier", "c1")
+		err := svc.DeleteCarrier("c1", c1Ver)
+		if !errors.Is(err, scheduling.ErrInvalid) {
+			t.Fatalf("期望 ErrInvalid，实得 %v", err)
+		}
+		if !strings.Contains(err.Error(), "s1") {
+			t.Fatalf("期望错误文案带小队名 s1，实得 %v", err)
+		}
+		// 载体仍在
+		if _, err := svc.Carrier("c1"); err != nil {
+			t.Fatalf("c1 仍应存在: %v", err)
+		}
+	})
+
+	t.Run("载体不存在返回 ErrNotFound", func(t *testing.T) {
+		err := svc.DeleteCarrier("nonexistent", 1)
+		if !errors.Is(err, scheduling.ErrNotFound) {
+			t.Fatalf("期望 ErrNotFound，实得 %v", err)
+		}
+	})
+
+	t.Run("CAS 版本不对拒绝", func(t *testing.T) {
+		err := svc.DeleteCarrier("c3", c3Ver+99)
+		if !errors.Is(err, schedclient.ErrCASConflict) {
+			t.Fatalf("期望 ErrCASConflict，实得 %v", err)
+		}
+		// 载体仍在
+		if _, err := svc.Carrier("c3"); err != nil {
+			t.Fatalf("c3 仍应存在: %v", err)
+		}
+	})
+
+	t.Run("未入队载体成功删除后变为 NotFound", func(t *testing.T) {
+		if err := svc.DeleteCarrier("c3", c3Ver); err != nil {
+			t.Fatalf("删除未入队载体 c3 失败: %v", err)
+		}
+		if _, err := svc.Carrier("c3"); !errors.Is(err, scheduling.ErrNotFound) {
+			t.Fatalf("删除后读 c3 应返回 ErrNotFound，实得: %v", err)
+		}
+	})
+}

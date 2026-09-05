@@ -37,6 +37,7 @@ import (
 func (s *Server) registerSchedulingRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/squads", s.withScheduling(s.handleSquadsGet))
 	api.HandleFunc("PUT /api/squads/carriers/{name}", s.withScheduling(s.handleCarrierPut))
+	api.HandleFunc("DELETE /api/squads/carriers/{name}", s.withScheduling(s.handleCarrierDelete))
 	api.HandleFunc("PUT /api/squads/squads/{name}", s.withScheduling(s.handleSquadPut))
 	api.HandleFunc("GET /api/queue", s.withScheduling(s.handleQueueGet))
 	api.HandleFunc("POST /api/squads/carriers/{name}/detect", s.withScheduling(s.handleCarrierDetect))
@@ -118,6 +119,25 @@ func (s *Server) handleCarrierPut(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, proto.SquadPutResp{Name: name, Version: expect + 1})
+}
+
+// handleCarrierDelete DELETE /api/squads/carriers/{name}?expect=N：以 CAS 删除未入队载体。
+// expect 必填，缺席一律 400。仍在小队中的载体拒绝删除（400），不存在返回 404，版本冲突返回 409。
+func (s *Server) handleCarrierDelete(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	expect, ok, err := expectVersion(r)
+	if !ok {
+		s.log.Warn("删除载体 expect 校验未过", "name", name, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("删除载体", "name", name, "expect", expect)
+	if err := s.scheduling.DeleteCarrier(name, expect); err != nil {
+		s.schedDeleteErr(w, name, err)
+		return
+	}
+	s.log.Info("删除载体成功", "name", name, "expect", expect)
+	writeJSON(w, http.StatusOK, proto.SquadPutResp{Name: name, Version: expect})
 }
 
 // handleSquadPut PUT /api/squads/squads/{name}?expect=N：以 CAS 写小队。
@@ -394,6 +414,25 @@ func (s *Server) schedPutErr(w http.ResponseWriter, kind, name string, err error
 		writeErr(w, http.StatusConflict, err)
 	default:
 		s.log.Error("编制域登记失败", "kind", kind, "name", name, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+	}
+}
+
+// schedDeleteErr 把编制域删除错误翻译成状态码：400 校验未过（仍在小队或名字非法） /
+// 404 载体不存在 / 409 CAS 冲突 / 500 内部故障。
+func (s *Server) schedDeleteErr(w http.ResponseWriter, name string, err error) {
+	switch {
+	case errors.Is(err, scheduling.ErrInvalid):
+		s.log.Warn("编制域删除被拒", "name", name, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+	case errors.Is(err, scheduling.ErrNotFound):
+		s.log.Warn("编制域删除未找到", "name", name, "cause", err)
+		writeErr(w, http.StatusNotFound, err)
+	case errors.Is(err, schedclient.ErrCASConflict):
+		s.log.Warn("编制域删除版本冲突", "name", name, "cause", err)
+		writeErr(w, http.StatusConflict, err)
+	default:
+		s.log.Error("编制域删除失败", "name", name, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 	}
 }

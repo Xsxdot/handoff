@@ -127,6 +127,13 @@ export const putCarrier = (name: string, expect: number, input: CarrierInput) =>
     omitZeroConcurrency(input),
   )
 
+/** 按载体名和 CAS 版本删除载体；expect 为期望版本号。 */
+export const deleteCarrier = (name: string, expect: number) =>
+  request<SquadPutResp>(
+    `/api/squads/carriers/${encodeURIComponent(name)}?expect=${expect}`,
+    { method: 'DELETE' },
+  )
+
 // 服务端用成员 max_concurrency 缺席表达「不限」；仅将调用方已经给出的 0
 // 投影为缺席，不能把非法文本在 API 层静默变成不限，页面负责输入校验。
 function omitZeroSquadConcurrency(input: SquadInput): SquadInput {

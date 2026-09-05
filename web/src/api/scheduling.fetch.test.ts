@@ -9,6 +9,7 @@ import {
   getQueue,
   defaultHomeDir,
   detectCarrier,
+  deleteCarrier,
   getCarrierRunCommand,
   getSquads,
   launchCoordinator,
@@ -126,6 +127,15 @@ describe('scheduling fetch seam', () => {
     })
     expect(runMock.mock.calls[0][0]).toBe('/api/squads/carriers/c%20a%2F%E7%89%B9/run-command')
     expect((runMock.mock.calls[0][1] as RequestInit).method ?? 'GET').toBe('GET')
+  })
+
+  it('serializes deleteCarrier with encoded name and expect query', async () => {
+    const fetchMock = mockFetchJSON({ name: 'carrier a', version: 3 })
+    await expect(deleteCarrier('carrier a/特殊', 3)).resolves.toEqual({ name: 'carrier a', version: 3 })
+    expect(fetchMock).toHaveBeenCalledWith(
+      '/api/squads/carriers/carrier%20a%2F%E7%89%B9%E6%AE%8A?expect=3',
+      { credentials: 'same-origin', method: 'DELETE' },
+    )
   })
 
   it('locks default HOME string and status labels', () => {

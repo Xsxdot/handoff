@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { ReactElement } from 'react'
 import type { CarrierInput, CarrierStatus, CarrierView, HomeProbeResp, SquadInput, SquadMember, SquadView, SquadsResp } from '../../api/scheduling'
 import { fetchMachines } from '../../api/client'
-import { CARRIER_STATUS_LABEL, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
+import { CARRIER_STATUS_LABEL, deleteCarrier, detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
 import { copyToClipboard } from '../lib/clipboard'
 import { errorMessage } from '../lib/format'
 
@@ -126,6 +126,8 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
   const [probing, setProbing] = useState(false)
   const [detecting, setDetecting] = useState('')
   const [detectError, setDetectError] = useState<Record<string, string>>({})
+  const [deleting, setDeleting] = useState('')
+  const [deleteError, setDeleteError] = useState<Record<string, string>>({})
   const [runState, setRunState] = useState({ name: '', message: '', error: '' })
   const [machineOptions, setMachineOptions] = useState<string[]>(['本机'])
   const probeSequence = useRef(0)
@@ -253,6 +255,24 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
     }
   }
 
+  const removeCarrier = async (row: CarrierView): Promise<void> => {
+    setDeleting(row.name)
+    setDeleteError((current) => ({ ...current, [row.name]: '' }))
+    const started = performance.now()
+    console.info({ event: 'scheduling.delete.start', name: row.name, version: row.version })
+    try {
+      await deleteCarrier(row.name, row.version)
+      console.info({ event: 'scheduling.delete.success', name: row.name, version: row.version, elapsed: performance.now() - started })
+      await load()
+    } catch (cause) {
+      const message = errorMessage(cause)
+      console.error({ event: 'scheduling.delete.failure', name: row.name, version: row.version, elapsed: performance.now() - started, cause })
+      setDeleteError((current) => ({ ...current, [row.name]: message }))
+    } finally {
+      setDeleting('')
+    }
+  }
+
   const save = async (): Promise<void> => {
     if (dialog === null || draft === null) return
     const name = draftName(dialog, draft)
@@ -360,10 +380,11 @@ export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
       <section className="space-y-2">
         <div className="flex items-center gap-2"><h3 className="text-xs font-semibold">载体</h3><span className="text-[11px] text-muted-foreground">并发上限是物理位：跨小队全局计数</span><span className="flex-1" /><button type="button" className="rounded-md border px-2.5 py-1 text-xs" onClick={() => openCarrier(null)}>登记载体</button></div>
         {snapshot.carriers.map((row) => { const status = carrierStatus(row); return <article key={row.name} className="rounded-lg border p-3">
-          <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5" data-status={status}>{CARRIER_STATUS_LABEL[status]}</span><span>{row.machine} · {row.cli}</span><span className="flex-1" /><span>在跑 — / {row.max_concurrency ?? '不限'} · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openCarrier(row)}>编辑 {row.name}</button><button type="button" className="rounded border px-2 py-1" disabled={detecting === row.name} onClick={() => void detect(row.name)}>{detecting === row.name ? '检测中…' : '检测'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => void runCarrier(row.name)}>运行</button></div>
+          <div className="flex flex-wrap items-center gap-2 text-xs"><strong className="font-mono">{row.name}</strong><span className="rounded-full bg-muted px-2 py-0.5" data-status={status}>{CARRIER_STATUS_LABEL[status]}</span><span>{row.machine} · {row.cli}</span><span className="flex-1" /><span>在跑 — / {row.max_concurrency ?? '不限'} · v{row.version}</span><button type="button" className="rounded border px-2 py-1" onClick={() => openCarrier(row)}>编辑 {row.name}</button><button type="button" className="rounded border px-2 py-1" disabled={detecting === row.name} onClick={() => void detect(row.name)}>{detecting === row.name ? '检测中…' : '检测'}</button><button type="button" className="rounded border px-2 py-1" onClick={() => void runCarrier(row.name)}>运行</button><button type="button" aria-label={`删除 ${row.name}`} className="rounded border px-2 py-1 text-destructive" disabled={deleting === row.name} onClick={() => void removeCarrier(row)}>{deleting === row.name ? '删除中…' : '删除'}</button></div>
           <dl className="mt-3 grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1 text-xs"><dt className="text-muted-foreground">HOME 档案</dt><dd className="font-mono">{row.home_dir || <span className="text-muted-foreground">主 HOME</span>}</dd><dt className="text-muted-foreground">模型</dt><dd>{row.model || <span className="text-muted-foreground">CLI 默认</span>}</dd><dt className="text-muted-foreground">凭据来源</dt><dd>{row.credential}</dd><dt className="text-muted-foreground">并发上限</dt><dd>{row.max_concurrency ?? '不限'}</dd></dl>
           {row.last_error && <p className="mt-2 text-xs text-destructive">最近检测：{row.last_error}</p>}
           {detectError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">检测失败：{detectError[row.name]}；请修正 HOME/登录后重试。</p>}
+          {deleteError[row.name] && <p role="alert" className="mt-2 text-xs text-destructive">删除失败：{deleteError[row.name]}</p>}
           {runState.name === row.name && (runState.message || runState.error) && <p role={runState.error ? 'alert' : undefined} className="mt-2 text-xs">{runState.message || `复制运行命令失败：${runState.error}`}</p>}
         </article> })}
         {snapshot.carriers.length === 0 && <p className="rounded-lg border border-dashed p-4 text-xs text-muted-foreground">尚未登记载体，请先登记一个可用 CLI 档案。</p>}
