@@ -464,3 +464,90 @@ func TestSchedulingEndpointsDegradedWithoutSetup(t *testing.T) {
 		t.Fatalf("未装配应 503 带可行动文案，得 %d：%s", code, rb)
 	}
 }
+
+func TestCarrierDeleteSeam(t *testing.T) {
+	env := newSchedEnv(t)
+
+	// 先建载体 c1 和小队 s1（c1 属于 s1）
+	code, _ := schedReq(t, env, http.MethodPut, "/api/squads/carriers/c1?expect=0",
+		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+	if code != http.StatusOK {
+		t.Fatalf("登记 c1 失败")
+	}
+	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/squads/s1?expect=0",
+		`{"role":"executor","members":[{"carrier":"c1"}]}`)
+	if code != http.StatusOK {
+		t.Fatalf("登记 s1 失败")
+	}
+
+	// 建不在任何小队的未入队载体 c2
+	code, _ = schedReq(t, env, http.MethodPut, "/api/squads/carriers/c2?expect=0",
+		`{"machine":"m1","cli":"opencode","credential":"standalone"}`)
+	if code != http.StatusOK {
+		t.Fatalf("登记 c2 失败")
+	}
+
+	t.Run("缺少 expect 参数 400", func(t *testing.T) {
+		code, rb := schedReq(t, env, http.MethodDelete, "/api/squads/carriers/c2", "")
+		if code != http.StatusBadRequest || !strings.Contains(rb, "缺少 expect") {
+			t.Fatalf("缺 expect 应 400，得 %d：%s", code, rb)
+		}
+	})
+
+	t.Run("非法 expect 参数 400", func(t *testing.T) {
+		code, rb := schedReq(t, env, http.MethodDelete, "/api/squads/carriers/c2?expect=invalid", "")
+		if code != http.StatusBadRequest {
+			t.Fatalf("非法 expect 应 400，得 %d：%s", code, rb)
+		}
+	})
+
+	t.Run("载体不存在 404", func(t *testing.T) {
+		code, rb := schedReq(t, env, http.MethodDelete, "/api/squads/carriers/nonexistent?expect=1", "")
+		if code != http.StatusNotFound {
+			t.Fatalf("载体不存在应 404，得 %d：%s", code, rb)
+		}
+	})
+
+	t.Run("仍在小队中的载体拒绝删除 400 且文案带小队名", func(t *testing.T) {
+		code, rb := schedReq(t, env, http.MethodDelete, "/api/squads/carriers/c1?expect=1", "")
+		if code != http.StatusBadRequest || !strings.Contains(rb, "s1") {
+			t.Fatalf("在队载体删除应 400 且含 s1，得 %d：%s", code, rb)
+		}
+		// 校验 c1 仍在
+		_, getBody := schedReq(t, env, http.MethodGet, "/api/squads", "")
+		if !strings.Contains(getBody, `"name":"c1"`) {
+			t.Fatalf("c1 仍应存在：%s", getBody)
+		}
+	})
+
+	t.Run("CAS 版本冲突 409", func(t *testing.T) {
+		code, rb := schedReq(t, env, http.MethodDelete, "/api/squads/carriers/c2?expect=99", "")
+		if code != http.StatusConflict {
+			t.Fatalf("版本冲突应 409，得 %d：%s", code, rb)
+		}
+		// 校验 c2 仍在
+		_, getBody := schedReq(t, env, http.MethodGet, "/api/squads", "")
+		if !strings.Contains(getBody, `"name":"c2"`) {
+			t.Fatalf("c2 仍应存在：%s", getBody)
+		}
+	})
+
+	t.Run("未入队载体成功删除 200 且 GET /api/squads 不再包含", func(t *testing.T) {
+		code, rb := schedReq(t, env, http.MethodDelete, "/api/squads/carriers/c2?expect=1", "")
+		if code != http.StatusOK {
+			t.Fatalf("未入队删除应 200，得 %d：%s", code, rb)
+		}
+		var resp proto.SquadPutResp
+		if err := json.Unmarshal([]byte(rb), &resp); err != nil {
+			t.Fatalf("解码响应失败: %v", err)
+		}
+		if resp.Name != "c2" || resp.Version != 1 {
+			t.Fatalf("返回应为 name: c2, version: 1，实得 %+v", resp)
+		}
+		// GET /api/squads 不再包含 c2
+		_, getBody := schedReq(t, env, http.MethodGet, "/api/squads", "")
+		if strings.Contains(getBody, `"name":"c2"`) {
+			t.Fatalf("删除后 GET /api/squads 不应再含 c2：%s", getBody)
+		}
+	})
+}

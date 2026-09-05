@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { fetchMachines } from '../../api/client'
-import { detectCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
+import { detectCarrier, deleteCarrier, getCarrierRunCommand, getSquads, probeHome, putCarrier, putSquad } from '../../api/scheduling'
 import { SchedulingPage } from './SchedulingPage'
 
 vi.mock('../../api/client', async () => {
@@ -14,12 +14,13 @@ vi.mock('../../api/client', async () => {
 
 vi.mock('../../api/scheduling', async () => {
   const actual = await vi.importActual<typeof import('../../api/scheduling')>('../../api/scheduling')
-  return { ...actual, detectCarrier: vi.fn(), getCarrierRunCommand: vi.fn(), getSquads: vi.fn(), probeHome: vi.fn(), putCarrier: vi.fn(), putSquad: vi.fn() }
+  return { ...actual, deleteCarrier: vi.fn(), detectCarrier: vi.fn(), getCarrierRunCommand: vi.fn(), getSquads: vi.fn(), probeHome: vi.fn(), putCarrier: vi.fn(), putSquad: vi.fn() }
 })
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [] })
+  vi.mocked(deleteCarrier).mockResolvedValue({ name: 'mbp', version: 1 })
   vi.mocked(detectCarrier).mockResolvedValue({ name: 'mbp', status: 'online', version: 1 })
   vi.mocked(getCarrierRunCommand).mockResolvedValue({ command: 'HOME=/h opencode' })
   vi.mocked(probeHome).mockResolvedValue({ kind: 'empty' })
@@ -195,6 +196,40 @@ describe('SchedulingPage', () => {
     expect(await screen.findByText(/版本冲突/)).toBeVisible()
     expect(screen.getByRole('dialog')).toBeVisible()
     expect(detectCarrier).not.toHaveBeenCalled()
+  })
+
+  it('carrier row delete button calls deleteCarrier with row version and reloads', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getSquads)
+      .mockResolvedValueOnce({
+        carriers: [{ name: 'b334-probe', machine: '本机', cli: 'opencode', home_dir: '', credential: 'standalone', status: 'pending', version: 1 }],
+        squads: [],
+      })
+      .mockResolvedValueOnce({
+        carriers: [],
+        squads: [],
+      })
+    render(<SchedulingPage />)
+    expect(await screen.findByText('b334-probe')).toBeVisible()
+    const deleteButton = screen.getByRole('button', { name: '删除 b334-probe' })
+    await user.click(deleteButton)
+    expect(deleteCarrier).toHaveBeenCalledWith('b334-probe', 1)
+    await waitFor(() => expect(screen.queryByText('b334-probe')).not.toBeInTheDocument())
+  })
+
+  it('carrier deletion failure displays server error on that row', async () => {
+    const user = userEvent.setup()
+    vi.mocked(getSquads).mockResolvedValue({
+      carriers: [{ name: 'grok', machine: '本机', cli: 'opencode', home_dir: '', credential: 'standalone', status: 'online', version: 2 }],
+      squads: [{ name: 'runner', role: 'executor', members: [{ carrier: 'grok' }], version: 1 }],
+    })
+    vi.mocked(deleteCarrier).mockRejectedValue(new Error('400: 载体 grok 仍在小队 runner 中，请先从小队移除'))
+    render(<SchedulingPage />)
+    expect(await screen.findByText('grok')).toBeVisible()
+    await user.click(screen.getByRole('button', { name: '删除 grok' }))
+    expect(deleteCarrier).toHaveBeenCalledWith('grok', 2)
+    expect(await screen.findByText(/载体 grok 仍在小队 runner 中/)).toBeVisible()
+    expect(screen.getByText('grok')).toBeVisible()
   })
 })
 
