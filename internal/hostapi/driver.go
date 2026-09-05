@@ -294,7 +294,9 @@ func consumeEvents(r io.Reader) (TurnReply, error) {
 }
 
 // lookPathWithFallback 先走 PATH，失败时尝试常见安装位，避免 agentd 的最小 PATH
-// 导致已安装的 opencode 找不到（mac-02 实测：~/.opencode/bin 不在 launchd PATH）。
+// 导致已安装的 CLI 找不到（mac-02 实测：~/.opencode/bin 不在 launchd PATH；
+// grok 在 ~/.grok/bin，agy/codex 常在 ~/.local/bin 或 /usr/local/bin）。
+// 只找同名二进制，绝不把 grok 兜底成 opencode。
 func lookPathWithFallback(cli string) (string, error) {
 	if bin, err := exec.LookPath(cli); err == nil {
 		return bin, nil
@@ -303,23 +305,22 @@ func lookPathWithFallback(cli string) (string, error) {
 		if cli != filepath.Base(cli) {
 			return "", err
 		}
-		// 仅对已支持的 CLI 兜底，未实装的直接返回原错，不静默试其它二进制。
-		if !supportedCLIs[filepath.Base(cli)] {
-			return "", err
-		}
-		candidates := make([]string, 0, 4)
-		if home, herr := os.UserHomeDir(); herr == nil && home != "" {
+		name := filepath.Base(cli)
+		candidates := make([]string, 0, 6)
+		if home, herr := userHomeDir(); herr == nil && home != "" {
 			candidates = append(candidates,
-				filepath.Join(home, ".opencode", "bin", cli),
-				filepath.Join(home, ".local", "bin", cli),
+				filepath.Join(home, ".grok", "bin", name),
+				filepath.Join(home, ".local", "bin", name),
+				filepath.Join(home, ".opencode", "bin", name),
 			)
 		}
 		candidates = append(candidates,
-			"/opt/homebrew/bin/"+cli,
-			"/usr/local/bin/"+cli,
+			"/opt/homebrew/bin/"+name,
+			"/usr/local/bin/"+name,
 		)
 		for _, cand := range candidates {
-			if _, serr := os.Stat(cand); serr == nil {
+			info, serr := os.Stat(cand)
+			if serr == nil && !info.IsDir() {
 				return cand, nil
 			}
 		}

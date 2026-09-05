@@ -8,6 +8,7 @@ package hostapi
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -253,19 +254,75 @@ func TestWakeHomeHonorsTimeoutViaRunTurn(t *testing.T) {
 	}
 }
 
+func isolateEmptyPATH(t *testing.T) {
+	t.Helper()
+	t.Setenv("PATH", t.TempDir())
+}
+
+func rejectDetectTurn(t *testing.T) {
+	t.Helper()
+	old := detectTurn
+	detectTurn = func(_ *Host, _ context.Context, req TurnRequest) (TurnReply, error) {
+		t.Errorf("名单外 CLI 不得走检测回合 cli=%s", req.CLI)
+		return TurnReply{}, errors.New("detectTurn should not run for unsupported CLI")
+	}
+	t.Cleanup(func() { detectTurn = old })
+}
+
 func TestWakeHomeUnsupportedCLIWritesUnreachableNotReady(t *testing.T) {
 	swapUserHomeDir(t, t.TempDir())
+	isolateEmptyPATH(t)
+	rejectDetectTurn(t)
 	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
 		CLI: "grok", HomeDir: t.TempDir(), Timeout: time.Second,
 	})
 	if err != nil {
-		t.Fatalf("未实装应映射为 WakeReply 而非 error: %v", err)
+		t.Fatalf("找不到命令应映射为 WakeReply 而非 error: %v", err)
 	}
 	if got.Outcome != WakeUnreachable {
-		t.Fatalf("未实装 Outcome = %q，want unreachable", got.Outcome)
+		t.Fatalf("找不到命令 Outcome = %q，want unreachable", got.Outcome)
 	}
-	if !strings.Contains(got.Detail, "未实装") {
-		t.Fatalf("Detail 应含未实装: %q", got.Detail)
+	if !strings.Contains(got.Detail, "找不到") {
+		t.Fatalf("Detail 应含找不到: %q", got.Detail)
+	}
+	if strings.Contains(got.Detail, "未实装") {
+		t.Fatalf("找不到命令不得再报未实装: %q", got.Detail)
+	}
+}
+
+func TestWakeHomeUnsupportedCLIPathReadySkipsTurn(t *testing.T) {
+	swapUserHomeDir(t, t.TempDir())
+	binDir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(binDir, "grok"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", binDir)
+	rejectDetectTurn(t)
+	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+		CLI: "grok", HomeDir: t.TempDir(), Timeout: time.Second,
+	})
+	if err != nil || got.Outcome != WakeReady {
+		t.Fatalf("PATH 命中 = %+v/%v，want ready/nil", got, err)
+	}
+}
+
+func TestWakeHomeUnsupportedCLIFallbackDirReadySkipsTurn(t *testing.T) {
+	home := t.TempDir()
+	swapUserHomeDir(t, home)
+	isolateEmptyPATH(t)
+	dir := filepath.Join(home, ".grok", "bin")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "grok"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	rejectDetectTurn(t)
+	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
+		CLI: "grok", HomeDir: t.TempDir(), Timeout: time.Second,
+	})
+	if err != nil || got.Outcome != WakeReady {
+		t.Fatalf("安装位命中 = %+v/%v，want ready/nil", got, err)
 	}
 }
 

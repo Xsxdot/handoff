@@ -1,7 +1,8 @@
 // probe.go —— 本机隔离 HOME 的路径探测与检测回合（B293 探测 + B295 检测）。
 //
-// 职责：问本机某路径相对某 CLI 是空 / 已登录 / 非空无凭据；以及用该 HOME 走
-// RunTurn 发一条固定短消息，按回合结局写成 WakeOutcome。只暴露本机能力。
+// 职责：问本机某路径相对某 CLI 是空 / 已登录 / 非空无凭据；以及用该 HOME
+// 检测可用性。名单内 CLI 走 RunTurn 发固定短消息；名单外只查命令是否可执行
+//（B342：不把未实装当成检测失败的唯一结局）。只暴露本机能力。
 //
 // 边界：不写编制域状态（那是 scheduling.ApplyDetect）；不绑卡、不经 keystone、
 // 不进派发状态机；不在控制台拉登录 TUI。跨机由 gateway 经 ?machine= 转发。
@@ -101,9 +102,10 @@ func (h *Host) ProbeHome(ctx context.Context, req ProbeRequest) (ProbeReply, err
 	return state.reply, nil
 }
 
-// WakeHome 用目标机展开后的隔离 HOME 跑一次检测回合。只在目标目录本身
-// empty 且 Credential 为 main_home_sync 时先拷表内凭据，再经 RunTurn 发
-// DetectPrompt。Timeout=0 使用 DefaultDetectTimeout。不进控制台登录 TUI。
+// WakeHome 用目标机展开后的隔离 HOME 跑一次检测。只在目标目录本身 empty
+// 且 Credential 为 main_home_sync 时先拷表内凭据。名单内再经 RunTurn 发
+// DetectPrompt；名单外只查命令（B342）。Timeout=0 使用 DefaultDetectTimeout。
+// 不进控制台登录 TUI。
 func (h *Host) WakeHome(ctx context.Context, req WakeRequest) (WakeReply, error) {
 	started := time.Now()
 	timeout := req.Timeout
@@ -324,14 +326,29 @@ func (h *Host) copyMainCredential(ctx context.Context, targetHome, cli string) (
 	return true, nil
 }
 
-// runWake 用隔离 HOME 走 RunTurn 发 DetectPrompt。凭据文件与 --version 不参与
-// 成败；未知错误和未实装都映射为 WakeReply，好让 detect 编排能 ApplyDetect。
+// runWake 用隔离 HOME 走检测。名单内 CLI 发 DetectPrompt；名单外只查同名
+// 命令在不在——找不到才 unreachable，找到即 ready，不调用 RunTurn（B342）。
+// 凭据文件与 --version 不参与成败；未知错误映射为 WakeReply，好让 detect
+// 编排能 ApplyDetect。
 func (h *Host) runWake(ctx context.Context, req WakeRequest, targetHome string) (WakeReply, error) {
 	timeout := req.Timeout
 	if timeout <= 0 {
 		timeout = DefaultDetectTimeout
 	}
 	cli := filepath.Base(req.CLI)
+	if !supportedCLIs[cli] {
+		bin, err := lookPathWithFallback(req.CLI)
+		if err != nil {
+			log().Warn("未实装 CLI 检测：找不到命令", "cli", cli, "target", targetHome, "cause", err)
+			return WakeReply{
+				Outcome: WakeUnreachable,
+				Detail:  fmt.Sprintf("找不到载体命令 %q: %v", cli, err),
+			}, nil
+		}
+		log().Info("未实装 CLI 检测：命令可执行，跳过检测回合",
+			"cli", cli, "bin", bin, "target", targetHome)
+		return WakeReply{Outcome: WakeReady, Detail: "命令可执行（该 CLI 尚未实装检测回合）"}, nil
+	}
 	log().Info("开始检测回合", "cli", cli, "target", targetHome, "timeout", timeout.String())
 	// Workdir 与 HOME 同指隔离目录：检测没有项目仓库，相对路径不得落到 agentd cwd。
 	reply, err := detectTurn(h, ctx, TurnRequest{
