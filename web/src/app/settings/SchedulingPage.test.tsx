@@ -43,6 +43,7 @@ describe('SchedulingPage', () => {
     expect(screen.getByText(/协调者优先/)).toBeVisible()
     expect(screen.getByRole('combobox', { name: '机器' })).toBeVisible()
     expect(screen.getByRole('combobox', { name: 'CLI' })).toBeVisible()
+    expect(screen.getByRole('option', { name: 'agy' })).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: '凭据来源' })).toBeVisible()
     expect(screen.getByRole('option', { name: '主 HOME 同步' })).toBeVisible()
     expect(screen.getByText(/主 HOME 同步 = 把主环境的认证态搬进隔离 HOME/)).toBeVisible()

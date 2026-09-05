@@ -23,7 +23,7 @@ type EntityDialog =
 const INPUT = 'h-8 w-full rounded-md border bg-background px-2 text-xs'
 // 原型 .form-grid label：块级、12px、muted、下缘 4px——标签在控件上方。
 const FIELD_LABEL = 'mb-1 block text-xs text-muted-foreground'
-const CLI_OPTIONS = ['opencode', 'claude', 'codex', 'grok']
+const CLI_OPTIONS = ['opencode', 'claude', 'codex', 'grok', 'agy']
 const CREDENTIAL_OPTIONS = [
   { value: 'standalone', label: '独立账号' },
   { value: 'main_home_sync', label: '主 HOME 同步' },
