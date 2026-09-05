@@ -434,30 +434,44 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 				"裁决已通过，但无法读取工作分支去推 origin：\n"+workErr.Error())
 		}
 		if workErr == nil && info.Branch != "" {
-			pushTarget, pushTask := info.Target, info.TaskID
-			if pushTarget == "" {
-				pushTarget = target
+			already, publishedErr := n.St.WorkBranchPublished(cardID, info.Branch)
+			if publishedErr != nil {
+				logger.Error("查询工作分支是否已发布失败", "branch", info.Branch, "cause", publishedErr)
+				return n.haltForHuman(cardID, "查询工作分支发布状态失败",
+					"裁决已通过，但无法确认工作分支是否已在 origin：\n"+publishedErr.Error())
 			}
-			if pushTask == "" {
-				pushTask = taskID
+			if already {
+				// implement 已经推过并归档了 task；review 再拿那条 WorkBranch
+				// 去 push 会打到已回收的 worktree（B346）。账本发布事件才是
+				// 「系统推过」的事实，不拿 origin 上碰巧有同名分支冒充。
+				logger.Info("工作分支已在 origin，跳过再推", "branch", info.Branch,
+					"target", info.Target, "task", info.TaskID)
+			} else {
+				pushTarget, pushTask := info.Target, info.TaskID
+				if pushTarget == "" {
+					pushTarget = target
+				}
+				if pushTask == "" {
+					pushTask = taskID
+				}
+				logger.Info("开始把工作分支推到 origin", "branch", info.Branch,
+					"target", pushTarget, "task", pushTask)
+				if pubErr := n.PublishWorkBranch(ctx, pushTarget, info.Branch, pushTask); pubErr != nil {
+					logger.Error("工作分支未能推到 origin", "branch", info.Branch,
+						"target", pushTarget, "task", pushTask, "cause", pubErr)
+					return n.haltForHuman(cardID, "工作分支未能推到 origin",
+						"裁决已通过，但 git push origin "+info.Branch+" 失败：\n"+pubErr.Error())
+				}
+				if err := n.gatedWrite("工作分支 origin 发布落账"); err != nil {
+					return Outcome{}, err
+				}
+				if recErr := n.St.RecordWorkBranchPublished(cardID, info.Branch, pushTarget, pushTask, n.actor()); recErr != nil {
+					logger.Error("工作分支发布落账失败", "branch", info.Branch, "cause", recErr)
+					return n.haltForHuman(cardID, "工作分支发布落账失败",
+						"origin 已推送，但账本未能记下发布事件：\n"+recErr.Error())
+				}
+				logger.Info("工作分支已发布到 origin", "branch", info.Branch, "target", pushTarget)
 			}
-			logger.Info("开始把工作分支推到 origin", "branch", info.Branch,
-				"target", pushTarget, "task", pushTask)
-			if pubErr := n.PublishWorkBranch(ctx, pushTarget, info.Branch, pushTask); pubErr != nil {
-				logger.Error("工作分支未能推到 origin", "branch", info.Branch,
-					"target", pushTarget, "task", pushTask, "cause", pubErr)
-				return n.haltForHuman(cardID, "工作分支未能推到 origin",
-					"裁决已通过，但 git push origin "+info.Branch+" 失败：\n"+pubErr.Error())
-			}
-			if err := n.gatedWrite("工作分支 origin 发布落账"); err != nil {
-				return Outcome{}, err
-			}
-			if recErr := n.St.RecordWorkBranchPublished(cardID, info.Branch, pushTarget, pushTask, n.actor()); recErr != nil {
-				logger.Error("工作分支发布落账失败", "branch", info.Branch, "cause", recErr)
-				return n.haltForHuman(cardID, "工作分支发布落账失败",
-					"origin 已推送，但账本未能记下发布事件：\n"+recErr.Error())
-			}
-			logger.Info("工作分支已发布到 origin", "branch", info.Branch, "target", pushTarget)
 		}
 	}
 

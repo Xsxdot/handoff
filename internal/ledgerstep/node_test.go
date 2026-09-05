@@ -706,6 +706,55 @@ func TestNodeStepPublishesWorkBranchBeforeFinishTask(t *testing.T) {
 	}
 }
 
+// TestNodeStepSkipsPublishWhenWorkBranchAlreadyOnOrigin 锁 B346：implement
+// 已经 RecordWorkBranchPublished 后，review pass 不得再对已归档 worktree push。
+func TestNodeStepSkipsPublishWhenWorkBranchAlreadyOnOrigin(t *testing.T) {
+	st, card := nodeLedger(t)
+	if err := st.RecordDispatch(card.ID, ledger.DispatchSnapshot{
+		Template: "feature-impl", Target: "linux-01", TaskID: "task-implement",
+		Branch: "cards/B346-charter", Purpose: "implement", Actor: "tester",
+	}); err != nil {
+		t.Fatalf("RecordDispatch: %v", err)
+	}
+	if err := st.RecordWorkBranchPublished(card.ID, "cards/B346-charter", "linux-01", "task-implement", "node:implement"); err != nil {
+		t.Fatalf("RecordWorkBranchPublished: %v", err)
+	}
+	var order []string
+	step := &NodeStep{
+		St: st,
+		Node: ledger.NodeDef{
+			Name: "review", Dispatch: true, Verdict: true, Template: "review-generic",
+			Next: ledger.StatusReview, OnFail: ledger.StatusDoing,
+		},
+		Dispatch: func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
+			return "mac-02", "task-review", nil
+		},
+		Await: func(context.Context, string, string) (string, error) {
+			order = append(order, "await")
+			return nodePassMessage(), nil
+		},
+		PublishWorkBranch: func(context.Context, string, string, string) error {
+			order = append(order, "publish")
+			return errors.New("不该再 push 已归档的 implement worktree")
+		},
+		FinishTask: func(context.Context, string, string) error {
+			order = append(order, "done")
+			return nil
+		},
+	}
+	out, err := step.RunOnce(context.Background(), card.ID)
+	if err != nil {
+		t.Fatalf("RunOnce: %v", err)
+	}
+	if out.Action != ActionPass {
+		t.Fatalf("Action = %q，want pass（已发布不得 needs_human）", out.Action)
+	}
+	want := []string{"await", "done"}
+	if strings.Join(order, ",") != strings.Join(want, ",") {
+		t.Fatalf("顺序 = %v，want %v（已发布必须跳过 publish）", order, want)
+	}
+}
+
 func TestNodeStepAttachesDeclaredOutputAndRoutes(t *testing.T) {
 	st, card := nodeLedger(t)
 	attached := 0
