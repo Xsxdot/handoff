@@ -652,6 +652,12 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **下一张新 charter 卡真机走满「满员入队 → 出队」**：本卡只 put 接线，不拿在飞卡或本卡自己 `--step` 当试纸。来源：B330 spec Out of Scope。
 - **给 runner 加成员**（例如 linux-01/codex）：编制是用户的，本卡只把节点接到已有小队。来源：同上。
 
+## 来自 B334–B336 真机（2026-09-05，DUT `8a8e93522fc1`）
+
+- **coordinate 把本机 target 名当远端**：leader 载体 muse 登记 `machine=mac-02`，该键的 addr 就是本机 `100.73.238.21:7777`，hostname 是 `sycmdeMacBook-Air.local`。`IsLocalMachine("mac-02")` 为假，`openCoordinatorTUI` 在开 tab 前报「远端载体 TUI 转发尚未接线」。工作目录已解析到项目主工作树 `/Users/sycm/.handoff/repos/handoff`，名额随后归还。产品冻死是「本机 leader 可用」。缺口卡 B338。来源：B337 真机 `card coordinate` 502。
+- **远端载体 TUI 转发仍未接线**：`?machine=` 开协调者 tab 的路径本卡未做。linux-01 上的 leader 仍然走不通。来源：B336 OOS / 收口残余，真机未打到这条。
+- **B335 工作分支经 origin 交接未真机**：本轮只验了 squad 节点 `--target`/`--executor` 被拒。pass 后 `git push origin`、下一台 fetch 续接，要一张真实 runner implement 过线才验。来源：B335 用户故事 2/3。
+
 ## 来自 B303 spec（2026-09-02，本期不做）
 
 - **Windows ConPTY**。PTY 仍报不支持；本卡不补。来源：B303 spec Out of Scope。

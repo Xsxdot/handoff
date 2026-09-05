@@ -54,8 +54,16 @@ func (s *Server) openCoordinatorTUI(card string, carrier scheduling.Carrier, spe
 	if workdir == "" {
 		return "", fmt.Errorf("卡 %s 没有项目主工作树，无法打开协调者 TUI", card)
 	}
-	if !scheduling.IsLocalMachine(carrier.Machine) {
+	// IsLocalMachine 只认空/local/本机/hostname。现网载体常登记成 targets
+	// 键（mac-02），地址却指向本进程——那是 IsSelfTarget 的本机身份。
+	localAlias := scheduling.IsLocalMachine(carrier.Machine)
+	selfTarget := s.IsSelfTarget(carrier.Machine)
+	if !localAlias && !selfTarget {
+		s.log.Warn("协调者 TUI 目标机非本机", "card", card, "machine", carrier.Machine)
 		return "", fmt.Errorf("远端载体 TUI 转发尚未接线：machine=%s", carrier.Machine)
+	}
+	if selfTarget && !localAlias {
+		s.log.Info("协调者 TUI 把本机 target 名当本地", "card", card, "machine", carrier.Machine)
 	}
 	shell := os.Getenv("SHELL")
 	if shell == "" {
