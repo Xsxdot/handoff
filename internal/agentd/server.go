@@ -183,6 +183,11 @@ type Server struct {
 	coordTabs   map[string]coordinatorLiveTab
 	// openCoordTUI 打开控制台 TUI；测试可替换。nil 走生产 PTY。
 	openCoordTUI func(card string, carrier scheduling.Carrier, spec keysclient.SessionSpec) (ptyID string, err error)
+	// createRemoteCoordPty / closeRemoteCoordPty / lookupRemoteCoordWorkdir
+	// 是远端协调者 TUI 的测试缝。nil 走 clientForTarget HTTP（B344）。
+	createRemoteCoordPty     func(machine string, req proto.CreatePtySessionReq) (ptyID string, err error)
+	closeRemoteCoordPty      func(machine, ptyID string) error
+	lookupRemoteCoordWorkdir func(machine, card string) (string, error)
 	// automationStartOnce/automationKick protect the single host automation loop.
 	automationStartOnce sync.Once
 	automationKick      chan struct{}

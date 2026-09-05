@@ -1972,3 +1972,33 @@ func (c *Client) PtySessions(ctx context.Context) (*proto.PtySessionsResp, error
 	}
 	return &out, nil
 }
+
+// CreatePtySession 在对端 POST /api/pty/sessions。调用方应 MarkForwarded。
+func (c *Client) CreatePtySession(ctx context.Context, req proto.CreatePtySessionReq) (*proto.PtySession, error) {
+	resp, err := c.do(ctx, http.MethodPost, "/api/pty/sessions", req)
+	if err != nil {
+		return nil, fmt.Errorf("请求建终端会话: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("建终端会话", resp)
+	}
+	var out proto.PtySession
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析建终端会话响应: %w", err)
+	}
+	return &out, nil
+}
+
+// DeletePtySession 在对端 DELETE /api/pty/sessions/{id}。调用方应 MarkForwarded。
+func (c *Client) DeletePtySession(ctx context.Context, id string) error {
+	resp, err := c.do(ctx, http.MethodDelete, "/api/pty/sessions/"+url.PathEscape(id), nil)
+	if err != nil {
+		return fmt.Errorf("请求关终端会话: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return c.httpError("关终端会话", resp)
+	}
+	return nil
+}

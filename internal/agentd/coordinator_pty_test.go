@@ -6,6 +6,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/keysclient"
+	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
@@ -37,8 +38,9 @@ func TestOpenCoordinatorTUITreatsSelfTargetAsLocal(t *testing.T) {
 	t.Cleanup(func() { _ = env.srv.pty.Close(id) })
 }
 
-// TestOpenCoordinatorTUIRejectsRemoteMachine 对照：真正的远端仍报尚未接线。
-func TestOpenCoordinatorTUIRejectsRemoteMachine(t *testing.T) {
+// TestOpenCoordinatorTUIOpensRemotePty 锁 B344：真正的远端经建会话缝打开，
+// 不再报尚未接线。忽略协调机本地 Workdir。
+func TestOpenCoordinatorTUIOpensRemotePty(t *testing.T) {
 	env := newLedgerEnv(t)
 	env.srv.openCoordTUI = nil
 	if err := env.srv.swapConf(func(cfg *config.Config) error {
@@ -50,12 +52,48 @@ func TestOpenCoordinatorTUIRejectsRemoteMachine(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("写入远端 target: %v", err)
 	}
+	var gotMachine, gotPath, gotInit string
+	env.srv.lookupRemoteCoordWorkdir = func(machine, card string) (string, error) {
+		if machine != "linux-01" || card != "B344" {
+			t.Fatalf("lookup machine/card = %s/%s", machine, card)
+		}
+		return "/remote/handoff", nil
+	}
+	env.srv.createRemoteCoordPty = func(machine string, req proto.CreatePtySessionReq) (string, error) {
+		gotMachine, gotPath, gotInit = machine, req.BasePath, req.InitCommand
+		return "remote-pty", nil
+	}
 
-	_, err := env.srv.openCoordinatorTUI("B338", scheduling.Carrier{
-		Name: "remote", Machine: "linux-01", CLI: "true",
-	}, keysclient.SessionSpec{CLI: "true", Workdir: t.TempDir()})
-	if err == nil || !strings.Contains(err.Error(), "远端载体 TUI 转发尚未接线") || !strings.Contains(err.Error(), "linux-01") {
-		t.Fatalf("远端应报尚未接线并点名机器，得 %v", err)
+	id, err := env.srv.openCoordinatorTUI("B344", scheduling.Carrier{
+		Name: "agy", Machine: "linux-01", CLI: "agy", HomeDir: "~",
+	}, keysclient.SessionSpec{CLI: "agy", Workdir: t.TempDir()})
+	if err != nil {
+		t.Fatalf("远端应打开 TUI，得 %v", err)
+	}
+	if id != "remote-pty" {
+		t.Fatalf("pty id = %q，want remote-pty", id)
+	}
+	if gotMachine != "linux-01" || gotPath != "/remote/handoff" {
+		t.Fatalf("建会话 machine/path = %s/%s", gotMachine, gotPath)
+	}
+	if !strings.Contains(gotInit, "agy") {
+		t.Fatalf("InitCommand 应含 CLI: %q", gotInit)
+	}
+}
+
+func TestCloseCoordinatorTabDeletesRemotePty(t *testing.T) {
+	env := newLedgerEnv(t)
+	var gotMachine, gotID string
+	env.srv.closeRemoteCoordPty = func(machine, ptyID string) error {
+		gotMachine, gotID = machine, ptyID
+		return nil
+	}
+	env.srv.rememberCoordinatorTab("B344", coordinatorLiveTab{
+		PtyID: "remote-pty", Machine: "linux-01", Card: "B344",
+	})
+	env.srv.closeCoordinatorTab("B344")
+	if gotMachine != "linux-01" || gotID != "remote-pty" {
+		t.Fatalf("关闭远端 = %s/%s", gotMachine, gotID)
 	}
 }
 
