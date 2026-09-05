@@ -398,7 +398,7 @@ func (s *Server) IsSelfTarget(name string) bool {
 // 返回值会写入派发请求、任务挂账与快照；调用方不应继续使用归一前的登记名
 // 作为身份。空串与配置中指向本机的登记名共用本机 client。
 func (s *Server) CanonicalTarget(name string) string {
-	if s.IsSelfTarget(name) {
+	if s.IsSelfTarget(name) || scheduling.IsLocalMachine(name) {
 		return ""
 	}
 	return name

@@ -303,14 +303,15 @@ func copyCoordinatorTreeIfPresent(source, destination string) error {
 }
 
 // normalizeCoordinatorSpec 将 SessionSpec.HomeDir 展开为绝对路径。
-// 空值或展开错误直接返回包含原串的错误，防止字面 ~ 漏进 keystone。
+// 空值视为主 HOME（~）展开；展开失败或非绝对路径返回包含原串的错误，防止字面 ~ 漏进 keystone。
 func normalizeCoordinatorSpec(spec keysclient.SessionSpec) (keysclient.SessionSpec, error) {
-	if strings.TrimSpace(spec.HomeDir) == "" {
-		return spec, errors.New("协调者 SessionSpec 缺少 HomeDir")
+	home := spec.HomeDir
+	if strings.TrimSpace(home) == "" {
+		home = "~"
 	}
-	expanded, err := hostapi.ExpandHomePath(spec.HomeDir)
+	expanded, err := hostapi.ExpandHomePath(home)
 	if err != nil {
-		return spec, fmt.Errorf("展开协调者 HOME %q: %w", spec.HomeDir, err)
+		return spec, fmt.Errorf("展开协调者 HOME %q: %w", home, err)
 	}
 	if !filepath.IsAbs(expanded) {
 		return spec, fmt.Errorf("协调者 HOME 不是绝对路径: %q", expanded)
@@ -339,6 +340,7 @@ func (r coordinatorSessionRefResolver) ResolveSessionRef(card string, ref keyscl
 			slog.Default().Error("读取协调者小队失败", "card", card, "cause", err)
 			return ref, fmt.Errorf("读取协调者小队以恢复卡 %s HOME: %w", card, err)
 		}
+		var found bool
 		for _, member := range squad.Members {
 			carrier, readErr := r.server.scheduling.Carrier(member.Carrier)
 			if readErr != nil {
@@ -349,9 +351,13 @@ func (r coordinatorSessionRefResolver) ResolveSessionRef(card string, ref keyscl
 				continue
 			}
 			ref.HomeDir = carrier.HomeDir
+			if strings.TrimSpace(ref.HomeDir) == "" {
+				ref.HomeDir = "~"
+			}
+			found = true
 			break
 		}
-		if ref.HomeDir == "" {
+		if !found {
 			err := fmt.Errorf("协调者小队 %s 没有已上线载体可恢复 HOME", squad.Name)
 			slog.Default().Error("恢复协调者 HOME 失败", "card", card, "squad", squad.Name, "cause", err)
 			return ref, err

@@ -10,6 +10,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
@@ -363,3 +364,76 @@ func TestProjectCoordinatorConfigPreservesStallTimeout(t *testing.T) {
 		t.Fatalf("projectCoordinatorConfig 改写了 StallTimeout: got %s, want 0", got.StallTimeout)
 	}
 }
+
+// TestNormalizeCoordinatorSpecEmptyHome 验证协调者 SessionSpec 空 HOME 展开为主 HOME 绝对路径，
+// 不再因空值返回「协调者 SessionSpec 缺少 HomeDir」。
+func TestNormalizeCoordinatorSpecEmptyHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("无法读取当前用户主目录: %v", err)
+	}
+	want := filepath.Clean(home)
+
+	for _, homeDir := range []string{"", "   ", "\t"} {
+		spec := keysclient.SessionSpec{
+			CLI:     "opencode",
+			HomeDir: homeDir,
+		}
+		got, err := normalizeCoordinatorSpec(spec)
+		if err != nil {
+			t.Fatalf("normalizeCoordinatorSpec(HomeDir=%q) 失败: %v", homeDir, err)
+		}
+		if got.HomeDir != want {
+			t.Fatalf("normalizeCoordinatorSpec(HomeDir=%q) = %q, want %q", homeDir, got.HomeDir, want)
+		}
+	}
+}
+
+// TestCoordinatorSessionRefResolverEmptyHomeOnlineCarrier 锁住已上线载体空 HOME 恢复接缝：
+// 当已上线载体登记 HOME 为空时，作为合法主 HOME 展开为绝对路径；小队中没有 online 载体时依然报错。
+func TestCoordinatorSessionRefResolverEmptyHomeOnlineCarrier(t *testing.T) {
+	env, _ := newCoordEnv(t)
+	svc := env.srv.Scheduling()
+
+	putOnlineCarrier(t, svc, scheduling.Carrier{
+		Name:       "c1",
+		Machine:    "本机",
+		CLI:        "opencode",
+		HomeDir:    "",
+		Credential: scheduling.CredentialStandalone,
+		Status:     scheduling.StatusOnline,
+	})
+	if err := svc.PutSquad(scheduling.Squad{
+		Name:    "coord",
+		Role:    scheduling.RoleCoordinator,
+		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 1}},
+	}, 0); err != nil {
+		t.Fatalf("登记协调者小队: %v", err)
+	}
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("无法读取当前用户主目录: %v", err)
+	}
+	wantHome := filepath.Clean(home)
+
+	resolver := coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath}
+
+	// 1. 已上线载体 HomeDir 为空：成功恢复为主 HOME 绝对路径
+	ref, err := resolver.ResolveSessionRef("card-test", keysclient.SessionRef{})
+	if err != nil {
+		t.Fatalf("已上线空 HOME 载体 ResolveSessionRef 失败: %v", err)
+	}
+	if ref.HomeDir != wantHome {
+		t.Fatalf("ResolveSessionRef HomeDir = %q, want %q", ref.HomeDir, wantHome)
+	}
+
+	// 2. 小队中无 online 载体：失败
+	if _, err := svc.ApplyDetect("c1", scheduling.DetectEvidence{Reachable: false}, "offline"); err != nil {
+		t.Fatalf("设置载体 c1 offline: %v", err)
+	}
+	if _, err := resolver.ResolveSessionRef("card-test-offline", keysclient.SessionRef{}); err == nil {
+		t.Fatal("小队无 online 载体时 ResolveSessionRef 应失败，但返回成功")
+	}
+}
+

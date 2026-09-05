@@ -173,3 +173,31 @@ func TestLocalStepTransportUsesLocalClient(t *testing.T) {
 		t.Fatalf("本机 HTTP 派发命中 %d 次，期望 2", got)
 	}
 }
+
+// TestCanonicalTargetLocalMachineAliases 锁住 CanonicalTarget 的本机别名归一口径：
+// 空串、"本机"、"local" 均折成本机空 target；未指向 Listen 的远端名（如 linux-01）保留原值。
+func TestCanonicalTargetLocalMachineAliases(t *testing.T) {
+	var s Server
+	var cfg config.Config
+	cfg.Listen = "127.0.0.1:9090"
+	cfg.Targets = map[string]config.Target{
+		"linux-01": {Addr: "192.168.1.50:9090", Token: "tok"},
+	}
+	s.cfg.Store(&cfg)
+
+	cases := []struct {
+		target string
+		want   string
+	}{
+		{target: "", want: ""},
+		{target: "本机", want: ""},
+		{target: "local", want: ""},
+		{target: "linux-01", want: "linux-01"},
+	}
+	for _, tc := range cases {
+		if got := s.CanonicalTarget(tc.target); got != tc.want {
+			t.Errorf("CanonicalTarget(%q) = %q, want %q", tc.target, got, tc.want)
+		}
+	}
+}
+
