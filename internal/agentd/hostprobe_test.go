@@ -222,3 +222,85 @@ func TestHostWakeAndProbeForwardPreserveCredentialAndRejectUnknownMachine(t *tes
 		t.Fatalf("未知机器应 400: %d %s", code, body)
 	}
 }
+
+func TestHostWakeAllowsEmptyHomeDirForMainHome(t *testing.T) {
+	installDetectCLI(t, `printf '%s\n' '{"type":"text","sessionID":"ses_detect","part":{"type":"text","text":"ok"}}'`)
+	env := newDirectSchedEnv(t, &config.Config{Token: testToken, DataDir: t.TempDir()})
+
+	// 1. 空 home_dir 合法（回落至主 HOME 执行），不得报 400
+	code, body := schedReq(t, env, http.MethodPost, "/api/host/wake",
+		`{"cli":"opencode","home_dir":""}`)
+	if code != http.StatusOK {
+		t.Fatalf("空 home_dir 唤起失败: %d %s", code, body)
+	}
+	var resp proto.HomeWakeResp
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("反序列化唤起响应失败: %v", err)
+	}
+	if resp.Outcome != "ready" {
+		t.Fatalf("空 home_dir 唤起 outcome = %q，want ready", resp.Outcome)
+	}
+
+	// 2. cli 为空仍拦截 400
+	code, body = schedReq(t, env, http.MethodPost, "/api/host/wake",
+		`{"cli":"","home_dir":""}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("空 cli 应 400: %d %s", code, body)
+	}
+
+	code, body = schedReq(t, env, http.MethodPost, "/api/host/wake",
+		`{"cli":"","home_dir":"/tmp/some-home"}`)
+	if code != http.StatusBadRequest {
+		t.Fatalf("空 cli 带非空 home_dir 应 400: %d %s", code, body)
+	}
+}
+
+func TestCarrierDetectRemoteWithEmptyHomeDir(t *testing.T) {
+	installDetectCLI(t, `printf '%s\n' '{"type":"text","sessionID":"ses_detect","part":{"type":"text","text":"ok"}}'`)
+	// 远端是一台真实的 agentd 实例（承接 POST /api/host/wake）
+	remoteEnv := newDirectSchedEnv(t, &config.Config{Token: "remote-token", DataDir: t.TempDir()})
+
+	// 协调机配置远端机器 target
+	st, err := ledger.Open(t.TempDir() + "/ledger.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	cfg := &config.Config{
+		Token:   testToken,
+		DataDir: t.TempDir(),
+		Targets: map[string]config.Target{
+			"remote-01": {Addr: remoteEnv.ts.URL, Token: "remote-token"},
+		},
+	}
+	dataStore, err := store.Open(t.TempDir() + "/handoff.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = dataStore.Close() })
+	srv := NewServer(cfg, dataStore, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetupAutomation(st)
+	ts := testhttp.NewServer(t, srv.Handler())
+	coordEnv := &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: nil, token: cfg.Token}, svc: srv.Scheduling()}
+
+	// 登记远端载体，home_dir 为空（代表该机主 HOME）
+	code, body := schedReq(t, coordEnv, http.MethodPut, "/api/squads/carriers/c-remote?expect=0",
+		`{"machine":"remote-01","cli":"opencode","home_dir":"","credential":"standalone"}`)
+	if code != http.StatusOK {
+		t.Fatalf("登记远端载体: %d %s", code, body)
+	}
+
+	// 远程检测：协调机转发 POST /api/host/wake 到远端，远端空 home_dir 成功返回 ready，协调机置 online
+	code, body = schedReq(t, coordEnv, http.MethodPost, "/api/squads/carriers/c-remote/detect", "{}")
+	if code != http.StatusOK {
+		t.Fatalf("远端空 HOME 载体检测失败: %d %s", code, body)
+	}
+	var detect proto.CarrierDetectResp
+	if err := json.Unmarshal([]byte(body), &detect); err != nil {
+		t.Fatal(err)
+	}
+	if detect.Status != "online" {
+		t.Fatalf("远端空 HOME 检测状态 = %q，want online", detect.Status)
+	}
+}
+

@@ -63,6 +63,7 @@ func (s *Server) handleHomeProbe(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleHomeWake POST /api/host/wake?machine=：本机有时限唤起。?machine= 先转发。
+// 空 home_dir 合法（代表目标机主 HOME，原样交给 WakeHome 回落处理）。
 func (s *Server) handleHomeWake(w http.ResponseWriter, r *http.Request) {
 	if s.forwardIfRequested(w, r) {
 		return
@@ -73,12 +74,12 @@ func (s *Server) handleHomeWake(w http.ResponseWriter, r *http.Request) {
 			"error": fmt.Sprintf("解析请求体: %v", err)})
 		return
 	}
-	if in.CLI == "" || in.HomeDir == "" {
+	if in.CLI == "" {
 		writeJSON(w, http.StatusBadRequest, map[string]string{
-			"error": "cli 与 home_dir 必填"})
+			"error": "cli 必填"})
 		return
 	}
-	s.log.Info("唤起隔离 HOME", "cli", in.CLI)
+	s.log.Info("唤起载体 HOME", "cli", in.CLI, "home_dir", in.HomeDir)
 	reply, err := s.hostAPI.WakeHome(r.Context(), hostapi.WakeRequest{
 		CLI: in.CLI, HomeDir: in.HomeDir, Credential: in.Credential, Model: in.Model,
 	})
