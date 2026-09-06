@@ -387,6 +387,36 @@ func (m *Manager) resolveModel(reqModel, execName string) string {
 	return ""
 }
 
+// isOpenCodeExecutor 判断指定执行者是否为 opencode。
+// 当 name 为空时按 defaultName 缺省判定。
+func isOpenCodeExecutor(name, defaultName string) bool {
+	if name == "" {
+		name = defaultName
+	}
+	return name == "opencode"
+}
+
+// taskIsOpenCode 查库判断任务是否由 opencode 驱动。
+func (m *Manager) taskIsOpenCode(taskID string) bool {
+	task, err := m.st.GetTask(taskID)
+	if err != nil {
+		return false
+	}
+	return isOpenCodeExecutor(task.Executor, m.conf().Executor.Default)
+}
+
+// resolveSnapshot 构造任务专属政策快照。
+func (m *Manager) resolveSnapshot(task *proto.Task) (executor.PolicySnapshot, error) {
+	scope := executor.ApprovalScope{
+		Workdir:    task.Workdir(),
+		TaskDir:    filepath.Join(m.cfg.DataDir, "tasks", task.ID),
+		TaskTmpDir: executor.TaskTmpDir(m.cfg.DataDir, task.ID),
+	}
+	cfg := m.conf()
+	ver := HashPolicyVersion(cfg.Approver.Blacklist, cfg.Approver.Executor != "", permgate.SafeCommandIDs(), scope)
+	return executor.PolicySnapshot{Version: ver, TaskID: task.ID, Scope: scope}, nil
+}
+
 // registeredNames 返回注册表全部执行者名（按字母序，供错误提示与日志）。
 func registeredNames(ads map[string]executor.Adapter) []string {
 	names := make([]string, 0, len(ads))
@@ -1012,8 +1042,17 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		m.log.Info("载体 HOME 已覆盖 executor 环境", "task", taskID,
 			"home_override", true, "home_dir", task.HomeDir)
 	}
+	var approval executor.ApprovalClient
+	if isOpenCodeExecutor(execName, m.conf().Executor.Default) {
+		snap, serr := m.resolveSnapshot(task)
+		if serr != nil {
+			return nil, serr
+		}
+		approval = m.bindApproval(taskID, snap)
+		m.log.Info("Dispatch 注入 ApprovalClient", "task", taskID, "version", snap.Version)
+	}
 	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent),
-		TaskDir: taskDir, Env: startEnv, Discipline: discText}); err != nil {
+		TaskDir: taskDir, Env: startEnv, Discipline: discText, Approval: approval}); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，协调者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
@@ -1305,6 +1344,24 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 		m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 路由执行者失败回迁")
 		return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
 	}
+	if m.taskIsOpenCode(taskID) {
+		task, _ := m.st.GetTask(taskID)
+		snap, err := m.resolveSnapshot(task)
+		if err != nil {
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 快照失败回迁")
+			return err
+		}
+		sa, ok := ad.(executor.SnapshotApplier)
+		if !ok {
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 无 SnapshotApplier")
+			return fmt.Errorf("OpenCode 未实现 SnapshotApplier，无法把新快照投影到原生配置")
+		}
+		m.log.Info("Continue 投影新快照", "task", taskID, "version", snap.Version)
+		if err := sa.ApplySnapshot(ctx, taskID, snap); err != nil {
+			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 投影失败回迁")
+			return err
+		}
+	}
 	if err := ad.Send(ctx, taskID, instructions); err != nil {
 		if !errors.Is(err, executor.ErrTaskNotRunning) {
 			// executor 还在，只是这次没打通：保持原语义，回迁让协调者可重试
@@ -1388,12 +1445,21 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 		m.log.Info("续接/恢复回注首派落盘正文", "task", taskID,
 			"name", task.DisciplineName, "bytes", len(discText))
 	}
+	var approval executor.ApprovalClient
+	if isOpenCodeExecutor(execName, m.conf().Executor.Default) {
+		snap, serr := m.resolveSnapshot(task)
+		if serr != nil {
+			return fmt.Errorf("恢复任务 %s 快照失败: %w", taskID, serr)
+		}
+		approval = m.bindApproval(taskID, snap)
+	}
 	m.log.Info("进入冷恢复", "task", taskID, "executor", execName, "session", task.ExecutorSession)
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: filepath.Join(m.cfg.DataDir, "tasks", taskID),
 		RepoPath: task.Workdir(), SessionID: task.ExecutorSession,
 		Env: envKVs, Discipline: discText, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: true,
+		Approval: approval,
 	})
 	if err != nil {
 		m.log.Error("恢复失败", "task", taskID, "cause", err)
@@ -1731,8 +1797,24 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 		if err != nil {
 			return fmt.Errorf("解析任务 %s 执行者: %w", taskID, err)
 		}
-		if err := ad.Send(actx, taskID, answer); err != nil {
-			return fmt.Errorf("中继提问回答: %w", err)
+		if m.taskIsOpenCode(taskID) {
+			ar, ok := ad.(executor.AskResponder)
+			if !ok {
+				return fmt.Errorf("OpenCode 未实现 AskResponder，禁止回退 Send")
+			}
+			q := ""
+			if native := executor.NativeIDFromTicket(taskID, ticketID); native != ticketID {
+				q = native
+			}
+			if err := ar.RespondAsk(actx, executor.RespondAskReq{
+				TaskID: taskID, TicketID: ticketID, QuestionID: q, Answer: answer,
+			}); err != nil {
+				return fmt.Errorf("中继提问回答: %w", err)
+			}
+		} else {
+			if err := ad.Send(actx, taskID, answer); err != nil {
+				return fmt.Errorf("中继提问回答: %w", err)
+			}
 		}
 		m.markDelivered(taskID, ticketID)
 		return nil
@@ -1783,6 +1865,11 @@ func (m *Manager) mediate(taskID string) {
 func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.AdapterEvent) {
 	switch ev.Type {
 	case adapterEventPermission:
+		if m.taskIsOpenCode(taskID) {
+			m.log.Warn("OpenCode 仍发出 permission 事件，忽略（权威在 adapter client）",
+				"task", taskID, "perm", ev.PermissionID)
+			return
+		}
 		m.log.Info("权限请求事件", "task", taskID, "perm", ev.PermissionID,
 			"text", truncateRunes(ev.Text, 80))
 		m.handlePermission(ctx, taskID, ev)
@@ -2525,23 +2612,7 @@ func permFingerprint(text string) string {
 // 注意：写入（建单）与查询（reuseDecision）必须都走本函数——两边规则不一致
 // 会让复用静默失效，那正是 B91 要修的缺陷形态。
 func permFingerprintFor(ev executor.AdapterEvent) string {
-	if ev.Perm != nil {
-		if ev.Perm.Command != "" {
-			return permFingerprint("cmd\x00" + ev.Perm.Command)
-		}
-		if len(ev.Perm.Paths) > 0 {
-			// 拷贝后排序，不原地改 ev.Perm.Paths——该切片来自 adapter，
-			// 排序它会让调用方看到的顺序被本函数悄悄改掉
-			paths := append([]string(nil), ev.Perm.Paths...)
-			sort.Strings(paths)
-			// Tool 必须进指纹：edit 与 external_directory 对同一路径含义不同
-			// （写这个文件 vs 授权越界访问这个目录），裸路径合并等于把两种
-			// 授权当成一件事。NUL 作分隔符——路径不可能含 NUL，杜绝
-			// ["a","b/c"] 与 ["a/b","c"] 这类拼接歧义
-			return permFingerprint("paths\x00" + ev.Perm.Tool + "\x00" + strings.Join(paths, "\x00"))
-		}
-	}
-	return permFingerprint(ev.Text)
+	return executor.PermFingerprint(ev)
 }
 
 // reuseDecision 检查本次权限请求是否命中本任务内既有的人工批准；命中则自动
@@ -2756,9 +2827,11 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 	// 这里刻意不区分「被拒终止的兜底提问」与「模型真的在问问题」：manager 没有
 	// 可靠判据（文本前缀匹配一改文案就失效）。吞错的代价是**模型**的一个回合，
 	// 漏抑制的代价是**协调者**的一个回合——后者正是本条要消灭的东西。
-	if guidance := m.takeDenyGuidance(taskID); guidance != "" {
-		m.relayDenyGuidance(ctx, taskID, guidance)
-		return
+	if !m.taskIsOpenCode(taskID) {
+		if guidance := m.takeDenyGuidance(taskID); guidance != "" {
+			m.relayDenyGuidance(ctx, taskID, guidance)
+			return
+		}
 	}
 	// 工单 id 优先用 executor 的原生提问 id 派生（taskID:questionID），与 gate
 	// 工单同构、天然幂等：agentd 重启后 executor 重放同一个 request 时，
@@ -2766,7 +2839,7 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 	// executor 没有原生 id 时退回 uuid——问题没有天然稳定 id，回答一次即终结。
 	ticketID := uuid.NewString()
 	if ev.QuestionID != "" {
-		ticketID = taskID + ":" + ev.QuestionID
+		ticketID = executor.NamespacedTicketID(taskID, ev.QuestionID)
 	}
 	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "question")
 	req, _ := json.Marshal(ticketRequest{Kind: "ask", Question: ev.Text})
@@ -2846,10 +2919,30 @@ func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 		m.log.Error("解析任务执行者失败", "task", taskID, "cause", err)
 		return
 	}
-	if err := ad.Send(actx, taskID, ans); err != nil {
-		m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
-		m.NoteDeliveryFailed(taskID, ticketID, err)
-		return
+	if m.taskIsOpenCode(taskID) {
+		ar, ok := ad.(executor.AskResponder)
+		if !ok {
+			m.log.Error("OpenCode 未实现 AskResponder，禁止回退 Send", "task", taskID)
+			m.NoteDeliveryFailed(taskID, ticketID, fmt.Errorf("OpenCode 未实现 AskResponder"))
+			return
+		}
+		q := ""
+		if native := executor.NativeIDFromTicket(taskID, ticketID); native != ticketID {
+			q = native
+		}
+		if err := ar.RespondAsk(actx, executor.RespondAskReq{
+			TaskID: taskID, TicketID: ticketID, QuestionID: q, Answer: ans,
+		}); err != nil {
+			m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
+			m.NoteDeliveryFailed(taskID, ticketID, err)
+			return
+		}
+	} else {
+		if err := ad.Send(actx, taskID, ans); err != nil {
+			m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
+			m.NoteDeliveryFailed(taskID, ticketID, err)
+			return
+		}
 	}
 	m.markDelivered(taskID, ticketID)
 }
@@ -3651,10 +3744,18 @@ func (m *Manager) ResumeTask(taskID string) bool {
 	}
 	// 启动恢复一律 Cold=false：agentd 重启时若有 10 个任务的 executor 已死，
 	// 急着冷恢复等于凭空拉起 10 个没人跟它说话的 executor（spec §4）
+	var approval executor.ApprovalClient
+	if isOpenCodeExecutor(task.Executor, m.conf().Executor.Default) {
+		snap, serr := m.resolveSnapshot(task)
+		if serr == nil {
+			approval = m.bindApproval(taskID, snap)
+		}
+	}
 	out, err := r.Resume(executor.ResumeReq{
 		TaskID: taskID, TaskDir: taskDir, RepoPath: task.Workdir(),
 		SessionID: task.ExecutorSession, Env: envKVs, Discipline: discText, Model: task.Model,
 		MarkRoot: prochost.ResolveMarkRoot(task.Workdir(), task.WorktreeManaged), Cold: false,
+		Approval: approval,
 	})
 	if err != nil {
 		m.log.Error("重建任务执行失败", "task", taskID, "cause", err)

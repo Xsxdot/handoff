@@ -92,7 +92,7 @@ func TestResumeColdVerifiesSessionStillExists(t *testing.T) {
 	a := New(quietLogger())
 
 	out, err := a.Resume(executor.ResumeReq{TaskID: "t1", TaskDir: dir,
-		RepoPath: repo, SessionID: "gone-session", Cold: true})
+		RepoPath: repo, SessionID: "gone-session", Cold: true, Approval: &fakeApprovalClient{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -122,7 +122,7 @@ func TestResumeColdKeepsSessionWhenPresent(t *testing.T) {
 	a := New(quietLogger())
 
 	out, err := a.Resume(executor.ResumeReq{TaskID: "t1", TaskDir: dir,
-		RepoPath: repo, SessionID: "sess-1", Cold: true})
+		RepoPath: repo, SessionID: "sess-1", Cold: true, Approval: &fakeApprovalClient{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,7 +153,7 @@ func TestResumeColdMutualExclusion(t *testing.T) {
 	}
 	a := New(quietLogger())
 	req := executor.ResumeReq{TaskID: "t1", TaskDir: dir, RepoPath: repo,
-		SessionID: "sess-1", Cold: true}
+		SessionID: "sess-1", Cold: true, Approval: &fakeApprovalClient{}}
 	var wg sync.WaitGroup
 	for i := 0; i < 2; i++ {
 		wg.Add(1)

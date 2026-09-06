@@ -273,6 +273,17 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 	return verdict
 }
 
+// SafeCommandIDs 返回当前白名单的稳定 id 集合（排序后），供政策快照 Version 哈希。
+func SafeCommandIDs() []string {
+	return []string{
+		"git-ledger-amend", "go-build", "go-test", "go-vet", "gofmt",
+		"npm-test", "npm-run", "make",
+		"ls", "cat", "grep", "which", "pwd", "head", "tail", "wc",
+		"git-status", "git-diff", "git-log", "git-grep", "git-show",
+		"git-blame", "git-cat-file", "git-rev-parse", "git-ls-files",
+	}
+}
+
 // safeCommandID matches a complete, positive command shape and returns its
 // stable audit identifier. It tokenizes shell quoting for the command body;
 // it is not a shell executor and rejects connectors except the one ledger

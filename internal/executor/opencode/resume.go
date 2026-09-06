@@ -139,7 +139,11 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 		mode = executor.ResumeModeCold
 		a.log.Info("冷恢复新 serve 就绪", "task", req.TaskID, "port", proc.Port)
 	}
+	if mode == executor.ResumeModeCold && req.Approval == nil {
+		return executor.ResumeOutcome{}, fmt.Errorf("OpenCode 冷恢复必须注入 ApprovalClient；nil 不是全部免审")
+	}
 	r := a.newRun(req.TaskID, req.TaskDir, req.RepoPath)
+	r.approval = req.Approval
 	sessionID := req.SessionID
 	r.session = sessionID
 	r.api = NewAPI(fmt.Sprintf("http://127.0.0.1:%d", proc.Port), proc.Password)

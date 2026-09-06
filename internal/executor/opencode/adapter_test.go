@@ -979,6 +979,41 @@ func TestStopReclaimsRun(t *testing.T) {
 	}
 }
 
+func TestStopRejectsPendingPermissions(t *testing.T) {
+	quietLog(t)
+	taskID := "task-stop-perm-01"
+	fs := newFakeServer(t)
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	r := ad.lookup(taskID)
+	if r == nil {
+		t.Fatal("启动后运行态应已登记")
+	}
+
+	r.sessMu.Lock()
+	r.permTiming["perm-stop-1"] = permissionTiming{part: "call-1", paused: true}
+	r.permSession["perm-stop-1"] = "sess-1"
+	r.sessMu.Unlock()
+
+	if err := ad.Stop(taskID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	fs.mu.Lock()
+	calls := append([]permCall(nil), fs.permCalls...)
+	fs.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("期望收到 1 次权限拒绝调用，实际收到 %d 次", len(calls))
+	}
+	if calls[0].path != "/session/sess-1/permissions/perm-stop-1" {
+		t.Errorf("权限路径不符: got %s", calls[0].path)
+	}
+	if !strings.Contains(calls[0].body, `"reject"`) {
+		t.Errorf("期望拒绝权限，实际 body=%s", calls[0].body)
+	}
+}
+
+
 // TestServeDeathEmitsFailed 验证 serve 死亡判定：
 // 探活失败 + SSE 断流后，产出 result !OK（FailReason 含 stderr 尾部），
 // 事件通道随后关闭（执行终结），运行态随订阅退出被注销。
@@ -1706,3 +1741,55 @@ func TestRespondPermissionRoutesToChildSession(t *testing.T) {
 		t.Fatalf("应答 path=%q，期望 %q（必须发往子会话，不是父会话）", calls[0].path, want)
 	}
 }
+
+func TestOpenCodeNilApprovalIsCapabilityError(t *testing.T) {
+	a := New(slog.Default())
+	err := a.Start(context.Background(), executor.StartReq{
+		Task:     proto.Task{ID: "t-nil"},
+		TaskDir:  t.TempDir(),
+		Approval: nil,
+	})
+	if err == nil {
+		t.Fatal("Start with nil Approval must fail")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "不是") && !strings.Contains(msg, "免审") && !strings.Contains(msg, "Approval") {
+		t.Fatalf("unexpected error message: %v", msg)
+	}
+}
+
+type fakeApprovalClient struct {
+	reqs []executor.ApprovalRequest
+}
+
+func (f *fakeApprovalClient) PolicySnapshot(context.Context) (executor.PolicySnapshot, error) {
+	return executor.PolicySnapshot{Version: "v1"}, nil
+}
+func (f *fakeApprovalClient) Request(_ context.Context, req executor.ApprovalRequest) (executor.ApprovalResult, error) {
+	f.reqs = append(f.reqs, req)
+	return executor.ApprovalResult{
+		Ref:      executor.ApprovalRef{ID: "ref-1"},
+		Decision: executor.ApprovalDecision{Status: executor.ApprovalAllow},
+	}, nil
+}
+func (f *fakeApprovalClient) Await(context.Context, executor.ApprovalRef) (executor.ApprovalDecision, error) {
+	return executor.ApprovalDecision{Status: executor.ApprovalAllow}, nil
+}
+func (f *fakeApprovalClient) Acknowledge(context.Context, executor.ApprovalAck) error {
+	return nil
+}
+
+func TestMapPermissionAskedWithApprovalClientDoesNotEmitPermission(t *testing.T) {
+	a, r := newAdapterWithRunForTest(t)
+	fakeClient := &fakeApprovalClient{}
+	r.approval = fakeClient
+	props := []byte(`{"id":"p1","permission":"bash","metadata":{"command":"ls"}}`)
+	a.mapPermissionAsked(r, props)
+	select {
+	case ev := <-r.EventsForTest():
+		t.Fatalf("ApprovalClient 存在时不得向事件通道 emit permission，实得 %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+		// 正常不产出
+	}
+}
+

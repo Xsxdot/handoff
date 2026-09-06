@@ -36,3 +36,10 @@ func permFingerprintHash(text string) string {
 	sum := sha256.Sum256([]byte(text))
 	return hex.EncodeToString(sum[:])
 }
+
+// ReuseFingerprint 把政策版本盐进权限指纹。P2(a)：不改 Ticket 字段。
+func ReuseFingerprint(version, permFP string) string {
+	return permFingerprintHash(version + "\x00" + permFP)
+}
+
+

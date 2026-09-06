@@ -10,8 +10,16 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
 )
+
+func testSnapshot() executor.PolicySnapshot {
+	return executor.PolicySnapshot{
+		Version: "v1", TaskID: "t1",
+		Scope: executor.ApprovalScope{Workdir: "/repo", TaskDir: "/task", TaskTmpDir: "/tmp/t"},
+	}
+}
 
 // TestTaskModelOverridesEnv 验证任务级 model 优先于 HANDOFF_OPENCODE_MODEL：
 // 两源都设置时写出 json 的 model 取任务值。
@@ -19,7 +27,7 @@ func TestTaskModelOverridesEnv(t *testing.T) {
 	quietLog(t)
 	t.Setenv("HANDOFF_OPENCODE_MODEL", "env-model")
 	taskDir := t.TempDir()
-	configPath, _, err := opencode.WriteTaskEnv(taskDir, "t1", "task-model", "plan", "")
+	configPath, _, err := opencode.WriteTaskEnv(taskDir, "t1", "task-model", "plan", "", testSnapshot())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -41,7 +49,7 @@ func TestTaskModelFallsBackToEnvThenEmpty(t *testing.T) {
 	quietLog(t)
 	t.Run("env 兜底", func(t *testing.T) {
 		t.Setenv("HANDOFF_OPENCODE_MODEL", "env-model")
-		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "", testSnapshot())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -58,7 +66,7 @@ func TestTaskModelFallsBackToEnvThenEmpty(t *testing.T) {
 	})
 	t.Run("都空则不写", func(t *testing.T) {
 		t.Setenv("HANDOFF_OPENCODE_MODEL", "")
-		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+		configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "", testSnapshot())
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -81,7 +89,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	const taskID = "T-2026-0001"
 	plan := "1. 实现 foo\n2. 修复 bar\n{\"ask\":\"要第三方库吗?\"}"
 
-	configPath, promptPath, err := opencode.WriteTaskEnv(taskDir, taskID, "", plan, "")
+	configPath, promptPath, err := opencode.WriteTaskEnv(taskDir, taskID, "", plan, "", testSnapshot())
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -107,7 +115,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	if err := json.Unmarshal(cfgRaw, &cfg); err != nil {
 		t.Fatalf("opencode.json 不是合法 JSON: %v\n%s", err, cfgRaw)
 	}
-	// 静态分级底线：改代码/常规命令放行，危险模式与外访仍上审批门
+	// 静态分级底线：改代码放行，越界/外访与 bash 兜底仍上审批门（B233.1: bash 兜底 ask）
 	if cfg.Permission.Edit != "allow" {
 		t.Errorf("permission.edit = %q，期望 allow（任务分支内改代码是派发目的本身）", cfg.Permission.Edit)
 	}
@@ -117,8 +125,8 @@ func TestWriteTaskEnv(t *testing.T) {
 	if cfg.Permission.ExternalDirectory != "ask" {
 		t.Errorf("permission.external_directory = %q，期望 ask", cfg.Permission.ExternalDirectory)
 	}
-	if cfg.Permission.Bash["*"] != "allow" {
-		t.Errorf("permission.bash[*] = %q，期望 allow（常规命令兜底放行）", cfg.Permission.Bash["*"])
+	if cfg.Permission.Bash["*"] != "ask" {
+		t.Errorf("permission.bash[*] = %q，期望 ask（无法精确表达无限制 bash ⊆ 快照）", cfg.Permission.Bash["*"])
 	}
 	// 危险模式必须逐条在场且为 ask——少一条就是静默放行破坏性操作
 	for _, pattern := range []string{
@@ -147,7 +155,7 @@ func TestWriteTaskEnv(t *testing.T) {
 	}
 
 	newPlan := "改版后的计划：只做一件事"
-	if _, _, err := opencode.WriteTaskEnv(taskDir, taskID, "", newPlan, ""); err != nil {
+	if _, _, err := opencode.WriteTaskEnv(taskDir, taskID, "", newPlan, "", testSnapshot()); err != nil {
 		t.Fatalf("重复调用 WriteTaskEnv: %v", err)
 	}
 	again, err := os.ReadFile(promptPath)
@@ -160,7 +168,7 @@ func TestWriteTaskEnv(t *testing.T) {
 }
 
 func TestWriteTaskEnvInjectsDiscipline(t *testing.T) {
-	_, promptPath, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "计划正文", "# 执行纪律\n单上下文版内容")
+	_, promptPath, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "计划正文", "# 执行纪律\n单上下文版内容", testSnapshot())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +188,7 @@ func TestWriteTaskEnvInjectsDiscipline(t *testing.T) {
 func TestBashRulesRejectBareRedirectGlob(t *testing.T) {
 	quietLog(t)
 	// 第 5 个参数是纪律块（B129 引入），本用例只关心 bash 规则表，传空串
-	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "", testSnapshot())
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -213,7 +221,7 @@ func TestBashRulesRejectBareRedirectGlob(t *testing.T) {
 // ~/.ssh/authorized_keys 就会连事件都不留。
 func TestExternalDirectoryIsAsk(t *testing.T) {
 	quietLog(t)
-	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "", testSnapshot())
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -246,7 +254,7 @@ func TestExternalDirectoryIsAsk(t *testing.T) {
 // 这与重定向那四条的取舍方向不同，是因为那边要避开高频的 2>&1。
 func TestBashRulesAskOnTee(t *testing.T) {
 	quietLog(t)
-	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "", testSnapshot())
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -265,9 +273,9 @@ func TestBashRulesAskOnTee(t *testing.T) {
 	if got := cfg.Permission.Bash["*tee*"]; got != "ask" {
 		t.Fatalf(`模式 "*tee*" = %q，期望 ask——少了它，| tee /tmp/x 零请求实写（B151）`, got)
 	}
-	// 兜底 allow 必须还在：本轮只补漏，不反转整张表（B150 已并入 B151 并记明理由）
-	if got := cfg.Permission.Bash["*"]; got != "allow" {
-		t.Fatalf(`兜底模式 "*" = %q，期望 allow——本轮不反转静态表`, got)
+	// B233.1: 无法精确表达「无限制 bash ⊆ 快照」，兜底模式必须强制为 ask
+	if got := cfg.Permission.Bash["*"]; got != "ask" {
+		t.Fatalf(`兜底模式 "*" = %q，期望 ask`, got)
 	}
 }
 
@@ -284,7 +292,7 @@ func TestBashRulesAskOnTee(t *testing.T) {
 // 平白送进审批链；tee 那条敢裸包含是因为 "tee" 作为子串罕见。
 func TestBashRulesAskOnParamWriteCommands(t *testing.T) {
 	quietLog(t)
-	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "")
+	configPath, _, err := opencode.WriteTaskEnv(t.TempDir(), "t1", "", "plan", "", testSnapshot())
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -312,3 +320,72 @@ func TestBashRulesAskOnParamWriteCommands(t *testing.T) {
 		}
 	}
 }
+
+func TestWritePermissionConfigSubsetOfSnapshot(t *testing.T) {
+	dir := t.TempDir()
+	snap := executor.PolicySnapshot{
+		Version: "s1", TaskID: "T1",
+		Scope: executor.ApprovalScope{Workdir: "/repo", TaskDir: "/task", TaskTmpDir: "/tmp/t"},
+	}
+	p, err := opencode.WritePermissionConfig(dir, "", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cfg struct {
+		Permission struct {
+			Edit              string            `json:"edit"`
+			Bash              map[string]string `json:"bash"`
+			Webfetch          string            `json:"webfetch"`
+			ExternalDirectory string            `json:"external_directory"`
+		} `json:"permission"`
+	}
+	if err := json.Unmarshal(raw, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Permission.Edit != "allow" {
+		t.Errorf("范围内 edit 可精确表达为 allow，got %q", cfg.Permission.Edit)
+	}
+	if cfg.Permission.ExternalDirectory != "ask" {
+		t.Errorf("越界必须 ask，got %q", cfg.Permission.ExternalDirectory)
+	}
+	if cfg.Permission.Webfetch != "ask" {
+		t.Errorf("webfetch 必须 ask，got %q", cfg.Permission.Webfetch)
+	}
+	if cfg.Permission.Bash["*"] == "allow" {
+		t.Fatal("快照不允许无限制 bash 时，不得写 \"*\": allow")
+	}
+	if cfg.Permission.Bash["*"] != "ask" {
+		t.Errorf(`bash["*"]=%q want ask`, cfg.Permission.Bash["*"])
+	}
+	for _, pattern := range []string{
+		"*rm -rf*", "*rm -fr*", "rm *", "*sudo*",
+		"*git push*", "*git reset --hard*", "*--force*", "curl *", "wget *",
+		"*>/*", "*> /*", "*>~*", "*> ~*", "*tee*",
+		"ln *", "* ln *", "install *", "* install *", "dd *", "* dd *",
+	} {
+		if got := cfg.Permission.Bash[pattern]; got != "ask" {
+			t.Errorf("bash[%q]=%q want ask", pattern, got)
+		}
+	}
+}
+
+func TestWritePermissionConfigEmptyScopeIsCapabilityError(t *testing.T) {
+	_, err := opencode.WritePermissionConfig(t.TempDir(), "", executor.PolicySnapshot{Version: "s1", TaskID: "T1"})
+	if err == nil {
+		t.Fatal("空 Scope 无法实施范围内允许，必须能力不足")
+	}
+}
+
+func TestWritePermissionConfigRequiresVersion(t *testing.T) {
+	_, err := opencode.WritePermissionConfig(t.TempDir(), "", executor.PolicySnapshot{
+		TaskID: "T1", Scope: executor.ApprovalScope{Workdir: "/r"},
+	})
+	if err == nil {
+		t.Fatal("缺 Version 必须拒绝")
+	}
+}
+

@@ -144,7 +144,8 @@ func isDeliverable(t proto.EventType) bool {
 		proto.EventTypeApproverDisabled,
 		proto.EventTypeTicketsVoided,
 		proto.EventTypeTicketAnswered,
-		proto.EventTypePermissionAutoAllow:
+		proto.EventTypePermissionAutoAllow,
+		proto.EventTypePermissionReuse:
 		return false
 	}
 	return true

@@ -3224,3 +3224,258 @@ func TestResolveModelOnlyAppliesToDefaultExecutor(t *testing.T) {
 		})
 	}
 }
+
+type openCodeStub struct {
+	chanAdapter
+	asks []executor.RespondAskReq
+}
+
+func (a *openCodeStub) RespondAsk(_ context.Context, req executor.RespondAskReq) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.respondErr != nil {
+		return a.respondErr
+	}
+	a.asks = append(a.asks, req)
+	return nil
+}
+
+func TestDispatchOpenCodeInjectsApproval(t *testing.T) {
+	stub := &openCodeStub{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	fakeAd := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{
+		"opencode": stub,
+		"fake":     fakeAd,
+	}, "opencode")
+
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid,
+		Prompt:    "test opencode dispatch",
+		Target:    "local",
+		Executor:  "opencode",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch opencode: %v", err)
+	}
+	startReq := stub.lastStartReq()
+	if startReq.Approval == nil {
+		t.Fatal("OpenCode 任务必须注入 ApprovalClient")
+	}
+	snap, err := startReq.Approval.PolicySnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("PolicySnapshot: %v", err)
+	}
+	if snap.TaskID != task.ID {
+		t.Fatalf("PolicySnapshot TaskID = %q, want %q", snap.TaskID, task.ID)
+	}
+
+	// 非 OpenCode 执行者
+	repo2 := initTestRepo(t)
+	pid2 := registerTestProject(t, m, repo2)
+	_, err = m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid2,
+		Prompt:    "test fake dispatch",
+		Target:    "local",
+		Executor:  "fake",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch fake: %v", err)
+	}
+	if fakeAd.lastStartReq().Approval != nil {
+		t.Fatal("非 OpenCode 任务 Approval 必须为 nil")
+	}
+}
+
+func TestOpenCodeWaitQuestionUsesRespondAsk(t *testing.T) {
+	stub := &openCodeStub{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{
+		"opencode": stub,
+	}, "opencode")
+
+	taskID := "task-opencode-ask"
+	mustCreateTask(t, st, &proto.Task{
+		ID:       taskID,
+		RepoPath: t.TempDir(),
+		WorkDir:  t.TempDir(),
+		State:    proto.TaskStateRunning,
+		Executor: "opencode",
+	})
+
+	m.handleQuestion(context.Background(), taskID, executor.AdapterEvent{
+		QuestionID: "q1",
+		Text:       "which option?",
+	})
+
+	ticketID := executor.NamespacedTicketID(taskID, "q1")
+	waitAnswerRegistered(t, m.hub, ticketID)
+	if !m.hub.NotifyAnswer(ticketID, "1.2") {
+		t.Fatal("NotifyAnswer 应成功通知等待者")
+	}
+
+	deadline := time.Now().Add(1 * time.Second)
+	for time.Now().Before(deadline) {
+		stub.mu.Lock()
+		count := len(stub.asks)
+		sends := len(stub.sends)
+		stub.mu.Unlock()
+		if count > 0 || sends > 0 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.asks) != 1 {
+		t.Fatalf("RespondAsk 必须被调用 1 次，实得 %d", len(stub.asks))
+	}
+	if stub.asks[0].TicketID != ticketID {
+		t.Fatalf("TicketID = %q, want %q", stub.asks[0].TicketID, ticketID)
+	}
+	if stub.asks[0].QuestionID != "q1" {
+		t.Fatalf("QuestionID = %q, want q1", stub.asks[0].QuestionID)
+	}
+	if stub.asks[0].Answer != "1.2" {
+		t.Fatalf("Answer = %q, want 1.2", stub.asks[0].Answer)
+	}
+	if len(stub.sends) != 0 {
+		t.Fatalf("Send 不得被调用，实得 %v", stub.sends)
+	}
+}
+
+func TestDenyGuidanceDoesNotSwallowQuestion(t *testing.T) {
+	stub := &openCodeStub{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{
+		"opencode": stub,
+	}, "opencode")
+
+	taskID := "task-opencode-guidance"
+	mustCreateTask(t, st, &proto.Task{
+		ID:       taskID,
+		RepoPath: t.TempDir(),
+		WorkDir:  t.TempDir(),
+		State:    proto.TaskStateRunning,
+		Executor: "opencode",
+	})
+
+	m.noteDenyGuidance(taskID, "forbidden file path")
+	m.handleQuestion(context.Background(), taskID, executor.AdapterEvent{
+		QuestionID: "q2",
+		Text:       "normal question",
+	})
+
+	ticketID := executor.NamespacedTicketID(taskID, "q2")
+	tk, err := st.GetTicket(ticketID)
+	if err != nil {
+		t.Fatalf("提问工单必须创建成功: %v", err)
+	}
+	if tk.Kind != "ask" {
+		t.Fatalf("工单 kind=%q want ask", tk.Kind)
+	}
+}
+
+func TestStopVoidsAskAndDoesNotRewriteAllow(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	taskID := "T-stop-void"
+	task := &proto.Task{
+		ID: taskID, RepoPath: t.TempDir(), Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: time.Now(), UpdatedAt: time.Now(),
+	}
+	mustCreateTask(t, st, task)
+
+	// 挂起提问工单
+	askID := taskID + ":ask-1"
+	if _, err := st.CreateTicket(&proto.Ticket{
+		ID: askID, TaskID: taskID, Kind: "ask",
+		Request: []byte(`{"kind":"ask","question":"q"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 事先已 allow 且 delivered 的 gate 工单
+	gateID := taskID + ":gate-1"
+	if _, err := st.CreateTicket(&proto.Ticket{
+		ID: gateID, TaskID: taskID, Kind: "gate",
+		Request: []byte(`{"kind":"gate","permission":"bash: ls"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AnswerTicket(gateID, "allow"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkTicketDelivered(gateID); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := m.Stop(context.Background(), taskID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	// 验证 pending ask 工单已被作废为 VoidAnswer
+	askTk, err := st.GetTicket(askID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if askTk.Answer == nil || *askTk.Answer != store.VoidAnswer {
+		t.Fatalf("Stop 后 pending ask 工单 answer = %v, want %q", askTk.Answer, store.VoidAnswer)
+	}
+
+	// 验证事先已决定的 gate 工单未被篡改
+	gateTk, err := st.GetTicket(gateID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if gateTk.Answer == nil || *gateTk.Answer != "allow" {
+		t.Fatalf("Stop 不得改写已决定的 gate 工单，answer = %v, want allow", gateTk.Answer)
+	}
+}
+
+func TestNonOpenCodeKeepsOldApprovalPath(t *testing.T) {
+	fakeAd := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{
+		"grok": fakeAd,
+	}, "grok")
+
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid,
+		Prompt:    "test grok dispatch",
+		Target:    "local",
+		Executor:  "grok",
+	})
+	if err != nil {
+		t.Fatalf("Dispatch grok: %v", err)
+	}
+
+	startReq := fakeAd.lastStartReq()
+	if startReq.Approval != nil {
+		t.Fatal("非 OpenCode 任务 Approval 必须为 nil")
+	}
+
+	m.handleQuestion(context.Background(), task.ID, executor.AdapterEvent{
+		QuestionID: "q1",
+		Text:       "which option?",
+	})
+
+	ticketID := executor.NamespacedTicketID(task.ID, "q1")
+	if err := m.RelayAnswer(task.ID, ticketID, "option A"); err != nil {
+		t.Fatalf("RelayAnswer: %v", err)
+	}
+
+	fakeAd.mu.Lock()
+	defer fakeAd.mu.Unlock()
+	if len(fakeAd.sends) != 1 {
+		t.Fatalf("非 OpenCode 回答必须走 Send 且恰好 1 次，实得 %d", len(fakeAd.sends))
+	}
+	if fakeAd.sends[0] != "option A" {
+		t.Fatalf("Send 实参 = %q, want %q", fakeAd.sends[0], "option A")
+	}
+}
+
+
+

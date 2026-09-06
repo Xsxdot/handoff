@@ -1199,15 +1199,25 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	if err := s.st.AnswerTicket(req.TicketID, req.Answer); err != nil {
+	applied, err := s.st.AnswerTicketApplied(req.TicketID, req.Answer)
+	if err != nil {
+		if errors.Is(err, store.ErrTicketConflict) {
+			s.log.Warn("reply 工单冲突", "task", taskID, "ticket", req.TicketID, "cause", err)
+			writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
+			return
+		}
 		if errors.Is(err, store.ErrNotFound) {
-			// 并发场景：另一请求已抢先回答（answer IS NULL 条件失效），按不存在处理
-			s.log.Warn("reply 工单已被回答", "task", taskID, "ticket", req.TicketID)
+			s.log.Warn("reply 目标工单不存在", "task", taskID, "ticket", req.TicketID)
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "工单不存在"})
 			return
 		}
 		s.log.Error("回答工单失败", "task", taskID, "ticket", req.TicketID, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
+		return
+	}
+	if !applied {
+		s.log.Info("reply 幂等无需二次中继", "task", taskID, "ticket", req.TicketID, "idempotent", true)
+		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "relayed": true, "idempotent": true})
 		return
 	}
 	if _, err := s.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,

@@ -1293,3 +1293,61 @@ func TestSaveTaskEmptyDisciplineName(t *testing.T) {
 		t.Fatalf("未点名的任务应为空串，实得 %q", got.DisciplineName)
 	}
 }
+
+func openStore(t *testing.T) *store.Store {
+	t.Helper()
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func createAskTicket(t *testing.T, s *store.Store, taskID, ticketID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := s.CreateTask(&proto.Task{ID: taskID, RepoPath: "/r", State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.CreateTicket(&proto.Ticket{ID: ticketID, TaskID: taskID, Kind: "ask", Request: json.RawMessage(`{}`), CreatedAt: now})
+	if err != nil || !ok {
+		t.Fatalf("CreateTicket: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAnswerTicketSameAnswerIdempotent(t *testing.T) {
+	s := openStore(t)
+	createAskTicket(t, s, "t1", "tk1")
+	if err := s.AnswerTicket("tk1", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerTicket("tk1", "hello"); err != nil {
+		t.Fatalf("相同答案第二次必须成功: %v", err)
+	}
+}
+
+func TestAnswerTicketDifferentAnswerRejected(t *testing.T) {
+	s := openStore(t)
+	createAskTicket(t, s, "t1", "tk1")
+	if err := s.AnswerTicket("tk1", "a"); err != nil {
+		t.Fatal(err)
+	}
+	err := s.AnswerTicket("tk1", "b")
+	if err == nil || !errors.Is(err, store.ErrTicketConflict) {
+		t.Fatalf("不同答案必须 ErrTicketConflict，got %v", err)
+	}
+}
+
+func TestAnswerTicketVoidRejected(t *testing.T) {
+	s := openStore(t)
+	createAskTicket(t, s, "t1", "tk1")
+	if _, err := s.VoidPendingTickets("t1"); err != nil {
+		t.Fatal(err)
+	}
+	err := s.AnswerTicket("tk1", "hello")
+	if err == nil || !errors.Is(err, store.ErrTicketConflict) {
+		t.Fatalf("作废后迟到答案必须拒绝，got %v", err)
+	}
+}
+

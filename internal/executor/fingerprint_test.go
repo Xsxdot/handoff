@@ -70,3 +70,26 @@ func TestPermFingerprintCommandDomainIgnoresTwinKind(t *testing.T) {
 		t.Fatal("same command must share fingerprint across twin permission kinds")
 	}
 }
+
+func TestReuseFingerprintSaltsVersion(t *testing.T) {
+	perm := executor.PermFingerprint(executor.AdapterEvent{
+		Text: "bash: echo hello",
+		Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "echo hello"},
+	})
+	a := executor.ReuseFingerprint("ver-1", perm)
+	b := executor.ReuseFingerprint("ver-2", perm)
+	c := executor.ReuseFingerprint("ver-1", perm)
+	if a == perm {
+		t.Fatal("加盐后不得等于裸 PermFingerprint")
+	}
+	if a == b {
+		t.Fatal("不同 Version 必须不同复用键")
+	}
+	if a != c {
+		t.Fatal("同一 Version+指纹必须稳定")
+	}
+	if len(a) != 64 {
+		t.Fatalf("hex sha256 长度=%d", len(a))
+	}
+}
+

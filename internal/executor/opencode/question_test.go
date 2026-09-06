@@ -8,6 +8,8 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 func TestRenderQuestionTicketSingleQuestion(t *testing.T) {
@@ -223,7 +225,36 @@ func TestParseQuestionAnswersCountMismatchRejected(t *testing.T) {
 	}
 }
 
-func TestSendRoutesToQuestionReplyWhenPending(t *testing.T) {
+func TestSendDoesNotConsumePendingAsk(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+	r.pendingQuestionID = "req_1"
+	r.pendingQuestions = []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}, {Label: "乙"}}}}
+
+	if err := a.Send(context.Background(), "task-1", "1.2"); err != nil {
+		t.Fatalf("Send 返回错误: %v", err)
+	}
+	for _, p := range paths {
+		if strings.Contains(p, "/question/") {
+			t.Fatalf("Send 不得打到 question 端点，实际 paths=%v", paths)
+		}
+	}
+	if r.pendingQuestionID != "req_1" {
+		t.Fatalf("Send 之后 pending 必须仍在，got %q", r.pendingQuestionID)
+	}
+}
+
+func TestRespondAskRepliesPendingQuestion(t *testing.T) {
 	var gotPath, gotBody string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotPath = r.URL.Path
@@ -241,17 +272,75 @@ func TestSendRoutesToQuestionReplyWhenPending(t *testing.T) {
 	r.pendingQuestionID = "req_1"
 	r.pendingQuestions = []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}, {Label: "乙"}}}}
 
-	if err := a.Send(context.Background(), "task-1", "1.2"); err != nil {
-		t.Fatalf("Send 返回错误: %v", err)
+	err := a.RespondAsk(context.Background(), executor.RespondAskReq{
+		TaskID: "task-1", TicketID: "task-1:req_1", QuestionID: "req_1", Answer: "1.2",
+	})
+	if err != nil {
+		t.Fatalf("RespondAsk: %v", err)
 	}
 	if gotPath != "/question/req_1/reply" {
-		t.Fatalf("path = %q，期望打到 reply 端点而不是 prompt", gotPath)
+		t.Fatalf("path = %q，期望 reply 端点", gotPath)
 	}
 	if !strings.Contains(gotBody, "乙") {
-		t.Errorf("body = %q，期望含折算后的 label 乙", gotBody)
+		t.Errorf("body = %q，期望含折算 label 乙", gotBody)
 	}
 	if r.pendingQuestionID != "" {
 		t.Error("应答成功后必须清掉挂起请求")
+	}
+}
+
+func TestRespondAskDoesNotStartPromptWhenPending(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+	r.pendingQuestionID = "req_1"
+	r.pendingQuestions = []QuestionInfo{{Custom: true, Options: []QuestionOption{{Label: "甲"}}}}
+
+	if err := a.RespondAsk(context.Background(), executor.RespondAskReq{
+		TaskID: "task-1", TicketID: "task-1:req_1", QuestionID: "req_1", Answer: "自定义",
+	}); err != nil {
+		t.Fatalf("RespondAsk: %v", err)
+	}
+	for _, p := range paths {
+		if strings.Contains(p, "/session/") && strings.Contains(p, "prompt") {
+			t.Fatalf("原生仍挂起时不得 Prompt，paths=%v", paths)
+		}
+	}
+}
+
+func TestRespondAskContinuesWhenTurnEnded(t *testing.T) {
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.URL.Path)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+	a := newTestAdapter(t)
+	dir := t.TempDir()
+	r := a.newRun("task-1", dir, dir)
+	r.session = "ses_a"
+	r.api = NewAPI(srv.URL, "pw")
+	// pending 空 = 提问回合已结束
+	err := a.RespondAsk(context.Background(), executor.RespondAskReq{
+		TaskID: "task-1", TicketID: "task-1:req_old", QuestionID: "req_old", Answer: "继续：用方案 A",
+	})
+	if err != nil {
+		t.Fatalf("RespondAsk: %v", err)
+	}
+	joined := strings.Join(paths, ",")
+	if !strings.Contains(joined, "/session/ses_a/") {
+		t.Fatalf("回合已结束应以关联 Prompt 续接，paths=%v", paths)
+	}
+	if strings.Contains(joined, "/question/") {
+		t.Fatalf("无挂起时不得 ReplyQuestion，paths=%v", paths)
 	}
 }
 
@@ -294,7 +383,10 @@ func TestSendUnparsableAnswerRepromptsAndKeepsPending(t *testing.T) {
 	r.pendingQuestionID = "req_1"
 	r.pendingQuestions = []QuestionInfo{{Options: []QuestionOption{{Label: "甲"}}}}
 
-	if err := a.Send(context.Background(), "task-1", "驴唇不对马嘴"); err != nil {
+	err := a.RespondAsk(context.Background(), executor.RespondAskReq{
+		TaskID: "task-1", TicketID: "task-1:req_1", QuestionID: "req_1", Answer: "驴唇不对马嘴",
+	})
+	if err != nil {
 		t.Fatalf("重问路径不应返回错误（错误要以工单形式给协调者）: %v", err)
 	}
 	ev, ok := drainOne(r)
@@ -320,7 +412,10 @@ func TestSendCustomRejectedByServerRepromptsAndKeepsPending(t *testing.T) {
 	r.pendingQuestionID = "req_1"
 	r.pendingQuestions = []QuestionInfo{{Custom: true, Options: []QuestionOption{{Label: "甲"}}}}
 
-	if err := a.Send(context.Background(), "task-1", "我自己想的答案"); err != nil {
+	err := a.RespondAsk(context.Background(), executor.RespondAskReq{
+		TaskID: "task-1", TicketID: "task-1:req_1", QuestionID: "req_1", Answer: "我自己想的答案",
+	})
+	if err != nil {
 		t.Fatalf("服务端拒绝自定义答案应降级重问而不是报错: %v", err)
 	}
 	ev, ok := drainOne(r)

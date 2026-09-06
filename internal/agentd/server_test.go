@@ -556,12 +556,18 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 		t.Fatalf("中继失败后 state = %s, want waiting_answer（保留恢复路径）", task.State)
 	}
 
-	// 回答已落库不可回滚：二次 reply 404（answer IS NULL 守卫已消耗）
+	// 回答已落库：二次相同 reply 幂等返回 200（idempotent=true），不同回答返回 409
 	resp2 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"allow"}`)
-	if resp2.StatusCode != http.StatusNotFound {
-		t.Fatalf("二次 reply 返回 %d, want 404（回答已落库）", resp2.StatusCode)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("二次相同 reply 返回 %d, want 200（幂等）", resp2.StatusCode)
 	}
 	resp2.Body.Close()
+
+	resp3 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"deny"}`)
+	if resp3.StatusCode != http.StatusConflict {
+		t.Fatalf("二次不同 reply 返回 %d, want 409（冲突）", resp3.StatusCode)
+	}
+	resp3.Body.Close()
 }
 
 // TestStopReturnsWorktreeRemovedInBody 验证 stop 响应体把「本次是否删了 managed
@@ -1063,3 +1069,53 @@ func TestDoneStillRejectsNonReviewStates(t *testing.T) {
 		})
 	}
 }
+
+func TestHandleReplyIdempotentDoesNotRelayTwice(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-idemp-1"
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "fake", RepoPath: "/repo", State: proto.TaskStateWaitingAnswer, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-ask-1", TaskID: taskID, Kind: "ask", Request: json.RawMessage(`{"kind":"ask","question":"which option?"}`), CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	f := fake.New(nil)
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv.SetManager(mgr)
+
+	// 第一次 reply
+	resp1 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-ask-1","answer":"option A"}`)
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("第一次 reply 返回 %d, want 200", resp1.StatusCode)
+	}
+	resp1.Body.Close()
+
+	// 第二次相同 reply
+	resp2 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-ask-1","answer":"option A"}`)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("第二次 reply 返回 %d, want 200", resp2.StatusCode)
+	}
+	var rbody struct {
+		OK         bool `json:"ok"`
+		Relayed    bool `json:"relayed"`
+		Idempotent bool `json:"idempotent"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&rbody); err != nil {
+		t.Fatalf("解码第二次 reply 响应: %v", err)
+	}
+	resp2.Body.Close()
+	if !rbody.OK || !rbody.Relayed || !rbody.Idempotent {
+		t.Fatalf("第二次 reply 响应 = %+v, want ok=true relayed=true idempotent=true", rbody)
+	}
+
+	// 确认底层 f.Sends() 只有 1 条记录（没有二次中继）
+	sends := f.Sends()
+	if len(sends) != 1 {
+		t.Fatalf("底层 Send 次数 = %d, want 1（幂等不二次中继）", len(sends))
+	}
+}
+

@@ -1252,29 +1252,56 @@ ORDER BY answered_at ASC`, taskID, VoidAnswer)
 //   - 回答成功后刷新所属任务的 updated_at（子查询取 task_id）：answer 落库是任务
 //     活动信号，看门狗以此判定「stalled 之后是否有回复」从而二次告警（P1-15a）；
 //     否则「已 stalled → 协调者回答 → executor 仍死」永远不再告警
+// ErrTicketConflict 在工单已有不同答案或已作废时返回。
+var ErrTicketConflict = errors.New("工单已有不同答案")
+
+// AnswerTicket 回答指定工单。若答案已存在且相同则幂等返回 nil；若不同或工单已作废则返回 ErrTicketConflict。
 func (s *Store) AnswerTicket(id, answer string) error {
+	_, err := s.AnswerTicketApplied(id, answer)
+	return err
+}
+
+// AnswerTicketApplied 回答指定工单，并返回本次是否真正写入新答案。
+// applied=true：本次将答案从 NULL 更新为 answer；
+// applied=false 且 err=nil：工单已有相同答案（幂等）；
+// err 非 nil：工单不存在（ErrNotFound）或已有不同答案/已作废（ErrTicketConflict）。
+func (s *Store) AnswerTicketApplied(id, answer string) (applied bool, err error) {
 	res, err := s.db.ExecContext(context.Background(),
 		"UPDATE tickets SET answer = ?, answered_at = ? WHERE id = ? AND answer IS NULL",
 		answer, fmtTime(time.Now()), id)
 	if err != nil {
-		return fmt.Errorf("回答工单 %s: %w", id, err)
+		return false, fmt.Errorf("回答工单 %s: %w", id, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("读取工单影响行数: %w", err)
+		return false, fmt.Errorf("读取工单影响行数: %w", err)
 	}
-	if n == 0 {
-		return ErrNotFound
+	if n == 1 {
+		s.touchTaskUpdatedAt(id)
+		return true, nil
 	}
-	// 刷新所属任务的活动时间。失败仅 Warn 不回滚回答：工单答案已持久化是审计
-	// 事实，回滚会让已答工单重新出现 pending 而裁决记录消失；刷新失败只影响
-	// 看门狗二次告警的时机，不影响回答本身的正确性
+	tk, gerr := s.GetTicket(id)
+	if gerr != nil {
+		return false, ErrNotFound
+	}
+	if tk.Answer == nil {
+		return false, ErrNotFound
+	}
+	if *tk.Answer == VoidAnswer {
+		return false, fmt.Errorf("%w: 工单已作废", ErrTicketConflict)
+	}
+	if *tk.Answer == answer {
+		return false, nil
+	}
+	return false, fmt.Errorf("%w", ErrTicketConflict)
+}
+
+func (s *Store) touchTaskUpdatedAt(ticketID string) {
 	if _, err := s.db.ExecContext(context.Background(),
 		"UPDATE tasks SET updated_at = ? WHERE id = (SELECT task_id FROM tickets WHERE id = ?)",
-		fmtTime(time.Now()), id); err != nil {
-		log().Warn("回答工单后刷新任务活动时间失败", "ticket", id, "cause", err)
+		fmtTime(time.Now()), ticketID); err != nil {
+		log().Warn("回答工单后刷新任务活动时间失败", "ticket", ticketID, "cause", err)
 	}
-	return nil
 }
 
 // VoidAnswer 是 VoidPendingTickets 写入的占位答案值。

@@ -10,6 +10,10 @@
 
 ## [Unreleased]
 
+### 变更
+
+- **OpenCode 普通派发改走审批 client 与 RespondAsk（B233.1）。** `permission_reuse` 不再唤醒 `handoff wait`。OpenCode 答问不再走无关联 `Send`。原生免审改为当前政策快照的精确子集（bash 默认 ask，范围内 edit 仍可原生 allow）。拒绝理由不再优先吞掉下一条提问。
+
 ### 修复
 
 - **重启后工作台终端 tab 只增不减（B322）。** 恢复不再把 workspace 活会话收成新组；没有 sessionId 的恢复 tab 不再静默建 shell，只给「重开一个终端」。`targets.local` 指向本机回环时，`scope=all` 不再把本机会话列两遍。存量已炸开的布局不会自动清掉，只是再打开不再涨。

@@ -29,6 +29,7 @@ package opencode
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -36,8 +37,58 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
+
+var ErrUnrepresentablePolicy = errors.New("快照含无法在原生配置实施的明确禁止")
+
+// WritePermissionConfig 把当前政策快照的精确子集写进 opencode.json。
+// 规则：
+//   - edit: "allow"（范围内编辑，越界由 external_directory 拦截并走 client）
+//   - external_directory: "ask"（越界必须经过 client/人工）
+//   - webfetch: "ask"（外访必须经过 client/人工）
+//   - bash: bashPermissionRules 的副本，且 "*" 必须强制为 "ask"（无法精确表达「无限制 bash ⊆ 快照」）
+func WritePermissionConfig(taskDir, model string, snap executor.PolicySnapshot) (string, error) {
+	if strings.TrimSpace(snap.Version) == "" {
+		return "", fmt.Errorf("PolicySnapshot.Version 为空")
+	}
+	if strings.TrimSpace(snap.Scope.Workdir) == "" {
+		return "", fmt.Errorf("%w: 空 Workdir", ErrUnrepresentablePolicy)
+	}
+	configPath := filepath.Join(taskDir, configFileName)
+	model = strings.TrimSpace(model)
+	if model == "" {
+		model = strings.TrimSpace(os.Getenv("HANDOFF_OPENCODE_MODEL"))
+	}
+	bash := cloneBashRulesAskDefault()
+	cfg := opencodeConfig{
+		Model: model,
+		Permission: permissionConfig{
+			Edit:              "allow",
+			Bash:              bash,
+			Webfetch:          "ask",
+			ExternalDirectory: "ask",
+		},
+	}
+	raw, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return configPath, err
+	}
+	if err := os.WriteFile(configPath, raw, 0o644); err != nil {
+		return configPath, fmt.Errorf("写 %s: %w", configPath, err)
+	}
+	return configPath, nil
+}
+
+func cloneBashRulesAskDefault() map[string]string {
+	out := make(map[string]string, len(bashPermissionRules))
+	for k, v := range bashPermissionRules {
+		out[k] = v
+	}
+	out["*"] = "ask" // 无法精确表达「无限制 bash ⊆ 快照」，不准放宽
+	return out
+}
 
 // 文件名常量：任务目录内生成的物料文件名，路径由 WriteTaskEnv 拼接。
 const (
@@ -74,40 +125,18 @@ var bashPermissionRules = map[string]string{
 	"*--force*":          "ask", // 各类强制开关（push --force / --force-with-lease 等）
 	"curl *":             "ask", // 外访直调
 	"wget *":             "ask", // 外访直调
-	// 重定向到绝对路径或家目录：opencode 自己不检出重定向落点（2026-08-18 真机
-	// 探针，spec §2.2.1——同一个路径，作为参数出现要授权、作为重定向落点不要），
-	// 不在这里把它们捞进来，permgate 的落点判据根本没机会跑。
-	// 四条而不是一条 "*>*"：后者会命中 2>&1，`go test ./... 2>&1 | tail` 是高频
-	// 写法，每条都送 Consult，在没配审批者的部署上等于升级人工。
-	"*>/*":  "ask", // >/abs、>>/abs 都含子串 ">/"
-	"*> /*": "ask", // > /abs、>> /abs 都含子串 "> /"
-	"*>~*":  "ask", // >~/x
-	"*> ~*": "ask", // > ~/x
-	// tee：落点在参数位，opencode 的 external_directory 对管道后的写命令检不出
-	// （2026-08-18 真机任务 4feb3766：`echo x | tee /tmp/y` 零权限请求、文件实写）。
-	// 用宽模式而不是 "*tee /*" 这种锚定形态：落点可以被标志隔开（tee -a /tmp/x）、
-	// 被引号包住，锚定要枚举四五条还留缝；tee 在构建/测试流里低频，误伤只是一次
-	// Consult。送进来之后由 permgate 的 WriteArgTargets 给确定性裁决（B151）。
-	"*tee*": "ask",
-	// ln / install / dd：与 tee 同一族——落点在参数位，而 opencode 的
-	// external_directory **检不出它们**。2026-08-18 真机任务 64569d7f 逐条实测：
-	// 同一批命令里只有 `mv probe.txt /tmp/x` 触发了 external_directory
-	// （paths=[/tmp] → 升人工），`ln -s /etc/hosts /tmp/b151-ln`、
-	// `install -m 644 x /tmp/b151-install.txt`、`dd if=/dev/zero of=/tmp/b151-dd.bin`
-	// **三条零权限请求、文件全部实写**（软链、17 字节、8 字节，事后在 /tmp 肉眼确认）。
-	// 即 opencode 只认 cp/mv 两个，其余同族命令一律静默放行。
-	//
-	// 每条给两个形态：`x *` 拦直接调用，`* x *` 拦复合命令与管道后的嵌入。
-	// 不用 "*ln*" 这种裸包含模式——"ln" 是极常见的子串（`grep alnum` 就会命中），
-	// 带空格锚定才不会把无关命令拖进审批链；tee 那条敢裸包含是因为 "tee" 罕见。
-	// 送进来之后由 permgate 的 WriteArgTargets 给确定性裁决（B151）。
-	"ln *":        "ask",
-	"* ln *":      "ask",
-	"install *":   "ask",
-	"* install *": "ask",
-	"dd *":        "ask",
-	"* dd *":      "ask",
-	"*":           "allow",
+	"*>/*":               "ask", // >/abs、>>/abs 都含子串 ">/"
+	"*> /*":              "ask", // > /abs、>> /abs 都含子串 "> /"
+	"*>~*":               "ask", // >~/x
+	"*> ~*":              "ask", // > ~/x
+	"*tee*":              "ask",
+	"ln *":               "ask",
+	"* ln *":             "ask",
+	"install *":          "ask",
+	"* install *":        "ask",
+	"dd *":               "ask",
+	"* dd *":             "ask",
+	"*":                  "allow",
 }
 
 // opencodeConfig 是 opencode.json 的完整结构，经结构体 marshal 生成
@@ -129,6 +158,7 @@ type opencodeConfig struct {
 //   - model: 任务级模型覆盖（dispatch --model 折算而来）；空则回退环境变量
 //   - planContent: 实现计划全文，原样嵌入 prompt 的「实现计划」段
 //   - disciplineBlock: 唯一来自 StartReq 的纪律块正文；taskenv 不自行解析
+//   - snap: 政策快照；原生配置必须是 snap 的子集（bash 默认 ask，范围内 edit 为 allow）
 //
 // 返回：
 //   - configPath: 生成的 opencode.json 路径
@@ -138,13 +168,13 @@ type opencodeConfig struct {
 // 注意：
 //   - 重复调用幂等覆盖：同名文件会被新内容覆盖，调用方可安全重试
 //   - 配置经结构体 marshal、prompt 经 text/template 渲染，均非字符串拼接
-func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string) (configPath, promptPath string, err error) {
+func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string, snap executor.PolicySnapshot) (configPath, promptPath string, err error) {
 	start := time.Now()
 	configPath = filepath.Join(taskDir, configFileName)
 	promptPath = filepath.Join(taskDir, promptFileName)
 	logger := slog.Default()
 	logger.Info("opencode 生成任务环境", "task_dir", taskDir, "task_id", taskID,
-		"config", configPath, "prompt", promptPath)
+		"config", configPath, "prompt", promptPath, "version", snap.Version)
 	defer func() {
 		if err != nil {
 			logger.Error("opencode 生成任务环境失败", "task_dir", taskDir,
@@ -156,35 +186,9 @@ func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string) (
 		}
 	}()
 
-	// 任务级 OPENCODE_CONFIG 会替换全局配置，不写 model 时只能依赖 opencode
-	// 默认。model 三级优先级：任务级 > HANDOFF_OPENCODE_MODEL 环境变量 > 不写。
-	// 为什么任务级优先：dispatch --model 在派发期已折算进 task.Model（含配置
-	// executor.model 兜底），是「这个任务明确要用什么模型」的唯一权威；env 只是
-	// 机器级兜底（远程免费模型 e2e 等场景），任务有显式模型时不应被覆盖。
-	model = strings.TrimSpace(model)
-	source := "task"
-	if model == "" {
-		model = strings.TrimSpace(os.Getenv("HANDOFF_OPENCODE_MODEL"))
-		if model != "" {
-			source = "env"
-		}
-	}
-	cfg := opencodeConfig{
-		Model: model,
-		Permission: permissionConfig{
-			Edit:              "allow",
-			Bash:              bashPermissionRules,
-			Webfetch:          "ask",
-			ExternalDirectory: "ask",
-		},
-	}
-	if cfg.Model != "" {
-		logger.Info("任务环境注入模型", "model", cfg.Model, "source", source)
-	}
-	cfgJSON, err := json.MarshalIndent(cfg, "", "  ")
+	configPath, err = WritePermissionConfig(taskDir, model, snap)
 	if err != nil {
-		// MarshalIndent 对本结构体不可能失败，保留错误返回以防未来字段变更引入
-		return configPath, promptPath, fmt.Errorf("序列化 opencode 配置: %w", err)
+		return configPath, promptPath, err
 	}
 
 	promptContent, err := turn.RenderPrompt(taskID, planContent, disciplineBlock)
@@ -192,9 +196,6 @@ func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string) (
 		return configPath, promptPath, err
 	}
 
-	if err := os.WriteFile(configPath, cfgJSON, 0o644); err != nil {
-		return configPath, promptPath, fmt.Errorf("写 %s: %w", configPath, err)
-	}
 	if err := os.WriteFile(promptPath, []byte(promptContent), 0o644); err != nil {
 		return configPath, promptPath, fmt.Errorf("写 %s: %w", promptPath, err)
 	}

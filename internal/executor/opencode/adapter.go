@@ -288,6 +288,9 @@ type runState struct {
 	// the waiting window without holding turnMu during HTTP I/O.
 	permTiming  map[string]permissionTiming
 	lastEventAt atomic.Int64 // 最近一次 SSE 事件到达时刻（unixnano，mapEvent 打点）；看门狗据此判定任务活跃性
+
+	approval    executor.ApprovalClient
+	reloadProbe func(context.Context) (bool, error)
 }
 
 // permissionTiming records whether a permission request still owns a paused
@@ -370,7 +373,14 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		}
 	}()
 
-	configPath, _, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.Task.Model, req.PlanContent, req.Discipline)
+	if req.Approval == nil {
+		return fmt.Errorf("OpenCode 任务必须注入 ApprovalClient；nil 不是全部免审")
+	}
+	snap, err := req.Approval.PolicySnapshot(ctx)
+	if err != nil {
+		return err
+	}
+	configPath, _, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.Task.Model, req.PlanContent, req.Discipline, snap)
 	if err != nil {
 		return err
 	}
@@ -433,6 +443,7 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 //   - err: 建会话/发 prompt 失败；失败时运行态已注销
 func (a *Adapter) startRun(ctx context.Context, req executor.StartReq, api *API, handle serveHandle) (sessionID string, err error) {
 	r := a.newRun(req.Task.ID, req.TaskDir, req.Task.Workdir())
+	r.approval = req.Approval
 	r.api = api
 	r.handle = handle
 	if err := r.frames.BeginTurn("dispatch", ""); err != nil {
@@ -525,7 +536,21 @@ func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 //     订阅已退出，prompt 发出也没有事件回程，任务会静默挂死——宁可让协调者
 //     看到「任务不在运行」的明确错误
 //   - 有挂起的 question 请求时不发 prompt，改把答复回填给该请求（B49）：
-//     question 工具阻塞时回合并未结束，发 prompt 会开出第二个回合
+var _ executor.AskResponder = (*Adapter)(nil)
+var _ executor.SnapshotApplier = (*Adapter)(nil)
+
+// Send 向 opencode 发送用户输入或续接指令。
+//
+// 职责：Send 只发普通续接；答问走 RespondAsk。有 pending 时 Send 不得消费它。
+// 拆开是为了冻结契约（9/94），避免普通续接误答挂起的提问。
+//
+// 参数：
+//   - text: 协调者的回答/修改指令，原样透传，不得加工
+//
+// 注意：
+//   - stopCh 已关（Stop 已介入，运行态可能因 kill 失败被保留）时拒绝发送：
+//     订阅已退出，prompt 发出也没有事件回程，任务会静默挂死——宁可让协调者
+//     看到「任务不在运行」的明确错误
 func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 	r := a.lookup(taskID)
 	if r == nil {
@@ -548,11 +573,49 @@ func (a *Adapter) Send(ctx context.Context, taskID, text string) (err error) {
 			a.log.Info("adapter 续接指令已发送", "task", taskID, "session", r.session)
 		}
 	}()
-	// 提问分流（B49）：有挂起的 question 请求时，协调者的答复必须打到 reply
-	// 端点而不是发新 prompt——question 工具阻塞时回合还在跑，再发 prompt 会
-	// 开出第二个回合，而阻塞的工具依然等不到应答
-	if reqID, qs := r.takePendingQuestionSnapshot(); reqID != "" {
-		return a.replyPendingQuestion(ctx, r, reqID, qs, text)
+	return r.api.PromptAsync(ctx, r.session, text)
+}
+
+// RespondAsk 按问题身份回答：原生仍挂起则 ReplyQuestion 且不开新 Prompt；
+// 提问回合已结束则以带 TicketID 关联的 Prompt 续接。
+//
+// 参数：req.TaskID 必须命中运行态；req.TicketID 必填（尝试身份）；req.QuestionID
+// 可空，空时用 NativeIDFromTicket(taskID, ticketID)。
+// 注意：不得按「当前唯一挂起槽」寻址——只给 TaskID 不合法。
+func (a *Adapter) RespondAsk(ctx context.Context, req executor.RespondAskReq) (err error) {
+	if req.TaskID == "" || req.TicketID == "" {
+		return fmt.Errorf("RespondAsk 必须携带 TaskID 与 TicketID")
+	}
+	r := a.lookup(req.TaskID)
+	if r == nil {
+		return fmt.Errorf("任务 %s: %w", req.TaskID, executor.ErrTaskNotRunning)
+	}
+	select {
+	case <-r.stopCh:
+		return fmt.Errorf("任务 %s 已停止（运行态保留待回收），不能答问", req.TaskID)
+	default:
+	}
+	native := req.QuestionID
+	if native == "" {
+		native = executor.NativeIDFromTicket(req.TaskID, req.TicketID)
+	}
+	a.log.Info("RespondAsk 进入", "task", req.TaskID, "ticket", req.TicketID,
+		"question", native, "answer_runes", len([]rune(req.Answer)))
+	defer func() {
+		if err != nil {
+			a.log.Error("RespondAsk 失败", "task", req.TaskID, "ticket", req.TicketID, "cause", err)
+		} else {
+			a.log.Info("RespondAsk 完成", "task", req.TaskID, "ticket", req.TicketID, "question", native)
+		}
+	}()
+	reqID, qs := r.takePendingQuestionSnapshot()
+	if reqID != "" && (native == "" || reqID == native) {
+		return a.replyPendingQuestion(ctx, r, reqID, qs, req.Answer)
+	}
+	// 回合已结束：关联身份后续接，不得假装这是无身份 Send。
+	text := "【回答工单 " + req.TicketID + "】\n" + req.Answer
+	if err := r.frames.BeginTurn("respond_ask", text); err != nil {
+		a.log.Warn("写 turn_start 帧失败，不影响回合", "task", req.TaskID, "cause", err)
 	}
 	return r.api.PromptAsync(ctx, r.session, text)
 }
@@ -671,6 +734,9 @@ func (a *Adapter) RespondPermission(ctx context.Context, taskID, permID, decisio
 	}
 	a.log.Info("权限应答选定会话", "task", taskID, "perm", permID,
 		"session", sess, "from_map", known)
+	if r.api == nil {
+		return fmt.Errorf("任务 %s: api 未就绪", taskID)
+	}
 	if err := r.api.RespondPermission(ctx, sess, permID, decision); err != nil {
 		return err
 	}
@@ -727,6 +793,81 @@ func (r *runState) takeTurnRejected() []string {
 	rejected := r.turnRejected
 	r.turnRejected = nil
 	return rejected
+}
+
+func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEvent) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() {
+		select {
+		case <-r.stopCh:
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	a.log.Info("原生权限交 client", "task", r.taskID, "perm", ev.PermissionID)
+	dec, err := executor.Authorize(ctx, r.approval, executor.ApprovalRequest{
+		NativeID:  ev.PermissionID,
+		Text:      ev.Text,
+		Perm:      ev.Perm,
+		Truncated: strings.Contains(ev.Text, executor.TruncationMarker),
+	})
+	if err != nil {
+		a.log.Error("Authorize 失败，拒绝该权限", "task", r.taskID, "perm", ev.PermissionID, "cause", err)
+		_ = a.RespondPermission(ctx, r.taskID, ev.PermissionID, "reject", "审批失败")
+		return
+	}
+	decision, reason := "reject", dec.Reason
+	if dec.Status == executor.ApprovalAllow {
+		decision, reason = "once", ""
+	}
+	ref := executor.ApprovalRef{ID: executor.NamespacedTicketID(r.taskID, ev.PermissionID)}
+	_ = r.approval.Acknowledge(ctx, executor.ApprovalAck{Ref: ref, NativeID: ev.PermissionID, Stage: executor.AckFormed})
+	if err := a.RespondPermission(ctx, r.taskID, ev.PermissionID, decision, reason); err != nil {
+		a.log.Error("RespondPermission 失败", "task", r.taskID, "perm", ev.PermissionID, "cause", err)
+		return
+	}
+	_ = r.approval.Acknowledge(ctx, executor.ApprovalAck{Ref: ref, NativeID: ev.PermissionID, Stage: executor.AckDelivered})
+	_ = r.approval.Acknowledge(ctx, executor.ApprovalAck{Ref: ref, NativeID: ev.PermissionID, Stage: executor.AckExecuted})
+	if decision == "reject" && strings.TrimSpace(reason) != "" {
+		guide := turn.DenyGuidanceText(reason)
+		if r.api != nil && r.session != "" {
+			if perr := r.api.PromptAsync(ctx, r.session, "【关联权限 "+ev.PermissionID+"】\n"+guide); perr != nil {
+				a.log.Error("拒绝指导下发失败", "task", r.taskID, "perm", ev.PermissionID, "cause", perr)
+			}
+		}
+	}
+	a.log.Info("原生权限已回传", "task", r.taskID, "perm", ev.PermissionID, "decision", decision)
+}
+
+// ApplySnapshot 实现 executor.SnapshotApplier。
+func (a *Adapter) ApplySnapshot(ctx context.Context, taskID string, snap executor.PolicySnapshot) error {
+	r := a.lookup(taskID)
+	if r == nil {
+		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	a.log.Info("ApplySnapshot", "task", taskID, "version", snap.Version)
+	if _, err := WritePermissionConfig(r.taskDir, "", snap); err != nil {
+		return err
+	}
+	ok, err := probeServeReloadsConfig(ctx, r)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("OpenCode serve 未重载任务目录 opencode.json，新快照无法保证原生 allow ⊆ 快照")
+	}
+	return nil
+}
+
+func probeServeReloadsConfig(ctx context.Context, r *runState) (bool, error) {
+	// 无公开热更新 API 时 fail-closed。探测：若 API 有 config 查询则比对 Version
+	// 标记文件；否则返回 (false, nil) 让 ApplySnapshot 报能力不足。
+	// 禁止返回 true 除非有正面证据。机内测试注入：r.reloadProbe。
+	if r.reloadProbe != nil {
+		return r.reloadProbe(ctx)
+	}
+	return false, nil
 }
 
 // takeAskedViaTool 取走「本回合已通过 question 工具提问」的标记（读后即清）。
@@ -799,6 +940,34 @@ func (a *Adapter) Stop(taskID string) (err error) {
 		}
 		cancel()
 		r.clearPendingQuestion()
+	}
+	// 挂起的权限请求同样解阻塞再杀进程（B233.1）：避免 opencode 侧权限等待死锁
+	var pendingPerms []struct{ id, sess string }
+	r.sessMu.Lock()
+	for permID, timing := range r.permTiming {
+		if timing.paused {
+			sess := r.session
+			if mapped, ok := r.permSession[permID]; ok {
+				sess = mapped
+			}
+			pendingPerms = append(pendingPerms, struct{ id, sess string }{id: permID, sess: sess})
+			timing.paused = false
+			r.permTiming[permID] = timing
+		}
+	}
+	r.sessMu.Unlock()
+
+	if len(pendingPerms) > 0 && r.api != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), unaryTimeout)
+		for _, p := range pendingPerms {
+			if rerr := r.api.RespondPermission(ctx, p.sess, p.id, "reject"); rerr != nil {
+				a.log.Warn("停止前拒绝挂起权限失败，该请求可能仍挂在 opencode 侧",
+					"task", taskID, "perm", p.id, "cause", rerr)
+			} else {
+				a.log.Info("停止前已拒绝挂起权限", "task", taskID, "perm", p.id)
+			}
+		}
+		cancel()
 	}
 	if r.handle != nil {
 		if kerr := r.handle.Kill(); kerr != nil {
@@ -1445,6 +1614,12 @@ func (a *Adapter) mapPermissionAsked(r *runState, props json.RawMessage) {
 		// 「为什么这个请求没走审批者」在日志里无从查起
 		a.log.Warn("opencode 权限请求提取不出结构化载荷，将由 manager 升级人工",
 			"task", r.taskID, "perm", pa.ID, "permission", pa.Permission)
+	}
+	if r.approval != nil {
+		ev := executor.AdapterEvent{Type: "permission", PermissionID: pa.ID,
+			Text: turn.TruncateMarked(text, permTextHardLimit), Perm: req}
+		go a.authorizeNativePermission(r, ev)
+		return
 	}
 	a.emit(r, executor.AdapterEvent{
 		Type: "permission", PermissionID: pa.ID,
