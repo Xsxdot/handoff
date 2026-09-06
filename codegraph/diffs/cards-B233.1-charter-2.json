@@ -35,9 +35,21 @@
       "signature": "type ApprovalScope struct {",
       "summary": "ApprovalScope 是一次执行实例的合法作用范围，与 permgate.Scope 三根同形。",
       "fields": [
-        ["Workdir", "string", ""],
-        ["TaskDir", "string", ""],
-        ["TaskTmpDir", "string", ""]
+        [
+          "Workdir",
+          "string",
+          ""
+        ],
+        [
+          "TaskDir",
+          "string",
+          ""
+        ],
+        [
+          "TaskTmpDir",
+          "string",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -51,9 +63,21 @@
       "signature": "type PolicySnapshot struct {",
       "summary": "PolicySnapshot 是绑定到当前回合的版本化政策。",
       "fields": [
-        ["Version", "string", ""],
-        ["TaskID", "string", ""],
-        ["Scope", "ApprovalScope", ""]
+        [
+          "Version",
+          "string",
+          ""
+        ],
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "Scope",
+          "ApprovalScope",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -67,10 +91,26 @@
       "signature": "type ApprovalRequest struct {",
       "summary": "ApprovalRequest 是一次原生权限请求的结构化输入。",
       "fields": [
-        ["NativeID", "string", ""],
-        ["Text", "string", ""],
-        ["Perm", "*PermRequest", ""],
-        ["Truncated", "bool", ""]
+        [
+          "NativeID",
+          "string",
+          ""
+        ],
+        [
+          "Text",
+          "string",
+          ""
+        ],
+        [
+          "Perm",
+          "*PermRequest",
+          ""
+        ],
+        [
+          "Truncated",
+          "bool",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -84,7 +124,11 @@
       "signature": "type ApprovalRef struct {",
       "summary": "ApprovalRef 是审批服务给出的稳定引用，供 Await / Acknowledge 使用。",
       "fields": [
-        ["ID", "string", ""]
+        [
+          "ID",
+          "string",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -98,9 +142,21 @@
       "signature": "type ApprovalDecision struct {",
       "summary": "ApprovalDecision 是最终或当前决定。",
       "fields": [
-        ["Status", "ApprovalStatus", ""],
-        ["Reason", "string", ""],
-        ["Rule", "string", ""]
+        [
+          "Status",
+          "ApprovalStatus",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "Rule",
+          "string",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -114,8 +170,16 @@
       "signature": "type ApprovalResult struct {",
       "summary": "ApprovalResult 是 Request 的立即返回：可能已经是终态，也可能 pending。",
       "fields": [
-        ["Ref", "ApprovalRef", ""],
-        ["Decision", "ApprovalDecision", ""]
+        [
+          "Ref",
+          "ApprovalRef",
+          ""
+        ],
+        [
+          "Decision",
+          "ApprovalDecision",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -129,9 +193,21 @@
       "signature": "type ApprovalAck struct {",
       "summary": "ApprovalAck 确认决定生命周期中的一个阶段。",
       "fields": [
-        ["Ref", "ApprovalRef", ""],
-        ["NativeID", "string", ""],
-        ["Stage", "AckStage", ""]
+        [
+          "Ref",
+          "ApprovalRef",
+          ""
+        ],
+        [
+          "NativeID",
+          "string",
+          ""
+        ],
+        [
+          "Stage",
+          "AckStage",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -145,10 +221,26 @@
       "signature": "type ApprovalClient interface {\n\tPolicySnapshot(ctx context.Context) (PolicySnapshot, error)\n\tRequest(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)\n\tAwait(ctx context.Context, ref ApprovalRef) (ApprovalDecision, error)\n\tAcknowledge(ctx context.Context, ack ApprovalAck) error\n}",
       "summary": "ApprovalClient 是限定于单个执行实例的审批 client。",
       "fields": [
-        ["PolicySnapshot", "func(ctx context.Context) (PolicySnapshot, error)", ""],
-        ["Request", "func(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)", ""],
-        ["Await", "func(ctx context.Context, ref ApprovalRef) (ApprovalDecision, error)", ""],
-        ["Acknowledge", "func(ctx context.Context, ack ApprovalAck) error", ""]
+        [
+          "PolicySnapshot",
+          "func(ctx context.Context) (PolicySnapshot, error)",
+          ""
+        ],
+        [
+          "Request",
+          "func(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)",
+          ""
+        ],
+        [
+          "Await",
+          "func(ctx context.Context, ref ApprovalRef) (ApprovalDecision, error)",
+          ""
+        ],
+        [
+          "Acknowledge",
+          "func(ctx context.Context, ack ApprovalAck) error",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -162,10 +254,26 @@
       "signature": "type RespondAskReq struct {",
       "summary": "RespondAskReq 是一次有身份的 Ask 回答。",
       "fields": [
-        ["TaskID", "string", ""],
-        ["TicketID", "string", "尝试/回合身份（工单 id）"],
-        ["QuestionID", "string", "原生问题 id，可空"],
-        ["Answer", "string", ""]
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "TicketID",
+          "string",
+          "尝试/回合身份（工单 id）"
+        ],
+        [
+          "QuestionID",
+          "string",
+          "原生问题 id，可空"
+        ],
+        [
+          "Answer",
+          "string",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -179,7 +287,11 @@
       "signature": "type AskResponder interface {\n\tRespondAsk(ctx context.Context, req RespondAskReq) error\n}",
       "summary": "AskResponder 是执行契约的 Ask 回程增量。消费方（Manager）做类型断言。",
       "fields": [
-        ["RespondAsk", "func(ctx context.Context, req RespondAskReq) error", ""]
+        [
+          "RespondAsk",
+          "func(ctx context.Context, req RespondAskReq) error",
+          ""
+        ]
       ],
       "modelKind": "dto"
     },
@@ -192,8 +304,16 @@
       "line": 37,
       "signature": "func NamespacedTicketID(taskID, nativeID string) string",
       "params": [
-        ["taskID", "string", "任务 ID"],
-        ["nativeID", "string", "原生请求 ID"]
+        [
+          "taskID",
+          "string",
+          "任务 ID"
+        ],
+        [
+          "nativeID",
+          "string",
+          "原生请求 ID"
+        ]
       ],
       "returns": "string",
       "summary": "NamespacedTicketID 把任务 id 与原生请求 id 编成工单 id。",
@@ -213,8 +333,16 @@
       "line": 44,
       "signature": "func NativeIDFromTicket(taskID, ticketID string) string",
       "params": [
-        ["taskID", "string", "任务 ID"],
-        ["ticketID", "string", "命名空间化工单 ID"]
+        [
+          "taskID",
+          "string",
+          "任务 ID"
+        ],
+        [
+          "ticketID",
+          "string",
+          "命名空间化工单 ID"
+        ]
       ],
       "returns": "string",
       "summary": "NativeIDFromTicket 从命名空间化工单 id 还原裸原生 id。",
@@ -234,7 +362,11 @@
       "line": 21,
       "signature": "func PermFingerprint(ev AdapterEvent) string",
       "params": [
-        ["ev", "AdapterEvent", "权限事件"]
+        [
+          "ev",
+          "AdapterEvent",
+          "权限事件"
+        ]
       ],
       "returns": "string",
       "summary": "PermFingerprint 计算一次权限请求的裁决指纹。",
@@ -264,8 +396,16 @@
       "line": 29,
       "signature": "func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) executor.ApprovalClient",
       "params": [
-        ["taskID", "string", "任务 ID"],
-        ["snap", "executor.PolicySnapshot", "政策快照"]
+        [
+          "taskID",
+          "string",
+          "任务 ID"
+        ],
+        [
+          "snap",
+          "executor.PolicySnapshot",
+          "政策快照"
+        ]
       ],
       "returns": "executor.ApprovalClient",
       "summary": "bindApproval 为任务绑定政策快照并构造 taskApprovalClient。"
@@ -276,23 +416,363 @@
       "order": 502,
       "name": "Adapter.authorizeNativePermission",
       "file": "internal/executor/opencode/adapter.go",
-      "line": 798,
+      "line": 788,
       "signature": "func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEvent)",
       "params": [
-        ["r", "*runState", ""],
-        ["ev", "executor.AdapterEvent", ""]
+        [
+          "r",
+          "*runState",
+          ""
+        ],
+        [
+          "ev",
+          "executor.AdapterEvent",
+          ""
+        ]
       ],
       "returns": "",
       "summary": "authorizeNativePermission 把原生权限交 client 判定并回传。"
+    },
+    "m_executor_ApprovalBinder": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 312,
+      "name": "ApprovalBinder",
+      "file": "internal/executor/approval.go",
+      "line": 95,
+      "signature": "type ApprovalBinder interface {\n\tBindApproval(taskID string, client ApprovalClient) error\n}",
+      "summary": "ApprovalBinder 是可选能力：允许运行态任务重绑 ApprovalClient（如 Continue 投影新快照后）。",
+      "fields": [
+        [
+          "BindApproval",
+          "func(taskID string, client ApprovalClient) error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_SnapshotApplier": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 313,
+      "name": "SnapshotApplier",
+      "file": "internal/executor/snapshot.go",
+      "line": 7,
+      "signature": "type SnapshotApplier interface {\n\tApplySnapshot(ctx context.Context, taskID string, snap PolicySnapshot) error\n}",
+      "summary": "SnapshotApplier 是可选能力：Continue 开始时把新快照编进原生配置。",
+      "fields": [
+        [
+          "ApplySnapshot",
+          "func(ctx context.Context, taskID string, snap PolicySnapshot) error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_executor_Authorize": {
+      "kind": "func",
+      "container": "k_executor_fn",
+      "order": 303,
+      "name": "Authorize",
+      "file": "internal/executor/authorize.go",
+      "line": 16,
+      "signature": "func Authorize(ctx context.Context, client ApprovalClient, req ApprovalRequest) (ApprovalDecision, error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "client",
+          "ApprovalClient",
+          "审批 client"
+        ],
+        [
+          "req",
+          "ApprovalRequest",
+          "原生权限请求"
+        ]
+      ],
+      "returns": "ApprovalDecision, error",
+      "summary": "Authorize 向 client 请求一次授权。Request 返回 pending 时 Await 直到终态。",
+      "tests": [
+        {
+          "name": "TestAuthorizeAwaitsWhenPending",
+          "file": "internal/executor/authorize_test.go:33"
+        },
+        {
+          "name": "TestAuthorizeNilClientIsNotAllow",
+          "file": "internal/executor/authorize_test.go:47"
+        }
+      ]
+    },
+    "n_executor_ReuseFingerprint": {
+      "kind": "func",
+      "container": "k_executor_fn",
+      "order": 304,
+      "name": "ReuseFingerprint",
+      "file": "internal/executor/fingerprint.go",
+      "line": 41,
+      "signature": "func ReuseFingerprint(version, permFP string) string",
+      "params": [
+        [
+          "version",
+          "string",
+          "政策版本"
+        ],
+        [
+          "permFP",
+          "string",
+          "权限指纹"
+        ]
+      ],
+      "returns": "string",
+      "summary": "ReuseFingerprint 把政策版本盐进权限指纹。P2(a)：不改 Ticket 字段。",
+      "tests": [
+        {
+          "name": "TestReuseFingerprintSaltsVersion",
+          "file": "internal/executor/fingerprint_test.go:74"
+        }
+      ]
+    },
+    "n_agentd_HashPolicyVersion": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 502,
+      "name": "HashPolicyVersion",
+      "file": "internal/agentd/approval_client.go",
+      "line": 272,
+      "signature": "func HashPolicyVersion(blacklist []string, approverOn bool, safeIDs []string, scope executor.ApprovalScope) string",
+      "params": [
+        [
+          "blacklist",
+          "[]string",
+          "黑名单"
+        ],
+        [
+          "approverOn",
+          "bool",
+          "审批者启用"
+        ],
+        [
+          "safeIDs",
+          "[]string",
+          "安全命令表"
+        ],
+        [
+          "scope",
+          "executor.ApprovalScope",
+          "范围三根"
+        ]
+      ],
+      "returns": "string",
+      "summary": "HashPolicyVersion 对政策内容做稳定哈希。字段集：黑名单、审批者启用、安全命令表、范围三根。"
+    },
+    "n_permgate_SafeCommandIDs": {
+      "kind": "func",
+      "container": "k_permgate_fn",
+      "order": 300,
+      "name": "SafeCommandIDs",
+      "file": "internal/permgate/permgate.go",
+      "line": 277,
+      "signature": "func SafeCommandIDs() []string",
+      "returns": "[]string",
+      "summary": "SafeCommandIDs 返回当前白名单的稳定 id 集合（排序后），供政策快照 Version 哈希。"
+    },
+    "n_store_Store_AnswerTicketApplied": {
+      "kind": "func",
+      "container": "k_store_Store",
+      "order": 300,
+      "name": "Store.AnswerTicketApplied",
+      "file": "internal/store/store.go",
+      "line": 1268,
+      "signature": "func (s *Store) AnswerTicketApplied(id, answer string) (applied bool, err error)",
+      "params": [
+        [
+          "id",
+          "string",
+          "工单 ID"
+        ],
+        [
+          "answer",
+          "string",
+          "答复内容"
+        ]
+      ],
+      "returns": "applied bool, err error",
+      "summary": "AnswerTicketApplied 回答指定工单，并返回本次是否真正写入新答案。"
+    },
+    "n_opencode_WritePermissionConfig": {
+      "kind": "func",
+      "container": "k_opencode_fn",
+      "order": 300,
+      "name": "WritePermissionConfig",
+      "file": "internal/executor/opencode/taskenv.go",
+      "line": 53,
+      "signature": "func WritePermissionConfig(taskDir, model string, snap executor.PolicySnapshot) (string, error)",
+      "params": [
+        [
+          "taskDir",
+          "string",
+          ""
+        ],
+        [
+          "model",
+          "string",
+          ""
+        ],
+        [
+          "snap",
+          "executor.PolicySnapshot",
+          "政策快照"
+        ]
+      ],
+      "returns": "string, error",
+      "summary": "WritePermissionConfig 把当前政策快照的精确子集写进 opencode.json。",
+      "tests": [
+        {
+          "name": "TestWritePermissionConfigSubsetOfSnapshot",
+          "file": "internal/executor/opencode/taskenv_test.go:324"
+        }
+      ]
+    },
+    "n_opencode_Adapter_RespondAsk": {
+      "kind": "func",
+      "container": "k_opencode_Adapter",
+      "order": 503,
+      "name": "Adapter.RespondAsk",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 575,
+      "signature": "func (a *Adapter) RespondAsk(ctx context.Context, req executor.RespondAskReq) (err error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "req",
+          "executor.RespondAskReq",
+          ""
+        ]
+      ],
+      "returns": "err error",
+      "summary": "RespondAsk 把回答经 AskResponder 协议定向送达原生提问。",
+      "tests": [
+        {
+          "name": "TestRespondAskRepliesPendingQuestion",
+          "file": "internal/executor/opencode/question_test.go:257"
+        }
+      ]
+    },
+    "n_opencode_Adapter_ApplySnapshot": {
+      "kind": "func",
+      "container": "k_opencode_Adapter",
+      "order": 504,
+      "name": "Adapter.ApplySnapshot",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 833,
+      "signature": "func (a *Adapter) ApplySnapshot(ctx context.Context, taskID string, snap executor.PolicySnapshot) error",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "taskID",
+          "string",
+          ""
+        ],
+        [
+          "snap",
+          "executor.PolicySnapshot",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "ApplySnapshot 实现 executor.SnapshotApplier。",
+      "tests": [
+        {
+          "name": "TestApplySnapshotDefaultFailClosed",
+          "file": "internal/executor/opencode/adapter_test.go:1797"
+        }
+      ]
+    },
+    "n_opencode_Adapter_BindApproval": {
+      "kind": "func",
+      "container": "k_opencode_Adapter",
+      "order": 505,
+      "name": "Adapter.BindApproval",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 853,
+      "signature": "func (a *Adapter) BindApproval(taskID string, client executor.ApprovalClient) error",
+      "params": [
+        [
+          "taskID",
+          "string",
+          ""
+        ],
+        [
+          "client",
+          "executor.ApprovalClient",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "BindApproval 实现 executor.ApprovalBinder。",
+      "tests": [
+        {
+          "name": "TestAdapterBindApproval",
+          "file": "internal/executor/opencode/adapter_test.go:1858"
+        }
+      ]
     }
   },
   "edgesAdded": [
-    ["n_opencode_Adapter_authorizeNativePermission", "m_executor_ApprovalClient"],
-    ["n_agentd_Manager_bindApproval", "m_agentd_taskApprovalClient"],
-    ["n_agentd_Manager_Dispatch", "n_agentd_Manager_bindApproval"]
+    [
+      "n_opencode_Adapter_authorizeNativePermission",
+      "m_executor_ApprovalClient"
+    ],
+    [
+      "n_agentd_Manager_bindApproval",
+      "m_agentd_taskApprovalClient"
+    ],
+    [
+      "n_agentd_Manager_Dispatch",
+      "n_agentd_Manager_bindApproval"
+    ],
+    [
+      "n_opencode_Adapter_authorizeNativePermission",
+      "n_executor_Authorize"
+    ],
+    [
+      "n_executor_Authorize",
+      "m_executor_ApprovalClient"
+    ],
+    [
+      "n_agentd_Manager_Continue",
+      "n_agentd_Manager_bindApproval"
+    ]
   ],
   "implementsAdded": [
-    ["m_agentd_taskApprovalClient", "m_executor_ApprovalClient"]
+    [
+      "m_agentd_taskApprovalClient",
+      "m_executor_ApprovalClient"
+    ],
+    [
+      "m_opencode_Adapter",
+      "m_executor_AskResponder"
+    ],
+    [
+      "m_opencode_Adapter",
+      "m_executor_SnapshotApplier"
+    ],
+    [
+      "m_opencode_Adapter",
+      "m_executor_ApprovalBinder"
+    ]
   ],
   "nodesModified": {
     "m_executor_StartReq": {
@@ -305,14 +785,151 @@
       "signature": "type StartReq struct {",
       "summary": "StartReq 是 Adapter.Start 的入参：任务上下文 + 计划内容 + 任务工作目录。",
       "fields": [
-        ["Task", "proto.Task", ""],
-        ["PlanContent", "string", ""],
-        ["TaskDir", "string", ""],
-        ["Env", "[]string", ""],
-        ["Discipline", "string", ""],
-        ["Approval", "ApprovalClient", "绑定到本执行实例的审批 client；nil 表示不走新 client"]
+        [
+          "Task",
+          "proto.Task",
+          ""
+        ],
+        [
+          "PlanContent",
+          "string",
+          ""
+        ],
+        [
+          "TaskDir",
+          "string",
+          ""
+        ],
+        [
+          "Env",
+          "[]string",
+          ""
+        ],
+        [
+          "Discipline",
+          "string",
+          ""
+        ],
+        [
+          "Approval",
+          "ApprovalClient",
+          "绑定到本执行实例的审批 client；nil 表示不走新 client"
+        ]
       ],
       "modelKind": "dto"
+    },
+    "m_executor_ResumeReq": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 5,
+      "name": "ResumeReq",
+      "file": "internal/executor/resume.go",
+      "line": 31,
+      "signature": "type ResumeReq struct {\n\tTaskID     string\n\tTaskDir    string\n\tRepoPath   string\n\tSessionID  string\n\tEnv        []string\n\tDiscipline string\n\tModel      string\n\tMarkRoot   string\n\tCold       bool\n\tApproval   ApprovalClient\n}",
+      "summary": "ResumeReq 是一次恢复请求。",
+      "fields": [
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "TaskDir",
+          "string",
+          ""
+        ],
+        [
+          "RepoPath",
+          "string",
+          ""
+        ],
+        [
+          "SessionID",
+          "string",
+          ""
+        ],
+        [
+          "Env",
+          "[]string",
+          ""
+        ],
+        [
+          "Discipline",
+          "string",
+          ""
+        ],
+        [
+          "Model",
+          "string",
+          ""
+        ],
+        [
+          "MarkRoot",
+          "string",
+          ""
+        ],
+        [
+          "Cold",
+          "bool",
+          ""
+        ],
+        [
+          "Approval",
+          "ApprovalClient",
+          "nil = 本任务不走新 client；OpenCode 冷恢复必须非 nil"
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_opencode_WriteTaskEnv": {
+      "kind": "func",
+      "container": "k_opencode_fn",
+      "order": 1,
+      "name": "WriteTaskEnv",
+      "file": "internal/executor/opencode/taskenv.go",
+      "line": 172,
+      "signature": "func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string, snap executor.PolicySnapshot) (configPath, promptPath string, err error)",
+      "signatureOld": "func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string) (configPath, promptPath string, err error)",
+      "params": [
+        [
+          "taskDir",
+          "string",
+          "任务数据目录（放置 opencode.json 与 prompt）"
+        ],
+        [
+          "taskID",
+          "string",
+          "任务 ID（渲染进 prompt）"
+        ],
+        [
+          "model",
+          "string",
+          "覆盖模型名；空则回退环境或 opencode 默认"
+        ],
+        [
+          "planContent",
+          "string",
+          "计划正文（原样嵌入 prompt 的「实现计划」段）"
+        ],
+        [
+          "disciplineBlock",
+          "string",
+          "纪律块正文（原样嵌入 prompt 的「执行纪律」段）"
+        ],
+        [
+          "snap",
+          "executor.PolicySnapshot",
+          "政策快照"
+        ]
+      ],
+      "returns": "configPath string, promptPath string, err error",
+      "summary": "WriteTaskEnv 在 taskDir 生成 opencode 配置与任务 prompt，返回二者路径。",
+      "tests": [
+        {
+          "name": "TestWriteTaskEnvGenerateValidFiles",
+          "file": "internal/executor/opencode/taskenv_test.go:19"
+        }
+      ]
     }
   }
 }
