@@ -200,4 +200,3 @@ func TestCanonicalTargetLocalMachineAliases(t *testing.T) {
 		}
 	}
 }
-

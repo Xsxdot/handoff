@@ -303,4 +303,3 @@ func TestCarrierDetectRemoteWithEmptyHomeDir(t *testing.T) {
 		t.Fatalf("远端空 HOME 检测状态 = %q，want online", detect.Status)
 	}
 }
-

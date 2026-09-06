@@ -436,4 +436,3 @@ func TestCoordinatorSessionRefResolverEmptyHomeOnlineCarrier(t *testing.T) {
 		t.Fatal("小队无 online 载体时 ResolveSessionRef 应失败，但返回成功")
 	}
 }
-
