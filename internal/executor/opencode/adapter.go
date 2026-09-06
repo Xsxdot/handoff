@@ -525,19 +525,9 @@ func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 	close(ch)
 	return ch
 }
-
-// Send 向同一会话续发指令（原生续接：上下文完整保留）。
-//
-// 参数：
-//   - text: 协调者的回答/修改指令，原样透传，不得加工
-//
-// 注意：
-//   - stopCh 已关（Stop 已介入，运行态可能因 kill 失败被保留）时拒绝发送：
-//     订阅已退出，prompt 发出也没有事件回程，任务会静默挂死——宁可让协调者
-//     看到「任务不在运行」的明确错误
-//   - 有挂起的 question 请求时不发 prompt，改把答复回填给该请求（B49）：
 var _ executor.AskResponder = (*Adapter)(nil)
 var _ executor.SnapshotApplier = (*Adapter)(nil)
+var _ executor.ApprovalBinder = (*Adapter)(nil)
 
 // Send 向 opencode 发送用户输入或续接指令。
 //
@@ -857,6 +847,16 @@ func (a *Adapter) ApplySnapshot(ctx context.Context, taskID string, snap executo
 	if !ok {
 		return fmt.Errorf("OpenCode serve 未重载任务目录 opencode.json，新快照无法保证原生 allow ⊆ 快照")
 	}
+	return nil
+}
+
+// BindApproval 实现 executor.ApprovalBinder。
+func (a *Adapter) BindApproval(taskID string, client executor.ApprovalClient) error {
+	r := a.lookup(taskID)
+	if r == nil {
+		return fmt.Errorf("任务 %s: %w", taskID, executor.ErrTaskNotRunning)
+	}
+	r.approval = client
 	return nil
 }
 

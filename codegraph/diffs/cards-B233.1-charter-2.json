@@ -244,8 +244,56 @@
           "file": "internal/executor/fingerprint_test.go:9"
         }
       ]
+    },
+    "m_agentd_taskApprovalClient": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 500,
+      "name": "taskApprovalClient",
+      "file": "internal/agentd/approval_client.go",
+      "line": 23,
+      "signature": "type taskApprovalClient struct",
+      "summary": "taskApprovalClient 绑定单个 Task.ID 的政策快照与审批判定。"
+    },
+    "n_agentd_Manager_bindApproval": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 501,
+      "name": "Manager.bindApproval",
+      "file": "internal/agentd/approval_client.go",
+      "line": 29,
+      "signature": "func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) executor.ApprovalClient",
+      "params": [
+        ["taskID", "string", "任务 ID"],
+        ["snap", "executor.PolicySnapshot", "政策快照"]
+      ],
+      "returns": "executor.ApprovalClient",
+      "summary": "bindApproval 为任务绑定政策快照并构造 taskApprovalClient。"
+    },
+    "n_opencode_Adapter_authorizeNativePermission": {
+      "kind": "func",
+      "container": "k_opencode_Adapter",
+      "order": 502,
+      "name": "Adapter.authorizeNativePermission",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 798,
+      "signature": "func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEvent)",
+      "params": [
+        ["r", "*runState", ""],
+        ["ev", "executor.AdapterEvent", ""]
+      ],
+      "returns": "",
+      "summary": "authorizeNativePermission 把原生权限交 client 判定并回传。"
     }
   },
+  "edgesAdded": [
+    ["n_opencode_Adapter_authorizeNativePermission", "m_executor_ApprovalClient"],
+    ["n_agentd_Manager_bindApproval", "m_agentd_taskApprovalClient"],
+    ["n_agentd_Manager_Dispatch", "n_agentd_Manager_bindApproval"]
+  ],
+  "implementsAdded": [
+    ["m_agentd_taskApprovalClient", "m_executor_ApprovalClient"]
+  ],
   "nodesModified": {
     "m_executor_StartReq": {
       "kind": "model",

@@ -452,3 +452,134 @@ func TestApprovalClientDoesNotInvokeOpenCodeSessionAPI(t *testing.T) {
 		t.Fatalf("argv 不得包含 session 或 PromptAsync: %s", joinedArgv)
 	}
 }
+
+// 11. 审批模型 Approve=true 时落地已送达 grant，同指纹第二次 Request 自动复用（Major 1）
+func TestApprovalClientApproverAllowCreatesReusableGrantAndSecondRequestReuses(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	app.runCmd = func(ctx context.Context, argv []string) (string, error) {
+		prompt := argv[len(argv)-1]
+		var nonce string
+		if idx := strings.Index(prompt, "nonce="); idx != -1 {
+			nonce = prompt[idx+len("nonce="):]
+			if end := strings.Index(nonce, "，"); end != -1 {
+				nonce = strings.TrimSpace(nonce[:end])
+			}
+		}
+		return fmt.Sprintf(`{"decision":"approve","reason":"safe test script","nonce":%q}`, nonce), nil
+	}
+
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	hub := NewHub()
+	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
+	m := NewManager(st, hub, map[string]executor.Adapter{"fake": &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}, cfg, nil, app, newTestGate(t), logger)
+
+	task := &proto.Task{
+		ID: "T-app-reuse", RepoPath: t.TempDir(), WorkDir: t.TempDir(),
+		State: proto.TaskStateRunning, Executor: "fake",
+	}
+	mustCreateTask(t, st, task)
+	scope := executor.ApprovalScope{
+		Workdir:    task.Workdir(),
+		TaskDir:    taskDirOf(m, "T-app-reuse"),
+		TaskTmpDir: executor.TaskTmpDir(m.cfg.DataDir, "T-app-reuse"),
+	}
+	version := "v1"
+	c := m.bindApproval("T-app-reuse", executor.PolicySnapshot{Version: version, TaskID: "T-app-reuse", Scope: scope})
+
+	cmd := "python3 script.py"
+	req1 := executor.ApprovalRequest{
+		NativeID: "perm-first",
+		Text:     "bash: " + cmd,
+		Perm:     &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}
+	res1, err := c.Request(context.Background(), req1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res1.Decision.Status != executor.ApprovalAllow {
+		t.Fatalf("第一次模型审批应为 allow, got %q", res1.Decision.Status)
+	}
+	if res1.Decision.Rule != "approver" {
+		t.Fatalf("第一次模型审批 rule 必须为 approver, got %q", res1.Decision.Rule)
+	}
+
+	// 断言工单已落库、严格 answer=allow、指纹已写、已送达
+	expectedTicketID := "T-app-reuse:perm-first"
+	tk, err := st.GetTicket(expectedTicketID)
+	if err != nil || tk == nil {
+		t.Fatalf("审批模型 allow 必须落 gate 工单: %v", err)
+	}
+	expectedFP := executor.ReuseFingerprint(version, executor.PermFingerprint(executor.AdapterEvent{
+		PermissionID: "perm-first", Text: req1.Text, Perm: req1.Perm,
+	}))
+	if tk.Fingerprint != expectedFP {
+		t.Fatalf("工单 fingerprint=%q, want %q", tk.Fingerprint, expectedFP)
+	}
+	if tk.Answer == nil || *tk.Answer != "allow" {
+		t.Fatalf("工单 answer 必须严格等于 allow, got %v", tk.Answer)
+	}
+	if tk.DeliveredAt == nil {
+		t.Fatalf("工单 DeliveredAt 必须非空（已送达）")
+	}
+
+	// 断言事件：有 approver_decision 事件，无 permission_request 事件
+	evs, err := st.EventsFromAsc("T-app-reuse", 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasApproverDecision := false
+	for _, e := range evs {
+		if e.Type == proto.EventTypePermissionRequest {
+			t.Fatalf("审批模型放行不得发出 permission_request 事件")
+		}
+		if e.Type == proto.EventTypeApproverDecision {
+			hasApproverDecision = true
+		}
+	}
+	if !hasApproverDecision {
+		t.Fatalf("审批模型放行必须记录 approver_decision 审计事件")
+	}
+
+	// 第二次同指纹请求（不同 NativeID）
+	req2 := executor.ApprovalRequest{
+		NativeID: "perm-second",
+		Text:     "bash: " + cmd,
+		Perm:     &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}
+	res2, err := c.Request(context.Background(), req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res2.Decision.Status != executor.ApprovalAllow {
+		t.Fatalf("第二次同指纹请求应为 allow, got %q", res2.Decision.Status)
+	}
+	if res2.Decision.Rule != "reuse" {
+		t.Fatalf("第二次同指纹请求 rule 必须为 reuse, got %q", res2.Decision.Rule)
+	}
+
+	// 断言第二次请求不发 permission_request，且有 permission_reuse 入库
+	evs2, err := st.EventsFromAsc("T-app-reuse", 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hasReuse := false
+	for _, e := range evs2 {
+		if e.Type == proto.EventTypePermissionRequest {
+			t.Fatalf("复用请求不得发出 permission_request 事件")
+		}
+		if e.Type == proto.EventTypePermissionReuse {
+			hasReuse = true
+		}
+	}
+	if !hasReuse {
+		t.Fatalf("第二次请求必须记录 permission_reuse 审计事件")
+	}
+}

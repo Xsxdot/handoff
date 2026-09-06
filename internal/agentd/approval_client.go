@@ -48,13 +48,21 @@ func (c *taskApprovalClient) Request(ctx context.Context, req executor.ApprovalR
 		return c.escalate(ctx, ev, "描述截断，fail-closed")
 	}
 	verdict := c.m.judgePermission(c.taskID, ev)
-	switch verdict.Action {
-	case permgate.AutoAllow:
+	if verdict.Action == permgate.AutoAllow {
 		ref := executor.ApprovalRef{ID: executor.NamespacedTicketID(c.taskID, req.NativeID)}
 		c.recordAutoAllow(ev, verdict)
 		return executor.ApprovalResult{Ref: ref, Decision: executor.ApprovalDecision{
 			Status: executor.ApprovalAllow, Rule: verdict.Rule, Reason: verdict.Reason,
 		}}, nil
+	}
+
+	ticketID := executor.NamespacedTicketID(c.taskID, req.NativeID)
+	fp := executor.ReuseFingerprint(c.snap.Version, executor.PermFingerprint(ev))
+	if res, ok := c.tryReuse(ev, ticketID, fp); ok {
+		return res, nil
+	}
+
+	switch verdict.Action {
 	case permgate.Consult:
 		if c.m.shouldConsultApprover(c.taskID) {
 			return c.consult(ctx, ev)
@@ -104,16 +112,108 @@ func (c *taskApprovalClient) Acknowledge(ctx context.Context, ack executor.Appro
 	}
 }
 
+func (c *taskApprovalClient) tryReuse(ev executor.AdapterEvent, ticketID, fp string) (executor.ApprovalResult, bool) {
+	prior, err := c.m.st.FindReusableGrant(c.taskID, fp)
+	if err != nil {
+		c.m.log.Warn("复用查询失败，升级人工", "task", c.taskID, "cause", err)
+		return executor.ApprovalResult{}, false
+	}
+	if prior == nil {
+		return executor.ApprovalResult{}, false
+	}
+	if _, err := c.m.st.AppendEvent(c.taskID, proto.EventTypePermissionReuse, permissionReusePayload{
+		TicketID:      ticketID,
+		PriorTicketID: prior.ID,
+		Fingerprint:   fp[:8],
+		Permission:    permEventText(ev.Text),
+	}); err != nil {
+		c.m.log.Error("追加 permission_reuse 失败", "task", c.taskID, "cause", err)
+	}
+	return executor.ApprovalResult{
+		Ref:      executor.ApprovalRef{ID: ticketID},
+		Decision: executor.ApprovalDecision{Status: executor.ApprovalAllow, Rule: "reuse", Reason: "复用工单 " + prior.ID},
+	}, true
+}
+
 func (c *taskApprovalClient) consult(ctx context.Context, ev executor.AdapterEvent) (executor.ApprovalResult, error) {
 	if c.m.approver == nil {
 		return c.escalate(ctx, ev, "审批者不可用")
 	}
-	dec := c.m.approver.Decide(ctx, ev.Text, "")
-	if dec.Err != nil || !dec.Approve {
-		c.m.log.Info("审批模型未放行，升级", "task", c.taskID, "perm", ev.PermissionID, "cause", dec.Err)
+	ticketID := executor.NamespacedTicketID(c.taskID, ev.PermissionID)
+	fp := executor.ReuseFingerprint(c.snap.Version, executor.PermFingerprint(ev))
+
+	summary := ""
+	if task, err := c.m.st.GetTask(c.taskID); err == nil {
+		summary = task.PlanSummary
+	}
+	dec := c.m.approver.Decide(ctx, ev.Text, summary)
+
+	decision := "error"
+	switch {
+	case dec.Approve:
+		decision = "approve"
+	case dec.Err == nil:
+		decision = "escalate"
+	}
+	reason := dec.Reason
+	if reason == "" && dec.Err != nil {
+		reason = dec.Err.Error()
+	}
+	if _, err := c.m.st.AppendEvent(c.taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
+		TicketID:   ticketID,
+		Permission: permEventText(ev.Text),
+		Decision:   decision,
+		Reason:     reason,
+		ElapsedMS:  dec.ElapsedMS,
+	}); err != nil {
+		c.m.log.Error("追加 approver_decision 事件失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+	}
+
+	if dec.Err != nil {
+		c.m.countApproverFail(c.taskID)
+		return c.escalate(ctx, ev, "审批者调用失败")
+	}
+	if !dec.Approve {
+		c.m.apMu.Lock()
+		delete(c.m.apFails, c.taskID)
+		c.m.apMu.Unlock()
 		return c.escalate(ctx, ev, "审批模型未形成允许")
 	}
-	ref := executor.ApprovalRef{ID: executor.NamespacedTicketID(c.taskID, ev.PermissionID)}
+
+	c.m.apMu.Lock()
+	delete(c.m.apFails, c.taskID)
+	c.m.apMu.Unlock()
+
+	reqJSON, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text})
+	if _, err := c.m.st.CreateTicket(&proto.Ticket{
+		ID:          ticketID,
+		TaskID:      c.taskID,
+		Kind:        "gate",
+		Request:     reqJSON,
+		CreatedAt:   time.Now().UTC(),
+		Fingerprint: fp,
+	}); err != nil {
+		c.m.log.Error("审批者批准：创建工单失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+		c.m.countApproverFail(c.taskID)
+		return c.escalate(ctx, ev, "审批者工单创建失败")
+	}
+	if err := c.m.st.AnswerTicket(ticketID, "allow"); err != nil {
+		c.m.log.Error("审批者批准：应答工单失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+		c.m.countApproverFail(c.taskID)
+		return c.escalate(ctx, ev, "审批者工单应答失败")
+	}
+	if _, err := c.m.st.AppendEvent(c.taskID, proto.EventTypeTicketAnswered, ticketAnsweredPayload{
+		TicketID: ticketID,
+		Answer:   "allow",
+	}); err != nil {
+		c.m.log.Warn("审批者批准：追加工单答复事件失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+	}
+	if err := c.m.st.MarkTicketDelivered(ticketID); err != nil {
+		c.m.log.Error("审批者批准：标记送达失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+		return c.escalate(ctx, ev, "审批者标记送达失败")
+	}
+
+	ref := executor.ApprovalRef{ID: ticketID}
 	return executor.ApprovalResult{Ref: ref, Decision: executor.ApprovalDecision{
 		Status: executor.ApprovalAllow, Rule: "approver", Reason: dec.Reason,
 	}}, nil
@@ -122,20 +222,6 @@ func (c *taskApprovalClient) consult(ctx context.Context, ev executor.AdapterEve
 func (c *taskApprovalClient) escalate(ctx context.Context, ev executor.AdapterEvent, reason string) (executor.ApprovalResult, error) {
 	ticketID := executor.NamespacedTicketID(c.taskID, ev.PermissionID)
 	fp := executor.ReuseFingerprint(c.snap.Version, executor.PermFingerprint(ev))
-	if prior, err := c.m.st.FindReusableGrant(c.taskID, fp); err != nil {
-		c.m.log.Warn("复用查询失败，升级人工", "task", c.taskID, "cause", err)
-	} else if prior != nil {
-		if _, err := c.m.st.AppendEvent(c.taskID, proto.EventTypePermissionReuse, permissionReusePayload{
-			TicketID: ticketID, PriorTicketID: prior.ID,
-			Fingerprint: fp[:8], Permission: permEventText(ev.Text),
-		}); err != nil {
-			c.m.log.Error("追加 permission_reuse 失败", "task", c.taskID, "cause", err)
-		}
-		return executor.ApprovalResult{
-			Ref:      executor.ApprovalRef{ID: ticketID},
-			Decision: executor.ApprovalDecision{Status: executor.ApprovalAllow, Rule: "reuse", Reason: "复用工单 " + prior.ID},
-		}, nil
-	}
 	c.m.transitBestEffort(c.taskID, proto.TaskStateWaitingAnswer, "permission_request")
 	reqJSON, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text})
 	if _, err := c.m.st.CreateTicket(&proto.Ticket{

@@ -1793,3 +1793,81 @@ func TestMapPermissionAskedWithApprovalClientDoesNotEmitPermission(t *testing.T)
 	}
 }
 
+// TestApplySnapshotDefaultFailClosed 验证生产路径无 probe 时 fail-closed 报能力不足（Major 2 item 3）
+func TestApplySnapshotDefaultFailClosed(t *testing.T) {
+	fs := newFakeServer(t)
+	taskID := "task-snap-failclosed"
+	taskDir := t.TempDir()
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), taskDir)
+
+	snap := executor.PolicySnapshot{
+		Version: "v1-test",
+		TaskID:  taskID,
+		Scope:   executor.ApprovalScope{Workdir: t.TempDir(), TaskDir: taskDir},
+	}
+
+	err := ad.ApplySnapshot(context.Background(), taskID, snap)
+	if err == nil {
+		t.Fatal("生产路径默认无 probe 必须报能力不足，实际返回 nil")
+	}
+	if !strings.Contains(err.Error(), "未重载") {
+		t.Fatalf("错误信息必须指出未重载能力不足，实际: %v", err)
+	}
+}
+
+// TestApplySnapshotInjectedProbeSuccess 验证注入 probe=true 时 ApplySnapshot 成功且配置落盘
+func TestApplySnapshotInjectedProbeSuccess(t *testing.T) {
+	fs := newFakeServer(t)
+	taskID := "task-snap-probe-ok"
+	taskDir := t.TempDir()
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), taskDir)
+
+	r := ad.lookup(taskID)
+	if r == nil {
+		t.Fatal("lookup task 失败")
+	}
+	r.reloadProbe = func(ctx context.Context) (bool, error) {
+		return true, nil
+	}
+
+	snap := executor.PolicySnapshot{
+		Version: "v2-probed",
+		TaskID:  taskID,
+		Scope:   executor.ApprovalScope{Workdir: t.TempDir(), TaskDir: taskDir},
+	}
+
+	if err := ad.ApplySnapshot(context.Background(), taskID, snap); err != nil {
+		t.Fatalf("注入 probe=true 时 ApplySnapshot 必须成功: %v", err)
+	}
+
+	cfgPath := filepath.Join(taskDir, configFileName)
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("读取新快照配置文件 %s: %v", cfgPath, err)
+	}
+	var cfg opencodeConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("解析新快照配置文件 %s: %v", cfgPath, err)
+	}
+	if cfg.Permission.ExternalDirectory != "ask" || cfg.Permission.Bash["*"] != "ask" {
+		t.Fatalf("配置内容不正确: %s", string(data))
+	}
+}
+
+// TestAdapterBindApproval 验证运行态任务成功重绑 ApprovalClient
+func TestAdapterBindApproval(t *testing.T) {
+	fs := newFakeServer(t)
+	taskID := "task-bind-approval"
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+
+	fakeClient := &fakeApprovalClient{}
+	if err := ad.BindApproval(taskID, fakeClient); err != nil {
+		t.Fatalf("BindApproval 失败: %v", err)
+	}
+
+	r := ad.lookup(taskID)
+	if r == nil || r.approval != fakeClient {
+		t.Fatal("BindApproval 后 r.approval 必须更新为新 client")
+	}
+}
+

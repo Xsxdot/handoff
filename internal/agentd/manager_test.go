@@ -3477,5 +3477,147 @@ func TestNonOpenCodeKeepsOldApprovalPath(t *testing.T) {
 	}
 }
 
+type fakeOpenCodeContinueAdapter struct {
+	*chanAdapter
+	mu               sync.Mutex
+	appliedSnapshots []executor.PolicySnapshot
+	boundApprovals   []executor.ApprovalClient
+}
+
+func (f *fakeOpenCodeContinueAdapter) ApplySnapshot(ctx context.Context, taskID string, snap executor.PolicySnapshot) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.appliedSnapshots = append(f.appliedSnapshots, snap)
+	return nil
+}
+
+func (f *fakeOpenCodeContinueAdapter) BindApproval(taskID string, client executor.ApprovalClient) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.boundApprovals = append(f.boundApprovals, client)
+	return nil
+}
+
+func TestContinueRebindsApprovalClientAndDoesNotReuseOldGrant(t *testing.T) {
+	fakeAd := &fakeOpenCodeContinueAdapter{chanAdapter: &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m, st, hub := newTestManagerWithAds(t, map[string]executor.Adapter{"opencode": fakeAd}, "opencode")
+
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	taskID := "task-opencode-continue"
+	taskDir := filepath.Join(m.cfg.DataDir, "tasks", taskID)
+	_ = os.MkdirAll(taskDir, 0755)
+
+	task := &proto.Task{
+		ID:        taskID,
+		ProjectID: pid,
+		RepoPath:  repo,
+		WorkDir:   repo,
+		State:     proto.TaskStateWaitingReview,
+		Executor:  "opencode",
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}
+	mustCreateTask(t, st, task)
+
+	// 获取初始快照版本 v1
+	snap1, err := m.resolveSnapshot(task)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 构造并在 store 落一条 v1 版本的已送达 allow grant
+	cmd := "python3 worker.py"
+	ev := executor.AdapterEvent{
+		PermissionID: "perm-v1",
+		Text:         "bash: " + cmd,
+		Perm:         &executor.PermRequest{Tool: executor.PermToolBash, Command: cmd},
+	}
+	fp1 := executor.ReuseFingerprint(snap1.Version, executor.PermFingerprint(ev))
+	ticketID1 := executor.NamespacedTicketID(taskID, "perm-v1")
+	reqJSON, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text})
+	if _, err := st.CreateTicket(&proto.Ticket{
+		ID: ticketID1, TaskID: taskID, Kind: "gate",
+		Request: reqJSON, CreatedAt: time.Now().UTC(),
+		Fingerprint: fp1,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AnswerTicket(ticketID1, "allow"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkTicketDelivered(ticketID1); err != nil {
+		t.Fatal(err)
+	}
+
+	// 验证在 v1 版本下同指纹请求命中复用
+	c1 := m.bindApproval(taskID, snap1)
+	resBefore, err := c1.Request(context.Background(), executor.ApprovalRequest{
+		NativeID: "perm-v1-repeat",
+		Text:     "bash: " + cmd,
+		Perm:     ev.Perm,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resBefore.Decision.Status != executor.ApprovalAllow || resBefore.Decision.Rule != "reuse" {
+		t.Fatalf("v1 版本下应复用 allow，got status=%q rule=%q", resBefore.Decision.Status, resBefore.Decision.Rule)
+	}
+
+	// 改变政策快照（如修改 blacklist），使新版本为 v2
+	m.cfg.Approver.Blacklist = []string{"rm -rf"}
+
+	// 执行 Continue
+	if err := m.Continue(context.Background(), taskID, "continue with new snapshot"); err != nil {
+		t.Fatalf("Continue 失败: %v", err)
+	}
+
+	// 1. 断言 ApplySnapshot 被调用，且传入的版本不同于 snap1
+	fakeAd.mu.Lock()
+	appliedLen := len(fakeAd.appliedSnapshots)
+	boundLen := len(fakeAd.boundApprovals)
+	var lastSnap executor.PolicySnapshot
+	if appliedLen > 0 {
+		lastSnap = fakeAd.appliedSnapshots[appliedLen-1]
+	}
+	var lastApproval executor.ApprovalClient
+	if boundLen > 0 {
+		lastApproval = fakeAd.boundApprovals[boundLen-1]
+	}
+	fakeAd.mu.Unlock()
+
+	if appliedLen != 1 {
+		t.Fatalf("ApplySnapshot 期望调用 1 次，实际 %d", appliedLen)
+	}
+	if lastSnap.Version == snap1.Version {
+		t.Fatalf("Continue 后快照 Version 应已更新，旧=%q 新=%q", snap1.Version, lastSnap.Version)
+	}
+
+	// 2. 断言 BindApproval 被调用，重绑了新 client
+	if boundLen != 1 {
+		t.Fatalf("BindApproval 必须被调用 1 次，实际 %d", boundLen)
+	}
+	if lastApproval == nil {
+		t.Fatal("重绑的 ApprovalClient 不得为 nil")
+	}
+
+	// 3. 断言重绑后的 client.Request 对同命令不得复用 v1 的旧 grant
+	resAfter, err := lastApproval.Request(context.Background(), executor.ApprovalRequest{
+		NativeID: "perm-v2-req",
+		Text:     "bash: " + cmd,
+		Perm:     ev.Perm,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resAfter.Decision.Status == executor.ApprovalAllow {
+		t.Fatal("Continue 换 Version 后 Request 不得复用旧 grant")
+	}
+	if resAfter.Decision.Rule == "reuse" {
+		t.Fatal("Continue 换 Version 后 Rule 不得为 reuse")
+	}
+	_ = hub
+}
+
 
 

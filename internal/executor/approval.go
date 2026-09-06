@@ -90,3 +90,8 @@ type ApprovalClient interface {
 	Await(ctx context.Context, ref ApprovalRef) (ApprovalDecision, error)
 	Acknowledge(ctx context.Context, ack ApprovalAck) error
 }
+
+// ApprovalBinder 是可选能力：允许运行态任务重绑 ApprovalClient（如 Continue 投影新快照后）。
+type ApprovalBinder interface {
+	BindApproval(taskID string, client ApprovalClient) error
+}

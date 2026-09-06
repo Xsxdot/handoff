@@ -20,7 +20,8 @@
 //     翻成 ask 等于给每次正常编辑加一道判完还是放行的空门（B27 复核结论，
 //     见 docs/superpowers/plans/2026-08-09-permission-payload-probe.md §3.1）。
 //   - bash: 模式表 —— 危险模式（rm -rf/sudo/git push/reset --hard/--force/
-//     curl/wget 等，见 bashPermissionRules）ask，其余 allow；
+//     curl/wget 等，见 bashPermissionRules）ask；在 B233.1 下通配 "*" 强制为 ask
+//     （由于无法在原生配置精确表达「无限制 bash ⊆ 快照」，降级走 ApprovalClient 判定）；
 //   - webfetch/external_directory: ask —— 外访与越出工作区仍逐次确认。
 //
 // 这是三级审批链的第 0 层（静态规则）；第 1 层（廉价模型审批者）见二期 spec，

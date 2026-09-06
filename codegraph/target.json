@@ -113,6 +113,15 @@
    ]
   },
   {
+   "from": "d_execution",
+   "to": "d_orchestration",
+   "legacyBudget": 0,
+   "interfaces": [
+    "ApprovalClient"
+   ],
+   "legacyBudgetNote": "B233.1：OpenCode 已消费 ApprovalClient 接口缝，实现由编排侧绑定；零调用预算。"
+  },
+  {
    "from": "d_gateway",
    "to": "d_execution",
    "legacyBudget": 1,

@@ -1361,6 +1361,12 @@ func (m *Manager) Continue(ctx context.Context, taskID, instructions string) (er
 			m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 投影失败回迁")
 			return err
 		}
+		if ab, ok := ad.(executor.ApprovalBinder); ok {
+			if err := ab.BindApproval(taskID, m.bindApproval(taskID, snap)); err != nil {
+				m.transitBestEffort(taskID, proto.TaskStateWaitingReview, "continue 重绑 ApprovalClient 失败回迁")
+				return fmt.Errorf("绑定新 ApprovalClient 失败: %w", err)
+			}
+		}
 	}
 	if err := ad.Send(ctx, taskID, instructions); err != nil {
 		if !errors.Is(err, executor.ErrTaskNotRunning) {
