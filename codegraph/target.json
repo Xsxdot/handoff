@@ -271,7 +271,8 @@
    "legacyBudget": 27,
    "entries": [
     "executor（包级函数）"
-   ]
+   ],
+   "legacyBudgetNote": "B233.1：ApprovalClient / AskResponder / PermFingerprint / NamespacedTicketID 落在既有 executor 包（best 归属 d_execution_contract）。本卡不新开 d_execution→d_orchestration，也不新立顶层审批域——client 接口在使用方，首个消费边（编排注入 StartReq.Approval 或 OpenCode 调 Client）落地时再声明 interfaces 方向。预算仍 27；本节点不新增编排→执行 call 边。"
   },
   {
    "from": "d_orchestration",
