@@ -13,6 +13,7 @@
 ### 变更
 
 - **OpenCode 普通派发改走审批 client 与 RespondAsk（B233.1）。** `permission_reuse` 不再唤醒 `handoff wait`。OpenCode 答问不再走无关联 `Send`。原生免审改为当前政策快照的精确子集（bash 默认 ask，范围内 edit 仍可原生 allow）。拒绝理由不再优先吞掉下一条提问。
+- **Stop/取消不再删除 managed 工作树（B233.4）。** `handoff stop` 与控制台「停止任务」只把任务落 failed，现场留到显式 `handoff reclaim` / `gc` 或归档 `handoff done`。CLI/Web 提示改为留存，不再把 `worktree_removed=false` 说成清理失败。
 
 ### 修复
 
