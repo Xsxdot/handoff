@@ -14,8 +14,8 @@ import (
 	"fmt"
 )
 
-// 现有受支持 harness 的登记名。必须与 cmd/agentd.go 组装表、OneShotArgs
-// switch、toolchain.order 使用同一组字面值——名字漂移会让能力查询与派发对不上。
+// 现有受支持 harness 的登记名。必须与 cmd/agentd.go 组装表、toolchain.order
+// 使用同一组字面值——名字漂移会让能力查询与派发对不上。
 const (
 	HarnessOpenCode = "opencode"
 	HarnessClaude   = "claude"

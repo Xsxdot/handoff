@@ -1,3 +1,7 @@
+// profile.go —— Claude Code HOME/配置 Profile 能力（B233.2）。
+//
+// 职责：把隔离 HOME 的规则、技能与任务 overlay 写入 Claude Code 原生落点。
+// 边界：Keychain 登录态没有可靠文件判据，Profile 不伪造凭据已同步。
 package claudecode
 
 import (
@@ -27,6 +31,7 @@ func NewProfile(log *slog.Logger) *Profile {
 	return &Profile{log: log}
 }
 
+// Profile 返回绑定当前 Adapter 日志器的 Profile 能力实现。
 func (a *Adapter) Profile() executor.Profile {
 	if a == nil {
 		return &Profile{}
@@ -34,10 +39,12 @@ func (a *Adapter) Profile() executor.Profile {
 	return &Profile{log: a.log}
 }
 
+// Prepare 将规则、技能与任务 overlay 写入 Claude Code 原生落点。
 func (a *Adapter) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error) {
 	return a.Profile().Prepare(ctx, req)
 }
 
+// Verify 校验 Claude Code 规则落点；Keychain 凭据不伪造为文件同步成功。
 func (a *Adapter) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error) {
 	return a.Profile().Verify(ctx, req)
 }

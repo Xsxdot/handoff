@@ -6,7 +6,7 @@
 //   - 不拼 argv。argv 留在各家包（spec：厂商细节不进消费方）
 //   - 不解析审批 JSON；审批模型语义留在 Approver
 //   - grok 的 low effort 是 Limits.Effort，不是 grok 能力默认
-//   - 本文件无 I/O；现状 OneShotArgs 在实现节点退役
+//   - 本文件无 I/O；各家 argv 编码与进程承载由提供方实现
 package executor
 
 import (

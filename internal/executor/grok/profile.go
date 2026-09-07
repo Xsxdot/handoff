@@ -1,3 +1,7 @@
+// profile.go —— Grok HOME/配置 Profile 能力（B233.2）。
+//
+// 职责：把隔离 HOME 的规则、技能与任务 overlay 写入 Grok 原生落点。
+// 边界：不复制会话数据库或整棵 HOME；EngineOK 只由真机引擎探证决定。
 package grok
 
 import (
@@ -27,6 +31,7 @@ func NewProfile(log *slog.Logger) *Profile {
 	return &Profile{log: log}
 }
 
+// Profile 返回绑定当前 Adapter 日志器的 Profile 能力实现。
 func (a *Adapter) Profile() executor.Profile {
 	if a == nil {
 		return &Profile{}
@@ -34,10 +39,12 @@ func (a *Adapter) Profile() executor.Profile {
 	return &Profile{log: a.log}
 }
 
+// Prepare 将规则、技能与任务 overlay 写入 Grok 原生落点。
 func (a *Adapter) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error) {
 	return a.Profile().Prepare(ctx, req)
 }
 
+// Verify 校验 Grok 规则落点；引擎健康仍需真机探证。
 func (a *Adapter) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error) {
 	return a.Profile().Verify(ctx, req)
 }
