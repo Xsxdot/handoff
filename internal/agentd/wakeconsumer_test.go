@@ -7,6 +7,7 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
@@ -72,6 +73,166 @@ func appendWorkflowMirroredForConsumer(t *testing.T, st *ledger.Store, cardID, t
 		t.Fatalf("读工作流镜像事件 %s: %v", typ, err)
 	}
 	return events[len(events)-1].Seq
+}
+
+func appendEnvelopeForWakeconsumer(t *testing.T, st *ledger.Store, cardID, task, node, attempt string, payload []byte) []byte {
+	t.Helper()
+	wrote, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+		Target: "consumer-target", Task: task, Node: node, Attempt: attempt,
+		SourceSeq: 1, Type: string(proto.EventTypeQuestion), Payload: payload, CreatedAt: time.Unix(0, 0),
+	})
+	if err != nil || !wrote {
+		t.Fatalf("写 envelope 夹具: wrote=%v err=%v", wrote, err)
+	}
+	events, err := st.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		t.Fatalf("读 envelope 夹具: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == ledger.EvTaskMirrored && event.SourceTask == task && event.SourceSeq == 1 {
+			return append([]byte(nil), event.Payload...)
+		}
+	}
+	t.Fatalf("找不到 envelope 夹具: task=%s", task)
+	return nil
+}
+
+func mutateWakeconsumerEnvelope(t *testing.T, raw []byte, nodePresent, attemptPresent, payloadPresent bool, nullIdentity bool) []byte {
+	t.Helper()
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("解 fixture envelope: %v", err)
+	}
+	if !nodePresent {
+		delete(fields, "node")
+	} else if nullIdentity {
+		fields["node"] = json.RawMessage("null")
+	}
+	if !attemptPresent {
+		delete(fields, "attempt")
+	} else if nullIdentity {
+		fields["attempt"] = json.RawMessage("null")
+	}
+	if !payloadPresent {
+		delete(fields, "payload")
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("重编码 fixture envelope: %v", err)
+	}
+	return encoded
+}
+
+// TestB2336WakeconsumerEnvelopeJSONBoundaries uses the production decoder after
+// Store.AppendMirroredEvent has emitted the real envelope.  The fixture map only
+// removes legacy keys or supplies JSON null; it does not duplicate decoder logic.
+func TestB2336WakeconsumerEnvelopeJSONBoundaries(t *testing.T) {
+	cases := []struct {
+		name                                        string
+		node, attempt, payload                      string
+		nodePresent, attemptPresent, payloadPresent bool
+		nullIdentity                                bool
+		wantNode, wantAttempt                       *string
+		wantPayload                                 string
+		wantErr                                     bool
+	}{
+		{name: "missing identity", payload: `{"ticket_id":"q1"}`, payloadPresent: true, wantPayload: `{"ticket_id":"q1"}`},
+		{name: "empty strings and null payload", nodePresent: true, attemptPresent: true, payloadPresent: true, wantNode: stringPtr(""), wantAttempt: stringPtr(""), wantPayload: "null"},
+		{name: "nonempty strings and object", node: "review", attempt: "attempt-1", payload: `{"ticket_id":"q1"}`, nodePresent: true, attemptPresent: true, payloadPresent: true, wantNode: stringPtr("review"), wantAttempt: stringPtr("attempt-1"), wantPayload: `{"ticket_id":"q1"}`},
+		{name: "json null identity", nodePresent: true, attemptPresent: true, payloadPresent: true, nullIdentity: true, wantPayload: "null"},
+		{name: "missing payload is rejected", node: "review", attempt: "attempt-2", nodePresent: true, attemptPresent: true, wantErr: true},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := newNoPTYLedgerEnv(t)
+			cardID := createCoordCard(t, env)
+			raw := appendEnvelopeForWakeconsumer(t, env.ledger, cardID, "task-"+tc.name,
+				tc.node, tc.attempt, []byte(tc.payload))
+			raw = mutateWakeconsumerEnvelope(t, raw, tc.nodePresent, tc.attemptPresent,
+				tc.payloadPresent, tc.nullIdentity)
+			got, err := decodeMirroredTaskEnvelope(proto.LedgerEvent{
+				Seq: 1, CardID: cardID, Type: ledger.EvTaskMirrored, Payload: raw,
+			})
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("缺失 payload 应由生产 decoder 拒绝: envelope=%s", raw)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("生产 wakeconsumer decoder: %v; envelope=%s", err, raw)
+			}
+			if !sameOptionalString(got.Node, tc.wantNode) {
+				t.Fatalf("node=%v, want=%v", got.Node, tc.wantNode)
+			}
+			if !sameOptionalString(got.Attempt, tc.wantAttempt) {
+				t.Fatalf("attempt=%v, want=%v", got.Attempt, tc.wantAttempt)
+			}
+			if string(got.Payload) != tc.wantPayload {
+				t.Fatalf("payload=%s, want=%s", got.Payload, tc.wantPayload)
+			}
+		})
+	}
+}
+
+func stringPtr(value string) *string { return &value }
+
+func sameOptionalString(got, want *string) bool {
+	if got == nil || want == nil {
+		return got == nil && want == nil
+	}
+	return *got == *want
+}
+
+func FuzzB2336WakeconsumerEnvelopeJSONRoundTrip(f *testing.F) {
+	f.Add("review", "attempt-1", []byte(`{"ticket_id":"q1"}`), true, true, true)
+	f.Add("", "", []byte(`null`), true, true, true)
+	f.Add("review", "attempt-2", []byte(`{}`), false, true, true)
+	f.Add("review", "attempt-3", []byte{}, true, true, false)
+
+	f.Fuzz(func(t *testing.T, node, attempt string, payload []byte, nodePresent, attemptPresent, payloadPresent bool) {
+		if len(payload) > 0 && !json.Valid(payload) {
+			t.Skip()
+		}
+		env := newNoPTYLedgerEnv(t)
+		cardID := createCoordCard(t, env)
+		raw := appendEnvelopeForWakeconsumer(t, env.ledger, cardID, "fuzz-task", node, attempt, payload)
+		raw = mutateWakeconsumerEnvelope(t, raw, nodePresent, attemptPresent, payloadPresent, false)
+		got, err := decodeMirroredTaskEnvelope(proto.LedgerEvent{
+			Seq: 1, CardID: cardID, Type: ledger.EvTaskMirrored, Payload: raw,
+		})
+		if !payloadPresent {
+			if err == nil {
+				t.Fatalf("缺失 payload 应由生产 decoder 拒绝: %s", raw)
+			}
+			return
+		}
+		if err != nil {
+			t.Fatalf("生产 wakeconsumer decoder: %v; envelope=%s", err, raw)
+		}
+		if nodePresent {
+			if got.Node == nil || *got.Node != node {
+				t.Fatalf("node=%v, want present %q", got.Node, node)
+			}
+		} else if got.Node != nil {
+			t.Fatalf("缺失 node 不得解码成零值 %q", *got.Node)
+		}
+		if attemptPresent {
+			if got.Attempt == nil || *got.Attempt != attempt {
+				t.Fatalf("attempt=%v, want present %q", got.Attempt, attempt)
+			}
+		} else if got.Attempt != nil {
+			t.Fatalf("缺失 attempt 不得解码成零值 %q", *got.Attempt)
+		}
+		wantPayload := payload
+		if len(wantPayload) == 0 {
+			wantPayload = []byte("null")
+		}
+		if string(got.Payload) != string(wantPayload) {
+			t.Fatalf("payload=%s, want=%s", got.Payload, wantPayload)
+		}
+	})
 }
 
 func prebindConsumerSession(t *testing.T, env *ledgerEnv, cardID string) {
@@ -178,6 +339,45 @@ func TestB2336StaleAttemptDoesNotWake(t *testing.T) {
 	for _, event := range events {
 		if event.Type == ledger.EvReviewVerdict || event.Type == ledger.EvAcceptanceRecorded {
 			t.Fatalf("执行事件不应生成业务裁决/验收: %+v", event)
+		}
+	}
+}
+
+// TestB2336TerminalWakeDoesNotWriteBusinessVerdict keeps execution terminal
+// facts separate from the workflow's review/acceptance facts.  The consumer
+// may wake the coordinator, but it does not own either business write.
+func TestB2336TerminalWakeDoesNotWriteBusinessVerdict(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	for i, typ := range []string{"completed", "turn_failed", "failed"} {
+		appendMirroredForConsumer(t, env.ledger, cardID, "terminal-"+typ, typ, int64(i+1),
+			`{"text":"`+typ+`"}`)
+	}
+
+	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil {
+		t.Fatalf("消费终态事件: %v", err)
+	}
+	if escalated || processed != 3 {
+		t.Fatalf("终态事件应各唤醒一次，processed=%d escalated=%v", processed, escalated)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 1 {
+		t.Fatalf("同卡终态事件应合并为一次 Resume，实得 %d", len(resumes))
+	}
+	for _, typ := range []string{"completed", "turn_failed", "failed"} {
+		if !strings.Contains(resumes[0], typ) {
+			t.Fatalf("终态 wake briefing 缺少 %q: %s", typ, resumes[0])
+		}
+	}
+	events, err := env.ledger.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		t.Fatalf("读终态消费账本: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == ledger.EvReviewVerdict || event.Type == ledger.EvAcceptanceRecorded {
+			t.Fatalf("执行终态不应伪造业务裁决/验收: %+v", event)
 		}
 	}
 }

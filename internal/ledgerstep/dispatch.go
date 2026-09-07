@@ -1,5 +1,5 @@
 // 模板派发的共用段：取模板 → 算分支与基线 → 拼 prompt → 经注入的 Transport
-// 派发 → 回链挂账 → 落 dispatched 快照。
+// 派发 → 先落 dispatched 快照 → 回链挂账。
 //
 // 职责：把「一张卡按某个模板派出去」这件事收口成一处，CLI 与 agentd 共用。
 // 边界：
@@ -345,16 +345,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	if snapshotBranch == "" {
 		snapshotBranch = existingBranch
 	}
-	if req.WriteGate != nil && !req.WriteGate() {
-		err := fmt.Errorf("挂账被拒：%w", ErrWriteGateClosed)
-		slog.Default().Warn("失去写权，停止派发挂账", "card", c.ID, "target", target, "task", taskID, "cause", err)
-		return zero, err
-	}
-	if err := d.St.LinkTask(c.ID, target, taskID, purpose, d.Actor); err != nil {
-		slog.Default().Warn("模板派发回链挂账失败", "card", c.ID, "target", target,
-			"task", taskID, "cause", err)
-		return zero, fmt.Errorf("回链挂账: %w", err)
-	}
+	// 先落快照再挂账：镜像对账能在 LinkTask 可见前取得 Node/Attempt 投影，
+	// 避免空身份事件先消耗 source watermark 后无法用新身份重放。
 	if req.WriteGate != nil && !req.WriteGate() {
 		err := fmt.Errorf("快照落账被拒：%w", ErrWriteGateClosed)
 		slog.Default().Warn("失去写权，停止派发快照落账", "card", c.ID, "target", target, "task", taskID, "cause", err)
@@ -372,6 +364,16 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		slog.Default().Warn("模板派发快照落账失败", "card", c.ID, "target", target,
 			"task", taskID, "base", base, "base_commit", baseCommit, "cause", err)
 		return zero, fmt.Errorf("快照落账: %w", err)
+	}
+	if req.WriteGate != nil && !req.WriteGate() {
+		err := fmt.Errorf("挂账被拒：%w", ErrWriteGateClosed)
+		slog.Default().Warn("失去写权，停止派发挂账", "card", c.ID, "target", target, "task", taskID, "cause", err)
+		return zero, err
+	}
+	if err := d.St.LinkTask(c.ID, target, taskID, purpose, d.Actor); err != nil {
+		slog.Default().Warn("模板派发回链挂账失败", "card", c.ID, "target", target,
+			"task", taskID, "cause", err)
+		return zero, fmt.Errorf("回链挂账: %w", err)
 	}
 	slog.Default().Info("模板派发完成", "card", c.ID, "template", tpl.Name,
 		"task", taskID, "target", target, "executor", executor, "model", model,

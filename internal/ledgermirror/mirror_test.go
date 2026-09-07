@@ -104,6 +104,87 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 	t.Fatal("镜像未按期落账（应恰 2 条：progress 过滤、幂等不重）")
 }
 
+// TestB2336MirrorSourceEventCoverage keeps the source-to-card seam explicit:
+// each deliverable task event is mirrored once, while progress and approver
+// bookkeeping remain source-only audit events.
+func TestB2336MirrorSourceEventCoverage(t *testing.T) {
+	s := testLedger(t)
+	cardID := linkedCard(t, s, "mac-02", "T-source-events")
+	input := []proto.Event{
+		{Seq: 1, Type: proto.EventTypeQuestion, Payload: []byte(`{"ticket_id":"q1"}`)},
+		{Seq: 2, Type: proto.EventTypePermissionRequest, Payload: []byte(`{"ticket_id":"p1"}`)},
+		{Seq: 3, Type: proto.EventTypeCompleted, Payload: []byte(`{"summary":"done"}`)},
+		{Seq: 4, Type: proto.EventTypeTurnFailed, Payload: []byte(`{"fail_reason":"turn"}`)},
+		{Seq: 5, Type: proto.EventTypeFailed, Payload: []byte(`{"fail_reason":"failed"}`)},
+		{Seq: 6, Type: proto.EventTypeArchived, Payload: []byte(`{}`)},
+		{Seq: 7, Type: proto.EventTypeProgress, Payload: []byte(`{"text":"progress"}`)},
+		{Seq: 8, Type: proto.EventTypeApproverDecision, Payload: []byte(`{"decision":"allow"}`)},
+		{Seq: 9, Type: proto.EventTypeApproverDisabled, Payload: []byte(`{"reason":"disabled"}`)},
+	}
+	source := func(ctx context.Context, _ *client.Client, taskID string, fromSeq int64,
+		onEvent func(proto.Event) error) error {
+		for _, event := range input {
+			if event.Seq <= fromSeq {
+				continue
+			}
+			event.TaskID = taskID
+			if err := onEvent(event); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	m := runMirror(t, s, machinesWith(t, "mac-02"), source)
+	defer m.Stop()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var events []ledger.Event
+	for time.Now().Before(deadline) {
+		var err error
+		events, err = s.EventsFromAsc([]string{cardID}, 0, 100)
+		if err != nil {
+			t.Fatalf("读镜像事件: %v", err)
+		}
+		count := 0
+		for _, event := range events {
+			if event.Type == ledger.EvTaskMirrored {
+				count++
+			}
+		}
+		if count == 6 {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	gotTypes := map[string]int{}
+	for _, event := range events {
+		if event.Type != ledger.EvTaskMirrored {
+			if event.Type == ledger.EvReviewVerdict || event.Type == ledger.EvAcceptanceRecorded {
+				t.Fatalf("终态镜像不应直接产生业务裁决/验收: %+v", event)
+			}
+			continue
+		}
+		var envelope struct {
+			TaskType string `json:"task_type"`
+		}
+		if err := json.Unmarshal(event.Payload, &envelope); err != nil {
+			t.Fatalf("解镜像 envelope: %v", err)
+		}
+		gotTypes[envelope.TaskType]++
+	}
+	for _, want := range []string{"question", "permission_request", "completed", "turn_failed", "failed", "archived"} {
+		if gotTypes[want] != 1 {
+			t.Fatalf("源事件 %s 镜像次数=%d，want 1；types=%v", want, gotTypes[want], gotTypes)
+		}
+	}
+	for _, skipped := range []string{"progress", "approver_decision", "approver_disabled"} {
+		if gotTypes[skipped] != 0 {
+			t.Fatalf("过滤源事件 %s 不应写入镜像: types=%v", skipped, gotTypes)
+		}
+	}
+}
+
 func TestB2336ProjectionChangeResubscribesWithNewAttempt(t *testing.T) {
 	s := testLedger(t)
 	c, _ := s.CreateCard(ledger.NewCard{Title: "节点重试", Project: "p", Workflow: "bug", Actor: "t"})
