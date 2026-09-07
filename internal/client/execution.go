@@ -43,8 +43,8 @@ type ExecutionClient interface {
 
 // ErrTunnelDisconnected 表示 relay 隧道在请求途中断开。
 //
-// Ticket 0 只立哨兵：生产路径的隧道失败仍包装为 ErrUnreachable。实现节点接线后，
-// 调用方用 errors.Is 区分「目标不可达」与「隧道断开」，不得把二者都吞成泛网络错误。
+// 生产路径由 Client.do 在 relayBacked 时包装本哨兵；直连仍是 ErrUnreachable。
+// 两条不得 errors.Is 互认。
 var ErrTunnelDisconnected = errors.New("relay 隧道断开")
 
 var (

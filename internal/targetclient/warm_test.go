@@ -7,6 +7,9 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net/http"
+	"net/http/httptest"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -109,3 +112,24 @@ func TestWarmStopsOnContextCancel(t *testing.T) {
 		t.Fatal("ctx 取消后 Warm 没有返回")
 	}
 }
+
+func TestWarmSuccessDoesNotProbeAgentdHTTP(t *testing.T) {
+	hits := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		hits++
+	}))
+	t.Cleanup(ts.Close)
+	addr := strings.TrimPrefix(ts.URL, "http://")
+	p := NewPool(confOf(map[string]config.Target{
+		"direct": {Addr: addr, Token: "t"},
+		"relayed": {Relay: "wss://r.example.com/relay", Credential: "c",
+			Node: "n", Token: "0123456789abcdef0123456789abcdef"},
+	}), slog.Default())
+	defer p.Close()
+	p.ensure = func(context.Context, string) error { return nil }
+	p.warmOnce(context.Background(), map[string]*warmState{})
+	if hits != 0 {
+		t.Fatalf("Warm 成功不得去拨 agentd HTTP，hits=%d", hits)
+	}
+}
+

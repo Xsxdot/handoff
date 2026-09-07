@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/relay"
 )
 
 func TestWaitDeliveryPolicyMatchesIsDeliverableAlias(t *testing.T) {
@@ -147,4 +149,82 @@ func TestTransportAndExecutionClientCompileOnAggregate(t *testing.T) {
 		t.Fatal("Transport.HTTPClient 不能为空")
 	}
 	_ = ex
+}
+
+func TestRelayClosedDispatchIsTunnelDisconnected(t *testing.T) {
+	d := relay.NewDialer("ws://127.0.0.1:1/relay", "c", "n",
+		"0123456789abcdef0123456789abcdef", "", slog.Default())
+	cl := client.NewRelay(d, "tok")
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cl.Dispatch(context.Background(), client.DispatchOpts{Prompt: "x"})
+	if err == nil {
+		t.Fatal("关闭的 relay 隧道上 Dispatch 必须失败")
+	}
+	if !errors.Is(err, client.ErrTunnelDisconnected) {
+		t.Fatalf("要 ErrTunnelDisconnected，实得 %v", err)
+	}
+	if errors.Is(err, client.ErrUnreachable) {
+		t.Fatalf("隧道断开不得与 ErrUnreachable 互认：%v", err)
+	}
+}
+
+func TestRelayCanceledDispatchIsNotTunnelOrUnreachable(t *testing.T) {
+	d := relay.NewDialer("ws://127.0.0.1:1/relay", "c", "n",
+		"0123456789abcdef0123456789abcdef", "", slog.Default())
+	t.Cleanup(func() { _ = d.Close() })
+	cl := client.NewRelay(d, "tok")
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := cl.Dispatch(ctx, client.DispatchOpts{Prompt: "x"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("要 context.Canceled，实得 %v", err)
+	}
+	if errors.Is(err, client.ErrUnreachable) || errors.Is(err, client.ErrTunnelDisconnected) {
+		t.Fatalf("ctx 取消不得包装成两条网络哨兵：%v", err)
+	}
+}
+
+func TestMarkForwardedRelayCopyKeepsTunnelSentinel(t *testing.T) {
+	d := relay.NewDialer("ws://127.0.0.1:1/relay", "c", "n",
+		"0123456789abcdef0123456789abcdef", "", slog.Default())
+	cl := client.NewRelay(d, "tok").MarkForwarded()
+	if err := d.Close(); err != nil {
+		t.Fatal(err)
+	}
+	_, err := cl.Dispatch(context.Background(), client.DispatchOpts{Prompt: "x"})
+	if !errors.Is(err, client.ErrTunnelDisconnected) {
+		t.Fatalf("MarkForwarded 副本必须仍识别隧道断开，实得 %v", err)
+	}
+	if errors.Is(err, client.ErrUnreachable) {
+		t.Fatalf("副本不得退回 ErrUnreachable：%v", err)
+	}
+}
+
+type countRoundTripper struct {
+	n    int
+	next http.RoundTripper
+}
+
+func (c *countRoundTripper) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.n++
+	return c.next.RoundTrip(req)
+}
+
+func TestDispatchDoOncePerCall(t *testing.T) {
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(proto.Task{ID: "T1"})
+	}))
+	t.Cleanup(ts.Close)
+	cl := client.New(ts.URL, "tok")
+	ct := &countRoundTripper{next: cl.HTTPClient().Transport}
+	cl.HTTPClient().Transport = ct
+	if _, err := cl.Dispatch(context.Background(), client.DispatchOpts{Prompt: "x"}); err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	if ct.n != 1 {
+		t.Fatalf("do 单次调用 hc.Do 次数=%d，want 1（重试不得放进 do）", ct.n)
+	}
 }

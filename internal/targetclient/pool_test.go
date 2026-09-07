@@ -113,3 +113,44 @@ func TestPoolDropsRemovedTarget(t *testing.T) {
 		t.Fatalf("已删除的机器要从池里移出，实得 %d 条", n)
 	}
 }
+
+func TestNewLocalDoesNotEnterPool(t *testing.T) {
+	p := NewPool(confOf(map[string]config.Target{
+		"mac-02": {Addr: "10.0.0.2:7777", Token: "tok"},
+	}), slog.Default())
+	defer p.Close()
+	local := NewLocal("127.0.0.1:7777", "tok")
+	if p.size() != 0 {
+		t.Fatalf("NewLocal 不得写入 entries，size=%d", p.size())
+	}
+	got, err := p.For("mac-02")
+	if err != nil {
+		t.Fatalf("For: %v", err)
+	}
+	if p.size() != 1 {
+		t.Fatalf("池内只能有 For 的条目，size=%d", p.size())
+	}
+	if local == got {
+		t.Fatal("NewLocal 的 client 不得是池里那一个")
+	}
+}
+
+func TestPoolForReturnedClientMustStayReusable(t *testing.T) {
+	p := NewPool(confOf(map[string]config.Target{
+		"mac-02": {Addr: "10.0.0.2:7777", Token: "tok"},
+	}), slog.Default())
+	defer p.Close()
+	a, err := p.For("mac-02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.HTTPClient().CloseIdleConnections()
+	b, err := p.For("mac-02")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatal("调用方关空闲连接不得迫使池重建 client（隧道归池）")
+	}
+}
+

@@ -178,6 +178,10 @@ type Client struct {
 	// "no Host in request URL"，把「这台机器是 relay 形态、压根没有 addr」这个
 	// 配置事实伪装成了网络故障。
 	initErr error
+
+	// relayBacked 为 true 时 hc.Transport 来自 relay.Dialer。
+	// do 把非 ctx 的传输失败包装成 ErrTunnelDisconnected，而不是 ErrUnreachable。
+	relayBacked bool
 }
 
 // New 创建 agentd 客户端。
@@ -208,6 +212,7 @@ func NewRelay(d *relay.Dialer, token string) *Client {
 		hc: &http.Client{
 			Transport: d.Transport(),
 		},
+		relayBacked:      true,
 		wsInitialBackoff: wsInitialBackoff,
 		wsMaxBackoff:     wsMaxBackoff,
 		wsStableAfter:    wsStableAfter,
@@ -328,6 +333,7 @@ func (c *Client) MarkForwarded() *Client {
 		token:            c.token,
 		hc:               c.hc,
 		initErr:          c.initErr,
+		relayBacked:      c.relayBacked,
 		extraHeaders:     map[string]string{"X-Handoff-Forwarded": "1"},
 		wsInitialBackoff: c.wsInitialBackoff,
 		wsMaxBackoff:     c.wsMaxBackoff,
@@ -356,6 +362,7 @@ func (c *Client) NoRedirect() *Client {
 				return http.ErrUseLastResponse
 			},
 		},
+		relayBacked:      c.relayBacked,
 		extraHeaders:     c.extraHeaders,
 		wsInitialBackoff: c.wsInitialBackoff,
 		wsMaxBackoff:     c.wsMaxBackoff,
@@ -405,6 +412,11 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			return nil, err
 		}
+		if c.relayBacked {
+			c.log().Debug("relay 隧道请求未拿到响应",
+				"method", method, "path", path, "url", c.baseURL, "cause", err)
+			return nil, fmt.Errorf("%w: %s %s: %w", ErrTunnelDisconnected, method, path, err)
+		}
 		// Debug 而非 Warn：status 轮询这类热路径会连续撞这里（upgrade 换版后每秒一次），
 		// 在这一层打 Warn 会把真正需要注意的失败淹掉。这次够不着是致命还是可降级，
 		// 只有调用方知道——由它决定要不要升级成 Warn（见 cmd/project.go 的降级点）。
@@ -412,6 +424,8 @@ func (c *Client) do(ctx context.Context, method, path string, body any) (*http.R
 			"method", method, "path", path, "url", c.baseURL, "cause", err)
 		return nil, fmt.Errorf("%w: %s %s: %w", ErrUnreachable, method, path, err)
 	}
+	c.log().Debug("agentd 请求拿到响应",
+		"method", method, "path", path, "status", resp.StatusCode, "url", c.baseURL, "relay", c.relayBacked)
 	return resp, nil
 }
 
@@ -673,15 +687,21 @@ func (c *Client) Attach(ctx context.Context, taskID string) (*AttachInfo, error)
 // 注意：
 //   - 工单不存在、已回答（不可重复回答）或不属于该任务时返回错误
 func (c *Client) Reply(ctx context.Context, taskID, ticketID, answer string) error {
+	c.log().Info("Reply 进入", "url", c.baseURL, "relay", c.relayBacked,
+		"task", taskID, "ticket", ticketID, "answer_runes", len([]rune(answer)))
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/reply",
 		map[string]string{"ticket_id": ticketID, "answer": answer})
 	if err != nil {
+		c.log().Error("Reply 失败", "url", c.baseURL, "task", taskID, "ticket", ticketID, "cause", err)
 		return fmt.Errorf("reply 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return c.httpError("reply", resp)
+		err := c.httpError("reply", resp)
+		c.log().Error("Reply 失败", "url", c.baseURL, "task", taskID, "ticket", ticketID, "cause", err)
+		return err
 	}
+	c.log().Info("Reply 完成", "task", taskID, "ticket", ticketID)
 	return nil
 }
 
@@ -750,18 +770,26 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	if opts.HomeDir != nil {
 		body["home_dir"] = *opts.HomeDir
 	}
+	c.log().Info("Dispatch 进入", "url", c.baseURL, "relay", c.relayBacked,
+		"executor", opts.Executor, "prompt_runes", len([]rune(opts.Prompt)))
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", body)
 	if err != nil {
+		c.log().Error("Dispatch 失败", "url", c.baseURL, "cause", err)
 		return nil, fmt.Errorf("dispatch 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return nil, c.httpError("dispatch", resp)
+		err := c.httpError("dispatch", resp)
+		c.log().Error("Dispatch 失败", "url", c.baseURL, "cause", err)
+		return nil, err
 	}
 	var task proto.Task
 	if err := json.NewDecoder(resp.Body).Decode(&task); err != nil {
-		return nil, fmt.Errorf("解析 dispatch 响应: %w", err)
+		err := fmt.Errorf("解析 dispatch 响应: %w", err)
+		c.log().Error("Dispatch 失败", "url", c.baseURL, "cause", err)
+		return nil, err
 	}
+	c.log().Info("Dispatch 完成", "url", c.baseURL, "task", task.ID, "state", task.State)
 	return &task, nil
 }
 
@@ -1023,15 +1051,21 @@ func (c *Client) PatchProject(ctx context.Context, name, newName, path string) (
 // 注意：
 //   - 任务不存在返回 404 错误；状态不允许续接返回 409 错误
 func (c *Client) Continue(ctx context.Context, taskID, instructions string) error {
+	c.log().Info("Continue 进入", "url", c.baseURL, "relay", c.relayBacked,
+		"task", taskID, "instructions_runes", len([]rune(instructions)))
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/continue",
 		map[string]string{"instructions": instructions})
 	if err != nil {
+		c.log().Error("Continue 失败", "url", c.baseURL, "task", taskID, "cause", err)
 		return fmt.Errorf("continue 请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return c.httpError("continue", resp)
+		err := c.httpError("continue", resp)
+		c.log().Error("Continue 失败", "url", c.baseURL, "task", taskID, "cause", err)
+		return err
 	}
+	c.log().Info("Continue 完成", "task", taskID)
 	return nil
 }
 
@@ -1078,18 +1112,23 @@ func (c *Client) Done(ctx context.Context, taskID, note string) (bool, error) {
 //     （旧版 agentd）按 false 处理。CLI 据此打印与行为一致的提示，不猜
 //   - 任务不存在（404）或已是终态（409）时返回错误
 func (c *Client) Stop(ctx context.Context, taskID string) (worktreeRemoved bool, err error) {
+	c.log().Info("Stop 进入", "url", c.baseURL, "relay", c.relayBacked, "task", taskID)
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks/"+taskID+"/stop", nil)
 	if err != nil {
+		c.log().Error("Stop 失败", "url", c.baseURL, "task", taskID, "cause", err)
 		return false, fmt.Errorf("中止任务请求: %w", err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		return false, c.httpError("中止任务", resp)
+		err = c.httpError("中止任务", resp)
+		c.log().Error("Stop 失败", "url", c.baseURL, "task", taskID, "cause", err)
+		return false, err
 	}
 	var body struct {
 		WorktreeRemoved bool `json:"worktree_removed"`
 	}
 	_ = json.NewDecoder(resp.Body).Decode(&body)
+	c.log().Info("Stop 完成", "task", taskID, "worktree_removed", body.WorktreeRemoved)
 	return body.WorktreeRemoved, nil
 }
 
@@ -1605,8 +1644,10 @@ func (c *Client) StreamEventsOnce(ctx context.Context, taskID string, fromSeq in
 func (c *Client) waitOnce(ctx context.Context, taskID string, fromSeq int64, all bool) (*proto.Event, error) {
 	var got *proto.Event
 	err := c.streamOnce(ctx, taskID, fromSeq, nil, func(ev proto.Event) error {
+		// why：策略在应用谓词，传输 streamOnce 必须仍见到该帧。口径与 FollowEvents 共用 isDeliverable。
 		if !all && !isDeliverable(ev.Type) {
-			return nil // 审计类与 progress 不唤醒；口径与 FollowEvents 共用 isDeliverable，避免两处漂移
+			c.log().Debug("wait 跳过不可交付事件", "task", taskID, "seq", ev.Seq, "type", ev.Type)
+			return nil
 		}
 		c.log().Info("wait 事件返回", "task", taskID, "seq", ev.Seq, "type", ev.Type)
 		got = &ev
@@ -1739,6 +1780,7 @@ func (c *Client) FollowEvents(ctx context.Context, taskID string, all bool,
 			lastFrame = time.Now()
 			fromSeq = ev.Seq
 			if !all && !isDeliverable(ev.Type) {
+				c.log().Debug("follow 跳过不可交付事件", "task", taskID, "seq", ev.Seq, "type", ev.Type)
 				return nil // 审计类与 progress 不交付；口径与 waitOnce 共用 isDeliverable，避免两处漂移
 			}
 			if werr := c.writeCursor(taskID, ev.Seq); werr != nil {

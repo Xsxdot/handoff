@@ -913,7 +913,17 @@ func (s *Server) handleProjectBranches(w http.ResponseWriter, r *http.Request) {
 //
 // 响应：200 proto.Workspace；项目不存在 404；请求不合法 400；git 失败 500（原文透出）
 func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Request) {
-	if s.forwardWorktreeIfRequested(w, r) {
+	handled, forwarded, cardIDs := s.forwardWorktreeIfRequested(w, r)
+	if handled {
+		if forwarded == nil {
+			return
+		}
+		if len(cardIDs) > 0 && s.ledger != nil {
+			*forwarded = s.attachCardBaseBranches(*forwarded, cardIDs, s.ledgerActor(r))
+		}
+		writeJSON(w, http.StatusOK, *forwarded)
+		s.log.Info("跨机建树完成并由本机挂卡", "machine", r.URL.Query().Get("machine"),
+			"branch", forwarded.Branch, "card_result_count", len(forwarded.CardResults))
 		return
 	}
 	if s.forwardIfRequested(w, r) {
