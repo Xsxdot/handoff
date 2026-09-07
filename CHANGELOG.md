@@ -12,6 +12,7 @@
 
 ### 变更
 
+- **普通派发改走已确认默认载体，禁止覆盖已绑定载体的机器/引擎/HOME（B233.5）。** `handoff dispatch` 未给 `--receiver` 时使用编制域默认载体；没有有效默认则失败，不再回退 `executor.default` 或裸环境。`--executor` 与载体 CLI 不同会被拒绝，不再单独决定执行落点。全局 `--target` 只选择控制面 agentd，不是执行落点。小队节点仍禁止点名机器/执行器。
 - **跨机失败可区分目标不可达与 relay 隧道断开（B233.3）。** `ExecutionClient` 在 relay 传输失败时返回可 `errors.Is` 的隧道断开哨兵，不再与「机器未登记 / 够不着」混用。跨机建树转发不再由传输层写卡账本；挂卡留在建树 handler，HTTP `CardResults` 不变。
 - **harness 能力归拢（B233.2）。** 审批一次性改走 OneShot 能力面；grok `--effort low` 改为调用方 Limits，不再是 grok 一次性默认。协调 Launch 对未实装协调能力的家返回明确不支持错误（禁止静默兜底到 OpenCode）。隔离 HOME 规则写入改走 Profile，不再写死 `.config/opencode`。`handoff skill install` 不再由调用方持各家路径表。
 - **OpenCode 普通派发改走审批 client 与 RespondAsk（B233.1）。** `permission_reuse` 不再唤醒 `handoff wait`。OpenCode 答问不再走无关联 `Send`。原生免审改为当前政策快照的精确子集（bash 默认 ask，范围内 edit 仍可原生 allow）。拒绝理由不再优先吞掉下一条提问。
