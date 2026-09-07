@@ -30,6 +30,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // ErrProjectAlreadyExists 表示位置冲突或克隆落点已被占用，映射 409。
@@ -940,7 +941,20 @@ func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return
 	}
-	ws, err := CreateManualWorktree(r.Context(), loc.Path, filepath.Join(s.conf().DataDir, "worktrees"), req)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	if err := s.mgr.requireWorkspace(); err != nil {
+		s.log.Error("建树失败：工作区能力未注入", "name", name, "cause", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	s.log.Info("准备通过工作区能力创建手工树", "name", name, "repo", loc.Path,
+		"mode", req.Mode, "branch", req.Branch)
+	tree, err := s.mgr.Workspace().CreateManual(r.Context(), loc.Path,
+		filepath.Join(s.conf().DataDir, "worktrees"),
+		workspace.ManualReq{Mode: req.Mode, Branch: req.Branch, Base: req.Base})
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, ErrBadWorktreeReq) {
@@ -951,6 +965,8 @@ func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, status, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return
 	}
+	s.log.Info("手工树创建成功", "name", name, "path", tree.Path, "branch", tree.Branch)
+	ws := proto.Workspace{Path: tree.Path, Branch: tree.Branch, Head: tree.Head, Managed: tree.Managed}
 	if len(req.CardIDs) > 0 && s.ledger != nil {
 		ws = s.attachCardBaseBranches(ws, req.CardIDs, s.ledgerActor(r))
 	}
