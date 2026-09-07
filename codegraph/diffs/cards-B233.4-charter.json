@@ -1,7 +1,7 @@
 {
  "view": "cards/B233.4-charter",
- "base": "124121e4",
- "summary": "B233.4 Ticket 0：工作区 Capability 空壳、身份编码与留存判据；叠加入口含 B233.1 ApprovalClient 以免 check 把既有契约打成 dead-interface",
+ "base": "94246fc8",
+ "summary": "B233.4 对账：补齐 agentd Capability 适配器、生产接线及工作区委托边，保留既有契约节点",
  "containersAdded": {
   "k_workspace_fn": {
    "label": "workspace（包级函数）",
@@ -12,6 +12,11 @@
    "label": "workspace 实体",
    "kind": "实体",
    "domain": "d_workspace"
+  },
+  "k_agentd_gitCapability": {
+   "label": "agentd.gitCapability",
+   "kind": "类型方法",
+   "domain": "d_coordination_task"
   }
  },
  "nodesAdded": {
@@ -1272,6 +1277,184 @@
      "file": "internal/workspace/retain_test.go:9"
     }
    ]
+  },
+  "m_agentd_gitCapability": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 1100,
+   "name": "gitCapability",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 22,
+   "signature": "type gitCapability struct{}",
+   "summary": "gitCapability 把包级 git 函数适配成 Capability；实现仍留在 agentd。",
+   "modelKind": "dto"
+  },
+  "n_agentd_NewGitCapability": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 1100,
+   "name": "NewGitCapability",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 25,
+   "signature": "func NewGitCapability() workspace.Capability",
+   "returns": "workspace.Capability",
+   "summary": "NewGitCapability 返回生产用工作区能力；只在组装点调用。"
+  },
+  "n_agentd_Manager_SetWorkspace": {
+   "kind": "func",
+   "container": "k_agentd_Manager",
+   "order": 1101,
+   "name": "Manager.SetWorkspace",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 30,
+   "signature": "func (m *Manager) SetWorkspace(c workspace.Capability)",
+   "params": [
+    ["c", "workspace.Capability", ""]
+   ],
+   "summary": "SetWorkspace 注入工作区能力；测试可换 fake，生产由组装点绑定。"
+  },
+  "n_agentd_Manager_Workspace": {
+   "kind": "func",
+   "container": "k_agentd_Manager",
+   "order": 1102,
+   "name": "Manager.Workspace",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 33,
+   "signature": "func (m *Manager) Workspace() workspace.Capability",
+   "returns": "workspace.Capability",
+   "summary": "Workspace 返回已注入的能力，可能为 nil。"
+  },
+  "n_agentd_Manager_requireWorkspace": {
+   "kind": "func",
+   "container": "k_agentd_Manager",
+   "order": 1103,
+   "name": "Manager.requireWorkspace",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 35,
+   "signature": "func (m *Manager) requireWorkspace() error",
+   "returns": "error"
+  },
+  "n_agentd_gitCapability_EnsureRepoUsable": {
+   "kind": "func",
+   "container": "k_agentd_gitCapability",
+   "order": 1,
+   "name": "gitCapability.EnsureRepoUsable",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 42,
+   "signature": "func (gitCapability) EnsureRepoUsable(ctx context.Context, repo string) error",
+   "params": [
+    ["ctx", "context.Context", ""],
+    ["repo", "string", ""]
+   ],
+   "returns": "error"
+  },
+  "n_agentd_gitCapability_ResolveBaseline": {
+   "kind": "func",
+   "container": "k_agentd_gitCapability",
+   "order": 2,
+   "name": "gitCapability.ResolveBaseline",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 46,
+   "signature": "func (gitCapability) ResolveBaseline(ctx context.Context, repo, sha string) (workspace.Baseline, error)",
+   "params": [
+    ["ctx", "context.Context", ""],
+    ["repo", "string", ""],
+    ["sha", "string", ""]
+   ],
+   "returns": "workspace.Baseline, error"
+  },
+  "n_agentd_gitCapability_Prepare": {
+   "kind": "func",
+   "container": "k_agentd_gitCapability",
+   "order": 3,
+   "name": "gitCapability.Prepare",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 54,
+   "signature": "func (gitCapability) Prepare(ctx context.Context, req workspace.PrepareReq) (workspace.Prepared, error)",
+   "params": [
+    ["ctx", "context.Context", ""],
+    ["req", "workspace.PrepareReq", ""]
+   ],
+   "returns": "workspace.Prepared, error"
+  },
+  "n_agentd_gitCapability_CreateManual": {
+   "kind": "func",
+   "container": "k_agentd_gitCapability",
+   "order": 4,
+   "name": "gitCapability.CreateManual",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 69,
+   "signature": "func (gitCapability) CreateManual(ctx context.Context, repo, worktreesDir string, req workspace.ManualReq) (workspace.ManualTree, error)",
+   "params": [
+    ["ctx", "context.Context", ""],
+    ["repo", "string", ""],
+    ["worktreesDir", "string", ""],
+    ["req", "workspace.ManualReq", ""]
+   ],
+   "returns": "workspace.ManualTree, error"
+  },
+  "n_agentd_gitCapability_DiffRange": {
+   "kind": "func",
+   "container": "k_agentd_gitCapability",
+   "order": 5,
+   "name": "gitCapability.DiffRange",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 80,
+   "signature": "func (gitCapability) DiffRange(ctx context.Context, repo, base, head string) (string, error)",
+   "params": [
+    ["ctx", "context.Context", ""],
+    ["repo", "string", ""],
+    ["base", "string", ""],
+    ["head", "string", ""]
+   ],
+   "returns": "string, error"
+  },
+  "n_agentd_gitCapability_ReadFile": {
+   "kind": "func",
+   "container": "k_agentd_gitCapability",
+   "order": 6,
+   "name": "gitCapability.ReadFile",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 87,
+   "signature": "func (gitCapability) ReadFile(ctx context.Context, repo, rel string) (workspace.FileContent, error)",
+   "params": [
+    ["ctx", "context.Context", ""],
+    ["repo", "string", ""],
+    ["rel", "string", ""]
+   ],
+   "returns": "workspace.FileContent, error"
+  },
+  "n_agentd_gitCapability_RecycleManaged": {
+   "kind": "func",
+   "container": "k_agentd_gitCapability",
+   "order": 7,
+   "name": "gitCapability.RecycleManaged",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 98,
+   "signature": "func (gitCapability) RecycleManaged(ctx context.Context, repo, workdir string) error",
+   "params": [
+    ["ctx", "context.Context", ""],
+    ["repo", "string", ""],
+    ["workdir", "string", ""]
+   ],
+   "returns": "error"
+  },
+  "n_agentd_Manager_assembleResultRef": {
+   "kind": "func",
+   "container": "k_agentd_Manager",
+   "order": 1104,
+   "name": "Manager.assembleResultRef",
+   "file": "internal/agentd/workspace_capability.go",
+   "line": 103,
+   "signature": "func (m *Manager) assembleResultRef(ctx context.Context, task *proto.Task, repo, headRev string) (workspace.ResultRef, error)",
+   "params": [
+    ["ctx", "context.Context", ""],
+    ["task", "*proto.Task", ""],
+    ["repo", "string", ""],
+    ["headRev", "string", ""]
+   ],
+   "returns": "workspace.ResultRef, error",
+   "summary": "assembleResultRef 在审阅现场组装结果引用；commit 取 rev-parse，失败则空串。"
   }
  },
  "edgesAdded": [
@@ -1318,6 +1501,288 @@
   [
    "n_workspace_NewResultRef",
    "m_workspace_ResultRef"
+  ],
+  [
+   "n_cmd_agentdCmd_RunE",
+   "n_agentd_Manager_SetWorkspace"
+  ],
+  [
+   "n_cmd_agentdCmd_RunE",
+   "n_agentd_NewGitCapability"
+  ],
+  [
+   "n_agentd_NewGitCapability",
+   "m_workspace_Capability"
+  ],
+  [
+   "n_cmd_id8",
+   "n_workspace_ID8"
+  ],
+  [
+   "n_agentd_Server_SetManager",
+   "n_agentd_Manager_SetWorkspace"
+  ],
+  [
+   "n_agentd_Server_SetManager",
+   "n_agentd_NewGitCapability"
+  ],
+  [
+   "n_agentd_Manager_SetWorkspace",
+   "m_workspace_Capability"
+  ],
+  [
+   "n_agentd_Manager_Workspace",
+   "m_workspace_Capability"
+  ],
+  [
+   "n_agentd_Manager_Dispatch",
+   "n_agentd_Manager_requireWorkspace"
+  ],
+  [
+   "n_agentd_Manager_Dispatch",
+   "m_workspace_Capability"
+  ],
+  [
+   "n_agentd_Manager_Dispatch",
+   "m_workspace_PrepareReq"
+  ],
+  [
+   "n_agentd_Manager_compensateWorkspace",
+   "n_workspace_MayRecycle"
+  ],
+  [
+   "n_agentd_Manager_compensateWorkspace",
+   "m_workspace_RecycleInput"
+  ],
+  [
+   "n_agentd_Manager_compensateWorkspace",
+   "n_agentd_Manager_requireWorkspace"
+  ],
+  [
+   "n_agentd_Manager_compensateWorkspace",
+   "m_workspace_Capability"
+  ],
+  [
+   "n_agentd_Manager_Done",
+   "n_workspace_MayRecycle"
+  ],
+  [
+   "n_agentd_Manager_Done",
+   "m_workspace_RecycleInput"
+  ],
+  [
+   "n_agentd_Manager_Done",
+   "n_agentd_Manager_requireWorkspace"
+  ],
+  [
+   "n_agentd_Manager_Done",
+   "m_workspace_Capability"
+  ],
+  [
+   "n_agentd_Manager_Stop",
+   "n_workspace_MayRecycle"
+  ],
+  [
+   "n_agentd_Manager_Stop",
+   "m_workspace_RecycleInput"
+  ],
+  [
+   "n_agentd_Manager_appendGCWorktreesExecute",
+   "n_workspace_MayRecycle"
+  ],
+  [
+   "n_agentd_Manager_appendGCWorktreesExecute",
+   "m_workspace_RecycleInput"
+  ],
+  [
+   "n_agentd_Manager_Reclaim",
+   "n_workspace_MayRecycle"
+  ],
+  [
+   "n_agentd_Manager_Reclaim",
+   "m_workspace_RecycleInput"
+  ],
+  [
+   "n_agentd_Server_handleProjectWorktreeCreate",
+   "n_agentd_Manager_requireWorkspace"
+  ],
+  [
+   "n_agentd_Server_handleProjectWorktreeCreate",
+   "n_agentd_Manager_Workspace"
+  ],
+  [
+   "n_agentd_Server_handleProjectWorktreeCreate",
+   "m_workspace_Capability"
+  ],
+  [
+   "n_agentd_Server_handleProjectWorktreeCreate",
+   "m_workspace_ManualReq"
+  ],
+  [
+   "n_agentd_Server_handleTaskDiff",
+   "n_agentd_Manager_assembleResultRef"
+  ],
+  [
+   "n_agentd_Server_handleTaskDiff",
+   "n_agentd_Manager_requireWorkspace"
+  ],
+  [
+   "n_agentd_Server_handleTaskDiff",
+   "n_agentd_Manager_Workspace"
+  ],
+  [
+   "n_agentd_Server_handleTaskFile",
+   "n_agentd_Manager_requireWorkspace"
+  ],
+  [
+   "n_agentd_Server_handleTaskFile",
+   "n_agentd_Manager_Workspace"
+  ],
+  [
+   "n_agentd_ResolveBaseline",
+   "n_workspace_IsCommitSHA"
+  ],
+  [
+   "n_agentd_id8",
+   "n_workspace_ID8"
+  ],
+  [
+   "n_agentd_taskBranch",
+   "n_workspace_TaskBranch"
+  ],
+  [
+   "n_agentd_gitCapability_EnsureRepoUsable",
+   "n_agentd_EnsureRepoUsable"
+  ],
+  [
+   "n_agentd_gitCapability_ResolveBaseline",
+   "n_agentd_ResolveBaseline"
+  ],
+  [
+   "n_agentd_gitCapability_ResolveBaseline",
+   "m_workspace_Baseline"
+  ],
+  [
+   "n_agentd_gitCapability_Prepare",
+   "n_agentd_PrepareWorkspace"
+  ],
+  [
+   "n_agentd_gitCapability_Prepare",
+   "m_agentd_WorkspaceReq"
+  ],
+  [
+   "n_agentd_gitCapability_Prepare",
+   "m_workspace_PrepareReq"
+  ],
+  [
+   "n_agentd_gitCapability_Prepare",
+   "m_workspace_Prepared"
+  ],
+  [
+   "n_agentd_gitCapability_CreateManual",
+   "n_agentd_CreateManualWorktree"
+  ],
+  [
+   "n_agentd_gitCapability_CreateManual",
+   "m_proto_CreateWorktreeReq"
+  ],
+  [
+   "n_agentd_gitCapability_CreateManual",
+   "m_workspace_ManualReq"
+  ],
+  [
+   "n_agentd_gitCapability_CreateManual",
+   "m_workspace_ManualTree"
+  ],
+  [
+   "n_agentd_gitCapability_DiffRange",
+   "n_agentd_DiffRange"
+  ],
+  [
+   "n_agentd_gitCapability_ReadFile",
+   "n_agentd_ReadFile"
+  ],
+  [
+   "n_agentd_gitCapability_ReadFile",
+   "m_workspace_FileContent"
+  ],
+  [
+   "n_agentd_gitCapability_RecycleManaged",
+   "n_agentd_RemoveManagedWorktree"
+  ],
+  [
+   "n_agentd_Manager_assembleResultRef",
+   "n_agentd_gitProbe"
+  ],
+  [
+   "n_agentd_Manager_assembleResultRef",
+   "n_workspace_IsCommitSHA"
+  ],
+  [
+   "n_agentd_Manager_assembleResultRef",
+   "n_workspace_NewResultRef"
+  ],
+  [
+   "n_agentd_Manager_assembleResultRef",
+   "m_proto_Task"
+  ],
+  [
+   "n_agentd_Manager_assembleResultRef",
+   "n_proto_Task_Workdir"
+  ],
+  [
+   "n_agentd_Manager_assembleResultRef",
+   "m_workspace_ResultRef"
+  ]
+ ],
+ "edgesDeleted": [
+  [
+   "n_agentd_Manager_Dispatch",
+   "m_agentd_WorkspaceReq"
+  ],
+  [
+   "n_agentd_Manager_Dispatch",
+   "n_agentd_EnsureRepoUsable"
+  ],
+  [
+   "n_agentd_Manager_Dispatch",
+   "n_agentd_PrepareWorkspace"
+  ],
+  [
+   "n_agentd_Manager_Dispatch",
+   "n_agentd_ResolveBaseline"
+  ],
+  [
+   "n_agentd_Manager_Done",
+   "n_agentd_RemoveManagedWorktree"
+  ],
+  [
+   "n_agentd_Manager_Stop",
+   "n_agentd_RemoveManagedWorktree"
+  ],
+  [
+   "n_agentd_Manager_Stop",
+   "n_agentd_worktreeCleanupHint"
+  ],
+  [
+   "n_agentd_Manager_compensateWorkspace",
+   "n_agentd_RemoveManagedWorktree"
+  ],
+  [
+   "n_agentd_Server_handleProjectWorktreeCreate",
+   "n_agentd_CreateManualWorktree"
+  ],
+  [
+   "n_agentd_Server_handleTaskDiff",
+   "n_agentd_DiffRange"
+  ],
+  [
+   "n_agentd_Server_handleTaskFile",
+   "n_agentd_ReadFile"
+  ],
+  [
+   "n_agentd_taskBranch",
+   "n_agentd_id8"
   ]
  ],
  "implementsAdded": [
@@ -1336,6 +1801,10 @@
   [
    "m_opencode_Adapter",
    "m_executor_ApprovalBinder"
+  ],
+  [
+   "m_agentd_gitCapability",
+   "m_workspace_Capability"
   ]
  ],
  "nodesModified": {
