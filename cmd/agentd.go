@@ -17,6 +17,7 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -185,6 +186,9 @@ var agentdCmd = &cobra.Command{
 		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
 		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
+		if ap != nil {
+			bindApproverOneShot(ap, ads, cfg.Approver.Executor, logger)
+		}
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
 				if runtime.GOOS == "windows" {
@@ -206,6 +210,8 @@ var agentdCmd = &cobra.Command{
 				return fmt.Errorf("codex 环境预检未通过: %w", err)
 			}
 		}
+		srv.SetProviders(agentd.RegistryFromAds(ads))
+		srv.SetRuleLoader(loadCarrierRules)
 		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, srv.EnvMapping, ap, gate, logger)
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
@@ -487,3 +493,108 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		lst.Close()
 	}, nil
 }
+
+// bindApproverOneShot 绑定审批者使用的 OneShot 能力。
+// 架构法边界：组装点允许根据 harness 名称 switch 适配各家；审批者包内部禁止 switch。
+func bindApproverOneShot(ap *agentd.Approver, ads map[string]executor.Adapter, name string, log *slog.Logger) {
+	if ap == nil || name == "" {
+		return
+	}
+	if ad, ok := ads[name]; ok {
+		if shot, ok := ad.(executor.OneShot); ok {
+			ap.BindOneShot(shot)
+			log.Info("审批者已绑定 OneShot", "executor", name)
+			return
+		}
+	}
+	switch name {
+	case executor.HarnessOpenCode:
+		ap.BindOneShot(opencode.NewOneShot(log))
+	case executor.HarnessClaude:
+		ap.BindOneShot(claudecode.NewOneShot(log))
+	case executor.HarnessGrok:
+		ap.BindOneShot(grok.NewOneShot(log))
+	case executor.HarnessCodex:
+		ap.BindOneShot(codex.NewOneShot(log))
+	case executor.HarnessAGY:
+		ap.BindOneShot(agy.NewOneShot(log))
+	default:
+		log.Error("审批者执行者无 OneShot 可绑定", "executor", name)
+	}
+}
+
+// loadCarrierRules 为协调者供给隔离 HOME 读取主 HOME 的载体规则和技能树。
+// 架构法边界：组装点持有五家规则相对路径常量，负责从主 HOME 读取文本，
+// 编排层（internal/agentd）零知识接收抽象规则集。
+func loadCarrierRules(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error) {
+	base := filepath.Base(cli)
+	var ruleRel, skillsRel string
+	switch base {
+	case executor.HarnessOpenCode:
+		ruleRel, skillsRel = opencode.RulesRelFile, opencode.SkillsRelDir
+	case executor.HarnessClaude:
+		ruleRel, skillsRel = claudecode.RulesRelFile, claudecode.SkillsRelDir
+	case executor.HarnessGrok:
+		ruleRel, skillsRel = grok.RulesRelFile, grok.SkillsRelDir
+	case executor.HarnessCodex:
+		ruleRel, skillsRel = codex.RulesRelFile, codex.SkillsRelDir
+	case executor.HarnessAGY:
+		ruleRel, skillsRel = agy.RulesRelFile, agy.SkillsRelDir
+	default:
+		return nil, nil, executor.UnsupportedError(base, executor.CapProfile)
+	}
+	var rules []executor.ProfileFile
+	if b, err := os.ReadFile(filepath.Join(mainHome, ruleRel)); err == nil {
+		rules = append(rules, executor.ProfileFile{Name: filepath.Base(ruleRel), Content: string(b)})
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	skills, err := readSkillTree(filepath.Join(mainHome, skillsRel), "")
+	return rules, skills, err
+}
+
+// readSkillTree 递归读取技能目录树为平铺的 ProfileFile 切片。
+func readSkillTree(root, rel string) ([]executor.ProfileFile, error) {
+	dir := root
+	if rel != "" {
+		dir = filepath.Join(root, rel)
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []executor.ProfileFile
+	for _, e := range entries {
+		child := e.Name()
+		if rel != "" {
+			child = filepath.Join(rel, e.Name())
+		}
+		p := filepath.Join(root, child)
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("规则源含 symlink %q", p)
+		}
+		if e.IsDir() {
+			sub, err := readSkillTree(root, child)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, sub...)
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, executor.ProfileFile{Name: child, Content: string(b)})
+	}
+	return out, nil
+}
+
+

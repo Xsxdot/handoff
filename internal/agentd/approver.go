@@ -19,7 +19,6 @@
 package agentd
 
 import (
-	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -28,7 +27,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/exec"
 	"strings"
 	"time"
 
@@ -36,10 +34,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
 )
-
-// maxDecideOutput 是裁决命令输出保留上限：模型在 JSON 后可能输出废话，
-// 只保留开头 64KiB 足够解析，防止失控输出驻留内存。
-const maxDecideOutput = 64 << 10
 
 // ApproverDecision 是审批者一次裁决的结果。
 //
@@ -66,9 +60,13 @@ type Approver struct {
 	// 审批者与任务执行者是同一个 agent 的两次启动，必须共用同一份 env——代理只配
 	// 半边会让审批者连不出去后静默 fail-closed 升级，是最难查的那类故障
 	env *envfile.Resolver
-	// runCmd 是执行 one-shot 裁决命令的测试缝（非导出字段，测试直接改注入）。
-	// 默认实现是 exec.CommandContext + CombinedOutput（输出上限 maxDecideOutput）。
-	runCmd func(ctx context.Context, argv []string) (string, error)
+	// shot 是执行一次性裁决的 OneShot 接口实现。
+	shot executor.OneShot
+}
+
+// BindOneShot 绑定一次性调用能力实现。
+func (a *Approver) BindOneShot(shot executor.OneShot) {
+	a.shot = shot
 }
 
 // NewApprover 构造审批者。
@@ -84,49 +82,13 @@ func NewApprover(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Log
 	if cfg.Executor == "" {
 		return nil, nil
 	}
-	a := &Approver{
+	return &Approver{
 		log:          log,
 		executorName: cfg.Executor,
 		model:        cfg.Model,
 		timeout:      cfg.Timeout,
 		env:          env,
-	}
-	// runCmd 绑到方法而不是包级函数：默认实现需要读 a.env 才能注入环境变量，
-	// 同时保持 runCmd 字段签名不变——既有 15 处测试注入点一行都不用改
-	a.runCmd = a.defaultRunCmd
-	return a, nil
-}
-
-// defaultRunCmd 是 runCmd 的默认实现：exec.CommandContext + CombinedOutput，
-// 输出上限 maxDecideOutput（截断而非报错——解析只关心输出开头的 JSON 行）。
-//
-// 环境（B19）：继承 agentd 环境并**追加**本 agent 的 env 文件变量。
-//   - 为什么是追加而不是替换：替换会让审批者连 PATH 都没有，executor 根本起不来
-//   - 为什么解析失败直接返回错误而不是无环境硬跑：Decide 的既有失败分支会把它
-//     变成 escalate（升级人工协调者）。让它带病裁决更危险——没有代理时模型请求
-//     必然失败，而失败会被当成「审批者判不了」，与真正的判不了混为一谈
-func (a *Approver) defaultRunCmd(ctx context.Context, argv []string) (string, error) {
-	env := os.Environ()
-	if a.env != nil {
-		extra, err := a.env.For(a.executorName)
-		if err != nil {
-			a.log.Error("审批者 env 文件解析失败，本次裁决升级人工协调者",
-				"executor", a.executorName, "cause", err)
-			return "", fmt.Errorf("解析审批者 env 文件: %w", err)
-		}
-		env = append(env, extra...)
-	}
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = env
-	var out bytes.Buffer
-	cmd.Stdout = &out
-	cmd.Stderr = &out
-	err := cmd.Run()
-	b := out.Bytes()
-	if len(b) > maxDecideOutput {
-		b = b[:maxDecideOutput]
-	}
-	return string(b), err
+	}, nil
 }
 
 // randNonce 生成一次性裁决随机数（8 字节 → 16 位十六进制）。
@@ -162,15 +124,30 @@ func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) A
 	a.log.Info("审批者开始裁决", "permission", truncateRunes(permission, 80),
 		"executor", a.executorName, "model", a.model, "nonce", nonce)
 	prompt := fmt.Sprintf(approverPromptTemplate, taskSummary, permission, nonce, nonce)
-	argv, err := executor.OneShotArgs(a.executorName, a.model, prompt)
-	if err != nil {
-		d := ApproverDecision{Approve: false, ElapsedMS: time.Since(start).Milliseconds(), Err: err}
-		a.log.Error("审批者裁决命令构造失败", "permission", truncateRunes(permission, 80), "cause", err)
+	if a.shot == nil {
+		d := ApproverDecision{Approve: false, ElapsedMS: time.Since(start).Milliseconds(), Err: fmt.Errorf("审批者未绑定 OneShot")}
+		a.log.Error("审批者裁决缺少 OneShot", "executor", a.executorName)
 		return d
+	}
+	var env []string
+	if a.env != nil {
+		extra, err := a.env.For(a.executorName)
+		if err != nil {
+			a.log.Error("审批者 env 文件解析失败，本次裁决升级人工协调者",
+				"executor", a.executorName, "cause", err)
+			return ApproverDecision{Approve: false, ElapsedMS: time.Since(start).Milliseconds(), Err: fmt.Errorf("解析审批者 env 文件: %w", err)}
+		}
+		if len(extra) > 0 {
+			env = append(os.Environ(), extra...)
+		}
+	}
+	req := executor.OneShotReq{Prompt: prompt, Model: a.model, Env: env, Limits: executor.OneShotLimits{}}
+	if a.executorName == executor.HarnessGrok {
+		req.Limits.Effort = executor.EffortLow
 	}
 	ctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
-	out, err := a.runCmd(ctx, argv)
+	reply, err := a.shot.Invoke(ctx, req)
 	elapsed := time.Since(start).Milliseconds()
 	if err != nil {
 		// fail-closed：命令失败/超时/不存在一律按 escalate，且 Err 非 nil
@@ -178,10 +155,10 @@ func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) A
 		// 「连续失败多少次就该停用」的判据
 		d := ApproverDecision{Approve: false, ElapsedMS: elapsed, Err: err}
 		a.log.Error("审批者裁决失败", "permission", truncateRunes(permission, 80),
-			"cause", err, "output", truncateRunes(out, 200), "elapsed_ms", elapsed)
+			"cause", err, "output", truncateRunes(reply.Text, 200), "elapsed_ms", elapsed)
 		return d
 	}
-	d := parseDecision(out, nonce, elapsed)
+	d := parseDecision(reply.Text, nonce, elapsed)
 	if d.Err != nil && strings.Contains(d.Err.Error(), "nonce 不匹配") {
 		a.log.Error("审批者裁决 nonce 校验失败，按升级处理", "task_summary", truncateRunes(taskSummary, 60),
 			"permission", truncateRunes(permission, 80), "cause", d.Err)

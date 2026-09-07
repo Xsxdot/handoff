@@ -191,6 +191,7 @@ type Manager struct {
 	// usageMu 保护 lastUsage：usage 事件的去重指纹（Task 2 通路）。
 	usageMu   sync.Mutex
 	lastUsage map[string]string // taskID → 上一次上报的用量指纹，去重用
+	reg       *executor.Registry
 }
 
 // sweep 调用清扫，走测试缝或真实实现。
@@ -309,11 +310,11 @@ func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg 
 	envMapping func() map[string]string,
 	approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
 	env := envfile.NewResolver(envfile.Dir(cfg.DataDir), envMapping, log)
-	return &Manager{
+	m := &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg,
-		appendEvent: st.AppendEvent,
-		conf:        func() *config.Config { return cfg },
-		approver:    approver, gate: gate, log: log,
+		appendEvent:  st.AppendEvent,
+		conf:         func() *config.Config { return cfg },
+		approver:     approver, gate: gate, log: log,
 		env:          env,
 		apInflight:   map[string]bool{},
 		apFails:      map[string]int{},
@@ -322,7 +323,42 @@ func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg 
 		aaCount:      map[string]int{},
 		stopping:     map[string]struct{}{},
 		sweepOwned:   map[string]struct{}{},
+		reg:          registryFromAds(ads),
 	}
+	if m.log != nil {
+		names := make([]string, 0, len(ads))
+		for n := range ads {
+			names = append(names, n)
+		}
+		m.log.Info("能力 Registry 已从 ads 推导", "n", len(ads), "registered", names)
+	}
+	return m
+}
+
+// RegistryFromAds 从 ads 全表推导能力 Registry。
+// 仅保留实现了 executor.Provider 的 adapter，重名以后者为准。
+func RegistryFromAds(ads map[string]executor.Adapter) *executor.Registry {
+	return registryFromAds(ads)
+}
+
+func registryFromAds(ads map[string]executor.Adapter) *executor.Registry {
+	ps := make([]executor.Provider, 0, len(ads))
+	for name, ad := range ads {
+		if p, ok := ad.(executor.Provider); ok {
+			ps = append(ps, p)
+		} else if ad != nil {
+			ps = append(ps, executor.StaticProvider{
+				HarnessName: name,
+				Rep: executor.CapabilityReport{
+					Harness: name,
+					Caps: []executor.CapabilityDecl{
+						{Name: executor.CapExecution, Supported: true},
+					},
+				},
+			})
+		}
+	}
+	return executor.NewRegistry(ps...)
 }
 
 // adapterFor 按任务记录的执行者名解析其 adapter。
@@ -780,6 +816,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, err
 	}
+	if m.reg != nil {
+		if rerr := m.reg.Require(execName, executor.CapExecution); rerr != nil {
+			m.log.Error("dispatch 执行能力不足", "executor", execName, "cause", rerr)
+			return nil, fmt.Errorf("%w: %w", errBadDispatchRequest, rerr)
+		}
+	}
 	model := m.resolveModel(req.Model, execName)
 
 	// env 注入（B19）：按 executor 名解析 env 文件。位置刻意排在最前段——早于建任务、
@@ -1043,7 +1085,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 			"home_override", true, "home_dir", task.HomeDir)
 	}
 	var approval executor.ApprovalClient
-	if isOpenCodeExecutor(execName, m.conf().Executor.Default) {
+	if isOpenCodeExecutor(execName, m.conf().Executor.Default) || execName == executor.HarnessClaude {
 		snap, serr := m.resolveSnapshot(task)
 		if serr != nil {
 			return nil, serr
@@ -1060,6 +1102,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "adapter start 失败")
 		return nil, fmt.Errorf("%w: %v", errExecutorStartFailed, err)
 	}
+	m.log.Info("dispatch 经执行能力面", "task", taskID, "executor", execName)
 	// executor 已接管工作区：此后的错误（transit 落库失败等 store 级故障）不再补偿
 	// 清理——worktree 正被运行中的 executor 使用，删了反而破坏运行中的任务
 	executorStarted = true
@@ -1410,7 +1453,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 	if err != nil {
 		return err
 	}
-	r, ok := ad.(restorer)
+	r, ok := ad.(executor.Recoverer)
 	if !ok {
 		return fmt.Errorf("任务 %s 的执行者不支持恢复，请重新派发: %w", taskID, executor.ErrTaskNotRunning)
 	}
@@ -3591,19 +3634,6 @@ func (m *Manager) MismatchTransit() func(taskID string, to proto.TaskState, reas
 	}
 }
 
-// restorer 是「agentd 重启后重建执行」的可选 adapter 能力（opencode 实现）。
-//
-// 为什么不用类型断言外的方案：executor.Adapter 是 Task 3 定稿的五动作契约，
-// 为恢复能力加方法会污染 fake 等全部实现；且 fake 的运行态随进程消亡、本就不该
-// 支持恢复。把恢复作为可选能力（interface 断言）既保住核心契约，又让
-// 「不支持恢复的 adapter 重启后一律按不存活走 failed 恢复路径」成为自然语义。
-//
-// 恢复的数据类型（ResumeReq/ResumeOutcome/Mode 常量）已随本设计挪到
-// internal/executor 包，三个 adapter 与 manager 共用同一套契约。
-type restorer interface {
-	Resume(executor.ResumeReq) (executor.ResumeOutcome, error)
-}
-
 // reaper 是「无内存运行态时按确定性命名兜底回收」的可选 adapter 能力
 // （三个真实 adapter 均实现，fake 不实现）。
 //
@@ -3695,7 +3725,7 @@ func (m *Manager) ResumeTask(taskID string) bool {
 		m.log.Error("恢复读取任务执行者失败", "task", taskID, "cause", err)
 		return false
 	}
-	r, ok := ad.(restorer)
+	r, ok := ad.(executor.Recoverer)
 	if !ok {
 		m.log.Warn("adapter 不支持执行恢复，任务按不存活处理", "task", taskID)
 		return false

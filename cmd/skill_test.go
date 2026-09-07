@@ -60,7 +60,7 @@ func TestSkillReportsStale(t *testing.T) {
 	os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
 	t.Setenv("HOME", home)
 	SetSkillContent("新内容")
-	skill.Install("新内容", home)
+	skill.Install("新内容", home, defaultSkillProviders(nil))
 	p := filepath.Join(home, ".grok", "skills", "handoff")
 	os.RemoveAll(p)
 	os.MkdirAll(p, 0o755)

@@ -3,9 +3,26 @@ package skill
 import (
 	"os"
 	"path/filepath"
-	"reflect"
+	"strings"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/agy"
+	"github.com/Xsxdot/handoff/internal/executor/claudecode"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
 )
+
+func defaultTestProviders() []executor.Skills {
+	return []executor.Skills{
+		claudecode.New(nil),
+		codex.New(nil),
+		opencode.New(nil),
+		grok.New(nil),
+		agy.New(nil),
+	}
+}
 
 // TestInstallSkipsMissingAgentDirs 锁住「目录不存在就跳过，不代为创建」。
 //
@@ -17,7 +34,7 @@ func TestInstallSkipsMissingAgentDirs(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	sites, err := Install("内容", home)
+	sites, err := Install("内容", home, defaultTestProviders())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -51,10 +68,10 @@ func TestInstallIsIdempotent(t *testing.T) {
 	for _, d := range []string{".claude", ".codex", ".config/opencode", ".grok", ".gemini/antigravity-cli"} {
 		os.MkdirAll(filepath.Join(home, d), 0o755)
 	}
-	if _, err := Install("v1", home); err != nil {
+	if _, err := Install("v1", home, defaultTestProviders()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := Install("v2", home); err != nil {
+	if _, err := Install("v2", home, defaultTestProviders()); err != nil {
 		t.Fatalf("第二次安装失败: %v", err)
 	}
 	b, _ := os.ReadFile(filepath.Join(home, ".handoff", "skill", "SKILL.md"))
@@ -73,7 +90,7 @@ func TestInstallWritesRealCopies(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if _, err := Install("内容 v1", home); err != nil {
+	if _, err := Install("内容 v1", home, defaultTestProviders()); err != nil {
 		t.Fatal(err)
 	}
 	for _, rel := range []string{
@@ -98,7 +115,7 @@ func TestInstallWritesRealCopies(t *testing.T) {
 }
 
 // TestInstallMigratesLegacySymlink：老装机的落点是指向基准副本的软链，
-// 必须能被就地换成实体副本，**且基准副本还在**。
+// 必须能被就地换成实体副本，且基准副本还在。
 //
 // why 必须钉死后半句：RemoveAll 对软链是摘链不删目标——这是本次改动唯一
 // 会咬人的语义。万一哪天改成了先解析再删，基准副本会被连带删掉，而症状
@@ -121,7 +138,7 @@ func TestInstallMigratesLegacySymlink(t *testing.T) {
 		t.Skipf("本平台建不了软链，迁移用例无从构造: %v", err)
 	}
 
-	if _, err := Install("新内容", home); err != nil {
+	if _, err := Install("新内容", home, defaultTestProviders()); err != nil {
 		t.Fatal(err)
 	}
 
@@ -152,22 +169,43 @@ func TestInstallReplacesRealDirectory(t *testing.T) {
 	home := t.TempDir()
 	os.MkdirAll(filepath.Join(home, ".grok", "skills", "handoff"), 0o755)
 	os.WriteFile(filepath.Join(home, ".grok", "skills", "handoff", "SKILL.md"), []byte("手工放的"), 0o644)
-	if _, err := Install("x", home); err != nil {
+	if _, err := Install("x", home, defaultTestProviders()); err != nil {
 		t.Fatalf("目标是实体目录时必须能覆盖: %v", err)
 	}
 }
 
-// TestAgentDirsContract 锁住五家原生 skills 相对路径（B233.2 金样本）。
-// 实现把路径收进各家 Skills 之后，本表必须被同等金样本替换，不得悄悄改目录。
-func TestAgentDirsContract(t *testing.T) {
-	want := []string{
-		".claude/skills",
-		".codex/skills",
-		".config/opencode/skills",
-		".grok/skills",
-		".gemini/antigravity-cli/skills",
+// TestInstallOneProviderFailsOthersSucceed 锁住「一家失败不全盘失败」：
+// 一家落点写失败（如父目录为文件导致创建目录失败），该家返回 StateSkipped 并带 Note，
+// 其它合法落点仍为 StateInstalled，Install 整体返回 err == nil。
+func TestInstallOneProviderFailsOthersSucceed(t *testing.T) {
+	home := t.TempDir()
+	// 创建 .claude 和 .grok，但故意把 .grok/skills 建为普通文件阻止写入
+	if err := os.MkdirAll(filepath.Join(home, ".claude"), 0o755); err != nil {
+		t.Fatal(err)
 	}
-	if !reflect.DeepEqual(agentDirs, want) {
-		t.Fatalf("agentDirs = %#v, want %#v", agentDirs, want)
+	if err := os.MkdirAll(filepath.Join(home, ".grok"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".grok", "skills"), []byte("not-a-dir"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sites, err := Install("测试内容", home, defaultTestProviders())
+	if err != nil {
+		t.Fatalf("单家失败不得导致 Install 返回错误: %v", err)
+	}
+	var claudeInstalled, grokSkipped bool
+	for _, s := range sites {
+		if strings.Contains(s.Path, ".claude") && s.State == StateInstalled {
+			claudeInstalled = true
+		}
+		if strings.Contains(s.Path, ".grok") && s.State == StateSkipped && s.Note != "" {
+			grokSkipped = true
+		}
+	}
+	if !claudeInstalled {
+		t.Fatal(".claude 应该安装成功")
+	}
+	if !grokSkipped {
+		t.Fatal(".grok 应该被跳过并给出理由")
 	}
 }

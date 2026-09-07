@@ -47,20 +47,3 @@ func TestGrokBaselineOneShotHasNoDefaultEffort(t *testing.T) {
 	}
 }
 
-func TestOneShotArgsStillEncodesGrokLowUntilMigrated(t *testing.T) {
-	// 现状债务：OneShotArgs 仍把 low effort 写进 grok 默认。本卡冻结「策略在调用方」
-	// 之后，实现节点必须让这条路径退役；本测试锁住迁移前的旧函数未被本节点改掉。
-	got, err := executor.OneShotArgs(executor.HarnessGrok, "m", "p")
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"grok", "--effort", "low", "-m", "m", "-p", "p"}
-	if len(got) != len(want) {
-		t.Fatalf("got %v want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("got %v want %v", got, want)
-		}
-	}
-}

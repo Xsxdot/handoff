@@ -26,6 +26,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 )
@@ -276,3 +277,19 @@ func TestResumeTaskAssemblesRequest(t *testing.T) {
 		t.Fatalf("env 未透传（漏传会让冷恢复丢掉用户密钥）: %v", got.Env)
 	}
 }
+
+func TestFakeAdapterDoesNotSatisfyRecoverer(t *testing.T) {
+	fk := fake.New(nil)
+	if _, ok := any(fk).(executor.Recoverer); ok {
+		t.Fatal("fake 不得实现 Recoverer（冻结 50）")
+	}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fk}, "fake")
+	mustCreateTask(t, st, &proto.Task{
+		ID: "t-fake-norecover", RepoPath: "/r", Executor: "fake",
+		State: proto.TaskStateRunning,
+	})
+	if alive := m.ResumeTask("t-fake-norecover"); alive {
+		t.Fatal("未实现 Recoverer 的 adapter 必须走不存活失败路径，禁止 ResumeTask 返回 true")
+	}
+}
+

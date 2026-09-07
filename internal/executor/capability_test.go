@@ -159,3 +159,17 @@ func TestCodexNativeLimitLiterals(t *testing.T) {
 }
 
 var _ executor.Provider = executor.StaticProvider{}
+
+func TestCLIOnPathIsNotFiveCapabilities(t *testing.T) {
+	// 缝：RequireCapability / ReportHas。构造「名字叫 claude、PATH 可忽略、报告仍不支持 coordination」。
+	rep, err := executor.BaselineReport(executor.HarnessClaude)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if executor.ReportHas(rep, executor.CapCoordination) {
+		t.Fatal("冻结 46：CLI 在 PATH 不得被解释成 coordination=true")
+	}
+	if err := executor.RequireCapability(rep, executor.CapCoordination); !errors.Is(err, executor.ErrCapabilityUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+}

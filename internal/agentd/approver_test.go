@@ -18,19 +18,34 @@ import (
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
-// newTestApprover 构造带注入 runCmd 的 Approver（裁决输出 out、错误 err）。
+type stubShot struct {
+	out, lastPrompt string
+	last            executor.OneShotReq
+	err             error
+	fn              func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)
+}
+
+func (s *stubShot) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+	s.last = req
+	s.lastPrompt = req.Prompt
+	if s.fn != nil {
+		return s.fn(ctx, req)
+	}
+	nonce := extractNonceForTest(req.Prompt)
+	return executor.OneShotReply{Text: injectNonceForTest(s.out, nonce), Status: executor.OneShotOK}, s.err
+}
+
+// newTestApprover 构造带注入 OneShot 的 Approver（裁决输出 out、错误 err）。
 //
 // 注（B9 nonce 防伪）：Decide 现在要求裁决输出回显本次 prompt 的 nonce，
-// 固定输出会被判无效——这里把 argv 里的 nonce 自动注入 JSON 行，保持
+// 固定输出会被判无效——这里把 prompt 里的 nonce 自动注入 JSON 行，保持
 // 「approve/escalate 干净裁决」的既有用例原意。
 func newTestApprover(t *testing.T, out string, err error) *Approver {
 	a, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
-	a.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		return injectNonceForTest(out, extractNonceForTest(strings.Join(argv, " "))), err
-	}
+	a.BindOneShot(&stubShot{out: out, err: err})
 	return a
 }
 
@@ -91,16 +106,12 @@ func TestDecideFailClosed(t *testing.T) {
 }
 
 func TestDecidePromptContainsContext(t *testing.T) {
-	var got []string
+	stub := &stubShot{out: `{"decision":"approve"}`}
 	a := newTestApprover(t, `{"decision":"approve"}`, nil)
-	a.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		got = argv
-		return `{"decision":"approve"}`, nil
-	}
+	a.BindOneShot(stub)
 	a.Decide(context.Background(), "PERM-TEXT", "TASK-SUMMARY")
-	joined := strings.Join(got, " ")
-	if !strings.Contains(joined, "PERM-TEXT") || !strings.Contains(joined, "TASK-SUMMARY") {
-		t.Fatalf("裁决 prompt 应含权限原文与任务摘要: %v", got)
+	if !strings.Contains(stub.lastPrompt, "PERM-TEXT") || !strings.Contains(stub.lastPrompt, "TASK-SUMMARY") {
+		t.Fatalf("裁决 prompt 应含权限原文与任务摘要: %v", stub.lastPrompt)
 	}
 }
 
@@ -111,7 +122,7 @@ func approverStep(perm string) []fake.Step {
 	return []fake.Step{{Permission: perm}, {Finish: executor.Result{OK: true, Branch: "handoff/x"}}}
 }
 
-// newTestManagerWithApproverOut 构造带审批者（runCmd 注入固定输出/错误）的 manager，
+// newTestManagerWithApproverOut 构造带审批者（OneShot 注入固定输出/错误）的 manager，
 // fake 脚本由调用方提供。
 func newTestManagerWithApproverOut(t *testing.T, script []fake.Step, out string, cmdErr error) (*Manager, *store.Store, *fake.Fake) {
 	t.Helper()
@@ -119,23 +130,21 @@ func newTestManagerWithApproverOut(t *testing.T, script []fake.Step, out string,
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
-	ap.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		return injectNonceForTest(out, extractNonceForTest(strings.Join(argv, " "))), cmdErr
-	}
+	ap.BindOneShot(&stubShot{out: out, err: cmdErr})
 	fk := fake.New(script)
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
 	return m, st, fk
 }
 
-// newTestManagerWithApproverFunc 构造带审批者（runCmd 注入自定义函数）的 manager，
+// newTestManagerWithApproverFunc 构造带审批者（OneShot 注入自定义函数）的 manager，
 // fake 脚本由调用方提供。
-func newTestManagerWithApproverFunc(t *testing.T, script []fake.Step, fn func(ctx context.Context, argv []string) (string, error)) (*Manager, *store.Store, *fake.Fake) {
+func newTestManagerWithApproverFunc(t *testing.T, script []fake.Step, fn func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)) (*Manager, *store.Store, *fake.Fake) {
 	t.Helper()
 	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
-	ap.runCmd = fn
+	ap.BindOneShot(&stubShot{fn: fn})
 	fk := fake.New(script)
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
 	return m, st, fk
@@ -307,9 +316,9 @@ func TestApproverEscalateFallsThroughToReviewer(t *testing.T) {
 // 审批者 runCmd 绝不被调用（fake 脚本权限文本命中内置 sudo 规则）。
 func TestApproverBlacklistSkipsApprover(t *testing.T) {
 	m, st, _ := newTestManagerWithApproverFunc(t, approverStep("Bash: sudo rm -rf /"),
-		func(ctx context.Context, argv []string) (string, error) {
+		func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
 			t.Fatal("黑名单命中不应调用审批者")
-			return "", nil
+			return executor.OneShotReply{Status: executor.OneShotOK}, nil
 		})
 	task := mustApproverDispatch(t, m)
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer) // 直接升级协调者
@@ -330,10 +339,12 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
-	ap.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		callCount.Add(1)
-		return "", errors.New("boom")
-	}
+	ap.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			callCount.Add(1)
+			return executor.OneShotReply{Status: executor.OneShotFailed}, errors.New("boom")
+		},
+	})
 	fk := fake.New(nil) // 空脚本：不产权限事件，由测试直接驱动 handlePermission
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
 	task := mustApproverDispatch(t, m)
@@ -379,9 +390,11 @@ func TestApproverDecisionErrorRecordsCause(t *testing.T) {
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
-	ap.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		return "You've reached your 5-hour usage limit", errors.New("exit status 1")
-	}
+	ap.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			return executor.OneShotReply{Text: "You've reached your 5-hour usage limit", Status: executor.OneShotFailed}, errors.New("exit status 1")
+		},
+	})
 	fk := fake.New(nil)
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
 	task := mustApproverDispatch(t, m)
@@ -463,12 +476,14 @@ func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
 	task := mustApproverDispatch(t, m)
 	waitTaskState(t, st, task.ID, proto.TaskStateRunning)
 
-	// 裁决窗口内 executor 死亡：runCmd 先触发 handleResult（落 waiting_review），
+	// 裁决窗口内 executor 死亡：OneShot 先触发 handleResult（落 waiting_review），
 	// 再返回 escalate——复现「Decide 期间任务已终结、裁决结果后到」的时序
-	ap.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		m.handleResult(task.ID, resultEvent())
-		return `{"decision":"escalate","reason":"窗口内已终结"}`, nil
-	}
+	ap.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			m.handleResult(task.ID, resultEvent())
+			return executor.OneShotReply{Text: `{"decision":"escalate","reason":"窗口内已终结"}`, Status: executor.OneShotOK}, nil
+		},
+	})
 	m.handlePermission(context.Background(), task.ID,
 		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "x",
 			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
@@ -573,9 +588,9 @@ func TestApproverTruncatedPermissionEscalates(t *testing.T) {
 	perm := "Bash: go test ./... " + executor.TruncationMarker
 	var calls atomic.Int64
 	m, st, _ := newTestManagerWithApproverFunc(t, approverStep(perm),
-		func(ctx context.Context, argv []string) (string, error) {
+		func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
 			calls.Add(1)
-			return `{"decision":"approve"}`, nil
+			return executor.OneShotReply{Text: `{"decision":"approve"}`, Status: executor.OneShotOK}, nil
 		})
 	task := mustApproverDispatch(t, m)
 	waitTaskState(t, st, task.ID, proto.TaskStateWaitingAnswer)
@@ -703,9 +718,11 @@ func TestDecideRequiresMatchingNonce(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			ap.runCmd = func(_ context.Context, argv []string) (string, error) {
-				return tc.reply(strings.Join(argv, " ")), nil
-			}
+			ap.BindOneShot(&stubShot{
+				fn: func(_ context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+					return executor.OneShotReply{Text: tc.reply(req.Prompt), Status: executor.OneShotOK}, nil
+				},
+			})
 			d := ap.Decide(context.Background(), "bash: ls", "测试任务")
 			if d.Approve != tc.wantApprove {
 				t.Errorf("Approve = %v，期望 %v", d.Approve, tc.wantApprove)
@@ -715,6 +732,31 @@ func TestDecideRequiresMatchingNonce(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestDecideInvokesOneShotWithGrokEffortLow(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{Executor: "grok", Timeout: time.Second}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	stub := &stubShot{out: `{"decision":"escalate","reason":"x"}`}
+	a.BindOneShot(stub)
+	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	if d.Err != nil && d.Approve {
+		t.Fatalf("unexpected approve: %+v", d)
+	}
+	if stub.last.Limits.Effort != executor.EffortLow {
+		t.Fatalf("grok 审批必须由调用方传入 EffortLow，got %q", stub.last.Limits.Effort)
+	}
+	if stub.last.Limits.Timeout != 0 {
+		t.Fatalf("Timeout 不得编进 Limits 当 argv；取消走 ctx。got %s", stub.last.Limits.Timeout)
+	}
+}
+
+func TestDecideDoesNotCallOneShotArgs(t *testing.T) {
+	a := newTestApprover(t, `{"decision":"escalate","reason":"x"}`, nil)
+	_ = a.Decide(context.Background(), "Bash: ls", "摘要")
+	// 本测试的存在意义：Decide 源码不得再出现 OneShotArgs。由 T4 收尾 grep 锁。
 }
 
 // extractNonceForTest 从 prompt 里抠出本次的 nonce（测试模拟「真读了 prompt 的模型」）。

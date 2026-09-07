@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
-	"strings"
 	"testing"
 	"time"
 
@@ -25,16 +24,21 @@ func (m *Manager) consultApproverForTest(taskID string, approve bool, ticketID, 
 	if err != nil {
 		panic(err)
 	}
-	ap.runCmd = func(_ context.Context, argv []string) (string, error) {
-		out, marshalErr := json.Marshal(map[string]string{
-			"decision": decision,
-			"reason":   "late decision",
-		})
-		if marshalErr != nil {
-			return "", marshalErr
-		}
-		return injectNonceForTest(string(out), extractNonceForTest(strings.Join(argv, " "))), nil
-	}
+	ap.BindOneShot(&stubShot{
+		fn: func(_ context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			out, marshalErr := json.Marshal(map[string]string{
+				"decision": decision,
+				"reason":   "late decision",
+			})
+			if marshalErr != nil {
+				return executor.OneShotReply{Status: executor.OneShotFailed}, marshalErr
+			}
+			return executor.OneShotReply{
+				Text:   injectNonceForTest(string(out), extractNonceForTest(req.Prompt)),
+				Status: executor.OneShotOK,
+			}, nil
+		},
+	})
 	original := m.approver
 	m.approver = ap
 	defer func() { m.approver = original }()

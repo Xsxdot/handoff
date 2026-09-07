@@ -10,6 +10,7 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/grok"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/toolchain"
@@ -193,3 +195,137 @@ func TestAdaptersForAlwaysAvailableKeepsAll(t *testing.T) {
 		}
 	}
 }
+
+func TestProductionAdapterReportsMatchBaseline(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ads := adaptersForWithProbe("darwin", log, t.TempDir())
+	for _, name := range []string{"opencode", "claude", "codex", "agy"} {
+		ad, ok := ads[name]
+		if !ok {
+			t.Fatalf("缺少 %s", name)
+		}
+		p, ok := ad.(executor.Provider)
+		if !ok {
+			t.Fatalf("%s 未实现 Provider", name)
+		}
+		got := p.Report()
+		want, err := executor.BaselineReport(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Harness != want.Harness {
+			t.Fatalf("%s harness = %q", name, got.Harness)
+		}
+		if len(got.Caps) != 5 {
+			t.Fatalf("%s caps = %d", name, len(got.Caps))
+		}
+		for _, cap := range executor.AllCapabilityNames() {
+			if executor.ReportHas(got, cap) != executor.ReportHas(want, cap) {
+				t.Fatalf("%s %s = %v want %v", name, cap, executor.ReportHas(got, cap), executor.ReportHas(want, cap))
+			}
+		}
+		if name == executor.HarnessCodex {
+			var oneshot executor.CapabilityDecl
+			for _, c := range got.Caps {
+				if c.Name == executor.CapOneShot {
+					oneshot = c
+				}
+			}
+			if !containsStr(oneshot.NativeLimits, executor.NativeLimitSandboxReadOnly) ||
+				!containsStr(oneshot.NativeLimits, executor.NativeLimitInvokeExec) {
+				t.Fatalf("codex oneshot limits = %#v", oneshot.NativeLimits)
+			}
+		}
+		if name == executor.HarnessGrok {
+			for _, c := range got.Caps {
+				if c.Name != executor.CapOneShot {
+					continue
+				}
+				for _, lim := range c.NativeLimits {
+					if lim == "effort=low" || lim == executor.EffortLow {
+						t.Fatalf("grok oneshot 不得把 effort=low 编进 NativeLimits: %#v", c.NativeLimits)
+					}
+				}
+			}
+		}
+	}
+	if grokAd, ok := ads["grok"]; ok {
+		p := grokAd.(executor.Provider)
+		if executor.ReportHas(p.Report(), executor.CapCoordination) {
+			t.Fatal("grok 不得声明 coordination")
+		}
+	}
+}
+
+func TestFakeReportIsExecutionOnly(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ads := adaptersForWithProbe("darwin", log, t.TempDir())
+	p, ok := ads["fake"].(executor.Provider)
+	if !ok {
+		t.Fatal("fake 必须实现 Provider，否则 Registry 漏登记")
+	}
+	rep := p.Report()
+	if rep.Harness != "fake" {
+		t.Fatalf("fake harness = %q", rep.Harness)
+	}
+	if !executor.ReportHas(rep, executor.CapExecution) {
+		t.Fatal("fake 必须声明 execution")
+	}
+	for _, cap := range []executor.CapabilityName{
+		executor.CapCoordination, executor.CapOneShot, executor.CapProfile, executor.CapSkills,
+	} {
+		if executor.ReportHas(rep, cap) {
+			t.Fatalf("fake 不得冒充 %s", cap)
+		}
+	}
+}
+
+func TestRegistryGetUnknownListsSupportedHarnesses(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ads := adaptersForWithProbe("darwin", log, t.TempDir())
+	reg := executor.NewRegistry(providersFromAds(ads)...)
+	_, err := reg.Get("gemini")
+	if !errors.Is(err, executor.ErrUnknownHarness) {
+		t.Fatalf("err = %v", err)
+	}
+	msg := err.Error()
+	for _, name := range []string{"opencode", "claude", "grok", "agy", "codex"} {
+		if !strings.Contains(msg, name) {
+			t.Fatalf("未知 harness 错误必须列出 %s: %q", name, msg)
+		}
+	}
+}
+
+func TestRequireClaudeCoordinationIsUnsupported(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ads := adaptersForWithProbe("darwin", log, t.TempDir())
+	reg := executor.NewRegistry(providersFromAds(ads)...)
+	err := reg.Require(executor.HarnessClaude, executor.CapCoordination)
+	if !errors.Is(err, executor.ErrCapabilityUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+	want := "harness 不支持该能力: claude 不支持 coordination（禁止静默兜底到另一家）"
+	if err.Error() != want {
+		t.Fatalf("error = %q want %q", err.Error(), want)
+	}
+}
+
+func providersFromAds(ads map[string]executor.Adapter) []executor.Provider {
+	out := make([]executor.Provider, 0, len(ads))
+	for _, ad := range ads {
+		if p, ok := ad.(executor.Provider); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func containsStr(ss []string, w string) bool {
+	for _, s := range ss {
+		if s == w {
+			return true
+		}
+	}
+	return false
+}
+

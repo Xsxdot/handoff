@@ -44,6 +44,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
@@ -125,6 +126,8 @@ type Server struct {
 	hub                   *Hub
 	log                   *slog.Logger
 	mgr                   *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
+	providers             *executor.Registry
+	ruleLoader            func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error)
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
 	// 在 NewServer 里记录而非从 bootstrap 传入：NewServer 只在 bootstrap 调用
 	// 一次，语义等价，且不必改动它的签名与全部测试调用点。
@@ -369,6 +372,10 @@ func (s *Server) SetManager(m *Manager) {
 		s.log.Info("manager 已挂接，配置读取切到活快照", "default_executor", s.conf().Executor.Default)
 	}
 }
+
+// SetProviders 注入能力 Registry。
+func (s *Server) SetProviders(r *executor.Registry) { s.providers = r }
+
 
 // conf 返回当前配置快照。
 //
@@ -2453,8 +2460,27 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 		userHomeDir:    os.UserHomeDir,
 		expandHomeDir:  hostapi.ExpandHomePath,
 		credentialPath: toolchain.CredRelPathFor,
+		loadRules:      s.ruleLoader,
+		profileFor: func(cli string) (executor.Profile, error) {
+			base := filepath.Base(cli)
+			if s.providers == nil {
+				return nil, executor.UnsupportedError(base, executor.CapProfile)
+			}
+			prov, err := s.providers.Get(base)
+			if err != nil {
+				return nil, err
+			}
+			if p, ok := prov.(executor.Profile); ok {
+				return p, nil
+			}
+			if pa, ok := prov.(interface{ Profile() executor.Profile }); ok {
+				return pa.Profile(), nil
+			}
+			return nil, executor.UnsupportedError(base, executor.CapProfile)
+		},
 	}
-	runner := coordinatorRunner{h: s.hostAPI, prepareHome: supplier.Prepare}
+	coord := opencode.NewCoordinator(s.hostAPI, slog.Default())
+	runner := coordinatorRunner{coord: coord, reg: s.providers, prepareHome: supplier.Prepare}
 	resolver := coordinatorSessionRefResolver{server: s, expandHomeDir: hostapi.ExpandHomePath}
 	ks := keystone.New(runner, roomNarrator{c: s.rooms}, facade,
 		attachLocator{expandHome: hostapi.ExpandHomePath})
@@ -2479,6 +2505,11 @@ func (s *Server) SetKeystone(svc *keystone.Service) { s.keystone = svc }
 
 // SetRooms 注入协作房间服务（测试缝：整体替换 SetupAutomation 构造的实例）。
 func (s *Server) SetRooms(svc *collab.Service) { s.rooms = svc }
+
+// SetRuleLoader 注入载体规则与技能装载函数。
+func (s *Server) SetRuleLoader(fn func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error)) {
+	s.ruleLoader = fn
+}
 
 // withRooms 守卫房间面端点：账本与会话服务未装配时 503（与 withLedger 同款降级）。
 func (s *Server) withRooms(h http.HandlerFunc) http.HandlerFunc {
@@ -2555,11 +2586,19 @@ func translateRegistryErr(err error) error {
 // Launch/Resume 前通过 prepareHome 按白名单供给隔离 HOME；
 // 供给失败在 child 启动前返回，绝不静默退回旧路径。
 type coordinatorRunner struct {
-	h           *hostapi.Host
+	coord       executor.Coordinator
+	reg         *executor.Registry
 	prepareHome func(keysclient.SessionSpec) (string, error)
 }
 
 func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error) {
+	name := filepath.Base(spec.CLI)
+	if r.reg != nil {
+		if err := r.reg.Require(name, executor.CapCoordination); err != nil {
+			slog.Default().Error("协调能力不支持，拒绝 Launch", "cli", spec.CLI, "cause", err)
+			return keysclient.TurnResult{}, err
+		}
+	}
 	if r.prepareHome != nil {
 		prepared, err := r.prepareHome(spec)
 		if err != nil {
@@ -2569,22 +2608,28 @@ func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (k
 		}
 		spec.HomeDir = prepared
 	}
-	slog.Default().Info("协调者 Launch 开始", "cli", spec.CLI,
-		"home_dir", spec.HomeDir, "workdir", spec.Workdir)
-	reply, err := r.h.RunTurn(context.Background(), hostapi.TurnRequest{
-		CLI: spec.CLI, HomeDir: spec.HomeDir, Workdir: spec.Workdir,
-		Model: spec.Model, Prompt: prompt, Env: spec.Env,
-	})
+	if r.coord == nil {
+		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got, err := r.coord.Launch(ctx, executor.CoordSessionSpec{
+		CLI: spec.CLI, HomeDir: spec.HomeDir, Model: spec.Model, Workdir: spec.Workdir, Env: spec.Env,
+	}, prompt)
 	if err != nil {
-		slog.Default().Error("协调者 Launch 失败", "cli", spec.CLI, "home_dir", spec.HomeDir, "cause", err)
 		return keysclient.TurnResult{}, err
 	}
-	slog.Default().Info("协调者 Launch 成功", "cli", spec.CLI,
-		"has_session", reply.SessionID != "", "output_bytes", len(reply.Output))
-	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, nil
+	return keysclient.TurnResult{SessionID: got.SessionID, Output: got.Output}, nil
 }
 
 func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error) {
+	name := filepath.Base(ref.CLI)
+	if r.reg != nil {
+		if err := r.reg.Require(name, executor.CapCoordination); err != nil {
+			slog.Default().Error("协调能力不支持，拒绝 Resume", "cli", ref.CLI, "cause", err)
+			return keysclient.TurnResult{}, err
+		}
+	}
 	if r.prepareHome != nil {
 		spec := keysclient.SessionSpec{
 			CLI: ref.CLI, HomeDir: ref.HomeDir, Model: ref.Model, Workdir: ref.Workdir,
@@ -2597,16 +2642,19 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 		}
 		ref.HomeDir = prepared
 	}
-	slog.Default().Info("协调者 Resume 开始", "cli", ref.CLI,
-		"home_dir", ref.HomeDir, "workdir", ref.Workdir)
-	reply, err := r.h.RunTurn(context.Background(), resumeTurnRequest(ref, prompt))
+	if r.coord == nil {
+		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	got, err := r.coord.Resume(ctx, executor.CoordSessionRef{
+		CLI: ref.CLI, SessionID: ref.SessionID, HomeDir: ref.HomeDir,
+		Workdir: ref.Workdir, Model: ref.Model,
+	}, prompt)
 	if err != nil {
-		slog.Default().Error("协调者 Resume 失败", "cli", ref.CLI, "home_dir", ref.HomeDir, "cause", err)
 		return keysclient.TurnResult{}, err
 	}
-	slog.Default().Info("协调者 Resume 成功", "cli", ref.CLI,
-		"has_session", reply.SessionID != "", "output_bytes", len(reply.Output))
-	return keysclient.TurnResult{SessionID: reply.SessionID, Output: reply.Output}, nil
+	return keysclient.TurnResult{SessionID: got.SessionID, Output: got.Output}, nil
 }
 
 // resumeTurnRequest 把 SessionRef 上的续接环境映射进 RunTurn。HOME 空时
