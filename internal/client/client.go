@@ -720,6 +720,8 @@ type DispatchOpts struct {
 	Target      string
 	Prompt      string
 	Name        string
+	// Receiver 是统一接收者名（载体或小队）。空=默认载体。
+	Receiver string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	HomeDir  *string
 	Executor string
@@ -766,6 +768,9 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		"resolve_default_base": opts.ResolveDefaultBase,
 		"local_base_branch":    opts.LocalBaseBranch,
 		"worktree":             opts.Worktree, "new_worktree": opts.NewWorktree, "base_commit": opts.BaseCommit,
+	}
+	if opts.Receiver != "" {
+		body["receiver"] = opts.Receiver
 	}
 	if opts.HomeDir != nil {
 		body["home_dir"] = *opts.HomeDir

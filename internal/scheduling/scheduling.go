@@ -22,7 +22,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/schedclient"
 )
 
-// 注册表里各实体的 kind 常量。只有这四个前缀，新增实体先改契约再改这里。
+// 注册表里各实体的 kind 常量。新增实体先改契约再改这里。
+// 默认载体 singleton 的 kind/id 在 receiver.go（KindDefaultCarrier / DefaultCarrierID）。
 const (
 	kindCarrier       = "carrier"
 	kindSquad         = "squad"
@@ -133,12 +134,14 @@ type IgnitionRequest struct {
 }
 
 // Binding 是准入成功后的落点：哪个小队的哪个载体、有效三元组是什么。
+// HomeDir 是绑定当时的载体 HOME 快照（B233.5）；空=沿用该机主 HOME。
 type Binding struct {
 	Squad    string `json:"squad"`
 	Carrier  string `json:"carrier"`
 	Target   string `json:"target"`
 	Executor string `json:"executor"`
 	Model    string `json:"model,omitempty"`
+	HomeDir  string `json:"home_dir,omitempty"`
 }
 
 var (

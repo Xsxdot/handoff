@@ -479,6 +479,9 @@ type DispatchReq struct {
 	Prompt string
 	// Name 是任务展示名（空时从 plan 名/prompt 派生，见 deriveName）。
 	Name string
+	// Receiver 是统一接收者名（载体或小队）。空=使用已确认的默认载体。
+	// Ticket 0 只保留字段；解析/准入接线归实现节点。
+	Receiver string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	// Ticket 0 只保留字段，执行机覆写行为归实现票 U5。
 	HomeDir *string

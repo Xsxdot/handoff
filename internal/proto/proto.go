@@ -221,10 +221,13 @@ type SpendEntry struct {
 // JSON 线格式契约（CLI wait/tasks/attach 输出与 server WS/REST 共用此结构，
 // key 必须小写——上层脚本按 {"id":..,"state":..,"created_at":..} 解析）。
 type Task struct {
-	ID              string    `json:"id"`
-	Target          string    `json:"target"`
-	RepoPath        string    `json:"repo_path"`
-	HomeDir         string    `json:"home_dir,omitempty"` // 载体派发的隔离 HOME；空串表示旧任务或普通派发。
+	ID       string `json:"id"`
+	Target   string `json:"target"`
+	RepoPath string `json:"repo_path"`
+	HomeDir  string `json:"home_dir,omitempty"` // 载体派发的隔离 HOME；空串表示旧任务或普通派发。
+	// Carrier 是派发时绑定的载体名（B233.5）。空=旧任务或尚未接线的派发。
+	// 落盘列归实现节点；本字段先冻结 JSON 键。
+	Carrier         string    `json:"carrier,omitempty"`
 	Branch          string    `json:"branch"`
 	PlanPath        string    `json:"plan_path"`
 	PlanSummary     string    `json:"plan_summary"`

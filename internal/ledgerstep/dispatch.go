@@ -26,6 +26,8 @@ import (
 // 读成 PlanB64/PlanName；其余字段与 agentd 的派发协议一一对应。
 type DispatchOpts struct {
 	Prompt, Branch, Target, Project, Executor, Model, PlanB64, PlanName, Base, ExistingBranch, Discipline string
+	// Receiver 是统一接收者名（载体或小队）。空=默认载体。Ticket 0 只声明。
+	Receiver string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	HomeDir *string
 	// B229：DisciplineText 是协调者侧组装好的纪律正文（缝 1 discipline.ResolveDispatch 产物），

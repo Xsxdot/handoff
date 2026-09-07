@@ -1326,6 +1326,8 @@ type dispatchRequest struct {
 	Target      string `json:"target"`
 	Prompt      string `json:"prompt"`
 	Name        string `json:"name"`
+	// Receiver 是统一接收者名（载体或小队）。空=默认载体。Ticket 0 只解码。
+	Receiver string `json:"receiver,omitempty"`
 	// HomeDir 是小队派发载体 HOME 的可空字段；缺席与显式空串必须可区分。
 	HomeDir  *string `json:"home_dir,omitempty"`
 	Executor string  `json:"executor"`
@@ -1370,7 +1372,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
-		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Discipline: req.Discipline, Model: req.Model,
+		Prompt: req.Prompt, Name: req.Name, Receiver: req.Receiver, Executor: req.Executor, Discipline: req.Discipline, Model: req.Model,
 		HomeDir:           req.HomeDir,
 		DisciplineText:    req.DisciplineText,
 		DisciplineVersion: req.DisciplineVersion,
