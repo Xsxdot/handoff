@@ -1,7 +1,7 @@
 {
  "view": "cards/B233.4-charter",
  "base": "94246fc8",
- "summary": "B233.4 对账：补齐 agentd Capability 适配器、生产接线及工作区委托边，保留既有契约节点",
+ "summary": "B233.4 对账：补齐 agentd Capability 适配器、生产接线及工作区委托边，保留既有契约节点；note：本卡新增跨域 call 的 legacyBudget 实测为 d_cli→d_orchestration 15（target 13）、d_cli→d_workspace 10（9）、d_gateway→d_workspace 3（1）、d_orchestration→d_workspace 41（19）；新符号含 Capability、NewGitCapability、Manager.SetWorkspace/Workspace/requireWorkspace、gitCapability.*、assembleResultRef、MayRecycle",
  "containersAdded": {
   "k_workspace_fn": {
    "label": "workspace（包级函数）",
