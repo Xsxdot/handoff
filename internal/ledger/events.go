@@ -122,7 +122,11 @@ type DispatchSnapshot struct {
 	DisciplineVersion int    `json:"discipline_version,omitempty"`
 	Target            string `json:"target"`
 	TaskID            string `json:"task_id"`
-	Branch            string `json:"branch"`
+	// Node 为空表示不属于工作流节点派发；非空时与 card_tasks.Node 相同。
+	Node string `json:"node,omitempty"`
+	// Attempt 是节点尝试身份，取本次派发返回的 TaskID；旧事件没有该键。
+	Attempt string `json:"attempt,omitempty"`
+	Branch  string `json:"branch"`
 	// Base 是本次作为新任务起点来源的分支名；旧事件没有该键且不回填。
 	Base string `json:"base"`
 	// BaseCommit 是目标 agentd 返回的 Task.BaseCommit；旧事件没有该键且不回填。

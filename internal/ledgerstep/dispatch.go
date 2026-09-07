@@ -52,10 +52,13 @@ type Transport func(ctx context.Context, opts DispatchOpts) (taskID string, base
 
 // DispatchResult 是模板派发完成后的回显与审计信息。
 type DispatchResult struct {
-	Card   string `json:"card"`
-	Task   string `json:"task"`
-	Target string `json:"target"`
-	Branch string `json:"branch"`
+	Card string `json:"card"`
+	Task string `json:"task"`
+	Node string `json:"node,omitempty"`
+	// Attempt 是本次节点尝试身份，按契约取返回的 TaskID。
+	Attempt string `json:"attempt,omitempty"`
+	Target  string `json:"target"`
+	Branch  string `json:"branch"`
 	// Base 是本次传给 agentd 的起点分支名；它不是卡的 effective base_branch。
 	Base string `json:"base"`
 	// BaseCommit 是目标 agentd Task.BaseCommit 的原样回传值。
@@ -90,8 +93,12 @@ type Dispatcher struct {
 
 // TemplateDispatch 描述一次按模板派发：模板、目标机、可选 plan 与纪律角色覆盖。
 type TemplateDispatch struct {
-	Template           string
-	Target             string
+	Template string
+	Target   string
+	// Receiver 是已由调用方解析的统一接收者名；空值沿用默认载体语义。
+	Receiver string
+	// Node 是工作流节点名；普通 card dispatch 为空。
+	Node               string
 	PlanPath           string
 	DisciplineOverride string
 	// WriteGate 在 Transport 成功后、每一处账本写入前调用；nil 表示不设闸。
@@ -314,6 +321,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	taskID, baseCommit, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
+		Receiver:   req.Receiver,
 		HomeDir:    d.HomeDir,
 		OutputPath: req.OutputPath,
 		PlanName:   planName, Base: base, NewWorktree: true,
@@ -356,6 +364,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,
 		Target:            target, TaskID: taskID, Branch: snapshotBranch,
+		Node: req.Node, Attempt: taskID,
 		Base: base, BaseCommit: baseCommit,
 		Executor: executor, Model: model,
 		Purpose: purpose, PlanPath: req.PlanPath, Actor: d.Actor,
@@ -369,6 +378,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"branch", snapshotBranch, "discipline", disciplineName)
 	return DispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
+		Node: req.Node, Attempt: taskID,
 		Base: base, BaseCommit: baseCommit,
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,

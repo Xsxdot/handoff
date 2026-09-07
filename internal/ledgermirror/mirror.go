@@ -504,7 +504,7 @@ func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c *client.
 					return nil
 				}
 				wrote, err := m.st.AppendMirroredEvent(link.CardID, ledger.MirroredEvent{
-					Target: link.Target, Task: link.TaskID, SourceSeq: e.Seq,
+					Target: link.Target, Task: link.TaskID, Node: link.Node, Attempt: link.Attempt, SourceSeq: e.Seq,
 					Type: string(e.Type), Payload: e.Payload, CreatedAt: e.CreatedAt,
 				})
 				if err != nil {

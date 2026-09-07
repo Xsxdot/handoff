@@ -13,7 +13,11 @@ import (
 // TaskLink card_tasks 一行。JSON tag 服务直接编码账本结构的 CLI；HTTP 详情使用
 // proto 投影并刻意保留 PascalCase 线格式。
 type TaskLink struct {
-	CardID    string    `json:"card_id"`
+	CardID string `json:"card_id"`
+	// Node 是工作流节点名；空值表示非工作流直派或旧挂账。
+	Node string `json:"node,omitempty"`
+	// Attempt 是本次节点尝试的稳定身份；B233.6 约定由派发 task id 形成。
+	Attempt   string    `json:"attempt,omitempty"`
 	Target    string    `json:"target"`
 	TaskID    string    `json:"task_id"`
 	Purpose   string    `json:"purpose"`

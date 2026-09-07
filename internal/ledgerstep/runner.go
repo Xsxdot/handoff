@@ -334,6 +334,8 @@ func (r *StepRunner) dispatchNodeWithGate(outputPath *string, writeGate func() b
 		result, err := r.Dispatcher.ViaTemplate(ctx, card, TemplateDispatch{
 			Template:           node.Template,
 			Target:             target,
+			Receiver:           node.Override.Squad,
+			Node:               node.Name,
 			DisciplineOverride: node.Override.Discipline,
 			ExecutorOverride:   executor,
 			ModelOverride:      model,

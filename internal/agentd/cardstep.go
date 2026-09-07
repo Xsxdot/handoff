@@ -331,6 +331,7 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 	}
 	task, err := cl.Dispatch(ctx, client.DispatchOpts{
 		Prompt: opts.Prompt, Target: canonical,
+		Receiver:  opts.Receiver,
 		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
 		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
 		HomeDir:           opts.HomeDir,

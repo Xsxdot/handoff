@@ -13,10 +13,12 @@ import (
 // MirroredEvent 一条待镜像的 task 事件（来源三元组 + 原始负载）。
 type MirroredEvent struct {
 	Target, Task string
-	SourceSeq    int64
-	Type         string // 原 task 事件类型，存入 payload；账本事件类型恒为 task_mirrored
-	Payload      []byte
-	CreatedAt    time.Time
+	// Node/Attempt 由挂账关联补入；空值只表示旧挂账或非工作流直派。
+	Node, Attempt string
+	SourceSeq     int64
+	Type          string // 原 task 事件类型，存入 payload；账本事件类型恒为 task_mirrored
+	Payload       []byte
+	CreatedAt     time.Time
 }
 
 // MirrorHealthRow per-target 镜像健康行（滞后判定数据源）。
@@ -49,7 +51,10 @@ func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, erro
 		if len(ev.Payload) == 0 {
 			inner = "null"
 		}
-		payload := fmt.Sprintf(`{"task_type":%q,"payload":%s}`, ev.Type, inner)
+		// node/attempt are the workflow projection; source_target/source_task/source_seq
+		// remain the authoritative source identity columns and are not copied into JSON.
+		payload := fmt.Sprintf(`{"node":%q,"attempt":%q,"task_type":%q,"payload":%s}`,
+			ev.Node, ev.Attempt, ev.Type, inner)
 		var seq int64
 		if s.dialect == dialectPG {
 			err = tx.QueryRow(s.q(`INSERT INTO card_events

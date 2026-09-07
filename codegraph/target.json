@@ -184,7 +184,7 @@
     "ledgerstep.StepRunner",
     "账本薄门面 Facade"
    ],
-   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经账本薄门面（entries 内的 账本薄门面 Facade 容器，internal/ledger/api），不扩大直调债；门面归一轮起 internal/ledgerapi 已退役，两份门面归一为 internal/ledger/api 一份。B312：控制面新增的 BindSeat/RebindSeat 仍属于 ledger.Store 权威写面，协作/keystone 不穿透。"
+   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经账本薄门面（entries 内的 账本薄门面 Facade 容器，internal/ledger/api），不扩大直调债；门面归一轮起 internal/ledgerapi 已退役，两份门面归一为 internal/ledger/api 一份。B312：控制面新增的 BindSeat/RebindSeat 仍属于 ledger.Store 权威写面，协作/keystone 不穿透。B233.6：工作流节点继续经 ledgerstep.StepRunner 进入共享 Dispatcher；节点/attempt 只作为账本投影与镜像 envelope 补充，不新增工作流→执行直连或第二事件总线。"
   },
   {
    "from": "d_scheduling",
@@ -257,7 +257,7 @@
     "targetclient.Pool",
     "client.Client"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。B233.6：receiver 沿既有 client.Dispatch wire 透传；事件回流仍由既有 ledgermirror 承载。"
   },
   {
    "from": "d_gateway",

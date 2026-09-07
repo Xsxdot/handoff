@@ -1,0 +1,161 @@
+{
+  "view": "cards/B233.6-charter",
+  "base": "94246fc8a2acc7996c254cb6b473c7c9b5aef225",
+  "summary": "B233.6：工作流节点/尝试关联与共享派发事件镜像 envelope",
+  "nodesModified": {
+    "m_ledger_TaskLink": {
+      "kind": "model",
+      "container": "k_ledger_model",
+      "order": 18,
+      "name": "TaskLink",
+      "file": "internal/ledger/tasks.go",
+      "line": 14,
+      "signature": "type TaskLink struct {",
+      "summary": "卡到任务的弱引用投影，补充工作流节点与 attempt 上下文。",
+      "fields": [
+        ["CardID", "string", ""],
+        ["Node", "string", "工作流节点名；空=普通直派或旧挂账"],
+        ["Attempt", "string", "节点尝试身份；新派发取 task id"],
+        ["Target", "string", ""],
+        ["TaskID", "string", ""],
+        ["Purpose", "string", ""],
+        ["CreatedAt", "time.Time", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_ledger_DispatchSnapshot": {
+      "kind": "model",
+      "container": "k_ledger_model",
+      "order": 115,
+      "name": "DispatchSnapshot",
+      "file": "internal/ledger/events.go",
+      "line": 115,
+      "signature": "type DispatchSnapshot struct {",
+      "summary": "派发快照补充节点与 attempt；执行域 task 仍是身份权威。",
+      "fields": [
+        ["Template", "string", ""],
+        ["TemplateVersion", "int", ""],
+        ["DisciplineName", "string", ""],
+        ["DisciplineVersion", "int", "命中的账本版本；老事件无此键反序列化为 0"],
+        ["Target", "string", ""],
+        ["TaskID", "string", ""],
+        ["Node", "string", "工作流节点名；空=普通直派"],
+        ["Attempt", "string", "本次派发 task id"],
+        ["Branch", "string", ""],
+        ["Base", "string", ""],
+        ["BaseCommit", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["Purpose", "string", ""],
+        ["PlanPath", "string", ""],
+        ["Actor", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_ledger_MirroredEvent": {
+      "kind": "model",
+      "container": "k_ledger_model",
+      "order": 14,
+      "name": "MirroredEvent",
+      "file": "internal/ledger/mirror.go",
+      "line": 14,
+      "signature": "type MirroredEvent struct {",
+      "summary": "源 task 事件及其工作流节点/attempt 投影。",
+      "fields": [
+        ["Target", "string", ""],
+        ["Task", "string", ""],
+        ["Node", "string", "工作流节点名"],
+        ["Attempt", "string", "节点尝试身份"],
+        ["SourceSeq", "int64", "源事件序号"],
+        ["Type", "string", "原 task 事件类型"],
+        ["Payload", "[]byte", "原始 payload"],
+        ["CreatedAt", "time.Time", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_ledgerstep_DispatchResult": {
+      "kind": "model",
+      "container": "k_ledgerstep_model",
+      "order": 34,
+      "name": "DispatchResult",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 52,
+      "signature": "type DispatchResult struct {",
+      "summary": "模板派发回显补充节点与 attempt。",
+      "fields": [
+        ["Card", "string", ""],
+        ["Task", "string", ""],
+        ["Node", "string", "工作流节点名"],
+        ["Attempt", "string", "等于 Task"],
+        ["Target", "string", ""],
+        ["Branch", "string", ""],
+        ["Base", "string", ""],
+        ["BaseCommit", "string", ""],
+        ["Template", "string", ""],
+        ["TemplateVersion", "int", ""],
+        ["DisciplineName", "string", ""],
+        ["DisciplineVersion", "int", "命中的账本版本；未点名/临时正文为 0"]
+      ],
+      "modelKind": "dto"
+    },
+    "m_ledgerstep_TemplateDispatch": {
+      "kind": "model",
+      "container": "k_ledgerstep_model",
+      "order": 52,
+      "name": "TemplateDispatch",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 95,
+      "signature": "type TemplateDispatch struct {",
+      "summary": "模板派发请求补充已解析接收者与工作流节点名。",
+      "fields": [
+        ["Template", "string", ""],
+        ["Target", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=默认载体"],
+        ["Node", "string", "工作流节点名；普通直派为空"],
+        ["PlanPath", "string", ""],
+        ["DisciplineOverride", "string", ""],
+        ["WriteGate", "func() bool", "运行节点在每处账本写入前使用的写闸；nil 表示不设闸"],
+        ["ExecutorOverride", "string", ""],
+        ["ModelOverride", "string", ""],
+        ["CarryCardContext", "bool", ""],
+        ["PurposeOverride", "string", ""],
+        ["OmitAcceptance", "bool", ""],
+        ["Extra", "string", ""],
+        ["OutputPath", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "n_ledgerstep_Dispatcher_ViaTemplate": {
+      "kind": "func",
+      "container": "k_ledgerstep_Dispatcher",
+      "order": 76,
+      "name": "Dispatcher.ViaTemplate",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 133,
+      "signature": "func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req TemplateDispatch) (DispatchResult, error)",
+      "summary": "共享模板派发入口透传 receiver，并以返回 task id 形成节点 attempt 快照。"
+    },
+    "n_ledgerstep_StepRunner_dispatchNodeWithGate": {
+      "kind": "func",
+      "container": "k_ledgerstep_StepRunner",
+      "order": 88,
+      "name": "StepRunner.dispatchNodeWithGate",
+      "file": "internal/ledgerstep/runner.go",
+      "line": 306,
+      "signature": "func (r *StepRunner) dispatchNodeWithGate(outputPath *string, writeGate func() bool) func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error)",
+      "summary": "节点只装配 receiver/node 后复用 Dispatcher，不再自造执行编排参数。"
+    },
+    "n_ledger_Store_AppendMirroredEvent": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 32,
+      "name": "Store.AppendMirroredEvent",
+      "file": "internal/ledger/mirror.go",
+      "line": 37,
+      "signature": "func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, error)",
+      "summary": "保持源三元组幂等，并写入 node/attempt/task_type/payload envelope。"
+    }
+  },
+  "edgesAdded": [],
+  "implementsAdded": []
+}
