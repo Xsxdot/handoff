@@ -1673,9 +1673,9 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 
 // handleStop 主动中止任务（停 executor、落 failed；作废由终态迁移收口完成）。
 //
-// 响应体：status=stopped；worktree_removed 如实反映本次是否删除了 managed
-// worktree（契约 C-6：Stop 留存现场，worktree_removed 恒为 false，显式 reclaim/gc 才清；
-// 用户自带 worktree / 原地模式亦为 false）。CLI 据此打印提示文案，不猜。
+// 响应体：status=stopped；worktree_removed 是兼容字段，成功 Stop 恒为 false。
+// Stop 只落 failed 并留存现场，显式 reclaim/gc 才清理 managed worktree；用户自带
+// worktree / 原地模式同样返回 false。CLI 据此打印提示文案，不猜。
 //
 // 错误映射：任务不存在 404；已是终态 409（manager 返回 store.ErrBadTransit）。
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
