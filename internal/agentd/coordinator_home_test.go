@@ -1,6 +1,7 @@
 package agentd
 
 import (
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -8,11 +9,46 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
+
+func testCoordRunner(h *hostapi.Host, prepareHome func(keysclient.SessionSpec) (string, error)) coordinatorRunner {
+	ocRep, _ := executor.BaselineReport(executor.HarnessOpenCode)
+	coordReg := executor.NewRegistry(executor.StaticProvider{HarnessName: executor.HarnessOpenCode, Rep: ocRep})
+	coord := opencode.NewCoordinator(h, slog.Default())
+	return coordinatorRunner{coord: coord, reg: coordReg, prepareHome: prepareHome}
+}
+
+func testLoadRules(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error) {
+	var rules []executor.ProfileFile
+	rulePath := filepath.Join(mainHome, ".config", "opencode", "AGENTS.md")
+	if b, err := os.ReadFile(rulePath); err == nil {
+		rules = append(rules, executor.ProfileFile{Name: "AGENTS.md", Content: string(b)})
+	}
+	var skills []executor.ProfileFile
+	skillsDir := filepath.Join(mainHome, ".config", "opencode", "skills")
+	_ = filepath.Walk(skillsDir, func(path string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
+		}
+		rel, err := filepath.Rel(skillsDir, path)
+		if err != nil {
+			return nil
+		}
+		b, err := os.ReadFile(path)
+		if err != nil {
+			return nil
+		}
+		skills = append(skills, executor.ProfileFile{Name: rel, Content: string(b)})
+		return nil
+	})
+	return rules, skills, nil
+}
 
 func installCoordinatorFakeCLI(t *testing.T) string {
 	t.Helper()
@@ -76,10 +112,14 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 		userHomeDir:    func() (string, error) { return mainHome, nil },
 		expandHomeDir:  expandHome,
 		credentialPath: toolchain.CredRelPathFor,
+		profileFor: func(cli string) (executor.Profile, error) {
+			return opencode.New(nil).Profile(), nil
+		},
+		loadRules: testLoadRules,
 	}
 
 	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
-	runner := coordinatorRunner{h: h, prepareHome: supplier.Prepare}
+	runner := testCoordRunner(h, supplier.Prepare)
 
 	spec := keysclient.SessionSpec{
 		CLI:     "opencode",
@@ -174,8 +214,12 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 				return hostapi.ExpandHomePath(p)
 			},
 			credentialPath: toolchain.CredRelPathFor,
+			profileFor: func(cli string) (executor.Profile, error) {
+				return opencode.New(nil).Profile(), nil
+			},
+			loadRules: testLoadRules,
 		}
-		occRunner := coordinatorRunner{h: h, prepareHome: occupiedSupplier.Prepare}
+		occRunner := testCoordRunner(h, occupiedSupplier.Prepare)
 
 		occSpec := keysclient.SessionSpec{
 			CLI:     "opencode",
@@ -226,8 +270,12 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 				return hostapi.ExpandHomePath(p)
 			},
 			credentialPath: toolchain.CredRelPathFor,
+			profileFor: func(cli string) (executor.Profile, error) {
+				return opencode.New(nil).Profile(), nil
+			},
+			loadRules: testLoadRules,
 		}
-		resRunner := coordinatorRunner{h: h, prepareHome: resumeSupplier.Prepare}
+		resRunner := testCoordRunner(h, resumeSupplier.Prepare)
 
 		ref := keysclient.SessionRef{
 			CLI:       "opencode",

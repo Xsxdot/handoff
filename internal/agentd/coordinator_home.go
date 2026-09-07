@@ -11,6 +11,7 @@
 package agentd
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -19,6 +20,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/scheduling"
@@ -29,6 +31,8 @@ type coordinatorHomeSupplier struct {
 	userHomeDir    func() (string, error)
 	expandHomeDir  func(string) (string, error)
 	credentialPath func(string) (string, bool)
+	profileFor     func(cli string) (executor.Profile, error)
+	loadRules      func(mainHome, cli string) (rules, skills []executor.ProfileFile, err error)
 }
 
 func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, error) {
@@ -88,8 +92,32 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 	if err := copyMissingCoordinatorCredential(mainHome, targetHome, spec.CLI, p.credentialPath); err != nil {
 		return "", err
 	}
-	if err := copyCoordinatorRules(mainHome, targetHome); err != nil {
+	if p.profileFor == nil {
+		return "", errors.New("协调者供给缺少 Profile")
+	}
+	prof, err := p.profileFor(spec.CLI)
+	if err != nil {
 		return "", err
+	}
+	if p.loadRules == nil {
+		return "", errors.New("协调者供给缺少规则装载函数")
+	}
+	rules, skills, err := p.loadRules(mainHome, spec.CLI)
+	if err != nil {
+		return "", err
+	}
+	rep, err := prof.Prepare(context.Background(), executor.ProfileReq{
+		HomeDir:    targetHome,
+		Isolated:   true,
+		Credential: executor.CredentialMainHomeSync,
+		Rules:      rules,
+		Skills:     skills,
+	})
+	if err != nil {
+		return "", err
+	}
+	if !rep.Prepared {
+		return "", fmt.Errorf("Profile.Prepare 未成功 prepared=false notes=%v", rep.Notes)
 	}
 	return targetHome, nil
 }
@@ -209,98 +237,7 @@ func copyMissingCoordinatorCredential(mainHome, targetHome, cli string,
 	return nil
 }
 
-// copyCoordinatorRules 供给 AGENTS.md 与 skills 树。
-// 为什么不用整树同步：只允许普通文件/目录覆盖同名内容，不删除目标端额外文件，严禁 symlink。
-func copyCoordinatorRules(mainHome, targetHome string) error {
-	sourceRoot := filepath.Join(mainHome, ".config", "opencode")
-	targetRoot := filepath.Join(targetHome, ".config", "opencode")
-	if err := copyCoordinatorFileIfPresent(filepath.Join(sourceRoot, "AGENTS.md"),
-		filepath.Join(targetRoot, "AGENTS.md"), true); err != nil {
-		return err
-	}
-	return copyCoordinatorTreeIfPresent(filepath.Join(sourceRoot, "skills"),
-		filepath.Join(targetRoot, "skills"))
-}
 
-func copyCoordinatorFileIfPresent(source, destination string, overwrite bool) error {
-	info, err := os.Lstat(source)
-	if errors.Is(err, os.ErrNotExist) {
-		slog.Default().Warn("协调者主 HOME 缺少规则文件，跳过供给", "source", source)
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stat 协调者规则源 %q: %w", source, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() {
-		return fmt.Errorf("协调者规则源不是普通文件 %q", source)
-	}
-	if existing, statErr := os.Lstat(destination); statErr == nil {
-		if existing.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("协调者规则目标是 symlink %q", destination)
-		}
-		if !overwrite {
-			return nil
-		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("检查协调者规则目标 %q: %w", destination, statErr)
-	}
-	if err := os.MkdirAll(filepath.Dir(destination), 0o700); err != nil {
-		return fmt.Errorf("创建协调者规则父目录 %q: %w", filepath.Dir(destination), err)
-	}
-	data, err := os.ReadFile(source)
-	if err != nil {
-		return fmt.Errorf("读取协调者规则 %q: %w", source, err)
-	}
-	if err := os.WriteFile(destination, data, info.Mode().Perm()); err != nil {
-		return fmt.Errorf("写协调者规则 %q: %w", destination, err)
-	}
-	return os.Chmod(destination, info.Mode().Perm())
-}
-
-func copyCoordinatorTreeIfPresent(source, destination string) error {
-	info, err := os.Lstat(source)
-	if errors.Is(err, os.ErrNotExist) {
-		slog.Default().Warn("协调者主 HOME 缺少 skills 目录，跳过供给", "source", source)
-		return nil
-	}
-	if err != nil {
-		return fmt.Errorf("stat 协调者 skills 源 %q: %w", source, err)
-	}
-	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
-		return fmt.Errorf("协调者 skills 源不是普通目录 %q", source)
-	}
-	if existing, statErr := os.Lstat(destination); statErr == nil {
-		if existing.Mode()&os.ModeSymlink != 0 || !existing.IsDir() {
-			return fmt.Errorf("协调者 skills 目标不是普通目录 %q", destination)
-		}
-	} else if !errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("检查协调者 skills 目标 %q: %w", destination, statErr)
-	}
-	if err := os.MkdirAll(destination, 0o700); err != nil {
-		return fmt.Errorf("创建协调者 skills 目标 %q: %w", destination, err)
-	}
-	entries, err := os.ReadDir(source)
-	if err != nil {
-		return fmt.Errorf("读取协调者 skills 目录 %q: %w", source, err)
-	}
-	for _, entry := range entries {
-		src := filepath.Join(source, entry.Name())
-		dst := filepath.Join(destination, entry.Name())
-		if entry.Type()&os.ModeSymlink != 0 {
-			return fmt.Errorf("协调者 skills 源含 symlink %q", src)
-		}
-		if entry.IsDir() {
-			if err := copyCoordinatorTreeIfPresent(src, dst); err != nil {
-				return err
-			}
-			continue
-		}
-		if err := copyCoordinatorFileIfPresent(src, dst, true); err != nil {
-			return err
-		}
-	}
-	return nil
-}
 
 // normalizeCoordinatorSpec 将 SessionSpec.HomeDir 展开为绝对路径。
 // 空值视为主 HOME（~）展开；展开失败或非绝对路径返回包含原串的错误，防止字面 ~ 漏进 keystone。

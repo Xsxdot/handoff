@@ -674,6 +674,14 @@ func TestDispatchUnknownError500(t *testing.T) {
 // PATH）。用于断言 dispatch 失败时响应体携带可读真因而非扁平「派发任务失败」。
 type startFailAdapter struct{}
 
+func (startFailAdapter) Name() string { return "opencode" }
+func (startFailAdapter) Report() executor.CapabilityReport {
+	return executor.CapabilityReport{
+		Harness: "opencode",
+		Caps:    []executor.CapabilityDecl{{Name: executor.CapExecution, Supported: true}},
+	}
+}
+
 func (startFailAdapter) Start(context.Context, executor.StartReq) error {
 	return errors.New(`exec: "tmux": executable file not found in $PATH`)
 }

@@ -4,6 +4,7 @@ package agentd
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -14,6 +15,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 // newEnvApprover 造一个带 env 文件的审批者；body 为 env 文件内容。
@@ -43,10 +45,18 @@ func newEnvApprover(t *testing.T, body string) *Approver {
 // 「切片被传下去了」更接近事实。
 func TestApproverInjectsEnvIntoDecideCommand(t *testing.T) {
 	ap := newEnvApprover(t, "HANDOFF_TEST_VAR=injected\n")
-	out, err := ap.defaultRunCmd(context.Background(),
-		[]string{"sh", "-c", `printf %s "$HANDOFF_TEST_VAR"`})
+	var capturedEnv []string
+	ap.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			capturedEnv = req.Env
+			return executor.OneShotReply{Text: `{"decision":"escalate"}`, Status: executor.OneShotOK}, nil
+		},
+	})
+	_ = ap.Decide(context.Background(), "test perm", "test")
+	out, err := executor.RunOneShotProcess(context.Background(),
+		[]string{"sh", "-c", `printf %s "$HANDOFF_TEST_VAR"`}, capturedEnv, "", "")
 	if err != nil {
-		t.Fatalf("defaultRunCmd: %v", err)
+		t.Fatalf("RunOneShotProcess: %v", err)
 	}
 	if out != "injected" {
 		t.Fatalf("子进程应看到注入的变量，实际输出 %q", out)
@@ -58,10 +68,18 @@ func TestApproverInjectsEnvIntoDecideCommand(t *testing.T) {
 func TestApproverStillInheritsAgentdEnv(t *testing.T) {
 	t.Setenv("HANDOFF_INHERITED_VAR", "inherited")
 	ap := newEnvApprover(t, "HANDOFF_TEST_VAR=injected\n")
-	out, err := ap.defaultRunCmd(context.Background(),
-		[]string{"sh", "-c", `printf %s "$HANDOFF_INHERITED_VAR"`})
+	var capturedEnv []string
+	ap.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			capturedEnv = req.Env
+			return executor.OneShotReply{Text: `{"decision":"escalate"}`, Status: executor.OneShotOK}, nil
+		},
+	})
+	_ = ap.Decide(context.Background(), "test perm", "test")
+	out, err := executor.RunOneShotProcess(context.Background(),
+		[]string{"sh", "-c", `printf %s "$HANDOFF_INHERITED_VAR"`}, capturedEnv, "", "")
 	if err != nil {
-		t.Fatalf("defaultRunCmd: %v", err)
+		t.Fatalf("RunOneShotProcess: %v", err)
 	}
 	if out != "inherited" {
 		t.Fatalf("应继承 agentd 环境，实际输出 %q", out)
@@ -82,19 +100,21 @@ func TestApproverEnvFailureDoesNotRunCommand(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewApprover: %v", err)
 	}
-	marker := filepath.Join(t.TempDir(), "ran")
-	out, rerr := ap.defaultRunCmd(context.Background(),
-		[]string{"sh", "-c", "touch " + marker})
-	if rerr == nil {
+	var called bool
+	ap.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			called = true
+			return executor.OneShotReply{Status: executor.OneShotOK}, nil
+		},
+	})
+	d := ap.Decide(context.Background(), "test perm", "test")
+	if d.Err == nil {
 		t.Fatal("env 解析失败时应报错")
 	}
-	if !strings.Contains(rerr.Error(), "nope.env") {
-		t.Errorf("错误应带文件名，实际 %q", rerr.Error())
+	if !strings.Contains(d.Err.Error(), "nope.env") {
+		t.Errorf("错误应带文件名，实际 %q", d.Err.Error())
 	}
-	if out != "" {
-		t.Errorf("不应有命令输出，实际 %q", out)
-	}
-	if _, serr := os.Stat(marker); serr == nil {
+	if called {
 		t.Error("env 解析失败时不应执行裁决命令")
 	}
 }
@@ -106,11 +126,22 @@ func TestApproverWithNilResolverStillRuns(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewApprover: %v", err)
 	}
-	out, rerr := ap.defaultRunCmd(context.Background(), []string{"sh", "-c", `printf ok`})
-	if rerr != nil {
-		t.Fatalf("defaultRunCmd: %v", rerr)
+	var called bool
+	ap.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			called = true
+			nonce := extractNonceForTest(req.Prompt)
+			return executor.OneShotReply{Text: fmt.Sprintf(`{"decision":"approve","nonce":%q}`, nonce), Status: executor.OneShotOK}, nil
+		},
+	})
+	d := ap.Decide(context.Background(), "test perm", "test")
+	if d.Err != nil {
+		t.Fatalf("Decide: %v", d.Err)
 	}
-	if out != "ok" {
-		t.Fatalf("输出应为 ok，实际 %q", out)
+	if !called {
+		t.Fatal("应正常调用 OneShot")
+	}
+	if !d.Approve {
+		t.Fatal("应批准")
 	}
 }

@@ -14,6 +14,12 @@ import (
 	"log/slog"
 	"os"
 
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/agy"
+	"github.com/Xsxdot/handoff/internal/executor/claudecode"
+	"github.com/Xsxdot/handoff/internal/executor/codex"
+	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/skill"
 	"github.com/spf13/cobra"
 )
@@ -26,6 +32,16 @@ var skillContent string
 
 // SetSkillContent 由 main 在启动时注入内嵌的 skill 全文。
 func SetSkillContent(s string) { skillContent = s }
+
+func defaultSkillProviders(log *slog.Logger) []executor.Skills {
+	return []executor.Skills{
+		claudecode.New(log),
+		codex.New(log),
+		opencode.New(log),
+		grok.New(log),
+		agy.New(log),
+	}
+}
 
 var skillCmd = &cobra.Command{
 	Use:   "skill",
@@ -40,7 +56,7 @@ var skillCmd = &cobra.Command{
 		}
 		// Status 的 err 恒为 nil：单点读取失败已落到该 Site 的 Note 上，
 		// 报告里如实点名，不让一处坏掉的落点吃掉整份报告
-		sites, _ := skill.Status(skillContent, home)
+		sites, _ := skill.Status(skillContent, home, defaultSkillProviders(slog.Default()))
 		out := cmd.OutOrStdout()
 		for _, s := range sites {
 			fmt.Fprintf(out, "%-8s %s%s\n", skillStateText(s.State), s.Path, noteSuffix(s))
@@ -64,7 +80,7 @@ var skillInstallCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("取 home 目录: %w", err)
 		}
-		sites, err := skill.Install(skillContent, home)
+		sites, err := skill.Install(skillContent, home, defaultSkillProviders(slog.Default()))
 		if err != nil {
 			return err
 		}

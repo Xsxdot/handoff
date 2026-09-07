@@ -94,6 +94,13 @@
 - **web Composer.test 未跑**：本机未装 vitest / `@tailwindcss/vite`。来源：B233.4 review-2 minor。
 - **Client.Stop 注释仍写 true=删树**：与 C-6 生产恒 `false` 不完全对齐。来源：B233.4 review-2 minor。
 
+## 来自 B233.2 验收（2026-09-07）
+
+- **真机十六条未在本 SHA**：对端 agentd 仍是线上 `86a08861`。breakdown §5 的本机/linux-01 五家执行、Claude 协调不支持、OpenCode 协调 HOME、审批 OneShot、并发 Overlay、失败 HOME、skill install、免费模型不可用、claude 凭据、EngineOK、ctx 取消、Windows 抽查，合 main 部署后再验。来源：B233.2 acceptance。
+- **Adapter.Prepare/Verify 与 \*Profile 双入口**：各家 Adapter 仍委托 Prepare/Verify，与独立 `*Profile` 并存。来源：B233.2 review-2/3 minor；file `internal/executor/opencode/profile.go`。
+- **HOME 接缝夹具直调 Profile()**：不锁生产 `ProfileFromProvider`。来源：B233.2 review-2/3 minor；file `internal/agentd/coordinator_home_test.go`。
+- **TaskOverlay 无消费者**：独立复审 R6。来源：独立质量复审；对象 `9d7e9270`。
+
 ## 来自 B203 spec（2026-08-23）
 
 - **卡级/持久的执行器绑定**（「这张卡以后都用 grok」）：B203 只做「这一次」的一次性

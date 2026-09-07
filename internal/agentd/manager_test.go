@@ -75,11 +75,12 @@ func newTestGate(t *testing.T) *permgate.Gate {
 // chanAdapter 是测试用空操作 adapter：事件通道由测试直接控制（模拟 executor 侧事件流），
 // 并记录 RespondPermission/Send 实参供断言（答案侧是否真正回传 executor）。
 type chanAdapter struct {
-	mu        sync.Mutex
-	evCh      chan executor.AdapterEvent
-	lastStart executor.StartReq
-	perms     []string
-	sends     []string
+	mu           sync.Mutex
+	evCh         chan executor.AdapterEvent
+	providerName string
+	lastStart    executor.StartReq
+	perms        []string
+	sends        []string
 	// respondErr 非 nil 时 RespondPermission/Send 直接返回它（模拟 executor
 	// 已退出或调用失败），供恢复操作的失败分支断言
 	respondErr error
@@ -87,6 +88,22 @@ type chanAdapter struct {
 	// 供 B137 的两条分支各测一次
 	denyInBand bool
 }
+
+func (a *chanAdapter) Name() string {
+	if a.providerName != "" {
+		return a.providerName
+	}
+	return "fake"
+}
+
+func (a *chanAdapter) Report() executor.CapabilityReport {
+	return executor.CapabilityReport{
+		Harness: a.Name(),
+		Caps:    []executor.CapabilityDecl{{Name: executor.CapExecution, Supported: true}},
+	}
+}
+
+func (a *chanAdapter) setProviderName(name string) { a.providerName = name }
 
 // setRespondErr 设置（或用 nil 清除）RespondPermission/Send 的注入错误。
 func (a *chanAdapter) setRespondErr(err error) {
@@ -184,6 +201,11 @@ func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaul
 // 测试环境（approver 可为 nil）。
 func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, approver *Approver) (*Manager, *store.Store, *Hub) {
 	t.Helper()
+	for name, ad := range ads {
+		if named, ok := ad.(interface{ setProviderName(string) }); ok {
+			named.setProviderName(name)
+		}
+	}
 	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
@@ -449,7 +471,23 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 
 // failStartAdapter 是 Start 恒失败的 adapter：模拟 executor 起不来（如 tmux 不在
 // PATH），Dispatch 应把任务落 failed 并补偿清理已建的 managed worktree。
-type failStartAdapter struct{}
+type failStartAdapter struct {
+	providerName string
+}
+
+func (a *failStartAdapter) Name() string {
+	if a.providerName != "" {
+		return a.providerName
+	}
+	return "fake"
+}
+func (a *failStartAdapter) setProviderName(name string) { a.providerName = name }
+func (a *failStartAdapter) Report() executor.CapabilityReport {
+	return executor.CapabilityReport{
+		Harness: a.Name(),
+		Caps:    []executor.CapabilityDecl{{Name: executor.CapExecution, Supported: true}},
+	}
+}
 
 func (a *failStartAdapter) Start(context.Context, executor.StartReq) error {
 	return errors.New(`exec: "tmux": executable file not found in $PATH`)
@@ -514,7 +552,10 @@ func TestManagerReadsLiveExecutorDefault(t *testing.T) {
 		Executor: config.ExecutorConfig{Default: "fake", Model: "m-fake"},
 	}, discardLogger())
 	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
-	ads := map[string]executor.Adapter{"fake": &failStartAdapter{}, "opencode": &failStartAdapter{}}
+	ads := map[string]executor.Adapter{
+		"fake":     &failStartAdapter{providerName: "fake"},
+		"opencode": &failStartAdapter{providerName: "opencode"},
+	}
 	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
 		env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
 	env.srv.SetManager(mgr) // 注入活配置就发生在这一刻
@@ -1522,6 +1563,14 @@ func TestWithCarrierHomeExpandsTilde(t *testing.T) {
 type envRecordingAdapter struct {
 	executor.Adapter
 	gotEnv []string
+}
+
+func (a *envRecordingAdapter) Name() string { return "fake" }
+func (a *envRecordingAdapter) Report() executor.CapabilityReport {
+	return executor.CapabilityReport{
+		Harness: "fake",
+		Caps:    []executor.CapabilityDecl{{Name: executor.CapExecution, Supported: true}},
+	}
 }
 
 func (a *envRecordingAdapter) Start(ctx context.Context, req executor.StartReq) error {
@@ -3628,6 +3677,3 @@ func TestContinueRebindsApprovalClientAndDoesNotReuseOldGrant(t *testing.T) {
 	}
 	_ = hub
 }
-
-
-

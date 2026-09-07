@@ -144,7 +144,7 @@ func renderStatusWithLookup(w io.Writer, addr string, cli proto.BuildInfo, st *p
 	// agentd 报本机的 skill 状态会让人以为那台机器上装了什么
 	if targetName == "" && skillContent != "" {
 		if home, err := os.UserHomeDir(); err == nil {
-			if sites, _ := skill.Status(skillContent, home); !skill.InSync(sites) {
+			if sites, _ := skill.Status(skillContent, home, defaultSkillProviders(nil)); !skill.InSync(sites) {
 				fmt.Fprintf(w, "skill    有落点与当前二进制不一致，handoff skill install 重新同步\n")
 			}
 		}

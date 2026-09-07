@@ -349,10 +349,8 @@ func TestApprovalClientApproverFailureOrTimeoutDoesNotAllow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// 注入 runCmd 返回错误
-	app.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		return "", errors.New("approver command execution failed")
-	}
+	// 注入 OneShot 返回错误
+	app.BindOneShot(&stubShot{err: errors.New("approver command execution failed")})
 
 	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
@@ -391,26 +389,31 @@ func TestApprovalClientApproverFailureOrTimeoutDoesNotAllow(t *testing.T) {
 	}
 }
 
-// 10. 审批路径不得调用 OpenCode session API：注入 Approver.runCmd，记录 argv；断言 argv 来自 executor.OneShotArgs，不得出现 OpenCode session /session/ 或 PromptAsync
+// 10. 审批路径不得调用 OpenCode session API：注入 Approver.BindOneShot，记录 req；断言 prompt 来自审批模板，不得出现 OpenCode session /session/ 或 PromptAsync
 func TestApprovalClientDoesNotInvokeOpenCodeSessionAPI(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	app, err := NewApprover(config.ApproverConfig{Executor: "opencode", Model: "deepseek-v4-flash", Timeout: time.Second}, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
-	var capturedArgv []string
-	app.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		capturedArgv = argv
-		prompt := argv[len(argv)-1]
-		var nonce string
-		if idx := strings.Index(prompt, "nonce="); idx != -1 {
-			nonce = prompt[idx+len("nonce="):]
-			if end := strings.Index(nonce, "，"); end != -1 {
-				nonce = strings.TrimSpace(nonce[:end])
+	var capturedReq executor.OneShotReq
+	app.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			capturedReq = req
+			prompt := req.Prompt
+			var nonce string
+			if idx := strings.Index(prompt, "nonce="); idx != -1 {
+				nonce = prompt[idx+len("nonce="):]
+				if end := strings.Index(nonce, "，"); end != -1 {
+					nonce = strings.TrimSpace(nonce[:end])
+				}
 			}
-		}
-		return fmt.Sprintf(`{"decision":"approve","reason":"safe test","nonce":%q}`, nonce), nil
-	}
+			return executor.OneShotReply{
+				Text:   fmt.Sprintf(`{"decision":"approve","reason":"safe test","nonce":%q}`, nonce),
+				Status: executor.OneShotOK,
+			}, nil
+		},
+	})
 
 	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
@@ -444,12 +447,17 @@ func TestApprovalClientDoesNotInvokeOpenCodeSessionAPI(t *testing.T) {
 	if res.Decision.Status != executor.ApprovalAllow {
 		t.Fatalf("approver approve 应为 allow, got %q", res.Decision.Status)
 	}
-	if len(capturedArgv) == 0 {
-		t.Fatal("Approver.runCmd 必须被调用并记录 argv")
+	if capturedReq.Prompt == "" {
+		t.Fatal("Approver OneShot 必须被调用并记录 req")
 	}
-	joinedArgv := strings.Join(capturedArgv, " ")
-	if strings.Contains(joinedArgv, "/session/") || strings.Contains(joinedArgv, "PromptAsync") {
-		t.Fatalf("argv 不得包含 session 或 PromptAsync: %s", joinedArgv)
+	if strings.Contains(capturedReq.Prompt, "/session/") || strings.Contains(capturedReq.Prompt, "PromptAsync") {
+		t.Fatalf("prompt 不得包含 session 或 PromptAsync: %s", capturedReq.Prompt)
+	}
+	if capturedReq.Workdir != "" && strings.Contains(capturedReq.Workdir, "T-oneshot") {
+		t.Fatalf("Workdir 不得是被审批任务目录: %s", capturedReq.Workdir)
+	}
+	if capturedReq.HomeDir != "" && strings.Contains(capturedReq.HomeDir, "T-oneshot") {
+		t.Fatalf("HomeDir 不得是被审批任务目录: %s", capturedReq.HomeDir)
 	}
 }
 
@@ -460,17 +468,22 @@ func TestApprovalClientApproverAllowCreatesReusableGrantAndSecondRequestReuses(t
 	if err != nil {
 		t.Fatal(err)
 	}
-	app.runCmd = func(ctx context.Context, argv []string) (string, error) {
-		prompt := argv[len(argv)-1]
-		var nonce string
-		if idx := strings.Index(prompt, "nonce="); idx != -1 {
-			nonce = prompt[idx+len("nonce="):]
-			if end := strings.Index(nonce, "，"); end != -1 {
-				nonce = strings.TrimSpace(nonce[:end])
+	app.BindOneShot(&stubShot{
+		fn: func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			prompt := req.Prompt
+			var nonce string
+			if idx := strings.Index(prompt, "nonce="); idx != -1 {
+				nonce = prompt[idx+len("nonce="):]
+				if end := strings.Index(nonce, "，"); end != -1 {
+					nonce = strings.TrimSpace(nonce[:end])
+				}
 			}
-		}
-		return fmt.Sprintf(`{"decision":"approve","reason":"safe test script","nonce":%q}`, nonce), nil
-	}
+			return executor.OneShotReply{
+				Text:   fmt.Sprintf(`{"decision":"approve","reason":"safe test script","nonce":%q}`, nonce),
+				Status: executor.OneShotOK,
+			}, nil
+		},
+	})
 
 	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {

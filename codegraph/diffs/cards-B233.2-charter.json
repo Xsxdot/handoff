@@ -1,0 +1,2146 @@
+{
+ "view": "cards/B233.2-charter",
+ "base": "94246fc8",
+ "summary": "B233.2 实现期：能力 Bundle、执行/协调/OneShot/Profile/Skills 与隔离 HOME 接线",
+ "nodesAdded": {
+  "m_executor_CapabilityName": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 400,
+   "name": "CapabilityName",
+   "file": "internal/executor/capability.go",
+   "line": 28,
+   "signature": "type CapabilityName string",
+   "summary": "CapabilityName 是五类能力的稳定名字。未出现在报告里的能力视为不支持。",
+   "modelKind": "dto",
+   "tests": [
+    {
+     "name": "TestCapabilityNameLiterals",
+     "file": "internal/executor/capability_test.go:29"
+    }
+   ]
+  },
+  "m_executor_CapabilityDecl": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 401,
+   "name": "CapabilityDecl",
+   "file": "internal/executor/capability.go",
+   "line": 57,
+   "signature": "type CapabilityDecl struct {",
+   "summary": "CapabilityDecl 是某一类能力的声明。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Name",
+     "CapabilityName",
+     ""
+    ],
+    [
+     "Supported",
+     "bool",
+     ""
+    ],
+    [
+     "NativeLimits",
+     "[]string",
+     ""
+    ]
+   ]
+  },
+  "m_executor_CapabilityReport": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 402,
+   "name": "CapabilityReport",
+   "file": "internal/executor/capability.go",
+   "line": 64,
+   "signature": "type CapabilityReport struct {",
+   "summary": "CapabilityReport 是一家 harness 的能力清单。Caps 必须五类都有显式声明。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Harness",
+     "string",
+     ""
+    ],
+    [
+     "Caps",
+     "[]CapabilityDecl",
+     ""
+    ]
+   ],
+   "tests": [
+    {
+     "name": "TestBaselineReportMatrix",
+     "file": "internal/executor/capability_test.go:58"
+    }
+   ]
+  },
+  "m_executor_Provider": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 403,
+   "name": "Provider",
+   "file": "internal/executor/capability.go",
+   "line": 71,
+   "signature": "type Provider interface {\n\tName() string\n\tReport() CapabilityReport\n}",
+   "summary": "Provider 是可查询能力报告的提供方。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Name",
+     "func() string",
+     ""
+    ],
+    [
+     "Report",
+     "func() CapabilityReport",
+     ""
+    ]
+   ]
+  },
+  "m_executor_StaticProvider": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 404,
+   "name": "StaticProvider",
+   "file": "internal/executor/capability.go",
+   "line": 78,
+   "signature": "type StaticProvider struct {",
+   "summary": "StaticProvider 用写死的报告充当 Provider。测试与 Ticket 0 金样本用。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "HarnessName",
+     "string",
+     ""
+    ],
+    [
+     "Rep",
+     "CapabilityReport",
+     ""
+    ]
+   ]
+  },
+  "m_executor_Registry": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 405,
+   "name": "Registry",
+   "file": "internal/executor/capability.go",
+   "line": 90,
+   "signature": "type Registry struct {",
+   "summary": "Registry 按名字查找 Provider。组装点绑定；本类型不做厂商 argv。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "byName",
+     "map[string]Provider",
+     ""
+    ]
+   ]
+  },
+  "m_executor_CoordSessionSpec": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 406,
+   "name": "CoordSessionSpec",
+   "file": "internal/executor/coordinator.go",
+   "line": 30,
+   "signature": "type CoordSessionSpec struct {",
+   "summary": "CoordSessionSpec 是一次无头拉起的会话规格，字段与 keysclient.SessionSpec 同形。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "CLI",
+     "string",
+     ""
+    ],
+    [
+     "HomeDir",
+     "string",
+     ""
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ],
+    [
+     "Workdir",
+     "string",
+     ""
+    ],
+    [
+     "Env",
+     "[]string",
+     ""
+    ]
+   ],
+   "tests": [
+    {
+     "name": "TestCoordTypesMirrorKeysclientFields",
+     "file": "internal/executor/coordinator_test.go:58"
+    }
+   ]
+  },
+  "m_executor_CoordSessionRef": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 407,
+   "name": "CoordSessionRef",
+   "file": "internal/executor/coordinator.go",
+   "line": 39,
+   "signature": "type CoordSessionRef struct {",
+   "summary": "CoordSessionRef 指向一个可 resume 的持久会话，字段与 keysclient.SessionRef 同形。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "CLI",
+     "string",
+     ""
+    ],
+    [
+     "SessionID",
+     "string",
+     ""
+    ],
+    [
+     "Machine",
+     "string",
+     ""
+    ],
+    [
+     "HomeDir",
+     "string",
+     ""
+    ],
+    [
+     "Workdir",
+     "string",
+     ""
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_executor_CoordTurnResult": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 408,
+   "name": "CoordTurnResult",
+   "file": "internal/executor/coordinator.go",
+   "line": 49,
+   "signature": "type CoordTurnResult struct {",
+   "summary": "CoordTurnResult 是一个唤醒回合的产出，字段与 keysclient.TurnResult 同形。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "SessionID",
+     "string",
+     ""
+    ],
+    [
+     "Output",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_executor_CoordAttachInfo": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 409,
+   "name": "CoordAttachInfo",
+   "file": "internal/executor/coordinator.go",
+   "line": 55,
+   "signature": "type CoordAttachInfo struct {",
+   "summary": "CoordAttachInfo 是 attach 定位三元组，字段与 keysclient.AttachInfo 同形。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Machine",
+     "string",
+     ""
+    ],
+    [
+     "Dir",
+     "string",
+     ""
+    ],
+    [
+     "Command",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_executor_Coordinator": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 410,
+   "name": "Coordinator",
+   "file": "internal/executor/coordinator.go",
+   "line": 64,
+   "signature": "type Coordinator interface {\n\tLaunch(ctx context.Context, spec CoordSessionSpec, prompt string) (CoordTurnResult, error)\n\tResume(ctx context.Context, ref CoordSessionRef, prompt string) (CoordTurnResult, error)\n\tCancelTurn(ctx context.Context, ref CoordSessionRef) error\n}",
+   "summary": "Coordinator 是协调会话能力面。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Launch",
+     "func(ctx context.Context, spec CoordSessionSpec, prompt string) (CoordTurnResult, error)",
+     ""
+    ],
+    [
+     "Resume",
+     "func(ctx context.Context, ref CoordSessionRef, prompt string) (CoordTurnResult, error)",
+     ""
+    ],
+    [
+     "CancelTurn",
+     "func(ctx context.Context, ref CoordSessionRef) error",
+     ""
+    ]
+   ]
+  },
+  "m_executor_CoordAttacher": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 411,
+   "name": "CoordAttacher",
+   "file": "internal/executor/coordinator.go",
+   "line": 72,
+   "signature": "type CoordAttacher interface {\n\tAttachInfo(ctx context.Context, ref CoordSessionRef) (CoordAttachInfo, error)\n}",
+   "summary": "CoordAttacher 是可选能力：给出在哪台机器哪个目录用什么命令打开原生 TUI。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "AttachInfo",
+     "func(ctx context.Context, ref CoordSessionRef) (CoordAttachInfo, error)",
+     ""
+    ]
+   ]
+  },
+  "m_executor_OneShotStatus": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 412,
+   "name": "OneShotStatus",
+   "file": "internal/executor/oneshot_cap.go",
+   "line": 23,
+   "signature": "type OneShotStatus string",
+   "summary": "OneShotStatus 是一次性调用的终态。",
+   "modelKind": "dto",
+   "tests": [
+    {
+     "name": "TestOneShotLiterals",
+     "file": "internal/executor/oneshot_cap_test.go:18"
+    }
+   ]
+  },
+  "m_executor_OneShotLimits": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 413,
+   "name": "OneShotLimits",
+   "file": "internal/executor/oneshot_cap.go",
+   "line": 34,
+   "signature": "type OneShotLimits struct {",
+   "summary": "OneShotLimits 是调用方策略，不是 harness 默认。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Effort",
+     "string",
+     ""
+    ],
+    [
+     "Timeout",
+     "time.Duration",
+     ""
+    ]
+   ]
+  },
+  "m_executor_OneShotReq": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 414,
+   "name": "OneShotReq",
+   "file": "internal/executor/oneshot_cap.go",
+   "line": 40,
+   "signature": "type OneShotReq struct {",
+   "summary": "OneShotReq 是一次 Invoke 的输入。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Prompt",
+     "string",
+     ""
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ],
+    [
+     "Workdir",
+     "string",
+     ""
+    ],
+    [
+     "HomeDir",
+     "string",
+     ""
+    ],
+    [
+     "Env",
+     "[]string",
+     ""
+    ],
+    [
+     "Limits",
+     "OneShotLimits",
+     ""
+    ]
+   ]
+  },
+  "m_executor_OneShotReply": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 415,
+   "name": "OneShotReply",
+   "file": "internal/executor/oneshot_cap.go",
+   "line": 50,
+   "signature": "type OneShotReply struct {",
+   "summary": "OneShotReply 是一次 Invoke 的产出。Usage 可空；Status 必须是 OneShot* 之一。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Text",
+     "string",
+     ""
+    ],
+    [
+     "Usage",
+     "*proto.Usage",
+     ""
+    ],
+    [
+     "Status",
+     "OneShotStatus",
+     ""
+    ]
+   ]
+  },
+  "m_executor_OneShot": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 416,
+   "name": "OneShot",
+   "file": "internal/executor/oneshot_cap.go",
+   "line": 57,
+   "signature": "type OneShot interface {\n\tInvoke(ctx context.Context, req OneShotReq) (OneShotReply, error)\n}",
+   "summary": "OneShot 是一次性调用能力面。ctx 取消必须打断实际进程。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Invoke",
+     "func(ctx context.Context, req OneShotReq) (OneShotReply, error)",
+     ""
+    ]
+   ]
+  },
+  "m_executor_CredentialPolicy": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 417,
+   "name": "CredentialPolicy",
+   "file": "internal/executor/profile.go",
+   "line": 15,
+   "signature": "type CredentialPolicy string",
+   "summary": "CredentialPolicy 是凭据供给策略，字面值与 hostapi.ProbeRequest.Credential 对齐。",
+   "modelKind": "dto",
+   "tests": [
+    {
+     "name": "TestCredentialPolicyLiterals",
+     "file": "internal/executor/profile_test.go:24"
+    }
+   ]
+  },
+  "m_executor_ProfileFile": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 418,
+   "name": "ProfileFile",
+   "file": "internal/executor/profile.go",
+   "line": 23,
+   "signature": "type ProfileFile struct {",
+   "summary": "ProfileFile 是一条期望写入原生位置的受管文件（规则或 skill）。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Content",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_executor_ProfileReq": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 419,
+   "name": "ProfileReq",
+   "file": "internal/executor/profile.go",
+   "line": 32,
+   "signature": "type ProfileReq struct {",
+   "summary": "ProfileReq 是载体提交的期望环境。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "HomeDir",
+     "string",
+     ""
+    ],
+    [
+     "Isolated",
+     "bool",
+     ""
+    ],
+    [
+     "Credential",
+     "CredentialPolicy",
+     ""
+    ],
+    [
+     "Rules",
+     "[]ProfileFile",
+     ""
+    ],
+    [
+     "Skills",
+     "[]ProfileFile",
+     ""
+    ],
+    [
+     "TaskOverlay",
+     "[]ProfileFile",
+     ""
+    ]
+   ]
+  },
+  "m_executor_ProfileReport": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 420,
+   "name": "ProfileReport",
+   "file": "internal/executor/profile.go",
+   "line": 44,
+   "signature": "type ProfileReport struct {",
+   "summary": "ProfileReport 是一次检查/准备/校验的可见结果。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "HomeDir",
+     "string",
+     ""
+    ],
+    [
+     "Isolated",
+     "bool",
+     ""
+    ],
+    [
+     "Prepared",
+     "bool",
+     ""
+    ],
+    [
+     "Verified",
+     "bool",
+     ""
+    ],
+    [
+     "EngineOK",
+     "bool",
+     ""
+    ],
+    [
+     "Missing",
+     "[]string",
+     ""
+    ],
+    [
+     "Notes",
+     "[]string",
+     ""
+    ]
+   ],
+   "tests": [
+    {
+     "name": "TestZeroProfileReportIsNotSuccess",
+     "file": "internal/executor/profile_test.go:33"
+    }
+   ]
+  },
+  "m_executor_Profile": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 421,
+   "name": "Profile",
+   "file": "internal/executor/profile.go",
+   "line": 57,
+   "signature": "type Profile interface {\n\tInspect(ctx context.Context, req ProfileReq) (ProfileReport, error)\n\tPrepare(ctx context.Context, req ProfileReq) (ProfileReport, error)\n\tVerify(ctx context.Context, req ProfileReq) (ProfileReport, error)\n}",
+   "summary": "Profile 是 HOME/配置能力面。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Inspect",
+     "func(ctx context.Context, req ProfileReq) (ProfileReport, error)",
+     ""
+    ],
+    [
+     "Prepare",
+     "func(ctx context.Context, req ProfileReq) (ProfileReport, error)",
+     ""
+    ],
+    [
+     "Verify",
+     "func(ctx context.Context, req ProfileReq) (ProfileReport, error)",
+     ""
+    ]
+   ]
+  },
+  "m_executor_SkillSite": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 422,
+   "name": "SkillSite",
+   "file": "internal/executor/skills_cap.go",
+   "line": 32,
+   "signature": "type SkillSite struct {",
+   "summary": "SkillSite 是一个落点及其状态，字段与 skill.Site 同形。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Path",
+     "string",
+     ""
+    ],
+    [
+     "State",
+     "string",
+     ""
+    ],
+    [
+     "Note",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_executor_SkillInstallReq": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 423,
+   "name": "SkillInstallReq",
+   "file": "internal/executor/skills_cap.go",
+   "line": 39,
+   "signature": "type SkillInstallReq struct {",
+   "summary": "SkillInstallReq 是一次安装/更新。Name 空则用 SkillDefaultName。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Home",
+     "string",
+     ""
+    ],
+    [
+     "Content",
+     "string",
+     ""
+    ],
+    [
+     "Name",
+     "string",
+     ""
+    ]
+   ]
+  },
+  "m_executor_SkillRemoveReq": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 424,
+   "name": "SkillRemoveReq",
+   "file": "internal/executor/skills_cap.go",
+   "line": 46,
+   "signature": "type SkillRemoveReq struct {",
+   "summary": "SkillRemoveReq 是一次删除。Authorized 必须为 true。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Home",
+     "string",
+     ""
+    ],
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Authorized",
+     "bool",
+     ""
+    ]
+   ]
+  },
+  "m_executor_Skills": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 425,
+   "name": "Skills",
+   "file": "internal/executor/skills_cap.go",
+   "line": 53,
+   "signature": "type Skills interface {\n\tInspect(ctx context.Context, home string) ([]SkillSite, error)\n\tInstall(ctx context.Context, req SkillInstallReq) ([]SkillSite, error)\n\tRemove(ctx context.Context, req SkillRemoveReq) error\n}",
+   "summary": "Skills 是 skill 管理能力面。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Inspect",
+     "func(ctx context.Context, home string) ([]SkillSite, error)",
+     ""
+    ],
+    [
+     "Install",
+     "func(ctx context.Context, req SkillInstallReq) ([]SkillSite, error)",
+     ""
+    ],
+    [
+     "Remove",
+     "func(ctx context.Context, req SkillRemoveReq) error",
+     ""
+    ]
+   ]
+  },
+  "m_executor_Recoverer": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 426,
+   "name": "Recoverer",
+   "file": "internal/executor/recoverer.go",
+   "line": 13,
+   "signature": "type Recoverer interface {\n\tResume(req ResumeReq) (ResumeOutcome, error)\n}",
+   "summary": "Recoverer 是执行会话的可选恢复能力。未实现则按不存活走失败恢复路径。",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Resume",
+     "func(req ResumeReq) (ResumeOutcome, error)",
+     ""
+    ]
+   ],
+   "tests": [
+    {
+     "name": "TestRecovererIsNotAdapterMethodSet",
+     "file": "internal/executor/recoverer_test.go:17"
+    }
+   ]
+  },
+  "n_executor_NewRegistry": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 400,
+   "name": "NewRegistry",
+   "file": "internal/executor/capability.go",
+   "line": 95,
+   "signature": "func NewRegistry(ps ...Provider) *Registry",
+   "summary": "NewRegistry 登记一组提供方。后写入覆盖同名先写入。",
+   "params": [
+    [
+     "ps",
+     "...Provider",
+     "提供方列表"
+    ]
+   ],
+   "returns": "*Registry"
+  },
+  "n_executor_Registry_Get": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 401,
+   "name": "Registry.Get",
+   "file": "internal/executor/capability.go",
+   "line": 107,
+   "signature": "func (r *Registry) Get(name string) (Provider, error)",
+   "summary": "Get 按登记名取提供方。未知名字返回 ErrUnknownHarness。",
+   "params": [
+    [
+     "name",
+     "string",
+     "harness 登记名"
+    ]
+   ],
+   "returns": "Provider, error"
+  },
+  "n_executor_Registry_Require": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 402,
+   "name": "Registry.Require",
+   "file": "internal/executor/capability.go",
+   "line": 119,
+   "signature": "func (r *Registry) Require(name string, cap CapabilityName) error",
+   "summary": "Require 查报告：不支持或未声明则返回 ErrCapabilityUnsupported。",
+   "params": [
+    [
+     "name",
+     "string",
+     "harness 登记名"
+    ],
+    [
+     "cap",
+     "CapabilityName",
+     "能力名"
+    ]
+   ],
+   "returns": "error",
+   "tests": [
+    {
+     "name": "TestRegistryRequireCoordination",
+     "file": "internal/executor/capability_test.go:126"
+    }
+   ]
+  },
+  "n_executor_ReportHas": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 403,
+   "name": "ReportHas",
+   "file": "internal/executor/capability.go",
+   "line": 128,
+   "signature": "func ReportHas(r CapabilityReport, cap CapabilityName) bool",
+   "summary": "ReportHas 报告是否显式声明并支持 cap。未出现在 Caps 里视为不支持。",
+   "params": [
+    [
+     "r",
+     "CapabilityReport",
+     "能力报告"
+    ],
+    [
+     "cap",
+     "CapabilityName",
+     "能力名"
+    ]
+   ],
+   "returns": "bool"
+  },
+  "n_executor_RequireCapability": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 404,
+   "name": "RequireCapability",
+   "file": "internal/executor/capability.go",
+   "line": 138,
+   "signature": "func RequireCapability(r CapabilityReport, cap CapabilityName) error",
+   "summary": "RequireCapability 在报告上执法：不支持则返回可行动的 Unsupported 错误。",
+   "params": [
+    [
+     "r",
+     "CapabilityReport",
+     "能力报告"
+    ],
+    [
+     "cap",
+     "CapabilityName",
+     "能力名"
+    ]
+   ],
+   "returns": "error"
+  },
+  "n_executor_UnsupportedError": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 405,
+   "name": "UnsupportedError",
+   "file": "internal/executor/capability.go",
+   "line": 148,
+   "signature": "func UnsupportedError(harness string, cap CapabilityName) error",
+   "summary": "UnsupportedError 构造某家不支持某能力的可行动错误。",
+   "params": [
+    [
+     "harness",
+     "string",
+     "harness 登记名"
+    ],
+    [
+     "cap",
+     "CapabilityName",
+     "能力名"
+    ]
+   ],
+   "returns": "error",
+   "tests": [
+    {
+     "name": "TestUnsupportedErrorGolden",
+     "file": "internal/executor/capability_test.go:47"
+    }
+   ]
+  },
+  "n_executor_SupportedHarnesses": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 406,
+   "name": "SupportedHarnesses",
+   "file": "internal/executor/capability.go",
+   "line": 154,
+   "signature": "func SupportedHarnesses() []string",
+   "summary": "SupportedHarnesses 返回受支持名单，顺序与 toolchain.order 一致。",
+   "returns": "[]string",
+   "tests": [
+    {
+     "name": "TestHarnessNameLiterals",
+     "file": "internal/executor/capability_test.go:11"
+    }
+   ]
+  },
+  "n_executor_AllCapabilityNames": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 407,
+   "name": "AllCapabilityNames",
+   "file": "internal/executor/capability.go",
+   "line": 159,
+   "signature": "func AllCapabilityNames() []CapabilityName",
+   "summary": "AllCapabilityNames 返回五类能力名，固定顺序。",
+   "returns": "[]CapabilityName"
+  },
+  "n_executor_BaselineReport": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 408,
+   "name": "BaselineReport",
+   "file": "internal/executor/capability.go",
+   "line": 164,
+   "signature": "func BaselineReport(harness string) (CapabilityReport, error)",
+   "summary": "BaselineReport 返回本卡冻结的支持矩阵。未知名字返回 ErrUnknownHarness。",
+   "params": [
+    [
+     "harness",
+     "string",
+     "harness 登记名"
+    ]
+   ],
+   "returns": "CapabilityReport, error",
+   "tests": [
+    {
+     "name": "TestBaselineReportMatrix",
+     "file": "internal/executor/capability_test.go:58"
+    }
+   ]
+  },
+  "n_executor_StaticProvider_Name": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 409,
+   "name": "StaticProvider.Name",
+   "file": "internal/executor/capability.go",
+   "line": 84,
+   "signature": "func (p StaticProvider) Name() string",
+   "summary": "Name 返回登记名。",
+   "returns": "string"
+  },
+  "n_executor_StaticProvider_Report": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 410,
+   "name": "StaticProvider.Report",
+   "file": "internal/executor/capability.go",
+   "line": 87,
+   "signature": "func (p StaticProvider) Report() CapabilityReport",
+   "summary": "Report 返回写死的能力清单。",
+   "returns": "CapabilityReport"
+  },
+  "n_executor_RequireLaunchPrompt": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 411,
+   "name": "RequireLaunchPrompt",
+   "file": "internal/executor/coordinator.go",
+   "line": 77,
+   "signature": "func RequireLaunchPrompt(prompt string) error",
+   "summary": "RequireLaunchPrompt 执法 Launch 的非空 prompt。空串（含纯空白）非法。",
+   "params": [
+    [
+     "prompt",
+     "string",
+     "第一回合输入"
+    ]
+   ],
+   "returns": "error",
+   "tests": [
+    {
+     "name": "TestRequireLaunchPrompt",
+     "file": "internal/executor/coordinator_test.go:34"
+    }
+   ]
+  },
+  "n_executor_RequireResumeRef": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 412,
+   "name": "RequireResumeRef",
+   "file": "internal/executor/coordinator.go",
+   "line": 85,
+   "signature": "func RequireResumeRef(ref CoordSessionRef) error",
+   "summary": "RequireResumeRef 执法 Resume 必须带会话 id。",
+   "params": [
+    [
+     "ref",
+     "CoordSessionRef",
+     "续接引用"
+    ]
+   ],
+   "returns": "error",
+   "tests": [
+    {
+     "name": "TestRequireResumeRef",
+     "file": "internal/executor/coordinator_test.go:48"
+    }
+   ]
+  },
+  "n_executor_GuardRemove": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 413,
+   "name": "GuardRemove",
+   "file": "internal/executor/skills_cap.go",
+   "line": 60,
+   "signature": "func GuardRemove(req SkillRemoveReq) error",
+   "summary": "GuardRemove 执法 Remove 必须明确授权。实现节点在写盘之前调用。",
+   "params": [
+    [
+     "req",
+     "SkillRemoveReq",
+     "删除请求"
+    ]
+   ],
+   "returns": "error",
+   "tests": [
+    {
+     "name": "TestGuardRemoveRequiresAuthorization",
+     "file": "internal/executor/skills_cap_test.go:45"
+    }
+   ]
+  },
+  "n_executor_SkillDirName": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "order": 414,
+   "name": "SkillDirName",
+   "file": "internal/executor/skills_cap.go",
+   "line": 68,
+   "signature": "func SkillDirName(name string) string",
+   "summary": "SkillDirName 返回安装目录名；空入参用缺省 handoff。",
+   "params": [
+    [
+     "name",
+     "string",
+     "skill 目录名"
+    ]
+   ],
+   "returns": "string",
+   "tests": [
+    {
+     "name": "TestSkillDirNameDefault",
+     "file": "internal/executor/skills_cap_test.go:55"
+    }
+   ]
+  },
+  "n_grok_OneShotArgv": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "order": 400,
+   "name": "OneShotArgv",
+   "file": "internal/executor/grok/oneshot_argv.go",
+   "line": 21,
+   "signature": "func OneShotArgv(model, prompt string, limits executor.OneShotLimits) ([]string, error)",
+   "summary": "OneShotArgv 把 model / prompt / limits 编成 grok 一次性 argv。",
+   "params": [
+    [
+     "model",
+     "string",
+     "模型名，空则省略"
+    ],
+    [
+     "prompt",
+     "string",
+     "一次性 prompt"
+    ],
+    [
+     "limits",
+     "executor.OneShotLimits",
+     "调用方限制"
+    ]
+   ],
+   "returns": "[]string, error",
+   "tests": [
+    {
+     "name": "TestOneShotArgvGoldenVectors",
+     "file": "internal/executor/grok/oneshot_argv_test.go:12"
+    }
+   ]
+  },
+  "n_executor_ProfileFromProvider": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "name": "ProfileFromProvider",
+   "file": "internal/executor/capability.go",
+   "line": 82,
+   "signature": "func ProfileFromProvider(p Provider) (Profile, bool)"
+  },
+  "n_executor_RunOneShotProcess": {
+   "kind": "func",
+   "container": "k_executor_fn",
+   "name": "RunOneShotProcess",
+   "file": "internal/executor/oneshot_run.go",
+   "line": 12,
+   "signature": "func RunOneShotProcess(ctx context.Context, argv []string, env []string, workdir, homeDir string) (string, error)"
+  },
+  "n_cmd_bindApproverOneShot": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "name": "bindApproverOneShot",
+   "file": "cmd/agentd.go",
+   "line": 503,
+   "signature": "func bindApproverOneShot(ap *agentd.Approver, ads map[string]executor.Adapter, name string, log *slog.Logger) error"
+  },
+  "n_cmd_loadCarrierRules": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "name": "loadCarrierRules",
+   "file": "cmd/agentd.go",
+   "line": 531,
+   "signature": "func loadCarrierRules(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error)"
+  },
+  "n_cmd_readSkillTree": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "name": "readSkillTree",
+   "file": "cmd/agentd.go",
+   "line": 559,
+   "signature": "func readSkillTree(root, rel string) ([]executor.ProfileFile, error)"
+  },
+  "n_cmd_defaultSkillProviders": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "name": "defaultSkillProviders",
+   "file": "cmd/skill.go",
+   "line": 36,
+   "signature": "func defaultSkillProviders(log *slog.Logger) []executor.Skills"
+  },
+  "n_agentd_Approver_BindOneShot": {
+   "kind": "func",
+   "container": "k_agentd_Approver",
+   "name": "Approver.BindOneShot",
+   "file": "internal/agentd/approver.go",
+   "line": 68,
+   "signature": "func (a *Approver) BindOneShot(shot executor.OneShot)"
+  },
+  "n_agentd_RegistryFromAds": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "name": "RegistryFromAds",
+   "file": "internal/agentd/manager.go",
+   "line": 340,
+   "signature": "func RegistryFromAds(ads map[string]executor.Adapter) *executor.Registry"
+  },
+  "n_agentd_registryFromAds": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "name": "registryFromAds",
+   "file": "internal/agentd/manager.go",
+   "line": 344,
+   "signature": "func registryFromAds(ads map[string]executor.Adapter) *executor.Registry"
+  },
+  "n_agentd_Server_SetProviders": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "name": "Server.SetProviders",
+   "file": "internal/agentd/server.go",
+   "line": 377,
+   "signature": "func (s *Server) SetProviders(r *executor.Registry)"
+  },
+  "n_agentd_Server_SetRuleLoader": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "name": "Server.SetRuleLoader",
+   "file": "internal/agentd/server.go",
+   "line": 2506,
+   "signature": "func (s *Server) SetRuleLoader(fn func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error))"
+  },
+  "n_agentd_coordinatorHomeSupplier_Prepare": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "name": "coordinatorHomeSupplier.Prepare",
+   "file": "internal/agentd/coordinator_home.go",
+   "line": 38,
+   "signature": "func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, error)"
+  },
+  "m_agy_OneShot": {
+   "kind": "model",
+   "container": "k_agy_model",
+   "name": "OneShot",
+   "file": "internal/executor/agy/oneshot.go",
+   "line": 10,
+   "signature": "type OneShot struct{ log *slog.Logger }"
+  },
+  "n_agy_NewOneShot": {
+   "kind": "func",
+   "container": "k_agy_fn",
+   "name": "NewOneShot",
+   "file": "internal/executor/agy/oneshot.go",
+   "line": 12,
+   "signature": "func NewOneShot(log *slog.Logger) *OneShot"
+  },
+  "n_agy_OneShot_Invoke": {
+   "kind": "func",
+   "container": "k_agy_fn",
+   "name": "OneShot.Invoke",
+   "file": "internal/executor/agy/oneshot.go",
+   "line": 19,
+   "signature": "func (s *OneShot) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_agy_Adapter_Invoke": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Invoke",
+   "file": "internal/executor/agy/oneshot.go",
+   "line": 39,
+   "signature": "func (a *Adapter) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_agy_OneShotArgv": {
+   "kind": "func",
+   "container": "k_agy_fn",
+   "name": "OneShotArgv",
+   "file": "internal/executor/agy/oneshot_argv.go",
+   "line": 6,
+   "signature": "func OneShotArgv(model, prompt string, _ executor.OneShotLimits) ([]string, error)"
+  },
+  "m_agy_Profile": {
+   "kind": "model",
+   "container": "k_agy_model",
+   "name": "Profile",
+   "file": "internal/executor/agy/profile.go",
+   "line": 24,
+   "signature": "type Profile struct {"
+  },
+  "n_agy_NewProfile": {
+   "kind": "func",
+   "container": "k_agy_fn",
+   "name": "NewProfile",
+   "file": "internal/executor/agy/profile.go",
+   "line": 30,
+   "signature": "func NewProfile(log *slog.Logger) *Profile"
+  },
+  "n_agy_Adapter_Profile": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Profile",
+   "file": "internal/executor/agy/profile.go",
+   "line": 35,
+   "signature": "func (a *Adapter) Profile() executor.Profile"
+  },
+  "n_agy_Adapter_Prepare": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Prepare",
+   "file": "internal/executor/agy/profile.go",
+   "line": 43,
+   "signature": "func (a *Adapter) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_agy_Adapter_Verify": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Verify",
+   "file": "internal/executor/agy/profile.go",
+   "line": 48,
+   "signature": "func (a *Adapter) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_agy_Profile_Inspect": {
+   "kind": "func",
+   "container": "k_agy_fn",
+   "name": "Profile.Inspect",
+   "file": "internal/executor/agy/profile.go",
+   "line": 52,
+   "signature": "func (p *Profile) Inspect(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_agy_Profile_Prepare": {
+   "kind": "func",
+   "container": "k_agy_fn",
+   "name": "Profile.Prepare",
+   "file": "internal/executor/agy/profile.go",
+   "line": 71,
+   "signature": "func (p *Profile) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_agy_Profile_Verify": {
+   "kind": "func",
+   "container": "k_agy_fn",
+   "name": "Profile.Verify",
+   "file": "internal/executor/agy/profile.go",
+   "line": 144,
+   "signature": "func (p *Profile) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_agy_Adapter_Name": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Name",
+   "file": "internal/executor/agy/report.go",
+   "line": 12,
+   "signature": "func (a *Adapter) Name() string"
+  },
+  "n_agy_Adapter_Report": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Report",
+   "file": "internal/executor/agy/report.go",
+   "line": 15,
+   "signature": "func (a *Adapter) Report() executor.CapabilityReport"
+  },
+  "n_agy_Adapter_Inspect": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Inspect",
+   "file": "internal/executor/agy/skills.go",
+   "line": 26,
+   "signature": "func (a *Adapter) Inspect(ctx context.Context, home string) ([]executor.SkillSite, error)"
+  },
+  "n_agy_Adapter_Install": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Install",
+   "file": "internal/executor/agy/skills.go",
+   "line": 56,
+   "signature": "func (a *Adapter) Install(ctx context.Context, req executor.SkillInstallReq) ([]executor.SkillSite, error)"
+  },
+  "n_agy_Adapter_Remove": {
+   "kind": "func",
+   "container": "k_agy_Adapter",
+   "name": "Adapter.Remove",
+   "file": "internal/executor/agy/skills.go",
+   "line": 102,
+   "signature": "func (a *Adapter) Remove(ctx context.Context, req executor.SkillRemoveReq) error"
+  },
+  "m_claudecode_OneShot": {
+   "kind": "model",
+   "container": "k_claudecode_model",
+   "name": "OneShot",
+   "file": "internal/executor/claudecode/oneshot.go",
+   "line": 10,
+   "signature": "type OneShot struct{ log *slog.Logger }"
+  },
+  "n_claudecode_NewOneShot": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "name": "NewOneShot",
+   "file": "internal/executor/claudecode/oneshot.go",
+   "line": 12,
+   "signature": "func NewOneShot(log *slog.Logger) *OneShot"
+  },
+  "n_claudecode_OneShot_Invoke": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "name": "OneShot.Invoke",
+   "file": "internal/executor/claudecode/oneshot.go",
+   "line": 19,
+   "signature": "func (s *OneShot) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_claudecode_Adapter_Invoke": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Invoke",
+   "file": "internal/executor/claudecode/oneshot.go",
+   "line": 39,
+   "signature": "func (a *Adapter) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_claudecode_OneShotArgv": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "name": "OneShotArgv",
+   "file": "internal/executor/claudecode/oneshot_argv.go",
+   "line": 6,
+   "signature": "func OneShotArgv(model, prompt string, _ executor.OneShotLimits) ([]string, error)"
+  },
+  "m_claudecode_Profile": {
+   "kind": "model",
+   "container": "k_claudecode_model",
+   "name": "Profile",
+   "file": "internal/executor/claudecode/profile.go",
+   "line": 24,
+   "signature": "type Profile struct {"
+  },
+  "n_claudecode_NewProfile": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "name": "NewProfile",
+   "file": "internal/executor/claudecode/profile.go",
+   "line": 30,
+   "signature": "func NewProfile(log *slog.Logger) *Profile"
+  },
+  "n_claudecode_Adapter_Profile": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Profile",
+   "file": "internal/executor/claudecode/profile.go",
+   "line": 35,
+   "signature": "func (a *Adapter) Profile() executor.Profile"
+  },
+  "n_claudecode_Adapter_Prepare": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Prepare",
+   "file": "internal/executor/claudecode/profile.go",
+   "line": 43,
+   "signature": "func (a *Adapter) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_claudecode_Adapter_Verify": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Verify",
+   "file": "internal/executor/claudecode/profile.go",
+   "line": 48,
+   "signature": "func (a *Adapter) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_claudecode_Profile_Inspect": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "name": "Profile.Inspect",
+   "file": "internal/executor/claudecode/profile.go",
+   "line": 52,
+   "signature": "func (p *Profile) Inspect(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_claudecode_Profile_Prepare": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "name": "Profile.Prepare",
+   "file": "internal/executor/claudecode/profile.go",
+   "line": 71,
+   "signature": "func (p *Profile) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_claudecode_Profile_Verify": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "name": "Profile.Verify",
+   "file": "internal/executor/claudecode/profile.go",
+   "line": 145,
+   "signature": "func (p *Profile) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_claudecode_Adapter_Name": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Name",
+   "file": "internal/executor/claudecode/report.go",
+   "line": 12,
+   "signature": "func (a *Adapter) Name() string"
+  },
+  "n_claudecode_Adapter_Report": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Report",
+   "file": "internal/executor/claudecode/report.go",
+   "line": 15,
+   "signature": "func (a *Adapter) Report() executor.CapabilityReport"
+  },
+  "n_claudecode_Adapter_Inspect": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Inspect",
+   "file": "internal/executor/claudecode/skills.go",
+   "line": 26,
+   "signature": "func (a *Adapter) Inspect(ctx context.Context, home string) ([]executor.SkillSite, error)"
+  },
+  "n_claudecode_Adapter_Install": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Install",
+   "file": "internal/executor/claudecode/skills.go",
+   "line": 56,
+   "signature": "func (a *Adapter) Install(ctx context.Context, req executor.SkillInstallReq) ([]executor.SkillSite, error)"
+  },
+  "n_claudecode_Adapter_Remove": {
+   "kind": "func",
+   "container": "k_claudecode_Adapter",
+   "name": "Adapter.Remove",
+   "file": "internal/executor/claudecode/skills.go",
+   "line": 102,
+   "signature": "func (a *Adapter) Remove(ctx context.Context, req executor.SkillRemoveReq) error"
+  },
+  "m_codex_OneShot": {
+   "kind": "model",
+   "container": "k_codex_model",
+   "name": "OneShot",
+   "file": "internal/executor/codex/oneshot.go",
+   "line": 10,
+   "signature": "type OneShot struct{ log *slog.Logger }"
+  },
+  "n_codex_NewOneShot": {
+   "kind": "func",
+   "container": "k_codex_fn",
+   "name": "NewOneShot",
+   "file": "internal/executor/codex/oneshot.go",
+   "line": 12,
+   "signature": "func NewOneShot(log *slog.Logger) *OneShot"
+  },
+  "n_codex_OneShot_Invoke": {
+   "kind": "func",
+   "container": "k_codex_fn",
+   "name": "OneShot.Invoke",
+   "file": "internal/executor/codex/oneshot.go",
+   "line": 19,
+   "signature": "func (s *OneShot) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_codex_Adapter_Invoke": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Invoke",
+   "file": "internal/executor/codex/oneshot.go",
+   "line": 39,
+   "signature": "func (a *Adapter) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_codex_OneShotArgv": {
+   "kind": "func",
+   "container": "k_codex_fn",
+   "name": "OneShotArgv",
+   "file": "internal/executor/codex/oneshot_argv.go",
+   "line": 6,
+   "signature": "func OneShotArgv(model, prompt string, _ executor.OneShotLimits) ([]string, error)"
+  },
+  "m_codex_Profile": {
+   "kind": "model",
+   "container": "k_codex_model",
+   "name": "Profile",
+   "file": "internal/executor/codex/profile.go",
+   "line": 24,
+   "signature": "type Profile struct {"
+  },
+  "n_codex_NewProfile": {
+   "kind": "func",
+   "container": "k_codex_fn",
+   "name": "NewProfile",
+   "file": "internal/executor/codex/profile.go",
+   "line": 30,
+   "signature": "func NewProfile(log *slog.Logger) *Profile"
+  },
+  "n_codex_Adapter_Profile": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Profile",
+   "file": "internal/executor/codex/profile.go",
+   "line": 35,
+   "signature": "func (a *Adapter) Profile() executor.Profile"
+  },
+  "n_codex_Adapter_Prepare": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Prepare",
+   "file": "internal/executor/codex/profile.go",
+   "line": 43,
+   "signature": "func (a *Adapter) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_codex_Adapter_Verify": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Verify",
+   "file": "internal/executor/codex/profile.go",
+   "line": 48,
+   "signature": "func (a *Adapter) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_codex_Profile_Inspect": {
+   "kind": "func",
+   "container": "k_codex_fn",
+   "name": "Profile.Inspect",
+   "file": "internal/executor/codex/profile.go",
+   "line": 52,
+   "signature": "func (p *Profile) Inspect(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_codex_Profile_Prepare": {
+   "kind": "func",
+   "container": "k_codex_fn",
+   "name": "Profile.Prepare",
+   "file": "internal/executor/codex/profile.go",
+   "line": 71,
+   "signature": "func (p *Profile) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_codex_Profile_Verify": {
+   "kind": "func",
+   "container": "k_codex_fn",
+   "name": "Profile.Verify",
+   "file": "internal/executor/codex/profile.go",
+   "line": 144,
+   "signature": "func (p *Profile) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_codex_Adapter_Name": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Name",
+   "file": "internal/executor/codex/report.go",
+   "line": 12,
+   "signature": "func (a *Adapter) Name() string"
+  },
+  "n_codex_Adapter_Report": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Report",
+   "file": "internal/executor/codex/report.go",
+   "line": 15,
+   "signature": "func (a *Adapter) Report() executor.CapabilityReport"
+  },
+  "n_codex_Adapter_Inspect": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Inspect",
+   "file": "internal/executor/codex/skills.go",
+   "line": 26,
+   "signature": "func (a *Adapter) Inspect(ctx context.Context, home string) ([]executor.SkillSite, error)"
+  },
+  "n_codex_Adapter_Install": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Install",
+   "file": "internal/executor/codex/skills.go",
+   "line": 56,
+   "signature": "func (a *Adapter) Install(ctx context.Context, req executor.SkillInstallReq) ([]executor.SkillSite, error)"
+  },
+  "n_codex_Adapter_Remove": {
+   "kind": "func",
+   "container": "k_codex_Adapter",
+   "name": "Adapter.Remove",
+   "file": "internal/executor/codex/skills.go",
+   "line": 102,
+   "signature": "func (a *Adapter) Remove(ctx context.Context, req executor.SkillRemoveReq) error"
+  },
+  "m_grok_OneShot": {
+   "kind": "model",
+   "container": "k_grok_model",
+   "name": "OneShot",
+   "file": "internal/executor/grok/oneshot.go",
+   "line": 10,
+   "signature": "type OneShot struct{ log *slog.Logger }"
+  },
+  "n_grok_NewOneShot": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "name": "NewOneShot",
+   "file": "internal/executor/grok/oneshot.go",
+   "line": 12,
+   "signature": "func NewOneShot(log *slog.Logger) *OneShot"
+  },
+  "n_grok_OneShot_Invoke": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "name": "OneShot.Invoke",
+   "file": "internal/executor/grok/oneshot.go",
+   "line": 19,
+   "signature": "func (s *OneShot) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_grok_Adapter_Invoke": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Invoke",
+   "file": "internal/executor/grok/oneshot.go",
+   "line": 39,
+   "signature": "func (a *Adapter) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_grok_OneShotArgv": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "name": "OneShotArgv",
+   "file": "internal/executor/grok/oneshot_argv.go",
+   "line": 21,
+   "signature": "func OneShotArgv(model, prompt string, limits executor.OneShotLimits) ([]string, error)"
+  },
+  "m_grok_Profile": {
+   "kind": "model",
+   "container": "k_grok_model",
+   "name": "Profile",
+   "file": "internal/executor/grok/profile.go",
+   "line": 24,
+   "signature": "type Profile struct {"
+  },
+  "n_grok_NewProfile": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "name": "NewProfile",
+   "file": "internal/executor/grok/profile.go",
+   "line": 30,
+   "signature": "func NewProfile(log *slog.Logger) *Profile"
+  },
+  "n_grok_Adapter_Profile": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Profile",
+   "file": "internal/executor/grok/profile.go",
+   "line": 35,
+   "signature": "func (a *Adapter) Profile() executor.Profile"
+  },
+  "n_grok_Adapter_Prepare": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Prepare",
+   "file": "internal/executor/grok/profile.go",
+   "line": 43,
+   "signature": "func (a *Adapter) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_grok_Adapter_Verify": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Verify",
+   "file": "internal/executor/grok/profile.go",
+   "line": 48,
+   "signature": "func (a *Adapter) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_grok_Profile_Inspect": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "name": "Profile.Inspect",
+   "file": "internal/executor/grok/profile.go",
+   "line": 52,
+   "signature": "func (p *Profile) Inspect(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_grok_Profile_Prepare": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "name": "Profile.Prepare",
+   "file": "internal/executor/grok/profile.go",
+   "line": 71,
+   "signature": "func (p *Profile) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_grok_Profile_Verify": {
+   "kind": "func",
+   "container": "k_grok_fn",
+   "name": "Profile.Verify",
+   "file": "internal/executor/grok/profile.go",
+   "line": 144,
+   "signature": "func (p *Profile) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_grok_Adapter_Name": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Name",
+   "file": "internal/executor/grok/report.go",
+   "line": 12,
+   "signature": "func (a *Adapter) Name() string"
+  },
+  "n_grok_Adapter_Report": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Report",
+   "file": "internal/executor/grok/report.go",
+   "line": 15,
+   "signature": "func (a *Adapter) Report() executor.CapabilityReport"
+  },
+  "n_grok_Adapter_Inspect": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Inspect",
+   "file": "internal/executor/grok/skills.go",
+   "line": 26,
+   "signature": "func (a *Adapter) Inspect(ctx context.Context, home string) ([]executor.SkillSite, error)"
+  },
+  "n_grok_Adapter_Install": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Install",
+   "file": "internal/executor/grok/skills.go",
+   "line": 56,
+   "signature": "func (a *Adapter) Install(ctx context.Context, req executor.SkillInstallReq) ([]executor.SkillSite, error)"
+  },
+  "n_grok_Adapter_Remove": {
+   "kind": "func",
+   "container": "k_grok_Adapter",
+   "name": "Adapter.Remove",
+   "file": "internal/executor/grok/skills.go",
+   "line": 102,
+   "signature": "func (a *Adapter) Remove(ctx context.Context, req executor.SkillRemoveReq) error"
+  },
+  "m_opencode_OneShot": {
+   "kind": "model",
+   "container": "k_opencode_model",
+   "name": "OneShot",
+   "file": "internal/executor/opencode/oneshot.go",
+   "line": 10,
+   "signature": "type OneShot struct{ log *slog.Logger }"
+  },
+  "n_opencode_NewOneShot": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "NewOneShot",
+   "file": "internal/executor/opencode/oneshot.go",
+   "line": 12,
+   "signature": "func NewOneShot(log *slog.Logger) *OneShot"
+  },
+  "n_opencode_OneShot_Invoke": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "OneShot.Invoke",
+   "file": "internal/executor/opencode/oneshot.go",
+   "line": 19,
+   "signature": "func (s *OneShot) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_opencode_Adapter_Invoke": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Invoke",
+   "file": "internal/executor/opencode/oneshot.go",
+   "line": 39,
+   "signature": "func (a *Adapter) Invoke(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)"
+  },
+  "n_opencode_OneShotArgv": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "OneShotArgv",
+   "file": "internal/executor/opencode/oneshot_argv.go",
+   "line": 6,
+   "signature": "func OneShotArgv(model, prompt string, _ executor.OneShotLimits) ([]string, error)"
+  },
+  "m_opencode_Profile": {
+   "kind": "model",
+   "container": "k_opencode_model",
+   "name": "Profile",
+   "file": "internal/executor/opencode/profile.go",
+   "line": 24,
+   "signature": "type Profile struct {"
+  },
+  "n_opencode_NewProfile": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "NewProfile",
+   "file": "internal/executor/opencode/profile.go",
+   "line": 30,
+   "signature": "func NewProfile(log *slog.Logger) *Profile"
+  },
+  "n_opencode_Adapter_Profile": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Profile",
+   "file": "internal/executor/opencode/profile.go",
+   "line": 35,
+   "signature": "func (a *Adapter) Profile() executor.Profile"
+  },
+  "n_opencode_Adapter_Prepare": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Prepare",
+   "file": "internal/executor/opencode/profile.go",
+   "line": 43,
+   "signature": "func (a *Adapter) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_opencode_Adapter_Verify": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Verify",
+   "file": "internal/executor/opencode/profile.go",
+   "line": 48,
+   "signature": "func (a *Adapter) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_opencode_Profile_Inspect": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "Profile.Inspect",
+   "file": "internal/executor/opencode/profile.go",
+   "line": 52,
+   "signature": "func (p *Profile) Inspect(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_opencode_Profile_Prepare": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "Profile.Prepare",
+   "file": "internal/executor/opencode/profile.go",
+   "line": 71,
+   "signature": "func (p *Profile) Prepare(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_opencode_Profile_Verify": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "Profile.Verify",
+   "file": "internal/executor/opencode/profile.go",
+   "line": 147,
+   "signature": "func (p *Profile) Verify(ctx context.Context, req executor.ProfileReq) (executor.ProfileReport, error)"
+  },
+  "n_opencode_Adapter_Name": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Name",
+   "file": "internal/executor/opencode/report.go",
+   "line": 12,
+   "signature": "func (a *Adapter) Name() string"
+  },
+  "n_opencode_Adapter_Report": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Report",
+   "file": "internal/executor/opencode/report.go",
+   "line": 15,
+   "signature": "func (a *Adapter) Report() executor.CapabilityReport"
+  },
+  "n_opencode_Adapter_Inspect": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Inspect",
+   "file": "internal/executor/opencode/skills.go",
+   "line": 26,
+   "signature": "func (a *Adapter) Inspect(ctx context.Context, home string) ([]executor.SkillSite, error)"
+  },
+  "n_opencode_Adapter_Install": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Install",
+   "file": "internal/executor/opencode/skills.go",
+   "line": 56,
+   "signature": "func (a *Adapter) Install(ctx context.Context, req executor.SkillInstallReq) ([]executor.SkillSite, error)"
+  },
+  "n_opencode_Adapter_Remove": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "name": "Adapter.Remove",
+   "file": "internal/executor/opencode/skills.go",
+   "line": 102,
+   "signature": "func (a *Adapter) Remove(ctx context.Context, req executor.SkillRemoveReq) error"
+  },
+  "m_opencode_Coordinator": {
+   "kind": "model",
+   "container": "k_opencode_model",
+   "name": "Coordinator",
+   "file": "internal/executor/opencode/coordinator.go",
+   "line": 16,
+   "signature": "type Coordinator struct {"
+  },
+  "n_opencode_NewCoordinator": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "NewCoordinator",
+   "file": "internal/executor/opencode/coordinator.go",
+   "line": 23,
+   "signature": "func NewCoordinator(h *hostapi.Host, log *slog.Logger) *Coordinator"
+  },
+  "n_opencode_Coordinator_Launch": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "Coordinator.Launch",
+   "file": "internal/executor/opencode/coordinator.go",
+   "line": 30,
+   "signature": "func (c *Coordinator) Launch(ctx context.Context, spec executor.CoordSessionSpec, prompt string) (executor.CoordTurnResult, error)"
+  },
+  "n_opencode_Coordinator_Resume": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "Coordinator.Resume",
+   "file": "internal/executor/opencode/coordinator.go",
+   "line": 41,
+   "signature": "func (c *Coordinator) Resume(ctx context.Context, ref executor.CoordSessionRef, prompt string) (executor.CoordTurnResult, error)"
+  },
+  "n_opencode_Coordinator_CancelTurn": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "Coordinator.CancelTurn",
+   "file": "internal/executor/opencode/coordinator.go",
+   "line": 52,
+   "signature": "func (c *Coordinator) CancelTurn(_ context.Context, ref executor.CoordSessionRef) error"
+  },
+  "n_opencode_Coordinator_turn": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "Coordinator.turn",
+   "file": "internal/executor/opencode/coordinator.go",
+   "line": 70,
+   "signature": "func (c *Coordinator) turn(ctx context.Context, req hostapi.TurnRequest) (res executor.CoordTurnResult, err error)"
+  },
+  "n_fake_Fake_Name": {
+   "kind": "func",
+   "container": "k_fake_Fake",
+   "name": "Fake.Name",
+   "file": "internal/executor/fake/report.go",
+   "line": 11,
+   "signature": "func (f *Fake) Name() string"
+  },
+  "n_fake_Fake_Report": {
+   "kind": "func",
+   "container": "k_fake_Fake",
+   "name": "Fake.Report",
+   "file": "internal/executor/fake/report.go",
+   "line": 13,
+   "signature": "func (f *Fake) Report() executor.CapabilityReport"
+  }
+ },
+ "nodesModified": {
+  "n_opencode_WriteTaskEnv": {
+   "kind": "func",
+   "container": "k_opencode_fn",
+   "name": "WriteTaskEnv",
+   "file": "internal/executor/opencode/taskenv.go",
+   "line": 171,
+   "signature": "func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string, snap executor.PolicySnapshot) (configPath, promptPath string, err error)",
+   "signatureOld": "func WriteTaskEnv(taskDir, taskID, model, planContent, disciplineBlock string) (configPath, promptPath string, err error)"
+  },
+  "n_claudecode_WriteTaskEnv": {
+   "kind": "func",
+   "container": "k_claudecode_fn",
+   "name": "WriteTaskEnv",
+   "file": "internal/executor/claudecode/taskenv.go",
+   "line": 167,
+   "signature": "func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string, snap executor.PolicySnapshot) (settingsPath, mcpPath, promptText string, err error)",
+   "signatureOld": "func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (settingsPath, mcpPath, promptText string, err error)"
+  },
+  "n_skill_Install": {
+   "kind": "func",
+   "container": "k_skill_fn",
+   "name": "Install",
+   "file": "internal/skill/install.go",
+   "line": 65,
+   "signature": "func Install(content, home string, providers []executor.Skills) ([]Site, error)",
+   "signatureOld": "func Install(content, home string) ([]Site, error)"
+  },
+  "n_skill_Status": {
+   "kind": "func",
+   "container": "k_skill_fn",
+   "name": "Status",
+   "file": "internal/skill/state.go",
+   "line": 32,
+   "signature": "func Status(content, home string, providers []executor.Skills) ([]Site, error)",
+   "signatureOld": "func Status(content, home string) ([]Site, error)"
+  }
+ },
+ "nodesDeleted": [
+  "n_agentd_Approver_defaultRunCmd",
+  "m_agentd_restorer",
+  "n_executor_OneShotArgs"
+ ],
+ "edgesAdded": [
+  [
+   "n_executor_Registry_Require",
+   "n_executor_Registry_Get"
+  ],
+  [
+   "n_executor_Registry_Require",
+   "n_executor_RequireCapability"
+  ],
+  [
+   "n_executor_RequireCapability",
+   "n_executor_ReportHas"
+  ],
+  [
+   "n_executor_RequireCapability",
+   "n_executor_UnsupportedError"
+  ],
+  [
+   "n_executor_Registry_Get",
+   "m_executor_Provider"
+  ],
+  [
+   "n_executor_NewRegistry",
+   "m_executor_Registry"
+  ],
+  [
+   "n_executor_BaselineReport",
+   "m_executor_CapabilityReport"
+  ],
+  [
+   "n_grok_OneShotArgv",
+   "m_executor_OneShotLimits"
+  ],
+  ["n_agentd_NewManager","n_agentd_registryFromAds"],
+  ["n_agentd_RegistryFromAds","n_agentd_registryFromAds"],
+  ["n_cmd_loadCarrierRules","n_cmd_readSkillTree"],
+  ["n_agentd_Manager_Dispatch","n_executor_Registry_Require"],
+  ["n_opencode_Coordinator_Launch","n_opencode_Coordinator_turn"],
+  ["n_opencode_Coordinator_Resume","n_opencode_Coordinator_turn"],
+  ["n_opencode_Profile_Verify","n_opencode_Profile_Inspect"],
+  ["n_agy_Adapter_Invoke","n_agy_NewOneShot"],
+  ["n_agy_OneShot_Invoke","n_agy_OneShotArgv"],
+  ["n_agy_Adapter_Prepare","n_agy_Adapter_Profile"],
+  ["n_agy_Adapter_Verify","n_agy_Adapter_Profile"],
+  ["n_claudecode_Adapter_Invoke","n_claudecode_NewOneShot"],
+  ["n_claudecode_OneShot_Invoke","n_claudecode_OneShotArgv"],
+  ["n_claudecode_Adapter_Prepare","n_claudecode_Adapter_Profile"],
+  ["n_claudecode_Adapter_Verify","n_claudecode_Adapter_Profile"],
+  ["n_codex_Adapter_Invoke","n_codex_NewOneShot"],
+  ["n_codex_OneShot_Invoke","n_codex_OneShotArgv"],
+  ["n_codex_Adapter_Prepare","n_codex_Adapter_Profile"],
+  ["n_codex_Adapter_Verify","n_codex_Adapter_Profile"],
+  ["n_grok_Adapter_Invoke","n_grok_NewOneShot"],
+  ["n_grok_OneShot_Invoke","n_grok_OneShotArgv"],
+  ["n_grok_Adapter_Prepare","n_grok_Adapter_Profile"],
+  ["n_grok_Adapter_Verify","n_grok_Adapter_Profile"],
+  ["n_opencode_Adapter_Invoke","n_opencode_NewOneShot"],
+  ["n_opencode_OneShot_Invoke","n_opencode_OneShotArgv"],
+  ["n_opencode_Adapter_Prepare","n_opencode_Adapter_Profile"],
+  ["n_opencode_Adapter_Verify","n_opencode_Adapter_Profile"]
+ ],
+ "edgesDeleted": [
+  [
+   "n_agentd_Approver_Decide",
+   "n_executor_OneShotArgs"
+  ]
+ ],
+ "implementsAdded": [
+  [
+   "m_executor_StaticProvider",
+   "m_executor_Provider"
+  ],
+  [
+   "m_opencode_Adapter",
+   "m_executor_Recoverer"
+  ],
+  [
+   "m_claudecode_Adapter",
+   "m_executor_Recoverer"
+  ],
+  [
+   "m_grok_Adapter",
+   "m_executor_Recoverer"
+  ],
+  [
+   "m_codex_Adapter",
+   "m_executor_Recoverer"
+  ],
+  [
+   "m_agy_Adapter",
+   "m_executor_Recoverer"
+  ],
+  ["m_fake_Fake","m_executor_Provider"],
+  ["m_opencode_Coordinator","m_executor_Coordinator"],
+  ["m_agy_Adapter","m_executor_Provider"],
+  ["m_agy_Adapter","m_executor_OneShot"],
+  ["m_agy_Adapter","m_executor_Skills"],
+  ["m_agy_OneShot","m_executor_OneShot"],
+  ["m_agy_Profile","m_executor_Profile"],
+  ["m_claudecode_Adapter","m_executor_Provider"],
+  ["m_claudecode_Adapter","m_executor_OneShot"],
+  ["m_claudecode_Adapter","m_executor_Skills"],
+  ["m_claudecode_OneShot","m_executor_OneShot"],
+  ["m_claudecode_Profile","m_executor_Profile"],
+  ["m_codex_Adapter","m_executor_Provider"],
+  ["m_codex_Adapter","m_executor_OneShot"],
+  ["m_codex_Adapter","m_executor_Skills"],
+  ["m_codex_OneShot","m_executor_OneShot"],
+  ["m_codex_Profile","m_executor_Profile"],
+  ["m_grok_Adapter","m_executor_Provider"],
+  ["m_grok_Adapter","m_executor_OneShot"],
+  ["m_grok_Adapter","m_executor_Skills"],
+  ["m_grok_OneShot","m_executor_OneShot"],
+  ["m_grok_Profile","m_executor_Profile"],
+  ["m_opencode_Adapter","m_executor_Provider"],
+  ["m_opencode_Adapter","m_executor_OneShot"],
+  ["m_opencode_Adapter","m_executor_Skills"],
+  ["m_opencode_OneShot","m_executor_OneShot"],
+  ["m_opencode_Profile","m_executor_Profile"]
+ ]
+}

@@ -21,7 +21,9 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 
+	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
@@ -162,15 +164,30 @@ type mcpServer struct {
 // 注意：
 //   - 重复调用幂等覆盖，Start 失败重试可安全重来
 //   - 两个配置文件都是 0600：mcp.json 泄露 socket 路径即泄露裁决入口
-func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string) (settingsPath, mcpPath, promptText string, err error) {
+func WriteTaskEnv(taskDir, taskID, planContent, sockPath, handoffBin, disciplineBlock string, snap executor.PolicySnapshot) (settingsPath, mcpPath, promptText string, err error) {
 	log := slog.Default()
 	settingsPath = filepath.Join(taskDir, settingsFileName)
 	mcpPath = filepath.Join(taskDir, mcpFileName)
-	log.Info("claude 生成任务环境", "task", taskID, "task_dir", taskDir,
+	log.Info("claude 生成任务环境", "task", taskID, "version", snap.Version, "task_dir", taskDir,
 		"settings", settingsPath, "mcp", mcpPath, "sock", sockPath)
 
+	if strings.TrimSpace(snap.Version) != "" && strings.TrimSpace(snap.Scope.Workdir) == "" {
+		log.Error("claude 政策快照无法精确表达", "task", taskID, "version", snap.Version, "cause", "空 Workdir")
+		return "", "", "", fmt.Errorf("%w: 空 Workdir", executor.ErrUnrepresentablePolicy)
+	}
+
+	allow := append([]string(nil), allowRules...)
+	filtered := allow[:0]
+	for _, r := range allow {
+		if r == "Bash" {
+			continue // 无限制 bash 无法 ⊆ 快照
+		}
+		filtered = append(filtered, r)
+	}
+	allow = filtered
+
 	settings := settingsFile{Permissions: permissionsSection{
-		Allow: allowRules,
+		Allow: allow,
 		Ask:   askRules,
 		Deny:  []string{},
 	}}

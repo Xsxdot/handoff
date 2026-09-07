@@ -30,7 +30,6 @@ package opencode
 
 import (
 	"encoding/json"
-	"errors"
 	"fmt"
 	"log/slog"
 	"os"
@@ -42,7 +41,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
-var ErrUnrepresentablePolicy = errors.New("快照含无法在原生配置实施的明确禁止")
+var ErrUnrepresentablePolicy = executor.ErrUnrepresentablePolicy
 
 // WritePermissionConfig 把当前政策快照的精确子集写进 opencode.json。
 // 规则：

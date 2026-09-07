@@ -7,11 +7,14 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/executor"
 )
 
 func TestWriteTaskEnvGeneratesSettingsAndMCP(t *testing.T) {
 	dir := t.TempDir()
-	settingsPath, mcpPath, prompt, err := WriteTaskEnv(dir, "T-1", "计划正文", "/tmp/x/perm.sock", "/usr/local/bin/handoff", "")
+	snap := executor.PolicySnapshot{Version: "test", Scope: executor.ApprovalScope{Workdir: dir}}
+	settingsPath, mcpPath, prompt, err := WriteTaskEnv(dir, "T-1", "计划正文", "/tmp/x/perm.sock", "/usr/local/bin/handoff", "", snap)
 	if err != nil {
 		t.Fatalf("WriteTaskEnv: %v", err)
 	}
@@ -103,7 +106,9 @@ func TestWriteTaskEnvGeneratesSettingsAndMCP(t *testing.T) {
 }
 
 func TestWriteTaskEnvInjectsDiscipline(t *testing.T) {
-	_, _, prompt, err := WriteTaskEnv(t.TempDir(), "T-1", "计划正文", "/tmp/perm.sock", "/bin/handoff", "# 执行纪律\n单上下文版内容")
+	dir := t.TempDir()
+	snap := executor.PolicySnapshot{Version: "test", Scope: executor.ApprovalScope{Workdir: dir}}
+	_, _, prompt, err := WriteTaskEnv(dir, "T-1", "计划正文", "/tmp/perm.sock", "/bin/handoff", "# 执行纪律\n单上下文版内容", snap)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -114,11 +119,12 @@ func TestWriteTaskEnvInjectsDiscipline(t *testing.T) {
 
 func TestWriteTaskEnvIdempotent(t *testing.T) {
 	dir := t.TempDir()
-	if _, _, _, err := WriteTaskEnv(dir, "T-1", "a", "/s", "/bin/handoff", ""); err != nil {
+	snap := executor.PolicySnapshot{Version: "test", Scope: executor.ApprovalScope{Workdir: dir}}
+	if _, _, _, err := WriteTaskEnv(dir, "T-1", "a", "/s", "/bin/handoff", "", snap); err != nil {
 		t.Fatal(err)
 	}
 	// 重复调用覆盖而非报错：Start 失败重试时必须能安全重来
-	if _, _, _, err := WriteTaskEnv(dir, "T-1", "b", "/s", "/bin/handoff", ""); err != nil {
+	if _, _, _, err := WriteTaskEnv(dir, "T-1", "b", "/s", "/bin/handoff", "", snap); err != nil {
 		t.Fatalf("重复调用应幂等: %v", err)
 	}
 }
@@ -204,3 +210,43 @@ func TestAllowListCoversToolchain(t *testing.T) {
 		}
 	}
 }
+
+func TestWriteTaskEnvEmptyWorkdirWithSnapshotFails(t *testing.T) {
+	dir := t.TempDir()
+	snap := executor.PolicySnapshot{Version: "v1", Scope: executor.ApprovalScope{Workdir: ""}}
+	_, _, _, err := WriteTaskEnv(dir, "T-1", "计划", "/tmp/p.sock", "/bin/handoff", "", snap)
+	if err == nil {
+		t.Fatal("空 Workdir 的快照必须失败，禁止写盘")
+	}
+}
+
+func TestWriteTaskEnvSnapshotAllowIsSubsetAndNotNakedBash(t *testing.T) {
+	dir := t.TempDir()
+	snap := executor.PolicySnapshot{
+		Version: "v1",
+		Scope:   executor.ApprovalScope{Workdir: dir},
+	}
+	settingsPath, _, _, err := WriteTaskEnv(dir, "T-1", "计划", "/tmp/p.sock", "/bin/handoff", "", snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Permissions struct {
+			Allow []string `json:"allow"`
+		} `json:"permissions"`
+	}
+	readJSON(t, settingsPath, &settings)
+	if contains(settings.Permissions.Allow, "Bash") {
+		t.Fatalf("快照下 allow 不得含裸 Bash（无法精确表达无限制 bash ⊆ 快照）: %v", settings.Permissions.Allow)
+	}
+	allowed := map[string]struct{}{}
+	for _, r := range allowRules {
+		allowed[r] = struct{}{}
+	}
+	for _, got := range settings.Permissions.Allow {
+		if _, ok := allowed[got]; !ok {
+			t.Fatalf("allow 出现快照不可表达项 %q，完整 %v", got, settings.Permissions.Allow)
+		}
+	}
+}
+
