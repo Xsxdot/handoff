@@ -43,6 +43,36 @@ func TestAppendMirroredEventIdempotent(t *testing.T) {
 	}
 }
 
+func TestMirrorWatermarkDoesNotRegressOnOutOfOrderAppend(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "乱序镜像水位")
+	appendEvent := func(seq int64) {
+		t.Helper()
+		wrote, err := s.AppendMirroredEvent(c.ID, MirroredEvent{
+			Target: "mac-02", Task: "T-out-of-order", SourceSeq: seq,
+			Type: "question", Payload: []byte(`{}`), CreatedAt: time.Unix(seq, 0),
+		})
+		if err != nil || !wrote {
+			t.Fatalf("写 seq=%d: wrote=%v err=%v", seq, wrote, err)
+		}
+	}
+	appendEvent(9)
+	wm, err := s.MirrorWatermark("mac-02", "T-out-of-order")
+	if err != nil || wm != 9 {
+		t.Fatalf("首个 watermark: %v %d", err, wm)
+	}
+	appendEvent(4)
+	wm, err = s.MirrorWatermark("mac-02", "T-out-of-order")
+	if err != nil || wm != 9 {
+		t.Fatalf("乱序写入不应回退 watermark: %v %d", err, wm)
+	}
+	appendEvent(12)
+	wm, err = s.MirrorWatermark("mac-02", "T-out-of-order")
+	if err != nil || wm != 12 {
+		t.Fatalf("更大 seq 应推进 watermark: %v %d", err, wm)
+	}
+}
+
 func TestMirrorLease(t *testing.T) {
 	s := seedStore(t)
 	// 假时钟：手动推进代替 time.Sleep 与真实壁钟比较。原写法里「A 丢 lease

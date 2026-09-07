@@ -1,6 +1,7 @@
 package ledger
 
 import (
+	"encoding/json"
 	"testing"
 	"time"
 )
@@ -77,6 +78,173 @@ func TestAppendMirroredEventWorkflowEnvelopeGolden(t *testing.T) {
 	if got := string(events[len(events)-1].Payload); got != want {
 		t.Fatalf("镜像工作流 envelope = %s, want %s", got, want)
 	}
+}
+
+func TestAppendMirroredEventWorkflowEnvelopeJSONBoundaries(t *testing.T) {
+	tests := []struct {
+		name                        string
+		node, attempt, payload      string
+		nodePresent, attemptPresent bool
+		payloadPresent              bool
+	}{
+		{name: "missing fields", nodePresent: false, attemptPresent: false, payloadPresent: false},
+		{name: "empty strings and null", nodePresent: true, attemptPresent: true, payloadPresent: true},
+		{name: "nonempty strings and object", node: "review", attempt: "attempt-1", payload: `{"ticket_id":"q1"}`, nodePresent: true, attemptPresent: true, payloadPresent: true},
+		{name: "missing node with nonempty attempt", attempt: "attempt-2", payload: `{}`, nodePresent: false, attemptPresent: true, payloadPresent: true},
+		{name: "nonempty identity with missing payload", node: "review", attempt: "attempt-3", nodePresent: true, attemptPresent: true, payloadPresent: false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			s := seedStore(t)
+			c := mk(t, s, "镜像 JSON 边界")
+			raw := appendWorkflowEnvelopePayload(t, s, c.ID, MirroredEvent{
+				Target: "mac-02", Task: "task-" + tc.name, Node: tc.node, Attempt: tc.attempt,
+				SourceSeq: 1, Type: "question", Payload: []byte(tc.payload), CreatedAt: time.Unix(0, 0),
+			})
+			raw = omitWorkflowEnvelopeFields(t, raw, tc.nodePresent, tc.attemptPresent, tc.payloadPresent)
+			got, err := decodeWorkflowEnvelopeJSON(raw)
+			if err != nil {
+				t.Fatalf("真实 AppendMirroredEvent envelope 解码: %v; raw=%s", err, raw)
+			}
+
+			if tc.nodePresent {
+				if got.Node == nil || *got.Node != tc.node {
+					t.Fatalf("node = %v, want present value %q", got.Node, tc.node)
+				}
+			} else if got.Node != nil {
+				t.Fatalf("缺失 node 不得解码成零值 %q", *got.Node)
+			}
+			if tc.attemptPresent {
+				if got.Attempt == nil || *got.Attempt != tc.attempt {
+					t.Fatalf("attempt = %v, want present value %q", got.Attempt, tc.attempt)
+				}
+			} else if got.Attempt != nil {
+				t.Fatalf("缺失 attempt 不得解码成零值 %q", *got.Attempt)
+			}
+			if tc.payloadPresent {
+				want := tc.payload
+				if want == "" {
+					want = "null"
+				}
+				if string(got.Payload) != want {
+					t.Fatalf("payload = %s, want %s", got.Payload, want)
+				}
+			} else if got.Payload != nil {
+				t.Fatalf("缺失 payload 不得解码成 JSON null: %s", got.Payload)
+			}
+		})
+	}
+}
+
+type workflowEnvelopeJSON struct {
+	Node     *string         `json:"node"`
+	Attempt  *string         `json:"attempt"`
+	TaskType string          `json:"task_type"`
+	Payload  json.RawMessage `json:"payload"`
+}
+
+func appendWorkflowEnvelopePayload(t *testing.T, s *Store, cardID string, ev MirroredEvent) []byte {
+	t.Helper()
+	wrote, err := s.AppendMirroredEvent(cardID, ev)
+	if err != nil || !wrote {
+		t.Fatalf("真实 AppendMirroredEvent: wrote=%v err=%v", wrote, err)
+	}
+	events, err := s.EventsFromAsc([]string{cardID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读取真实镜像 envelope: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == EvTaskMirrored && event.SourceTarget == ev.Target &&
+			event.SourceTask == ev.Task && event.SourceSeq == ev.SourceSeq {
+			return append([]byte(nil), event.Payload...)
+		}
+	}
+	t.Fatalf("未找到真实镜像 envelope: target=%s task=%s seq=%d", ev.Target, ev.Task, ev.SourceSeq)
+	return nil
+}
+
+func omitWorkflowEnvelopeFields(t *testing.T, raw []byte, nodePresent, attemptPresent, payloadPresent bool) []byte {
+	t.Helper()
+	// AppendMirroredEvent always emits the new envelope keys; deleting keys only
+	// here models a legacy persisted envelope so missing and explicit zero values
+	// can be asserted against the same real append/decode path.
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("解码 envelope fixture: %v", err)
+	}
+	if !nodePresent {
+		delete(fields, "node")
+	}
+	if !attemptPresent {
+		delete(fields, "attempt")
+	}
+	if !payloadPresent {
+		delete(fields, "payload")
+	}
+	encoded, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("重新编码 envelope fixture: %v", err)
+	}
+	return encoded
+}
+
+func decodeWorkflowEnvelopeJSON(raw []byte) (workflowEnvelopeJSON, error) {
+	var envelope workflowEnvelopeJSON
+	if err := json.Unmarshal(raw, &envelope); err != nil {
+		return workflowEnvelopeJSON{}, err
+	}
+	return envelope, nil
+}
+
+func FuzzAppendMirroredEventWorkflowEnvelopeJSONRoundTrip(f *testing.F) {
+	f.Add("review", "attempt-1", []byte(`{"ticket_id":"q1"}`), true, true, true)
+	f.Add("", "", []byte(`null`), true, true, true)
+	f.Add("review", "attempt-2", []byte(`{}`), false, true, true)
+	f.Add("review", "attempt-3", []byte{}, true, true, false)
+
+	f.Fuzz(func(t *testing.T, node, attempt string, payload []byte, nodePresent, attemptPresent, payloadPresent bool) {
+		if len(payload) > 0 && !json.Valid(payload) {
+			t.Skip()
+		}
+		s := seedStore(t)
+		c := mk(t, s, "镜像 JSON fuzz")
+		raw := appendWorkflowEnvelopePayload(t, s, c.ID, MirroredEvent{
+			Target: "fuzz-target", Task: "fuzz-task", Node: node, Attempt: attempt,
+			SourceSeq: 1, Type: "question", Payload: payload, CreatedAt: time.Unix(0, 0),
+		})
+		raw = omitWorkflowEnvelopeFields(t, raw, nodePresent, attemptPresent, payloadPresent)
+		got, err := decodeWorkflowEnvelopeJSON(raw)
+		if err != nil {
+			t.Fatalf("真实 AppendMirroredEvent envelope 解码: %v; raw=%s", err, raw)
+		}
+
+		if nodePresent {
+			if got.Node == nil || *got.Node != node {
+				t.Fatalf("node = %v, want present value %q", got.Node, node)
+			}
+		} else if got.Node != nil {
+			t.Fatalf("缺失 node 不得解码成零值 %q", *got.Node)
+		}
+		if attemptPresent {
+			if got.Attempt == nil || *got.Attempt != attempt {
+				t.Fatalf("attempt = %v, want present value %q", got.Attempt, attempt)
+			}
+		} else if got.Attempt != nil {
+			t.Fatalf("缺失 attempt 不得解码成零值 %q", *got.Attempt)
+		}
+		if payloadPresent {
+			want := payload
+			if len(want) == 0 {
+				want = []byte("null")
+			}
+			if string(got.Payload) != string(want) {
+				t.Fatalf("payload = %s, want %s", got.Payload, want)
+			}
+		} else if got.Payload != nil {
+			t.Fatalf("缺失 payload 不得解码成 JSON null: %s", got.Payload)
+		}
+	})
 }
 
 func TestLatestTaskStates(t *testing.T) {
