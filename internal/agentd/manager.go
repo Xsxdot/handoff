@@ -65,6 +65,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/google/uuid"
 )
 
@@ -136,6 +137,8 @@ type Manager struct {
 	// **与 approver 解耦**——approver 为 nil 时 gate 依然工作，否则未配置审批者的
 	// 部署会被工作区内的每一次写入淹没（spec §5.3）。构造后只读。
 	gate *permgate.Gate
+	// ws 是工作区能力。生产由组装点注入；nil 不得跳过基线/脏检查。
+	ws workspace.Capability
 	// aaMu 保护 aaCount：每任务累计的自动放行次数，回合终结时汇总打一条 Info。
 	// 不能完全静默——出问题时要有第一现场。
 	aaMu    sync.Mutex
@@ -845,7 +848,13 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// git 路径，ResolveBaseline 会把它误诊成 ErrBaseCommitMissing（「任务仓库落后
 	// 于本地，请先 git push」），那是个比沉默更糟的答案；managed 路径上则一路
 	// 走到 worktree add 才失败，扁平成 500
-	if err := EnsureRepoUsable(ctx, repoPath); err != nil {
+	// 工作区能力必须非 nil（P2-a）：禁止 nil 降级包级函数。
+	if err := m.requireWorkspace(); err != nil {
+		m.log.Error("dispatch 失败：工作区能力未注入",
+			"project_id", req.ProjectID, "project_name", req.ProjectName)
+		return nil, err
+	}
+	if err := m.ws.EnsureRepoUsable(ctx, repoPath); err != nil {
 		return nil, err
 	}
 	if req.ResolveDefaultBase && req.Base == "" && req.Branch == "" {
@@ -875,10 +884,11 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 
 	// 基线决议（B4 校验 + B35 起点）：放在工作区准备之前——基准不对时后面建的
 	// 分支全是错的，且此刻还没有任何落库/建树副作用，拒发是干净的
-	baseline, err := ResolveBaseline(ctx, repoPath, req.BaseCommit)
+	baselineWS, err := m.ws.ResolveBaseline(ctx, repoPath, req.BaseCommit)
 	if err != nil {
 		return nil, err
 	}
+	baseline := Baseline{Start: baselineWS.Start, Ahead: baselineWS.Ahead, Fetched: baselineWS.Fetched}
 	// 起点优先级：显式 --base > 决议出的基线 > 空（交给 git 默认）。
 	// 为什么 Branch 模式要排除：切一个已存在的分支没有「起点」这回事，把基线
 	// 硬塞进去会被 PrepareWorkspace 的 base×branch 互斥直接拒掉。
@@ -922,7 +932,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	// 派发前置：按分支×worktree 正交请求准备工作区（脏检查/建分支/建 worktree）。
 	// 为什么放在建任务之前：工作区准备是纯前置校验，失败时不落孤儿任务记录，
 	// 协调者修好仓库后重新 dispatch 即可（见 Dispatch doc 注意）
-	ws, err := PrepareWorkspace(ctx, WorkspaceReq{
+	prepared, err := m.ws.Prepare(ctx, workspace.PrepareReq{
 		Repo: repoPath, TaskID: taskID,
 		Branch: req.Branch, NewBranch: req.NewBranch, Base: start,
 		Worktree: req.Worktree, NewWorktree: req.NewWorktree,
@@ -930,6 +940,11 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	})
 	if err != nil {
 		return nil, fmt.Errorf("git 工作区准备: %w", err)
+	}
+	ws := Workspace{
+		Branch: prepared.Branch, WorkDir: prepared.WorkDir, Managed: prepared.Managed,
+		NewBranchTip: prepared.NewBranchTip, PrevRef: prepared.PrevRef,
+		RepoDirtyCount: prepared.RepoDirtyCount, RepoDirtyFiles: prepared.RepoDirtyFiles,
 	}
 	// 补偿清理 defer（P2-2 修复）：PrepareWorkspace 成功之后、executor 真正接管
 	// 工作区之前（ad.Start 成功）的**任何**错误返回，都要把已建的 managed worktree

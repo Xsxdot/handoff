@@ -207,6 +207,7 @@ var agentdCmd = &cobra.Command{
 			}
 		}
 		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, srv.EnvMapping, ap, gate, logger)
+		mgr.SetWorkspace(agentd.NewGitCapability())
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）

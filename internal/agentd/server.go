@@ -366,6 +366,9 @@ func (s *Server) SetManager(m *Manager) {
 	s.mgr = m
 	if m != nil {
 		m.conf = s.conf
+		if m.ws == nil {
+			m.SetWorkspace(NewGitCapability())
+		}
 		s.log.Info("manager 已挂接，配置读取切到活快照", "default_executor", s.conf().Executor.Default)
 	}
 }
@@ -1403,6 +1406,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - 其余（任务目录/落库等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error) {
 	switch {
+	case errors.Is(err, ErrWorkspaceUnavailable):
+		s.log.Error("dispatch 失败：工作区能力未注入", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrDirtyWorktree):
 		s.log.Warn("dispatch 被拒：工作区不干净", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})

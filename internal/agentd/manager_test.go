@@ -192,7 +192,9 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
-	return NewManager(st, hub, ads, cfg, nil, approver, newTestGate(t), logger), st, hub
+	m := NewManager(st, hub, ads, cfg, nil, approver, newTestGate(t), logger)
+	m.SetWorkspace(NewGitCapability())
+	return m, st, hub
 }
 
 // mustCreateTask 直接落库一个任务（绕过 Dispatch 的工作区准备），供路由类测试造数据。
@@ -426,6 +428,7 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, newTestGate(t), logger)
+	m.SetWorkspace(NewGitCapability())
 	pid := registerTestProject(t, m, repo)
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
