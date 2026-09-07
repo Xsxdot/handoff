@@ -79,6 +79,13 @@
 - **首次配置与自动发现基础载体**：发现引擎、登记基础载体、默认载体选择。用户已暂缓；B233.1 只接现有普通派发入口，不改 init / 发现。来源：`docs/superpowers/specs/b233.1.md` Out of Scope；配套讨论在 `2026-09-06-foundation-domain-model-draft.md` §11。
 - **push 责任主体与默认授权**：平台按任务授权统一 push，还是执行者在同一权限模型下 push，尚未裁定。B233.1 不擅改发布路径。来源：同上 spec OOS；模型草案 §7 / §10。
 
+## 来自 B233.3 验收（2026-09-07）
+
+- **relay 连通未验**：本环境无 relay 节点，不发明拓扑。隧道断开 `ErrTunnelDisconnected` 只在机内夹具锁过。来源：B233.3 plan §11.8；acceptance 已验。
+- **未用真重试器验单任务**：P5-(a) 本卡不实现重试器，只锁 `do` 一次 `hc.Do` 与禁标准幂等头。来源：拍板 P5；acceptance 已标明。
+- **跨机 Ask/审批/建树 card_ids 未在本 SHA 真机**：对端 agentd 仍是线上二进制，不是功能线。合 main 部署后再验。来源：B233.3 acceptance。
+- **handleProjectWorktreeCreate 缺 why 注释**：review minor，不阻塞。来源：B233.3 review；file `internal/agentd/projectadmin.go`。
+
 ## 来自 B203 spec（2026-08-23）
 
 - **卡级/持久的执行器绑定**（「这张卡以后都用 grok」）：B203 只做「这一次」的一次性
