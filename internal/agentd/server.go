@@ -1698,12 +1698,19 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 	// 409——那些是真的状态不对，一并放行等于让 done 变成万能收口，审核者会
 	// 失去「我操作错了」这个信号。
 	if cur, err := s.st.GetTask(taskID); err == nil && cur.State == proto.TaskStateCompleted {
+		s.releaseTaskCarrierOccupancy(cur)
 		writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
 		return
 	}
+	cur, taskErr := s.st.GetTask(taskID)
 	if err := s.mgr.Done(r.Context(), taskID, req.Note); err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return
+	}
+	if taskErr != nil {
+		s.log.Error("done 成功后读取任务快照失败，未能释放载体占用", "task", taskID, "cause", taskErr)
+	} else {
+		s.releaseTaskCarrierOccupancy(cur)
 	}
 	// 消息文字必须与 manager.Done 的「done 完成」区分开：两处同名会让一次归档
 	// 捞出两行日志，其中一行没有 note_saved，排障时分不清看的是哪一层
@@ -1726,12 +1733,32 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
+	task, taskErr := s.st.GetTask(taskID)
 	removed, err := s.mgr.Stop(r.Context(), taskID)
 	if err != nil {
 		s.writeManagerError(w, taskID, "stop", err)
 		return
 	}
+	if taskErr != nil {
+		s.log.Error("stop 成功后读取任务快照失败，未能释放载体占用", "task", taskID, "cause", taskErr)
+	} else {
+		s.releaseTaskCarrierOccupancy(task)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
+}
+
+// releaseTaskCarrierOccupancy 释放任务快照持有的裸载体占用。
+// Task 只冻结 Carrier，不落 Squad（P6），所以终态任务必须使用空小队调用
+// Release；Release 自身按占用键判定，重复终态请求只会把计数钳在零。
+func (s *Server) releaseTaskCarrierOccupancy(task *proto.Task) {
+	if task == nil || task.Carrier == "" || s.scheduling == nil {
+		return
+	}
+	if err := s.scheduling.Release("", task.Carrier); err != nil {
+		s.log.Error("任务终态释放载体占用失败", "task", task.ID, "carrier", task.Carrier, "cause", err)
+		return
+	}
+	s.log.Info("任务终态已释放载体占用", "task", task.ID, "carrier", task.Carrier)
 }
 
 // parseForce 解析 resume 的 force 查询参数。
