@@ -40,6 +40,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/logx"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -424,12 +425,9 @@ func notifyBacklog(sum *client.BacklogSummary) {
 	}
 }
 
-// id8 取字符串前 8 个字符（通知文案用）。
+// id8 取字符串前 8 个字符（通知短 id 与任务分支/目录名同一截断）。
 func id8(s string) string {
-	if len(s) > 8 {
-		return s[:8]
-	}
-	return s
+	return workspace.ID8(s)
 }
 
 // truncateBytes 将字符串截断为最多 n 个字节（osascript 输出截断，日志用）。
