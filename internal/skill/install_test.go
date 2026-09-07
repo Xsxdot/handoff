@@ -3,6 +3,7 @@ package skill
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 )
 
@@ -153,5 +154,20 @@ func TestInstallReplacesRealDirectory(t *testing.T) {
 	os.WriteFile(filepath.Join(home, ".grok", "skills", "handoff", "SKILL.md"), []byte("手工放的"), 0o644)
 	if _, err := Install("x", home); err != nil {
 		t.Fatalf("目标是实体目录时必须能覆盖: %v", err)
+	}
+}
+
+// TestAgentDirsContract 锁住五家原生 skills 相对路径（B233.2 金样本）。
+// 实现把路径收进各家 Skills 之后，本表必须被同等金样本替换，不得悄悄改目录。
+func TestAgentDirsContract(t *testing.T) {
+	want := []string{
+		".claude/skills",
+		".codex/skills",
+		".config/opencode/skills",
+		".grok/skills",
+		".gemini/antigravity-cli/skills",
+	}
+	if !reflect.DeepEqual(agentDirs, want) {
+		t.Fatalf("agentDirs = %#v, want %#v", agentDirs, want)
 	}
 }

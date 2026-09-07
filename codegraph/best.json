@@ -81,7 +81,7 @@
     },
     "d_execution_contract": {
       "label": "执行契约",
-      "responsibility": "定义 executor 挂载契约（Adapter 接口、事件与结果类型）与教模型用的回合帧协议，是执行域对编排域的唯一承诺面。",
+      "responsibility": "定义 harness 能力契约（执行 Adapter、协调 Coordinator、一次性 OneShot、Profile、Skills 与能力报告）与教模型用的回合帧协议，是执行域对编排/keystone/CLI 的唯一承诺面。",
       "parent": "d_execution"
     },
     "d_execution_adapters": {
