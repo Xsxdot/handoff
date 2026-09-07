@@ -376,7 +376,6 @@ func (s *Server) SetManager(m *Manager) {
 // SetProviders 注入能力 Registry。
 func (s *Server) SetProviders(r *executor.Registry) { s.providers = r }
 
-
 // conf 返回当前配置快照。
 //
 // 返回的指针在调用方持有期间恒定：写入方永不原地修改 Config，只整体换新，
@@ -2470,11 +2469,8 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 			if err != nil {
 				return nil, err
 			}
-			if p, ok := prov.(executor.Profile); ok {
-				return p, nil
-			}
-			if pa, ok := prov.(interface{ Profile() executor.Profile }); ok {
-				return pa.Profile(), nil
+			if profile, ok := executor.ProfileFromProvider(prov); ok {
+				return profile, nil
 			}
 			return nil, executor.UnsupportedError(base, executor.CapProfile)
 		},

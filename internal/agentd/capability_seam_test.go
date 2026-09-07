@@ -79,3 +79,22 @@ func TestDispatchRequiresExecutionBeforeStart(t *testing.T) {
 		t.Fatalf("Require 失败时不得调用 Start，实得调用次数: %d", spy.started)
 	}
 }
+
+type adapterWithoutProvider struct{}
+
+func (adapterWithoutProvider) Start(context.Context, executor.StartReq) error { return nil }
+func (adapterWithoutProvider) Events(string) <-chan executor.AdapterEvent     { return nil }
+func (adapterWithoutProvider) Send(context.Context, string, string) error     { return nil }
+func (adapterWithoutProvider) RespondPermission(context.Context, string, string, string, string) error {
+	return nil
+}
+func (adapterWithoutProvider) Stop(string) error { return nil }
+
+func TestRegistryFromAdsDoesNotPromoteAdapterWithoutProvider(t *testing.T) {
+	reg := registryFromAds(map[string]executor.Adapter{
+		"stub": adapterWithoutProvider{},
+	})
+	if err := reg.Require("stub", executor.CapExecution); !errors.Is(err, executor.ErrUnknownHarness) {
+		t.Fatalf("未实现 Provider 的 adapter 不得伪造 execution，err=%v", err)
+	}
+}

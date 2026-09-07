@@ -30,6 +30,14 @@ type probeStub struct {
 	delay time.Duration
 }
 
+func (p *probeStub) Name() string { return "stub" }
+func (p *probeStub) Report() executor.CapabilityReport {
+	return executor.CapabilityReport{
+		Harness: "stub",
+		Caps:    []executor.CapabilityDecl{{Name: executor.CapExecution, Supported: true}},
+	}
+}
+
 func (p *probeStub) Start(ctx context.Context, req executor.StartReq) error { return nil }
 func (p *probeStub) Events(taskID string) <-chan executor.AdapterEvent      { return nil }
 func (p *probeStub) Send(ctx context.Context, taskID, text string) error    { return nil }

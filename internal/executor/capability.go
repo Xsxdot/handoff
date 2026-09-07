@@ -73,6 +73,27 @@ type Provider interface {
 	Report() CapabilityReport
 }
 
+// ProfileFromProvider returns the Profile capability exposed by a provider bundle.
+//
+// Production adapters expose Profile through the bundle accessor because Skills
+// already owns the method name Inspect with a different request type. Keeping
+// this resolution beside the capability contract prevents orchestration code
+// from growing a second capability lookup rule.
+func ProfileFromProvider(p Provider) (Profile, bool) {
+	if p == nil {
+		return nil, false
+	}
+	if profile, ok := p.(Profile); ok {
+		return profile, true
+	}
+	accessor, ok := p.(interface{ Profile() Profile })
+	if !ok {
+		return nil, false
+	}
+	profile := accessor.Profile()
+	return profile, profile != nil
+}
+
 // StaticProvider 用写死的报告充当 Provider。测试与 Ticket 0 金样本用；
 // 生产各家包在实现节点换成真实报告。
 type StaticProvider struct {

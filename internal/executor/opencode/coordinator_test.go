@@ -65,6 +65,46 @@ func TestCoordinatorLaunchHonorsCancel(t *testing.T) {
 	}
 }
 
+func TestCoordinatorCancelTurnUsesSessionID(t *testing.T) {
+	installFakeCLI(t)
+	t.Setenv("FAKECLI_SLEEP_SESSION", "ses-a")
+	c := NewCoordinator(hostapi.New(), slog.Default())
+	type result struct {
+		id  string
+		err error
+	}
+	results := make(chan result, 2)
+	for _, sessionID := range []string{"ses-a", "ses-b"} {
+		go func(sessionID string) {
+			got, err := c.Resume(context.Background(), executor.CoordSessionRef{
+				CLI: "opencode", SessionID: sessionID, HomeDir: t.TempDir(), Workdir: t.TempDir(),
+			}, "hello")
+			results <- result{id: got.SessionID, err: err}
+		}(sessionID)
+	}
+	time.Sleep(100 * time.Millisecond)
+	if err := c.CancelTurn(context.Background(), executor.CoordSessionRef{CLI: "opencode", SessionID: "ses-a"}); err != nil {
+		t.Fatal(err)
+	}
+	var canceled, completed bool
+	deadline := time.After(500 * time.Millisecond)
+	for canceled == false || completed == false {
+		select {
+		case got := <-results:
+			if got.err != nil {
+				canceled = true
+				continue
+			}
+			if got.id != "ses-b" {
+				t.Fatalf("取消 ses-a 不得误伤并行 session，id=%q err=%v", got.id, got.err)
+			}
+			completed = true
+		case <-deadline:
+			t.Fatal("取消 ses-a 未在途，或并行 session 被同键覆盖")
+		}
+	}
+}
+
 func installFakeCLI(t *testing.T) {
 	t.Helper()
 	withArgvCapture(t)
@@ -74,13 +114,14 @@ if [ -n "$FAKECLI_ARGV_FILE" ]; then
   for a in "$@"; do printf '%s\n' "$a" >>"$FAKECLI_ARGV_FILE"; done
   printf 'env:HOME=%s\n' "$HOME" >>"$FAKECLI_ARGV_FILE"
 fi
-if [ -n "$FAKECLI_SLEEP" ]; then sleep "$FAKECLI_SLEEP"; fi
 SID=""; prev=""
 for a in "$@"; do
   if [ "$prev" = "-s" ]; then SID="$a"; fi
   prev="$a"
 done
 if [ -z "$SID" ]; then SID="ses_fake_new"; fi
+if [ -n "$FAKECLI_SLEEP" ]; then sleep "$FAKECLI_SLEEP"; fi
+if [ -n "$FAKECLI_SLEEP_SESSION" ] && [ "$SID" = "$FAKECLI_SLEEP_SESSION" ]; then sleep 30; fi
 printf '%s\n' "{\"type\":\"step_start\",\"sessionID\":\"$SID\",\"part\":{\"type\":\"step-start\"}}"
 printf '%s\n' "{\"type\":\"text\",\"sessionID\":\"$SID\",\"part\":{\"type\":\"text\",\"text\":\"ok-$SID\"}}"
 printf '%s\n' "{\"type\":\"step_finish\",\"sessionID\":\"$SID\",\"part\":{\"type\":\"step-finish\",\"reason\":\"stop\"}}"

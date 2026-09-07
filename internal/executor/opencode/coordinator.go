@@ -35,7 +35,7 @@ func (c *Coordinator) Launch(ctx context.Context, spec executor.CoordSessionSpec
 	return c.turn(ctx, hostapi.TurnRequest{
 		CLI: spec.CLI, HomeDir: spec.HomeDir, Workdir: spec.Workdir,
 		Model: spec.Model, Prompt: prompt, Env: spec.Env,
-	}, spec.HomeDir)
+	})
 }
 
 func (c *Coordinator) Resume(ctx context.Context, ref executor.CoordSessionRef, prompt string) (executor.CoordTurnResult, error) {
@@ -46,36 +46,44 @@ func (c *Coordinator) Resume(ctx context.Context, ref executor.CoordSessionRef, 
 	return c.turn(ctx, hostapi.TurnRequest{
 		CLI: ref.CLI, HomeDir: ref.HomeDir, Workdir: ref.Workdir,
 		Model: ref.Model, Prompt: prompt, SessionID: ref.SessionID, Env: nil,
-	}, ref.HomeDir)
+	})
 }
 
 func (c *Coordinator) CancelTurn(_ context.Context, ref executor.CoordSessionRef) error {
-	key := ref.HomeDir + "\x00" + ref.CLI
+	key := ref.SessionID
+	if key == "" {
+		c.log.Info("CancelTurn 缺少 session id，跳过", "cli", ref.CLI)
+		return nil
+	}
 	c.mu.Lock()
 	cancel, ok := c.canc[key]
 	c.mu.Unlock()
 	if !ok {
-		c.log.Info("CancelTurn 无在途回合", "cli", ref.CLI)
+		c.log.Info("CancelTurn 无在途回合", "cli", ref.CLI, "session_id", ref.SessionID)
 		return nil
 	}
-	c.log.Info("CancelTurn 取消在途回合", "cli", ref.CLI)
+	c.log.Info("CancelTurn 取消在途回合", "cli", ref.CLI, "session_id", ref.SessionID)
 	cancel()
 	return nil
 }
 
-func (c *Coordinator) turn(ctx context.Context, req hostapi.TurnRequest, keyHome string) (res executor.CoordTurnResult, err error) {
+func (c *Coordinator) turn(ctx context.Context, req hostapi.TurnRequest) (res executor.CoordTurnResult, err error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 	ctx, cancel := context.WithCancel(ctx)
-	key := keyHome + "\x00" + req.CLI
+	key := req.SessionID
 	c.mu.Lock()
-	c.canc[key] = cancel
+	if key != "" {
+		c.canc[key] = cancel
+	}
 	c.mu.Unlock()
 	defer func() {
 		cancel()
 		c.mu.Lock()
-		delete(c.canc, key)
+		if key != "" {
+			delete(c.canc, key)
+		}
 		c.mu.Unlock()
 		if err != nil {
 			c.log.Error("协调回合失败", "cli", req.CLI, "cause", err)

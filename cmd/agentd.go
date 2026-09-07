@@ -24,6 +24,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
@@ -187,7 +188,9 @@ var agentdCmd = &cobra.Command{
 		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
 		if ap != nil {
-			bindApproverOneShot(ap, ads, cfg.Approver.Executor, logger)
+			if err := bindApproverOneShot(ap, ads, cfg.Approver.Executor, logger); err != nil {
+				return fmt.Errorf("绑定审批者 OneShot 失败: %w", err)
+			}
 		}
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
@@ -495,32 +498,31 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 }
 
 // bindApproverOneShot 绑定审批者使用的 OneShot 能力。
-// 架构法边界：组装点允许根据 harness 名称 switch 适配各家；审批者包内部禁止 switch。
-func bindApproverOneShot(ap *agentd.Approver, ads map[string]executor.Adapter, name string, log *slog.Logger) {
+// 架构法边界：组装点只从同一 ads Bundle 取 OneShot；未实现能力必须启动失败，
+// 禁止另起一份按名称构造表。
+func bindApproverOneShot(ap *agentd.Approver, ads map[string]executor.Adapter, name string, log *slog.Logger) error {
 	if ap == nil || name == "" {
-		return
+		return nil
 	}
-	if ad, ok := ads[name]; ok {
-		if shot, ok := ad.(executor.OneShot); ok {
-			ap.BindOneShot(shot)
-			log.Info("审批者已绑定 OneShot", "executor", name)
-			return
-		}
+	if log == nil {
+		log = slog.Default()
 	}
-	switch name {
-	case executor.HarnessOpenCode:
-		ap.BindOneShot(opencode.NewOneShot(log))
-	case executor.HarnessClaude:
-		ap.BindOneShot(claudecode.NewOneShot(log))
-	case executor.HarnessGrok:
-		ap.BindOneShot(grok.NewOneShot(log))
-	case executor.HarnessCodex:
-		ap.BindOneShot(codex.NewOneShot(log))
-	case executor.HarnessAGY:
-		ap.BindOneShot(agy.NewOneShot(log))
-	default:
-		log.Error("审批者执行者无 OneShot 可绑定", "executor", name)
+	supported := strings.Join(executor.SupportedHarnesses(), ", ")
+	ad, ok := ads[name]
+	if !ok {
+		err := fmt.Errorf("审批者执行者 %q 未注册（支持 OneShot 的执行者: %s）", name, supported)
+		log.Error("审批者执行者未注册，无法绑定 OneShot", "executor", name, "supported", supported, "cause", err)
+		return err
 	}
+	shot, ok := ad.(executor.OneShot)
+	if !ok {
+		err := fmt.Errorf("审批者执行者 %q 未实现 OneShot（支持 OneShot 的执行者: %s）", name, supported)
+		log.Error("审批者执行者未实现 OneShot，无法绑定", "executor", name, "supported", supported, "cause", err)
+		return err
+	}
+	ap.BindOneShot(shot)
+	log.Info("审批者已绑定 OneShot", "executor", name)
+	return nil
 }
 
 // loadCarrierRules 为协调者供给隔离 HOME 读取主 HOME 的载体规则和技能树。
@@ -596,5 +598,3 @@ func readSkillTree(root, rel string) ([]executor.ProfileFile, error) {
 	}
 	return out, nil
 }
-
-

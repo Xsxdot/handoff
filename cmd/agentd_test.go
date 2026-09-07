@@ -19,7 +19,9 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/executor/grok"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/toolchain"
@@ -310,6 +312,38 @@ func TestRequireClaudeCoordinationIsUnsupported(t *testing.T) {
 	}
 }
 
+func TestBindApproverOneShotRejectsMissingBinding(t *testing.T) {
+	ap, err := agentd.NewApprover(config.ApproverConfig{Executor: "missing"}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bindApproverOneShot(ap, map[string]executor.Adapter{}, "missing", slog.Default())
+	if err == nil {
+		t.Fatal("未知执行者必须让审批者绑定失败")
+	}
+	for _, name := range executor.SupportedHarnesses() {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("绑定错误必须列出支持名单 %q，err=%q", name, err)
+		}
+	}
+}
+
+func TestBindApproverOneShotRejectsAdapterWithoutOneShot(t *testing.T) {
+	ap, err := agentd.NewApprover(config.ApproverConfig{Executor: "fake"}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bindApproverOneShot(ap, map[string]executor.Adapter{
+		"fake": &fake.Fake{},
+	}, "fake", slog.Default())
+	if err == nil {
+		t.Fatal("未实现 OneShot 的执行者必须让审批者绑定失败")
+	}
+	if !strings.Contains(err.Error(), "fake") || !strings.Contains(err.Error(), executor.HarnessOpenCode) {
+		t.Fatalf("绑定错误必须包含执行者与支持名单，err=%q", err)
+	}
+}
+
 func providersFromAds(ads map[string]executor.Adapter) []executor.Provider {
 	out := make([]executor.Provider, 0, len(ads))
 	for _, ad := range ads {
@@ -328,4 +362,3 @@ func containsStr(ss []string, w string) bool {
 	}
 	return false
 }
-

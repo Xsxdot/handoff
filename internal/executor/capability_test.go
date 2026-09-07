@@ -1,11 +1,13 @@
 package executor_test
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
 )
 
 func TestHarnessNameLiterals(t *testing.T) {
@@ -171,5 +173,35 @@ func TestCLIOnPathIsNotFiveCapabilities(t *testing.T) {
 	}
 	if err := executor.RequireCapability(rep, executor.CapCoordination); !errors.Is(err, executor.ErrCapabilityUnsupported) {
 		t.Fatalf("err = %v", err)
+	}
+}
+
+type profileProbe struct{}
+
+func (profileProbe) Inspect(context.Context, executor.ProfileReq) (executor.ProfileReport, error) {
+	return executor.ProfileReport{}, nil
+}
+func (profileProbe) Prepare(context.Context, executor.ProfileReq) (executor.ProfileReport, error) {
+	return executor.ProfileReport{}, nil
+}
+func (profileProbe) Verify(context.Context, executor.ProfileReq) (executor.ProfileReport, error) {
+	return executor.ProfileReport{}, nil
+}
+
+type profileBundle struct{ executor.StaticProvider }
+
+func (profileBundle) Profile() executor.Profile { return profileProbe{} }
+
+func TestProfileFromProviderUsesAdapterBundle(t *testing.T) {
+	profile, ok := executor.ProfileFromProvider(profileBundle{StaticProvider: executor.StaticProvider{
+		HarnessName: executor.HarnessOpenCode,
+	}})
+	if !ok || profile == nil {
+		t.Fatalf("Adapter Bundle 的 Profile 必须可取得，ok=%v profile=%T", ok, profile)
+	}
+
+	production, ok := executor.ProfileFromProvider(opencode.New(nil))
+	if !ok || production == nil {
+		t.Fatalf("生产 Adapter Bundle 的 Profile 必须可取得，ok=%v profile=%T", ok, production)
 	}
 }

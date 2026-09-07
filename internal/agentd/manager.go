@@ -312,9 +312,9 @@ func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg 
 	env := envfile.NewResolver(envfile.Dir(cfg.DataDir), envMapping, log)
 	m := &Manager{
 		st: st, hub: hub, ads: ads, cfg: cfg,
-		appendEvent:  st.AppendEvent,
-		conf:         func() *config.Config { return cfg },
-		approver:     approver, gate: gate, log: log,
+		appendEvent: st.AppendEvent,
+		conf:        func() *config.Config { return cfg },
+		approver:    approver, gate: gate, log: log,
 		env:          env,
 		apInflight:   map[string]bool{},
 		apFails:      map[string]int{},
@@ -343,19 +343,9 @@ func RegistryFromAds(ads map[string]executor.Adapter) *executor.Registry {
 
 func registryFromAds(ads map[string]executor.Adapter) *executor.Registry {
 	ps := make([]executor.Provider, 0, len(ads))
-	for name, ad := range ads {
+	for _, ad := range ads {
 		if p, ok := ad.(executor.Provider); ok {
 			ps = append(ps, p)
-		} else if ad != nil {
-			ps = append(ps, executor.StaticProvider{
-				HarnessName: name,
-				Rep: executor.CapabilityReport{
-					Harness: name,
-					Caps: []executor.CapabilityDecl{
-						{Name: executor.CapExecution, Supported: true},
-					},
-				},
-			})
 		}
 	}
 	return executor.NewRegistry(ps...)
