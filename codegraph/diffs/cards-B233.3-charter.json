@@ -1,0 +1,107 @@
+{
+  "view": "cards/B233.3-charter",
+  "base": "124121e4",
+  "summary": "B233.3 Ticket 0：ExecutionClient/Transport 空壳、WaitDeliveryPolicy 命名、relay PSK/帧金样本",
+  "nodesAdded": {
+    "m_client_Transport": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 400,
+      "name": "Transport",
+      "file": "internal/client/execution.go",
+      "line": 25,
+      "signature": "type Transport interface {\n\tBaseURL() string\n\tHTTPClient() *http.Client\n}",
+      "summary": "Transport 是直连与 relay 共用的字节通道。HTTPClient 仅供网关原样搬运。",
+      "fields": [
+        [
+          "BaseURL",
+          "func() string",
+          ""
+        ],
+        [
+          "HTTPClient",
+          "func() *http.Client",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_client_ExecutionClient": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 401,
+      "name": "ExecutionClient",
+      "file": "internal/client/execution.go",
+      "line": 35,
+      "signature": "type ExecutionClient interface {\n\tDispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error)\n\tReply(ctx context.Context, taskID, ticketID, answer string) error\n\tContinue(ctx context.Context, taskID, instructions string) error\n\tStop(ctx context.Context, taskID string) (worktreeRemoved bool, err error)\n\tWaitEvent(ctx context.Context, taskID string, all bool) (*proto.Event, error)\n\tFollowEvents(ctx context.Context, taskID string, all bool, idle time.Duration, onEvent func(*proto.Event) error, onBacklog func(*BacklogSummary) error) error\n}",
+      "summary": "ExecutionClient 是 233.1 执行能力在跨机调用面上的类型化入口。",
+      "fields": [
+        [
+          "Dispatch",
+          "func(ctx context.Context, opts DispatchOpts) (*proto.Task, error)",
+          ""
+        ],
+        [
+          "Reply",
+          "func(ctx context.Context, taskID, ticketID, answer string) error",
+          ""
+        ],
+        [
+          "Continue",
+          "func(ctx context.Context, taskID, instructions string) error",
+          ""
+        ],
+        [
+          "Stop",
+          "func(ctx context.Context, taskID string) (worktreeRemoved bool, err error)",
+          ""
+        ],
+        [
+          "WaitEvent",
+          "func(ctx context.Context, taskID string, all bool) (*proto.Event, error)",
+          ""
+        ],
+        [
+          "FollowEvents",
+          "func(ctx context.Context, taskID string, all bool, idle time.Duration, onEvent func(*proto.Event) error, onBacklog func(*BacklogSummary) error) error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_client_WaitDeliveryPolicy": {
+      "kind": "func",
+      "container": "k_client_fn",
+      "order": 400,
+      "name": "WaitDeliveryPolicy",
+      "file": "internal/client/delivery.go",
+      "line": 23,
+      "signature": "func WaitDeliveryPolicy(t proto.EventType) bool",
+      "params": [
+        [
+          "t",
+          "proto.EventType",
+          ""
+        ]
+      ],
+      "returns": "bool",
+      "summary": "WaitDeliveryPolicy 是任务事件消费策略：哪些事件唤醒 wait/follow。不是传输过滤。"
+    }
+  },
+  "edgesAdded": [
+    [
+      "n_client_isDeliverable",
+      "n_client_WaitDeliveryPolicy"
+    ]
+  ],
+  "implementsAdded": [
+    [
+      "m_client_Client",
+      "m_client_Transport"
+    ],
+    [
+      "m_client_Client",
+      "m_client_ExecutionClient"
+    ]
+  ]
+}

@@ -96,7 +96,7 @@
     "client 实体",
     "client.Client"
    ],
-   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。"
+   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。B233.3：执行能力跨机调用面冻结为 ExecutionClient（Dispatch/Reply/Continue/Stop/WaitEvent/FollowEvents），接口符号住在 d_transport 的 internal/client，不在 d_cli 再声明 interfaces（声明会 dead-interface）。*Client 仍是兼容聚合门面。不新开方向、不改预算。"
   },
   {
    "from": "d_cli",
@@ -257,7 +257,7 @@
     "targetclient.Pool",
     "client.Client"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。"
   },
   {
    "from": "d_gateway",
@@ -316,7 +316,8 @@
   {
    "from": "d_orchestration",
    "to": "d_transport",
-   "legacyBudget": 5
+   "legacyBudget": 5,
+   "legacyBudgetNote": "B233.3：编排经 Pool 取传输。建树挂卡是应用规则，不得因此新开 d_transport→d_ledger；forward 迁出挂卡由实现节点完成，本节点不改预算。"
   },
   {
    "from": "d_orchestration",
