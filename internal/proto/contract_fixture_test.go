@@ -314,6 +314,7 @@ func taskSample(now time.Time, taskID string) Task {
 		ID:              taskID,
 		Target:          "opencode",
 		RepoPath:        "/home/dev/handoff",
+		Carrier:         "muse",
 		Branch:          "handoff/w1-web-scaffold",
 		PlanPath:        ".handoff/plans/w1.md",
 		PlanSummary:     "W1：Web 控制台前端地基",

@@ -16,6 +16,7 @@ export interface Task {
   id: string
   target: string
   repo_path: string
+  carrier?: string       // 派发时绑定的载体名；缺席=旧任务
   branch: string
   plan_path: string
   plan_summary: string

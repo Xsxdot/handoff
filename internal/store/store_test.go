@@ -2,6 +2,7 @@
 package store_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 // TestTaskLifecycle 覆盖 Create→Get 回读一致、合法状态链、非法迁移拒绝与字段白名单。
@@ -428,6 +430,77 @@ func TestCreateTaskPersistsCarrierHome(t *testing.T) {
 	}
 	if got.HomeDir != task.HomeDir {
 		t.Fatalf("HomeDir = %q, want %q", got.HomeDir, task.HomeDir)
+	}
+}
+
+// TestCreateTaskPersistsCarrier 锁定派发时载体名只写入创建快照，不进入字段白名单。
+func TestCreateTaskPersistsCarrier(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+	task := &proto.Task{
+		ID: "carrier-col", RepoPath: "/repo", Carrier: "muse",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreateTask(task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Carrier != "muse" {
+		t.Fatalf("Carrier = %q, want muse", got.Carrier)
+	}
+	if err := s.SetTaskField(task.ID, "carrier", "other"); err == nil {
+		t.Fatal("carrier 不得进入 SetTaskField 白名单")
+	}
+	list, err := s.ListTasks()
+	if err != nil || len(list) != 1 || list[0].Carrier != "muse" {
+		t.Fatalf("ListTasks 必须扫回 carrier，got %+v err=%v", list, err)
+	}
+}
+
+// TestOpenMigratesCarrierColumnOnLegacyDB 用没有 carrier 的旧 tasks 表验证增量迁移。
+func TestOpenMigratesCarrierColumnOnLegacyDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, target TEXT NOT NULL DEFAULT '', repo_path TEXT NOT NULL,
+  branch TEXT NOT NULL DEFAULT '', plan_path TEXT NOT NULL DEFAULT '',
+  plan_summary TEXT NOT NULL DEFAULT '', executor_session TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL
+)`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO tasks (id, repo_path, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		"legacy", "/r", proto.TaskStatePending, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("打开旧库: %v", err)
+	}
+	defer s.Close()
+	got, err := s.GetTask("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Carrier != "" {
+		t.Fatalf("旧行 Carrier 必须空串，实得 %q", got.Carrier)
 	}
 }
 
@@ -1350,4 +1423,3 @@ func TestAnswerTicketVoidRejected(t *testing.T) {
 		t.Fatalf("作废后迟到答案必须拒绝，got %v", err)
 	}
 }
-

@@ -2,6 +2,7 @@
   "id": "7ec762e7-3bd2-412c-a39c-e4cf8b4057ad",
   "target": "opencode",
   "repo_path": "/home/dev/handoff",
+  "carrier": "muse",
   "branch": "handoff/w1-web-scaffold",
   "plan_path": ".handoff/plans/w1.md",
   "plan_summary": "W1：Web 控制台前端地基",

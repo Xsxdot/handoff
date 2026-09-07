@@ -202,7 +202,8 @@ describe('契约 fixture 与 TS 类型', () => {
     expect(task.branch).toBe('handoff/w1-web-scaffold')
     expect(task.created_at).toMatch(/^2026-08-11T/)
     expect(task.worktree_managed).toBe(true)
-    for (const key of ['id', 'target', 'repo_path', 'branch', 'plan_path', 'plan_summary', 'executor_session', 'state', 'created_at', 'updated_at', 'name', 'executor', 'model', 'work_dir', 'worktree_managed', 'base_commit', 'base_ahead', 'repo_dirty_count', 'repo_dirty_files', 'actual_model', 'usage', 'timing']) {
+    expect(task.carrier).toBe('muse')
+    for (const key of ['id', 'target', 'repo_path', 'carrier', 'branch', 'plan_path', 'plan_summary', 'executor_session', 'state', 'created_at', 'updated_at', 'name', 'executor', 'model', 'work_dir', 'worktree_managed', 'base_commit', 'base_ahead', 'repo_dirty_count', 'repo_dirty_files', 'actual_model', 'usage', 'timing']) {
       expect(Object.keys(task)).toContain(key)
     }
   })
