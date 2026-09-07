@@ -95,27 +95,16 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		target = binding.Target
 	}
 	var dispatchHomeDir *string
-	if binding.Squad != "" {
-		carrier, carrierErr := s.scheduling.Carrier(binding.Carrier)
-		if carrierErr != nil {
-			s.log.Error("卡节点准入后读取载体 HOME 失败", "card", cardID,
-				"squad", binding.Squad, "carrier", binding.Carrier, "cause", carrierErr)
-			s.releaseCardStep(cardID)
-			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {
-				s.log.Warn("载体 HOME 读取失败后的准入回滚失败", "card", cardID,
-					"squad", binding.Squad, "carrier", binding.Carrier, "cause", relErr)
-			}
-			return fmt.Errorf("卡 %s 读取准入载体 %s: %w", cardID, binding.Carrier, carrierErr)
-		}
+	if binding.Carrier != "" {
 		// 指针指向本次装配的稳定副本，避免下层误读可变 registry 对象；值本身
 		// 仍逐字节传递，目标 executor 才负责把它放进进程环境。
-		homeDir := carrier.HomeDir
+		homeDir := binding.HomeDir
 		dispatchHomeDir = &homeDir
 	}
 	resolved, target, err := s.resolveStepDiscipline(node, target)
 	if err != nil {
 		s.releaseCardStep(cardID)
-		if binding.Squad != "" {
+		if binding.Carrier != "" {
 			// 准入成功但后续装配失败：回滚两级名额防泄漏假满（Release 幂等；
 			// 回滚失败计数偏高属保守方向，只告警不阻断上报原错误）。
 			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {

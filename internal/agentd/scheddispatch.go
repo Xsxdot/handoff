@@ -54,6 +54,16 @@ func (s *Server) admitSquadStep(cardID string, req proto.CardStepReq, node ledge
 	if err != nil {
 		return scheduling.Binding{}, 0, fmt.Errorf("读卡取优先级快照: %w", err)
 	}
+	resolved, err := s.resolveReceiver(node.Override.Squad)
+	if err != nil {
+		return scheduling.Binding{}, 0, fmt.Errorf("节点 %s 解析小队 %q: %w", node.Name, node.Override.Squad, err)
+	}
+	if resolved.Kind != scheduling.ReceiverSquad {
+		err := fmt.Errorf("%w: 节点 %s 绑定的接收者 %q 不是小队", scheduling.ErrInvalid, node.Name, resolved.Name)
+		s.log.Error("小队节点接收者类型错误", "card", cardID, "node", node.Name,
+			"receiver", resolved.Name, "kind", string(resolved.Kind), "cause", err)
+		return scheduling.Binding{}, 0, err
+	}
 	target, executor, model := effectiveCovers(req, node)
 	ireq := scheduling.IgnitionRequest{
 		Card: cardID, Squad: node.Override.Squad, Node: req.Step,
@@ -67,6 +77,21 @@ func (s *Server) admitSquadStep(cardID string, req proto.CardStepReq, node ledge
 		"cover_executor", executor, "cover_model", model, "priority", card.Priority)
 	binding, err := s.scheduling.Admit(ireq)
 	if err == nil {
+		id := scheduling.PhysicalIdentity{Machine: binding.Target, CLI: binding.Executor, HomeDir: binding.HomeDir}
+		bound, bindErr := scheduling.BindPhysical(id, scheduling.PhysicalOverlay{})
+		if bindErr != nil {
+			s.log.Error("小队节点绑定物理身份失败", "card", cardID, "node", node.Name,
+				"squad", binding.Squad, "carrier", binding.Carrier, "cause", bindErr)
+			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {
+				s.log.Error("物理身份绑定失败后的准入回滚失败", "card", cardID,
+					"squad", binding.Squad, "carrier", binding.Carrier, "cause", relErr)
+			}
+			return scheduling.Binding{}, 0, bindErr
+		}
+		binding.Target = bound.Machine
+		binding.Executor = bound.CLI
+		binding.HomeDir = bound.HomeDir
+		binding.Model = scheduling.EffectiveModel(binding.Model, model)
 		s.log.Info("小队节点准入成功", "card", cardID, "node", node.Name,
 			"squad", binding.Squad, "carrier", binding.Carrier, "target", binding.Target,
 			"executor", binding.Executor, "model", binding.Model)
@@ -93,23 +118,12 @@ func (s *Server) admitSquadStep(cardID string, req proto.CardStepReq, node ledge
 	return scheduling.Binding{}, 0, fmt.Errorf("小队 %q 准入被拒: %w", node.Override.Squad, err)
 }
 
-// effectiveCovers 算出本次派发的一次性覆盖三元组：请求覆盖 > 节点覆盖，
-// executor/model 沿用 dispatchNodeWithGate（runner.go:311）的成对规则——换掉
-// 执行器时切断下层模型，显式重述同一执行器不改变模型。
+// effectiveCovers 只算模型覆盖；物理身份必须由已准入载体提供。
+// 返回的 target/executor 恒为空，避免卡节点在绑定前后形成第二条物理落点路径。
 //
-// 为什么装配侧要有这份副本：Squad 解析必须在 ViaTemplate 之前拿到完整覆盖去问
-// 编制域，而既有合并在 ledgerstep 内部发生、ledgerstep 又不得 import 编制域
-// （契约 §5）。两份公式的等价性由两侧各自的矩阵测试锁住：
-//   - 本副本：TestEffectiveCoversParityMatrix（本文件同名测试文件）；
-//   - 链路侧：TestRunnerExecutorModelOverridePriorityAndPairRule
-//     （internal/ledgerstep/runner_test.go:117）；
-//
-// 两侧矩阵逐行对应，任何一侧改规则必须同步另一侧，否则其中一处测试翻红。
+// 模型的成对规则仍与 dispatchNodeWithGate 一致；ledgerstep 不再接收卡节点物理
+// 覆盖。模型行由本文件的矩阵测试锁定，物理恒空是本卡 P7(a) 的新边界。
 func effectiveCovers(req proto.CardStepReq, node ledger.NodeDef) (target, executor, model string) {
-	target = req.Target
-	if target == "" {
-		target = node.Override.Target
-	}
 	executor = node.Override.Executor
 	model = node.Override.Model
 	if req.Executor != "" {
@@ -120,5 +134,5 @@ func effectiveCovers(req proto.CardStepReq, node ledger.NodeDef) (target, execut
 	} else if req.Model != "" {
 		model = req.Model
 	}
-	return target, executor, model
+	return "", "", model
 }

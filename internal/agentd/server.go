@@ -1355,7 +1355,7 @@ type dispatchRequest struct {
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
 //
-// 流程：解析请求体 → manager.Dispatch（建任务/写 plan/启动 executor/进 running）。
+// 流程：解析请求体 → 接收者准备链 → manager.Dispatch（建任务/写 plan/启动 executor/进 running）。
 func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("dispatch 请求", "method", r.Method, "path", r.URL.Path)
 	if s.mgr == nil {
@@ -1369,11 +1369,32 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {project_id, plan_b64, ...}"})
 		return
 	}
+	overlay := scheduling.PhysicalOverlay{Machine: req.Target, CLI: req.Executor, HomeDir: req.HomeDir}
+	binding, _, err := s.prepareReceiverBinding(req.Receiver, overlay, req.Model)
+	if err != nil {
+		s.writeDispatchError(w, req.ProjectID, err)
+		return
+	}
+	released := false
+	defer func() {
+		if !released && binding.Carrier != "" && s.scheduling != nil {
+			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {
+				s.log.Error("dispatch 失败释放占用失败", "project", req.ProjectID,
+					"squad", binding.Squad, "carrier", binding.Carrier, "cause", relErr)
+			}
+		}
+	}()
+	home := binding.HomeDir
+	var homePtr *string
+	if home != "" {
+		homePtr = &home
+	}
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
-		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
-		Prompt: req.Prompt, Name: req.Name, Receiver: req.Receiver, Executor: req.Executor, Discipline: req.Discipline, Model: req.Model,
-		HomeDir:           req.HomeDir,
+		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,
+		Prompt: req.Prompt, Name: req.Name, Receiver: req.Receiver, Carrier: binding.Carrier,
+		Executor: binding.Executor, Discipline: req.Discipline, Model: binding.Model,
+		HomeDir:           homePtr,
 		DisciplineText:    req.DisciplineText,
 		DisciplineVersion: req.DisciplineVersion,
 		Branch:            req.Branch, NewBranch: req.NewBranch, Base: req.Base,
@@ -1385,7 +1406,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		s.writeDispatchError(w, req.ProjectID, err)
 		return
 	}
-	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State)
+	released = true // 成功后由 T4 的任务终态钩子释放占用
+	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State, "carrier", task.Carrier,
+		"squad", binding.Squad, "target", binding.Target, "executor", binding.Executor)
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -1444,6 +1467,15 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, ErrBadWorkspaceReq):
 		s.log.Warn("dispatch 被拒：工作区参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, scheduling.ErrNoDefault), errors.Is(err, scheduling.ErrNotFound),
+		errors.Is(err, scheduling.ErrInvalid), errors.Is(err, scheduling.ErrNoHealthy),
+		errors.Is(err, scheduling.ErrRoleMismatch):
+		s.log.Warn("dispatch 被拒：接收者/编制参数", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, scheduling.ErrNameConflict), errors.Is(err, scheduling.ErrPhysicalOverride),
+		errors.Is(err, scheduling.ErrNoSlot), errors.Is(err, scheduling.ErrRetryExhausted):
+		s.log.Warn("dispatch 被拒：接收者冲突或满员", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrNoProcHeadroom):
 		s.log.Warn("dispatch 被拒：进程余量不足", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})

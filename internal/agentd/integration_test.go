@@ -33,9 +33,11 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/testhttp"
 )
@@ -97,8 +99,35 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 	f := fake.New(script)
 	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
+	ledgerPath := filepath.Join(t.TempDir(), "ledger.db")
+	led, lerr := ledger.Open(ledgerPath)
+	if lerr != nil {
+		t.Fatalf("打开测试账本: %v", lerr)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	srv.SetLedger(led)
+	srv.SetupAutomation(led)
+	putOnlineCarrierForInteg(t, srv, scheduling.Carrier{
+		Name: "muse", Machine: "local", CLI: "fake",
+		HomeDir: "", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 0, Status: scheduling.StatusOnline,
+	})
+	if err := srv.Scheduling().SetDefaultCarrier("muse"); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
 	quiesceOnCleanup(t, st, mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, mgr: mgr, cli: newConfiguredClient(t, ts.URL, testToken), repo: newTestRepo(t)}
+}
+
+func putOnlineCarrierForInteg(t *testing.T, srv *agentd.Server, c scheduling.Carrier) {
+	t.Helper()
+	svc := srv.Scheduling()
+	if err := svc.PutCarrier(c, 0); err != nil {
+		t.Fatalf("登记集成测试载体 %s: %v", c.Name, err)
+	}
+	if _, err := svc.ApplyDetect(c.Name, scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("设置集成测试载体 %s online: %v", c.Name, err)
+	}
 }
 
 // quiesceOnCleanup 让用例结束时先把写方停干净，再让 testing 去删沙箱目录。
@@ -717,6 +746,23 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	ts := testhttp.NewServer(t, srv.Handler())
 	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
 	srv.SetManager(mgr)
+	led, lerr := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if lerr != nil {
+		t.Fatalf("打开测试账本: %v", lerr)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	srv.SetLedger(led)
+	srv.SetupAutomation(led)
+	if err := srv.Scheduling().PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode",
+		Credential: scheduling.CredentialStandalone}, 0); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
+	if _, err := srv.Scheduling().ApplyDetect("muse", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("预置默认载体上线: %v", err)
+	}
+	if err := srv.Scheduling().SetDefaultCarrier("muse"); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
 
 	repo := newTestRepo(t)
 	// B62：派发必须先登记，登记会落到 store，随后 Dispatch 解析出同一路径
