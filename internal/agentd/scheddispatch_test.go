@@ -131,10 +131,10 @@ func TestEffectiveCoversParityMatrix(t *testing.T) {
 		wantT, wantE, wantM string
 	}{
 		{"全空走载体", "", "", "", "", "", "", "", "", ""},
-		{"节点覆盖保留", "", "", "", "mt", "ne", "nm", "mt", "ne", "nm"},
-		{"请求压过节点", "rt", "re", "rm", "mt", "ne", "nm", "rt", "re", "rm"},
-		{"换执行器切模型", "", "re", "", "", "ne", "nm", "", "re", ""},
-		{"重述同执行器保模型", "", "ne", "rm", "", "ne", "nm", "", "ne", "rm"},
+		{"节点覆盖保留", "", "", "", "mt", "ne", "nm", "", "", "nm"},
+		{"请求压过节点", "rt", "re", "rm", "mt", "ne", "nm", "", "", "rm"},
+		{"换执行器切模型", "", "re", "", "", "ne", "nm", "", "", ""},
+		{"重述同执行器保模型", "", "ne", "rm", "", "ne", "nm", "", "", "rm"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

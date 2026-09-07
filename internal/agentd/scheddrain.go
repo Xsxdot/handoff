@@ -381,9 +381,9 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 	return result, nil
 }
 
-// releaseSchedulingBinding 释放一次准入产生的两级计数；空 binding 是存量直绑路径。
+// releaseSchedulingBinding 释放一次准入产生的计数；直派 binding 只有载体键。
 func (s *Server) releaseSchedulingBinding(card string, binding scheduling.Binding) {
-	if binding.Squad == "" || binding.Carrier == "" || s.scheduling == nil {
+	if binding.Carrier == "" || s.scheduling == nil {
 		return
 	}
 	if err := s.scheduling.Release(binding.Squad, binding.Carrier); err != nil {

@@ -194,3 +194,41 @@ func TestTaskHomeDirJSON(t *testing.T) {
 		t.Fatalf("空 HomeDir 不应进入 JSON: %s", withoutHome)
 	}
 }
+
+// TestTaskCarrierJSON 锁定载体身份快照的三态线格式：非空带 carrier，空值省略。
+func TestTaskCarrierJSON(t *testing.T) {
+	withCarrier, err := json.Marshal(Task{Carrier: "muse"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(withCarrier), `"carrier":"muse"`) {
+		t.Fatalf("非空 Carrier 未进入 JSON: %s", withCarrier)
+	}
+
+	withoutCarrier, err := json.Marshal(Task{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(withoutCarrier), `"carrier"`) {
+		t.Fatalf("空 Carrier 不应进入 JSON: %s", withoutCarrier)
+	}
+}
+
+// TestTaskSquadJSON 锁定小队快照的线格式：非空带 squad，空值省略。
+func TestTaskSquadJSON(t *testing.T) {
+	withSquad, err := json.Marshal(Task{Squad: "rd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(withSquad), `"squad":"rd"`) {
+		t.Fatalf("非空 Squad 未进入 JSON: %s", withSquad)
+	}
+
+	withoutSquad, err := json.Marshal(Task{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(withoutSquad), `"squad"`) {
+		t.Fatalf("空 Squad 不应进入 JSON: %s", withoutSquad)
+	}
+}

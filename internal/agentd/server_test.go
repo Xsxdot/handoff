@@ -18,7 +18,9 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/testhttp"
 	"github.com/coder/websocket"
@@ -915,6 +917,24 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 	mgr := agentd.NewManager(env.st, env.srv.Hub(),
 		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, env.srv.EnvMapping, nil, newTestGate(t), logger)
 	env.srv.SetManager(mgr)
+	ledgerStore, lerr := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if lerr != nil {
+		t.Fatalf("打开测试账本: %v", lerr)
+	}
+	t.Cleanup(func() { _ = ledgerStore.Close() })
+	env.srv.SetLedger(ledgerStore)
+	env.srv.SetupAutomation(ledgerStore)
+	svc := env.srv.Scheduling()
+	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake",
+		HomeDir: "", Credential: scheduling.CredentialStandalone}, 0); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
+	if _, err := svc.ApplyDetect("muse", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("预置默认载体上线: %v", err)
+	}
+	if err := svc.SetDefaultCarrier("muse"); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
 
 	// B62：派发必须先登记；env 解析发生在任何 git 动作之前，登记到真实项目即可
 	repo := newTestRepo(t)
@@ -1157,4 +1177,3 @@ func TestHandleReplyIdempotentDoesNotRelayTwice(t *testing.T) {
 		t.Fatalf("底层 Send 次数 = %d, want 1（幂等不二次中继）", len(sends))
 	}
 }
-

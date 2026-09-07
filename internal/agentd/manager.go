@@ -376,13 +376,14 @@ func (m *Manager) adapterFor(taskID string) (executor.Adapter, error) {
 	return ad, nil
 }
 
-// resolveExecutor 在 dispatch 期把请求的执行者名解析为 adapter。
+// resolveExecutor 在 dispatch 期只把请求的执行者名解析为 adapter。
 //
-// 规则：name 空回退缺省（cfg.Executor.Default）；未注册返回 errBadDispatchRequest
-// 包装的错误（server 层映射 400）并列出已注册名。
+// name 为空时仍回退 cfg.Executor.Default 以保持 adapter 路由兼容；此回退不产生
+// 载体身份，载体名只能由网关通过 DispatchReq.Carrier 传入。
 func (m *Manager) resolveExecutor(name string) (string, executor.Adapter, error) {
 	if name == "" {
 		name = m.conf().Executor.Default
+		m.log.Info("dispatch 执行者使用缺省 adapter", "executor", name, "executor_defaulted", true)
 	}
 	ad, ok := m.ads[name]
 	if !ok {
@@ -479,6 +480,15 @@ type DispatchReq struct {
 	Prompt string
 	// Name 是任务展示名（空时从 plan 名/prompt 派生，见 deriveName）。
 	Name string
+	// Receiver 是统一接收者名（载体或小队）。空=使用已确认的默认载体。
+	// Ticket 0 只保留字段；解析/准入接线归实现节点。
+	Receiver string
+	// Carrier 是网关已经绑定的载体名。空=旧调用/未接线；只在 CreateTask 写入，
+	// 不得把 cfg.Executor.Default 或 Receiver 名称解析放到 Manager。
+	Carrier string
+	// Squad 是网关已经绑定的小队名快照。空=载体直派或旧调用；只在 CreateTask 写入，
+	// 供任务终态释放成员政策位，不参与 Manager 的接收者解析。
+	Squad string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	// Ticket 0 只保留字段，执行机覆写行为归实现票 U5。
 	HomeDir *string
@@ -751,7 +761,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	m.log.Info("dispatch 进入",
 		"project_id", req.ProjectID, "project_name", req.ProjectName,
 		"plan_name", req.PlanName, "target", req.Target,
-		"executor", req.Executor, "model", req.Model, "name", req.Name,
+		"executor", req.Executor, "receiver", req.Receiver, "carrier", req.Carrier,
+		"model", req.Model, "name", req.Name,
 		"branch", req.Branch, "new_branch", req.NewBranch, "base", req.Base,
 		"base_commit", req.BaseCommit, "resolve_default_base", req.ResolveDefaultBase,
 		"local_base_branch", req.LocalBaseBranch,
@@ -1028,6 +1039,8 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		Target:   req.Target,
 		RepoPath: repoPath,
 		HomeDir:  taskHomeDir,
+		Carrier:  req.Carrier,
+		Squad:    req.Squad,
 		// PlanPath 不在 SetTaskField 白名单，只能在创建时一并写入
 		PlanPath:  planPath,
 		State:     proto.TaskStatePending,

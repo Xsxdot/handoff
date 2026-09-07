@@ -2,7 +2,7 @@
 // 派发到 agentd 执行。
 //
 // 职责：
-//   - 读取本地 plan 文件并 base64 编码，连同项目身份/计划名/target/执行者/模型/
+//   - 读取本地 plan 文件并 base64 编码，连同项目身份/计划名/接收者/执行者/模型/
 //     分支/worktree 等参数一并 POST 给 agentd（body {project_id, plan_b64, prompt, ...}）
 //   - 派发的项目由 cwd 识别：读当前目录 git 仓库的 origin 离线算出 project_id，
 //     cwd 不是目标项目时用 --project <名字> 显式指定
@@ -14,6 +14,8 @@
 //
 // 边界：
 //   - 只做文件读取与上传，不校验计划内容语义（解析与执行由 executor 负责）
+//   - 全局 --target 只选择 agentd 拨号端点，不是执行落点；执行身份由 --receiver
+//     在目标机统一解析，--executor 仅作为可重述的 overlay
 //   - --no-terminal 在本文件只注册 flag 并参与「是否弹终端」的判定骨架；
 //     弹终端默认**不弹**（cfg.Terminal.Auto 默认 false），配置 auto: true 时
 //     才在 darwin 弹窗，--no-terminal 用于逐次关闭
@@ -43,6 +45,7 @@ var (
 	dispatchProject     string
 	dispatchPrompt      string
 	dispatchName        string
+	dispatchReceiver    string
 	dispatchExecutor    string
 	dispatchModel       string
 	dispatchBranch      string
@@ -257,9 +260,10 @@ var dispatchCmd = &cobra.Command{
 				return err
 			}
 		}
+		slog.Info("CLI 裸派发准备发送", "receiver", dispatchReceiver, "executor_overlay", dispatchExecutor)
 		opts := client.DispatchOpts{
 			ProjectID: projectID, ProjectName: dispatchProject,
-			PlanB64: planB64, PlanName: planName, Target: targetName,
+			PlanB64: planB64, PlanName: planName, Target: "", Receiver: dispatchReceiver,
 			Prompt: dispatchPrompt, Name: dispatchName,
 			Executor: dispatchExecutor, Model: dispatchModel,
 			Branch: dispatchBranch, NewBranch: dispatchNewBranch, Base: dispatchBase,
@@ -331,7 +335,10 @@ func init() {
 		"跨项目派发时指定项目名（省略则由当前目录自动识别；用 handoff project ls 查看有哪些）")
 	dispatchCmd.Flags().StringVar(&dispatchPrompt, "prompt", "", "直接指令（prompt-only 派发；与 plan 文件至少其一）")
 	dispatchCmd.Flags().StringVar(&dispatchName, "name", "", "任务展示名（默认从 plan 文件名或 prompt 派生）")
-	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "", "执行者名（opencode/claude/grok/codex/agy/fake；空=agentd 默认执行者）")
+	dispatchCmd.Flags().StringVar(&dispatchReceiver, "receiver", "",
+		"接收者名（已登记载体或小队；空=已确认的默认载体，没有则失败，不回退 executor.default）")
+	dispatchCmd.Flags().StringVar(&dispatchExecutor, "executor", "",
+		"与已绑定载体 CLI 相同则合法重述，不同则拒绝；不再单独决定执行落点")
 	dispatchCmd.Flags().StringVar(&dispatchModel, "model", "", "任务级模型覆盖（空=执行者自身默认）")
 	dispatchCmd.Flags().StringVar(&dispatchBranch, "branch", "", "切到已存在分支（与 --new-branch 互斥）")
 	dispatchCmd.Flags().StringVar(&dispatchNewBranch, "new-branch", "", "新建分支名（空且 --branch 空=自动 handoff/<id8>）")

@@ -1326,6 +1326,8 @@ type dispatchRequest struct {
 	Target      string `json:"target"`
 	Prompt      string `json:"prompt"`
 	Name        string `json:"name"`
+	// Receiver 是统一接收者名（载体或小队）。空=默认载体。Ticket 0 只解码。
+	Receiver string `json:"receiver,omitempty"`
 	// HomeDir 是小队派发载体 HOME 的可空字段；缺席与显式空串必须可区分。
 	HomeDir  *string `json:"home_dir,omitempty"`
 	Executor string  `json:"executor"`
@@ -1353,7 +1355,7 @@ type dispatchRequest struct {
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
 //
-// 流程：解析请求体 → manager.Dispatch（建任务/写 plan/启动 executor/进 running）。
+// 流程：解析请求体 → 接收者准备链 → manager.Dispatch（建任务/写 plan/启动 executor/进 running）。
 func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("dispatch 请求", "method", r.Method, "path", r.URL.Path)
 	if s.mgr == nil {
@@ -1367,11 +1369,32 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {project_id, plan_b64, ...}"})
 		return
 	}
+	overlay := scheduling.PhysicalOverlay{Machine: req.Target, CLI: req.Executor, HomeDir: req.HomeDir}
+	binding, _, err := s.prepareReceiverBinding(req.Receiver, overlay, req.Model)
+	if err != nil {
+		s.writeDispatchError(w, req.ProjectID, err)
+		return
+	}
+	released := false
+	defer func() {
+		if !released && binding.Carrier != "" && s.scheduling != nil {
+			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {
+				s.log.Error("dispatch 失败释放占用失败", "project", req.ProjectID,
+					"squad", binding.Squad, "carrier", binding.Carrier, "cause", relErr)
+			}
+		}
+	}()
+	home := binding.HomeDir
+	var homePtr *string
+	if home != "" {
+		homePtr = &home
+	}
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
-		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: req.Target,
-		Prompt: req.Prompt, Name: req.Name, Executor: req.Executor, Discipline: req.Discipline, Model: req.Model,
-		HomeDir:           req.HomeDir,
+		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,
+		Prompt: req.Prompt, Name: req.Name, Receiver: req.Receiver, Squad: binding.Squad, Carrier: binding.Carrier,
+		Executor: binding.Executor, Discipline: req.Discipline, Model: binding.Model,
+		HomeDir:           homePtr,
 		DisciplineText:    req.DisciplineText,
 		DisciplineVersion: req.DisciplineVersion,
 		Branch:            req.Branch, NewBranch: req.NewBranch, Base: req.Base,
@@ -1383,7 +1406,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		s.writeDispatchError(w, req.ProjectID, err)
 		return
 	}
-	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State)
+	released = true // 成功后由 T4 的任务终态钩子释放占用
+	s.log.Info("dispatch 完成", "task", task.ID, "state", task.State, "carrier", task.Carrier,
+		"squad", binding.Squad, "target", binding.Target, "executor", binding.Executor)
 	writeJSON(w, http.StatusOK, task)
 }
 
@@ -1442,6 +1467,15 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, ErrBadWorkspaceReq):
 		s.log.Warn("dispatch 被拒：工作区参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, scheduling.ErrNoDefault), errors.Is(err, scheduling.ErrNotFound),
+		errors.Is(err, scheduling.ErrInvalid), errors.Is(err, scheduling.ErrNoHealthy),
+		errors.Is(err, scheduling.ErrRoleMismatch):
+		s.log.Warn("dispatch 被拒：接收者/编制参数", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, scheduling.ErrNameConflict), errors.Is(err, scheduling.ErrPhysicalOverride),
+		errors.Is(err, scheduling.ErrNoSlot), errors.Is(err, scheduling.ErrRetryExhausted):
+		s.log.Warn("dispatch 被拒：接收者冲突或满员", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrNoProcHeadroom):
 		s.log.Warn("dispatch 被拒：进程余量不足", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
@@ -1664,12 +1698,19 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 	// 409——那些是真的状态不对，一并放行等于让 done 变成万能收口，审核者会
 	// 失去「我操作错了」这个信号。
 	if cur, err := s.st.GetTask(taskID); err == nil && cur.State == proto.TaskStateCompleted {
+		s.releaseTaskCarrierOccupancy(cur)
 		writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
 		return
 	}
+	cur, taskErr := s.st.GetTask(taskID)
 	if err := s.mgr.Done(r.Context(), taskID, req.Note); err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return
+	}
+	if taskErr != nil {
+		s.log.Error("done 成功后读取任务快照失败，未能释放载体占用", "task", taskID, "cause", taskErr)
+	} else {
+		s.releaseTaskCarrierOccupancy(cur)
 	}
 	// 消息文字必须与 manager.Done 的「done 完成」区分开：两处同名会让一次归档
 	// 捞出两行日志，其中一行没有 note_saved，排障时分不清看的是哪一层
@@ -1692,12 +1733,33 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
+	task, taskErr := s.st.GetTask(taskID)
 	removed, err := s.mgr.Stop(r.Context(), taskID)
 	if err != nil {
 		s.writeManagerError(w, taskID, "stop", err)
 		return
 	}
+	if taskErr != nil {
+		s.log.Error("stop 成功后读取任务快照失败，未能释放载体占用", "task", taskID, "cause", taskErr)
+	} else {
+		s.releaseTaskCarrierOccupancy(task)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
+}
+
+// releaseTaskCarrierOccupancy 释放任务快照持有的载体与小队成员占用。
+// Squad 与 Carrier 都在 CreateTask 时冻结；空 Squad 仍会由 OccupancyKeys 省略成员键，
+// 从而让载体直派和旧任务保持只释放载体位的语义。
+func (s *Server) releaseTaskCarrierOccupancy(task *proto.Task) {
+	if task == nil || task.Carrier == "" || s.scheduling == nil {
+		return
+	}
+	if err := s.scheduling.Release(task.Squad, task.Carrier); err != nil {
+		s.log.Error("任务终态释放载体占用失败", "task", task.ID, "squad", task.Squad,
+			"carrier", task.Carrier, "cause", err)
+		return
+	}
+	s.log.Info("任务终态已释放载体占用", "task", task.ID, "squad", task.Squad, "carrier", task.Carrier)
 }
 
 // parseForce 解析 resume 的 force 查询参数。

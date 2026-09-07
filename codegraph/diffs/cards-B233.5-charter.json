@@ -1,0 +1,1691 @@
+{
+  "view": "cards/B233.5-charter",
+  "base": "9605d19b",
+  "summary": "B233.5：统一接收者解析、默认载体、物理绑定、占用生命周期与任务身份快照",
+  "nodesAdded": {
+    "m_executor_ApprovalStatus": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 300,
+      "name": "ApprovalStatus",
+      "file": "internal/executor/approval.go",
+      "line": 17,
+      "signature": "type ApprovalStatus string",
+      "summary": "ApprovalStatus 是审批 client 对外可见的决定状态。Consult 是服务内部步骤，不得作为 client 返回值。",
+      "modelKind": "dto"
+    },
+    "m_executor_AckStage": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 301,
+      "name": "AckStage",
+      "file": "internal/executor/approval.go",
+      "line": 26,
+      "signature": "type AckStage string",
+      "summary": "AckStage 区分「决定已形成 / 已送达原生请求 / 动作已执行」。",
+      "modelKind": "dto"
+    },
+    "m_executor_ApprovalScope": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 302,
+      "name": "ApprovalScope",
+      "file": "internal/executor/approval.go",
+      "line": 35,
+      "signature": "type ApprovalScope struct {",
+      "summary": "ApprovalScope 是一次执行实例的合法作用范围，与 permgate.Scope 三根同形。",
+      "fields": [
+        [
+          "Workdir",
+          "string",
+          ""
+        ],
+        [
+          "TaskDir",
+          "string",
+          ""
+        ],
+        [
+          "TaskTmpDir",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_PolicySnapshot": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 303,
+      "name": "PolicySnapshot",
+      "file": "internal/executor/approval.go",
+      "line": 45,
+      "signature": "type PolicySnapshot struct {",
+      "summary": "PolicySnapshot 是绑定到当前回合的版本化政策。",
+      "fields": [
+        [
+          "Version",
+          "string",
+          ""
+        ],
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "Scope",
+          "ApprovalScope",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_ApprovalRequest": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 304,
+      "name": "ApprovalRequest",
+      "file": "internal/executor/approval.go",
+      "line": 52,
+      "signature": "type ApprovalRequest struct {",
+      "summary": "ApprovalRequest 是一次原生权限请求的结构化输入。",
+      "fields": [
+        [
+          "NativeID",
+          "string",
+          ""
+        ],
+        [
+          "Text",
+          "string",
+          ""
+        ],
+        [
+          "Perm",
+          "*PermRequest",
+          ""
+        ],
+        [
+          "Truncated",
+          "bool",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_ApprovalRef": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 305,
+      "name": "ApprovalRef",
+      "file": "internal/executor/approval.go",
+      "line": 60,
+      "signature": "type ApprovalRef struct {",
+      "summary": "ApprovalRef 是审批服务给出的稳定引用，供 Await / Acknowledge 使用。",
+      "fields": [
+        [
+          "ID",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_ApprovalDecision": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 306,
+      "name": "ApprovalDecision",
+      "file": "internal/executor/approval.go",
+      "line": 65,
+      "signature": "type ApprovalDecision struct {",
+      "summary": "ApprovalDecision 是最终或当前决定。",
+      "fields": [
+        [
+          "Status",
+          "ApprovalStatus",
+          ""
+        ],
+        [
+          "Reason",
+          "string",
+          ""
+        ],
+        [
+          "Rule",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_ApprovalResult": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 307,
+      "name": "ApprovalResult",
+      "file": "internal/executor/approval.go",
+      "line": 72,
+      "signature": "type ApprovalResult struct {",
+      "summary": "ApprovalResult 是 Request 的立即返回：可能已经是终态，也可能 pending。",
+      "fields": [
+        [
+          "Ref",
+          "ApprovalRef",
+          ""
+        ],
+        [
+          "Decision",
+          "ApprovalDecision",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_ApprovalAck": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 308,
+      "name": "ApprovalAck",
+      "file": "internal/executor/approval.go",
+      "line": 78,
+      "signature": "type ApprovalAck struct {",
+      "summary": "ApprovalAck 确认决定生命周期中的一个阶段。",
+      "fields": [
+        [
+          "Ref",
+          "ApprovalRef",
+          ""
+        ],
+        [
+          "NativeID",
+          "string",
+          ""
+        ],
+        [
+          "Stage",
+          "AckStage",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_ApprovalClient": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 309,
+      "name": "ApprovalClient",
+      "file": "internal/executor/approval.go",
+      "line": 87,
+      "signature": "type ApprovalClient interface {\n\tPolicySnapshot(ctx context.Context) (PolicySnapshot, error)\n\tRequest(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)\n\tAwait(ctx context.Context, ref ApprovalRef) (ApprovalDecision, error)\n\tAcknowledge(ctx context.Context, ack ApprovalAck) error\n}",
+      "summary": "ApprovalClient 是限定于单个执行实例的审批 client。",
+      "fields": [
+        [
+          "PolicySnapshot",
+          "func(ctx context.Context) (PolicySnapshot, error)",
+          ""
+        ],
+        [
+          "Request",
+          "func(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)",
+          ""
+        ],
+        [
+          "Await",
+          "func(ctx context.Context, ref ApprovalRef) (ApprovalDecision, error)",
+          ""
+        ],
+        [
+          "Acknowledge",
+          "func(ctx context.Context, ack ApprovalAck) error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_RespondAskReq": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 310,
+      "name": "RespondAskReq",
+      "file": "internal/executor/ask.go",
+      "line": 22,
+      "signature": "type RespondAskReq struct {",
+      "summary": "RespondAskReq 是一次有身份的 Ask 回答。",
+      "fields": [
+        [
+          "TaskID",
+          "string",
+          ""
+        ],
+        [
+          "TicketID",
+          "string",
+          "尝试/回合身份（工单 id）"
+        ],
+        [
+          "QuestionID",
+          "string",
+          "原生问题 id，可空"
+        ],
+        [
+          "Answer",
+          "string",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_AskResponder": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 311,
+      "name": "AskResponder",
+      "file": "internal/executor/ask.go",
+      "line": 30,
+      "signature": "type AskResponder interface {\n\tRespondAsk(ctx context.Context, req RespondAskReq) error\n}",
+      "summary": "AskResponder 是执行契约的 Ask 回程增量。消费方（Manager）做类型断言。",
+      "fields": [
+        [
+          "RespondAsk",
+          "func(ctx context.Context, req RespondAskReq) error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_executor_NamespacedTicketID": {
+      "kind": "func",
+      "container": "k_executor_fn",
+      "order": 300,
+      "name": "NamespacedTicketID",
+      "file": "internal/executor/ask.go",
+      "line": 37,
+      "signature": "func NamespacedTicketID(taskID, nativeID string) string",
+      "params": [
+        [
+          "taskID",
+          "string",
+          "任务 ID"
+        ],
+        [
+          "nativeID",
+          "string",
+          "原生请求 ID"
+        ]
+      ],
+      "returns": "string",
+      "summary": "NamespacedTicketID 把任务 id 与原生请求 id 编成工单 id。",
+      "tests": [
+        {
+          "name": "TestNamespacedTicketIDGoldenVectors",
+          "file": "internal/executor/ask_test.go:18"
+        }
+      ]
+    },
+    "n_executor_NativeIDFromTicket": {
+      "kind": "func",
+      "container": "k_executor_fn",
+      "order": 301,
+      "name": "NativeIDFromTicket",
+      "file": "internal/executor/ask.go",
+      "line": 44,
+      "signature": "func NativeIDFromTicket(taskID, ticketID string) string",
+      "params": [
+        [
+          "taskID",
+          "string",
+          "任务 ID"
+        ],
+        [
+          "ticketID",
+          "string",
+          "命名空间化工单 ID"
+        ]
+      ],
+      "returns": "string",
+      "summary": "NativeIDFromTicket 从命名空间化工单 id 还原裸原生 id。",
+      "tests": [
+        {
+          "name": "TestNamespacedTicketIDGoldenVectors",
+          "file": "internal/executor/ask_test.go:18"
+        }
+      ]
+    },
+    "n_executor_PermFingerprint": {
+      "kind": "func",
+      "container": "k_executor_fn",
+      "order": 302,
+      "name": "PermFingerprint",
+      "file": "internal/executor/fingerprint.go",
+      "line": 21,
+      "signature": "func PermFingerprint(ev AdapterEvent) string",
+      "params": [
+        [
+          "ev",
+          "AdapterEvent",
+          "权限事件"
+        ]
+      ],
+      "returns": "string",
+      "summary": "PermFingerprint 计算一次权限请求的裁决指纹。",
+      "tests": [
+        {
+          "name": "TestPermFingerprintGoldenVectors",
+          "file": "internal/executor/fingerprint_test.go:9"
+        }
+      ]
+    },
+    "m_agentd_taskApprovalClient": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 500,
+      "name": "taskApprovalClient",
+      "file": "internal/agentd/approval_client.go",
+      "line": 23,
+      "signature": "type taskApprovalClient struct",
+      "summary": "taskApprovalClient 绑定单个 Task.ID 的政策快照与审批判定。"
+    },
+    "n_agentd_Manager_bindApproval": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 501,
+      "name": "Manager.bindApproval",
+      "file": "internal/agentd/approval_client.go",
+      "line": 29,
+      "signature": "func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) executor.ApprovalClient",
+      "params": [
+        [
+          "taskID",
+          "string",
+          "任务 ID"
+        ],
+        [
+          "snap",
+          "executor.PolicySnapshot",
+          "政策快照"
+        ]
+      ],
+      "returns": "executor.ApprovalClient",
+      "summary": "bindApproval 为任务绑定政策快照并构造 taskApprovalClient。"
+    },
+    "n_opencode_Adapter_authorizeNativePermission": {
+      "kind": "func",
+      "container": "k_opencode_Adapter",
+      "order": 502,
+      "name": "Adapter.authorizeNativePermission",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 788,
+      "signature": "func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEvent)",
+      "params": [
+        [
+          "r",
+          "*runState",
+          ""
+        ],
+        [
+          "ev",
+          "executor.AdapterEvent",
+          ""
+        ]
+      ],
+      "returns": "",
+      "summary": "authorizeNativePermission 把原生权限交 client 判定并回传。"
+    },
+    "m_executor_ApprovalBinder": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 312,
+      "name": "ApprovalBinder",
+      "file": "internal/executor/approval.go",
+      "line": 95,
+      "signature": "type ApprovalBinder interface {\n\tBindApproval(taskID string, client ApprovalClient) error\n}",
+      "summary": "ApprovalBinder 是可选能力：允许运行态任务重绑 ApprovalClient（如 Continue 投影新快照后）。",
+      "fields": [
+        [
+          "BindApproval",
+          "func(taskID string, client ApprovalClient) error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_executor_SnapshotApplier": {
+      "kind": "model",
+      "container": "k_executor_model",
+      "order": 313,
+      "name": "SnapshotApplier",
+      "file": "internal/executor/snapshot.go",
+      "line": 7,
+      "signature": "type SnapshotApplier interface {\n\tApplySnapshot(ctx context.Context, taskID string, snap PolicySnapshot) error\n}",
+      "summary": "SnapshotApplier 是可选能力：Continue 开始时把新快照编进原生配置。",
+      "fields": [
+        [
+          "ApplySnapshot",
+          "func(ctx context.Context, taskID string, snap PolicySnapshot) error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_executor_Authorize": {
+      "kind": "func",
+      "container": "k_executor_fn",
+      "order": 303,
+      "name": "Authorize",
+      "file": "internal/executor/authorize.go",
+      "line": 16,
+      "signature": "func Authorize(ctx context.Context, client ApprovalClient, req ApprovalRequest) (ApprovalDecision, error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "client",
+          "ApprovalClient",
+          "审批 client"
+        ],
+        [
+          "req",
+          "ApprovalRequest",
+          "原生权限请求"
+        ]
+      ],
+      "returns": "ApprovalDecision, error",
+      "summary": "Authorize 向 client 请求一次授权。Request 返回 pending 时 Await 直到终态。",
+      "tests": [
+        {
+          "name": "TestAuthorizeAwaitsWhenPending",
+          "file": "internal/executor/authorize_test.go:33"
+        },
+        {
+          "name": "TestAuthorizeNilClientIsNotAllow",
+          "file": "internal/executor/authorize_test.go:47"
+        }
+      ]
+    },
+    "n_executor_ReuseFingerprint": {
+      "kind": "func",
+      "container": "k_executor_fn",
+      "order": 304,
+      "name": "ReuseFingerprint",
+      "file": "internal/executor/fingerprint.go",
+      "line": 41,
+      "signature": "func ReuseFingerprint(version, permFP string) string",
+      "params": [
+        [
+          "version",
+          "string",
+          "政策版本"
+        ],
+        [
+          "permFP",
+          "string",
+          "权限指纹"
+        ]
+      ],
+      "returns": "string",
+      "summary": "ReuseFingerprint 把政策版本盐进权限指纹。P2(a)：不改 Ticket 字段。",
+      "tests": [
+        {
+          "name": "TestReuseFingerprintSaltsVersion",
+          "file": "internal/executor/fingerprint_test.go:74"
+        }
+      ]
+    },
+    "n_agentd_HashPolicyVersion": {
+      "kind": "func",
+      "container": "k_agentd_fn",
+      "order": 502,
+      "name": "HashPolicyVersion",
+      "file": "internal/agentd/approval_client.go",
+      "line": 272,
+      "signature": "func HashPolicyVersion(blacklist []string, approverOn bool, safeIDs []string, scope executor.ApprovalScope) string",
+      "params": [
+        [
+          "blacklist",
+          "[]string",
+          "黑名单"
+        ],
+        [
+          "approverOn",
+          "bool",
+          "审批者启用"
+        ],
+        [
+          "safeIDs",
+          "[]string",
+          "安全命令表"
+        ],
+        [
+          "scope",
+          "executor.ApprovalScope",
+          "范围三根"
+        ]
+      ],
+      "returns": "string",
+      "summary": "HashPolicyVersion 对政策内容做稳定哈希。字段集：黑名单、审批者启用、安全命令表、范围三根。"
+    },
+    "n_permgate_SafeCommandIDs": {
+      "kind": "func",
+      "container": "k_permgate_fn",
+      "order": 300,
+      "name": "SafeCommandIDs",
+      "file": "internal/permgate/permgate.go",
+      "line": 277,
+      "signature": "func SafeCommandIDs() []string",
+      "returns": "[]string",
+      "summary": "SafeCommandIDs 返回当前白名单的稳定 id 集合（排序后），供政策快照 Version 哈希。"
+    },
+    "n_store_Store_AnswerTicketApplied": {
+      "kind": "func",
+      "container": "k_store_Store",
+      "order": 300,
+      "name": "Store.AnswerTicketApplied",
+      "file": "internal/store/store.go",
+      "line": 1268,
+      "signature": "func (s *Store) AnswerTicketApplied(id, answer string) (applied bool, err error)",
+      "params": [
+        [
+          "id",
+          "string",
+          "工单 ID"
+        ],
+        [
+          "answer",
+          "string",
+          "答复内容"
+        ]
+      ],
+      "returns": "applied bool, err error",
+      "summary": "AnswerTicketApplied 回答指定工单，并返回本次是否真正写入新答案。"
+    },
+    "n_opencode_WritePermissionConfig": {
+      "kind": "func",
+      "container": "k_opencode_fn",
+      "order": 300,
+      "name": "WritePermissionConfig",
+      "file": "internal/executor/opencode/taskenv.go",
+      "line": 53,
+      "signature": "func WritePermissionConfig(taskDir, model string, snap executor.PolicySnapshot) (string, error)",
+      "params": [
+        [
+          "taskDir",
+          "string",
+          ""
+        ],
+        [
+          "model",
+          "string",
+          ""
+        ],
+        [
+          "snap",
+          "executor.PolicySnapshot",
+          "政策快照"
+        ]
+      ],
+      "returns": "string, error",
+      "summary": "WritePermissionConfig 把当前政策快照的精确子集写进 opencode.json。",
+      "tests": [
+        {
+          "name": "TestWritePermissionConfigSubsetOfSnapshot",
+          "file": "internal/executor/opencode/taskenv_test.go:324"
+        }
+      ]
+    },
+    "n_opencode_Adapter_RespondAsk": {
+      "kind": "func",
+      "container": "k_opencode_Adapter",
+      "order": 503,
+      "name": "Adapter.RespondAsk",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 575,
+      "signature": "func (a *Adapter) RespondAsk(ctx context.Context, req executor.RespondAskReq) (err error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "req",
+          "executor.RespondAskReq",
+          ""
+        ]
+      ],
+      "returns": "err error",
+      "summary": "RespondAsk 把回答经 AskResponder 协议定向送达原生提问。",
+      "tests": [
+        {
+          "name": "TestRespondAskRepliesPendingQuestion",
+          "file": "internal/executor/opencode/question_test.go:257"
+        }
+      ]
+    },
+    "n_opencode_Adapter_ApplySnapshot": {
+      "kind": "func",
+      "container": "k_opencode_Adapter",
+      "order": 504,
+      "name": "Adapter.ApplySnapshot",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 833,
+      "signature": "func (a *Adapter) ApplySnapshot(ctx context.Context, taskID string, snap executor.PolicySnapshot) error",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "taskID",
+          "string",
+          ""
+        ],
+        [
+          "snap",
+          "executor.PolicySnapshot",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "ApplySnapshot 实现 executor.SnapshotApplier。",
+      "tests": [
+        {
+          "name": "TestApplySnapshotDefaultFailClosed",
+          "file": "internal/executor/opencode/adapter_test.go:1797"
+        }
+      ]
+    },
+    "n_opencode_Adapter_BindApproval": {
+      "kind": "func",
+      "container": "k_opencode_Adapter",
+      "order": 505,
+      "name": "Adapter.BindApproval",
+      "file": "internal/executor/opencode/adapter.go",
+      "line": 853,
+      "signature": "func (a *Adapter) BindApproval(taskID string, client executor.ApprovalClient) error",
+      "params": [
+        [
+          "taskID",
+          "string",
+          ""
+        ],
+        [
+          "client",
+          "executor.ApprovalClient",
+          ""
+        ]
+      ],
+      "returns": "error",
+      "summary": "BindApproval 实现 executor.ApprovalBinder。",
+      "tests": [
+        {
+          "name": "TestAdapterBindApproval",
+          "file": "internal/executor/opencode/adapter_test.go:1858"
+        }
+      ]
+    },
+    "n_scheduling_OccupancyCarrierKey": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 500,
+      "name": "OccupancyCarrierKey",
+      "file": "internal/scheduling/occupancy.go",
+      "line": 10,
+      "signature": "func OccupancyCarrierKey(carrier string) string",
+      "summary": "载体物理位计数 id：carrier/<name>。",
+      "tests": [
+        {
+          "name": "TestOccupancyCarrierKeyGolden",
+          "file": "internal/scheduling/occupancy_test.go:9"
+        }
+      ]
+    },
+    "n_scheduling_OccupancyMemberKey": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 501,
+      "name": "OccupancyMemberKey",
+      "file": "internal/scheduling/occupancy.go",
+      "line": 20,
+      "signature": "func OccupancyMemberKey(squad, carrier string) string",
+      "summary": "小队成员政策位计数 id：squad/<squad>/<carrier>。空小队返回空串。",
+      "tests": [
+        {
+          "name": "TestOccupancyMemberKeyGolden",
+          "file": "internal/scheduling/occupancy_test.go:21"
+        }
+      ]
+    },
+    "n_scheduling_OccupancyKeys": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 502,
+      "name": "OccupancyKeys",
+      "file": "internal/scheduling/occupancy.go",
+      "line": 28,
+      "signature": "func OccupancyKeys(squad, carrier string) (memberKey, carrierKey string)",
+      "summary": "一次占用要动的计数 id。载体直派只有载体键。",
+      "tests": [
+        {
+          "name": "TestOccupancyKeysCarrierOnly",
+          "file": "internal/scheduling/occupancy_test.go:36"
+        }
+      ]
+    },
+    "n_scheduling_EffectiveReceiverName": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 503,
+      "name": "EffectiveReceiverName",
+      "file": "internal/scheduling/receiver.go",
+      "line": 74,
+      "signature": "func EffectiveReceiverName(requested, defaultName string) (name string, viaDefault bool, err error)",
+      "summary": "空接收者名走已确认默认载体；两者都空则 ErrNoDefault。",
+      "tests": [
+        {
+          "name": "TestEffectiveReceiverName",
+          "file": "internal/scheduling/receiver_test.go:58"
+        }
+      ]
+    },
+    "n_scheduling_ClassifyRegistered": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 504,
+      "name": "ClassifyRegistered",
+      "file": "internal/scheduling/receiver.go",
+      "line": 88,
+      "signature": "func ClassifyRegistered(name string, hasCarrier, hasSquad bool) (ReceiverKind, error)",
+      "summary": "在载体/小队同一名称空间分类；冲突拒绝不猜。",
+      "tests": [
+        {
+          "name": "TestClassifyRegistered",
+          "file": "internal/scheduling/receiver_test.go:81"
+        }
+      ]
+    },
+    "n_scheduling_CheckDefaultKind": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 505,
+      "name": "CheckDefaultKind",
+      "file": "internal/scheduling/receiver.go",
+      "line": 106,
+      "signature": "func CheckDefaultKind(kind ReceiverKind) error",
+      "summary": "默认解析结果必须是载体。",
+      "tests": [
+        {
+          "name": "TestCheckDefaultKind",
+          "file": "internal/scheduling/receiver_test.go:104"
+        }
+      ]
+    },
+    "n_scheduling_ResolveLookup": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 506,
+      "name": "ResolveLookup",
+      "file": "internal/scheduling/receiver.go",
+      "line": 115,
+      "signature": "func ResolveLookup(requested, defaultName string, lookup func(string) (hasCarrier, hasSquad bool)) (ResolvedReceiver, error)",
+      "summary": "组合空名默认与登记分类。",
+      "tests": [
+        {
+          "name": "TestResolveLookupTable",
+          "file": "internal/scheduling/receiver_test.go:113"
+        }
+      ]
+    },
+    "n_scheduling_CrossKindConflict": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 507,
+      "name": "CrossKindConflict",
+      "file": "internal/scheduling/receiver.go",
+      "line": 140,
+      "signature": "func CrossKindConflict(otherExists bool) error",
+      "summary": "写入一侧时对侧同名已存在则 ErrNameConflict。",
+      "tests": [
+        {
+          "name": "TestCrossKindConflict",
+          "file": "internal/scheduling/receiver_test.go:170"
+        }
+      ]
+    },
+    "n_scheduling_IdentityOf": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 508,
+      "name": "IdentityOf",
+      "file": "internal/scheduling/receiver.go",
+      "line": 148,
+      "signature": "func IdentityOf(c Carrier) PhysicalIdentity",
+      "summary": "从载体取出不可覆盖的物理身份。",
+      "tests": [
+        {
+          "name": "TestIdentityOfAndBindPhysical",
+          "file": "internal/scheduling/receiver_test.go:179"
+        }
+      ]
+    },
+    "n_scheduling_BindPhysical": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 509,
+      "name": "BindPhysical",
+      "file": "internal/scheduling/receiver.go",
+      "line": 154,
+      "signature": "func BindPhysical(id PhysicalIdentity, overlay PhysicalOverlay) (PhysicalIdentity, error)",
+      "summary": "请求覆盖套到已绑定身份；指定但不同则 ErrPhysicalOverride。",
+      "tests": [
+        {
+          "name": "TestIdentityOfAndBindPhysical",
+          "file": "internal/scheduling/receiver_test.go:179"
+        }
+      ]
+    },
+    "n_scheduling_EffectiveModel": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 510,
+      "name": "EffectiveModel",
+      "file": "internal/scheduling/receiver.go",
+      "line": 169,
+      "signature": "func EffectiveModel(carrierModel, requestModel string) string",
+      "summary": "允许的逐任务模型覆盖；不改变物理身份。",
+      "tests": [
+        {
+          "name": "TestEffectiveModel",
+          "file": "internal/scheduling/receiver_test.go:219"
+        }
+      ]
+    },
+    "n_scheduling_EncodeDefaultCarrier": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 511,
+      "name": "EncodeDefaultCarrier",
+      "file": "internal/scheduling/receiver.go",
+      "line": 177,
+      "signature": "func EncodeDefaultCarrier(name string) ([]byte, error)",
+      "summary": "编码默认载体 singleton body。",
+      "tests": [
+        {
+          "name": "TestDefaultCarrierRecordGolden",
+          "file": "internal/scheduling/receiver_test.go:231"
+        }
+      ]
+    },
+    "n_scheduling_DecodeDefaultCarrier": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 512,
+      "name": "DecodeDefaultCarrier",
+      "file": "internal/scheduling/receiver.go",
+      "line": 186,
+      "signature": "func DecodeDefaultCarrier(body []byte) (string, error)",
+      "summary": "解码默认载体 singleton body。",
+      "tests": [
+        {
+          "name": "TestDefaultCarrierRecordGolden",
+          "file": "internal/scheduling/receiver_test.go:231"
+        }
+      ]
+    },
+    "m_scheduling_ReceiverKind": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 500,
+      "name": "ReceiverKind",
+      "file": "internal/scheduling/receiver.go",
+      "line": 19,
+      "signature": "type ReceiverKind string",
+      "summary": "统一名称解析的结果类型：carrier 或 squad。",
+      "modelKind": "dto"
+    },
+    "m_scheduling_DefaultCarrierRecord": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 501,
+      "name": "DefaultCarrierRecord",
+      "file": "internal/scheduling/receiver.go",
+      "line": 34,
+      "signature": "type DefaultCarrierRecord struct {",
+      "summary": "默认载体 singleton 的 body。",
+      "modelKind": "dto",
+      "fields": [
+        [
+          "Name",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_scheduling_ResolvedReceiver": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 502,
+      "name": "ResolvedReceiver",
+      "file": "internal/scheduling/receiver.go",
+      "line": 51,
+      "signature": "type ResolvedReceiver struct {",
+      "summary": "一次名称解析的结果。",
+      "modelKind": "dto",
+      "fields": [
+        [
+          "Kind",
+          "ReceiverKind",
+          ""
+        ],
+        [
+          "Name",
+          "string",
+          ""
+        ],
+        [
+          "ViaDefault",
+          "bool",
+          ""
+        ]
+      ]
+    },
+    "m_scheduling_PhysicalIdentity": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 503,
+      "name": "PhysicalIdentity",
+      "file": "internal/scheduling/receiver.go",
+      "line": 59,
+      "signature": "type PhysicalIdentity struct {",
+      "summary": "绑定后不可覆盖的物理身份。Model 不是物理身份。",
+      "modelKind": "dto",
+      "fields": [
+        [
+          "Machine",
+          "string",
+          ""
+        ],
+        [
+          "CLI",
+          "string",
+          ""
+        ],
+        [
+          "HomeDir",
+          "string",
+          ""
+        ]
+      ]
+    },
+    "m_scheduling_PhysicalOverlay": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 504,
+      "name": "PhysicalOverlay",
+      "file": "internal/scheduling/receiver.go",
+      "line": 66,
+      "signature": "type PhysicalOverlay struct {",
+      "summary": "请求侧想施加的物理字段。HomeDir nil=缺席。",
+      "modelKind": "dto",
+      "fields": [
+        [
+          "Machine",
+          "string",
+          ""
+        ],
+        [
+          "CLI",
+          "string",
+          ""
+        ],
+        [
+          "HomeDir",
+          "*string",
+          "nil=缺席"
+        ]
+      ]
+    },
+    "n_scheduling_Service_AdmitCarrier": {
+      "kind": "func",
+      "container": "k_scheduling_Service",
+      "order": 510,
+      "name": "Service.AdmitCarrier",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 378,
+      "signature": "func (s *Service) AdmitCarrier(name string) (Binding, error)",
+      "params": [
+        [
+          "name",
+          "string",
+          "载体名"
+        ]
+      ],
+      "returns": "Binding, error",
+      "summary": "对载体直派只占载体物理位，并返回机器、CLI 与 HOME 快照。",
+      "tests": [
+        {
+          "name": "TestAdmitCarrierOccupiesCarrierKeyOnly",
+          "file": "internal/scheduling/admit_carrier_test.go:47"
+        },
+        {
+          "name": "TestAdmitCarrierOfflineIsNoHealthy",
+          "file": "internal/scheduling/admit_carrier_test.go:96"
+        },
+        {
+          "name": "TestAdmitCarrierFullIsNoSlot",
+          "file": "internal/scheduling/admit_carrier_test.go:110"
+        }
+      ]
+    },
+    "n_scheduling_Service_DefaultCarrier": {
+      "kind": "func",
+      "container": "k_scheduling_Service",
+      "order": 511,
+      "name": "Service.DefaultCarrier",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 421,
+      "signature": "func (s *Service) DefaultCarrier() (string, error)",
+      "returns": "string, error",
+      "summary": "读取并校验已确认的默认载体 singleton。",
+      "tests": [
+        {
+          "name": "TestDefaultCarrierRoundtrip",
+          "file": "internal/scheduling/default_carrier_test.go:13"
+        }
+      ]
+    },
+    "n_scheduling_Service_SetDefaultCarrier": {
+      "kind": "func",
+      "container": "k_scheduling_Service",
+      "order": 512,
+      "name": "Service.SetDefaultCarrier",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 449,
+      "signature": "func (s *Service) SetDefaultCarrier(name string) error",
+      "params": [
+        [
+          "name",
+          "string",
+          "载体名"
+        ]
+      ],
+      "returns": "error",
+      "summary": "写入并校验默认载体 singleton。",
+      "tests": [
+        {
+          "name": "TestDefaultCarrierRoundtrip",
+          "file": "internal/scheduling/default_carrier_test.go:13"
+        },
+        {
+          "name": "TestSetDefaultCarrierRejectsSquadOnlyName",
+          "file": "internal/scheduling/default_carrier_test.go:40"
+        }
+      ]
+    },
+    "n_scheduling_bindingFor": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 513,
+      "name": "bindingFor",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 868,
+      "signature": "func bindingFor(q Squad, c Carrier, req IgnitionRequest) Binding",
+      "params": [
+        [
+          "q",
+          "Squad",
+          ""
+        ],
+        [
+          "c",
+          "Carrier",
+          ""
+        ],
+        [
+          "req",
+          "IgnitionRequest",
+          ""
+        ]
+      ],
+      "returns": "Binding",
+      "summary": "从载体物理身份与模型覆盖产出绑定快照，不覆盖机器、CLI 或 HOME。",
+      "tests": [
+        {
+          "name": "TestAdmitNoLongerOverridesPhysical",
+          "file": "internal/scheduling/admit_carrier_test.go:81"
+        }
+      ]
+    },
+    "n_agentd_Server_resolveReceiver": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1863,
+      "name": "Server.resolveReceiver",
+      "file": "internal/agentd/receiver_bind.go",
+      "line": 17,
+      "signature": "func (s *Server) resolveReceiver(requested string) (scheduling.ResolvedReceiver, error)",
+      "params": [
+        [
+          "requested",
+          "string",
+          "显式或空接收者名"
+        ]
+      ],
+      "returns": "scheduling.ResolvedReceiver, error",
+      "summary": "通过编制域解析显式或默认接收者。"
+    },
+    "n_agentd_Server_prepareReceiverBinding": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1864,
+      "name": "Server.prepareReceiverBinding",
+      "file": "internal/agentd/receiver_bind.go",
+      "line": 62,
+      "signature": "func (s *Server) prepareReceiverBinding(requested string, overlay scheduling.PhysicalOverlay, requestModel string) (scheduling.Binding, scheduling.ResolvedReceiver, error)",
+      "params": [
+        [
+          "requested",
+          "string",
+          "显式或空接收者名"
+        ],
+        [
+          "overlay",
+          "scheduling.PhysicalOverlay",
+          "请求侧物理覆盖"
+        ],
+        [
+          "requestModel",
+          "string",
+          "任务级模型覆盖"
+        ]
+      ],
+      "returns": "scheduling.Binding, scheduling.ResolvedReceiver, error",
+      "summary": "复用接收者解析、准入与物理身份绑定准备链。"
+    },
+    "n_agentd_Server_releaseTaskCarrierOccupancy": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1865,
+      "name": "Server.releaseTaskCarrierOccupancy",
+      "file": "internal/agentd/server.go",
+      "line": 1753,
+      "signature": "func (s *Server) releaseTaskCarrierOccupancy(task *proto.Task)",
+      "params": [
+        [
+          "task",
+          "*proto.Task",
+          "任务身份快照"
+        ]
+      ],
+      "summary": "按任务冻结的小队与载体身份释放终态占用。"
+    }
+  },
+  "nodesModified": {
+    "m_scheduling_Binding": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 4,
+      "name": "Binding",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 137,
+      "signature": "type Binding struct {",
+      "signatureOld": "type Binding",
+      "summary": "Binding 是准入成功后的落点；HomeDir 是绑定时的载体 HOME 快照。",
+      "fields": [
+        [
+          "Squad",
+          "string",
+          "命中小队"
+        ],
+        [
+          "Carrier",
+          "string",
+          "命中的具体载体"
+        ],
+        [
+          "Target",
+          "string",
+          "有效目标机"
+        ],
+        [
+          "Executor",
+          "string",
+          "有效执行者"
+        ],
+        [
+          "Model",
+          "string",
+          "有效模型，可空"
+        ],
+        [
+          "HomeDir",
+          "string",
+          "绑定时的载体 HOME 快照"
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_proto_Task": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 217,
+      "name": "Task",
+      "file": "internal/proto/proto.go",
+      "line": 220,
+      "signature": "type Task struct {",
+      "summary": "Task 表示一个 handoff 任务，并保存派发时绑定的载体与小队快照。",
+      "fields": [
+        ["ID", "string", ""],
+        ["Target", "string", ""],
+        ["RepoPath", "string", ""],
+        ["HomeDir", "string", ""],
+        ["Carrier", "string", "派发时绑定的载体名；空=旧任务或载体尚未接线"],
+        ["Squad", "string", "派发时绑定的小队名；空=载体直派或旧任务"],
+        ["Branch", "string", ""],
+        ["PlanPath", "string", ""],
+        ["PlanSummary", "string", ""],
+        ["ExecutorSession", "string", ""],
+        ["State", "TaskState", ""],
+        ["CreatedAt", "time.Time", ""],
+        ["UpdatedAt", "time.Time", ""],
+        ["Name", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["Discipline", "string", ""],
+        ["DisciplineName", "string", ""],
+        ["DisciplineVersion", "int", "命中的账本版本；老任务为 0"],
+        ["WorkDir", "string", ""],
+        ["WorktreeManaged", "bool", ""],
+        ["BaseCommit", "string", ""],
+        ["BaseAhead", "int", ""],
+        ["RepoDirtyCount", "int", ""],
+        ["RepoDirtyFiles", "string", ""],
+        ["DoneNote", "string", ""],
+        ["ActualModel", "string", ""],
+        ["Usage", "*Usage", ""],
+        ["Cumulative", "*Cumulative", ""],
+        ["Timing", "*TaskTiming", ""],
+        ["Machine", "string", ""],
+        ["ProjectID", "string", ""]
+      ],
+      "projScanned": true,
+      "modelKind": "entity"
+    },
+    "m_client_DispatchOpts": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 700,
+      "name": "DispatchOpts",
+      "file": "internal/client/client.go",
+      "line": 717,
+      "signature": "type DispatchOpts struct {",
+      "summary": "DispatchOpts 是 Dispatch 的入参，并携带统一接收者名。",
+      "fields": [
+        ["ProjectID", "string", ""],
+        ["ProjectName", "string", ""],
+        ["PlanB64", "string", ""],
+        ["PlanName", "string", ""],
+        ["Target", "string", ""],
+        ["Prompt", "string", ""],
+        ["Name", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=默认载体"],
+        ["HomeDir", "*string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["Branch", "string", ""],
+        ["NewBranch", "string", ""],
+        ["Base", "string", ""],
+        ["ResolveDefaultBase", "bool", "空基线时由目标侧解析项目默认分支"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"],
+        ["Worktree", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["BaseCommit", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_ledgerstep_DispatchOpts": {
+      "kind": "model",
+      "container": "k_ledgerstep_model",
+      "order": 25,
+      "name": "DispatchOpts",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 25,
+      "signature": "type DispatchOpts struct {",
+      "summary": "DispatchOpts 是 Transport 的完整派发请求，并携带统一接收者名。",
+      "fields": [
+        ["Prompt", "string", ""],
+        ["Branch", "string", ""],
+        ["Target", "string", ""],
+        ["Project", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["PlanB64", "string", ""],
+        ["PlanName", "string", ""],
+        ["Base", "string", ""],
+        ["ExistingBranch", "string", ""],
+        ["Discipline", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=默认载体"],
+        ["HomeDir", "*string", ""],
+        ["DisciplineText", "string", ""],
+        ["DisciplineVersion", "int", ""],
+        ["OutputPath", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["ResolveDefaultBase", "bool", "空基线时由目标侧解析项目默认分支"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"]
+      ],
+      "modelKind": "dto"
+    },
+    "m_agentd_DispatchReq": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 369,
+      "name": "DispatchReq",
+      "file": "internal/agentd/manager.go",
+      "line": 468,
+      "signature": "type DispatchReq struct {",
+      "summary": "DispatchReq 是 Dispatch 的入参，携带网关已冻结的载体与小队身份。",
+      "fields": [
+        ["ProjectID", "string", ""],
+        ["ProjectName", "string", ""],
+        ["PlanB64", "string", "plan 内容，base64 编码（路由/CLI 层编码，此处解码）"],
+        ["PlanName", "string", "plan 文件名（归档展示用，写入 task 的 PlanPath 目录下）"],
+        ["Target", "string", "目标主机名（归档展示用，记入 task.Target）"],
+        ["Prompt", "string", ""],
+        ["Name", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=使用已确认的默认载体"],
+        ["Carrier", "string", "网关绑定的载体名；只在 CreateTask 写入"],
+        ["Squad", "string", "网关绑定的小队名快照；空=载体直派"],
+        ["HomeDir", "*string", "小队派发载体 HOME；nil=字段缺席"],
+        ["Executor", "string", ""],
+        ["Discipline", "string", ""],
+        ["DisciplineText", "string", ""],
+        ["DisciplineVersion", "int", ""],
+        ["Model", "string", ""],
+        ["Branch", "string", ""],
+        ["NewBranch", "string", ""],
+        ["Base", "string", ""],
+        ["ResolveDefaultBase", "bool", "空基线时解析 origin/HEAD"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"],
+        ["Worktree", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["BaseCommit", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_agentd_dispatchRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1050,
+      "name": "dispatchRequest",
+      "file": "internal/agentd/server.go",
+      "line": 1319,
+      "signature": "type dispatchRequest struct {",
+      "summary": "dispatchRequest 是 POST /api/tasks 的请求体，包含统一接收者名。",
+      "fields": [
+        ["ProjectID", "string", ""],
+        ["ProjectName", "string", ""],
+        ["PlanB64", "string", ""],
+        ["PlanName", "string", ""],
+        ["Target", "string", ""],
+        ["Prompt", "string", ""],
+        ["Name", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=默认载体"],
+        ["HomeDir", "*string", ""],
+        ["Executor", "string", ""],
+        ["Discipline", "string", "点名的纪律块角色名；空=未点名（只注入平台层）"],
+        ["DisciplineText", "string", "协调者侧缝 1 组装好的纪律正文；本机收文即用不再解析"],
+        ["DisciplineVersion", "int", "命中的账本版本，随任务落盘供回放"],
+        ["Model", "string", ""],
+        ["Branch", "string", ""],
+        ["NewBranch", "string", ""],
+        ["Base", "string", ""],
+        ["ResolveDefaultBase", "bool", ""],
+        ["LocalBaseBranch", "bool", ""],
+        ["Worktree", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["BaseCommit", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_web_api_types_Task": {
+      "kind": "model",
+      "container": "k_web_api_types_model",
+      "order": 15,
+      "name": "Task",
+      "file": "web/src/api/types.ts",
+      "line": 15,
+      "signature": "interface Task",
+      "summary": "TS 侧 Task 镜像声明派发时绑定的载体与小队快照。",
+      "fields": [
+        ["id", "string", ""],
+        ["target", "string", ""],
+        ["repo_path", "string", ""],
+        ["carrier", "string", "可选；派发时绑定的载体名"],
+        ["squad", "string", "可选；派发时绑定的小队名"],
+        ["branch", "string", ""],
+        ["plan_path", "string", ""],
+        ["plan_summary", "string", ""],
+        ["executor_session", "string", ""],
+        ["state", "string", ""],
+        ["created_at", "string", ""],
+        ["updated_at", "string", ""],
+        ["name", "string", ""],
+        ["executor", "string", ""],
+        ["model", "string", ""],
+        ["discipline_name", "string", "可选；派发点名的角色名"],
+        ["discipline_version", "number", "可选；命中的账本版本"],
+        ["work_dir", "string", ""],
+        ["worktree_managed", "boolean", ""],
+        ["base_commit", "string", ""],
+        ["base_ahead", "number", ""],
+        ["repo_dirty_count", "number", ""],
+        ["repo_dirty_files", "string", ""],
+        ["done_note", "string", "归档时审核者留的完成说明；\"\"=未留说明"],
+        ["actual_model", "string", "executor 报回的实际模型名；缺省=还没报"],
+        ["usage", "Usage", "当前 context 占用；缺省=还没有完成的模型调用"],
+        ["cumulative", "Cumulative", "累计消耗；缺省=还没有账目"],
+        ["timing", "TaskTiming", "耗时聚合；缺省=还没有耗时账目"],
+        ["machine", "string", "\"\"=本机；否则为汇总方盖章的机器键"],
+        ["project_id", "string", "归属项目；未归属为 \"\""]
+      ],
+      "modelKind": "dto"
+    }
+  },
+  "edgesAdded": [
+    [
+      "n_opencode_Adapter_authorizeNativePermission",
+      "m_executor_ApprovalClient"
+    ],
+    [
+      "n_agentd_Manager_bindApproval",
+      "m_agentd_taskApprovalClient"
+    ],
+    [
+      "n_agentd_Manager_Dispatch",
+      "n_agentd_Manager_bindApproval"
+    ],
+    [
+      "n_opencode_Adapter_authorizeNativePermission",
+      "n_executor_Authorize"
+    ],
+    [
+      "n_executor_Authorize",
+      "m_executor_ApprovalClient"
+    ],
+    [
+      "n_agentd_Manager_Continue",
+      "n_agentd_Manager_bindApproval"
+    ],
+    [
+      "n_scheduling_PutCarrier",
+      "n_scheduling_Service_Squad"
+    ],
+    [
+      "n_scheduling_PutCarrier",
+      "n_scheduling_CrossKindConflict"
+    ],
+    [
+      "n_scheduling_Service_PutSquad",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_scheduling_Service_PutSquad",
+      "n_scheduling_CrossKindConflict"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_OccupancyKeys"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_Service_readCount"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_Service_casCount"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_IdentityOf"
+    ],
+    [
+      "n_scheduling_Service_DefaultCarrier",
+      "n_scheduling_DecodeDefaultCarrier"
+    ],
+    [
+      "n_scheduling_Service_DefaultCarrier",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_scheduling_Service_SetDefaultCarrier",
+      "n_scheduling_EncodeDefaultCarrier"
+    ],
+    [
+      "n_scheduling_Service_SetDefaultCarrier",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_scheduling_Service_Release",
+      "n_scheduling_OccupancyKeys"
+    ],
+    [
+      "n_scheduling_Service_acquire",
+      "n_scheduling_OccupancyKeys"
+    ],
+    [
+      "n_scheduling_bindingFor",
+      "n_scheduling_IdentityOf"
+    ],
+    [
+      "n_scheduling_bindingFor",
+      "n_scheduling_EffectiveModel"
+    ],
+    [
+      "n_agentd_Server_resolveReceiver",
+      "n_scheduling_Service_DefaultCarrier"
+    ],
+    [
+      "n_agentd_Server_resolveReceiver",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_agentd_Server_resolveReceiver",
+      "n_scheduling_Service_Squad"
+    ],
+    [
+      "n_agentd_Server_resolveReceiver",
+      "n_scheduling_ResolveLookup"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_agentd_Server_resolveReceiver"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_Service_AdmitCarrier"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_Service_Admit"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_BindPhysical"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_Service_Release"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_EffectiveModel"
+    ],
+    [
+      "n_agentd_Server_admitSquadStep",
+      "n_agentd_Server_resolveReceiver"
+    ],
+    [
+      "n_agentd_Server_admitSquadStep",
+      "n_scheduling_BindPhysical"
+    ],
+    [
+      "n_agentd_Server_admitSquadStep",
+      "n_scheduling_EffectiveModel"
+    ],
+    [
+      "n_agentd_Server_admitSquadStep",
+      "n_scheduling_Service_Release"
+    ],
+    [
+      "n_agentd_Server_handleDispatch",
+      "n_agentd_Server_prepareReceiverBinding"
+    ],
+    [
+      "n_agentd_Server_handleDispatch",
+      "n_scheduling_Service_Release"
+    ],
+    [
+      "n_agentd_Server_handleDone",
+      "n_agentd_Server_releaseTaskCarrierOccupancy"
+    ],
+    [
+      "n_agentd_Server_handleStop",
+      "n_agentd_Server_releaseTaskCarrierOccupancy"
+    ],
+    [
+      "n_agentd_Server_handleStop",
+      "n_store_Store_GetTask"
+    ],
+    [
+      "n_agentd_Server_releaseTaskCarrierOccupancy",
+      "n_scheduling_Service_Release"
+    ]
+  ],
+  "implementsAdded": [
+    [
+      "m_agentd_taskApprovalClient",
+      "m_executor_ApprovalClient"
+    ],
+    [
+      "m_opencode_Adapter",
+      "m_executor_AskResponder"
+    ],
+    [
+      "m_opencode_Adapter",
+      "m_executor_SnapshotApplier"
+    ],
+    [
+      "m_opencode_Adapter",
+      "m_executor_ApprovalBinder"
+    ]
+  ]
+}

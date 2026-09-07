@@ -22,7 +22,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/schedclient"
 )
 
-// 注册表里各实体的 kind 常量。只有这四个前缀，新增实体先改契约再改这里。
+// 注册表里各实体的 kind 常量。新增实体先改契约再改这里。
+// 默认载体 singleton 的 kind/id 在 receiver.go（KindDefaultCarrier / DefaultCarrierID）。
 const (
 	kindCarrier       = "carrier"
 	kindSquad         = "squad"
@@ -133,12 +134,14 @@ type IgnitionRequest struct {
 }
 
 // Binding 是准入成功后的落点：哪个小队的哪个载体、有效三元组是什么。
+// HomeDir 是绑定当时的载体 HOME 快照（B233.5）；空=沿用该机主 HOME。
 type Binding struct {
 	Squad    string `json:"squad"`
 	Carrier  string `json:"carrier"`
 	Target   string `json:"target"`
 	Executor string `json:"executor"`
 	Model    string `json:"model,omitempty"`
+	HomeDir  string `json:"home_dir,omitempty"`
 }
 
 var (
@@ -202,6 +205,15 @@ func (s *Service) PutCarrier(c Carrier, expect int) error {
 	}
 	if err := s.checkKnownMachine(c.Name, c.Machine, expect); err != nil {
 		return err
+	}
+	if _, squadErr := s.Squad(c.Name); squadErr == nil {
+		if err := CrossKindConflict(true); err != nil {
+			statusLog().Error("载体登记跨 kind 冲突", "name", c.Name, "expect", expect, "cause", err)
+			return fmt.Errorf("%w: %s", err, c.Name)
+		}
+	} else if !errors.Is(squadErr, ErrNotFound) {
+		statusLog().Error("检查载体同名小队失败", "name", c.Name, "expect", expect, "cause", squadErr)
+		return squadErr
 	}
 	homeChanged := false
 	if expect == 0 {
@@ -343,12 +355,125 @@ func (s *Service) PutSquad(q Squad, expect int) error {
 	if q.Role != RoleExecutor && q.Role != RoleCoordinator {
 		return fmt.Errorf("%w: 小队 %s 角色只能是 executor 或 coordinator", ErrInvalid, q.Name)
 	}
+	if _, carrierErr := s.Carrier(q.Name); carrierErr == nil {
+		if err := CrossKindConflict(true); err != nil {
+			statusLog().Error("小队登记跨 kind 冲突", "name", q.Name, "expect", expect, "cause", err)
+			return fmt.Errorf("%w: %s", err, q.Name)
+		}
+	} else if !errors.Is(carrierErr, ErrNotFound) {
+		statusLog().Error("检查小队同名载体失败", "name", q.Name, "expect", expect, "cause", carrierErr)
+		return carrierErr
+	}
 	for _, m := range q.Members {
 		if _, err := s.Carrier(m.Carrier); err != nil {
 			return fmt.Errorf("小队 %s 成员 %s: %w", q.Name, m.Carrier, err)
 		}
 	}
 	return s.putEntity(kindSquad, q.Name, q, expect)
+}
+
+// AdmitCarrier 对一次无小队的载体直派只占载体物理位。
+// Binding.Squad 为空；HomeDir 是绑定当时的 IdentityOf 快照。
+// 与 Admit 的小队两级准入不同，直派不创建小队成员计数键。
+func (s *Service) AdmitCarrier(name string) (Binding, error) {
+	name = strings.TrimSpace(name)
+	statusLog().Info("scheduling.admit_carrier.start", "carrier", name, "error_kind", "start")
+	c, err := s.Carrier(name)
+	if err != nil {
+		statusLog().Error("scheduling.admit_carrier.error", "carrier", name, "error_kind", "lookup", "cause", err)
+		return Binding{}, err
+	}
+	if c.Status != StatusOnline {
+		err := fmt.Errorf("%w: 载体 %s 状态为 %s", ErrNoHealthy, c.Name, c.Status)
+		statusLog().Warn("scheduling.admit_carrier.error", "carrier", c.Name, "status", c.Status, "error_kind", "no_healthy", "cause", err)
+		return Binding{}, err
+	}
+	_, carrierKey := OccupancyKeys("", c.Name)
+	for attempt := 0; attempt < maxCASAttempts; attempt++ {
+		running, expect, err := s.readCount(carrierKey)
+		if err != nil {
+			statusLog().Error("scheduling.admit_carrier.error", "carrier", c.Name, "carrier_key", carrierKey, "attempt", attempt+1, "error_kind", "counter_read", "cause", err)
+			return Binding{}, err
+		}
+		if c.MaxConcurrency > 0 && running >= c.MaxConcurrency {
+			err := fmt.Errorf("%w: 载体 %s", ErrNoSlot, c.Name)
+			statusLog().Warn("scheduling.admit_carrier.full", "carrier", c.Name, "carrier_key", carrierKey, "running", running, "carrier_cap", c.MaxConcurrency, "error_kind", "no_slot", "cause", err)
+			return Binding{}, err
+		}
+		if err := s.casCount(carrierKey, expect, running+1); err != nil {
+			if errors.Is(err, schedclient.ErrCASConflict) {
+				continue
+			}
+			statusLog().Error("scheduling.admit_carrier.error", "carrier", c.Name, "carrier_key", carrierKey, "attempt", attempt+1, "error_kind", "counter_write", "cause", err)
+			return Binding{}, err
+		}
+		id := IdentityOf(c)
+		b := Binding{Squad: "", Carrier: c.Name, Target: id.Machine, Executor: id.CLI, Model: c.Model, HomeDir: id.HomeDir}
+		statusLog().Info("scheduling.admit_carrier.success", "carrier", c.Name, "carrier_key", carrierKey, "target", b.Target, "executor", b.Executor, "home_dir", b.HomeDir, "error_kind", "success")
+		return b, nil
+	}
+	err = fmt.Errorf("%w: %s", ErrRetryExhausted, carrierKey)
+	statusLog().Error("scheduling.admit_carrier.error", "carrier", c.Name, "carrier_key", carrierKey, "error_kind", "retry_exhausted", "cause", err)
+	return Binding{}, err
+}
+
+// DefaultCarrier 读取已确认的默认载体名。没有记录或记录指向未登记载体时返回 ErrNoDefault。
+func (s *Service) DefaultCarrier() (string, error) {
+	statusLog().Info("scheduling.default_carrier.read.start", "kind", KindDefaultCarrier, "id", DefaultCarrierID)
+	rec, err := s.repo.Get(KindDefaultCarrier, DefaultCarrierID)
+	if err != nil {
+		if errors.Is(err, schedclient.ErrNotFound) {
+			err = ErrNoDefault
+		}
+		statusLog().Error("scheduling.default_carrier.read.error", "kind", KindDefaultCarrier, "id", DefaultCarrierID, "error_kind", "registry", "cause", err)
+		return "", err
+	}
+	name, err := DecodeDefaultCarrier(rec.Body)
+	if err != nil {
+		statusLog().Error("scheduling.default_carrier.decode.error", "kind", KindDefaultCarrier, "id", DefaultCarrierID, "error_kind", "decode", "cause", err)
+		return "", err
+	}
+	if _, err := s.Carrier(name); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			err = fmt.Errorf("%w: 默认载体 %s 未登记", ErrNoDefault, name)
+		}
+		statusLog().Error("scheduling.default_carrier.read.error", "name", name, "error_kind", "carrier_lookup", "cause", err)
+		return "", err
+	}
+	statusLog().Info("scheduling.default_carrier.read.success", "name", name, "kind", KindDefaultCarrier, "id", DefaultCarrierID, "error_kind", "success")
+	return name, nil
+}
+
+// SetDefaultCarrier 写入默认载体 singleton；kind 为 default_carrier、id 为 current。
+// 空名由 EncodeDefaultCarrier 拒绝，非载体名不写入记录。
+func (s *Service) SetDefaultCarrier(name string) error {
+	name = strings.TrimSpace(name)
+	body, err := EncodeDefaultCarrier(name)
+	if err != nil {
+		statusLog().Error("scheduling.default_carrier.write.error", "name", name, "error_kind", "invalid_name", "cause", err)
+		return err
+	}
+	if _, err := s.Carrier(name); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			err = fmt.Errorf("%w: 默认载体 %s 未登记为载体", ErrNoDefault, name)
+		}
+		statusLog().Error("scheduling.default_carrier.write.error", "name", name, "error_kind", "carrier_lookup", "cause", err)
+		return err
+	}
+	expect := 0
+	if rec, getErr := s.repo.Get(KindDefaultCarrier, DefaultCarrierID); getErr == nil {
+		expect = rec.Version
+	} else if !errors.Is(getErr, schedclient.ErrNotFound) {
+		statusLog().Error("读取默认载体版本失败", "name", name, "expect", expect, "cause", getErr)
+		return getErr
+	}
+	version, err := s.repo.Put(KindDefaultCarrier, DefaultCarrierID, expect, body, "scheduling")
+	if err != nil {
+		statusLog().Error("写入默认载体失败", "name", name, "expect", expect, "version", version, "cause", err)
+		return err
+	}
+	statusLog().Info("写入默认载体成功", "name", name, "expect", expect, "version", version, "kind", KindDefaultCarrier, "id", DefaultCarrierID, "error_kind", "success")
+	return nil
 }
 
 // Squad 读一个小队。
@@ -431,26 +556,32 @@ func (s *Service) LaunchAdmit(squadName string) (Binding, error) {
 }
 
 // Release 归还一个已结束回合占用的两级名额。幂等：计数到 0 后不再下探。
+// 空小队是载体直派，必须跳过成员键，避免释放一个从未存在的 squad//carrier 计数。
 func (s *Service) Release(squadName, carrierName string) error {
 	capacity := s.capacityContext(squadName, carrierName)
 	slog.Default().Info("scheduling.release.start", "squad", squadName, "carrier", carrierName,
 		"member_policy", capacity.memberPolicy, "carrier_cap", capacity.carrierCap,
 		"error_kind", "start")
-	if err := s.stepRunning(kindSquad+"/"+squadName+"/"+carrierName, -1); err != nil {
-		slog.Default().Error("scheduling.release.error", "squad", squadName,
-			"carrier", carrierName, "member_policy", capacity.memberPolicy,
-			"carrier_cap", capacity.carrierCap, "error_kind", "squad_counter", "cause", err)
-		return err
+	memberKey, carrierKey := OccupancyKeys(squadName, carrierName)
+	if memberKey != "" {
+		if err := s.stepRunning(memberKey, -1); err != nil {
+			slog.Default().Error("scheduling.release.error", "squad", squadName,
+				"carrier", carrierName, "member_policy", capacity.memberPolicy,
+				"carrier_cap", capacity.carrierCap, "error_kind", "squad_counter", "cause", err)
+			return err
+		}
 	}
-	if err := s.stepRunning(kindCarrier+"/"+carrierName, -1); err != nil {
-		slog.Default().Error("scheduling.release.error", "squad", squadName,
-			"carrier", carrierName, "member_policy", capacity.memberPolicy,
-			"carrier_cap", capacity.carrierCap, "error_kind", "carrier_counter", "cause", err)
-		return err
+	if carrierKey != "" {
+		if err := s.stepRunning(carrierKey, -1); err != nil {
+			slog.Default().Error("scheduling.release.error", "squad", squadName,
+				"carrier", carrierName, "member_policy", capacity.memberPolicy,
+				"carrier_cap", capacity.carrierCap, "error_kind", "carrier_counter", "cause", err)
+			return err
+		}
 	}
 	slog.Default().Info("scheduling.release.success", "squad", squadName, "carrier", carrierName,
 		"member_policy", capacity.memberPolicy, "carrier_cap", capacity.carrierCap,
-		"error_kind", "success")
+		"member_key", memberKey, "carrier_key", carrierKey, "error_kind", "success")
 	return nil
 }
 
@@ -648,15 +779,19 @@ func (s *Service) admitInto(q Squad, req IgnitionRequest) (Binding, error) {
 // 回写——期间可能有第三方又动了小队计数，按版本回写会把别人的增量踩掉。回滚
 // 失败只吞掉：计数偏高是保守方向（多拒不超发），偏低才会超发。
 func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRequest) (Binding, error) {
-	squadKey := kindSquad + "/" + q.Name + "/" + member.Carrier
-	carrierKey := kindCarrier + "/" + c.Name
+	squadKey, carrierKey := OccupancyKeys(q.Name, member.Carrier)
 	for attempt := 0; attempt < maxCASAttempts; attempt++ {
-		squadRunning, squadExpect, err := s.readCount(squadKey)
-		if err != nil {
-			slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
-				"carrier", c.Name, "member_policy", member.MaxConcurrency,
-				"carrier_cap", c.MaxConcurrency, "error_kind", "member_counter_read", "cause", err)
-			return Binding{}, err
+		squadRunning, squadExpect := 0, 0
+		if squadKey != "" {
+			var err error
+			squadRunning, squadExpect, err = s.readCount(squadKey)
+			if err != nil {
+				slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
+					"carrier", c.Name, "member_policy", member.MaxConcurrency,
+					"carrier_cap", c.MaxConcurrency, "member_key", squadKey,
+					"error_kind", "member_counter_read", "cause", err)
+				return Binding{}, err
+			}
 		}
 		carrierRunning, carrierExpect, err := s.readCount(carrierKey)
 		if err != nil {
@@ -665,7 +800,7 @@ func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRe
 				"carrier_cap", c.MaxConcurrency, "error_kind", "carrier_counter_read", "cause", err)
 			return Binding{}, err
 		}
-		if member.MaxConcurrency > 0 && squadRunning >= member.MaxConcurrency {
+		if squadKey != "" && member.MaxConcurrency > 0 && squadRunning >= member.MaxConcurrency {
 			slog.Default().Warn("scheduling.acquire.member_full", "squad", q.Name,
 				"carrier", c.Name, "member_policy", member.MaxConcurrency,
 				"carrier_cap", c.MaxConcurrency, "error_kind", "member_full")
@@ -677,17 +812,22 @@ func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRe
 				"carrier_cap", c.MaxConcurrency, "error_kind", "carrier_full")
 			return Binding{}, errMemberFull
 		}
-		if err := s.casCount(squadKey, squadExpect, squadRunning+1); err != nil {
-			if errors.Is(err, schedclient.ErrCASConflict) {
-				continue
+		if squadKey != "" {
+			if err := s.casCount(squadKey, squadExpect, squadRunning+1); err != nil {
+				if errors.Is(err, schedclient.ErrCASConflict) {
+					continue
+				}
+				slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
+					"carrier", c.Name, "member_policy", member.MaxConcurrency,
+					"carrier_cap", c.MaxConcurrency, "member_key", squadKey,
+					"error_kind", "member_counter_write", "cause", err)
+				return Binding{}, err
 			}
-			slog.Default().Error("scheduling.acquire.error", "squad", q.Name,
-				"carrier", c.Name, "member_policy", member.MaxConcurrency,
-				"carrier_cap", c.MaxConcurrency, "error_kind", "member_counter_write", "cause", err)
-			return Binding{}, err
 		}
 		if err := s.casCount(carrierKey, carrierExpect, carrierRunning+1); err != nil {
-			_ = s.stepRunning(squadKey, -1)
+			if squadKey != "" {
+				_ = s.stepRunning(squadKey, -1)
+			}
 			if errors.Is(err, schedclient.ErrCASConflict) {
 				continue
 			}
@@ -723,22 +863,18 @@ func admissionErrorKind(err error) string {
 	}
 }
 
-// bindingFor 产出有效三元组：一次性覆盖 > 载体缺省（spec §3：--target/--executor/
-// --model 降级为载体字段覆盖）。只在两级计数都成功递增后调用。
+// bindingFor 产出绑定快照：物理身份来自载体，只有模型接受请求覆盖。
+// 只在两级计数都成功递增后调用；请求侧物理字段由网关在此之前校验。
 func bindingFor(q Squad, c Carrier, req IgnitionRequest) Binding {
-	target := req.Target
-	if target == "" {
-		target = c.Machine
+	id := IdentityOf(c)
+	return Binding{
+		Squad:    q.Name,
+		Carrier:  c.Name,
+		Target:   id.Machine,
+		Executor: id.CLI,
+		Model:    EffectiveModel(c.Model, req.Model),
+		HomeDir:  id.HomeDir,
 	}
-	executor := req.Executor
-	if executor == "" {
-		executor = c.CLI
-	}
-	model := req.Model
-	if model == "" {
-		model = c.Model
-	}
-	return Binding{Squad: q.Name, Carrier: c.Name, Target: target, Executor: executor, Model: model}
 }
 
 // readCount 读一条运行计数的当前值与 CAS 期望版本；缺失视为 0、期望版本 0
