@@ -45,6 +45,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // 错误定义：
@@ -924,9 +925,6 @@ func RemoveManagedWorktree(ctx context.Context, repo, workdir string) error {
 // 独立于 WorkspaceGitTimeout：fetch 走网络，与本地 git 操作不是一个量级。
 var FetchTimeout = 2 * time.Minute
 
-// baseCommitRe 限定基线只能是 40 位小写十六进制（git rev-parse HEAD 的输出形态）。
-var baseCommitRe = regexp.MustCompile(`^[0-9a-f]{40}$`)
-
 // commitishRe 识别 --base 里不应触发网络补拉的十六进制提交缩写。
 // ResolveBaseline 仍只接受 40 位小写 sha；这里服务的是另一个字段 req.Base，
 // 它历史上一直交给 resolveCommit 处理短 sha，所以判定范围不能收窄到 40 位。
@@ -1244,7 +1242,7 @@ func ResolveBaseline(ctx context.Context, repo, sha string) (Baseline, error) {
 		log().Info("未提供基线提交，起点退回任务仓库 HEAD", "repo", repo, "start", head)
 		return Baseline{Start: head}, nil
 	}
-	if !baseCommitRe.MatchString(sha) {
+	if !workspace.IsCommitSHA(sha) {
 		log().Warn("基线提交格式非法，拒绝派发", "repo", repo, "base_commit", truncateRunes(sha, 80))
 		return Baseline{}, fmt.Errorf("%w: 基线提交必须是 40 位十六进制，实得 %q", ErrBadWorkspaceReq, truncateRunes(sha, 80))
 	}
@@ -1409,18 +1407,14 @@ func hasCommit(ctx context.Context, repo, sha string) bool {
 }
 
 // id8 截取任务 ID 前 8 字节，用于分支名与 worktree 目录名的稳定短标识。
-// 与执行者进程的短 id 展示共用同一截断规则，
-// 改动必须两侧同步（见 attach 命令的 id8 注释）。
+// 唯一截断规则在 workspace.ID8：禁止在本函数复制切片，改字面值只改那一处。
 func id8(taskID string) string {
-	if len(taskID) > 8 {
-		return taskID[:8]
-	}
-	return taskID
+	return workspace.ID8(taskID)
 }
 
 // taskBranch 由任务 ID 派生分支名 handoff/<id8>。
 func taskBranch(taskID string) string {
-	return "handoff/" + id8(taskID)
+	return workspace.TaskBranch(taskID)
 }
 
 // Diff 取任务分支相对基准分支的完整审阅素材：git diff <base>...HEAD 的差异

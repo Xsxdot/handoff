@@ -16,7 +16,7 @@
     },
     "d_workspace": {
       "label": "项目与工作区",
-      "responsibility": "为任务提供项目身份登记、工作树准备与回收、分支跨机同步、机器镜像发现与工作台启动项，把 git 与文件系统的现实隔离在协作语义之外。",
+      "responsibility": "为任务提供项目身份登记、工作树准备与回收、分支跨机同步、机器镜像发现与工作台启动项，把 git 与文件系统的现实隔离在协作语义之外。B233.4：对外能力面是 internal/workspace.Capability（基线、隔离、diff/读文件、managed 回收）；不写卡、不授权 push。",
       "type": "boundary"
     },
     "d_execution": {
@@ -268,6 +268,8 @@
     "k_prochost_model": "d_execution_host",
     "k_prochost_rosterSampler": "d_execution_host",
     "k_projectid_fn": "d_workspace",
+    "k_workspace_fn": "d_workspace",
+    "k_workspace_model": "d_workspace",
     "k_proto_Task": "d_protocol",
     "k_proto_TaskState": "d_protocol",
     "k_proto_fn": "d_protocol",

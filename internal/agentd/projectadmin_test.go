@@ -23,6 +23,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // initGitRepoWithOrigin 造一个带初始提交且配好 origin 的仓库，返回路径。
@@ -858,8 +859,22 @@ func TestProjectWorktreeCreateOK(t *testing.T) {
 	}
 }
 
+type cardCheckingCap struct {
+	workspace.Capability
+	createCalls    int
+	onBeforeCreate func(req workspace.ManualReq)
+}
+
+func (c *cardCheckingCap) CreateManual(ctx context.Context, repo, dir string, req workspace.ManualReq) (workspace.ManualTree, error) {
+	c.createCalls++
+	if c.onBeforeCreate != nil {
+		c.onBeforeCreate(req)
+	}
+	return c.Capability.CreateManual(ctx, repo, dir, req)
+}
+
 func TestProjectWorktreeCreateAttachesCardsAfterGit(t *testing.T) {
-	s, _, st := newTestServerWithManager(t)
+	s, mgr, st := newTestServerWithManager(t)
 	led, err := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -867,6 +882,17 @@ func TestProjectWorktreeCreateAttachesCardsAfterGit(t *testing.T) {
 	t.Cleanup(func() { _ = led.Close() })
 	seedAgentdLedger(t, led, "bug")
 	s.SetLedger(led)
+
+	var (
+		beforeCreateCardABase string
+		beforeCreateCardBBase string
+		manualReqObserved     workspace.ManualReq
+	)
+	spy := &cardCheckingCap{
+		Capability: NewGitCapability(),
+	}
+	mgr.SetWorkspace(spy)
+
 	name := registerWorktreeTestProject(t, st, initGitRepo(t))
 	cardA, err := led.CreateCard(ledger.NewCard{Title: "树卡 A", Project: "p", Workflow: "bug", Actor: "test"})
 	if err != nil {
@@ -876,11 +902,29 @@ func TestProjectWorktreeCreateAttachesCardsAfterGit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+
+	spy.onBeforeCreate = func(req workspace.ManualReq) {
+		manualReqObserved = req
+		cA, _ := led.GetCard(cardA.ID)
+		cB, _ := led.GetCard(cardB.ID)
+		beforeCreateCardABase = cA.BaseBranch
+		beforeCreateCardBBase = cB.BaseBranch
+	}
+
 	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees",
 		fmt.Sprintf(`{"mode":"new_branch","branch":"feat/cards","base":"main","card_ids":[%q,%q]}`,
 			cardA.ID, cardB.ID))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, body=%s", rec.Code, rec.Body.String())
+	}
+	if spy.createCalls < 1 {
+		t.Fatalf("必须经 Capability.CreateManual 建树，实得 %d", spy.createCalls)
+	}
+	if beforeCreateCardABase != "" || beforeCreateCardBBase != "" {
+		t.Fatalf("CreateManual 执行期间账本不得写卡基线：cardA=%q cardB=%q", beforeCreateCardABase, beforeCreateCardBBase)
+	}
+	if manualReqObserved.Branch != "feat/cards" || manualReqObserved.Mode != "new_branch" {
+		t.Fatalf("ManualReq 参数错误: %+v", manualReqObserved)
 	}
 	var ws proto.Workspace
 	if err := json.Unmarshal(rec.Body.Bytes(), &ws); err != nil {
@@ -901,6 +945,17 @@ func TestProjectWorktreeCreateAttachesCardsAfterGit(t *testing.T) {
 		if card.BaseBranch != ws.Branch {
 			t.Fatalf("卡 %s 基线=%q，想要=%q", id, card.BaseBranch, ws.Branch)
 		}
+	}
+}
+
+func TestProjectWorktreeCreateNilCapabilityFailsClosed(t *testing.T) {
+	s, mgr, st := newTestServerWithManager(t)
+	mgr.SetWorkspace(nil)
+	name := registerWorktreeTestProject(t, st, initGitRepo(t))
+	rec := doWorktreeReq(t, s, http.MethodPost, "/api/projects/"+name+"/worktrees",
+		`{"mode":"new_branch","branch":"feat/nil-cap","base":"main"}`)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("nil Capability 建树必须返回 503，实得 status=%d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

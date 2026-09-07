@@ -23,6 +23,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // worktreeEntry 是 git worktree list --porcelain 里的一条记录。
@@ -265,6 +266,25 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 	}
 	if !cur.WorktreeManaged || cur.WorkDir == "" {
 		return nil, fmt.Errorf("任务 %s：%w", taskID, ErrReclaimNotManaged)
+	}
+
+	dec := workspace.MayRecycle(workspace.RecycleInput{
+		Managed:  cur.WorktreeManaged,
+		Manual:   false,
+		Terminal: cur.State.IsTerminal(),
+		State:    string(cur.State),
+		Trigger:  workspace.TriggerExplicit,
+	})
+	m.log.Info("reclaim 回收判据", "task", taskID, "decision", dec, "state", cur.State)
+	if dec != workspace.RetainRecycle {
+		m.log.Warn("reclaim 被判据拒绝", "task", taskID, "decision", dec, "state", cur.State)
+		if !cur.State.IsTerminal() {
+			return nil, fmt.Errorf("任务 %s 状态 %s，%w", taskID, cur.State, ErrReclaimNotTerminal)
+		}
+		if !cur.WorktreeManaged || cur.WorkDir == "" {
+			return nil, fmt.Errorf("任务 %s：%w", taskID, ErrReclaimNotManaged)
+		}
+		return nil, fmt.Errorf("任务 %s 回收判据为 %s，拒绝回收", taskID, dec)
 	}
 
 	entries, lerr := repoWorktrees(ctx, cur.RepoPath)

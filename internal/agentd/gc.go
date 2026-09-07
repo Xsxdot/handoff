@@ -20,6 +20,7 @@ import (
 	"path/filepath"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // GC 预览或执行目标 agentd 上的终态缓存与残留 managed worktree 清理。
@@ -200,6 +201,22 @@ func (m *Manager) appendGCWorktreesExecute(ctx context.Context, resp *proto.GCRe
 		if !t.WorktreeManaged {
 			row.Status = proto.GCItemSkipped
 			row.Note = "非 managed 工作树，跳过"
+			resp.WorktreeRows = append(resp.WorktreeRows, row)
+			continue
+		}
+		dec := workspace.MayRecycle(workspace.RecycleInput{
+			Managed:  t.WorktreeManaged,
+			Manual:   false,
+			Terminal: t.State.IsTerminal(),
+			State:    string(t.State),
+			Trigger:  workspace.TriggerExplicit,
+		})
+		if dec != workspace.RetainRecycle {
+			if m.log != nil {
+				m.log.Info("gc 按判据留存工作树，跳过回收", "task", t.ID, "decision", dec)
+			}
+			row.Status = proto.GCItemSkipped
+			row.Note = "按留存判据跳过"
 			resp.WorktreeRows = append(resp.WorktreeRows, row)
 			continue
 		}

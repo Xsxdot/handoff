@@ -322,7 +322,8 @@
   {
    "from": "d_orchestration",
    "to": "d_workspace",
-   "legacyBudget": 19
+   "legacyBudget": 19,
+   "legacyBudgetNote": "B233.4：工作区能力契约面 Capability 落在 internal/workspace（d_workspace）。本节点不接线生产路径、不新增 call 边；预算仍 19、现状 18。实现把 Dispatch/Done 接到 Capability 时再声明 entries。禁止把 Capability 放进 k_agentd_fn（那是编排容器）。"
   },
   {
    "from": "d_policy",

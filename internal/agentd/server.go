@@ -366,6 +366,9 @@ func (s *Server) SetManager(m *Manager) {
 	s.mgr = m
 	if m != nil {
 		m.conf = s.conf
+		if m.ws == nil {
+			m.SetWorkspace(NewGitCapability())
+		}
 		s.log.Info("manager 已挂接，配置读取切到活快照", "default_executor", s.conf().Executor.Default)
 	}
 }
@@ -1403,6 +1406,9 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - 其余（任务目录/落库等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error) {
 	switch {
+	case errors.Is(err, ErrWorkspaceUnavailable):
+		s.log.Error("dispatch 失败：工作区能力未注入", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrDirtyWorktree):
 		s.log.Warn("dispatch 被拒：工作区不干净", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
@@ -1667,9 +1673,9 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 
 // handleStop 主动中止任务（停 executor、落 failed；作废由终态迁移收口完成）。
 //
-// 响应体：status=stopped；worktree_removed 如实反映本次是否删除了 managed
-// worktree（true=agentd 建的 worktree 已删，false=用户自带 worktree / 原地模式，
-// 或 managed 清理失败）。CLI 据此打印提示文案，不猜。
+// 响应体：status=stopped；worktree_removed 是兼容字段，成功 Stop 恒为 false。
+// Stop 只落 failed 并留存现场，显式 reclaim/gc 才清理 managed worktree；用户自带
+// worktree / 原地模式同样返回 false。CLI 据此打印提示文案，不猜。
 //
 // 错误映射：任务不存在 404；已是终态 409（manager 返回 store.ErrBadTransit）。
 func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
@@ -1820,7 +1826,19 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 			"error": fmt.Sprintf("任务分支 %s 已不存在，且任务 worktree 已回收——没有可比对的素材了", headRev)})
 		return
 	}
-	diff, err := DiffRange(repo, base, headRev)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	if _, err := s.mgr.assembleResultRef(r.Context(), task, repo, headRev); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	if err := s.mgr.requireWorkspace(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	diff, err := s.mgr.Workspace().DiffRange(r.Context(), repo, base, headRev)
 	if err != nil {
 		if errors.Is(err, ErrBadBaseBranch) {
 			// base 是协调者可控的查询参数：非法 base（"-" 前缀）是请求问题而非
@@ -1957,7 +1975,15 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 path 参数"})
 		return
 	}
-	res, err := ReadFile(repo, rel)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	if err := s.mgr.requireWorkspace(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	fc, err := s.mgr.Workspace().ReadFile(r.Context(), repo, rel)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrPathEscape):
@@ -1978,6 +2004,13 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
 		}
 		return
+	}
+	res := proto.FileRead{
+		Content:   fc.Content,
+		Size:      fc.Size,
+		Truncated: fc.Truncated,
+		Binary:    fc.Binary,
+		SHA256:    fc.SHA256,
 	}
 	// 截断提示留在 CLI 这条线上：handoff fetch 的用途就是看文件开头，提示是给
 	// 审核者看的（没有它，审核者会把第 1 MiB 处当成文件末尾去推理）。搬到这里

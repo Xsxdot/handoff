@@ -469,8 +469,8 @@ export interface ReplyResult {
   reason?: string
 }
 
-// stopResult 是 stop 接口的响应体；worktree_removed 如实反映 managed worktree
-// 是否被删除（false=用户自带 worktree / 原地模式或清理失败）。
+// stopResult 是 stop 接口的响应体；成功 Stop 后 worktree_removed 恒 false，
+// 表示现场留存，显式 reclaim/gc 才清，不是清理失败。
 export interface StopResult {
   status: string
   worktree_removed: boolean
