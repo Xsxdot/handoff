@@ -86,6 +86,14 @@
 - **跨机 Ask/审批/建树 card_ids 未在本 SHA 真机**：对端 agentd 仍是线上二进制，不是功能线。合 main 部署后再验。来源：B233.3 acceptance。
 - **handleProjectWorktreeCreate 缺 why 注释**：review minor，不阻塞。来源：B233.3 review；file `internal/agentd/projectadmin.go`。
 
+## 来自 B233.4 验收（2026-09-07）
+
+- **契约预算未棘轮**：图对账视图已补 Capability / gitCapability / MayRecycle 等符号与 implements；`codegraph check` 仍 5 红（cli→orchestration 15/13、cli→workspace 10/9、gateway→workspace 3/1、orchestration→workspace 41/19、off-interface Capability）。recon 无权改 `target.json`，合 main 时 contract/absorb 再抬。来源：B233.4 图对账-2 `79f9c438`。
+- **真机未在本 SHA**：对端 agentd 仍是线上 `86a08861`，Stop 留存 / reclaim 未对真任务验。合 main 部署后再验。来源：B233.4 acceptance。
+- **assembleResultRef 丢弃引用**：`handleTaskDiff` 用 `if _, err := assembleResultRef(...)` 只吃错误，随后 `DiffRange` 仍接原 `headRev`。不强制加 HTTP 字段，但准确 commit 要进入消费链。来源：独立质量复审 R9；file `internal/agentd/server.go`。
+- **web Composer.test 未跑**：本机未装 vitest / `@tailwindcss/vite`。来源：B233.4 review-2 minor。
+- **Client.Stop 注释仍写 true=删树**：与 C-6 生产恒 `false` 不完全对齐。来源：B233.4 review-2 minor。
+
 ## 来自 B203 spec（2026-08-23）
 
 - **卡级/持久的执行器绑定**（「这张卡以后都用 grok」）：B203 只做「这一次」的一次性
