@@ -101,6 +101,12 @@
 - **HOME 接缝夹具直调 Profile()**：不锁生产 `ProfileFromProvider`。来源：B233.2 review-2/3 minor；file `internal/agentd/coordinator_home_test.go`。
 - **TaskOverlay 无消费者**：独立复审 R6。来源：独立质量复审；对象 `9d7e9270`。
 
+## 来自 B233.5 验收（2026-09-07）
+
+- **真机未在本 SHA**：对端 agentd 仍是线上 `86a08861`。默认载体、`--receiver`、禁止物理覆盖、裸派发满员报忙、失败/Stop 释放占用，合 main 部署后再验。来源：B233.5 acceptance。
+- **handleDone 小队成员键无独立缝测**：只靠与 handleStop 共用的 `releaseTaskCarrierOccupancy`。来源：B233.5 review-2 minor。
+- **Web vitest 未跑**：本机缺 pnpm / node_modules。来源：B233.5 implement minor。
+
 ## 来自 B203 spec（2026-08-23）
 
 - **卡级/持久的执行器绑定**（「这张卡以后都用 grok」）：B203 只做「这一次」的一次性
