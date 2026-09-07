@@ -1,7 +1,7 @@
 {
   "view": "cards/B233.3-charter",
   "base": "124121e4",
-  "summary": "B233.3 Ticket 0：ExecutionClient/Transport 空壳、WaitDeliveryPolicy 命名、relay PSK/帧金样本",
+  "summary": "B233.3：能力 client/Transport 接缝、relay 断线语义、建树转发挂卡边界与升级选路",
   "nodesAdded": {
     "m_client_Transport": {
       "kind": "model",
@@ -96,6 +96,74 @@
           "file": "internal/client/delivery_internal_test.go:9"
         }
       ]
+    },
+    "m_cmd_upgradeDialErr": {
+      "kind": "model",
+      "container": "c_cli",
+      "order": 81,
+      "name": "upgradeDialErr",
+      "file": "cmd/upgrade.go",
+      "line": 81,
+      "signature": "type upgradeDialErr struct{ err error }",
+      "summary": "upgradeDialErr 把升级 client 构造错误延迟到 agentdPeer 方法调用，保持测试接缝签名不变。",
+      "fields": [
+        [
+          "err",
+          "error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_cmd_upgradeDialErr_Status": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 83,
+      "name": "upgradeDialErr.Status",
+      "file": "cmd/upgrade.go",
+      "line": 83,
+      "signature": "func (u upgradeDialErr) Status(context.Context) (*proto.StatusResp, error) { return nil, u.err }",
+      "returns": "*proto.StatusResp, error"
+    },
+    "n_cmd_upgradeDialErr_PushUpdate": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 84,
+      "name": "upgradeDialErr.PushUpdate",
+      "file": "cmd/upgrade.go",
+      "line": 84,
+      "signature": "func (u upgradeDialErr) PushUpdate(context.Context, string, string, []byte, bool) (*proto.UpdateResp, error) {",
+      "returns": "*proto.UpdateResp, error"
+    },
+    "n_cmd_upgradeDialErr_PullUpdate": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 87,
+      "name": "upgradeDialErr.PullUpdate",
+      "file": "cmd/upgrade.go",
+      "line": 87,
+      "signature": "func (u upgradeDialErr) PullUpdate(context.Context, string, string, bool) (*proto.UpdateResp, error) {",
+      "returns": "*proto.UpdateResp, error"
+    },
+    "n_cmd_upgradeDialErr_RestartAgentd": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 90,
+      "name": "upgradeDialErr.RestartAgentd",
+      "file": "cmd/upgrade.go",
+      "line": 90,
+      "signature": "func (u upgradeDialErr) RestartAgentd(context.Context, bool) (*proto.UpdateResp, error) {",
+      "returns": "*proto.UpdateResp, error"
+    },
+    "n_cmd_upgradeDialErr_WaitVersion": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 93,
+      "name": "upgradeDialErr.WaitVersion",
+      "file": "cmd/upgrade.go",
+      "line": 93,
+      "signature": "func (u upgradeDialErr) WaitVersion(context.Context, string, time.Duration, time.Duration, bool) error {",
+      "returns": "error"
     }
   },
   "nodesModified": {
@@ -133,6 +201,104 @@
           "file": "internal/client/delivery_internal_test.go:9"
         }
       ]
+    },
+    "n_client_NewRelay": {
+      "kind": "func",
+      "container": "k_client_fn",
+      "order": 205,
+      "name": "NewRelay",
+      "file": "internal/client/client.go",
+      "line": 208,
+      "signature": "func NewRelay(d *relay.Dialer, token string) *Client",
+      "params": [
+        [
+          "d",
+          "*relay.Dialer",
+          ""
+        ],
+        [
+          "token",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "*Client",
+      "summary": "NewRelay 创建 relay-backed client，并标记后续传输失败为 ErrTunnelDisconnected。",
+      "tests": [
+        {
+          "name": "TestNewRelayUsesPlaceholderAndDialerTransport",
+          "file": "internal/client/client_relay_test.go:10"
+        },
+        {
+          "name": "TestRelayClosedDispatchIsTunnelDisconnected",
+          "file": "internal/client/execution_test.go:154"
+        },
+        {
+          "name": "TestRelayCanceledDispatchIsNotTunnelOrUnreachable",
+          "file": "internal/client/execution_test.go:173"
+        }
+      ]
+    },
+    "n_client_Client_MarkForwarded": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 326,
+      "name": "Client.MarkForwarded",
+      "file": "internal/client/client.go",
+      "line": 326,
+      "signature": "func (c *Client) MarkForwarded() *Client {",
+      "returns": "*Client",
+      "summary": "MarkForwarded 返回带防环头的副本，并保留 relay 传输失败分类。",
+      "tests": [
+        {
+          "name": "TestMarkForwardedRelayCopyKeepsTunnelSentinel",
+          "file": "internal/client/execution_test.go:189"
+        }
+      ]
+    },
+    "n_client_Client_NoRedirect": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 354,
+      "name": "Client.NoRedirect",
+      "file": "internal/client/client.go",
+      "line": 354,
+      "signature": "func (c *Client) NoRedirect() *Client {",
+      "returns": "*Client",
+      "summary": "NoRedirect 返回禁用重定向且保留 relay 传输失败分类的副本。"
+    },
+    "n_client_Client_do": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 382,
+      "name": "Client.do",
+      "file": "internal/client/client.go",
+      "line": 382,
+      "signature": "func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "method",
+          "string",
+          ""
+        ],
+        [
+          "path",
+          "string",
+          ""
+        ],
+        [
+          "body",
+          "any",
+          ""
+        ]
+      ],
+      "returns": "*http.Response, error",
+      "summary": "do 单次发送带 Bearer token 的请求；relay 非上下文传输失败包装为 ErrTunnelDisconnected，直连包装为 ErrUnreachable。"
     },
     "n_agentd_Server_forwardJSON": {
       "kind": "func",
@@ -211,6 +377,16 @@
     [
       "n_client_isDeliverable",
       "n_client_WaitDeliveryPolicy"
+    ],
+    [
+      "n_agentd_Server_handleProjectWorktreeCreate",
+      "n_agentd_Server_forwardWorktreeIfRequested"
+    ]
+  ],
+  "edgesDeleted": [
+    [
+      "n_agentd_Server_forwardWorktreeIfRequested",
+      "n_agentd_Server_attachCardBaseBranches"
     ]
   ],
   "implementsAdded": [
@@ -221,6 +397,10 @@
     [
       "m_client_Client",
       "m_client_ExecutionClient"
+    ],
+    [
+      "m_cmd_upgradeDialErr",
+      "m_cmdagentdPeer"
     ]
   ]
 }
