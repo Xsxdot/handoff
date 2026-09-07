@@ -580,10 +580,12 @@ func TestStatusReportsLiveExecutorDefault(t *testing.T) {
 // TestStopRemovesManagedWorktree 覆盖 managed worktree 泄漏路径 (b)：被 stop 的任务
 // 落 failed，managed worktree 必须随 stop 删除——否则 stop 过的任务永远归档不了、
 // worktree 永久残留。任务分支必须保留（stop 不丢工作）。
-func TestStopRemovesManagedWorktree(t *testing.T) {
+func TestStopRetainsManagedWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	spy := &countingCap{inner: NewGitCapability()}
+	m.SetWorkspace(spy)
 	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
@@ -592,36 +594,37 @@ func TestStopRemovesManagedWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	workDir := task.WorkDir
-	if workDir == "" || !task.WorktreeManaged {
-		t.Fatalf("new-worktree 元数据缺失: %+v", task)
-	}
-	if removed, err := m.Stop(context.Background(), task.ID); err != nil {
+	recycleBefore := spy.recycle
+	removed, err := m.Stop(context.Background(), task.ID)
+	if err != nil {
 		t.Fatalf("Stop: %v", err)
-	} else if !removed {
-		t.Fatalf("managed worktree 已删，stop 应报告 worktree_removed=true")
+	}
+	if removed {
+		t.Fatal("成功 Stop 后 worktree_removed 必须为 false（契约 C-6）")
+	}
+	if spy.recycle != recycleBefore {
+		t.Fatalf("Stop 零次 RecycleManaged，实得 %d→%d", recycleBefore, spy.recycle)
+	}
+	if _, err := os.Stat(workDir); err != nil {
+		t.Fatalf("stop 后 managed worktree 必须仍在: %v", err)
 	}
 	cur, _ := st.GetTask(task.ID)
 	if cur.State != proto.TaskStateFailed {
 		t.Fatalf("stop 后 state=%s, want failed", cur.State)
-	}
-	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
-		t.Fatalf("stop 后 managed worktree 应被删除: %v", err)
 	}
 	if out := gitOut(t, repo, "branch", "--list", "handoff/"+id8(task.ID)); out == "" {
 		t.Fatalf("stop 不得删除任务分支")
 	}
 }
 
-// TestStopReportsWorktreeRemoved 验证 stop 的返回如实反映本次是否删除了 worktree：
-// managed worktree（agentd 建的）已删 → worktree_removed=true；原地模式（没有
-// worktree 概念）→ false。CLI 侧据此打印与行为一致的提示文案，不猜。
+// TestStopReportsWorktreeRemoved 验证 stop 无论 managed 还是原地，成功路径均返回 false（C-6）。
 func TestStopReportsWorktreeRemoved(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	pid := registerTestProject(t, m, repo)
 
-	// managed worktree：stop 真删了 worktree → worktree_removed=true
+	// managed worktree：stop 留存现场，不删 worktree → worktree_removed=false
 	wtTask, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
@@ -635,8 +638,8 @@ func TestStopReportsWorktreeRemoved(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Stop(managed): %v", err)
 	}
-	if !removed {
-		t.Fatal("managed worktree 已删，stop 应返回 worktree_removed=true")
+	if removed {
+		t.Fatal("managed stop 应返回 false")
 	}
 
 	// 原地模式：WorktreeManaged=false（WorkDir 回退为 RepoPath）→ 无 worktree 可删

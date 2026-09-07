@@ -349,6 +349,19 @@ func TestReclaimRefusesNonTerminal(t *testing.T) {
 	}
 }
 
+func TestReclaimRefusesWaitingReview(t *testing.T) {
+	m, repo := newReclaimManager(t)
+	wt := newWorktree(t, repo, "wt-wr", "f-wr")
+	id := seedTerminalTask(t, m, repo, wt, "f-wr", proto.TaskStateWaitingReview, true)
+	_, err := m.Reclaim(context.Background(), id, false)
+	if !errors.Is(err, ErrReclaimNotTerminal) {
+		t.Fatalf("waiting_review 应拒绝，实得 %v", err)
+	}
+	if _, serr := os.Stat(wt); serr != nil {
+		t.Fatalf("拒绝后工作树必须保留：%v", serr)
+	}
+}
+
 func TestReclaimRefusesNotManaged(t *testing.T) {
 	m, repo := newReclaimManager(t)
 	wt := newWorktree(t, repo, "wt-r7", "f-r7")

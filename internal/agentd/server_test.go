@@ -610,6 +610,45 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 	}
 }
 
+func TestStopManagedReturnsWorktreeRemovedFalseInBody(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-stop-managed-wt"
+	if err := env.st.CreateTask(&proto.Task{
+		ID: taskID, Target: "opencode", RepoPath: "/repo", WorkDir: "/repo/wt",
+		WorktreeManaged: true, State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	f := fake.New(nil)
+	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil, nil,
+		newTestGate(t),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	env.srv.SetManager(mgr)
+
+	resp := env.post(t, "/api/tasks/"+taskID+"/stop", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop 返回 %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Status          string `json:"status"`
+		WorktreeRemoved bool   `json:"worktree_removed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("解码 stop 响应: %v", err)
+	}
+	if body.Status != "stopped" {
+		t.Fatalf("stop 响应 status = %q, want stopped", body.Status)
+	}
+	if body.WorktreeRemoved {
+		t.Fatal("managed 模式任务 stop 后 worktree_removed 恒为 false（契约 C-6）")
+	}
+}
+
 // TestContinueErrTaskNotRunningReturns409 覆盖 agentd 重启后 waiting_review 任务
 // 续接失败的映射：Continue 遇到 executor.ErrTaskNotRunning（executor 运行态已随
 // 进程消亡丢失，agentd 可能重启过）必须回带可行动文本的 409，而不是扁平 500——

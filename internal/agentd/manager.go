@@ -1210,7 +1210,17 @@ func (m *Manager) compensateWorkspace(ctx context.Context, taskID string, repo s
 		"managed", ws.Managed, "branch", ws.Branch, "prev_ref", ws.PrevRef)
 
 	if ws.Managed {
-		if err := RemoveManagedWorktree(ctx, repo, ws.WorkDir); err != nil {
+		dec := workspace.MayRecycle(workspace.RecycleInput{
+			Managed: true, Manual: false, Terminal: false, State: "",
+			Trigger: workspace.TriggerCompensate,
+		})
+		m.log.Info("补偿回收判据", "task", taskID, "decision", dec, "workdir", ws.WorkDir)
+		if dec != workspace.RetainRecycle {
+			m.log.Info("补偿按判据不回收", "task", taskID, "decision", dec)
+		} else if err := m.requireWorkspace(); err != nil {
+			m.log.Error("补偿需回收但工作区能力未注入", "task", taskID, "cause", err)
+			return
+		} else if err := m.ws.RecycleManaged(ctx, repo, ws.WorkDir); err != nil {
 			// 工作树还在，分支被它 checkout 着，git 也会拒绝删除；且失败现场要留给人排查
 			m.log.Error("补偿清理 managed worktree 失败，保留分支待查",
 				"repo", repo, "workdir", ws.WorkDir, "branch", ws.Branch,
@@ -1606,10 +1616,21 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 	// 为什么只删 managed：用户自带 worktree（Managed=false）是协调者自己的资产，
 	// agentd 无权删别人的工作树；为什么失败只降级不阻塞归档：任务已审核通过，
 	// 残树是运维问题不是任务问题——留一条带原因的 progress 事件提示人工处理
-	if cur.WorktreeManaged && cur.WorkDir != "" {
-		m.log.Info("done 清理 managed worktree", "task", taskID, "workdir", cur.WorkDir)
-		if werr := RemoveManagedWorktree(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
+	dec := workspace.MayRecycle(workspace.RecycleInput{
+		Managed:  cur.WorktreeManaged,
+		Manual:   false,
+		Terminal: true,
+		State:    string(proto.TaskStateCompleted), // 刚迁 completed，禁止喂 waiting_review
+		Trigger:  workspace.TriggerDone,
+	})
+	m.log.Info("done 回收判据", "task", taskID, "decision", dec,
+		"managed", cur.WorktreeManaged, "workdir", cur.WorkDir)
+	if dec == workspace.RetainRecycle {
+		if err := m.requireWorkspace(); err != nil {
+			m.log.Error("done 需回收但工作区能力未注入", "task", taskID, "cause", err)
+		} else if werr := m.ws.RecycleManaged(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
 			m.log.Error("清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
+			// 既有：只降级 progress，不回滚 completed
 			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
 				Text: worktreeCleanupHint(taskID, werr),
 			}); aerr != nil {
@@ -1620,6 +1641,8 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 		} else {
 			m.log.Info("managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
 		}
+	} else {
+		m.log.Info("done 按判据留存工作树", "task", taskID, "decision", dec, "workdir", cur.WorkDir)
 	}
 	// B298：工作树处置尝试之后再删任务私有缓存。失败只记日志，不阻断归档。
 	// 重试入口是 gc，不是重发 done（已 completed 会短路）。
@@ -1635,9 +1658,8 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 //   - taskID: 待中止的任务
 //
 // 返回：
-//   - worktreeRemoved: 本次是否实际删除了 managed worktree。true=agentd 建的
-//     worktree 已删除；false=用户自带 worktree / 原地模式（没删），或 managed
-//     worktree 清理失败（工作树仍在）。CLI 据此打印与行为一致的提示，不猜
+//   - worktreeRemoved: 本次是否实际删除了 managed worktree。
+//     成功 Stop 后恒为 false（现场留存，显式 reclaim/gc 才清，契约 C-6）
 //   - store.ErrNotFound: 任务不存在
 //   - store.ErrBadTransit: 任务已是终态（completed/failed），无可中止
 //   - 其余：落库失败
@@ -1647,9 +1669,8 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (err error) {
 //     中止后仍可重新派发。「人为中止」与「真失败」的区分靠 failed 事件的
 //     fail_reason 文本，不靠状态
 //   - 不删任务分支：那是协调者的工作成果，stop 只让它停下（审阅/回滚仍可切回分支）
-//   - 删除 agentd 管理的 worktree（Managed=true）：被 stop 的任务落 failed，没有
-//     done 的 waiting_review 清理路径，不删就永久残留；清理失败只降级为警告事件，
-//     不阻断 stop（此时 worktreeRemoved=false，提示如实反映工作树仍在）
+//   - 留存工作树（B233.4 / 契约 C-6）：取消不是归档，现场必须保留供排查。有 commit 不构成删树授权；
+//     显式 reclaim 或 gc 才清理。成功路径 worktreeRemoved 恒为 false。
 //   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
 //     由执行者进程兜底，不能因为「停不掉进程」就让任务永远卡在 running
 func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool, err error) {
@@ -1707,30 +1728,21 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (worktreeRemoved bool
 	}
 	// 审批链运行时状态随任务终结清理，防内存 map 无界增长（与 Done 同款）
 	m.clearApproverState(taskID)
-	// worktree 清理（P2-2 修复）：被 stop 的任务落 failed，而 failed 没有 done 的
-	// waiting_review 门禁清理路径——不在这里删，managed worktree 就永久残留、
-	// 任务永远归档不了。分支必须保留（stop 不丢工作，协调者可切回分支审阅/回滚）。
-	//
-	// 为什么只删 managed：用户自带 worktree（Managed=false）是协调者自己的资产，
-	// agentd 无权删别人的工作树；为什么失败只降级不阻断 stop：中止已经达成
-	// （任务落 failed、事件已追加），残树是运维问题不是任务问题——留一条带原因的
-	// progress 事件提示人工处理，与 Done 的清理失败降级同款
-	if cur.WorktreeManaged && cur.WorkDir != "" {
-		m.log.Info("stop 清理 managed worktree", "task", taskID, "workdir", cur.WorkDir)
-		if werr := RemoveManagedWorktree(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
-			m.log.Error("stop 清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
-			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{
-				Text: worktreeCleanupHint(taskID, werr),
-			}); aerr != nil {
-				m.log.Error("追加 worktree 清理失败事件失败", "task", taskID, "cause", aerr)
-			} else {
-				m.hub.Publish(evt)
-			}
-		} else {
-			worktreeRemoved = true
-			m.log.Info("stop managed worktree 已清理", "task", taskID, "workdir", cur.WorkDir)
-		}
+	// worktree 留存（B233.4 / 契约 C-6）：Stop 必须留存现场，零次 RecycleManaged/RemoveManagedWorktree。
+	// 成功路径 worktreeRemoved 恒为 false；现场留到显式 reclaim/gc。
+	dec := workspace.MayRecycle(workspace.RecycleInput{
+		Managed:  cur.WorktreeManaged,
+		Manual:   false,
+		Terminal: true, // 刚迁 failed
+		State:    string(proto.TaskStateFailed),
+		Trigger:  workspace.TriggerStop,
+	})
+	m.log.Info("stop 留存判据", "task", taskID, "decision", dec,
+		"managed", cur.WorktreeManaged, "workdir", cur.WorkDir, "trigger", workspace.TriggerStop)
+	if dec != workspace.RetainKeep {
+		m.log.Error("stop 判据不是 keep，仍不回收（冻结 62）", "task", taskID, "decision", dec)
 	}
+	worktreeRemoved = false
 	// B298：stop 工作树处置尝试之后删缓存；失败不阻断 stop。
 	m.purgeTaskCache(taskID)
 	m.hub.Publish(evt)

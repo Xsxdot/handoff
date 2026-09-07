@@ -7,10 +7,10 @@ import type { Task } from '../../api/types'
 vi.mock('../../api/client', () => ({
   continueTask: vi.fn().mockResolvedValue({ ok: true }),
   doneTask: vi.fn().mockResolvedValue({ ok: true }),
-  stopTask: vi.fn().mockResolvedValue({ worktree_removed: true }),
+  stopTask: vi.fn().mockResolvedValue({ worktree_removed: false }),
   resumeTask: vi.fn().mockResolvedValue({ forced: false, note: '' }),
 }))
-import { continueTask } from '../../api/client'
+import { continueTask, stopTask } from '../../api/client'
 
 const task = (state: string) => ({ id: 't1', state } as Task)
 
@@ -60,4 +60,17 @@ describe('Composer', () => {
     expect(screen.getByRole('button', { name: /续发修改/ })).toBeDisabled()
     expect((box as HTMLTextAreaElement).value).toBe('还没发的话')
   })
+
+  it('stop 需二次确认，确认后提示现场已留存且不出现清理失败', async () => {
+    render(<Composer task={task('running')} disabled={false} onChanged={() => {}} />)
+    fireEvent.click(screen.getByRole('button', { name: /停止任务/ }))
+    expect(screen.getByText(/不可撤销/)).toBeInTheDocument()
+    const confirmButtons = screen.getAllByRole('button', { name: /停止任务/ })
+    fireEvent.click(confirmButtons[confirmButtons.length - 1])
+    await waitFor(() => {
+      expect(screen.getByText(/现场已留存/)).toBeInTheDocument()
+    })
+    expect(screen.queryByText(/清理失败/)).not.toBeInTheDocument()
+  })
 })
+
