@@ -1,7 +1,7 @@
 {
   "view": "cards/B233.5-charter",
   "base": "9605d19b",
-  "summary": "B233.5 Ticket 0：统一接收者解析、默认载体编码、物理身份绑定与占用键金样本",
+  "summary": "B233.5：统一接收者解析、默认载体、物理绑定、占用生命周期与任务身份快照",
   "nodesAdded": {
     "m_executor_ApprovalStatus": {
       "kind": "model",
@@ -1049,6 +1049,451 @@
           "nil=缺席"
         ]
       ]
+    },
+    "n_scheduling_Service_AdmitCarrier": {
+      "kind": "func",
+      "container": "k_scheduling_Service",
+      "order": 510,
+      "name": "Service.AdmitCarrier",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 378,
+      "signature": "func (s *Service) AdmitCarrier(name string) (Binding, error)",
+      "params": [
+        [
+          "name",
+          "string",
+          "载体名"
+        ]
+      ],
+      "returns": "Binding, error",
+      "summary": "对载体直派只占载体物理位，并返回机器、CLI 与 HOME 快照。",
+      "tests": [
+        {
+          "name": "TestAdmitCarrierOccupiesCarrierKeyOnly",
+          "file": "internal/scheduling/admit_carrier_test.go:47"
+        },
+        {
+          "name": "TestAdmitCarrierOfflineIsNoHealthy",
+          "file": "internal/scheduling/admit_carrier_test.go:96"
+        },
+        {
+          "name": "TestAdmitCarrierFullIsNoSlot",
+          "file": "internal/scheduling/admit_carrier_test.go:110"
+        }
+      ]
+    },
+    "n_scheduling_Service_DefaultCarrier": {
+      "kind": "func",
+      "container": "k_scheduling_Service",
+      "order": 511,
+      "name": "Service.DefaultCarrier",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 421,
+      "signature": "func (s *Service) DefaultCarrier() (string, error)",
+      "returns": "string, error",
+      "summary": "读取并校验已确认的默认载体 singleton。",
+      "tests": [
+        {
+          "name": "TestDefaultCarrierRoundtrip",
+          "file": "internal/scheduling/default_carrier_test.go:13"
+        }
+      ]
+    },
+    "n_scheduling_Service_SetDefaultCarrier": {
+      "kind": "func",
+      "container": "k_scheduling_Service",
+      "order": 512,
+      "name": "Service.SetDefaultCarrier",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 449,
+      "signature": "func (s *Service) SetDefaultCarrier(name string) error",
+      "params": [
+        [
+          "name",
+          "string",
+          "载体名"
+        ]
+      ],
+      "returns": "error",
+      "summary": "写入并校验默认载体 singleton。",
+      "tests": [
+        {
+          "name": "TestDefaultCarrierRoundtrip",
+          "file": "internal/scheduling/default_carrier_test.go:13"
+        },
+        {
+          "name": "TestSetDefaultCarrierRejectsSquadOnlyName",
+          "file": "internal/scheduling/default_carrier_test.go:40"
+        }
+      ]
+    },
+    "n_scheduling_bindingFor": {
+      "kind": "func",
+      "container": "k_scheduling_fn",
+      "order": 513,
+      "name": "bindingFor",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 868,
+      "signature": "func bindingFor(q Squad, c Carrier, req IgnitionRequest) Binding",
+      "params": [
+        [
+          "q",
+          "Squad",
+          ""
+        ],
+        [
+          "c",
+          "Carrier",
+          ""
+        ],
+        [
+          "req",
+          "IgnitionRequest",
+          ""
+        ]
+      ],
+      "returns": "Binding",
+      "summary": "从载体物理身份与模型覆盖产出绑定快照，不覆盖机器、CLI 或 HOME。",
+      "tests": [
+        {
+          "name": "TestAdmitNoLongerOverridesPhysical",
+          "file": "internal/scheduling/admit_carrier_test.go:81"
+        }
+      ]
+    },
+    "n_agentd_Server_resolveReceiver": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1863,
+      "name": "Server.resolveReceiver",
+      "file": "internal/agentd/receiver_bind.go",
+      "line": 17,
+      "signature": "func (s *Server) resolveReceiver(requested string) (scheduling.ResolvedReceiver, error)",
+      "params": [
+        [
+          "requested",
+          "string",
+          "显式或空接收者名"
+        ]
+      ],
+      "returns": "scheduling.ResolvedReceiver, error",
+      "summary": "通过编制域解析显式或默认接收者。"
+    },
+    "n_agentd_Server_prepareReceiverBinding": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1864,
+      "name": "Server.prepareReceiverBinding",
+      "file": "internal/agentd/receiver_bind.go",
+      "line": 62,
+      "signature": "func (s *Server) prepareReceiverBinding(requested string, overlay scheduling.PhysicalOverlay, requestModel string) (scheduling.Binding, scheduling.ResolvedReceiver, error)",
+      "params": [
+        [
+          "requested",
+          "string",
+          "显式或空接收者名"
+        ],
+        [
+          "overlay",
+          "scheduling.PhysicalOverlay",
+          "请求侧物理覆盖"
+        ],
+        [
+          "requestModel",
+          "string",
+          "任务级模型覆盖"
+        ]
+      ],
+      "returns": "scheduling.Binding, scheduling.ResolvedReceiver, error",
+      "summary": "复用接收者解析、准入与物理身份绑定准备链。"
+    },
+    "n_agentd_Server_releaseTaskCarrierOccupancy": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1865,
+      "name": "Server.releaseTaskCarrierOccupancy",
+      "file": "internal/agentd/server.go",
+      "line": 1753,
+      "signature": "func (s *Server) releaseTaskCarrierOccupancy(task *proto.Task)",
+      "params": [
+        [
+          "task",
+          "*proto.Task",
+          "任务身份快照"
+        ]
+      ],
+      "summary": "按任务冻结的小队与载体身份释放终态占用。"
+    }
+  },
+  "nodesModified": {
+    "m_scheduling_Binding": {
+      "kind": "model",
+      "container": "k_scheduling_model",
+      "order": 4,
+      "name": "Binding",
+      "file": "internal/scheduling/scheduling.go",
+      "line": 137,
+      "signature": "type Binding struct {",
+      "signatureOld": "type Binding",
+      "summary": "Binding 是准入成功后的落点；HomeDir 是绑定时的载体 HOME 快照。",
+      "fields": [
+        [
+          "Squad",
+          "string",
+          "命中小队"
+        ],
+        [
+          "Carrier",
+          "string",
+          "命中的具体载体"
+        ],
+        [
+          "Target",
+          "string",
+          "有效目标机"
+        ],
+        [
+          "Executor",
+          "string",
+          "有效执行者"
+        ],
+        [
+          "Model",
+          "string",
+          "有效模型，可空"
+        ],
+        [
+          "HomeDir",
+          "string",
+          "绑定时的载体 HOME 快照"
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_proto_Task": {
+      "kind": "model",
+      "container": "k_proto_model",
+      "order": 217,
+      "name": "Task",
+      "file": "internal/proto/proto.go",
+      "line": 220,
+      "signature": "type Task struct {",
+      "summary": "Task 表示一个 handoff 任务，并保存派发时绑定的载体与小队快照。",
+      "fields": [
+        ["ID", "string", ""],
+        ["Target", "string", ""],
+        ["RepoPath", "string", ""],
+        ["HomeDir", "string", ""],
+        ["Carrier", "string", "派发时绑定的载体名；空=旧任务或载体尚未接线"],
+        ["Squad", "string", "派发时绑定的小队名；空=载体直派或旧任务"],
+        ["Branch", "string", ""],
+        ["PlanPath", "string", ""],
+        ["PlanSummary", "string", ""],
+        ["ExecutorSession", "string", ""],
+        ["State", "TaskState", ""],
+        ["CreatedAt", "time.Time", ""],
+        ["UpdatedAt", "time.Time", ""],
+        ["Name", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["Discipline", "string", ""],
+        ["DisciplineName", "string", ""],
+        ["DisciplineVersion", "int", "命中的账本版本；老任务为 0"],
+        ["WorkDir", "string", ""],
+        ["WorktreeManaged", "bool", ""],
+        ["BaseCommit", "string", ""],
+        ["BaseAhead", "int", ""],
+        ["RepoDirtyCount", "int", ""],
+        ["RepoDirtyFiles", "string", ""],
+        ["DoneNote", "string", ""],
+        ["ActualModel", "string", ""],
+        ["Usage", "*Usage", ""],
+        ["Cumulative", "*Cumulative", ""],
+        ["Timing", "*TaskTiming", ""],
+        ["Machine", "string", ""],
+        ["ProjectID", "string", ""]
+      ],
+      "projScanned": true,
+      "modelKind": "entity"
+    },
+    "m_client_DispatchOpts": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 700,
+      "name": "DispatchOpts",
+      "file": "internal/client/client.go",
+      "line": 717,
+      "signature": "type DispatchOpts struct {",
+      "summary": "DispatchOpts 是 Dispatch 的入参，并携带统一接收者名。",
+      "fields": [
+        ["ProjectID", "string", ""],
+        ["ProjectName", "string", ""],
+        ["PlanB64", "string", ""],
+        ["PlanName", "string", ""],
+        ["Target", "string", ""],
+        ["Prompt", "string", ""],
+        ["Name", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=默认载体"],
+        ["HomeDir", "*string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["Branch", "string", ""],
+        ["NewBranch", "string", ""],
+        ["Base", "string", ""],
+        ["ResolveDefaultBase", "bool", "空基线时由目标侧解析项目默认分支"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"],
+        ["Worktree", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["BaseCommit", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_ledgerstep_DispatchOpts": {
+      "kind": "model",
+      "container": "k_ledgerstep_model",
+      "order": 25,
+      "name": "DispatchOpts",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 25,
+      "signature": "type DispatchOpts struct {",
+      "summary": "DispatchOpts 是 Transport 的完整派发请求，并携带统一接收者名。",
+      "fields": [
+        ["Prompt", "string", ""],
+        ["Branch", "string", ""],
+        ["Target", "string", ""],
+        ["Project", "string", ""],
+        ["Executor", "string", ""],
+        ["Model", "string", ""],
+        ["PlanB64", "string", ""],
+        ["PlanName", "string", ""],
+        ["Base", "string", ""],
+        ["ExistingBranch", "string", ""],
+        ["Discipline", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=默认载体"],
+        ["HomeDir", "*string", ""],
+        ["DisciplineText", "string", ""],
+        ["DisciplineVersion", "int", ""],
+        ["OutputPath", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["ResolveDefaultBase", "bool", "空基线时由目标侧解析项目默认分支"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"]
+      ],
+      "modelKind": "dto"
+    },
+    "m_agentd_DispatchReq": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 369,
+      "name": "DispatchReq",
+      "file": "internal/agentd/manager.go",
+      "line": 468,
+      "signature": "type DispatchReq struct {",
+      "summary": "DispatchReq 是 Dispatch 的入参，携带网关已冻结的载体与小队身份。",
+      "fields": [
+        ["ProjectID", "string", ""],
+        ["ProjectName", "string", ""],
+        ["PlanB64", "string", "plan 内容，base64 编码（路由/CLI 层编码，此处解码）"],
+        ["PlanName", "string", "plan 文件名（归档展示用，写入 task 的 PlanPath 目录下）"],
+        ["Target", "string", "目标主机名（归档展示用，记入 task.Target）"],
+        ["Prompt", "string", ""],
+        ["Name", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=使用已确认的默认载体"],
+        ["Carrier", "string", "网关绑定的载体名；只在 CreateTask 写入"],
+        ["Squad", "string", "网关绑定的小队名快照；空=载体直派"],
+        ["HomeDir", "*string", "小队派发载体 HOME；nil=字段缺席"],
+        ["Executor", "string", ""],
+        ["Discipline", "string", ""],
+        ["DisciplineText", "string", ""],
+        ["DisciplineVersion", "int", ""],
+        ["Model", "string", ""],
+        ["Branch", "string", ""],
+        ["NewBranch", "string", ""],
+        ["Base", "string", ""],
+        ["ResolveDefaultBase", "bool", "空基线时解析 origin/HEAD"],
+        ["LocalBaseBranch", "bool", "本地工作分支起点；禁止补拉"],
+        ["Worktree", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["BaseCommit", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_agentd_dispatchRequest": {
+      "kind": "model",
+      "container": "k_agentd_model",
+      "order": 1050,
+      "name": "dispatchRequest",
+      "file": "internal/agentd/server.go",
+      "line": 1319,
+      "signature": "type dispatchRequest struct {",
+      "summary": "dispatchRequest 是 POST /api/tasks 的请求体，包含统一接收者名。",
+      "fields": [
+        ["ProjectID", "string", ""],
+        ["ProjectName", "string", ""],
+        ["PlanB64", "string", ""],
+        ["PlanName", "string", ""],
+        ["Target", "string", ""],
+        ["Prompt", "string", ""],
+        ["Name", "string", ""],
+        ["Receiver", "string", "统一接收者名；空=默认载体"],
+        ["HomeDir", "*string", ""],
+        ["Executor", "string", ""],
+        ["Discipline", "string", "点名的纪律块角色名；空=未点名（只注入平台层）"],
+        ["DisciplineText", "string", "协调者侧缝 1 组装好的纪律正文；本机收文即用不再解析"],
+        ["DisciplineVersion", "int", "命中的账本版本，随任务落盘供回放"],
+        ["Model", "string", ""],
+        ["Branch", "string", ""],
+        ["NewBranch", "string", ""],
+        ["Base", "string", ""],
+        ["ResolveDefaultBase", "bool", ""],
+        ["LocalBaseBranch", "bool", ""],
+        ["Worktree", "string", ""],
+        ["NewWorktree", "bool", ""],
+        ["BaseCommit", "string", ""]
+      ],
+      "modelKind": "dto"
+    },
+    "m_web_api_types_Task": {
+      "kind": "model",
+      "container": "k_web_api_types_model",
+      "order": 15,
+      "name": "Task",
+      "file": "web/src/api/types.ts",
+      "line": 15,
+      "signature": "interface Task",
+      "summary": "TS 侧 Task 镜像声明派发时绑定的载体与小队快照。",
+      "fields": [
+        ["id", "string", ""],
+        ["target", "string", ""],
+        ["repo_path", "string", ""],
+        ["carrier", "string", "可选；派发时绑定的载体名"],
+        ["squad", "string", "可选；派发时绑定的小队名"],
+        ["branch", "string", ""],
+        ["plan_path", "string", ""],
+        ["plan_summary", "string", ""],
+        ["executor_session", "string", ""],
+        ["state", "string", ""],
+        ["created_at", "string", ""],
+        ["updated_at", "string", ""],
+        ["name", "string", ""],
+        ["executor", "string", ""],
+        ["model", "string", ""],
+        ["discipline_name", "string", "可选；派发点名的角色名"],
+        ["discipline_version", "number", "可选；命中的账本版本"],
+        ["work_dir", "string", ""],
+        ["worktree_managed", "boolean", ""],
+        ["base_commit", "string", ""],
+        ["base_ahead", "number", ""],
+        ["repo_dirty_count", "number", ""],
+        ["repo_dirty_files", "string", ""],
+        ["done_note", "string", "归档时审核者留的完成说明；\"\"=未留说明"],
+        ["actual_model", "string", "executor 报回的实际模型名；缺省=还没报"],
+        ["usage", "Usage", "当前 context 占用；缺省=还没有完成的模型调用"],
+        ["cumulative", "Cumulative", "累计消耗；缺省=还没有账目"],
+        ["timing", "TaskTiming", "耗时聚合；缺省=还没有耗时账目"],
+        ["machine", "string", "\"\"=本机；否则为汇总方盖章的机器键"],
+        ["project_id", "string", "归属项目；未归属为 \"\""]
+      ],
+      "modelKind": "dto"
     }
   },
   "edgesAdded": [
@@ -1075,6 +1520,154 @@
     [
       "n_agentd_Manager_Continue",
       "n_agentd_Manager_bindApproval"
+    ],
+    [
+      "n_scheduling_PutCarrier",
+      "n_scheduling_Service_Squad"
+    ],
+    [
+      "n_scheduling_PutCarrier",
+      "n_scheduling_CrossKindConflict"
+    ],
+    [
+      "n_scheduling_Service_PutSquad",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_scheduling_Service_PutSquad",
+      "n_scheduling_CrossKindConflict"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_OccupancyKeys"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_Service_readCount"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_Service_casCount"
+    ],
+    [
+      "n_scheduling_Service_AdmitCarrier",
+      "n_scheduling_IdentityOf"
+    ],
+    [
+      "n_scheduling_Service_DefaultCarrier",
+      "n_scheduling_DecodeDefaultCarrier"
+    ],
+    [
+      "n_scheduling_Service_DefaultCarrier",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_scheduling_Service_SetDefaultCarrier",
+      "n_scheduling_EncodeDefaultCarrier"
+    ],
+    [
+      "n_scheduling_Service_SetDefaultCarrier",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_scheduling_Service_Release",
+      "n_scheduling_OccupancyKeys"
+    ],
+    [
+      "n_scheduling_Service_acquire",
+      "n_scheduling_OccupancyKeys"
+    ],
+    [
+      "n_scheduling_bindingFor",
+      "n_scheduling_IdentityOf"
+    ],
+    [
+      "n_scheduling_bindingFor",
+      "n_scheduling_EffectiveModel"
+    ],
+    [
+      "n_agentd_Server_resolveReceiver",
+      "n_scheduling_Service_DefaultCarrier"
+    ],
+    [
+      "n_agentd_Server_resolveReceiver",
+      "n_scheduling_Service_Carrier"
+    ],
+    [
+      "n_agentd_Server_resolveReceiver",
+      "n_scheduling_Service_Squad"
+    ],
+    [
+      "n_agentd_Server_resolveReceiver",
+      "n_scheduling_ResolveLookup"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_agentd_Server_resolveReceiver"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_Service_AdmitCarrier"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_Service_Admit"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_BindPhysical"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_Service_Release"
+    ],
+    [
+      "n_agentd_Server_prepareReceiverBinding",
+      "n_scheduling_EffectiveModel"
+    ],
+    [
+      "n_agentd_Server_admitSquadStep",
+      "n_agentd_Server_resolveReceiver"
+    ],
+    [
+      "n_agentd_Server_admitSquadStep",
+      "n_scheduling_BindPhysical"
+    ],
+    [
+      "n_agentd_Server_admitSquadStep",
+      "n_scheduling_EffectiveModel"
+    ],
+    [
+      "n_agentd_Server_admitSquadStep",
+      "n_scheduling_Service_Release"
+    ],
+    [
+      "n_agentd_Server_handleDispatch",
+      "n_agentd_Server_prepareReceiverBinding"
+    ],
+    [
+      "n_agentd_Server_handleDispatch",
+      "n_scheduling_Service_Release"
+    ],
+    [
+      "n_agentd_Server_handleDone",
+      "n_agentd_Server_releaseTaskCarrierOccupancy"
+    ],
+    [
+      "n_agentd_Server_handleStop",
+      "n_agentd_Server_releaseTaskCarrierOccupancy"
+    ],
+    [
+      "n_agentd_Server_handleStop",
+      "n_store_Store_GetTask"
+    ],
+    [
+      "n_agentd_Server_releaseTaskCarrierOccupancy",
+      "n_scheduling_Service_Release"
     ]
   ],
   "implementsAdded": [
