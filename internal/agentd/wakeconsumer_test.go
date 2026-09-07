@@ -29,8 +29,15 @@ func newNoPTYAutomationEnv(t *testing.T) (*ledgerEnv, *queueTraceRunner) {
 
 func appendMirroredForConsumer(t *testing.T, st *ledger.Store, cardID, task, typ string, seq int64, payload string) int64 {
 	t.Helper()
+	node := "consumer-" + task
+	if err := st.RecordDispatch(cardID, ledger.DispatchSnapshot{
+		Target: "consumer-target", TaskID: task, Node: node, Attempt: task,
+		Branch: "cards/" + cardID + "-" + task, Purpose: ledger.PurposeReview, Actor: "test",
+	}); err != nil {
+		t.Fatalf("写消费者派发快照 %s: %v", task, err)
+	}
 	if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
-		Target: "consumer-target", Task: task, SourceSeq: seq, Type: typ,
+		Target: "consumer-target", Task: task, Node: node, Attempt: task, SourceSeq: seq, Type: typ,
 		Payload: []byte(payload), CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("写镜像事件 %s: %v", typ, err)
@@ -38,6 +45,31 @@ func appendMirroredForConsumer(t *testing.T, st *ledger.Store, cardID, task, typ
 	events, err := st.EventsFromAsc([]string{cardID}, 0, 10000)
 	if err != nil {
 		t.Fatalf("读镜像事件 %s: %v", typ, err)
+	}
+	return events[len(events)-1].Seq
+}
+
+func appendWorkflowDispatchForConsumer(t *testing.T, st *ledger.Store, cardID, task, node, attempt string) {
+	t.Helper()
+	if err := st.RecordDispatch(cardID, ledger.DispatchSnapshot{
+		Target: "consumer-target", TaskID: task, Node: node, Attempt: attempt,
+		Branch: "cards/" + cardID + "-" + task, Purpose: ledger.PurposeReview, Actor: "test",
+	}); err != nil {
+		t.Fatalf("写工作流派发快照 %s: %v", task, err)
+	}
+}
+
+func appendWorkflowMirroredForConsumer(t *testing.T, st *ledger.Store, cardID, task, node, attempt, typ string, seq int64, payload string) int64 {
+	t.Helper()
+	if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+		Target: "consumer-target", Task: task, Node: node, Attempt: attempt,
+		SourceSeq: seq, Type: typ, Payload: []byte(payload), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatalf("写工作流镜像事件 %s: %v", typ, err)
+	}
+	events, err := st.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		t.Fatalf("读工作流镜像事件 %s: %v", typ, err)
 	}
 	return events[len(events)-1].Seq
 }
@@ -108,6 +140,44 @@ func TestAutomationEventMappingThroughConsumer(t *testing.T) {
 	for _, unwanted := range []string{"progress", "协调者指针", "系统用户形状"} {
 		if strings.Contains(resumes[0], unwanted) {
 			t.Fatalf("不应唤醒/进入 briefing 的内容 %q 出现: %s", unwanted, resumes[0])
+		}
+	}
+}
+
+func TestB2336StaleAttemptDoesNotWake(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	appendWorkflowDispatchForConsumer(t, env.ledger, cardID, "task-old", "review", "attempt-old")
+	appendWorkflowDispatchForConsumer(t, env.ledger, cardID, "task-new", "review", "attempt-new")
+	appendWorkflowMirroredForConsumer(t, env.ledger, cardID, "task-old", "review", "attempt-old",
+		"question", 1, `{"ticket_id":"old-ticket"}`)
+	appendWorkflowMirroredForConsumer(t, env.ledger, cardID, "task-new", "review", "attempt-new",
+		"question", 1, `{"ticket_id":"new-ticket"}`)
+	appendWorkflowMirroredForConsumer(t, env.ledger, cardID, "task-empty", "", "",
+		"question", 1, `{"ticket_id":"empty-ticket"}`)
+
+	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil {
+		t.Fatalf("消费当前/旧 attempt: %v", err)
+	}
+	if escalated || processed != 1 {
+		t.Fatalf("仅当前 attempt 应唤醒一次，processed=%d escalated=%v", processed, escalated)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 1 || !strings.Contains(resumes[0], "new-ticket") {
+		t.Fatalf("当前 attempt 未唤醒或内容错误: resumes=%v", resumes)
+	}
+	if strings.Contains(resumes[0], "old-ticket") || strings.Contains(resumes[0], "empty-ticket") {
+		t.Fatalf("旧/空 attempt 不得进入 wake: %s", resumes[0])
+	}
+	events, err := env.ledger.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		t.Fatalf("读消费者账本: %v", err)
+	}
+	for _, event := range events {
+		if event.Type == ledger.EvReviewVerdict || event.Type == ledger.EvAcceptanceRecorded {
+			t.Fatalf("执行事件不应生成业务裁决/验收: %+v", event)
 		}
 	}
 }

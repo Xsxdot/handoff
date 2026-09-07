@@ -104,6 +104,110 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 	t.Fatal("镜像未按期落账（应恰 2 条：progress 过滤、幂等不重）")
 }
 
+func TestB2336ProjectionChangeResubscribesWithNewAttempt(t *testing.T) {
+	s := testLedger(t)
+	c, _ := s.CreateCard(ledger.NewCard{Title: "节点重试", Project: "p", Workflow: "bug", Actor: "t"})
+	if err := s.LinkTask(c.ID, "mac-02", "T-retry", ledger.PurposeReview, "t"); err != nil {
+		t.Fatalf("LinkTask: %v", err)
+	}
+	if err := s.RecordDispatch(c.ID, ledger.DispatchSnapshot{
+		Target: "mac-02", TaskID: "T-retry", Node: "review", Attempt: "attempt-old",
+		Branch: "cards/" + c.ID + "-review", Purpose: ledger.PurposeReview, Actor: "t",
+	}); err != nil {
+		t.Fatalf("RecordDispatch old: %v", err)
+	}
+	mach := machinesWith(t, "mac-02")
+	calls := make(chan srcCall, 4)
+	var sourceCalls atomic.Int64
+	source := func(ctx context.Context, c *client.Client, taskID string, fromSeq int64,
+		onEvent func(proto.Event) error) error {
+		seq := sourceCalls.Add(1)
+		calls <- srcCall{client: c, from: fromSeq, ctx: ctx}
+		if seq > fromSeq {
+			if err := onEvent(proto.Event{Seq: seq, TaskID: taskID, Type: "message",
+				Payload: []byte(`{"text":"retry"}`)}); err != nil {
+				return err
+			}
+		}
+		<-ctx.Done()
+		return ctx.Err()
+	}
+	m := New(s, mach, Options{Holder: "test", Source: source})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.reconcile(ctx)
+	first := waitCall(t, calls, "旧 attempt 首次订阅")
+	if first.from != 0 {
+		t.Fatalf("首次订阅 from=%d, want 0", first.from)
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		wm, err := s.MirrorWatermark("mac-02", "T-retry")
+		if err != nil {
+			t.Fatalf("MirrorWatermark old: %v", err)
+		}
+		if wm == 1 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if wm, _ := s.MirrorWatermark("mac-02", "T-retry"); wm != 1 {
+		t.Fatalf("旧 attempt 事件未落账，watermark=%d", wm)
+	}
+	if err := s.RecordDispatch(c.ID, ledger.DispatchSnapshot{
+		Target: "mac-02", TaskID: "T-retry", Node: "review", Attempt: "attempt-new",
+		Branch: "cards/" + c.ID + "-review-2", Purpose: ledger.PurposeReview, Actor: "t",
+	}); err != nil {
+		t.Fatalf("RecordDispatch new: %v", err)
+	}
+	m.reconcile(ctx)
+	second := waitCall(t, calls, "投影变化后应取消旧订阅并重订阅")
+	if second.from != 1 {
+		t.Fatalf("新 attempt 应从旧 watermark 1 续拉，实得 %d", second.from)
+	}
+	select {
+	case <-first.ctx.Done():
+	case <-time.After(3 * time.Second):
+		t.Fatal("投影变化后旧订阅未取消")
+	}
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		wm, err := s.MirrorWatermark("mac-02", "T-retry")
+		if err != nil {
+			t.Fatalf("MirrorWatermark new: %v", err)
+		}
+		if wm == 2 {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if wm, _ := s.MirrorWatermark("mac-02", "T-retry"); wm != 2 {
+		t.Fatalf("新 attempt 事件未落账，watermark=%d", wm)
+	}
+	events, err := s.EventsFromAsc([]string{c.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读镜像事件: %v", err)
+	}
+	for _, event := range events {
+		if event.Type != ledger.EvTaskMirrored || event.SourceSeq != 2 {
+			continue
+		}
+		var envelope struct {
+			Node    string `json:"node"`
+			Attempt string `json:"attempt"`
+		}
+		if err := json.Unmarshal(event.Payload, &envelope); err != nil {
+			t.Fatalf("解新 attempt envelope: %v", err)
+		}
+		if envelope.Node != "review" || envelope.Attempt != "attempt-new" {
+			t.Fatalf("新 attempt 镜像身份=%+v，want review/attempt-new", envelope)
+		}
+		m.Stop()
+		return
+	}
+	t.Fatal("缺少新 attempt 的 source_seq=2 镜像事件")
+}
+
 func TestMirrorLeaseExclusive(t *testing.T) {
 	s := testLedger(t)
 	blockSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
