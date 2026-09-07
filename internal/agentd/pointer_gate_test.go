@@ -53,6 +53,8 @@ var pointerWhitelist = []pointerWhitelistEntry{
 		"组装点适配器（target.json assembly 登记点，server.go）：B156.3 叙事换绑轮把协调者叙事经此落卡房间（Service.Pointer）；不在 HTTP 路由可达图上。"},
 	{"cmd/card_dispatch.go", "roomPointer",
 		"CLI 裸派发的派发指针行经测试缝 roomPointer（包级 var 闭包承载，归属实测名）落账（岔口八范围），不在 HTTP 路由可达图上。"},
+	{"internal/workspace/identity.go", "HasLedgerAttachField",
+		"反射提取结构体元数据（reflect.Pointer 解引用，非 collab.Service.Pointer 路由），用于断言工作区请求/响应结构体零挂卡字段。"},
 }
 
 // TestPointerRouteAbsentFromSource 契约 §4 判据 (a)：全仓非测试 .go 文件里每个

@@ -1442,6 +1442,7 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 	}
 	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
+	m.SetWorkspace(NewGitCapability())
 	pid := registerTestProject(t, m, repo)
 
 	if _, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
@@ -1771,6 +1772,7 @@ func compensateFixture(t *testing.T) (*Manager, string) {
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.SetWorkspace(NewGitCapability())
 	return m, dataDir
 }
 
@@ -1914,8 +1916,10 @@ func compensateOnlyManager(t *testing.T) *Manager {
 	}
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
-	return NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	m.SetWorkspace(NewGitCapability())
+	return m
 }
 
 // TestCompensateKeepsBranchWhenWorktreeRemoveFails 验证 worktree 删不掉时

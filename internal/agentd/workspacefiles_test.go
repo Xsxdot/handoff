@@ -20,6 +20,8 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -40,6 +42,11 @@ func wsFilesFixture(t *testing.T) (*testAgentdEnv, string) {
 	}); err != nil {
 		t.Fatalf("CreateProjectLocation: %v", err)
 	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	mgr := NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, env.srv.conf(), nil, nil, nil, logger)
+	mgr.SetWorkspace(NewGitCapability())
+	env.srv.SetManager(mgr)
+	env.mgr = mgr
 	return env, repo
 }
 
