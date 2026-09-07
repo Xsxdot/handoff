@@ -157,11 +157,21 @@ func TestHandleDispatchSquadReceiver(t *testing.T) {
 		t.Fatalf("小队载体派发返回 %d: %s", rr.Code, rr.Body.String())
 	}
 	task := decodeDispatchTask(t, rr)
-	if task.Carrier != "muse" || task.Target != "local" || task.Executor != "fake" {
+	if task.Squad != "rd" || task.Carrier != "muse" || task.Target != "local" || task.Executor != "fake" {
 		t.Fatalf("小队绑定快照不对: %+v", task)
 	}
-	if err := env.srv.Scheduling().Release("rd", "muse"); err != nil {
-		t.Fatal(err)
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyMemberKey("rd", "muse")); got != 1 {
+		t.Fatalf("小队成员占用=%d, want 1", got)
+	}
+	stop := runAction(env.srv, actionRequest(task.ID, "stop", ""), env.srv.handleStop)
+	if stop.Code != http.StatusOK {
+		t.Fatalf("小队派发 stop 返回 %d: %s", stop.Code, stop.Body.String())
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyMemberKey("rd", "muse")); got != 0 {
+		t.Fatalf("小队 stop 后成员占用=%d, want 0", got)
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("muse")); got != 0 {
+		t.Fatalf("小队 stop 后载体占用=%d, want 0", got)
 	}
 }
 

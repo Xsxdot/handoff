@@ -1392,7 +1392,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,
-		Prompt: req.Prompt, Name: req.Name, Receiver: req.Receiver, Carrier: binding.Carrier,
+		Prompt: req.Prompt, Name: req.Name, Receiver: req.Receiver, Squad: binding.Squad, Carrier: binding.Carrier,
 		Executor: binding.Executor, Discipline: req.Discipline, Model: binding.Model,
 		HomeDir:           homePtr,
 		DisciplineText:    req.DisciplineText,
@@ -1747,18 +1747,19 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
 }
 
-// releaseTaskCarrierOccupancy 释放任务快照持有的裸载体占用。
-// Task 只冻结 Carrier，不落 Squad（P6），所以终态任务必须使用空小队调用
-// Release；Release 自身按占用键判定，重复终态请求只会把计数钳在零。
+// releaseTaskCarrierOccupancy 释放任务快照持有的载体与小队成员占用。
+// Squad 与 Carrier 都在 CreateTask 时冻结；空 Squad 仍会由 OccupancyKeys 省略成员键，
+// 从而让载体直派和旧任务保持只释放载体位的语义。
 func (s *Server) releaseTaskCarrierOccupancy(task *proto.Task) {
 	if task == nil || task.Carrier == "" || s.scheduling == nil {
 		return
 	}
-	if err := s.scheduling.Release("", task.Carrier); err != nil {
-		s.log.Error("任务终态释放载体占用失败", "task", task.ID, "carrier", task.Carrier, "cause", err)
+	if err := s.scheduling.Release(task.Squad, task.Carrier); err != nil {
+		s.log.Error("任务终态释放载体占用失败", "task", task.ID, "squad", task.Squad,
+			"carrier", task.Carrier, "cause", err)
 		return
 	}
-	s.log.Info("任务终态已释放载体占用", "task", task.ID, "carrier", task.Carrier)
+	s.log.Info("任务终态已释放载体占用", "task", task.ID, "squad", task.Squad, "carrier", task.Carrier)
 }
 
 // parseForce 解析 resume 的 force 查询参数。

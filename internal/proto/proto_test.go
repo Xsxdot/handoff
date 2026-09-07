@@ -213,3 +213,22 @@ func TestTaskCarrierJSON(t *testing.T) {
 		t.Fatalf("空 Carrier 不应进入 JSON: %s", withoutCarrier)
 	}
 }
+
+// TestTaskSquadJSON 锁定小队快照的线格式：非空带 squad，空值省略。
+func TestTaskSquadJSON(t *testing.T) {
+	withSquad, err := json.Marshal(Task{Squad: "rd"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(withSquad), `"squad":"rd"`) {
+		t.Fatalf("非空 Squad 未进入 JSON: %s", withSquad)
+	}
+
+	withoutSquad, err := json.Marshal(Task{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(withoutSquad), `"squad"`) {
+		t.Fatalf("空 Squad 不应进入 JSON: %s", withoutSquad)
+	}
+}

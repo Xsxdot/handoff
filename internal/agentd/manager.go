@@ -486,6 +486,9 @@ type DispatchReq struct {
 	// Carrier 是网关已经绑定的载体名。空=旧调用/未接线；只在 CreateTask 写入，
 	// 不得把 cfg.Executor.Default 或 Receiver 名称解析放到 Manager。
 	Carrier string
+	// Squad 是网关已经绑定的小队名快照。空=载体直派或旧调用；只在 CreateTask 写入，
+	// 供任务终态释放成员政策位，不参与 Manager 的接收者解析。
+	Squad string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	// Ticket 0 只保留字段，执行机覆写行为归实现票 U5。
 	HomeDir *string
@@ -1037,6 +1040,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		RepoPath: repoPath,
 		HomeDir:  taskHomeDir,
 		Carrier:  req.Carrier,
+		Squad:    req.Squad,
 		// PlanPath 不在 SetTaskField 白名单，只能在创建时一并写入
 		PlanPath:  planPath,
 		State:     proto.TaskStatePending,

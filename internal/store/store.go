@@ -87,6 +87,8 @@ func Open(path string) (*Store, error) {
   home_dir TEXT NOT NULL DEFAULT '',
   -- carrier 是派发时绑定的载体名；旧任务为空串，空串不可再解释为默认载体。
   carrier TEXT NOT NULL DEFAULT '',
+  -- squad 是派发时解析出的小队名；旧任务为空串，终态释放据此归还成员占用。
+  squad TEXT NOT NULL DEFAULT '',
   branch TEXT NOT NULL DEFAULT '', plan_path TEXT NOT NULL DEFAULT '',
   plan_summary TEXT NOT NULL DEFAULT '', executor_session TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL,
@@ -280,6 +282,7 @@ func Open(path string) (*Store, error) {
 	for col, typ := range map[string]string{
 		"home_dir":             "TEXT NOT NULL DEFAULT ''",
 		"carrier":              "TEXT NOT NULL DEFAULT ''",
+		"squad":                "TEXT NOT NULL DEFAULT ''",
 		"name":                 "TEXT NOT NULL DEFAULT ''",
 		"executor":             "TEXT NOT NULL DEFAULT ''",
 		"model":                "TEXT NOT NULL DEFAULT ''",
@@ -330,10 +333,10 @@ func (s *Store) Close() error {
 //   - 状态迁移合法性由 UpdateTaskState 校验，此处仅原样入库，不含业务规则
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
-INSERT INTO tasks (id, target, repo_path, home_dir, carrier, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+INSERT INTO tasks (id, target, repo_path, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name, discipline_version)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Target, t.RepoPath, t.HomeDir, t.Carrier, t.Branch, t.PlanPath, t.PlanSummary,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Target, t.RepoPath, t.HomeDir, t.Carrier, t.Squad, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
 		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
 		t.BaseCommit, t.BaseAhead, t.RepoDirtyCount, t.RepoDirtyFiles, t.DisciplineName,
@@ -350,7 +353,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 //
 // 加一列要改**四处**：建表 DDL、迁移 map、INSERT（列清单 + 占位符 + 实参）、
 // 本常量 + scanTaskRow。原注释只提了后两处，照着做会漏掉前两处。
-const taskColumns = `id, target, repo_path, home_dir, carrier, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+const taskColumns = `id, target, repo_path, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note,
   actual_model, usage_context_tokens, usage_context_window, discipline_name, discipline_version`
 
@@ -372,7 +375,7 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 		ctxTokens       int
 		ctxWindow       int
 	)
-	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.HomeDir, &task.Carrier, &task.Branch, &task.PlanPath,
+	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.HomeDir, &task.Carrier, &task.Squad, &task.Branch, &task.PlanPath,
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
 		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,

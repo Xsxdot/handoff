@@ -227,7 +227,10 @@ type Task struct {
 	HomeDir  string `json:"home_dir,omitempty"` // 载体派发的隔离 HOME；空串表示旧任务或普通派发。
 	// Carrier 是派发时绑定的载体名（B233.5）。空=旧任务或尚未接线的派发。
 	// 落盘列归实现节点；本字段先冻结 JSON 键。
-	Carrier         string    `json:"carrier,omitempty"`
+	Carrier string `json:"carrier,omitempty"`
+	// Squad 是派发时解析出的小队名快照；空=载体直派或旧任务。只在创建时写入，
+	// 终态释放据此与 Carrier 一起归还小队成员政策位。
+	Squad           string    `json:"squad,omitempty"`
 	Branch          string    `json:"branch"`
 	PlanPath        string    `json:"plan_path"`
 	PlanSummary     string    `json:"plan_summary"`

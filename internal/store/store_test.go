@@ -463,6 +463,32 @@ func TestCreateTaskPersistsCarrier(t *testing.T) {
 	}
 }
 
+// TestCreateTaskPersistsSquad 锁定小队名与载体名一同作为派发时快照落库，且不进字段白名单。
+func TestCreateTaskPersistsSquad(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+	task := &proto.Task{
+		ID: "squad-col", RepoPath: "/repo", Squad: "rd", Carrier: "muse",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreateTask(task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Squad != "rd" {
+		t.Fatalf("Squad = %q, want rd", got.Squad)
+	}
+	if err := s.SetTaskField(task.ID, "squad", "other"); err == nil {
+		t.Fatal("squad 不得进入 SetTaskField 白名单")
+	}
+}
+
 // TestOpenMigratesCarrierColumnOnLegacyDB 用没有 carrier 的旧 tasks 表验证增量迁移。
 func TestOpenMigratesCarrierColumnOnLegacyDB(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "old.db")
