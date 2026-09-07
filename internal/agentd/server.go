@@ -1826,7 +1826,19 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 			"error": fmt.Sprintf("任务分支 %s 已不存在，且任务 worktree 已回收——没有可比对的素材了", headRev)})
 		return
 	}
-	diff, err := DiffRange(repo, base, headRev)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	if _, err := s.mgr.assembleResultRef(r.Context(), task, repo, headRev); err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
+		return
+	}
+	if err := s.mgr.requireWorkspace(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	diff, err := s.mgr.Workspace().DiffRange(r.Context(), repo, base, headRev)
 	if err != nil {
 		if errors.Is(err, ErrBadBaseBranch) {
 			// base 是协调者可控的查询参数：非法 base（"-" 前缀）是请求问题而非
@@ -1963,7 +1975,15 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 path 参数"})
 		return
 	}
-	res, err := ReadFile(repo, rel)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	if err := s.mgr.requireWorkspace(); err != nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
+		return
+	}
+	fc, err := s.mgr.Workspace().ReadFile(r.Context(), repo, rel)
 	if err != nil {
 		switch {
 		case errors.Is(err, ErrPathEscape):
@@ -1984,6 +2004,13 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取文件失败"})
 		}
 		return
+	}
+	res := proto.FileRead{
+		Content:   fc.Content,
+		Size:      fc.Size,
+		Truncated: fc.Truncated,
+		Binary:    fc.Binary,
+		SHA256:    fc.SHA256,
 	}
 	// 截断提示留在 CLI 这条线上：handoff fetch 的用途就是看文件开头，提示是给
 	// 审核者看的（没有它，审核者会把第 1 MiB 处当成文件末尾去推理）。搬到这里

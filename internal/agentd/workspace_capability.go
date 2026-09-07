@@ -7,6 +7,8 @@ package agentd
 import (
 	"context"
 	"errors"
+	"os"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/workspace"
@@ -96,3 +98,32 @@ func (gitCapability) ReadFile(ctx context.Context, repo, rel string) (workspace.
 func (gitCapability) RecycleManaged(ctx context.Context, repo, workdir string) error {
 	return RemoveManagedWorktree(ctx, repo, workdir)
 }
+
+// assembleResultRef 在审阅现场组装结果引用。commit 取 rev-parse；失败则空串，不编造。
+func (m *Manager) assembleResultRef(ctx context.Context, task *proto.Task, repo, headRev string) (workspace.ResultRef, error) {
+	commit := ""
+	if out, _, err := gitProbe(ctx, repo, "rev-parse", headRev); err == nil {
+		got := strings.TrimSpace(out)
+		if workspace.IsCommitSHA(got) {
+			commit = got
+		} else {
+			m.log.Warn("rev-parse 不是 40 位小写 hex，commit 留空", "repo", repo, "head", headRev, "got", got)
+		}
+	}
+	path, branch := "", ""
+	if task != nil {
+		branch = task.Branch
+		path = task.Workdir()
+		if _, err := os.Stat(path); err != nil {
+			path = ""
+		}
+	}
+	ref, err := workspace.NewResultRef(repo, branch, commit, path)
+	if err != nil {
+		m.log.Error("组装结果引用失败", "repo", repo, "branch", branch, "commit", commit, "cause", err)
+		return workspace.ResultRef{}, err
+	}
+	m.log.Info("结果引用已组装", "repo", ref.Repo, "branch", ref.Branch, "commit", ref.Commit, "path", ref.Path)
+	return ref, nil
+}
+

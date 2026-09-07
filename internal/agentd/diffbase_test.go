@@ -133,3 +133,16 @@ func TestTaskDiffTargetKeepsWorktreeWhenBranchUnknown(t *testing.T) {
 		t.Errorf("无分支可用时不该回退，得到 (%q, %q)", gotRepo, gotHead)
 	}
 }
+
+func TestTaskDiffTargetFallbackHeadRevIsNotHEAD(t *testing.T) {
+	gone := filepath.Join(t.TempDir(), "gone")
+	task := &proto.Task{RepoPath: t.TempDir(), WorkDir: gone, Branch: "handoff/deadbeef"}
+	_, head := taskDiffTarget(task)
+	if head == "HEAD" {
+		t.Fatal("树已回收时右端不得是主仓 HEAD")
+	}
+	if head != "handoff/deadbeef" {
+		t.Fatalf("右端应是任务分支，实得 %q", head)
+	}
+}
+
