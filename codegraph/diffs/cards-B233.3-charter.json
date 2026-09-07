@@ -85,7 +85,126 @@
         ]
       ],
       "returns": "bool",
-      "summary": "WaitDeliveryPolicy 是任务事件消费策略：哪些事件唤醒 wait/follow。不是传输过滤。"
+      "summary": "WaitDeliveryPolicy 是任务事件消费策略：哪些事件唤醒 wait/follow。不是传输过滤。",
+      "tests": [
+        {
+          "name": "TestWaitDeliveryPolicyMatchesIsDeliverableAlias",
+          "file": "internal/client/execution_test.go:21"
+        },
+        {
+          "name": "TestIsDeliverableAliasesWaitDeliveryPolicy",
+          "file": "internal/client/delivery_internal_test.go:9"
+        }
+      ]
+    }
+  },
+  "nodesModified": {
+    "m_client_Client": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 178,
+      "name": "Client",
+      "file": "internal/client/client.go",
+      "line": 156,
+      "signature": "type Client struct {",
+      "summary": "Client 是 agentd 的 HTTP/WS 客户端，持有服务地址与 Bearer 令牌。 并发安全：baseURL/token/hc 与 WS 节奏字段构造后只读；游标根由 cursorRootOnce 保护，首次调用解析、后续读缓存，可被多个 goroutine 同时使用。",
+      "modelKind": "dto"
+    },
+    "n_client_isDeliverable": {
+      "kind": "func",
+      "container": "k_client_fn",
+      "order": 139,
+      "name": "isDeliverable",
+      "file": "internal/client/client.go",
+      "line": 125,
+      "signature": "func isDeliverable(t proto.EventType) bool",
+      "params": [
+        [
+          "t",
+          "proto.EventType",
+          ""
+        ]
+      ],
+      "returns": "bool",
+      "summary": "isDeliverable 是 WaitDeliveryPolicy 的包内别名。既有 wait/follow/backlog 调用点未迁；策略归属见 WaitDeliveryPolicy（应用，不在传输）。",
+      "tests": [
+        {
+          "name": "TestIsDeliverableAliasesWaitDeliveryPolicy",
+          "file": "internal/client/delivery_internal_test.go:9"
+        }
+      ]
+    },
+    "n_agentd_Server_forwardJSON": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1829,
+      "name": "Server.forwardJSON",
+      "file": "internal/agentd/forward.go",
+      "line": 110,
+      "signature": "func (s *Server) forwardJSON(r *http.Request, name string, c *client.Client, token string, body []byte) (status int, headers http.Header, payload []byte, err error)",
+      "params": [
+        [
+          "r",
+          "*http.Request",
+          ""
+        ],
+        [
+          "name",
+          "string",
+          ""
+        ],
+        [
+          "c",
+          "*client.Client",
+          ""
+        ],
+        [
+          "token",
+          "string",
+          ""
+        ],
+        [
+          "body",
+          "[]byte",
+          ""
+        ]
+      ],
+      "returns": "status int, headers http.Header, payload []byte, err error",
+      "summary": "forwardJSON 经目标机客户端发一次有大小上限的 JSON 请求，把完整响应交回调用方。 成功/失败分叉留给调用方：失败原样透传；成功由 handler 挂卡再写响应。本函数不写账本。"
+    },
+    "n_agentd_Server_forwardWorktreeIfRequested": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1830,
+      "name": "Server.forwardWorktreeIfRequested",
+      "file": "internal/agentd/forward.go",
+      "line": 161,
+      "signature": "func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Request) (handled bool, ws *proto.Workspace, cardIDs []string)",
+      "signatureOld": "func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Request) bool",
+      "params": [
+        [
+          "w",
+          "http.ResponseWriter",
+          ""
+        ],
+        [
+          "r",
+          "*http.Request",
+          ""
+        ]
+      ],
+      "returns": "handled bool, ws *proto.Workspace, cardIDs []string",
+      "summary": "forwardWorktreeIfRequested 是建树请求专用的 ?machine 转发路径。 返回： - handled=false：不是跨机请求，调用方走本机建树 - handled=true 且 ws==nil：已向 w 写入拒绝或目标错误，调用方必须直接 return - handled=true 且 ws!=nil：目标建树成功。本函数不写账本、不写成功响应； copyForwardHeaders 已落到 w。调用方用 cardIDs 挂卡后再 writeJSON。 为什么建树不能走通用的 forwardIfRequested：card_ids 指的是协调者本机账本里的卡。",
+      "tests": [
+        {
+          "name": "TestForwardWorktreeStripsCardIDsAndAttachesLocally",
+          "file": "internal/agentd/forward_test.go:212"
+        },
+        {
+          "name": "TestForwardWorktreeErrorAndCancel",
+          "file": "internal/agentd/forward_test.go:288"
+        }
+      ]
     }
   },
   "edgesAdded": [
