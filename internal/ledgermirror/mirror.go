@@ -80,6 +80,7 @@ type Machines interface {
 type subscription struct {
 	cancel context.CancelFunc
 	client *client.Client
+	link   ledger.TaskLink
 }
 
 // DefaultSource 生产事件源：client.StreamEventsOnce 的薄包装。
@@ -360,6 +361,10 @@ func (m *Mirror) reconcile(ctx context.Context) {
 			m.dropSubLocked(key, sub, "本轮取不到该机器的客户端")
 		case !m.isLocalTarget(link.Target) && clients[link.Target] != sub.client:
 			m.dropSubLocked(key, sub, "机器配置已变更，退订重订")
+		case sub.link.CardID != link.CardID || sub.link.Node != link.Node || sub.link.Attempt != link.Attempt:
+			// Node/Attempt 是订阅写入 task_mirrored envelope 的身份投影；重试
+			// 只改这两个字段也必须换订阅，否则迟到事件会继续冒充旧尝试。
+			m.dropSubLocked(key, sub, "工作流尝试身份已变更，退订重订")
 		}
 	}
 	for key, link := range want {
@@ -377,12 +382,13 @@ func (m *Mirror) reconcile(ctx context.Context) {
 			continue
 		}
 		subCtx, cancel := context.WithCancel(ctx)
-		m.subs[key] = &subscription{cancel: cancel, client: c}
+		m.subs[key] = &subscription{cancel: cancel, client: c, link: link}
 		m.wgMu.Lock()
 		m.wg.Add(1)
 		m.wgMu.Unlock()
 		go m.subscribe(subCtx, link, c)
-		m.log.Info("起订", "sub", key, "target", link.Target)
+		m.log.Info("起订", "sub", key, "target", link.Target, "task", link.TaskID,
+			"node", link.Node, "attempt", link.Attempt)
 	}
 
 	// 活连接按「还没归档的订阅」计。已 archived 的挂账行仍在 card_tasks 里，
@@ -461,8 +467,9 @@ func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c *client.
 	for ctx.Err() == nil {
 		wm, err := m.st.MirrorWatermark(link.Target, link.TaskID)
 		if err != nil {
-			m.log.Warn("读 watermark 失败，退避重试", "target", link.Target, "task", link.TaskID,
-				"backoff", backoff, "err", err)
+			m.log.Warn("读 watermark 失败，退避重试", "card", link.CardID, "target", link.Target,
+				"task", link.TaskID, "node", link.Node, "attempt", link.Attempt,
+				"backoff", backoff, "cause", err)
 			m.setConn(key, false)
 			select {
 			case <-ctx.Done():
@@ -481,43 +488,49 @@ func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c *client.
 			source = m.opt.LocalSource
 			if source == nil {
 				err = errors.New("本机账本源未配置")
-				m.log.Warn("本机订阅无法建立", "target", link.Target, "task", link.TaskID,
+				m.log.Warn("本机订阅无法建立", "card", link.CardID, "target", link.Target,
+					"task", link.TaskID, "node", link.Node, "attempt", link.Attempt,
 					"from_seq", wm, "cause", err)
 			} else {
-				m.log.Info("建立本机账本订阅", "target", link.Target, "task", link.TaskID, "from_seq", wm)
+				m.log.Info("建立本机账本订阅", "card", link.CardID, "target", link.Target,
+					"task", link.TaskID, "node", link.Node, "attempt", link.Attempt, "from_seq", wm)
 			}
 		} else {
 			if c == nil {
 				err = errors.New("远端客户端缺失")
-				m.log.Warn("远端订阅无法建立", "target", link.Target, "task", link.TaskID,
+				m.log.Warn("远端订阅无法建立", "card", link.CardID, "target", link.Target,
+					"task", link.TaskID, "node", link.Node, "attempt", link.Attempt,
 					"from_seq", wm, "cause", err)
 			} else {
 				source = m.opt.Source
-				m.log.Info("建立远端账本订阅", "target", link.Target, "task", link.TaskID, "from_seq", wm)
+				m.log.Info("建立远端账本订阅", "card", link.CardID, "target", link.Target,
+					"task", link.TaskID, "node", link.Node, "attempt", link.Attempt, "from_seq", wm)
 			}
 		}
 		if source != nil {
 			err = source(ctx, c, link.TaskID, wm, func(e proto.Event) error {
 				if mirrorSkip[e.Type] {
 					m.log.Debug("账本镜像过滤事件", "target", link.Target, "task", link.TaskID,
-						"seq", e.Seq, "type", e.Type)
+						"node", link.Node, "attempt", link.Attempt, "seq", e.Seq, "type", e.Type)
 					return nil
 				}
 				wrote, err := m.st.AppendMirroredEvent(link.CardID, ledger.MirroredEvent{
-					Target: link.Target, Task: link.TaskID, SourceSeq: e.Seq,
+					Target: link.Target, Task: link.TaskID, Node: link.Node, Attempt: link.Attempt, SourceSeq: e.Seq,
 					Type: string(e.Type), Payload: e.Payload, CreatedAt: e.CreatedAt,
 				})
 				if err != nil {
 					m.log.Warn("账本镜像落库失败", "target", link.Target, "task", link.TaskID,
-						"seq", e.Seq, "type", e.Type, "cause", err)
+						"node", link.Node, "attempt", link.Attempt, "seq", e.Seq, "type", e.Type, "card", link.CardID, "cause", err)
 					return err
 				}
 				if wrote {
 					m.log.Debug("账本镜像事件已落账", "target", link.Target, "task", link.TaskID,
-						"seq", e.Seq, "type", e.Type)
+						"node", link.Node, "attempt", link.Attempt, "seq", e.Seq, "type", e.Type, "card", link.CardID)
 					if !m.isLocalTarget(link.Target) {
 						if err := m.st.TouchMirrorHealth(link.Target, e.Seq); err != nil {
-							m.log.Warn("touch 健康失败", "target", link.Target, "err", err)
+							m.log.Warn("touch 健康失败", "card", link.CardID, "target", link.Target,
+								"task", link.TaskID, "node", link.Node, "attempt", link.Attempt,
+								"seq", e.Seq, "cause", err)
 						}
 					}
 				}
@@ -538,8 +551,9 @@ func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c *client.
 			m.log.Info("订阅正常终结（task 归档）", "target", link.Target, "task", link.TaskID)
 			return
 		}
-		m.log.Warn("订阅断开，退避重连", "target", link.Target, "task", link.TaskID,
-			"backoff", backoff, "err", err)
+		m.log.Warn("订阅断开，退避重连", "card", link.CardID, "target", link.Target,
+			"task", link.TaskID, "node", link.Node, "attempt", link.Attempt,
+			"backoff", backoff, "cause", err)
 		select {
 		case <-ctx.Done():
 			return

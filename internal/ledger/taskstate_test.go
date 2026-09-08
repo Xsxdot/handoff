@@ -57,6 +57,28 @@ func TestLiveMirrorTargets(t *testing.T) {
 	}
 }
 
+func TestAppendMirroredEventWorkflowEnvelopeGolden(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "镜像工作流事件")
+	if _, err := s.AppendMirroredEvent(c.ID, MirroredEvent{
+		Target: "mac-02", Task: "task-attempt-1", Node: "review", Attempt: "task-attempt-1",
+		SourceSeq: 7, Type: "question", Payload: []byte(`{"ticket_id":"task-attempt-1:q1"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.EventsFromAsc([]string{c.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) == 0 {
+		t.Fatal("镜像事件未落账")
+	}
+	want := `{"node":"review","attempt":"task-attempt-1","task_type":"question","payload":{"ticket_id":"task-attempt-1:q1"}}`
+	if got := string(events[len(events)-1].Payload); got != want {
+		t.Fatalf("镜像工作流 envelope = %s, want %s", got, want)
+	}
+}
+
 func TestLatestTaskStates(t *testing.T) {
 	s := seedStore(t)
 	c := mk(t, s, "卡")

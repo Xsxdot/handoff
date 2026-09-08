@@ -17,22 +17,113 @@ import (
 )
 
 type mirroredTaskEnvelope struct {
+	Node     *string         `json:"node"`
+	Attempt  *string         `json:"attempt"`
 	TaskType string          `json:"task_type"`
 	Payload  json.RawMessage `json:"payload"`
 }
 
-func mirroredTaskTypeAndPayload(ev proto.LedgerEvent) (string, json.RawMessage, error) {
-	if ev.Type != ledger.EvTaskMirrored {
-		return "", nil, fmt.Errorf("事件 %d 不是 task_mirrored: %s", ev.Seq, ev.Type)
-	}
+func decodeMirroredTaskEnvelope(ev proto.LedgerEvent) (mirroredTaskEnvelope, error) {
 	var envelope mirroredTaskEnvelope
+	if ev.Type != ledger.EvTaskMirrored {
+		return envelope, fmt.Errorf("事件 %d 不是 task_mirrored: %s", ev.Seq, ev.Type)
+	}
 	if err := json.Unmarshal(ev.Payload, &envelope); err != nil {
-		return "", nil, fmt.Errorf("事件 %d 的 task_mirrored envelope 解码失败: %w", ev.Seq, err)
+		return envelope, fmt.Errorf("事件 %d 的 task_mirrored envelope 解码失败: %w", ev.Seq, err)
 	}
 	if envelope.TaskType == "" || len(envelope.Payload) == 0 {
-		return "", nil, fmt.Errorf("事件 %d 的 task_mirrored 缺 task_type/payload", ev.Seq)
+		return envelope, fmt.Errorf("事件 %d 的 task_mirrored 缺 task_type/payload", ev.Seq)
+	}
+	return envelope, nil
+}
+
+func mirroredTaskTypeAndPayload(ev proto.LedgerEvent) (string, json.RawMessage, error) {
+	envelope, err := decodeMirroredTaskEnvelope(ev)
+	if err != nil {
+		return "", nil, err
 	}
 	return envelope.TaskType, envelope.Payload, nil
+}
+
+// currentWorkflowAttempt 从卡事件流取指定节点当前的有效派发尝试。
+// 只有同时具备 Node 与 Attempt 的 dispatched 快照才可路由；旧 plain
+// dispatch 和缺字段快照保留为兼容审计数据，但不能猜成当前尝试。
+func (s *Server) currentWorkflowAttempt(cardID, node string) (attempt string, found bool, err error) {
+	if s.autoLedger == nil {
+		err := fmt.Errorf("卡 %s 节点 %s 读取当前 attempt：账本未装配", cardID, node)
+		s.log.Error("当前 workflow attempt 读取失败：账本未装配", "card", cardID,
+			"node", node, "cause", err)
+		return "", false, err
+	}
+	const pageSize = 500
+	from := int64(0)
+	for {
+		events, readErr := s.autoLedger.EventsFromAsc([]string{cardID}, from, pageSize)
+		if readErr != nil {
+			s.log.Error("读取当前 workflow attempt 失败", "card", cardID, "node", node,
+				"from_seq", from, "cause", readErr)
+			return "", false, fmt.Errorf("读取卡 %s 当前 attempt: %w", cardID, readErr)
+		}
+		for _, event := range events {
+			if event.Seq > from {
+				from = event.Seq
+			}
+			if event.Type != ledger.EvDispatched {
+				continue
+			}
+			var snapshot ledger.DispatchSnapshot
+			if decodeErr := json.Unmarshal(event.Payload, &snapshot); decodeErr != nil {
+				s.log.Error("当前 workflow attempt 的派发快照解码失败", "card", cardID,
+					"seq", event.Seq, "type", event.Type, "node", node, "cause", decodeErr)
+				return "", false, fmt.Errorf("卡 %s 派发快照 seq=%d 解码: %w", cardID, event.Seq, decodeErr)
+			}
+			if snapshot.Node == node && snapshot.Node != "" && snapshot.Attempt != "" {
+				attempt = snapshot.Attempt
+				found = true
+			}
+		}
+		if len(events) < pageSize {
+			return attempt, found, nil
+		}
+	}
+}
+
+// acceptsCurrentWorkflowAttempt 是 task_mirrored 唤醒前的身份闸。
+// 不匹配的事件仍会进入 automationSeen，保留审计但不会唤醒新尝试；
+// 缺失与空值使用指针区分，避免旧 envelope 被零值误判为有效身份。
+func (s *Server) acceptsCurrentWorkflowAttempt(ev proto.LedgerEvent) (bool, error) {
+	envelope, err := decodeMirroredTaskEnvelope(ev)
+	if err != nil {
+		s.log.Error("task_mirrored envelope 无法进入当前 attempt 闸", "card", ev.CardID,
+			"seq", ev.Seq, "type", ev.Type, "cause", err)
+		return false, fmt.Errorf("卡 %s task_mirrored seq=%d type=%s: %w", ev.CardID, ev.Seq, ev.Type, err)
+	}
+	if envelope.Node == nil || *envelope.Node == "" || envelope.Attempt == nil || *envelope.Attempt == "" {
+		s.log.Info("task_mirrored 因缺失或空 workflow 身份跳过", "card", ev.CardID,
+			"seq", ev.Seq, "type", ev.Type, "node_present", envelope.Node != nil,
+			"attempt_present", envelope.Attempt != nil, "task_type", envelope.TaskType)
+		return false, nil
+	}
+	current, found, err := s.currentWorkflowAttempt(ev.CardID, *envelope.Node)
+	if err != nil {
+		return false, err
+	}
+	if !found {
+		s.log.Info("task_mirrored 因没有当前 workflow dispatch 跳过", "card", ev.CardID,
+			"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node, "attempt", *envelope.Attempt,
+			"task_type", envelope.TaskType)
+		return false, nil
+	}
+	if current != *envelope.Attempt {
+		s.log.Info("task_mirrored 因旧 workflow attempt 跳过", "card", ev.CardID,
+			"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node,
+			"attempt", *envelope.Attempt, "current_attempt", current, "task_type", envelope.TaskType)
+		return false, nil
+	}
+	s.log.Debug("task_mirrored 通过当前 workflow attempt 闸", "card", ev.CardID,
+		"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node, "attempt", *envelope.Attempt,
+		"task_type", envelope.TaskType)
+	return true, nil
 }
 
 // automationWakeEvent 的 false 表示合法但不唤醒；摘要最多 400 rune，原事件仍在账本。
@@ -127,6 +218,21 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				maxProcessed = ev.Seq
 			}
 			continue
+		}
+		if ev.Type == ledger.EvTaskMirrored {
+			accepted, gateErr := s.acceptsCurrentWorkflowAttempt(ev)
+			if gateErr != nil {
+				return processed, escalated, gateErr
+			}
+			if !accepted {
+				if ev.Seq > maxProcessed {
+					maxProcessed = ev.Seq
+				}
+				s.automationMu.Lock()
+				s.automationSeen[ev.Seq] = struct{}{}
+				s.automationMu.Unlock()
+				continue
+			}
 		}
 		if ev.Type == ledger.EvStatusMoved && ev.CardID != "" {
 			var moved struct {

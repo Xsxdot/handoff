@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -375,6 +376,37 @@ func TestReplyRoundTrip(t *testing.T) {
 	}
 	if len(info.PendingTickets) != 0 {
 		t.Fatalf("reply 后 pending_tickets 仍残留 %d 条", len(info.PendingTickets))
+	}
+}
+
+// TestB2336TypedReplyKeepsTaskTicketBoundary locks the typed client seam used
+// by both question answers and permission replies: task and ticket ownership
+// stay in the URL/body while the answer remains uninterpreted text here.
+func TestB2336TypedReplyKeepsTaskTicketBoundary(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.Method != http.MethodPost {
+			t.Errorf("Reply method=%s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("解 Reply JSON: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(ts.Close)
+
+	if err := client.New(ts.URL, testToken).Reply(context.Background(), "task-current", "ticket-current", "deny:需要更多信息"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if gotPath != "/api/tasks/task-current/reply" {
+		t.Fatalf("Reply path=%q, want task-scoped path", gotPath)
+	}
+	want := map[string]string{"ticket_id": "ticket-current", "answer": "deny:需要更多信息"}
+	if !reflect.DeepEqual(gotBody, want) {
+		t.Fatalf("Reply JSON=%v, want %v", gotBody, want)
 	}
 }
 

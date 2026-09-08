@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -78,5 +79,84 @@ func TestStreamEventsOnceDeliversAndNoCursor(t *testing.T) {
 	}
 	if _, err := os.Stat(cursorsDir); !os.IsNotExist(err) {
 		t.Errorf("调用后游标目录必须仍不存在：%s", cursorsDir)
+	}
+}
+
+// TestB2336MirrorWatermarkIsIndependentFromWaitEvent uses the actual request
+// query to prove that mirror reconnects choose their own persisted watermark;
+// a later WaitEvent starts from the CLI cursor and cannot move that mirror
+// watermark or make StreamEventsOnce write the cursor directory.
+func TestB2336MirrorWatermarkIsIndependentFromWaitEvent(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	var requests []int64
+	serverCalls := 0
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/ws/events" {
+			http.NotFound(w, r)
+			return
+		}
+		fromSeq, err := strconv.ParseInt(r.URL.Query().Get("from_seq"), 10, 64)
+		if err != nil {
+			t.Errorf("解析 from_seq: %v", err)
+			return
+		}
+		requests = append(requests, fromSeq)
+		serverCalls++
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			t.Errorf("Accept WS: %v", err)
+			return
+		}
+		defer conn.CloseNow()
+		var ev proto.Event
+		switch serverCalls {
+		case 1:
+			ev = proto.Event{Seq: 7, TaskID: "t1", Type: proto.EventTypeProgress}
+		case 2:
+			ev = proto.Event{Seq: 9, TaskID: "t1", Type: proto.EventTypeQuestion}
+		case 3:
+			ev = proto.Event{Seq: 11, TaskID: "t1", Type: proto.EventTypeQuestion}
+		default:
+			t.Errorf("意外的 WS 连接次数: %d", serverCalls)
+			return
+		}
+		body, err := json.Marshal(ev)
+		if err != nil {
+			t.Errorf("marshal event: %v", err)
+			return
+		}
+		if err := conn.Write(r.Context(), websocket.MessageText, body); err != nil {
+			t.Errorf("write event: %v", err)
+		}
+	}))
+	t.Cleanup(func() { ts.CloseClientConnections(); ts.Close() })
+
+	cli := client.New(ts.URL, "")
+	var mirrorWatermark int64
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	for _, wantSeq := range []int64{7, 9} {
+		err := cli.StreamEventsOnce(ctx, "t1", mirrorWatermark, func(ev proto.Event) error {
+			mirrorWatermark = ev.Seq
+			return nil
+		})
+		if err != nil && ctx.Err() != nil {
+			t.Fatalf("StreamEventsOnce: %v", err)
+		}
+		if mirrorWatermark != wantSeq {
+			t.Fatalf("镜像 watermark=%d, want %d", mirrorWatermark, wantSeq)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(os.Getenv("HOME"), ".handoff", "cursors")); !os.IsNotExist(err) {
+		t.Fatalf("两次 StreamEventsOnce 后不应创建 cursor 目录: %v", err)
+	}
+	if _, err := cli.WaitEvent(ctx, "t1", false); err != nil {
+		t.Fatalf("WaitEvent: %v", err)
+	}
+	if mirrorWatermark != 9 {
+		t.Fatalf("WaitEvent 不得推进镜像 watermark，got %d", mirrorWatermark)
+	}
+	if len(requests) != 3 || requests[0] != 0 || requests[1] != 7 || requests[2] != 0 {
+		t.Fatalf("WS from_seq=%v，期望 mirror 0→7、WaitEvent 独立从 0", requests)
 	}
 }

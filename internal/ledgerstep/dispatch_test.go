@@ -236,8 +236,89 @@ func TestViaTemplateCarriesTransportBaseCommitIntoResultAndSnapshot(t *testing.T
 	t.Fatal("缺 dispatched 事件")
 }
 
-// TestViaTemplateStopsSnapshotAfterWriteGateCloses 覆盖挂账成功后、快照写入前
-// 失去运行锁的窗口：已有 card_tasks 行保留，但不得再落 dispatched 事件。
+// TestB2336DispatchSnapshotPrecedesTaskLink makes the workflow identity visible
+// before the mirror can discover the weak card_tasks link.  The mirror uses the
+// dispatched snapshot as the only Node/Attempt projection, so the event order
+// is part of the observable hand-off boundary.
+func TestB2336DispatchSnapshotPrecedesTaskLink(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	const taskID = "T-order"
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(context.Context, DispatchOpts) (string, string, error) {
+		return taskID, "", nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02", Node: "review",
+	}); err != nil {
+		t.Fatalf("ViaTemplate: %v", err)
+	}
+
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读派发事件: %v", err)
+	}
+	var snapshotSeq, linkSeq int64
+	for _, event := range events {
+		switch event.Type {
+		case ledger.EvDispatched:
+			var snapshot ledger.DispatchSnapshot
+			if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+				t.Fatalf("解 dispatched 快照: %v", err)
+			}
+			if snapshot.TaskID == taskID {
+				snapshotSeq = event.Seq
+			}
+		case ledger.EvComment:
+			if strings.Contains(string(event.Payload), taskID) {
+				linkSeq = event.Seq
+			}
+		}
+	}
+	if snapshotSeq == 0 || linkSeq == 0 {
+		t.Fatalf("缺少派发快照或挂账事件: snapshot_seq=%d link_seq=%d events=%+v", snapshotSeq, linkSeq, events)
+	}
+	if snapshotSeq >= linkSeq {
+		t.Fatalf("派发快照必须先于挂账可见: snapshot_seq=%d link_seq=%d", snapshotSeq, linkSeq)
+	}
+}
+
+// TestB2336DispatchFailureRollsBackSnapshot covers the conflict window after
+// the remote task exists: a failed card_tasks insert must not leave an
+// EvDispatched event that makes the task look like a successful workflow run.
+func TestB2336DispatchFailureRollsBackSnapshot(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	const taskID = "T-already-linked"
+	if err := st.LinkTask(card.ID, "mac-02", taskID, ledger.PurposeImplement, "existing"); err != nil {
+		t.Fatalf("预先占用 task link: %v", err)
+	}
+	d := &Dispatcher{St: st, Actor: "tester", Transport: func(context.Context, DispatchOpts) (string, string, error) {
+		return taskID, "", nil
+	}}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02", Node: "doing",
+	}); err == nil {
+		t.Fatal("重复挂账应使模板派发失败")
+	}
+
+	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读派发事件: %v", err)
+	}
+	for _, event := range events {
+		if event.Type != ledger.EvDispatched {
+			continue
+		}
+		var snapshot ledger.DispatchSnapshot
+		if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
+			t.Fatalf("解 dispatched 快照: %v", err)
+		}
+		if snapshot.TaskID == taskID {
+			t.Fatalf("挂账失败不得留下派发成功快照: seq=%d payload=%s", event.Seq, event.Payload)
+		}
+	}
+}
+
+// TestViaTemplateStopsSnapshotAfterWriteGateCloses 覆盖账本事务开始前失去
+// 运行锁的窗口：快照与挂账都不得写入。
 func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	const holder = "run:gate-test#1#1"
@@ -253,7 +334,7 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 		Template: "feature-impl", Target: "mac-02",
 		WriteGate: func() bool {
 			gateCalls++
-			if gateCalls == 2 {
+			if gateCalls == 1 {
 				if err := st.ReleaseRunLock(card.ID, holder); err != nil {
 					t.Fatalf("释放测试运行锁: %v", err)
 				}
@@ -266,26 +347,30 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 		},
 	})
 	if !errors.Is(err, ErrWriteGateClosed) {
-		t.Fatalf("快照写前失权应被拒: %v", err)
+		t.Fatalf("账本事务写前失权应被拒: %v", err)
 	}
-	if gateCalls != 2 {
-		t.Fatalf("两处账本写入前都应检查写闸，实得 %d 次", gateCalls)
+	if gateCalls != 1 {
+		t.Fatalf("账本事务写入前应检查一次写闸，实得 %d 次", gateCalls)
 	}
 	links, err := st.TasksOf(card.ID)
 	if err != nil {
 		t.Fatalf("读挂账: %v", err)
 	}
-	if len(links) != 1 {
-		t.Fatalf("失权前已完成的挂账应保留，实得 %d 行", len(links))
+	if len(links) != 0 {
+		t.Fatalf("失权后不得新增挂账，实得 %d 行", len(links))
 	}
 	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
 	if err != nil {
 		t.Fatalf("读事件: %v", err)
 	}
+	var dispatched int
 	for _, event := range events {
 		if event.Type == ledger.EvDispatched {
-			t.Fatalf("失权后不得新增 dispatched 事件: %+v", event)
+			dispatched++
 		}
+	}
+	if dispatched != 0 {
+		t.Fatalf("失权后原子账本事务不得写入快照，dispatched=%d", dispatched)
 	}
 }
 

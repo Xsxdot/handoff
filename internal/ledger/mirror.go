@@ -13,10 +13,12 @@ import (
 // MirroredEvent 一条待镜像的 task 事件（来源三元组 + 原始负载）。
 type MirroredEvent struct {
 	Target, Task string
-	SourceSeq    int64
-	Type         string // 原 task 事件类型，存入 payload；账本事件类型恒为 task_mirrored
-	Payload      []byte
-	CreatedAt    time.Time
+	// Node/Attempt 由挂账关联补入；空值只表示旧挂账或非工作流直派。
+	Node, Attempt string
+	SourceSeq     int64
+	Type          string // 原 task 事件类型，存入 payload；账本事件类型恒为 task_mirrored
+	Payload       []byte
+	CreatedAt     time.Time
 }
 
 // MirrorHealthRow per-target 镜像健康行（滞后判定数据源）。
@@ -33,6 +35,8 @@ type MirrorHealthRow struct {
 // 账本事件 type=task_mirrored，payload 包原类型与原始负载；来源三元组落
 // source_* 列。写入即 NOTIFY（单流消费者不区分事件出身）。
 func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, error) {
+	log().Debug("镜像事件写入入口", "card", cardID, "target", ev.Target, "task", ev.Task,
+		"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type)
 	inserted := false
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		var one int
@@ -40,16 +44,23 @@ func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, erro
 			WHERE source_target = ? AND source_task = ? AND source_seq = ?`),
 			ev.Target, ev.Task, ev.SourceSeq).Scan(&one)
 		if err == nil {
+			log().Info("镜像事件重放跳过", "card", cardID, "target", ev.Target, "task", ev.Task,
+				"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type)
 			return nil
 		}
 		if !errors.Is(err, sql.ErrNoRows) {
+			log().Warn("查询镜像幂等键失败", "card", cardID, "target", ev.Target, "task", ev.Task,
+				"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type, "cause", err)
 			return fmt.Errorf("查幂等键: %w", err)
 		}
 		inner := string(ev.Payload)
 		if len(ev.Payload) == 0 {
 			inner = "null"
 		}
-		payload := fmt.Sprintf(`{"task_type":%q,"payload":%s}`, ev.Type, inner)
+		// node/attempt are the workflow projection; source_target/source_task/source_seq
+		// remain the authoritative source identity columns and are not copied into JSON.
+		payload := fmt.Sprintf(`{"node":%q,"attempt":%q,"task_type":%q,"payload":%s}`,
+			ev.Node, ev.Attempt, ev.Type, inner)
 		var seq int64
 		if s.dialect == dialectPG {
 			err = tx.QueryRow(s.q(`INSERT INTO card_events
@@ -72,12 +83,20 @@ func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, erro
 			}
 		}
 		if err != nil {
+			log().Warn("镜像事件写入失败", "card", cardID, "target", ev.Target, "task", ev.Task,
+				"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type, "cause", err)
 			return fmt.Errorf("写镜像事件 %s/%s#%d: %w", ev.Target, ev.Task, ev.SourceSeq, err)
 		}
 		sink.seqs = append(sink.seqs, seq)
 		inserted = true
+		log().Info("镜像事件写入完成", "card", cardID, "target", ev.Target, "task", ev.Task,
+			"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type)
 		return nil
 	})
+	if err != nil {
+		log().Warn("镜像事件事务失败", "card", cardID, "target", ev.Target, "task", ev.Task,
+			"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type, "cause", err)
+	}
 	return inserted && err == nil, err
 }
 
@@ -87,8 +106,10 @@ func (s *Store) MirrorWatermark(target, task string) (int64, error) {
 	err := s.db.QueryRow(s.q(`SELECT MAX(source_seq) FROM card_events
 		WHERE source_target = ? AND source_task = ?`), target, task).Scan(&wm)
 	if err != nil {
+		log().Warn("读取镜像 watermark 失败", "target", target, "task", task, "cause", err)
 		return 0, fmt.Errorf("查 watermark: %w", err)
 	}
+	log().Debug("读取镜像 watermark 完成", "target", target, "task", task, "seq", wm.Int64)
 	return wm.Int64, nil
 }
 
