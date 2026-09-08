@@ -1898,15 +1898,32 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	if _, err := s.mgr.assembleResultRef(r.Context(), task, repo, headRev); err != nil {
+	ref, err := s.mgr.assembleResultRef(r.Context(), task, repo, headRev)
+	if err != nil {
+		s.log.Error("组装任务结果引用失败", "task", taskID, "repo", repo,
+			"head_rev", headRev, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return
+	}
+	// ResultRef.Commit 是同一次结果组装出的权威 diff head；Path 允许在 managed
+	// worktree 回收后为空，不能因此阻断准确 commit。只有 commit 为空才按原始
+	// 分支/HEAD 降级，并把该事实留在日志供排障。
+	head := headRev
+	if ref.Commit != "" {
+		head = ref.Commit
+		s.log.Info("任务 diff 使用结果引用 commit", "task", taskID, "repo", repo,
+			"head_rev", headRev, "commit", ref.Commit, "result_path", ref.Path)
+	} else {
+		s.log.Warn("ResultRef 缺少准确 commit，按任务分支降级", "task", taskID,
+			"repo", repo, "head_rev", headRev, "result_path", ref.Path,
+			"cause", "assembleResultRef 未取得有效 commit")
 	}
 	if err := s.mgr.requireWorkspace(); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
-	diff, err := s.mgr.Workspace().DiffRange(r.Context(), repo, base, headRev)
+	s.log.Info("开始取得任务 diff", "task", taskID, "repo", repo, "base", base, "head", head)
+	diff, err := s.mgr.Workspace().DiffRange(r.Context(), repo, base, head)
 	if err != nil {
 		if errors.Is(err, ErrBadBaseBranch) {
 			// base 是协调者可控的查询参数：非法 base（"-" 前缀）是请求问题而非

@@ -5,6 +5,7 @@
 package grok
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -151,8 +152,57 @@ func (p *Profile) Verify(ctx context.Context, req executor.ProfileReq) (executor
 		return rep, nil
 	}
 	rulePath := filepath.Join(req.HomeDir, RulesRelFile)
-	if _, err := os.Stat(rulePath); err == nil {
-		rep.Verified = true
+	globalOK := false
+	if len(req.Rules) == 0 {
+		_, err := os.Stat(rulePath)
+		globalOK = err == nil
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if p != nil && p.log != nil {
+				p.log.Error("Profile.Verify 读取原生规则失败", "harness", executor.HarnessGrok,
+					"home", req.HomeDir, "path", rulePath, "cause", err)
+			}
+			return rep, fmt.Errorf("校验原生规则 %q: %w", rulePath, err)
+		}
+	} else {
+		expected := req.Rules[0].Content
+		for _, rule := range req.Rules {
+			if filepath.Base(filepath.Clean(rule.Name)) == filepath.Base(RulesRelFile) {
+				expected = rule.Content
+			}
+		}
+		got, readErr := os.ReadFile(rulePath)
+		if readErr != nil {
+			rep.Missing = append(rep.Missing, RulesRelFile)
+		} else if !bytes.Equal(got, []byte(expected)) {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("规则内容不符: %s", RulesRelFile))
+		} else {
+			globalOK = true
+		}
+	}
+	overlayOK := true
+	for _, overlay := range req.TaskOverlay {
+		if strings.Contains(overlay.Name, "..") {
+			overlayOK = false
+			rep.Notes = append(rep.Notes, fmt.Sprintf("overlay 文件名含非法字符: %s", overlay.Name))
+			continue
+		}
+		rel := filepath.Join(".handoff", "task-overlay", filepath.Clean(overlay.Name))
+		got, readErr := os.ReadFile(filepath.Join(req.HomeDir, rel))
+		if readErr != nil {
+			overlayOK = false
+			rep.Missing = append(rep.Missing, rel)
+			continue
+		}
+		if !bytes.Equal(got, []byte(overlay.Content)) {
+			overlayOK = false
+			rep.Notes = append(rep.Notes, fmt.Sprintf("overlay 内容不符: %s", rel))
+		}
+	}
+	rep.Verified = globalOK && overlayOK
+	if p != nil && p.log != nil {
+		p.log.Info("Profile.Verify 完成", "harness", executor.HarnessGrok,
+			"home", req.HomeDir, "verified", rep.Verified, "engine_ok", rep.EngineOK,
+			"overlay_count", len(req.TaskOverlay))
 	}
 	return rep, nil
 }

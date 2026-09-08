@@ -146,15 +146,17 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 		t.Fatalf("小队未持久化: %v", err)
 	}
 
-	// ② 两级准入：小队有位且载体有位才放行；有效三元组 = 覆盖 > 载体缺省。
+	// ② 两级准入：小队有位且载体有位才放行；Target/Executor/HomeDir 是载体
+	// 的物理身份，只有 Model 允许按请求覆盖。
 	binding, err := svc.Admit(scheduling.IgnitionRequest{
 		Card: "B300", Squad: "exec-1", Executor: "claude",
 	})
 	if err != nil {
 		t.Fatalf("首次准入被拒: %v", err)
 	}
-	if binding.Carrier != "opencode-1" || binding.Target != "linux-01" || binding.Executor != "claude" {
-		t.Fatalf("绑定解析错误: %+v（期望载体 opencode-1 / 机 linux-01 / 执行者覆盖 claude）", binding)
+	if binding.Carrier != "opencode-1" || binding.Target != "linux-01" ||
+		binding.Executor != "opencode" || binding.HomeDir != "/home/coordinator/.opencode-home" {
+		t.Fatalf("绑定解析错误: %+v（期望载体 opencode-1 / 机 linux-01 / 物理执行者 opencode / 载体 HOME）", binding)
 	}
 	if _, err := svc.Admit(scheduling.IgnitionRequest{Card: "B301", Squad: "exec-1"}); !errors.Is(err, scheduling.ErrNoSlot) {
 		t.Fatalf("载体物理位满员仍放行: %v", err)

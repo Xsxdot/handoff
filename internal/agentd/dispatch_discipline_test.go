@@ -31,14 +31,18 @@ func discTextPath(dataDir, taskID string) string {
 // TestDispatchConsumesDeliveredText 点名 + 下发正文：注入正文逐字节等于下发值，
 // 本机 <DataDir>/discipline/ 不存在也照样成功；版本号随任务元数据落盘可读回。
 func TestDispatchConsumesDeliveredText(t *testing.T) {
-	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	ad := &profileRecordingAdapter{
+		chanAdapter: &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		profile:     &recordingProfile{},
+	}
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"codex": ad}, "codex")
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
+	home := t.TempDir()
 
 	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "codex",
-		Discipline: "review", DisciplineText: "X", DisciplineVersion: 3,
+		Discipline: "review", DisciplineText: "X", DisciplineVersion: 3, HomeDir: &home,
 	})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
@@ -139,9 +143,12 @@ func TestDispatchEmptyTextNoNameInjectsNothing(t *testing.T) {
 // 用于锁「先落盘后启动」的顺序。
 type startProbeAdapter struct {
 	chanAdapter
+	profile *recordingProfile
 	mu      sync.Mutex
 	atStart string
 }
+
+func (a *startProbeAdapter) Profile() executor.Profile { return a.profile }
 
 func (a *startProbeAdapter) Start(ctx context.Context, req executor.StartReq) error {
 	data, _ := os.ReadFile(filepath.Join(req.TaskDir, disciplineFileName))
@@ -154,14 +161,18 @@ func (a *startProbeAdapter) Start(ctx context.Context, req executor.StartReq) er
 // TestDispatchPersistsDisciplineBeforeExecutorStarts 顺序锁：
 // executor 启动那一刻落盘正文必须已经在盘上。
 func TestDispatchPersistsDisciplineBeforeExecutorStarts(t *testing.T) {
-	probe := &startProbeAdapter{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	probe := &startProbeAdapter{
+		chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		profile:     &recordingProfile{},
+	}
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"codex": probe}, "codex")
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
+	home := t.TempDir()
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "codex",
-		DisciplineText: "PERSIST-ME", DisciplineVersion: 1,
+		DisciplineText: "PERSIST-ME", DisciplineVersion: 1, HomeDir: &home,
 	}); err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}

@@ -33,6 +33,24 @@ func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) exec
 	return &taskApprovalClient{m: m, taskID: taskID, snap: snap}
 }
 
+// NoteDeliveryFailed 记录绑定任务的原生审批回传失败。
+//
+// 参数：taskID 必须与该 client 绑定的任务一致；ticketID 是任务命名空间工单；
+// cause 是 adapter 返回的真实失败原因。该能力是 adapter 的可选动态回调，
+// 不扩展 executor.ApprovalClient；任务不匹配时拒绝写入事件。
+func (c *taskApprovalClient) NoteDeliveryFailed(taskID, ticketID string, cause error) {
+	if c == nil || c.m == nil {
+		return
+	}
+	if taskID != c.taskID {
+		c.m.log.Error("拒绝记录跨任务权限投递失败", "task", taskID,
+			"bound_task", c.taskID, "ticket", ticketID, "cause", cause)
+		return
+	}
+	c.m.log.Info("记录权限投递失败", "task", taskID, "ticket", ticketID, "cause", cause)
+	c.m.NoteDeliveryFailed(taskID, ticketID, cause)
+}
+
 func (c *taskApprovalClient) PolicySnapshot(context.Context) (executor.PolicySnapshot, error) {
 	return c.snap, nil
 }

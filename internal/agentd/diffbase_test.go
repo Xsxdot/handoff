@@ -6,6 +6,7 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 	"path/filepath"
@@ -14,10 +15,86 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/testhttp"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
+
+type diffRangeCall struct {
+	repo string
+	base string
+	head string
+}
+
+type diffHeadSpy struct {
+	workspace.Capability
+	calls []diffRangeCall
+}
+
+func (s *diffHeadSpy) DiffRange(ctx context.Context, repo, base, head string) (string, error) {
+	s.calls = append(s.calls, diffRangeCall{repo: repo, base: base, head: head})
+	return "diff from result commit", nil
+}
+
+// TestTaskDiffUsesResultRefCommit verifies the HTTP → Server → Capability seam:
+// a precise assembled commit is the sole diff head, even though ResultRef.Path
+// is not exposed and the response remains the historical diff-only shape.
+func TestTaskDiffUsesResultRefCommit(t *testing.T) {
+	const token = "result-ref-token"
+	repo := initTestRepo(t)
+	commit := strings.TrimSpace(gitT(t, repo, "rev-parse", "HEAD"))
+	st, err := store.Open(filepath.Join(t.TempDir(), "result-ref.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cfg := &config.Config{Token: token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
+	srv := NewServer(cfg, st, discardLogger())
+	m := NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+		nil, nil, newTestGate(t), discardLogger())
+	spy := &diffHeadSpy{Capability: NewGitCapability()}
+	m.SetWorkspace(spy)
+	srv.SetManager(m)
+	now := time.Now().UTC()
+	if err := st.CreateTask(&proto.Task{ID: "result-ref-task", RepoPath: repo, WorkDir: repo,
+		Branch: "main", Executor: "fake", State: proto.TaskStatePending,
+		CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	ts := testhttp.NewServer(t, srv.Handler())
+	req, err := http.NewRequest(http.MethodGet, ts.URL+"/api/tasks/result-ref-task/diff?base=main", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("GET diff: %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("diff status=%d want %d", resp.StatusCode, http.StatusOK)
+	}
+	var body map[string]json.RawMessage
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode diff response: %v", err)
+	}
+	if len(body) != 1 {
+		t.Fatalf("diff response shape=%v want only diff", body)
+	}
+	if _, ok := body["commit"]; ok {
+		t.Fatal("diff response 不得新增 commit 字段")
+	}
+	if len(spy.calls) != 1 {
+		t.Fatalf("DiffRange 调用=%+v want exactly one", spy.calls)
+	}
+	if got := spy.calls[0]; got.repo != repo || got.base != "main" || got.head != commit {
+		t.Fatalf("DiffRange 入参=%+v，want repo=%q base=main head=%q", got, repo, commit)
+	}
+}
 
 // TestDiffBaseForPrefersTaskBaseCommit 钉住优先级：BaseCommit 非空即用它。
 func TestDiffBaseForPrefersTaskBaseCommit(t *testing.T) {
@@ -145,4 +222,3 @@ func TestTaskDiffTargetFallbackHeadRevIsNotHEAD(t *testing.T) {
 		t.Fatalf("右端应是任务分支，实得 %q", head)
 	}
 }
-

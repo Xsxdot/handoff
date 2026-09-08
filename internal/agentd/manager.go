@@ -595,6 +595,46 @@ type ticketRequest struct {
 	Kind       string `json:"kind"`
 	Permission string `json:"permission,omitempty"` // gate：权限描述
 	Question   string `json:"question,omitempty"`   // ask：问题原文
+	// QuestionID 是 OpenCode 原生问题身份；uuid 工单主键不能反推它。
+	QuestionID string `json:"question_id,omitempty"`
+}
+
+// questionIDFromTicket 从持久工单恢复原生问题身份。
+//
+// 参数：taskID 与 ticketID 用于校验归属并识别旧版命名工单。
+// 返回：持久化的 QuestionID；旧版 taskID:nativeID 工单可从命名空间兼容恢复，
+// uuid 工单返回空串。读取或 JSON 解析失败时返回错误。
+// 注意：uuid 工单主键没有原生身份，不能把 uuid 猜成 QuestionID。
+func (m *Manager) questionIDFromTicket(taskID, ticketID string) (string, error) {
+	tk, err := m.st.GetTicket(ticketID)
+	if err != nil {
+		m.log.Error("读取提问工单失败", "task", taskID, "ticket", ticketID, "cause", err)
+		return "", fmt.Errorf("读取提问工单 %s: %w", ticketID, err)
+	}
+	if tk.TaskID != taskID {
+		err := fmt.Errorf("工单 %s 不属于任务 %s", ticketID, taskID)
+		m.log.Error("提问工单归属校验失败", "task", taskID, "ticket", ticketID, "cause", err)
+		return "", err
+	}
+	var req ticketRequest
+	if err := json.Unmarshal(tk.Request, &req); err != nil {
+		m.log.Error("解析提问工单 JSON 失败", "task", taskID, "ticket", ticketID, "cause", err)
+		return "", fmt.Errorf("解析提问工单 %s 请求体: %w", ticketID, err)
+	}
+	if req.QuestionID != "" {
+		m.log.Info("从提问工单恢复原生身份", "task", taskID, "ticket", ticketID,
+			"question_id", req.QuestionID)
+		return req.QuestionID, nil
+	}
+	prefix := taskID + ":"
+	if strings.HasPrefix(ticketID, prefix) && len(ticketID) > len(prefix) {
+		native := executor.NativeIDFromTicket(taskID, ticketID)
+		m.log.Info("从旧版命名提问工单恢复原生身份", "task", taskID, "ticket", ticketID,
+			"question_id", native)
+		return native, nil
+	}
+	m.log.Info("提问工单无原生身份", "task", taskID, "ticket", ticketID)
+	return "", nil
 }
 
 // permissionPayload 是 permission_request 事件的 payload（含 ticket_id 供回复）。
@@ -1111,8 +1151,15 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		approval = m.bindApproval(taskID, snap)
 		m.log.Info("Dispatch 注入 ApprovalClient", "task", taskID, "version", snap.Version)
 	}
-	if err := ad.Start(ctx, executor.StartReq{Task: *task, PlanContent: string(planContent),
-		TaskDir: taskDir, Env: startEnv, Discipline: discText, Approval: approval}); err != nil {
+	startReq := executor.StartReq{Task: *task, PlanContent: string(planContent),
+		TaskDir: taskDir, Env: startEnv, Discipline: discText, Approval: approval}
+	if err := m.prepareTaskProfile(ctx, startReq); err != nil {
+		m.log.Error("任务 Profile 准备失败，拒绝启动 executor", "task", taskID,
+			"executor", execName, "home", task.HomeDir, "discipline_present", discText != "", "cause", err)
+		m.transitBestEffort(taskID, proto.TaskStateFailed, "任务 Profile 准备失败")
+		return nil, err
+	}
+	if err := ad.Start(ctx, startReq); err != nil {
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，协调者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
@@ -1145,6 +1192,61 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		"source", discSource, "bytes", len(discText))
 	go m.mediate(taskID)
 	return task, nil
+}
+
+// prepareTaskProfile 把 StartReq.Discipline 的唯一权威正文交给执行 Profile 的任务层。
+//
+// 参数：start 是普通任务启动装配结果，纪律正文只从 start.Discipline 读取。
+// 返回：空纪律直接成功；非空纪律若缺 HomeDir/Profile 或 Prepare 未报告成功则返回
+// 错误，调用方必须在启动 executor 前将任务置 failed。注意：不从本地纪律目录回退，
+// 也不修改载体全局规则文件。
+func (m *Manager) prepareTaskProfile(ctx context.Context, start executor.StartReq) error {
+	if start.Discipline == "" {
+		m.log.Info("任务纪律为空，跳过 Profile overlay", "task", start.Task.ID,
+			"executor", start.Task.Executor, "overlay_skipped", true)
+		return nil
+	}
+	if start.Task.HomeDir == "" {
+		return fmt.Errorf("task=%q executor=%q home=%q 无法准备非空纪律 Profile overlay",
+			start.Task.ID, start.Task.Executor, start.Task.HomeDir)
+	}
+	provider, ok := m.ads[start.Task.Executor].(executor.Provider)
+	if !ok {
+		return fmt.Errorf("task=%q executor=%q home=%q 不提供 Profile 能力",
+			start.Task.ID, start.Task.Executor, start.Task.HomeDir)
+	}
+	profile, ok := executor.ProfileFromProvider(provider)
+	if !ok || profile == nil {
+		return fmt.Errorf("task=%q executor=%q home=%q 没有 Profile 能力",
+			start.Task.ID, start.Task.Executor, start.Task.HomeDir)
+	}
+	req := executor.ProfileReq{
+		HomeDir: start.Task.HomeDir, Isolated: start.Task.HomeDir != "",
+		TaskOverlay: []executor.ProfileFile{{
+			Name: filepath.Join(start.Task.ID, disciplineFileName), Content: start.Discipline,
+		}},
+	}
+	m.log.Info("任务 Profile overlay 准备开始", "task", start.Task.ID,
+		"executor", start.Task.Executor, "home", start.Task.HomeDir,
+		"overlay_count", len(req.TaskOverlay), "content_bytes", len(start.Discipline))
+	rep, err := profile.Prepare(ctx, req)
+	if err != nil {
+		m.log.Error("任务 Profile overlay 准备失败", "task", start.Task.ID,
+			"executor", start.Task.Executor, "home", start.Task.HomeDir, "cause", err)
+		return fmt.Errorf("task=%q executor=%q home=%q Profile.Prepare: %w",
+			start.Task.ID, start.Task.Executor, start.Task.HomeDir, err)
+	}
+	if !rep.Prepared {
+		err := fmt.Errorf("Profile.Prepare 返回 Prepared=false")
+		m.log.Error("任务 Profile overlay 未准备完成", "task", start.Task.ID,
+			"executor", start.Task.Executor, "home", start.Task.HomeDir, "cause", err)
+		return fmt.Errorf("task=%q executor=%q home=%q: %w", start.Task.ID,
+			start.Task.Executor, start.Task.HomeDir, err)
+	}
+	m.log.Info("任务 Profile overlay 准备完成", "task", start.Task.ID,
+		"executor", start.Task.Executor, "home", start.Task.HomeDir,
+		"overlay_count", len(req.TaskOverlay), "content_bytes", len(start.Discipline))
+	return nil
 }
 
 // withCarrierHome 返回带有唯一显式 HOME 行的 env。它只处理 Manager 已经解析
@@ -1831,7 +1933,7 @@ func unaryCtx(parent context.Context) (context.Context, context.CancelFunc) {
 //
 // 规则（与 waitPermission/waitQuestion 的翻译规则完全一致）：
 //   - kind=gate：answer trim 后为 "allow" → RespondPermission("once")，其余一律 "reject"
-//   - kind=ask：answer 原文原样经 Send 透传
+//   - kind=ask：OpenCode 经 RespondAsk 使用持久化 QuestionID；其他 executor 经 Send 透传
 func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 	tk, err := m.st.GetTicket(ticketID)
 	if err != nil {
@@ -1881,15 +1983,17 @@ func (m *Manager) RelayAnswer(taskID, ticketID, answer string) error {
 			if !ok {
 				return fmt.Errorf("OpenCode 未实现 AskResponder，禁止回退 Send")
 			}
-			q := ""
-			if native := executor.NativeIDFromTicket(taskID, ticketID); native != ticketID {
-				q = native
+			q, qerr := m.questionIDFromTicket(taskID, ticketID)
+			if qerr != nil {
+				return qerr
 			}
+			m.log.Info("reply 读取持久提问身份", "task", taskID, "ticket", ticketID, "question_id", q)
 			if err := ar.RespondAsk(actx, executor.RespondAskReq{
 				TaskID: taskID, TicketID: ticketID, QuestionID: q, Answer: answer,
 			}); err != nil {
 				return fmt.Errorf("中继提问回答: %w", err)
 			}
+			m.log.Info("reply 提问回答已回传", "task", taskID, "ticket", ticketID, "question_id", q)
 		} else {
 			if err := ad.Send(actx, taskID, answer); err != nil {
 				return fmt.Errorf("中继提问回答: %w", err)
@@ -2868,7 +2972,7 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 		return
 	}
 	m.log.Info("权限应答已收到", "task", taskID, "perm", permID, "ticket", ticketID,
-		"wait_ms", time.Since(start).Milliseconds(), "answer", truncateRunes(ans, 80))
+		"wait_ms", time.Since(start).Milliseconds(), "answer_bytes", len(ans))
 
 	// 回迁失败（reply 回程的 resumeIfIdle 已抢先回迁）由 transitBestEffort 容忍
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "permission 已应答")
@@ -2893,8 +2997,8 @@ func (m *Manager) waitPermission(ctx context.Context, taskID, permID, ticketID s
 	m.markDelivered(taskID, ticketID)
 }
 
-// handleQuestion 中介提问：ticket(uuid, kind=ask) → 事件 → waiting_answer →
-// goroutine 等协调者回答后原样透传 executor。
+// handleQuestion 中介提问：ticket（原生命名或 uuid，kind=ask）→ 事件 → waiting_answer →
+// goroutine 等协调者回答后，按 executor 契约回传。
 //
 // 顺序契约与 handlePermission 相同（P1-2）：先置 waiting_answer 再 Publish；
 // waiter 注册异步，reply 先于注册到达时退化为自愈中继路径兜底。
@@ -2921,7 +3025,9 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 		ticketID = executor.NamespacedTicketID(taskID, ev.QuestionID)
 	}
 	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "question")
-	req, _ := json.Marshal(ticketRequest{Kind: "ask", Question: ev.Text})
+	req, _ := json.Marshal(ticketRequest{Kind: "ask", Question: ev.Text, QuestionID: ev.QuestionID})
+	m.log.Info("提问工单请求已序列化", "task", taskID, "ticket", ticketID,
+		"question_id", ev.QuestionID, "question_bytes", len(req))
 	created, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "ask",
 		Request: req, CreatedAt: time.Now().UTC(),
@@ -2960,6 +3066,8 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 				m.transitBestEffort(taskID, proto.TaskStateRunning, "提问工单创建失败回滚")
 				return
 			}
+			m.log.Info("提问重发工单已持久化", "task", taskID, "ticket", ticketID,
+				"question_id", ev.QuestionID)
 		}
 	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeQuestion, questionPayload{
@@ -2973,12 +3081,12 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 	m.hub.Publish(evt)
 }
 
-// waitQuestion 阻塞等待提问工单的回答，把回答原文原样透传给 executor 并回迁 running。
+// waitQuestion 阻塞等待提问工单的回答，把回答原文原样回传给 executor 并回迁 running。
 //
 // 为什么原文透传：回答语义（技术建议、需求取舍）只有协调者理解，manager 不做
 // 任何加工——无损透传是「回答什么由协调者决定」承诺的执行保证。
 //
-// 为什么先回迁 running 再 Send：同 waitPermission——Send 一发出 executor 立刻恢复
+// 为什么先回迁 running 再回传：同 waitPermission——回传一发出 executor 立刻恢复
 // 执行并可能立即产出 result，先落状态保证 result 到达时状态必为 running。
 func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 	start := time.Now()
@@ -2988,7 +3096,7 @@ func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 		return
 	}
 	m.log.Info("提问应答已收到", "task", taskID, "ticket", ticketID,
-		"wait_ms", time.Since(start).Milliseconds(), "answer", truncateRunes(ans, 80))
+		"wait_ms", time.Since(start).Milliseconds(), "answer_bytes", len(ans))
 
 	m.transitBestEffort(taskID, proto.TaskStateRunning, "question 已应答")
 	actx, acancel := unaryCtx(ctx)
@@ -3005,17 +3113,21 @@ func (m *Manager) waitQuestion(ctx context.Context, taskID, ticketID string) {
 			m.NoteDeliveryFailed(taskID, ticketID, fmt.Errorf("OpenCode 未实现 AskResponder"))
 			return
 		}
-		q := ""
-		if native := executor.NativeIDFromTicket(taskID, ticketID); native != ticketID {
-			q = native
+		q, qerr := m.questionIDFromTicket(taskID, ticketID)
+		if qerr != nil {
+			m.log.Error("提问回程无法恢复原生身份", "task", taskID, "ticket", ticketID, "cause", qerr)
+			m.NoteDeliveryFailed(taskID, ticketID, qerr)
+			return
 		}
 		if err := ar.RespondAsk(actx, executor.RespondAskReq{
 			TaskID: taskID, TicketID: ticketID, QuestionID: q, Answer: ans,
 		}); err != nil {
-			m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
+			m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID,
+				"question_id", q, "cause", err)
 			m.NoteDeliveryFailed(taskID, ticketID, err)
 			return
 		}
+		m.log.Info("提问回答已回传", "task", taskID, "ticket", ticketID, "question_id", q)
 	} else {
 		if err := ad.Send(actx, taskID, ans); err != nil {
 			m.log.Error("回发提问回答失败", "task", taskID, "ticket", ticketID, "cause", err)
@@ -3278,6 +3390,7 @@ func (m *Manager) markDelivered(taskID, ticketID string) {
 // 看门狗超时。产出事件才能唤醒协调者（wait 不过滤该类型），提示执行 handoff resume。
 // 供 manager 内部的应答等待链路与 server 的 reply 回程共用。
 func (m *Manager) NoteDeliveryFailed(taskID, ticketID string, cause error) {
+	m.log.Info("追加 delivery_failed 事件", "task", taskID, "ticket", ticketID, "cause", cause)
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeDeliveryFailed, deliveryFailedPayload{
 		TicketID: ticketID,
 		Reason:   truncateRunes(fmt.Sprint(cause), 500),
@@ -3288,6 +3401,7 @@ func (m *Manager) NoteDeliveryFailed(taskID, ticketID string, cause error) {
 		return
 	}
 	m.hub.Publish(evt)
+	m.log.Info("delivery_failed 事件已发布", "task", taskID, "ticket", ticketID)
 }
 
 // handleProgress 中介进度事件：只入库广播，不改任务状态。

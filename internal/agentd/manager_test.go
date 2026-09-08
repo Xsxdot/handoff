@@ -15,6 +15,7 @@
 package agentd
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -181,6 +182,39 @@ func (a *chanAdapter) sendsRec() []string {
 	defer a.mu.Unlock()
 	return append([]string(nil), a.sends...)
 }
+
+type recordingProfile struct {
+	mu   sync.Mutex
+	reqs []executor.ProfileReq
+}
+
+func (p *recordingProfile) Inspect(context.Context, executor.ProfileReq) (executor.ProfileReport, error) {
+	return executor.ProfileReport{}, nil
+}
+
+func (p *recordingProfile) Prepare(_ context.Context, req executor.ProfileReq) (executor.ProfileReport, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.reqs = append(p.reqs, req)
+	return executor.ProfileReport{HomeDir: req.HomeDir, Isolated: req.Isolated, Prepared: true}, nil
+}
+
+func (p *recordingProfile) Verify(context.Context, executor.ProfileReq) (executor.ProfileReport, error) {
+	return executor.ProfileReport{}, nil
+}
+
+func (p *recordingProfile) snapshot() []executor.ProfileReq {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return append([]executor.ProfileReq(nil), p.reqs...)
+}
+
+type profileRecordingAdapter struct {
+	*chanAdapter
+	profile *recordingProfile
+}
+
+func (a *profileRecordingAdapter) Profile() executor.Profile { return a.profile }
 
 // newTestManager 组装 manager 白盒测试环境：真实 store + hub + 可控事件通道 adapter。
 func newTestManager(t *testing.T) (*Manager, *store.Store, *Hub, *chanAdapter) {
@@ -2194,6 +2228,77 @@ func TestQuestionReissueAfterAnswerCreatesNewTicket(t *testing.T) {
 	if pending[0].ID == "T1:que_ff" {
 		t.Fatal("重发复用了已答工单的 id，协调者将无法作答")
 	}
+	var secondReq ticketRequest
+	if err := json.Unmarshal(pending[0].Request, &secondReq); err != nil {
+		t.Fatalf("重发工单 Request 不是合法 JSON: %v", err)
+	}
+	if secondReq.QuestionID != "que_ff" {
+		t.Fatalf("重发工单必须持久原生 QuestionID，实得 %q", secondReq.QuestionID)
+	}
+}
+
+// TestQuestionReissuePreservesNativeIDAcrossAnswerPaths 锁住已答重发的两条回程：
+// 新工单主键可以是 uuid，但持久 Request.question_id 仍必须让 waitQuestion 与
+// RelayAnswer 回到同一个 OpenCode 原生问题；uuid 主键本身不能被反推成原生 id。
+func TestQuestionReissuePreservesNativeIDAcrossAnswerPaths(t *testing.T) {
+	stub := &openCodeStub{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"opencode": stub}, "opencode")
+	taskID := "task-question-reissue-native"
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: t.TempDir(), WorkDir: t.TempDir(),
+		State: proto.TaskStateRunning, Executor: "opencode"})
+
+	ev := executor.AdapterEvent{Type: "question", QuestionID: "question-native-1", Text: "第一次"}
+	m.handleQuestion(context.Background(), taskID, ev)
+	firstID := executor.NamespacedTicketID(taskID, ev.QuestionID)
+	waitAnswerRegistered(t, m.hub, firstID)
+	if err := st.AnswerTicket(firstID, "旧答案"); err != nil {
+		t.Fatalf("AnswerTicket first: %v", err)
+	}
+	if !m.hub.NotifyAnswer(firstID, "旧答案") {
+		t.Fatal("第一次提问应能回答")
+	}
+	eventually(t, time.Second, "第一次 RespondAsk", func() bool {
+		stub.mu.Lock()
+		defer stub.mu.Unlock()
+		return len(stub.asks) == 1
+	})
+
+	m.handleQuestion(context.Background(), taskID, executor.AdapterEvent{
+		Type: "question", QuestionID: ev.QuestionID, Text: "第二次",
+	})
+	pending, err := st.PendingTickets(taskID)
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 1 || pending[0].ID == firstID {
+		t.Fatalf("已答重发应得到一张新工单，实得 %+v", pending)
+	}
+	secondID := pending[0].ID
+	var req ticketRequest
+	if err := json.Unmarshal(pending[0].Request, &req); err != nil {
+		t.Fatalf("第二张工单 Request 解析失败: %v", err)
+	}
+	if req.QuestionID != ev.QuestionID {
+		t.Fatalf("第二张工单 question_id=%q，want %q", req.QuestionID, ev.QuestionID)
+	}
+	waitAnswerRegistered(t, m.hub, secondID)
+	if !m.hub.NotifyAnswer(secondID, "新答案") {
+		t.Fatal("第二次提问应能回答")
+	}
+	eventually(t, time.Second, "重发 waitQuestion RespondAsk", func() bool {
+		stub.mu.Lock()
+		defer stub.mu.Unlock()
+		return len(stub.asks) == 2 && stub.asks[1].QuestionID == ev.QuestionID
+	})
+
+	if err := m.RelayAnswer(taskID, secondID, "中继答案"); err != nil {
+		t.Fatalf("RelayAnswer: %v", err)
+	}
+	stub.mu.Lock()
+	defer stub.mu.Unlock()
+	if len(stub.asks) != 3 || stub.asks[2].QuestionID != ev.QuestionID {
+		t.Fatalf("RelayAnswer QuestionID=%q，want %q；asks=%+v", stub.asks[len(stub.asks)-1].QuestionID, ev.QuestionID, stub.asks)
+	}
 }
 
 // TestQuestionWithoutIDFallsBackToUUID 验证无原生 id 的 executor（claudecode /
@@ -3345,6 +3450,93 @@ func TestDispatchOpenCodeInjectsApproval(t *testing.T) {
 	}
 	if fakeAd.lastStartReq().Approval != nil {
 		t.Fatal("非 OpenCode 任务 Approval 必须为 nil")
+	}
+}
+
+// TestDispatchInjectsTaskDisciplineIntoProfile locks the ordinary dispatch seam:
+// the exact StartReq.Discipline bytes must become one task-namespaced overlay,
+// while an empty discipline skips Profile.Prepare entirely.
+func TestDispatchInjectsTaskDisciplineIntoProfile(t *testing.T) {
+	profile := &recordingProfile{}
+	ad := &profileRecordingAdapter{
+		chanAdapter: &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		profile:     profile,
+	}
+	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	home := t.TempDir()
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	const discipline = "纪律\n必须逐字节保留\r\n"
+	task, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "profile seam", Executor: "fake",
+		HomeDir: &home, DisciplineText: discipline,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch: %v", err)
+	}
+	reqs := profile.snapshot()
+	if len(reqs) != 1 || len(reqs[0].TaskOverlay) != 1 {
+		t.Fatalf("Profile.Prepare 请求=%+v，want 一次且一个 overlay", reqs)
+	}
+	overlay := reqs[0].TaskOverlay[0]
+	if reqs[0].HomeDir != home || overlay.Name != filepath.Join(task.ID, "discipline.md") {
+		t.Fatalf("ProfileReq 任务隔离不对：%+v", reqs[0])
+	}
+	if !bytes.Equal([]byte(overlay.Content), []byte(discipline)) {
+		t.Fatalf("overlay 内容未逐字节保留：%q", overlay.Content)
+	}
+	start := ad.lastStartReq()
+	if !bytes.Equal([]byte(start.Discipline), []byte(discipline)) || start.Discipline != overlay.Content {
+		t.Fatalf("StartReq/ProfileReq 纪律不一致：start=%q overlay=%q", start.Discipline, overlay.Content)
+	}
+
+	repo2 := initTestRepo(t)
+	pid2 := registerTestProject(t, m, repo2)
+	if _, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid2, Prompt: "empty", Executor: "fake"}); err != nil {
+		t.Fatalf("空纪律 Dispatch: %v", err)
+	}
+	if got := len(profile.snapshot()); got != 1 {
+		t.Fatalf("空纪律不得调用 Profile.Prepare，调用次数=%d", got)
+	}
+
+	repo3 := initTestRepo(t)
+	pid3 := registerTestProject(t, m, repo3)
+	const whitespaceDiscipline = " \n\r\n"
+	whitespaceHome := t.TempDir()
+	whitespaceTask, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid3, Prompt: "whitespace", Executor: "fake",
+		HomeDir: &whitespaceHome, DisciplineText: whitespaceDiscipline,
+	})
+	if err != nil {
+		t.Fatalf("空白但非空纪律 Dispatch: %v", err)
+	}
+	reqs = profile.snapshot()
+	if len(reqs) != 2 || len(reqs[1].TaskOverlay) != 1 || reqs[1].TaskOverlay[0].Content != whitespaceDiscipline {
+		t.Fatalf("空白但非空纪律必须逐字节进入 Profile overlay：%+v", reqs)
+	}
+	if reqs[1].TaskOverlay[0].Name != filepath.Join(whitespaceTask.ID, disciplineFileName) {
+		t.Fatalf("空白纪律 overlay 路径错误：%+v", reqs[1].TaskOverlay[0])
+	}
+}
+
+// TestDispatchRejectsDisciplineWithoutTaskProfile prevents a non-empty task
+// discipline from silently disappearing when the adapter has no task Profile.
+func TestDispatchRejectsDisciplineWithoutTaskProfile(t *testing.T) {
+	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+	_, err := m.Dispatch(context.Background(), DispatchReq{
+		ProjectID: pid, Prompt: "missing profile", Executor: "fake", DisciplineText: "must not drop",
+	})
+	if err == nil || !strings.Contains(err.Error(), "task") || !strings.Contains(err.Error(), "fake") {
+		t.Fatalf("无 Profile 的非空纪律应带 task/executor 错误，实得 %v", err)
+	}
+	if got := ad.lastStartReq().Task.ID; got != "" {
+		t.Fatalf("Profile 不可用时不得启动 executor，实得 task=%q", got)
+	}
+	if tasks, listErr := st.ListTasks(); listErr != nil || len(tasks) != 1 || tasks[0].State != proto.TaskStateFailed {
+		t.Fatalf("Profile 不可用时应留下可见 failed 任务：err=%v tasks=%+v", listErr, tasks)
 	}
 }
 
