@@ -102,6 +102,7 @@ func (s *Store) AllTaskLinks() ([]TaskLink, error) {
 type dispatchProjection struct {
 	Node    string
 	Attempt string
+	Seq     int64
 }
 
 // projectTaskLinks 把 workflow 身份作为读取投影加入 card_tasks 行。
@@ -111,7 +112,7 @@ func (s *Store) projectTaskLinks(cardID string, links []TaskLink) ([]TaskLink, e
 	if len(links) == 0 {
 		return links, nil
 	}
-	query := `SELECT card_id, payload FROM card_events WHERE type = ?`
+	query := `SELECT seq, card_id, payload FROM card_events WHERE type = ?`
 	args := []any{EvDispatched}
 	if cardID != "" {
 		query += ` AND card_id = ?`
@@ -120,32 +121,38 @@ func (s *Store) projectTaskLinks(cardID string, links []TaskLink) ([]TaskLink, e
 	query += ` ORDER BY seq ASC`
 	rows, err := s.db.Query(s.q(query), args...)
 	if err != nil {
-		log().Warn("读派发快照投影失败", "card", cardID, "cause", err)
+		log().Warn("读派发快照投影失败", "card", cardID, "node", "", "attempt", "",
+			"target", "", "task", "", "seq", 0, "type", EvDispatched, "cause", err)
 		return nil, fmt.Errorf("读派发快照投影: %w", err)
 	}
 	defer rows.Close()
 	projections := make(map[string]dispatchProjection)
 	for rows.Next() {
+		var eventSeq int64
 		var eventCard, raw string
-		if err := rows.Scan(&eventCard, &raw); err != nil {
-			log().Warn("扫描派发快照投影失败", "card", cardID, "cause", err)
+		if err := rows.Scan(&eventSeq, &eventCard, &raw); err != nil {
+			log().Warn("扫描派发快照投影失败", "card", cardID, "node", "", "attempt", "",
+				"target", "", "task", "", "seq", eventSeq, "type", EvDispatched, "cause", err)
 			return nil, fmt.Errorf("扫描派发快照投影: %w", err)
 		}
 		var snapshot DispatchSnapshot
 		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
 			log().Warn("派发快照投影解码失败，保留空身份", "card", eventCard,
-				"cause", err)
+				"node", "", "attempt", "", "target", "", "task", "", "seq", eventSeq,
+				"type", EvDispatched, "cause", err)
 			continue
 		}
 		key := eventCard + "\x00" + snapshot.Target + "\x00" + snapshot.TaskID
-		projection := dispatchProjection{}
+		projection := dispatchProjection{Seq: eventSeq}
 		if snapshot.Node != "" && snapshot.Attempt != "" {
-			projection = dispatchProjection{Node: snapshot.Node, Attempt: snapshot.Attempt}
+			projection.Node = snapshot.Node
+			projection.Attempt = snapshot.Attempt
 		}
 		projections[key] = projection
 	}
 	if err := rows.Err(); err != nil {
-		log().Warn("读取派发快照投影行失败", "card", cardID, "cause", err)
+		log().Warn("读取派发快照投影行失败", "card", cardID, "node", "", "attempt", "",
+			"target", "", "task", "", "seq", 0, "type", EvDispatched, "cause", err)
 		return nil, fmt.Errorf("读派发快照投影: %w", err)
 	}
 	for i := range links {
@@ -153,11 +160,15 @@ func (s *Store) projectTaskLinks(cardID string, links []TaskLink) ([]TaskLink, e
 		projection, ok := projections[key]
 		if !ok {
 			log().Debug("挂账没有匹配派发快照，保留空身份", "card", links[i].CardID,
-				"target", links[i].Target, "task", links[i].TaskID)
+				"node", links[i].Node, "attempt", links[i].Attempt, "target", links[i].Target,
+				"task", links[i].TaskID, "seq", 0, "type", EvDispatched)
 			continue
 		}
 		links[i].Node = projection.Node
 		links[i].Attempt = projection.Attempt
+		log().Debug("挂账派发身份投影完成", "card", links[i].CardID, "node", links[i].Node,
+			"attempt", links[i].Attempt, "target", links[i].Target, "task", links[i].TaskID,
+			"seq", projection.Seq, "type", EvDispatched)
 	}
 	log().Debug("挂账派发身份投影完成", "card", cardID, "links", len(links))
 	return links, nil

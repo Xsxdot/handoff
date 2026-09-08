@@ -1,5 +1,5 @@
 // 模板派发的共用段：取模板 → 算分支与基线 → 拼 prompt → 经注入的 Transport
-// 派发 → 先落 dispatched 快照 → 回链挂账。
+// 派发 → 先落 dispatched 快照 → 回链挂账；本地账本失败时回消该次落账。
 //
 // 职责：把「一张卡按某个模板派出去」这件事收口成一处，CLI 与 agentd 共用。
 // 边界：
@@ -101,7 +101,7 @@ type TemplateDispatch struct {
 	Node               string
 	PlanPath           string
 	DisciplineOverride string
-	// WriteGate 在 Transport 成功后、每一处账本写入前调用；nil 表示不设闸。
+	// WriteGate 在 Transport 成功后、原子账本事务写入前调用；nil 表示不设闸。
 	// 运行节点用它阻止失去运行锁后的挂账与 dispatched 快照写入。
 	WriteGate func() bool
 	// ExecutorOverride / ModelOverride 是调用方对模板的单字段覆盖；空 = 用模板的。
@@ -131,6 +131,8 @@ type TemplateDispatch struct {
 //
 // 注意：不含协调者席位语义。实现类与环节派发都只负责派任务；运行互斥由
 // 节点编排的 RunLock 负责，席位由 bind/coordinate/rebind 命令管理。
+// 本次只调用一次 Transport；快照和五列挂账在一个事务内完成，不因本地落账
+// 失败重派第二个 task。远端 task 的回收属于真机/集成验收项。
 //
 // req.PlanPath 按调用方进程的 CWD 解析。agentd 一侧永远传空串：
 // 浏览器里没有 plan 文件，实现类派发也不从界面走。
@@ -305,7 +307,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		planName = filepath.Base(req.PlanPath)
 	}
 	slog.Default().Info("按模板派发",
-		"card", c.ID, "template", req.Template, "target", target,
+		"card", c.ID, "node", req.Node, "template", req.Template, "target", target,
+		"receiver", req.Receiver,
 		"executor", executor, "model", model, "discipline", disciplineName,
 		"discipline_version", d.DisciplineVersion,
 		"discipline_bytes", len(d.DisciplineText),
@@ -316,8 +319,9 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"carry_card_context", req.CarryCardContext, "has_extra", strings.TrimSpace(req.Extra) != "",
 		"output_path", req.OutputPath,
 		"prompt_bytes", len(prompt))
-	slog.Default().Info("派发前已确定节点产出路径", "card", c.ID, "template", req.Template,
-		"target", target, "output_path", req.OutputPath)
+	slog.Default().Info("派发前已确定节点产出路径", "card", c.ID, "node", req.Node,
+		"template", req.Template, "target", target, "receiver", req.Receiver,
+		"output_path", req.OutputPath)
 	taskID, baseCommit, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
@@ -333,26 +337,32 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		LocalBaseBranch:    localBaseBranch,
 	})
 	if err != nil {
-		slog.Default().Warn("模板派发传输失败", "card", c.ID, "target", target,
-			"branch", branch, "base", base, "cause", err)
+		slog.Default().Warn("模板派发传输失败", "card", c.ID, "node", req.Node,
+			"attempt", "", "target", target, "task", "", "seq", 0,
+			"type", ledger.EvDispatched, "branch", branch, "base", base, "cause", err)
 		return zero, fmt.Errorf("派发: %w", err)
 	}
-	slog.Default().Info("模板派发传输已返回", "card", c.ID, "target", target,
-		"task", taskID, "base", base, "base_commit", baseCommit)
-	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "template", req.Template,
-		"discipline", disciplineName, "overridden", req.DisciplineOverride != "")
+	slog.Default().Info("模板派发传输已返回", "card", c.ID, "node", req.Node,
+		"attempt", taskID, "target", target, "task", taskID, "seq", 0,
+		"type", ledger.EvDispatched, "receiver", req.Receiver, "base", base, "base_commit", baseCommit)
+	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "node", req.Node,
+		"template", req.Template, "discipline", disciplineName,
+		"overridden", req.DisciplineOverride != "")
 	snapshotBranch := branch
 	if snapshotBranch == "" {
 		snapshotBranch = existingBranch
 	}
 	// 先落快照再挂账：镜像对账能在 LinkTask 可见前取得 Node/Attempt 投影，
-	// 避免空身份事件先消耗 source watermark 后无法用新身份重放。
+	// 避免空身份事件先消耗 source watermark 后无法用新身份重放。两步在账本
+	// 同一事务内完成，挂账失败时事务回消快照，远端 task 仍由真机项回收。
 	if req.WriteGate != nil && !req.WriteGate() {
-		err := fmt.Errorf("快照落账被拒：%w", ErrWriteGateClosed)
-		slog.Default().Warn("失去写权，停止派发快照落账", "card", c.ID, "target", target, "task", taskID, "cause", err)
+		err := fmt.Errorf("派发落账被拒：%w", ErrWriteGateClosed)
+		slog.Default().Warn("失去写权，停止派发快照与挂账", "card", c.ID,
+			"node", req.Node, "attempt", taskID, "target", target, "task", taskID,
+			"seq", 0, "type", ledger.EvDispatched, "cause", err)
 		return zero, err
 	}
-	if err := d.St.RecordDispatch(c.ID, ledger.DispatchSnapshot{
+	snapshot := ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,
 		Target:            target, TaskID: taskID, Branch: snapshotBranch,
@@ -360,24 +370,23 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		Base: base, BaseCommit: baseCommit,
 		Executor: executor, Model: model,
 		Purpose: purpose, PlanPath: req.PlanPath, Actor: d.Actor,
-	}); err != nil {
-		slog.Default().Warn("模板派发快照落账失败", "card", c.ID, "target", target,
-			"task", taskID, "base", base, "base_commit", baseCommit, "cause", err)
-		return zero, fmt.Errorf("快照落账: %w", err)
 	}
-	if req.WriteGate != nil && !req.WriteGate() {
-		err := fmt.Errorf("挂账被拒：%w", ErrWriteGateClosed)
-		slog.Default().Warn("失去写权，停止派发挂账", "card", c.ID, "target", target, "task", taskID, "cause", err)
-		return zero, err
+	slog.Default().Info("模板派发快照与挂账落账开始", "card", c.ID, "node", req.Node,
+		"attempt", taskID, "target", target, "task", taskID, "seq", 0,
+		"type", ledger.EvDispatched, "snapshot", snapshot)
+	snapshotSeq, linkSeq, err := d.St.RecordDispatchAndLinkTask(c.ID, snapshot)
+	if err != nil {
+		slog.Default().Warn("模板派发快照与挂账落账失败", "card", c.ID, "node", req.Node,
+			"attempt", taskID, "target", target, "task", taskID, "seq", snapshotSeq,
+			"type", ledger.EvDispatched, "link_seq", linkSeq, "cause", err)
+		return zero, fmt.Errorf("快照与挂账落账: %w", err)
 	}
-	if err := d.St.LinkTask(c.ID, target, taskID, purpose, d.Actor); err != nil {
-		slog.Default().Warn("模板派发回链挂账失败", "card", c.ID, "target", target,
-			"task", taskID, "cause", err)
-		return zero, fmt.Errorf("回链挂账: %w", err)
-	}
-	slog.Default().Info("模板派发完成", "card", c.ID, "template", tpl.Name,
-		"task", taskID, "target", target, "executor", executor, "model", model,
-		"branch", snapshotBranch, "discipline", disciplineName)
+	slog.Default().Info("模板派发快照与挂账落账完成", "card", c.ID, "node", req.Node,
+		"attempt", taskID, "target", target, "task", taskID, "seq", linkSeq,
+		"type", ledger.EvComment, "snapshot_seq", snapshotSeq, "snapshot", snapshot)
+	slog.Default().Info("模板派发完成", "card", c.ID, "node", req.Node, "template", tpl.Name,
+		"attempt", taskID, "task", taskID, "target", target, "receiver", req.Receiver,
+		"executor", executor, "model", model, "branch", snapshotBranch, "discipline", disciplineName)
 	return DispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
 		Node: req.Node, Attempt: taskID,

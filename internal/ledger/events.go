@@ -157,6 +157,59 @@ func (s *Store) RecordDispatch(cardID string, snap DispatchSnapshot) error {
 	})
 }
 
+// RecordDispatchAndLinkTask 在同一账本事务内先追加 dispatched 快照，再写
+// card_tasks 挂账及其 comment。返回错误时事务整体回消，因此远端 task 已创建
+// 但本地挂账冲突不会留下看似成功的派发快照；调用方仍需负责远端孤儿回收。
+//
+// 参数：cardID 是卡号；snap 携带快照、Node/Attempt、目标 task 与审计 actor。
+// 返回：派发快照 seq、挂账 comment seq，以及账本写入或挂账失败的原始错误包装。
+// 注意：快照与挂账只在提交后对镜像可见，事务内顺序仍固定为快照→挂账。
+func (s *Store) RecordDispatchAndLinkTask(cardID string, snap DispatchSnapshot) (int64, int64, error) {
+	log().Debug("派发快照与挂账事务进入", "card", cardID, "node", snap.Node,
+		"attempt", snap.Attempt, "target", snap.Target, "task", snap.TaskID,
+		"seq", 0, "type", EvDispatched)
+	var dispatchSeq, linkSeq int64
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			log().Warn("派发快照与挂账事务取卡失败", "card", cardID, "node", snap.Node,
+				"attempt", snap.Attempt, "target", snap.Target, "task", snap.TaskID,
+				"seq", 0, "type", EvDispatched, "cause", err)
+			return fmt.Errorf("派发落账: 卡 %s: %w", cardID, err)
+		}
+		var err error
+		dispatchSeq, err = s.appendEvent(tx, sink, cardID, EvDispatched, snap.Actor, snap)
+		if err != nil {
+			log().Warn("派发快照事务写入失败", "card", cardID, "node", snap.Node,
+				"attempt", snap.Attempt, "target", snap.Target, "task", snap.TaskID,
+				"seq", dispatchSeq, "type", EvDispatched, "cause", err)
+			return err
+		}
+		log().Debug("派发快照已写入事务", "card", cardID, "node", snap.Node,
+			"attempt", snap.Attempt, "target", snap.Target, "task", snap.TaskID,
+			"seq", dispatchSeq, "type", EvDispatched)
+		if _, err := tx.Exec(s.q(`INSERT INTO card_tasks (card_id, target, task_id, purpose, created_at)
+			VALUES (?,?,?,?,?)`), cardID, snap.Target, snap.TaskID, snap.Purpose, s.tval(time.Now())); err != nil {
+			log().Warn("派发快照事务挂账失败，回消快照", "card", cardID, "node", snap.Node,
+				"attempt", snap.Attempt, "target", snap.Target, "task", snap.TaskID,
+				"seq", dispatchSeq, "type", EvComment, "cause", err)
+			return fmt.Errorf("写挂账（task 可能已挂在别的卡）: %w", err)
+		}
+		linkSeq, err = s.appendEvent(tx, sink, cardID, EvComment, snap.Actor,
+			map[string]any{"kind": "普通", "body": fmt.Sprintf("挂账 task %s@%s（%s）", snap.TaskID, snap.Target, snap.Purpose)})
+		if err != nil {
+			log().Warn("派发快照事务挂账留痕失败，回消快照", "card", cardID, "node", snap.Node,
+				"attempt", snap.Attempt, "target", snap.Target, "task", snap.TaskID,
+				"seq", linkSeq, "type", EvComment, "cause", err)
+			return err
+		}
+		log().Info("派发快照与挂账事务完成", "card", cardID, "node", snap.Node,
+			"attempt", snap.Attempt, "target", snap.Target, "task", snap.TaskID,
+			"seq", linkSeq, "type", EvComment, "snapshot_seq", dispatchSeq)
+		return nil
+	})
+	return dispatchSeq, linkSeq, err
+}
+
 // RecordReviewVerdict 落审阅裁决事件（node 是回合计数分组键，raw 是
 // verdict block 原文取证）。
 func (s *Store) RecordReviewVerdict(cardID, node string, pass bool, raw, actor string) error {

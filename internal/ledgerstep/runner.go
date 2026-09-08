@@ -302,7 +302,7 @@ func (r *StepRunner) dispatchNode(outputPath *string) func(context.Context, ledg
 }
 
 // dispatchNodeWithGate 是运行节点的派发适配器；写闸只在 Transport 返回后
-// 约束协调者账本写入，远端任务已经受理的事实不回滚。
+// 约束协调者原子账本写入，远端任务已经受理的事实不回滚，也不因此重派第二 task。
 func (r *StepRunner) dispatchNodeWithGate(outputPath *string, writeGate func() bool) func(context.Context, ledger.Card, ledger.NodeDef) (string, string, error) {
 	return func(ctx context.Context, card ledger.Card, node ledger.NodeDef) (string, string, error) {
 		target := r.Target
