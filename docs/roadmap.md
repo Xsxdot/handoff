@@ -704,3 +704,22 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   需要前端「加载更多」（服务端 `before` 排他上界游标已由 B274/B289 备好，缺的是
   UI 与调用）。B289 spec 未记此残余，由 B287 spec 侦查期间补记。来源：B289
   （`24be42238`）修复后的形态；`docs/superpowers/specs/b289.md`。
+
+## 来自 B233.6 真机验收（2026-09-08，DUT `737e2203`，mac-02+linux-01 隔离实例）
+
+- **远端孤儿 task 无自动回收**：Transport 成功后协调者本地快照+挂账事务失败时，
+  本地原子回滚成立（无假快照、不重派第二个 task，已有锁缝测试+真机注入实证），
+  但远端已创建的 task 保持 running 无任何自动回收；真机实测只能人工 `stop` 回收。
+  且孤儿留下的同名分支残留会让同节点重试在 `worktree add -b` 处 500（真机实测
+  `probe/B6-implement` 冲突），恢复依赖人工 reclaim + 删分支。需要一张后续卡：
+  对账回收「未挂账的远端 task」并让重试分支命名感知残留。来源：plan §6.2 真机项 1。
+- **wakeconsumer 游标/seen 未持久化**：协调者 agentd 重启后 `automationCursor` 归零、
+  `automationSeen` 清空，全量重放历史 card_events 并按卡重复走唤醒路径（真机实测
+  重启后 B1/B2/B3/B4 各被重新唤醒一轮；空座/bind 席位下为空转跳过，占座时会重复
+  拉起协调者回合）。不丢事件成立、不自激成环成立（B274 防护实证），但重复唤醒
+  是事实。需要游标持久化或启动水位初始化。来源：plan §6.2 真机项 6。
+- **PG 方言腿与 relay 传输腿未覆盖**：plan §6.2 项 3 的 PG 并发 lease 实际锁行为、
+  项 2/4 的 relay 形态重启/断线，本次隔离环境无独立 PG 与 relay 设施（linux-01 无
+  docker/postgres，共享 PG 宿主当晚两次闪断不宜加库），SQLite 腿已全覆盖（lease
+  单写者+TTL 崩溃重取、source 三元组唯一索引 23=23、watermark 续传零重复）。后续
+  在有隔离 PG/relay 的环境补测。来源：plan §6.2 真机项 2/3/4 残余。
