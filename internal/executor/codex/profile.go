@@ -191,11 +191,27 @@ func (p *Profile) Verify(ctx context.Context, req executor.ProfileReq) (executor
 		if readErr != nil {
 			overlayOK = false
 			rep.Missing = append(rep.Missing, rel)
+			if p != nil && p.log != nil {
+				actualState := "read_error"
+				if errors.Is(readErr, os.ErrNotExist) {
+					actualState = "missing"
+				}
+				p.log.Warn("Profile.Verify 任务层内容缺失",
+					"harness", executor.HarnessCodex, "home", req.HomeDir,
+					"relative_path", rel, "expected_state", "present", "actual_state", actualState,
+					"expected_bytes", len(overlay.Content), "actual_bytes", 0, "cause", readErr)
+			}
 			continue
 		}
 		if !bytes.Equal(got, []byte(overlay.Content)) {
 			overlayOK = false
 			rep.Notes = append(rep.Notes, fmt.Sprintf("overlay 内容不符: %s", rel))
+			if p != nil && p.log != nil {
+				p.log.Warn("Profile.Verify 任务层内容不符",
+					"harness", executor.HarnessCodex, "home", req.HomeDir,
+					"relative_path", rel, "expected_state", "present", "actual_state", "content_mismatch",
+					"expected_bytes", len(overlay.Content), "actual_bytes", len(got))
+			}
 		}
 	}
 	rep.Verified = globalOK && overlayOK

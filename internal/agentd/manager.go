@@ -1201,7 +1201,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 // 错误，调用方必须在启动 executor 前将任务置 failed。注意：不从本地纪律目录回退，
 // 也不修改载体全局规则文件。
 func (m *Manager) prepareTaskProfile(ctx context.Context, start executor.StartReq) error {
-	if start.Discipline == "" {
+	if strings.TrimSpace(start.Discipline) == "" {
 		m.log.Info("任务纪律为空，跳过 Profile overlay", "task", start.Task.ID,
 			"executor", start.Task.Executor, "overlay_skipped", true)
 		return nil

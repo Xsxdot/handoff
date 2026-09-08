@@ -3503,19 +3503,16 @@ func TestDispatchInjectsTaskDisciplineIntoProfile(t *testing.T) {
 	pid3 := registerTestProject(t, m, repo3)
 	const whitespaceDiscipline = " \n\r\n"
 	whitespaceHome := t.TempDir()
-	whitespaceTask, err := m.Dispatch(context.Background(), DispatchReq{
+	_, err = m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid3, Prompt: "whitespace", Executor: "fake",
 		HomeDir: &whitespaceHome, DisciplineText: whitespaceDiscipline,
 	})
 	if err != nil {
-		t.Fatalf("空白但非空纪律 Dispatch: %v", err)
+		t.Fatalf("空白纪律 Dispatch: %v", err)
 	}
 	reqs = profile.snapshot()
-	if len(reqs) != 2 || len(reqs[1].TaskOverlay) != 1 || reqs[1].TaskOverlay[0].Content != whitespaceDiscipline {
-		t.Fatalf("空白但非空纪律必须逐字节进入 Profile overlay：%+v", reqs)
-	}
-	if reqs[1].TaskOverlay[0].Name != filepath.Join(whitespaceTask.ID, disciplineFileName) {
-		t.Fatalf("空白纪律 overlay 路径错误：%+v", reqs[1].TaskOverlay[0])
+	if len(reqs) != 1 {
+		t.Fatalf("TrimSpace 后为空的纪律不得调用 Profile.Prepare，调用次数=%d，记录=%+v", len(reqs), reqs)
 	}
 }
 

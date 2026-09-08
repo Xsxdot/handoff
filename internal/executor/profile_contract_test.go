@@ -5,9 +5,12 @@
 package executor_test
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -22,13 +25,13 @@ func TestProfilesVerifyExistingRules(t *testing.T) {
 	profiles := []struct {
 		name string
 		path string
-		new  func() executor.Profile
+		new  func(*slog.Logger) executor.Profile
 	}{
-		{name: executor.HarnessOpenCode, path: opencode.RulesRelFile, new: func() executor.Profile { return opencode.New(nil).Profile() }},
-		{name: executor.HarnessClaude, path: claudecode.RulesRelFile, new: func() executor.Profile { return claudecode.New(nil).Profile() }},
-		{name: executor.HarnessGrok, path: grok.RulesRelFile, new: func() executor.Profile { return grok.New(nil).Profile() }},
-		{name: executor.HarnessCodex, path: codex.RulesRelFile, new: func() executor.Profile { return codex.New(nil).Profile() }},
-		{name: executor.HarnessAGY, path: agy.RulesRelFile, new: func() executor.Profile { return agy.New(nil).Profile() }},
+		{name: executor.HarnessOpenCode, path: opencode.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return opencode.New(log).Profile() }},
+		{name: executor.HarnessClaude, path: claudecode.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return claudecode.New(log).Profile() }},
+		{name: executor.HarnessGrok, path: grok.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return grok.New(log).Profile() }},
+		{name: executor.HarnessCodex, path: codex.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return codex.New(log).Profile() }},
+		{name: executor.HarnessAGY, path: agy.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return agy.New(log).Profile() }},
 	}
 
 	for _, tc := range profiles {
@@ -41,7 +44,7 @@ func TestProfilesVerifyExistingRules(t *testing.T) {
 			if err := os.WriteFile(rulePath, []byte("rules"), 0o600); err != nil {
 				t.Fatal(err)
 			}
-			rep, err := tc.new().Verify(context.Background(), executor.ProfileReq{HomeDir: home, Isolated: true})
+			rep, err := tc.new(nil).Verify(context.Background(), executor.ProfileReq{HomeDir: home, Isolated: true})
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -62,17 +65,19 @@ func TestProfilesVerifyTaskOverlayContent(t *testing.T) {
 	profiles := []struct {
 		name string
 		path string
-		new  func() executor.Profile
+		new  func(*slog.Logger) executor.Profile
 	}{
-		{name: executor.HarnessOpenCode, path: opencode.RulesRelFile, new: func() executor.Profile { return opencode.New(nil).Profile() }},
-		{name: executor.HarnessClaude, path: claudecode.RulesRelFile, new: func() executor.Profile { return claudecode.New(nil).Profile() }},
-		{name: executor.HarnessGrok, path: grok.RulesRelFile, new: func() executor.Profile { return grok.New(nil).Profile() }},
-		{name: executor.HarnessCodex, path: codex.RulesRelFile, new: func() executor.Profile { return codex.New(nil).Profile() }},
-		{name: executor.HarnessAGY, path: agy.RulesRelFile, new: func() executor.Profile { return agy.New(nil).Profile() }},
+		{name: executor.HarnessOpenCode, path: opencode.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return opencode.New(log).Profile() }},
+		{name: executor.HarnessClaude, path: claudecode.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return claudecode.New(log).Profile() }},
+		{name: executor.HarnessGrok, path: grok.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return grok.New(log).Profile() }},
+		{name: executor.HarnessCodex, path: codex.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return codex.New(log).Profile() }},
+		{name: executor.HarnessAGY, path: agy.RulesRelFile, new: func(log *slog.Logger) executor.Profile { return agy.New(log).Profile() }},
 	}
 
 	for _, tc := range profiles {
 		t.Run(tc.name, func(t *testing.T) {
+			var logs bytes.Buffer
+			logger := slog.New(slog.NewTextHandler(&logs, nil))
 			home := t.TempDir()
 			global := "global rules\n"
 			taskA := "task A\n纪律 α\r\n"
@@ -87,7 +92,7 @@ func TestProfilesVerifyTaskOverlayContent(t *testing.T) {
 					{Name: bName, Content: taskB},
 				},
 			}
-			prof := tc.new()
+			prof := tc.new(logger)
 			if rep, err := prof.Prepare(context.Background(), req); err != nil || !rep.Prepared {
 				t.Fatalf("Prepare rep=%+v err=%v", rep, err)
 			}
@@ -110,14 +115,22 @@ func TestProfilesVerifyTaskOverlayContent(t *testing.T) {
 			if err := os.Remove(aPath); err != nil {
 				t.Fatal(err)
 			}
+			logs.Reset()
 			if rep, err := prof.Verify(context.Background(), req); err != nil || rep.Verified {
 				t.Fatalf("缺失 task A 时 Verify 必须未验证：rep=%+v err=%v", rep, err)
+			}
+			if got := logs.String(); !strings.Contains(got, "expected_state=present") || !strings.Contains(got, "actual_state=missing") {
+				t.Fatalf("缺失 task A 的 Verify 日志必须含 expected-vs-actual 结构化状态，日志=%s", got)
 			}
 			if err := os.WriteFile(aPath, []byte("wrong bytes"), 0o600); err != nil {
 				t.Fatal(err)
 			}
+			logs.Reset()
 			if rep, err := prof.Verify(context.Background(), req); err != nil || rep.Verified {
 				t.Fatalf("错误 task A 内容时 Verify 必须未验证：rep=%+v err=%v", rep, err)
+			}
+			if got := logs.String(); !strings.Contains(got, "expected_state=present") || !strings.Contains(got, "actual_state=content_mismatch") || !strings.Contains(got, "expected_bytes=") || !strings.Contains(got, "actual_bytes=") {
+				t.Fatalf("错误 task A 的 Verify 日志必须含 expected-vs-actual 内容信息，日志=%s", got)
 			}
 			if err := os.Remove(aPath); err != nil {
 				t.Fatal(err)

@@ -1912,10 +1912,12 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	if ref.Commit != "" {
 		head = ref.Commit
 		s.log.Info("任务 diff 使用结果引用 commit", "task", taskID, "repo", repo,
-			"head_rev", headRev, "commit", ref.Commit, "result_path", ref.Path)
+			"head_rev", headRev, "commit", ref.Commit, "result_path", ref.Path,
+			"result_path_empty", ref.Path == "")
 	} else {
 		s.log.Warn("ResultRef 缺少准确 commit，按任务分支降级", "task", taskID,
 			"repo", repo, "head_rev", headRev, "result_path", ref.Path,
+			"result_path_empty", ref.Path == "", "commit_fallback", true,
 			"cause", "assembleResultRef 未取得有效 commit")
 	}
 	if err := s.mgr.requireWorkspace(); err != nil {
