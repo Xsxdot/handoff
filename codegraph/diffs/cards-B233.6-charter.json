@@ -156,6 +156,20 @@
       "summary": "保持源三元组幂等，并写入 node/attempt/task_type/payload envelope。"
     }
   },
-  "edgesAdded": [],
+  "nodesAdded": {
+    "n_ledger_Store_RecordDispatchAndLinkTask": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 715,
+      "name": "Store.RecordDispatchAndLinkTask",
+      "file": "internal/ledger/events.go",
+      "line": 167,
+      "signature": "func (s *Store) RecordDispatchAndLinkTask(cardID string, snap DispatchSnapshot) (int64, int64, error)",
+      "summary": "同一账本事务内追加 dispatched 快照并写 task 挂账，失败整体回消；远端孤儿回收仍归调用方。"
+    }
+  },
+  "edgesAdded": [
+    ["n_ledgerstep_Dispatcher_ViaTemplate", "n_ledger_Store_RecordDispatchAndLinkTask"]
+  ],
   "implementsAdded": []
 }
