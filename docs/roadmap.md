@@ -709,6 +709,12 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   UI 与调用）。B289 spec 未记此残余，由 B287 spec 侦查期间补记。来源：B289
   （`24be42238`）修复后的形态；`docs/superpowers/specs/b289.md`。
 
+## 来自 B349 验收（2026-09-09，DUT `96fd3f9d`，并入功能线 `f2bc2b6d`）
+
+- **跨机迟到镜像 / 真实重启续拉仍延后**：旧 attempt 提问、错机器 source_target、
+  agentd SIGKILL 后 cursor 文件、Windows rename 原子性，统一到全部 B233 收尾卡
+  之后的真机闸。来源：B349 spec OOS；breakdown 真机清单 1–8。
+
 ## 来自 B233.7 验收（2026-09-09，DUT `1ee954d3`，并入功能线 `88d547d0`）
 
 - **跨机真机延后**：OpenCode 再问/权限 delivery_failed、五家 overlay、真实 diff、WakeHome、物理 carrier、网络失败 status-first、重启回收，统一到全部 B233 收尾卡完成后再验。来源：spec R7；breakdown §6 真机清单 1–8。
@@ -723,11 +729,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   且孤儿留下的同名分支残留会让同节点重试在 `worktree add -b` 处 500（真机实测
   `probe/B6-implement` 冲突），恢复依赖人工 reclaim + 删分支。需要一张后续卡：
   对账回收「未挂账的远端 task」并让重试分支命名感知残留。来源：plan §6.2 真机项 1。
-- **wakeconsumer 游标/seen 未持久化**：协调者 agentd 重启后 `automationCursor` 归零、
-  `automationSeen` 清空，全量重放历史 card_events 并按卡重复走唤醒路径（真机实测
-  重启后 B1/B2/B3/B4 各被重新唤醒一轮；空座/bind 席位下为空转跳过，占座时会重复
-  拉起协调者回合）。不丢事件成立、不自激成环成立（B274 防护实证），但重复唤醒
-  是事实。需要游标持久化或启动水位初始化。来源：plan §6.2 真机项 6。
+- **wakeconsumer 游标机内已由 B349/B352 持久化**：`automation-cursor.json` 写本机
+  DataDir，机内单测覆盖续拉、损坏文件从 0 起、Save 失败后重试。跨机真实 agentd
+  重启、PG LISTEN、多 agentd 争用同一 DataDir 仍未真机。来源：B233.6 plan §6.2
+  真机项 6；B349 验收 DUT `96fd3f9d`。
 - **PG 方言腿与 relay 传输腿未覆盖**：plan §6.2 项 3 的 PG 并发 lease 实际锁行为、
   项 2/4 的 relay 形态重启/断线，本次隔离环境无独立 PG 与 relay 设施（linux-01 无
   docker/postgres，共享 PG 宿主当晚两次闪断不宜加库），SQLite 腿已全覆盖（lease

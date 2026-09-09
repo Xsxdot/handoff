@@ -12,6 +12,8 @@
 
 ### 变更
 
+- **`task_mirrored` 只叫醒当前派发（B349）。** `card wait` 与小队自动化都核事件所属卡上最新 `EvDispatched` 的 Attempt/Target，以及账本 `source_task`/`source_target`。旧 attempt、错机器、无当前快照的镜像留账本，不打 stdout、不拉协调者。本机两边 target 都空仍算匹配。
+- **自动化消费水位写在本机 DataDir（B352）。** agentd 重启从 `automation-cursor.json` 续拉，已处理过的卡不会再被全量重放叫醒；崩溃在落盘前允许再醒一次。不进共享账本，不复用 `wait` 游标。
 - **`card wait` 默认一条可动作即退出，`--follow` 才长挂（B353）。** 自动审批、挂账 comment 等审计不再打到 stdout；等人、裁决、房间真人消息、以及 `WaitDeliveryPolicy` 为真的任务镜像才会叫醒。grok / Claude Code 继续一条 `--follow`；opencode / Codex 一次一挂。小队自动化对 `delivery_failed` 与任务 wait 同口径。
 - **派发失败先查状态再决定，不自动认重（B233.7）。** 网络/502 后用 `handoff tasks` / `show` 核对本地与远端，再决定 `dispatch` 或 `resume`；说明书不再保证「再派仍是同一任务」。`reply` 投递失败仍走既有 `resume`。
 - **普通派发改走已确认默认载体，禁止覆盖已绑定载体的机器/引擎/HOME（B233.5）。** `handoff dispatch` 未给 `--receiver` 时使用编制域默认载体；没有有效默认则失败，不再回退 `executor.default` 或裸环境。`--executor` 与载体 CLI 不同会被拒绝，不再单独决定执行落点。全局 `--target` 只选择控制面 agentd，不是执行落点。小队节点仍禁止点名机器/执行器。
