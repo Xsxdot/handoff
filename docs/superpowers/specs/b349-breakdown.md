@@ -1,6 +1,6 @@
 # B349+B352 消费端 source identity 闸与自动化水位拆解提案
 
-状态：**出稿待拍板**（2026-09-09；本稿由 handoff executor 出稿）
+状态：**已拍板**（2026-09-09，协调者维持 F1–F6 冻结，无新岔口）
 卡：B349（B352 并入；不另开实现卡）
 定级：**L3 轻档**；路由：contract → breakdown → 单轮 implement → review → acceptance → finish
 有效基线：cards/B233.1-charter-7 @ f2129a25（当前分支不切换、不越过）
@@ -26,6 +26,8 @@ implement 把它们重新解释成实现偏好：
 
 若协调者要改动 F1–F6 任一项，应先退回 spec/contract 对应冻结物；本稿不自行
 吸收产品或契约分叉。
+
+拍板（2026-09-09，协调者）：F1–F6 **全部维持冻结**，无新岔口。理由：与已批准 spec 及已冻结 contract 一致；L3 轻档不扇出、闸在两处消费点、身份钉 Attempt+Target、双空 target 匹配、cursor 本机 DataDir 且内存先于落盘——均已由用户拍板或契约冻结，拆解未引入新取舍。
 
 ## 1. 触及子系统清单与派卡资格核
 
