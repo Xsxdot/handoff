@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -290,13 +291,30 @@ func TestB2336DispatchFailureRollsBackSnapshot(t *testing.T) {
 	if err := st.LinkTask(card.ID, "mac-02", taskID, ledger.PurposeImplement, "existing"); err != nil {
 		t.Fatalf("预先占用 task link: %v", err)
 	}
+	var compensations []string
 	d := &Dispatcher{St: st, Actor: "tester", Transport: func(context.Context, DispatchOpts) (string, string, error) {
 		return taskID, "", nil
+	}, Compensate: func(_ context.Context, target, gotTaskID string) error {
+		compensations = append(compensations, target+":"+gotTaskID)
+		return nil
 	}}
 	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
 		Template: "feature-impl", Target: "mac-02", Node: "doing",
 	}); err == nil {
 		t.Fatal("重复挂账应使模板派发失败")
+	}
+	if count, err := st.PurposeRounds(card.ID, ledger.PurposeImplement); err != nil || count != 2 {
+		t.Fatalf("落账冲突后的 implement 轮次 count=%d err=%v，want count=2 err=nil", count, err)
+	}
+	if !reflect.DeepEqual(compensations, []string{"mac-02:" + taskID}) {
+		t.Fatalf("落账冲突补偿调用 = %v，want [%s:%s]", compensations, "mac-02", taskID)
+	}
+	links, err := st.TasksOf(card.ID)
+	if err != nil {
+		t.Fatalf("读挂账: %v", err)
+	}
+	if len(links) != 1 || links[0].TaskID != taskID {
+		t.Fatalf("落账冲突后挂账 = %+v，want 预占的一行 %s", links, taskID)
 	}
 
 	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
@@ -327,8 +345,12 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 	}
 
 	gateCalls := 0
+	var compensations []string
 	d := &Dispatcher{St: st, Actor: "tester", Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 		return "T-write-gate", "", nil
+	}, Compensate: func(_ context.Context, target, taskID string) error {
+		compensations = append(compensations, target+":"+taskID)
+		return nil
 	}}
 	_, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
 		Template: "feature-impl", Target: "mac-02",
@@ -352,6 +374,12 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 	if gateCalls != 1 {
 		t.Fatalf("账本事务写入前应检查一次写闸，实得 %d 次", gateCalls)
 	}
+	if count, err := st.PurposeRounds(card.ID, ledger.PurposeImplement); err != nil || count != 1 {
+		t.Fatalf("写闸关闭后的 implement 轮次 count=%d err=%v，want count=1 err=nil", count, err)
+	}
+	if !reflect.DeepEqual(compensations, []string{"mac-02:T-write-gate"}) {
+		t.Fatalf("写闸关闭补偿调用 = %v，want [mac-02:T-write-gate]", compensations)
+	}
 	links, err := st.TasksOf(card.ID)
 	if err != nil {
 		t.Fatalf("读挂账: %v", err)
@@ -371,6 +399,40 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 	}
 	if dispatched != 0 {
 		t.Fatalf("失权后原子账本事务不得写入快照，dispatched=%d", dispatched)
+	}
+}
+
+func TestB351TransportFailureDoesNotCompensate(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	compensations := 0
+	d := &Dispatcher{
+		St: st, Actor: "tester",
+		Transport: func(context.Context, DispatchOpts) (string, string, error) {
+			return "", "", errors.New("transport-b351")
+		},
+		Compensate: func(context.Context, string, string) error {
+			compensations++
+			return nil
+		},
+	}
+	_, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02", Node: "doing",
+	})
+	if err == nil {
+		t.Fatal("Transport 错误应使模板派发失败")
+	}
+	if compensations != 0 {
+		t.Fatalf("Transport 失败不应补偿，调用次数=%d", compensations)
+	}
+	if count, roundErr := st.PurposeRounds(card.ID, ledger.PurposeImplement); roundErr != nil || count != 0 {
+		t.Fatalf("Transport 失败后的 implement 轮次 count=%d err=%v，want count=0 err=nil", count, roundErr)
+	}
+	links, linkErr := st.TasksOf(card.ID)
+	if linkErr != nil {
+		t.Fatalf("读挂账: %v", linkErr)
+	}
+	if len(links) != 0 {
+		t.Fatalf("Transport 失败不应挂账，实得 %+v", links)
 	}
 }
 

@@ -52,7 +52,8 @@ type Transport func(ctx context.Context, opts DispatchOpts) (taskID string, base
 
 // DispatchCompensator 是派发成功但本地账本落账失败时的远端补偿钩子。
 // target 为空时由调用方按普通派发的本机 client 语义选路；ledgerstep 不直接依赖
-// client，也不解释 Stop/Reclaim 的 HTTP 错误。Ticket 0 只声明接缝，接线归实现票。
+// client，也不解释 Stop/Reclaim 的 HTTP 错误。它只接收已创建 task 的失败回收，
+// 不改变 ViaTemplate 的原始账本错误。
 type DispatchCompensator func(ctx context.Context, target, taskID string) error
 
 // DispatchResult 是模板派发完成后的回显与审计信息。
@@ -80,7 +81,7 @@ type Dispatcher struct {
 	St        *ledger.Store
 	Transport Transport
 	// Compensate 在 Transport 已成功返回 task id、但本地快照/挂账或写闸失败时调用。
-	// nil 表示未装配；空壳期不改变现有派发行为，生产组装由实现票注入。
+	// nil 表示未装配；此时仍记录失败轮次但不执行远端动作。
 	Compensate DispatchCompensator
 	Actor      string
 	// HomeDir 是小队绑定载体 HOME 的可空原指针；nil 表示普通派发，指向空串
@@ -140,7 +141,7 @@ type TemplateDispatch struct {
 // 注意：不含协调者席位语义。实现类与环节派发都只负责派任务；运行互斥由
 // 节点编排的 RunLock 负责，席位由 bind/coordinate/rebind 命令管理。
 // 本次只调用一次 Transport；快照和五列挂账在一个事务内完成，不因本地落账
-// 失败重派第二个 task。远端 task 的回收属于真机/集成验收项。
+// 失败重派第二个 task。已创建 task 的失败回收由 Compensate 注入，不删除分支。
 //
 // req.PlanPath 按调用方进程的 CWD 解析。agentd 一侧永远传空串：
 // 浏览器里没有 plan 文件，实现类派发也不从界面走。
@@ -364,11 +365,12 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	// 避免空身份事件先消耗 source watermark 后无法用新身份重放。两步在账本
 	// 同一事务内完成，挂账失败时事务回消快照，远端 task 仍由真机项回收。
 	if req.WriteGate != nil && !req.WriteGate() {
-		err := fmt.Errorf("派发落账被拒：%w", ErrWriteGateClosed)
+		originalErr := fmt.Errorf("派发落账被拒：%w", ErrWriteGateClosed)
 		slog.Default().Warn("失去写权，停止派发快照与挂账", "card", c.ID,
 			"node", req.Node, "attempt", taskID, "target", target, "task", taskID,
-			"seq", 0, "type", ledger.EvDispatched, "cause", err)
-		return zero, err
+			"seq", 0, "type", ledger.EvDispatched, "cause", originalErr)
+		d.compensateFailedDispatch(ctx, c, purpose, target, taskID, originalErr)
+		return zero, originalErr
 	}
 	snapshot := ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
@@ -387,7 +389,9 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		slog.Default().Warn("模板派发快照与挂账落账失败", "card", c.ID, "node", req.Node,
 			"attempt", taskID, "target", target, "task", taskID, "seq", snapshotSeq,
 			"type", ledger.EvDispatched, "link_seq", linkSeq, "cause", err)
-		return zero, fmt.Errorf("快照与挂账落账: %w", err)
+		originalErr := fmt.Errorf("快照与挂账落账: %w", err)
+		d.compensateFailedDispatch(ctx, c, purpose, target, taskID, originalErr)
+		return zero, originalErr
 	}
 	slog.Default().Info("模板派发快照与挂账落账完成", "card", c.ID, "node", req.Node,
 		"attempt", taskID, "target", target, "task", taskID, "seq", linkSeq,
@@ -402,6 +406,33 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,
 	}, nil
+}
+
+// compensateFailedDispatch 记录已创建 task 的耗费轮次并执行一次注入补偿。
+// 失败轮次独立于 card_tasks：后者随失败的快照事务回滚，若复用它会让重试再次
+// 使用仍留在执行机上的首轮分支名。副作用失败只记日志，保留 ViaTemplate 原错。
+func (d *Dispatcher) compensateFailedDispatch(
+	ctx context.Context,
+	card ledger.Card,
+	purpose, target, taskID string,
+	originalErr error,
+) {
+	logger := slog.Default().With("card", card.ID, "purpose", purpose,
+		"target", target, "task", taskID)
+	logger.Warn("模板派发记录失败，登记耗费轮次", "cause", originalErr)
+	if err := d.St.RecordDispatchRound(card.ID, purpose); err != nil {
+		logger.Error("派发耗费轮次落账失败，保留原始错误", "cause", err)
+	}
+	if d.Compensate == nil {
+		logger.Warn("派发补偿钩子未装配")
+		return
+	}
+	logger.Info("派发失败补偿开始")
+	if err := d.Compensate(ctx, target, taskID); err != nil {
+		logger.Error("派发失败补偿失败，保留原始错误", "cause", err)
+		return
+	}
+	logger.Info("派发失败补偿完成")
 }
 
 // disciplineAndTarget 返回一次模板派发的有效（纪律角色名，目标机）：

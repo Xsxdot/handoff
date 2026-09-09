@@ -57,6 +57,34 @@ func TestCommentRefsAutoRelate(t *testing.T) {
 	}
 }
 
+func TestB351PurposeRoundsAddsFailedRoundsByPurpose(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "数失败轮次")
+	if count, err := s.PurposeRounds(c.ID, PurposeImplement); err != nil || count != 0 {
+		t.Fatalf("初始 implement 轮次 count=%d err=%v，want count=0 err=nil", count, err)
+	}
+	if err := s.LinkTask(c.ID, "acc", "T-success", PurposeImplement, "test"); err != nil {
+		t.Fatalf("成功挂账: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := s.RecordDispatchRound(c.ID, PurposeImplement); err != nil {
+			t.Fatalf("记录 implement 失败轮次 %d: %v", i+1, err)
+		}
+	}
+	if err := s.RecordDispatchRound(c.ID, PurposeReview); err != nil {
+		t.Fatalf("记录 review 失败轮次: %v", err)
+	}
+	if count, err := s.PurposeRounds(c.ID, PurposeImplement); err != nil || count != 3 {
+		t.Fatalf("implement 轮次 count=%d err=%v，want count=3 err=nil", count, err)
+	}
+	if count, err := s.ReviewRounds(c.ID); err != nil || count != 1 {
+		t.Fatalf("review 轮次 count=%d err=%v，want count=1 err=nil", count, err)
+	}
+	if count, err := s.PurposeRounds(c.ID, "integration"); err != nil || count != 0 {
+		t.Fatalf("未出现 purpose 轮次 count=%d err=%v，want count=0 err=nil", count, err)
+	}
+}
+
 func TestAcceptanceAndNeeds(t *testing.T) {
 	s := seedStore(t)
 	a := mk(t, s, "a")

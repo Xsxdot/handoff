@@ -604,21 +604,33 @@ func (s *Store) WorkBranchPublished(cardID, branch string) (bool, error) {
 }
 
 // PurposeRounds 数该卡已派出的指定 purpose 轮数（只增不减，用于给重跑轮的
-// 分支编号，避免 <prefix>/<卡>-<purpose> 固定拼法第二轮撞名）。
+// 分支编号，避免 <prefix>/<卡>-<purpose> 固定拼法第二轮撞名）。成功挂账与
+// 已创建但落账失败的耗费轮次相加，确保失败后重试不会再次使用残留的首轮分支名。
 // 与 ledgerstep 的 CountRounds 不是一回事：那个数的是「裁决回合」（人工重置
 // 会清零，用于封顶），这个数的是「派过几次」（只增不减，用于起名）。
 func (s *Store) PurposeRounds(cardID, purpose string) (int, error) {
 	links, err := s.TasksOf(cardID)
 	if err != nil {
+		log().Warn("读取成功派发轮次失败", "card", cardID, "purpose", purpose, "cause", err)
 		return 0, err
 	}
-	count := 0
+	succeeded := 0
 	for _, link := range links {
 		if link.Purpose == purpose {
-			count++
+			succeeded++
 		}
 	}
-	return count, nil
+	var failed int
+	if err := s.db.QueryRow(s.q(`SELECT COUNT(*)
+		FROM card_dispatch_rounds WHERE card_id = ? AND purpose = ?`),
+		cardID, purpose).Scan(&failed); err != nil {
+		log().Warn("读取派发耗费轮次失败", "card", cardID, "purpose", purpose, "cause", err)
+		return 0, fmt.Errorf("读派发耗费轮次: %w", err)
+	}
+	total := succeeded + failed
+	log().Info("派发轮次读取完成", "card", cardID, "purpose", purpose,
+		"succeeded", succeeded, "failed", failed, "total", total)
+	return total, nil
 }
 
 // ReviewRounds 已派出的审阅轮数——PurposeRounds 在 review 上的特例，保留旧名

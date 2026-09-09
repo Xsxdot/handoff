@@ -16,6 +16,7 @@ package ledger
 import (
 	"regexp"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +51,34 @@ func TestDDLDialectParity(t *testing.T) {
 	slices.Sort(sqliteSorted)
 	if !slices.Equal(pgSorted, sqliteSorted) {
 		t.Fatalf("两方言建表多重集不等（重数计入判据，排序后逐元素比对）:\nPG 排序后: %v\nSQLite 排序后: %v", pgSorted, sqliteSorted)
+	}
+}
+
+func TestB351DispatchRoundsDDLDialectParity(t *testing.T) {
+	pg := strings.Join(ddlStatements(true), "\n")
+	sqlite := strings.Join(ddlStatements(false), "\n")
+	for _, ddl := range []struct {
+		name string
+		text string
+	}{{"postgres", pg}, {"sqlite", sqlite}} {
+		t.Run(ddl.name, func(t *testing.T) {
+			for _, fragment := range []string{
+				"card_dispatch_rounds",
+				"card_id",
+				"purpose",
+				"created_at",
+				"idx_card_dispatch_rounds_card_purpose",
+			} {
+				if !strings.Contains(ddl.text, fragment) {
+					t.Fatalf("DDL 缺少 B351 片段 %q", fragment)
+				}
+			}
+			if !strings.Contains(ddl.text, "REFERENCES cards(id)") {
+				t.Fatal("DDL 缺少 card_dispatch_rounds.card_id 对 cards(id) 的外键")
+			}
+			if !strings.Contains(ddl.text, "(card_id, purpose)") {
+				t.Fatal("DDL 缺少按 card_id,purpose 的索引")
+			}
+		})
 	}
 }

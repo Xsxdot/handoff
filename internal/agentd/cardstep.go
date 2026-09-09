@@ -120,6 +120,22 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		RunHolder: fmt.Sprintf("run:%s#%d#%d", host, os.Getpid(), time.Now().UnixNano()),
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: s.ledger, Transport: s.stepTransport, Actor: req.Actor,
+			// agentd 补偿借用 Server 持有的 client pool；不复制 target/relay
+			// 选路，也不关闭池，只回收已取得 task id 的失败派发。
+			Compensate: func(ctx context.Context, target, taskID string) error {
+				cl, err := s.clientForTarget(target)
+				if err != nil {
+					s.log.Error("agentd 派发失败补偿创建 client 失败", "card", cardID, "target", target, "task", taskID, "cause", err)
+					return err
+				}
+				s.log.Info("agentd 派发失败补偿开始", "card", cardID, "target", target, "task", taskID)
+				if err := cl.StopAndReclaim(ctx, taskID); err != nil {
+					s.log.Error("agentd 派发失败补偿失败", "card", cardID, "target", target, "task", taskID, "cause", err)
+					return err
+				}
+				s.log.Info("agentd 派发失败补偿完成", "card", cardID, "target", target, "task", taskID)
+				return nil
+			},
 			HomeDir:           dispatchHomeDir,
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,

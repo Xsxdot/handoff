@@ -23,10 +23,42 @@ func TestOpenCreatesSchema(t *testing.T) {
 	s := newTestStore(t)
 	// 全部表都建出来了：逐表 SELECT 不报错即证明 DDL 幂等执行成功
 	for _, tbl := range []string{"cards", "card_relations", "card_tasks",
-		"card_events", "workflows", "dispatch_templates", "decisions",
+		"card_dispatch_rounds", "card_events", "workflows", "dispatch_templates", "decisions",
 		"mirror_lease", "mirror_cursors", "ledger_meta", "card_prefixes"} {
 		if _, err := s.db.Exec("SELECT * FROM " + tbl + " LIMIT 0"); err != nil {
 			t.Fatalf("表 %s 不存在: %v", tbl, err)
+		}
+	}
+	var indexName string
+	if err := s.db.QueryRow(`SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_card_dispatch_rounds_card_purpose'`).Scan(&indexName); err != nil {
+		t.Fatalf("B351 失败轮次索引不存在: %v", err)
+	}
+	if indexName != "idx_card_dispatch_rounds_card_purpose" {
+		t.Fatalf("B351 失败轮次索引名 = %q", indexName)
+	}
+	rows, err := s.db.Query(`PRAGMA table_info(card_dispatch_rounds)`)
+	if err != nil {
+		t.Fatalf("读取 B351 失败轮次列: %v", err)
+	}
+	defer rows.Close()
+	columns := map[string]bool{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull, pk int
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			t.Fatalf("扫描 B351 失败轮次列: %v", err)
+		}
+		columns[name] = true
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatalf("读取 B351 失败轮次列结束: %v", err)
+	}
+	for _, column := range []string{"card_id", "purpose", "created_at"} {
+		if !columns[column] {
+			t.Fatalf("B351 失败轮次缺列 %q，columns=%v", column, columns)
 		}
 	}
 	// 幂等：重开不报错

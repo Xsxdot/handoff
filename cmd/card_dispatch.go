@@ -331,6 +331,23 @@ var cardDispatchCmd = &cobra.Command{
 		// 不让普通派发入口把人尺度 actor 写进席位。
 		dispatcher := &ledgerstep.Dispatcher{
 			St: st, Transport: cliTransport, Actor: actor,
+			// CLI 补偿沿用本次派发的目标选路，并负责释放 targetClient 的
+			// relay cleanup；只回收已取得 task id 的失败派发，不改原始错误。
+			Compensate: func(ctx context.Context, target, taskID string) error {
+				cl, done, err := targetClient(target)
+				if err != nil {
+					slog.Error("CLI 派发失败补偿创建 client 失败", "card", card.ID, "target", target, "task", taskID, "cause", err)
+					return err
+				}
+				defer done()
+				slog.Info("CLI 派发失败补偿开始", "card", card.ID, "target", target, "task", taskID)
+				if err := cl.StopAndReclaim(ctx, taskID); err != nil {
+					slog.Error("CLI 派发失败补偿失败", "card", card.ID, "target", target, "task", taskID, "cause", err)
+					return err
+				}
+				slog.Info("CLI 派发失败补偿完成", "card", card.ID, "target", target, "task", taskID)
+				return nil
+			},
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
 			NormalizeTarget: func(target string) string {
