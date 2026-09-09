@@ -1,6 +1,6 @@
 # B351 远端孤儿回收与重试改名：breakdown 提案
 
-状态：**待拍板**（2026-09-09；本稿是提案，不含协调者裁决）
+状态：**已拍板**（2026-09-09；协调者维持 F1–F4 冻结，无新岔口）
 卡：B351
 定级：**L3 轻档**；路由：contract → breakdown →（单轮）implement → review → acceptance → finish
 有效基线：`cards/B233.1-charter-7` @ `6097892b`（不切换、不越过）
@@ -14,12 +14,12 @@
 
 本稿**没有新增待拍板岔口**。下列事项是 spec/contract 已冻结的实现边界，列在稿首是为了防止 implement 重新把冻结语义当作偏好：
 
-| 编号 | 已冻结事项 | 本稿吸收的边界 |
-|---|---|---|
-| F1 | 扇出形态 | L3 轻档的一张跨域 `B351-impl` 子卡；T0–T4 只是同一轮 implement 的内部顺序，不拆并行功能卡。 |
-| F2 | 失败轮次载体 | 独立 count-only `card_dispatch_rounds` 事实，与 `card_tasks` purpose 计数相加；不写 `EvDispatched`、不写 `card_tasks`、不造事件。 |
-| F3 | 补偿位置与方向 | `ViaTemplate` 失败出口先记轮次、再调用注入的 `DispatchCompensator`；ledgerstep 不 import client/agentd，账本不主动调 Stop。 |
-| F4 | 补偿动作与命名 | `Stop` 后 `Reclaim(force=true)`；Stop 409 仍 Reclaim，Stop/Reclaim 404 软成功；永不删分支；同 purpose 失败计入后续 `-2`，失败后成功再派第三次为 `-3`。 |
+| 编号 | 已冻结事项 | 本稿吸收的边界 | 裁决 | 理由 |
+|---|---|---|---|---|
+| F1 | 扇出形态 | L3 轻档的一张跨域 `B351-impl` 子卡；T1–T4 只是同一轮 implement 的内部顺序，不拆并行功能卡。 | **维持冻结** | spec 轻档；拆并行会把轮次计数和停 task 拆散。实现挂 B351，不另开子卡号。 |
+| F2 | 失败轮次载体 | 独立 count-only `card_dispatch_rounds` 事实，与 `card_tasks` purpose 计数相加；不写 `EvDispatched`、不写 `card_tasks`、不造事件。 | **维持冻结** | 用户选 B；加法（含第三次 `-3`）已由 spec C1 钉死。 |
+| F3 | 补偿位置与方向 | `ViaTemplate` 失败出口先记轮次、再调用注入的 `DispatchCompensator`；ledgerstep 不 import client/agentd，账本不主动调 Stop。 | **维持冻结** | 两处生产装配共用同一失败出口；不把补偿塞进 Transport。 |
+| F4 | 补偿动作与命名 | `Stop` 后 `Reclaim(force=true)`；Stop 409 仍 Reclaim，Stop/Reclaim 404 软成功；永不删分支；同 purpose 失败计入后续 `-2`，失败后成功再派第三次为 `-3`。 | **维持冻结** | 用户选 B；守 B77 不删分支、B233.4 留树必须再 reclaim。 |
 
 若协调者要改 F1–F4 任一项，必须退回 spec/contract 对应冻结物；本稿不自行吸收产品或契约分叉。
 

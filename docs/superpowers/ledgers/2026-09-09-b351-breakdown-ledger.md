@@ -12,3 +12,4 @@
 - 2026-09-09：命令 `go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . --view cards-B351-charter resolve --doc docs/superpowers/specs/b351-breakdown.md` 实际退出码 0；原始 JSON 报告 17 个锚点，状态仅为 `ok`/`moved`，无 `vanished`/`file_missing`。坏锚自检通过。
 - 2026-09-09：预提交命令 `git diff --cached --check && git diff --cached --stat` 首次失败；原始输出逐行报告 `docs/superpowers/specs/b351-breakdown.md:3` 至 `:10: trailing whitespace.`（Markdown 强制换行的两个空格）。已删除这些尾随空格，未改变文义；该次命令未作为通过依据。
 - 2026-09-09：提交命令 `git commit -m "docs(B351): add orphan compensation breakdown"` 原始输出为 `[cards/B351-charter-2 cdbd9b86] docs(B351): add orphan compensation breakdown`、`2 files changed, 318 insertions(+)`，并创建 breakdown 与 breakdown-ledger 两个文件；随后仅为收录此提交事实执行一次 amend。
+- 2026-09-09：协调者拍板 F1–F4 全部维持冻结（无新岔口）；头部回写「已拍板」。提交命令（历史读数）：`git commit -m "docs(B351): 拍板拆解 F1-F4 维持冻结"`。
