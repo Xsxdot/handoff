@@ -12,6 +12,7 @@
 
 ### 变更
 
+- **`card wait` 默认一条可动作即退出，`--follow` 才长挂（B353）。** 自动审批、挂账 comment 等审计不再打到 stdout；等人、裁决、房间真人消息、以及 `WaitDeliveryPolicy` 为真的任务镜像才会叫醒。grok / Claude Code 继续一条 `--follow`；opencode / Codex 一次一挂。小队自动化对 `delivery_failed` 与任务 wait 同口径。
 - **派发失败先查状态再决定，不自动认重（B233.7）。** 网络/502 后用 `handoff tasks` / `show` 核对本地与远端，再决定 `dispatch` 或 `resume`；说明书不再保证「再派仍是同一任务」。`reply` 投递失败仍走既有 `resume`。
 - **普通派发改走已确认默认载体，禁止覆盖已绑定载体的机器/引擎/HOME（B233.5）。** `handoff dispatch` 未给 `--receiver` 时使用编制域默认载体；没有有效默认则失败，不再回退 `executor.default` 或裸环境。`--executor` 与载体 CLI 不同会被拒绝，不再单独决定执行落点。全局 `--target` 只选择控制面 agentd，不是执行落点。小队节点仍禁止点名机器/执行器。
 - **跨机失败可区分目标不可达与 relay 隧道断开（B233.3）。** `ExecutionClient` 在 relay 传输失败时返回可 `errors.Is` 的隧道断开哨兵，不再与「机器未登记 / 够不着」混用。跨机建树转发不再由传输层写卡账本；挂卡留在建树 handler，HTTP `CardResults` 不变。
