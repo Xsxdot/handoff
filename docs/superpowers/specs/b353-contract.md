@@ -140,3 +140,19 @@
 - Ticket 0 编译：轻档不适用（无骨架代码变更）。
 - 金样本：本卡无哈希、密钥派生或编码格式新增；原始 `ledger.Event` JSON 形状不变。
 - 三重闸门：已记录四项拍板；无其它命中。
+
+## 9. breakdown 核对修订记录
+
+- **2026-09-09（breakdown 核对）**：`cmd/card_wait.go#runCardWait` 读取
+  `ledger.Store.Follow` 属于已有 `d_cli → d_ledger` 包内 API 面，不新增账本接口、HTTP
+  字段或事件总线；本卡只在 CLI 消费回调过滤并判断退出。
+- **2026-09-09（breakdown 核对）**：`task_mirrored` 载荷中的既有 `task_type` 只作为
+  `WaitDeliveryPolicy` 的输入，仍输出原始 `ledger.Event`；它不是新增协议字段或事件
+  枚举，`mirrorSkip` 不因此扩面。
+- **2026-09-09（breakdown 核对）**：`keystone.WakeEvent` 的既有
+  `WakeTaskTerminal` / `WakeTicket` / `WakeMessage` 形状承接新增卡原生可动作事件；
+  `decision_opened`、`decision_answered`、`needs_*` 复用已有 `WakeTaskTerminal`，不新增
+  Keystone 对外入口或持久事实。
+- **2026-09-09（breakdown 核对）**：`skills/handoff/SKILL.md` 与 `README.md` 仅是
+  已有 CLI 消费契约的操作文档同步面，不构成新的运行时接缝；若实现提案要扩展命令、
+  wire 字段或镜像责任，必须退回 contract，而不是在文档变更中隐含扩面。
