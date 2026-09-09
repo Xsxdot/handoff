@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "cards/B233.1-charter-7",
-  "commit": "3c525c6cd967fa669bd8227a4cacb36f8d415ba5",
+  "commit": "16b8811f99bb10eb41920eb19e257b5f56674720",
   "scannedAt": "2026-09-03",
   "generator": "handoff-executor/coverage-fill-20260903"
  },
@@ -369,6 +369,16 @@
    "label": "agy.tailer",
    "kind": "类型方法",
    "domain": "d_execution_adapters"
+  },
+  "k_approval_fn": {
+   "label": "approval（包级函数）",
+   "kind": "函数组",
+   "domain": "d_coordination_task"
+  },
+  "k_approval_model": {
+   "label": "approval 实体",
+   "kind": "实体",
+   "domain": "d_coordination_task"
   },
   "k_buildinfo_fn": {
    "label": "buildinfo（包级函数）",
@@ -6230,6 +6240,141 @@
    "summary": "tailer 从指定 offset 增量读 out.jsonl。",
    "modelKind": "dto"
   },
+  "m_approval_AnswerHub": {
+   "kind": "model",
+   "container": "k_approval_model",
+   "order": 300,
+   "name": "AnswerHub",
+   "file": "internal/approval/client.go",
+   "line": 21,
+   "signature": "type AnswerHub interface {",
+   "summary": "AnswerHub 是 ApprovalClient 使用的窄事件与答复等待端口。",
+   "fields": [
+    [
+     "Publish",
+     "func(proto.Event)",
+     ""
+    ],
+    [
+     "WaitAnswer",
+     "func(context.Context, string) (string, error)",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_approval_Client": {
+   "kind": "model",
+   "container": "k_approval_model",
+   "order": 303,
+   "name": "Client",
+   "file": "internal/approval/client.go",
+   "line": 50,
+   "signature": "type Client struct {",
+   "summary": "Client 是 ApprovalClient 的迁出生产实现。",
+   "modelKind": "dto"
+  },
+  "m_approval_ConsultDecision": {
+   "kind": "model",
+   "container": "k_approval_model",
+   "order": 301,
+   "name": "ConsultDecision",
+   "file": "internal/approval/client.go",
+   "line": 27,
+   "signature": "type ConsultDecision struct {",
+   "summary": "ConsultDecision 是 approver 调用结果的 agentd 无关镜像。",
+   "fields": [
+    [
+     "Approve",
+     "bool",
+     ""
+    ],
+    [
+     "Reason",
+     "string",
+     ""
+    ],
+    [
+     "ElapsedMS",
+     "int64",
+     ""
+    ],
+    [
+     "Err",
+     "error",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_approval_Hooks": {
+   "kind": "model",
+   "container": "k_approval_model",
+   "order": 302,
+   "name": "Hooks",
+   "file": "internal/approval/client.go",
+   "line": 35,
+   "signature": "type Hooks struct {",
+   "summary": "Hooks 是 Manager 组装给 ApprovalClient 的窄能力端口。",
+   "fields": [
+    [
+     "Log",
+     "*slog.Logger",
+     ""
+    ],
+    [
+     "Store",
+     "*store.Store",
+     ""
+    ],
+    [
+     "Hub",
+     "AnswerHub",
+     ""
+    ],
+    [
+     "JudgePermission",
+     "func(taskID string, ev executor.AdapterEvent) permgate.Verdict",
+     ""
+    ],
+    [
+     "ShouldConsult",
+     "func(taskID string) bool",
+     ""
+    ],
+    [
+     "Decide",
+     "func(context.Context, string, string) ConsultDecision",
+     ""
+    ],
+    [
+     "CountConsultFailure",
+     "func(taskID string)",
+     ""
+    ],
+    [
+     "ResetConsultFailure",
+     "func(taskID string)",
+     ""
+    ],
+    [
+     "AutoAllow",
+     "func(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict)",
+     ""
+    ],
+    [
+     "TransitBestEffort",
+     "func(taskID string, to proto.TaskState, reason string)",
+     ""
+    ],
+    [
+     "NoteDeliveryFailed",
+     "func(taskID, ticketID string, cause error)",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_claudecode_Adapter": {
    "kind": "model",
    "container": "k_claudecode_model",
@@ -9048,6 +9193,39 @@
     [
      "Spend",
      "*proto.SpendEntry",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_executor_ApprovalClient": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 309,
+   "name": "ApprovalClient",
+   "file": "internal/executor/approval.go",
+   "line": 87,
+   "signature": "type ApprovalClient interface {\n\tPolicySnapshot(ctx context.Context) (PolicySnapshot, error)\n\tRequest(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)\n\tAwait(ctx context.Context, ref ApprovalRef) (ApprovalDecision, error)\n\tAcknowledge(ctx context.Context, ack ApprovalAck) error\n}",
+   "summary": "ApprovalClient 是限定于单个执行实例的审批 client。",
+   "fields": [
+    [
+     "PolicySnapshot",
+     "func(ctx context.Context) (PolicySnapshot, error)",
+     ""
+    ],
+    [
+     "Request",
+     "func(ctx context.Context, req ApprovalRequest) (ApprovalResult, error)",
+     ""
+    ],
+    [
+     "Await",
+     "func(ctx context.Context, ref ApprovalRef) (ApprovalDecision, error)",
+     ""
+    ],
+    [
+     "Acknowledge",
+     "func(ctx context.Context, ack ApprovalAck) error",
      ""
     ]
    ],
@@ -29506,6 +29684,29 @@
    ],
    "summary": "autoAllowPermission records a safe-command audit when applicable, then responds once to the executor."
   },
+  "n_agentd_Manager_bindApproval": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 501,
+   "name": "Manager.bindApproval",
+   "file": "internal/agentd/approval_client.go",
+   "line": 29,
+   "signature": "func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) executor.ApprovalClient",
+   "params": [
+    [
+     "taskID",
+     "string",
+     "任务 ID"
+    ],
+    [
+     "snap",
+     "executor.PolicySnapshot",
+     "政策快照"
+    ]
+   ],
+   "returns": "executor.ApprovalClient",
+   "summary": "bindApproval 是 Manager 的 ApprovalClient 组装缝。"
+  },
   "n_agentd_Manager_cleanupCreatedDir": {
    "kind": "func",
    "container": "k_agentd_Manager",
@@ -30950,6 +31151,24 @@
      "file": "internal/agentd/manager_test.go:2965"
     }
    ]
+  },
+  "n_agentd_Manager_resolveSnapshot": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 502,
+   "name": "Manager.resolveSnapshot",
+   "file": "internal/agentd/manager.go",
+   "line": 439,
+   "signature": "func (m *Manager) resolveSnapshot(task *proto.Task) (executor.PolicySnapshot, error)",
+   "params": [
+    [
+     "task",
+     "*proto.Task",
+     "任务"
+    ]
+   ],
+   "returns": "executor.PolicySnapshot, error",
+   "summary": "resolveSnapshot 构造任务专属政策快照。"
   },
   "n_agentd_Manager_respondAnsweredTicketReplay": {
    "kind": "func",
@@ -46070,6 +46289,34 @@
    "file": "internal/executor/agy/proc.go",
    "line": 262,
    "signature": "func writeProcInfo(taskDir string, pi *procInfo) error"
+  },
+  "n_approval_NewClient": {
+   "kind": "func",
+   "container": "k_approval_fn",
+   "order": 300,
+   "name": "NewClient",
+   "file": "internal/approval/client.go",
+   "line": 57,
+   "signature": "func NewClient(taskID string, snap executor.PolicySnapshot, hooks Hooks) *Client",
+   "params": [
+    [
+     "taskID",
+     "string",
+     "任务 ID"
+    ],
+    [
+     "snap",
+     "executor.PolicySnapshot",
+     "绑定到当前回合的政策快照"
+    ],
+    [
+     "hooks",
+     "Hooks",
+     "Manager 组装的窄能力端口"
+    ]
+   ],
+   "returns": "*Client",
+   "summary": "NewClient 构造单任务 ApprovalClient。"
   },
   "n_buildinfo_Read": {
    "kind": "func",
@@ -70417,6 +70664,29 @@
    "signature": "func (a *API) streamOnce(ctx context.Context, onEvent func(json.RawMessage), onEstablished func()) error {",
    "summary": "streamOnce 建立一次 SSE 连接并消费到流结束，期间每条事件同步回调 onEvent。"
   },
+  "n_opencode_Adapter_BindApproval": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "order": 505,
+   "name": "Adapter.BindApproval",
+   "file": "internal/executor/opencode/adapter.go",
+   "line": 890,
+   "signature": "func (a *Adapter) BindApproval(taskID string, client executor.ApprovalClient) error",
+   "params": [
+    [
+     "taskID",
+     "string",
+     ""
+    ],
+    [
+     "client",
+     "executor.ApprovalClient",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "BindApproval 实现 executor.ApprovalBinder。"
+  },
   "n_opencode_Adapter_Events": {
    "kind": "func",
    "container": "k_opencode_Adapter",
@@ -70803,6 +71073,28 @@
    "line": 2172,
    "signature": "func (a *Adapter) advanceWatermark(r *runState) {",
    "summary": "advanceWatermark 把本回合最后一条 assistant 消息 id 落进 proc.json，作为对账水位。"
+  },
+  "n_opencode_Adapter_authorizeNativePermission": {
+   "kind": "func",
+   "container": "k_opencode_Adapter",
+   "order": 502,
+   "name": "Adapter.authorizeNativePermission",
+   "file": "internal/executor/opencode/adapter.go",
+   "line": 817,
+   "signature": "func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEvent)",
+   "params": [
+    [
+     "r",
+     "*runState",
+     ""
+    ],
+    [
+     "ev",
+     "executor.AdapterEvent",
+     ""
+    ]
+   ],
+   "summary": "authorizeNativePermission 把原生权限交 client 判定并回传。"
   },
   "n_opencode_Adapter_classifyReconciled": {
    "kind": "func",
@@ -114099,6 +114391,10 @@
   [
    "m_ledger_api_Facade",
    "m_keysclient_LedgerView"
+  ],
+  [
+   "m_approval_Client",
+   "m_executor_ApprovalClient"
   ]
  ],
  "projections": [

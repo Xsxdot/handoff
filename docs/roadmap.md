@@ -715,6 +715,12 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   agentd SIGKILL 后 cursor 文件、Windows rename 原子性，统一到全部 B233 收尾卡
   之后的真机闸。来源：B349 spec OOS；breakdown 真机清单 1–8。
 
+## 来自 B233.8 验收（2026-09-10，DUT `bd02aad0`，并入功能线 `16b8811f`）
+
+- **非 OpenCode 权限/提问权威仍走 handlePermission/handleQuestion**：本卡只迁生产实现落点。Claude 注入仍只服务快照。来源：B233.8 spec OOS。
+- **跨机真机延后 B233.9**：本机+linux-01 隔离实例验共享派发、OpenCode 审批注入、B351 孤儿 Stop+改名。来源：用户 2026-09-09 授权。
+- **review minor**：部分序列化 payload 未逐项核 prior_ticket_id/fingerprint/answer。不挡本卡。
+
 ## 来自 B233.8 spec（2026-09-09，收窄后）
 
 - **非 OpenCode 权限/提问权威迁移**：Claude 今日 Dispatch 注入只服务快照，运行时仍走 `handlePermission`；Codex/Grok/AGY 无 AskResponder。不在 B233.8。来源：B233.8 spec OOS；独立审查 F1–F3。
