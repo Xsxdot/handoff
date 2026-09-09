@@ -111,7 +111,8 @@ func ledgerCardWire(card ledger.Card) proto.Card {
 func ledgerEventWire(event ledger.Event) proto.LedgerEvent {
 	return proto.LedgerEvent{
 		Seq: event.Seq, CardID: event.CardID, Type: event.Type, Actor: event.Actor,
-		Payload: event.Payload, CreatedAt: event.CreatedAt,
+		Payload: event.Payload, SourceTarget: event.SourceTarget, SourceTask: event.SourceTask,
+		SourceSeq: event.SourceSeq, CreatedAt: event.CreatedAt,
 	}
 }
 

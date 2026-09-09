@@ -25,7 +25,7 @@
    "entries": [
     "proto 实体"
    ],
-   "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。 B312 finish：席位 helper 真实引用边 2，预算 0→2。"
+   "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。 B312 finish：席位 helper 真实引用边 2，预算 0→2。B349：LedgerEvent 的 source 三字段继续复用 proto 实体唯一投影；不新增方向或预算，source identity 闸留在两个消费点。"
   },
   {
    "from": "d_collab",
@@ -54,7 +54,7 @@
    "entries": [
     "ledger.Store"
    ],
-   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。B312：card bind/rebind 的席位写入仍复用既有 ledger.Store 容器，CAS 与来源校验不下沉到 CLI。B353：card wait 继续复用 ledger.Store.Follow/GetCard/MaxSeq/Subtree；过滤只发生在 CLI 消费点，账本审计事件不删；不新增方向或预算。"
+   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。B312：card bind/rebind 的席位写入仍复用既有 ledger.Store 容器，CAS 与来源校验不下沉到 CLI。B353：card wait 继续复用 ledger.Store.Follow/GetCard/MaxSeq/Subtree；过滤只发生在 CLI 消费点，账本审计事件不删；不新增方向或预算。B349：card wait 的当前派发快照扫描继续复用 ledger.Store.EventsFromAsc；事件所属卡取数、不新增 ledger 派生 API 或预算。"
   },
   {
    "from": "d_cli",
@@ -307,7 +307,7 @@
     "proto 实体",
     "proto.Task"
    ],
-   "legacyBudgetNote": "B298 absorb：Manager.GC / appendGCWorktreesPreview / appendGCWorktreesExecute / activeLeafOccupied 直调 TaskState.IsTerminal（+4）；既有 1 条为 Store.UpdateTaskState→CanTransit。"
+   "legacyBudgetNote": "B298 absorb：Manager.GC / appendGCWorktreesPreview / appendGCWorktreesExecute / activeLeafOccupied 直调 TaskState.IsTerminal（+4）；既有 1 条为 Store.UpdateTaskState→CanTransit。B349：wakeconsumer 读取既有 proto.LedgerEvent source 三列；身份比较仍在消费点，不新增 proto 方向或预算。"
   },
   {
    "from": "d_orchestration",

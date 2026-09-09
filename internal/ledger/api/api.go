@@ -146,11 +146,14 @@ func attachmentsWire(in []ledger.Attachment) []proto.Attachment {
 // 恒为零值，照抄 ledgerEventWire 全字段形状）。
 func eventWire(ev ledger.Event) proto.LedgerEvent {
 	return proto.LedgerEvent{
-		Seq:       ev.Seq,
-		CardID:    ev.CardID,
-		Type:      ev.Type,
-		Actor:     ev.Actor,
-		Payload:   ev.Payload,
-		CreatedAt: ev.CreatedAt,
+		Seq:          ev.Seq,
+		CardID:       ev.CardID,
+		Type:         ev.Type,
+		Actor:        ev.Actor,
+		Payload:      ev.Payload,
+		SourceTarget: ev.SourceTarget,
+		SourceTask:   ev.SourceTask,
+		SourceSeq:    ev.SourceSeq,
+		CreatedAt:    ev.CreatedAt,
 	}
 }
