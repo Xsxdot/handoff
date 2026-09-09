@@ -49,3 +49,22 @@
 
 - 首次并行启动基线命令在 30 秒等待窗口内未返回可判定结果；未据此下结论，随后逐条重跑并记录以上真实结果。
 - Task 4 组装级测试在本机受限文件系统下使用 `newNoPTYLedgerEnv`，因为本测试不依赖 PTY；未修改生产 PTY 语义。
+
+- 2026-09-09（review 修复回合）：当前工作树起点为分支 `cards/B351-charter-5`、HEAD `ff884f77 feat: reclaim orphan dispatch rounds`，工作树干净；本回合只处理 B351 review findings，不调用 handoff CLI、不派发子任务、不启动 executor。
+- 2026-09-09（review 修复回合）：`go test ./internal/ledgerstep -run '^(TestB2336DispatchFailureRollsBackSnapshot|TestViaTemplateStopsSnapshotAfterWriteGateCloses|TestViaTemplateSecondRoundGetsNumberedBranch|TestViaTemplateNodePurposeTakesReviewPath|TestViaTemplateEmptyTargetIsLocal)$' -count=1` 退出 0，原始输出：`ok   github.com/Xsxdot/handoff/internal/ledgerstep 0.631s`。
+- 2026-09-09（review 修复回合）：`go test ./internal/ledger -run '^(TestB351PurposeRoundsAddsFailedRoundsByPurpose|TestWorkBranchSkipsReviewRounds|TestPurposeRoundsCountsPerPurpose)$' -count=1` 退出 0，原始输出：`ok   github.com/Xsxdot/handoff/internal/ledger 0.417s`。
+- 2026-09-09（review 修复回合）：`go build ./...` 退出 0，原始输出为空。
+- 2026-09-09（review 修复回合，变异自验）：`rg -F -c 'total := succeeded + failed' internal/ledger/events.go` 命中 `1`；将唯一命中临时改为 `total := succeeded - failed`。
+- 2026-09-09（review 修复回合，变异自验）：行为先验 `go test ./internal/ledger -run '^TestB351PurposeRoundsAddsFailedRoundsByPurpose$' -count=1` 真实失败，原始断言：`implement 轮次 count=-1 err=<nil>，want count=3 err=nil`；不是未运行测试。
+- 2026-09-09（review 修复回合，变异自验）：变异后 `go build ./...` 退出 0，原始输出为空，故该变异可编译；相关测试 `go test ./internal/ledger -run '^(TestB351PurposeRoundsAddsFailedRoundsByPurpose|TestPurposeRoundsCountsPerPurpose|TestDDLDialectParity|TestB351DispatchRoundsDDLDialectParity)$' -count=1` 退出 1，唯一断言失败为 `TestB351PurposeRoundsAddsFailedRoundsByPurpose`，末段为 `FAIL github.com/Xsxdot/handoff/internal/ledger 0.278s`、`FAIL`。
+- 2026-09-09（review 修复回合，变异自验）：已恢复 `total := succeeded + failed` 原实现；变异不进入交付差异。
+- 2026-09-09（review 修复回合，恢复后）：`go test ./internal/ledgerstep -count=1` 退出 0，原始输出：`ok   github.com/Xsxdot/handoff/internal/ledgerstep 11.567s`。
+- 2026-09-09（review 修复回合，恢复后）：`go test ./internal/ledgerstep ./internal/ledger ./internal/client ./cmd ./internal/agentd -run '^TestB351' -count=1` 退出 0；原始输出依次为 ledgerstep `ok ... 0.677s`、ledger `ok ... 0.141s`、client `ok ... 0.014s`、cmd `ok ... 0.204s`、agentd `ok ... 0.241s`。
+- 2026-09-09（review 修复回合，恢复后）：`go build ./...` 退出 0，原始输出为空；`git diff --check` 退出 0、无输出；`git diff -- cmd/card_node.go` 退出 0、无输出；工作树仅有本回合台账、`internal/ledgerstep/dispatch.go` 注释和 `dispatch_test.go` 测试差异。
+- 2026-09-09（review 修复回合）：提交命令 `git add docs/superpowers/ledgers/2026-09-09-b351-implement-ledger.md internal/ledgerstep/dispatch.go internal/ledgerstep/dispatch_test.go && git commit -m "test: cover orphan dispatch compensation edges"`；原始输出：`[cards/B351-charter-5 0ffc2359] test: cover orphan dispatch compensation edges`、`3 files changed, 224 insertions(+), 5 deletions(-)`。随后按规则只 amend 一次收录本事实，不回写 amend 后 hash。
+- 2026-09-09（review 修复回合）：在 `internal/ledgerstep/dispatch_test.go` 新增并扩展声明缝反例，覆盖补偿错误保留原始落账错误、Compensate=nil 仍记轮次、RecordDispatchRound 失败仍调用补偿、WriteGate/落账失败不新增 `EvDispatched`/`card_tasks` 且 WorkBranch/CountRounds 不变、失败 review 轮次编号与失败后实现第三次分支 `-3`；生产行为测试前未改动。
+- 2026-09-09（review 修复回合）：`gofmt -w internal/ledgerstep/dispatch_test.go && go test ./internal/ledgerstep -run '^(TestB2336DispatchFailureRollsBackSnapshot|TestViaTemplateStopsSnapshotAfterWriteGateCloses|TestB351CompensationErrorPreservesOriginalLedgerError|TestB351NilCompensatorStillRecordsRound|TestB351RoundWriteFailureStillCompensates|TestB351FailedImplementRoundThenSuccessUsesThirdBranch|TestB351FailedReviewRoundUsesPurposeReviewNumber)$' -count=1` 退出 0，原始输出：`ok   github.com/Xsxdot/handoff/internal/ledgerstep 0.837s`。
+- 2026-09-09（review 修复回合）：修正 `internal/ledgerstep/dispatch.go` 中“远端 task 仍由真机项回收”过时注释，明确已创建 task 由注入的 `Compensate` best-effort 回收且不覆盖本地原始错误。
+- 2026-09-09（review 修复回合）：`go test ./internal/ledgerstep -count=1` 退出 0，原始输出：`ok   github.com/Xsxdot/handoff/internal/ledgerstep 11.789s`。
+- 2026-09-09（review 修复回合）：`go test ./internal/ledgerstep ./internal/ledger ./internal/client ./cmd ./internal/agentd -run '^TestB351' -count=1` 退出 0；原始输出依次为 ledgerstep `ok ... 0.618s`、ledger `ok ... 0.137s`、client `ok ... 0.007s`、cmd `ok ... 0.193s`、agentd `ok ... 0.229s`。
+- 2026-09-09（review 修复回合）：`go build ./...` 退出 0，原始输出为空。

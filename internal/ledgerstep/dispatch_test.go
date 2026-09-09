@@ -288,9 +288,31 @@ func TestB2336DispatchSnapshotPrecedesTaskLink(t *testing.T) {
 func TestB2336DispatchFailureRollsBackSnapshot(t *testing.T) {
 	st, card := dispatchTestCard(t)
 	const taskID = "T-already-linked"
+	const existingTaskID = "T-existing-success"
 	if err := st.LinkTask(card.ID, "mac-02", taskID, ledger.PurposeImplement, "existing"); err != nil {
 		t.Fatalf("预先占用 task link: %v", err)
 	}
+	if err := st.LinkTask(card.ID, "mac-02", existingTaskID, ledger.PurposeImplement, "existing"); err != nil {
+		t.Fatalf("预先挂账成功 task: %v", err)
+	}
+	if err := st.RecordDispatch(card.ID, ledger.DispatchSnapshot{
+		Template: "feature-impl", Target: "mac-02", TaskID: existingTaskID,
+		Branch: "cards/" + card.ID + "-implement", Purpose: ledger.PurposeImplement, Actor: "existing",
+	}); err != nil {
+		t.Fatalf("预先落成功快照: %v", err)
+	}
+	if err := st.RecordReviewVerdict(card.ID, "doing", false, "baseline", "existing"); err != nil {
+		t.Fatalf("预先落裁决轮次: %v", err)
+	}
+	workBefore, err := st.WorkBranch(card.ID)
+	if err != nil {
+		t.Fatalf("读失败前工作分支: %v", err)
+	}
+	eventsBefore, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读失败前事件: %v", err)
+	}
+	countRoundsBefore := CountRounds(eventsBefore, "doing")
 	var compensations []string
 	d := &Dispatcher{St: st, Actor: "tester", Transport: func(context.Context, DispatchOpts) (string, string, error) {
 		return taskID, "", nil
@@ -303,8 +325,8 @@ func TestB2336DispatchFailureRollsBackSnapshot(t *testing.T) {
 	}); err == nil {
 		t.Fatal("重复挂账应使模板派发失败")
 	}
-	if count, err := st.PurposeRounds(card.ID, ledger.PurposeImplement); err != nil || count != 2 {
-		t.Fatalf("落账冲突后的 implement 轮次 count=%d err=%v，want count=2 err=nil", count, err)
+	if count, err := st.PurposeRounds(card.ID, ledger.PurposeImplement); err != nil || count != 3 {
+		t.Fatalf("落账冲突后的 implement 轮次 count=%d err=%v，want count=3 err=nil", count, err)
 	}
 	if !reflect.DeepEqual(compensations, []string{"mac-02:" + taskID}) {
 		t.Fatalf("落账冲突补偿调用 = %v，want [%s:%s]", compensations, "mac-02", taskID)
@@ -313,18 +335,30 @@ func TestB2336DispatchFailureRollsBackSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("读挂账: %v", err)
 	}
-	if len(links) != 1 || links[0].TaskID != taskID {
-		t.Fatalf("落账冲突后挂账 = %+v，want 预占的一行 %s", links, taskID)
+	if len(links) != 2 {
+		t.Fatalf("落账冲突后挂账 = %+v，want 原有两行", links)
+	}
+	if got, err := st.WorkBranch(card.ID); err != nil || got != workBefore {
+		t.Fatalf("落账冲突后 WorkBranch=%+v err=%v，want unchanged=%+v", got, err, workBefore)
+	}
+	eventsAfter, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatalf("读失败后事件: %v", err)
+	}
+	if got := CountRounds(eventsAfter, "doing"); got != countRoundsBefore {
+		t.Fatalf("落账冲突后 CountRounds=%d，want unchanged=%d", got, countRoundsBefore)
 	}
 
 	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
 	if err != nil {
 		t.Fatalf("读派发事件: %v", err)
 	}
+	var dispatched int
 	for _, event := range events {
 		if event.Type != ledger.EvDispatched {
 			continue
 		}
+		dispatched++
 		var snapshot ledger.DispatchSnapshot
 		if err := json.Unmarshal(event.Payload, &snapshot); err != nil {
 			t.Fatalf("解 dispatched 快照: %v", err)
@@ -332,6 +366,9 @@ func TestB2336DispatchFailureRollsBackSnapshot(t *testing.T) {
 		if snapshot.TaskID == taskID {
 			t.Fatalf("挂账失败不得留下派发成功快照: seq=%d payload=%s", event.Seq, event.Payload)
 		}
+	}
+	if dispatched != 1 {
+		t.Fatalf("落账冲突后 EvDispatched 数量=%d，want 原有 1 条", dispatched)
 	}
 }
 
@@ -387,6 +424,9 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 	if len(links) != 0 {
 		t.Fatalf("失权后不得新增挂账，实得 %d 行", len(links))
 	}
+	if _, workErr := st.WorkBranch(card.ID); !errors.Is(workErr, ledger.ErrNotFound) {
+		t.Fatalf("失权后 WorkBranch 应保持未派发，实得 err=%v", workErr)
+	}
 	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
 	if err != nil {
 		t.Fatalf("读事件: %v", err)
@@ -399,6 +439,166 @@ func TestViaTemplateStopsSnapshotAfterWriteGateCloses(t *testing.T) {
 	}
 	if dispatched != 0 {
 		t.Fatalf("失权后原子账本事务不得写入快照，dispatched=%d", dispatched)
+	}
+	if got := CountRounds(events, "doing"); got != 0 {
+		t.Fatalf("失权后 CountRounds 不应增加，实得 %d", got)
+	}
+}
+
+func TestB351CompensationErrorPreservesOriginalLedgerError(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	const taskID = "T-compensation-error"
+	if err := st.LinkTask(card.ID, "mac-02", taskID, ledger.PurposeImplement, "existing"); err != nil {
+		t.Fatalf("预先占用 task link: %v", err)
+	}
+	compensationErr := errors.New("compensation-b351")
+	d := &Dispatcher{
+		St: st, Actor: "tester",
+		Transport: func(context.Context, DispatchOpts) (string, string, error) {
+			return taskID, "", nil
+		},
+		Compensate: func(context.Context, string, string) error { return compensationErr },
+	}
+	_, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02", Node: "doing",
+	})
+	if err == nil {
+		t.Fatal("重复挂账应返回原始落账错误")
+	}
+	if errors.Is(err, compensationErr) {
+		t.Fatalf("补偿错误不应覆盖原始落账错误: %v", err)
+	}
+	if !strings.Contains(err.Error(), "快照与挂账落账") {
+		t.Fatalf("原始落账错误上下文丢失: %v", err)
+	}
+}
+
+func TestB351NilCompensatorStillRecordsRound(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	d := &Dispatcher{
+		St: st, Actor: "tester",
+		Transport: func(context.Context, DispatchOpts) (string, string, error) {
+			return "T-nil-compensator", "", nil
+		},
+	}
+	_, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02",
+		WriteGate: func() bool { return false },
+	})
+	if !errors.Is(err, ErrWriteGateClosed) {
+		t.Fatalf("nil 补偿钩子仍应返回写闸原错: %v", err)
+	}
+	if count, roundErr := st.PurposeRounds(card.ID, ledger.PurposeImplement); roundErr != nil || count != 1 {
+		t.Fatalf("nil 补偿钩子后的 implement 轮次 count=%d err=%v，want count=1 err=nil", count, roundErr)
+	}
+}
+
+func TestB351RoundWriteFailureStillCompensates(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	compensations := 0
+	d := &Dispatcher{
+		St: st, Actor: "tester",
+		Transport: func(context.Context, DispatchOpts) (string, string, error) {
+			if err := st.Close(); err != nil {
+				t.Fatalf("关闭测试账本: %v", err)
+			}
+			return "T-round-write-failure", "", nil
+		},
+		Compensate: func(context.Context, string, string) error {
+			compensations++
+			return nil
+		},
+	}
+	_, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "feature-impl", Target: "mac-02",
+		WriteGate: func() bool { return false },
+	})
+	if !errors.Is(err, ErrWriteGateClosed) {
+		t.Fatalf("轮次写入失败不应覆盖写闸原错: %v", err)
+	}
+	if compensations != 1 {
+		t.Fatalf("轮次写入失败仍应调用一次补偿，实得 %d", compensations)
+	}
+}
+
+func TestB351FailedImplementRoundThenSuccessUsesThirdBranch(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	var branches []string
+	tasks := []string{"T-implement-failed", "T-implement-success-2", "T-implement-success-3"}
+	attempt := 0
+	d := &Dispatcher{
+		St: st, Actor: "tester",
+		Transport: func(_ context.Context, opts DispatchOpts) (string, string, error) {
+			branches = append(branches, opts.Branch)
+			taskID := tasks[attempt]
+			attempt++
+			return taskID, "", nil
+		},
+	}
+	for i := 0; i < 3; i++ {
+		_, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+			Template: "feature-impl", Target: "mac-02",
+			WriteGate: func() bool { return i != 0 },
+		})
+		if i == 0 {
+			if !errors.Is(err, ErrWriteGateClosed) {
+				t.Fatalf("第 1 次失败应是写闸原错: %v", err)
+			}
+			continue
+		}
+		if err != nil {
+			t.Fatalf("第 %d 次成功派发: %v", i+1, err)
+		}
+	}
+	want := []string{"cards/" + card.ID + "-implement", "cards/" + card.ID + "-implement-2", "cards/" + card.ID + "-implement-3"}
+	if !reflect.DeepEqual(branches, want) {
+		t.Fatalf("失败轮次后实现分支 = %v，want %v", branches, want)
+	}
+}
+
+func TestB351FailedReviewRoundUsesPurposeReviewNumber(t *testing.T) {
+	st, card := dispatchTestCard(t)
+	const existingTaskID = "T-review-conflict"
+	if err := st.LinkTask(card.ID, "mac-02", "T-implement", ledger.PurposeImplement, "existing"); err != nil {
+		t.Fatalf("预先挂账实现 task: %v", err)
+	}
+	if err := st.RecordDispatch(card.ID, ledger.DispatchSnapshot{
+		Template: "feature-impl", Target: "mac-02", TaskID: "T-implement",
+		Branch: "cards/" + card.ID + "-implement", Purpose: ledger.PurposeImplement, Actor: "existing",
+	}); err != nil {
+		t.Fatalf("预先落实现快照: %v", err)
+	}
+	if err := st.LinkTask(card.ID, "mac-02", existingTaskID, ledger.PurposeImplement, "existing"); err != nil {
+		t.Fatalf("预先制造 review 冲突: %v", err)
+	}
+	var branches []string
+	transportTasks := []string{existingTaskID, "T-review-success"}
+	attempt := 0
+	d := &Dispatcher{
+		St: st, Actor: "tester",
+		Transport: func(_ context.Context, opts DispatchOpts) (string, string, error) {
+			branches = append(branches, opts.Branch)
+			taskID := transportTasks[attempt]
+			attempt++
+			return taskID, "", nil
+		},
+	}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "review-generic", Target: "mac-02", Node: "review",
+	}); err == nil {
+		t.Fatal("重复 task 应使首轮 review 落账失败")
+	}
+	if got, err := st.ReviewRounds(card.ID); err != nil || got != 1 {
+		t.Fatalf("review 失败轮次 count=%d err=%v，want count=1 err=nil", got, err)
+	}
+	if _, err := d.ViaTemplate(context.Background(), card, TemplateDispatch{
+		Template: "review-generic", Target: "mac-02", Node: "review",
+	}); err != nil {
+		t.Fatalf("失败后的第二轮 review: %v", err)
+	}
+	want := []string{"cards/" + card.ID + "-review-1", "cards/" + card.ID + "-review-2"}
+	if !reflect.DeepEqual(branches, want) {
+		t.Fatalf("失败轮次后的 review 分支 = %v，want %v", branches, want)
 	}
 }
 

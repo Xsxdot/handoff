@@ -363,7 +363,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	// 先落快照再挂账：镜像对账能在 LinkTask 可见前取得 Node/Attempt 投影，
 	// 避免空身份事件先消耗 source watermark 后无法用新身份重放。两步在账本
-	// 同一事务内完成，挂账失败时事务回消快照，远端 task 仍由真机项回收。
+	// 同一事务内完成，挂账失败时事务回消快照；已创建 task 交给注入的
+	// Compensate best-effort 回收，失败不改变本地原始错误。
 	if req.WriteGate != nil && !req.WriteGate() {
 		originalErr := fmt.Errorf("派发落账被拒：%w", ErrWriteGateClosed)
 		slog.Default().Warn("失去写权，停止派发快照与挂账", "card", c.ID,
