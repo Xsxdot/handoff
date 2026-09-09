@@ -107,6 +107,10 @@
 - **handleDone 小队成员键无独立缝测**：只靠与 handleStop 共用的 `releaseTaskCarrierOccupancy`。来源：B233.5 review-2 minor。
 - **Web vitest 未跑**：本机缺 pnpm / node_modules。来源：B233.5 implement minor。
 
+## 来自 B353 spec（2026-09-09）
+
+- **两次 wait 之间无人订阅的真空**：一次性 wait 退出到下一挂之间没人听事件（08-11 曾空转 7h）。本卡不另开实现、不做常驻订阅者；grok/Claude 走 `--follow` 避开真空，opencode/Codex 接受偶发。若以后做 handoff 进程内常驻订阅，从本条重走 spec。来源：`docs/superpowers/specs/b353.md` Out of Scope。
+
 ## 来自 B203 spec（2026-08-23）
 
 - **卡级/持久的执行器绑定**（「这张卡以后都用 grok」）：B203 只做「这一次」的一次性
