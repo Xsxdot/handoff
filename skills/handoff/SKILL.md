@@ -709,6 +709,7 @@ handoff card rebind <id> --launch    # 新叫机器人接班
 |------|------|------|
 | 任何命令 404「任务不存在」 | 传了 8 位短 id | 用 `handoff tasks` 取完整 UUID |
 | `continue` / `done` 报 409 | 任务不在 `waiting_review` | `handoff show` 看真实状态，按状态机表办 |
+| `dispatch` 写请求失败（网络错误/502） | 一元请求结果未知，不能由错误推断任务是否已创建 | 先用 `handoff tasks` / `handoff show <task>`（tasks/show）核对本地与远端任务，再由协调者决定是否 `dispatch`；不要先按“同一任务”假设重复派发 |
 | `reply` 返回 502，或收到 `delivery_failed` | 裁决已落库但没送到 executor（executor 半死） | `handoff resume <task>`：幂等重投；executor 还在就继续跑，确已不在则转交审核 |
 | `resume` 之后 `reply` 404、`attach` 看不到挂起项 | 工单已被消耗 | 正常。按 `resume` 报告里的结论走 `continue` 或 `done` |
 | `wait` 立刻报错退出 | 401（token 与 agentd 不一致）或 1008（task-id 错） | 看报错原文，修 `~/.handoff/config.yaml` 或核对 id。**别重开**，它不会自己好 |

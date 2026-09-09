@@ -140,6 +140,15 @@ type Adapter struct {
 	reapMaxAttempts int
 }
 
+// deliveryFailureReporter 是沿既有 ApprovalClient 注入对象回传投递失败的可选能力。
+//
+// 为什么不把它加入 executor.ApprovalClient：失败事件是 agentd 的持久化事实，
+// 而 ApprovalClient 的稳定契约只负责审批形成/等待/Ack；动态断言既保持旧 client
+// 兼容，也阻止 adapter 直接碰 store。
+type deliveryFailureReporter interface {
+	NoteDeliveryFailed(taskID, ticketID string, cause error)
+}
+
 // managedTaskTmpEnv derives the task-private environment from TaskDir.
 //
 // The managed entries are appended after user entries at the process seam so
@@ -525,6 +534,7 @@ func (a *Adapter) Events(taskID string) <-chan executor.AdapterEvent {
 	close(ch)
 	return ch
 }
+
 var _ executor.AskResponder = (*Adapter)(nil)
 var _ executor.SnapshotApplier = (*Adapter)(nil)
 var _ executor.ApprovalBinder = (*Adapter)(nil)
@@ -785,6 +795,25 @@ func (r *runState) takeTurnRejected() []string {
 	return rejected
 }
 
+// reportDeliveryFailure 将“审批已形成但原生回传失败”交给既有注入对象。
+//
+// 参数：r 为当前任务运行态；permID 为原生权限身份；cause 为真实回传错误。
+// 注意：缺少可选能力时只能记录错误并结束当前授权，不伪造 Ack 或本地事件。
+func (a *Adapter) reportDeliveryFailure(ctx context.Context, r *runState, permID string, cause error) {
+	reporter, ok := r.approval.(deliveryFailureReporter)
+	if !ok {
+		a.log.Error("权限回传失败但审批 client 缺少 delivery failure 能力",
+			"task", r.taskID, "perm", permID,
+			"ref", executor.NamespacedTicketID(r.taskID, permID), "cause", cause)
+		return
+	}
+	ticketID := executor.NamespacedTicketID(r.taskID, permID)
+	a.log.Info("权限回传失败开始上报", "task", r.taskID, "perm", permID,
+		"ticket", ticketID, "cause", cause)
+	reporter.NoteDeliveryFailed(r.taskID, ticketID, cause)
+	a.log.Info("权限回传失败已上报", "task", r.taskID, "perm", permID, "ticket", ticketID)
+}
+
 func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEvent) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -804,7 +833,13 @@ func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEven
 	})
 	if err != nil {
 		a.log.Error("Authorize 失败，拒绝该权限", "task", r.taskID, "perm", ev.PermissionID, "cause", err)
-		_ = a.RespondPermission(ctx, r.taskID, ev.PermissionID, "reject", "审批失败")
+		if rejectErr := a.RespondPermission(ctx, r.taskID, ev.PermissionID, "reject", "审批失败"); rejectErr != nil {
+			a.log.Error("Authorize 失败后的 reject 回传失败", "task", r.taskID,
+				"perm", ev.PermissionID, "cause", rejectErr)
+			a.reportDeliveryFailure(ctx, r, ev.PermissionID, rejectErr)
+		} else {
+			a.log.Info("Authorize 失败后的 reject 已回传", "task", r.taskID, "perm", ev.PermissionID)
+		}
 		return
 	}
 	decision, reason := "reject", dec.Reason
@@ -815,6 +850,7 @@ func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEven
 	_ = r.approval.Acknowledge(ctx, executor.ApprovalAck{Ref: ref, NativeID: ev.PermissionID, Stage: executor.AckFormed})
 	if err := a.RespondPermission(ctx, r.taskID, ev.PermissionID, decision, reason); err != nil {
 		a.log.Error("RespondPermission 失败", "task", r.taskID, "perm", ev.PermissionID, "cause", err)
+		a.reportDeliveryFailure(ctx, r, ev.PermissionID, err)
 		return
 	}
 	_ = r.approval.Acknowledge(ctx, executor.ApprovalAck{Ref: ref, NativeID: ev.PermissionID, Stage: executor.AckDelivered})

@@ -262,7 +262,8 @@
   {
    "from": "d_gateway",
    "to": "d_workspace",
-   "legacyBudget": 1
+   "legacyBudget": 1,
+   "legacyBudgetNote": "B233.7：`handleTaskDiff` 沿既有 Manager.Workspace() 能力消费 ResultRef.Commit；不新增控制门面→工作区方向或预算。"
   },
   {
    "from": "d_maintenance",
@@ -281,7 +282,7 @@
    "entries": [
     "executor（包级函数）"
    ],
-   "legacyBudgetNote": "B233.1：ApprovalClient / AskResponder / PermFingerprint / NamespacedTicketID 落在既有 executor 包（best 归属 d_execution_contract）。本卡不新开 d_execution→d_orchestration，也不新立顶层审批域——client 接口在使用方，首个消费边（编排注入 StartReq.Approval 或 OpenCode 调 Client）落地时再声明 interfaces 方向。预算仍 27；本节点不新增编排→执行 call 边。 B233.2：Coordinator / OneShot / Profile / Skills / Recoverer / CapabilityReport 同样落在 executor（d_execution_contract）。本节点不新增编排→执行 call 边，不提前声明 d_keystone→d_execution（待 keysclient 首个消费 Coordinator 的边同提交写入，避免 dead-contract）。预算仍 27。"
+   "legacyBudgetNote": "B233.1：ApprovalClient / AskResponder / PermFingerprint / NamespacedTicketID 落在既有 executor 包（best 归属 d_execution_contract）。本卡不新开 d_execution→d_orchestration，也不新立顶层审批域——client 接口在使用方，首个消费边（编排注入 StartReq.Approval 或 OpenCode 调 Client）落地时再声明 interfaces 方向。预算仍 27；本节点不新增编排→执行 call 边。 B233.2：Coordinator / OneShot / Profile / Skills / Recoverer / CapabilityReport 同样落在 executor（d_execution_contract）。本节点不新增编排→执行 call 边，不提前声明 d_keystone→d_execution（待 keysclient 首个消费 Coordinator 的边同提交写入，避免 dead-contract）。预算仍 27。 B233.7：R2/R3/R4 继续复用既有 executor.AskResponder、Adapter.RespondPermission、ApprovalClient 与 Profile 接缝；失败事实回 Manager.NoteDeliveryFailed。不新增方向、接口或预算。"
   },
   {
    "from": "d_orchestration",
@@ -323,7 +324,7 @@
    "from": "d_orchestration",
    "to": "d_workspace",
    "legacyBudget": 19,
-   "legacyBudgetNote": "B233.4：工作区能力契约面 Capability 落在 internal/workspace（d_workspace）。本节点不接线生产路径、不新增 call 边；预算仍 19、现状 18。实现把 Dispatch/Done 接到 Capability 时再声明 entries。禁止把 Capability 放进 k_agentd_fn（那是编排容器）。"
+   "legacyBudgetNote": "B233.4：工作区能力契约面 Capability 落在 internal/workspace（d_workspace）。本节点不接线生产路径、不新增 call 边；预算仍 19、现状 18。实现把 Dispatch/Done 接到 Capability 时再声明 entries。禁止把 Capability 放进 k_agentd_fn（那是编排容器）。 B233.7：R9 继续经 Manager.Workspace() 消费 ResultRef 与 Capability.DiffRange；不新增 d_orchestration→d_workspace 方向、接口或预算。"
   },
   {
    "from": "d_policy",

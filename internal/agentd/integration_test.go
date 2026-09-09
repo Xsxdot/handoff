@@ -818,8 +818,28 @@ func TestResumeRoute(t *testing.T) {
 		}
 		return false
 	})
-	if hint, _ := payloadMap(t, failedEv)["hint"].(string); !strings.Contains(hint, "resume") {
-		t.Errorf("delivery_failed 事件应告诉协调者该执行 resume，实际 hint=%q", hint)
+	if failedEv == nil {
+		t.Fatal("store 中未找到 delivery_failed 事件")
+	}
+	if !client.WaitDeliveryPolicy(failedEv.Type) {
+		t.Fatalf("delivery_failed 必须穿过 WaitDeliveryPolicy 成为可交付事件，type=%s", failedEv.Type)
+	}
+	var failedPayload struct {
+		TicketID string `json:"ticket_id"`
+		Reason   string `json:"reason"`
+		Hint     string `json:"hint"`
+	}
+	if err := json.Unmarshal(failedEv.Payload, &failedPayload); err != nil {
+		t.Fatalf("解析 store 中 delivery_failed JSON: %v; raw=%s", err, failedEv.Payload)
+	}
+	if failedPayload.TicketID != ticketID {
+		t.Fatalf("delivery_failed ticket_id=%q，want %q; raw=%s", failedPayload.TicketID, ticketID, failedEv.Payload)
+	}
+	if !strings.Contains(failedPayload.Reason, "模拟半死 executor") {
+		t.Fatalf("delivery_failed reason 未保留真实原因=%q; raw=%s", failedPayload.Reason, failedEv.Payload)
+	}
+	if !strings.Contains(failedPayload.Hint, "resume") {
+		t.Errorf("delivery_failed 事件应告诉协调者该执行 resume，实际 hint=%q", failedPayload.Hint)
 	}
 
 	// 卡死现场：工单已被消耗，attach 看不到挂起项

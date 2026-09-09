@@ -108,7 +108,7 @@ func TestProfilePrepareTaskOverlayDoesNotOverwriteGlobalRules(t *testing.T) {
 			{Name: "AGENTS.md", Content: "global rules"},
 		},
 		TaskOverlay: []executor.ProfileFile{
-			{Name: "task-1.md", Content: "task 1 overlay"},
+			{Name: filepath.Join("task-1", filepath.Base(opencode.RulesRelFile)), Content: "task 1 overlay"},
 		},
 	}
 	if _, err := prof.Prepare(context.Background(), req1); err != nil {
@@ -118,7 +118,7 @@ func TestProfilePrepareTaskOverlayDoesNotOverwriteGlobalRules(t *testing.T) {
 		HomeDir:  home,
 		Isolated: true,
 		TaskOverlay: []executor.ProfileFile{
-			{Name: "task-2.md", Content: "task 2 overlay"},
+			{Name: filepath.Join("task-2", filepath.Base(opencode.RulesRelFile)), Content: "task 2 overlay"},
 		},
 	}
 	if _, err := prof.Prepare(context.Background(), req2); err != nil {
@@ -133,11 +133,11 @@ func TestProfilePrepareTaskOverlayDoesNotOverwriteGlobalRules(t *testing.T) {
 		t.Fatalf("全局 AGENTS.md 被 TaskOverlay 覆盖: %q", string(b))
 	}
 	// Task overlays should exist in .handoff/task-overlay
-	o1, err := os.ReadFile(filepath.Join(home, ".handoff", "task-overlay", "task-1.md"))
+	o1, err := os.ReadFile(filepath.Join(home, ".handoff", "task-overlay", "task-1", filepath.Base(opencode.RulesRelFile)))
 	if err != nil || string(o1) != "task 1 overlay" {
 		t.Fatalf("task 1 overlay 缺失或错误: %v, %q", err, string(o1))
 	}
-	o2, err := os.ReadFile(filepath.Join(home, ".handoff", "task-overlay", "task-2.md"))
+	o2, err := os.ReadFile(filepath.Join(home, ".handoff", "task-overlay", "task-2", filepath.Base(opencode.RulesRelFile)))
 	if err != nil || string(o2) != "task 2 overlay" {
 		t.Fatalf("task 2 overlay 缺失或错误: %v, %q", err, string(o2))
 	}

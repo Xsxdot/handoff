@@ -5,6 +5,7 @@
 package opencode
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -152,11 +153,70 @@ func (p *Profile) Verify(ctx context.Context, req executor.ProfileReq) (executor
 	if req.HomeDir == "" {
 		return rep, nil
 	}
-	if _, err := os.Stat(filepath.Join(req.HomeDir, RulesRelFile)); err == nil {
-		rep.Verified = true
-	} else if !errors.Is(err, os.ErrNotExist) {
-		return rep, fmt.Errorf("校验原生规则 %q: %w", filepath.Join(req.HomeDir, RulesRelFile), err)
+	rulePath := filepath.Join(req.HomeDir, RulesRelFile)
+	globalOK := false
+	if len(req.Rules) == 0 {
+		_, err = os.Stat(rulePath)
+		globalOK = err == nil
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			if p != nil && p.log != nil {
+				p.log.Error("Profile.Verify 读取原生规则失败", "harness", executor.HarnessOpenCode,
+					"home", req.HomeDir, "path", rulePath, "cause", err)
+			}
+			return rep, fmt.Errorf("校验原生规则 %q: %w", rulePath, err)
+		}
+	} else {
+		expected := req.Rules[0].Content
+		for _, rule := range req.Rules {
+			if filepath.Base(filepath.Clean(rule.Name)) == filepath.Base(RulesRelFile) {
+				expected = rule.Content
+			}
+		}
+		got, readErr := os.ReadFile(rulePath)
+		if readErr != nil {
+			rep.Missing = append(rep.Missing, RulesRelFile)
+		} else if !bytes.Equal(got, []byte(expected)) {
+			rep.Notes = append(rep.Notes, fmt.Sprintf("规则内容不符: %s", RulesRelFile))
+		} else {
+			globalOK = true
+		}
 	}
+	overlayOK := true
+	for _, overlay := range req.TaskOverlay {
+		if strings.Contains(overlay.Name, "..") {
+			overlayOK = false
+			rep.Notes = append(rep.Notes, fmt.Sprintf("overlay 文件名含非法字符: %s", overlay.Name))
+			continue
+		}
+		rel := filepath.Join(".handoff", "task-overlay", filepath.Clean(overlay.Name))
+		got, readErr := os.ReadFile(filepath.Join(req.HomeDir, rel))
+		if readErr != nil {
+			overlayOK = false
+			rep.Missing = append(rep.Missing, rel)
+			if p != nil && p.log != nil {
+				actualState := "read_error"
+				if errors.Is(readErr, os.ErrNotExist) {
+					actualState = "missing"
+				}
+				p.log.Warn("Profile.Verify 任务层内容缺失",
+					"harness", executor.HarnessOpenCode, "home", req.HomeDir,
+					"relative_path", rel, "expected_state", "present", "actual_state", actualState,
+					"expected_bytes", len(overlay.Content), "actual_bytes", 0, "cause", readErr)
+			}
+			continue
+		}
+		if !bytes.Equal(got, []byte(overlay.Content)) {
+			overlayOK = false
+			rep.Notes = append(rep.Notes, fmt.Sprintf("overlay 内容不符: %s", rel))
+			if p != nil && p.log != nil {
+				p.log.Warn("Profile.Verify 任务层内容不符",
+					"harness", executor.HarnessOpenCode, "home", req.HomeDir,
+					"relative_path", rel, "expected_state", "present", "actual_state", "content_mismatch",
+					"expected_bytes", len(overlay.Content), "actual_bytes", len(got))
+			}
+		}
+	}
+	rep.Verified = globalOK && overlayOK
 	if p != nil && p.log != nil {
 		p.log.Info("Profile.Verify 完成", "harness", executor.HarnessOpenCode, "home", req.HomeDir, "verified", rep.Verified, "engine_ok", rep.EngineOK)
 	}
