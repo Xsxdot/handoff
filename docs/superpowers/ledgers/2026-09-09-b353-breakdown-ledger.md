@@ -203,3 +203,10 @@ docs/superpowers/specs/b353-breakdown.md:11: trailing whitespace.
 ```
 
 按纪律，下面只 amend 一次收进本台账；不把 amend 后 hash 回写到台账。
+
+## 拍板
+
+- 2026-09-09：协调者提案 P1-A / P2-A / P3-B；用户原话「同意」。
+- P1-A：不 `card split`，T0–T4 在 B353 一轮实现。
+- P2-A：skill 与 README 同批改。
+- P3-B：项目缺陷族清单顶部基线行不在本卡补。
