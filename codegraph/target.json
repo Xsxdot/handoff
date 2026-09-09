@@ -54,7 +54,7 @@
    "entries": [
     "ledger.Store"
    ],
-   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。B312：card bind/rebind 的席位写入仍复用既有 ledger.Store 容器，CAS 与来源校验不下沉到 CLI。"
+   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。B312：card bind/rebind 的席位写入仍复用既有 ledger.Store 容器，CAS 与来源校验不下沉到 CLI。B353：card wait 继续复用 ledger.Store.Follow/GetCard/MaxSeq/Subtree；过滤只发生在 CLI 消费点，账本审计事件不删；不新增方向或预算。"
   },
   {
    "from": "d_cli",
@@ -96,7 +96,7 @@
     "client 实体",
     "client.Client"
    ],
-   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。B233.3：执行能力跨机调用面冻结为 ExecutionClient（Dispatch/Reply/Continue/Stop/WaitEvent/FollowEvents），接口符号住在 d_transport 的 internal/client，不在 d_cli 再声明 interfaces（声明会 dead-interface）。*Client 仍是兼容聚合门面。不新开方向、不改预算。"
+   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。B233.3：执行能力跨机调用面冻结为 ExecutionClient（Dispatch/Reply/Continue/Stop/WaitEvent/FollowEvents），接口符号住在 d_transport 的 internal/client，不在 d_cli 再声明 interfaces（声明会 dead-interface）。*Client 仍是兼容聚合门面。不新开方向、不改预算。B353：handoff wait/card wait 任务事件口径均消费 client.WaitDeliveryPolicy；card wait 不在 CLI 复制任务白名单，不新增方向或预算。"
   },
   {
    "from": "d_cli",
@@ -318,7 +318,7 @@
    "from": "d_orchestration",
    "to": "d_transport",
    "legacyBudget": 5,
-   "legacyBudgetNote": "B233.3：编排经 Pool 取传输。建树挂卡是应用规则，不得因此新开 d_transport→d_ledger；forward 迁出挂卡由实现节点完成，本节点不改预算。"
+   "legacyBudgetNote": "B233.3：编排经 Pool 取传输。建树挂卡是应用规则，不得因此新开 d_transport→d_ledger；forward 迁出挂卡由实现节点完成，本节点不改预算。B353：wakeconsumer 复用 client.WaitDeliveryPolicy 作为 task_mirrored 的任务策略权威；不复制白名单、不新增方向或预算；该符号当前为图覆盖债，以源码为准。"
   },
   {
    "from": "d_orchestration",
