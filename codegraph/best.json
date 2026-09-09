@@ -155,6 +155,8 @@
     "k_agentd_projectIndex": "d_workspace",
     "k_agentd_pullTracker": "d_orchestration",
     "k_agentd_runOutputBuffer": "d_workspace",
+    "k_approval_fn": "d_orchestration",
+    "k_approval_model": "d_orchestration",
     "k_buildinfo_fn": "d_maintenance",
     "k_claudecode_Adapter": "d_execution_adapters",
     "k_claudecode_Proc": "d_execution_adapters",
