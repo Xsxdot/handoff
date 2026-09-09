@@ -50,6 +50,11 @@ type DispatchOpts struct {
 // BaseCommit 必须原样来自目标 agentd，ledgerstep 不在协调者仓库猜测起点。
 type Transport func(ctx context.Context, opts DispatchOpts) (taskID string, baseCommit string, err error)
 
+// DispatchCompensator 是派发成功但本地账本落账失败时的远端补偿钩子。
+// target 为空时由调用方按普通派发的本机 client 语义选路；ledgerstep 不直接依赖
+// client，也不解释 Stop/Reclaim 的 HTTP 错误。Ticket 0 只声明接缝，接线归实现票。
+type DispatchCompensator func(ctx context.Context, target, taskID string) error
+
 // DispatchResult 是模板派发完成后的回显与审计信息。
 type DispatchResult struct {
 	Card string `json:"card"`
@@ -74,7 +79,10 @@ type DispatchResult struct {
 type Dispatcher struct {
 	St        *ledger.Store
 	Transport Transport
-	Actor     string
+	// Compensate 在 Transport 已成功返回 task id、但本地快照/挂账或写闸失败时调用。
+	// nil 表示未装配；空壳期不改变现有派发行为，生产组装由实现票注入。
+	Compensate DispatchCompensator
+	Actor      string
 	// HomeDir 是小队绑定载体 HOME 的可空原指针；nil 表示普通派发，指向空串
 	// 表示显式不覆盖目标进程 HOME。ledgerstep 不展开、清理或改写该字符串。
 	HomeDir *string

@@ -1,0 +1,63 @@
+{
+  "view": "cards/B351-charter",
+  "base": "5e9be36b6a04dde9b8c3d82148c95a93ce3eb845",
+  "summary": "B351：失败派发轮次、远端 Stop+Reclaim 补偿接缝骨架",
+  "nodesModified": {
+    "m_ledgerstep_Dispatcher": {
+      "kind": "model",
+      "container": "k_ledgerstep_model",
+      "order": 45,
+      "name": "Dispatcher",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 79,
+      "signature": "type Dispatcher struct {",
+      "summary": "Dispatcher 持有模板派发需要的账本、传输、补偿钩子和审计 actor。",
+      "fields": [
+        ["St", "*ledger.Store", ""],
+        ["Transport", "Transport", ""],
+        ["Compensate", "DispatchCompensator", "Transport 成功但本地账本落账失败时的远端补偿；nil 表示未装配"],
+        ["Actor", "string", ""],
+        ["HomeDir", "*string", "小队绑定载体 HOME 的可空透传值"],
+        ["NormalizeTarget", "func(target string) string", "将已确认的自机登记名归一成空串"],
+        ["DisciplineText", "string", "调用方装配时解析好的纪律正文"],
+        ["DisciplineVersion", "int", "命中的账本版本"]
+      ],
+      "modelKind": "dto"
+    }
+  },
+  "nodesAdded": {
+    "m_ledgerstep_DispatchCompensator": {
+      "kind": "model",
+      "container": "k_ledgerstep_model",
+      "order": 32,
+      "name": "DispatchCompensator",
+      "file": "internal/ledgerstep/dispatch.go",
+      "line": 56,
+      "signature": "type DispatchCompensator func(ctx context.Context, target, taskID string) error",
+      "summary": "本地落账失败后的远端 task 补偿回调；ledgerstep 不依赖 client。",
+      "modelKind": "dto"
+    },
+    "n_ledger_Store_RecordDispatchRound": {
+      "kind": "func",
+      "container": "k_ledger_Store",
+      "order": 716,
+      "name": "Store.RecordDispatchRound",
+      "file": "internal/ledger/dispatch_rounds.go",
+      "line": 9,
+      "signature": "func (s *Store) RecordDispatchRound(cardID, purpose string) error",
+      "summary": "为 Transport 成功但本地落账失败的派发保留 card×purpose 轮次事实；Ticket 0 空壳。"
+    },
+    "n_client_Client_StopAndReclaim": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 1858,
+      "name": "Client.StopAndReclaim",
+      "file": "internal/client/compensate.go",
+      "line": 12,
+      "signature": "func (c *Client) StopAndReclaim(ctx context.Context, taskID string) error",
+      "summary": "远端孤儿 task 的 Stop 后 force Reclaim 复合补偿接缝；Ticket 0 空壳。"
+    }
+  },
+  "edgesAdded": [],
+  "implementsAdded": []
+}
