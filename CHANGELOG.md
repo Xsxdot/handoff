@@ -24,6 +24,7 @@
 
 ### 修复
 
+- **远端落账失败会停孤儿任务并改名重试（B351）。** `ViaTemplate` 在 Transport 成功但本地挂账失败时记独立耗费轮次，`PurposeRounds` 按成功挂账加失败轮次计数；CLI 与 agentd 注入 Stop 后强制 Reclaim，不删分支。跨机真机延后 B233.9。
 - **质量复审 R1–R9 / B350 核销（B233.7）。** 已答提问再抛出时新工单仍能答回原题（持久化原生 QuestionID）；OpenCode 权限回传失败写入既有 `delivery_failed`，`wait` 可见；任务附加纪律随派发写入 Profile 任务层，Verify 验内容且不覆盖全局规则；任务 diff 在 `ResultRef.Commit` 非空时用该 commit。竖切测试与「载体是谁，执行者就是谁」对齐。跨机真机仍延后到全部收尾卡之后。
 - **重启后工作台终端 tab 只增不减（B322）。** 恢复不再把 workspace 活会话收成新组；没有 sessionId 的恢复 tab 不再静默建 shell，只给「重开一个终端」。`targets.local` 指向本机回环时，`scope=all` 不再把本机会话列两遍。存量已炸开的布局不会自动清掉，只是再打开不再涨。
 

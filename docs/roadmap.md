@@ -715,6 +715,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   agentd SIGKILL 后 cursor 文件、Windows rename 原子性，统一到全部 B233 收尾卡
   之后的真机闸。来源：B349 spec OOS；breakdown 真机清单 1–8。
 
+## 来自 B351 验收（2026-09-09，DUT `f13ff6b3`，并入功能线 `3c525c6c`）
+
+- **跨机孤儿 Stop+Reclaim 真机延后 B233.9**：机内 httptest/SQLite 已锁 Stop→Reclaim 顺序、force JSON、加法计数与失败出口反例；本机+linux-01 隔离实例真机（含同名重试改名）按用户授权放到 B233.8 之后。来源：breakdown 真机清单；acceptance 2026-09-09。
+- **review minor 覆盖缺口**：agentd 接缝测试未比较第三个请求路径；ledger 未覆盖卡不存在/写入失败/并发错误传播/review-3。不挡本卡。来源：review 2 findings。
+
 ## 来自 B233.7 验收（2026-09-09，DUT `1ee954d3`，并入功能线 `88d547d0`）
 
 - **跨机真机延后**：OpenCode 再问/权限 delivery_failed、五家 overlay、真实 diff、WakeHome、物理 carrier、网络失败 status-first、重启回收，统一到全部 B233 收尾卡完成后再验。来源：spec R7；breakdown §6 真机清单 1–8。
@@ -723,12 +728,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ## 来自 B233.6 真机验收（2026-09-08，DUT `737e2203`，mac-02+linux-01 隔离实例）
 
-- **远端孤儿 task 无自动回收**：Transport 成功后协调者本地快照+挂账事务失败时，
-  本地原子回滚成立（无假快照、不重派第二个 task，已有锁缝测试+真机注入实证），
-  但远端已创建的 task 保持 running 无任何自动回收；真机实测只能人工 `stop` 回收。
-  且孤儿留下的同名分支残留会让同节点重试在 `worktree add -b` 处 500（真机实测
-  `probe/B6-implement` 冲突），恢复依赖人工 reclaim + 删分支。需要一张后续卡：
-  对账回收「未挂账的远端 task」并让重试分支命名感知残留。来源：plan §6.2 真机项 1。
+- **远端孤儿 task 无自动回收**：机内行为已由 B351 落地（DUT `f13ff6b3`，并入 `3c525c6c`）：失败轮次加法计数 + Stop 后强制 Reclaim，不删分支。跨机隔离实例真机延后 B233.9。来源：B233.6 plan §6.2 真机项 1；B351 finish。
 - **wakeconsumer 游标机内已由 B349/B352 持久化**：`automation-cursor.json` 写本机
   DataDir，机内单测覆盖续拉、损坏文件从 0 起、Save 失败后重试。跨机真实 agentd
   重启、PG LISTEN、多 agentd 争用同一 DataDir 仍未真机。来源：B233.6 plan §6.2
