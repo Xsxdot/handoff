@@ -22,10 +22,12 @@ import (
 type captureTarget struct {
 	ts *httptest.Server
 
-	mu        sync.Mutex
-	bodies    []map[string]any
-	taskHits  int
-	otherPath []string
+	mu            sync.Mutex
+	bodies        []map[string]any
+	taskHits      int
+	otherPath     []string
+	requests      []string
+	reclaimBodies []map[string]bool
 }
 
 func newCaptureTarget(t *testing.T, statusBody string) *captureTarget {
@@ -39,6 +41,7 @@ func newCaptureTarget(t *testing.T, statusBody string) *captureTarget {
 		}
 		ct.mu.Lock()
 		ct.otherPath = append(ct.otherPath, r.URL.Path)
+		ct.requests = append(ct.requests, r.Method+" "+r.URL.Path)
 		if r.URL.Path == "/api/tasks" && r.Method == http.MethodPost {
 			var body map[string]any
 			_ = json.NewDecoder(r.Body).Decode(&body)
@@ -47,6 +50,25 @@ func newCaptureTarget(t *testing.T, statusBody string) *captureTarget {
 			ct.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, dispatchTestTaskJSON)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/tasks/") && strings.HasSuffix(r.URL.Path, "/reclaim") && r.Method == http.MethodPost {
+			var body map[string]bool
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				ct.mu.Unlock()
+				http.Error(w, "bad reclaim json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			ct.reclaimBodies = append(ct.reclaimBodies, body)
+			ct.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"removed":true,"action":"removed"}`)
+			return
+		}
+		if strings.HasPrefix(r.URL.Path, "/api/tasks/") && strings.HasSuffix(r.URL.Path, "/stop") && r.Method == http.MethodPost {
+			ct.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"status":"stopped","worktree_removed":false}`)
 			return
 		}
 		ct.mu.Unlock()
@@ -70,6 +92,20 @@ func (c *captureTarget) lastBody() map[string]any {
 		return nil
 	}
 	return c.bodies[len(c.bodies)-1]
+}
+
+func (c *captureTarget) requestsSnapshot() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.requests...)
+}
+
+func (c *captureTarget) reclaimBodiesSnapshot() []map[string]bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]map[string]bool, len(c.reclaimBodies))
+	copy(out, c.reclaimBodies)
+	return out
 }
 
 // runBareDispatchAgainstFake 以远程模式（--target fake-01）执行 dispatch，

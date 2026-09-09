@@ -225,6 +225,12 @@ func ddlStatements(pg bool) []string {
 				target TEXT NOT NULL, task_id TEXT NOT NULL, purpose TEXT NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (target, task_id))`,
 			`CREATE INDEX IF NOT EXISTS idx_card_tasks_card ON card_tasks(card_id)`,
+			`CREATE TABLE IF NOT EXISTS card_dispatch_rounds (
+				card_id TEXT NOT NULL REFERENCES cards(id),
+				purpose TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS idx_card_dispatch_rounds_card_purpose
+				ON card_dispatch_rounds(card_id, purpose)`,
 			`CREATE TABLE IF NOT EXISTS card_events (
 				seq BIGSERIAL PRIMARY KEY, card_id TEXT REFERENCES cards(id),
 				type TEXT NOT NULL, actor TEXT NOT NULL, payload JSONB NOT NULL,
@@ -302,6 +308,12 @@ func ddlStatements(pg bool) []string {
 				target TEXT NOT NULL, task_id TEXT NOT NULL, purpose TEXT NOT NULL,
 				created_at TEXT NOT NULL, PRIMARY KEY (target, task_id))`,
 			`CREATE INDEX IF NOT EXISTS idx_card_tasks_card ON card_tasks(card_id)`,
+			`CREATE TABLE IF NOT EXISTS card_dispatch_rounds (
+				card_id TEXT NOT NULL REFERENCES cards(id),
+				purpose TEXT NOT NULL,
+				created_at TEXT NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS idx_card_dispatch_rounds_card_purpose
+				ON card_dispatch_rounds(card_id, purpose)`,
 			`CREATE TABLE IF NOT EXISTS card_events (
 				seq INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT REFERENCES cards(id),
 				type TEXT NOT NULL, actor TEXT NOT NULL, payload TEXT NOT NULL,

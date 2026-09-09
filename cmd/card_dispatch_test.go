@@ -265,6 +265,73 @@ func TestCardDispatchClaimAndSnapshot(t *testing.T) {
 	}
 }
 
+func TestB351CardDispatchAssemblesStopAndReclaimCompensator(t *testing.T) {
+	dir := t.TempDir()
+	ct := newCaptureTarget(t, `{"disciplines_supported":true}`)
+	writeCardDispatchConfig(t, dir, strings.TrimPrefix(ct.ts.URL, "http://"))
+
+	out, _, err := runLedgerCLI(t, dir, "card", "add", "B351 CLI 补偿卡", "--project", "demo", "--workflow", "bug")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var card struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &card); err != nil {
+		t.Fatalf("解码 card: %v", err)
+	}
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.PutDiscipline("implement", "B351 CLI 实现纪律"); err != nil {
+		st.Close()
+		t.Fatalf("写入 implement 纪律: %v", err)
+	}
+	if err := st.LinkTask(card.ID, "fake-01", "T-b351-cli", ledger.PurposeImplement, "test"); err != nil {
+		st.Close()
+		t.Fatalf("预占 task link: %v", err)
+	}
+	_ = st.Close()
+
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
+		return "T-b351-cli", "", nil
+	})
+	defer restore()
+	if _, _, err := runLedgerCLI(t, dir, "card", "dispatch", card.ID,
+		"--template", "feature-impl", "--target", "fake-01"); err == nil {
+		t.Fatal("重复挂账应使 CLI 派发失败")
+	}
+	wantRequests := []string{"POST /api/tasks/T-b351-cli/stop", "POST /api/tasks/T-b351-cli/reclaim"}
+	gotRequests := ct.requestsSnapshot()
+	if len(gotRequests) != len(wantRequests) || gotRequests[0] != wantRequests[0] || gotRequests[1] != wantRequests[1] {
+		t.Fatalf("CLI 补偿请求 = %v，want %v", gotRequests, wantRequests)
+	}
+	bodies := ct.reclaimBodiesSnapshot()
+	if len(bodies) != 1 {
+		t.Fatalf("CLI reclaim 请求数 = %d，want 1", len(bodies))
+	}
+	force, ok := bodies[0]["force"]
+	if !ok || !force {
+		t.Fatalf("CLI reclaim force = (%v,%v)，want 存在且为 true", force, ok)
+	}
+	st, err = ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if count, err := st.PurposeRounds(card.ID, ledger.PurposeImplement); err != nil || count != 2 {
+		t.Fatalf("CLI 失败后的 implement 轮次 count=%d err=%v，want count=2 err=nil", count, err)
+	}
+	links, err := st.TasksOf(card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].TaskID != "T-b351-cli" {
+		t.Fatalf("CLI 失败后的挂账 = %+v，want 预占一行", links)
+	}
+}
+
 // TestCardDispatchDoesNotOverwriteSeat 断言裸 dispatch 只取得运行锁，不写协调者席位。
 func TestCardDispatchGuardFollowsOwnership(t *testing.T) {
 	dir := t.TempDir()

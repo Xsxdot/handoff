@@ -999,6 +999,124 @@ func TestReclaimUnknownTaskIsNotMistakenForUnsupported(t *testing.T) {
 	}
 }
 
+// TestB351StopAndReclaimOrderAndSoftErrors 锁住远端孤儿补偿的真实 HTTP 接缝：
+// Stop 的状态决定是否进入 Reclaim，Reclaim 一律携带 force=true；只有契约规定的
+// 404/旧端不支持是软成功，未知 500 必须保留为错误。
+func TestB351StopAndReclaimOrderAndSoftErrors(t *testing.T) {
+	type testCase struct {
+		name       string
+		stopStatus int
+		reclaim    int
+		listStatus int
+		wantErr    bool
+		wantList   bool
+	}
+	cases := []testCase{
+		{name: "stop 404", stopStatus: http.StatusNotFound},
+		{name: "stop 409 then reclaim 200", stopStatus: http.StatusConflict, reclaim: http.StatusOK},
+		{name: "stop 500", stopStatus: http.StatusInternalServerError, wantErr: true},
+		{name: "stop 200 then reclaim 404", stopStatus: http.StatusOK, reclaim: http.StatusNotFound, listStatus: http.StatusOK, wantList: true},
+		{name: "stop 200 then reclaim 500", stopStatus: http.StatusOK, reclaim: http.StatusInternalServerError, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var paths []string
+			var forceValues []map[string]bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.Method+" "+r.URL.Path)
+				switch r.URL.Path {
+				case "/api/tasks/task-b351/stop":
+					status := tc.stopStatus
+					if status == http.StatusOK {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(status)
+						_, _ = w.Write([]byte(`{"status":"stopped","worktree_removed":false}`))
+						return
+					}
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(`{"error":"stop failure"}`))
+				case "/api/tasks/task-b351/reclaim":
+					var body map[string]bool
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("解码 reclaim body: %v", err)
+					}
+					forceValues = append(forceValues, body)
+					status := tc.reclaim
+					if status == http.StatusOK {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(status)
+						_, _ = w.Write([]byte(`{"removed":true,"action":"removed"}`))
+						return
+					}
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(`{"error":"reclaim failure"}`))
+				case "/api/reclaim":
+					if tc.listStatus == http.StatusOK {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{"rows":[],"scanned":0}`))
+						return
+					}
+					w.WriteHeader(tc.listStatus)
+				default:
+					t.Errorf("收到意外请求 %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}))
+			defer srv.Close()
+
+			err := client.New(srv.URL, "tok").StopAndReclaim(context.Background(), "task-b351")
+			if tc.wantErr && err == nil {
+				t.Fatalf("应返回错误，实得 nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("应软成功，实得 %v", err)
+			}
+			if tc.wantErr && strings.Contains(tc.name, "reclaim") && errors.Is(err, client.ErrReclaimUnsupported) {
+				t.Fatalf("未知 reclaim 错误不得判为不支持: %v", err)
+			}
+			wantPaths := []string{"POST /api/tasks/task-b351/stop"}
+			if tc.stopStatus == http.StatusConflict || tc.stopStatus == http.StatusOK {
+				wantPaths = append(wantPaths, "POST /api/tasks/task-b351/reclaim")
+			}
+			if tc.wantList {
+				wantPaths = append(wantPaths, "GET /api/reclaim")
+			}
+			if !reflect.DeepEqual(paths, wantPaths) {
+				t.Fatalf("请求顺序 = %v，want %v", paths, wantPaths)
+			}
+			for i, body := range forceValues {
+				force, ok := body["force"]
+				if !ok || !force {
+					t.Fatalf("第 %d 个 reclaim 请求 force = (%v,%v)，want 存在且为 true；body=%v", i+1, force, ok, body)
+				}
+			}
+		})
+	}
+
+	// 旧 agentd 的 stop 端点可用而 reclaim 两条路由均不存在时，复合操作仍应
+	// 以 ErrReclaimUnsupported 的既有语义收口为软成功。
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/api/tasks/task-b351/stop" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"stopped","worktree_removed":false}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	if err := client.New(srv.URL, "tok").StopAndReclaim(context.Background(), "task-b351"); err != nil {
+		t.Fatalf("旧 agentd reclaim 不支持应软成功: %v", err)
+	}
+	wantPaths := []string{"POST /api/tasks/task-b351/stop", "POST /api/tasks/task-b351/reclaim", "GET /api/reclaim"}
+	if !reflect.DeepEqual(paths, wantPaths) {
+		t.Fatalf("旧 agentd 请求顺序 = %v，want %v", paths, wantPaths)
+	}
+}
+
 func TestReclaimDirtyRejectionCarriesStructuredList(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

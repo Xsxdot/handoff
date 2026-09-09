@@ -96,7 +96,7 @@
     "client 实体",
     "client.Client"
    ],
-   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。B233.3：执行能力跨机调用面冻结为 ExecutionClient（Dispatch/Reply/Continue/Stop/WaitEvent/FollowEvents），接口符号住在 d_transport 的 internal/client，不在 d_cli 再声明 interfaces（声明会 dead-interface）。*Client 仍是兼容聚合门面。不新开方向、不改预算。B353：handoff wait/card wait 任务事件口径均消费 client.WaitDeliveryPolicy；card wait 不在 CLI 复制任务白名单，不新增方向或预算。"
+   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。B233.3：执行能力跨机调用面冻结为 ExecutionClient（Dispatch/Reply/Continue/Stop/WaitEvent/FollowEvents），接口符号住在 d_transport 的 internal/client，不在 d_cli 再声明 interfaces（声明会 dead-interface）。*Client 仍是兼容聚合门面。不新开方向、不改预算。B353：handoff wait/card wait 任务事件口径均消费 client.WaitDeliveryPolicy；card wait 不在 CLI 复制任务白名单，不新增方向或预算。B351：bare card dispatch 的补偿装配复用既有 targetClient 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_cli→d_transport 方向或预算。"
   },
   {
    "from": "d_cli",
@@ -257,7 +257,7 @@
     "targetclient.Pool",
     "client.Client"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。B233.6：receiver 沿既有 client.Dispatch wire 透传；事件回流仍由既有 ledgermirror 承载。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。B233.6：receiver 沿既有 client.Dispatch wire 透传；事件回流仍由既有 ledgermirror 承载。B351：agentd startCardStep 的补偿装配复用既有 Server.clientForTarget 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_gateway→d_transport 方向或预算。"
   },
   {
    "from": "d_gateway",
