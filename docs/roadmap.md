@@ -715,6 +715,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   agentd SIGKILL 后 cursor 文件、Windows rename 原子性，统一到全部 B233 收尾卡
   之后的真机闸。来源：B349 spec OOS；breakdown 真机清单 1–8。
 
+## 来自 B233.8 spec（2026-09-09，收窄后）
+
+- **非 OpenCode 权限/提问权威迁移**：Claude 今日 Dispatch 注入只服务快照，运行时仍走 `handlePermission`；Codex/Grok/AGY 无 AskResponder。不在 B233.8。来源：B233.8 spec OOS；独立审查 F1–F3。
+- **全仓 `internal/` 按 best.json 重排**：超出共享派发迁包。来源：B233.8 spec OOS。
+
 ## 来自 B351 验收（2026-09-09，DUT `f13ff6b3`，并入功能线 `3c525c6c`）
 
 - **跨机孤儿 Stop+Reclaim 真机延后 B233.9**：机内 httptest/SQLite 已锁 Stop→Reclaim 顺序、force JSON、加法计数与失败出口反例；本机+linux-01 隔离实例真机（含同名重试改名）按用户授权放到 B233.8 之后。来源：breakdown 真机清单；acceptance 2026-09-09。
