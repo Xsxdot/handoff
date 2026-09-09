@@ -210,6 +210,33 @@ func TestWaitEventSkipsProgress(t *testing.T) {
 	}
 }
 
+func TestB353WaitEventDeliversDeliveryFailedAfterAudit(t *testing.T) {
+	env := newTestClientEnv(t)
+	taskID := env.createPendingTask(t)
+	if _, err := env.st.AppendEvent(taskID, proto.EventTypePermissionAutoAllow,
+		map[string]any{"rule": "safe-command"}); err != nil {
+		t.Fatalf("AppendEvent audit: %v", err)
+	}
+	failed, err := env.st.AppendEvent(taskID, proto.EventTypeDeliveryFailed,
+		map[string]any{"ticket_id": "ticket-1"})
+	if err != nil {
+		t.Fatalf("AppendEvent delivery_failed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	got, err := client.New(env.ts.URL, env.token).WaitEvent(ctx, taskID, false)
+	if err != nil {
+		t.Fatalf("WaitEvent: %v", err)
+	}
+	if got.Seq != failed.Seq || got.Type != proto.EventTypeDeliveryFailed {
+		t.Fatalf("WaitEvent = seq=%d type=%q, want seq=%d type=%q",
+			got.Seq, got.Type, failed.Seq, proto.EventTypeDeliveryFailed)
+	}
+	if got.Payload == nil || string(got.Payload) == "null" {
+		t.Fatalf("delivery_failed payload 被丢失: %s", got.Payload)
+	}
+}
+
 // trackListener 包装 net.Listener，记录每次 Accept 得到的连接，提供 closeAll 强杀全部连接。
 //
 // 为什么需要它：http.Server.Close 不关闭已 hijack 的 WS 连接（net/http 对 hijack 后的

@@ -6,11 +6,14 @@
 package agentd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -137,26 +140,27 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 		if err != nil {
 			return keystone.WakeEvent{}, false, err
 		}
-		var kind keystone.WakeKind
-		switch proto.EventType(taskType) {
-		case proto.EventTypeCompleted, proto.EventTypeFailed, proto.EventTypeTurnFailed:
-			kind = keystone.WakeTaskTerminal
-		case proto.EventTypePermissionRequest, proto.EventTypeQuestion:
-			kind = keystone.WakeTicket
-		default:
+		if !client.WaitDeliveryPolicy(proto.EventType(taskType)) {
+			slog.Default().Debug("task_mirrored 因任务消费策略过滤", "seq", ev.Seq,
+				"card", ev.CardID, "type", ev.Type, "task_type", taskType,
+				"reason", "delivery_policy_false")
 			return keystone.WakeEvent{}, false, nil
+		}
+		kind := keystone.WakeTaskTerminal
+		if proto.EventType(taskType) == proto.EventTypePermissionRequest ||
+			proto.EventType(taskType) == proto.EventTypeQuestion {
+			kind = keystone.WakeTicket
 		}
 		return keystone.WakeEvent{
 			Kind: kind, Card: ev.CardID,
 			Summary: fmt.Sprintf("%s: %s", taskType, truncateRunes(string(payload), 400)),
 		}, true, nil
 	case ledger.EvRoomMessage:
-		var msg proto.RoomMessage
-		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
-			return keystone.WakeEvent{}, false,
-				fmt.Errorf("事件 %d 的 room_message 解码失败: %w", ev.Seq, err)
+		msg, yes, err := decodeHumanRoomMessage(ev)
+		if err != nil {
+			return keystone.WakeEvent{}, false, err
 		}
-		if msg.Kind != proto.RoomMsgUser || msg.BySystem {
+		if !yes {
 			return keystone.WakeEvent{}, false, nil
 		}
 		return keystone.WakeEvent{
@@ -172,7 +176,8 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 			return keystone.WakeEvent{}, false, nil
 		}
 		return keystone.WakeEvent{}, false, nil
-	case ledger.EvNeedsHuman, ledger.EvNeedsCleared:
+	case ledger.EvNeedsHuman, ledger.EvNeedsCleared,
+		ledger.EvDecisionOpened, ledger.EvDecisionAnswered:
 		return keystone.WakeEvent{
 			Kind: keystone.WakeTaskTerminal, Card: ev.CardID,
 			Summary: fmt.Sprintf("%s: %s", ev.Type, truncateRunes(string(ev.Payload), 400)),
@@ -180,6 +185,27 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 	default:
 		return keystone.WakeEvent{}, false, nil
 	}
+}
+
+func decodeHumanRoomMessage(ev proto.LedgerEvent) (proto.RoomMessage, bool, error) {
+	var msg proto.RoomMessage
+	if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+		return proto.RoomMessage{}, false,
+			fmt.Errorf("事件 %d 的 room_message 解码失败: %w", ev.Seq, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(ev.Payload, &fields); err != nil {
+		return proto.RoomMessage{}, false,
+			fmt.Errorf("事件 %d 的 room_message 字段解码失败: %w", ev.Seq, err)
+	}
+	if raw, present := fields["by_system"]; present &&
+		bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return msg, false, nil
+	}
+	if msg.Kind != proto.RoomMsgUser || msg.BySystem {
+		return msg, false, nil
+	}
+	return msg, true, nil
 }
 
 func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int, escalated bool, err error) {
