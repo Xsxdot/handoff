@@ -228,12 +228,15 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 	s.log.Debug("读取自动化账本事件", "cursor", from, "event_count", len(events))
 	type pending struct {
 		seq int64
+		typ string
 		ev  keystone.WakeEvent
 	}
 	pendingByCard := map[string][]pending{}
 	maxProcessed := from
 	for _, ev := range events {
 		if ev.Seq <= from {
+			s.log.Debug("自动化事件不在游标之后，跳过", "seq", ev.Seq,
+				"card", ev.CardID, "type", ev.Type, "cursor", from)
 			continue
 		}
 		s.automationMu.Lock()
@@ -243,6 +246,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			if ev.Seq > maxProcessed {
 				maxProcessed = ev.Seq
 			}
+			s.log.Debug("自动化事件已见，跳过重复消费", "seq", ev.Seq,
+				"card", ev.CardID, "type", ev.Type, "cursor", from,
+				"cursor_candidate", maxProcessed, "reason", "seen")
 			continue
 		}
 		if ev.Type == ledger.EvTaskMirrored {
@@ -257,6 +263,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				s.automationMu.Lock()
 				s.automationSeen[ev.Seq] = struct{}{}
 				s.automationMu.Unlock()
+				s.log.Debug("自动化事件因当前 attempt 闸被标记 seen", "seq", ev.Seq,
+					"card", ev.CardID, "type", ev.Type, "cursor", from,
+					"cursor_candidate", maxProcessed, "reason", "stale_attempt")
 				continue
 			}
 		}
@@ -278,12 +287,18 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			maxProcessed = ev.Seq
 		}
 		if yes {
-			pendingByCard[ev.CardID] = append(pendingByCard[ev.CardID], pending{seq: ev.Seq, ev: wake})
+			pendingByCard[ev.CardID] = append(pendingByCard[ev.CardID], pending{seq: ev.Seq, typ: ev.Type, ev: wake})
+			s.log.Debug("自动化事件进入 pending", "seq", ev.Seq, "card", ev.CardID,
+				"type", ev.Type, "cursor", from, "cursor_candidate", maxProcessed,
+				"pending_count", len(pendingByCard[ev.CardID]))
 			continue
 		}
 		s.automationMu.Lock()
 		s.automationSeen[ev.Seq] = struct{}{}
 		s.automationMu.Unlock()
+		s.log.Debug("自动化事件标记 seen", "seq", ev.Seq, "card", ev.CardID,
+			"type", ev.Type, "cursor", from, "cursor_candidate", maxProcessed,
+			"reason", "not_actionable")
 	}
 
 	cards := make([]string, 0, len(pendingByCard))
@@ -301,6 +316,11 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		if !decision.Wake {
 			s.log.Info("自动化事件因 attach 暂缓", "card", card,
 				"event_count", len(evs), "reason", decision.Reason)
+			for _, item := range batch {
+				s.log.Debug("自动化 pending 事件因 attach 暂缓", "seq", item.seq,
+					"card", card, "type", item.typ, "cursor", from,
+					"cursor_candidate", maxProcessed, "reason", decision.Reason)
+			}
 			return processed, escalated, nil
 		}
 		result, wakeErr := s.wakeCoordinatorRound(ctx, card, evs)
@@ -331,6 +351,11 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 					}
 				}
 			}
+			for _, item := range batch {
+				s.log.Debug("自动化 pending 事件唤醒失败，推进 cursor", "seq", item.seq,
+					"card", card, "type", item.typ, "cursor", from,
+					"cursor_candidate", maxProcessed, "cause", wakeErr)
+			}
 			s.automationMu.Lock()
 			if maxProcessed > s.automationCursor {
 				s.automationCursor = maxProcessed
@@ -349,6 +374,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			s.automationSeen[item.seq] = struct{}{}
 			s.automationMu.Unlock()
 			processed++
+			s.log.Debug("自动化 pending 事件标记 seen", "seq", item.seq,
+				"card", card, "type", item.typ, "cursor", from,
+				"cursor_candidate", maxProcessed, "reason", "wake_succeeded")
 		}
 		s.log.Info("自动化事件批次已唤醒", "card", card,
 			"event_count", len(evs), "session", result.SessionID,

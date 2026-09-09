@@ -242,7 +242,10 @@ func startCardWaitIdle(parent context.Context, idle time.Duration) (
 		return parent, func() {}, func() {}, func() bool { return false }
 	}
 	ctx, cancel := context.WithCancel(parent)
-	activity := make(chan struct{}, 1)
+	// 每条账本事件都必须和 idle 控制器完成一次握手。容量 1 的非阻塞
+	// 通知会把同一批回调压成一条，导致计时从批次中较早事件而非最后事件
+	// 刷新；无缓冲通道让 Store.Follow 的回调在每次刷新后再继续。
+	activity := make(chan struct{})
 	expired := make(chan struct{})
 	done := make(chan struct{})
 	go func() {
@@ -271,7 +274,8 @@ func startCardWaitIdle(parent context.Context, idle time.Duration) (
 	noteActivity = func() {
 		select {
 		case activity <- struct{}{}:
-		default:
+		case <-ctx.Done():
+			// 父 context 或 idle timer 已停止控制器；不能再等待接收者。
 		}
 	}
 	stop = func() {

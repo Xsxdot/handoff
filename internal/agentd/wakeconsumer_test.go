@@ -7,6 +7,7 @@ package agentd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -269,6 +270,25 @@ func appendPointerMessage(t *testing.T, st *ledger.Store, cardID string) {
 	}
 }
 
+func appendRawRoomEvent(t *testing.T, env *ledgerEnv, cardID, payload string) int64 {
+	t.Helper()
+	db, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("打开原始 room ledger: %v", err)
+	}
+	defer db.Close()
+	result, err := db.Exec(`INSERT INTO card_events (card_id, type, actor, payload, created_at)
+		VALUES (?, ?, ?, ?, ?)`, cardID, ledger.EvRoomMessage, "test", payload, time.Now())
+	if err != nil {
+		t.Fatalf("写原始 room event: %v", err)
+	}
+	seq, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("读取原始 room event seq: %v", err)
+	}
+	return seq
+}
+
 func TestAutomationEventMappingThroughConsumer(t *testing.T) {
 	env, runner := newNoPTYAutomationEnv(t)
 	cardID := createCoordCard(t, env)
@@ -443,6 +463,55 @@ func TestB353AutomationRoomJSONBoundaries(t *testing.T) {
 			}
 			if err != nil || got != tc.want {
 				t.Fatalf("room payload got wake=%+v yes=%v err=%v，want yes=%v", wake, got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestB353AutomationRoomJSONBoundariesThroughConsumer(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    bool
+		wantErr bool
+	}{
+		{name: "by_system missing", payload: `{"kind":"user","body":"missing"}`, want: true},
+		{name: "by_system false", payload: `{"kind":"user","body":"false","by_system":false}`, want: true},
+		{name: "by_system true", payload: `{"kind":"user","body":"true","by_system":true}`},
+		{name: "by_system null", payload: `{"kind":"user","body":"null","by_system":null}`},
+		{name: "by_system invalid", payload: `{"kind":"user","body":"invalid","by_system":"yes"}`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner := newNoPTYAutomationEnv(t)
+			cardID := createCoordCard(t, env)
+			prebindConsumerSession(t, env, cardID)
+			seq := appendRawRoomEvent(t, env, cardID, tc.payload)
+			processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+			if tc.wantErr {
+				if err == nil || processed != 0 || escalated ||
+					!strings.Contains(err.Error(), fmt.Sprint(seq)) {
+					t.Fatalf("非法 room payload consumer seam processed=%d escalated=%v err=%v, seq=%d",
+						processed, escalated, err, seq)
+				}
+				return
+			}
+			if err != nil || escalated {
+				t.Fatalf("room payload consumer seam err=%v escalated=%v", err, escalated)
+			}
+			wantProcessed := 0
+			if tc.want {
+				wantProcessed = 1
+			}
+			if processed != wantProcessed {
+				t.Fatalf("room payload consumer processed=%d, want %d", processed, wantProcessed)
+			}
+			_, resumes, _ := runner.snapshot()
+			if tc.want && len(resumes) != 1 {
+				t.Fatalf("真人 room payload 应唤醒一次，resumes=%v", resumes)
+			}
+			if !tc.want && len(resumes) != 0 {
+				t.Fatalf("系统/null room payload 不应唤醒，resumes=%v", resumes)
 			}
 		})
 	}
