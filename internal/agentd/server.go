@@ -192,11 +192,12 @@ type Server struct {
 	closeRemoteCoordPty      func(machine, ptyID string) error
 	lookupRemoteCoordWorkdir func(machine, card string) (string, error)
 	// automationStartOnce/automationKick protect the single host automation loop.
-	automationStartOnce sync.Once
-	automationKick      chan struct{}
-	automationMu        sync.Mutex
-	automationCursor    int64
-	automationSeen      map[int64]struct{}
+	automationStartOnce   sync.Once
+	automationKick        chan struct{}
+	automationMu          sync.Mutex
+	automationCursor      int64
+	automationCursorStore *automationCursorStore
+	automationSeen        map[int64]struct{}
 	// automationRoundHook is a test-only observation point; production leaves it nil.
 	automationRoundHook func(card string, result keystone.RoundResult)
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
@@ -2554,6 +2555,17 @@ func truncateRunes(s string, n int) string {
 func (s *Server) SetupAutomation(st *ledger.Store) {
 	facade := ledgerapi.New(st)
 	s.autoLedger = facade
+	cursorPath := filepath.Join(s.conf().DataDir, "automation-cursor.json")
+	s.automationCursorStore = newAutomationCursorStore(cursorPath)
+	loadedCursor, cursorErr := s.automationCursorStore.Load()
+	if cursorErr != nil {
+		s.log.Error("自动化 cursor 读取失败，以 0 启动", "path", cursorPath, "cause", cursorErr)
+		loadedCursor = 0
+	}
+	s.automationMu.Lock()
+	s.automationCursor = loadedCursor
+	s.automationMu.Unlock()
+	s.log.Info("自动化 cursor 已装配", "path", cursorPath, "loaded_seq", loadedCursor)
 	s.scheduling = scheduling.New(facadeAsRegistry{f: facade})
 	s.scheduling.SetKnownMachines(func(name string) bool {
 		cfg := s.conf()

@@ -11,6 +11,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -54,8 +56,13 @@ func appendMirroredForConsumer(t *testing.T, st *ledger.Store, cardID, task, typ
 
 func appendWorkflowDispatchForConsumer(t *testing.T, st *ledger.Store, cardID, task, node, attempt string) {
 	t.Helper()
+	appendWorkflowDispatchForConsumerWithTarget(t, st, cardID, "consumer-target", task, node, attempt)
+}
+
+func appendWorkflowDispatchForConsumerWithTarget(t *testing.T, st *ledger.Store, cardID, target, task, node, attempt string) {
+	t.Helper()
 	if err := st.RecordDispatch(cardID, ledger.DispatchSnapshot{
-		Target: "consumer-target", TaskID: task, Node: node, Attempt: attempt,
+		Target: target, TaskID: task, Node: node, Attempt: attempt,
 		Branch: "cards/" + cardID + "-" + task, Purpose: ledger.PurposeReview, Actor: "test",
 	}); err != nil {
 		t.Fatalf("写工作流派发快照 %s: %v", task, err)
@@ -64,8 +71,13 @@ func appendWorkflowDispatchForConsumer(t *testing.T, st *ledger.Store, cardID, t
 
 func appendWorkflowMirroredForConsumer(t *testing.T, st *ledger.Store, cardID, task, node, attempt, typ string, seq int64, payload string) int64 {
 	t.Helper()
+	return appendWorkflowMirroredForConsumerWithTarget(t, st, cardID, "consumer-target", task, node, attempt, typ, seq, payload)
+}
+
+func appendWorkflowMirroredForConsumerWithTarget(t *testing.T, st *ledger.Store, cardID, target, task, node, attempt, typ string, seq int64, payload string) int64 {
+	t.Helper()
 	if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
-		Target: "consumer-target", Task: task, Node: node, Attempt: attempt,
+		Target: target, Task: task, Node: node, Attempt: attempt,
 		SourceSeq: seq, Type: typ, Payload: []byte(payload), CreatedAt: time.Now(),
 	}); err != nil {
 		t.Fatalf("写工作流镜像事件 %s: %v", typ, err)
@@ -75,6 +87,98 @@ func appendWorkflowMirroredForConsumer(t *testing.T, st *ledger.Store, cardID, t
 		t.Fatalf("读工作流镜像事件 %s: %v", typ, err)
 	}
 	return events[len(events)-1].Seq
+}
+
+func appendRawMirroredWithoutSourceTask(t *testing.T, env *ledgerEnv, cardID, target, node, attempt string, sourceSeq int64) int64 {
+	t.Helper()
+	db, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("打开 raw mirrored ledger: %v", err)
+	}
+	defer db.Close()
+	payload := fmt.Sprintf(`{"node":%q,"attempt":%q,"task_type":"question","payload":{"ticket_id":"missing-source-task"}}`, node, attempt)
+	result, err := db.Exec(`INSERT INTO card_events
+		(card_id, type, actor, payload, source_target, source_seq, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?)`, cardID, ledger.EvTaskMirrored, "mirror", payload, target, sourceSeq, time.Now())
+	if err != nil {
+		t.Fatalf("写缺 source_task 的 raw mirrored 事件: %v", err)
+	}
+	seq, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("读取缺 source_task 事件 seq: %v", err)
+	}
+	return seq
+}
+
+func TestB349AutomationSourceIdentity(t *testing.T) {
+	t.Run("current attempt requires source task and target", func(t *testing.T) {
+		env, runner := newNoPTYAutomationEnv(t)
+		cardID := createCoordCard(t, env)
+		prebindConsumerSession(t, env, cardID)
+		appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current")
+		appendRawMirroredWithoutSourceTask(t, env, cardID, "target-current", "review", "attempt-current", 700)
+		appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "wrong-task", "review", "attempt-current", "question", 1, `{"ticket_id":"wrong-task"}`)
+		appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "wrong-target", "attempt-current", "review", "attempt-current", "question", 2, `{"ticket_id":"wrong-target"}`)
+		appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-old", "question", 3, `{"ticket_id":"old-attempt"}`)
+		appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current", "question", 999, `{"ticket_id":"current"}`)
+
+		processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+		if err != nil || escalated || processed != 1 {
+			t.Fatalf("source identity 闸 processed=%d escalated=%v err=%v，want 1/false/nil", processed, escalated, err)
+		}
+		_, resumes, _ := runner.snapshot()
+		if len(resumes) != 1 || !strings.Contains(resumes[0], "current") {
+			t.Fatalf("仅当前 source identity 应唤醒一次: %v", resumes)
+		}
+		for _, unwanted := range []string{"wrong-task", "wrong-target", "old-attempt"} {
+			if strings.Contains(resumes[0], unwanted) {
+				t.Fatalf("不匹配 source identity %q 不应进入 wake: %s", unwanted, resumes[0])
+			}
+		}
+	})
+
+	t.Run("latest malformed identity snapshot is ignored", func(t *testing.T) {
+		env, runner := newNoPTYAutomationEnv(t)
+		cardID := createCoordCard(t, env)
+		prebindConsumerSession(t, env, cardID)
+		appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current")
+		appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "task-not-attempt", "review", "attempt-new")
+		appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current", "question", 10, `{"ticket_id":"current-after-invalid"}`)
+
+		processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+		if err != nil || escalated || processed != 1 {
+			t.Fatalf("TaskID!=Attempt 的最新快照不应遮蔽合法快照，processed=%d escalated=%v err=%v", processed, escalated, err)
+		}
+		_, resumes, _ := runner.snapshot()
+		if len(resumes) != 1 || !strings.Contains(resumes[0], "current-after-invalid") {
+			t.Fatalf("合法快照未唤醒: %v", resumes)
+		}
+	})
+
+	t.Run("snapshot scan paginates to tail", func(t *testing.T) {
+		env, runner := newNoPTYAutomationEnv(t)
+		cardID := createCoordCard(t, env)
+		prebindConsumerSession(t, env, cardID)
+		for i := 0; i < 501; i++ {
+			if _, err := env.ledger.AddComment(cardID, fmt.Sprintf("audit-%d", i), "普通", "test"); err != nil {
+				t.Fatalf("写分页审计事件 %d: %v", i, err)
+			}
+		}
+		if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
+			t.Fatalf("先推进审计事件游标: %v", err)
+		}
+		appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "", "attempt-current", "review", "attempt-current")
+		appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "", "attempt-current", "review", "attempt-current", "question", 7777, `{"ticket_id":"paged"}`)
+
+		processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+		if err != nil || escalated || processed != 1 {
+			t.Fatalf("分页到尾且双空 target 应唤醒，processed=%d escalated=%v err=%v", processed, escalated, err)
+		}
+		_, resumes, _ := runner.snapshot()
+		if len(resumes) != 1 || !strings.Contains(resumes[0], "paged") {
+			t.Fatalf("分页尾部合法事件未唤醒: %v", resumes)
+		}
+	})
 }
 
 func appendEnvelopeForWakeconsumer(t *testing.T, st *ledger.Store, cardID, task, node, attempt string, payload []byte) []byte {
@@ -544,11 +648,11 @@ func TestB2336StaleAttemptDoesNotWake(t *testing.T) {
 	env, runner := newNoPTYAutomationEnv(t)
 	cardID := createCoordCard(t, env)
 	prebindConsumerSession(t, env, cardID)
-	appendWorkflowDispatchForConsumer(t, env.ledger, cardID, "task-old", "review", "attempt-old")
-	appendWorkflowDispatchForConsumer(t, env.ledger, cardID, "task-new", "review", "attempt-new")
-	appendWorkflowMirroredForConsumer(t, env.ledger, cardID, "task-old", "review", "attempt-old",
+	appendWorkflowDispatchForConsumer(t, env.ledger, cardID, "attempt-old", "review", "attempt-old")
+	appendWorkflowDispatchForConsumer(t, env.ledger, cardID, "attempt-new", "review", "attempt-new")
+	appendWorkflowMirroredForConsumer(t, env.ledger, cardID, "attempt-old", "review", "attempt-old",
 		"question", 1, `{"ticket_id":"old-ticket"}`)
-	appendWorkflowMirroredForConsumer(t, env.ledger, cardID, "task-new", "review", "attempt-new",
+	appendWorkflowMirroredForConsumer(t, env.ledger, cardID, "attempt-new", "review", "attempt-new",
 		"question", 1, `{"ticket_id":"new-ticket"}`)
 	appendWorkflowMirroredForConsumer(t, env.ledger, cardID, "task-empty", "", "",
 		"question", 1, `{"ticket_id":"empty-ticket"}`)
@@ -668,6 +772,7 @@ func TestAutomationAttachDefersAndThenWakes(t *testing.T) {
 	env, runner := newNoPTYAutomationEnv(t)
 	cardID := createCoordCard(t, env)
 	prebindConsumerSession(t, env, cardID)
+	cursorPath := filepath.Join(env.srv.conf().DataDir, "automation-cursor.json")
 	appendMirroredForConsumer(t, env.ledger, cardID, "terminal", "completed", 1, `{"text":"done"}`)
 	events, err := env.ledger.EventsFromAsc([]string{cardID}, 0, 10000)
 	if err != nil {
@@ -690,6 +795,9 @@ func TestAutomationAttachDefersAndThenWakes(t *testing.T) {
 	if cursor >= terminalSeq {
 		t.Fatalf("attach 暂缓却推进 cursor=%d 到事件=%d", cursor, terminalSeq)
 	}
+	if _, err := os.Stat(cursorPath); !os.IsNotExist(err) {
+		t.Fatalf("attach 暂缓不应写 cursor 文件，stat err=%v", err)
+	}
 	_, resumes, _ := runner.snapshot()
 	if len(resumes) != 0 {
 		t.Fatalf("attach 中不应 Resume，实得 %d", len(resumes))
@@ -702,6 +810,9 @@ func TestAutomationAttachDefersAndThenWakes(t *testing.T) {
 	_, resumes, _ = runner.snapshot()
 	if len(resumes) != 1 {
 		t.Fatalf("解除 attach 后应 Resume 一次，实得 %d", len(resumes))
+	}
+	if _, err := os.Stat(cursorPath); err != nil {
+		t.Fatalf("解除 attach 后应持久化 cursor: %v", err)
 	}
 }
 
@@ -831,4 +942,94 @@ func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 	if runner.launches != first {
 		t.Fatalf("失败后不得对同一条再 Launch：%d → %d", first, runner.launches)
 	}
+}
+
+func TestB349AutomationCursorPersistence(t *testing.T) {
+	t.Run("persists and resumes from the same DataDir", func(t *testing.T) {
+		env, runner := newNoPTYAutomationEnv(t)
+		cardID := createCoordCard(t, env)
+		prebindConsumerSession(t, env, cardID)
+		cursorPath := filepath.Join(env.srv.conf().DataDir, "automation-cursor.json")
+		roomPath := filepath.Join(env.srv.conf().DataDir, "room-cursors.json")
+		roomBefore, roomBeforeErr := os.ReadFile(roomPath)
+		if _, err := os.Stat(cursorPath); !os.IsNotExist(err) {
+			t.Fatalf("首次装配前 cursor 应不存在，stat err=%v", err)
+		}
+		appendMirroredForConsumer(t, env.ledger, cardID, "terminal", "completed", 1, `{"text":"first"}`)
+		processed, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+		if err != nil || processed != 1 {
+			t.Fatalf("首次消费 processed=%d err=%v，want 1/nil", processed, err)
+		}
+		raw, err := os.ReadFile(cursorPath)
+		if err != nil {
+			t.Fatalf("消费后应存在 cursor 文件: %v", err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &fields); err != nil {
+			t.Fatalf("cursor JSON: %v", err)
+		}
+		if len(fields) != 1 {
+			t.Fatalf("cursor 只能包含 seq，fields=%s", raw)
+		}
+		if _, ok := fields["seq"]; !ok {
+			t.Fatalf("cursor 缺少 seq: %s", raw)
+		}
+		info, err := os.Stat(cursorPath)
+		if err != nil || info.Mode().Perm() != 0o600 {
+			t.Fatalf("cursor 权限=%v err=%v，want 0600", info.Mode().Perm(), err)
+		}
+		if roomAfter, roomAfterErr := os.ReadFile(roomPath); errors.Is(roomAfterErr, os.ErrNotExist) != errors.Is(roomBeforeErr, os.ErrNotExist) || string(roomAfter) != string(roomBefore) {
+			t.Fatalf("room cursor 不应被自动化 cursor 改写，before=(%v,%q) after=(%v,%q)", roomBeforeErr, roomBefore, roomAfterErr, roomAfter)
+		}
+
+		resumed := NewServer(env.srv.conf(), env.st, discardLogger())
+		resumed.SetLedger(env.ledger)
+		resumed.SetupAutomation(env.ledger)
+		resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
+		processed, _, err = resumed.consumeAutomationEventsOnce(context.Background())
+		if err != nil || processed != 0 {
+			t.Fatalf("新 Server 读回已保存 cursor 后不应重放，processed=%d err=%v", processed, err)
+		}
+		appendMirroredForConsumer(t, env.ledger, cardID, "terminal-next", "completed", 2, `{"text":"second"}`)
+		processed, _, err = resumed.consumeAutomationEventsOnce(context.Background())
+		if err != nil || processed != 1 {
+			t.Fatalf("cursor 后新事件应续拉，processed=%d err=%v", processed, err)
+		}
+		_, resumes, _ := runner.snapshot()
+		if len(resumes) != 2 {
+			t.Fatalf("首次事件与 cursor 后新事件各应唤醒一次，resumes=%v", resumes)
+		}
+	})
+
+	t.Run("save failure keeps memory ahead without faking disk waterline", func(t *testing.T) {
+		env, runner := newNoPTYAutomationEnv(t)
+		cardID := createCoordCard(t, env)
+		prebindConsumerSession(t, env, cardID)
+		cursorPath := filepath.Join(env.srv.conf().DataDir, "automation-cursor.json")
+		if err := os.Mkdir(cursorPath, 0o700); err != nil {
+			t.Fatalf("制造 cursor rename 失败夹具: %v", err)
+		}
+		appendMirroredForConsumer(t, env.ledger, cardID, "terminal", "completed", 1, `{"text":"save-failure"}`)
+		processed, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+		if err == nil || processed != 1 {
+			t.Fatalf("Save 失败应保留消费结果并返回错误，processed=%d err=%v", processed, err)
+		}
+		env.srv.automationMu.Lock()
+		memoryCursor := env.srv.automationCursor
+		env.srv.automationMu.Unlock()
+		if memoryCursor == 0 {
+			t.Fatal("Save 失败后内存 cursor 不应回滚")
+		}
+		info, statErr := os.Stat(cursorPath)
+		if statErr != nil || !info.IsDir() {
+			t.Fatalf("Save 失败不应伪造主 cursor 文件，stat=%v err=%v", info, statErr)
+		}
+		if _, err := os.Stat(cursorPath + ".tmp"); !os.IsNotExist(err) {
+			t.Fatalf("Save 失败后临时文件应清理，stat err=%v", err)
+		}
+		_, resumes, _ := runner.snapshot()
+		if len(resumes) != 1 {
+			t.Fatalf("Save 失败前仍应只唤醒一次，resumes=%v", resumes)
+		}
+	})
 }
