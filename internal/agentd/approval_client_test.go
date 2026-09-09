@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/approval"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -19,6 +20,22 @@ import (
 
 func taskDirOf(m *Manager, taskID string) string {
 	return filepath.Join(m.cfg.DataDir, "tasks", taskID)
+}
+
+func TestBindApprovalUsesMovedProductionClient(t *testing.T) {
+	m, _, _, _ := newTestManager(t)
+	client := m.bindApproval("task-moved", executor.PolicySnapshot{Version: "v1"})
+	moved, ok := client.(*approval.Client)
+	if !ok || moved == nil {
+		t.Fatalf("bindApproval 必须返回 *approval.Client，got %T", client)
+	}
+	snap, err := client.PolicySnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("PolicySnapshot: %v", err)
+	}
+	if snap.TaskID != "task-moved" {
+		t.Fatalf("空 snapshot TaskID 必须由 bindApproval 补全，got %q", snap.TaskID)
+	}
 }
 
 func setupTestTaskClient(t *testing.T, taskID, version string) (*Manager, executor.ApprovalClient, *proto.Task) {

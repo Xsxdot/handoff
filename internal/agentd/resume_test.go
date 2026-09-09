@@ -278,6 +278,34 @@ func TestResumeTaskAssemblesRequest(t *testing.T) {
 	}
 }
 
+// TestResumeTaskOpenCodeInjectsApproval locks startup hot-resume request
+// assembly; the recording adapter is not evidence of a real OpenCode session.
+func TestResumeTaskOpenCodeInjectsApproval(t *testing.T) {
+	ad := &recordingRestorer{chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"opencode": ad}, "opencode")
+	const taskID = "task-opencode-hot"
+	mustCreateTask(t, st, &proto.Task{
+		ID: taskID, RepoPath: "/r", Executor: "opencode", Model: "sonnet",
+		State: proto.TaskStateRunning, ExecutorSession: "sess-hot",
+	})
+	if alive := m.ResumeTask(taskID); alive {
+		t.Fatalf("recordingRestorer 不存活时 ResumeTask 应为 false")
+	}
+	ad.mu.Lock()
+	got := ad.got
+	ad.mu.Unlock()
+	if got.Cold {
+		t.Fatalf("启动热恢复必须 Cold=false，实际 true")
+	}
+	if got.Approval == nil {
+		t.Fatal("OpenCode 启动热恢复必须注入 ApprovalClient")
+	}
+	snap, err := got.Approval.PolicySnapshot(context.Background())
+	if err != nil || snap.TaskID != taskID {
+		t.Fatalf("热恢复 ApprovalClient 快照错误: snap=%+v err=%v", snap, err)
+	}
+}
+
 func TestFakeAdapterDoesNotSatisfyRecoverer(t *testing.T) {
 	fk := fake.New(nil)
 	if _, ok := any(fk).(executor.Recoverer); ok {
@@ -292,4 +320,3 @@ func TestFakeAdapterDoesNotSatisfyRecoverer(t *testing.T) {
 		t.Fatal("未实现 Recoverer 的 adapter 必须走不存活失败路径，禁止 ResumeTask 返回 true")
 	}
 }
-

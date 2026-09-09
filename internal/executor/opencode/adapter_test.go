@@ -1812,7 +1812,7 @@ func (f *fakeApprovalClient) Acknowledge(_ context.Context, ack executor.Approva
 }
 
 // NoteDeliveryFailed 实现 adapter 的可选回调缝；生产实现由 Manager 注入的
-// taskApprovalClient 提供，测试仅记录参数以验证 adapter 没有自行写 store。
+// 生产 approval.Client 提供，测试仅记录参数以验证 adapter 没有自行写 store。
 func (f *fakeApprovalClient) NoteDeliveryFailed(taskID, ticketID string, cause error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
