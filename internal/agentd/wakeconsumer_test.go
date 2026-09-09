@@ -1001,6 +1001,62 @@ func TestB349AutomationCursorPersistence(t *testing.T) {
 		}
 	})
 
+	t.Run("corrupt or unreadable cursor starts at zero", func(t *testing.T) {
+		t.Run("corrupt json", func(t *testing.T) {
+			env, runner := newNoPTYAutomationEnv(t)
+			cardID := createCoordCard(t, env)
+			prebindConsumerSession(t, env, cardID)
+			appendMirroredForConsumer(t, env.ledger, cardID, "terminal-corrupt", "completed", 1, `{"text":"corrupt-cursor"}`)
+			cursorPath := filepath.Join(env.srv.conf().DataDir, "automation-cursor.json")
+			if err := os.WriteFile(cursorPath, []byte(`{"seq":`), 0o600); err != nil {
+				t.Fatalf("写损坏 cursor: %v", err)
+			}
+
+			resumed := NewServer(env.srv.conf(), env.st, discardLogger())
+			resumed.SetLedger(env.ledger)
+			resumed.SetupAutomation(env.ledger)
+			resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
+			if resumed.automationCursor != 0 {
+				t.Fatalf("损坏 cursor 不应装配为已保存水位: %d", resumed.automationCursor)
+			}
+			processed, _, err := resumed.consumeAutomationEventsOnce(context.Background())
+			if err != nil || processed != 1 {
+				t.Fatalf("损坏 cursor 以 0 启动后应重试事件，processed=%d err=%v", processed, err)
+			}
+			_, resumes, _ := runner.snapshot()
+			if len(resumes) != 1 {
+				t.Fatalf("损坏 cursor 不应跳过未消费事件，resumes=%v", resumes)
+			}
+		})
+
+		t.Run("unreadable directory", func(t *testing.T) {
+			env, runner := newNoPTYAutomationEnv(t)
+			cardID := createCoordCard(t, env)
+			prebindConsumerSession(t, env, cardID)
+			appendMirroredForConsumer(t, env.ledger, cardID, "terminal-unreadable", "completed", 1, `{"text":"unreadable-cursor"}`)
+			cursorPath := filepath.Join(env.srv.conf().DataDir, "automation-cursor.json")
+			if err := os.Mkdir(cursorPath, 0o700); err != nil {
+				t.Fatalf("制造不可读 cursor 夹具: %v", err)
+			}
+
+			resumed := NewServer(env.srv.conf(), env.st, discardLogger())
+			resumed.SetLedger(env.ledger)
+			resumed.SetupAutomation(env.ledger)
+			resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
+			if resumed.automationCursor != 0 {
+				t.Fatalf("不可读 cursor 不应装配为已保存水位: %d", resumed.automationCursor)
+			}
+			processed, _, err := resumed.consumeAutomationEventsOnce(context.Background())
+			if err == nil || processed != 1 {
+				t.Fatalf("不可读 cursor 仍应先重试事件并暴露保存错误，processed=%d err=%v", processed, err)
+			}
+			_, resumes, _ := runner.snapshot()
+			if len(resumes) != 1 {
+				t.Fatalf("不可读 cursor 不应跳过未消费事件，resumes=%v", resumes)
+			}
+		})
+	})
+
 	t.Run("save failure keeps memory ahead without faking disk waterline", func(t *testing.T) {
 		env, runner := newNoPTYAutomationEnv(t)
 		cardID := createCoordCard(t, env)
@@ -1030,6 +1086,25 @@ func TestB349AutomationCursorPersistence(t *testing.T) {
 		_, resumes, _ := runner.snapshot()
 		if len(resumes) != 1 {
 			t.Fatalf("Save 失败前仍应只唤醒一次，resumes=%v", resumes)
+		}
+
+		if err := os.Remove(cursorPath); err != nil {
+			t.Fatalf("移除 Save 失败夹具目录: %v", err)
+		}
+		resumed := NewServer(env.srv.conf(), env.st, discardLogger())
+		resumed.SetLedger(env.ledger)
+		resumed.SetupAutomation(env.ledger)
+		resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
+		processed, _, err = resumed.consumeAutomationEventsOnce(context.Background())
+		if err != nil || processed != 1 {
+			t.Fatalf("Save 失败后新 Server 应从未落盘水位重试，processed=%d err=%v", processed, err)
+		}
+		if _, err := os.Stat(cursorPath); err != nil {
+			t.Fatalf("新 Server 重试成功后应保存 cursor: %v", err)
+		}
+		_, resumes, _ = runner.snapshot()
+		if len(resumes) != 2 {
+			t.Fatalf("Save 失败事件应在新 Server 重试并唤醒两次，resumes=%v", resumes)
 		}
 	})
 }
