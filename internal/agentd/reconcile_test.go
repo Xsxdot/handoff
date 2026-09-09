@@ -364,6 +364,26 @@ type ladderAdapter struct {
 	sendHits int
 }
 
+type openCodeLadderAdapter struct {
+	ladderAdapter
+	applied executor.PolicySnapshot
+	bound   executor.ApprovalClient
+}
+
+func (a *openCodeLadderAdapter) ApplySnapshot(_ context.Context, _ string, snap executor.PolicySnapshot) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.applied = snap
+	return nil
+}
+
+func (a *openCodeLadderAdapter) BindApproval(_ string, client executor.ApprovalClient) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.bound = client
+	return nil
+}
+
 func (a *ladderAdapter) Send(ctx context.Context, taskID, text string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -410,6 +430,46 @@ func TestContinueColdResumesAndRetriesSend(t *testing.T) {
 	cur, _ := st.GetTask("t1")
 	if cur.State != proto.TaskStateRunning {
 		t.Fatalf("续接成功后应留在 running，实际 %s", cur.State)
+	}
+}
+
+// TestContinueColdResumeInjectsApproval locks the Manager -> OpenCode request
+// assembly seam. It does not claim that an external OpenCode process is ready.
+func TestContinueColdResumeInjectsApproval(t *testing.T) {
+	ad := &openCodeLadderAdapter{ladderAdapter: ladderAdapter{
+		chanAdapter: chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		outcome:     executor.ResumeOutcome{Alive: true, Mode: executor.ResumeModeCold, SessionID: "sess-cold"},
+	}}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"opencode": ad}, "opencode")
+	const taskID = "task-opencode-cold"
+	mustCreateTask(t, st, &proto.Task{
+		ID: taskID, RepoPath: "/r", Executor: "opencode",
+		State: proto.TaskStateWaitingReview, ExecutorSession: "sess-old",
+	})
+	if err := m.Continue(context.Background(), taskID, "继续"); err != nil {
+		t.Fatalf("OpenCode 冷恢复 Continue: %v", err)
+	}
+	ad.mu.Lock()
+	req, applied, bound, hits := ad.gotReq, ad.applied, ad.bound, ad.sendHits
+	ad.mu.Unlock()
+	if !req.Cold {
+		t.Fatal("Continue 触发的恢复必须 Cold=true")
+	}
+	if req.Approval == nil {
+		t.Fatal("OpenCode 冷 Resume 必须注入 ApprovalClient")
+	}
+	if bound == nil {
+		t.Fatal("Continue 的 SnapshotApplier 之后必须重绑非 nil ApprovalClient")
+	}
+	if applied.TaskID != taskID {
+		t.Fatalf("ApplySnapshot 必须先收到当前任务快照: %+v", applied)
+	}
+	snap, err := req.Approval.PolicySnapshot(context.Background())
+	if err != nil || snap.TaskID != taskID {
+		t.Fatalf("冷 Resume 的 ApprovalClient 快照错误: snap=%+v err=%v", snap, err)
+	}
+	if hits != 2 {
+		t.Fatalf("冷恢复后 Send 应重试一次，实际 %d 次", hits)
 	}
 }
 
