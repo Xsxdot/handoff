@@ -116,3 +116,59 @@ func TestFollowingProjectionKeyPresence(t *testing.T) {
 		t.Fatalf("缺席不得出键（omitempty）: %s", rawSingle)
 	}
 }
+
+func TestFacadeEventsFromAscPreservesSourceIdentity(t *testing.T) {
+	st, lc := newFacadeStore(t)
+	mustBugWorkflow(t, st)
+	card, err := st.CreateCard(ledger.NewCard{Title: "source 投影", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AddComment(card.ID, "原生事件", "普通", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := st.AppendMirroredEvent(card.ID, ledger.MirroredEvent{
+		Target: "linux-01", Task: "task-source", SourceSeq: 7,
+		Type: string(proto.EventTypeQuestion), Payload: []byte(`{"ticket_id":"q1"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	events, err := lc.EventsFromAsc([]string{card.ID}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var mirrored, native *proto.LedgerEvent
+	for i := range events {
+		event := &events[i]
+		switch event.Type {
+		case ledger.EvTaskMirrored:
+			mirrored = event
+		case ledger.EvComment:
+			native = event
+		}
+	}
+	if mirrored == nil || mirrored.SourceTarget != "linux-01" ||
+		mirrored.SourceTask != "task-source" || mirrored.SourceSeq != 7 {
+		t.Fatalf("Facade 镜像 source 投影丢失: %+v", mirrored)
+	}
+	raw, err := json.Marshal(*mirrored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{`"source_target":"linux-01"`, `"source_task":"task-source"`, `"source_seq":7`} {
+		if !strings.Contains(string(raw), key) {
+			t.Fatalf("Facade JSON 缺 source 键 %s: %s", key, raw)
+		}
+	}
+	if native == nil || native.SourceTarget != "" || native.SourceTask != "" || native.SourceSeq != 0 {
+		t.Fatalf("卡原生事件 source 应为零值: %+v", native)
+	}
+	rawNative, err := json.Marshal(*native)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rawNative), "source_") {
+		t.Fatalf("卡原生事件的 omitempty source 键不应出现: %s", rawNative)
+	}
+}
