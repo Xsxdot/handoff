@@ -90,7 +90,7 @@
 
 - **契约预算未棘轮**：图对账视图已补 Capability / gitCapability / MayRecycle 等符号与 implements；`codegraph check` 仍 5 红（cli→orchestration 15/13、cli→workspace 10/9、gateway→workspace 3/1、orchestration→workspace 41/19、off-interface Capability）。recon 无权改 `target.json`，合 main 时 contract/absorb 再抬。来源：B233.4 图对账-2 `79f9c438`。
 - **真机未在本 SHA**：对端 agentd 仍是线上 `86a08861`，Stop 留存 / reclaim 未对真任务验。合 main 部署后再验。来源：B233.4 acceptance。
-- **assembleResultRef 丢弃引用**：`handleTaskDiff` 用 `if _, err := assembleResultRef(...)` 只吃错误，随后 `DiffRange` 仍接原 `headRev`。不强制加 HTTP 字段，但准确 commit 要进入消费链。来源：独立质量复审 R9；file `internal/agentd/server.go`。
+- **assembleResultRef 丢弃引用**：已由 B233.7 核销（`handleTaskDiff` 非空 `ResultRef.Commit` 作 DiffRange head）。来源：独立质量复审 R9；核销 DUT `1ee954d3`。
 - **web Composer.test 未跑**：本机未装 vitest / `@tailwindcss/vite`。来源：B233.4 review-2 minor。
 - **Client.Stop 注释仍写 true=删树**：与 C-6 生产恒 `false` 不完全对齐。来源：B233.4 review-2 minor。
 
@@ -99,7 +99,7 @@
 - **真机十六条未在本 SHA**：对端 agentd 仍是线上 `86a08861`。breakdown §5 的本机/linux-01 五家执行、Claude 协调不支持、OpenCode 协调 HOME、审批 OneShot、并发 Overlay、失败 HOME、skill install、免费模型不可用、claude 凭据、EngineOK、ctx 取消、Windows 抽查，合 main 部署后再验。来源：B233.2 acceptance。
 - **Adapter.Prepare/Verify 与 \*Profile 双入口**：各家 Adapter 仍委托 Prepare/Verify，与独立 `*Profile` 并存。来源：B233.2 review-2/3 minor；file `internal/executor/opencode/profile.go`。
 - **HOME 接缝夹具直调 Profile()**：不锁生产 `ProfileFromProvider`。来源：B233.2 review-2/3 minor；file `internal/agentd/coordinator_home_test.go`。
-- **TaskOverlay 无消费者**：独立复审 R6。来源：独立质量复审；对象 `9d7e9270`。
+- **TaskOverlay 无消费者**：已由 B233.7 核销（Dispatch 写入 `ProfileReq.TaskOverlay`，Verify 验内容）。来源：独立质量复审 R6；核销 DUT `1ee954d3`。
 
 ## 来自 B233.5 验收（2026-09-07）
 
@@ -704,6 +704,12 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   需要前端「加载更多」（服务端 `before` 排他上界游标已由 B274/B289 备好，缺的是
   UI 与调用）。B289 spec 未记此残余，由 B287 spec 侦查期间补记。来源：B289
   （`24be42238`）修复后的形态；`docs/superpowers/specs/b289.md`。
+
+## 来自 B233.7 验收（2026-09-09，DUT `1ee954d3`，并入功能线 `88d547d0`）
+
+- **跨机真机延后**：OpenCode 再问/权限 delivery_failed、五家 overlay、真实 diff、WakeHome、物理 carrier、网络失败 status-first、重启回收，统一到全部 B233 收尾卡完成后再验。来源：spec R7；breakdown §6 真机清单 1–8。
+- **ApprovalClient 迁包仍归 B233.8**：本卡只收行为（失败走 `delivery_failed`），不搬包。来源：spec R3。
+- **TestLegacyNodeEventSequenceUnchanged 存量金样漂移**：功能线 `b5b22eb3` 即红（第 1 条 got `dispatched`、want 挂账 comment），B233.7 未改该路径。来源：finish 全量 2026-09-09。
 
 ## 来自 B233.6 真机验收（2026-09-08，DUT `737e2203`，mac-02+linux-01 隔离实例）
 
