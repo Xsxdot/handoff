@@ -380,6 +380,7 @@ log states which path this run used.
 | `handoff agentd` | Run agentd in the foreground (development/debugging; day-to-day use goes through service) | `--executor=opencode\|claude\|grok\|codex\|fake` (default opencode) |
 | `handoff dispatch [plan.md]` | Dispatch a task (project identified by current directory) | `--prompt "<instruction>"` (at least one of this and a plan file); `--target <machine>`; `--executor`/`--model`/`--name`; `--branch\|--new-branch <b>`; `--base <t>`; `--worktree <path>\|--new-worktree`; `--allow-dirty`; `--no-sync-check`; `--no-terminal` |
 | `handoff wait <task>` | Block until the next event that needs you (`--until-done` waits silently for the archive instead) | `--follow` (keep subscribing until the task ends); `--until-done` (dependency latch, prints only the `archived` event; mutually exclusive with `--follow`); `--notify`; `--timeout <duration>` (one-shot = total budget, `--follow` = idle budget, `--until-done` = total budget); `--no-sync` |
+| `handoff card wait <id>` | Follow a card or dynamic subtree ledger; default prints the first actionable event and exits, `--follow` keeps the subscription until all current members are terminal | `--subtree`; `--follow`; `--timeout <duration>` (one-shot = total budget, `--follow` = idle budget) |
 | `handoff reply <task>` | Answer a ticket | `--ticket <id>` plus exactly one of `--approve` / `--deny [--reason]` / `--answer "text"` |
 | `handoff diff <task>` | git diff + commit list (defaults to the task's own base commit, falling back to the repo's default branch) | `--base <rev>` |
 | `handoff fetch <task> <file>` | Read a single file from the task repo | — |
@@ -428,8 +429,22 @@ a watchdog kill, or the executor no longer being present lands the task in `fail
 | `delivery_failed` | a reply was persisted but never reached the executor | `handoff resume <task>` to redeliver |
 | `stalled` | watchdog: no output for a long time | `attach`/`show` to judge long-running vs stuck |
 
-`progress` and approval-chain audit events are stored without waking anyone; they show up
-in `show`'s event history.
+Task wait/follow filters the same seven audit types at the application consumer:
+`progress`, `approver_decision`, `approver_disabled`, `tickets_voided`,
+`ticket_answered`, `permission_auto_allow`, and `permission_reuse`. Every other
+existing task event—including `delivery_failed`, `stalled`, `approval_dropped`,
+`archived`, and pressure alerts—is actionable; `delivery_failed` means run
+`handoff resume <task>`.
+
+Card wait applies that task policy after unpacking `task_mirrored` and additionally
+wakes for `needs_human`, `needs_cleared`, `decision_opened`, `decision_answered`,
+and real user room messages. Comments, dispatch snapshots, acceptance records,
+system room messages, and `status_moved` remain ledger audit facts: they do not
+produce a wake line, and filtering never removes them from `show` history.
+
+With a background Monitor, Claude Code/grok use one long-lived
+`handoff card wait --follow`; opencode/Codex use the default one-shot card wait,
+that is, 默认一次一挂, then handle the event and attach the next one.
 
 ## Configuration Reference (~/.handoff/config.yaml)
 

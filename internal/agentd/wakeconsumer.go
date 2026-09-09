@@ -6,11 +6,14 @@
 package agentd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sort"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -137,26 +140,27 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 		if err != nil {
 			return keystone.WakeEvent{}, false, err
 		}
-		var kind keystone.WakeKind
-		switch proto.EventType(taskType) {
-		case proto.EventTypeCompleted, proto.EventTypeFailed, proto.EventTypeTurnFailed:
-			kind = keystone.WakeTaskTerminal
-		case proto.EventTypePermissionRequest, proto.EventTypeQuestion:
-			kind = keystone.WakeTicket
-		default:
+		if !client.WaitDeliveryPolicy(proto.EventType(taskType)) {
+			slog.Default().Debug("task_mirrored 因任务消费策略过滤", "seq", ev.Seq,
+				"card", ev.CardID, "type", ev.Type, "task_type", taskType,
+				"reason", "delivery_policy_false")
 			return keystone.WakeEvent{}, false, nil
+		}
+		kind := keystone.WakeTaskTerminal
+		if proto.EventType(taskType) == proto.EventTypePermissionRequest ||
+			proto.EventType(taskType) == proto.EventTypeQuestion {
+			kind = keystone.WakeTicket
 		}
 		return keystone.WakeEvent{
 			Kind: kind, Card: ev.CardID,
 			Summary: fmt.Sprintf("%s: %s", taskType, truncateRunes(string(payload), 400)),
 		}, true, nil
 	case ledger.EvRoomMessage:
-		var msg proto.RoomMessage
-		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
-			return keystone.WakeEvent{}, false,
-				fmt.Errorf("事件 %d 的 room_message 解码失败: %w", ev.Seq, err)
+		msg, yes, err := decodeHumanRoomMessage(ev)
+		if err != nil {
+			return keystone.WakeEvent{}, false, err
 		}
-		if msg.Kind != proto.RoomMsgUser || msg.BySystem {
+		if !yes {
 			return keystone.WakeEvent{}, false, nil
 		}
 		return keystone.WakeEvent{
@@ -172,7 +176,8 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 			return keystone.WakeEvent{}, false, nil
 		}
 		return keystone.WakeEvent{}, false, nil
-	case ledger.EvNeedsHuman, ledger.EvNeedsCleared:
+	case ledger.EvNeedsHuman, ledger.EvNeedsCleared,
+		ledger.EvDecisionOpened, ledger.EvDecisionAnswered:
 		return keystone.WakeEvent{
 			Kind: keystone.WakeTaskTerminal, Card: ev.CardID,
 			Summary: fmt.Sprintf("%s: %s", ev.Type, truncateRunes(string(ev.Payload), 400)),
@@ -180,6 +185,27 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 	default:
 		return keystone.WakeEvent{}, false, nil
 	}
+}
+
+func decodeHumanRoomMessage(ev proto.LedgerEvent) (proto.RoomMessage, bool, error) {
+	var msg proto.RoomMessage
+	if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+		return proto.RoomMessage{}, false,
+			fmt.Errorf("事件 %d 的 room_message 解码失败: %w", ev.Seq, err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(ev.Payload, &fields); err != nil {
+		return proto.RoomMessage{}, false,
+			fmt.Errorf("事件 %d 的 room_message 字段解码失败: %w", ev.Seq, err)
+	}
+	if raw, present := fields["by_system"]; present &&
+		bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return msg, false, nil
+	}
+	if msg.Kind != proto.RoomMsgUser || msg.BySystem {
+		return msg, false, nil
+	}
+	return msg, true, nil
 }
 
 func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int, escalated bool, err error) {
@@ -202,12 +228,15 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 	s.log.Debug("读取自动化账本事件", "cursor", from, "event_count", len(events))
 	type pending struct {
 		seq int64
+		typ string
 		ev  keystone.WakeEvent
 	}
 	pendingByCard := map[string][]pending{}
 	maxProcessed := from
 	for _, ev := range events {
 		if ev.Seq <= from {
+			s.log.Debug("自动化事件不在游标之后，跳过", "seq", ev.Seq,
+				"card", ev.CardID, "type", ev.Type, "cursor", from)
 			continue
 		}
 		s.automationMu.Lock()
@@ -217,6 +246,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			if ev.Seq > maxProcessed {
 				maxProcessed = ev.Seq
 			}
+			s.log.Debug("自动化事件已见，跳过重复消费", "seq", ev.Seq,
+				"card", ev.CardID, "type", ev.Type, "cursor", from,
+				"cursor_candidate", maxProcessed, "reason", "seen")
 			continue
 		}
 		if ev.Type == ledger.EvTaskMirrored {
@@ -231,6 +263,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				s.automationMu.Lock()
 				s.automationSeen[ev.Seq] = struct{}{}
 				s.automationMu.Unlock()
+				s.log.Debug("自动化事件因当前 attempt 闸被标记 seen", "seq", ev.Seq,
+					"card", ev.CardID, "type", ev.Type, "cursor", from,
+					"cursor_candidate", maxProcessed, "reason", "stale_attempt")
 				continue
 			}
 		}
@@ -252,12 +287,18 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			maxProcessed = ev.Seq
 		}
 		if yes {
-			pendingByCard[ev.CardID] = append(pendingByCard[ev.CardID], pending{seq: ev.Seq, ev: wake})
+			pendingByCard[ev.CardID] = append(pendingByCard[ev.CardID], pending{seq: ev.Seq, typ: ev.Type, ev: wake})
+			s.log.Debug("自动化事件进入 pending", "seq", ev.Seq, "card", ev.CardID,
+				"type", ev.Type, "cursor", from, "cursor_candidate", maxProcessed,
+				"pending_count", len(pendingByCard[ev.CardID]))
 			continue
 		}
 		s.automationMu.Lock()
 		s.automationSeen[ev.Seq] = struct{}{}
 		s.automationMu.Unlock()
+		s.log.Debug("自动化事件标记 seen", "seq", ev.Seq, "card", ev.CardID,
+			"type", ev.Type, "cursor", from, "cursor_candidate", maxProcessed,
+			"reason", "not_actionable")
 	}
 
 	cards := make([]string, 0, len(pendingByCard))
@@ -275,6 +316,11 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		if !decision.Wake {
 			s.log.Info("自动化事件因 attach 暂缓", "card", card,
 				"event_count", len(evs), "reason", decision.Reason)
+			for _, item := range batch {
+				s.log.Debug("自动化 pending 事件因 attach 暂缓", "seq", item.seq,
+					"card", card, "type", item.typ, "cursor", from,
+					"cursor_candidate", maxProcessed, "reason", decision.Reason)
+			}
 			return processed, escalated, nil
 		}
 		result, wakeErr := s.wakeCoordinatorRound(ctx, card, evs)
@@ -305,6 +351,11 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 					}
 				}
 			}
+			for _, item := range batch {
+				s.log.Debug("自动化 pending 事件唤醒失败，推进 cursor", "seq", item.seq,
+					"card", card, "type", item.typ, "cursor", from,
+					"cursor_candidate", maxProcessed, "cause", wakeErr)
+			}
 			s.automationMu.Lock()
 			if maxProcessed > s.automationCursor {
 				s.automationCursor = maxProcessed
@@ -323,6 +374,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			s.automationSeen[item.seq] = struct{}{}
 			s.automationMu.Unlock()
 			processed++
+			s.log.Debug("自动化 pending 事件标记 seen", "seq", item.seq,
+				"card", card, "type", item.typ, "cursor", from,
+				"cursor_candidate", maxProcessed, "reason", "wake_succeeded")
 		}
 		s.log.Info("自动化事件批次已唤醒", "card", card,
 			"event_count", len(evs), "session", result.SessionID,

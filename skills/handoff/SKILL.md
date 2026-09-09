@@ -91,7 +91,11 @@ handoff wait <task> --notify --timeout 1h
 
 无人值守时务必带 `--timeout`：它是配置错误的最后一道防线，退出码 124 可以和真失败区分开。
 
-`progress` / `approver_decision` / `approver_disabled` / `tickets_voided` 四类事件**不会**唤醒 `wait`（只入库）。你只会在 `show` 的事件历史里见到它们，日常不用管。
+`progress` / `approver_decision` / `approver_disabled` / `tickets_voided` /
+`ticket_answered` / `permission_auto_allow` / `permission_reuse` 七类事件**不会**唤醒
+`wait`（只入库）。任务流的集合外全是可动作事件，包括 `delivery_failed`、`stalled`、
+`approval_dropped`、`archived` 和压力告警；`delivery_failed` 要去
+`handoff resume <task>`。审计事件仍可在 `show` 的事件历史里对质。
 
 ## 执行器选型与模型
 
@@ -392,8 +396,8 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 坐下 / `--self` 不查小队；叫机器人 / `--launch` 才查。普通终端出示不出会话身份时，
 `bind` / `rebind --self` 失败，空座上仍可 `coordinate`。浏览器页不能坐下。
 
-坐下立刻返回，不代替 wait：这场对话接着挂 `handoff card wait <id>`（已经挂过就
-不要再挂）。叫机器人由那边的无头会话收消息。
+坐下立刻返回，不代替 wait：这场对话接着按下方 harness 规则挂
+`handoff card wait <id>`。叫机器人由那边的无头会话收消息。
 
 `--step` **不占座、不换座**。空座可以派；有人则出示必须等于席位，否则拒绝并提示
 `rebind`。`takeover` 一律失败并指向 bind / coordinate / rebind。`release` 空座幂等
@@ -447,7 +451,7 @@ handoff card list --project <项目>     # 落在执行列（既非「待办」�
 
 ```bash
 handoff card dispatch <id> --step <节点名>   # 走工作流节点（节点名 = 看板列名）
-handoff card wait <id> [--subtree] [--timeout 3h]
+handoff card wait <id> [--subtree] [--follow] [--timeout 3h]
 ```
 
 - **裸 `card dispatch`（不带 `--step`）不要用在卡驱动上。** 卡驱动一律走 `--step`
@@ -475,14 +479,27 @@ handoff card wait <id> [--subtree] [--timeout 3h]
   重派前 `card needs <id> --clear`。
 - 一次性覆盖：绑小队的节点不能 `--executor`；`--model`（B203）、`--extra "<本轮补充>"`（进 prompt
   的「本次补充」小节，不落卡、不影响后续轮次）、`--discipline-override <角色>`（应急）。
-- `card wait` 跟的是**账本单流**（卡或整棵子树的事件，含镜像进来的 task 事件），
-  不是 task 集合——所以挂起期间新拆的子卡、新派的任务天然进流，没有动态成员问题。
-- **一次工作流只挂一次 `card wait`，不必再叠 task 级 `wait --follow`**。唤醒语义
-  与 `wait --follow` 同款：逐条事件即时流出、命令不退出、不用重挂；工单
-  （`question` / `permission_request`）由镜像子系统转成 `task_mirrored` 进卡流，
-  只跳过 `progress` / `approver_decision` / `approver_disabled`
-  （`internal/ledgermirror/mirror.go` 的 `mirrorSkip`）。**卡流该有的事件却没动静时，
-  先查自己的命令有没有接管道**（见上文「订阅」一节的过滤器禁令），别先怀疑镜像。
+- `card wait` 跟的是**账本单流**（卡或整棵动态子树的事件，含镜像进来的 task 事件），
+  stdout 只出逐行原始 `ledger.Event` JSON；过滤发生在消费点，`comment`、`dispatched`、
+  `acceptance_recorded`、审批链/自动审批审计和系统房间指针仍留在账本，`show` 可对质。
+- 默认模式收到第一条可动作事件并成功写出后退出 0；只收到审计事件时继续等。
+  `--follow` 才持续输出多条可动作事件，直到当前成员全部 `已完成`/`终止`；
+  `status_moved` 只触发终态检查，不作为 stdout 唤醒行。
+- 可动作卡事件是 `needs_human`、`needs_cleared`、`decision_opened`、
+  `decision_answered`、真人 `room_message`，以及 `task_mirrored` 解包后经任务
+  `WaitDeliveryPolicy` 判为真的 task event。任务假集合七项与 `handoff wait` 同值；
+  `delivery_failed` 会醒来，按任务处置表执行 `handoff resume <task>`。
+- 默认 `--timeout` 是等到可动作事件或终态收尾的总时长；`--follow` 的 `--timeout`
+  是空闲上限，任意新账本事件（含被过滤审计事件）都会刷新它；超时退出 124。
+- 有后台 Monitor 的 Claude Code/grok：只挂一条
+  `handoff card wait --follow <id> --timeout 3h`。没有后台唤醒的 opencode/Codex：
+  使用不带 `--follow` 的一次性（默认一次一挂）`handoff card wait <id> --timeout 5m`，返回后处置，
+  再挂下一条；不要用 `show`+`sleep`、shell 大循环、子 agent 或 `write_stdin` 轮询冒充 follow。
+- 卡 wait 与 task wait 不是两张分类表；同一工作流只在选择 follow 的 harness 上长挂
+  card wait，不再叠加第二条 task 级订阅来补审计噪声。两次默认 wait 之间的偶发订阅真空
+  是已接受的后续项，不在本卡创建常驻订阅者。
+- **卡流该有的事件却没动静时，先查自己的命令有没有接管道**（见上文「订阅」一节的
+  过滤器禁令），别先怀疑镜像。
 - 醒来之后**处置方式与任务回路完全相同**：先 `handoff show <task>` 以 state
   为准，再按事件分诊表办。别在这里另发明一套。
 

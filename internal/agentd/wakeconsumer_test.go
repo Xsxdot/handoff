@@ -7,8 +7,10 @@ package agentd
 
 import (
 	"context"
+	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -268,6 +270,25 @@ func appendPointerMessage(t *testing.T, st *ledger.Store, cardID string) {
 	}
 }
 
+func appendRawRoomEvent(t *testing.T, env *ledgerEnv, cardID, payload string) int64 {
+	t.Helper()
+	db, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode=WAL&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("打开原始 room ledger: %v", err)
+	}
+	defer db.Close()
+	result, err := db.Exec(`INSERT INTO card_events (card_id, type, actor, payload, created_at)
+		VALUES (?, ?, ?, ?, ?)`, cardID, ledger.EvRoomMessage, "test", payload, time.Now())
+	if err != nil {
+		t.Fatalf("写原始 room event: %v", err)
+	}
+	seq, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("读取原始 room event seq: %v", err)
+	}
+	return seq
+}
+
 func TestAutomationEventMappingThroughConsumer(t *testing.T) {
 	env, runner := newNoPTYAutomationEnv(t)
 	cardID := createCoordCard(t, env)
@@ -302,6 +323,220 @@ func TestAutomationEventMappingThroughConsumer(t *testing.T) {
 		if strings.Contains(resumes[0], unwanted) {
 			t.Fatalf("不应唤醒/进入 briefing 的内容 %q 出现: %s", unwanted, resumes[0])
 		}
+	}
+}
+
+func TestB353AutomationUsesWaitDeliveryPolicy(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	falseTypes := []string{
+		"progress", "approver_decision", "approver_disabled", "tickets_voided",
+		"ticket_answered", "permission_auto_allow", "permission_reuse",
+	}
+	for i, typ := range falseTypes {
+		appendMirroredForConsumer(t, env.ledger, cardID, "audit-"+typ, typ, int64(i+1),
+			`{"kind":"audit","type":"`+typ+`"}`)
+	}
+	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil {
+		t.Fatalf("消费策略假事件: %v", err)
+	}
+	if processed != 0 || escalated {
+		t.Fatalf("策略假事件不应唤醒，processed=%d escalated=%v", processed, escalated)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 0 {
+		t.Fatalf("策略假事件不应 Resume: %v", resumes)
+	}
+	events, err := env.ledger.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		t.Fatalf("读取审计事件: %v", err)
+	}
+	for _, typ := range falseTypes {
+		found := false
+		for _, event := range events {
+			if event.Type == ledger.EvTaskMirrored && strings.Contains(string(event.Payload), `"task_type":"`+typ+`"`) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Fatalf("策略假事件 %s 被消费过滤后不应从账本消失", typ)
+		}
+	}
+
+	trueTypes := []string{"delivery_failed", "stalled", "approval_dropped", "archived"}
+	for i, typ := range trueTypes {
+		appendMirroredForConsumer(t, env.ledger, cardID, "action-"+typ, typ, int64(100+i),
+			`{"kind":"action","type":"`+typ+`"}`)
+	}
+	processed, escalated, err = env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil || escalated || processed != len(trueTypes) {
+		t.Fatalf("策略真事件未完整唤醒，processed=%d escalated=%v err=%v", processed, escalated, err)
+	}
+	_, resumes, _ = runner.snapshot()
+	if len(resumes) != 1 {
+		t.Fatalf("同卡策略真事件应合并一次 Resume，实得 %d", len(resumes))
+	}
+	for _, typ := range trueTypes {
+		if !strings.Contains(resumes[0], typ) {
+			t.Fatalf("Resume briefing 缺少策略真事件 %s: %s", typ, resumes[0])
+		}
+	}
+}
+
+func TestB353AutomationMapsCardActionEvents(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	if err := env.ledger.MarkNeedsHuman(cardID, "needs human payload", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.ledger.ClearNeedsHuman(cardID, "test"); err != nil {
+		t.Fatal(err)
+	}
+	decision, err := env.ledger.OpenDecision(cardID, "decision body", []string{"a", "b"}, "test")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := env.ledger.AnswerDecision(decision.ID, "a", "test"); err != nil {
+		t.Fatal(err)
+	}
+	appendUserMessage(t, env.ledger, cardID, "真人 room payload", false)
+	appendUserMessage(t, env.ledger, cardID, "系统 room payload", true)
+	appendPointerMessage(t, env.ledger, cardID)
+	if _, err := env.ledger.AddComment(cardID, "comment audit", "普通", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.ledger.MoveCard(cardID, ledger.StatusTodo, "", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.ledger.CloseCard(cardID, ledger.CloseCancelled, "test"); err != nil {
+		t.Fatal(err)
+	}
+
+	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil || escalated || processed != 5 {
+		t.Fatalf("卡原生动作消费 processed=%d escalated=%v err=%v，want 5/nil/false", processed, escalated, err)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 1 {
+		t.Fatalf("卡原生动作应合并一次 Resume，实得 %d", len(resumes))
+	}
+	for _, want := range []string{"needs human payload", "needs_cleared", "decision body", "answer", "真人 room payload"} {
+		if !strings.Contains(resumes[0], want) {
+			t.Fatalf("卡原生动作 briefing 缺少 %q: %s", want, resumes[0])
+		}
+	}
+	for _, unwanted := range []string{"系统 room payload", "comment audit", "协调者指针", ledger.StatusTodo, ledger.StatusClosed} {
+		if strings.Contains(resumes[0], unwanted) {
+			t.Fatalf("非动作事件 %q 不应进入 briefing: %s", unwanted, resumes[0])
+		}
+	}
+}
+
+func TestB353AutomationRoomJSONBoundaries(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    bool
+		wantErr bool
+	}{
+		{name: "by_system missing", payload: `{"kind":"user","body":"missing"}`, want: true},
+		{name: "by_system false", payload: `{"kind":"user","body":"false","by_system":false}`, want: true},
+		{name: "by_system true", payload: `{"kind":"user","body":"true","by_system":true}`},
+		{name: "by_system null", payload: `{"kind":"user","body":"null","by_system":null}`},
+		{name: "by_system invalid", payload: `{"kind":"user","body":"invalid","by_system":"yes"}`, wantErr: true},
+	}
+	for i, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ev := proto.LedgerEvent{Seq: int64(i + 1), CardID: "B353", Type: ledger.EvRoomMessage,
+				Payload: json.RawMessage(tc.payload)}
+			wake, got, err := automationWakeEvent(ev)
+			if tc.wantErr {
+				if err == nil || !strings.Contains(err.Error(), "事件") ||
+					!strings.Contains(err.Error(), fmt.Sprint(i+1)) {
+					t.Fatalf("非法 room payload error=%v", err)
+				}
+				return
+			}
+			if err != nil || got != tc.want {
+				t.Fatalf("room payload got wake=%+v yes=%v err=%v，want yes=%v", wake, got, err, tc.want)
+			}
+		})
+	}
+}
+
+func TestB353AutomationRoomJSONBoundariesThroughConsumer(t *testing.T) {
+	cases := []struct {
+		name    string
+		payload string
+		want    bool
+		wantErr bool
+	}{
+		{name: "by_system missing", payload: `{"kind":"user","body":"missing"}`, want: true},
+		{name: "by_system false", payload: `{"kind":"user","body":"false","by_system":false}`, want: true},
+		{name: "by_system true", payload: `{"kind":"user","body":"true","by_system":true}`},
+		{name: "by_system null", payload: `{"kind":"user","body":"null","by_system":null}`},
+		{name: "by_system invalid", payload: `{"kind":"user","body":"invalid","by_system":"yes"}`, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner := newNoPTYAutomationEnv(t)
+			cardID := createCoordCard(t, env)
+			prebindConsumerSession(t, env, cardID)
+			seq := appendRawRoomEvent(t, env, cardID, tc.payload)
+			processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+			if tc.wantErr {
+				if err == nil || processed != 0 || escalated ||
+					!strings.Contains(err.Error(), fmt.Sprint(seq)) {
+					t.Fatalf("非法 room payload consumer seam processed=%d escalated=%v err=%v, seq=%d",
+						processed, escalated, err, seq)
+				}
+				return
+			}
+			if err != nil || escalated {
+				t.Fatalf("room payload consumer seam err=%v escalated=%v", err, escalated)
+			}
+			wantProcessed := 0
+			if tc.want {
+				wantProcessed = 1
+			}
+			if processed != wantProcessed {
+				t.Fatalf("room payload consumer processed=%d, want %d", processed, wantProcessed)
+			}
+			_, resumes, _ := runner.snapshot()
+			if tc.want && len(resumes) != 1 {
+				t.Fatalf("真人 room payload 应唤醒一次，resumes=%v", resumes)
+			}
+			if !tc.want && len(resumes) != 0 {
+				t.Fatalf("系统/null room payload 不应唤醒，resumes=%v", resumes)
+			}
+		})
+	}
+}
+
+func TestB353AutomationMalformedEnvelopeFailsAtConsumerSeam(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	seq := appendMirroredForConsumer(t, env.ledger, cardID, "malformed", "", 1, `{"body":"missing type"}`)
+	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err == nil || processed != 0 || escalated {
+		t.Fatalf("缺失 task_type 应在 consumer seam 失败，processed=%d escalated=%v err=%v", processed, escalated, err)
+	}
+	for _, want := range []string{cardID, "task_mirrored"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("错误 %q 缺少上下文: %v", want, err)
+		}
+	}
+	if !strings.Contains(err.Error(), fmt.Sprint(seq)) {
+		t.Fatalf("错误缺少事件 seq=%d: %v", seq, err)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 0 {
+		t.Fatalf("坏 envelope 不得 Resume: %v", resumes)
 	}
 }
 

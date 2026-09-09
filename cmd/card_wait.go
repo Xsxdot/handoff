@@ -8,6 +8,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,12 +18,17 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/logx"
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // cardWaitSubtree 扩展到子树（后代 + 并入成员，每轮动态重算）。
 var cardWaitSubtree bool
+
+// cardWaitFollow 开启持续输出；未开启时首个可动作事件输出成功即退出。
+var cardWaitFollow bool
 
 // cardWaitTimeout 总时长，0 = 不限；超时以 ExitTimeout(124) 退出，与执行域
 // wait 的超时码一致，脚本侧可用同一套判断。
@@ -31,28 +37,37 @@ var cardWaitTimeout time.Duration
 // cardWaitCmd 阻塞跟随一张卡（或整棵子树）的账本事件流。
 var cardWaitCmd = &cobra.Command{
 	Use:   "wait <id>",
-	Short: "跟随卡的账本事件流（--subtree 跟整棵子树），全部达终态退出",
+	Short: "跟随卡的账本事件流（--subtree 跟整棵子树），可动作事件一行一唤醒",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if cardWaitTimeout < 0 {
 			return fmt.Errorf("--timeout 必须为正时长（当前 %s）；不设上限请省略该参数", cardWaitTimeout)
 		}
-		return runCardWait(cmd, args[0], cardWaitSubtree, cardWaitTimeout)
+		return runCardWait(cmd, args[0], cardWaitSubtree, cardWaitFollow, cardWaitTimeout)
 	},
 }
 
-// runCardWait 账本单流多路 wait：从当前 seq 起跟子树事件（每行一个
-// JSON 事件到 stdout），全部成员达骨架终态（已完成/终止）即退出 0。
-// 成员集每轮重算——wait 挂起期间新拆/新并入的卡天然进流。timeout 是
-// 总时长（0=不限），超时退出码 124 与单 task wait 一致。
-func runCardWait(cmd *cobra.Command, cardID string, subtree bool, timeout time.Duration) error {
+// runCardWait 跟随卡或动态子树的账本单流。
+//
+// 默认模式只输出首个成功编码的可动作原始 ledger.Event 后退出 0；follow
+// 模式持续输出可动作事件，直到当前成员全部进入已完成/终止。审计事件
+// 始终保留在账本，只在本消费点不写 stdout。默认 timeout 是等待总时长，
+// follow timeout 是任意账本事件之间的空闲上限；0 表示不设限，超时为 124。
+func runCardWait(cmd *cobra.Command, cardID string, subtree, follow bool, timeout time.Duration) error {
+	slog.SetDefault(logx.Setup("cli", ""))
+	slog.Info("card wait 入口", "card", cardID, "subtree", subtree, "follow", follow,
+		"timeout", timeout.String())
 	st, err := openLedger()
 	if err != nil {
-		return err
+		slog.Error("card wait 打开账本失败", "card", cardID, "subtree", subtree,
+			"follow", follow, "timeout", timeout.String(), "cause", err)
+		return fmt.Errorf("card %s wait 打开账本: %w", cardID, err)
 	}
 	defer st.Close()
 	if _, err := st.GetCard(cardID); err != nil {
-		return err
+		slog.Error("card wait 卡不存在或读取失败", "card", cardID, "subtree", subtree,
+			"follow", follow, "timeout", timeout.String(), "cause", err)
+		return fmt.Errorf("card %s wait 读取卡: %w", cardID, err)
 	}
 	members := func() ([]string, error) {
 		if subtree {
@@ -62,26 +77,33 @@ func runCardWait(cmd *cobra.Command, cardID string, subtree bool, timeout time.D
 	}
 	start, err := st.MaxSeq()
 	if err != nil {
-		return err
+		slog.Error("card wait 读取起点失败", "card", cardID, "subtree", subtree,
+			"follow", follow, "timeout", timeout.String(), "cause", err)
+		return fmt.Errorf("card %s wait 读取起点: %w", cardID, err)
 	}
 	ctx := cmd.Context()
-	if timeout > 0 {
+	noteActivity := func() {}
+	stopIdle := func() {}
+	timedOut := func() bool { return false }
+	if follow && timeout > 0 {
+		ctx, noteActivity, stopIdle, timedOut = startCardWaitIdle(ctx, timeout)
+		defer stopIdle()
+	} else if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
 	}
-	slog.SetDefault(logx.Setup("cli", ""))
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	allDone := errors.New("all-done")
 	checkDone := func() (bool, error) {
 		ids, err := members()
 		if err != nil {
-			return false, err
+			return false, fmt.Errorf("card %s wait 解析成员: %w", cardID, err)
 		}
 		for _, id := range ids {
 			card, err := st.GetCard(id)
 			if err != nil {
-				return false, err
+				return false, fmt.Errorf("card %s wait 读取成员 %s: %w", cardID, id, err)
 			}
 			if card.Status != ledger.StatusDone && card.Status != ledger.StatusClosed {
 				return false, nil
@@ -90,37 +112,190 @@ func runCardWait(cmd *cobra.Command, cardID string, subtree bool, timeout time.D
 		return true, nil
 	}
 	if done, err := checkDone(); err != nil {
+		slog.Error("card wait 初始终态检查失败", "card", cardID, "subtree", subtree,
+			"follow", follow, "timeout", timeout.String(), "cause", err)
 		return err
 	} else if done {
+		slog.Info("card wait 初始即全部终态", "card", cardID, "subtree", subtree,
+			"follow", follow)
 		fmt.Fprintln(cmd.ErrOrStderr(), "子树已全部完成")
 		return nil
 	}
 	err = st.Follow(ctx, members, start, 2*time.Second, func(e ledger.Event) error {
-		if err := enc.Encode(e); err != nil {
-			return err
-		}
-		if e.Type != ledger.EvStatusMoved {
+		noteActivity()
+		slog.Debug("card wait 收到账本事件", "card", e.CardID, "seq", e.Seq,
+			"type", e.Type, "follow", follow)
+
+		if e.Type == ledger.EvStatusMoved {
+			done, err := checkDone()
+			if err != nil {
+				slog.Error("card wait 终态检查失败", "card", cardID, "seq", e.Seq,
+					"type", e.Type, "cause", err)
+				return err
+			}
+			if done {
+				slog.Info("card wait 成员全部终态", "card", cardID, "seq", e.Seq,
+					"type", e.Type, "follow", follow)
+				return allDone
+			}
 			return nil
 		}
-		if done, err := checkDone(); err != nil {
+
+		actionable, err := cardWaitEventActionable(e)
+		if err != nil {
+			slog.Error("card wait 事件分类失败", "card", e.CardID, "seq", e.Seq,
+				"type", e.Type, "cause", err)
 			return err
-		} else if done {
+		}
+		if !actionable {
+			slog.Debug("card wait 过滤审计事件", "card", e.CardID, "seq", e.Seq,
+				"type", e.Type)
+			return nil
+		}
+		if err := enc.Encode(e); err != nil {
+			slog.Error("card wait 输出事件失败", "card", e.CardID, "seq", e.Seq,
+				"type", e.Type, "cause", err)
+			return err
+		}
+		slog.Info("card wait 已输出可动作事件", "card", e.CardID, "seq", e.Seq,
+			"type", e.Type, "follow", follow)
+		if !follow {
 			return allDone
 		}
 		return nil
 	})
 	switch {
 	case errors.Is(err, allDone):
-		fmt.Fprintln(cmd.ErrOrStderr(), "子树全部完成，wait 退出")
+		if follow {
+			slog.Info("card wait 成员全部终态，follow 退出", "card", cardID)
+		} else {
+			slog.Info("card wait 首个可动作事件已输出，一次性退出", "card", cardID)
+		}
 		return nil
+	case follow && errors.Is(err, context.Canceled) && timedOut():
+		slog.Error("card wait follow 空闲超时", "card", cardID, "subtree", subtree,
+			"follow", follow, "timeout", timeout.String(), "cause", err)
+		return &exitCodeError{code: ExitTimeout, err: fmt.Errorf("wait --card 空闲超时")}
 	case errors.Is(err, context.DeadlineExceeded):
+		slog.Error("card wait 总时长超时", "card", cardID, "subtree", subtree,
+			"follow", follow, "timeout", timeout.String(), "cause", err)
 		return &exitCodeError{code: ExitTimeout, err: fmt.Errorf("wait --card 超时")}
 	default:
+		if err != nil {
+			slog.Error("card wait 异常退出", "card", cardID, "subtree", subtree,
+				"follow", follow, "timeout", timeout.String(), "cause", err)
+		}
 		return err
 	}
 }
 
+// cardWaitEventActionable 根据唯一任务等待策略与卡原生动作集合分类事件。
+// 返回错误时表示 payload 已损坏或缺失，调用方必须携带事件上下文返回，不能
+// 把无法判断的事件静默降级为审计。
+func cardWaitEventActionable(ev ledger.Event) (bool, error) {
+	switch ev.Type {
+	case ledger.EvNeedsHuman, ledger.EvNeedsCleared,
+		ledger.EvDecisionOpened, ledger.EvDecisionAnswered:
+		return true, nil
+	case ledger.EvRoomMessage:
+		var msg proto.RoomMessage
+		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+			return false, fmt.Errorf("card %s room_message seq=%d type=%s 解码: %w",
+				ev.CardID, ev.Seq, ev.Type, err)
+		}
+		var fields map[string]json.RawMessage
+		if err := json.Unmarshal(ev.Payload, &fields); err != nil {
+			return false, fmt.Errorf("card %s room_message seq=%d type=%s 字段解码: %w",
+				ev.CardID, ev.Seq, ev.Type, err)
+		}
+		if raw, present := fields["by_system"]; present &&
+			bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+			return false, nil
+		}
+		return msg.Kind == proto.RoomMsgUser && !msg.BySystem, nil
+	case ledger.EvTaskMirrored:
+		var envelope struct {
+			TaskType string          `json:"task_type"`
+			Payload  json.RawMessage `json:"payload"`
+		}
+		if err := json.Unmarshal(ev.Payload, &envelope); err != nil {
+			return false, fmt.Errorf("card %s task_mirrored seq=%d type=%s 解包: %w",
+				ev.CardID, ev.Seq, ev.Type, err)
+		}
+		if envelope.TaskType == "" || len(envelope.Payload) == 0 {
+			return false, fmt.Errorf("card %s task_mirrored seq=%d type=%s 缺 task_type/payload",
+				ev.CardID, ev.Seq, ev.Type)
+		}
+		return client.WaitDeliveryPolicy(proto.EventType(envelope.TaskType)), nil
+	default:
+		return false, nil
+	}
+}
+
+// startCardWaitIdle 建立 follow 的空闲计时控制器。计时以 Store.Follow 收到
+// 任意账本事件为准，过滤掉的审计事件也会调用 noteActivity；stop 等待控制
+// goroutine 退出，避免一次性 CLI 测试或命令结束后遗留后台生命周期。
+func startCardWaitIdle(parent context.Context, idle time.Duration) (
+	ctx context.Context, noteActivity func(), stop func(), timedOut func() bool,
+) {
+	if idle <= 0 {
+		return parent, func() {}, func() {}, func() bool { return false }
+	}
+	ctx, cancel := context.WithCancel(parent)
+	// 每条账本事件都必须和 idle 控制器完成一次握手。容量 1 的非阻塞
+	// 通知会把同一批回调压成一条，导致计时从批次中较早事件而非最后事件
+	// 刷新；无缓冲通道让 Store.Follow 的回调在每次刷新后再继续。
+	activity := make(chan struct{})
+	expired := make(chan struct{})
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		timer := time.NewTimer(idle)
+		defer timer.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-activity:
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+				timer.Reset(idle)
+			case <-timer.C:
+				close(expired)
+				cancel()
+				return
+			}
+		}
+	}()
+	noteActivity = func() {
+		select {
+		case activity <- struct{}{}:
+		case <-ctx.Done():
+			// 父 context 或 idle timer 已停止控制器；不能再等待接收者。
+		}
+	}
+	stop = func() {
+		cancel()
+		<-done
+	}
+	timedOut = func() bool {
+		select {
+		case <-expired:
+			return true
+		default:
+			return false
+		}
+	}
+	return ctx, noteActivity, stop, timedOut
+}
+
 func init() {
 	cardWaitCmd.Flags().BoolVar(&cardWaitSubtree, "subtree", false, "扩展到子树（后代 + 并入成员，动态）")
-	cardWaitCmd.Flags().DurationVar(&cardWaitTimeout, "timeout", 0, "总时限（如 2h）；到点以 124 退出")
+	cardWaitCmd.Flags().BoolVar(&cardWaitFollow, "follow", false, "持续输出可动作事件，全部成员终态才退出")
+	cardWaitCmd.Flags().DurationVar(&cardWaitTimeout, "timeout", 0,
+		"超时（如 2h）；默认=等待总时长，--follow=空闲上限，到点以 124 退出")
 }

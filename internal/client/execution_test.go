@@ -35,6 +35,41 @@ func TestWaitDeliveryPolicyMatchesIsDeliverableAlias(t *testing.T) {
 	}
 }
 
+func TestB353WaitDeliveryPolicyFrozenSet(t *testing.T) {
+	falseTypes := []proto.EventType{
+		proto.EventTypeProgress,
+		proto.EventTypeApproverDecision,
+		proto.EventTypeApproverDisabled,
+		proto.EventTypeTicketsVoided,
+		proto.EventTypeTicketAnswered,
+		proto.EventTypePermissionAutoAllow,
+		proto.EventTypePermissionReuse,
+	}
+	trueTypes := []proto.EventType{
+		proto.EventTypePermissionRequest,
+		proto.EventTypeQuestion,
+		proto.EventTypeCompleted,
+		proto.EventTypeFailed,
+		proto.EventTypeTurnFailed,
+		proto.EventTypeStalled,
+		proto.EventTypeDeliveryFailed,
+		proto.EventTypeApprovalDropped,
+		proto.EventTypeArchived,
+		proto.EventTypeResourcePressure,
+		proto.EventTypeTaskProcPressure,
+	}
+	for _, typ := range falseTypes {
+		if got := client.WaitDeliveryPolicy(typ); got {
+			t.Errorf("WaitDeliveryPolicy(%q)=true, want false", typ)
+		}
+	}
+	for _, typ := range trueTypes {
+		if got := client.WaitDeliveryPolicy(typ); !got {
+			t.Errorf("WaitDeliveryPolicy(%q)=false, want true", typ)
+		}
+	}
+}
+
 func wantDeliverable(t proto.EventType) bool {
 	switch t {
 	case proto.EventTypeProgress, proto.EventTypeApproverDecision,
