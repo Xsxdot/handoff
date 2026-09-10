@@ -28,6 +28,10 @@ type DispatchOpts struct {
 	Prompt, Branch, Target, Project, Executor, Model, PlanB64, PlanName, Base, ExistingBranch, Discipline string
 	// Receiver 是统一接收者名（载体或小队）。空=默认载体。Ticket 0 只声明。
 	Receiver string
+	// Carrier/Squad 是卡节点已经冻结的执行身份；空=普通派发或旧调用。
+	// ledgerstep 只透传，不解析、不准入、不释放。
+	Carrier string
+	Squad   string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	HomeDir *string
 	// B229：DisciplineText 是协调者侧组装好的纪律正文（缝 1 discipline.ResolveDispatch 产物），
@@ -87,6 +91,9 @@ type Dispatcher struct {
 	// HomeDir 是小队绑定载体 HOME 的可空原指针；nil 表示普通派发，指向空串
 	// 表示显式不覆盖目标进程 HOME。ledgerstep 不展开、清理或改写该字符串。
 	HomeDir *string
+	// Carrier/Squad 是卡节点起源侧已冻结的执行身份；普通派发保持空值。
+	Carrier string
+	Squad   string
 	// NormalizeTarget 把调用方已确认的自机登记名归一成空串；nil 等价于恒等
 	// 函数。未知目标名不得在此处改写，目标身份判断归组装点负责。
 	NormalizeTarget func(target string) string
@@ -335,6 +342,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
 		Receiver:   req.Receiver,
+		Carrier:    d.Carrier,
+		Squad:      d.Squad,
 		HomeDir:    d.HomeDir,
 		OutputPath: req.OutputPath,
 		PlanName:   planName, Base: base, NewWorktree: true,

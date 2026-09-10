@@ -520,6 +520,18 @@ func (s *Service) Admit(req IgnitionRequest) (Binding, error) {
 	return binding, err
 }
 
+// Select 为 B233.10 的起源侧选择空壳：实现票负责从 req.Squad 选择并冻结一个
+// Binding，但起源侧不得为这次执行写运行计数。
+func (s *Service) Select(req IgnitionRequest) (Binding, error) {
+	return Binding{}, errors.New("scheduling: 冻结身份选择尚未接线")
+}
+
+// AdmitFrozen 为 B233.10 的执行侧准入空壳：实现票按给定 Binding 占用准确载体，
+// 不得使用 Binding.Squad 再解析出另一成员。
+func (s *Service) AdmitFrozen(binding Binding) (Binding, error) {
+	return Binding{}, errors.New("scheduling: 冻结身份准入尚未接线")
+}
+
 // LaunchAdmit 对一次协调者拉起做两级准入（协调者小队的成员载体必须在协调机上，
 // 该约束由配置审核保证，本域只管计数）。
 func (s *Service) LaunchAdmit(squadName string) (Binding, error) {

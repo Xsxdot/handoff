@@ -137,6 +137,8 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 				return nil
 			},
 			HomeDir:           dispatchHomeDir,
+			Carrier:           binding.Carrier,
+			Squad:             binding.Squad,
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
 			NormalizeTarget:   s.CanonicalTarget,
@@ -347,7 +349,8 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 	}
 	task, err := cl.Dispatch(ctx, client.DispatchOpts{
 		Prompt: opts.Prompt, Target: canonical,
-		Receiver:  opts.Receiver,
+		Receiver: opts.Receiver,
+		Carrier:  opts.Carrier, Squad: opts.Squad,
 		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
 		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
 		HomeDir:           opts.HomeDir,

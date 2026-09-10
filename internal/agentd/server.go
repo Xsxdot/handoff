@@ -1329,6 +1329,10 @@ type dispatchRequest struct {
 	Name        string `json:"name"`
 	// Receiver 是统一接收者名（载体或小队）。空=默认载体。Ticket 0 只解码。
 	Receiver string `json:"receiver,omitempty"`
+	// Carrier/Squad 是 B233.10 Ticket 0 的冻结身份字段；当前空壳只解码，
+	// 执行侧消费接线归实现票。
+	Carrier string `json:"carrier,omitempty"`
+	Squad   string `json:"squad,omitempty"`
 	// HomeDir 是小队派发载体 HOME 的可空字段；缺席与显式空串必须可区分。
 	HomeDir  *string `json:"home_dir,omitempty"`
 	Executor string  `json:"executor"`
