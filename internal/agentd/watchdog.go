@@ -21,12 +21,15 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/schedclient"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
@@ -442,6 +445,70 @@ func emitReclaimFailed(st *store.Store, hub *Hub, taskID string, used, hardLimit
 	}
 	hub.Publish(evt)
 	log.Warn("已向协调者发出强制回收失败提示", "task", taskID, "used", used, "hard_limit", hardLimit)
+}
+
+const schedRunningKind = "sched_running"
+
+type schedRunningBody struct {
+	Count int `json:"count"`
+}
+
+// reconcileSchedRunning 是启动对账，对共享 sched_running **只读不写**。
+//
+// 为什么不清零：sched_running 在共享账本上跨机可见。本机 ListTasks 看不到 owner
+// 不等于集群里没有占用者（他机执行、没有 Task 的 LaunchAdmit 会话都在同一把键上
+// 计数）。以「本机无非终态 owner」或「本机对应任务已终态」为由把共享计数写成 0，
+// 会跨机误伤别人的占用。本机 pending/running/waiting_review owner 本就不该被改写，
+// 一并原样保留。
+//
+// 仍保留解码校验：损坏记录在启动时带 key/version 暴露并阻断后续 executor 恢复，
+// 而不是被悄悄清零或跳过。对账本身不再产生任何写者。
+func reconcileSchedRunning(st *store.Store, repo schedclient.Registry, log *slog.Logger) error {
+	tasks, err := st.ListTasks()
+	if err != nil {
+		log.Error("启动对账读取任务列表失败", "error_kind", "task_list", "cause", err)
+		return fmt.Errorf("启动对账读取任务列表: %w", err)
+	}
+	owned := make(map[string]struct{})
+	for _, task := range tasks {
+		if task.State.IsTerminal() || task.Carrier == "" {
+			continue
+		}
+		owned[scheduling.OccupancyCarrierKey(task.Carrier)] = struct{}{}
+		if task.Squad != "" {
+			owned[scheduling.OccupancyMemberKey(task.Squad, task.Carrier)] = struct{}{}
+		}
+	}
+	rows, err := repo.List(schedRunningKind)
+	if err != nil {
+		log.Error("启动对账读取 sched_running 失败", "error_kind", "running_list", "cause", err)
+		return fmt.Errorf("启动对账读取 sched_running: %w", err)
+	}
+	foreignPreserved := 0
+	for _, row := range rows {
+		var body schedRunningBody
+		if err := json.Unmarshal(row.Body, &body); err != nil {
+			log.Error("启动对账解码运行计数失败", "key", row.ID, "version", row.Version,
+				"count", body.Count, "error_kind", "decode", "cause", err)
+			return fmt.Errorf("启动对账解码 %s: %w", row.ID, err)
+		}
+		if body.Count <= 0 {
+			log.Info("启动对账跳过非正运行计数", "key", row.ID, "version", row.Version,
+				"count", body.Count, "error_kind", "non_positive")
+			continue
+		}
+		if _, ok := owned[row.ID]; ok {
+			log.Info("启动对账保留本机任务所有的运行计数", "key", row.ID, "count", body.Count,
+				"version", row.Version, "error_kind", "owned")
+			continue
+		}
+		foreignPreserved++
+		log.Info("启动对账保留无本机 owner 的运行计数（跨机占用不得清零）", "key", row.ID,
+			"count", body.Count, "version", row.Version, "error_kind", "foreign_preserved")
+	}
+	log.Info("启动调度占用对账完成（只读，不清零）", "task_count", len(tasks),
+		"record_count", len(rows), "owned_count", len(owned), "foreign_preserved", foreignPreserved)
+	return nil
 }
 
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：

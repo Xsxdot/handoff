@@ -722,6 +722,9 @@ type DispatchOpts struct {
 	Name        string
 	// Receiver 是统一接收者名（载体或小队）。空=默认载体。
 	Receiver string
+	// Carrier/Squad 是起源侧已经冻结的执行身份；空=普通派发或旧调用。
+	Carrier string
+	Squad   string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	HomeDir  *string
 	Executor string
@@ -772,11 +775,18 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	if opts.Receiver != "" {
 		body["receiver"] = opts.Receiver
 	}
+	if opts.Carrier != "" {
+		body["carrier"] = opts.Carrier
+	}
+	if opts.Squad != "" {
+		body["squad"] = opts.Squad
+	}
 	if opts.HomeDir != nil {
 		body["home_dir"] = *opts.HomeDir
 	}
 	c.log().Info("Dispatch 进入", "url", c.baseURL, "relay", c.relayBacked,
-		"executor", opts.Executor, "prompt_runes", len([]rune(opts.Prompt)))
+		"executor", opts.Executor, "target", opts.Target, "carrier", opts.Carrier, "squad", opts.Squad,
+		"home_dir_set", opts.HomeDir != nil, "prompt_runes", len([]rune(opts.Prompt)))
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", body)
 	if err != nil {
 		c.log().Error("Dispatch 失败", "url", c.baseURL, "cause", err)

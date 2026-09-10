@@ -114,6 +114,16 @@
 - **ExecutionClient 成为生产消费类型**：接口与编译断言已在，生产调用方仍持有聚合 `*client.Client`。来源：同上。
 - **全仓 internal/ 按 best.json 重排**：物理搬家仍暂缓，目录是结果不是手段。来源：同上。
 
+## 来自 B233.11 spec（2026-09-10）
+
+- **占用记录写入 task/machine owner，再按 owner 回收**：AdmitFrozen→CreateTask 崩溃窗口与本机终态漏释放，不能靠「本机任务表没有 owner」去清共享键。B233.11 只禁止跨机误清。来源：`docs/superpowers/specs/b233.11.md` Out of Scope。
+
+## 来自 B233.10 验收（2026-09-10，DUT `4e39434f`）
+
+- **真机/跨机矩阵未在本 SHA**：对端 agentd 仍是线上 `86a08861`，不是功能线。plan §9 未跑：本地 squad A/B 精确冻结与满载、origin→linux-01 跨机 HTTP、adapter start failure 真实进程、AdmitFrozen→CreateTask 前后及 agentd 重启三个窗口、Done/Stop/重复 Done/Continue/Resume 真实 CLI、direct carrier dispatch 与 queue 满载、Linux/macOS/Windows 矩阵。合 main 部署后再验。来源：B233.10 plan §9；acceptance。
+- **冻结空 Model 的 acquire 成功日志仍打印当前载体 Model**：最终快照日志已是冻结值，acquire 成功那行口径不一致。review-4 minor，不阻塞。来源：B233.10 review-4；file `internal/scheduling/scheduling.go`。
+- **TestLegacyNodeEventSequenceUnchanged 基线已红**：`comment`/`dispatched` 序在 charter-5 / `3fd6874f` 即红，非本卡引入。来源：B233.10 acceptance 复跑。
+
 ## 来自 B353 spec（2026-09-09）
 
 - **两次 wait 之间无人订阅的真空**：一次性 wait 退出到下一挂之间没人听事件（08-11 曾空转 7h）。本卡不另开实现、不做常驻订阅者；grok/Claude 走 `--follow` 避开真空，opencode/Codex 接受偶发。若以后做 handoff 进程内常驻订阅，从本条重走 spec。来源：`docs/superpowers/specs/b353.md` Out of Scope。

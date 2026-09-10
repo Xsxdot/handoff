@@ -3,14 +3,17 @@ package agentd
 // B233.5 T2 接缝测试：裸 HTTP 派发按载体/小队统一解析、准入与物理绑定。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
 
+	handoffclient "github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
@@ -99,6 +102,73 @@ func TestHandleDispatchEmptyReceiverBindsDefault(t *testing.T) {
 	}
 }
 
+// TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty 锁住冻结 HTTP 接缝的
+// HomeDir 三态：请求明确携带空串时，传给 Manager 的身份快照仍须保留字段存在性，
+// 不能被当成 nil 省略。
+func TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+		Name: "empty-home", Machine: "local", CLI: "fake", HomeDir: "",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		Status: scheduling.StatusOnline,
+	})
+
+	var logs bytes.Buffer
+	previous := env.srv.log
+	env.srv.log = slog.New(slog.NewTextHandler(&logs, nil))
+	t.Cleanup(func() { env.srv.log = previous })
+
+	body := dispatchBody(env.projectID, `,"carrier":"empty-home","target":"local","executor":"fake","home_dir":""`)
+	rr := postDispatch(t, env.srv, body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("冻结空 HOME 派发返回 %d: %s", rr.Code, rr.Body.String())
+	}
+	task := decodeDispatchTask(t, rr)
+	if task.HomeDir != "" {
+		t.Fatalf("冻结空 HOME 任务快照 = %q，want empty", task.HomeDir)
+	}
+	foundSnapshot := false
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if !strings.Contains(line, `msg="dispatch 任务身份快照已组装"`) {
+			continue
+		}
+		foundSnapshot = true
+		if !strings.Contains(line, "home_dir_set=true") {
+			t.Fatalf("冻结请求的显式空 HOME 在身份快照中被省略: %s", line)
+		}
+	}
+	if !foundSnapshot {
+		t.Fatalf("冻结请求未产生身份快照日志: %s", logs.String())
+	}
+	stop := runAction(env.srv, actionRequest(task.ID, "stop", ""), env.srv.handleStop)
+	if stop.Code != http.StatusOK {
+		t.Fatalf("清理冻结空 HOME 任务返回 %d: %s", stop.Code, stop.Body.String())
+	}
+}
+
+// TestB23310FrozenMissingHomeDirIsRejectedForEmptyHomeCarrier 锁住冻结请求的
+// HomeDir 缺席与显式空串不是同一个值：载体登记为空 HOME 时，缺席键不能被服务端
+// 折叠成显式空串而放行，只有明确携带 home_dir:"" 才表示目标机主 HOME。
+func TestB23310FrozenMissingHomeDirIsRejectedForEmptyHomeCarrier(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+		Name: "empty-home-missing", Machine: "local", CLI: "fake", HomeDir: "",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		Status: scheduling.StatusOnline,
+	})
+
+	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
+		` ,"carrier":"empty-home-missing","target":"local","executor":"fake"`))
+	if rr.Code == http.StatusOK {
+		t.Fatalf("冻结空 HOME 缺席 home_dir 不应成功: %s", rr.Body.String())
+	}
+	if tasks, err := env.st.ListTasks(); err != nil {
+		t.Fatalf("读取缺席 HOME 后任务: %v", err)
+	} else if len(tasks) != 0 {
+		t.Fatalf("冻结空 HOME 缺席 home_dir 不应创建任务: %+v", tasks)
+	}
+}
+
 func TestHandleDispatchNoDefaultFails(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID, ""))
@@ -172,6 +242,48 @@ func TestHandleDispatchSquadReceiver(t *testing.T) {
 	}
 	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("muse")); got != 0 {
 		t.Fatalf("小队 stop 后载体占用=%d, want 0", got)
+	}
+}
+
+// TestB23310ClientDispatchUsesFrozenIdentity 验证客户端已经解析出的冻结身份
+// 是 /api/tasks 的准入依据；Receiver 仅保留为审计提示，不得重新选择载体。
+func TestB23310ClientDispatchUsesFrozenIdentity(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	svc := env.srv.Scheduling()
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "carrier-A", Machine: "local", CLI: "fake",
+		HomeDir: "/home/carrier-A", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 1, Status: scheduling.StatusOnline})
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "carrier-B", Machine: "local", CLI: "fake",
+		HomeDir: "/home/carrier-B", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 1, Status: scheduling.StatusOnline})
+	if err := svc.PutSquad(scheduling.Squad{Name: "squad-A", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "carrier-A", MaxConcurrency: 1}}}, 0); err != nil {
+		t.Fatalf("登记 squad-A: %v", err)
+	}
+	if err := svc.PutSquad(scheduling.Squad{Name: "squad-B", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "carrier-B", MaxConcurrency: 1}}}, 0); err != nil {
+		t.Fatalf("登记 squad-B: %v", err)
+	}
+	home := "/home/carrier-A"
+	task, err := handoffclient.New(env.ts.URL, env.token).Dispatch(context.Background(), handoffclient.DispatchOpts{
+		ProjectID: env.projectID, Prompt: "x", Target: "local", Executor: "fake", Model: "model-A",
+		Receiver: "squad-B", Carrier: "carrier-A", Squad: "squad-A", HomeDir: &home,
+	})
+	if err != nil {
+		t.Fatalf("冻结身份派发: %v", err)
+	}
+	if task.Carrier != "carrier-A" || task.Squad != "squad-A" || task.HomeDir != home ||
+		task.Target != "local" || task.Executor != "fake" || task.Model != "model-A" {
+		t.Fatalf("任务未保存冻结身份: %+v", task)
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("carrier-A")); got != 1 {
+		t.Fatalf("冻结载体占用=%d, want 1", got)
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("carrier-B")); got != 0 {
+		t.Fatalf("Receiver 指向的载体被错误占用=%d, want 0", got)
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyMemberKey("squad-A", "carrier-A")); got != 1 {
+		t.Fatalf("冻结小队成员占用=%d, want 1", got)
 	}
 }
 

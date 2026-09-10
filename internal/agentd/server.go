@@ -1329,6 +1329,10 @@ type dispatchRequest struct {
 	Name        string `json:"name"`
 	// Receiver 是统一接收者名（载体或小队）。空=默认载体。Ticket 0 只解码。
 	Receiver string `json:"receiver,omitempty"`
+	// Carrier/Squad 是 B233.10 的冻结身份字段；带 Carrier 时服务端按这组字段
+	// 做一次精确准入，Receiver 只作审计，不重新选择成员。
+	Carrier string `json:"carrier,omitempty"`
+	Squad   string `json:"squad,omitempty"`
 	// HomeDir 是小队派发载体 HOME 的可空字段；缺席与显式空串必须可区分。
 	HomeDir  *string `json:"home_dir,omitempty"`
 	Executor string  `json:"executor"`
@@ -1356,9 +1360,12 @@ type dispatchRequest struct {
 
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
 //
-// 流程：解析请求体 → 接收者准备链 → manager.Dispatch（建任务/写 plan/启动 executor/进 running）。
+// 流程：解析请求体 → 冻结身份准入或普通接收者准备链 → manager.Dispatch
+// （建任务/写 plan/启动 executor/进 running）。带 Carrier 的请求必须使用已冻结的
+// 物理身份；Receiver 只作为审计字段，不能再次选择载体。
 func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
-	s.log.Info("dispatch 请求", "method", r.Method, "path", r.URL.Path)
+	s.log.Info("dispatch 请求", "method", r.Method, "path", r.URL.Path,
+		"remote_addr", r.RemoteAddr)
 	if s.mgr == nil {
 		s.log.Warn("dispatch 请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
@@ -1370,9 +1377,44 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {project_id, plan_b64, ...}"})
 		return
 	}
-	overlay := scheduling.PhysicalOverlay{Machine: req.Target, CLI: req.Executor, HomeDir: req.HomeDir}
-	binding, _, err := s.prepareReceiverBinding(req.Receiver, overlay, req.Model)
+	s.log.Info("dispatch 请求身份", "project", req.ProjectID, "receiver", req.Receiver,
+		"carrier", req.Carrier, "squad", req.Squad, "target", req.Target,
+		"executor", req.Executor, "model", req.Model, "home_dir_set", req.HomeDir != nil)
+	var binding scheduling.Binding
+	var resolved scheduling.ResolvedReceiver
+	var err error
+	if req.Carrier != "" {
+		if s.scheduling == nil {
+			err = errors.New("编制域服务未装配（SetupAutomation 未执行）")
+		} else if req.HomeDir == nil {
+			err = fmt.Errorf("%w: 冻结请求必须明确携带 home_dir（空串表示目标机主 HOME）", scheduling.ErrInvalid)
+			s.log.Warn("dispatch 冻结身份缺少 home_dir", "project", req.ProjectID,
+				"receiver", req.Receiver, "carrier", req.Carrier, "squad", req.Squad,
+				"target", req.Target, "error_kind", "frozen_home_dir_missing", "cause", err)
+		} else {
+			homeDir := *req.HomeDir
+			binding, err = s.scheduling.AdmitFrozen(scheduling.Binding{
+				Squad: req.Squad, Carrier: req.Carrier, Target: req.Target,
+				Executor: req.Executor, Model: req.Model, HomeDir: homeDir,
+			})
+			s.log.Info("dispatch 冻结身份准入", "project", req.ProjectID, "receiver", req.Receiver,
+				"carrier", req.Carrier, "squad", req.Squad, "target", req.Target,
+				"executor", req.Executor, "model", req.Model, "error_kind", "frozen_admit")
+		}
+	} else if req.Squad != "" {
+		err = fmt.Errorf("%w: 冻结小队请求缺少 carrier", scheduling.ErrInvalid)
+	} else {
+		overlay := scheduling.PhysicalOverlay{Machine: req.Target, CLI: req.Executor, HomeDir: req.HomeDir}
+		binding, resolved, err = s.prepareReceiverBinding(req.Receiver, overlay, req.Model)
+		s.log.Info("dispatch 普通身份准入", "project", req.ProjectID, "receiver", req.Receiver,
+			"resolved_name", resolved.Name, "resolved_kind", string(resolved.Kind),
+			"carrier", binding.Carrier, "squad", binding.Squad, "target", binding.Target,
+			"executor", binding.Executor, "model", binding.Model, "error_kind", "ordinary_admit")
+	}
 	if err != nil {
+		s.log.Warn("dispatch 身份准入失败", "project", req.ProjectID, "receiver", req.Receiver,
+			"carrier", req.Carrier, "squad", req.Squad, "target", req.Target,
+			"error_kind", "admit", "cause", err)
 		s.writeDispatchError(w, req.ProjectID, err)
 		return
 	}
@@ -1387,9 +1429,12 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}()
 	home := binding.HomeDir
 	var homePtr *string
-	if home != "" {
+	if req.Carrier != "" || home != "" {
 		homePtr = &home
 	}
+	s.log.Info("dispatch 任务身份快照已组装", "project", req.ProjectID,
+		"carrier", binding.Carrier, "squad", binding.Squad, "target", binding.Target,
+		"executor", binding.Executor, "home_dir_set", homePtr != nil)
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,
@@ -1699,20 +1744,32 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 	// 409——那些是真的状态不对，一并放行等于让 done 变成万能收口，审核者会
 	// 失去「我操作错了」这个信号。
 	if cur, err := s.st.GetTask(taskID); err == nil && cur.State == proto.TaskStateCompleted {
-		s.releaseTaskCarrierOccupancy(cur)
+		s.log.Info("done 已幂等完成，跳过重复释放", "task", taskID, "state", cur.State,
+			"carrier", cur.Carrier, "squad", cur.Squad, "error_kind", "already_completed")
 		writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
 		return
 	}
 	cur, taskErr := s.st.GetTask(taskID)
+	if taskErr != nil {
+		s.log.Error("done 读取任务快照失败，未执行终态迁移", "task", taskID, "cause", taskErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务快照失败"})
+		return
+	}
 	if err := s.mgr.Done(r.Context(), taskID, req.Note); err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return
 	}
-	if taskErr != nil {
-		s.log.Error("done 成功后读取任务快照失败，未能释放载体占用", "task", taskID, "cause", taskErr)
-	} else {
+	terminal, snapshotErr := s.st.GetTask(taskID)
+	if snapshotErr != nil {
+		// 任务身份在终态迁移中不会改变；读回失败时用迁移前已取得的
+		// 同一身份快照补释放，避免“不能确认快照”变成容量泄漏。
+		s.log.Error("done 成功后读取终态任务快照失败，使用迁移前身份快照释放占用",
+			"task", taskID, "cause", snapshotErr)
 		s.releaseTaskCarrierOccupancy(cur)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "任务已归档但读取终态快照失败"})
+		return
 	}
+	s.releaseTaskCarrierOccupancy(terminal)
 	// 消息文字必须与 manager.Done 的「done 完成」区分开：两处同名会让一次归档
 	// 捞出两行日志，其中一行没有 note_saved，排障时分不清看的是哪一层
 	s.log.Info("done 请求完成", "task", taskID, "note_saved", req.Note != "")
@@ -1735,16 +1792,27 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, taskErr := s.st.GetTask(taskID)
+	if taskErr != nil {
+		s.log.Error("stop 读取任务快照失败，未执行终态迁移", "task", taskID, "cause", taskErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务快照失败"})
+		return
+	}
 	removed, err := s.mgr.Stop(r.Context(), taskID)
 	if err != nil {
 		s.writeManagerError(w, taskID, "stop", err)
 		return
 	}
-	if taskErr != nil {
-		s.log.Error("stop 成功后读取任务快照失败，未能释放载体占用", "task", taskID, "cause", taskErr)
-	} else {
+	terminal, snapshotErr := s.st.GetTask(taskID)
+	if snapshotErr != nil {
+		// 与 Done 同理：终态迁移不改任务身份，保留一次可释放的快照，
+		// 同时把快照读取故障明确返回给调用方。
+		s.log.Error("stop 成功后读取终态任务快照失败，使用迁移前身份快照释放占用",
+			"task", taskID, "cause", snapshotErr)
 		s.releaseTaskCarrierOccupancy(task)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "任务已停止但读取终态快照失败"})
+		return
 	}
+	s.releaseTaskCarrierOccupancy(terminal)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
 }
 
@@ -1752,15 +1820,33 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 // Squad 与 Carrier 都在 CreateTask 时冻结；空 Squad 仍会由 OccupancyKeys 省略成员键，
 // 从而让载体直派和旧任务保持只释放载体位的语义。
 func (s *Server) releaseTaskCarrierOccupancy(task *proto.Task) {
-	if task == nil || task.Carrier == "" || s.scheduling == nil {
+	if task == nil {
+		s.log.Warn("任务终态没有任务快照可释放", "error_kind", "task_missing")
+		return
+	}
+	memberKey := scheduling.OccupancyMemberKey(task.Squad, task.Carrier)
+	carrierKey := scheduling.OccupancyCarrierKey(task.Carrier)
+	if task.Carrier == "" {
+		s.log.Info("任务终态无载体占用可释放", "task", task.ID, "state", task.State,
+			"squad", task.Squad, "carrier", task.Carrier, "member_key", memberKey,
+			"carrier_key", carrierKey, "error_kind", "no_carrier")
+		return
+	}
+	if s.scheduling == nil {
+		s.log.Error("任务终态释放占用失败：编制域未装配", "task", task.ID, "state", task.State,
+			"squad", task.Squad, "carrier", task.Carrier, "member_key", memberKey,
+			"carrier_key", carrierKey, "error_kind", "scheduling_unavailable")
 		return
 	}
 	if err := s.scheduling.Release(task.Squad, task.Carrier); err != nil {
-		s.log.Error("任务终态释放载体占用失败", "task", task.ID, "squad", task.Squad,
-			"carrier", task.Carrier, "cause", err)
+		s.log.Error("任务终态释放载体占用失败", "task", task.ID, "state", task.State,
+			"squad", task.Squad, "carrier", task.Carrier, "member_key", memberKey,
+			"carrier_key", carrierKey, "error_kind", "release", "cause", err)
 		return
 	}
-	s.log.Info("任务终态已释放载体占用", "task", task.ID, "squad", task.Squad, "carrier", task.Carrier)
+	s.log.Info("任务终态已释放载体占用", "task", task.ID, "state", task.State,
+		"squad", task.Squad, "carrier", task.Carrier, "member_key", memberKey,
+		"carrier_key", carrierKey, "owner", "task_terminal", "error_kind", "release_success")
 }
 
 // parseForce 解析 resume 的 force 查询参数。
@@ -2611,6 +2697,24 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	if s.pty != nil {
 		s.ptyGate = ptyapi.New(s.pty)
 	}
+}
+
+// RecoverOnStartup 先对账调度占用，再执行既有任务恢复；必须在 HTTP Serve 前调用。
+// 对账失败时不进入 executor 恢复，调用方应让 agentd 启动失败并保留上下文。
+func (s *Server) RecoverOnStartup(probe func(string) bool, sweep func(string), log *slog.Logger) error {
+	if s.autoLedger == nil {
+		return errors.New("启动恢复缺少自动化账本")
+	}
+	if log == nil {
+		log = s.log
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	if err := reconcileSchedRunning(s.st, facadeAsRegistry{f: s.autoLedger}, log); err != nil {
+		return err
+	}
+	return RecoverOnStartup(s.st, s.hub, probe, sweep, log)
 }
 
 // PtyAPI 返回终端 PTY 薄门面；PTY 宿主未装配时返回 nil。

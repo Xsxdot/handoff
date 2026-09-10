@@ -17,12 +17,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"log/slog"
+	"net/http"
 	"sort"
 	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/discipline"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
@@ -151,9 +153,9 @@ func TestEffectiveCoversParityMatrix(t *testing.T) {
 }
 
 // holdAfterSquadRound 让小队节点在真实派发之后卡住，直到测试结束才返回。
-// implement 节点 Dispatch 且无 Verdict：Run 在派发后立刻返回，K5 的
-// defer releaseSchedulingBinding 会把计数清零（见 TestCardStepAdmittedRoundReleasesCapacity）。
-// 本文件要观察的是「回合还在飞」时的计数与排队，必须把归还推迟到断言之后。
+// implement 节点 Dispatch 且无 Verdict：Run 在派发后立刻返回；卡槽释放与任务
+// 终态占用释放已经分属两个 owner。本文件要观察的是「回合还在飞」时的计数与
+// 排队，必须把回合执行推迟到断言之后。
 func holdAfterSquadRound(t *testing.T, env *ledgerEnv) {
 	t.Helper()
 	release := make(chan struct{})
@@ -164,9 +166,36 @@ func holdAfterSquadRound(t *testing.T, env *ledgerEnv) {
 	}
 }
 
+func TestB23310CardSelectAssemblyFailureDoesNotRelease(t *testing.T) {
+	env := setupNoPTYSquadEnv(t, 1)
+	if _, err := env.ledger.PutWorkflow("bad-sqflow", ledger.WorkflowDef{Nodes: []ledger.NodeDef{
+		{Name: ledger.StatusTodo, Next: "implement"},
+		{Name: "implement", Next: ledger.StatusDone, Dispatch: true, Template: "feature-impl",
+			Override: ledger.NodeOverride{Squad: "sq1", Discipline: "missing-discipline"}},
+		{Name: ledger.StatusDone},
+	}}); err != nil {
+		t.Fatalf("写入缺失纪律工作流: %v", err)
+	}
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: "选择装配失败卡", Project: "handoff",
+		Workflow: "bad-sqflow", Actor: "test"})
+	if err != nil {
+		t.Fatalf("创建选择装配失败卡: %v", err)
+	}
+	cardID := card.ID
+	if err := env.srv.startCardStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}); err == nil {
+		t.Fatal("缺失模板应在 HTTP 派发前失败")
+	}
+	for _, key := range []string{"carrier/c1", "squad/sq1/c1"} {
+		if _, err := env.srv.autoLedger.Get("sched_running", key); !errors.Is(err, ledger.ErrNotFound) {
+			t.Fatalf("Select 后装配失败不应释放/写入 %s，读结果=%v", key, err)
+		}
+	}
+}
+
 // TestSquadNodeAdmitsAndDispatchesThroughBinding 缝①（编制域入站 api 门面）×
 // 缝④（环节执行体缝）：Squad 非空节点受理后，派发真的穿过 Binding 的三元组——
-// 目标机/执行者以载体为准，计数两级各 +1，task 挂到卡上。
+// 目标机/执行者以载体为准，冻结 Carrier/Squad 进入 wire，task 挂到卡上；起源
+// 侧不持有执行计数。
 func TestSquadNodeAdmitsAndDispatchesThroughBinding(t *testing.T) {
 	env, ftm := setupSquadEnv(t, 2)
 	holdAfterSquadRound(t, env)
@@ -186,20 +215,84 @@ func TestSquadNodeAdmitsAndDispatchesThroughBinding(t *testing.T) {
 	if body["executor"] != "opencode" {
 		t.Fatalf("派发执行者=%v，want 载体 cli opencode", body["executor"])
 	}
+	if body["carrier"] != "c1" || body["squad"] != "sq1" {
+		t.Fatalf("冻结身份未穿过 HTTP body: carrier=%v squad=%v", body["carrier"], body["squad"])
+	}
 	facade := env.srv.autoLedger
-	for key, want := range map[string]int{"squad/sq1/c1": 1, "carrier/c1": 1} {
-		if got := runningCountIn(t, facade, key); got != want {
-			t.Fatalf("计数 %s=%d，want %d", key, got, want)
+	for _, key := range []string{"squad/sq1/c1", "carrier/c1"} {
+		if got := runningCountIn(t, facade, key); got != 0 {
+			t.Fatalf("起源卡节点不应写执行计数 %s=%d，want 0", key, got)
 		}
 	}
+}
+
+// TestB23310CardSelectDoesNotOccupyBeforeHTTP 锁住卡节点起源侧只选择不占用：
+// admitSquadStep 的成功返回带冻结载体身份，但真实 sched_running 仍为零；满员时
+// 入队 envelope 仍只保存原始小队请求，不保存任何预选 carrier。
+func TestB23310CardSelectDoesNotOccupyBeforeHTTP(t *testing.T) {
+	t.Run("选择不写计数", func(t *testing.T) {
+		env := setupNoPTYSquadEnv(t, 1)
+		cardID := seedSquadFlow(t, env, "sq1", 1)[0]
+		node := ledger.NodeDef{Name: "implement", Override: ledger.NodeOverride{Squad: "sq1"}}
+		binding, outcome, err := env.srv.admitSquadStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}, node)
+		if err != nil {
+			t.Fatalf("选择冻结身份: %v", err)
+		}
+		if outcome != squadDispatchAdmitted || binding.Carrier != "c1" {
+			t.Fatalf("选择结果=(%+v,%d)，want c1/admitted", binding, outcome)
+		}
+		for _, key := range []string{"carrier/c1", "squad/sq1/c1"} {
+			if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+				t.Fatalf("起源侧 Select 写入 %s=%d，want 0", key, got)
+			}
+		}
+	})
+
+	t.Run("满员排队不保存载体", func(t *testing.T) {
+		env := setupNoPTYSquadEnv(t, 1)
+		ids := seedSquadFlow(t, env, "sq1", 2)
+		if _, err := env.srv.Scheduling().Admit(scheduling.IgnitionRequest{Card: ids[0], Squad: "sq1", Actor: "test"}); err != nil {
+			t.Fatalf("预置满员: %v", err)
+		}
+		node := ledger.NodeDef{Name: "implement", Override: ledger.NodeOverride{Squad: "sq1"}}
+		binding, outcome, err := env.srv.admitSquadStep(ids[1], proto.CardStepReq{Step: "implement", Actor: "test"}, node)
+		if err != nil {
+			t.Fatalf("满员排队: %v", err)
+		}
+		if outcome != squadDispatchQueued || binding != (scheduling.Binding{}) {
+			t.Fatalf("满员结果=(%+v,%d)，want zero/queued", binding, outcome)
+		}
+		row, err := env.srv.autoLedger.Get(scheduling.KindIgnitionQueue, ids[1]+"|implement")
+		if err != nil {
+			t.Fatalf("读排队 envelope: %v", err)
+		}
+		var envelope struct {
+			Req map[string]any `json:"req"`
+		}
+		if err := json.Unmarshal(row.Body, &envelope); err != nil {
+			t.Fatalf("解码排队 envelope: %v", err)
+		}
+		if _, ok := envelope.Req["carrier"]; ok {
+			t.Fatalf("排队 envelope 不应含预选 carrier: %s", row.Body)
+		}
+		if _, ok := envelope.Req["Carrier"]; ok {
+			t.Fatalf("排队 envelope 不应含预选 Carrier: %s", row.Body)
+		}
+		if envelope.Req["target"] != nil || envelope.Req["executor"] != nil {
+			t.Fatalf("排队 envelope 不应伪造物理落点: %s", row.Body)
+		}
+	})
 }
 
 // TestSquadNodeFullQueuesWithoutTrace 缝①×缝④排队分支：满员第二轮以排队形态
 // 结束——受理返回 nil、goroutine 不启动、卡事件流零新增、计数不动、队列行里的
 // 覆盖快照与手写裁决（独立 oracle）逐项相等。
 func TestSquadNodeFullQueuesWithoutTrace(t *testing.T) {
-	env, _ := setupSquadEnv(t, 1) // 载体物理位 1：第一张占满，第二张必排队
-	holdAfterSquadRound(t, env)
+	// 执行侧必须真实占用冻结载体，才谈得上「任务持有占用、排队不占不改」：本支
+	// 走真实 startCardStep → stepTransport → 本机 HTTP → handleDispatch 夹具，
+	// 而不是只记录 wire 的假目标机（后者不会调用 AdmitFrozen，计数永远为 0，
+	// 会让「有 task 却占用 0」看起来像通过）。载体物理位 1：第一张占满，第二张必排队。
+	env := setupB23310CardTaskEnv(t, []fake.Step{{Finish: executor.Result{OK: true}}})
 	ids := seedSquadFlow(t, env, "sq1", 2)
 	if err := env.srv.startCardStep(ids[0], proto.CardStepReq{
 		Step: "implement", Actor: "web:test"}); err != nil {
@@ -309,11 +402,11 @@ func TestSquadNodeRejectsAreDistinctFromQueueing(t *testing.T) {
 	})
 }
 
-// ---- 修复轮（charter-3）：准入重试预算耗尽与满员同处置转排队 + WARN 落痕 ----
+// ---- B233.10：CAS 预算耗尽随执行侧 AdmitFrozen 归属，起源 Select 不再写计数 ----
 
 // casConflictOnRunning 把 sched_running 的写全部打成 CAS 冲突的替身注册表，
-// 其余读写原样透传生产同款适配器。Admit 的计数 CAS 因此连续冲突直至预算耗尽
-// ——用替身注入构造 ErrRetryExhausted（协调者裁决：可用替身，不必真打并发）。
+// 其余读写原样透传生产同款适配器。执行侧 AdmitFrozen 的计数 CAS 因此连续冲突
+// 直至预算耗尽——用替身注入构造 ErrRetryExhausted（协调者裁决：可用替身，不必真打并发）。
 type casConflictOnRunning struct{ inner schedclient.Registry }
 
 func (r casConflictOnRunning) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
@@ -335,50 +428,31 @@ func (r casConflictOnRunning) Delete(kind, id string, expectVersion int, actor s
 	return r.inner.Delete(kind, id, expectVersion, actor)
 }
 
-// TestSquadAdmitBudgetExhaustedQueuesWithWarn 锁修复轮裁决：Admit 返回
-// ErrRetryExhausted（瞬态争用，不是「没容量」）时与满员同处置——转 Enqueue、
-// 本轮以排队形态结束；且必须先落一条 WARN 标记词「准入重试预算耗尽，按满员
-// 转排队」，预算耗尽这个真实信号不许被吞。强制正控：去掉该分流分支本测试必翻红。
-func TestSquadAdmitBudgetExhaustedQueuesWithWarn(t *testing.T) {
-	env, _ := setupSquadEnv(t, 2)
+// TestSquadAdmitBudgetExhaustedSurfacesOnExecutionSide 锁住 CAS 预算耗尽的新归属：
+// 起源 Select 只读、不再写 sched_running，预算耗尽只可能发生在执行侧 AdmitFrozen。
+// 执行侧必须把它作为独立分类外露为 409，不得静默吞掉，也不得伪装成满员排队或
+// 成功。强制正控：把该分类折进成功/其他分支本测试必翻红。
+func TestSquadAdmitBudgetExhaustedSurfacesOnExecutionSide(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+		Name: "carrier-A", Machine: "local", CLI: "fake", HomeDir: "/home/carrier-A",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		Status: scheduling.StatusOnline})
 	// 整体替换编制域服务（既有测试缝 SetScheduling）：内层用生产适配器，
-	// 只有计数写恒冲突——载体/小队登记已在替换前经真实服务落库。
+	// 只有计数写恒冲突——载体登记已在替换前经真实服务落库。
 	env.srv.SetScheduling(scheduling.New(casConflictOnRunning{
 		inner: facadeAsRegistry{f: env.srv.autoLedger}}))
-	cardID := seedSquadFlow(t, env, "sq1", 1)[0]
 
-	var logs strings.Builder
-	prevLog := env.srv.log
-	env.srv.log = slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
-	t.Cleanup(func() { env.srv.log = prevLog })
-
-	queued := make(chan struct{}, 1)
-	env.srv.runStepFn = func(context.Context, *ledgerstep.StepRunner, string, string) {
-		queued <- struct{}{} // 排队形态不得走到这里
+	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
+		`,"carrier":"carrier-A","target":"local","executor":"fake","home_dir":"/home/carrier-A"`))
+	if rr.Code != http.StatusConflict {
+		t.Fatalf("执行侧预算耗尽应 409，实得 %d：%s", rr.Code, rr.Body.String())
 	}
-	before := countCardEvents(t, env.ledger, cardID)
-	if err := env.srv.startCardStep(cardID, proto.CardStepReq{
-		Step: "implement", Actor: "web:test"}); err != nil {
-		t.Fatalf("预算耗尽应与满员同处置静默排队（返回 nil），实得 %v", err)
+	if !strings.Contains(rr.Body.String(), "运行计数连续冲突") {
+		t.Fatalf("执行侧预算耗尽的分类被吞或伪装：%s", rr.Body.String())
 	}
-	select {
-	case <-queued:
-		t.Fatal("预算耗尽的排队形态起了 runner——违反「本轮以排队形态结束」")
-	default:
-	}
-	if after := countCardEvents(t, env.ledger, cardID); after != before {
-		t.Fatalf("排队留痕：卡事件数 %d→%d，want 零新增", before, after)
-	}
-	facade := env.srv.autoLedger
-	if got := runningCountIn(t, facade, "carrier/c1"); got != 0 {
-		t.Fatalf("计数 CAS 恒冲突下不该有成功准入：carrier/c1=%d，want 0", got)
-	}
-	if _, err := facade.Get(scheduling.KindIgnitionQueue, cardID+"|implement"); err != nil {
-		t.Fatalf("队列行不存在，排队没有真正发生: %v", err)
-	}
-	out := logs.String()
-	if !strings.Contains(out, "level=WARN") || !strings.Contains(out, "准入重试预算耗尽，按满员转排队") {
-		t.Fatalf("缺 WARN 落痕（级别或标记词缺失），日志原文：\n%s", out)
+	if tasks, err := env.st.ListTasks(); err != nil || len(tasks) != 0 {
+		t.Fatalf("预算耗尽不得创建任务: tasks=%+v err=%v", tasks, err)
 	}
 }
 

@@ -221,19 +221,24 @@ var agentdCmd = &cobra.Command{
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
 		agentd.SetTaskProcCounter(mgr.TaskProcCount)
+		// 恢复前先挂自动化账本：RecoverOnStartup 会通过 Server.autoLedger
+		// 对任务占用做启动期对账，账本尚未装配时必须拒绝启动，而不是让恢复
+		// 进入一个不完整的服务状态。
+		wdCtx, wdCancel := context.WithCancel(context.Background())
+		defer wdCancel()
+		stopLedger, err := setupLedger(cfg, srv, st, wdCtx, logger)
+		if err != nil {
+			return err
+		}
+		defer stopLedger()
 
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
 		// 任务转 failed/waiting_review 交协调者裁决。探活与「重建订阅」封装在同一个
 		// 闭包里（watchdog.go RecoverOnStartup 的 seam 说明），此处即其接线点
-		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
+		if err := srv.RecoverOnStartup(mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
 			return fmt.Errorf("启动恢复: %w", err)
 		}
-		// 看门狗随停机一起收：以前挂在 context.Background() 上靠进程退出终止，
-		// 有了优雅关停之后必须显式取消，否则关停期间它还在扫任务、写事件，
-		// 而数据库正要被关掉
-		wdCtx, wdCancel := context.WithCancel(context.Background())
-		defer wdCancel()
 		if err := srv.StartPreviewServices(wdCtx); err != nil {
 			return fmt.Errorf("启动预览服务: %w", err)
 		}
@@ -262,15 +267,6 @@ var agentdCmd = &cobra.Command{
 		go mirror.Run(wdCtx)
 		logger.Info("事件镜像已启动", "targets", len(srv.Pool().Names()), "tick", "30s",
 			"note", "运行期新增的机器无需重启")
-
-		// 账本域是必需品（B229 §2.6：enabled 开关已退休，配置里的键被忽略）：
-		// 恒开库恒挂镜像。dsn 空 = DataDir/ledger.db 单机回退；web 侧靠
-		// /api/ledger/health 拿到 enabled:true 后渲染入口。
-		stopLedger, err := setupLedger(cfg, srv, st, wdCtx, logger)
-		if err != nil {
-			return err
-		}
-		defer stopLedger()
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待

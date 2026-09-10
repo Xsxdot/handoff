@@ -196,7 +196,7 @@
    "entries": [
     "账本薄门面 Facade"
    ],
-   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；B292 只改变编制域在 sched_running 中的成员政策键，不新增账本依赖或第三类 registry kind。本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。"
+   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；B292 只改变编制域在 sched_running 中的成员政策键，不新增账本依赖或第三类 registry kind。本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。B233.10：Select/AdmitFrozen 不新增账本读写入口，仍受既有 Registry 边界约束。B233.10 P2：启动对账只列既有 sched_running kind，复用 Registry.List/Get/Put 与现有 Task 快照，不新增 registry kind 或 reservation DTO，不新增方向或预算。"
   },
   {
    "from": "d_gateway",
@@ -210,7 +210,7 @@
    "entries": [
     "agentd.Manager"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。B233.10：任务终态迁移继续经既有 agentd.Manager；本卡不新增编排方向或预算。"
   },
   {
    "from": "d_gateway",
@@ -237,7 +237,7 @@
     "scheduling.Service",
     "scheduling（包级函数）"
    ],
-   "legacyBudgetNote": "B156.3：新方向。B292 沿用该唯一入站边，控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；成员政策位与载体物理位的规则仍只在 scheduling.Service 收口。预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。B233.5：同一门面增 ResolveLookup / BindPhysical / OccupancyKeys / EncodeDefaultCarrier（包级函数）；本节点不接线生产路径、不新开 d_orchestration→d_scheduling。名称解析与物理绑定权威在编制域。"
+   "legacyBudgetNote": "B156.3：新方向。B292 沿用该唯一入站边，控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；成员政策位与载体物理位的规则仍只在 scheduling.Service 收口。预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。B233.5：同一门面增 ResolveLookup / BindPhysical / OccupancyKeys / EncodeDefaultCarrier（包级函数）；本节点不接线生产路径、不新开 d_orchestration→d_scheduling。名称解析与物理绑定权威在编制域。B233.10：同一 scheduling.Service 门面新增 Select/AdmitFrozen 契约，选择与冻结准入仍不新增方向或预算。"
   },
   {
    "from": "d_gateway",
@@ -257,7 +257,7 @@
     "targetclient.Pool",
     "client.Client"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。B233.6：receiver 沿既有 client.Dispatch wire 透传；事件回流仍由既有 ledgermirror 承载。B351：agentd startCardStep 的补偿装配复用既有 Server.clientForTarget 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_gateway→d_transport 方向或预算。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。B233.6：receiver 沿既有 client.Dispatch wire 透传；事件回流仍由既有 ledgermirror 承载。B351：agentd startCardStep 的补偿装配复用既有 Server.clientForTarget 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_gateway→d_transport 方向或预算。B233.10：carrier/squad 作为冻结身份沿既有 client.Dispatch 发送，不新增传输方向或预算。"
   },
   {
    "from": "d_gateway",
