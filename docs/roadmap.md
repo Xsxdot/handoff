@@ -107,6 +107,13 @@
 - **handleDone 小队成员键无独立缝测**：只靠与 handleStop 共用的 `releaseTaskCarrierOccupancy`。来源：B233.5 review-2 minor。
 - **Web vitest 未跑**：本机缺 pnpm / node_modules。来源：B233.5 implement minor。
 
+## 来自 B233.10 spec（2026-09-10）
+
+- **审批拥有审批事实**：政策、决策、升级、送达确认有唯一归属；harness 只做原生协议转换。OpenCode 今日在 `RespondPermission` 成功后立刻记 `AckDelivered` 与 `AckExecuted`，后者不改任何持久事实；非 OpenCode 仍走 `handlePermission` / `handleQuestion`。B233.10 不收口。来源：`docs/superpowers/specs/b233.10.md` Out of Scope。
+- **工作区能力主体迁出 agentd**：`gitCapability` 仍转调 agentd 包级函数，属 B233.4 声明的中间态。产物引用已进 `handleTaskDiff`，完整消费链未收。来源：同上。
+- **ExecutionClient 成为生产消费类型**：接口与编译断言已在，生产调用方仍持有聚合 `*client.Client`。来源：同上。
+- **全仓 internal/ 按 best.json 重排**：物理搬家仍暂缓，目录是结果不是手段。来源：同上。
+
 ## 来自 B353 spec（2026-09-09）
 
 - **两次 wait 之间无人订阅的真空**：一次性 wait 退出到下一挂之间没人听事件（08-11 曾空转 7h）。本卡不另开实现、不做常驻订阅者；grok/Claude 走 `--follow` 避开真空，opencode/Codex 接受偶发。若以后做 handoff 进程内常驻订阅，从本条重走 spec。来源：`docs/superpowers/specs/b353.md` Out of Scope。
