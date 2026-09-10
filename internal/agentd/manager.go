@@ -782,7 +782,8 @@ func permEventText(s string) string {
 }
 
 // Dispatch 派发一个新任务：准备任务分支 → 建任务 → 建 taskDir 写 plan → Adapter.Start →
-// running → 启动中介 goroutine 消费事件流。
+// running → 启动中介 goroutine 消费事件流。Carrier/Squad 已由网关完成冻结准入，
+// 本方法只把它们与物理身份落盘，不重新解析接收者或重新选择成员。
 //
 // 参数：
 //   - req: 仓库路径与 base64 计划（字段说明见 DispatchReq）

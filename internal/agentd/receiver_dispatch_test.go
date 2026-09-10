@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	handoffclient "github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
@@ -172,6 +173,48 @@ func TestHandleDispatchSquadReceiver(t *testing.T) {
 	}
 	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("muse")); got != 0 {
 		t.Fatalf("小队 stop 后载体占用=%d, want 0", got)
+	}
+}
+
+// TestB23310ClientDispatchUsesFrozenIdentity 验证客户端已经解析出的冻结身份
+// 是 /api/tasks 的准入依据；Receiver 仅保留为审计提示，不得重新选择载体。
+func TestB23310ClientDispatchUsesFrozenIdentity(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	svc := env.srv.Scheduling()
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "carrier-A", Machine: "local", CLI: "fake",
+		HomeDir: "/home/carrier-A", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 1, Status: scheduling.StatusOnline})
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "carrier-B", Machine: "local", CLI: "fake",
+		HomeDir: "/home/carrier-B", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 1, Status: scheduling.StatusOnline})
+	if err := svc.PutSquad(scheduling.Squad{Name: "squad-A", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "carrier-A", MaxConcurrency: 1}}}, 0); err != nil {
+		t.Fatalf("登记 squad-A: %v", err)
+	}
+	if err := svc.PutSquad(scheduling.Squad{Name: "squad-B", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "carrier-B", MaxConcurrency: 1}}}, 0); err != nil {
+		t.Fatalf("登记 squad-B: %v", err)
+	}
+	home := "/home/carrier-A"
+	task, err := handoffclient.New(env.ts.URL, env.token).Dispatch(context.Background(), handoffclient.DispatchOpts{
+		ProjectID: env.projectID, Prompt: "x", Target: "local", Executor: "fake", Model: "model-A",
+		Receiver: "squad-B", Carrier: "carrier-A", Squad: "squad-A", HomeDir: &home,
+	})
+	if err != nil {
+		t.Fatalf("冻结身份派发: %v", err)
+	}
+	if task.Carrier != "carrier-A" || task.Squad != "squad-A" || task.HomeDir != home ||
+		task.Target != "local" || task.Executor != "fake" || task.Model != "model-A" {
+		t.Fatalf("任务未保存冻结身份: %+v", task)
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("carrier-A")); got != 1 {
+		t.Fatalf("冻结载体占用=%d, want 1", got)
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("carrier-B")); got != 0 {
+		t.Fatalf("Receiver 指向的载体被错误占用=%d, want 0", got)
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyMemberKey("squad-A", "carrier-A")); got != 1 {
+		t.Fatalf("冻结小队成员占用=%d, want 1", got)
 	}
 }
 

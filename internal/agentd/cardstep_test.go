@@ -184,7 +184,7 @@ func TestCardStepAdmittedRoundReleasesCapacity(t *testing.T) {
 	waitFor(t, func() bool { return !env.srv.cardStepInFlight(cardID) })
 	for _, key := range []string{"squad/sq1/c1", "carrier/c1"} {
 		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
-			t.Fatalf("回合结束后计数 %s=%d，want 0", key, got)
+			t.Fatalf("起源卡节点回合结束后不应有执行计数 %s=%d，want 0", key, got)
 		}
 	}
 	if err := env.srv.startCardStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}); err != nil {

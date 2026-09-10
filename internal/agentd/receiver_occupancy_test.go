@@ -125,7 +125,7 @@ func TestHandleDoneReleasesBareCarrier(t *testing.T) {
 	}
 }
 
-func TestHandleDoneIdempotentReleasesBareCarrier(t *testing.T) {
+func TestHandleDoneIdempotentDoesNotReleaseCompletedCarrier(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
 	if _, err := env.srv.Scheduling().AdmitCarrier("muse"); err != nil {
@@ -138,19 +138,34 @@ func TestHandleDoneIdempotentReleasesBareCarrier(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
+	facade := receiverOccupancyFacade(env.ledgerEnv)
+	before, err := facade.Get("sched_running", scheduling.OccupancyCarrierKey("muse"))
+	if err != nil {
+		t.Fatalf("读取 done 前载体记录: %v", err)
+	}
 	rr := runAction(env.srv, actionRequest(taskID, "done", `{}`), env.srv.handleDone)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("已 completed 的 done 返回 %d: %s", rr.Code, rr.Body.String())
 	}
-	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("muse")); got != 0 {
-		t.Fatalf("幂等 done 后载体计数=%d, want 0", got)
+	afterFirst, err := facade.Get("sched_running", scheduling.OccupancyCarrierKey("muse"))
+	if err != nil {
+		t.Fatalf("读取首次幂等 done 后载体记录: %v", err)
+	}
+	if got := runningCountIn(t, facade, scheduling.OccupancyCarrierKey("muse")); afterFirst.Version != before.Version || got != 1 {
+		t.Fatalf("已 completed 的 done 不应释放载体：before=(v%d,count1) after=(v%d,count%d)",
+			before.Version, afterFirst.Version, got)
 	}
 	rr = runAction(env.srv, actionRequest(taskID, "done", `{}`), env.srv.handleDone)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("重复 completed done 返回 %d: %s", rr.Code, rr.Body.String())
 	}
-	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("muse")); got != 0 {
-		t.Fatalf("重复幂等 done 后载体计数=%d, want 0", got)
+	afterSecond, err := facade.Get("sched_running", scheduling.OccupancyCarrierKey("muse"))
+	if err != nil {
+		t.Fatalf("读取重复幂等 done 后载体记录: %v", err)
+	}
+	if got := runningCountIn(t, facade, scheduling.OccupancyCarrierKey("muse")); afterSecond.Version != afterFirst.Version || got != 1 {
+		t.Fatalf("重复 completed done 不应再次释放载体：after1=(v%d,count1) after2=(v%d,count%d)",
+			afterFirst.Version, afterSecond.Version, got)
 	}
 }
 

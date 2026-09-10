@@ -72,11 +72,12 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 				node.Name, node.Override.Squad, named)
 		}
 	}
-	// B156.3 K2：节点绑小队时编制域先裁决本次派发（解析层插在纪律解析之前——
+	// B156.3 K2：节点绑小队时编制域先选择本次派发身份（解析层插在纪律解析之前——
 	// 有效目标机要等 Binding 出来才知道，能力位探活必须打 Binding.Target）。
 	// 三种同步结局：admitted→Binding 三元组接管覆盖继续装配；queued→已持久
 	// 入队，本轮以排队形态结束（释放槽位返回 nil，不起 goroutine、无 task、
-	// 卡事件流零写入）；error→受理失败上浮（HTTP 非 202），已准入的先回滚名额。
+	// 卡事件流零写入）；error→受理失败上浮（HTTP 非 202）。Select 只读，不需要
+	// 回滚执行名额。
 	binding := scheduling.Binding{}
 	if node.Override.Squad != "" {
 		outcome := squadDispatchAdmitted
@@ -104,14 +105,9 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 	resolved, target, err := s.resolveStepDiscipline(node, target)
 	if err != nil {
 		s.releaseCardStep(cardID)
-		if binding.Carrier != "" {
-			// 准入成功但后续装配失败：回滚两级名额防泄漏假满（Release 幂等；
-			// 回滚失败计数偏高属保守方向，只告警不阻断上报原错误）。
-			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {
-				s.log.Warn("准入回滚失败（计数偏高属保守方向）", "card", cardID,
-					"squad", binding.Squad, "carrier", binding.Carrier, "cause", relErr)
-			}
-		}
+		s.log.Warn("卡节点冻结身份后装配失败，未释放执行占用", "card", cardID,
+			"node", req.Step, "squad", binding.Squad, "carrier", binding.Carrier,
+			"error_kind", "assembly", "cause", err)
 		return err
 	}
 	host, _ := os.Hostname()
@@ -166,12 +162,12 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 	}
 	go func() {
 		defer s.releaseCardStep(cardID)
-		defer s.releaseSchedulingBinding(cardID, binding)
 		s.log.Info("卡节点回合开始", "card", cardID, "node", req.Step,
 			"squad", binding.Squad, "carrier", binding.Carrier)
 		s.runStepFn(context.Background(), runner, cardID, req.Step)
 		s.log.Info("卡节点回合返回", "card", cardID, "node", req.Step,
-			"squad", binding.Squad, "carrier", binding.Carrier)
+			"squad", binding.Squad, "carrier", binding.Carrier,
+			"occupancy_owner", "task_terminal", "card_slot_owner", "card_step")
 	}()
 	return nil
 }
@@ -339,6 +335,7 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 	s.log.Info("agentd 节点派发请求", "target", opts.Target, "canonical_target", canonical,
 		"executor", opts.Executor,
 		"model", opts.Model, "prompt_bytes", len(opts.Prompt),
+		"carrier", opts.Carrier, "squad", opts.Squad, "home_dir_set", opts.HomeDir != nil,
 		"discipline", opts.Discipline, "discipline_version", opts.DisciplineVersion,
 		"discipline_bytes", len(opts.DisciplineText))
 	cl, err := s.clientForTarget(canonical)
@@ -364,12 +361,12 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 	})
 	if err != nil {
 		s.log.Warn("agentd 节点派发失败", "target", opts.Target, "canonical_target", canonical,
-			"executor", opts.Executor,
+			"executor", opts.Executor, "carrier", opts.Carrier, "squad", opts.Squad,
 			"model", opts.Model, "cause", err)
 		return "", "", err
 	}
 	s.log.Info("agentd 节点派发已受理", "target", opts.Target, "canonical_target", canonical, "task", task.ID,
-		"base_commit", task.BaseCommit)
+		"carrier", task.Carrier, "squad", task.Squad, "base_commit", task.BaseCommit)
 	return task.ID, task.BaseCommit, nil
 }
 

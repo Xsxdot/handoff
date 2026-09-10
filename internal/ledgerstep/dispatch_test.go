@@ -81,7 +81,7 @@ func TestViaTemplateCarriesHomeDirPointer(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			st, card := dispatchTestCard(t)
 			var got DispatchOpts
-			d := &Dispatcher{St: st, Actor: "tester", HomeDir: tc.home,
+			d := &Dispatcher{St: st, Actor: "tester", HomeDir: tc.home, Carrier: "carrier-A", Squad: "squad-A",
 				Transport: func(ctx context.Context, opts DispatchOpts) (string, string, error) {
 					got = opts
 					return "T-home-dir", "", nil
@@ -96,6 +96,9 @@ func TestViaTemplateCarriesHomeDirPointer(t *testing.T) {
 				t.Fatal("非 nil HomeDir 不得在 Transport 前丢失")
 			} else if tc.home != nil && *got.HomeDir != *tc.home {
 				t.Fatalf("HomeDir = %q，want %q", *got.HomeDir, *tc.home)
+			}
+			if got.Carrier != "carrier-A" || got.Squad != "squad-A" {
+				t.Fatalf("冻结身份 = carrier=%q squad=%q，want carrier-A/squad-A", got.Carrier, got.Squad)
 			}
 		})
 	}

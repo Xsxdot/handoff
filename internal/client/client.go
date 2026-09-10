@@ -785,7 +785,8 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 		body["home_dir"] = *opts.HomeDir
 	}
 	c.log().Info("Dispatch 进入", "url", c.baseURL, "relay", c.relayBacked,
-		"executor", opts.Executor, "prompt_runes", len([]rune(opts.Prompt)))
+		"executor", opts.Executor, "target", opts.Target, "carrier", opts.Carrier, "squad", opts.Squad,
+		"home_dir_set", opts.HomeDir != nil, "prompt_runes", len([]rune(opts.Prompt)))
 	resp, err := c.do(ctx, http.MethodPost, "/api/tasks", body)
 	if err != nil {
 		c.log().Error("Dispatch 失败", "url", c.baseURL, "cause", err)

@@ -324,7 +324,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	slog.Default().Info("按模板派发",
 		"card", c.ID, "node", req.Node, "template", req.Template, "target", target,
-		"receiver", req.Receiver,
+		"receiver", req.Receiver, "carrier", d.Carrier, "squad", d.Squad, "home_dir_set", d.HomeDir != nil,
 		"executor", executor, "model", model, "discipline", disciplineName,
 		"discipline_version", d.DisciplineVersion,
 		"discipline_bytes", len(d.DisciplineText),
@@ -362,7 +362,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	}
 	slog.Default().Info("模板派发传输已返回", "card", c.ID, "node", req.Node,
 		"attempt", taskID, "target", target, "task", taskID, "seq", 0,
-		"type", ledger.EvDispatched, "receiver", req.Receiver, "base", base, "base_commit", baseCommit)
+		"type", ledger.EvDispatched, "receiver", req.Receiver, "carrier", d.Carrier, "squad", d.Squad,
+		"base", base, "base_commit", baseCommit)
 	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "node", req.Node,
 		"template", req.Template, "discipline", disciplineName,
 		"overridden", req.DisciplineOverride != "")
@@ -408,6 +409,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"type", ledger.EvComment, "snapshot_seq", snapshotSeq, "snapshot", snapshot)
 	slog.Default().Info("模板派发完成", "card", c.ID, "node", req.Node, "template", tpl.Name,
 		"attempt", taskID, "task", taskID, "target", target, "receiver", req.Receiver,
+		"carrier", d.Carrier, "squad", d.Squad, "home_dir_set", d.HomeDir != nil,
 		"executor", executor, "model", model, "branch", snapshotBranch, "discipline", disciplineName)
 	return DispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,

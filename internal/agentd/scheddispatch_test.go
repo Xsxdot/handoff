@@ -151,9 +151,9 @@ func TestEffectiveCoversParityMatrix(t *testing.T) {
 }
 
 // holdAfterSquadRound 让小队节点在真实派发之后卡住，直到测试结束才返回。
-// implement 节点 Dispatch 且无 Verdict：Run 在派发后立刻返回，K5 的
-// defer releaseSchedulingBinding 会把计数清零（见 TestCardStepAdmittedRoundReleasesCapacity）。
-// 本文件要观察的是「回合还在飞」时的计数与排队，必须把归还推迟到断言之后。
+// implement 节点 Dispatch 且无 Verdict：Run 在派发后立刻返回；卡槽释放与任务
+// 终态占用释放已经分属两个 owner。本文件要观察的是「回合还在飞」时的计数与
+// 排队，必须把回合执行推迟到断言之后。
 func holdAfterSquadRound(t *testing.T, env *ledgerEnv) {
 	t.Helper()
 	release := make(chan struct{})
@@ -164,9 +164,36 @@ func holdAfterSquadRound(t *testing.T, env *ledgerEnv) {
 	}
 }
 
+func TestB23310CardSelectAssemblyFailureDoesNotRelease(t *testing.T) {
+	env := setupNoPTYSquadEnv(t, 1)
+	if _, err := env.ledger.PutWorkflow("bad-sqflow", ledger.WorkflowDef{Nodes: []ledger.NodeDef{
+		{Name: ledger.StatusTodo, Next: "implement"},
+		{Name: "implement", Next: ledger.StatusDone, Dispatch: true, Template: "feature-impl",
+			Override: ledger.NodeOverride{Squad: "sq1", Discipline: "missing-discipline"}},
+		{Name: ledger.StatusDone},
+	}}); err != nil {
+		t.Fatalf("写入缺失纪律工作流: %v", err)
+	}
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: "选择装配失败卡", Project: "handoff",
+		Workflow: "bad-sqflow", Actor: "test"})
+	if err != nil {
+		t.Fatalf("创建选择装配失败卡: %v", err)
+	}
+	cardID := card.ID
+	if err := env.srv.startCardStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}); err == nil {
+		t.Fatal("缺失模板应在 HTTP 派发前失败")
+	}
+	for _, key := range []string{"carrier/c1", "squad/sq1/c1"} {
+		if _, err := env.srv.autoLedger.Get("sched_running", key); !errors.Is(err, ledger.ErrNotFound) {
+			t.Fatalf("Select 后装配失败不应释放/写入 %s，读结果=%v", key, err)
+		}
+	}
+}
+
 // TestSquadNodeAdmitsAndDispatchesThroughBinding 缝①（编制域入站 api 门面）×
 // 缝④（环节执行体缝）：Squad 非空节点受理后，派发真的穿过 Binding 的三元组——
-// 目标机/执行者以载体为准，计数两级各 +1，task 挂到卡上。
+// 目标机/执行者以载体为准，冻结 Carrier/Squad 进入 wire，task 挂到卡上；起源
+// 侧不持有执行计数。
 func TestSquadNodeAdmitsAndDispatchesThroughBinding(t *testing.T) {
 	env, ftm := setupSquadEnv(t, 2)
 	holdAfterSquadRound(t, env)
@@ -186,12 +213,73 @@ func TestSquadNodeAdmitsAndDispatchesThroughBinding(t *testing.T) {
 	if body["executor"] != "opencode" {
 		t.Fatalf("派发执行者=%v，want 载体 cli opencode", body["executor"])
 	}
+	if body["carrier"] != "c1" || body["squad"] != "sq1" {
+		t.Fatalf("冻结身份未穿过 HTTP body: carrier=%v squad=%v", body["carrier"], body["squad"])
+	}
 	facade := env.srv.autoLedger
-	for key, want := range map[string]int{"squad/sq1/c1": 1, "carrier/c1": 1} {
-		if got := runningCountIn(t, facade, key); got != want {
-			t.Fatalf("计数 %s=%d，want %d", key, got, want)
+	for _, key := range []string{"squad/sq1/c1", "carrier/c1"} {
+		if got := runningCountIn(t, facade, key); got != 0 {
+			t.Fatalf("起源卡节点不应写执行计数 %s=%d，want 0", key, got)
 		}
 	}
+}
+
+// TestB23310CardSelectDoesNotOccupyBeforeHTTP 锁住卡节点起源侧只选择不占用：
+// admitSquadStep 的成功返回带冻结载体身份，但真实 sched_running 仍为零；满员时
+// 入队 envelope 仍只保存原始小队请求，不保存任何预选 carrier。
+func TestB23310CardSelectDoesNotOccupyBeforeHTTP(t *testing.T) {
+	t.Run("选择不写计数", func(t *testing.T) {
+		env := setupNoPTYSquadEnv(t, 1)
+		cardID := seedSquadFlow(t, env, "sq1", 1)[0]
+		node := ledger.NodeDef{Name: "implement", Override: ledger.NodeOverride{Squad: "sq1"}}
+		binding, outcome, err := env.srv.admitSquadStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}, node)
+		if err != nil {
+			t.Fatalf("选择冻结身份: %v", err)
+		}
+		if outcome != squadDispatchAdmitted || binding.Carrier != "c1" {
+			t.Fatalf("选择结果=(%+v,%d)，want c1/admitted", binding, outcome)
+		}
+		for _, key := range []string{"carrier/c1", "squad/sq1/c1"} {
+			if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+				t.Fatalf("起源侧 Select 写入 %s=%d，want 0", key, got)
+			}
+		}
+	})
+
+	t.Run("满员排队不保存载体", func(t *testing.T) {
+		env := setupNoPTYSquadEnv(t, 1)
+		ids := seedSquadFlow(t, env, "sq1", 2)
+		if _, err := env.srv.Scheduling().Admit(scheduling.IgnitionRequest{Card: ids[0], Squad: "sq1", Actor: "test"}); err != nil {
+			t.Fatalf("预置满员: %v", err)
+		}
+		node := ledger.NodeDef{Name: "implement", Override: ledger.NodeOverride{Squad: "sq1"}}
+		binding, outcome, err := env.srv.admitSquadStep(ids[1], proto.CardStepReq{Step: "implement", Actor: "test"}, node)
+		if err != nil {
+			t.Fatalf("满员排队: %v", err)
+		}
+		if outcome != squadDispatchQueued || binding != (scheduling.Binding{}) {
+			t.Fatalf("满员结果=(%+v,%d)，want zero/queued", binding, outcome)
+		}
+		row, err := env.srv.autoLedger.Get(scheduling.KindIgnitionQueue, ids[1]+"|implement")
+		if err != nil {
+			t.Fatalf("读排队 envelope: %v", err)
+		}
+		var envelope struct {
+			Req map[string]any `json:"req"`
+		}
+		if err := json.Unmarshal(row.Body, &envelope); err != nil {
+			t.Fatalf("解码排队 envelope: %v", err)
+		}
+		if _, ok := envelope.Req["carrier"]; ok {
+			t.Fatalf("排队 envelope 不应含预选 carrier: %s", row.Body)
+		}
+		if _, ok := envelope.Req["Carrier"]; ok {
+			t.Fatalf("排队 envelope 不应含预选 Carrier: %s", row.Body)
+		}
+		if envelope.Req["target"] != nil || envelope.Req["executor"] != nil {
+			t.Fatalf("排队 envelope 不应伪造物理落点: %s", row.Body)
+		}
+	})
 }
 
 // TestSquadNodeFullQueuesWithoutTrace 缝①×缝④排队分支：满员第二轮以排队形态

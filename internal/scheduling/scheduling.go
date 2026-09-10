@@ -520,16 +520,175 @@ func (s *Service) Admit(req IgnitionRequest) (Binding, error) {
 	return binding, err
 }
 
-// Select 为 B233.10 的起源侧选择空壳：实现票负责从 req.Squad 选择并冻结一个
-// Binding，但起源侧不得为这次执行写运行计数。
+// Select 从 req.Squad 按登记顺序选择一个在线且两级计数均有空位的载体，并返回
+// 当时的物理身份快照。它只读 Registry，不为后续执行预占任何运行计数；调用方
+// 必须把返回的 Binding 原样交给执行侧 AdmitFrozen，容量竞态由后者的 CAS 裁决。
 func (s *Service) Select(req IgnitionRequest) (Binding, error) {
-	return Binding{}, errors.New("scheduling: 冻结身份选择尚未接线")
+	logger := statusLog().With("squad", req.Squad, "card", req.Card, "node", req.Node,
+		"target", req.Target, "executor", req.Executor, "model", req.Model)
+	logger.Info("冻结身份选择开始", "error_kind", "select_start")
+	if strings.TrimSpace(req.Squad) == "" {
+		err := fmt.Errorf("%w: 选择小队不能为空", ErrInvalid)
+		logger.Error("冻结身份选择拒绝", "error_kind", "squad_missing", "cause", err)
+		return Binding{}, err
+	}
+	q, err := s.Squad(req.Squad)
+	if err != nil {
+		logger.Error("冻结身份选择读取小队失败", "error_kind", "squad_read", "cause", err)
+		return Binding{}, err
+	}
+	if q.Role != RoleExecutor {
+		err := fmt.Errorf("%w: %s 是协调者小队", ErrRoleMismatch, q.Name)
+		logger.Error("冻结身份选择拒绝协调者小队", "error_kind", "role_mismatch", "cause", err)
+		return Binding{}, err
+	}
+
+	anyOnline := false
+	for _, member := range q.Members {
+		carrier, carrierErr := s.Carrier(member.Carrier)
+		if carrierErr != nil {
+			if errors.Is(carrierErr, ErrNotFound) {
+				logger.Warn("冻结身份选择跳过未登记载体", "carrier", member.Carrier,
+					"member_key", OccupancyMemberKey(q.Name, member.Carrier),
+					"carrier_key", OccupancyCarrierKey(member.Carrier), "error_kind", "carrier_missing")
+				continue
+			}
+			logger.Error("冻结身份选择读取载体失败", "carrier", member.Carrier,
+				"member_key", OccupancyMemberKey(q.Name, member.Carrier),
+				"carrier_key", OccupancyCarrierKey(member.Carrier), "error_kind", "carrier_read", "cause", carrierErr)
+			return Binding{}, carrierErr
+		}
+		if carrier.Status != StatusOnline {
+			logger.Info("冻结身份选择跳过离线载体", "carrier", carrier.Name,
+				"member_key", OccupancyMemberKey(q.Name, carrier.Name),
+				"carrier_key", OccupancyCarrierKey(carrier.Name), "status", carrier.Status,
+				"error_kind", "carrier_offline")
+			continue
+		}
+		anyOnline = true
+		memberKey, carrierKey := OccupancyKeys(q.Name, carrier.Name)
+		memberRunning, _, memberErr := s.readCount(memberKey)
+		if memberErr != nil {
+			logger.Error("冻结身份选择读取成员计数失败", "carrier", carrier.Name,
+				"member_key", memberKey, "carrier_key", carrierKey,
+				"error_kind", "member_counter_read", "cause", memberErr)
+			return Binding{}, memberErr
+		}
+		carrierRunning, _, carrierCountErr := s.readCount(carrierKey)
+		if carrierCountErr != nil {
+			logger.Error("冻结身份选择读取载体计数失败", "carrier", carrier.Name,
+				"member_key", memberKey, "carrier_key", carrierKey,
+				"error_kind", "carrier_counter_read", "cause", carrierCountErr)
+			return Binding{}, carrierCountErr
+		}
+		if member.MaxConcurrency > 0 && memberRunning >= member.MaxConcurrency {
+			logger.Info("冻结身份选择跳过成员满员载体", "carrier", carrier.Name,
+				"member_key", memberKey, "carrier_key", carrierKey,
+				"running", memberRunning, "member_cap", member.MaxConcurrency,
+				"error_kind", "member_full")
+			continue
+		}
+		if carrier.MaxConcurrency > 0 && carrierRunning >= carrier.MaxConcurrency {
+			logger.Info("冻结身份选择跳过载体满员载体", "carrier", carrier.Name,
+				"member_key", memberKey, "carrier_key", carrierKey,
+				"running", carrierRunning, "carrier_cap", carrier.MaxConcurrency,
+				"error_kind", "carrier_full")
+			continue
+		}
+		binding := bindingFor(q, carrier, req)
+		logger.Info("冻结身份选择成功", "carrier", binding.Carrier,
+			"member_key", memberKey, "carrier_key", carrierKey,
+			"target", binding.Target, "executor", binding.Executor, "model", binding.Model,
+			"home_dir", binding.HomeDir, "error_kind", "select_success")
+		return binding, nil
+	}
+	if !anyOnline {
+		err := fmt.Errorf("%w: 小队 %s 没有在线载体", ErrNoHealthy, q.Name)
+		logger.Warn("冻结身份选择无在线载体", "error_kind", "no_healthy", "cause", err)
+		return Binding{}, err
+	}
+	err = fmt.Errorf("%w: 小队 %s 所有在线载体均无空位", ErrNoSlot, q.Name)
+	logger.Info("冻结身份选择无空位", "error_kind", "no_slot", "cause", err)
+	return Binding{}, err
 }
 
-// AdmitFrozen 为 B233.10 的执行侧准入空壳：实现票按给定 Binding 占用准确载体，
-// 不得使用 Binding.Squad 再解析出另一成员。
+// AdmitFrozen 按 Binding.Carrier 对冻结载体执行一次两级 CAS 准入，并核验绑定时
+// 的机器、CLI、HOME 与载体登记仍一致。它绝不按 Binding.Squad 重新选择成员；
+// Squad 为空时只占载体物理键，不产生成员键。
 func (s *Service) AdmitFrozen(binding Binding) (Binding, error) {
-	return Binding{}, errors.New("scheduling: 冻结身份准入尚未接线")
+	logger := statusLog().With("squad", binding.Squad, "carrier", binding.Carrier,
+		"target", binding.Target, "executor", binding.Executor, "model", binding.Model,
+		"home_dir", binding.HomeDir)
+	logger.Info("冻结载体准入开始", "error_kind", "admit_frozen_start")
+	if strings.TrimSpace(binding.Carrier) == "" {
+		err := fmt.Errorf("%w: 冻结载体不能为空", ErrInvalid)
+		logger.Error("冻结载体准入拒绝", "error_kind", "carrier_missing", "cause", err)
+		return Binding{}, err
+	}
+	carrier, err := s.Carrier(binding.Carrier)
+	if err != nil {
+		logger.Error("冻结载体读取失败", "error_kind", "carrier_read", "cause", err)
+		return Binding{}, err
+	}
+	if carrier.Status != StatusOnline {
+		err := fmt.Errorf("%w: 载体 %s 当前状态为 %s", ErrNoHealthy, binding.Carrier, carrier.Status)
+		logger.Warn("冻结载体不在线", "error_kind", "carrier_offline", "cause", err)
+		return Binding{}, err
+	}
+
+	q := Squad{}
+	member := SquadMember{Carrier: binding.Carrier}
+	if strings.TrimSpace(binding.Squad) != "" {
+		q, err = s.Squad(binding.Squad)
+		if err != nil {
+			logger.Error("冻结小队读取失败", "error_kind", "squad_read", "cause", err)
+			return Binding{}, err
+		}
+		if q.Role != RoleExecutor {
+			err := fmt.Errorf("%w: %s 是协调者小队", ErrRoleMismatch, q.Name)
+			logger.Error("冻结载体准入拒绝协调者小队", "error_kind", "role_mismatch", "cause", err)
+			return Binding{}, err
+		}
+		found := false
+		for _, candidate := range q.Members {
+			if candidate.Carrier == binding.Carrier {
+				member = candidate
+				found = true
+				break
+			}
+		}
+		if !found {
+			err := fmt.Errorf("%w: 载体 %s 不在小队 %s", ErrRoleMismatch, binding.Carrier, binding.Squad)
+			logger.Warn("冻结载体不是小队成员", "error_kind", "member_mismatch", "cause", err)
+			return Binding{}, err
+		}
+	}
+	identity := IdentityOf(carrier)
+	if binding.Target != identity.Machine || binding.Executor != identity.CLI || binding.HomeDir != identity.HomeDir {
+		err := fmt.Errorf("%w: 冻结物理身份与载体登记不一致", ErrRoleMismatch)
+		logger.Warn("冻结物理身份不匹配", "registered_target", identity.Machine,
+			"registered_executor", identity.CLI, "registered_home_dir", identity.HomeDir,
+			"error_kind", "physical_mismatch", "cause", err)
+		return Binding{}, err
+	}
+
+	admitted, err := s.acquire(q, member, carrier, IgnitionRequest{
+		Squad: binding.Squad, Model: binding.Model, Actor: "admit_frozen",
+	})
+	if errors.Is(err, errMemberFull) {
+		err = ErrNoSlot
+	}
+	if err != nil {
+		memberKey, carrierKey := OccupancyKeys(binding.Squad, binding.Carrier)
+		logger.Error("冻结载体准入失败", "member_key", memberKey, "carrier_key", carrierKey,
+			"error_kind", admissionErrorKind(err), "cause", err)
+		return Binding{}, err
+	}
+	logger.Info("冻结载体准入成功", "member_key", OccupancyMemberKey(admitted.Squad, admitted.Carrier),
+		"carrier_key", OccupancyCarrierKey(admitted.Carrier), "target", admitted.Target,
+		"executor", admitted.Executor, "model", admitted.Model, "home_dir", admitted.HomeDir,
+		"error_kind", "admit_frozen_success")
+	return admitted, nil
 }
 
 // LaunchAdmit 对一次协调者拉起做两级准入（协调者小队的成员载体必须在协调机上，
@@ -838,7 +997,11 @@ func (s *Service) acquire(q Squad, member SquadMember, c Carrier, req IgnitionRe
 		}
 		if err := s.casCount(carrierKey, carrierExpect, carrierRunning+1); err != nil {
 			if squadKey != "" {
-				_ = s.stepRunning(squadKey, -1)
+				if rollbackErr := s.stepRunning(squadKey, -1); rollbackErr != nil {
+					slog.Default().Error("scheduling.acquire.rollback_error", "squad", q.Name,
+						"carrier", c.Name, "member_key", squadKey, "carrier_key", carrierKey,
+						"error_kind", "member_rollback", "cause", rollbackErr)
+				}
 			}
 			if errors.Is(err, schedclient.ErrCASConflict) {
 				continue

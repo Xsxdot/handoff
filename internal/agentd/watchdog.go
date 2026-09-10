@@ -21,12 +21,15 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/schedclient"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
@@ -442,6 +445,73 @@ func emitReclaimFailed(st *store.Store, hub *Hub, taskID string, used, hardLimit
 	}
 	hub.Publish(evt)
 	log.Warn("已向协调者发出强制回收失败提示", "task", taskID, "used", used, "hard_limit", hardLimit)
+}
+
+const schedRunningKind = "sched_running"
+
+type schedRunningBody struct {
+	Count int `json:"count"`
+}
+
+// reconcileSchedRunning 按任务全量快照对账调度占用。
+//
+// 只有非终态 Task 才拥有 carrier/member key；匹配记录保持原 count，不把启动恢复
+// 变成第二个并发写者。无主正计数逐记录 CAS 清零，carrier 与 member 各自独立收敛。
+func reconcileSchedRunning(st *store.Store, repo schedclient.Registry, log *slog.Logger) error {
+	tasks, err := st.ListTasks()
+	if err != nil {
+		log.Error("启动对账读取任务列表失败", "error_kind", "task_list", "cause", err)
+		return fmt.Errorf("启动对账读取任务列表: %w", err)
+	}
+	owned := make(map[string]struct{})
+	for _, task := range tasks {
+		if task.State.IsTerminal() || task.Carrier == "" {
+			continue
+		}
+		owned[scheduling.OccupancyCarrierKey(task.Carrier)] = struct{}{}
+		if task.Squad != "" {
+			owned[scheduling.OccupancyMemberKey(task.Squad, task.Carrier)] = struct{}{}
+		}
+	}
+	rows, err := repo.List(schedRunningKind)
+	if err != nil {
+		log.Error("启动对账读取 sched_running 失败", "error_kind", "running_list", "cause", err)
+		return fmt.Errorf("启动对账读取 sched_running: %w", err)
+	}
+	for _, row := range rows {
+		var body schedRunningBody
+		if err := json.Unmarshal(row.Body, &body); err != nil {
+			log.Error("启动对账解码运行计数失败", "key", row.ID, "version", row.Version,
+				"count", body.Count, "error_kind", "decode", "cause", err)
+			return fmt.Errorf("启动对账解码 %s: %w", row.ID, err)
+		}
+		if body.Count <= 0 {
+			log.Info("启动对账跳过非正运行计数", "key", row.ID, "version", row.Version,
+				"count", body.Count, "error_kind", "non_positive")
+			continue
+		}
+		if _, ok := owned[row.ID]; ok {
+			log.Info("启动对账保留任务所有的运行计数", "key", row.ID, "count", body.Count,
+				"version", row.Version, "error_kind", "owned")
+			continue
+		}
+		payload, err := json.Marshal(schedRunningBody{Count: 0})
+		if err != nil {
+			log.Error("启动对账编码清零计数失败", "key", row.ID, "version", row.Version,
+				"count", body.Count, "error_kind", "encode", "cause", err)
+			return fmt.Errorf("启动对账编码 %s: %w", row.ID, err)
+		}
+		if _, err := repo.Put(schedRunningKind, row.ID, row.Version, payload, "agentd-startup-reconcile"); err != nil {
+			log.Error("启动对账清理无主运行计数失败", "key", row.ID, "count", body.Count,
+				"version", row.Version, "error_kind", "cas", "cause", err)
+			return fmt.Errorf("启动对账清理 %s: %w", row.ID, err)
+		}
+		log.Warn("启动对账清理无主运行计数", "key", row.ID, "previous_count", body.Count,
+			"previous_version", row.Version, "error_kind", "orphan_cleared")
+	}
+	log.Info("启动调度占用对账完成", "task_count", len(tasks), "record_count", len(rows),
+		"owned_count", len(owned))
+	return nil
 }
 
 // RecoverOnStartup 在 agentd 启动时恢复未终结任务（spec §8 的 agentd 重启恢复）：
