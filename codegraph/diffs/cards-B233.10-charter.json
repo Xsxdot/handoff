@@ -1,7 +1,7 @@
 {
   "view": "cards/B233.10-charter",
   "base": "a1571673a22c0740e666cdadbe9617948d76a557",
-  "summary": "B233.10：冻结身份字段与 Select/AdmitFrozen 契约骨架",
+  "summary": "B233.10：冻结身份字段、Select/AdmitFrozen 实现与启动占用对账入口",
   "nodesModified": {
     "m_client_DispatchOpts": {
       "kind": "model",
@@ -139,9 +139,9 @@
       "order": 530,
       "name": "Service.Select",
       "file": "internal/scheduling/scheduling.go",
-      "line": 525,
+      "line": 526,
       "signature": "func (s *Service) Select(req IgnitionRequest) (Binding, error)",
-      "summary": "起源侧身份选择空壳；不写运行占用。"
+      "summary": "起源侧只读选择冻结身份；不写 sched_running。"
     },
     "n_scheduling_Service_AdmitFrozen": {
       "kind": "func",
@@ -149,11 +149,23 @@
       "order": 531,
       "name": "Service.AdmitFrozen",
       "file": "internal/scheduling/scheduling.go",
-      "line": 531,
+      "line": 618,
       "signature": "func (s *Service) AdmitFrozen(binding Binding) (Binding, error)",
-      "summary": "执行侧冻结身份准入空壳；不重新按小队选择。"
+      "summary": "执行侧按冻结载体 CAS 准入；不重新按小队选择。"
+    },
+    "n_agentd_Server_RecoverOnStartup": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1879,
+      "name": "Server.RecoverOnStartup",
+      "file": "internal/agentd/server.go",
+      "line": 2704,
+      "signature": "func (s *Server) RecoverOnStartup(probe func(string) bool, sweep func(string), log *slog.Logger) error",
+      "summary": "启动时先对账 sched_running 再恢复任务；缺自动化账本则失败。"
     }
   },
-  "edgesAdded": [],
+  "edgesAdded": [
+    ["n_agentd_Server_RecoverOnStartup", "n_agentd_RecoverOnStartup"]
+  ],
   "implementsAdded": []
 }
