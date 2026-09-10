@@ -718,7 +718,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 ## 来自 B233.8 验收（2026-09-10，DUT `bd02aad0`，并入功能线 `16b8811f`）
 
 - **非 OpenCode 权限/提问权威仍走 handlePermission/handleQuestion**：本卡只迁生产实现落点。Claude 注入仍只服务快照。来源：B233.8 spec OOS。
-- **跨机真机延后 B233.9**：本机+linux-01 隔离实例验共享派发、OpenCode 审批注入、B351 孤儿 Stop+改名。来源：用户 2026-09-09 授权。
+- **跨机真机延后 B233.9**：已由 B233.9 补跑（2026-09-10）在隔离 grok 上跑满：跨机 `dispatch --target linux-01-iso` running→done；写闸后 Stop+Reclaim 且重试 `cards/P1-implement-2`，首轮分支保留。OpenCode 隔离 harness 仍未登录。证据 `docs/superpowers/notes/2026-09-10-b233.9-isolated.md`。来源：用户 2026-09-09 授权；2026-09-10 拷本机凭据补跑。
 - **review minor**：部分序列化 payload 未逐项核 prior_ticket_id/fingerprint/answer。不挡本卡。
 
 ## 来自 B233.8 spec（2026-09-09，收窄后）
@@ -728,7 +728,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ## 来自 B351 验收（2026-09-09，DUT `f13ff6b3`，并入功能线 `3c525c6c`）
 
-- **跨机孤儿 Stop+Reclaim 真机延后 B233.9**：机内 httptest/SQLite 已锁 Stop→Reclaim 顺序、force JSON、加法计数与失败出口反例；本机+linux-01 隔离实例真机（含同名重试改名）按用户授权放到 B233.8 之后。来源：breakdown 真机清单；acceptance 2026-09-09。
+- **跨机孤儿 Stop+Reclaim 真机延后 B233.9**：机内行为已由 B351 落地。隔离真机补跑（2026-09-10）在 linux-01 隔离账本 P1 上：写闸关闭后记耗费轮次、Stop+Reclaim 不删 `cards/P1-implement`，重试挂号 `cards/P1-implement-2`。来源：breakdown 真机清单；acceptance 2026-09-09；B233.9 补跑。
 - **review minor 覆盖缺口**：agentd 接缝测试未比较第三个请求路径；ledger 未覆盖卡不存在/写入失败/并发错误传播/review-3。不挡本卡。来源：review 2 findings。
 
 ## 来自 B233.7 验收（2026-09-09，DUT `1ee954d3`，并入功能线 `88d547d0`）
