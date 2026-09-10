@@ -453,10 +453,16 @@ type schedRunningBody struct {
 	Count int `json:"count"`
 }
 
-// reconcileSchedRunning 按任务全量快照对账调度占用。
+// reconcileSchedRunning 是启动对账，对共享 sched_running **只读不写**。
 //
-// 只有非终态 Task 才拥有 carrier/member key；匹配记录保持原 count，不把启动恢复
-// 变成第二个并发写者。无主正计数逐记录 CAS 清零，carrier 与 member 各自独立收敛。
+// 为什么不清零：sched_running 在共享账本上跨机可见。本机 ListTasks 看不到 owner
+// 不等于集群里没有占用者（他机执行、没有 Task 的 LaunchAdmit 会话都在同一把键上
+// 计数）。以「本机无非终态 owner」或「本机对应任务已终态」为由把共享计数写成 0，
+// 会跨机误伤别人的占用。本机 pending/running/waiting_review owner 本就不该被改写，
+// 一并原样保留。
+//
+// 仍保留解码校验：损坏记录在启动时带 key/version 暴露并阻断后续 executor 恢复，
+// 而不是被悄悄清零或跳过。对账本身不再产生任何写者。
 func reconcileSchedRunning(st *store.Store, repo schedclient.Registry, log *slog.Logger) error {
 	tasks, err := st.ListTasks()
 	if err != nil {
@@ -478,6 +484,7 @@ func reconcileSchedRunning(st *store.Store, repo schedclient.Registry, log *slog
 		log.Error("启动对账读取 sched_running 失败", "error_kind", "running_list", "cause", err)
 		return fmt.Errorf("启动对账读取 sched_running: %w", err)
 	}
+	foreignPreserved := 0
 	for _, row := range rows {
 		var body schedRunningBody
 		if err := json.Unmarshal(row.Body, &body); err != nil {
@@ -491,26 +498,16 @@ func reconcileSchedRunning(st *store.Store, repo schedclient.Registry, log *slog
 			continue
 		}
 		if _, ok := owned[row.ID]; ok {
-			log.Info("启动对账保留任务所有的运行计数", "key", row.ID, "count", body.Count,
+			log.Info("启动对账保留本机任务所有的运行计数", "key", row.ID, "count", body.Count,
 				"version", row.Version, "error_kind", "owned")
 			continue
 		}
-		payload, err := json.Marshal(schedRunningBody{Count: 0})
-		if err != nil {
-			log.Error("启动对账编码清零计数失败", "key", row.ID, "version", row.Version,
-				"count", body.Count, "error_kind", "encode", "cause", err)
-			return fmt.Errorf("启动对账编码 %s: %w", row.ID, err)
-		}
-		if _, err := repo.Put(schedRunningKind, row.ID, row.Version, payload, "agentd-startup-reconcile"); err != nil {
-			log.Error("启动对账清理无主运行计数失败", "key", row.ID, "count", body.Count,
-				"version", row.Version, "error_kind", "cas", "cause", err)
-			return fmt.Errorf("启动对账清理 %s: %w", row.ID, err)
-		}
-		log.Warn("启动对账清理无主运行计数", "key", row.ID, "previous_count", body.Count,
-			"previous_version", row.Version, "error_kind", "orphan_cleared")
+		foreignPreserved++
+		log.Info("启动对账保留无本机 owner 的运行计数（跨机占用不得清零）", "key", row.ID,
+			"count", body.Count, "version", row.Version, "error_kind", "foreign_preserved")
 	}
-	log.Info("启动调度占用对账完成", "task_count", len(tasks), "record_count", len(rows),
-		"owned_count", len(owned))
+	log.Info("启动调度占用对账完成（只读，不清零）", "task_count", len(tasks),
+		"record_count", len(rows), "owned_count", len(owned), "foreign_preserved", foreignPreserved)
 	return nil
 }
 

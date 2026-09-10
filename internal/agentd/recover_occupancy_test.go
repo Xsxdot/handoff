@@ -1,7 +1,8 @@
 package agentd
 
-// B233.10 启动对账接缝测试：只验证 sched_running 的任务 owner 快照与逐键清理，
-// 不改变既有 watchdog 的 executor 恢复测试。
+// B233.11 启动对账接缝测试：启动对账对共享 sched_running 只读不清——本机任务表
+// 没有非终态 owner 不构成清零授权，本机终态任务也不是。测试一律打 RecoverOnStartup
+// 接缝，不改变既有 watchdog 的 executor 恢复测试。
 
 import (
 	"bytes"
@@ -95,28 +96,59 @@ func TestB23310RecoverKeepsPendingCarrierAndMember(t *testing.T) {
 	}
 }
 
-func TestB23310RecoverClearsOrphanCarrierAndMemberIndependently(t *testing.T) {
+func TestB23311RecoverKeepsForeignOccupancyWithoutLocalOwner(t *testing.T) {
 	env := setupRecoveryEnv(t)
 	facade := ledgerapi.New(env.ledger)
 	carrierKey := scheduling.OccupancyCarrierKey("carrier-A")
 	memberKey := scheduling.OccupancyMemberKey("squad-S", "carrier-A")
 	putSchedRunning(t, facade, carrierKey, 2)
 	putSchedRunning(t, facade, memberKey, 3)
+	carrierVersion, _ := schedRunningRecord(t, facade, carrierKey)
+	memberVersion, _ := schedRunningRecord(t, facade, memberKey)
 
 	if err := recoverWithoutProbe(t, env.srv); err != nil {
-		t.Fatalf("无主启动对账: %v", err)
+		t.Fatalf("无本机任务启动对账: %v", err)
 	}
-	carrierVersion, carrierCount := schedRunningRecord(t, facade, carrierKey)
-	memberVersion, memberCount := schedRunningRecord(t, facade, memberKey)
-	if carrierVersion != 2 || carrierCount != 0 {
-		t.Fatalf("无主 carrier 清理=(v%d,count%d), want (v2,count0)", carrierVersion, carrierCount)
+	if gotVersion, gotCount := schedRunningRecord(t, facade, carrierKey); gotVersion != carrierVersion || gotCount != 2 {
+		t.Fatalf("本机无任务不得清共享 carrier：before=(v%d,count2) after=(v%d,count%d)", carrierVersion, gotVersion, gotCount)
 	}
-	if memberVersion != 2 || memberCount != 0 {
-		t.Fatalf("无主 member 清理=(v%d,count%d), want (v2,count0)", memberVersion, memberCount)
+	if gotVersion, gotCount := schedRunningRecord(t, facade, memberKey); gotVersion != memberVersion || gotCount != 3 {
+		t.Fatalf("本机无任务不得清共享 member：before=(v%d,count3) after=(v%d,count%d)", memberVersion, gotVersion, gotCount)
 	}
 }
 
-func TestB23310RecoverKeepsWaitingReviewAndRunningOwners(t *testing.T) {
+func TestB23311RecoverKeepsForeignKeysAlongsideLocalOwner(t *testing.T) {
+	env := setupRecoveryEnv(t)
+	createRecoveryTask(t, env, "recover-running", proto.TaskStateRunning, "carrier-A", "squad-S")
+	facade := ledgerapi.New(env.ledger)
+	localCarrier := scheduling.OccupancyCarrierKey("carrier-A")
+	localMember := scheduling.OccupancyMemberKey("squad-S", "carrier-A")
+	foreignCarrier := scheduling.OccupancyCarrierKey("carrier-F")
+	foreignMember := scheduling.OccupancyMemberKey("squad-F", "carrier-F")
+	keys := []string{localCarrier, localMember, foreignCarrier, foreignMember}
+	for _, key := range keys {
+		putSchedRunning(t, facade, key, 1)
+	}
+
+	probes := 0
+	err := env.srv.RecoverOnStartup(func(string) bool {
+		probes++
+		return true
+	}, func(string) {}, slog.New(slog.NewTextHandler(&bytes.Buffer{}, nil)))
+	if err != nil {
+		t.Fatalf("本机 owner 与他机键并存启动对账: %v", err)
+	}
+	if probes != 1 {
+		t.Fatalf("running 探活次数=%d, want 1", probes)
+	}
+	for _, key := range keys {
+		if version, count := schedRunningRecord(t, facade, key); version != 1 || count != 1 {
+			t.Fatalf("本机 owner 与他人占用并存时 %s 被改写：version=%d count=%d", key, version, count)
+		}
+	}
+}
+
+func TestB23311RecoverKeepsLiveAndTerminalOwners(t *testing.T) {
 	env := setupRecoveryEnv(t)
 	createRecoveryTask(t, env, "recover-running", proto.TaskStateRunning, "carrier-A", "squad-S")
 	createRecoveryTask(t, env, "recover-review", proto.TaskStateWaitingReview, "carrier-B", "squad-T")
@@ -142,14 +174,9 @@ func TestB23310RecoverKeepsWaitingReviewAndRunningOwners(t *testing.T) {
 	if probes != 2 {
 		t.Fatalf("running/waiting_review 探活次数=%d, want 2", probes)
 	}
-	for _, key := range keys[:4] {
+	for _, key := range keys {
 		if version, count := schedRunningRecord(t, facade, key); version != 1 || count != 1 {
-			t.Fatalf("活跃任务 owner %s 被清理：version=%d count=%d", key, version, count)
-		}
-	}
-	for _, key := range keys[4:] {
-		if version, count := schedRunningRecord(t, facade, key); version != 2 || count != 0 {
-			t.Fatalf("终态任务 orphan %s 未独立清理：version=%d count=%d", key, version, count)
+			t.Fatalf("任务 owner %s 被启动对账改写：version=%d count=%d", key, version, count)
 		}
 	}
 }
