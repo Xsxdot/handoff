@@ -3,8 +3,10 @@ package agentd
 // B233.5 T2 接缝测试：裸 HTTP 派发按载体/小队统一解析、准入与物理绑定。
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -97,6 +99,50 @@ func TestHandleDispatchEmptyReceiverBindsDefault(t *testing.T) {
 	}
 	if err := env.srv.Scheduling().Release("", "muse"); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty 锁住冻结 HTTP 接缝的
+// HomeDir 三态：请求明确携带空串时，传给 Manager 的身份快照仍须保留字段存在性，
+// 不能被当成 nil 省略。
+func TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+		Name: "empty-home", Machine: "local", CLI: "fake", HomeDir: "",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		Status: scheduling.StatusOnline,
+	})
+
+	var logs bytes.Buffer
+	previous := env.srv.log
+	env.srv.log = slog.New(slog.NewTextHandler(&logs, nil))
+	t.Cleanup(func() { env.srv.log = previous })
+
+	body := dispatchBody(env.projectID, `,"carrier":"empty-home","target":"local","executor":"fake","home_dir":""`)
+	rr := postDispatch(t, env.srv, body)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("冻结空 HOME 派发返回 %d: %s", rr.Code, rr.Body.String())
+	}
+	task := decodeDispatchTask(t, rr)
+	if task.HomeDir != "" {
+		t.Fatalf("冻结空 HOME 任务快照 = %q，want empty", task.HomeDir)
+	}
+	foundSnapshot := false
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if !strings.Contains(line, `msg="dispatch 任务身份快照已组装"`) {
+			continue
+		}
+		foundSnapshot = true
+		if !strings.Contains(line, "home_dir_set=true") {
+			t.Fatalf("冻结请求的显式空 HOME 在身份快照中被省略: %s", line)
+		}
+	}
+	if !foundSnapshot {
+		t.Fatalf("冻结请求未产生身份快照日志: %s", logs.String())
+	}
+	stop := runAction(env.srv, actionRequest(task.ID, "stop", ""), env.srv.handleStop)
+	if stop.Code != http.StatusOK {
+		t.Fatalf("清理冻结空 HOME 任务返回 %d: %s", stop.Code, stop.Body.String())
 	}
 }
 

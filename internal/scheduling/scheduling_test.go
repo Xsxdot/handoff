@@ -668,6 +668,26 @@ func TestB23310AdmitFrozenRejectsPhysicalMismatch(t *testing.T) {
 	}
 }
 
+// TestB23310AdmitFrozenEarlyErrorLogsOccupancyKeys 锁住冻结准入的每条早退错误都
+// 带上两级占用键，避免容量现场只能靠 carrier 名人工拼接。
+func TestB23310AdmitFrozenEarlyErrorLogsOccupancyKeys(t *testing.T) {
+	previous := slog.Default()
+	var logs bytes.Buffer
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(previous) })
+
+	svc, _ := newFrozenFixture(t)
+	if _, err := svc.AdmitFrozen(frozenBinding("B", "machine-other", "cli-B", "/home/B", "model-B")); err == nil {
+		t.Fatal("物理身份不匹配应失败")
+	}
+	out := logs.String()
+	for _, want := range []string{"member_key=squad/S/B", "carrier_key=carrier/B"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("冻结准入早退日志缺少 %s: %s", want, out)
+		}
+	}
+}
+
 // TestB23310AdmitFrozenDirectHasNoMemberKey 锁住无小队冻结直派只占 carrier 键，
 // 不制造 squad//carrier 伪键。
 func TestB23310AdmitFrozenDirectHasNoMemberKey(t *testing.T) {

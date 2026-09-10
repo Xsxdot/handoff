@@ -3,14 +3,21 @@ package agentd
 import (
 	"context"
 	"errors"
+	"net/http"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/testhttp"
 )
 
 func newStepTestServer(t *testing.T) *Server {
@@ -196,6 +203,164 @@ func TestCardStepAdmittedRoundReleasesCapacity(t *testing.T) {
 		t.Fatal("第二次执行者回合未返回")
 	}
 	waitFor(t, func() bool { return !env.srv.cardStepInFlight(cardID) })
+}
+
+type b23310ProfileFakeAdapter struct {
+	*fake.Fake
+	profile executor.Profile
+}
+
+func (a *b23310ProfileFakeAdapter) Profile() executor.Profile { return a.profile }
+
+func setupB23310CardTaskEnv(t *testing.T, script []fake.Step) *ledgerEnv {
+	t.Helper()
+	env := setupNoPTYSquadEnv(t, 1)
+	remote := testhttp.NewServer(t, env.srv.Handler())
+	if err := env.srv.swapConf(func(c *config.Config) error {
+		if c.Targets == nil {
+			c.Targets = make(map[string]config.Target)
+		}
+		c.Targets["b23310-loop"] = config.Target{
+			Addr: strings.TrimPrefix(remote.URL, "http://"), Token: testToken,
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("登记生命周期测试目标机: %v", err)
+	}
+	svc := env.srv.Scheduling()
+	carrier, err := svc.Carrier("c1")
+	if err != nil {
+		t.Fatalf("读取 c1: %v", err)
+	}
+	rec, err := env.srv.autoLedger.Get("carrier", "c1")
+	if err != nil {
+		t.Fatalf("读取 c1 版本: %v", err)
+	}
+	carrier.Machine = "b23310-loop"
+	carrier.CLI = "fake"
+	carrier.HomeDir = filepath.Join(t.TempDir(), "carrier-home")
+	if err := svc.PutCarrier(carrier, rec.Version); err != nil {
+		t.Fatalf("把 c1 换成本机 fake: %v", err)
+	}
+	if _, err := svc.ApplyDetect("c1", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("确认生命周期测试载体上线: %v", err)
+	}
+
+	adapter := &b23310ProfileFakeAdapter{Fake: fake.New(script), profile: &recordingProfile{}}
+	mgr := NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": adapter},
+		env.srv.conf(), nil, nil, newTestGate(t), discardLogger())
+	mgr.SetWorkspace(NewGitCapability())
+	env.srv.SetManager(mgr)
+	origin, repo := newOriginAndClone(t)
+	if _, err := mgr.RegisterProject(context.Background(), RegisterProjectReq{
+		OriginURL: origin, Name: "handoff", Path: repo,
+	}); err != nil {
+		t.Fatalf("登记 handoff 项目: %v", err)
+	}
+	return env
+}
+
+func b23310TaskForCard(t *testing.T, env *ledgerEnv, cardID string, runErr <-chan error) *proto.Task {
+	t.Helper()
+	var task *proto.Task
+	var returned bool
+	var runnerErr error
+	waitFor(t, func() bool {
+		links, err := env.ledger.TasksOf(cardID)
+		if err == nil && len(links) > 0 {
+			var getErr error
+			task, getErr = env.st.GetTask(links[0].TaskID)
+			return getErr == nil
+		}
+		select {
+		case runnerErr = <-runErr:
+			returned = true
+			return true
+		default:
+			return false
+		}
+	})
+	if returned {
+		card, cardErr := env.ledger.GetCard(cardID)
+		events, eventErr := env.ledger.EventsFromAsc([]string{cardID}, 0, 100)
+		payloads := make([]string, 0, len(events))
+		for _, event := range events {
+			payloads = append(payloads, string(event.Payload))
+		}
+		t.Fatalf("小队卡节点未形成 task，runner error=%v card=%+v card_error=%v event_payloads=%v event_error=%v",
+			runnerErr, card, cardErr, payloads, eventErr)
+	}
+	return task
+}
+
+func b23310RunStep(t *testing.T, env *ledgerEnv, runErr chan<- error) {
+	t.Helper()
+	env.srv.runStepFn = func(ctx context.Context, runner *ledgerstep.StepRunner, id, node string) {
+		_, err := runner.Run(ctx, id, node)
+		runErr <- err
+	}
+}
+
+// TestB23310CardTaskOwnsOccupancyUntilTerminal 锁住一次小队卡节点的双重生命期：
+// 卡步骤 goroutine 返回只释放 card slot，任务进入终态前仍持有 carrier/member；
+// done 才释放两级任务占用，非终态 fake 返回不能提前改计数。
+func TestB23310CardTaskOwnsOccupancyUntilTerminal(t *testing.T) {
+	t.Run("terminal task releases on done", func(t *testing.T) {
+		env := setupB23310CardTaskEnv(t, []fake.Step{{Finish: executor.Result{OK: true}}})
+		cardID := seedSquadFlow(t, env, "sq1", 1)[0]
+		runErr := make(chan error, 1)
+		b23310RunStep(t, env, runErr)
+		if err := env.srv.startCardStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}); err != nil {
+			t.Fatalf("启动小队卡节点: %v", err)
+		}
+		task := b23310TaskForCard(t, env, cardID, runErr)
+		waitFor(t, func() bool {
+			got, err := env.st.GetTask(task.ID)
+			return err == nil && got.State == proto.TaskStateWaitingReview && !env.srv.cardStepInFlight(cardID)
+		})
+		for _, key := range []string{"squad/sq1/c1", "carrier/c1"} {
+			if got := runningCountIn(t, env.srv.autoLedger, key); got != 1 {
+				t.Fatalf("任务终态前占用 %s=%d，want 1", key, got)
+			}
+		}
+		rr := runAction(env.srv, actionRequest(task.ID, "done", `{}`), env.srv.handleDone)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("done 返回 %d: %s", rr.Code, rr.Body.String())
+		}
+		for _, key := range []string{"squad/sq1/c1", "carrier/c1"} {
+			if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+				t.Fatalf("done 后占用 %s=%d，want 0", key, got)
+			}
+		}
+	})
+
+	t.Run("nonterminal task keeps occupancy after card goroutine returns", func(t *testing.T) {
+		env := setupB23310CardTaskEnv(t, nil)
+		cardID := seedSquadFlow(t, env, "sq1", 1)[0]
+		runErr := make(chan error, 1)
+		b23310RunStep(t, env, runErr)
+		if err := env.srv.startCardStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}); err != nil {
+			t.Fatalf("启动非终态小队卡节点: %v", err)
+		}
+		task := b23310TaskForCard(t, env, cardID, runErr)
+		waitFor(t, func() bool { return !env.srv.cardStepInFlight(cardID) })
+		got, err := env.st.GetTask(task.ID)
+		if err != nil {
+			t.Fatalf("读取非终态任务: %v", err)
+		}
+		if got.State == proto.TaskStateCompleted || got.State == proto.TaskStateFailed {
+			t.Fatalf("fake 非终态任务意外终结: %s", got.State)
+		}
+		for _, key := range []string{"squad/sq1/c1", "carrier/c1"} {
+			if got := runningCountIn(t, env.srv.autoLedger, key); got != 1 {
+				t.Fatalf("卡 goroutine 返回后非终态占用 %s=%d，want 1", key, got)
+			}
+		}
+		rr := runAction(env.srv, actionRequest(task.ID, "stop", ""), env.srv.handleStop)
+		if rr.Code != http.StatusOK {
+			t.Fatalf("清理非终态任务返回 %d: %s", rr.Code, rr.Body.String())
+		}
+	})
 }
 
 // TestRequiresInlineLocalFile keeps the guard tied to request capabilities rather than node names.

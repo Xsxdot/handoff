@@ -616,9 +616,10 @@ func (s *Service) Select(req IgnitionRequest) (Binding, error) {
 // 的机器、CLI、HOME 与载体登记仍一致。它绝不按 Binding.Squad 重新选择成员；
 // Squad 为空时只占载体物理键，不产生成员键。
 func (s *Service) AdmitFrozen(binding Binding) (Binding, error) {
+	memberKey, carrierKey := OccupancyKeys(binding.Squad, binding.Carrier)
 	logger := statusLog().With("squad", binding.Squad, "carrier", binding.Carrier,
 		"target", binding.Target, "executor", binding.Executor, "model", binding.Model,
-		"home_dir", binding.HomeDir)
+		"home_dir", binding.HomeDir, "member_key", memberKey, "carrier_key", carrierKey)
 	logger.Info("冻结载体准入开始", "error_kind", "admit_frozen_start")
 	if strings.TrimSpace(binding.Carrier) == "" {
 		err := fmt.Errorf("%w: 冻结载体不能为空", ErrInvalid)

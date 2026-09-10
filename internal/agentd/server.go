@@ -1427,9 +1427,12 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}()
 	home := binding.HomeDir
 	var homePtr *string
-	if home != "" {
+	if req.Carrier != "" || home != "" {
 		homePtr = &home
 	}
+	s.log.Info("dispatch 任务身份快照已组装", "project", req.ProjectID,
+		"carrier", binding.Carrier, "squad", binding.Squad, "target", binding.Target,
+		"executor", binding.Executor, "home_dir_set", homePtr != nil)
 	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,

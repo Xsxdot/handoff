@@ -14,6 +14,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -116,6 +117,28 @@ func TestNewAgentdHTTPServerTimeouts(t *testing.T) {
 	}
 	if s.IdleTimeout <= 0 {
 		t.Errorf("IdleTimeout 必须非零（keep-alive 空闲回收），实际 %v", s.IdleTimeout)
+	}
+}
+
+// TestB23310AgentdSetsUpLedgerBeforeRecovery 锁住启动组装顺序：恢复路径要求
+// Server.autoLedger 已由 setupLedger 注入；看门狗则必须仍在恢复之后启动。
+func TestB23310AgentdSetsUpLedgerBeforeRecovery(t *testing.T) {
+	source, err := os.ReadFile("agentd.go")
+	if err != nil {
+		t.Fatalf("读取 agentd.go: %v", err)
+	}
+	body := string(source)
+	setup := strings.Index(body, "stopLedger, err := setupLedger(")
+	recover := strings.Index(body, "if err := srv.RecoverOnStartup(")
+	watchdog := strings.Index(body, "go agentd.RunWatchdog(")
+	if setup < 0 || recover < 0 || watchdog < 0 {
+		t.Fatalf("启动顺序锚点缺失: setup=%d recover=%d watchdog=%d", setup, recover, watchdog)
+	}
+	if setup >= recover {
+		t.Fatalf("setupLedger 必须位于 RecoverOnStartup 之前: setup=%d recover=%d", setup, recover)
+	}
+	if watchdog <= recover {
+		t.Fatalf("RunWatchdog 必须位于 RecoverOnStartup 之后: watchdog=%d recover=%d", watchdog, recover)
 	}
 }
 
