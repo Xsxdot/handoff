@@ -696,6 +696,65 @@ func TestB23310AdmitFrozenNormalizesLocalAliases(t *testing.T) {
 	}
 }
 
+// TestB23310AdmitFrozenPreservesEmptyModel 锁住冻结 Model 的空值也属于身份快照：
+// Select 得到空 Model 后，即使载体登记随后改成了新模型，AdmitFrozen 成功返回的
+// Binding.Model 仍必须保持冻结时的空值，不能用 EffectiveModel 回填当前登记。
+func TestB23310AdmitFrozenPreservesEmptyModel(t *testing.T) {
+	svc, facade := newFrozenFixture(t)
+	carrier, err := svc.Carrier("A")
+	if err != nil {
+		t.Fatalf("读取 carrier A: %v", err)
+	}
+	carrier.Model = ""
+	record, err := facade.Get("carrier", "A")
+	if err != nil {
+		t.Fatalf("读取 carrier A 版本: %v", err)
+	}
+	body, err := json.Marshal(carrier)
+	if err != nil {
+		t.Fatalf("编码 carrier A: %v", err)
+	}
+	if _, err := facade.Put("carrier", "A", record.Version, body, "test"); err != nil {
+		t.Fatalf("清空 carrier A model: %v", err)
+	}
+
+	frozen, err := svc.Select(scheduling.IgnitionRequest{Squad: "S", Actor: "test"})
+	if err != nil {
+		t.Fatalf("Select: %v", err)
+	}
+	if frozen.Carrier != "A" || frozen.Model != "" {
+		t.Fatalf("Select 未冻结空 Model: %+v", frozen)
+	}
+
+	carrier, err = svc.Carrier("A")
+	if err != nil {
+		t.Fatalf("重新读取 carrier A: %v", err)
+	}
+	carrier.Model = "current-model"
+	record, err = facade.Get("carrier", "A")
+	if err != nil {
+		t.Fatalf("读取更新 carrier A 版本: %v", err)
+	}
+	body, err = json.Marshal(carrier)
+	if err != nil {
+		t.Fatalf("编码更新 carrier A: %v", err)
+	}
+	if _, err := facade.Put("carrier", "A", record.Version, body, "test"); err != nil {
+		t.Fatalf("更新 carrier A model: %v", err)
+	}
+
+	admitted, err := svc.AdmitFrozen(frozen)
+	if err != nil {
+		t.Fatalf("AdmitFrozen: %v", err)
+	}
+	if admitted.Model != "" {
+		t.Fatalf("AdmitFrozen 不得用当前载体 Model 回填冻结空值: %+v", admitted)
+	}
+	if err := svc.Release("S", "A"); err != nil {
+		t.Fatalf("Release: %v", err)
+	}
+}
+
 // TestB23310AdmitFrozenEarlyErrorLogsOccupancyKeys 锁住冻结准入的每条早退错误都
 // 带上两级占用键，避免容量现场只能靠 carrier 名人工拼接。
 func TestB23310AdmitFrozenEarlyErrorLogsOccupancyKeys(t *testing.T) {

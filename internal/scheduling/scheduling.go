@@ -685,6 +685,9 @@ func (s *Service) AdmitFrozen(binding Binding) (Binding, error) {
 			"error_kind", admissionErrorKind(err), "cause", err)
 		return Binding{}, err
 	}
+	// acquire 共用普通准入的绑定投影；冻结准入的模型也必须是当时快照，
+	// 即使载体登记在 Select 与本次 CAS 之间已被更新，也不能重新取当前模型。
+	admitted.Model = binding.Model
 	logger.Info("冻结载体准入成功", "member_key", OccupancyMemberKey(admitted.Squad, admitted.Carrier),
 		"carrier_key", OccupancyCarrierKey(admitted.Carrier), "target", admitted.Target,
 		"executor", admitted.Executor, "model", admitted.Model, "home_dir", admitted.HomeDir,
