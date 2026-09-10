@@ -1386,11 +1386,13 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	if req.Carrier != "" {
 		if s.scheduling == nil {
 			err = errors.New("编制域服务未装配（SetupAutomation 未执行）")
+		} else if req.HomeDir == nil {
+			err = fmt.Errorf("%w: 冻结请求必须明确携带 home_dir（空串表示目标机主 HOME）", scheduling.ErrInvalid)
+			s.log.Warn("dispatch 冻结身份缺少 home_dir", "project", req.ProjectID,
+				"receiver", req.Receiver, "carrier", req.Carrier, "squad", req.Squad,
+				"target", req.Target, "error_kind", "frozen_home_dir_missing", "cause", err)
 		} else {
-			homeDir := ""
-			if req.HomeDir != nil {
-				homeDir = *req.HomeDir
-			}
+			homeDir := *req.HomeDir
 			binding, err = s.scheduling.AdmitFrozen(scheduling.Binding{
 				Squad: req.Squad, Carrier: req.Carrier, Target: req.Target,
 				Executor: req.Executor, Model: req.Model, HomeDir: homeDir,
@@ -1748,15 +1750,26 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	cur, taskErr := s.st.GetTask(taskID)
+	if taskErr != nil {
+		s.log.Error("done 读取任务快照失败，未执行终态迁移", "task", taskID, "cause", taskErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务快照失败"})
+		return
+	}
 	if err := s.mgr.Done(r.Context(), taskID, req.Note); err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
 		return
 	}
-	if taskErr != nil {
-		s.log.Error("done 成功后读取任务快照失败，未能释放载体占用", "task", taskID, "cause", taskErr)
-	} else {
+	terminal, snapshotErr := s.st.GetTask(taskID)
+	if snapshotErr != nil {
+		// 任务身份在终态迁移中不会改变；读回失败时用迁移前已取得的
+		// 同一身份快照补释放，避免“不能确认快照”变成容量泄漏。
+		s.log.Error("done 成功后读取终态任务快照失败，使用迁移前身份快照释放占用",
+			"task", taskID, "cause", snapshotErr)
 		s.releaseTaskCarrierOccupancy(cur)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "任务已归档但读取终态快照失败"})
+		return
 	}
+	s.releaseTaskCarrierOccupancy(terminal)
 	// 消息文字必须与 manager.Done 的「done 完成」区分开：两处同名会让一次归档
 	// 捞出两行日志，其中一行没有 note_saved，排障时分不清看的是哪一层
 	s.log.Info("done 请求完成", "task", taskID, "note_saved", req.Note != "")
@@ -1779,16 +1792,27 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	task, taskErr := s.st.GetTask(taskID)
+	if taskErr != nil {
+		s.log.Error("stop 读取任务快照失败，未执行终态迁移", "task", taskID, "cause", taskErr)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务快照失败"})
+		return
+	}
 	removed, err := s.mgr.Stop(r.Context(), taskID)
 	if err != nil {
 		s.writeManagerError(w, taskID, "stop", err)
 		return
 	}
-	if taskErr != nil {
-		s.log.Error("stop 成功后读取任务快照失败，未能释放载体占用", "task", taskID, "cause", taskErr)
-	} else {
+	terminal, snapshotErr := s.st.GetTask(taskID)
+	if snapshotErr != nil {
+		// 与 Done 同理：终态迁移不改任务身份，保留一次可释放的快照，
+		// 同时把快照读取故障明确返回给调用方。
+		s.log.Error("stop 成功后读取终态任务快照失败，使用迁移前身份快照释放占用",
+			"task", taskID, "cause", snapshotErr)
 		s.releaseTaskCarrierOccupancy(task)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "任务已停止但读取终态快照失败"})
+		return
 	}
+	s.releaseTaskCarrierOccupancy(terminal)
 	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
 }
 

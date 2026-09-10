@@ -146,6 +146,29 @@ func TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty(t *testing.T) {
 	}
 }
 
+// TestB23310FrozenMissingHomeDirIsRejectedForEmptyHomeCarrier 锁住冻结请求的
+// HomeDir 缺席与显式空串不是同一个值：载体登记为空 HOME 时，缺席键不能被服务端
+// 折叠成显式空串而放行，只有明确携带 home_dir:"" 才表示目标机主 HOME。
+func TestB23310FrozenMissingHomeDirIsRejectedForEmptyHomeCarrier(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+		Name: "empty-home-missing", Machine: "local", CLI: "fake", HomeDir: "",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		Status: scheduling.StatusOnline,
+	})
+
+	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
+		` ,"carrier":"empty-home-missing","target":"local","executor":"fake"`))
+	if rr.Code == http.StatusOK {
+		t.Fatalf("冻结空 HOME 缺席 home_dir 不应成功: %s", rr.Body.String())
+	}
+	if tasks, err := env.st.ListTasks(); err != nil {
+		t.Fatalf("读取缺席 HOME 后任务: %v", err)
+	} else if len(tasks) != 0 {
+		t.Fatalf("冻结空 HOME 缺席 home_dir 不应创建任务: %+v", tasks)
+	}
+}
+
 func TestHandleDispatchNoDefaultFails(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID, ""))

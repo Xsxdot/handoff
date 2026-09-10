@@ -16,6 +16,7 @@ import (
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // occupancyStartFailAdapter 模拟 executor 已准入但启动失败的边界，保留真实失败原因。
@@ -122,6 +123,47 @@ func TestHandleDoneReleasesBareCarrier(t *testing.T) {
 	}
 	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("muse")); got != 0 {
 		t.Fatalf("done 后载体计数=%d, want 0", got)
+	}
+}
+
+type closeStoreAfterDoneStopAdapter struct {
+	*fake.Fake
+	st *store.Store
+}
+
+func (a *closeStoreAfterDoneStopAdapter) Stop(taskID string) error {
+	if err := a.Fake.Stop(taskID); err != nil {
+		return err
+	}
+	return a.st.Close()
+}
+
+// TestHandleDoneDoesNotReturnSuccessWithoutTerminalSnapshot 让真实 Manager.Done
+// 在终态迁移后关闭任务 store，模拟终态成功但随后 GetTask 读快照失败；handler 不得
+// 写 200 假装已经完成释放，同时仍须用已取得的身份快照补做一次释放，避免容量泄漏。
+func TestHandleDoneDoesNotReturnSuccessWithoutTerminalSnapshot(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	seedDefaultFakeCarrier(t, env.srv, "fake")
+	if _, err := env.srv.Scheduling().AdmitCarrier("muse"); err != nil {
+		t.Fatalf("AdmitCarrier: %v", err)
+	}
+	const taskID = "done-snapshot-read-failure"
+	now := time.Now().UTC()
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "local", Executor: "fake",
+		Carrier: "muse", HomeDir: "~/.handoff/home/muse", State: proto.TaskStateWaitingReview,
+		CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	adapter := &closeStoreAfterDoneStopAdapter{Fake: fake.New(nil), st: env.st}
+	env.srv.SetManager(NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": adapter},
+		env.srv.conf(), nil, nil, newTestGate(t), discardLogger()))
+
+	rr := runAction(env.srv, actionRequest(taskID, "done", `{}`), env.srv.handleDone)
+	if rr.Code == http.StatusOK {
+		t.Fatalf("终态快照读取失败不应返回 200: %s", rr.Body.String())
+	}
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("muse")); got != 0 {
+		t.Fatalf("终态快照读取失败后载体占用=%d，want 0", got)
 	}
 }
 

@@ -213,19 +213,25 @@ type b23310ProfileFakeAdapter struct {
 func (a *b23310ProfileFakeAdapter) Profile() executor.Profile { return a.profile }
 
 func setupB23310CardTaskEnv(t *testing.T, script []fake.Step) *ledgerEnv {
+	return setupB23310CardTaskEnvWithMachine(t, script, "b23310-loop")
+}
+
+func setupB23310CardTaskEnvWithMachine(t *testing.T, script []fake.Step, machine string) *ledgerEnv {
 	t.Helper()
 	env := setupNoPTYSquadEnv(t, 1)
-	remote := testhttp.NewServer(t, env.srv.Handler())
-	if err := env.srv.swapConf(func(c *config.Config) error {
-		if c.Targets == nil {
-			c.Targets = make(map[string]config.Target)
+	if machine != "local" {
+		remote := testhttp.NewServer(t, env.srv.Handler())
+		if err := env.srv.swapConf(func(c *config.Config) error {
+			if c.Targets == nil {
+				c.Targets = make(map[string]config.Target)
+			}
+			c.Targets[machine] = config.Target{
+				Addr: strings.TrimPrefix(remote.URL, "http://"), Token: testToken,
+			}
+			return nil
+		}); err != nil {
+			t.Fatalf("登记生命周期测试目标机: %v", err)
 		}
-		c.Targets["b23310-loop"] = config.Target{
-			Addr: strings.TrimPrefix(remote.URL, "http://"), Token: testToken,
-		}
-		return nil
-	}); err != nil {
-		t.Fatalf("登记生命周期测试目标机: %v", err)
 	}
 	svc := env.srv.Scheduling()
 	carrier, err := svc.Carrier("c1")
@@ -236,7 +242,7 @@ func setupB23310CardTaskEnv(t *testing.T, script []fake.Step) *ledgerEnv {
 	if err != nil {
 		t.Fatalf("读取 c1 版本: %v", err)
 	}
-	carrier.Machine = "b23310-loop"
+	carrier.Machine = machine
 	carrier.CLI = "fake"
 	carrier.HomeDir = filepath.Join(t.TempDir(), "carrier-home")
 	if err := svc.PutCarrier(carrier, rec.Version); err != nil {
@@ -258,6 +264,32 @@ func setupB23310CardTaskEnv(t *testing.T, script []fake.Step) *ledgerEnv {
 		t.Fatalf("登记 handoff 项目: %v", err)
 	}
 	return env
+}
+
+// TestB23310CardTaskUsesFrozenLocalTarget 穿过真实 startCardStep → stepTransport →
+// 本机 HTTP → handleDispatch，锁住本机登记名仍按冻结 Machine 落点，且只建立一次
+// 任务占用。
+func TestB23310CardTaskUsesFrozenLocalTarget(t *testing.T) {
+	env := setupB23310CardTaskEnvWithMachine(t, []fake.Step{{Finish: executor.Result{OK: true}}}, "local")
+	cardID := seedSquadFlow(t, env, "sq1", 1)[0]
+	runErr := make(chan error, 1)
+	b23310RunStep(t, env, runErr)
+	if err := env.srv.startCardStep(cardID, proto.CardStepReq{Step: "implement", Actor: "test"}); err != nil {
+		t.Fatalf("启动本机小队卡节点: %v", err)
+	}
+	task := b23310TaskForCard(t, env, cardID, runErr)
+	if task.Target != "local" {
+		t.Fatalf("本机冻结任务 Target = %q，want local", task.Target)
+	}
+	for _, key := range []string{"squad/sq1/c1", "carrier/c1"} {
+		if got := runningCountIn(t, env.srv.autoLedger, key); got != 1 {
+			t.Fatalf("本机任务创建后占用 %s=%d，want 1", key, got)
+		}
+	}
+	rr := runAction(env.srv, actionRequest(task.ID, "stop", ""), env.srv.handleStop)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("清理本机冻结任务返回 %d: %s", rr.Code, rr.Body.String())
+	}
 }
 
 func b23310TaskForCard(t *testing.T, env *ledgerEnv, cardID string, runErr <-chan error) *proto.Task {

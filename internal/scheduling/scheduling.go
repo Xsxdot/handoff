@@ -665,7 +665,7 @@ func (s *Service) AdmitFrozen(binding Binding) (Binding, error) {
 		}
 	}
 	identity := IdentityOf(carrier)
-	if binding.Target != identity.Machine || binding.Executor != identity.CLI || binding.HomeDir != identity.HomeDir {
+	if !samePhysicalMachine(binding.Target, identity.Machine) || binding.Executor != identity.CLI || binding.HomeDir != identity.HomeDir {
 		err := fmt.Errorf("%w: 冻结物理身份与载体登记不一致", ErrRoleMismatch)
 		logger.Warn("冻结物理身份不匹配", "registered_target", identity.Machine,
 			"registered_executor", identity.CLI, "registered_home_dir", identity.HomeDir,
@@ -690,6 +690,18 @@ func (s *Service) AdmitFrozen(binding Binding) (Binding, error) {
 		"executor", admitted.Executor, "model", admitted.Model, "home_dir", admitted.HomeDir,
 		"error_kind", "admit_frozen_success")
 	return admitted, nil
+}
+
+// samePhysicalMachine 把空串、local、本机和当前 hostname 统一看作本 agentd。
+// 冻结目标的原始登记名仍保留在 Binding/Task 中；这里只在物理核验时消除本机
+// 别名差异，避免 client 直连 canonical 化后把同一台机器误判成两台。
+func samePhysicalMachine(left, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if IsLocalMachine(left) && IsLocalMachine(right) {
+		return true
+	}
+	return left == right
 }
 
 // LaunchAdmit 对一次协调者拉起做两级准入（协调者小队的成员载体必须在协调机上，

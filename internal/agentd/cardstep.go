@@ -330,6 +330,13 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 	if isLocalMachine(canonical) {
 		canonical = ""
 	}
+	dispatchTarget := canonical
+	if opts.Carrier != "" {
+		// canonical 只决定 client 走本机直连还是远端池；冻结载体的
+		// Machine 是任务物理身份，必须原样进入 DispatchOpts，供目标机
+		// AdmitFrozen 用同一套本机别名规则核验。
+		dispatchTarget = opts.Target
+	}
 	// 远端仍走 target 客户端池以保留 relay；本机则直连当前 agentd，避免把
 	// loopback 登记名当成远端再次进入镜像/WS 路径。
 	s.log.Info("agentd 节点派发请求", "target", opts.Target, "canonical_target", canonical,
@@ -345,7 +352,7 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		return "", "", err
 	}
 	task, err := cl.Dispatch(ctx, client.DispatchOpts{
-		Prompt: opts.Prompt, Target: canonical,
+		Prompt: opts.Prompt, Target: dispatchTarget,
 		Receiver: opts.Receiver,
 		Carrier:  opts.Carrier, Squad: opts.Squad,
 		NewBranch: opts.Branch, Branch: opts.ExistingBranch,

@@ -668,6 +668,34 @@ func TestB23310AdmitFrozenRejectsPhysicalMismatch(t *testing.T) {
 	}
 }
 
+// TestB23310AdmitFrozenNormalizesLocalAliases 锁住本机物理身份的同一套归一化：
+// 起源冻结结果可能把本机目标写成空串，而载体登记使用 local；二者不能被误判为
+// 物理身份不一致，否则真实 startCardStep 会在本机 HTTP 回路被拒绝。
+func TestB23310AdmitFrozenNormalizesLocalAliases(t *testing.T) {
+	svc, facade := newRowsFixture(t)
+	putOnlineCarrier(t, svc, scheduling.Carrier{
+		Name: "local-carrier", Machine: "local", CLI: "fake",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+	})
+	if err := svc.PutSquad(scheduling.Squad{Name: "local-squad", Role: scheduling.RoleExecutor,
+		Members: []scheduling.SquadMember{{Carrier: "local-carrier", MaxConcurrency: 1}},
+	}, 0); err != nil {
+		t.Fatalf("登记本机测试小队: %v", err)
+	}
+	binding, err := svc.AdmitFrozen(scheduling.Binding{
+		Squad: "local-squad", Carrier: "local-carrier", Target: "", Executor: "fake",
+	})
+	if err != nil {
+		t.Fatalf("空串与 local 应视为同一本机目标: %v", err)
+	}
+	if binding.Carrier != "local-carrier" || runningCount(t, facade, "carrier/local-carrier") != 1 ||
+		runningCount(t, facade, "squad/local-squad/local-carrier") != 1 {
+		t.Fatalf("本机别名准入未按冻结载体占用: binding=%+v carrier=%d member=%d", binding,
+			runningCount(t, facade, "carrier/local-carrier"),
+			runningCount(t, facade, "squad/local-squad/local-carrier"))
+	}
+}
+
 // TestB23310AdmitFrozenEarlyErrorLogsOccupancyKeys 锁住冻结准入的每条早退错误都
 // 带上两级占用键，避免容量现场只能靠 carrier 名人工拼接。
 func TestB23310AdmitFrozenEarlyErrorLogsOccupancyKeys(t *testing.T) {
