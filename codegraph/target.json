@@ -196,7 +196,7 @@
    "entries": [
     "账本薄门面 Facade"
    ],
-   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；B292 只改变编制域在 sched_running 中的成员政策键，不新增账本依赖或第三类 registry kind。本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。B233.10：Select/AdmitFrozen 不新增账本读写入口，仍受既有 Registry 边界约束。"
+   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；B292 只改变编制域在 sched_running 中的成员政策键，不新增账本依赖或第三类 registry kind。本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。B233.10：Select/AdmitFrozen 不新增账本读写入口，仍受既有 Registry 边界约束。B233.10 P2：启动对账只列既有 sched_running kind，复用 Registry.List/Get/Put 与现有 Task 快照，不新增 registry kind 或 reservation DTO，不新增方向或预算。"
   },
   {
    "from": "d_gateway",
