@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "cards/B233.1-charter-7",
-  "commit": "16b8811f99bb10eb41920eb19e257b5f56674720",
+  "commit": "f5a88b6b3f236ef72f593535da190b2d82146e76",
   "scannedAt": "2026-09-03",
   "generator": "handoff-executor/coverage-fill-20260903"
  },
@@ -4747,8 +4747,8 @@
    "order": 1050,
    "name": "dispatchRequest",
    "file": "internal/agentd/server.go",
-   "line": 1290,
-   "summary": "dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传）。",
+   "line": 1320,
+   "summary": "POST /api/tasks 请求体增加冻结身份的 Ticket 0 解码字段。",
    "fields": [
     [
      "ProjectID",
@@ -4786,6 +4786,26 @@
      ""
     ],
     [
+     "Receiver",
+     "string",
+     ""
+    ],
+    [
+     "Carrier",
+     "string",
+     "冻结的执行载体；Ticket 0 只解码"
+    ],
+    [
+     "Squad",
+     "string",
+     "冻结的小队；Ticket 0 只解码"
+    ],
+    [
+     "HomeDir",
+     "*string",
+     "缺席与显式空串可区分"
+    ],
+    [
      "Executor",
      "string",
      ""
@@ -4793,17 +4813,17 @@
     [
      "Discipline",
      "string",
-     "点名的纪律块角色名；空=未点名（只注入平台层）"
+     ""
     ],
     [
      "DisciplineText",
      "string",
-     "协调者侧缝 1 组装好的纪律正文；本机收文即用不再解析"
+     ""
     ],
     [
      "DisciplineVersion",
      "int",
-     "命中的账本版本，随任务落盘供回放"
+     ""
     ],
     [
      "Model",
@@ -7106,8 +7126,8 @@
    "order": 700,
    "name": "DispatchOpts",
    "file": "internal/client/client.go",
-   "line": 717,
-   "summary": "DispatchOpts 是 Dispatch 的入参，与 agentd POST /api/tasks 的请求体键一一对应",
+   "line": 713,
+   "summary": "DispatchOpts 增加冻结 carrier/squad 的 wire 透传字段。",
    "fields": [
     [
      "ProjectID",
@@ -7145,8 +7165,43 @@
      ""
     ],
     [
+     "Receiver",
+     "string",
+     "统一接收者名"
+    ],
+    [
+     "Carrier",
+     "string",
+     "起源侧冻结的执行载体；空=普通派发"
+    ],
+    [
+     "Squad",
+     "string",
+     "起源侧冻结的小队；空=普通派发"
+    ],
+    [
+     "HomeDir",
+     "*string",
+     "nil=缺席，指向空串=显式空值"
+    ],
+    [
      "Executor",
      "string",
+     ""
+    ],
+    [
+     "Discipline",
+     "string",
+     ""
+    ],
+    [
+     "DisciplineText",
+     "string",
+     ""
+    ],
+    [
+     "DisciplineVersion",
+     "int",
      ""
     ],
     [
@@ -7172,12 +7227,12 @@
     [
      "ResolveDefaultBase",
      "bool",
-     "空基线时由目标侧解析项目默认分支"
+     ""
     ],
     [
      "LocalBaseBranch",
      "bool",
-     "本地工作分支起点；禁止补拉"
+     ""
     ],
     [
      "Worktree",
@@ -7194,7 +7249,8 @@
      "string",
      ""
     ]
-   ]
+   ],
+   "modelKind": "dto"
   },
   "m_client_ProjectAddOpts": {
    "kind": "model",
@@ -12495,7 +12551,7 @@
    "name": "DispatchOpts",
    "file": "internal/ledgerstep/dispatch.go",
    "line": 25,
-   "summary": "DispatchOpts 是 Transport 的完整派发请求",
+   "summary": "DispatchOpts 增加冻结身份的机械透传字段。",
    "fields": [
     [
      "Prompt",
@@ -12553,6 +12609,41 @@
      ""
     ],
     [
+     "Receiver",
+     "string",
+     "统一接收者名"
+    ],
+    [
+     "Carrier",
+     "string",
+     "已冻结的执行载体；只透传"
+    ],
+    [
+     "Squad",
+     "string",
+     "已冻结的小队；只透传"
+    ],
+    [
+     "HomeDir",
+     "*string",
+     "nil=缺席，指向空串=显式空值"
+    ],
+    [
+     "DisciplineText",
+     "string",
+     ""
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     ""
+    ],
+    [
+     "OutputPath",
+     "string",
+     ""
+    ],
+    [
      "NewWorktree",
      "bool",
      ""
@@ -12560,14 +12651,15 @@
     [
      "ResolveDefaultBase",
      "bool",
-     "空基线时由目标侧解析项目默认分支"
+     ""
     ],
     [
      "LocalBaseBranch",
      "bool",
-     "本地工作分支起点；禁止补拉"
+     ""
     ]
-   ]
+   ],
+   "modelKind": "dto"
   },
   "m_ledgerstep_DispatchResult": {
    "kind": "model",
@@ -12627,9 +12719,9 @@
    "order": 45,
    "name": "Dispatcher",
    "file": "internal/ledgerstep/dispatch.go",
-   "line": 79,
+   "line": 84,
    "signature": "type Dispatcher struct {",
-   "summary": "Dispatcher 持有模板派发需要的账本、传输和审计 actor。",
+   "summary": "Dispatcher 增加起源侧冻结身份的机械透传字段。",
    "fields": [
     [
      "St",
@@ -12644,7 +12736,7 @@
     [
      "Compensate",
      "DispatchCompensator",
-     "Transport 成功但本地账本落账失败时的远端补偿；nil 表示未装配"
+     ""
     ],
     [
      "Actor",
@@ -12654,22 +12746,32 @@
     [
      "HomeDir",
      "*string",
-     "小队绑定载体 HOME 的可空透传值"
+     ""
+    ],
+    [
+     "Carrier",
+     "string",
+     "卡节点已冻结的执行载体"
+    ],
+    [
+     "Squad",
+     "string",
+     "卡节点已冻结的小队"
     ],
     [
      "NormalizeTarget",
      "func(target string) string",
-     "将已确认的自机登记名归一成空串"
+     ""
     ],
     [
      "DisciplineText",
      "string",
-     "调用方装配时解析好的纪律正文"
+     ""
     ],
     [
      "DisciplineVersion",
      "int",
-     "命中的账本版本"
+     ""
     ]
    ],
    "modelKind": "dto"
@@ -34283,6 +34385,16 @@
    "line": 73,
    "signature": "func (s *Server) ReclaimPtySessions() error { return s.reclaimPtySessions() }",
    "summary": "ReclaimPtySessions 在 agentd 启动完成、开始监听前认领既有会话。"
+  },
+  "n_agentd_Server_RecoverOnStartup": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1879,
+   "name": "Server.RecoverOnStartup",
+   "file": "internal/agentd/server.go",
+   "line": 2704,
+   "signature": "func (s *Server) RecoverOnStartup(probe func(string) bool, sweep func(string), log *slog.Logger) error",
+   "summary": "启动时先对账 sched_running 再恢复任务；缺自动化账本则失败。"
   },
   "n_agentd_Server_Scheduling": {
    "kind": "func",
@@ -79234,6 +79346,16 @@
    "returns": "Binding, error",
    "summary": "解析加两级准入：小队有位且载体有位才放行；满员返回 ErrNoSlot 调用方转排队"
   },
+  "n_scheduling_Service_AdmitFrozen": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 531,
+   "name": "Service.AdmitFrozen",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 618,
+   "signature": "func (s *Service) AdmitFrozen(binding Binding) (Binding, error)",
+   "summary": "执行侧按冻结载体 CAS 准入；不重新按小队选择。"
+  },
   "n_scheduling_Service_ApplyDetect": {
    "kind": "func",
    "container": "k_scheduling_Service",
@@ -79417,6 +79539,16 @@
    ],
    "returns": "error",
    "summary": "按小队+载体成员政策键和载体物理键归还名额；幂等"
+  },
+  "n_scheduling_Service_Select": {
+   "kind": "func",
+   "container": "k_scheduling_Service",
+   "order": 530,
+   "name": "Service.Select",
+   "file": "internal/scheduling/scheduling.go",
+   "line": 526,
+   "signature": "func (s *Service) Select(req IgnitionRequest) (Binding, error)",
+   "summary": "起源侧只读选择冻结身份；不写 sched_running。"
   },
   "n_scheduling_Service_Squad": {
    "kind": "func",
@@ -114345,6 +114477,10 @@
   [
    "n_ledger_Store_RecordDispatchRound",
    "n_ledger_Store_timeNow"
+  ],
+  [
+   "n_agentd_Server_RecoverOnStartup",
+   "n_agentd_RecoverOnStartup"
   ]
  ],
  "implements": [
