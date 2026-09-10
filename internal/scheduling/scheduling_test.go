@@ -791,3 +791,38 @@ func TestB23310AdmitFrozenDirectHasNoMemberKey(t *testing.T) {
 		t.Fatalf("直派不应创建 squad//B，读结果=%v", err)
 	}
 }
+
+// casConflictRegistry 把 sched_running 的写全部打成 CAS 冲突，读原样透传，
+// 用于构造 AdmitFrozen 的 CAS 重试预算耗尽（瞬态争用），不改变实体登记读取。
+type casConflictRegistry struct{ inner schedclient.Registry }
+
+func (r casConflictRegistry) Put(kind, id string, expectVersion int, body []byte, actor string) (int, error) {
+	if kind == "sched_running" {
+		return 0, schedclient.ErrCASConflict
+	}
+	return r.inner.Put(kind, id, expectVersion, body, actor)
+}
+
+func (r casConflictRegistry) Get(kind, id string) (schedclient.Record, error) {
+	return r.inner.Get(kind, id)
+}
+
+func (r casConflictRegistry) List(kind string) ([]schedclient.Record, error) {
+	return r.inner.List(kind)
+}
+
+func (r casConflictRegistry) Delete(kind, id string, expectVersion int, actor string) error {
+	return r.inner.Delete(kind, id, expectVersion, actor)
+}
+
+// TestB23310AdmitFrozenBudgetExhausted 锁住执行侧 CAS 预算耗尽仍以
+// ErrRetryExhausted 原样外露：它是瞬态争用，不能被吞成成功，也不能伪装成
+// ErrNoSlot（两者的用户处置不同——前者该重试/排队，后者是容量问题）。
+func TestB23310AdmitFrozenBudgetExhausted(t *testing.T) {
+	_, facade := newFrozenFixture(t)
+	svc := scheduling.New(casConflictRegistry{inner: facadeRegistry{f: facade}})
+	_, err := svc.AdmitFrozen(frozenBinding("A", "machine-A", "cli-A", "/home/A", "model-A"))
+	if !errors.Is(err, scheduling.ErrRetryExhausted) {
+		t.Fatalf("AdmitFrozen 预算耗尽 error = %v，want ErrRetryExhausted", err)
+	}
+}
