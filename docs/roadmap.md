@@ -109,7 +109,8 @@
 
 ## 来自 B233.10 spec（2026-09-10）
 
-- **审批拥有审批事实**：政策、决策、升级、送达确认有唯一归属；harness 只做原生协议转换。OpenCode 今日在 `RespondPermission` 成功后立刻记 `AckDelivered` 与 `AckExecuted`，后者不改任何持久事实；非 OpenCode 仍走 `handlePermission` / `handleQuestion`。B233.10 不收口。来源：`docs/superpowers/specs/b233.10.md` Out of Scope。
+- **审批拥有审批事实**：政策、决策、升级、送达确认有唯一归属；harness 只做原生协议转换。第一刀投递/送达归 B233.12（spec 待批）。其余 Hooks（Judge/Transit/Store）随 B233.13；非 OpenCode 权威仍待迁。`AckExecuted` 紧跟回传、不改持久事实。来源：`docs/superpowers/specs/b233.10.md` Out of Scope；B233.12。
+- **OpenCode Continue 热加载**：生产 `probeServeReloadsConfig` 恒 false，Continue 无条件 `ApplySnapshot` 会失败。不要跳过快照（原生 allow 可能宽于新政策）；要有真实重载证据或重启 serve。来源：`4485a4e7` 审查 P1-6；B233.12 OOS。
 - **工作区能力主体迁出 agentd**：`gitCapability` 仍转调 agentd 包级函数，属 B233.4 声明的中间态。产物引用已进 `handleTaskDiff`，完整消费链未收。来源：同上。
 - **ExecutionClient 成为生产消费类型**：接口与编译断言已在，生产调用方仍持有聚合 `*client.Client`。来源：同上。
 - **全仓 internal/ 按 best.json 重排**：物理搬家仍暂缓，目录是结果不是手段。来源：同上。
