@@ -477,12 +477,18 @@ handoff card wait <id> [--subtree] [--timeout 3h]
   的「本次补充」小节，不落卡、不影响后续轮次）、`--discipline-override <角色>`（应急）。
 - `card wait` 跟的是**账本单流**（卡或整棵子树的事件，含镜像进来的 task 事件），
   不是 task 集合——所以挂起期间新拆的子卡、新派的任务天然进流，没有动态成员问题。
+- **建连第一行是 `card_snapshot`**（B356）：`actionable` 是当时成员集上未决工单
+  （`ticket_id` / `source_task` / `source_target` / 子卡 `card_id`），`needs` 是未清
+  的等人标记。建连前已经镜像到子卡的工单靠这一行，不靠回放。之后的新事件仍是
+  `task_mirrored`。处置工单与任务回路相同：`show <task> --target <source_target>`
+  再 `reply`。
 - **一次工作流只挂一次 `card wait`，不必再叠 task 级 `wait --follow`**。唤醒语义
   与 `wait --follow` 同款：逐条事件即时流出、命令不退出、不用重挂；工单
   （`question` / `permission_request`）由镜像子系统转成 `task_mirrored` 进卡流，
   只跳过 `progress` / `approver_decision` / `approver_disabled`
   （`internal/ledgermirror/mirror.go` 的 `mirrorSkip`）。**卡流该有的事件却没动静时，
   先查自己的命令有没有接管道**（见上文「订阅」一节的过滤器禁令），别先怀疑镜像。
+  父卡 coordinate、子卡空座时，工单会冒泡叫醒父卡；bind 席位仍只靠本命令 stdout。
 - 醒来之后**处置方式与任务回路完全相同**：先 `handoff show <task>` 以 state
   为准，再按事件分诊表办。别在这里另发明一套。
 

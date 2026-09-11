@@ -25,6 +25,11 @@
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
 
+## 来自 B356 spec（2026-09-11）
+
+- **card wait 持久 cursor / 逐条回放**：建连快照覆盖「挂 wait 前已镜像的子卡工单」；子树成员集动态时 cursor 回放未做。来源：`docs/superpowers/specs/b356.md` Out of Scope（与 B253 同口径）。
+- **图覆盖债**：新增导出 `Store.OpenTickets` / `Store.NeedsReasons` 未写入 `codegraph/baseline.json`（`OpenTicketCounts` 已在图中）。来源：B356 finish，本卡未出视图 diff。
+
 ## 来自 B322 spec（2026-09-04）
 
 - **无引用 PTY 的空闲回收**：修复后 workspace 活会话不再被收编成 tab，ptyhost 里可能留下没人点开的 shell。自动杀掉会误伤后台任务，需要单独的产品闸（空闲多久、是否提示）。来源：`docs/superpowers/specs/b322.md` Out of Scope。
