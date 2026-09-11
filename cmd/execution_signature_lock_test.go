@@ -26,6 +26,7 @@ var (
 	_ func(context.Context, dispatchClient, *ledger.Store, string, string) (discipline.ResolvedDiscipline, error) = resolveCardDispatchDiscipline
 	_ func(context.Context, compensateClient, string, string, string) error                                       = compensateCardDispatch
 
+	_ func(*cobra.Command, waitClient, string, string) error = runWaitOnce
 	_ func(*cobra.Command, string, string, waitClient) error = runUntilDone
 	_ func(*cobra.Command, string, string, waitClient) error = runFollow
 	_ func(context.Context, waitClient, time.Duration)       = warnIfTimeoutBelowStall

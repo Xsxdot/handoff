@@ -108,10 +108,21 @@
    "file": "cmd/card_dispatch.go",
    "line": 282,
    "signature": "func compensateCardDispatch(ctx context.Context, cl compensateClient, cardID, target, taskID string) error",
-   "summary": "compensateCardDispatch 回收一次已取得 task id 的失败派发。具名入口（原为内联闭包）。",
-   "returns": "error"
-  },
-  "m_agentd_runClient": {
+    "summary": "compensateCardDispatch 回收一次已取得 task id 的失败派发。具名入口（原为内联闭包）。",
+    "returns": "error"
+   },
+   "n_cmd_runWaitOnce": {
+    "kind": "func",
+    "container": "k_cmd_fn",
+    "order": 744,
+    "name": "runWaitOnce",
+    "file": "cmd/wait.go",
+    "line": 139,
+    "signature": "func runWaitOnce(cmd *cobra.Command, cli waitClient, taskID, addr string) error",
+    "summary": "runWaitOnce 是 wait 一次性消费路径的具名可注入入口：等一个可动作事件、--notify、单行写出、终态后自动同步。RunE 只组装不内联跨机调用。",
+    "returns": "error"
+   },
+   "m_agentd_runClient": {
    "kind": "model",
    "container": "k_agentd_model",
    "order": 2000,

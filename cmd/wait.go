@@ -126,39 +126,48 @@ var waitCmd = &cobra.Command{
 		if followFlag {
 			return runFollow(cmd, taskID, addr, cli)
 		}
-		// ——以下一次性路径与改动前完全一致——
-		ctx := cmd.Context()
-		if waitTimeout > 0 {
-			// 到点 ctx 触发 DeadlineExceeded：WaitEvent 返回 ctx.Err()，
-			// 下方转成带时长的明确报错（区别于事件到达的正常返回）
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, waitTimeout)
-			defer cancel()
-		}
-
-		ev, err := cli.WaitEvent(ctx, taskID, false)
-		if err != nil {
-			if waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
-				slog.Error("wait 超时未等到事件", "task", taskID, "timeout", waitTimeout.String())
-				// 专属退出码：无人值守场景只看得到退出码，「等满了时限」必须
-				// 与「配置/鉴权失败」区分开（前者继续等，后者要立刻告警）
-				return &exitCodeError{code: ExitTimeout,
-					err: fmt.Errorf("wait 超时（%s）未等到事件", waitTimeout)}
-			}
-			return err
-		}
-		if notifyFlag {
-			notifyEvent(ev)
-		}
-		if err := writeEventLine(cmd.OutOrStdout(), ev); err != nil {
-			return err
-		}
-		// 任务结束后把远程任务分支拉到本地（B12）。
-		// 为什么输出走 stderr：wait 的 stdout 是「单行事件 JSON」的契约，
-		// 上层脚本按行解析——往 stdout 多打一行同步说明会直接打断它们
-		autoSyncAfterWait(cmd, cli, addr, ev)
-		return nil
+		return runWaitOnce(cmd, cli, taskID, addr)
 	},
+}
+
+// runWaitOnce 实现 wait 的一次性消费路径：等一个可动作事件、按 --notify 发系统
+// 通知、单行写出事件 JSON，事件为回合终态时自动同步远程分支到本地。
+//
+// 它是「cmd wait 一次性消费点」的具名可注入入口（B233.16 契约冻结，spec 接缝
+// 表第 9 行）——RunE 只负责组装（取 addr / 构造 client / 三形态分派），不内联
+// 跨机调用，最小替身才能替换该跨机动作。
+func runWaitOnce(cmd *cobra.Command, cli waitClient, taskID, addr string) error {
+	ctx := cmd.Context()
+	if waitTimeout > 0 {
+		// 到点 ctx 触发 DeadlineExceeded：WaitEvent 返回 ctx.Err()，
+		// 下方转成带时长的明确报错（区别于事件到达的正常返回）
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, waitTimeout)
+		defer cancel()
+	}
+
+	ev, err := cli.WaitEvent(ctx, taskID, false)
+	if err != nil {
+		if waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+			slog.Error("wait 超时未等到事件", "task", taskID, "timeout", waitTimeout.String())
+			// 专属退出码：无人值守场景只看得到退出码，「等满了时限」必须
+			// 与「配置/鉴权失败」区分开（前者继续等，后者要立刻告警）
+			return &exitCodeError{code: ExitTimeout,
+				err: fmt.Errorf("wait 超时（%s）未等到事件", waitTimeout)}
+		}
+		return err
+	}
+	if notifyFlag {
+		notifyEvent(ev)
+	}
+	if err := writeEventLine(cmd.OutOrStdout(), ev); err != nil {
+		return err
+	}
+	// 任务结束后把远程任务分支拉到本地（B12）。
+	// 为什么输出走 stderr：wait 的 stdout 是「单行事件 JSON」的契约，
+	// 上层脚本按行解析——往 stdout 多打一行同步说明会直接打断它们
+	autoSyncAfterWait(cmd, cli, addr, ev)
+	return nil
 }
 
 // runUntilDone 实现 B67 依赖门闩：静默等待真实 archived，成功只输出一行事件。
