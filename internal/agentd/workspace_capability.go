@@ -1,20 +1,22 @@
 // workspace_capability.go —— 工作区 Capability 的 agentd 适配器（B233.4）。
 //
-// 职责：把既有包级 git 函数暴露为 workspace.Capability；供 Manager 持有。
+// 职责：把既有包级 git 函数暴露为 workspace.Capability；供编排 Manager 持有。
 // 边界：不搬 workspace.go；不写账本；不授权 push；具体类型只在组装点构造。
+//
+// B233.13：Manager 侧的 SetWorkspace/Workspace/RequireWorkspace/AssembleResultRef
+// 随 Manager 迁往 internal/orchestration；本文件只保留 gitCapability 适配器
+// （本卡不迁工作区实现，B233.15）。
 package agentd
 
 import (
 	"context"
 	"errors"
-	"os"
-	"strings"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
-// ErrWorkspaceUnavailable 表示 Manager 未注入工作区能力。
+// ErrWorkspaceUnavailable 表示编排侧未注入工作区能力。
 // nil 不得解释成跳过 EnsureRepoUsable 或脏检查——调用方必须失败。
 var ErrWorkspaceUnavailable = errors.New("工作区能力未注入")
 
@@ -25,19 +27,6 @@ type gitCapability struct{}
 func NewGitCapability() workspace.Capability { return gitCapability{} }
 
 var _ workspace.Capability = gitCapability{}
-
-// SetWorkspace 注入工作区能力。测试可换 fake；生产由组装点绑定。
-func (m *Manager) SetWorkspace(c workspace.Capability) { m.ws = c }
-
-// Workspace 返回已注入的能力，可能为 nil。
-func (m *Manager) Workspace() workspace.Capability { return m.ws }
-
-func (m *Manager) requireWorkspace() error {
-	if m == nil || m.ws == nil {
-		return ErrWorkspaceUnavailable
-	}
-	return nil
-}
 
 func (gitCapability) EnsureRepoUsable(ctx context.Context, repo string) error {
 	return EnsureRepoUsable(ctx, repo)
@@ -98,32 +87,3 @@ func (gitCapability) ReadFile(ctx context.Context, repo, rel string) (workspace.
 func (gitCapability) RecycleManaged(ctx context.Context, repo, workdir string) error {
 	return RemoveManagedWorktree(ctx, repo, workdir)
 }
-
-// assembleResultRef 在审阅现场组装结果引用。commit 取 rev-parse；失败则空串，不编造。
-func (m *Manager) assembleResultRef(ctx context.Context, task *proto.Task, repo, headRev string) (workspace.ResultRef, error) {
-	commit := ""
-	if out, _, err := gitProbe(ctx, repo, "rev-parse", headRev); err == nil {
-		got := strings.TrimSpace(out)
-		if workspace.IsCommitSHA(got) {
-			commit = got
-		} else {
-			m.log.Warn("rev-parse 不是 40 位小写 hex，commit 留空", "repo", repo, "head", headRev, "got", got)
-		}
-	}
-	path, branch := "", ""
-	if task != nil {
-		branch = task.Branch
-		path = task.Workdir()
-		if _, err := os.Stat(path); err != nil {
-			path = ""
-		}
-	}
-	ref, err := workspace.NewResultRef(repo, branch, commit, path)
-	if err != nil {
-		m.log.Error("组装结果引用失败", "repo", repo, "branch", branch, "commit", commit, "cause", err)
-		return workspace.ResultRef{}, err
-	}
-	m.log.Info("结果引用已组装", "repo", ref.Repo, "branch", ref.Branch, "commit", ref.Commit, "path", ref.Path)
-	return ref, nil
-}
-

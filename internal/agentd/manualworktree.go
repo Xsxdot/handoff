@@ -190,9 +190,9 @@ func readBackWorktree(ctx context.Context, repo, managedRoot, dir, branch string
 	if probeErr != "" {
 		log().Warn("建树后回读探测失败，返回最小信息", "dir", dir, "cause", probeErr)
 	}
-	want := canonPath(dir)
+	want := CanonPath(dir)
 	for _, ws := range list {
-		if canonPath(ws.Path) == want {
+		if CanonPath(ws.Path) == want {
 			return ws
 		}
 	}

@@ -36,6 +36,9 @@ func newReceiverTestEnv(t *testing.T) *receiverTestEnv {
 	cfg.Executor.Default = "opencode"
 	mgr := NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), discardLogger())
+	// B233.13 P1：SetManager 不再兜底注入工作区能力，测试 harness 按组装点语义
+	// 显式接线（生产由 cmd/agentd.go 注入）。
+	mgr.SetWorkspace(NewGitCapability())
 	env.srv.SetManager(mgr)
 	repo := initTestRepo(t)
 	return &receiverTestEnv{ledgerEnv: env, mgr: mgr, projectID: registerTestProject(t, mgr, repo)}

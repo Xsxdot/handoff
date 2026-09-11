@@ -240,7 +240,7 @@ func TestDoneOnRunningDoesNotPurgeCache(t *testing.T) {
 	m, _, _, _ := newTestManager(t)
 	id := "33333333-0000-4000-8000-000000000003"
 	active, legacy, _ := seedTaskWithCache(t, m, id, proto.TaskStateRunning)
-	if err := m.Done(context.Background(), id, ""); err == nil {
+	if _, err := m.Done(context.Background(), id, ""); err == nil {
 		t.Fatal("running 走 Done 必须失败")
 	}
 	if _, err := os.Lstat(active); err != nil {

@@ -3,7 +3,7 @@
 // 职责：Manager 是唯一生产组装点，把自身能力绑定到 internal/approval.Client。
 // 边界：审批行为、工单/事件写入和 Ack 在 approval 包；本文件不再承载命名的
 // ApprovalClient 实现，HashPolicyVersion 继续留在 agentd 作为现有政策版本落点。
-package agentd
+package orchestration
 
 import (
 	"context"

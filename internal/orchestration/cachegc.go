@@ -10,7 +10,7 @@
 //   - 不改任务状态、不删任务目录/分支/render.log/frames.jsonl/proc.json
 //   - 不扫描无任务行的孤儿目录，不清空 tmp 根
 //   - 不复用 ActiveTasksByWorkDir（那是 workdir 占用，不是短号占用）
-package agentd
+package orchestration
 
 import (
 	"errors"

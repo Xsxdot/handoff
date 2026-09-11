@@ -457,7 +457,7 @@ func TestDeriveName(t *testing.T) {
 // mustDone 归档任务，失败即 Fatal。
 func mustDone(t *testing.T, m *Manager, taskID, note string) {
 	t.Helper()
-	if err := m.Done(context.Background(), taskID, note); err != nil {
+	if _, err := m.Done(context.Background(), taskID, note); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 }
@@ -670,11 +670,11 @@ func TestStopRetainsManagedWorktree(t *testing.T) {
 	}
 	workDir := task.WorkDir
 	recycleBefore := spy.recycle
-	removed, err := m.Stop(context.Background(), task.ID)
+	stopOutcome, err := m.Stop(context.Background(), task.ID)
 	if err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
-	if removed {
+	if stopOutcome.WorktreeRemoved {
 		t.Fatal("成功 Stop 后 worktree_removed 必须为 false（契约 C-6）")
 	}
 	if spy.recycle != recycleBefore {
@@ -709,11 +709,11 @@ func TestStopReportsWorktreeRemoved(t *testing.T) {
 	if wtTask.WorkDir == "" || !wtTask.WorktreeManaged {
 		t.Fatalf("new-worktree 元数据缺失: %+v", wtTask)
 	}
-	removed, err := m.Stop(context.Background(), wtTask.ID)
+	stopOutcome, err := m.Stop(context.Background(), wtTask.ID)
 	if err != nil {
 		t.Fatalf("Stop(managed): %v", err)
 	}
-	if removed {
+	if stopOutcome.WorktreeRemoved {
 		t.Fatal("managed stop 应返回 false")
 	}
 
@@ -727,11 +727,11 @@ func TestStopReportsWorktreeRemoved(t *testing.T) {
 	if plainTask.WorktreeManaged {
 		t.Fatalf("原地模式不应有 managed worktree: %+v", plainTask)
 	}
-	removed, err = m.Stop(context.Background(), plainTask.ID)
+	stopOutcome, err = m.Stop(context.Background(), plainTask.ID)
 	if err != nil {
 		t.Fatalf("Stop(plain): %v", err)
 	}
-	if removed {
+	if stopOutcome.WorktreeRemoved {
 		t.Fatal("原地模式没有 worktree，stop 应返回 worktree_removed=false")
 	}
 }
@@ -2480,7 +2480,7 @@ func TestDoneEmitsArchivedBeforeClosingSubs(t *testing.T) {
 	ch, cancel := hub.Subscribe(taskID)
 	defer cancel()
 
-	if err := m.Done(context.Background(), taskID, "改完了登录页"); err != nil {
+	if _, err := m.Done(context.Background(), taskID, "改完了登录页"); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 
@@ -2514,7 +2514,7 @@ func TestDoneWithEmptyNoteStillEmitsArchived(t *testing.T) {
 	ch, cancel := hub.Subscribe(taskID)
 	defer cancel()
 
-	if err := m.Done(context.Background(), taskID, ""); err != nil {
+	if _, err := m.Done(context.Background(), taskID, ""); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	select {
@@ -2530,7 +2530,7 @@ func TestDoneWithEmptyNoteStillEmitsArchived(t *testing.T) {
 // TestDonePersistsNote 断言说明落进了 tasks.done_note，handoff show 才看得到。
 func TestDonePersistsNote(t *testing.T) {
 	m, _, taskID := newDoneTestTask(t, "task-b68-persist")
-	if err := m.Done(context.Background(), taskID, "两个用例补齐"); err != nil {
+	if _, err := m.Done(context.Background(), taskID, "两个用例补齐"); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	got, err := m.st.GetTask(taskID)
@@ -3204,7 +3204,7 @@ func TestDoneSweepsProcsAfterStop(t *testing.T) {
 	// 里 mustCreateTask 造 waiting_review 任务的同款方式）
 	id := "sweep-done"
 	mustCreateTask(t, st, &proto.Task{ID: id, RepoPath: "/r", State: proto.TaskStateWaitingReview})
-	if err := m.Done(context.Background(), id, ""); err != nil {
+	if _, err := m.Done(context.Background(), id, ""); err != nil {
 		t.Fatal(err)
 	}
 	if len(got) != 1 || got[0] != id {
@@ -3311,7 +3311,7 @@ func TestDoneSweepsViaTransit(t *testing.T) {
 	var swept []string
 	m.sweepProcs = func(id string) error { swept = append(swept, id); return nil }
 
-	if err := m.Done(context.Background(), "done-sweep", "验收通过"); err != nil {
+	if _, err := m.Done(context.Background(), "done-sweep", "验收通过"); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	if len(swept) != 1 || swept[0] != "done-sweep" {

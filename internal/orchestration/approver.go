@@ -16,7 +16,7 @@
 //
 // 2026-08-09（B23/B27）黑名单与截断判定已迁往 internal/permgate，本文件
 // 不再持有规则表；Approver 退化为只做「调模型 + 解析裁决」。
-package agentd
+package orchestration
 
 import (
 	"context"
@@ -33,6 +33,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
+
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 )
 
 // ApproverDecision 是审批者一次裁决的结果。
@@ -121,7 +123,7 @@ func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) A
 	if nonce == "" {
 		a.log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "executor", a.executorName)
 	}
-	a.log.Info("审批者开始裁决", "permission", truncateRunes(permission, 80),
+	a.log.Info("审批者开始裁决", "permission", agentd.TruncateRunes(permission, 80),
 		"executor", a.executorName, "model", a.model, "nonce", nonce)
 	prompt := fmt.Sprintf(approverPromptTemplate, taskSummary, permission, nonce, nonce)
 	if a.shot == nil {
@@ -154,16 +156,16 @@ func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) A
 		// 供上层计数禁用——这既是「审批者为什么没批」的第一现场，也是
 		// 「连续失败多少次就该停用」的判据
 		d := ApproverDecision{Approve: false, ElapsedMS: elapsed, Err: err}
-		a.log.Error("审批者裁决失败", "permission", truncateRunes(permission, 80),
-			"cause", err, "output", truncateRunes(reply.Text, 200), "elapsed_ms", elapsed)
+		a.log.Error("审批者裁决失败", "permission", agentd.TruncateRunes(permission, 80),
+			"cause", err, "output", agentd.TruncateRunes(reply.Text, 200), "elapsed_ms", elapsed)
 		return d
 	}
 	d := parseDecision(reply.Text, nonce, elapsed)
 	if d.Err != nil && strings.Contains(d.Err.Error(), "nonce 不匹配") {
-		a.log.Error("审批者裁决 nonce 校验失败，按升级处理", "task_summary", truncateRunes(taskSummary, 60),
-			"permission", truncateRunes(permission, 80), "cause", d.Err)
+		a.log.Error("审批者裁决 nonce 校验失败，按升级处理", "task_summary", agentd.TruncateRunes(taskSummary, 60),
+			"permission", agentd.TruncateRunes(permission, 80), "cause", d.Err)
 	}
-	a.log.Info("审批者裁决完成", "decision", decisionLabel(d), "reason", truncateRunes(d.Reason, 80),
+	a.log.Info("审批者裁决完成", "decision", decisionLabel(d), "reason", agentd.TruncateRunes(d.Reason, 80),
 		"elapsed_ms", elapsed)
 	return d
 }
@@ -217,7 +219,7 @@ func parseDecision(out, nonce string, elapsedMS int64) ApproverDecision {
 		//（那会掩盖「有人在伪造裁决」这件事本身）
 		if nonce != "" && m.Nonce != nonce {
 			return ApproverDecision{Approve: false, ElapsedMS: elapsedMS,
-				Err: fmt.Errorf("审批者裁决 nonce 不匹配（期望 %s，实得 %q），疑似伪造裁决", nonce, truncateRunes(m.Nonce, 40))}
+				Err: fmt.Errorf("审批者裁决 nonce 不匹配（期望 %s，实得 %q），疑似伪造裁决", nonce, agentd.TruncateRunes(m.Nonce, 40))}
 		}
 		switch m.Decision {
 		case "approve":

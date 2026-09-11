@@ -237,8 +237,6 @@ func copyMissingCoordinatorCredential(mainHome, targetHome, cli string,
 	return nil
 }
 
-
-
 // normalizeCoordinatorSpec 将 SessionSpec.HomeDir 展开为绝对路径。
 // 空值视为主 HOME（~）展开；展开失败或非绝对路径返回包含原串的错误，防止字面 ~ 漏进 keystone。
 func normalizeCoordinatorSpec(spec keysclient.SessionSpec) (keysclient.SessionSpec, error) {

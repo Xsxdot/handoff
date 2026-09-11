@@ -8,18 +8,17 @@
 //   - 不探活：本文件只负责「已经知道 executor 没了之后怎么办」，
 //     「怎么知道的」属各到达口自己（spec §2.2 明确不加周期性探活）
 //   - 不碰 adapter：收尾只动 store 与 hub
-package agentd
+package orchestration
 
 import (
 	"errors"
 	"fmt"
-	"log/slog"
 	"path/filepath"
 
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
-	"github.com/Xsxdot/handoff/internal/store"
 )
 
 // noteStopping 标记「接下来这次事件通道关闭是我们自己发起的」。
@@ -53,9 +52,10 @@ func (m *Manager) takeStopping(taskID string) bool {
 	return ok
 }
 
-// reconcileExecutorGone 是包级同名函数的方法薄包装（省去调用点重复传 st/hub/log）。
+// reconcileExecutorGone 是 gateway 包级同名函数的方法薄包装（省去调用点重复传 st/hub/log）。
+// B233.13：实现留 gateway（watchdog 仍用），编排经 agentd.ReconcileExecutorGone 调用。
 func (m *Manager) reconcileExecutorGone(taskID, reason string) proto.TaskState {
-	return reconcileExecutorGone(m.st, m.hub, taskID, reason, m.log, m.SweepTaskProcs)
+	return agentd.ReconcileExecutorGone(m.st, m.hub, taskID, reason, m.log, m.SweepTaskProcs)
 }
 
 // stopExecutor 停 executor，并在「没有内存运行态」时按恢复凭据兜底回收。
@@ -122,78 +122,13 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) error {
 //   - 追加失败只记日志、不返回错误：调用方全都处在归档/中止的收尾路径上，
 //     那件事本身已经达成，不该因为发不出提示而中断
 func (m *Manager) notifyOrphanRisk(taskID, text string) {
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: text})
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, agentd.ProgressPayload{Text: text})
 	if err != nil {
 		m.log.Error("追加 executor 残留提示事件失败", "task", taskID, "cause", err)
 		return
 	}
 	m.hub.Publish(evt)
 	m.log.Info("已向协调者发出 executor 残留提示", "task", taskID)
-}
-
-// reconcileExecutorGone 收尾一个 executor 已不在的任务。
-//
-// 参数：
-//   - sweep: 残留进程清扫回调；**无条件调用**，与任务状态无关（why 见下）
-//
-// 为什么清扫是无条件后置动作：本函数对非 running/waiting_answer 的状态提前返回，
-// 那条分支的理由是「待审核终态与已终结态不需要状态收尾」——它说的是状态，不是
-// 资源。executor 已经不在了，残留进程该不该收与任务停在哪个状态无关；已经 done
-// 过的任务同样可能有残留（那次 Kill 正因锁已释放而空转）。2026-08-12 事故里两个
-// 任务最终都停在 waiting_review，恰好是提前返回会跳过的形态。
-//
-// 顺序：状态收尾在前、清扫在后。协调者的工作流（任务进 waiting_review）不受
-// 清扫成败影响——清扫失败只上报，绝不回头改状态。
-func reconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
-	log *slog.Logger, sweep func(taskID string)) proto.TaskState {
-
-	cur, err := st.GetTask(taskID)
-	if err != nil {
-		log.Error("对账读取任务失败", "task", taskID, "reason", reason, "cause", err)
-		return ""
-	}
-	log.Info("executor 已不在，开始对账", "task", taskID, "state", cur.State, "reason", reason)
-	if cur.State != proto.TaskStateRunning && cur.State != proto.TaskStateWaitingAnswer {
-		log.Info("任务无需状态对账，仅清扫残留", "task", taskID, "state", cur.State)
-		sweep(taskID) // 无条件：见上方 why
-		return cur.State
-	}
-
-	// 复用终态收口的同一个助手（B63）：这条路径迁的是 waiting_review（非终态），
-	// 走不到 transit 的终态分支，但「executor 已死 ⇒ 挂起工单不可能再被回答」的
-	// 语义与终态一致，审计痕迹也该一致
-	voidTicketsWithAudit(st, taskID, reason, log)
-	// 先迁状态、后追加事件（B97）：turn_failed 事件一落库就可被 WS 重放读到，状态
-	// 必须先就位，否则协调者看到 turn_failed 后立刻 continue/done 会被状态机 409
-	// 拒。反转的代价是失败形态从「状态错」变成「状态对、事件缺」：迁失败就不追加
-	// 事件，任务停在旧状态可重试；崩在两步之间留下的是「waiting_review 但缺一条
-	// turn_failed」，协调者 show 出来仍可裁决——旧形态「事件说回合失败、状态还是
-	// running」只会让操作被拒、干等到 2h 看门狗（handleResult / transitFailedWithEvent
-	// 函数头的同一条理由）。
-	if err := recoverTransit(st, taskID, cur.State); err != nil {
-		log.Error("对账迁移 waiting_review 失败，不追加 turn_failed 事件", "task", taskID, "cause", err)
-		sweep(taskID)
-		return cur.State
-	}
-	// 对账路径没有 git 实况可带（executor 已不在，查不了回合起点）。
-	//
-	// 类型是 turn_failed 而不是 failed（B100 补漏）：本函数迁的是
-	// **waiting_review**（上面的 recoverTransit），任务**没有终结**——executor 死了
-	// 但代码还在，值得让协调者 diff 完再决定 continue 还是 done。落 failed 会让
-	// wait --follow 收流、打「任务已终结」并以 0 退出，把一个正等着裁决的任务
-	// 报成死的。B100 首轮漏了这条：它的 spec 把这一行误记成「任务落 failed」，
-	// 没去看 recoverTransit 的实际迁移目标（见 watchdog.go 里 transitFailedWithEvent
-	// 的注释，那里明写着「reconcileExecutorGone 收的是 waiting_review」）。
-	evt, err := st.AppendEvent(taskID, proto.EventTypeTurnFailed, newFailedPayload(reason, "", ""))
-	if err != nil {
-		log.Error("对账追加 turn_failed 事件失败（状态已迁 waiting_review）", "task", taskID, "cause", err)
-		sweep(taskID) // 事件没发成不代表 executor 还活着，残留照收
-		return cur.State
-	}
-	hub.Publish(evt)
-	log.Info("对账完成", "task", taskID, "from", cur.State, "to", proto.TaskStateWaitingReview)
-	sweep(taskID)
-	return proto.TaskStateWaitingReview
 }
 
 // TaskProcCount 数一个任务名下当前有几个进程。

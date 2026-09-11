@@ -1,15 +1,16 @@
-// Package agentd 的强制回收入口。
+// forcereclaim.go 的强制回收入口。
 //
 // 职责：把「停 executor → 判成败 → 成功才落 failed」这三步收成一个方法，供
 // watchdog 的硬上限档调用（B119 §2.3）。
 // 边界：不删 worktree（那是 handoff stop 的人工决定，watchdog 自动触发不继承
 // 它）；不自己清扫（清扫挂在 transit 的终态分支上，见 manager.go 的 transit）；
 // 不做告警去重（边沿状态由调用方 watchdog 持有，见 scanTaskProcs）。
-package agentd
+package orchestration
 
 import (
 	"fmt"
 
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -49,7 +50,7 @@ func (m *Manager) ForceReclaim(taskID, reason string) error {
 		m.log.Error("强制回收落 failed 失败", "task", taskID, "cause", terr)
 		return fmt.Errorf("强制回收落 failed: %w", terr)
 	}
-	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeFailed, newFailedPayload(reason, "", ""))
+	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeFailed, agentd.NewFailedPayload(reason, "", ""))
 	if aerr != nil {
 		m.log.Error("强制回收追加 failed 事件失败", "task", taskID, "cause", aerr)
 		return fmt.Errorf("强制回收追加事件: %w", aerr)

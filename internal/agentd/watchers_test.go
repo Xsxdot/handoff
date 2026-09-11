@@ -147,7 +147,7 @@ func TestDoneClosesEventSubscriptions(t *testing.T) {
 	ch, cancel := hub.Subscribe(id)
 	defer cancel()
 
-	if err := m.Done(context.Background(), id, ""); err != nil {
+	if _, err := m.Done(context.Background(), id, ""); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	// 为什么先收 archived 再收关闭：done 现在会先发归档事件、再关订阅（B68）。

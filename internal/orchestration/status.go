@@ -9,7 +9,7 @@
 //     报告，修复归 continue/stop 那条既有路径（见 spec §1.4「不兼做恢复」）
 //   - 不做周期性探活：本文件只在有人调 status 时才跑，与 Spec A §2.2
 //     「不新增周期性探活」不冲突——那条拒绝的是后台定时扫
-package agentd
+package orchestration
 
 import (
 	"fmt"
@@ -18,6 +18,7 @@ import (
 	"sort"
 	"time"
 
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/buildinfo"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -90,7 +91,7 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 	var active []proto.Task
 	for _, t := range tasks {
 		resp.TaskCounts[string(t.State)]++
-		if !isTerminalState(t.State) {
+		if !agentd.IsTerminalState(t.State) {
 			active = append(active, t)
 		}
 	}
@@ -117,11 +118,6 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 	m.log.Info("状态聚合完成", "tasks", len(tasks), "active", len(active),
 		"executors", len(names), "unattended", unattended, "managed", resp.Update.Managed)
 	return resp, nil
-}
-
-// isTerminalState 判断状态是否终结（completed / failed）。
-func isTerminalState(s proto.TaskState) bool {
-	return s == proto.TaskStateCompleted || s == proto.TaskStateFailed
 }
 
 // probeActive 对每个非终结任务做一次只读探活，共享一份总时限预算。
