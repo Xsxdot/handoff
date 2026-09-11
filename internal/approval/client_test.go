@@ -413,34 +413,112 @@ func TestClientConsultAllowPersistsGrant(t *testing.T) {
 		func(context.Context, string, string) approval.ConsultDecision {
 			return approval.ConsultDecision{Approve: true, Reason: "approved by fixture", ElapsedMS: 7}
 		})
-	first, err := client.Request(context.Background(), permissionRequest("native-approver", "python3 script.py"))
+	req := permissionRequest("native-approver", "python3 script.py")
+	first, err := client.Request(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 	if first.Decision.Status != executor.ApprovalAllow || first.Decision.Rule != "approver" {
 		t.Fatalf("approver allow result=%+v", first.Decision)
 	}
+	fp := executor.ReuseFingerprint("v1", executor.PermFingerprint(executor.AdapterEvent{
+		PermissionID: req.NativeID, Text: req.Text, Perm: req.Perm,
+	}))
 	tk, err := st.GetTicket(first.Ref.ID)
-	if err != nil || tk.Answer == nil || *tk.Answer != "allow" || tk.DeliveredAt == nil {
-		t.Fatalf("approver grant=%+v err=%v", tk, err)
+	if err != nil || tk.Answer == nil || *tk.Answer != "allow" {
+		t.Fatalf("审批者批准必须落 answer=allow 的工单: %+v err=%v", tk, err)
+	}
+	if tk.DeliveredAt != nil {
+		t.Fatalf("Request 返回 allow 时不得已送达（DeliveredAt 必须为空）: %+v", tk)
+	}
+	if prior, err := st.FindReusableGrant("task-client-fixture", fp); err != nil || prior != nil {
+		t.Fatalf("未送达 allow 不得被复用: prior=%+v err=%v", prior, err)
 	}
 	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
 	if err != nil {
 		t.Fatalf("EventsFromAsc: %v", err)
 	}
-	if eventCount(events, proto.EventTypeApproverDecision) != 1 || eventCount(events, proto.EventTypeTicketAnswered) != 1 || eventCount(events, proto.EventTypePermissionRequest) != 0 {
+	if eventCount(events, proto.EventTypeApproverDecision) != 1 ||
+		eventCount(events, proto.EventTypeTicketAnswered) != 1 ||
+		eventCount(events, proto.EventTypePermissionRequest) != 0 {
 		t.Fatalf("approver events=%+v", events)
 	}
 	decision := payloadMap(t, events[0].Payload)
 	if decision["decision"] != "approve" || decision["elapsed_ms"] != float64(7) {
 		t.Fatalf("approver_decision payload=%v", decision)
 	}
+	// 送达确认只在 AckDelivered。
+	if err := client.Acknowledge(context.Background(), executor.ApprovalAck{
+		Ref: first.Ref, NativeID: req.NativeID, Stage: executor.AckDelivered,
+	}); err != nil {
+		t.Fatalf("AckDelivered: %v", err)
+	}
+	tk, err = st.GetTicket(first.Ref.ID)
+	if err != nil || tk.DeliveredAt == nil {
+		t.Fatalf("AckDelivered 之后必须送达: %+v err=%v", tk, err)
+	}
 	second, err := client.Request(context.Background(), permissionRequest("native-approver-2", "python3 script.py"))
 	if err != nil {
 		t.Fatalf("reuse Request: %v", err)
 	}
 	if second.Decision.Status != executor.ApprovalAllow || second.Decision.Rule != "reuse" {
-		t.Fatalf("approved grant not reusable: %+v", second.Decision)
+		t.Fatalf("已送达同指纹应复用: %+v", second.Decision)
+	}
+}
+
+// ticketListed 报告待投列表里是否有指定工单，供 #12 时序断言复用。
+func ticketListed(tickets []proto.Ticket, id string) bool {
+	for _, tk := range tickets {
+		if tk.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestClientApproverAllowUndeliveredUntilAck 锁冻结 #12：审批者 allow 之后、
+// 原生回传成功（Acknowledge(AckDelivered)）之前，工单必须留在 UndeliveredAnswers
+// 待投列表里，且不得被 FindReusableGrant 当作先例；AckDelivered 之后才从待投列表消失。
+//
+// 反向变异：把 MarkTicketDelivered 加回 consult → Request 返回时工单已被标记送达，
+// UndeliveredAnswers 为空、FindReusableGrant 命中，本测试红。
+func TestClientApproverAllowUndeliveredUntilAck(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true,
+		func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{Approve: true, Reason: "approved by fixture"}
+		})
+	req := permissionRequest("native-undelivered", "python3 script.py")
+	first, err := client.Request(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if first.Decision.Status != executor.ApprovalAllow || first.Decision.Rule != "approver" {
+		t.Fatalf("approver allow result=%+v", first.Decision)
+	}
+	fp := executor.ReuseFingerprint("v1", executor.PermFingerprint(executor.AdapterEvent{
+		PermissionID: req.NativeID, Text: req.Text, Perm: req.Perm,
+	}))
+	undelivered, err := st.UndeliveredAnswers("task-client-fixture")
+	if err != nil {
+		t.Fatalf("UndeliveredAnswers: %v", err)
+	}
+	if !ticketListed(undelivered, first.Ref.ID) {
+		t.Fatalf("审批者 allow 未送达前必须留在待投列表（#12）: got=%+v", undelivered)
+	}
+	if prior, err := st.FindReusableGrant("task-client-fixture", fp); err != nil || prior != nil {
+		t.Fatalf("未送达 allow 不得被复用: prior=%+v err=%v", prior, err)
+	}
+	if err := client.Acknowledge(context.Background(), executor.ApprovalAck{
+		Ref: first.Ref, NativeID: req.NativeID, Stage: executor.AckDelivered,
+	}); err != nil {
+		t.Fatalf("AckDelivered: %v", err)
+	}
+	undelivered, err = st.UndeliveredAnswers("task-client-fixture")
+	if err != nil {
+		t.Fatalf("UndeliveredAnswers after ack: %v", err)
+	}
+	if ticketListed(undelivered, first.Ref.ID) {
+		t.Fatalf("AckDelivered 之后不得仍在待投列表（#12）: got=%+v", undelivered)
 	}
 }
 

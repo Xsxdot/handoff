@@ -123,6 +123,8 @@ func (c *Client) Request(ctx context.Context, req executor.ApprovalRequest) (exe
 			log.Error("自动放行缺少审计钩子，拒绝放行", "task", c.taskID, "native", req.NativeID, "cause", err)
 			return c.escalate(ctx, ev, err.Error())
 		}
+		// 钩子只写审计与计数，不得做原生投递；OpenCode 的 RespondPermission
+		// 只由 adapter 的 authorizeNativePermission 一次完成（冻结 #3/#16）。
 		ref := executor.ApprovalRef{ID: executor.NamespacedTicketID(c.taskID, req.NativeID)}
 		c.hooks.AutoAllow(c.taskID, ev, verdict)
 		log.Info("审批自动放行成功", "task", c.taskID, "native", req.NativeID, "ref", ref.ID)
@@ -370,13 +372,10 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 	}); err != nil {
 		c.logger().Warn("审批者批准：追加工单答复事件失败", "task", c.taskID, "ticket", ticketID, "cause", err)
 	}
-	if err := c.hooks.Store.MarkTicketDelivered(ticketID); err != nil {
-		c.logger().Error("审批者批准：标记送达失败", "task", c.taskID, "ticket", ticketID, "cause", err)
-		return c.escalate(ctx, ev, "审批者标记送达失败")
-	}
-
+	// 送达时间戳归 Acknowledge(AckDelivered)（B233.7 第 58 条 / 冻结 #5、#7）；
+	// 本函数只负责形成并持久化决定，绝不在此写 delivered_at。
 	ref := executor.ApprovalRef{ID: ticketID}
-	c.logger().Info("审批者批准已持久化并送达", "task", c.taskID, "ticket", ticketID)
+	c.logger().Info("审批者批准决定已落库，尚未送达", "task", c.taskID, "ticket", ticketID)
 	return executor.ApprovalResult{Ref: ref, Decision: executor.ApprovalDecision{
 		Status: executor.ApprovalAllow, Rule: "approver", Reason: dec.Reason,
 	}}, nil
