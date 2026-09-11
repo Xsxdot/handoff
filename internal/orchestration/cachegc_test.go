@@ -6,9 +6,10 @@
 //
 // 边界：
 //   - 不覆盖 Manager.GC 批处理；那属于 gc_test.go
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"bytes"
 	"context"
 	"errors"
@@ -280,7 +281,7 @@ func TestCompensatePurgesCacheWhenWorktreeRemoveFails(t *testing.T) {
 	m := compensateOnlyManager(t)
 	id := "2c58bbb7-0000-0000-0000-000000000000"
 	active, legacy, taskDir := seedTaskWithCache(t, m, id, proto.TaskStateFailed)
-	m.compensateWorkspace(context.Background(), id, repo, Workspace{
+	m.compensateWorkspace(context.Background(), id, repo, agentd.Workspace{
 		Branch: "e2e/stuck-cache", WorkDir: filepath.Join(t.TempDir(), "not-a-worktree"),
 		Managed: true, NewBranchTip: tip,
 	})

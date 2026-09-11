@@ -1,6 +1,7 @@
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"context"
 	"errors"
 	"fmt"
@@ -374,7 +375,7 @@ func TestApprovalClientApproverFailureOrTimeoutDoesNotAllow(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	hub := NewHub()
+	hub := agentd.NewHub()
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, hub, map[string]executor.Adapter{"fake": &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}, cfg, nil, app, newTestGate(t), logger)
 
@@ -437,7 +438,7 @@ func TestApprovalClientDoesNotInvokeOpenCodeSessionAPI(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	hub := NewHub()
+	hub := agentd.NewHub()
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, hub, map[string]executor.Adapter{"fake": &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}, cfg, nil, app, newTestGate(t), logger)
 
@@ -507,7 +508,7 @@ func TestApprovalClientApproverAllowCreatesReusableGrantAndSecondRequestReuses(t
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	hub := NewHub()
+	hub := agentd.NewHub()
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, hub, map[string]executor.Adapter{"fake": &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}, cfg, nil, app, newTestGate(t), logger)
 

@@ -15,6 +15,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
+	orchestration "github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -76,7 +77,7 @@ type statusEnv struct {
 		CreateTask(t *proto.Task) error
 	}
 	// mgr 是同一个 manager 的引用：FootprintAll 等直接调方法的测试不走 HTTP。
-	mgr *agentd.Manager
+	mgr *orchestration.Manager
 }
 
 // newStatusEnv 构造 status 测试环境：manager 以单只 probeStub 注册为 "stub"，
@@ -91,8 +92,9 @@ func newStatusEnv(t *testing.T, ad executor.Adapter) *statusEnv {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": ad},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": ad},
 		cfg, nil, nil, nil, logger)
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 	return &statusEnv{ts: env.ts, st: env.st, mgr: mgr}
 }
@@ -101,7 +103,7 @@ func newStatusEnv(t *testing.T, ad executor.Adapter) *statusEnv {
 //
 // 与 newStatusEnv 的差异：只构造 Manager，不挂 HTTP server——本测试直接调
 // Status() 方法本身，不需要经过 wire 层。
-func newTestManager(t *testing.T) *agentd.Manager {
+func newTestManager(t *testing.T) *orchestration.Manager {
 	t.Helper()
 	cfg := &config.Config{
 		Token:    testToken,
@@ -111,8 +113,10 @@ func newTestManager(t *testing.T) *agentd.Manager {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
-	return agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": &probeStub{alive: true}},
+	m := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"stub": &probeStub{alive: true}},
 		cfg, nil, nil, nil, logger)
+	m.SetWorkspace(agentd.NewGitCapability())
+	return m
 }
 
 // seedTask 落一条指定状态的任务（executor 一律 "stub"，保证探活路由到 stub）。
@@ -375,7 +379,7 @@ func TestStatusListenAux(t *testing.T) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(),
 		map[string]executor.Adapter{"stub": &probeStub{alive: true}}, cfg, nil, nil, nil, logger)
 
 	st, err := mgr.Status()

@@ -3,10 +3,12 @@
 // 为什么白盒（package agentd）而不是放进 server_test.go：那个文件是 agentd_test
 // 外部包，够不到 initGitRepo / mustCreateTask / newWorktree 等内部助手；而本组
 // 用例需要真 git 仓库 + 真 worktree 才能驱动判定逻辑，只能白盒。
-package agentd
+package orchestration
 
 import (
 	"encoding/json"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -14,35 +16,38 @@ import (
 	"strings"
 	"testing"
 
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 // newServerWithDirtyWorktree 造一个 server+manager+真 git 仓库，任务为终态 +
 // 脏 managed worktree，返回 server 与任务 ID。
-func newServerWithDirtyWorktree(t *testing.T) (*Server, string) {
+func newServerWithDirtyWorktree(t *testing.T) (*agentd.Server, string) {
 	t.Helper()
-	m, st, hub, _ := newTestManager(t)
+	m, st, _, _ := newTestManager(t)
 	repo := initGitRepo(t)
 	wt := newWorktree(t, repo, "wt-srv1", "f-srv1")
 	if err := os.WriteFile(filepath.Join(wt, "probe.log"), []byte("x"), 0o644); err != nil {
 		t.Fatalf("造脏：%v", err)
 	}
 	id := seedTerminalTask(t, m, repo, wt, "f-srv1", proto.TaskStateFailed, true)
-	srv := &Server{st: st, hub: hub, log: m.log, mgr: m}
-	srv.cfg.Store(&config.Config{Token: "test"})
+	srv := agentd.NewServer(&config.Config{Token: "test"}, st,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetManager(m)
 	return srv, id
 }
 
 // newServerWithRunningTask 造一个任务为非终态（running）的 server。
-func newServerWithRunningTask(t *testing.T) (*Server, string) {
+func newServerWithRunningTask(t *testing.T) (*agentd.Server, string) {
 	t.Helper()
-	m, st, hub, _ := newTestManager(t)
+	m, st, _, _ := newTestManager(t)
 	repo := initGitRepo(t)
 	wt := newWorktree(t, repo, "wt-srv2", "f-srv2")
 	id := seedTerminalTask(t, m, repo, wt, "f-srv2", proto.TaskStateRunning, true)
-	srv := &Server{st: st, hub: hub, log: m.log, mgr: m}
-	srv.cfg.Store(&config.Config{Token: "test"})
+	srv := agentd.NewServer(&config.Config{Token: "test"}, st,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetManager(m)
 	return srv, id
 }
 

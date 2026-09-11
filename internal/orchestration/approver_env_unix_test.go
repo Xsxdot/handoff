@@ -1,6 +1,6 @@
 //go:build unix
 
-package agentd
+package orchestration
 
 import (
 	"context"

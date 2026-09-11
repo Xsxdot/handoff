@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	orchestration "github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
@@ -443,11 +444,12 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 
 	// 注入 manager（真实 hub + fake executor）：reply 路由的自愈中继落点
 	f := fake.New(nil)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 
 	// 全程无任何 WaitAnswer 等待者（模拟重启后等待 goroutine 已消亡）
@@ -522,11 +524,12 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 	// 与 opencode adapter 的「任务不在运行中」错误同构，见 adapter.go lookup 判空）
 	f := fake.New(nil)
 	f.SetPermError(fmt.Errorf("任务 %s 不在运行中", taskID))
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 
 	resp := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"allow"}`)
@@ -585,11 +588,12 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 	}
 
 	f := fake.New(nil)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 
 	resp := env.post(t, "/api/tasks/"+taskID+"/stop", "")
@@ -624,11 +628,12 @@ func TestStopManagedReturnsWorktreeRemovedFalseInBody(t *testing.T) {
 	}
 
 	f := fake.New(nil)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 
 	resp := env.post(t, "/api/tasks/"+taskID+"/stop", "")
@@ -667,11 +672,12 @@ func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
 	// Send 一律返回 ErrTaskNotRunning（模拟 adapter 无该任务运行态）
 	f := fake.New(nil)
 	f.SetSendError(fmt.Errorf("任务 %s 不在运行中: %w", taskID, executor.ErrTaskNotRunning))
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 
 	resp := env.post(t, "/api/tasks/"+taskID+"/continue", `{"instructions":"改一下"}`)
@@ -914,8 +920,9 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 		Env:      map[string]string{"fake": "missing.env"}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(),
 		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, env.srv.EnvMapping, nil, newTestGate(t), logger)
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 	ledgerStore, lerr := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
 	if lerr != nil {
@@ -982,11 +989,12 @@ func newDoneEnvWithState(t *testing.T, taskID string, state proto.TaskState) *te
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(),
 		map[string]executor.Adapter{"fake": fake.New(nil)},
 		&config.Config{Token: testToken, DataDir: t.TempDir(),
 			Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 	return env
 }
@@ -1141,9 +1149,10 @@ func TestHandleReplyIdempotentDoesNotRelayTwice(t *testing.T) {
 	}
 
 	f := fake.New(nil)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(agentd.NewGitCapability())
 	env.srv.SetManager(mgr)
 
 	// 第一次 reply

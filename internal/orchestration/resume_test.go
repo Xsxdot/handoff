@@ -9,7 +9,7 @@
 //     路由与 CLI 侧在 integration/cmd 测
 //   - B229 的纪律正文消费判据（continue/resume 读首派落盘正文）在
 //     dispatch_discipline_test.go，本文件不再重复
-package agentd
+package orchestration
 
 import (
 	"context"

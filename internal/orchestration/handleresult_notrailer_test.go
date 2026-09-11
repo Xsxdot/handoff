@@ -5,9 +5,10 @@
 // 依赖 main 上已有的两块：voidTicketsWithAudit（B63）会产 tickets_voided 审计
 // 事件，本文件直接断言它的 Reason 字段；newFailedPayload（B73）带 ProcUsage，
 // git 实况由同一构造器带上，本文件断言它没有丢。
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -42,7 +43,7 @@ func TestFailedPayloadCarriesGitTruth(t *testing.T) {
 	}})
 
 	ev := lastEventOfType(t, m, "t1", string(proto.EventTypeTurnFailed))
-	var p failedPayload
+	var p agentd.FailedPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +64,7 @@ func TestCompletedPayloadCarriesFinalTextAsOptionalField(t *testing.T) {
 	}})
 
 	ev := lastEventOfType(t, m, "final-text", string(proto.EventTypeCompleted))
-	var payload completedPayload
+	var payload agentd.CompletedPayload
 	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
@@ -109,7 +110,7 @@ func TestVoidReasonComesFromResultNotHardcoded(t *testing.T) {
 	}})
 
 	ev := lastEventOfType(t, m, "t3", string(proto.EventTypeTicketsVoided))
-	var p ticketsVoidedPayload
+	var p agentd.TicketsVoidedPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatal(err)
 	}
@@ -130,7 +131,7 @@ func TestVoidReasonDefaultsToExecutorGone(t *testing.T) {
 	}})
 
 	ev := lastEventOfType(t, m, "t4", string(proto.EventTypeTicketsVoided))
-	var p ticketsVoidedPayload
+	var p agentd.TicketsVoidedPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatal(err)
 	}

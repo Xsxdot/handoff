@@ -253,10 +253,7 @@ func setupB23310CardTaskEnvWithMachine(t *testing.T, script []fake.Step, machine
 	}
 
 	adapter := &b23310ProfileFakeAdapter{Fake: fake.New(script), profile: &recordingProfile{}}
-	mgr := NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": adapter},
-		env.srv.conf(), nil, nil, newTestGate(t), discardLogger())
-	mgr.SetWorkspace(NewGitCapability())
-	env.srv.SetManager(mgr)
+	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": adapter})
 	origin, repo := newOriginAndClone(t)
 	if _, err := mgr.RegisterProject(context.Background(), RegisterProjectReq{
 		OriginURL: origin, Name: "handoff", Path: repo,

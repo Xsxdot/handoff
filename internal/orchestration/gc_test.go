@@ -6,12 +6,14 @@
 //
 // 边界：
 //   - 复用 cachegc_test 与 reclaim_test 的夹具，不另造 git init
-package agentd
+package orchestration
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -20,19 +22,21 @@ import (
 	"testing"
 	"time"
 
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
-func newGCServer(t *testing.T) (*Server, *Manager) {
+func newGCServer(t *testing.T) (*agentd.Server, *Manager) {
 	t.Helper()
-	m, st, hub, _ := newTestManager(t)
-	s := &Server{st: st, hub: hub, log: m.log, mgr: m}
-	s.cfg.Store(&config.Config{Token: "test"})
+	m, st, _, _ := newTestManager(t)
+	s := agentd.NewServer(&config.Config{Token: "test"}, st,
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	s.SetManager(m)
 	return s, m
 }
 
-func doGC(t *testing.T, s *Server, method, rawURL, body, token string) *httptest.ResponseRecorder {
+func doGC(t *testing.T, s *agentd.Server, method, rawURL, body, token string) *httptest.ResponseRecorder {
 	t.Helper()
 	var r *http.Request
 	if body == "" {

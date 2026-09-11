@@ -36,7 +36,7 @@ func TestCreateManualWorktreeNewBranch(t *testing.T) {
 		t.Fatalf("CreateManualWorktree: %v", err)
 	}
 	wantDir := filepath.Join(worktreesDir, "manual", "feat-x")
-	if canonPath(ws.Path) != canonPath(wantDir) {
+	if CanonPath(ws.Path) != CanonPath(wantDir) {
 		t.Fatalf("落点 = %q, want %q", ws.Path, wantDir)
 	}
 	if ws.Branch != "feat/x" {

@@ -2,9 +2,10 @@
 //
 // 测试为白盒（package agentd）：直接驱动 m.transit，绕开 Done/Stop 的前置门禁，
 // 让每条用例只钉住「终态迁移 ⇒ 作废」这一件事。
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"encoding/json"
 	"testing"
 	"time"
@@ -66,7 +67,7 @@ func TestTransitToTerminalVoidsPendingTickets(t *testing.T) {
 	if len(evs) != 1 {
 		t.Fatalf("tickets_voided 事件 = %d 条，期望 1 条", len(evs))
 	}
-	var p ticketsVoidedPayload
+	var p agentd.TicketsVoidedPayload
 	if err := json.Unmarshal(evs[0].Payload, &p); err != nil {
 		t.Fatalf("解析 payload: %v", err)
 	}

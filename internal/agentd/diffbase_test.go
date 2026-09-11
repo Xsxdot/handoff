@@ -55,8 +55,7 @@ func TestTaskDiffUsesResultRefCommit(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	srv := NewServer(cfg, st, discardLogger())
-	m := NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), discardLogger())
+	m := newManagerForTest(t, ManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: discardLogger(), LiveConfig: srv.Conf()})
 	spy := &diffHeadSpy{Capability: NewGitCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)
@@ -114,8 +113,7 @@ func TestTaskDiffAllowsEmptyResultPathWithCommit(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	cfg := &config.Config{Token: token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	srv := NewServer(cfg, st, logger)
-	m := NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), logger)
+	m := newManagerForTest(t, ManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: logger, LiveConfig: srv.Conf()})
 	spy := &diffHeadSpy{Capability: NewGitCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)
@@ -154,8 +152,7 @@ func TestTaskDiffEmptyCommitFallsBackThroughHTTP(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	cfg := &config.Config{Token: token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	srv := NewServer(cfg, st, logger)
-	m := NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), logger)
+	m := newManagerForTest(t, ManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: logger, LiveConfig: srv.Conf()})
 	spy := &diffHeadSpy{Capability: NewGitCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)

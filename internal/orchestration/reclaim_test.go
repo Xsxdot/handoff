@@ -3,9 +3,10 @@
 // 解析类用例用固定文本（不起 git）；判定与回收类用例在 t.TempDir() 里
 // git init + git worktree add 造真实工作树，复用 workspace_test.go 的
 // initGitRepo / gitAt / writeAndCommit 助手。
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"context"
 	"errors"
 	"fmt"
@@ -66,7 +67,7 @@ func TestParsePorcelainStatusEmptyIsClean(t *testing.T) {
 	}
 }
 
-// canonPath 必须能穿透符号链接：macOS 上 /tmp 是 /private/tmp 的链接，
+// agentd.CanonPath 必须能穿透符号链接：macOS 上 /tmp 是 /private/tmp 的链接，
 // git 报的是解析后的路径，而任务库里存的可能是未解析的——不归一就永远匹配不上。
 func TestCanonPathResolvesSymlink(t *testing.T) {
 	real := t.TempDir()
@@ -74,8 +75,8 @@ func TestCanonPathResolvesSymlink(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatalf("建符号链接：%v", err)
 	}
-	if canonPath(link) != canonPath(real) {
-		t.Fatalf("链接与目标应归一到同一路径：%s vs %s", canonPath(link), canonPath(real))
+	if agentd.CanonPath(link) != agentd.CanonPath(real) {
+		t.Fatalf("链接与目标应归一到同一路径：%s vs %s", agentd.CanonPath(link), agentd.CanonPath(real))
 	}
 }
 
@@ -88,8 +89,8 @@ func TestCanonPathResolvesMissingLeafViaParent(t *testing.T) {
 		t.Fatalf("建符号链接：%v", err)
 	}
 	gone := filepath.Join(link, "gone")
-	want := filepath.Join(canonPath(real), "gone")
-	if got := canonPath(gone); got != want {
+	want := filepath.Join(agentd.CanonPath(real), "gone")
+	if got := agentd.CanonPath(gone); got != want {
 		t.Fatalf("缺失叶子应经父目录归一：实得 %s，期望 %s", got, want)
 	}
 }
@@ -216,9 +217,9 @@ func newReclaimManager(t *testing.T) (*Manager, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
-	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+	m := NewManager(st, agentd.NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	m.SetWorkspace(NewGitCapability())
+	m.SetWorkspace(agentd.NewGitCapability())
 	return m, repo
 }
 
@@ -264,9 +265,9 @@ func TestReclaimRefusesDirtyWithoutForce(t *testing.T) {
 	id := seedTerminalTask(t, m, repo, wt, "f-r2", proto.TaskStateFailed, true)
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	var de *DirtyWorktreeError
+	var de *agentd.DirtyWorktreeError
 	if !errors.As(err, &de) {
-		t.Fatalf("脏树无 force 应返回 DirtyWorktreeError，实得 %v", err)
+		t.Fatalf("脏树无 force 应返回 agentd.DirtyWorktreeError，实得 %v", err)
 	}
 	if len(de.Files) != 1 || de.Files[0].Path != "probe.log" {
 		t.Fatalf("拒绝时必须带脏清单，实得 %+v", de.Files)
@@ -342,7 +343,7 @@ func TestReclaimRefusesNonTerminal(t *testing.T) {
 	id := seedTerminalTask(t, m, repo, wt, "f-r6", proto.TaskStateRunning, true)
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, ErrReclaimNotTerminal) {
+	if !errors.Is(err, agentd.ErrReclaimNotTerminal) {
 		t.Fatalf("非终态应拒绝，实得 %v", err)
 	}
 	if _, serr := os.Stat(wt); serr != nil {
@@ -355,7 +356,7 @@ func TestReclaimRefusesWaitingReview(t *testing.T) {
 	wt := newWorktree(t, repo, "wt-wr", "f-wr")
 	id := seedTerminalTask(t, m, repo, wt, "f-wr", proto.TaskStateWaitingReview, true)
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, ErrReclaimNotTerminal) {
+	if !errors.Is(err, agentd.ErrReclaimNotTerminal) {
 		t.Fatalf("waiting_review 应拒绝，实得 %v", err)
 	}
 	if _, serr := os.Stat(wt); serr != nil {
@@ -369,7 +370,7 @@ func TestReclaimRefusesNotManaged(t *testing.T) {
 	id := seedTerminalTask(t, m, repo, wt, "f-r7", proto.TaskStateFailed, false)
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, ErrReclaimNotManaged) {
+	if !errors.Is(err, agentd.ErrReclaimNotManaged) {
 		t.Fatalf("非 managed 应拒绝，实得 %v", err)
 	}
 	if _, serr := os.Stat(wt); serr != nil {
@@ -388,7 +389,7 @@ func TestReclaimRefusesWhenRepoUnreachable(t *testing.T) {
 	}
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, ErrReclaimRepoUnreachable) {
+	if !errors.Is(err, agentd.ErrReclaimRepoUnreachable) {
 		t.Fatalf("仓库不可达应报 repo_unreachable，实得 %v", err)
 	}
 }
@@ -505,7 +506,7 @@ func TestReclaimRefusesWhenWorktreeUnreadable(t *testing.T) {
 	id := seedTerminalTask(t, m, repo, wt, "f-r9", proto.TaskStateFailed, true)
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, ErrReclaimRepoUnreachable) {
+	if !errors.Is(err, agentd.ErrReclaimRepoUnreachable) {
 		t.Fatalf("工作树读不出状态应报 repo_unreachable（判不出绝不能静默成功），实得 %v", err)
 	}
 }

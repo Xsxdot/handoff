@@ -317,6 +317,10 @@ func NewManager(st *store.Store, hub *agentd.Hub, ads map[string]executor.Adapte
 	return m
 }
 
+// B233.13：编排实现满足 gateway 使用方定义的出站 client 契约。
+// 此断言把「接口与实现形状不符」从运行期提前到编译期。
+var _ agentd.OrchestrationClient = (*Manager)(nil)
+
 // RegistryFromAds 从 ads 全表推导能力 Registry。
 // 仅保留实现了 executor.Provider 的 adapter，重名以后者为准。
 func RegistryFromAds(ads map[string]executor.Adapter) *executor.Registry {

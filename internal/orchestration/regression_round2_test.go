@@ -9,41 +9,49 @@
 //   - 白盒测试（package agentd）：直接驱动 manager/server 的内部方法复现时序窗口，
 //     不经 HTTP——被测对象是中介顺序本身，不是路由
 //   - WS 相关回归（N-1/N-2/N-3）在 server_test.go，不在本文件
-package agentd
+package orchestration
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"log/slog"
+	"net/http"
+	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
-// replyLikeServer 复刻 Server.handleReply 的回程步骤（落库应答 → 唤醒等待者 →
-// 无等待者则自愈中继 → 空闲则回迁 running），供时序窗口的竞态复现使用。
-func replyLikeServer(srv *Server, mgr *Manager, taskID, ticketID, answer string) {
-	if err := srv.st.AnswerTicket(ticketID, answer); err != nil {
-		return
-	}
-	if !srv.hub.NotifyAnswer(ticketID, answer) {
-		_ = mgr.RelayAnswer(taskID, ticketID, answer)
-	}
-	srv.resumeIfIdle(taskID)
+// replyLikeServer 经 Server 的真实 handleReply 路径完成回程（落库应答 → 唤醒等待者
+// → 无等待者则自愈中继 → 空闲则回迁 running）。迁包后不再能访问 Server 未导出字段，
+// 故改走 HTTP，语义等价且更贴近生产路径。
+func replyLikeServer(srv *agentd.Server, taskID, ticketID, answer string) {
+	body, _ := json.Marshal(map[string]string{"ticket_id": ticketID, "answer": answer})
+	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/reply", bytes.NewReader(body))
+	req.Host = "127.0.0.1:7777"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer test")
+	rr := httptest.NewRecorder()
+	srv.Handler().ServeHTTP(rr, req)
 }
 
-// newTestServerWithManager 组装白盒 server+manager（共用一个 store 与 hub）。
-func newTestServerWithManager(t *testing.T) (*Server, *Manager, *store.Store) {
+// newTestServerWithManager 组装白盒 server+manager（共用一个 store；manager 挂到
+// server 上，reply 经真实 HTTP 路径驱动）。
+func newTestServerWithManager(t *testing.T) (*agentd.Server, *Manager, *store.Store) {
 	t.Helper()
-	mgr, st, hub, _ := newTestManager(t)
+	mgr, st, _, _ := newTestManager(t)
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir()}
-	srv := &Server{st: st, hub: hub, log: mgr.log, mgr: mgr}
-	srv.cfg.Store(cfg)
+	srv := agentd.NewServer(cfg, st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srv.SetManager(mgr)
 	return srv, mgr, st
 }
 
@@ -81,7 +89,7 @@ func TestPermissionStateVisibleBeforeTicket(t *testing.T) {
 			deadline := time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
 				if pending, err := st.PendingTickets(taskID); err == nil && len(pending) > 0 {
-					replyLikeServer(srv, mgr, taskID, ticketID, "allow")
+					replyLikeServer(srv, taskID, ticketID, "allow")
 					return
 				}
 			}

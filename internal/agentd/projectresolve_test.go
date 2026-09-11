@@ -42,7 +42,7 @@ func TestResolveProject(t *testing.T) {
 		{name: "project_id 未命中（表为空）", id: handoffID, entries: nil, wantErr: ErrProjectNotRegistered},
 		{name: "project_name 命中", projName: "tk", entries: locFixture(), wantPath: "/root/work/tk"},
 		{name: "project_name 未命中", projName: "nope", entries: locFixture(), wantErr: ErrProjectNotRegistered},
-		{name: "两者都空", entries: locFixture(), wantErr: errBadDispatchRequest},
+		{name: "两者都空", entries: locFixture(), wantErr: ErrBadDispatchRequest},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

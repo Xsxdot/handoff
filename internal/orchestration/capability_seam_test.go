@@ -6,9 +6,10 @@
 //     2. coordinatorRunner.Launch 执法 CapCoordination（非 OpenCode 返回 ErrCapabilityUnsupported 且底层零调用）；
 //     3. Approver.Decide 走 a.shot.Invoke 且 grok 填入 EffortLow；
 //     4. coordinatorHomeSupplier.Prepare 经 Profile.Prepare 写入规则，绝不触碰表外 sessions.db。
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"context"
 	"errors"
 	"log/slog"
@@ -64,7 +65,7 @@ func TestDispatchRequiresExecutionBeforeStart(t *testing.T) {
 		log: slog.Default(),
 	}
 
-	_, err := mgr.Dispatch(context.Background(), DispatchReq{
+	_, err := mgr.Dispatch(context.Background(), agentd.DispatchReq{
 		ProjectName: "proj-1",
 		Prompt:      "test",
 		Executor:    "no-exec",

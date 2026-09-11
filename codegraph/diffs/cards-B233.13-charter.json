@@ -1,7 +1,7 @@
 {
  "view": "cards/B233.13-charter",
  "base": "1f848057",
- "summary": "B233.13 Ticket 0：gateway 编排出站 client 接口空壳",
+ "summary": "B233.13：gateway 编排出站 client 接口 OrchestrationClient + Ticket 0 空壳",
  "containersAdded": {
   "k_agentd_orchestration_client": {
    "label": "agentd 编排 client 接口",

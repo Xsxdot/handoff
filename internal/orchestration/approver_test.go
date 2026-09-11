@@ -1,7 +1,8 @@
 // approver 白盒测试：黑名单命中、CLI 裁决、fail-closed 三连与审批链接入 handlePermission。
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"context"
 	"encoding/json"
 	"errors"
@@ -155,7 +156,7 @@ func mustApproverDispatch(t *testing.T, m *Manager) *proto.Task {
 	t.Helper()
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "跑测试", Executor: "fake"})
+	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{ProjectID: pid, Prompt: "跑测试", Executor: "fake"})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -407,7 +408,7 @@ func TestApproverDecisionErrorRecordsCause(t *testing.T) {
 			if e.Type != proto.EventTypeApproverDecision {
 				continue
 			}
-			var p approverDecisionPayload
+			var p agentd.ApproverDecisionPayload
 			if json.Unmarshal(e.Payload, &p) != nil {
 				continue
 			}

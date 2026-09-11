@@ -1,6 +1,7 @@
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"context"
 	"errors"
 	"sync"
@@ -62,10 +63,10 @@ func TestDispatchCallsCapability(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
-	spy := &countingCap{inner: NewGitCapability()}
+	spy := &countingCap{inner: agentd.NewGitCapability()}
 	m.SetWorkspace(spy)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), DispatchReq{
+	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
@@ -88,10 +89,10 @@ func TestDispatchNilCapabilityFailsClosed(t *testing.T) {
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	m.SetWorkspace(nil)
 	pid := registerTestProject(t, m, repo)
-	_, err := m.Dispatch(context.Background(), DispatchReq{
+	_, err := m.Dispatch(context.Background(), agentd.DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
-	if !errors.Is(err, ErrWorkspaceUnavailable) {
-		t.Fatalf("nil Capability 必须失败且错误链含 ErrWorkspaceUnavailable，实得 %v", err)
+	if !errors.Is(err, agentd.ErrWorkspaceUnavailable) {
+		t.Fatalf("nil Capability 必须失败且错误链含 agentd.ErrWorkspaceUnavailable，实得 %v", err)
 	}
 }

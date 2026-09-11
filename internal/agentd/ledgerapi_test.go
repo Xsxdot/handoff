@@ -149,8 +149,7 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	env := newTestAgentdEnv(t)
 	env.srv.SetLedger(st)
 	// 空 target 的 card step 对本机 /api/status 探活；没 manager 会 503。
-	env.srv.SetManager(NewManager(env.st, env.srv.Hub(), nil, env.srv.conf(), nil, nil, nil,
-		slog.New(slog.NewTextHandler(io.Discard, nil))))
+	newManagerForServer(t, env.srv, nil)
 	return &ledgerEnv{testAgentdEnv: env, ledger: st, ledgerPath: ledgerPath}
 }
 
@@ -182,7 +181,7 @@ func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := NewServer(cfg, backend, log)
 	srv.SetLedger(ledgerStore)
-	srv.SetManager(NewManager(backend, srv.Hub(), nil, cfg, nil, nil, nil, log))
+	newManagerForServer(t, srv, nil)
 	ts := testhttp.NewServer(t, srv.Handler())
 	// Task 3 的本机纪律探活走真实 HTTP；把临时服务地址回填为本机监听地址，
 	// 避免零值 Listen 被误当成 relay 的空端点。

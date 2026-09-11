@@ -1,7 +1,8 @@
 // 运行态对账的白盒测试：executor 已不在这一事实的唯一收尾实现。
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"context"
 	"encoding/json"
 	"errors"
@@ -39,7 +40,7 @@ func TestReconcileExecutorGone(t *testing.T) {
 		t.Run(c.name, func(t *testing.T) {
 			st := newTestStore(t)
 			mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: c.from})
-			got := reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
+			got := agentd.ReconcileExecutorGone(st, agentd.NewHub(), "t1", "测试来源", quietLog(), func(string) {})
 			if got != c.wantState {
 				t.Fatalf("返回状态 = %s，期望 %s", got, c.wantState)
 			}
@@ -72,8 +73,8 @@ func TestReconcileExecutorGone(t *testing.T) {
 func TestReconcileExecutorGoneIdempotent(t *testing.T) {
 	st := newTestStore(t)
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning})
-	reconcileExecutorGone(st, NewHub(), "t1", "第一次", quietLog(), func(string) {})
-	reconcileExecutorGone(st, NewHub(), "t1", "第二次", quietLog(), func(string) {})
+	agentd.ReconcileExecutorGone(st, agentd.NewHub(), "t1", "第一次", quietLog(), func(string) {})
+	agentd.ReconcileExecutorGone(st, agentd.NewHub(), "t1", "第二次", quietLog(), func(string) {})
 	evs, err := st.EventsFromAsc("t1", 0, 100)
 	if err != nil {
 		t.Fatal(err)
@@ -97,7 +98,7 @@ func TestReconcileExecutorGoneVoidsPendingTickets(t *testing.T) {
 	if _, err := st.CreateTicket(&proto.Ticket{ID: "t1:p1", TaskID: "t1", Kind: "permission", Request: json.RawMessage(`{"permission":"Bash: ls"}`)}); err != nil {
 		t.Fatal(err)
 	}
-	reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
+	agentd.ReconcileExecutorGone(st, agentd.NewHub(), "t1", "测试来源", quietLog(), func(string) {})
 	pend, err := st.PendingTickets("t1")
 	if err != nil {
 		t.Fatal(err)
@@ -107,8 +108,8 @@ func TestReconcileExecutorGoneVoidsPendingTickets(t *testing.T) {
 	}
 }
 
-// TestReconcileTransitsBeforeEvent 同上，对 reconcileExecutorGone：turn_failed
-// 事件落库那一刻，状态必须已迁到 waiting_review——reconcileExecutorGone 迁的不是
+// TestReconcileTransitsBeforeEvent 同上，对 agentd.ReconcileExecutorGone：turn_failed
+// 事件落库那一刻，状态必须已迁到 waiting_review——agentd.ReconcileExecutorGone 迁的不是
 // failed（任务未终结，executor 死了代码还在，等协调者 diff 完裁决），是 waiting_review。
 //
 // 断言机制与 TestStopTransitsBeforeEvent 同款：钩子同步触发于 INSERT 之后、AppendEvent
@@ -126,7 +127,7 @@ func TestReconcileTransitsBeforeEvent(t *testing.T) {
 	})
 
 	go func() {
-		reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
+		agentd.ReconcileExecutorGone(st, agentd.NewHub(), "t1", "测试来源", quietLog(), func(string) {})
 	}()
 
 	var gotType proto.EventType
@@ -136,7 +137,7 @@ func TestReconcileTransitsBeforeEvent(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("等待对账的 turn_failed 事件落库超时")
 	}
-	// 放行钩子：GetTask 期间 reconcileExecutorGone 停在 AppendEvent 内，读到的就是
+	// 放行钩子：GetTask 期间 agentd.ReconcileExecutorGone 停在 AppendEvent 内，读到的就是
 	// 事件落库瞬间的状态
 	defer close(release)
 	if gotType != proto.EventTypeTurnFailed {
@@ -555,7 +556,7 @@ func TestReconcileExecutorGoneSweepsUnconditionally(t *testing.T) {
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateWaitingReview})
 
 	swept := 0
-	reconcileExecutorGone(st, NewHub(), "t1", "测试", quietLog(), func(string) { swept++ })
+	agentd.ReconcileExecutorGone(st, agentd.NewHub(), "t1", "测试", quietLog(), func(string) { swept++ })
 
 	if swept != 1 {
 		t.Fatalf("提前返回分支也必须清扫一次，实际 %d 次", swept)
@@ -575,7 +576,7 @@ func TestReconcileExecutorGoneSweepsAfterTransit(t *testing.T) {
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning})
 
 	var stateAtSweep proto.TaskState
-	reconcileExecutorGone(st, NewHub(), "t1", "测试", quietLog(), func(taskID string) {
+	agentd.ReconcileExecutorGone(st, agentd.NewHub(), "t1", "测试", quietLog(), func(taskID string) {
 		cur, _ := st.GetTask(taskID)
 		stateAtSweep = cur.State
 	})
@@ -597,7 +598,7 @@ func TestReconcileExecutorGoneEmitsTurnFailed(t *testing.T) {
 	st := newTestStore(t)
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: "/r", State: proto.TaskStateRunning})
 
-	got := reconcileExecutorGone(st, NewHub(), "t1", "测试来源", quietLog(), func(string) {})
+	got := agentd.ReconcileExecutorGone(st, agentd.NewHub(), "t1", "测试来源", quietLog(), func(string) {})
 	if got != proto.TaskStateWaitingReview {
 		t.Fatalf("对账应收 waiting_review，实际 %s", got)
 	}

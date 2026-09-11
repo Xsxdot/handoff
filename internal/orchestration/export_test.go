@@ -1,6 +1,7 @@
-package agentd
+package orchestration
 
 import (
+	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"context"
 	"encoding/json"
 	"log/slog"
@@ -58,7 +59,7 @@ func seedLateDecisionCase(t *testing.T, state proto.TaskState) (*Manager, *store
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "late approval", Executor: "fake"})
+	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{ProjectID: pid, Prompt: "late approval", Executor: "fake"})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
