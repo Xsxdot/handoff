@@ -6,10 +6,10 @@
 //
 // 边界：不放业务实现、不新增 HTTP/CLI/事件类型；*Manager 只在组装点 new。
 //
-// 骨架期 DTO 定位：DispatchReq / RegisterProjectReq / RecoverReport 今日与 Manager
-// 同包（internal/agentd）。实现节点把它们随 Manager 迁到 internal/orchestration，
-// 本接口对应参数类型随之限定为 orchestration.*（见 contract §待拍板）。这是物理
-// 迁包，不是契约面变化：方法名、参数语义、返回形状冻结在 contract。
+// DTO 定位（D1 拍板）：DispatchReq / RegisterProjectReq / RecoverReport 留 gateway，
+// 与 OrchestrationClient 同包；迁出的编排实现 import gateway 取共享 DTO，gateway
+// 生产文件不 import orchestration。这是物理迁包，不是契约面变化：方法名、参数语义、
+// 返回形状冻结在 contract。
 package agentd
 
 import (
