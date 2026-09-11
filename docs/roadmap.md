@@ -119,13 +119,14 @@
 ## 来自 B233.15 spec（2026-09-11）
 
 - **工作区域剩余文件的迁包**：B233.15 只搬 git/工作区实现文件（`workspace.go`、`manualworktree.go`、`workspaceprobe.go`、`gitroot.go`、`gitignore.go`、procgroup），下列仍留在 `internal/agentd`，本卡只改它们的调用点：项目登记（`projectadmin.go`，best 已归 `k_agentd_projectIndex`→`d_workspace`）、镜像 bundle（`bundle.go`，已归 `k_agentd_Mirror`）、回收编排（`reclaim.go`）、预览仓主（`preview_owner.go`）。来源：`docs/superpowers/specs/b233.15.md` Out of Scope。
-- **`d_workspace→d_orchestration` 预算清零**：B233.15 把 `k_agentd_Mirror`/`k_agentd_projectIndex` 的消费点同域化后，该方向的两条边应消失；预算与 entries 的收尾（含 `.13` 迁包后的 `d_gateway→d_orchestration`）留 B233.17 一次棘轮到门面。来源：同上；`codegraph/target.json`。
+- **`d_workspace→d_orchestration` 预算清零**：B233.15 把 `k_agentd_Mirror`/`k_agentd_projectIndex` 的消费点同域化后，该方向的两条边应消失；预算与 entries 的收尾（含 `.13` 迁包后的 `d_gateway→d_orchestration`）留 B233.17 一次棘轮到门面。**实况更正（finish）**：absorb 后该方向仍有 3 条直调边（3/2 超预算），未清零——spec 预期偏乐观，棘轮时需逐条看这 3 条是残留还是新形态。来源：同上；`codegraph/target.json`。
 
 ## 来自 B233.15 验收（2026-09-11，DUT `a1b59515`）
 
 - **diff 三连点语义无测试锁定**：`Diff`/`DiffRange` 用 `base...head`（只显示本分支改动），变异成 `base..head` 后 `TestDiffShowsCommits` 仍绿——该用例的 base 分支在分支后没动过，两种点法结果相同。真机取证：base 前进后两连点会把 base 的改动显示成本分支的删除。既有盲区（起点 `bdeda1e9` 同形态），非本卡引入；补一支「base 前进后 diff 不含 base 改动」的用例即可锁死。来源：B233.15 验收变异复验；file `internal/workspace/gitworkspace.go`。
 - **macOS 下 cmd 包既有红**：`TestServePermissionHookDenyWithReasonAndStep0` 在 `t.TempDir()` 下 bind unix socket 报 `invalid argument`（路径长度超限），起点 `bdeda1e9` 同样失败。来源：B233.15 验收复跑。
-- **plan §2.1 冻结签名表陈旧**：修复轮把 `RestoreWorktree`/`DeleteBranch`/`RemoveWorktree` 改为返回 `(stderr, error)` 并新增 `ProbeOriginURL`，plan 签名表未同步。纯文档债，留 finish 文档对齐。来源：B233.15 review-2 minor。
+- **plan §2.1 冻结签名表陈旧**：已由 B233.15 finish 核销（`224861e4` 同步签名表、改写表与实况注记，spec 现状锚一并改指迁移后位置，两文档锚点自检 exit 0）。来源：B233.15 review-2 minor。
+- **本卡带来的 5 条 over-budget 待棘轮（DUT `03005e58`）**：absorb 后 `codegraph check` fails=5，全部是预算未抬——`d_cli→d_workspace` 11/9、`d_gateway→d_workspace` 17/1、`d_orchestration→d_workspace` 49/19、`d_workspace→d_orchestration` 3/2、`d_workspace→d_protocol` 23/3。根因：符号随实现迁入 `d_workspace`，跨域边计数整体上移，而 `target.json` 预算未动（用户裁决跳过 contract，spec 明文「预算数字归 contract 落地」）。正主是 **B233.17**（卡名即「预算棘轮」）；absorb 前后 fails 逐项一致，非本卡新增违规。来源：B233.15 finish；`codegraph/target.json`。
 
 ## 来自 B233.11 spec（2026-09-10）
 
