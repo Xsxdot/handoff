@@ -121,6 +121,13 @@
 - **非执行能力面的消费点收窄**：B233.16 只覆盖「一次任务/卡节点执行闭环」这条缝。仍持聚合 `*client.Client` 且无卡承接的：任务事件镜像（`internal/ledgermirror` 的 `Machines.For`/`Source` 做 `StreamEventsOnce`/`ListTasks`）、PTY（`internal/agentd` 的 coordinator PTY 路径）、预览、回收、项目、机器、会话、升级，以及纯查询命令（`tasks`/`show`/`diff`/`attach`/`frames`/`footprint` 等）。这些面要各自按使用方声明能力接口（如事件流需另立订阅缝），单独定性。来源：`docs/superpowers/specs/b233.16.md` Out of Scope。
 - **其余入传输边的 entries 复核**：`d_cli`/`d_gateway`/`d_ledger` → `d_transport` 三条边由 B233.16 按现实棘轮更新；`d_policy`/`d_maintenance` → `d_transport` 两条边（预算 2/3）不在本卡清单内，留 B233.17 棘轮时逐条复核是否也含执行面消费点。来源：同上；`codegraph/target.json`。
 
+## 来自 B233.16 验收（2026-09-12，DUT `3041605d`）
+
+- **T3 守卫的包级漏判盲点**（review minor，协调者实测确证）：`cmd/execution_surface_test.go#executionSurfaceViolations` 的 `current` 函数名**跨函数持续、从不重置**，导致「出现在白名单函数（`newTargetClient`/`newTargetClientNamed`/`targetClient`）之后、且其间无其他 `func` 定义」的**包级**聚合用法被放行。实测：包级聚合在文件顶部→红（正常）；在白名单函数之后→**放行**（盲点，含后续有普通函数的情形）。触发位置不自然（Go 惯例把包级声明写在顶部）+ T1 编译期签名锁是本卡主形态，故本卡判不阻塞；修法是在扫描里跟踪花括号深度或按缩进判定函数体范围（约 5–8 行）。**正主是 B233.17**（组装点收窄与编译期封界，守卫收口在其职责内）。来源：B233.16 review findings；协调者 acceptance 探针实测。
+- **本卡的「行为不变」未在部署环境验证**：B233.16 的生产改动（8 组合接口 + 9 具名入口 + `StepRunner.Clients` 收窄）全在类型/结构层、方法体逐字搬运（contract §2.1.3 逐文件复核），且分支未合入功能线 → agentd 二进制不含本卡代码，真机行为**不可得**。合并部署后应确认：`dispatch`/`card dispatch`/`reply`/`continue`/`stop`/`wait`（三形态）与 `card step` 的 stdout、退出码、HTTP 路径与今日逐字一致。来源：B233.16 breakdown §6；acceptance 判定。
+- **基线 flaky（非本卡引入，待登记观察）**：全量 `go test ./...` 两次跑出的失败集合不稳定——BASE（起点 `4bdd8bcd`）11 条 vs HEAD（`3041605d`）9 条，其中 `TestWakeHomeReadyRequiresTurnOutputNotCredFile`、`TestWakeHomeSuppliesMainCredentialBeforeTurn` 只在 BASE 红（HEAD 绿），另一次 HEAD 跑到 20 条（含 opencode/hostapi 的 permission 族）。判据：**只在 HEAD 红 = 空**（本卡零新增红）；但 flaky 本身值得单独定性（`internal/hostapi`、`internal/executor/opencode`、`internal/agentd` 的 wakehome 族）。来源：B233.16 acceptance 复跑对照。
+- **跨节点事实不继承（流程改进）**：`--deny --reason` 的理由只回到**当前任务**的 executor；每个节点是全新会话，同一事实（如「本机 `codegraph` 在 PATH，勿用 `go run`」）需要在每个节点重复驳回。B233.16 的 plan 与 review 两轮各被驳回一次。要根治需把这类「本机工具链事实」写进**纪律块或项目文档**（跨任务可见）。来源：B233.16 acceptance 观察。
+
 ## 来自 B233.15 spec（2026-09-11）
 
 - **工作区域剩余文件的迁包**：B233.15 只搬 git/工作区实现文件（`workspace.go`、`manualworktree.go`、`workspaceprobe.go`、`gitroot.go`、`gitignore.go`、procgroup），下列仍留在 `internal/agentd`，本卡只改它们的调用点：项目登记（`projectadmin.go`，best 已归 `k_agentd_projectIndex`→`d_workspace`）、镜像 bundle（`bundle.go`，已归 `k_agentd_Mirror`）、回收编排（`reclaim.go`）、预览仓主（`preview_owner.go`）。来源：`docs/superpowers/specs/b233.15.md` Out of Scope。
