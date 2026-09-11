@@ -109,10 +109,35 @@ func TestOpenTicketCounts(t *testing.T) {
 	if err != nil || counts[c.ID] != 2 {
 		t.Fatalf("两单未决: %v %+v", err, counts)
 	}
+	open, err := s.OpenTickets()
+	if err != nil {
+		t.Fatalf("OpenTickets: %v", err)
+	}
+	gotIDs := map[string]OpenTicket{}
+	for _, ticket := range open {
+		if ticket.CardID == c.ID {
+			gotIDs[ticket.TicketID] = ticket
+		}
+	}
+	if _, ok := gotIDs["q1"]; !ok || string(gotIDs["q1"].Payload) != `{"ticket_id":"q1"}` {
+		t.Fatalf("缺 q1 明细: %+v", open)
+	}
+	if _, ok := gotIDs["q2"]; !ok {
+		t.Fatalf("缺 q2 明细: %+v", open)
+	}
 	put(evTicketAnswered, `{"ticket_id":"q1"}`)
 	counts, err = s.OpenTicketCounts()
 	if err != nil || counts[c.ID] != 1 {
 		t.Fatalf("答一单剩一单: %v %+v", err, counts)
+	}
+	open, err = s.OpenTickets()
+	if err != nil {
+		t.Fatalf("OpenTickets after answer: %v", err)
+	}
+	for _, ticket := range open {
+		if ticket.CardID == c.ID && ticket.TicketID == "q1" {
+			t.Fatalf("已答复工单不应仍在 OpenTickets: %+v", ticket)
+		}
 	}
 	put(evTicketsVoided, `{}`) // 回合结束作废全部未决单
 	counts, err = s.OpenTicketCounts()

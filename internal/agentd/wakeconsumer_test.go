@@ -327,3 +327,87 @@ func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 		t.Fatalf("失败后不得对同一条再 Launch：%d → %d", first, runner.launches)
 	}
 }
+
+func splitCoordChild(t *testing.T, env *ledgerEnv, parentID string) string {
+	t.Helper()
+	child, err := env.ledger.SplitCard(parentID, "子卡工单", "test")
+	if err != nil {
+		t.Fatalf("拆子卡: %v", err)
+	}
+	return child.ID
+}
+
+func TestAutomationWakeBubblesChildTicketToParentCoordinate(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	parentID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, parentID)
+	childID := splitCoordChild(t, env, parentID)
+	appendMirroredForConsumer(t, env.ledger, childID, "child-task", "permission_request", 1, `{"ticket_id":"tk-child"}`)
+
+	processed, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil {
+		t.Fatalf("消费子卡工单: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed=%d want 1", processed)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 1 {
+		t.Fatalf("应 Resume 父卡一次，实得 %d %v", len(resumes), resumes)
+	}
+	if !strings.Contains(resumes[0], "\n- 卡号："+parentID+"\n") {
+		t.Fatalf("briefing 应是父卡 %s: %s", parentID, resumes[0])
+	}
+	if strings.Contains(resumes[0], "\n- 卡号："+childID+"\n") {
+		t.Fatalf("不应把子卡当唤醒目标: %s", resumes[0])
+	}
+	if !strings.Contains(resumes[0], "permission_request") {
+		t.Fatalf("briefing 缺 permission_request: %s", resumes[0])
+	}
+}
+
+func TestAutomationWakeDoesNotBubbleWhenChildHasCoordinateSeat(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	parentID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, parentID)
+	childID := splitCoordChild(t, env, parentID)
+	prebindConsumerSession(t, env, childID)
+	appendMirroredForConsumer(t, env.ledger, childID, "child-task", "permission_request", 1, `{"ticket_id":"tk-child"}`)
+
+	processed, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil {
+		t.Fatalf("消费: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("processed=%d want 1", processed)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 1 {
+		t.Fatalf("只应叫醒子卡一次，实得 %d %v", len(resumes), resumes)
+	}
+	if !strings.Contains(resumes[0], "\n- 卡号："+childID+"\n") {
+		t.Fatalf("应叫醒子卡 %s: %s", childID, resumes[0])
+	}
+	if strings.Contains(resumes[0], "\n- 卡号："+parentID+"\n") {
+		t.Fatalf("子卡有席位时不应叫醒父卡: %s", resumes[0])
+	}
+}
+
+func TestAutomationWakeDoesNotWakeBindParent(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	parentID := createCoordCard(t, env)
+	if err := env.ledger.BindSeat(parentID, "cli:grok#bind-parent", proto.SeatSourceBind); err != nil {
+		t.Fatalf("父卡 bind: %v", err)
+	}
+	childID := splitCoordChild(t, env, parentID)
+	appendMirroredForConsumer(t, env.ledger, childID, "child-task", "permission_request", 1, `{"ticket_id":"tk-child"}`)
+
+	_, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil {
+		t.Fatalf("消费: %v", err)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 0 {
+		t.Fatalf("父卡 bind 不应自动 Resume，实得 %v", resumes)
+	}
+}

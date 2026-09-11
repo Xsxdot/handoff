@@ -91,6 +91,46 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 	}
 }
 
+const wakeParentWalkLimit = 32
+
+// resolveWakeCard 把唤醒目标从事件卡收到真正有 coordinate 席位的卡。
+// 事件卡自己有 coordinate 席位 → 自己；事件卡是 bind → 空（bind 靠 CLI wait）；
+// 空座沿 parent_id 上走，bind 祖先跳过，coordinate 祖先接手。不改账本 card_id。
+func (s *Server) resolveWakeCard(cardID string) string {
+	if s.ledger == nil || cardID == "" {
+		return ""
+	}
+	origin := cardID
+	seen := map[string]bool{}
+	for i := 0; i < wakeParentWalkLimit && cardID != ""; i++ {
+		if seen[cardID] {
+			s.log.Warn("自动化唤醒祖先链成环，停止上走", "origin", origin, "card", cardID)
+			return ""
+		}
+		seen[cardID] = true
+		card, err := s.ledger.GetCard(cardID)
+		if err != nil {
+			s.log.Warn("自动化唤醒读卡失败", "origin", origin, "card", cardID, "cause", err)
+			return ""
+		}
+		occupied := card.DriverSession != "" || card.DriverSource != ""
+		if occupied {
+			if card.DriverSource == string(proto.SeatSourceBind) {
+				if cardID == origin {
+					return ""
+				}
+				cardID = card.ParentID
+				continue
+			}
+			if proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) == nil {
+				return cardID
+			}
+		}
+		cardID = card.ParentID
+	}
+	return ""
+}
+
 func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int, escalated bool, err error) {
 	if s.autoLedger == nil || s.keystone == nil {
 		s.log.Error("自动化事件消费失败：依赖尚未装配",
@@ -146,7 +186,19 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			maxProcessed = ev.Seq
 		}
 		if yes {
-			pendingByCard[ev.CardID] = append(pendingByCard[ev.CardID], pending{seq: ev.Seq, ev: wake})
+			target := s.resolveWakeCard(wake.Card)
+			if target == "" {
+				s.log.Debug("自动化事件无 coordinate 席位可叫醒", "card", wake.Card, "seq", ev.Seq)
+				s.automationMu.Lock()
+				s.automationSeen[ev.Seq] = struct{}{}
+				s.automationMu.Unlock()
+				continue
+			}
+			if target != wake.Card {
+				s.log.Info("自动化唤醒冒泡到祖先席位", "from", wake.Card, "to", target, "seq", ev.Seq)
+			}
+			wake.Card = target
+			pendingByCard[target] = append(pendingByCard[target], pending{seq: ev.Seq, ev: wake})
 			continue
 		}
 		s.automationMu.Lock()

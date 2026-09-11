@@ -28,6 +28,34 @@ var cardWaitSubtree bool
 // wait 的超时码一致，脚本侧可用同一套判断。
 var cardWaitTimeout time.Duration
 
+const cardSnapshotType = "card_snapshot"
+
+// cardSnapshotLine 是 card wait 建连时输出的只读快照。不回放历史事件：
+// 子树成员集会漂，欠单用派生视图（与看板 OpenTicketCounts 同一把尺）。
+type cardSnapshotLine struct {
+	Type       string               `json:"type"`
+	CardID     string               `json:"card_id"`
+	Subtree    bool                 `json:"subtree"`
+	FromSeq    int64                `json:"from_seq"`
+	Members    []string             `json:"members"`
+	Actionable []cardSnapshotTicket `json:"actionable"`
+	Needs      []cardSnapshotNeed   `json:"needs"`
+}
+
+type cardSnapshotTicket struct {
+	CardID   string          `json:"card_id"`
+	Target   string          `json:"source_target"`
+	TaskID   string          `json:"source_task"`
+	TicketID string          `json:"ticket_id"`
+	TaskType string          `json:"task_type"`
+	Payload  json.RawMessage `json:"payload"`
+}
+
+type cardSnapshotNeed struct {
+	CardID string `json:"card_id"`
+	Reason string `json:"reason"`
+}
+
 // cardWaitCmd 阻塞跟随一张卡（或整棵子树）的账本事件流。
 var cardWaitCmd = &cobra.Command{
 	Use:   "wait <id>",
@@ -72,6 +100,14 @@ func runCardWait(cmd *cobra.Command, cardID string, subtree bool, timeout time.D
 	}
 	slog.SetDefault(logx.Setup("cli", ""))
 	enc := json.NewEncoder(cmd.OutOrStdout())
+	snapshotIDs, err := members()
+	if err != nil {
+		slog.Error("card wait 解析快照成员失败", "card", cardID, "subtree", subtree, "cause", err)
+		return fmt.Errorf("解析成员集: %w", err)
+	}
+	if err := encodeCardWaitSnapshot(enc, st, cardID, subtree, start, snapshotIDs); err != nil {
+		return err
+	}
 	allDone := errors.New("all-done")
 	checkDone := func() (bool, error) {
 		ids, err := members()
@@ -118,6 +154,50 @@ func runCardWait(cmd *cobra.Command, cardID string, subtree bool, timeout time.D
 	default:
 		return err
 	}
+}
+
+func encodeCardWaitSnapshot(enc *json.Encoder, st *ledger.Store, cardID string, subtree bool, fromSeq int64, members []string) error {
+	want := make(map[string]bool, len(members))
+	for _, id := range members {
+		want[id] = true
+	}
+	tickets, err := st.OpenTickets()
+	if err != nil {
+		slog.Error("card wait 读未决工单失败", "card", cardID, "cause", err)
+		return fmt.Errorf("读未决工单: %w", err)
+	}
+	actionable := make([]cardSnapshotTicket, 0)
+	for _, ticket := range tickets {
+		if !want[ticket.CardID] {
+			continue
+		}
+		actionable = append(actionable, cardSnapshotTicket{
+			CardID: ticket.CardID, Target: ticket.Target, TaskID: ticket.TaskID,
+			TicketID: ticket.TicketID, TaskType: ticket.TaskType, Payload: ticket.Payload,
+		})
+	}
+	reasons, err := st.NeedsReasons()
+	if err != nil {
+		slog.Error("card wait 读等人标记失败", "card", cardID, "cause", err)
+		return fmt.Errorf("读等人标记: %w", err)
+	}
+	needs := make([]cardSnapshotNeed, 0)
+	for _, id := range members {
+		if reason := reasons[id]; reason != "" {
+			needs = append(needs, cardSnapshotNeed{CardID: id, Reason: reason})
+		}
+	}
+	line := cardSnapshotLine{
+		Type: cardSnapshotType, CardID: cardID, Subtree: subtree, FromSeq: fromSeq,
+		Members: members, Actionable: actionable, Needs: needs,
+	}
+	if err := enc.Encode(line); err != nil {
+		return fmt.Errorf("写 card_snapshot: %w", err)
+	}
+	slog.Info("card wait 建连快照已输出", "card", cardID, "subtree", subtree,
+		"members", len(members), "actionable", len(actionable), "needs", len(needs),
+		"from_seq", fromSeq)
+	return nil
 }
 
 func init() {

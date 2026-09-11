@@ -216,6 +216,11 @@ func (s *Store) allStatuses() (map[string]string, error) {
 
 // needsMap 每卡最后一条 needs_human/needs_cleared 决定当前等人态。
 // 单卡最多几十条事件、卡数百张，直接扫两类事件按 seq 归并即可。
+// NeedsReasons 每卡当前等人原因（空 map 值不出现 = 未等人）。
+func (s *Store) NeedsReasons() (map[string]string, error) {
+	return s.needsMap()
+}
+
 func (s *Store) needsMap() (map[string]string, error) {
 	rows, err := s.db.Query(s.q(`SELECT card_id, type, payload FROM card_events
 		WHERE type IN (?, ?) AND card_id IS NOT NULL ORDER BY seq ASC`), EvNeedsHuman, EvNeedsCleared)
