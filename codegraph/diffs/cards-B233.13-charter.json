@@ -1,0 +1,150 @@
+{
+ "view": "cards/B233.13-charter",
+ "base": "1f848057",
+ "summary": "B233.13 Ticket 0：gateway 编排出站 client 接口空壳",
+ "containersAdded": {
+  "k_agentd_orchestration_client": {
+   "label": "agentd 编排 client 接口",
+   "kind": "实体",
+   "domain": "d_coordination_api"
+  }
+ },
+ "nodesAdded": {
+  "m_agentd_TerminalOutcome": {
+   "kind": "model",
+   "container": "k_agentd_orchestration_client",
+   "order": 401,
+   "name": "TerminalOutcome",
+   "file": "internal/agentd/orchestration_client.go",
+   "line": 27,
+   "signature": "type TerminalOutcome struct {",
+   "summary": "TerminalOutcome 是终态动作（Done/Stop）的结果。",
+   "fields": [
+    [
+     "Claimed",
+     "bool",
+     "本次调用赢得进入终态的 CAS，是唯一有资格 Release 的凭证"
+    ],
+    [
+     "WorktreeRemoved",
+     "bool",
+     "Stop 的兼容字段；成功 Stop 恒为 false"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_OrchestrationClient": {
+   "kind": "model",
+   "container": "k_agentd_orchestration_client",
+   "order": 400,
+   "name": "OrchestrationClient",
+   "file": "internal/agentd/orchestration_client.go",
+   "line": 39,
+   "signature": "type OrchestrationClient interface {",
+   "summary": "OrchestrationClient 是 gateway 生产路径消费任务编排能力的唯一接口。",
+   "fields": [
+    [
+     "Dispatch",
+     "func(ctx context.Context, req DispatchReq) (*proto.Task, error)",
+     ""
+    ],
+    [
+     "Continue",
+     "func(ctx context.Context, taskID, instructions string) error",
+     ""
+    ],
+    [
+     "Done",
+     "func(ctx context.Context, taskID, note string) (TerminalOutcome, error)",
+     ""
+    ],
+    [
+     "Stop",
+     "func(ctx context.Context, taskID string) (TerminalOutcome, error)",
+     ""
+    ],
+    [
+     "RelayAnswer",
+     "func(taskID, ticketID, answer string) error",
+     ""
+    ],
+    [
+     "NoteDeliveryFailed",
+     "func(taskID, ticketID string, cause error)",
+     ""
+    ],
+    [
+     "RecoverStuck",
+     "func(taskID string, force bool) (*RecoverReport, error)",
+     ""
+    ],
+    [
+     "Status",
+     "func() (*proto.StatusResp, error)",
+     ""
+    ],
+    [
+     "FootprintAll",
+     "func() (*proto.FootprintResp, error)",
+     ""
+    ],
+    [
+     "ReclaimList",
+     "func() (*proto.ReclaimListResp, error)",
+     ""
+    ],
+    [
+     "Reclaim",
+     "func(ctx context.Context, taskID string, force bool) (*proto.ReclaimResp, error)",
+     ""
+    ],
+    [
+     "GC",
+     "func(ctx context.Context, force, execute bool) (*proto.GCResp, error)",
+     ""
+    ],
+    [
+     "RegisterProject",
+     "func(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error)",
+     ""
+    ],
+    [
+     "ListProjects",
+     "func(ctx context.Context) ([]proto.ProjectLocation, error)",
+     ""
+    ],
+    [
+     "UnregisterProject",
+     "func(ctx context.Context, name string) error",
+     ""
+    ],
+    [
+     "ExecutorNames",
+     "func() []string",
+     ""
+    ],
+    [
+     "Workspace",
+     "func() workspace.Capability",
+     ""
+    ],
+    [
+     "RequireWorkspace",
+     "func() error",
+     ""
+    ],
+    [
+     "AssembleResultRef",
+     "func(ctx context.Context, task *proto.Task, repo, headRev string) (workspace.ResultRef, error)",
+     ""
+    ],
+    [
+     "InspectRepoDir",
+     "func(ctx context.Context, dir string) (root, origin string, err error)",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  }
+ }
+}

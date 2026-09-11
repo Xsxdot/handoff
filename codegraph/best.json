@@ -152,6 +152,7 @@
     "k_agentd_fn": "d_orchestration",
     "k_agentd_hostAllowlist": "d_gateway",
     "k_agentd_model": "d_orchestration",
+    "k_agentd_orchestration_client": "d_gateway",
     "k_agentd_projectIndex": "d_workspace",
     "k_agentd_pullTracker": "d_orchestration",
     "k_agentd_runOutputBuffer": "d_workspace",

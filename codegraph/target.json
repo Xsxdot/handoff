@@ -210,7 +210,10 @@
    "entries": [
     "agentd.Manager"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。B233.10：任务终态迁移继续经既有 agentd.Manager；本卡不新增编排方向或预算。"
+   "interfaces": [
+    "OrchestrationClient"
+   ],
+   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。B233.10：任务终态迁移继续经既有 agentd.Manager；本卡不新增编排方向或预算。B233.13：gateway 出站封界——生产持编排 client 接口 OrchestrationClient（定义在使用方 gateway 包），Manager 迁 internal/orchestration；接口走 interfaces，entries 待实现节点随迁包改为编排包容器。预算 321 不棘轮，棘轮到 0 留给 B233.17。"
   },
   {
    "from": "d_gateway",
