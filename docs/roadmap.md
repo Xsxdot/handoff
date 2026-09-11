@@ -126,6 +126,13 @@
 - **冻结空 Model 的 acquire 成功日志仍打印当前载体 Model**：最终快照日志已是冻结值，acquire 成功那行口径不一致。review-4 minor，不阻塞。来源：B233.10 review-4；file `internal/scheduling/scheduling.go`。
 - **TestLegacyNodeEventSequenceUnchanged 基线已红**：`comment`/`dispatched` 序在 charter-5 / `3fd6874f` 即红，非本卡引入。来源：B233.10 acceptance 复跑。
 
+## 来自 B233.13 验收（2026-09-12，DUT `f74c347d`）
+
+- **cards-B233.4 视图失效边**：`codegraph validate` 2 红，`n_agentd_Manager_appendGCWorktreesExecute` 仍锚 `internal/agentd/gc.go`，实体已随本卡迁到 `internal/orchestration/gc.go`。本卡不 absorb 他卡图。来源：B233.13 review-3 major；acceptance 复跑 validate exit 1。
+- **完整图重扫未做**：baseline 节点 file/line 与边端点未随迁包重定位；无视图 `check` 报 `dead-interface OrchestrationClient`。合功能线 absorb。来源：implement 台账；review-3 minor。
+- **transitClaim 早幂等 / CAS-loser 重读无独立缝测**：handler `Claimed` 门变异已红（`TestB23313ConcurrentDoneReleasesOnce` before=v1 after=v3）。协调者把 CAS-loser `return true` 变异后 B23313ConcurrentDone 仍绿。来源：review-3 minor；acceptance 复验。
+- **真机 OpenCode 未验**：并发 Done 只核过夹具；未跑真实会话。来源：B233.13 acceptance；用户未要求 live OpenCode。
+
 ## 来自 B353 spec（2026-09-09）
 
 - **两次 wait 之间无人订阅的真空**：一次性 wait 退出到下一挂之间没人听事件（08-11 曾空转 7h）。本卡不另开实现、不做常驻订阅者；grok/Claude 走 `--follow` 避开真空，opencode/Codex 接受偶发。若以后做 handoff 进程内常驻订阅，从本条重走 spec。来源：`docs/superpowers/specs/b353.md` Out of Scope。
