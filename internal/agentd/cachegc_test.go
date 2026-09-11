@@ -21,6 +21,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 func TestCacheID8AndLeaves(t *testing.T) {
@@ -280,7 +281,7 @@ func TestCompensatePurgesCacheWhenWorktreeRemoveFails(t *testing.T) {
 	m := compensateOnlyManager(t)
 	id := "2c58bbb7-0000-0000-0000-000000000000"
 	active, legacy, taskDir := seedTaskWithCache(t, m, id, proto.TaskStateFailed)
-	m.compensateWorkspace(context.Background(), id, repo, Workspace{
+	m.compensateWorkspace(context.Background(), id, repo, workspace.Prepared{
 		Branch: "e2e/stuck-cache", WorkDir: filepath.Join(t.TempDir(), "not-a-worktree"),
 		Managed: true, NewBranchTip: tip,
 	})

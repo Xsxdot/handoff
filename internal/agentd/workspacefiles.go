@@ -36,6 +36,7 @@ import (
 	"strconv"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // scratchDirName 是草稿区在 DataDir 下的目录名。
@@ -116,7 +117,7 @@ func (s *Server) resolveWorkspace(ctx context.Context, path string) (string, boo
 		if l.ProjectID == "" {
 			continue
 		}
-		ws, probeErr := probeWorkspaces(ctx, l.Path, managedRoot)
+		ws, probeErr := workspace.ProbeWorkspaces(ctx, l.Path, managedRoot)
 		if probeErr != "" {
 			continue
 		}
@@ -171,16 +172,16 @@ func (s *Server) handleWorkspaceDir(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	entries, err := ListDir(root, rel)
+	entries, err := workspace.ListDir(root, rel)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrPathEscape):
+		case errors.Is(err, workspace.ErrPathEscape):
 			s.log.Warn("目录列举路径逃逸被拒绝", "root", root, "rel", rel)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不合法（不允许逃出工作树）"})
 		case errors.Is(err, fs.ErrNotExist):
 			s.log.Warn("目录列举目标不存在", "root", root, "rel", rel)
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "目录不存在"})
-		case errors.Is(err, ErrPathNotDir):
+		case errors.Is(err, workspace.ErrPathNotDir):
 			s.log.Warn("目录列举目标不是目录", "root", root, "rel", rel)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不是目录"})
 		default:
@@ -191,7 +192,7 @@ func (s *Server) handleWorkspaceDir(w http.ResponseWriter, r *http.Request) {
 	}
 	// 忽略标注在列举之后单独做：ListDir 是纯文件系统操作（还被建/删/改名复用），
 	// 而「归不归 git 管」要问 git。失败只降级不影响这次列举（见 markIgnored）
-	markIgnored(r.Context(), root, rel, entries)
+	workspace.MarkIgnored(r.Context(), root, rel, entries)
 	s.log.Info("工作树目录列举完成", "root", root, "rel", rel, "entries", len(entries))
 	writeJSON(w, http.StatusOK, proto.DirListResult{Entries: entries})
 }
@@ -215,19 +216,19 @@ func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "缺少 rel 参数"})
 		return
 	}
-	res, err := ReadFile(root, rel)
+	res, err := workspace.ReadFile(root, rel)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrPathEscape):
+		case errors.Is(err, workspace.ErrPathEscape):
 			s.log.Warn("读文件路径逃逸被拒绝", "root", root, "rel", rel)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不合法（不允许逃出工作树）"})
 		case errors.Is(err, fs.ErrNotExist):
 			s.log.Warn("读文件目标不存在", "root", root, "rel", rel)
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在"})
-		case errors.Is(err, ErrPathIsDir):
+		case errors.Is(err, workspace.ErrPathIsDir):
 			s.log.Warn("读文件目标是目录", "root", root, "rel", rel)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径是目录，不是文件"})
-		case errors.Is(err, ErrNotRegularFile):
+		case errors.Is(err, workspace.ErrNotRegularFile):
 			s.log.Warn("读文件目标不是普通文件", "root", root, "rel", rel)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不是普通文件"})
 		default:
@@ -284,28 +285,28 @@ func (s *Server) handleWorkspaceFileWrite(w http.ResponseWriter, r *http.Request
 	s.log.Info("工作树写文件请求", "root", root, "rel", rel,
 		"bytes", len(req.Content), "base", shortHash(req.BaseSHA256))
 
-	res, err := WriteFile(root, rel, req.Content, req.BaseSHA256)
+	res, err := workspace.WriteFile(root, rel, req.Content, req.BaseSHA256)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrBaseMismatch):
+		case errors.Is(err, workspace.ErrBaseMismatch):
 			// 409 的 body 带磁盘现状：冲突界面的两个出口都要用它
 			s.log.Warn("工作树写文件冲突", "root", root, "rel", rel,
 				"base", shortHash(req.BaseSHA256), "current", shortHash(res.SHA256))
 			writeJSON(w, http.StatusConflict, proto.FileConflictResp{
 				Error: "文件已被改动", Current: res})
-		case errors.Is(err, ErrPathEscape):
+		case errors.Is(err, workspace.ErrPathEscape):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不合法（不允许逃出工作树）"})
-		case errors.Is(err, ErrGitDirWrite):
+		case errors.Is(err, workspace.ErrGitDirWrite):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "不允许写入 .git 目录"})
-		case errors.Is(err, ErrSymlinkTarget):
+		case errors.Is(err, workspace.ErrSymlinkTarget):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "目标是符号链接，不支持在线编辑"})
-		case errors.Is(err, ErrPathIsDir):
+		case errors.Is(err, workspace.ErrPathIsDir):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径是目录，不是文件"})
-		case errors.Is(err, ErrNotRegularFile):
+		case errors.Is(err, workspace.ErrNotRegularFile):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不是普通文件"})
-		case errors.Is(err, ErrBinaryFile):
+		case errors.Is(err, workspace.ErrBinaryFile):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "二进制文件不支持在线编辑"})
-		case errors.Is(err, ErrFileTooLarge):
+		case errors.Is(err, workspace.ErrFileTooLarge):
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "文件超过 1 MB，不支持在线编辑"})
 		case errors.Is(err, fs.ErrNotExist):
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在"})
@@ -323,26 +324,26 @@ func (s *Server) handleWorkspaceFileWrite(w http.ResponseWriter, r *http.Request
 // writeEntryError 把条目操作/查找的错误映射成 HTTP 应答（四个 entry 端点 +
 // search 端点共用）。
 //
-// 文案策略与写文件端点同一纪律：被拒的哨兵错误（ErrEntryExists /
-// ErrEntryNotFound / ErrBadEntryName / ErrPathEscape / ErrGitDirWrite）**原样透传
+// 文案策略与写文件端点同一纪律：被拒的哨兵错误（workspace.ErrEntryExists /
+// workspace.ErrEntryNotFound / workspace.ErrBadEntryName / workspace.ErrPathEscape / workspace.ErrGitDirWrite）**原样透传
 // err.Error()**——这些哨兵文案本身就带目标细节（如「不允许写入 .git 目录:
 // ".git"」），吞成「操作失败」只会让用户回来问。4xx 一律 Warn（被拒不是 agentd
 // 出故障），5xx 才 Error。
 func (s *Server) writeEntryError(w http.ResponseWriter, root, rel string, err error) {
 	switch {
-	case errors.Is(err, ErrEntryExists):
+	case errors.Is(err, workspace.ErrEntryExists):
 		s.log.Warn("工作树条目操作被拒：目标已存在", "root", root, "rel", rel, "status", http.StatusConflict)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrEntryNotFound), errors.Is(err, fs.ErrNotExist):
+	case errors.Is(err, workspace.ErrEntryNotFound), errors.Is(err, fs.ErrNotExist):
 		s.log.Warn("工作树条目操作被拒：目标不存在", "root", root, "rel", rel, "status", http.StatusNotFound)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrBadEntryName):
+	case errors.Is(err, workspace.ErrBadEntryName):
 		s.log.Warn("工作树条目操作被拒：名字不合法", "root", root, "rel", rel, "status", http.StatusBadRequest)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrPathEscape):
+	case errors.Is(err, workspace.ErrPathEscape):
 		s.log.Warn("工作树条目操作被拒：路径逃逸", "root", root, "rel", rel, "status", http.StatusBadRequest)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrGitDirWrite):
+	case errors.Is(err, workspace.ErrGitDirWrite):
 		s.log.Warn("工作树条目操作被拒：命中 .git", "root", root, "rel", rel, "status", http.StatusBadRequest)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
@@ -378,7 +379,7 @@ func (s *Server) handleWorkspaceEntryCreate(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
 		return
 	}
-	entry, err := CreateEntry(root, rel, req.Name, req.Kind)
+	entry, err := workspace.CreateEntry(root, rel, req.Name, req.Kind)
 	if err != nil {
 		s.writeEntryError(w, root, rel, err)
 		return
@@ -408,7 +409,7 @@ func (s *Server) handleWorkspaceEntryCopy(w http.ResponseWriter, r *http.Request
 	if !ok {
 		return
 	}
-	entry, err := CopyEntry(root, rel)
+	entry, err := workspace.CopyEntry(root, rel)
 	if err != nil {
 		s.writeEntryError(w, root, rel, err)
 		return
@@ -444,7 +445,7 @@ func (s *Server) handleWorkspaceEntryRename(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体不是合法 JSON"})
 		return
 	}
-	entry, err := RenameEntry(root, rel, req.NewName)
+	entry, err := workspace.RenameEntry(root, rel, req.NewName)
 	if err != nil {
 		s.writeEntryError(w, root, rel, err)
 		return
@@ -474,7 +475,7 @@ func (s *Server) handleWorkspaceEntryDelete(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	if err := DeleteEntry(root, rel); err != nil {
+	if err := workspace.DeleteEntry(root, rel); err != nil {
 		s.writeEntryError(w, root, rel, err)
 		return
 	}
@@ -521,11 +522,19 @@ func (s *Server) handleWorkspaceSearch(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	res, err := SearchInDir(r.Context(), root, rel, q, limit)
+	res, err := workspace.SearchInDir(r.Context(), root, rel, q, limit)
 	if err != nil {
 		s.writeEntryError(w, root, rel, err)
 		return
 	}
 	s.log.Info("工作树搜索完成", "root", root, "rel", rel, "q", q, "hits", len(res.Hits), "truncated", res.Truncated)
 	writeJSON(w, http.StatusOK, res)
+}
+
+// shortHash 取哈希前 8 位供日志用（agentd 私有副本；工作区包另有一份）。
+func shortHash(h string) string {
+	if len(h) <= 8 {
+		return h
+	}
+	return h[:8]
 }

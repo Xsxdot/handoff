@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // buildLocalTree 构建本机项目树。
@@ -51,7 +52,7 @@ func (s *Server) buildLocalTree(ctx context.Context) (proto.ProjectTreeResp, err
 			resp.Unowned = append(resp.Unowned, l.Name)
 			continue
 		}
-		ws, probeErr := probeWorkspaces(ctx, l.Path, managedRoot)
+		ws, probeErr := workspace.ProbeWorkspaces(ctx, l.Path, managedRoot)
 		if probeErr != "" {
 			broken++
 		}

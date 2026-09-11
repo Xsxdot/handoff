@@ -62,6 +62,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/Xsxdot/handoff/internal/webui"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/coder/websocket"
 )
 
@@ -371,7 +372,7 @@ func (s *Server) SetManager(m *Manager) {
 	if m != nil {
 		m.conf = s.conf
 		if m.ws == nil {
-			m.SetWorkspace(NewGitCapability())
+			m.SetWorkspace(workspace.NewCapability())
 		}
 		s.log.Info("manager 已挂接，配置读取切到活快照", "default_executor", s.conf().Executor.Default)
 	}
@@ -1461,15 +1462,15 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 // writeDispatchError 把 dispatch 失败映射为 HTTP 状态码与可读原因（P1-14）。
 //
 // 映射规则：
-//   - ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
+//   - workspace.ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
 //     协调者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
 //     而非扁平化的「派发任务失败」
 //   - ErrWorkdirBusy → 409：目标工作目录已被一个非终态任务占用（含 waiting_review），
-//     与 ErrDirtyWorktree 同为状态冲突而非请求错误——报文点名占用任务并给出
+//     与 workspace.ErrDirtyWorktree 同为状态冲突而非请求错误——报文点名占用任务并给出
 //     两条出路（done/stop 它，或改用 --new-worktree）
-//   - ErrBaseCommitMissing → 400：任务仓库落后于协调者本地基线，拒发并带 git push
+//   - workspace.ErrBaseCommitMissing → 400：任务仓库落后于协调者本地基线，拒发并带 git push
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
-//   - ErrRepoUnusable / errBadDispatchRequest / ErrBadWorkspaceReq → 400：调用方先
+//   - workspace.ErrRepoUnusable / errBadDispatchRequest / workspace.ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
 //   - ErrProjectNotRegistered → 400：project_id / project_name 在本机位置表里查不到，
 //     报文自带本机已登记清单——协调者拿到即可行动（换名字，或先 handoff project add）；
@@ -1486,22 +1487,22 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, ErrWorkspaceUnavailable):
 		s.log.Error("dispatch 失败：工作区能力未注入", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrDirtyWorktree):
+	case errors.Is(err, workspace.ErrDirtyWorktree):
 		s.log.Warn("dispatch 被拒：工作区不干净", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrWorkdirBusy):
 		s.log.Warn("dispatch 被拒：目标工作目录被占用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, errFetchRefLockContention):
+	case errors.Is(err, workspace.ErrFetchRefLockContention):
 		s.log.Warn("dispatch 被拒：基线补拉遭遇远端 ref 锁竞争", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, errLocalBaseBranchDiverged):
+	case errors.Is(err, workspace.ErrLocalBaseBranchDiverged):
 		s.log.Warn("dispatch 被拒：本地工作分支与 origin 分叉", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrBaseCommitMissing):
+	case errors.Is(err, workspace.ErrBaseCommitMissing):
 		s.log.Warn("dispatch 被拒：任务仓库落后于本地基线", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrRepoUnusable):
+	case errors.Is(err, workspace.ErrRepoUnusable):
 		s.log.Warn("dispatch 被拒：仓库不可用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrProjectNotRegistered):
@@ -1510,7 +1511,7 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, errBadDispatchRequest):
 		s.log.Warn("dispatch 被拒：请求参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrBadWorkspaceReq):
+	case errors.Is(err, workspace.ErrBadWorkspaceReq):
 		s.log.Warn("dispatch 被拒：工作区参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, scheduling.ErrNoDefault), errors.Is(err, scheduling.ErrNotFound),
@@ -1624,13 +1625,13 @@ func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request) {
 // 映射规则（与 writeDispatchError 同一套哲学：调用方拿到就能行动）：
 //   - store.ErrNotFound → 404：登记名不存在
 //   - ErrProjectAlreadyExists → 409：项目/名字/路径已被占用，或克隆落点已存在——
-//     与 ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
+//     与 workspace.ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
 //   - store.ErrProjectDuplicate → 409：改名/改路径撞上已被占用的名字或路径
 //     （handleProjectPatch 直接透传 store 的冲突哨兵，映射集中在这一处）
 //   - ErrWorkdirBusy → 409：注销时项目仓库仍被活跃任务占用
 //   - ErrProjectOriginMismatch → 400：路径上是另一个项目——报文同时给出两边
 //     的 origin，人一眼就能看出「你说的是 A，那儿实际是 B」
-//   - ErrRepoUnusable / errBadDispatchRequest → 400：请求本身的问题
+//   - workspace.ErrRepoUnusable / errBadDispatchRequest → 400：请求本身的问题
 //     （路径不是仓库、没有 origin、clone 失败、参数缺失）
 //   - 其余 → 500
 func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error) {
@@ -1650,7 +1651,7 @@ func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error
 	case errors.Is(err, ErrProjectOriginMismatch):
 		s.log.Warn("项目登记被拒：路径上是另一个项目", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrRepoUnusable), errors.Is(err, errBadDispatchRequest):
+	case errors.Is(err, workspace.ErrRepoUnusable), errors.Is(err, errBadDispatchRequest):
 		s.log.Warn("项目登记操作被拒：请求非法", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
@@ -1960,10 +1961,10 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	repo, headRev := taskDiffTarget(task)
+	repo, headRev := workspace.TaskDiffTarget(task)
 	base := r.URL.Query().Get("base")
 	if base == "" {
-		base = diffBaseFor(task, repo)
+		base = workspace.DiffBaseFor(task, repo)
 	}
 	s.log.Info("diff 基准已确定", "task", taskID, "base", base,
 		"from_task_base", r.URL.Query().Get("base") == "" && task.BaseCommit != "")
@@ -1975,7 +1976,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	// 回退到主仓库时，任务分支可能也已经被删了（任务做完、分支合并后删掉是常态）。
 	// 那种情况下素材是真的没有了，要说清楚——原来它表现为 git 的 exit status 128，
 	// 读的人无从判断是「分支没了」还是「git 坏了」。
-	if repo != task.Workdir() && !manualBranchExists(r.Context(), repo, headRev) {
+	if repo != task.Workdir() && !workspace.ManualBranchExists(r.Context(), repo, headRev) {
 		s.log.Warn("任务分支已不存在，无可比对素材", "task", taskID, "repo", repo, "branch", headRev)
 		writeJSON(w, http.StatusNotFound, map[string]string{
 			"error": fmt.Sprintf("任务分支 %s 已不存在，且任务 worktree 已回收——没有可比对的素材了", headRev)})
@@ -2014,7 +2015,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("开始取得任务 diff", "task", taskID, "repo", repo, "base", base, "head", head)
 	diff, err := s.mgr.Workspace().DiffRange(r.Context(), repo, base, head)
 	if err != nil {
-		if errors.Is(err, ErrBadBaseBranch) {
+		if errors.Is(err, workspace.ErrBadBaseBranch) {
 			// base 是协调者可控的查询参数：非法 base（"-" 前缀）是请求问题而非
 			// 服务故障，400 明确告知（与 ErrPathEscape 同款映射）
 			s.log.Warn("diff 基准分支非法被拒绝", "task", taskID, "base", base)
@@ -2064,11 +2065,11 @@ func (s *Server) handleTaskBundle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	start := time.Now()
-	path, err := BundleRange(r.Context(), task.RepoPath, have, task.Branch)
+	path, err := workspace.BundleRange(r.Context(), task.RepoPath, have, task.Branch)
 	switch {
-	case errors.Is(err, ErrHaveMissing), errors.Is(err, ErrBadBaseBranch):
+	case errors.Is(err, workspace.ErrHaveMissing), errors.Is(err, workspace.ErrBadBaseBranch):
 		// have 与 branch 都由请求侧决定，属请求问题不是服务故障（与 diff 的
-		// ErrBadBaseBranch 同款映射）
+		// workspace.ErrBadBaseBranch 同款映射）
 		s.log.Warn("bundle 请求参数被拒", "task", taskID, "have", have, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return
@@ -2118,7 +2119,7 @@ func (s *Server) handleTaskBranches(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	repo := task.Workdir()
-	branches, err := Branches(repo)
+	branches, err := workspace.Branches(repo)
 	if err != nil {
 		s.log.Error("列分支失败", "task", taskID, "repo", repo, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
@@ -2127,7 +2128,7 @@ func (s *Server) handleTaskBranches(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("branches 完成", "task", taskID, "count", len(branches))
 	writeJSON(w, http.StatusOK, map[string]any{
 		"branches":  branches,
-		"default":   resolveBaseBranch(repo),
+		"default":   workspace.ResolveBaseBranch(repo),
 		"task_base": task.BaseCommit,
 	})
 }
@@ -2160,17 +2161,17 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 	fc, err := s.mgr.Workspace().ReadFile(r.Context(), repo, rel)
 	if err != nil {
 		switch {
-		case errors.Is(err, ErrPathEscape):
+		case errors.Is(err, workspace.ErrPathEscape):
 			s.log.Warn("file 路径逃逸被拒绝", "task", taskID, "path", rel)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不合法（不允许逃出任务仓库）"})
 		case errors.Is(err, fs.ErrNotExist):
 			s.log.Warn("file 目标不存在", "task", taskID, "path", rel)
 			writeJSON(w, http.StatusNotFound, map[string]string{"error": "文件不存在"})
-		case errors.Is(err, ErrPathIsDir):
+		case errors.Is(err, workspace.ErrPathIsDir):
 			// 目录是可确定的状态（不同于「读取失败」的环境性问题），400 明确告知
 			s.log.Warn("file 目标是目录", "task", taskID, "path", rel)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径是目录，不是文件"})
-		case errors.Is(err, ErrNotRegularFile):
+		case errors.Is(err, workspace.ErrNotRegularFile):
 			s.log.Warn("file 目标不是普通文件", "task", taskID, "path", rel)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径不是普通文件"})
 		default:
@@ -2192,7 +2193,7 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 	// 本端点的响应体因此逐字节不变，handoff fetch 行为零变更
 	content := res.Content
 	if res.Truncated {
-		content += truncatedNotice(res.Size)
+		content += workspace.TruncatedNotice(res.Size)
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"content": content})
 }
@@ -2232,9 +2233,9 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "cmd 不能为空"})
 		return
 	}
-	stdout, exitCode, err := RunCmd(r.Context(), repo, req.Cmd)
+	stdout, exitCode, err := workspace.RunCmd(r.Context(), repo, req.Cmd)
 	if err != nil {
-		if errors.Is(err, ErrNoProcHeadroom) || errors.Is(err, ErrWorkdirGone) {
+		if errors.Is(err, ErrNoProcHeadroom) || errors.Is(err, workspace.ErrWorkdirGone) {
 			s.log.Warn("run 被拒", "task", taskID, "repo", repo,
 				"cmd", truncateRunes(req.Cmd, 200), "cause", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})

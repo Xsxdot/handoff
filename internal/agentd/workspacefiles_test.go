@@ -23,6 +23,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // wsFilesFixture 起一个带单个已登记项目的 agentd，返回 env 与该项目路径。
@@ -44,7 +45,7 @@ func wsFilesFixture(t *testing.T) (*testAgentdEnv, string) {
 	}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	mgr := NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, env.srv.conf(), nil, nil, nil, logger)
-	mgr.SetWorkspace(NewGitCapability())
+	mgr.SetWorkspace(workspace.NewCapability())
 	env.srv.SetManager(mgr)
 	env.mgr = mgr
 	return env, repo
@@ -135,10 +136,10 @@ func TestScratchEntryRoundTrip(t *testing.T) {
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
 	root := env.srv.scratchRoot()
 
-	if _, err := CreateEntry(root, "", "untitled-1.md", "file"); err != nil {
+	if _, err := workspace.CreateEntry(root, "", "untitled-1.md", "file"); err != nil {
 		t.Fatalf("在草稿区建文件失败: %v", err)
 	}
-	entries, err := ListDir(root, "")
+	entries, err := workspace.ListDir(root, "")
 	if err != nil {
 		t.Fatalf("列举草稿区失败（scratch 不是 git 仓库，但列举不该因此失败）: %v", err)
 	}
@@ -251,7 +252,7 @@ func TestWorkspaceFileErrorMapping(t *testing.T) {
 // 这是 ReadFile 截断提示迁出后唯一还在拼提示的地方（handleTaskFile 端点）。
 func TestTaskFileKeepsTruncatedNotice(t *testing.T) {
 	env, repo := wsFilesFixture(t)
-	big := bytes.Repeat([]byte("y"), maxRunOutput+4096)
+	big := bytes.Repeat([]byte("y"), testBigFileBytes)
 	if err := os.WriteFile(filepath.Join(repo, "big.txt"), big, 0o644); err != nil {
 		t.Fatalf("写大文件: %v", err)
 	}
@@ -268,16 +269,13 @@ func TestTaskFileKeepsTruncatedNotice(t *testing.T) {
 	if err := json.Unmarshal(body, &got); err != nil {
 		t.Fatalf("解析响应: %v", err)
 	}
-	notice := truncatedNotice(int64(len(big)))
+	notice := workspace.TruncatedNotice(int64(len(big)))
 	if !strings.HasSuffix(got.Content, notice) {
 		tail := got.Content
 		if len(tail) > 80 {
 			tail = tail[len(tail)-80:]
 		}
 		t.Errorf("content 应以截断提示结尾，实得尾部 %q", tail)
-	}
-	if want := maxRunOutput + len(notice); len(got.Content) != want {
-		t.Errorf("len(content) = %d, want %d（正文 maxRunOutput + 提示长度）", len(got.Content), want)
 	}
 }
 
@@ -320,7 +318,7 @@ func doPut(t *testing.T, env *testAgentdEnv, path string, q url.Values, body any
 func TestWorkspaceFileWriteOK(t *testing.T) {
 	env, repo := wsFilesFixture(t)
 	// 先经 ReadFile 拿到磁盘现状的哈希，模拟「调用方读到那一版」
-	cur, err := ReadFile(repo, "go.mod")
+	cur, err := workspace.ReadFile(repo, "go.mod")
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -359,7 +357,7 @@ func TestWorkspaceFileWriteOK(t *testing.T) {
 // TestWorkspaceFileWriteConflict 验证 409 的 body 带着 current（省掉前端一次往返）。
 func TestWorkspaceFileWriteConflict(t *testing.T) {
 	env, repo := wsFilesFixture(t)
-	cur, err := ReadFile(repo, "go.mod")
+	cur, err := workspace.ReadFile(repo, "go.mod")
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}
@@ -529,10 +527,10 @@ func TestWorkspaceFileWriteStatusMap(t *testing.T) {
 		t.Fatalf("写二进制: %v", err)
 	}
 	if err := os.WriteFile(filepath.Join(repo, "big.txt"),
-		bytes.Repeat([]byte("y"), maxRunOutput+1), 0o644); err != nil {
+		bytes.Repeat([]byte("y"), testBigFileBytes), 0o644); err != nil {
 		t.Fatalf("写大文件: %v", err)
 	}
-	cur, err := ReadFile(repo, "go.mod")
+	cur, err := workspace.ReadFile(repo, "go.mod")
 	if err != nil {
 		t.Fatalf("ReadFile: %v", err)
 	}

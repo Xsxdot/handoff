@@ -10,6 +10,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 func TestDispatchPersistsFrozenIdentity(t *testing.T) {
@@ -17,7 +18,7 @@ func TestDispatchPersistsFrozenIdentity(t *testing.T) {
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	if m.Workspace() == nil {
-		m.SetWorkspace(NewGitCapability())
+		m.SetWorkspace(workspace.NewCapability())
 	}
 	pid := registerTestProject(t, m, repo)
 	home := "~/.handoff/home/muse"
@@ -42,7 +43,7 @@ func TestDispatchEmptyExecutorDoesNotInventCarrier(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
-	m.SetWorkspace(NewGitCapability())
+	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "", NewWorktree: true,
@@ -59,7 +60,7 @@ func TestHistoryTaskIgnoresLiveCarrierHome(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
-	m.SetWorkspace(NewGitCapability())
+	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 	home := "/old/home"
 	task, err := m.Dispatch(context.Background(), DispatchReq{

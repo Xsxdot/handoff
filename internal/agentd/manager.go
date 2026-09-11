@@ -81,6 +81,10 @@ const (
 // errBadDispatchRequest 是 Dispatch 入参错误的哨兵（server 层映射为 400）。
 var errBadDispatchRequest = errors.New("dispatch 请求参数非法")
 
+// ErrWorkdirBusy 表示目标工作目录已被活跃任务占用（B233.15 从工作区迁回本包定义：
+// 它描述的是编排侧的工作目录占用守卫，不属于工作区能力）。
+var ErrWorkdirBusy = errors.New("目标工作目录已被活跃任务占用")
+
 // errExecutorStartFailed 是 Dispatch 启动 executor 失败（adapter.Start 返回错误）
 // 的哨兵（server 层映射见 writeDispatchError 的对应分支）。
 //
@@ -849,12 +853,12 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		m.log.Warn("dispatch 被拒：本地工作分支与默认基线标记互斥",
 			"base", req.Base, "resolve_default_base", req.ResolveDefaultBase)
 		return nil, fmt.Errorf("%w: local_base_branch 与 resolve_default_base 互斥",
-			ErrBadWorkspaceReq)
+			workspace.ErrBadWorkspaceReq)
 	}
 	if req.LocalBaseBranch && strings.TrimSpace(req.Base) == "" {
 		m.log.Warn("dispatch 被拒：本地工作分支缺少 Base")
 		return nil, fmt.Errorf("%w: local_base_branch=true 时 base 必须是非空工作分支名",
-			ErrBadWorkspaceReq)
+			workspace.ErrBadWorkspaceReq)
 	}
 	// dispatch 期解析执行者：req.Executor 空回退缺省；未注册按参数错误拒绝（400）
 	execName, ad, err := m.resolveExecutor(req.Executor)
@@ -942,7 +946,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 		return nil, err
 	}
 	if req.ResolveDefaultBase && req.Base == "" && req.Branch == "" {
-		defaultBase, baseErr := resolveDefaultBaseBranch(ctx, repoPath)
+		defaultBase, baseErr := workspace.ResolveDefaultBaseBranch(ctx, repoPath)
 		if baseErr != nil {
 			m.log.Warn("卡派发默认基线解析失败，拒绝派发", "repo", repoPath, "cause", baseErr)
 			return nil, baseErr
@@ -972,7 +976,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, err
 	}
-	baseline := Baseline{Start: baselineWS.Start, Ahead: baselineWS.Ahead, Fetched: baselineWS.Fetched}
+	baseline := baselineWS
 	// 起点优先级：显式 --base > 决议出的基线 > 空（交给 git 默认）。
 	// 为什么 Branch 模式要排除：切一个已存在的分支没有「起点」这回事，把基线
 	// 硬塞进去会被 PrepareWorkspace 的 base×branch 互斥直接拒掉。
@@ -995,7 +999,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if start != "" {
 		// D2 只补拉普通分支名；短 sha、tag、origin/<分支> 等 commit-ish 形态
 		// 必须保留旧 resolveCommit 路径，否则 --base 的既有承诺会被网络 fetch 打断。
-		resolved, fetched, rerr := resolveDispatchBase(ctx, repoPath, start, req.LocalBaseBranch)
+		resolved, fetched, rerr := workspace.ResolveDispatchBase(ctx, repoPath, start, req.LocalBaseBranch)
 		if rerr != nil {
 			return nil, rerr
 		}
@@ -1025,11 +1029,7 @@ func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Ta
 	if err != nil {
 		return nil, fmt.Errorf("git 工作区准备: %w", err)
 	}
-	ws := Workspace{
-		Branch: prepared.Branch, WorkDir: prepared.WorkDir, Managed: prepared.Managed,
-		NewBranchTip: prepared.NewBranchTip, PrevRef: prepared.PrevRef,
-		RepoDirtyCount: prepared.RepoDirtyCount, RepoDirtyFiles: prepared.RepoDirtyFiles,
-	}
+	ws := prepared
 	// 补偿清理 defer（P2-2 修复）：PrepareWorkspace 成功之后、executor 真正接管
 	// 工作区之前（ad.Start 成功）的**任何**错误返回，都要把已建的 managed worktree
 	// 清掉。为什么必须覆盖全部错误返回而不能逐个调用点补：落 failed 的任务没有
@@ -1346,7 +1346,7 @@ func (m *Manager) guardWorkdirBusy(workDir string) error {
 //     没派出去，补偿成败是次要信息
 //   - 三条 fail-safe：worktree 删除失败 / 切回原 ref 失败 / 分支尖端对不上，
 //     任一命中都保留现场不再往下做。宁可留残留，不可误删
-func (m *Manager) compensateWorkspace(ctx context.Context, taskID string, repo string, ws Workspace) {
+func (m *Manager) compensateWorkspace(ctx context.Context, taskID string, repo string, ws workspace.Prepared) {
 	// 空值守卫：现有调用点把 defer 注册在 PrepareWorkspace 成功之后，理论上到不了
 	// 这里，但补偿函数本身不该依赖调用点的注册位置
 	if ws.WorkDir == "" {
@@ -1383,7 +1383,7 @@ func (m *Manager) compensateWorkspace(ctx context.Context, taskID string, repo s
 				"manual", "git -C "+ws.WorkDir+" checkout <你原来的分支>")
 			return
 		}
-		if _, stderr, err := gitRun(ctx, ws.WorkDir, "checkout", ws.PrevRef); err != nil {
+		if stderr, err := workspace.RestoreWorktree(ctx, ws.WorkDir, ws.PrevRef); err != nil {
 			m.log.Error("补偿切回原 ref 失败，工作树仍停在任务分支上",
 				"workdir", ws.WorkDir, "prev_ref", ws.PrevRef,
 				"stderr", truncateRunes(stderr, 300), "cause", err)
@@ -1450,8 +1450,8 @@ func decideBranchAction(recordedTip, currentTip string, tipErr error) branchActi
 //     非 managed 已切回原 ref），否则 git 会拒绝
 //   - 删不删的规则全部在 decideBranchAction 里（含「NewBranchTip 为空 = 不是
 //     本次新建的，一律不动」这一条），本函数只负责取数据、按决定打日志、执行 git
-func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws Workspace) {
-	cur, tipErr := branchTip(ctx, repo, ws.Branch)
+func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws workspace.Prepared) {
+	cur, tipErr := workspace.BranchTip(ctx, repo, ws.Branch)
 	switch decideBranchAction(ws.NewBranchTip, cur, tipErr) {
 	case branchKeepNotOurs:
 		// 不是本次新建的，静默保留：每次 --branch <已存在分支> 的派发失败都会
@@ -1469,7 +1469,7 @@ func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws Works
 	m.log.Info("补偿删除本次新建的分支", "repo", repo, "branch", ws.Branch, "tip", ws.NewBranchTip)
 	// 用 -D 而非 -d：分支起点可能领先仓库当前 HEAD，-d 会因「未合并」误拒；
 	// 而「自创建以来零提交」已由上面的尖端复核实证，-D 在这里是确定性而非暴力
-	if _, stderr, err := gitRun(ctx, repo, "branch", "-D", ws.Branch); err != nil {
+	if stderr, err := workspace.DeleteBranch(ctx, repo, ws.Branch); err != nil {
 		m.log.Error("补偿删除分支失败", "repo", repo, "branch", ws.Branch,
 			"stderr", truncateRunes(stderr, 300), "cause", err)
 		return

@@ -62,7 +62,7 @@ func TestDispatchCallsCapability(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
-	spy := &countingCap{inner: NewGitCapability()}
+	spy := &countingCap{inner: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{

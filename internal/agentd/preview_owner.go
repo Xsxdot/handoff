@@ -27,6 +27,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 const previewTTLSeconds int64 = 7200
@@ -212,24 +213,19 @@ func defaultPreviewWorkspaceResolver(ctx context.Context, getwd func() (string, 
 	if err != nil {
 		return "", "", "", fmt.Errorf("解析工作目录: %w", err)
 	}
-	if out, _, probeErr := gitProbe(ctx, workspaceRoot, "rev-parse", "--show-toplevel"); probeErr == nil {
-		if root := strings.TrimSpace(out); root != "" {
-			if realRoot, realErr := filepath.EvalSymlinks(root); realErr == nil {
-				workspaceRoot = realRoot
-			} else {
-				log().Warn("预览工作区根目录归一化失败，保留当前目录", "workspace", workspaceRoot, "git_root", root, "cause", realErr)
-			}
+	if root, ok := workspace.TopLevel(ctx, workspaceRoot); ok {
+		if realRoot, realErr := filepath.EvalSymlinks(root); realErr == nil {
+			workspaceRoot = realRoot
+		} else {
+			log().Warn("预览工作区根目录归一化失败，保留当前目录", "workspace", workspaceRoot, "git_root", root, "cause", realErr)
 		}
 	}
 
 	var originURL string
-	if out, _, probeErr := gitProbe(ctx, workspaceRoot, "remote", "get-url", "origin"); probeErr == nil {
-		originURL = strings.TrimSpace(out)
+	if u, ok := workspace.ProbeOriginURL(ctx, workspaceRoot); ok {
+		originURL = u
 	}
-	var branch string
-	if out, _, probeErr := gitProbe(ctx, workspaceRoot, "symbolic-ref", "--short", "-q", "HEAD"); probeErr == nil {
-		branch = strings.TrimSpace(out)
-	}
+	branch := workspace.HeadBranch(ctx, workspaceRoot)
 	log().Info("预览工作区元数据读取成功", "operation", "preview_workspace", "workspace", workspaceRoot, "origin_url", originURL, "branch", branch)
 	return workspaceRoot, originURL, branch, nil
 }

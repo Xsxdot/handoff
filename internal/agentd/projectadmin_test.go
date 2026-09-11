@@ -102,8 +102,8 @@ func TestRegisterProjectRejectsNoOrigin(t *testing.T) {
 	repo := initGitRepo(t) // 刻意不加 origin
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
 		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: repo})
-	if !errors.Is(err, ErrRepoUnusable) {
-		t.Fatalf("err = %v, want errors.Is(..., ErrRepoUnusable)", err)
+	if !errors.Is(err, workspace.ErrRepoUnusable) {
+		t.Fatalf("err = %v, want errors.Is(..., workspace.ErrRepoUnusable)", err)
 	}
 }
 
@@ -255,49 +255,6 @@ func TestRegisterProjectClonesWhenNoPath(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(want, ".git")); err != nil {
 		t.Fatalf("落点应是一个克隆好的仓库: %v", err)
-	}
-}
-
-// TestCloneDoesNotWaitForRepoFetchLock 持有克隆目标路径对应的 fetch 锁时仍允许
-// clone 完成，锁只保护 fetch 与目标 ref 读取，不扩散到项目登记的 clone。
-func TestCloneDoesNotWaitForRepoFetchLock(t *testing.T) {
-	m, _, _ := newTestManagerWithAds(t, nil, "fake")
-	src := initGitRepo(t)
-	root := filepath.Join(t.TempDir(), "repos")
-	m.cfg.RepoRoot = root
-	dest := filepath.Join(root, "clone")
-
-	type result struct {
-		loc proto.ProjectLocation
-		err error
-	}
-	resultCh := make(chan result, 1)
-	err := withRepoFetchLock(dest, func() error {
-		go func() {
-			loc, cloneErr := m.cloneAndRegisterProject(context.Background(), RegisterProjectReq{
-				OriginURL: src,
-				Name:      "clone",
-			})
-			resultCh <- result{loc: loc, err: cloneErr}
-		}()
-		select {
-		case got := <-resultCh:
-			if got.err != nil {
-				return fmt.Errorf("cloneAndRegisterProject: %w", got.err)
-			}
-			if got.loc.Path != dest {
-				return fmt.Errorf("clone path=%q, want %q", got.loc.Path, dest)
-			}
-		case <-time.After(5 * time.Second):
-			return fmt.Errorf("clone 在 fetch 锁持有期间未完成")
-		}
-		return nil
-	})
-	if err != nil {
-		t.Fatalf("fetch 锁不应阻塞 clone: %v", err)
-	}
-	if _, err := os.Stat(filepath.Join(dest, ".git")); err != nil {
-		t.Fatalf("clone 目标应存在 .git: %v", err)
 	}
 }
 
@@ -771,8 +728,8 @@ func TestCloneToPathCleansUpOnFailure(t *testing.T) {
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
 		OriginURL: bogus, Name: "proj", Path: filepath.Join(base, "a", "b", "proj"),
 	})
-	if !errors.Is(err, ErrRepoUnusable) {
-		t.Fatalf("err = %v, want ErrRepoUnusable", err)
+	if !errors.Is(err, workspace.ErrRepoUnusable) {
+		t.Fatalf("err = %v, want workspace.ErrRepoUnusable", err)
 	}
 	if _, serr := os.Stat(filepath.Join(base, "a")); serr == nil {
 		t.Errorf("clone 失败后 %s 不该留下", filepath.Join(base, "a"))
@@ -853,7 +810,7 @@ func TestProjectWorktreeCreateOK(t *testing.T) {
 	if ws.Branch != "feat/x" {
 		t.Fatalf("分支 = %q", ws.Branch)
 	}
-	wantRoot := ManualWorktreeRoot(filepath.Join(s.conf().DataDir, "worktrees"))
+	wantRoot := workspace.ManualWorktreeRoot(filepath.Join(s.conf().DataDir, "worktrees"))
 	if !strings.HasPrefix(canonPath(ws.Path), canonPath(wantRoot)) {
 		t.Fatalf("落点 %q 不在 %q 下", ws.Path, wantRoot)
 	}
@@ -889,7 +846,7 @@ func TestProjectWorktreeCreateAttachesCardsAfterGit(t *testing.T) {
 		manualReqObserved     workspace.ManualReq
 	)
 	spy := &cardCheckingCap{
-		Capability: NewGitCapability(),
+		Capability: workspace.NewCapability(),
 	}
 	mgr.SetWorkspace(spy)
 

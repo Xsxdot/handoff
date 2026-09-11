@@ -26,9 +26,9 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -73,7 +73,7 @@ func localProjectRoot(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("取当前目录: %w", err)
 	}
-	return agentd.MainWorktreeRoot(ctx, cwd)
+	return workspace.MainWorktreeRoot(ctx, cwd)
 }
 
 // projectCmd 是 project 子命令族的父命令。
