@@ -35,14 +35,14 @@ import (
 
 // ErrProjectAlreadyExists 表示位置冲突或克隆落点已被占用，映射 409。
 //
-// 与 ErrRepoUnusable（400）的区别：那是「请求本身有问题，改了再来」，
-// 这是「当前状态与请求冲突」——和 ErrDirtyWorktree / ErrWorkdirBusy 同层级。
+// 与 workspace.ErrRepoUnusable（400）的区别：那是「请求本身有问题，改了再来」，
+// 这是「当前状态与请求冲突」——和 workspace.ErrDirtyWorktree / ErrWorkdirBusy 同层级。
 var ErrProjectAlreadyExists = errors.New("项目位置冲突或克隆落点已存在")
 
 // ErrProjectOriginMismatch 表示调用方声称的项目与该路径上实际仓库的 origin 不符，映射 400。
 //
 // 为什么必须单列一个哨兵：这是自动化最容易造出的脏登记——路径敲错但恰好指到
-// 另一个真实仓库。若并进 ErrRepoUnusable，报文就变成含糊的「仓库不可用」，
+// 另一个真实仓库。若并进 workspace.ErrRepoUnusable，报文就变成含糊的「仓库不可用」，
 // 而人需要的是「你说的是 A，那儿实际是 B」。
 var ErrProjectOriginMismatch = errors.New("路径上的仓库与请求的项目不是同一个")
 
@@ -81,31 +81,6 @@ type RegisterProjectReq struct {
 	OriginURL string
 	Name      string
 	Path      string
-}
-
-// projectOriginURL 读取仓库的 origin 地址。
-//
-// 参数：
-//   - ctx: 控制 git 调用生命周期
-//   - repo: 仓库路径
-//
-// 返回：
-//   - origin 地址；仓库不可用或没有 origin 时返回包装 ErrRepoUnusable 的错误
-//
-// 注意：
-//   - 没有 origin 的仓库拒绝登记：project_id 由 origin 派生，没有 origin 就
-//     算不出身份，登记进来只会是一条永远引用不到的死记录
-func projectOriginURL(ctx context.Context, repo string) (string, error) {
-	out, stderr, err := gitRun(ctx, repo, "remote", "get-url", "origin")
-	if err != nil {
-		return "", fmt.Errorf("%w: 读取 %s 的 origin 失败: %s: %v",
-			ErrRepoUnusable, repo, strings.TrimSpace(stderr), err)
-	}
-	url := strings.TrimSpace(out)
-	if url == "" {
-		return "", fmt.Errorf("%w: 仓库 %s 没有配置 origin remote", ErrRepoUnusable, repo)
-	}
-	return url, nil
 }
 
 // projectNameFromURL 从 git URL 末段派生缺省引用名（去掉 .git 后缀）。
@@ -158,7 +133,7 @@ func validateProjectName(name string) error {
 //
 // 返回：
 //   - 落库后的位置条目
-//   - 错误：ErrRepoUnusable（400，路径不是仓库/无 origin/clone 失败）、
+//   - 错误：workspace.ErrRepoUnusable（400，路径不是仓库/无 origin/clone 失败）、
 //     ErrProjectOriginMismatch（400，路径上是另一个项目）、
 //     ErrProjectAlreadyExists（409，项目/名字/路径已被占用，或落点已存在）、
 //     errBadDispatchRequest（400，参数缺失或名字非法）
@@ -174,7 +149,7 @@ func (m *Manager) RegisterProject(ctx context.Context, req RegisterProjectReq) (
 	req.Name = strings.TrimSpace(req.Name)
 	req.Path = strings.TrimSpace(req.Path)
 	if req.OriginURL != "" && strings.HasPrefix(req.OriginURL, "-") {
-		// git 会把以 - 开头的参数解释为选项——参数注入面，与 ErrBadBaseBranch 同源。
+		// git 会把以 - 开头的参数解释为选项——参数注入面，与 workspace.ErrBadBaseBranch 同源。
 		return proto.ProjectLocation{}, fmt.Errorf("%w: origin_url 不允许以 - 开头", errBadDispatchRequest)
 	}
 	if req.Path != "" {
@@ -219,7 +194,7 @@ func (m *Manager) registerAtPath(ctx context.Context, req RegisterProjectReq) (p
 		return m.cloneToPathAndRegister(ctx, req)
 	}
 	if err != nil {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查路径 %s: %v", ErrRepoUnusable, req.Path, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查路径 %s: %v", workspace.ErrRepoUnusable, req.Path, err)
 	}
 	return m.registerExistingProject(ctx, req)
 }
@@ -323,18 +298,18 @@ func (m *Manager) cloneToPathAndRegister(ctx context.Context, req RegisterProjec
 	// 调用方原本就有的目录绝不碰。
 	created := firstMissingAncestor(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", ErrRepoUnusable, parent, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", workspace.ErrRepoUnusable, parent, err)
 	}
 	m.log.Info("开始克隆项目到指定路径", "origin", req.OriginURL, "dest", dest)
 	start := time.Now()
 	// gitRun 以 parent 为 cwd 执行；-- 分隔符防止 URL/路径被当成选项。
-	if _, stderr, err := gitRun(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
+	if stderr, err := workspace.CloneRepo(ctx, parent, req.OriginURL, dest, false); err != nil {
 		m.log.Error("克隆到指定路径失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
 		m.cleanupCreatedDir(created)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
-			ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
+			workspace.ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
 	}
 	m.log.Info("克隆到指定路径完成", "origin", req.OriginURL, "dest", dest,
 		"elapsed_ms", time.Since(start).Milliseconds())
@@ -395,22 +370,22 @@ func sameLocation(a, b string) bool {
 // 返回：
 //   - root: 归并主工作树后的仓库根（绝对路径）
 //   - origin: 该仓库 origin 的现读值（非空；读不到即返回错误）
-//   - err: 任一步失败时的包装错误（ErrRepoUnusable 系列）
+//   - err: 任一步失败时的包装错误（workspace.ErrRepoUnusable 系列）
 func (m *Manager) inspectRepoDir(ctx context.Context, dir string) (root, origin string, err error) {
-	if err := EnsureRepoUsable(ctx, dir); err != nil {
+	if err := workspace.EnsureRepoUsable(ctx, dir); err != nil {
 		m.log.Warn("登记被拒：路径不是可用的 git 仓库", "path", dir, "cause", err)
 		return "", "", err
 	}
 	// 归并主工作树：位置表一个项目只允许一行，而 linked worktree 与主仓
 	// origin 相同、project_id 相同（spec §5）。
-	root, err = MainWorktreeRoot(ctx, dir)
+	root, err = workspace.MainWorktreeRoot(ctx, dir)
 	if err != nil {
 		m.log.Warn("登记被拒：归并主工作树失败", "path", dir, "cause", err)
 		return "", "", err
 	}
 	// origin 由 agentd 在本机现读，而不是采信调用方上送的值：登记的是这个
 	// 路径上真实存在的仓库，它的 origin 才是权威。
-	origin, err = projectOriginURL(ctx, root)
+	origin, err = workspace.OriginURL(ctx, root)
 	if err != nil {
 		m.log.Warn("登记被拒：读不到 origin", "path", root, "cause", err)
 		return "", "", err
@@ -528,25 +503,25 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req RegisterProje
 			"dest", dest, "project_id", projectid.FromOrigin(actual))
 		return m.persistProject(name, root, actual)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查落点 %s: %v", ErrRepoUnusable, dest, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查落点 %s: %v", workspace.ErrRepoUnusable, dest, err)
 	}
 	parent := filepath.Dir(dest)
 	// clone 前先记下 MkdirAll 会从哪一层开始造——失败时只回收这一层往下，
 	// 调用方原本就有的目录绝不碰。
 	created := firstMissingAncestor(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", ErrRepoUnusable, parent, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", workspace.ErrRepoUnusable, parent, err)
 	}
 	m.log.Info("开始克隆项目", "origin", req.OriginURL, "dest", dest)
 	start := time.Now()
 	// gitRun 以 parent 为 cwd 执行；-- 分隔符防止 URL/路径被当成选项。
-	if _, stderr, err := gitRunNet(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
+	if stderr, err := workspace.CloneRepo(ctx, parent, req.OriginURL, dest, true); err != nil {
 		m.log.Error("克隆项目失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
 			"stderr", truncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
 		m.cleanupCreatedDir(created)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
-			ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
+			workspace.ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
 	}
 	m.log.Info("克隆项目完成", "origin", req.OriginURL, "dest", dest,
 		"elapsed_ms", time.Since(start).Milliseconds())
@@ -678,7 +653,7 @@ func probeProjectStatus(ctx context.Context, path string) string {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
 		return projectStatusMissing
 	}
-	if err := EnsureRepoUsable(ctx, path); err != nil {
+	if err := workspace.EnsureRepoUsable(ctx, path); err != nil {
 		return projectStatusNotRepo
 	}
 	return projectStatusOK
@@ -871,7 +846,7 @@ func (s *Server) handleProjectBranches(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
 		return
 	}
-	names, err := Branches(loc.Path)
+	names, err := workspace.Branches(loc.Path)
 	if err != nil {
 		s.log.Error("列项目分支失败", "name", name, "repo", loc.Path, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
@@ -880,7 +855,7 @@ func (s *Server) handleProjectBranches(w http.ResponseWriter, r *http.Request) {
 	worktreesDir := filepath.Join(s.conf().DataDir, "worktrees")
 	// 占用表复用项目树那次探测的同一个函数，不另跑一遍 worktree list：
 	// 两处口径分叉时，界面置灰的分支与真能建的分支会对不上
-	existing, probeErr := probeWorkspaces(r.Context(), loc.Path, worktreesDir)
+	existing, probeErr := workspace.ProbeWorkspaces(r.Context(), loc.Path, worktreesDir)
 	if probeErr != "" {
 		s.log.Warn("列项目分支：探测工作树失败，占用信息缺失", "name", name, "cause", probeErr)
 	}
@@ -892,8 +867,8 @@ func (s *Server) handleProjectBranches(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := proto.ProjectBranchesResp{
 		Branches:     make([]proto.ProjectBranch, 0, len(names)),
-		Default:      resolveBaseBranch(loc.Path),
-		WorktreeRoot: ManualWorktreeRoot(worktreesDir),
+		Default:      workspace.ResolveBaseBranch(loc.Path),
+		WorktreeRoot: workspace.ManualWorktreeRoot(worktreesDir),
 	}
 	for _, b := range names {
 		resp.Branches = append(resp.Branches, proto.ProjectBranch{Name: b, Worktree: byBranch[b]})
@@ -967,7 +942,7 @@ func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Requ
 		workspace.ManualReq{Mode: req.Mode, Branch: req.Branch, Base: req.Base})
 	if err != nil {
 		status := http.StatusInternalServerError
-		if errors.Is(err, ErrBadWorktreeReq) {
+		if errors.Is(err, workspace.ErrBadWorktreeReq) {
 			status = http.StatusBadRequest
 		}
 		s.log.Error("建树失败", "name", name, "repo", loc.Path, "mode", req.Mode,

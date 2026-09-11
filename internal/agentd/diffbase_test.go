@@ -57,7 +57,7 @@ func TestTaskDiffUsesResultRefCommit(t *testing.T) {
 	srv := NewServer(cfg, st, discardLogger())
 	m := NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), discardLogger())
-	spy := &diffHeadSpy{Capability: NewGitCapability()}
+	spy := &diffHeadSpy{Capability: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)
 	now := time.Now().UTC()
@@ -116,7 +116,7 @@ func TestTaskDiffAllowsEmptyResultPathWithCommit(t *testing.T) {
 	srv := NewServer(cfg, st, logger)
 	m := NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), logger)
-	spy := &diffHeadSpy{Capability: NewGitCapability()}
+	spy := &diffHeadSpy{Capability: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)
 	now := time.Now().UTC()
@@ -156,7 +156,7 @@ func TestTaskDiffEmptyCommitFallsBackThroughHTTP(t *testing.T) {
 	srv := NewServer(cfg, st, logger)
 	m := NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), logger)
-	spy := &diffHeadSpy{Capability: NewGitCapability()}
+	spy := &diffHeadSpy{Capability: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)
 	now := time.Now().UTC()
@@ -197,7 +197,7 @@ func doAuthorizedDiffRequest(t *testing.T, baseURL, token, taskID, base string) 
 func TestDiffBaseForPrefersTaskBaseCommit(t *testing.T) {
 	repo := initTestRepo(t)
 	task := &proto.Task{ID: "t1", BaseCommit: "0123456789abcdef0123456789abcdef01234567"}
-	if got := diffBaseFor(task, repo); got != task.BaseCommit {
+	if got := workspace.DiffBaseFor(task, repo); got != task.BaseCommit {
 		t.Errorf("应优先用任务基线：got=%q want=%q", got, task.BaseCommit)
 	}
 }
@@ -207,7 +207,7 @@ func TestDiffBaseForPrefersTaskBaseCommit(t *testing.T) {
 func TestDiffBaseForFallsBackWhenNoBaseCommit(t *testing.T) {
 	repo := initTestRepo(t) // initTestRepo 建的是 main 分支
 	task := &proto.Task{ID: "t1"}
-	if got := diffBaseFor(task, repo); got != "main" {
+	if got := workspace.DiffBaseFor(task, repo); got != "main" {
 		t.Errorf("应退回推导链：got=%q want=%q", got, "main")
 	}
 }
@@ -275,7 +275,7 @@ func TestTaskDiffTargetFallsBackToRepoWhenWorktreeGone(t *testing.T) {
 		WorkDir:  filepath.Join(t.TempDir(), "已被回收的-worktree"),
 		Branch:   "bench/b93",
 	}
-	gotRepo, gotHead := taskDiffTarget(task)
+	gotRepo, gotHead := workspace.TaskDiffTarget(task)
 	if gotRepo != repo {
 		t.Errorf("worktree 没了应回到主仓库，得到 %q 想要 %q", gotRepo, repo)
 	}
@@ -291,7 +291,7 @@ func TestTaskDiffTargetFallsBackToRepoWhenWorktreeGone(t *testing.T) {
 func TestTaskDiffTargetKeepsWorktreeWhenPresent(t *testing.T) {
 	wt := t.TempDir()
 	task := &proto.Task{RepoPath: t.TempDir(), WorkDir: wt, Branch: "bench/b93"}
-	gotRepo, gotHead := taskDiffTarget(task)
+	gotRepo, gotHead := workspace.TaskDiffTarget(task)
 	if gotRepo != wt || gotHead != "HEAD" {
 		t.Errorf("worktree 在时应原样用它 + HEAD，得到 (%q, %q)", gotRepo, gotHead)
 	}
@@ -302,7 +302,7 @@ func TestTaskDiffTargetKeepsWorktreeWhenPresent(t *testing.T) {
 func TestTaskDiffTargetKeepsWorktreeWhenBranchUnknown(t *testing.T) {
 	gone := filepath.Join(t.TempDir(), "没了")
 	task := &proto.Task{RepoPath: t.TempDir(), WorkDir: gone, Branch: ""}
-	gotRepo, gotHead := taskDiffTarget(task)
+	gotRepo, gotHead := workspace.TaskDiffTarget(task)
 	if gotRepo != gone || gotHead != "HEAD" {
 		t.Errorf("无分支可用时不该回退，得到 (%q, %q)", gotRepo, gotHead)
 	}
@@ -311,7 +311,7 @@ func TestTaskDiffTargetKeepsWorktreeWhenBranchUnknown(t *testing.T) {
 func TestTaskDiffTargetFallbackHeadRevIsNotHEAD(t *testing.T) {
 	gone := filepath.Join(t.TempDir(), "gone")
 	task := &proto.Task{RepoPath: t.TempDir(), WorkDir: gone, Branch: "handoff/deadbeef"}
-	_, head := taskDiffTarget(task)
+	_, head := workspace.TaskDiffTarget(task)
 	if head == "HEAD" {
 		t.Fatal("树已回收时右端不得是主仓 HEAD")
 	}

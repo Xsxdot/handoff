@@ -38,6 +38,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // looseTempDir 建一个测试用临时目录，收尾时尽力删除、删不掉也不判用例失败。
@@ -249,7 +250,7 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
 	m := NewManager(st, hub, ads, cfg, nil, approver, newTestGate(t), logger)
-	m.SetWorkspace(NewGitCapability())
+	m.SetWorkspace(workspace.NewCapability())
 	return m, st, hub
 }
 
@@ -364,8 +365,8 @@ func TestDispatchRejectsLocalBaseBranchInvariant(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if _, err := m.Dispatch(context.Background(), tc.req); !errors.Is(err, ErrBadWorkspaceReq) {
-				t.Fatalf("应返回 ErrBadWorkspaceReq，实得 %v", err)
+			if _, err := m.Dispatch(context.Background(), tc.req); !errors.Is(err, workspace.ErrBadWorkspaceReq) {
+				t.Fatalf("应返回 workspace.ErrBadWorkspaceReq，实得 %v", err)
 			} else if !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("错误应包含 %q，实得 %v", tc.want, err)
 			}
@@ -484,7 +485,7 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, newTestGate(t), logger)
-	m.SetWorkspace(NewGitCapability())
+	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 
 	if _, err := m.Dispatch(context.Background(), DispatchReq{
@@ -659,7 +660,7 @@ func TestStopRetainsManagedWorktree(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
-	spy := &countingCap{inner: NewGitCapability()}
+	spy := &countingCap{inner: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
@@ -687,7 +688,7 @@ func TestStopRetainsManagedWorktree(t *testing.T) {
 	if cur.State != proto.TaskStateFailed {
 		t.Fatalf("stop 后 state=%s, want failed", cur.State)
 	}
-	if out := gitOut(t, repo, "branch", "--list", "handoff/"+id8(task.ID)); out == "" {
+	if out := gitOut(t, repo, "branch", "--list", "handoff/"+workspace.ID8(task.ID)); out == "" {
 		t.Fatalf("stop 不得删除任务分支")
 	}
 }
@@ -759,7 +760,7 @@ func TestDoneRemovesManagedWorktree(t *testing.T) {
 	if _, err := os.Stat(workDir); !os.IsNotExist(err) {
 		t.Fatalf("worktree 目录应已删除: %v", err)
 	}
-	if out := gitOut(t, repo, "branch", "--list", "handoff/"+id8(task.ID)); out == "" {
+	if out := gitOut(t, repo, "branch", "--list", "handoff/"+workspace.ID8(task.ID)); out == "" {
 		t.Fatalf("任务分支不应被删除")
 	}
 	cur, _ := st.GetTask(task.ID)
@@ -1517,7 +1518,7 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 	}
 	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
-	m.SetWorkspace(NewGitCapability())
+	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 
 	if _, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
@@ -1855,7 +1856,7 @@ func compensateFixture(t *testing.T) (*Manager, string) {
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	m.SetWorkspace(NewGitCapability())
+	m.SetWorkspace(workspace.NewCapability())
 	return m, dataDir
 }
 
@@ -2001,7 +2002,7 @@ func compensateOnlyManager(t *testing.T) *Manager {
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
-	m.SetWorkspace(NewGitCapability())
+	m.SetWorkspace(workspace.NewCapability())
 	return m
 }
 
@@ -2014,7 +2015,7 @@ func TestCompensateKeepsBranchWhenWorktreeRemoveFails(t *testing.T) {
 	gitT(t, repo, "branch", "e2e/stuck")
 	tip := gitOut(t, repo, "rev-parse", "refs/heads/e2e/stuck")
 	m := compensateOnlyManager(t)
-	m.compensateWorkspace(context.Background(), "2c58bbb7-0000-0000-0000-000000000000", repo, Workspace{
+	m.compensateWorkspace(context.Background(), "2c58bbb7-0000-0000-0000-000000000000", repo, workspace.Prepared{
 		Branch: "e2e/stuck", WorkDir: filepath.Join(t.TempDir(), "not-a-worktree"),
 		Managed: true, NewBranchTip: tip,
 	})
@@ -2033,7 +2034,7 @@ func TestCompensateKeepsBranchWhenTipMoved(t *testing.T) {
 	writeAndCommit(t, repo, "extra.txt", "x\n") // 尖端前移，与 staleTip 不再相等
 	gitT(t, repo, "checkout", "-q", orig)
 	m := compensateOnlyManager(t)
-	m.compensateWorkspace(context.Background(), "2c58bbb7-0000-0000-0000-000000000000", repo, Workspace{
+	m.compensateWorkspace(context.Background(), "2c58bbb7-0000-0000-0000-000000000000", repo, workspace.Prepared{
 		Branch: "e2e/moved", WorkDir: repo, Managed: false,
 		NewBranchTip: staleTip, PrevRef: orig,
 	})
@@ -2049,7 +2050,7 @@ func TestCompensateUserWorktreeRestores(t *testing.T) {
 	wt := filepath.Join(t.TempDir(), "userwt")
 	gitT(t, repo, "worktree", "add", "-q", "-b", "userbase", wt)
 
-	ws, err := PrepareWorkspace(context.Background(), WorkspaceReq{
+	ws, err := workspace.PrepareWorkspace(context.Background(), workspace.WorkspaceReq{
 		Repo: repo, TaskID: "eeeeeeee-0000-0000-0000-000000000000",
 		NewBranch: "e2e/userwt", Worktree: wt,
 	})
@@ -2061,7 +2062,11 @@ func TestCompensateUserWorktreeRestores(t *testing.T) {
 	}
 
 	m := compensateOnlyManager(t)
-	m.compensateWorkspace(context.Background(), "eeeeeeee-0000-0000-0000-000000000000", repo, ws)
+	m.compensateWorkspace(context.Background(), "eeeeeeee-0000-0000-0000-000000000000", repo, workspace.Prepared{
+		Branch: ws.Branch, WorkDir: ws.WorkDir, Managed: ws.Managed,
+		NewBranchTip: ws.NewBranchTip, PrevRef: ws.PrevRef,
+		RepoDirtyCount: ws.RepoDirtyCount, RepoDirtyFiles: ws.RepoDirtyFiles,
+	})
 
 	if got := gitOut(t, wt, "rev-parse", "--abbrev-ref", "HEAD"); got != "userbase" {
 		t.Fatalf("用户树应被切回 userbase，实际停在 %s", got)

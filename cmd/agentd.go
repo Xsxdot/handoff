@@ -47,6 +47,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/toolchain"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -165,7 +166,12 @@ var agentdCmd = &cobra.Command{
 
 		// git 出网代理必须在任何 clone/fetch 之前注入。放在 NewServer 之前而不是
 		// 之后：自动登记（B62）的 clone 可能在服务起来后的第一个请求就发生
-		agentd.SetGitProxy(cfg.Proxy)
+		workspace.ConfigureGitNet(workspace.GitNetConfig{
+			Argv:   proxycfg.GitArgs(cfg.Proxy),
+			Redact: proxycfg.Redact(cfg.Proxy),
+		})
+		workspace.SetForkFailureNote(prochost.ExplainForkFailure)
+		workspace.SetProcHeadroom(agentd.CheckProcHeadroom)
 		if cfg.Proxy != "" {
 			logger.Info("git 出网将使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
 		}
@@ -216,7 +222,7 @@ var agentdCmd = &cobra.Command{
 		srv.SetProviders(agentd.RegistryFromAds(ads))
 		srv.SetRuleLoader(loadCarrierRules)
 		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, srv.EnvMapping, ap, gate, logger)
-		mgr.SetWorkspace(agentd.NewGitCapability())
+		mgr.SetWorkspace(workspace.NewCapability())
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
@@ -411,7 +417,7 @@ func adaptersForWithProbe(goos string, logger *slog.Logger, probeDir string) map
 //     goroutine）；配合 IdleTimeout 保证半死连接被回收
 //   - ReadTimeout 30s：请求体读取上限（reply/fetch 等请求体都很小，30s 充足）。
 //     只作用于请求头/体的读取，不约束 handler 执行时长，无需随 run 上限放大
-//   - WriteTimeout 11min（= agentd.RunCmdTimeout + 1min 余量）：响应写入上限，
+//   - WriteTimeout 11min（= workspace.RunCmdTimeout + 1min 余量）：响应写入上限，
 //     **必须** ≥ run 路由的执行上限——handleTaskRun 在 handler 内同步执行 RunCmd
 //     （最长 RunCmdTimeout=10min），net/http 的 WriteTimeout 在 handler 执行前设下
 //     deadline、响应写完前不重置，若小于命令执行上限，跑测试/lint 的审阅命令
@@ -428,7 +434,7 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      agentd.RunCmdTimeout + time.Minute,
+		WriteTimeout:      workspace.RunCmdTimeout + time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
 }
