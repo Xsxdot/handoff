@@ -24,7 +24,7 @@ func stopOutcomeLine(taskID string, removed bool) string {
 	return fmt.Sprintf("任务 %s 已中止（状态 failed，现场已留存，显式 reclaim/gc 才清，分支保留）\n", taskID)
 }
 
-func runStop(cmd *cobra.Command, c *client.Client, taskID string) error {
+func runStop(cmd *cobra.Command, c client.ExecutionClient, taskID string) error {
 	removed, err := c.Stop(cmd.Context(), taskID)
 	if err != nil {
 		return err

@@ -738,7 +738,7 @@ func TestRunnerLocalClientUsesWaitAndDiffWire(t *testing.T) {
 			}
 			return taskID, "", nil
 		}},
-		Clients: func(target string) (*client.Client, error) {
+		Clients: func(target string) (StepClient, error) {
 			if target != "" {
 				return nil, fmt.Errorf("本机 runner 收到非空 target %q", target)
 			}
@@ -830,7 +830,7 @@ func TestB2336TerminalRunDoesNotBecomeBusinessVerdict(t *testing.T) {
 				Dispatcher: &Dispatcher{St: st, Actor: "terminal-test", Transport: func(context.Context, DispatchOpts) (string, string, error) {
 					return taskID, "", nil
 				}},
-				Clients: func(target string) (*client.Client, error) {
+				Clients: func(target string) (StepClient, error) {
 					return client.New(ts.URL, "test-token"), nil
 				},
 			}

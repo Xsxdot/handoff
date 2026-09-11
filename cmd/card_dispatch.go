@@ -74,7 +74,7 @@ var dispatchTransport = func(prompt, branch, target, project string) (string, st
 		return "", "", err
 	}
 	defer done()
-	task, err := cl.Dispatch(context.Background(), client.DispatchOpts{
+	task, err := dispatchTask(context.Background(), cl, client.DispatchOpts{
 		Prompt: prompt, NewBranch: branch, Target: canonical, ProjectName: project,
 	})
 	if err != nil {
@@ -93,7 +93,7 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, string, error
 		return "", "", err
 	}
 	defer done()
-	task, err := cl.Dispatch(context.Background(), client.DispatchOpts{
+	task, err := dispatchTask(context.Background(), cl, client.DispatchOpts{
 		Prompt: req.prompt, Target: canonical,
 		NewBranch: req.branch, Branch: req.existingBranch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
@@ -244,7 +244,7 @@ func resolveCardDispatchTemplate(st *ledger.Store) (string, error) {
 // 随派发下发的正文三元组。探活失败保留网络/认证 cause 并停止派发；只有探活成功
 // 但能力位缺席=nil 或 false 才产生「升级」拒发文案。未点名模板的产物是纯平台层
 // 正文、版本 0（§3.1 拒发闸覆盖一切带正文派发）。
-func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, target string) (discipline.ResolvedDiscipline, error) {
+func resolveCardDispatchDiscipline(ctx context.Context, cl dispatchClient, st *ledger.Store, name, target string) (discipline.ResolvedDiscipline, error) {
 	lookup := func(n string) (int, string, error) {
 		d, err := st.GetDiscipline(n, 0)
 		if err != nil {
@@ -253,13 +253,6 @@ func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, 
 		return d.Version, d.Body, nil
 	}
 	var cap *bool
-	cl, done, err := targetClient(target)
-	if err != nil {
-		slog.Error("模板派发前取得目标机客户端失败", "target", target, "cause", err)
-		return discipline.ResolvedDiscipline{}, fmt.Errorf(
-			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
-	}
-	defer done()
 	status, err := cl.Status(ctx)
 	if err != nil {
 		slog.Error("模板派发前目标机探活失败", "target", target, "cause", err)
@@ -275,6 +268,25 @@ func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, 
 	slog.Info("模板派发纪律正文已就绪", "target", target,
 		"discipline", name, "version", res.Version, "bytes", len(res.Text))
 	return res, nil
+}
+
+// compensateClient 是派发失败补偿路径的执行消费面：执行动作（嵌入提供方内部冻结的
+// client.ExecutionClient）+ 回收。接口定义在使用方（B233.16 契约冻结）。
+type compensateClient interface {
+	client.ExecutionClient
+	StopAndReclaim(ctx context.Context, taskID string) error
+}
+
+// compensateCardDispatch 回收一次已取得 task id 的失败派发。具名入口（原为
+// 内联闭包），依赖声明收窄到 compensateClient；只回收，不改原始错误。
+func compensateCardDispatch(ctx context.Context, cl compensateClient, cardID, target, taskID string) error {
+	slog.Info("CLI 派发失败补偿开始", "card", cardID, "target", target, "task", taskID)
+	if err := cl.StopAndReclaim(ctx, taskID); err != nil {
+		slog.Error("CLI 派发失败补偿失败", "card", cardID, "target", target, "task", taskID, "cause", err)
+		return err
+	}
+	slog.Info("CLI 派发失败补偿完成", "card", cardID, "target", target, "task", taskID)
+	return nil
 }
 
 var cardDispatchCmd = &cobra.Command{
@@ -320,8 +332,15 @@ var cardDispatchCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		probeCl, doneProbe, err := targetClient(discTarget)
+		if err != nil {
+			slog.Error("模板派发前取得目标机客户端失败", "target", discTarget, "cause", err)
+			return fmt.Errorf(
+				"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
+		}
 		var resolved discipline.ResolvedDiscipline
-		resolved, err = resolveCardDispatchDiscipline(ctx, st, discName, discTarget)
+		resolved, err = resolveCardDispatchDiscipline(ctx, probeCl, st, discName, discTarget)
+		doneProbe()
 		if err != nil {
 			slog.Warn("裸卡派发被拒发闸拦下", "card", id, "discipline", discName,
 				"target", discTarget, "cause", err)
@@ -340,13 +359,7 @@ var cardDispatchCmd = &cobra.Command{
 					return err
 				}
 				defer done()
-				slog.Info("CLI 派发失败补偿开始", "card", card.ID, "target", target, "task", taskID)
-				if err := cl.StopAndReclaim(ctx, taskID); err != nil {
-					slog.Error("CLI 派发失败补偿失败", "card", card.ID, "target", target, "task", taskID, "cause", err)
-					return err
-				}
-				slog.Info("CLI 派发失败补偿完成", "card", card.ID, "target", target, "task", taskID)
-				return nil
+				return compensateCardDispatch(ctx, cl, card.ID, target, taskID)
 			},
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,

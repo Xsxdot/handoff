@@ -110,6 +110,20 @@ func dispatchWithAutoRegister(dispatch func() (*proto.Task, error), register fun
 	return dispatch()
 }
 
+// dispatchClient 是裸派发与 card dispatch 纪律解析路径的执行消费面：执行动作
+// （嵌入提供方内部冻结的 client.ExecutionClient）+ 派发前能力位探活（Status）。
+// 接口定义在使用方（B233.16 契约冻结）。
+type dispatchClient interface {
+	client.ExecutionClient
+	Status(ctx context.Context) (*proto.StatusResp, error)
+}
+
+// dispatchTask 是派发动作的具名执行消费点：依赖声明收窄到 client.ExecutionClient，
+// 使最小替身可在不改命令构造的情况下替换跨机客户端（B233.16）。
+func dispatchTask(ctx context.Context, cli client.ExecutionClient, opts client.DispatchOpts) (*proto.Task, error) {
+	return cli.Dispatch(ctx, opts)
+}
+
 // localHeadCommit 取当前工作目录所在 git 仓库的 HEAD 提交号，作为远程基线校验的基准。
 //
 // 返回空串的三种情况（都按「不校验」处理，不报错）：cwd 不是 git 仓库、
@@ -182,7 +196,7 @@ func baselineLine(task *proto.Task, userBase string) string {
 //
 // 参数：cli 已装配的目标机客户端（探活用）；rawFile --discipline-file 路径（空=未点名）。
 // 返回：随派发下发的正文三元组；文件不可读或拒发闸拦下时返回错误。
-func resolveBareDiscipline(ctx context.Context, cli *client.Client, rawFile string) (discipline.ResolvedDiscipline, error) {
+func resolveBareDiscipline(ctx context.Context, cli dispatchClient, rawFile string) (discipline.ResolvedDiscipline, error) {
 	ref := discipline.DisciplineRef{}
 	if rawFile != "" {
 		content, err := os.ReadFile(rawFile)
@@ -279,7 +293,7 @@ var dispatchCmd = &cobra.Command{
 		opts.DisciplineText = resolved.Text
 		opts.DisciplineVersion = resolved.Version
 		task, err := dispatchWithAutoRegister(
-			func() (*proto.Task, error) { return cli.Dispatch(cmd.Context(), opts) },
+			func() (*proto.Task, error) { return dispatchTask(cmd.Context(), cli, opts) },
 			func() error {
 				// 用 --project <名字> 指名的项目查不到时，自动登记帮不上忙：
 				// 名字不是身份，本机无从知道那个名字该指向哪个 origin。
