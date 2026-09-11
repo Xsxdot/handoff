@@ -116,6 +116,11 @@
 - **ExecutionClient 成为生产消费类型**：接口与编译断言已在，生产调用方仍持有聚合 `*client.Client`。来源：同上。
 - **全仓 internal/ 按 best.json 重排**：物理搬家仍暂缓，目录是结果不是手段。来源：同上。
 
+## 来自 B233.16 spec（2026-09-11）
+
+- **非执行能力面的消费点收窄**：B233.16 只覆盖「一次任务/卡节点执行闭环」这条缝。仍持聚合 `*client.Client` 且无卡承接的：任务事件镜像（`internal/ledgermirror` 的 `Machines.For`/`Source` 做 `StreamEventsOnce`/`ListTasks`）、PTY（`internal/agentd` 的 coordinator PTY 路径）、预览、回收、项目、机器、会话、升级，以及纯查询命令（`tasks`/`show`/`diff`/`attach`/`frames`/`footprint` 等）。这些面要各自按使用方声明能力接口（如事件流需另立订阅缝），单独定性。来源：`docs/superpowers/specs/b233.16.md` Out of Scope。
+- **其余入传输边的 entries 复核**：`d_cli`/`d_gateway`/`d_ledger` → `d_transport` 三条边由 B233.16 按现实棘轮更新；`d_policy`/`d_maintenance` → `d_transport` 两条边（预算 2/3）不在本卡清单内，留 B233.17 棘轮时逐条复核是否也含执行面消费点。来源：同上；`codegraph/target.json`。
+
 ## 来自 B233.15 spec（2026-09-11）
 
 - **工作区域剩余文件的迁包**：B233.15 只搬 git/工作区实现文件（`workspace.go`、`manualworktree.go`、`workspaceprobe.go`、`gitroot.go`、`gitignore.go`、procgroup），下列仍留在 `internal/agentd`，本卡只改它们的调用点：项目登记（`projectadmin.go`，best 已归 `k_agentd_projectIndex`→`d_workspace`）、镜像 bundle（`bundle.go`，已归 `k_agentd_Mirror`）、回收编排（`reclaim.go`）、预览仓主（`preview_owner.go`）。来源：`docs/superpowers/specs/b233.15.md` Out of Scope。
