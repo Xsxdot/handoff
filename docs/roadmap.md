@@ -112,9 +112,14 @@
 - **审批拥有审批事实**：政策、决策、升级、送达确认有唯一归属；harness 只做原生协议转换。第一刀投递/送达归 B233.12（spec 待批）。其余 Hooks（Judge/Transit/Store）随 B233.13；非 OpenCode 权威仍待迁。`AckExecuted` 紧跟回传、不改持久事实。来源：`docs/superpowers/specs/b233.10.md` Out of Scope；B233.12。
 - **OpenCode Continue 热加载**：生产 `probeServeReloadsConfig` 恒 false，Continue 无条件 `ApplySnapshot` 会失败。不要跳过快照（原生 allow 可能宽于新政策）；要有真实重载证据或重启 serve。来源：`4485a4e7` 审查 P1-6；B233.12 OOS。
 - **B233.12 真机未验**：接缝测试与变异已过；未跑真实 OpenCode 会话确认免审只回传一次、无假 `delivery_failed`。来源：B233.12 acceptance 2026-09-11。
-- **工作区能力主体迁出 agentd**：`gitCapability` 仍转调 agentd 包级函数，属 B233.4 声明的中间态。产物引用已进 `handleTaskDiff`，完整消费链未收。来源：同上。
+- **工作区能力主体迁出 agentd**：`gitCapability` 仍转调 agentd 包级函数，属 B233.4 声明的中间态——已由 B233.15（spec 2026-09-11）承接：git/工作区实现文件整包迁进 `internal/workspace`。搬后残余见「来自 B233.15 spec」段。来源：同上。
 - **ExecutionClient 成为生产消费类型**：接口与编译断言已在，生产调用方仍持有聚合 `*client.Client`。来源：同上。
 - **全仓 internal/ 按 best.json 重排**：物理搬家仍暂缓，目录是结果不是手段。来源：同上。
+
+## 来自 B233.15 spec（2026-09-11）
+
+- **工作区域剩余文件的迁包**：B233.15 只搬 git/工作区实现文件（`workspace.go`、`manualworktree.go`、`workspaceprobe.go`、`gitroot.go`、`gitignore.go`、procgroup），下列仍留在 `internal/agentd`，本卡只改它们的调用点：项目登记（`projectadmin.go`，best 已归 `k_agentd_projectIndex`→`d_workspace`）、镜像 bundle（`bundle.go`，已归 `k_agentd_Mirror`）、回收编排（`reclaim.go`）、预览仓主（`preview_owner.go`）。来源：`docs/superpowers/specs/b233.15.md` Out of Scope。
+- **`d_workspace→d_orchestration` 预算清零**：B233.15 把 `k_agentd_Mirror`/`k_agentd_projectIndex` 的消费点同域化后，该方向的两条边应消失；预算与 entries 的收尾（含 `.13` 迁包后的 `d_gateway→d_orchestration`）留 B233.17 一次棘轮到门面。来源：同上；`codegraph/target.json`。
 
 ## 来自 B233.11 spec（2026-09-10）
 
