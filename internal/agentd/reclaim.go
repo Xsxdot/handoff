@@ -130,12 +130,12 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 			"workdir", cur.WorkDir, "discard", len(dirty))
 	}
 
-	if rerr := workspace.RemoveWorktree(ctx, cur.RepoPath, cur.WorkDir, force); rerr != nil {
+	if stderr, rerr := workspace.RemoveWorktree(ctx, cur.RepoPath, cur.WorkDir, force); rerr != nil {
 		// prunable 兜底：实证 git 2.50.1 上 remove 能直接处理在册但目录已失的
 		// 条目，这里只防旧版 git 行为不同。remove 成功是常路，本分支是保险
 		if state == proto.WorktreePrunable {
 			m.log.Warn("reclaim：prunable 条目 remove 失败，退回 prune",
-				"task", taskID, "cause", rerr)
+				"task", taskID, "stderr", truncateRunes(stderr, 200), "cause", rerr)
 			if perr := workspace.PruneWorktrees(ctx, cur.RepoPath); perr != nil {
 				return nil, perr
 			}

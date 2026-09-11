@@ -164,8 +164,9 @@ func ClassifyWorktree(ctx context.Context, entries map[string]WorktreeEntry, wor
 //
 // 参数：ctx 上层上下文，内部叠加 WorkspaceGitTimeout；repo 主仓库路径；
 // workdir 待删工作树路径；force 为真时对脏树强删（丢弃未提交改动）。
-// 返回：失败时返回包装 stderr 原文的错误，成功 nil。
-func RemoveWorktree(ctx context.Context, repo, workdir string, force bool) error {
+// 返回：git stderr 原文（成功为空串）与错误；调用方需要逐字段还原迁移前的
+// 日志/文案时按 CloneRepo 同款约定自取 stderr。
+func RemoveWorktree(ctx context.Context, repo, workdir string, force bool) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, WorkspaceGitTimeout)
 	defer cancel()
 	args := []string{"worktree", "remove", workdir}
@@ -173,10 +174,10 @@ func RemoveWorktree(ctx context.Context, repo, workdir string, force bool) error
 		args = append(args, "--force")
 	}
 	if _, stderr, err := gitRun(ctx, repo, args...); err != nil {
-		return fmt.Errorf("git worktree remove %s: %s: %w",
+		return stderr, fmt.Errorf("git worktree remove %s: %s: %w",
 			workdir, strings.TrimSpace(truncateRunes(stderr, 200)), err)
 	}
-	return nil
+	return "", nil
 }
 
 // PruneWorktrees 清理丢失目录的 worktree 元数据（git worktree prune）。

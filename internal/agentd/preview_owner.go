@@ -222,7 +222,7 @@ func defaultPreviewWorkspaceResolver(ctx context.Context, getwd func() (string, 
 	}
 
 	var originURL string
-	if u, err := workspace.OriginURL(ctx, workspaceRoot); err == nil {
+	if u, ok := workspace.ProbeOriginURL(ctx, workspaceRoot); ok {
 		originURL = u
 	}
 	branch := workspace.HeadBranch(ctx, workspaceRoot)

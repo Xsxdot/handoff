@@ -21,7 +21,7 @@ func TestDeleteBranchRemovesOnlyNamedBranch(t *testing.T) {
 	gitAt(t, repo, "branch", "keep")
 	gitAt(t, repo, "branch", "doomed")
 
-	if err := DeleteBranch(context.Background(), repo, "doomed"); err != nil {
+	if _, err := DeleteBranch(context.Background(), repo, "doomed"); err != nil {
 		t.Fatalf("DeleteBranch: %v", err)
 	}
 	if _, _, err := gitProbe(context.Background(), repo, "rev-parse", "--verify", "--quiet", "refs/heads/doomed"); err == nil {
@@ -54,7 +54,7 @@ func TestBranchTipReturnsHeadSHA(t *testing.T) {
 func TestRestoreWorktreeChecksOutRef(t *testing.T) {
 	repo := initGitRepo(t)
 	gitAt(t, repo, "checkout", "-q", "-b", "feature")
-	if err := RestoreWorktree(context.Background(), repo, "main"); err != nil {
+	if _, err := RestoreWorktree(context.Background(), repo, "main"); err != nil {
 		t.Fatalf("RestoreWorktree: %v", err)
 	}
 	if got := gitOut(t, repo, "rev-parse", "--abbrev-ref", "HEAD"); got != "main" {
@@ -113,6 +113,12 @@ func TestRepoProbes(t *testing.T) {
 	if _, err := OriginURL(context.Background(), plain); !errors.Is(err, ErrRepoUnusable) {
 		t.Fatalf("无 origin 应返回 ErrRepoUnusable，实得 %v", err)
 	}
+	if u, ok := ProbeOriginURL(context.Background(), plain); ok || u != "" {
+		t.Fatalf("无 origin 时 ProbeOriginURL 应 fail-open 返回 (\"\",false)，实得 (%q,%v)", u, ok)
+	}
+	if u, ok := ProbeOriginURL(context.Background(), clone); !ok || u != origin {
+		t.Fatalf("ProbeOriginURL=%q ok=%v，期望 %q", u, ok, origin)
+	}
 
 	sub := filepath.Join(clone, "sub")
 	if err := os.MkdirAll(sub, 0o755); err != nil {
@@ -149,10 +155,10 @@ func TestRemoveWorktreeForceDiscardsDirty(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(wt, "dirty.txt"), []byte("x\n"), 0o644); err != nil {
 		t.Fatalf("写脏文件: %v", err)
 	}
-	if err := RemoveWorktree(context.Background(), repo, wt, false); err == nil {
+	if _, err := RemoveWorktree(context.Background(), repo, wt, false); err == nil {
 		t.Fatalf("脏树不带 force 必须拒绝")
 	}
-	if err := RemoveWorktree(context.Background(), repo, wt, true); err != nil {
+	if _, err := RemoveWorktree(context.Background(), repo, wt, true); err != nil {
 		t.Fatalf("force 删除: %v", err)
 	}
 	entries, err := ListWorktrees(context.Background(), repo)

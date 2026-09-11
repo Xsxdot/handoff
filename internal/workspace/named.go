@@ -15,26 +15,28 @@ import (
 // DeleteBranch 删除本地分支 refs/heads/<branch>（git branch -D）。
 //
 // 参数：ctx 控制本次 git 调用；repo 主仓库路径；branch 分支名。
-// 返回：失败时返回包装 stderr 原文的错误（是否吞掉由调用方按补偿语义决定）。
+// 返回：git stderr 原文（成功为空串）与错误；调用方需要逐字段还原迁移前的
+// 日志/文案时按 CloneRepo 同款约定自取 stderr。
 //
 // 注意：只删分支，不删工作树；force 语义（-D）沿用原补偿路径：补偿只删本次
 // 自建且自创建以来零提交的分支，调用方已先复核，故此处固定 -D。
-func DeleteBranch(ctx context.Context, repo, branch string) error {
+func DeleteBranch(ctx context.Context, repo, branch string) (string, error) {
 	if _, stderr, err := gitRun(ctx, repo, "branch", "-D", branch); err != nil {
-		return fmt.Errorf("git branch -D %s: %s: %w", branch, strings.TrimSpace(stderr), err)
+		return stderr, fmt.Errorf("git branch -D %s: %s: %w", branch, strings.TrimSpace(stderr), err)
 	}
-	return nil
+	return "", nil
 }
 
 // RestoreWorktree 把非 managed 工作树切回原 ref（git checkout <ref>）。
 //
 // 参数：ctx 控制本次 git 调用；workdir 工作树路径；ref 原 ref（分支名或 sha）。
-// 返回：失败时返回包装 stderr 原文的错误。
-func RestoreWorktree(ctx context.Context, workdir, ref string) error {
+// 返回：git stderr 原文（成功为空串）与错误；调用方需要逐字段还原迁移前的
+// 日志/文案时按 CloneRepo 同款约定自取 stderr。
+func RestoreWorktree(ctx context.Context, workdir, ref string) (string, error) {
 	if _, stderr, err := gitRun(ctx, workdir, "checkout", ref); err != nil {
-		return fmt.Errorf("git -C %s checkout %s: %s: %w", workdir, ref, strings.TrimSpace(stderr), err)
+		return stderr, fmt.Errorf("git -C %s checkout %s: %s: %w", workdir, ref, strings.TrimSpace(stderr), err)
 	}
-	return nil
+	return "", nil
 }
 
 // OriginURL 读取仓库 origin 地址（git remote get-url origin）。
@@ -54,6 +56,26 @@ func OriginURL(ctx context.Context, repo string) (string, error) {
 		return "", fmt.Errorf("%w: 仓库 %s 没有配置 origin remote", ErrRepoUnusable, repo)
 	}
 	return url, nil
+}
+
+// ProbeOriginURL 探活仓库 origin 地址（预览元数据专用，fail-open）。
+//
+// 参数：ctx 控制本次 git 调用；repo 仓库路径。
+// 返回：origin 地址与是否命中；没有 origin 或仓库不可用时返回 ("", false)，
+// 走 gitProbe 口径（未命中记 Debug 不记 Error），与 TopLevel/HeadBranch 一致。
+//
+// 注意：登记路径必须用 OriginURL——那里「没有 origin」要拒绝登记，语义相反，
+// 不得用本探针替代。
+func ProbeOriginURL(ctx context.Context, repo string) (string, bool) {
+	out, _, err := gitProbe(ctx, repo, "remote", "get-url", "origin")
+	if err != nil {
+		return "", false
+	}
+	val := strings.TrimSpace(out)
+	if val == "" {
+		return "", false
+	}
+	return val, true
 }
 
 // CloneRepo 在 parentDir 下克隆 originURL 到 dest。

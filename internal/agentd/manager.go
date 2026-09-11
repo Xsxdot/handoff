@@ -1383,9 +1383,10 @@ func (m *Manager) compensateWorkspace(ctx context.Context, taskID string, repo s
 				"manual", "git -C "+ws.WorkDir+" checkout <你原来的分支>")
 			return
 		}
-		if err := workspace.RestoreWorktree(ctx, ws.WorkDir, ws.PrevRef); err != nil {
+		if stderr, err := workspace.RestoreWorktree(ctx, ws.WorkDir, ws.PrevRef); err != nil {
 			m.log.Error("补偿切回原 ref 失败，工作树仍停在任务分支上",
-				"workdir", ws.WorkDir, "prev_ref", ws.PrevRef, "cause", err)
+				"workdir", ws.WorkDir, "prev_ref", ws.PrevRef,
+				"stderr", truncateRunes(stderr, 300), "cause", err)
 			return
 		}
 		m.log.Info("补偿已切回原 ref", "workdir", ws.WorkDir, "prev_ref", ws.PrevRef)
@@ -1468,8 +1469,9 @@ func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws works
 	m.log.Info("补偿删除本次新建的分支", "repo", repo, "branch", ws.Branch, "tip", ws.NewBranchTip)
 	// 用 -D 而非 -d：分支起点可能领先仓库当前 HEAD，-d 会因「未合并」误拒；
 	// 而「自创建以来零提交」已由上面的尖端复核实证，-D 在这里是确定性而非暴力
-	if err := workspace.DeleteBranch(ctx, repo, ws.Branch); err != nil {
-		m.log.Error("补偿删除分支失败", "repo", repo, "branch", ws.Branch, "cause", err)
+	if stderr, err := workspace.DeleteBranch(ctx, repo, ws.Branch); err != nil {
+		m.log.Error("补偿删除分支失败", "repo", repo, "branch", ws.Branch,
+			"stderr", truncateRunes(stderr, 300), "cause", err)
 		return
 	}
 	m.log.Info("补偿删除分支完成", "repo", repo, "branch", ws.Branch)
