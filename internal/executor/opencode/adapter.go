@@ -795,6 +795,20 @@ func (r *runState) takeTurnRejected() []string {
 	return rejected
 }
 
+// deliveryFailureHasTicket 判定一次终态决定背后是否有可恢复的持久工单。
+// 免审 AutoAllow 由审批 client 直接返回且不建工单（B249），失败不产
+// delivery_failed（冻结 #11）。adapter 不得 import permgate，只按既有
+// ApprovalDecision.Rule/Status 判：
+//   - deny 一定来自有工单的裁决（人工/审批者/升级）
+//   - allow 只有 approver / reuse 有工单；safe-command / self-command 以及
+//     范围内的自动放行（Rule 为空）都无工单
+func deliveryFailureHasTicket(dec executor.ApprovalDecision) bool {
+	if dec.Status == executor.ApprovalDeny {
+		return true
+	}
+	return dec.Rule == "approver" || dec.Rule == "reuse"
+}
+
 // reportDeliveryFailure 将“审批已形成但原生回传失败”交给既有注入对象。
 //
 // 参数：r 为当前任务运行态；permID 为原生权限身份；cause 为真实回传错误。
@@ -836,6 +850,8 @@ func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEven
 		if rejectErr := a.RespondPermission(ctx, r.taskID, ev.PermissionID, "reject", "审批失败"); rejectErr != nil {
 			a.log.Error("Authorize 失败后的 reject 回传失败", "task", r.taskID,
 				"perm", ev.PermissionID, "cause", rejectErr)
+			// Authorize 失败后的 reject 不属于 #11 闸门：这是审批未形成时的
+			// 拒绝回传，保持既有上报语义。
 			a.reportDeliveryFailure(ctx, r, ev.PermissionID, rejectErr)
 		} else {
 			a.log.Info("Authorize 失败后的 reject 已回传", "task", r.taskID, "perm", ev.PermissionID)
@@ -850,7 +866,12 @@ func (a *Adapter) authorizeNativePermission(r *runState, ev executor.AdapterEven
 	_ = r.approval.Acknowledge(ctx, executor.ApprovalAck{Ref: ref, NativeID: ev.PermissionID, Stage: executor.AckFormed})
 	if err := a.RespondPermission(ctx, r.taskID, ev.PermissionID, decision, reason); err != nil {
 		a.log.Error("RespondPermission 失败", "task", r.taskID, "perm", ev.PermissionID, "cause", err)
-		a.reportDeliveryFailure(ctx, r, ev.PermissionID, err)
+		if deliveryFailureHasTicket(dec) {
+			a.reportDeliveryFailure(ctx, r, ev.PermissionID, err)
+		} else {
+			a.log.Warn("免审 AutoAllow 回传失败，无工单可恢复，不产 delivery_failed",
+				"task", r.taskID, "perm", ev.PermissionID, "rule", dec.Rule, "cause", err)
+		}
 		return
 	}
 	_ = r.approval.Acknowledge(ctx, executor.ApprovalAck{Ref: ref, NativeID: ev.PermissionID, Stage: executor.AckDelivered})

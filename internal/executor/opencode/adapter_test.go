@@ -1777,6 +1777,7 @@ type fakeApprovalClient struct {
 	reqs     []executor.ApprovalRequest
 	acks     []executor.ApprovalAck
 	failures []deliveryFailure
+	decision executor.ApprovalDecision
 }
 
 type deliveryFailure struct {
@@ -1788,13 +1789,24 @@ type deliveryFailure struct {
 func (f *fakeApprovalClient) PolicySnapshot(context.Context) (executor.PolicySnapshot, error) {
 	return executor.PolicySnapshot{Version: "v1"}, nil
 }
+
+func (f *fakeApprovalClient) setDecision(dec executor.ApprovalDecision) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.decision = dec
+}
+
 func (f *fakeApprovalClient) Request(_ context.Context, req executor.ApprovalRequest) (executor.ApprovalResult, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reqs = append(f.reqs, req)
+	dec := f.decision
+	if dec.Status == "" {
+		dec = executor.ApprovalDecision{Status: executor.ApprovalAllow, Rule: "approver"}
+	}
 	return executor.ApprovalResult{
 		Ref:      executor.ApprovalRef{ID: "ref-1"},
-		Decision: executor.ApprovalDecision{Status: executor.ApprovalAllow},
+		Decision: dec,
 	}, nil
 }
 func (f *fakeApprovalClient) Await(context.Context, executor.ApprovalRef) (executor.ApprovalDecision, error) {
@@ -1888,6 +1900,83 @@ func TestAuthorizeNativePermissionReportsDeliveryFailure(t *testing.T) {
 		if ack.Stage == executor.AckDelivered || ack.Stage == executor.AckExecuted {
 			t.Fatalf("投递失败后不得 AckDelivered/AckExecuted: %+v", acks)
 		}
+	}
+}
+
+func ackStagePresent(acks []executor.ApprovalAck, stage executor.AckStage) bool {
+	for _, ack := range acks {
+		if ack.Stage == stage {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAuthorizeNativePermissionAllowDeliversOnce(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	taskID := "task-permission-allow-once"
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	r := ad.lookup(taskID)
+	approval := &fakeApprovalClient{}
+	approval.setDecision(executor.ApprovalDecision{Status: executor.ApprovalAllow, Rule: "approver"})
+	r.approval = approval
+
+	fs.push(permissionAskedEvent("perm-allow-once", "bash", "echo once"))
+	deadline := time.After(2 * time.Second)
+	for {
+		_, acks, _ := approval.snapshot()
+		if ackStagePresent(acks, executor.AckDelivered) {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("等待 AckDelivered 超时")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	calls := fs.perms()
+	if len(calls) != 1 {
+		t.Fatalf("一次权限请求应恰发 1 次原生应答，实得 %d", len(calls))
+	}
+	if !strings.Contains(calls[0].body, `"response":"once"`) {
+		t.Fatalf("应答体=%q，应含 once", calls[0].body)
+	}
+	_, _, failures := approval.snapshot()
+	if len(failures) != 0 {
+		t.Fatalf("成功路径不得上报投递失败: %+v", failures)
+	}
+}
+
+// 缝 #11：免审 AutoAllow（无工单）回传失败不得上报 NoteDeliveryFailed。
+// 反向变异：去掉 decide 闸门无条件上报 → failures 非空，测试红。
+func TestAuthorizeNativePermissionAutoAllowFailureDoesNotReport(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.failPermissionResponses(http.StatusBadGateway)
+	taskID := "task-permission-autoallow-fail"
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	r := ad.lookup(taskID)
+	approval := &fakeApprovalClient{}
+	approval.setDecision(executor.ApprovalDecision{Status: executor.ApprovalAllow, Rule: "safe-command"})
+	r.approval = approval
+
+	fs.push(permissionAskedEvent("perm-autoallow-fail", "bash", "go test ./..."))
+	deadline := time.After(2 * time.Second)
+	for len(fs.perms()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("等待原生应答尝试超时")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	_, acks, failures := approval.snapshot()
+	if len(failures) != 0 {
+		t.Fatalf("免审 AutoAllow 无工单，失败不得上报 delivery_failed: %+v", failures)
+	}
+	if ackStagePresent(acks, executor.AckDelivered) || ackStagePresent(acks, executor.AckExecuted) {
+		t.Fatalf("投递失败后不得 AckDelivered/AckExecuted: %+v", acks)
 	}
 }
 

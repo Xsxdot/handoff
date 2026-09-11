@@ -556,8 +556,11 @@ func TestApprovalClientApproverAllowCreatesReusableGrantAndSecondRequestReuses(t
 	if tk.Answer == nil || *tk.Answer != "allow" {
 		t.Fatalf("工单 answer 必须严格等于 allow, got %v", tk.Answer)
 	}
-	if tk.DeliveredAt == nil {
-		t.Fatalf("工单 DeliveredAt 必须非空（已送达）")
+	if tk.DeliveredAt != nil {
+		t.Fatalf("Request 返回 allow 时不得已送达（DeliveredAt 必须为空）")
+	}
+	if prior, err := st.FindReusableGrant("T-app-reuse", expectedFP); err != nil || prior != nil {
+		t.Fatalf("未送达 allow 不得被复用: prior=%+v err=%v", prior, err)
 	}
 
 	// 断言事件：有 approver_decision 事件，无 permission_request 事件
@@ -576,6 +579,17 @@ func TestApprovalClientApproverAllowCreatesReusableGrantAndSecondRequestReuses(t
 	}
 	if !hasApproverDecision {
 		t.Fatalf("审批模型放行必须记录 approver_decision 审计事件")
+	}
+
+	// P4：复用前必须显式送达；Request 本身不写 DeliveredAt。
+	if err := c.Acknowledge(context.Background(), executor.ApprovalAck{
+		Ref: res1.Ref, NativeID: req1.NativeID, Stage: executor.AckDelivered,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	delivered, err := st.GetTicket(expectedTicketID)
+	if err != nil || delivered.DeliveredAt == nil {
+		t.Fatalf("AckDelivered 之后必须送达: %+v err=%v", delivered, err)
 	}
 
 	// 第二次同指纹请求（不同 NativeID）
@@ -611,5 +625,48 @@ func TestApprovalClientApproverAllowCreatesReusableGrantAndSecondRequestReuses(t
 	}
 	if !hasReuse {
 		t.Fatalf("第二次请求必须记录 permission_reuse 审计事件")
+	}
+}
+
+// 缝 #16（生产组装侧）：经生产 bindApproval 的 AutoAllow 钩子不得回传原生应答。
+// 生产钩子是 auditAutoAllowOnly；RespondPermission 只能由 adapter 负责。
+// 反向变异：bindApproval 改回 m.autoAllowPermission → recordedPerms 非空，测试红。
+func TestApprovalClientAutoAllowProductionHookDoesNotRespond(t *testing.T) {
+	m, st, _, adapter := newTestManager(t)
+	taskID := "T-auto-prod"
+	work := t.TempDir()
+	now := time.Now().UTC()
+	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: work, WorkDir: work, Executor: "fake",
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now})
+	tmp := executor.TaskTmpDir(m.cfg.DataDir, taskID)
+	command := "go test ./... > " + filepath.Join(tmp, "out")
+	scope := executor.ApprovalScope{
+		Workdir:    work,
+		TaskDir:    taskDirOf(m, taskID),
+		TaskTmpDir: tmp,
+	}
+	c := m.bindApproval(taskID, executor.PolicySnapshot{Version: "v1", TaskID: taskID, Scope: scope})
+	res, err := c.Request(context.Background(), executor.ApprovalRequest{
+		NativeID: "native-auto-prod",
+		Text:     "Bash: " + command,
+		Perm:     &executor.PermRequest{Tool: executor.PermToolBash, Command: command},
+	})
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Decision.Status != executor.ApprovalAllow {
+		t.Fatalf("白名单命令应自动放行，实得 %+v", res.Decision)
+	}
+	if got := adapter.recordedPerms(); len(got) != 0 {
+		t.Fatalf("生产 AutoAllow 钩子不得回传原生应答，实得 %v", got)
+	}
+	if got := countEvents(mustEvents(t, st, taskID), proto.EventTypePermissionAutoAllow); got != 1 {
+		t.Fatalf("自动放行审计事件 = %d，want 1", got)
+	}
+	if _, err := st.GetTicket(taskID + ":native-auto-prod"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("免审不得建工单，err=%v", err)
+	}
+	if got := m.takeAutoAllowed(taskID); got != 1 {
+		t.Fatalf("P3：计数应跟审计走，实得 %d", got)
 	}
 }

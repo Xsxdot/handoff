@@ -47,7 +47,9 @@ func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) exec
 			defer m.apMu.Unlock()
 			delete(m.apFails, id)
 		},
-		AutoAllow:          m.autoAllowPermission,
+		// AutoAllow 只审计、不回传：OpenCode 的原生投递归 adapter（冻结 #3/#16）。
+		// 非 OpenCode 的回传在 handlePermission 的 autoAllowPermission 路径。
+		AutoAllow:          m.auditAutoAllowOnly,
 		TransitBestEffort:  m.transitBestEffort,
 		NoteDeliveryFailed: m.NoteDeliveryFailed,
 	})

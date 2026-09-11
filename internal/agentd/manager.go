@@ -2289,17 +2289,15 @@ type permissionAutoAllowPayload struct {
 	Reason       string   `json:"reason"`
 }
 
-// autoAllowPermission records a safe-command audit when applicable, then
-// responds once to the executor. Audit failure never blocks that response.
+// auditAutoAllowOnly 只写自动放行审计并累计计数，不碰原生连接。
 //
-// 注意：
-//   - 没有工单可失败，因此回传失败**不产 delivery_failed 事件**；最常见的
-//     失败成因是订阅重放（同一权限请求被再次投递，而 executor 侧那次请求
-//     早已应答完毕），按 Warn 记录即可
-//   - adapterFor 失败意味着任务的运行态已经没了，executor 侧那次请求将无人
-//     应答——这是 Error 级，但同样无工单可失败
-
-func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict) {
+// bindApproval 把本函数绑给 approval.Hooks.AutoAllow，供 OpenCode 入站使用：
+// OpenCode 的原生投递只由 adapter 的 authorizeNativePermission 完成一次。
+// 免审无工单（B249），因此这里不产 delivery_failed。
+//
+// 注意：noteAutoAllowed 跟审计走、不跟原生投递走（P3）——OpenCode 不再回传，
+// 计数若留在回传后就会从本段汇总里消失。
+func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict) {
 	m.log.Info("权限请求自动放行", "task", taskID, "perm", ev.PermissionID,
 		"action", verdict.Action.String(), "rule", verdict.Rule, "reason", verdict.Reason)
 	if verdict.Rule == permgate.RuleSafeCommand {
@@ -2332,6 +2330,18 @@ func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent, v
 			}
 		}
 	}
+	m.noteAutoAllowed(taskID)
+}
+
+// autoAllowPermission 是非 OpenCode 权威：审计 + 一次原生回传。
+// 只有 handlePermission 的 AutoAllow 分支调用它（冻结 #14）。
+//
+// 注意：没有工单可失败，因此回传失败不产 delivery_failed 事件；最常见的
+// 失败成因是订阅重放（同一权限请求被再次投递，而 executor 侧那次请求早已
+// 应答完毕），按 Warn 记录即可。adapterFor 失败意味着任务的运行态已没，executor
+// 侧那次请求将无人应答——Error 级，同样无工单可失败。
+func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict) {
+	m.auditAutoAllowOnly(taskID, ev, verdict)
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("自动放行：解析执行者失败，该权限请求将无人应答",
@@ -2345,7 +2355,6 @@ func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent, v
 			"task", taskID, "perm", ev.PermissionID, "cause", err)
 		return
 	}
-	m.noteAutoAllowed(taskID)
 	m.log.Info("自动放行已回传 executor", "task", taskID, "perm", ev.PermissionID)
 }
 

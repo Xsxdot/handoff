@@ -413,34 +413,56 @@ func TestClientConsultAllowPersistsGrant(t *testing.T) {
 		func(context.Context, string, string) approval.ConsultDecision {
 			return approval.ConsultDecision{Approve: true, Reason: "approved by fixture", ElapsedMS: 7}
 		})
-	first, err := client.Request(context.Background(), permissionRequest("native-approver", "python3 script.py"))
+	req := permissionRequest("native-approver", "python3 script.py")
+	first, err := client.Request(context.Background(), req)
 	if err != nil {
 		t.Fatalf("Request: %v", err)
 	}
 	if first.Decision.Status != executor.ApprovalAllow || first.Decision.Rule != "approver" {
 		t.Fatalf("approver allow result=%+v", first.Decision)
 	}
+	fp := executor.ReuseFingerprint("v1", executor.PermFingerprint(executor.AdapterEvent{
+		PermissionID: req.NativeID, Text: req.Text, Perm: req.Perm,
+	}))
 	tk, err := st.GetTicket(first.Ref.ID)
-	if err != nil || tk.Answer == nil || *tk.Answer != "allow" || tk.DeliveredAt == nil {
-		t.Fatalf("approver grant=%+v err=%v", tk, err)
+	if err != nil || tk.Answer == nil || *tk.Answer != "allow" {
+		t.Fatalf("审批者批准必须落 answer=allow 的工单: %+v err=%v", tk, err)
+	}
+	if tk.DeliveredAt != nil {
+		t.Fatalf("Request 返回 allow 时不得已送达（DeliveredAt 必须为空）: %+v", tk)
+	}
+	if prior, err := st.FindReusableGrant("task-client-fixture", fp); err != nil || prior != nil {
+		t.Fatalf("未送达 allow 不得被复用: prior=%+v err=%v", prior, err)
 	}
 	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
 	if err != nil {
 		t.Fatalf("EventsFromAsc: %v", err)
 	}
-	if eventCount(events, proto.EventTypeApproverDecision) != 1 || eventCount(events, proto.EventTypeTicketAnswered) != 1 || eventCount(events, proto.EventTypePermissionRequest) != 0 {
+	if eventCount(events, proto.EventTypeApproverDecision) != 1 ||
+		eventCount(events, proto.EventTypeTicketAnswered) != 1 ||
+		eventCount(events, proto.EventTypePermissionRequest) != 0 {
 		t.Fatalf("approver events=%+v", events)
 	}
 	decision := payloadMap(t, events[0].Payload)
 	if decision["decision"] != "approve" || decision["elapsed_ms"] != float64(7) {
 		t.Fatalf("approver_decision payload=%v", decision)
 	}
+	// 送达确认只在 AckDelivered。
+	if err := client.Acknowledge(context.Background(), executor.ApprovalAck{
+		Ref: first.Ref, NativeID: req.NativeID, Stage: executor.AckDelivered,
+	}); err != nil {
+		t.Fatalf("AckDelivered: %v", err)
+	}
+	tk, err = st.GetTicket(first.Ref.ID)
+	if err != nil || tk.DeliveredAt == nil {
+		t.Fatalf("AckDelivered 之后必须送达: %+v err=%v", tk, err)
+	}
 	second, err := client.Request(context.Background(), permissionRequest("native-approver-2", "python3 script.py"))
 	if err != nil {
 		t.Fatalf("reuse Request: %v", err)
 	}
 	if second.Decision.Status != executor.ApprovalAllow || second.Decision.Rule != "reuse" {
-		t.Fatalf("approved grant not reusable: %+v", second.Decision)
+		t.Fatalf("已送达同指纹应复用: %+v", second.Decision)
 	}
 }
 
