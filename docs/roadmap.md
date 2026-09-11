@@ -121,6 +121,12 @@
 - **工作区域剩余文件的迁包**：B233.15 只搬 git/工作区实现文件（`workspace.go`、`manualworktree.go`、`workspaceprobe.go`、`gitroot.go`、`gitignore.go`、procgroup），下列仍留在 `internal/agentd`，本卡只改它们的调用点：项目登记（`projectadmin.go`，best 已归 `k_agentd_projectIndex`→`d_workspace`）、镜像 bundle（`bundle.go`，已归 `k_agentd_Mirror`）、回收编排（`reclaim.go`）、预览仓主（`preview_owner.go`）。来源：`docs/superpowers/specs/b233.15.md` Out of Scope。
 - **`d_workspace→d_orchestration` 预算清零**：B233.15 把 `k_agentd_Mirror`/`k_agentd_projectIndex` 的消费点同域化后，该方向的两条边应消失；预算与 entries 的收尾（含 `.13` 迁包后的 `d_gateway→d_orchestration`）留 B233.17 一次棘轮到门面。来源：同上；`codegraph/target.json`。
 
+## 来自 B233.15 验收（2026-09-11，DUT `a1b59515`）
+
+- **diff 三连点语义无测试锁定**：`Diff`/`DiffRange` 用 `base...head`（只显示本分支改动），变异成 `base..head` 后 `TestDiffShowsCommits` 仍绿——该用例的 base 分支在分支后没动过，两种点法结果相同。真机取证：base 前进后两连点会把 base 的改动显示成本分支的删除。既有盲区（起点 `bdeda1e9` 同形态），非本卡引入；补一支「base 前进后 diff 不含 base 改动」的用例即可锁死。来源：B233.15 验收变异复验；file `internal/workspace/gitworkspace.go`。
+- **macOS 下 cmd 包既有红**：`TestServePermissionHookDenyWithReasonAndStep0` 在 `t.TempDir()` 下 bind unix socket 报 `invalid argument`（路径长度超限），起点 `bdeda1e9` 同样失败。来源：B233.15 验收复跑。
+- **plan §2.1 冻结签名表陈旧**：修复轮把 `RestoreWorktree`/`DeleteBranch`/`RemoveWorktree` 改为返回 `(stderr, error)` 并新增 `ProbeOriginURL`，plan 签名表未同步。纯文档债，留 finish 文档对齐。来源：B233.15 review-2 minor。
+
 ## 来自 B233.11 spec（2026-09-10）
 
 - **占用记录写入 task/machine owner，再按 owner 回收**：AdmitFrozen→CreateTask 崩溃窗口与本机终态漏释放，不能靠「本机任务表没有 owner」去清共享键。B233.11 只禁止跨机误清。来源：`docs/superpowers/specs/b233.11.md` Out of Scope。
