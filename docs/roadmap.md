@@ -119,7 +119,7 @@
 ## 来自 B233.16 spec（2026-09-11）
 
 - **非执行能力面的消费点收窄**：B233.16 只覆盖「一次任务/卡节点执行闭环」这条缝。仍持聚合 `*client.Client` 且无卡承接的：任务事件镜像（`internal/ledgermirror` 的 `Machines.For`/`Source` 做 `StreamEventsOnce`/`ListTasks`）、PTY（`internal/agentd` 的 coordinator PTY 路径）、预览、回收、项目、机器、会话、升级，以及纯查询命令（`tasks`/`show`/`diff`/`attach`/`frames`/`footprint` 等）。这些面要各自按使用方声明能力接口（如事件流需另立订阅缝），单独定性。来源：`docs/superpowers/specs/b233.16.md` Out of Scope。
-- **其余入传输边的 entries 复核**：`d_cli`/`d_gateway`/`d_ledger` → `d_transport` 三条边由 B233.16 按现实棘轮更新；`d_policy`/`d_maintenance` → `d_transport` 两条边（预算 2/3）不在本卡清单内，留 B233.17 棘轮时逐条复核是否也含执行面消费点。来源：同上；`codegraph/target.json`。
+- **其余入传输边的 entries 复核**：~~`d_cli`/`d_gateway`/`d_ledger` → `d_transport` 三条边由 B233.16 按现实棘轮更新~~（**注**：原表述沿用了 spec 的错误，`d_ledger→d_transport` 在图中**不存在**，见「来自 B233.16 验收」段与 spec 勘误；B233.16 实际只动了 `d_gateway→d_transport` 的 entries）；仍有效的是后半：`d_policy`/`d_maintenance` → `d_transport` 两条边（预算 2/3）不在 B233.16 清单内，留 B233.17 棘轮时逐条复核是否也含执行面消费点。来源：同上；`codegraph/target.json`；B233.16 验收校正。
 
 ## 来自 B233.16 验收（2026-09-12，DUT `3041605d`）
 
@@ -127,6 +127,7 @@
 - **本卡的「行为不变」未在部署环境验证**：B233.16 的生产改动（8 组合接口 + 9 具名入口 + `StepRunner.Clients` 收窄）全在类型/结构层、方法体逐字搬运（contract §2.1.3 逐文件复核），且分支未合入功能线 → agentd 二进制不含本卡代码，真机行为**不可得**。合并部署后应确认：`dispatch`/`card dispatch`/`reply`/`continue`/`stop`/`wait`（三形态）与 `card step` 的 stdout、退出码、HTTP 路径与今日逐字一致。来源：B233.16 breakdown §6；acceptance 判定。
 - **基线 flaky（非本卡引入，待登记观察）**：全量 `go test ./...` 两次跑出的失败集合不稳定——BASE（起点 `4bdd8bcd`）11 条 vs HEAD（`3041605d`）9 条，其中 `TestWakeHomeReadyRequiresTurnOutputNotCredFile`、`TestWakeHomeSuppliesMainCredentialBeforeTurn` 只在 BASE 红（HEAD 绿），另一次 HEAD 跑到 20 条（含 opencode/hostapi 的 permission 族）。判据：**只在 HEAD 红 = 空**（本卡零新增红）；但 flaky 本身值得单独定性（`internal/hostapi`、`internal/executor/opencode`、`internal/agentd` 的 wakehome 族）。来源：B233.16 acceptance 复跑对照。
 - **跨节点事实不继承（流程改进）**：`--deny --reason` 的理由只回到**当前任务**的 executor；每个节点是全新会话，同一事实（如「本机 `codegraph` 在 PATH，勿用 `go run`」）需要在每个节点重复驳回。B233.16 的 plan 与 review 两轮各被驳回一次。要根治需把这类「本机工具链事实」写进**纪律块或项目文档**（跨任务可见）。来源：B233.16 acceptance 观察。
+- **★ 测试必须串行跑（finish 阶段实测的环境判据）**：合并后在本机跑 `go test ./cmd/ ./internal/agentd/ ./internal/ledgerstep/`（**默认并行**）出现**上百条假红**（`TestStopCLIRetainCopy`、`TestStatusJSON`、`TestSquadListRendersTableAndJSON` 等大批本应绿的用例）；改 `-p 1` 串行后红集合立刻回落到与验收基线**逐名一致**的三条存量红。根因：本机 agentd 常驻 + 三包并发争抢同一批资源（HOME/端口/数据目录）。**判据：本仓跑多包测试一律加 `-p 1`**，否则绿红不可信。来源：B233.16 finish 合后全量对照。
 
 ## 来自 B233.15 spec（2026-09-11）
 
