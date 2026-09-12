@@ -17,6 +17,16 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
+// StepClient 是 StepRunner 逐 target 取用的执行消费面：执行动作（嵌入提供方内部
+// 冻结的 client.ExecutionClient）+ 本轮 diff + attach 快照 + 归档。接口定义在使用方
+// （B233.16 契约冻结）；方法集是本编排路径真实调用的并集。
+type StepClient interface {
+	client.ExecutionClient
+	Diff(ctx context.Context, taskID, base string) (string, error)
+	Attach(ctx context.Context, taskID string) (*client.AttachInfo, error)
+	Done(ctx context.Context, taskID, note string) (bool, error)
+}
+
 // StepRunner 节点执行的装配器。依赖全部显式注入，调用方各填各的。
 //
 // 本地仓路径与主线名已随本地合并退役一并删除：合并现在是普通派发节点，
@@ -38,7 +48,7 @@ type StepRunner struct {
 	// why 这里要的是客户端而不是 (addr, token)：relay 形态的机器根本没有 addr，
 	// 拿地址自己 client.New 对它们恒失败（会退化成一个没有 Host 的 URL）。
 	// 选路归调用方的 target client 工厂管；空 target 也是合法的本机身份，本包只消费。
-	Clients func(target string) (*client.Client, error)
+	Clients func(target string) (StepClient, error)
 	// Target 覆盖节点/模板里的目标机；空则用节点覆盖或模板的 target。
 	Target string
 	// Executor/Model 是本次 CLI 节点派发的一次性覆盖；空值表示不覆盖该字段。

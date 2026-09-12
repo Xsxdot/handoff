@@ -44,6 +44,16 @@ import (
 	"github.com/spf13/cobra"
 )
 
+// waitClient 是 handoff wait 子系统的执行消费面：执行动作（嵌入提供方内部冻结的
+// client.ExecutionClient）+ 归档等待 + attach 快照 + 能力位探活。接口定义在使用方
+// （B233.16 契约冻结）；方法集是 waitCmd 各路径真实调用的并集。
+type waitClient interface {
+	client.ExecutionClient
+	WaitArchived(ctx context.Context, taskID string) (*proto.Event, error)
+	Attach(ctx context.Context, taskID string) (*client.AttachInfo, error)
+	Status(ctx context.Context) (*proto.StatusResp, error)
+}
+
 // notifyFlag 为 true 时事件到达同时发 macOS 系统通知（spec §7 风险#4 的兜底）。
 var notifyFlag bool
 
@@ -116,39 +126,48 @@ var waitCmd = &cobra.Command{
 		if followFlag {
 			return runFollow(cmd, taskID, addr, cli)
 		}
-		// ——以下一次性路径与改动前完全一致——
-		ctx := cmd.Context()
-		if waitTimeout > 0 {
-			// 到点 ctx 触发 DeadlineExceeded：WaitEvent 返回 ctx.Err()，
-			// 下方转成带时长的明确报错（区别于事件到达的正常返回）
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, waitTimeout)
-			defer cancel()
-		}
-
-		ev, err := cli.WaitEvent(ctx, taskID, false)
-		if err != nil {
-			if waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
-				slog.Error("wait 超时未等到事件", "task", taskID, "timeout", waitTimeout.String())
-				// 专属退出码：无人值守场景只看得到退出码，「等满了时限」必须
-				// 与「配置/鉴权失败」区分开（前者继续等，后者要立刻告警）
-				return &exitCodeError{code: ExitTimeout,
-					err: fmt.Errorf("wait 超时（%s）未等到事件", waitTimeout)}
-			}
-			return err
-		}
-		if notifyFlag {
-			notifyEvent(ev)
-		}
-		if err := writeEventLine(cmd.OutOrStdout(), ev); err != nil {
-			return err
-		}
-		// 任务结束后把远程任务分支拉到本地（B12）。
-		// 为什么输出走 stderr：wait 的 stdout 是「单行事件 JSON」的契约，
-		// 上层脚本按行解析——往 stdout 多打一行同步说明会直接打断它们
-		autoSyncAfterWait(cmd, cli, addr, ev)
-		return nil
+		return runWaitOnce(cmd, cli, taskID, addr)
 	},
+}
+
+// runWaitOnce 实现 wait 的一次性消费路径：等一个可动作事件、按 --notify 发系统
+// 通知、单行写出事件 JSON，事件为回合终态时自动同步远程分支到本地。
+//
+// 它是「cmd wait 一次性消费点」的具名可注入入口（B233.16 契约冻结，spec 接缝
+// 表第 9 行）——RunE 只负责组装（取 addr / 构造 client / 三形态分派），不内联
+// 跨机调用，最小替身才能替换该跨机动作。
+func runWaitOnce(cmd *cobra.Command, cli waitClient, taskID, addr string) error {
+	ctx := cmd.Context()
+	if waitTimeout > 0 {
+		// 到点 ctx 触发 DeadlineExceeded：WaitEvent 返回 ctx.Err()，
+		// 下方转成带时长的明确报错（区别于事件到达的正常返回）
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, waitTimeout)
+		defer cancel()
+	}
+
+	ev, err := cli.WaitEvent(ctx, taskID, false)
+	if err != nil {
+		if waitTimeout > 0 && errors.Is(err, context.DeadlineExceeded) {
+			slog.Error("wait 超时未等到事件", "task", taskID, "timeout", waitTimeout.String())
+			// 专属退出码：无人值守场景只看得到退出码，「等满了时限」必须
+			// 与「配置/鉴权失败」区分开（前者继续等，后者要立刻告警）
+			return &exitCodeError{code: ExitTimeout,
+				err: fmt.Errorf("wait 超时（%s）未等到事件", waitTimeout)}
+		}
+		return err
+	}
+	if notifyFlag {
+		notifyEvent(ev)
+	}
+	if err := writeEventLine(cmd.OutOrStdout(), ev); err != nil {
+		return err
+	}
+	// 任务结束后把远程任务分支拉到本地（B12）。
+	// 为什么输出走 stderr：wait 的 stdout 是「单行事件 JSON」的契约，
+	// 上层脚本按行解析——往 stdout 多打一行同步说明会直接打断它们
+	autoSyncAfterWait(cmd, cli, addr, ev)
+	return nil
 }
 
 // runUntilDone 实现 B67 依赖门闩：静默等待真实 archived，成功只输出一行事件。
@@ -164,7 +183,7 @@ var waitCmd = &cobra.Command{
 //   - 其他: 依赖 failed / 鉴权 / 任务不存在 / 协议异常（退出 1）
 //
 // 边界：不写审核者 cursor、不自动派发后续任务；等待期间 stdout 恒为空。
-func runUntilDone(cmd *cobra.Command, taskID, addr string, cli *client.Client) error {
+func runUntilDone(cmd *cobra.Command, taskID, addr string, cli waitClient) error {
 	ctx := cmd.Context()
 	if waitTimeout > 0 {
 		var cancel context.CancelFunc
@@ -233,7 +252,7 @@ func writeEventLine(w io.Writer, ev *proto.Event) error {
 // 注意：
 //   - stdout 严格是「每事件一行 JSON」，任何人读信息一律走 stderr——上层
 //     （Monitor）按行解析，多打一行说明就会打断它
-func runFollow(cmd *cobra.Command, taskID, addr string, cli *client.Client) error {
+func runFollow(cmd *cobra.Command, taskID, addr string, cli waitClient) error {
 	// 异步核对 --timeout 与对端 stalltimeout：status 要逐个探活，最坏 10 秒，
 	// 不能让一句告警把开始跟随这件事拖后
 	go warnIfTimeoutBelowStall(cmd.Context(), cli, waitTimeout)
@@ -277,7 +296,7 @@ func runFollow(cmd *cobra.Command, taskID, addr string, cli *client.Client) erro
 // 注意：
 //   - 全部失败路径静默（Debug）：这是锦上添花的提醒，取不到对端状态不该影响跟随
 //   - 单独设 15 秒时限：status 端要逐个探活，不能挂在这里
-func warnIfTimeoutBelowStall(ctx context.Context, cli *client.Client, idle time.Duration) {
+func warnIfTimeoutBelowStall(ctx context.Context, cli waitClient, idle time.Duration) {
 	if idle <= 0 {
 		return
 	}
@@ -331,7 +350,7 @@ func idleTimeoutWarning(idle, stall time.Duration) string {
 //   - 全部失败路径只打印到 stderr、绝不改变 wait 的退出码：wait 的唯一职责是
 //     唤醒协调者，把同步做成阻塞条件等于让「ssh 临时不通」变成「收不到完成通知」
 //   - 失败（含回合失败）也同步：失败恰恰是最需要把代码拉到本地翻的时候
-func autoSyncAfterWait(cmd *cobra.Command, cli *client.Client, addr string, ev *proto.Event) {
+func autoSyncAfterWait(cmd *cobra.Command, cli waitClient, addr string, ev *proto.Event) {
 	if waitNoSync || ev == nil {
 		return
 	}
