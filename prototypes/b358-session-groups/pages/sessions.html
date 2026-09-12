@@ -157,7 +157,7 @@
       </div>
     </div>
     <div class="dock">
-      <a class="dock-btn" href="sessions.html" title="会话" aria-current="page">◱</a>
+      <a class="dock-btn" style="background:var(--muted);color:var(--foreground)" href="sessions.html" title="会话（家）" aria-current="page">◱<span class="badge dock-badge">2</span></a>
       <a class="dock-btn" href="board.html" title="工作项">▤<span class="badge dock-badge">2</span></a>
       <a class="dock-btn" href="flow.html" title="运转流程图（设计文档）">◇</a>
       <a class="dock-btn" href="settings.html" title="设置">⚙</a>
@@ -166,13 +166,7 @@
   </aside>
 
   <div class="main">
-    <div class="breadcrumb">本机 / handoff / cards/B233.1-charter-7</div>
-    <div class="tabbar">
-      <button class="tab active" aria-current="page">会话</button>
-      <button class="tab">终端 1</button>
-      <button class="tab">README.md</button>
-    </div>
-
+    <!-- 一等公民页面：不占工作台的 tab 条、不挂面包屑、不带右栏文件树（同工作项页 pages/board.html） -->
     <main class="content">
       <!-- ============ 左：会话列表（家） ============ -->
       <div class="sx-list">
@@ -358,14 +352,6 @@
       </div>
     </main>
   </div>
-
-  <aside class="filetree">
-    <div class="ft-head">文件</div>
-    <div class="ft-item">cmd/</div>
-    <div class="ft-item">internal/</div>
-    <div class="ft-item">web/</div>
-    <div class="ft-item">README.md</div>
-  </aside>
 </div>
 
 <script>

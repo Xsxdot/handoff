@@ -38,6 +38,7 @@
 - 载体流程按 `prototyping-in-brainstorm`：fork 自 `prototypes/base/`；IM 视觉语言取自 `b275-frontend-proto/`（base 未回流 B275，故不重复造视觉）。走查要点 W1–W6 见副本 README。
 - 用户走查定稿（原话「我觉得可以，就这么定吧」）→ spec 头部状态回写为**已批准**；副本确认状态登记进 `prototypes/base/README.md`（置「确认中」，回流在 finish）。
 - 入库决定（用户：「至于 git，随卡入库吧」）：`git add -f prototypes/b358-session-groups`；**不复制** `data/`（1.7MB codegraph 演示数据）与 `pages/codegraph.html`。
+- 形态追加裁决（同日，见卡上对话与 `pages/sessions.html` 修订）：① **会话页是一等公民页面，不是工作台 tab**——不占 tab 条、不挂面包屑、不带右栏文件树，整块中央区归它（与工作项页同构）；理由是 tab 条语义是「我现在在干的几件事」（可多开/可关/可分屏），而家必须位置稳定，且会话跨卡跨机器、不合 tab 的「项目位置 × 工作树」绑定。② **左栏保留项目树**（全局导航），会话列表为中央区第一栏；未选「会话列表接管左栏」与「左栏可折叠」两个备选。
 
 ## 五、与既有文档的关系
 
