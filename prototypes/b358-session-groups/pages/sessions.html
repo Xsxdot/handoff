@@ -1,0 +1,467 @@
+<!doctype html>
+<!--
+  会话面（B358）—— 房间锚点从卡翻转到会话后的产品形态原型。
+  三态：会话列表（家）/ 群聊 / 会话详情，右侧两态在 content 内切换。
+  形态来自 B275 的 IM 变体 B（磨砂玻璃气泡、微信行式列表、琥珀 needs），
+  被翻转的是底下的锚点：会话 = 工作单元，卡是会话里的工作项。
+
+  原型注解（.anno，灰底虚线圈）只用于走查，说明时序与投递语义，不进真实产品。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 控制台 · 会话</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  /* display:flex 会盖掉 UA 的 [hidden]{display:none}——本页大量用 hidden 切态，
+     统一用一条 !important 规则兜住（同 base 里 .tui[hidden] 的教训） */
+  [hidden] { display: none !important; }
+
+  .content { display: flex; min-height: 0; }
+
+  /* ---------- 左：会话列表（家） ---------- */
+  .sx-list {
+    width: 300px; flex-shrink: 0; display: flex; flex-direction: column;
+    min-height: 0; border-right: 1px solid var(--border); background: var(--background);
+  }
+  .sx-list-head { display: flex; align-items: center; gap: 8px; padding: 12px 14px 8px; }
+  .sx-list-title { font-weight: 600; font-size: 15px; flex: 1; }
+  .sx-filters { display: flex; align-items: center; gap: 2px; padding: 0 10px 8px; border-bottom: 1px solid var(--border); }
+  .sx-filter { display: inline-flex; align-items: center; gap: 5px; padding: 3px 8px; border: none; border-radius: 6px; background: none; font-size: 12.5px; color: var(--foreground); cursor: pointer; line-height: 1.5; }
+  .sx-filter:hover { background: var(--muted); }
+  .sx-filter.on { color: var(--amber); font-weight: 600; background: #fffbeb; }
+  .sx-filter select { appearance: none; -webkit-appearance: none; border: none; background: transparent; font: inherit; color: inherit; cursor: pointer; padding: 0; outline: none; }
+  .sx-filter .caret { font-size: 10px; color: var(--muted-foreground); }
+  .sx-filter .fcnt { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; background: #fef3c7; color: var(--amber); font-size: 10.5px; font-weight: 600; display: inline-flex; align-items: center; justify-content: center; }
+  .sx-filter.on .fcnt { background: var(--amber); color: #fff; }
+  .sx-list-body { flex: 1; overflow-y: auto; }
+
+  .conv { display: flex; gap: 12px; padding: 11px 0 0 14px; cursor: pointer; }
+  .conv:hover { background: #f5f5f5; }
+  .conv.needs { background: #fffbeb; }
+  .conv.needs:hover { background: #fef3c7; }
+  .conv.active { background: #f0f0f0; }
+  .conv-body { flex: 1; min-width: 0; padding: 1px 14px 11px 0; border-bottom: 1px solid #f0f0f0; }
+  .conv:last-child .conv-body { border-bottom: none; }
+  .conv-avatar { position: relative; width: 44px; height: 44px; border-radius: 6px; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: 600; flex-shrink: 0; }
+  .conv-avatar .abadge { position: absolute; top: -5px; right: -6px; min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; background: #fa5151; color: #fff; font-size: 10px; font-weight: 600; display: flex; align-items: center; justify-content: center; box-shadow: 0 0 0 2px #fff; }
+  .conv.needs .conv-avatar .abadge { box-shadow: 0 0 0 2px #fffbeb; }
+  .conv-top { display: flex; align-items: baseline; gap: 8px; }
+  .conv-name { font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conv.unread .conv-name { font-weight: 600; }
+  .conv-time { font-size: 11px; color: var(--muted-foreground); flex-shrink: 0; margin-left: auto; }
+  .conv-preview { font-size: 12.5px; color: var(--muted-foreground); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conv-tag { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 999px; background: #fef3c7; color: var(--amber); border: 1px solid #fde68a; vertical-align: 1px; }
+
+  /* ---------- 右：会话（群聊 / 详情） ---------- */
+  .sx-main { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+  .sx-head { display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .sx-head .name { font-weight: 600; font-size: 14px; }
+  .sx-head .owner { font-size: 11.5px; color: var(--muted-foreground); }
+  .sx-head .spacer { flex: 1; }
+  .sx-members { display: flex; align-items: center; }
+  .sx-members .mv { width: 22px; height: 22px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 10px; font-weight: 600; margin-left: -6px; box-shadow: 0 0 0 2px #fff; }
+  .sx-members .mv:first-child { margin-left: 0; }
+
+  /* 本会话的卡：横向 chips；空座卡显式提示没人推 */
+  .sx-cards { display: flex; align-items: center; gap: 6px; padding: 7px 12px; border-bottom: 1px solid var(--border); background: var(--sidebar); overflow-x: auto; }
+  .sx-card { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--background); font-size: 12px; white-space: nowrap; }
+  .sx-card b { font-weight: 600; font-family: var(--font-mono); }
+  .sx-card .st { color: var(--muted-foreground); font-size: 11px; }
+  .sx-card .seat { font-size: 10.5px; color: var(--muted-foreground); }
+  .sx-card.empty { border-style: dashed; }
+  .sx-card.empty .seat { color: var(--amber); }
+
+  .sx-msgs { flex: 1; overflow-y: auto; padding: 16px 18px; display: flex; flex-direction: column; gap: 14px; background: #fafafa; }
+
+  .mrow { display: flex; gap: 9px; align-items: flex-start; }
+  .mrow.right { justify-content: flex-end; }
+  .mav { width: 36px; height: 36px; border-radius: 50%; background: rgba(255,255,255,.7); border: 1px solid rgba(255,255,255,.8); display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+  .mcol { max-width: 74%; min-width: 0; }
+  .mwho { font-size: 11.5px; color: var(--muted-foreground); margin: 0 0 3px 2px; display: flex; align-items: center; gap: 6px; }
+  .mwho .role { font-size: 10.5px; padding: 0 5px; border-radius: 999px; background: var(--muted); color: var(--muted-foreground); }
+  .mbubble { padding: 9px 12px; border-radius: 12px; font-size: 13.5px; line-height: 1.6; background: rgba(255,255,255,.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border: 1px solid rgba(255,255,255,.8); box-shadow: 0 4px 16px rgba(15,23,42,.05); }
+  .mrow.left .mbubble { border-top-left-radius: 4px; }
+  .mrow.right .mbubble { border-top-right-radius: 4px; }
+  .mbubble.user { background: rgba(17,24,39,.85); border-color: transparent; color: #f9fafb; }
+  .mbubble .at { color: var(--amber); font-weight: 600; }
+  .mbubble.user .at { color: #fde68a; }
+  /* 回复：引用条贴在气泡上方，点它跳原消息（原型里是静态锚） */
+  .quote { display: flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--muted-foreground); padding: 3px 8px; border-left: 2px solid var(--border); background: rgba(0,0,0,.02); border-radius: 0 4px 4px 0; margin-bottom: -4px; }
+  .mrow.right .quote { justify-content: flex-end; border-left: none; border-right: 2px solid var(--border); border-radius: 4px 0 0 4px; }
+
+  /* 原型注解：走查用，不进真实产品 */
+  .anno { margin: 2px 0 0 2px; padding: 5px 9px; font-size: 11.5px; line-height: 1.6; color: #6b7280; background: #f9fafb; border: 1px dashed #e5e7eb; border-radius: 6px; }
+  .anno b { color: #374151; font-weight: 600; }
+  .anno code { font-family: var(--font-mono); font-size: 11px; background: #eef2f7; padding: 1px 4px; border-radius: 3px; }
+
+  .sx-input { border-top: 1px solid var(--border); background: var(--background); padding: 10px 12px; }
+  .sx-input .row { display: flex; gap: 8px; align-items: flex-end; }
+  .sx-input textarea { flex: 1; border-radius: 14px; resize: none; height: 40px; padding: 10px 14px; }
+  .sx-input .hint { font-size: 11.5px; color: var(--muted-foreground); margin-top: 6px; padding-left: 2px; }
+
+  /* ---------- 详情态 ---------- */
+  .sx-detail { flex: 1; overflow-y: auto; padding: 14px 18px; background: #fafafa; }
+  .dsec { margin-bottom: 16px; }
+  .dtitle { font-size: 12px; font-weight: 600; color: var(--muted-foreground); margin: 0 2px 6px; }
+  .glass { border: 1px solid rgba(255,255,255,.8); border-radius: 12px; background: rgba(255,255,255,.65); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); box-shadow: 0 4px 16px rgba(15,23,42,.05); }
+  .mrow2 { display: flex; align-items: center; gap: 10px; padding: 10px 12px; border-bottom: 1px solid rgba(0,0,0,.05); }
+  .mrow2:last-child { border-bottom: none; }
+  .mrow2 .mav2 { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; flex-shrink: 0; }
+  .mrow2 .mname { font-size: 13px; font-weight: 500; }
+  .mrow2 .mmeta { font-size: 11.5px; color: var(--muted-foreground); margin-top: 1px; }
+  .mrow2 .spacer { flex: 1; }
+  .dot-s { width: 7px; height: 7px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .dot-s.work { background: var(--amber); animation: pulse 1.2s infinite; }
+  .dot-s.listen { background: var(--green); }
+  .dot-s.idle { background: #d4d4d4; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .stt { font-size: 11.5px; color: var(--muted-foreground); display: inline-flex; align-items: center; gap: 5px; }
+
+  .tl { padding: 8px 12px; }
+  .tl-row { display: flex; gap: 10px; padding: 6px 0; font-size: 12.5px; }
+  .tl-time { font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); width: 46px; flex-shrink: 0; padding-top: 1px; }
+  .tl-body { flex: 1; min-width: 0; }
+  .tl-body .sub { color: var(--muted-foreground); font-size: 11.5px; }
+  .node-row { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-bottom: 1px solid rgba(0,0,0,.05); font-size: 12.5px; }
+  .node-row:last-child { border-bottom: none; }
+  .node-row .k { font-family: var(--font-mono); font-size: 11.5px; }
+  .node-row .spacer { flex: 1; }
+
+  .proto-note { margin: 10px 12px 0; padding: 9px 12px; border: 1px dashed #d8d8d8; border-radius: 8px; background: #fffdf5; font-size: 12px; color: #7c6f52; line-height: 1.65; }
+  .proto-note b { color: #5b4a1f; }
+</style>
+</head>
+<body>
+<div class="app-shell">
+  <aside class="sidebar">
+    <div class="brand"><span>handoff</span><button class="icon-btn" title="显示偏好">☰</button></div>
+    <div class="tree-search">
+      <input class="input sm" placeholder="搜索项目、机器或任务">
+      <kbd class="kbd">⌘K</kbd>
+    </div>
+    <div class="tree">
+      <div class="tree-group">
+        <div class="tree-label machine-row"><span>本机</span>
+          <span class="row-actions"><button class="icon-btn xs" title="新建工作树">＋</button><button class="icon-btn xs" title="更多">⋯</button></span>
+        </div>
+        <a class="tree-item">handoff</a>
+        <a class="tree-item selected">└ cards/B233.1-charter-7</a>
+      </div>
+      <div class="tree-group">
+        <div class="tree-label machine-row"><span>linux-01</span>
+          <span class="row-actions"><button class="icon-btn xs" title="新建工作树">＋</button><button class="icon-btn xs" title="更多">⋯</button></span>
+        </div>
+        <a class="tree-item">handoff</a>
+      </div>
+    </div>
+    <div class="dock">
+      <a class="dock-btn" href="sessions.html" title="会话" aria-current="page">◱</a>
+      <a class="dock-btn" href="board.html" title="工作项">▤<span class="badge dock-badge">2</span></a>
+      <a class="dock-btn" href="flow.html" title="运转流程图（设计文档）">◇</a>
+      <a class="dock-btn" href="settings.html" title="设置">⚙</a>
+      <button class="dock-btn" title="home 基准终端">▭</button>
+    </div>
+  </aside>
+
+  <div class="main">
+    <div class="breadcrumb">本机 / handoff / cards/B233.1-charter-7</div>
+    <div class="tabbar">
+      <button class="tab active" aria-current="page">会话</button>
+      <button class="tab">终端 1</button>
+      <button class="tab">README.md</button>
+    </div>
+
+    <main class="content">
+      <!-- ============ 左：会话列表（家） ============ -->
+      <div class="sx-list">
+        <div class="sx-list-head">
+          <span class="sx-list-title">会话</span>
+          <button class="btn sm">＋ 新建会话</button>
+        </div>
+        <div class="sx-filters">
+          <label class="sx-filter" title="按项目筛选">
+            ▦
+            <select><option>全部项目</option><option>handoff</option><option>benchmarking</option></select>
+            <span class="caret">∨</span>
+          </label>
+          <span class="sep" style="width:1px;height:14px;background:var(--border);margin:0 4px"></span>
+          <button class="sx-filter" id="fNeeds" title="只看需要你的会话">⚑ 需要你 <span class="fcnt" id="needsCnt">2</span></button>
+        </div>
+        <div class="sx-list-body" id="convList">
+          <!-- 会话行由 JS 渲染（mock 数据见页尾） -->
+        </div>
+      </div>
+
+      <!-- ============ 右：会话 ============ -->
+      <div class="sx-main">
+        <!-- 群聊态 -->
+        <div id="viewChat" style="flex:1;min-height:0;display:flex;flex-direction:column">
+          <div class="sx-head">
+            <span class="name" id="chatName">架构物理化（B233.1–B233.17）</span>
+            <span class="owner" id="chatOwner">群主：Claude 桌面端</span>
+            <span class="spacer"></span>
+            <div class="sx-members" id="chatMembers"></div>
+            <button class="btn sm" id="pullCard">＋ 拉卡进群</button>
+            <button class="icon-btn" id="toDetail" title="会话详情（成员 / 任务节点 / timeline）">⋯</button>
+          </div>
+
+          <!-- 本会话的卡：卡是工作项，进群不等于有人推 -->
+          <div class="sx-cards" id="chatCards"></div>
+
+          <div class="sx-msgs" id="msgs">
+            <div class="mrow right">
+              <div class="mcol">
+                <div class="mwho" style="justify-content:flex-end">我 <span class="role">董事长</span></div>
+                <div class="mbubble user">B233 这刀太大，14 / 16 / 17 三张卡分开推，谁推哪张说清楚。</div>
+                <div class="anno">无寻址发言 → <b>不唤醒任何人</b>，成员只看到未读红点。</div>
+              </div>
+              <div class="mav" style="background:#fde68a">我</div>
+            </div>
+
+            <div class="mrow left">
+              <div class="mav" style="background:#dbeafe">CL</div>
+              <div class="mcol">
+                <div class="mwho">Claude 桌面端 <span class="role">主 agent</span></div>
+                <div class="quote">↩ 我：B233 这刀太大，14 / 16 / 17 三张卡分开推…</div>
+                <div class="mbubble">收到。14 的封界归 opencode·muse，16 的消费面归 grok·spark，17 先不配人——等 14 的接口冻结再叫机器人。</div>
+                <div class="anno">回复 = <b>隐式 @ 原作者</b> → 只唤醒「我」一个人；群里其他人只有未读。</div>
+              </div>
+            </div>
+
+            <div class="mrow left">
+              <div class="mav" style="background:#dcfce7">14</div>
+              <div class="mcol">
+                <div class="mwho">B233.14 协调者 <span class="role">opencode · muse</span></div>
+                <div class="mbubble">填补级，我直接落账：<code>executionSurfaceViolations</code> 的 <code>current</code> 变量跨函数不重置，白名单函数之后的包级用法会被放行。我在扫描里加了花括号深度跟踪，方案写进 detail 段。</div>
+                <div class="anno">填补级（spec 未覆盖的实现选择）→ <b>自己拍，一个 @ 都不发</b>。这正是「主 agent 不被每个动作叫醒」的实现方式。</div>
+              </div>
+            </div>
+
+            <div class="mrow right">
+              <div class="mcol">
+                <div class="mwho" style="justify-content:flex-end">我 <span class="role">董事长</span></div>
+                <div class="mbubble user"><span class="at">@B233.16</span> 守卫的收口归你；别在 14 的分支上顺手改，会撞。</div>
+                <div class="anno">显式 @ → 只唤醒 <b>B233.16 的当前席位</b>（@ 卡号，不 @ 人，换绑后依然对）。</div>
+              </div>
+              <div class="mav" style="background:#fde68a">我</div>
+            </div>
+
+            <div class="mrow left">
+              <div class="mav" style="background:#ede9fe">16</div>
+              <div class="mcol">
+                <div class="mwho">B233.16 协调者 <span class="role">grok · spark</span></div>
+                <div class="quote">↩ 我：@B233.16 守卫的收口归你…</div>
+                <div class="mbubble">收到，我在自己的分支上加守卫，14 的 diff 不碰。跑完把证据挂到卡上。</div>
+              </div>
+            </div>
+
+            <div class="mrow left">
+              <div class="mav" style="background:#fce7f3">17</div>
+              <div class="mcol">
+                <div class="mwho">B233.17 协调者 <span class="role">opencode · muse</span></div>
+                <div class="mbubble"><span class="at">@Claude 桌面端</span> 【推翻级】组装点收窄：spec 写的是 handler 退出 assembly，但 <code>internal/agentd/codegraph.go</code> 也是组装点，退出后编译不过。<br>· 商定 vs 实测：spec §4.2「组装点只剩 server.go」↔ 实测 5 处引用<br>· 影响半径：本卡 3 个文件，不动 14/16 的分支<br>· 选项：A 保留 codegraph.go 为第二组装点 / B 收进 server.go 并改 spec 勘误<br>· 推荐：<b>B</b>，停在这里等你裁。</div>
+                <div class="anno">推翻级 → <b>@ 主 agent</b>（不是叫人）。停下来等裁决，不推进下一节点。</div>
+              </div>
+            </div>
+
+            <div class="mrow left">
+              <div class="mav" style="background:#dbeafe">CL</div>
+              <div class="mcol">
+                <div class="mwho">Claude 桌面端 <span class="role">主 agent</span></div>
+                <div class="quote">↩ B233.17 协调者：【推翻级】组装点收窄…</div>
+                <div class="mbubble">按 B 做，但把「codegraph.go 同为组装点」写进 spec 勘误，别只口头。<span class="at">@我</span> 这条改的是当初商定的接缝，要你拍。</div>
+                <div class="anno">主 agent 判不了（要动 spec 商定）→ <b>@ 人</b>。升级链：协调者 → 主 agent → 人。</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="sx-input">
+            <div class="row">
+              <textarea class="input" placeholder="发消息…（输入 @ 选成员；回复某条消息 = 只叫醒他）"></textarea>
+              <button class="btn primary">发送</button>
+            </div>
+            <div class="hint">要谁办就 @ 谁；没 @ 的发言只入未读，不唤醒任何人。</div>
+          </div>
+        </div>
+
+        <!-- 详情态：结构与状态 -->
+        <div id="viewDetail" hidden style="flex:1;min-height:0;display:flex;flex-direction:column">
+          <div class="sx-head">
+            <button class="icon-btn" id="backChat" title="返回群聊">←</button>
+            <span class="name">会话详情</span>
+            <span class="owner">架构物理化（B233.1–B233.17）</span>
+            <span class="spacer"></span>
+          </div>
+          <div class="sx-detail">
+            <div class="dsec">
+              <div class="dtitle">成员</div>
+              <div class="glass">
+                <div class="mrow2">
+                  <div class="mav2" style="background:#fde68a">我</div>
+                  <div><div class="mname">我 <span class="role" style="font-size:10.5px;padding:0 5px;border-radius:999px;background:var(--muted);color:var(--muted-foreground)">群主</span></div><div class="mmeta">人 · 在浏览器里</div></div>
+                  <span class="spacer"></span>
+                  <span class="stt"><i class="dot-s listen"></i>在线</span>
+                </div>
+                <div class="mrow2">
+                  <div class="mav2" style="background:#dbeafe">CL</div>
+                  <div><div class="mname">Claude 桌面端</div><div class="mmeta">主 agent · 外部会话</div></div>
+                  <span class="spacer"></span>
+                  <span class="stt"><i class="dot-s idle"></i>最后活跃 3 分钟前</span>
+                </div>
+                <div class="mrow2">
+                  <div class="mav2" style="background:#dcfce7">14</div>
+                  <div><div class="mname">B233.14 协调者</div><div class="mmeta">opencode · muse@本机 · 席位来源：叫机器人</div></div>
+                  <span class="spacer"></span>
+                  <span class="stt"><i class="dot-s work"></i>工作中（implement 第 2 轮，12:31 起）</span>
+                </div>
+                <div class="mrow2">
+                  <div class="mav2" style="background:#ede9fe">16</div>
+                  <div><div class="mname">B233.16 协调者</div><div class="mmeta">grok · spark@mac-02 · 席位来源：叫机器人</div></div>
+                  <span class="spacer"></span>
+                  <span class="stt"><i class="dot-s listen"></i>监听中</span>
+                </div>
+                <div class="mrow2">
+                  <div class="mav2" style="background:var(--muted)">17</div>
+                  <div><div class="mname">（B233.17 无人推）</div><div class="mmeta">席位空座 · 卡在群里，还没配人</div></div>
+                  <span class="spacer"></span>
+                  <span class="stt"><i class="dot-s idle"></i>空座</span>
+                </div>
+              </div>
+              <div class="anno">成员状态只报<b>可证实的</b>：能续租的报精确态（工作中/监听中），外部会话只报「最后活跃」——不报在线，因为它随时可能被关掉（今天 <code>RoomSummary.Live</code> 恒 false 就是这个洞）。</div>
+            </div>
+
+            <div class="dsec">
+              <div class="dtitle">协调者派发的任务节点</div>
+              <div class="glass">
+                <div class="node-row"><span class="k">B233.14</span><span class="st">implement · 第 2 轮</span><span class="spacer"></span><span class="stt"><i class="dot-s work"></i>running · opencode@本机</span></div>
+                <div class="node-row"><span class="k">B233.16</span><span class="st">review · 第 1 轮</span><span class="spacer"></span><span class="stt"><i class="dot-s listen"></i>waiting_review · grok@mac-02</span></div>
+                <div class="node-row"><span class="k">B233.13</span><span class="st">finish</span><span class="spacer"></span><span class="stt"><i class="dot-s idle"></i>已完成 · 12:12 收口</span></div>
+              </div>
+            </div>
+
+            <div class="dsec">
+              <div class="dtitle">会话 timeline（结构事件）</div>
+              <div class="glass tl">
+                <div class="tl-row"><span class="tl-time">09:12</span><span class="tl-body">卡 <b>B233.14</b> 进群 <span class="sub">· 由 Claude 桌面端</span></span></div>
+                <div class="tl-row"><span class="tl-time">09:40</span><span class="tl-body">叫机器人：<b>B233.14</b> ← opencode·muse <span class="sub">· 席位来源=叫机器人</span></span></div>
+                <div class="tl-row"><span class="tl-time">10:05</span><span class="tl-body">卡 <b>B233.16</b> 进群 <span class="sub">· 由 Claude 桌面端</span></span></div>
+                <div class="tl-row"><span class="tl-time">10:06</span><span class="tl-body">换绑：<b>B233.16</b> ← grok·spark <span class="sub">· 原 opencode·muse 已剥权</span></span></div>
+                <div class="tl-row"><span class="tl-time">11:58</span><span class="tl-body">B233.17 <b>needs_human</b> 亮起 <span class="sub">· 组装点冲突，等裁决</span></span></div>
+                <div class="tl-row"><span class="tl-time">12:04</span><span class="tl-body">主 agent @ 我 <span class="sub">· 升级到董事长</span></span></div>
+              </div>
+              <div class="anno">结构事件<b>不进群聊流</b>：群聊面只放人话，进度与结构在详情页可查可对质。</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+
+  <aside class="filetree">
+    <div class="ft-head">文件</div>
+    <div class="ft-item">cmd/</div>
+    <div class="ft-item">internal/</div>
+    <div class="ft-item">web/</div>
+    <div class="ft-item">README.md</div>
+  </aside>
+</div>
+
+<script>
+// 原型不连后端：全部数据是页面内 mock 常量。
+const convs = [
+  {
+    id: 'arch', name: '架构物理化（B233.1–B233.17）', avatar: 'B233', bg: '#dbeafe',
+    owner: '群主：Claude 桌面端', unread: 3, needs: true, time: '12:04',
+    preview: 'B233.17：组装点收窄这条要你拍',
+    members: [['我', '#fde68a'], ['CL', '#dbeafe'], ['14', '#dcfce7'], ['16', '#ede9fe'], ['17', '#fce7f3']],
+    cards: [
+      { id: 'B233.14', title: '编制入站封界', st: '进行中', seat: 'opencode·muse', empty: false },
+      { id: 'B233.16', title: '跨机执行消费面', st: '待审', seat: 'grok·spark', empty: false },
+      { id: 'B233.17', title: '组装点收窄', st: '待办', seat: '空座 · 还没配人', empty: true },
+    ],
+  },
+  {
+    id: 'desk', name: '桌面端体验', avatar: 'B320', bg: '#fee2e2',
+    owner: '群主：我', unread: 1, needs: true, time: '11:20',
+    preview: 'B320：main 缺 min-w-0，已推分支待审',
+    members: [['我', '#fde68a'], ['32', '#fee2e2']],
+    cards: [{ id: 'B320', title: '工作项页滚动带动整页', st: '待审', seat: 'opencode·muse', empty: false }],
+  },
+  {
+    id: 'cross', name: '跨机执行面（B233.9）', avatar: 'B233.9', bg: '#dcfce7',
+    owner: '群主：Claude 桌面端', unread: 0, needs: false, time: '昨天',
+    preview: '主 agent：relay 联通未验，已记 roadmap',
+    members: [['CL', '#dbeafe'], ['9', '#dcfce7']],
+    cards: [{ id: 'B233.9', title: '隔离实例跨机真机', st: '进行中', seat: 'opencode·muse', empty: false }],
+  },
+  {
+    id: 'bench', name: 'benchmarking', avatar: 'B93', bg: '#f3e8ff',
+    owner: '群主：我', unread: 0, needs: false, time: '周一',
+    preview: 'B93：全量回归通过（18 包）',
+    members: [['我', '#fde68a'], ['93', '#f3e8ff']],
+    cards: [{ id: 'B93', title: '基准评测 opencode-qwen', st: '已完成', seat: 'opencode·qwen', empty: false }],
+  },
+];
+
+let current = 'arch';
+let needsOnly = false;
+
+const listEl = document.getElementById('convList');
+
+function renderList() {
+  const rows = convs.filter(c => !needsOnly || c.needs);
+  listEl.innerHTML = rows.map(c => `
+    <div class="conv ${c.unread ? 'unread' : ''} ${c.needs ? 'needs' : ''} ${c.id === current ? 'active' : ''}" data-id="${c.id}">
+      <div class="conv-avatar" style="background:${c.bg}">${c.avatar}${c.unread ? `<span class="abadge">${c.unread}</span>` : ''}</div>
+      <div class="conv-body">
+        <div class="conv-top">
+          <span class="conv-name">${c.name}</span>
+          <span class="conv-time">${c.time}</span>
+        </div>
+        <div class="conv-preview">${c.needs ? '<span class="conv-tag">需要你</span> ' : ''}${c.preview}</div>
+      </div>
+    </div>`).join('');
+  listEl.querySelectorAll('.conv').forEach(el => {
+    el.addEventListener('click', () => { current = el.dataset.id; renderList(); renderChat(); });
+  });
+}
+
+function renderChat() {
+  const c = convs.find(x => x.id === current);
+  document.getElementById('chatName').textContent = c.name;
+  document.getElementById('chatOwner').textContent = c.owner;
+  document.getElementById('chatMembers').innerHTML =
+    c.members.map(([t, bg]) => `<span class="mv" style="background:${bg}">${t}</span>`).join('');
+  document.getElementById('chatCards').innerHTML =
+    c.cards.map(k => `<span class="sx-card ${k.empty ? 'empty' : ''}"><b>${k.id}</b><span class="st">${k.st}</span><span class="seat">${k.seat}</span></span>`).join('');
+
+  // 本原型只详画了第一个会话的群聊；其余会话给一句说明，避免假装有内容
+  const msgs = document.getElementById('msgs');
+  if (c.id !== 'arch') {
+    msgs.innerHTML = `<div class="proto-note">本原型只详画「架构物理化（B233.1–B233.17）」的群聊与详情；
+      其余会话仅演示列表行的形态（未读、<b>需要你</b>标签、群主、预览）。</div>`;
+  }
+}
+
+document.getElementById('fNeeds').addEventListener('click', (e) => {
+  needsOnly = !needsOnly;
+  e.currentTarget.classList.toggle('on', needsOnly);
+  renderList();
+});
+
+document.getElementById('toDetail').addEventListener('click', () => {
+  document.getElementById('viewChat').hidden = true;
+  document.getElementById('viewDetail').hidden = false;
+});
+document.getElementById('backChat').addEventListener('click', () => {
+  document.getElementById('viewDetail').hidden = true;
+  document.getElementById('viewChat').hidden = false;
+});
+
+renderList();
+renderChat();
+</script>
+</body>
+</html>
