@@ -43,6 +43,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace/internal/gitproc"
 )
 
 // 错误定义：
@@ -1980,7 +1981,7 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 		return "", -1, fmt.Errorf("%w（managed worktree 可能已被 done/stop 回收）: %s",
 			ErrWorkdirGone, repo)
 	}
-	sh, serr := runShell()
+	sh, serr := gitproc.RunShell()
 	if serr != nil {
 		log().Error("run 命令的 shell 解析失败", "repo", repo, "cause", serr)
 		return "", -1, serr
@@ -1988,7 +1989,7 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 	cmd := exec.CommandContext(ctx, sh, "-c", cmdline)
 	cmd.Dir = repo
 	// 命令设为独立进程组组长：超时/取消时按组回收，孙进程不留孤儿（见 workspace_procgroup_unix.go）
-	setProcGroup(cmd)
+	gitproc.SetProcGroup(cmd)
 	// stdout/stderr 指向同一个有界回收器：与 CombinedOutput 相同的合并语义
 	// （os/exec 对相同 writer 走单管道），但存储上限 maxRunOutput，超出排空
 	out := runOutputBuffer{limit: maxRunOutput}
@@ -2025,7 +2026,7 @@ func RunCmd(ctx context.Context, repo, cmdline string) (stdout string, exitCode 
 				return
 			default:
 				// Wait 尚未返回：组内仍有成员持有输出管道，按组回收
-				killProcGroup(cmd.Process.Pid)
+				gitproc.KillProcGroup(cmd.Process.Pid)
 			}
 		case <-cmdDone:
 			// 进程已回收：无论 ctx 是否取消都不再补杀（见上方 why）

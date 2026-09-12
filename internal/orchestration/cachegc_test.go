@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/orchestration/internal/cacheplan"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/workspace"
 )
@@ -27,42 +28,42 @@ import (
 func TestCacheID8AndLeaves(t *testing.T) {
 	data := "/data"
 	id := "137a7dc9-df89-4c1c-891e-ebe106c68b37"
-	if got, want := cacheID8(id), "137a7dc9"; got != want {
+	if got, want := cacheplan.ID8(id), "137a7dc9"; got != want {
 		t.Fatalf("cacheID8 = %q want %q", got, want)
 	}
-	if got, want := cacheID8("T1"), "T1"; got != want {
+	if got, want := cacheplan.ID8("T1"), "T1"; got != want {
 		t.Fatalf("short cacheID8 = %q want %q", got, want)
 	}
-	if got, want := cacheActiveLeaf(data, id), executor.TaskTmpDir(data, id); got != want {
+	if got, want := cacheplan.ActiveLeaf(data, id), executor.TaskTmpDir(data, id); got != want {
 		t.Fatalf("active = %q want %q", got, want)
 	}
-	if got, want := cacheLegacyLeaf(data, id), filepath.Join(data, "tasks", id, "tmp"); got != want {
+	if got, want := cacheplan.LegacyLeaf(data, id), filepath.Join(data, "tasks", id, "tmp"); got != want {
 		t.Fatalf("legacy = %q want %q", got, want)
 	}
-	if got, want := cacheTmpRoot(data), filepath.Join(data, "tmp"); got != want {
+	if got, want := cacheplan.TmpRoot(data), filepath.Join(data, "tmp"); got != want {
 		t.Fatalf("root = %q want %q", got, want)
 	}
 }
 
 func TestCacheTmpRootGuard(t *testing.T) {
 	data := "/opt/handoff"
-	if !isCacheTmpRoot(data, cacheActiveLeaf(data, "")) {
+	if !cacheplan.IsTmpRoot(data, cacheplan.ActiveLeaf(data, "")) {
 		t.Fatal("空 taskID 的活动叶子必须判为 tmp 根")
 	}
-	if !isCacheTmpRoot(data, filepath.Join(data, "tmp", ".")) {
+	if !cacheplan.IsTmpRoot(data, filepath.Join(data, "tmp", ".")) {
 		t.Fatal("Clean 后的 tmp/. 必须判为 tmp 根")
 	}
-	dotdot := cacheLegacyLeaf(data, "..")
-	if !isCacheTmpRoot(data, dotdot) {
+	dotdot := cacheplan.LegacyLeaf(data, "..")
+	if !cacheplan.IsTmpRoot(data, dotdot) {
 		t.Fatalf("taskID=.. 的遗留叶子 %q 必须判为 tmp 根", dotdot)
 	}
 	id := "abcd1234-xxxx"
-	plans := planTaskCacheLeaves(data, "", nil)
+	plans := cacheplan.PlanTaskCacheLeaves(data, "", nil)
 	if len(plans) == 0 || !plans[0].Skip || plans[0].Note == "" {
 		t.Fatalf("空 ID 必须 skip 并带原因，实得 %+v", plans)
 	}
-	for _, p := range planTaskCacheLeaves(data, id, nil) {
-		if isCacheTmpRoot(data, p.Path) && !p.Skip {
+	for _, p := range cacheplan.PlanTaskCacheLeaves(data, id, nil) {
+		if cacheplan.IsTmpRoot(data, p.Path) && !p.Skip {
 			t.Fatalf("根路径不得进入可删计划：%+v", p)
 		}
 	}
@@ -76,16 +77,16 @@ func TestActiveLeafOccupied(t *testing.T) {
 	unrelated := proto.Task{ID: "cafebabe-0000-4000-8000-eeeeeeeeeeee", State: proto.TaskStateRunning}
 	selfRow := proto.Task{ID: self, State: proto.TaskStateCompleted}
 
-	if activeLeafOccupied([]proto.Task{selfRow, otherDone, unrelated}, self) {
+	if cacheplan.ActiveLeafOccupied([]proto.Task{selfRow, otherDone, unrelated}, self) {
 		t.Fatal("终态同号与无关短号不得占用")
 	}
-	if !activeLeafOccupied([]proto.Task{selfRow, otherRun}, self) {
+	if !cacheplan.ActiveLeafOccupied([]proto.Task{selfRow, otherRun}, self) {
 		t.Fatal("其他 running 同 id8 必须占用")
 	}
-	if !activeLeafOccupied([]proto.Task{selfRow, otherReview}, self) {
+	if !cacheplan.ActiveLeafOccupied([]proto.Task{selfRow, otherReview}, self) {
 		t.Fatal("其他 waiting_review 同 id8 必须占用（非终态）")
 	}
-	if activeLeafOccupied([]proto.Task{selfRow}, self) {
+	if cacheplan.ActiveLeafOccupied([]proto.Task{selfRow}, self) {
 		t.Fatal("自己不得算占用者")
 	}
 }
@@ -105,14 +106,14 @@ func TestSumRegularFileBytesIgnoresDirSymlinkAndNonRegular(t *testing.T) {
 	if err := os.Symlink(filepath.Join(root, "a.txt"), filepath.Join(root, "linkfile")); err != nil {
 		t.Fatal(err)
 	}
-	n, err := sumRegularFileBytes(root)
+	n, err := cacheplan.SumRegularFileBytes(root)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if n != 4 {
 		t.Fatalf("只计普通文件 a.txt 的 4 字节，不得跟随 symlink，实得 %d", n)
 	}
-	missing, err := sumRegularFileBytes(filepath.Join(root, "nope"))
+	missing, err := cacheplan.SumRegularFileBytes(filepath.Join(root, "nope"))
 	if err != nil || missing != 0 {
 		t.Fatalf("缺失目录应 0,nil，实得 %d %v", missing, err)
 	}
@@ -295,7 +296,7 @@ func TestCompensatePurgesCacheWhenWorktreeRemoveFails(t *testing.T) {
 
 func TestPurgeRefusesTmpRootEvenIfCalledDirectly(t *testing.T) {
 	m, _, _, _ := newTestManager(t)
-	root := cacheTmpRoot(m.cfg.DataDir)
+	root := cacheplan.TmpRoot(m.cfg.DataDir)
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
 	}

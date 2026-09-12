@@ -1,4 +1,4 @@
-// runshell.go —— handoff run 的 shell 解析。
+// runshell.go —— handoff run 的 shell 解析（B233.17 从 workspace 公开包迁入嵌套 internal）。
 //
 // 职责：为 RunCmd 选出执行 `-c <cmdline>` 的 shell 可执行文件路径。
 //
@@ -6,17 +6,19 @@
 //   - 只做解析，不执行、不拼参数（那是 RunCmd 的事）
 //   - 不做 shell 方言转换：本文件的全部意义就是让协调者写的 unix 风格命令
 //     在两个平台上是同一句话
-package workspace
+//   - **无跨域消费者**：只被 workspace 公开包的 RunCmd 消费，故可进嵌套
+package gitproc
 
 import (
 	"fmt"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 )
 
-// runShellCandidates 返回本平台上 sh 的已知安装位置（绝对路径，按优先级）。
+// RunShellCandidates 返回本平台上 sh 的已知安装位置（绝对路径，按优先级）。
 //
 // 参数：goos 取 runtime.GOOS；抽成参数是为了让 Windows 分支在 mac/linux 上测得到。
 //
@@ -25,7 +27,7 @@ import (
 // 为什么必须有兜底：Git for Windows 的默认安装只把 Git\cmd 加进 PATH，而 sh.exe
 // 住在 Git\bin，**默认不在 PATH 上**（真机实测）。只靠 LookPath 会在绝大多数正常
 // 安装的机器上失败。这与 internal/pathenv 的「已知安装目录兜底」是同一个模式。
-func runShellCandidates(goos string) []string {
+func RunShellCandidates(goos string) []string {
 	if goos != "windows" {
 		return nil
 	}
@@ -60,7 +62,7 @@ func dedupStrings(in []string) []string {
 	return out
 }
 
-// resolveRunShell 解析 run 命令要用的 shell。
+// ResolveRunShell 解析 run 命令要用的 shell。
 //
 // 参数：
 //   - goos: 平台标识（生产路径传 runtime.GOOS）
@@ -74,33 +76,33 @@ func dedupStrings(in []string) []string {
 // 为什么找不到时**硬失败**而不是降级到 cmd 或 PowerShell：那会让协调者写的
 // unix 风格命令（管道、$(…)、&&）以难以理解的方式半跑，排障成本远高于一条
 // 明确的「请装 Git for Windows」。
-func resolveRunShell(goos string, lookPath func(string) (string, error), stat func(string) error) (string, error) {
+func ResolveRunShell(goos string, lookPath func(string) (string, error), stat func(string) error) (string, error) {
 	if goos != "windows" {
 		return "sh", nil
 	}
 	if p, err := lookPath("sh"); err == nil && p != "" {
-		log().Info("run 的 shell 解析自 PATH", "sh", p)
+		slog.Default().Info("run 的 shell 解析自 PATH", "sh", p)
 		return p, nil
 	}
-	cands := runShellCandidates(goos)
+	cands := RunShellCandidates(goos)
 	for _, c := range cands {
 		if err := stat(c); err == nil {
-			log().Info("run 的 shell 解析自已知安装目录", "sh", c)
+			slog.Default().Info("run 的 shell 解析自已知安装目录", "sh", c)
 			return c, nil
 		}
 	}
-	log().Error("找不到 sh，run 命令无法执行", "candidates", cands)
+	slog.Default().Error("找不到 sh，run 命令无法执行", "candidates", cands)
 	return "", fmt.Errorf("找不到 sh：请在本机安装完整的 Git for Windows"+
 		"（MinGit 不带 sh），已查找 PATH 与 %v", cands)
 }
 
-// statFile 是 resolveRunShell 的生产存在性判据。
+// statFile 是 ResolveRunShell 的生产存在性判据。
 func statFile(p string) error {
 	_, err := os.Stat(p)
 	return err
 }
 
-// runShell 是 RunCmd 的调用入口，把生产依赖接上。
-func runShell() (string, error) {
-	return resolveRunShell(runtime.GOOS, exec.LookPath, statFile)
+// RunShell 是 RunCmd 的调用入口，把生产依赖接上。
+func RunShell() (string, error) {
+	return ResolveRunShell(runtime.GOOS, exec.LookPath, statFile)
 }

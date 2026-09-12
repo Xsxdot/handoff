@@ -16,11 +16,13 @@ import (
 	"syscall"
 	"testing"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/workspace/internal/gitproc"
 )
 
 // TestRunCmdKillsProcessGroupOnTimeout 验证超时按进程组回收：
 // sh -c 拉起的后台 sleep（孙进程）在 RunCmd 超时后必须被一并杀掉。
-// 同时用计数包装断言 killProcGroup 恰好调用 1 次——既不能漏杀（孙进程
+// 同时用计数包装断言 gitproc.KillProcGroup 恰好调用 1 次——既不能漏杀（孙进程
 // 存活），也不能多杀（对已回收 pid 重复发信号即 P0-3 的误杀形态）。
 func TestRunCmdKillsProcessGroupOnTimeout(t *testing.T) {
 	orig := RunCmdTimeout
@@ -28,9 +30,9 @@ func TestRunCmdKillsProcessGroupOnTimeout(t *testing.T) {
 	defer func() { RunCmdTimeout = orig }()
 
 	var kills atomic.Int32
-	origKill := killProcGroup
-	killProcGroup = func(pid int) { kills.Add(1); origKill(pid) }
-	defer func() { killProcGroup = origKill }()
+	origKill := gitproc.KillProcGroup
+	gitproc.KillProcGroup = func(pid int) { kills.Add(1); origKill(pid) }
+	defer func() { gitproc.KillProcGroup = origKill }()
 
 	repo := initGitRepo(t)
 	pidFile := filepath.Join(t.TempDir(), "grandchild.pid")
@@ -43,7 +45,7 @@ func TestRunCmdKillsProcessGroupOnTimeout(t *testing.T) {
 		t.Fatalf("超时命令应返回错误且 code=124, got code=%d err=%v", code, err)
 	}
 	if got := kills.Load(); got != 1 {
-		t.Fatalf("超时路径 killProcGroup 应恰好调用 1 次, got %d", got)
+		t.Fatalf("超时路径 gitproc.KillProcGroup 应恰好调用 1 次, got %d", got)
 	}
 	b, rerr := os.ReadFile(pidFile)
 	if rerr != nil {
@@ -78,9 +80,9 @@ func TestRunCmdNoKillOnNormalExit(t *testing.T) {
 	defer runtime.GOMAXPROCS(origMax)
 
 	var kills atomic.Int32
-	origKill := killProcGroup
-	killProcGroup = func(pid int) { kills.Add(1); origKill(pid) }
-	defer func() { killProcGroup = origKill }()
+	origKill := gitproc.KillProcGroup
+	gitproc.KillProcGroup = func(pid int) { kills.Add(1); origKill(pid) }
+	defer func() { gitproc.KillProcGroup = origKill }()
 
 	repo := initGitRepo(t)
 	for i := 0; i < 20; i++ {
@@ -93,6 +95,6 @@ func TestRunCmdNoKillOnNormalExit(t *testing.T) {
 	runtime.Gosched()
 	time.Sleep(200 * time.Millisecond)
 	if got := kills.Load(); got != 0 {
-		t.Fatalf("正常退出命令不应触发 killProcGroup（对已回收 pid 发 SIGKILL）, 调用 %d 次", got)
+		t.Fatalf("正常退出命令不应触发 gitproc.KillProcGroup（对已回收 pid 发 SIGKILL）, 调用 %d 次", got)
 	}
 }

@@ -3,7 +3,7 @@
 // 职责：验证不同平台的 sh 解析顺序、Git for Windows 已知安装目录兜底与明确失败。
 //
 // 边界：只测试解析逻辑，不启动 shell 或执行用户命令；Windows 运行期仍待真机验证。
-package workspace
+package gitproc
 
 import (
 	"errors"
@@ -14,7 +14,7 @@ import (
 
 // TestResolveRunShellUnix 钉住非 Windows 平台行为不变：就是 sh。
 func TestResolveRunShellUnix(t *testing.T) {
-	got, err := resolveRunShell("darwin",
+	got, err := ResolveRunShell("darwin",
 		func(string) (string, error) { return "/bin/sh", nil },
 		func(string) error { return nil })
 	if err != nil || got != "sh" {
@@ -24,7 +24,7 @@ func TestResolveRunShellUnix(t *testing.T) {
 
 // TestResolveRunShellWindowsPrefersPath 钉住 PATH 优先。
 func TestResolveRunShellWindowsPrefersPath(t *testing.T) {
-	got, err := resolveRunShell("windows",
+	got, err := ResolveRunShell("windows",
 		func(name string) (string, error) {
 			if name == "sh" {
 				return `C:\somewhere\sh.exe`, nil
@@ -43,7 +43,7 @@ func TestResolveRunShellWindowsPrefersPath(t *testing.T) {
 // sh.exe 所在的 Git\bin 不在 PATH 上（真机实测）。
 func TestResolveRunShellWindowsFallsBackToKnownDir(t *testing.T) {
 	want := `C:\Program Files\Git\bin\sh.exe`
-	got, err := resolveRunShell("windows",
+	got, err := ResolveRunShell("windows",
 		func(string) (string, error) { return "", exec.ErrNotFound },
 		func(p string) error {
 			if p == want {
@@ -58,7 +58,7 @@ func TestResolveRunShellWindowsFallsBackToKnownDir(t *testing.T) {
 
 // TestResolveRunShellWindowsAllMissing 钉住「全落空要给可行动的话」。
 func TestResolveRunShellWindowsAllMissing(t *testing.T) {
-	_, err := resolveRunShell("windows",
+	_, err := ResolveRunShell("windows",
 		func(string) (string, error) { return "", exec.ErrNotFound },
 		func(string) error { return errors.New("不存在") })
 	if err == nil {
@@ -71,11 +71,11 @@ func TestResolveRunShellWindowsAllMissing(t *testing.T) {
 
 // TestRunShellCandidatesOrder 钉住候选顺序：默认安装位置在前。
 func TestRunShellCandidatesOrder(t *testing.T) {
-	got := runShellCandidates("windows")
+	got := RunShellCandidates("windows")
 	if len(got) == 0 || got[0] != `C:\Program Files\Git\bin\sh.exe` {
 		t.Fatalf("首选应是 64 位默认安装位置：got=%v", got)
 	}
-	if len(runShellCandidates("darwin")) != 0 {
+	if len(RunShellCandidates("darwin")) != 0 {
 		t.Fatal("非 Windows 不应有候选目录")
 	}
 }

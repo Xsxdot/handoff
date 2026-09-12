@@ -17,6 +17,7 @@ import (
 	"path/filepath"
 
 	agentd "github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/orchestration/internal/cacheplan"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/workspace"
 )
@@ -75,14 +76,14 @@ func (m *Manager) GC(ctx context.Context, force, execute bool) (resp *proto.GCRe
 			continue
 		}
 		resp.Scanned++
-		for _, leaf := range planTaskCacheLeaves(m.cfg.DataDir, t.ID, tasks) {
+		for _, leaf := range cacheplan.PlanTaskCacheLeaves(m.cfg.DataDir, t.ID, tasks) {
 			key := filepath.Clean(leaf.Path)
 			if _, ok := seen[key]; ok {
 				continue
 			}
 			seen[key] = struct{}{}
 			row := proto.GCCacheRow{TaskID: t.ID, Path: leaf.Path}
-			if leaf.Skip || isCacheTmpRoot(m.cfg.DataDir, leaf.Path) {
+			if leaf.Skip || cacheplan.IsTmpRoot(m.cfg.DataDir, leaf.Path) {
 				row.Status = proto.GCItemSkipped
 				row.Error = leaf.Note
 				if row.Error == "" {
@@ -94,7 +95,7 @@ func (m *Manager) GC(ctx context.Context, force, execute bool) (resp *proto.GCRe
 				resp.CacheRows = append(resp.CacheRows, row)
 				continue
 			}
-			n, werr := sumRegularFileBytes(leaf.Path)
+			n, werr := cacheplan.SumRegularFileBytes(leaf.Path)
 			if werr != nil {
 				if m.log != nil {
 					m.log.Error("gc 统计缓存字节失败", "task", t.ID, "path", leaf.Path, "cause", werr)
