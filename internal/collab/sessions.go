@@ -86,7 +86,7 @@ func (s *Service) SessionDetail(id string) (proto.SessionDetail, error) {
 	detail := proto.SessionDetail{
 		Summary:  s.summarizeSession(session, byCard, events, needs),
 		Nodes:    sessionNodes(session, byCard, events),
-		Timeline: sessionTimeline(events, session.ID, byCard),
+		Timeline: sessionTimeline(events, session),
 	}
 	return detail, nil
 }
@@ -292,7 +292,14 @@ func sessionNodes(session proto.Session, byCard map[string]proto.Card, events []
 				Node     *string `json:"node"`
 				TaskType string  `json:"task_type"`
 			}
-			if err := json.Unmarshal(ev.Payload, &envelope); err != nil || envelope.Node == nil {
+			if err := json.Unmarshal(ev.Payload, &envelope); err != nil {
+				log().Warn("task_mirrored 载荷不可解析，节点投影跳过该行",
+					"seq", ev.Seq, "card", ev.CardID, "cause", err)
+				continue
+			}
+			if envelope.Node == nil {
+				log().Warn("task_mirrored 载荷缺 node 字段，节点投影跳过该行",
+					"seq", ev.Seq, "card", ev.CardID)
 				continue
 			}
 			out = append(out, proto.SessionNode{
@@ -303,36 +310,110 @@ func sessionNodes(session proto.Session, byCard map[string]proto.Card, events []
 	return out
 }
 
-// sessionTimeline 投影会话 timeline：入群/移出/归档结构事件 + 席位变更。
-func sessionTimeline(events []proto.LedgerEvent, sessionID string, byCard map[string]proto.Card) []proto.SessionTimelineEvent {
+// structEventFields 解析结构事件载荷为键值表；解析失败留日志并返回 nil，
+// 调用方跳过该行（缺陷族 2：静默跳过只许丢一行，不吞整段 timeline）。
+func structEventFields(ev proto.LedgerEvent) map[string]any {
+	var fields map[string]any
+	if err := json.Unmarshal(ev.Payload, &fields); err != nil {
+		log().Warn("会话结构事件载荷不可解析，timeline 跳过该行",
+			"seq", ev.Seq, "type", ev.Type, "cause", err)
+		return nil
+	}
+	return fields
+}
+
+// sessionTimeline 投影会话 timeline：结构事实（建群/归档/进群/移出）+
+// 席位变更（换绑）。归属判据（契约 §9「仅当事件所属卡在该会话内时归入」的
+// 全族应用，B358.2 修复 breakdown 发现 A）：
+//   - 无卡结构事件：载荷归属键（created 是 id——与 ledger 写面
+//     map{"id",...} 同形；其余是 session）等于本会话 id 才归入；
+//   - 卡事件：仅当 ev.CardID ∈ 本会话当前 Cards 才归入。判定按当前成员——
+//     卡移出后其历史行不再出现在本会话 timeline（契约 §9 字面）。
+//
+// Ticket 0 偏差：driver_takeover 曾用全量卡表判归属（任何卡的换绑落进每场
+// 会话）、created 曾查错载荷键（session vs id，过滤恒空）、joined/left 曾无
+// 判定——三处同族一并修复，反例见 TestSessionTimelineBelongsToOneSession。
+func sessionTimeline(events []proto.LedgerEvent, session proto.Session) []proto.SessionTimelineEvent {
+	inSession := make(map[string]bool, len(session.Cards))
+	for _, cardID := range session.Cards {
+		inSession[cardID] = true
+	}
 	out := []proto.SessionTimelineEvent{}
 	for _, ev := range events {
 		kind := ""
 		cardID := ""
 		detail := ""
 		switch ev.Type {
-		case "session_card_joined":
-			kind, cardID = proto.SessionEventCardJoined, payloadString(ev.Payload, "card")
-		case "session_card_left":
-			kind, cardID = proto.SessionEventCardLeft, payloadString(ev.Payload, "card")
-		case "session_archived":
-			kind = proto.SessionEventArchived
 		case "session_created":
+			fields := structEventFields(ev)
+			if fields == nil || fields["id"] != session.ID {
+				continue
+			}
 			kind = proto.SessionEventCreated
+		case "session_archived":
+			fields := structEventFields(ev)
+			if fields == nil || fields["session"] != session.ID {
+				continue
+			}
+			kind = proto.SessionEventArchived
+		case "session_card_joined":
+			fields := structEventFields(ev)
+			if fields == nil || fields["session"] != session.ID {
+				continue
+			}
+			card, _ := fields["card"].(string)
+			kind, cardID = proto.SessionEventCardJoined, card
+		case "session_card_left":
+			fields := structEventFields(ev)
+			if fields == nil || fields["session"] != session.ID {
+				continue
+			}
+			card, _ := fields["card"].(string)
+			kind, cardID = proto.SessionEventCardLeft, card
 		case "driver_takeover":
-			// 席位变更：仅当事件所属卡在该会话内时归入本 timeline。
-			cardID = ev.CardID
-			if _, ok := byCard[cardID]; !ok {
+			// 席位变更：仅当事件所属卡在该会话内时归入本 timeline（契约 §9）。
+			// detail 原样透传 {from,to} 载荷——可对质，不做二次解释（缺陷族 6）。
+			if !inSession[ev.CardID] {
 				continue
 			}
-			kind, detail = proto.SessionEventSeatRebound, string(ev.Payload)
+			kind, cardID, detail = proto.SessionEventSeatRebound, ev.CardID, string(ev.Payload)
+		case "driver_seat_bound":
+			// R2（契约 §4.7 条 54）：EvDriverSeatBound 是 seat_bound 行的唯一
+			// 载体（唯一定义点 internal/ledger/types.go——collab 非测试零 import
+			// ledger，契约条 36，故字面量 + 注释指认）；归属判据沿用 §9「仅当
+			// 事件所属卡在该会话内」。载荷 {to}、actor=席位自称，detail 原样
+			// 透传（可对质，缺陷族 6）。
+			if !inSession[ev.CardID] {
+				continue
+			}
+			kind, cardID, detail = proto.SessionEventSeatBound, ev.CardID, string(ev.Payload)
+		case "status_moved":
+			// R3（契约 §4.8 条 56）：载体是既有 EvStatusMoved。当且仅当
+			// to ∈ {已完成, 终止} 记 card_closed（字面值即 ledger.StatusDone /
+			// ledger.StatusClosed；漂移由测试用 ledger 常量生产事件钉住）；
+			// 普通列间转移不是结构事实。终止的 reason 随 payload 透传 Detail。
+			if !inSession[ev.CardID] {
+				continue
+			}
+			switch payloadString(ev.Payload, "to") {
+			case "已完成", "终止":
+				kind, cardID, detail = proto.SessionEventCardClosed, ev.CardID, string(ev.Payload)
+			default:
+				continue
+			}
+		case "needs_human":
+			// 等人标记进 timeline（proto.SessionEventNeedsHuman；spec §4.3 末条
+			// 「needs_human 亮起归详情页 timeline」）。归属判据同 §9；载荷
+			// {reason} 原样透传 Detail。needs_cleared 不进 timeline——词表 8 值
+			// 无它（补签轮逐值冻结），标签熄灭由 needsHumanByCard 承担。
+			if !inSession[ev.CardID] {
+				continue
+			}
+			kind, cardID, detail = proto.SessionEventNeedsHuman, ev.CardID, string(ev.Payload)
 		default:
+			// 未知 ledger 事件类型不进 timeline（缺陷族 7：不得被默认分支收编）。
+			// seat_bound / card_closed / needs_human 分支已增补（Task 2/3）。
 			continue
-		}
-		if kind == proto.SessionEventCreated || kind == proto.SessionEventArchived {
-			if payloadString(ev.Payload, "session") != "" && payloadString(ev.Payload, "session") != sessionID {
-				continue
-			}
 		}
 		out = append(out, proto.SessionTimelineEvent{
 			Seq: ev.Seq, Kind: kind, CardID: cardID, Detail: detail,

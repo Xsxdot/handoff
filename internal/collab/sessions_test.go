@@ -11,7 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/collab/room"
@@ -383,4 +385,633 @@ func ledgerEvent(t *testing.T, msg proto.RoomMessage) proto.LedgerEvent {
 		t.Fatal(err)
 	}
 	return proto.LedgerEvent{Seq: 1, Type: "room_message", Actor: "user:sy", Payload: raw}
+}
+
+// sessionStructSeqs 扫全流建「事件类型/归属键值 → seq」索引（测试辅助）。
+// created 的归属键是 id、joined/left 是 card——与 ledger 写面载荷同形。
+func sessionStructSeqs(t *testing.T, st *ledger.Store) map[string]int64 {
+	t.Helper()
+	events, err := st.EventsFromAsc([]string{}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]int64{}
+	for _, ev := range events {
+		var fields map[string]any
+		if err := json.Unmarshal(ev.Payload, &fields); err != nil {
+			continue
+		}
+		switch ev.Type {
+		case ledger.EvSessionCreated:
+			if id, _ := fields["id"].(string); id != "" {
+				out["created/"+id] = ev.Seq
+			}
+		case ledger.EvSessionCardJoined:
+			if card, _ := fields["card"].(string); card != "" {
+				out["joined/"+card] = ev.Seq
+			}
+		}
+	}
+	return out
+}
+
+// cardSet 把卡号切片转集合（测试辅助）。
+func cardSet(ids []string) map[string]bool {
+	out := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		out[id] = true
+	}
+	return out
+}
+
+// TestSessionTimelineBelongsToOneSession 跨会话污染反例（breakdown §2.4
+// 发现 A）+ 同族反例：timeline 只装本会话的结构事实。卡 A ∈ 会话一、
+// 卡 B 不属任何会话、卡 C ∈ 会话二：B 的席位事件不得进任何会话 timeline；
+// 会话二的建群/进群事件不得进会话一（Ticket 0 三处归属偏差：takeover 全量
+// 卡表、created 查错载荷键、joined/left 无判定）。本会话自己的行必须保留
+// （防修复过删）。先红后绿：在修复前的代码上本测试必红。
+func TestSessionTimelineBelongsToOneSession(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	cardA := sessionCard(t, st, "会话一成员卡")
+	cardB := sessionCard(t, st, "无会话卡")
+	cardC := sessionCard(t, st, "会话二成员卡")
+
+	session1, err := svc.CreateSession("会话一", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session1.ID, cardA.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	session2, err := svc.CreateSession("会话二", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session2.ID, cardC.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	// 无会话卡 B：坐下 + 换绑，落 seat_bound 与 takeover 两个卡事件。
+	if err := st.BindSeat(cardB.ID, "cli:opencode#b-1", proto.SeatSourceBind); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RebindSeat(cardB.ID, "cli:codex#b-2", proto.SeatSourceCoordinate, "cli:opencode#b-1"); err != nil {
+		t.Fatal(err)
+	}
+	// 会话一成员卡 A 坐下再换绑：seat_rebound 行必须留在会话一（防过删）。
+	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.RebindSeat(cardA.ID, "cli:codex#a-2", proto.SeatSourceCoordinate, "cli:opencode#a-1"); err != nil {
+		t.Fatal(err)
+	}
+
+	seqs := sessionStructSeqs(t, st)
+	d1, err := svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := svc.SessionDetail(session2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s1full, err := st.GetSession(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s2full, err := st.GetSession(session2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 反例主体（发现 A）：每场会话的 timeline 里，带卡号的行只许属于本会话的卡。
+	for name, tc := range map[string]struct {
+		detail proto.SessionDetail
+		own    map[string]bool
+	}{
+		"会话一": {d1, cardSet(s1full.Cards)},
+		"会话二": {d2, cardSet(s2full.Cards)},
+	} {
+		for _, row := range tc.detail.Timeline {
+			if row.CardID != "" && !tc.own[row.CardID] {
+				t.Fatalf("%s timeline 串进非本会话卡的事件行（发现 A）: %+v", name, row)
+			}
+		}
+	}
+	// 卡 B 不属任何会话：它的任何行不得出现在任何 timeline。
+	for _, d := range []proto.SessionDetail{d1, d2} {
+		for _, row := range d.Timeline {
+			if row.CardID == cardB.ID {
+				t.Fatalf("无会话卡 B 的事件串进 timeline: %+v", row)
+			}
+		}
+	}
+	// 同族反例：他场会话的结构事件（created/joined）不串场。
+	for _, bad := range []struct {
+		detail proto.SessionDetail
+		seq    int64
+		what   string
+	}{
+		{d1, seqs["created/"+session2.ID], "会话二的 created"},
+		{d1, seqs["joined/"+cardC.ID], "卡 C 进会话二的 joined"},
+		{d2, seqs["created/"+session1.ID], "会话一的 created"},
+		{d2, seqs["joined/"+cardA.ID], "卡 A 进会话一的 joined"},
+	} {
+		for _, row := range bad.detail.Timeline {
+			if row.Seq == bad.seq {
+				t.Fatalf("他场结构事件串场（%s）: %+v", bad.what, row)
+			}
+		}
+	}
+	// 防过删：会话一自己的 created、卡 A 的 joined 必须在；卡 A 的
+	// seat_rebound 行必须在且 Detail 原样透传 {from,to}（缺陷族 6）。
+	for _, want := range []struct {
+		seq  int64
+		kind string
+	}{
+		{seqs["created/"+session1.ID], proto.SessionEventCreated},
+		{seqs["joined/"+cardA.ID], proto.SessionEventCardJoined},
+	} {
+		found := false
+		for _, row := range d1.Timeline {
+			if row.Seq == want.seq && row.Kind == want.kind {
+				found = true
+			}
+		}
+		if !found {
+			t.Fatalf("会话一自己的行被过删: want seq=%d kind=%s", want.seq, want.kind)
+		}
+	}
+	reboundFound := false
+	for _, row := range d1.Timeline {
+		if row.Kind == proto.SessionEventSeatRebound && row.CardID == cardA.ID {
+			reboundFound = true
+			if !strings.Contains(row.Detail, `"from":"cli:opencode#a-1"`) ||
+				!strings.Contains(row.Detail, `"to":"cli:codex#a-2"`) {
+				t.Fatalf("seat_rebound Detail 应原样透传载荷（可对质）: %+v", row)
+			}
+		}
+	}
+	if !reboundFound {
+		t.Fatalf("会话一成员卡 A 的换绑行被过删: %+v", d1.Timeline)
+	}
+}
+
+// TestSessionTimelineSeatBoundAndCardClosed R2/R3 的 timeline 消费（契约欠账
+// §8.10）：seat_bound 以 EvDriverSeatBound 为唯一载体、归属判据同 §9；
+// card_closed 以既有 EvStatusMoved 为载体、当且仅当 to ∈ {已完成,终止} 记行，
+// 终止 reason 透传 Detail；普通列间转移与他会话卡不产生行。测试用
+// ledger.StatusDone/StatusClosed 常量生产事件——账本词表若变，此处先红
+// （字面量漂移哨兵，契约条 36「collab 非测试零 import ledger」的测试侧镜像）。
+func TestSessionTimelineSeatBoundAndCardClosed(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	cardA := sessionCard(t, st, "收口观察卡")
+	cardE := sessionCard(t, st, "终止观察卡")
+	cardB := sessionCard(t, st, "无会话卡")
+	session1, err := svc.CreateSession("收口会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session2, err := svc.CreateSession("旁观会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session1.ID, cardA.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session1.ID, cardE.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+
+	// R2：成员卡坐下 → seat_bound 行；无会话卡坐下 → 不进任何 timeline。
+	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindSeat(cardB.ID, "cli:opencode#b-1", proto.SeatSourceBind); err != nil {
+		t.Fatal(err)
+	}
+	d1, err := svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var boundRow *proto.SessionTimelineEvent
+	for i := range d1.Timeline {
+		row := d1.Timeline[i]
+		if row.Kind == proto.SessionEventSeatBound && row.CardID == cardB.ID {
+			t.Fatalf("无会话卡 B 的 seat_bound 串场: %+v", row)
+		}
+		if row.Kind == proto.SessionEventSeatBound && row.CardID == cardA.ID {
+			boundRow = &d1.Timeline[i]
+		}
+	}
+	if boundRow == nil {
+		t.Fatalf("坐下应产生 seat_bound 行: %+v", d1.Timeline)
+	}
+	if boundRow.Actor != "cli:opencode#a-1" {
+		t.Fatalf("seat_bound actor 应为席位自称（账本写面即如此）: %+v", boundRow)
+	}
+	if !strings.Contains(boundRow.Detail, `"to":"cli:opencode#a-1"`) {
+		t.Fatalf("seat_bound Detail 应原样透传载荷 {to}: %+v", boundRow)
+	}
+
+	// R3：普通列间转移不记行；to=已完成 记 card_closed；终止（含 reason）透传。
+	if err := st.MoveCard(cardA.ID, ledger.StatusDoing, ledger.StatusTodo, "t"); err != nil {
+		t.Fatal(err)
+	}
+	d1, err = svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, row := range d1.Timeline {
+		if row.Kind == proto.SessionEventCardClosed && row.CardID == cardA.ID {
+			t.Fatalf("普通列间转移不得记 card_closed（契约条 56）: %+v", row)
+		}
+	}
+	if err := st.MoveCard(cardA.ID, ledger.StatusDone, ledger.StatusDoing, "t"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CloseCard(cardE.ID, ledger.CloseAbandoned, "t"); err != nil {
+		t.Fatal(err)
+	}
+	// 无会话卡 B 终止 → 不进任何会话 timeline。
+	if err := st.CloseCard(cardB.ID, ledger.CloseCancelled, "t"); err != nil {
+		t.Fatal(err)
+	}
+	d1, err = svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := svc.SessionDetail(session2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, d := range []proto.SessionDetail{d1, d2} {
+		for _, row := range d.Timeline {
+			if row.Kind == proto.SessionEventCardClosed && row.CardID == cardB.ID {
+				t.Fatalf("无会话卡 B 的 card_closed 串场: %+v", row)
+			}
+		}
+	}
+	closedA, closedE := false, false
+	for _, row := range d1.Timeline {
+		if row.Kind == proto.SessionEventCardClosed && row.CardID == cardA.ID {
+			closedA = true
+			if !strings.Contains(row.Detail, `"to":"已完成"`) {
+				t.Fatalf("card_closed Detail 应透传 to=已完成: %+v", row)
+			}
+		}
+		if row.Kind == proto.SessionEventCardClosed && row.CardID == cardE.ID {
+			closedE = true
+			if !strings.Contains(row.Detail, `"to":"终止"`) || !strings.Contains(row.Detail, `"reason":"废弃"`) {
+				t.Fatalf("终止 card_closed 应透传 to 与 reason（不做二次解释）: %+v", row)
+			}
+		}
+	}
+	if !closedA || !closedE {
+		t.Fatalf("to∈{已完成,终止} 应各记一行 card_closed: closedA=%v closedE=%v", closedA, closedE)
+	}
+	// 词表对齐（缺陷族 7）：timeline 所有行的 kind ∈ proto 冻结词表 8 值。
+	allowed := map[string]bool{
+		proto.SessionEventCardJoined: true, proto.SessionEventCardLeft: true,
+		proto.SessionEventSeatBound: true, proto.SessionEventSeatRebound: true,
+		proto.SessionEventNeedsHuman: true, proto.SessionEventCardClosed: true,
+		proto.SessionEventArchived: true, proto.SessionEventCreated: true,
+	}
+	for _, d := range []proto.SessionDetail{d1, d2} {
+		for _, row := range d.Timeline {
+			if !allowed[row.Kind] {
+				t.Fatalf("timeline 出现词表外 kind: %+v", row)
+			}
+		}
+	}
+}
+
+// TestSessionTimelineNeedsHuman needs_human 进 timeline（契约 §3.2 词表 +
+// breakdown §3.3 ③）：卡 ∈ 会话的 needs_human 事件出恰一条 kind=needs_human
+// 行且 Summary.NeedsHuman 亮起；卡 ∉ 会话的不出现、不点亮他会话标签；
+// needs_cleared 不产生 timeline 行（词表 8 值无它——补签轮逐值冻结），
+// 标签由 needsHumanByCard 翻灭。
+func TestSessionTimelineNeedsHuman(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	cardA := sessionCard(t, st, "等人观察卡")
+	cardB := sessionCard(t, st, "无会话卡")
+	session1, err := svc.CreateSession("等人会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session2, err := svc.CreateSession("隔壁会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session1.ID, cardA.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(cardA.ID, "验收不过", "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(cardB.ID, "与本会话无关", "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	d1, err := svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d2, err := svc.SessionDetail(session2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !d1.Summary.NeedsHuman {
+		t.Fatal("会话内卡 needs_human 后列表标签应亮起")
+	}
+	if d2.Summary.NeedsHuman {
+		t.Fatal("他会话卡的 needs_human 不得点亮本会话标签")
+	}
+	rows := 0
+	for _, row := range d1.Timeline {
+		if row.Kind == proto.SessionEventNeedsHuman {
+			rows++
+			if row.CardID != cardA.ID {
+				t.Fatalf("needs_human 行归属错误: %+v", row)
+			}
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("应恰一条 needs_human 行, got %d: %+v", rows, d1.Timeline)
+	}
+	for _, row := range d2.Timeline {
+		if row.Kind == proto.SessionEventNeedsHuman {
+			t.Fatalf("无会话卡 B 的 needs_human 串进会话二: %+v", row)
+		}
+	}
+	before := len(d1.Timeline)
+	if err := st.ClearNeedsHuman(cardA.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	d1, err = svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d1.Summary.NeedsHuman {
+		t.Fatal("needs_cleared 后标签应熄灭")
+	}
+	if len(d1.Timeline) != before {
+		t.Fatalf("needs_cleared 不得产生 timeline 行（词表无此 kind）: before=%d after=%d",
+			before, len(d1.Timeline))
+	}
+}
+
+// memberByCard 按卡号取席位成员（测试辅助）。
+func memberByCard(t *testing.T, d proto.SessionDetail, cardID string) proto.SessionMember {
+	t.Helper()
+	for _, m := range d.Summary.Members {
+		if m.CardID == cardID {
+			return m
+		}
+	}
+	t.Fatalf("找不到卡 %s 的席位成员: %+v", cardID, d.Summary.Members)
+	return proto.SessionMember{}
+}
+
+// memberByIdentity 按身份取成员（测试辅助）。
+func memberByIdentity(t *testing.T, d proto.SessionDetail, identity string) proto.SessionMember {
+	t.Helper()
+	for _, m := range d.Summary.Members {
+		if m.Identity == identity {
+			return m
+		}
+	}
+	t.Fatalf("找不到成员 %s: %+v", identity, d.Summary.Members)
+	return proto.SessionMember{}
+}
+
+// TestSessionMemberStatusHonest 成员状态诚实判据（契约条 17/18 + breakdown
+// §2.4 澄清 3）：working 只能由未过期租约推出，判据时钟与租约判定同一注入
+// 时钟（拨钟即翻）；无租约报 last_active+零值；空座报 empty；观察到的状态串
+// ⊆ {working,last_active,empty}——四值词表减 listening（生产零载体，澄清 3），
+// 「online」等词表外串自然被拒。本测试写下去应绿（行为已在）——红即停手上报。
+func TestSessionMemberStatusHonest(t *testing.T) {
+	svc, st, lc := newSessionFixture(t)
+	cardA := sessionCard(t, st, "租约卡")
+	cardC := sessionCard(t, st, "空座卡")
+	session1, err := svc.CreateSession("状态会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session1.ID, cardA.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session1.ID, cardC.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind); err != nil {
+		t.Fatal(err)
+	}
+	// 注入时钟与租约判定同源（条 18）：nowFn 拨到可拨源 cur，working →
+	// last_active 的翻转只由 cur 前拨触发（同源范式先例
+	// readmodel_test.go#TestListRoomsLiveFlip）。
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	cur := base
+	oldNow := nowFn
+	nowFn = func() time.Time { return cur }
+	t.Cleanup(func() { nowFn = oldNow })
+
+	// 未过期租约：Store.RenewDriverLease 是本测试专属生产者（生产零调用方，
+	// 澄清 3）；expiresAt = 墙钟 + 1h，必在 cur（2026-01-01）之后 → working。
+	if _, err := st.RenewDriverLease("cli:opencode#a-1", time.Hour); err != nil {
+		t.Fatal(err)
+	}
+	exp, exists, err := lc.DriverLease("cli:opencode#a-1")
+	if err != nil || !exists {
+		t.Fatalf("租约应可读: exp=%v exists=%v err=%v", exp, exists, err)
+	}
+	d1, err := svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat := memberByCard(t, d1, cardA.ID)
+	if seat.Status != proto.SessionMemberWorking {
+		t.Fatalf("未过期租约应报 working: %+v", seat)
+	}
+	if !seat.LastActive.Equal(exp) {
+		t.Fatalf("working 的 LastActive 应为租约到期时刻 %v（可证实的「活到几点」）: %+v", exp, seat)
+	}
+
+	// 拨钟过期（同一 cur 前拨过 expiresAt）→ last_active；LastActive 仍是
+	// 到期时刻。拨钟即翻 = 判据用的是注入钟的证明（缺陷族 4）。
+	cur = time.Now().Add(2 * time.Hour)
+	d1, err = svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat = memberByCard(t, d1, cardA.ID)
+	if seat.Status != proto.SessionMemberLastActive {
+		t.Fatalf("拨钟过期后应翻 last_active: %+v", seat)
+	}
+	if !seat.LastActive.Equal(exp) {
+		t.Fatalf("过期租约的 LastActive 应为到期时刻 %v: %+v", exp, seat)
+	}
+
+	// 无租约的显式成员：last_active + 零值 LastActive（无「最后活跃」可证实读数）。
+	owner := memberByIdentity(t, d1, "user:sy")
+	if owner.Status != proto.SessionMemberLastActive || !owner.LastActive.IsZero() {
+		t.Fatalf("无租约成员应报 last_active+零值: %+v", owner)
+	}
+	// 空座卡：empty + 空身份 + 零值。
+	empty := memberByCard(t, d1, cardC.ID)
+	if empty.Status != proto.SessionMemberEmpty || empty.Identity != "" || !empty.LastActive.IsZero() {
+		t.Fatalf("空座卡应报 empty: %+v", empty)
+	}
+	// 词表扫（缺陷族 8 + 澄清 3）：全部观察值 ∈ {working,last_active,empty}。
+	for _, m := range d1.Summary.Members {
+		switch m.Status {
+		case proto.SessionMemberWorking, proto.SessionMemberLastActive, proto.SessionMemberEmpty:
+		default:
+			t.Fatalf("成员状态词表外取值（listening 无生产载体；online 不可证实）: %+v", m)
+		}
+	}
+}
+
+// TestSessionNodesAggregation 任务节点投影（breakdown §3.3 ③ + 缺陷族 2）：
+// 卡 ∈ 会话的 task_mirrored（含 node 字段）聚合进 Nodes；卡 ∉ 会话的不出现；
+// envelope 无 round/target/title 字段 → Round/Target/Title 留空（plan 定稿：
+// 不为填空造新账本读）；单条载荷解码失败只跳该行、同卡其余节点保留。
+// 本测试写下去应绿（行为已在）——红即停手上报。
+func TestSessionNodesAggregation(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	cardA := sessionCard(t, st, "节点观察卡")
+	cardB := sessionCard(t, st, "无会话卡")
+	session1, err := svc.CreateSession("节点会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session1.ID, cardA.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	if _, err := st.AppendMirroredEvent(cardA.ID, ledger.MirroredEvent{
+		Target: "tgt-1", Task: "task-1", Node: "implement", SourceSeq: 1,
+		Type: "task_started", Payload: []byte(`{"step":1}`), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 解码失败样本：非法 JSON 内层 → 组合载荷整体不可解析 → 跳该行。
+	if _, err := st.AppendMirroredEvent(cardA.ID, ledger.MirroredEvent{
+		Target: "tgt-1", Task: "task-1", Node: "review", SourceSeq: 2,
+		Type: "task_broken", Payload: []byte(`{"broken`), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	// 无会话卡 B 的镜像 → 不进 Nodes。
+	if _, err := st.AppendMirroredEvent(cardB.ID, ledger.MirroredEvent{
+		Target: "tgt-2", Task: "task-2", Node: "plan", SourceSeq: 3,
+		Type: "task_started", Payload: []byte(`{}`), CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	d1, err := svc.SessionDetail(session1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(d1.Nodes) != 1 {
+		t.Fatalf("应恰一条节点（解码失败跳过、他会话卡不进）: %+v", d1.Nodes)
+	}
+	node := d1.Nodes[0]
+	if node.CardID != cardA.ID || node.Node != "implement" || node.State != "task_started" {
+		t.Fatalf("节点投影字段错误: %+v", node)
+	}
+	if node.Round != 0 || node.Target != "" || node.Title != "" {
+		t.Fatalf("Round/Target/Title 应留空（envelope 无对应字段，不为填空造新账本读）: %+v", node)
+	}
+}
+
+// TestMentionClearScopedToSessionRoom B287 审查移交反例：会话房间「回复即清
+// 提及」只清本房间——user:alice 在两场会话各被 @ 一次，仅回复会话一时，会话
+// 一的提及被消费（EvMessageConsumed 在），会话二的提及必须仍留在收件箱
+// mention 源（不牵连他房间）。预期绿（consumeRoomMentions 已按 SameRoom
+// 过滤）；实测红即越界修复面，停手上报。
+func TestMentionClearScopedToSessionRoom(t *testing.T) {
+	svc, st, lc := newSessionFixture(t)
+	session1, err := svc.CreateSession("清提及-会话一", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session2, err := svc.CreateSession("清提及-会话二", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sid := range []string{session1.ID, session2.ID} {
+		if err := st.AddSessionMember(sid, "user:alice", "user:sy"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	seq1, err := svc.Send(session1.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "@alice 看会话一", Mentions: []string{"user:alice"},
+	}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq2, err := svc.Send(session2.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "@alice 看会话二", Mentions: []string{"user:alice"},
+	}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mentions, err := svc.Mentions("user:alice", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mentions) != 2 {
+		t.Fatalf("两条提及都应在收件箱: %+v", mentions)
+	}
+	// alice 只回复会话一。
+	if _, err := svc.Send(session1.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "收到，会话一处理中",
+	}, "user:alice"); err != nil {
+		t.Fatal(err)
+	}
+	mentions, err = svc.Mentions("user:alice", 0, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mentions) != 1 || mentions[0].Seq != seq2 {
+		t.Fatalf("会话二的提及必须保留、会话一的应被清: %+v", mentions)
+	}
+	// 权威在账本消费标记：seq1 已消费、seq2 未消费。
+	// （plan 笔误修正：st.EventsFromAsc 返回 []ledger.Event，ConsumedSeqs 收
+	// []proto.LedgerEvent——改走既有 room.ReadAllEvents 转换，语义同全流升序。）
+	events, err := room.ReadAllEvents(lc, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	consumed := room.ConsumedSeqs(events, "user:alice")
+	if !consumed[seq1] {
+		t.Fatalf("会话一提及应落 EvMessageConsumed: seq=%d", seq1)
+	}
+	if consumed[seq2] {
+		t.Fatalf("会话二提及不得被牵连消费: seq=%d", seq2)
+	}
+}
+
+// TestSessionDetailReadableAfterArchive 缺陷族 1：会话归档后详情投影仍可读
+// （归档只读执法在写路径 Send/JoinCard，不封读面），timeline 含自己的
+// created 与 archived 两行。
+func TestSessionDetailReadableAfterArchive(t *testing.T) {
+	svc, _, _ := newSessionFixture(t)
+	session, err := svc.CreateSession("归档后读", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ArchiveSession(session.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := svc.SessionDetail(session.ID)
+	if err != nil {
+		t.Fatalf("归档后详情必须可读: %v", err)
+	}
+	kinds := map[string]bool{}
+	for _, row := range detail.Timeline {
+		kinds[row.Kind] = true
+	}
+	if !kinds[proto.SessionEventCreated] || !kinds[proto.SessionEventArchived] {
+		t.Fatalf("归档后 timeline 应含 created 与 archived: %+v", detail.Timeline)
+	}
 }
