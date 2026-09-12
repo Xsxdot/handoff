@@ -136,6 +136,50 @@ func TestB23314EmptyHomeDisciplinePreparesProfile(t *testing.T) {
 	}
 }
 
+// #18：非空 Task.HomeDir 时 Isolated=true，写入点为该非空绝对路径。
+// 锁住「展开后的绝对路径不等于 Isolated=true」的反向：非空 HOME 必须隔离。
+func TestB23314NonEmptyHomeDisciplineIsIsolated(t *testing.T) {
+	mainHome := t.TempDir()
+	withMainHome(t, mainHome)
+
+	profile := &recordingProfile{}
+	ad := &profileRecordingAdapter{
+		chanAdapter: &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)},
+		profile:     profile,
+	}
+	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
+	repo := initTestRepo(t)
+	pid := registerTestProject(t, m, repo)
+
+	carrierHome := filepath.Join(t.TempDir(), "carrier")
+	const discipline = "非空 HOME 纪律"
+	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+		ProjectID: pid, Prompt: "non-empty home discipline", Executor: "fake",
+		HomeDir: &carrierHome, DisciplineText: discipline,
+	})
+	if err != nil {
+		t.Fatalf("非空 HOME + 非空纪律应成功: %v", err)
+	}
+	reqs := profile.snapshot()
+	if len(reqs) != 1 {
+		t.Fatalf("Profile.Prepare 调用次数=%d, want 1（%+v）", len(reqs), reqs)
+	}
+	req := reqs[0]
+	if !req.Isolated {
+		t.Fatalf("非空 HOME 必须 Isolated=true，got HomeDir=%q", req.HomeDir)
+	}
+	if req.HomeDir != carrierHome {
+		t.Fatalf("写入点=%q, want 载体 HOME %q", req.HomeDir, carrierHome)
+	}
+	got, gerr := st.GetTask(task.ID)
+	if gerr != nil {
+		t.Fatal(gerr)
+	}
+	if got.HomeDir != carrierHome {
+		t.Fatalf("Task.HomeDir=%q, want 原字面 %q", got.HomeDir, carrierHome)
+	}
+}
+
 // realProfileAdapter 把真实 executor.Profile 挂到可记录事件的 adapter 上，
 // 用于「真落盘」边界测试（现有 profileRecordingAdapter 只接受 *recordingProfile）。
 type realProfileAdapter struct {

@@ -16,6 +16,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
@@ -53,6 +54,14 @@ func TestSetupLedgerMountsWithRetiredEnabledFlag(t *testing.T) {
 
 	if _, statErr := os.Stat(filepath.Join(dir, "ledger.db")); statErr != nil {
 		t.Fatalf("dsn 空应回退 DataDir/ledger.db 并落盘: %v", statErr)
+	}
+
+	// B233.14：编制域具体服务必须由 cmd 组装点构造并注入。删掉
+	// setupLedger 里的 srv.SetScheduling(sched) 会让这里落成 nil（StartAutomation
+	// 也会静默 no-op），必须红。
+	svc, ok := srv.Scheduling().(*scheduling.Service)
+	if !ok || svc == nil {
+		t.Fatalf("setupLedger 后必须注入具体 *scheduling.Service，got %#v", srv.Scheduling())
 	}
 
 	ts := httptest.NewServer(srv.Handler())
