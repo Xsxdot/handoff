@@ -84,3 +84,46 @@ func TestSetupLedgerMountsWithRetiredEnabledFlag(t *testing.T) {
 		t.Fatalf("health 应报 enabled:true，得到 %d %s", resp.StatusCode, body.String())
 	}
 }
+
+// TestB23314SetSchedulingBeforeStartAutomation 锁住 setupLedger 内的装配顺序：
+// 编制域具体服务必须先经 SetScheduling 注入，随后才 StartAutomation。
+//
+// 为什么必须由源码顺序断言承重：StartAutomation 遇 s.scheduling==nil 只记一条
+// Warn 后静默 no-op（internal/agentd/scheddrain.go:52-57），两行对调不会让任何
+// 运行期返回值/状态变红——只有顺序断言能挡住「组装漏接却全绿」的假绿（plan
+// Task1 承重顺序判据）。
+func TestB23314SetSchedulingBeforeStartAutomation(t *testing.T) {
+	body := goFuncBody(t, "agentd.go", "setupLedger")
+	setIdx := strings.Index(body, "srv.SetScheduling(")
+	startIdx := strings.Index(body, "srv.StartAutomation(")
+	if setIdx < 0 {
+		t.Fatalf("setupLedger 缺少 srv.SetScheduling( 调用")
+	}
+	if startIdx < 0 {
+		t.Fatalf("setupLedger 缺少 srv.StartAutomation( 调用")
+	}
+	if setIdx > startIdx {
+		t.Fatalf("装配顺序错误：StartAutomation 先于 SetScheduling；StartAutomation 遇 scheduling==nil 会静默 no-op，自动化循环永不启动")
+	}
+}
+
+// goFuncBody 读取同包 go 文件并返回命名函数的函数体（从 func 声明到下一个顶层
+// func 之前）。边界：文本切分，只答调用顺序，不解析 AST / 注释。
+func goFuncBody(t *testing.T, file, fn string) string {
+	t.Helper()
+	b, err := os.ReadFile(file)
+	if err != nil {
+		t.Fatalf("读取 %s 失败: %v", file, err)
+	}
+	src := string(b)
+	decl := "func " + fn + "("
+	start := strings.Index(src, decl)
+	if start < 0 {
+		t.Fatalf("%s 中找不到 %q 声明", file, decl)
+	}
+	rest := src[start+len(decl):]
+	if next := strings.Index(rest, "\nfunc "); next >= 0 {
+		return rest[:next]
+	}
+	return rest
+}
