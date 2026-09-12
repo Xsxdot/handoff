@@ -286,7 +286,7 @@ S7 纪律与 roadmap（无代码依赖） ────────────�
 
 **①契约引用**：contract §3.2（wire DTO）、§7.3（TS 孪生金样本欠账）、§8.4；spec 实现决定 1–4、§4.4；北极星 sessions.html + README W1–W6；S4 的端点面。
 
-**②意图与为什么**：北极星落地：会话页一等公民（不占 tab 条、不挂面包屑、无右栏文件树，中央区整块）、左栏保留项目树、dock 入口；三态（列表/群聊/详情）；列表行 = 谁需要我（未读 + needs_human 标签 + 预览），群聊面只有人话 + 引用条 + @高亮 + 卡 chips（空座虚线），详情页三块（成员状态 / 任务节点 / timeline）。TS 镜像补 Session DTO 全集与孪生金样本（`testdata/RoomsFixture.json`，与 `rooms_fixture_test.go` 逐键一致）。旧 RoomPanel 的退役方式（原地改造 vs 新页面 + 移除旧入口）归 plan，以 W1 形态为准绳。
+**②意图与为什么**：北极星落地：会话页一等公民（不占 tab 条、不挂面包屑、无右栏文件树，中央区整块）、左栏保留项目树、dock 入口；三态（列表/群聊/详情）；列表行 = 谁需要我（未读 + needs_human 标签 + 预览），群聊面只有人话 + 引用条 + @高亮 + 卡 chips（空座虚线），详情页三块（成员状态 / 任务节点 / timeline）。TS 镜像补 Session DTO 全集与孪生金样本（`testdata/RoomsFixture.json`，与 `rooms_fixture_test.go` 逐键一致）。旧 RoomPanel 的退役方式（原地改造 vs 新页面 + 移除旧入口）归 plan，以 W1 形态为准绳。**（2026-09-12 走查修订：IA 按 B361 定稿执行——B358 spec 实现决定 1 已修订，形态基准改 `sessions-v2.html`；「退役方式归 plan」开放点关闭，用户裁决悬浮窗与工作项内嵌 IM 面板直接移除，会话入口收敛左栏会话 tab；S6 有界文件集相应新增移除对象。）**
 
 **③验收（行为化，逻辑型——组件/金样本机内闭环，真实浏览器归真机）**：
 
