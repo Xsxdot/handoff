@@ -235,7 +235,12 @@ export function WorkbenchPage({
   }
 
   const renderGroup = (group: typeof activeGroup, visible: boolean) => (
-    <div className={cn('flex min-h-0 flex-1 flex-col', !visible && 'pointer-events-none absolute -left-[10000px] top-0 h-full w-full')} aria-hidden={!visible}>
+    // min-w-0：本 div 是 340 行那个 flex-ROW 容器的子项。xterm 画布有固有宽度，
+    // 缺 min-w-0 时 flex 的自动最小尺寸（min-width:auto）会把整组撑到画布宽——
+    // 切回工作台的瞬间容器已缩到目标宽、组却还停在画布的旧固有宽上，
+    // ResizeObserver→fit→PTY resize 每帧一拍，连打十几轮 SIGWINCH（WebGL
+    // 画布在这类尺寸风暴里会被打坏，TUI 就花了）。最小宽度必须在这里断掉。
+    <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col', !visible && 'pointer-events-none absolute -left-[10000px] top-0 h-full w-full')} aria-hidden={!visible}>
       {/* 原型 .cols { overflow: hidden }：列压进容器，不出现横向滚动 */}
       <div className="flex min-h-0 flex-1 overflow-hidden bg-border">
         {group.columns.map((column, columnIndex) => (
