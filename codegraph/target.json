@@ -6,7 +6,8 @@
  "assembly": [
   "main.go",
   "internal/agentd/server.go",
-  "internal/agentd/codegraph.go"
+  "internal/agentd/codegraph.go",
+  "cmd/agentd.go"
  ],
  "contracts": [
   {
@@ -238,7 +239,10 @@
     "scheduling.Service",
     "scheduling（包级函数）"
    ],
-   "legacyBudgetNote": "B156.3：新方向。B292 沿用该唯一入站边，控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；成员政策位与载体物理位的规则仍只在 scheduling.Service 收口。预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。B233.5：同一门面增 ResolveLookup / BindPhysical / OccupancyKeys / EncodeDefaultCarrier（包级函数）；本节点不接线生产路径、不新开 d_orchestration→d_scheduling。名称解析与物理绑定权威在编制域。B233.10：同一 scheduling.Service 门面新增 Select/AdmitFrozen 契约，选择与冻结准入仍不新增方向或预算。"
+   "legacyBudgetNote": "B156.3：新方向。B292 沿用该唯一入站边，控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；成员政策位与载体物理位的规则仍只在 scheduling.Service 收口。预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。B233.5：同一门面增 ResolveLookup / BindPhysical / OccupancyKeys / EncodeDefaultCarrier（包级函数）；本节点不接线生产路径、不新开 d_orchestration→d_scheduling。名称解析与物理绑定权威在编制域。B233.10：同一 scheduling.Service 门面新增 Select/AdmitFrozen 契约，选择与冻结准入仍不新增方向或预算。 B233.14：gateway 入站封界——生产字段类型改为使用方接口 SchedulingClient（落 interfaces，与 d_execution→d_orchestration 的 ApprovalClient 同形）；entries 保留 provider 容器 scheduling.Service / 包级函数（图内 call 边仍解析到 *Service 实现方法，删容器是假棘轮，与 B233.13 的 client.Client 同理）。预算保持 0。",
+   "interfaces": [
+    "SchedulingClient"
+   ]
   },
   {
    "from": "d_gateway",

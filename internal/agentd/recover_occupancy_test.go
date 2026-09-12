@@ -24,7 +24,7 @@ type testSchedRunningBody struct {
 func setupRecoveryEnv(t *testing.T) *ledgerEnv {
 	t.Helper()
 	env := newNoPTYLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	return env
 }
 

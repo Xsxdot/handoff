@@ -172,8 +172,9 @@ type Server struct {
 	pty         *ptyhost.Host
 	ptyRootPath string
 	// B156.3 自动化层：编制域与 keystone 域的服务引用，SetupAutomation 装配。
-	// 生产接线只在本组装点文件内发生；实现票把 handler 接上这些服务。
-	scheduling *scheduling.Service
+	// B233.14：编制域字段是使用方接口 SchedulingClient；具体 *scheduling.Service
+	// 只在 cmd 组装点构造后经 SetScheduling 注入，本文件不再 new。
+	scheduling SchedulingClient
 	keystone   *keystone.Service
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
@@ -2663,6 +2664,10 @@ func truncateRunes(s string, n int) string {
 // 组装点内完成全部跨域绑定；绑定代码只允许出现在本文件（target.json assembly
 // 登记点），组装点之外不得 new 他方具体类型。
 //
+// B233.14：本函数不再构造编制域具体服务；它只装配账本门面（编制域具体服务由
+// cmd 组装点 `scheduling.New` 构造后 `SetScheduling` 注入，经 SchedulingRegistry()
+// 取账户门面适配）。其余 rooms/keystone/hostapi 装配原样保留。
+//
 // 骨架期语义：服务已构造、端口已绑定，行为由实现票逐缝点亮；宿主进程照常
 // 启动，不受未点亮能力影响。
 func (s *Server) SetupAutomation(st *ledger.Store) {
@@ -2679,15 +2684,6 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	s.automationCursor = loadedCursor
 	s.automationMu.Unlock()
 	s.log.Info("自动化 cursor 已装配", "path", cursorPath, "loaded_seq", loadedCursor)
-	s.scheduling = scheduling.New(facadeAsRegistry{f: facade})
-	s.scheduling.SetKnownMachines(func(name string) bool {
-		cfg := s.conf()
-		if cfg == nil {
-			return false
-		}
-		_, ok := cfg.Targets[name]
-		return ok
-	})
 	s.rooms = collab.New(facade)
 	s.rooms.SetCursorStore(cursor.New(filepath.Join(s.conf().DataDir, "room-cursors.json")))
 	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
@@ -2747,8 +2743,39 @@ func (s *Server) RecoverOnStartup(probe func(string) bool, sweep func(string), l
 // PtyAPI 返回终端 PTY 薄门面；PTY 宿主未装配时返回 nil。
 func (s *Server) PtyAPI() *ptyapi.Host { return s.ptyGate }
 
-// SetScheduling 注入编制域服务（测试缝：整体替换单测构造的实例）。
-func (s *Server) SetScheduling(svc *scheduling.Service) { s.scheduling = svc }
+// SetScheduling 注入编制域实现（使用方接口）。
+//
+// B233.14：参数由具体 *scheduling.Service 改为 gateway 使用方接口 SchedulingClient；
+// 生产 *scheduling.Service 只在 cmd 组装点 new。接口里的 typed-nil（(*scheduling.Service)(nil)
+// 赋给接口）会让 `s.scheduling == nil` 失效，这里显式识别并落 nil，保住 11 处
+// 未就绪 503 守卫（withScheduling / resolveReceiver / StartAutomation / handleDispatch
+// 冻结分支 / releaseTaskCarrierOccupancy / coordapi.withCoordinator / scheddispatch / scheddrain）。
+func (s *Server) SetScheduling(svc SchedulingClient) {
+	if svc == nil {
+		s.scheduling = nil
+		s.log.Warn("SetScheduling 收到 nil 编制实现，按未就绪处理", "error_kind", "scheduling_nil")
+		return
+	}
+	if rv := reflect.ValueOf(svc); rv.Kind() == reflect.Ptr && rv.IsNil() {
+		s.scheduling = nil
+		s.log.Warn("SetScheduling 收到 typed-nil 编制实现，按未就绪处理", "error_kind", "scheduling_typed_nil")
+		return
+	}
+	s.scheduling = svc
+	s.log.Info("编制域已挂接，凭据为使用方接口 SchedulingClient")
+}
+
+// SchedulingRegistry 返回账本门面适配成的编制域持久化端口，供 cmd 组装点构造
+// *scheduling.Service（B233.14：scheduling.New 上移 cmd）。
+//
+// autoLedger 未装配时返回 nil；组装点必须显式判空拒启动——scheduling.New(nil)
+// 会建出 repo 为 nil 的坏服务，首次调用才空指针。
+func (s *Server) SchedulingRegistry() schedclient.Registry {
+	if s.autoLedger == nil {
+		return nil
+	}
+	return facadeAsRegistry{f: s.autoLedger}
+}
 
 // SetHostAPI 注入进程承载门面（测试缝）。
 func (s *Server) SetHostAPI(h *hostapi.Host) { s.hostAPI = h }
@@ -2777,8 +2804,9 @@ func (s *Server) withRooms(h http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-// Scheduling 返回编制域服务；未装配返回 nil（handler 据此降级 503，同 withLedger）。
-func (s *Server) Scheduling() *scheduling.Service { return s.scheduling }
+// Scheduling 返回编制域能力（使用方接口）；未装配返回 nil（handler 据此降级 503）。
+// B233.14：返回类型由 *scheduling.Service 改为 SchedulingClient（测试缝；生产不消费）。
+func (s *Server) Scheduling() SchedulingClient { return s.scheduling }
 
 // Keystone 返回 keystone 域服务。
 func (s *Server) Keystone() *keystone.Service { return s.keystone }

@@ -28,7 +28,7 @@ import (
 func newNoPTYAutomationEnv(t *testing.T) (*ledgerEnv, *queueTraceRunner) {
 	t.Helper()
 	env := newNoPTYLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	return env, seedQueueCoordinator(t, env)
 }
 
@@ -846,14 +846,14 @@ func (r *fallbackConsumerRunner) Resume(keysclient.SessionRef, string) (keysclie
 
 func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	allowCarrierMachines(t, env.srv, "ftm")
-	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
 		Status: scheduling.StatusOnline,
 	})
-	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
+	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "coord-carrier", MaxConcurrency: 1}},
 	}, 0); err != nil {
 		t.Fatal(err)
@@ -902,14 +902,14 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 // 同一条用户消息无限 Launch（B274：空 spec + 失败不推 cursor + kick = 指针洪流）。
 func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	allowCarrierMachines(t, env.srv, "ftm")
-	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
 		Status: scheduling.StatusOnline,
 	})
-	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
+	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "coord-carrier", MaxConcurrency: 1}},
 	}, 0); err != nil {
 		t.Fatal(err)
@@ -984,7 +984,7 @@ func TestB349AutomationCursorPersistence(t *testing.T) {
 
 		resumed := NewServer(env.srv.conf(), env.st, discardLogger())
 		resumed.SetLedger(env.ledger)
-		resumed.SetupAutomation(env.ledger)
+		SetupAutomationForTest(t, resumed, env.ledger)
 		resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
 		processed, _, err = resumed.consumeAutomationEventsOnce(context.Background())
 		if err != nil || processed != 0 {
@@ -1014,7 +1014,7 @@ func TestB349AutomationCursorPersistence(t *testing.T) {
 
 			resumed := NewServer(env.srv.conf(), env.st, discardLogger())
 			resumed.SetLedger(env.ledger)
-			resumed.SetupAutomation(env.ledger)
+			SetupAutomationForTest(t, resumed, env.ledger)
 			resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
 			if resumed.automationCursor != 0 {
 				t.Fatalf("损坏 cursor 不应装配为已保存水位: %d", resumed.automationCursor)
@@ -1041,7 +1041,7 @@ func TestB349AutomationCursorPersistence(t *testing.T) {
 
 			resumed := NewServer(env.srv.conf(), env.st, discardLogger())
 			resumed.SetLedger(env.ledger)
-			resumed.SetupAutomation(env.ledger)
+			SetupAutomationForTest(t, resumed, env.ledger)
 			resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
 			if resumed.automationCursor != 0 {
 				t.Fatalf("不可读 cursor 不应装配为已保存水位: %d", resumed.automationCursor)
@@ -1093,7 +1093,7 @@ func TestB349AutomationCursorPersistence(t *testing.T) {
 		}
 		resumed := NewServer(env.srv.conf(), env.st, discardLogger())
 		resumed.SetLedger(env.ledger)
-		resumed.SetupAutomation(env.ledger)
+		SetupAutomationForTest(t, resumed, env.ledger)
 		resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
 		processed, _, err = resumed.consumeAutomationEventsOnce(context.Background())
 		if err != nil || processed != 1 {

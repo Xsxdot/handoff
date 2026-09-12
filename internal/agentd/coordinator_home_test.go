@@ -441,7 +441,7 @@ func TestNormalizeCoordinatorSpecEmptyHome(t *testing.T) {
 // 当已上线载体登记 HOME 为空时，作为合法主 HOME 展开为绝对路径；小队中没有 online 载体时依然报错。
 func TestCoordinatorSessionRefResolverEmptyHomeOnlineCarrier(t *testing.T) {
 	env, _ := newCoordEnv(t)
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name:       "c1",

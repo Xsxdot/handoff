@@ -47,8 +47,8 @@ func newSchedEnv(t *testing.T) *schedEnv {
 		},
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	env.srv.SetLedger(st)
-	env.srv.SetupAutomation(st)
-	return &schedEnv{testAgentdEnv: env, svc: env.srv.Scheduling()}
+	SetupAutomationForTest(t, env.srv, st)
+	return &schedEnv{testAgentdEnv: env, svc: mustScheduling(t, env.srv)}
 }
 
 // newSchedNoPTYEnv 复用 no-PTY 真实账本夹具，保持 Handler/Bearer/JSON 链路不变；
@@ -61,7 +61,7 @@ func newSchedNoPTYEnv(t *testing.T) *schedEnv {
 		t.Fatalf("准备配置: %v", err)
 	}
 	env.srv.SetConfigPath(configPath)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	if err := env.srv.swapConf(func(c *config.Config) error {
 		c.Targets["m1"] = config.Target{Addr: "127.0.0.1:1", Token: testToken}
 		c.Targets["m"] = config.Target{Addr: "127.0.0.1:1", Token: testToken}
@@ -69,7 +69,7 @@ func newSchedNoPTYEnv(t *testing.T) *schedEnv {
 	}); err != nil {
 		t.Fatalf("测试 targets: %v", err)
 	}
-	return &schedEnv{testAgentdEnv: env.testAgentdEnv, svc: env.srv.Scheduling()}
+	return &schedEnv{testAgentdEnv: env.testAgentdEnv, svc: mustScheduling(t, env.srv)}
 }
 
 // schedReq 发一个带 Bearer 的任意方法请求，回 (状态码, 响应体)。

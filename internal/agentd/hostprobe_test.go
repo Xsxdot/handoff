@@ -46,9 +46,9 @@ func newDirectSchedEnv(t *testing.T, cfg *config.Config) *schedEnv {
 	}
 	t.Cleanup(func() { _ = dataStore.Close(); _ = ledgerStore.Close() })
 	srv := NewServer(cfg, dataStore, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv.SetupAutomation(ledgerStore)
+	SetupAutomationForTest(t, srv, ledgerStore)
 	ts := testhttp.NewServer(t, srv.Handler())
-	return &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: dataStore, token: cfg.Token}, svc: srv.Scheduling()}
+	return &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: dataStore, token: cfg.Token}, svc: mustScheduling(t, srv)}
 }
 
 func TestCarrierDetectThroughHandlerWritesCoordinatorState(t *testing.T) {
@@ -108,9 +108,9 @@ func newRemoteSchedEnv(t *testing.T, handler http.Handler) (*schedEnv, *httptest
 	}
 	t.Cleanup(func() { _ = dataStore.Close() })
 	srv := NewServer(cfg, dataStore, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv.SetupAutomation(st)
+	SetupAutomationForTest(t, srv, st)
 	ts := testhttp.NewServer(t, srv.Handler())
-	return &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: nil, token: cfg.Token}, svc: srv.Scheduling()}, remote
+	return &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: nil, token: cfg.Token}, svc: mustScheduling(t, srv)}, remote
 }
 
 func TestCarrierDetectRemoteWakesOnlyHostAndWritesLocalRegistry(t *testing.T) {
@@ -279,9 +279,9 @@ func TestCarrierDetectRemoteWithEmptyHomeDir(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = dataStore.Close() })
 	srv := NewServer(cfg, dataStore, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv.SetupAutomation(st)
+	SetupAutomationForTest(t, srv, st)
 	ts := testhttp.NewServer(t, srv.Handler())
-	coordEnv := &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: nil, token: cfg.Token}, svc: srv.Scheduling()}
+	coordEnv := &schedEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: nil, token: cfg.Token}, svc: mustScheduling(t, srv)}
 
 	// 登记远端载体，home_dir 为空（代表该机主 HOME）
 	code, body := schedReq(t, coordEnv, http.MethodPut, "/api/squads/carriers/c-remote?expect=0",

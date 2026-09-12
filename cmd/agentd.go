@@ -46,6 +46,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/relay"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/Xsxdot/handoff/internal/workspace"
@@ -478,6 +479,25 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// B156.2 协作房间面装配：collab 入站门面 + 换绑端口 + 游标介质。设计上
 	// SetupAutomation 是全仓唯一组装点（target.json assembly 登记），此处激活。
 	srv.SetupAutomation(lst)
+	// B233.14：编制域具体服务在 cmd 组装点构造（scheduling.New 不再落 gateway）。
+	// 注册表由 gateway 经 SchedulingRegistry() 交出台账→Registry 适配；判空拒启动，
+	// 不得把 nil 喂给 New 静默建出坏服务。
+	reg := srv.SchedulingRegistry()
+	if reg == nil {
+		_ = lst.Close()
+		return nil, fmt.Errorf("编制域装配：SchedulingRegistry 为空（SetupAutomation 未装配账本门面）")
+	}
+	sched := scheduling.New(reg)
+	// 保留控制台改机器清单不必重启 agentd：闭包经 Conf() 读活配置。
+	sched.SetKnownMachines(func(name string) bool {
+		cfg := srv.Conf()()
+		if cfg == nil {
+			return false
+		}
+		_, ok := cfg.Targets[name]
+		return ok
+	})
+	srv.SetScheduling(sched)
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
 	srv.StartAutomation(ctx)

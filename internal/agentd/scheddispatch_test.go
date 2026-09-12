@@ -69,14 +69,14 @@ func seedSquadFlow(t *testing.T, env *ledgerEnv, squad string, count int) []stri
 func setupSquadEnv(t *testing.T, carrierMax int) (*ledgerEnv, *fakeTargetMachine) {
 	t.Helper()
 	env := newLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger) // 真实 facadeAsRegistry + scheduling.Service
+	SetupAutomationForTest(t, env.srv, env.ledger) // 真实 facadeAsRegistry + scheduling.Service
 	yes := true
 	ftm := newFakeTargetMachine(t, &yes)
 	registerFakeTarget(t, env.srv, "ftm", ftm)
 	if ver := seedDisciplineOnLedger(t, env, discipline.NameImplement, "# 实现纪律\n完成即 commit\n"); ver < 1 {
 		t.Fatalf("纪律块版本异常: %d", ver)
 	}
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "c1", Machine: "ftm",
 		CLI: "opencode", Credential: scheduling.CredentialStandalone,
 		MaxConcurrency: carrierMax, Status: scheduling.StatusOnline})
@@ -251,7 +251,7 @@ func TestB23310CardSelectDoesNotOccupyBeforeHTTP(t *testing.T) {
 	t.Run("满员排队不保存载体", func(t *testing.T) {
 		env := setupNoPTYSquadEnv(t, 1)
 		ids := seedSquadFlow(t, env, "sq1", 2)
-		if _, err := env.srv.Scheduling().Admit(scheduling.IgnitionRequest{Card: ids[0], Squad: "sq1", Actor: "test"}); err != nil {
+		if _, err := mustScheduling(t, env.srv).Admit(scheduling.IgnitionRequest{Card: ids[0], Squad: "sq1", Actor: "test"}); err != nil {
 			t.Fatalf("预置满员: %v", err)
 		}
 		node := ledger.NodeDef{Name: "implement", Override: ledger.NodeOverride{Squad: "sq1"}}
@@ -378,7 +378,7 @@ func TestSquadNodeRejectsNamedTargetAndExecutor(t *testing.T) {
 func TestSquadNodeRejectsAreDistinctFromQueueing(t *testing.T) {
 	t.Run("空成员小队报ErrNoHealthy", func(t *testing.T) {
 		env, _ := setupSquadEnv(t, 2)
-		if err := env.srv.Scheduling().PutSquad(scheduling.Squad{Name: "empty",
+		if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{Name: "empty",
 			Role: scheduling.RoleExecutor, Members: nil}, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -390,7 +390,7 @@ func TestSquadNodeRejectsAreDistinctFromQueueing(t *testing.T) {
 	})
 	t.Run("协调者小队报角色不符", func(t *testing.T) {
 		env, _ := setupSquadEnv(t, 2)
-		if err := env.srv.Scheduling().PutSquad(scheduling.Squad{Name: "coord",
+		if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{Name: "coord",
 			Role: scheduling.RoleCoordinator, Members: []scheduling.SquadMember{{Carrier: "c1"}}}, 0); err != nil {
 			t.Fatal(err)
 		}
@@ -434,7 +434,7 @@ func (r casConflictOnRunning) Delete(kind, id string, expectVersion int, actor s
 // 成功。强制正控：把该分类折进成功/其他分支本测试必翻红。
 func TestSquadAdmitBudgetExhaustedSurfacesOnExecutionSide(t *testing.T) {
 	env := newReceiverTestEnv(t)
-	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "carrier-A", Machine: "local", CLI: "fake", HomeDir: "/home/carrier-A",
 		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
 		Status: scheduling.StatusOnline})
@@ -492,8 +492,8 @@ var legacyGolden = []string{
 
 func TestLegacyNodeEventSequenceUnchanged(t *testing.T) {
 	env := newLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger) // 刻意在场：证明调度在场也不被触碰
-	yes := true                         // 同金样取证程序：能力位必须为真，派发链才走得到 wire
+	SetupAutomationForTest(t, env.srv, env.ledger) // 刻意在场：证明调度在场也不被触碰
+	yes := true                                    // 同金样取证程序：能力位必须为真，派发链才走得到 wire
 	ftm := newFakeTargetMachine(t, &yes)
 	registerFakeTarget(t, env.srv, "ftm", ftm)
 	seedDisciplineOnLedger(t, env, discipline.NameImplement, "# 实现纪律\n完成即 commit\n")

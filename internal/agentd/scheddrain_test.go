@@ -63,7 +63,7 @@ func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 		return "pty-stub", nil
 	}
 	allowCarrierMachines(t, env.srv, "ftm")
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
@@ -116,7 +116,7 @@ func (r *firstCoordinatorSlotFullRegistry) Delete(kind, id string, expectVersion
 func TestDrainQueuesDefersCoordinatorNoSlotAndContinues(t *testing.T) {
 	env := setupNoPTYSquadEnv(t, 1)
 	runner := seedQueueCoordinator(t, env)
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
 		Name: "c2", Machine: "ftm", CLI: "opencode", HomeDir: "/tmp/c2-home",
 		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
@@ -133,12 +133,12 @@ func TestDrainQueuesDefersCoordinatorNoSlotAndContinues(t *testing.T) {
 	}))
 	ids := seedSquadFlow(t, env, "sq2", 1)
 	coordCard := createCoordCard(t, env)
-	if _, err := env.srv.Scheduling().Enqueue(scheduling.IgnitionRequest{
+	if _, err := mustScheduling(t, env.srv).Enqueue(scheduling.IgnitionRequest{
 		Card: coordCard, Squad: "coord", Actor: "test", Ready: true,
 	}, scheduling.KindLaunchQueue); err != nil {
 		t.Fatalf("入队协调者: %v", err)
 	}
-	if _, err := env.srv.Scheduling().Enqueue(scheduling.IgnitionRequest{
+	if _, err := mustScheduling(t, env.srv).Enqueue(scheduling.IgnitionRequest{
 		Card: ids[0], Squad: "sq2", Node: "implement", Actor: "test", Ready: true,
 	}, scheduling.KindIgnitionQueue); err != nil {
 		t.Fatalf("入队执行者: %v", err)
@@ -160,7 +160,7 @@ func TestDrainQueuesDefersCoordinatorNoSlotAndContinues(t *testing.T) {
 		}
 		return false
 	})
-	rows, err := env.srv.Scheduling().QueueSnapshot()
+	rows, err := mustScheduling(t, env.srv).QueueSnapshot()
 	if err != nil {
 		t.Fatalf("读回填队列: %v", err)
 	}
@@ -184,19 +184,19 @@ func setupNoPTYSquadEnv(t *testing.T, carrierMax int) *ledgerEnv {
 		t.Fatalf("准备配置: %v", err)
 	}
 	env.srv.SetConfigPath(configPath)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	yes := true
 	ftm := newFakeTargetMachine(t, &yes)
 	registerFakeTarget(t, env.srv, "ftm", ftm)
 	if ver := seedDisciplineOnLedger(t, env, discipline.NameImplement, "# 实现纪律\n完成即 commit\n"); ver < 1 {
 		t.Fatalf("纪律块版本异常: %d", ver)
 	}
-	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "c1", Machine: "ftm", CLI: "opencode",
 		Credential: scheduling.CredentialStandalone, MaxConcurrency: carrierMax,
 		Status: scheduling.StatusOnline,
 	})
-	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{
+	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{
 		Name: "sq1", Role: scheduling.RoleExecutor, Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}},
 	}, 0); err != nil {
 		t.Fatalf("登记执行者小队: %v", err)
@@ -216,7 +216,7 @@ func TestAutomationQueueRestartReplay(t *testing.T) {
 		{req: scheduling.IgnitionRequest{Card: ids[1], Squad: "sq1", Node: "implement", Actor: "test", Ready: true}, kind: scheduling.KindIgnitionQueue},
 		{req: scheduling.IgnitionRequest{Card: ids[2], Squad: "sq1", Node: "implement", Actor: "test", Ready: true}, kind: scheduling.KindIgnitionQueue},
 	} {
-		if _, err := env.srv.Scheduling().Enqueue(req.req, req.kind); err != nil {
+		if _, err := mustScheduling(t, env.srv).Enqueue(req.req, req.kind); err != nil {
 			t.Fatalf("入队 %s: %v", req.kind, err)
 		}
 	}
@@ -232,7 +232,7 @@ func TestAutomationQueueRestartReplay(t *testing.T) {
 	waitFor(t, func() bool {
 		return !env.srv.cardStepInFlight(ids[1]) && !env.srv.cardStepInFlight(ids[2])
 	})
-	rows, err := env.srv.Scheduling().QueueSnapshot()
+	rows, err := mustScheduling(t, env.srv).QueueSnapshot()
 	if err != nil {
 		t.Fatalf("读队列快照: %v", err)
 	}
@@ -263,7 +263,7 @@ func TestAutomationIgnitionDrainWakesBeforeTrueDispatch(t *testing.T) {
 	if err := env.ledger.BindSeat(ids[1], identity, proto.SeatSourceCoordinate); err != nil {
 		t.Fatalf("写预绑定协调者席位: %v", err)
 	}
-	if _, err := env.srv.Scheduling().Enqueue(scheduling.IgnitionRequest{
+	if _, err := mustScheduling(t, env.srv).Enqueue(scheduling.IgnitionRequest{
 		Card: ids[1], Squad: "sq1", Node: "implement", Actor: "test", Ready: true,
 	}, scheduling.KindIgnitionQueue); err != nil {
 		t.Fatalf("入队: %v", err)
@@ -293,7 +293,7 @@ func TestAutomationIgnitionDrainWakesBeforeTrueDispatch(t *testing.T) {
 
 func TestAutomationRoundReleasesCoordinatorCounters(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	_ = seedQueueCoordinator(t, env)
 	cardID := createCoordCard(t, env)
 	for _, tc := range []struct {
@@ -336,7 +336,7 @@ func TestAutomationRoundReleasesCoordinatorCounters(t *testing.T) {
 
 func TestAutomationReleaseKicksDrain(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	seedQueueCoordinator(t, env)
 	cardID := createCoordCard(t, env)
 	if _, err := env.srv.launchCoordinatorRound(context.Background(), cardID, "coordinate"); err != nil {

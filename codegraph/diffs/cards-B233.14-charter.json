@@ -1,0 +1,186 @@
+{
+ "view": "cards/B233.14-charter",
+ "base": "02180141",
+ "summary": "B233.14 编制入站封界：gateway 持 SchedulingClient 使用方接口；实现期把 scheduling.New 上移 cmd 组装点（SetupAutomation 不再 new）、新增 SchedulingRegistry 交出账本→Registry 适配，SetScheduling/Scheduling 签名改为接口，*scheduling.Service 满足接口。空 HOME×非空纪律缝（taskProfileHome/userHomeDir/prepareTaskProfile/expandCarrierHome）座落 internal/orchestration，该包由未吸收的 B233.13 视图引入，本 baseline-relative 视图无法表达，记入台账图覆盖债。",
+ "containersAdded": {
+  "k_agentd_scheduling_client": {
+   "label": "agentd 编制 client 接口",
+   "kind": "实体",
+   "domain": "d_coordination_api"
+  }
+ },
+ "nodesAdded": {
+  "m_agentd_SchedulingClient": {
+   "kind": "model",
+   "container": "k_agentd_scheduling_client",
+   "order": 403,
+   "name": "SchedulingClient",
+   "file": "internal/agentd/scheduling_client.go",
+   "line": 24,
+   "signature": "type SchedulingClient interface {",
+   "summary": "SchedulingClient 是 gateway 生产路径消费编制域能力的唯一接口。",
+   "fields": [
+    [
+     "DefaultCarrier",
+     "func() (string, error)",
+     ""
+    ],
+    [
+     "Carrier",
+     "func(name string) (scheduling.Carrier, error)",
+     ""
+    ],
+    [
+     "Squad",
+     "func(name string) (scheduling.Squad, error)",
+     ""
+    ],
+    [
+     "AdmitCarrier",
+     "func(name string) (scheduling.Binding, error)",
+     ""
+    ],
+    [
+     "Admit",
+     "func(req scheduling.IgnitionRequest) (scheduling.Binding, error)",
+     ""
+    ],
+    [
+     "AdmitFrozen",
+     "func(binding scheduling.Binding) (scheduling.Binding, error)",
+     ""
+    ],
+    [
+     "Select",
+     "func(req scheduling.IgnitionRequest) (scheduling.Binding, error)",
+     ""
+    ],
+    [
+     "LaunchAdmit",
+     "func(squadName string) (scheduling.Binding, error)",
+     ""
+    ],
+    [
+     "Release",
+     "func(squadName, carrierName string) error",
+     ""
+    ],
+    [
+     "Enqueue",
+     "func(req scheduling.IgnitionRequest, kind string) (int, error)",
+     ""
+    ],
+    [
+     "PopReady",
+     "func(kind string) (scheduling.IgnitionRequest, bool, error)",
+     ""
+    ],
+    [
+     "QueueSnapshot",
+     "func() ([]scheduling.QueuedRequest, error)",
+     ""
+    ],
+    [
+     "CarrierRows",
+     "func() ([]scheduling.CarrierRow, error)",
+     ""
+    ],
+    [
+     "SquadRows",
+     "func() ([]scheduling.SquadRow, error)",
+     ""
+    ],
+    [
+     "PutCarrier",
+     "func(c scheduling.Carrier, expect int) error",
+     ""
+    ],
+    [
+     "DeleteCarrier",
+     "func(name string, expect int) error",
+     ""
+    ],
+    [
+     "PutSquad",
+     "func(q scheduling.Squad, expect int) error",
+     ""
+    ],
+    [
+     "ApplyDetect",
+     "func(name string, ev scheduling.DetectEvidence, detail string) (scheduling.Carrier, error)",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "n_agentd_Server_SchedulingRegistry": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1877,
+   "name": "Server.SchedulingRegistry",
+   "file": "internal/agentd/server.go",
+   "line": 2773,
+   "signature": "func (s *Server) SchedulingRegistry() schedclient.Registry",
+   "returns": "schedclient.Registry",
+   "summary": "SchedulingRegistry 返回账本门面适配成的编制域持久化端口，供 cmd 组装点构造 *scheduling.Service（B233.14：scheduling.New 上移 cmd）。autoLedger 未装配时返回 nil。"
+  }
+ },
+ "nodesModified": {
+  "n_agentd_Server_SetScheduling": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 62,
+   "name": "Server.SetScheduling",
+   "file": "internal/agentd/server.go",
+   "line": 2753,
+   "signature": "func (s *Server) SetScheduling(svc SchedulingClient)",
+   "signatureOld": "func (s *Server) SetScheduling(svc *scheduling.Service)",
+   "params": [
+    [
+     "svc",
+     "SchedulingClient",
+     "编制域实现（使用方接口）"
+    ]
+   ],
+   "summary": "注入编制域实现（使用方接口）。B233.14：参数由具体 *scheduling.Service 改为 gateway 使用方接口；typed-nil 落 nil 保住未就绪 503 守卫。"
+  },
+  "n_agentd_Server_Scheduling": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1876,
+   "name": "Server.Scheduling",
+   "file": "internal/agentd/server.go",
+   "line": 2809,
+   "signature": "func (s *Server) Scheduling() SchedulingClient",
+   "signatureOld": "func (s *Server) Scheduling() *scheduling.Service",
+   "returns": "SchedulingClient",
+   "summary": "Scheduling 返回编制域能力（使用方接口）；未装配返回 nil（handler 据此降级 503）。B233.14：返回类型由 *scheduling.Service 改为 SchedulingClient。"
+  }
+ },
+ "edgesAdded": [
+  [
+   "n_cmd_setupLedger",
+   "n_scheduling_New"
+  ],
+  [
+   "n_cmd_setupLedger",
+   "n_agentd_Server_SchedulingRegistry"
+  ],
+  [
+   "n_cmd_setupLedger",
+   "n_agentd_Server_SetScheduling"
+  ]
+ ],
+ "edgesDeleted": [
+  [
+   "n_agentd_Server_SetupAutomation",
+   "n_scheduling_New"
+  ]
+ ],
+ "implementsAdded": [
+  [
+   "m_scheduling_Service",
+   "m_agentd_SchedulingClient"
+  ]
+ ]
+}

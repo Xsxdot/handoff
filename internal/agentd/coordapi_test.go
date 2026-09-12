@@ -93,7 +93,7 @@ func allowCarrierMachines(t *testing.T, s *Server, names ...string) {
 func newCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	t.Helper()
 	env := newLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	allowCarrierMachines(t, env.srv, "linux-01", "m1", "m2")
 	env.srv.openCoordTUI = func(card string, carrier scheduling.Carrier, spec keysclient.SessionSpec) (string, error) {
 		return "pty-stub", nil
@@ -108,7 +108,7 @@ func newCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 func newNoPTYCoordEnv(t *testing.T) (*ledgerEnv, *fakeCoordRunner) {
 	t.Helper()
 	env := newNoPTYLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	allowCarrierMachines(t, env.srv, "linux-01", "m1", "m2")
 	env.srv.openCoordTUI = func(card string, carrier scheduling.Carrier, spec keysclient.SessionSpec) (string, error) {
 		return "pty-stub", nil
@@ -160,7 +160,7 @@ func createCoordCard(t *testing.T, env *ledgerEnv) string {
 // seedCoordinatorSquad 登记协调者载体 + 小队（物理位/政策位各 1）。
 func seedCoordinatorSquad(t *testing.T, env *ledgerEnv) {
 	t.Helper()
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "c1", Machine: "linux-01",
 		CLI: "opencode", HomeDir: "/home/coordinator",
 		Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline})
@@ -355,7 +355,7 @@ func TestCoordRebindSourceOnlySeatDoesNotLaunch(t *testing.T) {
 // 含指路文案与最小参数示例（岔口四 B 附加约束）。执行者小队在场证明过滤按 role 生效。
 func TestCoordLaunchNoSquadActionableError(t *testing.T) {
 	env, _ := newCoordEnv(t)
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "e1", Machine: "linux-01",
 		CLI: "opencode", Credential: scheduling.CredentialStandalone,
 		Status: scheduling.StatusOnline})
@@ -379,7 +379,7 @@ func TestCoordLaunchNoSquadActionableError(t *testing.T) {
 // 错误逐一点名候选。
 func TestCoordLaunchAmbiguousSquadConflict(t *testing.T) {
 	env, _ := newCoordEnv(t)
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	for _, c := range []scheduling.Carrier{
 		{Name: "c1", Machine: "m1", CLI: "opencode", Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline},
 		{Name: "c2", Machine: "m2", CLI: "opencode", Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline},
@@ -671,12 +671,12 @@ func TestCoordStatusQuotesHomePathWithSpaces(t *testing.T) {
 		HomeDir:    "/home/coord docs",
 		Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline,
 	}
-	putOnlineCarrier(t, env.srv.scheduling, c1)
+	putOnlineCarrier(t, mustScheduling(t, env.srv), c1)
 	squad := scheduling.Squad{
 		Name: "coord", Role: scheduling.RoleCoordinator,
 		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 1}},
 	}
-	if err := env.srv.scheduling.PutSquad(squad, 0); err != nil {
+	if err := mustScheduling(t, env.srv).PutSquad(squad, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)
 	}
 	if err := env.st.CreateProjectLocation(&proto.ProjectLocation{
