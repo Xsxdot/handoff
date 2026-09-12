@@ -202,7 +202,7 @@ S7 纪律与 roadmap（无代码依赖） ────────────�
   - 无寻址会话消息（会话房间、user、无 mentions、ReplyTo=0）→ fake keystone 零 Wake 调用，事件进 seen、游标推进。
   - `@卡号`（卡 ∈ 会话、有席位）→ 恰一次 `WakeMessage{Card:该卡}`，Summary 含命中条正文。
   - 空座 `@卡号`、`@非成员`、`@不存在的卡` → 零 Wake。
-  - `reply_to` 指向席位作者的消息 → 唤醒该卡；指向已换绑前的旧席位 → 唤醒**当前**席位（作者身份按当前 driver_session 解析的反例：旧席位身份不再命中）。
+  - `reply_to` 指向席位作者的消息 → 唤醒该卡；指向已换绑前的旧席位 → 唤醒**当前**席位（作者身份按当前 driver_session 解析的反例：旧席位身份不再命中）。**（2026-09-12 修订：本行转述失真，按契约执行——条 24 冻结 reply_to 寻址原作者**身份**（Ticket 0 ResolveDelivery 同），重绑豁免仅 `@卡号`（条 21）、唤醒目标须为当前成员（条 47）；旧席位不命中 → 外部分支进未读不唤醒，要重绑安全的唤醒用 `@卡号`（spec 用户故事 8）。B358.3 plan 拍板#1 回写。）**
   - `by_system`/pointer 消息、`session_created/archived/card_joined/card_left` 结构事件 → 零 Wake（结构事件不得被新代码当成 room_message 处理）。
 - 源码级守卫（先例 `internal/agentd/pointer_gate_test.go#TestPointerRouteAbsentFromSource`）：唤醒路径测试断言 wakeconsumer 源不再含「`Kind==user` 即唤醒」形状、唤醒调用前必经 `MessageWakeTargets`/`AddressesCard`；`grep -n "decodeHumanRoomMessage" internal/agentd/` 零命中或该函数已重构为寻址前置。
 - 既有护栏保持绿：attach 暂缓、seen/cursor、同卡合并、失败升级不自激（`go test ./internal/agentd -count=1` 全量）。
