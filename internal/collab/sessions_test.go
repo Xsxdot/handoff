@@ -206,7 +206,8 @@ func TestResolveDeliveryPurity(t *testing.T) {
 	}
 }
 
-// TestSessionArchiveReadOnly 归档后只读：归档会话不得再拉卡进群。
+// TestSessionArchiveReadOnly 归档后只读（contract §4.1 条 7）：归档会话不得
+// 再拉卡进群，且拒绝路径不落事件（stream 上不得出现 session_card_joined）。
 func TestSessionArchiveReadOnly(t *testing.T) {
 	svc, st, _ := newSessionFixture(t)
 	card := sessionCard(t, st, "归档会话卡")
@@ -219,6 +220,68 @@ func TestSessionArchiveReadOnly(t *testing.T) {
 	}
 	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err == nil {
 		t.Fatal("归档会话不得再拉卡进群")
+	}
+	events, err := st.EventsFromAsc([]string{}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, ev := range events {
+		if ev.Type == ledger.EvSessionCardJoined {
+			t.Fatalf("归档后 JoinCard 被拒不得落事件（条 7）: %+v", ev)
+		}
+	}
+}
+
+// TestArchiveSessionLandsExactlyOneEvent contract §4.1 条 6：归档幂等且全生命
+// 周期恰落一条 EvSessionArchived——重复归档不落第二条（协调者拍板 ①：Store 级
+// 已归档短路修复扩进本卡有界文件集 internal/ledger/sessions.go，强读法生效；
+// Store 侧同款断言在 internal/ledger/sessions_test.go，此处锁门面路径）。
+func TestArchiveSessionLandsExactlyOneEvent(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	session, err := svc.CreateSession("恰一条归档事件", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.ArchiveSession(session.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	// 重复归档：幂等 nil，不落第二条（条 6 强读法，拍板 ①）。
+	if err := svc.ArchiveSession(session.ID, "user:sy"); err != nil {
+		t.Fatalf("重复归档应幂等 nil: %v", err)
+	}
+	events, err := st.EventsFromAsc([]string{}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, ev := range events {
+		if ev.Type == ledger.EvSessionArchived && payloadString(ev.Payload, "session") == session.ID {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("一次归档应恰一条 EvSessionArchived（重复归档不叠加），got %d", n)
+	}
+}
+
+// TestSessionOutlivesCardTerminal contract §4.1 条 13：卡终态不导致会话归档
+// （会话生命周期独立，spec §4.1；讨论面可能还在用）。
+func TestSessionOutlivesCardTerminal(t *testing.T) {
+	svc, st := newFixture(t)
+	card := mustAnyCard(t, svc, st)
+	sid := mustSession(t, svc, st, "比卡活得久的会话")
+	if err := svc.JoinCard(sid, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.CloseCard(card.ID, ledger.CloseCancelled, "test"); err != nil {
+		t.Fatalf("置终态: %v", err)
+	}
+	detail, err := svc.SessionDetail(sid)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if detail.Summary.Archived {
+		t.Fatal("卡终态不得归档会话（条 13）")
 	}
 }
 

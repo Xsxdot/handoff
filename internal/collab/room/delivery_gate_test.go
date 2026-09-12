@@ -68,6 +68,49 @@ func TestResolveDeliveryShapeHasNoMemberSet(t *testing.T) {
 	}
 }
 
+// TestVerifyWriterHasNoKindBranches 源码级守卫（B358 废止 kind 书写者矩阵；
+// 先例 TestResolveDeliveryShapeHasNoMemberSet / agentd pointer_gate_test）：
+// VerifyWriter 的形参不得再有 kind、函数体不得引用 proto.RoomMsg* 词表常量
+// ——kind 分权矩阵的任何回潮形状（escalation 绑定者、relay 父卡、user 反绑）
+// 从这里当场红。
+//
+// 为什么是读源码测试而不是缝级断言：被锁对象是「执法代码不含按 kind 分权的
+// 分支」这一源码性质，从 Service.Send 的任何调用构造不出「没有分支」这条
+// 断言（内部锁，理由声明见 plan §接缝覆盖——breakdown §3.2 ③ 的源码审查项
+// 的机器化）。
+func TestVerifyWriterHasNoKindBranches(t *testing.T) {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "room.go", nil, 0)
+	if err != nil {
+		t.Fatalf("解析 room.go: %v", err)
+	}
+	var fn *ast.FuncDecl
+	ast.Inspect(f, func(n ast.Node) bool {
+		if d, ok := n.(*ast.FuncDecl); ok && d.Name.Name == "VerifyWriter" {
+			fn = d
+		}
+		return true
+	})
+	if fn == nil {
+		t.Fatalf("room.go 未找到 VerifyWriter——书写者执法入口不存在")
+	}
+	for _, p := range fn.Type.Params.List {
+		for _, name := range p.Names {
+			if strings.EqualFold(name.Name, "kind") {
+				t.Errorf("VerifyWriter 形参 %q——kind 书写者矩阵已废止（B358 spec §4.2），按 kind 分权的形状不得回潮", name.Name)
+			}
+		}
+	}
+	ast.Inspect(fn, func(n ast.Node) bool {
+		if sel, ok := n.(*ast.SelectorExpr); ok {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "proto" && strings.HasPrefix(sel.Sel.Name, "RoomMsg") {
+				t.Errorf("VerifyWriter 引用 proto.%s——按 kind 分权的矩阵回潮", sel.Sel.Name)
+			}
+		}
+		return true
+	})
+}
+
 // TestWakePathSourceUsesAddressing 扫描投递相关的非测试源码，钉住「扇出禁令」在
 // 仓内的落地：任何按成员集合投递的 helper 都不许出现在 room 包与 collab 门面。
 // 判据：room 包与 collab 根包非测试 .go 文件里，不得出现名为

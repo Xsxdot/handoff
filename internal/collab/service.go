@@ -70,49 +70,110 @@ func New(lc client.LedgerClient) *Service {
 // 不调用则保持 New 的纯内存默认——游标非权威，重启丢失无害、打开房间即自愈。
 func (s *Service) SetCursorStore(st *cursor.Store) { s.cursor = st }
 
-// Send 发消息：白名单 + 书写者执法的唯一写入口（pointer 除外——它只能走
-// Pointer，经本方法一律拒收）。返回落账 seq。
+// Send 发消息：身份与形态执法的唯一写入口（pointer 除外——它只能走 Pointer，
+// 经本方法一律拒收）。返回落账 seq。
 //
-// 执法矩阵（契约 §3.3 逐条 + §4 冻结清单）：kind 词表校验（pointer 拒收）
-// → 房间解析（room.Resolve：存在性 + 只读判定）→ 只读拒写 → 按 kind 的
-// 书写者校验（room.VerifyWriter）→ 经 client 发布。全部规则实现在 room
-// 子包，本方法只做编排。
+// B358 执法路径（锚点翻转后，契约 §3.7 + breakdown §2.4 澄清 1/2）：pointer
+// 拒收 → 房间解析（room.Resolve：存在性，不存在的卡仍 ErrNoRoom）→ 旧房间
+// （卡 / project:<name> / global）只读归档，一律 ErrReadOnly（P5 拍板；错误
+// 语义是「房间在、只是归档」，不是 ErrNoRoom）→ 会话房间：归档只读（门面查
+// 会话本体）→ 书写者执法 → 经 client 发布。kind 不再设白名单——发言自由
+// （spec §4.2 废止 kind 白名单，Task 2 落地）；identity 执法不变，账本仍能
+// 回答「这句话谁说的」。
+//
+// 执法规则实现在 room 子包（执法内核），本方法只做编排；成员集由本门面组装
+// 后送进 room.VerifyWriter（契约 §3.7：Resolve 只解析形态、不查会话表）。
 func (s *Service) Send(roomID string, msg proto.RoomMessage, actor string) (int64, error) {
-	if !room.KindAllowed(msg.Kind) || msg.Kind == proto.RoomMsgPointer {
+	if msg.Kind == proto.RoomMsgPointer {
 		return 0, room.ErrKindNotAllowed
 	}
 	r, err := room.Resolve(s.lc, roomID)
 	if err != nil {
 		return 0, err
 	}
-	if r.ReadOnly {
+	if !room.IsSessionRoom(roomID) {
+		// B358 P5：旧房间只读归档。房间存在性已由 Resolve 判定（不存在的卡
+		// → ErrNoRoom）；走到这里的都是「在但已归档」的房间。
+		log().Info("旧房间已只读归档，发言拒收", "room", roomID, "kind", msg.Kind, "actor", actor)
 		return 0, room.ErrReadOnly
 	}
-	if err := room.VerifyWriter(r, msg.Kind, actor); err != nil {
+	return s.sendToSession(r, msg, actor)
+}
+
+// sessionWriters 组装会话房间的书写者集：显式成员（人与主 agent 的外部会话
+// 身份，P4 统一记法）∪ 会话内各卡的当前席位（席位权威在 cards.driver_session，
+// 换绑后随卡走——breakdown 缺陷族 8 的「换绑剥权」由集合重建天然获得）。空座
+// 卡不产生书写者。账本读失败向上传播（不伪装成 ErrNotWriter——一次读错不该
+// 被说成「你不是成员」，缺陷族 2）。
+func (s *Service) sessionWriters(session proto.Session) ([]string, error) {
+	writers := make([]string, 0, len(session.Members)+len(session.Cards))
+	writers = append(writers, session.Members...)
+	if len(session.Cards) == 0 {
+		return writers, nil
+	}
+	cards, err := s.lc.ListAllCards("")
+	if err != nil {
+		log().Warn("会话书写者集组装失败：读卡列表", "session", session.ID, "cause", err)
+		return nil, err
+	}
+	byID := make(map[string]proto.Card, len(cards))
+	for _, c := range cards {
+		byID[c.ID] = c
+	}
+	for _, cardID := range session.Cards {
+		if c, ok := byID[cardID]; ok && c.DriverSession != "" {
+			writers = append(writers, c.DriverSession)
+		}
+	}
+	return writers, nil
+}
+
+// sendToSession 会话房间的发言路径：归档只读（澄清 ②——不只 JoinCard，发言
+// 同样在门面查会话本体）→ 书写者执法 → 发布（无卡事件，contract 条 33）→
+// B287 触发（kind=user 回复即清提及，Task 1 起延伸到会话房间）。
+// 换绑剥权与成员执法在 Task 3 接入（本任务中段仍是旧 VerifyWriter 签名）。
+func (s *Service) sendToSession(r *room.Room, msg proto.RoomMessage, actor string) (int64, error) {
+	session, err := s.lc.GetSession(r.ID)
+	if err != nil {
+		return 0, mapSessionError(err)
+	}
+	if session.Archived {
+		log().Warn("会话已归档，发言拒收", "room", r.ID, "actor", actor)
+		return 0, room.ErrReadOnly
+	}
+	writers, err := s.sessionWriters(session)
+	if err != nil {
 		return 0, err
 	}
-	msg.Room = roomID
+	if err := room.VerifyWriter(writers, actor); err != nil {
+		return 0, err
+	}
+	msg.Room = r.ID
+	// r.CardID 对会话房间恒为空串（Resolve 会话分支不填卡）——RecordRoomMessage
+	// 的空 cardID 即群级无卡事件（ledger/rooms.go 语义，contract 条 33）。
 	seq, err := s.lc.RecordRoomMessage(r.CardID, msg, actor)
 	if err != nil {
 		return 0, err
 	}
 	if msg.Kind == proto.RoomMsgUser {
-		// B287：用户回复即清该房间的提及类待回复。best-effort：发送已成功，
-		// 消费失败只告警不回滚（回滚要新账本事务面，超出本卡契约零增量约束）。
-		s.consumeRoomMentions(roomID, actor)
+		// B287：用户发言即清该房间的提及类待回复。B358 起会话房间同权——
+		// 会话是唯一活着的发言面，@ 在会话 mention 源只进不出会违背
+		// 「@ 只是提醒」的裁决。best-effort：发送已成功，消费失败只告警
+		// 不回滚（沿用既有取舍）。
+		s.consumeRoomMentions(r.ID, actor)
 	}
-	log().Info("房间消息已落账", "room", roomID, "kind", msg.Kind, "actor", actor, "seq", seq)
+	log().Info("会话消息已落账", "room", r.ID, "kind", msg.Kind, "actor", actor, "seq", seq)
 	return seq, nil
 }
 
 // consumeRoomMentions 用户消息落房后，把该房间内 @本人 且未消费的提及一并消费
-// （B287 拍板「回复即清提及类」）。只处理卡房间：mentions 角标面只认 card_id
-// （agentd handleInbox 用 ev.CardID 亮房间），群级提及本就不进角标；裁决与
-// 工单两源不受影响——它们要求显式审批/答复，不因一句话消掉。
+// （B287 拍板「回复即清提及类」；B358 起卡房间与会话房间同权——卡房间已归档、
+// 会话房间是唯一活着的发言面）。裁决与工单两源不受影响——它们要求显式审批/
+// 答复，不因一句话消掉。
 //
-// 消费身份 = 发送 actor，与收件箱 mention 源（agentd handleInbox 的
-// rooms.Mentions(s.roomUserActor(r),…)）同标识，保证「发前亮、回复后灭」
-// 同一把尺子。幂等由 Consume 兜底；失败逐条告警，下次回复自然重试。
+// 消费身份 = 发送 actor，与收件箱 mention 源（Service.Mentions）同标识，保证
+// 「发前亮、回复后灭」同一把尺子。幂等由 Consume 兜底；失败逐条告警，下次
+// 回复自然重试。
 func (s *Service) consumeRoomMentions(roomID, member string) {
 	events, err := room.ReadAllEvents(s.lc, 0)
 	if err != nil {
@@ -121,7 +182,7 @@ func (s *Service) consumeRoomMentions(roomID, member string) {
 	}
 	consumed := room.ConsumedSeqs(events, member)
 	for _, ev := range events {
-		if ev.Type != room.RoomEventType || ev.CardID != roomID || consumed[ev.Seq] {
+		if ev.Type != room.RoomEventType || !room.SameRoom(ev, roomID) || consumed[ev.Seq] {
 			continue
 		}
 		if !room.MentionsMember(ev, member) {

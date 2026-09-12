@@ -8,7 +8,9 @@ import "errors"
 var (
 	// ErrNoRoom 400：房间不存在
 	ErrNoRoom = errors.New("collab: 房间不存在")
-	// ErrKindNotAllowed 400：kind 不在白名单 / pointer 走错门
+	// ErrKindNotAllowed 400：pointer 走错门（B358 kind 白名单已废止——发言
+	// 自由；本哨兵唯一残余生产点是 Send 拒收 pointer，pointer 只能走
+	// Service.Pointer 专用入口）。
 	ErrKindNotAllowed = errors.New("collab: 消息形态不在白名单")
 	// ErrReadOnly 409：房间并入冻结或终态归档
 	ErrReadOnly = errors.New("collab: 房间已只读（并入冻结或终态归档）")
