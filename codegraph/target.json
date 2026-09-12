@@ -6,7 +6,6 @@
  "assembly": [
   "main.go",
   "internal/agentd/server.go",
-  "internal/agentd/codegraph.go",
   "cmd/agentd.go"
  ],
  "contracts": [
@@ -102,7 +101,14 @@
   {
    "from": "d_cli",
    "to": "d_workspace",
-   "legacyBudget": 9
+   "legacyBudget": 0,
+   "entries": [
+    "workspace（包级函数）",
+    "projectid（包级函数）",
+    "localsync（包级函数）",
+    "localsync 实体"
+   ],
+   "legacyBudgetNote": "B233.15 迁出工作区实现后本方向超配额（11/9）。B233.17：CLI 命令面消费的是工作区公开具名能力（MainWorktreeRoot/ID8）、项目身份 helper（projectid.FromOrigin）与本地同步面（localsync）；这些是直引的公开能力，写成 entries，直调预算按门面口径降到 0（不抬到现状 11）。"
   },
   {
    "from": "d_execution",
@@ -207,12 +213,16 @@
   {
    "from": "d_gateway",
    "to": "d_orchestration",
-   "legacyBudget": 321,
-   "entries": [],
+   "legacyBudget": 0,
+   "entries": [
+    "orchestration.Manager",
+    "orchestration（包级函数）",
+    "orchestration 实体"
+   ],
    "interfaces": [
     "OrchestrationClient"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。B233.10：任务终态迁移继续经既有 agentd.Manager；本卡不新增编排方向或预算。B233.13：gateway 出站封界完成——Manager 迁 internal/orchestration，gateway 生产不再直调编排，只持使用方接口 OrchestrationClient（interfaces 冻结）。原 entry agentd.Manager 已不存在，entries 清空；预算 321 不棘轮，棘轮到 0 留给 B233.17。"
+   "legacyBudgetNote": "B233.13 冻结了使用方接口 OrchestrationClient（interfaces），但预算 321 未棘轮；B233.17 棘轮到 0。entries 用编排实现容器（B233.14 SchedulingClient 同形）；消费方接口进 interfaces，不写 entries。图内 call 边落点仍是实现方法容器，故 entries 保留 provider 容器实现容器，不删容器假绿。B233.17：handler 定义退出 assembly 后，非免检文件对编排实现的直调计入本方向；预算 0 = 一律走 OrchestrationClient，穿透内部即违法。B233.13 未 absorb 的本方向存量边（基线仍指 internal/agentd/manager.go）在实现期经本卡视图与直调改走接口收口。"
   },
   {
    "from": "d_gateway",
@@ -268,8 +278,13 @@
   {
    "from": "d_gateway",
    "to": "d_workspace",
-   "legacyBudget": 1,
-   "legacyBudgetNote": "B233.7：`handleTaskDiff` 沿既有 Manager.Workspace() 能力消费 ResultRef.Commit；不新增控制门面→工作区方向或预算。"
+   "legacyBudget": 0,
+   "legacyBudgetNote": "B233.15 迁出后本方向超配额（17/1）。B233.17：gateway handler 消费工作区公开文件/条目能力与 ResolveBaseBranch/ProbeWorkspaces 等具名能力，以及 projectid helper；直引公开能力写成 entries，直调预算降到 0（不抬到现状 17）。server.go 的 SetManager/handleTask* 组装与 handler 边由 assembly 豁免。",
+   "entries": [
+    "workspace（包级函数）",
+    "workspace 实体",
+    "projectid（包级函数）"
+   ]
   },
   {
    "from": "d_maintenance",
@@ -279,7 +294,8 @@
   {
    "from": "d_maintenance",
    "to": "d_transport",
-   "legacyBudget": 3
+   "legacyBudget": 3,
+   "legacyBudgetNote": "B233.17 复核：三条边为 upgrade/remote.go 的 Client.PullUpdate/PushUpdate/WaitVersion，是远程升级维护消费，不是任务执行面（ExecutionClient）消费点，故本卡核实、不动数字（预算 3）。"
   },
   {
    "from": "d_orchestration",
@@ -329,8 +345,13 @@
   {
    "from": "d_orchestration",
    "to": "d_workspace",
-   "legacyBudget": 19,
-   "legacyBudgetNote": "B233.4：工作区能力契约面 Capability 落在 internal/workspace（d_workspace）。本节点不接线生产路径、不新增 call 边；预算仍 19、现状 18。实现把 Dispatch/Done 接到 Capability 时再声明 entries。禁止把 Capability 放进 k_agentd_fn（那是编排容器）。 B233.7：R9 继续经 Manager.Workspace() 消费 ResultRef 与 Capability.DiffRange；不新增 d_orchestration→d_workspace 方向、接口或预算。"
+   "legacyBudget": 0,
+   "legacyBudgetNote": "B233.15 迁出后本方向超配额（49/19）。B233.17：编排经 Manager 持有的工作区 Capability 具名能力与公开工作区函数消费；直引公开能力/类型写成 entries，直调预算降到 0（不抬到现状 49）。基线残留经 internal/agentd（DirtyWorktreeError/Mirror）的陈旧归属边属 B233.13 未 absorb，实现期随本卡收口。",
+   "entries": [
+    "workspace（包级函数）",
+    "workspace 实体",
+    "projectid（包级函数）"
+   ]
   },
   {
    "from": "d_policy",
@@ -340,7 +361,8 @@
   {
    "from": "d_policy",
    "to": "d_transport",
-   "legacyBudget": 2
+   "legacyBudget": 2,
+   "legacyBudgetNote": "B233.17 复核：两条边为 config.validate→proxycfg.Validate、config.Load→proxycfg.Redact，是代理参数解析/脱敏，不是跨机执行面消费点（与 ExecutionClient 收窄无关），故本卡核实、不动数字（预算 2）。"
   },
   {
    "from": "d_sessions",
@@ -364,12 +386,18 @@
   {
    "from": "d_workspace",
    "to": "d_orchestration",
-   "legacyBudget": 2
+   "legacyBudget": 0,
+   "entries": [],
+   "legacyBudgetNote": "B233.15 后本方向 3 条直调均系基线陈旧归属（internal/agentd 的 agentd 实体/包级函数被 best 归 d_orchestration，实现已在别包）。B233.17：工作区不得反向依赖编排；预算 0、无 entries。残留边随完整图重扫/B233.13 absorb 清。"
   },
   {
    "from": "d_workspace",
    "to": "d_protocol",
-   "legacyBudget": 3
+   "legacyBudget": 0,
+   "entries": [
+    "proto 实体"
+   ],
+   "legacyBudgetNote": "B233.15 迁出后本方向超配额（23/3）。B233.17：proto 是词表包，工作区对 proto DTO 的直引是设计允许的类型跨缝；全部 23 条均落「proto 实体」容器，写成 entries，预算按门面口径降到 0（不抬到现状 23）。"
   },
   {
    "from": "d_cli",
