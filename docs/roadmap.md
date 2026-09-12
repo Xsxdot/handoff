@@ -158,6 +158,12 @@
 - **transitClaim 早幂等 / CAS-loser 重读无独立缝测**：handler `Claimed` 门变异已红（`TestB23313ConcurrentDoneReleasesOnce` before=v1 after=v3）。协调者把 CAS-loser `return true` 变异后 B23313ConcurrentDone 仍绿。来源：review-3 minor；acceptance 复验。
 - **真机 OpenCode 未验**：并发 Done 只核过夹具；未跑真实会话。来源：B233.13 acceptance；用户未要求 live OpenCode。
 
+## 来自 B233.14 验收（2026-09-12，DUT `d8931e96`，合线 absorb `9d785ae5`）
+
+- **真机 OpenCode / 空 HOME 真机派发未验**：空 HOME×纪律只核过夹具。来源：B233.14 plan §6；acceptance 未跑 live。
+- **taskProfileHome 图覆盖债**：写入点助手在 `internal/orchestration`，B233.13 视图未 absorb，本卡 baseline-relative 视图不能重复声明 `k_orchestration_fn`。合线后 B233.14 absorb 已过（+2 节点）；orchestration 函数组仍靠 13 重扫。来源：B233.14 图对账。
+- **TestRepoContractGate dead-interface OrchestrationClient**：B233.13 absorb 拒收遗留。来源：B233.13 finish；B233.14 合后全量仍红。
+
 ## 来自 B353 spec（2026-09-09）
 
 - **两次 wait 之间无人订阅的真空**：一次性 wait 退出到下一挂之间没人听事件（08-11 曾空转 7h）。本卡不另开实现、不做常驻订阅者；grok/Claude 走 `--follow` 避开真空，opencode/Codex 接受偶发。若以后做 handoff 进程内常驻订阅，从本条重走 spec。来源：`docs/superpowers/specs/b353.md` Out of Scope。
