@@ -431,3 +431,5 @@ func IsAddressed(msg proto.RoomMessage, replyAuthor string) bool
 - 源码守卫：`delivery_gate_test.go` 本轮跑过。
 - 三重闸门：§6 记录「无命中」及三条审计依据，非空着。
 - 图三闸：`codegraph validate --view cards-B358-charter` 本视图 0 issue；`codegraph check --view cards-B358-charter` fails=6（与基线逐条相同、无本卡新增）。
+
+> **修订记录（breakdown 出稿轮，2026-09-12）**：三条边界澄清，不新增接缝——① 会话房间书写执法归门面（actor ∈ 显式成员 ∪ 会话内各卡当前席位；spec §6 接缝 #1 的「非成员不能发言」由 `Service.Send` 路径执法，`room.Resolve` 只解析形态）；② 归档只读判定同样由 `Service.Send` 查会话本体（§3.7 的门面职责覆盖发言路径，不只 JoinCard）；③ 成员状态 `listening` 在本卡无生产载体（租约只有到期时刻、`RenewDriverLease` 生产零调用方），生产只报 `working`（有未过期租约时）/`last_active`/`empty`，`listening` 保留作词表位、随 OOS 心跳路径启用。同轮发现三处疑似缺口（外部会话订阅通道签名、初始坐下的席位事件、卡收口 timeline kind 值）按纪律**退回 contract**，不在拆解边加；见 breakdown 稿 §2。
