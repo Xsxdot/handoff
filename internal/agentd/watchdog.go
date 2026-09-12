@@ -268,7 +268,7 @@ func scanStateMismatch(st *store.Store, hub *Hub, startedAt time.Time, minAge ti
 			continue
 		}
 		// 审计事件：progress，文本含原始事件 seq（不补第二条 failed 事件）
-		evt, aerr := st.AppendEvent(t.ID, proto.EventTypeProgress, progressPayload{
+		evt, aerr := st.AppendEvent(t.ID, proto.EventTypeProgress, ProgressPayload{
 			Text: fmt.Sprintf("失配对账：任务状态已补正为 failed（对账前的 failed 事件 seq=%d）", latest.Seq),
 		})
 		if aerr != nil {
@@ -438,7 +438,7 @@ func scanTaskProcs(st *store.Store, hub *Hub, budget, hardLimit int,
 func emitReclaimFailed(st *store.Store, hub *Hub, taskID string, used, hardLimit int, cause error, log *slog.Logger) {
 	text := fmt.Sprintf("强制回收失败：任务进程数 %d 超过硬上限 %d，但 executor 未能停止（原因：%v）。"+
 		"任务保持活跃并将每轮重试，请用 handoff status %s 确认后人工处理", used, hardLimit, cause, taskID)
-	evt, err := st.AppendEvent(taskID, proto.EventTypeProgress, progressPayload{Text: text})
+	evt, err := st.AppendEvent(taskID, proto.EventTypeProgress, ProgressPayload{Text: text})
 	if err != nil {
 		log.Error("追加强制回收失败提示事件失败", "task", taskID, "cause", err)
 		return
@@ -579,7 +579,7 @@ func RecoverOnStartup(st *store.Store, hub *Hub, probe func(taskID string) bool,
 		}
 		failed++
 		log.Info("执行器已不在，任务转 waiting_review 交协调者", "task", t.ID, "alive", false, "state", t.State)
-		reconcileExecutorGone(st, hub, t.ID, "agentd 重启后执行器已不在", log, sweep)
+		ReconcileExecutorGone(st, hub, t.ID, "agentd 重启后执行器已不在", log, sweep)
 	}
 	log.Info("启动恢复完成", "recovered", recovered, "failed", failed, "waiting_review_kept", kept)
 	return nil

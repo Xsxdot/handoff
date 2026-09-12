@@ -4,19 +4,19 @@ package agentd
 
 import (
 	"context"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"os"
 	"strings"
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
-	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 func TestDispatchPersistsFrozenIdentity(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
-	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	if m.Workspace() == nil {
 		m.SetWorkspace(workspace.NewCapability())
 	}
@@ -30,7 +30,7 @@ func TestDispatchPersistsFrozenIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
-	got, err := m.st.GetTask(task.ID)
+	got, err := st.GetTask(task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -43,7 +43,6 @@ func TestDispatchEmptyExecutorDoesNotInventCarrier(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
-	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "", NewWorktree: true,
@@ -59,7 +58,7 @@ func TestDispatchEmptyExecutorDoesNotInventCarrier(t *testing.T) {
 func TestHistoryTaskIgnoresLiveCarrierHome(t *testing.T) {
 	repo := initTestRepo(t)
 	fk := fake.New(nil)
-	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 	home := "/old/home"
@@ -70,7 +69,7 @@ func TestHistoryTaskIgnoresLiveCarrierHome(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := m.st.GetTask(task.ID)
+	got, err := st.GetTask(task.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +79,8 @@ func TestHistoryTaskIgnoresLiveCarrierHome(t *testing.T) {
 }
 
 func TestDispatchDoesNotImportSchedulingResolver(t *testing.T) {
-	src, err := os.ReadFile("manager.go")
+	// B233.13：Manager 已迁至 internal/orchestration，读迁出后的实现文件断言。
+	src, err := os.ReadFile("../orchestration/manager.go")
 	if err != nil {
 		t.Fatal(err)
 	}

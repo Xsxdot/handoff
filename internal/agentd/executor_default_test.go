@@ -23,8 +23,11 @@ func newExecDefaultEnv(t *testing.T, def, model string, execs ...string) *testAg
 	for _, n := range execs {
 		ads[n] = &failStartAdapter{}
 	}
-	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
-		env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
+	mgr := newManagerForTest(t, ManagerDeps{
+		Store: env.st, Hub: env.srv.Hub(), Ads: ads, Cfg: env.srv.conf(),
+		EnvMapping: env.srv.EnvMapping, Gate: newTestGate(t), Log: discardLogger(),
+		LiveConfig: env.srv.Conf(),
+	})
 	env.srv.SetManager(mgr)
 	env.mgr = mgr
 	return env
@@ -73,13 +76,8 @@ func TestExecutorDefaultPutSaves(t *testing.T) {
 	if saved.Default != "codex" || saved.Model != "gpt-5.6-luna" {
 		t.Fatalf("落盘 = %+v", saved)
 	}
-	// 承重：不重建 Manager，派发路径立即用新值
-	if name, _, err := env.mgr.resolveExecutor(""); err != nil || name != "codex" {
-		t.Fatalf("resolveExecutor = %q, err = %v，想要 codex", name, err)
-	}
-	if got := env.mgr.resolveModel("", "codex"); got != "gpt-5.6-luna" {
-		t.Fatalf("resolveModel = %q，想要 gpt-5.6-luna", got)
-	}
+	// 承重「不重建 Manager，派发路径立即用新值」的 Manager 内部断言已迁至
+	// internal/orchestration（B233.13：Manager 不再与 gateway 同包）。
 }
 
 func TestExecutorDefaultPutClearsModel(t *testing.T) {
@@ -93,9 +91,7 @@ func TestExecutorDefaultPutClearsModel(t *testing.T) {
 	if resp.Model != "" {
 		t.Fatalf("model = %q，想要空串", resp.Model)
 	}
-	if got := env.mgr.resolveModel("", "opencode"); got != "" {
-		t.Fatalf("resolveModel = %q，想要空串（清空后由执行器自身默认接管）", got)
-	}
+	// 「清空后由执行器自身默认接管」的 Manager 内部断言已迁至 internal/orchestration。
 }
 
 func TestExecutorDefaultPutRejects(t *testing.T) {

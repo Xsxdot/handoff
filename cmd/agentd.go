@@ -40,6 +40,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgermirror"
 	"github.com/Xsxdot/handoff/internal/logx"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/pathenv"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
@@ -153,7 +154,7 @@ var agentdCmd = &cobra.Command{
 
 		// 审批链接线：配置启用了 approver 时构造裁决器；黑名单正则等配置错误
 		// 直接启动失败（属配置错误，改配置重启即可，不该带病运行）
-		ap, err := agentd.NewApprover(cfg.Approver, envRes, logger)
+		ap, err := orchestration.NewApprover(cfg.Approver, envRes, logger)
 		if err != nil {
 			return fmt.Errorf("初始化审批链: %w", err)
 		}
@@ -219,10 +220,11 @@ var agentdCmd = &cobra.Command{
 				return fmt.Errorf("codex 环境预检未通过: %w", err)
 			}
 		}
-		srv.SetProviders(agentd.RegistryFromAds(ads))
+		srv.SetProviders(orchestration.RegistryFromAds(ads))
 		srv.SetRuleLoader(loadCarrierRules)
-		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, srv.EnvMapping, ap, gate, logger)
+		mgr := orchestration.NewManager(st, srv.Hub(), ads, cfg, srv.EnvMapping, ap, gate, logger)
 		mgr.SetWorkspace(workspace.NewCapability())
+		mgr.SetLiveConfig(srv.Conf()) // B233.13 P1：活配置注入移出 SetManager，改组装点显式接线
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
@@ -503,7 +505,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 // bindApproverOneShot 绑定审批者使用的 OneShot 能力。
 // 架构法边界：组装点只从同一 ads Bundle 取 OneShot；未实现能力必须启动失败，
 // 禁止另起一份按名称构造表。
-func bindApproverOneShot(ap *agentd.Approver, ads map[string]executor.Adapter, name string, log *slog.Logger) error {
+func bindApproverOneShot(ap *orchestration.Approver, ads map[string]executor.Adapter, name string, log *slog.Logger) error {
 	if ap == nil || name == "" {
 		return nil
 	}

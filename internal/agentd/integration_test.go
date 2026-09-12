@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"io"
 	"log/slog"
 	"net/http"
@@ -34,6 +35,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	orchestration "github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -59,7 +61,7 @@ type integEnv struct {
 	st   *store.Store
 	fake *fake.Fake
 	cli  *client.Client
-	mgr  *agentd.Manager // 供测试直接登记项目（B62：派发必须先登记）
+	mgr  *orchestration.Manager // 供测试直接登记项目（B62：派发必须先登记）
 	// repo 是任务仓库（沙箱里 git init 的干净仓库，Dispatch 的分支准备落在这里）。
 	// repoPID 是它登记后的 project_id（懒登记，首次用时缓存）。
 	repo    string
@@ -97,7 +99,8 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := testhttp.NewServer(t, srv.Handler())
 	f := fake.New(script)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
+	mgr := orchestration.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
+	mgr.SetWorkspace(workspace.NewCapability())
 	srv.SetManager(mgr)
 	ledgerPath := filepath.Join(t.TempDir(), "ledger.db")
 	led, lerr := ledger.Open(ledgerPath)
@@ -142,7 +145,7 @@ func putOnlineCarrierForInteg(t *testing.T, srv *agentd.Server, c scheduling.Car
 //
 // 调用位置有讲究：t.Cleanup 是 LIFO，这行必须晚于第一次 t.TempDir()（那次注册了
 // 删目录）与 st.Close 的注册，才能拿到「先停写 → 再关库 → 最后删目录」的顺序。
-func quiesceOnCleanup(t *testing.T, st *store.Store, mgr *agentd.Manager) {
+func quiesceOnCleanup(t *testing.T, st *store.Store, mgr *orchestration.Manager) {
 	t.Helper()
 	t.Cleanup(func() {
 		// 先敲掉还活着的任务。Stop 对已是终态的任务会报错，所以先筛一遍；
@@ -744,7 +747,8 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "opencode"}}
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := testhttp.NewServer(t, srv.Handler())
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
+	mgr := orchestration.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
+	mgr.SetWorkspace(workspace.NewCapability())
 	srv.SetManager(mgr)
 	led, lerr := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
 	if lerr != nil {

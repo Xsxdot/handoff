@@ -454,7 +454,7 @@ func (s *Server) ticketDestructive(taskID, ticketID string) bool {
 		if ev.Type != proto.EventTypeApproverDecision {
 			continue
 		}
-		var p approverDecisionPayload
+		var p ApproverDecisionPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			continue
 		}

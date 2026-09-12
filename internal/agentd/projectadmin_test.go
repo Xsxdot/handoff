@@ -102,8 +102,8 @@ func TestRegisterProjectRejectsNoOrigin(t *testing.T) {
 	repo := initGitRepo(t) // 刻意不加 origin
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
 		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: repo})
-	if !errors.Is(err, workspace.ErrRepoUnusable) {
-		t.Fatalf("err = %v, want errors.Is(..., workspace.ErrRepoUnusable)", err)
+	if !errors.Is(err, ErrRepoUnusable) {
+		t.Fatalf("err = %v, want errors.Is(..., ErrRepoUnusable)", err)
 	}
 }
 
@@ -143,8 +143,8 @@ func TestRegisterProjectIdempotentSamePath(t *testing.T) {
 	if second.ProjectID != first.ProjectID || second.Name != first.Name || second.Path != first.Path {
 		t.Fatalf("幂等返回应与首次登记一致:\n first=%+v\nsecond=%+v", first, second)
 	}
-	if second.Status != projectStatusOK {
-		t.Fatalf("幂等返回的 Status 应为 %q，got %q", projectStatusOK, second.Status)
+	if second.Status != ProjectStatusOK {
+		t.Fatalf("幂等返回的 Status 应为 %q，got %q", ProjectStatusOK, second.Status)
 	}
 	locs, err := st.ListProjectLocations()
 	if err != nil {
@@ -188,7 +188,8 @@ func TestRegisterProjectIdempotentLinkedWorktree(t *testing.T) {
 // 重复登记会幂等返回已有行，且**根本不触发 clone**：origin 指向一个必然 clone
 // 失败的位置（不存在的本地目录），若短路发生在 clone 之前就不会去碰它。
 func TestRegisterProjectIdempotentCloneForm(t *testing.T) {
-	m, st, _ := newTestManagerWithAds(t, nil, "fake")
+	cfg := testManagerCfg(t)
+	m, st, _ := newTestManagerWithCfg(t, nil, cfg)
 	const origin = "/nonexistent/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
 	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
@@ -196,7 +197,7 @@ func TestRegisterProjectIdempotentCloneForm(t *testing.T) {
 		t.Fatalf("登记已有目录: %v", err)
 	}
 	root := filepath.Join(t.TempDir(), "repos")
-	m.cfg.RepoRoot = root
+	cfg.RepoRoot = root
 
 	second, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin})
 	if err != nil {
@@ -240,10 +241,11 @@ func TestRegisterProjectNameCollisionFallsBack(t *testing.T) {
 // TestRegisterProjectClonesWhenNoPath 验证不给 path 时 clone 到 repo_root/<名字>。
 // 用本地目录当 clone 源，不依赖网络。
 func TestRegisterProjectClonesWhenNoPath(t *testing.T) {
-	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	cfg := testManagerCfg(t)
+	m, _, _ := newTestManagerWithCfg(t, nil, cfg)
 	src := initGitRepo(t)
 	root := filepath.Join(t.TempDir(), "repos")
-	m.cfg.RepoRoot = root
+	cfg.RepoRoot = root
 
 	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: src, Name: "src"})
 	if err != nil {
@@ -263,10 +265,11 @@ func TestRegisterProjectClonesWhenNoPath(t *testing.T) {
 // 成功本身即证明认领路径没去 clone（project rm 只删登记不动磁盘，这是「rm 后再派发
 // → 自动重登记」成立的机制）。
 func TestRegisterProjectClaimExistingDest(t *testing.T) {
-	m, st, _ := newTestManagerWithAds(t, nil, "fake")
+	cfg := testManagerCfg(t)
+	m, st, _ := newTestManagerWithCfg(t, nil, cfg)
 	const origin = "/nonexistent/handoff.git"
 	root := filepath.Join(t.TempDir(), "repos")
-	m.cfg.RepoRoot = root
+	cfg.RepoRoot = root
 	dest := filepath.Join(root, "handoff")
 	repo := initGitRepoIn(t, dest)
 	gitAt(t, repo, "remote", "add", "origin", origin)
@@ -295,10 +298,11 @@ func TestRegisterProjectClaimExistingDest(t *testing.T) {
 // TestRegisterProjectClaimRejectsNonRepoDest 验证落点已存在但不是 git 仓库（普通目录）
 // 时认领失败，保持 409，报文带上落点路径。
 func TestRegisterProjectClaimRejectsNonRepoDest(t *testing.T) {
-	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	cfg := testManagerCfg(t)
+	m, _, _ := newTestManagerWithCfg(t, nil, cfg)
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	root := filepath.Join(t.TempDir(), "repos")
-	m.cfg.RepoRoot = root
+	cfg.RepoRoot = root
 	dest := filepath.Join(root, "handoff")
 	if err := os.MkdirAll(dest, 0o755); err != nil {
 		t.Fatalf("建占位目录: %v", err)
@@ -319,9 +323,10 @@ func TestRegisterProjectClaimRejectsNonRepoDest(t *testing.T) {
 // TestRegisterProjectClaimRejectsForeignRepoDest 验证落点已存在且是**另一个项目**
 // 的仓库时认领失败，保持 409，报文同时给出两边的项目名。
 func TestRegisterProjectClaimRejectsForeignRepoDest(t *testing.T) {
-	m, _, _ := newTestManagerWithAds(t, nil, "fake")
+	cfg := testManagerCfg(t)
+	m, _, _ := newTestManagerWithCfg(t, nil, cfg)
 	root := filepath.Join(t.TempDir(), "repos")
-	m.cfg.RepoRoot = root
+	cfg.RepoRoot = root
 	// 落点是根目录名由请求 origin 派生出的 root/handoff，在那里放一份 origin
 	// 指向另一个项目（tk）的仓库。
 	dest := filepath.Join(root, "handoff")
@@ -346,8 +351,12 @@ func newPatchTestEnv(t *testing.T) *testAgentdEnv {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: testToken}
 	env := newTestAgentdEnvWithCfg(t, cfg, logger)
-	mgr := NewManager(env.st, env.srv.Hub(),
-		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, nil, nil, newTestGate(t), logger)
+	mgr := newManagerForTest(t, ManagerDeps{
+		Store: env.st, Hub: env.srv.Hub(),
+		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg,
+		EnvMapping: env.srv.EnvMapping, Gate: newTestGate(t), Log: logger,
+		LiveConfig: env.srv.Conf(),
+	})
 	env.srv.SetManager(mgr)
 	env.mgr = mgr
 	return env
@@ -541,8 +550,8 @@ func TestRegisterProjectExistingInfersOrigin(t *testing.T) {
 func TestRegisterProjectRejectsEmptyOriginAndEmptyPath(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{})
-	if !errors.Is(err, errBadDispatchRequest) {
-		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	if !errors.Is(err, ErrBadDispatchRequest) {
+		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
 	}
 }
 
@@ -583,8 +592,8 @@ func TestRegisterProjectMissingPathRequiresOrigin(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	dest := filepath.Join(t.TempDir(), "nope")
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{Path: dest})
-	if !errors.Is(err, errBadDispatchRequest) {
-		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	if !errors.Is(err, ErrBadDispatchRequest) {
+		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
 	}
 }
 
@@ -601,8 +610,8 @@ func TestRegisterProjectRejectsRelativePath(t *testing.T) {
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
 		OriginURL: src, Name: "relproj", Path: "workdir/relproj",
 	})
-	if !errors.Is(err, errBadDispatchRequest) {
-		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	if !errors.Is(err, ErrBadDispatchRequest) {
+		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
 	}
 	if !strings.Contains(err.Error(), "绝对路径") {
 		t.Errorf("报文 = %q, want 含「绝对路径」（人要看得懂怎么改）", err.Error())
@@ -618,8 +627,8 @@ func TestRegisterProjectRejectsTildePath(t *testing.T) {
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
 		OriginURL: src, Name: "tildeproj", Path: "~/code/tildeproj",
 	})
-	if !errors.Is(err, errBadDispatchRequest) {
-		t.Fatalf("err = %v, want errBadDispatchRequest", err)
+	if !errors.Is(err, ErrBadDispatchRequest) {
+		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
 	}
 	if _, serr := os.Stat("~"); serr == nil {
 		t.Errorf("cwd 下出现了字面量 ~ 目录——说明请求走到了 MkdirAll")
@@ -702,17 +711,7 @@ func TestRegisterProjectCloneToPathIdempotentSameLocation(t *testing.T) {
 	}
 }
 
-// TestFirstMissingAncestor 验证助手找的是「MkdirAll 会从哪一层开始造」。
-func TestFirstMissingAncestor(t *testing.T) {
-	base := t.TempDir()
-	if got := firstMissingAncestor(base); got != "" {
-		t.Errorf("已存在的目录应返回空串，got %q", got)
-	}
-	want := filepath.Join(base, "a")
-	if got := firstMissingAncestor(filepath.Join(base, "a", "b", "c")); got != want {
-		t.Errorf("firstMissingAncestor = %q, want %q", got, want)
-	}
-}
+// TestFirstMissingAncestor 已迁至 internal/orchestration（B233.13：助手随 Manager 迁出）。
 
 // TestCloneToPathCleansUpOnFailure 验证 clone 失败时本次新建的目录被回收，
 // 而调用方原本就有的目录一根汗毛不动。
@@ -728,8 +727,8 @@ func TestCloneToPathCleansUpOnFailure(t *testing.T) {
 	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
 		OriginURL: bogus, Name: "proj", Path: filepath.Join(base, "a", "b", "proj"),
 	})
-	if !errors.Is(err, workspace.ErrRepoUnusable) {
-		t.Fatalf("err = %v, want workspace.ErrRepoUnusable", err)
+	if !errors.Is(err, ErrRepoUnusable) {
+		t.Fatalf("err = %v, want ErrRepoUnusable", err)
 	}
 	if _, serr := os.Stat(filepath.Join(base, "a")); serr == nil {
 		t.Errorf("clone 失败后 %s 不该留下", filepath.Join(base, "a"))
@@ -811,7 +810,7 @@ func TestProjectWorktreeCreateOK(t *testing.T) {
 		t.Fatalf("分支 = %q", ws.Branch)
 	}
 	wantRoot := workspace.ManualWorktreeRoot(filepath.Join(s.conf().DataDir, "worktrees"))
-	if !strings.HasPrefix(canonPath(ws.Path), canonPath(wantRoot)) {
+	if !strings.HasPrefix(CanonPath(ws.Path), CanonPath(wantRoot)) {
 		t.Fatalf("落点 %q 不在 %q 下", ws.Path, wantRoot)
 	}
 }
@@ -1064,7 +1063,7 @@ func TestProjectBranchesUnknownProject(t *testing.T) {
 // TestProjectNameFromURLHandlesWindowsSeparators 覆盖本地路径 origin 的名字派生。
 //
 // why 这个用例存在：origin 为 Windows 本地路径（`C:\work\x.git`）时，派生名若不切
-// 反斜杠就会是 `\work\x`，撞上 validateProjectName 的「含 / \ : 拒收」，
+// 反斜杠就会是 `\work\x`，撞上 ValidateProjectName 的「含 / \ : 拒收」，
 // 表现为自动登记失败、dispatch 400。
 func TestProjectNameFromURLHandlesWindowsSeparators(t *testing.T) {
 	cases := []struct {
@@ -1080,13 +1079,13 @@ func TestProjectNameFromURLHandlesWindowsSeparators(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := projectNameFromURL(c.in)
+			got := ProjectNameFromURL(c.in)
 			if got != c.want {
-				t.Fatalf("projectNameFromURL(%q) = %q，期望 %q", c.in, got, c.want)
+				t.Fatalf("ProjectNameFromURL(%q) = %q，期望 %q", c.in, got, c.want)
 			}
 			// 派生名必须能过校验，否则自动登记依然会失败
-			if err := validateProjectName(got); err != nil {
-				t.Fatalf("派生名 %q 未通过 validateProjectName: %v", got, err)
+			if err := ValidateProjectName(got); err != nil {
+				t.Fatalf("派生名 %q 未通过 ValidateProjectName: %v", got, err)
 			}
 		})
 	}

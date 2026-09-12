@@ -24,7 +24,7 @@ import (
 
 type receiverTestEnv struct {
 	*ledgerEnv
-	mgr       *Manager
+	mgr       TestManager
 	projectID string
 }
 
@@ -34,9 +34,8 @@ func newReceiverTestEnv(t *testing.T) *receiverTestEnv {
 	env.srv.SetupAutomation(env.ledger)
 	cfg := env.srv.conf()
 	cfg.Executor.Default = "opencode"
-	mgr := NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
-		nil, nil, newTestGate(t), discardLogger())
-	env.srv.SetManager(mgr)
+	// B233.13：经 ManagerFactory 组装真实编排实现；工作区能力由工厂按组装点语义注入。
+	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": fake.New(nil)})
 	repo := initTestRepo(t)
 	return &receiverTestEnv{ledgerEnv: env, mgr: mgr, projectID: registerTestProject(t, mgr, repo)}
 }
