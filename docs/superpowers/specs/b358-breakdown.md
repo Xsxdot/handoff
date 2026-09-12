@@ -174,7 +174,7 @@ S7 纪律与 roadmap（无代码依赖） ────────────�
 - `needs_human` 事件（卡 ∈ 会话）后，`SessionDetail.Timeline` 出现 `kind=needs_human` 行；`needs_cleared` 后 `Summary.NeedsHuman` 翻 false（label 消失有测试）。
 - 成员状态：测试经 `Store.RenewDriverLease`（测试专属生产者）造未过期租约 + 注入时钟 → `working`；拨钟过期 → `last_active`（**同一注入时钟**，contract 条目 18——时钟不同源的写法判 fail）；空座卡 → `empty`；断言四值词表外不出现任何其它状态串（含「online」）。
 - `SessionNode`：卡 ∈ 会话的 `task_mirrored`（含 node 字段）聚合进 `Nodes`，卡 ∉ 会话的不出现；`Round`/`Target` 词表位允许空（填法归 plan，envelope 无 round 字段，不许为填空造新账本读）。
-- `go test ./internal/proto -run TestSessionsFixture -count=1` 保持绿（投影不新增 wire 键）。
+- `go test ./internal/proto -run TestSessionsFixture -count=1` 保持绿（投影不新增 wire 键）。**（2026-09-12 修订：原字面零匹配属假绿——实际判据为 `-run 'TestSession'`（4 支金样本），B358.2 plan 拍板①回写。）**
 
 **④入口指针与有界文件集**：`internal/collab/sessions.go`、`internal/collab/sessions_test.go`；符号锚：`internal/collab/sessions.go#sessionTimeline`、`internal/collab/sessions.go#sessionMembers`、`internal/collab/sessions.go#memberStatus`、`internal/collab/sessions.go#sessionNodes`、`internal/collab/sessions.go#needsHumanByCard`。
 
