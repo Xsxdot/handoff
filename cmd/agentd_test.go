@@ -19,11 +19,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/Xsxdot/handoff/internal/workspace"
@@ -337,7 +337,7 @@ func TestRequireClaudeCoordinationIsUnsupported(t *testing.T) {
 }
 
 func TestBindApproverOneShotRejectsMissingBinding(t *testing.T) {
-	ap, err := agentd.NewApprover(config.ApproverConfig{Executor: "missing"}, nil, slog.Default())
+	ap, err := orchestration.NewApprover(config.ApproverConfig{Executor: "missing"}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -353,7 +353,7 @@ func TestBindApproverOneShotRejectsMissingBinding(t *testing.T) {
 }
 
 func TestBindApproverOneShotRejectsAdapterWithoutOneShot(t *testing.T) {
-	ap, err := agentd.NewApprover(config.ApproverConfig{Executor: "fake"}, nil, slog.Default())
+	ap, err := orchestration.NewApprover(config.ApproverConfig{Executor: "fake"}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}

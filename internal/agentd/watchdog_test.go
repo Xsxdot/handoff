@@ -357,7 +357,7 @@ func TestRecoverOnStartup(t *testing.T) {
 		if len(failed) != 1 {
 			t.Fatalf("任务 %s 期望 1 条 turn_failed 事件，实际 %d 条", id, len(failed))
 		}
-		var pl failedPayload
+		var pl FailedPayload
 		if err := json.Unmarshal(failed[0].Payload, &pl); err != nil {
 			t.Fatalf("解析 failed payload: %v", err)
 		}
@@ -545,7 +545,7 @@ func TestScanStateMismatchTransitsAndAudits(t *testing.T) {
 	m, st, hub, _ := newTestManager(t)
 	createRunningTask(t, st, "t1")
 	// 追加一条 failed 事件作为最新事件（事件年龄 ≥ minAge=time.Nanosecond 恒成立）
-	fevt, err := st.AppendEvent("t1", proto.EventTypeFailed, failedPayload{FailReason: "对账失败"})
+	fevt, err := st.AppendEvent("t1", proto.EventTypeFailed, FailedPayload{FailReason: "对账失败"})
 	if err != nil {
 		t.Fatalf("AppendEvent(failed): %v", err)
 	}
@@ -606,7 +606,7 @@ func TestScanStateMismatchLeavesHealthyTaskAlone(t *testing.T) {
 	seedWaitingReviewTask(t, st, "task-healthy")
 	// turn_failed 事件作为最新事件：mismatchVerdict 判 false（latest 不是 failed）
 	if _, err := st.AppendEvent("task-healthy", proto.EventTypeTurnFailed,
-		failedPayload{FailReason: "回合失败"}); err != nil {
+		FailedPayload{FailReason: "回合失败"}); err != nil {
 		t.Fatalf("AppendEvent(turn_failed): %v", err)
 	}
 	before, err := st.EventsFrom("task-healthy", 0, 100)

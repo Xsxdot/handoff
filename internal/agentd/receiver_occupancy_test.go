@@ -111,10 +111,7 @@ func (r *schedulingCallCounter) Delete(kind, id string, expectVersion int, actor
 func TestHandleDispatchStartFailureReleases(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "opencode")
-	cfg := env.srv.conf()
-	env.srv.SetManager(NewManager(env.st, env.srv.Hub(),
-		map[string]executor.Adapter{"opencode": occupancyStartFailAdapter{}}, cfg,
-		nil, nil, newTestGate(t), discardLogger()))
+	newManagerForServer(t, env.srv, map[string]executor.Adapter{"opencode": occupancyStartFailAdapter{}})
 
 	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("muse")); got != 0 {
 		t.Fatalf("准入前载体计数=%d, want 0", got)
@@ -198,8 +195,7 @@ func TestHandleDoneDoesNotReturnSuccessWithoutTerminalSnapshot(t *testing.T) {
 		t.Fatalf("CreateTask: %v", err)
 	}
 	adapter := &closeStoreAfterDoneStopAdapter{Fake: fake.New(nil), st: env.st}
-	env.srv.SetManager(NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": adapter},
-		env.srv.conf(), nil, nil, newTestGate(t), discardLogger()))
+	newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": adapter})
 
 	rr := runAction(env.srv, actionRequest(taskID, "done", `{}`), env.srv.handleDone)
 	if rr.Code == http.StatusOK {
@@ -326,9 +322,7 @@ func TestContinueDoesNotAdmit(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
 	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true}}})
-	cfg := env.srv.conf()
-	env.srv.SetManager(NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fk}, cfg,
-		nil, nil, newTestGate(t), discardLogger()))
+	newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": fk})
 	task := decodeDispatchTask(t, postDispatch(t, env.srv, dispatchBody(env.projectID, "")))
 	waitTaskState(t, env.st, task.ID, proto.TaskStateWaitingReview)
 	before, err := env.st.GetTask(task.ID)
@@ -397,9 +391,7 @@ func TestB23310ContinueResumeNeverAdmit(t *testing.T) {
 	counter := &schedulingCallCounter{inner: facadeAsRegistry{f: receiverOccupancyFacade(env.ledgerEnv)}}
 	env.srv.SetScheduling(scheduling.New(counter))
 	adapter := &resumeOnlyAdapter{chanAdapter: &chanAdapter{evCh: make(chan executor.AdapterEvent)}}
-	mgr := NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": adapter}, env.srv.conf(),
-		nil, nil, newTestGate(t), discardLogger())
-	env.srv.SetManager(mgr)
+	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": adapter})
 	const taskID = "continue-resume-no-admit"
 	now := time.Now().UTC()
 	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "local", Executor: "fake", Model: "frozen-model",

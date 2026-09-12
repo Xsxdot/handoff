@@ -207,10 +207,11 @@
    "from": "d_gateway",
    "to": "d_orchestration",
    "legacyBudget": 321,
-   "entries": [
-    "agentd.Manager"
+   "entries": [],
+   "interfaces": [
+    "OrchestrationClient"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。B233.10：任务终态迁移继续经既有 agentd.Manager；本卡不新增编排方向或预算。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。B233.10：任务终态迁移继续经既有 agentd.Manager；本卡不新增编排方向或预算。B233.13：gateway 出站封界完成——Manager 迁 internal/orchestration，gateway 生产不再直调编排，只持使用方接口 OrchestrationClient（interfaces 冻结）。原 entry agentd.Manager 已不存在，entries 清空；预算 321 不棘轮，棘轮到 0 留给 B233.17。"
   },
   {
    "from": "d_gateway",

@@ -18,7 +18,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/testhttp"
-	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 func newStepTestServer(t *testing.T) *Server {
@@ -254,10 +253,7 @@ func setupB23310CardTaskEnvWithMachine(t *testing.T, script []fake.Step, machine
 	}
 
 	adapter := &b23310ProfileFakeAdapter{Fake: fake.New(script), profile: &recordingProfile{}}
-	mgr := NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": adapter},
-		env.srv.conf(), nil, nil, newTestGate(t), discardLogger())
-	mgr.SetWorkspace(workspace.NewCapability())
-	env.srv.SetManager(mgr)
+	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": adapter})
 	origin, repo := newOriginAndClone(t)
 	if _, err := mgr.RegisterProject(context.Background(), RegisterProjectReq{
 		OriginURL: origin, Name: "handoff", Path: repo,

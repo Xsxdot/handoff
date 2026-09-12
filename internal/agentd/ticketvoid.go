@@ -22,12 +22,14 @@ import (
 //
 // Reason 直接沿用调用方的迁移原因（"done" / "stop" / 对账的那句人话），
 // 让 show 里能回答「这批单是因为什么被作废的」。
-type ticketsVoidedPayload struct {
+//
+// B233.13：迁包后由编排包经 agentd.VoidTicketsWithAudit 引用，故类型与函数均导出。
+type TicketsVoidedPayload struct {
 	Voided int    `json:"voided"`
 	Reason string `json:"reason"`
 }
 
-// voidTicketsWithAudit 作废任务的全部挂起工单，并在确实作废了东西时留一条审计事件。
+// VoidTicketsWithAudit 作废任务的全部挂起工单，并在确实作废了东西时留一条审计事件。
 //
 // 参数：
 //   - st: 存储
@@ -43,7 +45,7 @@ type ticketsVoidedPayload struct {
 //     无条件写事件等于给每条正常事件流添噪音
 //   - 依赖 VoidPendingTickets 的幂等（第二次起返回 0）来天然去重，本函数不另做判重
 //   - 失败一律只记日志：见文件头「不中断调用方」
-func voidTicketsWithAudit(st *store.Store, taskID, reason string, log *slog.Logger) int {
+func VoidTicketsWithAudit(st *store.Store, taskID, reason string, log *slog.Logger) int {
 	voided, err := st.VoidPendingTickets(taskID)
 	if err != nil {
 		log.Error("作废挂起工单失败", "task", taskID, "reason", reason, "cause", err)
@@ -54,7 +56,7 @@ func voidTicketsWithAudit(st *store.Store, taskID, reason string, log *slog.Logg
 	}
 	log.Warn("挂起工单已作废", "task", taskID, "reason", reason, "voided", voided)
 	if _, err := st.AppendEvent(taskID, proto.EventTypeTicketsVoided,
-		ticketsVoidedPayload{Voided: voided, Reason: reason}); err != nil {
+		TicketsVoidedPayload{Voided: voided, Reason: reason}); err != nil {
 		log.Error("追加工单作废审计事件失败", "task", taskID, "voided", voided, "cause", err)
 	}
 	return voided

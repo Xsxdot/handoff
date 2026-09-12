@@ -58,7 +58,7 @@ func locationLines(entries []proto.ProjectLocation) string {
 //
 // 返回：
 //   - 命中的位置行（Path 即 executor 的工作仓库）
-//   - 错误：ErrProjectNotRegistered（查不到）或 errBadDispatchRequest（两者都空），
+//   - 错误：ErrProjectNotRegistered（查不到）或 ErrBadDispatchRequest（两者都空），
 //     均映射 400，且报文自带本机已登记清单
 //
 // 注意：
@@ -94,6 +94,6 @@ func resolveProject(projectID, projectName string, entries []proto.ProjectLocati
 	default:
 		log().Warn("项目解析被拒：请求未指明项目")
 		return proto.ProjectLocation{}, fmt.Errorf(
-			"%w: 请求未指明项目（project_id 与 project_name 至少其一）", errBadDispatchRequest)
+			"%w: 请求未指明项目（project_id 与 project_name 至少其一）", ErrBadDispatchRequest)
 	}
 }

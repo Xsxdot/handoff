@@ -11,7 +11,7 @@ import (
 
 func TestAssembleResultRefEmptyCommitAllowed(t *testing.T) {
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake", nil)
-	ref, err := m.assembleResultRef(context.Background(), &proto.Task{Branch: "feat/x"}, "/no/such/repo", "HEAD")
+	ref, err := m.AssembleResultRef(context.Background(), &proto.Task{Branch: "feat/x"}, "/no/such/repo", "HEAD")
 	if err != nil {
 		t.Fatalf("commit 未知应允许空：%v", err)
 	}

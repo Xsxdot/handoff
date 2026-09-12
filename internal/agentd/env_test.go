@@ -28,8 +28,11 @@ func newEnvEnv(t *testing.T, mapping map[string]string, execs ...string) (*testA
 	for _, n := range execs {
 		ads[n] = &failStartAdapter{} // 只需要名字进注册表，本组用例不启动任何 executor
 	}
-	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
-		env.srv.EnvMapping, nil, newTestGate(t), discardLogger())
+	mgr := newManagerForTest(t, ManagerDeps{
+		Store: env.st, Hub: env.srv.Hub(), Ads: ads, Cfg: env.srv.conf(),
+		EnvMapping: env.srv.EnvMapping, Gate: newTestGate(t), Log: discardLogger(),
+		LiveConfig: env.srv.Conf(),
+	})
 	env.srv.SetManager(mgr)
 	env.mgr = mgr
 	return env, filepath.Join(dataDir, "env")
@@ -389,33 +392,5 @@ func TestEnvMappingRejectsMissingFileAndBadMode(t *testing.T) {
 	}
 }
 
-func TestEnvMappingHotReloadsWithoutRebuildingManager(t *testing.T) {
-	// 这条是整个 B158 的承重判据：改完映射**不重建 Manager**，
-	// manager 侧的 resolver 必须立即反映新值
-	env, envDir := newEnvEnv(t, nil, "opencode")
-	env.srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
-	if err := os.MkdirAll(envDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(envDir, "proxy.env"), []byte("A=1\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	before, err := env.mgr.env.For("opencode")
-	if err != nil || len(before) != 0 {
-		t.Fatalf("before = %v, err = %v，想要未配置时不注入", before, err)
-	}
-	var resp proto.EnvResp
-	if code := env.putJSON(t, "/api/env/mapping", proto.EnvMappingReq{Bindings: []proto.EnvBinding{
-		{Executor: "opencode", Mode: proto.EnvModeFile, File: "proxy.env"},
-	}}, &resp); code != 200 {
-		t.Fatalf("code = %d, want 200", code)
-	}
-	after, err := env.mgr.env.For("opencode")
-	if err != nil {
-		t.Fatalf("For: %v", err)
-	}
-	if len(after) != 1 || after[0] != "A=1" {
-		t.Fatalf("after = %v，想要 [A=1]（不重启 agentd 就该生效）", after)
-	}
-}
+// TestEnvMappingHotReloadsWithoutRebuildingManager 的 Manager 内部 resolver 断言
+// 已迁至 internal/orchestration（B233.13：Manager 不再与 gateway 同包）。

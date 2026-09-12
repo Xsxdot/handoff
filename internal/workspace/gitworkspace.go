@@ -317,6 +317,18 @@ func gitRunNet(ctx context.Context, repo string, args ...string) (stdout, stderr
 	return gitRun(ctx, repo, gitNetArgs(args...)...)
 }
 
+// GitRun / GitProbe / GitRunNet 是 git 执行入口的导出面，供 gateway 转发
+// （B233.13 P3）与编排包调用。实现仍是本文件未导出的 gitRun*。
+func GitRun(ctx context.Context, repo string, args ...string) (string, string, error) {
+	return gitRun(ctx, repo, args...)
+}
+func GitProbe(ctx context.Context, repo string, args ...string) (string, string, error) {
+	return gitProbe(ctx, repo, args...)
+}
+func GitRunNet(ctx context.Context, repo string, args ...string) (string, string, error) {
+	return gitRunNet(ctx, repo, args...)
+}
+
 // PrepareBranch 是 PrepareWorkspace 的过渡薄包装：保持一期「原地 + 自动分支」语义
 // 与全部错误哨兵（ErrDirtyWorktree/ErrRepoUnusable），Dispatch 改走 PrepareWorkspace
 // 后本函数仅剩测试与本包内部引用（Task 7 会清理调用点）。

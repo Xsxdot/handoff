@@ -30,6 +30,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -126,7 +127,7 @@ type Server struct {
 	roomAttachLastRefresh time.Time
 	hub                   *Hub
 	log                   *slog.Logger
-	mgr                   *Manager // 任务状态机中枢（dispatch/continue/done 三条路由的落点），SetManager 注入
+	mgr                   OrchestrationClient // 任务编排 client（B233.13：生产字段不再持有 *Manager），SetManager 注入
 	providers             *executor.Registry
 	ruleLoader            func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error)
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
@@ -359,23 +360,28 @@ func (s *Server) SetRestart(fn func(reason string) bool) { s.restart = fn }
 // 执行文件、rename 二进制、停进程。
 func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }
 
-// SetManager 把任务管理器挂到 Server 上。
+// SetManager 把编排实现挂到 Server 上。
+//
+// B233.13：参数是 gateway 使用方定义的 OrchestrationClient，生产字段不再持有 *Manager。
+// P5：接口里的 typed-nil（(*Manager)(nil) 赋给接口）会让 `s.mgr == nil` 失效，
+// 这里显式识别并落 nil，保住 handler 的 503 未就绪判据。
+// P1：活配置与工作区兜底注入已移交组装点（cmd/agentd.go），本方法只赋值 + 日志。
 //
 // 注意：
-//   - manager 依赖本服务内部的 hub 与外部 adapter，必须在 NewServer 之后构造并注入
 //   - 注入前三条路由返回 503（manager 未就绪），agentd bootstrap 顺序保证注入先于监听
-//   - 挂接时会把 Server 的活配置取值函数交给 Manager。Manager 构造时收到的是一份
-//     配置**快照**指针，而 swapConf 换的是新指针，读快照永远拿不到控制台改过的值
-//     （B160 §4.2）。这一步是「保存后下一个任务即生效」成立的前提。
-func (s *Server) SetManager(m *Manager) {
-	s.mgr = m
-	if m != nil {
-		m.conf = s.conf
-		if m.ws == nil {
-			m.SetWorkspace(workspace.NewCapability())
-		}
-		s.log.Info("manager 已挂接，配置读取切到活快照", "default_executor", s.conf().Executor.Default)
+func (s *Server) SetManager(m OrchestrationClient) {
+	if m == nil {
+		s.mgr = nil
+		s.log.Warn("SetManager 收到 nil 编排实现，按未就绪处理", "error_kind", "manager_nil")
+		return
 	}
+	if rv := reflect.ValueOf(m); rv.Kind() == reflect.Ptr && rv.IsNil() {
+		s.mgr = nil
+		s.log.Warn("SetManager 收到 typed-nil 编排实现，按未就绪处理", "error_kind", "manager_typed_nil")
+		return
+	}
+	s.mgr = m
+	s.log.Info("manager 已挂接，凭据为编排 client 接口")
 }
 
 // SetProviders 注入能力 Registry。
@@ -386,6 +392,13 @@ func (s *Server) SetProviders(r *executor.Registry) { s.providers = r }
 // 返回的指针在调用方持有期间恒定：写入方永不原地修改 Config，只整体换新，
 // 因此读者看到的始终是一份自洽的配置，而不是改到一半的状态。
 func (s *Server) conf() *config.Config { return s.cfg.Load() }
+
+// Conf 返回 Server 的活配置取值函数，供组装点注入编排实现（B233.13 P1-A）。
+//
+// 为什么需要：SetManager 不再持有 *Manager，活配置注入（B160 §4.2）改由组装点
+// 显式接线；cmd 持有具体 *orchestration.Manager，用它把 Server 的活配置快照
+// 交给 Manager。handler 不消费本方法。
+func (s *Server) Conf() func() *config.Config { return s.conf }
 
 // IsSelfTarget 判断登记名是否指向本 agentd。
 //
@@ -1052,7 +1065,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			owned++
 		}
 		w := s.hub.Watchers(t.ID)
-		if w == 0 && !isTerminalState(t.State) && t.State != proto.TaskStateWaitingReview {
+		if w == 0 && !IsTerminalState(t.State) && t.State != proto.TaskStateWaitingReview {
 			unattended++
 		}
 		views = append(views, proto.TaskView{Task: t, Watchers: w})
@@ -1232,7 +1245,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
-		ticketAnsweredPayload{TicketID: req.TicketID, Answer: req.Answer}); err != nil {
+		TicketAnsweredPayload{TicketID: req.TicketID, Answer: req.Answer}); err != nil {
 		s.log.Warn("追加工单答复事件失败", "task", taskID, "ticket", req.TicketID, "cause", err)
 	}
 
@@ -1462,24 +1475,24 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 // writeDispatchError 把 dispatch 失败映射为 HTTP 状态码与可读原因（P1-14）。
 //
 // 映射规则：
-//   - workspace.ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
+//   - ErrDirtyWorktree → 409：工作区状态与服务端要求冲突，这是最常见的拒绝原因，
 //     协调者一条 git 命令即可修复——必须带可读 reason（err.Error() 含脏文件第一行），
 //     而非扁平化的「派发任务失败」
 //   - ErrWorkdirBusy → 409：目标工作目录已被一个非终态任务占用（含 waiting_review），
-//     与 workspace.ErrDirtyWorktree 同为状态冲突而非请求错误——报文点名占用任务并给出
+//     与 ErrDirtyWorktree 同为状态冲突而非请求错误——报文点名占用任务并给出
 //     两条出路（done/stop 它，或改用 --new-worktree）
-//   - workspace.ErrBaseCommitMissing → 400：任务仓库落后于协调者本地基线，拒发并带 git push
+//   - ErrBaseCommitMissing → 400：任务仓库落后于协调者本地基线，拒发并带 git push
 //     动作提示；与参数类错误同层级——调用方先解决远程仓库再重派
-//   - workspace.ErrRepoUnusable / errBadDispatchRequest / workspace.ErrBadWorkspaceReq → 400：调用方先
+//   - workspace.ErrRepoUnusable / ErrBadDispatchRequest / workspace.ErrBadWorkspaceReq → 400：调用方先
 //     解决请求本身的问题（仓库路径不对、参数缺失/互斥/分支不存在、plan 编码错误）
 //   - ErrProjectNotRegistered → 400：project_id / project_name 在本机位置表里查不到，
 //     报文自带本机已登记清单——协调者拿到即可行动（换名字，或先 handoff project add）；
 //     本机 CLI 收到这条会自动补登记后重发（B62）
-//   - errExecutorStartFailed → 500 + 可读真因：executor 启动失败（执行者二进制不在 PATH、
+//   - ErrExecutorStartFailed → 500 + 可读真因：executor 启动失败（执行者二进制不在 PATH、
 //     opencode 未安装等）是环境问题而非 agentd 内部故障——响应体直接带
 //     err.Error()（含真因如 exec: "opencode": executable file not found），协调者拿到
 //     即可行动（装依赖），不必去 agentd.log 翻一行 exec 错误
-//   - errEnvResolveFailed → 500 + 可读真因：env 文件缺失/语法错是执行机上的配置
+//   - ErrEnvResolveFailed → 500 + 可读真因：env 文件缺失/语法错是执行机上的配置
 //     问题，响应体带完整路径与行号，派发者改完文件重派即可
 //   - 其余（任务目录/落库等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error) {
@@ -1508,7 +1521,7 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, ErrProjectNotRegistered):
 		s.log.Warn("dispatch 被拒：项目未登记", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, errBadDispatchRequest):
+	case errors.Is(err, ErrBadDispatchRequest):
 		s.log.Warn("dispatch 被拒：请求参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, workspace.ErrBadWorkspaceReq):
@@ -1526,13 +1539,13 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, ErrNoProcHeadroom):
 		s.log.Warn("dispatch 被拒：进程余量不足", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, errExecutorStartFailed):
+	case errors.Is(err, ErrExecutorStartFailed):
 		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	case errors.Is(err, errEnvResolveFailed):
+	case errors.Is(err, ErrEnvResolveFailed):
 		s.log.Error("dispatch 被拒：env 文件解析失败（配置问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	case errors.Is(err, errDisciplineResolveFailed):
+	case errors.Is(err, ErrDisciplineResolveFailed):
 		s.log.Error("dispatch 被拒：纪律块解析失败（配置问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
@@ -1625,13 +1638,13 @@ func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request) {
 // 映射规则（与 writeDispatchError 同一套哲学：调用方拿到就能行动）：
 //   - store.ErrNotFound → 404：登记名不存在
 //   - ErrProjectAlreadyExists → 409：项目/名字/路径已被占用，或克隆落点已存在——
-//     与 workspace.ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
+//     与 ErrDirtyWorktree/ErrWorkdirBusy 同为状态冲突
 //   - store.ErrProjectDuplicate → 409：改名/改路径撞上已被占用的名字或路径
 //     （handleProjectPatch 直接透传 store 的冲突哨兵，映射集中在这一处）
 //   - ErrWorkdirBusy → 409：注销时项目仓库仍被活跃任务占用
 //   - ErrProjectOriginMismatch → 400：路径上是另一个项目——报文同时给出两边
 //     的 origin，人一眼就能看出「你说的是 A，那儿实际是 B」
-//   - workspace.ErrRepoUnusable / errBadDispatchRequest → 400：请求本身的问题
+//   - workspace.ErrRepoUnusable / ErrBadDispatchRequest → 400：请求本身的问题
 //     （路径不是仓库、没有 origin、clone 失败、参数缺失）
 //   - 其余 → 500
 func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error) {
@@ -1651,7 +1664,7 @@ func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error
 	case errors.Is(err, ErrProjectOriginMismatch):
 		s.log.Warn("项目登记被拒：路径上是另一个项目", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, workspace.ErrRepoUnusable), errors.Is(err, errBadDispatchRequest):
+	case errors.Is(err, workspace.ErrRepoUnusable), errors.Is(err, ErrBadDispatchRequest):
 		s.log.Warn("项目登记操作被拒：请求非法", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
@@ -1756,8 +1769,15 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务快照失败"})
 		return
 	}
-	if err := s.mgr.Done(r.Context(), taskID, req.Note); err != nil {
+	outcome, err := s.mgr.Done(r.Context(), taskID, req.Note)
+	if err != nil {
 		s.writeManagerError(w, taskID, "归档任务", err)
+		return
+	}
+	if !outcome.Claimed {
+		// 并发 loser / 幂等重发：迁移与释放由赢家承担，本条 200 但不释放。
+		s.log.Info("done 幂等成功，跳过占用释放", "task", taskID)
+		writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
 		return
 	}
 	terminal, snapshotErr := s.st.GetTask(taskID)
@@ -1798,9 +1818,15 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务快照失败"})
 		return
 	}
-	removed, err := s.mgr.Stop(r.Context(), taskID)
+	outcome, err := s.mgr.Stop(r.Context(), taskID)
 	if err != nil {
 		s.writeManagerError(w, taskID, "stop", err)
+		return
+	}
+	if !outcome.Claimed {
+		// 并发 loser：任务已被他人终结，按 409 语义返回（Manager.Stop 已返回 ErrBadTransit）。
+		s.log.Warn("stop 并发竞争失败，任务已被终结", "task", taskID)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "任务已是终态"})
 		return
 	}
 	terminal, snapshotErr := s.st.GetTask(taskID)
@@ -1814,7 +1840,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.releaseTaskCarrierOccupancy(terminal)
-	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": removed})
+	writeJSON(w, http.StatusOK, map[string]any{"status": "stopped", "worktree_removed": outcome.WorktreeRemoved})
 }
 
 // releaseTaskCarrierOccupancy 释放任务快照持有的载体与小队成员占用。
@@ -1986,7 +2012,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	ref, err := s.mgr.assembleResultRef(r.Context(), task, repo, headRev)
+	ref, err := s.mgr.AssembleResultRef(r.Context(), task, repo, headRev)
 	if err != nil {
 		s.log.Error("组装任务结果引用失败", "task", taskID, "repo", repo,
 			"head_rev", headRev, "cause", err)
@@ -2008,7 +2034,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 			"result_path_empty", ref.Path == "", "commit_fallback", true,
 			"cause", "assembleResultRef 未取得有效 commit")
 	}
-	if err := s.mgr.requireWorkspace(); err != nil {
+	if err := s.mgr.RequireWorkspace(); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
@@ -2017,7 +2043,7 @@ func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		if errors.Is(err, workspace.ErrBadBaseBranch) {
 			// base 是协调者可控的查询参数：非法 base（"-" 前缀）是请求问题而非
-			// 服务故障，400 明确告知（与 ErrPathEscape 同款映射）
+			// 服务故障，400 明确告知（与 workspace.ErrPathEscape 同款映射）
 			s.log.Warn("diff 基准分支非法被拒绝", "task", taskID, "base", base)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})
 			return
@@ -2154,7 +2180,7 @@ func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	if err := s.mgr.requireWorkspace(); err != nil {
+	if err := s.mgr.RequireWorkspace(); err != nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 		return
 	}
