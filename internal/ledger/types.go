@@ -66,7 +66,13 @@ const (
 	EvDecisionAnswered   = "decision_answered"
 	EvTaskMirrored       = "task_mirrored"
 	EvWorkflowMigrated   = "workflow_migrated"
-	EvDriverTakeover     = "driver_takeover"
+	EvDriverTakeover = "driver_takeover"
+	// EvDriverSeatBound 协调者初始坐下（B358 补签轮）：空座被原子占为规范
+	// 席位的落账事实，载荷 {to: 席位身份}、actor=席位自称，与
+	// EvDriverTakeover（换绑，{from,to}）配对。会话 timeline 的 seat_bound
+	// 行（proto.SessionEventSeatBound）以本事件为唯一载体；结构事件，
+	// 不唤醒任何人。
+	EvDriverSeatBound = "driver_seat_bound"
 	// EvRoomMessage 协作房间域（B156.2）的唯一内容事件；kind 受控词表在
 	// proto.RoomMsgKind*。卡会话消息 CardID=卡号；项目群/全员群消息
 	// CardID=""（无卡事件——follow.go 现状把项目级事件排除在多路 wait 外，

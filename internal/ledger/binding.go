@@ -25,8 +25,10 @@ const (
 	DriverLeaseRenewInterval = 2 * time.Minute
 )
 
-// BindSeat 只把空座原子地占为规范 identity/source，不落事件也不写
-// driver_carrier。读、判空、写入在同一个账本事务内完成。
+// BindSeat 只把空座原子地占为规范 identity/source，不写 driver_carrier；
+// 同一事务落恰一条 EvDriverSeatBound（B358：协调者入群的 timeline 事实源，
+// 与换绑的 EvDriverTakeover 配对）。读、判空、写入、落事件在同一个账本
+// 事务内完成。
 func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error {
 	log().Info("开始坐下", "card", id, "source", source)
 	if identity == "" {
@@ -39,7 +41,7 @@ func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error {
 		log().Warn("坐下被拒：席位无效", "card", id, "source", source, "cause", wrapped)
 		return wrapped
 	}
-	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
 		if err != nil {
 			return fmt.Errorf("坐下读卡 %s: %w", id, err)
@@ -52,6 +54,10 @@ func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error {
 		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_heartbeat_at = ? WHERE id = ?`),
 			identity, source, s.tval(s.timeNow()), id); err != nil {
 			return fmt.Errorf("坐下写席位 %s: %w", id, err)
+		}
+		if _, err := s.appendEvent(tx, sink, id, EvDriverSeatBound, identity,
+			map[string]string{"to": identity}); err != nil {
+			return fmt.Errorf("坐下落事件 %s: %w", id, err)
 		}
 		return nil
 	})

@@ -125,6 +125,78 @@ func TestBindSeatAndRebindSeatUseAtomicSeatContract(t *testing.T) {
 	}
 }
 
+// countSeatBoundEvents 取该卡的 EvDriverSeatBound 事件切片。
+func countSeatBoundEvents(t *testing.T, s *Store, id string) []Event {
+	t.Helper()
+	events, err := s.EventsFromAsc([]string{id}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []Event
+	for _, e := range events {
+		if e.Type == EvDriverSeatBound {
+			out = append(out, e)
+		}
+	}
+	return out
+}
+
+// B358 补签轮 R2：初始坐下同事务落恰一条 EvDriverSeatBound——「协调者入群」
+// 的 timeline 事实源（proto.SessionEventSeatBound 的唯一生产者）。
+// 载荷恰 {to} 一键（无 from——初始坐下没有旧席位），actor=席位自称，与
+// RebindSeat 同形。成功路径、拒绝路径（CAS 冲突/身份无效）、换绑路径逐一
+// 可变红：BindSeat 不落事件、换绑误落 seat_bound、冲突落事件都会在此变红。
+func TestBindSeatFallsDriverSeatBoundEventInSameTransaction(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "入群席位", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity, err := proto.EncodeSeatIdentity("opencode", "thread-b358")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.BindSeat(c.ID, identity, proto.SeatSourceBind); err != nil {
+		t.Fatalf("空座 bind: %v", err)
+	}
+	bound := countSeatBoundEvents(t, s, c.ID)
+	if len(bound) != 1 {
+		t.Fatalf("坐下应恰落一条 EvDriverSeatBound: %+v", bound)
+	}
+	if bound[0].CardID != c.ID || bound[0].Actor != identity {
+		t.Fatalf("seat_bound 应挂该卡、actor=席位自称: %+v", bound[0])
+	}
+	var payload map[string]string
+	if err := json.Unmarshal(bound[0].Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if len(payload) != 1 || payload["to"] != identity {
+		t.Fatalf("seat_bound payload 应恰有 to 一键且值为席位身份: %v", payload)
+	}
+	// 换绑不得误落 seat_bound（席位变更的 timeline 行只归 EvDriverTakeover）。
+	next, _ := proto.EncodeSeatIdentity("codex", "thread-b358-2")
+	if err := s.RebindSeat(c.ID, next, proto.SeatSourceCoordinate, identity); err != nil {
+		t.Fatalf("换绑: %v", err)
+	}
+	if bound = countSeatBoundEvents(t, s, c.ID); len(bound) != 1 {
+		t.Fatalf("换绑不得追加 seat_bound: %+v", bound)
+	}
+	if evs := countTakeoverEvents(t, s, c.ID); len(evs) != 1 || evs[0].Actor != next {
+		t.Fatalf("换绑应恰落一条新身份 takeover: %+v", evs)
+	}
+	// 拒绝路径零事件：CAS 冲突与身份无效都不得落 seat_bound。
+	other, _ := proto.EncodeSeatIdentity("grok", "thread-b358-3")
+	if err := s.BindSeat(c.ID, other, proto.SeatSourceBind); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("已有席位 bind 应冲突: %v", err)
+	}
+	if err := s.BindSeat(c.ID, "", proto.SeatSourceBind); !errors.Is(err, ErrBadState) {
+		t.Fatalf("空身份 bind 应拒绝: %v", err)
+	}
+	if bound = countSeatBoundEvents(t, s, c.ID); len(bound) != 1 {
+		t.Fatalf("拒绝路径不得追加 seat_bound: %+v", bound)
+	}
+}
+
 func TestBindSeatRejectsLegacyAndRebindRejectsEmptySeat(t *testing.T) {
 	s := seedStore(t)
 	c, err := s.CreateCard(NewCard{Title: "旧席位", Project: "p", Workflow: "bug", Actor: "t"})

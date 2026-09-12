@@ -120,3 +120,24 @@ func TestSessionMemberStatusVocabulary(t *testing.T) {
 		}
 	}
 }
+
+func TestSessionTimelineKindVocabulary(t *testing.T) {
+	// timeline kind 词表冻结（B358 补签轮）：逐值断言字面量，防手抖改串；
+	// 消费方（sessionTimeline）的 switch 必须与这里逐值对齐，未知 ledger
+	// 事件类型不得被默认分支收进 timeline。
+	want := map[string]string{
+		SessionEventCardJoined:  "card_joined",
+		SessionEventCardLeft:    "card_left",
+		SessionEventSeatBound:   "seat_bound",
+		SessionEventSeatRebound: "seat_rebound",
+		SessionEventNeedsHuman:  "needs_human",
+		SessionEventCardClosed:  "card_closed",
+		SessionEventArchived:    "archived",
+		SessionEventCreated:     "created",
+	}
+	for constant, literal := range want {
+		if constant != literal {
+			t.Fatalf("timeline kind 常量 %q 与冻结字面量 %q 不一致", constant, literal)
+		}
+	}
+}

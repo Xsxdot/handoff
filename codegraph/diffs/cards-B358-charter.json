@@ -1,7 +1,7 @@
 {
  "view": "cards/B358-charter",
  "base": "94246fc8a2acc7996c254cb6b473c7c9b5aef225",
- "summary": "B358 Ticket 0：会话（群）域空壳——会话本体/成员/详情 DTO、账本会话存储、collab 会话门面、投递寻址纯函数与源码级扇出守卫",
+ "summary": "B358 Ticket 0：会话（群）域空壳——会话本体/成员/详情 DTO、账本会话存储、collab 会话门面、投递寻址纯函数与源码级扇出守卫；补签名轮（2026-09-12）：BindSeat 同事务落 EvDriverSeatBound（R2）、SessionEventCardClosed 词表 +1（R3）、外部订阅通道签名只入契约文档不落码（R1，§3.8）",
  "nodesModified": {
   "m_proto_RoomMessage": {
    "kind": "model",
@@ -140,6 +140,40 @@
      "func",
      "记入显式成员"
     ]
+   ]
+  },
+  "n_ledger_Store_BindSeat": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 701,
+   "name": "Store.BindSeat",
+   "file": "internal/ledger/binding.go",
+   "line": 32,
+   "signature": "func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error",
+   "params": [
+    [
+     "id",
+     "string",
+     "卡号"
+    ],
+    [
+     "identity",
+     "string",
+     "规范席位身份"
+    ],
+    [
+     "source",
+     "proto.SeatSource",
+     "席位来源"
+    ]
+   ],
+   "returns": "error",
+   "summary": "只把空座原子地占为规范 identity/source，不写 driver_carrier；同一事务落恰一条 EvDriverSeatBound（B358 补签轮 R2：协调者入群的 timeline 事实源，与换绑 EvDriverTakeover 配对，载荷 {to}、actor=席位自称）。读、判空、写入、落事件在同一个账本事务内完成。",
+   "tests": [
+    {
+     "name": "TestBindSeatFallsDriverSeatBoundEventInSameTransaction",
+     "file": "internal/ledger/binding_test.go:149"
+    }
    ]
   }
  },

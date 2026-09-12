@@ -3,7 +3,7 @@
 **上游状态：已批准**（源 spec：`docs/superpowers/specs/b358.md`，头部状态行
 「**状态**：**已批准**（用户 2026-09-12：「我觉得可以，就这么定吧」）」——本轮已对工作树复核一致，无需回写）
 **级别：L3 ｜ 选档复核：重档确认**（会话模型重做 × 账本域宿舍与归属 × 控制面唤醒路径 × CLI room 命令族 × `d_web` 内容面，远超流程固定成本且可并行；直通竖切按重档法定步骤执行，见 §7）
-**冻结状态：本提交随 `codegraph/target.json`、`codegraph/diffs/cards-B358-charter.json`、Ticket 0 骨架、直通竖切与本台账冻结**
+**冻结状态：本提交随 `codegraph/target.json`、`codegraph/diffs/cards-B358-charter.json`、Ticket 0 骨架、直通竖切与本台账冻结；补签名轮（2026-09-12，R1/R2/R3）随同批提交增补冻结——R1 签名见 §3.8、R2/R3 载体见 §3.9、冻结条目 §4.6–§4.8**
 **有效基线：** `cards/B233.1-charter-7` @ `94246fc8`
 **架构形态：** 按子系统分域的平铺领域包，无横向 controller/service/dao 分层（沿用 `codegraph/best.json`；本卡不新增领域）
 **命名警示（沿用 B156.2）：** 会话（群）域 `d_collab` 与终端会话域 `d_sessions` 同名不同物；本卡的「会话」是 IM 群工作单元，不是 PTY 会话。
@@ -268,6 +268,86 @@ func IsAddressed(msg proto.RoomMessage, replyAuthor string) bool
 - `Resolve` 增会话分支：会话房间作为无卡可比的讨论面恒可写；归档只读判定由门面在会话本体上做（`Resolve` 只解析形态，不查会话表）。
 - `SameRoom` 对会话房间看载荷 `Room`（与群房间同款）。
 
+### 3.8 外部会话订阅通道签名（补签轮 R1，2026-09-12）
+
+spec §4.3 点名归 contract 的最后一块签名。用户 2026-09-12 探讨定调（breakdown §0 P1 裁决行）：外部会话（人 / 主 agent，用户自启的会话）走**事件流订阅**——即 spec 列的候选「扩既有 wait 的事件类型」；handoff 内部 agent 的 print/continue 唤醒属「参战形态 v2」另卡，不入 B358。**通道本体（命令实现、DTO 落码、wakeconsumer 分流改接）归 S3 外部半边**，本节只定签名与冻结条目（§4.6）。
+
+**通道形态拍板：会话维度的阻塞 wait（`handoff session wait`），不扩 `Store.Follow`。**
+
+决定性现状事实：会话房间消息是**无卡事件**（`CardID=""`），而 `Store.Follow` 明文把无卡事件排除在多路 wait 外（`internal/ledger/follow.go:13-19`「含 card_id 为空的项目级事件不在内」）——这是 B156.3 的刻意设计（执行器对群聊零感知）。把无卡事件塞进 Follow 等于让执行器 wait 被会话噪声唤醒，是扇出禁令的另一半破口。等价的最小增量形态：
+
+- **订阅入口（CLI，归 P7 已立的 `session` 命令族）**：
+
+  ```
+  handoff session wait <member> [--since <seq>] [--timeout <dur>]
+  ```
+
+  - `member`：订阅者身份（外部会话身份 `user:<name>` / `agent:<name>`，P4 拍板的统一记法；wire 上仍是不透明串）。命中判定 = `member` 与寻址 target **逐字相等**。
+  - `--since <seq>`：订阅起点（账本 seq，排他）；缺省 = 命令启动时的流尾（`Store.MaxSeq`，与 `cmd/card_wait.go#runCardWait`（`:78`）同约定）——只等新事件。
+  - `--timeout <dur>`：等待总时长；到点以 124 退出（`ExitTimeout`，与 card wait / 执行域 wait 同码，`cmd/card_wait.go:178-182`）；0 = 不限。
+  - 一次性原语：首个命中输出载荷后退出 0；外部会话「醒—处置—再挂」循环用它组合。常驻 follow 不在本卡（属参战形态 v2 的常驻订阅，另卡）。
+
+- **读侧形状**：轮询 `Store.EventsFromAsc(nil, cursor, 500)` **全流读**（无卡事件在内；`internal/ledger/events.go#Store.EventsFromAsc`（`:63`）「cardIDs 空 = 全流」；wakeconsumer 消费循环正是此读法，`internal/agentd/wakeconsumer.go:234`），只对会话房间（`room.IsSessionRoom`）的 `EvRoomMessage` 做命中判定；其余事件类型推进游标、零输出。组装走既有 CLI 组装点 `cmd/room.go#roomServiceFor`（`:33`），**不新增组装点、不新增跨域边**。
+
+- **命中判定唯一入口**：`collab.Service.MessageWakeTargets`（`internal/collab/sessions.go:127`，本契约 §3.5 已冻结）。cmd 侧不得重造寻址判定——与 §4.3 条 27 的签名禁令同形，通道里没有成员集合参数。
+
+- **唤醒载荷最小化（spec §4.3：命中条 + 引用条 + 未读数）**——stdout 恰一行 JSON（`json.Encoder` 逐行，同 card wait `cmd/card_wait.go:155`）。wire 形状冻结如下，DTO 落码进 proto 唯一定义处（随通道实现）：
+
+  ```go
+  // SessionWake 是会话订阅通道的唤醒载荷（B358 R1）。
+  type SessionWake struct {
+      Session    string       `json:"session"`              // 命中所在会话 id
+      Hit        SessionCite  `json:"hit"`                  // 寻址命中那条
+      Referenced *SessionCite `json:"referenced,omitempty"` // reply_to 指向的那条；无引用锚省键
+      Unread     int          `json:"unread"`               // 该成员在该会话的未读数（含命中条）
+  }
+
+  // SessionCite 是命中条/引用条的最小引用形状（可点跳转的锚点集）。
+  type SessionCite struct {
+      Seq   int64  `json:"seq"`   // 账本 seq（跳转与对质锚）
+      Room  string `json:"room"`  // 会话房间 id
+      Actor string `json:"actor"` // 发言者身份
+      Body  string `json:"body"`  // 正文
+  }
+  ```
+
+  `referenced` 取 `ReplyTo` 指向消息的引用条；ReplyTo 无效或作者缺失时省键（与 `ResolveDelivery` 对空作者的忽略同判）。`unread` 与 `ListSessions(member)` 的 Unread **同一投影**（同一游标介质 `room-cursors.json`，`internal/collab/cursor`）。
+
+- **订阅只读**：通道不落账、不推进未读游标、不经 keystone、不改任何卡或会话状态。未读游标的消费仍走既有机制（MarkRead / B287 回复即清）。
+
+- **席位成员不承诺经本通道唤醒**：席位（协调者）的法定唤醒通道是 keystone 卡锚（`WakeMessage{Card}`，B156.3 沿用）；本通道的承诺消费方是外部会话成员（显式成员）。机制上席位身份语法可用，但那不是契约承诺面。
+
+**wakeconsumer 消费分支形状**（S3 对账形状，实现归欠账 §8.9）：
+
+1. 会话房间 `EvRoomMessage` 经 `MessageWakeTargets` 得 target 集，**按 target 身份分流**：
+   - 席位身份命中（target = 会话内某卡当前 `driver_session`）→ 进既有 keystone 批次，`WakeMessage{Card:该卡}` **恰一次**；
+   - 外部身份命中 → **零 keystone Wake**（事件标 seen、游标照推、未读由事件+游标天然承载）；推醒由订阅通道（本节）完成。
+2. 一条消息同时命中席位与外部身份时两类分流互不合并、互不广播：不因外部命中丢席位唤醒，不因席位命中向外部广播。
+3. `session_*` 结构事件与 `driver_seat_bound`/`driver_takeover` 等席位事件不得被当成 room_message 消费（逐值反例归 S3；mirror spec「系统结构事件不唤醒」）。
+4. 席位判据按「会话内卡的当前 `driver_session` 是否等于该 target」（`AddressesCard` 同判据），**不建外部身份注册表**——注册表就是按成员集合投递的形状回潮。
+
+### 3.9 席位入群事件与卡收口 kind（补签轮 R2/R3）
+
+**R2 账本席位事件**（`internal/ledger/types.go` 唯一定义点，落既有事件常量块）：
+
+```go
+// EvDriverSeatBound 协调者初始坐下（B358 补签轮）：空座被原子占为规范
+// 席位的落账事实，载荷 {to: 席位身份}、actor=席位自称，与
+// EvDriverTakeover（换绑，{from,to}）配对。会话 timeline 的 seat_bound 行
+// （proto.SessionEventSeatBound）以本事件为唯一载体；结构事件，不唤醒任何人。
+EvDriverSeatBound = "driver_seat_bound"
+```
+
+写面：`internal/ledger/binding.go#Store.BindSeat`（`:32`）在既有 mutate 事务内、席位列 UPDATE 之后 `appendEvent(tx, sink, id, EvDriverSeatBound, identity, map[string]string{"to": identity})`——与 `#Store.RebindSeat`（`:111-113`）落 `EvDriverTakeover` 逐行同形（样板出处）。同事务 = 席位列写入与事件原子：事件在即坐成，坐成必有事件。命名沿用卡上席位域 `driver_` 词根与 takeover 配对；proto 侧 `SessionEventSeatBound`（§3.2 已冻结）由此获得唯一生产者。payload 用 `{to}` 单键（镜像 `EvStatusMoved` 终止事件的 `{to}` 形，`internal/ledger/cards.go:709`）：初始坐下没有旧席位，无 from 可记。
+
+**R3 卡收口 timeline kind**（`internal/proto/sessions.go` 词表 +1，载体复用既有事件）：
+
+```go
+SessionEventCardClosed = "card_closed"
+```
+
+载体 = 既有 `EvStatusMoved`（无新账本事件），由 timeline 消费方按 payload 判定：**当且仅当 `to ∈ {已完成(ledger.StatusDone), 终止(ledger.StatusClosed)}` 时记一行 card_closed**；普通列间转移（待办/进行中/待审阅）不是结构事实、不进 timeline。判据出处：spec §4.3「卡收口或终止」+ 用户故事 9「卡何时收口」；`EvStatusMoved` 载荷三处生产（`internal/ledger/move.go:67` `{from,to}`、`internal/ledger/cards.go:709` 终止 `{from,to,reason}`、`:730` 复活）均带可判 `to` 键。终止的 `reason` 随 payload 透传给 Detail 字段（不二次解释，同 §9 对 driver_takeover 的透传裁决）。timeline 消费本体归 S2（欠账 §8.10）。proto 不 import ledger——判定值域写在消费方，词表注释记语义。
+
 ---
 
 ## 4. 原子冻结清单
@@ -327,6 +407,33 @@ func IsAddressed(msg proto.RoomMessage, replyAuthor string) bool
 37. `var _ client.LedgerClient = (*Facade)(nil)` 编译期成立（Facade 缺任一方法即编译失败）。
 38. `codegraph/diffs/cards-B358-charter.json` 记录 Ticket 0 新增符号；`codegraph validate` 本视图零 issue。
 
+### 4.6 外部会话订阅通道（补签轮 R1；条目 39–44 的通道本体归 S3 外部半边实现，45 起为 wakeconsumer 对账条目）
+
+39. 订阅入口为 `handoff session wait <member> [--since <seq>] [--timeout <dur>]`；`member` 与寻址 target 逐字相等匹配（wire 上不透明串）。
+40. `--since` 缺省 = 命令启动时的流尾；起点排他（仅消费 `seq > since` 的事件）。
+41. 订阅只对会话房间（`IsSessionRoom`）的 `EvRoomMessage` 输出唤醒；其余事件类型（含全部 `session_*` 结构事件、`driver_seat_bound`/`driver_takeover`、`status_moved`）推进游标、零输出。
+42. 命中判定唯一入口是 `collab.Service.MessageWakeTargets`；通道内不得出现第二份寻址判定（无成员集合形状，同条 27 的签名禁令在通道的镜像）。
+43. 命中输出恰一行 JSON `SessionWake`：顶层键集 {session, hit, referenced, unread}；`referenced` 在 ReplyTo 无作者/无引用锚时省键；hit 与 referenced 的键集 = {seq, room, actor, body}。
+44. `unread` = 该成员在该会话的未读数，与 `ListSessions(member)` 的 Unread 同一游标投影，含命中条本身。
+45. 订阅只读：不落账、不推进未读游标、不经 keystone、不改任何卡或会话状态。
+46. 超时以 124 退出；命中输出后退出 0；无命中且未超时保持阻塞。
+47. wakeconsumer 对会话房间消息按 target 分流：席位身份命中（target = 会话内某卡当前 `driver_session`）→ 恰一次 keystone `WakeMessage{Card:该卡}`；外部身份命中 → 零 keystone Wake（事件标 seen、游标照推、未读照记）。
+48. 一条消息同时命中席位与外部身份时，席位唤醒与外部不唤醒互不影响（不因外部命中丢席位唤醒，不因席位命中向外部广播）。
+49. `Store.Follow` 语义不变：无卡事件继续被多路 wait 排除；订阅通道读侧走 `EventsFromAsc` 全流读，不走 Follow。
+50. wakeconsumer 消费席位/结构事件时不得把 `driver_seat_bound`/`driver_takeover`/`session_*` 当成 room_message 处理（逐值反例归 S3）。
+
+### 4.7 席位入群事件（补签轮 R2）
+
+51. `Store.BindSeat` 成功时同事务落恰一条 `EvDriverSeatBound`：`card_id`=卡号、`actor`=席位身份、payload 恰 `{to}` 一键且值为席位身份。
+52. `BindSeat` 拒绝路径（已占用 CAS 冲突、身份为空、席位无效）不落 `EvDriverSeatBound`。
+53. `RebindSeat` 不落 `EvDriverSeatBound`——换绑的席位变更事实只有 `EvDriverTakeover`，两事件不重叠。
+54. `EvDriverSeatBound` 是 `proto.SessionEventSeatBound` timeline 行的唯一载体（timeline 消费归 S2，见欠账 §8.10）；结构事件，不唤醒任何人。
+
+### 4.8 卡收口 timeline kind（补签轮 R3）
+
+55. `proto.SessionEventCardClosed = "card_closed"` 在词表内且逐值冻结（`TestSessionTimelineKindVocabulary`）。
+56. timeline `card_closed` 行的载体是既有 `EvStatusMoved`：当且仅当 payload `to ∈ {已完成, 终止}` 记一行；普通列间转移不产生 timeline 行。（消费归 S2。）
+
 ---
 
 ## 5. 依赖方向、组装点与预算
@@ -348,6 +455,13 @@ func IsAddressed(msg proto.RoomMessage, replyAuthor string) bool
 - **成员状态取值 Working/Listening/LastActive/Empty**：直接来自 spec 实现决定 4 与「看板不说谎」，无取舍空间。不立。
 
 **无其它命中。**（空着与没审过的区别已按上三条审计记录覆盖。）
+
+**补签轮（2026-09-12）命中两条：**
+
+- **订阅通道不复用 `Store.Follow`，无卡事件不进多路 wait**（R1）：难逆转——扩 Follow 让无卡事件进多路 wait，B156.3「执行器对群聊零感知」的承诺在 collab/agentd/CLI 三面同时破口，回头要动执行域 wait 语义与 PG LISTEN 行为面；无上下文会惊讶——follow.go 明文排除无卡事件而订阅通道读全流，后人极可能想「统一成一条机制」；真取舍——被否方案就是「扩 Follow 事件类型」，两边各立一条读侧。立。
+- **外部半边是拉式 CLI 订阅，agentd 不向外部会话推送**（R1）：难逆转——推送要求 agentd 持有外部会话注册表并按身份寻址推送，正是扇出禁令要扑灭的形状，且外部会话（用户自启进程）的生命周期不受 agentd 管；无上下文会惊讶——「外部命中在 wakeconsumer 里零推送代码」会被当成漏实现而顺手「补上」（breakdown S3 缺陷族 4 点名的最高危假绿温床）；真取舍——被否方案是 gateway SSE/长连接推送，P1 裁决已定事件流订阅方向，此处记的是机内理由。立。
+
+（R2/R3 为微增量事件与常量，语义由 spec 直接决定，无被否的像样方案，不立。）
 
 ---
 
@@ -389,6 +503,15 @@ func IsAddressed(msg proto.RoomMessage, replyAuthor string) bool
 - `go test ./internal/collab/...` → `ok`；`go test ./internal/ledger/...` → `ok`。
 - `codegraph validate --view cards-B358-charter` → 本视图 0 issue；`codegraph check --view cards-B358-charter` → fails=6（与基线逐条相同）。
 
+### 7.5 补签轮落码（2026-09-12，R2/R3 本提交；R1 不落码）
+
+- `internal/ledger/types.go`：+`EvDriverSeatBound = "driver_seat_bound"`（§3.9）。
+- `internal/ledger/binding.go#Store.BindSeat`：同 mutate 事务落席位事件（闭包收 `sink`），注释同步；`RebindSeat` 不动。
+- `internal/ledger/binding_test.go`：+`TestBindSeatFallsDriverSeatBoundEventInSameTransaction`（成功/换绑/两拒绝路径；变异验证：删 appendEvent 调用 → 红，还原 → 绿）。
+- `internal/proto/sessions.go`：+`SessionEventCardClosed = "card_closed"`（词表注释写载体与 `to` 判定）。
+- `internal/proto/sessions_fixture_test.go`：+`TestSessionTimelineKindVocabulary`（timeline kind 全词表 8 值逐字冻结；变异验证：改字面量 → 红，还原 → 绿）。
+- **R1 不落码**：通道本体（`session wait` 命令、`SessionWake`/`SessionCite` DTO 落码与金样本、wakeconsumer 分流改接）归 S3 外部半边（欠账 §8.9）；本契约 §3.8/§4.6 是其全部签名依据。R1 处置前 S3 外部半边的「入未读、零 Wake、留日志」收口态继续有效，至通道落地为止。
+
 ---
 
 ## 8. 本节点欠账（实现节点逐条补齐，不得静默带走）
@@ -401,6 +524,8 @@ func IsAddressed(msg proto.RoomMessage, replyAuthor string) bool
 6. **升级三档纪律文本**：协调者与主 agent 的 discipline/skill 修订（协调者自决填补级、@ 主 agent 仅推翻级、人掌三道人工门）——落纪律资源与 skill 层，非本节点代码面。
 7. **旧 326 卡房间只读归档**：归档迁移/只读判定（spec §4.5），本节点未动。
 8. **OOS 项的 roadmap 登记**：主 agent 内部对话面、成员状态心跳写入路径、多人时代、历史翻页、富文本（spec §7）。
+9. **R1 通道本体实现**（S3 外部半边，**本补签轮后解除阻塞**）：`handoff session wait` 命令（`session` 命令族 + 组装点 `roomServiceFor`）、`SessionWake`/`SessionCite` DTO 落码进 proto + 双侧金样本（Go 侧锁 stdout 形状；TS 侧若控制台也消费则随 S6）、wakeconsumer 按条 47/48/50 分流改接、命中条/引用条/未读数装配。对账依据 = §3.8 + §4.6 条 39–46 逐条。**R1 处置前 S3 外部半边的「入未读、不唤醒、留日志」收口态维持至本条完成**；不得以成员集合广播兜底（条 42/48）。
+10. **R2/R3 的 timeline 消费**（S2 增补条目，**本补签轮后解除阻塞**）：`sessionTimeline` 增两分支——`seat_bound`（载体 `EvDriverSeatBound`，归入判据沿用 §9「仅当事件所属卡在该会话内」）与 `card_closed`（载体 `EvStatusMoved`、`to ∈ {已完成,终止}` 判定、终止 reason 透传 Detail）；配套跨会话污染反例（R2/R3 处置前 S2 不做这两条，其余条目照常并行）。
 
 ---
 
@@ -432,4 +557,16 @@ func IsAddressed(msg proto.RoomMessage, replyAuthor string) bool
 - 三重闸门：§6 记录「无命中」及三条审计依据，非空着。
 - 图三闸：`codegraph validate --view cards-B358-charter` 本视图 0 issue；`codegraph check --view cards-B358-charter` fails=6（与基线逐条相同、无本卡新增）。
 
+**补签轮法定核对（2026-09-12）：**
+
+- 上游裁决位：breakdown 稿头部「已拍板（2026-09-12）——P1–P7 全案 A；R1/R2/R3 成立，卡退回 contract 补签名轮」；本文件头部冻结状态行已注明补签轮。
+- 每个新签名带现状代码出处：§3.8（follow.go 排除无卡事件、EventsFromAsc 全流、card wait CLI 约定、MessageWakeTargets、roomServiceFor）、§3.9（RebindSeat 落事件样板、EvStatusMoved 载荷三处生产）——出处见各节内联与台账 §一。
+- 对侧常量查执（补签轮增量）：`EvDriverSeatBound` 生产者 = `BindSeat`（本轮起），消费者 = S2 timeline（欠账）；`SessionEventCardClosed` 生产者 = 复用既有 `EvStatusMoved`（三处生产已在），消费者 = S2 timeline。无零使用死常量被当事实源——R2/R3 常量的消费面是显式欠账，不是「已有消费」。
+- R2/R3 可执行冻结：金样本测试 `TestSessionTimelineKindVocabulary` 本轮跑过且变异验证过；`TestBindSeatFallsDriverSeatBoundEventInSameTransaction` 本轮跑过且变异验证过（原文见台账 §三/§四）。
+- R1 无落码、无金样本——通道 wire 形状（SessionWake 键集）以 §3.8 文本冻结，金样本随通道实现补（欠账 §8.9），届时适用 §7.3 同款纪律。
+- 三重闸门补签轮：§6 记两条命中 + R2/R3 不立的判据，非空着。
+- 图三闸（补签轮复跑）：见 §10 末轮读数与本台账 §六。
+
 > **修订记录（breakdown 出稿轮，2026-09-12）**：三条边界澄清，不新增接缝——① 会话房间书写执法归门面（actor ∈ 显式成员 ∪ 会话内各卡当前席位；spec §6 接缝 #1 的「非成员不能发言」由 `Service.Send` 路径执法，`room.Resolve` 只解析形态）；② 归档只读判定同样由 `Service.Send` 查会话本体（§3.7 的门面职责覆盖发言路径，不只 JoinCard）；③ 成员状态 `listening` 在本卡无生产载体（租约只有到期时刻、`RenewDriverLease` 生产零调用方），生产只报 `working`（有未过期租约时）/`last_active`/`empty`，`listening` 保留作词表位、随 OOS 心跳路径启用。同轮发现三处疑似缺口（外部会话订阅通道签名、初始坐下的席位事件、卡收口 timeline kind 值）按纪律**退回 contract**，不在拆解边加；见 breakdown 稿 §2。
+>
+> **修订记录（contract 补签名轮，2026-09-12）**：三条退回项处置完毕——R1 外部会话订阅通道签名落 §3.8（形态拍板：`handoff session wait` 阻塞订阅、不扩 Follow、agentd 不推送外部会话；拍板记录见 §6）+ 冻结条目 §4.6（39–50）；R2 席位入群事件落 §3.9 + §4.7（51–54），`EvDriverSeatBound` 常量、`BindSeat` 同事务落事件、可变红测试随本轮落码（§7.5）；R3 卡收口 kind 落 §3.9 + §4.8（55–56），`SessionEventCardClosed` 常量与词表金样本随本轮落码。欠账 §8 增 9/10 两条：S3 外部半边与 S2 的 seat_bound/card_closed timeline 条目**解除阻塞**（收口态条款：R1 通道落地前外部命中维持「入未读、零 Wake、留日志」）。冻结条目总数 38 → 56。

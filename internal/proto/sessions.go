@@ -103,12 +103,18 @@ type SessionNode struct {
 }
 
 // 会话 timeline 的结构事件种类词表（结构信息不进群聊流）。
+//
+// 载体对应：seat_bound ← ledger.EvDriverSeatBound（初始坐下）；seat_rebound ←
+// EvDriverTakeover；card_closed ← 既有 EvStatusMoved 复用（B358 补签轮 R3），
+// 由消费方按 payload.to 判定——仅 to ∈ {已完成, 终止} 记 card_closed，普通列
+// 间转移不是结构事实、不进 timeline；终止的 reason 键随 payload 透传。
 const (
 	SessionEventCardJoined  = "card_joined"
 	SessionEventCardLeft    = "card_left"
 	SessionEventSeatBound   = "seat_bound"
 	SessionEventSeatRebound = "seat_rebound"
 	SessionEventNeedsHuman  = "needs_human"
+	SessionEventCardClosed  = "card_closed"
 	SessionEventArchived    = "archived"
 	SessionEventCreated     = "created"
 )
