@@ -246,6 +246,22 @@ func containsStr(xs []string, s string) bool {
 	return false
 }
 
+// TestB23317AssemblyFilesHaveNoHandlerDefs 是缝 1 的实质断言：assembly 名单里的
+// 任何 .go 文件都不得定义 Server.handle*（免检只留给开机插线）。handler 搬迁前
+// server.go 含 21 个 handle*，本测试必红。
+func TestB23317AssemblyFilesHaveNoHandlerDefs(t *testing.T) {
+	repo, assembly := b23317AssemblyFiles(t)
+	for _, rel := range assembly {
+		body, err := os.ReadFile(filepath.Join(repo, rel))
+		if err != nil {
+			t.Fatalf("读 assembly 文件 %s: %v", rel, err)
+		}
+		if got := b23317HandlerDefsIn(body); len(got) != 0 {
+			t.Fatalf("assembly 文件 %s 不得定义 Server.handle*（缝 1）：%v", rel, got)
+		}
+	}
+}
+
 // TestB23317HandlerGuardHasTeeth 是可变红哨兵：assembly 名单文件里塞回一个
 // handle* 定义必须被判红，非 Server 接收者与注释里的同形文本必须放行。
 func TestB23317HandlerGuardHasTeeth(t *testing.T) {
