@@ -8,6 +8,7 @@
 package api
 
 import (
+	"errors"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
@@ -88,6 +89,83 @@ func (f *Facade) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]pr
 		out = append(out, eventWire(ev))
 	}
 	return out, nil
+}
+
+// --- B358 会话（群）域直通镜像：逐方法转调 Store，不含业务判断 ---
+
+func (f *Facade) CreateSession(title, owner, actor string) (proto.Session, error) {
+	session, err := f.st.CreateSession(title, owner, actor)
+	if err != nil {
+		return proto.Session{}, err
+	}
+	return sessionWire(session), nil
+}
+
+func (f *Facade) GetSession(id string) (proto.Session, error) {
+	session, err := f.st.GetSession(id)
+	if err != nil {
+		return proto.Session{}, translateNotFound(err)
+	}
+	return sessionWire(session), nil
+}
+
+func (f *Facade) ListSessions() ([]proto.Session, error) {
+	sessions, err := f.st.ListSessions()
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proto.Session, 0, len(sessions))
+	for _, s := range sessions {
+		out = append(out, sessionWire(s))
+	}
+	return out, nil
+}
+
+func (f *Facade) ArchiveSession(id, actor string) error {
+	return translateNotFound(f.st.ArchiveSession(id, actor))
+}
+
+func (f *Facade) JoinCardToSession(sessionID, cardID, actor string) error {
+	return translateNotFound(f.st.JoinCardToSession(sessionID, cardID, actor))
+}
+
+func (f *Facade) LeaveCardToSession(sessionID, cardID, actor string) error {
+	return translateNotFound(f.st.LeaveCardToSession(sessionID, cardID, actor))
+}
+
+func (f *Facade) SessionOfCard(cardID string) (string, error) {
+	return f.st.SessionOfCard(cardID)
+}
+
+// AddSessionMember 把一个显式成员记入会话（幂等）。
+func (f *Facade) AddSessionMember(sessionID, identity, actor string) error {
+	return translateNotFound(f.st.AddSessionMember(sessionID, identity, actor))
+}
+
+// translateNotFound 把账本 ErrNotFound 翻成使用方哨兵 client.ErrNotFound；
+// 其它错误原样透传。接口归属使用方（架构法第九条），实现侧负责翻译。
+func translateNotFound(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, ledger.ErrNotFound) {
+		return client.ErrNotFound
+	}
+	return err
+}
+
+// sessionWire 账本会话 → wire DTO（逐字段直通，无业务判断）。
+func sessionWire(s ledger.Session) proto.Session {
+	return proto.Session{
+		ID:        s.ID,
+		Title:     s.Title,
+		Owner:     s.Owner,
+		Archived:  s.Archived,
+		Members:   s.Members,
+		Cards:     s.Cards,
+		CreatedAt: s.CreatedAt,
+		UpdatedAt: s.UpdatedAt,
+	}
 }
 
 func (f *Facade) BindDriver(id, session, carrier, expect string) error {

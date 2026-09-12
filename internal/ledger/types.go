@@ -76,6 +76,19 @@ const (
 	// 同一 mutate 事务内查后写（照 ClearNeedsHumanFrom 同形），权威在事件
 	// 存在性；会话侧游标只是缓存。
 	EvMessageConsumed = "message_consumed"
+
+	// B358 会话（群）域的结构事件。会话是工作单元（人/主 agent 开的一场
+	// 会话），卡是会话里的工作项。结构事件只进详情页 timeline、不唤醒任何人
+	// （投递寻址化的扇出禁令），也不进群聊流。
+	//
+	// EvSessionCreated 会话建立（群主 = 人或主 agent 会话身份）。
+	EvSessionCreated = "session_created"
+	// EvSessionArchived 会话显式归档；归档后只读。卡的终态不等于会话结束。
+	EvSessionArchived = "session_archived"
+	// EvSessionCardJoined 卡进群（只建讨论面，不等于配人——配人仍走 B307 三按钮）。
+	EvSessionCardJoined = "session_card_joined"
+	// EvSessionCardLeft 卡移出会话。
+	EvSessionCardLeft = "session_card_left"
 )
 
 // WorkflowTarget 是跨流迁移的显式目标。Version==0 表示在迁移事务内取目标流最新版。

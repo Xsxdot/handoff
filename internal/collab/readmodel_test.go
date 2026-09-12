@@ -66,6 +66,23 @@ func (f *fakeLC) RecordRoomMessage(cardID string, msg proto.RoomMessage, actor s
 func (f *fakeLC) RecordMessageConsumed(cardID string, msgSeq int64, consumer string) error {
 	return nil
 }
+
+// --- B358 会话（群）域账本能力（本文件不测会话；给出编译期占位实现）---
+
+func (f *fakeLC) CreateSession(title, owner, actor string) (proto.Session, error) {
+	return proto.Session{ID: "session:1", Title: title, Owner: owner}, nil
+}
+func (f *fakeLC) GetSession(id string) (proto.Session, error) {
+	return proto.Session{ID: id}, nil
+}
+func (f *fakeLC) ListSessions() ([]proto.Session, error) { return nil, nil }
+func (f *fakeLC) ArchiveSession(id, actor string) error  { return nil }
+func (f *fakeLC) JoinCardToSession(sessionID, cardID, actor string) error {
+	return nil
+}
+func (f *fakeLC) LeaveCardToSession(sessionID, cardID, actor string) error { return nil }
+func (f *fakeLC) SessionOfCard(cardID string) (string, error)              { return "", nil }
+func (f *fakeLC) AddSessionMember(sessionID, identity, actor string) error { return nil }
 func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	f.eventReads++
 	if limit <= 0 {

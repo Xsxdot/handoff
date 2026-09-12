@@ -23,11 +23,16 @@ import (
 func log() *slog.Logger { return slog.Default() }
 
 // 房间三类（proto.RoomSummary.Kind 词表；C5 的列表投影共用，等值由
-// service_test.go 的字面量测试钉住）。
+// service_test.go 的字面量测试钉住）。B358 起会话（群）是唯一的工作单元房间，
+// 旧的卡/项目群/全员群只读归档。
 const (
 	KindCard    = "card"
 	KindProject = "project"
 	KindGlobal  = "global"
+	// KindSession 会话（群）房间 id 形如 session:<n>，B358 的工作单元。
+	KindSession = "session"
+	// sessionPrefix 会话房间标识前缀。
+	sessionPrefix = "session:"
 )
 
 // Room 是房间解析的完整结果：识别房间形态并携带执法所需全部上下文。
@@ -57,6 +62,12 @@ func Resolve(lc client.LedgerClient, roomID string) (*Room, error) {
 		kind, name := groupRoomKind(roomID)
 		log().Info("房间解析为群房间", "room", roomID, "kind", kind, "project", name)
 		return &Room{ID: roomID, Kind: kind, Project: name}, nil
+	}
+	// B358 会话（群）房间：与旧群房间同为无卡可比的讨论面，恒可写（归档只读
+	// 判定由门面在会话本体上做——本函数只解析形态，不查会话表）。
+	if IsSessionRoom(roomID) {
+		log().Info("房间解析为会话房间", "room", roomID)
+		return &Room{ID: roomID, Kind: KindSession}, nil
 	}
 	cards, err := lc.ListAllCards("")
 	if err != nil {
@@ -173,6 +184,11 @@ func isGroupRoom(roomID string) bool {
 	return roomID == "global" || len(roomID) > len(prefix) && roomID[:len(prefix)] == prefix
 }
 
+// IsSessionRoom 会话房间标识形如 session:<n>（B358 的工作单元）。
+func IsSessionRoom(roomID string) bool {
+	return len(roomID) > len(sessionPrefix) && roomID[:len(sessionPrefix)] == sessionPrefix
+}
+
 // groupRoomKind 解析群房间形态：global 返回 (global,"")；project 群返回
 // (project, 名字)。
 func groupRoomKind(roomID string) (kind, name string) {
@@ -188,10 +204,10 @@ func groupRoomKind(roomID string) (kind, name string) {
 // （internal/proto/rooms_fixture_test.go / service_test.go）钉住。
 const RoomEventType = "room_message"
 
-// SameRoom 判断事件是否属于该房间：卡房间的 card_id 即房间号；群级事件看
-// 载荷 Room 字段。
+// SameRoom 判断事件是否属于该房间：卡房间的 card_id 即房间号；群级/会话级
+// 无卡事件看载荷 Room 字段。
 func SameRoom(ev proto.LedgerEvent, roomID string) bool {
-	if isGroupRoom(roomID) {
+	if isGroupRoom(roomID) || IsSessionRoom(roomID) {
 		var msg proto.RoomMessage
 		if err := UnmarshalMessage(ev.Payload, &msg); err != nil {
 			return false

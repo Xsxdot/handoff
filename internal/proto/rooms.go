@@ -21,12 +21,19 @@ const (
 
 // RoomMessage 是 room_message 账本事件的载荷 schema。ledger 只存
 // RawMessage 不解释字段；会话子系统与控制台按本结构编解码。
+//
+// B358：投递寻址化——接收人由发送者写下的寻址决定，与「群里有谁」无关。
+// 寻址两类来源：显式 Mentions（可多个）与 ReplyTo（隐式寻址原作者，一人）。
+// 两者皆无 => 不唤醒任何人（落账、进未读）。
 type RoomMessage struct {
-	Room     string   `json:"room"` // 卡号 | project:<name> | global
+	Room     string   `json:"room"` // 会话号 | 旧卡号 | project:<name> | global
 	Kind     string   `json:"kind"` // RoomMsg* 受控词表
 	Body     string   `json:"body"`
 	Refs     []string `json:"refs,omitempty"`     // 引用锚：git 路径 / timeline 锚 / 卡号 / 附件路径
-	Mentions []string `json:"mentions,omitempty"` // @成员：卡号（=该卡协调者）或用户标识
+	Mentions []string `json:"mentions,omitempty"` // @成员：卡号（=该卡当前席位）或外部会话身份
+	// ReplyTo 被回复消息的账本 seq；隐式寻址原作者（一人）。0=无回复锚。
+	// B358 起引用条渲染与投递都读它；投影与投递的归属仍在 collab/agentd。
+	ReplyTo int64 `json:"reply_to,omitempty"`
 	// DecisionID 简报挂的裁决 id；kind=escalation 时应非零（关联决策答复直达）。
 	DecisionID int64 `json:"decision_id,omitempty"`
 	// BySystem true=系统组件书写的指针行；Send 一律拒收 pointer，

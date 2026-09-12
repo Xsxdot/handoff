@@ -271,6 +271,17 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS driver_leases (
 				session TEXT PRIMARY KEY,
 				expires_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS sessions (
+				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
+				archived BOOLEAN NOT NULL DEFAULT false, members JSONB NOT NULL DEFAULT '[]',
+				created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS session_cards (
+				session_id TEXT NOT NULL REFERENCES sessions(id),
+				card_id TEXT NOT NULL REFERENCES cards(id),
+				created_at TIMESTAMPTZ NOT NULL,
+				PRIMARY KEY (session_id, card_id))`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uq_session_cards_card
+				ON session_cards(card_id)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
 				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
 			`CREATE TABLE IF NOT EXISTS registry (
@@ -357,6 +368,17 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS driver_leases (
 				session TEXT PRIMARY KEY,
 				expires_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS sessions (
+				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
+				archived INTEGER NOT NULL DEFAULT 0, members TEXT NOT NULL DEFAULT '[]',
+				created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS session_cards (
+				session_id TEXT NOT NULL REFERENCES sessions(id),
+				card_id TEXT NOT NULL REFERENCES cards(id),
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (session_id, card_id))`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uq_session_cards_card
+				ON session_cards(card_id)`,
 			`CREATE TABLE IF NOT EXISTS registry (
 				kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL,
 				seq INTEGER NOT NULL, body TEXT NOT NULL,

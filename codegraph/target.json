@@ -16,7 +16,7 @@
    "entries": [
     "proto 实体"
    ],
-   "legacyBudgetNote": "B156.2：新增方向。房间消息/收件箱/会话列表的 wire DTO 在 proto 唯一定义处（internal/proto/rooms.go）；竖切路径 Service.Send/History/Mentions 已有真实引用边。B312：卡 DTO 的 driver_session/driver_source 仍经 proto 唯一投影；席位身份编码 helper 归 d_protocol，不在 collab 复制。 B312 finish：席位 helper 真实引用边 1，预算 0→1。"
+   "legacyBudgetNote": "B156.2：新增方向。房间消息/收件箱/会话列表的 wire DTO 在 proto 唯一定义处（internal/proto/rooms.go）；竖切路径 Service.Send/History/Mentions 已有真实引用边。B312：卡 DTO 的 driver_session/driver_source 仍经 proto 唯一投影；席位身份编码 helper 归 d_protocol，不在 collab 复制。 B312 finish：席位 helper 真实引用边 1，预算 0→1。 B358：会话（群）域 DTO（Session/SessionMember/SessionSummary/SessionDetail）继续复用 proto 实体唯一投影；不新增方向或预算。"
   },
   {
    "from": "d_ledger",
@@ -25,7 +25,7 @@
    "entries": [
     "proto 实体"
    ],
-   "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。 B312 finish：席位 helper 真实引用边 2，预算 0→2。B349：LedgerEvent 的 source 三字段继续复用 proto 实体唯一投影；不新增方向或预算，source identity 闸留在两个消费点。"
+   "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。 B312 finish：席位 helper 真实引用边 2，预算 0→2。B349：LedgerEvent 的 source 三字段继续复用 proto 实体唯一投影；不新增方向或预算，source identity 闸留在两个消费点。 B358：会话消息仍取 proto.RoomMessage；会话本体 DTO 经 ledger/api 投影，ledger 不直接 import proto 新类型。"
   },
   {
    "from": "d_collab",
@@ -34,7 +34,7 @@
    "interfaces": [
     "LedgerClient"
    ],
-   "legacyBudgetNote": "B156.2：出站 client 接口缝（会话→账本）。接口定义在会话侧 internal/collab/client，实现 ledger/api.Facade 由组装点绑定；本方向零调用预算——collab 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红，穿透禁令由此执法。B312：collab 继续只消费 proto.Card 的规范席位字符串，不新增直接账本调用。"
+   "legacyBudgetNote": "B156.2：出站 client 接口缝（会话→账本）。接口定义在会话侧 internal/collab/client，实现 ledger/api.Facade 由组装点绑定；本方向零调用预算——collab 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红，穿透禁令由此执法。B312：collab 继续只消费 proto.Card 的规范席位字符串，不新增直接账本调用。 B358：会话本体与卡↔会话归属经 LedgerClient 接口缝读写（CreateSession/GetSession/ListSessions/ArchiveSession/JoinCardToSession/…），接口归会话侧、实现由组装点绑定 Facade；仍零调用预算，穿透仍违法。"
   },
   {
    "from": "d_cli",

@@ -1,0 +1,871 @@
+{
+ "view": "cards/B358-charter",
+ "base": "94246fc8a2acc7996c254cb6b473c7c9b5aef225",
+ "summary": "B358 Ticket 0：会话（群）域空壳——会话本体/成员/详情 DTO、账本会话存储、collab 会话门面、投递寻址纯函数与源码级扇出守卫",
+ "nodesModified": {
+  "m_proto_RoomMessage": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 430,
+   "name": "RoomMessage",
+   "file": "internal/proto/rooms.go",
+   "line": 28,
+   "summary": "room_message 账本事件的载荷 schema；kind 受控词表 RoomMsg*；B358 起投递寻址化（Mentions+ReplyTo）",
+   "fields": [
+    [
+     "Room",
+     "string",
+     "卡号 | project:<name> | global"
+    ],
+    [
+     "Kind",
+     "string",
+     "escalation|deviation|closing|relay|reply|user|pointer"
+    ],
+    [
+     "Body",
+     "string",
+     ""
+    ],
+    [
+     "Refs",
+     "[]string",
+     "引用锚；可选"
+    ],
+    [
+     "Mentions",
+     "[]string",
+     "@成员；可选"
+    ],
+    [
+     "ReplyTo",
+     "int64",
+     "被回复消息的账本 seq；隐式寻址原作者；0=无回复锚"
+    ],
+    [
+     "DecisionID",
+     "int64",
+     "简报挂的裁决 id；可选"
+    ],
+    [
+     "BySystem",
+     "bool",
+     "系统组件指针行；可选"
+    ]
+   ],
+   "projScanned": true
+  },
+  "m_collab_client_LedgerClient": {
+   "kind": "model",
+   "container": "k_collab_client_model",
+   "order": 20,
+   "name": "LedgerClient",
+   "file": "internal/collab/client/client.go",
+   "line": 19,
+   "signature": "type LedgerClient interface",
+   "summary": "会话侧出站接口（测试缝）：对外部账本能力的全部需求面；实现由组装点绑定为 ledger/api.Facade（B358 补会话语义）",
+   "fields": [
+    [
+     "GetCard",
+     "func",
+     "读卡（含绑定投影）"
+    ],
+    [
+     "ListActiveCards",
+     "func",
+     "已开始未结束的卡（成员派生输入）"
+    ],
+    [
+     "RecordRoomMessage",
+     "func",
+     "发布房间消息事件"
+    ],
+    [
+     "RecordMessageConsumed",
+     "func",
+     "恰好一次消费标记"
+    ],
+    [
+     "EventsFromAsc",
+     "func",
+     "升序游标读事件"
+    ],
+    [
+     "BindDriver",
+     "func",
+     "绑定/换绑 CAS"
+    ],
+    [
+     "DriverLease",
+     "func",
+     "绑定者活性租约"
+    ],
+    [
+     "CreateSession",
+     "func",
+     "建一场会话（群）"
+    ],
+    [
+     "GetSession",
+     "func",
+     "读单会话"
+    ],
+    [
+     "ListSessions",
+     "func",
+     "列全部会话"
+    ],
+    [
+     "ArchiveSession",
+     "func",
+     "显式归档会话"
+    ],
+    [
+     "JoinCardToSession",
+     "func",
+     "拉卡进群（一卡只挂一会话）"
+    ],
+    [
+     "LeaveCardToSession",
+     "func",
+     "移卡出群"
+    ],
+    [
+     "SessionOfCard",
+     "func",
+     "读卡所属会话"
+    ],
+    [
+     "AddSessionMember",
+     "func",
+     "记入显式成员"
+    ]
+   ]
+  }
+ },
+ "nodesAdded": {
+  "m_ledger_Session": {
+   "kind": "model",
+   "container": "k_ledger_model",
+   "order": 902,
+   "name": "Session",
+   "file": "internal/ledger/sessions.go",
+   "line": 20,
+   "signature": "type Session struct {",
+   "modelKind": "entity",
+   "summary": "一场会话（群）的账本投影；卡是会话里的工作项，一卡同时只挂一个会话。",
+   "fields": [
+    [
+     "ID",
+     "string",
+     ""
+    ],
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Owner",
+     "string",
+     "群主：人或主 agent 会话身份（升级终点）"
+    ],
+    [
+     "Archived",
+     "bool",
+     "显式归档后只读"
+    ],
+    [
+     "Members",
+     "[]string",
+     "显式成员身份；席位成员派生不落表"
+    ],
+    [
+     "Cards",
+     "[]string",
+     "会话内卡号"
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ],
+    [
+     "UpdatedAt",
+     "time.Time",
+     ""
+    ]
+   ]
+  },
+  "n_ledger_Store_CreateSession": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 717,
+   "name": "Store.CreateSession",
+   "file": "internal/ledger/sessions.go",
+   "line": 39,
+   "signature": "func (s *Store) CreateSession(title, owner, actor string) (Session, error)",
+   "summary": "建一场会话并落 EvSessionCreated（无卡事件），分配 session:<n>。"
+  },
+  "n_ledger_Store_GetSession": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 718,
+   "name": "Store.GetSession",
+   "file": "internal/ledger/sessions.go",
+   "line": 96,
+   "signature": "func (s *Store) GetSession(id string) (Session, error)",
+   "summary": "读单会话；不存在返回 ErrNotFound。"
+  },
+  "n_ledger_Store_ListSessions": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 719,
+   "name": "Store.ListSessions",
+   "file": "internal/ledger/sessions.go",
+   "line": 111,
+   "signature": "func (s *Store) ListSessions() ([]Session, error)",
+   "summary": "列全部会话（含归档），按创建序。"
+  },
+  "n_ledger_Store_ArchiveSession": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 720,
+   "name": "Store.ArchiveSession",
+   "file": "internal/ledger/sessions.go",
+   "line": 137,
+   "signature": "func (s *Store) ArchiveSession(id, actor string) error",
+   "summary": "显式归档会话；归档后只读，幂等。"
+  },
+  "n_ledger_Store_JoinCardToSession": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 721,
+   "name": "Store.JoinCardToSession",
+   "file": "internal/ledger/sessions.go",
+   "line": 158,
+   "signature": "func (s *Store) JoinCardToSession(sessionID, cardID, actor string) error",
+   "summary": "拉卡进群：事务内校验卡/会话存在、会话未归档、卡不属其它会话。"
+  },
+  "n_ledger_Store_LeaveCardToSession": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 722,
+   "name": "Store.LeaveCardToSession",
+   "file": "internal/ledger/sessions.go",
+   "line": 194,
+   "signature": "func (s *Store) LeaveCardToSession(sessionID, cardID, actor string) error",
+   "summary": "移卡出群；幂等。"
+  },
+  "n_ledger_Store_AddSessionMember": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 723,
+   "name": "Store.AddSessionMember",
+   "file": "internal/ledger/sessions.go",
+   "line": 226,
+   "signature": "func (s *Store) AddSessionMember(sessionID, identity, actor string) error",
+   "summary": "记入一个显式成员；幂等。"
+  },
+  "n_ledger_Store_SessionOfCard": {
+   "kind": "func",
+   "container": "k_ledger_Store",
+   "order": 724,
+   "name": "Store.SessionOfCard",
+   "file": "internal/ledger/sessions.go",
+   "line": 257,
+   "signature": "func (s *Store) SessionOfCard(cardID string) (string, error)",
+   "summary": "返回该卡当前所属会话 id；不属于任何会话返回空串。"
+  },
+  "n_collab_Service_CreateSession": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 23,
+   "name": "Service.CreateSession",
+   "file": "internal/collab/sessions.go",
+   "line": 25,
+   "signature": "func (s *Service) CreateSession(title, owner, actor string) (proto.Session, error)",
+   "summary": "建一场会话（群）；群主是升级终点。"
+  },
+  "n_collab_Service_ListSessions": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 24,
+   "name": "Service.ListSessions",
+   "file": "internal/collab/sessions.go",
+   "line": 30,
+   "signature": "func (s *Service) ListSessions(member string) ([]proto.SessionSummary, error)",
+   "summary": "列会话并投影成员未读；谁需要我。"
+  },
+  "n_collab_Service_SessionDetail": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 25,
+   "name": "Service.SessionDetail",
+   "file": "internal/collab/sessions.go",
+   "line": 68,
+   "signature": "func (s *Service) SessionDetail(id string) (proto.SessionDetail, error)",
+   "summary": "会话详情页投影：成员状态、派发节点、timeline。"
+  },
+  "n_collab_Service_ArchiveSession": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 26,
+   "name": "Service.ArchiveSession",
+   "file": "internal/collab/sessions.go",
+   "line": 95,
+   "signature": "func (s *Service) ArchiveSession(id, actor string) error",
+   "summary": "显式归档会话；归档后只读。"
+  },
+  "n_collab_Service_JoinCard": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 27,
+   "name": "Service.JoinCard",
+   "file": "internal/collab/sessions.go",
+   "line": 100,
+   "signature": "func (s *Service) JoinCard(sessionID, cardID, actor string) error",
+   "summary": "拉卡进群（进群 ≠ 配人）。"
+  },
+  "n_collab_Service_LeaveCard": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 28,
+   "name": "Service.LeaveCard",
+   "file": "internal/collab/sessions.go",
+   "line": 105,
+   "signature": "func (s *Service) LeaveCard(sessionID, cardID, actor string) error",
+   "summary": "移卡出群；幂等。"
+  },
+  "n_collab_Service_WakeTargets": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 29,
+   "name": "Service.WakeTargets",
+   "file": "internal/collab/sessions.go",
+   "line": 116,
+   "signature": "func (s *Service) WakeTargets(ev proto.LedgerEvent) ([]string, error)",
+   "summary": "解析一条消息的寻址，返回被唤醒成员集；空集=不唤醒任何人。"
+  },
+  "n_collab_Service_MessageWakeTargets": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 30,
+   "name": "Service.MessageWakeTargets",
+   "file": "internal/collab/sessions.go",
+   "line": 127,
+   "signature": "func (s *Service) MessageWakeTargets(msg proto.RoomMessage) ([]string, error)",
+   "summary": "消息级寻址判定入口；唤醒路径只认它（签名无成员集合）。"
+  },
+  "n_collab_Service_AddressesCard": {
+   "kind": "func",
+   "container": "k_collab_Service",
+   "order": 31,
+   "name": "Service.AddressesCard",
+   "file": "internal/collab/sessions.go",
+   "line": 145,
+   "signature": "func (s *Service) AddressesCard(msg proto.RoomMessage, cardID string) bool",
+   "summary": "判断一条消息的寻址是否命中该卡当前席位（唤醒路径必要条件）。"
+  },
+  "n_collab_room_ResolveDelivery": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 24,
+   "name": "ResolveDelivery",
+   "file": "internal/collab/room/delivery.go",
+   "line": 30,
+   "signature": "func ResolveDelivery(msg proto.RoomMessage, replyAuthor string, resolveSeat func(mention string) (seat string, isCard bool)) []string",
+   "summary": "投递寻址纯函数：mentions+reply_to 解析为被唤醒成员集；签名里没有成员集合。"
+  },
+  "n_collab_room_IsAddressed": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 25,
+   "name": "IsAddressed",
+   "file": "internal/collab/room/delivery.go",
+   "line": 66,
+   "signature": "func IsAddressed(msg proto.RoomMessage, replyAuthor string) bool",
+   "summary": "判断消息是否携带任何寻址。"
+  },
+  "n_collab_room_IsSessionRoom": {
+   "kind": "func",
+   "container": "k_collab_room_fn",
+   "order": 26,
+   "name": "IsSessionRoom",
+   "file": "internal/collab/room/room.go",
+   "line": 188,
+   "signature": "func IsSessionRoom(roomID string) bool",
+   "summary": "会话房间标识形如 session:<n>。"
+  },
+  "n_ledger_api_Facade_CreateSession": {
+   "kind": "func",
+   "container": "k_ledger_api_Facade",
+   "order": 36,
+   "name": "Facade.CreateSession",
+   "file": "internal/ledger/api/api.go",
+   "line": 96,
+   "signature": "func (f *Facade) CreateSession(...)",
+   "summary": "B358 会话域直通镜像：转调 Store，不含业务判断。"
+  },
+  "n_ledger_api_Facade_GetSession": {
+   "kind": "func",
+   "container": "k_ledger_api_Facade",
+   "order": 37,
+   "name": "Facade.GetSession",
+   "file": "internal/ledger/api/api.go",
+   "line": 104,
+   "signature": "func (f *Facade) GetSession(...)",
+   "summary": "B358 会话域直通镜像：转调 Store，不含业务判断。"
+  },
+  "n_ledger_api_Facade_ListSessions": {
+   "kind": "func",
+   "container": "k_ledger_api_Facade",
+   "order": 38,
+   "name": "Facade.ListSessions",
+   "file": "internal/ledger/api/api.go",
+   "line": 112,
+   "signature": "func (f *Facade) ListSessions(...)",
+   "summary": "B358 会话域直通镜像：转调 Store，不含业务判断。"
+  },
+  "n_ledger_api_Facade_ArchiveSession": {
+   "kind": "func",
+   "container": "k_ledger_api_Facade",
+   "order": 39,
+   "name": "Facade.ArchiveSession",
+   "file": "internal/ledger/api/api.go",
+   "line": 124,
+   "signature": "func (f *Facade) ArchiveSession(...)",
+   "summary": "B358 会话域直通镜像：转调 Store，不含业务判断。"
+  },
+  "n_ledger_api_Facade_JoinCardToSession": {
+   "kind": "func",
+   "container": "k_ledger_api_Facade",
+   "order": 40,
+   "name": "Facade.JoinCardToSession",
+   "file": "internal/ledger/api/api.go",
+   "line": 128,
+   "signature": "func (f *Facade) JoinCardToSession(...)",
+   "summary": "B358 会话域直通镜像：转调 Store，不含业务判断。"
+  },
+  "n_ledger_api_Facade_LeaveCardToSession": {
+   "kind": "func",
+   "container": "k_ledger_api_Facade",
+   "order": 41,
+   "name": "Facade.LeaveCardToSession",
+   "file": "internal/ledger/api/api.go",
+   "line": 132,
+   "signature": "func (f *Facade) LeaveCardToSession(...)",
+   "summary": "B358 会话域直通镜像：转调 Store，不含业务判断。"
+  },
+  "n_ledger_api_Facade_SessionOfCard": {
+   "kind": "func",
+   "container": "k_ledger_api_Facade",
+   "order": 42,
+   "name": "Facade.SessionOfCard",
+   "file": "internal/ledger/api/api.go",
+   "line": 136,
+   "signature": "func (f *Facade) SessionOfCard(...)",
+   "summary": "B358 会话域直通镜像：转调 Store，不含业务判断。"
+  },
+  "n_ledger_api_Facade_AddSessionMember": {
+   "kind": "func",
+   "container": "k_ledger_api_Facade",
+   "order": 43,
+   "name": "Facade.AddSessionMember",
+   "file": "internal/ledger/api/api.go",
+   "line": 141,
+   "signature": "func (f *Facade) AddSessionMember(...)",
+   "summary": "B358 会话域直通镜像：转调 Store，不含业务判断。"
+  },
+  "m_proto_Session": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1005,
+   "name": "Session",
+   "file": "internal/proto/sessions.go",
+   "line": 16,
+   "signature": "type Session struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "ID",
+     "string",
+     ""
+    ],
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Owner",
+     "string",
+     ""
+    ],
+    [
+     "Archived",
+     "bool",
+     ""
+    ],
+    [
+     "Members",
+     "[]string",
+     "显式成员身份"
+    ],
+    [
+     "Cards",
+     "[]string",
+     "会话内卡号"
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ],
+    [
+     "UpdatedAt",
+     "time.Time",
+     ""
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionMember": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1006,
+   "name": "SessionMember",
+   "file": "internal/proto/sessions.go",
+   "line": 49,
+   "signature": "type SessionMember struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Identity",
+     "string",
+     "人/主 agent 外部会话身份，或协调者席位身份"
+    ],
+    [
+     "Kind",
+     "string",
+     "human|agent|seat"
+    ],
+    [
+     "CardID",
+     "string",
+     "席位成员所属卡号"
+    ],
+    [
+     "CardTitle",
+     "string",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     "working|listening|last_active|empty"
+    ],
+    [
+     "LastActive",
+     "time.Time",
+     "不可续租成员的可证实读数"
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionCard": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1007,
+   "name": "SessionCard",
+   "file": "internal/proto/sessions.go",
+   "line": 66,
+   "signature": "type SessionCard struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "CardID",
+     "string",
+     ""
+    ],
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Status",
+     "string",
+     ""
+    ],
+    [
+     "Seat",
+     "string",
+     "空=空座"
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionSummary": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1008,
+   "name": "SessionSummary",
+   "file": "internal/proto/sessions.go",
+   "line": 75,
+   "signature": "type SessionSummary struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "ID",
+     "string",
+     ""
+    ],
+    [
+     "Kind",
+     "string",
+     "session"
+    ],
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Owner",
+     "string",
+     "群主"
+    ],
+    [
+     "Archived",
+     "bool",
+     ""
+    ],
+    [
+     "Unread",
+     "int",
+     ""
+    ],
+    [
+     "NeedsHuman",
+     "bool",
+     "会话内任意卡 needs_human"
+    ],
+    [
+     "LastActivity",
+     "time.Time",
+     ""
+    ],
+    [
+     "Preview",
+     "*RoomPreview",
+     ""
+    ],
+    [
+     "Members",
+     "[]SessionMember",
+     ""
+    ],
+    [
+     "Cards",
+     "[]SessionCard",
+     ""
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionNode": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1009,
+   "name": "SessionNode",
+   "file": "internal/proto/sessions.go",
+   "line": 96,
+   "signature": "type SessionNode struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "CardID",
+     "string",
+     ""
+    ],
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Node",
+     "string",
+     ""
+    ],
+    [
+     "Round",
+     "int",
+     ""
+    ],
+    [
+     "State",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionTimelineEvent": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1010,
+   "name": "SessionTimelineEvent",
+   "file": "internal/proto/sessions.go",
+   "line": 117,
+   "signature": "type SessionTimelineEvent struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Seq",
+     "int64",
+     ""
+    ],
+    [
+     "Kind",
+     "string",
+     ""
+    ],
+    [
+     "CardID",
+     "string",
+     ""
+    ],
+    [
+     "Detail",
+     "string",
+     ""
+    ],
+    [
+     "Actor",
+     "string",
+     ""
+    ],
+    [
+     "CreatedAt",
+     "time.Time",
+     ""
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionDetail": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1011,
+   "name": "SessionDetail",
+   "file": "internal/proto/sessions.go",
+   "line": 128,
+   "signature": "type SessionDetail struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Summary",
+     "SessionSummary",
+     ""
+    ],
+    [
+     "Nodes",
+     "[]SessionNode",
+     ""
+    ],
+    [
+     "Timeline",
+     "[]SessionTimelineEvent",
+     ""
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionCreatedPayload": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1012,
+   "name": "SessionCreatedPayload",
+   "file": "internal/proto/sessions.go",
+   "line": 135,
+   "signature": "type SessionCreatedPayload struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "ID",
+     "string",
+     ""
+    ],
+    [
+     "Title",
+     "string",
+     ""
+    ],
+    [
+     "Owner",
+     "string",
+     ""
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionArchivedPayload": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1013,
+   "name": "SessionArchivedPayload",
+   "file": "internal/proto/sessions.go",
+   "line": 142,
+   "signature": "type SessionArchivedPayload struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Session",
+     "string",
+     ""
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  },
+  "m_proto_SessionCardPayload": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1014,
+   "name": "SessionCardPayload",
+   "file": "internal/proto/sessions.go",
+   "line": 147,
+   "signature": "type SessionCardPayload struct {",
+   "modelKind": "dto",
+   "fields": [
+    [
+     "Session",
+     "string",
+     ""
+    ],
+    [
+     "Card",
+     "string",
+     ""
+    ]
+   ],
+   "summary": "B358 会话（群）域的 wire DTO。"
+  }
+ },
+ "edgesAdded": [],
+ "implementsAdded": [],
+ "projectionsAdded": [],
+ "lifecycleAdded": [
+  {
+   "who": "n_ledger_Store_CreateSession",
+   "model": "m_ledger_Session",
+   "kind": "creator"
+  }
+ ]
+}
