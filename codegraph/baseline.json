@@ -2,7 +2,7 @@
  "meta": {
   "project": "handoff",
   "branch": "cards/B233.1-charter-7",
-  "commit": "03005e586de5e2d9bdb13efe8c79096bbece4753",
+  "commit": "b2d3e8e7a9f6114ef6bae6423cd8854a27ed055d",
   "scannedAt": "2026-09-03",
   "generator": "handoff-executor/coverage-fill-20260903"
  },
@@ -5548,6 +5548,24 @@
    ],
    "modelKind": "dto"
   },
+  "m_agentd_runClient": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 2000,
+   "name": "runClient",
+   "file": "internal/agentd/cardstep.go",
+   "line": 41,
+   "signature": "type runClient interface {\n\tclient.ExecutionClient\n\tRun(ctx context.Context, taskID, cmd string) (string, int, error)\n}",
+   "summary": "runClient 是 push 工作分支路径的执行消费面：执行动作 + 一次性命令。",
+   "fields": [
+    [
+     "Run",
+     "func(ctx context.Context, taskID, cmd string) (string, int, error)",
+     "在执行机跑一次命令"
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_agentd_runRequest": {
    "kind": "model",
    "container": "k_agentd_model",
@@ -5649,6 +5667,42 @@
    "line": 51,
    "signature": "type stateMismatchTransit func(taskID string, to proto.TaskState, reason string) error",
    "summary": "stateMismatchTransit 是失配对账扫描的「迁移」回调：把任务状态迁到 failed。",
+   "modelKind": "dto"
+  },
+  "m_agentd_statusClient": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 2001,
+   "name": "statusClient",
+   "file": "internal/agentd/cardstep.go",
+   "line": 47,
+   "signature": "type statusClient interface {\n\tclient.ExecutionClient\n\tStatus(ctx context.Context) (*proto.StatusResp, error)\n}",
+   "summary": "statusClient 是纪律探活路径的执行消费面：执行动作 + 能力位探活。",
+   "fields": [
+    [
+     "Status",
+     "func(ctx context.Context) (*proto.StatusResp, error)",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_stopReclaimClient": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 2002,
+   "name": "stopReclaimClient",
+   "file": "internal/agentd/cardstep.go",
+   "line": 53,
+   "signature": "type stopReclaimClient interface {\n\tclient.ExecutionClient\n\tStopAndReclaim(ctx context.Context, taskID string) error\n}",
+   "summary": "stopReclaimClient 是派发失败补偿路径的执行消费面：执行动作 + 回收。",
+   "fields": [
+    [
+     "StopAndReclaim",
+     "func(ctx context.Context, taskID string) error",
+     ""
+    ]
+   ],
    "modelKind": "dto"
   },
   "m_agentd_taskDetail": {
@@ -7191,6 +7245,42 @@
    "summary": "Endpoint 是一台可被升级的机器。",
    "modelKind": "dto"
   },
+  "m_cmd_compensateClient": {
+   "kind": "model",
+   "container": "k_cmd_model",
+   "order": 742,
+   "name": "compensateClient",
+   "file": "cmd/card_dispatch.go",
+   "line": 275,
+   "signature": "type compensateClient interface {\n\tclient.ExecutionClient\n\tStopAndReclaim(ctx context.Context, taskID string) error\n}",
+   "summary": "compensateClient 是派发失败补偿路径的执行消费面：执行动作 + 回收。",
+   "fields": [
+    [
+     "StopAndReclaim",
+     "func(ctx context.Context, taskID string) error",
+     "回收已取得 task id 的失败派发"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_cmd_dispatchClient": {
+   "kind": "model",
+   "container": "k_cmd_model",
+   "order": 740,
+   "name": "dispatchClient",
+   "file": "cmd/dispatch.go",
+   "line": 116,
+   "signature": "type dispatchClient interface {\n\tclient.ExecutionClient\n\tStatus(ctx context.Context) (*proto.StatusResp, error)\n}",
+   "summary": "dispatchClient 是裸派发与 card dispatch 纪律解析路径的执行消费面：执行动作（嵌入提供方冻结的 client.ExecutionClient）+ 派发前能力位探活（Status）。",
+   "fields": [
+    [
+     "Status",
+     "func(ctx context.Context) (*proto.StatusResp, error)",
+     "派发前目标机能力位探活"
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_cmd_hookDecisionOutput": {
    "kind": "model",
    "container": "k_cmd_model",
@@ -7290,6 +7380,34 @@
    "name": "squadSetCmd",
    "file": "cmd/squad.go",
    "line": 78,
+   "modelKind": "dto"
+  },
+  "m_cmd_waitClient": {
+   "kind": "model",
+   "container": "k_cmd_model",
+   "order": 741,
+   "name": "waitClient",
+   "file": "cmd/wait.go",
+   "line": 50,
+   "signature": "type waitClient interface {\n\tclient.ExecutionClient\n\tWaitArchived(ctx context.Context, taskID string) (*proto.Event, error)\n\tAttach(ctx context.Context, taskID string) (*client.AttachInfo, error)\n\tStatus(ctx context.Context) (*proto.StatusResp, error)\n}",
+   "summary": "waitClient 是 handoff wait 子系统的执行消费面：执行动作 + 归档等待 + attach 快照 + 能力位探活。",
+   "fields": [
+    [
+     "WaitArchived",
+     "func(ctx context.Context, taskID string) (*proto.Event, error)",
+     "等真实 archived"
+    ],
+    [
+     "Attach",
+     "func(ctx context.Context, taskID string) (*client.AttachInfo, error)",
+     "回合终态后取任务快照做自动同步"
+    ],
+    [
+     "Status",
+     "func(ctx context.Context) (*proto.StatusResp, error)",
+     "核对对端 stalltimeout"
+    ]
+   ],
    "modelKind": "dto"
   },
   "m_cmdagentdPeer": {
@@ -12712,13 +12830,41 @@
    ],
    "modelKind": "dto"
   },
+  "m_ledgerstep_StepClient": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 2000,
+   "name": "StepClient",
+   "file": "internal/ledgerstep/runner.go",
+   "line": 23,
+   "signature": "type StepClient interface {\n\tclient.ExecutionClient\n\tDiff(ctx context.Context, taskID, base string) (string, error)\n\tAttach(ctx context.Context, taskID string) (*client.AttachInfo, error)\n\tDone(ctx context.Context, taskID, note string) (bool, error)\n}",
+   "summary": "StepClient 是 StepRunner 逐 target 取用的执行消费面：执行动作 + 本轮 diff + attach 快照 + 归档。",
+   "fields": [
+    [
+     "Diff",
+     "func(ctx context.Context, taskID, base string) (string, error)",
+     ""
+    ],
+    [
+     "Attach",
+     "func(ctx context.Context, taskID string) (*client.AttachInfo, error)",
+     ""
+    ],
+    [
+     "Done",
+     "func(ctx context.Context, taskID, note string) (bool, error)",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
   "m_ledgerstep_StepRunner": {
    "kind": "model",
    "container": "k_ledgerstep_model",
    "order": 22,
    "name": "StepRunner",
    "file": "internal/ledgerstep/runner.go",
-   "line": 24,
+   "line": 34,
    "summary": "StepRunner 节点执行的装配器。依赖全部显式注入，调用方各填各的。",
    "fields": [
     [
@@ -12748,7 +12894,7 @@
     ],
     [
      "Clients",
-     "func(target string) (*client.Client, error)",
+     "func(target string) (StepClient, error)",
      ""
     ],
     [
@@ -12889,6 +13035,24 @@
     [
      "Raw",
      "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_ledgerstep_finalMessageClient": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "order": 2001,
+   "name": "finalMessageClient",
+   "file": "internal/ledgerstep/wire.go",
+   "line": 21,
+   "signature": "type finalMessageClient interface {\n\tclient.ExecutionClient\n\tAttach(ctx context.Context, taskID string) (*client.AttachInfo, error)\n}",
+   "summary": "finalMessageClient 是最终报文取用的最小面：只读 attach 快照。",
+   "fields": [
+    [
+     "Attach",
+     "func(ctx context.Context, taskID string) (*client.AttachInfo, error)",
      ""
     ]
    ],
@@ -34244,6 +34408,17 @@
    "returns": "*client.Client, error",
    "summary": "clientForTarget 按规范目标取得 agentd client。 空串或配置中指向本机的登记名返回本机直连 client；该 client 不由调用方关闭。 远端和未知名称交给 target client 池，池保留既有的配置校验与 relay 生命周期。"
   },
+  "n_agentd_Server_compensateStep": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 2000,
+   "name": "Server.compensateStep",
+   "file": "internal/agentd/cardstep.go",
+   "line": 87,
+   "signature": "func (s *Server) compensateStep(ctx context.Context, cl stopReclaimClient, cardID, target, taskID string) error",
+   "returns": "error",
+   "summary": "compensateStep 回收一次已取得 task id 的失败派发。具名入口（原为内联闭包），依赖收窄到 stopReclaimClient。"
+  },
   "n_agentd_Server_conf": {
    "kind": "func",
    "container": "k_agentd_Server",
@@ -37464,6 +37639,17 @@
    ],
    "summary": "pumpPtyUplink 读客户端上行：binary=按键，text=控制帧。"
   },
+  "n_agentd_Server_pushWorkBranchVia": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 2001,
+   "name": "Server.pushWorkBranchVia",
+   "file": "internal/agentd/cardstep.go",
+   "line": 99,
+   "signature": "func (s *Server) pushWorkBranchVia(ctx context.Context, cl runClient, target, branch, taskID string) error",
+   "returns": "error",
+   "summary": "pushWorkBranchVia 在持有工作分支的机器上执行一次 git push。具名入口，依赖收窄到 runClient。"
+  },
   "n_agentd_Server_reclaimPtySessions": {
    "kind": "func",
    "container": "k_agentd_Server",
@@ -38082,8 +38268,8 @@
    "order": 94,
    "name": "Server.stepTransport",
    "file": "internal/agentd/cardstep.go",
-   "line": 272,
-   "signature": "func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, error) {"
+   "line": 387,
+   "signature": "func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, string, error) {"
   },
   "n_agentd_Server_storeRoomAttach": {
    "kind": "func",
@@ -39419,6 +39605,17 @@
    ],
    "returns": "func(context.Context, string, string) ([]byte, string, error)",
    "summary": "desktopDownloadFetcher 构造生产下载缝：校验和走 release 的 checksums.txt，"
+  },
+  "n_agentd_dispatchStep": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 2000,
+   "name": "dispatchStep",
+   "file": "internal/agentd/cardstep.go",
+   "line": 60,
+   "signature": "func dispatchStep(ctx context.Context, cl client.ExecutionClient, opts ledgerstep.DispatchOpts, target string) (*proto.Task, error)",
+   "returns": "*proto.Task, error",
+   "summary": "dispatchStep 是节点派发的具名执行消费点，依赖声明收窄到 client.ExecutionClient。"
   },
   "n_agentd_effectiveCovers": {
    "kind": "func",
@@ -41201,6 +41398,17 @@
    ],
    "returns": "string",
    "summary": "probeProjectStatus 探测一条位置指向的路径当前是什么状态。"
+  },
+  "n_agentd_probeStatus": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 2001,
+   "name": "probeStatus",
+   "file": "internal/agentd/cardstep.go",
+   "line": 79,
+   "signature": "func probeStatus(ctx context.Context, cl statusClient) (*proto.StatusResp, error)",
+   "returns": "*proto.StatusResp, error",
+   "summary": "probeStatus 是纪律探活的具名执行消费点，统一 10s 时限。"
   },
   "n_agentd_projectIndex_projectIDOf": {
    "kind": "func",
@@ -49018,8 +49226,8 @@
    "order": 328,
    "name": "autoSyncAfterWait",
    "file": "cmd/wait.go",
-   "line": 333,
-   "signature": "func autoSyncAfterWait(cmd *cobra.Command, cli *client.Client, addr string, ev *proto.Event)",
+   "line": 344,
+   "signature": "func autoSyncAfterWait(cmd *cobra.Command, cli waitClient, addr string, ev *proto.Event)",
    "params": [
     [
      "cmd",
@@ -49028,8 +49236,8 @@
     ],
     [
      "cli",
-     "*client.Client",
-     ""
+     "waitClient",
+     "执行消费面"
     ],
     [
      "addr",
@@ -49805,6 +50013,17 @@
    "returns": "string",
    "summary": "compareByRevision 是任一侧没有 release 版本号时的对照（B54 之前的原样行为）。"
   },
+  "n_cmd_compensateCardDispatch": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 743,
+   "name": "compensateCardDispatch",
+   "file": "cmd/card_dispatch.go",
+   "line": 282,
+   "signature": "func compensateCardDispatch(ctx context.Context, cl compensateClient, cardID, target, taskID string) error",
+   "returns": "error",
+   "summary": "compensateCardDispatch 回收一次已取得 task id 的失败派发。具名入口（原为内联闭包）。"
+  },
   "n_cmd_composeAnswer": {
    "kind": "func",
    "container": "k_cmd_fn",
@@ -50162,6 +50381,17 @@
    ],
    "returns": "error",
    "summary": "裸派发入口；B229 起发出任何任务请求前先经 resolveBareDiscipline 过拒发闸（未点名也注入平台层）。"
+  },
+  "n_cmd_dispatchTask": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 740,
+   "name": "dispatchTask",
+   "file": "cmd/dispatch.go",
+   "line": 123,
+   "signature": "func dispatchTask(ctx context.Context, cli client.ExecutionClient, opts client.DispatchOpts) (*proto.Task, error)",
+   "returns": "*proto.Task, error",
+   "summary": "dispatchTask 是派发动作的具名执行消费点：依赖声明收窄到 client.ExecutionClient。"
   },
   "n_cmd_dispatchWithAutoRegister": {
    "kind": "func",
@@ -52001,8 +52231,8 @@
    "order": 643,
    "name": "resolveBareDiscipline",
    "file": "cmd/dispatch.go",
-   "line": 182,
-   "signature": "func resolveBareDiscipline(ctx context.Context, cli *client.Client, rawFile string) (discipline.ResolvedDiscipline, error)",
+   "line": 199,
+   "signature": "func resolveBareDiscipline(ctx context.Context, cli dispatchClient, rawFile string) (discipline.ResolvedDiscipline, error)",
    "summary": "裸派发的缝 1 收口：未点名只注入平台层；--discipline-file 作 RawText 直通（不落库、版本 0）；先探目标机能力位，探活失败按不支持处置"
   },
   "n_cmd_resolveCardDispatchDiscipline": {
@@ -52011,8 +52241,8 @@
    "order": 644,
    "name": "resolveCardDispatchDiscipline",
    "file": "cmd/card_dispatch.go",
-   "line": 246,
-   "signature": "func resolveCardDispatchDiscipline(ctx context.Context, st *ledger.Store, name, target string) (discipline.ResolvedDiscipline, error)",
+   "line": 247,
+   "signature": "func resolveCardDispatchDiscipline(ctx context.Context, cl dispatchClient, st *ledger.Store, name, target string) (discipline.ResolvedDiscipline, error)",
    "summary": "CLI 模板派发的缝 1 收口：绑账本 lookup 与能力位探活各一次，经 ResolveDispatch 产出随派发下发的正文三元组"
   },
   "n_cmd_resolveServiceBinFrom": {
@@ -52297,14 +52527,25 @@
     }
    ]
   },
+  "n_cmd_runContinue": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 742,
+   "name": "runContinue",
+   "file": "cmd/continue.go",
+   "line": 20,
+   "signature": "func runContinue(cmd *cobra.Command, c client.ExecutionClient, taskID, instructions string) error",
+   "returns": "error",
+   "summary": "runContinue 把一次续接指令经执行能力面下发。具名入口（原为 RunE 内联）。"
+  },
   "n_cmd_runFollow": {
    "kind": "func",
    "container": "k_cmd_fn",
    "order": 230,
    "name": "runFollow",
    "file": "cmd/wait.go",
-   "line": 235,
-   "signature": "func runFollow(cmd *cobra.Command, taskID, addr string, cli *client.Client) error",
+   "line": 246,
+   "signature": "func runFollow(cmd *cobra.Command, taskID, addr string, cli waitClient) error",
    "params": [
     [
      "cmd",
@@ -52323,7 +52564,7 @@
     ],
     [
      "cli",
-     "*client.Client",
+     "waitClient",
      ""
     ]
    ],
@@ -52500,14 +52741,25 @@
    "returns": "error",
    "summary": "runReclaimOne 回收单个任务的工作树。"
   },
+  "n_cmd_runReply": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 741,
+   "name": "runReply",
+   "file": "cmd/reply.go",
+   "line": 24,
+   "signature": "func runReply(cmd *cobra.Command, c client.ExecutionClient, taskID, answer string) error",
+   "returns": "error",
+   "summary": "runReply 把一次工单应答经执行能力面回传。具名入口（原为 RunE 内联）。"
+  },
   "n_cmd_runUntilDone": {
    "kind": "func",
    "container": "k_cmd_fn",
    "order": 161,
    "name": "runUntilDone",
    "file": "cmd/wait.go",
-   "line": 166,
-   "signature": "func runUntilDone(cmd *cobra.Command, taskID, addr string, cli *client.Client) error",
+   "line": 177,
+   "signature": "func runUntilDone(cmd *cobra.Command, taskID, addr string, cli waitClient) error",
    "params": [
     [
      "cmd",
@@ -52526,12 +52778,23 @@
     ],
     [
      "cli",
-     "*client.Client",
+     "waitClient",
      ""
     ]
    ],
    "returns": "error",
    "summary": "runUntilDone 实现 B67 依赖门闩：静默等待真实 archived，成功只输出一行事件。"
+  },
+  "n_cmd_runWaitOnce": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 744,
+   "name": "runWaitOnce",
+   "file": "cmd/wait.go",
+   "line": 139,
+   "signature": "func runWaitOnce(cmd *cobra.Command, cli waitClient, taskID, addr string) error",
+   "returns": "error",
+   "summary": "runWaitOnce 是 wait 一次性消费路径的具名可注入入口：等一个可动作事件、--notify、单行写出、终态后自动同步。RunE 只组装不内联跨机调用。"
   },
   "n_cmd_servePermissionHook": {
    "kind": "func",
@@ -53592,8 +53855,8 @@
    "order": 274,
    "name": "warnIfTimeoutBelowStall",
    "file": "cmd/wait.go",
-   "line": 279,
-   "signature": "func warnIfTimeoutBelowStall(ctx context.Context, cli *client.Client, idle time.Duration)",
+   "line": 290,
+   "signature": "func warnIfTimeoutBelowStall(ctx context.Context, cli waitClient, idle time.Duration)",
    "params": [
     [
      "ctx",
@@ -53602,7 +53865,7 @@
     ],
     [
      "cli",
-     "*client.Client",
+     "waitClient",
      ""
     ],
     [
@@ -67293,8 +67556,8 @@
    "order": 43,
    "name": "clientFinalMessage",
    "file": "internal/ledgerstep/wire.go",
-   "line": 115,
-   "signature": "func clientFinalMessage(ctx context.Context, cl *client.Client, taskID string) (string, error)",
+   "line": 122,
+   "signature": "func clientFinalMessage(ctx context.Context, cl finalMessageClient, taskID string) (string, error)",
    "params": [
     [
      "ctx",
@@ -67303,7 +67566,7 @@
     ],
     [
      "cl",
-     "*client.Client",
+     "finalMessageClient",
      ""
     ],
     [
