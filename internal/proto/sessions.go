@@ -154,3 +154,19 @@ type SessionCardPayload struct {
 	Session string `json:"session"`
 	Card    string `json:"card"`
 }
+
+// SessionWake 是会话订阅通道的唤醒载荷（B358 R1）。
+type SessionWake struct {
+	Session    string       `json:"session"`              // 命中所在会话 id
+	Hit        SessionCite  `json:"hit"`                  // 寻址命中那条
+	Referenced *SessionCite `json:"referenced,omitempty"` // reply_to 指向的那条；无引用锚省键
+	Unread     int          `json:"unread"`               // 该成员在该会话的未读数（含命中条）
+}
+
+// SessionCite 是命中条/引用条的最小引用形状（可点跳转的锚点集）。
+type SessionCite struct {
+	Seq   int64  `json:"seq"`   // 账本 seq（跳转与对质锚）
+	Room  string `json:"room"`  // 会话房间 id
+	Actor string `json:"actor"` // 发言者身份
+	Body  string `json:"body"`  // 正文
+}

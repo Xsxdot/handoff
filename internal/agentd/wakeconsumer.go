@@ -15,6 +15,7 @@ import (
 	"sort"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -140,11 +141,11 @@ func (s *Server) acceptsCurrentWorkflowAttempt(ev proto.LedgerEvent) (bool, erro
 	return true, nil
 }
 
-// automationWakeEvent 的 false 表示合法但不唤醒；摘要最多 400 rune，原事件仍在账本。
+// automationWakeEvent 是非 room_message 事件的映射；false 表示合法但不唤醒；
+// 摘要最多 400 rune，原事件仍在账本。无卡事件是结构事实（session_*/driver_*
+// 等），条 31 不唤醒任何人——该语义由 automationWakeEvents 的非 room_message
+// 分支承担，本函数不再设卡闸。
 func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error) {
-	if ev.CardID == "" {
-		return keystone.WakeEvent{}, false, nil
-	}
 	switch ev.Type {
 	case ledger.EvTaskMirrored:
 		taskType, payload, err := mirroredTaskTypeAndPayload(ev)
@@ -166,18 +167,6 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 			Kind: kind, Card: ev.CardID,
 			Summary: fmt.Sprintf("%s: %s", taskType, truncateRunes(string(payload), 400)),
 		}, true, nil
-	case ledger.EvRoomMessage:
-		msg, yes, err := decodeHumanRoomMessage(ev)
-		if err != nil {
-			return keystone.WakeEvent{}, false, err
-		}
-		if !yes {
-			return keystone.WakeEvent{}, false, nil
-		}
-		return keystone.WakeEvent{
-			Kind: keystone.WakeMessage, Card: ev.CardID,
-			Summary: truncateRunes(msg.Body, 400),
-		}, true, nil
 	case ledger.EvStatusMoved:
 		var moved struct {
 			To string `json:"to"`
@@ -198,7 +187,12 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 	}
 }
 
-func decodeHumanRoomMessage(ev proto.LedgerEvent) (proto.RoomMessage, bool, error) {
+// decodeRoomMessageForWake 解码 room_message 并判定是否为可寻址的人类发言形状。
+// 返回 human=false 的合法情形：by_system/pointer 系统结构行（恒不唤醒，契约
+// 条 26/31）与 by_system:null 旧边界（B353 锁定，TestB353AutomationRoom* 族）。
+// kind 不再是唤醒条件——kind 白名单已废止（S1，发言自由）；广播形状已删
+// （条 30），唤醒与否由寻址判定决定。解码失败按错误上抛（消费循环报错）。
+func decodeRoomMessageForWake(ev proto.LedgerEvent) (proto.RoomMessage, bool, error) {
 	var msg proto.RoomMessage
 	if err := json.Unmarshal(ev.Payload, &msg); err != nil {
 		return proto.RoomMessage{}, false,
@@ -213,10 +207,109 @@ func decodeHumanRoomMessage(ev proto.LedgerEvent) (proto.RoomMessage, bool, erro
 		bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
 		return msg, false, nil
 	}
-	if msg.Kind != proto.RoomMsgUser || msg.BySystem {
+	if msg.BySystem || msg.Kind == proto.RoomMsgPointer {
 		return msg, false, nil
 	}
 	return msg, true, nil
+}
+
+// automationWakeEvents 是消费循环的统一映射入口（B358.3 改接寻址后）。
+// 会话消息（无卡事件）不再被首行卡闸一刀切拦下——改走 roomMessageWakeEvents
+// 寻址分流（条 29/30）；其余事件类型的映射沿用 automationWakeEvent，其中
+// 无卡事件是结构事实（session_*/driver_* 等），条 31 不唤醒任何人。
+func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
+	if ev.Type == ledger.EvRoomMessage {
+		return s.roomMessageWakeEvents(ev)
+	}
+	if ev.CardID == "" {
+		s.log.Debug("无卡结构事件不唤醒", "seq", ev.Seq, "type", ev.Type)
+		return nil, nil
+	}
+	wake, yes, err := automationWakeEvent(ev)
+	if err != nil {
+		return nil, err
+	}
+	if !yes {
+		return nil, nil
+	}
+	return []keystone.WakeEvent{wake}, nil
+}
+
+// roomMessageWakeEvents 是会话消息的寻址分流（契约 §3.8、条 47/48/50）。
+// 只对会话房间（room.IsSessionRoom）的人类形状消息做寻址判定；判定唯一入口
+// collab.Service.MessageWakeTargets（agentd 不解析 mentions，不建外部身份
+// 注册表）。分流：
+//   - target = 会话内某卡当前 driver_session → WakeMessage{Card:该卡} 恰一次
+//     （同卡多命中去重）；
+//   - 其余 target（外部身份/非成员/旧席位/不存在的卡）→ 零 keystone Wake，
+//     Info 日志可查，未读由事件+游标天然承载（推醒走 session wait 订阅通道）。
+// 非会话房间的消息一律不唤醒：旧房间只读归档（S1），广播形状已删（条 30）。
+// 寻址判定读账本失败上抛；会话本体读失败宁缺毋滥（Error 日志 + 不唤醒，
+// 同 AddressesCard 的装配缺失纪律）。
+func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEvent, error) {
+	msg, human, err := decodeRoomMessageForWake(ev)
+	if err != nil || !human {
+		return nil, err
+	}
+	if s.rooms == nil {
+		s.log.Error("会话消息寻址判定不可用：collab 服务未装配，消息不唤醒",
+			"seq", ev.Seq, "room", msg.Room)
+		return nil, nil
+	}
+	if !room.IsSessionRoom(msg.Room) {
+		s.log.Debug("非会话房间消息不唤醒（旧房间只读归档，广播形状已删）",
+			"seq", ev.Seq, "room", msg.Room)
+		return nil, nil
+	}
+	targets, err := s.rooms.MessageWakeTargets(msg)
+	if err != nil {
+		return nil, fmt.Errorf("事件 %d 的会话寻址判定失败: %w", ev.Seq, err)
+	}
+	if len(targets) == 0 {
+		s.log.Debug("会话消息无寻址，不唤醒", "seq", ev.Seq, "session", msg.Room)
+		return nil, nil
+	}
+	session, err := s.autoLedger.GetSession(msg.Room)
+	if err != nil {
+		s.log.Error("会话消息所在会话读取失败，不唤醒",
+			"seq", ev.Seq, "session", msg.Room, "cause", err)
+		return nil, nil
+	}
+	bySeat := make(map[string]string, len(session.Cards))
+	for _, cardID := range session.Cards {
+		card, err := s.autoLedger.GetCard(cardID)
+		if err != nil {
+			s.log.Error("会话卡席位读取失败，该卡不参与本次唤醒",
+				"seq", ev.Seq, "session", msg.Room, "card", cardID, "cause", err)
+			continue
+		}
+		if card.DriverSession != "" {
+			bySeat[card.DriverSession] = cardID
+		}
+	}
+	var wakes []keystone.WakeEvent
+	seenCard := make(map[string]bool, len(targets))
+	external := make([]string, 0, len(targets))
+	for _, target := range targets {
+		cardID, ok := bySeat[target]
+		if !ok {
+			external = append(external, target)
+			continue
+		}
+		if seenCard[cardID] {
+			continue
+		}
+		seenCard[cardID] = true
+		wakes = append(wakes, keystone.WakeEvent{
+			Kind: keystone.WakeMessage, Card: cardID,
+			Summary: truncateRunes(msg.Body, 400),
+		})
+	}
+	if len(external) > 0 {
+		s.log.Info("会话消息外部身份命中：不经 keystone，推醒走 session wait 订阅通道",
+			"seq", ev.Seq, "session", msg.Room, "targets", external)
+	}
+	return wakes, nil
 }
 
 func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int, escalated bool, err error) {
@@ -288,7 +381,7 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				s.closeCoordinatorTabIfTerminal(ev.CardID, moved.To)
 			}
 		}
-		wake, yes, mapErr := automationWakeEvent(ev)
+		wakes, mapErr := s.automationWakeEvents(ev)
 		if mapErr != nil {
 			s.log.Error("自动化账本事件映射失败", "seq", ev.Seq, "card", ev.CardID,
 				"type", ev.Type, "cause", mapErr)
@@ -297,11 +390,13 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		if ev.Seq > maxProcessed {
 			maxProcessed = ev.Seq
 		}
-		if yes {
-			pendingByCard[ev.CardID] = append(pendingByCard[ev.CardID], pending{seq: ev.Seq, typ: ev.Type, ev: wake})
-			s.log.Debug("自动化事件进入 pending", "seq", ev.Seq, "card", ev.CardID,
-				"type", ev.Type, "cursor", from, "cursor_candidate", maxProcessed,
-				"pending_count", len(pendingByCard[ev.CardID]))
+		if len(wakes) > 0 {
+			for _, wake := range wakes {
+				pendingByCard[wake.Card] = append(pendingByCard[wake.Card], pending{seq: ev.Seq, typ: ev.Type, ev: wake})
+				s.log.Debug("自动化事件进入 pending", "seq", ev.Seq, "card", wake.Card,
+					"type", ev.Type, "kind", string(wake.Kind), "cursor", from,
+					"cursor_candidate", maxProcessed)
+			}
 			continue
 		}
 		s.automationMu.Lock()

@@ -12,10 +12,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"text/tabwriter"
 
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -36,12 +38,20 @@ func roomServiceFor(st *ledger.Store) *collab.Service {
 
 // openRoomService 是 CLI 侧房间域组装点（target.json assembly 登记点语义），
 // 房间命令族共用本入口；绑定收敛在 roomServiceFor。调用方负责 Close 返回的 Store。
+// B358.3：挂游标文件介质——session wait 的 unread 投影（契约条 44）与未来
+// session list/detail（S5）都要求与 gateway 同一介质 room-cursors.json；
+// collab.New 默认纯内存空游标会让 CLI 侧未读失真。对既有 room 命令行为中性
+// （ListRooms 仅 member!="" 分支读游标，CLI room 命令族不传 member）。
 func openRoomService() (*collab.Service, *ledger.Store, error) {
 	st, err := openLedger()
 	if err != nil {
 		return nil, nil, err
 	}
-	return roomServiceFor(st), st, nil
+	svc := roomServiceFor(st)
+	if cfg := loadCLIConfig(); cfg.DataDir != "" {
+		svc.SetCursorStore(cursor.New(filepath.Join(cfg.DataDir, "room-cursors.json")))
+	}
+	return svc, st, nil
 }
 
 var roomListProject string
