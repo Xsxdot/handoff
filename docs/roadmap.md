@@ -153,7 +153,7 @@
 ## 来自 B233.13 验收（2026-09-12，DUT `f74c347d`）
 
 - **cards-B233.4 视图失效边**：`codegraph validate` 2 红，`n_agentd_Manager_appendGCWorktreesExecute` 仍锚 `internal/agentd/gc.go`，实体已随本卡迁到 `internal/orchestration/gc.go`。本卡不 absorb 他卡图。来源：B233.13 review-3 major；acceptance 复跑 validate exit 1。
-- **完整图重扫未做**：baseline 节点 file/line 与边端点未随迁包重定位；无视图 `check` 报 `dead-interface OrchestrationClient`。合功能线 absorb。来源：implement 台账；review-3 minor。
+- **完整图重扫未做 / absorb 拒收**：合进功能线后 `codegraph absorb cards-B233.13-charter` 拒收——视图仍引用 B233.15 已迁走的 `n_agentd_PrepareWorkspace` / `classifyWorktree` 等节点。`check` 仍有 `dead-interface OrchestrationClient`。正主是重扫或重写本卡视图后再 absorb，不在本卡造假基线。来源：B233.13 finish；DUT merge `78425778`。
 - **transitClaim 早幂等 / CAS-loser 重读无独立缝测**：handler `Claimed` 门变异已红（`TestB23313ConcurrentDoneReleasesOnce` before=v1 after=v3）。协调者把 CAS-loser `return true` 变异后 B23313ConcurrentDone 仍绿。来源：review-3 minor；acceptance 复验。
 - **真机 OpenCode 未验**：并发 Done 只核过夹具；未跑真实会话。来源：B233.13 acceptance；用户未要求 live OpenCode。
 
