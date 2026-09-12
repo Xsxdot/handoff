@@ -40,7 +40,7 @@
 6. **P6｜升级三档纪律文本的载体路由（contract §8.6）。** 内容横跨两仓：本仓 `skills/handoff/SKILL.md` 协作房间纪律节（:578 起）+ `docs/roadmap.md` OOS 登记（§8.8）；charter 套件半边（协调者/主 agent discipline 的三档升级规则）在 `~/.agents/skills/` 与 `~/workspace/charter` 仓，**出不了本仓的有界文件集**。
    - **方案 A（推荐）：本仓半边出一张文档子卡**（S7），charter 套件半边由协调者走 charter 仓自己的流程另办（`scripts/regen_discipline.py` 同步）。理由：本仓半边可派发可验收（grep 断言可写）；charter 半边硬塞进本仓卡违反有界文件集。
    - **方案 B：全部留协调者本地办**，不出子卡。理由：省一张卡；代价是 repo 半边的落账与证据链游离在卡流程外。
-   - **裁决：A。**S7 出本仓半边；charter 半边（协调者/主 agent discipline 三档升级规则）是协调者义务——改 `~/workspace/charter` 并跑 `scripts/regen_discipline.py`，随本卡推进另办，记卡上跟进，不出子卡。
+   - **裁决：A。**S7 出本仓半边；charter 半边（协调者/主 agent discipline 三档升级规则）是协调者义务——改 `~/workspace/charter` 并跑 `scripts/regen_discipline.py`，随本卡推进另办，记卡上跟进，不出子卡。**（2026-09-12 用户纠正，本裁决后半句作废：三档升级纪律是 handoff 平台协作纪律，应由 handoff 按角色在启动时注入，不属 charter 仓——charter 只管方法论纪律，两套独立。见 B363；S7 本仓半边范围不变。§3.8 缺陷族第 5 条中「charter 半边归协调者」的残余表述随之作废。）**
 7. **P7｜CLI 命令族命名。** 锚点翻转后产品词是「会话」。
    - **方案 A（推荐）：新开 `handoff session` 命令族**（list/detail/create/archive/join/leave/send），旧 `room list/read` 保留为旧房间只读对质面，`room send` 随旧房间归档自然失效（保留报错），`room inbox` 不动。理由：旧 `room send` 的目标（卡房间）已死，扩进 room 族会让新旧语义挤在一族。
    - **方案 B：扩既有 `room` 族**（`room sessions`、`room join` 等）。理由：命令树不长大；代价是 `room send <session>` 与 `room send <卡号>` 同形不同命（一个活一个死），靠房间形态区分。
