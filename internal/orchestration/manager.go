@@ -1057,10 +1057,6 @@ func (m *Manager) prepareTaskProfile(ctx context.Context, start executor.StartRe
 			"executor", start.Task.Executor, "overlay_skipped", true)
 		return nil
 	}
-	if start.Task.HomeDir == "" {
-		return fmt.Errorf("task=%q executor=%q home=%q 无法准备非空纪律 Profile overlay",
-			start.Task.ID, start.Task.Executor, start.Task.HomeDir)
-	}
 	provider, ok := m.ads[start.Task.Executor].(executor.Provider)
 	if !ok {
 		return fmt.Errorf("task=%q executor=%q home=%q 不提供 Profile 能力",
@@ -1071,31 +1067,44 @@ func (m *Manager) prepareTaskProfile(ctx context.Context, start executor.StartRe
 		return fmt.Errorf("task=%q executor=%q home=%q 没有 Profile 能力",
 			start.Task.ID, start.Task.Executor, start.Task.HomeDir)
 	}
+	// B233.14：空 Task.HomeDir 是合法身份（沿用该机主 HOME），不再拒绝非空纪律。
+	// 写入点与身份快照分离：写入点必为绝对路径，Task.HomeDir 保持不变（B347）。
+	writePoint, err := taskProfileHome(start.Task.HomeDir)
+	if err != nil {
+		m.log.Error("任务纪律 overlay 写入点解析失败", "task", start.Task.ID,
+			"executor", start.Task.Executor, "home", start.Task.HomeDir, "cause", err)
+		return fmt.Errorf("task=%q executor=%q home=%q 解析纪律写入点: %w",
+			start.Task.ID, start.Task.Executor, start.Task.HomeDir, err)
+	}
 	req := executor.ProfileReq{
-		HomeDir: start.Task.HomeDir, Isolated: start.Task.HomeDir != "",
+		HomeDir:  writePoint,
+		Isolated: start.Task.HomeDir != "",
 		TaskOverlay: []executor.ProfileFile{{
 			Name: filepath.Join(start.Task.ID, disciplineFileName), Content: start.Discipline,
 		}},
 	}
 	m.log.Info("任务 Profile overlay 准备开始", "task", start.Task.ID,
-		"executor", start.Task.Executor, "home", start.Task.HomeDir,
-		"overlay_count", len(req.TaskOverlay), "content_bytes", len(start.Discipline))
+		"executor", start.Task.Executor, "home", start.Task.HomeDir, "write_point", writePoint,
+		"isolated", req.Isolated, "overlay_count", len(req.TaskOverlay),
+		"content_bytes", len(start.Discipline))
 	rep, err := profile.Prepare(ctx, req)
 	if err != nil {
 		m.log.Error("任务 Profile overlay 准备失败", "task", start.Task.ID,
-			"executor", start.Task.Executor, "home", start.Task.HomeDir, "cause", err)
+			"executor", start.Task.Executor, "home", start.Task.HomeDir,
+			"write_point", writePoint, "cause", err)
 		return fmt.Errorf("task=%q executor=%q home=%q Profile.Prepare: %w",
 			start.Task.ID, start.Task.Executor, start.Task.HomeDir, err)
 	}
 	if !rep.Prepared {
 		err := fmt.Errorf("Profile.Prepare 返回 Prepared=false")
 		m.log.Error("任务 Profile overlay 未准备完成", "task", start.Task.ID,
-			"executor", start.Task.Executor, "home", start.Task.HomeDir, "cause", err)
+			"executor", start.Task.Executor, "home", start.Task.HomeDir,
+			"write_point", writePoint, "cause", err)
 		return fmt.Errorf("task=%q executor=%q home=%q: %w", start.Task.ID,
 			start.Task.Executor, start.Task.HomeDir, err)
 	}
 	m.log.Info("任务 Profile overlay 准备完成", "task", start.Task.ID,
-		"executor", start.Task.Executor, "home", start.Task.HomeDir,
+		"executor", start.Task.Executor, "home", start.Task.HomeDir, "write_point", writePoint,
 		"overlay_count", len(req.TaskOverlay), "content_bytes", len(start.Discipline))
 	return nil
 }
@@ -1117,6 +1126,10 @@ func withCarrierHome(env []string, homeDir string) []string {
 	return append(out, "HOME="+expandCarrierHome(homeDir))
 }
 
+// userHomeDir 是本机主 HOME 取值缝（B233.14）：生产恒为 os.UserHomeDir；
+// 测试替换它以覆盖「主 HOME 不可得必须拒派」（契约 #19、#18 的展开失败分支）。
+var userHomeDir = os.UserHomeDir
+
 // expandCarrierHome 把载体 HomeDir 的前导 ~ 在本机展开为绝对路径。
 // 登记串是跨机可认的用户可见形态（含 ~，见 scheduling.IsolatedHomeRoot）；
 // 进子进程 HOME 前必须展开，否则子进程把 $HOME 系文件相对 cwd 落盘，
@@ -1126,13 +1139,40 @@ func expandCarrierHome(homeDir string) string {
 	if homeDir != "~" && !strings.HasPrefix(homeDir, "~/") && !strings.HasPrefix(homeDir, `~\`) {
 		return homeDir
 	}
-	if base, err := os.UserHomeDir(); err == nil && base != "" {
+	if base, err := userHomeDir(); err == nil && base != "" {
 		if homeDir == "~" {
 			return base
 		}
 		return filepath.Join(base, strings.TrimLeft(homeDir[1:], `/\`))
 	}
 	return homeDir
+}
+
+// taskProfileHome 解析任务纪律 overlay 的落盘写入点（B233.14）。
+//
+// 语义：返回恒为非空路径的写入点——五家 Profile.Prepare 拒绝空 HomeDir，且
+// overlay 必须落盘。非空 taskHome 经 expandCarrierHome 展开 ~ 前缀为绝对路径
+// （修掉把 ~ 当目录名、在 cwd 建 ./~/.handoff 的既有缺陷）；空 taskHome
+// （载体主 HOME）取本机主 HOME。展开后仍非绝对即报错，绝不静默落相对路径。
+//
+// 注意：Task.HomeDir 身份快照不由本函数改写（B347：空 HOME 是身份值），
+// 本函数只回答「写到哪」。
+func taskProfileHome(taskHome string) (string, error) {
+	if taskHome != "" {
+		writePoint := expandCarrierHome(taskHome)
+		if !filepath.IsAbs(writePoint) {
+			return "", fmt.Errorf("载体 HOME %q 展开后仍非绝对路径", taskHome)
+		}
+		return writePoint, nil
+	}
+	home, err := userHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("无法解析本机主 HOME: %w", err)
+	}
+	if home == "" {
+		return "", errors.New("无法解析本机主 HOME: 取值为空")
+	}
+	return home, nil
 }
 
 // guardWorkdirBusy 拒绝把任务派到已被活跃任务占用的工作目录（B42）。

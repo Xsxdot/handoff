@@ -72,7 +72,7 @@ func TestB23313ConcurrentDoneClaimedOnce(t *testing.T) {
 func TestB23313ConcurrentDoneReleasesOnce(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
-	if _, err := env.srv.Scheduling().AdmitCarrier("muse"); err != nil {
+	if _, err := mustScheduling(t, env.srv).AdmitCarrier("muse"); err != nil {
 		t.Fatalf("AdmitCarrier: %v", err)
 	}
 	const taskID = "b23313-concurrent-done-release"

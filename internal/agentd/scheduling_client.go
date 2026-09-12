@@ -56,7 +56,3 @@ type SchedulingClient interface {
 // 编译期断言：编制域实现必须满足 gateway 使用方接口。实现节点切换字段类型时
 // 由本断言在编译期暴露方法集错配，不留给集成阶段。
 var _ SchedulingClient = (*scheduling.Service)(nil)
-
-// 编译期断言：编制域 *Service 满足 gateway 使用方接口（方法集闭包核对）。
-// 少一个方法或签名漂移即编译失败；多出来的方法不影响（接口只声明消费面）。
-var _ SchedulingClient = (*scheduling.Service)(nil)

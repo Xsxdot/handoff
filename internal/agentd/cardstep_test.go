@@ -233,7 +233,7 @@ func setupB23310CardTaskEnvWithMachine(t *testing.T, script []fake.Step, machine
 			t.Fatalf("登记生命周期测试目标机: %v", err)
 		}
 	}
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	carrier, err := svc.Carrier("c1")
 	if err != nil {
 		t.Fatalf("读取 c1: %v", err)
