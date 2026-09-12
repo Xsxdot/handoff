@@ -116,6 +116,12 @@
 - **ExecutionClient 成为生产消费类型**：接口与编译断言已在，生产调用方仍持有聚合 `*client.Client`。来源：同上。
 - **全仓 internal/ 按 best.json 重排**：物理搬家仍暂缓，目录是结果不是手段。来源：同上。
 
+## 来自 B233.17 spec（2026-09-12）
+
+- **SetupAutomation 里房间 / keystone / hostapi 的构造仍在 gateway 文件**：本卡只让处理请求的函数退出免检名单，不把这三处 `New` 上移 `cmd`。B233.14 已划出。要收口时从本条重走 spec。来源：`docs/superpowers/specs/b233.17.md` Out of Scope。
+- **非 12–16 方向的老债配额**：`d_gateway → d_ledger` 17、`d_cli → d_policy` 32 等本卡不清零。棘轮只覆盖 12–16 交出的有门面方向。来源：同上。
+- **全仓 internal/ 按 best.json 重排**：本卡再确认不做（只封已迁出的四包）。原条见「来自 B233.10 spec」。
+
 ## 来自 B233.16 spec（2026-09-11）
 
 - **非执行能力面的消费点收窄**：B233.16 只覆盖「一次任务/卡节点执行闭环」这条缝。仍持聚合 `*client.Client` 且无卡承接的：任务事件镜像（`internal/ledgermirror` 的 `Machines.For`/`Source` 做 `StreamEventsOnce`/`ListTasks`）、PTY（`internal/agentd` 的 coordinator PTY 路径）、预览、回收、项目、机器、会话、升级，以及纯查询命令（`tasks`/`show`/`diff`/`attach`/`frames`/`footprint` 等）。这些面要各自按使用方声明能力接口（如事件流需另立订阅缝），单独定性。来源：`docs/superpowers/specs/b233.16.md` Out of Scope。
