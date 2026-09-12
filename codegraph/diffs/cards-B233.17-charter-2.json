@@ -1,7 +1,7 @@
 {
  "view": "cards/B233.17-charter-2",
  "base": "9d785ae5",
- "summary": "B233.17 contract：组装点收窄 + 四包编译期封界 + 预算棘轮；视图补 B233.13 未 absorb 的编排域符号（Manager/Approver/包级/实体）与 OrchestrationClient 使用方接口。",
+ "summary": "B233.17 contract：组装点收窄 + 四包编译期封界 + 预算棘轮；视图补 B233.13 未 absorb 的编排域符号（Manager/Approver/包级/实体）与 OrchestrationClient 使用方接口。B233.17 对账：handler 定义 39 节点改锚 internal/agentd/handlers.go；workspace shell/进程组原语 7 节点改锚 nested gitproc；orchestration cache 符号 10 节点改锚 nested cacheplan；补 nested decision（MapGateAnswer/GateDecision/PermEventText）与 logging（StatusLog）符号及容器；补 Server.releaseTaskCarrierOccupancy（迁入 handlers.go，基线未收录）。",
  "containersAdded": {
   "k_agentd_orchestration_client": {
    "label": "agentd 编排 client 接口",
@@ -27,6 +27,16 @@
    "label": "orchestration（包级函数）",
    "kind": "函数组",
    "domain": "d_coordination_task"
+  },
+  "k_approval_decision": {
+   "label": "decision（包级函数）",
+   "kind": "函数组",
+   "domain": "d_coordination_task"
+  },
+  "k_scheduling_logging": {
+   "label": "logging（包级函数）",
+   "kind": "函数组",
+   "domain": "d_scheduling"
   }
  },
  "nodesAdded": {
@@ -279,10 +289,10 @@
    "kind": "model",
    "container": "k_orchestration_model",
    "order": 74,
-   "name": "cacheLeafPlan",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 74,
-   "signature": "type cacheLeafPlan struct {",
+   "name": "LeafPlan",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 81,
+   "signature": "type LeafPlan struct {",
    "fields": [
     [
      "TaskID",
@@ -869,7 +879,7 @@
    "order": 1500,
    "name": "Manager.GC",
    "file": "internal/orchestration/gc.go",
-   "line": 35,
+   "line": 36,
    "signature": "func (m *Manager) GC(ctx context.Context, force, execute bool) (resp *proto.GCResp, err error)",
    "params": [
     [
@@ -1510,7 +1520,7 @@
    "order": 192,
    "name": "Manager.appendGCWorktreesExecute",
    "file": "internal/orchestration/gc.go",
-   "line": 191,
+   "line": 192,
    "signature": "func (m *Manager) appendGCWorktreesExecute(ctx context.Context, resp *proto.GCResp, tasks []proto.Task, force bool)",
    "params": [
     [
@@ -1541,7 +1551,7 @@
    "order": 1480,
    "name": "Manager.appendGCWorktreesPreview",
    "file": "internal/orchestration/gc.go",
-   "line": 147,
+   "line": 148,
    "signature": "func (m *Manager) appendGCWorktreesPreview(resp *proto.GCResp, tasks []proto.Task, force bool)",
    "params": [
     [
@@ -2863,8 +2873,8 @@
    "order": 147,
    "name": "Manager.purgeTaskCache",
    "file": "internal/orchestration/cachegc.go",
-   "line": 147,
-   "signature": "func (m *Manager) purgeTaskCache(taskID string)",
+   "line": 26,
+   "signature": "func (m *Manager) purgeTaskCache(taskID string) {",
    "params": [
     [
      "taskID",
@@ -3085,8 +3095,8 @@
    "order": 139,
    "name": "Manager.removeCacheLeaf",
    "file": "internal/orchestration/cachegc.go",
-   "line": 139,
-   "signature": "func (m *Manager) removeCacheLeaf(path string) error",
+   "line": 18,
+   "signature": "func (m *Manager) removeCacheLeaf(path string) error {",
    "params": [
     [
      "path",
@@ -3962,10 +3972,10 @@
    "kind": "func",
    "container": "k_orchestration_fn",
    "order": 55,
-   "name": "activeLeafOccupied",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 55,
-   "signature": "func activeLeafOccupied(tasks []proto.Task, selfID string) bool",
+   "name": "ActiveLeafOccupied",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 61,
+   "signature": "func ActiveLeafOccupied(tasks []proto.Task, selfID string) bool",
    "params": [
     [
      "tasks",
@@ -3991,10 +4001,10 @@
    "kind": "func",
    "container": "k_orchestration_fn",
    "order": 25,
-   "name": "cacheActiveLeaf",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 25,
-   "signature": "func cacheActiveLeaf(dataDir, taskID string) string",
+   "name": "ActiveLeaf",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 26,
+   "signature": "func ActiveLeaf(dataDir, taskID string) string",
    "params": [
     [
      "dataDir",
@@ -4023,10 +4033,10 @@
    "kind": "func",
    "container": "k_orchestration_fn",
    "order": 41,
-   "name": "cacheID8",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 41,
-   "signature": "func cacheID8(taskID string) string",
+   "name": "ID8",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 46,
+   "signature": "func ID8(taskID string) string",
    "params": [
     [
      "taskID",
@@ -4046,10 +4056,10 @@
    "kind": "func",
    "container": "k_orchestration_fn",
    "order": 29,
-   "name": "cacheLegacyLeaf",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 29,
-   "signature": "func cacheLegacyLeaf(dataDir, taskID string) string",
+   "name": "LegacyLeaf",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 31,
+   "signature": "func LegacyLeaf(dataDir, taskID string) string",
    "params": [
     [
      "dataDir",
@@ -4074,10 +4084,10 @@
    "kind": "func",
    "container": "k_orchestration_fn",
    "order": 33,
-   "name": "cacheTmpRoot",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 33,
-   "signature": "func cacheTmpRoot(dataDir string) string",
+   "name": "TmpRoot",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 36,
+   "signature": "func TmpRoot(dataDir string) string",
    "params": [
     [
      "dataDir",
@@ -4348,10 +4358,10 @@
    "kind": "func",
    "container": "k_orchestration_fn",
    "order": 48,
-   "name": "isCacheTmpRoot",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 48,
-   "signature": "func isCacheTmpRoot(dataDir, path string) bool",
+   "name": "IsTmpRoot",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 54,
+   "signature": "func IsTmpRoot(dataDir, path string) bool",
    "params": [
     [
      "dataDir",
@@ -4536,10 +4546,10 @@
    "kind": "func",
    "container": "k_orchestration_fn",
    "order": 84,
-   "name": "planTaskCacheLeaves",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 84,
-   "signature": "func planTaskCacheLeaves(dataDir, taskID string, tasks []proto.Task) []cacheLeafPlan",
+   "name": "PlanTaskCacheLeaves",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 91,
+   "signature": "func PlanTaskCacheLeaves(dataDir, taskID string, tasks []proto.Task) []LeafPlan",
    "params": [
     [
      "dataDir",
@@ -4692,10 +4702,10 @@
    "kind": "func",
    "container": "k_orchestration_fn",
    "order": 109,
-   "name": "sumRegularFileBytes",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 109,
-   "signature": "func sumRegularFileBytes(root string) (int64, error)",
+   "name": "SumRegularFileBytes",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 116,
+   "signature": "func SumRegularFileBytes(root string) (int64, error)",
    "params": [
     [
      "root",
@@ -4803,10 +4813,10 @@
   "n_orchestration_cachePathEqual": {
    "kind": "func",
    "container": "k_orchestration_fn",
-   "name": "cachePathEqual",
-   "file": "internal/orchestration/cachegc.go",
-   "line": 37,
-   "signature": "func cachePathEqual(a string, b string) bool"
+   "name": "PathEqual",
+   "file": "internal/orchestration/internal/cacheplan/cacheplan.go",
+   "line": 41,
+   "signature": "func PathEqual(a, b string) bool"
   },
   "m_orchestration_appendEventFunc": {
    "kind": "model",
@@ -4959,6 +4969,1228 @@
    "file": "internal/orchestration/log.go",
    "line": 10,
    "signature": "func log() *slog.Logger"
+  },
+  "n_decision_MapGateAnswer": {
+   "kind": "func",
+   "container": "k_approval_decision",
+   "order": 20,
+   "name": "MapGateAnswer",
+   "file": "internal/approval/internal/decision/decision.go",
+   "line": 20,
+   "signature": "func MapGateAnswer(ans string) executor.ApprovalDecision {",
+   "summary": "MapGateAnswer 把 ticket answer 映射为 executor.ApprovalDecision。"
+  },
+  "n_decision_GateDecision": {
+   "kind": "func",
+   "container": "k_approval_decision",
+   "order": 31,
+   "name": "GateDecision",
+   "file": "internal/approval/internal/decision/decision.go",
+   "line": 31,
+   "signature": "func GateDecision(answer string) (decision, reason string) {",
+   "summary": "GateDecision preserves the old manager-to-executor translation: only the exact answer \"allow\" grants once; all other answers reject, with a deny reason copied only from the explicit deny form."
+  },
+  "n_decision_PermEventText": {
+   "kind": "func",
+   "container": "k_approval_decision",
+   "order": 45,
+   "name": "PermEventText",
+   "file": "internal/approval/internal/decision/decision.go",
+   "line": 45,
+   "signature": "func PermEventText(s string) string {",
+   "summary": "PermEventText 截断权限文案到 200 rune 并附 executor.TruncationMarker。"
+  },
+  "n_logging_StatusLog": {
+   "kind": "func",
+   "container": "k_scheduling_logging",
+   "order": 14,
+   "name": "StatusLog",
+   "file": "internal/scheduling/internal/logging/logging.go",
+   "line": 14,
+   "signature": "func StatusLog() *slog.Logger {",
+   "summary": "StatusLog 返回编制域结构化 logger（mod=scheduling）。包级日志入口的实现细节，无跨域消费者；公开 scheduling 包经 statusLog() 转发，保持调用点不变。"
+  },
+  "n_agentd_Server_releaseTaskCarrierOccupancy": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 998,
+   "name": "Server.releaseTaskCarrierOccupancy",
+   "file": "internal/agentd/handlers.go",
+   "line": 998,
+   "signature": "func (s *Server) releaseTaskCarrierOccupancy(task *proto.Task) {",
+   "summary": "releaseTaskCarrierOccupancy 释放任务快照持有的载体与小队成员占用。"
+  }
+ },
+ "nodesModified": {
+  "m_agentd_continueRequest": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 1287,
+   "name": "continueRequest",
+   "file": "internal/agentd/handlers.go",
+   "line": 826,
+   "summary": "continueRequest 是 POST /api/tasks/{id}/continue 的请求体。",
+   "fields": [
+    [
+     "Instructions",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_dispatchRequest": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 1050,
+   "name": "dispatchRequest",
+   "file": "internal/agentd/handlers.go",
+   "line": 483,
+   "summary": "POST /api/tasks 请求体增加冻结身份的 Ticket 0 解码字段。",
+   "fields": [
+    [
+     "ProjectID",
+     "string",
+     ""
+    ],
+    [
+     "ProjectName",
+     "string",
+     ""
+    ],
+    [
+     "PlanB64",
+     "string",
+     ""
+    ],
+    [
+     "PlanName",
+     "string",
+     ""
+    ],
+    [
+     "Target",
+     "string",
+     ""
+    ],
+    [
+     "Prompt",
+     "string",
+     ""
+    ],
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Receiver",
+     "string",
+     ""
+    ],
+    [
+     "Carrier",
+     "string",
+     "冻结的执行载体；Ticket 0 只解码"
+    ],
+    [
+     "Squad",
+     "string",
+     "冻结的小队；Ticket 0 只解码"
+    ],
+    [
+     "HomeDir",
+     "*string",
+     "缺席与显式空串可区分"
+    ],
+    [
+     "Executor",
+     "string",
+     ""
+    ],
+    [
+     "Discipline",
+     "string",
+     ""
+    ],
+    [
+     "DisciplineText",
+     "string",
+     ""
+    ],
+    [
+     "DisciplineVersion",
+     "int",
+     ""
+    ],
+    [
+     "Model",
+     "string",
+     ""
+    ],
+    [
+     "Branch",
+     "string",
+     ""
+    ],
+    [
+     "NewBranch",
+     "string",
+     ""
+    ],
+    [
+     "Base",
+     "string",
+     ""
+    ],
+    [
+     "ResolveDefaultBase",
+     "bool",
+     ""
+    ],
+    [
+     "LocalBaseBranch",
+     "bool",
+     ""
+    ],
+    [
+     "Worktree",
+     "string",
+     ""
+    ],
+    [
+     "NewWorktree",
+     "bool",
+     ""
+    ],
+    [
+     "BaseCommit",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_doneRequest": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 1326,
+   "name": "doneRequest",
+   "file": "internal/agentd/handlers.go",
+   "line": 865,
+   "summary": "doneRequest 是归档请求的可选请求体。",
+   "fields": [
+    [
+     "Note",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_doneResult": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 1335,
+   "name": "doneResult",
+   "file": "internal/agentd/handlers.go",
+   "line": 874,
+   "summary": "doneResult 是归档响应。",
+   "fields": [
+    [
+     "OK",
+     "bool",
+     ""
+    ],
+    [
+     "NoteSaved",
+     "bool",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_projectAddRequest": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 1174,
+   "name": "projectAddRequest",
+   "file": "internal/agentd/handlers.go",
+   "line": 713,
+   "summary": "projectAddRequest 是 POST /api/projects 的请求体。",
+   "fields": [
+    [
+     "OriginURL",
+     "string",
+     ""
+    ],
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Path",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_replyRequest": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 881,
+   "name": "replyRequest",
+   "file": "internal/agentd/handlers.go",
+   "line": 300,
+   "summary": "replyRequest 是 POST /api/tasks/{id}/reply 的请求体。",
+   "fields": [
+    [
+     "TicketID",
+     "string",
+     ""
+    ],
+    [
+     "Answer",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_replyResult": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 891,
+   "name": "replyResult",
+   "file": "internal/agentd/handlers.go",
+   "line": 310,
+   "summary": "replyResult 是 reply 接口的响应体。",
+   "fields": [
+    [
+     "OK",
+     "bool",
+     ""
+    ],
+    [
+     "Relayed",
+     "bool",
+     ""
+    ],
+    [
+     "Reason",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_runRequest": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 1710,
+   "name": "runRequest",
+   "file": "internal/agentd/handlers.go",
+   "line": 1377,
+   "summary": "runRequest 是 POST /api/tasks/{id}/run 的请求体。",
+   "fields": [
+    [
+     "Cmd",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_runResponse": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 1715,
+   "name": "runResponse",
+   "file": "internal/agentd/handlers.go",
+   "line": 1382,
+   "summary": "runResponse 是 run 接口的响应体（合并输出 + 退出码）。",
+   "fields": [
+    [
+     "Stdout",
+     "string",
+     ""
+    ],
+    [
+     "ExitCode",
+     "int",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_agentd_taskDetail": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 873,
+   "name": "taskDetail",
+   "file": "internal/agentd/handlers.go",
+   "line": 292,
+   "summary": "taskDetail 是 GET /api/tasks/{id} 的响应体（attach 数据源）。",
+   "fields": [
+    [
+     "Task",
+     "proto.TaskView",
+     ""
+    ],
+    [
+     "PendingTickets",
+     "[]proto.Ticket",
+     ""
+    ],
+    [
+     "RecentEvents",
+     "[]proto.Event",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "n_agentd_Server_handleContinue": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1296,
+   "name": "Server.handleContinue",
+   "file": "internal/agentd/handlers.go",
+   "line": 835,
+   "signature": "func (s *Server) handleContinue(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleContinue 向任务续发修改指令（要求任务处于 waiting_review）。"
+  },
+  "n_agentd_Server_handleDispatch": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1075,
+   "name": "Server.handleDispatch",
+   "file": "internal/agentd/handlers.go",
+   "line": 529,
+   "signature": "func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleDispatch 派发一个新任务，返回创建后的任务（state=running）。"
+  },
+  "n_agentd_Server_handleDone": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1341,
+   "name": "Server.handleDone",
+   "file": "internal/agentd/handlers.go",
+   "line": 880,
+   "signature": "func (s *Server) handleDone(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleDone 归档任务（要求任务处于 waiting_review）：置 completed 并回收 executor。"
+  },
+  "n_agentd_Server_handleEvents": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1814,
+   "name": "Server.handleEvents",
+   "file": "internal/agentd/handlers.go",
+   "line": 1481,
+   "signature": "func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleEvents 处理 /ws/events：先订阅 hub 实时流，再补发 store 中 seq>from_seq 的"
+  },
+  "n_agentd_Server_handleFootprint": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 670,
+   "name": "Server.handleFootprint",
+   "file": "internal/agentd/handlers.go",
+   "line": 89,
+   "signature": "func (s *Server) handleFootprint(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleFootprint 返回全部任务（含已归档）的进程足迹体检。"
+  },
+  "n_agentd_Server_handleGetTask": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 824,
+   "name": "Server.handleGetTask",
+   "file": "internal/agentd/handlers.go",
+   "line": 243,
+   "signature": "func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleGetTask 返回任务详情（任务 + 待办工单 + 最近事件），是 attach 命令的数据源。",
+   "tests": [
+    {
+     "name": "TestGetTaskCarriesWatchers",
+     "file": "internal/agentd/watchers_test.go:42"
+    }
+   ]
+  },
+  "n_agentd_Server_handleListTasks": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 770,
+   "name": "Server.handleListTasks",
+   "file": "internal/agentd/handlers.go",
+   "line": 189,
+   "signature": "func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleListTasks 返回全部任务（created_at 降序）及其实时订阅数，供 tasks 命令展示。"
+  },
+  "n_agentd_Server_handleProjectAdd": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1181,
+   "name": "Server.handleProjectAdd",
+   "file": "internal/agentd/handlers.go",
+   "line": 720,
+   "signature": "func (s *Server) handleProjectAdd(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleProjectAdd 登记一个项目（必要时先克隆）。"
+  },
+  "n_agentd_Server_handleProjectList": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1209,
+   "name": "Server.handleProjectList",
+   "file": "internal/agentd/handlers.go",
+   "line": 748,
+   "signature": "func (s *Server) handleProjectList(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleProjectList 列出全部项目位置（含现场探得的实际状态）。"
+  },
+  "n_agentd_Server_handleProjectRemove": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1228,
+   "name": "Server.handleProjectRemove",
+   "file": "internal/agentd/handlers.go",
+   "line": 767,
+   "signature": "func (s *Server) handleProjectRemove(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleProjectRemove 注销一条项目位置（只删登记，不动磁盘）。"
+  },
+  "n_agentd_Server_handleReclaim": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 712,
+   "name": "Server.handleReclaim",
+   "file": "internal/agentd/handlers.go",
+   "line": 131,
+   "signature": "func (s *Server) handleReclaim(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleReclaim 回收单个终态任务的 managed worktree。"
+  },
+  "n_agentd_Server_handleReclaimList": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 689,
+   "name": "Server.handleReclaimList",
+   "file": "internal/agentd/handlers.go",
+   "line": 108,
+   "signature": "func (s *Server) handleReclaimList(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleReclaimList 返回全部终态任务的 managed worktree 残留体检结果。"
+  },
+  "n_agentd_Server_handleReply": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 922,
+   "name": "Server.handleReply",
+   "file": "internal/agentd/handlers.go",
+   "line": 341,
+   "signature": "func (s *Server) handleReply(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleReply 回答一个工单，完成唤醒闭环的回程。",
+   "tests": [
+    {
+     "name": "TestWatchdogRefiresStalledAfterReply",
+     "file": "internal/agentd/watchdog_test.go:198"
+    }
+   ]
+  },
+  "n_agentd_Server_handleResume": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1437,
+   "name": "Server.handleResume",
+   "file": "internal/agentd/handlers.go",
+   "line": 1058,
+   "signature": "func (s *Server) handleResume(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleResume 显式恢复卡死的任务：重投「已落库但未送达 executor」的应答，"
+  },
+  "n_agentd_Server_handleStatus": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 631,
+   "name": "Server.handleStatus",
+   "file": "internal/agentd/handlers.go",
+   "line": 37,
+   "signature": "func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleStatus 返回本 agentd 的可用性与身份信息；B229 起上报 DisciplinesSupported 能力位（与实现同生同死四件事核对单）。",
+   "tests": [
+    {
+     "name": "TestStatusReportsPtySupported",
+     "file": "internal/agentd/pty_api_test.go:141"
+    },
+    {
+     "name": "TestStatusReportsPullCapabilityAndState",
+     "file": "internal/agentd/update_test.go:443"
+    }
+   ]
+  },
+  "n_agentd_Server_handleStop": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1391,
+   "name": "Server.handleStop",
+   "file": "internal/agentd/handlers.go",
+   "line": 956,
+   "signature": "func (s *Server) handleStop(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleStop 主动中止任务（停 executor、落 failed；作废由终态迁移收口完成）。"
+  },
+  "n_agentd_Server_handleTaskBranches": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1637,
+   "name": "Server.handleTaskBranches",
+   "file": "internal/agentd/handlers.go",
+   "line": 1289,
+   "signature": "func (s *Server) handleTaskBranches(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleTaskBranches 返回任务仓库的本地分支名列表与推导出的默认基准分支。"
+  },
+  "n_agentd_Server_handleTaskBundle": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1577,
+   "name": "Server.handleTaskBundle",
+   "file": "internal/agentd/handlers.go",
+   "line": 1229,
+   "signature": "func (s *Server) handleTaskBundle(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleTaskBundle 吐任务分支的 git bundle，供协调者 pull 时不经 ssh 取回改动。"
+  },
+  "n_agentd_Server_handleTaskDiff": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1511,
+   "name": "Server.handleTaskDiff",
+   "file": "internal/agentd/handlers.go",
+   "line": 1132,
+   "signature": "func (s *Server) handleTaskDiff(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleTaskDiff 返回任务分支相对基准分支的审阅素材（git diff + 提交列表）。"
+  },
+  "n_agentd_Server_handleTaskFile": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1663,
+   "name": "Server.handleTaskFile",
+   "file": "internal/agentd/handlers.go",
+   "line": 1315,
+   "signature": "func (s *Server) handleTaskFile(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleTaskFile 返回任务仓库内指定文件的内容（协调者取上下文用）。",
+   "tests": [
+    {
+     "name": "TestReadFileTruncatedHasNoNotice",
+     "file": "internal/agentd/workspace_read_struct_test.go:47"
+    }
+   ]
+  },
+  "n_agentd_Server_handleTaskRun": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1725,
+   "name": "Server.handleTaskRun",
+   "file": "internal/agentd/handlers.go",
+   "line": 1392,
+   "signature": "func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "summary": "handleTaskRun 在任务仓库执行一条审阅命令（sh -c），返回合并输出与退出码。"
+  },
+  "n_agentd_Server_resumeIfIdle": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1019,
+   "name": "Server.resumeIfIdle",
+   "file": "internal/agentd/handlers.go",
+   "line": 452,
+   "signature": "func (s *Server) resumeIfIdle(taskID string)",
+   "params": [
+    [
+     "taskID",
+     "string",
+     ""
+    ]
+   ],
+   "summary": "resumeIfIdle 当任务处于 waiting_answer 且已无未答工单时，把状态回迁 running。",
+   "tests": [
+    {
+     "name": "TestWatchdogRefiresStalledAfterReply",
+     "file": "internal/agentd/watchdog_test.go:198"
+    }
+   ]
+  },
+  "n_agentd_Server_taskOrErr": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1474,
+   "name": "Server.taskOrErr",
+   "file": "internal/agentd/handlers.go",
+   "line": 1095,
+   "signature": "func (s *Server) taskOrErr(w http.ResponseWriter, taskID string) (*proto.Task, bool)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "*proto.Task, bool",
+   "summary": "taskOrErr 读取路径中的任务并做门禁：任务不存在写 404、缺工作区路径写 400，"
+  },
+  "n_agentd_Server_taskRepoOrErr": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1496,
+   "name": "Server.taskRepoOrErr",
+   "file": "internal/agentd/handlers.go",
+   "line": 1117,
+   "signature": "func (s *Server) taskRepoOrErr(w http.ResponseWriter, taskID string) (repo string, ok bool)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "repo string, ok bool",
+   "summary": "taskRepoOrErr 读取路径中的任务并返回其工作区目录；任务不存在（404）或没有"
+  },
+  "n_agentd_Server_writeDispatchError": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1126,
+   "name": "Server.writeDispatchError",
+   "file": "internal/agentd/handlers.go",
+   "line": 647,
+   "signature": "func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "projectRef",
+     "string",
+     ""
+    ],
+    [
+     "err",
+     "error",
+     ""
+    ]
+   ],
+   "summary": "writeDispatchError 把 dispatch 失败映射为 HTTP 状态码与可读原因（P1-14）。"
+  },
+  "n_agentd_Server_writeManagerError": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1764,
+   "name": "Server.writeManagerError",
+   "file": "internal/agentd/handlers.go",
+   "line": 1431,
+   "signature": "func (s *Server) writeManagerError(w http.ResponseWriter, taskID, op string, err error)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ],
+    [
+     "op",
+     "string",
+     ""
+    ],
+    [
+     "err",
+     "error",
+     ""
+    ]
+   ],
+   "summary": "writeManagerError 把 manager 返回的错误映射为 HTTP 状态码与提示。"
+  },
+  "n_agentd_Server_writeProjectError": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 1260,
+   "name": "Server.writeProjectError",
+   "file": "internal/agentd/handlers.go",
+   "line": 799,
+   "signature": "func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "err",
+     "error",
+     ""
+    ]
+   ],
+   "summary": "writeProjectError 把项目登记操作的失败映射为 HTTP 状态码与可读原因。"
+  },
+  "n_agentd_Server_writeReclaimError": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 738,
+   "name": "Server.writeReclaimError",
+   "file": "internal/agentd/handlers.go",
+   "line": 157,
+   "signature": "func (s *Server) writeReclaimError(w http.ResponseWriter, taskID string, err error)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "taskID",
+     "string",
+     ""
+    ],
+    [
+     "err",
+     "error",
+     ""
+    ]
+   ],
+   "summary": "writeReclaimError 把 Reclaim 的错误翻成 HTTP 应答。"
+  },
+  "n_agentd_parseForce": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 1411,
+   "name": "parseForce",
+   "file": "internal/agentd/handlers.go",
+   "line": 1032,
+   "signature": "func parseForce(r *http.Request) bool",
+   "params": [
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "returns": "bool",
+   "summary": "parseForce 解析 resume 的 force 查询参数。",
+   "tests": [
+    {
+     "name": "TestHandleResumeParsesForce",
+     "file": "internal/agentd/server_resume_test.go:10"
+    }
+   ]
+  },
+  "n_workspace_runShell": {
+   "kind": "func",
+   "container": "k_workspace_fn",
+   "order": 104,
+   "name": "RunShell",
+   "file": "internal/workspace/internal/gitproc/runshell.go",
+   "line": 106,
+   "signature": "func runShell() (string, error)",
+   "returns": "string, error",
+   "summary": "runShell 是 RunCmd 的调用入口，把生产依赖接上。"
+  },
+  "n_workspace_resolveRunShell": {
+   "kind": "func",
+   "container": "k_workspace_fn",
+   "order": 77,
+   "name": "ResolveRunShell",
+   "file": "internal/workspace/internal/gitproc/runshell.go",
+   "line": 79,
+   "signature": "func resolveRunShell(goos string, lookPath func(string) (string, error), stat func(string) error) (string, error)",
+   "params": [
+    [
+     "goos",
+     "string",
+     ""
+    ],
+    [
+     "lookPath",
+     "func(string) (string, error)",
+     ""
+    ],
+    [
+     "stat",
+     "func(string) error",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "resolveRunShell 解析 run 命令要用的 shell。 参数： - goos: 平台标识（生产路径传 runtime.GOOS） - lookPath: PATH 查找函数（生产路径传 exec.LookPath） - stat: 文件存在性判定（生产路径传 statFile） 返回： - shell 的路径或名字，可直接交给 exec.CommandContext - error: 只在 Windows 上找不到任何 sh 时返回，文案指出装什么能修 为什么找不到时**硬失败**而不是降级到 cmd 或 PowerShell：那会让协调者写的 unix 风格命令（管道、$(…)、&&）以难以理解的方式半跑，排障成本远高于一条 明确的「请装 Git for Windows」。",
+   "tests": [
+    {
+     "name": "TestResolveRunShellUnix",
+     "file": "internal/workspace/runshell_test.go:16"
+    },
+    {
+     "name": "TestResolveRunShellWindowsPrefersPath",
+     "file": "internal/workspace/runshell_test.go:26"
+    },
+    {
+     "name": "TestResolveRunShellWindowsFallsBackToKnownDir",
+     "file": "internal/workspace/runshell_test.go:44"
+    },
+    {
+     "name": "TestResolveRunShellWindowsAllMissing",
+     "file": "internal/workspace/runshell_test.go:60"
+    }
+   ]
+  },
+  "n_workspace_runShellCandidates": {
+   "kind": "func",
+   "container": "k_workspace_fn",
+   "order": 28,
+   "name": "RunShellCandidates",
+   "file": "internal/workspace/internal/gitproc/runshell.go",
+   "line": 30,
+   "signature": "func runShellCandidates(goos string) []string",
+   "params": [
+    [
+     "goos",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "[]string",
+   "summary": "runShellCandidates 返回本平台上 sh 的已知安装位置（绝对路径，按优先级）。 参数：goos 取 runtime.GOOS；抽成参数是为了让 Windows 分支在 mac/linux 上测得到。 返回：非 Windows 恒为空——那些平台上 sh 一定在 PATH 上，不需要兜底。 为什么必须有兜底：Git for Windows 的默认安装只把 Git\\cmd 加进 PATH，而 sh.exe 住在 Git\\bin，**默认不在 PATH 上**（真机实测）。只靠 LookPath 会在绝大多数正常 安装的机器上失败。这与 internal/pathenv 的「已知安装目录兜底」是同一个模式。",
+   "tests": [
+    {
+     "name": "TestRunShellCandidatesOrder",
+     "file": "internal/workspace/runshell_test.go:73"
+    }
+   ]
+  },
+  "n_workspace_dedupStrings": {
+   "kind": "func",
+   "container": "k_workspace_fn",
+   "order": 50,
+   "name": "dedupStrings",
+   "file": "internal/workspace/internal/gitproc/runshell.go",
+   "line": 52,
+   "signature": "func dedupStrings(in []string) []string",
+   "params": [
+    [
+     "in",
+     "[]string",
+     ""
+    ]
+   ],
+   "returns": "[]string",
+   "summary": "dedupStrings 按首次出现顺序去重。"
+  },
+  "n_workspace_statFile": {
+   "kind": "func",
+   "container": "k_workspace_fn",
+   "order": 98,
+   "name": "statFile",
+   "file": "internal/workspace/internal/gitproc/runshell.go",
+   "line": 100,
+   "signature": "func statFile(p string) error",
+   "params": [
+    [
+     "p",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "statFile 是 resolveRunShell 的生产存在性判据。"
+  },
+  "n_workspace_setProcGroup": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 17,
+   "name": "SetProcGroup",
+   "file": "internal/workspace/internal/gitproc/procgroup_unix.go",
+   "line": 17,
+   "signature": "func setProcGroup(cmd *exec.Cmd)",
+   "params": [
+    [
+     "cmd",
+     "*exec.Cmd",
+     ""
+    ]
+   ],
+   "summary": "setProcGroup 让命令进程成为新进程组组长（pgid = pid）。"
+  },
+  "n_workspace_setProcGroup_2": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 10,
+   "name": "SetProcGroup",
+   "file": "internal/workspace/internal/gitproc/procgroup_other.go",
+   "line": 10,
+   "signature": "func setProcGroup(cmd *exec.Cmd) {}",
+   "summary": "setProcGroup 非 unix 平台无进程组概念，空操作。"
   }
  }
 }
