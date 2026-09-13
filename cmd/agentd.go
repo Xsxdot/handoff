@@ -7,12 +7,12 @@
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
 //   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒协调者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
-//   - 经 agentd.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
+//   - 经 orchestration.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
 //     → 停看门狗 → 关库 → 放锁；正常关停 exit 0，供进程管理器据此拉起新版
 //
 // 边界：
 //   - 不创建任务/工单：任务生命周期由 manager 驱动（executor 按 --executor 挂载）
-//   - 不决定何时停机：信号与进程内触发都汇到 agentd.Shutdown，本文件只接线
+//   - 不决定何时停机：信号与进程内触发都汇到 orchestration.Shutdown，本文件只接线
 package cmd
 
 import (
@@ -312,7 +312,7 @@ var agentdCmd = &cobra.Command{
 		// store.Close 与 lock.Release 上面已有 defer，这里不重复调用——
 		// defer 在 RunE 返回后仍会执行，顺序是 lock.Release 后于 st.Close，
 		// 正是我们要的。
-		sd := agentd.NewShutdown(logger)
+		sd := orchestration.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
 		// 两侧都要保留：main 侧把 wdCancel 包进了 PTY 感知的优雅关停清理，
@@ -498,7 +498,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	srv.SetHostAPI(hostAPI)
 	// keystone 域（B156.3）：协调者会话承载 + 隔离 HOME 供给 + ref 解析 +
 	// 叙事/attach 适配，经 SetKeystone 注入。
-	prepareHome := agentd.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
+	prepareHome := orchestration.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())
 	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome)
 	resolver := agentd.NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath)

@@ -149,7 +149,7 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 
 	// push 与自拉同抢 release.TempName(tag) 这个确定性临时文件路径：自拉在跑时
 	// 再受理 push，两个换版会往同一个文件写、互相截断出一个坏二进制
-	if s.pull.busy() {
+	if s.pull.Busy() {
 		s.log.Warn("换版被拒：已有自拉换版在进行中", "tag", tag)
 		writeJSON(w, http.StatusConflict, proto.UpdateError{
 			Error:  "已有自拉换版在进行中，等它跑完再推送；去 status 看 pull_state",
@@ -208,10 +208,10 @@ func (s *Server) handlePullUpdate(w http.ResponseWriter, tag, sum string, busy i
 		})
 		return
 	}
-	if !s.pull.begin(tag) {
+	if !s.pull.Begin(tag) {
 		// force 不越过这一条：两个自拉会往同一个临时文件路径写
 		//（release.TempName(tag) 是确定性的），互相截断出一个坏二进制
-		cur := s.pull.snapshot()
+		cur := s.pull.Snapshot()
 		s.log.Warn("自拉被拒：已有一个自拉在跑", "tag", tag, "current", cur)
 		writeJSON(w, http.StatusConflict, proto.UpdateError{
 			Error:  "已有一个自拉换版在进行中，去 status 看 pull_state",
@@ -235,7 +235,7 @@ func (s *Server) handlePullUpdate(w http.ResponseWriter, tag, sum string, busy i
 //
 // 注意：
 //   - 由 handlePullUpdate 在抢到 pull 锁之后起。任何失败路径都必须调
-//     s.pull.fail 释放锁，否则这台 agentd 从此再也不能自拉
+//     s.pull.Fail 释放锁，否则这台 agentd 从此再也不能自拉
 //   - 成功路径不释放锁：换版成功即触发重启，进程整个换掉
 func (s *Server) runPull(tag, sum string) {
 	ctx := s.pullBaseCtx
@@ -245,12 +245,12 @@ func (s *Server) runPull(tag, sum string) {
 	goos, goarch := s.upd.Platform()
 	s.log.Info("自拉换版开始", "tag", tag, "platform", goos+"/"+goarch, "sha256", sum)
 
-	s.pull.stage(proto.PullStageDownloading)
+	s.pull.Stage(proto.PullStageDownloading)
 	tgz, err := s.upd.FetchByTag(ctx, tag, goos, goarch, sum)
 	if err != nil {
 		s.log.Error("自拉换版失败：下载或校验不过", "tag", tag,
 			"platform", goos+"/"+goarch, "cause", err)
-		s.pull.fail(err)
+		s.pull.Fail(err)
 		return
 	}
 	s.log.Info("自拉换版：资产已就绪", "tag", tag, "bytes", len(tgz))
@@ -258,22 +258,22 @@ func (s *Server) runPull(tag, sum string) {
 	target, err := s.upd.Executable()
 	if err != nil {
 		s.log.Error("自拉换版失败：取当前二进制路径", "tag", tag, "cause", err)
-		s.pull.fail(err)
+		s.pull.Fail(err)
 		return
 	}
 
-	s.pull.stage(proto.PullStageInstalling)
+	s.pull.Stage(proto.PullStageInstalling)
 	// 临时文件必须与目标同目录：os.Rename 的原子性只在同一文件系统内成立
 	newPath, err := s.upd.Install(tgz, sum, tag, filepath.Dir(target))
 	if err != nil {
 		s.log.Error("自拉换版失败：校验或自检未通过", "tag", tag, "target", target, "cause", err)
-		s.pull.fail(err)
+		s.pull.Fail(err)
 		return
 	}
 	prev, err := s.upd.Activate(newPath, target)
 	if err != nil {
 		s.log.Error("自拉换版失败：替换二进制出错", "tag", tag, "target", target, "cause", err)
-		s.pull.fail(err)
+		s.pull.Fail(err)
 		return
 	}
 

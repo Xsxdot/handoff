@@ -136,7 +136,7 @@ func putOnlineCarrierForInteg(t *testing.T, svc *scheduling.Service, c schedulin
 //
 // 为什么非有不可：Manager 没有停机接口，每个任务一条 go m.mediate 协程。用例
 // 返回时仍在 running/waiting_* 的任务，协程还会继续 AppendEvent，而 AppendEvent
-// 的同步钩子（eventFrameHook）会往 DataDir/tasks/<id>/frames.jsonl 追加。
+// 的同步钩子（orchestration.EventFrameHook）会往 DataDir/tasks/<id>/frames.jsonl 追加。
 // DataDir 是 t.TempDir()，testing 收尾时对它 RemoveAll——RemoveAll 刚把某个任务
 // 目录清空、正要 unlink 它时对方又落一个 frames.jsonl，unlinkat 报
 // "directory not empty"，用例被判失败。这条曾以 6% 左右的概率打红

@@ -1,4 +1,4 @@
-// eventframes.go —— 把控制面事件派生成 frames.jsonl 里的 event 引用帧。
+// eventframes.go —— 把控制面事件派生成 frames.jsonl 里的 event 引用帧（B233.26 自 gateway 归域编排包）。
 //
 // 职责：
 //   - 提供一个 store.SetEventHook 用的回调：事件落库后往该任务的
@@ -17,7 +17,7 @@
 // 该任务的 FrameWriter（r.frames）。若事件钩子每次自己 new 一个 writer，两个
 // 实例各持一份内存 seq 写同一个 frames.jsonl，帧号会互相覆盖（落盘 1 2 3 3）。
 // WriterFor 按任务目录去重返回**同一个**实例，保证「一个任务目录一个 seq 分配者」。
-package agentd
+package orchestration
 
 import (
 	"log/slog"
@@ -28,7 +28,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
-// eventFrameHook 返回一个「事件落库后写 event 引用帧」的回调。
+// EventFrameHook 返回一个「事件落库后写 event 引用帧」的回调。
 //
 // 参数：
 //   - dataDir: agentd 数据目录（任务目录在 dataDir/tasks/<id> 下）
@@ -36,7 +36,7 @@ import (
 //
 // 注意：任务目录不存在时静默跳过——事件可能属于一个目录已被清掉的任务，
 // 那不是错误，只是没有帧文件可写。
-func eventFrameHook(dataDir string, log *slog.Logger) func(proto.Event) {
+func EventFrameHook(dataDir string, log *slog.Logger) func(proto.Event) {
 	return func(e proto.Event) {
 		taskDir := filepath.Join(dataDir, "tasks", e.TaskID)
 		if _, err := os.Stat(taskDir); err != nil {
@@ -54,14 +54,4 @@ func eventFrameHook(dataDir string, log *slog.Logger) func(proto.Event) {
 		}
 		log.Debug("事件帧已写入", "task", e.TaskID, "seq", e.Seq, "type", e.Type)
 	}
-}
-
-// registerEventFrameHook 在装配期把事件帧钩子挂到 store 上。
-//
-// 为什么是一个注册点而不是改 20 个 AppendEvent 调用点：调用点散落在
-// manager.go / reconcile.go / watchdog.go，逐点补一行既啰嗦，又留下
-// 「以后新增调用点忘了补」的失效模式。钩子自动覆盖现有与未来的全部调用点。
-func (s *Server) registerEventFrameHook() {
-	s.st.SetEventHook(eventFrameHook(s.conf().DataDir, s.log))
-	s.log.Info("事件帧钩子已注册", "datadir", s.conf().DataDir)
 }

@@ -1,10 +1,8 @@
-package agentd
+package orchestration
 
 import (
-	"log/slog"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
@@ -13,16 +11,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
-	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
-
-func testCoordRunner(h *hostapi.Host, prepareHome func(keysclient.SessionSpec) (string, error)) coordinatorRunner {
-	ocRep, _ := executor.BaselineReport(executor.HarnessOpenCode)
-	coordReg := executor.NewRegistry(executor.StaticProvider{HarnessName: executor.HarnessOpenCode, Rep: ocRep})
-	coord := opencode.NewCoordinator(h, slog.Default())
-	return coordinatorRunner{coord: coord, reg: coordReg, prepareHome: prepareHome}
-}
 
 func testLoadRules(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error) {
 	var rules []executor.ProfileFile
@@ -38,11 +28,11 @@ func testLoadRules(mainHome, cli string) ([]executor.ProfileFile, []executor.Pro
 		}
 		rel, err := filepath.Rel(skillsDir, path)
 		if err != nil {
-			return nil
+			return err
 		}
 		b, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return err
 		}
 		skills = append(skills, executor.ProfileFile{Name: rel, Content: string(b)})
 		return nil
@@ -50,30 +40,11 @@ func testLoadRules(mainHome, cli string) ([]executor.ProfileFile, []executor.Pro
 	return rules, skills, nil
 }
 
-func installCoordinatorFakeCLI(t *testing.T) string {
-	t.Helper()
-	binDir := t.TempDir()
-	capture := filepath.Join(t.TempDir(), "coordinator-cli.txt")
-	script := `#!/bin/sh
-: "${COORD_CAPTURE:?COORD_CAPTURE 必须设置}"
-for arg in "$@"; do printf 'arg:%s\n' "$arg" >>"$COORD_CAPTURE"; done
-printf 'env:HOME=%s\n' "$HOME" >>"$COORD_CAPTURE"
-printf '%s\n' '{"type":"step_start","sessionID":"runner-sess","part":{"type":"step-start"}}'
-printf '%s\n' '{"type":"text","sessionID":"runner-sess","part":{"type":"text","text":"runner-ok"}}'
-printf '%s\n' '{"type":"step_finish","sessionID":"runner-sess","part":{"type":"step-finish","reason":"stop"}}'
-`
-	fake := filepath.Join(binDir, "opencode")
-	if err := os.WriteFile(fake, []byte(script), 0o755); err != nil {
-		t.Fatalf("写 coordinator fake CLI: %v", err)
-	}
-	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
-	t.Setenv("COORD_CAPTURE", capture)
-	return capture
-}
-
+// TestCoordinatorHomeSupplyOnLaunchAndResume 锁协调者隔离 HOME 的供给行为：
+// Launch/Resume 前按白名单写入 config.yaml（活配置投影）、AGENTS.md、skills 与
+// 缺失凭据。B233.26 归域后本包直驱 supplier.Prepare 断言供给结果；runner 把
+// prepareHome 返回值作为子进程 HOME 传递的集成断言留 gateway（coordrunner_test.go）。
 func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
-	capture := installCoordinatorFakeCLI(t)
-
 	mainHome := t.TempDir()
 	if err := os.MkdirAll(filepath.Join(mainHome, ".config", "opencode", "skills", "plan"), 0o700); err != nil {
 		t.Fatal(err)
@@ -118,21 +89,18 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 		loadRules: testLoadRules,
 	}
 
-	h := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
-	runner := testCoordRunner(h, supplier.Prepare)
-
 	spec := keysclient.SessionSpec{
 		CLI:     "opencode",
 		HomeDir: "~/.handoff/home/muse",
 		Workdir: t.TempDir(),
 	}
 
-	res, err := runner.Launch(spec, "测试启动")
+	prepared, err := supplier.Prepare(spec)
 	if err != nil {
-		t.Fatalf("runner.Launch: %v", err)
+		t.Fatalf("supplier.Prepare: %v", err)
 	}
-	if res.SessionID != "runner-sess" {
-		t.Fatalf("SessionID=%q, want runner-sess", res.SessionID)
+	if prepared != targetDir {
+		t.Fatalf("Prepare 返回 %q, want 展开后的隔离 HOME %q", prepared, targetDir)
 	}
 
 	cfgPath := filepath.Join(targetDir, ".handoff", "config.yaml")
@@ -160,25 +128,6 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 	}
 	if b, err := os.ReadFile(filepath.Join(targetDir, ".local", "share", "opencode", "auth.json")); err != nil || string(b) != "main-auth-token" {
 		t.Fatalf("auth.json = %q/%v, want main-auth-token", b, err)
-	}
-
-	rawCapture, err := os.ReadFile(capture)
-	if err != nil {
-		t.Fatalf("读 capture: %v", err)
-	}
-	lines := strings.Split(strings.TrimSpace(string(rawCapture)), "\n")
-	wantHome := "env:HOME=" + targetDir
-	found := false
-	for _, l := range lines {
-		if strings.HasPrefix(l, "env:HOME=~") {
-			t.Fatalf("字面 ~ 进入子进程: %v", lines)
-		}
-		if l == wantHome {
-			found = true
-		}
-	}
-	if !found {
-		t.Fatalf("未找到子进程绝对 HOME=%q，捕获行: %v", wantHome, lines)
 	}
 
 	t.Run("OccupiedTargetOverwritesConfigPreservesSessionAndAuth", func(t *testing.T) {
@@ -219,15 +168,13 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 			},
 			loadRules: testLoadRules,
 		}
-		occRunner := testCoordRunner(h, occupiedSupplier.Prepare)
-
 		occSpec := keysclient.SessionSpec{
 			CLI:     "opencode",
 			HomeDir: "~/.handoff/home/occupied",
 			Workdir: t.TempDir(),
 		}
-		if _, err := occRunner.Launch(occSpec, "occupied launch"); err != nil {
-			t.Fatalf("occRunner.Launch: %v", err)
+		if _, err := occupiedSupplier.Prepare(occSpec); err != nil {
+			t.Fatalf("occupiedSupplier.Prepare: %v", err)
 		}
 
 		occLoaded, err := config.Load(filepath.Join(occupiedTarget, ".handoff", "config.yaml"))
@@ -275,23 +222,14 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 			},
 			loadRules: testLoadRules,
 		}
-		resRunner := testCoordRunner(h, resumeSupplier.Prepare)
-
-		ref := keysclient.SessionRef{
-			CLI:       "opencode",
-			SessionID: "runner-sess",
-			HomeDir:   "~/.handoff/home/resume",
-			Workdir:   t.TempDir(),
+		resSpec := keysclient.SessionSpec{
+			CLI:     "opencode",
+			HomeDir: "~/.handoff/home/resume",
+			Workdir: t.TempDir(),
 		}
 
-		_ = os.Remove(capture)
-
-		resResult, err := resRunner.Resume(ref, "resume prompt")
-		if err != nil {
-			t.Fatalf("resRunner.Resume: %v", err)
-		}
-		if resResult.SessionID != "runner-sess" {
-			t.Fatalf("SessionID=%q, want runner-sess", resResult.SessionID)
+		if _, err := resumeSupplier.Prepare(resSpec); err != nil {
+			t.Fatalf("resumeSupplier.Prepare: %v", err)
 		}
 
 		resLoaded, err := config.Load(filepath.Join(resumeTarget, ".handoff", "config.yaml"))
@@ -303,38 +241,6 @@ func TestCoordinatorHomeSupplyOnLaunchAndResume(t *testing.T) {
 		}
 		if b, err := os.ReadFile(filepath.Join(resumeTarget, ".config", "opencode", "AGENTS.md")); err != nil || string(b) != "agents-doc" {
 			t.Fatalf("Resume 缺少 AGENTS.md: %q/%v", b, err)
-		}
-
-		capData, err := os.ReadFile(capture)
-		if err != nil {
-			t.Fatalf("读 capture: %v", err)
-		}
-		capLines := strings.Split(strings.TrimSpace(string(capData)), "\n")
-		hasResumeArg := false
-		hasSessArg := false
-		for i, l := range capLines {
-			if l == "arg:-s" {
-				hasResumeArg = true
-				if i+1 < len(capLines) && capLines[i+1] == "arg:runner-sess" {
-					hasSessArg = true
-				}
-			}
-		}
-		if !hasResumeArg || !hasSessArg {
-			t.Fatalf("fake CLI 未收到 -s runner-sess 参数: %v", capLines)
-		}
-		wantResumeHome := "env:HOME=" + resumeTarget
-		hasResumeHome := false
-		for _, line := range capLines {
-			if strings.HasPrefix(line, "env:HOME=~") {
-				t.Fatalf("Resume 把字面 ~ 传给 fake CLI: %v", capLines)
-			}
-			if line == wantResumeHome {
-				hasResumeHome = true
-			}
-		}
-		if !hasResumeHome {
-			t.Fatalf("Resume 未收到展开后的 HOME=%q，捕获行: %v", wantResumeHome, capLines)
 		}
 	})
 }
@@ -427,60 +333,12 @@ func TestNormalizeCoordinatorSpecEmptyHome(t *testing.T) {
 			CLI:     "opencode",
 			HomeDir: homeDir,
 		}
-		got, err := normalizeCoordinatorSpec(spec)
+		got, err := NormalizeCoordinatorSpec(spec)
 		if err != nil {
-			t.Fatalf("normalizeCoordinatorSpec(HomeDir=%q) 失败: %v", homeDir, err)
+			t.Fatalf("NormalizeCoordinatorSpec(HomeDir=%q) 失败: %v", homeDir, err)
 		}
 		if got.HomeDir != want {
-			t.Fatalf("normalizeCoordinatorSpec(HomeDir=%q) = %q, want %q", homeDir, got.HomeDir, want)
+			t.Fatalf("NormalizeCoordinatorSpec(HomeDir=%q) = %q, want %q", homeDir, got.HomeDir, want)
 		}
-	}
-}
-
-// TestCoordinatorSessionRefResolverEmptyHomeOnlineCarrier 锁住已上线载体空 HOME 恢复接缝：
-// 当已上线载体登记 HOME 为空时，作为合法主 HOME 展开为绝对路径；小队中没有 online 载体时依然报错。
-func TestCoordinatorSessionRefResolverEmptyHomeOnlineCarrier(t *testing.T) {
-	env, _ := newCoordEnv(t)
-	svc := mustScheduling(t, env.srv)
-
-	putOnlineCarrier(t, svc, scheduling.Carrier{
-		Name:       "c1",
-		Machine:    "本机",
-		CLI:        "opencode",
-		HomeDir:    "",
-		Credential: scheduling.CredentialStandalone,
-		Status:     scheduling.StatusOnline,
-	})
-	if err := svc.PutSquad(scheduling.Squad{
-		Name:    "coord",
-		Role:    scheduling.RoleCoordinator,
-		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 1}},
-	}, 0); err != nil {
-		t.Fatalf("登记协调者小队: %v", err)
-	}
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		t.Skipf("无法读取当前用户主目录: %v", err)
-	}
-	wantHome := filepath.Clean(home)
-
-	resolver := coordinatorSessionRefResolver{server: env.srv, expandHomeDir: hostapi.ExpandHomePath}
-
-	// 1. 已上线载体 HomeDir 为空：成功恢复为主 HOME 绝对路径
-	ref, err := resolver.ResolveSessionRef("card-test", keysclient.SessionRef{})
-	if err != nil {
-		t.Fatalf("已上线空 HOME 载体 ResolveSessionRef 失败: %v", err)
-	}
-	if ref.HomeDir != wantHome {
-		t.Fatalf("ResolveSessionRef HomeDir = %q, want %q", ref.HomeDir, wantHome)
-	}
-
-	// 2. 小队中无 online 载体：失败
-	if _, err := svc.ApplyDetect("c1", scheduling.DetectEvidence{Reachable: false}, "offline"); err != nil {
-		t.Fatalf("设置载体 c1 offline: %v", err)
-	}
-	if _, err := resolver.ResolveSessionRef("card-test-offline", keysclient.SessionRef{}); err == nil {
-		t.Fatal("小队无 online 载体时 ResolveSessionRef 应失败，但返回成功")
 	}
 }

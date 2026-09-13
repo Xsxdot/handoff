@@ -28,7 +28,7 @@ func newEnvEnv(t *testing.T, mapping map[string]string, execs ...string) (*testA
 	for _, n := range execs {
 		ads[n] = &failStartAdapter{} // 只需要名字进注册表，本组用例不启动任何 executor
 	}
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(), Ads: ads, Cfg: env.srv.conf(),
 		EnvMapping: env.srv.EnvMapping, Gate: newTestGate(t), Log: discardLogger(),
 		LiveConfig: env.srv.Conf(),

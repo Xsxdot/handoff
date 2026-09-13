@@ -3,7 +3,7 @@
 // 信号路径不在单测里触发（给测试进程发 SIGTERM 会连带影响 go test 本身），
 // 覆盖的是同一条汇合逻辑的另一个入口：Trigger。两者在 Serve 里汇到同一个
 // select，测 Trigger 等于测通了那条路。
-package agentd
+package orchestration
 
 import (
 	"errors"

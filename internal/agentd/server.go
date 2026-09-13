@@ -153,8 +153,8 @@ type Server struct {
 	downloadFetch    func(context.Context, string, string) ([]byte, string, error)
 	downloadOpen     func(string) error
 	downloadPlatform func() (string, string)
-	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
-	pull *pullTracker
+	// pull 是自拉换版的并发锁与状态容器，NewServer 里 orchestration.NewPullTracker 构造（B233.26 归域编排包）
+	pull *orchestration.PullTracker
 	// pullBaseCtx 是后台自拉的基准上下文。
 	//
 	// **绝不能用 r.Context()**：handler 一返回它就被取消，下载会在受理后的
@@ -273,7 +273,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		startedAt:      time.Now(),
 		replayLimit:    eventReplayLimit,
 		liveLimit:      liveBufferLimit,
-		pull:           newPullTracker(),
+		pull:           orchestration.NewPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
 		ptyRootPath:    filepath.Join(cfg.DataDir, "ptys"),
 		latestFetch:    releaseClient.Latest,
@@ -310,6 +310,18 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	// 事件落库即派生一条 event 引用帧，让帧流能表达控制面事件的时序
 	s.registerEventFrameHook()
 	return s
+}
+
+// registerEventFrameHook 在装配期把事件帧钩子挂到 store 上。
+//
+// 为什么是一个注册点而不是改 20 个 AppendEvent 调用点：调用点散落在
+// manager.go / reconcile.go / watchdog.go，逐点补一行既啰嗦，又留下
+// 「以后新增调用点忘了补」的失效模式。钩子自动覆盖现有与未来的全部调用点。
+// B233.26：钩子本体 eventFrameHook 归域 orchestration（导出为 EventFrameHook），
+// 本装配方法留 gateway，改调编排包导出面。
+func (s *Server) registerEventFrameHook() {
+	s.st.SetEventHook(orchestration.EventFrameHook(s.conf().DataDir, s.log))
+	s.log.Info("事件帧钩子已注册", "datadir", s.conf().DataDir)
 }
 
 // coordinatorLock 返回一张卡的控制面串行锁。锁只覆盖控制段，不把不同卡的
@@ -1268,7 +1280,7 @@ func (l attachLocator) Locate(ref keysclient.SessionRef, workdir string) (keyscl
 	}
 	return keysclient.AttachInfo{
 		Machine: ref.Machine, Dir: workdir,
-		Command: fmt.Sprintf("HOME=%s %s --session %s", shellQuote(expandedHome), shellQuote(ref.CLI), shellQuote(ref.SessionID)),
+		Command: fmt.Sprintf("HOME=%s %s --session %s", orchestration.ShellQuote(expandedHome), orchestration.ShellQuote(ref.CLI), orchestration.ShellQuote(ref.SessionID)),
 	}, nil
 }
 

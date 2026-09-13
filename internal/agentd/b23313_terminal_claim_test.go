@@ -28,7 +28,7 @@ func TestB23313ConcurrentDoneClaimedOnce(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(),
 		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: env.srv.conf(),
 		Gate: newTestGate(t), Log: discardLogger(), LiveConfig: env.srv.Conf(),
@@ -83,7 +83,7 @@ func TestB23313ConcurrentDoneReleasesOnce(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(),
 		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: env.srv.conf(),
 		Gate: newTestGate(t), Log: discardLogger(), LiveConfig: env.srv.Conf(),
@@ -136,7 +136,7 @@ func TestB23313ConcurrentStopSecondIs409(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(),
 		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: env.srv.conf(),
 		Gate: newTestGate(t), Log: discardLogger(), LiveConfig: env.srv.Conf(),

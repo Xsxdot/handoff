@@ -1,14 +1,16 @@
-// coordinator_home.go —— 协调者隔离 HOME 的供给、规范化与 ref 解析。
+// coordinator_home.go —— 协调者隔离 HOME 的供给、规范化与 shell 单词引用
+// （B233.26 自 gateway 归域编排包；SessionRef resolver 因耦合 *Server 留 gateway，
+// 见 internal/agentd/coordinator_sessionref.go）。
 //
 // 职责：
 //   - 协调者无头 Launch/Resume 运行前按写入白名单供给隔离 HOME（config.yaml、AGENTS.md、skills/、缺失凭据）；
 //   - Launch/Wake 自动化入口将 carrier 登记 HomeDir 规范化为展开后的绝对路径；
-//   - attach 定位在 locator 消费 ref 前，由 resolver 补齐已上线载体的 HomeDir 并展开为绝对路径。
+//   - attach 定位的 shell 命令拼装提供安全引用（ShellQuote）。
 //
 // 边界：
 //   - 只服务协调者无头 Launch/Resume 与 attach ref，绝不被 WakeHome 调用；
 //   - 严禁整树同步或 RemoveAll，不触碰 .local/share/opencode 下除单个表内凭据外的其他文件（尤其 session db）。
-package agentd
+package orchestration
 
 import (
 	"context"
@@ -23,8 +25,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
-	"github.com/Xsxdot/handoff/internal/keystone"
-	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
@@ -272,9 +272,10 @@ func copyMissingCoordinatorCredential(mainHome, targetHome, cli string,
 	return nil
 }
 
-// normalizeCoordinatorSpec 将 SessionSpec.HomeDir 展开为绝对路径。
+// NormalizeCoordinatorSpec 将 SessionSpec.HomeDir 展开为绝对路径。
 // 空值视为主 HOME（~）展开；展开失败或非绝对路径返回包含原串的错误，防止字面 ~ 漏进 keystone。
-func normalizeCoordinatorSpec(spec keysclient.SessionSpec) (keysclient.SessionSpec, error) {
+// B233.26 导出：gateway 侧 scheddrain 的 Launch/Wake 入口仍在消费（归域后跨包调用）。
+func NormalizeCoordinatorSpec(spec keysclient.SessionSpec) (keysclient.SessionSpec, error) {
 	home := spec.HomeDir
 	if strings.TrimSpace(home) == "" {
 		home = "~"
@@ -288,77 +289,6 @@ func normalizeCoordinatorSpec(spec keysclient.SessionSpec) (keysclient.SessionSp
 	}
 	spec.HomeDir = expanded
 	return spec, nil
-}
-
-// coordinatorSessionRefResolver 实现 keystone.SessionRefResolver：
-// 在 ref 交给 TerminalLocator 之前，从已登记协调者小队已上线载体补齐空的 HomeDir，
-// 并确保展开为绝对路径。
-type coordinatorSessionRefResolver struct {
-	server        *Server
-	expandHomeDir func(string) (string, error)
-}
-
-// NewCoordinatorSessionRefResolver 构造 keystone 的 ref 解析缝（B233.18：类型与
-// 解析逻辑留在本包，构造上移 cmd 组装点，故导出本构造函数；返回
-// keystone.SessionRefResolver 使用方接口）。resolver 经 server 读编制域端口，
-// server 不可为 nil。
-func NewCoordinatorSessionRefResolver(server *Server,
-	expandHomeDir func(string) (string, error)) keystone.SessionRefResolver {
-	return coordinatorSessionRefResolver{server: server, expandHomeDir: expandHomeDir}
-}
-
-func (r coordinatorSessionRefResolver) ResolveSessionRef(card string, ref keysclient.SessionRef) (keysclient.SessionRef, error) {
-	if r.server == nil || r.server.scheduling == nil {
-		return ref, errors.New("协调者 attach 无编制域读取端口")
-	}
-	slog.Default().Info("协调者 SessionRef 解析开始", "card", card, "has_home", ref.HomeDir != "",
-		"has_session", ref.SessionID != "")
-	if ref.HomeDir == "" {
-		squad, err := r.server.resolveCoordinatorSquad()
-		if err != nil {
-			slog.Default().Error("读取协调者小队失败", "card", card, "cause", err)
-			return ref, fmt.Errorf("读取协调者小队以恢复卡 %s HOME: %w", card, err)
-		}
-		var found bool
-		for _, member := range squad.Members {
-			carrier, readErr := r.server.scheduling.Carrier(member.Carrier)
-			if readErr != nil {
-				slog.Default().Error("读取协调者载体失败", "card", card, "carrier", member.Carrier, "cause", readErr)
-				return ref, fmt.Errorf("读取协调者载体 %s HOME: %w", member.Carrier, readErr)
-			}
-			if carrier.Status != scheduling.StatusOnline {
-				continue
-			}
-			ref.HomeDir = carrier.HomeDir
-			if strings.TrimSpace(ref.HomeDir) == "" {
-				ref.HomeDir = "~"
-			}
-			found = true
-			break
-		}
-		if !found {
-			err := fmt.Errorf("协调者小队 %s 没有已上线载体可恢复 HOME", squad.Name)
-			slog.Default().Error("恢复协调者 HOME 失败", "card", card, "squad", squad.Name, "cause", err)
-			return ref, err
-		}
-	}
-	expand := r.expandHomeDir
-	if expand == nil {
-		expand = hostapi.ExpandHomePath
-	}
-	expanded, err := expand(ref.HomeDir)
-	if err != nil {
-		slog.Default().Error("展开协调者 attach HOME 失败", "card", card, "home_dir", ref.HomeDir, "cause", err)
-		return ref, fmt.Errorf("展开卡 %s 的协调者 attach HOME %q: %w", card, ref.HomeDir, err)
-	}
-	if !filepath.IsAbs(expanded) {
-		err := fmt.Errorf("卡 %s 的协调者 attach HOME 不是绝对路径: %q", card, expanded)
-		slog.Default().Error("协调者 attach HOME 非绝对路径", "card", card, "expanded", expanded, "cause", err)
-		return ref, err
-	}
-	ref.HomeDir = expanded
-	slog.Default().Info("协调者 SessionRef 解析成功", "card", card, "home_dir", ref.HomeDir)
-	return ref, nil
 }
 
 // isSafeShellWord 检查字符串是否由合法安全的 shell 字符组成：
@@ -378,9 +308,10 @@ func isSafeShellWord(s string) bool {
 	return true
 }
 
-// shellQuote 将字符串安全引用为 POSIX shell 单词：
+// ShellQuote 将字符串安全引用为 POSIX shell 单词：
 // 安全字符原样输出，其余字符用单引号包围并把内部 ' 转义为 '\”。
-func shellQuote(s string) string {
+// B233.26 导出：gateway 侧 attachLocator 拼装 attach 命令仍在消费（归域后跨包调用）。
+func ShellQuote(s string) string {
 	if isSafeShellWord(s) {
 		return s
 	}

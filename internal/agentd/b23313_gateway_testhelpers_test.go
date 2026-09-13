@@ -1,8 +1,9 @@
-// b23313_gateway_testhelpers_test.go —— B233.13 迁包后 gateway 白盒测试的通用夹具。
+// b23313_gateway_testhelpers_test.go —— gateway 白盒测试的通用夹具。
 //
-// 职责：为仍留在 package agentd 的出站/门面白盒测试提供构造真实编排实现的助手
-// （经 ManagerFactory，见 b23313_managerfactory_test.go），以及从编排测试迁出的
-// 通用 adapter/断言助手在本包的等价副本（两包各自独立，不跨测试包 import）。
+// 职责：为 package agentd 的出站/门面白盒测试提供构造真实编排实现的助手
+// （B233.26 刀2：ManagerFactory 桥随 D1 反转退役，本包直连 orchestration.NewManager，
+// 装配语义与 cmd 组装点同口径），以及从编排测试迁出的通用 adapter/断言助手在本包的
+// 等价副本（两包各自独立，不跨测试包 import）。
 //
 // 边界：只做夹具，不含被迁移的 Manager 行为断言（那些在 internal/orchestration）。
 package agentd
@@ -225,17 +226,37 @@ func (a *failStartAdapter) RespondPermission(context.Context, string, string, st
 }
 func (a *failStartAdapter) Stop(string) error { return nil }
 
-// newManagerForTest 经 ManagerFactory 组装真实编排实现；未接线即 Fatal。
-func newManagerForTest(t *testing.T, d ManagerDeps) TestManager {
-	t.Helper()
-	if ManagerFactory == nil {
-		t.Fatal("ManagerFactory 未接线（应由 package agentd_test 的 init 设置）")
-	}
-	return ManagerFactory(d)
+// testManagerDeps 是 gateway 测试构造编排实现的参数束（与 cmd 组装点同口径）。
+// B233.26 刀2 桥退役后只剩这把纯参数束：没有工厂变量、没有接口间接、没有跨测试包接线。
+type testManagerDeps struct {
+	Store      *store.Store
+	Hub        *orchestration.Hub
+	Ads        map[string]executor.Adapter
+	Cfg        *config.Config
+	EnvMapping func() map[string]string
+	Gate       *permgate.Gate
+	Log        *slog.Logger
+	// LiveConfig 非 nil 时作为活配置取值函数注入（等价 cmd 的 SetLiveConfig(srv.Conf())）。
+	LiveConfig func() *config.Config
 }
 
-// newTestManager 经 ManagerFactory 组装真实编排实现（真实 store + hub + 可控事件通道）。
-func newTestManager(t *testing.T) (TestManager, *store.Store, *orchestration.Hub, *chanAdapter) {
+// newManagerForTest 直接构造真实编排实现（NewManager + SetWorkspace + SetLiveConfig，
+// 与 b23313_managerfactory_wire_test.go 退役前的工厂体逐语义一致）。
+func newManagerForTest(t *testing.T, d testManagerDeps) *orchestration.Manager {
+	t.Helper()
+	m := orchestration.NewManager(d.Store, d.Hub, d.Ads, d.Cfg, d.EnvMapping, nil, d.Gate, d.Log)
+	m.SetWorkspace(workspace.NewCapability())
+	live := d.LiveConfig
+	if live == nil {
+		cfg := d.Cfg
+		live = func() *config.Config { return cfg }
+	}
+	m.SetLiveConfig(live)
+	return m
+}
+
+// newTestManager 组装真实编排实现（真实 store + hub + 可控事件通道）。
+func newTestManager(t *testing.T) (*orchestration.Manager, *store.Store, *orchestration.Hub, *chanAdapter) {
 	t.Helper()
 	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
 	m, st, hub := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
@@ -243,14 +264,14 @@ func newTestManager(t *testing.T) (TestManager, *store.Store, *orchestration.Hub
 }
 
 // newTestManagerWithAds 组装带 adapter 注册表的真实编排实现。
-func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (TestManager, *store.Store, *orchestration.Hub) {
+func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (*orchestration.Manager, *store.Store, *orchestration.Hub) {
 	t.Helper()
 	return newTestManagerWithApprover(t, ads, defaultName, nil)
 }
 
 // newTestManagerWithApprover 组装真实编排实现；approver 参数保留兼容签名（本包不需
 // 审批者，传 nil）。
-func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, _ any) (TestManager, *store.Store, *orchestration.Hub) {
+func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, _ any) (*orchestration.Manager, *store.Store, *orchestration.Hub) {
 	t.Helper()
 	for name, ad := range ads {
 		if named, ok := ad.(interface{ setProviderName(string) }); ok {
@@ -265,10 +286,7 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 	hub := orchestration.NewHub()
 	logger := discardLogger()
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
-	if ManagerFactory == nil {
-		t.Fatal("ManagerFactory 未接线（应由 package agentd_test 的 init 设置）")
-	}
-	m := ManagerFactory(ManagerDeps{
+	m := newManagerForTest(t, testManagerDeps{
 		Store: st, Hub: hub, Ads: ads, Cfg: cfg,
 		Gate: newTestGate(t), Log: logger,
 		LiveConfig: func() *config.Config { return cfg },
@@ -283,9 +301,9 @@ func testManagerCfg(t *testing.T) *config.Config {
 }
 
 // newManagerForServer 用测试 env 的 store/hub/活配置组装真实编排实现并挂到 srv。
-func newManagerForServer(t *testing.T, srv *Server, ads map[string]executor.Adapter) TestManager {
+func newManagerForServer(t *testing.T, srv *Server, ads map[string]executor.Adapter) *orchestration.Manager {
 	t.Helper()
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: srv.st, Hub: srv.Hub(), Ads: ads, Cfg: srv.conf(),
 		EnvMapping: srv.EnvMapping, Gate: newTestGate(t), Log: discardLogger(),
 		LiveConfig: srv.Conf(),
@@ -296,7 +314,7 @@ func newManagerForServer(t *testing.T, srv *Server, ads map[string]executor.Adap
 
 // newTestManagerWithCfg 同 newTestManagerWithApprover，但用调用方给定的 cfg
 // （活配置闭包返回同一指针，调用方可在构造后改字段，Manager 立即可见）。
-func newTestManagerWithCfg(t *testing.T, ads map[string]executor.Adapter, cfg *config.Config) (TestManager, *store.Store, *orchestration.Hub) {
+func newTestManagerWithCfg(t *testing.T, ads map[string]executor.Adapter, cfg *config.Config) (*orchestration.Manager, *store.Store, *orchestration.Hub) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
@@ -304,7 +322,7 @@ func newTestManagerWithCfg(t *testing.T, ads map[string]executor.Adapter, cfg *c
 	}
 	t.Cleanup(func() { st.Close() })
 	hub := orchestration.NewHub()
-	m := newManagerForTest(t, ManagerDeps{
+	m := newManagerForTest(t, testManagerDeps{
 		Store: st, Hub: hub, Ads: ads, Cfg: cfg,
 		Gate: newTestGate(t), Log: discardLogger(),
 		LiveConfig: func() *config.Config { return cfg },
@@ -321,7 +339,7 @@ func mustCreateTask(t *testing.T, st *store.Store, task *proto.Task) {
 }
 
 // registerTestProject 把 repo 登记成项目位置，返回 project_id。
-func registerTestProject(t *testing.T, m TestManager, repo string) string {
+func registerTestProject(t *testing.T, m *orchestration.Manager, repo string) string {
 	t.Helper()
 	origin := "git@handoff.test:" + replaceSlashes(repo) + ".git"
 	gitAt(t, repo, "remote", "add", "origin", origin)
@@ -333,7 +351,7 @@ func registerTestProject(t *testing.T, m TestManager, repo string) string {
 }
 
 // mustDone 归档任务，失败即 Fatal。
-func mustDone(t *testing.T, m TestManager, taskID, note string) {
+func mustDone(t *testing.T, m *orchestration.Manager, taskID, note string) {
 	t.Helper()
 	if _, err := m.Done(context.Background(), taskID, note); err != nil {
 		t.Fatalf("Done: %v", err)
@@ -369,7 +387,7 @@ func waitTaskState(t *testing.T, st *store.Store, taskID string, want proto.Task
 }
 
 // newTestServerWithManager 组装共享 store/hub 的白盒 server+真实编排实现。
-func newTestServerWithManager(t *testing.T) (*Server, TestManager, *store.Store) {
+func newTestServerWithManager(t *testing.T) (*Server, *orchestration.Manager, *store.Store) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
@@ -379,10 +397,7 @@ func newTestServerWithManager(t *testing.T) (*Server, TestManager, *store.Store)
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	logger := discardLogger()
 	srv := NewServer(cfg, st, logger)
-	if ManagerFactory == nil {
-		t.Fatal("ManagerFactory 未接线（应由 package agentd_test 的 init 设置）")
-	}
-	mgr := ManagerFactory(ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: st, Hub: srv.Hub(), Ads: nil, Cfg: cfg,
 		Gate: newTestGate(t), Log: logger,
 		LiveConfig: srv.Conf(),

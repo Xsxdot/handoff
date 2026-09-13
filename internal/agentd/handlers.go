@@ -54,7 +54,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if resp.Update != nil {
 		yes := true
 		resp.Update.Pull = &yes
-		resp.Update.PullState = s.pull.snapshot()
+		resp.Update.PullState = s.pull.Snapshot()
 	}
 	ptyOK := s.pty.Supported()
 	resp.PtySupported = &ptyOK

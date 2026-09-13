@@ -15,6 +15,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
@@ -270,7 +271,7 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
 		Workdir: s.resolveCoordWorkdir(card),
 	}
-	normalized, err := normalizeCoordinatorSpec(spec)
+	normalized, err := orchestration.NormalizeCoordinatorSpec(spec)
 	if err != nil {
 		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
@@ -339,7 +340,7 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
 		Workdir: s.resolveCoordWorkdir(card),
 	}
-	normalized, err := normalizeCoordinatorSpec(spec)
+	normalized, err := orchestration.NormalizeCoordinatorSpec(spec)
 	if err != nil {
 		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)

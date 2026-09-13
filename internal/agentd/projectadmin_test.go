@@ -352,7 +352,7 @@ func newPatchTestEnv(t *testing.T) *testAgentdEnv {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: testToken}
 	env := newTestAgentdEnvWithCfg(t, cfg, logger)
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(),
 		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg,
 		EnvMapping: env.srv.EnvMapping, Gate: newTestGate(t), Log: logger,
