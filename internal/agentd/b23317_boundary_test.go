@@ -184,12 +184,23 @@ type b23317FrozenContract struct {
 }
 
 var b23317FrozenContracts = []b23317FrozenContract{
-	{From: "d_gateway", To: "d_orchestration", Budget: 0, Interfaces: []string{"OrchestrationClient"}},
+	// B233.25 冻结值 0→83 依据：B233.23 重扫把 gateway 任务读面（handlers/watchdog/
+	// b23319 适配器/authroutes/workbench_api/roomsapi/projectadmin/auth/taskroute）
+	// 直读编排域 store.Store（77）与实体/包级函数（6）的既存缝如实记入预算
+	// （spec plan 第 2 步明文「消不掉的把 target.json 预算棘轮到重扫实况并写 note」，
+	// 落地于 commit 89a4660f3，note 见 codegraph/target.json 该方向 legacyBudgetNote）；
+	// 收窄（经 OrchestrationClient 或查询门面）归后续卡。棘轮语义不变：超过 83 仍红。
+	{From: "d_gateway", To: "d_orchestration", Budget: 83, Interfaces: []string{"OrchestrationClient"}},
 	{From: "d_cli", To: "d_workspace", Budget: 0},
 	{From: "d_gateway", To: "d_workspace", Budget: 0},
 	{From: "d_orchestration", To: "d_workspace", Budget: 0},
-	{From: "d_workspace", To: "d_orchestration", Budget: 0},
 	{From: "d_workspace", To: "d_protocol", Budget: 0},
+	// B233.25 移除 d_workspace→d_orchestration（原冻结 0）：B233.23 重扫后该方向
+	// 在 target.json 不再有条目——B233.13/B233.19 把 workspace 对编排的引用经
+	// PreviewStore/ProjectTreeSource/RemoteTaskSource 反转为 d_workspace→d_gateway
+	// 后，internal/workspace 生产代码对 internal/orchestration 零 import
+	// （go list ./internal/workspace/... 实证），零引用方向重扫不发射条目。
+	// 该方向已消亡，棘轮 vacuous；若未来重扫再发射此方向，须先补冻结值再收口。
 }
 
 // TestB23317FacadeBudgetsStayRatchet 断言六条有门面方向的 legacyBudget 不高于
