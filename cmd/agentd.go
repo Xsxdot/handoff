@@ -184,8 +184,11 @@ var agentdCmd = &cobra.Command{
 
 		srv := agentd.NewServer(cfg, st, logger)
 		srv.SetConfigPath(p)
-		previewHub := agentd.NewPreviewHub(logger)
-		previewOwner := agentd.NewPreviewOwner(st, previewHub, agentd.PreviewOwnerDeps{}, logger)
+		previewHub := workspace.NewPreviewHub(logger)
+		// B233.19：owner truth 在 internal/workspace；静态 HTTP 服务（gateway 面）
+		// 与本机 store 行适配器由本组装点注入。
+		previewOwner := workspace.NewPreviewOwner(agentd.NewPreviewStore(st), previewHub,
+			workspace.PreviewOwnerDeps{Static: agentd.NewPreviewStaticServer(logger)}, logger)
 		previewMirror := agentd.NewPreviewMirror(srv.Pool(), previewOwner, previewHub, srv.IsSelfTarget, logger)
 		previewOpener := agentd.NewPreviewOpenService(previewOwner, previewMirror, srv.Pool(), nil, logger)
 		srv.SetPreviewOwner(previewOwner)
@@ -276,7 +279,7 @@ var agentdCmd = &cobra.Command{
 
 		// 恒启动：镜像的机器清单现在来自活快照，启动时没有机器不代表以后没有。
 		// 留着 len>0 的闸会让控制台新增的第一台机器永远等不到镜像。
-		mirror := agentd.NewMirror(srv.Pool(), st, srv.Hub(), srv.IsSelfTarget, logger)
+		mirror := workspace.NewMirror(agentd.NewMirrorTaskSource(srv.Pool()), st, srv.Hub(), srv.IsSelfTarget, logger)
 		go mirror.Run(wdCtx)
 		logger.Info("事件镜像已启动", "targets", len(srv.Pool().Names()), "tick", "30s",
 			"note", "运行期新增的机器无需重启")

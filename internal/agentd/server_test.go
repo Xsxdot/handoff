@@ -946,7 +946,7 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 	repo := newTestRepo(t)
 	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
 	runGit(t, repo, "remote", "add", "origin", origin)
-	loc, rerr := mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, rerr := mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if rerr != nil {
 		t.Fatalf("RegisterProject: %v", rerr)
 	}

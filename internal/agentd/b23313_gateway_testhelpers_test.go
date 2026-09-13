@@ -22,6 +22,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // looseTempDir 建一个测试用临时目录，收尾时尽力删除、删不掉也不判用例失败。
@@ -323,7 +324,7 @@ func registerTestProject(t *testing.T, m TestManager, repo string) string {
 	t.Helper()
 	origin := "git@handoff.test:" + replaceSlashes(repo) + ".git"
 	gitAt(t, repo, "remote", "add", "origin", origin)
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("registerTestProject(%s): %v", repo, err)
 	}

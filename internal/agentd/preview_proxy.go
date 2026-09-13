@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // PreviewRawDial is the target-scoped upstream connection seam.
@@ -41,7 +43,7 @@ type PreviewAllowlist struct {
 // ParsePreviewAllowlist accepts only IP, CIDR, or normalized domain entries.
 // Empty input still permits the three loopback spellings and localhost.
 func ParsePreviewAllowlist(via []string) (PreviewAllowlist, error) {
-	if err := validatePreviewViaSyntax(via); err != nil {
+	if err := workspace.ValidatePreviewViaSyntax(via); err != nil {
 		return PreviewAllowlist{}, err
 	}
 	allow := PreviewAllowlist{loopback: true, domains: make(map[string]struct{})}

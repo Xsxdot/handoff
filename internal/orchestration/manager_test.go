@@ -279,7 +279,7 @@ func registerTestProject(t *testing.T, m *Manager, repo string) string {
 	// origin 由路径派生：每个用例的临时仓库各不相同，project_id 因此天然不撞。
 	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
 	gitAt(t, repo, "remote", "add", "origin", origin)
-	loc, err := m.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("registerTestProject(%s): %v", repo, err)
 	}
@@ -1696,7 +1696,7 @@ func TestDispatchExplicitBaseWinsOverBaseline(t *testing.T) {
 func TestDispatchCardEmptyBaseStartsAtOriginDefaultTip(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	origin, clone := newOriginAndClone(t)
-	loc, err := m.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: clone})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: clone})
 	if err != nil {
 		t.Fatalf("登记项目: %v", err)
 	}

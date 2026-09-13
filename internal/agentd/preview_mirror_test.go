@@ -16,6 +16,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 type previewListStub struct {
@@ -49,8 +50,8 @@ func TestPreviewMirrorListAndEvents(t *testing.T) {
 		t.Fatalf("open local store: %v", err)
 	}
 	t.Cleanup(func() { _ = localStore.Close() })
-	localHub := NewPreviewHub(slog.New(slog.NewTextHandler(io.Discard, nil)))
-	localOwner := NewPreviewOwner(localStore, localHub, PreviewOwnerDeps{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	localHub := workspace.NewPreviewHub(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	localOwner := workspace.NewPreviewOwner(NewPreviewStore(localStore), localHub, workspace.PreviewOwnerDeps{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	cfg := &config.Config{Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}}}
 	pool := targetclient.NewPool(func() *config.Config { return cfg }, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	defer pool.Close()
@@ -146,7 +147,7 @@ func TestPreviewMirrorStopExitsRunAndPreventsRestart(t *testing.T) {
 }
 
 func TestPreviewMirrorListConvergencePublishesClosedForDroppedSession(t *testing.T) {
-	hub := NewPreviewHub(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	hub := workspace.NewPreviewHub(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	mirror := NewPreviewMirror(nil, nil, hub, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	session := proto.PreviewSession{ID: "preview-dropped", EntryURL: "http://localhost:5173", Machine: "devbox"}
 	mirror.mu.Lock()

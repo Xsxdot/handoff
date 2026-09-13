@@ -42,7 +42,7 @@ func TestRegisterProjectExisting(t *testing.T) {
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
 
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("RegisterProject: %v", err)
 	}
@@ -66,7 +66,7 @@ func TestRegisterProjectMergesWorktree(t *testing.T) {
 	wt := filepath.Join(t.TempDir(), "wt")
 	gitAt(t, main, "worktree", "add", "-b", "feat/x", wt)
 
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: wt})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: wt})
 	if err != nil {
 		t.Fatalf("RegisterProject(worktree): %v", err)
 	}
@@ -83,9 +83,9 @@ func TestRegisterProjectRejectsOriginMismatch(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	repo := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/tk.git")
 
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: repo})
-	if !errors.Is(err, ErrProjectOriginMismatch) {
+	if !errors.Is(err, workspace.ErrProjectOriginMismatch) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrProjectOriginMismatch)", err)
 	}
 	for _, want := range []string{"tk", "handoff"} {
@@ -100,7 +100,7 @@ func TestRegisterProjectRejectsOriginMismatch(t *testing.T) {
 func TestRegisterProjectRejectsNoOrigin(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	repo := initGitRepo(t) // 刻意不加 origin
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: repo})
 	if !errors.Is(err, ErrRepoUnusable) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrRepoUnusable)", err)
@@ -112,12 +112,12 @@ func TestRegisterProjectDuplicateProject(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	first := initGitRepoWithOrigin(t, origin)
-	if _, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: first}); err != nil {
+	if _, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: first}); err != nil {
 		t.Fatalf("首次登记: %v", err)
 	}
 	second := initGitRepoWithOrigin(t, origin)
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: second})
-	if !errors.Is(err, ErrProjectAlreadyExists) {
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: second})
+	if !errors.Is(err, workspace.ErrProjectAlreadyExists) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrProjectAlreadyExists)", err)
 	}
 	if !strings.Contains(err.Error(), first) {
@@ -132,19 +132,19 @@ func TestRegisterProjectIdempotentSamePath(t *testing.T) {
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
 
-	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	first, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("首次登记: %v", err)
 	}
-	second, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	second, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("同一项目同一路径重复登记应幂等成功，got %v", err)
 	}
 	if second.ProjectID != first.ProjectID || second.Name != first.Name || second.Path != first.Path {
 		t.Fatalf("幂等返回应与首次登记一致:\n first=%+v\nsecond=%+v", first, second)
 	}
-	if second.Status != ProjectStatusOK {
-		t.Fatalf("幂等返回的 Status 应为 %q，got %q", ProjectStatusOK, second.Status)
+	if second.Status != workspace.ProjectStatusOK {
+		t.Fatalf("幂等返回的 Status 应为 %q，got %q", workspace.ProjectStatusOK, second.Status)
 	}
 	locs, err := st.ListProjectLocations()
 	if err != nil {
@@ -161,14 +161,14 @@ func TestRegisterProjectIdempotentLinkedWorktree(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, nil, "fake")
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	main := initGitRepoWithOrigin(t, origin)
-	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: main})
+	first, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: main})
 	if err != nil {
 		t.Fatalf("登记主仓: %v", err)
 	}
 	wt := filepath.Join(t.TempDir(), "wt")
 	gitAt(t, main, "worktree", "add", "-b", "feat/x", wt)
 
-	second, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: wt})
+	second, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: wt})
 	if err != nil {
 		t.Fatalf("linked worktree 路径重复登记应幂等成功，got %v", err)
 	}
@@ -192,14 +192,14 @@ func TestRegisterProjectIdempotentCloneForm(t *testing.T) {
 	m, st, _ := newTestManagerWithCfg(t, nil, cfg)
 	const origin = "/nonexistent/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
-	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	first, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("登记已有目录: %v", err)
 	}
 	root := filepath.Join(t.TempDir(), "repos")
 	cfg.RepoRoot = root
 
-	second, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin})
+	second, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin})
 	if err != nil {
 		t.Fatalf("无 path 的重复登记应幂等成功（不应触发 clone），got %v", err)
 	}
@@ -223,12 +223,12 @@ func TestRegisterProjectIdempotentCloneForm(t *testing.T) {
 func TestRegisterProjectNameCollisionFallsBack(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	a := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/handoff.git")
-	if _, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	if _, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: a}); err != nil {
 		t.Fatalf("首次登记: %v", err)
 	}
 	b := initGitRepoWithOrigin(t, "git@github.com:other/handoff.git")
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: "git@github.com:other/handoff.git", Path: b})
 	if err != nil {
 		t.Fatalf("同名不同项目登记: %v", err)
@@ -247,7 +247,7 @@ func TestRegisterProjectClonesWhenNoPath(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "repos")
 	cfg.RepoRoot = root
 
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: src, Name: "src"})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: src, Name: "src"})
 	if err != nil {
 		t.Fatalf("RegisterProject(clone): %v", err)
 	}
@@ -274,7 +274,7 @@ func TestRegisterProjectClaimExistingDest(t *testing.T) {
 	repo := initGitRepoIn(t, dest)
 	gitAt(t, repo, "remote", "add", "origin", origin)
 
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin})
 	if err != nil {
 		t.Fatalf("落点已存在且是本项目时应认领成功，got %v", err)
 	}
@@ -311,8 +311,8 @@ func TestRegisterProjectClaimRejectsNonRepoDest(t *testing.T) {
 		t.Fatalf("写占位文件: %v", err)
 	}
 
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin})
-	if !errors.Is(err, ErrProjectAlreadyExists) {
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin})
+	if !errors.Is(err, workspace.ErrProjectAlreadyExists) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrProjectAlreadyExists)", err)
 	}
 	if !strings.Contains(err.Error(), dest) {
@@ -333,9 +333,9 @@ func TestRegisterProjectClaimRejectsForeignRepoDest(t *testing.T) {
 	repo := initGitRepoIn(t, dest)
 	gitAt(t, repo, "remote", "add", "origin", "git@github.com:Xsxdot/tk.git")
 
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: "git@github.com:Xsxdot/handoff.git"})
-	if !errors.Is(err, ErrProjectAlreadyExists) {
+	if !errors.Is(err, workspace.ErrProjectAlreadyExists) {
 		t.Fatalf("err = %v, want errors.Is(..., ErrProjectAlreadyExists)", err)
 	}
 	for _, want := range []string{"tk", "handoff"} {
@@ -405,7 +405,7 @@ func TestProjectPatchRenames(t *testing.T) {
 	env := newPatchTestEnv(t)
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
-	if _, err := env.mgr.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
+	if _, err := env.mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
 		t.Fatalf("登记: %v", err)
 	}
 	var loc proto.ProjectLocation
@@ -426,7 +426,7 @@ func TestProjectPatchChangesPath(t *testing.T) {
 	env := newPatchTestEnv(t)
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
-	if _, err := env.mgr.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
+	if _, err := env.mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
 		t.Fatalf("登记: %v", err)
 	}
 	repo2 := initGitRepoWithOrigin(t, origin)
@@ -453,7 +453,7 @@ func TestProjectPatchRejectsDifferentOrigin(t *testing.T) {
 	env := newPatchTestEnv(t)
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
-	if _, err := env.mgr.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
+	if _, err := env.mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
 		t.Fatalf("登记: %v", err)
 	}
 	tk := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/tk.git")
@@ -472,11 +472,11 @@ func TestProjectPatchDuplicateName(t *testing.T) {
 	env := newPatchTestEnv(t)
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
-	if _, err := env.mgr.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
+	if _, err := env.mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
 		t.Fatalf("登记 handoff: %v", err)
 	}
 	tk := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/tk.git")
-	if _, err := env.mgr.RegisterProject(context.Background(), RegisterProjectReq{
+	if _, err := env.mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: "git@github.com:Xsxdot/tk.git", Name: "other", Path: tk}); err != nil {
 		t.Fatalf("登记 other: %v", err)
 	}
@@ -492,7 +492,7 @@ func TestProjectPatchEmptyBody(t *testing.T) {
 	env := newPatchTestEnv(t)
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
-	if _, err := env.mgr.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
+	if _, err := env.mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo}); err != nil {
 		t.Fatalf("登记: %v", err)
 	}
 	patchJSON(t, env, "/api/projects/handoff", `{}`, http.StatusBadRequest, nil)
@@ -513,7 +513,7 @@ func TestUnregisterProjectRejectsBusy(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, nil, "fake")
 	const origin = "git@github.com:Xsxdot/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("登记: %v", err)
 	}
@@ -530,7 +530,7 @@ func TestRegisterProjectExistingInfersOrigin(t *testing.T) {
 	const origin = "git@github.com:xushixin/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
 
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{Path: repo})
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{Path: repo})
 	if err != nil {
 		t.Fatalf("RegisterProject(无 origin): %v", err)
 	}
@@ -549,7 +549,7 @@ func TestRegisterProjectExistingInfersOrigin(t *testing.T) {
 // 无法确定身份与落点。
 func TestRegisterProjectRejectsEmptyOriginAndEmptyPath(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{})
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{})
 	if !errors.Is(err, ErrBadDispatchRequest) {
 		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
 	}
@@ -564,7 +564,7 @@ func TestRegisterProjectClonesToExplicitPath(t *testing.T) {
 	// 父目录 workdir 也不存在，验证实现会 MkdirAll。
 	dest := filepath.Join(t.TempDir(), "workdir", "my-handoff")
 
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src,
 		Name:      "my-handoff",
 		Path:      dest,
@@ -591,7 +591,7 @@ func TestRegisterProjectClonesToExplicitPath(t *testing.T) {
 func TestRegisterProjectMissingPathRequiresOrigin(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	dest := filepath.Join(t.TempDir(), "nope")
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{Path: dest})
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{Path: dest})
 	if !errors.Is(err, ErrBadDispatchRequest) {
 		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
 	}
@@ -607,7 +607,7 @@ func TestRegisterProjectRejectsRelativePath(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	src := initGitRepo(t)
 
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src, Name: "relproj", Path: "workdir/relproj",
 	})
 	if !errors.Is(err, ErrBadDispatchRequest) {
@@ -624,7 +624,7 @@ func TestRegisterProjectRejectsTildePath(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	src := initGitRepo(t)
 
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src, Name: "tildeproj", Path: "~/code/tildeproj",
 	})
 	if !errors.Is(err, ErrBadDispatchRequest) {
@@ -642,7 +642,7 @@ func TestRegisterProjectNormalizesDirtyAbsPath(t *testing.T) {
 	const origin = "git@github.com:xushixin/handoff.git"
 	repo := initGitRepoWithOrigin(t, origin)
 
-	loc, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	loc, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		Path: filepath.Join(repo, "sub", ".."),
 	})
 	if err != nil {
@@ -660,7 +660,7 @@ func TestRegisterProjectCloneToPathRejectsDifferentLocation(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	src := initGitRepo(t)
 
-	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	first, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src, Name: "proj-a", Path: filepath.Join(t.TempDir(), "first"),
 	})
 	if err != nil {
@@ -668,10 +668,10 @@ func TestRegisterProjectCloneToPathRejectsDifferentLocation(t *testing.T) {
 	}
 
 	other := filepath.Join(t.TempDir(), "second")
-	_, err = m.RegisterProject(context.Background(), RegisterProjectReq{
+	_, err = m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src, Name: "proj-a", Path: other,
 	})
-	if !errors.Is(err, ErrProjectAlreadyExists) {
+	if !errors.Is(err, workspace.ErrProjectAlreadyExists) {
 		t.Fatalf("err = %v, want ErrProjectAlreadyExists", err)
 	}
 	if !strings.Contains(err.Error(), first.Path) {
@@ -690,7 +690,7 @@ func TestRegisterProjectCloneToPathIdempotentSameLocation(t *testing.T) {
 	src := initGitRepo(t)
 	dest := filepath.Join(t.TempDir(), "proj")
 
-	first, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	first, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src, Name: "proj-a", Path: dest,
 	})
 	if err != nil {
@@ -700,7 +700,7 @@ func TestRegisterProjectCloneToPathIdempotentSameLocation(t *testing.T) {
 		t.Fatalf("清掉磁盘上的克隆: %v", err)
 	}
 
-	again, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	again, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src, Name: "proj-a", Path: dest,
 	})
 	if err != nil {
@@ -724,7 +724,7 @@ func TestCloneToPathCleansUpOnFailure(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	_, err := m.RegisterProject(context.Background(), RegisterProjectReq{
+	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: bogus, Name: "proj", Path: filepath.Join(base, "a", "b", "proj"),
 	})
 	if !errors.Is(err, ErrRepoUnusable) {
@@ -1079,12 +1079,12 @@ func TestProjectNameFromURLHandlesWindowsSeparators(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := ProjectNameFromURL(c.in)
+			got := workspace.ProjectNameFromURL(c.in)
 			if got != c.want {
 				t.Fatalf("ProjectNameFromURL(%q) = %q，期望 %q", c.in, got, c.want)
 			}
 			// 派生名必须能过校验，否则自动登记依然会失败
-			if err := ValidateProjectName(got); err != nil {
+			if err := workspace.ValidateProjectName(got); err != nil {
 				t.Fatalf("派生名 %q 未通过 ValidateProjectName: %v", got, err)
 			}
 		})

@@ -17,6 +17,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 type coordinatorLiveTab struct {
@@ -136,7 +137,7 @@ func (s *Server) remoteCoordWorkdir(machine, card string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("列机器 %s 项目: %w", machine, err)
 	}
-	loc, err := resolveProject("", row.Project, locs)
+	loc, err := workspace.ResolveProject("", row.Project, locs)
 	if err != nil {
 		return "", err
 	}

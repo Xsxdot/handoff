@@ -54,7 +54,7 @@ type OrchestrationClient interface {
 	GC(ctx context.Context, force, execute bool) (*proto.GCResp, error)
 
 	// —— 项目位置 ——
-	RegisterProject(ctx context.Context, req RegisterProjectReq) (proto.ProjectLocation, error)
+	RegisterProject(ctx context.Context, req workspace.RegisterProjectReq) (proto.ProjectLocation, error)
 	ListProjects(ctx context.Context) ([]proto.ProjectLocation, error)
 	UnregisterProject(ctx context.Context, name string) error
 

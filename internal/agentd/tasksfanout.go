@@ -33,7 +33,7 @@ func (s *Server) tasksAll(ctx context.Context) proto.TasksResp {
 	idx := s.projectIndex()
 	views := make([]proto.TaskView, 0, len(tasks))
 	for _, t := range tasks {
-		t.ProjectID = idx.projectIDOf(t.RepoPath) // 读时 join，不落库
+		t.ProjectID = idx.ProjectIDOf(t.RepoPath) // 读时 join，不落库
 		views = append(views, proto.TaskView{Task: t, Watchers: s.hub.Watchers(t.ID)})
 	}
 

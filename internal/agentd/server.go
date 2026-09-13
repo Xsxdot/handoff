@@ -57,6 +57,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/webui"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/coder/websocket"
 )
 
@@ -220,7 +221,7 @@ type Server struct {
 	// 靠注入必然漏，而漏掉的表现是运行时空指针。池的构造零成本（不发请求），
 	// 自建没有代价。
 	pool          *targetclient.Pool
-	previewOwner  *PreviewOwner
+	previewOwner  *workspace.PreviewOwner
 	previewOpener PreviewOpener
 	previewMirror *PreviewMirror
 	// cardStepMu / cardStepFlight 守「同一张卡同时只允许一个环节在飞」。
@@ -476,7 +477,7 @@ func (s *Server) SetConfigPath(p string) { s.cfgPath = p }
 func (s *Server) Pool() *targetclient.Pool { return s.pool }
 
 // SetPreviewOwner injects the owner-side preview authority before serving HTTP.
-func (s *Server) SetPreviewOwner(owner *PreviewOwner) { s.previewOwner = owner }
+func (s *Server) SetPreviewOwner(owner *workspace.PreviewOwner) { s.previewOwner = owner }
 
 // SetPreviewOpener injects the explicit local desktop open boundary.
 func (s *Server) SetPreviewOpener(opener PreviewOpener) { s.previewOpener = opener }

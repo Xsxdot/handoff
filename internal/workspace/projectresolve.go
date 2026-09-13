@@ -2,19 +2,23 @@
 // 「executor 应该在本机的哪个目录工作」。
 //
 // 职责：
-//   - resolveProject：按 project_id / project_name 在位置表里查出那一行
+//   - ResolveProject：按 project_id / project_name 在位置表里查出那一行
 //   - locationLines：把位置表压成人可读的清单，供拒绝报文使用
 //
 // 边界：
 //   - 不碰数据库：位置行由调用方查好后以切片传入
 //   - 不碰 git、不碰文件系统：路径是否真的可用由 EnsureRepoUsable 另行判定
-//   - 不碰 HTTP：错误只用哨兵表达，状态码映射在 server.go
+//   - 不碰 HTTP：错误只用哨兵表达，状态码映射在 gateway（agentd）侧
 //   - **不接受任何路径入参**：调用方描述「代码在这台机器的哪个目录」正是 B62
 //     要根除的漏洞（spec §1.2）。路径由本机查表得出，别人不许指定
 //
 // 为什么单独成文件且刻意保持纯净：这段规则是 dispatch 的必经之路，一旦错了
 // 就会把任务派到错误的项目上。纯函数才能表驱动穷举。
-package agentd
+//
+// B233.19：自 internal/agentd/projectresolve.go 整文件迁入（best.json：
+// k_agentd_projectIndex → d_workspace）；ErrBadDispatchRequest 哨兵随迁，
+// gateway 侧保留同名别名指向本包。
+package workspace
 
 import (
 	"errors"
@@ -24,9 +28,17 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
+// ErrBadDispatchRequest 表示 dispatch 请求参数非法。
+//
+// B233.19 随 ResolveProject / ValidateProjectName 自 agentd 迁入：这两个迁出
+// 函数的错误链都要包它，而 workspace 不得反向 import agentd，因此哨兵正身
+// 落在本包。gateway（agentd.ErrBadDispatchRequest）与编排包持有的是本值的
+// 别名，errors.Is 与文案逐字节不变。
+var ErrBadDispatchRequest = errors.New("dispatch 请求参数非法")
+
 // ErrProjectNotRegistered 表示派发请求指向的项目在本机没有位置。
 //
-// 映射为 400（调用方先解决请求本身的问题），见 server.go 的 writeDispatchError。
+// 映射为 400（调用方先解决请求本身的问题），见 gateway 的 writeDispatchError。
 // 本机 CLI 收到它会触发自动登记后重发（spec §6.2）——因此报文既要给人看，
 // 也要能被 CLI 用 errors 判别，两者都靠这个哨兵。
 //
@@ -49,7 +61,7 @@ func locationLines(entries []proto.ProjectLocation) string {
 	return strings.Join(lines, "; ")
 }
 
-// resolveProject 把派发请求里的项目引用解析成本机的位置行。
+// ResolveProject 把派发请求里的项目引用解析成本机的位置行。
 //
 // 参数：
 //   - projectID: 调用方算出的 project_id（优先）
@@ -64,7 +76,7 @@ func locationLines(entries []proto.ProjectLocation) string {
 // 注意：
 //   - projectID 与 projectName 同时给出时以 projectID 为准：它是身份，名字只是引用
 //   - 本函数不判断路径是否真的存在，那是 EnsureRepoUsable 的职责
-func resolveProject(projectID, projectName string, entries []proto.ProjectLocation) (proto.ProjectLocation, error) {
+func ResolveProject(projectID, projectName string, entries []proto.ProjectLocation) (proto.ProjectLocation, error) {
 	switch {
 	case projectID != "":
 		for _, e := range entries {

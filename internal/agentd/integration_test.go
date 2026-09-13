@@ -195,7 +195,7 @@ func (e *integEnv) registerProject(t *testing.T, repo string) string {
 	}
 	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
 	runGit(t, repo, "remote", "add", "origin", origin)
-	loc, err := e.mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, err := e.mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("registerProject(%s): %v", repo, err)
 	}
@@ -771,7 +771,7 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	// B62：派发必须先登记，登记会落到 store，随后 Dispatch 解析出同一路径
 	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
 	runGit(t, repo, "remote", "add", "origin", origin)
-	loc, rerr := mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, rerr := mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if rerr != nil {
 		t.Fatalf("RegisterProject: %v", rerr)
 	}

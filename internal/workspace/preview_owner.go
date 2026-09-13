@@ -6,9 +6,17 @@
 //   - 恢复 path 静态服务并按 idle TTL 扫描、续命和收口
 //
 // 边界：
-//   - 不实现 Chromium、SOCKS 或远端 mirror；open 的本地执行由 PreviewOpener 提供
+//   - 不实现 Chromium、SOCKS 或远端 mirror；open 的本地执行由 gateway 侧的
+//     PreviewOpener 提供
 //   - PreviewHub 只承载进程内实时副作用，Store 才是重启后的权威事实
-package agentd
+//   - 静态 HTTP 服务（PreviewStaticServer 的生产实现）与浏览器 launcher 留
+//     gateway（agentd），经 PreviewOwnerDeps.Static 注入
+//
+// B233.19：自 internal/agentd/preview_owner.go 迁入。持久化触点收成本地窄接口
+// PreviewStore（行类型经 PreviewRow/PreviewSource 投影，gateway 侧适配器负责
+// 与 store.PreviewRecord 互转），store.ErrNotFound 等持久层错误原样穿透，
+// gateway 的 404 映射与错误文案逐字节不变。
+package workspace
 
 import (
 	"context"
@@ -26,23 +34,60 @@ import (
 	"github.com/google/uuid"
 
 	"github.com/Xsxdot/handoff/internal/proto"
-	"github.com/Xsxdot/handoff/internal/store"
-	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
-const previewTTLSeconds int64 = 7200
+// PreviewTTLSeconds 是 owner preview 的 idle TTL（秒）。
+const PreviewTTLSeconds int64 = 7200
 
-var errPreviewClosed = errors.New("预览会话已关闭")
+// ErrPreviewClosed 表示预览会话已关闭（重复关闭映射 404）。
+var ErrPreviewClosed = errors.New("预览会话已关闭")
 
-type previewInputError struct {
+// PreviewInputError 表示请求字段校验失败（映射 400），Operation/Field/Value
+// 供 gateway 与测试定位是哪个字段被拒。
+type PreviewInputError struct {
 	Operation string
 	Field     string
 	Value     string
 	Reason    string
 }
 
-func (e *previewInputError) Error() string {
+func (e *PreviewInputError) Error() string {
 	return fmt.Sprintf("preview %s field=%s value=%q: %s", e.Operation, e.Field, e.Value, e.Reason)
+}
+
+// PreviewSource 标识 owner 会话的来源。Kind 为 "port" 或 "path"；path 来源
+// 另带 workspace root 与 workspace 相对路径。Source 是持久化内部数据，
+// 不进 wire DTO。
+type PreviewSource struct {
+	Kind          string
+	Port          int
+	WorkspaceRoot string
+	RelativePath  string
+}
+
+// PreviewRow 是 owner preview 持久化行在本包的窄投影。ClosedAt 为 nil 表示
+// 行仍开着；LastActiveAt 是 idle TTL 的时钟，与 session 的 CreatedAt 线字段
+// 刻意分开。
+type PreviewRow struct {
+	Session      proto.PreviewSession
+	Source       PreviewSource
+	LastActiveAt time.Time
+	ClosedAt     *time.Time
+}
+
+// PreviewStore 是 owner preview 会话持久化的窄接口（B233.19 收窄的 store 触点）。
+// gateway 侧适配器把 *store.Store 包进本接口并做 PreviewRow 互转；持久层
+// 错误（如 not found）原样穿透，调用方的 errors.Is 判别不受影响。
+type PreviewStore interface {
+	InsertPreview(row PreviewRow) error
+	GetPreview(id string) (PreviewRow, error)
+	ListActivePreviews(now time.Time) ([]PreviewRow, error)
+	ClosePreview(id string, at time.Time) (PreviewRow, bool, error)
+	// TouchPreview 续命一个开着的会话；id 不存在时返回 not-found 错误（适配器
+	// 负责把持久层的「未命中」包成带原文案的错误，gateway 的 404 映射不受影响）。
+	TouchPreview(id string, at time.Time) error
+	ExpirePreviews(now time.Time) ([]PreviewRow, error)
+	UpdatePreviewEntry(id, entryURL string) error
 }
 
 // PreviewClock supplies owner time; tests inject it to make idle boundaries deterministic.
@@ -67,7 +112,9 @@ type PreviewStaticServer interface {
 type PreviewWorkspaceResolver func(context.Context, string) (workspaceRoot, originURL, branch string, err error)
 
 // PreviewOwnerDeps are the side effects at the owner boundary.
-// Nil fields are replaced by production implementations by NewPreviewOwner.
+// Nil fields are replaced by production implementations by NewPreviewOwner,
+// except Static: 静态 HTTP 服务的生产实现留在 gateway（agentd），
+// 由组装点（cmd）注入，本包不反向承载 HTTP 面。
 type PreviewOwnerDeps struct {
 	Now              PreviewClock
 	NewID            PreviewID
@@ -138,6 +185,14 @@ func (h *PreviewHub) Publish(event proto.PreviewEvent) {
 	}
 }
 
+// SubscriberCount returns the current number of live subscribers. 测试用它等待
+// 「WS 订阅者已连上」；不加锁拷贝，计数仅供观测。
+func (h *PreviewHub) SubscriberCount() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return len(h.subscribers)
+}
+
 // Close terminates every preview event stream and is safe to call repeatedly.
 func (h *PreviewHub) Close() {
 	h.mu.Lock()
@@ -154,7 +209,7 @@ func (h *PreviewHub) Close() {
 
 // PreviewOwner is the owner-side authority for preview session lifecycle.
 type PreviewOwner struct {
-	st   *store.Store
+	st   PreviewStore
 	hub  *PreviewHub
 	deps PreviewOwnerDeps
 	log  *slog.Logger
@@ -167,7 +222,8 @@ type PreviewOwner struct {
 }
 
 // NewPreviewOwner creates an owner using injected seams or production defaults.
-func NewPreviewOwner(st *store.Store, hub *PreviewHub, deps PreviewOwnerDeps, log *slog.Logger) *PreviewOwner {
+// Static 不设缺省：生产实现（gateway 的静态 HTTP 服务）由组装点注入。
+func NewPreviewOwner(st PreviewStore, hub *PreviewHub, deps PreviewOwnerDeps, log *slog.Logger) *PreviewOwner {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -196,10 +252,7 @@ func NewPreviewOwner(st *store.Store, hub *PreviewHub, deps PreviewOwnerDeps, lo
 		}
 	}
 	if deps.ValidateVia == nil {
-		deps.ValidateVia = validatePreviewViaSyntax
-	}
-	if deps.Static == nil {
-		deps.Static = NewPreviewStaticServer(log)
+		deps.ValidateVia = ValidatePreviewViaSyntax
 	}
 	return &PreviewOwner{st: st, hub: hub, deps: deps, log: log, staticStops: make(map[string]func() error)}
 }
@@ -213,7 +266,7 @@ func defaultPreviewWorkspaceResolver(ctx context.Context, getwd func() (string, 
 	if err != nil {
 		return "", "", "", fmt.Errorf("解析工作目录: %w", err)
 	}
-	if root, ok := workspace.TopLevel(ctx, workspaceRoot); ok {
+	if root, ok := TopLevel(ctx, workspaceRoot); ok {
 		if realRoot, realErr := filepath.EvalSymlinks(root); realErr == nil {
 			workspaceRoot = realRoot
 		} else {
@@ -222,10 +275,10 @@ func defaultPreviewWorkspaceResolver(ctx context.Context, getwd func() (string, 
 	}
 
 	var originURL string
-	if u, ok := workspace.ProbeOriginURL(ctx, workspaceRoot); ok {
+	if u, ok := ProbeOriginURL(ctx, workspaceRoot); ok {
 		originURL = u
 	}
-	branch := workspace.HeadBranch(ctx, workspaceRoot)
+	branch := HeadBranch(ctx, workspaceRoot)
 	log().Info("预览工作区元数据读取成功", "operation", "preview_workspace", "workspace", workspaceRoot, "origin_url", originURL, "branch", branch)
 	return workspaceRoot, originURL, branch, nil
 }
@@ -234,13 +287,13 @@ func defaultPreviewWorkspaceResolver(ctx context.Context, getwd func() (string, 
 func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*proto.PreviewSession, error) {
 	now := o.deps.Now().UTC()
 	if (req.Port == 0) == (strings.TrimSpace(req.Path) == "") {
-		return nil, &previewInputError{Operation: "create", Field: "port/path", Value: fmt.Sprintf("port=%d path=%q", req.Port, req.Path), Reason: "port 与 path 必须二选一"}
+		return nil, &PreviewInputError{Operation: "create", Field: "port/path", Value: fmt.Sprintf("port=%d path=%q", req.Port, req.Path), Reason: "port 与 path 必须二选一"}
 	}
 	if req.Port != 0 && (req.Port < 1 || req.Port > 65535) {
-		return nil, &previewInputError{Operation: "create", Field: "port", Value: fmt.Sprint(req.Port), Reason: "必须在 1..65535"}
+		return nil, &PreviewInputError{Operation: "create", Field: "port", Value: fmt.Sprint(req.Port), Reason: "必须在 1..65535"}
 	}
 	if err := o.deps.ValidateVia(req.Via); err != nil {
-		return nil, &previewInputError{Operation: "create", Field: "via", Value: strings.Join(req.Via, ","), Reason: err.Error()}
+		return nil, &PreviewInputError{Operation: "create", Field: "via", Value: strings.Join(req.Via, ","), Reason: err.Error()}
 	}
 	cwd := req.CWD
 	var err error
@@ -259,16 +312,16 @@ func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*p
 		return nil, fmt.Errorf("解析工作目录: %w", err)
 	}
 
-	session := proto.PreviewSession{ID: o.deps.NewID(), CWD: cwd, CreatedAt: now, TTLSeconds: previewTTLSeconds, Via: append([]string(nil), req.Via...)}
+	session := proto.PreviewSession{ID: o.deps.NewID(), CWD: cwd, CreatedAt: now, TTLSeconds: PreviewTTLSeconds, Via: append([]string(nil), req.Via...)}
 	if session.ID == "" {
 		return nil, errors.New("生成预览会话 ID 为空")
 	}
-	row := store.PreviewRecord{Session: session, LastActiveAt: now}
+	row := PreviewRow{Session: session, LastActiveAt: now}
 	var stop func() error
 	if req.Port != 0 {
 		if err := o.deps.ProbePort(ctx, req.Port); err != nil {
 			o.log.Warn("预览端口未监听", "operation", "create", "port", req.Port, "cause", err)
-			return nil, &previewInputError{Operation: "create", Field: "port", Value: fmt.Sprint(req.Port), Reason: "端口未监听: " + err.Error()}
+			return nil, &PreviewInputError{Operation: "create", Field: "port", Value: fmt.Sprint(req.Port), Reason: "端口未监听: " + err.Error()}
 		}
 		root, origin, branch, err := o.deps.ResolveWorkspace(ctx, cwd)
 		if err != nil {
@@ -280,17 +333,17 @@ func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*p
 		if root == "" {
 			root = cwd
 		}
-		row.Source = store.PreviewSource{Kind: "port", Port: req.Port, WorkspaceRoot: root}
+		row.Source = PreviewSource{Kind: "port", Port: req.Port, WorkspaceRoot: root}
 	} else {
 		root, origin, branch, err := o.deps.ResolveWorkspace(ctx, cwd)
 		if err != nil {
 			o.log.Warn("读取 path 预览工作区元数据失败", "operation", "create", "cwd", cwd, "path", req.Path, "cause", err)
 			return nil, fmt.Errorf("解析预览工作区 path=%q: %w", req.Path, err)
 		}
-		rel, err := validatePreviewRelativePath(root, req.Path)
+		rel, err := ValidatePreviewRelativePath(root, req.Path)
 		if err != nil {
 			o.log.Warn("预览 path 校验失败", "operation", "create", "cwd", cwd, "workspace", root, "path", req.Path, "cause", err)
-			return nil, &previewInputError{Operation: "create", Field: "path", Value: req.Path, Reason: err.Error()}
+			return nil, &PreviewInputError{Operation: "create", Field: "path", Value: req.Path, Reason: err.Error()}
 		}
 		entry, cleanup, err := o.deps.Static.Start(ctx, root, rel)
 		if err != nil {
@@ -299,7 +352,7 @@ func (o *PreviewOwner) Create(ctx context.Context, req proto.PreviewOpenReq) (*p
 		}
 		stop = cleanup
 		session.EntryURL, session.OriginURL, session.Branch = entry, origin, branch
-		row.Source = store.PreviewSource{Kind: "path", WorkspaceRoot: root, RelativePath: rel}
+		row.Source = PreviewSource{Kind: "path", WorkspaceRoot: root, RelativePath: rel}
 	}
 	row.Session = session
 	o.mu.Lock()
@@ -353,7 +406,7 @@ func (o *PreviewOwner) Close(ctx context.Context, id string) (*proto.PreviewClos
 		return nil, err
 	}
 	if !changed {
-		return nil, fmt.Errorf("预览会话 %s: %w", id, errPreviewClosed)
+		return nil, fmt.Errorf("预览会话 %s: %w", id, ErrPreviewClosed)
 	}
 	if stop != nil {
 		if err := stop(); err != nil {
@@ -368,14 +421,7 @@ func (o *PreviewOwner) Close(ctx context.Context, id string) (*proto.PreviewClos
 // Touch renews idle lifetime for an open session; it does not alter wire is-open state.
 func (o *PreviewOwner) Touch(ctx context.Context, id string, at time.Time) error {
 	_ = ctx
-	ok, err := o.st.TouchPreview(id, at.UTC())
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return fmt.Errorf("预览会话 %s: %w", id, store.ErrNotFound)
-	}
-	return nil
+	return o.st.TouchPreview(id, at.UTC())
 }
 
 // Expire closes idle sessions and publishes one complete event per transition.
@@ -491,6 +537,21 @@ func (o *PreviewOwner) stopStatic(id string) {
 	}
 }
 
+// Hub 暴露会话事件广播面，供 gateway 的 /ws/previews 订阅。
+func (o *PreviewOwner) Hub() *PreviewHub { return o.hub }
+
+// Now 返回 owner 时钟当前值（gateway 侧 open 路径续命与 TTL 判定共用同一时钟）。
+func (o *PreviewOwner) Now() time.Time { return o.deps.Now() }
+
+// Get 返回一个会话的持久化行（含生命周期时间），供 gateway 侧判定会话是否
+// 仍可打开。未登记时持久层的 not found 错误原样穿透。
+func (o *PreviewOwner) Get(id string) (PreviewRow, error) {
+	if o.st == nil {
+		return PreviewRow{}, errors.New("preview owner 未配置")
+	}
+	return o.st.GetPreview(id)
+}
+
 func probePreviewPort(ctx context.Context, port int) error {
 	dialCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
@@ -501,7 +562,9 @@ func probePreviewPort(ctx context.Context, port int) error {
 	return conn.Close()
 }
 
-func validatePreviewViaSyntax(via []string) error {
+// ValidatePreviewViaSyntax 校验 session 级网络 allowlist 的每一项（gateway 的
+// proxy 面与 owner 的 Create 共用同一套语法规则）。
+func ValidatePreviewViaSyntax(via []string) error {
 	for _, raw := range via {
 		value := strings.TrimSpace(raw)
 		if value == "" {
@@ -528,7 +591,10 @@ func validatePreviewViaSyntax(via []string) error {
 
 var previewDomainPattern = regexp.MustCompile(`(?i)^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$`)
 
-func validatePreviewRelativePath(root, raw string) (string, error) {
+// ValidatePreviewRelativePath 校验请求 path 是 workspace root 之内的非空相对
+// 路径，返回可安全用于静态服务与持久化的 slash 形式（gateway 的静态服务在
+// Start 前复用同一校验）。
+func ValidatePreviewRelativePath(root, raw string) (string, error) {
 	if strings.TrimSpace(raw) == "" || filepath.IsAbs(raw) {
 		return "", errors.New("path 必须是非空 workspace-relative 路径")
 	}

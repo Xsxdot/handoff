@@ -29,6 +29,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // errNoCoordinatorSquad 表示仓内没有 role=coordinator 的小队（岔口四 B：不做出厂
@@ -265,7 +266,7 @@ func (s *Server) resolveCoordWorkdir(cardID string) string {
 		s.log.Warn("协调者工作目录解析失败：列项目位置出错", "card", cardID, "cause", err)
 		return ""
 	}
-	loc, err := resolveProject("", card.Project, entries)
+	loc, err := workspace.ResolveProject("", card.Project, entries)
 	if err != nil {
 		s.log.Warn("协调者工作目录解析失败：项目未登记", "card", cardID, "project", card.Project, "cause", err)
 		return ""

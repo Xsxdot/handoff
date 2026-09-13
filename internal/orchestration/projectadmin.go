@@ -50,7 +50,7 @@ import (
 //     不存在路径的死记录
 //   - Path 非空时必须是绝对路径，否则 400（见 RegisterProjectReq）
 //   - clone 的落点若已存在则直接拒绝，绝不往里 clone、绝不覆盖
-func (m *Manager) RegisterProject(ctx context.Context, req agentd.RegisterProjectReq) (proto.ProjectLocation, error) {
+func (m *Manager) RegisterProject(ctx context.Context, req workspace.RegisterProjectReq) (proto.ProjectLocation, error) {
 	m.log.Info("登记项目请求", "origin", req.OriginURL, "name", req.Name, "path", req.Path)
 	req.OriginURL = strings.TrimSpace(req.OriginURL)
 	req.Name = strings.TrimSpace(req.Name)
@@ -90,7 +90,7 @@ func (m *Manager) RegisterProject(ctx context.Context, req agentd.RegisterProjec
 // 目录不存在时：无 OriginURL → 400（无 URL 无法创建）；有 OriginURL →
 // cloneToPathAndRegister。目录存在时一律走 registerExistingProject——
 // 绝不往已存在的目录里 clone（那里是不是仓库、是不是本项目，由 inspect 校验说）。
-func (m *Manager) registerAtPath(ctx context.Context, req agentd.RegisterProjectReq) (proto.ProjectLocation, error) {
+func (m *Manager) registerAtPath(ctx context.Context, req workspace.RegisterProjectReq) (proto.ProjectLocation, error) {
 	_, err := os.Stat(req.Path)
 	if errors.Is(err, os.ErrNotExist) {
 		if req.OriginURL == "" {
@@ -163,7 +163,7 @@ func (m *Manager) cleanupCreatedDir(created string) {
 // 幂等边界：同项目 + 同落点 → 返回已有行（磁盘被 rm 掉、位置表还在时，重复登记
 // 不该把自动登记链打断）；同项目 + 异落点 → ErrProjectAlreadyExists，报文指向
 // 已有位置。绝不静默返回一个与请求 path 不同的位置。
-func (m *Manager) cloneToPathAndRegister(ctx context.Context, req agentd.RegisterProjectReq) (proto.ProjectLocation, error) {
+func (m *Manager) cloneToPathAndRegister(ctx context.Context, req workspace.RegisterProjectReq) (proto.ProjectLocation, error) {
 	// 幂等短路：必须发生在 clone 之前——重复登记同一个项目不应再 clone 出第二份。
 	// 但只有**同落点**才算"重复声明同一个事实"：调用方明确指了一个新落点时，
 	// 静默返回旧位置等于把他填的 path 吞了。异落点报 409，与「路径已存在」分支
@@ -175,17 +175,17 @@ func (m *Manager) cloneToPathAndRegister(ctx context.Context, req agentd.Registe
 			return proto.ProjectLocation{}, err
 		}
 		if ok {
-			if agentd.SameLocation(existing.Path, req.Path) {
+			if workspace.SameLocation(existing.Path, req.Path) {
 				m.log.Info("项目位置已存在且落点相同，幂等返回",
 					"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
-				existing.Status = agentd.ProjectStatusOK
+				existing.Status = workspace.ProjectStatusOK
 				return existing, nil
 			}
 			m.log.Warn("克隆登记被拒：该项目在本机已有位置",
 				"project_id", pid, "existing", existing.Path, "requested", req.Path)
 			return proto.ProjectLocation{}, fmt.Errorf(
 				"%w: 项目 %s 在本机已登记于 %s；要换位置先 handoff project rm %s",
-				agentd.ErrProjectAlreadyExists, existing.Name, existing.Path, existing.Name)
+				workspace.ErrProjectAlreadyExists, existing.Name, existing.Path, existing.Name)
 		}
 	}
 	// 与 cloneAndRegisterProject 同款提前校验：name 派生（空名走 ProjectNameFromURL）
@@ -193,9 +193,9 @@ func (m *Manager) cloneToPathAndRegister(ctx context.Context, req agentd.Registe
 	// persistProject 再拦就晚了，会留下已 clone 未登记的孤儿目录。
 	name := req.Name
 	if name == "" {
-		name = agentd.ProjectNameFromURL(req.OriginURL)
+		name = workspace.ProjectNameFromURL(req.OriginURL)
 	}
-	if err := agentd.ValidateProjectName(name); err != nil {
+	if err := workspace.ValidateProjectName(name); err != nil {
 		m.log.Warn("克隆登记被拒：项目名非法", "name", name, "cause", err)
 		return proto.ProjectLocation{}, err
 	}
@@ -275,7 +275,7 @@ func (m *Manager) InspectRepoDir(ctx context.Context, dir string) (root, origin 
 	}
 	// origin 由 agentd 在本机现读，而不是采信调用方上送的值：登记的是这个
 	// 路径上真实存在的仓库，它的 origin 才是权威。
-	origin, err = agentd.ProjectOriginURL(ctx, root)
+	origin, err = workspace.OriginURL(ctx, root)
 	if err != nil {
 		m.log.Warn("登记被拒：读不到 origin", "path", root, "cause", err)
 		return "", "", err
@@ -289,7 +289,7 @@ func (m *Manager) InspectRepoDir(ctx context.Context, dir string) (root, origin 
 // （Web「只填 path」主路径——磁盘上的仓库本身就是权威，不要求调用方复述）；
 // 非空时仅作一致性校验，不一致仍报 ErrProjectOriginMismatch。
 // 落库 origin 永远用 actual，不采信请求串里未校验的写法。
-func (m *Manager) registerExistingProject(ctx context.Context, req agentd.RegisterProjectReq) (proto.ProjectLocation, error) {
+func (m *Manager) registerExistingProject(ctx context.Context, req workspace.RegisterProjectReq) (proto.ProjectLocation, error) {
 	root, actual, err := m.InspectRepoDir(ctx, req.Path)
 	if err != nil {
 		return proto.ProjectLocation{}, err
@@ -302,7 +302,7 @@ func (m *Manager) registerExistingProject(ctx context.Context, req agentd.Regist
 			"path", root, "actual_origin", actual, "want_origin", req.OriginURL)
 		return proto.ProjectLocation{}, fmt.Errorf(
 			"%w: %s 上的 origin 是 %s，而请求的项目是 %s；换个路径，或去掉 --path 让本机自己 clone",
-			agentd.ErrProjectOriginMismatch, root, actual, req.OriginURL)
+			workspace.ErrProjectOriginMismatch, root, actual, req.OriginURL)
 	}
 	// 幂等短路：同一项目已经登记在**同一位置**时直接返回已有行。自动登记
 	// （cmd/project.go 的 registerProjectBothHops）的 hop-1 在第二次及以后的
@@ -316,10 +316,10 @@ func (m *Manager) registerExistingProject(ctx context.Context, req agentd.Regist
 		if existing, ok, err := m.registeredProjectByID(pid); err != nil {
 			return proto.ProjectLocation{}, err
 		} else if ok {
-			if agentd.SameLocation(existing.Path, root) {
+			if workspace.SameLocation(existing.Path, root) {
 				m.log.Info("项目位置已存在，幂等返回",
 					"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
-				existing.Status = agentd.ProjectStatusOK
+				existing.Status = workspace.ProjectStatusOK
 				return existing, nil
 			}
 			// 同一项目已登记在别处：真正的冲突（ADR-0008：一台机器一个项目只能
@@ -328,14 +328,14 @@ func (m *Manager) registerExistingProject(ctx context.Context, req agentd.Regist
 				"project_id", pid, "existing", existing.Path, "requested", root)
 			return proto.ProjectLocation{}, fmt.Errorf(
 				"%w: 项目 %s 在本机已登记于 %s；要换位置先 handoff project rm %s",
-				agentd.ErrProjectAlreadyExists, existing.Name, existing.Path, existing.Name)
+				workspace.ErrProjectAlreadyExists, existing.Name, existing.Path, existing.Name)
 		}
 	}
 	return m.persistProject(req.Name, root, actual)
 }
 
 // cloneAndRegisterProject 先 clone 再登记。
-func (m *Manager) cloneAndRegisterProject(ctx context.Context, req agentd.RegisterProjectReq) (proto.ProjectLocation, error) {
+func (m *Manager) cloneAndRegisterProject(ctx context.Context, req workspace.RegisterProjectReq) (proto.ProjectLocation, error) {
 	// 幂等短路：同一项目已经登记过就直接返回已有行，**必须发生在 clone 之前**——
 	// 自动登记（registerProjectBothHops）的 hop-1 在第二次及以后的每次派发都会
 	// 带着空 Path 打到本机，不短路的话每派发一次就重复 clone 一份，repo_root
@@ -347,17 +347,17 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req agentd.Regist
 		} else if ok {
 			m.log.Info("项目位置已存在，幂等返回",
 				"project_id", existing.ProjectID, "name", existing.Name, "path", existing.Path)
-			existing.Status = agentd.ProjectStatusOK
+			existing.Status = workspace.ProjectStatusOK
 			return existing, nil
 		}
 	}
 	name := req.Name
 	if name == "" {
-		name = agentd.ProjectNameFromURL(req.OriginURL)
+		name = workspace.ProjectNameFromURL(req.OriginURL)
 	}
 	// 校验必须早于 dest 计算：名字含 .. 时 dest=repo_root/<名字> 会逃出 repo_root，
 	// 等 persistProject 再拦就晚了（落点已建/克隆已跑）。
-	if err := agentd.ValidateProjectName(name); err != nil {
+	if err := workspace.ValidateProjectName(name); err != nil {
 		m.log.Warn("克隆登记被拒：项目名非法", "name", name, "cause", err)
 		return proto.ProjectLocation{}, err
 	}
@@ -377,14 +377,14 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req agentd.Regist
 			m.log.Warn("克隆被拒：落点已存在但认领失败", "dest", dest, "cause", ierr)
 			return proto.ProjectLocation{}, fmt.Errorf(
 				"%w: 克隆落点 %s 已存在，但它不是本项目可认领的仓库（%v）；该目录不是 git 仓库或读不到 origin，请人工处置（agentd 不会自动删除或改名）",
-				agentd.ErrProjectAlreadyExists, dest, ierr)
+				workspace.ErrProjectAlreadyExists, dest, ierr)
 		}
 		if projectid.FromOrigin(actual) != projectid.FromOrigin(req.OriginURL) {
 			m.log.Warn("克隆被拒：落点已存在且属于另一个项目",
 				"dest", dest, "actual_origin", actual, "want_origin", req.OriginURL)
 			return proto.ProjectLocation{}, fmt.Errorf(
 				"%w: 克隆落点 %s 已存在，其 origin 是 %s（另一个项目），请求的项目是 %s；请人工处置该目录（agentd 不会自动删除或改名）",
-				agentd.ErrProjectAlreadyExists, dest, actual, req.OriginURL)
+				workspace.ErrProjectAlreadyExists, dest, actual, req.OriginURL)
 		}
 		// 落点就是本项目：认领登记，不 clone（origin 现读的就是权威，见
 		// InspectRepoDir）。认领后仓库可能落后于远端——这里不 fetch，派发时
@@ -448,13 +448,13 @@ func (m *Manager) persistProject(name, path, origin string) (proto.ProjectLocati
 				"project_id", pid, "existing", e.Path, "requested", path)
 			return proto.ProjectLocation{}, fmt.Errorf(
 				"%w: 项目 %s 在本机已登记于 %s；要换位置先 handoff project rm %s",
-				agentd.ErrProjectAlreadyExists, e.Name, e.Path, e.Name)
+				workspace.ErrProjectAlreadyExists, e.Name, e.Path, e.Name)
 		}
 	}
 	if name == "" {
-		name = agentd.ProjectNameFromURL(origin)
+		name = workspace.ProjectNameFromURL(origin)
 	}
-	if err := agentd.ValidateProjectName(name); err != nil {
+	if err := workspace.ValidateProjectName(name); err != nil {
 		m.log.Warn("登记落库被拒：项目名非法", "name", name, "cause", err)
 		return proto.ProjectLocation{}, err
 	}
@@ -473,14 +473,14 @@ func (m *Manager) persistProject(name, path, origin string) (proto.ProjectLocati
 				"project_id", pid, "name", name, "path", loc.Path, "cause", err)
 			return proto.ProjectLocation{}, fmt.Errorf(
 				"%w: 项目 %s、名字 %q 或路径 %s 已被登记（handoff project ls 查看）",
-				agentd.ErrProjectAlreadyExists, pid, name, loc.Path)
+				workspace.ErrProjectAlreadyExists, pid, name, loc.Path)
 		}
 		m.log.Error("登记落库失败", "name", name, "path", loc.Path, "cause", err)
 		return proto.ProjectLocation{}, err
 	}
 	m.log.Info("项目位置登记完成",
 		"project_id", pid, "name", name, "path", loc.Path, "origin", origin)
-	loc.Status = agentd.ProjectStatusOK
+	loc.Status = workspace.ProjectStatusOK
 	return loc, nil
 }
 
@@ -504,14 +504,14 @@ func uniqueProjectName(base string, entries []proto.ProjectLocation) (string, er
 	if !taken[base] {
 		return base, nil
 	}
-	for i := 2; i <= agentd.NameFallbackLimit; i++ {
+	for i := 2; i <= workspace.NameFallbackLimit; i++ {
 		candidate := base + "-" + strconv.Itoa(i)
 		if !taken[candidate] {
 			return candidate, nil
 		}
 	}
 	return "", fmt.Errorf("%w: 名字 %s 及其 -2..-%d 变体全部被占用，请用 [名字] 参数显式指定",
-		agentd.ErrBadDispatchRequest, base, agentd.NameFallbackLimit)
+		agentd.ErrBadDispatchRequest, base, workspace.NameFallbackLimit)
 }
 
 // ListProjects 列出本机全部项目位置，并现场探测每条的实际状态。
@@ -541,12 +541,12 @@ func (m *Manager) ListProjects(ctx context.Context) ([]proto.ProjectLocation, er
 // probeProjectStatus 探测一条位置指向的路径当前是什么状态。
 func probeProjectStatus(ctx context.Context, path string) string {
 	if _, err := os.Stat(path); errors.Is(err, os.ErrNotExist) {
-		return agentd.ProjectStatusMissing
+		return workspace.ProjectStatusMissing
 	}
 	if err := workspace.EnsureRepoUsable(ctx, path); err != nil {
-		return agentd.ProjectStatusNotRepo
+		return workspace.ProjectStatusNotRepo
 	}
-	return agentd.ProjectStatusOK
+	return workspace.ProjectStatusOK
 }
 
 // UnregisterProject 注销一条项目位置。

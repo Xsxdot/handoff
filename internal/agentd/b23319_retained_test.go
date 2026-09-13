@@ -1,4 +1,8 @@
-// 任务归属 join 测试：命中 / 未登记 / 已注销 / 遗留 linked worktree 四态。
+// b23319_retained_test.go —— B233.19 迁包后必须留在 gateway 的集成断言。
+//
+// 职责：锁 /api/tasks 对已登记任务盖 ProjectID 注解的读时 join 行为（实现已迁
+// internal/workspace：LoadProjectIndex/ProjectIndex.ProjectIDOf）。
+// 边界：断言逐字保留自原 agentd/projectjoin_test.go#TestTaskListAnnotatesProjectID。
 package agentd
 
 import (
@@ -9,35 +13,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/google/uuid"
 )
-
-func TestProjectIndexLookup(t *testing.T) {
-	idx := newProjectIndex([]proto.ProjectLocation{
-		{ProjectID: "aaaa111122223333", Name: "handoff", Path: "/home/dev/handoff"},
-		{ProjectID: "bbbb444455556666", Name: "tk", Path: "/home/dev/tk/"},
-	})
-
-	cases := []struct {
-		name     string
-		repoPath string
-		want     string
-	}{
-		{"命中", "/home/dev/handoff", "aaaa111122223333"},
-		{"命中（尾斜杠归一）", "/home/dev/tk", "bbbb444455556666"},
-		{"命中（非规范路径归一）", "/home/dev/./handoff", "aaaa111122223333"},
-		// 已注销 = 表里没这行了；未登记 = 从来没登记过。对 join 是同一件事：
-		// 诚实显示未归属，而不是留一列陈旧数据说谎
-		{"未登记", "/home/dev/other", ""},
-		// B62 之前派发的任务，repo_path 可能指向 linked worktree（当时不归并）。
-		// 这类任务 join 不中，显示未归属——这是诚实的降级，不做回填
-		{"遗留 linked worktree", "/home/dev/handoff/.worktrees/w1", ""},
-		{"空路径", "", ""},
-	}
-	for _, c := range cases {
-		if got := idx.projectIDOf(c.repoPath); got != c.want {
-			t.Errorf("%s: projectIDOf(%q) = %q，期望 %q", c.name, c.repoPath, got, c.want)
-		}
-	}
-}
 
 // TestTaskListAnnotatesProjectID 断言 GET /api/tasks 的每条都带上归属注解。
 func TestTaskListAnnotatesProjectID(t *testing.T) {

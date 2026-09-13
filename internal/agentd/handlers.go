@@ -182,6 +182,12 @@ func (s *Server) writeReclaimError(w http.ResponseWriter, taskID string, err err
 	}
 }
 
+// projectIndex 构建任务归属索引，实现见 workspace.LoadProjectIndex（B233.19
+// 迁出）：本方法只是 gateway 消费点的注入胶水（本机 store + 日志入口）。
+func (s *Server) projectIndex() workspace.ProjectIndex {
+	return workspace.LoadProjectIndex(s.st, s.log)
+}
+
 // handleListTasks 返回全部任务（created_at 降序）及其实时订阅数，供 tasks 命令展示。
 //
 // 注意：watchers 取自 hub 的瞬时状态、不落库；它只回答「此刻有几个连接在听」，
@@ -209,7 +215,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	unattended := 0
 	owned := 0
 	for _, t := range tasks {
-		t.ProjectID = idx.projectIDOf(t.RepoPath) // 读时 join，不落库
+		t.ProjectID = idx.ProjectIDOf(t.RepoPath) // 读时 join，不落库
 		if t.ProjectID != "" {
 			owned++
 		}
@@ -278,7 +284,7 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		events = []proto.Event{}
 	}
 	watchers := s.hub.Watchers(taskID)
-	task.ProjectID = s.projectIndex().projectIDOf(task.RepoPath) // 读时 join，不落库
+	task.ProjectID = s.projectIndex().ProjectIDOf(task.RepoPath) // 读时 join，不落库
 	s.log.Info("任务详情完成", "task", taskID, "state", task.State,
 		"pending", len(pending), "watchers", watchers)
 	writeJSON(w, http.StatusOK, taskDetail{
@@ -667,7 +673,7 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, workspace.ErrRepoUnusable):
 		s.log.Warn("dispatch 被拒：仓库不可用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrProjectNotRegistered):
+	case errors.Is(err, workspace.ErrProjectNotRegistered):
 		s.log.Warn("dispatch 被拒：项目未登记", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, ErrBadDispatchRequest):
@@ -734,7 +740,7 @@ func (s *Server) handleProjectAdd(w http.ResponseWriter, r *http.Request) {
 			map[string]string{"error": "请求体必须是 JSON {origin_url, name, path}"})
 		return
 	}
-	loc, err := s.mgr.RegisterProject(r.Context(), RegisterProjectReq{
+	loc, err := s.mgr.RegisterProject(r.Context(), workspace.RegisterProjectReq{
 		OriginURL: req.OriginURL, Name: req.Name, Path: req.Path})
 	if err != nil {
 		s.writeProjectError(w, req.Name, err)
@@ -801,7 +807,7 @@ func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error
 	case errors.Is(err, store.ErrNotFound):
 		s.log.Warn("项目登记操作被拒：登记不存在", "name", name, "cause", err)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrProjectAlreadyExists):
+	case errors.Is(err, workspace.ErrProjectAlreadyExists):
 		s.log.Warn("项目登记操作被拒：已存在", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, store.ErrProjectDuplicate):
@@ -810,7 +816,7 @@ func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error
 	case errors.Is(err, ErrWorkdirBusy):
 		s.log.Warn("项目登记操作被拒：被活跃任务占用", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrProjectOriginMismatch):
+	case errors.Is(err, workspace.ErrProjectOriginMismatch):
 		s.log.Warn("项目登记被拒：路径上是另一个项目", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, workspace.ErrRepoUnusable), errors.Is(err, ErrBadDispatchRequest):

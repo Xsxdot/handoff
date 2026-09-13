@@ -7,13 +7,18 @@
 //
 // 边界：
 //   - 现场扇出（不读缓存）：项目登记是低频操作，实时性换简单。任务列表的
-//     scope=all 走的是镜像快照（见 tasksfanout），两者刻意不同
+//     scope=all 走的是镜像快照（见 gateway 的 tasksfanout），两者刻意不同
 //   - 一跳封顶：扇出请求带 X-Handoff-Forwarded，对端不再扇出
 //   - 单台失败不影响整体：整体恒 200
-package agentd
+//
+// B233.19：自 internal/agentd/projectfanout.go 迁入；targetclient 触点收成
+// ProjectTreeSource/ProjectTreeClient 窄接口（MarkForwarded 语义由 gateway
+// 侧适配器吸收），本机树经 local 回调取自 BuildLocalTree。
+package workspace
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -23,11 +28,25 @@ import (
 // treeFanoutBudget 是整轮扇出的总预算（§5.2：短于任何调用方超时）。
 const treeFanoutBudget = 3 * time.Second
 
-// buildTreeAll 汇总本机与全部 target 的项目树。
+// ProjectTreeClient 是单台 target 项目树读取的窄接口（B233.19 收窄的
+// targetclient 触点）。
+type ProjectTreeClient interface {
+	ProjectTree(ctx context.Context) (*proto.ProjectTreeResp, error)
+}
+
+// ProjectTreeSource 提供 target 清单与按名取客户端的能力。
+type ProjectTreeSource interface {
+	Names() []string
+	For(name string) (ProjectTreeClient, error)
+}
+
+// FanoutProjectTree 汇总本机与全部 target 的项目树。
 //
 // 返回值恒有效：单台失败记进 Machines 那一行，不影响其余机器与本机的数据。
-func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
-	out, err := s.buildLocalTree(ctx)
+// local 取本机那一棵树（gateway 侧闭包到 BuildLocalTree）。
+func FanoutProjectTree(ctx context.Context, local func(context.Context) (proto.ProjectTreeResp, error),
+	targets ProjectTreeSource, logger *slog.Logger) proto.ProjectTreeResp {
+	out, err := local(ctx)
 	if err != nil {
 		// 连本机的树都读不出来：仍然返回可用信封，让 UI 看到本机 ok=false
 		out = proto.ProjectTreeResp{Projects: []proto.ProjectNode{}, Unowned: []string{}}
@@ -37,7 +56,7 @@ func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
 		out.Machines = []proto.MachineStatus{{Name: "", Ok: true, FetchedAt: time.Now().UTC()}}
 	}
 
-	names := s.pool.Names()
+	names := targets.Names()
 
 	fanCtx, cancel := context.WithTimeout(ctx, treeFanoutBudget)
 	defer cancel()
@@ -54,16 +73,16 @@ func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
 			defer wg.Done()
 			st := proto.MachineStatus{Name: name, FetchedAt: time.Now().UTC()}
 			// relay 机器没有 addr，项目树扇出必须复用池里的选路结果。
-			c, err := s.pool.For(name)
+			c, err := targets.For(name)
 			if err != nil {
-				s.log.Warn("项目树扇出：取客户端失败", "machine", name, "cause", err)
+				logger.Warn("项目树扇出：取客户端失败", "machine", name, "cause", err)
 				st.Error = err.Error()
 				results[i] = result{status: st}
 				return
 			}
-			tree, err := c.MarkForwarded().ProjectTree(fanCtx)
+			tree, err := c.ProjectTree(fanCtx)
 			if err != nil {
-				s.log.Warn("项目树扇出失败", "machine", name, "cause", err)
+				logger.Warn("项目树扇出失败", "machine", name, "cause", err)
 				st.Error = err.Error()
 				results[i] = result{status: st}
 				return
@@ -81,7 +100,7 @@ func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
 		}
 		mergeTree(&out, r.status.Name, *r.tree)
 	}
-	s.log.Info("项目树汇总完成", "machines", len(out.Machines),
+	logger.Info("项目树汇总完成", "machines", len(out.Machines),
 		"projects", len(out.Projects))
 	return out
 }

@@ -181,8 +181,9 @@ type ApproverDecisionPayload struct {
 
 // —— Dispatch 哨兵（server 层映射为 400/500）——
 
-// ErrBadDispatchRequest 是 Dispatch 入参错误的哨兵（server 层映射为 400）。
-var ErrBadDispatchRequest = errors.New("dispatch 请求参数非法")
+// ErrBadDispatchRequest 与 workspace 同哨兵（B233.19 正身随 ResolveProject /
+// ValidateProjectName 迁 workspace），handler 映射与编排包引用仍走 gateway 名。
+var ErrBadDispatchRequest = workspace.ErrBadDispatchRequest
 
 // ErrWorkdirBusy 表示目标工作目录已被活跃任务占用（编排侧占用守卫，不属于工作区能力）。
 var ErrWorkdirBusy = errors.New("目标工作目录已被活跃任务占用")
@@ -331,9 +332,9 @@ func RecoverTransit(st *store.Store, taskID string, cur proto.TaskState) error {
 	return recoverTransit(st, taskID, cur)
 }
 
-// ResolveProject 见 projectresolve.go#resolveProject。
+// ResolveProject 见 workspace/projectresolve.go#ResolveProject（B233.19 迁出）。
 func ResolveProject(projectID, projectName string, entries []proto.ProjectLocation) (proto.ProjectLocation, error) {
-	return resolveProject(projectID, projectName, entries)
+	return workspace.ResolveProject(projectID, projectName, entries)
 }
 
 func ResolveDispatchBase(ctx context.Context, repo, rev string, localBaseBranch bool) (string, bool, error) {

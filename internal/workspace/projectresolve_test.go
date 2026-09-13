@@ -1,4 +1,4 @@
-package agentd
+package workspace
 
 import (
 	"errors"
@@ -46,7 +46,7 @@ func TestResolveProject(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got, err := resolveProject(tt.id, tt.projName, tt.entries)
+			got, err := ResolveProject(tt.id, tt.projName, tt.entries)
 			if tt.wantErr != nil {
 				if !errors.Is(err, tt.wantErr) {
 					t.Fatalf("err = %v, want errors.Is(..., %v)", err, tt.wantErr)
@@ -67,13 +67,13 @@ func TestResolveProject(t *testing.T) {
 // 而不是一句干巴巴的「未登记」——远程派发时协调者读不到执行机的 agentd.log，
 // 报文是他唯一的线索。
 func TestResolveProjectErrorsAreActionable(t *testing.T) {
-	_, err := resolveProject("deadbeefdeadbeef", "", locFixture())
+	_, err := ResolveProject("deadbeefdeadbeef", "", locFixture())
 	for _, want := range []string{"handoff", "/root/work/handoff", "tk", "/root/work/tk"} {
 		if !strings.Contains(err.Error(), want) {
 			t.Errorf("报文 %q 未包含 %q", err.Error(), want)
 		}
 	}
-	_, err = resolveProject("deadbeefdeadbeef", "", nil)
+	_, err = ResolveProject("deadbeefdeadbeef", "", nil)
 	if !strings.Contains(err.Error(), "本机尚无任何项目") {
 		t.Errorf("空表报文应说明本机尚无任何项目，got %q", err.Error())
 	}

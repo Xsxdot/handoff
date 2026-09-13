@@ -15,7 +15,12 @@
 //   - 不改 CLI wait：--target 直拨照旧。镜像跑稳后再谈让 wait 走本机
 //   - 副本不是真相：整表删掉可从 from_seq=0 重建
 //   - 本机任务已在本机 Store/Hub，不进入 mirror_tasks，也不通过 loopback 自订
-package agentd
+//
+// B233.19：自 internal/agentd/mirror.go 迁入。targetclient/store/Hub 触点收成
+// RemoteTaskSource / MirrorStore / EventPublisher 三个本地窄接口：*store.Store
+// 与 *agentd.Hub 结构满足，cmd 直接注入；target 池经 gateway 侧适配器
+// （agentd.NewMirrorTaskSource）包入 MarkForwarded 语义。
+package workspace
 
 import (
 	"context"
@@ -25,8 +30,6 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
-	"github.com/Xsxdot/handoff/internal/store"
-	"github.com/Xsxdot/handoff/internal/targetclient"
 )
 
 // mirrorDiscoveryTick 是发现轮询间隔（§6.1）。慢对账靠它补漏「不伴随事件的
@@ -54,6 +57,35 @@ const mirrorDiscoverBudget = 3 * time.Second
 // 订阅循环立刻退出，不必等远端掐线。
 var errMirrorDone = errors.New("镜像任务已终结")
 
+// MirrorStore 是 mirror_events / mirror_tasks 持久化的窄接口（B233.19 收窄的
+// store 触点）。*store.Store 结构满足本接口，cmd 直接注入，无需适配器代码。
+type MirrorStore interface {
+	UpsertMirrorTask(target string, task proto.Task, fetchedAt time.Time) error
+	MirrorWatermark(taskID string) (int64, error)
+	AppendMirrorEvent(taskID string, ev proto.Event) (inserted bool, err error)
+}
+
+// EventPublisher 是本机实时路由的窄接口（B233.19 收窄的 Hub 触点）。
+// *agentd.Hub 结构满足本接口，镜像事件经它让 /ws/events 订阅者立刻收到。
+type EventPublisher interface {
+	Publish(ev proto.Event)
+}
+
+// RemoteTaskClient 是单台 target 任务读取与事件续拉的窄接口（B233.19 收窄的
+// targetclient 触点）。gateway 侧适配器把 *client.Client 的 MarkForwarded
+// 语义包进实现（一跳封顶）。
+type RemoteTaskClient interface {
+	ListTasks(ctx context.Context) ([]proto.TaskView, error)
+	StreamEventsOnce(ctx context.Context, taskID string, fromSeq int64,
+		onEvent func(proto.Event) error) error
+}
+
+// RemoteTaskSource 同时提供两样东西：客户端与「有哪些机器」的判据。
+type RemoteTaskSource interface {
+	Names() []string
+	For(name string) (RemoteTaskClient, error)
+}
+
 // Mirror 是事件镜像的管理器：发现远端活跃任务、持有上游订阅、维护快照。
 //
 // 并发安全：subs/ring 两个 map 的全部访问都在 mu 保护下；wg 跟踪全部
@@ -64,9 +96,9 @@ type Mirror struct {
 	// 为什么不再持 *config.Config：那是 NewMirror 时的静态快照，控制台运行期
 	// 新增的机器要重启 agentd 才会被镜像——而「加完看不见」很容易被误当成
 	// 对端故障去查。
-	pool *targetclient.Pool
-	st   *store.Store
-	hub  *Hub
+	pool RemoteTaskSource
+	st   MirrorStore
+	hub  EventPublisher
 	log  *slog.Logger
 	// isSelfTarget identifies configured names that point back to this agentd.
 	// A nil predicate preserves the old behavior and filters no configured name.
@@ -82,12 +114,12 @@ type Mirror struct {
 // NewMirror 创建镜像管理器。
 //
 // 参数：
-//   - pool: target 客户端池（同时提供客户端与活的 target 清单）
+//   - pool: target 客户端源（同时提供客户端与活的 target 清单）
 //   - st: 本机存储（mirror_events / mirror_tasks 的落点）
 //   - hub: 本机实时路由（镜像事件经它 Publish，让 /ws/events 订阅者立刻收到）
 //   - isSelfTarget: 自机登记名判定；nil 表示不额外过滤名称
 //   - log: 本镜像的日志入口
-func NewMirror(pool *targetclient.Pool, st *store.Store, hub *Hub,
+func NewMirror(pool RemoteTaskSource, st MirrorStore, hub EventPublisher,
 	isSelfTarget func(name string) bool, log *slog.Logger) *Mirror {
 	return &Mirror{
 		pool:         pool,
@@ -202,7 +234,7 @@ func (m *Mirror) discoverOnce(ctx context.Context) {
 				results[i] = result{name: name, err: err}
 				return
 			}
-			views, err := c.MarkForwarded().ListTasks(fanCtx)
+			views, err := c.ListTasks(fanCtx)
 			results[i] = result{name: name, views: views, err: err}
 		}(i, name)
 	}
@@ -261,7 +293,7 @@ func (m *Mirror) subscribe(ctx context.Context, machine string, taskID string) {
 			m.log.Warn("镜像订阅：取客户端失败", "task", taskID, "machine", machine, "cause", err)
 			return
 		}
-		err = c.MarkForwarded().StreamEventsOnce(ctx, taskID, fromSeq,
+		err = c.StreamEventsOnce(ctx, taskID, fromSeq,
 			func(ev proto.Event) error { return m.onEvent(ctx, machine, taskID, ev) })
 
 		switch {
@@ -325,7 +357,7 @@ func (m *Mirror) refreshSnapshot(ctx context.Context, machine string) {
 		m.log.Warn("镜像快照刷新：取客户端失败", "machine", machine, "cause", err)
 		return
 	}
-	tasks, err := c.MarkForwarded().ListTasks(ctx)
+	tasks, err := c.ListTasks(ctx)
 	if err != nil {
 		m.log.Warn("镜像快照刷新失败", "machine", machine, "cause", err)
 		return

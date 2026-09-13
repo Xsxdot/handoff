@@ -681,7 +681,7 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 		m.log.Error("dispatch 前置：读取项目位置失败", "cause", err)
 		return nil, err
 	}
-	loc, err := agentd.ResolveProject(req.ProjectID, req.ProjectName, entries)
+	loc, err := workspace.ResolveProject(req.ProjectID, req.ProjectName, entries)
 	if err != nil {
 		return nil, err
 	}
