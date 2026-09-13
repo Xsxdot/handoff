@@ -20,6 +20,12 @@ import (
 // bindApproval is the sole production assembly point for a task-scoped
 // ApprovalClient. Concrete orchestration capabilities are passed as Hooks;
 // approval.Client never reaches back into agentd.
+//
+// B233.21：JudgePermission 钩子绑 m.judgePermission——它已收缩为对
+// approval.Authority.Judge（非 OpenCode 决策权威）的委托。OpenCode 面与非
+// OpenCode 面共用同一场判据权威。
+var _ permissionAuthority = (*approval.Authority)(nil)
+
 func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) executor.ApprovalClient {
 	if snap.TaskID == "" {
 		snap.TaskID = taskID
@@ -48,7 +54,8 @@ func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) exec
 			delete(m.apFails, id)
 		},
 		// AutoAllow 只审计、不回传：OpenCode 的原生投递归 adapter（冻结 #3/#16）。
-		// 非 OpenCode 的回传在 handlePermission 的 autoAllowPermission 路径。
+		// 非 OpenCode 的回传在 approval.Authority.AutoAllow 处置之后经
+		// Manager.deliverAutoAllowOnce 完成（B233.21）。
 		AutoAllow:          m.auditAutoAllowOnly,
 		TransitBestEffort:  m.transitBestEffort,
 		NoteDeliveryFailed: m.NoteDeliveryFailed,

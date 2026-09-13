@@ -58,6 +58,7 @@ import (
 	"unicode"
 
 	agentd "github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/approval"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -116,6 +117,12 @@ type Manager struct {
 	// **与 approver 解耦**——approver 为 nil 时 gate 依然工作，否则未配置审批者的
 	// 部署会被工作区内的每一次写入淹没（spec §5.3）。构造后只读。
 	gate *permgate.Gate
+	// permAuthority 是非 OpenCode 权限决策权威（B233.21）：重放幂等、判据裁决、
+	// 决策复用与 AutoAllow 出口处置的唯一权威，实现在 internal/approval
+	//（OpenCode 面与非 OpenCode 面共用同一场判据）。本 Manager 只按权威结论
+	// 落账本事实（工单/状态/事件/waiter/Publish）并做原生回传。
+	// 生产由 NewManager 装配 approval.Authority；缝级测试以桩替换。
+	permAuthority permissionAuthority
 	// ws 是工作区能力。生产由组装点注入；nil 不得跳过基线/脏检查。
 	ws workspace.Capability
 	// aaMu 保护 aaCount：每任务累计的自动放行次数，回合终结时汇总打一条 Info。
@@ -307,6 +314,17 @@ func NewManager(st *store.Store, hub *agentd.Hub, ads map[string]executor.Adapte
 		sweepOwned:   map[string]struct{}{},
 		reg:          registryFromAds(ads),
 	}
+	// 非 OpenCode 权限决策权威（B233.21）：判据/复用/自动放行/重放幂等的实现
+	// 体在 internal/approval；AutoAllow 出口的审计与原生回传经 Hooks 绑回本
+	// Manager（审计与 OpenCode 面 Hooks.AutoAllow 同一实现）。
+	m.permAuthority = approval.NewAuthority(approval.AuthorityHooks{
+		Log:              log,
+		Store:            st,
+		Gate:             gate,
+		DataDir:          cfg.DataDir,
+		AuditAutoAllow:   m.auditAutoAllowOnly,
+		DeliverAutoAllow: m.deliverAutoAllowOnce,
+	})
 	if m.log != nil {
 		names := make([]string, 0, len(ads))
 		for n := range ads {
@@ -1991,8 +2009,22 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 	}
 }
 
-// handlePermission 中介权限请求：ticket(id=taskID:permID, kind=gate) → 事件 →
-// waiting_answer → goroutine 等协调者应答后回传 executor。
+// permissionAuthority 是非 OpenCode 权限决策权威的编排侧接缝（B233.21）。
+// 生产绑定 internal/approval.Authority；沿「能力接口由消费方定义」的既有约定
+// （同 reconciler/restorer），缝级测试以桩替换，锁死「三出口决策出自权威」——
+// 重放幂等（IsReplay/HasAutoAllow）、判据裁决（Judge）、AutoAllow 处置
+// （AutoAllow）、决策复用判定（FindReuse）都不在 Manager 本地实现。
+type permissionAuthority interface {
+	IsReplay(taskID, permID, ticketID string) bool
+	HasAutoAllow(taskID, permID string) bool
+	Judge(taskID string, ev executor.AdapterEvent) permgate.Verdict
+	AutoAllow(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict)
+	FindReuse(taskID, ticketID string, ev executor.AdapterEvent) (prior *proto.Ticket, fp string, hit bool)
+}
+
+// handlePermission 中介权限请求：收 adapter 事件 → 调决策权威 → 按权威结论落
+// 账本事实（ticket(id=taskID:permID, kind=gate) → 事件 → waiting_answer →
+// goroutine 等协调者应答）→ 原生回传 executor（B233.21 收口后的形状）。
 //
 // 审批链前置的时序说明（二期新增）：approver 启用且黑名单未命中时，请求先交
 // consultApprover 做廉价模型裁决——approve 全程不动状态机（任务保持 running，
@@ -2026,7 +2058,7 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 	// 命名空间化后各任务工单 id 全局唯一；回传 executor 仍用裸 permID
 	// （adapter 契约，见 waitPermission/RelayAnswer）
 	ticketID := taskID + ":" + ev.PermissionID
-	if m.isPermissionReplay(taskID, ev.PermissionID, ticketID) {
+	if m.permAuthority.IsReplay(taskID, ev.PermissionID, ticketID) {
 		// AutoAllow 无工单。agy 在 HOME + workspace 双 hooks 下会对同一
 		// step_N 再连一次 perm.sock；审计事件当幂等标记会吞掉第二次
 		// onAsk 且不再 Respond，PreToolUse 挂到 86400s。重放仍须回传 once。
@@ -2037,12 +2069,16 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 		return
 	}
 	// 判据前置分流（B23/B27）：结构化判据先判，三个出口对应三条既有路径。
+	// 判定权威在 internal/approval（B233.21）；Manager 只按裁决落账本。
 	// AutoAllow 不建工单、不发事件、不改状态——工作区内的写入是派发的目的
 	// 本身，为它唤醒任何人都是噪音。
 	verdict := m.judgePermission(taskID, ev)
 	switch verdict.Action {
 	case permgate.AutoAllow:
-		m.autoAllowPermission(taskID, ev, verdict)
+		// AutoAllow 出口的处置（审计一次 + 原生回传 once）同样出自权威；
+		// 冻结 #14：这条处置只有本分支调用（审计回调与 OpenCode 面
+		// Hooks.AutoAllow 同一实现，只审计不投递）。
+		m.permAuthority.AutoAllow(taskID, ev, verdict)
 		return
 	case permgate.Consult:
 		// 审批者可用且本任务未停用时才咨询；否则退化为升级人工（原行为）。
@@ -2092,8 +2128,8 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 		TicketID: ticketID, Permission: permEventText(ev.Text), Kind: "gate",
 	})
 	if err != nil {
-		// 工单在、事件缺：不回滚工单，留给下一次重放由 isPermissionReplay 的
-		// 「有工单无事件」分支自愈补发（N-4）
+		// 工单在、事件缺：不回滚工单，留给下一次重放由权威重放判定
+		//（approval.Authority.IsReplay）的「有工单无事件」分支自愈补发（N-4）
 		m.log.Error("追加 permission_request 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 		return
 	}
@@ -2103,86 +2139,28 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 	m.hub.Publish(evt)
 }
 
-// judgePermission 把一次权限事件交给判据网关，返回裁决。
+// judgePermission 把一次权限事件交给判据权威（internal/approval.Authority.Judge，
+// B233.21 迁入），返回裁决；OpenCode 面 bindApproval 的 JudgePermission 钩子
+// 绑的也是这里——判据权威只有一份。
 //
-// 参数：
-//   - taskID: 任务 id（用于取工作区范围）
-//   - ev: 权限事件
-//
-// 返回：permgate.Verdict；一切无法判定的情形都返回 Escalate（fail-closed）
-//
-// 注意：
-//   - ev.Perm 为 nil 表示 adapter 提取不出结构——看不懂的请求交给人，
-//     绝不让廉价模型去猜
-//   - 读任务失败时工作区范围不可知，同样升级人工：范围未知时判「路径在不在
-//     范围内」是没有意义的
-//   - gate 为 nil 是构造契约被违反（NewManager 文档已写明不得为 nil），
-//     但这里仍兜一手：不兜的话 Judge 会在权限处理 goroutine 里空指针 panic，
-//     把整个 agentd 带走——那比升级人工严重得多，也违背「fail-closed 无例外」
+// gate 为 nil 是构造契约被违反（NewManager 文档已写明不得为 nil）。这一手兜底
+// 留在 Manager：手工构造的 Manager（白盒测试）没有权威实例可调，必须先于权威
+// 调用 fail-closed，否则会在权限处理 goroutine 里空指针 panic，把整个 agentd
+// 带走——那比升级人工严重得多，也违背「fail-closed 无例外」。
 func (m *Manager) judgePermission(taskID string, ev executor.AdapterEvent) permgate.Verdict {
 	if m.gate == nil {
 		m.log.Error("判据网关未装配，fail-closed 升级人工（NewManager 的 gate 不得为 nil）",
 			"task", taskID, "perm", ev.PermissionID)
 		return permgate.Verdict{Action: permgate.Escalate, Reason: "判据网关未装配"}
 	}
-	if ev.Perm == nil {
-		m.log.Warn("权限事件缺结构化载荷，fail-closed 升级人工",
-			"task", taskID, "perm", ev.PermissionID,
-			"text", agentd.TruncateRunes(ev.Text, 120))
-		return permgate.Verdict{Action: permgate.Escalate,
-			Reason: "adapter 未提供结构化权限载荷"}
-	}
-	task, err := m.st.GetTask(taskID)
-	if err != nil {
-		m.log.Warn("读任务失败，工作区范围不可知，fail-closed 升级人工",
-			"task", taskID, "perm", ev.PermissionID, "cause", err)
-		return permgate.Verdict{Action: permgate.Escalate,
-			Reason: "读任务失败，工作区范围不可知"}
-	}
-	scope := permgate.Scope{
-		Workdir:    task.Workdir(),
-		TaskDir:    filepath.Join(m.cfg.DataDir, "tasks", taskID),
-		TaskTmpDir: executor.TaskTmpDir(m.cfg.DataDir, taskID),
-	}
-	v := m.gate.Judge(permgate.Request{
-		Tool:      ev.Perm.Tool,
-		Text:      ev.Text,
-		Command:   ev.Perm.Command,
-		Paths:     ev.Perm.Paths,
-		Truncated: strings.Contains(ev.Text, executor.TruncationMarker),
-	}, scope)
-	switch v.Action {
-	case permgate.AutoAllow:
-		m.log.Debug("权限判定：自动放行", "task", taskID, "perm", ev.PermissionID,
-			"tool", ev.Perm.Tool, "paths", ev.Perm.Paths, "reason", v.Reason)
-	case permgate.Consult:
-		m.log.Info("权限判定：交审批者", "task", taskID, "perm", ev.PermissionID,
-			"tool", ev.Perm.Tool, "reason", v.Reason, "rule", v.Rule)
-	default:
-		lvl := escalateLogLevel(v.Rule)
-		m.log.Log(context.Background(), lvl, "权限判定：升级人工",
-			"task", taskID, "perm", ev.PermissionID, "tool", ev.Perm.Tool,
-			"paths", ev.Perm.Paths, "workdir", scope.Workdir, "task_dir", scope.TaskDir,
-			"task_tmp_dir", scope.TaskTmpDir,
-			"reason", v.Reason, "rule", v.Rule)
-	}
-	return v
+	return m.permAuthority.Judge(taskID, ev)
 }
 
 // escalateLogLevel 决定「权限判定：升级人工」这条日志的级别。
-//
-// 参数：rule 为 Verdict.Rule（黑名单命中时是规则原文，自指令时是
-// permgate.RuleSelfCommand，其余情形为空）
-//
-// 为什么不是一律 Info：Warn 这一档留给「本该被静默通过、现在被拦下」的事件，
-// 那是每次收口改动的全部价值所在，必须在日志里一眼可见。今天有两类——
-// 越界写与结构缺失（Rule 为空，B27 那一批）、自指令（B115）。黑名单命中
-// 走 Info，因为它改动前后都会被拦，不是新增的信号。
+// 实现体已随判据权威迁 internal/approval（EscalateLogLevel，B233.21）；
+// 这里保留编排侧命名落点，白盒测试沿用同名断言。
 func escalateLogLevel(rule string) slog.Level {
-	if rule == "" || rule == permgate.RuleSelfCommand {
-		return slog.LevelWarn
-	}
-	return slog.LevelInfo
+	return approval.EscalateLogLevel(rule)
 }
 
 // permissionAutoAllowPayload is the bounded structured audit shape for a static
@@ -2241,29 +2219,31 @@ func (m *Manager) auditAutoAllowOnly(taskID string, ev executor.AdapterEvent, ve
 	m.noteAutoAllowed(taskID)
 }
 
-// autoAllowPermission 是非 OpenCode 权威：审计 + 一次原生回传。
-// 只有 handlePermission 的 AutoAllow 分支调用它（冻结 #14）。
+// deliverAutoAllowOnce 把 AutoAllow 出口的 once 裁决原生回传 executor：
+// 解析执行者 + RespondPermission("once")。作为 approval.Authority 的
+// DeliverAutoAllow 回调被绑定（B233.21）——AutoAllow 处置的顺序权威（先审计、
+// 再恰好一次回传、不碰任何账本）在 approval，本函数只承载投递 mechanics 与
+// 失败日志的第一现场。
 //
 // 注意：没有工单可失败，因此回传失败不产 delivery_failed 事件；最常见的
 // 失败成因是订阅重放（同一权限请求被再次投递，而 executor 侧那次请求早已
-// 应答完毕），按 Warn 记录即可。adapterFor 失败意味着任务的运行态已没，executor
-// 侧那次请求将无人应答——Error 级，同样无工单可失败。
-func (m *Manager) autoAllowPermission(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict) {
-	m.auditAutoAllowOnly(taskID, ev, verdict)
+// 应答完毕），按 Error 记录即可。adapterFor 失败意味着任务的运行态已没，
+// executor 侧那次请求将无人应答——Error 级，同样无工单可失败。
+func (m *Manager) deliverAutoAllowOnce(taskID, permID string) {
 	ad, err := m.adapterFor(taskID)
 	if err != nil {
 		m.log.Error("自动放行：解析执行者失败，该权限请求将无人应答",
-			"task", taskID, "perm", ev.PermissionID, "cause", err)
+			"task", taskID, "perm", permID, "cause", err)
 		return
 	}
 	actx, acancel := unaryCtx(context.Background())
 	defer acancel()
-	if err := ad.RespondPermission(actx, taskID, ev.PermissionID, "once", ""); err != nil {
+	if err := ad.RespondPermission(actx, taskID, permID, "once", ""); err != nil {
 		m.log.Error("自动放行回传 executor 失败（多为订阅重放，请求已失效）",
-			"task", taskID, "perm", ev.PermissionID, "cause", err)
+			"task", taskID, "perm", permID, "cause", err)
 		return
 	}
-	m.log.Info("自动放行已回传 executor", "task", taskID, "perm", ev.PermissionID)
+	m.log.Info("自动放行已回传 executor", "task", taskID, "perm", permID)
 }
 
 // noteAutoAllowed 累计一次自动放行。
@@ -2557,50 +2537,12 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 	m.log.Info("审批者批准已送达", "task", taskID, "ticket", ticketID, "source", source)
 }
 
-// isPermissionReplay 判定一次 permission 事件是否为「已完整中介过」的重放
-// （SSE 断线重连 / agentd 重启后订阅重建都会重放同一权限请求）。
-//
-// 参数：permID 是 executor 侧裸权限 id（仅用于日志），ticketID 是命名空间化的工单 id。
-//
-// 返回：true 表示应跳过全部中介动作。
-//
-// 判定规则（why 这里不能只看工单是否存在）：
-//   - 工单不存在 → 新请求，正常中介
-//   - 工单存在且已应答 → 真重放，跳过：再动一次就是重复交付
-//   - 工单存在但通知事件缺失 → **不是**重放，而是崩溃恰好落在「建工单」与
-//     「追加事件」之间留下的半截状态。仅凭工单存在就跳过，会让 permission_request
-//     永不产生、状态停在 running、无等待者，协调者的 wait 永远不触发（N-4）——
-//     此处放行以补发事件，CreateTicket 本身幂等，不会产生第二张工单
-//   - 工单存在且事件也在 → 真重放，跳过（P1-7 的幂等承诺）
-func (m *Manager) hasPermissionAutoAllow(taskID, permID string) bool {
-	events, err := m.st.EventsFrom(taskID, 0, 1000)
-	if err != nil {
-		m.log.Error("查询权限自动放行审计事件失败", "task", taskID, "perm", permID, "cause", err)
-		return false
-	}
-	for _, event := range events {
-		if event.Type != proto.EventTypePermissionAutoAllow {
-			continue
-		}
-		var payload struct {
-			PermissionID string `json:"permission_id"`
-		}
-		if err := json.Unmarshal(event.Payload, &payload); err != nil {
-			m.log.Error("解析权限自动放行审计事件失败", "task", taskID,
-				"perm", permID, "seq", event.Seq, "cause", err)
-			continue
-		}
-		if payload.PermissionID == permID {
-			return true
-		}
-	}
-	return false
-}
-
 // respondAutoAllowReplay 把已审计过的 auto-allow 再送到当前 pending 连接。
 // SSE 重放时 pending 已空，Respond 失败只记日志。
+// 「是否已有 AutoAllow 审计」的幂等判定出自权限决策权威
+// （approval.Authority.HasAutoAllow，B233.21）。
 func (m *Manager) respondAutoAllowReplay(taskID string, ev executor.AdapterEvent) {
-	if ev.PermissionID == "" || !m.hasPermissionAutoAllow(taskID, ev.PermissionID) {
+	if ev.PermissionID == "" || !m.permAuthority.HasAutoAllow(taskID, ev.PermissionID) {
 		return
 	}
 	ad, err := m.adapterFor(taskID)
@@ -2620,7 +2562,8 @@ func (m *Manager) respondAutoAllowReplay(taskID string, ev executor.AdapterEvent
 
 // respondAnsweredTicketReplay 把已答 gate 工单的裁决再送到当前 pending 连接。
 // 第一次 Respond 已从 pending 删掉该 step_N；第二条 PreToolUse 再连时
-// isPermissionReplay 见 tk.Answer 就跳过中介。不补工单、不改状态。
+// 权威重放判定（approval.Authority.IsReplay）见 tk.Answer 就跳过中介。
+// 不补工单、不改状态。
 func (m *Manager) respondAnsweredTicketReplay(taskID string, ev executor.AdapterEvent, ticketID string) {
 	if ev.PermissionID == "" {
 		return
@@ -2653,37 +2596,9 @@ func (m *Manager) respondAnsweredTicketReplay(taskID string, ev executor.Adapter
 	m.log.Info("已答工单重放已回传 executor", "task", taskID, "perm", ev.PermissionID, "decision", decision)
 }
 
-func (m *Manager) isPermissionReplay(taskID, permID, ticketID string) bool {
-	// Safe-command AutoAllow deliberately has no ticket, so its audit event is
-	// the durable idempotency marker for replayed permission notifications.
-	if m.hasPermissionAutoAllow(taskID, permID) {
-		m.log.Debug("权限自动放行请求重放，跳过中介", "task", taskID, "perm", permID)
-		return true
-	}
-	tk, err := m.st.GetTicket(ticketID)
-	if errors.Is(err, store.ErrNotFound) {
-		return false
-	}
-	if err != nil {
-		m.log.Error("读取权限工单失败", "task", taskID, "perm", permID, "ticket", ticketID, "cause", err)
-		return true // 读不到就不动，宁可少一次唤醒也不重复中介
-	}
-	if tk.Answer != nil {
-		m.log.Debug("权限请求重放且已应答，跳过中介", "task", taskID, "perm", permID, "ticket", ticketID)
-		return true
-	}
-	hasEvent, err := m.st.TicketHasEvent(taskID, ticketID)
-	if err != nil {
-		m.log.Error("查询权限工单通知事件失败", "task", taskID, "ticket", ticketID, "cause", err)
-		return true
-	}
-	if hasEvent {
-		m.log.Debug("权限请求重放，跳过中介", "task", taskID, "perm", permID, "ticket", ticketID)
-		return true
-	}
-	m.log.Warn("权限工单存在但通知事件缺失，补发以自愈", "task", taskID, "perm", permID, "ticket", ticketID)
-	return false
-}
+// isPermissionReplay 的判定权威（含 AutoAllow 审计幂等标记、工单已答、
+// 「有工单无事件」自愈放行三类规则）已迁 internal/approval
+//（approval.Authority.IsReplay，B233.21）；编排侧只剩回传 mechanics。
 
 // permFingerprint 计算权限描述全文的裁决指纹（sha256 十六进制串）。
 //
@@ -2716,34 +2631,20 @@ func permFingerprintFor(ev executor.AdapterEvent) string {
 	return executor.PermFingerprint(ev)
 }
 
-// reuseDecision 检查本次权限请求是否命中本任务内既有的人工批准；命中则自动
-// 放行并返回 true，调用方不得再走升级人工那套。
+// reuseDecision 落「决策复用」的账本事实：是否命中本任务内既有的人工批准由
+// 权威判定（approval.Authority.FindReuse，B233.21——查询与 fail-closed 语义
+// 已迁出）；命中则补 permission_reuse 审计事件并经 approvePermission 自动放行，
+// 返回 true，调用方不得再走升级人工那套。
 //
 // 参数：
 //   - taskID/ev/ticketID: 与 escalatePermission 同源
 //
 // 返回：命中并已自动放行为 true；未命中（含查询失败）为 false
-//
-// 注意：
-//   - 查询失败按未命中处理（fail-closed 到「照常问人」）——多问一次是噪音，
-//     错误地复用是安全事故，两个方向的代价不对称
-//   - 只复用 allow、只在同任务内复用：见 spec §3.3/§3.4
 func (m *Manager) reuseDecision(taskID string, ev executor.AdapterEvent, ticketID string) bool {
-	fp := permFingerprintFor(ev)
-	prior, err := m.st.FindReusableGrant(taskID, fp)
-	if err != nil {
-		m.log.Warn("查询可复用裁决失败，照常升级人工", "task", taskID,
-			"ticket", ticketID, "fingerprint", fp[:8], "cause", err)
+	prior, fp, hit := m.permAuthority.FindReuse(taskID, ticketID, ev)
+	if !hit {
 		return false
 	}
-	if prior == nil {
-		m.log.Debug("无可复用裁决，升级人工", "task", taskID,
-			"ticket", ticketID, "fingerprint", fp[:8])
-		return false
-	}
-	m.log.Info("命中既有人工批准，自动放行不再叫醒协调者", "task", taskID,
-		"ticket", ticketID, "prior_ticket", prior.ID, "fingerprint", fp[:8],
-		"perm_chars", len([]rune(ev.Text)))
 	// 只入库不 Publish：照 approver_decision 的先例——自动放行没有人需要被唤醒，
 	// 但协调者经 show 必须能看到「这条是复用工单 X 的裁决放行的」
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypePermissionReuse, permissionReusePayload{
@@ -2938,10 +2839,8 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 	// 工单同构、天然幂等：agentd 重启后 executor 重放同一个 request 时，
 	// CreateTicket 直接返回 created=false，不会产出第二张永远答不掉的单（B58）。
 	// executor 没有原生 id 时退回 uuid——问题没有天然稳定 id，回答一次即终结。
-	ticketID := uuid.NewString()
-	if ev.QuestionID != "" {
-		ticketID = executor.NamespacedTicketID(taskID, ev.QuestionID)
-	}
+	// 身份派生是提问面的权威决策，落 internal/approval（B233.21 spec §范围 3）。
+	ticketID := approval.AskTicketID(taskID, ev.QuestionID)
 	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "question")
 	req, _ := json.Marshal(ticketRequest{Kind: "ask", Question: ev.Text, QuestionID: ev.QuestionID})
 	m.log.Info("提问工单请求已序列化", "task", taskID, "ticket", ticketID,
@@ -2956,26 +2855,28 @@ func (m *Manager) handleQuestion(ctx context.Context, taskID string, ev executor
 		return
 	}
 	if !created {
+		// 撞上既有工单：复用还是另开新单由提问权威处置（approval.ClassifyAskDuplicate，
+		// B233.21）；重读既有工单只是给权威取判定输入。
 		prior, gerr := m.st.GetTicket(ticketID)
-		switch {
-		case gerr != nil:
+		switch approval.ClassifyAskDuplicate(prior, gerr) {
+		case approval.AskDuplicateSkip:
 			m.log.Error("提问工单已存在但读取失败，按重放跳过", "task", taskID,
 				"ticket", ticketID, "cause", gerr)
 			return
-		case prior.Answer == nil:
+		case approval.AskDuplicateWait:
 			// 重放：agentd 重启后 executor 重发了同一个仍未作答的 request。
 			// 不建单、不发第二条事件（协调者已经被叫醒过一次），但必须重挂
 			// waiter——新 agentd 实例里没有任何 goroutine 在等这张单
 			m.log.Info("提问重放，复用既有工单并重挂等待", "task", taskID, "ticket", ticketID)
 			go m.waitQuestion(ctx, taskID, ticketID)
 			return
-		default:
+		default: // approval.AskDuplicateReissue
 			// 重发：旧单已答，但 executor 又问了一次（opencode 的「答复没对上
 			// 选项」路径用的是同一个 reqID）。此时**必须**新开一张单——复用已答
 			// 工单的 id 会让协调者再也答不了，任务停在 waiting_answer 到 stall
 			m.log.Info("提问重发（旧单已答），另开新工单", "task", taskID,
 				"prior_ticket", ticketID)
-			ticketID = uuid.NewString()
+			ticketID = approval.AskReissueTicketID()
 			if _, err := m.st.CreateTicket(&proto.Ticket{
 				ID: ticketID, TaskID: taskID, Kind: "ask",
 				Request: req, CreatedAt: time.Now().UTC(),
