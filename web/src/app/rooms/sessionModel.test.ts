@@ -118,6 +118,19 @@ describe('@ 候选与 token 替换（B358.8 #2 纯函数缝）', () => {
     expect(mentionCandidates(members, '没有人')).toEqual([])
   })
 
+  it('候选按身份去重且非席位记录优先（review P2：显式成员+席位可并存）', () => {
+    const duplicated: SessionMember[] = [
+      { identity: 'user:sy', kind: 'seat', status: 'working', card_id: 'B1', card_title: '席位卡' },
+      { identity: 'user:sy', kind: 'human', status: 'working' },
+    ]
+    const candidates = mentionCandidates(duplicated, '')
+    expect(candidates).toHaveLength(1)
+    expect(candidates[0]).toMatchObject({ identity: 'user:sy', kind: 'human' })
+    // 顺序保持：非席位顶替原席位的位置，其余身份相对次序不变
+    const triple = [...duplicated, { identity: 'agent:a1', kind: 'agent', status: 'working' } as SessionMember]
+    expect(mentionCandidates(triple, '').map((member) => member.identity)).toEqual(['user:sy', 'agent:a1'])
+  })
+
   it('applyMention 整体替换末尾 token 为 @<identity> 并以空格终结', () => {
     expect(applyMention('看下 @sy', 'user:sy')).toBe('看下 @user:sy ')
     expect(applyMention('@', 'agent:a1')).toBe('@agent:a1 ')

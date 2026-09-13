@@ -1,32 +1,13 @@
 // NewSessionDialog —— 新建会话对话框。owner 用统一记法 user:<name>/agent:<name>
 // （B358.4 拍板①：成员身份不收机器位 web:）；客户端前缀预检只为快速失败，
 // 服务端校验是权威（invalidSessionOwner 400 原文透传）。
-// B358.8 #7：owner 预填 = localStorage 记忆的上次成功创建 owner（读写容错隐私
-// 模式，先例 treePrefs.ts）——第二次起零输入可直接提交；输入挂既有成员候选
-// （Shell 从会话流投影 identities 下传）+ 当前输入，保留改选能力。
+// B358.8 #7：owner 预填 = localStorage 记忆的上次成功创建 owner（sessionOwnerPrefs，
+// 读写容错隐私模式）——第二次起零输入可直接提交；输入挂既有成员候选（Shell 从
+// 会话流投影 identities 下传）+ 当前输入，保留改选能力。
 // 控制台无「当前登录用户」概念（web:<host> 是机器位不配当 owner，B358.4 拍板①），
 // 记忆方案是有意的落点：首次使用仍需输一次。
 import { useEffect, useState } from 'react'
-
-export const LAST_SESSION_OWNER_KEY = 'handoff.last-session-owner'
-
-export function loadLastSessionOwner(): string {
-  try {
-    const value = window.localStorage.getItem(LAST_SESSION_OWNER_KEY)
-    return typeof value === 'string' ? value : ''
-  } catch {
-    // 隐私模式等 storage 不可用：记忆是体验优化不是功能依赖，退回手输
-    return ''
-  }
-}
-
-export function saveLastSessionOwner(owner: string): void {
-  try {
-    window.localStorage.setItem(LAST_SESSION_OWNER_KEY, owner)
-  } catch {
-    // 写失败不阻塞创建流程
-  }
-}
+import { loadLastSessionOwner } from './sessionOwnerPrefs'
 
 export function NewSessionDialog({ open, busy, error, memberIdentities = [], onCancel, onCreate }: {
   open: boolean; busy: boolean; error: string

@@ -3,7 +3,8 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { LAST_SESSION_OWNER_KEY, NewSessionDialog, saveLastSessionOwner } from './NewSessionDialog'
+import { NewSessionDialog } from './NewSessionDialog'
+import { LAST_SESSION_OWNER_KEY, saveLastSessionOwner } from './sessionOwnerPrefs'
 
 const openDialog = (over: { memberIdentities?: string[] } = {}) =>
   render(

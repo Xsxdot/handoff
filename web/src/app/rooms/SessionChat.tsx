@@ -132,6 +132,9 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
       if (picked) pickMention(picked.identity)
     } else if (event.key === 'Escape') {
       setMentionDismissed(true)
+      // Esc 分层（review P2）：stopPropagation 挡住原生事件继续冒泡到 window，
+      // SessionTab 的抽屉收起监听器不再同帧收到这次 Esc——面板开着时 Esc 只关面板。
+      event.stopPropagation()
     }
   }
 

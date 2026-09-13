@@ -139,6 +139,25 @@ describe('SessionChat', () => {
     expect(input).toHaveValue('@user:sy ')
   })
 
+  it('@ 候选按身份去重：同一身份显式成员+席位只出一行（review P2）', async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionChat
+        sessionId="session:1"
+        summary={summary({ members: [
+          { identity: 'user:sy', kind: 'seat', status: 'working', card_id: 'B1', card_title: '席位卡' },
+          { identity: 'user:sy', kind: 'human', status: 'working' },
+        ] })}
+        events={[]} historyError="" onSent={() => {}}
+      />,
+    )
+    await user.type(screen.getByRole('textbox', { name: '发送消息' }), '@')
+    const options = screen.getAllByRole('option')
+    expect(options).toHaveLength(1)
+    expect(options[0]).toHaveAttribute('data-mention-identity', 'user:sy')
+    expect(options[0]).toHaveTextContent('成员')
+  })
+
   it('发送：正文里的 @token 解析进 mentions（服务端据此寻址）', async () => {
     const onSent = vi.fn()
     const user = userEvent.setup()

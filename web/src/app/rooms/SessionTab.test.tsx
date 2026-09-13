@@ -90,6 +90,20 @@ describe('SessionTab', () => {
     await waitFor(() => expect(screen.queryByTestId('session-drawer')).toBeNull())
   })
 
+  it('Esc 分层：@ 面板开着按 Esc 只关面板，抽屉保持（review P2）', async () => {
+    const user = userEvent.setup()
+    render(<SessionTab sessionId="session:7" title="架构物理化" />)
+    await user.click(await screen.findByRole('button', { name: '会话详情' }))
+    expect(await screen.findByTestId('session-drawer')).toBeInTheDocument()
+    const input = screen.getByRole('textbox', { name: '发送消息' })
+    await user.type(input, '@')
+    expect(screen.getByTestId('mention-menu')).toBeInTheDocument()
+    await user.keyboard('{Escape}')
+    expect(screen.queryByTestId('mention-menu')).toBeNull()
+    // 抽屉的 window 监听器不得同帧收到这次 Esc
+    expect(screen.getByTestId('session-drawer')).toBeInTheDocument()
+  })
+
   it('抽屉归档入口：确认后调既有幂等端点 archiveSession', async () => {
     const user = userEvent.setup()
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
