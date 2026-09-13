@@ -28,6 +28,8 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -37,6 +39,8 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/executor/grok"
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
+	"github.com/Xsxdot/handoff/internal/hostapi"
+	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgermirror"
 	"github.com/Xsxdot/handoff/internal/logx"
@@ -476,9 +480,29 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}
 	srv.SetLedger(lst)
-	// B156.2 协作房间面装配：collab 入站门面 + 换绑端口 + 游标介质。设计上
-	// SetupAutomation 是全仓唯一组装点（target.json assembly 登记），此处激活。
+	// B156.3 自动化层装配。B233.18：SetupAutomation 收缩为账本门面 / automation
+	// cursor / ptyGate 的纯装配；房间/keystone/hostapi 三域构造上移本组装点
+	// （target.json assembly 登记点语义随之由 cmd 承接）——先备 facade，再构造注入。
 	srv.SetupAutomation(lst)
+	// 房间面（B156.2）：collab 入站门面 + 游标介质，经 SetRooms 注入。
+	facade := srv.AutoLedger()
+	rooms := collab.New(facade)
+	rooms.SetCursorStore(cursor.New(filepath.Join(srv.Conf()().DataDir, "room-cursors.json")))
+	srv.SetRooms(rooms)
+	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
+	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
+	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	srv.SetHostAPI(hostAPI)
+	// keystone 域（B156.3）：协调者会话承载 + 隔离 HOME 供给 + ref 解析 +
+	// 叙事/attach 适配，经 SetKeystone 注入。
+	prepareHome := agentd.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
+	coord := opencode.NewCoordinator(hostAPI, slog.Default())
+	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome)
+	resolver := agentd.NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath)
+	ks := keystone.New(runner, agentd.NewRoomNarrator(rooms), facade,
+		agentd.NewAttachLocator(hostapi.ExpandHomePath))
+	ks.SetSessionRefResolver(resolver)
+	srv.SetKeystone(ks)
 	// B233.14：编制域具体服务在 cmd 组装点构造（scheduling.New 不再落 gateway）。
 	// 注册表由 gateway 经 SchedulingRegistry() 交出台账→Registry 适配；判空拒启动，
 	// 不得把 nil 喂给 New 静默建出坏服务。

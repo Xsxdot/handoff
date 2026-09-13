@@ -39,10 +39,8 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab"
-	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
-	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
@@ -58,7 +56,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
-	"github.com/Xsxdot/handoff/internal/toolchain"
 	"github.com/Xsxdot/handoff/internal/webui"
 	"github.com/coder/websocket"
 )
@@ -167,15 +164,18 @@ type Server struct {
 	restart     func(reason string) bool
 	pty         *ptyhost.Host
 	ptyRootPath string
-	// B156.3 自动化层：编制域与 keystone 域的服务引用，SetupAutomation 装配。
+	// B156.3 自动化层：编制域与 keystone 域的服务引用，cmd 组装点装配注入。
 	// B233.14：编制域字段是使用方接口 SchedulingClient；具体 *scheduling.Service
 	// 只在 cmd 组装点构造后经 SetScheduling 注入，本文件不再 new。
+	// B233.18：keystone/hostapi 同款——构造上移 cmd 组装点，经 SetKeystone /
+	// SetHostAPI 注入，本文件不再 new。
 	scheduling SchedulingClient
 	keystone   *keystone.Service
 	autoLedger *ledgerapi.Facade
 	ptyGate    *ptyapi.Host
 	hostAPI    *hostapi.Host
-	// B156.2 协作房间：入站门面实例与换绑端口，SetupAutomation 装配。
+	// B156.2 协作房间：入站门面实例与换绑端口，cmd 组装点装配注入
+	// （B233.18：collab.New 构造上移 cmd，经 SetRooms 注入）。
 	rooms *collab.Service
 	// coordLocks 串行化同一卡的 Launch→席位 CAS；每张卡独立，避免不同卡互相阻塞。
 	coordLocksMu sync.Mutex
@@ -917,17 +917,16 @@ func truncateRunes(s string, n int) string {
 
 // ===== B156.3 自动化层组装点（架构法第四条第 3 档）=====
 
-// SetupAutomation 装配三期自动化层：账本门面、编制域服务、keystone 域服务，
-// 并把各域的出站端口绑定到具体实现上。与 SetLedger 同形：cmd 侧持账本库，
-// 组装点内完成全部跨域绑定；绑定代码只允许出现在本文件（target.json assembly
-// 登记点），组装点之外不得 new 他方具体类型。
+// SetupAutomation 装配自动化层的账本门面与 automation cursor，并在 PTY 宿主
+// 就绪时装配终端门面。
 //
-// B233.14：本函数不再构造编制域具体服务；它只装配账本门面（编制域具体服务由
-// cmd 组装点 `scheduling.New` 构造后 `SetScheduling` 注入，经 SchedulingRegistry()
-// 取账户门面适配）。其余 rooms/keystone/hostapi 装配原样保留。
+// B233.14：编制域具体服务不在本函数构造——cmd 组装点 `scheduling.New` 构造后
+// `SetScheduling` 注入，账本门面经 SchedulingRegistry() 交出 Registry 适配。
 //
-// 骨架期语义：服务已构造、端口已绑定，行为由实现票逐缝点亮；宿主进程照常
-// 启动，不受未点亮能力影响。
+// B233.18：房间/keystone/hostapi 三域服务构造上移 cmd 组装点（cmd/agentd.go
+// setupLedger），Server 只持注入实例（SetRooms / SetHostAPI / SetKeystone），
+// 本函数不再 new 任何域服务；装配辅助类型（coordinatorRunner 等）留在本包，
+// 经导出构造函数供 cmd 组装点与测试装配缝共用。
 func (s *Server) SetupAutomation(st *ledger.Store) {
 	facade := ledgerapi.New(st)
 	s.autoLedger = facade
@@ -942,39 +941,6 @@ func (s *Server) SetupAutomation(st *ledger.Store) {
 	s.automationCursor = loadedCursor
 	s.automationMu.Unlock()
 	s.log.Info("自动化 cursor 已装配", "path", cursorPath, "loaded_seq", loadedCursor)
-	s.rooms = collab.New(facade)
-	s.rooms.SetCursorStore(cursor.New(filepath.Join(s.conf().DataDir, "room-cursors.json")))
-	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
-	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
-	s.hostAPI = hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
-	supplier := coordinatorHomeSupplier{
-		currentConfig:  s.conf,
-		userHomeDir:    os.UserHomeDir,
-		expandHomeDir:  hostapi.ExpandHomePath,
-		credentialPath: toolchain.CredRelPathFor,
-		loadRules:      s.ruleLoader,
-		profileFor: func(cli string) (executor.Profile, error) {
-			base := filepath.Base(cli)
-			if s.providers == nil {
-				return nil, executor.UnsupportedError(base, executor.CapProfile)
-			}
-			prov, err := s.providers.Get(base)
-			if err != nil {
-				return nil, err
-			}
-			if profile, ok := executor.ProfileFromProvider(prov); ok {
-				return profile, nil
-			}
-			return nil, executor.UnsupportedError(base, executor.CapProfile)
-		},
-	}
-	coord := opencode.NewCoordinator(s.hostAPI, slog.Default())
-	runner := coordinatorRunner{coord: coord, reg: s.providers, prepareHome: supplier.Prepare}
-	resolver := coordinatorSessionRefResolver{server: s, expandHomeDir: hostapi.ExpandHomePath}
-	ks := keystone.New(runner, roomNarrator{c: s.rooms}, facade,
-		attachLocator{expandHome: hostapi.ExpandHomePath})
-	ks.SetSessionRefResolver(resolver)
-	s.keystone = ks
 	if s.pty != nil {
 		s.ptyGate = ptyapi.New(s.pty)
 	}
@@ -1035,13 +1001,31 @@ func (s *Server) SchedulingRegistry() schedclient.Registry {
 	return facadeAsRegistry{f: s.autoLedger}
 }
 
-// SetHostAPI 注入进程承载门面（测试缝）。
+// AutoLedger 返回自动化账本门面（B233.18：cmd 组装点构造 rooms/keystone 时
+// 复用 SetupAutomation 建出的同一实例，避免二次 New 出分叉门面）。
+// 未装配时返回 nil，调用方须显式判空。
+func (s *Server) AutoLedger() *ledgerapi.Facade { return s.autoLedger }
+
+// Providers 返回执行者注册表（B233.18：cmd 组装点构造 keystone 会话承载缝与
+// 隔离 HOME 供给的 Profile 闭包所需）。未注入时返回 nil。
+func (s *Server) Providers() *executor.Registry { return s.providers }
+
+// RuleLoader 返回载体规则与技能装载函数（B233.18：cmd 组装点构造协调者隔离
+// HOME 供给所需）。未注入时返回 nil。
+func (s *Server) RuleLoader() func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error) {
+	return s.ruleLoader
+}
+
+// SetHostAPI 注入进程承载门面（B233.18 升格生产注入缝：cmd 组装点构造后注入；
+// 测试亦可整体替换）。
 func (s *Server) SetHostAPI(h *hostapi.Host) { s.hostAPI = h }
 
-// SetKeystone 注入 keystone 域服务（测试缝：同上）。
+// SetKeystone 注入 keystone 域服务（B233.18 升格生产注入缝：cmd 组装点构造后
+// 注入；测试亦可整体替换）。
 func (s *Server) SetKeystone(svc *keystone.Service) { s.keystone = svc }
 
-// SetRooms 注入协作房间服务（测试缝：整体替换 SetupAutomation 构造的实例）。
+// SetRooms 注入协作房间服务（B233.18 由测试缝升格为生产注入缝：cmd 组装点
+// 构造后注入；测试亦可整体替换）。
 func (s *Server) SetRooms(svc *collab.Service) { s.rooms = svc }
 
 // SetRuleLoader 注入载体规则与技能装载函数。
@@ -1196,6 +1180,14 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	return keysclient.TurnResult{SessionID: got.SessionID, Output: got.Output}, nil
 }
 
+// NewCoordinatorRunner 构造 keystone 的会话承载缝（B233.18：类型与 Launch/Resume
+// 实现留在本包，构造上移 cmd 组装点，故导出本构造函数；返回 keysclient.Runner
+// 使用方接口，cmd 不感知具体类型）。
+func NewCoordinatorRunner(coord executor.Coordinator, reg *executor.Registry,
+	prepareHome func(keysclient.SessionSpec) (string, error)) keysclient.Runner {
+	return coordinatorRunner{coord: coord, reg: reg, prepareHome: prepareHome}
+}
+
 // resumeTurnRequest 把 SessionRef 上的续接环境映射进 RunTurn。HOME 空时
 // 子进程继承 agentd 默认 HOME，隔离会话必然找不到——调用方必须带上。
 func resumeTurnRequest(ref keysclient.SessionRef, prompt string) hostapi.TurnRequest {
@@ -1238,6 +1230,10 @@ func (n roomNarrator) Say(cardID, text string) error {
 	return err
 }
 
+// NewRoomNarrator 构造房间叙事适配器（B233.18：构造上移 cmd 组装点；返回
+// keysclient.Narrator 使用方接口）。
+func NewRoomNarrator(c *collab.Service) keysclient.Narrator { return roomNarrator{c: c} }
+
 // attachLocator 是 attach 定位缝的实现：命令形态按 CLI 拼装，包含展开后的绝对 HOME 路径。
 type attachLocator struct {
 	expandHome func(string) (string, error)
@@ -1265,4 +1261,10 @@ func (l attachLocator) Locate(ref keysclient.SessionRef, workdir string) (keyscl
 		Machine: ref.Machine, Dir: workdir,
 		Command: fmt.Sprintf("HOME=%s %s --session %s", shellQuote(expandedHome), shellQuote(ref.CLI), shellQuote(ref.SessionID)),
 	}, nil
+}
+
+// NewAttachLocator 构造 attach 定位缝（B233.18：构造上移 cmd 组装点；返回
+// keysclient.TerminalLocator 使用方接口）。
+func NewAttachLocator(expandHome func(string) (string, error)) keysclient.TerminalLocator {
+	return attachLocator{expandHome: expandHome}
 }

@@ -4,15 +4,26 @@ package agentd
 //
 // 职责：SetupAutomation 不再构造编制域具体服务后，测试需要真实编制域时显式补装
 // （镜像 cmd/agentd.go#setupLedger 的组装：SchedulingRegistry + SetKnownMachines
-// + SetScheduling）。
+// + SetScheduling）。B233.18 起 rooms/hostapi/keystone 三域构造同样上移 cmd，
+// 由 assembleDomainsForTest 经同一条导出构造缝（NewCoordinatorRunner 等）镜像
+// 补装，保证装配完成后字段状态与改前 SetupAutomation 逐字段等价；cmd 包无法
+// 被本测试包导入（import 环），镜像按 newSchedulingForTest 先例落在测试侧。
 // 边界：仅测试构建可见；不改生产导入面。SetupAutomationForTest 导出以便
 // package agentd_test 复用（与 B23313 ManagerFactory 同款跨测试包接线）。
 
 import (
+	"log/slog"
+	"path/filepath"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/cursor"
+	"github.com/Xsxdot/handoff/internal/executor/opencode"
+	"github.com/Xsxdot/handoff/internal/hostapi"
+	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 // newSchedulingForTest 构造编制域具体服务并镜像 cmd 的 SetKnownMachines（经
@@ -35,10 +46,33 @@ func newSchedulingForTest(t *testing.T, srv *Server) *scheduling.Service {
 	return svc
 }
 
+// assembleDomainsForTest 镜像 cmd/agentd.go#setupLedger 的三域装配（B233.18：
+// rooms/hostapi/keystone 构造上移 cmd 后，SetupAutomation 只剩 facade/cursor/
+// ptyGate 纯装配，测试经导出构造函数 + Set* 注入缝补装三域）。
+func assembleDomainsForTest(t *testing.T, srv *Server) {
+	t.Helper()
+	facade := srv.AutoLedger()
+	if facade == nil {
+		t.Fatal("AutoLedger() == nil：SetupAutomation 未装配账本门面")
+	}
+	rooms := collab.New(facade)
+	rooms.SetCursorStore(cursor.New(filepath.Join(srv.Conf()().DataDir, "room-cursors.json")))
+	srv.SetRooms(rooms)
+	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	srv.SetHostAPI(hostAPI)
+	prepareHome := NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
+	coord := opencode.NewCoordinator(hostAPI, slog.Default())
+	ks := keystone.New(NewCoordinatorRunner(coord, srv.Providers(), prepareHome),
+		NewRoomNarrator(rooms), facade, NewAttachLocator(hostapi.ExpandHomePath))
+	ks.SetSessionRefResolver(NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath))
+	srv.SetKeystone(ks)
+}
+
 // SetupAutomationForTest 装配账本/rooms/keystone 并补装编制域具体服务。
 func SetupAutomationForTest(t *testing.T, srv *Server, st *ledger.Store) *scheduling.Service {
 	t.Helper()
 	srv.SetupAutomation(st)
+	assembleDomainsForTest(t, srv)
 	svc := newSchedulingForTest(t, srv)
 	srv.SetScheduling(svc)
 	return svc

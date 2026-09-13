@@ -23,7 +23,9 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
+	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/toolchain"
 )
 
 type coordinatorHomeSupplier struct {
@@ -120,6 +122,39 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 		return "", fmt.Errorf("Profile.Prepare 未成功 prepared=false notes=%v", rep.Notes)
 	}
 	return targetHome, nil
+}
+
+// NewCoordinatorPrepareHome 构造协调者隔离 HOME 的供给函数（coordinatorHomeSupplier
+// 的 Prepare 方法值）。B233.18 keystone 构造上移 cmd 组装点后，cmd 无法直接拼装
+// 本包未导出类型，字段接线（主 HOME 读取、HOME 展开、凭据相对路径表、Profile
+// 闭包）由本构造函数按原 SetupAutomation 形态完成；调用方只注入 Server 持有的
+// 三个活依赖（活配置、执行者注册表、规则装载）。返回值供 coordinatorRunner 的
+// prepareHome 缝直接消费。providers 允许为 nil（沿用原 nil 守卫：按能力缺口拒绝）。
+func NewCoordinatorPrepareHome(currentConfig func() *config.Config, providers *executor.Registry,
+	loadRules func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error),
+) func(keysclient.SessionSpec) (string, error) {
+	supplier := coordinatorHomeSupplier{
+		currentConfig:  currentConfig,
+		userHomeDir:    os.UserHomeDir,
+		expandHomeDir:  hostapi.ExpandHomePath,
+		credentialPath: toolchain.CredRelPathFor,
+		loadRules:      loadRules,
+		profileFor: func(cli string) (executor.Profile, error) {
+			base := filepath.Base(cli)
+			if providers == nil {
+				return nil, executor.UnsupportedError(base, executor.CapProfile)
+			}
+			prov, err := providers.Get(base)
+			if err != nil {
+				return nil, err
+			}
+			if profile, ok := executor.ProfileFromProvider(prov); ok {
+				return profile, nil
+			}
+			return nil, executor.UnsupportedError(base, executor.CapProfile)
+		},
+	}
+	return supplier.Prepare
 }
 
 // projectCoordinatorConfig 复制活配置并把 DataDir、RepoRoot 以及相对 SQLite Ledger DSN
@@ -261,6 +296,15 @@ func normalizeCoordinatorSpec(spec keysclient.SessionSpec) (keysclient.SessionSp
 type coordinatorSessionRefResolver struct {
 	server        *Server
 	expandHomeDir func(string) (string, error)
+}
+
+// NewCoordinatorSessionRefResolver 构造 keystone 的 ref 解析缝（B233.18：类型与
+// 解析逻辑留在本包，构造上移 cmd 组装点，故导出本构造函数；返回
+// keystone.SessionRefResolver 使用方接口）。resolver 经 server 读编制域端口，
+// server 不可为 nil。
+func NewCoordinatorSessionRefResolver(server *Server,
+	expandHomeDir func(string) (string, error)) keystone.SessionRefResolver {
+	return coordinatorSessionRefResolver{server: server, expandHomeDir: expandHomeDir}
 }
 
 func (r coordinatorSessionRefResolver) ResolveSessionRef(card string, ref keysclient.SessionRef) (keysclient.SessionRef, error) {
