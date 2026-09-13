@@ -318,15 +318,23 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 
 // handleRoomSend POST /api/rooms/{id}/messages → 用户发言（kind 服务端固定 user，
 // actor 服务端注入，均不经请求体）。空正文拒绝（无意义消息不进房间）。
+// reply_to 是回复锚发送半边（B365）：可选，逐字映射 RoomMessage.ReplyTo——
+// 接收侧 ResolveDelivery 隐式寻址原作者（冻结判定，本 handler 不碰）；负值 400
+//（0 = 无回复锚，与缺省等价，wire omitempty 下不落键）。
 func (s *Server) handleRoomSend(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("id")
 	var req struct {
 		Body     string   `json:"body"`
 		Refs     []string `json:"refs,omitempty"`
 		Mentions []string `json:"mentions,omitempty"`
+		ReplyTo  int64    `json:"reply_to,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
+		return
+	}
+	if req.ReplyTo < 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("reply_to 必须为非负 seq；0 = 无回复锚"))
 		return
 	}
 	if strings.TrimSpace(req.Body) == "" {
@@ -335,6 +343,7 @@ func (s *Server) handleRoomSend(w http.ResponseWriter, r *http.Request) {
 	}
 	seq, err := s.rooms.Send(roomID, proto.RoomMessage{
 		Kind: proto.RoomMsgUser, Body: req.Body, Refs: req.Refs, Mentions: req.Mentions,
+		ReplyTo: req.ReplyTo,
 	}, s.roomUserActor(r))
 	if err != nil {
 		s.log.Warn("房间消息发送失败", "room", roomID, "actor", s.roomUserActor(r), "cause", err)

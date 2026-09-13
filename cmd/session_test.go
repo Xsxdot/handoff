@@ -5,17 +5,26 @@
 package cmd
 
 import (
+	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+	"sync"
 	"testing"
+	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -640,5 +649,273 @@ func TestSessionArchiveCommand(t *testing.T) {
 	}
 	if !strings.Contains(errb, "session:999") {
 		t.Fatalf("报错应含会话 id（可行动）: %q", errb)
+	}
+}
+
+// —— B365：wait --follow 常驻形态 + send --reply-to 发送半边 ——
+
+// syncBuffer 是 goroutine 直调 runSessionWait 时并发安全的输出收集器
+//（test 二进制默认开 -race，bytes.Buffer 裸并发必炸）。
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (s *syncBuffer) Write(p []byte) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.Write(p)
+}
+
+func (s *syncBuffer) String() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.buf.String()
+}
+
+// waitOutputLines 轮询等待 stdout 出现 n 行（follow 形态的同步缝：首个命中行
+// 出现即证明 runSessionWait 已进读循环——信号注册在循环之前，此后发 SIGTERM
+// 不会落回默认处置杀死测试进程）。
+func waitOutputLines(t *testing.T, out *syncBuffer, n int, within time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		// 空串不是一行：先排空态再数行（Count("",...)+1 的 0+1 恒真陷阱）。
+		if s := out.String(); s != "" && strings.Count(strings.TrimRight(s, "\n"), "\n")+1 >= n {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("等待 %d 行输出超时（within=%s）: %q", n, within, out.String())
+}
+
+// mustWaitConfig 让直调面（不经 runLedgerCLI 的 flag 树）拿到与 CLI 同款
+// DataDir 配置；openRoomService 经 configPath 读它（先例
+// TestOpenLedgerIgnoresRetiredEnabledFlag 的 configPath 直设）。
+func mustWaitConfig(t *testing.T, dir string) {
+	t.Helper()
+	cfgPath := filepath.Join(dir, "config.yaml")
+	c := &config.Config{
+		Listen: "127.0.0.1:0", Token: "t", DataDir: dir, StallTimeout: 2 * time.Hour,
+		Ledger: config.LedgerConfig{Enabled: true},
+	}
+	if err := config.Save(cfgPath, c); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	configPath = cfgPath
+}
+
+// TestSessionWaitFollowOutputsEachHit 锁 follow 常驻形态的输出契约（spec §2.1）：
+// 两条预置命中（--since 0 首轮轮询全见）各自输出一行 SessionWake——一次性原语
+// 会在首个命中后退出，follow 必须两行都出；之后无新命中，--timeout 作为空闲
+// 上限到点以 124 退出（非 0 退出不影响已输出行）。
+func TestSessionWaitFollowOutputsEachHit(t *testing.T) {
+	dir := t.TempDir()
+	svc, _, _, sessionID := mustWaitFixture(t, dir)
+	seq1, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 第一条", Mentions: []string{"user:sy"}}, "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq2, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 第二条", Mentions: []string{"user:sy"}}, "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--follow", "--since", "0", "--timeout", "300ms")
+	codeErr := &exitCodeError{}
+	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
+		t.Fatalf("follow 空闲超时应 124: %v", err)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("follow 应逐行输出两命中，实得 %d 行: %q", len(lines), out)
+	}
+	var seqs []int64
+	for _, line := range lines {
+		var wake proto.SessionWake
+		if err := json.Unmarshal([]byte(line), &wake); err != nil {
+			t.Fatalf("SessionWake 解码: %v 原文=%s", err, line)
+		}
+		if wake.Session != sessionID {
+			t.Fatalf("session=%s want %s", wake.Session, sessionID)
+		}
+		seqs = append(seqs, wake.Hit.Seq)
+	}
+	if seqs[0] != seq1 || seqs[1] != seq2 {
+		t.Fatalf("两行命中 seq 应升序 %d,%d，实得 %v", seq1, seq2, seqs)
+	}
+}
+
+// TestSessionWaitFollowTimeoutIsIdleNotTotal 锁 follow 下 --timeout 的空闲语义
+//（spec §2.1 字面：任意两命中帧之间的最大间隔）：第二条命中在「总时长」假想
+// 死线之后才落账、但仍在第一条命中的空闲窗内——总时长语义（WithTimeout 整体
+// 掐死）下第二条永不输出，空闲语义下两行全出、空闲窗重新计满后才 124。轮询
+// 节奏压到 20ms（sessionWaitPollInterval var 测试缝），收尾还原。
+func TestSessionWaitFollowTimeoutIsIdleNotTotal(t *testing.T) {
+	dir := t.TempDir()
+	svc, _, _, sessionID := mustWaitFixture(t, dir)
+	mustWaitConfig(t, dir)
+	oldInterval := sessionWaitPollInterval
+	sessionWaitPollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { sessionWaitPollInterval = oldInterval })
+	send := func(body string) {
+		t.Helper()
+		if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: body, Mentions: []string{"user:sy"}}, "user:tester"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var out syncBuffer
+	c := &cobra.Command{Use: "wait"}
+	c.SetOut(&out)
+	c.SetContext(context.Background())
+	start := time.Now()
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runSessionWait(c, "user:sy", 0, true, 600*time.Millisecond, true)
+	}()
+	// 第一条在 400ms 落账、下个 20ms tick 即见（< 600ms 总时长死线）——两种
+	// 语义下都输出，作为第二条的空闲窗锚点。
+	time.Sleep(400 * time.Millisecond)
+	send("@user:sy 第一条")
+	waitOutputLines(t, &out, 1, 5*time.Second)
+	// 第二条在 ~800ms 落账：> 600ms（总时长语义此刻已 124 收场），但距第一条
+	// 命中帧 ~400ms < 600ms（空闲窗仍开着）——空闲语义必须输出它。
+	time.Sleep(400 * time.Millisecond)
+	send("@user:sy 第二条")
+	waitOutputLines(t, &out, 2, 5*time.Second)
+	select {
+	case err := <-errCh:
+		codeErr := &exitCodeError{}
+		if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
+			t.Fatalf("空闲上限到点应 124: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("空闲上限到点未退出")
+	}
+	if elapsed := time.Since(start); elapsed < 800*time.Millisecond {
+		t.Fatalf("第二条命中在总时长死线后仍输出 ⇒ 空闲语义；实耗 %s 过短反而可疑", elapsed)
+	}
+}
+
+// TestSessionWaitFollowGracefulExitOnSignal 锁主动退出 0（spec §2.1）：SIGINT
+// 到达后 follow 订阅以 err=nil 收场（CLI 退出码 0 的同一路径）。同步缝：首个
+// 命中行出现在 stdout 之后才发信号——signal.NotifyContext 的注册严格先于读循环，
+// 此时注册必已生效（TDD 不可测的窗口已被同步点消除）。
+func TestSessionWaitFollowGracefulExitOnSignal(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("向自身进程投递信号仅 unix 有实现（GOOS=windows 仍须过 vet，TestWindowsVets 门）")
+	}
+	dir := t.TempDir()
+	svc, _, _, sessionID := mustWaitFixture(t, dir)
+	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 信号前命中", Mentions: []string{"user:sy"}}, "user:tester"); err != nil {
+		t.Fatal(err)
+	}
+	mustWaitConfig(t, dir)
+	var out syncBuffer
+	c := &cobra.Command{Use: "wait"}
+	c.SetOut(&out)
+	c.SetContext(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runSessionWait(c, "user:sy", 0, true, 10*time.Second, true)
+	}()
+	waitOutputLines(t, &out, 1, 5*time.Second)
+	// os.Interrupt 走跨平台 API（syscall.Kill 无 Windows 面， vet 门红线）；
+	// runSessionWait 的 NotifyContext 同时注册 SIGINT/SIGTERM，同一路径。
+	self, err := os.FindProcess(os.Getpid())
+	if err != nil {
+		t.Fatalf("定位自身进程: %v", err)
+	}
+	if err := self.Signal(os.Interrupt); err != nil {
+		t.Fatalf("发 SIGINT: %v", err)
+	}
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("follow 收到 SIGINT 应主动退出 0（err=nil），实得 %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("SIGINT 后 follow 未退出")
+	}
+	if n := strings.Count(strings.TrimRight(out.String(), "\n"), "\n") + 1; n != 1 {
+		t.Fatalf("退出前应恰输出一行命中，实得 %d 行: %q", n, out.String())
+	}
+}
+
+// TestSessionSendReplyToFlag 锁 send 回复锚发送半边（spec §2.2）：--reply-to
+// 透传 RoomMessage.ReplyTo 落账（payload 含 reply_to 键）；0 与缺省等价
+//（omitempty 不落键）；负值用法错且零落账；端到端——被回复原作者的 wait 收到
+// 带 referenced 的唤醒载荷（接收侧 ResolveDelivery 隐式寻址，冻结判定）。
+func TestSessionSendReplyToFlag(t *testing.T) {
+	dir := t.TempDir()
+	svc, _, st, sessionID, _ := mustSendFixture(t, dir, "回复锚场")
+	target, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "被回复的上下文"}, "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 带锚发送（CLI actor 已由夹具坐进成员）。
+	out, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "带锚回复", "--reply-to", fmt.Sprintf("%d", target))
+	if err != nil || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("session send --reply-to: err=%v out=%q", err, out)
+	}
+	// 0 与缺省等价 + 缺省。
+	if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "零值锚", "--reply-to", "0"); err != nil {
+		t.Fatalf("send --reply-to 0: %v", err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "缺省锚"); err != nil {
+		t.Fatalf("send 缺省: %v", err)
+	}
+	// 负值用法错 + 零落账。
+	before, err := st.EventsFromAsc(nil, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "负值", "--reply-to", "-1"); err == nil {
+		t.Fatal("负 --reply-to 必须拒绝")
+	}
+	after, err := st.EventsFromAsc(nil, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("负值拒绝必须零落账: before=%d after=%d", len(before), len(after))
+	}
+	// 落账核对：带锚含键且值正确；无锚两类键不落（omitempty）。
+	byBody := map[string]string{}
+	for _, ev := range after {
+		if ev.Type != ledger.EvRoomMessage {
+			continue
+		}
+		var msg proto.RoomMessage
+		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+			t.Fatal(err)
+		}
+		byBody[msg.Body] = string(ev.Payload)
+		if msg.Body == "带锚回复" && msg.ReplyTo != target {
+			t.Fatalf("带锚落账 ReplyTo=%d, want %d", msg.ReplyTo, target)
+		}
+	}
+	if raw, ok := byBody["带锚回复"]; !ok || !strings.Contains(raw, `"reply_to"`) {
+		t.Fatalf("带锚消息 payload 应含 reply_to 键: %q ok=%v", raw, ok)
+	}
+	for _, absent := range []string{"零值锚", "缺省锚"} {
+		raw, ok := byBody[absent]
+		if !ok {
+			t.Fatalf("消息 %q 未落账: %+v", absent, byBody)
+		}
+		if strings.Contains(raw, "reply_to") {
+			t.Fatalf("无锚消息 %q payload 不应含 reply_to 键: %s", absent, raw)
+		}
+	}
+	// 端到端：原作者 user:tester 的 wait 命中回复消息，referenced 指回被回复 seq。
+	out, _, err = runLedgerCLI(t, dir, "session", "wait", "user:tester", "--since", "0")
+	if err != nil {
+		t.Fatalf("session wait 原作者: %v", err)
+	}
+	wake := decodeSessionWake(t, out)
+	if wake.Hit.Body != "带锚回复" {
+		t.Fatalf("原作者应被回复隐式寻址命中: %+v", wake.Hit)
+	}
+	if wake.Referenced == nil || wake.Referenced.Seq != target || wake.Referenced.Body != "被回复的上下文" {
+		t.Fatalf("referenced 引用条漂移: %+v", wake.Referenced)
 	}
 }

@@ -10,7 +10,11 @@
 // 跨域边，契约 §3.8）；游标文件介质由 openRoomService 统一挂载（条 44 的
 // unread 同一投影依赖它）。
 // B358.5 已续写六子命令（create/list/detail/archive/join/leave/send）——交界
-// 兑现；wait 段零改动。
+// 兑现。
+// B365 wait 双形态化：缺省一次性原语不变，--follow 常驻订阅（每命中一行、
+// SIGINT/SIGTERM 退 0、--timeout 变空闲上限，同 card_wait follow 语义）；
+// send 增 --reply-to 发送半边（透传 proto.RoomMessage.ReplyTo，接收半边
+// ResolveDelivery 隐式寻址原作者已冻结）。
 package cmd
 
 import (
@@ -18,8 +22,11 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"os"
+	"os/signal"
 	"sort"
 	"strings"
+	"syscall"
 	"text/tabwriter"
 	"time"
 
@@ -40,20 +47,25 @@ var sessionCmd = &cobra.Command{
 var (
 	sessionWaitSince   int64
 	sessionWaitTimeout time.Duration
+	// sessionWaitFollow 开启常驻订阅（B365）：未开启时保持一次性原语——首个
+	// 命中输出后退出 0（条 46）；开启后每个命中各输出一行并继续等下一条。
+	sessionWaitFollow bool
 )
 
 // sessionWaitPollInterval 全流轮询节奏；与 card wait 的 Follow tick 同量级。
-const sessionWaitPollInterval = 2 * time.Second
+// var 而非 const：cmd 测试缝——follow 下「--timeout 是空闲上限而非总时长」的
+// 时序断言要求把轮询调到亚秒级（2s 轮询下两种语义不可分辨），测试收尾还原。
+var sessionWaitPollInterval = 2 * time.Second
 
 var sessionWaitCmd = &cobra.Command{
 	Use:   "wait <member>",
-	Short: "阻塞订阅会话寻址：首个命中我的消息输出一行 SessionWake JSON 后退出 0",
+	Short: "订阅会话寻址：命中输出一行 SessionWake JSON（缺省首个命中即退 0；--follow 常驻）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if sessionWaitTimeout < 0 {
 			return fmt.Errorf("--timeout 必须为正时长（当前 %s）；不设上限请省略该参数", sessionWaitTimeout)
 		}
-		return runSessionWait(cmd, args[0], sessionWaitSince, cmd.Flags().Changed("since"), sessionWaitTimeout)
+		return runSessionWait(cmd, args[0], sessionWaitSince, cmd.Flags().Changed("since"), sessionWaitTimeout, sessionWaitFollow)
 	},
 }
 
@@ -61,10 +73,19 @@ var sessionWaitCmd = &cobra.Command{
 // 相等（不透明串，不做大小写/前后缀归一）；--since 缺省 = 启动时流尾（排他），
 // 只等新事件；只对会话房间的 EvRoomMessage 做命中判定，其余事件推进游标、
 // 零输出；不落账、不推进未读游标、不经 keystone（订阅只读，条 45）。
-func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet bool, timeout time.Duration) error {
+//
+// 双形态（B365），一次性与 follow 共享同一条读循环（EventsFromAsc 全流轮询），
+// 分叉点只在「首个命中后是否退出」：
+//   - 一次性（缺省）：首个命中输出一行 SessionWake 后退出 0（条 46）；--timeout
+//     是等待总时长，到点 124；
+//   - --follow：每个命中各自输出一行后重置空闲计时、继续推进游标等下一条，
+//     不主动退出——SIGINT/SIGTERM 退出 0；--timeout 语义变为空闲上限（任意
+//     两命中帧之间的最大间隔，0 = 不设限），到点 124（与 runCardWait 的
+//     follow 语义同形，card_wait.go:55-56）。
+func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error {
 	slog.SetDefault(logx.Setup("cli", ""))
 	slog.Info("session wait 入口", "member", member, "since", sinceFlag,
-		"since_set", sinceSet, "timeout", timeout.String())
+		"since_set", sinceSet, "timeout", timeout.String(), "follow", follow)
 	if sinceSet && sinceFlag < 0 {
 		return fmt.Errorf("--since 必须为非负 seq（当前 %d）", sinceFlag)
 	}
@@ -82,10 +103,25 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 		}
 	}
 	ctx := cmd.Context()
-	if timeout > 0 {
+	if !follow && timeout > 0 {
+		// 一次性：--timeout 是等待总时长（现状不变）。
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)
 		defer cancel()
+	}
+	var idleC <-chan time.Time
+	var idleTimer *time.Timer
+	if follow {
+		// 常驻：SIGINT/SIGTERM 汇入 ctx 取消（主动退出 0）；--timeout 是空闲
+		// 上限——计时只在命中帧重置，与总时长解耦，故不用 WithTimeout。
+		var stopSignals context.CancelFunc
+		ctx, stopSignals = signal.NotifyContext(ctx, os.Interrupt, syscall.SIGTERM)
+		defer stopSignals()
+		if timeout > 0 {
+			idleTimer = time.NewTimer(timeout)
+			defer idleTimer.Stop()
+			idleC = idleTimer.C
+		}
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
 	ticker := time.NewTicker(sessionWaitPollInterval)
@@ -129,13 +165,34 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 				return fmt.Errorf("session wait 输出唤醒载荷: %w", err)
 			}
 			slog.Info("session wait 命中并输出", "member", member,
-				"session", msg.Room, "seq", ev.Seq)
-			return nil // 一次性原语：首个命中输出后退出 0（条 46）
+				"session", msg.Room, "seq", ev.Seq, "follow", follow)
+			if !follow {
+				return nil // 一次性原语：首个命中输出后退出 0（条 46）
+			}
+			// follow：本命中帧起再等一个完整空闲窗；排空可能已到点的旧火药
+			//（card_wait startCardWaitIdle 同款排空-重置）。
+			if idleTimer != nil {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(timeout)
+			}
 		}
 		select {
 		case <-ctx.Done():
+			if follow {
+				// SIGINT/SIGTERM（或父 ctx 取消）——主动退出 0（B365 双形态）。
+				slog.Info("session wait follow 主动退出", "member", member)
+				return nil
+			}
 			slog.Info("session wait 超时退出", "member", member, "timeout", timeout.String())
 			return &exitCodeError{code: ExitTimeout, err: fmt.Errorf("session wait 超时")}
+		case <-idleC:
+			slog.Info("session wait follow 空闲超时退出", "member", member, "timeout", timeout.String())
+			return &exitCodeError{code: ExitTimeout, err: fmt.Errorf("session wait 空闲超时")}
 		case <-ticker.C:
 		}
 	}
@@ -410,6 +467,10 @@ var (
 	sessionSendMention []string
 	sessionSendCLI     string
 	sessionSendSession string
+	// sessionSendReplyTo 被回复消息的账本 seq（B365 回复发送半边）：透传进
+	// proto.RoomMessage.ReplyTo，接收侧 ResolveDelivery 隐式寻址原作者（冻结
+	// 判定，本卡零改动）。0 = 无回复锚，与缺省等价；负值用法错。
+	sessionSendReplyTo int64
 )
 
 var sessionSendCmd = &cobra.Command{
@@ -424,6 +485,9 @@ var sessionSendCmd = &cobra.Command{
 		sessChanged := cmd.Flags().Changed("session")
 		if cliChanged != sessChanged {
 			return fmt.Errorf("席位身份必须成对出示：--cli 与 --session 需同时给出（自报身份需成对 flag）")
+		}
+		if sessionSendReplyTo < 0 {
+			return fmt.Errorf("--reply-to 必须为非负 seq（当前 %d）；0 = 无回复锚", sessionSendReplyTo)
 		}
 		body := strings.TrimSpace(strings.Join(args[1:], " "))
 		if body == "" {
@@ -447,6 +511,7 @@ var sessionSendCmd = &cobra.Command{
 		msg := proto.RoomMessage{
 			Kind: proto.RoomMsgUser, Body: body,
 			Refs: sessionSendRefs, Mentions: sessionSendMention,
+			ReplyTo: sessionSendReplyTo,
 		}
 		seq, err := svc.Send(args[0], msg, actor)
 		if err != nil {
@@ -460,7 +525,10 @@ var sessionSendCmd = &cobra.Command{
 
 func init() {
 	sessionWaitCmd.Flags().Int64Var(&sessionWaitSince, "since", -1, "订阅起点（账本 seq，排他）；缺省 = 启动时流尾，只等新事件")
-	sessionWaitCmd.Flags().DurationVar(&sessionWaitTimeout, "timeout", 0, "等待总时长；到点以 124 退出；0 = 不限")
+	sessionWaitCmd.Flags().DurationVar(&sessionWaitTimeout, "timeout", 0,
+		"缺省=等待总时长，--follow=命中间空闲上限；到点以 124 退出；0 = 不限")
+	sessionWaitCmd.Flags().BoolVar(&sessionWaitFollow, "follow", false,
+		"常驻订阅：每个命中各输出一行后继续（SIGINT/SIGTERM 退出 0）")
 	sessionCmd.AddCommand(sessionWaitCmd)
 	sessionCreateCmd.Flags().StringVar(&sessionCreateOwner, "owner", "", "群主身份（统一记法 user:<name>/agent:<name>，必填）")
 	sessionListCmd.Flags().StringVar(&sessionListMember, "member", "", "投影该成员身份的未读数（缺省不投影）")
@@ -468,6 +536,7 @@ func init() {
 	sessionDetailCmd.Flags().BoolVar(&sessionDetailJSON, "json", false, "输出 SessionDetail JSON（一行）")
 	sessionSendCmd.Flags().StringArrayVar(&sessionSendRefs, "ref", nil, "引用锚（git 路径/timeline 锚/卡号/附件路径，可重复）")
 	sessionSendCmd.Flags().StringArrayVar(&sessionSendMention, "mention", nil, "@成员或卡号（可重复；寻址唤醒的来源）")
+	sessionSendCmd.Flags().Int64Var(&sessionSendReplyTo, "reply-to", 0, "被回复消息的账本 seq（回复锚；隐式寻址原作者；0 = 无）")
 	sessionSendCmd.Flags().StringVar(&sessionSendCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
 	sessionSendCmd.Flags().StringVar(&sessionSendSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
 	sessionCmd.AddCommand(sessionCreateCmd, sessionListCmd, sessionDetailCmd, sessionArchiveCmd, sessionJoinCmd, sessionLeaveCmd, sessionSendCmd)

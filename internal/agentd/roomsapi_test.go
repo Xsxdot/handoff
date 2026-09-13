@@ -602,6 +602,87 @@ func TestRoomSendEndpoint(t *testing.T) {
 	}
 }
 
+// TestRoomSendReplyToEndpoint 锁 B365 回复锚发送半边：POST /api/rooms/{id}/messages
+// 请求体增可选 reply_to，逐字映射 RoomMessage.ReplyTo（接收侧 ResolveDelivery
+// 隐式寻址原作者的判定不在本 handler）。断言：带锚发送落账 payload 含 reply_to
+// 且值即被回复 seq；--reply_to 0 与缺省等价——wire omitempty 下不落键；负值 400。
+func TestRoomSendReplyToEndpoint(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "回复锚场")
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages", `{"body":"被回复的上下文"}`)
+	if code != 200 {
+		t.Fatalf("POST 基准消息: %d %s", code, body)
+	}
+	var first struct {
+		Seq int64 `json:"seq"`
+	}
+	if err := json.Unmarshal([]byte(body), &first); err != nil {
+		t.Fatalf("解码 seq 响应: %v", err)
+	}
+	// 带锚发送：200 且落账 ReplyTo == 基准 seq。
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages",
+		fmt.Sprintf(`{"body":"回复","reply_to":%d}`, first.Seq)); code != 200 {
+		t.Fatalf("POST 带锚消息: %d %s", code, body)
+	}
+	// 0 与缺省等价（都不落 reply_to 键）。
+	if code, _ = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages",
+		`{"body":"零值锚","reply_to":0}`); code != 200 {
+		t.Fatalf("POST reply_to=0 应等价缺省: %d", code)
+	}
+	if code, _ = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages",
+		`{"body":"缺省锚"}`); code != 200 {
+		t.Fatalf("POST 缺省消息: %d", code)
+	}
+	// 负值 400（参数错，不触账本）。
+	if code, _ = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages",
+		`{"body":"x","reply_to":-1}`); code != 400 {
+		t.Fatalf("负 reply_to 应 400: %d", code)
+	}
+	events, err := env.ledger.EventsFromAsc(nil, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	type payloadRow struct {
+		msg proto.RoomMessage
+		raw string
+	}
+	byBody := map[string]payloadRow{}
+	for _, ev := range events {
+		if ev.Type != ledger.EvRoomMessage {
+			continue
+		}
+		var msg proto.RoomMessage
+		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+			t.Fatal(err)
+		}
+		byBody[msg.Body] = payloadRow{msg: msg, raw: string(ev.Payload)}
+	}
+	// 带锚：值与键都在（逐字映射）。
+	hit, ok := byBody["回复"]
+	if !ok {
+		t.Fatalf("带锚消息未落账: %+v", byBody)
+	}
+	if hit.msg.ReplyTo != first.Seq {
+		t.Fatalf("带锚消息 ReplyTo=%d, want %d", hit.msg.ReplyTo, first.Seq)
+	}
+	if !strings.Contains(hit.raw, `"reply_to"`) {
+		t.Fatalf("带锚消息 payload 应含 reply_to 键: %s", hit.raw)
+	}
+	// 无锚（缺省 / 0 同形）：值 0 且键不落（wire omitempty）。
+	for _, absent := range []string{"被回复的上下文", "零值锚", "缺省锚"} {
+		row, ok := byBody[absent]
+		if !ok {
+			t.Fatalf("消息 %q 未落账: %+v", absent, byBody)
+		}
+		if row.msg.ReplyTo != 0 {
+			t.Fatalf("消息 %q ReplyTo 应 0: %+v", absent, row.msg)
+		}
+		if strings.Contains(row.raw, "reply_to") {
+			t.Fatalf("无锚消息 %q payload 不应含 reply_to 键: %s", absent, row.raw)
+		}
+	}
+}
+
 func TestRoomReadEndpoint(t *testing.T) {
 	// B358.4 红窗改写：夹具卡房间 → 会话房间；MarkRead 水位清零断言照抄。
 	env := newRoomsEnv(t)
