@@ -28,6 +28,10 @@ export interface WorkbenchPageProps {
   // taskName 把 tui 的 taskId 解析成任务原名，由持有任务流的 Shell 构建
   // 下传（单一口径：标签条、窗格标题、面包屑共用）；省略时 tabTitle 自己回退。
   taskName?: (taskId: string) => string | undefined
+  // onSplitSessions 由 Shell 注入（B361 决定 5：tabbar + ◫ 固定分屏开关）。
+  // 不传不渲染——既有测试与调用面零波及。焦点是会话 tab 或无会话 tab 时由
+  // Shell 侧 no-op，按钮置灰由 disabled 判定（hasSessionTab 本地可算）。
+  onSplitSessions?: () => void
 }
 
 type DragOver = {
@@ -42,7 +46,7 @@ function tabCount(group: { columns: Array<{ panes: Array<Tab | null> }> }): numb
 }
 
 export function WorkbenchPage({
-  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName,
+  api, onAddProject, renderContent, terminalUnavailable, onBeforeClose, tree, tasks, onFileCreated, launchers = [], taskName, onSplitSessions,
 }: WorkbenchPageProps) {
   const { wb, base } = api
   const activeGroup = wb.groups.find((group) => group.id === wb.activeGroupId) ?? wb.groups[0]
@@ -321,20 +325,32 @@ export function WorkbenchPage({
 
   return (
     <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-border">
-      <TabBar
-        groups={wb.groups}
-        activeGroupId={wb.activeGroupId}
-        base={base}
-        taskName={taskName}
-        onActivateGroup={api.activateGroup}
-        onCloseGroup={api.closeGroup}
-        onNew={openNew}
-        onNewLauncher={openLauncher}
-        launchers={launcherItems}
-        terminalUnavailable={terminalUnavailable}
-        onNewGroup={api.addGroup}
-        onMoveGroup={moveGroup}
-      />
+      <div className="flex min-h-0 items-stretch">
+        <div className="min-w-0 flex-1">
+          <TabBar
+            groups={wb.groups}
+            activeGroupId={wb.activeGroupId}
+            base={base}
+            taskName={taskName}
+            onActivateGroup={api.activateGroup}
+            onCloseGroup={api.closeGroup}
+            onNew={openNew}
+            onNewLauncher={openLauncher}
+            launchers={launcherItems}
+            terminalUnavailable={terminalUnavailable}
+            onNewGroup={api.addGroup}
+            onMoveGroup={moveGroup}
+          />
+        </div>
+        {onSplitSessions && (
+          <button type="button" data-testid="split-sessions" aria-label="分屏：工作项在左、会话在右"
+            disabled={!wb.groups.some((group) => group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'session')))}
+            onClick={onSplitSessions}
+            className="mx-2 shrink-0 self-center rounded-md border px-2 py-1 text-xs hover:bg-accent disabled:cursor-not-allowed disabled:opacity-45">
+            ◫ 分屏
+          </button>
+        )}
+      </div>
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
       <div className="relative flex min-h-0 flex-1">
