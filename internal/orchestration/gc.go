@@ -235,7 +235,7 @@ func (m *Manager) appendGCWorktreesExecute(ctx context.Context, resp *proto.GCRe
 		if m.log != nil {
 			m.log.Info("gc reclaim 未删除", "task", t.ID, "cause", err)
 		}
-		var dirty *agentd.DirtyWorktreeError
+		var dirty *workspace.DirtyWorktreeError
 		switch {
 		case errors.As(err, &dirty):
 			row.Status = proto.GCItemSkipped

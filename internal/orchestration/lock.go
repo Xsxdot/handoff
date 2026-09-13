@@ -13,7 +13,7 @@
 //   - 不跨机器：flock 是本机语义，两台机器各跑各的 agentd 是 handoff 的正常形态
 //   - 加锁原语与错误语义在 internal/prochost（B34 的 flock_unix.go / flock_other.go
 //     上移而来，全项目只保留这一份实现），本文件只做日志与文案
-package agentd
+package orchestration
 
 import (
 	"errors"

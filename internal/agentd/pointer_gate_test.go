@@ -49,8 +49,8 @@ type pointerWhitelistEntry struct {
 }
 
 var pointerWhitelist = []pointerWhitelistEntry{
-	{"internal/agentd/server.go", "roomNarrator.Say",
-		"组装点适配器（target.json assembly 登记点，server.go）：B156.3 叙事换绑轮把协调者叙事经此落卡房间（Service.Pointer）；不在 HTTP 路由可达图上。"},
+	{"internal/keystone/room_narrator.go", "roomNarrator.Say",
+		"组装点适配器（target.json assembly 登记点，B233.22 起在 internal/keystone/room_narrator.go）：B156.3 叙事换绑轮把协调者叙事经此落卡房间（Service.Pointer）；不在 HTTP 路由可达图上。"},
 	{"cmd/card_dispatch.go", "roomPointer",
 		"CLI 裸派发的派发指针行经测试缝 roomPointer（包级 var 闭包承载，归属实测名）落账（岔口八范围），不在 HTTP 路由可达图上。"},
 	{"internal/workspace/identity.go", "HasLedgerAttachField",

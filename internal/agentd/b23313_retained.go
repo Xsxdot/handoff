@@ -13,7 +13,6 @@ package agentd
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
 	"path/filepath"
 
@@ -296,22 +295,6 @@ func ReconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	log.Info("对账完成", "task", taskID, "from", cur.State, "to", proto.TaskStateWaitingReview)
 	sweep(taskID)
 	return proto.TaskStateWaitingReview
-}
-
-// DirtyWorktreeError 表示工作树有未提交改动或未跟踪文件，未带 force 时拒绝回收。
-//
-// 为什么是带清单的类型而不是裸哨兵：协调者要决定「这些改动能不能丢」，
-// 就必须看见改了什么。只给一句「树是脏的」等于把决定权交出去却不给依据。
-// 注意名字避开 workspace.go 里的 ErrDirtyWorktree 哨兵——那是 dispatch 拒发的
-// 错误，语义是「拒绝派发」，与这里的「回收被拒、带清单」是两回事。
-//
-// B233.13：保留声明于 gateway（server.go 仍用），并导出供编排包引用。
-type DirtyWorktreeError struct {
-	Files []proto.DirtyFile
-}
-
-func (e *DirtyWorktreeError) Error() string {
-	return fmt.Sprintf("工作树有 %d 项未提交改动或未跟踪文件", len(e.Files))
 }
 
 var (

@@ -155,7 +155,7 @@ func (s *Server) handleReclaim(w http.ResponseWriter, r *http.Request) {
 //
 // 注意：4xx 一律 Warn 不 Error（B11 已定的纪律）——被拒不是 agentd 出故障
 func (s *Server) writeReclaimError(w http.ResponseWriter, taskID string, err error) {
-	var de *DirtyWorktreeError
+	var de *workspace.DirtyWorktreeError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
 		s.log.Warn("回收被拒：任务不存在", "task", taskID)

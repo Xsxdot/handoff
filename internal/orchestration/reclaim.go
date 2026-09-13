@@ -99,7 +99,7 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 			taskID, cur.WorkDir, note, agentd.ErrReclaimRepoUnreachable)
 	case proto.WorktreeDirty:
 		if !force {
-			return nil, &agentd.DirtyWorktreeError{Files: dirty}
+			return nil, &workspace.DirtyWorktreeError{Files: dirty}
 		}
 		m.log.Warn("reclaim 强删脏工作树", "task", taskID,
 			"workdir", cur.WorkDir, "discard", len(dirty))

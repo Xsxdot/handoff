@@ -63,7 +63,7 @@ func assembleDomainsForTest(t *testing.T, srv *Server) {
 	prepareHome := NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())
 	ks := keystone.New(NewCoordinatorRunner(coord, srv.Providers(), prepareHome),
-		NewRoomNarrator(rooms), facade, NewAttachLocator(hostapi.ExpandHomePath))
+		keystone.NewRoomNarrator(rooms), facade, NewAttachLocator(hostapi.ExpandHomePath))
 	ks.SetSessionRefResolver(NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath))
 	srv.SetKeystone(ks)
 }

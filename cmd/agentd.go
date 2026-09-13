@@ -117,7 +117,7 @@ var agentdCmd = &cobra.Command{
 		// systemd KillMode 自检（拆 tmux 后的部署硬要求）：setsid 不脱离 cgroup，
 		// KillMode 非 process 时 agentd 重启会连坐执行者。只提示不阻断；非 systemd
 		// 环境（macOS 开发机）完全静默。
-		agentd.WarnIfKillModeUnsafe(logger)
+		orchestration.WarnIfKillModeUnsafe(logger)
 
 		// DataDir 首次运行可能不存在（config.Load 只保证配置目录），
 		// store.Open 与 taskDir 创建都依赖它，必须先建
@@ -136,7 +136,7 @@ var agentdCmd = &cobra.Command{
 		// **最后**一条语句，在它之前 RecoverOnStartup 已经对在役 agentd 的活
 		// 执行器重建了订阅并写入状态迁移；store.Open 开了 WAL 也不拦多进程
 		// 打开。破坏发生在撞端口之前，所以锁必须卡在这里。
-		lock, err := agentd.AcquireDataDirLock(cfg.DataDir, logger)
+		lock, err := orchestration.AcquireDataDirLock(cfg.DataDir, logger)
 		if err != nil {
 			// 不再包一层：撞锁时 err 本身就是一段完整的可行动指引，
 			// 前面再缀「启动 agentd 失败:」只会把重点冲淡
@@ -502,7 +502,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())
 	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome)
 	resolver := agentd.NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath)
-	ks := keystone.New(runner, agentd.NewRoomNarrator(rooms), facade,
+	ks := keystone.New(runner, keystone.NewRoomNarrator(rooms), facade,
 		agentd.NewAttachLocator(hostapi.ExpandHomePath))
 	ks.SetSessionRefResolver(resolver)
 	srv.SetKeystone(ks)

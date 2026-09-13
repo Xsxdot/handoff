@@ -193,3 +193,22 @@ func PruneWorktrees(ctx context.Context, repo string) error {
 	}
 	return nil
 }
+
+// —— 回收被拒错误类型（B233.22 自 agentd/b23313_retained.go 归域迁入）——
+
+// DirtyWorktreeError 表示工作树有未提交改动或未跟踪文件，未带 force 时拒绝回收。
+//
+// 为什么是带清单的类型而不是裸哨兵：协调者要决定「这些改动能不能丢」，
+// 就必须看见改了什么。只给一句「树是脏的」等于把决定权交出去却不给依据。
+// 注意名字避开本包 workspace.go 的 ErrDirtyWorktree 哨兵——那是 dispatch 拒发的
+// 错误，语义是「拒绝派发」，与这里的「回收被拒、带清单」是两回事。
+//
+// B233.13：曾保留声明于 gateway 并导出供编排包引用；B233.22 按 best.json
+// （k_agentd_DirtyWorktreeError → d_workspace）迁入本包，消费方直接引用 workspace 类型。
+type DirtyWorktreeError struct {
+	Files []proto.DirtyFile
+}
+
+func (e *DirtyWorktreeError) Error() string {
+	return fmt.Sprintf("工作树有 %d 项未提交改动或未跟踪文件", len(e.Files))
+}

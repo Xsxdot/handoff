@@ -2,7 +2,7 @@
 //
 // 为什么不起子进程：flock 挂在「打开的文件描述」上而非进程上，同一进程内
 // 两次 OpenFile 同一路径同样互斥——本机实测确认。
-package agentd_test
+package orchestration_test
 
 import (
 	"io"
@@ -12,7 +12,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 )
 
 // lockTestLogger 返回丢弃所有输出的 logger，免得单测日志灌进测试输出。
@@ -22,7 +22,7 @@ func lockTestLogger() *slog.Logger {
 
 func TestAcquireDataDirLockCreatesLockFile(t *testing.T) {
 	dir := t.TempDir()
-	l, err := agentd.AcquireDataDirLock(dir, lockTestLogger())
+	l, err := orchestration.AcquireDataDirLock(dir, lockTestLogger())
 	if err != nil {
 		t.Fatalf("首次获取锁应成功，实得 %v", err)
 	}
@@ -34,13 +34,13 @@ func TestAcquireDataDirLockCreatesLockFile(t *testing.T) {
 
 func TestAcquireDataDirLockSecondFails(t *testing.T) {
 	dir := t.TempDir()
-	first, err := agentd.AcquireDataDirLock(dir, lockTestLogger())
+	first, err := orchestration.AcquireDataDirLock(dir, lockTestLogger())
 	if err != nil {
 		t.Fatalf("首次获取锁应成功，实得 %v", err)
 	}
 	defer first.Release()
 
-	second, err := agentd.AcquireDataDirLock(dir, lockTestLogger())
+	second, err := orchestration.AcquireDataDirLock(dir, lockTestLogger())
 	if err == nil {
 		second.Release()
 		t.Fatal("同一 DataDir 第二次获取锁必须失败")
@@ -49,13 +49,13 @@ func TestAcquireDataDirLockSecondFails(t *testing.T) {
 
 func TestAcquireDataDirLockErrorIsActionable(t *testing.T) {
 	dir := t.TempDir()
-	first, err := agentd.AcquireDataDirLock(dir, lockTestLogger())
+	first, err := orchestration.AcquireDataDirLock(dir, lockTestLogger())
 	if err != nil {
 		t.Fatalf("首次获取锁应成功，实得 %v", err)
 	}
 	defer first.Release()
 
-	_, err = agentd.AcquireDataDirLock(dir, lockTestLogger())
+	_, err = orchestration.AcquireDataDirLock(dir, lockTestLogger())
 	if err == nil {
 		t.Fatal("应撞锁失败")
 	}
@@ -69,14 +69,14 @@ func TestAcquireDataDirLockErrorIsActionable(t *testing.T) {
 
 func TestDataDirLockReleaseAllowsReacquire(t *testing.T) {
 	dir := t.TempDir()
-	first, err := agentd.AcquireDataDirLock(dir, lockTestLogger())
+	first, err := orchestration.AcquireDataDirLock(dir, lockTestLogger())
 	if err != nil {
 		t.Fatalf("首次获取锁应成功，实得 %v", err)
 	}
 	if err := first.Release(); err != nil {
 		t.Fatalf("释放锁应成功，实得 %v", err)
 	}
-	second, err := agentd.AcquireDataDirLock(dir, lockTestLogger())
+	second, err := orchestration.AcquireDataDirLock(dir, lockTestLogger())
 	if err != nil {
 		t.Fatalf("释放后应可重新获取，实得 %v", err)
 	}
@@ -85,12 +85,12 @@ func TestDataDirLockReleaseAllowsReacquire(t *testing.T) {
 
 func TestDataDirLockDifferentDirsDoNotConflict(t *testing.T) {
 	a, b := t.TempDir(), t.TempDir()
-	la, err := agentd.AcquireDataDirLock(a, lockTestLogger())
+	la, err := orchestration.AcquireDataDirLock(a, lockTestLogger())
 	if err != nil {
 		t.Fatalf("锁 A 应成功，实得 %v", err)
 	}
 	defer la.Release()
-	lb, err := agentd.AcquireDataDirLock(b, lockTestLogger())
+	lb, err := orchestration.AcquireDataDirLock(b, lockTestLogger())
 	if err != nil {
 		t.Fatalf("锁 B 不应受锁 A 影响，实得 %v", err)
 	}
@@ -99,7 +99,7 @@ func TestDataDirLockDifferentDirsDoNotConflict(t *testing.T) {
 
 func TestAcquireDataDirLockMissingDirIsReadable(t *testing.T) {
 	missing := filepath.Join(t.TempDir(), "not-created")
-	_, err := agentd.AcquireDataDirLock(missing, lockTestLogger())
+	_, err := orchestration.AcquireDataDirLock(missing, lockTestLogger())
 	if err == nil {
 		t.Fatal("DataDir 不存在时应返回错误")
 	}

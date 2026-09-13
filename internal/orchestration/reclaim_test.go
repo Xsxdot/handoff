@@ -85,9 +85,9 @@ func TestReclaimRefusesDirtyWithoutForce(t *testing.T) {
 	id := seedTerminalTask(t, m, repo, wt, "f-r2", proto.TaskStateFailed, true)
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	var de *agentd.DirtyWorktreeError
+	var de *workspace.DirtyWorktreeError
 	if !errors.As(err, &de) {
-		t.Fatalf("脏树无 force 应返回 agentd.DirtyWorktreeError，实得 %v", err)
+		t.Fatalf("脏树无 force 应返回 workspace.DirtyWorktreeError，实得 %v", err)
 	}
 	if len(de.Files) != 1 || de.Files[0].Path != "probe.log" {
 		t.Fatalf("拒绝时必须带脏清单，实得 %+v", de.Files)

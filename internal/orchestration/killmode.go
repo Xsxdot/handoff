@@ -15,7 +15,7 @@
 // 向整个 cgroup 发信号，shim 与执行者一并被杀，目标①直接落空。
 // 这不是本次改动引入的退化：tmux 时代同样如此（tmux server 若由 agentd 首次
 // 拉起也在同一 cgroup 里），只是从没被显式说明过。
-package agentd
+package orchestration
 
 import (
 	"log/slog"
