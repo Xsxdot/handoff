@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
+import { fetchCards } from '../../api/ledger'
 import type { RoomHistoryItem, SessionDetail, SessionSummary } from '../../api/rooms'
 import fixture from '../../api/testdata/RoomsFixture.json'
 import { SessionTab } from './SessionTab'
@@ -15,6 +16,10 @@ vi.mock('../../api/rooms', async (importOriginal) => ({
   markRoomRead: vi.fn(),
   joinSessionCard: vi.fn(),
   archiveSession: vi.fn(),
+}))
+vi.mock('../../api/ledger', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../api/ledger')>()),
+  fetchCards: vi.fn(),
 }))
 
 const cases = fixture as { case: string; detail?: SessionDetail; summary?: SessionSummary }[]
@@ -36,6 +41,13 @@ beforeEach(() => {
   vi.mocked(markRoomRead).mockResolvedValue({ ok: true })
   vi.mocked(joinSessionCard).mockResolvedValue({ ok: true })
   vi.mocked(archiveSession).mockResolvedValue({ ok: true })
+  vi.mocked(fetchCards).mockResolvedValue({
+    cards: [
+      { id: 'B1', title: '竖切卡', status: '进行中', priority: 'P2', project: 'handoff', workflow: 'charter', parent: '', base_branch: 'main', attachments: [], following: '', blocked: false, blocked_by: [], merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0, conflict: false, open_tickets: 0 },
+      { id: 'B233.14', title: '编制入站封界', status: '进行中', priority: 'P2', project: 'handoff', workflow: 'charter', parent: '', base_branch: 'main', attachments: [], following: '', blocked: false, blocked_by: [], merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0, conflict: false, open_tickets: 0 },
+    ],
+    unlinked: { tasks: [] },
+  } as never)
 })
 
 describe('SessionTab', () => {
@@ -93,12 +105,22 @@ describe('SessionTab', () => {
     expect(markRoomRead).toHaveBeenCalledTimes(1)
   })
 
-  it('拉卡入口在输入框左下工具钮：卡号确认后 POST …/cards', async () => {
+  it('拉卡工具钮 → 卡选择器勾选确认 → 逐张 POST …/cards（B358.8 #8）', async () => {
     const user = userEvent.setup()
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
     await user.click(await screen.findByRole('button', { name: '拉卡进群' }))
-    await user.type(screen.getByRole('textbox', { name: '卡号' }), 'B233.14')
-    await user.click(screen.getByRole('button', { name: '确认拉卡' }))
+    // 选择器列出可选卡；已在会话的卡禁选
+    expect(await screen.findByText('编制入站封界')).toBeInTheDocument()
+    await user.click(screen.getByRole('checkbox', { name: '选择 B233.14' }))
+    await user.click(screen.getByRole('button', { name: /确认拉卡（1）/ }))
     await waitFor(() => expect(joinSessionCard).toHaveBeenCalledWith('session:7', 'B233.14'))
+  })
+
+  it('已在会话内的卡在选择器中禁选（existingCardIds 来自 summary.cards）', async () => {
+    const user = userEvent.setup()
+    render(<SessionTab sessionId="session:7" title="架构物理化" />)
+    await user.click(await screen.findByRole('button', { name: '拉卡进群' }))
+    expect(await screen.findByText('已在会话')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: '选择 B1' })).toBeDisabled()
   })
 })

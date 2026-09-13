@@ -58,21 +58,26 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
     return () => window.removeEventListener('keydown', onKey)
   }, [drawerOpen])
 
-  const joinCard = async (cardId: string) => {
+  // joinCards 批量拉卡（B358.8 #8）：逐张顺序发既有单卡端点；失败聚合原文留在
+  // 对话框供重试，部分成功也刷新详情——端点语义零改动，批量只是前端循环。
+  const joinCards = async (cardIds: string[]) => {
     setJoinBusy(true)
     setJoinError('')
-    logRoom('debug', 'session_join_card_started', { session: sessionId, card: cardId })
-    try {
-      await joinSessionCard(sessionId, cardId)
-      setJoinOpen(false)
-      detailPoll.refresh()
-      logRoom('debug', 'session_join_card_succeeded', { session: sessionId, card: cardId })
-    } catch (error: unknown) {
-      setJoinError(errorMessage(error))
-      logRoom('error', 'session_join_card_failed', { session: sessionId, card: cardId, error: errorMessage(error) })
-    } finally {
-      setJoinBusy(false)
+    logRoom('debug', 'session_join_card_started', { session: sessionId, cards: cardIds })
+    const failed: string[] = []
+    for (const cardId of cardIds) {
+      try {
+        await joinSessionCard(sessionId, cardId)
+        logRoom('debug', 'session_join_card_succeeded', { session: sessionId, card: cardId })
+      } catch (error: unknown) {
+        failed.push(`${cardId}：${errorMessage(error)}`)
+        logRoom('error', 'session_join_card_failed', { session: sessionId, card: cardId, error: errorMessage(error) })
+      }
     }
+    if (failed.length > 0) setJoinError(failed.join('\n'))
+    else setJoinOpen(false)
+    detailPoll.refresh()
+    setJoinBusy(false)
   }
 
   const archive = async () => {
@@ -115,7 +120,9 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
                 onArchive={() => setArchiveConfirm(true)} archiveBusy={archiveBusy} archiveError={archiveError} />}
         </aside>
       )}
-      <JoinCardDialog open={joinOpen} busy={joinBusy} error={joinError} onCancel={() => setJoinOpen(false)} onJoin={(cardIds) => void joinCard(cardIds)} />
+      <JoinCardDialog open={joinOpen} busy={joinBusy} error={joinError}
+        existingCardIds={(detail?.summary?.cards ?? []).map((card) => card.card_id)}
+        onCancel={() => setJoinOpen(false)} onJoin={(cardIds) => void joinCards(cardIds)} />
       <ConfirmDialog open={archiveConfirm} title="归档会话"
         description={`归档「${title}」后本会话转为只读（归档是幂等操作）。`}
         confirmLabel="归档" destructive busy={archiveBusy} error={archiveError}
