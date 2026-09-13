@@ -264,7 +264,7 @@ S7 纪律与 roadmap（无代码依赖） ────────────�
   - `session create --title T` → stdout 含 `session:<n>`；`session list` 行含标题/未读/需要你标签列；`session detail <id>` 三块（成员/节点/timeline）逐列可读。
   - `session join <id> <卡号>` 幂等（重复执行退出 0）；对已属他会话的卡退出非 0 且 stderr 含「已属会话」类可行动文案。
   - `session send <id> "…"`（人）→ actor=`cli:<user>@<host>`；`session send <id> --cli opencode --session <sid> "…"`（协调者）→ actor=席位身份、kind=user——旧守卫的替代形状是「自报身份需成对 flag」，机内断言两形态落账 actor 可查。
-  - 归档会话 send/join → 非 0 退出 + `ErrReadOnly` 文案。
+  - 归档会话 send/join → 非 0 退出 + `ErrReadOnly` 文案。**（2026-09-12 修订：join 半边实际哨兵为 ErrBadState/「已归档」（send 半边确为 ErrReadOnly），B358.5 plan 拍板 5 照 B358.2 先例回写。）**
 - `handoff room read <卡号>`（旧面）对旧房间仍可读；`handoff room send <卡号>` → 非 0 退出（S1 归档语义经 CLI 呈现）。
 - 退出码契约：成功 0、用法/存在性错误非 0，沿用 cmd 族既有约定（与 `card wait` 的 124 特例不冲突，本卡不引入新超时）。
 
