@@ -7,7 +7,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { TabBar } from './TabBar'
 import { DRAG_GROUP_MIME } from './paneDrop'
 import { EMPTY_WORKBENCH, createGroup as createGroupLayout, openTab } from './tabs'
-import { useWorkbench, type BaseDir } from './useWorkbench'
+import { useWorkbench, sessionBase, type BaseDir } from './useWorkbench'
 
 const local: BaseDir = { key: '/local', kind: 'workspace', path: '/local', label: 'local', projectName: 'handoff', machine: '' }
 
@@ -78,6 +78,17 @@ describe('TabBar（组标签条）', () => {
     expect(view.container.querySelector('.lucide-terminal')).not.toBeNull()
     expect(view.container.querySelector('.lucide-file-text')).not.toBeNull()
     expect(view.container.querySelector('.lucide-plus')).not.toBeNull()
+  })
+
+  it('session 焦点内容用会话语义图标，不落 default 的 Plus（B358.8 #5 反例）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:1', title: '架构物理化' }, sessionBase('session:1')))
+
+    const view = renderBar(hook.result.current)
+    // 图标位只看 TabIconSlot：组标签内还有 sr-only「新建内容」的 Plus，不算图标位
+    const iconSlot = view.getByRole('tab', { name: /架构物理化/ }).querySelector('span[aria-hidden]')!
+    expect(iconSlot.querySelector('.lucide-messages-square')).not.toBeNull()
+    expect(iconSlot.querySelector('.lucide-plus')).toBeNull()
   })
 
   it('所有标签都有状态面，只有激活组使用深一档药丸色', () => {

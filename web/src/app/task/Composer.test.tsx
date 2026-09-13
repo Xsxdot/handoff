@@ -10,7 +10,7 @@ vi.mock('../../api/client', () => ({
   stopTask: vi.fn().mockResolvedValue({ worktree_removed: false }),
   resumeTask: vi.fn().mockResolvedValue({ forced: false, note: '' }),
 }))
-import { continueTask, stopTask } from '../../api/client'
+import { continueTask } from '../../api/client'
 
 const task = (state: string) => ({ id: 't1', state } as Task)
 

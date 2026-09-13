@@ -1066,23 +1066,6 @@ describe('B361 会话 IA', () => {
     expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
   })
 
-  it('◫ 分屏把最近打开的会话 tab 放到焦点工作 tab 右列（工作项左/会话右）', async () => {
-    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
-    const user = userEvent.setup()
-    renderShell()
-    await openBranch()
-    fireEvent.click(await screen.findByText('go.mod'))
-    await waitFor(() => expect(screen.getAllByRole('button', { name: /关闭 go.mod/ }).length).toBeGreaterThan(0))
-    await user.click(await screen.findByTestId('session-row'))
-    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
-    // 开会话 tab 后焦点在会话组；经左栏已打开行回聚焦工作 tab（OpenItem 投影是既有锚）
-    fireEvent.click(screen.getAllByTestId('open-item-row').find((row) => row.textContent?.includes('go.mod'))!)
-    await waitFor(() => expect(screen.getByRole('tab', { name: /go.mod/ })).toHaveAttribute('aria-selected', 'true'))
-    const before = screen.getAllByTestId('workbench-pane').length
-    fireEvent.click(screen.getByTestId('split-sessions'))
-    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(before + 1))
-  })
-
   it('反例断言：旧房间面板任何形态都不再出现', async () => {
     renderShell('/cards')
     await screen.findByTestId('session-list')

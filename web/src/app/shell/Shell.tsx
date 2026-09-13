@@ -439,24 +439,6 @@ export function Shell() {
     console.debug('shell.session.open', { sessionId: session.id, title: session.title })
   }
 
-  // splitSessionRight ◫ 固定分屏（B361 决定 5）：把最近打开的会话 tab place 到
-  // 焦点格右列（工作项左/会话右）。焦点是会话 tab 或无会话 tab 时 no-op——
-  // 按钮同时由 WorkbenchPage 依 hasSessionTab 置灰，这里再守一道语义边界。
-  const splitSessionRight = () => {
-    const group = wb.wb.groups.find((candidate) => candidate.id === wb.wb.activeGroupId)
-    if (!group) return
-    const [column, row] = group.focus
-    const focused = group.columns[column]?.panes[row]
-    if (!focused || focused.content.kind === 'session') return
-    const sessionItem = [...wb.openedItems].reverse().find((item) => item.content.kind === 'session')
-    if (!sessionItem) return
-    wb.place(
-      { kind: 'tab', groupId: sessionItem.groupId, tabId: sessionItem.tabId },
-      { groupId: group.id, column, row, zone: 'right' },
-    )
-    console.debug('shell.session.split', { sessionId: sessionItem.content.kind === 'session' ? sessionItem.content.sessionId : '', groupId: group.id })
-  }
-
   // confirmCreateSession 建会话：owner 统一记法（服务端权威校验），失败原文
   // 留在对话框；成功关弹层并立即刷新会话流（不等下一个 5s 周期）。
   const confirmCreateSession = async (title: string, owner: string) => {
@@ -808,7 +790,6 @@ export function Shell() {
               terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
               launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
               onBeforeClose={beforeCloseTab}
-              onSplitSessions={splitSessionRight}
               renderContent={(c, base, group, tabId, active = true) => {
                 switch (c.kind) {
                   case 'terminal': {
