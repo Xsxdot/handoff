@@ -9,6 +9,8 @@
 // 组装走既有 CLI 组装点 openRoomService/roomServiceFor（不新增组装点、不新增
 // 跨域边，契约 §3.8）；游标文件介质由 openRoomService 统一挂载（条 44 的
 // unread 同一投影依赖它）。
+// B358.5 已续写六子命令（create/list/detail/archive/join/leave/send）——交界
+// 兑现；wait 段零改动。
 package cmd
 
 import (
@@ -16,6 +18,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"sort"
+	"strings"
+	"text/tabwriter"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -180,9 +185,291 @@ func buildSessionWake(svc *collab.Service, ev ledger.Event, msg proto.RoomMessag
 	return wake, nil
 }
 
+// —— B358.5 续写：list/detail/create/archive/join/leave/send 六子命令 ——
+//
+// 身份两字段（B358.4 拍板① 的 CLI 半边，docs/superpowers/plans/b358.5-plan.md §2.2）：
+//   - 成员身份（--owner、--member、席位出示值）用统一记法 user:<name>/agent:<name>
+//     并校验前缀——owner 是会话初始成员（契约条 3），web:<host> 是机器位不配当成员；
+//   - 审计 actor 沿 CLI 既有注入面 ledgerActor()（cli:<user>@<host>），两字段不混用。
+// session send 两形态：无席位 flag=人（ledgerActor）；--cli/--session 成对=协调者
+// 席位（currentSeatIdentity 只消费 flag 对，环境席位键不参与——身份显式性与会话
+// wait 的显式 member 对称）；单只 flag 用法错。kind 恒 user（发言自由，spec §4.2）。
+
+// validSessionMemberIdentity 校验会话成员统一记法：只认 user:<name>/agent:<name>
+// 且前缀后非空。与 gateway 侧 internal/agentd/sessionsapi.go#validSessionOwner
+// 同规则两处实现——cmd 不得 import agentd（域方向），漂移由两侧测试钉住
+//（TestSessionsCreateEndpoint / TestSessionCreateCommand）；统一收口归后续重构卡
+//（b358.5-plan 岔口 6）。
+func validSessionMemberIdentity(identity string) bool {
+	if rest, ok := strings.CutPrefix(identity, "user:"); ok && rest != "" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(identity, "agent:")
+	return ok && rest != ""
+}
+
+var sessionCreateOwner string
+
+var sessionCreateCmd = &cobra.Command{
+	Use:   "create <title>",
+	Short: "建一场会话（群）：--owner 指定群主（统一记法 user:<name>/agent:<name>）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		title := strings.TrimSpace(args[0])
+		if title == "" {
+			return fmt.Errorf("会话标题不能为空")
+		}
+		owner := strings.TrimSpace(sessionCreateOwner)
+		if !validSessionMemberIdentity(owner) {
+			return fmt.Errorf("--owner 必须是统一记法 user:<name> 或 agent:<name>（当前 %q）", sessionCreateOwner)
+		}
+		svc, st, err := openRoomService()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		actor := ledgerActor()
+		session, err := svc.CreateSession(title, owner, actor)
+		if err != nil {
+			slog.Default().Warn("CLI 建会话失败", "title", title, "owner", owner, "actor", actor, "cause", err)
+			return fmt.Errorf("建会话: %w", err)
+		}
+		slog.Default().Info("CLI 会话已创建", "session", session.ID, "title", title, "owner", owner, "actor", actor)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(session)
+	},
+}
+
+var (
+	sessionListMember string
+	sessionListJSON   bool
+)
+
+var sessionListCmd = &cobra.Command{
+	Use:   "list",
+	Short: "列会话（谁需要我：未读、需要你标签；--member 投影未读；--json 机读）",
+	Args:  cobra.NoArgs,
+	RunE: func(cmd *cobra.Command, _ []string) error {
+		svc, st, err := openRoomService()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		summaries, err := svc.ListSessions(sessionListMember)
+		if err != nil {
+			slog.Default().Warn("CLI 会话列表失败", "member", sessionListMember, "cause", err)
+			return fmt.Errorf("列会话: %w", err)
+		}
+		// 呈现排序（cmd 层）：最近活动降序（谁需要我语义）；门面返回创建序不动
+		//（0.2#11）。稳定排序保平手时创建序，输出形状确定（RFC3339Nano 纳秒精度，
+		// 0.2#15）。
+		sort.SliceStable(summaries, func(i, j int) bool {
+			return summaries[i].LastActivity.After(summaries[j].LastActivity)
+		})
+		if sessionListJSON {
+			enc := json.NewEncoder(cmd.OutOrStdout())
+			for _, summary := range summaries {
+				if err := enc.Encode(summary); err != nil {
+					return err
+				}
+			}
+			slog.Default().Info("CLI 会话列表已输出", "member", sessionListMember, "count", len(summaries), "format", "json")
+			return nil
+		}
+		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "ID\t标题\t群主\t归档\t未读\t需要你\t最近活动")
+		for _, summary := range summaries {
+			needs := ""
+			if summary.NeedsHuman {
+				needs = "需要你"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%v\t%d\t%s\t%s\n",
+				summary.ID, summary.Title, summary.Owner, summary.Archived,
+				summary.Unread, needs, summary.LastActivity.Format("2006-01-02 15:04:05"))
+		}
+		slog.Default().Info("CLI 会话列表已输出", "member", sessionListMember, "count", len(summaries))
+		return w.Flush()
+	},
+}
+
+var sessionDetailJSON bool
+
+var sessionDetailCmd = &cobra.Command{
+	Use:   "detail <session>",
+	Short: "会话详情三块：成员 / 派发节点 / timeline（--json 机读）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		svc, st, err := openRoomService()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		detail, err := svc.SessionDetail(args[0])
+		if err != nil {
+			slog.Default().Warn("CLI 会话详情失败", "session", args[0], "cause", err)
+			// mapSessionError 已把 ErrNotFound 替换成裸 ErrNoRoom（0.2#4，Store 层
+			// 含 id 文案丢失）——边界把 id 包回去（gateway handleSessionDetail 先例）。
+			return fmt.Errorf("会话 %s: %w", args[0], err)
+		}
+		if sessionDetailJSON {
+			slog.Default().Info("CLI 会话详情已输出", "session", args[0], "format", "json")
+			return json.NewEncoder(cmd.OutOrStdout()).Encode(detail)
+		}
+		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
+		fmt.Fprintln(w, "成员:")
+		for _, m := range detail.Summary.Members {
+			card := m.CardID
+			if card == "" {
+				card = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\t%s\n", m.Identity, m.Kind, m.Status, card)
+		}
+		fmt.Fprintln(w, "节点:")
+		for _, n := range detail.Nodes {
+			card := n.CardID
+			if card == "" {
+				card = "-"
+			}
+			fmt.Fprintf(w, "%s\t%s\t%s\n", card, n.Node, n.State)
+		}
+		fmt.Fprintln(w, "时间线:")
+		for _, ev := range detail.Timeline {
+			card := ev.CardID
+			if card == "" {
+				card = "-"
+			}
+			fmt.Fprintf(w, "#%d\t%s\t%s\t%s\n", ev.Seq, ev.Kind, card, ev.Detail)
+		}
+		slog.Default().Info("CLI 会话详情已输出", "session", args[0],
+			"members", len(detail.Summary.Members), "nodes", len(detail.Nodes), "timeline", len(detail.Timeline))
+		return w.Flush()
+	},
+}
+
+var sessionArchiveCmd = &cobra.Command{
+	Use:   "archive <session>",
+	Short: "归档会话（幂等；归档后只读，卡的终态不等于会话结束）",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		svc, st, err := openRoomService()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		actor := ledgerActor()
+		if err := svc.ArchiveSession(args[0], actor); err != nil {
+			slog.Default().Warn("CLI 归档会话失败", "session", args[0], "actor", actor, "cause", err)
+			return fmt.Errorf("归档会话 %s: %w", args[0], err)
+		}
+		slog.Default().Info("CLI 会话已归档", "session", args[0], "actor", actor)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]bool{"ok": true})
+	},
+}
+
+var sessionJoinCmd = &cobra.Command{
+	Use:   "join <session> <card>",
+	Short: "拉卡进会话（进群≠配人，配人仍走卡上三按钮；一卡同时只挂一个会话）",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		svc, st, err := openRoomService()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		actor := ledgerActor()
+		if err := svc.JoinCard(args[0], args[1], actor); err != nil {
+			slog.Default().Warn("CLI 拉卡进群失败", "session", args[0], "card", args[1], "actor", actor, "cause", err)
+			return fmt.Errorf("session join %s %s: %w", args[0], args[1], err)
+		}
+		slog.Default().Info("CLI 卡已进群", "session", args[0], "card", args[1], "actor", actor)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]bool{"ok": true})
+	},
+}
+
+var sessionLeaveCmd = &cobra.Command{
+	Use:   "leave <session> <card>",
+	Short: "把卡移出会话（幂等：不在会话内亦成功）",
+	Args:  cobra.ExactArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		svc, st, err := openRoomService()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		actor := ledgerActor()
+		if err := svc.LeaveCard(args[0], args[1], actor); err != nil {
+			slog.Default().Warn("CLI 移卡出群失败", "session", args[0], "card", args[1], "actor", actor, "cause", err)
+			return fmt.Errorf("session leave %s %s: %w", args[0], args[1], err)
+		}
+		slog.Default().Info("CLI 卡已移出会话", "session", args[0], "card", args[1], "actor", actor)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]bool{"ok": true})
+	},
+}
+
+var (
+	sessionSendRefs    []string
+	sessionSendMention []string
+	sessionSendCLI     string
+	sessionSendSession string
+)
+
+var sessionSendCmd = &cobra.Command{
+	Use:   "send <session> <text...>",
+	Short: "会话发言（不分 kind，各自以自己名义；协调者用 --cli/--session 成对出示席位身份）",
+	Args:  cobra.MinimumNArgs(2),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		// 身份判定先于开账本：用法错误不触账本（0 落账）。两形态（§2.2）：
+		// 成对 flag=席位（自报身份需成对 flag——旧 room send 守卫的替代形状，
+		// breakdown §3.6 ③）；无 flag=人（ledgerActor）。环境席位键不参与本命令。
+		cliChanged := cmd.Flags().Changed("cli")
+		sessChanged := cmd.Flags().Changed("session")
+		if cliChanged != sessChanged {
+			return fmt.Errorf("席位身份必须成对出示：--cli 与 --session 需同时给出（自报身份需成对 flag）")
+		}
+		body := strings.TrimSpace(strings.Join(args[1:], " "))
+		if body == "" {
+			return fmt.Errorf("消息正文不能为空")
+		}
+		var actor string
+		if cliChanged {
+			identity, err := currentSeatIdentity(sessionSendCLI, sessionSendSession)
+			if err != nil {
+				return err
+			}
+			actor = identity
+		} else {
+			actor = ledgerActor()
+		}
+		svc, st, err := openRoomService()
+		if err != nil {
+			return err
+		}
+		defer st.Close()
+		msg := proto.RoomMessage{
+			Kind: proto.RoomMsgUser, Body: body,
+			Refs: sessionSendRefs, Mentions: sessionSendMention,
+		}
+		seq, err := svc.Send(args[0], msg, actor)
+		if err != nil {
+			slog.Default().Warn("CLI 会话消息发送失败", "session", args[0], "actor", actor, "cause", err)
+			return fmt.Errorf("发送到 %s: %w", args[0], err)
+		}
+		slog.Default().Info("CLI 会话消息已发送", "session", args[0], "kind", proto.RoomMsgUser, "actor", actor, "seq", seq)
+		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"ok": true, "seq": seq})
+	},
+}
+
 func init() {
 	sessionWaitCmd.Flags().Int64Var(&sessionWaitSince, "since", -1, "订阅起点（账本 seq，排他）；缺省 = 启动时流尾，只等新事件")
 	sessionWaitCmd.Flags().DurationVar(&sessionWaitTimeout, "timeout", 0, "等待总时长；到点以 124 退出；0 = 不限")
 	sessionCmd.AddCommand(sessionWaitCmd)
+	sessionCreateCmd.Flags().StringVar(&sessionCreateOwner, "owner", "", "群主身份（统一记法 user:<name>/agent:<name>，必填）")
+	sessionListCmd.Flags().StringVar(&sessionListMember, "member", "", "投影该成员身份的未读数（缺省不投影）")
+	sessionListCmd.Flags().BoolVar(&sessionListJSON, "json", false, "输出 SessionSummary JSON 流（每会话一行）")
+	sessionDetailCmd.Flags().BoolVar(&sessionDetailJSON, "json", false, "输出 SessionDetail JSON（一行）")
+	sessionSendCmd.Flags().StringArrayVar(&sessionSendRefs, "ref", nil, "引用锚（git 路径/timeline 锚/卡号/附件路径，可重复）")
+	sessionSendCmd.Flags().StringArrayVar(&sessionSendMention, "mention", nil, "@成员或卡号（可重复；寻址唤醒的来源）")
+	sessionSendCmd.Flags().StringVar(&sessionSendCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
+	sessionSendCmd.Flags().StringVar(&sessionSendSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
+	sessionCmd.AddCommand(sessionCreateCmd, sessionListCmd, sessionDetailCmd, sessionArchiveCmd, sessionJoinCmd, sessionLeaveCmd, sessionSendCmd)
 	rootCmd.AddCommand(sessionCmd)
 }
