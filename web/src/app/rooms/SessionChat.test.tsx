@@ -35,15 +35,21 @@ beforeEach(() => {
 })
 
 describe('SessionChat', () => {
-  it('卡 chips：有座实线显席位、空座虚线显「还没配人」，点 chip 跳卡', async () => {
-    const onOpenCard = vi.fn()
+  it('群主行与卡 chips 行不再渲染（B358.8 #3 反例：两块迁详情抽屉）', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    expect(screen.queryByTestId('session-card-chip')).toBeNull()
+    expect(screen.queryByText(/群主：/)).toBeNull()
+    expect(document.body.textContent).not.toContain('还没配人')
+  })
+
+  it('拉卡入口在输入框左下工具钮：点击回调触发；不传 onJoinCard 不渲染', async () => {
+    const onJoinCard = vi.fn()
     const user = userEvent.setup()
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} onOpenCard={onOpenCard} />)
-    const chips = screen.getAllByTestId('session-card-chip')
-    expect(chips[0]).toHaveTextContent('cli:opencode#s1')
-    expect(chips[1]).toHaveTextContent('空座 · 还没配人')
-    await user.click(chips[1])
-    expect(onOpenCard).toHaveBeenCalledWith('B233.17')
+    const view = render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} onJoinCard={onJoinCard} />)
+    await user.click(screen.getByRole('button', { name: '拉卡进群' }))
+    expect(onJoinCard).toHaveBeenCalledOnce()
+    view.rerender(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    expect(screen.queryByRole('button', { name: '拉卡进群' })).toBeNull()
   })
 
   it('@mention 高亮与回复引用条：点引用条滚动定位被引用消息', async () => {

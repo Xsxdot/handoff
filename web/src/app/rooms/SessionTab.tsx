@@ -1,10 +1,13 @@
-// SessionTab —— 会话的工作台 tab 窗格宿主（B361：群聊↔详情切换留在 tab 内部）。
-// 职责：详情+历史两路轮询、打开即已读（markedReads 去重守卫，沿用旧房间面板既有
-// 模式）、拉卡进群对话框、⋯/← 切换。边界：不发身份字段；已读失败只告警不阻塞渲染。
+// SessionTab —— 会话的工作台 tab 窗格宿主（B358.8 #3：chat↔detail 双态退役，
+// 「⋯」改右侧抽屉与会话框并存）。
+// 职责：详情+历史两路轮询、打开即已读（markedReads 去重守卫）、拉卡对话框态、
+// 抽屉开关与归档确认。边界：不发身份字段；已读失败只告警不阻塞渲染。
+// 标题不在此渲染——唯一来源是窗格标题行（tabTitle →「会话 · 标题」）。
 import { useEffect, useRef, useState } from 'react'
-import { fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
+import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
 import type { SessionDetail as SessionDetailDTO } from '../../api/rooms'
 import { errorMessage } from '../lib/format'
+import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { usePoll } from '../data/usePoll'
 import { COLLAB_POLL_MS } from './constants'
 import { logRoom } from './roomLog'
@@ -19,10 +22,13 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
   title: string
   onOpenCard?: (cardId: string) => void
 }) {
-  const [view, setView] = useState<'chat' | 'detail'>('chat')
+  const [drawerOpen, setDrawerOpen] = useState(false)
   const [joinOpen, setJoinOpen] = useState(false)
   const [joinBusy, setJoinBusy] = useState(false)
   const [joinError, setJoinError] = useState('')
+  const [archiveConfirm, setArchiveConfirm] = useState(false)
+  const [archiveBusy, setArchiveBusy] = useState(false)
+  const [archiveError, setArchiveError] = useState('')
   const markedReads = useRef<Record<string, number>>({})
 
   const detailPoll = usePoll(() => fetchSessionDetail(sessionId), COLLAB_POLL_MS)
@@ -33,14 +39,24 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
 
   // 打开即已读（spec §7）：seq 水位去重，失败从水位表剔除让下一轮重试。
   useEffect(() => {
-    if (view !== 'chat' || detailPoll.data === null || maxSeq <= 0 || maxSeq <= (markedReads.current[sessionId] ?? 0)) return
+    if (detailPoll.data === null || maxSeq <= 0 || maxSeq <= (markedReads.current[sessionId] ?? 0)) return
     markedReads.current[sessionId] = maxSeq
     logRoom('debug', 'session_mark_read_started', { session: sessionId, upto_seq: maxSeq })
     void markRoomRead(sessionId, maxSeq).catch((error: unknown) => {
       delete markedReads.current[sessionId]
       logRoom('error', 'session_mark_read_failed', { session: sessionId, error: errorMessage(error) })
     })
-  }, [view, sessionId, maxSeq, detailPoll.data])
+  }, [sessionId, maxSeq, detailPoll.data])
+
+  // 抽屉 Esc 收起：与会话流并存（无遮罩），Esc 是 spec 拍板的第二收起通道。
+  useEffect(() => {
+    if (!drawerOpen) return
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setDrawerOpen(false)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [drawerOpen])
 
   const joinCard = async (cardId: string) => {
     setJoinBusy(true)
@@ -59,27 +75,51 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
     }
   }
 
+  const archive = async () => {
+    setArchiveBusy(true)
+    setArchiveError('')
+    logRoom('debug', 'session_archive_started', { session: sessionId })
+    try {
+      await archiveSession(sessionId)
+      setArchiveConfirm(false)
+      detailPoll.refresh()
+      logRoom('debug', 'session_archive_succeeded', { session: sessionId })
+    } catch (error: unknown) {
+      setArchiveError(errorMessage(error))
+      logRoom('error', 'session_archive_failed', { session: sessionId, error: errorMessage(error) })
+    } finally {
+      setArchiveBusy(false)
+    }
+  }
+
   return (
-    <div className="flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center gap-2 border-b px-3 py-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-semibold">{title}</span>
-        <button type="button" aria-label="拉卡进群" onClick={() => setJoinOpen(true)} className="rounded-md border px-2 py-1 text-xs hover:bg-accent">＋ 拉卡进群</button>
-        {view === 'chat' ? (
-          <button type="button" aria-label="会话详情" onClick={() => setView('detail')} className="rounded-md px-2 py-1 text-xs hover:bg-accent">⋯</button>
-        ) : (
-          <button type="button" aria-label="返回群聊" onClick={() => setView('chat')} className="rounded-md px-2 py-1 text-sm hover:bg-accent">←</button>
-        )}
+    <div className="relative flex h-full min-h-0 flex-col">
+      <header className="flex shrink-0 items-center justify-end border-b px-2 py-1">
+        <button type="button" aria-label="会话详情" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}
+          className="rounded-md px-2 py-1 text-xs hover:bg-accent">⋯</button>
       </header>
-      {view === 'chat' ? (
-        <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
-          historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
-          onOpenCard={onOpenCard} />
-      ) : detail === null ? (
-        <p className="p-4 text-sm text-muted-foreground">{detailPoll.disconnected ? `详情读取失败：${detailPoll.errorText}` : '正在读取…'}</p>
-      ) : (
-        <SessionDetail detail={detail} />
+      <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
+        historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
+        onJoinCard={() => setJoinOpen(true)} />
+      {drawerOpen && (
+        <aside data-testid="session-drawer" aria-label="会话详情"
+          className="absolute inset-y-0 right-0 z-30 flex w-80 max-w-[85%] flex-col border-l bg-background shadow-xl">
+          <div className="flex shrink-0 items-center justify-between border-b px-3 py-2">
+            <h2 className="text-sm font-semibold">会话详情</h2>
+            <button type="button" aria-label="关闭详情" onClick={() => setDrawerOpen(false)}
+              className="rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent">×</button>
+          </div>
+          {detail === null
+            ? <p className="p-3 text-sm text-muted-foreground">{detailPoll.disconnected ? `详情读取失败：${detailPoll.errorText}` : '正在读取…'}</p>
+            : <SessionDetail detail={detail} onOpenCard={onOpenCard}
+                onArchive={() => setArchiveConfirm(true)} archiveBusy={archiveBusy} archiveError={archiveError} />}
+        </aside>
       )}
-      <JoinCardDialog open={joinOpen} busy={joinBusy} error={joinError} onCancel={() => setJoinOpen(false)} onJoin={(cardId) => void joinCard(cardId)} />
+      <JoinCardDialog open={joinOpen} busy={joinBusy} error={joinError} onCancel={() => setJoinOpen(false)} onJoin={(cardIds) => void joinCard(cardIds)} />
+      <ConfirmDialog open={archiveConfirm} title="归档会话"
+        description={`归档「${title}」后本会话转为只读（归档是幂等操作）。`}
+        confirmLabel="归档" destructive busy={archiveBusy} error={archiveError}
+        onConfirm={() => void archive()} onCancel={() => setArchiveConfirm(false)} />
     </div>
   )
 }

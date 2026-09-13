@@ -1,8 +1,11 @@
 // SessionChat —— 会话 tab 的群聊态：人话气泡 + @高亮 + 回复引用条（只读渲染，
-// 回复锚生产面缺口归 B365）+ 卡 chips（空座虚线）+ 发送。
+// 回复锚生产面缺口归 B365）+ 发送。
 // 边界：member 身份由服务端注入，前端不自报（请求不带身份字段）；发送被拒的
 // 原文透传（403 非成员 / 409 归档）——可行动报错是岔口 1 的组件半边。
+// B358.8 #3：群主与卡列表迁详情抽屉（SessionDetail），本面只留聊天；拉卡入口
+// 移到输入框左下工具钮（onJoinCard 回调，对话框态由 SessionTab 持有）。
 import { useState } from 'react'
+import { ListPlus } from 'lucide-react'
 import type { RoomHistoryItem, SessionSummary } from '../../api/rooms'
 import { addSessionMember, sendRoomMessage } from '../../api/rooms'
 import { ApiError } from '../../api/client'
@@ -16,7 +19,7 @@ export interface SessionChatProps {
   events: RoomHistoryItem[]
   historyError: string
   onSent: () => void
-  onOpenCard?: (cardId: string) => void
+  onJoinCard?: () => void
 }
 
 function MessageRow({ event, referenced, highlight, onJump }: {
@@ -52,7 +55,7 @@ function MessageRow({ event, referenced, highlight, onJump }: {
   )
 }
 
-export function SessionChat({ sessionId, summary, events, historyError, onSent, onOpenCard }: SessionChatProps) {
+export function SessionChat({ sessionId, summary, events, historyError, onSent, onJoinCard }: SessionChatProps) {
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
@@ -116,21 +119,8 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
   const archived = summary?.archived === true
   return (
     <div className="flex min-h-0 flex-1 flex-col">
-      <div className="shrink-0 border-b px-3 py-2 text-xs text-muted-foreground">
-        {summary?.owner != null && summary.owner !== '' && <span>群主：{summary.owner} · </span>}
-        {archived && <span className="font-semibold text-amber-700">会话已归档，只读。</span>}
-      </div>
-      {(summary?.cards ?? []).length > 0 && (
-        <div className="flex shrink-0 items-center gap-1.5 overflow-x-auto border-b bg-slate-50 px-3 py-1.5">
-          {summary!.cards!.map((card) => (
-            <button key={card.card_id} type="button" data-testid="session-card-chip" onClick={() => onOpenCard?.(card.card_id)}
-              className={`inline-flex shrink-0 items-center gap-1.5 rounded-md border bg-background px-2 py-0.5 text-xs ${card.seat ? '' : 'border-dashed'}`}>
-              <b className="font-mono">{card.card_id}</b>
-              {card.status && <span className="text-muted-foreground">{card.status}</span>}
-              <span className={card.seat ? 'text-muted-foreground' : 'text-amber-700'}>{card.seat ?? '空座 · 还没配人'}</span>
-            </button>
-          ))}
-        </div>
+      {archived && (
+        <div className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-700">会话已归档，只读。</div>
       )}
       <div className="min-h-0 flex-1 space-y-2 overflow-y-auto bg-slate-50/60 p-3">
         {events.length === 0 ? <p className="text-sm text-muted-foreground">（还没有消息）</p>
@@ -154,6 +144,12 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
           </p>
         )}
         <div className="flex items-end gap-2 rounded-2xl border bg-background p-1.5">
+          {onJoinCard && (
+            <button type="button" aria-label="拉卡进群" title="拉卡进群" onClick={onJoinCard}
+              className="rounded-lg p-1.5 text-muted-foreground hover:bg-accent hover:text-foreground">
+              <ListPlus className="size-4" />
+            </button>
+          )}
           <textarea aria-label="发送消息" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={archived} rows={2}
             className="min-w-0 flex-1 resize-none border-0 bg-transparent px-1.5 py-1 text-sm outline-none"
             placeholder={archived ? '' : '发消息…（要谁办就 @ 谁；没 @ 的发言不唤醒任何人）'} />
