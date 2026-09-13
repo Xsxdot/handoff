@@ -16,7 +16,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import { coordinatorBase } from './Shell'
 import type { ProjectTreeResp, Task } from '../../api/types'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -1064,6 +1064,32 @@ describe('B361 会话 IA', () => {
     // （plan §2.4 kind:'home'）的内容名 tail 被吞——「第三段=会话标题」需
     // Breadcrumb.tsx 一行修复（越界文件，归协调者裁决，本卡不动）。
     expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
+  })
+
+  it('左栏会话行的 DataTransfer 穿过 Shell 投到工作台窗格右缘分屏（B358.8 #1）', async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
+    renderShell()
+    const row = await screen.findByTestId('session-row')
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => {
+        values.set(type, value)
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type)
+      },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    fireEvent.dragStart(row, { dataTransfer })
+    expect(dataTransfer.types).toContain(DRAG_SESSION_MIME)
+    expect(JSON.parse(values.get(DRAG_SESSION_MIME)!)).toMatchObject({ sessionId: 'session:1', title: '架构物理化' })
+
+    const target = screen.getAllByTestId('workbench-pane')[0]
+    setPaneRect(target)
+    dropAt(target, dataTransfer, 360, 200)
+    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
+    expect(within(screen.getByRole('tablist', { name: '标签组' })).getAllByRole('tab', { name: /架构物理化/ })).toHaveLength(1)
   })
 
   it('反例断言：旧房间面板任何形态都不再出现', async () => {

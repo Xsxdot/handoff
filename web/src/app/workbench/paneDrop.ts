@@ -9,6 +9,7 @@ export const DRAG_BASE_MIME = 'text/handoff-base'
 export const DRAG_DIR_MIME = 'text/handoff-dir'
 export const DRAG_TAB_MIME = 'text/handoff-tab'
 export const DRAG_GROUP_MIME = 'text/handoff-group'
+export const DRAG_SESSION_MIME = 'text/handoff-session'
 
 export type DropZone = 'left' | 'right' | 'top' | 'bottom' | 'center'
 
@@ -78,4 +79,12 @@ export function readDragGroup(raw: string): { groupId: string } | null {
   const value = objectValue(raw)
   if (!value || !stringField(value.groupId) || value.groupId === '') return null
   return { groupId: value.groupId }
+}
+
+/** 解析左栏会话行拖源（B358.8 #1）；与 readDragTab 同款纪律：坏载荷返 null。 */
+export function readDragSession(raw: string): { sessionId: string; title: string } | null {
+  const value = objectValue(raw)
+  if (!value || !stringField(value.sessionId) || !stringField(value.title) ||
+      value.sessionId === '' || value.title === '') return null
+  return { sessionId: value.sessionId, title: value.title }
 }

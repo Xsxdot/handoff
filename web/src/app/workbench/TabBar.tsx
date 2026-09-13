@@ -14,7 +14,7 @@ import { FileText, MessagesSquare, Plus, Terminal, X } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { launchersFor, pickItemsFor, type LauncherItem, type PickKind } from './BlankTab'
 import { IconMenu, type IconMenuItem } from '../lib/IconMenu'
-import { DRAG_GROUP_MIME, readDragGroup } from './paneDrop'
+import { DRAG_GROUP_MIME, DRAG_SESSION_MIME, readDragGroup, readDragSession } from './paneDrop'
 import { tabTitle, type BaseDir, type Tab, type TabContent, type TabGroup } from './tabs'
 import { cn } from '@/lib/utils'
 
@@ -33,6 +33,9 @@ export interface TabBarProps {
   terminalUnavailable?: string
   onNewGroup: () => void
   onMoveGroup: (sourceGroupId: string, targetGroupId: string, zone: 'left' | 'right' | 'center') => void
+  // 会话 MIME 投到组标签 = 该组内打开（B358.8 #1）。去重/移动语义由持有布局的
+  // 上层（WorkbenchPage）承接；不传不挂分支，既有调用面零波及。
+  onDropSession?: (source: { sessionId: string; title: string }, groupId: string) => void
 }
 
 function groupContentCount(group: TabGroup): number {
@@ -101,7 +104,7 @@ function TabClose({ label, onClose }: { label: string; onClose: () => void }) {
 
 export function TabBar({
   groups, activeGroupId, base, taskName, onActivateGroup, onCloseGroup, onNew, onNewLauncher,
-  launchers = [], terminalUnavailable, onNewGroup, onMoveGroup,
+  launchers = [], terminalUnavailable, onNewGroup, onMoveGroup, onDropSession,
 }: TabBarProps) {
   const [dropWarning, setDropWarning] = useState<string | null>(null)
 
@@ -144,12 +147,24 @@ export function TabBar({
                 event.dataTransfer.effectAllowed = 'move'
               }}
               onDragOver={(event) => {
-                if (!event.dataTransfer.types.includes(DRAG_GROUP_MIME)) return
+                const types = event.dataTransfer.types
+                if (!types.includes(DRAG_GROUP_MIME) && !types.includes(DRAG_SESSION_MIME)) return
                 event.preventDefault()
                 event.dataTransfer.dropEffect = 'move'
               }}
               onDrop={(event) => {
-                if (!event.dataTransfer.types.includes(DRAG_GROUP_MIME)) return
+                const types = event.dataTransfer.types
+                // 会话行投到组标签：作为该组新 tab 打开（去重在上层 dropSessionIntoGroup）。
+                if (types.includes(DRAG_SESSION_MIME)) {
+                  if (!onDropSession) return
+                  event.preventDefault()
+                  const source = readDragSession(event.dataTransfer.getData(DRAG_SESSION_MIME))
+                  if (!source) return
+                  setDropWarning(null)
+                  onDropSession(source, group.id)
+                  return
+                }
+                if (!types.includes(DRAG_GROUP_MIME)) return
                 event.preventDefault()
                 const source = readDragGroup(event.dataTransfer.getData(DRAG_GROUP_MIME))
                 if (!source || source.groupId === group.id) return

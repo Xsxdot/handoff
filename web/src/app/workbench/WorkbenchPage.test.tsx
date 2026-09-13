@@ -1,8 +1,8 @@
 import { act, createEvent, fireEvent, render, renderHook, within } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkbenchPage } from './WorkbenchPage'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
-import { useWorkbench, type BaseDir } from './useWorkbench'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
+import { useWorkbench, sessionBase, type BaseDir } from './useWorkbench'
 
 const local: BaseDir = { key: '/local', kind: 'workspace', path: '/local', label: 'local', projectName: 'handoff', machine: '' }
 const remote: BaseDir = { key: '/remote@linux-01', kind: 'workspace', path: '/remote', label: 'remote', projectName: 'aim', machine: 'linux-01' }
@@ -20,6 +20,15 @@ function page(api: ReturnType<typeof useWorkbench>) {
     renderContent={(content, base) => <div>{content.kind === 'file' ? content.rel : `${content.kind}:${base.projectName}`}</div>}
   />
 }
+
+// sessionDropPayload 造左栏会话行的拖放载荷（B358.8 #1）。
+const sessionDropPayload = (sessionId = 'session:1', title = '架构物理化') => ({
+  types: [DRAG_SESSION_MIME],
+  getData: (key: string) => key === DRAG_SESSION_MIME ? JSON.stringify({ sessionId, title }) : '',
+  setData: vi.fn(),
+  effectAllowed: '',
+  dropEffect: '',
+})
 
 describe('WorkbenchPage', () => {
   it('最外容器裁掉横向溢出：列压进窗口，不允许横滑', () => {
@@ -385,6 +394,87 @@ describe('WorkbenchPage', () => {
     expect(warn).toHaveBeenCalledWith('workbench.drop.invalid_source', expect.objectContaining({
       project: 'handoff', machine: '', path: '/local',
     }))
+    warn.mockRestore()
+  })
+
+  it('会话拖到窗格右缘 → 新列分屏出会话 tab，base 为会话基准（B358.8 #1 主诉求）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const dataTransfer = sessionDropPayload()
+
+    const dragOver = createEvent.dragOver(pane, { dataTransfer })
+    Object.defineProperty(dragOver, 'clientX', { value: 360 })
+    Object.defineProperty(dragOver, 'clientY', { value: 200 })
+    fireEvent(pane, dragOver)
+    expect(view.getByTestId('drop-right')).toBeInTheDocument()
+
+    const drop = createEvent.drop(pane, { dataTransfer })
+    Object.defineProperty(drop, 'clientX', { value: 360 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(pane, drop)
+    expect(hook.result.current.wb.groups[0].columns).toHaveLength(2)
+    const placed = hook.result.current.wb.groups[0].columns[1].panes[0]
+    expect(placed).toMatchObject({ base: sessionBase('session:1'), content: { kind: 'session', sessionId: 'session:1', title: '架构物理化' } })
+  })
+
+  it('会话已开在别的组时投到窗格 center 整支移动过去，不复制出第二个 tab（去重前置）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:1', title: '架构物理化' }, sessionBase('session:1')))
+    const sourceTabId = hook.result.current.wb.groups[0].columns[0].panes[0]!.id
+    act(() => hook.result.current.addGroup()) // g2 空组
+    const targetGroupId = hook.result.current.wb.activeGroupId
+    const view = render(page(hook.result.current))
+    const panes = view.container.querySelectorAll('[data-testid="workbench-pane"]')
+    const target = panes[panes.length - 1] as HTMLElement
+    setRect(target)
+    const drop = createEvent.drop(target, { dataTransfer: sessionDropPayload() })
+    Object.defineProperty(drop, 'clientX', { value: 200 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(target, drop)
+
+    const sessionTabs = hook.result.current.wb.groups
+      .flatMap((group) => group.columns.flatMap((column) => column.panes))
+      .filter((tab) => tab?.content.kind === 'session')
+    expect(sessionTabs).toHaveLength(1)
+    expect(sessionTabs[0]!.id).toBe(sourceTabId)
+    expect(sessionTabs[0]!.base.projectName).toBe('')
+    expect(hook.result.current.wb.groups.find((group) => group.id === targetGroupId)!.columns[0].panes[0]!.id).toBe(sourceTabId)
+  })
+
+  it('会话已开在本组时投到本组窗格只激活，不改变布局', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:1', title: '架构物理化' }, sessionBase('session:1')))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const drop = createEvent.drop(pane, { dataTransfer: sessionDropPayload() })
+    Object.defineProperty(drop, 'clientX', { value: 200 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(pane, drop)
+    const sessionTabs = hook.result.current.wb.groups
+      .flatMap((group) => group.columns.flatMap((column) => column.panes))
+      .filter((tab) => tab?.content.kind === 'session')
+    expect(sessionTabs).toHaveLength(1)
+    expect(hook.result.current.wb.groups).toHaveLength(1)
+    expect(hook.result.current.wb.activeGroupId).toBe('g1')
+  })
+
+  it('会话 MIME 载荷损坏时拒绝放置，布局不变', () => {
+    const hook = renderHook(() => useWorkbench())
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const dataTransfer = { types: [DRAG_SESSION_MIME], getData: () => '{bad-json', setData: vi.fn(), dropEffect: '' }
+    const drop = createEvent.drop(pane, { dataTransfer })
+    Object.defineProperty(drop, 'clientX', { value: 200 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(pane, drop)
+    expect(hook.result.current.wb.groups[0].columns[0].panes[0]).toBeNull()
+    expect(warn).toHaveBeenCalledWith('workbench.drop.invalid_mime', expect.objectContaining({ reason: 'session MIME payload is missing or invalid' }))
     warn.mockRestore()
   })
 })

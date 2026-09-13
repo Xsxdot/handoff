@@ -1,9 +1,10 @@
 // SessionSidebar.test.tsx —— 列表行（未读角标/需要你标签/预览）与筛选。
 import { describe, expect, it, vi } from 'vitest'
-import { render, screen } from '@testing-library/react'
+import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import fixture from '../../api/testdata/RoomsFixture.json'
 import type { SessionSummary } from '../../api/rooms'
+import { DRAG_SESSION_MIME } from '../workbench/paneDrop'
 import { SessionSidebar } from './SessionSidebar'
 
 const cases = fixture as { case: string; summary?: SessionSummary }[]
@@ -36,5 +37,20 @@ describe('SessionSidebar', () => {
     expect(screen.queryByText('跨机执行面')).not.toBeInTheDocument()
     rerender(<SessionSidebar sessions={[]} loading={false} errorText="" needsOnly={false} onToggleNeeds={() => {}} onOpen={() => {}} onCreate={() => {}} />)
     expect(screen.getByText('（暂无会话）')).toBeInTheDocument()
+  })
+
+  it('行可拖：dragstart 写入会话 MIME 与 {sessionId,title} 载荷，拖源行降低透明度（B358.8 #1）', () => {
+    const golden = cases.find((c) => c.case === 'session-summary-golden')!.summary!
+    const view = render(<SessionSidebar sessions={[golden]} loading={false} errorText="" needsOnly={false} onToggleNeeds={() => {}} onOpen={() => {}} onCreate={() => {}} />)
+    const row = screen.getByTestId('session-row')
+    expect(row).toHaveAttribute('draggable', 'true')
+    const dragData = { setData: vi.fn(), effectAllowed: '', dropEffect: '', types: [] as string[], getData: () => '' }
+    fireEvent.dragStart(row, { dataTransfer: dragData })
+    expect(dragData.setData).toHaveBeenCalledWith(DRAG_SESSION_MIME, JSON.stringify({ sessionId: golden.id, title: golden.title }))
+    expect(dragData.effectAllowed).toBe('move')
+    expect(row.className).toContain('opacity-50')
+    fireEvent.dragEnd(row, { dataTransfer: dragData })
+    expect(row.className).not.toContain('opacity-50')
+    expect(view.container.querySelector('[data-drag-session]')).not.toBeNull()
   })
 })
