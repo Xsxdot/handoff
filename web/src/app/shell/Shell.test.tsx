@@ -1102,7 +1102,7 @@ describe('B361 会话 IA', () => {
     expect(screen.queryByRole('button', { name: '打开房间面板' })).toBeNull()
   })
 
-  it('新建会话：对话框收集标题与统一记法群主，createSession 后刷新列表', async () => {
+  it('新建会话：对话框收集标题与统一记法群主，createSession 后刷新列表并记忆 owner', async () => {
     const { createSession } = await import('../../api/rooms')
     vi.mocked(createSession).mockResolvedValue({ id: 'session:9', title: '新场', owner: 'user:sy', archived: false, created_at: '', updated_at: '' })
     vi.mocked(fetchSessions).mockResolvedValue([] as never)
@@ -1110,9 +1110,11 @@ describe('B361 会话 IA', () => {
     renderShell()
     await user.click(await screen.findByRole('button', { name: '新建会话' }))
     await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
-    await user.type(screen.getByRole('textbox', { name: '群主身份' }), 'user:sy')
+    await user.type(screen.getByRole('combobox', { name: '群主身份' }), 'user:sy')
     await user.click(screen.getByRole('button', { name: '创建' }))
     await waitFor(() => expect(createSession).toHaveBeenCalledWith('新场', 'user:sy'))
+    // B358.8 #7：成功创建后回写记忆，下次新建对话框直接预填
+    await waitFor(() => expect(window.localStorage.getItem('handoff.last-session-owner')).toBe('user:sy'))
   })
 
   it('关闭会话 tab（组关闭）后 tabbar 不再含该会话', async () => {

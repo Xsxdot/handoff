@@ -5,7 +5,7 @@ import { describe, expect, it } from 'vitest'
 import type { SessionMember, SessionSummary } from '../../api/rooms'
 import {
   MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, TIMELINE_KIND_LABEL,
-  applyMention, memberKindLabel, memberStatusLabel, memberStatusText, mentionCandidates,
+  applyMention, filterSessionsByProject, memberKindLabel, memberStatusLabel, memberStatusText, mentionCandidates,
   segmentBody, timelineKindLabel, totalUnread,
 } from './sessionModel'
 
@@ -69,6 +69,29 @@ describe('timeline kind 标签', () => {
 describe('未读聚合', () => {
   it('会话 tab 徽章 = Σ unread', () => {
     expect(totalUnread([{ unread: 2 }, { unread: 0 }, { unread: 3 }] as SessionSummary[])).toBe(5)
+  })
+})
+
+describe('项目筛选（B358.8 #6 纯函数缝）', () => {
+  const summaryOf = (id: string, cardIds: string[]): SessionSummary => ({
+    id, kind: 'session', title: id, owner: 'user:sy', archived: false, unread: 0,
+    needs_human: false, last_activity: '',
+    cards: cardIds.map((card_id) => ({ card_id })),
+  })
+  const projectOfCard = (cardId: string): string =>
+    ({ B1: 'handoff', B2: 'aim' })[cardId as 'B1' | 'B2'] ?? ''
+  const sessions = [summaryOf('s1', ['B1']), summaryOf('s2', ['B1', 'B2']), summaryOf('s3', []), summaryOf('s4', ['B9'])]
+
+  it('缺省「全部」（空串）全显', () => {
+    expect(filterSessionsByProject(sessions, projectOfCard, '')).toHaveLength(4)
+  })
+  it('选中项目：任一锚定卡命中即显示（多卡并集）', () => {
+    expect(filterSessionsByProject(sessions, projectOfCard, 'handoff').map((s) => s.id)).toEqual(['s1', 's2'])
+    expect(filterSessionsByProject(sessions, projectOfCard, 'aim').map((s) => s.id)).toEqual(['s2'])
+  })
+  it('无卡会话与映射缺失的卡只归「全部」', () => {
+    expect(filterSessionsByProject(sessions, projectOfCard, 'handoff')).not.toContain(sessions[2])
+    expect(filterSessionsByProject(sessions, projectOfCard, 'aim')).not.toContain(sessions[3])
   })
 })
 

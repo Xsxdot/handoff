@@ -77,6 +77,17 @@ export function applyMention(draft: string, identity: string): string {
   return draft.replace(MENTION_TOKEN_RE, `@${identity} `)
 }
 
+// filterSessionsByProject 按项目筛选会话列表（B358.8 #6）：project='' 为「全部」
+// 缺省全显；选中项目时会话任一锚定卡的 project 命中才显示；无卡会话只归「全部」。
+export function filterSessionsByProject(
+  sessions: SessionSummary[],
+  projectOfCard: (cardId: string) => string,
+  project: string,
+): SessionSummary[] {
+  if (project === '') return sessions
+  return sessions.filter((session) => (session.cards ?? []).some((card) => projectOfCard(card.card_id) === project))
+}
+
 // totalUnread 会话 tab 徽章的聚合读数（Σ unread）。
 export function totalUnread(summaries: SessionSummary[]): number {
   return summaries.reduce((total, summary) => total + summary.unread, 0)

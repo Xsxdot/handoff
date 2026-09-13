@@ -8,7 +8,7 @@ import type { DragEvent } from 'react'
 import type { SessionSummary } from '../../api/rooms'
 import { formatRelative } from '../lib/format'
 import { DRAG_SESSION_MIME } from '../workbench/paneDrop'
-import { totalUnread } from './sessionModel'
+import { filterSessionsByProject, totalUnread } from './sessionModel'
 
 export interface SessionSidebarProps {
   sessions: SessionSummary[]
@@ -18,10 +18,17 @@ export interface SessionSidebarProps {
   onToggleNeeds: () => void
   onOpen: (session: SessionSummary) => void
   onCreate: () => void
+  // 项目筛选（B358.8 #6）：选项与映射由 Shell 从 cardsState 投影下传（零新增端点）。
+  projectFilter: string
+  onProjectFilter: (project: string) => void
+  projectOptions: string[]
+  projectOfCard: (cardId: string) => string
 }
 
-export function SessionSidebar({ sessions, loading, errorText, needsOnly, onToggleNeeds, onOpen, onCreate }: SessionSidebarProps) {
-  const visible = needsOnly ? sessions.filter((session) => session.needs_human) : sessions
+export function SessionSidebar({ sessions, loading, errorText, needsOnly, onToggleNeeds, onOpen, onCreate,
+  projectFilter, onProjectFilter, projectOptions, projectOfCard }: SessionSidebarProps) {
+  const byProject = filterSessionsByProject(sessions, projectOfCard, projectFilter)
+  const visible = needsOnly ? byProject.filter((session) => session.needs_human) : byProject
   const needsCount = sessions.filter((session) => session.needs_human).length
   // draggingId 拖源提示：被拖行降低透明度；dragend 兜底复位（drop 在列表外完成时不回流）。
   const [draggingId, setDraggingId] = useState<string | null>(null)
@@ -36,6 +43,15 @@ export function SessionSidebar({ sessions, loading, errorText, needsOnly, onTogg
       <div className="flex shrink-0 items-center justify-between px-3 py-2.5">
         <span className="text-sm font-semibold">会话</span>
         <button type="button" aria-label="新建会话" onClick={onCreate} className="rounded-md border px-2 py-1 text-xs hover:bg-accent">＋ 新建会话</button>
+      </div>
+      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5 text-xs">
+        <label htmlFor="session-project-filter" className="shrink-0 text-muted-foreground">项目</label>
+        <select id="session-project-filter" data-testid="session-project-filter" value={projectFilter}
+          onChange={(event) => onProjectFilter(event.target.value)}
+          className="min-w-0 flex-1 rounded-md border bg-background px-1.5 py-0.5 text-xs">
+          <option value="">全部</option>
+          {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
+        </select>
       </div>
       <div className="flex shrink-0 items-center border-b px-3 py-1.5 text-xs">
         <button type="button" aria-pressed={needsOnly} onClick={onToggleNeeds} className={needsOnly ? 'font-semibold text-amber-700' : 'text-muted-foreground'}>
