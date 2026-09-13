@@ -4,8 +4,9 @@
 import { describe, expect, it } from 'vitest'
 import type { SessionMember, SessionSummary } from '../../api/rooms'
 import {
-  MEMBER_STATUS_LABEL, TIMELINE_KIND_LABEL,
-  memberStatusLabel, memberStatusText, segmentBody, timelineKindLabel, totalUnread,
+  MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, TIMELINE_KIND_LABEL,
+  applyMention, memberKindLabel, memberStatusLabel, memberStatusText, mentionCandidates,
+  segmentBody, timelineKindLabel, totalUnread,
 } from './sessionModel'
 
 describe('成员状态渲染词表（看板不说谎的前端半边）', () => {
@@ -68,5 +69,47 @@ describe('timeline kind 标签', () => {
 describe('未读聚合', () => {
   it('会话 tab 徽章 = Σ unread', () => {
     expect(totalUnread([{ unread: 2 }, { unread: 0 }, { unread: 3 }] as SessionSummary[])).toBe(5)
+  })
+})
+
+describe('@ 候选与 token 替换（B358.8 #2 纯函数缝）', () => {
+  const members: SessionMember[] = [
+    { identity: 'user:sy', kind: 'human', status: 'working' },
+    { identity: 'Agent:Opendev', kind: 'agent', status: 'working', card_title: '执行卡' },
+    { identity: '', kind: 'seat', card_id: 'B1', status: 'empty' },
+  ]
+
+  it('kind 标签恰三值，词表外透传', () => {
+    expect(Object.keys(MEMBER_KIND_LABEL).sort()).toEqual(['agent', 'human', 'seat'])
+    expect(memberKindLabel('human')).toBe('成员')
+    expect(memberKindLabel('agent')).toBe('代理')
+    expect(memberKindLabel('seat')).toBe('席位')
+    expect(memberKindLabel('未来新值')).toBe('未来新值')
+  })
+
+  it('候选：空串=全量；空座不进候选；片段大小写不敏感包含过滤', () => {
+    expect(mentionCandidates(members, '')).toHaveLength(2)
+    expect(mentionCandidates(members, '').map((member) => member.identity)).toEqual(['user:sy', 'Agent:Opendev'])
+    expect(mentionCandidates(members, 'sy').map((member) => member.identity)).toEqual(['user:sy'])
+    expect(mentionCandidates(members, 'OPEND').map((member) => member.identity)).toEqual(['Agent:Opendev'])
+    expect(mentionCandidates(members, '没有人')).toEqual([])
+  })
+
+  it('applyMention 整体替换末尾 token 为 @<identity> 并以空格终结', () => {
+    expect(applyMention('看下 @sy', 'user:sy')).toBe('看下 @user:sy ')
+    expect(applyMention('@', 'agent:a1')).toBe('@agent:a1 ')
+    // 无进行中 token 时原样返回（防御：点选只发生在面板开着时）
+    expect(applyMention('没有 token', 'user:sy')).toBe('没有 token')
+  })
+
+  it('替换结果与 send 的 mentions 提取逐字兼容（token = @ + 非空白）', () => {
+    const draft = applyMention('hi @ope', 'Agent:Opendev')
+    expect(draft.match(/@[^\s]+/g)).toEqual(['@Agent:Opendev'])
+    // 高亮联动：segmentBody 以 @token 分段
+    expect(segmentBody(draft, ['Agent:Opendev'])).toEqual([
+      { text: 'hi ', mention: false },
+      { text: '@Agent:Opendev', mention: true },
+      { text: ' ', mention: false },
+    ])
   })
 })
