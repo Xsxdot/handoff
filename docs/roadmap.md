@@ -820,3 +820,16 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   docker/postgres，共享 PG 宿主当晚两次闪断不宜加库），SQLite 腿已全覆盖（lease
   单写者+TTL 崩溃重取、source 三元组唯一索引 23=23、watermark 续传零重复）。后续
   在有隔离 PG/relay 的环境补测。来源：plan §6.2 真机项 2/3/4 残余。
+
+## 来自 B233.18–.25 残余批次收口（2026-09-13，功能线至 0088ba7ff）
+
+- **B233.22 B 档 10 项留驻 agentd**（hub/shutdown/pullstate/admission/watchdog/ticketvoid/eventframes/coordinator_home/b23313_retained 余部/logging）：全部需要 D1 拍板的 orchestration→agentd import 方向反转或接口缝设计，清单与缝位见 `docs/superpowers/notes/b233.22-placement.md` §3。来源：B233.22 验收。
+- **placement 未登记零散项**：server.go 内组装适配器与 k_agentd_fn 粗粒度成员的文件粒度归属留后续逐个定夺（preview 族、agy、测试基建已由 B233.23 补登记）。来源：b233.22-placement §4。
+- **B233.20 收窄残余（字面 grep 对类型推断局部盲区）**：内联 RunE 与 pool.For 推断局部仍持聚合——`agentd/preview_mirror.go:180/251-257`、`agentd/machines.go:122/130`、`agentd/machineupgrade.go:50/150`、`cmd/project.go`、`cmd/sessions.go`、`cmd/tasks.go`、`cmd/show.go`、`cmd/diff.go`、`cmd/footprint.go`。来源：B233.20 审计 P2。
+- **d_gateway→d_orchestration 83 条既存缝**：gateway 任务读面直读 store.Store(77)+实体/包级(6)；target.json legacyBudgetNote 已记账，收窄归后续卡。来源：B233.23 阶段二（`89a4660f3`）。
+- **flows 段未产**：旧基线亦无；配方 C17 口径「没有 flows 即 FAIL」，查看器降级，补产归后续卡。来源：B233.23 扫描报告 §3。
+- **mirror 三层组合缝（发现→上游订阅→落库）真栈冒烟**：B233.19 后各段各自有测试，组合缝无人锁，建议补一条真栈冒烟。来源：B233.19 审计 F1。
+- **b23319_adapter 的 MarkForwarded 包装测试锚**：语义集中到唯一施力点后无测试报警。来源：B233.19 审计 F2。
+- **视图 nodesModified 同 id 内容差**：validate 不执法、合并时覆写基线定义，随下次 absorb 消解。来源：B233.24 验收。
+- **超长 TMPDIR 压测潜伏观察**：agy TestStartOrderingAndTaskEnv 报 MarkRoot 空、cmd service 夹具族报无非临时可写根——默认环境全绿，非六族成员。来源：B233.25 偏差 3。
+- **TestPtyWSAttachedBacklogBytesKeyPresent 存量 flake（约 1/10）**：pty 子进程输出与 WS attach 竞速，B233.25 按纪律未修。来源：B233.19/25 实测。
