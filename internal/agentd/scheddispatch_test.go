@@ -479,15 +479,29 @@ func canonicalPayloadForTest(t *testing.T, raw json.RawMessage) string {
 	return string(b)
 }
 
-// legacyGolden 是基线（改动前）非小队节点完整派发链的事件序列投影
-// （Seq|Type|Actor|canonical(Payload)），由 Task 0 的 golden_dump 程序在改动前
-// 真实捕获后粘贴（连续两次运行逐字节一致）。断言 = 改动后同一夹具重跑产出
-// 完全相同的序列（拍板记录⑥：存量直绑逐字节不变的执法形态）+ 调度侧零痕迹
-// （即使 SetupAutomation 在场，非小队路径不给 registry 留任何行）。
+// legacyGolden 是非小队节点完整派发链的事件序列投影
+// （Seq|Type|Actor|canonical(Payload)），由 Task 0 的 golden_dump 程序真实捕获
+// （连续两次运行逐字节一致）。断言 = 同一夹具重跑产出完全相同的序列
+// （拍板记录⑥：存量直绑逐字节不变的执法形态）+ 调度侧零痕迹（即使
+// SetupAutomation 在场，非小队路径不给 registry 留任何行）。
+//
+// B233.25 重捕依据（非生产回归，契约被 B233.6 明文变更）：
+//   - 顺序翻转（comment 在前 → dispatched 在前）：commit 52b4b82fb
+//     「fix(B233.6): close dispatch and mirror review gaps」把
+//     「回链挂账 → 落 dispatched 快照」改为「先落 dispatched 快照 → 回链挂账」，
+//     理由见 internal/ledgerstep/dispatch.go 先落快照再挂账的 why 注释
+//     （镜像对账须在 LinkTask 可见前取得 Node/Attempt 投影，避免空身份事件
+//     先消耗 source watermark）；
+//   - 同事务化：commit 737e2203f「fix(B233.6): compensate dispatch ledger
+//     failure」引入 RecordDispatchAndLinkTask，b233.6-plan.md 明文
+//     「事务内固定先写 EvDispatched 快照、再写五列 card_tasks 与挂账 comment」；
+//   - dispatched payload 新增 node/attempt 键：b233.6-contract.md 明文
+//     「写入账本单流时补充卡、节点、attempt 与源事件身份」「新增只在事件写入时
+//     补 Node/Attempt」。
 var legacyGolden = []string{
 	`GOLDEN|1|card_created|test|[{"title":"环节测试卡"},{"workflow":"bug"},{"workflow_version":1}]`,
-	`GOLDEN|2|comment|web:test|[{"body":"挂账 task T-fake-01@ftm（implement）"},{"kind":"普通"}]`,
-	`GOLDEN|3|dispatched|web:test|[{"base":""},{"base_commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},{"branch":"cards/B1-implement"},{"discipline_name":"implement"},{"discipline_version":1},{"executor":"opencode"},{"model":""},{"purpose":"implement"},{"target":"ftm"},{"task_id":"T-fake-01"},{"template":"feature-impl"},{"template_version":2}]`,
+	`GOLDEN|2|dispatched|web:test|[{"attempt":"T-fake-01"},{"base":""},{"base_commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"},{"branch":"cards/B1-implement"},{"discipline_name":"implement"},{"discipline_version":1},{"executor":"opencode"},{"model":""},{"node":"进行中"},{"purpose":"implement"},{"target":"ftm"},{"task_id":"T-fake-01"},{"template":"feature-impl"},{"template_version":2}]`,
+	`GOLDEN|3|comment|web:test|[{"body":"挂账 task T-fake-01@ftm（implement）"},{"kind":"普通"}]`,
 }
 
 func TestLegacyNodeEventSequenceUnchanged(t *testing.T) {
