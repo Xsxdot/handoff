@@ -4,7 +4,7 @@
 //
 // 边界：本文件是 gateway 对 d_collab 入站 api 门面会话半边的消费侧（spec 测试
 // 接缝清单 #1 的调用方）；不得 import internal/collab 之外的门面，账本能力经
-// s.ledger 既有直调面触达。
+// s.autoLedger 既有薄门面触达。
 //
 // 身份两字段（B358.4 拍板①，docs/superpowers/plans/b358.4-plan.md 文末拍板）：
 //   - 成员身份（会话群主/列表 member 维度）用统一记法 user:<name>/agent:<name>
