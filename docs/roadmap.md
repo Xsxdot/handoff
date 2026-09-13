@@ -122,14 +122,22 @@
 - **非 12–16 方向的老债配额**：`d_gateway → d_ledger` 17、`d_cli → d_policy` 32 等本卡不清零。棘轮只覆盖 12–16 交出的有门面方向。来源：同上。
 - **全仓 internal/ 按 best.json 重排**：本卡再确认不做（只封已迁出的四包）。原条见「来自 B233.10 spec」。
 
+## 来自 B233.17 验收（2026-09-13，DUT `53bbce50e`，合线 absorb 同提交）
+
+- **真机 OpenCode 会话未验**：结构闸，无用户可观察行为变更；acceptance 用既有 HTTP 级测试代替 live。来源：B233.17 plan §10；acceptance 口径。
+- **`codegraph check` 仍 6 红（P1-A）**：3 条 dead-entry（`orchestration.Manager` / 包级 / 实体 在 `d_orchestration` 找不到——`best.json` 仍把容器归 `d_coordination_task`）+ 3 条 over-budget（gateway→orchestration 296/0、orchestration→workspace 9/0、workspace→orchestration 3/0）。本卡不改 `best.json`/`baseline` 重扫。吸图后 dead-interface `OrchestrationClient` 消失（合前无视图 7 红 → 合后 6 红）。来源：finish 合线后 `codegraph check`。
+- **`codegraph validate` 完整性问题 ~130**：基线文件锚滞后（handler 仍有节点写 `server.go`）。视图 `nodesModified` 已吸进基线，未做全仓重扫。来源：图对账 minor；finish validate。
+- **合后全量测试存量红（非本卡引入）**：`TestRepoContractGate`、`TestLegacyNodeEventSequenceUnchanged`、`TestServePermissionHookDenyWithReasonAndStep0`、agy permission 族、`TestCoordinatorCancelTurnUsesSessionID`、hostapi wakehome 两条。与 B233.13/14 合线后分类一致。`TestB23317*` 与 `TestCLIExecutionSurfaceGuardHasTeeth` 绿。
+- **`d_policy` / `d_maintenance → d_transport`**：本卡复核，无新增执行面消费点，数字不动。来源：contract §6；B233.16 spec 交办。
+
 ## 来自 B233.16 spec（2026-09-11）
 
 - **非执行能力面的消费点收窄**：B233.16 只覆盖「一次任务/卡节点执行闭环」这条缝。仍持聚合 `*client.Client` 且无卡承接的：任务事件镜像（`internal/ledgermirror` 的 `Machines.For`/`Source` 做 `StreamEventsOnce`/`ListTasks`）、PTY（`internal/agentd` 的 coordinator PTY 路径）、预览、回收、项目、机器、会话、升级，以及纯查询命令（`tasks`/`show`/`diff`/`attach`/`frames`/`footprint` 等）。这些面要各自按使用方声明能力接口（如事件流需另立订阅缝），单独定性。来源：`docs/superpowers/specs/b233.16.md` Out of Scope。
-- **其余入传输边的 entries 复核**：~~`d_cli`/`d_gateway`/`d_ledger` → `d_transport` 三条边由 B233.16 按现实棘轮更新~~（**注**：原表述沿用了 spec 的错误，`d_ledger→d_transport` 在图中**不存在**，见「来自 B233.16 验收」段与 spec 勘误；B233.16 实际只动了 `d_gateway→d_transport` 的 entries）；仍有效的是后半：`d_policy`/`d_maintenance` → `d_transport` 两条边（预算 2/3）不在 B233.16 清单内，留 B233.17 棘轮时逐条复核是否也含执行面消费点。来源：同上；`codegraph/target.json`；B233.16 验收校正。
+- **其余入传输边的 entries 复核**：~~`d_cli`/`d_gateway`/`d_ledger` → `d_transport` 三条边由 B233.16 按现实棘轮更新~~（**注**：原表述沿用了 spec 的错误，`d_ledger→d_transport` 在图中**不存在**，见「来自 B233.16 验收」段与 spec 勘误；B233.16 实际只动了 `d_gateway→d_transport` 的 entries）；仍有效的是后半：`d_policy`/`d_maintenance` → `d_transport` 两条边（预算 2/3）不在 B233.16 清单内，留 B233.17 棘轮时逐条复核是否也含执行面消费点。**B233.17 已复核：无新增执行面消费点，数字不动。** 来源：同上；`codegraph/target.json`；B233.16 验收校正；B233.17 contract。
 
 ## 来自 B233.16 验收（2026-09-12，DUT `3041605d`）
 
-- **T3 守卫的包级漏判盲点**（review minor，协调者实测确证）：`cmd/execution_surface_test.go#executionSurfaceViolations` 的 `current` 函数名**跨函数持续、从不重置**，导致「出现在白名单函数（`newTargetClient`/`newTargetClientNamed`/`targetClient`）之后、且其间无其他 `func` 定义」的**包级**聚合用法被放行。实测：包级聚合在文件顶部→红（正常）；在白名单函数之后→**放行**（盲点，含后续有普通函数的情形）。触发位置不自然（Go 惯例把包级声明写在顶部）+ T1 编译期签名锁是本卡主形态，故本卡判不阻塞；修法是在扫描里跟踪花括号深度或按缩进判定函数体范围（约 5–8 行）。**正主是 B233.17**（组装点收窄与编译期封界，守卫收口在其职责内）。来源：B233.16 review findings；协调者 acceptance 探针实测。
+- ~~**T3 守卫的包级漏判盲点**~~：**B233.17 已修**（`executionSurfaceViolations` 按花括号深度重置函数名；`TestCLIExecutionSurfaceGuardHasTeeth` 可变红）。原条见 B233.16 验收；正主收口在 B233.17 W3。
 - **本卡的「行为不变」未在部署环境验证**：B233.16 的生产改动（8 组合接口 + 9 具名入口 + `StepRunner.Clients` 收窄）全在类型/结构层、方法体逐字搬运（contract §2.1.3 逐文件复核），且分支未合入功能线 → agentd 二进制不含本卡代码，真机行为**不可得**。合并部署后应确认：`dispatch`/`card dispatch`/`reply`/`continue`/`stop`/`wait`（三形态）与 `card step` 的 stdout、退出码、HTTP 路径与今日逐字一致。来源：B233.16 breakdown §6；acceptance 判定。
 - **基线 flaky（非本卡引入，待登记观察）**：全量 `go test ./...` 两次跑出的失败集合不稳定——BASE（起点 `4bdd8bcd`）11 条 vs HEAD（`3041605d`）9 条，其中 `TestWakeHomeReadyRequiresTurnOutputNotCredFile`、`TestWakeHomeSuppliesMainCredentialBeforeTurn` 只在 BASE 红（HEAD 绿），另一次 HEAD 跑到 20 条（含 opencode/hostapi 的 permission 族）。判据：**只在 HEAD 红 = 空**（本卡零新增红）；但 flaky 本身值得单独定性（`internal/hostapi`、`internal/executor/opencode`、`internal/agentd` 的 wakehome 族）。来源：B233.16 acceptance 复跑对照。
 - **跨节点事实不继承（流程改进）**：`--deny --reason` 的理由只回到**当前任务**的 executor；每个节点是全新会话，同一事实（如「本机 `codegraph` 在 PATH，勿用 `go run`」）需要在每个节点重复驳回。B233.16 的 plan 与 review 两轮各被驳回一次。要根治需把这类「本机工具链事实」写进**纪律块或项目文档**（跨任务可见）。来源：B233.16 acceptance 观察。
