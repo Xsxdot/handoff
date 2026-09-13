@@ -63,7 +63,8 @@ func TestPermissionStateVisibleBeforeTicket(t *testing.T) {
 			// 工单则回迁 running（resumeIfIdle 的 CAS 语义，ErrBadTransit=
 			// 并发已迁，容忍）。三步在本 goroutine 内同步完成，与旧 HTTP 回程
 			// 「返回时回迁已落定」的时序等价——被测的 U-1 顺序契约在
-			// handlePermission 一侧；真 Server 回程由 gateway_http_test.go 覆盖。
+			// handlePermission 一侧；真 Server HTTP 回程由 agentd server_test.go
+			// TestReply* 族覆盖（B233.26 审计 P3-1 更正指向）。
 			deadline := time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
 				pending, err := st.PendingTickets(taskID)
