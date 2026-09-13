@@ -90,5 +90,71 @@
       "last_activity": "2026-08-26T08:00:00+08:00",
       "unread": 0
     }
+  },
+  {
+    "case": "user-reply",
+    "message": {
+      "room": "session:1",
+      "kind": "user",
+      "body": "@B233.16 守卫的收口归你",
+      "reply_to": 42
+    }
+  },
+  {
+    "case": "session-summary-golden",
+    "summary": {
+      "id": "session:7",
+      "kind": "session",
+      "title": "架构物理化",
+      "owner": "user:sy",
+      "archived": false,
+      "unread": 2,
+      "needs_human": true,
+      "last_activity": "1970-01-01T00:00:00Z",
+      "members": [
+        { "identity": "user:sy", "kind": "human", "status": "last_active" },
+        { "identity": "", "kind": "seat", "card_id": "B1", "card_title": "竖切卡", "status": "working" }
+      ],
+      "cards": [
+        { "card_id": "B1", "title": "竖切卡", "status": "进行中", "seat": "cli:opencode#s1" }
+      ]
+    }
+  },
+  {
+    "case": "session-summary-archived-empty",
+    "summary": {
+      "id": "session:9",
+      "kind": "session",
+      "title": "归档场",
+      "owner": "agent:claude",
+      "archived": true,
+      "unread": 0,
+      "needs_human": false,
+      "last_activity": "1970-01-01T00:00:00Z",
+      "cards": [
+        { "card_id": "B2", "title": "空座卡", "status": "待办" }
+      ]
+    }
+  },
+  {
+    "case": "session-detail-golden",
+    "detail": {
+      "summary": {
+        "id": "session:7", "kind": "session", "title": "会话", "owner": "user:sy",
+        "archived": false, "unread": 0, "needs_human": false,
+        "last_activity": "1970-01-01T00:00:00Z"
+      },
+      "nodes": [
+        { "card_id": "B1", "node": "implement", "state": "running" }
+      ],
+      "timeline": [
+        { "seq": 1, "kind": "created", "created_at": "1970-01-01T00:00:00Z" },
+        { "seq": 2, "kind": "card_joined", "card_id": "B1", "created_at": "1970-01-01T00:00:00Z" },
+        { "seq": 3, "kind": "seat_bound", "card_id": "B1", "detail": "{\"to\":\"cli:opencode#s1\"}", "actor": "cli:opencode#s1", "created_at": "1970-01-01T00:00:00Z" },
+        { "seq": 4, "kind": "seat_rebound", "card_id": "B1", "detail": "{\"from\":\"cli:opencode#s1\",\"to\":\"cli:grok#s2\"}", "actor": "cli:grok#s2", "created_at": "1970-01-01T00:00:00Z" },
+        { "seq": 5, "kind": "needs_human", "card_id": "B1", "detail": "{\"reason\":\"组装点冲突\"}", "created_at": "1970-01-01T00:00:00Z" },
+        { "seq": 6, "kind": "card_closed", "card_id": "B1", "detail": "{\"from\":\"待审阅\",\"to\":\"已完成\"}", "created_at": "1970-01-01T00:00:00Z" }
+      ]
+    }
   }
 ]

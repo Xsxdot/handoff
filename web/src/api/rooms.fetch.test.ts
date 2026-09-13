@@ -5,18 +5,28 @@
 // 链条经孪生夹具闭合。RoomSummary 不在金样本（台账 D2），用内联样本断言。
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  addSessionMember,
+  archiveSession,
+  createSession,
   fetchInbox,
   fetchRoomMessages,
   fetchRooms,
+  fetchSessionDetail,
+  fetchSessions,
+  joinSessionCard,
+  leaveSessionCard,
   markRoomRead,
   sendRoomMessage,
 } from './rooms'
 import fixture from './testdata/RoomsFixture.json'
+import type { SessionDetail, SessionSummary } from './rooms'
 
 const cases = fixture as {
   case: string
   message?: { room: string; kind: string; body: string; refs?: string[]; mentions?: string[]; decision_id?: number }
   item?: { origin: string; title: string; card_id?: string; ref_id: string; payload?: unknown }
+  summary?: SessionSummary
+  detail?: SessionDetail
 }[]
 
 function jsonResp(body: unknown): Response {
@@ -152,5 +162,85 @@ describe('fetchInbox', () => {
     expect(decision.payload).toBeDefined()
     const ticket = inbox.find((i) => i.origin === 'ticket')!
     expect(ticket.card_id).toBeUndefined()
+  })
+})
+
+// —— B358.6 会话端点契约（六端点 + 复用面）：URL/方法/请求体逐端点断言，
+// 并对同一 fixture 做解码断言（序列化边界穿真实 fetch stub → request() 解析）。——
+
+describe('fetchSessions (B358.6)', () => {
+  it('GET /api/sessions 恰此 URL（无 member 参数——身份服务端注入），解包 sessions 数组', async () => {
+    const summary = cases.find((c) => c.case === 'session-summary-golden')!.summary
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResp({ sessions: [summary] })))
+    vi.stubGlobal('fetch', fetchMock)
+    const sessions = await fetchSessions()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/sessions')
+    expect(sessions).toHaveLength(1)
+    expect(sessions[0].members![1].kind).toBe('seat')
+  })
+})
+
+describe('fetchSessionDetail (B358.6)', () => {
+  it('GET /api/sessions/{id}，id 走 encodeURIComponent，解码金样本 detail', async () => {
+    const detail = cases.find((c) => c.case === 'session-detail-golden')!.detail
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp(detail))
+    vi.stubGlobal('fetch', fetchMock)
+    const out = await fetchSessionDetail('session:7')
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/sessions/session%3A7')
+    expect(out.timeline).toHaveLength(6)
+  })
+})
+
+// —— B366 补员端点（控制台「以当前身份加入会话」一键的后端镜像）：成员身份
+// 服务端权威，identity 缺省不出键（前端不自报身份，与 fetchSessions 同款纪律）。——
+
+describe('addSessionMember (B366)', () => {
+  it('POST /api/sessions/{id}/members 空体 {}——identity 不出键（前端不自报身份）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    await addSessionMember('session:7')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/sessions/session%3A7/members')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({})
+  })
+
+  it('显式 identity 原样出键（端点形状镜像；服务端仍校验统一记法并忽略塞值）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    await addSessionMember('session:7', 'user:sy')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/sessions/session%3A7/members')
+    expect(JSON.parse(init.body as string)).toEqual({ identity: 'user:sy' })
+  })
+})
+
+describe('session 写面 (B358.6)', () => {
+  it('createSession POST {title, owner}——owner 统一记法原样透传，无 actor 字段', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ id: 'session:1', title: 'T', owner: 'user:sy', archived: false, created_at: '', updated_at: '' }))
+    vi.stubGlobal('fetch', fetchMock)
+    await createSession('需求对齐', 'user:sy')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/sessions')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({ title: '需求对齐', owner: 'user:sy' })
+  })
+
+  it('joinSessionCard POST {card} / leaveSessionCard DELETE / archiveSession POST', async () => {
+    // mockImplementation 而非 mockResolvedValue：本用例连续发三次请求，同一 Response
+    // 实例的 body 只能读一次（与本文件 fetchRooms 用例同坑同解）
+    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResp({ ok: true })))
+    vi.stubGlobal('fetch', fetchMock)
+    await joinSessionCard('session:1', 'B1')
+    const [joinUrl, joinInit] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(joinUrl).toBe('/api/sessions/session%3A1/cards')
+    expect(joinInit.method).toBe('POST')
+    expect(JSON.parse(joinInit.body as string)).toEqual({ card: 'B1' })
+    await leaveSessionCard('session:1', 'B1')
+    const [leaveUrl, leaveInit] = fetchMock.mock.calls[1] as [string, RequestInit]
+    expect(leaveUrl).toBe('/api/sessions/session%3A1/cards/B1')
+    expect(leaveInit.method).toBe('DELETE')
+    await archiveSession('session:1')
+    expect(fetchMock.mock.calls[2][0]).toBe('/api/sessions/session%3A1/archive')
   })
 })

@@ -133,11 +133,21 @@ func (s *Store) ListSessions() ([]Session, error) {
 	return out, nil
 }
 
-// ArchiveSession 显式归档会话；归档后只读，幂等。
+// ArchiveSession 显式归档会话；归档后只读，幂等。幂等语义在 Store 层执法
+// （契约 §4.1 条 6 强读法，B358.1 拍板 ①）：已归档会话重复归档返回 nil 且
+// 不再落 EvSessionArchived、不再触碰 updated_at——timeline 上一次归档只出
+// 一行。不存在 → ErrNotFound。
 func (s *Store) ArchiveSession(id, actor string) error {
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
-		if _, err := getSessionTx(s, tx, id); err != nil {
+		session, err := getSessionTx(s, tx, id)
+		if err != nil {
 			return err
+		}
+		if session.Archived {
+			// 已归档短路：目标态（archived=true）已成立，重复写只会污染
+			// timeline（每多一次调用多一行 session_archived）。幂等 = 无副
+			// 作用返回 nil。
+			return nil
 		}
 		if _, err := tx.Exec(s.q(`UPDATE sessions SET archived = ?, updated_at = ? WHERE id = ?`),
 			true, s.tval(s.timeNow()), id); err != nil {

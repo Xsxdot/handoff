@@ -16,9 +16,18 @@ describe('breadcrumbSegments', () => {
     expect(breadcrumbSegments(local, 'go.mod')).toEqual(['handoff', '本机', 'go.mod'])
   })
 
-  it('home 基准只显示一段，tail 不参与', () => {
+  it('home 基准单段：无 tail 显示基准名（既有回归）；tail 放行（B366 修——不再吞内容名）', () => {
     expect(breadcrumbSegments(home)).toEqual(['home'])
-    expect(breadcrumbSegments(home, 'bash')).toEqual(['home'])
+    expect(breadcrumbSegments(home, 'bash')).toEqual(['bash'])
+  })
+
+  it('B366 会话 tab：kind home + label 会话，第三段=会话标题（B358.6 review I-1）', () => {
+    // Shell 给会话工作台 tab 的 base（useWorkbench#sessionBase）：kind 落 'home'
+    // 白名单、label=「会话」；焦点内容 tail=tabTitle 的「会话 · 标题」。
+    const sessionBase: BaseDir = { key: 'session:7', kind: 'home', path: '', label: '会话', projectName: '', machine: '' }
+    expect(breadcrumbSegments(sessionBase, '会话 · 架构物理化')).toEqual(['会话 · 架构物理化'])
+    // 无焦点内容回落基准名（不再是硬编码 'home'）。
+    expect(breadcrumbSegments(sessionBase)).toEqual(['会话'])
   })
 })
 

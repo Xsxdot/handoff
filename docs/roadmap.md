@@ -833,3 +833,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **视图 nodesModified 同 id 内容差**：validate 不执法、合并时覆写基线定义，随下次 absorb 消解。来源：B233.24 验收。
 - **超长 TMPDIR 压测潜伏观察**：agy TestStartOrderingAndTaskEnv 报 MarkRoot 空、cmd service 夹具族报无非临时可写根——默认环境全绿，非六族成员。来源：B233.25 偏差 3。
 - **TestPtyWSAttachedBacklogBytesKeyPresent 存量 flake（约 1/10）**：pty 子进程输出与 WS attach 竞速，B233.25 按纪律未修。来源：B233.19/25 实测。
+
+## 来自 B358 spec（2026-09-12，OOS 登记）
+
+- **主 agent 的内部对话面（handoff 自带载体）**：B358 只支持外部会话形态（人 / 主 agent 在自己的对话工具里开会话，经 `session wait` 收寻址命中）；handoff 自己跑的对话面要单独定性「聊天面承载 agent 会话」与 B156.2 原判（聊天面不跑执行者会话）的关系；内部 agent 的 print/continue 唤醒属「参战形态 v2」。来源：`docs/superpowers/specs/b358.md` §7；breakdown §0 P1 裁决。
+- **成员状态的心跳写入路径**：B358 只要求「不报不可证实的」——生产只报 `working`（有未过期租约时）/`last_active`/`empty`，`listening` 保留作词表位、随本项启用；精确态若要覆盖外部会话，需单独设计续租与超时。来源：同上 spec §7；breakdown §2.4 澄清 3。
+- **多人时代**：多人类成员、登录与权限体系、线程、已读回执、在场状态、消息搜索。B156.2 已记（触发条件：第二个人类成员共用账本），B358 锚点翻转后仍成立；数据形状已预留（消息 author、会话成员集、按成员未读游标），届时是加数据不是改模型。来源：同上 spec §7；`docs/superpowers/specs/2026-08-25-b156.2-collaboration-rooms-design.md` Out of Scope。
+- **会话模板与 routines、goal 驱动自主推进**：B156.4 四期输入，与 B156.3 的 roadmap 段合流。来源：同上 spec §7；`docs/superpowers/specs/2026-08-26-b156.3-automation-keystone-design.md` Out of Scope。
+- **历史翻页与富文本渲染**：历史翻页是 B289 残余（服务端 `before` 游标已备，缺 UI 与调用）、富文本是 B275 残余；B358 会话面沿用同一消息载体，两残余原样顺延。来源：同上 spec §7；本文件「来自 B289 残余」段。

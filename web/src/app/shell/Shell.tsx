@@ -44,7 +44,7 @@ import { TuiTab } from '../workbench/TuiTab'
 import { HomeDock } from '../homedock/HomeDock'
 import { useHomeDock } from '../homedock/useHomeDock'
 import type { DockSnapshot } from '../homedock/dockPersist'
-import { HOME_BASE, scratchBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
+import { HOME_BASE, scratchBase, sessionBase, useWorkbench, type BaseDir } from '../workbench/useWorkbench'
 import { createUntitledFile } from '../workbench/newFile'
 import { nextTerminalSeq, spawnTerminalContent, tabTitle, type Tab, type TabContent, type Workbench } from '../workbench/tabs'
 import { taskDisplayName } from '../lib/taskName'
@@ -57,7 +57,13 @@ import { SettingsPage } from '../settings/SettingsPage'
 import { CodegraphFrame } from '../codegraph/CodegraphFrame'
 import { CardsPage } from '../cards/CardsPage'
 import { FlowsPage } from '../flows/FlowsPage'
-import { RoomPanel } from '../rooms/RoomPanel'
+import { fetchSessions, createSession } from '../../api/rooms'
+import type { SessionSummary } from '../../api/rooms'
+import { NewSessionDialog } from '../rooms/NewSessionDialog'
+import { SessionSidebar } from '../rooms/SessionSidebar'
+import { SessionTab } from '../rooms/SessionTab'
+import { totalUnread } from '../rooms/sessionModel'
+import { COLLAB_POLL_MS } from '../rooms/constants'
 import { needsAttention } from '../cards/columns'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
@@ -157,6 +163,16 @@ export function Shell() {
     if (!summary) return null
     return new Set((summary.tasks ?? []).map((task) => task.task_id))
   }, [cardsState.data])
+  // 会话流（B361）：徽章要在任务 tab 激活时也活着，数据源在 Shell 持有，
+  // 列表组件只渲染。未启用账本时轮询关闭（与旧房间面同门控）。
+  const sessionsState = usePoll(fetchSessions, COLLAB_POLL_MS, { enabled: ledgerEnabled })
+  const sessions = useMemo(() => sessionsState.data ?? [], [sessionsState.data])
+  const [sidebarTab, setSidebarTab] = useState<'sessions' | 'tasks'>('sessions')
+  const [createOpen, setCreateOpen] = useState(false)
+  const [createBusy, setCreateBusy] = useState(false)
+  const [createError, setCreateError] = useState('')
+  // needsOnly 左栏「需要你」筛选态：与筛选钮同层，传给 SessionSidebar 渲染。
+  const [needsOnly, setNeedsOnly] = useState(false)
   const caps = useMachineCaps()
   const launcherMachine = wb.base?.machine ?? ''
   const launchersSupported = caps.launchers(launcherMachine) === true
@@ -415,6 +431,51 @@ export function Shell() {
     if (location.pathname !== '/') navigate('/')
   }
 
+  // openSession 会话行的唯一入口：开工作台 tab（openOrFocus 全局去重——重复
+  // 点击聚焦原 tab）；先回工作台（/cards 等整页盖上时会话 tab 看不见）。
+  const openSession = (session: SessionSummary) => {
+    backToWorkbench()
+    wb.openOrFocus({ kind: 'session', sessionId: session.id, title: session.title }, sessionBase(session.id))
+    console.debug('shell.session.open', { sessionId: session.id, title: session.title })
+  }
+
+  // splitSessionRight ◫ 固定分屏（B361 决定 5）：把最近打开的会话 tab place 到
+  // 焦点格右列（工作项左/会话右）。焦点是会话 tab 或无会话 tab 时 no-op——
+  // 按钮同时由 WorkbenchPage 依 hasSessionTab 置灰，这里再守一道语义边界。
+  const splitSessionRight = () => {
+    const group = wb.wb.groups.find((candidate) => candidate.id === wb.wb.activeGroupId)
+    if (!group) return
+    const [column, row] = group.focus
+    const focused = group.columns[column]?.panes[row]
+    if (!focused || focused.content.kind === 'session') return
+    const sessionItem = [...wb.openedItems].reverse().find((item) => item.content.kind === 'session')
+    if (!sessionItem) return
+    wb.place(
+      { kind: 'tab', groupId: sessionItem.groupId, tabId: sessionItem.tabId },
+      { groupId: group.id, column, row, zone: 'right' },
+    )
+    console.debug('shell.session.split', { sessionId: sessionItem.content.kind === 'session' ? sessionItem.content.sessionId : '', groupId: group.id })
+  }
+
+  // confirmCreateSession 建会话：owner 统一记法（服务端权威校验），失败原文
+  // 留在对话框；成功关弹层并立即刷新会话流（不等下一个 5s 周期）。
+  const confirmCreateSession = async (title: string, owner: string) => {
+    setCreateBusy(true)
+    setCreateError('')
+    console.debug('shell.session.create_started', { title })
+    try {
+      const session = await createSession(title, owner)
+      setCreateOpen(false)
+      sessionsState.refresh()
+      console.debug('shell.session.created', { sessionId: session.id, title, owner })
+    } catch (error: unknown) {
+      setCreateError(errorMessage(error))
+      console.warn('shell.session.create_failed', { title, error: errorMessage(error) })
+    } finally {
+      setCreateBusy(false)
+    }
+  }
+
   // fullPageRoute = 中央区被整页替换掉的那些路由。
   //
   // why 要判它：右栏文件树与面包屑都挂在 <Routes> 外面、只跟 wb.base 走，
@@ -645,47 +706,80 @@ export function Shell() {
         {sync.error !== '' && (
           <DisconnectedBanner message={`工作台状态恢复失败，本次不会保存布局：${sync.error}`} compact />
         )}
-        {treeState.data && (
-          <ProjectTree
-            tree={treeState.data}
-            tasks={tasks}
-            selectedKey={fileDrawer?.key ?? wb.base?.key ?? null}
-            ticketCount={tickets.count}
-            ticketsByDir={tickets.byWorkDir}
-            openItems={openItems}
-            focusedTaskId={focusedTaskId}
-            onFocusOpenItem={openWorkbenchItem}
-            onCloseOpenItem={closeOpenItem}
-            onOpenTerminalAt={openTerminalAt}
-            onOpenDirectory={openDirectory}
-            onOpenTask={openTaskTui}
-            previews={previews}
-            previewMachines={previewsState.data?.machines ?? []}
-            previewOpenKeys={previewsState.openKeys}
-            previewOpeningKeys={previewsState.openingKeys}
-            onOpenPreview={(id, machine) => { void previewsState.open(id, machine).catch(() => {}) }}
-            onOpenBoard={() => setOverlay('board')}
-            onOpenCards={() => navigate('/cards')}
-            onOpenProjectCards={ledgerEnabled ? openProjectCards : undefined}
-            onOpenFlows={() => navigate('/flows')}
-            ledgerEnabled={ledgerEnabled}
-            cardNeedsCount={cardNeedsCount}
-            unlinkedCount={unlinkedTaskIds?.size ?? 0}
-            onOpenTickets={() => setOverlay('tickets')}
-            onOpenSettings={() => navigate('/settings')}
-            onOpenCodegraph={() => navigate('/codegraph')}
-            onOpenProjectCodegraph={openProjectCodegraph}
-            onAddProject={() => setWizardOpen(true)}
-            onEdit={(p) => setEditProject(p)}
-            onUnregister={onUnregister}
-            onWorktreeCreated={(project, machine, ws) => {
-              // 先刷新树再选中：选中只改 useWorkbench 的 base，树上那一行要等
-              // 这次 refresh 回来才会出现，两件事都必须做
-              treeState.refresh()
-              wb.select(workspaceBase(project, machine, ws))
-            }}
-          />
+        {/* 左栏两 tab（B361）：会话 | 任务。双挂载、以 hidden class 切换——
+            不用 hidden 属性：attribute 会让 jsdom 的可达性查询排除整个面板，
+            既有树交互测试全部失效；class 切换在真机同为 display:none（台账 Task 4）。 */}
+        <div className="flex shrink-0 border-b" role="tablist" aria-label="左栏视图">
+          {ledgerEnabled && (
+            <button type="button" role="tab" aria-selected={sidebarTab === 'sessions'} data-testid="sidebar-tab-sessions"
+              onClick={() => setSidebarTab('sessions')}
+              className={`flex flex-1 items-center justify-center gap-1.5 py-2 text-[13px] ${sidebarTab === 'sessions' ? 'border-b-2 border-primary font-semibold' : 'text-muted-foreground'}`}>
+              会话
+              {totalUnread(sessions) > 0 && (
+                <span data-testid="sidebar-unread" className="min-w-4 rounded-full bg-red-500 px-1 text-center text-[10px] leading-4 text-white">{totalUnread(sessions)}</span>
+              )}
+            </button>
+          )}
+          <button type="button" role="tab" aria-selected={sidebarTab === 'tasks'} data-testid="sidebar-tab-tasks"
+            onClick={() => setSidebarTab('tasks')}
+            className={`flex flex-1 items-center justify-center py-2 text-[13px] ${sidebarTab === 'tasks' ? 'border-b-2 border-primary font-semibold text-foreground' : 'text-muted-foreground'}`}>
+            任务
+          </button>
+        </div>
+        {ledgerEnabled && (
+          <div className={`flex min-h-0 flex-1 flex-col ${sidebarTab !== 'sessions' ? 'hidden' : ''}`}>
+            <SessionSidebar sessions={sessions} loading={sessionsState.data === null && !sessionsState.disconnected}
+              errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
+              needsOnly={needsOnly}
+              onToggleNeeds={() => setNeedsOnly((current) => !current)}
+              onOpen={openSession}
+              onCreate={() => { setCreateError(''); setCreateOpen(true) }} />
+          </div>
         )}
+        {/* 账本未启用时会话 tab 不渲染，任务 pane 兜底可见（hidden 恒不挂） */}
+        <div className={`flex min-h-0 flex-1 flex-col ${ledgerEnabled && sidebarTab !== 'tasks' ? 'hidden' : ''}`}>
+          {treeState.data && (
+            <ProjectTree
+              tree={treeState.data}
+              tasks={tasks}
+              selectedKey={fileDrawer?.key ?? wb.base?.key ?? null}
+              ticketCount={tickets.count}
+              ticketsByDir={tickets.byWorkDir}
+              openItems={openItems}
+              focusedTaskId={focusedTaskId}
+              onFocusOpenItem={openWorkbenchItem}
+              onCloseOpenItem={closeOpenItem}
+              onOpenTerminalAt={openTerminalAt}
+              onOpenDirectory={openDirectory}
+              onOpenTask={openTaskTui}
+              previews={previews}
+              previewMachines={previewsState.data?.machines ?? []}
+              previewOpenKeys={previewsState.openKeys}
+              previewOpeningKeys={previewsState.openingKeys}
+              onOpenPreview={(id, machine) => { void previewsState.open(id, machine).catch(() => {}) }}
+              onOpenBoard={() => setOverlay('board')}
+              onOpenCards={() => navigate('/cards')}
+              onOpenProjectCards={ledgerEnabled ? openProjectCards : undefined}
+              onOpenFlows={() => navigate('/flows')}
+              ledgerEnabled={ledgerEnabled}
+              cardNeedsCount={cardNeedsCount}
+              unlinkedCount={unlinkedTaskIds?.size ?? 0}
+              onOpenTickets={() => setOverlay('tickets')}
+              onOpenSettings={() => navigate('/settings')}
+              onOpenCodegraph={() => navigate('/codegraph')}
+              onOpenProjectCodegraph={openProjectCodegraph}
+              onAddProject={() => setWizardOpen(true)}
+              onEdit={(p) => setEditProject(p)}
+              onUnregister={onUnregister}
+              onWorktreeCreated={(project, machine, ws) => {
+                // 先刷新树再选中：选中只改 useWorkbench 的 base，树上那一行要等
+                // 这次 refresh 回来才会出现，两件事都必须做
+                treeState.refresh()
+                wb.select(workspaceBase(project, machine, ws))
+              }}
+            />
+          )}
+        </div>
       </ResizableSidebar>
 
       {/* min-h-0 / min-w-0 与左栏同一条：flex 子项默认 min-size:auto。
@@ -714,6 +808,7 @@ export function Shell() {
               terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
               launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
               onBeforeClose={beforeCloseTab}
+              onSplitSessions={splitSessionRight}
               renderContent={(c, base, group, tabId, active = true) => {
                 switch (c.kind) {
                   case 'terminal': {
@@ -777,6 +872,14 @@ export function Shell() {
                         onStatus={(status) => reportFileStatus(tabId, status)}
                       />
                     )
+                  case 'session':
+                    return (
+                      <SessionTab
+                        sessionId={c.sessionId}
+                        title={c.title}
+                        onOpenCard={(cardId) => navigate(`/cards?card=${encodeURIComponent(cardId)}`)}
+                      />
+                    )
                   case 'tui':
                     return <TuiTab taskId={c.taskId} />
                   default:
@@ -805,7 +908,6 @@ export function Shell() {
             <Route path="/tasks/:id" element={<FullPageCover><TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} /></FullPageCover>} />
           </Routes>
         </main>
-        {ledgerEnabled && <RoomPanel workbench={wb} persistent={cardsRoute} onOpenCard={(id) => navigate(`/cards?card=${encodeURIComponent(id)}`)} />}
       </div>
 
       {/* scratch 不是可选中的 wb 基准，只被浮窗 file tab 使用，所以不该渲染右栏文件树。 */}
@@ -925,6 +1027,9 @@ export function Shell() {
         }}
         onCancel={() => { setClosingDirtyFile(null); setClosingDirtyHome(null) }}
       />
+
+      <NewSessionDialog open={createOpen} busy={createBusy} error={createError}
+        onCancel={() => setCreateOpen(false)} onCreate={(title, owner) => void confirmCreateSession(title, owner)} />
 
       <AddProjectWizard
         open={wizardOpen}

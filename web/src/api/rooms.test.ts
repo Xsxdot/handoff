@@ -6,13 +6,22 @@
 // 改线格式必须同步 Go 结构体、fixture 与本文件，漏一处就有一个测试当场变红。
 import { describe, expect, it } from 'vitest'
 import fixture from './testdata/RoomsFixture.json'
-import type { InboxItem, RoomMessage, RoomSummary } from './rooms'
+import type {
+  InboxItem,
+  RoomMessage,
+  RoomSummary,
+  SessionDetail,
+  SessionMemberStatus,
+  SessionSummary,
+} from './rooms'
 
 const cases = fixture as {
   case: string
   message?: RoomMessage
   item?: InboxItem
   room?: RoomSummary
+  summary?: SessionSummary
+  detail?: SessionDetail
 }[]
 
 describe('room message twin fixtures', () => {
@@ -77,5 +86,72 @@ describe('inbox item twin fixtures', () => {
       expect(item.card_id, `${c} 不应带 card_id`).toBeUndefined()
       expect(typeof item.ref_id).toBe('string')
     }
+  })
+})
+
+// —— B358.6 会话孪生金样本：与 internal/proto/sessions_fixture_test.go 逐键一致，
+// 值以同一 JSON 文件为唯一来源（fixture 与 Go 金样本同源，TS 侧不手抄）。——
+describe('session twin fixtures (B358.6)', () => {
+  it('SessionSummary 金样本键集逐键在文，kind 恒 session', () => {
+    const summary = cases.find((c) => c.case === 'session-summary-golden')!.summary!
+    for (const key of ['id', 'kind', 'title', 'owner', 'archived', 'unread', 'needs_human', 'last_activity']) {
+      expect(summary, `SessionSummary 缺键 ${key}`).toHaveProperty(key)
+    }
+    expect(summary.kind).toBe('session')
+    expect(summary.unread).toBe(2)
+    expect(summary.needs_human).toBe(true)
+    expect(summary.preview).toBeUndefined()
+  })
+
+  it('成员键集与 omitempty 语义：identity 恒在、席位带 card_id/card_title、last_active 零值省键', () => {
+    const summary = cases.find((c) => c.case === 'session-summary-golden')!.summary!
+    const [human, seat] = summary.members!
+    expect(human).toMatchObject({ identity: 'user:sy', kind: 'human', status: 'last_active' })
+    expect(human).not.toHaveProperty('last_active')
+    expect(human).not.toHaveProperty('card_id')
+    expect(seat).toMatchObject({ identity: '', kind: 'seat', card_id: 'B1', card_title: '竖切卡', status: 'working' })
+  })
+
+  it('归档空座场：members omitempty 缺键（缺失≠空数组）、空座卡 seat 缺键=还没配人', () => {
+    const summary = cases.find((c) => c.case === 'session-summary-archived-empty')!.summary!
+    expect(summary.archived).toBe(true)
+    expect(summary.members).toBeUndefined()
+    expect(summary.cards![0].seat).toBeUndefined()
+  })
+
+  it('SessionDetail 键集：summary 恒在、nodes/timeline 在文', () => {
+    const detail = cases.find((c) => c.case === 'session-detail-golden')!.detail!
+    for (const key of ['summary', 'nodes', 'timeline']) {
+      expect(detail, `SessionDetail 缺键 ${key}`).toHaveProperty(key)
+    }
+    expect(detail.nodes![0]).toMatchObject({ card_id: 'B1', node: 'implement', state: 'running' })
+    expect(detail.nodes![0]).not.toHaveProperty('round')
+    expect(detail.timeline![0]).toMatchObject({ seq: 1, kind: 'created' })
+    expect(detail.timeline![1]).not.toHaveProperty('actor')
+  })
+
+  it('timeline kind 词表恰八值且 fixture 逐值在文（消费方渲染必须与 Go 词表对齐）', () => {
+    const kinds = ['created', 'archived', 'card_joined', 'card_left', 'seat_bound', 'seat_rebound', 'needs_human', 'card_closed']
+    const detail = cases.find((c) => c.case === 'session-detail-golden')!.detail!
+    const fixtureKinds = detail.timeline!.map((row) => row.kind)
+    for (const kind of ['created', 'card_joined', 'seat_bound', 'seat_rebound', 'needs_human', 'card_closed']) {
+      expect(fixtureKinds, `fixture 应含 kind=${kind}`).toContain(kind)
+    }
+    for (const kind of fixtureKinds) expect(kinds, `未知 timeline kind ${kind}`).toContain(kind)
+  })
+
+  it('成员状态词表恰四值；online 不是合法取值（反例断言：词表闭包）', () => {
+    const four: SessionMemberStatus[] = ['working', 'listening', 'last_active', 'empty']
+    const summary = cases.find((c) => c.case === 'session-summary-golden')!.summary!
+    for (const member of summary.members!) expect(four, `成员状态越表: ${member.status}`).toContain(member.status)
+    expect(four).not.toContain('online' as SessionMemberStatus)
+    expect(four).not.toContain('在线' as SessionMemberStatus)
+  })
+
+  it('reply_to omitempty 三态：缺键=undefined（非 0）、非零在线', () => {
+    const minimal = cases.find((c) => c.case === 'user-minimal')!.message! as unknown as Record<string, unknown>
+    expect(minimal, '缺键必须 decode 成 undefined 而不是 0（可空 vs 零值分辨）').not.toHaveProperty('reply_to')
+    const replied = cases.find((c) => c.case === 'user-reply')!.message!
+    expect(replied.reply_to).toBe(42)
   })
 })

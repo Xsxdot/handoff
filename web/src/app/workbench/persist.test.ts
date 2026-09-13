@@ -151,3 +151,21 @@ describe('session cleanup and diff', () => {
     expect(diffPayloads({ a: '1', b: '2' }, { a: '1', c: '3' })).toEqual({ changed: ['c'], removed: ['b'] })
   })
 })
+
+// —— B358.6 会话 tab 持久化：不改 parseContent 时整份 payload 被
+// 拒收（数据丢失级），本支是数据丢失反例的正面锚。——
+describe('session tab persistence (B358.6)', () => {
+  it('encode→decode roundtrip 保留 session tab（sessionId/title 双字段）', () => {
+    const wb: Workbench = {
+      activeGroupId: 'g1',
+      groups: [{
+        id: 'g1', name: '组 1', autoName: true,
+        columns: [{ panes: [{ id: 't1', base: { key: 'session:session:7', kind: 'home', path: '', label: '会话', projectName: '', machine: '' }, content: { kind: 'session', sessionId: 'session:7', title: '架构物理化' } }] }],
+        sizes: [1], focus: [0, 0],
+      }],
+    }
+    const decoded = decodeWorkbench(encodeWorkbench(wb))
+    expect(decoded).not.toBeNull()
+    expect(decoded!.groups[0].columns[0].panes[0]!.content).toEqual({ kind: 'session', sessionId: 'session:7', title: '架构物理化' })
+  })
+})

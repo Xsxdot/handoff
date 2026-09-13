@@ -9,6 +9,7 @@ package proto
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -139,5 +140,68 @@ func TestSessionTimelineKindVocabulary(t *testing.T) {
 		if constant != literal {
 			t.Fatalf("timeline kind 常量 %q 与冻结字面量 %q 不一致", constant, literal)
 		}
+	}
+}
+
+// TestSessionWakeFixture 锁会话订阅通道唤醒载荷的 wire 形状（契约 §3.8/条 43）：
+// 顶层键集恰 {session,hit,referenced,unread}；referenced 为指针 + omitempty——
+// 无引用锚时省键（缺键 ≠ 零值，序列化边界纪律）；hit/referenced 键集恰
+// {seq,room,actor,body}。R1 通道（S3）stdout 形状以本测试为 Go 侧金样本；
+// TS 孪生金样本归 S6（契约 §8.9）。改形状先回 contract 节点。
+func TestSessionWakeFixture(t *testing.T) {
+	hit := SessionCite{Seq: 42, Room: "session:1", Actor: "cli:opencode#ab12", Body: "@B1 这个方案跑不通"}
+	wake := SessionWake{
+		Session:    "session:1",
+		Hit:        hit,
+		Referenced: &SessionCite{Seq: 41, Room: "session:1", Actor: "user:sy", Body: "商定的是走分支 B"},
+		Unread:     3,
+	}
+	raw, err := json.Marshal(wake)
+	if err != nil {
+		t.Fatalf("编码 SessionWake: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("解 JSON: %v", err)
+	}
+	for _, key := range []string{"session", "hit", "referenced", "unread"} {
+		if _, ok := fields[key]; !ok {
+			t.Fatalf("顶层缺键 %s: %s", key, raw)
+		}
+	}
+	if len(fields) != 4 {
+		t.Fatalf("顶层键集漂移: %s", raw)
+	}
+	var hitFields map[string]json.RawMessage
+	if err := json.Unmarshal(fields["hit"], &hitFields); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"seq", "room", "actor", "body"} {
+		if _, ok := hitFields[key]; !ok {
+			t.Fatalf("hit 缺键 %s: %s", key, fields["hit"])
+		}
+	}
+	if len(hitFields) != 4 {
+		t.Fatalf("hit 键集漂移: %s", fields["hit"])
+	}
+	// referenced omitempty：nil 时省键。
+	rawNoRef, err := json.Marshal(SessionWake{Session: "session:1", Hit: hit, Unread: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var noRefFields map[string]json.RawMessage
+	if err := json.Unmarshal(rawNoRef, &noRefFields); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := noRefFields["referenced"]; ok {
+		t.Fatalf("无引用锚时 referenced 必须省键: %s", rawNoRef)
+	}
+	// 往返恒等（roundtrip 属性：一条属性顶一族手写用例）。
+	var back SessionWake
+	if err := json.Unmarshal(raw, &back); err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(wake, back) {
+		t.Fatalf("roundtrip 漂移: want=%+v got=%+v", wake, back)
 	}
 }

@@ -391,7 +391,7 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 
 `--self` 与 `--launch` 必须二选一。没有 `--to` / `--carrier` / `--expect`。
 `--cli` / `--session` 是命令本地 flag，仅属于 `card bind`、`card rebind --self`、
-已有席位的 `card dispatch --step` 和 `kind != user` 的 `room send`；两项必须成对。
+已有席位的 `card dispatch --step` 和协调者出示席位身份的 `session send`；两项必须成对。
 `card rebind --launch` 与 `card coordinate` 不接受这两个 flag。
 坐下 / `--self` 不查小队；叫机器人 / `--launch` 才查。普通终端出示不出会话身份时，
 `bind` / `rebind --self` 失败，空座上仍可 `coordinate`。浏览器页不能坐下。
@@ -403,8 +403,8 @@ handoff done <task> --note "已验收：重试与失败用例都符合预期"
 `rebind`。`takeover` 一律失败并指向 bind / coordinate / rebind。`release` 空座幂等
 成功，有席位失败并指向 `rebind`。
 
-`kind != user` 的 `room send`（`escalation` / `closing` 等）也要出示这场席位；出示
-失败改 `--kind user`，或先 `bind` / `rebind --self`。
+协调者的 `session send`（升级简报、收口摘要等）也要出示这场席位（`--cli` / `--session`
+成对）；出示失败先 `bind` / `rebind --self`。以人身份发言需你的会话身份在会话成员集内——补员面归 S6/后续卡（B358 父卡 integrate 核对项）。
 
 ### 状态不会自己流转
 
@@ -575,15 +575,40 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 | 「开卡即绑 / `card add --coordinate`」 | 建卡不占座。该 flag 已废止。要坐走 `card bind`，要机器人走 `card coordinate`。 |
 | 「`--step` 会把我写成协调者」 | 派发不占座。席位只由 bind / coordinate / rebind 写。 |
 
-## 协作房间纪律：升级简报、收口摘要与重建
+## 协作会话纪律：会话、寻址与三档升级
 
-> 前置条件：本节三款走 B156.2 协作房间层（房间、简报、收口摘要都是账本事件流，
-> 契约见 `docs/superpowers/specs/b156.2-contract.md`）。该层未部署的机器上按原样
-> 回退：请示用 `decision open`、过程记录用 `card note`——「回合末四分法落账」不变。
+> 载体：本节走 B358 会话层——会话（群）即工作单元，契约见
+> `docs/superpowers/specs/b358-contract.md`。B156.2 的房间制模型（卡:房间 1:1、
+> 消息 kind 白名单、书写者矩阵）已由 B358 显式废止：旧卡房间只读归档，
+> `handoff room read` 保留作历史对质面，`handoff room send` 不再是发言入口。
+> 旧 agentd 上没有 `session` 命令族——那时请示与落账退回「回合末四分法落账」
+> （`decision open` / `card note` / `card move` / `card needs`），那四条从来不依赖会话层。
+
+### 会话即工作单元：在场与寻址
+
+- **会话（群）= 工作单元**：一场会话由人 / 主 agent 开（`handoff session create --owner <user:名字|agent:名字> <标题>`），卡是会话里的工作项；**进群 ≠ 配人**——`handoff session join <会话> <卡号>` 只建讨论面，配不配协调者仍在卡上按三颗按钮（bind / coordinate / rebind）。一张卡同时只挂一个会话。协调者不拉卡进群——它只管自己那张卡。
+- **成员**：人与主 agent 是显式成员（统一记法 `user:<名字>` / `agent:<名字>`）；群里各卡的**当前席位**是它的协调者成员（派生不落表）。执行者不入群不写账——永不做项。
+- **发言自由，身份执法**：群里不分内容类别、各自以自己名义说话（`handoff session send <会话> <正文>`；协调者用 `--cli <物种> --session <id>` 成对出示席位身份）。谁说的落账可查，执法只回答两件事：「非成员不能写」（成员 = 显式成员 ∪ 会话内各卡当前席位）与「归档只读」。
+- **@寻址投递，无寻址不唤醒**：一条消息的接收人由**发送者写下的寻址**决定，与「群里有谁」无关——`handoff session send` 用 `--mention <目标>`（可重复）寻址：`--mention <卡号>` 唤醒那张卡的**当前席位**（换绑后依然找得到）、`--mention agent:<名字>` / `--mention user:<名字>` 唤醒那位成员。**无寻址的发言落账、进未读，不唤醒任何人**；系统永不按成员集合投递；要叫几个人就写几个 `--mention`，没有「@所有人」。回复寻址（`reply_to` 隐式寻址原作者）在模型里保留，但今天的发言命令还没有设置入口——要唤醒谁，显式 `--mention` 谁，别用「我回了他的消息」代替寻址。
+- **知会类结构事件进详情页，不进聊天流**：卡进群/移出、协调者入群、换绑、卡收口或终止、`needs_human` 亮起——这些是结构事实，归 `handoff session detail <会话>` 的 timeline 与 `session list` 的「需要你」标签，**不发进聊天流**。聊天流是人话与升级；结构轨迹在详情页可查。
+- **外部会话的订阅入口（推）**：`handoff session wait <成员身份> [--timeout <时长>]` 阻塞订阅「寻址命中我」——首个命中输出一行唤醒 JSON（命中条 + 引用条 + 未读数）后退出 0，到点退出 124。外部会话（人 / 主 agent 自己开着的对话）用它被 @ 醒来：醒—处置—再挂。订阅只读：不落账、不推进未读。
+- **定时巡场（拉）**：主 agent 主动巡场用 `handoff session list --member <自己>`（谁需要我）与 `handoff session detail <会话>`（成员状态、派发节点、timeline）。**推只在升级那一刻，拉随时可行**——不被每个动作叫醒。
+
+### 升级三档：填补级自决 / 推翻级 @主 agent / 人掌三道门
+
+| 档 | 判据 | 动作 |
+|---|---|---|
+| **填补级** | spec 未覆盖的实现选择、顺手小修、新问题落新卡 | 自决：落账、继续，**一个 `--mention` 都不发** |
+| **推翻级** | 实测证伪 spec 商定；要动范围 / 验收判据 / 契约语义；超轮僵局；不可逆动作的提案 | 停卡，在会话里 `--mention agent:<主 agent 名字>` 发**升级简报**（六段，见下），等答复 |
+| **人** | spec 批准、验收结论、合 main 三道人工门 | 主 agent 判不了就往上一级 `--mention user:<人>` |
+
+判据不由频率兜底：不是「@ 多了就少 @」，是每一条 `--mention` 都必须落在上表判据内。无内容可发就是无 @——群里安静是常态，说明一切按 spec 在走。
+
+**协调者侧的模型级 / 跨仓裁决，先进会话叙事再动手**：改纪律归属、跨仓路由、流程层纠正这类超出单卡范围的决定，先在会话里发一条叙事（三问齐全）把裁决与理由落进群史，再执行动作——裁决只活在协调者自己的会话记忆里，接班者与主 agent 都看不见。本条先例已行（2026-09-12 三档升级纪律归属的纠正，即 B364（账本卡，协调者自主裁决的告知机制）前身教训）。
 
 ### 升级简报：六段契约（缺段拒收）
 
-推翻级偏差停卡后发升级简报等答复。
+推翻级偏差停卡后，在会话里 @主 agent 发升级简报等答复。
 简报是「对 spec 的 diff」的载体契约，**缺段拒收，格式是契约不是模板建议**。六段：
 
 1. **一句话**：什么被推翻/要动什么，挂卡号；
@@ -602,7 +627,7 @@ handoff card note <新卡> "发现自 <原卡 id> 的验收"
 
 ### 收口摘要：四段与偏差上报义务
 
-卡到终态时，协调者发的最后一条消息是收口摘要，四段：
+卡到终态时，协调者在会话里发的最后一条消息是收口摘要，四段：
 
 1. 做了什么（一段话）；
 2. **全部偏差清单**：推翻级裁决结果 + 填补级逐条——自主消化的不许消失，这是安全网执法点；
@@ -630,12 +655,12 @@ handoff card rebind <id> --self      # 这场对话接班
 handoff card rebind <id> --launch    # 新叫机器人接班
 ```
 
-没有 `--to` / `--carrier` / `--expect`。换绑写入即撤销旧会话的房间写权与推进权
-（防旧会话醒来继续发消息推卡）。新任协调者开局先做**重建四步**，一步不跳：
+没有 `--to` / `--carrier` / `--expect`。换绑写入即撤销旧席位的发言权与推进权
+（防旧会话醒来继续发消息推卡；旧席位身份再发言会被拒、不再被唤醒）。新任协调者
+开局先做**重建四步**，一步不跳：
 
 1. **读卡**（字段/附件/验收判据）：`handoff card show <id>`；
-2. **读卡会话史**：房间页或 `handoff room read`——会话史天生是交接简报，第一读者
-   是用户，第二读者是你；
+2. **读会话史**：`handoff session list --json` 找到该卡所在会话（每行摘要含该会话的卡清单），`handoff session detail <会话>` 读群史与 timeline——会话史天生是交接简报，第一读者是用户，第二读者是你；
 3. **读 timeline**：`handoff card show <id>` 的事件流；
 4. **读仓内文档**：spec / 契约 / plan 等附件与分支上的相关文档。
 
@@ -644,12 +669,13 @@ handoff card rebind <id> --launch    # 新叫机器人接班
 
 ### 叙事文体：同事协作叙事（三问齐全，正文不贴代码）
 
-技术细节的家是卡 timeline，语义现状不变（timeline 是账，房间是播）。
+技术细节的家是卡 timeline，语义现状不变（timeline 是账，会话是播）。
 文体：同事协作叙事——讲发生了什么/为什么/意味着什么；凡引证据给链接，正文不贴代码。
 
-书写者规则：叙事类消息的书写者是房间成员中的协调者实体，executor 与非成员不可写；
-无协调者在场时房间面退化为机械信号（工单上浮、needs-human、指针），不伪造叙事，
-接管者唤醒后补写。
+书写者规则：会话里人人以自己名义发言，不再有按内容分类的书写门槛——执法只在
+身份：发言者必须身份可验证（人 = 会话身份、协调者 = 席位身份），非成员不能发言。
+执行者不入群不写账；无协调者在场时，会话面只有人与主 agent 的对话，机械事实归
+详情页 timeline（工单上浮、needs-human 标签），不伪造叙事，接管者唤醒后补写。
 
 文体三条，发出前自检、收到时执法：
 
@@ -659,11 +685,11 @@ handoff card rebind <id> --launch    # 新叫机器人接班
 2. **证据给链接，正文不贴代码**：证据一律给引用锚（git 路径 / timeline 锚 / 卡号 /
    附件），正文出现成块代码或日志原文即不合规——技术细节回卡 timeline 去，那里才是
    它的家。
-3. **叙事不是心跳**：「开始了/进行中/跑测试了」这类进度播报不进房间——没消息 = 按 spec 在走；
-   白名单的敌人是心跳与日志，不是对话。
+3. **叙事不是心跳**：「开始了/进行中/跑测试了」这类进度播报不进会话——没消息 = 按
+   spec 在走；这条的敌人是心跳与日志，不是对话。
 
 拒收话术（审阅者拿它对任一条具体消息说出 X 才算执法）：「这条缺『为什么』」/
-「这条正文贴了代码，证据没给链接」/「这是心跳消息，不在白名单」。
+「这条正文贴了代码，证据没给链接」/「这是心跳消息」。
 
 ## 会话恢复：从零接管
 
@@ -742,11 +768,11 @@ handoff card rebind <id> --launch    # 新叫机器人接班
 | `card dispatch --step` 已受理后短等超时、卡上仍无 `dispatched`/`派发失败` 首态 | 202 只代表请求已受理；编排仍在 agentd 异步运行，正常首态可能在约 20 秒窗口外；运行锁占用会在卡上 comment + `needs_human` 留痕，ViaTemplate 派发失败也会落卡 | stdout 的「已受理，首态未到；进展见 card wait」是正常短等超时，跟 `card wait`；若短等捕获 reason=`派发失败`，stderr 会有卡上 comment 正文且命令非 0。运行锁问题先读卡上 comment 的 holder/reason。席位用 `bind` / `coordinate` / `rebind`，`takeover` 不再占座。 |
 | `card add --coordinate` 失败 | 建卡不占座，该 flag 已废止 | 先建卡，再 `card bind` 或 `card coordinate` |
 | `card rebind --to` 报 unknown flag | 任意 session id 已废止 | `--self` 或 `--launch` 二选一 |
-| `card bind` / `rebind --self` 报未出示席位身份 | 当前来源依次是完整 HANDOFF_SESSION_CLI/ID、单独的 GROK_SESSION_ID 或 CLAUDE_CODE_SESSION_ID；普通终端/已关会话没有来源，或环境残缺、双宿主、手填与当前来源不一致 | 在 grok/claude 对话里直接重试；没有当前来源时在同一命令带 `--cli <物种> --session <id>`，两项必须成对且与当前来源一致。完整 HANDOFF 对优先；不要用 `USER`/hostname/PID，不要给 `rebind --launch` 或 coordinate 带这两个 flag。`--step`/非 user room send 也沿用同一对。 |
+| `card bind` / `rebind --self` 报未出示席位身份 | 当前来源依次是完整 HANDOFF_SESSION_CLI/ID、单独的 GROK_SESSION_ID 或 CLAUDE_CODE_SESSION_ID；普通终端/已关会话没有来源，或环境残缺、双宿主、手填与当前来源不一致 | 在 grok/claude 对话里直接重试；没有当前来源时在同一命令带 `--cli <物种> --session <id>`，两项必须成对且与当前来源一致。完整 HANDOFF 对优先；不要用 `USER`/hostname/PID，不要给 `rebind --launch` 或 coordinate 带这两个 flag。`--step`/协调者 `session send` 也沿用同一对。 |
 | `card bind` 报已有席位 | 桌子上有人（含旧人尺度席位） | `rebind --self` 或 `--launch` |
 | `card coordinate` 报席位状态不适合此操作 / 409 | 空座才叫机器人；有人不能再 launch | `rebind --launch` 或 `--self` |
 | `card takeover` 失败 | 不再通过 takeover 占座 | 空座 `bind` 或 `coordinate`；有人 `rebind` |
-| `room send --kind escalation` 报书写者与房间身份不符 | `kind != user` 要比对账本席位，不是 `cli:user@host` | 未入座用 `--kind user`；本对话发简报/收口先 `bind` 或 `rebind --self` |
+| `session send` 报「书写者与房间身份不符」 | 出示的席位身份要比对会话成员集（显式成员 ∪ 各卡当前席位），不是 `cli:user@host` | 本对话发简报/收口先 `bind` 或 `rebind --self`；以人身份发言需你的会话身份在会话成员集内——补员面归 S6/后续卡（B358 父卡 integrate 核对项） |
 
 **日志在哪**（在 executor 所在机器上）：
 

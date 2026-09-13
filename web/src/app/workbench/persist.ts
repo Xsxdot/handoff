@@ -83,6 +83,11 @@ function parseContent(raw: unknown): TabContent | null {
       return hasOnly(raw, ['kind', 'rel']) && isString(raw.rel) ? { kind: 'file', rel: raw.rel } : null
     case 'tui':
       return hasOnly(raw, ['kind', 'taskId']) && isString(raw.taskId) ? { kind: 'tui', taskId: raw.taskId } : null
+    case 'session':
+      // 不改 = 含会话 tab 的 payload 整份拒收，重载丢全部布局（B358.6 数据丢失反例的正面锚）。
+      return hasOnly(raw, ['kind', 'sessionId', 'title']) && isString(raw.sessionId) && isString(raw.title)
+        ? { kind: 'session', sessionId: raw.sessionId, title: raw.title }
+        : null
     case 'terminal': {
       if (!hasOnly(raw, ['kind', 'seq', 'sessionId', 'rel', 'launcher']) || !isFiniteNumber(raw.seq)) return null
       if (raw.sessionId !== undefined && !isString(raw.sessionId)) return null

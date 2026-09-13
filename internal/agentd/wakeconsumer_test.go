@@ -400,6 +400,8 @@ func TestAutomationEventMappingThroughConsumer(t *testing.T) {
 	for i, typ := range []string{"completed", "failed", "turn_failed", "permission_request", "question", "progress"} {
 		appendMirroredForConsumer(t, env.ledger, cardID, "task-"+typ, typ, int64(i+1), `{"text":"`+typ+`"}`)
 	}
+	// B358.3：广播形状删除（条 30），卡房间消息不再唤醒——「用户留言」与
+	// 「系统用户形状」同为无寻址的卡房间 user 消息，只标 seen。
 	appendUserMessage(t, env.ledger, cardID, "用户留言", false)
 	appendPointerMessage(t, env.ledger, cardID)
 	appendUserMessage(t, env.ledger, cardID, "系统用户形状", true)
@@ -411,19 +413,19 @@ func TestAutomationEventMappingThroughConsumer(t *testing.T) {
 	if escalated {
 		t.Fatal("正常事件消费不应升级人工")
 	}
-	if processed != 6 {
-		t.Fatalf("处理唤醒事件数=%d，want 6", processed)
+	if processed != 5 {
+		t.Fatalf("处理唤醒事件数=%d，want 5", processed)
 	}
 	_, resumes, _ := runner.snapshot()
 	if len(resumes) != 1 {
 		t.Fatalf("同卡事件应合并为一次 Resume，实得 %d", len(resumes))
 	}
-	for _, want := range []string{"completed", "failed", "turn_failed", "permission_request", "question", "用户留言"} {
+	for _, want := range []string{"completed", "failed", "turn_failed", "permission_request", "question"} {
 		if !strings.Contains(resumes[0], want) {
 			t.Fatalf("briefing 缺 %q: %s", want, resumes[0])
 		}
 	}
-	for _, unwanted := range []string{"progress", "协调者指针", "系统用户形状"} {
+	for _, unwanted := range []string{"progress", "用户留言", "协调者指针", "系统用户形状"} {
 		if strings.Contains(resumes[0], unwanted) {
 			t.Fatalf("不应唤醒/进入 briefing 的内容 %q 出现: %s", unwanted, resumes[0])
 		}
@@ -520,67 +522,42 @@ func TestB353AutomationMapsCardActionEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// B358.3：广播形状删除（条 30），卡房间消息不再唤醒——processed 5→4。
 	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
-	if err != nil || escalated || processed != 5 {
-		t.Fatalf("卡原生动作消费 processed=%d escalated=%v err=%v，want 5/nil/false", processed, escalated, err)
+	if err != nil || escalated || processed != 4 {
+		t.Fatalf("卡原生动作消费 processed=%d escalated=%v err=%v，want 4/nil/false", processed, escalated, err)
 	}
 	_, resumes, _ := runner.snapshot()
 	if len(resumes) != 1 {
 		t.Fatalf("卡原生动作应合并一次 Resume，实得 %d", len(resumes))
 	}
-	for _, want := range []string{"needs human payload", "needs_cleared", "decision body", "answer", "真人 room payload"} {
+	for _, want := range []string{"needs human payload", "needs_cleared", "decision body", "answer"} {
 		if !strings.Contains(resumes[0], want) {
 			t.Fatalf("卡原生动作 briefing 缺少 %q: %s", want, resumes[0])
 		}
 	}
-	for _, unwanted := range []string{"系统 room payload", "comment audit", "协调者指针", ledger.StatusTodo, ledger.StatusClosed} {
+	for _, unwanted := range []string{"真人 room payload", "系统 room payload", "comment audit", "协调者指针", ledger.StatusTodo, ledger.StatusClosed} {
 		if strings.Contains(resumes[0], unwanted) {
 			t.Fatalf("非动作事件 %q 不应进入 briefing: %s", unwanted, resumes[0])
 		}
 	}
 }
 
-func TestB353AutomationRoomJSONBoundaries(t *testing.T) {
-	cases := []struct {
-		name    string
-		payload string
-		want    bool
-		wantErr bool
-	}{
-		{name: "by_system missing", payload: `{"kind":"user","body":"missing"}`, want: true},
-		{name: "by_system false", payload: `{"kind":"user","body":"false","by_system":false}`, want: true},
-		{name: "by_system true", payload: `{"kind":"user","body":"true","by_system":true}`},
-		{name: "by_system null", payload: `{"kind":"user","body":"null","by_system":null}`},
-		{name: "by_system invalid", payload: `{"kind":"user","body":"invalid","by_system":"yes"}`, wantErr: true},
-	}
-	for i, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			ev := proto.LedgerEvent{Seq: int64(i + 1), CardID: "B353", Type: ledger.EvRoomMessage,
-				Payload: json.RawMessage(tc.payload)}
-			wake, got, err := automationWakeEvent(ev)
-			if tc.wantErr {
-				if err == nil || !strings.Contains(err.Error(), "事件") ||
-					!strings.Contains(err.Error(), fmt.Sprint(i+1)) {
-					t.Fatalf("非法 room payload error=%v", err)
-				}
-				return
-			}
-			if err != nil || got != tc.want {
-				t.Fatalf("room payload got wake=%+v yes=%v err=%v，want yes=%v", wake, got, err, tc.want)
-			}
-		})
-	}
-}
-
+// TestB353AutomationRoomJSONBoundaries 已整支删除（B358.3）：它直调
+// automationWakeEvent 的 room 分支——该分支已移入 roomMessageWakeEvents 寻址
+// 分流（plan Task 2 步骤 5.3）。by_system 解码边界由
+// TestB353AutomationRoomJSONBoundariesThroughConsumer 穿消费循环覆盖
+// （breakdown §3.4 ③「不许只单测映射函数」）。
 func TestB353AutomationRoomJSONBoundariesThroughConsumer(t *testing.T) {
+	// B358.3：广播形状删除（条 30）——所有可解码 payload（卡房间、无寻址）
+	// wantProcessed=0 且零 Resume；by_system invalid 仍 wantErr（解码失败上抛）。
 	cases := []struct {
 		name    string
 		payload string
-		want    bool
 		wantErr bool
 	}{
-		{name: "by_system missing", payload: `{"kind":"user","body":"missing"}`, want: true},
-		{name: "by_system false", payload: `{"kind":"user","body":"false","by_system":false}`, want: true},
+		{name: "by_system missing", payload: `{"kind":"user","body":"missing"}`},
+		{name: "by_system false", payload: `{"kind":"user","body":"false","by_system":false}`},
 		{name: "by_system true", payload: `{"kind":"user","body":"true","by_system":true}`},
 		{name: "by_system null", payload: `{"kind":"user","body":"null","by_system":null}`},
 		{name: "by_system invalid", payload: `{"kind":"user","body":"invalid","by_system":"yes"}`, wantErr: true},
@@ -603,19 +580,12 @@ func TestB353AutomationRoomJSONBoundariesThroughConsumer(t *testing.T) {
 			if err != nil || escalated {
 				t.Fatalf("room payload consumer seam err=%v escalated=%v", err, escalated)
 			}
-			wantProcessed := 0
-			if tc.want {
-				wantProcessed = 1
-			}
-			if processed != wantProcessed {
-				t.Fatalf("room payload consumer processed=%d, want %d", processed, wantProcessed)
+			if processed != 0 {
+				t.Fatalf("卡房间消息不唤醒（条 30），processed=%d", processed)
 			}
 			_, resumes, _ := runner.snapshot()
-			if tc.want && len(resumes) != 1 {
-				t.Fatalf("真人 room payload 应唤醒一次，resumes=%v", resumes)
-			}
-			if !tc.want && len(resumes) != 0 {
-				t.Fatalf("系统/null room payload 不应唤醒，resumes=%v", resumes)
+			if len(resumes) != 0 {
+				t.Fatalf("广播形状已删，room payload 不应唤醒，resumes=%v", resumes)
 			}
 		})
 	}
@@ -918,10 +888,13 @@ func TestAutomationWakeFailureAdvancesCursor(t *testing.T) {
 	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
 	cardID := createCoordCard(t, env)
 	runner.failLaunch = false
-	prebindConsumerSession(t, env, cardID)
+	// B358.3：广播形状删除（条 30），失败升级路径需要一次真实寻址命中——
+	// 夹具从卡房间 appendUserMessage 改为会话发言 @卡号（mustWakeSessionFixture
+	// 内含预绑定席位，坐席 Launch 需 failLaunch=false，故在置回失败位之前）。
+	sessionID, svc := mustWakeSessionFixture(t, env, cardID)
 	runner.failLaunch = true
 	runner.failResume = true
-	appendUserMessage(t, env.ledger, cardID, "用户留言", false)
+	sendSessionMessage(t, svc, sessionID, "user:tester", "用户留言", []string{cardID}, 0)
 
 	_, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
 	if err == nil {

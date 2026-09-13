@@ -40,7 +40,7 @@
 6. **P6｜升级三档纪律文本的载体路由（contract §8.6）。** 内容横跨两仓：本仓 `skills/handoff/SKILL.md` 协作房间纪律节（:578 起）+ `docs/roadmap.md` OOS 登记（§8.8）；charter 套件半边（协调者/主 agent discipline 的三档升级规则）在 `~/.agents/skills/` 与 `~/workspace/charter` 仓，**出不了本仓的有界文件集**。
    - **方案 A（推荐）：本仓半边出一张文档子卡**（S7），charter 套件半边由协调者走 charter 仓自己的流程另办（`scripts/regen_discipline.py` 同步）。理由：本仓半边可派发可验收（grep 断言可写）；charter 半边硬塞进本仓卡违反有界文件集。
    - **方案 B：全部留协调者本地办**，不出子卡。理由：省一张卡；代价是 repo 半边的落账与证据链游离在卡流程外。
-   - **裁决：A。**S7 出本仓半边；charter 半边（协调者/主 agent discipline 三档升级规则）是协调者义务——改 `~/workspace/charter` 并跑 `scripts/regen_discipline.py`，随本卡推进另办，记卡上跟进，不出子卡。
+   - **裁决：A。**S7 出本仓半边；charter 半边（协调者/主 agent discipline 三档升级规则）是协调者义务——改 `~/workspace/charter` 并跑 `scripts/regen_discipline.py`，随本卡推进另办，记卡上跟进，不出子卡。**（2026-09-12 用户纠正，本裁决后半句作废：三档升级纪律是 handoff 平台协作纪律，应由 handoff 按角色在启动时注入，不属 charter 仓——charter 只管方法论纪律，两套独立。见 B363；S7 本仓半边范围不变。§3.8 缺陷族第 5 条中「charter 半边归协调者」的残余表述随之作废。）**
 7. **P7｜CLI 命令族命名。** 锚点翻转后产品词是「会话」。
    - **方案 A（推荐）：新开 `handoff session` 命令族**（list/detail/create/archive/join/leave/send），旧 `room list/read` 保留为旧房间只读对质面，`room send` 随旧房间归档自然失效（保留报错），`room inbox` 不动。理由：旧 `room send` 的目标（卡房间）已死，扩进 room 族会让新旧语义挤在一族。
    - **方案 B：扩既有 `room` 族**（`room sessions`、`room join` 等）。理由：命令树不长大；代价是 `room send <session>` 与 `room send <卡号>` 同形不同命（一个活一个死），靠房间形态区分。
@@ -174,7 +174,7 @@ S7 纪律与 roadmap（无代码依赖） ────────────�
 - `needs_human` 事件（卡 ∈ 会话）后，`SessionDetail.Timeline` 出现 `kind=needs_human` 行；`needs_cleared` 后 `Summary.NeedsHuman` 翻 false（label 消失有测试）。
 - 成员状态：测试经 `Store.RenewDriverLease`（测试专属生产者）造未过期租约 + 注入时钟 → `working`；拨钟过期 → `last_active`（**同一注入时钟**，contract 条目 18——时钟不同源的写法判 fail）；空座卡 → `empty`；断言四值词表外不出现任何其它状态串（含「online」）。
 - `SessionNode`：卡 ∈ 会话的 `task_mirrored`（含 node 字段）聚合进 `Nodes`，卡 ∉ 会话的不出现；`Round`/`Target` 词表位允许空（填法归 plan，envelope 无 round 字段，不许为填空造新账本读）。
-- `go test ./internal/proto -run TestSessionsFixture -count=1` 保持绿（投影不新增 wire 键）。
+- `go test ./internal/proto -run TestSessionsFixture -count=1` 保持绿（投影不新增 wire 键）。**（2026-09-12 修订：原字面零匹配属假绿——实际判据为 `-run 'TestSession'`（4 支金样本），B358.2 plan 拍板①回写。）**
 
 **④入口指针与有界文件集**：`internal/collab/sessions.go`、`internal/collab/sessions_test.go`；符号锚：`internal/collab/sessions.go#sessionTimeline`、`internal/collab/sessions.go#sessionMembers`、`internal/collab/sessions.go#memberStatus`、`internal/collab/sessions.go#sessionNodes`、`internal/collab/sessions.go#needsHumanByCard`。
 
@@ -202,7 +202,7 @@ S7 纪律与 roadmap（无代码依赖） ────────────�
   - 无寻址会话消息（会话房间、user、无 mentions、ReplyTo=0）→ fake keystone 零 Wake 调用，事件进 seen、游标推进。
   - `@卡号`（卡 ∈ 会话、有席位）→ 恰一次 `WakeMessage{Card:该卡}`，Summary 含命中条正文。
   - 空座 `@卡号`、`@非成员`、`@不存在的卡` → 零 Wake。
-  - `reply_to` 指向席位作者的消息 → 唤醒该卡；指向已换绑前的旧席位 → 唤醒**当前**席位（作者身份按当前 driver_session 解析的反例：旧席位身份不再命中）。
+  - `reply_to` 指向席位作者的消息 → 唤醒该卡；指向已换绑前的旧席位 → 唤醒**当前**席位（作者身份按当前 driver_session 解析的反例：旧席位身份不再命中）。**（2026-09-12 修订：本行转述失真，按契约执行——条 24 冻结 reply_to 寻址原作者**身份**（Ticket 0 ResolveDelivery 同），重绑豁免仅 `@卡号`（条 21）、唤醒目标须为当前成员（条 47）；旧席位不命中 → 外部分支进未读不唤醒，要重绑安全的唤醒用 `@卡号`（spec 用户故事 8）。B358.3 plan 拍板#1 回写。）**
   - `by_system`/pointer 消息、`session_created/archived/card_joined/card_left` 结构事件 → 零 Wake（结构事件不得被新代码当成 room_message 处理）。
 - 源码级守卫（先例 `internal/agentd/pointer_gate_test.go#TestPointerRouteAbsentFromSource`）：唤醒路径测试断言 wakeconsumer 源不再含「`Kind==user` 即唤醒」形状、唤醒调用前必经 `MessageWakeTargets`/`AddressesCard`；`grep -n "decodeHumanRoomMessage" internal/agentd/` 零命中或该函数已重构为寻址前置。
 - 既有护栏保持绿：attach 暂缓、seen/cursor、同卡合并、失败升级不自激（`go test ./internal/agentd -count=1` 全量）。
@@ -264,7 +264,7 @@ S7 纪律与 roadmap（无代码依赖） ────────────�
   - `session create --title T` → stdout 含 `session:<n>`；`session list` 行含标题/未读/需要你标签列；`session detail <id>` 三块（成员/节点/timeline）逐列可读。
   - `session join <id> <卡号>` 幂等（重复执行退出 0）；对已属他会话的卡退出非 0 且 stderr 含「已属会话」类可行动文案。
   - `session send <id> "…"`（人）→ actor=`cli:<user>@<host>`；`session send <id> --cli opencode --session <sid> "…"`（协调者）→ actor=席位身份、kind=user——旧守卫的替代形状是「自报身份需成对 flag」，机内断言两形态落账 actor 可查。
-  - 归档会话 send/join → 非 0 退出 + `ErrReadOnly` 文案。
+  - 归档会话 send/join → 非 0 退出 + `ErrReadOnly` 文案。**（2026-09-12 修订：join 半边实际哨兵为 ErrBadState/「已归档」（send 半边确为 ErrReadOnly），B358.5 plan 拍板 5 照 B358.2 先例回写。）**
 - `handoff room read <卡号>`（旧面）对旧房间仍可读；`handoff room send <卡号>` → 非 0 退出（S1 归档语义经 CLI 呈现）。
 - 退出码契约：成功 0、用法/存在性错误非 0，沿用 cmd 族既有约定（与 `card wait` 的 124 特例不冲突，本卡不引入新超时）。
 
@@ -286,7 +286,7 @@ S7 纪律与 roadmap（无代码依赖） ────────────�
 
 **①契约引用**：contract §3.2（wire DTO）、§7.3（TS 孪生金样本欠账）、§8.4；spec 实现决定 1–4、§4.4；北极星 sessions.html + README W1–W6；S4 的端点面。
 
-**②意图与为什么**：北极星落地：会话页一等公民（不占 tab 条、不挂面包屑、无右栏文件树，中央区整块）、左栏保留项目树、dock 入口；三态（列表/群聊/详情）；列表行 = 谁需要我（未读 + needs_human 标签 + 预览），群聊面只有人话 + 引用条 + @高亮 + 卡 chips（空座虚线），详情页三块（成员状态 / 任务节点 / timeline）。TS 镜像补 Session DTO 全集与孪生金样本（`testdata/RoomsFixture.json`，与 `rooms_fixture_test.go` 逐键一致）。旧 RoomPanel 的退役方式（原地改造 vs 新页面 + 移除旧入口）归 plan，以 W1 形态为准绳。
+**②意图与为什么**：北极星落地：会话页一等公民（不占 tab 条、不挂面包屑、无右栏文件树，中央区整块）、左栏保留项目树、dock 入口；三态（列表/群聊/详情）；列表行 = 谁需要我（未读 + needs_human 标签 + 预览），群聊面只有人话 + 引用条 + @高亮 + 卡 chips（空座虚线），详情页三块（成员状态 / 任务节点 / timeline）。TS 镜像补 Session DTO 全集与孪生金样本（`testdata/RoomsFixture.json`，与 `rooms_fixture_test.go` 逐键一致）。旧 RoomPanel 的退役方式（原地改造 vs 新页面 + 移除旧入口）归 plan，以 W1 形态为准绳。**（2026-09-12 走查修订：IA 按 B361 定稿执行——B358 spec 实现决定 1 已修订，形态基准改 `sessions-v2.html`；「退役方式归 plan」开放点关闭，用户裁决悬浮窗与工作项内嵌 IM 面板直接移除，会话入口收敛左栏会话 tab；S6 有界文件集相应新增移除对象。）**
 
 **③验收（行为化，逻辑型——组件/金样本机内闭环，真实浏览器归真机）**：
 

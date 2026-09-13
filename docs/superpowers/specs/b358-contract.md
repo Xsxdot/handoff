@@ -75,6 +75,7 @@ B358 **不新增顶层领域**。会话语义沉进既有 `d_collab`（协作房
 - **入站 api**：`internal/collab`（package collab）。外界（gateway、CLI）只 import 此包 + proto DTO；会话新方法都落在这里。
 - **出站 client**：`internal/collab/client#LedgerClient`（接口归使用方）。新增八个会话方法；具体实现是 `internal/ledger/api.Facade`，组装点绑定。`var _ client.LedgerClient = (*Facade)(nil)` 是编译期执法。
 - **哨兵归属**：接口不 import ledger；「对象不存在」用会话侧哨兵 `client.ErrNotFound`（实现侧 Facade 把账本 `ledger.ErrNotFound` 翻译成它），门面再映射 `collab.ErrNoRoom`。
+- **B366 review F3 澄清**：gateway 对 §3.5 无 Service 包装的冻结 LedgerClient 面（如 AddSessionMember）允许直调账本薄门面 Facade 并引用其哨兵——d_gateway→d_ledger 边 entry 明文形状，不构成越层。
 
 ### 2.3 依赖方向
 
@@ -531,17 +532,9 @@ SessionEventCardClosed = "card_closed"
 
 ## 9. 移交 plan 附区
 
-以下是查证期确立的实现级落点，不占冻结条目；plan 吸收后须在本节标题标注「已由 plan〈文档〉吸收（日期）」并销区：
+**已由 plan〈b358.1/2/3 实现计划〉吸收（2026-09-12）——本区销账。**
 
-- `internal/ledger/store.go#ddlStatements` 两方言分支同时加 `sessions`/`session_cards`（`TestDDLDialectParity` 逐表名比对会拦截单边漏加）。
-- `Session` 成员列用 `JSONB`(PG)/`TEXT`(SQLite) 存 JSON 数组，编解码 `encodeMembers`/`decodeMembers` 兼容空串。
-- `JoinCardToSession` 的门面错误用 `ErrBadState`（已属会话）与 `ErrNotFound`（卡/会话不存在），实现节点按 gateway 映射表补 HTTP 状态；`uq_session_cards_card` 是最后兜底，不是首选错误路径。
-- `ResolveDelivery` 的 `resolveSeat` 注入点：门面用 `lc.GetCard(mention)` 判定是否卡号；账本读失败按「非卡号」处理（原样用 mention），避免一次读错把 @ 吞掉。
-- `AddressesCard` 是唤醒路径的收窄入口；`wakeconsumer` 接线时优先经它或 `MessageWakeTargets`，不要在 agentd 内重造寻址判定。
-- `SessionNode` 从 `task_mirrored` envelope 的 `node`/`task_type` 聚合；不新增执行域依赖。
-- 会话 timeline 的席位变更消费 `driver_takeover`，仅当事件所属卡在该会话内时归入。
-
-（区头销账：本区将由 plan〈b358 实现计划〉吸收。）
+（原附区七条实现级落点已分别落进三份实现计划，见 `docs/superpowers/plans/b358.1-plan.md`、`b358.2-plan.md`、`b358.3-plan.md`；销区后本节不再承载待办。）
 
 ---
 

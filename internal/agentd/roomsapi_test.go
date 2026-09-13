@@ -1,6 +1,10 @@
 // 房间 HTTP 面与收件箱测试（B156.2 C6）：六端点、错误映射逐哨兵、收件箱三源、
 // Watchers 翻转正控、破坏性不受限、集成冒烟。全部从 HTTP 进入（spec 测试接缝
 // 清单 #1 的调用方侧 = gateway 控制面），调用链穿过 collab 入站 api 门面。
+//
+// B358.4 红窗改写：下方标注「B358.4 红窗改写」的 10 支原以旧房间 user 发言成功
+// 为断言/夹具，随 B358.1 S1 只读归档失效；按新会话语义就地改写（名字保留供
+// 红窗核算逐支比对），断言意图逐支对应迁移，见 docs/superpowers/plans/b358.4-plan.md §5。
 package agentd
 
 import (
@@ -76,41 +80,69 @@ func itemKeys(t *testing.T, it proto.InboxItem) map[string]bool {
 }
 
 func TestRoomsListEndpoint(t *testing.T) {
+	// B358.4 红窗改写：原夹具「向卡房间 user 发言」随 S1 只读归档失效。
+	// 改锁会话语义下的等价行为——(a) 列表投影 preview 的正面锚迁到会话列表
+	// （写入面现在只在会话房间）；(b) /api/rooms 旧读面对质保留（S1：读史不断）。
 	env := newRoomsEnv(t)
 	card := seedCard(t, env, "卡A")
-	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "hi"}, "user:sy"); err != nil {
+	session := mustConsoleSession(t, env, "列表预览场")
+	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "hi"}, webUserMember); err != nil {
 		t.Fatal(err)
 	}
 	var out struct {
-		Rooms []proto.RoomSummary `json:"rooms"`
+		Sessions []proto.SessionSummary `json:"sessions"`
 	}
-	code := env.getJSON(t, "/api/rooms?project=p", &out)
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/sessions")
 	if code != 200 {
-		t.Fatalf("GET /api/rooms: %d", code)
+		t.Fatalf("GET /api/sessions: %d %s", code, body)
 	}
-	var found *proto.RoomSummary
-	for i := range out.Rooms {
-		if out.Rooms[i].ID == card.ID {
-			found = &out.Rooms[i]
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	var found *proto.SessionSummary
+	for i := range out.Sessions {
+		if out.Sessions[i].ID == session.ID {
+			found = &out.Sessions[i]
 		}
 	}
 	if found == nil {
-		t.Fatalf("卡房间应出现在列表: %+v", out.Rooms)
+		t.Fatalf("会话应出现在列表: %+v", out.Sessions)
 	}
 	if found.Preview == nil || found.Preview.Body != "hi" || found.Preview.Seq <= 0 || found.Preview.CreatedAt.IsZero() {
-		t.Fatalf("真实 HTTP /api/rooms 应保留 preview 正文、seq、created_at: %+v", found.Preview)
+		t.Fatalf("真实 HTTP /api/sessions 应保留 preview 正文、seq、created_at: %+v", found.Preview)
+	}
+	// 旧房间读面对质保留：卡房间行仍在 /api/rooms（无需发言即可读）。
+	var rooms struct {
+		Rooms []proto.RoomSummary `json:"rooms"`
+	}
+	if code := env.getJSON(t, "/api/rooms?project=p", &rooms); code != 200 {
+		t.Fatalf("GET /api/rooms: %d", code)
+	}
+	roomFound := false
+	for _, room := range rooms.Rooms {
+		if room.ID == card.ID {
+			roomFound = true
+		}
+	}
+	if !roomFound {
+		t.Fatalf("旧卡房间读面应保留: %+v", rooms.Rooms)
 	}
 }
 
 func TestRoomsListUnreadAndAttachProjection(t *testing.T) {
+	// B358.4 红窗改写：未读/已读半边迁会话语义（写入面只在会话房间）；
+	// attach 投影半边不依赖发言，卡房间挂账断言原样保留。
 	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "未读迁移场")
+	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "一"}, webUserMember); err != nil {
+		t.Fatal(err)
+	}
+	second, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "二"}, webUserMember)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// attach 半边（原样）：本机挂账卡 → /api/rooms 行带 attach。
 	card := seedCard(t, env, "可挂账卡")
-	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "一"}, "user:sy"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "二"}, "user:sy"); err != nil {
-		t.Fatal(err)
-	}
 	if err := env.st.CreateTask(&proto.Task{ID: "T1", RepoPath: "/repo", WorkDir: "/work/B1"}); err != nil {
 		t.Fatal(err)
 	}
@@ -118,63 +150,66 @@ func TestRoomsListUnreadAndAttachProjection(t *testing.T) {
 		t.Fatal(err)
 	}
 	var out struct {
-		Rooms []proto.RoomSummary `json:"rooms"`
+		Sessions []proto.SessionSummary `json:"sessions"`
+		Rooms    []proto.RoomSummary    `json:"rooms"`
 	}
-	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/sessions")
+	if code != 200 {
+		t.Fatalf("GET /api/sessions: %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &out); err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range out.Sessions {
+		if s.ID == session.ID && s.Unread != 2 {
+			t.Fatalf("两条未读消息应投影 unread=2: %+v", s)
+		}
+	}
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms")
 	if code != 200 {
 		t.Fatalf("GET /api/rooms: %d %s", code, body)
 	}
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
 		t.Fatal(err)
 	}
-	var found *proto.RoomSummary
+	var roomFound *proto.RoomSummary
+	globalFound := false
 	for i := range out.Rooms {
 		if out.Rooms[i].ID == card.ID {
-			found = &out.Rooms[i]
-			break
+			roomFound = &out.Rooms[i]
 		}
-	}
-	if found == nil {
-		t.Fatalf("卡房间应出现在列表: %+v", out.Rooms)
-	}
-	if found.Unread != 2 {
-		t.Fatalf("两条未读消息应投影 unread=2: %+v", *found)
-	}
-	if found.Attach == nil || found.Attach.Target != "" || found.Attach.TaskID != "T1" ||
-		found.Attach.WorkDir != "/work/B1" || found.Attach.Command != "handoff attach T1" {
-		t.Fatalf("本机挂账 attach 投影错误: %+v", found.Attach)
-	}
-	globalFound := false
-	for _, room := range out.Rooms {
-		if room.Kind == "global" {
+		if out.Rooms[i].Kind == "global" {
 			globalFound = true
-			if room.Unread < 0 {
-				t.Fatalf("global unread 必须在线: %+v", room)
+			if out.Rooms[i].Unread < 0 {
+				t.Fatalf("global unread 必须在线: %+v", out.Rooms[i])
 			}
 		}
+	}
+	if roomFound == nil {
+		t.Fatalf("卡房间应出现在列表: %+v", out.Rooms)
 	}
 	if !globalFound {
 		t.Fatal("global 房间应出现在列表")
 	}
-
-	seq, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "三"}, "user:sy")
-	if err != nil {
-		t.Fatal(err)
+	if roomFound.Attach == nil || roomFound.Attach.Target != "" || roomFound.Attach.TaskID != "T1" ||
+		roomFound.Attach.WorkDir != "/work/B1" || roomFound.Attach.Command != "handoff attach T1" {
+		t.Fatalf("本机挂账 attach 投影错误: %+v", roomFound.Attach)
 	}
-	code, body = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+card.ID+"/read", fmt.Sprintf(`{"upto_seq":%d}`, seq))
-	if code != 200 {
+	// 已读：POST /api/rooms/{session}/read 到最新 seq → 会话行 unread=0。
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/read",
+		fmt.Sprintf(`{"upto_seq":%d}`, second)); code != 200 {
 		t.Fatalf("POST /read: %d %s", code, body)
 	}
-	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/sessions")
 	if code != 200 {
-		t.Fatalf("GET /api/rooms after read: %d %s", code, body)
+		t.Fatalf("GET /api/sessions after read: %d %s", code, body)
 	}
 	if err := json.Unmarshal([]byte(body), &out); err != nil {
 		t.Fatal(err)
 	}
-	for _, room := range out.Rooms {
-		if room.ID == card.ID && room.Unread != 0 {
-			t.Fatalf("已读后 unread 应为 0: %+v", room)
+	for _, s := range out.Sessions {
+		if s.ID == session.ID && s.Unread != 0 {
+			t.Fatalf("已读后 unread 应为 0: %+v", s)
 		}
 	}
 }
@@ -477,23 +512,22 @@ func TestRoomsListTTFB200Cards(t *testing.T) {
 }
 
 func TestRoomMessagesEndpoint(t *testing.T) {
-	// 写侧受守、读侧宽容的正面锚（协调者裁决①）：存在的房间、已落过 N 条
-	// room_message → GET 返回 200 且恰好那 N 条（条数与内容都断言，不只断言
-	// 非空）。同一支测试里的这条正面断言让「History 恒空」的假实现当场翻红。
+	// B358.4 红窗改写：夹具卡房间 → 会话房间；「写侧受守、读侧宽容」正面锚
+	// 与否定锚断言逐条照抄（条数与内容都断言，不只断言非空）。
 	env := newRoomsEnv(t)
-	card := seedCard(t, env, "卡B")
-	first, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "第一条"}, "user:sy")
+	session := mustConsoleSession(t, env, "历史场")
+	first, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "第一条"}, webUserMember)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "第二条"}, "user:sy")
+	second, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "第二条"}, webUserMember)
 	if err != nil {
 		t.Fatal(err)
 	}
 	var out struct {
 		Messages []proto.LedgerEvent `json:"messages"`
 	}
-	code := env.getJSON(t, "/api/rooms/"+card.ID+"/messages?limit=10", &out)
+	code := env.getJSON(t, "/api/rooms/"+session.ID+"/messages?limit=10", &out)
 	if code != 200 {
 		t.Fatalf("GET messages: %d", code)
 	}
@@ -516,7 +550,7 @@ func TestRoomMessagesEndpoint(t *testing.T) {
 	if !bodies["第一条"] || !bodies["第二条"] {
 		t.Fatalf("两条消息正文都应返回: %v", bodies)
 	}
-	// 读侧宽容的否定锚（同一支测试、同一夹具）：不存在的房间 → 200 且零条。
+	// 读侧宽容的否定锚（原样）：不存在的房间 → 200 且零条。
 	var empty struct {
 		Messages []proto.LedgerEvent `json:"messages"`
 	}
@@ -530,13 +564,15 @@ func TestRoomMessagesEndpoint(t *testing.T) {
 }
 
 func TestRoomSendEndpoint(t *testing.T) {
+	// B358.4 红窗改写：POST 发言成功断言从卡房间（S1 起只读）迁到会话房间。
+	// 会话消息是无卡事件 → 读账本改全流读（0.2#6）；actor 服务端注入断言原样。
 	env := newRoomsEnv(t)
-	card := seedCard(t, env, "卡C")
-	code, body := ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+card.ID+"/messages", `{"body":"你好"}`)
+	session := mustConsoleSession(t, env, "发送场")
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages", `{"body":"你好"}`)
 	if code != 200 {
 		t.Fatalf("POST messages: %d %s", code, body)
 	}
-	events, err := env.ledger.EventsFromAsc([]string{card.ID}, 0, 10)
+	events, err := env.ledger.EventsFromAsc(nil, 0, 100)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -559,22 +595,28 @@ func TestRoomSendEndpoint(t *testing.T) {
 	if !found {
 		t.Fatalf("消息未落账: %+v", events)
 	}
+	// 写侧受守补断言：不存在的会话房间 → 400（ErrNoRoom→400 既有映射对
+	// 会话房间同样成立；与存活的 TestRoomSendErrMapping 同族）。
+	if code, _ := ledgerPost(t, env.testAgentdEnv, "/api/rooms/session:999/messages", `{"body":"x"}`); code != 400 {
+		t.Fatalf("不存在会话房间发言应 400: %d", code)
+	}
 }
 
 func TestRoomReadEndpoint(t *testing.T) {
+	// B358.4 红窗改写：夹具卡房间 → 会话房间；MarkRead 水位清零断言照抄。
 	env := newRoomsEnv(t)
-	card := seedCard(t, env, "卡D")
-	seq, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy")
+	session := mustConsoleSession(t, env, "已读场")
+	seq, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, webUserMember)
 	if err != nil {
 		t.Fatal(err)
 	}
-	code, body := ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+card.ID+"/read",
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/read",
 		fmt.Sprintf(`{"upto_seq":%d}`, seq))
 	if code != 200 {
 		t.Fatalf("POST read: %d %s", code, body)
 	}
-	// 读尽后未读应 0（MarkRead 到当前最大 seq → 水位语义清空）
-	if n, err := env.srv.rooms.Unread(webUserMember, card.ID); err != nil || n != 0 {
+	// 读尽后未读应 0（MarkRead 到当前最大 seq → 水位语义清空）。
+	if n, err := env.srv.rooms.Unread(webUserMember, session.ID); err != nil || n != 0 {
 		t.Fatalf("读尽后未读应 0: %v %d", err, n)
 	}
 }
@@ -628,6 +670,10 @@ func TestRoomsEndpoints503WithoutLedger(t *testing.T) {
 
 func TestInboxThreeSources(t *testing.T) {
 	env := newRoomsEnv(t)
+	// B358.4 红窗改写：mention 源夹具从 project 群房间迁会话房间（旧房间只读）。
+	// 发送者用夹具群主（真成员）——发送者若是 @ 目标本人（webUserMember），
+	// sendToSession 的回复即清提及会把刚落账的 @ 立刻消费掉，mention 源必空。
+	session := mustConsoleSession(t, env, "收件箱三源场")
 	// decision 源：卡级 + 项目级 open 裁决
 	card := seedCard(t, env, "卡G")
 	if _, err := env.ledger.OpenDecision(card.ID, "一句话：契约语义冲突", []string{"a", "b"}, "coord"); err != nil {
@@ -636,9 +682,9 @@ func TestInboxThreeSources(t *testing.T) {
 	if _, err := env.ledger.OpenDecision("", "项目级裁决", nil, "coord"); err != nil {
 		t.Fatal(err)
 	}
-	// mention 源：群房间 @ 用户
-	if _, err := env.srv.rooms.Send("project:p", proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "改动影响 B145", Mentions: []string{webUserMember}}, "user:sy"); err != nil {
+	// mention 源：会话房间 @ 用户
+	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "改动影响 B145", Mentions: []string{webUserMember}}, sessionFixtureOwner); err != nil {
 		t.Fatal(err)
 	}
 	// ticket 源：等待人工任务上的未答复工单
@@ -731,8 +777,12 @@ func TestInboxDestructiveTicketFloatsWithWatchers(t *testing.T) {
 
 func TestInboxMentionSource(t *testing.T) {
 	env := newRoomsEnv(t)
-	seq, err := env.srv.rooms.Send("project:p", proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "改动影响 B145", Mentions: []string{webUserMember}}, "user:sy")
+	// B358.4 红窗改写：mention 源夹具从 project 群房间迁会话房间（旧房间只读）。
+	// 发送者用夹具群主（真成员）——若 webUserMember 自己发，回复即清提及会把
+	// 这条 @ 立刻消费掉，mention 源必空（与 TestInboxThreeSources 同一理由）。
+	session := mustConsoleSession(t, env, "收件箱提及场")
+	seq, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "改动影响 B145", Mentions: []string{webUserMember}}, sessionFixtureOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -760,13 +810,17 @@ func TestInboxMentionSource(t *testing.T) {
 
 func TestInboxRefIDShapes(t *testing.T) {
 	env := newRoomsEnv(t)
+	// B358.4 红窗改写：mention 源夹具从 project 群房间迁会话房间（旧房间只读，
+	// 发送者用夹具群主，理由同 TestInboxThreeSources）；decision/ticket 夹具与
+	// RefID 形状断言原样。
+	session := mustConsoleSession(t, env, "收件箱引用形状场")
 	card := seedCard(t, env, "卡I")
 	dec, err := env.ledger.OpenDecision(card.ID, "一句话：X", nil, "coord")
 	if err != nil {
 		t.Fatal(err)
 	}
-	seq, err := env.srv.rooms.Send("project:p", proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, "user:sy")
+	seq, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, sessionFixtureOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -797,12 +851,16 @@ func TestInboxRefIDShapes(t *testing.T) {
 
 func TestInboxGoldenKeyShapes(t *testing.T) {
 	env := newRoomsEnv(t)
+	// B358.4 红窗改写：mention 源夹具从 project 群房间迁会话房间（旧房间只读，
+	// 发送者用夹具群主，理由同 TestInboxThreeSources）；金样本键集断言原样
+	// （会话消息是无卡事件，mention 条 card_id 仍须省略）。
+	session := mustConsoleSession(t, env, "收件箱键集场")
 	card := seedCard(t, env, "卡J")
 	if _, err := env.ledger.OpenDecision(card.ID, "一句话：X", nil, "coord"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.srv.rooms.Send("project:p", proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, "user:sy"); err != nil {
+	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, sessionFixtureOwner); err != nil {
 		t.Fatal(err)
 	}
 	mustCreateTask(t, env.st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake", State: proto.TaskStateWaitingAnswer})
@@ -828,13 +886,16 @@ func TestInboxGoldenKeyShapes(t *testing.T) {
 func TestInboxIntegrationSmoke(t *testing.T) {
 	// 澄清三：httptest 一发穿 handler→真 SQLite→响应解码回 InboxItem/RoomSummary，
 	// 与 testdata/RoomsFixture.json 孪生一致（键集形状，非逐字节值）。
+	// B358.4 红窗改写：mention 源夹具从 project 群房间迁会话房间（旧房间只读，
+	// 发送者用夹具群主，理由同 TestInboxThreeSources）；集成冒烟断言原样。
 	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "收件箱冒烟场")
 	card := seedCard(t, env, "卡K")
 	if _, err := env.ledger.OpenDecision(card.ID, "一句话：契约语义冲突", []string{"a", "b"}, "coord"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.srv.rooms.Send("project:p", proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, "user:sy"); err != nil {
+	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, sessionFixtureOwner); err != nil {
 		t.Fatal(err)
 	}
 	mustCreateTask(t, env.st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake", State: proto.TaskStateWaitingAnswer})
