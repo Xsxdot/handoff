@@ -5,6 +5,7 @@
 // 链条经孪生夹具闭合。RoomSummary 不在金样本（台账 D2），用内联样本断言。
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import {
+  addSessionMember,
   archiveSession,
   createSession,
   fetchInbox,
@@ -187,6 +188,30 @@ describe('fetchSessionDetail (B358.6)', () => {
     const out = await fetchSessionDetail('session:7')
     expect(fetchMock.mock.calls[0][0]).toBe('/api/sessions/session%3A7')
     expect(out.timeline).toHaveLength(6)
+  })
+})
+
+// —— B366 补员端点（控制台「以当前身份加入会话」一键的后端镜像）：成员身份
+// 服务端权威，identity 缺省不出键（前端不自报身份，与 fetchSessions 同款纪律）。——
+
+describe('addSessionMember (B366)', () => {
+  it('POST /api/sessions/{id}/members 空体 {}——identity 不出键（前端不自报身份）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    await addSessionMember('session:7')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/sessions/session%3A7/members')
+    expect(init.method).toBe('POST')
+    expect(JSON.parse(init.body as string)).toEqual({})
+  })
+
+  it('显式 identity 原样出键（端点形状镜像；服务端仍校验统一记法并忽略塞值）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ ok: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    await addSessionMember('session:7', 'user:sy')
+    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe('/api/sessions/session%3A7/members')
+    expect(JSON.parse(init.body as string)).toEqual({ identity: 'user:sy' })
   })
 })
 

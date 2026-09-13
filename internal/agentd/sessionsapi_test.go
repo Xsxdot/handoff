@@ -380,6 +380,111 @@ func TestSessionArchiveEndpoint(t *testing.T) {
 	}
 }
 
+// TestSessionMemberAddEndpoint 锁 B366 补员端点（POST /api/sessions/{id}/members）：
+// ① 空体自加入成功（服务端权威：成员=服务端注入 actor，发言链 403→加入→200 打通
+// ——岔口1 用户故事 1 的服务端半边）；② 幂等（重复 200）；③ body 塞 identity/actor
+// 被忽略（成员恒服务端注入，user:mallory 不入成员列——roomsapi.go「成员标识服务端
+// 注入，不经请求体」门禁反例）；④ body 塞非统一记法 identity 400（机器位 web: 与
+// 裸名，validSessionOwner 口径）；⑤ 不存在会话 404 且文案含会话 id（缺陷族 2）；
+// ⑥ 已归档 409 且文案含「已归档」。
+func TestSessionMemberAddEndpoint(t *testing.T) {
+	env := newRoomsEnv(t)
+	// 直接经 HTTP 建会话，不经 mustConsoleSession：控制台成员必须不在成员集，
+	// 才能先证 403 前态、再证加入后打通。
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/sessions",
+		`{"title":"原地答场","owner":"user:tester"}`)
+	if code != 200 {
+		t.Fatalf("POST /api/sessions: %d %s", code, body)
+	}
+	var session proto.Session
+	if err := json.Unmarshal([]byte(body), &session); err != nil {
+		t.Fatal(err)
+	}
+	// 前态：控制台 actor 非成员，发言 403（ErrNotWriter，B358.6 岔口1 复现）。
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages",
+		`{"body":"加入前"}`); code != 403 {
+		t.Fatalf("非成员发言应 403: %d %s", code, body)
+	}
+	// ① 空体自加入：成员=服务端注入 actor（webUserMember）。
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/members", `{}`); code != 200 {
+		t.Fatalf("空体自加入应 200: %d %s", code, body)
+	}
+	// ② 幂等：重复加入 200（Store 级短路）。
+	if code, _ = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/members", `{}`); code != 200 {
+		t.Fatalf("重复自加入应幂等 200: %d", code)
+	}
+	// 发言链通：加入后同一 actor 发言 200（403→一键→发言成功的链）。
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages",
+		`{"body":"加入后"}`); code != 200 {
+		t.Fatalf("加入后发言应 200: %d %s", code, body)
+	}
+	// ③ 塞 identity+actor 被忽略：有效统一记法 identity 也不入成员列（服务端
+	// 权威），body actor 不改审计面；成员仍只有服务端注入的 webUserMember。
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/members",
+		`{"identity":"user:mallory","actor":"user:mallory"}`); code != 200 {
+		t.Fatalf("塞有效 identity 应 200 且被忽略: %d %s", code, body)
+	}
+	var detail proto.SessionDetail
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/sessions/"+session.ID)
+	if code != 200 {
+		t.Fatalf("加员后详情: %d %s", code, body)
+	}
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatal(err)
+	}
+	var hasWeb, hasMallory bool
+	for _, m := range detail.Summary.Members {
+		switch m.Identity {
+		case webUserMember:
+			hasWeb = true
+		case "user:mallory":
+			hasMallory = true
+		}
+	}
+	if !hasWeb {
+		t.Fatalf("服务端注入成员 %q 应在成员列: %+v", webUserMember, detail.Summary.Members)
+	}
+	if hasMallory {
+		t.Fatalf("body 塞 identity 被忽略（成员标识服务端注入，不经请求体）: %+v", detail.Summary.Members)
+	}
+	// ④ 前缀校验 400（拒绝半边）：机器位 web: 与裸名都不是成员统一记法。
+	if code, _ = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/members",
+		`{"identity":"web:127.0.0.1"}`); code != 400 {
+		t.Fatalf("塞机器位 web: identity 应 400: %d", code)
+	}
+	if code, _ = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/members",
+		`{"identity":"mallory"}`); code != 400 {
+		t.Fatalf("塞裸名 identity 应 400: %d", code)
+	}
+	// ⑤ 不存在会话 → 404 且文案含会话 id（可行动错误，缺陷族 2）。
+	code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions/session:999/members", `{}`)
+	if code != 404 {
+		t.Fatalf("不存在会话加员应 404: %d %s", code, body)
+	}
+	if !strings.Contains(body, "session:999") {
+		t.Fatalf("404 文案应含会话 id（可行动错误）: %s", body)
+	}
+	// ⑥ 已归档 → 409 且文案含「已归档」（可行动错误）。
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions",
+		`{"title":"加员归档场","owner":"user:tester"}`); code != 200 {
+		t.Fatalf("建归档场: %d %s", code, body)
+	}
+	var archived proto.Session
+	if err := json.Unmarshal([]byte(body), &archived); err != nil {
+		t.Fatal(err)
+	}
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+archived.ID+"/archive", `{}`); code != 200 {
+		t.Fatalf("归档: %d %s", code, body)
+	}
+	code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+archived.ID+"/members", `{}`)
+	if code != 409 {
+		t.Fatalf("已归档会话加员应 409: %d %s", code, body)
+	}
+	if !strings.Contains(body, "已归档") {
+		t.Fatalf("409 文案应可行动（含「已归档」）: %s", body)
+	}
+}
+
 // TestSessionsEndpoints503WithoutLedger 锁 withRooms 守卫对会话端点同款降级
 // （与 TestRoomsEndpoints503WithoutLedger 同族）。
 func TestSessionsEndpoints503WithoutLedger(t *testing.T) {

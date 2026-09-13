@@ -18,11 +18,13 @@ import type { BaseDir } from '../workbench/useWorkbench'
 // breadcrumbSegments 把基准目录拆成要显示的几段。
 // 导出是为了让桌面薄壳的标题栏（DesktopTitleBar）用同一份拆法——两处各写
 // 一遍就会出现「窗口顶上写的和页面里写的不一样」。
-// tail 是焦点窗格的内容名（tui=任务原名 / file=文件名 / terminal=终端标题），
-// 非空时替换第三段（目录名）；home 基准不属于任何项目/机器，只有一段，tail 不参与。
+// tail 是焦点窗格的内容名（tui=任务原名 / file=文件名 / terminal=终端标题 /
+// session=「会话 · 标题」），非空时替换第三段（目录名）；home 基准只有一段，
+// tail 同样放行（B366 修 B358.6 review I-1：会话 tab 的 base 落 home 白名单，
+// 此前 tail 被吞导致面包屑显 'home' 而不是会话标题）。
 export function breadcrumbSegments(base: BaseDir, tail?: string): string[] {
-  // home 基准不属于任何项目/机器，只显示一段
-  if (base.kind === 'home') return ['home']
+  // home 基准不属于任何项目/机器，只显示一段：有焦点内容显内容名，否则基准名。
+  if (base.kind === 'home') return [tail ?? base.label]
   return [base.projectName, base.machine === '' ? '本机' : base.machine, tail || base.label]
 }
 

@@ -1,6 +1,6 @@
-// 会话（群）HTTP 面（B358.4）：会话建/列/详情/归档/拉卡/移出六端点，注册进
-// registerLedgerRoutes 同一 mux；发言、已读、历史复用既有 /api/rooms 端点
-// （roomsapi.go——会话房间经 B358.1 会话语义已可读写）。
+// 会话（群）HTTP 面（B358.4；B366 增补员端点）：会话建/列/详情/归档/拉卡/移出
+// 加员七端点，注册进 registerLedgerRoutes 同一 mux；发言、已读、历史复用既有
+// /api/rooms 端点（roomsapi.go——会话房间经 B358.1 会话语义已可读写）。
 //
 // 边界：本文件是 gateway 对 d_collab 入站 api 门面会话半边的消费侧（spec 测试
 // 接缝清单 #1 的调用方）；不得 import internal/collab 之外的门面，账本能力经
@@ -19,10 +19,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/ledger"
 )
 
@@ -37,14 +39,16 @@ func validSessionOwner(owner string) bool {
 }
 
 // sessionErr 把 collab.Service 会话写面哨兵翻译为 HTTP 状态（b358.4-plan §2.2
-// 定稿映射表）：ErrNoRoom（含 mapSessionError 归一的 client.ErrNotFound）→404、
-// ledger.ErrBadState（已属他会话/会话已归档）→409、其余 500。只覆盖会话写面
-// 六端点可达的哨兵，不与 collabErr 的发言路径映射混流（缺陷族 7）——若未来
-// 会话写面冒出 ErrNotWriter/ErrReadOnly，按 500 暴露，不静默归并。
+// 定稿映射表）：ErrNoRoom（含 mapSessionError 归一的 client.ErrNotFound，及
+// B366 补员端点 facade 直调面 translateNotFound 出站的 client.ErrNotFound——
+// 同族哨兵，collab.ErrNoRoom 本就是它的入站翻译）→404、ledger.ErrBadState
+// （已属他会话/会话已归档）→409、其余 500。覆盖会话写面七端点可达的哨兵，
+// 不与 collabErr 的发言路径映射混流（缺陷族 7）——若未来会话写面冒出
+// ErrNotWriter/ErrReadOnly，按 500 暴露，不静默归并。
 func sessionErr(w http.ResponseWriter, err error) {
 	code := http.StatusInternalServerError
 	switch {
-	case errors.Is(err, collab.ErrNoRoom):
+	case errors.Is(err, collab.ErrNoRoom), errors.Is(err, client.ErrNotFound):
 		code = http.StatusNotFound
 	case errors.Is(err, ledger.ErrBadState):
 		code = http.StatusConflict
@@ -86,6 +90,45 @@ func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("会话已创建", "session", session.ID, "title", title, "owner", owner, "actor", actor)
 	writeJSON(w, http.StatusOK, session)
+}
+
+// handleSessionMemberAdd POST /api/sessions/{id}/members → AddSessionMember
+// （B366 补员端点：控制台「以当前身份加入会话」的唯一生产入口，发言权岔口1
+// 用户故事 1 的接线；AddSessionMember 的 Store/Facade/Client 三层随 B358
+// Ticket 0 冻结，此处纯接线）。调用面是 Server.autoLedger（SetupAutomation
+// 装配、与 s.rooms 同一 facade 实例＝LedgerClient 实现，server.go 组装处）。
+//
+// 成员身份服务端权威（roomsapi.go 门禁纪律「成员标识服务端注入，不经请求体」，
+// 拍板①两字段不混用的同族应用）：body 可空或 {identity:""}＝以调用者身份加入
+// （roomUserActor 注入值）；body 塞非空 identity 时仍按 validSessionOwner 统一
+// 记法口径校验（违者 400），但成员恒取服务端注入 actor——塞值被忽略不入成员列
+// （TestSessionMemberAddEndpoint ③ 反例锁）；body actor 字段一律不解码。
+func (s *Server) handleSessionMemberAdd(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Identity string `json:"identity"`
+	}
+	// body 可空：空体（io.EOF）视同 {}——控制台一键以调用者身份加入。
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && !errors.Is(err, io.EOF) {
+		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
+		return
+	}
+	if identity := strings.TrimSpace(req.Identity); identity != "" && !validSessionOwner(identity) {
+		writeErr(w, http.StatusBadRequest,
+			errors.New(`identity 必须是统一记法 user:<name> 或 agent:<name>`))
+		return
+	}
+	// 成员与审计 actor 同源恒为服务端注入值；加员幂等（Store 级短路、零事件副作用）。
+	actor := s.roomUserActor(r)
+	if err := s.autoLedger.AddSessionMember(id, actor, actor); err != nil {
+		s.log.Warn("会话加员失败", "session", id, "member", actor, "cause", err)
+		// 包回会话 id：facade 出站哨兵不携带 Store 层文案（与 handleSessionDetail
+		// 同款边界处理），404/409 文案可行动（缺陷族 2）；%w 保住哨兵映射。
+		sessionErr(w, fmt.Errorf("会话 %s: %w", id, err))
+		return
+	}
+	s.log.Info("成员已加入会话", "session", id, "member", actor)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
 // handleSessionsList GET /api/sessions → ListSessions（谁需要我：未读/标签/预览）。

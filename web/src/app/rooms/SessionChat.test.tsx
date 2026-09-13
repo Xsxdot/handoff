@@ -4,13 +4,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ApiError } from '../../api/client'
-import { sendRoomMessage } from '../../api/rooms'
+import { addSessionMember, sendRoomMessage } from '../../api/rooms'
 import type { RoomHistoryItem, SessionSummary } from '../../api/rooms'
 import { SessionChat } from './SessionChat'
 
 vi.mock('../../api/rooms', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/rooms')>()),
   sendRoomMessage: vi.fn(),
+  addSessionMember: vi.fn(),
 }))
 
 const summary = (over: Partial<SessionSummary> = {}): SessionSummary => ({
@@ -78,6 +79,37 @@ describe('SessionChat', () => {
     await user.type(screen.getByRole('textbox', { name: '发送消息' }), 'hi')
     await user.click(screen.getByRole('button', { name: '发送' }))
     expect(await screen.findByRole('alert')).toHaveTextContent('你不是这场会话的成员')
+  })
+
+  it('B366 链：403 → 一键「以当前身份加入会话」（空体、不自报身份）→ 清横幅 → 再发送成功', async () => {
+    vi.mocked(sendRoomMessage)
+      .mockRejectedValueOnce(new ApiError(403, 'collab: 书写者与房间身份不符'))
+      .mockResolvedValueOnce({ seq: 4 })
+    vi.mocked(addSessionMember).mockResolvedValue({ ok: true })
+    const onSent = vi.fn()
+    const user = userEvent.setup()
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={onSent} />)
+    await user.type(screen.getByRole('textbox', { name: '发送消息' }), 'hi')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('书写者与房间身份不符')
+    // 一键以调用者身份加入：addSessionMember 只带会话号（身份服务端权威）。
+    await user.click(screen.getByRole('button', { name: '以当前身份加入会话' }))
+    await waitFor(() => expect(addSessionMember).toHaveBeenCalledWith('session:1'))
+    await waitFor(() => expect(screen.queryByRole('alert')).toBeNull())
+    // 发言链通：草稿仍在，直接再发成功。
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(sendRoomMessage).toHaveBeenCalledTimes(2))
+    expect(onSent).toHaveBeenCalled()
+  })
+
+  it('一键只在 403 出现：非成员判定按状态码，其余错误（如 500）不给加入入口', async () => {
+    vi.mocked(sendRoomMessage).mockRejectedValue(new ApiError(500, '账本写失败'))
+    const user = userEvent.setup()
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    await user.type(screen.getByRole('textbox', { name: '发送消息' }), 'hi')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('账本写失败')
+    expect(screen.queryByRole('button', { name: '以当前身份加入会话' })).toBeNull()
   })
 
   it('归档只读：输入与发送禁用 + 只读横幅', () => {

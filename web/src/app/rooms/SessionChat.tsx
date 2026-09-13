@@ -4,7 +4,8 @@
 // 原文透传（403 非成员 / 409 归档）——可行动报错是岔口 1 的组件半边。
 import { useState } from 'react'
 import type { RoomHistoryItem, SessionSummary } from '../../api/rooms'
-import { sendRoomMessage } from '../../api/rooms'
+import { addSessionMember, sendRoomMessage } from '../../api/rooms'
+import { ApiError } from '../../api/client'
 import { errorMessage } from '../lib/format'
 import { logRoom } from './roomLog'
 import { isSelfActor, segmentBody } from './sessionModel'
@@ -55,6 +56,10 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
   const [draft, setDraft] = useState('')
   const [sending, setSending] = useState(false)
   const [sendError, setSendError] = useState('')
+  // sendErrorStatus 记发送被拒的 HTTP 状态（0=非 ApiError/网络层）：B366 一键
+  // 「以当前身份加入会话」只在 403（非成员）出现，409 归档等不给加入入口。
+  const [sendErrorStatus, setSendErrorStatus] = useState(0)
+  const [joining, setJoining] = useState(false)
   const [highlightSeq, setHighlightSeq] = useState<number | null>(null)
   const bySeq = new Map(events.map((item) => [item.seq, item]))
 
@@ -70,6 +75,7 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
     if (body === '' || sending) return
     setSending(true)
     setSendError('')
+    setSendErrorStatus(0)
     const mentions = body.match(/@[^\s]+/g)?.map((token) => token.slice(1)) ?? []
     logRoom('debug', 'session_send_started', { session: sessionId, mentions: mentions.length })
     try {
@@ -80,9 +86,30 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
     } catch (error: unknown) {
       // 403（非成员）/409（归档）等哨兵文案原文透传——ApiError 保留 agentd error 字段。
       setSendError(errorMessage(error))
+      setSendErrorStatus(error instanceof ApiError ? error.status : 0)
       logRoom('error', 'session_send_failed', { session: sessionId, error: errorMessage(error) })
     } finally {
       setSending(false)
+    }
+  }
+
+  // joinSelf 「以当前身份加入会话」一键（B366，发言权岔口1 的组件半边）：身份
+  // 服务端权威——addSessionMember 不带身份字段（前端不自报，B358.4 门禁纪律），
+  // 服务端以注入 actor 入列；成功即清 403 横幅，草稿仍在可直接再发。
+  const joinSelf = async () => {
+    if (joining) return
+    setJoining(true)
+    try {
+      await addSessionMember(sessionId)
+      setSendError('')
+      setSendErrorStatus(0)
+      logRoom('debug', 'session_self_joined', { session: sessionId })
+    } catch (error: unknown) {
+      setSendError(errorMessage(error))
+      setSendErrorStatus(error instanceof ApiError ? error.status : 0)
+      logRoom('error', 'session_self_join_failed', { session: sessionId, error: errorMessage(error) })
+    } finally {
+      setJoining(false)
     }
   }
 
@@ -115,7 +142,17 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
       </div>
       <footer className="shrink-0 border-t bg-background p-2.5">
         {historyError !== '' && <p role="alert" className="mb-1 text-xs text-amber-800">消息流已断开：{historyError}</p>}
-        {sendError !== '' && <p role="alert" className="mb-1 text-xs text-destructive">发送被拒：{sendError}</p>}
+        {sendError !== '' && (
+          <p role="alert" className="mb-1 text-xs text-destructive">
+            发送被拒：{sendError}
+            {sendErrorStatus === 403 && !archived && (
+              <button type="button" data-testid="session-join-self" onClick={() => void joinSelf()} disabled={joining}
+                className="ml-2 rounded-md border px-2 py-0.5 text-xs text-foreground hover:bg-muted disabled:opacity-50">
+                以当前身份加入会话
+              </button>
+            )}
+          </p>
+        )}
         <div className="flex items-end gap-2 rounded-2xl border bg-background p-1.5">
           <textarea aria-label="发送消息" value={draft} onChange={(event) => setDraft(event.target.value)} disabled={archived} rows={2}
             className="min-w-0 flex-1 resize-none border-0 bg-transparent px-1.5 py-1 text-sm outline-none"

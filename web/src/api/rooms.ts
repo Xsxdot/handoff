@@ -201,6 +201,17 @@ export const createSession = (title: string, owner: string): Promise<Session> =>
 export const archiveSession = (id: string): Promise<{ ok: boolean }> =>
   postJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}/archive`, {})
 
+// addSessionMember 以当前身份加入会话（POST /api/sessions/{id}/members，B366：
+// 控制台 403「以当前身份加入会话」一键的后端）。成员身份服务端权威：identity
+// 缺省不出键（空体）——服务端以注入 actor 入列，前端不自报身份（与 fetchSessions
+// 同款纪律，B358.4 门禁）；identity 参数保留为端点形状镜像，服务端仍校验统一
+// 记法前缀并忽略塞值（TestSessionMemberAddEndpoint ③④ 反例）。
+export const addSessionMember = (id: string, identity = ''): Promise<{ ok: boolean }> => {
+  const payload: { identity?: string } = {}
+  if (identity !== '') payload.identity = identity
+  return postJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}/members`, payload)
+}
+
 // joinSessionCard 拉卡进群（POST …/cards {card}；进群 ≠ 配人）。
 export const joinSessionCard = (id: string, card: string): Promise<{ ok: boolean }> =>
   postJSON<{ ok: boolean }>(`/api/sessions/${encodeURIComponent(id)}/cards`, { card })

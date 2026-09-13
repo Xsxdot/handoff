@@ -59,6 +59,8 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/sessions/{id}/archive", s.withRooms(s.handleSessionArchive))
 	api.HandleFunc("POST /api/sessions/{id}/cards", s.withRooms(s.handleSessionJoinCard))
 	api.HandleFunc("DELETE /api/sessions/{id}/cards/{cardID}", s.withRooms(s.handleSessionLeaveCard))
+	// B366 补员端点：控制台「以当前身份加入会话」一键的后端（成员身份服务端权威）。
+	api.HandleFunc("POST /api/sessions/{id}/members", s.withRooms(s.handleSessionMemberAdd))
 	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
 	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
 	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)
