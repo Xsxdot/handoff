@@ -144,7 +144,7 @@ func TestHandleStopReleasesBareCarrier(t *testing.T) {
 func TestHandleDoneReleasesBareCarrier(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
-	if _, err := env.srv.Scheduling().AdmitCarrier("muse"); err != nil {
+	if _, err := mustScheduling(t, env.srv).AdmitCarrier("muse"); err != nil {
 		t.Fatalf("AdmitCarrier: %v", err)
 	}
 	const taskID = "done-carrier-release"
@@ -184,7 +184,7 @@ func (a *closeStoreAfterDoneStopAdapter) Stop(taskID string) error {
 func TestHandleDoneDoesNotReturnSuccessWithoutTerminalSnapshot(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
-	if _, err := env.srv.Scheduling().AdmitCarrier("muse"); err != nil {
+	if _, err := mustScheduling(t, env.srv).AdmitCarrier("muse"); err != nil {
 		t.Fatalf("AdmitCarrier: %v", err)
 	}
 	const taskID = "done-snapshot-read-failure"
@@ -212,7 +212,7 @@ func TestHandleDoneDoesNotReturnSuccessWithoutTerminalSnapshot(t *testing.T) {
 func TestHandleStopDoesNotReturnSuccessWithoutTerminalSnapshot(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
-	if _, err := env.srv.Scheduling().AdmitCarrier("muse"); err != nil {
+	if _, err := mustScheduling(t, env.srv).AdmitCarrier("muse"); err != nil {
 		t.Fatalf("AdmitCarrier: %v", err)
 	}
 	const taskID = "stop-snapshot-read-failure"
@@ -260,7 +260,7 @@ func TestHandleStopDoesNotReturnSuccessWithoutTerminalSnapshot(t *testing.T) {
 func TestHandleDoneIdempotentDoesNotReleaseCompletedCarrier(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
-	if _, err := env.srv.Scheduling().AdmitCarrier("muse"); err != nil {
+	if _, err := mustScheduling(t, env.srv).AdmitCarrier("muse"); err != nil {
 		t.Fatalf("AdmitCarrier: %v", err)
 	}
 	const taskID = "done-carrier-release-idem"
@@ -304,7 +304,7 @@ func TestHandleDoneIdempotentDoesNotReleaseCompletedCarrier(t *testing.T) {
 func TestReleaseSchedulingBindingCarrierOnly(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
-	binding, err := env.srv.Scheduling().AdmitCarrier("muse")
+	binding, err := mustScheduling(t, env.srv).AdmitCarrier("muse")
 	if err != nil {
 		t.Fatalf("AdmitCarrier: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestContinueDoesNotAdmit(t *testing.T) {
 func TestB23310ContinueResumeNeverAdmit(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	if err := svc.PutSquad(scheduling.Squad{Name: "resume-squad", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "muse", MaxConcurrency: 1}}}, 0); err != nil {
 		t.Fatalf("PutSquad: %v", err)

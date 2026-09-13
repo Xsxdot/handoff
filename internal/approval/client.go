@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	decisionpkg "github.com/Xsxdot/handoff/internal/approval/internal/decision"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -184,7 +185,7 @@ func (c *Client) Await(ctx context.Context, ref executor.ApprovalRef) (executor.
 		log.Error("Await 取消且 Store 无终态", "task", c.taskID, "ref", ref.ID, "cause", err)
 		return executor.ApprovalDecision{}, err
 	}
-	d := mapGateAnswer(ans)
+	d := decisionpkg.MapGateAnswer(ans)
 	log.Info("Await 从 Hub 返回终态", "task", c.taskID, "ref", ref.ID, "status", d.Status)
 	return d, nil
 }
@@ -267,7 +268,7 @@ func (c *Client) tryReuse(ev executor.AdapterEvent, ticketID, fp string) (execut
 		TicketID:      ticketID,
 		PriorTicketID: prior.ID,
 		Fingerprint:   fp[:8],
-		Permission:    permEventText(ev.Text),
+		Permission:    decisionpkg.PermEventText(ev.Text),
 	}); err != nil {
 		c.logger().Error("追加 permission_reuse 失败", "task", c.taskID, "ticket", ticketID, "cause", err)
 	}
@@ -315,7 +316,7 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 	}
 	if _, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
 		TicketID:   ticketID,
-		Permission: permEventText(ev.Text),
+		Permission: decisionpkg.PermEventText(ev.Text),
 		Decision:   decision,
 		Reason:     reason,
 		ElapsedMS:  dec.ElapsedMS,
@@ -410,7 +411,7 @@ func (c *Client) escalate(ctx context.Context, ev executor.AdapterEvent, reason 
 		return executor.ApprovalResult{}, err
 	}
 	evt, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypePermissionRequest, permissionPayload{
-		TicketID: ticketID, Permission: permEventText(ev.Text), Kind: "gate",
+		TicketID: ticketID, Permission: decisionpkg.PermEventText(ev.Text), Kind: "gate",
 	})
 	if err != nil {
 		c.logger().Error("追加 permission_request 失败", "task", c.taskID, "ticket", ticketID, "cause", err)
@@ -446,31 +447,7 @@ func (c *Client) decisionFromStore(ticketID string) (executor.ApprovalDecision, 
 	if tk.Answer == nil || *tk.Answer == store.VoidAnswer {
 		return executor.ApprovalDecision{}, false, nil
 	}
-	return mapGateAnswer(*tk.Answer), true, nil
-}
-
-func mapGateAnswer(ans string) executor.ApprovalDecision {
-	d, reason := gateDecision(ans)
-	if d == "once" {
-		return executor.ApprovalDecision{Status: executor.ApprovalAllow}
-	}
-	return executor.ApprovalDecision{Status: executor.ApprovalDeny, Reason: reason}
-}
-
-// gateDecision preserves the old manager-to-executor translation: only the
-// exact answer "allow" grants once; all other answers reject, with a deny
-// reason copied only from the explicit deny form.
-func gateDecision(answer string) (decision, reason string) {
-	trimmed := strings.TrimSpace(answer)
-	if trimmed == "allow" {
-		return "once", ""
-	}
-	rest := strings.TrimPrefix(trimmed, "deny")
-	rest = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(rest), ":"))
-	if rest == trimmed {
-		return "reject", ""
-	}
-	return "reject", rest
+	return decisionpkg.MapGateAnswer(*tk.Answer), true, nil
 }
 
 // The payloads stay private to this package because they are the hand-written
@@ -505,15 +482,6 @@ type approverDecisionPayload struct {
 type ticketAnsweredPayload struct {
 	TicketID string `json:"ticket_id"`
 	Answer   string `json:"answer"`
-}
-
-func permEventText(s string) string {
-	const limit = 200
-	if len([]rune(s)) <= limit {
-		return s
-	}
-	r := []rune(s)
-	return string(r[:limit]) + executor.TruncationMarker
 }
 
 func jsonMarshal(v any) ([]byte, error) {

@@ -31,7 +31,7 @@ type receiverTestEnv struct {
 func newReceiverTestEnv(t *testing.T) *receiverTestEnv {
 	t.Helper()
 	env := newNoPTYLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	cfg := env.srv.conf()
 	cfg.Executor.Default = "opencode"
 	// B233.13：经 ManagerFactory 组装真实编排实现；工作区能力由工厂按组装点语义注入。
@@ -42,7 +42,7 @@ func newReceiverTestEnv(t *testing.T) *receiverTestEnv {
 
 func seedDefaultFakeCarrier(t *testing.T, srv *Server, cli string) {
 	t.Helper()
-	svc := srv.Scheduling()
+	svc := mustScheduling(t, srv)
 	if svc == nil {
 		t.Fatal("需要 SetupAutomation")
 	}
@@ -96,7 +96,7 @@ func TestHandleDispatchEmptyReceiverBindsDefault(t *testing.T) {
 	if task.Carrier != "muse" || task.Target != "local" || task.Executor != "fake" || task.HomeDir != "~/.handoff/home/muse" {
 		t.Fatalf("默认载体快照不对: %+v", task)
 	}
-	if err := env.srv.Scheduling().Release("", "muse"); err != nil {
+	if err := mustScheduling(t, env.srv).Release("", "muse"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -106,7 +106,7 @@ func TestHandleDispatchEmptyReceiverBindsDefault(t *testing.T) {
 // 不能被当成 nil 省略。
 func TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty(t *testing.T) {
 	env := newReceiverTestEnv(t)
-	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "empty-home", Machine: "local", CLI: "fake", HomeDir: "",
 		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
 		Status: scheduling.StatusOnline,
@@ -150,7 +150,7 @@ func TestB23310FrozenEmptyHomeDirReachesTaskAsExplicitEmpty(t *testing.T) {
 // 折叠成显式空串而放行，只有明确携带 home_dir:"" 才表示目标机主 HOME。
 func TestB23310FrozenMissingHomeDirIsRejectedForEmptyHomeCarrier(t *testing.T) {
 	env := newReceiverTestEnv(t)
-	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
 		Name: "empty-home-missing", Machine: "local", CLI: "fake", HomeDir: "",
 		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
 		Status: scheduling.StatusOnline,
@@ -188,7 +188,7 @@ func TestHandleDispatchExplicitReceiver(t *testing.T) {
 	if task.Carrier != "muse" || task.Target != "local" || task.Executor != "fake" {
 		t.Fatalf("显式载体快照不对: %+v", task)
 	}
-	if err := env.srv.Scheduling().Release("", "muse"); err != nil {
+	if err := mustScheduling(t, env.srv).Release("", "muse"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -217,7 +217,7 @@ func TestHandleDispatchNameConflict(t *testing.T) {
 func TestHandleDispatchSquadReceiver(t *testing.T) {
 	env := newReceiverTestEnv(t)
 	seedDefaultFakeCarrier(t, env.srv, "fake")
-	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{Name: "rd", Role: scheduling.RoleExecutor,
+	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{Name: "rd", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "muse", MaxConcurrency: 8}}}, 0); err != nil {
 		t.Fatal(err)
 	}
@@ -248,7 +248,7 @@ func TestHandleDispatchSquadReceiver(t *testing.T) {
 // 是 /api/tasks 的准入依据；Receiver 仅保留为审计提示，不得重新选择载体。
 func TestB23310ClientDispatchUsesFrozenIdentity(t *testing.T) {
 	env := newReceiverTestEnv(t)
-	svc := env.srv.Scheduling()
+	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "carrier-A", Machine: "local", CLI: "fake",
 		HomeDir: "/home/carrier-A", Credential: scheduling.CredentialStandalone,
 		MaxConcurrency: 1, Status: scheduling.StatusOnline})
@@ -298,7 +298,7 @@ func TestHandleDispatchPhysicalOverride(t *testing.T) {
 	if rr.Code != http.StatusOK {
 		t.Fatalf("重述相同物理身份应成功: %d %s", rr.Code, rr.Body.String())
 	}
-	if err := env.srv.Scheduling().Release("", "muse"); err != nil {
+	if err := mustScheduling(t, env.srv).Release("", "muse"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -314,19 +314,19 @@ func TestHandleDispatchModelOverlay(t *testing.T) {
 	if task.Model != "gpt-y" || task.Target != "local" || task.Executor != "fake" || task.HomeDir != "~/.handoff/home/muse" {
 		t.Fatalf("模型覆盖改变绑定身份: %+v", task)
 	}
-	if err := env.srv.Scheduling().Release("", "muse"); err != nil {
+	if err := mustScheduling(t, env.srv).Release("", "muse"); err != nil {
 		t.Fatal(err)
 	}
 }
 
 func TestHandleDispatchNoSlotBusy(t *testing.T) {
 	env := newReceiverTestEnv(t)
-	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake",
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake",
 		HomeDir: "~/.handoff/home/muse", Credential: scheduling.CredentialStandalone, MaxConcurrency: 1})
-	if err := env.srv.Scheduling().SetDefaultCarrier("muse"); err != nil {
+	if err := mustScheduling(t, env.srv).SetDefaultCarrier("muse"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := env.srv.Scheduling().AdmitCarrier("muse"); err != nil {
+	if _, err := mustScheduling(t, env.srv).AdmitCarrier("muse"); err != nil {
 		t.Fatal(err)
 	}
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID, ""))
@@ -337,7 +337,7 @@ func TestHandleDispatchNoSlotBusy(t *testing.T) {
 	if rows, err := ledgerapi.New(env.ledger).List(scheduling.KindIgnitionQueue); err != nil || len(rows) != 0 {
 		t.Fatalf("裸派发满员不得入 ignition_queue: rows=%+v err=%v", rows, err)
 	}
-	if err := env.srv.Scheduling().Release("", "muse"); err != nil {
+	if err := mustScheduling(t, env.srv).Release("", "muse"); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -345,16 +345,16 @@ func TestHandleDispatchNoSlotBusy(t *testing.T) {
 func setupSquadEnvWithHome(t *testing.T, home string) (*ledgerEnv, *fakeTargetMachine) {
 	t.Helper()
 	env := newLedgerEnv(t)
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	yes := true
 	ftm := newFakeTargetMachine(t, &yes)
 	registerFakeTarget(t, env.srv, "ftm", ftm)
 	if ver := seedDisciplineOnLedger(t, env, "implement", "# 实现纪律\n完成即 commit\n"); ver < 1 {
 		t.Fatalf("纪律块版本异常: %d", ver)
 	}
-	putOnlineCarrier(t, env.srv.Scheduling(), scheduling.Carrier{Name: "c1", Machine: "ftm", CLI: "opencode",
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{Name: "c1", Machine: "ftm", CLI: "opencode",
 		HomeDir: home, Credential: scheduling.CredentialStandalone, MaxConcurrency: 2})
-	if err := env.srv.Scheduling().PutSquad(scheduling.Squad{Name: "sq1", Role: scheduling.RoleExecutor,
+	if err := mustScheduling(t, env.srv).PutSquad(scheduling.Squad{Name: "sq1", Role: scheduling.RoleExecutor,
 		Members: []scheduling.SquadMember{{Carrier: "c1", MaxConcurrency: 8}}}, 0); err != nil {
 		t.Fatalf("登记小队: %v", err)
 	}

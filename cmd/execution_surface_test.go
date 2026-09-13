@@ -94,25 +94,40 @@ func blankPreservingNewlines(s string) string {
 
 // executionSurfaceViolations 返回非白名单符号里的聚合用法（行号:符号）。
 // cleaned 必须已经过 stripCommentsAndStrings。
+//
+// 函数名上下文只对「包裹该行的方法/函数」有效：遇到包级 var/const/type 声明
+// 必须重置，否则白名单工厂函数之后紧跟的包级聚合会沿用它而被误放行（B233.16 漏判）。
+// 包级以花括号深度 == 0 判定——stripCommentsAndStrings 会把紧跟分号行的空行
+// 还原成空格，包级声明未必仍在列 0，故不能按列 0 锚定。
 func executionSurfaceViolations(cleaned []byte) []string {
 	funcRe := regexp.MustCompile(`^func\s+(?:\([^)]*\)\s+)?([A-Za-z_]\w*)`)
+	declRe := regexp.MustCompile(`^(var|const|type)\b`)
 	var out []string
 	current := ""
+	depth := 0
 	for i, line := range strings.Split(string(cleaned), "\n") {
-		if m := funcRe.FindStringSubmatch(strings.TrimLeft(line, " \t")); m != nil {
-			current = m[1]
+		trimmed := strings.TrimLeft(line, " \t")
+		if depth == 0 {
+			if m := funcRe.FindStringSubmatch(trimmed); m != nil {
+				current = m[1]
+			} else if declRe.MatchString(trimmed) {
+				// 包级声明开始：此后的聚合不属于上一个函数。
+				current = ""
+			}
 		}
-		if !strings.Contains(line, "*client.Client") && !strings.Contains(line, "client.New(") {
-			continue
+		if strings.Contains(line, "*client.Client") || strings.Contains(line, "client.New(") {
+			if !executionFactorySymbols[current] {
+				sym := current
+				if sym == "" {
+					sym = "<package>"
+				}
+				out = append(out, fmt.Sprintf("%d:%s", i+1, sym))
+			}
 		}
-		if executionFactorySymbols[current] {
-			continue
+		depth += strings.Count(line, "{") - strings.Count(line, "}")
+		if depth < 0 {
+			depth = 0
 		}
-		sym := current
-		if sym == "" {
-			sym = "<package>"
-		}
-		out = append(out, fmt.Sprintf("%d:%s", i+1, sym))
 	}
 	return out
 }
@@ -158,5 +173,12 @@ func TestCLIExecutionSurfaceGuardHasTeeth(t *testing.T) {
 	decoys := []byte("package cmd\n\n// 说明：*client.Client 与 client.New( 只出现在注释里\nvar note = \"*client.Client client.New(\"\n")
 	if got := executionSurfaceViolations(stripCommentsAndStrings(decoys)); len(got) != 0 {
 		t.Fatalf("注释/字符串里的同形文本不得误报，实得 %v", got)
+	}
+
+	// 包级聚合写在白名单工厂函数之后：函数名上下文不得沿用到包级声明（B233.16 漏判）。
+	leakAfterFactory := []byte("package cmd\n\nfunc targetClient(t string) (*client.Client, func(), error) {\n" +
+		"\treturn client.New(\"a\", \"b\"), func() {}, nil\n}\n\nvar leak *client.Client\n")
+	if got := executionSurfaceViolations(stripCommentsAndStrings(leakAfterFactory)); len(got) == 0 {
+		t.Fatal("白名单工厂函数之后的包级 *client.Client 必须判红（函数名上下文不得沿用）")
 	}
 }

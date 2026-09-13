@@ -16,6 +16,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/schedclient"
+	"github.com/Xsxdot/handoff/internal/scheduling/internal/logging"
 )
 
 // CarrierStatus 是载体一等状态的英文键（wire `status`）。用户可见中文名见 Label。
@@ -32,7 +33,7 @@ const (
 // 不跟可改的 DataDir：登记串必须跨机可认，DataDir 搬迁不得改已登记默认形态。
 const IsolatedHomeRoot = "~/.handoff/home"
 
-func statusLog() *slog.Logger { return slog.Default().With("mod", "scheduling") }
+func statusLog() *slog.Logger { return logging.StatusLog() }
 
 // Label 返回状态的用户可见中文名（设置页药丸与 CLI 共用这一份）。
 func (s CarrierStatus) Label() string {

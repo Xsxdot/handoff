@@ -35,7 +35,7 @@ func newRoomsEnv(t *testing.T) *ledgerEnv {
 	t.Helper()
 	env := newNoPTYLedgerEnv(t)
 	seedAgentdLedger(t, env.ledger, "bug")
-	env.srv.SetupAutomation(env.ledger)
+	SetupAutomationForTest(t, env.srv, env.ledger)
 	return env
 }
 

@@ -109,22 +109,21 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 	}
 	t.Cleanup(func() { _ = led.Close() })
 	srv.SetLedger(led)
-	srv.SetupAutomation(led)
-	putOnlineCarrierForInteg(t, srv, scheduling.Carrier{
+	svc := agentd.SetupAutomationForTest(t, srv, led)
+	putOnlineCarrierForInteg(t, svc, scheduling.Carrier{
 		Name: "muse", Machine: "local", CLI: "fake",
 		HomeDir: "", Credential: scheduling.CredentialStandalone,
 		MaxConcurrency: 0, Status: scheduling.StatusOnline,
 	})
-	if err := srv.Scheduling().SetDefaultCarrier("muse"); err != nil {
+	if err := svc.SetDefaultCarrier("muse"); err != nil {
 		t.Fatalf("预置默认载体: %v", err)
 	}
 	quiesceOnCleanup(t, st, mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, mgr: mgr, cli: newConfiguredClient(t, ts.URL, testToken), repo: newTestRepo(t)}
 }
 
-func putOnlineCarrierForInteg(t *testing.T, srv *agentd.Server, c scheduling.Carrier) {
+func putOnlineCarrierForInteg(t *testing.T, svc *scheduling.Service, c scheduling.Carrier) {
 	t.Helper()
-	svc := srv.Scheduling()
 	if err := svc.PutCarrier(c, 0); err != nil {
 		t.Fatalf("登记集成测试载体 %s: %v", c.Name, err)
 	}
@@ -756,15 +755,15 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = led.Close() })
 	srv.SetLedger(led)
-	srv.SetupAutomation(led)
-	if err := srv.Scheduling().PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode",
+	svc := agentd.SetupAutomationForTest(t, srv, led)
+	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode",
 		Credential: scheduling.CredentialStandalone}, 0); err != nil {
 		t.Fatalf("预置默认载体: %v", err)
 	}
-	if _, err := srv.Scheduling().ApplyDetect("muse", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+	if _, err := svc.ApplyDetect("muse", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
 		t.Fatalf("预置默认载体上线: %v", err)
 	}
-	if err := srv.Scheduling().SetDefaultCarrier("muse"); err != nil {
+	if err := svc.SetDefaultCarrier("muse"); err != nil {
 		t.Fatalf("预置默认载体: %v", err)
 	}
 

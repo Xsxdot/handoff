@@ -24,6 +24,7 @@ import (
 
 	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/orchestration/internal/cacheplan"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -149,7 +150,7 @@ func TestGCDedupesSharedActiveLeafBytesAndDelete(t *testing.T) {
 	if n != 1 {
 		t.Fatalf("共用活动叶子应只报告一次，实得 %d 行 %+v", n, resp.CacheRows)
 	}
-	want, err := sumRegularFileBytes(active)
+	want, err := cacheplan.SumRegularFileBytes(active)
 	if err != nil {
 		t.Fatal(err)
 	}
