@@ -55,7 +55,7 @@ func init() {
 }
 
 // runGC 调用目标 agentd 的单次预览或执行入口。
-func runGC(cmd *cobra.Command, cl *client.Client, addr string) error {
+func runGC(cmd *cobra.Command, cl client.GCClient, addr string) error {
 	slog.Default().Info("CLI gc 进入", "target", addr, "force", gcForce, "execute", gcYes, "json", gcJSON)
 	var (
 		resp *proto.GCResp

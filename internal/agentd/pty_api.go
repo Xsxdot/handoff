@@ -232,14 +232,14 @@ func (s *Server) ptySessionsAll(r *http.Request, local []proto.PtySession) proto
 			defer wg.Done()
 			st := proto.MachineStatus{Name: name, FetchedAt: time.Now().UTC()}
 			// relay 机器没有 addr，终端会话扇出必须复用池里的选路结果。
-			c, err := s.pool.For(name)
+			pc, err := s.clientForPtyFanout(name)
 			if err != nil {
 				s.log.Warn("终端会话扇出：取客户端失败", "machine", name, "cause", err)
 				st.Error = err.Error()
 				results[i] = result{status: st}
 				return
 			}
-			resp, err := c.MarkForwarded().PtySessions(ctx)
+			resp, err := pc.PtySessions(ctx)
 			if err != nil {
 				s.log.Warn("终端会话扇出失败", "machine", name, "cause", err)
 				st.Error = err.Error()

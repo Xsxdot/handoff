@@ -534,7 +534,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// 机器永远等不到账本镜像（与任务镜像同一条纪律，B163 ①）。
 	// 池必须与任务镜像共用同一个：两个池等于两套 relay 隧道。
 	host, _ := os.Hostname()
-	lm := ledgermirror.New(lst, srv.Pool(), ledgermirror.Options{
+	lm := ledgermirror.New(lst, agentd.NewLedgerMirrorMachines(srv.Pool()), ledgermirror.Options{
 		Holder:       host,
 		LocalSource:  ledgermirror.NewLocalSource(taskStore, logger.With("source", "local")),
 		IsSelfTarget: srv.IsSelfTarget,

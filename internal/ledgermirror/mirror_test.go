@@ -38,7 +38,7 @@ func TestMirrorFlowsLinkedTaskEvents(t *testing.T) {
 	_ = s.LinkTask(c.ID, "mac-02", "T1", "implement", "t")
 
 	var calls atomic.Int64
-	fake := func(ctx context.Context, _ *client.Client, taskID string, fromSeq int64,
+	fake := func(ctx context.Context, _ client.EventStreamClient, taskID string, fromSeq int64,
 		onEvent func(proto.Event) error) error {
 		calls.Add(1)
 		for _, e := range []proto.Event{
@@ -121,7 +121,7 @@ func TestB2336MirrorSourceEventCoverage(t *testing.T) {
 		{Seq: 8, Type: proto.EventTypeApproverDecision, Payload: []byte(`{"decision":"allow"}`)},
 		{Seq: 9, Type: proto.EventTypeApproverDisabled, Payload: []byte(`{"reason":"disabled"}`)},
 	}
-	source := func(ctx context.Context, _ *client.Client, taskID string, fromSeq int64,
+	source := func(ctx context.Context, _ client.EventStreamClient, taskID string, fromSeq int64,
 		onEvent func(proto.Event) error) error {
 		for _, event := range input {
 			if event.Seq <= fromSeq {
@@ -200,7 +200,7 @@ func TestB2336ProjectionChangeResubscribesWithNewAttempt(t *testing.T) {
 	mach := machinesWith(t, "mac-02")
 	calls := make(chan srcCall, 4)
 	var sourceCalls atomic.Int64
-	source := func(ctx context.Context, c *client.Client, taskID string, fromSeq int64,
+	source := func(ctx context.Context, c client.EventStreamClient, taskID string, fromSeq int64,
 		onEvent func(proto.Event) error) error {
 		seq := sourceCalls.Add(1)
 		calls <- srcCall{client: c, from: fromSeq, ctx: ctx}
@@ -291,7 +291,7 @@ func TestB2336ProjectionChangeResubscribesWithNewAttempt(t *testing.T) {
 
 func TestMirrorLeaseExclusive(t *testing.T) {
 	s := testLedger(t)
-	blockSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
+	blockSrc := func(ctx context.Context, _ client.EventStreamClient, _ string, _ int64, _ func(proto.Event) error) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -312,7 +312,7 @@ func TestMirrorNoTouchWhenDisconnected(t *testing.T) {
 	s := testLedger(t)
 	c, _ := s.CreateCard(ledger.NewCard{Title: "卡", Project: "p", Workflow: "bug", Actor: "t"})
 	_ = s.LinkTask(c.ID, "dead-box", "T9", "implement", "t")
-	failSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
+	failSrc := func(ctx context.Context, _ client.EventStreamClient, _ string, _ int64, _ func(proto.Event) error) error {
 		return fmt.Errorf("dial refused")
 	}
 	m := New(s, machinesWith(t, "dead-box", "idle-box"), Options{Holder: "test", Tick: 50 * time.Millisecond, LeaseTTL: time.Second, Source: failSrc})
@@ -352,7 +352,7 @@ func TestMirrorTouchesWhenAllLinkedTasksArchived(t *testing.T) {
 	s := testLedger(t)
 	c, _ := s.CreateCard(ledger.NewCard{Title: "卡", Project: "p", Workflow: "bug", Actor: "t"})
 	_ = s.LinkTask(c.ID, "mac-02", "T1", "implement", "t")
-	src := func(ctx context.Context, _ *client.Client, taskID string, fromSeq int64,
+	src := func(ctx context.Context, _ client.EventStreamClient, taskID string, fromSeq int64,
 		onEvent func(proto.Event) error) error {
 		ev := proto.Event{Seq: 1, TaskID: taskID, Type: proto.EventTypeArchived, Payload: []byte(`{}`)}
 		if ev.Seq > fromSeq {
@@ -412,7 +412,7 @@ func TestMirrorTouchesLeftoverIdleCursor(t *testing.T) {
 	if t1.IsZero() {
 		t.Fatal("应已有 mac-02 cursor")
 	}
-	blockSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
+	blockSrc := func(ctx context.Context, _ client.EventStreamClient, _ string, _ int64, _ func(proto.Event) error) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -449,7 +449,7 @@ func TestMirrorDoesNotTouchUnregisteredLiveCursor(t *testing.T) {
 			t1 = r.UpdatedAt
 		}
 	}
-	blockSrc := func(ctx context.Context, _ *client.Client, _ string, _ int64, _ func(proto.Event) error) error {
+	blockSrc := func(ctx context.Context, _ client.EventStreamClient, _ string, _ int64, _ func(proto.Event) error) error {
 		<-ctx.Done()
 		return ctx.Err()
 	}
@@ -513,7 +513,7 @@ func TestMirrorLocalTargetUsesLocalSource(t *testing.T) {
 		Holder:   "test-local",
 		Tick:     20 * time.Millisecond,
 		LeaseTTL: time.Second,
-		Source: func(context.Context, *client.Client, string, int64, func(proto.Event) error) error {
+		Source: func(context.Context, client.EventStreamClient, string, int64, func(proto.Event) error) error {
 			return fmt.Errorf("本机 link 不应调用远端 source")
 		},
 		LocalSource: NewLocalSource(localStore, log),

@@ -129,11 +129,11 @@ func (s *Server) remoteCoordWorkdir(machine, card string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("读卡 %s: %w", card, err)
 	}
-	c, err := s.clientForTarget(machine)
+	c, err := s.clientForProjectList(machine)
 	if err != nil {
 		return "", fmt.Errorf("取机器 %s 客户端: %w", machine, err)
 	}
-	locs, err := c.MarkForwarded().ProjectList(context.Background())
+	locs, err := c.ProjectList(context.Background())
 	if err != nil {
 		return "", fmt.Errorf("列机器 %s 项目: %w", machine, err)
 	}
@@ -148,11 +148,11 @@ func (s *Server) createRemoteCoordinatorPty(machine string, req proto.CreatePtyS
 	if s.createRemoteCoordPty != nil {
 		return s.createRemoteCoordPty(machine, req)
 	}
-	c, err := s.clientForTarget(machine)
+	c, err := s.clientForPtySessions(machine)
 	if err != nil {
 		return "", fmt.Errorf("取机器 %s 客户端: %w", machine, err)
 	}
-	sess, err := c.MarkForwarded().CreatePtySession(context.Background(), req)
+	sess, err := c.CreatePtySession(context.Background(), req)
 	if err != nil {
 		return "", err
 	}
@@ -166,11 +166,11 @@ func (s *Server) closeRemoteCoordinatorPty(machine, ptyID string) error {
 	if s.closeRemoteCoordPty != nil {
 		return s.closeRemoteCoordPty(machine, ptyID)
 	}
-	c, err := s.clientForTarget(machine)
+	c, err := s.clientForPtySessions(machine)
 	if err != nil {
 		return fmt.Errorf("取机器 %s 客户端: %w", machine, err)
 	}
-	return c.MarkForwarded().DeletePtySession(context.Background(), ptyID)
+	return c.DeletePtySession(context.Background(), ptyID)
 }
 
 func (s *Server) closeCoordinatorTab(card string) {

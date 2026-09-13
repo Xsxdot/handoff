@@ -3,7 +3,8 @@
 //
 // 本包不依赖 internal/agentd，也不依赖 internal/targetclient：机器清单与
 // 客户端经 Machines 接口注入（消费者侧接口），生产实现是 agentd 的
-// target 客户端池，测试注入内存实现，全程不碰网络。
+// target 客户端池经 gateway 侧适配器（agentd.LedgerMirrorMachines）收窄后的
+// 形态，测试注入内存实现，全程不碰网络。
 //
 // 边界：本包不解析机器地址、不选传输形态（直连 / relay）、不管隧道生命周期
 // —— 那三件事全归池。包内出现 config.Target 的 Addr/Token 字段读取即是回退。
@@ -32,7 +33,10 @@ import (
 //   - fromSeq: 排他水位，调用方按本机已落账的最大 source_seq 传
 //
 // 注意：实现方不得关闭 c —— 隧道归池，进程退出时统一关。
-type Source func(ctx context.Context, c *client.Client, taskID string, fromSeq int64,
+//
+// B233.20：c 的类型是事件流订阅缝（client.EventStreamClient），不再引用聚合
+// 客户端；标记语义已收进缝方法本身（ForwardedStreamEventsOnce）。
+type Source func(ctx context.Context, c client.EventStreamClient, taskID string, fromSeq int64,
 	onEvent func(proto.Event) error) error
 
 // Options 子系统参数。零值取生产默认。
@@ -58,7 +62,9 @@ type LocalEventStore interface {
 //
 // 为什么是消费者侧接口而不是直接 import targetclient：本包只需要「清单 +
 // 取客户端」两件事，声明在这里既让测试能注入内存实现，也不给本包引入
-// relay 传输栈的依赖。生产实现是 *targetclient.Pool，方法集逐字相同。
+// relay 传输栈的依赖。生产实现是 gateway 侧适配器（agentd.LedgerMirrorMachines）
+// 包着 *targetclient.Pool：For 透传池的规范实例（B233.20 起返回值收窄为
+// client.EventStreamClient）。
 //
 // 注意：For 不发任何网络请求，可以每轮对账现调；它的错误是**配置性**的
 // （机器未登记 / 无端点 / relay token 熵不足），不是网络抖动——因此
@@ -67,7 +73,11 @@ type Machines interface {
 	// Names 返回当前登记的机器名，已排序。判据取自活配置快照。
 	Names() []string
 	// For 取某台机器的客户端；**调用方不负责关闭它**。
-	For(name string) (*client.Client, error)
+	//
+	// 返回值必须是池的规范实例（同一 target 配置不变时返回同一实例）——
+	// 对账按实例判等识别「机器配置已变更」（B163 ②），在适配层另造副本
+	// 会让订阅每轮退订重订。
+	For(name string) (client.EventStreamClient, error)
 }
 
 // subscription 是一条在飞订阅的登记：取消函数 + 它当时用的客户端实例。
@@ -79,18 +89,18 @@ type Machines interface {
 // 无限重连下去（B163 ②，改地址后永不生效）。
 type subscription struct {
 	cancel context.CancelFunc
-	client *client.Client
+	client client.EventStreamClient
 	link   ledger.TaskLink
 }
 
-// DefaultSource 生产事件源：client.StreamEventsOnce 的薄包装。
+// DefaultSource 生产事件源：client.ForwardedStreamEventsOnce 的薄包装。
 //
-// 为什么带 MarkForwarded：这一跳是 agentd→agentd，标记让对端不再向外扇出
+// 为什么带一跳封顶：这一跳是 agentd→agentd，标记让对端不再向外扇出
 // （一跳封顶，A→B→A 不成环），与任务镜像的镜像订阅同款
-// （internal/agentd/mirror.go 的 c.MarkForwarded().StreamEventsOnce）。
-func DefaultSource(ctx context.Context, c *client.Client, taskID string, fromSeq int64,
+// （internal/workspace 的 RemoteTaskSource 适配器也包 MarkForwarded）。
+func DefaultSource(ctx context.Context, c client.EventStreamClient, taskID string, fromSeq int64,
 	onEvent func(proto.Event) error) error {
-	return c.MarkForwarded().StreamEventsOnce(ctx, taskID, fromSeq, onEvent)
+	return c.ForwardedStreamEventsOnce(ctx, taskID, fromSeq, onEvent)
 }
 
 const localSourceBatchSize = 100
@@ -111,7 +121,7 @@ func NewLocalSource(events LocalEventStore, logger *slog.Logger) Source {
 	if logger == nil {
 		logger = slog.Default()
 	}
-	return func(ctx context.Context, _ *client.Client, taskID string, fromSeq int64,
+	return func(ctx context.Context, _ client.EventStreamClient, taskID string, fromSeq int64,
 		onEvent func(proto.Event) error) error {
 		if events == nil {
 			err := errors.New("本机事件源缺少 store")
@@ -330,7 +340,7 @@ func (m *Mirror) reconcile(ctx context.Context) {
 
 	// 现取客户端：只对本轮真有挂账的机器取一次（For 不发网络请求）。
 	// 取不到就当这台机器本轮不可用——For 的错误是配置性的，重试没有意义。
-	clients := map[string]*client.Client{}
+	clients := map[string]client.EventStreamClient{}
 	for _, link := range want {
 		if m.isLocalTarget(link.Target) {
 			continue
@@ -458,7 +468,7 @@ func (m *Mirror) dropSubLocked(key string, sub *subscription, reason string) {
 //
 // 参数 c 是起订那一刻的客户端实例；它对应的机器配置若在运行期被改，reconcile
 // 会取消本 ctx 并用新实例重起一条（见 subscription 的注释），**本函数不自行换客户端**。
-func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c *client.Client) {
+func (m *Mirror) subscribe(ctx context.Context, link ledger.TaskLink, c client.EventStreamClient) {
 	defer m.wg.Done()
 	key := link.Target + "/" + link.TaskID
 	defer m.setConn(key, false)

@@ -449,6 +449,41 @@ func (s *Server) clientForTarget(target string) (*client.Client, error) {
 	return s.pool.For(canonical)
 }
 
+// clientForPtySessions 取一台目标机的 PTY 会话管理能力（B233.20 PTY 面收窄入口）。
+//
+// 返回值已带一跳封顶标记（消费方原今天各调一次 c.MarkForwarded()，标记语义
+// 不变）；选路与 clientForTarget 同源（规范目标归一 + 本机直连）。
+func (s *Server) clientForPtySessions(target string) (client.PtySessionClient, error) {
+	c, err := s.clientForTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	return c.MarkForwarded(), nil
+}
+
+// clientForProjectList 取一台目标机的项目清单读取能力（B233.20 项目面收窄入口）。
+//
+// 返回值已带一跳封顶标记；选路与 clientForTarget 同源。
+func (s *Server) clientForProjectList(target string) (client.ProjectListClient, error) {
+	c, err := s.clientForTarget(target)
+	if err != nil {
+		return nil, err
+	}
+	return c.MarkForwarded(), nil
+}
+
+// clientForPtyFanout 取一台远端机器的 PTY 扇出能力（B233.20 PTY 面收窄入口）。
+//
+// 走池直取而不是 clientForTarget：终端会话扇出已自行过滤本机 target，
+// 选路语义保持原样（不经过规范目标归一）。返回值已带一跳封顶标记。
+func (s *Server) clientForPtyFanout(name string) (client.PtySessionClient, error) {
+	c, err := s.pool.For(name)
+	if err != nil {
+		return nil, err
+	}
+	return c.MarkForwarded(), nil
+}
+
 // DisciplineMapping 返回当前配置里的 executor 名 → 纪律块文件名映射。
 //
 // B229 后它只服务 /api/discipline 端点的回显与 mapping PUT 的整段替换
