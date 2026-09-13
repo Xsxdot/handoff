@@ -235,12 +235,19 @@ export function WorkbenchPage({
   }
 
   const renderGroup = (group: typeof activeGroup, visible: boolean) => (
-    // min-w-0：本 div 是 340 行那个 flex-ROW 容器的子项。xterm 画布有固有宽度，
-    // 缺 min-w-0 时 flex 的自动最小尺寸（min-width:auto）会把整组撑到画布宽——
-    // 切回工作台的瞬间容器已缩到目标宽、组却还停在画布的旧固有宽上，
-    // ResizeObserver→fit→PTY resize 每帧一拍，连打十几轮 SIGWINCH（WebGL
-    // 画布在这类尺寸风暴里会被打坏，TUI 就花了）。最小宽度必须在这里断掉。
-    <div className={cn('flex min-h-0 min-w-0 flex-1 flex-col', !visible && 'pointer-events-none absolute -left-[10000px] top-0 h-full w-full')} aria-hidden={!visible}>
+    // 后台组叠在原位（inset-0），不移出视口、不 opacity-0（那些会弄死 WebGL）。
+    // 但必须 pointer-events-none + inert：z-0 的 WebGL 画布会从激活组抢走滚轮，
+    // 眼前那条 TUI 就划不动。激活组从未加过这个类，不走「去掉后命中回不来」。
+    // min-w-0 切断设置往返的 min-content 撑越。
+    <div
+      data-testid="workbench-group"
+      className={cn(
+        'absolute inset-0 flex min-h-0 min-w-0 flex-col bg-background',
+        visible ? 'z-10' : 'z-0 pointer-events-none',
+      )}
+      aria-hidden={!visible}
+      {...(!visible ? { inert: true } : {})}
+    >
       {/* 原型 .cols { overflow: hidden }：列压进容器，不出现横向滚动 */}
       <div className="flex min-h-0 flex-1 overflow-hidden bg-border">
         {group.columns.map((column, columnIndex) => (
@@ -325,7 +332,7 @@ export function WorkbenchPage({
   )
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-border">
+    <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-border">
       <TabBar
         groups={wb.groups}
         activeGroupId={wb.activeGroupId}
@@ -342,7 +349,7 @@ export function WorkbenchPage({
       />
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
-      <div className="relative flex min-h-0 flex-1">
+      <div className="relative isolate min-h-0 min-w-0 flex-1 overflow-hidden">
         {wb.groups.map((group) => (
           <Fragment key={group.id}>
             {group.id === wb.activeGroupId && renderGroup(group, true)}

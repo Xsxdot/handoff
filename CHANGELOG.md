@@ -24,6 +24,7 @@
 
 ### 修复
 
+- **切走终端再回来 TUI 花屏、划不动（B367）。** 后台组叠在原位，不移出视口、不 opacity-0。隐藏组 `pointer-events-none` + `inert`，避免 z-0 的 WebGL 画布抢走滚轮；激活组不加这个类。滚轮跟指针走。组容器 `min-w-0`，进设置再回来不再被画布固有宽撑出一串 SIGWINCH。
 - **审批 client 生产实现迁出 agentd（B233.8）。** OpenCode 派发 / continue / resume 仍注入同一 `ApprovalClient`；`internal/agentd` 只组装。非 OpenCode 权限权威与跨机真机延后 B233.9。
 - **远端落账失败会停孤儿任务并改名重试（B351）。** `ViaTemplate` 在 Transport 成功但本地挂账失败时记独立耗费轮次，`PurposeRounds` 按成功挂账加失败轮次计数；CLI 与 agentd 注入 Stop 后强制 Reclaim，不删分支。跨机真机延后 B233.9。
 - **质量复审 R1–R9 / B350 核销（B233.7）。** 已答提问再抛出时新工单仍能答回原题（持久化原生 QuestionID）；OpenCode 权限回传失败写入既有 `delivery_failed`，`wait` 可见；任务附加纪律随派发写入 Profile 任务层，Verify 验内容且不覆盖全局规则；任务 diff 在 `ResultRef.Commit` 非空时用该 commit。竖切测试与「载体是谁，执行者就是谁」对齐。跨机真机仍延后到全部收尾卡之后。

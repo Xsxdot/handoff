@@ -589,6 +589,21 @@ describe('TerminalTab', () => {
     expect(payloads).not.toContain('\x1b[I')
   })
 
+  it('分屏未聚焦的可见 pane 仍把 TUI 滚轮发给指针格子', async () => {
+    const spy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockReturnValue({
+      width: 800, height: 480, x: 0, y: 0, top: 0, left: 0, right: 800, bottom: 480,
+      toJSON: () => ({}),
+    } as DOMRect)
+    render(<TerminalTab base={WS} seq={1} sessionId="s" active={false} onSession={vi.fn()} />)
+    await waitFor(() => expect(connectPty).toHaveBeenCalled())
+    const handler = termInstance.attachCustomWheelEventHandler.mock.calls[0][0] as (ev: { deltaY: number; clientX: number; clientY: number }) => boolean
+    termInstance.buffer.active.type = 'alternate'
+    termInstance.modes.mouseTrackingMode = 'vt200'
+    expect(handler({ deltaY: -80, clientX: 50, clientY: 50 })).toBe(false)
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[<64;7;4M'.repeat(5))
+    spy.mockRestore()
+  })
+
   it('没开鼠标追踪时不拦截，交给 xterm', async () => {
     render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
     await waitFor(() => expect(connectPty).toHaveBeenCalled())
