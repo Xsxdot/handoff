@@ -51,6 +51,14 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("POST /api/rooms/{id}/messages", s.withRooms(s.handleRoomSend))
 	api.HandleFunc("POST /api/rooms/{id}/read", s.withRooms(s.handleRoomRead))
 	api.HandleFunc("GET /api/inbox", s.withRooms(s.handleInbox))
+	// B358.4 会话（群）六端点：全部经 withRooms 守卫（未装配 503，与 rooms 同款）；
+	// 发言/已读/历史复用上方 /api/rooms 端点（会话房间以 session:<n> 作 {id}）。
+	api.HandleFunc("POST /api/sessions", s.withRooms(s.handleSessionCreate))
+	api.HandleFunc("GET /api/sessions", s.withRooms(s.handleSessionsList))
+	api.HandleFunc("GET /api/sessions/{id}", s.withRooms(s.handleSessionDetail))
+	api.HandleFunc("POST /api/sessions/{id}/archive", s.withRooms(s.handleSessionArchive))
+	api.HandleFunc("POST /api/sessions/{id}/cards", s.withRooms(s.handleSessionJoinCard))
+	api.HandleFunc("DELETE /api/sessions/{id}/cards/{cardID}", s.withRooms(s.handleSessionLeaveCard))
 	// health 是前端的门控探针，必须恒 200：503 与网络错在浏览器侧不可区分。
 	// 其余 /api/cards* 等仍走 withLedger（未挂载 = 503）。
 	api.HandleFunc("GET /api/ledger/health", s.handleLedgerHealth)

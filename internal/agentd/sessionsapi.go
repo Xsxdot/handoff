@@ -1,0 +1,178 @@
+// 会话（群）HTTP 面（B358.4）：会话建/列/详情/归档/拉卡/移出六端点，注册进
+// registerLedgerRoutes 同一 mux；发言、已读、历史复用既有 /api/rooms 端点
+// （roomsapi.go——会话房间经 B358.1 会话语义已可读写）。
+//
+// 边界：本文件是 gateway 对 d_collab 入站 api 门面会话半边的消费侧（spec 测试
+// 接缝清单 #1 的调用方）；不得 import internal/collab 之外的门面，账本能力经
+// s.ledger 既有直调面触达。
+//
+// 身份两字段（B358.4 拍板①，docs/superpowers/plans/b358.4-plan.md 文末拍板）：
+//   - 成员身份（会话群主/列表 member 维度）用统一记法 user:<name>/agent:<name>
+//     ——群主取请求体并校验前缀，两字段不得混用（owner 是初始成员，契约条 3）；
+//   - 审计 actor 沿 gateway 既有注入面服务端注入（roomUserActor），请求体不
+//     带该字段——body 里的 actor 字段一律不解码。
+//
+// 错误映射：sessionErr（会话写面）+ 既有 collabErr（发言路径）。
+package agentd
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/http"
+	"strings"
+
+	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/ledger"
+)
+
+// 统一记法前缀（拍板①）：成员身份只认 user:<name>/agent:<name>，前缀后须
+// 有非空名字。web:<host> 是机器位（会漂），不配当会话成员身份。
+func validSessionOwner(owner string) bool {
+	if rest, ok := strings.CutPrefix(owner, "user:"); ok && rest != "" {
+		return true
+	}
+	rest, ok := strings.CutPrefix(owner, "agent:")
+	return ok && rest != ""
+}
+
+// sessionErr 把 collab.Service 会话写面哨兵翻译为 HTTP 状态（b358.4-plan §2.2
+// 定稿映射表）：ErrNoRoom（含 mapSessionError 归一的 client.ErrNotFound）→404、
+// ledger.ErrBadState（已属他会话/会话已归档）→409、其余 500。只覆盖会话写面
+// 六端点可达的哨兵，不与 collabErr 的发言路径映射混流（缺陷族 7）——若未来
+// 会话写面冒出 ErrNotWriter/ErrReadOnly，按 500 暴露，不静默归并。
+func sessionErr(w http.ResponseWriter, err error) {
+	code := http.StatusInternalServerError
+	switch {
+	case errors.Is(err, collab.ErrNoRoom):
+		code = http.StatusNotFound
+	case errors.Is(err, ledger.ErrBadState):
+		code = http.StatusConflict
+	}
+	writeErr(w, code, err)
+}
+
+// handleSessionCreate POST /api/sessions {title, owner} → CreateSession。
+// owner（群主=初始成员，契约条 3）取请求体统一记法并校验前缀；actor（审计
+// 「谁调的 HTTP」）服务端注入 roomUserActor，两字段不混用（拍板①，
+// TestSessionsCreateEndpoint 反例锁）。
+func (s *Server) handleSessionCreate(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Title string `json:"title"`
+		Owner string `json:"owner"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
+		return
+	}
+	title := strings.TrimSpace(req.Title)
+	if title == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("会话标题不能为空"))
+		return
+	}
+	owner := strings.TrimSpace(req.Owner)
+	if !validSessionOwner(owner) {
+		writeErr(w, http.StatusBadRequest,
+			errors.New(`owner 必须是统一记法 user:<name> 或 agent:<name>`))
+		return
+	}
+	actor := s.roomUserActor(r)
+	session, err := s.rooms.CreateSession(title, owner, actor)
+	if err != nil {
+		// 可达失败只有账本写失败（owner/title 已验）——服务端错误。
+		s.log.Warn("建会话失败", "title", title, "owner", owner, "actor", actor, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.log.Info("会话已创建", "session", session.ID, "title", title, "owner", owner, "actor", actor)
+	writeJSON(w, http.StatusOK, session)
+}
+
+// handleSessionsList GET /api/sessions → ListSessions（谁需要我：未读/标签/预览）。
+// member 维度 = 控制台成员身份（服务端注入）；?member= 查询参数不参与
+// （TestSessionsListUnreadAndMemberForgery 反例锁）。
+func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request) {
+	member := s.roomUserActor(r)
+	summaries, err := s.rooms.ListSessions(member)
+	if err != nil {
+		s.log.Warn("会话列表读取失败", "member", member, "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	s.log.Info("会话列表响应成功", "member", member, "sessions", len(summaries))
+	writeJSON(w, http.StatusOK, map[string]any{"sessions": summaries})
+}
+
+// handleSessionDetail GET /api/sessions/{id} → SessionDetail（成员/节点/timeline
+// 三块）。不存在 → 404 且文案含会话 id（breakdown 缺陷族 2 可行动文案）：门面
+// 出栈前 ErrNotFound 已被 translateNotFound/mapSessionError 双重归一成裸
+// ErrNoRoom，Store 层「会话 %s: …」文案不随哨兵透传，handler 在边界把 id 包回
+// （%w 保住 ErrNoRoom 映射）。
+func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	detail, err := s.rooms.SessionDetail(id)
+	if err != nil {
+		s.log.Warn("会话详情读取失败", "session", id, "cause", err)
+		sessionErr(w, fmt.Errorf("会话 %s: %w", id, err))
+		return
+	}
+	s.log.Info("会话详情响应成功", "session", id)
+	writeJSON(w, http.StatusOK, detail)
+}
+
+// handleSessionArchive POST /api/sessions/{id}/archive → ArchiveSession（幂等，
+// Store 级已归档短路）。归档后只读由 collab.Send / collab.JoinCard 在会话本体
+// 上执法（B358.1），本 handler 不重复判定。
+func (s *Server) handleSessionArchive(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	actor := s.roomUserActor(r)
+	if err := s.rooms.ArchiveSession(id, actor); err != nil {
+		s.log.Warn("归档会话失败", "session", id, "actor", actor, "cause", err)
+		sessionErr(w, err)
+		return
+	}
+	s.log.Info("会话已归档", "session", id, "actor", actor)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleSessionJoinCard POST /api/sessions/{id}/cards {card} → JoinCard
+// （进群 ≠ 配人，配人仍走 B307 三按钮）。已属他会话/会话已归档 → 409
+// （ErrBadState）；卡或会话不存在 → 404（ErrNoRoom）。
+func (s *Server) handleSessionJoinCard(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req struct {
+		Card string `json:"card"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
+		return
+	}
+	cardID := strings.TrimSpace(req.Card)
+	if cardID == "" {
+		writeErr(w, http.StatusBadRequest, errors.New("卡号不能为空"))
+		return
+	}
+	actor := s.roomUserActor(r)
+	if err := s.rooms.JoinCard(id, cardID, actor); err != nil {
+		s.log.Warn("拉卡进群失败", "session", id, "card", cardID, "actor", actor, "cause", err)
+		sessionErr(w, err)
+		return
+	}
+	s.log.Info("卡已进群", "session", id, "card", cardID, "actor", actor)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}
+
+// handleSessionLeaveCard DELETE /api/sessions/{id}/cards/{cardID} → LeaveCard
+// （幂等：不在会话内返回 nil）。
+func (s *Server) handleSessionLeaveCard(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	cardID := r.PathValue("cardID")
+	actor := s.roomUserActor(r)
+	if err := s.rooms.LeaveCard(id, cardID, actor); err != nil {
+		s.log.Warn("移卡出群失败", "session", id, "card", cardID, "actor", actor, "cause", err)
+		sessionErr(w, err)
+		return
+	}
+	s.log.Info("卡已移出会话", "session", id, "card", cardID, "actor", actor)
+	writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
+}

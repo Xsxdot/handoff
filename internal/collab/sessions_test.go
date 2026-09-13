@@ -1015,3 +1015,59 @@ func TestSessionDetailReadableAfterArchive(t *testing.T) {
 		t.Fatalf("归档后 timeline 应含 created 与 archived: %+v", detail.Timeline)
 	}
 }
+
+// —— B358.4 移交两支（B358.1 review：仅源码成立的两个事实补直测）——
+
+// listAllCardsFailingClient 只把 ListAllCards 换成注入失败，其余能力走真实
+// Facade（内嵌接口值）——构造「读账本失败」这个真实账本给不出的形状。
+type listAllCardsFailingClient struct{ client.LedgerClient }
+
+func (c listAllCardsFailingClient) ListAllCards(project string) ([]proto.Card, error) {
+	return nil, errInjectedLedgerRead
+}
+
+var errInjectedLedgerRead = errors.New("注入：读卡列表失败")
+
+// TestSessionWritersReadFailureNotWriterGuard 锁（B358.1 移交①）：sessionWriters
+// 组装书写者集时读卡列表失败必须向上传播原错误，不得伪装成 ErrNotWriter——
+// 一次账本读错被说成「你不是成员」（403）是缺陷族 2 的静默失败。fake 注入是
+// 唯一构造点：gateway 侧 s.rooms 是真实 Facade 组装，从 HTTP 缝造不出读失败。
+func TestSessionWritersReadFailureNotWriterGuard(t *testing.T) {
+	svc, st, lc := newSessionFixture(t)
+	session, err := svc.CreateSession("读失败反例", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatalf("建会话: %v", err)
+	}
+	// 会话内有卡才会走 sessionWriters 的 ListAllCards 半边（无卡会话短路返回
+	// 显式成员，读失败构造不出来，plan 原夹具即栽在这里——见台账偏差清单）。
+	card := sessionCard(t, st, "读失败反例卡")
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatalf("拉卡进群: %v", err)
+	}
+	guarded := New(listAllCardsFailingClient{lc})
+	_, err = guarded.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy")
+	if err == nil {
+		t.Fatal("读卡列表失败后发言应报错")
+	}
+	if errors.Is(err, ErrNotWriter) {
+		t.Fatalf("读账本失败不得伪装 403（ErrNotWriter）: %v", err)
+	}
+	if !errors.Is(err, errInjectedLedgerRead) {
+		t.Fatalf("读失败应原样向上传播，实得: %v", err)
+	}
+}
+
+// TestSessionSendToMissingSessionRoomIsErrNoRoom 锁（B358.1 移交②）：会话房间
+// 不存在（session:999 无本体）时经 Send 发言 → ErrNoRoom。路径：Resolve 会话
+// 分支只解析形态（room.go，不查会话表）→ sendToSession 的 GetSession 失败 →
+// mapSessionError（client.ErrNotFound → ErrNoRoom）。此前仅源码成立，无直测。
+func TestSessionSendToMissingSessionRoomIsErrNoRoom(t *testing.T) {
+	svc, _, _ := newSessionFixture(t)
+	_, err := svc.Send("session:999", proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy")
+	if !errors.Is(err, ErrNoRoom) {
+		t.Fatalf("不存在的会话房间发言必须 ErrNoRoom，实得: %v", err)
+	}
+	if errors.Is(err, ErrReadOnly) {
+		t.Fatalf("不得误报只读（房间不是在而是无）: %v", err)
+	}
+}
