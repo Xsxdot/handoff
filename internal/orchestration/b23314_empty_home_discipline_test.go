@@ -13,7 +13,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -97,7 +96,7 @@ func TestB23314EmptyHomeDisciplinePreparesProfile(t *testing.T) {
 
 	const discipline = "空 HOME 纪律\n逐字节保留\r\n"
 	emptyHome := ""
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "empty home discipline", Executor: "fake",
 		HomeDir: &emptyHome, DisciplineText: discipline,
 	})
@@ -153,7 +152,7 @@ func TestB23314NonEmptyHomeDisciplineIsIsolated(t *testing.T) {
 
 	carrierHome := filepath.Join(t.TempDir(), "carrier")
 	const discipline = "非空 HOME 纪律"
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "non-empty home discipline", Executor: "fake",
 		HomeDir: &carrierHome, DisciplineText: discipline,
 	})
@@ -206,7 +205,7 @@ func TestB23314EmptyHomeDisciplineReallyWritesOverlay(t *testing.T) {
 	pid := registerTestProject(t, m, repo)
 
 	emptyHome := ""
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "real overlay", Executor: "fake",
 		HomeDir: &emptyHome, DisciplineText: "REAL-OVERLAY",
 	})
@@ -243,7 +242,7 @@ func TestB23314EmptyHomeDisciplineRejectsWhenMainHomeUnavailable(t *testing.T) {
 	pid := registerTestProject(t, m, repo)
 
 	emptyHome := ""
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "no main home", Executor: "fake",
 		HomeDir: &emptyHome, DisciplineText: "必须拒派",
 	}); err == nil {

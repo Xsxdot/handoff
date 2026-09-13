@@ -61,7 +61,7 @@ import (
 //
 // 注意：
 //   - logx.Setup 之后必须立即 slog.SetDefault：hub 在 NewServer 构造时捕获 slog.Default()
-//     （见 agentd.NewHub），顺序颠倒会让 hub 的日志落在初始默认 logger 上
+//     （见 orchestration.NewHub），顺序颠倒会让 hub 的日志落在初始默认 logger 上
 var agentdCmd = &cobra.Command{
 	Use:   "agentd",
 	Short: "启动 agentd 服务（HTTP API + WS 事件流）",
@@ -177,7 +177,7 @@ var agentdCmd = &cobra.Command{
 			Redact: proxycfg.Redact(cfg.Proxy),
 		})
 		workspace.SetForkFailureNote(prochost.ExplainForkFailure)
-		workspace.SetProcHeadroom(agentd.CheckProcHeadroom)
+		workspace.SetProcHeadroom(orchestration.CheckProcHeadroom)
 		if cfg.Proxy != "" {
 			logger.Info("git 出网将使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
 		}
@@ -236,7 +236,7 @@ var agentdCmd = &cobra.Command{
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
-		agentd.SetTaskProcCounter(mgr.TaskProcCount)
+		orchestration.SetTaskProcCounter(mgr.TaskProcCount)
 		// 恢复前先挂自动化账本：RecoverOnStartup 会通过 Server.autoLedger
 		// 对任务占用做启动期对账，账本尚未装配时必须拒绝启动，而不是让恢复
 		// 进入一个不完整的服务状态。
@@ -273,9 +273,9 @@ var agentdCmd = &cobra.Command{
 		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
 		// 会让这些合法的迁移在首轮就被误判成失配
 		wdStart := time.Now()
-		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
+		go orchestration.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
 			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim,
-			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
+			wdStart, orchestration.MismatchScanMinAge, mgr.MismatchTransit(), logger)
 
 		// 恒启动：镜像的机器清单现在来自活快照，启动时没有机器不代表以后没有。
 		// 留着 len>0 的闸会让控制台新增的第一台机器永远等不到镜像。

@@ -19,6 +19,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -234,7 +235,7 @@ func newManagerForTest(t *testing.T, d ManagerDeps) TestManager {
 }
 
 // newTestManager 经 ManagerFactory 组装真实编排实现（真实 store + hub + 可控事件通道）。
-func newTestManager(t *testing.T) (TestManager, *store.Store, *Hub, *chanAdapter) {
+func newTestManager(t *testing.T) (TestManager, *store.Store, *orchestration.Hub, *chanAdapter) {
 	t.Helper()
 	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
 	m, st, hub := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
@@ -242,14 +243,14 @@ func newTestManager(t *testing.T) (TestManager, *store.Store, *Hub, *chanAdapter
 }
 
 // newTestManagerWithAds 组装带 adapter 注册表的真实编排实现。
-func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (TestManager, *store.Store, *Hub) {
+func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (TestManager, *store.Store, *orchestration.Hub) {
 	t.Helper()
 	return newTestManagerWithApprover(t, ads, defaultName, nil)
 }
 
 // newTestManagerWithApprover 组装真实编排实现；approver 参数保留兼容签名（本包不需
 // 审批者，传 nil）。
-func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, _ any) (TestManager, *store.Store, *Hub) {
+func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, _ any) (TestManager, *store.Store, *orchestration.Hub) {
 	t.Helper()
 	for name, ad := range ads {
 		if named, ok := ad.(interface{ setProviderName(string) }); ok {
@@ -261,7 +262,7 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	hub := NewHub()
+	hub := orchestration.NewHub()
 	logger := discardLogger()
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
 	if ManagerFactory == nil {
@@ -295,14 +296,14 @@ func newManagerForServer(t *testing.T, srv *Server, ads map[string]executor.Adap
 
 // newTestManagerWithCfg 同 newTestManagerWithApprover，但用调用方给定的 cfg
 // （活配置闭包返回同一指针，调用方可在构造后改字段，Manager 立即可见）。
-func newTestManagerWithCfg(t *testing.T, ads map[string]executor.Adapter, cfg *config.Config) (TestManager, *store.Store, *Hub) {
+func newTestManagerWithCfg(t *testing.T, ads map[string]executor.Adapter, cfg *config.Config) (TestManager, *store.Store, *orchestration.Hub) {
 	t.Helper()
 	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
 	if err != nil {
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	hub := NewHub()
+	hub := orchestration.NewHub()
 	m := newManagerForTest(t, ManagerDeps{
 		Store: st, Hub: hub, Ads: ads, Cfg: cfg,
 		Gate: newTestGate(t), Log: discardLogger(),
@@ -420,4 +421,29 @@ func replaceSlashes(s string) string {
 		out = append(out, s[i])
 	}
 	return string(out)
+}
+
+// discardLogger 返回丢弃输出的 logger（原随 watchdog_test.go 定义；watchdog 测试
+// B233.26 迁编排包后，本包消费面留下的同语义副本）。
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// testLogger 返回丢弃输出的 logger（原随 watchdog_fence_test.go 定义；watchdog
+// 测试 B233.26 迁编排包后，本包消费面留下的同语义副本）。
+func testLogger(t *testing.T) *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// newTestStore 打开临时目录下的真实 store（SQLite 落盘，验证真实持久化行为）。
+// 原随 watchdog_test.go 定义；watchdog 测试迁编排包后本包消费面（update_test）的
+// 同语义副本。
+func newTestStore(t *testing.T) *store.Store {
+	t.Helper()
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { st.Close() })
+	return st
 }

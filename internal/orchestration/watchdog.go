@@ -1,4 +1,5 @@
-// watchdog.go —— 任务级卡住看门狗、失配对账扫描与 agentd 启动恢复。
+// watchdog.go —— 任务级卡住看门狗、失配对账扫描与 agentd 启动恢复
+// （B233.26 自 gateway 归域编排包）。
 //
 // 职责：
 //   - RunWatchdog：周期扫描 running/waiting_answer 任务，最新事件早于 stallTimeout
@@ -17,7 +18,7 @@
 //   - 不直接接触 adapter：重建订阅的具体动作经探活闭包注入（见 RecoverOnStartup
 //     的 seam 说明），本文件只负责「探测结果 → 事件/状态」的翻译
 //   - tick 间隔是 runWatchdog 的参数（测试注入 10ms），RunWatchdog 固定每分钟一次
-package agentd
+package orchestration
 
 import (
 	"context"
@@ -453,7 +454,7 @@ type schedRunningBody struct {
 	Count int `json:"count"`
 }
 
-// reconcileSchedRunning 是启动对账，对共享 sched_running **只读不写**。
+// ReconcileSchedRunning 是启动对账，对共享 sched_running **只读不写**。
 //
 // 为什么不清零：sched_running 在共享账本上跨机可见。本机 ListTasks 看不到 owner
 // 不等于集群里没有占用者（他机执行、没有 Task 的 LaunchAdmit 会话都在同一把键上
@@ -463,7 +464,7 @@ type schedRunningBody struct {
 //
 // 仍保留解码校验：损坏记录在启动时带 key/version 暴露并阻断后续 executor 恢复，
 // 而不是被悄悄清零或跳过。对账本身不再产生任何写者。
-func reconcileSchedRunning(st *store.Store, repo schedclient.Registry, log *slog.Logger) error {
+func ReconcileSchedRunning(st *store.Store, repo schedclient.Registry, log *slog.Logger) error {
 	tasks, err := st.ListTasks()
 	if err != nil {
 		log.Error("启动对账读取任务列表失败", "error_kind", "task_list", "cause", err)

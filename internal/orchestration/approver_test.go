@@ -5,7 +5,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"log/slog"
 	"strings"
 	"sync/atomic"
@@ -156,7 +155,7 @@ func mustApproverDispatch(t *testing.T, m *Manager) *proto.Task {
 	t.Helper()
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{ProjectID: pid, Prompt: "跑测试", Executor: "fake"})
+	task, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "跑测试", Executor: "fake"})
 	if err != nil {
 		t.Fatalf("Dispatch: %v", err)
 	}
@@ -408,7 +407,7 @@ func TestApproverDecisionErrorRecordsCause(t *testing.T) {
 			if e.Type != proto.EventTypeApproverDecision {
 				continue
 			}
-			var p agentd.ApproverDecisionPayload
+			var p ApproverDecisionPayload
 			if json.Unmarshal(e.Payload, &p) != nil {
 				continue
 			}

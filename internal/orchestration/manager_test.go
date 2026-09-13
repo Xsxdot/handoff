@@ -30,7 +30,6 @@ import (
 	"testing"
 	"time"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -219,7 +218,7 @@ type profileRecordingAdapter struct {
 func (a *profileRecordingAdapter) Profile() executor.Profile { return a.profile }
 
 // newTestManager 组装 manager 白盒测试环境：真实 store + hub + 可控事件通道 adapter。
-func newTestManager(t *testing.T) (*Manager, *store.Store, *agentd.Hub, *chanAdapter) {
+func newTestManager(t *testing.T) (*Manager, *store.Store, *Hub, *chanAdapter) {
 	t.Helper()
 	ad := &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}
 	m, st, hub := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
@@ -229,13 +228,13 @@ func newTestManager(t *testing.T) (*Manager, *store.Store, *agentd.Hub, *chanAda
 // newTestManagerWithAds 组装带 adapter 注册表的 manager 白盒测试环境：
 // 真实 store + hub + 给定注册表（defaultName 为缺省执行者名，写进 cfg.Executor.Default）；
 // 不启用审批链（approver=nil）。
-func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (*Manager, *store.Store, *agentd.Hub) {
+func newTestManagerWithAds(t *testing.T, ads map[string]executor.Adapter, defaultName string) (*Manager, *store.Store, *Hub) {
 	return newTestManagerWithApprover(t, ads, defaultName, nil)
 }
 
 // newTestManagerWithApprover 组装带 adapter 注册表与可选审批者的 manager 白盒
 // 测试环境（approver 可为 nil）。
-func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, approver *Approver) (*Manager, *store.Store, *agentd.Hub) {
+func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, defaultName string, approver *Approver) (*Manager, *store.Store, *Hub) {
 	t.Helper()
 	for name, ad := range ads {
 		if named, ok := ad.(interface{ setProviderName(string) }); ok {
@@ -247,7 +246,7 @@ func newTestManagerWithApprover(t *testing.T, ads map[string]executor.Adapter, d
 		t.Fatalf("store.Open: %v", err)
 	}
 	t.Cleanup(func() { st.Close() })
-	hub := agentd.NewHub()
+	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: defaultName}}
 	m := NewManager(st, hub, ads, cfg, nil, approver, newTestGate(t), logger)
@@ -273,7 +272,7 @@ func mustCreateTask(t *testing.T, st *store.Store, task *proto.Task) {
 //   - repo: 仓库路径；本助手会给它配一个由路径派生的唯一 origin
 //
 // 返回：
-//   - project_id，供 agentd.DispatchReq{ProjectID: ...} 使用
+//   - project_id，供 DispatchReq{ProjectID: ...} 使用
 func registerTestProject(t *testing.T, m *Manager, repo string) string {
 	t.Helper()
 	// origin 由路径派生：每个用例的临时仓库各不相同，project_id 因此天然不撞。
@@ -315,7 +314,7 @@ func TestDispatchPromptOnly(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "把 README 安装命令改成 brew", Target: "local",
 	})
 	if err != nil {
@@ -336,7 +335,7 @@ func TestDispatchRequiresPlanOrPrompt(t *testing.T) {
 	// 不能让它被「未指明项目」这个更靠前的错误遮蔽
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{ProjectID: pid}); !errors.Is(err, agentd.ErrBadDispatchRequest) {
+	if _, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid}); !errors.Is(err, workspace.ErrBadDispatchRequest) {
 		t.Fatalf("plan 与 prompt 都缺应 400: %v", err)
 	}
 }
@@ -349,18 +348,18 @@ func TestDispatchRejectsLocalBaseBranchInvariant(t *testing.T) {
 	pid := registerTestProject(t, m, repo)
 	cases := []struct {
 		name string
-		req  agentd.DispatchReq
+		req  DispatchReq
 		want string
 	}{
 		{
 			name: "互斥默认基线",
-			req: agentd.DispatchReq{ProjectID: pid, Prompt: "x", Base: "main", LocalBaseBranch: true,
+			req: DispatchReq{ProjectID: pid, Prompt: "x", Base: "main", LocalBaseBranch: true,
 				ResolveDefaultBase: true, NewWorktree: true},
 			want: "互斥",
 		},
 		{
 			name: "空本地起点",
-			req:  agentd.DispatchReq{ProjectID: pid, Prompt: "x", LocalBaseBranch: true, NewWorktree: true},
+			req:  DispatchReq{ProjectID: pid, Prompt: "x", LocalBaseBranch: true, NewWorktree: true},
 			want: "非空工作分支名",
 		},
 	}
@@ -396,7 +395,7 @@ func TestDispatchPromptAppendedToPlan(t *testing.T) {
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
 	plan := base64.StdEncoding.EncodeToString([]byte("# 计划标题\n正文"))
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, PlanB64: plan, PlanName: "p.md", Prompt: "只改 X 模块",
 	})
 	if err != nil {
@@ -415,8 +414,8 @@ func TestDispatchUnknownExecutorRejected(t *testing.T) {
 	// 不能让它被「未指明项目」这个更靠前的错误遮蔽
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	_, err := m.Dispatch(context.Background(), agentd.DispatchReq{ProjectID: pid, Prompt: "x", Executor: "nope"})
-	if !errors.Is(err, agentd.ErrBadDispatchRequest) {
+	_, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "x", Executor: "nope"})
+	if !errors.Is(err, workspace.ErrBadDispatchRequest) {
 		t.Fatalf("未注册执行者应 400: %v", err)
 	}
 }
@@ -427,7 +426,7 @@ func TestDispatchPersistsExecutorModelAndWorkspace(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", Model: "m1",
 		Name: "自定义名", NewWorktree: true,
 	})
@@ -482,14 +481,14 @@ func TestDispatchFailedAfterWorkspaceCleansManagedWorktree(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { st.Close() })
-	hub := agentd.NewHub()
+	hub := NewHub()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
 	m := NewManager(st, hub, map[string]executor.Adapter{"fake": fk}, cfg, nil, nil, newTestGate(t), logger)
 	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
@@ -551,7 +550,7 @@ func TestDispatchStartFailureCleansManagedWorktree(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": &failStartAdapter{}}, "fake")
 	pid := registerTestProject(t, m, repo)
 
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	}); err == nil {
 		t.Fatal("adapter.Start 失败应使 dispatch 失败")
@@ -585,7 +584,7 @@ func TestStopRetainsManagedWorktree(t *testing.T) {
 	spy := &countingCap{inner: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
@@ -623,7 +622,7 @@ func TestStopReportsWorktreeRemoved(t *testing.T) {
 	pid := registerTestProject(t, m, repo)
 
 	// managed worktree：stop 留存现场，不删 worktree → worktree_removed=false
-	wtTask, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	wtTask, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
@@ -641,7 +640,7 @@ func TestStopReportsWorktreeRemoved(t *testing.T) {
 	}
 
 	// 原地模式：WorktreeManaged=false（WorkDir 回退为 RepoPath）→ 无 worktree 可删
-	plainTask, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	plainTask, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "y", Executor: "fake",
 	})
 	if err != nil {
@@ -666,7 +665,7 @@ func TestDoneRemovesManagedWorktree(t *testing.T) {
 	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
@@ -699,7 +698,7 @@ func TestDoneKeepsUserWorktree(t *testing.T) {
 	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", Worktree: wt,
 	})
 	if err != nil {
@@ -723,7 +722,7 @@ func TestDoneWorktreeRemoveFailureDoesNotBlockArchive(t *testing.T) {
 	fk := fake.New([]fake.Step{{Finish: executor.Result{OK: true, Branch: "handoff/x"}}})
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
@@ -767,7 +766,7 @@ func createRunningTask(t *testing.T, st *store.Store, id string) {
 
 // waitAnswerRegistered 等待 waitPermission goroutine 完成 WaitAnswer 注册（hub.answers 里有等待者），
 // 保证后续 NotifyAnswer 不会因注册未完成而被丢弃。
-func waitAnswerRegistered(t *testing.T, hub *agentd.Hub, ticketID string) {
+func waitAnswerRegistered(t *testing.T, hub *Hub, ticketID string) {
 	t.Helper()
 	eventually(t, 2*time.Second, "waitPermission 已注册到 hub", func() bool {
 		return hubAnswerWaiters(hub, ticketID) > 0
@@ -1383,21 +1382,21 @@ func TestDispatchRejectsWhenEnvFileMissing(t *testing.T) {
 		Executor: config.ExecutorConfig{Default: "fake"},
 		Env:      map[string]string{"fake": "missing.env"},
 	}
-	m := NewManager(st, agentd.NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
 
 	// 先登记一个真实项目让解析通过：env 解析发生在任何 git 动作之前，
 	// 这条断言同时证明了「解析确实排在最前段」——若排到 git 动作之后，
-	// 这里就不会是 agentd.ErrEnvResolveFailed
+	// 这里就不会是 ErrEnvResolveFailed
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	_, derr := m.Dispatch(context.Background(), agentd.DispatchReq{
+	_, derr := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "任意指令",
 	})
 	if derr == nil {
 		t.Fatal("env 文件缺失时应拒发")
 	}
-	if !errors.Is(derr, agentd.ErrEnvResolveFailed) {
-		t.Fatalf("应为 agentd.ErrEnvResolveFailed，实际 %v", derr)
+	if !errors.Is(derr, ErrEnvResolveFailed) {
+		t.Fatalf("应为 ErrEnvResolveFailed，实际 %v", derr)
 	}
 	if !strings.Contains(derr.Error(), "missing.env") {
 		t.Errorf("错误应带文件名，实际 %q", derr.Error())
@@ -1435,11 +1434,11 @@ func TestDispatchPassesEnvToAdapter(t *testing.T) {
 		Env:      map[string]string{"fake": "dev.env"},
 	}
 	rec := &envRecordingAdapter{Adapter: fake.New(nil)}
-	m := NewManager(st, agentd.NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": rec}, cfg, envfile.Static(cfg.Env), nil, newTestGate(t), logger)
 	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 
-	if _, derr := m.Dispatch(context.Background(), agentd.DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
+	if _, derr := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid, Prompt: "任意指令"}); derr != nil {
 		t.Fatalf("Dispatch: %v", derr)
 	}
 	if len(rec.gotEnv) != 1 || rec.gotEnv[0] != "HTTPS_PROXY=http://p:1" {
@@ -1455,7 +1454,7 @@ func TestDispatchPersistsCarrierHome(t *testing.T) {
 	pid := registerTestProject(t, m, repo)
 	home := "/carrier/home"
 
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "载体 HOME 生命周期", HomeDir: &home,
 	})
 	if err != nil {
@@ -1618,7 +1617,7 @@ func TestDispatchAutoBranchStartsAtBaseCommit(t *testing.T) {
 	pid := registerTestProject(t, m, repo)
 	base := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
 	writeAndCommit(t, repo, "drift.txt", "x") // 仓库 HEAD 前进，模拟执行机落后/超前
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
 	})
 	if err != nil {
@@ -1639,7 +1638,7 @@ func TestDispatchRecordsBaseline(t *testing.T) {
 	base := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
 	writeAndCommit(t, repo, "one.txt", "1")
 	writeAndCommit(t, repo, "two.txt", "2")
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true, BaseCommit: base,
 	})
 	if err != nil {
@@ -1667,7 +1666,7 @@ func TestDispatchExplicitBaseWinsOverBaseline(t *testing.T) {
 	explicit := strings.TrimSpace(gitAt(t, repo, "rev-parse", "HEAD"))
 	baseline := writeAndCommit(t, repo, "mid.txt", "m") // 基线比 explicit 新
 	writeAndCommit(t, repo, "tip.txt", "t")             // 仓库 HEAD 再前进一格
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 		BaseCommit: baseline, Base: explicit,
 	})
@@ -1703,7 +1702,7 @@ func TestDispatchCardEmptyBaseStartsAtOriginDefaultTip(t *testing.T) {
 	localHead := gitOut(t, clone, "rev-parse", "HEAD")
 	remoteTip := commitOnOrigin(t, origin, "remote-tip.txt", "remote tip")
 
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: loc.ProjectID, Prompt: "卡派发空基线回归", Executor: "fake",
 		NewWorktree: true, ResolveDefaultBase: true,
 	})
@@ -1729,7 +1728,7 @@ func TestDispatchWithoutCardDefaultMarkerKeepsEmptyBaseHead(t *testing.T) {
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
 	want := gitOut(t, repo, "rev-parse", "HEAD")
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "普通 CLI 空基线回归", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {
@@ -1746,7 +1745,7 @@ func TestDispatchCardDefaultBaseRejectsMissingOriginHead(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	_, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	_, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "缺少默认分支回归", Executor: "fake", NewWorktree: true,
 		ResolveDefaultBase: true,
 	})
@@ -1772,7 +1771,7 @@ func compensateFixture(t *testing.T) (*Manager, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: dataDir, Executor: config.ExecutorConfig{Default: "fake"}}
-	m := NewManager(st, agentd.NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.SetWorkspace(workspace.NewCapability())
 	return m, dataDir
@@ -1837,7 +1836,7 @@ func TestCompensateDeletesCreatedBranch(t *testing.T) {
 	repo := initTestRepo(t)
 	m, _ := compensateFixture(t)
 	pid := registerTestProject(t, m, repo)
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true, NewBranch: "e2e/retry",
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
@@ -1854,7 +1853,7 @@ func TestCompensateKeepsExistingBranch(t *testing.T) {
 	gitT(t, repo, "branch", "mine")
 	m, _ := compensateFixture(t)
 	pid := registerTestProject(t, m, repo)
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true, Branch: "mine",
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
@@ -1874,7 +1873,7 @@ func TestCompensateInPlaceRestoresPrevRef(t *testing.T) {
 	before := gitOut(t, repo, "rev-parse", "--abbrev-ref", "HEAD")
 	m, _ := compensateFixture(t)
 	pid := registerTestProject(t, m, repo)
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewBranch: "e2e/inplace",
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
@@ -1895,7 +1894,7 @@ func TestCompensateInPlaceRestoresDetached(t *testing.T) {
 	gitT(t, repo, "checkout", "--detach", "-q", head)
 	m, _ := compensateFixture(t)
 	pid := registerTestProject(t, m, repo)
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewBranch: "e2e/detached",
 	}); err == nil {
 		t.Fatal("taskDir 创建失败场景应派发失败")
@@ -1918,7 +1917,7 @@ func compensateOnlyManager(t *testing.T) *Manager {
 	}
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
-	m := NewManager(st, agentd.NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.SetWorkspace(workspace.NewCapability())
 	return m
@@ -2381,7 +2380,7 @@ func TestDenyGuidanceKeptWhenNotInBand(t *testing.T) {
 
 // newDoneTestTask 组装一个处于 waiting_review 的任务，返回 manager、hub 与任务 id。
 // 沿用本文件既有的 newTestManagerWithAds + mustCreateTask，不新造建库写法。
-func newDoneTestTask(t *testing.T, id string) (*Manager, *agentd.Hub, string) {
+func newDoneTestTask(t *testing.T, id string) (*Manager, *Hub, string) {
 	t.Helper()
 	m, st, hub := newTestManagerWithAds(t,
 		map[string]executor.Adapter{"fake": fake.New(nil)}, "fake")
@@ -2489,7 +2488,7 @@ func TestDispatchBaseBranchNameYieldsRequestedBranch(t *testing.T) {
 	m := compensateOnlyManager(t)
 	pid := registerTestProject(t, m, clone)
 
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 		NewBranch: "feat/wanted", Base: "shared-base",
 	})
@@ -3338,7 +3337,7 @@ func TestDispatchOpenCodeInjectsApproval(t *testing.T) {
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
 
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid,
 		Prompt:    "test opencode dispatch",
 		Target:    "local",
@@ -3362,7 +3361,7 @@ func TestDispatchOpenCodeInjectsApproval(t *testing.T) {
 	// 非 OpenCode 执行者
 	repo2 := initTestRepo(t)
 	pid2 := registerTestProject(t, m, repo2)
-	_, err = m.Dispatch(context.Background(), agentd.DispatchReq{
+	_, err = m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid2,
 		Prompt:    "test fake dispatch",
 		Target:    "local",
@@ -3390,7 +3389,7 @@ func TestDispatchInjectsTaskDisciplineIntoProfile(t *testing.T) {
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
 	const discipline = "纪律\n必须逐字节保留\r\n"
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "profile seam", Executor: "fake",
 		HomeDir: &home, DisciplineText: discipline,
 	})
@@ -3415,7 +3414,7 @@ func TestDispatchInjectsTaskDisciplineIntoProfile(t *testing.T) {
 
 	repo2 := initTestRepo(t)
 	pid2 := registerTestProject(t, m, repo2)
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{ProjectID: pid2, Prompt: "empty", Executor: "fake"}); err != nil {
+	if _, err := m.Dispatch(context.Background(), DispatchReq{ProjectID: pid2, Prompt: "empty", Executor: "fake"}); err != nil {
 		t.Fatalf("空纪律 Dispatch: %v", err)
 	}
 	if got := len(profile.snapshot()); got != 1 {
@@ -3426,7 +3425,7 @@ func TestDispatchInjectsTaskDisciplineIntoProfile(t *testing.T) {
 	pid3 := registerTestProject(t, m, repo3)
 	const whitespaceDiscipline = " \n\r\n"
 	whitespaceHome := t.TempDir()
-	_, err = m.Dispatch(context.Background(), agentd.DispatchReq{
+	_, err = m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid3, Prompt: "whitespace", Executor: "fake",
 		HomeDir: &whitespaceHome, DisciplineText: whitespaceDiscipline,
 	})
@@ -3446,7 +3445,7 @@ func TestDispatchRejectsDisciplineWithoutTaskProfile(t *testing.T) {
 	m, st, _ := newTestManagerWithAds(t, map[string]executor.Adapter{"fake": ad}, "fake")
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
-	_, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	_, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "missing profile", Executor: "fake", DisciplineText: "must not drop",
 	})
 	if err == nil || !strings.Contains(err.Error(), "task") || !strings.Contains(err.Error(), "fake") {
@@ -3613,7 +3612,7 @@ func TestNonOpenCodeKeepsOldApprovalPath(t *testing.T) {
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
 
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid,
 		Prompt:    "test grok dispatch",
 		Target:    "local",

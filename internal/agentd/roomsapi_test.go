@@ -16,6 +16,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/testhttp"
 )
@@ -717,7 +718,7 @@ func TestInboxDestructiveTicketFloatsWithWatchers(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 审批者升级信号（D-destructive，台账 L10）：approver_decision escalate
-	if _, err := env.st.AppendEvent("t1", proto.EventTypeApproverDecision, ApproverDecisionPayload{
+	if _, err := env.st.AppendEvent("t1", proto.EventTypeApproverDecision, orchestration.ApproverDecisionPayload{
 		TicketID: "t1:p1", Decision: "escalate"}); err != nil {
 		t.Fatal(err)
 	}

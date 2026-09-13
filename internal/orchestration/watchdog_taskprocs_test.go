@@ -6,7 +6,7 @@
 //
 // 边界：不测 Manager.TaskProcCount 的真实实现——那是 prochost 的活；本文件把
 // taskProcCountFn 测试缝直接赋成假实现，聚焦 scanTaskProcs 自己的判定逻辑。
-package agentd
+package orchestration
 
 import (
 	"encoding/json"

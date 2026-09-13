@@ -1,31 +1,26 @@
-// b23313_retained.go —— B233.13 迁包后必须留在 gateway 的共享符号。
+// contracts.go —— 编排域的契约面：出站 client DTO、事件 payload、派发/回收哨兵
+// 与 executor 失联对账（B233.26 反转 D1 后自 gateway 的 b23313_retained.go 归域）。
 //
-// 职责：承载两类因「gateway 生产/测试仍引用」而留在 internal/agentd 的声明：
-//  1. 出站 client 契约的 DTO 与事件 payload（D1 拍板：DTO 留 gateway、与
-//     OrchestrationClient 同包，编排包以 agentd.* 引用）；
-//  2. 少量既有未导出助手/哨兵/类型：gateway 内部继续用原名，编排包经这里的
-//     导出转发入口访问（单一实现留在原声明处，不重复实现）。
+// 职责：承载 gateway 包与编排包共享的声明——D1 期它们钉在
+// gateway 侧、编排经 agentd.* 引用；反转后契约随提供方落本包，gateway 经
+// orchestration.* 反向引用（方向合法）。别名哨兵（ErrRepoUnusable /
+// ErrBadDispatchRequest，workspace 正身的旧别名）与转发垫片（RecoverTransit /
+// TruncateRunes / Git 三兄弟等）在反转中退役，不再随迁。
 //
-// 边界：不放业务实现；转发入口只做签名适配。编排实现迁到 internal/orchestration
-// 后，本文件是 gateway ↔ orchestration 的共享符号面（B233.13 契约 §2.3）。
-package agentd
+// 边界：不放 HTTP 面；ReconcileExecutorGone 是本包对「executor 已不在」的
+// 唯一收口实现，gateway 的 Server.RecoverOnStartup 包装与 watchdog 复用它。
+package orchestration
 
 import (
-	"context"
 	"errors"
 	"log/slog"
-	"path/filepath"
 
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
-	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
-// ErrRepoUnusable 与 workspace 同哨兵，handler 映射仍走 gateway 名。
-var ErrRepoUnusable = workspace.ErrRepoUnusable
-
-// —— 派发/登记 DTO（D1：留 gateway）——
+// —— 派发/登记 DTO（B233.26：随契约家族归域编排包）——
 
 // DispatchReq 是 Dispatch 的入参：任务仓库、base64 计划与二期派发参数。
 type DispatchReq struct {
@@ -156,7 +151,7 @@ type FailedPayload struct {
 	ProcUsage *prochost.Admission `json:"proc_usage,omitempty"`
 }
 
-// NewFailedPayload 构造带占用快照的失败载荷。迁移后由编排包经 agentd.NewFailedPayload 引用。
+// NewFailedPayload 构造带占用快照的失败载荷。
 //
 // 参数：reason 为失败原因，原样保留不做改写；branch/commit 为可选的 git 实况，
 // 绝大多数失败路径没有（进程退出、对账），传空串即可
@@ -178,17 +173,13 @@ type ApproverDecisionPayload struct {
 	ElapsedMS  int64  `json:"elapsed_ms"`
 }
 
-// —— Dispatch 哨兵（server 层映射为 400/500）——
-
-// ErrBadDispatchRequest 与 workspace 同哨兵（B233.19 正身随 ResolveProject /
-// ValidateProjectName 迁 workspace），handler 映射与编排包引用仍走 gateway 名。
-var ErrBadDispatchRequest = workspace.ErrBadDispatchRequest
+// —— Dispatch 哨兵（gateway server 层映射为 400/500）——
 
 // ErrWorkdirBusy 表示目标工作目录已被活跃任务占用（编排侧占用守卫，不属于工作区能力）。
 var ErrWorkdirBusy = errors.New("目标工作目录已被活跃任务占用")
 
 // ErrExecutorStartFailed 是 Dispatch 启动 executor 失败（adapter.Start 返回错误）
-// 的哨兵（server 层映射见 writeDispatchError 的对应分支）。
+// 的哨兵（gateway server 层映射见 writeDispatchError 的对应分支）。
 var ErrExecutorStartFailed = errors.New("启动 executor 失败")
 
 // ErrEnvResolveFailed 表示 env 文件解析失败（文件缺失/语法错/文件名非法）。
@@ -197,38 +188,18 @@ var ErrEnvResolveFailed = errors.New("解析 env 文件失败")
 // ErrDisciplineResolveFailed 表示纪律块文件不可用（文件名非法/读不到/超限）。
 var ErrDisciplineResolveFailed = errors.New("纪律块解析失败")
 
-// —— 保留类型/助手（gateway 生产仍用；编排经导出入口）——
+// —— reclaim 哨兵（gateway server 层映射为 409/500）——
 
-// IsTerminalState 判断状态是否终结（completed / failed）。
-func IsTerminalState(s proto.TaskState) bool {
-	return s == proto.TaskStateCompleted || s == proto.TaskStateFailed
-}
-
-// CanonPath 把路径归一到可比较的形态。
-//
-// 参数：
-//   - p: 绝对路径，目录可能已不存在
-//
-// 返回：
-//   - 解析符号链接后的清洁路径
-//
-// 注意：
-//   - 必须穿透符号链接。macOS 上 /tmp 是 /private/tmp 的链接，git 报的是
-//     解析后的路径，而任务库里存的可能没解析——不归一就永远匹配不上
-//   - 目录已不存在时（prunable 态）EvalSymlinks 会失败，退一步解析父目录
-//     再拼回叶子名。不做这层退让，回收入口对 prunable 这一态直接失效
-//
-// B233.13：保留声明于 gateway（manualworktree.go 仍用），并导出供编排包引用。
-func CanonPath(p string) string {
-	p = filepath.Clean(p)
-	if r, err := filepath.EvalSymlinks(p); err == nil {
-		return filepath.Clean(r)
-	}
-	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
-		return filepath.Join(r, filepath.Base(p))
-	}
-	return p
-}
+var (
+	// ErrReclaimNotTerminal 表示任务还没到终态，不予回收——删运行中任务的
+	// 工作树等于抽它脚下。
+	ErrReclaimNotTerminal = errors.New("任务非终态，不回收工作树")
+	// ErrReclaimRepoUnreachable 表示仓库不可达或不是 git 仓库，判不出。
+	// 单任务回收必须据此拒绝，绝不能降级成「无残留」静默成功。
+	ErrReclaimRepoUnreachable = errors.New("仓库不可达，工作树状态判不出")
+	// ErrReclaimNotManaged 表示该任务用的是协调者自带的工作树，agentd 无权删。
+	ErrReclaimNotManaged = errors.New("工作区不是 agentd 管理的 worktree")
+)
 
 // ReconcileExecutorGone 收尾一个 executor 已不在的任务。
 //
@@ -244,7 +215,8 @@ func CanonPath(p string) string {
 // 顺序：状态收尾在前、清扫在后。协调者的工作流（任务进 waiting_review）不受
 // 清扫成败影响——清扫失败只上报，绝不回头改状态。
 //
-// B233.13：保留声明于 gateway（watchdog.go 仍用），并导出供编排包引用。
+// B233.26：实现体随契约家族归域本包（依赖的 VoidTicketsWithAudit/recoverTransit/
+// NewFailedPayload/Hub 同包直调，gateway 侧经 orchestration.* 反向引用）。
 func ReconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	log *slog.Logger, sweep func(taskID string)) proto.TaskState {
 
@@ -296,56 +268,3 @@ func ReconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	sweep(taskID)
 	return proto.TaskStateWaitingReview
 }
-
-var (
-	// ErrReclaimNotTerminal 表示任务还没到终态，不予回收——删运行中任务的
-	// 工作树等于抽它脚下。
-	ErrReclaimNotTerminal = errors.New("任务非终态，不回收工作树")
-	// ErrReclaimRepoUnreachable 表示仓库不可达或不是 git 仓库，判不出。
-	// 单任务回收必须据此拒绝，绝不能降级成「无残留」静默成功。
-	ErrReclaimRepoUnreachable = errors.New("仓库不可达，工作树状态判不出")
-	// ErrReclaimNotManaged 表示该任务用的是协调者自带的工作树，agentd 无权删。
-	ErrReclaimNotManaged = errors.New("工作区不是 agentd 管理的 worktree")
-)
-
-// —— gateway 未导出助手的导出入口（P3；git 实现在 internal/workspace）——
-
-// RecoverTransit 见 watchdog.go#recoverTransit。
-func RecoverTransit(st *store.Store, taskID string, cur proto.TaskState) error {
-	return recoverTransit(st, taskID, cur)
-}
-
-// ResolveProject 见 workspace/projectresolve.go#ResolveProject（B233.19 迁出）。
-func ResolveProject(projectID, projectName string, entries []proto.ProjectLocation) (proto.ProjectLocation, error) {
-	return workspace.ResolveProject(projectID, projectName, entries)
-}
-
-func ResolveDispatchBase(ctx context.Context, repo, rev string, localBaseBranch bool) (string, bool, error) {
-	return workspace.ResolveDispatchBase(ctx, repo, rev, localBaseBranch)
-}
-
-func ResolveDefaultBaseBranch(ctx context.Context, repo string) (string, error) {
-	return workspace.ResolveDefaultBaseBranch(ctx, repo)
-}
-
-func GitProbe(ctx context.Context, repo string, args ...string) (string, string, error) {
-	return workspace.GitProbe(ctx, repo, args...)
-}
-
-func BranchTip(ctx context.Context, repo, branch string) (string, error) {
-	return workspace.BranchTip(ctx, repo, branch)
-}
-
-func GitRun(ctx context.Context, repo string, args ...string) (string, string, error) {
-	return workspace.GitRun(ctx, repo, args...)
-}
-
-func GitRunNet(ctx context.Context, repo string, args ...string) (string, string, error) {
-	return workspace.GitRunNet(ctx, repo, args...)
-}
-
-func ProbeWorkspaces(ctx context.Context, dir, managedRoot string) ([]proto.Workspace, string) {
-	return workspace.ProbeWorkspaces(ctx, dir, managedRoot)
-}
-
-func TruncateRunes(s string, n int) string { return truncateRunes(s, n) }

@@ -18,7 +18,6 @@ import (
 	"sort"
 	"time"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/buildinfo"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -91,7 +90,7 @@ func (m *Manager) Status() (*proto.StatusResp, error) {
 	var active []proto.Task
 	for _, t := range tasks {
 		resp.TaskCounts[string(t.State)]++
-		if !agentd.IsTerminalState(t.State) {
+		if !t.State.IsTerminal() {
 			active = append(active, t)
 		}
 	}

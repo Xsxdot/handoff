@@ -1,5 +1,6 @@
-// agentd 包测试：验证 hub 的事件实时扇出（Subscribe/Publish）与 ticket 应答路由（WaitAnswer/NotifyAnswer）。
-package agentd_test
+// orchestration 外部测试包：验证 hub 的事件实时扇出（Subscribe/Publish）与 ticket
+// 应答路由（WaitAnswer/NotifyAnswer）。B233.26 随 hub.go 自 gateway 归域。
+package orchestration_test
 
 import (
 	"context"
@@ -11,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -23,7 +24,7 @@ func TestMain(m *testing.M) {
 
 // TestPublishFanout 验证：两个订阅者都收到广播；cancel 后不再收且通道关闭、重复取消不 panic；Publish 不阻塞。
 func TestPublishFanout(t *testing.T) {
-	hub := agentd.NewHub()
+	hub := orchestration.NewHub()
 	ch1, cancel1 := hub.Subscribe("t1")
 	ch2, cancel2 := hub.Subscribe("t1")
 	defer cancel2()
@@ -70,7 +71,7 @@ func TestPublishFanout(t *testing.T) {
 // Notify 无人等待不 panic；应答一次性（先 Notify 后 Wait 拿不到旧应答）。
 func TestWaitAnswerBeforeAndAfter(t *testing.T) {
 	t.Run("先 Wait 后 Notify 能收到", func(t *testing.T) {
-		hub := agentd.NewHub()
+		hub := orchestration.NewHub()
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
@@ -101,7 +102,7 @@ func TestWaitAnswerBeforeAndAfter(t *testing.T) {
 	})
 
 	t.Run("Notify 无人等待不 panic 且返回 false，应答一次性", func(t *testing.T) {
-		hub := agentd.NewHub()
+		hub := orchestration.NewHub()
 		// 无人等待时 Notify 不应 panic，且必须返回 false（供调用方走 RelayAnswer 自愈中继）
 		if hub.NotifyAnswer("ticket-ghost", "42") {
 			t.Fatal("无人等待时 NotifyAnswer 应返回 false")
@@ -116,7 +117,7 @@ func TestWaitAnswerBeforeAndAfter(t *testing.T) {
 	})
 
 	t.Run("ctx 取消返回 ctx.Err() 并清理等待者", func(t *testing.T) {
-		hub := agentd.NewHub()
+		hub := orchestration.NewHub()
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan error, 1)
 		go func() {
@@ -145,7 +146,7 @@ func TestWaitAnswerBeforeAndAfter(t *testing.T) {
 
 // TestPublishDropsSlowSubscriber 验证慢订阅者被 select-default 丢弃：Publish 永不阻塞，快订阅者不受影响收全量。
 func TestPublishDropsSlowSubscriber(t *testing.T) {
-	hub := agentd.NewHub()
+	hub := orchestration.NewHub()
 	slow, cancelSlow := hub.Subscribe("t1") // 从不消费，缓冲必然写满
 	fast, cancelFast := hub.Subscribe("t1")
 	defer cancelSlow()
@@ -193,7 +194,7 @@ func TestPublishDropsSlowSubscriber(t *testing.T) {
 // 为什么这个数字必须干净：handoff status 的「⚠ 无人值守」直接以它为判据，
 // 多算一个（内部订阅者虚高）就是漏报，少算一个就是误报。
 func TestWatchersCountsSubscribers(t *testing.T) {
-	hub := agentd.NewHub()
+	hub := orchestration.NewHub()
 
 	if n := hub.Watchers("t-watch"); n != 0 {
 		t.Fatalf("未订阅时 Watchers = %d, want 0", n)
@@ -225,7 +226,7 @@ func TestWatchersCountsSubscribers(t *testing.T) {
 // TestWatchersConcurrent 验证并发订阅/取消/读取下 Watchers 不数据竞争。
 // 单跑无意义，价值在 -race 下（见本 task 的 Step 4）。
 func TestWatchersConcurrent(t *testing.T) {
-	hub := agentd.NewHub()
+	hub := orchestration.NewHub()
 	var wg sync.WaitGroup
 	for i := 0; i < 32; i++ {
 		wg.Add(1)
@@ -245,7 +246,7 @@ func TestWatchersConcurrent(t *testing.T) {
 // TestCloseTaskClosesAllSubscribers 验证 CloseTask 关闭该任务全部订阅、
 // 返回关闭数、不误伤别的任务，且随后的 cancel 幂等不 panic（不得二次 close）。
 func TestCloseTaskClosesAllSubscribers(t *testing.T) {
-	hub := agentd.NewHub()
+	hub := orchestration.NewHub()
 	ch1, cancel1 := hub.Subscribe("t-done")
 	ch2, cancel2 := hub.Subscribe("t-done")
 	chOther, cancelOther := hub.Subscribe("t-live")

@@ -39,6 +39,6 @@ func SetForkFailureNote(fn func(error) (string, bool)) {
 	forkFailureNote = fn
 }
 
-// SetProcHeadroom 绑定 run 的进程余量判读函数（agentd.CheckProcHeadroom）。
+// SetProcHeadroom 绑定 run 的进程余量判读函数（B233.26 后为 orchestration.CheckProcHeadroom）。
 // fn 为 nil 时恢复默认「不判余量」。只在组装点调用一次。
 func SetProcHeadroom(fn func(op string) error) { procHeadroom = fn }

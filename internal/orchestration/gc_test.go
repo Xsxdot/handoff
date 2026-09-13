@@ -1,8 +1,8 @@
-// gc_test.go —— B298 agentd gc 预览/执行与 HTTP 接缝测试。
+// gc_test.go —— B298 gc 预览/执行的 Manager 层测试（HTTP 接缝用例在
+// gateway_http_test.go，B233.26 因测试变体类型约束转外部测试包）。
 //
 // 职责：
 //   - 锁定终态扫描、叶子去重、快照重读、脏树 skip、缺失幂等与删除失败入 JSON
-//   - 验证 GET 预览 / POST 执行写 200 JSON，未鉴权 401
 //
 // 边界：
 //   - 复用 cachegc_test 与 reclaim_test 的夹具，不另造 git init
@@ -10,50 +10,16 @@ package orchestration
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"io"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
-	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/orchestration/internal/cacheplan"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
-
-func newGCServer(t *testing.T) (*agentd.Server, *Manager) {
-	t.Helper()
-	m, st, _, _ := newTestManager(t)
-	s := agentd.NewServer(&config.Config{Token: "test"}, st,
-		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	s.SetManager(m)
-	return s, m
-}
-
-func doGC(t *testing.T, s *agentd.Server, method, rawURL, body, token string) *httptest.ResponseRecorder {
-	t.Helper()
-	var r *http.Request
-	if body == "" {
-		r = httptest.NewRequest(method, rawURL, nil)
-	} else {
-		r = httptest.NewRequest(method, rawURL, strings.NewReader(body))
-		r.Header.Set("Content-Type", "application/json")
-	}
-	r.Host = "127.0.0.1:7777"
-	if token != "" {
-		r.Header.Set("Authorization", "Bearer "+token)
-	}
-	rec := httptest.NewRecorder()
-	s.Handler().ServeHTTP(rec, r)
-	return rec
-}
 
 func TestGCPreviewListsTerminalLeavesWithoutDeleting(t *testing.T) {
 	m, _, _, _ := newTestManager(t)
@@ -325,74 +291,4 @@ func TestGCRemoveAllFailureIsFailedRowAndContinues(t *testing.T) {
 		t.Fatalf("失败必须进 JSON 行：%+v", resp.CacheRows)
 	}
 	assertGone(t, otherActive)
-}
-
-func TestHandleGCGetPreviewPostExecuteAndAuth(t *testing.T) {
-	s, m := newGCServer(t)
-	id := "httpgc00-0000-4000-8000-000000000001"
-	seedTaskWithCache(t, m, id, proto.TaskStateFailed)
-
-	unauth := doGC(t, s, http.MethodGet, "/api/gc", "", "")
-	if unauth.Code != http.StatusUnauthorized {
-		t.Fatalf("未鉴权 GET /api/gc 应 401，实得 %d %s", unauth.Code, unauth.Body.String())
-	}
-	unauthP := doGC(t, s, http.MethodPost, "/api/gc", `{"force":false}`, "")
-	if unauthP.Code != http.StatusUnauthorized {
-		t.Fatalf("未鉴权 POST /api/gc 应 401，实得 %d", unauthP.Code)
-	}
-
-	get := doGC(t, s, http.MethodGet, "/api/gc", "", "test")
-	if get.Code != http.StatusOK {
-		t.Fatalf("GET 应 200 不是 503，实得 %d %s", get.Code, get.Body.String())
-	}
-	if strings.Contains(get.Body.String(), "gc 尚未接线") {
-		t.Fatal("503 空壳不得再达")
-	}
-	var preview proto.GCResp
-	if err := json.Unmarshal(get.Body.Bytes(), &preview); err != nil {
-		t.Fatal(err)
-	}
-	if !preview.Preview {
-		t.Fatal("GET 必须 preview=true")
-	}
-
-	forceGet := doGC(t, s, http.MethodGet, "/api/gc?force=true", "", "test")
-	var fg proto.GCResp
-	if err := json.Unmarshal(forceGet.Body.Bytes(), &fg); err != nil {
-		t.Fatal(err)
-	}
-	if !fg.Preview || !fg.Force {
-		t.Fatalf("GET ?force=true 仍是预览且 force=true，实得 %+v", fg)
-	}
-
-	post := doGC(t, s, http.MethodPost, "/api/gc", `{"force":false}`, "test")
-	if post.Code != http.StatusOK {
-		t.Fatalf("POST 应 200，实得 %d %s", post.Code, post.Body.String())
-	}
-	var execResp proto.GCResp
-	if err := json.Unmarshal(post.Body.Bytes(), &execResp); err != nil {
-		t.Fatal(err)
-	}
-	if execResp.Preview {
-		t.Fatal("POST 必须 preview=false")
-	}
-}
-
-func TestHandleGCJSONZeroReleasableBytesPresent(t *testing.T) {
-	s, _ := newGCServer(t)
-	rec := doGC(t, s, http.MethodGet, "/api/gc", "", "test")
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status %d %s", rec.Code, rec.Body.String())
-	}
-	var fields map[string]json.RawMessage
-	if err := json.Unmarshal(rec.Body.Bytes(), &fields); err != nil {
-		t.Fatal(err)
-	}
-	raw, ok := fields["releasable_bytes"]
-	if !ok {
-		t.Fatal("空快照成功响应必须带 releasable_bytes:0，不得缺席")
-	}
-	if string(raw) != "0" {
-		t.Fatalf("releasable_bytes=%s want 0", raw)
-	}
 }

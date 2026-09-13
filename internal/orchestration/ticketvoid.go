@@ -1,15 +1,15 @@
-// 本文件实现「工单作废 + 留痕」这一个动作（B63）。
+// 本文件实现「工单作废 + 留痕」这一个动作（B63；B233.26 自 gateway 归域编排包）。
 //
 // 职责：
 //   - 把一个任务的全部未回答工单作废，并按需产出一条 tickets_voided 审计事件
-//   - 作为 transit 终态分支与 reconcileExecutorGone 的唯一共用实现
+//   - 作为 transit 终态分支与 ReconcileExecutorGone 的唯一共用实现
 //
 // 边界：
 //   - 不判断「该不该作废」——时机由调用方决定（终态 / executor 已死）
 //   - 不 Publish：tickets_voided 是纯审计事件，实时流上不出现（见 proto 常量注释）
 //   - 不因作废或写事件失败而中断调用方：状态迁移已经发生，为一条审计写失败回滚
 //     终态得不偿失
-package agentd
+package orchestration
 
 import (
 	"log/slog"
@@ -23,7 +23,8 @@ import (
 // Reason 直接沿用调用方的迁移原因（"done" / "stop" / 对账的那句人话），
 // 让 show 里能回答「这批单是因为什么被作废的」。
 //
-// B233.13：迁包后由编排包经 agentd.VoidTicketsWithAudit 引用，故类型与函数均导出。
+// B233.13：随编排域归位（B233.26 反转 D1 后类型与函数在本包，gateway 经
+// orchestration.* 反向引用）。
 type TicketsVoidedPayload struct {
 	Voided int    `json:"voided"`
 	Reason string `json:"reason"`

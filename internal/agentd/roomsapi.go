@@ -23,6 +23,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -454,7 +455,7 @@ func (s *Server) ticketDestructive(taskID, ticketID string) bool {
 		if ev.Type != proto.EventTypeApproverDecision {
 			continue
 		}
-		var p ApproverDecisionPayload
+		var p orchestration.ApproverDecisionPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			continue
 		}

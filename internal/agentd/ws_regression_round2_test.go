@@ -28,6 +28,7 @@ import (
 	"github.com/coder/websocket"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/testhttp"
@@ -483,7 +484,7 @@ func TestWSClosesNormallyOnArchive(t *testing.T) {
 }
 
 // waitWatchers 轮询等待订阅数达到期望值（订阅是异步建立的）。
-func waitWatchers(t *testing.T, hub *Hub, taskID string, want int) {
+func waitWatchers(t *testing.T, hub *orchestration.Hub, taskID string, want int) {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for time.Now().Before(deadline) {

@@ -1,7 +1,7 @@
 // dispatch_discipline_test.go —— B229 §2.5 执行机侧行为契约的判据。
 //
 // 职责：
-//   - 收文即用：agentd.DispatchReq.DisciplineText 逐字节成为注入正文，本机零解析
+//   - 收文即用：DispatchReq.DisciplineText 逐字节成为注入正文，本机零解析
 //   - 反向断言：点名但没收到正文 = 拒派（防「查不到就兜底」的降级复活）
 //   - 显式空正文 + 未点名 = 不注入任何块（机器合法形态）
 //   - 正文落盘先于 executor 启动；continue/resume 消费首派落盘正文
@@ -13,7 +13,6 @@ package orchestration
 import (
 	"context"
 	"errors"
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"os"
 	"path/filepath"
 	"strings"
@@ -41,7 +40,7 @@ func TestDispatchConsumesDeliveredText(t *testing.T) {
 	pid := registerTestProject(t, m, repo)
 	home := t.TempDir()
 
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "codex",
 		Discipline: "review", DisciplineText: "X", DisciplineVersion: 3, HomeDir: &home,
 	})
@@ -99,7 +98,7 @@ func TestDispatchRefusesNamedWithoutDeliveredText(t *testing.T) {
 			repo := initTestRepo(t)
 			pid := registerTestProject(t, m, repo)
 
-			task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+			task, err := m.Dispatch(context.Background(), DispatchReq{
 				ProjectID: pid, Prompt: "x", Executor: "codex", Discipline: "review",
 			})
 			if err == nil {
@@ -126,7 +125,7 @@ func TestDispatchEmptyTextNoNameInjectsNothing(t *testing.T) {
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
 
-	task, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	task, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "codex",
 	})
 	if err != nil {
@@ -171,7 +170,7 @@ func TestDispatchPersistsDisciplineBeforeExecutorStarts(t *testing.T) {
 	pid := registerTestProject(t, m, repo)
 	home := t.TempDir()
 
-	if _, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	if _, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "codex",
 		DisciplineText: "PERSIST-ME", DisciplineVersion: 1, HomeDir: &home,
 	}); err != nil {
@@ -199,7 +198,7 @@ func TestDispatchSkipsStartWhenPersistFails(t *testing.T) {
 	repo := initTestRepo(t)
 	pid := registerTestProject(t, m, repo)
 
-	_, err := m.Dispatch(context.Background(), agentd.DispatchReq{
+	_, err := m.Dispatch(context.Background(), DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "codex",
 		DisciplineText: "X", DisciplineVersion: 2,
 	})

@@ -21,6 +21,7 @@ import (
 	"testing"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/ptytestroot"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -35,7 +36,7 @@ type testAgentdEnv struct {
 	srv   *Server
 	ts    *httptest.Server
 	st    *store.Store
-	mgr   OrchestrationClient // 由用例注入（SetManager 装配后填充）
+	mgr   orchestration.OrchestrationClient // 由用例注入（SetManager 装配后填充）
 	token string
 }
 

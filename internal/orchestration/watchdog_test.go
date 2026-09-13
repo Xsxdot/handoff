@@ -1,4 +1,4 @@
-// agentd 看门狗与启动恢复的白盒测试（package agentd，直接驱动未导出的 runWatchdog）。
+// agentd 看门狗与启动恢复的白盒测试（package orchestration，直接驱动未导出的 runWatchdog）。
 //
 // 覆盖（brief Task 12 Step 1 三个用例）：
 //   - TestWatchdogFiresOnceOnStall：卡住任务触发 stalled，且「只发一次」防事件风暴
@@ -11,14 +11,13 @@
 // 由 store 内部取当前时间，测试无法直接回填旧时间（否则要改公开 API 或直改
 // SQLite 表）。stallTimeout 本就是可注入参数（与 tick 同款，见 runWatchdog），
 // 传入 time.Nanosecond 等价于「最新事件远超阈值」，语义与 3h 前事件完全一致。
-package agentd
+package orchestration
 
 import (
 	"context"
 	"encoding/json"
 	"io"
 	"log/slog"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -31,17 +30,6 @@ import (
 // discardLogger 返回丢弃输出的 logger，保证测试输出干净（与 hub_test 的 TestMain 同款）。
 func discardLogger() *slog.Logger {
 	return slog.New(slog.NewTextHandler(io.Discard, nil))
-}
-
-// newTestStore 打开临时目录下的真实 store（SQLite 落盘，验证真实持久化行为）。
-func newTestStore(t *testing.T) *store.Store {
-	t.Helper()
-	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
-	if err != nil {
-		t.Fatalf("store.Open: %v", err)
-	}
-	t.Cleanup(func() { st.Close() })
-	return st
 }
 
 // seedRunningTask 创建任务并迁移到 running，随后追加一条事件（看门狗判定的基准）。
@@ -74,16 +62,6 @@ func seedCompletedTask(t *testing.T, st *store.Store, id string) {
 	}
 	if err := st.UpdateTaskState(id, proto.TaskStateCompleted); err != nil {
 		t.Fatalf("置为 completed: %v", id)
-	}
-}
-
-// seedWaitingReviewTask 创建任务并迁到 waiting_review（协调者审阅中，executor
-// 可能还活着等续接指令，也可能已不在）。
-func seedWaitingReviewTask(t *testing.T, st *store.Store, id string) {
-	t.Helper()
-	createRunningTask(t, st, id)
-	if err := st.UpdateTaskState(id, proto.TaskStateWaitingReview); err != nil {
-		t.Fatalf("置为 waiting_review: %v", id)
 	}
 }
 

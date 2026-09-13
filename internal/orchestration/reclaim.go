@@ -19,7 +19,7 @@ import (
 	"fmt"
 	"strings"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/workspace"
 )
@@ -34,7 +34,7 @@ import (
 // 返回：
 //   - 回收结果（removed / pruned / already_absent）
 //   - store.ErrNotFound: 任务不存在
-//   - agentd.ErrReclaimNotTerminal / agentd.ErrReclaimNotManaged / agentd.ErrReclaimRepoUnreachable
+//   - ErrReclaimNotTerminal / ErrReclaimNotManaged / ErrReclaimRepoUnreachable
 //   - *DirtyWorktreeError: 脏树且未带 force
 //
 // 注意：
@@ -56,10 +56,10 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 		return nil, err
 	}
 	if !cur.State.IsTerminal() {
-		return nil, fmt.Errorf("任务 %s 状态 %s，%w", taskID, cur.State, agentd.ErrReclaimNotTerminal)
+		return nil, fmt.Errorf("任务 %s 状态 %s，%w", taskID, cur.State, ErrReclaimNotTerminal)
 	}
 	if !cur.WorktreeManaged || cur.WorkDir == "" {
-		return nil, fmt.Errorf("任务 %s：%w", taskID, agentd.ErrReclaimNotManaged)
+		return nil, fmt.Errorf("任务 %s：%w", taskID, ErrReclaimNotManaged)
 	}
 
 	dec := workspace.MayRecycle(workspace.RecycleInput{
@@ -73,10 +73,10 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 	if dec != workspace.RetainRecycle {
 		m.log.Warn("reclaim 被判据拒绝", "task", taskID, "decision", dec, "state", cur.State)
 		if !cur.State.IsTerminal() {
-			return nil, fmt.Errorf("任务 %s 状态 %s，%w", taskID, cur.State, agentd.ErrReclaimNotTerminal)
+			return nil, fmt.Errorf("任务 %s 状态 %s，%w", taskID, cur.State, ErrReclaimNotTerminal)
 		}
 		if !cur.WorktreeManaged || cur.WorkDir == "" {
-			return nil, fmt.Errorf("任务 %s：%w", taskID, agentd.ErrReclaimNotManaged)
+			return nil, fmt.Errorf("任务 %s：%w", taskID, ErrReclaimNotManaged)
 		}
 		return nil, fmt.Errorf("任务 %s 回收判据为 %s，拒绝回收", taskID, dec)
 	}
@@ -84,7 +84,7 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 	entries, lerr := workspace.ListWorktrees(ctx, cur.RepoPath)
 	if lerr != nil {
 		return nil, fmt.Errorf("任务 %s 的仓库 %s：%v：%w",
-			taskID, cur.RepoPath, lerr, agentd.ErrReclaimRepoUnreachable)
+			taskID, cur.RepoPath, lerr, ErrReclaimRepoUnreachable)
 	}
 	state, dirty, note := workspace.ClassifyWorktree(ctx, entries, cur.WorkDir)
 	base := &proto.ReclaimResp{WorkDir: cur.WorkDir, Branch: cur.Branch}
@@ -96,7 +96,7 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 		return base, nil
 	case proto.WorktreeUnknown:
 		return nil, fmt.Errorf("任务 %s 工作树 %s：%s：%w",
-			taskID, cur.WorkDir, note, agentd.ErrReclaimRepoUnreachable)
+			taskID, cur.WorkDir, note, ErrReclaimRepoUnreachable)
 	case proto.WorktreeDirty:
 		if !force {
 			return nil, &workspace.DirtyWorktreeError{Files: dirty}
@@ -110,7 +110,7 @@ func (m *Manager) Reclaim(ctx context.Context, taskID string, force bool) (resp 
 		// 条目，这里只防旧版 git 行为不同。remove 成功是常路，本分支是保险
 		if state == proto.WorktreePrunable {
 			m.log.Warn("reclaim：prunable 条目 remove 失败，退回 prune",
-				"task", taskID, "stderr", agentd.TruncateRunes(stderr, 200), "cause", rerr)
+				"task", taskID, "stderr", turn.TruncateRunes(stderr, 200), "cause", rerr)
 			if perr := workspace.PruneWorktrees(ctx, cur.RepoPath); perr != nil {
 				return nil, perr
 			}
@@ -168,7 +168,7 @@ func (m *Manager) ReclaimList() (*proto.ReclaimListResp, error) {
 		if !cached {
 			e, lerr := workspace.ListWorktrees(ctx, t.RepoPath)
 			if lerr != nil {
-				failed[t.RepoPath] = strings.TrimSpace(agentd.TruncateRunes(lerr.Error(), 200))
+				failed[t.RepoPath] = strings.TrimSpace(turn.TruncateRunes(lerr.Error(), 200))
 			}
 			cache[t.RepoPath], entries = e, e
 		}
