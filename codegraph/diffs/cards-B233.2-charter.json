@@ -1,7 +1,7 @@
 {
  "view": "cards/B233.2-charter",
  "base": "94246fc8",
- "summary": "B233.2 实现期：能力 Bundle、执行/协调/OneShot/Profile/Skills 与隔离 HOME 接线",
+ "summary": "B233.2 实现期：能力 Bundle、执行/协调/OneShot/Profile/Skills 与隔离 HOME 接线；B233.24 锚保鲜：悬空引用改指迁包后当前基线 id（orchestration/workspace/cmd），已吸收或已消亡的引用删除",
  "nodesAdded": {
   "m_executor_CapabilityName": {
    "kind": "model",
@@ -1147,30 +1147,6 @@
    "line": 36,
    "signature": "func defaultSkillProviders(log *slog.Logger) []executor.Skills"
   },
-  "n_agentd_Approver_BindOneShot": {
-   "kind": "func",
-   "container": "k_agentd_Approver",
-   "name": "Approver.BindOneShot",
-   "file": "internal/agentd/approver.go",
-   "line": 68,
-   "signature": "func (a *Approver) BindOneShot(shot executor.OneShot)"
-  },
-  "n_agentd_RegistryFromAds": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "name": "RegistryFromAds",
-   "file": "internal/agentd/manager.go",
-   "line": 340,
-   "signature": "func RegistryFromAds(ads map[string]executor.Adapter) *executor.Registry"
-  },
-  "n_agentd_registryFromAds": {
-   "kind": "func",
-   "container": "k_agentd_fn",
-   "name": "registryFromAds",
-   "file": "internal/agentd/manager.go",
-   "line": 344,
-   "signature": "func registryFromAds(ads map[string]executor.Adapter) *executor.Registry"
-  },
   "n_agentd_Server_SetProviders": {
    "kind": "func",
    "container": "k_agentd_Server",
@@ -2018,11 +1994,6 @@
    "signatureOld": "func Status(content, home string) ([]Site, error)"
   }
  },
- "nodesDeleted": [
-  "n_agentd_Approver_defaultRunCmd",
-  "m_agentd_restorer",
-  "n_executor_OneShotArgs"
- ],
  "edgesAdded": [
   [
    "n_executor_Registry_Require",
@@ -2056,10 +2027,10 @@
    "n_grok_OneShotArgv",
    "m_executor_OneShotLimits"
   ],
-  ["n_agentd_NewManager","n_agentd_registryFromAds"],
-  ["n_agentd_RegistryFromAds","n_agentd_registryFromAds"],
+  ["n_orchestration_NewManager","n_orchestration_registryFromAds"],
+  ["n_orchestration_RegistryFromAds","n_orchestration_registryFromAds"],
   ["n_cmd_loadCarrierRules","n_cmd_readSkillTree"],
-  ["n_agentd_Manager_Dispatch","n_executor_Registry_Require"],
+  ["n_orchestration_Manager_Dispatch","n_executor_Registry_Require"],
   ["n_opencode_Coordinator_Launch","n_opencode_Coordinator_turn"],
   ["n_opencode_Coordinator_Resume","n_opencode_Coordinator_turn"],
   ["n_opencode_Profile_Verify","n_opencode_Profile_Inspect"],
@@ -2083,12 +2054,6 @@
   ["n_opencode_OneShot_Invoke","n_opencode_OneShotArgv"],
   ["n_opencode_Adapter_Prepare","n_opencode_Adapter_Profile"],
   ["n_opencode_Adapter_Verify","n_opencode_Adapter_Profile"]
- ],
- "edgesDeleted": [
-  [
-   "n_agentd_Approver_Decide",
-   "n_executor_OneShotArgs"
-  ]
  ],
  "implementsAdded": [
   [

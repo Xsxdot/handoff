@@ -1,7 +1,7 @@
 {
   "view": "cards/B233.3-charter",
   "base": "124121e4",
-  "summary": "B233.3：能力 client/Transport 接缝、relay 断线语义、建树转发挂卡边界与升级选路",
+  "summary": "B233.3：能力 client/Transport 接缝、relay 断线语义、建树转发挂卡边界与升级选路；B233.24 锚保鲜：悬空引用改指迁包后当前基线 id（orchestration/workspace/cmd），已吸收或已消亡的引用删除",
   "nodesAdded": {
     "m_client_Transport": {
       "kind": "model",
@@ -383,12 +383,6 @@
       "n_agentd_Server_forwardWorktreeIfRequested"
     ]
   ],
-  "edgesDeleted": [
-    [
-      "n_agentd_Server_forwardWorktreeIfRequested",
-      "n_agentd_Server_attachCardBaseBranches"
-    ]
-  ],
   "implementsAdded": [
     [
       "m_client_Client",
@@ -400,7 +394,7 @@
     ],
     [
       "m_cmd_upgradeDialErr",
-      "m_cmdagentdPeer"
+      "m_cmd_agentdPeer"
     ]
   ]
 }

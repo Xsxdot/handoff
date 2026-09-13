@@ -1,7 +1,7 @@
 {
   "view": "cards/B233.1-charter-2",
   "base": "63aa4aff",
-  "summary": "B233.1 Ticket 0：审批 client 与 AskResponder 空壳、工单命名空间与权限指纹编码",
+  "summary": "B233.1 Ticket 0：审批 client 与 AskResponder 空壳、工单命名空间与权限指纹编码；B233.24 锚保鲜：悬空引用改指迁包后当前基线 id（orchestration/workspace/cmd），已吸收或已消亡的引用删除",
   "nodesAdded": {
     "m_executor_ApprovalStatus": {
       "kind": "model",
@@ -377,39 +377,6 @@
         }
       ]
     },
-    "m_agentd_taskApprovalClient": {
-      "kind": "model",
-      "container": "k_agentd_model",
-      "order": 500,
-      "name": "taskApprovalClient",
-      "file": "internal/agentd/approval_client.go",
-      "line": 23,
-      "signature": "type taskApprovalClient struct",
-      "summary": "taskApprovalClient 绑定单个 Task.ID 的政策快照与审批判定。"
-    },
-    "n_agentd_Manager_bindApproval": {
-      "kind": "func",
-      "container": "k_agentd_fn",
-      "order": 501,
-      "name": "Manager.bindApproval",
-      "file": "internal/agentd/approval_client.go",
-      "line": 29,
-      "signature": "func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) executor.ApprovalClient",
-      "params": [
-        [
-          "taskID",
-          "string",
-          "任务 ID"
-        ],
-        [
-          "snap",
-          "executor.PolicySnapshot",
-          "政策快照"
-        ]
-      ],
-      "returns": "executor.ApprovalClient",
-      "summary": "bindApproval 为任务绑定政策快照并构造 taskApprovalClient。"
-    },
     "n_opencode_Adapter_authorizeNativePermission": {
       "kind": "func",
       "container": "k_opencode_Adapter",
@@ -535,39 +502,6 @@
           "file": "internal/executor/fingerprint_test.go:74"
         }
       ]
-    },
-    "n_agentd_HashPolicyVersion": {
-      "kind": "func",
-      "container": "k_agentd_fn",
-      "order": 502,
-      "name": "HashPolicyVersion",
-      "file": "internal/agentd/approval_client.go",
-      "line": 272,
-      "signature": "func HashPolicyVersion(blacklist []string, approverOn bool, safeIDs []string, scope executor.ApprovalScope) string",
-      "params": [
-        [
-          "blacklist",
-          "[]string",
-          "黑名单"
-        ],
-        [
-          "approverOn",
-          "bool",
-          "审批者启用"
-        ],
-        [
-          "safeIDs",
-          "[]string",
-          "安全命令表"
-        ],
-        [
-          "scope",
-          "executor.ApprovalScope",
-          "范围三根"
-        ]
-      ],
-      "returns": "string",
-      "summary": "HashPolicyVersion 对政策内容做稳定哈希。字段集：黑名单、审批者启用、安全命令表、范围三根。"
     },
     "n_permgate_SafeCommandIDs": {
       "kind": "func",
@@ -736,12 +670,8 @@
       "m_executor_ApprovalClient"
     ],
     [
-      "n_agentd_Manager_bindApproval",
-      "m_agentd_taskApprovalClient"
-    ],
-    [
-      "n_agentd_Manager_Dispatch",
-      "n_agentd_Manager_bindApproval"
+      "n_orchestration_Manager_Dispatch",
+      "n_orchestration_Manager_bindApproval"
     ],
     [
       "n_opencode_Adapter_authorizeNativePermission",
@@ -752,15 +682,11 @@
       "m_executor_ApprovalClient"
     ],
     [
-      "n_agentd_Manager_Continue",
-      "n_agentd_Manager_bindApproval"
+      "n_orchestration_Manager_Continue",
+      "n_orchestration_Manager_bindApproval"
     ]
   ],
   "implementsAdded": [
-    [
-      "m_agentd_taskApprovalClient",
-      "m_executor_ApprovalClient"
-    ],
     [
       "m_opencode_Adapter",
       "m_executor_AskResponder"
