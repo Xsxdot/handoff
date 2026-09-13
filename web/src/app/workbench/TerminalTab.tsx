@@ -370,7 +370,10 @@ export function TerminalTab({
     const wheelOnce = new WeakSet<WheelEvent>()
     const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent)
     const handleAltWheel = (ev: WheelEvent): boolean => {
-      if (!activeRef.current) return true
+      // 滚轮跟指针走，不跟键盘焦点走：分屏里未聚焦但看得见的 pane
+      // 也要能滑。后台 keep-alive 组带 aria-hidden/inert，事件到不了这里；
+      // 若到了也必须放行，不能把滚轮送给看不见的 TUI。
+      if (host.closest('[aria-hidden="true"]') || host.closest('[inert]')) return true
       if (term.buffer.active.type !== 'alternate') return true
       if (term.modes.mouseTrackingMode === 'none') {
         const now = Date.now()

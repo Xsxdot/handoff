@@ -387,4 +387,46 @@ describe('WorkbenchPage', () => {
     }))
     warn.mockRestore()
   })
+
+  it('后台终端组叠在原位：不移出视口，但让出命中，且能缩到小于画布固有宽', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const firstGroup = hook.result.current.wb.activeGroupId
+    act(() => hook.result.current.addGroup())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 2 }, local))
+    const view = render(page(hook.result.current))
+    const panes = view.container.querySelectorAll('[data-testid="workbench-pane"]')
+    expect(panes.length).toBe(2)
+    const groups = () => [...view.container.querySelectorAll('[data-testid="workbench-group"]')] as HTMLElement[]
+    expect(groups()).toHaveLength(2)
+    const hiddenRoot = groups().find((el) => el.getAttribute('aria-hidden') === 'true')
+    expect(hiddenRoot).toBeDefined()
+    // 后台组必须让出命中：z-0 的 WebGL 画布会从激活组手里抢走滚轮，
+    // 看起来就是「眼前这条 TUI 划不动」。不移出视口、不 opacity-0。
+    expect(hiddenRoot!.className).toContain('pointer-events-none')
+    expect(hiddenRoot!.hasAttribute('inert')).toBe(true)
+    expect(hiddenRoot!.className).not.toContain('-left-[10000px]')
+    expect(hiddenRoot!.className).not.toContain('opacity-0')
+    expect(hiddenRoot!.className).not.toContain('invisible')
+    expect(hiddenRoot!.className).toContain('z-0')
+    expect(hiddenRoot!.className).toContain('inset-0')
+    expect(hiddenRoot!.className).toContain('min-w-0')
+    act(() => hook.result.current.activateGroup(firstGroup))
+    view.rerender(page(hook.result.current))
+    const revealed = groups().find((el) => el.getAttribute('aria-hidden') === 'false')
+    expect(revealed).toBeDefined()
+    expect(revealed!.className).toContain('z-10')
+    expect(revealed!.className).not.toContain('pointer-events-none')
+    expect(revealed!.hasAttribute('inert')).toBe(false)
+  })
+
+  it('纯文件组切走即卸，不占终端 keep-alive', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'file', rel: 'a.md' }, local))
+    act(() => hook.result.current.addGroup())
+    act(() => hook.result.current.open({ kind: 'file', rel: 'b.md' }, local))
+    const view = render(page(hook.result.current))
+    expect(view.container.querySelectorAll('[data-testid="workbench-group"]')).toHaveLength(1)
+    expect(view.container.querySelectorAll('[data-testid="workbench-pane"]')).toHaveLength(1)
+  })
 })
