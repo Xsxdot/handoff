@@ -258,3 +258,11 @@ func JudgeMirroredWake(st *ledger.Store, ev WakeGateEvent) (WakeGateDecision, er
 - Ticket 0 编译：本轮 `go build ./...` 退出码 0；`go vet ./internal/client/ ./internal/agentd/ ./cmd/` 退出码 0（台账 §4）。
 - 可执行冻结：命中编译期签名与接缝行为；无哈希/密钥派生命中。
 - 三重闸门：已记录 4 项；无其它命中。
+
+## 12. breakdown 核对修订记录
+
+以下澄清由 breakdown 节点（`docs/superpowers/specs/b370-breakdown.md`，2026-09-14）在契约增量核对中做出；结论均为「不退回 contract」，只留痕不改冻结语义。
+
+- **2026-09-14（breakdown 核对）：「有派发但无工作流身份」与「无派发」的区分属包内实现面，不属导出契约面。** 冻结的 `CurrentWorkflowAttempt(st, cardID, node)` 契约只承诺返回 `(snapshot, found)` 二态；实现分支 2/3 reason 区分所需的第三态（有 `EvDispatched` 但无合格身份）以 `internal/client` 包内**未导出**取数承载，导出面一个符号不增不删，不产生新跨域边。若裁决要改导出面，须退回 contract 重冻。
+- **2026-09-14（breakdown 核对）：`node` 缺失/为空时「定位」用该卡最新合格快照而非以 `source_task` 反查该任务自身快照。** 这是为同时满足 §5.4 条目 36/37（空身份应交付）与 B349 回归 `TestB2336StaleAttemptDoesNotWake`（其空身份 `task-empty` 事件须不唤醒）而必须取的分支——见 breakdown §0 F1，仍待协调者拍板确认。
+- **2026-09-14（breakdown 核对）：§3.2 A 末句「缺 `source_task` 落 `WakeGateStaleAttempt`」与 §3.1 常量 `WakeGateMissingSourceTask` 注释「身份非空且缺 source_task 的独立 reason」不自洽。** 两值都在冻结枚举内，选哪个不退回 contract；breakdown §0 F3 请协调者拍板，以便实现与契约字面对齐。
