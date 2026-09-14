@@ -273,31 +273,17 @@ func cardWaitEventActionable(st *ledger.Store, ev ledger.Event) (bool, error) {
 			return false, fmt.Errorf("card %s task_mirrored seq=%d type=%s 缺 task_type/payload",
 				ev.CardID, ev.Seq, ev.Type)
 		}
-		if envelope.Node == nil || *envelope.Node == "" || envelope.Attempt == nil || *envelope.Attempt == "" {
-			slog.Info("card wait task_mirrored 因缺失或空 workflow 身份跳过", "card", ev.CardID,
-				"seq", ev.Seq, "type", ev.Type, "task_type", envelope.TaskType,
-				"reason", "missing_workflow_identity")
-			return false, nil
-		}
-		snapshot, found, err := cardWaitCurrentWorkflowAttempt(st, ev.CardID, *envelope.Node)
+		decision, err := client.JudgeMirroredWake(st, client.WakeGateEvent{
+			CardID: ev.CardID, Seq: ev.Seq, Node: envelope.Node, Attempt: envelope.Attempt,
+			TaskType: envelope.TaskType, SourceTask: ev.SourceTask,
+			SourceTarget: ev.SourceTarget, SourceSeq: ev.SourceSeq,
+		})
 		if err != nil {
 			return false, err
 		}
-		if !found || snapshot.TaskID != snapshot.Attempt || snapshot.Attempt != *envelope.Attempt ||
-			ev.SourceTask != snapshot.Attempt || ev.SourceTarget != snapshot.Target {
-			slog.Info("card wait task_mirrored 因 source identity 不匹配跳过", "card", ev.CardID,
-				"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node,
-				"attempt", *envelope.Attempt, "current_attempt", snapshot.Attempt,
-				"source_task", ev.SourceTask, "source_target", ev.SourceTarget,
-				"current_target", snapshot.Target, "source_seq", ev.SourceSeq,
-				"task_type", envelope.TaskType, "reason", "source_identity_mismatch")
+		if !decision.Deliver {
 			return false, nil
 		}
-		slog.Debug("card wait task_mirrored 通过 source identity 闸", "card", ev.CardID,
-			"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node,
-			"attempt", *envelope.Attempt, "source_task", ev.SourceTask,
-			"source_target", ev.SourceTarget, "current_target", snapshot.Target,
-			"source_seq", ev.SourceSeq, "task_type", envelope.TaskType)
 		return client.WaitDeliveryPolicy(proto.EventType(envelope.TaskType)), nil
 	default:
 		return false, nil

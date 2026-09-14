@@ -103,10 +103,10 @@ func (s *Server) currentWorkflowAttempt(cardID, node string) (snapshot ledger.Di
 }
 
 // acceptsCurrentWorkflowAttempt 是 task_mirrored 唤醒前的身份闸。
-// 不匹配的事件仍会进入 automationSeen，保留审计但不会唤醒新尝试；
-// 缺失与空值使用指针区分，避免旧 envelope 被零值误判为有效身份。source
-// task/target 来自账本列，必须和事件所属卡的当前派发快照一致；source_seq
-// 不参与身份比较。
+// 判定正文（含 B370 降级三分支）由 internal/client#JudgeMirroredWake 一处承载；
+// 本方法只做 envelope 解码、把事件投影成 client.WakeGateEvent，并把判定结果翻译成
+// 消费循环的布尔出口。不匹配的事件仍会进入 automationSeen，保留审计但不会唤醒新尝试；
+// 缺失与空值使用指针区分，避免旧 envelope 被零值误判为有效身份。
 func (s *Server) acceptsCurrentWorkflowAttempt(ev proto.LedgerEvent) (bool, error) {
 	envelope, err := decodeMirroredTaskEnvelope(ev)
 	if err != nil {
@@ -114,31 +114,18 @@ func (s *Server) acceptsCurrentWorkflowAttempt(ev proto.LedgerEvent) (bool, erro
 			"seq", ev.Seq, "type", ev.Type, "cause", err)
 		return false, fmt.Errorf("卡 %s task_mirrored seq=%d type=%s: %w", ev.CardID, ev.Seq, ev.Type, err)
 	}
-	if envelope.Node == nil || *envelope.Node == "" || envelope.Attempt == nil || *envelope.Attempt == "" {
-		s.log.Info("task_mirrored 因缺失或空 workflow 身份跳过", "card", ev.CardID,
-			"seq", ev.Seq, "type", ev.Type, "node_present", envelope.Node != nil,
-			"attempt_present", envelope.Attempt != nil, "task_type", envelope.TaskType)
-		return false, nil
+	if s.ledger == nil {
+		return false, fmt.Errorf("卡 %s task_mirrored seq=%d: 账本未装配", ev.CardID, ev.Seq)
 	}
-	current, found, err := s.currentWorkflowAttempt(ev.CardID, *envelope.Node)
+	decision, err := client.JudgeMirroredWake(s.ledger, client.WakeGateEvent{
+		CardID: ev.CardID, Seq: ev.Seq, Node: envelope.Node, Attempt: envelope.Attempt,
+		TaskType: envelope.TaskType, SourceTask: ev.SourceTask,
+		SourceTarget: ev.SourceTarget, SourceSeq: ev.SourceSeq,
+	})
 	if err != nil {
 		return false, err
 	}
-	if !found || current.TaskID != current.Attempt || current.Attempt != *envelope.Attempt ||
-		ev.SourceTask != current.Attempt || ev.SourceTarget != current.Target {
-		s.log.Info("task_mirrored 因 source identity 不匹配跳过", "card", ev.CardID,
-			"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node,
-			"attempt", *envelope.Attempt, "current_attempt", current.Attempt,
-			"source_task", ev.SourceTask, "source_target", ev.SourceTarget,
-			"current_target", current.Target, "source_seq", ev.SourceSeq,
-			"task_type", envelope.TaskType, "reason", "source_identity_mismatch")
-		return false, nil
-	}
-	s.log.Debug("task_mirrored 通过 source identity 闸", "card", ev.CardID,
-		"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node, "attempt", *envelope.Attempt,
-		"source_task", ev.SourceTask, "source_target", ev.SourceTarget,
-		"current_target", current.Target, "source_seq", ev.SourceSeq, "task_type", envelope.TaskType)
-	return true, nil
+	return decision.Deliver, nil
 }
 
 // automationWakeEvent 是非 room_message 事件的映射；false 表示合法但不唤醒；
