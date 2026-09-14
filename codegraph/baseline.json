@@ -29307,8 +29307,8 @@
  ],
  "meta": {
   "project": "handoff",
-  "branch": "cards/B233.26-charter",
-  "commit": "161441b3d8757154190d0f8bfebf91bae773e13a",
+  "branch": "cards/B233-residual",
+  "commit": "af838fd2c1514808c6d53500fc070201ae69f7d6",
   "scannedAt": "2026-09-14",
   "generator": "handoff-executor/b233.26-full-rescan"
  },
