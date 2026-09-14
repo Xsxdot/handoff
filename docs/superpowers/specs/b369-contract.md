@@ -366,3 +366,13 @@ spec 选定：Go 核用 token 副本**程序化**兑换 ticket→cookie（`handl
 - 可执行冻结：Go 侧配对载体金样本本轮跑过；无新哈希/密钥派生命中。
 - 图三闸：`validate --view cards-B369-charter` 0 issue；`check --view cards-B369-charter` fails=0；基线 check fails=0；`TestRepoContractGate` PASS。
 - 三重闸门：§6 记两条命中 + 三条不立的判据，非空着。
+
+---
+
+## 修订记录（breakdown 出稿轮，2026-09-14）
+
+拆解稿 `docs/superpowers/specs/b369-breakdown.md` 逐条核对 §4（32 条）与 §8（10 条欠账），**无退回项**；以下三条边界澄清即便结论是「不退回 contract」也留痕，供 review 冻结物触碰对账：
+
+1. **配对 wire 的 JSON 金样本属契约面、非包内 API**：`PairBundle` 编码字节形状跨语言（Go 编 / Kotlin·Swift 解），`err_is` 哨兵与键集是契约的一部分（§4 条 10）；`Validate`/`Encode`/`Decode` 的 Go 函数签名是包内 API，可随实现微调（错误包装）只要哨兵语义不变。
+2. **`d_transport→d_protocol` 的 entry「proto（包级函数）」覆盖 `Encode/DecodePairBundle`**：`internal/mobilecore` 调用属该既有 entry 范围，不新增方向、不加预算（实测 target budget=0）。
+3. **`mobile/bind/bind.go` 是图外组装点**：contract §5 记为移动核组装点且图外（嵌套 module 不进根构建图）；其导出面变更不触发 `graph check`，但绑定面形状是壳的契约面。后续图对齐时补登记。
