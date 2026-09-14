@@ -26,8 +26,14 @@ func TestComposeEnabledKeepsHeadBaseTailOrderAndSources(t *testing.T) {
 	if strings.Contains(got.Text, "handoff graph") {
 		t.Fatal("平台正文不得提供 handoff graph 执行入口")
 	}
-	if !strings.Contains(got.Text, "go run github.com/Xsxdot/charter/graph/cmd/codegraph") {
-		t.Fatal("平台正文缺少 canonical codegraph 查询入口")
+	if strings.Contains(got.Text, "go run github.com/Xsxdot/charter/graph/cmd/codegraph") {
+		t.Fatal("平台正文不得再把 go run 当查图入口")
+	}
+	if !strings.Contains(got.Text, "已安装的 codegraph 二进制") {
+		t.Fatal("平台正文缺少已安装 codegraph 入口")
+	}
+	if !strings.Contains(got.Text, `{"ask":"本机未安装 codegraph，请安装后再继续"}`) {
+		t.Fatal("平台正文缺少缺二进制时的 ask 工单")
 	}
 	if !(strings.Index(got.Text, head) < strings.Index(got.Text, "角色纪律正文") &&
 		strings.Index(got.Text, "角色纪律正文") < strings.Index(got.Text, tail)) {
