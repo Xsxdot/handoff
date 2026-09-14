@@ -1,0 +1,172 @@
+{
+  "view": "cards/B233.28-charter",
+  "base": "b5ebef69",
+  "summary": "B233.28 Ticket 0：gateway 任务查询/应答/回迁与项目位置查询的编排门面空壳与直通镜像（facade.go 15 个 Manager 方法 + OrchestrationClient 方法集扩），编译通过。图改挂（会话/工作台容器）按 C 裁决不做，记契约图覆盖债。",
+  "nodesModified": {
+    "m_orchestration_OrchestrationClient": {
+      "kind": "model",
+      "container": "k_orchestration_model",
+      "order": 32,
+      "name": "OrchestrationClient",
+      "file": "internal/orchestration/orchestration_client.go",
+      "line": 37,
+      "signature": "type OrchestrationClient interface {\n\t// —— 任务生命周期 ——\n\tDispatch(ctx context.Context, req DispatchReq) (*proto.Task, error)\n\tContinue(ctx context.Context, taskID, instructions string) error\n\tDone(ctx context.Context, taskID, note string) (TerminalOutcome, error)\n\tStop(ctx context.Context, taskID string) (TerminalOutcome, error)\n\tRelayAnswer(taskID, ticketID, answer string) error\n\tNoteDeliveryFailed(taskID, ticketID string, cause error)\n\tRecoverStuck(taskID string, force bool) (*RecoverReport, error)\n\n\t// —— 任务查询与回收 ——\n\tStatus() (*proto.StatusResp, error)\n\tFootprintAll() (*proto.FootprintResp, error)\n\tReclaimList() (*proto.ReclaimListResp, error)\n\tReclaim(ctx context.Context, taskID string, force bool) (*proto.ReclaimResp, error)\n\tGC(ctx context.Context, force, execute bool) (*proto.GCResp, error)\n\n\t// —— 任务查询与应答（B233.28：gateway 不再直打 store 的这一面）——\n\tListTasks() ([]proto.Task, error)\n\tGetTask(taskID string) (*proto.Task, error)\n\tPendingTickets(taskID string) ([]proto.Ticket, error)\n\tEventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)\n\tEventsFromAsc(taskID string, fromSeq int64, limit int) ([]proto.Event, error)\n\tLatestEvent(taskID string) (*proto.Event, error)\n\tCountEvents(taskID string, afterSeq, throughSeq int64) (int, error)\n\tListMirrorTasks() ([]store.MirrorTask, error)\n\tMirrorTaskTarget(taskID string) (string, bool, error)\n\tMirrorEventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)\n\tAnswerTicket(ctx context.Context, taskID, ticketID, answer string) (applied bool, err error)\n\tResumeIfIdle(ctx context.Context, taskID string)\n\n\t// —— 项目位置 ——\n\tRegisterProject(ctx context.Context, req workspace.RegisterProjectReq) (proto.ProjectLocation, error)\n\tListProjects(ctx context.Context) ([]proto.ProjectLocation, error)\n\tListProjectLocations() ([]proto.ProjectLocation, error)\n\tGetProjectLocationByName(name string) (proto.ProjectLocation, error)\n\tUpdateProjectLocation(name, newName, newPath string) (proto.ProjectLocation, error)\n\tUnregisterProject(ctx context.Context, name string) error\n\n\t// —— 执行者名单 ——\n\tExecutorNames() []string\n\n\t// —— 工作区能力只读透传（本卡不迁工作区，仅收口 handler 对 s.mgr 的调用）——\n\tWorkspace() workspace.Capability\n\tRequireWorkspace() error\n\tAssembleResultRef(ctx context.Context, task *proto.Task, repo, headRev string) (workspace.ResultRef, error)\n\tInspectRepoDir(ctx context.Context, dir string) (root, origin string, err error)\n}",
+      "summary": "B233.28：方法集扩任务查询（ListTasks/GetTask/PendingTickets/EventsFrom/EventsFromAsc/LatestEvent/CountEvents/镜像三法）与应答/回迁（AnswerTicket/ResumeIfIdle）、项目位置补 ListProjectLocations/GetProjectLocationByName/UpdateProjectLocation；gateway 任务面与项目位置不再直打 store。",
+      "modelKind": "dto"
+    }
+  },
+  "nodesAdded": {
+    "n_orchestration_Manager_ListTasks": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 120,
+      "name": "Manager.ListTasks",
+      "file": "internal/orchestration/facade.go",
+      "line": 35,
+      "signature": "func (m *Manager) ListTasks() ([]proto.Task, error)",
+      "summary": "B233.28：store.ListTasks 的直通镜像，任务公开列表经编排门面。"
+    },
+    "n_orchestration_Manager_GetTask": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 121,
+      "name": "Manager.GetTask",
+      "file": "internal/orchestration/facade.go",
+      "line": 38,
+      "signature": "func (m *Manager) GetTask(taskID string) (*proto.Task, error)",
+      "summary": "B233.28：store.GetTask 的直通镜像，任务详情经编排门面。"
+    },
+    "n_orchestration_Manager_PendingTickets": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 122,
+      "name": "Manager.PendingTickets",
+      "file": "internal/orchestration/facade.go",
+      "line": 41,
+      "signature": "func (m *Manager) PendingTickets(taskID string) ([]proto.Ticket, error)",
+      "summary": "B233.28：store.PendingTickets 的直通镜像，待办工单经编排门面。"
+    },
+    "n_orchestration_Manager_EventsFrom": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 123,
+      "name": "Manager.EventsFrom",
+      "file": "internal/orchestration/facade.go",
+      "line": 46,
+      "signature": "func (m *Manager) EventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)",
+      "summary": "B233.28：store.EventsFrom 的直通镜像，最近事件经编排门面。"
+    },
+    "n_orchestration_Manager_EventsFromAsc": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 124,
+      "name": "Manager.EventsFromAsc",
+      "file": "internal/orchestration/facade.go",
+      "line": 51,
+      "signature": "func (m *Manager) EventsFromAsc(taskID string, fromSeq int64, limit int) ([]proto.Event, error)",
+      "summary": "B233.28：store.EventsFromAsc 的直通镜像，WS 历史补发经编排门面。"
+    },
+    "n_orchestration_Manager_LatestEvent": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 125,
+      "name": "Manager.LatestEvent",
+      "file": "internal/orchestration/facade.go",
+      "line": 56,
+      "signature": "func (m *Manager) LatestEvent(taskID string) (*proto.Event, error)",
+      "summary": "B233.28：store.LatestEvent 的直通镜像，WS 截断基线经编排门面。"
+    },
+    "n_orchestration_Manager_CountEvents": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 126,
+      "name": "Manager.CountEvents",
+      "file": "internal/orchestration/facade.go",
+      "line": 59,
+      "signature": "func (m *Manager) CountEvents(taskID string, afterSeq, throughSeq int64) (int, error)",
+      "summary": "B233.28：store.CountEvents 的直通镜像，截断缺口核对经编排门面。"
+    },
+    "n_orchestration_Manager_ListMirrorTasks": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 127,
+      "name": "Manager.ListMirrorTasks",
+      "file": "internal/orchestration/facade.go",
+      "line": 64,
+      "signature": "func (m *Manager) ListMirrorTasks() ([]store.MirrorTask, error)",
+      "summary": "B233.28：store.ListMirrorTasks 的直通镜像，镜像快照汇总经编排门面。"
+    },
+    "n_orchestration_Manager_MirrorTaskTarget": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 128,
+      "name": "Manager.MirrorTaskTarget",
+      "file": "internal/orchestration/facade.go",
+      "line": 67,
+      "signature": "func (m *Manager) MirrorTaskTarget(taskID string) (string, bool, error)",
+      "summary": "B233.28：store.MirrorTaskTarget 的直通镜像，透明路由索引经编排门面。"
+    },
+    "n_orchestration_Manager_MirrorEventsFrom": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 129,
+      "name": "Manager.MirrorEventsFrom",
+      "file": "internal/orchestration/facade.go",
+      "line": 72,
+      "signature": "func (m *Manager) MirrorEventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)",
+      "summary": "B233.28：store.MirrorEventsFrom 的直通镜像，镜像任务历史重放经编排门面。"
+    },
+    "n_orchestration_Manager_ListProjectLocations": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 130,
+      "name": "Manager.ListProjectLocations",
+      "file": "internal/orchestration/facade.go",
+      "line": 80,
+      "signature": "func (m *Manager) ListProjectLocations() ([]proto.ProjectLocation, error)",
+      "summary": "B233.28：store.ListProjectLocations 的直通镜像（未探测状态），项目位置表经编排门面。"
+    },
+    "n_orchestration_Manager_GetProjectLocationByName": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 131,
+      "name": "Manager.GetProjectLocationByName",
+      "file": "internal/orchestration/facade.go",
+      "line": 86,
+      "signature": "func (m *Manager) GetProjectLocationByName(name string) (proto.ProjectLocation, error)",
+      "summary": "B233.28：store.GetProjectLocationByName 的直通镜像，按名查项目位置经编排门面。"
+    },
+    "n_orchestration_Manager_UpdateProjectLocation": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 132,
+      "name": "Manager.UpdateProjectLocation",
+      "file": "internal/orchestration/facade.go",
+      "line": 92,
+      "signature": "func (m *Manager) UpdateProjectLocation(name, newName, newPath string) (proto.ProjectLocation, error)",
+      "summary": "B233.28：store.UpdateProjectLocation 的直通镜像，改项目位置经编排门面。"
+    },
+    "n_orchestration_Manager_AnswerTicket": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 133,
+      "name": "Manager.AnswerTicket",
+      "file": "internal/orchestration/facade.go",
+      "line": 105,
+      "signature": "func (m *Manager) AnswerTicket(ctx context.Context, taskID, ticketID, answer string) (applied bool, err error)",
+      "summary": "B233.28：工单应答门面空壳；落库/事件/归属校验的行为归 implement（骨架期返 ErrTicketAnswerUnwired）。"
+    },
+    "n_orchestration_Manager_ResumeIfIdle": {
+      "kind": "func",
+      "container": "k_orchestration_Manager",
+      "order": 134,
+      "name": "Manager.ResumeIfIdle",
+      "file": "internal/orchestration/facade.go",
+      "line": 115,
+      "signature": "func (m *Manager) ResumeIfIdle(ctx context.Context, taskID string)",
+      "summary": "B233.28：无待办回迁 running 的门面空壳；CAS 有界重试循环归 implement（骨架期空实现）。"
+    }
+  },
+  "edgesAdded": [],
+  "implementsAdded": []
+}
