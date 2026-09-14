@@ -605,6 +605,16 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("dispatch 任务身份快照已组装", "project", req.ProjectID,
 		"carrier", binding.Carrier, "squad", binding.Squad, "target", binding.Target,
 		"executor", binding.Executor, "home_dir_set", homePtr != nil)
+	// B233.27：准入只核「请求 vs 登记」。现网登记名常是 targets 键（linux-01），
+	// 不能只用 IsLocalMachine（它把 linux-01 当远端）。CanonicalTarget 空串=本机。
+	if canon := s.CanonicalTarget(binding.Target); canon != "" {
+		err = fmt.Errorf("%w: 载体登记机 %s 不是当前接收机", scheduling.ErrRoleMismatch, binding.Target)
+		s.log.Warn("dispatch 被拒：接收机不是载体登记机", "project", req.ProjectID,
+			"carrier", binding.Carrier, "registered_target", binding.Target,
+			"canonical_target", canon, "error_kind", "receiver_not_carrier_machine", "cause", err)
+		s.writeDispatchError(w, req.ProjectID, err)
+		return
+	}
 	task, err := s.mgr.Dispatch(r.Context(), orchestration.DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,

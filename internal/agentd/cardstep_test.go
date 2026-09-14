@@ -3,6 +3,7 @@ package agentd
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"strings"
@@ -17,7 +18,6 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
-	"github.com/Xsxdot/handoff/internal/testhttp"
 	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
@@ -214,21 +214,26 @@ type b23310ProfileFakeAdapter struct {
 func (a *b23310ProfileFakeAdapter) Profile() executor.Profile { return a.profile }
 
 func setupB23310CardTaskEnv(t *testing.T, script []fake.Step) *ledgerEnv {
-	return setupB23310CardTaskEnvWithMachine(t, script, "b23310-loop")
+	// 本机 HTTP → handleDispatch。B233.27 之后不能再用「第二 listener + 远端名」
+	// 绕过接收机闸；要测命名本机用 Addr=Listen 的 WithMachine。
+	return setupB23310CardTaskEnvWithMachine(t, script, "local")
 }
 
 func setupB23310CardTaskEnvWithMachine(t *testing.T, script []fake.Step, machine string) *ledgerEnv {
 	t.Helper()
 	env := setupNoPTYSquadEnv(t, 1)
 	if machine != "local" {
-		remote := testhttp.NewServer(t, env.srv.Handler())
+		// 命名机必须把 Addr 指到本进程 Listen，否则 B233.27 闸会把
+		// 「同一 Handler 的第二 listener」当成远端接收机拒掉。本夹具要的是
+		// startCardStep → 本机 HTTP → handleDispatch，不是真跨机。
 		if err := env.srv.swapConf(func(c *config.Config) error {
 			if c.Targets == nil {
 				c.Targets = make(map[string]config.Target)
 			}
-			c.Targets[machine] = config.Target{
-				Addr: strings.TrimPrefix(remote.URL, "http://"), Token: testToken,
+			if strings.TrimSpace(c.Listen) == "" {
+				return fmt.Errorf("Listen 为空，无法把 %s 标成本机", machine)
 			}
+			c.Targets[machine] = config.Target{Addr: c.Listen, Token: testToken}
 			return nil
 		}); err != nil {
 			t.Fatalf("登记生命周期测试目标机: %v", err)

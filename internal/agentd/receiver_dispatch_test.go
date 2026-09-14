@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	handoffclient "github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
@@ -84,6 +85,113 @@ func assertDispatchError(t *testing.T, rr *httptest.ResponseRecorder, code int, 
 	t.Helper()
 	if rr.Code != code || !strings.Contains(rr.Body.String(), text) {
 		t.Fatalf("派发响应=(%d,%s)，want (%d, contains %q)", rr.Code, rr.Body.String(), code, text)
+	}
+}
+
+// countingDispatch 包住生产 OrchestrationClient，只计数 Dispatch。B233.27 反面
+// 断言：打到非本机接收机时开工次数必须为 0。
+type countingDispatch struct {
+	orchestration.OrchestrationClient
+	n int
+}
+
+func (c *countingDispatch) Dispatch(ctx context.Context, req orchestration.DispatchReq) (*proto.Task, error) {
+	c.n++
+	return c.OrchestrationClient.Dispatch(ctx, req)
+}
+
+func wrapDispatchCounter(srv *Server) *countingDispatch {
+	c := &countingDispatch{OrchestrationClient: srv.mgr}
+	srv.mgr = c
+	return c
+}
+
+// putTarget 原地改活配置的 targets。newNoPTYLedgerEnv 没有配置文件路径，
+// swapConf 会失败；SetKnownMachines 每次读 Conf()，写进 map 即可被登记校验看见。
+func putTarget(t *testing.T, srv *Server, name, addr string) {
+	t.Helper()
+	cfg := srv.conf()
+	if cfg.Targets == nil {
+		cfg.Targets = map[string]config.Target{}
+	}
+	cfg.Targets[name] = config.Target{Addr: addr, Token: testToken}
+}
+
+func assertNoTaskCreated(t *testing.T, env *receiverTestEnv) {
+	t.Helper()
+	tasks, err := env.st.ListTasks()
+	if err != nil || len(tasks) != 0 {
+		t.Fatalf("不得创建任务: tasks=%+v err=%v", tasks, err)
+	}
+}
+
+// TestB23327FrozenRemoteTargetRejectedWithoutDispatch 锁住合线复审 P1：
+// 冻结身份与登记一致，但打到「不是登记机」的 agentd 时必须 400，且 Dispatch 次数为 0。
+func TestB23327FrozenRemoteTargetRejectedWithoutDispatch(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	ctr := wrapDispatchCounter(env.srv)
+	putTarget(t, env.srv, "linux-01", "192.0.2.9:7777")
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
+		Name: "remote-box", Machine: "linux-01", CLI: "fake", HomeDir: "",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		Status: scheduling.StatusOnline,
+	})
+	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
+		`,"carrier":"remote-box","target":"linux-01","executor":"fake","home_dir":""`))
+	assertDispatchError(t, rr, http.StatusBadRequest, "linux-01")
+	if ctr.n != 0 {
+		t.Fatalf("非本机冻结派发调用了 Dispatch %d 次，want 0", ctr.n)
+	}
+	assertNoTaskCreated(t, env)
+	if got := runningCountIn(t, receiverOccupancyFacade(env.ledgerEnv), scheduling.OccupancyCarrierKey("remote-box")); got != 0 {
+		t.Fatalf("拒绝后占用未回滚: carrier/remote-box=%d", got)
+	}
+}
+
+// TestB23327OrdinaryRemoteBindingRejectedWithoutDispatch 普通派发选到的载体
+// 机器不是本机时，同一道闸。
+func TestB23327OrdinaryRemoteBindingRejectedWithoutDispatch(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	ctr := wrapDispatchCounter(env.srv)
+	putTarget(t, env.srv, "linux-01", "192.0.2.9:7777")
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
+		Name: "muse", Machine: "linux-01", CLI: "fake",
+		HomeDir: "~/.handoff/home/muse", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 8, Status: scheduling.StatusOnline,
+	})
+	if err := mustScheduling(t, env.srv).SetDefaultCarrier("muse"); err != nil {
+		t.Fatalf("SetDefaultCarrier: %v", err)
+	}
+	rr := postDispatch(t, env.srv, dispatchBody(env.projectID, ""))
+	assertDispatchError(t, rr, http.StatusBadRequest, "linux-01")
+	if ctr.n != 0 {
+		t.Fatalf("非本机普通派发调用了 Dispatch %d 次，want 0", ctr.n)
+	}
+	assertNoTaskCreated(t, env)
+}
+
+// TestB23327SelfTargetNameStillDispatches 配置里 linux-01 的地址指向本进程时
+// CanonicalTarget 为空串，冻结派发必须放行——锁住「不是只用 IsLocalMachine」。
+func TestB23327SelfTargetNameStillDispatches(t *testing.T) {
+	env := newReceiverTestEnv(t)
+	putTarget(t, env.srv, "linux-01", env.srv.conf().Listen)
+	putOnlineCarrier(t, mustScheduling(t, env.srv), scheduling.Carrier{
+		Name: "self-box", Machine: "linux-01", CLI: "fake", HomeDir: "",
+		Credential: scheduling.CredentialStandalone, MaxConcurrency: 1,
+		Status: scheduling.StatusOnline,
+	})
+	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
+		`,"carrier":"self-box","target":"linux-01","executor":"fake","home_dir":""`))
+	if rr.Code != http.StatusOK {
+		t.Fatalf("本机 target 名冻结派发返回 %d: %s", rr.Code, rr.Body.String())
+	}
+	task := decodeDispatchTask(t, rr)
+	if task.Carrier != "self-box" {
+		t.Fatalf("任务载体=%q, want self-box", task.Carrier)
+	}
+	stop := runAction(env.srv, actionRequest(task.ID, "stop", ""), env.srv.handleStop)
+	if stop.Code != http.StatusOK {
+		t.Fatalf("清理本机 target 名任务返回 %d: %s", stop.Code, stop.Body.String())
 	}
 }
 
