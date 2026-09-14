@@ -16,6 +16,7 @@ import (
 // seedPlanTask 造一条带归档指令文件的任务，返回任务 ID 与文件路径。
 func seedPlanTask(t *testing.T, env *testAgentdEnv, content string) (string, string) {
 	t.Helper()
+	ensureTestManager(t, env)
 	dir := t.TempDir()
 	planPath := filepath.Join(dir, "b119-dispatch.md")
 	if err := os.WriteFile(planPath, []byte(content), 0o600); err != nil {
@@ -79,6 +80,7 @@ func TestTaskPlanTruncatesHugeFile(t *testing.T) {
 // 且错误里说得出是哪种情况——两者的处置完全不同。
 func TestTaskPlanMissingIsNotFound(t *testing.T) {
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	now := time.Now().UTC()
 	old := uuid.NewString()
 	mustCreateTask(t, env.st, &proto.Task{ID: old, Name: "老任务", RepoPath: "/home/dev/handoff",
@@ -108,6 +110,7 @@ func TestTaskPlanMissingIsNotFound(t *testing.T) {
 // TestTaskPlanUnknownTaskIsNotFound 断言：任务不存在返回 404 而不是 500。
 func TestTaskPlanUnknownTaskIsNotFound(t *testing.T) {
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	if code := env.getJSON(t, "/api/tasks/"+uuid.NewString()+"/plan", nil); code != http.StatusNotFound {
 		t.Fatalf("状态码 = %d，期望 404", code)
 	}

@@ -312,6 +312,19 @@ func newManagerForServer(t *testing.T, srv *Server, ads map[string]executor.Adap
 	return mgr
 }
 
+// ensureTestManager 给默认未注入 manager 的白盒测试环境挂上真实编排实现。
+//
+// B233.28 P-1-A：任务/项目读路径与 byTask 中间件改经 s.mgr 后，未注入 manager 的
+// 既有用例会 503。**写路径用例（登记/派发等）需要 manager 缺席的 503 语义，故不
+// 改 newTestAgentdEnv 默认值**，受影响用例显式调用本助手。
+//
+// ads 传 nil：读路径不需要 adapter；写路径用例另有自己的 manager 装配。
+func ensureTestManager(t *testing.T, env *testAgentdEnv) *testAgentdEnv {
+	t.Helper()
+	env.mgr = newManagerForServer(t, env.srv, nil)
+	return env
+}
+
 // newTestManagerWithCfg 同 newTestManagerWithApprover，但用调用方给定的 cfg
 // （活配置闭包返回同一指针，调用方可在构造后改字段，Manager 立即可见）。
 func newTestManagerWithCfg(t *testing.T, ads map[string]executor.Adapter, cfg *config.Config) (*orchestration.Manager, *store.Store, *orchestration.Hub) {

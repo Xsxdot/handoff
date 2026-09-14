@@ -98,7 +98,12 @@ func (s *Server) resolveWorkspace(ctx context.Context, path string) (string, boo
 	if root := s.scratchRoot(); root != "" && want == root {
 		return root, true
 	}
-	locs, err := s.st.ListProjectLocations()
+	if s.mgr == nil {
+		// 闸门坏了要关上：读不出位置表时拒绝而不是放行
+		s.log.Error("工作树白名单：manager 未注入，按拒绝处理")
+		return "", false
+	}
+	locs, err := s.mgr.ListProjectLocations()
 	if err != nil {
 		// 读不出位置表时**拒绝**而不是放行：闸门坏了要关上，不能敞开
 		s.log.Error("工作树白名单：查询位置表失败，按拒绝处理", "cause", err)

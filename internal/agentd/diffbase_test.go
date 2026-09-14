@@ -230,6 +230,7 @@ func TestBranchesEndpointReportsTaskBase(t *testing.T) {
 	}
 
 	srv := NewServer(&config.Config{Token: token, DataDir: t.TempDir()}, st, discardLogger())
+	newManagerForServer(t, srv, map[string]executor.Adapter{"fake": fake.New(nil)})
 	ts := testhttp.NewServer(t, srv.Handler())
 
 	req, _ := http.NewRequest(http.MethodGet, ts.URL+"/api/tasks/t1/branches", nil)

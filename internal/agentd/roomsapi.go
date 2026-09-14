@@ -103,10 +103,11 @@ func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSumm
 
 	localTasks := make(map[string]proto.Task)
 	for _, link := range links {
-		if link.Target != "" || s.st == nil {
+		if link.Target != "" || s.mgr == nil {
+			// 房间列表只读降级：manager 未注入时不阻断主响应，只是禁用本机 attach
 			continue
 		}
-		tasks, listErr := s.st.ListTasks()
+		tasks, listErr := s.mgr.ListTasks()
 		if listErr != nil {
 			s.log.Warn("读取本机任务列表失败，attach 降级禁用", "cause", listErr)
 			break
@@ -321,7 +322,7 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 // actor 服务端注入，均不经请求体）。空正文拒绝（无意义消息不进房间）。
 // reply_to 是回复锚发送半边（B365）：可选，逐字映射 RoomMessage.ReplyTo——
 // 接收侧 ResolveDelivery 隐式寻址原作者（冻结判定，本 handler 不碰）；负值 400
-//（0 = 无回复锚，与缺省等价，wire omitempty 下不落键）。
+// （0 = 无回复锚，与缺省等价，wire omitempty 下不落键）。
 func (s *Server) handleRoomSend(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("id")
 	var req struct {
@@ -379,6 +380,12 @@ func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	items := make([]proto.InboxItem, 0, 8)
 
+	if s.mgr == nil {
+		s.log.Warn("收件箱请求到达但 manager 未注入")
+		writeErr(w, http.StatusServiceUnavailable, errors.New("manager 未就绪"))
+		return
+	}
+
 	// 源① decision：open 裁决全量（含 CardID 为空的项目级），岔口二方案 A 直调面。
 	decisions, err := s.ledger.ListDecisions(true)
 	if err != nil {
@@ -400,7 +407,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 
 	// 源② ticket：等待人工输入态任务上的未答复工单；Watchers>0 排除（无人驱动
 	// 才上浮），破坏性工单不受限（既有硬纪律，D-destructive 判据见 ticketDestructive）。
-	tasks, err := s.st.ListTasks()
+	tasks, err := s.mgr.ListTasks()
 	if err != nil {
 		s.log.Warn("收件箱 ticket 源读取失败", "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
@@ -410,7 +417,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		if task.State != proto.TaskStateWaitingAnswer {
 			continue
 		}
-		pending, err := s.st.PendingTickets(task.ID)
+		pending, err := s.mgr.PendingTickets(task.ID)
 		if err != nil {
 			s.log.Warn("收件箱 ticket 源读取失败", "task", task.ID, "cause", err)
 			continue
@@ -456,7 +463,11 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 // （ticket_id 匹配且 decision ∈ {escalate, error}）——审批者不敢放行或裁决失败即
 // 系统标记的危险请求。窗口用 recentEventsLimit=100（server.go:65，与任务详情同款）。
 func (s *Server) ticketDestructive(taskID, ticketID string) bool {
-	events, err := s.st.EventsFrom(taskID, 0, recentEventsLimit)
+	if s.mgr == nil {
+		// 读不出就保守：不标破坏性，避免在 manager 未就绪时误判
+		return false
+	}
+	events, err := s.mgr.EventsFrom(taskID, 0, recentEventsLimit)
 	if err != nil {
 		return false
 	}

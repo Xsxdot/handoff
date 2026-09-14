@@ -195,12 +195,17 @@ func (s *Server) projectIndex() workspace.ProjectIndex {
 // 不回答「该不该有人听」——那条判据在 status 侧（unattended）。
 func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("任务列表请求", "method", r.Method, "path", r.URL.Path)
+	if s.mgr == nil {
+		s.log.Warn("任务列表请求到达但 manager 未注入", "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
 	if r.URL.Query().Get("scope") == "all" && !isForwarded(r) {
 		// 跨机汇总信封（镜像快照，不现场扇出）；带转发头时降级为本机
 		writeJSON(w, http.StatusOK, s.tasksAll(r.Context()))
 		return
 	}
-	tasks, err := s.st.ListTasks()
+	tasks, err := s.mgr.ListTasks()
 	if err != nil {
 		s.log.Error("查询任务列表失败", "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
@@ -251,7 +256,12 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("任务详情请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
 
-	task, err := s.st.GetTask(taskID)
+	if s.mgr == nil {
+		s.log.Warn("任务详情请求到达但 manager 未注入", "task", taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	task, err := s.mgr.GetTask(taskID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.log.Warn("任务不存在", "task", taskID)
@@ -262,13 +272,13 @@ func (s *Server) handleGetTask(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
 		return
 	}
-	pending, err := s.st.PendingTickets(taskID)
+	pending, err := s.mgr.PendingTickets(taskID)
 	if err != nil {
 		s.log.Error("读取待办工单失败", "task", taskID, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
 		return
 	}
-	events, err := s.st.EventsFrom(taskID, 0, recentEventsLimit)
+	events, err := s.mgr.EventsFrom(taskID, 0, recentEventsLimit)
 	if err != nil {
 		s.log.Error("读取最近事件失败", "task", taskID, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
@@ -326,7 +336,10 @@ type replyResult struct {
 //  1. 校验 ticket 存在且属于路径中的任务（跨任务一律按不存在处理，不泄露信息）
 //  2. store.AnswerTicket 持久化应答（answer IS NULL 条件保证不可重复回答）
 //  3. hub.NotifyAnswer 唤醒阻塞在 WaitAnswer 上的 executor 侧
-//  4. 若任务处于 waiting_answer 且无其余未答工单，状态回迁 running（resumeIfIdle）
+//  4. 若任务处于 waiting_answer 且无其余未答工单，状态回迁 running（编排侧 ResumeIfIdle）
+//
+// B233.28：第 1、2 步与第 4 步的回迁规则收进编排门面（AnswerTicket / ResumeIfIdle），
+// gateway 不再持一份 CAS 循环；本函数只转 HTTP 与承担 hub 唤醒/自愈中继。
 //
 // 响应：正常（NotifyAnswer 命中等待者或 RelayAnswer 成功）返回 200
 // `{"ok":true,"relayed":true}`；回答已落库但 executor 侧递送失败（无等待者且
@@ -349,6 +362,12 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("reply 请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
 
+	if s.mgr == nil {
+		s.log.Warn("reply 请求到达但 manager 未注入", "task", taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+
 	var req replyRequest
 	// LimitReader 限制请求体大小，防止恶意大 body 占满内存
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
@@ -362,24 +381,8 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	tk, err := s.st.GetTicket(req.TicketID)
-	if err != nil {
-		if errors.Is(err, store.ErrNotFound) {
-			s.log.Warn("reply 目标工单不存在", "task", taskID, "ticket", req.TicketID)
-			writeJSON(w, http.StatusNotFound, map[string]string{"error": "工单不存在"})
-			return
-		}
-		s.log.Error("读取工单失败", "task", taskID, "ticket", req.TicketID, "cause", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
-		return
-	}
-	if tk.TaskID != taskID {
-		s.log.Warn("reply 工单不属于该任务", "task", taskID, "ticket", req.TicketID, "ticket_task", tk.TaskID)
-		writeJSON(w, http.StatusNotFound, map[string]string{"error": "工单不存在"})
-		return
-	}
-
-	applied, err := s.st.AnswerTicketApplied(req.TicketID, req.Answer)
+	// B233.28：归属校验 + 落库 + ticket_answered 事件收进编排门面；错误原样分流
+	applied, err := s.mgr.AnswerTicket(r.Context(), taskID, req.TicketID, req.Answer)
 	if err != nil {
 		if errors.Is(err, store.ErrTicketConflict) {
 			s.log.Warn("reply 工单冲突", "task", taskID, "ticket", req.TicketID, "cause", err)
@@ -400,10 +403,6 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{"ok": true, "relayed": true, "idempotent": true})
 		return
 	}
-	if _, err := s.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
-		orchestration.TicketAnsweredPayload{TicketID: req.TicketID, Answer: req.Answer}); err != nil {
-		s.log.Warn("追加工单答复事件失败", "task", taskID, "ticket", req.TicketID, "cause", err)
-	}
 
 	// 唤醒阻塞在该 ticket 上的 WaitAnswer 调用者（executor 侧继续执行）；
 	// 无人等待（典型为 agentd 重启后等待 goroutine 已随进程消亡）时走
@@ -414,12 +413,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 	relayed := true
 	reason := ""
 	if !s.hub.NotifyAnswer(req.TicketID, req.Answer) {
-		if s.mgr == nil {
-			relayed = false
-			reason = "manager 未注入，应答未回传 executor"
-			s.log.Error("reply 无等待者且 manager 未注入，应答未回传 executor",
-				"task", taskID, "ticket", req.TicketID)
-		} else if err := s.mgr.RelayAnswer(taskID, req.TicketID, req.Answer); err != nil {
+		if err := s.mgr.RelayAnswer(taskID, req.TicketID, req.Answer); err != nil {
 			relayed = false
 			// 响应里的 reason 截断展示，完整错误留在日志
 			reason = truncateRunes(err.Error(), 200)
@@ -436,53 +430,16 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		// 同时落一条 delivery_failed 事件：502 只回给「当前这次 reply」的调用方，
 		// 而事件是持久的——换个会话接管、或此刻根本没人盯着终端时，仍能从
 		// attach/wait 看到「有裁决卡在半路，该执行 handoff resume」
-		if s.mgr != nil {
-			s.mgr.NoteDeliveryFailed(taskID, req.TicketID, errors.New(reason))
-		}
+		s.mgr.NoteDeliveryFailed(taskID, req.TicketID, errors.New(reason))
 		writeJSON(w, http.StatusBadGateway, replyResult{OK: true, Relayed: false, Reason: reason})
 		return
 	}
 
-	// 回答已落库与唤醒完成，此时任务若无其余未答工单即可回迁 running；
-	// 回迁失败（如任务已被并发迁移）不影响 reply 本身的成功
-	s.resumeIfIdle(taskID)
+	// 应答已落库与唤醒完成，无其余未答工单时回迁 running；回迁规则（何时 running、
+	// CAS 重试）归编排侧，gateway 不再持一份 CAS 循环（contract §5.2 #15）
+	s.mgr.ResumeIfIdle(r.Context(), taskID)
 
 	writeJSON(w, http.StatusOK, replyResult{OK: true, Relayed: true})
-}
-
-// resumeIfIdle 当任务处于 waiting_answer 且已无未答工单时，把状态回迁 running。
-//
-// 为什么用有界重试：两个工单被并发回答时，先回答的请求可能读到「仍有未答工单」而跳过，
-// 后回答的请求负责回迁；也可能两个请求都读到「已无工单」，此时先执行者成功，
-// 后执行者因 CAS（WHERE state = 旧值）收到 ErrBadTransit。重试让意图在最新快照上重新
-// 评估，而不是把并发迁移当作错误直接吞掉。
-func (s *Server) resumeIfIdle(taskID string) {
-	for attempt := 0; attempt < 3; attempt++ {
-		task, err := s.st.GetTask(taskID)
-		if err != nil {
-			s.log.Error("reply 后读取任务失败", "task", taskID, "cause", err)
-			return
-		}
-		if task.State != proto.TaskStateWaitingAnswer {
-			return // 任务已不在等待应答，无需回迁
-		}
-		pending, err := s.st.PendingTickets(taskID)
-		if err != nil {
-			s.log.Error("reply 后查询待办工单失败", "task", taskID, "cause", err)
-			return
-		}
-		if len(pending) > 0 {
-			return // 仍有未答工单，任务保持 waiting_answer
-		}
-		if err := s.st.UpdateTaskState(taskID, proto.TaskStateRunning); err == nil {
-			return
-		} else if !errors.Is(err, store.ErrBadTransit) {
-			s.log.Error("reply 后恢复任务运行失败", "task", taskID, "cause", err)
-			return
-		}
-		// ErrBadTransit：状态被并发变更（如另一 reply 已回迁），重读最新快照重试
-	}
-	s.log.Warn("reply 后恢复任务运行重试耗尽", "task", taskID)
 }
 
 // dispatchRequest 是 POST /api/tasks 的请求体（plan 内容 base64 编码上传，
@@ -930,13 +887,13 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 	// **判据要严**：只有 completed 转 200。其余非 waiting_review 的状态仍然
 	// 409——那些是真的状态不对，一并放行等于让 done 变成万能收口，审核者会
 	// 失去「我操作错了」这个信号。
-	if cur, err := s.st.GetTask(taskID); err == nil && cur.State == proto.TaskStateCompleted {
+	if cur, err := s.mgr.GetTask(taskID); err == nil && cur.State == proto.TaskStateCompleted {
 		s.log.Info("done 已幂等完成，跳过重复释放", "task", taskID, "state", cur.State,
 			"carrier", cur.Carrier, "squad", cur.Squad, "error_kind", "already_completed")
 		writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
 		return
 	}
-	cur, taskErr := s.st.GetTask(taskID)
+	cur, taskErr := s.mgr.GetTask(taskID)
 	if taskErr != nil {
 		s.log.Error("done 读取任务快照失败，未执行终态迁移", "task", taskID, "cause", taskErr)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务快照失败"})
@@ -953,7 +910,7 @@ func (s *Server) handleDone(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, doneResult{OK: true, NoteSaved: req.Note != ""})
 		return
 	}
-	terminal, snapshotErr := s.st.GetTask(taskID)
+	terminal, snapshotErr := s.mgr.GetTask(taskID)
 	if snapshotErr != nil {
 		// 任务身份在终态迁移中不会改变；读回失败时用迁移前已取得的
 		// 同一身份快照补释放，避免“不能确认快照”变成容量泄漏。
@@ -985,7 +942,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
-	task, taskErr := s.st.GetTask(taskID)
+	task, taskErr := s.mgr.GetTask(taskID)
 	if taskErr != nil {
 		s.log.Error("stop 读取任务快照失败，未执行终态迁移", "task", taskID, "cause", taskErr)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "读取任务快照失败"})
@@ -1002,7 +959,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusConflict, map[string]string{"error": "任务已是终态"})
 		return
 	}
-	terminal, snapshotErr := s.st.GetTask(taskID)
+	terminal, snapshotErr := s.mgr.GetTask(taskID)
 	if snapshotErr != nil {
 		// 与 Done 同理：终态迁移不改任务身份，保留一次可释放的快照，
 		// 同时把快照读取故障明确返回给调用方。
@@ -1117,7 +1074,12 @@ func (s *Server) handleResume(w http.ResponseWriter, r *http.Request) {
 //
 // 供 diff/fetch/run 三条审阅路由共用——它们只关心任务指向的仓库，不依赖状态机。
 func (s *Server) taskOrErr(w http.ResponseWriter, taskID string) (*proto.Task, bool) {
-	task, err := s.st.GetTask(taskID)
+	if s.mgr == nil {
+		s.log.Warn("任务读取路径到达但 manager 未注入", "task", taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return nil, false
+	}
+	task, err := s.mgr.GetTask(taskID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.log.Warn("任务不存在", "task", taskID)
@@ -1520,6 +1482,14 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	// 未就绪守卫放在 Accept 之前：Accept 会升级连接，升级后再拒绝只能关连接，
+	// 不如在握手前直接以 HTTP 503 fail-closed
+	if s.mgr == nil {
+		s.log.Warn("WS 事件请求到达但 manager 未注入", "task", taskID, "remote_addr", r.RemoteAddr)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+
 	conn, err := websocket.Accept(w, r, nil)
 	if err != nil {
 		// Accept 失败时已自行写回响应（如非升级请求的 400），此处仅记录
@@ -1533,11 +1503,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 以 PolicyViolation（1008）close 码关闭连接：语义是「你的请求本身非法」而非
 	// 网络断连，客户端据此判定永久失败立即报错，而不是把它当瞬时故障无限退避重连
 	mirrored := false
-	if _, err := s.st.GetTask(taskID); err != nil {
+	if _, err := s.mgr.GetTask(taskID); err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			// 本机没有：可能是镜像任务（远端的活，本机订着它的事件）。命中则本
 			// 连接从 mirror_events 重放历史，活事件由镜像订阅经同一个 Hub 送来
-			if _, ok, mErr := s.st.MirrorTaskTarget(taskID); mErr == nil && ok {
+			if _, ok, mErr := s.mgr.MirrorTaskTarget(taskID); mErr == nil && ok {
 				mirrored = true
 				s.log.Info("WS 订阅镜像任务", "task", taskID, "from_seq", fromSeq)
 			} else {
@@ -1636,9 +1606,9 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 语义与本机 EventsFromAsc 一致（开区间、截尾部、可凭更大 cursor 续拉）。
 	var replays []proto.Event
 	if mirrored {
-		replays, err = s.st.MirrorEventsFrom(taskID, fromSeq, s.replayLimit)
+		replays, err = s.mgr.MirrorEventsFrom(taskID, fromSeq, s.replayLimit)
 	} else {
-		replays, err = s.st.EventsFromAsc(taskID, fromSeq, s.replayLimit)
+		replays, err = s.mgr.EventsFromAsc(taskID, fromSeq, s.replayLimit)
 	}
 	if err != nil {
 		s.log.Error("WS 补发历史事件失败", "task", taskID, "from_seq", fromSeq, "mirrored", mirrored, "cause", err)
@@ -1655,7 +1625,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 被 eventReplayLimit 截断，缺口在尾部 (maxReplayed, storeMax]；缺口是否真的
 	// 丢失（真截断）在归并后核对（见阶段二后的截断诊断）
 	storeMax := int64(0)
-	if latest, lerr := s.st.LatestEvent(taskID); lerr == nil {
+	if latest, lerr := s.mgr.LatestEvent(taskID); lerr == nil {
 		storeMax = latest.Seq
 	}
 	s.log.Debug("WS 重放开始", "task", taskID, "from_seq", fromSeq, "replays", len(replays), "store_max", storeMax)
@@ -1737,7 +1707,7 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	// 客户端需凭更大 cursor 重连续拉补齐；若归并已追平 store 最新，尾部缺口由
 	// 实时流补齐，属预期场景，仅 Debug
 	if len(replays) == s.replayLimit && storeMax > maxReplayed {
-		gapTotal, cerr := s.st.CountEvents(taskID, maxReplayed, storeMax)
+		gapTotal, cerr := s.mgr.CountEvents(taskID, maxReplayed, storeMax)
 		switch {
 		case cerr != nil:
 			s.log.Error("WS 截断缺口核对失败", "task", taskID, "cause", cerr)

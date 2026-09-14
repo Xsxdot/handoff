@@ -22,6 +22,7 @@ func seedTasksEnv(t *testing.T) *testAgentdEnv {
 		Token:   testToken,
 		Targets: map[string]config.Target{"devbox": {Addr: "http://127.0.0.1:1", Token: testToken}},
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ensureTestManager(t, env)
 	if err := env.st.CreateProjectLocation(&proto.ProjectLocation{
 		ProjectID: "aaaa111122223333", Name: "handoff", Path: "/home/dev/handoff",
 		OriginURL: "git@github.com:x/handoff.git", CreatedAt: time.Now().UTC(),

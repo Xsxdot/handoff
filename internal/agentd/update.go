@@ -286,7 +286,11 @@ func (s *Server) runPull(tag, sum string) {
 // waiting_review 不计入：它在等协调者裁决，挂几天都正常，计入等于让升级
 // 被无限期阻塞（沿用 B54.3 的 D12）。
 func (s *Server) activeCount() (int, error) {
-	tasks, err := s.st.ListTasks()
+	if s.mgr == nil {
+		// 未就绪不假装没有活跃任务：换版闸一要求读到真实计数才放行
+		return 0, fmt.Errorf("manager 未就绪")
+	}
+	tasks, err := s.mgr.ListTasks()
 	if err != nil {
 		return 0, fmt.Errorf("列任务: %w", err)
 	}

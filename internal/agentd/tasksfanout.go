@@ -25,7 +25,7 @@ import (
 // 返回值恒有效：本机列表读不出来时照常返回信封（镜像部分仍可用）；
 // 机器应答情况逐台进 Machines，不因单台缺失让整个响应失败。
 func (s *Server) tasksAll(ctx context.Context) proto.TasksResp {
-	tasks, err := s.st.ListTasks()
+	tasks, err := s.mgr.ListTasks()
 	if err != nil {
 		s.log.Error("任务汇总：查询本机任务失败", "cause", err)
 		tasks = []proto.Task{}
@@ -37,7 +37,7 @@ func (s *Server) tasksAll(ctx context.Context) proto.TasksResp {
 		views = append(views, proto.TaskView{Task: t, Watchers: s.hub.Watchers(t.ID)})
 	}
 
-	mirrors, err := s.st.ListMirrorTasks()
+	mirrors, err := s.mgr.ListMirrorTasks()
 	if err != nil {
 		s.log.Error("任务汇总：查询镜像快照失败", "cause", err)
 		mirrors = []store.MirrorTask{}
