@@ -1402,10 +1402,6 @@
   ],
   [
    "n_orchestration_Manager_AssembleResultRef",
-   "n_agentd_GitProbe"
-  ],
-  [
-   "n_orchestration_Manager_AssembleResultRef",
    "n_workspace_IsCommitSHA"
   ],
   [
