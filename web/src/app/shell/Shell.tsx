@@ -60,6 +60,7 @@ import { FlowsPage } from '../flows/FlowsPage'
 import { fetchSessions, createSession } from '../../api/rooms'
 import type { SessionSummary } from '../../api/rooms'
 import { NewSessionDialog } from '../rooms/NewSessionDialog'
+import { saveLastSessionOwner } from '../rooms/sessionOwnerPrefs'
 import { SessionSidebar } from '../rooms/SessionSidebar'
 import { SessionTab } from '../rooms/SessionTab'
 import { totalUnread } from '../rooms/sessionModel'
@@ -173,6 +174,27 @@ export function Shell() {
   const [createError, setCreateError] = useState('')
   // needsOnly 左栏「需要你」筛选态：与筛选钮同层，传给 SessionSidebar 渲染。
   const [needsOnly, setNeedsOnly] = useState(false)
+  // 项目筛选（B358.8 #6）：state 与 needsOnly 同层；选项与卡→项目映射都从既有
+  // cardsState（2.5s 轮询）投影，零新增数据供给。
+  const [projectFilter, setProjectFilter] = useState('')
+  const cardProjectById = useMemo(() => {
+    const map = new Map<string, string>()
+    for (const card of cardsState.data?.cards ?? []) map.set(card.id, card.project)
+    return map
+  }, [cardsState.data])
+  const projectOptions = useMemo(() => [...new Set(cardProjectById.values())].sort(), [cardProjectById])
+  const projectOfCard = useCallback((cardId: string) => cardProjectById.get(cardId) ?? '', [cardProjectById])
+  // 新建会话 owner 候选（B358.8 #7）：既有会话成员 identities 投影（对话框再并上
+  // 记忆值与当前输入），降低手输成本，零新增端点。
+  const sessionMemberIdentities = useMemo(() => {
+    const identities = new Set<string>()
+    for (const session of sessions) {
+      for (const member of session.members ?? []) {
+        if (member.identity !== '') identities.add(member.identity)
+      }
+    }
+    return [...identities].sort()
+  }, [sessions])
   const caps = useMachineCaps()
   const launcherMachine = wb.base?.machine ?? ''
   const launchersSupported = caps.launchers(launcherMachine) === true
@@ -439,32 +461,16 @@ export function Shell() {
     console.debug('shell.session.open', { sessionId: session.id, title: session.title })
   }
 
-  // splitSessionRight ◫ 固定分屏（B361 决定 5）：把最近打开的会话 tab place 到
-  // 焦点格右列（工作项左/会话右）。焦点是会话 tab 或无会话 tab 时 no-op——
-  // 按钮同时由 WorkbenchPage 依 hasSessionTab 置灰，这里再守一道语义边界。
-  const splitSessionRight = () => {
-    const group = wb.wb.groups.find((candidate) => candidate.id === wb.wb.activeGroupId)
-    if (!group) return
-    const [column, row] = group.focus
-    const focused = group.columns[column]?.panes[row]
-    if (!focused || focused.content.kind === 'session') return
-    const sessionItem = [...wb.openedItems].reverse().find((item) => item.content.kind === 'session')
-    if (!sessionItem) return
-    wb.place(
-      { kind: 'tab', groupId: sessionItem.groupId, tabId: sessionItem.tabId },
-      { groupId: group.id, column, row, zone: 'right' },
-    )
-    console.debug('shell.session.split', { sessionId: sessionItem.content.kind === 'session' ? sessionItem.content.sessionId : '', groupId: group.id })
-  }
-
   // confirmCreateSession 建会话：owner 统一记法（服务端权威校验），失败原文
-  // 留在对话框；成功关弹层并立即刷新会话流（不等下一个 5s 周期）。
+  // 留在对话框；成功关弹层、立即刷新会话流（不等下一个 5s 周期），并把 owner
+  // 写进 localStorage 记忆（B358.8 #7：下次新建直接预填，第一次使用仍需输一次）。
   const confirmCreateSession = async (title: string, owner: string) => {
     setCreateBusy(true)
     setCreateError('')
     console.debug('shell.session.create_started', { title })
     try {
       const session = await createSession(title, owner)
+      saveLastSessionOwner(owner)
       setCreateOpen(false)
       sessionsState.refresh()
       console.debug('shell.session.created', { sessionId: session.id, title, owner })
@@ -732,6 +738,10 @@ export function Shell() {
               errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
               needsOnly={needsOnly}
               onToggleNeeds={() => setNeedsOnly((current) => !current)}
+              projectFilter={projectFilter}
+              onProjectFilter={setProjectFilter}
+              projectOptions={projectOptions}
+              projectOfCard={projectOfCard}
               onOpen={openSession}
               onCreate={() => { setCreateError(''); setCreateOpen(true) }} />
           </div>
@@ -808,7 +818,6 @@ export function Shell() {
               terminalUnavailable={wb.base ? ptyNote(wb.base.machine) : ''}
               launchers={launchersSupported ? (launchersData?.launchers ?? []) : []}
               onBeforeClose={beforeCloseTab}
-              onSplitSessions={splitSessionRight}
               renderContent={(c, base, group, tabId, active = true) => {
                 switch (c.kind) {
                   case 'terminal': {
@@ -1028,7 +1037,7 @@ export function Shell() {
         onCancel={() => { setClosingDirtyFile(null); setClosingDirtyHome(null) }}
       />
 
-      <NewSessionDialog open={createOpen} busy={createBusy} error={createError}
+      <NewSessionDialog open={createOpen} busy={createBusy} error={createError} memberIdentities={sessionMemberIdentities}
         onCancel={() => setCreateOpen(false)} onCreate={(title, owner) => void confirmCreateSession(title, owner)} />
 
       <AddProjectWizard

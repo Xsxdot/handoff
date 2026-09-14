@@ -1,4 +1,4 @@
-// SessionChat.test.tsx —— 群聊面：@高亮、引用条跳转、卡 chips 空座、发送、
+// SessionChat.test.tsx —— 群聊面：@高亮、回复快捷钮与引用条、@ 输入联想、发送、
 // 归档只读、403 可行动报错（本卡最重岔口 1 的组件半边反例断言）。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
@@ -17,6 +17,11 @@ vi.mock('../../api/rooms', async (importOriginal) => ({
 const summary = (over: Partial<SessionSummary> = {}): SessionSummary => ({
   id: 'session:1', kind: 'session', title: '架构物理化', owner: 'user:sy',
   archived: false, unread: 0, needs_human: false, last_activity: '2026-09-12T00:00:00Z',
+  members: [
+    { identity: 'user:sy', kind: 'human', status: 'working' },
+    { identity: 'agent:opencode', kind: 'agent', status: 'working', card_title: 'B233.16 执行卡' },
+    { identity: '', kind: 'seat', card_id: 'B1', card_title: '空座卡', status: 'empty' },
+  ],
   cards: [{ card_id: 'B233.14', title: '编制入站封界', status: '进行中', seat: 'cli:opencode#s1' },
           { card_id: 'B233.17', title: '组装点收窄', status: '待办' }],
   ...over,
@@ -35,15 +40,21 @@ beforeEach(() => {
 })
 
 describe('SessionChat', () => {
-  it('卡 chips：有座实线显席位、空座虚线显「还没配人」，点 chip 跳卡', async () => {
-    const onOpenCard = vi.fn()
+  it('群主行与卡 chips 行不再渲染（B358.8 #3 反例：两块迁详情抽屉）', () => {
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    expect(screen.queryByTestId('session-card-chip')).toBeNull()
+    expect(screen.queryByText(/群主：/)).toBeNull()
+    expect(document.body.textContent).not.toContain('还没配人')
+  })
+
+  it('拉卡入口在输入框左下工具钮：点击回调触发；不传 onJoinCard 不渲染', async () => {
+    const onJoinCard = vi.fn()
     const user = userEvent.setup()
-    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} onOpenCard={onOpenCard} />)
-    const chips = screen.getAllByTestId('session-card-chip')
-    expect(chips[0]).toHaveTextContent('cli:opencode#s1')
-    expect(chips[1]).toHaveTextContent('空座 · 还没配人')
-    await user.click(chips[1])
-    expect(onOpenCard).toHaveBeenCalledWith('B233.17')
+    const view = render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} onJoinCard={onJoinCard} />)
+    await user.click(screen.getByRole('button', { name: '拉卡进群' }))
+    expect(onJoinCard).toHaveBeenCalledOnce()
+    view.rerender(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    expect(screen.queryByRole('button', { name: '拉卡进群' })).toBeNull()
   })
 
   it('@mention 高亮与回复引用条：点引用条滚动定位被引用消息', async () => {
@@ -60,6 +71,91 @@ describe('SessionChat', () => {
     await user.click(screen.getByTestId('quote-42'))
     expect(window.HTMLElement.prototype.scrollIntoView).toHaveBeenCalled()
     expect(screen.getByTestId('msg-41').className).toMatch(/highlight/)
+  })
+
+  it('回复快捷钮：hover 出钮、点击进回复态、引用条内容、可取消（B358.8 #2）', async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionChat sessionId="session:1" summary={summary()}
+        events={[event(41, '商定的是走分支 B', { actor: 'user:sy' })]}
+        historyError="" onSent={() => {}} />,
+    )
+    await user.hover(screen.getByTestId('msg-41'))
+    await user.click(screen.getByRole('button', { name: '回复 #41' }))
+    expect(screen.getByTestId('reply-target')).toHaveTextContent('user:sy：商定的是走分支 B')
+    await user.click(screen.getByRole('button', { name: '取消回复' }))
+    expect(screen.queryByTestId('reply-target')).toBeNull()
+  })
+
+  it('回复态发送：请求不含 reply_to（B365 缝位反例锁），发送后回复态清空', async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionChat sessionId="session:1" summary={summary()}
+        events={[event(41, '商定的是走分支 B', { actor: 'user:sy' })]}
+        historyError="" onSent={() => {}} />,
+    )
+    await user.click(screen.getByRole('button', { name: '回复 #41' }))
+    await user.type(screen.getByRole('textbox', { name: '发送消息' }), '收到')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(sendRoomMessage).toHaveBeenCalledWith('session:1', '收到', {}))
+    expect(vi.mocked(sendRoomMessage).mock.calls[0]![2]).not.toHaveProperty('reply_to')
+    await waitFor(() => expect(screen.queryByTestId('reply-target')).toBeNull())
+  })
+
+  it('@ 输入联想：键入 @ 出候选、空座不进候选、实时筛选、Enter 插入完整 token（B358.8 #2）', async () => {
+    const user = userEvent.setup()
+    const onSent = vi.fn()
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={onSent} />)
+    const input = screen.getByRole('textbox', { name: '发送消息' })
+    await user.type(input, '@')
+    expect(screen.getByTestId('mention-menu')).toBeInTheDocument()
+    expect(screen.getAllByRole('option')).toHaveLength(2)
+    await user.type(input, 'ope')
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    expect(screen.getByTestId('mention-option-0')).toHaveAttribute('data-mention-identity', 'agent:opencode')
+    await user.keyboard('{Enter}')
+    expect(input).toHaveValue('@agent:opencode ')
+    await user.type(input, '收口归你')
+    await user.click(screen.getByRole('button', { name: '发送' }))
+    await waitFor(() => expect(sendRoomMessage).toHaveBeenCalledWith('session:1', '@agent:opencode 收口归你', { mentions: ['agent:opencode'] }))
+    expect(onSent).toHaveBeenCalled()
+  })
+
+  it('@ 联想键盘语义：Esc 关闭面板，token 变化重开；点选插入', async () => {
+    const user = userEvent.setup()
+    render(<SessionChat sessionId="session:1" summary={summary()} events={[]} historyError="" onSent={() => {}} />)
+    const input = screen.getByRole('textbox', { name: '发送消息' })
+    await user.type(input, '@sy')
+    expect(screen.getAllByRole('option')).toHaveLength(1)
+    await user.keyboard('{Escape}')
+    expect(screen.queryByTestId('mention-menu')).toBeNull()
+    // token 变化重开：继续敲入无命中的片段仍不弹（筛选语义优先），回删命中后重开
+    await user.type(input, 'x')
+    expect(screen.queryByTestId('mention-menu')).toBeNull()
+    await user.keyboard('{Backspace}')
+    expect(screen.getByTestId('mention-menu')).toBeInTheDocument()
+    await user.click(screen.getByTestId('mention-option-0'))
+    // token '@sy' 整体替换为完整记法并以空格终结
+    expect(input).toHaveValue('@user:sy ')
+  })
+
+  it('@ 候选按身份去重：同一身份显式成员+席位只出一行（review P2）', async () => {
+    const user = userEvent.setup()
+    render(
+      <SessionChat
+        sessionId="session:1"
+        summary={summary({ members: [
+          { identity: 'user:sy', kind: 'seat', status: 'working', card_id: 'B1', card_title: '席位卡' },
+          { identity: 'user:sy', kind: 'human', status: 'working' },
+        ] })}
+        events={[]} historyError="" onSent={() => {}}
+      />,
+    )
+    await user.type(screen.getByRole('textbox', { name: '发送消息' }), '@')
+    const options = screen.getAllByRole('option')
+    expect(options).toHaveLength(1)
+    expect(options[0]).toHaveAttribute('data-mention-identity', 'user:sy')
+    expect(options[0]).toHaveTextContent('成员')
   })
 
   it('发送：正文里的 @token 解析进 mentions（服务端据此寻址）', async () => {
@@ -112,9 +208,14 @@ describe('SessionChat', () => {
     expect(screen.queryByRole('button', { name: '以当前身份加入会话' })).toBeNull()
   })
 
-  it('归档只读：输入与发送禁用 + 只读横幅', () => {
-    render(<SessionChat sessionId="session:1" summary={summary({ archived: true })} events={[]} historyError="" onSent={() => {}} />)
+  it('归档只读：输入与发送禁用 + 只读横幅；回复钮与联想面板不渲染', async () => {
+    render(
+      <SessionChat sessionId="session:1" summary={summary({ archived: true })}
+        events={[event(41, '商定的是走分支 B', { actor: 'user:sy' })]}
+        historyError="" onSent={() => {}} />,
+    )
     expect(screen.getByRole('textbox', { name: '发送消息' })).toBeDisabled()
     expect(screen.getByText('会话已归档，只读。')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /回复 #/ })).toBeNull()
   })
 })

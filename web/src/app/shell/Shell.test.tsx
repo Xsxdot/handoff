@@ -16,7 +16,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import { coordinatorBase } from './Shell'
 import type { ProjectTreeResp, Task } from '../../api/types'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -1066,21 +1066,30 @@ describe('B361 会话 IA', () => {
     expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
   })
 
-  it('◫ 分屏把最近打开的会话 tab 放到焦点工作 tab 右列（工作项左/会话右）', async () => {
+  it('左栏会话行的 DataTransfer 穿过 Shell 投到工作台窗格右缘分屏（B358.8 #1）', async () => {
     vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
-    const user = userEvent.setup()
     renderShell()
-    await openBranch()
-    fireEvent.click(await screen.findByText('go.mod'))
-    await waitFor(() => expect(screen.getAllByRole('button', { name: /关闭 go.mod/ }).length).toBeGreaterThan(0))
-    await user.click(await screen.findByTestId('session-row'))
+    const row = await screen.findByTestId('session-row')
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => {
+        values.set(type, value)
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type)
+      },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    fireEvent.dragStart(row, { dataTransfer })
+    expect(dataTransfer.types).toContain(DRAG_SESSION_MIME)
+    expect(JSON.parse(values.get(DRAG_SESSION_MIME)!)).toMatchObject({ sessionId: 'session:1', title: '架构物理化' })
+
+    const target = screen.getAllByTestId('workbench-pane')[0]
+    setPaneRect(target)
+    dropAt(target, dataTransfer, 360, 200)
     expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
-    // 开会话 tab 后焦点在会话组；经左栏已打开行回聚焦工作 tab（OpenItem 投影是既有锚）
-    fireEvent.click(screen.getAllByTestId('open-item-row').find((row) => row.textContent?.includes('go.mod'))!)
-    await waitFor(() => expect(screen.getByRole('tab', { name: /go.mod/ })).toHaveAttribute('aria-selected', 'true'))
-    const before = screen.getAllByTestId('workbench-pane').length
-    fireEvent.click(screen.getByTestId('split-sessions'))
-    await waitFor(() => expect(screen.getAllByTestId('workbench-pane')).toHaveLength(before + 1))
+    expect(within(screen.getByRole('tablist', { name: '标签组' })).getAllByRole('tab', { name: /架构物理化/ })).toHaveLength(1)
   })
 
   it('反例断言：旧房间面板任何形态都不再出现', async () => {
@@ -1093,7 +1102,7 @@ describe('B361 会话 IA', () => {
     expect(screen.queryByRole('button', { name: '打开房间面板' })).toBeNull()
   })
 
-  it('新建会话：对话框收集标题与统一记法群主，createSession 后刷新列表', async () => {
+  it('新建会话：对话框收集标题与统一记法群主，createSession 后刷新列表并记忆 owner', async () => {
     const { createSession } = await import('../../api/rooms')
     vi.mocked(createSession).mockResolvedValue({ id: 'session:9', title: '新场', owner: 'user:sy', archived: false, created_at: '', updated_at: '' })
     vi.mocked(fetchSessions).mockResolvedValue([] as never)
@@ -1101,9 +1110,11 @@ describe('B361 会话 IA', () => {
     renderShell()
     await user.click(await screen.findByRole('button', { name: '新建会话' }))
     await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
-    await user.type(screen.getByRole('textbox', { name: '群主身份' }), 'user:sy')
+    await user.type(screen.getByRole('combobox', { name: '群主身份' }), 'user:sy')
     await user.click(screen.getByRole('button', { name: '创建' }))
     await waitFor(() => expect(createSession).toHaveBeenCalledWith('新场', 'user:sy'))
+    // B358.8 #7：成功创建后回写记忆，下次新建对话框直接预填
+    await waitFor(() => expect(window.localStorage.getItem('handoff.last-session-owner')).toBe('user:sy'))
   })
 
   it('关闭会话 tab（组关闭）后 tabbar 不再含该会话', async () => {
