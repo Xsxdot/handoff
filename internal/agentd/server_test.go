@@ -71,6 +71,15 @@ func newTestEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logger) *t
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := agentd.NewServer(cfg, st, logger)
+	// B233.28 P-1-A：任务/项目读路径切 s.mgr 后，未注入 manager 的读接口会 503。
+	// 生产恒在 Serve 前 SetManager（cmd/agentd.go），故测试夹具默认注入真 Manager；
+	// 需要 manager 缺席语义的用例（登记 503 等）用 newTestAgentdEnv 或自行覆盖。
+	srvMgr := orchestration.NewManager(st, srv.Hub(),
+		map[string]executor.Adapter{"fake": fake.New(nil)},
+		&config.Config{Token: cfg.Token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srvMgr.SetWorkspace(workspace.NewCapability())
+	srv.SetManager(srvMgr)
 	ts := testhttp.NewServer(t, srv.Handler())
 	return &testEnv{srv: srv, ts: ts, st: st, token: cfg.Token}
 }
@@ -1183,5 +1192,50 @@ func TestHandleReplyIdempotentDoesNotRelayTwice(t *testing.T) {
 	sends := f.Sends()
 	if len(sends) != 1 {
 		t.Fatalf("底层 Send 次数 = %d, want 1（幂等不二次中继）", len(sends))
+	}
+}
+
+// recordingOrchClient 借嵌入接口获得完整方法集，覆盖 reply 路径关心的方法与
+// byTask 中间件会调用的查询方法（reply 路由被 byTask 包住）。
+type recordingOrchClient struct {
+	orchestration.OrchestrationClient
+	answerCalls int
+	resumeCalls int
+	applied     bool
+	answerErr   error
+}
+
+func (c *recordingOrchClient) GetTask(string) (*proto.Task, error) { return nil, store.ErrNotFound }
+func (c *recordingOrchClient) MirrorTaskTarget(string) (string, bool, error) {
+	return "", false, nil
+}
+func (c *recordingOrchClient) AnswerTicket(_ context.Context, _, _, _ string) (bool, error) {
+	c.answerCalls++
+	return c.applied, c.answerErr
+}
+func (c *recordingOrchClient) ResumeIfIdle(context.Context, string)     { c.resumeCalls++ }
+func (c *recordingOrchClient) RelayAnswer(string, string, string) error { return nil }
+func (c *recordingOrchClient) NoteDeliveryFailed(string, string, error) {}
+
+// TestHandleReplyDelegatesToFacade 锁 S1：reply 只打编排门面，不再自己
+// GetTicket/AnswerTicketApplied/AppendEvent/CAS 回迁。fake client 未落库，
+// 若 handler 回退直打 s.st，answerCalls 恒 0 且回报 404 → 本测红。
+func TestHandleReplyDelegatesToFacade(t *testing.T) {
+	env := newTestEnvWithCfg(t, &config.Config{Token: testToken,
+		Executor: config.ExecutorConfig{Default: "fake"}},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	fakeMgr := &recordingOrchClient{applied: true}
+	env.srv.SetManager(fakeMgr)
+
+	resp := env.post(t, "/api/tasks/t1/reply", `{"ticket_id":"tk1","answer":"允许"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reply 返回 %d, want 200", resp.StatusCode)
+	}
+	if fakeMgr.answerCalls != 1 {
+		t.Fatalf("门面 AnswerTicket 调用次数=%d, want 1", fakeMgr.answerCalls)
+	}
+	if fakeMgr.resumeCalls != 1 {
+		t.Fatalf("门面 ResumeIfIdle 调用次数=%d, want 1", fakeMgr.resumeCalls)
 	}
 }

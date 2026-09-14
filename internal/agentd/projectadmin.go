@@ -84,7 +84,7 @@ func (s *Server) handleProjectPatch(w http.ResponseWriter, r *http.Request) {
 			map[string]string{"error": "new_name 与 path 不能都为空"})
 		return
 	}
-	cur, err := s.st.GetProjectLocationByName(name)
+	cur, err := s.mgr.GetProjectLocationByName(name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.log.Warn("project patch 被拒：项目不存在", "name", name, "cause", err)
@@ -133,7 +133,7 @@ func (s *Server) handleProjectPatch(w http.ResponseWriter, r *http.Request) {
 			newPath = root
 		}
 	}
-	loc, err := s.st.UpdateProjectLocation(name, newName, newPath)
+	loc, err := s.mgr.UpdateProjectLocation(name, newName, newPath)
 	if err != nil {
 		s.writeProjectError(w, name, err)
 		return
@@ -163,7 +163,11 @@ func (s *Server) handleProjectBranches(w http.ResponseWriter, r *http.Request) {
 	}
 	name := r.PathValue("name")
 	s.log.Info("列项目分支请求", "name", name, "machine", r.URL.Query().Get("machine"))
-	loc, err := s.st.GetProjectLocationByName(name)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	loc, err := s.mgr.GetProjectLocationByName(name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.log.Warn("列项目分支被拒：项目不存在", "name", name, "status", http.StatusNotFound, "cause", err)
@@ -234,6 +238,10 @@ func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	name := r.PathValue("name")
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
 	var req proto.CreateWorktreeReq
 	if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&req); err != nil {
 		s.log.Warn("建树请求体解析失败", "name", name, "status", http.StatusBadRequest, "cause", err)
@@ -243,7 +251,7 @@ func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Requ
 	}
 	s.log.Info("建树请求", "name", name, "machine", r.URL.Query().Get("machine"),
 		"mode", req.Mode, "branch", req.Branch, "base", req.Base, "card_count", len(req.CardIDs))
-	loc, err := s.st.GetProjectLocationByName(name)
+	loc, err := s.mgr.GetProjectLocationByName(name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.log.Warn("建树被拒：项目不存在", "name", name, "status", http.StatusNotFound, "cause", err)
@@ -252,10 +260,6 @@ func (s *Server) handleProjectWorktreeCreate(w http.ResponseWriter, r *http.Requ
 		}
 		s.log.Error("建树失败：查询位置表", "name", name, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": truncateRunes(err.Error(), 200)})
-		return
-	}
-	if s.mgr == nil {
-		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
 		return
 	}
 	if err := s.mgr.RequireWorkspace(); err != nil {

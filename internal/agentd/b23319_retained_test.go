@@ -17,6 +17,7 @@ import (
 // TestTaskListAnnotatesProjectID 断言 GET /api/tasks 的每条都带上归属注解。
 func TestTaskListAnnotatesProjectID(t *testing.T) {
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	if err := env.st.CreateProjectLocation(&proto.ProjectLocation{
 		ProjectID: "aaaa111122223333", Name: "handoff",
 		Path: "/home/dev/handoff", OriginURL: "git@github.com:x/handoff.git",

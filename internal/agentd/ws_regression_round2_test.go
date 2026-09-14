@@ -91,6 +91,7 @@ func newWSTestEnvWithSockBuf(t *testing.T, sockBuf int) *wsTestEnv {
 	logger := slog.New(slog.NewTextHandler(env, &slog.HandlerOptions{Level: slog.LevelDebug}))
 	cfg := &config.Config{Token: wsTestToken, DataDir: t.TempDir()}
 	env.srv = NewServer(cfg, st, logger)
+	newManagerForServer(t, env.srv, nil)
 	env.srv.onTruncationDiagnosed = func(verdict string) {
 		env.truncationDiagnosed <- verdict
 	}

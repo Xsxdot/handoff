@@ -67,6 +67,7 @@ func newUpdateServer(t *testing.T, st *store.Store, managed bool) (*Server, *[]s
 		},
 	})
 	srv.SetRestart(func(reason string) bool { *acts = append(*acts, "restart:"+reason); return true })
+	newManagerForServer(t, srv, nil)
 	return srv, acts
 }
 

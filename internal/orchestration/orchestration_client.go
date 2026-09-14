@@ -13,6 +13,7 @@ import (
 	"context"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
@@ -50,9 +51,26 @@ type OrchestrationClient interface {
 	Reclaim(ctx context.Context, taskID string, force bool) (*proto.ReclaimResp, error)
 	GC(ctx context.Context, force, execute bool) (*proto.GCResp, error)
 
+	// —— 任务查询与应答（B233.28：gateway 不再直打 store 的这一面）——
+	ListTasks() ([]proto.Task, error)
+	GetTask(taskID string) (*proto.Task, error)
+	PendingTickets(taskID string) ([]proto.Ticket, error)
+	EventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)
+	EventsFromAsc(taskID string, fromSeq int64, limit int) ([]proto.Event, error)
+	LatestEvent(taskID string) (*proto.Event, error)
+	CountEvents(taskID string, afterSeq, throughSeq int64) (int, error)
+	ListMirrorTasks() ([]store.MirrorTask, error)
+	MirrorTaskTarget(taskID string) (string, bool, error)
+	MirrorEventsFrom(taskID string, fromSeq int64, limit int) ([]proto.Event, error)
+	AnswerTicket(ctx context.Context, taskID, ticketID, answer string) (applied bool, err error)
+	ResumeIfIdle(ctx context.Context, taskID string)
+
 	// —— 项目位置 ——
 	RegisterProject(ctx context.Context, req workspace.RegisterProjectReq) (proto.ProjectLocation, error)
 	ListProjects(ctx context.Context) ([]proto.ProjectLocation, error)
+	ListProjectLocations() ([]proto.ProjectLocation, error)
+	GetProjectLocationByName(name string) (proto.ProjectLocation, error)
+	UpdateProjectLocation(name, newName, newPath string) (proto.ProjectLocation, error)
 	UnregisterProject(ctx context.Context, name string) error
 
 	// —— 执行者名单 ——

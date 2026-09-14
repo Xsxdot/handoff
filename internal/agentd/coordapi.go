@@ -257,11 +257,15 @@ func (s *Server) handleCoordForget(w http.ResponseWriter, r *http.Request) {
 // （SessionSpec.Workdir=项目位置根）。解析不到不阻断拉起（置空由承载层缺省），
 // 只留日志——plan §D5.2 的 best-effort 定案。
 func (s *Server) resolveCoordWorkdir(cardID string) string {
+	if s.mgr == nil {
+		// best-effort 解析：缺 manager 只留空，由承载层缺省决定工作目录
+		return ""
+	}
 	card, err := s.ledger.GetCard(cardID)
 	if err != nil {
 		return ""
 	}
-	entries, err := s.st.ListProjectLocations()
+	entries, err := s.mgr.ListProjectLocations()
 	if err != nil {
 		s.log.Warn("协调者工作目录解析失败：列项目位置出错", "card", cardID, "cause", err)
 		return ""

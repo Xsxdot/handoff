@@ -31,7 +31,12 @@ func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		if _, err := s.st.GetTask(id); err == nil {
+		if s.mgr == nil {
+			s.log.Warn("任务路由：manager 未注入", "task", id)
+			writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+			return
+		}
+		if _, err := s.mgr.GetTask(id); err == nil {
 			next(w, r) // 本机的活
 			return
 		} else if !errors.Is(err, store.ErrNotFound) {
@@ -39,7 +44,7 @@ func (s *Server) byTask(next http.HandlerFunc) http.HandlerFunc {
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
 			return
 		}
-		target, ok, err := s.st.MirrorTaskTarget(id)
+		target, ok, err := s.mgr.MirrorTaskTarget(id)
 		if err != nil {
 			s.log.Error("任务路由：查镜像索引失败", "task", id, "cause", err)
 			writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "内部错误"})
