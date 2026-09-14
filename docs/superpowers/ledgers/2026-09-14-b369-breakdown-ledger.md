@@ -60,3 +60,26 @@ $ git add docs/superpowers/specs/b369-breakdown.md docs/superpowers/ledgers/2026
 
 随后按红线只 amend 一次把本台账行收进同批提交——amend 会换 hash（历史读数 96a0a20a 即提交当时读数，不复写 amend 后 HEAD）。
 
+## 七、协调者拍板（2026-09-14）
+
+P1–P6 全案 A：
+
+- P1 A：同一份 Shell 条件渲染底栏，不开 `/m` 树。
+- P2 A：卡 tab 只做布局适配 + 复用既有 move/评论，不新增账本写入面。
+- P3 A：终端输入留在 S6；键条不得再造第 6 个 `terminal*` 源文件。
+- P4 A：兑换在 Go 核，壳只做 cookie 桥接。
+- P5 A：壳工程不进本仓；S1 壳侧孪生归真机清单 #1，仓内只落共享 JSON。
+- P6 A：轮换文档并入 S3 `mobile/README.md`。
+
+无退回 contract。拍板结果回写 `b369-breakdown.md` 稿首与 §0，头部改「已拍板」。
+
+### 提交事实（历史读数）
+
+```
+$ git add docs/superpowers/specs/b369-breakdown.md docs/superpowers/ledgers/2026-09-14-b369-breakdown-ledger.md && git commit -m "breakdown(B369): 拍板 P1–P6 全案 A"
+[cards/B369-charter-4 31f2a94a] breakdown(B369): 拍板 P1–P6 全案 A
+ 2 files changed, 29 insertions(+), 10 deletions(-)
+```
+
+随后只 amend 一次把本段收进同批提交。
+

@@ -1,6 +1,6 @@
 # B369 拆解提案：移动端 App（webview 薄壳 + gomobile 连接核）
 
-**状态：待拍板（2026-09-14）**
+**状态：已拍板（2026-09-14）——P1–P6 全案 A（P3 约束：键条不得再造 `terminal*` 第 6 个源文件；P5 壳工程不进本仓，S1 壳侧孪生归真机）**
 **卡：** B369（L3 重档；contract 已冻结 @ `6f10ba7c`，Ticket 0 骨架与直通竖切在工作树）
 **上游 spec：** `docs/superpowers/specs/2026-09-13-mobile-app-design.md`（头部状态：**已批准**，本稿逐字核对过文件头）
 **冻结 contract：** `docs/superpowers/specs/b369-contract.md`（头部状态：**已冻结**；本稿 §2.2 核对结论 = **无退回项**，§2.4 三条边界澄清已回写契约末尾修订记录一行）
@@ -20,30 +20,36 @@
    - **方案 A（推荐）：新增移动壳内容子卡，作为 web 响应式断点谱系的一部分，不新开路由树**——底栏四 tab 用既有 `/cards`、`/settings`、会话左栏、项目树复用；移动断点下切换为底栏导航（同一份 Shell，条件渲染）。理由：spec「UI 一份、桌面/移动永不漂移」；`/cards` 已是工作项账本页，会话/项目已有真实页面，移动端只是布局变体。
    - **方案 B：另开 `/m` 移动路由树**（独立 Screen 组件族）。理由：移动 IA 与桌面分叉更干净；代价是两套 IA 并行、违背「一份产物」论据（ADR 0009），且 spec 明言「响应式覆盖」不是新树。
    - 归属：本岔口影响 S6 的有界文件集，拍板前 S6 只能写到「响应式断点与底栏导航」形态层。
+   - **裁决（2026-09-14 协调者）：A。** spec 明言「UI 一份、响应式覆盖」；另开 `/m` 树是第二套 IA，违背 ADR 0009。底栏是同一份 Shell 的条件渲染，复用 `/cards`、`/settings`、会话左栏、项目树。
 2. **P2｜「卡」tab 的「需要你」浮顶 + 验收通过走 card move gate 的操作面是否属本期。**
    spec 用户故事 4 明列「进卡详情逐条对照证据验收、评论 #引用成链、验收通过走 card move 过工作流 gate（`cmd/card_records.go:6` 边界）」。现状 `/cards` 页操作面在 `web/src/app/cards/`（`CardsPage`/`flows`），非移动专用；移动端是否只做只读镜像 + 已存在的 move 动作，还是要新增移动验收交互，规格未定。
    - **方案 A（推荐）：本期只做移动端布局适配 + 复用既有卡片操作（move/评论入口），不新增账本写入面。** 理由：spec「卡 tab 镜像桌面工作项看板 v2」是呈现层承诺；账本写入面（move gate）是网关/账本域既有能力，移动端零改动即达。
    - **方案 B：为移动端新增专用验收/评论组件与接口。** 理由：触屏交互更顺手；代价是新增 d_web 写路径与 d_gateway 端点，触发门禁族复审，且 spec 未点名这是移动端增量。
+   - **裁决：A。** 用户故事 4 的 move gate 是网关/账本既有能力，移动端零改写入面即达。本期不新开 d_web 写路径、不新开 d_gateway 端点。
 3. **P3｜移动终端输入层（特殊键条 + IME 组合）的载体与验收基。**
    spec 实现决定要求「终端输入层含特殊键条与 IME 组合，沿用 08-11 评审积累的输入法补丁认知（`docs/superpowers/reviews/2026-08-11-desktop-form-factor-assessment.md:102`）」。现状 `terminalInput.ts` 只处理 WKWebView Option 组合键（`web/src/app/workbench/terminalInput.ts:18`），无移动 IME/键条组件；`TerminalTab.tsx` 732 行，无响应式键条。
    - **方案 A（推荐）：S6 内新增移动键条组件 + IME 输入路径，验收以 `terminalInput` 既有测试体系 + 新增组件测试收口；真机 IME 走真机清单。** 理由：spec 明列一期主干；与既有终端输入修正同文件族，属 d_web_workbench 有界文件集。
    - **方案 B：拆独立子卡（web 终端输入层专卡）。** 理由：终端输入是脊柱级风险点、可独立验；代价是 S6 与输入卡共享 `TerminalTab.tsx` 同一文件，需 plan 定文件边界。
    - 归属：影响 S6 是否拆分为 S6a（响应式与 IA）+ S6b（终端输入层）。
+   - **裁决：A。** 终端输入是一期主干，但与四 tab 同属一份 UI 产物、同碰 `TerminalTab.tsx`；拆 S6b 会造两张卡抢同一文件。约束：键条做成独立组件且**不得**再造第 6 个 `terminal*` 前缀源文件（用 `MobileKeybar` 等非 terminal 前缀）；IME 真机走 §5 #4。
 4. **P4｜程序化 ticket→cookie 兑换与 cookie jar 桥接的实现载体归属（移动核 vs 壳）。**
    contract §3.4 明言「本节点只落反代与端口隔离；程序化兑换与 cookie jar 桥接是越过空壳的可观测行为，列欠账 §8.2」，且「每机独立回环端口 + 切机清 webview 会话罐」在 spec 选定的语义。但兑换发生在 Go 核（`internal/mobilecore`）还是壳侧（Kotlin/Swift 的 cookie jar / WKWebView 的 `WKHTTPCookieStore` / Android `CookieManager`）属未定实现选择。
    - **方案 A（推荐）：兑换逻辑在 Go 核（`internal/mobilecore` 新增 ticket→cookie 程序化兑换），cookie 注入 webview 由绑定面（`mobile/bind`）暴露给壳，壳调平台 cookie API。** 理由：协议逻辑零重实现、核侧可机内测试（fake agentd 返回 Set-Cookie）；壳侧只做薄桥接。
    - **方案 B：核只吐 ticket URL，壳自行 HTTP 兑换并管 cookie jar。** 理由：壳与 webview cookie 同进程更方便；代价是协议逻辑（302 语义、cookie 属性、每机一罐）落到两侧壳，各自重实现。
    - 归属：影响 S2（连接核）与 S4（壳绑定面）的文件边界；拍板前 S2 不含兑换实现。
+   - **裁决：A。** 协议逻辑零重实现是 spec 硬约束；302 / Set-Cookie / 每机一罐若落到 Kotlin+Swift 就是两侧重实现。核内兑换可机内测；壳只调平台 cookie API。S2 含兑换实现，S4 暴露桥接方法、不暴露 token。
 5. **P5｜壳骨架（Kotlin/Swift 工程）是否在本仓与本期落盘。**
    spec 说壳职责四件（webview 容器、扫码配对、凭据入安全存储、推送 token 预留），但本仓现状零 Kotlin/Swift（`find` 无 `.kt`/`.swift`；`mobile/` 只有 `bind/bind.go`）。spec 真机验证形态是 sideload/TestFlight，商店上架 OOS。
    - **方案 A（推荐）：壳工程不进本仓本卡**——`mobile/bind` 是唯一交接面；壳（Android Studio / Xcode 工程）由协调者在真机侧另办，本卡只保证绑定面可编（AAR/XCFramework 形态由工具链 gate 回执支撑）。理由：有界文件集圈不出跨工具链的壳工程；contract §5 明言「移动核组装点是 `mobile/bind/bind.go`，图外」，壳侧未列组装点。
    - **方案 B：本卡新增 `mobile/android/` + `mobile/ios/` 壳骨架（各自构建文件 + 极薄源码）。** 理由：交付更完整；代价是引入 Gradle/Xcode 构建链，机内 Linux 无法验证，且远超「有界文件集」。
    - 归属：拍板前 S4 只写绑定面（`mobile/bind`），不承诺壳工程。
+   - **裁决：A。** 圈不出跨 Gradle/Xcode 的有界文件集，linux 工作树也无法验。`mobile/bind` 是本卡唯一交接面；壳工程由协调者真机侧另办。后果：S1 的 Kotlin/Swift 解码测试**不进本仓**，只落共享 JSON fixture；壳侧孪生归真机清单 #1。
 6. **P6｜token 轮换操作文档的归属（spec 用户故事 8 / contract §8.9）。**
    contract §8.9 明言「token 泄露唯一处置 = 双端轮换节点 token 并重启；现状无文档，随本期 contract/文档段产出」，但 contract 本节点未产出该文档，列为欠账。本稿 §4 行为闭环核对发现它是唯一无归属的 spec 承诺。
    - **方案 A（推荐）：并入 S3 的 `mobile/README.md`（与本卡交付物同批提交）。** 理由：与构建/凭据卫生文档同处，`mobile/` 是本卡最自然的凭据主题落点；不新开子卡。
    - **方案 B：单开一张纯文档子卡（`docs/superpowers/` 下独立文档）。** 理由：文档生命周期独立、便于检索；代价是多一张卡的开销。
    - 归属：拍板前该承诺在闭环表标注「无归属（待 P6）」。
+   - **裁决：A。** 不单开文档卡。轮换操作文档并入 S3 `mobile/README.md`（与构建/凭据卫生同处）。§4 闭环该行归属改为 S3。
 
 ---
 
@@ -167,10 +173,10 @@ S1 与 S5 可并行（S5 只依赖 `proto.EncodePairBundle` 与既有 `IssueAuth
 - `go test ./internal/proto/... -count=1` 退出 0（含 `TestPairBundleEnvelopeVersionKey`/`RoundTrip`/`RejectsUnknownVersion`/`RejectsMalformed`）。
 - **roundtrip 属性测试存在且可红**：随机构造合法 `PairBundle`（含空/非空 `Relay`、1..N 机器、relay/直连两形态、有/无 `Ticket`、零值/非零时间），断言 `Decode(Encode(b))` 与输入在**所有键**上恒等；把 `EncodePairBundle` 的版本字段改成常量错误值时测试变红（变异验证）。批判性质：区分「字段缺失」与「值为零」——`Ticket` 为 nil vs 空 `PairTicket{}`、`Credential` 空串 vs 缺键，roundtrip 必须保留可空类型语义。
 - **金样本键集逐键断言**：`pairing_fixture_test.go` 的金样本 JSON 文件（或内联字符串）与 `PairBundle` 的 JSON tag 逐键一致；新增/改名 tag 时测试红。
-- **壳侧孪生样本落地于 `mobile/`**（Kotlin/Swift 各一份 json fixture + 解码测试）：与本卡 Go 金样本**同一份 JSON 字节**（从 Go 侧导出或共享文件），壳侧断言解出的每个字段值。**注意：壳测试在移动工具链内跑（Gradle/Xcode），本工作树 linux 无法跑 → 「未验证，需真机/需移动 CI」**；归真机清单 #1。
+- **共享金样本字节落地于 `mobile/bind/pairing_fixture.json`**（从 Go 侧导出，与 `pairing_fixture_test.go` 同源）。P5=A：Kotlin/Swift 解码测试**不进本仓**；壳工程侧用同一份 JSON 做孪生断言，归真机清单 #1。本卡机内只锁 Go roundtrip + 共享字节文件存在且与 tag 逐键一致。
 - `codegraph validate --view cards-B369-charter` 与 `check --view cards-B369-charter` 保持 0 issue/0 fail；`go test ./cmd/ -run TestRepoContractGate` PASS。
 
-**④入口指针与有界文件集**：`internal/proto/pairing.go`（只读，除非发现缺陷）、`internal/proto/pairing_fixture_test.go`（改：加属性测试 + 键集断言）、`mobile/bind/pairing_fixture.json`（新，共享金样本）、`mobile/android/.../PairDecodeTest.kt`、`mobile/ios/.../PairDecodeTests.swift`（壳侧孪生，路径按 P5 拍板）。符号锚：`internal/proto/pairing.go#PairBundle`、`#EncodePairBundle`、`#DecodePairBundle`、`#ErrPairVersion`、`#ErrPairMalformed`。
+**④入口指针与有界文件集**：`internal/proto/pairing.go`（只读，除非发现缺陷）、`internal/proto/pairing_fixture_test.go`（改：加属性测试 + 键集断言）、`mobile/bind/pairing_fixture.json`（新，共享金样本）。P5=A 后无 `.kt`/`.swift` 入库路径。符号锚：`internal/proto/pairing.go#PairBundle`、`#EncodePairBundle`、`#DecodePairBundle`、`#ErrPairVersion`、`#ErrPairMalformed`。
 
 **缺陷族对抗（验收栏）**：
 
@@ -221,12 +227,13 @@ S1 与 S5 可并行（S5 只依赖 `proto.EncodePairBundle` 与既有 `IssueAuth
 
 **①契约引用**：contract §0（工具链 gate 回执与两条工程约束）、§4.4（条 28–29）、§8.1、§8.6、§9 附区条 4；spec 测试决定（gomobile spike 列工具链 gate）；P5。
 
-**②意图与为什么**：contract §0 的两条工程约束必须落进 `mobile/` 模块：go.mod 带 `tool golang.org/x/mobile/cmd/gobind`（否则新版 gomobile 报 `golang.org/x/mobile` 不在依赖图内），Android 构建显式 `-androidapi 21`（NDK 30 移除 API<21）。本卡提供可复现的构建脚本与本仓文档，让「怎么出 AAR/XCFramework」不靠记忆。
+**②意图与为什么**：contract §0 的两条工程约束必须落进 `mobile/` 模块：go.mod 带 `tool golang.org/x/mobile/cmd/gobind`（否则新版 gomobile 报 `golang.org/x/mobile` 不在依赖图内），Android 构建显式 `-androidapi 21`（NDK 30 移除 API<21）。本卡提供可复现的构建脚本与本仓文档，让「怎么出 AAR/XCFramework」不靠记忆。P6=A：token 轮换操作文档（spec 用户故事 8 / contract §8.9）并入同一份 `mobile/README.md`，不另开文档卡。
 
 **③验收（行为化）**：
 
 - `mobile/go.mod` 含 `tool golang.org/x/mobile/cmd/gobind`（grep 断言）；`cd mobile && go build ./...` 退出 0（实测本工作树已 0，加 tool 指令后须仍 0）。
 - 构建脚本（如 `mobile/build.sh` 或 Taskfile）存在，Android 分支显式 `-androidapi 21`，iOS 分支 `-target=ios`；脚本注释记录 gomobile 版本与 NDK 版本（contract §0 台账读数）。
+- `mobile/README.md` 含 token 泄露唯一处置：双端轮换节点 token 并重启（contract §8.9）；不得把轮换写成「吊销 cookie 会话即够」。
 - **真机/移动 CI 验证**：在本工作树（linux，无 Xcode/NDK）**无法**跑 `gomobile bind`；脚本正确性以「本工作树 `go build` 通过 + 脚本内容静态核对 + contract §0 的双端 PASS 台账」为据，**实际 AAR/XCFramework 重跑未验证，需真机/移动 CI**（#3）。不得把 linux 上没跑成的 bind 写成结论。
 
 **④入口指针与有界文件集**：`mobile/go.mod`（改）、`mobile/build.sh`（新）、`mobile/README.md`（新）。符号锚：无（构建文件），引用 contract §0 台账。
@@ -253,7 +260,7 @@ S1 与 S5 可并行（S5 只依赖 `proto.EncodePairBundle` 与既有 `IssueAuth
 
 - `cd mobile && go build ./...` 退出 0；根模块 `go list ./...` 仍不含 `/mobile`（实测 0 命中）——反向依赖禁止。
 - 绑定导出面方法数与签名有源码断言（grep/AST），且不含任何协议逻辑（壳侧协议零重实现）。
-- 若 P4=A：新增的 cookie/兑换桥接方法有编译期与单元断言（fake 核）；真实 `WKHTTPCookieStore`/`CookieManager` 注入**未验证，需真机**（#2）。
+- P4=A：新增 cookie/兑换桥接方法有编译期与单元断言（fake 核）；真实 `WKHTTPCookieStore`/`CookieManager` 注入**未验证，需真机**（#2）。导出面不得含 `Token`/`Dial`。
 - 文档（`mobile/README.md`，与 S3 共用）写清壳侧接线契约（哪几个方法、cookie 如何注入）。
 
 **④入口指针与有界文件集**：`mobile/bind/bind.go`（改）；可能新增 `mobile/bind/session.go`。符号锚：`mobile/bind/bind.go#Pair`、`#Origin`、`#MachineNames`、`#Close`、`internal/mobilecore/core.go#Core.Pair`、`#Core.Origin`。
@@ -318,7 +325,7 @@ S1 与 S5 可并行（S5 只依赖 `proto.EncodePairBundle` 与既有 `IssueAuth
 - `cd web && npx tsc -b` 与 `npx eslint .` 退出 0。
 - **真机走查**：真实 iOS/Android webview 内对照十一屏原型（W1–…）逐屏，含底栏、扫码配对入口、终端键条与 IME、外接键盘收起键条 → **未验证，需真机**（#4）。
 
-**④入口指针与有界文件集**：`web/src/app/shell/Shell.tsx`（响应式断点与底栏导航）、`web/src/app/rooms/`（会话移动镜像）、`web/src/app/board/`+`cards/`（卡 tab 镜像）、`web/src/app/tree/`+`projects/`+`files/`（项目 tab）、`web/src/app/settings/SettingsPage.tsx`（配对清单入口）、`web/src/app/workbench/terminalInput.ts`+`TerminalTab.tsx`（键条/IME）、`web/src/app/lib/desktopShell.ts`（移动壳探针，如需）、各自 `*.test.ts(x)`。符号锚：`web/src/app/shell/Shell.tsx#Shell`、`web/src/app/workbench/terminalInput.ts#installTerminalInputFix`、`web/src/app/workbench/TerminalTab.tsx#TerminalTab`、`web/src/app/lib/desktopShell.ts#isDesktopShell`。
+**④入口指针与有界文件集**：`web/src/app/shell/Shell.tsx`（响应式断点与底栏导航）、`web/src/app/rooms/`（会话移动镜像）、`web/src/app/board/`+`cards/`（卡 tab 镜像）、`web/src/app/tree/`+`projects/`+`files/`（项目 tab）、`web/src/app/settings/SettingsPage.tsx`（配对清单入口）、`web/src/app/workbench/terminalInput.ts`+`TerminalTab.tsx`（IME 路径）+ 非 `terminal*` 前缀的键条组件（P3 约束）、`web/src/app/lib/desktopShell.ts`（移动壳探针，如需）、各自 `*.test.ts(x)`。符号锚：`web/src/app/shell/Shell.tsx#Shell`、`web/src/app/workbench/terminalInput.ts#installTerminalInputFix`、`web/src/app/workbench/TerminalTab.tsx#TerminalTab`、`web/src/app/lib/desktopShell.ts#isDesktopShell`。
 
 **缺陷族对抗（验收栏）**：
 
@@ -352,12 +359,11 @@ S1 与 S5 可并行（S5 只依赖 `proto.EncodePairBundle` 与既有 `IssueAuth
 | 用户外出终端输入 | 移动键条 + IME 组合 + xterm | `TerminalTab` 输入路径 | 特殊键/组合输入上屏 | S6（P3 拍板后定拆分） |
 | pad/折叠展开态 | 响应式断点（分栏 + 外接键盘收起键条） | Shell 布局 | 对话与终端分栏、键条收起 | S6 |
 | 同局域网走直连 | `DefaultDial` 直连分支（`client.New`） | `Core.Pair` | 不绕 relay（Origin 反代走直连 Transport） | S2 |
-| 手机丢失吊销 | `handoff sessions revoke`（既有） | agentd 会话表 | cookie 会话失效；token 泄露需双端轮换 | S5?（轮换文档，§3.6 未含）→ **文档欠账归实现节点**（见下） |
+| 手机丢失吊销 | `handoff sessions revoke`（既有）+ 双端轮换节点 token | agentd 会话表 / 节点配置 | cookie 会话失效；token 泄露须双端轮换并重启（不只吊销 cookie） | S3（`mobile/README.md`，P6=A） |
 | 配对多机管理 | `MachineNames` + bundle 各机登记 | 设置页配对清单 | 清单列出已配对机器 | S2、S6（设置） |
 
-**闭环核对结论**：除下列两处外，每条承诺行为五格齐、有归属。
+**闭环核对结论**：P6=A 后轮换文档归属 S3，每条承诺行为五格齐、有归属。
 
-- **轮换操作文档（spec 用户故事 8，contract §8.9）**：载体是纯文档，无跨子系统闭环，其归属待 **P6** 裁（并入 S3 或单开文档子卡）。**在 P6 裁决前该承诺不得视作已归属。**
 - **推送通知（APNs/FCM）**：spec Out of Scope，不在闭环表。
 
 未发现「只活在接口、测试或无人认领格子里的承诺」。
@@ -382,5 +388,5 @@ S1 与 S5 可并行（S5 只依赖 `proto.EncodePairBundle` 与既有 `IssueAuth
 - [x] 「待拍板」岔口 P1–P6 集中列于稿首 §0，正文岔口一律回指。
 - [x] 「未验证，需真机」汇总为 §5 七条。
 - [x] 每张子卡有界文件集核过（§3 各④）；圈不出的（壳工程按 P5、轮换文档按 P6 路由），未硬塞进功能卡。
-- [x] 行为闭环 §4 每行五格完整；轮换文档一处明确标为无归属并挂 P6 待裁，未冒充已归属。
+- [x] 行为闭环 §4 每行五格完整；P6=A 后轮换文档归属 S3，无无人认领格子。
 - [x] 收尾动作：`codegraph resolve --doc docs/superpowers/specs/b369-breakdown.md` 与 `check`/`validate` 结果记台账；坏锚即修。
