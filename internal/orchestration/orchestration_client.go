@@ -31,8 +31,8 @@ type TerminalOutcome struct {
 
 // OrchestrationClient 是 gateway 生产路径消费任务编排能力的唯一接口。
 //
-// 接口按架构法第九条定义在使用方（gateway）；实现是迁出后的编排 Manager。
-// 新增方法先回 contract 节点。
+// B233.26 反转 D1 后接口随提供方归本包（沿 capabilities.go 先例）；gateway
+// 以字段类型持有，不再在使用方定义。新增方法先回 contract 节点。
 type OrchestrationClient interface {
 	// —— 任务生命周期 ——
 	Dispatch(ctx context.Context, req DispatchReq) (*proto.Task, error)
