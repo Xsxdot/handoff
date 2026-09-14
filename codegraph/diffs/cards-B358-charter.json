@@ -2449,12 +2449,5 @@
   "n_web_app_rooms_roomNeedsReply",
   "n_web_app_rooms_roomPreview",
   "n_web_app_rooms_visibleRooms"
- ],
- "containersAdded": {
-  "k_web_api_rooms": {
-   "label": "api/rooms API 函数",
-   "kind": "TypeScript 函数组",
-   "domain": "d_web"
-  }
- }
+ ]
 }
