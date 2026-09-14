@@ -42,16 +42,12 @@ var (
 	bestDom   = map[string]string{}
 	// 阶段二拟登记的 best 映射（对旧 best 有意修订处），阶段一 baseline 的
 	// container.domain 按本表 + 包→域映射写，保证两阶段一致。
-	// 依据 B233.22 placement：B1/B2/B3/B9/B10 等 B 档成员因 §0-3 的环/Server 绑定
-	// 留驻 gateway（留驻面继续 d_gateway），其 d_orchestration 应然记 placement 残余；
-	// 待方向反转卡落地时随迁改登记。
-	domOverride = map[string]string{
-		"k_agentd_fn":          "d_gateway",
-		"k_agentd_model":       "d_gateway",
-		"k_agentd_Hub":         "d_gateway",
-		"k_agentd_Shutdown":    "d_gateway",
-		"k_agentd_pullTracker": "d_gateway",
-	}
+	// B233.26 刀3：D1 方向反转后，B233.23 钉死的五条 gateway override 全部删除——
+	// k_agentd_Hub/Shutdown/pullTracker 已随迁 orchestration（容器 id 变
+	// k_orchestration_*，由 pkgDomain 归 d_orchestration），k_agentd_fn/model 剩留
+	// gateway 文件仍由 best.json 登记为 d_gateway，无需 override 兜底。保留空表表示
+	// 本卡对所有既存 best 登记不再覆盖；新结论以重扫后的 container.domain 为准。
+	domOverride = map[string]string{}
 
 	scanned   []*pkgInfo
 	pkgByDir  = map[string]*pkgInfo{}
@@ -133,6 +129,12 @@ func main() {
 	flag.StringVar(&oldPath, "old", "", "old baseline.json")
 	flag.StringVar(&outPath, "out", "scripts/codegraph-rescan/out/baseline.new.json", "output")
 	flag.Parse()
+	// packages.Load 返回的 p.Dir 恒为绝对路径；-repo 传相对路径（如 ../..）时
+	// filepath.Rel(相对, 绝对) 报错，scanGo 会把全部 Go 包静默跳过、只扫到 TS。
+	// 这里统一折叠成绝对路径，保证相对与绝对 -repo 两种调用同结果。
+	if abs, err := filepath.Abs(repoRoot); err == nil {
+		repoRoot = abs
+	}
 	if oldPath != "" {
 		raw, err := os.ReadFile(oldPath)
 		must(err)
@@ -148,8 +150,8 @@ func main() {
 			Project:   "handoff",
 			Branch:    gitBranch(),
 			Commit:    head,
-			ScannedAt: "2026-09-13",
-			Generator: "handoff-executor/b233.23-full-rescan",
+			ScannedAt: "2026-09-14",
+			Generator: "handoff-executor/b233.26-full-rescan",
 		},
 
 		Containers: map[string]*Container{},
@@ -1594,6 +1596,24 @@ func remapNode(g *Graph, oldID string) string {
 		sort.Strings(cands)
 		note("lifecycle 重锚歧义 %s -> %v（取首）", oldID, cands)
 		return cands[0]
+	}
+	// 大小写重命名重锚：B233.26 十文件搬迁把 pullTracker→PullTracker 等导出化，
+	// 符号本体未消亡只是首字母变大写。精确后缀匹配落空时做一次大小写不敏感回退，
+	// 仍要求唯一命中（多处命中不猜，宁可丢弃并记备注）。
+	lowerBody := strings.ToLower(body)
+	for id := range g.Nodes {
+		if !strings.HasPrefix(id, prefix) || !strings.HasSuffix(strings.ToLower(id), "_"+lowerBody) {
+			continue
+		}
+		cands = append(cands, id)
+	}
+	if len(cands) == 1 {
+		note("lifecycle 大小写重锚 %s -> %s（导出化改名）", oldID, cands[0])
+		return cands[0]
+	}
+	if len(cands) > 1 {
+		sort.Strings(cands)
+		note("lifecycle 大小写重锚歧义 %s -> %v（丢弃）", oldID, cands)
 	}
 	return ""
 }
