@@ -10,7 +10,7 @@ import "strings"
 const platformInvariantHead = `# 平台不变量（恒在层）
 
 1. 不要派发、不要调用 handoff CLI、不要起任何新的 executor 进程或子任务。
-2. 查图使用 go run github.com/Xsxdot/charter/graph/cmd/codegraph --repo . <子命令>；也可使用已安装的 codegraph；两者均不可用时再 grep。
+2. 查图只使用已安装的 codegraph 二进制：codegraph --repo . <子命令>。禁止 go run、禁止编译源码当入口。PATH 上没有 codegraph 时，输出单行 JSON {"ask":"本机未安装 codegraph，请安装后再继续"} 并结束本回合，等待协调者安装；禁止自行安装。图查询未命中符号时再 grep，并把未命中记入图覆盖债——缺二进制不得用 grep 代替查图。
 3. 没有亲自跑到结果的命令，不许写它的结论。跑了但失败，贴原始报错原文，不要替它归因；不确定就写「未验证」。`
 
 // 落台账要求不在平台层：spec 第 80 行把它移出平台层，第 81 行改由角色层只对
