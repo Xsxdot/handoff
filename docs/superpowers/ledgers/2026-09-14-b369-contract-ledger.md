@@ -1,7 +1,7 @@
-# B368 contract 台账(移动端 App · 契约落地与冻结)
+# B369 contract 台账(移动端 App · 契约落地与冻结)
 
 节点:contract(上游 spec `docs/superpowers/specs/2026-09-13-mobile-app-design.md`,状态行已回写「已批准」——contract 开工核对通过)。
-卡:B368(contract 列,spec 附件已挂)。
+卡:B369(contract 列,spec 附件已挂,base_branch=cards/B233.1-charter-7)。接替 B368——首派未设基线,冻结在 main 起点(缺 charter-7 线与 spec),机制内无解(SetCardBaseBranch 首派后冻结),已取消并留说明于其事件流。
 
 ## 工具链 gate:gomobile spike(spec 测试决定:contract 启动前出结果)
 
