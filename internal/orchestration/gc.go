@@ -16,7 +16,6 @@ import (
 	"os"
 	"path/filepath"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/orchestration/internal/cacheplan"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/workspace"
@@ -242,9 +241,9 @@ func (m *Manager) appendGCWorktreesExecute(ctx context.Context, resp *proto.GCRe
 			row.Worktree = proto.WorktreeDirty
 			row.DirtyCount = len(dirty.Files)
 			row.Note = err.Error()
-		case errors.Is(err, agentd.ErrReclaimNotManaged),
-			errors.Is(err, agentd.ErrReclaimNotTerminal),
-			errors.Is(err, agentd.ErrReclaimRepoUnreachable):
+		case errors.Is(err, ErrReclaimNotManaged),
+			errors.Is(err, ErrReclaimNotTerminal),
+			errors.Is(err, ErrReclaimRepoUnreachable):
 			row.Status = proto.GCItemSkipped
 			row.Error = err.Error()
 			row.Note = err.Error()

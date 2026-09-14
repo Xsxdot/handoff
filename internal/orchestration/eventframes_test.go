@@ -1,4 +1,4 @@
-package agentd
+package orchestration
 
 import (
 	"bufio"
@@ -18,7 +18,7 @@ func TestEventFrameHookWritesRefFrame(t *testing.T) {
 		t.Fatalf("建任务目录: %v", err)
 	}
 
-	hook := eventFrameHook(dataDir, testLogger(t))
+	hook := EventFrameHook(dataDir, testLogger(t))
 	hook(proto.Event{Seq: 88, TaskID: taskID, Type: proto.EventTypePermissionRequest})
 
 	f, err := os.Open(filepath.Join(dataDir, "tasks", taskID, turn.FramesFileName))
@@ -48,7 +48,7 @@ func TestEventFrameHookWritesRefFrame(t *testing.T) {
 // 任务目录不存在（事件属于一个已清理的任务）不该 panic 也不该报错——
 // 钩子是尽力而为的可见性副作用。
 func TestEventFrameHookToleratesMissingTaskDir(t *testing.T) {
-	hook := eventFrameHook(t.TempDir(), testLogger(t))
+	hook := EventFrameHook(t.TempDir(), testLogger(t))
 	hook(proto.Event{Seq: 1, TaskID: "no-such-task", Type: proto.EventTypeProgress})
 	// 不 panic 即通过
 }

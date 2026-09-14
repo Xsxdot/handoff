@@ -20,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/ptyhost"
 	"github.com/Xsxdot/handoff/internal/ptyhost/hostproc"
@@ -142,19 +143,24 @@ func TestGracefulShutdownKeepsPtySession(t *testing.T) {
 	if err := s.reclaimPtySessions(); err != nil {
 		t.Fatal(err)
 	}
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	// B233.26：Shutdown 已归域 orchestration，serveWithListeners 是其未导出可测形态，
+	// 本包改经导出 Serve 驱动同一条优雅关停路径。先探一个空闲端口再释放，让 Serve
+	// 自行绑口（重绑窗口极小；进程内无其他占用者）。
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
+	addr := probe.Addr().String()
+	probe.Close()
 	httpSrv := &http.Server{Handler: http.NewServeMux()}
-	sd := NewShutdown(quietLogger())
+	sd := orchestration.NewShutdown(discardLogger())
 	wdCanceled := make(chan struct{})
 	done := make(chan error, 1)
 	go func() {
-		done <- sd.serveWithListeners([]net.Listener{ln}, httpSrv,
-			s.GracefulShutdownCleanup(func() { close(wdCanceled) }))
+		done <- sd.Serve(httpSrv,
+			s.GracefulShutdownCleanup(func() { close(wdCanceled) }), addr)
 	}()
-	waitListening(t, ln.Addr().String())
+	waitListening(t, addr)
 	sd.Trigger("update:v-next")
 
 	select {
@@ -176,6 +182,22 @@ func TestGracefulShutdownKeepsPtySession(t *testing.T) {
 	if bytes.Contains(logs.Bytes(), []byte("停止 PTY 会话失败")) {
 		t.Fatalf("优雅关停不应进入 PTY Close 路径: %s", logs.String())
 	}
+}
+
+// waitListening 轮询到端口可连为止（原随 shutdown_test.go 定义；B233.26 shutdown
+// 归域编排包后本包消费面留下的同语义副本）。
+func waitListening(t *testing.T, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		c, err := net.DialTimeout("tcp", addr, 200*time.Millisecond)
+		if err == nil {
+			c.Close()
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatalf("端口 %s 在 5s 内未就绪", addr)
 }
 
 func waitReclaimFile(t *testing.T, path string) {

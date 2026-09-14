@@ -1,4 +1,4 @@
-// Package agentd 是 handoff agentd 服务的进程内实时路由层。
+// hub.go —— 进程内实时路由层（B233.26 自 gateway 归域编排包）。
 //
 // 职责：
 //   - 按 taskID 维度做事件实时扇出（Subscribe/Publish/Watchers），供 HTTP/WS 层推送
@@ -6,9 +6,10 @@
 //
 // 边界：
 //   - 不做持久化：事件落库在 store，可靠性由 events 表 seq + cursor 承担，
-//     本层只做实时扇出，不保证送达（慢订阅者直接丢弃），历史回放由 server 层用 store.EventsFromAsc 拼接
+//     本层只做实时扇出，不保证送达（慢订阅者直接丢弃），历史回放由 gateway
+//     server 层用 store.EventsFromAsc 拼接
 //   - 不参与业务决策（状态迁移、审批），仅提供进程内路由原语
-package agentd
+package orchestration
 
 import (
 	"context"

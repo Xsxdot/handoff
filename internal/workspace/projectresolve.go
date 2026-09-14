@@ -32,8 +32,8 @@ import (
 //
 // B233.19 随 ResolveProject / ValidateProjectName 自 agentd 迁入：这两个迁出
 // 函数的错误链都要包它，而 workspace 不得反向 import agentd，因此哨兵正身
-// 落在本包。gateway（agentd.ErrBadDispatchRequest）与编排包持有的是本值的
-// 别名，errors.Is 与文案逐字节不变。
+// 落在本包。B233.26 反转 D1 后 gateway 与编排包都直引本值（旧别名退役），
+// errors.Is 与文案逐字节不变。
 var ErrBadDispatchRequest = errors.New("dispatch 请求参数非法")
 
 // ErrProjectNotRegistered 表示派发请求指向的项目在本机没有位置。

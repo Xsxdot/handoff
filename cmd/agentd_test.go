@@ -131,7 +131,7 @@ func TestB23310AgentdSetsUpLedgerBeforeRecovery(t *testing.T) {
 	body := string(source)
 	setup := strings.Index(body, "stopLedger, err := setupLedger(")
 	recover := strings.Index(body, "if err := srv.RecoverOnStartup(")
-	watchdog := strings.Index(body, "go agentd.RunWatchdog(")
+	watchdog := strings.Index(body, "go orchestration.RunWatchdog(")
 	if setup < 0 || recover < 0 || watchdog < 0 {
 		t.Fatalf("启动顺序锚点缺失: setup=%d recover=%d watchdog=%d", setup, recover, watchdog)
 	}

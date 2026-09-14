@@ -6,54 +6,24 @@
 //     挂起工单作废）、N-4（工单存在但通知事件缺失时必须自愈补发）三项修复
 //
 // 边界：
-//   - 白盒测试（package agentd）：直接驱动 manager/server 的内部方法复现时序窗口，
+//   - 白盒测试（package orchestration）：直接驱动 manager 的内部方法复现时序窗口，
 //     不经 HTTP——被测对象是中介顺序本身，不是路由
-//   - WS 相关回归（N-1/N-2/N-3）在 server_test.go，不在本文件
+//   - WS 相关回归（N-1/N-2/N-3）在 gateway 侧测试文件，不在本文件
 package orchestration
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
-	"io"
-	"log/slog"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
-	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 )
-
-// replyLikeServer 经 Server 的真实 handleReply 路径完成回程（落库应答 → 唤醒等待者
-// → 无等待者则自愈中继 → 空闲则回迁 running）。迁包后不再能访问 Server 未导出字段，
-// 故改走 HTTP，语义等价且更贴近生产路径。
-func replyLikeServer(srv *agentd.Server, taskID, ticketID, answer string) {
-	body, _ := json.Marshal(map[string]string{"ticket_id": ticketID, "answer": answer})
-	req := httptest.NewRequest(http.MethodPost, "/api/tasks/"+taskID+"/reply", bytes.NewReader(body))
-	req.Host = "127.0.0.1:7777"
-	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("Authorization", "Bearer test")
-	rr := httptest.NewRecorder()
-	srv.Handler().ServeHTTP(rr, req)
-}
-
-// newTestServerWithManager 组装白盒 server+manager（共用一个 store；manager 挂到
-// server 上，reply 经真实 HTTP 路径驱动）。
-func newTestServerWithManager(t *testing.T) (*agentd.Server, *Manager, *store.Store) {
-	t.Helper()
-	mgr, st, _, _ := newTestManager(t)
-	cfg := &config.Config{Token: "test", DataDir: t.TempDir()}
-	srv := agentd.NewServer(cfg, st, slog.New(slog.NewTextHandler(io.Discard, nil)))
-	srv.SetManager(mgr)
-	return srv, mgr, st
-}
 
 // TestPermissionStateVisibleBeforeTicket 验证权限中介的顺序契约（U-1）：
 // 工单对协调者可见时，任务状态必须已经是 waiting_answer。
@@ -66,7 +36,7 @@ func newTestServerWithManager(t *testing.T) (*agentd.Server, *Manager, *store.St
 //
 // 修复后 transit 先于 CreateTicket：工单不可能早于状态出现，反向窗口不存在。
 func TestPermissionStateVisibleBeforeTicket(t *testing.T) {
-	srv, mgr, st := newTestServerWithManager(t)
+	mgr, st, _, _ := newTestManager(t)
 	const rounds = 200
 	stuck := 0
 	for i := range rounds {
@@ -85,13 +55,39 @@ func TestPermissionStateVisibleBeforeTicket(t *testing.T) {
 		}()
 		go func() {
 			defer wg.Done()
-			// 模拟协调者「一看到挂起工单就回答」：紧贴工单可见的瞬间进入回程
+			// 模拟协调者「一看到挂起工单就回答」：紧贴工单可见的瞬间进入回程。
+			// B233.26 反转后，本包内测试的 *Manager（测试变体）不再能挂上真
+			// gateway Server（SetManager 收 plain 变体接口），回程直驱旧
+			// handleReply 实际走的确定性分支（server hub 恒无等待者）：
+			// AnswerTicketApplied 落库应答 → RelayAnswer 自愈中继 → 无未答
+			// 工单则回迁 running（resumeIfIdle 的 CAS 语义，ErrBadTransit=
+			// 并发已迁，容忍）。三步在本 goroutine 内同步完成，与旧 HTTP 回程
+			// 「返回时回迁已落定」的时序等价——被测的 U-1 顺序契约在
+			// handlePermission 一侧；真 Server HTTP 回程由 agentd server_test.go
+			// TestReply* 族覆盖（B233.26 审计 P3-1 更正指向）。
 			deadline := time.Now().Add(2 * time.Second)
 			for time.Now().Before(deadline) {
-				if pending, err := st.PendingTickets(taskID); err == nil && len(pending) > 0 {
-					replyLikeServer(srv, taskID, ticketID, "allow")
-					return
+				pending, err := st.PendingTickets(taskID)
+				if err != nil || len(pending) == 0 {
+					continue
 				}
+				if _, err := st.AnswerTicketApplied(ticketID, "allow"); err != nil && !errors.Is(err, store.ErrTicketConflict) {
+					t.Errorf("AnswerTicketApplied(%s): %v", ticketID, err)
+				}
+				_ = mgr.RelayAnswer(taskID, ticketID, "allow")
+				for attempt := 0; attempt < 3; attempt++ {
+					task, err := st.GetTask(taskID)
+					if err != nil || task.State != proto.TaskStateWaitingAnswer {
+						break
+					}
+					if pending, err := st.PendingTickets(taskID); err != nil || len(pending) > 0 {
+						break
+					}
+					if err := st.UpdateTaskState(taskID, proto.TaskStateRunning); !errors.Is(err, store.ErrBadTransit) {
+						break
+					}
+				}
+				return
 			}
 		}()
 		wg.Wait()

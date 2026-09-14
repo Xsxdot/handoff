@@ -6,7 +6,6 @@ package orchestration
 
 import (
 	"encoding/json"
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"testing"
 	"time"
 
@@ -67,7 +66,7 @@ func TestTransitToTerminalVoidsPendingTickets(t *testing.T) {
 	if len(evs) != 1 {
 		t.Fatalf("tickets_voided 事件 = %d 条，期望 1 条", len(evs))
 	}
-	var p agentd.TicketsVoidedPayload
+	var p TicketsVoidedPayload
 	if err := json.Unmarshal(evs[0].Payload, &p); err != nil {
 		t.Fatalf("解析 payload: %v", err)
 	}

@@ -18,13 +18,14 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
 type receiverTestEnv struct {
 	*ledgerEnv
-	mgr       TestManager
+	mgr       *orchestration.Manager
 	projectID string
 }
 
@@ -34,7 +35,8 @@ func newReceiverTestEnv(t *testing.T) *receiverTestEnv {
 	SetupAutomationForTest(t, env.srv, env.ledger)
 	cfg := env.srv.conf()
 	cfg.Executor.Default = "opencode"
-	// B233.13：经 ManagerFactory 组装真实编排实现；工作区能力由工厂按组装点语义注入。
+	// B233.26：直接组装真实编排实现（ManagerFactory 桥退役）；工作区能力由
+	// newManagerForTest 按组装点语义注入。
 	mgr := newManagerForServer(t, env.srv, map[string]executor.Adapter{"fake": fake.New(nil)})
 	repo := initTestRepo(t)
 	return &receiverTestEnv{ledgerEnv: env, mgr: mgr, projectID: registerTestProject(t, mgr, repo)}

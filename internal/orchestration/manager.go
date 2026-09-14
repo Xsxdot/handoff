@@ -57,7 +57,6 @@ import (
 	"time"
 	"unicode"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/approval"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
@@ -95,7 +94,7 @@ type appendEventFunc func(string, proto.EventType, any) (proto.Event, error)
 
 type Manager struct {
 	st  *store.Store
-	hub *agentd.Hub
+	hub *Hub
 	// ads 是 executor 注册表（name → Adapter），构造后只读 map，并发安全依旧。
 	// 任务经 task.Executor（adapterFor）或缺省名（resolveExecutor）路由到对应实现。
 	ads map[string]executor.Adapter
@@ -295,7 +294,7 @@ func (m *Manager) consumeSweepOwned(taskID string) bool {
 //   - 调用方须保证 log 为统一配置后的 logger；st/hub 必须已就绪
 //   - B229 起本机不做任何纪律解析（收文即用），机器级 Discipline 映射不再进
 //     Manager；映射的保存与回显仍归 Server 的 /api/discipline 端点
-func NewManager(st *store.Store, hub *agentd.Hub, ads map[string]executor.Adapter, cfg *config.Config,
+func NewManager(st *store.Store, hub *Hub, ads map[string]executor.Adapter, cfg *config.Config,
 	envMapping func() map[string]string,
 	approver *Approver, gate *permgate.Gate, log *slog.Logger) *Manager {
 	env := envfile.NewResolver(envfile.Dir(cfg.DataDir), envMapping, log)
@@ -337,7 +336,7 @@ func NewManager(st *store.Store, hub *agentd.Hub, ads map[string]executor.Adapte
 
 // B233.13：编排实现满足 gateway 使用方定义的出站 client 契约。
 // 此断言把「接口与实现形状不符」从运行期提前到编译期。
-var _ agentd.OrchestrationClient = (*Manager)(nil)
+var _ OrchestrationClient = (*Manager)(nil)
 
 // RegistryFromAds 从 ads 全表推导能力 Registry。
 // 仅保留实现了 executor.Provider 的 adapter，重名以后者为准。
@@ -386,7 +385,7 @@ func (m *Manager) adapterFor(taskID string) (executor.Adapter, error) {
 // resolveExecutor 在 dispatch 期只把请求的执行者名解析为 adapter。
 //
 // name 为空时仍回退 cfg.Executor.Default 以保持 adapter 路由兼容；此回退不产生
-// 载体身份，载体名只能由网关通过 agentd.DispatchReq.Carrier 传入。
+// 载体身份，载体名只能由网关通过 DispatchReq.Carrier 传入。
 func (m *Manager) resolveExecutor(name string) (string, executor.Adapter, error) {
 	if name == "" {
 		name = m.conf().Executor.Default
@@ -395,7 +394,7 @@ func (m *Manager) resolveExecutor(name string) (string, executor.Adapter, error)
 	ad, ok := m.ads[name]
 	if !ok {
 		m.log.Warn("dispatch 指定未注册执行者", "executor", name, "registered", registeredNames(m.ads))
-		return "", nil, fmt.Errorf("%w: 执行者 %q 未注册（可用: %s）", agentd.ErrBadDispatchRequest, name, strings.Join(registeredNames(m.ads), ", "))
+		return "", nil, fmt.Errorf("%w: 执行者 %q 未注册（可用: %s）", workspace.ErrBadDispatchRequest, name, strings.Join(registeredNames(m.ads), ", "))
 	}
 	return name, ad, nil
 }
@@ -488,7 +487,7 @@ const planSummaryLimit = 200
 func planSummaryFromContent(content []byte) string {
 	for _, line := range strings.Split(string(content), "\n") {
 		if trimmed := strings.TrimSpace(line); trimmed != "" {
-			return agentd.TruncateRunes(trimmed, planSummaryLimit)
+			return turn.TruncateRunes(trimmed, planSummaryLimit)
 		}
 	}
 	return ""
@@ -650,7 +649,7 @@ func permEventText(s string) string {
 	if len([]rune(s)) <= permEventTextLimit {
 		return s
 	}
-	return agentd.TruncateRunes(s, permEventTextLimit) + executor.TruncationMarker
+	return turn.TruncateRunes(s, permEventTextLimit) + executor.TruncationMarker
 }
 
 // Dispatch 派发一个新任务：准备任务分支 → 建任务 → 建 taskDir 写 plan → Adapter.Start →
@@ -658,7 +657,7 @@ func permEventText(s string) string {
 // 本方法只把它们与物理身份落盘，不重新解析接收者或重新选择成员。
 //
 // 参数：
-//   - req: 仓库路径与 base64 计划（字段说明见 agentd.DispatchReq）
+//   - req: 仓库路径与 base64 计划（字段说明见 DispatchReq）
 //
 // 返回：
 //   - 已入库的任务（state 为 running）；Adapter.Start 失败时返回错误，
@@ -670,7 +669,7 @@ func permEventText(s string) string {
 //     dispatch 即可——不会为每次被拒的派发留下 failed 噪音
 //   - 分支名经 store.SetTaskField 白名单字段 "branch" 写入任务（不随 CreateTask
 //     带列写入，保持「创建期只写创建时已知的字段」的约定）
-func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *proto.Task, err error) {
+func (m *Manager) Dispatch(ctx context.Context, req DispatchReq) (task *proto.Task, err error) {
 	m.log.Info("dispatch 进入",
 		"project_id", req.ProjectID, "project_name", req.ProjectName,
 		"plan_name", req.PlanName, "target", req.Target,
@@ -712,7 +711,7 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 	// 校验：repo 必填；plan 与 prompt 至少其一（prompt-only 派发）
 	if repoPath == "" || (req.PlanB64 == "" && req.Prompt == "") {
 		return nil, fmt.Errorf("%w: repo_path=%q plan_b64 长度=%d prompt 长度=%d",
-			agentd.ErrBadDispatchRequest, repoPath, len(req.PlanB64), len(req.Prompt))
+			workspace.ErrBadDispatchRequest, repoPath, len(req.PlanB64), len(req.Prompt))
 	}
 	// 本地工作分支是一个明确的目标机本地起点，不允许借默认基线或空 Base
 	// 语义兜底。这个门必须早于默认分支解析、基线 fetch、建任务和 worktree，
@@ -736,7 +735,7 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 	if m.reg != nil {
 		if rerr := m.reg.Require(execName, executor.CapExecution); rerr != nil {
 			m.log.Error("dispatch 执行能力不足", "executor", execName, "cause", rerr)
-			return nil, fmt.Errorf("%w: %w", agentd.ErrBadDispatchRequest, rerr)
+			return nil, fmt.Errorf("%w: %w", workspace.ErrBadDispatchRequest, rerr)
 		}
 	}
 	model := m.resolveModel(req.Model, execName)
@@ -747,7 +746,7 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 	// 已建，就变成「创建了一个注定 failed 的任务」，与 spec §6「任务不创建」矛盾
 	envKVs, err := m.env.For(execName)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", agentd.ErrEnvResolveFailed, err)
+		return nil, fmt.Errorf("%w: %v", ErrEnvResolveFailed, err)
 	}
 	// 纪律正文裁决与 env 解析同段：失败是参数/配置问题，此刻还没有落库/建树
 	// 副作用，拒派是干净的。
@@ -760,7 +759,7 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 	if strings.TrimSpace(req.Discipline) != "" && discText == "" {
 		m.log.Warn("dispatch 被拒：点名纪律块但未收到下发正文", "name", req.Discipline)
 		return nil, fmt.Errorf("%w: 点名纪律块 %q 但请求未携带 discipline_text（执行机不再本地解析，正文须由协调者下发）",
-			agentd.ErrDisciplineResolveFailed, req.Discipline)
+			ErrDisciplineResolveFailed, req.Discipline)
 	}
 	// 来源标注只服务任务回显与 progress 播报；正文本体不进日志（§3.4），只记字节量。
 	discSource := ""
@@ -782,7 +781,7 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 	if req.PlanB64 != "" {
 		planContent, err = base64.StdEncoding.DecodeString(req.PlanB64)
 		if err != nil {
-			return nil, fmt.Errorf("%w: 解码 plan_b64: %v", agentd.ErrBadDispatchRequest, err)
+			return nil, fmt.Errorf("%w: 解码 plan_b64: %v", workspace.ErrBadDispatchRequest, err)
 		}
 		if req.Prompt != "" {
 			planContent = append(planContent, []byte("\n\n## 附加指令（派发时提供）\n\n"+req.Prompt)...)
@@ -881,7 +880,7 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 
 	// 准入闸必须排在建任务行、建 worktree 之前：拒发要干干净净，
 	// 不能留下一个建了一半的任务等人收
-	if err := agentd.CheckProcHeadroom("dispatch"); err != nil {
+	if err := CheckProcHeadroom("dispatch"); err != nil {
 		return nil, err
 	}
 
@@ -999,7 +998,7 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 		return nil, fmt.Errorf("记录任务 plan 摘要: %w", err)
 	}
 	task.PlanSummary = summary
-	m.log.Info("plan 摘要已生成", "task", taskID, "summary", agentd.TruncateRunes(summary, 40))
+	m.log.Info("plan 摘要已生成", "task", taskID, "summary", turn.TruncateRunes(summary, 40))
 	m.log.Info("工作区就绪", "task", taskID, "workdir", ws.WorkDir, "managed", ws.Managed)
 
 	startEnv := envKVs
@@ -1032,9 +1031,9 @@ func (m *Manager) Dispatch(ctx context.Context, req agentd.DispatchReq) (task *p
 		m.log.Error("adapter 启动失败", "task", taskID, "cause", err)
 		// pending→failed 合法；失败现场留在任务里，协调者可见。
 		// 注意：本错误返回由上方 defer 补偿清理 managed worktree（executor 尚未接管）；
-		// 包 agentd.ErrExecutorStartFailed 哨兵，让 server 层把真因回显给协调者（修复 3）
+		// 包 ErrExecutorStartFailed 哨兵，让 server 层把真因回显给协调者（修复 3）
 		m.transitBestEffort(taskID, proto.TaskStateFailed, "adapter start 失败")
-		return nil, fmt.Errorf("%w: %v", agentd.ErrExecutorStartFailed, err)
+		return nil, fmt.Errorf("%w: %v", ErrExecutorStartFailed, err)
 	}
 	m.log.Info("dispatch 经执行能力面", "task", taskID, "executor", execName)
 	// executor 已接管工作区：此后的错误（transit 落库失败等 store 级故障）不再补偿
@@ -1200,7 +1199,7 @@ func taskProfileHome(taskHome string) (string, error) {
 //
 // 返回：
 //   - nil：无人占用，或本次是 managed 模式
-//   - agentd.ErrWorkdirBusy：已有非终态任务占着这个目录，错误文本点名占用者与两条出路
+//   - ErrWorkdirBusy：已有非终态任务占着这个目录，错误文本点名占用者与两条出路
 //     （server 层据此给 409，与「工作区不干净」同为状态冲突）
 //   - 其他错误：查询任务表失败
 //
@@ -1229,7 +1228,7 @@ func (m *Manager) guardWorkdirBusy(workDir string) error {
 	m.log.Warn("dispatch 被拒：目标工作目录已被活跃任务占用", "workdir", workDir,
 		"holder", holder.ID, "holder_state", holder.State, "holders", len(busy))
 	return fmt.Errorf("%w: %s 正被任务 %s（%s, %s）占用；先 handoff done/stop 它，或改用 --new-worktree 在独立工作树上开工",
-		agentd.ErrWorkdirBusy, workDir, holder.ID, holder.Name, holder.State)
+		ErrWorkdirBusy, workDir, holder.ID, holder.Name, holder.State)
 }
 
 // compensateWorkspace 在 dispatch 后续步骤失败时复原已准备好的工作区。
@@ -1294,7 +1293,7 @@ func (m *Manager) compensateWorkspace(ctx context.Context, taskID string, repo s
 		if stderr, err := workspace.RestoreWorktree(ctx, ws.WorkDir, ws.PrevRef); err != nil {
 			m.log.Error("补偿切回原 ref 失败，工作树仍停在任务分支上",
 				"workdir", ws.WorkDir, "prev_ref", ws.PrevRef,
-				"stderr", agentd.TruncateRunes(stderr, 300), "cause", err)
+				"stderr", turn.TruncateRunes(stderr, 300), "cause", err)
 			return
 		}
 		m.log.Info("补偿已切回原 ref", "workdir", ws.WorkDir, "prev_ref", ws.PrevRef)
@@ -1379,7 +1378,7 @@ func (m *Manager) deleteCreatedBranch(ctx context.Context, repo string, ws works
 	// 而「自创建以来零提交」已由上面的尖端复核实证，-D 在这里是确定性而非暴力
 	if stderr, err := workspace.DeleteBranch(ctx, repo, ws.Branch); err != nil {
 		m.log.Error("补偿删除分支失败", "repo", repo, "branch", ws.Branch,
-			"stderr", agentd.TruncateRunes(stderr, 300), "cause", err)
+			"stderr", turn.TruncateRunes(stderr, 300), "cause", err)
 		return
 	}
 	m.log.Info("补偿删除分支完成", "repo", repo, "branch", ws.Branch)
@@ -1523,7 +1522,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 		m.log.Error("续接时点名的纪律块缺落盘正文，拒绝续接",
 			"task", taskID, "name", task.DisciplineName, "cause", derr)
 		return fmt.Errorf("%w: 任务 %s 点名的纪律块 %q 缺少首派落盘正文: %v",
-			agentd.ErrDisciplineResolveFailed, taskID, task.DisciplineName, derr)
+			ErrDisciplineResolveFailed, taskID, task.DisciplineName, derr)
 	case derr != nil:
 		// 未点名且无落盘正文：沿用既有降级。这条路上丢的是通用纪律，
 		// 不是某个角色的正确性约束；在这里改成拒绝会让所有存量部署
@@ -1577,7 +1576,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 		text = fmt.Sprintf("原会话 %s 已不可载入，已新开会话 %s；上下文从本条指令开始，必要时请在指令中重述背景",
 			task.ExecutorSession, out.SessionID)
 	}
-	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, agentd.ProgressPayload{Text: text})
+	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, ProgressPayload{Text: text})
 	if aerr != nil {
 		m.log.Error("追加恢复播报事件失败", "task", taskID, "cause", aerr)
 		return nil // 事件没落住不影响续接本身
@@ -1601,7 +1600,7 @@ func (m *Manager) resumeForContinue(ctx context.Context, taskID string, ad execu
 //   - 顺序是「先落说明、再迁移状态」：写失败时任务仍在 waiting_review，协调者可
 //     原样重试；反过来先迁移就会留下「已归档但说明丢了」且不可重试的状态——done
 //     对已 completed 的任务返回 409，协调者补不回来
-func (m *Manager) Done(ctx context.Context, taskID, note string) (outcome agentd.TerminalOutcome, err error) {
+func (m *Manager) Done(ctx context.Context, taskID, note string) (outcome TerminalOutcome, err error) {
 	// 认领终态清扫：本路径末尾自己调 sweepAfterStop（带有界重试、且早于 worktree
 	// 删除），transit 的兜底清扫据此跳过。见 sweepOwned 字段注释。
 	m.noteSweepOwned(taskID)
@@ -1616,17 +1615,17 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (outcome agentd
 
 	cur, err := m.st.GetTask(taskID)
 	if err != nil {
-		return agentd.TerminalOutcome{}, err
+		return TerminalOutcome{}, err
 	}
 	// 契约 §5.2 #9：已 completed 的重复 Done 是幂等成功（Claimed=false, err==nil）。
 	// 只有其它非 waiting_review 状态才是真错误（§5.2 #7）。
 	if cur.State == proto.TaskStateCompleted {
 		m.log.Info("done 已幂等完成", "task", taskID, "state", cur.State)
-		return agentd.TerminalOutcome{Claimed: false}, nil
+		return TerminalOutcome{Claimed: false}, nil
 	}
 	if cur.State != proto.TaskStateWaitingReview {
 		m.log.Warn("done 状态不允许", "task", taskID, "state", cur.State)
-		return agentd.TerminalOutcome{}, fmt.Errorf("任务 %s 状态 %s 不允许归档（需 waiting_review）: %w", taskID, cur.State, store.ErrBadTransit)
+		return TerminalOutcome{}, fmt.Errorf("任务 %s 状态 %s 不允许归档（需 waiting_review）: %w", taskID, cur.State, store.ErrBadTransit)
 	}
 	// 先落说明再迁移状态：写失败时任务仍在 waiting_review，协调者可原样重试；
 	// 反过来先迁移就会留下「已归档但说明丢了」且不可重试的状态——done 对
@@ -1634,19 +1633,19 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (outcome agentd
 	if note != "" {
 		if err := m.st.SetTaskField(taskID, "done_note", note); err != nil {
 			m.log.Error("写入归档说明失败", "task", taskID, "note_bytes", len(note), "cause", err)
-			return agentd.TerminalOutcome{}, fmt.Errorf("写入归档说明: %w", err)
+			return TerminalOutcome{}, fmt.Errorf("写入归档说明: %w", err)
 		}
 		m.log.Info("归档说明已落库", "task", taskID, "note_bytes", len(note))
 	}
 	claimed, err := m.transitClaim(taskID, proto.TaskStateCompleted, "done")
 	if err != nil {
-		return agentd.TerminalOutcome{}, err
+		return TerminalOutcome{}, err
 	}
 	if !claimed {
 		// 并发 loser：目标态已由赢家迁移完成并承担收尾；本条按幂等成功返回，
 		// 不得重复发布归档事件/清理/释放占用（契约 §5.2 #9）。
 		m.log.Info("done 幂等成功（并发中他人已完成迁移）", "task", taskID)
-		return agentd.TerminalOutcome{Claimed: false}, nil
+		return TerminalOutcome{Claimed: false}, nil
 	}
 	// 归档事件：必须在 hub.CloseTask 之前发布，否则订阅者（wait --follow）一条
 	// 都收不到——而事件仍会入库，症状是等待方永远等不到归档，极难归因（B68 §4.2）。
@@ -1701,7 +1700,7 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (outcome agentd
 		} else if werr := m.ws.RecycleManaged(ctx, cur.RepoPath, cur.WorkDir); werr != nil {
 			m.log.Error("清理 managed worktree 失败", "task", taskID, "workdir", cur.WorkDir, "cause", werr)
 			// 既有：只降级 progress，不回滚 completed
-			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, agentd.ProgressPayload{
+			if evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeProgress, ProgressPayload{
 				Text: worktreeCleanupHint(taskID, werr),
 			}); aerr != nil {
 				m.log.Error("追加 worktree 清理失败事件失败", "task", taskID, "cause", aerr)
@@ -1717,7 +1716,7 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (outcome agentd
 	// B298：工作树处置尝试之后再删任务私有缓存。失败只记日志，不阻断归档。
 	// 重试入口是 gc，不是重发 done（已 completed 会短路）。
 	m.purgeTaskCache(taskID)
-	return agentd.TerminalOutcome{Claimed: true}, nil
+	return TerminalOutcome{Claimed: true}, nil
 }
 
 // Stop 主动中止一个任务：停 executor、落 failed 并唤醒协调者；挂起工单的作废
@@ -1743,7 +1742,7 @@ func (m *Manager) Done(ctx context.Context, taskID, note string) (outcome agentd
 //     显式 reclaim 或 gc 才清理。成功路径 worktreeRemoved 恒为 false。
 //   - adapter.Stop 失败只 Warn 不中断：目的是让任务离开活跃态，executor 残留
 //     由执行者进程兜底，不能因为「停不掉进程」就让任务永远卡在 running
-func (m *Manager) Stop(ctx context.Context, taskID string) (outcome agentd.TerminalOutcome, err error) {
+func (m *Manager) Stop(ctx context.Context, taskID string) (outcome TerminalOutcome, err error) {
 	// 认领终态清扫，理由同 Done。见 sweepOwned 字段注释。
 	m.noteSweepOwned(taskID)
 	m.log.Info("stop 进入", "task", taskID)
@@ -1757,11 +1756,11 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (outcome agentd.Termi
 
 	cur, err := m.st.GetTask(taskID)
 	if err != nil {
-		return agentd.TerminalOutcome{}, err
+		return TerminalOutcome{}, err
 	}
 	if cur.State.IsTerminal() {
 		m.log.Warn("stop 状态不允许", "task", taskID, "state", cur.State)
-		return agentd.TerminalOutcome{}, fmt.Errorf("任务 %s 已是终态 %s，无可中止: %w", taskID, cur.State, store.ErrBadTransit)
+		return TerminalOutcome{}, fmt.Errorf("任务 %s 已是终态 %s，无可中止: %w", taskID, cur.State, store.ErrBadTransit)
 	}
 
 	ad, aerr := m.adapterFor(taskID)
@@ -1791,16 +1790,16 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (outcome agentd.Termi
 	// running」只会让协调者干等到 2h 看门狗（handleResult 函数头的同一条理由）。
 	claimed, terr := m.transitClaim(taskID, proto.TaskStateFailed, "stop")
 	if terr != nil {
-		return agentd.TerminalOutcome{}, terr
+		return TerminalOutcome{}, terr
 	}
 	if !claimed {
 		// 并发 loser：已有他人把任务迁到终态（failed 或其它），本条按 409 语义返回，
 		// 不释放、不重复追加事件（契约 §5.2 #11）。
-		return agentd.TerminalOutcome{}, fmt.Errorf("任务 %s 已在并发中被终结: %w", taskID, store.ErrBadTransit)
+		return TerminalOutcome{}, fmt.Errorf("任务 %s 已在并发中被终结: %w", taskID, store.ErrBadTransit)
 	}
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, agentd.NewFailedPayload("协调者主动中止（handoff stop）", "", ""))
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, NewFailedPayload("协调者主动中止（handoff stop）", "", ""))
 	if err != nil {
-		return agentd.TerminalOutcome{}, fmt.Errorf("追加中止事件: %w", err)
+		return TerminalOutcome{}, fmt.Errorf("追加中止事件: %w", err)
 	}
 	// 审批链运行时状态随任务终结清理，防内存 map 无界增长（与 Done 同款）
 	m.clearApproverState(taskID)
@@ -1821,7 +1820,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (outcome agentd.Termi
 	// B298：stop 工作树处置尝试之后删缓存；失败不阻断 stop。
 	m.purgeTaskCache(taskID)
 	m.hub.Publish(evt)
-	return agentd.TerminalOutcome{Claimed: true, WorktreeRemoved: false}, nil
+	return TerminalOutcome{Claimed: true, WorktreeRemoved: false}, nil
 }
 
 // unaryAPITimeout 是 executor 侧一次一元调用（建会话/发 prompt/权限应答）的等待上限。
@@ -1981,13 +1980,13 @@ func (m *Manager) handleEvent(ctx context.Context, taskID string, ev executor.Ad
 			return
 		}
 		m.log.Info("权限请求事件", "task", taskID, "perm", ev.PermissionID,
-			"text", agentd.TruncateRunes(ev.Text, 80))
+			"text", turn.TruncateRunes(ev.Text, 80))
 		m.handlePermission(ctx, taskID, ev)
 	case adapterEventQuestion:
-		m.log.Info("提问事件", "task", taskID, "text", agentd.TruncateRunes(ev.Text, 80))
+		m.log.Info("提问事件", "task", taskID, "text", turn.TruncateRunes(ev.Text, 80))
 		m.handleQuestion(ctx, taskID, ev)
 	case adapterEventProgress:
-		m.log.Info("进度事件", "task", taskID, "text", agentd.TruncateRunes(ev.Text, 80))
+		m.log.Info("进度事件", "task", taskID, "text", turn.TruncateRunes(ev.Text, 80))
 		m.handleProgress(taskID, ev)
 	case adapterEventResult:
 		if ev.Result != nil {
@@ -2306,7 +2305,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 		m.apMu.Unlock()
 	}()
 	m.log.Info("审批者开始裁决", "task", taskID, "ticket", ticketID,
-		"perm", ev.PermissionID, "text", agentd.TruncateRunes(ev.Text, 80))
+		"perm", ev.PermissionID, "text", turn.TruncateRunes(ev.Text, 80))
 	// 任务摘要取 PlanSummary；GetTask 失败用空串——摘要是上下文不是裁决前提，
 	// 不因读失败把整个裁决拖下水
 	summary := ""
@@ -2329,7 +2328,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	if reason == "" && d.Err != nil {
 		reason = d.Err.Error()
 	}
-	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, agentd.ApproverDecisionPayload{
+	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, ApproverDecisionPayload{
 		TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
 		Reason: reason, ElapsedMS: d.ElapsedMS,
 	}); err != nil {
@@ -2441,7 +2440,7 @@ func (m *Manager) clearApproverState(taskID string) {
 	m.apMu.Unlock()
 	if had {
 		m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
-			"task", taskID, "reason", agentd.TruncateRunes(guidance, 80))
+			"task", taskID, "reason", turn.TruncateRunes(guidance, 80))
 		// Publish 而不是只落库（B91）：这条事件是可操作唤醒——审核者拿到的
 		// reply 返回是 {"ok":true}，不叫醒的话他永远不知道那句 reason 空转了，
 		// 唯一的补救动作（把话写进 continue）也就无从发生。progress /
@@ -2492,7 +2491,7 @@ func (m *Manager) countApproverFail(taskID string) {
 //     复用路径若打「审批者自动批准」会把人引向一条根本没发生的裁决链去排查。
 func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, reason, source string) {
 	m.log.Info("权限自动批准", "task", taskID, "ticket", ticketID,
-		"perm", permID, "source", source, "reason", agentd.TruncateRunes(reason, 80))
+		"perm", permID, "source", source, "reason", turn.TruncateRunes(reason, 80))
 	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: permission})
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
@@ -2514,7 +2513,7 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 		return
 	}
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
-		agentd.TicketAnsweredPayload{TicketID: ticketID, Answer: "allow"}); err != nil {
+		TicketAnsweredPayload{TicketID: ticketID, Answer: "allow"}); err != nil {
 		m.log.Warn("审批者批准：追加工单答复事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 	}
 	ad, err := m.adapterFor(taskID)
@@ -2706,7 +2705,7 @@ func (m *Manager) noteDenyGuidance(taskID, reason string) {
 	m.denyGuidance[taskID] = reason
 	m.apMu.Unlock()
 	m.log.Info("登记待下发的拒绝原因", "task", taskID,
-		"reason", agentd.TruncateRunes(reason, 80))
+		"reason", turn.TruncateRunes(reason, 80))
 }
 
 // takeDenyGuidance 取走任务挂起的拒绝原因（读后即清）。
@@ -2752,7 +2751,7 @@ func (m *Manager) relayDenyGuidance(ctx context.Context, taskID, guidance string
 		m.log.Error("追加 deny_guidance_relayed 事件失败", "task", taskID, "cause", err)
 	}
 	m.log.Info("拒绝原因已下发，executor 将据此开新回合", "task", taskID,
-		"reason", agentd.TruncateRunes(guidance, 80))
+		"reason", turn.TruncateRunes(guidance, 80))
 }
 
 // appendGuidanceDropped 记录拒绝原因没能下发的审计事件与告警：回合在下一条
@@ -2768,7 +2767,7 @@ func (m *Manager) appendGuidanceDropped(taskID, guidance string, cause error) {
 		m.hub.Publish(evt)
 	}
 	m.log.Warn("拒绝原因未下发：回合已终结，用 continue 自己把话带上",
-		"task", taskID, "reason", agentd.TruncateRunes(guidance, 80), "cause", cause)
+		"task", taskID, "reason", turn.TruncateRunes(guidance, 80), "cause", cause)
 }
 
 // waitPermission 阻塞等待权限工单的协调者应答，按规则回传 executor 并回迁 running。
@@ -3005,7 +3004,7 @@ type reconciler interface {
 //     过的回合不会二次补发）
 //   - 与 ResumeTask 的区别：ResumeTask 是 agentd 重启时的执行器存活探测与订阅
 //     重建（进程级），本方法是单任务的应答重投与会话对账（工单级），两者互不替代
-func (m *Manager) RecoverStuck(taskID string, force bool) (*agentd.RecoverReport, error) {
+func (m *Manager) RecoverStuck(taskID string, force bool) (*RecoverReport, error) {
 	task, err := m.st.GetTask(taskID)
 	if err != nil {
 		return nil, fmt.Errorf("读取任务 %s: %w", taskID, err)
@@ -3013,7 +3012,7 @@ func (m *Manager) RecoverStuck(taskID string, force bool) (*agentd.RecoverReport
 	if task.State == proto.TaskStateCompleted || task.State == proto.TaskStateFailed {
 		return nil, fmt.Errorf("任务 %s 已终结（%s），无可恢复项: %w", taskID, task.State, store.ErrBadTransit)
 	}
-	rep := &agentd.RecoverReport{Task: taskID, State: task.State}
+	rep := &RecoverReport{Task: taskID, State: task.State}
 
 	stuck, err := m.st.UndeliveredAnswers(taskID)
 	if err != nil {
@@ -3077,7 +3076,7 @@ func (m *Manager) RecoverStuck(taskID string, force bool) (*agentd.RecoverReport
 //   - adapter 未实现 reconciler 时不改状态、不伪装成「对账过了」
 //   - 对账失败只记 WARN 并把原因写进 Note，**不返回错误**——协调者要的是
 //     「现在怎么办」，不是一个让 CLI 退非零的堆栈
-func (m *Manager) reconcileInto(rep *agentd.RecoverReport, taskID string, state proto.TaskState) {
+func (m *Manager) reconcileInto(rep *RecoverReport, taskID string, state proto.TaskState) {
 	if state != proto.TaskStateRunning && state != proto.TaskStateWaitingAnswer {
 		rep.Note = fmt.Sprintf("没有卡在半路的应答；任务处于 %s，不在对账范围"+
 			"（pending 尚未启动、waiting_review 请用 continue/done）", state)
@@ -3129,14 +3128,14 @@ func (m *Manager) reconcileInto(rep *agentd.RecoverReport, taskID string, state 
 // 风险与护栏：executor 可能真的还在跑，收口后 continue 会往忙碌会话里塞指令。
 // 护栏只有事件文本与报告文案——不加更硬的拦截，因为更硬的拦截就是 stop，
 // 而这个场景的全部意义恰恰是不杀会话。
-func (m *Manager) forceToReview(rep *agentd.RecoverReport, taskID string, state proto.TaskState) {
+func (m *Manager) forceToReview(rep *RecoverReport, taskID string, state proto.TaskState) {
 	rep.Forced = true
 	text := "协调者人工强制收口（handoff resume --force）：未经 executor 确认。" +
 		"对账当时的结论是：" + rep.Note + "。若 executor 其实仍在执行，" +
 		"后续 continue 的指令会进入一个忙碌会话，请先 handoff attach 确认现场。"
 	m.log.Warn("恢复操作：人工强制收口", "task", taskID, "from", state, "note", rep.Note)
 	m.appendProgress(taskID, text)
-	if err := agentd.RecoverTransit(m.st, taskID, state); err != nil {
+	if err := recoverTransit(m.st, taskID, state); err != nil {
 		rep.Note = "强制收口失败：" + err.Error()
 		m.log.Error("恢复操作：强制收口迁移失败", "task", taskID, "cause", err)
 		return
@@ -3149,7 +3148,7 @@ func (m *Manager) forceToReview(rep *agentd.RecoverReport, taskID string, state 
 // appendProgress 追加一条 progress 事件并广播（恢复/强制收口等人工提示用）。
 // 落库失败只 Error 不回滚——状态迁移已经发生，事件缺失最坏是协调者少看一条提示。
 func (m *Manager) appendProgress(taskID, text string) {
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, agentd.ProgressPayload{Text: text})
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, ProgressPayload{Text: text})
 	if err != nil {
 		m.log.Error("追加 progress 事件失败", "task", taskID, "cause", err)
 		return
@@ -3163,7 +3162,7 @@ func (m *Manager) appendProgress(taskID, text string) {
 //
 // 收尾实现已统一到 reconcileExecutorGone，本函数只负责拼这一句 reason。
 func (m *Manager) abandonToReview(taskID, ticketID string, cause error) proto.TaskState {
-	return agentd.ReconcileExecutorGone(m.st, m.hub, taskID,
+	return ReconcileExecutorGone(m.st, m.hub, taskID,
 		fmt.Sprintf("恢复操作发现 executor 已不在，应答 %s 无法送达: %v", ticketID, cause), m.log, m.SweepTaskProcs)
 }
 
@@ -3190,7 +3189,7 @@ func (m *Manager) NoteDeliveryFailed(taskID, ticketID string, cause error) {
 	m.log.Info("追加 delivery_failed 事件", "task", taskID, "ticket", ticketID, "cause", cause)
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypeDeliveryFailed, deliveryFailedPayload{
 		TicketID: ticketID,
-		Reason:   agentd.TruncateRunes(fmt.Sprint(cause), 500),
+		Reason:   turn.TruncateRunes(fmt.Sprint(cause), 500),
 		Hint:     "应答已落库但未送达 executor，执行 handoff resume <task> 重投",
 	})
 	if err != nil {
@@ -3213,7 +3212,7 @@ func (m *Manager) handleProgress(taskID string, ev executor.AdapterEvent) {
 			m.log.Warn("落库 executor_session 失败", "task", taskID, "session", ev.SessionID, "cause", err)
 		}
 	}
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, agentd.ProgressPayload{Text: ev.Text})
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, ProgressPayload{Text: ev.Text})
 	if err != nil {
 		m.log.Error("追加 progress 事件失败", "task", taskID, "cause", err)
 		return
@@ -3406,7 +3405,7 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		if r.FinalText != "" {
 			finalTextPtr = &r.FinalText
 		}
-		evt, err = m.st.AppendEvent(taskID, proto.EventTypeCompleted, agentd.CompletedPayload{
+		evt, err = m.st.AppendEvent(taskID, proto.EventTypeCompleted, CompletedPayload{
 			Branch: r.Branch, CommitHash: r.CommitHash, Summary: r.Summary,
 			FinalText: finalTextPtr,
 		})
@@ -3424,14 +3423,14 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		if voidReason == "" {
 			voidReason = executor.VoidReasonExecutorGone
 		}
-		agentd.VoidTicketsWithAudit(m.st, taskID, voidReason, m.log)
+		VoidTicketsWithAudit(m.st, taskID, voidReason, m.log)
 		m.log.Warn("回合以失败收尾", "task", taskID, "reason", r.FailReason,
 			"branch", r.Branch, "commit", r.CommitHash, "void_reason", voidReason)
 		// 类型是 turn_failed 而不是 failed：上面 transitToReview 已经把任务迁到
 		// waiting_review，它**没有终结**。发 failed 会让 wait --follow 打出
 		// 「任务已失败」并以 0 退出，而此时任务好端端等着审（B100 两次真机实测）。
 		evt, err = m.st.AppendEvent(taskID, proto.EventTypeTurnFailed,
-			agentd.NewFailedPayload(r.FailReason, r.Branch, r.CommitHash))
+			NewFailedPayload(r.FailReason, r.Branch, r.CommitHash))
 	}
 	if err != nil {
 		m.log.Error("追加 result 事件失败", "task", taskID, "cause", err)
@@ -3549,7 +3548,7 @@ func (m *Manager) transitClaim(taskID string, to proto.TaskState, reason string)
 	//
 	// 幂等分支（cur.State == to）在上面已经 return，不会重复作废。
 	if to.IsTerminal() {
-		agentd.VoidTicketsWithAudit(m.st, taskID, reason, m.log)
+		VoidTicketsWithAudit(m.st, taskID, reason, m.log)
 		// 终态即清扫（B119）：与上面的工单作废同一个理由——挂在这里才能覆盖
 		// **将来新增的**终态路径。B93 把清扫只加在 handleResult 末尾，Stop 这条
 		// 终态路径就漏了，标题写的「落终态即清扫」实际只做到了「回合终态」。

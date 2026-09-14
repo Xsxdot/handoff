@@ -7,12 +7,12 @@
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
 //   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒协调者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
-//   - 经 agentd.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
+//   - 经 orchestration.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
 //     → 停看门狗 → 关库 → 放锁；正常关停 exit 0，供进程管理器据此拉起新版
 //
 // 边界：
 //   - 不创建任务/工单：任务生命周期由 manager 驱动（executor 按 --executor 挂载）
-//   - 不决定何时停机：信号与进程内触发都汇到 agentd.Shutdown，本文件只接线
+//   - 不决定何时停机：信号与进程内触发都汇到 orchestration.Shutdown，本文件只接线
 package cmd
 
 import (
@@ -61,7 +61,7 @@ import (
 //
 // 注意：
 //   - logx.Setup 之后必须立即 slog.SetDefault：hub 在 NewServer 构造时捕获 slog.Default()
-//     （见 agentd.NewHub），顺序颠倒会让 hub 的日志落在初始默认 logger 上
+//     （见 orchestration.NewHub），顺序颠倒会让 hub 的日志落在初始默认 logger 上
 var agentdCmd = &cobra.Command{
 	Use:   "agentd",
 	Short: "启动 agentd 服务（HTTP API + WS 事件流）",
@@ -177,7 +177,7 @@ var agentdCmd = &cobra.Command{
 			Redact: proxycfg.Redact(cfg.Proxy),
 		})
 		workspace.SetForkFailureNote(prochost.ExplainForkFailure)
-		workspace.SetProcHeadroom(agentd.CheckProcHeadroom)
+		workspace.SetProcHeadroom(orchestration.CheckProcHeadroom)
 		if cfg.Proxy != "" {
 			logger.Info("git 出网将使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
 		}
@@ -236,7 +236,7 @@ var agentdCmd = &cobra.Command{
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
-		agentd.SetTaskProcCounter(mgr.TaskProcCount)
+		orchestration.SetTaskProcCounter(mgr.TaskProcCount)
 		// 恢复前先挂自动化账本：RecoverOnStartup 会通过 Server.autoLedger
 		// 对任务占用做启动期对账，账本尚未装配时必须拒绝启动，而不是让恢复
 		// 进入一个不完整的服务状态。
@@ -273,9 +273,9 @@ var agentdCmd = &cobra.Command{
 		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
 		// 会让这些合法的迁移在首轮就被误判成失配
 		wdStart := time.Now()
-		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
+		go orchestration.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
 			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim,
-			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
+			wdStart, orchestration.MismatchScanMinAge, mgr.MismatchTransit(), logger)
 
 		// 恒启动：镜像的机器清单现在来自活快照，启动时没有机器不代表以后没有。
 		// 留着 len>0 的闸会让控制台新增的第一台机器永远等不到镜像。
@@ -312,7 +312,7 @@ var agentdCmd = &cobra.Command{
 		// store.Close 与 lock.Release 上面已有 defer，这里不重复调用——
 		// defer 在 RunE 返回后仍会执行，顺序是 lock.Release 后于 st.Close，
 		// 正是我们要的。
-		sd := agentd.NewShutdown(logger)
+		sd := orchestration.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
 		// 两侧都要保留：main 侧把 wdCancel 包进了 PTY 感知的优雅关停清理，
@@ -498,7 +498,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	srv.SetHostAPI(hostAPI)
 	// keystone 域（B156.3）：协调者会话承载 + 隔离 HOME 供给 + ref 解析 +
 	// 叙事/attach 适配，经 SetKeystone 注入。
-	prepareHome := agentd.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
+	prepareHome := orchestration.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())
 	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome)
 	resolver := agentd.NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath)

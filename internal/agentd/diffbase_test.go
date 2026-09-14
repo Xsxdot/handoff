@@ -55,7 +55,7 @@ func TestTaskDiffUsesResultRefCommit(t *testing.T) {
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	srv := NewServer(cfg, st, discardLogger())
-	m := newManagerForTest(t, ManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: discardLogger(), LiveConfig: srv.Conf()})
+	m := newManagerForTest(t, testManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: discardLogger(), LiveConfig: srv.Conf()})
 	spy := &diffHeadSpy{Capability: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)
@@ -113,7 +113,7 @@ func TestTaskDiffAllowsEmptyResultPathWithCommit(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	cfg := &config.Config{Token: token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	srv := NewServer(cfg, st, logger)
-	m := newManagerForTest(t, ManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: logger, LiveConfig: srv.Conf()})
+	m := newManagerForTest(t, testManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: logger, LiveConfig: srv.Conf()})
 	spy := &diffHeadSpy{Capability: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)
@@ -152,7 +152,7 @@ func TestTaskDiffEmptyCommitFallsBackThroughHTTP(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(&logs, nil))
 	cfg := &config.Config{Token: token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
 	srv := NewServer(cfg, st, logger)
-	m := newManagerForTest(t, ManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: logger, LiveConfig: srv.Conf()})
+	m := newManagerForTest(t, testManagerDeps{Store: st, Hub: srv.Hub(), Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg, Gate: newTestGate(t), Log: logger, LiveConfig: srv.Conf()})
 	spy := &diffHeadSpy{Capability: workspace.NewCapability()}
 	m.SetWorkspace(spy)
 	srv.SetManager(m)

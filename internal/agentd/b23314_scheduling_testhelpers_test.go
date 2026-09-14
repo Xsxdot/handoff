@@ -9,7 +9,8 @@ package agentd
 // 补装，保证装配完成后字段状态与改前 SetupAutomation 逐字段等价；cmd 包无法
 // 被本测试包导入（import 环），镜像按 newSchedulingForTest 先例落在测试侧。
 // 边界：仅测试构建可见；不改生产导入面。SetupAutomationForTest 导出以便
-// package agentd_test 复用（与 B23313 ManagerFactory 同款跨测试包接线）。
+// package agentd_test 复用（原与 B23313 ManagerFactory 同款跨测试包接线；该桥已随
+// B233.26 刀2 退役）。
 
 import (
 	"log/slog"
@@ -22,6 +23,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/toolchain"
 )
@@ -60,7 +62,7 @@ func assembleDomainsForTest(t *testing.T, srv *Server) {
 	srv.SetRooms(rooms)
 	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
 	srv.SetHostAPI(hostAPI)
-	prepareHome := NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
+	prepareHome := orchestration.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
 	coord := opencode.NewCoordinator(hostAPI, slog.Default())
 	ks := keystone.New(NewCoordinatorRunner(coord, srv.Providers(), prepareHome),
 		keystone.NewRoomNarrator(rooms), facade, NewAttachLocator(hostapi.ExpandHomePath))

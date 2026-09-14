@@ -18,7 +18,7 @@
 //
 // B233.19：自 internal/agentd/mirror.go 迁入。targetclient/store/Hub 触点收成
 // RemoteTaskSource / MirrorStore / EventPublisher 三个本地窄接口：*store.Store
-// 与 *agentd.Hub 结构满足，cmd 直接注入；target 池经 gateway 侧适配器
+// 与 *orchestration.Hub 结构满足（B233.26 起 hub 归编排包），cmd 直接注入；target 池经 gateway 侧适配器
 // （agentd.NewMirrorTaskSource）包入 MarkForwarded 语义。
 package workspace
 
@@ -66,7 +66,7 @@ type MirrorStore interface {
 }
 
 // EventPublisher 是本机实时路由的窄接口（B233.19 收窄的 Hub 触点）。
-// *agentd.Hub 结构满足本接口，镜像事件经它让 /ws/events 订阅者立刻收到。
+// *orchestration.Hub 结构满足本接口，镜像事件经它让 /ws/events 订阅者立刻收到。
 type EventPublisher interface {
 	Publish(ev proto.Event)
 }

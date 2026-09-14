@@ -1,16 +1,13 @@
-// orchestration_client.go —— gateway 对任务编排的出站 client 契约（B233.13 Ticket 0）。
+// orchestration_client.go —— 任务编排的出站 client 契约（B233.13 Ticket 0 立面，
+// B233.26 反转 D1 后归位提供方侧编排包）。
 //
-// 职责：定义 Server 生产字段持有的编排接口，方法集覆盖 handler 今日对 s.mgr 的
-// 生产调用；具体实现由组装点注入。实现节点把 Manager 迁到 internal/orchestration
-// 后，由该包的 *Manager 满足本接口，Server.mgr 字段类型改为本接口。
+// 职责：定义 gateway 包生产字段持有的编排接口，方法集覆盖
+// handler 对 s.mgr 的生产调用；实现是本包的 *Manager，由 cmd 组装点注入。
+// 接口放提供方侧沿 internal/client/capabilities.go（B233.20）先例：方法名、
+// 参数语义、返回形状冻结在 contract。
 //
 // 边界：不放业务实现、不新增 HTTP/CLI/事件类型；*Manager 只在组装点 new。
-//
-// DTO 定位（D1 拍板）：DispatchReq / RegisterProjectReq / RecoverReport 留 gateway，
-// 与 OrchestrationClient 同包；迁出的编排实现 import gateway 取共享 DTO，gateway
-// 生产文件不 import orchestration。这是物理迁包，不是契约面变化：方法名、参数语义、
-// 返回形状冻结在 contract。
-package agentd
+package orchestration
 
 import (
 	"context"
@@ -34,8 +31,8 @@ type TerminalOutcome struct {
 
 // OrchestrationClient 是 gateway 生产路径消费任务编排能力的唯一接口。
 //
-// 接口按架构法第九条定义在使用方（gateway）；实现是迁出后的编排 Manager。
-// 新增方法先回 contract 节点。
+// B233.26 反转 D1 后接口随提供方归本包（沿 capabilities.go 先例）；gateway
+// 以字段类型持有，不再在使用方定义。新增方法先回 contract 节点。
 type OrchestrationClient interface {
 	// —— 任务生命周期 ——
 	Dispatch(ctx context.Context, req DispatchReq) (*proto.Task, error)

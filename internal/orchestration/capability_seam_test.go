@@ -11,7 +11,6 @@ package orchestration
 import (
 	"context"
 	"errors"
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"log/slog"
 	"testing"
 
@@ -65,7 +64,7 @@ func TestDispatchRequiresExecutionBeforeStart(t *testing.T) {
 		log: slog.Default(),
 	}
 
-	_, err := mgr.Dispatch(context.Background(), agentd.DispatchReq{
+	_, err := mgr.Dispatch(context.Background(), DispatchReq{
 		ProjectName: "proj-1",
 		Prompt:      "test",
 		Executor:    "no-exec",

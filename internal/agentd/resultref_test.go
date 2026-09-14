@@ -6,6 +6,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -25,7 +26,7 @@ func TestBaseCommitDoesNotDriftWithDefaultBranch(t *testing.T) {
 	fk := fake.New(nil)
 	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), DispatchReq{
+	task, err := m.Dispatch(context.Background(), orchestration.DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", NewWorktree: true,
 	})
 	if err != nil {

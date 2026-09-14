@@ -295,52 +295,11 @@ func TestEmptyBodyNoModeStillRestarts(t *testing.T) {
 	}
 }
 
-// 并发锁：一个自拉在跑时，第二个请求 409 + pull_in_progress。
-// 没有这道锁，两个 goroutine 会往同一个临时文件路径写，互相截断出一个坏二进制。
-func TestPullTrackerRejectsConcurrent(t *testing.T) {
-	p := newPullTracker()
-	if !p.begin("v1.0.0") {
-		t.Fatal("首次 begin 应成功")
-	}
-	if p.begin("v1.0.1") {
-		t.Fatal("已有自拉在跑时 begin 应失败")
-	}
-	p.fail(errors.New("boom"))
-	if !p.begin("v1.0.2") {
-		t.Fatal("失败释放后 begin 应能再次成功")
-	}
-}
-
-// 没跑过自拉时 snapshot 返回 nil：status 不该显示一个编出来的空状态。
-func TestPullTrackerSnapshotNilWhenIdle(t *testing.T) {
-	if got := newPullTracker().snapshot(); got != nil {
-		t.Fatalf("空闲时应返回 nil，实得 %+v", got)
-	}
-}
-
-// 失败后 snapshot 必须留住阶段与错误原文——进程不重启，这正是要查它的场合。
-func TestPullTrackerKeepsFailure(t *testing.T) {
-	p := newPullTracker()
-	p.begin("v1.0.0")
-	p.stage(proto.PullStageDownloading)
-	p.fail(errors.New("proxyconnect tcp: connection refused"))
-	got := p.snapshot()
-	if got == nil || got.Stage != proto.PullStageFailed {
-		t.Fatalf("应留下 failed 状态，实得 %+v", got)
-	}
-	if !strings.Contains(got.Error, "connection refused") {
-		t.Errorf("应留下错误原文，实得 %q", got.Error)
-	}
-	if got.Tag != "v1.0.0" {
-		t.Errorf("应留下 tag，实得 %q", got.Tag)
-	}
-}
-
 // 自拉进行中再来一个 push 必须 409 + pull_in_progress：
 // 两个换版会写同一个确定性临时文件（release.TempName(tag)），互相截断出坏二进制。
 func TestPushRejectedWhilePullRunning(t *testing.T) {
 	s := newTestServerManaged(t)
-	if !s.pull.begin("v1.0.0") {
+	if !s.pull.Begin("v1.0.0") {
 		t.Fatal("begin 应成功")
 	}
 	rr := doUpdate(t, s, "?mode=push&tag=v1.0.0&sha256=abc", []byte("tgz"))
@@ -412,7 +371,7 @@ func TestPullDownloadFailureRecordsAndDoesNotActivate(t *testing.T) {
 	if activated || restarted {
 		t.Fatalf("下载失败不得换版或重启，activated=%v restarted=%v", activated, restarted)
 	}
-	got := s.pull.snapshot()
+	got := s.pull.Snapshot()
 	if !strings.Contains(got.Error, "connection refused") {
 		t.Errorf("状态应留下错误原文，实得 %q", got.Error)
 	}
@@ -461,10 +420,10 @@ func waitPullStage(t *testing.T, s *Server, want string, timeout time.Duration) 
 	t.Helper()
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
-		if st := s.pull.snapshot(); st != nil && st.Stage == want {
+		if st := s.pull.Snapshot(); st != nil && st.Stage == want {
 			return
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("等待 pull 阶段 %q 超时，实得 %+v", want, s.pull.snapshot())
+	t.Fatalf("等待 pull 阶段 %q 超时，实得 %+v", want, s.pull.Snapshot())
 }

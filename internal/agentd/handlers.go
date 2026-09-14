@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -53,7 +54,7 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	if resp.Update != nil {
 		yes := true
 		resp.Update.Pull = &yes
-		resp.Update.PullState = s.pull.snapshot()
+		resp.Update.PullState = s.pull.Snapshot()
 	}
 	ptyOK := s.pty.Supported()
 	resp.PtySupported = &ptyOK
@@ -164,15 +165,15 @@ func (s *Server) writeReclaimError(w http.ResponseWriter, taskID string, err err
 		s.log.Warn("回收被拒：工作树脏", "task", taskID, "dirty", len(de.Files))
 		writeJSON(w, http.StatusConflict, proto.ReclaimError{
 			Error: err.Error(), Reason: proto.ReasonDirty, Dirty: de.Files})
-	case errors.Is(err, ErrReclaimNotTerminal):
+	case errors.Is(err, orchestration.ErrReclaimNotTerminal):
 		s.log.Warn("回收被拒：任务非终态", "task", taskID)
 		writeJSON(w, http.StatusConflict, proto.ReclaimError{
 			Error: err.Error(), Reason: proto.ReasonNotTerminal})
-	case errors.Is(err, ErrReclaimNotManaged):
+	case errors.Is(err, orchestration.ErrReclaimNotManaged):
 		s.log.Warn("回收被拒：非 managed 工作区", "task", taskID)
 		writeJSON(w, http.StatusConflict, proto.ReclaimError{
 			Error: err.Error(), Reason: proto.ReasonNotManaged})
-	case errors.Is(err, ErrReclaimRepoUnreachable):
+	case errors.Is(err, orchestration.ErrReclaimRepoUnreachable):
 		s.log.Warn("回收被拒：仓库不可达", "task", taskID, "cause", err)
 		writeJSON(w, http.StatusConflict, proto.ReclaimError{
 			Error: err.Error(), Reason: proto.ReasonRepoUnreachable})
@@ -220,7 +221,7 @@ func (s *Server) handleListTasks(w http.ResponseWriter, r *http.Request) {
 			owned++
 		}
 		w := s.hub.Watchers(t.ID)
-		if w == 0 && !IsTerminalState(t.State) && t.State != proto.TaskStateWaitingReview {
+		if w == 0 && !t.State.IsTerminal() && t.State != proto.TaskStateWaitingReview {
 			unattended++
 		}
 		views = append(views, proto.TaskView{Task: t, Watchers: w})
@@ -400,7 +401,7 @@ func (s *Server) handleReply(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if _, err := s.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
-		TicketAnsweredPayload{TicketID: req.TicketID, Answer: req.Answer}); err != nil {
+		orchestration.TicketAnsweredPayload{TicketID: req.TicketID, Answer: req.Answer}); err != nil {
 		s.log.Warn("追加工单答复事件失败", "task", taskID, "ticket", req.TicketID, "cause", err)
 	}
 
@@ -604,7 +605,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("dispatch 任务身份快照已组装", "project", req.ProjectID,
 		"carrier", binding.Carrier, "squad", binding.Squad, "target", binding.Target,
 		"executor", binding.Executor, "home_dir_set", homePtr != nil)
-	task, err := s.mgr.Dispatch(r.Context(), DispatchReq{
+	task, err := s.mgr.Dispatch(r.Context(), orchestration.DispatchReq{
 		ProjectID: req.ProjectID, ProjectName: req.ProjectName,
 		PlanB64: req.PlanB64, PlanName: req.PlanName, Target: binding.Target,
 		Prompt: req.Prompt, Name: req.Name, Receiver: req.Receiver, Squad: binding.Squad, Carrier: binding.Carrier,
@@ -652,13 +653,13 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 //   - 其余（任务目录/落库等 agentd 侧故障）→ 500
 func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, err error) {
 	switch {
-	case errors.Is(err, ErrWorkspaceUnavailable):
+	case errors.Is(err, orchestration.ErrWorkspaceUnavailable):
 		s.log.Error("dispatch 失败：工作区能力未注入", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": err.Error()})
 	case errors.Is(err, workspace.ErrDirtyWorktree):
 		s.log.Warn("dispatch 被拒：工作区不干净", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrWorkdirBusy):
+	case errors.Is(err, orchestration.ErrWorkdirBusy):
 		s.log.Warn("dispatch 被拒：目标工作目录被占用", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, workspace.ErrFetchRefLockContention):
@@ -676,7 +677,7 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 	case errors.Is(err, workspace.ErrProjectNotRegistered):
 		s.log.Warn("dispatch 被拒：项目未登记", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrBadDispatchRequest):
+	case errors.Is(err, workspace.ErrBadDispatchRequest):
 		s.log.Warn("dispatch 被拒：请求参数非法", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, workspace.ErrBadWorkspaceReq):
@@ -691,16 +692,16 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 		errors.Is(err, scheduling.ErrNoSlot), errors.Is(err, scheduling.ErrRetryExhausted):
 		s.log.Warn("dispatch 被拒：接收者冲突或满员", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrNoProcHeadroom):
+	case errors.Is(err, orchestration.ErrNoProcHeadroom):
 		s.log.Warn("dispatch 被拒：进程余量不足", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrExecutorStartFailed):
+	case errors.Is(err, orchestration.ErrExecutorStartFailed):
 		s.log.Error("dispatch 启动 executor 失败（环境问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrEnvResolveFailed):
+	case errors.Is(err, orchestration.ErrEnvResolveFailed):
 		s.log.Error("dispatch 被拒：env 文件解析失败（配置问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrDisciplineResolveFailed):
+	case errors.Is(err, orchestration.ErrDisciplineResolveFailed):
 		s.log.Error("dispatch 被拒：纪律块解析失败（配置问题，真因回显）", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 	default:
@@ -813,13 +814,13 @@ func (s *Server) writeProjectError(w http.ResponseWriter, name string, err error
 	case errors.Is(err, store.ErrProjectDuplicate):
 		s.log.Warn("项目登记操作被拒：名字或路径已被占用", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
-	case errors.Is(err, ErrWorkdirBusy):
+	case errors.Is(err, orchestration.ErrWorkdirBusy):
 		s.log.Warn("项目登记操作被拒：被活跃任务占用", "name", name, "cause", err)
 		writeJSON(w, http.StatusConflict, map[string]string{"error": err.Error()})
 	case errors.Is(err, workspace.ErrProjectOriginMismatch):
 		s.log.Warn("项目登记被拒：路径上是另一个项目", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
-	case errors.Is(err, workspace.ErrRepoUnusable), errors.Is(err, ErrBadDispatchRequest):
+	case errors.Is(err, workspace.ErrRepoUnusable), errors.Is(err, workspace.ErrBadDispatchRequest):
 		s.log.Warn("项目登记操作被拒：请求非法", "name", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	default:
@@ -1416,7 +1417,7 @@ func (s *Server) handleTaskRun(w http.ResponseWriter, r *http.Request) {
 	}
 	stdout, exitCode, err := workspace.RunCmd(r.Context(), repo, req.Cmd)
 	if err != nil {
-		if errors.Is(err, ErrNoProcHeadroom) || errors.Is(err, workspace.ErrWorkdirGone) {
+		if errors.Is(err, orchestration.ErrNoProcHeadroom) || errors.Is(err, workspace.ErrWorkdirGone) {
 			s.log.Warn("run 被拒", "task", taskID, "repo", repo,
 				"cmd", truncateRunes(req.Cmd, 200), "cause", err)
 			writeJSON(w, http.StatusBadRequest, map[string]string{"error": truncateRunes(err.Error(), 200)})

@@ -12,7 +12,7 @@
 //   - 不算 project_id：那是 internal/projectid 的纯函数
 //   - 不删磁盘上的仓库：注销只影响登记，磁盘由人自己处置
 //   - clone 在**本机**执行（agentd 就跑在这台机器上），不走 ssh
-//   - gateway 生产文件仍引用的共享助手（ValidateProjectName 等）经 agentd.* 引用
+//   - 哨兵正身在 internal/workspace（ErrBadDispatchRequest/ErrRepoUnusable），本包直引
 package orchestration
 
 import (
@@ -25,7 +25,7 @@ import (
 	"strings"
 	"time"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/executor/turn"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -57,7 +57,7 @@ func (m *Manager) RegisterProject(ctx context.Context, req workspace.RegisterPro
 	req.Path = strings.TrimSpace(req.Path)
 	if req.OriginURL != "" && strings.HasPrefix(req.OriginURL, "-") {
 		// git 会把以 - 开头的参数解释为选项——参数注入面，与 ErrBadBaseBranch 同源。
-		return proto.ProjectLocation{}, fmt.Errorf("%w: origin_url 不允许以 - 开头", agentd.ErrBadDispatchRequest)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: origin_url 不允许以 - 开头", workspace.ErrBadDispatchRequest)
 	}
 	if req.Path != "" {
 		// path 必须是绝对路径：clone 落点由 GitRun（cwd=父目录）解析，落库路径由
@@ -70,7 +70,7 @@ func (m *Manager) RegisterProject(ctx context.Context, req workspace.RegisterPro
 			m.log.Warn("登记被拒：path 不是绝对路径", "path", req.Path)
 			return proto.ProjectLocation{}, fmt.Errorf(
 				"%w: path 必须是绝对路径（不支持 ~ 展开与相对路径）：%s",
-				agentd.ErrBadDispatchRequest, req.Path)
+				workspace.ErrBadDispatchRequest, req.Path)
 		}
 		req.Path = filepath.Clean(req.Path)
 		return m.registerAtPath(ctx, req)
@@ -79,7 +79,7 @@ func (m *Manager) RegisterProject(ctx context.Context, req workspace.RegisterPro
 	if req.OriginURL == "" {
 		return proto.ProjectLocation{}, fmt.Errorf(
 			"%w: 不带 path 时必须提供 origin_url（否则既无落点也无项目身份）",
-			agentd.ErrBadDispatchRequest)
+			workspace.ErrBadDispatchRequest)
 	}
 	return m.cloneAndRegisterProject(ctx, req)
 }
@@ -96,12 +96,12 @@ func (m *Manager) registerAtPath(ctx context.Context, req workspace.RegisterProj
 		if req.OriginURL == "" {
 			return proto.ProjectLocation{}, fmt.Errorf(
 				"%w: 路径 %s 不存在，且未提供 origin_url，无法 clone",
-				agentd.ErrBadDispatchRequest, req.Path)
+				workspace.ErrBadDispatchRequest, req.Path)
 		}
 		return m.cloneToPathAndRegister(ctx, req)
 	}
 	if err != nil {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查路径 %s: %v", agentd.ErrRepoUnusable, req.Path, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查路径 %s: %v", workspace.ErrRepoUnusable, req.Path, err)
 	}
 	return m.registerExistingProject(ctx, req)
 }
@@ -205,18 +205,18 @@ func (m *Manager) cloneToPathAndRegister(ctx context.Context, req workspace.Regi
 	// 调用方原本就有的目录绝不碰。
 	created := firstMissingAncestor(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", agentd.ErrRepoUnusable, parent, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", workspace.ErrRepoUnusable, parent, err)
 	}
 	m.log.Info("开始克隆项目到指定路径", "origin", req.OriginURL, "dest", dest)
 	start := time.Now()
 	// GitRun 以 parent 为 cwd 执行；-- 分隔符防止 URL/路径被当成选项。
-	if _, stderr, err := agentd.GitRun(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
+	if _, stderr, err := workspace.GitRun(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
 		m.log.Error("克隆到指定路径失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
-			"stderr", agentd.TruncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+			"stderr", turn.TruncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
 		m.cleanupCreatedDir(created)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
-			agentd.ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
+			workspace.ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
 	}
 	m.log.Info("克隆到指定路径完成", "origin", req.OriginURL, "dest", dest,
 		"elapsed_ms", time.Since(start).Milliseconds())
@@ -363,7 +363,7 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req workspace.Reg
 	}
 	if m.cfg.RepoRoot == "" {
 		return proto.ProjectLocation{}, fmt.Errorf(
-			"%w: 本机未配置 repo_root，无法决定克隆落点（在 config.yaml 里配它）", agentd.ErrBadDispatchRequest)
+			"%w: 本机未配置 repo_root，无法决定克隆落点（在 config.yaml 里配它）", workspace.ErrBadDispatchRequest)
 	}
 	dest := filepath.Join(m.cfg.RepoRoot, name)
 	// 落点已存在时先尝试**认领**，而不是直接拒绝：`project rm` 只删登记不动磁盘，
@@ -393,25 +393,25 @@ func (m *Manager) cloneAndRegisterProject(ctx context.Context, req workspace.Reg
 			"dest", dest, "project_id", projectid.FromOrigin(actual))
 		return m.persistProject(name, root, actual)
 	} else if !errors.Is(err, os.ErrNotExist) {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查落点 %s: %v", agentd.ErrRepoUnusable, dest, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 探查落点 %s: %v", workspace.ErrRepoUnusable, dest, err)
 	}
 	parent := filepath.Dir(dest)
 	// clone 前先记下 MkdirAll 会从哪一层开始造——失败时只回收这一层往下，
 	// 调用方原本就有的目录绝不碰。
 	created := firstMissingAncestor(parent)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", agentd.ErrRepoUnusable, parent, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 创建落点父目录 %s: %v", workspace.ErrRepoUnusable, parent, err)
 	}
 	m.log.Info("开始克隆项目", "origin", req.OriginURL, "dest", dest)
 	start := time.Now()
 	// GitRunNet 以 parent 为 cwd 执行；-- 分隔符防止 URL/路径被当成选项。
-	if _, stderr, err := agentd.GitRunNet(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
+	if _, stderr, err := workspace.GitRunNet(ctx, parent, "clone", "--", req.OriginURL, dest); err != nil {
 		m.log.Error("克隆项目失败", "origin", req.OriginURL, "dest", dest,
 			"elapsed_ms", time.Since(start).Milliseconds(),
-			"stderr", agentd.TruncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
+			"stderr", turn.TruncateRunes(strings.TrimSpace(stderr), 300), "cause", err)
 		m.cleanupCreatedDir(created)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: 克隆 %s 到 %s 失败: %s: %v",
-			agentd.ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
+			workspace.ErrRepoUnusable, req.OriginURL, dest, strings.TrimSpace(stderr), err)
 	}
 	m.log.Info("克隆项目完成", "origin", req.OriginURL, "dest", dest,
 		"elapsed_ms", time.Since(start).Milliseconds())
@@ -426,14 +426,14 @@ func (m *Manager) persistProject(name, path, origin string) (proto.ProjectLocati
 	absPath, err := filepath.Abs(filepath.Clean(path))
 	if err != nil {
 		m.log.Warn("登记落库被拒：路径无法归一化为绝对路径", "path", path, "cause", err)
-		return proto.ProjectLocation{}, fmt.Errorf("%w: 归一化路径 %s: %v", agentd.ErrBadDispatchRequest, path, err)
+		return proto.ProjectLocation{}, fmt.Errorf("%w: 归一化路径 %s: %v", workspace.ErrBadDispatchRequest, path, err)
 	}
 	path = absPath
 	pid := projectid.FromOrigin(origin)
 	if pid == "" {
 		m.log.Warn("登记落库被拒：origin 算不出 project_id", "origin", origin, "path", path)
 		return proto.ProjectLocation{}, fmt.Errorf("%w: origin %q 归一化后为空，算不出项目身份",
-			agentd.ErrBadDispatchRequest, origin)
+			workspace.ErrBadDispatchRequest, origin)
 	}
 	entries, err := m.st.ListProjectLocations()
 	if err != nil {
@@ -511,7 +511,7 @@ func uniqueProjectName(base string, entries []proto.ProjectLocation) (string, er
 		}
 	}
 	return "", fmt.Errorf("%w: 名字 %s 及其 -2..-%d 变体全部被占用，请用 [名字] 参数显式指定",
-		agentd.ErrBadDispatchRequest, base, workspace.NameFallbackLimit)
+		workspace.ErrBadDispatchRequest, base, workspace.NameFallbackLimit)
 }
 
 // ListProjects 列出本机全部项目位置，并现场探测每条的实际状态。
@@ -557,7 +557,7 @@ func probeProjectStatus(ctx context.Context, path string) string {
 //
 // 返回：
 //   - 错误：位置不存在时 store.ErrNotFound（404）；路径被活跃任务占用时
-//     agentd.ErrWorkdirBusy（409）
+//     ErrWorkdirBusy（409）
 //
 // 注意：
 //   - **只删登记，永不删磁盘上的仓库**。磁盘上那份是不是还要留，由人自己决定
@@ -580,7 +580,7 @@ func (m *Manager) UnregisterProject(ctx context.Context, name string) error {
 		m.log.Warn("注销项目被拒：仓库被活跃任务占用",
 			"name", name, "path", loc.Path, "tasks", strings.Join(ids, ","))
 		return fmt.Errorf("%w: 项目 %s（%s）上还有 %d 个活跃任务（%s）；先 done 或 stop 它们",
-			agentd.ErrWorkdirBusy, name, loc.Path, len(tasks), strings.Join(ids, ", "))
+			ErrWorkdirBusy, name, loc.Path, len(tasks), strings.Join(ids, ", "))
 	}
 	if err := m.st.DeleteProjectLocation(name); err != nil {
 		m.log.Error("注销项目落库失败", "name", name, "cause", err)

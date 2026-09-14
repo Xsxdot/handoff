@@ -9,7 +9,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"io"
 	"log/slog"
 	"os"
@@ -37,7 +36,7 @@ func newReclaimManager(t *testing.T) (*Manager, string) {
 	}
 	t.Cleanup(func() { st.Close() })
 	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
-	m := NewManager(st, agentd.NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
+	m := NewManager(st, NewHub(), map[string]executor.Adapter{"fake": fake.New(nil)}, cfg,
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
 	m.SetWorkspace(workspace.NewCapability())
 	return m, repo
@@ -163,7 +162,7 @@ func TestReclaimRefusesNonTerminal(t *testing.T) {
 	id := seedTerminalTask(t, m, repo, wt, "f-r6", proto.TaskStateRunning, true)
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, agentd.ErrReclaimNotTerminal) {
+	if !errors.Is(err, ErrReclaimNotTerminal) {
 		t.Fatalf("非终态应拒绝，实得 %v", err)
 	}
 	if _, serr := os.Stat(wt); serr != nil {
@@ -176,7 +175,7 @@ func TestReclaimRefusesWaitingReview(t *testing.T) {
 	wt := newWorktree(t, repo, "wt-wr", "f-wr")
 	id := seedTerminalTask(t, m, repo, wt, "f-wr", proto.TaskStateWaitingReview, true)
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, agentd.ErrReclaimNotTerminal) {
+	if !errors.Is(err, ErrReclaimNotTerminal) {
 		t.Fatalf("waiting_review 应拒绝，实得 %v", err)
 	}
 	if _, serr := os.Stat(wt); serr != nil {
@@ -190,7 +189,7 @@ func TestReclaimRefusesNotManaged(t *testing.T) {
 	id := seedTerminalTask(t, m, repo, wt, "f-r7", proto.TaskStateFailed, false)
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, agentd.ErrReclaimNotManaged) {
+	if !errors.Is(err, ErrReclaimNotManaged) {
 		t.Fatalf("非 managed 应拒绝，实得 %v", err)
 	}
 	if _, serr := os.Stat(wt); serr != nil {
@@ -209,7 +208,7 @@ func TestReclaimRefusesWhenRepoUnreachable(t *testing.T) {
 	}
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, agentd.ErrReclaimRepoUnreachable) {
+	if !errors.Is(err, ErrReclaimRepoUnreachable) {
 		t.Fatalf("仓库不可达应报 repo_unreachable，实得 %v", err)
 	}
 }
@@ -326,7 +325,7 @@ func TestReclaimRefusesWhenWorktreeUnreadable(t *testing.T) {
 	id := seedTerminalTask(t, m, repo, wt, "f-r9", proto.TaskStateFailed, true)
 
 	_, err := m.Reclaim(context.Background(), id, false)
-	if !errors.Is(err, agentd.ErrReclaimRepoUnreachable) {
+	if !errors.Is(err, ErrReclaimRepoUnreachable) {
 		t.Fatalf("工作树读不出状态应报 repo_unreachable（判不出绝不能静默成功），实得 %v", err)
 	}
 }

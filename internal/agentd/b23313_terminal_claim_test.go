@@ -10,6 +10,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -27,7 +28,7 @@ func TestB23313ConcurrentDoneClaimedOnce(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(),
 		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: env.srv.conf(),
 		Gate: newTestGate(t), Log: discardLogger(), LiveConfig: env.srv.Conf(),
@@ -82,7 +83,7 @@ func TestB23313ConcurrentDoneReleasesOnce(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(),
 		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: env.srv.conf(),
 		Gate: newTestGate(t), Log: discardLogger(), LiveConfig: env.srv.Conf(),
@@ -135,7 +136,7 @@ func TestB23313ConcurrentStopSecondIs409(t *testing.T) {
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(),
 		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: env.srv.conf(),
 		Gate: newTestGate(t), Log: discardLogger(), LiveConfig: env.srv.Conf(),
@@ -166,9 +167,11 @@ func TestB23313ConcurrentStopSecondIs409(t *testing.T) {
 	}
 }
 
-// nilOrchClient 借嵌入接口获得 OrchestrationClient 方法集，用来构造一个
+// nilOrchClient 借嵌入接口获得 orchestration.OrchestrationClient 方法集，用来构造一个
 // 「非 nil 接口、底层指针为 nil」的 typed-nil（B233.13 P5）。
-type nilOrchClient struct{ OrchestrationClient }
+type nilOrchClient struct {
+	orchestration.OrchestrationClient
+}
 
 // 断言（S2）：SetManager 收到 typed-nil 后落 nil，handler 仍 503，不 panic。
 func TestB23313SetManagerRejectsTypedNil(t *testing.T) {

@@ -184,13 +184,14 @@ type b23317FrozenContract struct {
 }
 
 var b23317FrozenContracts = []b23317FrozenContract{
-	// B233.25 冻结值 0→83 依据：B233.23 重扫把 gateway 任务读面（handlers/watchdog/
-	// b23319 适配器/authroutes/workbench_api/roomsapi/projectadmin/auth/taskroute）
-	// 直读编排域 store.Store（77）与实体/包级函数（6）的既存缝如实记入预算
-	// （spec plan 第 2 步明文「消不掉的把 target.json 预算棘轮到重扫实况并写 note」，
-	// 落地于 commit 89a4660f3，note 见 codegraph/target.json 该方向 legacyBudgetNote）；
-	// 收窄（经 OrchestrationClient 或查询门面）归后续卡。棘轮语义不变：超过 83 仍红。
-	{From: "d_gateway", To: "d_orchestration", Budget: 83, Interfaces: []string{"OrchestrationClient"}},
+	// B233.26 反转 D1：OrchestrationClient 契约族随十文件迁入提供方 orchestration，
+	// 接口不再定义在使用方侧——interfaces 声明从本方向移除（若未来回潮须先补冻结值
+	// 再收口，见 TestB23317FacadeBudgetsStayRatchet 的 interfaces 锁）。方向语义随
+	// 反转：不再是 gateway 直读留驻 store，而是 gateway 对编排实现/数据的真实依赖。
+	// 重扫 raw 87 中 10 条落已声明 entries、另 1 条源在 assembly 免除，check 判定直调
+	// 76；预算按「只降不抬」由 B233.23 的 83 收紧到 76（超过 76 仍红），未抬配额抹绿。
+	// 收窄（经查询门面）归后续卡。
+	{From: "d_gateway", To: "d_orchestration", Budget: 76},
 	{From: "d_cli", To: "d_workspace", Budget: 0},
 	{From: "d_gateway", To: "d_workspace", Budget: 0},
 	{From: "d_orchestration", To: "d_workspace", Budget: 0},

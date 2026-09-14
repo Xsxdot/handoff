@@ -4,6 +4,7 @@ package agentd
 
 import (
 	"context"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/workspace"
 	"os"
 	"strings"
@@ -22,7 +23,7 @@ func TestDispatchPersistsFrozenIdentity(t *testing.T) {
 	}
 	pid := registerTestProject(t, m, repo)
 	home := "~/.handoff/home/muse"
-	task, err := m.Dispatch(context.Background(), DispatchReq{
+	task, err := m.Dispatch(context.Background(), orchestration.DispatchReq{
 		ProjectID: pid, Prompt: "x",
 		Target: "linux-01", Executor: "fake", Carrier: "muse", HomeDir: &home, Model: "gpt-y",
 		NewWorktree: true,
@@ -44,7 +45,7 @@ func TestDispatchEmptyExecutorDoesNotInventCarrier(t *testing.T) {
 	fk := fake.New(nil)
 	m, _, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", nil)
 	pid := registerTestProject(t, m, repo)
-	task, err := m.Dispatch(context.Background(), DispatchReq{
+	task, err := m.Dispatch(context.Background(), orchestration.DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "", NewWorktree: true,
 	})
 	if err != nil {
@@ -62,7 +63,7 @@ func TestHistoryTaskIgnoresLiveCarrierHome(t *testing.T) {
 	m.SetWorkspace(workspace.NewCapability())
 	pid := registerTestProject(t, m, repo)
 	home := "/old/home"
-	task, err := m.Dispatch(context.Background(), DispatchReq{
+	task, err := m.Dispatch(context.Background(), orchestration.DispatchReq{
 		ProjectID: pid, Prompt: "x", Executor: "fake", Carrier: "muse", HomeDir: &home, Target: "local",
 		NewWorktree: true,
 	})

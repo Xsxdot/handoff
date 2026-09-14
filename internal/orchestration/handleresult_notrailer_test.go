@@ -9,7 +9,6 @@ package orchestration
 
 import (
 	"encoding/json"
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"strings"
 	"testing"
 
@@ -43,7 +42,7 @@ func TestFailedPayloadCarriesGitTruth(t *testing.T) {
 	}})
 
 	ev := lastEventOfType(t, m, "t1", string(proto.EventTypeTurnFailed))
-	var p agentd.FailedPayload
+	var p FailedPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatal(err)
 	}
@@ -64,7 +63,7 @@ func TestCompletedPayloadCarriesFinalTextAsOptionalField(t *testing.T) {
 	}})
 
 	ev := lastEventOfType(t, m, "final-text", string(proto.EventTypeCompleted))
-	var payload agentd.CompletedPayload
+	var payload CompletedPayload
 	if err := json.Unmarshal(ev.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
@@ -110,7 +109,7 @@ func TestVoidReasonComesFromResultNotHardcoded(t *testing.T) {
 	}})
 
 	ev := lastEventOfType(t, m, "t3", string(proto.EventTypeTicketsVoided))
-	var p agentd.TicketsVoidedPayload
+	var p TicketsVoidedPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatal(err)
 	}
@@ -131,7 +130,7 @@ func TestVoidReasonDefaultsToExecutorGone(t *testing.T) {
 	}})
 
 	ev := lastEventOfType(t, m, "t4", string(proto.EventTypeTicketsVoided))
-	var p agentd.TicketsVoidedPayload
+	var p TicketsVoidedPayload
 	if err := json.Unmarshal(ev.Payload, &p); err != nil {
 		t.Fatal(err)
 	}

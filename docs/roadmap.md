@@ -823,10 +823,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ## 来自 B233.18–.25 残余批次收口（2026-09-13，功能线至 0088ba7ff）
 
-- **B233.22 B 档 10 项留驻 agentd**（hub/shutdown/pullstate/admission/watchdog/ticketvoid/eventframes/coordinator_home/b23313_retained 余部/logging）：全部需要 D1 拍板的 orchestration→agentd import 方向反转或接口缝设计，清单与缝位见 `docs/superpowers/notes/b233.22-placement.md` §3。来源：B233.22 验收。
+- ~~**B233.22 B 档 10 项留驻 agentd**~~：**已由 B233.26 核销**（DUT `b33f628ca`；刀1+刀2 归域、刀3 图对账、刀4 实现记录）。D1 已反转，orchestration 生产零 import agentd。清单与缝位原见 `docs/superpowers/notes/b233.22-placement.md` §3；收口见 `docs/superpowers/notes/b233.26-impl-record.md`。来源：B233.22 验收；B233.26 finish。
 - **placement 未登记零散项**：server.go 内组装适配器与 k_agentd_fn 粗粒度成员的文件粒度归属留后续逐个定夺（preview 族、agy、测试基建已由 B233.23 补登记）。来源：b233.22-placement §4。
 - **B233.20 收窄残余（字面 grep 对类型推断局部盲区）**：内联 RunE 与 pool.For 推断局部仍持聚合——`agentd/preview_mirror.go:180/251-257`、`agentd/machines.go:122/130`、`agentd/machineupgrade.go:50/150`、`cmd/project.go`、`cmd/sessions.go`、`cmd/tasks.go`、`cmd/show.go`、`cmd/diff.go`、`cmd/footprint.go`。来源：B233.20 审计 P2。
-- **d_gateway→d_orchestration 83 条既存缝**：gateway 任务读面直读 store.Store(77)+实体/包级(6)；target.json legacyBudgetNote 已记账，收窄归后续卡。来源：B233.23 阶段二（`89a4660f3`）。
+- **d_gateway→d_orchestration 直调 76**：B233.26 刀3 把 B233.23 的 83 收紧到 76（只降不抬）；OrchestrationClient 随提供方归位。收窄（经查询门面）仍归后续卡。来源：B233.23 阶段二（`89a4660f3`）；B233.26 刀3 `b33f628ca`。
 - **flows 段未产**：旧基线亦无；配方 C17 口径「没有 flows 即 FAIL」，查看器降级，补产归后续卡。来源：B233.23 扫描报告 §3。
 - **mirror 三层组合缝（发现→上游订阅→落库）真栈冒烟**：B233.19 后各段各自有测试，组合缝无人锁，建议补一条真栈冒烟。来源：B233.19 审计 F1。
 - **b23319_adapter 的 MarkForwarded 包装测试锚**：语义集中到唯一施力点后无测试报警。来源：B233.19 审计 F2。
@@ -846,3 +846,11 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **推送通知（APNs/FCM）**：执行器等待审批/提问时唤醒手机。一期 App 架构不挡（壳预留 push token 注册位、配对载体预留通道语义），用户主动打开 App 才看到等待介入；真疼了再立项，届时需要推送服务端（agentd → push service → APNs/FCM）的凭据与通道设计。来源：`docs/superpowers/specs/2026-09-13-mobile-app-design.md` Out of Scope；用户 2026-09-13 明示「以后可能还需要加通知之类的」。
 - **每设备独立隧道凭据**：一期 App 持有节点 token 副本建 E2E 隧道，吊销粒度是「整节点轮换」；每设备独立凭据属 relay 协议增量（服务端在仓外），列为硬化项。来源：同上 spec 契约语义与 Out of Scope。
+
+## 来自 B233.26 验收（2026-09-14，DUT `b33f628ca`）
+
+- **preview 族与 B233.19/.20 适配器归域**：B233.26 Out of Scope；server.go 内组装适配器仍留 gateway。来源：spec Out of Scope；B233.23 未登记表。
+- **d_gateway→d_orchestration 收窄到查询门面**：棘轮已 83→76，直读 store 仍在。来源：spec §3；刀3 扫描报告 §4.2。
+- **flows 段未产**：刀3 全量重扫沿 B233.23 不产 flows。来源：B233.23 扫描报告 §3；B233.26 扫描报告 §2。
+- **守卫牙测试为合成重演**：`b23326_direction_guard_test.go` 未把变异源喂给真实枚举助手；编译期 cycle 兜底仍在。来源：审计 P3-5。
+- **ptyreclaim Serve 重绑 TOCTOU**：`internal/agentd/ptyreclaim_test.go` 探活端口→Close→Serve 窗口已注释。来源：审计 P3-3。

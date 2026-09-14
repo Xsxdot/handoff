@@ -17,17 +17,16 @@ import (
 	"testing"
 	"unsafe"
 
-	"github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 )
 
-// hubAnswerWaiters 读取 agentd.Hub 上某个 ticket 的应答等待者数量。
+// hubAnswerWaiters 读取 Hub 上某个 ticket 的应答等待者数量。
 //
-// 为什么用反射+unsafe 而不是给 hub 加导出方法：本卡只补测试，不改 gateway
-// 生产面（plan §2.4 明确不改 hub.go）。answers 是未导出字段，测试取字段地址后
-// 沿 hub 自身的锁读取，既拿到同步信号又不引入 -race 数据竞争。
-func hubAnswerWaiters(h *agentd.Hub, ticketID string) int {
+// 为什么用反射+unsafe 而不是给 hub 加导出方法：测试只读内部计数，不动生产面。
+// answers 是未导出字段，测试取字段地址后沿 hub 自身的锁读取，既拿到同步信号
+// 又不引入 -race 数据竞争。（B233.26 起 hub 与本测试同包，仍走同一套反射读取。）
+func hubAnswerWaiters(h *Hub, ticketID string) int {
 	hv := reflect.ValueOf(h).Elem()
 	mu := (*sync.Mutex)(unsafe.Pointer(hv.FieldByName("mu").UnsafeAddr()))
 	mu.Lock()

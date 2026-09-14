@@ -1163,12 +1163,12 @@
    "line": 2506,
    "signature": "func (s *Server) SetRuleLoader(fn func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error))"
   },
-  "n_agentd_coordinatorHomeSupplier_Prepare": {
+  "n_orchestration_coordinatorHomeSupplier_Prepare": {
    "kind": "func",
-   "container": "k_agentd_fn",
+   "container": "k_orchestration_coordinatorHomeSupplier",
    "name": "coordinatorHomeSupplier.Prepare",
-   "file": "internal/agentd/coordinator_home.go",
-   "line": 38,
+   "file": "internal/orchestration/coordinator_home.go",
+   "line": 40,
    "signature": "func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, error)"
   },
   "m_agy_OneShot": {

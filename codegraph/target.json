@@ -208,16 +208,13 @@
   {
    "from": "d_gateway",
    "to": "d_orchestration",
-   "legacyBudget": 83,
+   "legacyBudget": 76,
    "entries": [
     "orchestration.Manager",
     "orchestration（包级函数）",
     "orchestration 实体"
    ],
-   "interfaces": [
-    "OrchestrationClient"
-   ],
-   "legacyBudgetNote": "B233.13 冻结了使用方接口 OrchestrationClient（interfaces），但预算 321 未棘轮；B233.17 棘轮到 0。entries 用编排实现容器（B233.14 SchedulingClient 同形）；消费方接口进 interfaces，不写 entries。图内 call 边落点仍是实现方法容器，故 entries 保留 provider 容器实现容器，不删容器假绿。B233.17：handler 定义退出 assembly 后，非免检文件对编排实现的直调计入本方向；预算 0 = 一律走 OrchestrationClient，穿透内部即违法。B233.13 未 absorb 的本方向存量边（基线仍指 internal/agentd/manager.go）在实现期经本卡视图与直调改走接口收口。 B233.23 重扫棘轮 0→83：B233.13 D1 只冻结了派发出站面（OrchestrationClient interfaces 保留）；重扫实况是 gateway 任务读面（handlers/watchdog/b23319 适配器/authroutes/workbench_api/roomsapi/projectadmin/auth/taskroute）直读 store.Store（77）与 store 实体/包级函数（6）——这是编排域数据被 gateway 直接查询的既存缝，按配方如实记预算；收窄（经 OrchestrationClient 或查询门面）归后续卡，不在本卡造假抹边。"
+   "legacyBudgetNote": "B233.26 反转 D1：OrchestrationClient 契约族随十文件迁入提供方 orchestration（m_orchestration_OrchestrationClient 归 k_orchestration_model），gateway 不再持有该接口，interfaces 声明从本方向移除（接口不再定义在使用方）。方向语义随反转：不再是「gateway 直读留驻 store」，而是 gateway 对编排实现与数据的真实依赖。重扫实况 raw 87（store.Store 59、orchestration 包级函数 8、orchestration.Hub 6、orchestration.PullTracker 6、store 实体/包级函数 6、orchestration 实体 2）；其中 10 条落已声明公开 entries（orchestration 包级函数 8 / orchestration 实体 2），check 判定的直调实为 76（另 1 条源在 assembly 免除）——预算按「只降不抬」由 B233.23 的 83 收紧到 76，未抬配额抹绿。收窄（经查询门面）归后续卡。"
   },
   {
    "from": "d_gateway",
@@ -308,20 +305,16 @@
    "legacyBudget": 27,
    "entries": [
     "executor（包级函数）",
-    "executor 实体"
+    "executor 实体",
+    "executor.Registry",
+    "turn（包级函数）",
+    "turn.FrameWriter",
+    "prochost（包级函数）",
+    "prochost.Admission",
+    "prochost.Lock",
+    "hostapi（包级函数）"
    ],
-   "legacyBudgetNote": "B233.1：ApprovalClient / AskResponder / PermFingerprint / NamespacedTicketID 落在既有 executor 包（best 归属 d_execution_contract）。本卡不新开 d_execution→d_orchestration，也不新立顶层审批域——client 接口在使用方，首个消费边（编排注入 StartReq.Approval 或 OpenCode 调 Client）落地时再声明 interfaces 方向。预算仍 27；本节点不新增编排→执行 call 边。 B233.2：Coordinator / OneShot / Profile / Skills / Recoverer / CapabilityReport 同样落在 executor（d_execution_contract）。本节点不新增编排→执行 call 边，不提前声明 d_keystone→d_execution（待 keysclient 首个消费 Coordinator 的边同提交写入，避免 dead-contract）。预算仍 27。 B233.7：R2/R3/R4 继续复用既有 executor.AskResponder、Adapter.RespondPermission、ApprovalClient 与 Profile 接缝；失败事实回 Manager.NoteDeliveryFailed。不新增方向、接口或预算。 B233.8：internal/approval 仅实现既有 executor.ApprovalClient，不新增编排→执行调用方向或预算条目。 B233.23：entries 增 executor 实体——编排消费执行契约 DTO 家族（StartReq/ResumeReq/AdapterEvent 等，B233.1–.8 契约面），重扫按字面量与方法调用核证。"
-  },
-  {
-   "from": "d_orchestration",
-   "to": "d_gateway",
-   "legacyBudget": 2,
-   "entries": [
-    "agentd（包级函数）",
-    "agentd.Hub",
-    "agentd 实体"
-   ],
-   "legacyBudgetNote": "B233.13 D1 拍板的共享面登记：编排实现 import gateway 取共享 DTO（DispatchReq/RecoverReport 等留驻 b23313_retained.go）与导出 helper（RecoverTransit/GitRun/CanonPath）；Hub 消费缝按 B233.22 placement B1 记录（编排签名取 *Hub，方向反转延期）。B233.23 重扫把这三类真实消费写成 entries，预算保持 2 收紧余量。"
+   "legacyBudgetNote": "B233.1：ApprovalClient / AskResponder / PermFingerprint / NamespacedTicketID 落在既有 executor 包（best 归属 d_execution_contract）。本卡不新开 d_execution→d_orchestration，也不新立顶层审批域——client 接口在使用方，首个消费边落地时再声明 interfaces 方向。 B233.2：Coordinator / OneShot / Profile / Skills / Recoverer / CapabilityReport 同样落在 executor。 B233.7：复用既有 executor.AskResponder、Adapter.RespondPermission、ApprovalClient 与 Profile 接缝；失败事实回 Manager.NoteDeliveryFailed。 B233.8：internal/approval 仅实现既有 executor.ApprovalClient。 B233.23：entries 增 executor 实体。 B233.26：十文件（watchdog/admission/eventframes/coordinator_home 等）迁入 orchestration 后，其中对执行域公开能力的直引随迁（turn.TruncateRunes/WriterFor/FrameWriter、prochost.CheckAdmission/Footprint/UIDUsage/ResolveMarkRoot/Sweep/Lock、executor.Registry、hostapi.ExpandHomePath）——均为执行域公开 helper/实体，按门面口径写成 entries，预算保持 27 不抬。"
   },
   {
    "from": "d_orchestration",
@@ -330,8 +323,28 @@
   },
   {
    "from": "d_orchestration",
+   "to": "d_scheduling",
+   "legacyBudget": 0,
+   "entries": [
+    "scheduling（包级函数）"
+   ],
+   "legacyBudgetNote": "B233.26：反转 D1 后登记既存方向。ReconcileSchedRunning（watchdog.go 随十文件迁入 orchestration）直引编制域公开 helper OccupancyCarrierKey/OccupancyMemberKey（internal/scheduling/occupancy.go），是编排对载具占位键的既有消费；两条边均落 scheduling（包级函数）entries，直调预算 0 = 不再扩大。"
+  },
+  {
+   "from": "d_orchestration",
    "to": "d_policy",
-   "legacyBudget": 16
+   "legacyBudget": 16,
+   "entries": [
+    "config（包级函数）",
+    "config 实体",
+    "envfile（包级函数）",
+    "envfile.Resolver",
+    "permgate（包级函数）",
+    "permgate 实体",
+    "permgate.Action",
+    "permgate.Gate"
+   ],
+   "legacyBudgetNote": "B233.26：十文件迁入的 coordinator_home.go（config.Save/Config）与既有 approval/watchdog/manager 对 envfile/permgate 公开能力面的直引，按门面口径写成 entries；预算保持 16 不抬（超出的 2 条 config 边随迁入，由 entries 覆盖而非抬配额）。"
   },
   {
    "from": "d_orchestration",

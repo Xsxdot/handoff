@@ -1,4 +1,4 @@
-// shutdown.go —— agentd 的优雅关停协调。
+// shutdown.go —— agentd 的优雅关停协调（B233.26 自 gateway 归域编排包）。
 //
 // 职责：
 //   - 汇合两种停机意图：进程信号（SIGINT/SIGTERM）与进程内触发（Shutdown.Trigger）
@@ -14,7 +14,7 @@
 // （下载 → 替换 → 退出 → 管理器拉起新版）唯一的交接点就是退出码。systemd 的
 // Restart=on-failure 在 exit 0 时**不会**重启——那样服务会在换版后无声消失。
 // 本期把 deploy 模板改成 Restart=always 正是为此。
-package agentd
+package orchestration
 
 import (
 	"context"

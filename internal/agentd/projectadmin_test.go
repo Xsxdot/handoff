@@ -20,6 +20,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -102,8 +103,8 @@ func TestRegisterProjectRejectsNoOrigin(t *testing.T) {
 	repo := initGitRepo(t) // 刻意不加 origin
 	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: "git@github.com:Xsxdot/handoff.git", Path: repo})
-	if !errors.Is(err, ErrRepoUnusable) {
-		t.Fatalf("err = %v, want errors.Is(..., ErrRepoUnusable)", err)
+	if !errors.Is(err, workspace.ErrRepoUnusable) {
+		t.Fatalf("err = %v, want errors.Is(..., workspace.ErrRepoUnusable)", err)
 	}
 }
 
@@ -351,7 +352,7 @@ func newPatchTestEnv(t *testing.T) *testAgentdEnv {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	cfg := &config.Config{Token: testToken}
 	env := newTestAgentdEnvWithCfg(t, cfg, logger)
-	mgr := newManagerForTest(t, ManagerDeps{
+	mgr := newManagerForTest(t, testManagerDeps{
 		Store: env.st, Hub: env.srv.Hub(),
 		Ads: map[string]executor.Adapter{"fake": fake.New(nil)}, Cfg: cfg,
 		EnvMapping: env.srv.EnvMapping, Gate: newTestGate(t), Log: logger,
@@ -518,8 +519,8 @@ func TestUnregisterProjectRejectsBusy(t *testing.T) {
 		t.Fatalf("登记: %v", err)
 	}
 	mustCreateTask(t, st, &proto.Task{ID: "t1", RepoPath: loc.Path, State: proto.TaskStateRunning})
-	if err := m.UnregisterProject(context.Background(), loc.Name); !errors.Is(err, ErrWorkdirBusy) {
-		t.Fatalf("err = %v, want errors.Is(..., ErrWorkdirBusy)", err)
+	if err := m.UnregisterProject(context.Background(), loc.Name); !errors.Is(err, orchestration.ErrWorkdirBusy) {
+		t.Fatalf("err = %v, want errors.Is(..., orchestration.ErrWorkdirBusy)", err)
 	}
 }
 
@@ -550,8 +551,8 @@ func TestRegisterProjectExistingInfersOrigin(t *testing.T) {
 func TestRegisterProjectRejectsEmptyOriginAndEmptyPath(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{})
-	if !errors.Is(err, ErrBadDispatchRequest) {
-		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
+	if !errors.Is(err, workspace.ErrBadDispatchRequest) {
+		t.Fatalf("err = %v, want workspace.ErrBadDispatchRequest", err)
 	}
 }
 
@@ -592,8 +593,8 @@ func TestRegisterProjectMissingPathRequiresOrigin(t *testing.T) {
 	m, _, _ := newTestManagerWithAds(t, nil, "fake")
 	dest := filepath.Join(t.TempDir(), "nope")
 	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{Path: dest})
-	if !errors.Is(err, ErrBadDispatchRequest) {
-		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
+	if !errors.Is(err, workspace.ErrBadDispatchRequest) {
+		t.Fatalf("err = %v, want workspace.ErrBadDispatchRequest", err)
 	}
 }
 
@@ -610,8 +611,8 @@ func TestRegisterProjectRejectsRelativePath(t *testing.T) {
 	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src, Name: "relproj", Path: "workdir/relproj",
 	})
-	if !errors.Is(err, ErrBadDispatchRequest) {
-		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
+	if !errors.Is(err, workspace.ErrBadDispatchRequest) {
+		t.Fatalf("err = %v, want workspace.ErrBadDispatchRequest", err)
 	}
 	if !strings.Contains(err.Error(), "绝对路径") {
 		t.Errorf("报文 = %q, want 含「绝对路径」（人要看得懂怎么改）", err.Error())
@@ -627,8 +628,8 @@ func TestRegisterProjectRejectsTildePath(t *testing.T) {
 	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: src, Name: "tildeproj", Path: "~/code/tildeproj",
 	})
-	if !errors.Is(err, ErrBadDispatchRequest) {
-		t.Fatalf("err = %v, want ErrBadDispatchRequest", err)
+	if !errors.Is(err, workspace.ErrBadDispatchRequest) {
+		t.Fatalf("err = %v, want workspace.ErrBadDispatchRequest", err)
 	}
 	if _, serr := os.Stat("~"); serr == nil {
 		t.Errorf("cwd 下出现了字面量 ~ 目录——说明请求走到了 MkdirAll")
@@ -727,7 +728,7 @@ func TestCloneToPathCleansUpOnFailure(t *testing.T) {
 	_, err := m.RegisterProject(context.Background(), workspace.RegisterProjectReq{
 		OriginURL: bogus, Name: "proj", Path: filepath.Join(base, "a", "b", "proj"),
 	})
-	if !errors.Is(err, ErrRepoUnusable) {
+	if !errors.Is(err, workspace.ErrRepoUnusable) {
 		t.Fatalf("err = %v, want ErrRepoUnusable", err)
 	}
 	if _, serr := os.Stat(filepath.Join(base, "a")); serr == nil {
@@ -810,7 +811,7 @@ func TestProjectWorktreeCreateOK(t *testing.T) {
 		t.Fatalf("分支 = %q", ws.Branch)
 	}
 	wantRoot := workspace.ManualWorktreeRoot(filepath.Join(s.conf().DataDir, "worktrees"))
-	if !strings.HasPrefix(CanonPath(ws.Path), CanonPath(wantRoot)) {
+	if !strings.HasPrefix(canonPathForTest(ws.Path), canonPathForTest(wantRoot)) {
 		t.Fatalf("落点 %q 不在 %q 下", ws.Path, wantRoot)
 	}
 }
@@ -1089,4 +1090,20 @@ func TestProjectNameFromURLHandlesWindowsSeparators(t *testing.T) {
 			}
 		})
 	}
+}
+
+// canonPathForTest 把路径归一到可比较的形态（原 b23313_retained.go CanonPath 的
+// 测试本地副本；生产侧零引用已退役，本用例是唯一消费者——B233.26 归置到此）。
+//
+// 语义不变：必须穿透符号链接（macOS 上 /tmp 是 /private/tmp 的链接）；目录已
+// 不存在时退一步解析父目录再拼回叶子名。
+func canonPathForTest(p string) string {
+	p = filepath.Clean(p)
+	if r, err := filepath.EvalSymlinks(p); err == nil {
+		return filepath.Clean(r)
+	}
+	if r, err := filepath.EvalSymlinks(filepath.Dir(p)); err == nil {
+		return filepath.Join(r, filepath.Base(p))
+	}
+	return p
 }

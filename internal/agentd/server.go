@@ -47,6 +47,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/ptyapi"
@@ -119,9 +120,9 @@ type Server struct {
 	roomAttachCache       map[string]roomAttachCacheEntry
 	roomAttachRefreshing  bool
 	roomAttachLastRefresh time.Time
-	hub                   *Hub
+	hub                   *orchestration.Hub // 实时路由（B233.26：类型归域编排包）
 	log                   *slog.Logger
-	mgr                   OrchestrationClient // 任务编排 client（B233.13：生产字段不再持有 *Manager），SetManager 注入
+	mgr                   orchestration.OrchestrationClient // 任务编排 client（B233.26：契约归域编排包），SetManager 注入
 	providers             *executor.Registry
 	ruleLoader            func(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error)
 	// startedAt 是本 agentd 的启动时刻，status 用它换算 uptime。
@@ -152,8 +153,8 @@ type Server struct {
 	downloadFetch    func(context.Context, string, string) ([]byte, string, error)
 	downloadOpen     func(string) error
 	downloadPlatform func() (string, string)
-	// pull 是自拉换版的并发锁与状态容器，NewServer 里 newPullTracker 构造
-	pull *pullTracker
+	// pull 是自拉换版的并发锁与状态容器，NewServer 里 orchestration.NewPullTracker 构造（B233.26 归域编排包）
+	pull *orchestration.PullTracker
 	// pullBaseCtx 是后台自拉的基准上下文。
 	//
 	// **绝不能用 r.Context()**：handler 一返回它就被取消，下载会在受理后的
@@ -267,12 +268,12 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	}
 	s := &Server{
 		st:             st,
-		hub:            NewHub(),
+		hub:            orchestration.NewHub(),
 		log:            log,
 		startedAt:      time.Now(),
 		replayLimit:    eventReplayLimit,
 		liveLimit:      liveBufferLimit,
-		pull:           newPullTracker(),
+		pull:           orchestration.NewPullTracker(),
 		sessionRecheck: defaultSessionRecheck,
 		ptyRootPath:    filepath.Join(cfg.DataDir, "ptys"),
 		latestFetch:    releaseClient.Latest,
@@ -311,6 +312,18 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	return s
 }
 
+// registerEventFrameHook 在装配期把事件帧钩子挂到 store 上。
+//
+// 为什么是一个注册点而不是改 20 个 AppendEvent 调用点：调用点散落在
+// manager.go / reconcile.go / watchdog.go，逐点补一行既啰嗦，又留下
+// 「以后新增调用点忘了补」的失效模式。钩子自动覆盖现有与未来的全部调用点。
+// B233.26：钩子本体 eventFrameHook 归域 orchestration（导出为 EventFrameHook），
+// 本装配方法留 gateway，改调编排包导出面。
+func (s *Server) registerEventFrameHook() {
+	s.st.SetEventHook(orchestration.EventFrameHook(s.conf().DataDir, s.log))
+	s.log.Info("事件帧钩子已注册", "datadir", s.conf().DataDir)
+}
+
 // coordinatorLock 返回一张卡的控制面串行锁。锁只覆盖控制段，不把不同卡的
 // Launch 人为串成全局队列。
 func (s *Server) coordinatorLock(card string) *sync.Mutex {
@@ -328,7 +341,7 @@ func (s *Server) coordinatorLock(card string) *sync.Mutex {
 }
 
 // Hub 返回服务内部的实时路由 hub，供上层（manager）做事件广播与 ticket 应答等待。
-func (s *Server) Hub() *Hub {
+func (s *Server) Hub() *orchestration.Hub {
 	return s.hub
 }
 
@@ -360,14 +373,15 @@ func (s *Server) SetUpdateDeps(d UpdateDeps) { s.upd = d }
 
 // SetManager 把编排实现挂到 Server 上。
 //
-// B233.13：参数是 gateway 使用方定义的 OrchestrationClient，生产字段不再持有 *Manager。
+// B233.13：参数是编排 client 接口，生产字段不再持有 *Manager。
+// B233.26：OrchestrationClient 归位提供方侧（internal/orchestration），本包反向引用。
 // P5：接口里的 typed-nil（(*Manager)(nil) 赋给接口）会让 `s.mgr == nil` 失效，
 // 这里显式识别并落 nil，保住 handler 的 503 未就绪判据。
 // P1：活配置与工作区兜底注入已移交组装点（cmd/agentd.go），本方法只赋值 + 日志。
 //
 // 注意：
 //   - 注入前三条路由返回 503（manager 未就绪），agentd bootstrap 顺序保证注入先于监听
-func (s *Server) SetManager(m OrchestrationClient) {
+func (s *Server) SetManager(m orchestration.OrchestrationClient) {
 	if m == nil {
 		s.mgr = nil
 		s.log.Warn("SetManager 收到 nil 编排实现，按未就绪处理", "error_kind", "manager_nil")
@@ -994,10 +1008,10 @@ func (s *Server) RecoverOnStartup(probe func(string) bool, sweep func(string), l
 	if log == nil {
 		log = slog.Default()
 	}
-	if err := reconcileSchedRunning(s.st, facadeAsRegistry{f: s.autoLedger}, log); err != nil {
+	if err := orchestration.ReconcileSchedRunning(s.st, facadeAsRegistry{f: s.autoLedger}, log); err != nil {
 		return err
 	}
-	return RecoverOnStartup(s.st, s.hub, probe, sweep, log)
+	return orchestration.RecoverOnStartup(s.st, s.hub, probe, sweep, log)
 }
 
 // PtyAPI 返回终端 PTY 薄门面；PTY 宿主未装配时返回 nil。
@@ -1266,7 +1280,7 @@ func (l attachLocator) Locate(ref keysclient.SessionRef, workdir string) (keyscl
 	}
 	return keysclient.AttachInfo{
 		Machine: ref.Machine, Dir: workdir,
-		Command: fmt.Sprintf("HOME=%s %s --session %s", shellQuote(expandedHome), shellQuote(ref.CLI), shellQuote(ref.SessionID)),
+		Command: fmt.Sprintf("HOME=%s %s --session %s", orchestration.ShellQuote(expandedHome), orchestration.ShellQuote(ref.CLI), orchestration.ShellQuote(ref.SessionID)),
 	}, nil
 }
 

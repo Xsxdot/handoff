@@ -15,7 +15,6 @@ import (
 	"fmt"
 	"path/filepath"
 
-	agentd "github.com/Xsxdot/handoff/internal/agentd"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -53,9 +52,9 @@ func (m *Manager) takeStopping(taskID string) bool {
 }
 
 // reconcileExecutorGone 是 gateway 包级同名函数的方法薄包装（省去调用点重复传 st/hub/log）。
-// B233.13：实现留 gateway（watchdog 仍用），编排经 agentd.ReconcileExecutorGone 调用。
+// B233.13：实现留 gateway（watchdog 仍用），编排经 ReconcileExecutorGone 调用。
 func (m *Manager) reconcileExecutorGone(taskID, reason string) proto.TaskState {
-	return agentd.ReconcileExecutorGone(m.st, m.hub, taskID, reason, m.log, m.SweepTaskProcs)
+	return ReconcileExecutorGone(m.st, m.hub, taskID, reason, m.log, m.SweepTaskProcs)
 }
 
 // stopExecutor 停 executor，并在「没有内存运行态」时按恢复凭据兜底回收。
@@ -122,7 +121,7 @@ func (m *Manager) stopExecutor(taskID string, ad executor.Adapter) error {
 //   - 追加失败只记日志、不返回错误：调用方全都处在归档/中止的收尾路径上，
 //     那件事本身已经达成，不该因为发不出提示而中断
 func (m *Manager) notifyOrphanRisk(taskID, text string) {
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, agentd.ProgressPayload{Text: text})
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeProgress, ProgressPayload{Text: text})
 	if err != nil {
 		m.log.Error("追加 executor 残留提示事件失败", "task", taskID, "cause", err)
 		return
