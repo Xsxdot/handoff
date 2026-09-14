@@ -17,6 +17,7 @@ TUI tab 是任务会话主视图。
 | （fork `b288-workbench-ux/`） | B288 工作台 UX：打开任务保原名、终端拖放落点、列宽不横滑、终态进已结束、左栏箭头右侧+层级 | `*` | 确认中 |
 | （fork `b358-session-groups/`） | B358 **会话即工作单元**：房间锚点从卡翻转到会话——会话列表为家、群聊只有人话（`@`/回复/无寻址三种投递）、详情页承载成员与成员状态/协调者派发的任务节点/会话 timeline；卡进群 ≠ 配人 | `*` | 确认中（2026-09-12 用户走查定稿）。形态基准 `pages/sessions.html`，过程基准 `pages/flow.html`（两者是本卡的北极星，随卡入库）；IM 视觉取自 `b275-frontend-proto/`（base 尚未回流 B275） |
 | （fork `b358-session-groups/`·B361） | B361 **会话页 IA 变体**：左栏「会话 \| 任务」两 tab（项目树收进任务 tab）、会话行开成工作台 tab（多开/可关/◫分屏）、悬浮窗与工作项内嵌 IM 面板移除；内容面与视觉与 B358 形态逐字同源 | `*` | 确认中（2026-09-12 用户走查定稿：「可以」+ 移除裁决）。形态基准 `pages/sessions-v2.html`（对照版 sessions.html 保留）；B358 spec 实现决定 1 已按此修订。推进「已确认」待 S6（B358.6）真实页面对照验收 |
+| （fork `mobile-app/`） | 移动端 App（webview 薄壳）十一屏：方案一图流 + 底栏四个一级 tab（会话\|卡\|项目\|设置）——会话列表为家（B358 镜像）→ 群聊 → 任务现场（裁决/终端键条/停止二确认）；卡 = 工作项账本移动镜像（「需要你」浮顶、状态词表筛选、验收开关、卡↔会话双跳）；项目 → 位置/目录/只读文件/项目终端；设置·配对（bundle QR 一次配全部） | 移动端新形态（无桌面路由对应；语义镜像 sessions-v2、`/cards` 工作项账本、CONTEXT.md 项目位置） | 确认中（2026-09-13 用户走查拍板「没什么问题了」+ 三轴独立审计修订落盘：cards 补「终止」chip、pairing 补 bundle 主形态、八屏引用标补齐）。形态基准 fork 内 `pages/mobile-*.html`；spec `docs/superpowers/specs/2026-09-13-mobile-app-design.md` 已批准。推进「已确认」待真实页面对照验收 |
 | pages/settings.html | 设置页（开发机/执行纪律/**自动化**/常规/Env/更新；`?section=automation` 直达编制卡） | `/settings` | 自动化分区骨架已确认（2026-08-28 B282 回流）。确认中：B292 小队成员政策位（`prototypes/b292-squad-concurrency/`）；B293 载体四态/检测/运行/默认 HOME（`prototypes/b293-carrier-home/`） |
 | （未建页） | 任务深链：按任务 id 直接打开它的 TUI | `/tasks/:id` | — |
 | （无需页） | `/machines` → 重定向到 `/settings` | `/machines` | — |

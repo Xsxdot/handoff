@@ -841,3 +841,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **多人时代**：多人类成员、登录与权限体系、线程、已读回执、在场状态、消息搜索。B156.2 已记（触发条件：第二个人类成员共用账本），B358 锚点翻转后仍成立；数据形状已预留（消息 author、会话成员集、按成员未读游标），届时是加数据不是改模型。来源：同上 spec §7；`docs/superpowers/specs/2026-08-25-b156.2-collaboration-rooms-design.md` Out of Scope。
 - **会话模板与 routines、goal 驱动自主推进**：B156.4 四期输入，与 B156.3 的 roadmap 段合流。来源：同上 spec §7；`docs/superpowers/specs/2026-08-26-b156.3-automation-keystone-design.md` Out of Scope。
 - **历史翻页与富文本渲染**：历史翻页是 B289 残余（服务端 `before` 游标已备，缺 UI 与调用）、富文本是 B275 残余；B358 会话面沿用同一消息载体，两残余原样顺延。来源：同上 spec §7；本文件「来自 B289 残余」段。
+
+## 来自移动端 App spec（2026-09-13，spec 已批准）
+
+- **推送通知（APNs/FCM）**：执行器等待审批/提问时唤醒手机。一期 App 架构不挡（壳预留 push token 注册位、配对载体预留通道语义），用户主动打开 App 才看到等待介入；真疼了再立项，届时需要推送服务端（agentd → push service → APNs/FCM）的凭据与通道设计。来源：`docs/superpowers/specs/2026-09-13-mobile-app-design.md` Out of Scope；用户 2026-09-13 明示「以后可能还需要加通知之类的」。
+- **每设备独立隧道凭据**：一期 App 持有节点 token 副本建 E2E 隧道，吊销粒度是「整节点轮换」；每设备独立凭据属 relay 协议增量（服务端在仓外），列为硬化项。来源：同上 spec 契约语义与 Out of Scope。
