@@ -528,11 +528,15 @@ type dispatchRequest struct {
 	BaseCommit string `json:"base_commit"`
 }
 
+// errReceiverNotCarrierMachine 是 B233.27：请求打到的 agentd 不是载体登记机。
+// 不复用 scheduling.ErrRoleMismatch，避免和「小队角色不符」混桶。
+var errReceiverNotCarrierMachine = errors.New("接收机不是载体登记机")
+
 // handleDispatch 派发一个新任务，返回创建后的任务（state=running）。
 //
-// 流程：解析请求体 → 冻结身份准入或普通接收者准备链 → manager.Dispatch
-// （建任务/写 plan/启动 executor/进 running）。带 Carrier 的请求必须使用已冻结的
-// 物理身份；Receiver 只作为审计字段，不能再次选择载体。
+// 流程：解析请求体 → 冻结身份准入或普通接收者准备链 → 接收机必须是载体登记机
+// → manager.Dispatch（建任务/写 plan/启动 executor/进 running）。带 Carrier 的
+// 请求必须使用已冻结的物理身份；Receiver 只作为审计字段，不能再次选择载体。
 func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	s.log.Info("dispatch 请求", "method", r.Method, "path", r.URL.Path,
 		"remote_addr", r.RemoteAddr)
@@ -608,7 +612,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	// B233.27：准入只核「请求 vs 登记」。现网登记名常是 targets 键（linux-01），
 	// 不能只用 IsLocalMachine（它把 linux-01 当远端）。CanonicalTarget 空串=本机。
 	if canon := s.CanonicalTarget(binding.Target); canon != "" {
-		err = fmt.Errorf("%w: 载体登记机 %s 不是当前接收机", scheduling.ErrRoleMismatch, binding.Target)
+		err = fmt.Errorf("%w: 载体登记机 %s 不是当前接收机", errReceiverNotCarrierMachine, binding.Target)
 		s.log.Warn("dispatch 被拒：接收机不是载体登记机", "project", req.ProjectID,
 			"carrier", binding.Carrier, "registered_target", binding.Target,
 			"canonical_target", canon, "error_kind", "receiver_not_carrier_machine", "cause", err)
@@ -692,6 +696,9 @@ func (s *Server) writeDispatchError(w http.ResponseWriter, projectRef string, er
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, workspace.ErrBadWorkspaceReq):
 		s.log.Warn("dispatch 被拒：工作区参数非法", "project", projectRef, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
+	case errors.Is(err, errReceiverNotCarrierMachine):
+		s.log.Warn("dispatch 被拒：接收机不是载体登记机", "project", projectRef, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": err.Error()})
 	case errors.Is(err, scheduling.ErrNoDefault), errors.Is(err, scheduling.ErrNotFound),
 		errors.Is(err, scheduling.ErrInvalid), errors.Is(err, scheduling.ErrNoHealthy),

@@ -117,6 +117,17 @@ func putTarget(t *testing.T, srv *Server, name, addr string) {
 	cfg.Targets[name] = config.Target{Addr: addr, Token: testToken}
 }
 
+func assertReceiverNotCarrierError(t *testing.T, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	assertDispatchError(t, rr, http.StatusBadRequest, "接收机不是载体登记机")
+	if !strings.Contains(rr.Body.String(), "linux-01") {
+		t.Fatalf("错误正文应含登记机 linux-01: %s", rr.Body.String())
+	}
+	if strings.Contains(rr.Body.String(), "小队角色不符") {
+		t.Fatalf("打错机器不得复用 ErrRoleMismatch 前缀: %s", rr.Body.String())
+	}
+}
+
 func assertNoTaskCreated(t *testing.T, env *receiverTestEnv) {
 	t.Helper()
 	tasks, err := env.st.ListTasks()
@@ -138,7 +149,7 @@ func TestB23327FrozenRemoteTargetRejectedWithoutDispatch(t *testing.T) {
 	})
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID,
 		`,"carrier":"remote-box","target":"linux-01","executor":"fake","home_dir":""`))
-	assertDispatchError(t, rr, http.StatusBadRequest, "linux-01")
+	assertReceiverNotCarrierError(t, rr)
 	if ctr.n != 0 {
 		t.Fatalf("非本机冻结派发调用了 Dispatch %d 次，want 0", ctr.n)
 	}
@@ -163,7 +174,7 @@ func TestB23327OrdinaryRemoteBindingRejectedWithoutDispatch(t *testing.T) {
 		t.Fatalf("SetDefaultCarrier: %v", err)
 	}
 	rr := postDispatch(t, env.srv, dispatchBody(env.projectID, ""))
-	assertDispatchError(t, rr, http.StatusBadRequest, "linux-01")
+	assertReceiverNotCarrierError(t, rr)
 	if ctr.n != 0 {
 		t.Fatalf("非本机普通派发调用了 Dispatch %d 次，want 0", ctr.n)
 	}
