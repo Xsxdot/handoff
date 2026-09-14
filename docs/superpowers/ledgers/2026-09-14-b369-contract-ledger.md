@@ -21,3 +21,47 @@ spike 形态:临时包 `mobile-spike/`(gate 后删除,不入库)——module `gi
    - 过程坑(写进交棒):NDK 30 移除了 API<21 的 platform,而 gomobile 缺省 minsdk=16 → 首发报 `unsupported API version 16 (not in 21..37)`;加 `-androidapi 21` 即过。mobile/ 正式模块的构建脚本/文档必须显式带 `-androidapi 21`(或将 minSdk 定为 21)。
 
 gate 结论:**双端 PASS**——go 1.26.1 + gomobile@2026-09-08 + Xcode 26.6 + NDK 30.0.16248370(androidapi 21)工具链可用,relay/client 闭包可绑。spike 产物与 `mobile-spike/` 目录已按预定删除,不入库。
+
+---
+
+## 第三次派发回合（2026-09-14，本轮）
+
+起点 `977720e2`（B233.26 已在基线里）。前两轮作废：c99a527d 空转 5h 无提交；82965bef 冻在旧基线 9686ca23 已 stop。本工作树 linux，无 Xcode/NDK——工具链 gate 以上方台账为据，不重跑。
+
+### 一、现状查证（本轮实测，行号见 contract §1）
+
+- relay 懒拨号 `internal/relay/dialer.go#NewDialer:47`、`Transport:385`、`Ensure:380`、`Close:390`；拨号时序 `ensureTunnel:267-340`（WSS→CONNECT→CONNECT_OK→SecureClient→yamux）。
+- 已选路客户端 `internal/client/client.go#NewRelay:208`（baseURL=`http://localhost`），`#New:195`；注释明文「token remains the agentd Bearer credential」:201。
+- ticket 寿命 `internal/agentd/auth.go:34`（60s）；一次性原子消费 `internal/store/auth.go#ConsumeAuthTicket:94`（条件 UPDATE，`consumed_at IS NULL`）；兑换 `internal/agentd/authroutes.go#handleConsole:167` → 302（`http.Redirect ...,StatusFound`:225）；cookie 属性 `#sessionCookie:343-354`（Secure=r.TLS!=nil）。
+- `console --qr` 仓内零实现（仅 `docs/superpowers/plans/2026-08-11-agentd-browser-auth.md:56` 设计留痕）；无 QR 库、无 `--qr` flag。
+- 图：`sym NewDialer`→`n_relay_NewDialer`（d_transport_tunnel）；`sym NewRelay`/`sym New`→`n_client_*`（d_transport_channel）。
+
+### 二、图覆盖债
+
+Ticket 0 新增符号为本轮首建——`codegraph/diffs/cards-B369-charter.json` 落 24 新符号 + 5 新容器 + 8 边。
+`mobile/` 是嵌套独立模块（与 `desktop/` 同例），图外；扫描配方 `scripts/codegraph-rescan/main.go` 已加 `mobile` 前缀排除，`pkgDomain` 加 `internal/mobilecore → d_transport_channel`。
+
+### 三、拍板与冻结（命中两条，详见 contract §6）
+
+- 移动核沉进 `d_transport` 而不新立 `d_mobile` 顶层子系统（新立会强制一次全量 baseline 重扫，本 contract 节点不夹带）。
+- 回环反代透传、不注入凭据（安全属性；被否方案=反代补凭据）。
+
+### 四、本轮命令与原始输出（历史读数）
+
+- `go build ./...`（根模块） → 退出码 0。
+- `go test ./internal/proto/...` → `ok github.com/Xsxdot/handoff/internal/proto`。
+- `go test ./internal/mobilecore/...` → `ok github.com/Xsxdot/handoff/internal/mobilecore`（含 `TestPairVerticalSlice`、`TestPairPartialBundle`）。
+- 竖切变异（把 proxy.go 改成注入 `Authorization: Bearer INJECTED`） → `core_test.go:163: 反代不得注入 Authorization，上游看到 "Bearer INJECTED"` FAIL；还原 → ok。
+- `go build ./...`（mobile/ 模块，replace ../） → 退出码 0（首次缺 go.sum → `go mod tidy` 后过）。
+- `codegraph validate --view cards-B369-charter` → issues=null、edgeIssues=null。
+- `codegraph check --view cards-B369-charter` → fails=0；coverage 343/343，misplacedSkipped=0。
+- `codegraph check`（基线） → fails=0。
+- `go test ./cmd/ -run TestRepoContractGate` → PASS（legacy 命中 21 方向，warn 33）。
+- `codegraph resolve --doc docs/superpowers/specs/b369-contract.md` → 0 坏锚（EXIT=0）。
+
+### 五、试错记录
+
+- `go mod tidy` 前 `mobile/` 缺 go.sum（coder/websocket、flynn/noise、hashicorp/yamux、x/crypto），tidy 后过。
+- `Core.Pair` 首版直接造 relay client 即判在线——`TestPairPartialBundle` 红：懒拨号造 Dialer ≠ 隧道通。改加 `probeReachable`（3s 超时，任何 HTTP 响应算可达），两测试绿。
+- 新立 `d_mobile` 域尝试：baseline check 报 2 条 dead-contract（方向无活跃边），因 baseline 未重扫；退回既有 `d_transport`，只在 target 补既有方向的 entry，基线 check 归零。
+- proto 结构体一度挂在自造 `k_proto_PairBundle` 容器，validate 报「新增节点引用不存在的容器」；改挂扫描约定的单容器 `k_proto_model`，`n_proto_PairMachine_Validate`/`n_proto_PairBundle_Validate` 保留独立类型方法容器。

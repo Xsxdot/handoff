@@ -396,9 +396,10 @@
    "to": "d_protocol",
    "legacyBudget": 0,
    "entries": [
-    "proto 实体"
+    "proto 实体",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：transport Client 的 preview REST/WS 镜像只经 proto DTO；不反向依赖 gateway。"
+   "legacyBudgetNote": "B294：transport Client 的 preview REST/WS 镜像只经 proto DTO；不反向依赖 gateway。 B369：移动连接核复用配对载体的 proto 包级编解码（Encode/DecodePairBundle）；transport→protocol 既有方向，补 entry。"
   },
   {
    "from": "d_workspace",

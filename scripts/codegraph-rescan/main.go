@@ -228,7 +228,7 @@ func inScopeDir(rel string) bool {
 			return false
 		}
 	}
-	for _, pre := range []string{"codegraph", "docs", "scripts", "desktop", "skills"} {
+	for _, pre := range []string{"codegraph", "docs", "scripts", "desktop", "skills", "mobile"} {
 		if rel == pre || strings.HasPrefix(rel, pre+"/") {
 			return false
 		}
@@ -2139,6 +2139,7 @@ var goPkgDomain = map[string]string{
 	"internal/hostapi":             "d_execution_host",
 	"internal/prochost":            "d_execution_host",
 	"internal/client":              "d_transport_channel",
+	"internal/mobilecore":          "d_transport_channel",
 	"internal/targetclient":        "d_transport_channel",
 	"internal/relay":               "d_transport_tunnel",
 	"internal/proxycfg":            "d_transport_tunnel",

@@ -1,0 +1,555 @@
+{
+ "view": "cards/B369-charter",
+ "base": "977720e2c12cfe3b9348b34e976b62f19dc230f8",
+ "summary": "B369 Ticket 0：移动端配对载体与连接核骨架。proto 新增配对 bundle wire（PairBundle/PairRelay/PairMachine/PairTicket + Encode/DecodePairBundle，信封版本与畸形拒收）；internal/mobilecore 新增连接核（DefaultDial 选路、Core.Pair 解析登记、每机独立 loopback 透传反代，回环门禁不注入凭据）；mobile/ 独立 gomobile 绑定模块（图外，与 desktop/ 同例）。直通竖切 core_test.go TestPairVerticalSlice 一次真实调用穿编码→解码→relay E2E→回环反代→HTTP 往返。",
+ "containersAdded": {
+  "k_mobilecore_fn": {
+   "label": "mobilecore（包级函数）",
+   "kind": "函数组",
+   "domain": "d_transport_channel"
+  },
+  "k_mobilecore_model": {
+   "label": "mobilecore 实体",
+   "kind": "实体",
+   "domain": "d_transport_channel"
+  },
+  "k_mobilecore_Core": {
+   "label": "mobilecore.Core",
+   "kind": "类型方法",
+   "domain": "d_transport_channel"
+  },
+  "k_proto_PairBundle": {
+   "label": "proto.PairBundle",
+   "kind": "类型方法",
+   "domain": "d_protocol"
+  },
+  "k_proto_PairMachine": {
+   "label": "proto.PairMachine",
+   "kind": "类型方法",
+   "domain": "d_protocol"
+  }
+ },
+ "nodesAdded": {
+  "m_proto_PairBundle": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1017,
+   "name": "PairBundle",
+   "file": "internal/proto/pairing.go",
+   "line": 40,
+   "signature": "type PairBundle struct",
+   "fields": [
+    [
+     "Version",
+     "int",
+     "信封版本；未知版本拒收"
+    ],
+    [
+     "Relay",
+     "*PairRelay",
+     "管道 relay 端点；无 relay 形态机器时省键"
+    ],
+    [
+     "Machines",
+     "[]PairMachine",
+     "各已知执行机登记"
+    ],
+    [
+     "IssuedAt",
+     "time.Time",
+     ""
+    ],
+    [
+     "ExpiresAt",
+     "time.Time",
+     ""
+    ]
+   ],
+   "modelKind": "dto",
+   "summary": "配对载体（B369）：relay 端点 + 管道 credential + 各机登记 + 每机一次性 ticket；单机配对是其退化形态。"
+  },
+  "m_proto_PairRelay": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1018,
+   "name": "PairRelay",
+   "file": "internal/proto/pairing.go",
+   "line": 50,
+   "signature": "type PairRelay struct",
+   "fields": [
+    [
+     "URL",
+     "string",
+     ""
+    ],
+    [
+     "Credential",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto",
+   "summary": "管道级 relay 端点与 coordinator CONNECT 凭证。"
+  },
+  "m_proto_PairMachine": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1019,
+   "name": "PairMachine",
+   "file": "internal/proto/pairing.go",
+   "line": 58,
+   "signature": "type PairMachine struct",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Token",
+     "string",
+     "agentd 主 Bearer 令牌副本"
+    ],
+    [
+     "Credential",
+     "string",
+     "管道凭证覆盖；通常空"
+    ],
+    [
+     "Node",
+     "string",
+     "relay 形态节点名"
+    ],
+    [
+     "Addr",
+     "string",
+     "直连形态地址"
+    ],
+    [
+     "Ticket",
+     "*PairTicket",
+     "离线机可缺"
+    ]
+   ],
+   "modelKind": "dto",
+   "summary": "一台执行机的登记：relay 形态与直连形态 0..1、按可达性选择，二者必居其一。"
+  },
+  "m_proto_PairTicket": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1020,
+   "name": "PairTicket",
+   "file": "internal/proto/pairing.go",
+   "line": 69,
+   "signature": "type PairTicket struct",
+   "fields": [
+    [
+     "URL",
+     "string",
+     ""
+    ],
+    [
+     "ExpiresAt",
+     "time.Time",
+     ""
+    ]
+   ],
+   "modelKind": "dto",
+   "summary": "一台 agentd 的一次性 ticket（CLI 经各自通路代领，寿命 60s）。"
+  },
+  "n_proto_PairMachine_Validate": {
+   "kind": "func",
+   "container": "k_proto_PairMachine",
+   "order": 1,
+   "name": "PairMachine.Validate",
+   "file": "internal/proto/pairing.go",
+   "line": 75,
+   "signature": "func (m PairMachine) Validate() error",
+   "returns": "error",
+   "summary": "检查机器登记自洽：名字与 token 非空，且恰为 relay 或直连形之一。"
+  },
+  "n_proto_PairBundle_Validate": {
+   "kind": "func",
+   "container": "k_proto_PairBundle",
+   "order": 1,
+   "name": "PairBundle.Validate",
+   "file": "internal/proto/pairing.go",
+   "line": 91,
+   "signature": "func (b PairBundle) Validate() error",
+   "returns": "error",
+   "summary": "检查整份 bundle 自洽：版本、非空机器、逐机校验与 relay 端点齐备。"
+  },
+  "n_proto_EncodePairBundle": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 1,
+   "name": "EncodePairBundle",
+   "file": "internal/proto/pairing.go",
+   "line": 111,
+   "signature": "func EncodePairBundle(b PairBundle) (string, error)",
+   "params": [
+    [
+     "b",
+     "PairBundle",
+     ""
+    ]
+   ],
+   "returns": "(string, error)",
+   "summary": "把 bundle 编成 QR 载荷文本（紧凑 JSON）；先 Validate。"
+  },
+  "n_proto_DecodePairBundle": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 2,
+   "name": "DecodePairBundle",
+   "file": "internal/proto/pairing.go",
+   "line": 127,
+   "signature": "func DecodePairBundle(raw string) (PairBundle, error)",
+   "params": [
+    [
+     "raw",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "(PairBundle, error)",
+   "summary": "解析 QR 载荷文本：畸形→ErrPairMalformed、未知/缺省版本→ErrPairVersion。"
+  },
+  "m_mobilecore_DialFunc": {
+   "kind": "model",
+   "container": "k_mobilecore_model",
+   "order": 1,
+   "name": "DialFunc",
+   "file": "internal/mobilecore/core.go",
+   "line": 35,
+   "signature": "type DialFunc func(ctx context.Context, b proto.PairBundle, m proto.PairMachine) (*client.Client, func(), error)",
+   "summary": "Core 与选路实现之间的唯一接缝：按 bundle 与一台机器登记造已选路客户端与收尾函数。"
+  },
+  "m_mobilecore_PairedMachine": {
+   "kind": "model",
+   "container": "k_mobilecore_model",
+   "order": 2,
+   "name": "PairedMachine",
+   "file": "internal/mobilecore/core.go",
+   "line": 38,
+   "signature": "type PairedMachine struct",
+   "fields": [
+    [
+     "Name",
+     "string",
+     ""
+    ],
+    [
+     "Origin",
+     "string",
+     "该机 loopback 源；离线机为空"
+    ],
+    [
+     "Online",
+     "bool",
+     "离线机标记、上线后补配"
+    ]
+   ],
+   "summary": "配对结果里一台机器的可操作摘要。"
+  },
+  "m_mobilecore_PairResult": {
+   "kind": "model",
+   "container": "k_mobilecore_model",
+   "order": 3,
+   "name": "PairResult",
+   "file": "internal/mobilecore/core.go",
+   "line": 45,
+   "signature": "type PairResult struct",
+   "fields": [
+    [
+     "Machines",
+     "[]PairedMachine",
+     ""
+    ]
+   ],
+   "summary": "一次配对的结果：全部机器登记（含离线），不整单失败。"
+  },
+  "n_mobilecore_DefaultDial": {
+   "kind": "func",
+   "container": "k_mobilecore_fn",
+   "order": 1,
+   "name": "DefaultDial",
+   "file": "internal/mobilecore/core.go",
+   "line": 51,
+   "signature": "func DefaultDial(ctx context.Context, b proto.PairBundle, m proto.PairMachine) (*client.Client, func(), error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "b",
+     "proto.PairBundle",
+     ""
+    ],
+    [
+     "m",
+     "proto.PairMachine",
+     ""
+    ]
+   ],
+   "returns": "(*client.Client, func(), error)",
+   "summary": "生产 DialFunc：relay 形态走 relay.NewDialer+client.NewRelay，直连形态走 client.New。"
+  },
+  "m_mobilecore_Core": {
+   "kind": "model",
+   "container": "k_mobilecore_model",
+   "order": 4,
+   "name": "Core",
+   "file": "internal/mobilecore/core.go",
+   "line": 73,
+   "signature": "type Core struct",
+   "summary": "移动连接核：配对解码、选路拨号、每机独立回环反代与会话存取。"
+  },
+  "m_mobilecore_machine": {
+   "kind": "model",
+   "container": "k_mobilecore_model",
+   "order": 5,
+   "name": "machine",
+   "file": "internal/mobilecore/core.go",
+   "line": 81,
+   "signature": "type machine struct",
+   "summary": "单台已配对机器的运行时装配（client、loopback 源、反代 server、收尾）。"
+  },
+  "n_mobilecore_New": {
+   "kind": "func",
+   "container": "k_mobilecore_fn",
+   "order": 2,
+   "name": "New",
+   "file": "internal/mobilecore/core.go",
+   "line": 91,
+   "signature": "func New(dial DialFunc, log *slog.Logger) *Core",
+   "params": [
+    [
+     "dial",
+     "DialFunc",
+     ""
+    ],
+    [
+     "log",
+     "*slog.Logger",
+     ""
+    ]
+   ],
+   "returns": "*Core",
+   "summary": "构造连接核；dial 为 nil 时用 DefaultDial。"
+  },
+  "n_mobilecore_probeReachable": {
+   "kind": "func",
+   "container": "k_mobilecore_fn",
+   "order": 3,
+   "name": "probeReachable",
+   "file": "internal/mobilecore/core.go",
+   "line": 148,
+   "signature": "func probeReachable(ctx context.Context, cl *client.Client) bool",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "cl",
+     "*client.Client",
+     ""
+    ]
+   ],
+   "returns": "bool",
+   "summary": "发一次最小请求判该机器可达：任何 HTTP 响应都算可达，只把传输失败判离线。"
+  },
+  "n_mobilecore_stopMachine": {
+   "kind": "func",
+   "container": "k_mobilecore_fn",
+   "order": 4,
+   "name": "stopMachine",
+   "file": "internal/mobilecore/core.go",
+   "line": 208,
+   "signature": "func stopMachine(m *machine)",
+   "params": [
+    [
+     "m",
+     "*machine",
+     ""
+    ]
+   ],
+   "summary": "收掉单台机器：反代 server、listener 与客户端收尾。"
+  },
+  "n_mobilecore_Core_Pair": {
+   "kind": "func",
+   "container": "k_mobilecore_Core",
+   "order": 1,
+   "name": "Core.Pair",
+   "file": "internal/mobilecore/core.go",
+   "line": 109,
+   "signature": "func (c *Core) Pair(ctx context.Context, bundleJSON string) (PairResult, error)",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "bundleJSON",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "(PairResult, error)",
+   "summary": "解析配对 bundle 并登记全部机器：可达机起回环反代，不可达机标 offline（部分 bundle）；重复扫码幂等。"
+  },
+  "n_mobilecore_Core_replaceMachine": {
+   "kind": "func",
+   "container": "k_mobilecore_Core",
+   "order": 2,
+   "name": "Core.replaceMachine",
+   "file": "internal/mobilecore/core.go",
+   "line": 164,
+   "signature": "func (c *Core) replaceMachine(name string, next *machine)",
+   "params": [
+    [
+     "name",
+     "string",
+     ""
+    ],
+    [
+     "next",
+     "*machine",
+     ""
+    ]
+   ],
+   "summary": "关掉同名旧机器资源再登记新机器（重复扫码幂等）。"
+  },
+  "n_mobilecore_Core_Origin": {
+   "kind": "func",
+   "container": "k_mobilecore_Core",
+   "order": 3,
+   "name": "Core.Origin",
+   "file": "internal/mobilecore/core.go",
+   "line": 172,
+   "signature": "func (c *Core) Origin(machine string) (string, error)",
+   "params": [
+    [
+     "machine",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "(string, error)",
+   "summary": "返回某台机器 webview 应加载的 loopback 源。"
+  },
+  "n_mobilecore_Core_MachineNames": {
+   "kind": "func",
+   "container": "k_mobilecore_Core",
+   "order": 4,
+   "name": "Core.MachineNames",
+   "file": "internal/mobilecore/core.go",
+   "line": 183,
+   "signature": "func (c *Core) MachineNames() []string",
+   "returns": "[]string",
+   "summary": "返回已登记机器名（设置页配对清单）。"
+  },
+  "n_mobilecore_Core_Close": {
+   "kind": "func",
+   "container": "k_mobilecore_Core",
+   "order": 5,
+   "name": "Core.Close",
+   "file": "internal/mobilecore/core.go",
+   "line": 194,
+   "signature": "func (c *Core) Close() error",
+   "returns": "error",
+   "summary": "收掉全部 loopback 反代与客户端（幂等）。"
+  },
+  "n_mobilecore_Core_startLoopback": {
+   "kind": "func",
+   "container": "k_mobilecore_Core",
+   "order": 6,
+   "name": "Core.startLoopback",
+   "file": "internal/mobilecore/core.go",
+   "line": 223,
+   "signature": "func (c *Core) startLoopback(machineName string, cl *client.Client) (string, net.Listener, *http.Server, error)",
+   "params": [
+    [
+     "machineName",
+     "string",
+     ""
+    ],
+    [
+     "cl",
+     "*client.Client",
+     ""
+    ]
+   ],
+   "returns": "(string, net.Listener, *http.Server, error)",
+   "summary": "为单台机器起独立 loopback 端口与透传反代（多机会话域语义的承载）。"
+  },
+  "n_mobilecore_newReverseProxy": {
+   "kind": "func",
+   "container": "k_mobilecore_fn",
+   "order": 5,
+   "name": "newReverseProxy",
+   "file": "internal/mobilecore/proxy.go",
+   "line": 27,
+   "signature": "func newReverseProxy(machineName string, cl *client.Client, log *slog.Logger) http.Handler",
+   "params": [
+    [
+     "machineName",
+     "string",
+     ""
+    ],
+    [
+     "cl",
+     "*client.Client",
+     ""
+    ],
+    [
+     "log",
+     "*slog.Logger",
+     ""
+    ]
+   ],
+   "returns": "http.Handler",
+   "summary": "造回环透传反代：Transport 与桌面端同源选路，Host 改写为对端 loopback 名，**不注入凭据**。"
+  }
+ },
+ "edgesAdded": [
+  [
+   "n_mobilecore_Core_Pair",
+   "n_proto_DecodePairBundle"
+  ],
+  [
+   "n_mobilecore_DefaultDial",
+   "n_relay_NewDialer"
+  ],
+  [
+   "n_mobilecore_DefaultDial",
+   "n_client_NewRelay"
+  ],
+  [
+   "n_mobilecore_DefaultDial",
+   "n_client_New"
+  ],
+  [
+   "n_mobilecore_Core_startLoopback",
+   "n_mobilecore_newReverseProxy"
+  ],
+  [
+   "n_mobilecore_Core_Close",
+   "n_mobilecore_stopMachine"
+  ],
+  [
+   "n_mobilecore_newReverseProxy",
+   "n_client_Client_BaseURL"
+  ],
+  [
+   "n_mobilecore_newReverseProxy",
+   "n_client_Client_HTTPClient"
+  ]
+ ],
+ "implementsAdded": []
+}
