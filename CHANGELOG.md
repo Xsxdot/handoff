@@ -10,6 +10,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **OpenCode 协调者可挂 `wait --follow`（B373）。** `handoff skill install` 把仓内 monitor 插件写到 `~/.config/opencode/plugins/`（不改 `opencode.json`）。Command Code / Codex 仍走不带 `--follow` 的一次性 wait，每收到一个事件（含工单）就退出。
+
 ### 修复
 
 - **重启后工作台终端 tab 只增不减（B322）。** 恢复不再把 workspace 活会话收成新组；没有 sessionId 的恢复 tab 不再静默建 shell，只给「重开一个终端」。`targets.local` 指向本机回环时，`scope=all` 不再把本机会话列两遍。存量已炸开的布局不会自动清掉，只是再打开不再涨。

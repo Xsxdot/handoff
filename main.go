@@ -19,8 +19,14 @@ import (
 //go:embed skills/handoff/SKILL.md
 var skillContent string
 
+// pluginContent 是 OpenCode monitor 插件源码，与 skill 同版本内嵌，避免分发漂移。
+//
+//go:embed plugins/opencode-monitor/handoff-monitor.ts
+var pluginContent string
+
 func main() {
 	cmd.SetSkillContent(skillContent)
+	cmd.SetPluginContent(pluginContent)
 	// Execute 出错必须带非零退出码退出：cobra 已把错误打到 stderr，
 	// 上层脚本（e2e 验收、CI）依赖退出码判断命令成败，静默吞错会让
 	// 「所有 CLI 失败都表现为成功」——错误信息还在但退出码恒 0。

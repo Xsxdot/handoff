@@ -9,8 +9,8 @@ import (
 )
 
 func TestServePermissionHookAllow(t *testing.T) {
-	sockDir := t.TempDir()
-	sockPath := filepath.Join(sockDir, "perm.sock")
+	// 不能用 t.TempDir()：长测试名会把 unix socket 路径顶过 macOS 104 字节上限。
+	sockPath := filepath.Join(shortSockDir(t), "perm.sock")
 
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
@@ -51,8 +51,7 @@ func TestServePermissionHookAllow(t *testing.T) {
 }
 
 func TestServePermissionHookDenyWithReasonAndStep0(t *testing.T) {
-	sockDir := t.TempDir()
-	sockPath := filepath.Join(sockDir, "perm.sock")
+	sockPath := filepath.Join(shortSockDir(t), "perm.sock")
 
 	ln, err := net.Listen("unix", sockPath)
 	if err != nil {
