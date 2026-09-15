@@ -681,3 +681,5 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   需要前端「加载更多」（服务端 `before` 排他上界游标已由 B274/B289 备好，缺的是
   UI 与调用）。B289 spec 未记此残余，由 B287 spec 侦查期间补记。来源：B289
   （`24be42238`）修复后的形态；`docs/superpowers/specs/b289.md`。
+- **终态卡房间出列表剪枝**：B374 Out of Scope，需另修 b358 §4.4 冻结语义（旧卡房间语义不变）。来源：B374 spec Out of Scope（2026-09-15）。
+- **roomAttachRefreshInterval/TTL 动态化**：B374 分页后 fan-out 已降量级，动态节流列为优化项。来源：B374 spec Out of Scope（2026-09-15）。
