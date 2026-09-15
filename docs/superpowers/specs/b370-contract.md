@@ -112,7 +112,7 @@ func JudgeMirroredWake(st *ledger.Store, ev WakeGateEvent) (WakeGateDecision, er
 2. **能定位快照，但快照无工作流身份**（裸派发 / 旧派发 / 旧写入者）→ 无从判迟到 = 放行（`Reason=WakeGateSnapshotNoWorkflowIdentity`）。
 3. **找不到该 task 的派发快照** → 无从判迟到 = 放行（`Reason=WakeGateSnapshotNotFound`，相对 B349 的 `!found` 反转）。
 
-定位规则：`node` 非空时按 `(cardID, node)` 用 `CurrentWorkflowAttempt` 定位；`node` 缺失或空时无从按节点定位，以 `ev.SourceTask` 在卡上匹配合格快照。分支 2/3 的 reason 区分只服务可观测性（§3.3）。
+定位规则：`node` 非空时按 `(cardID, node)` 用 `CurrentWorkflowAttempt` 定位；`node` 缺失或空时无从按节点定位，改以**该事件所属卡上的最新合格快照**为当前身份，再与 `ev.SourceTask` / `ev.SourceTarget` 比对（F1=A，2026-09-14 协调者拍板，见 §12 修订记录与 breakdown §9；实现即 `internal/client#scanCardDispatchSnapshots` 的三态取数）。分支 2/3 的 reason 区分只服务可观测性（§3.3）。
 
 **C. reason 可观测**：判定结果必须携带 `reason`（枚举）；两个消费点按 reason 落日志——放行与拦截都留痕。
 
@@ -264,5 +264,5 @@ func JudgeMirroredWake(st *ledger.Store, ev WakeGateEvent) (WakeGateDecision, er
 以下澄清由 breakdown 节点（`docs/superpowers/specs/b370-breakdown.md`，2026-09-14）在契约增量核对中做出；结论均为「不退回 contract」，只留痕不改冻结语义。
 
 - **2026-09-14（breakdown 核对）：「有派发但无工作流身份」与「无派发」的区分属包内实现面，不属导出契约面。** 冻结的 `CurrentWorkflowAttempt(st, cardID, node)` 契约只承诺返回 `(snapshot, found)` 二态；实现分支 2/3 reason 区分所需的第三态（有 `EvDispatched` 但无合格身份）以 `internal/client` 包内**未导出**取数承载，导出面一个符号不增不删，不产生新跨域边。若裁决要改导出面，须退回 contract 重冻。
-- **2026-09-14（breakdown 核对）：`node` 缺失/为空时「定位」用该卡最新合格快照而非以 `source_task` 反查该任务自身快照。** 这是为同时满足 §5.4 条目 36/37（空身份应交付）与 B349 回归 `TestB2336StaleAttemptDoesNotWake`（其空身份 `task-empty` 事件须不唤醒）而必须取的分支——见 breakdown §0 F1，仍待协调者拍板确认。
-- **2026-09-14（breakdown 核对）：§3.2 A 末句「缺 `source_task` 落 `WakeGateStaleAttempt`」与 §3.1 常量 `WakeGateMissingSourceTask` 注释「身份非空且缺 source_task 的独立 reason」不自洽。** 两值都在冻结枚举内，选哪个不退回 contract；breakdown §0 F3 请协调者拍板，以便实现与契约字面对齐。
+- **2026-09-14（breakdown 核对）：`node` 缺失/为空时「定位」用该卡最新合格快照而非以 `source_task` 反查该任务自身快照。** 这是为同时满足 §5.4 条目 36/37（空身份应交付）与 B349 回归 `TestB2336StaleAttemptDoesNotWake`（其空身份 `task-empty` 事件须不唤醒）而必须取的分支——见 breakdown §0 F1；**已拍板 F1=A**（breakdown §9，2026-09-14），本文 §3.2 B 定位规则已同步。
+- **2026-09-14（breakdown 核对）：§3.2 A 末句「缺 `source_task` 落 `WakeGateStaleAttempt`」与 §3.1 常量 `WakeGateMissingSourceTask` 注释「身份非空且缺 source_task 的独立 reason」不自洽。** 两值都在冻结枚举内，选哪个不退回 contract；breakdown §0 F3 已拍板 **F3=A**（breakdown §9，2026-09-14）：实现返回 `WakeGateMissingSourceTask`；本文 §3.2 A 末句按此口径读（缺 `source_task` 仍 `Deliver=false`，闭集拒绝不变，仅 reason 更精确）。
