@@ -50,63 +50,11 @@ func mirroredTaskTypeAndPayload(ev proto.LedgerEvent) (string, json.RawMessage, 
 	return envelope.TaskType, envelope.Payload, nil
 }
 
-// currentWorkflowAttempt 从事件所属卡的全量事件流取指定节点当前的有效派发快照。
-// 只有 Node、Attempt 非空且 TaskID == Attempt 的快照才是身份事实；旧快照和
-// 不自洽快照保留为审计数据。source 三列不进入 envelope，调用方在快照返回后
-// 与账本列比较；分页到尾是为了避免首页截断掩盖后续当前快照。
-func (s *Server) currentWorkflowAttempt(cardID, node string) (snapshot ledger.DispatchSnapshot, found bool, err error) {
-	if s.autoLedger == nil {
-		err := fmt.Errorf("卡 %s 节点 %s 读取当前 attempt：账本未装配", cardID, node)
-		s.log.Error("当前 workflow attempt 读取失败：账本未装配", "card", cardID,
-			"node", node, "cause", err)
-		return ledger.DispatchSnapshot{}, false, err
-	}
-	const pageSize = 500
-	from := int64(0)
-	for {
-		events, readErr := s.autoLedger.EventsFromAsc([]string{cardID}, from, pageSize)
-		if readErr != nil {
-			s.log.Error("读取当前 workflow attempt 失败", "card", cardID, "node", node,
-				"from_seq", from, "cause", readErr)
-			return ledger.DispatchSnapshot{}, false, fmt.Errorf("读取卡 %s 当前 attempt: %w", cardID, readErr)
-		}
-		s.log.Debug("读取当前 workflow attempt 分页", "card", cardID, "node", node,
-			"from_seq", from, "event_count", len(events), "page_size", pageSize)
-		for _, event := range events {
-			if event.Seq > from {
-				from = event.Seq
-			}
-			if event.Type != ledger.EvDispatched {
-				continue
-			}
-			var candidate ledger.DispatchSnapshot
-			if decodeErr := json.Unmarshal(event.Payload, &candidate); decodeErr != nil {
-				s.log.Error("当前 workflow attempt 的派发快照解码失败", "card", cardID,
-					"seq", event.Seq, "type", event.Type, "node", node, "cause", decodeErr)
-				return ledger.DispatchSnapshot{}, false, fmt.Errorf("卡 %s 派发快照 seq=%d type=%s 解码: %w", cardID, event.Seq, event.Type, decodeErr)
-			}
-			if candidate.Node == node && candidate.Node != "" && candidate.Attempt != "" &&
-				candidate.TaskID == candidate.Attempt {
-				s.log.Debug("当前 workflow attempt 命中合格派发快照", "card", cardID,
-					"seq", event.Seq, "type", event.Type, "node", node,
-					"attempt", candidate.Attempt, "target", candidate.Target)
-				// 事件按 seq 升序读取，因此最后一个合格快照是当前身份。
-				// source_seq 只用于镜像去重，不能替代账本事件 seq。
-				snapshot = candidate
-				found = true
-			}
-		}
-		if len(events) < pageSize {
-			return snapshot, found, nil
-		}
-	}
-}
-
 // acceptsCurrentWorkflowAttempt 是 task_mirrored 唤醒前的身份闸。
-// 不匹配的事件仍会进入 automationSeen，保留审计但不会唤醒新尝试；
-// 缺失与空值使用指针区分，避免旧 envelope 被零值误判为有效身份。source
-// task/target 来自账本列，必须和事件所属卡的当前派发快照一致；source_seq
-// 不参与身份比较。
+// 判定正文（含 B370 降级三分支）由 internal/client#JudgeMirroredWake 一处承载；
+// 本方法只做 envelope 解码、把事件投影成 client.WakeGateEvent，并按 reason 落日志、
+// 把判定结果翻译成消费循环的布尔出口。不匹配的事件仍会进入 automationSeen，保留审计
+// 但不会唤醒新尝试；缺失与空值使用指针区分，避免旧 envelope 被零值误判为有效身份。
 func (s *Server) acceptsCurrentWorkflowAttempt(ev proto.LedgerEvent) (bool, error) {
 	envelope, err := decodeMirroredTaskEnvelope(ev)
 	if err != nil {
@@ -114,31 +62,23 @@ func (s *Server) acceptsCurrentWorkflowAttempt(ev proto.LedgerEvent) (bool, erro
 			"seq", ev.Seq, "type", ev.Type, "cause", err)
 		return false, fmt.Errorf("卡 %s task_mirrored seq=%d type=%s: %w", ev.CardID, ev.Seq, ev.Type, err)
 	}
-	if envelope.Node == nil || *envelope.Node == "" || envelope.Attempt == nil || *envelope.Attempt == "" {
-		s.log.Info("task_mirrored 因缺失或空 workflow 身份跳过", "card", ev.CardID,
-			"seq", ev.Seq, "type", ev.Type, "node_present", envelope.Node != nil,
-			"attempt_present", envelope.Attempt != nil, "task_type", envelope.TaskType)
-		return false, nil
+	if s.ledger == nil {
+		return false, fmt.Errorf("卡 %s task_mirrored seq=%d: 账本未装配", ev.CardID, ev.Seq)
 	}
-	current, found, err := s.currentWorkflowAttempt(ev.CardID, *envelope.Node)
+	decision, err := client.JudgeMirroredWake(s.ledger, client.WakeGateEvent{
+		CardID: ev.CardID, Seq: ev.Seq, Node: envelope.Node, Attempt: envelope.Attempt,
+		TaskType: envelope.TaskType, SourceTask: ev.SourceTask,
+		SourceTarget: ev.SourceTarget, SourceSeq: ev.SourceSeq,
+	})
 	if err != nil {
+		s.log.Error("task_mirrored 身份闸判定失败", "card", ev.CardID, "seq", ev.Seq,
+			"type", ev.Type, "cause", err)
 		return false, err
 	}
-	if !found || current.TaskID != current.Attempt || current.Attempt != *envelope.Attempt ||
-		ev.SourceTask != current.Attempt || ev.SourceTarget != current.Target {
-		s.log.Info("task_mirrored 因 source identity 不匹配跳过", "card", ev.CardID,
-			"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node,
-			"attempt", *envelope.Attempt, "current_attempt", current.Attempt,
-			"source_task", ev.SourceTask, "source_target", ev.SourceTarget,
-			"current_target", current.Target, "source_seq", ev.SourceSeq,
-			"task_type", envelope.TaskType, "reason", "source_identity_mismatch")
-		return false, nil
-	}
-	s.log.Debug("task_mirrored 通过 source identity 闸", "card", ev.CardID,
-		"seq", ev.Seq, "type", ev.Type, "node", *envelope.Node, "attempt", *envelope.Attempt,
-		"source_task", ev.SourceTask, "source_target", ev.SourceTarget,
-		"current_target", current.Target, "source_seq", ev.SourceSeq, "task_type", envelope.TaskType)
-	return true, nil
+	s.log.Info("task_mirrored 身份闸判定", "card", ev.CardID, "seq", ev.Seq,
+		"type", ev.Type, "task_type", envelope.TaskType, "deliver", decision.Deliver,
+		"reason", string(decision.Reason))
+	return decision.Deliver, nil
 }
 
 // automationWakeEvent 是非 room_message 事件的映射；false 表示合法但不唤醒；
@@ -367,9 +307,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				s.automationMu.Lock()
 				s.automationSeen[ev.Seq] = struct{}{}
 				s.automationMu.Unlock()
-				s.log.Debug("自动化事件因当前 attempt 闸被标记 seen", "seq", ev.Seq,
+				s.log.Debug("自动化事件因身份闸被标记 seen", "seq", ev.Seq,
 					"card", ev.CardID, "type", ev.Type, "cursor", from,
-					"cursor_candidate", maxProcessed, "reason", "stale_attempt")
+					"cursor_candidate", maxProcessed, "reason", "wake_gate_rejected")
 				continue
 			}
 		}

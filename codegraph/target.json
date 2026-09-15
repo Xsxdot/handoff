@@ -97,9 +97,10 @@
    "legacyBudget": 12,
    "entries": [
     "client 实体",
-    "client.Client"
+    "client.Client",
+    "client（包级函数）"
    ],
-   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。B233.3：执行能力跨机调用面冻结为 ExecutionClient（Dispatch/Reply/Continue/Stop/WaitEvent/FollowEvents），接口符号住在 d_transport 的 internal/client，不在 d_cli 再声明 interfaces（声明会 dead-interface）。*Client 仍是兼容聚合门面。不新开方向、不改预算。B353：handoff wait/card wait 任务事件口径均消费 client.WaitDeliveryPolicy；card wait 不在 CLI 复制任务白名单，不新增方向或预算。B351：bare card dispatch 的补偿装配复用既有 targetClient 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_cli→d_transport 方向或预算。 B233.16：CLI 执行消费点（stop/reply/continue/dispatch/card dispatch/wait）依赖声明收窄为使用方组合面（嵌入 client.ExecutionClient）；entries 仍含 client.Client（图内调用边落点仍是实现方法，ExecutionClient 未入图，覆盖债），client 实体 已在场；不新开方向、不改预算。 B233.23 重扫棘轮 10→12：entries 增 client（包级函数）/targetclient（包级函数）后残余为 console/shim 直连装配对 proxycfg/relay 的直引（B233.3 远程控制台既存消费）；收窄沿 B233.16 组合面先例另行开卡。"
+   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。B233.3：执行能力跨机调用面冻结为 ExecutionClient（Dispatch/Reply/Continue/Stop/WaitEvent/FollowEvents），接口符号住在 d_transport 的 internal/client，不在 d_cli 再声明 interfaces（声明会 dead-interface）。*Client 仍是兼容聚合门面。不新开方向、不改预算。B353：handoff wait/card wait 任务事件口径均消费 client.WaitDeliveryPolicy；card wait 不在 CLI 复制任务白名单，不新增方向或预算。B351：bare card dispatch 的补偿装配复用既有 targetClient 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_cli→d_transport 方向或预算。 B233.16：CLI 执行消费点（stop/reply/continue/dispatch/card dispatch/wait）依赖声明收窄为使用方组合面（嵌入 client.ExecutionClient）；entries 仍含 client.Client（图内调用边落点仍是实现方法，ExecutionClient 未入图，覆盖债），client 实体 已在场；不新开方向、不改预算。 B233.23 重扫棘轮 10→12：entries 增 client（包级函数）/targetclient（包级函数）后残余为 console/shim 直连装配对 proxycfg/relay 的直引（B233.3 远程控制台既存消费）；收窄沿 B233.16 组合面先例另行开卡。 B370：card wait 的身份闸消费点由 client.JudgeMirroredWake（client 包级函数）承载，与 B353 的 WaitDeliveryPolicy 同容器；entries 补 client（包级函数）（B233.23 曾声明但当前条目缺失），消费边落该容器，不新增方向或预算。"
   },
   {
    "from": "d_cli",
@@ -274,9 +275,10 @@
    "entries": [
     "targetclient.Pool",
     "client.Client",
-    "client 实体"
+    "client 实体",
+    "client（包级函数）"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。B233.6：receiver 沿既有 client.Dispatch wire 透传；事件回流仍由既有 ledgermirror 承载。B351：agentd startCardStep 的补偿装配复用既有 Server.clientForTarget 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_gateway→d_transport 方向或预算。B233.10：carrier/squad 作为冻结身份沿既有 client.Dispatch 发送，不新增传输方向或预算。 B233.16：agentd 执行消费点（stepTransport/补偿/推分支/探活）依赖声明收窄为使用方组合面（嵌入 client.ExecutionClient）；entries 增 client 实体（能力接口符号在场），client.Client 保留（图内调用边仍落实现方法）；不新开方向、不改预算。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。B233.6：receiver 沿既有 client.Dispatch wire 透传；事件回流仍由既有 ledgermirror 承载。B351：agentd startCardStep 的补偿装配复用既有 Server.clientForTarget 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_gateway→d_transport 方向或预算。B233.10：carrier/squad 作为冻结身份沿既有 client.Dispatch 发送，不新增传输方向或预算。 B233.16：agentd 执行消费点（stepTransport/补偿/推分支/探活）依赖声明收窄为使用方组合面（嵌入 client.ExecutionClient）；entries 增 client 实体（能力接口符号在场），client.Client 保留（图内调用边仍落实现方法）；不新开方向、不改预算。 B370：acceptsCurrentWorkflowAttempt 的身份闸判定改调 client.JudgeMirroredWake（client 包级函数），与 B353 的 WaitDeliveryPolicy 同容器；entries 补 client（包级函数），消费边落该容器，不新增方向或预算。"
   },
   {
    "from": "d_gateway",
@@ -390,6 +392,16 @@
    "from": "d_transport",
    "to": "d_policy",
    "legacyBudget": 4
+  },
+  {
+   "from": "d_transport",
+   "to": "d_ledger",
+   "legacyBudget": 0,
+   "entries": [
+    "ledger.Store",
+    "ledger 实体"
+   ],
+   "legacyBudgetNote": "B370：新增方向。镜像身份闸判定正文（含降级三分支）收成一处共享实现，落 internal/client（与 WaitDeliveryPolicy 同包、两处消费点都依赖），代价是 client 读 ledger.Store.EventsFromAsc 与 ledger.DispatchSnapshot 取当前派发快照——这是本方向的唯一消费面，写成 entries，直调预算 0 = 不再扩大。agentd 侧消费点只经本包，不新增 d_gateway→d_ledger 的判定边。骨架提交时活跃边承载在分支视图 cards-B370-charter-4；实现轮重扫后改由 cards-B370-charter-8 背书（图对账 2026-09-15 以 44258345 与 HEAD 两次独立全量重扫逐项核对，锚点与 HEAD 一致、零矛盾），charter-4 同日退役（其 edgesAdded 含 HEAD 已不存在的边 n_client_CurrentWorkflowAttempt→n_ledger_Store_EventsFromAsc，CurrentWorkflowAttempt 已改为委托 scanCardDispatchSnapshots）；absorb 时以 charter-8 为唯一累计视图，absorb 后本方向由基线活跃边背书。"
   },
   {
    "from": "d_transport",

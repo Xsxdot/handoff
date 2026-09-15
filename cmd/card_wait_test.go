@@ -687,3 +687,217 @@ func TestWaitRejectsCardFlag(t *testing.T) {
 		t.Fatalf("应报未知 flag，实际: %v", err)
 	}
 }
+
+func insertRawCardWaitMirrored(dir, cardID, target, task string, sourceSeq int64, payload string) (int64, error) {
+	db, err := sql.Open("sqlite", filepath.Join(dir, "ledger.db")+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	result, err := db.Exec(`INSERT INTO card_events
+		(card_id, type, actor, payload, source_target, source_task, source_seq, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		cardID, ledger.EvTaskMirrored, "mirror", payload, target, task, sourceSeq, time.Now())
+	if err != nil {
+		return 0, err
+	}
+	return result.LastInsertId()
+}
+
+func recordB370CardWaitDispatch(st *ledger.Store, cardID, target, node, attempt string) error {
+	return st.RecordDispatch(cardID, ledger.DispatchSnapshot{
+		Target: target, TaskID: attempt, Node: node, Attempt: attempt,
+		Branch: "cards/" + cardID + "-" + attempt, Purpose: ledger.PurposeReview, Actor: "test",
+	})
+}
+
+// runB370CardWaitScenario 起一张真实卡、在写手里执行 setup、再以 --follow 跑 runCardWait，
+// 返回 stdout 解出的 ledger.Event 序列与卡号。入口是 runCardWait，不是分类 helper。
+func runB370CardWaitScenario(t *testing.T, setup func(st *ledger.Store, dir, cardID string) error) ([]ledger.Event, string) {
+	t.Helper()
+	dir := t.TempDir()
+	cardID := createCardWaitFixture(t, dir)
+	writerErr := make(chan error, 1)
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+		if err != nil {
+			writerErr <- err
+			return
+		}
+		defer st.Close()
+		if err := setup(st, dir, cardID); err != nil {
+			writerErr <- err
+			return
+		}
+		writerErr <- moveCardWaitFixtureToDone(st, cardID)
+	}()
+	out, _, err := runLedgerCLI(t, dir, "card", "wait", cardID, "--follow", "--timeout", "5s")
+	if we := <-writerErr; we != nil {
+		t.Fatalf("写 B370 card wait 夹具: %v", we)
+	}
+	if err != nil {
+		t.Fatalf("card wait --follow: %v; output=%q", err, out)
+	}
+	var got []ledger.Event
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		var ev ledger.Event
+		if err := json.Unmarshal([]byte(line), &ev); err != nil {
+			t.Fatalf("stdout 不是 ledger.Event JSON: %v; line=%q", err, line)
+		}
+		got = append(got, ev)
+	}
+	return got, cardID
+}
+
+func TestB370CardWaitDegradedIdentity(t *testing.T) {
+	cases := []struct {
+		name  string
+		setup func(st *ledger.Store, dir, cardID string) error
+		want  bool // true = 应输出一行 task_mirrored
+	}{
+		{
+			name: "missing node/attempt keys with source equal current dispatch delivers",
+			setup: func(st *ledger.Store, dir, cardID string) error {
+				if err := recordB370CardWaitDispatch(st, cardID, "target-current", "review", "attempt-current"); err != nil {
+					return err
+				}
+				if _, err := insertRawCardWaitMirrored(dir, cardID, "target-current", "attempt-current", 1,
+					`{"task_type":"question","payload":{"ticket_id":"legacy-missing-keys"}}`); err != nil {
+					return err
+				}
+				return nil
+			},
+			want: true,
+		},
+		{
+			name: "empty string keys with source equal current dispatch delivers",
+			setup: func(st *ledger.Store, dir, cardID string) error {
+				if err := recordB370CardWaitDispatch(st, cardID, "target-current", "review", "attempt-current"); err != nil {
+					return err
+				}
+				if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+					Target: "target-current", Task: "attempt-current", Node: "", Attempt: "",
+					SourceSeq: 2, Type: "question", Payload: []byte(`{"ticket_id":"empty-keys"}`), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+				return nil
+			},
+			want: true,
+		},
+		{
+			name: "snapshot without workflow identity delivers",
+			setup: func(st *ledger.Store, dir, cardID string) error {
+				if err := st.RecordDispatch(cardID, ledger.DispatchSnapshot{
+					Target: "target-current", TaskID: "task-no-identity", Node: "", Attempt: "",
+					Branch: "cards/" + cardID + "-legacy", Purpose: ledger.PurposeReview, Actor: "test",
+				}); err != nil {
+					return err
+				}
+				if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+					Target: "target-current", Task: "task-no-identity", Node: "", Attempt: "",
+					SourceSeq: 3, Type: "question", Payload: []byte(`{"ticket_id":"no-identity-snapshot"}`), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+				return nil
+			},
+			want: true,
+		},
+		{
+			name: "no dispatch snapshot delivers",
+			setup: func(st *ledger.Store, dir, cardID string) error {
+				if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+					Target: "target-current", Task: "attempt-current", Node: "", Attempt: "",
+					SourceSeq: 4, Type: "question", Payload: []byte(`{"ticket_id":"no-dispatch"}`), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+				return nil
+			},
+			want: true,
+		},
+		{
+			name: "empty identity with source not matching current dispatch is blocked",
+			setup: func(st *ledger.Store, dir, cardID string) error {
+				if err := recordB370CardWaitDispatch(st, cardID, "target-current", "review", "attempt-new"); err != nil {
+					return err
+				}
+				if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+					Target: "target-current", Task: "attempt-old", Node: "", Attempt: "",
+					SourceSeq: 5, Type: "question", Payload: []byte(`{"ticket_id":"stale-empty"}`), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+				return nil
+			},
+			want: false,
+		},
+		{
+			name: "nonempty identity equal current dispatch delivers",
+			setup: func(st *ledger.Store, dir, cardID string) error {
+				if err := recordB370CardWaitDispatch(st, cardID, "target-current", "review", "attempt-current"); err != nil {
+					return err
+				}
+				if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+					Target: "target-current", Task: "attempt-current", Node: "review", Attempt: "attempt-current",
+					SourceSeq: 6, Type: "question", Payload: []byte(`{"ticket_id":"current-identity"}`), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+				return nil
+			},
+			want: true,
+		},
+		{
+			name: "nonempty old attempt is blocked",
+			setup: func(st *ledger.Store, dir, cardID string) error {
+				if err := recordB370CardWaitDispatch(st, cardID, "target-current", "review", "attempt-new"); err != nil {
+					return err
+				}
+				if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+					Target: "target-current", Task: "attempt-new", Node: "review", Attempt: "attempt-old",
+					SourceSeq: 7, Type: "question", Payload: []byte(`{"ticket_id":"stale-identity"}`), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+				return nil
+			},
+			want: false,
+		},
+		{
+			name: "delivery policy false is still blocked after identity passes",
+			setup: func(st *ledger.Store, dir, cardID string) error {
+				if err := recordB370CardWaitDispatch(st, cardID, "target-current", "review", "attempt-current"); err != nil {
+					return err
+				}
+				if _, err := st.AppendMirroredEvent(cardID, ledger.MirroredEvent{
+					Target: "target-current", Task: "attempt-current", Node: "review", Attempt: "attempt-current",
+					SourceSeq: 8, Type: string(proto.EventTypePermissionAutoAllow), Payload: []byte(`{"rule":"safe"}`), CreatedAt: time.Now(),
+				}); err != nil {
+					return err
+				}
+				return nil
+			},
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got, cardID := runB370CardWaitScenario(t, tc.setup)
+			if tc.want && (len(got) != 1 || got[0].Type != ledger.EvTaskMirrored || got[0].CardID != cardID) {
+				t.Fatalf("want 一行 task_mirrored(card=%s)，got=%+v", cardID, got)
+			}
+			if !tc.want && len(got) != 0 {
+				t.Fatalf("want 无输出，got=%+v", got)
+			}
+			if tc.want && got[0].SourceTask == "" {
+				t.Fatalf("stdout 丢失 source_task 列: %+v", got[0])
+			}
+		})
+	}
+}
