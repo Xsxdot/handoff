@@ -401,7 +401,7 @@
     "ledger.Store",
     "ledger 实体"
    ],
-   "legacyBudgetNote": "B370：新增方向。镜像身份闸判定正文（含降级三分支）收成一处共享实现，落 internal/client（与 WaitDeliveryPolicy 同包、两处消费点都依赖），代价是 client 读 ledger.Store.EventsFromAsc 与 ledger.DispatchSnapshot 取当前派发快照——这是本方向的唯一消费面，写成 entries，直调预算 0 = 不再扩大。agentd 侧消费点只经本包，不新增 d_gateway→d_ledger 的判定边。骨架提交时活跃边承载在分支视图 cards-B370-charter-4（baseline 未重扫）；absorb 后本方向由基线活跃边背书。"
+   "legacyBudgetNote": "B370：新增方向。镜像身份闸判定正文（含降级三分支）收成一处共享实现，落 internal/client（与 WaitDeliveryPolicy 同包、两处消费点都依赖），代价是 client 读 ledger.Store.EventsFromAsc 与 ledger.DispatchSnapshot 取当前派发快照——这是本方向的唯一消费面，写成 entries，直调预算 0 = 不再扩大。agentd 侧消费点只经本包，不新增 d_gateway→d_ledger 的判定边。骨架提交时活跃边承载在分支视图 cards-B370-charter-4；实现轮重扫后改由 cards-B370-charter-8 背书（图对账 2026-09-15 以 44258345 与 HEAD 两次独立全量重扫逐项核对，锚点与 HEAD 一致、零矛盾），charter-4 同日退役（其 edgesAdded 含 HEAD 已不存在的边 n_client_CurrentWorkflowAttempt→n_ledger_Store_EventsFromAsc，CurrentWorkflowAttempt 已改为委托 scanCardDispatchSnapshots）；absorb 时以 charter-8 为唯一累计视图，absorb 后本方向由基线活跃边背书。"
   },
   {
    "from": "d_transport",
