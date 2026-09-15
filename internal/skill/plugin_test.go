@@ -138,6 +138,9 @@ func TestSkillTextBranchesWaitModes(t *testing.T) {
 		t.Fatal("skill 必须写 OpenCode 的 monitor 工具走 follow")
 	}
 	if !strings.Contains(text, "每次收到一个事件") {
-		t.Fatal("Command Code 必须写明每次收到事件就退出")
+		t.Fatal("Command Code 必须写明任务级 wait 每次收到事件就退出")
+	}
+	if strings.Contains(text, "一次性 `card wait`") {
+		t.Fatal("card wait 跟流直到终态，不许写成一次性命令")
 	}
 }

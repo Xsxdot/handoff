@@ -79,6 +79,7 @@ const plugin: Plugin = async (ctx) => {
   const queues = new Map<string, Wake[]>()
   const busy = new Set<string>()
   const flushing = new Set<string>()
+  const dead = new Set<string>()
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
 
   log({ event: "plugin_loaded" })
@@ -92,6 +93,7 @@ const plugin: Plugin = async (ctx) => {
   })
 
   const enqueue = (sessionID: string, wake: Wake) => {
+    if (dead.has(sessionID)) return
     const q = queues.get(sessionID) ?? []
     q.push(wake)
     queues.set(sessionID, q)
@@ -107,7 +109,7 @@ const plugin: Plugin = async (ctx) => {
   }
 
   const flush = async (sessionID: string) => {
-    if (busy.has(sessionID) || flushing.has(sessionID)) return
+    if (dead.has(sessionID) || busy.has(sessionID) || flushing.has(sessionID)) return
     const q = queues.get(sessionID)
     if (!q || q.length === 0) return
     flushing.add(sessionID)
@@ -118,6 +120,7 @@ const plugin: Plugin = async (ctx) => {
       "</monitor-notification>",
       "These are background monitor events. Treat each JSON line as a handoff wait event if it looks like one. Do not poll. Do not restart the monitor unless it exited.",
     ].join("\n")
+    let dispatched = false
     try {
       const session = ctx.client.session as {
         promptAsync?: (args: unknown) => Promise<unknown>
@@ -135,6 +138,7 @@ const plugin: Plugin = async (ctx) => {
       } else {
         await session.prompt(args)
       }
+      dispatched = true
       log({ event: "woke", sessionID, n: batch.length, ids: [...new Set(batch.map((w) => w.id))] })
       void app?.log?.({
         body: {
@@ -145,14 +149,26 @@ const plugin: Plugin = async (ctx) => {
         },
       })
     } catch (err) {
-      queues.set(sessionID, [...batch, ...(queues.get(sessionID) ?? [])])
-      const msg = err instanceof Error ? err.message : String(err)
-      const isBusy = /busy|SessionBusy/i.test(msg)
-      if (isBusy) busy.add(sessionID)
-      log({ event: isBusy ? "busy_defer" : "wake_error", sessionID, err: msg, n: batch.length })
+      if (dead.has(sessionID)) {
+        log({ event: "wake_dropped", sessionID, reason: "session_gone", n: batch.length })
+      } else {
+        queues.set(sessionID, [...batch, ...(queues.get(sessionID) ?? [])])
+        const msg = err instanceof Error ? err.message : String(err)
+        const isBusy = /busy|SessionBusy/i.test(msg)
+        if (isBusy) busy.add(sessionID)
+        log({ event: isBusy ? "busy_defer" : "wake_error", sessionID, err: msg, n: batch.length })
+      }
     } finally {
       flushing.delete(sessionID)
-      if ((queues.get(sessionID) ?? []).length > 0 && !busy.has(sessionID)) void flush(sessionID)
+      // 失败不要立刻重入：busy 等 idle，其它错误等下一行 coalesce，避免 livelock。
+      if (
+        dispatched &&
+        !dead.has(sessionID) &&
+        !busy.has(sessionID) &&
+        (queues.get(sessionID) ?? []).length > 0
+      ) {
+        void flush(sessionID)
+      }
     }
   }
 
@@ -352,6 +368,7 @@ const plugin: Plugin = async (ctx) => {
         void flush(sessionID)
       }
       if (ev.type === "session.deleted") {
+        dead.add(sessionID)
         for (const [id, job] of jobs) {
           if (job.sessionID === sessionID) stopJob(id, "session_deleted")
         }
@@ -360,7 +377,9 @@ const plugin: Plugin = async (ctx) => {
       }
     },
     dispose: async () => {
+      for (const job of jobs.values()) dead.add(job.sessionID)
       for (const id of [...jobs.keys()]) stopJob(id, "dispose")
+      queues.clear()
       log({ event: "disposed" })
     },
   }

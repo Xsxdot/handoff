@@ -111,7 +111,7 @@ handoff wait <task> --notify --timeout 1h
 上面的主循环假设操作者能前台阻塞一小时。agent 的 Bash 工具做不到（前台超时上限通常只有几分钟到十分钟），于是最常见的走样就是自己发明 `show` + `sleep` 轮询循环，或把几百轮 wait 包进一条 shell 大循环。**两种都不要。** 正确形态按你所在 harness 的能力二选一：
 
 - **有按行叫醒的 harness（Claude Code 的 Monitor、grok 的 `monitor`、OpenCode 工具列表里的 `monitor`）**：挂一条后台 `wait --follow` 长订阅，见下节。
-- **没有按行叫醒的 harness（OpenCode 未装 handoff monitor 插件、codex、Command Code 的 `cmd`）**：挂不了 `--follow` 订阅，退回**前台一次性 wait 逐轮挂**：`handoff wait <完整 task-id> --timeout <小于前台超时上限，如 5m>`，阻塞到返回一个事件（含工单）就退出并处置，处置完再挂下一条；退出码 124 表示这轮没等到，直接再挂即可。每轮一条独立命令，事件 JSON 完整落在命令输出里——这不是被禁止的轮询循环，禁的是拿不到事件的 `show`+`sleep` 和吞掉输出的 shell 大循环。Command Code 的 `monitor_command` 只在定时点/进程退出叫醒，**不能**当 follow 用。
+- **没有按行叫醒的 harness（OpenCode 未装 handoff monitor 插件、codex、Command Code 的 `cmd`）**：挂不了 `--follow` 订阅，退回**前台一次性 wait 逐轮挂**：`handoff wait <完整 task-id> --timeout <小于前台超时上限，如 5m>`，每次收到一个事件（含工单）就退出并处置，处置完再挂下一条；退出码 124 表示这轮没等到，直接再挂即可。每轮一条独立命令，事件 JSON 完整落在命令输出里——这不是被禁止的轮询循环，禁的是拿不到事件的 `show`+`sleep` 和吞掉输出的 shell 大循环。Command Code 的 `monitor_command` 只在定时点/进程退出叫醒，**不能**当 follow 用。
 
 ### 订阅：开一次，活到会话结束（Claude Code / grok / OpenCode `monitor`）
 
@@ -489,7 +489,7 @@ handoff card wait <id> [--subtree] [--timeout 3h]
   的等人标记。建连前已经镜像到子卡的工单靠这一行，不靠回放。之后的新事件仍是
   `task_mirrored`。处置工单与任务回路相同：`show <task> --target <source_target>`
   再 `reply`。
-- **一次工作流只挂一次 `card wait`，不必再叠 task 级 `wait --follow`**。有按行叫醒的 harness（Claude Code / grok / OpenCode `monitor`）把 `card wait` 挂成后台长订阅，唤醒语义与 `wait --follow` 同款：逐条事件即时流出、命令不退出、不用重挂。没有按行叫醒的 harness（未装插件的 OpenCode、Codex、Command Code）用不带 `--follow` 的一次性 `card wait`，**每次收到一个事件（含工单）就退出**，处置后再挂。工单
+- **一次工作流只挂一次 `card wait`，不必再叠 task 级 `wait --follow`**。`card wait` 本身跟流直到成员终态，没有 `--follow` 旗标、也不是一事件一退出。有按行叫醒的 harness（Claude Code / grok / OpenCode `monitor`）把它挂成后台长订阅：逐条事件即时流出、命令不退出、不用重挂。没有按行叫醒的 harness（未装插件的 OpenCode、Codex、Command Code）**不要**前台挂 `card wait`（Bash 超时前它不会按事件退出）；改走任务级不带 `--follow` 的 `handoff wait`。工单
   （`question` / `permission_request`）由镜像子系统转成 `task_mirrored` 进卡流，
   只跳过 `progress` / `approver_decision` / `approver_disabled`
   （`internal/ledgermirror/mirror.go` 的 `mirrorSkip`）。**卡流该有的事件却没动静时，
