@@ -1081,3 +1081,158 @@ func TestB349AutomationCursorPersistence(t *testing.T) {
 		}
 	})
 }
+
+func appendRawMirroredWithSource(t *testing.T, env *ledgerEnv, cardID, target, task, payload string, sourceSeq int64) int64 {
+	t.Helper()
+	db, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("打开 raw mirrored ledger: %v", err)
+	}
+	defer db.Close()
+	result, err := db.Exec(`INSERT INTO card_events
+		(card_id, type, actor, payload, source_target, source_task, source_seq, created_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		cardID, ledger.EvTaskMirrored, "mirror", payload, target, task, sourceSeq, time.Now())
+	if err != nil {
+		t.Fatalf("写 raw mirrored 事件: %v", err)
+	}
+	seq, err := result.LastInsertId()
+	if err != nil {
+		t.Fatalf("读取 raw mirrored seq: %v", err)
+	}
+	return seq
+}
+
+func TestB370AutomationDegradedIdentity(t *testing.T) {
+	cases := []struct {
+		name          string
+		setup         func(t *testing.T, env *ledgerEnv, cardID string)
+		wantProcessed int
+		wantWake      string // 非空表示 expects 一次 Resume 且 briefing 含该子串
+	}{
+		{
+			name: "missing keys with source equal current dispatch wakes",
+			setup: func(t *testing.T, env *ledgerEnv, cardID string) {
+				appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current")
+				appendRawMirroredWithSource(t, env, cardID, "target-current", "attempt-current",
+					`{"task_type":"question","payload":{"ticket_id":"legacy-missing-keys"}}`, 1)
+			},
+			wantProcessed: 1,
+			wantWake:      "legacy-missing-keys",
+		},
+		{
+			name: "empty string keys with source equal current dispatch wakes",
+			setup: func(t *testing.T, env *ledgerEnv, cardID string) {
+				appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current")
+				appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "", "", "question", 2, `{"ticket_id":"empty-keys"}`)
+			},
+			wantProcessed: 1,
+			wantWake:      "empty-keys",
+		},
+		{
+			name: "snapshot without workflow identity wakes",
+			setup: func(t *testing.T, env *ledgerEnv, cardID string) {
+				appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "task-no-identity", "", "")
+				appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "task-no-identity", "", "", "question", 3, `{"ticket_id":"no-identity-snapshot"}`)
+			},
+			wantProcessed: 1,
+			wantWake:      "no-identity-snapshot",
+		},
+		{
+			name: "no dispatch snapshot wakes",
+			setup: func(t *testing.T, env *ledgerEnv, cardID string) {
+				appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "", "", "question", 4, `{"ticket_id":"no-dispatch"}`)
+			},
+			wantProcessed: 1,
+			wantWake:      "no-dispatch",
+		},
+		{
+			name: "empty identity source mismatch is blocked",
+			setup: func(t *testing.T, env *ledgerEnv, cardID string) {
+				appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-new", "review", "attempt-new")
+				appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-old", "", "", "question", 5, `{"ticket_id":"stale-empty"}`)
+			},
+			wantProcessed: 0,
+		},
+		{
+			name: "nonempty identity equal current dispatch wakes",
+			setup: func(t *testing.T, env *ledgerEnv, cardID string) {
+				appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current")
+				appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current", "question", 6, `{"ticket_id":"current-identity"}`)
+			},
+			wantProcessed: 1,
+			wantWake:      "current-identity",
+		},
+		{
+			name: "nonempty old attempt is blocked",
+			setup: func(t *testing.T, env *ledgerEnv, cardID string) {
+				appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-new", "review", "attempt-new")
+				appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-new", "review", "attempt-old", "question", 7, `{"ticket_id":"stale-identity"}`)
+			},
+			wantProcessed: 0,
+		},
+		{
+			name: "delivery policy false is blocked after identity passes",
+			setup: func(t *testing.T, env *ledgerEnv, cardID string) {
+				appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current")
+				appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-current", "review", "attempt-current", "permission_auto_allow", 7, `{"rule":"safe"}`)
+			},
+			wantProcessed: 0,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env, runner := newNoPTYAutomationEnv(t)
+			cardID := createCoordCard(t, env)
+			prebindConsumerSession(t, env, cardID)
+			tc.setup(t, env, cardID)
+			processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+			if err != nil || escalated || processed != tc.wantProcessed {
+				t.Fatalf("processed=%d escalated=%v err=%v，want %d/false/nil", processed, escalated, err, tc.wantProcessed)
+			}
+			_, resumes, _ := runner.snapshot()
+			if tc.wantWake == "" {
+				if len(resumes) != 0 {
+					t.Fatalf("不应唤醒，resumes=%v", resumes)
+				}
+				return
+			}
+			if len(resumes) != 1 || !strings.Contains(resumes[0], tc.wantWake) {
+				t.Fatalf("应唤醒一次且含 %q，resumes=%v", tc.wantWake, resumes)
+			}
+		})
+	}
+}
+
+func TestB370AutomationBlockedEventSeenAndContinues(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	appendWorkflowDispatchForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-new", "review", "attempt-new")
+	blockedSeq := appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-new", "review", "attempt-old", "question", 1, `{"ticket_id":"stale"}`)
+
+	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil || escalated || processed != 0 {
+		t.Fatalf("被拦事件 processed=%d escalated=%v err=%v，want 0/false/nil", processed, escalated, err)
+	}
+	env.srv.automationMu.Lock()
+	_, seen := env.srv.automationSeen[blockedSeq]
+	cursor := env.srv.automationCursor
+	env.srv.automationMu.Unlock()
+	if !seen {
+		t.Fatalf("被拦事件 seq=%d 应记 seen", blockedSeq)
+	}
+	if cursor < blockedSeq {
+		t.Fatalf("被拦事件应推进游标：cursor=%d seq=%d", cursor, blockedSeq)
+	}
+
+	appendWorkflowMirroredForConsumerWithTarget(t, env.ledger, cardID, "target-current", "attempt-new", "review", "attempt-new", "question", 2, `{"ticket_id":"current-after-block"}`)
+	processed, escalated, err = env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil || escalated || processed != 1 {
+		t.Fatalf("被拦后消费循环应继续，processed=%d escalated=%v err=%v", processed, escalated, err)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 1 || !strings.Contains(resumes[0], "current-after-block") {
+		t.Fatalf("后续合法事件未唤醒: %v", resumes)
+	}
+}

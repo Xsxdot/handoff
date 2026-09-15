@@ -189,54 +189,11 @@ func runCardWait(cmd *cobra.Command, cardID string, subtree, follow bool, timeou
 	}
 }
 
-// cardWaitCurrentWorkflowAttempt 从事件所属卡的全量事件流取指定节点当前的有效派发快照。
-// 事件卡而非 wait 根卡是身份事实的归属；只接受 Node、Attempt 非空且
-// TaskID == Attempt 的快照，并按 seq 升序保留最后一个合格快照。
-func cardWaitCurrentWorkflowAttempt(st *ledger.Store, cardID, node string) (snapshot ledger.DispatchSnapshot, found bool, err error) {
-	const pageSize = 500
-	from := int64(0)
-	for {
-		events, readErr := st.EventsFromAsc([]string{cardID}, from, pageSize)
-		if readErr != nil {
-			slog.Error("card wait 读取当前 workflow attempt 失败", "card", cardID,
-				"node", node, "from_seq", from, "cause", readErr)
-			return ledger.DispatchSnapshot{}, false,
-				fmt.Errorf("card %s 当前派发快照读取: %w", cardID, readErr)
-		}
-		slog.Debug("card wait 读取当前 workflow attempt 分页", "card", cardID,
-			"node", node, "from_seq", from, "event_count", len(events), "page_size", pageSize)
-		for _, event := range events {
-			if event.Seq > from {
-				from = event.Seq
-			}
-			if event.Type != ledger.EvDispatched {
-				continue
-			}
-			var candidate ledger.DispatchSnapshot
-			if decodeErr := json.Unmarshal(event.Payload, &candidate); decodeErr != nil {
-				slog.Error("card wait 派发快照解码失败", "card", cardID,
-					"seq", event.Seq, "type", event.Type, "node", node, "cause", decodeErr)
-				return ledger.DispatchSnapshot{}, false,
-					fmt.Errorf("card %s 派发快照 seq=%d type=%s 解码: %w", cardID, event.Seq, event.Type, decodeErr)
-			}
-			if candidate.Node == node && candidate.Node != "" && candidate.Attempt != "" &&
-				candidate.TaskID == candidate.Attempt {
-				snapshot = candidate
-				found = true
-				slog.Debug("card wait 命中合格派发快照", "card", cardID, "seq", event.Seq,
-					"type", event.Type, "node", node, "attempt", candidate.Attempt,
-					"target", candidate.Target)
-			}
-		}
-		if len(events) < pageSize {
-			return snapshot, found, nil
-		}
-	}
-}
-
 // cardWaitEventActionable 根据 source identity、唯一任务等待策略与卡原生动作集合分类事件。
 // 返回错误时表示 payload 已损坏或缺失，调用方必须携带事件上下文返回，不能
-// 把无法判断的事件静默降级为审计。task_mirrored 只有身份闸通过后才进入策略判断。
+// 把无法判断的事件静默降级为审计。task_mirrored 的身份闸正文由
+// client.JudgeMirroredWake 一处承载（--subtree 也用事件所属卡 e.CardID），
+// 身份闸通过后才进入 client.WaitDeliveryPolicy 策略判断。
 func cardWaitEventActionable(st *ledger.Store, ev ledger.Event) (bool, error) {
 	switch ev.Type {
 	case ledger.EvNeedsHuman, ledger.EvNeedsCleared,
@@ -279,8 +236,13 @@ func cardWaitEventActionable(st *ledger.Store, ev ledger.Event) (bool, error) {
 			SourceTarget: ev.SourceTarget, SourceSeq: ev.SourceSeq,
 		})
 		if err != nil {
+			slog.Error("card wait task_mirrored 身份闸判定失败", "card", ev.CardID, "seq", ev.Seq,
+				"type", ev.Type, "task_type", envelope.TaskType, "cause", err)
 			return false, err
 		}
+		slog.Info("card wait task_mirrored 身份闸判定", "card", ev.CardID, "seq", ev.Seq,
+			"type", ev.Type, "task_type", envelope.TaskType, "deliver", decision.Deliver,
+			"reason", string(decision.Reason))
 		if !decision.Deliver {
 			return false, nil
 		}
