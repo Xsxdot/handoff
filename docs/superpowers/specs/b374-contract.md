@@ -302,3 +302,12 @@ export const fetchRooms = (opts?: { project?: string; cursor?: string; limit?: n
 - **P6（本轮新增）游标兜底不比 ID 序。** 决定：主判据 = 当前扁平序里 roomID 的位置；房间已不在列表时按 LastActivity 时刻跳过，同刻插入序不可恢复。被否：上一轮的 `x.ID > r` 比较。为什么必须记：`listRooms` 的扁平序是「非终态在前 / 终态沉底 / 各自 LastActivity 降序 / 同刻 SliceStable 插入序」，ID 序与它不同构；ID 序在多数用例里与正确结果巧合一致，只有同刻条目才暴露，反向写不会有常规测试变红。
 
 **交棒：breakdown。**
+
+## 9. breakdown 核对修订记录
+
+以下澄清由 breakdown 节点（`docs/superpowers/specs/b374-breakdown.md`，2026-09-15）在契约增量核对中做出；结论均为「不退回 contract」，只留痕不改冻结语义。冻结正文一字未动。
+
+- **C-1（2026-09-15，breakdown 核对）：状态位核对通过，头部「工作分支」标签已漂移。** 上游 spec 头部「已批准」与本文头部「冻结状态」均实读在位（台账条目 4、5）。本文头部 §3 写「工作分支 `cards/B374-charter-3`」，而 breakdown 在本分支 `cards/B374-charter-5` 上开工——冻结提交 `32756584` 在两个分支上均可达，属分支标签漂移，非冻结物失真；下游以提交 hash 为准，不据分支名判定。
+- **C-2（2026-09-15，breakdown 核对）：存量代码注释里的 `F` 编号是上一轮遗留，非权威。** 重冻后 §5 已重编号（F1–F4 信封、F5–F9 参数/426、F10–F11 游标、F12–F16 裁剪、F17–F18 刷新、F19–F21 日志、F22 前端），而 `internal/agentd/roomsapi.go` 与 `internal/collab/service.go` 多处注释仍写上轮编号（如 `F4`=游标 400、`F9/F10`=刷新限域）。实现以 §5 重编号为准；本卡不要求为注释编号单独开卡，实现轮顺手对齐。
+- **C-3（2026-09-15，breakdown 核对）：`trimRoomPage` 的兜底注释与 P6 冲突，属代码注释待修，非契约面。** `internal/collab/service.go#trimRoomPage` 注释写「(LastActivity,roomID) 为兜底比较」，与 §3.2 规则 3 + P6「主判据 roomID 位置、兜底按 LastActivity 时刻、不比 ID 序」矛盾。归 implement 轮修注释与实现，契约语义以 §3.2/P6 为准。
+- **C-4（2026-09-15，breakdown 核对）：`k_agentd_fn`/`k_logx_fn` 的域归属以 `best.json` 为准，`codegraph sym` 单点输出可能仍报 baseline 残留域 id。** 实读 `codegraph sym n_logx_Setup` 报 `domain=d_runtime_config`，而 `best.json` 的 `k_logx_fn→d_policy`。图覆盖债（baseline 残留 id 未 absorb 回灌），不属本卡修；子卡归属按 `best.json`。
