@@ -1,14 +1,14 @@
 # B374 contract 台账（房间列表强制分页 + attach 刷新限域 + 日志三件套）
 
 节点：contract（上游 spec `docs/specs/2026-09-15-b374-rooms-pagination.md`，头部状态行「已批准（2026-09-15，用户审批）」——开工核对通过，见条目 1）。
-卡：B374　有效基线分支：未设置（分支基线 `cards/B374-charter` @ `41a28474`，spec 提交在 `origin/main` @ `85840cf2`，本卡暂未定合并目标，见条目 2）。
+卡：B374　有效基线分支：未设置（工作分支 `cards/B374-charter-3`，自 `cards/B374-charter` @ `5b00e2b5` 续接，spec 提交在 `origin/main` @ `85840cf2`；本卡暂未定合并目标，见条目 2）。本台账含两轮：§0–§5 首轮冻结（提交 `5b00e2b5`），§6 为 contract 重冻轮（用户拍板 A）。
 一行一条历史读数；命令与原始输出照抄，不做二次加工。
 
 ## 0. 落点裁决与边界
 
 1. 2026-09-15：上游状态位核对。`git show origin/main:docs/specs/2026-09-15-b374-rooms-pagination.md` 第 3 行原文 `状态：已批准（2026-09-15，用户审批） / 级别：L3轻 / 日期：2026-09-15`。规范路径 `docs/specs/2026-09-15-b374-rooms-pagination.md` 在本分支不存在（分支基线 `41a28474` 早于 spec 提交），经协调者指路改读 `origin/main`。
 2. 2026-09-15：本卡未设置合并目标（无有效基线分支）。冻结提交只落本分支 `cards/B374-charter`，不假定 main。
-3. 2026-09-15：spec 定级 **L3 轻档**。定级两问——跨 `d_gateway`（handler+刷新）/`d_sessions`（collab 列表语义）/`d_web`（懒加载）三契约面；动跨进程 wire `GET /api/rooms`。**轻档无直通竖切**（纪律块「轻档与 L2 无此步骤」），运行时最薄路径由 plan 节点的「最薄路径」承接。
+3. 2026-09-15：spec 定级 **L3 轻档**。定级两问——跨 `d_gateway`（handler+刷新）/`d_collab`（collab 列表语义；**勘误**：原文误写 `d_sessions`，`d_sessions` 是终端 PTY 回放域，见条目 42）/`d_web`（懒加载）三契约面；动跨进程 wire `GET /api/rooms`。**轻档无直通竖切**（纪律块「轻档与 L2 无此步骤」），运行时最薄路径由 plan 节点的「最薄路径」承接。上轮 §2 条目 28 记 `logx.Setup` 域为 `d_runtime_config`——**勘误**：`best.json` 中 `k_logx_*` 归 `d_policy`，见条目 42。
 4. 2026-09-15：本节点只落契约增量文档、Ticket 0 可编译空壳骨架、target.json 契约面、本分支视图 diff 与台账；完整分页/限域/日志实现归 implement 轮。
 
 ## 1. 现状查证（命令与原始输出）
@@ -50,7 +50,7 @@
 
 ## 2. 图覆盖债（未命中事项）
 
-28. 2026-09-15：`logx.Setup` **在图中**（`n_logx_Setup`，`k_logx_fn`，域 `d_runtime_config`），与 spec 备注「logx.Setup 未入代码图」不符——spec 备注基于旧扫描；本轮核实图已覆盖，覆盖债注销。`codegraph sym logx`（裸包名）查不到是查询串问题，非覆盖问题。
+28. 2026-09-15：`logx.Setup` **在图中**（`n_logx_Setup`，`k_logx_fn`），与 spec 备注「logx.Setup 未入代码图」不符——spec 备注基于旧扫描；覆盖债注销（`codegraph sym logx` 裸包名查不到是查询串问题）。**域 id 勘误**：上轮本条记域 `d_runtime_config` 有误——`best.json` 中 `k_logx_fn`/`k_logx_model`/`k_logx_multiHandler` 均归 **`d_policy`**；`d_runtime_config` 是 baseline 扫描残留的旧域 id，`best.json` 无此域。见条目 42。
 29. 2026-09-15：`codegraph sym 'collab.Service.ListRoomsForMember'` / `'agentd.Server.handleRoomsList'` 报「不在图中」——**点号全名不是合法查询串**；用节点 id（`n_...`）命中。属查询语法，非覆盖债。
 
 ## 3. 拍板记录（三重闸门）
@@ -81,6 +81,18 @@
 - **被否**：新增 `X-Handoff-Client-Version` 头探测——外置桌面 app 改动面更大，且 spec 只要求发版提示，不要求版本协商。
 - **为什么难逆转/会惊讶**：这是「反过来写不会有任何测试变红」的流程裁决——若把「缺 limit」也当作合法默认而非 legacy，新 web 首屏与旧客户端请求形态完全相同（都是无参），阻断与默认就互相吞掉，T2/T3 各自绿而集成必翻；无文档后人一次「顺手」就把旧客户端当新客户端返回首屏半页。故必须显式记录。
 
+### P5：落地顺序——Legacy 探测 + HTTP 426 先于 `trimRoomPage` 真裁剪
+
+- **决定**：implement 必须先落 `parseRoomsListParams` 真解析 + legacy 426（F5–F9），再落 `trimRoomPage` 真裁剪（F12–F16）。
+- **被否**：并行落地；或先真裁剪后 426。
+- **为什么难逆转/会惊讶**：这是「反过来写不会有任何测试变红」的流程裁决。Ticket 0 已把 handler 切到 `ListRoomsPage`；若先真裁剪（honours `limit=50`），无参 `GET /api/rooms` 会先命中默认 limit 静默返回半页——F5 绿、T2 绿，而 US5（旧客户端看到明确升级提示）当场失守，没有任何现有测试会红。必须显式记录顺序。
+
+### P6：游标兜底不比 ID 序
+
+- **决定**：`trimRoomPage` 主判据 = 当前扁平序里 `roomID` 的位置；房间已不在列表时，按 `LastActivity` 时刻跳过（不早于游标时刻的全跳），同刻插入序不可恢复。
+- **被否**：上一轮冻结的 `x.ID > r` 比较兜底。
+- **为什么难逆转/会惊讶**：`listRooms` 的扁平序是「非终态在前 / 终态沉底 / 各自 `LastActivity` 降序 / 同刻 `SliceStable` 插入序」，与 ID 序不同构。ID 序在多数用例里与正确结果巧合一致，只有同刻条目才暴露；反向写不会有常规测试变红。必须显式记录，并把「同刻不可恢复」写进冻结清单 F14，不假装 ID 序能保不丢不重。
+
 ## 4. Ticket 0 骨架与本轮读数
 
 30. 2026-09-15：`internal/proto/rooms.go` 新增 `RoomsPage`（`rooms`+`next_cursor,omitempty`+`has_more`）。
@@ -98,3 +110,27 @@
 
 40. 2026-09-15：本节点冻结即提交，命令 `git add <8 文件> && git commit -F -`；`git log --oneline -1` 原始输出 `7ca9eb48 contract(B374): 房间列表强制分页 wire 冻结——Ticket 0 骨架 + 视图`；`git status --short` 提交后回显 `8 files changed, 851 insertions(+), 5 deletions(-)`（提交输出）。本条回填后 amend 一次收进同批提交——amend 会换 hash，收口判据是工作树干净，不 chase hash。
 41. 2026-09-15：提交后复核 `git status --porcelain` 无输出（工作树干净）；`go build ./...` 退出码 0；`codegraph --view cards-B374-charter check` fails 0；`codegraph validate` issues null。
+
+## 6. 重冻轮（用户拍板 A；自 `5b00e2b5` 续接）
+
+42. 2026-09-15（重冻轮）：域 id 勘误取证。`python3` 读 `codegraph/best.json`：`k_collab_Service`/`k_collab_fn`/`k_collab_model` → `d_collab`；`k_logx_fn`/`k_logx_model`/`k_logx_multiHandler` → `d_policy`；`d_runtime_config` **不在** best 的 domains；`d_sessions` 是终端 PTY 域。spec 段 19 原写「`d_sessions`（collab 列表语义）」误写，已勘误回写 spec 备注；台账条目 3、28 已勘误。
+43. 2026-09-15（重冻轮）：`k_collab_model` 归属取证。`python3 -c` 读 baseline/best：`best.json` 含 `k_collab_model`（→ `d_collab`）；`baseline.json` 在 HEAD / origin/main / merge-base `41a28474` 均**不含**（`grep -c` = 0）。`charter v0.10.1` 模块缓存 `codegraph/validate.go#ValidateDiff`（`:198-226`）按 `baseline + view` 校验 `containersAdded`。故视图 `containersAdded{k_collab_model}` 是工具要求（`k_collab_model` 判为「baseline 没有」的新容器）。先例：B358 视图（`91f6cbeb`）同样把 best-only 的 `k_web_api_rooms` 写进 `containersAdded`。协调者拍板 **A：保留**。
+44. 2026-09-15（重冻轮）：取证 `codegraph --repo . validate`。删 `containersAdded` → 退出码 1，原文 `"issues": ["[cards-B374-charter] 新增节点 m_collab_roomCursor 引用不存在的容器 k_collab_model"]`；保留 → `"issues": null`、退出码 0。这是 item 9a 的裁决依据。
+45. 2026-09-15（重冻轮）：`decodeRoomCursor` 加 a/r 校验（缺键/类型不符裹 `ErrInvalidCursor`），`internal/collab/service.go` 新增 `ErrInvalidCursor`。新增测试 `internal/collab/roomcursor_test.go#TestDecodeRoomCursorValidatesKeys` / `#TestListRoomsPageCursorErrorIsIdentifiable` / `#TestDecodeRoomCursorAcceptsValidKeys`。
+46. 2026-09-15（重冻轮）：变异验证有牙。把 `decodeRoomCursor` 临时改回宽容 unmarshal → `TestDecodeRoomCursorValidatesKeys` 对 `"e30"`（`{}`）当场 FAIL；`TestListRoomsPageCursorErrorIsIdentifiable` FAIL（错误未裹哨兵）。恢复后 PASS。原始输出见本轮终端历史。
+47. 2026-09-15（重冻轮）：`handleRoomsList` 错误映射修（游标非法 400 / 组装失败 500），抽 `roomsListErrorStatus` 纯函数；新增 `internal/agentd/roomslist_status_test.go`。变异：把 `roomsListErrorStatus` 恒返回 500 → `TestRoomsListErrorStatusMapping` FAIL（`裸哨兵 ... = 500, want 400`）。恢复后 PASS。
+48. 2026-09-15（重冻轮）：`enrichRoomAttachments` / `handleRoomsList` 注释删「刷新已限域」假声明，改为显式「F17/F18 尚未实现，归 implement」。
+49. 2026-09-15（重冻轮）：历史重扫器取值：`git archive 6f10ba7c scripts/codegraph-rescan | tar -x` 至 `/tmp/rescan`，`go build -o /tmp/rescanbin` 退出码 0；`/tmp/rescanbin --repo . --old codegraph/baseline.json --out /tmp/b374-rescan2/baseline.new.json` 原始输出 `nodes=4838 containers=308 edges=6077 implements=12 projections=402 lifecycle=134 packages=82`。取 B374 新符号真实容器：`m_collab_roomCursor→k_collab_model`、`n_agentd_roomsListErrorStatus→k_agentd_fn` 等。
+50. 2026-09-15（重冻轮）：按重扫事实重建 `codegraph/diffs/cards-B374-charter.json`：`containersAdded{k_collab_model}`（文案「相对 baseline 补齐，best 已有，absorb 未回灌」）、9 新节点（新增 `n_agentd_roomsListErrorStatus`）、1 改动节点、12 新边、1 删边。`codegraph --repo . validate` → `"issues": null`。
+51. 2026-09-15（重冻轮）：`codegraph --repo . --view cards-B374-charter check` → `fails: []`；`codegraph --repo . check` → `fails: []`；`go test ./cmd/ -run '^TestRepoContractGate$' -count=1` → `ok`。
+52. 2026-09-15（重冻轮）：`codegraph --repo . resolve --doc docs/superpowers/specs/b374-contract.md` 退出码 0，anchor 状态计数 `{moved: 11, ok: 9}`，bad anchors 空。
+53. 2026-09-15（重冻轮）：`gofmt -l` 对四个改动 Go 文件无输出；`go build ./...` 退出码 0；`go vet ./internal/collab/ ./internal/agentd/ ./internal/proto/` 退出码 0。
+54. 2026-09-15（重冻轮）：`go test ./internal/collab/ ./internal/proto/ -count=1` → 两包 `ok`；`go test ./internal/agentd/ -run 'TestRooms|TestInbox' -count=1` → `ok github.com/Xsxdot/handoff/internal/agentd 5.952s`。
+55. 2026-09-15（重冻轮）：TS 孪生金样本未锁——本工作树无 `web/node_modules`，vitest/tsc 未跑（未验证）；已显式写进 contract §7 欠账，不静默。
+56. 2026-09-15（重冻轮）：spec 纳入本工作分支（`git checkout origin/main -- docs/specs/2026-09-15-b374-rooms-pagination.md`）并加勘误备注（`d_sessions`→`d_collab`）。
+
+
+## 7. 重冻轮冻结提交（历史读数）
+
+57. 2026-09-15（重冻轮）：冻结即提交，命令 `git add <8 文件> && git commit -F -`；`git log --oneline -1` 原始输出 `2373b9e7 contract(B374): 重冻——错误映射/游标校验/图视图勘误 + 落地顺序拍板`；提交输出 `8 files changed, 396 insertions(+), 350 deletions(-)`（含新建 `docs/specs/2026-09-15-b374-rooms-pagination.md`、`internal/agentd/roomslist_status_test.go`）。本条回填后 amend 一次收进同批提交——amend 会换 hash，收口判据是工作树干净，不 chase hash。
+58. 2026-09-15（重冻轮）：提交后复核 `git status --porcelain` 无输出（工作树干净）。

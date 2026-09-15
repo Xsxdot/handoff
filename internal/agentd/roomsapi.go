@@ -70,6 +70,12 @@ type roomsListParams struct {
 //
 // Ticket 0 为直通镜像：恒返回默认参数、Legacy=false，不解析请求；真解析
 // （limit 收敛、非整数 400）归 implement（冻结清单 F2/F4）。
+//
+// 欠账可达性：在真解析落地前，F3 的 legacy 426、F2/F4 里由 query 输入的 HTTP
+// 路径（非法 limit → 400）都**不可达**——本函数不读 *http.Request，Legacy 恒
+// false、Cursor 恒空。当前唯一可达的 400 来自 ListRoomsPage 回传的非法游标
+// （collab.ErrInvalidCursor），但那需要调用方显式带 cursor，而本函数还不搬
+// query，故经 GET /api/rooms 亦不可达；该路径由 service 层测试锁定。
 func parseRoomsListParams(_ *http.Request) (roomsListParams, error) {
 	return roomsListParams{Limit: roomsListDefaultLimit}, nil
 }
@@ -77,8 +83,13 @@ func parseRoomsListParams(_ *http.Request) (roomsListParams, error) {
 // handleRoomsList GET /api/rooms?project=&limit=&cursor= → ListRoomsPage
 // （扁平活动排序分页列表，B374）。
 //
-// attach 投影与后台刷新只覆盖本页返回房间（enrichRoomAttachments 入参即
-// 本页）。legacy 426 分支归 implement。
+// 错误映射（契约冻结清单 F4）：游标非法（collab.ErrInvalidCursor）→ 400；
+// ListRoomsPage 的其它失败（读卡/读事件/游标快照）→ 500。Ticket 0 只落这条
+// 可识别错误映射，真解析与 legacy 426 分支仍归 implement。
+//
+// 注意：本函数当前仍把 attach 投影与后台刷新交给 enrichRoomAttachments，后者
+// 本轮仍是全量 AllTaskLinks + 全量远端 fan-out——刷新限域（F9/F10）尚未实现，
+// 归 implement 轮。不得据本注释认为限域已生效。
 func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	member := s.roomUserActor(r)
@@ -90,6 +101,11 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := s.rooms.ListRoomsPage(project, member, params.Cursor, params.Limit)
 	if err != nil {
+		if code := roomsListErrorStatus(err); code == http.StatusBadRequest {
+			s.log.Warn("会话列表游标非法", "project", project, "cause", err)
+			writeErr(w, code, err)
+			return
+		}
 		s.log.Warn("会话列表读取失败", "project", project, "member", member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
@@ -97,6 +113,18 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	s.enrichRoomAttachments(r.Context(), page.Rooms)
 	s.log.Info("会话列表响应成功", "project", project, "member", member, "rooms", len(page.Rooms))
 	writeJSON(w, http.StatusOK, page)
+}
+
+// roomsListErrorStatus 把 ListRoomsPage 的错误映射为 HTTP 状态（契约冻结清单
+// F4）：游标非法（collab.ErrInvalidCursor 经 decodeRoomCursor 裹出）→ 400；
+// 其余（读卡/读事件/游标快照等列表组装失败）→ 500。单独成函数是为了让这条
+// 映射能被一支只测映射、不依赖 HTTP 装配的测试钉住（Ticket 0 parseRoomsListParams
+// 仍是空壳，游标不经 query 进入，400 分支在 handler 上暂不可达）。
+func roomsListErrorStatus(err error) int {
+	if errors.Is(err, collab.ErrInvalidCursor) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 const (
@@ -116,6 +144,10 @@ type roomAttachCacheEntry struct {
 // enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
 // 保持 Attach=nil。远端 attach 是非承重字段：请求只读取本地挂账与缓存，缺失项
 // 交给后台刷新，避免一个 relay 延迟拖住整个房间列表。
+//
+// B374 现状（Ticket 0）：本函数仍读**全量** AllTaskLinks 并把**全量** links 交给
+// startRoomAttachRefresh——刷新限域（冻结清单 F9/F10：只对本页房间的 links 投影
+// 与后台 fan-out）尚未实现，归 implement 轮。本注释在限域落地前不得声称已限域。
 func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSummary) {
 	if s.ledger == nil {
 		return

@@ -13,6 +13,7 @@ package collab
 import (
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -44,6 +45,12 @@ var (
 	ErrNotWriter      = room.ErrNotWriter
 	ErrNotBound       = room.ErrNotBound
 )
+
+// ErrInvalidCursor 表示分页游标非法：坏 base64、坏 JSON、缺 a/r 键、键类型不符
+// （B374 契约 §3.2，冻结清单 F4）。gateway 用 errors.Is 识别它并映射 HTTP 400；
+// 列表组装失败（读卡/读事件/游标快照）不裹本哨兵，仍走 500。游标是 collab 根包
+// 自己的 wire 概念（非 room 执法内核），故哨兵定义在此、不落 room 子包。
+var ErrInvalidCursor = errors.New("collab: 分页游标非法")
 
 // historyDefaultLimit History/Mentions 未给 limit 时的取数上限。
 const historyDefaultLimit = 200
@@ -353,19 +360,31 @@ func encodeRoomCursor(lastActivity time.Time, roomID string) string {
 	return base64.RawURLEncoding.EncodeToString(raw)
 }
 
-// decodeRoomCursor 解码游标；空串表示首页（零值，nil error）。非法 base64
-// 或非法 JSON 返回 error（gateway 据此映射 400）。
+// decodeRoomCursor 解码游标；空串表示首页（零值，nil error）。非法 base64、
+// 非法 JSON，或载荷缺 a/r 键 / 键类型不符（如 `{}`、`{"a":"x"}`）都返回裹了
+// ErrInvalidCursor 的 error（gateway 据此映射 400，契约 §3.2 冻结清单 F4）。
 func decodeRoomCursor(raw string) (time.Time, string, error) {
 	if raw == "" {
 		return time.Time{}, "", nil
 	}
 	decoded, err := base64.RawURLEncoding.DecodeString(raw)
 	if err != nil {
-		return time.Time{}, "", fmt.Errorf("游标 base64 解码: %w", err)
+		return time.Time{}, "", fmt.Errorf("%w: base64 解码: %v", ErrInvalidCursor, err)
+	}
+	// 用 map 而非直接 Unmarshal 进 roomCursor：后者对缺键/类型不符静默补零值，
+	// 会把 `{}` 当合法游标（首条时间 + 空 ID），与 F4「缺键即非法」冲突。
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(decoded, &fields); err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: JSON 解码: %v", ErrInvalidCursor, err)
 	}
 	var payload roomCursor
-	if err := json.Unmarshal(decoded, &payload); err != nil {
-		return time.Time{}, "", fmt.Errorf("游标 JSON 解码: %w", err)
+	rawA, okA := fields["a"]
+	if err := json.Unmarshal(rawA, &payload.A); !okA || err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: 缺键或类型不符 a", ErrInvalidCursor)
+	}
+	rawR, okR := fields["r"]
+	if err := json.Unmarshal(rawR, &payload.R); !okR || err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: 缺键或类型不符 r", ErrInvalidCursor)
 	}
 	return time.Unix(0, payload.A).UTC(), payload.R, nil
 }

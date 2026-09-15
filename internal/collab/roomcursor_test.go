@@ -5,6 +5,7 @@
 package collab
 
 import (
+	"errors"
 	"testing"
 	"time"
 )
@@ -56,11 +57,51 @@ func TestDecodeRoomCursorRejectsMalformed(t *testing.T) {
 	}
 }
 
-// TestListRoomsPageRejectsMalformedCursor 锁住分页入口对非法游标的透传拒绝：
-// Ticket 0 的 trimRoomPage 是直通镜像，但「非法游标 → error」这一可观测分支
-// 已真实生效，必须能被测红，否则 gateway 的 400 路径无守护。
-func TestListRoomsPageRejectsMalformedCursor(t *testing.T) {
-	if _, err := New(&fakeLC{}).ListRoomsPage("", "", "!!!not-base64!!!", 50); err == nil {
+// TestDecodeRoomCursorValidatesKeys 锁住 F4 的缺键/类型不符分支：json.Unmarshal
+// 直接进 roomCursor 会把 `{}` 静默解成零值（首条时间 + 空 ID），那是合法游标与
+// 「非法 base64」之间的黑洞。本测试断言 a/r 任一缺失或类型不符都必须报错，且错误
+// 可被 errors.Is(err, ErrInvalidCursor) 识别（gateway 的 400 分支据此判定）。
+func TestDecodeRoomCursorValidatesKeys(t *testing.T) {
+	bad := []string{
+		"e30",                                // {}        缺 a 与 r
+		"eyJyIjoiQjQyIn0",                    // {"r":"B42"} 缺 a
+		"eyJhIjoxNzAwMDAwMDAwMDAwMDAwMDAwfQ", // {"a":1.7e18} 缺 r
+		"eyJhIjoieCIsInIiOiJCNDIifQ",         // {"a":"x","r":"B42"} a 类型不符
+		"eyJhIjoxLCJyIjo5fQ",                 // {"a":1,"r":9} r 类型不符
+	}
+	for _, raw := range bad {
+		_, _, err := decodeRoomCursor(raw)
+		if err == nil {
+			t.Fatalf("缺键/类型不符的游标 %q 必须报错，不得当合法游标", raw)
+		}
+		if !errors.Is(err, ErrInvalidCursor) {
+			t.Fatalf("游标 %q 的错误必须裹 ErrInvalidCursor（gateway 映射 400），实得 %v", raw, err)
+		}
+	}
+}
+
+// TestListRoomsPageCursorErrorIsIdentifiable 锁住分页入口对非法游标的可识别拒绝：
+// ListRoomsPage 的错误必须能被 errors.Is(err, ErrInvalidCursor) 认出——这正是
+// agentd 把「游标非法 → 400」与「列表组装失败 → 500」分开的唯一依据（契约 F4）。
+// 序列化用 errors.Is 而非字符串比较，防止未来换文案时静默失配。
+func TestListRoomsPageCursorErrorIsIdentifiable(t *testing.T) {
+	_, err := New(&fakeLC{}).ListRoomsPage("", "", "!!!not-base64!!!", 50)
+	if err == nil {
 		t.Fatal("非法游标必须从 ListRoomsPage 透传出错")
+	}
+	if !errors.Is(err, ErrInvalidCursor) {
+		t.Fatalf("ListRoomsPage 非法游标错误必须裹 ErrInvalidCursor，实得 %v", err)
+	}
+}
+
+func TestDecodeRoomCursorAcceptsValidKeys(t *testing.T) {
+	// 正控：合法键集（含 a=0 与空 r 是合法值，不等于缺键）必须解码成功。
+	raw := encodeRoomCursor(time.Unix(0, 0).UTC(), "")
+	_, id, err := decodeRoomCursor(raw)
+	if err != nil {
+		t.Fatalf("合法键集 %q 不应报错: %v", raw, err)
+	}
+	if id != "" {
+		t.Fatalf("空 r 是合法房间 ID（global 类群房间不用），got %q", id)
 	}
 }
