@@ -49,19 +49,54 @@ func (s *Server) roomUserActor(r *http.Request) string {
 	return "web:" + hostOnly(r.RemoteAddr)
 }
 
-// handleRoomsList GET /api/rooms?project= → ListRooms（扁平活动排序列表）。
+// roomsListDefaultLimit / roomsListMaxLimit 是 GET /api/rooms 分页的默认与上限，
+// 与 collab 侧 roomsPageDefaultLimit/roomsPageMaxLimit 同值（契约 §3.3）。
+const (
+	roomsListDefaultLimit = 50
+	roomsListMaxLimit     = 200
+)
+
+// roomsListParams 是 GET /api/rooms 的分页参数决议结果（B374）。
+//
+// Legacy 为真表示请求 query 里 limit 与 cursor 双双缺席——旧客户端判据
+// （拍板 P4）。Ticket 0 不消费该位；legacy 426 分支归 implement。
+type roomsListParams struct {
+	Limit  int
+	Cursor string
+	Legacy bool
+}
+
+// parseRoomsListParams 解析分页 query（B374）。
+//
+// Ticket 0 为直通镜像：恒返回默认参数、Legacy=false，不解析请求；真解析
+// （limit 收敛、非整数 400）归 implement（冻结清单 F2/F4）。
+func parseRoomsListParams(_ *http.Request) (roomsListParams, error) {
+	return roomsListParams{Limit: roomsListDefaultLimit}, nil
+}
+
+// handleRoomsList GET /api/rooms?project=&limit=&cursor= → ListRoomsPage
+// （扁平活动排序分页列表，B374）。
+//
+// attach 投影与后台刷新只覆盖本页返回房间（enrichRoomAttachments 入参即
+// 本页）。legacy 426 分支归 implement。
 func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	member := s.roomUserActor(r)
-	rooms, err := s.rooms.ListRoomsForMember(project, member)
+	params, err := parseRoomsListParams(r)
+	if err != nil {
+		s.log.Warn("会话列表分页参数无效", "project", project, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	page, err := s.rooms.ListRoomsPage(project, member, params.Cursor, params.Limit)
 	if err != nil {
 		s.log.Warn("会话列表读取失败", "project", project, "member", member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.enrichRoomAttachments(r.Context(), rooms)
-	s.log.Info("会话列表响应成功", "project", project, "member", member, "rooms", len(rooms))
-	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
+	s.enrichRoomAttachments(r.Context(), page.Rooms)
+	s.log.Info("会话列表响应成功", "project", project, "member", member, "rooms", len(page.Rooms))
+	writeJSON(w, http.StatusOK, page)
 }
 
 const (

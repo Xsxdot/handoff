@@ -11,6 +11,9 @@
 package collab
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"sort"
 	"time"
@@ -300,8 +303,83 @@ func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
 
 // ListRoomsForMember 返回会话列表并把指定成员的未读数投影到每一行。
 // member 为空时不读取游标，保持 ListRooms 的旧语义。
+//
+// B374：本入口保留全量语义（CLI 与既有测试依赖），分页入口另见
+// ListRoomsPage；裁剪规则只在 service 层一处（trimRoomPage）。
 func (s *Service) ListRoomsForMember(project, member string) ([]proto.RoomSummary, error) {
 	return s.listRooms(project, member)
+}
+
+// roomsPageDefaultLimit / roomsPageMaxLimit 是 GET /api/rooms 分页的默认与上限。
+// 默认 50（spec 建议值，契约冻结）；上限 200 防止单页把响应撑大。
+const (
+	roomsPageDefaultLimit = 50
+	roomsPageMaxLimit     = 200
+)
+
+// ListRoomsPage 是分页会话列表的 wire 组装点（B374）：在全量扁平序上按
+// cursor 定位、取 limit 条，返回信封。游标是不透明字符串，编解码见
+// encodeRoomCursor/decodeRoomCursor；页裁剪只经 trimRoomPage 一处。
+//
+// Ticket 0：本条为直通镜像——调 listRooms 取全量后交 trimRoomPage，后者
+// 本轮返回整表、hasMore=false。真裁剪归 implement（冻结清单 F5-F8）。
+func (s *Service) ListRoomsPage(project, member, pageCursor string, limit int) (proto.RoomsPage, error) {
+	rooms, err := s.listRooms(project, member)
+	if err != nil {
+		return proto.RoomsPage{}, err
+	}
+	page, next, hasMore, err := trimRoomPage(rooms, pageCursor, limit)
+	if err != nil {
+		return proto.RoomsPage{}, err
+	}
+	return proto.RoomsPage{Rooms: page, NextCursor: next, HasMore: hasMore}, nil
+}
+
+// roomCursor 是复合游标的 wire 载荷：A=LastActivity UnixNano，R=房间 ID。
+// 键名与类型属冻结 wire（金样本锁），改键先回 contract。
+type roomCursor struct {
+	A int64  `json:"a"`
+	R string `json:"r"`
+}
+
+// encodeRoomCursor 把 (LastActivity, roomID) 编码为不透明游标：
+// base64url_nopad(json.Marshal({a,r}))。客户端不回解。
+func encodeRoomCursor(lastActivity time.Time, roomID string) string {
+	raw, err := json.Marshal(roomCursor{A: lastActivity.UnixNano(), R: roomID})
+	if err != nil {
+		// roomCursor 只有 int64/string，Marshal 不会失败；保留兜底不 panic。
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// decodeRoomCursor 解码游标；空串表示首页（零值，nil error）。非法 base64
+// 或非法 JSON 返回 error（gateway 据此映射 400）。
+func decodeRoomCursor(raw string) (time.Time, string, error) {
+	if raw == "" {
+		return time.Time{}, "", nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("游标 base64 解码: %w", err)
+	}
+	var payload roomCursor
+	if err := json.Unmarshal(decoded, &payload); err != nil {
+		return time.Time{}, "", fmt.Errorf("游标 JSON 解码: %w", err)
+	}
+	return time.Unix(0, payload.A).UTC(), payload.R, nil
+}
+
+// trimRoomPage 在扁平序上按游标切片（B374 页裁剪符号）。
+//
+// Ticket 0 为直通镜像：返回整表、next=""、hasMore=false，不实现真裁剪。
+// implement 轮按契约 §3.2 填充：limit 收敛、ID 定位为主判据、
+// (LastActivity,roomID) 为兜底比较、末条编 next。
+func trimRoomPage(rooms []proto.RoomSummary, pageCursor string, limit int) ([]proto.RoomSummary, string, bool, error) {
+	if _, _, err := decodeRoomCursor(pageCursor); err != nil {
+		return nil, "", false, err
+	}
+	return rooms, "", false, nil
 }
 
 func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error) {

@@ -71,6 +71,19 @@ type RoomPreview struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
+// RoomsPage 是 GET /api/rooms 的分页响应信封（B374）。Rooms 是 LastActivity
+// 降序稳定切片中的本页；NextCursor 非空时原样回传取下一页（不透明字符串，
+// 客户端不解析）；HasMore 是 NextCursor 的布尔镜像，前端据此判断是否续载。
+//
+// 信封是**向后兼容的加键**：既有消费方仍可只解包 rooms 数组读到首屏内容；
+// B374 的旧客户端识别靠请求形态（query 无 limit 也无 cursor）而非信封形状，
+// 故 RoomsPage 只在既有 rooms 数组旁新增两个键，不改数组元素形状。
+type RoomsPage struct {
+	Rooms      []RoomSummary `json:"rooms"`
+	NextCursor string        `json:"next_cursor,omitempty"`
+	HasMore    bool          `json:"has_more"`
+}
+
 // RoomSummary 是会话列表（扁平活动排序）的单行。
 type RoomSummary struct {
 	ID      string `json:"id"`   // 卡号 | project:<name> | global
