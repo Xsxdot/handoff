@@ -178,9 +178,10 @@ To watch the executor live at any moment: `handoff attach <task>`.
 > When the coordinator is an AI session, none of this needs memorizing: installation
 > already set up the handoff skill for all four agents (Claude Code / opencode / grok /
 > codex), and the AI drives the whole loop by the discipline written in the skill. One
-> capability difference: Claude Code and grok have background-task wake-up, so they can
-> keep a long `wait --follow` subscription; opencode and codex don't, and the skill steers
-> them to foreground blocking `wait` calls, one turn at a time.
+> capability difference: Claude Code, grok, and OpenCode (after `handoff skill install`
+> drops the monitor plugin) can keep a long `wait --follow` subscription; Codex and
+> Command Code don't get line-wakeup, and the skill steers them to foreground blocking
+> `wait` calls that exit on each event.
 
 ### 节点化工作流
 
