@@ -53,7 +53,7 @@ vi.mock('../../api/rooms', async () => {
   const actual = await vi.importActual<typeof import('../../api/rooms')>('../../api/rooms')
   return {
     ...actual,
-    fetchRooms: vi.fn().mockResolvedValue([]),
+    fetchRooms: vi.fn().mockResolvedValue({ rooms: [], has_more: false }),
     fetchInbox: vi.fn().mockResolvedValue([]),
     fetchRoomMessages: vi.fn().mockResolvedValue([]),
     markRoomRead: vi.fn().mockResolvedValue({ ok: true }),

@@ -11,6 +11,10 @@
 package collab
 
 import (
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"fmt"
 	"log/slog"
 	"sort"
 	"time"
@@ -41,6 +45,12 @@ var (
 	ErrNotWriter      = room.ErrNotWriter
 	ErrNotBound       = room.ErrNotBound
 )
+
+// ErrInvalidCursor 表示分页游标非法：坏 base64、坏 JSON、缺 a/r 键、键类型不符
+// （B374 契约 §3.2，冻结清单 F10）。gateway 用 errors.Is 识别它并映射 HTTP 400；
+// 列表组装失败（读卡/读事件/游标快照）不裹本哨兵，仍走 500。游标是 collab 根包
+// 自己的 wire 概念（非 room 执法内核），故哨兵定义在此、不落 room 子包。
+var ErrInvalidCursor = errors.New("collab: 分页游标非法")
 
 // historyDefaultLimit History/Mentions 未给 limit 时的取数上限。
 const historyDefaultLimit = 200
@@ -361,8 +371,145 @@ func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
 
 // ListRoomsForMember 返回会话列表并把指定成员的未读数投影到每一行。
 // member 为空时不读取游标，保持 ListRooms 的旧语义。
+//
+// B374：本入口保留全量语义（CLI 与既有测试依赖），分页入口另见
+// ListRoomsPage；裁剪规则只在 service 层一处（trimRoomPage）。
 func (s *Service) ListRoomsForMember(project, member string) ([]proto.RoomSummary, error) {
 	return s.listRooms(project, member)
+}
+
+// roomsPageDefaultLimit / roomsPageMaxLimit 是 GET /api/rooms 分页的默认与上限。
+// 默认 50（spec 建议值，契约冻结）；上限 200 防止单页把响应撑大。
+const (
+	roomsPageDefaultLimit = 50
+	roomsPageMaxLimit     = 200
+)
+
+// ListRoomsPage 是分页会话列表的 wire 组装点（B374）：在全量扁平序上按
+// cursor 定位、取 limit 条，返回信封。游标是不透明字符串，编解码见
+// encodeRoomCursor/decodeRoomCursor；页裁剪只经 trimRoomPage 一处（契约 §3.2）。
+//
+// 错误：游标非法 → 裹 ErrInvalidCursor（gateway 映射 400）；listRooms 失败
+// 原样向上传播，不吞。
+func (s *Service) ListRoomsPage(project, member, pageCursor string, limit int) (proto.RoomsPage, error) {
+	rooms, err := s.listRooms(project, member)
+	if err != nil {
+		return proto.RoomsPage{}, err
+	}
+	page, next, hasMore, err := trimRoomPage(rooms, pageCursor, limit)
+	if err != nil {
+		return proto.RoomsPage{}, err
+	}
+	log().Debug("会话分页完成", "project", project, "page", len(page), "has_more", hasMore)
+	return proto.RoomsPage{Rooms: page, NextCursor: next, HasMore: hasMore}, nil
+}
+
+// roomCursor 是复合游标的 wire 载荷：A=LastActivity UnixNano，R=房间 ID。
+// 键名与类型属冻结 wire（金样本锁），改键先回 contract。
+type roomCursor struct {
+	A int64  `json:"a"`
+	R string `json:"r"`
+}
+
+// encodeRoomCursor 把 (LastActivity, roomID) 编码为不透明游标：
+// base64url_nopad(json.Marshal({a,r}))。客户端不回解。
+func encodeRoomCursor(lastActivity time.Time, roomID string) string {
+	raw, err := json.Marshal(roomCursor{A: lastActivity.UnixNano(), R: roomID})
+	if err != nil {
+		// roomCursor 只有 int64/string，Marshal 不会失败；保留兜底不 panic。
+		return ""
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// decodeRoomCursor 解码游标；空串表示首页（零值，nil error）。非法 base64、
+// 非法 JSON，或载荷缺 a/r 键 / 键类型不符（如 `{}`、`{"a":"x"}`）都返回裹了
+// ErrInvalidCursor 的 error（gateway 据此映射 400，契约 §3.2 冻结清单 F10）。
+func decodeRoomCursor(raw string) (time.Time, string, error) {
+	if raw == "" {
+		return time.Time{}, "", nil
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: base64 解码: %v", ErrInvalidCursor, err)
+	}
+	// 用 map 而非直接 Unmarshal 进 roomCursor：后者对缺键/类型不符静默补零值，
+	// 会把 `{}` 当合法游标（首条时间 + 空 ID），与 F10「缺键即非法」冲突。
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(decoded, &fields); err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: JSON 解码: %v", ErrInvalidCursor, err)
+	}
+	var payload roomCursor
+	rawA, okA := fields["a"]
+	if err := json.Unmarshal(rawA, &payload.A); !okA || err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: 缺键或类型不符 a", ErrInvalidCursor)
+	}
+	rawR, okR := fields["r"]
+	if err := json.Unmarshal(rawR, &payload.R); !okR || err != nil {
+		return time.Time{}, "", fmt.Errorf("%w: 缺键或类型不符 r", ErrInvalidCursor)
+	}
+	return time.Unix(0, payload.A).UTC(), payload.R, nil
+}
+
+// trimRoomPage 在扁平序上按游标切片（B374，契约 §3.2 规则 1–4 + 拍板 P6）。
+//
+// 语义：
+//  1. limit<=0 取 roomsPageDefaultLimit；limit>roomsPageMaxLimit 取上限。
+//  2. cursor=="" 从首条起算。
+//  3. 否则解码游标，主判据=当前扁平序里 roomID 相同条目的位置之后；
+//     兜底（房间已不在列表）=跳过所有 LastActivity 不早于游标时刻的条目。
+//     **不比 ID 序**：listRooms 的扁平序是「非终态在前/终态沉底/各自活动降序/
+//     同刻 SliceStable 插入序」，与 ID 序不同构；同刻插入序在游标里不可恢复
+//     （F14 显式限制，不假装不丢不重）。
+//  4. 取前 limit 条；有剩余则 hasMore=true 且 next=末条 (LastActivity,ID) 编码。
+func trimRoomPage(rooms []proto.RoomSummary, pageCursor string, limit int) ([]proto.RoomSummary, string, bool, error) {
+	if limit <= 0 {
+		limit = roomsPageDefaultLimit
+	}
+	if limit > roomsPageMaxLimit {
+		limit = roomsPageMaxLimit
+	}
+	page := rooms
+	if pageCursor != "" {
+		at, roomID, err := decodeRoomCursor(pageCursor)
+		if err != nil {
+			return nil, "", false, err
+		}
+		found := -1
+		for i := range rooms {
+			if rooms[i].ID == roomID {
+				found = i
+				break
+			}
+		}
+		if found >= 0 {
+			page = rooms[found+1:]
+		} else {
+			// 兜底：房间已不在当前列表。按扁平序逐条过滤，只保留 LastActivity
+			// 早于游标时刻的条目。**不得用「首个 Before(at) 的下标切尾巴」**：
+			// 扁平序是 active 在前、sunk 沉底，跨段非单调（段内降序），切尾巴会
+			// 把排在更早 active 之后、时刻却不早于游标的 sunk 房间错误带回。
+			filtered := make([]proto.RoomSummary, 0, len(rooms))
+			for i := range rooms {
+				if rooms[i].LastActivity.Before(at) {
+					filtered = append(filtered, rooms[i])
+				}
+			}
+			page = filtered
+		}
+	}
+	hasMore := len(page) > limit
+	if len(page) > limit {
+		page = page[:limit]
+	}
+	next := ""
+	if hasMore && len(page) > 0 {
+		last := page[len(page)-1]
+		next = encodeRoomCursor(last.LastActivity, last.ID)
+	}
+	out := make([]proto.RoomSummary, len(page))
+	copy(out, page)
+	return out, next, hasMore, nil
 }
 
 func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error) {

@@ -183,6 +183,7 @@ func (s *Server) automationWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEven
 //     （同卡多命中去重）；
 //   - 其余 target（外部身份/非成员/旧席位/不存在的卡）→ 零 keystone Wake，
 //     Info 日志可查，未读由事件+游标天然承载（推醒走 session wait 订阅通道）。
+//
 // 非会话房间的消息一律不唤醒：旧房间只读归档（S1），广播形状已删（条 30）。
 // 寻址判定读账本失败上抛；会话本体读失败宁缺毋滥（Error 日志 + 不唤醒，
 // 同 AddressesCard 的装配缺失纪律）。
@@ -250,6 +251,46 @@ func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEve
 			"seq", ev.Seq, "session", msg.Room, "targets", external)
 	}
 	return wakes, nil
+}
+
+const wakeParentWalkLimit = 32
+
+// resolveWakeCard 把唤醒目标从事件卡收到真正有 coordinate 席位的卡。
+// 事件卡自己有 coordinate 席位 → 自己；事件卡是 bind → 空（bind 靠 CLI wait）；
+// 空座沿 parent_id 上走，bind 祖先跳过，coordinate 祖先接手。不改账本 card_id。
+func (s *Server) resolveWakeCard(cardID string) string {
+	if s.ledger == nil || cardID == "" {
+		return ""
+	}
+	origin := cardID
+	seen := map[string]bool{}
+	for i := 0; i < wakeParentWalkLimit && cardID != ""; i++ {
+		if seen[cardID] {
+			s.log.Warn("自动化唤醒祖先链成环，停止上走", "origin", origin, "card", cardID)
+			return ""
+		}
+		seen[cardID] = true
+		card, err := s.ledger.GetCard(cardID)
+		if err != nil {
+			s.log.Warn("自动化唤醒读卡失败", "origin", origin, "card", cardID, "cause", err)
+			return ""
+		}
+		occupied := card.DriverSession != "" || card.DriverSource != ""
+		if occupied {
+			if card.DriverSource == string(proto.SeatSourceBind) {
+				if cardID == origin {
+					return ""
+				}
+				cardID = card.ParentID
+				continue
+			}
+			if proto.ValidateSeat(card.DriverSession, proto.SeatSource(card.DriverSource)) == nil {
+				return cardID
+			}
+		}
+		cardID = card.ParentID
+	}
+	return ""
 }
 
 func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int, escalated bool, err error) {
@@ -331,11 +372,27 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			maxProcessed = ev.Seq
 		}
 		if len(wakes) > 0 {
+			queued := 0
 			for _, wake := range wakes {
-				pendingByCard[wake.Card] = append(pendingByCard[wake.Card], pending{seq: ev.Seq, typ: ev.Type, ev: wake})
+				target := s.resolveWakeCard(wake.Card)
+				if target == "" {
+					s.log.Debug("自动化事件无 coordinate 席位可叫醒", "card", wake.Card, "seq", ev.Seq)
+					continue
+				}
+				if target != wake.Card {
+					s.log.Info("自动化唤醒冒泡到祖先席位", "from", wake.Card, "to", target, "seq", ev.Seq)
+				}
+				wake.Card = target
+				pendingByCard[target] = append(pendingByCard[target], pending{seq: ev.Seq, typ: ev.Type, ev: wake})
+				queued++
 				s.log.Debug("自动化事件进入 pending", "seq", ev.Seq, "card", wake.Card,
 					"type", ev.Type, "kind", string(wake.Kind), "cursor", from,
 					"cursor_candidate", maxProcessed)
+			}
+			if queued == 0 {
+				s.automationMu.Lock()
+				s.automationSeen[ev.Seq] = struct{}{}
+				s.automationMu.Unlock()
 			}
 			continue
 		}

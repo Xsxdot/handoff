@@ -25,6 +25,11 @@
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
 
+## 来自 B356 spec（2026-09-11）
+
+- **card wait 持久 cursor / 逐条回放**：建连快照覆盖「挂 wait 前已镜像的子卡工单」；子树成员集动态时 cursor 回放未做。来源：`docs/superpowers/specs/b356.md` Out of Scope（与 B253 同口径）。
+- **图覆盖债**：新增导出 `Store.OpenTickets` / `Store.NeedsReasons` 未写入 `codegraph/baseline.json`（`OpenTicketCounts` 已在图中）。来源：B356 finish，本卡未出视图 diff。
+
 ## 来自 B322 spec（2026-09-04）
 
 - **无引用 PTY 的空闲回收**：修复后 workspace 活会话不再被收编成 tab，ptyhost 里可能留下没人点开的 shell。自动杀掉会误伤后台任务，需要单独的产品闸（空闲多久、是否提示）。来源：`docs/superpowers/specs/b322.md` Out of Scope。
@@ -772,6 +777,16 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **`CreatePtySessionReq` 增加通用 env 字段或桌面标记**。本卡写死在目标机 Env 末尾，不改 HTTP 契约。来源：同上。
 - **给已经在跑的 PTY 补注入**。重开终端。来源：同上。
 - **未升级的旧 agentd 上让 Grok 发 OSC 52**。注入发生在目标机 fork；旧二进制没有这颗变量。来源：同上。
+
+## 来自 B374 acceptance（2026-09-16，真机未验）
+
+- **366 房间首屏 ≤2s / card wait 秒级**：机内 httptest 不代替真负载。来源：B374 spec US1/US2。
+- **真桌面端 426 呈现**：旧客户端无 `limit`/`cursor` 的 HTTP 426 机内已锁；桌面 UI 文案未真机。来源：B374 spec US5。
+- **真 Attach RPC 从 800+ 降到本页**：限域入参机内计数已锁；relay 实况未验。来源：B374 spec 刷新限域。
+- **linux-01 镜像 `context deadline exceeded` 归因**：机内仅证发现循环与房间刷新无共享锁。来源：B374 契约欠账 8。
+- **launchd 下 agentd.log 单写与 100MB×5 轮转实况**：logx 单写/轮转机内已锁；launchd 重定向实况未验。来源：B374 F20/F21。
+- **Windows 轮转改名句柄**：未验。来源：B374 拆解族 3。
+- **b358 §4.4 文档修订**：本树无该文档；已在 b156.2 两处加废止注。来源：B374 欠账 9 / 拍板 P-1。
 
 ## 来自 B289 残余（2026-08-28，B274 移植轮登记）——本期不做、后续要做
 

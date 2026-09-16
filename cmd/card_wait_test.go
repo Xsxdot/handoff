@@ -44,6 +44,23 @@ func moveCardWaitFixtureToDone(st *ledger.Store, cardID string) error {
 	return nil
 }
 
+// cardWaitActionableLines 过滤 card wait stdout 中的建连快照行（B356），只留
+// 可动作 ledger.Event 行。快照行 type=card_snapshot，恒为第一行；旧测试按
+// 无快照断言，合并后统一经此过滤后再按原意图断言。
+func cardWaitActionableLines(out string) []string {
+	var lines []string
+	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
+		if line == "" {
+			continue
+		}
+		if strings.Contains(line, `"card_snapshot"`) {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	return lines
+}
+
 func TestB353CardWaitHelpHasFollow(t *testing.T) {
 	dir := t.TempDir()
 	out, stderr, err := runLedgerCLI(t, dir, "card", "wait", "--help")
@@ -93,7 +110,7 @@ func TestB353CardWaitDefaultEmitsFirstActionAndExits(t *testing.T) {
 	if err := <-writerErr; err != nil {
 		t.Fatalf("写入 card wait 事件: %v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
+	lines := cardWaitActionableLines(out)
 	if len(lines) != 1 {
 		t.Fatalf("默认模式应只输出一条可动作事件，实际 %d 行: %q", len(lines), out)
 	}
@@ -187,10 +204,7 @@ func TestB353CardWaitFollowFiltersAndContinues(t *testing.T) {
 		t.Fatalf("写入 card wait follow 事件: %v", err)
 	}
 	var got []ledger.Event
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
+	for _, line := range cardWaitActionableLines(out) {
 		var event ledger.Event
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			t.Fatalf("stdout 不是 ledger.Event JSON: %v; line=%q", err, line)
@@ -298,8 +312,8 @@ func TestB353CardWaitFollowIdleRefreshesAuditLedgerEvent(t *testing.T) {
 	if elapsed < 4*time.Second {
 		t.Fatalf("账本审计事件未刷新 follow idle：耗时 %s，至少应超过首次 3s 总时长", elapsed)
 	}
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("审计事件刷新 idle 但不应输出 stdout: %q", out)
+	if len(cardWaitActionableLines(out)) != 0 {
+		t.Fatalf("审计事件刷新 idle 但不应输出可动作 stdout: %q", out)
 	}
 }
 
@@ -340,8 +354,8 @@ func TestB353CardWaitStatusMovedNonTerminalDoesNotEmit(t *testing.T) {
 	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
 		t.Fatalf("仅非终态 status_moved 应继续等待并超时，err=%v", err)
 	}
-	if strings.TrimSpace(out) != "" {
-		t.Fatalf("非终态 status_moved 不应输出 stdout: %q", out)
+	if len(cardWaitActionableLines(out)) != 0 {
+		t.Fatalf("非终态 status_moved 不应输出可动作 stdout: %q", out)
 	}
 }
 
@@ -391,7 +405,7 @@ func TestB353CardWaitPreservesNullAndRejectsMissingMirroredPayload(t *testing.T)
 		!strings.Contains(err.Error(), ledger.EvTaskMirrored) {
 		t.Fatalf("缺失 mirrored payload 应在 card wait 穿缝报错，err=%v", err)
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
+	lines := cardWaitActionableLines(out)
 	if len(lines) != 1 {
 		t.Fatalf("null payload 事件应原样输出一行，实际 %d 行: %q", len(lines), out)
 	}
@@ -478,10 +492,7 @@ func TestB349CardWaitSourceIdentity(t *testing.T) {
 		t.Fatalf("card wait source identity: %v; output=%q", err, out)
 	}
 	var got []ledger.Event
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
+	for _, line := range cardWaitActionableLines(out) {
 		var event ledger.Event
 		if err := json.Unmarshal([]byte(line), &event); err != nil {
 			t.Fatalf("stdout 不是 ledger.Event JSON: %v; line=%q", err, line)
@@ -498,7 +509,7 @@ func TestB349CardWaitSourceIdentity(t *testing.T) {
 		t.Fatalf("双空 target 当前镜像 source 三列错误: %+v", got[1])
 	}
 	var wire map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(strings.Split(strings.TrimSpace(out), "\n")[2]), &wire); err != nil {
+	if err := json.Unmarshal([]byte(cardWaitActionableLines(out)[2]), &wire); err != nil {
 		t.Fatalf("卡原生 stdout JSON: %v", err)
 	}
 	for _, key := range []string{"source_target", "source_task", "source_seq"} {
@@ -585,7 +596,7 @@ func TestB349CardWaitSubtreeUsesEventCardIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatalf("card wait --subtree 子卡身份: %v; output=%q", err, out)
 	}
-	lines := strings.Split(strings.TrimSpace(out), "\n")
+	lines := cardWaitActionableLines(out)
 	if len(lines) != 1 {
 		t.Fatalf("根卡快照不得放行/拒绝子卡事件，期望仅输出当前子卡事件，实际 %d 行: %q", len(lines), out)
 	}
@@ -656,7 +667,7 @@ func TestCardWaitSubtreeExitsWhenAllDone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("wait 应正常退出: %v", err)
 	}
-	if strings.TrimSpace(waitOut) != "" {
+	if len(cardWaitActionableLines(waitOut)) != 0 {
 		t.Fatalf("status_moved 终态检查不应输出唤醒行: %q", waitOut)
 	}
 	st, err := ledger.Open(dir + "/ledger.db")
@@ -672,6 +683,119 @@ func TestCardWaitSubtreeExitsWhenAllDone(t *testing.T) {
 		if card.Status != ledger.StatusDone {
 			t.Fatalf("卡 %s status=%s, want %s", id, card.Status, ledger.StatusDone)
 		}
+	}
+}
+
+func firstJSONLine(t *testing.T, out string) map[string]any {
+	t.Helper()
+	line, _, _ := strings.Cut(strings.TrimSpace(out), "\n")
+	if line == "" {
+		t.Fatalf("stdout 空: %q", out)
+	}
+	var obj map[string]any
+	if err := json.Unmarshal([]byte(line), &obj); err != nil {
+		t.Fatalf("第一行不是 JSON: %q err=%v", line, err)
+	}
+	return obj
+}
+
+func TestCardWaitSubtreeSnapshotIncludesChildTicket(t *testing.T) {
+	dir := t.TempDir()
+	out, _, _ := runLedgerCLI(t, dir, "card", "add", "根卡", "--project", "demo", "--workflow", "bug")
+	var root struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &root)
+	out, _, _ = runLedgerCLI(t, dir, "card", "split", root.ID, "子卡")
+	var child struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &child)
+
+	st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+	if err != nil {
+		t.Fatalf("open ledger: %v", err)
+	}
+	if _, err := st.AppendMirroredEvent(child.ID, ledger.MirroredEvent{
+		Target: "linux-01", Task: "task-child", SourceSeq: 1, Type: "permission_request",
+		Payload: []byte(`{"ticket_id":"tk-child","permission":"git push"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		st.Close()
+		t.Fatalf("镜像子卡工单: %v", err)
+	}
+	if _, err := st.AppendMirroredEvent(child.ID, ledger.MirroredEvent{
+		Target: "linux-01", Task: "task-child", SourceSeq: 2, Type: "permission_request",
+		Payload: []byte(`{"ticket_id":"tk-done"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		st.Close()
+		t.Fatalf("镜像已答工单: %v", err)
+	}
+	if _, err := st.AppendMirroredEvent(child.ID, ledger.MirroredEvent{
+		Target: "linux-01", Task: "task-child", SourceSeq: 3, Type: "ticket_answered",
+		Payload: []byte(`{"ticket_id":"tk-done"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		st.Close()
+		t.Fatalf("镜像答复: %v", err)
+	}
+	st.Close()
+
+	waitOut, _, waitErr := runLedgerCLI(t, dir, "card", "wait", root.ID, "--subtree", "--timeout", "2s")
+	if waitErr == nil {
+		t.Fatal("子树未完成时应超时，实际成功退出")
+	}
+	snap := firstJSONLine(t, waitOut)
+	if snap["type"] != "card_snapshot" {
+		t.Fatalf("第一行 type=%v want card_snapshot out=%q", snap["type"], waitOut)
+	}
+	if snap["card_id"] != root.ID {
+		t.Fatalf("快照 card_id=%v want %s", snap["card_id"], root.ID)
+	}
+	if snap["subtree"] != true {
+		t.Fatalf("subtree 字段应为 true: %+v", snap)
+	}
+	actionable, _ := snap["actionable"].([]any)
+	if actionable == nil {
+		t.Fatalf("actionable 缺席（应为空数组或列表）: %+v", snap)
+	}
+	ids := map[string]map[string]any{}
+	for _, item := range actionable {
+		row, _ := item.(map[string]any)
+		tid, _ := row["ticket_id"].(string)
+		ids[tid] = row
+	}
+	childRow := ids["tk-child"]
+	if childRow == nil {
+		t.Fatalf("快照缺子卡未决工单 tk-child: %+v out=%q", snap, waitOut)
+	}
+	if childRow["card_id"] != child.ID {
+		t.Fatalf("工单 card_id=%v want 子卡 %s", childRow["card_id"], child.ID)
+	}
+	if childRow["source_task"] != "task-child" || childRow["source_target"] != "linux-01" {
+		t.Fatalf("工单来源三元组不完整: %+v", childRow)
+	}
+	if _, ok := ids["tk-done"]; ok {
+		t.Fatalf("已答复工单不应出现: %+v", snap)
+	}
+}
+
+func TestCardWaitSnapshotEmittedWhenNothingOwed(t *testing.T) {
+	dir := t.TempDir()
+	out, _, _ := runLedgerCLI(t, dir, "card", "add", "空欠单", "--project", "demo", "--workflow", "bug")
+	var card struct {
+		ID string `json:"id"`
+	}
+	_ = json.Unmarshal([]byte(strings.TrimSpace(out)), &card)
+	waitOut, _, waitErr := runLedgerCLI(t, dir, "card", "wait", card.ID, "--timeout", "2s")
+	if waitErr == nil {
+		t.Fatal("未完成卡 wait 应超时")
+	}
+	snap := firstJSONLine(t, waitOut)
+	if snap["type"] != "card_snapshot" {
+		t.Fatalf("无欠单也要出快照行，type=%v out=%q", snap["type"], waitOut)
+	}
+	actionable, _ := snap["actionable"].([]any)
+	if len(actionable) != 0 {
+		t.Fatalf("无欠单时 actionable 应为空数组: %+v", snap)
 	}
 }
 
@@ -740,10 +864,7 @@ func runB370CardWaitScenario(t *testing.T, setup func(st *ledger.Store, dir, car
 		t.Fatalf("card wait --follow: %v; output=%q", err, out)
 	}
 	var got []ledger.Event
-	for _, line := range strings.Split(strings.TrimSpace(out), "\n") {
-		if line == "" {
-			continue
-		}
+	for _, line := range cardWaitActionableLines(out) {
 		var ev ledger.Event
 		if err := json.Unmarshal([]byte(line), &ev); err != nil {
 			t.Fatalf("stdout 不是 ledger.Event JSON: %v; line=%q", err, line)

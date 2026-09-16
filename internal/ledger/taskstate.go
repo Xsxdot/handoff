@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
 )
 
 // TaskStateRow 挂账 task 的实况摘要。LastType 空 = 尚无镜像事件（未知）。
@@ -131,10 +132,19 @@ type ticketPayload struct {
 	TicketID string `json:"ticket_id"`
 }
 
-// OpenTicketCounts 每张卡的未决工单数：单遍扫描镜像事件，按 ticket_id
-// 回放 创建→答复/作废。镜像滞后即工单滞后——与实况同一显性化通道
-// （MirrorHealth），不另设真相源。
-func (s *Store) OpenTicketCounts() (map[string]int, error) {
+// OpenTicket 一条未决工单的派生视图。Payload 是创建该工单的镜像原 payload。
+type OpenTicket struct {
+	CardID   string
+	Target   string
+	TaskID   string
+	TicketID string
+	TaskType string
+	Payload  json.RawMessage
+}
+
+// OpenTickets 全账本未决工单明细：与 OpenTicketCounts 同一把尺，单遍扫描
+// 镜像事件按 ticket_id 回放 创建→答复/作废。
+func (s *Store) OpenTickets() ([]OpenTicket, error) {
 	rows, err := s.db.Query(s.q(`SELECT card_id, source_target, source_task, payload
 		FROM card_events WHERE type = ? AND source_target IS NOT NULL ORDER BY seq ASC`), EvTaskMirrored)
 	if err != nil {
@@ -142,7 +152,7 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 	}
 	defer rows.Close()
 
-	open := make(map[openTicketKey]struct{})
+	open := make(map[openTicketKey]OpenTicket)
 	for rows.Next() {
 		var cardID, target, taskID, raw string
 		if err := rows.Scan(&cardID, &target, &taskID, &raw); err != nil {
@@ -152,7 +162,7 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 		if err := json.Unmarshal([]byte(raw), &event); err != nil {
 			return nil, fmt.Errorf("解码镜像工单事件: %w", err)
 		}
-		keyPrefix := func(ticketID string) openTicketKey {
+		keyOf := func(ticketID string) openTicketKey {
 			return openTicketKey{cardID: cardID, target: target, taskID: taskID, ticketID: ticketID}
 		}
 		switch event.TaskType {
@@ -162,7 +172,10 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 				return nil, fmt.Errorf("解码镜像工单 payload: %w", err)
 			}
 			if ticket.TicketID != "" {
-				open[keyPrefix(ticket.TicketID)] = struct{}{}
+				open[keyOf(ticket.TicketID)] = OpenTicket{
+					CardID: cardID, Target: target, TaskID: taskID,
+					TicketID: ticket.TicketID, TaskType: event.TaskType, Payload: event.Payload,
+				}
 			}
 		case evTicketAnswered:
 			var ticket ticketPayload
@@ -170,7 +183,7 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 				return nil, fmt.Errorf("解码镜像答复 payload: %w", err)
 			}
 			if ticket.TicketID != "" {
-				delete(open, keyPrefix(ticket.TicketID))
+				delete(open, keyOf(ticket.TicketID))
 			}
 		case evTicketsVoided:
 			for key := range open {
@@ -183,10 +196,28 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("读镜像工单事件: %w", err)
 	}
+	out := make([]OpenTicket, 0, len(open))
+	for _, ticket := range open {
+		out = append(out, ticket)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CardID != out[j].CardID {
+			return out[i].CardID < out[j].CardID
+		}
+		return out[i].TicketID < out[j].TicketID
+	})
+	return out, nil
+}
 
+// OpenTicketCounts 每张卡的未决工单数：OpenTickets 的计数投影。
+func (s *Store) OpenTicketCounts() (map[string]int, error) {
+	tickets, err := s.OpenTickets()
+	if err != nil {
+		return nil, err
+	}
 	counts := make(map[string]int)
-	for key := range open {
-		counts[key.cardID]++
+	for _, ticket := range tickets {
+		counts[ticket.CardID]++
 	}
 	return counts, nil
 }

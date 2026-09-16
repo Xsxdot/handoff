@@ -50,19 +50,104 @@ func (s *Server) roomUserActor(r *http.Request) string {
 	return "web:" + hostOnly(r.RemoteAddr)
 }
 
-// handleRoomsList GET /api/rooms?project= → ListRooms（扁平活动排序列表）。
+// roomsListDefaultLimit / roomsListMaxLimit 是 GET /api/rooms 分页的默认与上限，
+// 与 collab 侧 roomsPageDefaultLimit/roomsPageMaxLimit 同值（契约 §3.3）。
+const (
+	roomsListDefaultLimit = 50
+	roomsListMaxLimit     = 200
+)
+
+// roomsListLegacyMessage 是旧客户端阻断文案（契约 §3.3，冻结，一字不改）。
+const roomsListLegacyMessage = "客户端版本过旧：会话列表已改为分页加载，请升级 handoff 桌面端与控制台后重试。"
+
+// roomsListParams 是 GET /api/rooms 的分页参数决议结果（B374）。
+//
+// Legacy 为真表示请求 query 里 limit 与 cursor 双双缺席——旧客户端判据
+// （拍板 P4）：handler 据此回 426，不调用 ListRoomsPage。
+type roomsListParams struct {
+	Limit  int
+	Cursor string
+	Legacy bool
+}
+
+// parseRoomsListParams 解析分页 query（B374，冻结清单 F5–F9）。
+//
+// limit 与 cursor 双双缺席 → Legacy=true（旧客户端，handler 回 426）。
+// limit 缺席但带 cursor → 非 legacy，limit 取默认；limit 非整数 → error
+// （handler 直回 400，不得经 roomsListErrorStatus 变 500）。
+func parseRoomsListParams(r *http.Request) (roomsListParams, error) {
+	q := r.URL.Query()
+	rawLimit := q.Get("limit")
+	rawCursor := q.Get("cursor")
+	if rawLimit == "" && rawCursor == "" {
+		return roomsListParams{Limit: roomsListDefaultLimit, Legacy: true}, nil
+	}
+	params := roomsListParams{Cursor: rawCursor}
+	if rawLimit == "" {
+		params.Limit = roomsListDefaultLimit
+		return params, nil
+	}
+	n, err := strconv.Atoi(rawLimit)
+	if err != nil {
+		return roomsListParams{}, fmt.Errorf("limit 非法: %q", rawLimit)
+	}
+	if n <= 0 {
+		n = roomsListDefaultLimit
+	}
+	if n > roomsListMaxLimit {
+		n = roomsListMaxLimit
+	}
+	params.Limit = n
+	return params, nil
+}
+
+// handleRoomsList GET /api/rooms?project=&limit=&cursor= → ListRoomsPage
+// （扁平活动排序分页列表，B374）。
+//
+// 错误分流三路（冻结）：parse 错 → 400 直回；仅 collab.ErrInvalidCursor 经
+// roomsListErrorStatus → 400；其余 ListRoomsPage 失败（读卡/读事件/游标快照）
+// → 500。旧客户端（limit 与 cursor 双缺席）→ 426 + 冻结文案（F9/US5）。
+//
+// 刷新限域：attach 投影与后台刷新只对本页 rooms 对应的 links（F17/F18），
+// 由 enrichRoomAttachments 收窄入参。
 func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
 	member := s.roomUserActor(r)
-	rooms, err := s.rooms.ListRoomsForMember(project, member)
+	params, err := parseRoomsListParams(r)
 	if err != nil {
+		s.log.Warn("会话列表分页参数无效", "project", project, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if params.Legacy {
+		s.log.Warn("会话列表命中旧客户端请求，回 426", "project", project)
+		writeErr(w, http.StatusUpgradeRequired, errors.New(roomsListLegacyMessage))
+		return
+	}
+	page, err := s.rooms.ListRoomsPage(project, member, params.Cursor, params.Limit)
+	if err != nil {
+		if code := roomsListErrorStatus(err); code == http.StatusBadRequest {
+			s.log.Warn("会话列表游标非法", "project", project, "cause", err)
+			writeErr(w, code, err)
+			return
+		}
 		s.log.Warn("会话列表读取失败", "project", project, "member", member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.enrichRoomAttachments(r.Context(), rooms)
-	s.log.Info("会话列表响应成功", "project", project, "member", member, "rooms", len(rooms))
-	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
+	s.enrichRoomAttachments(r.Context(), page.Rooms)
+	s.log.Debug("会话列表响应成功", "project", project, "member", member, "rooms", len(page.Rooms))
+	writeJSON(w, http.StatusOK, page)
+}
+
+// roomsListErrorStatus 把 ListRoomsPage 的错误映射为 HTTP 状态（契约冻结清单
+// F10）：游标非法（collab.ErrInvalidCursor 经 decodeRoomCursor 裹出）→ 400；
+// 其余（读卡/读事件/游标快照等列表组装失败）→ 500。
+func roomsListErrorStatus(err error) int {
+	if errors.Is(err, collab.ErrInvalidCursor) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 const (
@@ -82,6 +167,10 @@ type roomAttachCacheEntry struct {
 // enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
 // 保持 Attach=nil。远端 attach 是非承重字段：请求只读取本地挂账与缓存，缺失项
 // 交给后台刷新，避免一个 relay 延迟拖住整个房间列表。
+//
+// B374 限域（P-4）：仍读**全量** AllTaskLinks 建索引（本机任务索引依赖全量判定），
+// 但只收集入参（本页）rooms 对应的 links 传给 startRoomAttachRefresh——页外房间
+// 不投影、不触发远端 fan-out（F17/F18）。刷新体（workers/TTL/节流）不改。
 func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSummary) {
 	if s.ledger == nil {
 		return
@@ -101,8 +190,17 @@ func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSumm
 		})
 	}
 
+	// 限域（B374 P-4）：只收集本页 rooms 的 links，fan-out 用该子集。
+	pageLinks := make([]ledger.TaskLink, 0)
+	for i := range rooms {
+		if rooms[i].Kind != room.KindCard {
+			continue
+		}
+		pageLinks = append(pageLinks, linksByRoom[rooms[i].ID]...)
+	}
+
 	localTasks := make(map[string]proto.Task)
-	for _, link := range links {
+	for _, link := range pageLinks {
 		if link.Target != "" || s.mgr == nil {
 			// 房间列表只读降级：manager 未注入时不阻断主响应，只是禁用本机 attach
 			continue
@@ -137,20 +235,20 @@ func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSumm
 					continue
 				}
 				rooms[i].Attach = attach
-				s.log.Info("房间 attach 投影成功", "room", rooms[i].ID,
+				s.log.Debug("房间 attach 投影成功", "room", rooms[i].ID,
 					"target", link.Target, "task", link.TaskID, "workdir", attach.WorkDir)
 				break
 			}
 			if attach := s.cachedRoomAttach(link); attach != nil {
 				rooms[i].Attach = attach
-				s.log.Info("房间 attach 从缓存投影成功", "room", rooms[i].ID,
+				s.log.Debug("房间 attach 从缓存投影成功", "room", rooms[i].ID,
 					"target", link.Target, "task", link.TaskID, "workdir", attach.WorkDir)
 				break
 			}
 		}
 	}
-	s.startRoomAttachRefresh(links)
-	s.log.Info("房间 attach 投影完成", "rooms", len(rooms), "links", len(links))
+	s.startRoomAttachRefresh(pageLinks)
+	s.log.Debug("房间 attach 投影完成", "rooms", len(rooms), "links", len(pageLinks))
 }
 
 // startRoomAttachRefresh asynchronously resolves remote task workdirs. A single
@@ -210,12 +308,12 @@ func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
 					return
 				}
 				s.storeRoomAttach(link, attach)
-				s.log.Info("房间 attach 后台刷新成功", "target", link.Target,
+				s.log.Debug("房间 attach 后台刷新成功", "target", link.Target,
 					"task", link.TaskID, "workdir", attach.WorkDir)
 			}()
 		}
 		wg.Wait()
-		s.log.Info("房间 attach 后台刷新完成", "links", len(remoteLinks),
+		s.log.Debug("房间 attach 后台刷新完成", "links", len(remoteLinks),
 			"timed_out", ctx.Err() != nil)
 	}()
 }
