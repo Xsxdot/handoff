@@ -54,37 +54,47 @@ const roomsFixture: unknown = [
 afterEach(() => vi.unstubAllGlobals())
 
 describe('fetchRooms', () => {
-  it('GET /api/rooms，project 参数走查询串，解包 rooms 数组', async () => {
-    // mockImplementation 而非 mockResolvedValue：同一 Response 的 body 只能读一次，
-    // 本用例连续发两次请求，每次都要新的 Response 实例
-    const fetchMock = vi.fn().mockImplementation(() => Promise.resolve(jsonResp({ rooms: roomsFixture })))
+  it('首屏显式带 limit=50，project 走查询串，解包信封', async () => {
+    const fetchMock = vi.fn().mockImplementation(() =>
+      Promise.resolve(jsonResp({ rooms: roomsFixture, has_more: false })))
     vi.stubGlobal('fetch', fetchMock)
-    const rooms = await fetchRooms()
-    expect(fetchMock.mock.calls[0][0]).toBe('/api/rooms')
-    expect(rooms).toHaveLength(2)
+    const page = await fetchRooms({ project: 'handoff', limit: 50 })
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rooms?project=handoff&limit=50')
+    expect(page.rooms).toHaveLength(2)
     // last_activity 原样直通（time.Time RFC3339Nano → TS string），不做格式转换
-    expect(rooms[0].last_activity).toBe('2026-08-26T08:00:00.123456789+08:00')
-    expect(rooms[0].live).toBe(true)
-    expect(rooms[0].read_only).toBe(false)
-    expect(rooms[0].bound_session).toBe('console:alice@box')
-    expect(rooms[0].unread).toBe(0)
-    expect(rooms[0].attach).toEqual({
+    expect(page.rooms[0].last_activity).toBe('2026-08-26T08:00:00.123456789+08:00')
+    expect(page.rooms[0].attach).toEqual({
       target: 'devbox', task_id: 'T1', work_dir: '/w/B1', command: 'handoff attach T1',
     })
-    expect(rooms[0].preview).toEqual({
-      body: '真实 HTTP preview', seq: 7, created_at: '2026-08-26T08:00:00.123456789+08:00',
-    })
+  })
 
-    await fetchRooms('handoff')
-    expect(fetchMock.mock.calls[1][0]).toBe('/api/rooms?project=handoff')
+  it('续载原样回传 cursor，不带 limit', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResp({ rooms: [], has_more: false }))
+    vi.stubGlobal('fetch', fetchMock)
+    await fetchRooms({ cursor: 'eyJhIjoxLCJyIjoiQjQyIn0' })
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/rooms?cursor=eyJhIjoxLCJyIjoiQjQyIn0')
+  })
+
+  it('缺失/零值可分辨：has_more=false 且 next_cursor 缺席 vs has_more=true 且非空', async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResp({ rooms: [], has_more: false }))
+      .mockResolvedValueOnce(jsonResp({ rooms: [], has_more: true, next_cursor: 'C1' }))
+    vi.stubGlobal('fetch', fetchMock)
+    const last = await fetchRooms({ limit: 50 })
+    expect(last.has_more).toBe(false)
+    expect(last.next_cursor).toBeUndefined()
+    const more = await fetchRooms({ limit: 50 })
+    expect(more.has_more).toBe(true)
+    expect(more.next_cursor).toBe('C1')
   })
 
   it('bound_session 缺席不出键：解码为 undefined 而非空串（可空 vs 零值）', async () => {
     const fetchMock = vi.fn().mockResolvedValue(
-      jsonResp({ rooms: [{ id: 'global', kind: 'global', title: '全员群', live: false, read_only: false, last_activity: 'x', unread: 0 }] }),
+      jsonResp({ rooms: [{ id: 'global', kind: 'global', title: '全员群', live: false, read_only: false, last_activity: 'x', unread: 0 }], has_more: false }),
     )
     vi.stubGlobal('fetch', fetchMock)
-    const [room] = await fetchRooms()
+    const [room] = (await fetchRooms({ limit: 50 })).rooms
     expect(room.bound_session).toBeUndefined()
     expect(room.unread).toBe(0)
     expect(room.attach).toBeUndefined()

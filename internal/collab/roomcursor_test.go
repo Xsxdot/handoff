@@ -1,11 +1,13 @@
 // B374 分页游标金样本（契约冻结清单 F8）：encodeRoomCursor 的 wire 编码是
 // base64url_nopad(json{a,r})，跨实现一致性靠本测试锁定，不靠「逐字节一致」声明。
 //
-// 本文件只测编解码这一处可执行冻结；页裁剪与 legacy 分支归 implement 轮。
+// 本文件锁编解码这一处可执行冻结；页裁剪（F12–F16）的缝级测试见 rooms_page_test.go。
 package collab
 
 import (
 	"errors"
+	"fmt"
+	"math/rand"
 	"testing"
 	"time"
 )
@@ -91,6 +93,23 @@ func TestListRoomsPageCursorErrorIsIdentifiable(t *testing.T) {
 	}
 	if !errors.Is(err, ErrInvalidCursor) {
 		t.Fatalf("ListRoomsPage 非法游标错误必须裹 ErrInvalidCursor，实得 %v", err)
+	}
+}
+
+// TestRoomCursorRoundTripProperty 锁 F11 往返一致：任意 (时刻, 房间 ID) 编码后
+// 解码回原值（含随机纳秒与随机 0..999 ID）。
+func TestRoomCursorRoundTripProperty(t *testing.T) {
+	rng := rand.New(rand.NewSource(374))
+	for i := 0; i < 200; i++ {
+		at := time.Unix(0, rng.Int63()).UTC()
+		id := fmt.Sprintf("B%03d", rng.Intn(1000))
+		gotAt, gotID, err := decodeRoomCursor(encodeRoomCursor(at, id))
+		if err != nil {
+			t.Fatalf("第 %d 轮解码: %v", i, err)
+		}
+		if !gotAt.Equal(at) || gotID != id {
+			t.Fatalf("第 %d 轮往返不一致: (%s,%q) != (%s,%q)", i, gotAt, gotID, at, id)
+		}
 	}
 }
 

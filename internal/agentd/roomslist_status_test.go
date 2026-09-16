@@ -1,9 +1,9 @@
-// B374 分页列表错误映射（契约冻结清单 F4）：游标非法 → 400，列表组装失败 → 500。
+// B374 分页列表错误映射（契约冻结清单 F10）：游标非法 → 400，列表组装失败 → 500。
 //
-// 为什么单独测 roomsListErrorStatus 而不是走 HTTP：Ticket 0 的
-// parseRoomsListParams 是空壳，游标不经 query 进入 handler，400 分支在
-// GET /api/rooms 上暂不可达；把映射抽成纯函数后，这条可观测语义仍有一支能变红
-// 的测试钉住，等 implement 轮把 query 搬进 handler 时不会悄悄改掉映射。
+// 为什么单独测 roomsListErrorStatus 而不是走 HTTP：该纯函数是「游标非法 400」与
+// 「列表组装失败 500」的唯一分界点；纯函数测试把这条映射从 HTTP 装配里解耦，防止
+// 后人把「照抄 collabErr 哨兵表」顺手扩大成别的错误也 400。HTTP 侧另有
+// TestRoomsListPaginationHTTP 的非法游标 400 / limit=abc 400 端到端钉住。
 package agentd
 
 import (

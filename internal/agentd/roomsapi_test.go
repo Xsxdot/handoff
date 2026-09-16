@@ -4,10 +4,14 @@
 package agentd
 
 import (
+	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync"
@@ -19,6 +23,35 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/testhttp"
 )
+
+// roomsLogCapture 记录 Server.log 的每条记录（含级别），供「噪声降 Debug」断言。
+// 它不按级别过滤：断言读 Record.Level，直接证明降级，不靠 logx 的过滤行为。
+type roomsLogCapture struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (c *roomsLogCapture) Enabled(context.Context, slog.Level) bool { return true }
+func (c *roomsLogCapture) Handle(_ context.Context, r slog.Record) error {
+	c.mu.Lock()
+	c.records = append(c.records, r.Clone())
+	c.mu.Unlock()
+	return nil
+}
+func (c *roomsLogCapture) WithAttrs([]slog.Attr) slog.Handler { return c }
+func (c *roomsLogCapture) WithGroup(string) slog.Handler      { return c }
+
+// find 返回首条 Message 匹配的记录；不存在则 false。
+func (c *roomsLogCapture) find(msg string) (slog.Record, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	for _, r := range c.records {
+		if r.Message == msg {
+			return r, true
+		}
+	}
+	return slog.Record{}, false
+}
 
 // webUserMember 是测试环境里控制台已认证主体的成员标识：httptest.NewServer 固定
 // 监听 127.0.0.1，hostOnly(r.RemoteAddr) 恒为 "127.0.0.1"，故 roomUserActor 恒为
@@ -75,6 +108,210 @@ func itemKeys(t *testing.T, it proto.InboxItem) map[string]bool {
 	return keys
 }
 
+// decodeRoomsPage 解 B374 分页信封（真实 HTTP body）。
+func decodeRoomsPage(t *testing.T, body string) proto.RoomsPage {
+	t.Helper()
+	var page proto.RoomsPage
+	if err := json.Unmarshal([]byte(body), &page); err != nil {
+		t.Fatalf("分页信封解码失败: %v（原文 %s）", err, body)
+	}
+	return page
+}
+
+// testRoomCursor 复刻契约 §3.2 的游标编码（base64url_nopad(json{a,r})），
+// 供测试构造真实客户端拿到的续页游标；encodeRoomCursor 在 internal/collab 私有。
+func testRoomCursor(t *testing.T, at time.Time, roomID string) string {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{"a": at.UnixNano(), "r": roomID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return base64.RawURLEncoding.EncodeToString(raw)
+}
+
+// TestRoomsListLegacyRequestRejectedWith426 锁旧客户端阻断（F9）：query 里
+// limit 与 cursor 双双缺席即旧客户端，必须 426 + 冻结文案，且不得夹带半页 rooms。
+func TestRoomsListLegacyRequestRejectedWith426(t *testing.T) {
+	env := newRoomsEnv(t)
+	seedCard(t, env, "旧客户端卡")
+	for _, path := range []string{"/api/rooms", "/api/rooms?project=p"} {
+		code, body := ledgerGet(t, env.testAgentdEnv, path)
+		if code != http.StatusUpgradeRequired {
+			t.Fatalf("%s 旧客户端必须 426，实得 %d %s", path, code, body)
+		}
+		if !strings.Contains(body, roomsListLegacyMessage) {
+			t.Fatalf("%s 426 文案漂移: %s", path, body)
+		}
+		if strings.Contains(body, `"rooms"`) {
+			t.Fatalf("%s 426 不得夹带半页 rooms: %s", path, body)
+		}
+	}
+}
+
+// TestRoomsListPaginationHTTP 经真实 HTTP 一次覆盖 F5–F8、F10：limit 收敛
+// 与非法参数的 400（不得经 roomsListErrorStatus 假绿成 500）。
+func TestRoomsListPaginationHTTP(t *testing.T) {
+	env := newRoomsEnv(t)
+	for i := 0; i < 205; i++ {
+		seedCard(t, env, fmt.Sprintf("分页卡-%03d", i))
+	}
+	// F7：limit<=0 取默认 50
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=0")
+	if code != http.StatusOK {
+		t.Fatalf("limit=0: %d %s", code, body)
+	}
+	page := decodeRoomsPage(t, body)
+	// 205 卡 + project:p + global = 207 条扁平序；首页 50 条。
+	if len(page.Rooms) != 50 || !page.HasMore {
+		t.Fatalf("limit=0 应取默认 50 且 has_more=true: len=%d has_more=%v", len(page.Rooms), page.HasMore)
+	}
+	// F5：limit 缺席但带合法游标（非 legacy）→ 默认 50。
+	last := page.Rooms[len(page.Rooms)-1]
+	cursor := testRoomCursor(t, last.LastActivity, last.ID)
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms?cursor="+url.QueryEscape(cursor))
+	if code != http.StatusOK {
+		t.Fatalf("cursor-only: %d %s", code, body)
+	}
+	if got := decodeRoomsPage(t, body); len(got.Rooms) != 50 {
+		t.Fatalf("limit 缺席应取默认 50，实得 %d", len(got.Rooms))
+	}
+	// F6：limit>200 取上限 200
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=500")
+	if code != http.StatusOK {
+		t.Fatalf("limit=500: %d %s", code, body)
+	}
+	page = decodeRoomsPage(t, body)
+	if len(page.Rooms) != 200 || !page.HasMore {
+		t.Fatalf("limit=500 应取上限 200 且 has_more=true: len=%d", len(page.Rooms))
+	}
+	// F8：limit 非整数 → 400（不得 500）
+	if code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=abc"); code != http.StatusBadRequest {
+		t.Fatalf("limit=abc 必须 400（若经 roomsListErrorStatus 会假绿成 500）: %d %s", code, body)
+	}
+	// F10：非法游标 → 400
+	if code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50&cursor=!!!not-base64!!!"); code != http.StatusBadRequest {
+		t.Fatalf("非法游标必须 400: %d %s", code, body)
+	}
+}
+
+// TestRoomsListLimitConstants 锁 gateway 侧 limit 常量与契约 §3.2/§3.3 同值。
+func TestRoomsListLimitConstants(t *testing.T) {
+	if roomsListDefaultLimit != 50 || roomsListMaxLimit != 200 {
+		t.Fatalf("gateway limit 常量漂移: %d/%d", roomsListDefaultLimit, roomsListMaxLimit)
+	}
+}
+
+// TestRoomsListAttachRefreshLimitedToPageRooms 锁刷新限域（F17/F18）：第 1 页
+// 之外的远端挂账不得触发任何远端 RPC；翻到含该房间的页后才允许发生。
+func TestRoomsListAttachRefreshLimitedToPageRooms(t *testing.T) {
+	env := newRoomsEnv(t)
+	// 先建远端挂账卡（时间最早 → 沉到扁平序末段），再建 55 张有发言的卡把首页占满。
+	remoteCard := seedCard(t, env, "远端卡")
+	if err := env.ledger.LinkTask(remoteCard.ID, "relay", "T-relay", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 55; i++ {
+		c := seedCard(t, env, fmt.Sprintf("占位卡-%02d", i))
+		if _, err := env.srv.rooms.Send(c.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var mu sync.Mutex
+	calls := 0
+	remote := testhttp.NewServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"task":            map[string]any{"id": "T-relay", "repo_path": "/repo", "work_dir": "/relay/B1"},
+			"pending_tickets": []any{}, "recent_events": []any{},
+		})
+	}))
+	env.srv.conf().Targets = map[string]config.Target{
+		"relay": {Addr: remote.URL, Token: "remote-token"},
+	}
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
+	if code != http.StatusOK {
+		t.Fatalf("首页: %d %s", code, body)
+	}
+	page := decodeRoomsPage(t, body)
+	for _, r := range page.Rooms {
+		if r.ID == remoteCard.ID {
+			t.Fatalf("夹具失效：远端卡必须不在首页: %s", body)
+		}
+	}
+	time.Sleep(200 * time.Millisecond) // 给后台刷新一个起跑窗口
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got != 0 {
+		t.Fatalf("首页之外的房间不得触发远端 RPC，实得 %d", got)
+	}
+	// 翻到含远端卡的那一页后，远端 RPC 才允许发生。
+	last := page.Rooms[len(page.Rooms)-1]
+	cursor := testRoomCursor(t, last.LastActivity, last.ID)
+	if code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50&cursor="+url.QueryEscape(cursor)); code != http.StatusOK {
+		t.Fatalf("续页: %d %s", code, body)
+	}
+	eventually(t, 2*time.Second, "续页触发远端 attach", func() bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return calls > 0
+	})
+}
+
+// TestRoomsListAttachLogsAtDebug 锁高频 attach 日志降 Debug（契约 §3.4①）：
+// 捕获 handler 不过滤级别，直接断言 Record.Level。
+func TestRoomsListAttachLogsAtDebug(t *testing.T) {
+	t.Setenv("HANDOFF_LOG_LEVEL", "info")
+	env := newRoomsEnv(t)
+	cap := &roomsLogCapture{}
+	env.srv.log = slog.New(cap)
+	seedCard(t, env, "降级卡")
+	if code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50"); code != http.StatusOK {
+		t.Fatalf("列表: %d %s", code, body)
+	}
+	if _, ok := cap.find("会话列表响应成功"); !ok {
+		t.Fatal("成功路径不得静默：会话列表响应成功缺失")
+	}
+	rec, ok := cap.find("房间 attach 投影完成")
+	if !ok {
+		t.Fatal("逐次 attach 汇总日志缺失")
+	}
+	if rec.Level != slog.LevelDebug {
+		t.Fatalf("高频 attach INFO 必须降 Debug，实得 %s", rec.Level)
+	}
+}
+
+// TestRoomsListPageEnvelopeWireShapes 穿过真实 writeJSON 序列化边界断言信封形状
+// （F1–F4 重编号）：rooms/has_more 恒出键（含 false）、has_more=false 时
+// next_cursor 必须缺席。
+func TestRoomsListPageEnvelopeWireShapes(t *testing.T) {
+	env := newRoomsEnv(t)
+	seedCard(t, env, "信封卡")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
+	if code != http.StatusOK {
+		t.Fatalf("列表: %d %s", code, body)
+	}
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(body), &raw); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := raw["rooms"]; !ok {
+		t.Fatalf("rooms 恒出键: %s", body)
+	}
+	hasMore, ok := raw["has_more"]
+	if !ok {
+		t.Fatalf("has_more 恒出键（含 false）: %s", body)
+	}
+	if string(hasMore) != "false" {
+		t.Fatalf("单页 has_more 应为 false: %s", body)
+	}
+	if _, ok := raw["next_cursor"]; ok {
+		t.Fatalf("has_more=false 时 next_cursor 必须缺席: %s", body)
+	}
+}
+
 func TestRoomsListEndpoint(t *testing.T) {
 	env := newRoomsEnv(t)
 	card := seedCard(t, env, "卡A")
@@ -84,7 +321,7 @@ func TestRoomsListEndpoint(t *testing.T) {
 	var out struct {
 		Rooms []proto.RoomSummary `json:"rooms"`
 	}
-	code := env.getJSON(t, "/api/rooms?project=p", &out)
+	code := env.getJSON(t, "/api/rooms?project=p&limit=50", &out)
 	if code != 200 {
 		t.Fatalf("GET /api/rooms: %d", code)
 	}
@@ -120,7 +357,7 @@ func TestRoomsListUnreadAndAttachProjection(t *testing.T) {
 	var out struct {
 		Rooms []proto.RoomSummary `json:"rooms"`
 	}
-	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
 	if code != 200 {
 		t.Fatalf("GET /api/rooms: %d %s", code, body)
 	}
@@ -165,7 +402,7 @@ func TestRoomsListUnreadAndAttachProjection(t *testing.T) {
 	if code != 200 {
 		t.Fatalf("POST /read: %d %s", code, body)
 	}
-	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
 	if code != 200 {
 		t.Fatalf("GET /api/rooms after read: %d %s", code, body)
 	}
@@ -182,7 +419,7 @@ func TestRoomsListUnreadAndAttachProjection(t *testing.T) {
 func TestRoomsListWithoutAttachmentKeepsAttachMissing(t *testing.T) {
 	env := newRoomsEnv(t)
 	card := seedCard(t, env, "无挂账卡")
-	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
 	if code != 200 {
 		t.Fatalf("GET /api/rooms: %d %s", code, body)
 	}
@@ -208,7 +445,7 @@ func TestRoomsListWithoutAttachmentKeepsAttachMissing(t *testing.T) {
 func TestRoomsListWireIncludesZeroUnread(t *testing.T) {
 	env := newRoomsEnv(t)
 	seedCard(t, env, "零未读卡")
-	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?project=p")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?project=p&limit=50")
 	if code != http.StatusOK {
 		t.Fatalf("GET /api/rooms: %d %s", code, body)
 	}
@@ -251,7 +488,7 @@ func TestRoomsListAttachTimeoutDoesNotBlockMainList(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms", nil)
+	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms?limit=50", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +543,7 @@ func TestRoomsListUsesBackgroundAttachCache(t *testing.T) {
 	}
 
 	startedAt := time.Now()
-	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
 	firstElapsed := time.Since(startedAt)
 	if code != http.StatusOK {
 		t.Fatalf("首次列表应成功: %d %s", code, body)
@@ -322,7 +559,7 @@ func TestRoomsListUsesBackgroundAttachCache(t *testing.T) {
 	close(release)
 
 	eventually(t, 2*time.Second, "缓存命中 relay attach", func() bool {
-		code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+		code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
 		if code != http.StatusOK {
 			return false
 		}
@@ -372,7 +609,7 @@ func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
 		"relay": {Addr: remote.URL, Token: "remote-token"},
 	}
 
-	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
 	if code != http.StatusOK {
 		t.Fatalf("首次列表应成功: %d %s", code, body)
 	}
@@ -393,7 +630,7 @@ func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
 	entry.expiresAt = time.Now().Add(time.Minute)
 	env.srv.roomAttachLastRefresh = time.Now().Add(-roomAttachRefreshInterval)
 	env.srv.roomAttachMu.Unlock()
-	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+	code, body = ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
 	if code != http.StatusOK {
 		t.Fatalf("刷新中的列表仍应成功: %d %s", code, body)
 	}
@@ -408,7 +645,7 @@ func TestRoomsListDropsExpiredAndFailedRemoteAttachCache(t *testing.T) {
 	})
 	assertAttachMissing := func(stage string) {
 		t.Helper()
-		code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms")
+		code, body := ledgerGet(t, env.testAgentdEnv, "/api/rooms?limit=50")
 		if code != http.StatusOK {
 			t.Fatalf("%s GET /api/rooms 应成功: %d %s", stage, code, body)
 		}
@@ -454,7 +691,7 @@ func TestRoomsListTTFB200Cards(t *testing.T) {
 	for i := 0; i < 205; i++ {
 		seedCard(t, env, fmt.Sprintf("性能卡-%03d", i))
 	}
-	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms", nil)
+	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms?limit=50", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -856,7 +1093,7 @@ func TestInboxIntegrationSmoke(t *testing.T) {
 	var rooms struct {
 		Rooms []proto.RoomSummary `json:"rooms"`
 	}
-	if code := env.getJSON(t, "/api/rooms", &rooms); code != 200 {
+	if code := env.getJSON(t, "/api/rooms?limit=50", &rooms); code != 200 {
 		t.Fatalf("GET /api/rooms: %d", code)
 	}
 	if len(rooms.Rooms) == 0 {

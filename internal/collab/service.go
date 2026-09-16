@@ -326,10 +326,10 @@ const (
 
 // ListRoomsPage 是分页会话列表的 wire 组装点（B374）：在全量扁平序上按
 // cursor 定位、取 limit 条，返回信封。游标是不透明字符串，编解码见
-// encodeRoomCursor/decodeRoomCursor；页裁剪只经 trimRoomPage 一处。
+// encodeRoomCursor/decodeRoomCursor；页裁剪只经 trimRoomPage 一处（契约 §3.2）。
 //
-// Ticket 0：本条为直通镜像——调 listRooms 取全量后交 trimRoomPage，后者
-// 本轮返回整表、hasMore=false。真裁剪归 implement（冻结清单 F5-F8）。
+// 错误：游标非法 → 裹 ErrInvalidCursor（gateway 映射 400）；listRooms 失败
+// 原样向上传播，不吞。
 func (s *Service) ListRoomsPage(project, member, pageCursor string, limit int) (proto.RoomsPage, error) {
 	rooms, err := s.listRooms(project, member)
 	if err != nil {
@@ -339,6 +339,7 @@ func (s *Service) ListRoomsPage(project, member, pageCursor string, limit int) (
 	if err != nil {
 		return proto.RoomsPage{}, err
 	}
+	log().Debug("会话分页完成", "project", project, "page", len(page), "has_more", hasMore)
 	return proto.RoomsPage{Rooms: page, NextCursor: next, HasMore: hasMore}, nil
 }
 
@@ -389,16 +390,64 @@ func decodeRoomCursor(raw string) (time.Time, string, error) {
 	return time.Unix(0, payload.A).UTC(), payload.R, nil
 }
 
-// trimRoomPage 在扁平序上按游标切片（B374 页裁剪符号）。
+// trimRoomPage 在扁平序上按游标切片（B374，契约 §3.2 规则 1–4 + 拍板 P6）。
 //
-// Ticket 0 为直通镜像：返回整表、next=""、hasMore=false，不实现真裁剪。
-// implement 轮按契约 §3.2 填充：limit 收敛、ID 定位为主判据、
-// (LastActivity,roomID) 为兜底比较、末条编 next。
+// 语义：
+//  1. limit<=0 取 roomsPageDefaultLimit；limit>roomsPageMaxLimit 取上限。
+//  2. cursor=="" 从首条起算。
+//  3. 否则解码游标，主判据=当前扁平序里 roomID 相同条目的位置之后；
+//     兜底（房间已不在列表）=跳过所有 LastActivity 不早于游标时刻的条目。
+//     **不比 ID 序**：listRooms 的扁平序是「非终态在前/终态沉底/各自活动降序/
+//     同刻 SliceStable 插入序」，与 ID 序不同构；同刻插入序在游标里不可恢复
+//     （F14 显式限制，不假装不丢不重）。
+//  4. 取前 limit 条；有剩余则 hasMore=true 且 next=末条 (LastActivity,ID) 编码。
 func trimRoomPage(rooms []proto.RoomSummary, pageCursor string, limit int) ([]proto.RoomSummary, string, bool, error) {
-	if _, _, err := decodeRoomCursor(pageCursor); err != nil {
-		return nil, "", false, err
+	if limit <= 0 {
+		limit = roomsPageDefaultLimit
 	}
-	return rooms, "", false, nil
+	if limit > roomsPageMaxLimit {
+		limit = roomsPageMaxLimit
+	}
+	start := 0
+	if pageCursor != "" {
+		at, roomID, err := decodeRoomCursor(pageCursor)
+		if err != nil {
+			return nil, "", false, err
+		}
+		start = -1
+		for i := range rooms {
+			if rooms[i].ID == roomID {
+				start = i + 1
+				break
+			}
+		}
+		if start < 0 {
+			// 兜底：房间已不在当前列表。跳过所有 LastActivity 不早于游标时刻的条目。
+			start = len(rooms)
+			for i := range rooms {
+				if rooms[i].LastActivity.Before(at) {
+					start = i
+					break
+				}
+			}
+		}
+		if start > len(rooms) {
+			start = len(rooms)
+		}
+	}
+	page := rooms[start:]
+	if len(page) > limit {
+		page = page[:limit]
+	}
+	hasMore := start+len(page) < len(rooms)
+	next := ""
+	if hasMore && len(page) > 0 {
+		last := page[len(page)-1]
+		next = encodeRoomCursor(last.LastActivity, last.ID)
+	}
+	out := make([]proto.RoomSummary, len(page))
+	copy(out, page)
+	return out, next, hasMore, nil
 }
 
 func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error) {

@@ -4,11 +4,12 @@
 // 以及 attach 后的 Workbench 终端入口。
 // 边界：不改变路由、不直接创建 PTY；列表与收件箱轮询独立，消息正文只进入界面，
 // 不进入结构化日志。
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent, type UIEvent } from 'react'
 import { fetchCardDetail } from '../../api/ledger'
 import type { CardDetail } from '../../api/ledger'
+import { ApiError } from '../../api/client'
 import { fetchInbox, fetchRoomMessages, fetchRooms, markRoomRead, sendRoomMessage } from '../../api/rooms'
-import type { RoomHistoryItem, RoomSummary } from '../../api/rooms'
+import type { RoomsPage, RoomHistoryItem, RoomSummary } from '../../api/rooms'
 import { nextTerminalSeq, spawnTerminalContent } from '../workbench/tabs'
 import type { WorkbenchApi } from '../workbench/useWorkbench'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
@@ -34,6 +35,10 @@ export interface RoomPanelProps {
 }
 
 const HISTORY_LIMIT = 200
+// ROOMS_PAGE_LIMIT 首屏每页条数；ROOMS_SCROLL_THRESHOLD 触底阈值（距底多少像素
+// 内开始续载，避免用户真的滚到底才等下一页）。
+const ROOMS_PAGE_LIMIT = 50
+const ROOMS_SCROLL_THRESHOLD = 48
 
 const KIND_LABEL: Record<string, string> = {
   card: '卡房间',
@@ -126,6 +131,13 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
   const [needsOnly, setNeedsOnly] = useState(false)
   const [attachConfirm, setAttachConfirm] = useState(false)
   const [draft, setDraft] = useState('')
+  // upgradeRequired 非空 = 服务端 426 旧客户端阻断，渲染可行动提示（F22/族 2）。
+  const [upgradeRequired, setUpgradeRequired] = useState('')
+  // moreRooms/moreCursor/moreHasMore/loadingMore 是首屏之后逐页追加的续载态。
+  const [moreRooms, setMoreRooms] = useState<RoomSummary[]>([])
+  const [moreCursor, setMoreCursor] = useState('')
+  const [moreHasMore, setMoreHasMore] = useState(false)
+  const [loadingMore, setLoadingMore] = useState(false)
   const [readError, setReadError] = useState('')
   const [sendError, setSendError] = useState('')
   const [stepBusy, setStepBusy] = useState(false)
@@ -169,12 +181,18 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
   }
 
   const loadRooms = async () => {
-    logRoom('debug', 'rooms_request_started', { request: 'rooms' })
+    logRoom('debug', 'rooms_request_started', { request: 'rooms', limit: ROOMS_PAGE_LIMIT })
     try {
-      const result = await fetchRooms()
-      logRoom('debug', 'rooms_request_succeeded', { request: 'rooms', count: result.length })
-      return result
+      const page = await fetchRooms({ limit: ROOMS_PAGE_LIMIT })
+      logRoom('debug', 'rooms_request_succeeded', {
+        request: 'rooms', count: page.rooms.length, has_more: page.has_more,
+      })
+      return page
     } catch (error: unknown) {
+      if (error instanceof ApiError && error.status === 426) {
+        setUpgradeRequired(errorMessage(error))
+        logRoom('warn', 'rooms_upgrade_required', { request: 'rooms', status: error.status })
+      }
       logRoom('error', 'rooms_request_failed', { request: 'rooms', error: errorMessage(error) })
       throw error
     }
@@ -203,7 +221,48 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
   }
   const roomsPoll = usePoll(loadRooms, COLLAB_POLL_MS)
   const inboxPoll = usePoll(loadInbox, COLLAB_POLL_MS)
-  const rooms = useMemo(() => roomsPoll.data ?? [], [roomsPoll.data])
+  const firstPage: RoomsPage | null = roomsPoll.data
+  const firstPageRef = useRef(firstPage)
+  firstPageRef.current = firstPage
+  // 首屏签名：内容变了才重置已续载的页，避免每轮 5s 轮询把翻页进度冲掉。
+  const firstPageSignature = firstPage === null
+    ? ''
+    : `${firstPage.rooms[0]?.id ?? ''}|${firstPage.rooms.length}|${firstPage.has_more}`
+  useEffect(() => {
+    const page = firstPageRef.current
+    if (page === null) return
+    setMoreRooms([])
+    setMoreCursor(page.next_cursor ?? '')
+    setMoreHasMore(page.has_more)
+  }, [firstPageSignature])
+  const rooms = useMemo(
+    () => (firstPage === null ? [] : [...firstPage.rooms, ...moreRooms]),
+    [firstPage, moreRooms],
+  )
+  // loadMore 触底续载：moreCursor 原样回传，has_more=false 后不再续载。
+  const loadMore = async () => {
+    if (loadingMore || !moreHasMore || moreCursor === '') return
+    setLoadingMore(true)
+    logRoom('debug', 'rooms_more_started', { request: 'rooms', cursor: moreCursor })
+    try {
+      const page = await fetchRooms({ cursor: moreCursor })
+      setMoreRooms((previous) => [...previous, ...page.rooms])
+      setMoreCursor(page.next_cursor ?? '')
+      setMoreHasMore(page.has_more)
+      logRoom('debug', 'rooms_more_succeeded', {
+        request: 'rooms', count: page.rooms.length, has_more: page.has_more,
+      })
+    } catch (error: unknown) {
+      logRoom('error', 'rooms_more_failed', { request: 'rooms', error: errorMessage(error) })
+    } finally {
+      setLoadingMore(false)
+    }
+  }
+  const onRoomsScroll = (event: UIEvent<HTMLDivElement>) => {
+    const el = event.currentTarget
+    if (el.scrollHeight - el.scrollTop - el.clientHeight > ROOMS_SCROLL_THRESHOLD) return
+    void loadMore()
+  }
   const inbox = useMemo(() => inboxPoll.data ?? [], [inboxPoll.data])
   const needRoomIDs = useMemo(() => new Set(inbox.map((item) => item.card_id).filter((id): id is string => !!id)), [inbox])
   const visible = useMemo(() => orderRooms(visibleRooms(rooms, project, needsOnly, needRoomIDs), needRoomIDs), [rooms, project, needsOnly, needRoomIDs])
@@ -342,7 +401,12 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
           </select>
         </div>
       </div>
-      {(roomsPoll.disconnected || roomsPoll.sessionExpired || inboxPoll.disconnected || inboxPoll.sessionExpired) && (
+      {upgradeRequired !== '' && (
+        <div className="shrink-0 border-b bg-amber-50 px-3 py-2 text-xs text-amber-800">
+          <p role="alert">{upgradeRequired}</p>
+        </div>
+      )}
+      {upgradeRequired === '' && (roomsPoll.disconnected || roomsPoll.sessionExpired || inboxPoll.disconnected || inboxPoll.sessionExpired) && (
         <div className="shrink-0 space-y-1 border-b bg-amber-50 px-3 py-2 text-xs text-amber-800">
           {roomsPoll.disconnected && <p role="alert">会话列表已断开：{roomsPoll.errorText}</p>}
           {roomsPoll.sessionExpired && <p role="alert">会话已过期，请重新登录。</p>}
@@ -351,8 +415,13 @@ export function RoomPanel({ workbench, persistent, onOpenCard }: RoomPanelProps)
           <button type="button" className="underline" onClick={() => { roomsPoll.refresh(); inboxPoll.refresh() }}>重试</button>
         </div>
       )}
-      <div className="min-h-0 flex-1 overflow-y-auto p-2">
+      <div
+        data-testid="room-list-scroll"
+        onScroll={onRoomsScroll}
+        className="min-h-0 flex-1 overflow-y-auto p-2"
+      >
         {roomsPoll.data === null && !roomsPoll.disconnected && !roomsPoll.sessionExpired ? <p className="p-2 text-sm text-muted-foreground">正在读取…</p> : visible.length === 0 && roomsPoll.data !== null ? <p className="p-2 text-sm text-muted-foreground">（暂无会话）</p> : visible.map((room) => <ListRow key={room.id} room={room} needsReply={roomNeedsReply(room, needRoomIDs)} onOpen={openRoom} />)}
+        {loadingMore && <p className="p-2 text-xs text-muted-foreground">正在载入更多会话…</p>}
       </div>
     </>
   ) : view === 'room' ? (

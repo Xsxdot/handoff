@@ -81,11 +81,28 @@ export type RoomHistoryItem = LedgerEvent
 // ---- C8 接线（契约 §3.5 端点 + §3.6 收件箱；响应信封形状与 C6 handler 逐字一致）----
 import { postJSON, request } from './client'
 
-// fetchRooms 会话列表（GET /api/rooms?project=）。project 省略取全部。
-export const fetchRooms = (project = ''): Promise<RoomSummary[]> =>
-  request<{ rooms: RoomSummary[] }>(
-    `/api/rooms${project ? `?project=${encodeURIComponent(project)}` : ''}`,
-  ).then((response) => response.rooms ?? [])
+// RoomsPage 是 GET /api/rooms 的分页信封（B374，契约 §3.5）：rooms 恒出、
+// has_more 恒出、next_cursor 仅非空时出键。与 internal/proto/rooms.go 逐字段对应。
+export interface RoomsPage {
+  rooms: RoomSummary[]
+  next_cursor?: string
+  has_more: boolean
+}
+
+// fetchRooms 会话列表（GET /api/rooms?project=&cursor=&limit=）。
+//
+// 首屏必须显式传 limit（拍板 P4：不带 limit 也不带 cursor 即旧客户端，服务端 426）。
+// next_cursor 原样回传取下一页；has_more=false 终止续载。
+export const fetchRooms = (
+  opts: { project?: string; cursor?: string; limit?: number } = {},
+): Promise<RoomsPage> => {
+  const q = new URLSearchParams()
+  if (opts.project) q.set('project', opts.project)
+  if (opts.cursor) q.set('cursor', opts.cursor)
+  if (opts.limit !== undefined) q.set('limit', String(opts.limit))
+  const qs = q.toString()
+  return request<RoomsPage>(`/api/rooms${qs ? `?${qs}` : ''}`)
+}
 
 // fetchRoomMessages 房间历史（GET /api/rooms/{id}/messages）。before 排他游标、
 // limit<=0 由服务端取 200；返回升序 room_message 事件。

@@ -60,8 +60,10 @@ function workbench(open = vi.fn()): WorkbenchApi {
 }
 
 beforeEach(() => {
-  vi.clearAllMocks()
-  vi.mocked(fetchRooms).mockResolvedValue([])
+  // resetAllMocks 而非 clearAllMocks：clear 不清 mockResolvedValueOnce 队列，
+  // 续载用例的 once 值会泄漏到下一支测试（全量跑时表现为 fetchRooms 拿到脏数据）。
+  vi.resetAllMocks()
+  vi.mocked(fetchRooms).mockResolvedValue({ rooms: [], has_more: false })
   vi.mocked(fetchInbox).mockResolvedValue([])
   vi.mocked(fetchRoomMessages).mockResolvedValue([])
   vi.mocked(markRoomRead).mockResolvedValue({ ok: true })
@@ -78,11 +80,11 @@ beforeEach(() => {
 
 describe('RoomPanel', () => {
   it('列表把待回复置顶、显示数量、全员房不受项目过滤', async () => {
-    vi.mocked(fetchRooms).mockResolvedValue([
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [
       room({ id: 'B1', title: 'B1 卡房间', project: 'p1' }),
       room({ id: 'global', kind: 'global', project: undefined, title: '全员', unread: 0 }),
       room({ id: 'B2', title: 'B2 卡房间', project: 'p2' }),
-    ])
+    ], has_more: false })
     vi.mocked(fetchInbox).mockResolvedValue([
       { origin: 'mention', title: '@你', card_id: 'B2', ref_id: 'mention-1' },
     ])
@@ -99,7 +101,7 @@ describe('RoomPanel', () => {
   })
 
   it('列表直接使用服务端 preview，不发逐房间 limit=1 请求', async () => {
-    vi.mocked(fetchRooms).mockResolvedValue([room({ preview: { body: '服务端预览', seq: 7, created_at: '2026-08-28T08:00:00+08:00' } })])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room({ preview: { body: '服务端预览', seq: 7, created_at: '2026-08-28T08:00:00+08:00' } })], has_more: false })
     vi.mocked(fetchRoomMessages).mockResolvedValue([message(7, '不应被列表读取')])
     render(<RoomPanel workbench={workbench()} persistent={false} />)
 
@@ -108,7 +110,7 @@ describe('RoomPanel', () => {
   })
 
   it('打开房间即 mark read，发送直达当前房间，更多进入详情', async () => {
-    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room()], has_more: false })
     vi.mocked(fetchRoomMessages).mockResolvedValue([message(2, '收到')])
     const user = userEvent.setup()
     render(<RoomPanel workbench={workbench()} persistent />)
@@ -126,7 +128,7 @@ describe('RoomPanel', () => {
   it('attach 无投影时置灰并说明；有投影时确认后打开带 initCommand 的终端', async () => {
     const open = vi.fn()
     const attach = { task_id: 'T1', work_dir: '/w/B1', command: 'handoff attach T1' }
-    vi.mocked(fetchRooms).mockResolvedValue([room({ attach })])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room({ attach })], has_more: false })
     const user = userEvent.setup()
     render(<RoomPanel workbench={workbench(open)} persistent={false} />)
     await user.click(await screen.findByRole('button', { name: /卡房间/ }))
@@ -144,7 +146,7 @@ describe('RoomPanel', () => {
   })
 
   it('attach 无投影时置灰并说明', async () => {
-    vi.mocked(fetchRooms).mockResolvedValue([room({ attach: undefined })])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room({ attach: undefined })], has_more: false })
     const user = userEvent.setup()
     render(<RoomPanel workbench={workbench()} persistent={false} />)
     await user.click(await screen.findByRole('button', { name: /卡房间/ }))
@@ -156,7 +158,7 @@ describe('RoomPanel', () => {
   it('详情显示卡片信息，点击卡片跳到 /cards 并打开抽屉', async () => {
     const openCard = vi.fn()
     const user = userEvent.setup()
-    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room()], has_more: false })
     render(<RoomPanel workbench={workbench()} persistent={false} onOpenCard={openCard} />)
     await user.click(await screen.findByRole('button', { name: /卡房间/ }))
     await user.click(screen.getByRole('button', { name: '更多' }))
@@ -176,7 +178,7 @@ describe('RoomPanel', () => {
     })
     const openCard = vi.fn(() => { sequence.push('onOpenCard') })
     const user = userEvent.setup()
-    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room()], has_more: false })
     render(<RoomPanel workbench={workbench()} persistent={false} onOpenCard={openCard} />)
     await user.click(await screen.findByRole('button', { name: /卡房间/ }))
     await user.click(screen.getByRole('button', { name: '更多' }))
@@ -211,7 +213,7 @@ describe('RoomPanel', () => {
   })
 
   it('消息流 401 终止时显示告警并禁用发送', async () => {
-    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room()], has_more: false })
     vi.mocked(fetchRoomMessages).mockImplementation((_id, opts = {}) => (
       opts.limit === 1
         ? Promise.resolve([])
@@ -235,7 +237,7 @@ describe('RoomPanel', () => {
   })
 
   it('空房间历史加载完成后显示空态而不是持续读取', async () => {
-    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room()], has_more: false })
     vi.mocked(fetchRoomMessages).mockResolvedValue([])
     const user = userEvent.setup()
     render(<RoomPanel workbench={workbench()} persistent />)
@@ -243,6 +245,47 @@ describe('RoomPanel', () => {
 
     expect(await screen.findByText('（还没有消息）')).toBeInTheDocument()
     expect(screen.queryByText('正在读取…')).not.toBeInTheDocument()
+  })
+
+  it('首屏以 limit=50 拉一页', async () => {
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room()], has_more: false })
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    await screen.findByRole('button', { name: /卡房间/ })
+    expect(fetchRooms).toHaveBeenCalledWith({ limit: 50 })
+  })
+
+  it('has_more=true 滚动到底按 cursor 续载，has_more=false 终止', async () => {
+    // 按入参分派而非 once 队列：全量跑时 5s 轮询可能在断言前打一发，once 队列
+    // 会被首屏轮询吃掉第二页，续载路径消失（假红）。按 opts.cursor 分派与轮询节奏无关。
+    vi.mocked(fetchRooms).mockImplementation((opts = {}) => Promise.resolve(
+      opts.cursor
+        ? { rooms: [room({ id: 'B2', title: 'B2 卡房间' })], has_more: false }
+        : { rooms: [room({ id: 'B1' })], has_more: true, next_cursor: 'C1' },
+    ))
+    render(<RoomPanel workbench={workbench()} persistent={false} />)
+    await screen.findByRole('button', { name: /卡房间/ })
+    const list = screen.getByTestId('room-list-scroll')
+    Object.defineProperty(list, 'scrollHeight', { value: 1000, configurable: true })
+    Object.defineProperty(list, 'clientHeight', { value: 0, configurable: true })
+    Object.defineProperty(list, 'scrollTop', { value: 1000, configurable: true, writable: true })
+    // 首屏签名 effect 与 findByRole 之间存在调度竞窗：首拉数据已渲染、续载态
+    // 还没落定时单发一次 scroll 会丢事件。在 waitFor 内重发，直到续载真正发生。
+    await waitFor(() => {
+      fireEvent.scroll(list)
+      expect(fetchRooms).toHaveBeenCalledWith({ cursor: 'C1' })
+    })
+    expect(await screen.findByText('B2 卡房间')).toBeInTheDocument()
+    fireEvent.scroll(list)
+    // has_more=false 后不得再发任何带 cursor 的续载（首屏 limit 轮询不算）。
+    const cursorCalls = vi.mocked(fetchRooms).mock.calls.filter(([opts]) => opts?.cursor !== undefined)
+    expect(cursorCalls).toHaveLength(1)
+  })
+
+  it('426 渲染可行动升级提示，不显示半页', async () => {
+    vi.mocked(fetchRooms).mockRejectedValue(
+      new ApiError(426, '客户端版本过旧：会话列表已改为分页加载，请升级 handoff 桌面端与控制台后重试。'))
+    render(<RoomPanel workbench={workbench()} persistent />)
+    expect(await screen.findByText(/客户端版本过旧/)).toBeInTheDocument()
   })
 })
 
@@ -255,7 +298,7 @@ describe('RoomPanel 发送后刷新（B287）', () => {
     vi.mocked(fetchInbox).mockImplementation(
       () => new Promise((resolve) => { releaseInbox = resolve }),
     )
-    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room()], has_more: false })
     const user = userEvent.setup()
     render(<RoomPanel workbench={workbench()} persistent={false} />)
     await user.click(await screen.findByRole('button', { name: /会话 B1/ }))
@@ -268,7 +311,7 @@ describe('RoomPanel 发送后刷新（B287）', () => {
 
 describe('RoomPanel 悬浮球（B287）', () => {
   it('收起球上移错开 + 球：bottom-[104px]（+球占 44–88px，净距 16px）', async () => {
-    vi.mocked(fetchRooms).mockResolvedValue([])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [], has_more: false })
     render(<RoomPanel workbench={workbench()} persistent={false} />)
     const fab = await screen.findByRole('button', { name: '打开房间面板' })
     expect(fab.className).toContain('bottom-[104px]')
@@ -279,7 +322,7 @@ describe('RoomPanel 悬浮球（B287）', () => {
 describe('RoomPanel 浮窗几何（B287）', () => {
   it('浮窗按 geom 摆位：拖标题栏改 left/top，拉角落改宽高，最小尺寸钳制', async () => {
     window.localStorage.setItem('handoff:room-panel-geom.v1', JSON.stringify({ x: 100, y: 80, w: 360, h: 520 }))
-    vi.mocked(fetchRooms).mockResolvedValue([])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [], has_more: false })
     render(<RoomPanel workbench={workbench()} persistent={false} />)
     const panel = await screen.findByTestId('room-panel')
     expect(panel.style.left).toBe('100px')
@@ -298,7 +341,7 @@ describe('RoomPanel 浮窗几何（B287）', () => {
 
   it('几何本机持久化：拖动后写入 localStorage，重挂载恢复摆法', async () => {
     window.localStorage.clear()
-    vi.mocked(fetchRooms).mockResolvedValue([])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [], has_more: false })
     const view = render(<RoomPanel workbench={workbench()} persistent={false} />)
     await screen.findByTestId('room-panel')
     fireEvent.pointerDown(screen.getByTestId('room-panel-title'), { clientX: 0, clientY: 0 })
@@ -316,7 +359,7 @@ describe('RoomPanel 浮窗几何（B287）', () => {
 
 describe('RoomPanel 常驻栏独立开合（B287 返修）', () => {
   it('浮窗收起不牵连工作项页常驻栏；常驻栏自己可收起、可由悬浮球重开', async () => {
-    vi.mocked(fetchRooms).mockResolvedValue([room()])
+    vi.mocked(fetchRooms).mockResolvedValue({ rooms: [room()], has_more: false })
     const user = userEvent.setup()
     const view = render(<RoomPanel workbench={workbench()} persistent={false} />)
     await screen.findByTestId('room-panel')
