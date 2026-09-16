@@ -47,7 +47,7 @@ var (
 )
 
 // ErrInvalidCursor 表示分页游标非法：坏 base64、坏 JSON、缺 a/r 键、键类型不符
-// （B374 契约 §3.2，冻结清单 F4）。gateway 用 errors.Is 识别它并映射 HTTP 400；
+// （B374 契约 §3.2，冻结清单 F10）。gateway 用 errors.Is 识别它并映射 HTTP 400；
 // 列表组装失败（读卡/读事件/游标快照）不裹本哨兵，仍走 500。游标是 collab 根包
 // 自己的 wire 概念（非 room 执法内核），故哨兵定义在此、不落 room 子包。
 var ErrInvalidCursor = errors.New("collab: 分页游标非法")
@@ -363,7 +363,7 @@ func encodeRoomCursor(lastActivity time.Time, roomID string) string {
 
 // decodeRoomCursor 解码游标；空串表示首页（零值，nil error）。非法 base64、
 // 非法 JSON，或载荷缺 a/r 键 / 键类型不符（如 `{}`、`{"a":"x"}`）都返回裹了
-// ErrInvalidCursor 的 error（gateway 据此映射 400，契约 §3.2 冻结清单 F4）。
+// ErrInvalidCursor 的 error（gateway 据此映射 400，契约 §3.2 冻结清单 F10）。
 func decodeRoomCursor(raw string) (time.Time, string, error) {
 	if raw == "" {
 		return time.Time{}, "", nil
@@ -373,7 +373,7 @@ func decodeRoomCursor(raw string) (time.Time, string, error) {
 		return time.Time{}, "", fmt.Errorf("%w: base64 解码: %v", ErrInvalidCursor, err)
 	}
 	// 用 map 而非直接 Unmarshal 进 roomCursor：后者对缺键/类型不符静默补零值，
-	// 会把 `{}` 当合法游标（首条时间 + 空 ID），与 F4「缺键即非法」冲突。
+	// 会把 `{}` 当合法游标（首条时间 + 空 ID），与 F10「缺键即非法」冲突。
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(decoded, &fields); err != nil {
 		return time.Time{}, "", fmt.Errorf("%w: JSON 解码: %v", ErrInvalidCursor, err)
@@ -408,38 +408,39 @@ func trimRoomPage(rooms []proto.RoomSummary, pageCursor string, limit int) ([]pr
 	if limit > roomsPageMaxLimit {
 		limit = roomsPageMaxLimit
 	}
-	start := 0
+	page := rooms
 	if pageCursor != "" {
 		at, roomID, err := decodeRoomCursor(pageCursor)
 		if err != nil {
 			return nil, "", false, err
 		}
-		start = -1
+		found := -1
 		for i := range rooms {
 			if rooms[i].ID == roomID {
-				start = i + 1
+				found = i
 				break
 			}
 		}
-		if start < 0 {
-			// 兜底：房间已不在当前列表。跳过所有 LastActivity 不早于游标时刻的条目。
-			start = len(rooms)
+		if found >= 0 {
+			page = rooms[found+1:]
+		} else {
+			// 兜底：房间已不在当前列表。按扁平序逐条过滤，只保留 LastActivity
+			// 早于游标时刻的条目。**不得用「首个 Before(at) 的下标切尾巴」**：
+			// 扁平序是 active 在前、sunk 沉底，跨段非单调（段内降序），切尾巴会
+			// 把排在更早 active 之后、时刻却不早于游标的 sunk 房间错误带回。
+			filtered := make([]proto.RoomSummary, 0, len(rooms))
 			for i := range rooms {
 				if rooms[i].LastActivity.Before(at) {
-					start = i
-					break
+					filtered = append(filtered, rooms[i])
 				}
 			}
-		}
-		if start > len(rooms) {
-			start = len(rooms)
+			page = filtered
 		}
 	}
-	page := rooms[start:]
+	hasMore := len(page) > limit
 	if len(page) > limit {
 		page = page[:limit]
 	}
-	hasMore := start+len(page) < len(rooms)
 	next := ""
 	if hasMore && len(page) > 0 {
 		last := page[len(page)-1]

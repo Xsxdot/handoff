@@ -73,3 +73,13 @@
 27. 2026-09-16：web 全量 `npx vitest run` → `Test Files 124 passed (124) / Tests 1333 passed (1333)`；`npx tsc -b` → 退出 0。
 
 28. 2026-09-16：提交事实。`git add <19 文件> && git commit -m "feat(B374): server-side rooms pagination, attach refresh scoping, log triple"` 原始输出尾部：`5fea0faa feat(B374): server-side rooms pagination, attach refresh scoping, log triple`、`create mode 100644 docs/superpowers/ledgers/2026-09-16-b374-implement-ledger.md`（另 4 新文件）。本条随手 amend 收进同批提交；amend 会换 hash，不回写、不 chase，收口判据是工作树干净。
+
+## 7. implement 补刀（独立 review 判 major：trimRoomPage 兜底切尾巴带回 sunk）
+
+29. 2026-09-16：基线复核：`go test ./internal/collab/ -count=1 -run 'TestListRoomsPage|TestRoomCursor'` → `ok 0.014s`。
+30. 2026-09-16：先写红测试 `TestListRoomsPageFallbackFiltersNonMonotonicFlatOrder`（`rooms_page_test.go`）：扁平序 active[A(at-1s)] + sunk[Z(at+1h)]，游标房间 A0 已消失。首红原文：`rooms_page_test.go:176: 兜底必须逐条保留 LastActivity.Before(at) 的条目（不得带回 sunk Z）: [A Z]`；`--- FAIL`。失败原因是功能缺失（旧实现按下标切尾巴把 Z 带回），非 typo。
+31. 2026-09-16：改 `trimRoomPage`：主判据命中走 `rooms[found+1:]`（不变）；未命中改**按扁平序逐条过滤 `LastActivity.Before(at)`**，弃用 `start` 下标切尾。`hasMore` 语义随之改为 `len(page) > limit`（过滤后集合长度，过滤路径下与旧 `start+len(page)<len(rooms)` 不等价，必须随改）。注释说明跨段非单调为何不能切尾。
+32. 2026-09-16：`go test ./internal/collab/ -count=1 -run 'TestListRoomsPage|TestRoomCursor' -v` → 全 PASS（含既有同刻全跳过、更早留下、主判据/兜底切换三支保绿）。
+33. 2026-09-16：变异自验（命中唯一 `count(old)==1` → `go build ./...` = BUILD_OK → 跑测试）。变异把过滤改回 `start` 下标切尾：`--- FAIL: TestListRoomsPageFallbackFiltersNonMonotonicFlatOrder`，`FAIL`；还原后 `ok 0.004s`。确认测试有牙。
+34. 2026-09-16：注释勘误 F4→F10：`service.go:50`（`ErrInvalidCursor`）、`:366`（`decodeRoomCursor`）、`:376`（缺键即非法）三处残留 F4 改 F10。`grep -n 'F4' internal/collab/service.go internal/agentd/roomsapi.go` → 无命中。
+35. 2026-09-16：收口：`go build ./...` → `FULL_BUILD_OK`；`go test ./internal/collab/ -count=1` → `ok ... 3.907s`。未跑全量（本补刀只触及 collab，plan 测试范围声明 collab 局部 + 全量编译即够）。

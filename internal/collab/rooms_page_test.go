@@ -155,6 +155,28 @@ func TestListRoomsPageFallbackSkipsSameInstant(t *testing.T) {
 	}
 }
 
+// TestListRoomsPageFallbackFiltersNonMonotonicFlatOrder 锁 F14 兜底在非单调扁平序上
+// 按扁平序逐条过滤，而不是从首个更早条目切尾巴：active 段里有一条活动早于游标时刻的
+// 房间，其后 sunk 段的终态房间活动晚于游标时刻（降序排序只在段内成立，跨段非单调）。
+// 兜底若用「首个 Before(at) 的下标切尾巴」，会把该 sunk 房间错误带回。
+func TestListRoomsPageFallbackFiltersNonMonotonicFlatOrder(t *testing.T) {
+	base := time.Date(2026, 9, 15, 0, 0, 0, 0, time.UTC)
+	at := base
+	// 扁平序 = active[A(at-1s)] + sunk[Z(at+1h)]；游标房间 A0 已不在列表。
+	fake := &fakeLC{cards: []proto.Card{
+		{ID: "A", Title: "A", Status: "进行中", UpdatedAt: at.Add(-time.Second)},
+		{ID: "Z", Title: "Z", Status: "已完成", UpdatedAt: at.Add(time.Hour)},
+	}, leases: map[string]time.Time{}}
+	page, err := New(fake).ListRoomsPage("", "", encodeRoomCursor(at, "A0"), 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := cardIDs(page.Rooms)
+	if len(got) != 1 || got[0] != "A" {
+		t.Fatalf("兜底必须逐条保留 LastActivity.Before(at) 的条目（不得带回 sunk Z）: %v", got)
+	}
+}
+
 // TestListRoomsPageCursorRoomPresentVsRemoved 锁主判据/兜底两条路径的切换：
 // 房间仍在 → 其位置之后；房间已被移走 → 首个更早时刻起算。
 func TestListRoomsPageCursorRoomPresentVsRemoved(t *testing.T) {
