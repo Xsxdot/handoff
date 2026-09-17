@@ -25,6 +25,16 @@
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
 
+## 来自 B376 spec（2026-09-17）
+
+- **`go run github.com/…/codegraph` 认成 codegraph 查询**：会编译，不是只读查询。来源：`docs/superpowers/specs/b376.md` Out of Scope。
+- **`handoff init` 多选审批者**：本期 init 仍问一个；多选用手改 yaml。来源：同上。
+- **每候选单独 `approver.model`**：本期共用一个 model。来源：同上。
+- **剥 `/bin/bash -lc` 再做静默匹配**：不改执行器上报形态。来源：同上。
+- **`find` / `npx vitest` 进白名单**：近 14 天不是噪声源或有副作用面。来源：同上。
+- **`approver_disabled` 改成 wait 可交付**：会碰 B233.1 假集合。来源：同上。
+- **控制台设置页审批者表单**：今天没有；权威是执行机 yaml。来源：同上。
+
 ## 来自 B356 spec（2026-09-11）
 
 - **card wait 持久 cursor / 逐条回放**：建连快照覆盖「挂 wait 前已镜像的子卡工单」；子树成员集动态时 cursor 回放未做。来源：`docs/superpowers/specs/b356.md` Out of Scope（与 B253 同口径）。
