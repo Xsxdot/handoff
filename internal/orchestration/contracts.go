@@ -165,12 +165,16 @@ func NewFailedPayload(reason, branch, commit string) FailedPayload {
 
 // ApproverDecisionPayload 是 approver_decision 事件的 payload：审批者对一次权限
 // 请求的裁决结果。Decision 取 approve/escalate/error（error=裁决本身失败）。
+//
+// B376：Executor 记录最终生效的候选名（failover 后停下的那个），空=未配置/
+// 旧路径。additive 字段，omitempty 保证旧事件形态不变。
 type ApproverDecisionPayload struct {
 	TicketID   string `json:"ticket_id"`
 	Permission string `json:"permission"`
 	Decision   string `json:"decision"`
 	Reason     string `json:"reason"`
 	ElapsedMS  int64  `json:"elapsed_ms"`
+	Executor   string `json:"executor,omitempty"`
 }
 
 // —— Dispatch 哨兵（gateway server 层映射为 400/500）——

@@ -186,16 +186,55 @@ type SyncConfig struct {
 // ApproverConfig 描述审批链的廉价模型审批者。
 //
 // 参数语义：
-//   - Executor：审批者执行者名（如 opencode/claude/grok/agy/codex）；空=不启用审批链
-//   - Model：审批者模型名；空=用执行者自身默认模型
+//   - Executor：审批者执行者有序候选（如 opencode/claude/grok/agy/codex）；
+//     空=不启用审批链。YAML 标量与序列都合法（B376）
+//   - Model：审批者模型名；空=用执行者自身默认模型（全候选共用）
 //   - Timeout：单次裁决超时，超时按 escalate 处理（fail-closed）
 //   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工协调者
 type ApproverConfig struct {
-	Executor  string
+	Executor  ExecutorList
 	Model     string
 	Timeout   time.Duration
 	Blacklist []string
 }
+
+// ExecutorList 是 approver.executor 的值类型：YAML 标量或序列都合法。
+//
+// 为什么需要自定义反序列化（B376）：旧配置是标量 `executor: codex`，
+// 新语义是有序 failover 候选列表。同一键必须两形态都吃——另起键名会让
+// 存量配置静默失效。
+type ExecutorList []string
+
+// UnmarshalYAML 接受标量（单元素）与序列（原样），其余形态报错。
+func (l *ExecutorList) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		// 空标量（`executor:` 或 `executor: ""`）是历史「不启用」写法，
+		// 必须保持关闭语义，不能变成含一个空串元素的列表（那会被校验拒绝）。
+		if value.Tag == "!!null" || value.Value == "" {
+			*l = nil
+			return nil
+		}
+		var s string
+		if err := value.Decode(&s); err != nil {
+			return err
+		}
+		*l = ExecutorList{s}
+		return nil
+	case yaml.SequenceNode:
+		var out []string
+		if err := value.Decode(&out); err != nil {
+			return err
+		}
+		*l = ExecutorList(out)
+		return nil
+	default:
+		return fmt.Errorf("approver.executor 必须是标量或序列（第 %d 行）", value.Line)
+	}
+}
+
+// Empty 报告候选列表是否为空（即审批链关闭）。
+func (l ExecutorList) Empty() bool { return len(l) == 0 }
 
 // ExecutorConfig 描述 dispatch 未显式指定执行者时的缺省选择。
 type ExecutorConfig struct {
@@ -531,9 +570,22 @@ func (c *Config) validate() error {
 	}
 	// approver 相关的取值域校验只在审批链启用时生效（Executor 非空）：
 	// 未启用时写不写这些键都不影响行为，写错也不该拦启动。
-	if c.Approver.Executor != "" {
+	if !c.Approver.Executor.Empty() {
 		if c.Approver.Timeout <= 0 {
 			return fmt.Errorf("approver.timeout 必须为正时长（当前 %s）", c.Approver.Timeout)
+		}
+		// 候选列表的两条形态校验（B376）：空串元素没有可路由的执行者名；
+		// 重复名会让同一个 OneShot 被绑两次，failover 语义上自欺——都在
+		// 启动期拦，不留到运行期静默去重。
+		seen := make(map[string]bool, len(c.Approver.Executor))
+		for i, name := range c.Approver.Executor {
+			if name == "" {
+				return fmt.Errorf("approver.executor[%d] 不能为空串", i)
+			}
+			if seen[name] {
+				return fmt.Errorf("approver.executor 含重复候选 %q", name)
+			}
+			seen[name] = true
 		}
 		for i, r := range c.Approver.Blacklist {
 			// 黑名单是正则，必须在启动期编译校验：运行期才 panic 会让

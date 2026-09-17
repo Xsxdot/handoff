@@ -337,11 +337,11 @@ func TestRequireClaudeCoordinationIsUnsupported(t *testing.T) {
 }
 
 func TestBindApproverOneShotRejectsMissingBinding(t *testing.T) {
-	ap, err := orchestration.NewApprover(config.ApproverConfig{Executor: "missing"}, nil, slog.Default())
+	ap, err := orchestration.NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"missing"}}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = bindApproverOneShot(ap, map[string]executor.Adapter{}, "missing", slog.Default())
+	err = bindApproverOneShot(ap, map[string]executor.Adapter{}, []string{"missing"}, slog.Default())
 	if err == nil {
 		t.Fatal("未知执行者必须让审批者绑定失败")
 	}
@@ -353,13 +353,13 @@ func TestBindApproverOneShotRejectsMissingBinding(t *testing.T) {
 }
 
 func TestBindApproverOneShotRejectsAdapterWithoutOneShot(t *testing.T) {
-	ap, err := orchestration.NewApprover(config.ApproverConfig{Executor: "fake"}, nil, slog.Default())
+	ap, err := orchestration.NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"fake"}}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
 	err = bindApproverOneShot(ap, map[string]executor.Adapter{
 		"fake": &fake.Fake{},
-	}, "fake", slog.Default())
+	}, []string{"fake"}, slog.Default())
 	if err == nil {
 		t.Fatal("未实现 OneShot 的执行者必须让审批者绑定失败")
 	}

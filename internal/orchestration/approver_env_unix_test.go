@@ -30,7 +30,7 @@ func newEnvApprover(t *testing.T, body string) *Approver {
 	}
 	res := envfile.NewResolver(dir, envfile.Static(map[string]string{"opencode": "a.env"}),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: 5 * time.Second},
+	ap, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: 5 * time.Second},
 		res, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewApprover: %v", err)
@@ -95,7 +95,7 @@ func TestApproverEnvFailureDoesNotRunCommand(t *testing.T) {
 	}
 	res := envfile.NewResolver(dir, envfile.Static(map[string]string{"opencode": "nope.env"}),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
-	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: 5 * time.Second},
+	ap, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: 5 * time.Second},
 		res, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewApprover: %v", err)
@@ -121,7 +121,7 @@ func TestApproverEnvFailureDoesNotRunCommand(t *testing.T) {
 
 // TestApproverWithNilResolverStillRuns 确认 nil resolver（未配置/测试场景）不注入也不报错。
 func TestApproverWithNilResolverStillRuns(t *testing.T) {
-	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: 5 * time.Second},
+	ap, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: 5 * time.Second},
 		nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if err != nil {
 		t.Fatalf("NewApprover: %v", err)

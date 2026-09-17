@@ -362,7 +362,7 @@ func TestApprovalClientTaskIDNamespacing(t *testing.T) {
 // 9. 注入 Judge 失败 / 审批超时：构造 Approver 让 Decide 阻塞超过 Timeout 或返回错误 -> 不得 allow
 func TestApprovalClientApproverFailureOrTimeoutDoesNotAllow(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	app, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: 10 * time.Millisecond}, nil, logger)
+	app, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: 10 * time.Millisecond}, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -409,7 +409,7 @@ func TestApprovalClientApproverFailureOrTimeoutDoesNotAllow(t *testing.T) {
 // 10. 审批路径不得调用 OpenCode session API：注入 Approver.BindOneShot，记录 req；断言 prompt 来自审批模板，不得出现 OpenCode session /session/ 或 PromptAsync
 func TestApprovalClientDoesNotInvokeOpenCodeSessionAPI(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	app, err := NewApprover(config.ApproverConfig{Executor: "opencode", Model: "deepseek-v4-flash", Timeout: time.Second}, nil, logger)
+	app, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Model: "deepseek-v4-flash", Timeout: time.Second}, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,7 +481,7 @@ func TestApprovalClientDoesNotInvokeOpenCodeSessionAPI(t *testing.T) {
 // 11. 审批模型 Approve=true 时落地已送达 grant，同指纹第二次 Request 自动复用（Major 1）
 func TestApprovalClientApproverAllowCreatesReusableGrantAndSecondRequestReuses(t *testing.T) {
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	app, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, logger)
+	app, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, logger)
 	if err != nil {
 		t.Fatal(err)
 	}

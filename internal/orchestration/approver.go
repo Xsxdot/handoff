@@ -36,6 +36,21 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/turn"
 )
 
+// ApproverAttempt 是一次候选尝试的审计记录（B376）。
+//
+//   - Executor: 本候选执行者名
+//   - Decision: approve / escalate / error（方案与 ApproverDecision 同义）
+//   - Reason: 裁决理由或失败原因
+//   - Err: 非 nil 表示该候选失败（命令失败/解析失败/未绑定/超时）
+//   - ElapsedMS: 本候选耗时
+type ApproverAttempt struct {
+	Executor  string
+	Decision  string
+	Reason    string
+	Err       error
+	ElapsedMS int64
+}
+
 // ApproverDecision 是审批者一次裁决的结果。
 //
 //   - Approve: true=自动放行（executor 收 once）；false=升级人工协调者
@@ -44,48 +59,78 @@ import (
 //   - Err: 非 nil 表示裁决本身失败（命令失败/解析失败/超时/取值非法）——
 //     区别于干净的 escalate（Err=nil）。上层据此做连续失败计数：只有 Err 非 nil
 //     才累计，干净的 escalate 不算失败（那是审批者正常行使职权）
+//   - Executor: 最终生效的候选名（failover 后停下的那个）
+//   - Attempts: 本次请求内各候选的尝试记录，按尝试顺序
 type ApproverDecision struct {
 	Approve   bool
 	Reason    string
 	ElapsedMS int64
 	Err       error
+	Executor  string
+	Attempts  []ApproverAttempt
 }
 
 // Approver 是审批链的廉价模型裁决器。
 type Approver struct {
-	log          *slog.Logger
-	executorName string // one-shot 执行者名（如 opencode/claude）
-	model        string // 审批者模型；空=执行者自身默认
+	log *slog.Logger
+	// names 是有序候选执行者名（B376）。单候选时 names[0] 即历史 executorName；
+	// 第一个是「默认名」，单测/日志兼容旧语义。
+	names        []string
+	executorName string // = names[0]，保留给日志与单候选兼容
+	model        string // 审批者模型；空=执行者自身默认（全候选共用）
 	timeout      time.Duration
 	// env 是本审批者所用 agent 的 env 文件解析器；nil=不注入（未配置或测试场景）。
 	// 审批者与任务执行者是同一个 agent 的两次启动，必须共用同一份 env——代理只配
-	// 半边会让审批者连不出去后静默 fail-closed 升级，是最难查的那类故障
+	// 半边会让审批者连不出去后静默 fail-closed 升级，是最难查的那类故障。
+	// failover 时每个候选各取自己的 env.For(名字)。
 	env *envfile.Resolver
-	// shot 是执行一次性裁决的 OneShot 接口实现。
-	shot executor.OneShot
+	// shots 是候选名 → 一次性调用能力（B376）。单候选路径绑定到 names[0]，
+	// 兼容既有 BindOneShot 调用方。
+	shots map[string]executor.OneShot
 }
 
-// BindOneShot 绑定一次性调用能力实现。
+// BindOneShot 绑定一次性调用能力实现（绑到首要候选 names[0]）。
 func (a *Approver) BindOneShot(shot executor.OneShot) {
-	a.shot = shot
+	if a.shots == nil {
+		a.shots = map[string]executor.OneShot{}
+	}
+	if len(a.names) == 0 {
+		a.shots[a.executorName] = shot
+		return
+	}
+	a.shots[a.names[0]] = shot
+}
+
+// BindOneShotFor 把一次性调用能力绑到指定候选名（B376 failover）。
+func (a *Approver) BindOneShotFor(name string, shot executor.OneShot) {
+	if a.shots == nil {
+		a.shots = map[string]executor.OneShot{}
+	}
+	a.shots[name] = shot
 }
 
 // NewApprover 构造审批者。
 //
 // 参数：
-//   - cfg: 审批者配置；cfg.Executor 为空表示不启用审批链，返回 (nil, nil)
+//   - cfg: 审批者配置；cfg.Executor 为空表示不启用审批链，返回 (nil, nil)。
+//     非空时按序候选，第一个不可用/失败才试下一个
 //   - env: 本 agent 的 env 文件解析器（B19）；nil=不注入
 //   - log: 包日志入口
 //
 // 返回：
 //   - 未启用时返回 (nil, nil)；启用时返回可用的审批者
 func NewApprover(cfg config.ApproverConfig, env *envfile.Resolver, log *slog.Logger) (*Approver, error) {
-	if cfg.Executor == "" {
+	if cfg.Executor.Empty() {
 		return nil, nil
+	}
+	names := append([]string(nil), cfg.Executor...)
+	if log == nil {
+		log = slog.Default()
 	}
 	return &Approver{
 		log:          log,
-		executorName: cfg.Executor,
+		names:        names,
+		executorName: names[0],
 		model:        cfg.Model,
 		timeout:      cfg.Timeout,
 		env:          env,
@@ -122,63 +167,107 @@ func (a *Approver) Decide(ctx context.Context, permission, taskSummary string) A
 	if nonce == "" {
 		a.log.Warn("生成裁决 nonce 失败，本次裁决不做防伪校验", "executor", a.executorName)
 	}
-	a.log.Info("审批者开始裁决", "permission", turn.TruncateRunes(permission, 80),
-		"executor", a.executorName, "model", a.model, "nonce", nonce)
+	// 一个 nonce 服务整条请求：所有候选拿到同一个 prompt，防伪语义不变
 	prompt := fmt.Sprintf(approverPromptTemplate, taskSummary, permission, nonce, nonce)
-	if a.shot == nil {
-		d := ApproverDecision{Approve: false, ElapsedMS: time.Since(start).Milliseconds(), Err: fmt.Errorf("审批者未绑定 OneShot")}
-		a.log.Error("审批者裁决缺少 OneShot", "executor", a.executorName)
-		return d
+	a.log.Info("审批者开始裁决", "permission", turn.TruncateRunes(permission, 80),
+		"executors", strings.Join(a.names, ","), "model", a.model, "nonce", nonce)
+
+	var attempts []ApproverAttempt
+	var lastErr error
+	for _, name := range a.names {
+		attempt := a.decideWithCandidate(ctx, name, prompt, nonce, permission, taskSummary)
+		attempts = append(attempts, attempt)
+		if attempt.Err == nil {
+			// 干净裁决（approve 或 escalate）：停，不再试下一个
+			return ApproverDecision{
+				Approve:   attempt.Decision == "approve",
+				Reason:    attempt.Reason,
+				ElapsedMS: time.Since(start).Milliseconds(),
+				Executor:  name,
+				Attempts:  attempts,
+			}
+		}
+		lastErr = attempt.Err
+		a.log.Warn("审批者候选失败，尝试下一个", "executor", name,
+			"cause", attempt.Err, "tried", len(attempts))
+	}
+	// 全部候选都失败：返回一个总 Err（请求级失败计 1，不按候选数累加）
+	if lastErr == nil {
+		lastErr = fmt.Errorf("审批者未绑定 OneShot")
+	}
+	final := ApproverDecision{
+		Approve:   false,
+		ElapsedMS: time.Since(start).Milliseconds(),
+		Err:       fmt.Errorf("全部审批候选均失败（%s）: %w", strings.Join(a.names, ","), lastErr),
+		Attempts:  attempts,
+	}
+	if len(attempts) > 0 {
+		final.Executor = attempts[len(attempts)-1].Executor
+	}
+	a.log.Error("审批者全部候选失败", "executors", strings.Join(a.names, ","),
+		"tried", len(attempts), "cause", final.Err)
+	return final
+}
+
+// decideWithCandidate 对单个候选执行一次裁决尝试。
+//
+// 未绑定 OneShot / env 解析失败都算该候选失败（Decision=error, Err 非 nil），
+// 由 Decide 决定是否继续 failover。每个候选各取自己的 env.For(name)。
+func (a *Approver) decideWithCandidate(ctx context.Context, name, prompt, nonce, permission, taskSummary string) ApproverAttempt {
+	candStart := time.Now()
+	shot := a.shots[name]
+	if shot == nil {
+		err := fmt.Errorf("审批者候选 %q 未绑定 OneShot", name)
+		a.log.Error("审批者候选缺少 OneShot", "executor", name)
+		return ApproverAttempt{Executor: name, Decision: "error", Reason: err.Error(),
+			Err: err, ElapsedMS: time.Since(candStart).Milliseconds()}
 	}
 	var env []string
 	if a.env != nil {
-		extra, err := a.env.For(a.executorName)
+		extra, err := a.env.For(name)
 		if err != nil {
-			a.log.Error("审批者 env 文件解析失败，本次裁决升级人工协调者",
-				"executor", a.executorName, "cause", err)
-			return ApproverDecision{Approve: false, ElapsedMS: time.Since(start).Milliseconds(), Err: fmt.Errorf("解析审批者 env 文件: %w", err)}
+			a.log.Error("审批者 env 文件解析失败，该候选按失败处理",
+				"executor", name, "cause", err)
+			return ApproverAttempt{Executor: name, Decision: "error", Reason: err.Error(),
+				Err: fmt.Errorf("解析审批者 env 文件: %w", err), ElapsedMS: time.Since(candStart).Milliseconds()}
 		}
 		if len(extra) > 0 {
 			env = append(os.Environ(), extra...)
 		}
 	}
 	req := executor.OneShotReq{Prompt: prompt, Model: a.model, Env: env, Limits: executor.OneShotLimits{}}
-	if a.executorName == executor.HarnessGrok {
+	if name == executor.HarnessGrok {
 		req.Limits.Effort = executor.EffortLow
 	}
-	ctx, cancel := context.WithTimeout(ctx, a.timeout)
+	cctx, cancel := context.WithTimeout(ctx, a.timeout)
 	defer cancel()
-	reply, err := a.shot.Invoke(ctx, req)
-	elapsed := time.Since(start).Milliseconds()
+	a.log.Info("审批者候选开始", "executor", name, "model", a.model)
+	reply, err := shot.Invoke(cctx, req)
+	elapsed := time.Since(candStart).Milliseconds()
 	if err != nil {
-		// fail-closed：命令失败/超时/不存在一律按 escalate，且 Err 非 nil
-		// 供上层计数禁用——这既是「审批者为什么没批」的第一现场，也是
-		// 「连续失败多少次就该停用」的判据
-		d := ApproverDecision{Approve: false, ElapsedMS: elapsed, Err: err}
-		a.log.Error("审批者裁决失败", "permission", turn.TruncateRunes(permission, 80),
+		a.log.Error("审批者候选裁决失败", "executor", name,
+			"permission", turn.TruncateRunes(permission, 80),
 			"cause", err, "output", turn.TruncateRunes(reply.Text, 200), "elapsed_ms", elapsed)
-		return d
+		return ApproverAttempt{Executor: name, Decision: "error", Reason: err.Error(),
+			Err: err, ElapsedMS: elapsed}
 	}
 	d := parseDecision(reply.Text, nonce, elapsed)
-	if d.Err != nil && strings.Contains(d.Err.Error(), "nonce 不匹配") {
-		a.log.Error("审批者裁决 nonce 校验失败，按升级处理", "task_summary", turn.TruncateRunes(taskSummary, 60),
-			"permission", turn.TruncateRunes(permission, 80), "cause", d.Err)
+	if d.Err != nil {
+		if strings.Contains(d.Err.Error(), "nonce 不匹配") {
+			a.log.Error("审批者裁决 nonce 校验失败，按候选失败处理", "executor", name,
+				"task_summary", turn.TruncateRunes(taskSummary, 60),
+				"permission", turn.TruncateRunes(permission, 80), "cause", d.Err)
+		}
+		return ApproverAttempt{Executor: name, Decision: "error", Reason: d.Err.Error(),
+			Err: d.Err, ElapsedMS: elapsed}
 	}
-	a.log.Info("审批者裁决完成", "decision", decisionLabel(d), "reason", turn.TruncateRunes(d.Reason, 80),
-		"elapsed_ms", elapsed)
-	return d
-}
-
-// decisionLabel 把裁决结果压成一个日志可读的短标签。
-func decisionLabel(d ApproverDecision) string {
-	switch {
-	case d.Approve:
-		return "approve"
-	case d.Err != nil:
-		return "error"
-	default:
-		return "escalate"
+	decision := "escalate"
+	if d.Approve {
+		decision = "approve"
 	}
+	a.log.Info("审批者候选裁决完成", "executor", name, "decision", decision,
+		"reason", turn.TruncateRunes(d.Reason, 80), "elapsed_ms", elapsed)
+	return ApproverAttempt{Executor: name, Decision: decision, Reason: d.Reason, ElapsedMS: elapsed}
 }
 
 // parseDecision 从裁决命令输出里解析 decision。

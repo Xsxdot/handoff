@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -79,12 +80,13 @@ func (h *testHub) published() []proto.Event {
 }
 
 type hookCalls struct {
-	mu          sync.Mutex
-	autoAllows  int
-	transitions []proto.TaskState
-	failures    int
-	resets      int
-	deliveries  []string
+	mu             sync.Mutex
+	autoAllows     int
+	transitions    []proto.TaskState
+	failures       int
+	resets         int
+	deliveries     []string
+	disabledReason string
 }
 
 func newClientFixture(t *testing.T, verdict permgate.Verdict,
@@ -147,6 +149,11 @@ func newClientFixture(t *testing.T, verdict permgate.Verdict,
 			calls.mu.Lock()
 			calls.deliveries = append(calls.deliveries, ticketID+": "+cause.Error())
 			calls.mu.Unlock()
+		},
+		ConsultDisabledReason: func(string) string {
+			calls.mu.Lock()
+			defer calls.mu.Unlock()
+			return calls.disabledReason
 		},
 	}
 	snap := executor.PolicySnapshot{
@@ -519,6 +526,78 @@ func TestClientApproverAllowUndeliveredUntilAck(t *testing.T) {
 	}
 	if ticketListed(undelivered, first.Ref.ID) {
 		t.Fatalf("AckDelivered 之后不得仍在待投列表（#12）: got=%+v", undelivered)
+	}
+}
+
+// TestClientDisabledEscalatesWithDisabledReason 钉住 B376 第 3 条：审批链停用
+// 后 Escalate 的理由必须点名停用，不得再回落「黑名单未命中」。
+func TestClientDisabledEscalatesWithDisabledReason(t *testing.T) {
+	st, _, client, calls := newClientFixture(t, permgate.Verdict{Action: permgate.Consult, Reason: "黑名单未命中"}, false, nil)
+	calls.mu.Lock()
+	calls.disabledReason = "审批链已停用（连续 3 次失败）"
+	calls.mu.Unlock()
+	res, err := client.Request(context.Background(), permissionRequest("native-disabled", "python3 script.py"))
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Decision.Status != executor.ApprovalPending {
+		t.Fatalf("停用后应升级为 pending: %+v", res.Decision)
+	}
+	if !strings.Contains(res.Decision.Reason, "审批链已停用") {
+		t.Fatalf("升级理由必须含停用说明，得到 %q", res.Decision.Reason)
+	}
+	if res.Decision.Reason == "黑名单未命中" {
+		t.Fatalf("停用后不得回落「黑名单未命中」，得到 %q", res.Decision.Reason)
+	}
+	tk, err := st.GetTicket(res.Ref.ID)
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	request := payloadMap(t, tk.Request)
+	if reason, _ := request["permission"].(string); reason == "" {
+		t.Fatalf("工单请求缺 permission: %v", request)
+	}
+}
+
+// TestClientConsultWritesAttemptEvents 钉住 B376 第 3 条：每次候选尝试各写一条
+// approver_decision，payload 能看出 executor 与 decision；这里从 Store 真读，
+// 穿过 AppendEvent 的真实 JSON 反序列化。
+func TestClientConsultWritesAttemptEvents(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true,
+		func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{
+				Approve:   true,
+				Reason:    "grok 放行",
+				ElapsedMS: 12,
+				Executor:  "grok",
+				Attempts: []approval.ApproverAttempt{
+					{Executor: "codex", Decision: "error", Reason: "codex 挂了", Err: errors.New("codex 挂了")},
+					{Executor: "grok", Decision: "approve", Reason: "grok 放行"},
+				},
+			}
+		})
+	if _, err := client.Request(context.Background(), permissionRequest("native-attempts", "python3 script.py")); err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var got []map[string]any
+	for _, ev := range events {
+		if ev.Type != proto.EventTypeApproverDecision {
+			continue
+		}
+		got = append(got, payloadMap(t, ev.Payload))
+	}
+	if len(got) != 2 {
+		t.Fatalf("期望 2 条 approver_decision，得到 %d: %+v", len(got), got)
+	}
+	if got[0]["executor"] != "codex" || got[0]["decision"] != "error" {
+		t.Fatalf("第一条 = %+v，期望 codex/error", got[0])
+	}
+	if got[1]["executor"] != "grok" || got[1]["decision"] != "approve" {
+		t.Fatalf("第二条 = %+v，期望 grok/approve", got[1])
 	}
 }
 

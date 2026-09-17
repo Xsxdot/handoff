@@ -449,7 +449,7 @@ func (m *Manager) resolveSnapshot(task *proto.Task) (executor.PolicySnapshot, er
 		TaskTmpDir: executor.TaskTmpDir(m.cfg.DataDir, task.ID),
 	}
 	cfg := m.conf()
-	ver := HashPolicyVersion(cfg.Approver.Blacklist, cfg.Approver.Executor != "", permgate.SafeCommandIDs(), scope)
+	ver := HashPolicyVersion(cfg.Approver.Blacklist, !cfg.Approver.Executor.Empty(), permgate.SafeCommandIDs(), scope)
 	return executor.PolicySnapshot{Version: ver, TaskID: task.ID, Scope: scope}, nil
 }
 
@@ -2283,6 +2283,21 @@ func (m *Manager) shouldConsultApprover(taskID string) bool {
 	return true
 }
 
+// consultDisabledReason 返回审批链停用时的升级理由；未停用返回空串。
+//
+// B376 第 3 条：停用后的 Escalate 理由必须点名停用（连续 N 次失败），
+// 不得再回落判据的「黑名单未命中」——那是一句正确但误导的话，会让协调者
+// 去查命令判据，而真正坏的是审批链。
+func (m *Manager) consultDisabledReason(taskID string) string {
+	m.apMu.Lock()
+	disabled := m.apDisabled[taskID]
+	m.apMu.Unlock()
+	if !disabled {
+		return ""
+	}
+	return fmt.Sprintf("审批链已停用（连续 %d 次失败）", maxApproverFails)
+}
+
 // markApproverInflight 尝试登记 ticket 的审批中状态；返回 false 表示已有同
 // ticket 的裁决在途（SSE 重放），本次直接吞掉不重复咨询。
 func (m *Manager) markApproverInflight(ticketID string) bool {
@@ -2330,7 +2345,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	}
 	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, ApproverDecisionPayload{
 		TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
-		Reason: reason, ElapsedMS: d.ElapsedMS,
+		Reason: reason, ElapsedMS: d.ElapsedMS, Executor: d.Executor,
 	}); err != nil {
 		m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 	}

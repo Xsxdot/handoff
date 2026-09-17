@@ -269,6 +269,15 @@ func (g *Gate) judgeBash(req Request, scope Scope) Verdict {
 		return Verdict{Action: AutoAllow, Rule: RuleSafeCommand,
 			Reason: "安全命令白名单命中: " + id}
 	}
+	// B376：复合只读拆段静默。白名单仍只认单段——这一段只在「整条仍是
+	// Consult」时把 `a && b` / `a | b` / `a; b` 拆开逐段证明只读；任一段
+	// 证明不了就整条 Consult，绝不半段放行。
+	if id, segs, ok := compoundSilent(req.Command); ok {
+		g.log.Info("复合只读命令静默", "command", req.Command, "id", id,
+			"segments", segs, "targets", len(targets))
+		return Verdict{Action: AutoAllow, Rule: RuleSafeCommand,
+			Reason: "复合只读命令静默: " + id}
+	}
 	g.log.Debug("安全命令白名单未命中", "command", req.Command)
 	return verdict
 }
@@ -278,10 +287,22 @@ func SafeCommandIDs() []string {
 	return []string{
 		"git-ledger-amend", "go-build", "go-test", "go-vet", "gofmt",
 		"npm-test", "npm-run", "make",
-		"ls", "cat", "grep", "which", "pwd", "head", "tail", "wc",
+		"ls", "cat", "grep", "rg", "which", "pwd", "head", "tail", "wc",
+		"echo", "printf", "cd", "sed-n", "codegraph",
 		"git-status", "git-diff", "git-log", "git-grep", "git-show",
 		"git-blame", "git-cat-file", "git-rev-parse", "git-ls-files",
+		"git-branch", "git-merge-base", "git-ls-tree", "git-rev-list",
 	}
+}
+
+// codegraphReadSubcommands 是 codegraph 的只读子命令闭集（B376）。
+//
+// 闭集之外的任何子命令都判 Consult：codegraph absorb 这类会改写视图目录，
+// 不在静默面里。
+var codegraphReadSubcommands = map[string]bool{
+	"sym": true, "who-calls": true, "chain": true, "flow": true,
+	"tree": true, "context": true, "entity": true, "domains": true,
+	"check": true, "validate": true, "summary": true,
 }
 
 // safeCommandID matches a complete, positive command shape and returns its
@@ -302,7 +323,27 @@ func safeCommandID(command string) (id string, ok bool) {
 	if len(segments) != 1 || len(segments[0]) == 0 {
 		return "", false
 	}
-	fields := segments[0]
+	return matchSilentFields(segments[0], command)
+}
+
+// matchSilentFields 在单段词元上匹配静默白名单。command 是承载这些词元的
+// 原文（复合拆段时是段文本，单段路径时是整条命令），供 gofmt/git diff 的
+// 写落点与 echo/printf 的重定向守卫使用。
+//
+// 为什么单独拆出来：单段白名单被两处复用——safeCommandID 的原路径与 B376
+// 复合拆段的每一段。两份实现迟早漂移，白名单表必须只有一处。
+func matchSilentFields(fields []string, command string) (id string, ok bool) {
+	if len(fields) == 0 {
+		return "", false
+	}
+	// 命令替换（`$(...)` / 反引号）不得静默：它在引号内也会被执行——词元匹配
+	// 只看得到 `echo`，而 shell 会跑括号里的任意命令。splitSafeCommand 的引号
+	// 状态机把引号内内容当字面量，不会报警，所以这道守卫必须独立存在。
+	// 不拦纯变量展开（`$VAR`/`${VAR}`）：它不执行命令，且 `echo "$HOME"` 是
+	// 高频无副作用写法，拦它会重新制造噪音。`${VAR:-$(cmd)}` 里的 `$(` 仍被拦。
+	if hasCommandSubstitution(command) {
+		return "", false
+	}
 	if len(fields) >= 2 && fields[0] == "go" {
 		switch fields[1] {
 		case "build":
@@ -327,13 +368,53 @@ func safeCommandID(command string) (id string, ok bool) {
 			if len(fields) >= 3 && fields[2] != "" && !strings.HasPrefix(fields[2], "-") {
 				return "npm-run", true
 			}
+		case "--prefix":
+			// B376：--prefix 插在 npm 与 test/run 之间也认；`npm --prefix d ci`
+			// 的 ci 仍非静默。
+			if len(fields) >= 4 {
+				switch fields[3] {
+				case "test":
+					return "npm-test", true
+				case "run":
+					if len(fields) >= 5 && fields[4] != "" && !strings.HasPrefix(fields[4], "-") {
+						return "npm-run", true
+					}
+				}
+			}
 		}
 	}
 	if fields[0] == "make" {
 		return "make", true
 	}
 	switch fields[0] {
-	case "ls", "cat", "grep", "which", "pwd", "head", "tail", "wc":
+	case "ls", "cat", "grep", "rg", "which", "pwd", "head", "tail", "wc":
+		return fields[0], true
+	}
+	if fields[0] == "cd" && len(fields) <= 2 {
+		return "cd", true
+	}
+	if fields[0] == "codegraph" {
+		if len(fields) == 1 || fields[1] == "--help" || fields[1] == "--version" {
+			return "codegraph", true
+		}
+		if codegraphReadSubcommands[fields[1]] {
+			return "codegraph-" + fields[1], true
+		}
+		return "", false
+	}
+	if fields[0] == "sed" {
+		// B376：sed 只有 -n 只读形态才静默；-i/--in-place 会改源文件。
+		if (hasToken(fields[1:], "-n") || hasToken(fields[1:], "--quiet")) &&
+			!hasToken(fields[1:], "-i") && !hasToken(fields[1:], "--in-place") {
+			return "sed-n", true
+		}
+		return "", false
+	}
+	if fields[0] == "echo" || fields[0] == "printf" {
+		// B376：echo/printf 只在无写重定向时静默；`echo x > file` 是写。
+		if hasNonDiscardWriteRedirect(command) {
+			return "", false
+		}
 		return fields[0], true
 	}
 	if len(fields) >= 2 && fields[0] == "git" {
@@ -362,9 +443,248 @@ func safeCommandID(command string) (id string, ok bool) {
 			return "git-rev-parse", true
 		case "ls-files":
 			return "git-ls-files", true
+		case "merge-base":
+			return "git-merge-base", true
+		case "ls-tree":
+			return "git-ls-tree", true
+		case "rev-list":
+			return "git-rev-list", true
+		case "branch":
+			// B376：git branch 的删除/改名/复制/强制形态都非只读。
+			for _, f := range fields {
+				switch f {
+				case "-d", "-D", "-m", "-c", "-C", "--delete", "--move", "--copy", "--force":
+					return "", false
+				}
+			}
+			return "git-branch", true
 		}
 	}
 	return "", false
+}
+
+// hasNonDiscardWriteRedirect 判断命令是否含会真正写文件的输出重定向。
+//
+// 复用 RedirectTargets 的引号感知扫描，只是把 /dev/null 这类丢弃设备排除。
+func hasNonDiscardWriteRedirect(cmd string) bool {
+	for _, t := range RedirectTargets(cmd) {
+		if !IsDiscardTarget(t) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasCommandSubstitution 判断命令是否含命令替换或变量展开（含引号内）。
+//
+// 为什么必须独立扫原文：splitSafeCommand 的引号状态机把引号内内容当字面量，
+// `echo "$(rm -rf x)"` 会被切成干净的 [echo, $(rm -rf x)]。但 shell 在引号内
+// **照样执行** 命令替换。判据是「静态可证明」，内容不可见就不在静默面。
+func hasCommandSubstitution(cmd string) bool {
+	for i := 0; i < len(cmd); i++ {
+		switch cmd[i] {
+		case '`':
+			return true
+		case '$':
+			if i+1 < len(cmd) && cmd[i+1] == '(' {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// compoundSilent 是 B376 的复合只读判定入口：把 `a && b` / `a | b` / `a; b`
+// 拆开后逐段证明只读，全部可静默才静默。
+//
+// 边界（与 spec 第 1 条逐字对齐）：
+//   - 白名单仍只认单段——本函数不把整串写进白名单表
+//   - 任一段证明不了（未知命令、写重定向、管道进写工具）→ 整条不静默
+//   - 绝不半段放行：`grep a && rm x` 整条 Consult
+//
+// 返回：命中 id（"compound"）、段数、是否整条可静默。
+func compoundSilent(command string) (id string, segments int, ok bool) {
+	segs, ok := splitSilentSegments(command)
+	if !ok {
+		return "", 0, false
+	}
+	for _, seg := range segs {
+		if _, ok := matchSilentSegment(seg); !ok {
+			return "", len(segs), false
+		}
+	}
+	return "compound", len(segs), true
+}
+
+// splitSilentSegments 把命令按引号外的 `&&` / `||` / `;` 切开。
+//
+// 返回 ok=false 的形态（任一出现即整条不静默）：
+//   - 未闭合引号、换行、`(` `)`、反引号、`$(`、`${`
+//   - 单独的 `&`（后台执行，不在静默面）
+//   - 空段（连接符前后缺命令）
+//
+// 注意：`|` 不在这里切——管道在 matchSilentSegment 内按 `每一级可静默`
+// 单独判定（语义不同：管道级的可静默条件是逐级只读）。
+func splitSilentSegments(cmd string) ([]string, bool) {
+	var out []string
+	var token strings.Builder
+	var quote rune
+	flush := func() bool {
+		seg := strings.TrimSpace(token.String())
+		token.Reset()
+		if seg == "" {
+			return false
+		}
+		out = append(out, seg)
+		return true
+	}
+	rs := []rune(cmd)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+			token.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote = r
+			token.WriteRune(r)
+		case r == '&':
+			if i+1 >= len(rs) || rs[i+1] != '&' {
+				return nil, false
+			}
+			if !flush() {
+				return nil, false
+			}
+			i++
+		case r == '|':
+			if i+1 < len(rs) && rs[i+1] == '|' {
+				if !flush() {
+					return nil, false
+				}
+				i++
+				continue
+			}
+			token.WriteRune(r) // 单管道留给 splitPipeStages
+		case r == ';':
+			if !flush() {
+				return nil, false
+			}
+		case r == '\n', r == '(', r == ')', r == '`':
+			return nil, false
+		case r == '$' && i+1 < len(rs) && (rs[i+1] == '(' || rs[i+1] == '{'):
+			return nil, false
+		default:
+			token.WriteRune(r)
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	if !flush() {
+		return nil, false
+	}
+	return out, true
+}
+
+// splitPipeStages 把一段命令按引号外的 `|` 切成管道各级。
+func splitPipeStages(seg string) ([]string, bool) {
+	var out []string
+	var token strings.Builder
+	var quote rune
+	flush := func() bool {
+		stage := strings.TrimSpace(token.String())
+		token.Reset()
+		if stage == "" {
+			return false
+		}
+		out = append(out, stage)
+		return true
+	}
+	rs := []rune(seg)
+	for i := 0; i < len(rs); i++ {
+		r := rs[i]
+		switch {
+		case quote != 0:
+			if r == quote {
+				quote = 0
+			}
+			token.WriteRune(r)
+		case r == '\'' || r == '"':
+			quote = r
+			token.WriteRune(r)
+		case r == '|':
+			if i+1 < len(rs) && rs[i+1] == '|' {
+				return nil, false // `||` 应在段层已被切开，出现即形态异常
+			}
+			if !flush() {
+				return nil, false
+			}
+		default:
+			token.WriteRune(r)
+		}
+	}
+	if quote != 0 {
+		return nil, false
+	}
+	if !flush() {
+		return nil, false
+	}
+	return out, true
+}
+
+// silentFields 把一段命令切成词元（引号感知）。段内不应再含连接符；
+// 出现连接符或未闭合引号即返回 ok=false。
+func silentFields(seg string) ([]string, bool) {
+	segments, ok := splitSafeCommand(seg)
+	if !ok || len(segments) != 1 {
+		return nil, false
+	}
+	return segments[0], true
+}
+
+// matchSilentSegment 判定单段（可含管道）能否静默，返回命中的 id。
+//
+// 判定顺序：
+//  1. 段内含非丢弃写重定向 → 否（`echo x > file` 不得静默）
+//  2. 无管道：整段作为单段白名单匹配
+//  3. 有管道：每一级都要单段可静默，且末级二进制不是 `tee`
+func matchSilentSegment(seg string) (string, bool) {
+	if hasNonDiscardWriteRedirect(seg) {
+		return "", false
+	}
+	stages, ok := splitPipeStages(seg)
+	if !ok {
+		return "", false
+	}
+	if len(stages) == 1 {
+		fields, ok := silentFields(stages[0])
+		if !ok {
+			return "", false
+		}
+		return matchSilentFields(fields, seg)
+	}
+	firstID := ""
+	for i, stage := range stages {
+		fields, ok := silentFields(stage)
+		if !ok {
+			return "", false
+		}
+		if i == 0 {
+			firstID = fields[0]
+		}
+		if i == len(stages)-1 && fields[0] == "tee" {
+			return "", false
+		}
+		if _, ok := matchSilentFields(fields, stage); !ok {
+			return "", false
+		}
+	}
+	if firstID == "" {
+		firstID = "pipe"
+	}
+	return firstID, true
 }
 
 func hasToken(fields []string, want string) bool {

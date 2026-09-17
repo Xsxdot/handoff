@@ -32,11 +32,12 @@ func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) exec
 	}
 	m.log.Info("组装 ApprovalClient", "task", taskID, "version", snap.Version)
 	return approval.NewClient(taskID, snap, approval.Hooks{
-		Log:             m.log,
-		Store:           m.st,
-		Hub:             m.hub,
-		JudgePermission: m.judgePermission,
-		ShouldConsult:   m.shouldConsultApprover,
+		Log:                   m.log,
+		Store:                 m.st,
+		Hub:                   m.hub,
+		JudgePermission:       m.judgePermission,
+		ShouldConsult:         m.shouldConsultApprover,
+		ConsultDisabledReason: m.consultDisabledReason,
 		Decide: func(ctx context.Context, permission, summary string) approval.ConsultDecision {
 			if m.approver == nil {
 				return approval.ConsultDecision{Err: errors.New("审批者不可用")}
@@ -45,6 +46,7 @@ func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) exec
 			return approval.ConsultDecision{
 				Approve: d.Approve, Reason: d.Reason,
 				ElapsedMS: d.ElapsedMS, Err: d.Err,
+				Executor: d.Executor, Attempts: toApprovalAttempts(d.Attempts),
 			}
 		},
 		CountConsultFailure: m.countApproverFail,
@@ -60,6 +62,25 @@ func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) exec
 		TransitBestEffort:  m.transitBestEffort,
 		NoteDeliveryFailed: m.NoteDeliveryFailed,
 	})
+}
+
+// toApprovalAttempts 把编排侧的裁决尝试记录投影到 approval 包的同构类型。
+//
+// 为什么复制而不是让 approval 包 import orchestration：审批包必须保持
+// agentd-independent（它只通过 Hooks 触碰编排能力），跨包投影是这条边界的
+// 固定成本。
+func toApprovalAttempts(in []ApproverAttempt) []approval.ApproverAttempt {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]approval.ApproverAttempt, 0, len(in))
+	for _, a := range in {
+		out = append(out, approval.ApproverAttempt{
+			Executor: a.Executor, Decision: a.Decision, Reason: a.Reason,
+			Err: a.Err, ElapsedMS: a.ElapsedMS,
+		})
+	}
+	return out
 }
 
 // HashPolicyVersion computes a stable version for policy content. The field

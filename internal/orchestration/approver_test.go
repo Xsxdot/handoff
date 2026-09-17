@@ -41,7 +41,7 @@ func (s *stubShot) Invoke(ctx context.Context, req executor.OneShotReq) (executo
 // 固定输出会被判无效——这里把 prompt 里的 nonce 自动注入 JSON 行，保持
 // 「approve/escalate 干净裁决」的既有用例原意。
 func newTestApprover(t *testing.T, out string, err error) *Approver {
-	a, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+	a, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -126,7 +126,7 @@ func approverStep(perm string) []fake.Step {
 // fake 脚本由调用方提供。
 func newTestManagerWithApproverOut(t *testing.T, script []fake.Step, out string, cmdErr error) (*Manager, *store.Store, *fake.Fake) {
 	t.Helper()
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -140,7 +140,7 @@ func newTestManagerWithApproverOut(t *testing.T, script []fake.Step, out string,
 // fake 脚本由调用方提供。
 func newTestManagerWithApproverFunc(t *testing.T, script []fake.Step, fn func(ctx context.Context, req executor.OneShotReq) (executor.OneShotReply, error)) (*Manager, *store.Store, *fake.Fake) {
 	t.Helper()
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -335,7 +335,7 @@ func TestApproverBlacklistSkipsApprover(t *testing.T) {
 // 读取，普通 int 是 data race（-race 稳定复现，P1-5）。
 func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	var callCount atomic.Int64
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -386,7 +386,7 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 // TestApproverDecisionErrorRecordsCause 验证裁决命令失败时 approver_decision
 // 的 reason 带上 Err 原文（B316 配额失败事件 reason 为空，界面上看不见）。
 func TestApproverDecisionErrorRecordsCause(t *testing.T) {
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -467,7 +467,7 @@ func TestRelayAnswerRelaysApproverAllowAsOnce(t *testing.T) {
 // 随后审批者判 escalate 也不得重建工单/唤醒协调者——只留 approver_decision 审计
 // 事件，避免「状态 waiting_review 却带 pending 权限工单」的 U-1/U-3 矛盾形态回归。
 func TestApproverConcurrentTaskEndOnlyAudits(t *testing.T) {
-	ap, aerr := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+	ap, aerr := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 	if aerr != nil {
 		t.Fatal(aerr)
 	}
@@ -639,7 +639,7 @@ func hasApproverState(m *Manager, taskID string) bool {
 // 在任务终结处被清理（P2-5）：这两张内存 map 若随归档任务残留会无界增长。
 func TestApproverStateClearedOnTaskEnd(t *testing.T) {
 	t.Run("handleResult 回合结束清理", func(t *testing.T) {
-		ap, _ := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+		ap, _ := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 		m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake", ap)
 		task := mustApproverDispatch(t, m)
 		setApproverState(m, task.ID)
@@ -653,7 +653,7 @@ func TestApproverStateClearedOnTaskEnd(t *testing.T) {
 		}
 	})
 	t.Run("Done 归档清理", func(t *testing.T) {
-		ap, _ := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+		ap, _ := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 		m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fake.New(nil)}, "fake", ap)
 		task := mustApproverDispatch(t, m)
 		if err := m.transit(task.ID, proto.TaskStateWaitingReview, "test"); err != nil {
@@ -714,7 +714,7 @@ func TestDecideRequiresMatchingNonce(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+			ap, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -735,7 +735,7 @@ func TestDecideRequiresMatchingNonce(t *testing.T) {
 }
 
 func TestDecideInvokesOneShotWithGrokEffortLow(t *testing.T) {
-	a, err := NewApprover(config.ApproverConfig{Executor: "grok", Timeout: time.Second}, nil, slog.Default())
+	a, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"grok"}, Timeout: time.Second}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -750,6 +750,125 @@ func TestDecideInvokesOneShotWithGrokEffortLow(t *testing.T) {
 	}
 	if stub.last.Limits.Timeout != 0 {
 		t.Fatalf("Timeout 不得编进 Limits 当 argv；取消走 ctx。got %s", stub.last.Limits.Timeout)
+	}
+}
+
+// TestDecideFailoverSecondApproves 钉住 B376 第 2 条：第一候选出错才试下一个，
+// 第二候选干净放行即停。两次尝试都必须记进 Attempts。
+func TestDecideFailoverSecondApproves(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"codex", "grok"}, Timeout: time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var firstCalls, secondCalls atomic.Int64
+	a.BindOneShotFor("codex", &stubShot{
+		fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+			firstCalls.Add(1)
+			return executor.OneShotReply{Status: executor.OneShotFailed}, errors.New("codex 不可用")
+		},
+	})
+	a.BindOneShotFor("grok", &stubShot{
+		fn: func(_ context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			secondCalls.Add(1)
+			out := injectNonceForTest(`{"decision":"approve","reason":"grok 放行"}`, extractNonceForTest(req.Prompt))
+			return executor.OneShotReply{Text: out, Status: executor.OneShotOK}, nil
+		},
+	})
+	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	if !d.Approve || d.Err != nil {
+		t.Fatalf("第二候选干净放行应 approve: %+v", d)
+	}
+	if d.Executor != "grok" {
+		t.Fatalf("最终生效候选 = %q，期望 grok", d.Executor)
+	}
+	if len(d.Attempts) != 2 {
+		t.Fatalf("Attempts = %+v，期望两条", d.Attempts)
+	}
+	if d.Attempts[0].Executor != "codex" || d.Attempts[0].Decision != "error" {
+		t.Fatalf("第一条 attempt = %+v，期望 codex/error", d.Attempts[0])
+	}
+	if d.Attempts[1].Executor != "grok" || d.Attempts[1].Decision != "approve" {
+		t.Fatalf("第二条 attempt = %+v，期望 grok/approve", d.Attempts[1])
+	}
+	if firstCalls.Load() != 1 || secondCalls.Load() != 1 {
+		t.Fatalf("两候选各应被调用一次，first=%d second=%d", firstCalls.Load(), secondCalls.Load())
+	}
+}
+
+// TestDecideFailoverCleanEscalateDoesNotTryNext 钉住「模型的干净升级是职权，
+// 不是故障」：第一候选干净 escalate 即停，不再试下一个。
+func TestDecideFailoverCleanEscalateDoesNotTryNext(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"codex", "grok"}, Timeout: time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BindOneShotFor("codex", &stubShot{out: `{"decision":"escalate","reason":"拿不准"}`})
+	a.BindOneShotFor("grok", &stubShot{
+		fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+			t.Fatal("干净 escalate 之后不得再试下一个候选")
+			return executor.OneShotReply{}, nil
+		},
+	})
+	d := a.Decide(context.Background(), "Bash: curl", "摘要")
+	if d.Approve || d.Err != nil || d.Reason != "拿不准" {
+		t.Fatalf("应干净 escalate: %+v", d)
+	}
+	if d.Executor != "codex" {
+		t.Fatalf("最终生效候选 = %q，期望 codex", d.Executor)
+	}
+	if len(d.Attempts) != 1 || d.Attempts[0].Decision != "escalate" {
+		t.Fatalf("Attempts = %+v，期望一条 escalate", d.Attempts)
+	}
+}
+
+// TestDecideAllCandidatesError 钉住全候选失败才返回总 Err，且请求级失败在外层
+// 只计 1 次（这里只验证 Decide 返回一个总 Err，不按候选数量累加）。
+func TestDecideAllCandidatesError(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"codex", "grok"}, Timeout: time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BindOneShotFor("codex", &stubShot{err: errors.New("codex 挂了")})
+	a.BindOneShotFor("grok", &stubShot{err: errors.New("grok 挂了")})
+	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	if d.Err == nil {
+		t.Fatalf("全候选失败应返回总 Err: %+v", d)
+	}
+	if d.Approve {
+		t.Fatalf("全候选失败不得 approve: %+v", d)
+	}
+	if len(d.Attempts) != 2 {
+		t.Fatalf("Attempts = %+v，期望两条 error", d.Attempts)
+	}
+	for _, at := range d.Attempts {
+		if at.Decision != "error" {
+			t.Fatalf("attempt = %+v，期望 error", at)
+		}
+	}
+}
+
+// TestDecideUnboundCandidateSkipsToNext 钉住部分候选未绑定 OneShot 时当作
+// 不可用处理：记一条 error attempt，继续试下一个。
+func TestDecideUnboundCandidateSkipsToNext(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"codex", "grok"}, Timeout: time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	a.BindOneShotFor("grok", &stubShot{out: `{"decision":"approve"}`})
+	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	if !d.Approve || d.Executor != "grok" {
+		t.Fatalf("未绑定候选应跳过试下一个: %+v", d)
+	}
+	if len(d.Attempts) != 2 || d.Attempts[0].Executor != "codex" || d.Attempts[0].Decision != "error" {
+		t.Fatalf("Attempts = %+v", d.Attempts)
 	}
 }
 

@@ -20,7 +20,7 @@ func (m *Manager) consultApproverForTest(taskID string, approve bool, ticketID, 
 	if approve {
 		decision = "approve"
 	}
-	ap, err := NewApprover(config.ApproverConfig{Executor: "opencode", Timeout: time.Second}, nil, slog.Default())
+	ap, err := NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"opencode"}, Timeout: time.Second}, nil, slog.Default())
 	if err != nil {
 		panic(err)
 	}

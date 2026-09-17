@@ -53,18 +53,111 @@ func TestJudgeSafeCommandTable(t *testing.T) {
 	}
 }
 
+// TestJudgeCompoundSilentTable 钉住 B376 第 1 条：复合只读拆段后整条静默。
+//
+// 入口仍是 Gate.Judge——拆段只服务静默判定，不是新的判据权威。每段都要能
+// 单独证明只读才整条 AutoAllow；半段放行被产品明禁。
+func TestJudgeCompoundSilentTable(t *testing.T) {
+	g := newTestGate(t)
+	work := t.TempDir()
+	sc := Scope{Workdir: work, TaskDir: t.TempDir(), TaskTmpDir: filepath.Join(work, "tmp")}
+	cases := []struct {
+		name    string
+		command string
+	}{
+		{"与连接的两段只读", "grep a && grep b"},
+		{"cd 段带出工作目录", "cd src && rg foo"},
+		{"三段只读 git", "git status && git branch --show-current && git rev-parse HEAD"},
+		{"管道只读", "ls | head"},
+		{"sed -n 只读", "sed -n '1,20p' file"},
+		{"分号串 sed 与 echo", `sed -n '219,300p' f; echo "=== cursor"`},
+		{"codegraph 读图补全", "codegraph sym Gate.Judge"},
+		{"npm --prefix", "npm --prefix web test"},
+		{"printf 无重定向", `printf '%s\n' hello`},
+		{"单段 go test 回归", "go test ./..."},
+		{"单段 grep 回归", "grep -R x docs"},
+		{"单段 git status 回归", "git status --short"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Command: tc.command}, sc)
+			if v.Action != AutoAllow || v.Rule != RuleSafeCommand {
+				t.Fatalf("command %q verdict = %#v, want AutoAllow safe-command", tc.command, v)
+			}
+		})
+	}
+}
+
+// TestJudgeCompoundNotSilent 钉住 B376 的反例面：只读段不能把写段带过门，
+// 未知段一律整条 Consult，不做半段放行。
+func TestJudgeCompoundNotSilent(t *testing.T) {
+	g := newTestGate(t)
+	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
+	for _, command := range []string{
+		"grep a && rm x",
+		"git branch -d topic",
+		"sed -i 's/a/b/' f",
+		"ls | tee out",
+		"echo x > file",
+		"go test ./... | tee /tmp/out",
+		`bash -c "go test ./..."`,
+		"go run ./...",
+		"git log -S x --oneline || true",
+		"codegraph absorb",
+		"npm --prefix web ci",
+	} {
+		v := g.Judge(Request{Tool: "bash", Command: command}, sc)
+		if v.Action == AutoAllow && v.Rule == RuleSafeCommand {
+			t.Fatalf("compound non-readonly %q was auto-allowed: %#v", command, v)
+		}
+	}
+}
+
+// TestJudgeCommandSubstitutionNotSilent 钉住命令替换不得静默：`echo "$(cmd)"`
+// 的词元匹配只看得到 echo，但 shell 在引号内照样执行替换。判据是「静态可
+// 证明」，内容不可见就不在静默面——这是不要用 echo 白名单开洞的守卫。
+func TestJudgeCommandSubstitutionNotSilent(t *testing.T) {
+	g := newTestGate(t)
+	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
+	for _, command := range []string{
+		`echo "$(rm -rf x)"`,
+		`echo "$(cat /etc/passwd)"`,
+		`printf '%s' "$(whoami)"`,
+		"grep \"$(cat /etc/passwd)\" f",
+	} {
+		v := g.Judge(Request{Tool: "bash", Command: command}, sc)
+		if v.Action == AutoAllow && v.Rule == RuleSafeCommand {
+			t.Fatalf("命令替换 %q 不得静默放行: %#v", command, v)
+		}
+	}
+}
+
+// TestJudgeEchoMimicIsEchoNotGoTest 反锁子串误判：echo 的正文含 "go test"
+// 时只能命中 echo，不得被当成 go-test 命中。
+func TestJudgeEchoMimicIsEchoNotGoTest(t *testing.T) {
+	g := newTestGate(t)
+	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
+	v := g.Judge(Request{Tool: "bash", Command: `echo "go test ./..."`}, sc)
+	if v.Action != AutoAllow || v.Rule != RuleSafeCommand {
+		t.Fatalf(`echo "go test ./..." 应按 echo 静默，实得 %#v`, v)
+	}
+	if !strings.Contains(v.Reason, "echo") || strings.Contains(v.Reason, "go-test") {
+		t.Fatalf("reason = %q，必须含 echo 且不得含 go-test", v.Reason)
+	}
+}
+
 // TestJudgeSafeCommandRejectsMimicsAndConnectors keeps shell wrappers and
 // untrusted command joins outside the positive whitelist.
+//
+// B376 起，纯只读的 `;` / `&&` 连接串改走 TestJudgeCompoundSilentTable 正例，
+// 本表只保留真正的包装器、管道进写工具、换行与写落点形态。
 func TestJudgeSafeCommandRejectsMimicsAndConnectors(t *testing.T) {
 	g := newTestGate(t)
 	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
 	for _, command := range []string{
-		`echo "go test ./..."`,
 		`bash -c "go test ./..."`,
 		"go test ./... | tee /tmp/out",
-		"go test ./...; cat file",
 		"go test ./...\ncat file",
-		"git status && git log",
 		"git log -S HANDOFF_SESSION_CLI --oneline || true",
 		"git show --output=/tmp/x HEAD",
 		"go run ./...",

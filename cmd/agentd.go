@@ -552,28 +552,44 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 // bindApproverOneShot 绑定审批者使用的 OneShot 能力。
 // 架构法边界：组装点只从同一 ads Bundle 取 OneShot；未实现能力必须启动失败，
 // 禁止另起一份按名称构造表。
-func bindApproverOneShot(ap *orchestration.Approver, ads map[string]executor.Adapter, name string, log *slog.Logger) error {
-	if ap == nil || name == "" {
+//
+// B376：names 是有序候选列表。逐个从 ads 取；一个都绑不上 → 启动失败（与今天
+// 单名未注册相同）；部分缺失 → Warn，Decide 时该名当不可用（记为一次 error
+// attempt 后试下一个）。候选名为空=审批链关闭，直接返回。
+func bindApproverOneShot(ap *orchestration.Approver, ads map[string]executor.Adapter, names []string, log *slog.Logger) error {
+	if ap == nil || len(names) == 0 {
 		return nil
 	}
 	if log == nil {
 		log = slog.Default()
 	}
 	supported := strings.Join(executor.SupportedHarnesses(), ", ")
-	ad, ok := ads[name]
-	if !ok {
-		err := fmt.Errorf("审批者执行者 %q 未注册（支持 OneShot 的执行者: %s）", name, supported)
-		log.Error("审批者执行者未注册，无法绑定 OneShot", "executor", name, "supported", supported, "cause", err)
+	bound := 0
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		ad, ok := ads[name]
+		if !ok {
+			log.Warn("审批者候选未注册，跳过该候选（Decide 时按不可用处理）",
+				"executor", name, "supported", supported)
+			continue
+		}
+		shot, ok := ad.(executor.OneShot)
+		if !ok {
+			log.Warn("审批者候选未实现 OneShot，跳过该候选",
+				"executor", name, "supported", supported)
+			continue
+		}
+		ap.BindOneShotFor(name, shot)
+		bound++
+		log.Info("审批者候选已绑定 OneShot", "executor", name)
+	}
+	if bound == 0 {
+		err := fmt.Errorf("审批者候选 %v 全部无法绑定 OneShot（支持 OneShot 的执行者: %s）", names, supported)
+		log.Error("审批者候选全部无法绑定 OneShot，启动失败", "executors", names, "cause", err)
 		return err
 	}
-	shot, ok := ad.(executor.OneShot)
-	if !ok {
-		err := fmt.Errorf("审批者执行者 %q 未实现 OneShot（支持 OneShot 的执行者: %s）", name, supported)
-		log.Error("审批者执行者未实现 OneShot，无法绑定", "executor", name, "supported", supported, "cause", err)
-		return err
-	}
-	ap.BindOneShot(shot)
-	log.Info("审批者已绑定 OneShot", "executor", name)
 	return nil
 }
 

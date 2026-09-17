@@ -560,8 +560,8 @@ func TestInitApproverEmptyDisables(t *testing.T) {
 	if _, err := runInit(t, p, true, execAnswers("n")); err != nil {
 		t.Fatalf("init: %v", err)
 	}
-	if got := loadCfg(t, p).Approver.Executor; got != "" {
-		t.Fatalf("审批链空选后 Approver.Executor=%q，期望空串", got)
+	if got := loadCfg(t, p).Approver.Executor; !got.Empty() {
+		t.Fatalf("审批链空选后 Approver.Executor=%v，期望空", got)
 	}
 }
 

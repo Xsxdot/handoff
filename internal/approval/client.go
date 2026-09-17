@@ -27,15 +27,32 @@ type AnswerHub interface {
 	WaitAnswer(context.Context, string) (string, error)
 }
 
+// ApproverAttempt mirrors one candidate attempt from the orchestration
+// approver (B376). It is deliberately structural rather than an import so the
+// approval package stays agentd-independent.
+type ApproverAttempt struct {
+	Executor  string
+	Decision  string // approve / escalate / error
+	Reason    string
+	Err       error
+	ElapsedMS int64
+}
+
 // ConsultDecision is the agentd-independent result of an approver call.
 //
 // Err is retained as the original approver failure. An error or a non-approval
 // is always fail-closed by Client.
+//
+// B376: Attempts carries per-candidate failover records so consult can write one
+// approver_decision event per attempt. Empty Attempts preserves the single-event
+// behavior for a single-candidate approver.
 type ConsultDecision struct {
 	Approve   bool
 	Reason    string
 	ElapsedMS int64
 	Err       error
+	Executor  string
+	Attempts  []ApproverAttempt
 }
 
 // Hooks supplies the orchestration capabilities required by Client.
@@ -43,17 +60,20 @@ type ConsultDecision struct {
 // Store owns durable ticket/event state; Hub only wakes an active waiter.
 // Missing decision or persistence hooks are fail-closed and never allow.
 type Hooks struct {
-	Log                 *slog.Logger
-	Store               *store.Store
-	Hub                 AnswerHub
-	JudgePermission     func(taskID string, ev executor.AdapterEvent) permgate.Verdict
-	ShouldConsult       func(taskID string) bool
-	Decide              func(context.Context, string, string) ConsultDecision
-	CountConsultFailure func(taskID string)
-	ResetConsultFailure func(taskID string)
-	AutoAllow           func(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict)
-	TransitBestEffort   func(taskID string, to proto.TaskState, reason string)
-	NoteDeliveryFailed  func(taskID, ticketID string, cause error)
+	Log             *slog.Logger
+	Store           *store.Store
+	Hub             AnswerHub
+	JudgePermission func(taskID string, ev executor.AdapterEvent) permgate.Verdict
+	ShouldConsult   func(taskID string) bool
+	Decide          func(context.Context, string, string) ConsultDecision
+	// ConsultDisabledReason returns the escalation reason used when the approver
+	// chain has been disabled (B376). Returning "" keeps verdict.Reason.
+	ConsultDisabledReason func(taskID string) string
+	CountConsultFailure   func(taskID string)
+	ResetConsultFailure   func(taskID string)
+	AutoAllow             func(taskID string, ev executor.AdapterEvent, verdict permgate.Verdict)
+	TransitBestEffort     func(taskID string, to proto.TaskState, reason string)
+	NoteDeliveryFailed    func(taskID, ticketID string, cause error)
 }
 
 // Client is the production ApprovalClient implementation for one task.
@@ -148,7 +168,17 @@ func (c *Client) Request(ctx context.Context, req executor.ApprovalRequest) (exe
 	if verdict.Action == permgate.Consult && c.hooks.ShouldConsult == nil {
 		log.Error("审批者开关钩子缺失，升级人工", "task", c.taskID, "native", req.NativeID)
 	}
-	return c.escalate(ctx, ev, verdict.Reason)
+	// B376：审批链被连续失败停用时，升级理由必须点名停用，不得再回落
+	// 「黑名单未命中」——那会把「审批者坏了」掩盖成「命令没命中判据」。
+	reason := verdict.Reason
+	if c.hooks.ConsultDisabledReason != nil {
+		if r := c.hooks.ConsultDisabledReason(c.taskID); r != "" {
+			log.Warn("审批链已停用，升级理由改写", "task", c.taskID,
+				"native", req.NativeID, "reason", r)
+			reason = r
+		}
+	}
+	return c.escalate(ctx, ev, reason)
 }
 
 // Await waits for a gate answer, preferring durable state before and after the
@@ -303,25 +333,52 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 	c.logger().Info("审批者返回", "task", c.taskID, "ticket", ticketID,
 		"approve", dec.Approve, "elapsed_ms", dec.ElapsedMS, "error", dec.Err)
 
-	decision := "error"
-	switch {
-	case dec.Approve:
-		decision = "approve"
-	case dec.Err == nil:
-		decision = "escalate"
-	}
-	reason := dec.Reason
-	if reason == "" && dec.Err != nil {
-		reason = dec.Err.Error()
-	}
-	if _, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
-		TicketID:   ticketID,
-		Permission: decisionpkg.PermEventText(ev.Text),
-		Decision:   decision,
-		Reason:     reason,
-		ElapsedMS:  dec.ElapsedMS,
-	}); err != nil {
-		c.logger().Error("追加 approver_decision 事件失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+	// B376：每次候选尝试各写一条 approver_decision，payload 里带 executor，
+	// 协调者据此看出「试过谁、各自什么结论」。Attempts 为空（单候选旧路径）
+	// 时保持今天的一条行为。
+	permText := decisionpkg.PermEventText(ev.Text)
+	if len(dec.Attempts) > 0 {
+		for _, at := range dec.Attempts {
+			reason := at.Reason
+			if reason == "" && at.Err != nil {
+				reason = at.Err.Error()
+			}
+			c.logger().Info("审批者候选尝试", "task", c.taskID, "ticket", ticketID,
+				"executor", at.Executor, "decision", at.Decision)
+			if _, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
+				TicketID:   ticketID,
+				Permission: permText,
+				Decision:   at.Decision,
+				Reason:     reason,
+				ElapsedMS:  at.ElapsedMS,
+				Executor:   at.Executor,
+			}); err != nil {
+				c.logger().Error("追加 approver_decision 事件失败", "task", c.taskID,
+					"ticket", ticketID, "executor", at.Executor, "cause", err)
+			}
+		}
+	} else {
+		decision := "error"
+		switch {
+		case dec.Approve:
+			decision = "approve"
+		case dec.Err == nil:
+			decision = "escalate"
+		}
+		reason := dec.Reason
+		if reason == "" && dec.Err != nil {
+			reason = dec.Err.Error()
+		}
+		if _, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
+			TicketID:   ticketID,
+			Permission: permText,
+			Decision:   decision,
+			Reason:     reason,
+			ElapsedMS:  dec.ElapsedMS,
+			Executor:   dec.Executor,
+		}); err != nil {
+			c.logger().Error("追加 approver_decision 事件失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+		}
 	}
 
 	if dec.Err != nil {
@@ -477,6 +534,7 @@ type approverDecisionPayload struct {
 	Decision   string `json:"decision"`
 	Reason     string `json:"reason"`
 	ElapsedMS  int64  `json:"elapsed_ms"`
+	Executor   string `json:"executor,omitempty"`
 }
 
 type ticketAnsweredPayload struct {
