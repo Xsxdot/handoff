@@ -10,6 +10,10 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **OpenCode 协调者可挂 `wait --follow`（B373）。** `handoff skill install` 把仓内 monitor 插件写到 `~/.config/opencode/plugins/`（不改 `opencode.json`）。Command Code / Codex 仍走不带 `--follow` 的一次性 wait，每收到一个事件（含工单）就退出。
+
 ### 变更
 
 - **`task_mirrored` 只叫醒当前派发（B349）。** `card wait` 与小队自动化都核事件所属卡上最新 `EvDispatched` 的 Attempt/Target，以及账本 `source_task`/`source_target`。旧 attempt、错机器、无当前快照的镜像留账本，不打 stdout、不拉协调者。本机两边 target 都空仍算匹配。

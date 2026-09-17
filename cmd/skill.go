@@ -30,8 +30,14 @@ import (
 // 在仓库根。为什么不在本包放一份拷贝：那份拷贝会和二进制一样漂移。
 var skillContent string
 
+// pluginContent 是 main 包注入的 OpenCode monitor 插件源码。
+var pluginContent string
+
 // SetSkillContent 由 main 在启动时注入内嵌的 skill 全文。
 func SetSkillContent(s string) { skillContent = s }
+
+// SetPluginContent 由 main 注入 OpenCode monitor 插件全文。
+func SetPluginContent(s string) { pluginContent = s }
 
 func defaultSkillProviders(log *slog.Logger) []executor.Skills {
 	return []executor.Skills{
@@ -47,7 +53,8 @@ var skillCmd = &cobra.Command{
 	Use:   "skill",
 	Short: "查看或安装给 AI 协调者的 handoff skill",
 	Long: "不带参数报告各落点是否与当前二进制内嵌的 skill 一致。\n" +
-		"skill install 把内嵌版本装到本机各家 agent（Claude Code / codex / opencode / grok）。\n" +
+		"skill install 把内嵌版本装到本机各家 agent（Claude Code / codex / opencode / grok），\n" +
+		"并在已装 OpenCode 时写入 monitor 插件。\n" +
 		"安装与升级会自动调用它，正常不需要手工跑。",
 	RunE: func(cmd *cobra.Command, _ []string) error {
 		home, err := os.UserHomeDir()
@@ -57,6 +64,7 @@ var skillCmd = &cobra.Command{
 		// Status 的 err 恒为 nil：单点读取失败已落到该 Site 的 Note 上，
 		// 报告里如实点名，不让一处坏掉的落点吃掉整份报告
 		sites, _ := skill.Status(skillContent, home, defaultSkillProviders(slog.Default()))
+		sites = append(sites, skill.PluginStatus(pluginContent, home))
 		out := cmd.OutOrStdout()
 		for _, s := range sites {
 			fmt.Fprintf(out, "%-8s %s%s\n", skillStateText(s.State), s.Path, noteSuffix(s))
@@ -84,6 +92,7 @@ var skillInstallCmd = &cobra.Command{
 		if err != nil {
 			return err
 		}
+		sites = append(sites, skill.InstallPlugin(pluginContent, home))
 		// 逐个落点数出结论：安装是个「部分成功」的操作，只把表打给人看，
 		// 事后排查（比如「为什么这台机器的 codex 没有 skill」）就没有任何痕迹
 		var installed, skipped int

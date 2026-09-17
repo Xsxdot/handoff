@@ -114,15 +114,22 @@ handoff wait <task> --notify --timeout 1h
 
 上面的主循环假设操作者能前台阻塞一小时。agent 的 Bash 工具做不到（前台超时上限通常只有几分钟到十分钟），于是最常见的走样就是自己发明 `show` + `sleep` 轮询循环，或把几百轮 wait 包进一条 shell 大循环。**两种都不要。** 正确形态按你所在 harness 的能力二选一：
 
-- **有后台任务/监控机制的 harness（Claude Code 的 Monitor、grok 的 background task）**：挂一条后台 `wait --follow` 长订阅，见下节。
-- **没有后台唤醒机制的 harness（opencode、codex）**：挂不了 `--follow` 订阅，退回**前台一次性 wait 逐轮挂**：`handoff wait <完整 task-id> --timeout <小于前台超时上限，如 5m>`，阻塞到返回一个事件就处置，处置完再挂下一条；退出码 124 表示这轮没等到，直接再挂即可。每轮一条独立命令，事件 JSON 完整落在命令输出里——这不是被禁止的轮询循环，禁的是拿不到事件的 `show`+`sleep` 和吞掉输出的 shell 大循环。
+- **有按行叫醒的 harness（Claude Code 的 Monitor、grok 的 `monitor`、OpenCode 工具列表里的 `monitor`）**：挂一条后台 `wait --follow` 长订阅，见下节。
+- **没有按行叫醒的 harness（OpenCode 未装 handoff monitor 插件、codex、Command Code 的 `cmd`）**：挂不了 `--follow` 订阅，退回**前台一次性 wait 逐轮挂**：`handoff wait <完整 task-id> --timeout <小于前台超时上限，如 5m>`，每次收到一个事件（含工单）就退出并处置，处置完再挂下一条；退出码 124 表示这轮没等到，直接再挂即可。每轮一条独立命令，事件 JSON 完整落在命令输出里——这不是被禁止的轮询循环，禁的是拿不到事件的 `show`+`sleep` 和吞掉输出的 shell 大循环。Command Code 的 `monitor_command` 只在定时点/进程退出叫醒，**不能**当 follow 用。
 
-### 订阅：开一次，活到会话结束（Claude Code / grok）
+### 订阅：开一次，活到会话结束（Claude Code / grok / OpenCode `monitor`）
 
     Monitor({
       command: "handoff wait --follow <完整 task-id> --timeout 3h",
       description: "handoff <任务名> 事件流",
       persistent: true
+    })
+
+OpenCode 装了 handoff monitor 插件（`handoff skill install` 会写入，工具列表里有 `monitor`）时用：
+
+    monitor({
+      command: "handoff wait --follow <完整 task-id> --timeout 3h",
+      description: "handoff <任务名> 事件流"
     })
 
 事件作为通知逐条流入本会话，**没有「重挂」这个动作**。
@@ -496,10 +503,11 @@ handoff card wait <id> [--subtree] [--follow] [--timeout 3h]
   `delivery_failed` 会醒来，按任务处置表执行 `handoff resume <task>`。
 - 默认 `--timeout` 是等到可动作事件或终态收尾的总时长；`--follow` 的 `--timeout`
   是空闲上限，任意新账本事件（含被过滤审计事件）都会刷新它；超时退出 124。
-- 有后台 Monitor 的 Claude Code/grok：只挂一条
+- 有后台 Monitor 的 Claude Code/grok/OpenCode（`monitor` 插件）：只挂一条
   `handoff card wait --follow <id> --timeout 3h`。没有后台唤醒的 opencode/Codex：
   使用不带 `--follow` 的一次性（默认一次一挂）`handoff card wait <id> --timeout 5m`，返回后处置，
-  再挂下一条；不要用 `show`+`sleep`、shell 大循环、子 agent 或 `write_stdin` 轮询冒充 follow。
+  再挂下一条；不要用 `show`+`sleep`、shell 大循环、子 agent、`write_stdin` 或 Command Code 的
+  `monitor_command` 轮询冒充 follow（`monitor_command` 只在定时点/进程退出叫醒，不能当 follow 用）。
 - 卡 wait 与 task wait 不是两张分类表；同一工作流只在选择 follow 的 harness 上长挂
   card wait，不再叠加第二条 task 级订阅来补审计噪声。两次默认 wait 之间的偶发订阅真空
   是已接受的后续项，不在本卡创建常驻订阅者。
