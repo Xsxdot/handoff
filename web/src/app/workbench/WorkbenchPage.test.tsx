@@ -1,4 +1,5 @@
 import { act, createEvent, fireEvent, render, renderHook, within } from '@testing-library/react'
+import { useEffect } from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { WorkbenchPage } from './WorkbenchPage'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
@@ -427,6 +428,65 @@ describe('WorkbenchPage', () => {
     expect(revealed!.className).toContain('z-10')
     expect(revealed!.className).not.toContain('pointer-events-none')
     expect(revealed!.hasAttribute('inert')).toBe(false)
+  })
+
+  // B367 回归：换组只许翻 visible 标记，不许重挂终端子树。
+  // 双条件 `{a && el} {b && el}` 把同一 div 放在两个 keyless 槽位，
+  // visible 一翻 React 就按槽位卸载重建——xterm 全套 teardown/replay、
+  // Viewport 定时器打在已 dispose 的 RenderService 上刷 dimensions、
+  // PTY 重连定时器变孤儿。keep-alive 名存实亡。
+  function MountProbe({ id, mounts }: { id: string; mounts: Map<string, number> }) {
+    useEffect(() => {
+      mounts.set(id, (mounts.get(id) ?? 0) + 1)
+    }, [id, mounts])
+    return <div data-mount-probe={id} />
+  }
+
+  it('换组只翻 visible 标记：组容器是同一 DOM 节点，终端内容只挂载一次', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const firstGroup = hook.result.current.wb.activeGroupId
+    act(() => hook.result.current.addGroup())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 2 }, local))
+    const secondGroup = hook.result.current.wb.activeGroupId
+    const mounts = new Map<string, number>()
+    const view = render(
+      <WorkbenchPage
+        api={hook.result.current}
+        tree={null}
+        tasks={[]}
+        onAddProject={vi.fn()}
+        renderContent={(content, _base, groupId, tabId) => (
+          <MountProbe id={`${groupId}:${tabId}:${content.kind}`} mounts={mounts} />
+        )}
+      />,
+    )
+    const rerenderPage = () => view.rerender(
+      <WorkbenchPage
+        api={hook.result.current}
+        tree={null}
+        tasks={[]}
+        onAddProject={vi.fn()}
+        renderContent={(content, _base, groupId, tabId) => (
+          <MountProbe id={`${groupId}:${tabId}:${content.kind}`} mounts={mounts} />
+        )}
+      />,
+    )
+    const groups = () => [...view.container.querySelectorAll('[data-testid="workbench-group"]')] as HTMLElement[]
+    expect(groups()).toHaveLength(2)
+    const before = groups()
+    act(() => hook.result.current.activateGroup(firstGroup))
+    rerenderPage()
+    act(() => hook.result.current.activateGroup(secondGroup))
+    rerenderPage()
+    const after = groups()
+    expect(after).toHaveLength(2)
+    // 组容器必须是同一批 DOM 节点：换组只改类名/aria/inert，不替换子树
+    expect(after[0]).toBe(before[0])
+    expect(after[1]).toBe(before[1])
+    // 每个 tab 内容只挂载一次：重挂 = xterm 重建 + backlog 重放 + 重连风暴
+    expect(mounts.size).toBe(2)
+    for (const count of mounts.values()) expect(count).toBe(1)
   })
 
   it('纯文件组切走即卸，不占终端 keep-alive', () => {

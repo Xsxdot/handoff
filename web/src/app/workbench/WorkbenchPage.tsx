@@ -420,9 +420,15 @@ export function WorkbenchPage({
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
       <div className="relative isolate min-h-0 min-w-0 flex-1 overflow-hidden">
         {wb.groups.map((group) => (
+          // 单槽位条件：visible 翻转只改同一 div 的类名/aria/inert，不换槽位。
+          // 写成 `{a && el}{b && el}` 双槽位时，visible 一翻 React 就按索引
+          // 卸载重建——xterm 全套 teardown/replay、Viewport 定时器打在已
+          // dispose 的 RenderService 上刷 dimensions、PTY 重连定时器变孤儿
+          // （B367 回归实测）。纯文件/会话组后台仍照旧卸载（keep-alive 只保终端）。
           <Fragment key={group.id}>
-            {group.id === wb.activeGroupId && renderGroup(group, true)}
-            {group.id !== wb.activeGroupId && group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'terminal')) && renderGroup(group, false)}
+            {(group.id === wb.activeGroupId ||
+              group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'terminal'))) &&
+              renderGroup(group, group.id === wb.activeGroupId)}
           </Fragment>
         ))}
       </div>
