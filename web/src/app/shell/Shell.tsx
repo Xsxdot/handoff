@@ -57,7 +57,7 @@ import { SettingsPage } from '../settings/SettingsPage'
 import { CodegraphFrame } from '../codegraph/CodegraphFrame'
 import { CardsPage } from '../cards/CardsPage'
 import { FlowsPage } from '../flows/FlowsPage'
-import { fetchSessions, createSession } from '../../api/rooms'
+import { fetchSessions, addSessionMember, createSession } from '../../api/rooms'
 import type { SessionSummary } from '../../api/rooms'
 import { NewSessionDialog } from '../rooms/NewSessionDialog'
 import { saveLastSessionOwner } from '../rooms/sessionOwnerPrefs'
@@ -464,6 +464,9 @@ export function Shell() {
   // confirmCreateSession 建会话：owner 统一记法（服务端权威校验），失败原文
   // 留在对话框；成功关弹层、立即刷新会话流（不等下一个 5s 周期），并把 owner
   // 写进 localStorage 记忆（B358.8 #7：下次新建直接预填，第一次使用仍需输一次）。
+  // 建后自动补员（走查 09-17）：控制台 actor 是服务端注入的 web:<host>，既非
+  // owner 亦非成员——不补员则新建会话第一句即 403。复用 B366 补员端点，前端多
+  // 一次调用、后端零改动；失败不阻塞（回落到发送时 403 +「以当前身份加入会话」一键）。
   const confirmCreateSession = async (title: string, owner: string) => {
     setCreateBusy(true)
     setCreateError('')
@@ -471,6 +474,12 @@ export function Shell() {
     try {
       const session = await createSession(title, owner)
       saveLastSessionOwner(owner)
+      try {
+        await addSessionMember(session.id)
+        console.debug('shell.session.self_joined', { sessionId: session.id })
+      } catch (error: unknown) {
+        console.debug('shell.session.self_join_failed', { sessionId: session.id, error: errorMessage(error) })
+      }
       setCreateOpen(false)
       sessionsState.refresh()
       console.debug('shell.session.created', { sessionId: session.id, title, owner })

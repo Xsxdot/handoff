@@ -1,10 +1,11 @@
 // SessionTab.test.tsx —— tab 窗格宿主：⋯ 右侧抽屉（B358.8 #3，chat↔detail 双态退役）、
 // 打开即已读、拉卡入口移位（footer 工具钮）。
 import { beforeEach, describe, expect, it, vi } from 'vitest'
-import { fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
 import { fetchCards } from '../../api/ledger'
+import { openSessionDetail } from './sessionDetailOpener'
 import type { RoomHistoryItem, SessionDetail, SessionSummary } from '../../api/rooms'
 import fixture from '../../api/testdata/RoomsFixture.json'
 import { SessionTab } from './SessionTab'
@@ -51,14 +52,15 @@ beforeEach(() => {
 })
 
 describe('SessionTab', () => {
-  it('头部精简：无标题行、无拉卡钮，只剩 ⋯（标题唯一来源=窗格标题行）', async () => {
+  it('头部精简：无标题行、无拉卡钮、无 ⋯（⋯ 住窗格标题行，标题唯一来源不变）', async () => {
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
     await screen.findByRole('textbox', { name: '发送消息' })
     expect(screen.queryByText('架构物理化')).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: '返回群聊' })).toBeNull()
     // 拉卡入口唯一：SessionChat footer 的工具钮（头部按钮已删）
     expect(screen.getAllByRole('button', { name: '拉卡进群' })).toHaveLength(1)
-    expect(screen.getByRole('button', { name: '会话详情' })).toHaveTextContent('⋯')
+    // ⋯ 住窗格标题行（WorkbenchPage 渲染），本组件内不再渲染
+    expect(screen.queryByRole('button', { name: '会话详情' })).toBeNull()
   })
 
   it('⋯ 开右侧抽屉：群主标识、卡列表行回调 onOpenCard，抽屉打开时会话消息仍可见', async () => {
@@ -66,7 +68,8 @@ describe('SessionTab', () => {
     const user = userEvent.setup()
     render(<SessionTab sessionId="session:7" title="架构物理化" onOpenCard={onOpenCard} />)
     await screen.findByRole('textbox', { name: '发送消息' })
-    await user.click(screen.getByRole('button', { name: '会话详情' }))
+    // ⋯ 住窗格标题行：经注册表投递开启（标题行按钮的组件半边见 WorkbenchPage.test）
+    act(() => { openSessionDetail('session:7') })
     const drawer = await screen.findByTestId('session-drawer')
     expect(within(drawer).getAllByText(/user:sy|无人推/).length).toBeGreaterThan(0)
     expect(within(drawer).getByTestId('member-owner-0')).toHaveTextContent('群主')
@@ -80,11 +83,12 @@ describe('SessionTab', () => {
   it('抽屉收起：关闭钮与 Esc 双通道', async () => {
     const user = userEvent.setup()
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
-    await user.click(await screen.findByRole('button', { name: '会话详情' }))
+    await screen.findByRole('textbox', { name: '发送消息' })
+    act(() => { openSessionDetail('session:7') })
     expect(await screen.findByTestId('session-drawer')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: '关闭详情' }))
     await waitFor(() => expect(screen.queryByTestId('session-drawer')).toBeNull())
-    await user.click(screen.getByRole('button', { name: '会话详情' }))
+    act(() => { openSessionDetail('session:7') })
     expect(await screen.findByTestId('session-drawer')).toBeInTheDocument()
     fireEvent.keyDown(window, { key: 'Escape' })
     await waitFor(() => expect(screen.queryByTestId('session-drawer')).toBeNull())
@@ -93,7 +97,8 @@ describe('SessionTab', () => {
   it('Esc 分层：@ 面板开着按 Esc 只关面板，抽屉保持（review P2）', async () => {
     const user = userEvent.setup()
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
-    await user.click(await screen.findByRole('button', { name: '会话详情' }))
+    await screen.findByRole('textbox', { name: '发送消息' })
+    act(() => { openSessionDetail('session:7') })
     expect(await screen.findByTestId('session-drawer')).toBeInTheDocument()
     const input = screen.getByRole('textbox', { name: '发送消息' })
     await user.type(input, '@')
@@ -107,7 +112,8 @@ describe('SessionTab', () => {
   it('抽屉归档入口：确认后调既有幂等端点 archiveSession', async () => {
     const user = userEvent.setup()
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
-    await user.click(await screen.findByRole('button', { name: '会话详情' }))
+    await screen.findByRole('textbox', { name: '发送消息' })
+    act(() => { openSessionDetail('session:7') })
     await user.click(await screen.findByTestId('session-archive'))
     await user.click(screen.getByRole('button', { name: '归档' }))
     await waitFor(() => expect(archiveSession).toHaveBeenCalledWith('session:7'))

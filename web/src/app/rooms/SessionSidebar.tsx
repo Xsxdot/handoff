@@ -44,20 +44,22 @@ export function SessionSidebar({ sessions, loading, errorText, needsOnly, onTogg
         <span className="text-sm font-semibold">会话</span>
         <button type="button" aria-label="新建会话" onClick={onCreate} className="rounded-md border px-2 py-1 text-xs hover:bg-accent">＋ 新建会话</button>
       </div>
-      <div className="flex shrink-0 items-center gap-2 border-b px-3 py-1.5 text-xs">
-        <label htmlFor="session-project-filter" className="shrink-0 text-muted-foreground">项目</label>
+      {/* 筛选单行（走查 09-17，对 board.html 原型 .im-filters）：项目下拉 + 需要你
+          开关 + 计数同处一行，纯文字项不做成带边框表单控件 */}
+      <div data-testid="session-filters" className="flex shrink-0 items-center gap-1 border-b px-3 py-1.5 text-xs">
+        <label htmlFor="session-project-filter" className="shrink-0 text-muted-foreground">▦ 项目</label>
         <select id="session-project-filter" data-testid="session-project-filter" value={projectFilter}
           onChange={(event) => onProjectFilter(event.target.value)}
-          className="min-w-0 flex-1 rounded-md border bg-background px-1.5 py-0.5 text-xs">
-          <option value="">全部</option>
+          className="min-w-0 max-w-[8rem] flex-1 cursor-pointer appearance-none bg-transparent py-0.5 pl-0.5 text-xs outline-none">
+          <option value="">全部项目</option>
           {projectOptions.map((project) => <option key={project} value={project}>{project}</option>)}
         </select>
-      </div>
-      <div className="flex shrink-0 items-center border-b px-3 py-1.5 text-xs">
+        <span aria-hidden="true" className="shrink-0 text-[10px] text-muted-foreground">∨</span>
+        <span aria-hidden="true" className="mx-1 h-3.5 w-px shrink-0 bg-border" />
         <button type="button" aria-pressed={needsOnly} onClick={onToggleNeeds} className={needsOnly ? 'font-semibold text-amber-700' : 'text-muted-foreground'}>
-          ⚑ 需要你 <span data-testid="needs-count">{needsCount}</span>
+          ⚑ 需要你 <span data-testid="needs-count" className="rounded-full bg-amber-100 px-1.5 text-[10px] font-semibold text-amber-700">{needsCount}</span>
         </button>
-        <span className="ml-auto text-muted-foreground" data-testid="session-total">{loading ? '读取中' : `${visible.length} 个会话`}</span>
+        <span className="ml-auto shrink-0 text-muted-foreground" data-testid="session-total">{loading ? '读取中' : `${visible.length} 个会话`}</span>
       </div>
       {errorText !== '' && <p role="alert" className="shrink-0 border-b bg-amber-50 px-3 py-1.5 text-xs text-amber-800">会话列表已断开：{errorText}</p>}
       <div className="min-h-0 flex-1 overflow-y-auto p-1">

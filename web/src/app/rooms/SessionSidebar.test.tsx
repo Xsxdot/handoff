@@ -88,4 +88,14 @@ describe('SessionSidebar', () => {
     rerender(<SessionSidebar sessions={[golden, noCard]} {...defaultProps} projectOptions={['handoff', 'aim']} projectOfCard={projectOfCard} />)
     expect(screen.getByTestId('session-total')).toHaveTextContent('2 个会话')
   })
+
+  it('筛选单行（走查 09-17，对 board.html 原型）：项目下拉、需要你、计数同处一行纯文字项', () => {
+    render(<SessionSidebar sessions={[]} {...defaultProps} projectOptions={['handoff']} />)
+    const row = screen.getByTestId('session-filters')
+    expect(row).toContainElement(screen.getByTestId('session-project-filter'))
+    expect(row).toContainElement(screen.getByRole('button', { name: /需要你/ }))
+    expect(row).toContainElement(screen.getByTestId('session-total'))
+    // 纯文字项：筛选项无边框表单控件样式（原型 .im-filter 无 border）
+    expect(screen.getByTestId('session-project-filter').className).not.toMatch(/border/)
+  })
 })

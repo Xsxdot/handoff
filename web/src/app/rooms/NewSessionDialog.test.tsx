@@ -79,6 +79,31 @@ describe('NewSessionDialog（owner 记忆方案）', () => {
     getItem.mockRestore()
   })
 
+  it('无记忆值但有成员身份：缺省取成员中的 user:*（人席优先），打开即直接提交（走查 09-17）', async () => {
+    const onCreate = vi.fn()
+    const user = userEvent.setup()
+    render(<NewSessionDialog open busy={false} error=""
+      memberIdentities={['cli:sycm@sycmdeMacBook-Air.local', 'agent:claude', 'user:livecheck']}
+      onCancel={() => {}} onCreate={onCreate} />)
+    const ownerInput = screen.getByRole('combobox', { name: '群主身份' })
+    await waitFor(() => expect(ownerInput).toHaveValue('user:livecheck'))
+    await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    expect(onCreate).toHaveBeenCalledWith('新场', 'user:livecheck')
+  })
+
+  it('记忆值优先于成员回退', async () => {
+    saveLastSessionOwner('user:sy')
+    openDialog({ memberIdentities: ['user:livecheck'] })
+    await waitFor(() => expect(screen.getByRole('combobox', { name: '群主身份' })).toHaveValue('user:sy'))
+  })
+
+  it('候选只给合法集：cli:/web:/裸名不进 datalist，选了无法创建的死选项不再出现（走查 09-17）', () => {
+    openDialog({ memberIdentities: ['cli:sycm@sycmdeMacBook-Air.local', 'user:livecheck', 'web:127.0.0.1', 'bare'] })
+    const options = Array.from(document.querySelectorAll('#new-session-owner-candidates option')) as HTMLOptionElement[]
+    expect(options.map((option) => option.value)).toEqual(['user:livecheck'])
+  })
+
   it('saveLastSessionOwner 写入约定键；非法记法也照记（服务端权威）', async () => {
     saveLastSessionOwner('agent:claude')
     expect(window.localStorage.getItem(LAST_SESSION_OWNER_KEY)).toBe('agent:claude')

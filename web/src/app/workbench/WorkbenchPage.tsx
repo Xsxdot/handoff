@@ -14,6 +14,7 @@ import type { WorkbenchApi } from './useWorkbench'
 import { sessionBase } from './useWorkbench'
 import { createUntitledFile } from './newFile'
 import { errorMessage } from '../lib/format'
+import { openSessionDetail } from '../rooms/sessionDetailOpener'
 import { cn } from '@/lib/utils'
 
 export interface WorkbenchPageProps {
@@ -372,6 +373,20 @@ export function WorkbenchPage({
                     {tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}
                     {tab?.base.projectName && <span className="ml-2 text-muted-foreground">{tab.base.projectName}{tab.base.machine ? ` · ${tab.base.machine}` : ''}</span>}
                   </div>
+                  {tab && tab.content.kind === 'session' && (
+                    <button
+                      type="button"
+                      aria-label="会话详情"
+                      title="会话详情（成员/卡/归档）"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        // 外层已保证 session；闭包内重判一次做收窄（tab 是回调参数）。
+                        if (tab.content.kind !== 'session') return
+                        openSessionDetail(tab.content.sessionId)
+                      }}
+                      className="rounded p-0.5 text-muted-foreground hover:bg-accent"
+                    >⋯</button>
+                  )}
                   <button
                     type="button"
                     aria-label={`关闭 ${tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}`}

@@ -61,6 +61,7 @@ vi.mock('../../api/rooms', async () => {
     fetchSessions: vi.fn().mockResolvedValue([]),
     fetchSessionDetail: vi.fn().mockResolvedValue(null),
     createSession: vi.fn(),
+    addSessionMember: vi.fn().mockResolvedValue({ ok: true }),
   }
 })
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身（照 TerminalTab.test.tsx）：
@@ -190,6 +191,9 @@ beforeAll(() => {
 })
 
 beforeEach(() => {
+  // 新建会话 owner 记忆是 localStorage 级状态：不清则上一个建会话用例的记忆
+  // 会预填进下一个对话框，user.type 变成追加（走查 09-17 修后回退链的连带）。
+  window.localStorage.clear()
   vi.mocked(fetchTasks).mockResolvedValue([t1])
   vi.mocked(fetchProjectTree).mockResolvedValue(tree)
   vi.mocked(fetchWorkspaceDir).mockResolvedValue({ entries: [{ name: 'go.mod', is_dir: false, size: 5 }] })
@@ -1115,6 +1119,36 @@ describe('B361 会话 IA', () => {
     await waitFor(() => expect(createSession).toHaveBeenCalledWith('新场', 'user:sy'))
     // B358.8 #7：成功创建后回写记忆，下次新建对话框直接预填
     await waitFor(() => expect(window.localStorage.getItem('handoff.last-session-owner')).toBe('user:sy'))
+  })
+
+  it('新建会话成功后自动补员：调 addSessionMember(新会话)，首句可直接发（走查 09-17）', async () => {
+    const { addSessionMember, createSession } = await import('../../api/rooms')
+    vi.mocked(createSession).mockResolvedValue({ id: 'session:9', title: '新场', owner: 'user:sy', archived: false, created_at: '', updated_at: '' })
+    vi.mocked(fetchSessions).mockResolvedValue([] as never)
+    const user = userEvent.setup()
+    renderShell()
+    await user.click(await screen.findByRole('button', { name: '新建会话' }))
+    await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
+    await user.type(screen.getByRole('combobox', { name: '群主身份' }), 'user:sy')
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    await waitFor(() => expect(addSessionMember).toHaveBeenCalledWith('session:9'))
+    // 对话框照关，不被补员挡住
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建会话' })).toBeNull())
+  })
+
+  it('自动补员失败不阻塞建会话：对话框照关，回落到发送时 403 + 一键加入', async () => {
+    const { addSessionMember, createSession } = await import('../../api/rooms')
+    vi.mocked(createSession).mockResolvedValue({ id: 'session:9', title: '新场', owner: 'user:sy', archived: false, created_at: '', updated_at: '' })
+    vi.mocked(addSessionMember).mockRejectedValueOnce(new Error('net down'))
+    vi.mocked(fetchSessions).mockResolvedValue([] as never)
+    const user = userEvent.setup()
+    renderShell()
+    await user.click(await screen.findByRole('button', { name: '新建会话' }))
+    await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
+    await user.type(screen.getByRole('combobox', { name: '群主身份' }), 'user:sy')
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建会话' })).toBeNull())
+    expect(window.localStorage.getItem('handoff.last-session-owner')).toBe('user:sy')
   })
 
   it('关闭会话 tab（组关闭）后 tabbar 不再含该会话', async () => {

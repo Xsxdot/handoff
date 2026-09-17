@@ -1,6 +1,7 @@
 import { act, createEvent, fireEvent, render, renderHook, within } from '@testing-library/react'
 import { useEffect } from 'react'
 import { describe, expect, it, vi } from 'vitest'
+import { registerSessionDetailOpener } from '../rooms/sessionDetailOpener'
 import { WorkbenchPage } from './WorkbenchPage'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
 import { useWorkbench, sessionBase, type BaseDir } from './useWorkbench'
@@ -578,5 +579,22 @@ describe('WorkbenchPage', () => {
     expect(hook.result.current.wb.groups[0].columns[0].panes[0]).toBeNull()
     expect(warn).toHaveBeenCalledWith('workbench.drop.invalid_mime', expect.objectContaining({ reason: 'session MIME payload is missing or invalid' }))
     warn.mockRestore()
+  })
+
+  it('会话窗格标题行含 ⋯：与标题/× 同行，点击开启该会话详情（走查 09-17 #3）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:1', title: '架构物理化' }, sessionBase('session:1')))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    const more = within(pane).getByRole('button', { name: '会话详情' })
+    expect(more).toHaveTextContent('⋯')
+    // 与标题、关闭钮同处窗格标题行（内容区 stub 不渲染 ⋯，按钮只能来自标题行）
+    const close = within(pane).getByRole('button', { name: '关闭 会话 · 架构物理化' })
+    expect(more.parentElement).toContainElement(close)
+    const opener = vi.fn()
+    const unregister = registerSessionDetailOpener('session:1', opener)
+    fireEvent.click(more)
+    expect(opener).toHaveBeenCalledTimes(1)
+    unregister()
   })
 })

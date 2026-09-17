@@ -1,5 +1,5 @@
-// SessionTab —— 会话的工作台 tab 窗格宿主（B358.8 #3：chat↔detail 双态退役，
-// 「⋯」改右侧抽屉与会话框并存）。
+// SessionTab —— 会话的工作台 tab 窗格宿主（B358.8 #3：chat↔detail 双态退役，右侧
+// 抽屉与会话框并存；走查 09-17：⋯ 搬进窗格标题行，本组件只留抽屉与开启器注册）。
 // 职责：详情+历史两路轮询、打开即已读（markedReads 去重守卫）、拉卡对话框态、
 // 抽屉开关与归档确认。边界：不发身份字段；已读失败只告警不阻塞渲染。
 // 标题不在此渲染——唯一来源是窗格标题行（tabTitle →「会话 · 标题」）。
@@ -11,6 +11,7 @@ import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { usePoll } from '../data/usePoll'
 import { COLLAB_POLL_MS } from './constants'
 import { logRoom } from './roomLog'
+import { registerSessionDetailOpener } from './sessionDetailOpener'
 import { JoinCardDialog } from './JoinCardDialog'
 import { SessionChat } from './SessionChat'
 import { SessionDetail } from './SessionDetail'
@@ -47,6 +48,10 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
       logRoom('error', 'session_mark_read_failed', { session: sessionId, error: errorMessage(error) })
     })
   }, [sessionId, maxSeq, detailPoll.data])
+
+  // 详情开启投递（走查 09-17 #3）：⋯ 住窗格标题行（WorkbenchPage 渲染），抽屉
+  // 开关状态住本组件——挂载即注册开启器，标题行按钮经注册表投递到这里；卸载注销。
+  useEffect(() => registerSessionDetailOpener(sessionId, () => setDrawerOpen(true)), [sessionId])
 
   // 抽屉 Esc 收起：与会话流并存（无遮罩），Esc 是 spec 拍板的第二收起通道。
   useEffect(() => {
@@ -99,10 +104,6 @@ export function SessionTab({ sessionId, title, onOpenCard }: {
 
   return (
     <div className="relative flex h-full min-h-0 flex-col">
-      <header className="flex shrink-0 items-center justify-end border-b px-2 py-1">
-        <button type="button" aria-label="会话详情" aria-expanded={drawerOpen} onClick={() => setDrawerOpen(true)}
-          className="rounded-md px-2 py-1 text-xs hover:bg-accent">⋯</button>
-      </header>
       <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
         historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
         onJoinCard={() => setJoinOpen(true)} />
