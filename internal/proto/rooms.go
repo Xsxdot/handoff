@@ -34,6 +34,12 @@ type RoomMessage struct {
 	// ReplyTo 被回复消息的账本 seq；隐式寻址原作者（一人）。0=无回复锚。
 	// B358 起引用条渲染与投递都读它；投影与投递的归属仍在 collab/agentd。
 	ReplyTo int64 `json:"reply_to,omitempty"`
+	// Device 端戳（B358.9）：发言时发送端登记的设备名，只用于落款显示。
+	//
+	// **不参与任何判定**：不进写权限、不进 @ 路由、不进已读、不进成员名单。
+	// actor 恒为人的固定名（user:<name>），端戳是它的附注。缺失（老客户端/CLI
+	// 无登录会话）省键——少的是落款，不是权力（spec 决定 1/3）。
+	Device string `json:"device,omitempty"`
 	// DecisionID 简报挂的裁决 id；kind=escalation 时应非零（关联决策答复直达）。
 	DecisionID int64 `json:"decision_id,omitempty"`
 	// BySystem true=系统组件书写的指针行；Send 一律拒收 pointer，

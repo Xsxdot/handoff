@@ -843,3 +843,46 @@ func TestUnknownKeyErrorMentionsProxy(t *testing.T) {
 		t.Errorf("错误文本应列出 proxy，实得 %q", err)
 	}
 }
+
+// TestConsoleUserRoundTrip 锁 B358.9 配置键 console_user：
+//   - 非空往返（Load 读回）；
+//   - 空值 omitempty 不写盘（旧版 agentd 不会被新键顶死）；
+//   - 未知键报错的已知键清单含 console_user。
+func TestConsoleUserRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	cfg := config.Defaults()
+	cfg.ConsoleUser = "sycm"
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.ConsoleUser != "sycm" {
+		t.Fatalf("console_user 未往返: %q", got.ConsoleUser)
+	}
+	// 空值不写盘：omitempty 硬要求。
+	empty := config.Defaults()
+	emptyPath := filepath.Join(t.TempDir(), "empty.yaml")
+	if err := config.Save(emptyPath, empty); err != nil {
+		t.Fatalf("Save empty: %v", err)
+	}
+	raw, err := os.ReadFile(emptyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "console_user") {
+		t.Fatalf("空 console_user 不得写盘（omitempty）: %s", raw)
+	}
+	// 已知键清单含 console_user。
+	badPath := filepath.Join(t.TempDir(), "bad.yaml")
+	if err := os.WriteFile(badPath, []byte("nonsense_key: 1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err = config.Load(badPath)
+	if err == nil || !strings.Contains(err.Error(), "console_user") {
+		t.Fatalf("未知键清单应含 console_user: %v", err)
+	}
+}

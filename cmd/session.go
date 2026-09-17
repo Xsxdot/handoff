@@ -467,6 +467,11 @@ var (
 	sessionSendMention []string
 	sessionSendCLI     string
 	sessionSendSession string
+	// sessionSendAgent 是主 agent 的启动身份出示（B358.9 接缝 #5）：外部
+	// harness 自建会话/进成员后，用 `--agent <启动身份>` 以 `agent:<启动身份>`
+	// 发言（写权是字符串等值，唯一命中路径）。缺则 fail-closed——不带 flag 且
+	// 不带席位对时用 ledgerActor（审计 actor），不冒充主 agent。
+	sessionSendAgent string
 	// sessionSendReplyTo 被回复消息的账本 seq（B365 回复发送半边）：透传进
 	// proto.RoomMessage.ReplyTo，接收侧 ResolveDelivery 隐式寻址原作者（冻结
 	// 判定，本卡零改动）。0 = 无回复锚，与缺省等价；负值用法错。
@@ -475,16 +480,20 @@ var (
 
 var sessionSendCmd = &cobra.Command{
 	Use:   "send <session> <text...>",
-	Short: "会话发言（不分 kind，各自以自己名义；协调者用 --cli/--session 成对出示席位身份）",
+	Short: "会话发言（--agent 出示主 agent 身份；--cli/--session 成对出示协调者席位；无 flag 用人尺度 actor）",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
-		// 身份判定先于开账本：用法错误不触账本（0 落账）。两形态（§2.2）：
-		// 成对 flag=席位（自报身份需成对 flag——旧 room send 守卫的替代形状，
-		// breakdown §3.6 ③）；无 flag=人（ledgerActor）。环境席位键不参与本命令。
+		// 身份判定先于开账本：用法错误不触账本（0 落账）。三形态（B358.9）：
+		// --agent=主 agent 启动身份（agent:<名>）；成对 flag=协调者席位
+		// （cli:<cli>#<session>，自报身份需成对 flag）；无 flag=人尺度审计 actor
+		// （ledgerActor）。三形态互斥。
 		cliChanged := cmd.Flags().Changed("cli")
 		sessChanged := cmd.Flags().Changed("session")
 		if cliChanged != sessChanged {
 			return fmt.Errorf("席位身份必须成对出示：--cli 与 --session 需同时给出（自报身份需成对 flag）")
+		}
+		if sessionSendAgent != "" && cliChanged {
+			return fmt.Errorf("--agent 与 --cli/--session 互斥：一条发言只有一个作者")
 		}
 		if sessionSendReplyTo < 0 {
 			return fmt.Errorf("--reply-to 必须为非负 seq（当前 %d）；0 = 无回复锚", sessionSendReplyTo)
@@ -493,15 +502,9 @@ var sessionSendCmd = &cobra.Command{
 		if body == "" {
 			return fmt.Errorf("消息正文不能为空")
 		}
-		var actor string
-		if cliChanged {
-			identity, err := currentSeatIdentity(sessionSendCLI, sessionSendSession)
-			if err != nil {
-				return err
-			}
-			actor = identity
-		} else {
-			actor = ledgerActor()
+		actor, err := sessionSendActor(sessionSendAgent, sessionSendCLI, sessionSendSession, cliChanged)
+		if err != nil {
+			return err
 		}
 		svc, st, err := openRoomService()
 		if err != nil {
@@ -523,6 +526,30 @@ var sessionSendCmd = &cobra.Command{
 	},
 }
 
+// sessionSendActor 决议 session send 的发言 actor（B358.9 接缝 #5）。
+//
+// 三形态（互斥，调用方已保证 --agent 与席位对不并用、席位对已完整）：
+//   - agentFlag 非空：主 agent 出示启动身份，编码为 agent:<启动身份>；名字不合法
+//     即 fail-closed（可行动报错），绝不回落到别的脸。
+//   - cliChanged：协调者席位 cli:<cli>#<session>（currentSeatIdentity）。
+//   - 否则：ledgerActor()（CLI 审计 actor，人尺度）。
+//
+// 抽成独立函数是为了让「三形态决议 + fail-closed」可单测，不与账本打开耦合。
+func sessionSendActor(agentFlag, cliFlag, sessionFlag string, cliChanged bool) (string, error) {
+	switch {
+	case agentFlag != "":
+		identity, err := proto.MemberIdentity(proto.IdentityKindAgent, agentFlag)
+		if err != nil {
+			return "", fmt.Errorf("--agent 启动身份非法: %w", err)
+		}
+		return identity, nil
+	case cliChanged:
+		return currentSeatIdentity(cliFlag, sessionFlag)
+	default:
+		return ledgerActor(), nil
+	}
+}
+
 func init() {
 	sessionWaitCmd.Flags().Int64Var(&sessionWaitSince, "since", -1, "订阅起点（账本 seq，排他）；缺省 = 启动时流尾，只等新事件")
 	sessionWaitCmd.Flags().DurationVar(&sessionWaitTimeout, "timeout", 0,
@@ -539,6 +566,7 @@ func init() {
 	sessionSendCmd.Flags().Int64Var(&sessionSendReplyTo, "reply-to", 0, "被回复消息的账本 seq（回复锚；隐式寻址原作者；0 = 无）")
 	sessionSendCmd.Flags().StringVar(&sessionSendCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
 	sessionSendCmd.Flags().StringVar(&sessionSendSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
+	sessionSendCmd.Flags().StringVar(&sessionSendAgent, "agent", "", "以主 agent 启动身份发言（编码为 agent:<启动身份>；与 --cli/--session 互斥）")
 	sessionCmd.AddCommand(sessionCreateCmd, sessionListCmd, sessionDetailCmd, sessionArchiveCmd, sessionJoinCmd, sessionLeaveCmd, sessionSendCmd)
 	rootCmd.AddCommand(sessionCmd)
 }

@@ -80,11 +80,12 @@
   {
    "from": "d_cli",
    "to": "d_protocol",
-   "legacyBudget": 1,
+   "legacyBudget": 2,
    "entries": [
-    "proto 实体"
+    "proto 实体",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。"
+   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。 B358.9：CLI session send --agent 出示主 agent 启动身份，经 proto.MemberIdentity（包级函数）构造 agent:<启动身份>，不复制记法规则（与 agentd 侧同一唯一入口）。预算按新增消费面 1→2 抬一档——这是本卡引入的新消费点，非重扫棘轮；entries 补 proto（包级函数）。"
   },
   {
    "from": "d_cli",
@@ -236,7 +237,7 @@
     "proto.TaskState",
     "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：agentd preview HTTP/WS 门面只消费冻结 DTO；owner truth 与编排实现留在 gateway。 B312 finish：席位 helper 真实引用边 1，预算 0→1。 B233.23：entries 增 proto.Task/TaskState 方法容器与包级函数——proto 是词表包，状态迁移判据（CanTransit/IsTerminal）直引属设计允许的类型跨缝。"
+   "legacyBudgetNote": "B294：agentd preview HTTP/WS 门面只消费冻结 DTO；owner truth 与编排实现留在 gateway。 B312 finish：席位 helper 真实引用边 1，预算 0→1。 B233.23：entries 增 proto.Task/TaskState 方法容器与包级函数——proto 是词表包，状态迁移判据（CanTransit/IsTerminal）直引属设计允许的类型跨缝。 B358.9：控制台身份读缝 GET /api/identity 返回 proto.IdentityResp，身份解析经 proto.MemberIdentity（包级函数）构造 user:<name>——DTO 与记法 helper 都在 proto 唯一定义处，不新增方向、不抬预算（已落既有 entries「proto 实体」「proto（包级函数）」）。"
   },
   {
    "from": "d_gateway",

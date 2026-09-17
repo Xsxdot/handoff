@@ -132,6 +132,13 @@ type Config struct {
 	// 为什么第三档不同：env 内容是机器特有的，猜错不如不猜；纪律块内容是 handoff
 	// 通用的，不给默认等于让用户退回人工粘贴到 plan 头部（见 B129 spec §2.4）。
 	Discipline map[string]string
+	// ConsoleUser 是控制台里的「本机用户人名」（B358.9 决定 3）：全局名，
+	// 各机器配同一个。控制台发言/@/成员/已读只认这个名字，端戳只做落款。
+	//
+	// 空 = 未配置：控制台身份解析 fail-closed（发话拒收 + 可行动报错），
+	// 绝不回落到旧传输层临时脸 web:<host>（决定 8）。omitempty 是硬要求，
+	// 理由同 PathDirs：空值不写盘，旧版 agentd 不会被新键顶死。
+	ConsoleUser string `yaml:"console_user,omitempty"`
 	// PlatformInvariants 是平台底线恒在层的显式开关。
 	//
 	// nil 表示未配置，PlatformInvariantsEnabled 将其解释为 true；非 nil 的 false
@@ -568,7 +575,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/console_user/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

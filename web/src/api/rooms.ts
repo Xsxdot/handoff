@@ -30,6 +30,9 @@ export interface RoomMessage {
   decision_id?: number
   by_system?: boolean
   reply_to?: number // 被回复消息的账本 seq；隐式寻址原作者；omitempty——缺键≠0
+  // device 端戳（B358.9）：发送端登记的设备名，只用于落款显示；不参与任何判定。
+  // 缺失省键——少的是落款，不是权力。
+  device?: string
 }
 
 export const INBOX_ORIGIN_DECISION = 'decision'
