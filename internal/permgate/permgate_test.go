@@ -88,6 +88,12 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		{"sed -nsE 只读", `sed -nsE '1,2p' f`},
 		{"sed -ne 脚本粘连", `sed -ne'1,20p' f`},
 		{"sed --silent 只读", `sed --silent '1,20p' f`},
+		// B377 review-1：簇里的 e 吃掉脚本实参后即为显式脚本源，其后位置参数
+		// 是输入文件而非脚本。文件名以写/执行命令字母开头（web.log）时，若漏置
+		// explicitScript，整个文件名会被当脚本扫出 w 而误否决——须与拆开写的
+		// `sed -n -e '1,20p' web.log` 同判 AutoAllow。
+		{"sed -ne 输入文件名以写字母开头", `sed -ne '1,20p' web.log`},
+		{"sed -ne 脚本粘连且输入文件名以写字母开头", `sed -ne'1,20p' web.log`},
 		// B376 复审：只读 sed 形态（替换打印、正则地址）仍须静默；守卫只拦写/执行。
 		{"sed -n 替换只读", `sed -n 's/foo/bar/p' f`},
 		{"sed -n 正则地址只读", `sed -n '/error/p' f`},

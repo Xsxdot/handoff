@@ -925,11 +925,13 @@ func hasSedWriteOrExec(fields []string) bool {
 			// B377：短选项簇按 GNU sed 选项表展开。旗标段（簇首到首个带参
 			// 字母前）逐个字母判；遇 e/f/l/i 即停——其后属该选项的实参。
 			//   - e：实参是 sed 脚本（粘连在簇上，或取下一词元），交给
-			//     sedScriptWritesOrExecs 扫写/执行面
+			//     sedScriptWritesOrExecs 扫写/执行面；簇里出现过 e 即等于
+			//     有了显式脚本源，必须置 explicitScript，否则其后位置参数
+			//     （输入文件名）会被当脚本扫——`sed -ne '1,20p' web.log`
+			//     的 web.log 会被扫出 w 而误否决
 			//   - f：脚本来自文件、内容不可见 → 否决
 			//   - l/i：无写/执行语义，跳过实参
-			//   - 未知带参字母：GNU sed 只有 g/G/h/H/... 单字母命令旗标，
-			//     遇到不能证明的形态保守否决
+			//   - 未知带参字母：不能证明的形态保守否决
 			body := f[1:]
 			i2 := 0
 			for i2 < len(body) {
@@ -938,6 +940,7 @@ func hasSedWriteOrExec(fields []string) bool {
 					i2++
 					continue
 				case 'e':
+					explicitScript = true
 					arg := body[i2+1:]
 					if arg == "" && i+1 < len(fields) {
 						i++
