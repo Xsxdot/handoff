@@ -23,7 +23,7 @@ var errSessionsNotWired = errors.New("核侧会话入口未接线（S2 未落地
 // notWiredSessions 在 S2 落地前占住 sessionAPI 的生产接线点。
 type notWiredSessions struct{}
 
-func (notWiredSessions) SessionCookie(string) (string, error) { return "", nil }
+func (notWiredSessions) SessionCookie(string) (string, error) { return "", errSessionsNotWired }
 func (notWiredSessions) SwitchMachine(string) (string, error) { return "", errSessionsNotWired }
 
 // sessions 是核侧会话入口的装配点；S2 落地后在此接 *mobilecore.Core 的适配器。
