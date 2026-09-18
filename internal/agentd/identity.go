@@ -46,8 +46,10 @@ func (s *Server) resolveConsoleIdentity(r *http.Request) consoleIdentity {
 	}
 	member, err := proto.MemberIdentity(proto.IdentityKindUser, name)
 	if err != nil {
-		// 配置名不合法等同未配：可行动报错由调用方给（写清 console_user）。
-		s.log.Warn("console_user 配置不合法，身份解析失败", "cause", err)
+		// 配置名不合法等同未配。这里不 Warn：拒收面（requireConsoleIdentity）
+		// 会以带 method/path 的单条 Warn 汇报同一次失败——两处各 Warn 一条是
+		// 重复噪声（B358.9 review finding 4）。此处 Debug 留住 cause 供诊断。
+		s.log.Debug("console_user 配置不合法，身份解析 fail-closed", "cause", err)
 		return consoleIdentity{Configured: false}
 	}
 	return consoleIdentity{

@@ -452,6 +452,61 @@ func TestSessionKindFreedom(t *testing.T) {
 	t.Fatalf("账本流上没有 seq=%d", seq)
 }
 
+// TestSessionWritersExcludesEmptySeat 锁条 32：空座卡不得产空串书写者。
+// 内部锁：从声明缝 Service.Send 构造不出这条断言（空 actor 恒 ErrNotWriter，
+// 与「书写者集是否含空串」无区分力），故直调私有 sessionWriters——理由见
+// plan §3 内部锁声明。
+func TestSessionWritersExcludesEmptySeat(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	card := sessionCard(t, st, "空座书写者卡")
+	session, err := svc.CreateSession("空座书写者场", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	// 不 BindSeat => driver_session 空座。
+	got, err := svc.lc.GetSession(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writers, err := svc.sessionWriters(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, w := range writers {
+		if w == "" {
+			t.Fatalf("空座不得产空串书写者: %v", writers)
+		}
+	}
+}
+
+// TestCursorKeyedByMemberIdentity 锁条 36–38：游标形参仍是 member string（编译期，
+// 下面直接传串），传入 user:<name> 以该串为键往返；旧脸键不得回落到人名游标
+// （禁半新半旧并行判定，契约 §3.7）。
+func TestCursorKeyedByMemberIdentity(t *testing.T) {
+	svc, st := newFixture(t)
+	sid := mustSession(t, svc, st, "游标人名场")
+	seq, err := svc.Send(sid, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MarkRead("user:sy", sid, seq); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := svc.Unread("user:sy", sid); err != nil || n != 0 {
+		t.Fatalf("人名键游标应生效: %v %d", err, n)
+	}
+	snap, err := svc.cursor.Snapshot("web:127.0.0.1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snap) != 0 {
+		t.Fatalf("旧脸键查询不得返回人名游标（禁半新半旧）: %v", snap)
+	}
+}
+
 // TestSessionMembershipEnforcement 会话书写执法（breakdown §3.2 ③ + §2.4
 // 澄清 1）：actor ∈ 显式成员 ∪ 会话内各卡当前席位才可发言，在 Service.Send
 // 路径执法（HTTP handleRoomSend、CLI room send、未来订阅通道回复全部共享这

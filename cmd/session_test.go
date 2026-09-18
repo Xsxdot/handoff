@@ -990,6 +990,35 @@ func TestSessionSendAgentIdentity(t *testing.T) {
 	}
 }
 
+// TestSessionMemberNotationSingleDefinition 锁 B358.9 契约 §5 H 组条 42（CLI 半边）：
+// 统一记法规则只在 proto 一处定义，cmd 侧不得再内联 CutPrefix 前缀判定。
+func TestSessionMemberNotationSingleDefinition(t *testing.T) {
+	raw, err := os.ReadFile("session.go")
+	if err != nil {
+		t.Fatalf("读 session.go: %v", err)
+	}
+	src := string(raw)
+	for _, banned := range []string{`CutPrefix(owner, "user:")`, `CutPrefix(identity, "user:")`,
+		`CutPrefix(owner, "agent:")`, `CutPrefix(identity, "agent:")`} {
+		if strings.Contains(src, banned) {
+			t.Fatalf("cmd/session.go 仍内联统一记法规则 %q——应收敛到 proto.ValidateMemberIdentity", banned)
+		}
+	}
+}
+
+// TestSessionSendAgentEmptyFallsThrough 锁条 28：--agent 名为空串等价无 flag，
+// 走 ledgerActor 默认形态（不冒充主 agent、不报错）。
+func TestSessionSendAgentEmptyFallsThrough(t *testing.T) {
+	dir := t.TempDir()
+	_, _, _, sessionID, actor := mustSendFixture(t, dir, "空 agent 场")
+	if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "人话", "--agent", ""); err != nil {
+		t.Fatalf("空 --agent 应等价无 flag: %v", err)
+	}
+	if actor != ledgerActor() {
+		t.Fatalf("夹具 actor 漂移: %q", actor)
+	}
+}
+
 // TestSessionSendActorResolution 单测 sessionSendActor 三形态决议（接缝 #5 的
 // 可单测半边）：agent 优先于席位、席位优先于 ledgerActor，且非法 agent 名报错。
 func TestSessionSendActorResolution(t *testing.T) {

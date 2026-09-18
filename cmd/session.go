@@ -252,17 +252,10 @@ func buildSessionWake(svc *collab.Service, ev ledger.Event, msg proto.RoomMessag
 // 席位（currentSeatIdentity 只消费 flag 对，环境席位键不参与——身份显式性与会话
 // wait 的显式 member 对称）；单只 flag 用法错。kind 恒 user（发言自由，spec §4.2）。
 
-// validSessionMemberIdentity 校验会话成员统一记法：只认 user:<name>/agent:<name>
-// 且前缀后非空。与 gateway 侧 internal/agentd/sessionsapi.go#validSessionOwner
-// 同规则两处实现——cmd 不得 import agentd（域方向），漂移由两侧测试钉住
-//（TestSessionsCreateEndpoint / TestSessionCreateCommand）；统一收口归后续重构卡
-//（b358.5-plan 岔口 6）。
+// validSessionMemberIdentity 校验会话成员统一记法（B358.9 §8.3 CLI 半边）：
+// 收敛到 proto 唯一定义处，退役与 gateway 侧同规则的重复实现（契约 §5 H 组条 42）。
 func validSessionMemberIdentity(identity string) bool {
-	if rest, ok := strings.CutPrefix(identity, "user:"); ok && rest != "" {
-		return true
-	}
-	rest, ok := strings.CutPrefix(identity, "agent:")
-	return ok && rest != ""
+	return proto.ValidateMemberIdentity(identity)
 }
 
 var sessionCreateOwner string

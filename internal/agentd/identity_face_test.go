@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -141,6 +142,10 @@ func TestConsoleFaceFailClosedWithoutName(t *testing.T) {
 		{"POST", "/api/sessions", `{"title":"x"}`},
 		{"POST", "/api/sessions/" + session.ID + "/members", `{}`},
 		{"POST", "/api/sessions/" + session.ID + "/archive", `{}`},
+		// join/leave 是写面（会改卡与会话归属），与其余写面同门 fail-closed：
+		// 不设门时它们会在未配名身份下带着零值 actor 落账/改归属。
+		{"POST", "/api/sessions/" + session.ID + "/cards", `{"card":"B1"}`},
+		{"DELETE", "/api/sessions/" + session.ID + "/cards/B1", ""},
 		{"GET", "/api/inbox", ""},
 		{"GET", "/api/sessions", ""},
 		{"GET", "/api/rooms?limit=50", ""},
@@ -148,9 +153,12 @@ func TestConsoleFaceFailClosedWithoutName(t *testing.T) {
 	for _, p := range probes {
 		var code int
 		var body string
-		if p.method == http.MethodGet {
+		switch p.method {
+		case http.MethodGet:
 			code, body = ledgerGet(t, env.testAgentdEnv, p.path)
-		} else {
+		case http.MethodDelete:
+			code, body = ledgerDelete(t, env.testAgentdEnv, p.path, p.body)
+		default:
 			code, body = ledgerPost(t, env.testAgentdEnv, p.path, p.body)
 		}
 		if code != http.StatusForbidden {
@@ -174,6 +182,32 @@ func TestConsoleFaceRejectsIllegalName(t *testing.T) {
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages", `{"body":"x"}`)
 	if code != http.StatusForbidden || !strings.Contains(body, "console_user") {
 		t.Fatalf("非法 console_user 必须 fail-closed 403+文案: %d %s", code, body)
+	}
+}
+
+// TestConsoleFaceIllegalNameWarnsOnce 锁 B358.9 review finding 4：非法
+// console_user 的失败只由拒收门 Warn 一条（此前 identity.go 与 roomsapi.go
+// 各 Warn 一条，重复噪声）。捕获 handler 不过滤级别，直接数 Warn 记录。
+func TestConsoleFaceIllegalNameWarnsOnce(t *testing.T) {
+	env := newRoomsEnv(t)
+	cap := &roomsLogCapture{}
+	env.srv.log = slog.New(cap)
+	session := mustConsoleSession(t, env, "非法名 Warn 场")
+	setConsoleUser(t, env, "bad name")
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/messages", `{"body":"x"}`)
+	if code != http.StatusForbidden {
+		t.Fatalf("非法 console_user 必须 403: %d %s", code, body)
+	}
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	warns := 0
+	for _, rec := range cap.records {
+		if rec.Level == slog.LevelWarn {
+			warns++
+		}
+	}
+	if warns != 1 {
+		t.Fatalf("非法 console_user 失败应恰一条 Warn（不重复），实得 %d", warns)
 	}
 }
 
