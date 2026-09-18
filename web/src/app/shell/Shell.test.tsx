@@ -12,7 +12,7 @@
 import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import { coordinatorBase } from './Shell'
 import type { ProjectTreeResp, Task } from '../../api/types'
@@ -187,6 +187,12 @@ beforeAll(() => {
     unobserve() {}
     disconnect() {}
   } as unknown as typeof ResizeObserver
+})
+
+afterEach(() => {
+  // 紧凑视口用例会改写 innerWidth；每个用例后复位成 jsdom 默认（桌面档），
+  // 否则后面的桌面断言会被上一个用例污染（用例顺序耦合是隐性假绿）。
+  Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true, writable: true })
 })
 
 beforeEach(() => {
@@ -1127,6 +1133,68 @@ describe('B361 会话 IA', () => {
     // tablist（读数：TabClose aria-label = '关闭 ' + 组标签，plan 预留裁量区）
     fireEvent.click(within(screen.getByRole('tablist', { name: '标签组' })).getByRole('button', { name: /关闭 会话 · 架构物理化/ }))
     await waitFor(() => expect(within(screen.getByRole('tablist', { name: '标签组' })).queryByRole('tab', { name: /架构物理化/ })).toBeNull())
+  })
+})
+
+// —— B369.6 移动断点谱系：紧凑视口底栏四 tab、桌面零漂移、下钻往返 ——
+describe('B369.6 移动断点谱系', () => {
+  it('紧凑视口渲染底栏四 tab、不渲染桌面左栏与右栏文件树', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell()
+    await screen.findByTestId('mobile-home')
+    for (const tab of ['sessions', 'cards', 'projects', 'settings']) {
+      expect(screen.getByTestId(`mobile-tab-${tab}`)).toBeInTheDocument()
+    }
+    expect(screen.queryByRole('complementary', { name: '项目导航' })).toBeNull()
+    expect(screen.queryByText('文件')).toBeNull()
+  })
+
+  it('桌面视口不渲染底栏（既有三栏行为零漂移）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true, writable: true })
+    renderShell()
+    await screen.findByText('handoff')
+    expect(screen.queryByTestId('mobile-tabbar')).toBeNull()
+    expect(screen.getByRole('complementary', { name: '项目导航' })).toBeInTheDocument()
+  })
+
+  it('切换底栏 tab 换成对应内容面，工作台仍常驻（不卸载）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell()
+    await screen.findByTestId('mobile-home')
+    fireEvent.click(screen.getByTestId('mobile-tab-projects'))
+    expect(await screen.findByTestId('project-node-p1')).toBeInTheDocument()
+    // 工作台容器仍在 DOM（B280 keep-alive）
+    expect(document.querySelector('[data-testid="workbench-group"]')).not.toBeNull()
+  })
+
+  it('项目 tab → 目录 → 覆盖层；返回条回到底栏首页（下钻往返）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell()
+    fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    // 与桌面 openBranch 同款：机器行点击展开工作树子行；已展开时不要重复点
+    // （ProjectTree 的 toggle 会把它收回去）。
+    if (screen.queryByText('integration/b2-b3') === null) {
+      fireEvent.click(await screen.findByTestId('machine-row'))
+    }
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    expect(await screen.findByTestId('mobile-dir')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('mobile-dir-back'))
+    await waitFor(() => expect(screen.queryByTestId('mobile-dir')).toBeNull())
+    expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
+  })
+
+  it('点会话进下钻态：底栏首页让开、返回条出现；返回回到底栏首页', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
+    renderShell()
+    fireEvent.click(await screen.findByTestId('session-row'))
+    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+    // 下钻态：底栏首页整层让开，工作台仍在 DOM（keep-alive）
+    expect(screen.queryByTestId('mobile-home')).toBeNull()
+    expect(document.querySelector('[data-testid="workbench-group"]')).not.toBeNull()
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    expect(await screen.findByTestId('mobile-home')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
   })
 })
 
