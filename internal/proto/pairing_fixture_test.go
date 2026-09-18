@@ -34,7 +34,10 @@ func pairFixture() PairBundle {
 			// 直连形态（同机两态切换：story 7 的 LAN target）。
 			{Name: "lan", Token: strings.Repeat("cd", 32), Addr: "http://10.0.0.9:7777"},
 			// 离线机：无 ticket = 部分 bundle，不整单失败。
-			{Name: "offline", Token: strings.Repeat("ef", 32), Node: "offline"},
+			// Credential 非空：钉住 PairMachine 的 `credential,omitempty` 键——
+			// 只有至少一台机器的 Credential 非空，该键才出现在规范字节里，
+			// 键集断言才有牙（改名/删键当场变红）。
+			{Name: "offline", Token: strings.Repeat("ef", 32), Credential: strings.Repeat("0f", 8), Node: "offline"},
 		},
 	}
 }
@@ -246,10 +249,14 @@ func TestPairBundleJSONKeysMatchWire(t *testing.T) {
 	if len(machines) != 3 {
 		t.Fatalf("金样本应有 3 台机器，实得 %d", len(machines))
 	}
-	// 0：relay 形态 + ticket；1：直连形态；2：relay 形态无 ticket。
+	// 0：relay 形态 + ticket；1：直连形态无 credential；2：relay 形态无 ticket 但 credential 非空。
+	// machines[2] 显式覆盖 PairMachine 的 `credential` 键：改名或误加 omitempty 省键都会在此变红。
 	assertExactKeys(t, "machines[0]", machines[0], []string{"name", "token", "node", "ticket"})
 	assertExactKeys(t, "machines[1]", machines[1], []string{"name", "token", "addr"})
-	assertExactKeys(t, "machines[2]", machines[2], []string{"name", "token", "node"})
+	assertExactKeys(t, "machines[2]", machines[2], []string{"name", "token", "credential", "node"})
+	if got := string(machines[2]["credential"]); got != `"0f0f0f0f0f0f0f0f"` {
+		t.Fatalf("machines[2] credential 值漂移: got %s", got)
+	}
 
 	var ticket map[string]json.RawMessage
 	if err := json.Unmarshal(machines[0]["ticket"], &ticket); err != nil {
