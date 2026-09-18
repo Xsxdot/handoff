@@ -43,11 +43,20 @@ func collabErr(w http.ResponseWriter, err error) {
 	writeErr(w, code, err)
 }
 
-// roomUserActor 是房间面的控制台成员/actor 标识（服务端注入）：沿用
-// ledgerapi.go:458 的 step 补 actor 先例（"web:"+hostOnly）。@用户的提及
-// 与已读游标都以此标识为成员维度（D-identity，台账 L15）。
-func (s *Server) roomUserActor(r *http.Request) string {
-	return "web:" + hostOnly(r.RemoteAddr)
+// requireConsoleIdentity 解析本请求的控制台身份；未配名/非法名时写 403 可行动
+// 错误并返回 ok=false（调用方立即 return）。这是会话/房间「需要谁是我」端点的
+// 统一身份门（B358.9 决定 8 fail-closed）：未配名 ≠ 非成员——文案写清
+// console_user，前端据 GET /api/identity 的 configured 渲染横幅并把原文透传
+// （breakdown P-1 甲）。读面与写面同门（P-2 甲），不降级放行。
+func (s *Server) requireConsoleIdentity(w http.ResponseWriter, r *http.Request) (consoleIdentity, bool) {
+	id := s.resolveConsoleIdentity(r)
+	if !id.Configured {
+		s.log.Warn("控制台身份未配置，请求拒收（fail-closed）", "method", r.Method, "path", r.URL.Path)
+		writeErr(w, http.StatusForbidden, errors.New(
+			"本机未配置控制台人名 console_user，无法确定身份；请在 agentd 配置文件中设置 console_user 后重试"))
+		return consoleIdentity{}, false
+	}
+	return id, true
 }
 
 // roomsListDefaultLimit / roomsListMaxLimit 是 GET /api/rooms 分页的默认与上限，
@@ -112,7 +121,11 @@ func parseRoomsListParams(r *http.Request) (roomsListParams, error) {
 // 由 enrichRoomAttachments 收窄入参。
 func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
-	member := s.roomUserActor(r)
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
+	member := id.Member
 	params, err := parseRoomsListParams(r)
 	if err != nil {
 		s.log.Warn("会话列表分页参数无效", "project", project, "cause", err)
@@ -423,6 +436,10 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 // （0 = 无回复锚，与缺省等价，wire omitempty 下不落键）。
 func (s *Server) handleRoomSend(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("id")
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Body     string   `json:"body"`
 		Refs     []string `json:"refs,omitempty"`
@@ -441,22 +458,27 @@ func (s *Server) handleRoomSend(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("消息正文不能为空"))
 		return
 	}
+	// 端戳只做落款：登录会话设备名随 payload 走（决定 1/3），不参与任何判定。
 	seq, err := s.rooms.Send(roomID, proto.RoomMessage{
 		Kind: proto.RoomMsgUser, Body: req.Body, Refs: req.Refs, Mentions: req.Mentions,
-		ReplyTo: req.ReplyTo,
-	}, s.roomUserActor(r))
+		ReplyTo: req.ReplyTo, Device: id.Device,
+	}, id.Member)
 	if err != nil {
-		s.log.Warn("房间消息发送失败", "room", roomID, "actor", s.roomUserActor(r), "cause", err)
+		s.log.Warn("房间消息发送失败", "room", roomID, "actor", id.Member, "cause", err)
 		collabErr(w, err)
 		return
 	}
-	s.log.Info("房间消息已发送", "room", roomID, "seq", seq, "actor", s.roomUserActor(r))
+	s.log.Info("房间消息已发送", "room", roomID, "seq", seq, "actor", id.Member)
 	writeJSON(w, http.StatusOK, map[string]int64{"seq": seq})
 }
 
 // handleRoomRead POST /api/rooms/{id}/read {upto_seq} → MarkRead（打开房间即已读）。
 func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("id")
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		UptoSeq int64 `json:"upto_seq"`
 	}
@@ -464,8 +486,8 @@ func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
 		return
 	}
-	if err := s.rooms.MarkRead(s.roomUserActor(r), roomID, req.UptoSeq); err != nil {
-		s.log.Warn("已读游标置位失败", "room", roomID, "member", s.roomUserActor(r), "cause", err)
+	if err := s.rooms.MarkRead(id.Member, roomID, req.UptoSeq); err != nil {
+		s.log.Warn("已读游标置位失败", "room", roomID, "member", id.Member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -476,6 +498,11 @@ func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request) {
 // gateway 层）。decision/mention 源失败如实 500（承重）；ticket 源失败降级跳过
 // （与 handleCardsList 的 tickets 徽标同族，不吞主查询）。
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
+	member := id.Member
 	items := make([]proto.InboxItem, 0, 8)
 
 	if s.mgr == nil {
@@ -535,9 +562,9 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 源③ mention：@用户的未消费提及（collab.Mentions 已含未消费过滤，C5 锁住）。
-	mentions, err := s.rooms.Mentions(s.roomUserActor(r), 0, 0)
+	mentions, err := s.rooms.Mentions(member, 0, 0)
 	if err != nil {
-		s.log.Warn("收件箱 mention 源读取失败", "member", s.roomUserActor(r), "cause", err)
+		s.log.Warn("收件箱 mention 源读取失败", "member", member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -552,7 +579,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.log.Info("收件箱已聚合", "member", s.roomUserActor(r), "items", len(items))
+	s.log.Info("收件箱已聚合", "member", member, "items", len(items))
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 

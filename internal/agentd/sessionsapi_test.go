@@ -21,14 +21,14 @@ import (
 // sessionFixtureOwner 是会话夹具的群主身份（P4 统一记法，拍板①：owner 取
 // 请求体、校验 user:/agent: 前缀；先例 wakeconsumer_b358_test.go#mustWakeSessionFixture
 // 的 user:tester）。审计 actor 与它是两个字段：前者恒为服务端注入的
-// webUserMember，不因 owner 改变。
+// consoleMember，不因 owner 改变。
 const sessionFixtureOwner = "user:tester"
 
 // mustConsoleSession 经 HTTP 建一场会话（owner=sessionFixtureOwner，请求体
-// 统一记法），返回会话投影。拍板①后群主不再是 webUserMember，而 HTTP 发言
-// 路径的 actor 由服务端注入恒为 web:127.0.0.1、书写者执法要求它是会话成员
-// ——夹具以 Store.AddSessionMember（幂等、零事件副作用；成员扩张的 HTTP
-// 端点显式不做，plan §8.5）把控制台成员坐进会话，控制台发言/已读/收 @ 全链可用。
+// 统一记法），返回会话投影。B358.9 换脸后 HTTP 发言路径的 actor 由服务端注入
+// 恒为 user:sycm、书写者执法要求它是会话成员——夹具以 Store.AddSessionMember
+// （幂等、零事件副作用；成员扩张的 HTTP 端点显式不做，plan §8.5）把控制台成员
+// 坐进会话，控制台发言/已读/收 @ 全链可用。
 func mustConsoleSession(t *testing.T, env *ledgerEnv, title string) proto.Session {
 	t.Helper()
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/sessions",
@@ -43,7 +43,7 @@ func mustConsoleSession(t *testing.T, env *ledgerEnv, title string) proto.Sessio
 	if !strings.HasPrefix(session.ID, "session:") {
 		t.Fatalf("会话 id 应形如 session:<n>: %q", session.ID)
 	}
-	if err := env.ledger.AddSessionMember(session.ID, webUserMember, webUserMember); err != nil {
+	if err := env.ledger.AddSessionMember(session.ID, consoleMember, consoleMember); err != nil {
 		t.Fatalf("坐进控制台成员: %v", err)
 	}
 	return session
@@ -82,8 +82,8 @@ func TestSessionsCreateEndpoint(t *testing.T) {
 			continue
 		}
 		created = true
-		if ev.Actor != webUserMember {
-			t.Fatalf("建会话审计 actor 应服务端注入 %q，实得 %q", webUserMember, ev.Actor)
+		if ev.Actor != consoleMember {
+			t.Fatalf("建会话审计 actor 应服务端注入 %q，实得 %q", consoleMember, ev.Actor)
 		}
 	}
 	if !created {
@@ -98,9 +98,16 @@ func TestSessionsCreateEndpoint(t *testing.T) {
 		`{"title":"x","owner":"mallory"}`); code != 400 {
 		t.Fatalf("owner 裸名无前缀应 400: %d", code)
 	}
-	// owner 缺失 → 400（群主是初始成员，契约条 3，不可缺）。
-	if code, _ = ledgerPost(t, env.testAgentdEnv, "/api/sessions", `{"title":"x"}`); code != 400 {
-		t.Fatalf("owner 缺失应 400: %d", code)
+	// owner 缺失 → 缺省为解析人名（B358.9 §3.8：owner=创建者）。
+	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions", `{"title":"缺省群主"}`); code != 200 {
+		t.Fatalf("owner 缺失应缺省为解析人名: %d %s", code, body)
+	}
+	var defaulted proto.Session
+	if err := json.Unmarshal([]byte(body), &defaulted); err != nil {
+		t.Fatal(err)
+	}
+	if defaulted.Owner != consoleMember {
+		t.Fatalf("owner 缺省应为解析人名 %q，实得 %q", consoleMember, defaulted.Owner)
 	}
 	// 空标题拒绝（handler 卫生检查，与 handleCardCreate 同款）。
 	if code, _ = ledgerPost(t, env.testAgentdEnv, "/api/sessions",
@@ -152,7 +159,7 @@ func TestSessionsListUnreadAndMemberForgery(t *testing.T) {
 		t.Fatalf("两条无 @ 消息 → Unread=2（伪造 member 参数不得改写本人未读）: %d", found.Unread)
 	}
 	// 已读后伪造参数不得把「别人的未读」带回本人投影：MarkRead 的是服务端注入
-	// 成员（webUserMember），若 handler 改读 query member（变异抽查①），这里会
+	// 成员（consoleMember），若 handler 改读 query member（变异抽查①），这里会
 	// 按 user:mallory 的空游标算出 2 而翻红。
 	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/rooms/"+session.ID+"/read",
 		fmt.Sprintf(`{"upto_seq":1000000}`)); code != 200 {
@@ -405,7 +412,7 @@ func TestSessionMemberAddEndpoint(t *testing.T) {
 		`{"body":"加入前"}`); code != 403 {
 		t.Fatalf("非成员发言应 403: %d %s", code, body)
 	}
-	// ① 空体自加入：成员=服务端注入 actor（webUserMember）。
+	// ① 空体自加入：成员=服务端注入 actor（consoleMember）。
 	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/members", `{}`); code != 200 {
 		t.Fatalf("空体自加入应 200: %d %s", code, body)
 	}
@@ -419,7 +426,7 @@ func TestSessionMemberAddEndpoint(t *testing.T) {
 		t.Fatalf("加入后发言应 200: %d %s", code, body)
 	}
 	// ③ 塞 identity+actor 被忽略：有效统一记法 identity 也不入成员列（服务端
-	// 权威），body actor 不改审计面；成员仍只有服务端注入的 webUserMember。
+	// 权威），body actor 不改审计面；成员仍只有服务端注入的 consoleMember。
 	if code, body = ledgerPost(t, env.testAgentdEnv, "/api/sessions/"+session.ID+"/members",
 		`{"identity":"user:mallory","actor":"user:mallory"}`); code != 200 {
 		t.Fatalf("塞有效 identity 应 200 且被忽略: %d %s", code, body)
@@ -435,14 +442,14 @@ func TestSessionMemberAddEndpoint(t *testing.T) {
 	var hasWeb, hasMallory bool
 	for _, m := range detail.Summary.Members {
 		switch m.Identity {
-		case webUserMember:
+		case consoleMember:
 			hasWeb = true
 		case "user:mallory":
 			hasMallory = true
 		}
 	}
 	if !hasWeb {
-		t.Fatalf("服务端注入成员 %q 应在成员列: %+v", webUserMember, detail.Summary.Members)
+		t.Fatalf("服务端注入成员 %q 应在成员列: %+v", consoleMember, detail.Summary.Members)
 	}
 	if hasMallory {
 		t.Fatalf("body 塞 identity 被忽略（成员标识服务端注入，不经请求体）: %+v", detail.Summary.Members)

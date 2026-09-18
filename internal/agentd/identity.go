@@ -8,8 +8,8 @@
 //   - 缺名不回落旧脸 web:<host>（决定 8）——返回 Configured=false 让调用方拒收。
 //   - 端戳缺失不拦门：主令牌身份（CLI，无登录会话）端戳为空，不是失败（决定 3）。
 //
-// 本文件是解析唯一入口；控制台各端点（房间/会话/已读/收件箱）在实现节点改为
-// 消费它，取代今天散落的 roomUserActor()="web:"+hostOnly（见契约欠账）。
+// 本文件是解析唯一入口；控制台各端点（房间/会话/已读/收件箱）经
+// requireConsoleIdentity 消费它，已取代旧 roomUserActor()="web:"+hostOnly。
 package agentd
 
 import (
