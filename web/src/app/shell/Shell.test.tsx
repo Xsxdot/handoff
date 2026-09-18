@@ -1196,6 +1196,37 @@ describe('B369.6 移动断点谱系', () => {
     expect(await screen.findByTestId('mobile-home')).toBeInTheDocument()
     expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
   })
+
+  it('移动「项目」tab：不可达位置标已断开且不渲染其目录内容（不降级只读）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    // 本机位置有一个可展开的工作树（证明树可用），另加一台远端位置探测失败：
+    // probe_error 非空即 CONTEXT「项目位置不可用」——只标状态、不渲染缓存内容。
+    vi.mocked(fetchProjectTree).mockResolvedValue({
+      ...tree,
+      machines: [],
+      projects: [{
+        ...tree.projects[0],
+        locations: [
+          ...tree.projects[0].locations,
+          {
+            machine: 'devbox', name: 'handoff', path: '/srv/handoff',
+            probe_error: 'dial tcp 10.0.0.8:7777: connect: connection refused',
+            workspaces: [{ path: '/srv/handoff/wt', branch: '离线分支', head: 'abc1234', is_main: false, managed: true, created_at: '' }],
+          },
+        ],
+      }],
+    })
+    renderShell()
+    fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    // 离线机器行保持可见并标「已断开」——不静默少一台（CONTEXT「项目位置不可用」）。
+    expect(await screen.findByText('已断开')).toBeInTheDocument()
+    // 反例锁：离线位置的目录内容一格都不渲染（不降级只读、不摆缓存快照）。
+    expect(screen.queryByText('离线分支')).toBeNull()
+    // 位置不可用时该机器行不可展开（onClick 为 undefined）；本机行仍可展开。
+    const offlineRow = screen.getAllByTestId('machine-row').find((row) => row.getAttribute('aria-disabled') === 'true')
+    expect(offlineRow).toBeDefined()
+    expect(offlineRow?.getAttribute('aria-expanded')).toBeNull()
+  })
 })
 
 // —— 原「统一房间面板挂载」节内与房间面无关的回归支（B358.6 迁移保留）——
