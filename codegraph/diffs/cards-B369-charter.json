@@ -515,6 +515,51 @@
    ],
    "returns": "http.Handler",
    "summary": "造回环透传反代：Transport 与桌面端同源选路，Host 改写为对端 loopback 名，**不注入凭据**。"
+  },
+  "n_cmd_runConsolePair": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 9100,
+   "name": "runConsolePair",
+   "file": "cmd/console.go",
+   "line": 121,
+   "signature": "func runConsolePair(cmd *cobra.Command) error"
+  },
+  "n_cmd_buildPairBundle": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 9101,
+   "name": "buildPairBundle",
+   "file": "cmd/console.go",
+   "line": 186,
+   "signature": "func buildPairBundle(ctx context.Context, targets []Endpoint, device string, log *slog.Logger) (proto.PairBundle, error)"
+  },
+  "n_cmd_pairMachineForTarget": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 9102,
+   "name": "pairMachineForTarget",
+   "file": "cmd/console.go",
+   "line": 229,
+   "signature": "func pairMachineForTarget(ctx context.Context, ep Endpoint, device, relayCred string, log *slog.Logger) proto.PairMachine"
+  },
+  "n_cmd_issuePairTicketForTarget": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 9103,
+   "name": "issuePairTicketForTarget",
+   "file": "cmd/console.go",
+   "line": 259,
+   "signature": "func issuePairTicketForTarget(ctx context.Context, name, device string) (*proto.PairTicket, error)"
+  },
+  "n_cmd_renderBundleQR": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 9104,
+   "name": "renderBundleQR",
+   "file": "cmd/console.go",
+   "line": 279,
+   "signature": "func renderBundleQR(payload string) (string, error)"
   }
  },
  "edgesAdded": [
@@ -549,6 +594,58 @@
   [
    "n_mobilecore_newReverseProxy",
    "n_client_Client_HTTPClient"
+  ],
+  [
+   "n_cmd_consoleCmd_RunE",
+   "n_cmd_runConsolePair"
+  ],
+  [
+   "n_cmd_runConsolePair",
+   "n_cmd_Endpoints"
+  ],
+  [
+   "n_cmd_runConsolePair",
+   "n_cmd_buildPairBundle"
+  ],
+  [
+   "n_cmd_runConsolePair",
+   "n_cmd_renderBundleQR"
+  ],
+  [
+   "n_cmd_runConsolePair",
+   "n_cmd_effectiveConfigPath"
+  ],
+  [
+   "n_cmd_runConsolePair",
+   "n_proto_EncodePairBundle"
+  ],
+  [
+   "n_cmd_buildPairBundle",
+   "n_cmd_pairMachineForTarget"
+  ],
+  [
+   "n_cmd_buildPairBundle",
+   "n_proto_EncodePairBundle"
+  ],
+  [
+   "n_cmd_buildPairBundle",
+   "m_proto_PairBundle"
+  ],
+  [
+   "n_cmd_pairMachineForTarget",
+   "m_proto_PairMachine"
+  ],
+  [
+   "n_cmd_pairMachineForTarget",
+   "n_cmd_issuePairTicketForTarget"
+  ],
+  [
+   "n_cmd_issuePairTicketForTarget",
+   "n_cmd_newTargetClientNamed"
+  ],
+  [
+   "n_cmd_issuePairTicketForTarget",
+   "n_client_Client_IssueAuthTicket"
   ]
  ],
  "implementsAdded": []
