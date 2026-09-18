@@ -13,6 +13,7 @@ import { errorMessage } from '../lib/format'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
 import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
+import { CARD_STATUSES } from './statusVocab'
 import { ListView } from './ListView'
 import { MigrateDialog } from './MigrateDialog'
 import { NewCardDialog } from './NewCardDialog'
@@ -84,6 +85,9 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
   const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
   const [needsOnly, setNeedsOnly] = useState(false)
+  // statusFilter：移动「卡」tab 的状态词表筛选（'' = 全部）。词表是受控的
+  // CARD_STATUSES（与 Go 逐值一致），不提供自由输入——自由输入等于允许词表外串。
+  const [statusFilter, setStatusFilter] = useState('')
   const [selected, setSelected] = useState<string | null>(null)
   const [newCardOpen, setNewCardOpen] = useState(false)
   const [migrateCardId, setMigrateCardId] = useState<string | null>(null)
@@ -173,8 +177,9 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
       if (workflow && card.workflow !== workflow) return false
       return query === '' || card.id.toLowerCase().includes(query) || card.title.toLowerCase().includes(query)
     })
-    return filterNeeds(base, needsOnly)
-  }, [cards, needsOnly, project, search, workflow])
+    const byStatus = statusFilter === '' ? base : base.filter((card) => card.status === statusFilter)
+    return filterNeeds(byStatus, needsOnly)
+  }, [cards, needsOnly, project, search, workflow, statusFilter])
   const attentionCount = cards.filter(needsAttention).length + projectDecisionCount(decisions)
   // 项目级请示不跟筛选走：它被算进了「需要你」徽标，只在筛选态显示等于
   // 徽标数字有一部分永远看不见（同一类毛病见 visibleColumns 的注释）
@@ -261,6 +266,24 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
         <input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="搜 B 号 / 标题" className="w-40 rounded-md border bg-background px-2 py-1 text-xs" />
         <button type="button" onClick={() => setNewCardOpen(true)} className="rounded-md border px-2.5 py-1 text-xs">+ 新建</button>
         <button type="button" onClick={() => setNeedsOnly((current) => !current)} className={`rounded-md border px-2.5 py-1 text-xs ${needsOnly ? 'border-amber-400 bg-amber-50 text-amber-800' : 'text-amber-700'}`}>⚑ 需要你 {attentionCount}</button>
+        <span data-testid="card-status-filter" className="flex items-center gap-1">
+          {CARD_STATUSES.map((status) => (
+            <button
+              key={status}
+              type="button"
+              data-testid={`card-status-${status}`}
+              aria-pressed={statusFilter === status}
+              onClick={() => {
+                const next = statusFilter === status ? '' : status
+                console.debug('cards.status_filter', { status: next })
+                setStatusFilter(next)
+              }}
+              className={`rounded-full border px-2 py-0.5 text-[11px] ${statusFilter === status ? 'border-foreground bg-accent font-medium' : 'text-muted-foreground'}`}
+            >
+              {status}
+            </button>
+          ))}
+        </span>
         {showOpenInBrowser && (
           <button
             type="button"
