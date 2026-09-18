@@ -538,6 +538,9 @@ type ticketRequest struct {
 	Question   string `json:"question,omitempty"`   // ask：问题原文
 	// QuestionID 是 OpenCode 原生问题身份；uuid 工单主键不能反推它。
 	QuestionID string `json:"question_id,omitempty"`
+	// Reason 是 gate 工单的升级理由（B376 复审）：审批链停用等情况下必须让
+	// 协调者从工单本身看到真因，不得回落「黑名单未命中」。空=普通升级。
+	Reason string `json:"reason,omitempty"`
 }
 
 // questionIDFromTicket 从持久工单恢复原生问题身份。
@@ -579,10 +582,15 @@ func (m *Manager) questionIDFromTicket(taskID, ticketID string) (string, error) 
 }
 
 // permissionPayload 是 permission_request 事件的 payload（含 ticket_id 供回复）。
+//
+// B376 复审：Reason 是审批链停用时的升级理由（「审批链已停用（连续 N 次失败）」），
+// 执行器无关——Manager 中介路径（claude/grok/agy/codex）也落这条，不能只在
+// OpenCode 的 Client.Request 里改写。未停用时为空，omitempty 保持旧形态。
 type permissionPayload struct {
 	TicketID   string `json:"ticket_id"`
 	Permission string `json:"permission"`
 	Kind       string `json:"kind"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 // questionPayload 是 question 事件的 payload（含 ticket_id 供回复）。
@@ -2088,6 +2096,15 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 			}
 			return
 		}
+		// B376 复审：审批链已停用时，升级理由必须点名停用，且对 Manager 中介
+		// 路径（claude/grok/agy/codex）同样成立——不能只在 OpenCode 的
+		// Client.Request 改写。注意只在 Consult 出口改写：真正的黑名单 Escalate
+		//（verdict.Action==Escalate）理由必须保留判据原文，不能被停用说明掩盖。
+		if reason := m.consultDisabledReason(taskID); reason != "" {
+			m.log.Warn("审批链已停用，升级理由改写", "task", taskID, "ticket", ticketID)
+			m.escalatePermissionReasoned(ctx, taskID, ev, ticketID, reason)
+			return
+		}
 	}
 	m.escalatePermission(ctx, taskID, ev, ticketID)
 }
@@ -2100,6 +2117,14 @@ func (m *Manager) handlePermission(ctx context.Context, taskID string, ev execut
 // 工单存权限描述全文，事件 payload 另行截断——全文是协调者裁决的依据，不能只存
 // 唤醒用的摘要。
 func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID string) {
+	m.escalatePermissionReasoned(ctx, taskID, ev, ticketID, "")
+}
+
+// escalatePermissionReasoned 是 escalatePermission 的带理由形态（B376 复审）：
+// reason 非空时落进工单请求体与 permission_request 事件，供协调者看真因
+// （审批链停用等）；空串与 escalatePermission 逐字一致。只在 Consult 出口停用时
+// 调用，判据自身的 Escalate 理由仍走 verdict，不被掩盖。
+func (m *Manager) escalatePermissionReasoned(ctx context.Context, taskID string, ev executor.AdapterEvent, ticketID, reason string) {
 	// 复用判定必须早于任何状态迁移（spec §3.2）：先落 waiting_answer 再放行回迁
 	// running，会让任务状态凭空抖动一次，resumeIfIdle 的判定面也跟着变复杂。
 	if m.reuseDecision(taskID, ev, ticketID) {
@@ -2112,7 +2137,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 	// 反过来「状态已落但工单还没建」是安全的：reply 找不到工单只会 404，
 	// 协调者重试即可，且工单随即出现。
 	m.transitBestEffort(taskID, proto.TaskStateWaitingAnswer, "permission_request")
-	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text})
+	req, _ := json.Marshal(ticketRequest{Kind: "gate", Permission: ev.Text, Reason: reason})
 	if _, err := m.st.CreateTicket(&proto.Ticket{
 		ID: ticketID, TaskID: taskID, Kind: "gate",
 		Request: req, CreatedAt: time.Now().UTC(),
@@ -2124,7 +2149,7 @@ func (m *Manager) escalatePermission(ctx context.Context, taskID string, ev exec
 		return
 	}
 	evt, err := m.st.AppendEvent(taskID, proto.EventTypePermissionRequest, permissionPayload{
-		TicketID: ticketID, Permission: permEventText(ev.Text), Kind: "gate",
+		TicketID: ticketID, Permission: permEventText(ev.Text), Kind: "gate", Reason: reason,
 	})
 	if err != nil {
 		// 工单在、事件缺：不回滚工单，留给下一次重放由权威重放判定
@@ -2338,16 +2363,38 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 	}
 	// 只入库不 Publish：approve 路径无人可唤醒（已自动放行），escalate 路径的
 	// 唤醒由紧随其后的 permission_request 完成；approver_decision 是审计记录，
-	// 协调者经 show 可见
-	reason := d.Reason
-	if reason == "" && d.Err != nil {
-		reason = d.Err.Error()
-	}
-	if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, ApproverDecisionPayload{
-		TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
-		Reason: reason, ElapsedMS: d.ElapsedMS, Executor: d.Executor,
-	}); err != nil {
-		m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
+	// 协调者经 show 可见。
+	//
+	// B376 复审：per-attempt 观测必须是执行器无关的——非 OpenCode 执行器走
+	// 这条 Manager 路径时，每个候选也要各写一条 approver_decision（带 executor），
+	// 与 OpenCode 的 Client.consult 一致；Attempts 为空时保持单条旧形态。
+	if len(d.Attempts) > 0 {
+		for _, at := range d.Attempts {
+			atReason := at.Reason
+			if atReason == "" && at.Err != nil {
+				atReason = at.Err.Error()
+			}
+			m.log.Info("审批者候选尝试", "task", taskID, "ticket", ticketID,
+				"executor", at.Executor, "decision", at.Decision)
+			if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, ApproverDecisionPayload{
+				TicketID: ticketID, Permission: permEventText(ev.Text), Decision: at.Decision,
+				Reason: atReason, ElapsedMS: at.ElapsedMS, Executor: at.Executor,
+			}); err != nil {
+				m.log.Error("追加 approver_decision 事件失败", "task", taskID,
+					"ticket", ticketID, "executor", at.Executor, "cause", err)
+			}
+		}
+	} else {
+		reason := d.Reason
+		if reason == "" && d.Err != nil {
+			reason = d.Err.Error()
+		}
+		if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, ApproverDecisionPayload{
+			TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
+			Reason: reason, ElapsedMS: d.ElapsedMS, Executor: d.Executor,
+		}); err != nil {
+			m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
+		}
 	}
 
 	// 重读任务状态后分流（P1-1）：审批链异步化打破了「permission 与 mediate 循环

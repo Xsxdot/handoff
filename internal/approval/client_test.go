@@ -557,6 +557,28 @@ func TestClientDisabledEscalatesWithDisabledReason(t *testing.T) {
 	if reason, _ := request["permission"].(string); reason == "" {
 		t.Fatalf("工单请求缺 permission: %v", request)
 	}
+	// B376 复审：停用理由必须落进工单请求体与 permission_request 事件，
+	// 不能只活在返回给 adapter 的 Decision.Reason 里——协调者从任一入口都
+	// 要看到「审批链坏了」，而不是「命令没命中判据」。
+	if reason, _ := request["reason"].(string); !strings.Contains(reason, "审批链已停用") {
+		t.Fatalf("工单请求体理由必须点名停用，得到 %q", reason)
+	}
+	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var evReason string
+	for _, e := range events {
+		if e.Type != proto.EventTypePermissionRequest {
+			continue
+		}
+		if reason, _ := payloadMap(t, e.Payload)["reason"].(string); reason != "" {
+			evReason = reason
+		}
+	}
+	if !strings.Contains(evReason, "审批链已停用") {
+		t.Fatalf("permission_request 事件理由必须点名停用，得到 %q", evReason)
+	}
 }
 
 // TestClientConsultWritesAttemptEvents 钉住 B376 第 3 条：每次候选尝试各写一条
@@ -598,6 +620,32 @@ func TestClientConsultWritesAttemptEvents(t *testing.T) {
 	}
 	if got[1]["executor"] != "grok" || got[1]["decision"] != "approve" {
 		t.Fatalf("第二条 = %+v，期望 grok/approve", got[1])
+	}
+}
+
+// TestClientJudgeEscalateKeepsReasonWhenDisabled 反锁复审边界：审批链停用时，
+// 判据自身的 Escalate（黑名单命中）理由必须保留原文，不得被停用说明掩盖。
+func TestClientJudgeEscalateKeepsReasonWhenDisabled(t *testing.T) {
+	st, _, client, calls := newClientFixture(t, permgate.Verdict{Action: permgate.Escalate, Reason: "命中黑名单 sudo"}, false, nil)
+	calls.mu.Lock()
+	calls.disabledReason = "审批链已停用（连续 3 次失败）"
+	calls.mu.Unlock()
+	res, err := client.Request(context.Background(), permissionRequest("native-judge-escalate", "sudo rm -rf /"))
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Decision.Reason != "命中黑名单 sudo" {
+		t.Fatalf("判据 Escalate 理由应为原文，得到 %q", res.Decision.Reason)
+	}
+	if strings.Contains(res.Decision.Reason, "审批链已停用") {
+		t.Fatalf("判据 Escalate 理由不得被停用说明掩盖，得到 %q", res.Decision.Reason)
+	}
+	tk, err := st.GetTicket(res.Ref.ID)
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	if reason, _ := payloadMap(t, tk.Request)["reason"].(string); strings.Contains(reason, "审批链已停用") {
+		t.Fatalf("工单理由不得被停用说明掩盖，得到 %q", reason)
 	}
 }
 

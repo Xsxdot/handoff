@@ -80,6 +80,16 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		{"git branch 只读列表", "git branch -a"},
 		{"git branch --list", "git branch --list 'feat/*'"},
 		{"sed -n 带 --quiet", "sed --quiet '1,20p' file"},
+		// B376 复审：只读 sed 形态（替换打印、正则地址）仍须静默；守卫只拦写/执行。
+		{"sed -n 替换只读", `sed -n 's/foo/bar/p' f`},
+		{"sed -n 正则地址只读", `sed -n '/error/p' f`},
+		// B376 复审 minor：codegraph 的 --repo 是全局旗标，其后子命令仍走闭集。
+		{"codegraph --repo 读图", "codegraph --repo . sym Gate.Judge"},
+		{"codegraph --view 读图", "codegraph --view cards-B376 sym Gate.Judge"},
+		{"codegraph help", "codegraph --help"},
+		{"sed 正则含 w 只读", `sed -n '/write/p' f`},
+		{"git branch 远程/详情只读", "git branch -r"},
+		{"git branch -v 只读", "git branch -v"},
 		{"单段 go test 回归", "go test ./..."},
 		{"单段 grep 回归", "grep -R x docs"},
 		{"单段 git status 回归", "git status --short"},
@@ -109,6 +119,19 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		"sed -n --in-place=.bak 's/a/b/' f",
 		"sed -n -e 's/a/b/' -i.bak f",
 		"sed -ni.bak 's/a/b/' f",
+		// B376 复审 2：sed 的 w（写文件）与 e（执行命令）命令是静默面外的写/执行
+		// 面，独立成 `-e`/脚本或作为 `s///w file` 标志出现；`-i` 守卫拦不住它们。
+		`sed -n 'w /tmp/sedout' f`,
+		`sed -n 'e echo pwned' f`,
+		`sed -n 's/a/b/w /tmp/sedout' f`,
+		`sed -n -e 'w /tmp/sedout' f`,
+		`sed -ne 'w /tmp/sedout' f`,
+		`sed -n --expression='w /tmp/sedout' f`,
+		`sed -n '1,5w /tmp/sedout' f`,
+		`sed -n 'p; w /tmp/sedout' f`,
+		`sed -n '/re/p;w /tmp/sedout' f`,
+		`sed -n 'p; e echo pwned' f`,
+		`printf 'w /tmp/sedout\n' | sed -n -f /dev/stdin f`,
 		// B376 复审：rg 新入白名单必须约束执行型标志，--pre 会执行任意程序。
 		`rg --pre 'rm -rf x' foo`,
 		"rg --pre=rm foo",
@@ -118,7 +141,11 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		"cd /etc && gofmt -w passwd",
 		"cd /tmp && git diff --output=x HEAD",
 		"cd src && gofmt -w x.go",
-		// B376 复审：git branch 的强制改名/复制形态都非只读。
+		// B376 复审 2：git branch 的强制改名/上游/描述写入形态都改 ref 或 .git/config。
+		"git branch -f main",
+		"git branch -u origin/main",
+		"git branch --set-upstream-to=origin/main",
+		"git branch --edit-description",
 		"git branch -M newname",
 		"git branch -C copy",
 		"ls | tee out",

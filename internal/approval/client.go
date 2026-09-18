@@ -170,8 +170,11 @@ func (c *Client) Request(ctx context.Context, req executor.ApprovalRequest) (exe
 	}
 	// B376：审批链被连续失败停用时，升级理由必须点名停用，不得再回落
 	// 「黑名单未命中」——那会把「审批者坏了」掩盖成「命令没命中判据」。
+	//
+	// 复审边界：只改写 Consult 出口的理由。判据自身的 Escalate（真黑名单命中、
+	// 自指令）理由必须保留原文，否则会反向掩盖成「审批链坏了」。
 	reason := verdict.Reason
-	if c.hooks.ConsultDisabledReason != nil {
+	if verdict.Action == permgate.Consult && c.hooks.ConsultDisabledReason != nil {
 		if r := c.hooks.ConsultDisabledReason(c.taskID); r != "" {
 			log.Warn("审批链已停用，升级理由改写", "task", c.taskID,
 				"native", req.NativeID, "reason", r)
@@ -452,7 +455,7 @@ func (c *Client) escalate(ctx context.Context, ev executor.AdapterEvent, reason 
 		c.logger().Error("创建权限工单失败", "task", c.taskID, "ticket", ticketID, "cause", err)
 		return executor.ApprovalResult{}, err
 	}
-	reqJSON, err := jsonMarshal(ticketRequest{Kind: "gate", Permission: ev.Text})
+	reqJSON, err := jsonMarshal(ticketRequest{Kind: "gate", Permission: ev.Text, Reason: reason})
 	if err != nil {
 		c.logger().Error("编码权限工单失败", "task", c.taskID, "ticket", ticketID, "cause", err)
 		return executor.ApprovalResult{}, err
@@ -468,7 +471,7 @@ func (c *Client) escalate(ctx context.Context, ev executor.AdapterEvent, reason 
 		return executor.ApprovalResult{}, err
 	}
 	evt, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypePermissionRequest, permissionPayload{
-		TicketID: ticketID, Permission: decisionpkg.PermEventText(ev.Text), Kind: "gate",
+		TicketID: ticketID, Permission: decisionpkg.PermEventText(ev.Text), Kind: "gate", Reason: reason,
 	})
 	if err != nil {
 		c.logger().Error("追加 permission_request 失败", "task", c.taskID, "ticket", ticketID, "cause", err)
@@ -513,12 +516,17 @@ func (c *Client) decisionFromStore(ticketID string) (executor.ApprovalDecision, 
 type ticketRequest struct {
 	Kind       string `json:"kind"`
 	Permission string `json:"permission,omitempty"`
+	// Reason is the escalation cause (B376 review): after the approver chain is
+	// disabled the durable ticket must name it instead of the generic verdict
+	// reason. Empty preserves the legacy shape.
+	Reason string `json:"reason,omitempty"`
 }
 
 type permissionPayload struct {
 	TicketID   string `json:"ticket_id"`
 	Permission string `json:"permission"`
 	Kind       string `json:"kind"`
+	Reason     string `json:"reason,omitempty"`
 }
 
 type permissionReusePayload struct {

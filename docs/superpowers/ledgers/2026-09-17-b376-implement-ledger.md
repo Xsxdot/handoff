@@ -129,4 +129,85 @@ $ git status --short
 
 amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
 
+## 复审修复轮 2（review-2 fail 四项 major + 两项 minor）
+
+上一轮 review-2 fail 逐项处置（TDD：先红→实现→绿→变异）：
+
+1. **sed 的 w/e 静默写/执行**：`sed -n 'w /path'`、`'e <cmd>'`、`'s///w /path'`、
+   `-e 'w ...'`、`-ne '...'`、`--expression=...`、`-f <任意脚本>` 均曾 AutoAllow
+   （`-i` 守卫拦不住）。先补反例进 `TestJudgeCompoundNotSilent`，红：
+   `compound non-readonly "sed -n 'w /tmp/sedout' f" was auto-allowed`。
+   实装 `hasSedWriteOrExec`（脚本命令位扫描，含 `;`/换行多命令切分）、
+   `sedScriptWritesOrExecs`、`splitSedCommands`、`sedSubstituteWrites`；
+   `-f/-e` 短选项簇保守否决。
+   变异：去掉 `!hasSedWriteOrExec(...)` 短接 → 反例红；`splitSedCommands` 改单元素
+   → `'p; w /tmp/sedout'` 反例红（确认多命令切分有牙）。
+2. **git branch 遗漏 -f/-u/-t/--set-upstream-to/--edit-description**：整词表只含
+   d/D/m/M/c/C。补齐 `hasGitBranchMutator` 短选项 f/u/t 与长选项 `--set-upstream-to`
+   / `--unset-upstream` / `--edit-description` / `--track`（含 `=值` 与粘连）。
+   反例红后实装。变异：短选项表去掉 f/u/t → `git branch -f main` 反例红。
+3. **停用理由与 per-attempt 观测须执行器无关**：`Manager.consultApprover`（claude/
+   grok/agy/codex 路径）此前只写一条汇总 `approver_decision`、停用理由只活在
+   OpenCode 的 `Client.Request`。实装：
+   - `consultApprover` 有 `Attempts` 时每候选各写一条 `approver_decision`（带
+     `executor`），空 Attempts 保持单条。
+   - `escalatePermissionReasoned`：Consult 出口停用时把「审批链已停用（连续 3 次
+     失败）」写进 gate 工单请求体与 `permission_request` 事件 payload。
+   - **边界**：只在 Consult 出口改写；判据自身的 Escalate（黑名单/自指令）理由
+     保留原文（反例 `TestBlacklistEscalateKeepsJudgeReasonWhenDisabled` 与
+     `TestClientJudgeEscalateKeepsReasonWhenDisabled` 锁住）。
+   - OpenCode `Client.escalate` 同步落 reason 进工单/事件（此前只改 Decision.Reason）。
+   测试：`TestConsultApproverWritesPerAttemptEventsManagerPath`、
+   `TestApproverDisabledEscalationReasonManagerPath`、client 侧
+   `TestClientDisabledEscalatesWithDisabledReason` 扩断言。变异：`len(d.Attempts)>0`
+   → false 红；`reason := m.consultDisabledReason` → "" 红；client 的 Consult 条件
+   去掉 → 判据原反例红。
+4. **b233.8-contract.md 冻结物被加字段**：`ConsultDecision`/`Hooks` 是契约 §3.1
+   冻结签名，B376 直接加 `Executor`/`Attempts`/`ConsultDisabledReason` 未走修订。
+   按 charter 冻结纪律回写 **§10 B376 修订记录（2026-09-18）**：说明加性扩张依据、
+   冻结正文（第 1–9 节）未改、`executor.ApprovalClient` 四方法与 F01–F18 不变。
+   `codegraph resolve --doc` 在基线 HEAD 同样 `file_missing`（存量图债，与本卡无关）。
+
+minor：
+- manager 路径 `ApproverDecisionPayload.Executor` 由上面第 3 项的两条测试断言
+  （`decisions[0].Executor=="codex"` / `==="grok"`）。
+- `codegraph --repo . sym ...` 进白名单：实装 `codegraphReadSubcommand` +
+  `codegraphValueFlags`，全局旗标出现在子命令前仍走闭集；未知子命令仍 Consult
+  （反例 `codegraph absorb` 保持红）。变异：`fields[1]` 直取 → absorb 反例红。
+
+复审命令与原始输出（历史读数）：
+
+```
+$ go build ./...
+build_exit=0
+$ go vet ./internal/permgate/ ./internal/approval/ ./internal/orchestration/
+vet_exit=0
+$ go test ./internal/permgate/ ./internal/approval/ ./internal/orchestration/ ./internal/config/ -count=1
+ok  	.../internal/permgate	0.011s
+ok  	.../internal/approval	1.847s
+ok  	.../internal/orchestration	59.515s
+ok  	.../internal/config	0.018s
+$ go test ./... -run '^$' -count=1
+（全 test 包编译通过，无 build failed）
+$ go test ./internal/client/ -run 'TestListTasksAndAttach|TestReplyRelayFailureSurfacesReason' -count=1
+（基线 HEAD 同红：本卡未触碰 internal/client，属存量红）
+```
+
+图查询：`codegraph --repo . sym Gate.Judge` / `sym safeCommandID` 命中；
+`who-calls Gate.Judge` 仅 `approval.Authority.Judge`，无新增债。
+
+### 本修复轮提交
+
+提交当时的命令与原始输出（历史读数；本条随同批 amend 收进）：
+
+```
+$ git commit -m "fix(B376): 复审 2——sed w/e 守卫 + git branch 上游/强制 + 停用理由执行器无关 + 契约修订回写 ..."
+[cards/B376-charter-5 0aa02716] fix(B376): 复审 2——sed w/e 守卫 + git branch 上游/强制 + 停用理由执行器无关 + 契约修订回写
+ 8 files changed, 610 insertions(+), 26 deletions(-)
+$ git status --short
+（空）
+```
+
+amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
+
 

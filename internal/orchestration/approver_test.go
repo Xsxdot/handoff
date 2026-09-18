@@ -383,6 +383,138 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 	}
 }
 
+// TestConsultApproverWritesPerAttemptEventsManagerPath 钉住 B376 复审：非
+// OpenCode 执行器（claude/grok/agy/codex）走 Manager.consultApprover 时，
+// per-attempt 观测与 opencode 的 Client.consult 一致——每个候选各写一条
+// approver_decision，payload 带 executor，不能只留一条汇总。
+func TestConsultApproverWritesPerAttemptEventsManagerPath(t *testing.T) {
+	ap, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"codex", "grok"}, Timeout: time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ap.BindOneShotFor("codex", &stubShot{
+		fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+			return executor.OneShotReply{Status: executor.OneShotFailed}, errors.New("codex 挂了")
+		},
+	})
+	ap.BindOneShotFor("grok", &stubShot{out: `{"decision":"approve","reason":"grok 放行"}`})
+	fk := fake.New(nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	task := mustApproverDispatch(t, m)
+	m.handlePermission(context.Background(), task.ID,
+		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "something",
+			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
+	waitApproverIdle(t, m)
+
+	var decisions []ApproverDecisionPayload
+	for _, e := range mustEvents(t, st, task.ID) {
+		if e.Type != proto.EventTypeApproverDecision {
+			continue
+		}
+		var p ApproverDecisionPayload
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatalf("解析 approver_decision: %v", err)
+		}
+		decisions = append(decisions, p)
+	}
+	if len(decisions) != 2 {
+		t.Fatalf("期望每候选一条 approver_decision，得到 %d: %+v", len(decisions), decisions)
+	}
+	if decisions[0].Executor != "codex" || decisions[0].Decision != "error" {
+		t.Fatalf("第一条 = %+v，期望 codex/error", decisions[0])
+	}
+	if decisions[1].Executor != "grok" || decisions[1].Decision != "approve" {
+		t.Fatalf("第二条 = %+v，期望 grok/approve", decisions[1])
+	}
+}
+
+// TestApproverDisabledEscalationReasonManagerPath 钉住 B376 复审：审批链停用
+// 后的升级理由必须点名停用，且对非 OpenCode 执行器同样成立——不能只在
+// opencode 的 Client.Request 里改写。理由同时落工单请求体与 permission_request
+// 事件，协调者从任一入口都能看到「审批链坏了」而不是「命令没命中判据」。
+func TestApproverDisabledEscalationReasonManagerPath(t *testing.T) {
+	ap, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"opencode"}, Timeout: time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fk := fake.New(nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	task := mustApproverDispatch(t, m)
+	m.apMu.Lock()
+	m.apDisabled[task.ID] = true
+	m.apMu.Unlock()
+
+	m.handlePermission(context.Background(), task.ID,
+		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "something",
+			Perm: &executor.PermRequest{Tool: executor.PermToolOther}})
+	waitEvent(t, st, task.ID, proto.EventTypePermissionRequest)
+
+	var evReason string
+	for _, e := range mustEvents(t, st, task.ID) {
+		if e.Type != proto.EventTypePermissionRequest {
+			continue
+		}
+		var p permissionPayload
+		if json.Unmarshal(e.Payload, &p) != nil {
+			continue
+		}
+		evReason = p.Reason
+	}
+	if !strings.Contains(evReason, "审批链已停用") {
+		t.Fatalf("permission_request 事件理由必须点名停用，得到 %q", evReason)
+	}
+	tk := mustGetTicket(t, st, task.ID+":p1")
+	var req ticketRequest
+	if err := json.Unmarshal(tk.Request, &req); err != nil {
+		t.Fatalf("解析工单请求体: %v", err)
+	}
+	if !strings.Contains(req.Reason, "审批链已停用") {
+		t.Fatalf("工单理由必须点名停用，得到 %q", req.Reason)
+	}
+}
+
+// TestBlacklistEscalateKeepsJudgeReasonWhenDisabled 反锁复审范围的边界：审批链
+// 停用时，真正的判据 Escalate（黑名单/自指令）理由必须保留判据原文，不能被
+// 停用说明掩盖——否则协调者会去查审批链，而其实是命令命中黑名单。
+func TestBlacklistEscalateKeepsJudgeReasonWhenDisabled(t *testing.T) {
+	ap, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"opencode"}, Timeout: time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	fk := fake.New(nil)
+	m, st, _ := newTestManagerWithApprover(t, map[string]executor.Adapter{"fake": fk}, "fake", ap)
+	task := mustApproverDispatch(t, m)
+	m.apMu.Lock()
+	m.apDisabled[task.ID] = true
+	m.apMu.Unlock()
+
+	m.handlePermission(context.Background(), task.ID,
+		executor.AdapterEvent{Type: "permission", PermissionID: "p1", Text: "Bash: sudo rm -rf /",
+			Perm: &executor.PermRequest{Tool: executor.PermToolBash, Command: "sudo rm -rf /"}})
+	waitEvent(t, st, task.ID, proto.EventTypePermissionRequest)
+
+	var evReason string
+	for _, e := range mustEvents(t, st, task.ID) {
+		if e.Type != proto.EventTypePermissionRequest {
+			continue
+		}
+		var p permissionPayload
+		if json.Unmarshal(e.Payload, &p) != nil {
+			continue
+		}
+		evReason = p.Reason
+	}
+	if strings.Contains(evReason, "审批链已停用") {
+		t.Fatalf("黑名单 Escalate 理由不得被停用说明掩盖，得到 %q", evReason)
+	}
+}
+
 // TestApproverDecisionErrorRecordsCause 验证裁决命令失败时 approver_decision
 // 的 reason 带上 Err 原文（B316 配额失败事件 reason 为空，界面上看不见）。
 func TestApproverDecisionErrorRecordsCause(t *testing.T) {

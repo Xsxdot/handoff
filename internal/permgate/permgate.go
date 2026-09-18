@@ -306,6 +306,54 @@ var codegraphReadSubcommands = map[string]bool{
 	"check": true, "validate": true, "summary": true,
 }
 
+// codegraphValueFlags 是 codegraph 全局旗标里「吃一个值」的那些。
+//
+// why 需要它：子命令是「第一个不以 - 开头」的词元，而 --repo/--view/--base
+// 的**值**（如 `.`）同样不以 - 开头。不跳过值就会把 `.` 当成子命令。
+var codegraphValueFlags = map[string]bool{
+	"--repo": true, "--view": true, "--base": true,
+}
+
+// codegraphReadSubcommand 从子命令之前的参数里找出 codegraph 子命令。
+//
+// 返回 (子命令名, ok)：ok=false 表示子命令不在只读闭集（或未知），不得静默；
+// 命中 --help/--version 且无子命令时返回 ("", true)。
+//
+// 边界：全局旗标可出现在子命令之前（`codegraph --repo . sym X`），判定按
+// 「第一个非旗标词元」而不是固定 fields[1]；值旗标的下一词元按值跳过。
+func codegraphReadSubcommand(args []string) (string, bool) {
+	if len(args) == 0 {
+		return "", true // 裸 codegraph 只打印帮助
+	}
+	sawHelp := false
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		if strings.HasPrefix(a, "--") {
+			name := a
+			if eq := strings.IndexByte(a, '='); eq >= 0 {
+				name = a[:eq]
+			} else if codegraphValueFlags[name] && i+1 < len(args) {
+				i++ // 跳过值
+			}
+			if name == "--help" || name == "--version" {
+				sawHelp = true
+			}
+			continue
+		}
+		if strings.HasPrefix(a, "-") && a != "-" {
+			continue
+		}
+		if codegraphReadSubcommands[a] {
+			return a, true
+		}
+		return "", false
+	}
+	if sawHelp {
+		return "", true
+	}
+	return "", false
+}
+
 // safeCommandID matches a complete, positive command shape and returns its
 // stable audit identifier. It tokenizes shell quoting for the command body;
 // it is not a shell executor and rejects connectors except the one ledger
@@ -395,20 +443,28 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 		return "cd", true
 	}
 	if fields[0] == "codegraph" {
-		if len(fields) == 1 || fields[1] == "--help" || fields[1] == "--version" {
+		// B376 复审：codegraph 的全局旗标（--repo/--view/--base/--stale）可出现在
+		// 子命令之前，白名单要按「子命令闭集」判，而不是把 fields[1] 当子命令。
+		// 未知子命令仍 Consult（absorb 会改写视图目录）。
+		sub, ok := codegraphReadSubcommand(fields[1:])
+		if !ok {
+			return "", false
+		}
+		if sub == "" {
 			return "codegraph", true
 		}
-		if codegraphReadSubcommands[fields[1]] {
-			return "codegraph-" + fields[1], true
-		}
-		return "", false
+		return "codegraph-" + sub, true
 	}
 	if fields[0] == "sed" {
 		// B376：sed 只有 -n 只读形态才静默；-i/--in-place 会改源文件。
 		// -i 的短路后缀（-i.bak、-i'.bak'、--in-place=.bak）也是原地改写，
 		// 必须用前缀匹配而不是整词匹配，否则守卫被后缀绕过。
+		//
+		// 复审 2：-i 不是唯一的写/执行面。sed 脚本里的 w/W（写文件）、e（执行
+		// 命令）以及 s///w file 的 w 标志同样在静默面外；-f/--file 从文件读脚本，
+		// 内容不可见同样不得静默。这三类与 -i 一样是「静态不可证明只读」。
 		if (hasToken(fields[1:], "-n") || hasToken(fields[1:], "--quiet")) &&
-			!hasSedInPlace(fields[1:]) {
+			!hasSedInPlace(fields[1:]) && !hasSedWriteOrExec(fields[1:]) {
 			return "sed-n", true
 		}
 		return "", false
@@ -780,18 +836,196 @@ func hasRGExecuteFlag(fields []string) bool {
 	return false
 }
 
-// hasGitBranchMutator 判断 git branch 参数里是否含改写分支引用的选项。
+// hasSedWriteOrExec 判断 sed 参数里是否含脚本层面的写文件或执行命令面。
 //
-// 短选项 -d/-D/-m/-M/-c/-C 既可能独立成词（`git branch -M topic`），
+// sed 的 `w file` / `W file` 命令把模式空间写进任意文件，`e` 命令执行任意
+// shell；`s/.../.../w file` 的 w 标志同理。这些都可以藏进 sed 脚本（位置参数
+// 或 -e/--expression 的下一词元，也可能直接粘连成 `s/a/b/w /tmp/x`）。
+//
+// 判定是文本级白名单之外的黑名单：对每个参数（含引号剥离后的脚本串）扫描
+// 脚本命令形态。保守但正确——判据是「静态可证明只读」，可见写/执行面即否决。
+// 另外 -f/--file 从任意文件读脚本，内容不可见，同样否决。
+func hasSedWriteOrExec(fields []string) bool {
+	for i := 0; i < len(fields); i++ {
+		f := fields[i]
+		if f == "-f" || f == "--file" || strings.HasPrefix(f, "--file=") {
+			return true
+		}
+		if strings.HasPrefix(f, "--expression=") {
+			if sedScriptWritesOrExecs(strings.TrimPrefix(f, "--expression=")) {
+				return true
+			}
+			continue
+		}
+		switch f {
+		case "-e", "--expression":
+			if i+1 < len(fields) {
+				i++
+				if sedScriptWritesOrExecs(fields[i]) {
+					return true
+				}
+			}
+			continue
+		case "-n", "--quiet", "-s", "-E", "-r", "-z", "-u", "--posix",
+			"--debug", "--sandbox", "-l":
+			continue
+		}
+		if strings.HasPrefix(f, "--") {
+			// 未知长选项（含 --debug=... 的变体）保守否决：判据要静态可证明。
+			return true
+		}
+		if strings.HasPrefix(f, "-") {
+			// 短选项簇：含 f（从任意文件读脚本）即内容不可见；含 e 时脚本可能是
+			// 下一词元或粘连，保守起见一并按「不可证明」处理（读只读形态会被
+			// 更上面的显式 -e/--expression 分支接走）。
+			if strings.ContainsRune(f[1:], 'f') || strings.ContainsRune(f[1:], 'e') {
+				return true
+			}
+			continue
+		}
+		// 位置参数：首个非选项词元是 sed 脚本。
+		return sedScriptWritesOrExecs(f)
+	}
+	return false
+}
+
+// sedScriptWritesOrExecs 判断一段 sed 脚本文本是否含 w/W/e 命令或 s///w 标志。
+//
+// 脚本可含多条命令（`p; w /tmp/x`、换行分隔），也可能带地址前缀（`1,5w f`、
+// `/re/d`）。按 `;` / 换行切成命令后逐条判定；对切分不确定以「是」作答——误伤
+// 只是多一次 Consult，漏判则是静默写文件。
+func sedScriptWritesOrExecs(script string) bool {
+	for _, cmd := range splitSedCommands(script) {
+		if sedCommandWritesOrExecs(cmd) {
+			return true
+		}
+	}
+	return false
+}
+
+// splitSedCommands 把 sed 脚本按未转义的 `;` 与换行切成交替命令。
+//
+// 反斜杠转义（`\;`）不切；`s/a;b/c/` 这类替换正文里的分号会被误切，但那只会
+// 让后续片段以非命令字母开头而被判为「否」——最坏是多看几个片段，不产生
+// 漏判（换行在脚本参数里通常已被 shell 引号保护，同样只是安全侧切分）。
+func splitSedCommands(script string) []string {
+	var out []string
+	var cur strings.Builder
+	esc := false
+	for _, r := range script {
+		switch {
+		case esc:
+			cur.WriteRune(r)
+			esc = false
+		case r == '\\':
+			cur.WriteRune(r)
+			esc = true
+		case r == ';' || r == '\n':
+			out = append(out, cur.String())
+			cur.Reset()
+		default:
+			cur.WriteRune(r)
+		}
+	}
+	out = append(out, cur.String())
+	return out
+}
+
+// sedCommandWritesOrExecs 判断单条 sed 命令是否写文件或执行命令。
+func sedCommandWritesOrExecs(script string) bool {
+	s := strings.TrimSpace(script)
+	if s == "" {
+		return false
+	}
+	// 去掉可选的地址前缀（数字、$、/re/、\cre），剩下的是命令。
+	rest := strings.TrimLeft(s, "0123456789$, \t")
+	if strings.HasPrefix(rest, "/") {
+		// 跳过 /.../ 地址（转义斜杠 \\/ 不提前闭合）
+		esc := false
+		for i := 1; i < len(rest); i++ {
+			if esc {
+				esc = false
+				continue
+			}
+			if rest[i] == '\\' {
+				esc = true
+				continue
+			}
+			if rest[i] == '/' {
+				rest = rest[i+1:]
+				break
+			}
+		}
+	}
+	rest = strings.TrimLeft(rest, " \t")
+	if rest == "" {
+		return false
+	}
+	switch rest[0] {
+	case 'w', 'W', 'e':
+		return true
+	case 's':
+		// s/pat/rep/flags —— flags 里的 w file 是写文件。
+		return sedSubstituteWrites(rest)
+	}
+	return false
+}
+
+// sedSubstituteWrites 判断 s/// 的 flags 段是否含 w（写文件）标志。
+func sedSubstituteWrites(s string) bool {
+	if len(s) < 2 {
+		return false
+	}
+	delim := s[1]
+	seg := s[2:]
+	// 依次跳过 pattern 与 replacement 两段（处理反斜杠转义）。
+	for part := 0; part < 2; part++ {
+		esc := false
+		found := false
+		for i := 0; i < len(seg); i++ {
+			if esc {
+				esc = false
+				continue
+			}
+			if seg[i] == '\\' {
+				esc = true
+				continue
+			}
+			if seg[i] == delim {
+				seg = seg[i+1:]
+				found = true
+				break
+			}
+		}
+		if !found {
+			return false
+		}
+	}
+	// flags 段：任意位置出现 w 即写文件。
+	return strings.ContainsRune(seg, 'w') || strings.ContainsRune(seg, 'W')
+}
+
+// 短选项 -d/-D/-m/-M/-c/-C/-f/-u/-t 既可能独立成词（`git branch -M topic`），
 // 也可能与参数粘连（`git branch -Mtopic`），还可能聚簇（`git branch -mM`）；
 // 长选项 `--move=x` 亦然。整词匹配会漏掉粘连形态，必须前缀匹配。
+//
+// 各选项为什么非只读：
+//   - d/D 删除、m/M 改名、c/C 复制：直接改 ref
+//   - f 强制重置分支指向：改 ref
+//   - u / --set-upstream-to / --unset-upstream / -t / --track：写 .git/config
+//     的上游追踪
+//   - --edit-description：写分支描述到 config
 func hasGitBranchMutator(fields []string) bool {
+	mutatingLong := []string{
+		"--delete", "--move", "--copy", "--force",
+		"--set-upstream-to", "--unset-upstream", "--edit-description", "--track",
+	}
 	for _, f := range fields {
 		if !strings.HasPrefix(f, "-") {
 			continue
 		}
 		if strings.HasPrefix(f, "--") {
-			for _, long := range []string{"--delete", "--move", "--copy", "--force"} {
+			for _, long := range mutatingLong {
 				if f == long || strings.HasPrefix(f, long+"=") {
 					return true
 				}
@@ -801,7 +1035,7 @@ func hasGitBranchMutator(fields []string) bool {
 		// 短选项：跳过前导 '-'，逐个字母检查改写类。
 		for _, c := range f[1:] {
 			switch c {
-			case 'd', 'D', 'm', 'M', 'c', 'C':
+			case 'd', 'D', 'm', 'M', 'c', 'C', 'f', 'u', 't':
 				return true
 			}
 		}
