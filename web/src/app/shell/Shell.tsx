@@ -904,6 +904,7 @@ export function Shell() {
                         initCommand={c.initCommand ?? launcher?.command}
                         incompatible={c.incompatible}
                         active={active && !fullPageRoute}
+                        keybar={compact}
                         // 会话 id 必须写回这个 tab：不写回的话切一次 tab
                         // 就会再建一个会话，用户每切一次多留一个 shell
                         onSession={(id) => wb.setContent(group, tabId, { ...c, sessionId: id, incompatible: false })}

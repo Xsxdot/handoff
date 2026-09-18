@@ -857,4 +857,19 @@ describe('TerminalTab 建连时重申尺寸', () => {
     attachOf()({ since: 0, truncated: false })
     expect(resize).toHaveBeenCalledWith(termInstance.cols, termInstance.rows)
   })
+
+  it('keybar 开启时渲染键条，点击把序列喂回 term.input（不直写 WS）', async () => {
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} keybar />)
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByTestId('keybar-esc'))
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b')
+    fireEvent.click(screen.getByTestId('keybar-up'))
+    expect(termInstance.input).toHaveBeenCalledWith('\x1b[A')
+  })
+
+  it('keybar 缺席时不渲染键条（桌面形态逐字节不变）', async () => {
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    expect(screen.queryByTestId('mobile-keybar')).toBeNull()
+  })
 })
