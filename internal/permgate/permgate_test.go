@@ -80,6 +80,14 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		{"git branch 只读列表", "git branch -a"},
 		{"git branch --list", "git branch --list 'feat/*'"},
 		{"sed -n 带 --quiet", "sed --quiet '1,20p' file"},
+		// B377：短选项簇里的 n 与整词 -n 是同一只读形态；--silent 是 GNU
+		// --quiet 的别名。簇里带参字母（e/f/l/i）之后的字符是该选项实参，
+		// 不再是旗标。
+		{"sed -ne 只读", `sed -ne '1,20p' f`},
+		{"sed -nE 只读", `sed -nE 's/a/A/p' f`},
+		{"sed -nsE 只读", `sed -nsE '1,2p' f`},
+		{"sed -ne 脚本粘连", `sed -ne'1,20p' f`},
+		{"sed --silent 只读", `sed --silent '1,20p' f`},
 		// B376 复审：只读 sed 形态（替换打印、正则地址）仍须静默；守卫只拦写/执行。
 		{"sed -n 替换只读", `sed -n 's/foo/bar/p' f`},
 		{"sed -n 正则地址只读", `sed -n '/error/p' f`},
@@ -176,6 +184,13 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		`sed -n 'p; q' -e 'w /tmp/out' f`,
 		`sed -n 'p' -ne 'w /tmp/out' f`,
 		`sed -n 'p' -e 'w /tmp/out' --expression='e touch /tmp/x' f`,
+		// B377：簇里的 n 可能是别的带参选项的实参，不得据此静默；簇展开后
+		// e 仍要吃脚本、f 仍否决。
+		`sed -en '1p' f`,
+		`sed -ln '1p' f`,
+		`sed -nf /tmp/script f`,
+		`sed -ne 's/a/b/e' f`,
+		`sed -ne 'p' -e 'w /tmp/out' f`,
 		// B376 复审：rg 新入白名单必须约束执行型标志，--pre 会执行任意程序。
 		`rg --pre 'rm -rf x' foo`,
 		"rg --pre=rm foo",
