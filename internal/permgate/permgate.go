@@ -20,6 +20,7 @@ package permgate
 import (
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"strings"
 
@@ -387,7 +388,7 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 		return "make", true
 	}
 	switch fields[0] {
-	case "ls", "cat", "grep", "rg", "which", "pwd", "head", "tail", "wc":
+	case "ls", "cat", "grep", "which", "pwd", "head", "tail", "wc":
 		return fields[0], true
 	}
 	if fields[0] == "cd" && len(fields) <= 2 {
@@ -404,11 +405,22 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 	}
 	if fields[0] == "sed" {
 		// B376：sed 只有 -n 只读形态才静默；-i/--in-place 会改源文件。
+		// -i 的短路后缀（-i.bak、-i'.bak'、--in-place=.bak）也是原地改写，
+		// 必须用前缀匹配而不是整词匹配，否则守卫被后缀绕过。
 		if (hasToken(fields[1:], "-n") || hasToken(fields[1:], "--quiet")) &&
-			!hasToken(fields[1:], "-i") && !hasToken(fields[1:], "--in-place") {
+			!hasSedInPlace(fields[1:]) {
 			return "sed-n", true
 		}
 		return "", false
+	}
+	if fields[0] == "rg" {
+		// B376 复审：rg 的执行型标志会拉起任意程序，不得静默。
+		// --pre <cmd> / --pre=<cmd> 让 rg 对每个文件执行该命令；--pre-glob 不
+		// 是执行型，但与本守卫无关。其它 rg 形态仍与 grep 同档只读。
+		if hasRGExecuteFlag(fields[1:]) {
+			return "", false
+		}
+		return fields[0], true
 	}
 	if fields[0] == "echo" || fields[0] == "printf" {
 		// B376：echo/printf 只在无写重定向时静默；`echo x > file` 是写。
@@ -451,11 +463,11 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 			return "git-rev-list", true
 		case "branch":
 			// B376：git branch 的删除/改名/复制/强制形态都非只读。
-			for _, f := range fields {
-				switch f {
-				case "-d", "-D", "-m", "-c", "-C", "--delete", "--move", "--copy", "--force":
-					return "", false
-				}
+			// -m/-M/-c/-C 是短选项：`git branch -M topic`、`git branch -Mnew`
+			// 与 `git branch -mM` 都是强制改名，必须前缀匹配；--move/--copy/
+			// --delete/--force 同理，`--delete=x` 也命中。
+			if hasGitBranchMutator(fields[1:]) {
+				return "", false
 			}
 			return "git-branch", true
 		}
@@ -508,12 +520,43 @@ func compoundSilent(command string) (id string, segments int, ok bool) {
 	if !ok {
 		return "", 0, false
 	}
+	cdActive := false
 	for _, seg := range segs {
+		// cd 改变后续段的实际工作目录，而参数位写落点按 Workdir 解析——相对
+		// 落点会被误判成范围内（`cd /etc && gofmt -w passwd` 实际写 /etc/passwd）。
+		// 重定向落点有 hasNonDiscardWriteRedirect 全拦；这里只补参数位写命令。
+		if isCDSegment(seg) {
+			cdActive = true
+		} else if cdActive && segmentHasRelativeWriteTarget(seg) {
+			return "", len(segs), false
+		}
 		if _, ok := matchSilentSegment(seg); !ok {
 			return "", len(segs), false
 		}
 	}
 	return "compound", len(segs), true
+}
+
+// isCDSegment 判断一段的首词元是否为 cd。
+func isCDSegment(seg string) bool {
+	fields, ok := silentFields(seg)
+	return ok && len(fields) > 0 && fields[0] == "cd"
+}
+
+// segmentHasRelativeWriteTarget 判断一段是否存在相对路径的参数位写落点。
+//
+// 只认相对路径：绝对落点的归属不随 cd 变化，且 judgeBash 的范围判定已覆盖。
+// 丢弃设备跳过（`tee /dev/null` 之类不构成写）。
+func segmentHasRelativeWriteTarget(seg string) bool {
+	for _, t := range WriteArgTargets(seg) {
+		if IsDiscardTarget(t) {
+			continue
+		}
+		if !filepath.IsAbs(t) {
+			return true
+		}
+	}
+	return false
 }
 
 // splitSilentSegments 把命令按引号外的 `&&` / `||` / `;` 切开。
@@ -691,6 +734,76 @@ func hasToken(fields []string, want string) bool {
 	for _, field := range fields {
 		if field == want {
 			return true
+		}
+	}
+	return false
+}
+
+// hasSedInPlace 判断 sed 参数里是否含原地改写选项。
+//
+// 为什么不能用 hasToken("-i")：sed 允许选项与实参粘连，也允许短选项聚簇——
+// `-i.bak`、`-i'.bak'`（splitSafeCommand 剥引号后是 `-i.bak`）、
+// `--in-place=.bak`、`-ni.bak`。整词匹配会漏掉全部非独立词形态，而它们都
+// 真的改写源文件。sed 的短选项表里只有 -i 含字母 i，故短选项簇按字母扫。
+func hasSedInPlace(fields []string) bool {
+	for _, f := range fields {
+		if f == "" || f == "-" || !strings.HasPrefix(f, "-") {
+			continue
+		}
+		if strings.HasPrefix(f, "--") {
+			if strings.HasPrefix(f, "--in-place") {
+				return true
+			}
+			continue
+		}
+		body := f[1:]
+		if i := strings.IndexByte(body, '.'); i >= 0 {
+			body = body[:i]
+		}
+		if strings.ContainsRune(body, 'i') {
+			return true
+		}
+	}
+	return false
+}
+
+// hasRGExecuteFlag 判断 rg 参数里是否含执行型标志。
+//
+// --pre <cmd> / --pre=<cmd> 让 rg 对每个被检索文件先跑一次该命令，等于把
+// 任意程序带过门；--pre-glob 只是 glob 过滤，不在此列。
+func hasRGExecuteFlag(fields []string) bool {
+	for _, f := range fields {
+		if f == "--pre" || strings.HasPrefix(f, "--pre=") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasGitBranchMutator 判断 git branch 参数里是否含改写分支引用的选项。
+//
+// 短选项 -d/-D/-m/-M/-c/-C 既可能独立成词（`git branch -M topic`），
+// 也可能与参数粘连（`git branch -Mtopic`），还可能聚簇（`git branch -mM`）；
+// 长选项 `--move=x` 亦然。整词匹配会漏掉粘连形态，必须前缀匹配。
+func hasGitBranchMutator(fields []string) bool {
+	for _, f := range fields {
+		if !strings.HasPrefix(f, "-") {
+			continue
+		}
+		if strings.HasPrefix(f, "--") {
+			for _, long := range []string{"--delete", "--move", "--copy", "--force"} {
+				if f == long || strings.HasPrefix(f, long+"=") {
+					return true
+				}
+			}
+			continue
+		}
+		// 短选项：跳过前导 '-'，逐个字母检查改写类。
+		for _, c := range f[1:] {
+			switch c {
+			case 'd', 'D', 'm', 'M', 'c', 'C':
+				return true
+			}
 		}
 	}
 	return false

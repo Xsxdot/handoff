@@ -74,6 +74,12 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		{"codegraph 读图补全", "codegraph sym Gate.Judge"},
 		{"npm --prefix", "npm --prefix web test"},
 		{"printf 无重定向", `printf '%s\n' hello`},
+		// B376 复审：守卫只拦执行型/改写型标志，只读形态仍须静默。
+		{"rg 普通检索", `rg -n "pattern" internal/`},
+		{"rg --pre-glob 非执行", `rg --pre-glob '*.go' foo`},
+		{"git branch 只读列表", "git branch -a"},
+		{"git branch --list", "git branch --list 'feat/*'"},
+		{"sed -n 带 --quiet", "sed --quiet '1,20p' file"},
 		{"单段 go test 回归", "go test ./..."},
 		{"单段 grep 回归", "grep -R x docs"},
 		{"单段 git status 回归", "git status --short"},
@@ -97,6 +103,24 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		"grep a && rm x",
 		"git branch -d topic",
 		"sed -i 's/a/b/' f",
+		// B376 复审：sed 的 -i 守卫必须覆盖带后缀形态，否则可静默改写文件。
+		"sed -n -i.bak 's/a/b/' f",
+		"sed -n -i'.bak' 's/a/b/' f",
+		"sed -n --in-place=.bak 's/a/b/' f",
+		"sed -n -e 's/a/b/' -i.bak f",
+		"sed -ni.bak 's/a/b/' f",
+		// B376 复审：rg 新入白名单必须约束执行型标志，--pre 会执行任意程序。
+		`rg --pre 'rm -rf x' foo`,
+		"rg --pre=rm foo",
+		`rg --pre 'sh -c x' pattern .`,
+		// B376 复审：cd 段改变后续段的实际工作目录，而写落点按 Workdir 解析，
+		// 相对写落点会被误判成范围内。cd 之后的参数位写段一律不静默。
+		"cd /etc && gofmt -w passwd",
+		"cd /tmp && git diff --output=x HEAD",
+		"cd src && gofmt -w x.go",
+		// B376 复审：git branch 的强制改名/复制形态都非只读。
+		"git branch -M newname",
+		"git branch -C copy",
 		"ls | tee out",
 		"echo x > file",
 		"go test ./... | tee /tmp/out",
