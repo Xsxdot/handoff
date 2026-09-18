@@ -842,16 +842,28 @@ func hasRGExecuteFlag(fields []string) bool {
 // shell；`s/.../.../w file` 的 w 标志同理。这些都可以藏进 sed 脚本（位置参数
 // 或 -e/--expression 的下一词元，也可能直接粘连成 `s/a/b/w /tmp/x`）。
 //
-// 判定是文本级白名单之外的黑名单：对每个参数（含引号剥离后的脚本串）扫描
-// 脚本命令形态。保守但正确——判据是「静态可证明只读」，可见写/执行面即否决。
-// 另外 -f/--file 从任意文件读脚本，内容不可见，同样否决。
+// 判定是文本级白名单之外的黑名单：扫描**每一个**脚本源。旧实现遇首个位置
+// 参数即 return，`sed -n 'p' -e 'w /tmp/out' f` 这种「位置脚本在前、-e 写/
+// 执行在后」的形态会被静默放行——真机 GNU sed 里位置参数按输入文件读并报错，
+// 但 -e 的 w/e 照样执行（review-4 真机复现绕过）。因此这里不再短路：
+//
+//   - -f/--file（含 --file=）从任意文件读脚本，内容不可见 → 否决
+//   - 每个 -e/--expression（含 --expression=与粘连）都扫脚本正文
+//   - 位置参数按 GNU 语义只有「没有显式脚本源」时才是脚本，此时扫首个位置
+//     参数；有 -e/-f 时位置参数是输入文件，不执行，不当脚本扫（否则
+//     `sed -n -e 'p' /etc/passwd` 会把路径正则误当写命令）
+//
+// 保守但正确——判据是「静态可证明只读」，可见写/执行面即否决。
 func hasSedWriteOrExec(fields []string) bool {
+	var positionals []string
+	explicitScript := false
 	for i := 0; i < len(fields); i++ {
 		f := fields[i]
 		if f == "-f" || f == "--file" || strings.HasPrefix(f, "--file=") {
 			return true
 		}
 		if strings.HasPrefix(f, "--expression=") {
+			explicitScript = true
 			if sedScriptWritesOrExecs(strings.TrimPrefix(f, "--expression=")) {
 				return true
 			}
@@ -859,6 +871,7 @@ func hasSedWriteOrExec(fields []string) bool {
 		}
 		switch f {
 		case "-e", "--expression":
+			explicitScript = true
 			if i+1 < len(fields) {
 				i++
 				if sedScriptWritesOrExecs(fields[i]) {
@@ -874,7 +887,7 @@ func hasSedWriteOrExec(fields []string) bool {
 			// 未知长选项（含 --debug=... 的变体）保守否决：判据要静态可证明。
 			return true
 		}
-		if strings.HasPrefix(f, "-") {
+		if strings.HasPrefix(f, "-") && f != "-" {
 			// 短选项簇：含 f（从任意文件读脚本）即内容不可见；含 e 时脚本可能是
 			// 下一词元或粘连，保守起见一并按「不可证明」处理（读只读形态会被
 			// 更上面的显式 -e/--expression 分支接走）。
@@ -883,8 +896,12 @@ func hasSedWriteOrExec(fields []string) bool {
 			}
 			continue
 		}
-		// 位置参数：首个非选项词元是 sed 脚本。
-		return sedScriptWritesOrExecs(f)
+		positionals = append(positionals, f)
+	}
+	// 有显式脚本源（-e/--expression/-f）时，位置参数是输入文件而非脚本；
+	// 没有时，首个位置参数才是脚本。
+	if !explicitScript && len(positionals) > 0 {
+		return sedScriptWritesOrExecs(positionals[0])
 	}
 	return false
 }

@@ -160,6 +160,22 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		`sed -n 's/a;b/c/e' f`,
 		`sed -n 's/a;b/c/w /tmp/out' f`,
 		`printf 'w /tmp/sedout\n' | sed -n -f /dev/stdin f`,
+		// B376 复审 4：位置脚本在前、-e/--expression/-f 写/执行在后。
+		// 旧扫描遇首个位置脚本即 return，其后的显式脚本源根本不被看见；
+		// 真机 GNU sed 里 `-e` 仍会执行（位置参数此时按输入文件读，报错也拦不住
+		// -e 的 w/e）。任何脚本源含写/执行都必须整段否决。
+		`sed -n 'p' -e 'w /tmp/out' f`,
+		`sed -n 'p' -e 'e touch /tmp/x' f`,
+		`sed -n 'p' --expression='w /tmp/out' f`,
+		`sed -n 'p' --expression='e touch /tmp/x' f`,
+		`sed -n 'p' -f /tmp/script f`,
+		`sed -n 'p' --file /tmp/script f`,
+		`sed -n 'p' --file=/tmp/script f`,
+		`sed -n 'p' -e 'p' -e 'w /tmp/out' f`,
+		`sed -n 'p' -e 's/a/b/w /tmp/out' f`,
+		`sed -n 'p; q' -e 'w /tmp/out' f`,
+		`sed -n 'p' -ne 'w /tmp/out' f`,
+		`sed -n 'p' -e 'w /tmp/out' --expression='e touch /tmp/x' f`,
 		// B376 复审：rg 新入白名单必须约束执行型标志，--pre 会执行任意程序。
 		`rg --pre 'rm -rf x' foo`,
 		"rg --pre=rm foo",

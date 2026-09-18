@@ -282,4 +282,84 @@ $ git status --short
 
 amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
 
+## 复审修复轮 4（review-4 fail：位置脚本在前、-e/--expression/-f 写/执行在后）
 
+基线 `cards/B376-charter-7`，接 review-4 报 `cae39c32`（review-3 地址语法族已闭合，未回退）。
+根因：`hasSedWriteOrExec` 遇首个位置参数（脚本）即 `return sedScriptWritesOrExecs(f)`，
+其后的 `-e`/`--expression`/`-f` 根本不被扫描。
+
+**真机复现绕过**（旁路探针原始输出，修复前）：
+
+```
+$ sed -n 'p' -e 'w /tmp/sedout' /tmp/sedin.txt
+sed: can't read p: No such file or directory   # 位置参数按输入文件读并报错
+exit=2
+-rw-r--r-- 1 root root 4 /tmp/sedout            # -e 的 w 照样执行写文件
+```
+
+Gate 侧同轮 `Judge(Request{Tool:"bash", Command:"sed -n 'p' -e 'w /tmp/out' f"})`
+→ `auto_allow rule="safe-command" reason="安全命令白名单命中: sed-n"`（旁路探针日志原文）。
+
+TDD：
+
+1. 先补反例进 `TestJudgeCompoundNotSilent`（12 条：`-e`/`--expression`/`--expression=`/
+   `-ne`/`--file`/`--file=`/多个 `-e` 混合，写 `w` 与执行 `e` 均有），红原文：
+   `compound non-readonly "sed -n 'p' -e 'w /tmp/out' f" was auto-allowed:
+   permgate.Verdict{Action:0, Reason:"安全命令白名单命中: sed-n", Rule:"safe-command"}`。
+   红因是守卫短路（功能缺失），不是 typo。
+2. 实现：`hasSedWriteOrExec` 不再在首个位置参数处短路。改为扫全部显式脚本源
+   （每个 `-e`/`--expression`，含 `=` 粘连；`-f`/`--file`/`--file=` 直接否决）；
+   位置参数收集起来，仅当**无任何显式脚本源**时才把首个位置参数按脚本扫描——
+   有 `-e`/`-f` 时位置参数是输入文件，不执行，扫它会把 `sed -n -e 'p' /etc/passwd`
+   的路径正则误当写命令。顺带把单 `-`（stdin 占位，非选项词元）归入位置参数。
+3. 绿：`go test ./internal/permgate/ ./internal/config/ ./internal/orchestration/ ./internal/approval/ -count=1` → 全 `ok`。
+
+**变异自验**（均先确认 `go build ./...` 通过再数红，变异前断言命中唯一）：
+
+- `if !explicitScript && len(positionals) > 0` → `... < 0`：`TestJudgeCompoundNotSilent` 红
+  （`sed -n 'w /tmp/sedout' f` 被静默）——位置脚本路径有牙。
+- 删掉 `case "-e","--expression"` 分支里的 `sedScriptWritesOrExecs` 扫描：同名测试红
+  （`sed -n -e 'w /tmp/sedout' f` 被静默）——新 `-e` 扫描路径有牙。
+- 两次变异都编译通过（`build_exit=0`），不是「编译红假 0 红」。
+
+**回归**：review-3 地址语法族、只读 `sed -n` 静默、`git branch` 可变写、`disabled-reason`、
+b233.8 §10 契约修订全部保留且绿；本修复只改 `internal/permgate/permgate.go` 的 sed 守卫，
+未触碰 failover/可观测/契约面（`git diff --stat` 仅两文件）。
+
+复审命令与原始输出（历史读数）：
+
+```
+$ go vet ./internal/permgate/
+vet_exit=0
+$ gofmt -l internal/permgate/
+（无输出）
+$ go test ./internal/permgate/ -count=1
+ok  	github.com/Xsxdot/handoff/internal/permgate	0.010s
+$ go test ./internal/permgate/ ./internal/config/ ./internal/orchestration/ ./internal/approval/ -count=1
+ok  	.../internal/permgate	0.018s
+ok  	.../internal/config	0.041s
+ok  	.../internal/orchestration	63.762s
+ok  	.../internal/approval	2.174s
+$ go build ./...
+build_exit=0
+$ go test ./... -run '^$' -count=1
+（全 test 包编译通过，无 build failed/cannot）
+```
+
+图覆盖债：`codegraph --repo . sym hasSedWriteOrExec` / `who-calls hasSedWriteOrExec`
+均未命中（`节点 "hasSedWriteOrExec" 不在图中，近似候选: []`）——沿用 spec 已记的
+`who-calls Judge` 空边债，本轮不新增可解析债；守卫以源码为事实。
+
+### 本修复轮提交
+
+提交当时的命令与原始输出（历史读数；本条随同批 amend 收进）：
+
+```
+$ git commit -m "fix(B376): 复审 4——sed 位置脚本在前时仍扫全部 -e/--expression/-f 脚本源"
+[cards/B376-charter-7 35d18b5e] fix(B376): 复审 4——sed 位置脚本在前时仍扫全部 -e/--expression/-f 脚本源
+ 3 files changed, 119 insertions(+), 6 deletions(-)
+$ git status --short
+（空）
+```
+
+amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
