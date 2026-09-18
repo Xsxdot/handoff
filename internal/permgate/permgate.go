@@ -913,8 +913,16 @@ func hasSedWriteOrExec(fields []string) bool {
 				}
 			}
 			continue
+		case "-l":
+			// l 必带实参（行宽），独立写法 `-l 1` 取下一词元。漏吃会把
+			// 行宽当位置脚本、真脚本当输入文件——`sed -n -l 1 'w /tmp/out' f`
+			// 静默放行（review-2 真机复现建文件）。
+			if i+1 < len(fields) {
+				i++
+			}
+			continue
 		case "-n", "--quiet", "--silent", "-s", "-E", "-r", "-z", "-u", "--posix",
-			"--debug", "--sandbox", "-l":
+			"--debug", "--sandbox":
 			continue
 		}
 		if strings.HasPrefix(f, "--") {
@@ -930,7 +938,11 @@ func hasSedWriteOrExec(fields []string) bool {
 			//     （输入文件名）会被当脚本扫——`sed -ne '1,20p' web.log`
 			//     的 web.log 会被扫出 w 而误否决
 			//   - f：脚本来自文件、内容不可见 → 否决
-			//   - l/i：无写/执行语义，跳过实参
+			//   - l：l 必带实参（行宽），可粘连（-l1）也可取下一词元（-l 1）。
+			//     簇尾为 l（其后无字符）时须吃掉下一词元，否则该实参会被当
+			//     位置脚本、真脚本会被当输入文件——`sed -nl 1 'w /tmp/out' f`
+			//     在此漏判为静默（review-2 真机 GNU sed 4.9 复现建文件）。
+			//   - i：可选后缀且只能粘连（-i.bak），不得吃下一词元
 			//   - 未知带参字母：不能证明的形态保守否决
 			body := f[1:]
 			i2 := 0
@@ -952,7 +964,12 @@ func hasSedWriteOrExec(fields []string) bool {
 					i2 = len(body)
 				case 'f':
 					return true
-				case 'l', 'i':
+				case 'l':
+					if body[i2+1:] == "" && i+1 < len(fields) {
+						i++
+					}
+					i2 = len(body)
+				case 'i':
 					i2 = len(body)
 				default:
 					return true
