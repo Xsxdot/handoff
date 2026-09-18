@@ -108,7 +108,7 @@ export function connectPty(options: PtyOptions): PtyHandle {
       return
     }
     switch (ctrl.type) {
-      case 'attached':
+      case 'attached': {
         // 服务端说它从哪个字节开始给：以**它**的口径为准推进游标。
         // 用本地的猜测会在 truncated 时把游标停在一个环里已经没有的位置。
         cursor = ctrl.since
@@ -120,6 +120,7 @@ export function connectPty(options: PtyOptions): PtyHandle {
         if (typeof ctrl.backlog_bytes === 'number') info.backlog_bytes = ctrl.backlog_bytes
         options.onAttached(info)
         return
+      }
       case 'exit':
         terminal = true
         options.onExit(ctrl.exit_code)

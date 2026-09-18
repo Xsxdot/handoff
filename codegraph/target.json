@@ -85,7 +85,7 @@
     "proto 实体",
     "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。 B358.9：CLI session send --agent 出示主 agent 启动身份，经 proto.MemberIdentity（包级函数）构造 agent:<启动身份>，不复制记法规则（与 agentd 侧同一唯一入口）。预算按新增消费面 1→2 抬一档——这是本卡引入的新消费点，非重扫棘轮；entries 补 proto（包级函数）。"
+   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。 B358.9：CLI session send --agent 出示主 agent 启动身份，经 proto.MemberIdentity（包级函数）构造 agent:<启动身份>，不复制记法规则（与 agentd 侧同一唯一入口）。预算按新增消费面 1→2 抬一档——这是本卡引入的新消费点，非重扫棘轮；entries 补 proto（包级函数）。 B369.5：console --qr/--bundle 复用配对载体包级编解码（proto.EncodePairBundle），同用「proto（包级函数）」entry（contract §8.3 明令 CLI 不得重实现 bundle 编解码）；entries 命中不计 legacy，预算在 B358.9 抬到 2 后不再变化（本卡合线时两边预算与 entries 已一致，仅并说明文字）。"
   },
   {
    "from": "d_cli",
@@ -409,9 +409,10 @@
    "to": "d_protocol",
    "legacyBudget": 0,
    "entries": [
-    "proto 实体"
+    "proto 实体",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：transport Client 的 preview REST/WS 镜像只经 proto DTO；不反向依赖 gateway。"
+   "legacyBudgetNote": "B294：transport Client 的 preview REST/WS 镜像只经 proto DTO；不反向依赖 gateway。 B369：移动连接核复用配对载体的 proto 包级编解码（Encode/DecodePairBundle）；transport→protocol 既有方向，补 entry。"
   },
   {
    "from": "d_workspace",
