@@ -216,16 +216,20 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 // sessionMembers 派生会话成员：显式成员（人/主 agent）+ 会话内各卡的当前席位。
 // 状态只报可证实的——有未过期租约报 working/listening，否则报 last_active；
 // 空座报 empty。不报「在线」（外部会话随时可能被关掉）。
+//
+// 显式成员 kind 按统一记法前缀判定（B358.9 契约 §5 H 组条 39/40）：user:→human、
+// agent:→agent。历史脏行（旧 web:/cli: 脸）不崩：kind 按最保守的 human 兜底并留痕。
 func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.Card) []proto.SessionMember {
 	members := make([]proto.SessionMember, 0, len(session.Members)+len(session.Cards))
 	for _, identity := range session.Members {
 		kind := proto.SessionMemberHuman
-		if identity == session.Owner && session.Owner != "" {
-			// 群主身份沿用显式成员；kind 由身份前缀近似（cli: 视为 agent，其余人）。
-			// 精确种类归 plan；本投影只保证身份可查、状态可证实。
-			if len(identity) >= 4 && identity[:4] == "cli:" {
-				kind = proto.SessionMemberAgent
-			}
+		parsedKind, _, err := proto.ParseMemberIdentity(identity)
+		switch {
+		case err != nil:
+			log().Warn("会话成员身份非统一记法，kind 按 human 兜底",
+				"session", session.ID, "identity", identity, "cause", err)
+		case parsedKind == proto.IdentityKindAgent:
+			kind = proto.SessionMemberAgent
 		}
 		status, lastActive := s.memberStatus(identity)
 		members = append(members, proto.SessionMember{

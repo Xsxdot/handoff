@@ -686,6 +686,9 @@ func (s *Server) Handler() http.Handler {
 	// SPA 兜底回落成 HTML（为什么必须这样，见 SPA 注册处的注释）。
 	api := http.NewServeMux()
 	api.HandleFunc("GET /api/status", s.handleStatus)
+	// B358.9 控制台身份读缝：本请求的人名+端名+是否已配名（会话页/新建表单数据源）。
+	// 不挂 withRooms/withLedger——身份解析只依赖配置与登录会话，与账本装配无关。
+	api.HandleFunc("GET /api/identity", s.handleIdentity)
 	api.HandleFunc("GET /api/footprint", s.handleFootprint)
 	api.HandleFunc("GET /api/reclaim", s.handleReclaimList)
 	api.HandleFunc("GET /api/gc", s.handleGC)
@@ -871,7 +874,7 @@ func (s *Server) auth(next http.Handler) http.Handler {
 			return
 		}
 		s.refreshSession(sess)
-		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), identity{session: sess.ID})))
+		next.ServeHTTP(w, r.WithContext(withIdentity(r.Context(), identity{session: sess.ID, device: sess.DeviceName})))
 	})
 }
 

@@ -103,7 +103,15 @@ export function totalUnread(summaries: SessionSummary[]): number {
   return summaries.reduce((total, summary) => total + summary.unread, 0)
 }
 
-// isSelfActor 自方消息判定：控制台发言 actor 恒服务端注入 web:<host>（roomUserActor）。
-export function isSelfActor(actor: string): boolean {
-  return actor.startsWith('web:')
+// isSelfActor 自方消息判定：与本次请求的控制台人名精确等值（B358.9 P-4 甲）。
+// selfMember 取服务端 GET /api/identity 的 member；拉取失败（null）回落
+// user: 前缀——但绝不把 web:<host> 旧脸判为自方（本卡要退役的机器位）。
+export function isSelfActor(actor: string, selfMember: string | null): boolean {
+  if (selfMember !== null) return actor === selfMember
+  return actor.startsWith('user:')
+}
+
+// signatureText 落款：人名 + 端名（有端戳时）；端戳缺失只出人名（决定 1）。
+export function signatureText(actor: string, device?: string): string {
+  return device ? `${actor} · ${device}` : actor
 }

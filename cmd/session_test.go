@@ -919,3 +919,122 @@ func TestSessionSendReplyToFlag(t *testing.T) {
 		t.Fatalf("referenced 引用条漂移: %+v", wake.Referenced)
 	}
 }
+
+// TestSessionSendAgentIdentity 锁 B358.9 接缝 #5：主 agent 以启动身份出示发言。
+//
+// 今天 `--cli/--session` 只产席位串 cli:<cli>#<session>，而写权是字符串等值——
+// agent:<启动身份> 成员因此发不出话。新增 `--agent <启动身份>` 后：
+//   - 落账 actor 恰为 agent:<启动身份>（不是席位串、不是 ledgerActor）；
+//   - 该身份已在成员集（AddSessionMember 坐入）时发言成功；
+//   - 三形态互斥（--agent 与 --cli/--session 并用拒绝）；
+//   - 非法启动身份（含冒号/空白）fail-closed、零落账。
+func TestSessionSendAgentIdentity(t *testing.T) {
+	dir := t.TempDir()
+	_, facade, st, sessionID, _ := mustSendFixture(t, dir, "主 agent 场")
+	if err := facade.AddSessionMember(sessionID, "agent:opencode", "user:tester"); err != nil {
+		t.Fatalf("坐入 agent:opencode: %v", err)
+	}
+	// 合法出示：落账 actor=agent:opencode，stdout {"ok":true,"seq":n}。
+	out, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "主 agent 自理", "--agent", "opencode")
+	if err != nil || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("session send --agent: err=%v out=%q", err, out)
+	}
+	events, err := st.EventsFromAsc(nil, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ev := range events {
+		if ev.Type != ledger.EvRoomMessage {
+			continue
+		}
+		var msg proto.RoomMessage
+		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Body == "主 agent 自理" {
+			found = true
+			if ev.Actor != "agent:opencode" {
+				t.Fatalf("主 agent 发言 actor 应为 agent:opencode，实得 %q", ev.Actor)
+			}
+			if strings.HasPrefix(ev.Actor, "cli:") {
+				t.Fatalf("主 agent 发言不得落成席位串: %q", ev.Actor)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("主 agent 消息未落账")
+	}
+
+	// 三形态互斥：--agent 与席位对并用拒绝。
+	if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "x",
+		"--agent", "opencode", "--cli", "grok", "--session", "s1"); err == nil {
+		t.Fatal("--agent 与 --cli/--session 并用必须拒绝")
+	}
+	// 非法启动身份 fail-closed + 零落账。
+	before, err := st.EventsFromAsc(nil, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"a:b", "a b"} {
+		if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "x", "--agent", bad); err == nil {
+			t.Fatalf("--agent %q 非法启动身份必须拒绝", bad)
+		}
+	}
+	after, err := st.EventsFromAsc(nil, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("互斥/非法负例必须零落账: before=%d after=%d", len(before), len(after))
+	}
+}
+
+// TestSessionMemberNotationSingleDefinition 锁 B358.9 契约 §5 H 组条 42（CLI 半边）：
+// 统一记法规则只在 proto 一处定义，cmd 侧不得再内联 CutPrefix 前缀判定。
+func TestSessionMemberNotationSingleDefinition(t *testing.T) {
+	raw, err := os.ReadFile("session.go")
+	if err != nil {
+		t.Fatalf("读 session.go: %v", err)
+	}
+	src := string(raw)
+	for _, banned := range []string{`CutPrefix(owner, "user:")`, `CutPrefix(identity, "user:")`,
+		`CutPrefix(owner, "agent:")`, `CutPrefix(identity, "agent:")`} {
+		if strings.Contains(src, banned) {
+			t.Fatalf("cmd/session.go 仍内联统一记法规则 %q——应收敛到 proto.ValidateMemberIdentity", banned)
+		}
+	}
+}
+
+// TestSessionSendAgentEmptyFallsThrough 锁条 28：--agent 名为空串等价无 flag，
+// 走 ledgerActor 默认形态（不冒充主 agent、不报错）。
+func TestSessionSendAgentEmptyFallsThrough(t *testing.T) {
+	dir := t.TempDir()
+	_, _, _, sessionID, actor := mustSendFixture(t, dir, "空 agent 场")
+	if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "人话", "--agent", ""); err != nil {
+		t.Fatalf("空 --agent 应等价无 flag: %v", err)
+	}
+	if actor != ledgerActor() {
+		t.Fatalf("夹具 actor 漂移: %q", actor)
+	}
+}
+
+// TestSessionSendActorResolution 单测 sessionSendActor 三形态决议（接缝 #5 的
+// 可单测半边）：agent 优先于席位、席位优先于 ledgerActor，且非法 agent 名报错。
+func TestSessionSendActorResolution(t *testing.T) {
+	got, err := sessionSendActor("opencode", "", "", false)
+	if err != nil || got != "agent:opencode" {
+		t.Fatalf("agent 形态: got=%q err=%v", got, err)
+	}
+	got, err = sessionSendActor("", "grok", "s1", true)
+	if err != nil || got != "cli:grok#s1" {
+		t.Fatalf("席位形态: got=%q err=%v", got, err)
+	}
+	got, err = sessionSendActor("", "", "", false)
+	if err != nil || got != ledgerActor() {
+		t.Fatalf("人尺度形态: got=%q err=%v", got, err)
+	}
+	if _, err := sessionSendActor("bad:name", "", "", false); err == nil {
+		t.Fatal("非法 agent 启动身份必须报错")
+	}
+}

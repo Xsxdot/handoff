@@ -299,10 +299,10 @@ func TestSessionExplicitMembers(t *testing.T) {
 	if len(session.Members) != 1 || session.Members[0] != "user:sy" {
 		t.Fatalf("会话初值应含群主: %+v", session.Members)
 	}
-	if err := st.AddSessionMember(session.ID, "cli:claude#desktop", "user:sy"); err != nil {
+	if err := st.AddSessionMember(session.ID, "user:claude", "user:sy"); err != nil {
 		t.Fatalf("加显式成员: %v", err)
 	}
-	if err := st.AddSessionMember(session.ID, "cli:claude#desktop", "user:sy"); err != nil {
+	if err := st.AddSessionMember(session.ID, "user:claude", "user:sy"); err != nil {
 		t.Fatalf("重复加成员应幂等: %v", err)
 	}
 	got, err := st.GetSession(session.ID)
@@ -311,6 +311,63 @@ func TestSessionExplicitMembers(t *testing.T) {
 	}
 	if len(got.Members) != 2 {
 		t.Fatalf("显式成员应恰好两条（幂等）: %+v", got.Members)
+	}
+}
+
+// TestSessionMemberKindByIdentityPrefix 锁 B358.9 契约 §5 H 组条 39/40：显式成员
+// kind 按统一记法前缀判定——agent:<名> 不得因不是 cli: 形状而被误报 human。
+func TestSessionMemberKindByIdentityPrefix(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	session, err := svc.CreateSession("kind 场", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.AddSessionMember(session.ID, "agent:opencode", "user:sy"); err != nil {
+		t.Fatalf("加 agent 成员: %v", err)
+	}
+	detail, err := svc.SessionDetail(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := memberByIdentity(t, detail, "agent:opencode"); m.Kind != proto.SessionMemberAgent {
+		t.Fatalf("agent:<名> 成员 kind 应为 agent，实得 %q", m.Kind)
+	}
+	if m := memberByIdentity(t, detail, "user:sy"); m.Kind != proto.SessionMemberHuman {
+		t.Fatalf("user:<名> 成员 kind 应为 human，实得 %q", m.Kind)
+	}
+}
+
+// TestSessionSeatMemberKindDerivedFromCard 锁条 41/35：卡派生席位 kind=seat；
+// 席位身份不落 session.Members（席位由卡当前 driver_session 派生）。
+func TestSessionSeatMemberKindDerivedFromCard(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	card := sessionCard(t, st, "席位 kind 卡")
+	session, err := svc.CreateSession("席位 kind 场", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.BindSeat(card.ID, "cli:opencode#seat-k", proto.SeatSourceCoordinate); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := svc.SessionDetail(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := memberByCard(t, detail, card.ID); m.Kind != proto.SessionMemberSeat {
+		t.Fatalf("卡派生席位 kind 应为 seat，实得 %q", m.Kind)
+	}
+	// 席位不落成员表：session.Members 不含 cli: 席位串（条 35）。
+	if got, err := svc.lc.GetSession(session.ID); err != nil {
+		t.Fatal(err)
+	} else {
+		for _, m := range got.Members {
+			if strings.HasPrefix(m, "cli:") {
+				t.Fatalf("席位身份不得写进 session.Members: %v", got.Members)
+			}
+		}
 	}
 }
 
@@ -330,10 +387,10 @@ func TestLedgerClientSessionPassthrough(t *testing.T) {
 	if owner, err := lc.SessionOfCard(card.ID); err != nil || owner != session.ID {
 		t.Fatalf("SessionOfCard 应命中会话 %s: %q err=%v", session.ID, owner, err)
 	}
-	if err := lc.AddSessionMember(session.ID, "cli:claude#desktop", "user:sy"); err != nil {
+	if err := lc.AddSessionMember(session.ID, "user:claude", "user:sy"); err != nil {
 		t.Fatalf("接口缝加成员: %v", err)
 	}
-	if err := lc.AddSessionMember(session.ID, "cli:claude#desktop", "user:sy"); err != nil {
+	if err := lc.AddSessionMember(session.ID, "user:claude", "user:sy"); err != nil {
 		t.Fatalf("接口缝加成员应幂等: %v", err)
 	}
 	got, err := lc.GetSession(session.ID)

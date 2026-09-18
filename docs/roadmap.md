@@ -890,3 +890,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **老 `web:` 孤儿成员行展示治理**：不搬家决定之后，老会话成员区里的 `web:<host>` 旧行永久残留；要的是给它们一个明确的展示说法（标孤儿/折叠/隐藏），不是改数据。来源：B358.9 spec Out of Scope 备注。
 - **handoff 拉起的会话级主 agent 的拉起 + @ 唤醒绑定**：需要一条「身份→（机器/执行器/实例）」的绑定，@ 到即由 handoff 叫醒（今天唤醒只到卡席位，`internal/agentd/wakeconsumer.go` 对非席位 target 零唤醒）。B358.9 只跑通外部自理（自己建会话、自己订阅、自己发言）。来源：B358.9 spec 两版合并（用户拍板先做自理）。
 - **拉权对称（新拉人 op）**：群内任一成员可拉新人、群主零审批；含控制台拉人入口与 CLI 拉人命令。另开子卡；新增时须与 B366 自助加入保持两条语义（自助加入＝老屋恢复路径，不许被吞）。来源：B358.9 spec「本卡不做」。
+
+## 来自 B358.9 acceptance（2026-09-18，验收残余）
+
+- **跨物理机同名未验**：本次真机以同一 agentd 上两台设备登录（`mac-air`/`ipad`）代替「两台机器」，跨机需先把本分支部署到第二台机器。
+- **旧 `web:` 游标孤儿行不清理**：`room-cursors.json` 里老脸行在换脸后成为死行（无行为影响：不冒充已读、不脏读）；要不要清理随「老 `web:` 孤儿成员行展示治理」一并处置。
+- **源码守卫覆盖面**：`TestConsoleFaceNoWebFallbackSourceGuard` 只扫 `roomsapi.go`/`sessionsapi.go`，不含 `identity.go`（旧脸回落写进拒绝点所在文件时守卫不红；行为锁仍能兜住）。
+- **分支图快照混入别卡声明（图卫生）**：`cards/B358.9-*` 分支的 `codegraph/target.json` 带入 B370 的 `d_transport→d_ledger` 声明，其实现不在本分支，`codegraph check` 因此报 1 条 `dead-contract`；契约声明与实现应当同分支同行。来源：B358.9 acceptance §4。

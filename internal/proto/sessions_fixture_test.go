@@ -46,6 +46,37 @@ func TestRoomMessageReplyToGolden(t *testing.T) {
 	}
 }
 
+// TestRoomMessageDeviceStampGolden 锁 B358.9 端戳键 device 的 wire 形状：
+// 零值省键（既有最小金样本不受扰）、非零在线、往返一致。端戳只做落款，
+// 不参与任何判定——本测试只管编码形状。
+func TestRoomMessageDeviceStampGolden(t *testing.T) {
+	minimal, err := json.Marshal(RoomMessage{Room: "session:1", Kind: RoomMsgUser, Body: "无端戳"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(minimal), "device") {
+		t.Fatalf("device 零值必须省略: %s", minimal)
+	}
+	stamped, err := json.Marshal(RoomMessage{Room: "session:1", Kind: RoomMsgUser, Body: "带端戳", Device: "mac / Safari"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(stamped, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["device"] != "mac / Safari" {
+		t.Fatalf("device 应编码为设备名: %s", stamped)
+	}
+	var back RoomMessage
+	if err := json.Unmarshal(stamped, &back); err != nil {
+		t.Fatal(err)
+	}
+	if back.Device != "mac / Safari" {
+		t.Fatalf("device 往返不一致: %+v", back)
+	}
+}
+
 func TestSessionSummaryGoldenProjection(t *testing.T) {
 	now := time.Unix(0, 0).UTC()
 	summary := SessionSummary{

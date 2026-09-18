@@ -1,0 +1,375 @@
+{
+ "view": "cards/B358.9-charter-4",
+ "base": "94246fc8a2acc7996c254cb6b473c7c9b5aef225",
+ "summary": "B358.9 contract Ticket 0：会话身份统一记法（proto.MemberIdentity/ParseMemberIdentity/ValidateMemberIdentity + IdentityResp 读缝）、config.console_user 键、agentd 身份解析收口（resolveConsoleIdentity/sessionDeviceName/handleIdentity + GET /api/identity）、RoomMessage 端戳 device 键、CLI session send --agent 主 agent 出示（sessionSendActor）。无新领域/容器；新符号均落既有容器。",
+ "nodesAdded": {
+  "m_proto_IdentityResp": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 1125,
+   "name": "IdentityResp",
+   "file": "internal/proto/identity.go",
+   "line": 31,
+   "summary": "IdentityResp 是控制台身份读缝（GET /api/identity）的响应。 三个键恒出（无 omitempty）：前端要能区分「值为空」与「键不存在」—— member 为空可能是 console_user 未配置（configured=false，可行动提示的 数据源），也可能后端版本过旧根本没发这个字段。缺键与空串是两回事。",
+   "fields": [
+    [
+     "Member",
+     "string",
+     "本请求的人名统一记法 user:<name>；未配置时为空串"
+    ],
+    [
+     "Device",
+     "string",
+     "端戳：登录会话登记的设备名；主令牌身份为空串"
+    ],
+    [
+     "Configured",
+     "bool",
+     "本机 console_user 是否已配置"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "n_proto_MemberIdentity": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 6,
+   "name": "MemberIdentity",
+   "file": "internal/proto/identity.go",
+   "line": 45,
+   "signature": "// MemberIdentity 用统一记法拼一个成员身份：user:<name> / agent:<name>。\n//\n// kind 只认 IdentityKindUser / IdentityKindAgent；name 非空、无首尾空白、\n// 不含分隔符 : 与空白字符。错误信息可行动（写清缺什么）。\nfunc MemberIdentity(kind, name string) (string, error)",
+   "params": [
+    [
+     "kind",
+     "string",
+     ""
+    ],
+    [
+     "name",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "MemberIdentity 用统一记法拼一个成员身份：user:<name> / agent:<name>。 kind 只认 IdentityKindUser / IdentityKindAgent；name 非空、无首尾空白、 不含分隔符 : 与空白字符。错误信息可行动（写清缺什么）。"
+  },
+  "n_proto_ParseMemberIdentity": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 7,
+   "name": "ParseMemberIdentity",
+   "file": "internal/proto/identity.go",
+   "line": 57,
+   "signature": "// ParseMemberIdentity 解出统一记法的 (kind, name)。空串、非统一记法前缀、\n// 残缺名字都返回错误——fail-closed，绝不把残缺身份悄悄降级成别的东西。\nfunc ParseMemberIdentity(raw string) (kind, name string, err error)",
+   "params": [
+    [
+     "raw",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "kind string, name string, err error",
+   "summary": "ParseMemberIdentity 解出统一记法的 (kind, name)。空串、非统一记法前缀、 残缺名字都返回错误——fail-closed，绝不把残缺身份悄悄降级成别的东西。"
+  },
+  "n_proto_ValidateMemberIdentity": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 8,
+   "name": "ValidateMemberIdentity",
+   "file": "internal/proto/identity.go",
+   "line": 75,
+   "signature": "// ValidateMemberIdentity 判断 raw 是否是合法统一记法；供「快速失败」预检。\nfunc ValidateMemberIdentity(raw string) bool",
+   "params": [
+    [
+     "raw",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "bool",
+   "summary": "ValidateMemberIdentity 判断 raw 是否是合法统一记法；供「快速失败」预检。"
+  },
+  "n_proto_validateMemberName": {
+   "kind": "func",
+   "container": "k_proto_fn",
+   "order": 9,
+   "name": "validateMemberName",
+   "file": "internal/proto/identity.go",
+   "line": 82,
+   "signature": "// validateMemberName 校验名字本体：非空、无首尾空白、不含冒号与空白字符。\n// 名字是全系统唯一的「人是谁」锚，宽松会造出两个看起来一样的人。\nfunc validateMemberName(name string) error",
+   "params": [
+    [
+     "name",
+     "string",
+     ""
+    ]
+   ],
+   "returns": "error",
+   "summary": "validateMemberName 校验名字本体：非空、无首尾空白、不含冒号与空白字符。 名字是全系统唯一的「人是谁」锚，宽松会造出两个看起来一样的人。"
+  },
+  "m_agentd_consoleIdentity": {
+   "kind": "model",
+   "container": "k_agentd_model",
+   "order": 8,
+   "name": "consoleIdentity",
+   "file": "internal/agentd/identity.go",
+   "line": 27,
+   "summary": "consoleIdentity 是 agentd 侧一次请求的身份解析结果（B358.9）。 Member 恒为本文请求的人名统一记法 user:<name>（Configured=false 时为空串）； Device 是本次登录会话登记的设备名（主令牌/无会话时为空串）； Configured 表示本机 console_user 是否已配置——false 时发话面调用方 fail-closed。",
+   "fields": [
+    [
+     "Member",
+     "string",
+     "人名统一记法 user:<name>"
+    ],
+    [
+     "Device",
+     "string",
+     "登录会话设备名（端戳）"
+    ],
+    [
+     "Configured",
+     "bool",
+     "console_user 是否已配置"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "n_agentd_Server_resolveConsoleIdentity": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 301,
+   "name": "Server.resolveConsoleIdentity",
+   "file": "internal/agentd/identity.go",
+   "line": 38,
+   "signature": "// resolveConsoleIdentity 是本卡身份解析唯一入口（契约 §3「身份解析只在 agentd\n// 一处」）：人名取配置 console_user，端戳取登录会话设备名；缺名 fail-closed。\n//\n// 参数 r 只用于取本次请求的登录会话（cookie 会话 id → store.Session.DeviceName）。\n// 主令牌（CLI）请求 identity.session 为空，端戳留空——端戳缺失不拦门。\nfunc (s *Server) resolveConsoleIdentity(r *http.Request) consoleIdentity",
+   "params": [
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "returns": "consoleIdentity",
+   "summary": "resolveConsoleIdentity 是本卡身份解析唯一入口（契约 §3「身份解析只在 agentd 一处」）：人名取配置 console_user，端戳取登录会话设备名；缺名 fail-closed。"
+  },
+  "n_agentd_Server_handleIdentity": {
+   "kind": "func",
+   "container": "k_agentd_Server",
+   "order": 303,
+   "name": "Server.handleIdentity",
+   "file": "internal/agentd/identity.go",
+   "line": 74,
+   "signature": "// handleIdentity 返回本请求的控制台身份（GET /api/identity，契约接缝 #4）。\n//\n// 这是控制台会话页/新建会话表单的数据源：owner 预填、落款显示、缺名可行动\n// 提示。三个键恒出（无 omitempty）——前端要能区分「空串」与「后端没发这个\n// 字段」（老 agentd）。本端点不落账、不改状态，读配置与会话行。\nfunc (s *Server) handleIdentity(w http.ResponseWriter, r *http.Request)",
+   "params": [
+    [
+     "w",
+     "http.ResponseWriter",
+     ""
+    ],
+    [
+     "r",
+     "*http.Request",
+     ""
+    ]
+   ],
+   "returns": "",
+   "summary": "handleIdentity 返回本请求的控制台身份（GET /api/identity，契约接缝 #4）。 这是控制台会话页/新建会话表单的数据源：owner 预填、落款显示、缺名可行动 提示。三个键恒出（无 omitempty）——前端要能区分「空串」与「后端没发这个 字段」（老 agentd）。本端点不落账、不改状态，读配置与会话行。"
+  },
+  "e_http_get_api_identity": {
+   "kind": "entry",
+   "container": "c_http",
+   "order": 900,
+   "name": "GET /api/identity",
+   "file": "internal/agentd/server.go",
+   "line": 691,
+   "channel": "http"
+  },
+  "n_cmd_sessionSendActor": {
+   "kind": "func",
+   "container": "k_cmd_fn",
+   "order": 756,
+   "name": "sessionSendActor",
+   "file": "cmd/session.go",
+   "line": 538,
+   "signature": "// sessionSendActor 决议 session send 的发言 actor（B358.9 接缝 #5）。\n//\n// 三形态（互斥，调用方已保证 --agent 与席位对不并用、席位对已完整）：\n//   - agentFlag 非空：主 agent 出示启动身份，编码为 agent:<启动身份>；名字不合法\n//     即 fail-closed（可行动报错），绝不回落到别的脸。\n//   - cliChanged：协调者席位 cli:<cli>#<session>（currentSeatIdentity）。\n//   - 否则：ledgerActor()（CLI 审计 actor，人尺度）。\n//\n// 抽成独立函数是为了让「三形态决议 + fail-closed」可单测，不与账本打开耦合。\nfunc sessionSendActor(agentFlag, cliFlag, sessionFlag string, cliChanged bool) (string, error)",
+   "params": [
+    [
+     "agentFlag",
+     "string",
+     ""
+    ],
+    [
+     "cliFlag",
+     "string",
+     ""
+    ],
+    [
+     "sessionFlag",
+     "string",
+     ""
+    ],
+    [
+     "cliChanged",
+     "bool",
+     ""
+    ]
+   ],
+   "returns": "string, error",
+   "summary": "sessionSendActor 决议 session send 的发言 actor（B358.9 接缝 #5）。"
+  },
+  "n_agentd_sessionDeviceName": {
+   "kind": "func",
+   "container": "k_agentd_fn",
+   "order": 126,
+   "name": "sessionDeviceName",
+   "file": "internal/agentd/identity.go",
+   "line": 65,
+   "signature": "// sessionDeviceName 取本次请求登录会话登记的设备名（端戳，B358.9）。\n//\n// 端戳在鉴权中间件查会话行时随 identity 一次读出（server.go auth 处装填），\n// 本函数不再二次查库——无新增调用边。无登录会话（主令牌）时为空串：端戳缺失\n// 不拦门（少的是落款，不是权力）。\nfunc sessionDeviceName(ctx context.Context) string",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ]
+   ],
+   "returns": "string",
+   "summary": "sessionDeviceName 取本次请求登录会话登记的设备名（端戳，B358.9）。"
+  }
+ },
+ "nodesModified": {
+  "m_proto_RoomMessage": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "order": 107,
+   "name": "RoomMessage",
+   "file": "internal/proto/rooms.go",
+   "line": 28,
+   "summary": "RoomMessage 是 room_message 账本事件的载荷 schema。ledger 只存 RawMessage 不解释字段；会话子系统与控制台按本结构编解码。 B358：投递寻址化——接收人由发送者写下的寻址决定，与「群里有谁」无关。 B358.9：增端戳键 device，只做落款显示，不参与任何判定。",
+   "fields": [
+    [
+     "Room",
+     "string",
+     ""
+    ],
+    [
+     "Kind",
+     "string",
+     ""
+    ],
+    [
+     "Body",
+     "string",
+     ""
+    ],
+    [
+     "Refs",
+     "[]string",
+     ""
+    ],
+    [
+     "Mentions",
+     "[]string",
+     ""
+    ],
+    [
+     "ReplyTo",
+     "int64",
+     ""
+    ],
+    [
+     "Device",
+     "string",
+     "端戳：发送端登记的设备名，只做落款"
+    ],
+    [
+     "DecisionID",
+     "int64",
+     ""
+    ],
+    [
+     "BySystem",
+     "bool",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_config_Config": {
+   "kind": "model",
+   "container": "k_config_model",
+   "order": 1,
+   "name": "Config",
+   "file": "internal/config/config.go",
+   "line": 43,
+   "summary": "Config 是 handoff 的顶层配置。 B358.9：增 console_user（控制台人名），空=未配，身份解析 fail-closed。",
+   "modelKind": "config"
+  },
+  "m_web_api_rooms_RoomMessage": {
+   "kind": "model",
+   "container": "k_web_api_rooms_model",
+   "order": 9,
+   "name": "RoomMessage",
+   "file": "web/src/api/rooms.ts",
+   "line": 24,
+   "modelKind": "dto"
+  }
+ },
+ "edgesAdded": [
+  [
+   "e_http_get_api_identity",
+   "n_agentd_Server_handleIdentity"
+  ],
+  [
+   "n_agentd_Server_handleIdentity",
+   "n_agentd_Server_resolveConsoleIdentity"
+  ],
+  [
+   "n_agentd_Server_handleIdentity",
+   "n_agentd_writeJSON"
+  ],
+  [
+   "n_agentd_Server_handleIdentity",
+   "m_proto_IdentityResp"
+  ],
+  [
+   "n_agentd_Server_resolveConsoleIdentity",
+   "n_agentd_Server_conf"
+  ],
+  [
+   "n_agentd_Server_resolveConsoleIdentity",
+   "n_agentd_sessionDeviceName"
+  ],
+  [
+   "n_agentd_Server_resolveConsoleIdentity",
+   "n_proto_MemberIdentity"
+  ],
+  [
+   "n_proto_MemberIdentity",
+   "n_proto_validateMemberName"
+  ],
+  [
+   "n_proto_ParseMemberIdentity",
+   "n_proto_validateMemberName"
+  ],
+  [
+   "n_proto_ValidateMemberIdentity",
+   "n_proto_ParseMemberIdentity"
+  ],
+  [
+   "n_cmd_sessionSendActor",
+   "n_proto_MemberIdentity"
+  ],
+  [
+   "n_cmd_sessionSendActor",
+   "n_cmd_currentSeatIdentity"
+  ],
+  [
+   "n_cmd_sessionSendActor",
+   "n_cmd_ledgerActor"
+  ],
+  [
+   "n_agentd_sessionDeviceName",
+   "n_agentd_identityFrom"
+  ]
+ ]
+}

@@ -58,10 +58,10 @@ func (c *roomsLogCapture) find(msg string) (slog.Record, bool) {
 	return slog.Record{}, false
 }
 
-// webUserMember 是测试环境里控制台已认证主体的成员标识：httptest.NewServer 固定
-// 监听 127.0.0.1，hostOnly(r.RemoteAddr) 恒为 "127.0.0.1"，故 roomUserActor 恒为
-// "web:127.0.0.1"（hostOnly 见 hostguard.go:236）。消息 @ 该标识才进收件箱 mention 源。
-const webUserMember = "web:127.0.0.1"
+// consoleMember 是测试环境里控制台已认证主体的成员标识（B358.9 换脸后）：
+// newRoomsEnv 配 console_user="sycm"，各端点经 resolveConsoleIdentity 解析出
+// user:sycm 作为 actor/member。消息 @ 该标识才进收件箱 mention 源。
+const consoleMember = "user:sycm"
 
 // newRoomsEnv 组装房间 HTTP 测试环境：真 SQLite 账本 + bug 工作流 + SetupAutomation
 // （装配 collab.Service 与换绑端口）+ httptest 全链。
@@ -70,6 +70,10 @@ func newRoomsEnv(t *testing.T) *ledgerEnv {
 	env := newNoPTYLedgerEnv(t)
 	seedAgentdLedger(t, env.ledger, "bug")
 	SetupAutomationForTest(t, env.srv, env.ledger)
+	// B358.9：房间/会话面换脸后必须有 console_user，否则全部端点 fail-closed。
+	next := *env.srv.conf()
+	next.ConsoleUser = "sycm"
+	env.srv.cfg.Store(&next)
 	return env
 }
 
@@ -324,7 +328,7 @@ func TestRoomsListEndpoint(t *testing.T) {
 	env := newRoomsEnv(t)
 	card := seedCard(t, env, "卡A")
 	session := mustConsoleSession(t, env, "列表预览场")
-	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "hi"}, webUserMember); err != nil {
+	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "hi"}, consoleMember); err != nil {
 		t.Fatal(err)
 	}
 	var out struct {
@@ -372,10 +376,10 @@ func TestRoomsListUnreadAndAttachProjection(t *testing.T) {
 	// attach 投影半边不依赖发言，卡房间挂账断言原样保留。
 	env := newRoomsEnv(t)
 	session := mustConsoleSession(t, env, "未读迁移场")
-	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "一"}, webUserMember); err != nil {
+	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "一"}, consoleMember); err != nil {
 		t.Fatal(err)
 	}
-	second, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "二"}, webUserMember)
+	second, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "二"}, consoleMember)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -754,11 +758,11 @@ func TestRoomMessagesEndpoint(t *testing.T) {
 	// 与否定锚断言逐条照抄（条数与内容都断言，不只断言非空）。
 	env := newRoomsEnv(t)
 	session := mustConsoleSession(t, env, "历史场")
-	first, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "第一条"}, webUserMember)
+	first, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "第一条"}, consoleMember)
 	if err != nil {
 		t.Fatal(err)
 	}
-	second, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "第二条"}, webUserMember)
+	second, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "第二条"}, consoleMember)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -825,8 +829,8 @@ func TestRoomSendEndpoint(t *testing.T) {
 		}
 		if msg.Body == "你好" {
 			found = true
-			if !strings.HasPrefix(ev.Actor, "web:") {
-				t.Fatalf("actor 应服务端注入（不经请求体）: %q", ev.Actor)
+			if ev.Actor != consoleMember {
+				t.Fatalf("actor 应服务端注入解析人名 %q: %q", consoleMember, ev.Actor)
 			}
 		}
 	}
@@ -925,7 +929,7 @@ func TestRoomReadEndpoint(t *testing.T) {
 	// B358.4 红窗改写：夹具卡房间 → 会话房间；MarkRead 水位清零断言照抄。
 	env := newRoomsEnv(t)
 	session := mustConsoleSession(t, env, "已读场")
-	seq, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, webUserMember)
+	seq, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, consoleMember)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -935,7 +939,7 @@ func TestRoomReadEndpoint(t *testing.T) {
 		t.Fatalf("POST read: %d %s", code, body)
 	}
 	// 读尽后未读应 0（MarkRead 到当前最大 seq → 水位语义清空）。
-	if n, err := env.srv.rooms.Unread(webUserMember, session.ID); err != nil || n != 0 {
+	if n, err := env.srv.rooms.Unread(consoleMember, session.ID); err != nil || n != 0 {
 		t.Fatalf("读尽后未读应 0: %v %d", err, n)
 	}
 }
@@ -990,7 +994,7 @@ func TestRoomsEndpoints503WithoutLedger(t *testing.T) {
 func TestInboxThreeSources(t *testing.T) {
 	env := newRoomsEnv(t)
 	// B358.4 红窗改写：mention 源夹具从 project 群房间迁会话房间（旧房间只读）。
-	// 发送者用夹具群主（真成员）——发送者若是 @ 目标本人（webUserMember），
+	// 发送者用夹具群主（真成员）——发送者若是 @ 目标本人（consoleMember），
 	// sendToSession 的回复即清提及会把刚落账的 @ 立刻消费掉，mention 源必空。
 	session := mustConsoleSession(t, env, "收件箱三源场")
 	// decision 源：卡级 + 项目级 open 裁决
@@ -1003,7 +1007,7 @@ func TestInboxThreeSources(t *testing.T) {
 	}
 	// mention 源：会话房间 @ 用户
 	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "改动影响 B145", Mentions: []string{webUserMember}}, sessionFixtureOwner); err != nil {
+		Kind: proto.RoomMsgUser, Body: "改动影响 B145", Mentions: []string{consoleMember}}, sessionFixtureOwner); err != nil {
 		t.Fatal(err)
 	}
 	// ticket 源：等待人工任务上的未答复工单
@@ -1097,11 +1101,11 @@ func TestInboxDestructiveTicketFloatsWithWatchers(t *testing.T) {
 func TestInboxMentionSource(t *testing.T) {
 	env := newRoomsEnv(t)
 	// B358.4 红窗改写：mention 源夹具从 project 群房间迁会话房间（旧房间只读）。
-	// 发送者用夹具群主（真成员）——若 webUserMember 自己发，回复即清提及会把
+	// 发送者用夹具群主（真成员）——若 consoleMember 自己发，回复即清提及会把
 	// 这条 @ 立刻消费掉，mention 源必空（与 TestInboxThreeSources 同一理由）。
 	session := mustConsoleSession(t, env, "收件箱提及场")
 	seq, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "改动影响 B145", Mentions: []string{webUserMember}}, sessionFixtureOwner)
+		Kind: proto.RoomMsgUser, Body: "改动影响 B145", Mentions: []string{consoleMember}}, sessionFixtureOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1119,7 +1123,7 @@ func TestInboxMentionSource(t *testing.T) {
 		t.Fatalf("mention RefID 应为消息 seq 十进制串: %q", mention.RefID)
 	}
 	// 消费后消失
-	if err := env.srv.rooms.Consume(seq, webUserMember); err != nil {
+	if err := env.srv.rooms.Consume(seq, consoleMember); err != nil {
 		t.Fatal(err)
 	}
 	if items := inboxItems(t, env); hasOrigin(items, proto.InboxOriginMention) {
@@ -1139,7 +1143,7 @@ func TestInboxRefIDShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	seq, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, sessionFixtureOwner)
+		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{consoleMember}}, sessionFixtureOwner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1179,7 +1183,7 @@ func TestInboxGoldenKeyShapes(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, sessionFixtureOwner); err != nil {
+		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{consoleMember}}, sessionFixtureOwner); err != nil {
 		t.Fatal(err)
 	}
 	mustCreateTask(t, env.st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake", State: proto.TaskStateWaitingAnswer})
@@ -1214,7 +1218,7 @@ func TestInboxIntegrationSmoke(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := env.srv.rooms.Send(session.ID, proto.RoomMessage{
-		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{webUserMember}}, sessionFixtureOwner); err != nil {
+		Kind: proto.RoomMsgUser, Body: "b", Mentions: []string{consoleMember}}, sessionFixtureOwner); err != nil {
 		t.Fatal(err)
 	}
 	mustCreateTask(t, env.st, &proto.Task{ID: "t1", RepoPath: "/r", Executor: "fake", State: proto.TaskStateWaitingAnswer})
