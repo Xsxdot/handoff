@@ -83,6 +83,13 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		// B376 复审：只读 sed 形态（替换打印、正则地址）仍须静默；守卫只拦写/执行。
 		{"sed -n 替换只读", `sed -n 's/foo/bar/p' f`},
 		{"sed -n 正则地址只读", `sed -n '/error/p' f`},
+		// B376 复审 3：地址前缀闭族（数字范围、GNU 步长、! 取反、正则范围）
+		// 本身是只读形态，真正的写/执行在他们之后的命令字母；未闭合地址
+		// 解析不得把只读命令误判成写。
+		{"sed -n 数字范围只读", `sed -n '1,5p' f`},
+		{"sed -n 正则范围只读", `sed -n '/a/,/b/p' f`},
+		{"sed -n 取反地址只读", `sed -n '2!p' f`},
+		{"sed -n GNU 步长地址只读", `sed -n '1~2p' f`},
 		// B376 复审 minor：codegraph 的 --repo 是全局旗标，其后子命令仍走闭集。
 		{"codegraph --repo 读图", "codegraph --repo . sym Gate.Judge"},
 		{"codegraph --view 读图", "codegraph --view cards-B376 sym Gate.Judge"},
@@ -131,6 +138,27 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		`sed -n 'p; w /tmp/sedout' f`,
 		`sed -n '/re/p;w /tmp/sedout' f`,
 		`sed -n 'p; e echo pwned' f`,
+		// B376 复审 3：地址前缀（数字范围、GNU ~ 步长、! 取反、正则范围）后的
+		// w/W/e 仍是写/执行面；s///e 的 e 标志执行替换结果。地址剥离或 flags
+		// 解析不认这些形态就会被静默放行。
+		`sed -n '1~2w /tmp/out' f`,
+		`sed -n '/a/,/b/w /tmp/out' f`,
+		`sed -n '2,4!w /tmp/out' f`,
+		`sed -n '1~2e touch /tmp/x' f`,
+		`sed -n '/a/,/b/e touch /tmp/x' f`,
+		`sed -n '2,4!W /tmp/out' f`,
+		`sed -n 's/a/x/e' f`,
+		`sed -n 's/a/x/we /tmp/out' f`,
+		// B376 复审 3：地址族还有更隐蔽的成员——正则地址的 GNU 标志 I/M、
+		// 相对行数端点 +N、相对步长端点 ~N；s/// 的 pattern/replacement 正文里
+		// 可以含分号，先按 `;` 切分会把执行标志吃掉。
+		`sed -n '/a/Iw /tmp/out' f`,
+		`sed -n '/a/Mw /tmp/out' f`,
+		`sed -n '/a/,+2w /tmp/out' f`,
+		`sed -n '/a/,~2w /tmp/out' f`,
+		`sed -n '1,~3w /tmp/out' f`,
+		`sed -n 's/a;b/c/e' f`,
+		`sed -n 's/a;b/c/w /tmp/out' f`,
 		`printf 'w /tmp/sedout\n' | sed -n -f /dev/stdin f`,
 		// B376 复审：rg 新入白名单必须约束执行型标志，--pre 会执行任意程序。
 		`rg --pre 'rm -rf x' foo`,
@@ -141,6 +169,9 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		"cd /etc && gofmt -w passwd",
 		"cd /tmp && git diff --output=x HEAD",
 		"cd src && gofmt -w x.go",
+		// B376 复审 3：相对路径 w 落点不得因地址前缀绕过 cd 守卫。
+		`cd /etc && sed -n '1~2w passwd' f`,
+		`cd /etc && sed -n '/a/,/b/w passwd' f`,
 		// B376 复审 2：git branch 的强制改名/上游/描述写入形态都改 ref 或 .git/config。
 		"git branch -f main",
 		"git branch -u origin/main",

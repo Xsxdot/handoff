@@ -210,4 +210,76 @@ $ git status --short
 
 amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
 
+## 复审修复轮 3（review-3 fail：sed 地址语法族绕过）
+
+基线 `cards/B376-charter-6`，接 review-3 HEAD `c59fc262`。根因：`sedCommandWritesOrExecs`
+用 `TrimLeft(..., "0123456789$, \t")` 剥地址前缀，不认 `~`/`!`/正则范围；`sedSubstituteWrites`
+只查 flags 的 `w/W`，不查 `e`。实测以下全部 AutoAllow（旁路探针原始输出）：
+`sed -n '1~2w /tmp/out'`、`'/a/,/b/w ...'`、`'2,4!w ...'`、`'1~2e touch ...'`、
+`'s/a/x/e'`（带 `-n` 时）、`cd /etc && sed -n '1~2w passwd'`。
+
+TDD：
+
+1. 先补反例进 `TestJudgeCompoundNotSilent`、正例进 `TestJudgeCompoundSilentTable`，红：
+   `compound non-readonly "sed -n '1~2w /tmp/out' f" was auto-allowed`。
+2. 实现：删 `splitSedCommands`（先按 `;` 切分会把 `s/a;b/c/e` 的执行标志切掉），
+   `sedScriptWritesOrExecs` 改为对整段脚本一次左到右扫描；新增 `skipSedAddress`
+   （数字含 `~N`、`$`、`/re/` 含 `I/M` 标志、`\cre`、范围端点 `,+N`/`,~N`、`!`）、
+   `skipSedAddressItem`、`skipSedAddressFlags`、`parseSedSubstitute`、`parseSedY`、
+   `skipSedToLineEnd`/`skipSedToSeparator`。`sedSubstituteWrites` 成死代码删除。
+3. 绿：`go test ./internal/permgate/ -count=1` → `ok`（正例 31 PASS，反例 0 FAIL）。
+
+**本轮自行发现并一并封住的同族绕过**（review-3 未列，验证于真机 GNU sed）：
+- 正则地址 GNU 标志 `I`/`M`：`/a/Iw /tmp/o`、`/a/Ie touch /tmp/x` 真机会写/执行，原实现静默。
+- 相对端点 `,+N` / `,~N`：`'/a/,+2w ...'`、`'1,~3w ...'` 真机会写，原实现静默。
+- `s///` 的 pattern/replacement 正文含分号：`'s/a;b/c/e'`、`'s/a;b/c/w /tmp/out'`
+  真机会执行/写，原先切分实现漏掉。
+补进正/反例表锁死。`sed -n '/a/,/b/p'`、`'/a/Ip'`、`'y/a/b/'`、`'r /tmp/in'`
+等只读形态仍静默（未误伤）。
+
+变异自验（overlay，不污染工作树）：
+- `ContainsAny(flags, "wWe")` → `"wW"`：`TestJudgeCompoundNotSilent` 红（命中唯一）。
+- `case 'w','W','e'` → 去掉 `'e'`：`sed -n 'e echo pwned'` 反例红。
+- `parseSedSubstitute` 返回空 flags：`s/a/b/w` 反例红。
+- 地址 `~step`/`I`/`M`/`,+N` 的剥离分支单独删除后测试仍绿——它们是冗余兜底路径
+  （同样的写/执行面被命令字母分支拦下），属未打中，不记测试无牙；语义守卫三发均红。
+
+回归：review-2 已过的直写形态（`'w /tmp'`、`'e ...'`、`'s///w'`、`-f`、`-i.bak`）
+在本轮反例表中全部保留且红。failover/可观测/b233.8 契约未触碰。
+
+复审命令与原始输出（历史读数）：
+
+```
+$ go build ./...
+build_exit=0
+$ go vet ./internal/permgate/
+vet_exit=0
+$ gofmt -l internal/permgate/
+（无输出）
+$ go test ./internal/permgate/ -count=1
+ok  	github.com/Xsxdot/handoff/internal/permgate	0.010s
+$ go test ./internal/permgate/ ./internal/approval/ ./internal/config/ -count=1
+ok  	.../internal/permgate	0.010s
+ok  	.../internal/approval	1.610s
+ok  	.../internal/config	0.016s
+$ go test ./internal/orchestration/ -count=1
+ok  	.../internal/orchestration	54.845s
+$ go test ./... -run '^$' -count=1
+（全 test 包编译通过，无 build failed）
+```
+
+### 本修复轮提交
+
+提交当时的命令与原始输出（历史读数；本条随同批 amend 收进）：
+
+```
+$ git commit -m "fix(B376): 复审 3——sed 地址语法族（~/!/范围/正则标志/相对端点）与 s///e 全拦 ..."
+[cards/B376-charter-6 4ff7d0cc] fix(B376): 复审 3——sed 地址语法族（~/!/范围/正则标志/相对端点）与 s///e 全拦
+ 3 files changed, 324 insertions(+), 88 deletions(-)
+$ git status --short
+（空）
+```
+
+amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
+
 

@@ -889,120 +889,253 @@ func hasSedWriteOrExec(fields []string) bool {
 	return false
 }
 
-// sedScriptWritesOrExecs 判断一段 sed 脚本文本是否含 w/W/e 命令或 s///w 标志。
+// sedScriptWritesOrExecs 判断一段 sed 脚本文本是否含写文件或执行命令面。
 //
-// 脚本可含多条命令（`p; w /tmp/x`、换行分隔），也可能带地址前缀（`1,5w f`、
-// `/re/d`）。按 `;` / 换行切成命令后逐条判定；对切分不确定以「是」作答——误伤
-// 只是多一次 Consult，漏判则是静默写文件。
+// 为什么不能先按 `;` 切分再逐条判：review-3 的 `s/a;b/c/e` 证明分号既可能
+// 是命令分隔符，也可能是 s/// 的 pattern/replacement 正文。先切会把 `s/a;b/c/e`
+// 切成 `s/a`（解析失败，判否）与 `b/c/e`（首字母 b，判否），于是执行标志 e 漏掉。
+// 现在改成对整段脚本做一次左到右扫描，分隔符只在自己该在的位置生效。
+//
+// 单条命令的扫描顺序（与 GNU sed 语法一致）：
+//  1. 地址/取反前缀：行号（含 `~step`）、`$`、正则 `/re/`（可带 `I`/`M` 标志）、
+//     `\cre`、`,` 范围端点（含 `,+N` / `,~N`）、`!`
+//  2. 命令字母：
+//     - w/W/e 直接否决
+//     - s 解析 pattern/replacement/flags，flags 含 w/W/e 否决
+//     - y 跳过三段分隔文本（转写，非写/执行）
+//     - a/i/c/r/R 吃掉本行剩余（GNU 语义：它们把 `;` 后文本当参数，不执行）
+//     - b/t/T/: 标签吃到 `;`/换行（标签在 `;` 处结束，不能吞掉后续命令）
+//     - 其余单字母命令跳过
+//
+// 对无法确定或未闭合的形态以「是」作答——误伤只多一次 Consult，漏判则是
+// 静默写文件或静默执行命令。
 func sedScriptWritesOrExecs(script string) bool {
-	for _, cmd := range splitSedCommands(script) {
-		if sedCommandWritesOrExecs(cmd) {
+	i := 0
+	for i < len(script) {
+		switch script[i] {
+		case ' ', '\t', '\r', ';', '\n':
+			i++
+			continue
+		}
+		next, ok := skipSedAddress(script, i)
+		if !ok {
+			return true // 地址形态不可证明为只读
+		}
+		i = next
+		if i >= len(script) {
+			return false // 只有地址没有命令
+		}
+		switch c := script[i]; c {
+		case 'w', 'W', 'e':
 			return true
-		}
-	}
-	return false
-}
-
-// splitSedCommands 把 sed 脚本按未转义的 `;` 与换行切成交替命令。
-//
-// 反斜杠转义（`\;`）不切；`s/a;b/c/` 这类替换正文里的分号会被误切，但那只会
-// 让后续片段以非命令字母开头而被判为「否」——最坏是多看几个片段，不产生
-// 漏判（换行在脚本参数里通常已被 shell 引号保护，同样只是安全侧切分）。
-func splitSedCommands(script string) []string {
-	var out []string
-	var cur strings.Builder
-	esc := false
-	for _, r := range script {
-		switch {
-		case esc:
-			cur.WriteRune(r)
-			esc = false
-		case r == '\\':
-			cur.WriteRune(r)
-			esc = true
-		case r == ';' || r == '\n':
-			out = append(out, cur.String())
-			cur.Reset()
+		case 's':
+			n, flags := parseSedSubstitute(script, i)
+			if strings.ContainsAny(flags, "wWe") {
+				return true
+			}
+			i = n
+		case 'y':
+			n, ok := parseSedY(script, i)
+			if !ok {
+				return true
+			}
+			i = n
+		case 'a', 'i', 'c', 'r', 'R':
+			i = skipSedToLineEnd(script, i+1)
+		case 'b', 't', 'T', ':':
+			i = skipSedToSeparator(script, i+1)
+		case '#':
+			i = skipSedToLineEnd(script, i)
 		default:
-			cur.WriteRune(r)
+			i++
 		}
-	}
-	out = append(out, cur.String())
-	return out
-}
-
-// sedCommandWritesOrExecs 判断单条 sed 命令是否写文件或执行命令。
-func sedCommandWritesOrExecs(script string) bool {
-	s := strings.TrimSpace(script)
-	if s == "" {
-		return false
-	}
-	// 去掉可选的地址前缀（数字、$、/re/、\cre），剩下的是命令。
-	rest := strings.TrimLeft(s, "0123456789$, \t")
-	if strings.HasPrefix(rest, "/") {
-		// 跳过 /.../ 地址（转义斜杠 \\/ 不提前闭合）
-		esc := false
-		for i := 1; i < len(rest); i++ {
-			if esc {
-				esc = false
-				continue
-			}
-			if rest[i] == '\\' {
-				esc = true
-				continue
-			}
-			if rest[i] == '/' {
-				rest = rest[i+1:]
-				break
-			}
-		}
-	}
-	rest = strings.TrimLeft(rest, " \t")
-	if rest == "" {
-		return false
-	}
-	switch rest[0] {
-	case 'w', 'W', 'e':
-		return true
-	case 's':
-		// s/pat/rep/flags —— flags 里的 w file 是写文件。
-		return sedSubstituteWrites(rest)
 	}
 	return false
 }
 
-// sedSubstituteWrites 判断 s/// 的 flags 段是否含 w（写文件）标志。
-func sedSubstituteWrites(s string) bool {
-	if len(s) < 2 {
-		return false
+// skipSedBlanks 跳过空格与制表符，返回下一个非空白下标。
+func skipSedBlanks(s string, i int) int {
+	for i < len(s) && (s[i] == ' ' || s[i] == '\t') {
+		i++
 	}
-	delim := s[1]
-	seg := s[2:]
-	// 依次跳过 pattern 与 replacement 两段（处理反斜杠转义）。
-	for part := 0; part < 2; part++ {
-		esc := false
-		found := false
-		for i := 0; i < len(seg); i++ {
-			if esc {
-				esc = false
-				continue
+	return i
+}
+
+// skipSedAddress 跳过一条命令前的完整地址前缀（含范围、GNU 端点、取反）。
+//
+// 返回：(新下标, ok)。ok=false 表示地址形态畸形或未闭合——调用方按不可证明
+// 只读否决。没有地址时原地下标返回，ok=true。
+func skipSedAddress(s string, i int) (int, bool) {
+	n, ok := skipSedAddressItem(s, i)
+	if !ok {
+		return i, false
+	}
+	if n == i {
+		return i, true // 无地址
+	}
+	i = n
+	for {
+		j := skipSedBlanks(s, i)
+		if j >= len(s) || s[j] != ',' {
+			break
+		}
+		j = skipSedBlanks(s, j+1)
+		switch {
+		case j < len(s) && s[j] == '+':
+			// GNU `addr,+N`：相对行数端点。
+			j++
+			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+				j++
 			}
-			if seg[i] == '\\' {
-				esc = true
-				continue
+		case j+1 < len(s) && s[j] == '~' && s[j+1] >= '0' && s[j+1] <= '9':
+			// GNU `addr,~N`：相对步长端点。
+			j++
+			for j < len(s) && s[j] >= '0' && s[j] <= '9' {
+				j++
 			}
-			if seg[i] == delim {
-				seg = seg[i+1:]
-				found = true
-				break
+		default:
+			n2, ok := skipSedAddressItem(s, j)
+			if !ok || n2 == j {
+				return j, false // 逗号后无端点，畸形
+			}
+			j = n2
+		}
+		i = j
+	}
+	// 取反 `!` 可出现在完整地址之后（含空格）。
+	for {
+		j := skipSedBlanks(s, i)
+		if j < len(s) && s[j] == '!' {
+			i = j + 1
+			continue
+		}
+		break
+	}
+	return i, true
+}
+
+// skipSedAddressItem 跳过一个地址项：行号（可带 ~step）、$、/re/ 或 \cre。
+//
+// 正则地址闭合后可带 GNU 的 `I`/`M` 标志（`/re/Iw file`），必须一并消费，
+// 否则 w 会被当成地址的一部分读掉。
+func skipSedAddressItem(s string, i int) (int, bool) {
+	if i >= len(s) {
+		return i, true
+	}
+	switch c := s[i]; {
+	case c >= '0' && c <= '9':
+		for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+			i++
+		}
+		if i < len(s) && s[i] == '~' {
+			i++
+			for i < len(s) && s[i] >= '0' && s[i] <= '9' {
+				i++
 			}
 		}
-		if !found {
-			return false
+		return i, true
+	case c == '$':
+		return i + 1, true
+	case c == '/':
+		n, ok := skipSedDelimited(s, i, '/')
+		if !ok {
+			return i, false
+		}
+		return skipSedAddressFlags(s, n), true
+	case c == '\\':
+		if i+1 >= len(s) || s[i+1] == '\n' {
+			return i, false
+		}
+		n, ok := skipSedDelimited(s, i+1, s[i+1])
+		if !ok {
+			return i, false
+		}
+		return skipSedAddressFlags(s, n), true
+	}
+	return i, true // 无地址项
+}
+
+// skipSedAddressFlags 消费正则地址闭合后的 GNU 标志 I / M。
+func skipSedAddressFlags(s string, i int) int {
+	for i < len(s) && (s[i] == 'I' || s[i] == 'M') {
+		i++
+	}
+	return i
+}
+
+// parseSedSubstitute 从 `s` 命令字母起解析 `s<d>pat<d>rep<d>flags`。
+//
+// 参数：s 为脚本，start 指向 `s`
+// 返回：命令之后的下一扫描下标；flags 段文本（到 `;`/换行为止，可能为空）。
+// 未闭合分隔符时按读到脚本末尾处理、flags 为空（不构成写；由调用方决定）。
+func parseSedSubstitute(s string, start int) (int, string) {
+	if start+1 >= len(s) {
+		return len(s), ""
+	}
+	delim := s[start+1]
+	// pattern：起始分隔符在 start+1。
+	if n, ok := skipSedDelimited(s, start+1, delim); ok {
+		// replacement：上一段闭合分隔符即下一段的起始分隔符。
+		if n2, ok := skipSedDelimited(s, n-1, delim); ok {
+			j := n2
+			for j < len(s) && s[j] != ';' && s[j] != '\n' {
+				j++
+			}
+			return j, s[n2:j]
 		}
 	}
-	// flags 段：任意位置出现 w 即写文件。
-	return strings.ContainsRune(seg, 'w') || strings.ContainsRune(seg, 'W')
+	return len(s), ""
+}
+
+// parseSedY 从 `y` 命令字母起解析 `y<d>src<d>dst<d>`（两段分隔文本）。
+func parseSedY(s string, start int) (int, bool) {
+	if start+1 >= len(s) {
+		return len(s), true
+	}
+	delim := s[start+1]
+	n, ok := skipSedDelimited(s, start+1, delim)
+	if !ok {
+		return len(s), false
+	}
+	// 第一段闭合分隔符同时是第二段的起始分隔符，回退一位再进入下一轮。
+	n2, ok := skipSedDelimited(s, n-1, delim)
+	if !ok {
+		return len(s), false
+	}
+	return n2, true
+}
+
+// skipSedToLineEnd 跳到本行行尾（不含换行）。
+func skipSedToLineEnd(s string, i int) int {
+	for i < len(s) && s[i] != '\n' {
+		i++
+	}
+	return i
+}
+
+// skipSedToSeparator 跳到下一个 `;` 或换行（标签类命令的参数边界）。
+func skipSedToSeparator(s string, i int) int {
+	for i < len(s) && s[i] != ';' && s[i] != '\n' {
+		i++
+	}
+	return i
+}
+
+// skipSedDelimited 跳过以 delim 包裹的一段 sed 文本（pattern 或 replacement）。
+//
+// 参数：s 为脚本，start 指向起始 delim，delim 为分隔字符（`/` 或 `\c` 的 c）
+// 返回：闭合 delim 之后的下标；(0, false) 表示未闭合——调用方必须按「不可
+// 证明只读」否决。反斜杠转义（`\/`）不提前闭合。
+func skipSedDelimited(s string, start int, delim byte) (int, bool) {
+	for i := start + 1; i < len(s); i++ {
+		switch s[i] {
+		case '\\':
+			i++ // 跳过被转义的下一个字符
+		case delim:
+			return i + 1, true
+		}
+	}
+	return 0, false
 }
 
 // 短选项 -d/-D/-m/-M/-c/-C/-f/-u/-t 既可能独立成词（`git branch -M topic`），
