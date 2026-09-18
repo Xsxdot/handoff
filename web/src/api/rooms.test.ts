@@ -7,6 +7,7 @@
 import { describe, expect, it } from 'vitest'
 import fixture from './testdata/RoomsFixture.json'
 import type {
+  IdentityResp,
   InboxItem,
   RoomMessage,
   RoomSummary,
@@ -22,6 +23,7 @@ const cases = fixture as {
   room?: RoomSummary
   summary?: SessionSummary
   detail?: SessionDetail
+  identity?: IdentityResp
 }[]
 
 describe('room message twin fixtures', () => {
@@ -153,5 +155,34 @@ describe('session twin fixtures (B358.6)', () => {
     expect(minimal, '缺键必须 decode 成 undefined 而不是 0（可空 vs 零值分辨）').not.toHaveProperty('reply_to')
     const replied = cases.find((c) => c.case === 'user-reply')!.message!
     expect(replied.reply_to).toBe(42)
+  })
+})
+
+// —— B358.9 身份读缝与端戳的 TS 孪生金样本：identity-* 与 user-stamped 三 case
+// 与 Go 金样本 internal/proto/identity_test.go#TestIdentityRespWireShape、
+// sessions_fixture_test.go#TestRoomMessageDeviceStampGolden 逐键一致，
+// 唯一来源是同一 JSON 文件（TS 不手抄）。——
+describe('身份读缝孪生样本（B358.9）', () => {
+  it('identity-configured 三键恒出且与 Go 金样本逐键一致', () => {
+    const id = cases.find((c) => c.case === 'identity-configured')!.identity as IdentityResp
+    expect(Object.keys(id).sort()).toEqual(['configured', 'device', 'member'])
+    expect(id.member).toBe('user:sycm')
+    expect(id.device).toBe('mbp / Safari')
+    expect(id.configured).toBe(true)
+  })
+
+  it('identity-unconfigured：值空但键仍在（缺失≠零值）', () => {
+    const id = cases.find((c) => c.case === 'identity-unconfigured')!.identity as IdentityResp
+    expect(Object.keys(id).sort()).toEqual(['configured', 'device', 'member'])
+    expect(id.configured).toBe(false)
+  })
+
+  it('user-stamped：device 键在线；user-minimal 缺 device 键（omitempty）', () => {
+    const stamped = cases.find((c) => c.case === 'user-stamped')!.message!
+    expect(stamped.device).toBe('mbp / Safari')
+    const raw = cases.find((c) => c.case === 'user-minimal')!.message! as unknown as Record<string, unknown>
+    for (const banned of ['refs', 'mentions', 'decision_id', 'by_system', 'device']) {
+      expect(raw, `可选键 ${banned} 不得出现`).not.toHaveProperty(banned)
+    }
   })
 })

@@ -5,8 +5,8 @@ import { describe, expect, it } from 'vitest'
 import type { SessionMember, SessionSummary } from '../../api/rooms'
 import {
   MEMBER_KIND_LABEL, MEMBER_STATUS_LABEL, TIMELINE_KIND_LABEL,
-  applyMention, filterSessionsByProject, memberKindLabel, memberStatusLabel, memberStatusText, mentionCandidates,
-  segmentBody, timelineKindLabel, totalUnread,
+  applyMention, filterSessionsByProject, isSelfActor, memberKindLabel, memberStatusLabel, memberStatusText,
+  mentionCandidates, segmentBody, signatureText, timelineKindLabel, totalUnread,
 } from './sessionModel'
 
 describe('成员状态渲染词表（看板不说谎的前端半边）', () => {
@@ -147,5 +147,22 @@ describe('@ 候选与 token 替换（B358.8 #2 纯函数缝）', () => {
       { text: '@Agent:Opendev', mention: true },
       { text: ' ', mention: false },
     ])
+  })
+})
+
+describe('自方判定与落款（B358.9 P-4）', () => {
+  it('isSelfActor 与人名精确等值：他人 user:/agent:/web: 都不给自方', () => {
+    expect(isSelfActor('user:sycm', 'user:sycm')).toBe(true)
+    expect(isSelfActor('user:other', 'user:sycm')).toBe(false)
+    expect(isSelfActor('agent:opencode', 'user:sycm')).toBe(false)
+    expect(isSelfActor('web:127.0.0.1', 'user:sycm')).toBe(false)
+  })
+  it('identity 拉取失败（null）回落 user: 前缀；web: 永不判自方（反例）', () => {
+    expect(isSelfActor('user:sycm', null)).toBe(true)
+    expect(isSelfActor('web:127.0.0.1', null)).toBe(false)
+  })
+  it('signatureText 有端戳出人名·端名，缺端戳只出人名', () => {
+    expect(signatureText('user:sycm', 'mbp / Safari')).toBe('user:sycm · mbp / Safari')
+    expect(signatureText('user:sycm', undefined)).toBe('user:sycm')
   })
 })

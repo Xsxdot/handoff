@@ -15,6 +15,7 @@ vi.mock('../../api/rooms', () => ({
   markRoomRead: vi.fn(),
   joinSessionCard: vi.fn(),
   sendRoomMessage: vi.fn(),
+  fetchIdentity: vi.fn().mockResolvedValue({ member: 'user:sycm', device: '', configured: true }),
 }))
 
 describe('A.6 轮询间隔常量', () => {

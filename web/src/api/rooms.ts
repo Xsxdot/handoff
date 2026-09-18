@@ -201,7 +201,19 @@ export const fetchInbox = (): Promise<InboxItem[]> =>
 // ---- B358.6 会话六端点（B358.4 已收口的 /api/sessions 面；发言/已读/历史复用上方
 // sendRoomMessage/markRoomRead/fetchRoomMessages——会话号作 {id}，签名零改动）----
 
-// fetchSessions 会话列表（GET /api/sessions）：member 维度服务端注入（web:<host>），
+// IdentityResp 是 GET /api/identity 的响应（B358.9 契约 §3.1）。三键恒出（无
+// omitempty）：member 空可能是 console_user 未配置，也可能是后端太老没发键。
+export interface IdentityResp {
+  member: string
+  device: string
+  configured: boolean
+}
+
+// fetchIdentity 控制台身份读缝（GET /api/identity）：本文请求的人名+端名+是否已配名。
+// 落款显示、isSelfActor 判据、缺名可行动提示的数据源。
+export const fetchIdentity = (): Promise<IdentityResp> => request<IdentityResp>('/api/identity')
+
+// fetchSessions 会话列表（GET /api/sessions）：member 维度服务端注入（解析人名），
 // 前端不得自报身份——不设 member 参数（与 S4 缺陷族 5 反例镜像）。
 export const fetchSessions = (): Promise<SessionSummary[]> =>
   request<{ sessions: SessionSummary[] }>('/api/sessions').then((r) => r.sessions ?? [])
@@ -210,11 +222,10 @@ export const fetchSessions = (): Promise<SessionSummary[]> =>
 export const fetchSessionDetail = (id: string): Promise<SessionDetail> =>
   request<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`)
 
-// createSession 建会话（POST /api/sessions {title, owner}）：owner 统一记法
-// user:<name>/agent:<name>（服务端前缀校验为权威，客户端仅预检）；审计 actor
-// 服务端注入——请求体无该字段。
-export const createSession = (title: string, owner: string): Promise<Session> =>
-  postJSON<Session>('/api/sessions', { title, owner })
+// createSession 建会话（POST /api/sessions {title}）：owner 由服务端按解析人名
+// 缺省（B358.9 契约 §3.8；决定 6 owner=创建者），前端不传 owner。
+export const createSession = (title: string): Promise<Session> =>
+  postJSON<Session>('/api/sessions', { title })
 
 // archiveSession 归档会话（POST …/archive，幂等）。控制台本期无归档入口
 // （CLI `session archive` 是操作面），函数保留为六端点镜像完整性。

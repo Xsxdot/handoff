@@ -57,10 +57,9 @@ import { SettingsPage } from '../settings/SettingsPage'
 import { CodegraphFrame } from '../codegraph/CodegraphFrame'
 import { CardsPage } from '../cards/CardsPage'
 import { FlowsPage } from '../flows/FlowsPage'
-import { fetchSessions, addSessionMember, createSession } from '../../api/rooms'
+import { fetchSessions, createSession, fetchIdentity } from '../../api/rooms'
 import type { SessionSummary } from '../../api/rooms'
 import { NewSessionDialog } from '../rooms/NewSessionDialog'
-import { saveLastSessionOwner } from '../rooms/sessionOwnerPrefs'
 import { SessionSidebar } from '../rooms/SessionSidebar'
 import { SessionTab } from '../rooms/SessionTab'
 import { totalUnread } from '../rooms/sessionModel'
@@ -172,6 +171,19 @@ export function Shell() {
   const [createOpen, setCreateOpen] = useState(false)
   const [createBusy, setCreateBusy] = useState(false)
   const [createError, setCreateError] = useState('')
+  // consoleConfigured 身份读缝（B358.9）：未配 console_user 时新建表单给可行动
+  // 提示并禁用创建。拉取失败不得误判「未配名」——保持放行（fail-visible），
+  // 让创建请求把服务端 403 可行动原文显示在对话框。
+  const [consoleConfigured, setConsoleConfigured] = useState(true)
+  useEffect(() => {
+    let cancelled = false
+    fetchIdentity()
+      .then((id) => { if (!cancelled) setConsoleConfigured(id.configured) })
+      .catch((error: unknown) => {
+        console.warn('shell.identity_fetch_failed', { error: errorMessage(error) })
+      })
+    return () => { cancelled = true }
+  }, [])
   // needsOnly 左栏「需要你」筛选态：与筛选钮同层，传给 SessionSidebar 渲染。
   const [needsOnly, setNeedsOnly] = useState(false)
   // 项目筛选（B358.8 #6）：state 与 needsOnly 同层；选项与卡→项目映射都从既有
@@ -184,17 +196,6 @@ export function Shell() {
   }, [cardsState.data])
   const projectOptions = useMemo(() => [...new Set(cardProjectById.values())].sort(), [cardProjectById])
   const projectOfCard = useCallback((cardId: string) => cardProjectById.get(cardId) ?? '', [cardProjectById])
-  // 新建会话 owner 候选（B358.8 #7）：既有会话成员 identities 投影（对话框再并上
-  // 记忆值与当前输入），降低手输成本，零新增端点。
-  const sessionMemberIdentities = useMemo(() => {
-    const identities = new Set<string>()
-    for (const session of sessions) {
-      for (const member of session.members ?? []) {
-        if (member.identity !== '') identities.add(member.identity)
-      }
-    }
-    return [...identities].sort()
-  }, [sessions])
   const caps = useMachineCaps()
   const launcherMachine = wb.base?.machine ?? ''
   const launchersSupported = caps.launchers(launcherMachine) === true
@@ -461,28 +462,17 @@ export function Shell() {
     console.debug('shell.session.open', { sessionId: session.id, title: session.title })
   }
 
-  // confirmCreateSession 建会话：owner 统一记法（服务端权威校验），失败原文
-  // 留在对话框；成功关弹层、立即刷新会话流（不等下一个 5s 周期），并把 owner
-  // 写进 localStorage 记忆（B358.8 #7：下次新建直接预填，第一次使用仍需输一次）。
-  // 建后自动补员（走查 09-17）：控制台 actor 是服务端注入的 web:<host>，既非
-  // owner 亦非成员——不补员则新建会话第一句即 403。复用 B366 补员端点，前端多
-  // 一次调用、后端零改动；失败不阻塞（回落到发送时 403 +「以当前身份加入会话」一键）。
-  const confirmCreateSession = async (title: string, owner: string) => {
+  // confirmCreateSession 建会话（B358.9）：owner 由服务端按解析人名缺省，前端只交
+  // 标题；建后刷新会话流。403「以当前身份加入会话」一键仍在 SessionChat（U7 老屋）。
+  const confirmCreateSession = async (title: string) => {
     setCreateBusy(true)
     setCreateError('')
     console.debug('shell.session.create_started', { title })
     try {
-      const session = await createSession(title, owner)
-      saveLastSessionOwner(owner)
-      try {
-        await addSessionMember(session.id)
-        console.debug('shell.session.self_joined', { sessionId: session.id })
-      } catch (error: unknown) {
-        console.debug('shell.session.self_join_failed', { sessionId: session.id, error: errorMessage(error) })
-      }
+      const session = await createSession(title)
       setCreateOpen(false)
       sessionsState.refresh()
-      console.debug('shell.session.created', { sessionId: session.id, title, owner })
+      console.debug('shell.session.created', { sessionId: session.id, title })
     } catch (error: unknown) {
       setCreateError(errorMessage(error))
       console.warn('shell.session.create_failed', { title, error: errorMessage(error) })
@@ -1046,8 +1036,8 @@ export function Shell() {
         onCancel={() => { setClosingDirtyFile(null); setClosingDirtyHome(null) }}
       />
 
-      <NewSessionDialog open={createOpen} busy={createBusy} error={createError} memberIdentities={sessionMemberIdentities}
-        onCancel={() => setCreateOpen(false)} onCreate={(title, owner) => void confirmCreateSession(title, owner)} />
+      <NewSessionDialog open={createOpen} busy={createBusy} error={createError} configured={consoleConfigured}
+        onCancel={() => setCreateOpen(false)} onCreate={(title) => void confirmCreateSession(title)} />
 
       <AddProjectWizard
         open={wizardOpen}

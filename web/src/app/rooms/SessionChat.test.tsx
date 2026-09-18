@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { ApiError } from '../../api/client'
-import { addSessionMember, sendRoomMessage } from '../../api/rooms'
+import { addSessionMember, fetchIdentity, sendRoomMessage } from '../../api/rooms'
 import type { RoomHistoryItem, SessionSummary } from '../../api/rooms'
 import { SessionChat } from './SessionChat'
 
@@ -12,6 +12,7 @@ vi.mock('../../api/rooms', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../api/rooms')>()),
   sendRoomMessage: vi.fn(),
   addSessionMember: vi.fn(),
+  fetchIdentity: vi.fn(),
 }))
 
 const summary = (over: Partial<SessionSummary> = {}): SessionSummary => ({
@@ -36,6 +37,7 @@ const event = (seq: number, body: string, over: Partial<RoomHistoryItem> = {}): 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(sendRoomMessage).mockResolvedValue({ seq: 3 })
+  vi.mocked(fetchIdentity).mockResolvedValue({ member: 'user:sycm', device: '', configured: true })
   window.HTMLElement.prototype.scrollIntoView = vi.fn()
 })
 
@@ -217,5 +219,23 @@ describe('SessionChat', () => {
     expect(screen.getByRole('textbox', { name: '发送消息' })).toBeDisabled()
     expect(screen.getByText('会话已归档，只读。')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: /回复 #/ })).toBeNull()
+  })
+
+  it('落款渲染人名+端名；device 缺失只出人名（B358.9 决定 1）', async () => {
+    render(<SessionChat sessionId="session:1" summary={summary()}
+      events={[
+        event(51, '甲', { actor: 'user:sycm', payload: { room: 'session:1', kind: 'user', body: '甲', device: 'mbp / Safari' } }),
+        event(52, '乙', { actor: 'user:sycm' }),
+      ]}
+      historyError="" onSent={() => {}} />)
+    expect(await screen.findByText(/user:sycm · mbp \/ Safari/)).toBeInTheDocument()
+    expect(screen.getByTestId('msg-52')).toHaveTextContent('user:sycm · #52')
+  })
+
+  it('自方判定取服务端人名：本人消息靠右（items-end）', async () => {
+    vi.mocked(fetchIdentity).mockResolvedValue({ member: 'user:sycm', device: '', configured: true })
+    render(<SessionChat sessionId="session:1" summary={summary()}
+      events={[event(53, '我', { actor: 'user:sycm' })]} historyError="" onSent={() => {}} />)
+    expect(await screen.findByTestId('msg-53')).toHaveClass('items-end')
   })
 })

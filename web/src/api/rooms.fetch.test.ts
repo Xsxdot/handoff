@@ -8,6 +8,7 @@ import {
   addSessionMember,
   archiveSession,
   createSession,
+  fetchIdentity,
   fetchInbox,
   fetchRoomMessages,
   fetchRooms,
@@ -226,14 +227,22 @@ describe('addSessionMember (B366)', () => {
 })
 
 describe('session 写面 (B358.6)', () => {
-  it('createSession POST {title, owner}——owner 统一记法原样透传，无 actor 字段', async () => {
-    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ id: 'session:1', title: 'T', owner: 'user:sy', archived: false, created_at: '', updated_at: '' }))
+  it('createSession POST {title}——不再带 owner（服务端按解析人名缺省）', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ id: 'session:1', title: 'T', owner: 'user:sycm', archived: false, created_at: '', updated_at: '' }))
     vi.stubGlobal('fetch', fetchMock)
-    await createSession('需求对齐', 'user:sy')
+    await createSession('需求对齐')
     const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
     expect(url).toBe('/api/sessions')
     expect(init.method).toBe('POST')
-    expect(JSON.parse(init.body as string)).toEqual({ title: '需求对齐', owner: 'user:sy' })
+    expect(JSON.parse(init.body as string)).toEqual({ title: '需求对齐' })
+  })
+
+  it('fetchIdentity GET /api/identity 三键解码', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(jsonResp({ member: 'user:sycm', device: 'mbp / Safari', configured: true }))
+    vi.stubGlobal('fetch', fetchMock)
+    const id = await fetchIdentity()
+    expect(fetchMock.mock.calls[0][0]).toBe('/api/identity')
+    expect(id).toEqual({ member: 'user:sycm', device: 'mbp / Safari', configured: true })
   })
 
   it('joinSessionCard POST {card} / leaveSessionCard DELETE / archiveSession POST', async () => {

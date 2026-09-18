@@ -156,5 +156,17 @@
         { "seq": 6, "kind": "card_closed", "card_id": "B1", "detail": "{\"from\":\"待审阅\",\"to\":\"已完成\"}", "created_at": "1970-01-01T00:00:00Z" }
       ]
     }
+  },
+  {
+    "case": "identity-configured",
+    "identity": { "member": "user:sycm", "device": "mbp / Safari", "configured": true }
+  },
+  {
+    "case": "identity-unconfigured",
+    "identity": { "member": "", "device": "", "configured": false }
+  },
+  {
+    "case": "user-stamped",
+    "message": { "room": "session:1", "kind": "user", "body": "带端戳", "device": "mbp / Safari" }
   }
 ]

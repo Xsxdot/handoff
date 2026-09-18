@@ -9,12 +9,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { CornerUpLeft, ListPlus } from 'lucide-react'
 import type { KeyboardEvent } from 'react'
-import type { RoomHistoryItem, SessionSummary } from '../../api/rooms'
-import { addSessionMember, sendRoomMessage } from '../../api/rooms'
+import type { IdentityResp, RoomHistoryItem, SessionSummary } from '../../api/rooms'
+import { addSessionMember, fetchIdentity, sendRoomMessage } from '../../api/rooms'
 import { ApiError } from '../../api/client'
 import { errorMessage } from '../lib/format'
 import { logRoom } from './roomLog'
-import { applyMention, isSelfActor, memberKindLabel, mentionCandidates, segmentBody } from './sessionModel'
+import { applyMention, isSelfActor, memberKindLabel, mentionCandidates, segmentBody, signatureText } from './sessionModel'
 
 export interface SessionChatProps {
   sessionId: string
@@ -25,16 +25,17 @@ export interface SessionChatProps {
   onJoinCard?: () => void
 }
 
-function MessageRow({ event, referenced, highlight, archived, onJump, onReply }: {
+function MessageRow({ event, referenced, highlight, archived, selfMember, onJump, onReply }: {
   event: RoomHistoryItem
   referenced: RoomHistoryItem | null
   highlight: boolean
   archived: boolean
+  selfMember: string | null
   onJump: (seq: number) => void
   onReply: (event: RoomHistoryItem) => void
 }) {
-  const payload = event.payload as { body?: string; mentions?: string[]; reply_to?: number }
-  const self = isSelfActor(event.actor)
+  const payload = event.payload as { body?: string; mentions?: string[]; reply_to?: number; device?: string }
+  const self = isSelfActor(event.actor, selfMember)
   const body = typeof payload.body === 'string' ? payload.body : ''
   const replyTo = typeof payload.reply_to === 'number' && payload.reply_to > 0 ? payload.reply_to : null
   return (
@@ -48,7 +49,7 @@ function MessageRow({ event, referenced, highlight, archived, onJump, onReply }:
       )}
       <div className={`flex max-w-[74%] items-center gap-1 ${self ? 'flex-row-reverse' : ''}`}>
         <div className={`rounded-2xl px-3 py-2 text-sm shadow-sm ${self ? 'bg-slate-900 text-white' : 'border bg-white/65 backdrop-blur-[12px]'}`}>
-          <div className={`mb-0.5 text-[10px] ${self ? 'text-white/60' : 'text-muted-foreground'}`}>{event.actor} · #{event.seq}</div>
+          <div className={`mb-0.5 text-[10px] ${self ? 'text-white/60' : 'text-muted-foreground'}`}>{signatureText(event.actor, payload.device)} · #{event.seq}</div>
           <p className="whitespace-pre-wrap">
             {segmentBody(body, payload.mentions).map((segment, index) => (
               segment.mention
@@ -85,6 +86,20 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
   // 关闭，token 变化（继续输入）时重开。
   const [mentionDismissed, setMentionDismissed] = useState(false)
   const [mentionIndex, setMentionIndex] = useState(0)
+  // identity 身份态（B358.9）：一次拉取服务端人名，用于自方判定；失败回落 null
+  // （isSelfActor 走 user: 前缀兜底），并记 warn——绝不静默也绝不把 web: 判自方。
+  const [identity, setIdentity] = useState<IdentityResp | null>(null)
+  useEffect(() => {
+    let cancelled = false
+    fetchIdentity()
+      .then((got) => { if (!cancelled) setIdentity(got) })
+      .catch((error: unknown) => {
+        if (!cancelled) setIdentity(null)
+        logRoom('warn', 'session_identity_fetch_failed', { error: errorMessage(error) })
+      })
+    return () => { cancelled = true }
+  }, [])
+  const selfMember = identity?.member ?? null
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
   const bySeq = new Map(events.map((item) => [item.seq, item]))
   const archived = summary?.archived === true
@@ -195,7 +210,8 @@ export function SessionChat({ sessionId, summary, events, historyError, onSent, 
             const payload = item.payload as { reply_to?: number }
             const replyTo = typeof payload.reply_to === 'number' && payload.reply_to > 0 ? payload.reply_to : null
             return <MessageRow key={item.seq} event={item} referenced={replyTo !== null ? bySeq.get(replyTo) ?? null : null}
-              highlight={highlightSeq === item.seq} archived={archived} onJump={jumpTo} onReply={startReply} />
+              highlight={highlightSeq === item.seq} archived={archived} selfMember={selfMember}
+              onJump={jumpTo} onReply={startReply} />
           })}
       </div>
       <footer className="shrink-0 border-t bg-background p-2.5">
