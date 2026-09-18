@@ -16,6 +16,8 @@
 
 ### 变更
 
+- **会话身份按「人名」落定，端名只做落款（B358.9）。** 控制台发言、已读、收件箱与列表面一律以配置里的 `console_user`（`user:<名>`）判定，机器位 `web:<host>` 退役；端戳取本次登录会话登记的设备名（`handoff console --device`，缺省本机名），只进签名，不参与成员/写权/@ 判定。未配 `console_user` 时写面与读面一律拒收（403 + 文案含 `console_user`，零落账），不再回落机器位。已读水位按人合并：同一人在另一台设备标记已读，各端未读一起归零。控制台新增身份读缝 `GET /api/identity`（`member`/`device`/`configured`），落款显示「人名 · 端名」、端戳缺失只出人名，新建会话表单不再手输群主。
+- **会话可由外部自理的主 agent 发起（B358.9）。** `session create --owner agent:<名>` 建群、`session send --agent <名>` 出示身份发言、`session wait <名>` 订阅自己的 @；`agent:<名>` 走统一记法校验，身份不绑定具体执行器。卡席位（`cli:`）语义与 B366 自助加入路径不变。
 - **`task_mirrored` 只叫醒当前派发（B349）。** `card wait` 与小队自动化都核事件所属卡上最新 `EvDispatched` 的 Attempt/Target，以及账本 `source_task`/`source_target`。旧 attempt、错机器、无当前快照的镜像留账本，不打 stdout、不拉协调者。本机两边 target 都空仍算匹配。
 - **自动化消费水位写在本机 DataDir（B352）。** agentd 重启从 `automation-cursor.json` 续拉，已处理过的卡不会再被全量重放叫醒；崩溃在落盘前允许再醒一次。不进共享账本，不复用 `wait` 游标。
 - **`card wait` 默认一条可动作即退出，`--follow` 才长挂（B353）。** 自动审批、挂账 comment 等审计不再打到 stdout；等人、裁决、房间真人消息、以及 `WaitDeliveryPolicy` 为真的任务镜像才会叫醒。grok / Claude Code 继续一条 `--follow`；opencode / Codex 一次一挂。小队自动化对 `delivery_failed` 与任务 wait 同口径。
