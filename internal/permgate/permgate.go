@@ -463,7 +463,7 @@ func matchSilentFields(fields []string, command string) (id string, ok bool) {
 		// 复审 2：-i 不是唯一的写/执行面。sed 脚本里的 w/W（写文件）、e（执行
 		// 命令）以及 s///w file 的 w 标志同样在静默面外；-f/--file 从文件读脚本，
 		// 内容不可见同样不得静默。这三类与 -i 一样是「静态不可证明只读」。
-		if (hasToken(fields[1:], "-n") || hasToken(fields[1:], "--quiet")) &&
+		if hasSedQuiet(fields[1:]) &&
 			!hasSedInPlace(fields[1:]) && !hasSedWriteOrExec(fields[1:]) {
 			return "sed-n", true
 		}
@@ -823,6 +823,40 @@ func hasSedInPlace(fields []string) bool {
 	return false
 }
 
+// hasSedQuiet 判断 sed 参数里是否含「静默」旗标（-n / --quiet / --silent）。
+//
+// 为什么不能用 hasToken("-n")：sed 允许短选项聚簇，`-ne` 与 `-n -e` 是同一个
+// 只读形态（本机 GNU sed 4.9 实测输出一致，原文在台账）。判定必须按 GNU sed
+// 选项表扫每一段短选项簇，而不是整词相等。
+//
+// 扫簇时遇带参选项字母即停：GNU sed 里 e/f/l 必带实参（可粘连也可取下一词元），
+// i 可选粘连后缀，其后字符属于该选项实参，不再是旗标——所以 `-en` 里的 n 是
+// e 的脚本实参，不算静默；`-ln`/`-nl 2` 里的 n 是 l 的实参（-nl 2 的 2 才是
+// l 的行宽），也不算。旗标段（簇首直到首个带参字母前）里出现 n 才是静默。
+//
+// 返回 true 只表示「有静默旗标」；`-i` 与写/执行面由调用方另行否决。
+func hasSedQuiet(fields []string) bool {
+	for _, f := range fields {
+		if f == "--quiet" || f == "--silent" {
+			return true
+		}
+		if f == "" || f == "-" || !strings.HasPrefix(f, "-") || strings.HasPrefix(f, "--") {
+			continue
+		}
+		for _, c := range f[1:] {
+			switch c {
+			case 'n':
+				return true
+			case 'e', 'f', 'l', 'i':
+				// 带参字母之后的字符是实参，旗标段到此为止。
+				goto next
+			}
+		}
+	next:
+	}
+	return false
+}
+
 // hasRGExecuteFlag 判断 rg 参数里是否含执行型标志。
 //
 // --pre <cmd> / --pre=<cmd> 让 rg 对每个被检索文件先跑一次该命令，等于把
@@ -879,8 +913,16 @@ func hasSedWriteOrExec(fields []string) bool {
 				}
 			}
 			continue
-		case "-n", "--quiet", "-s", "-E", "-r", "-z", "-u", "--posix",
-			"--debug", "--sandbox", "-l":
+		case "-l":
+			// l 必带实参（行宽），独立写法 `-l 1` 取下一词元。漏吃会把
+			// 行宽当位置脚本、真脚本当输入文件——`sed -n -l 1 'w /tmp/out' f`
+			// 静默放行（review-2 真机复现建文件）。
+			if i+1 < len(fields) {
+				i++
+			}
+			continue
+		case "-n", "--quiet", "--silent", "-s", "-E", "-r", "-z", "-u", "--posix",
+			"--debug", "--sandbox":
 			continue
 		}
 		if strings.HasPrefix(f, "--") {
@@ -888,11 +930,50 @@ func hasSedWriteOrExec(fields []string) bool {
 			return true
 		}
 		if strings.HasPrefix(f, "-") && f != "-" {
-			// 短选项簇：含 f（从任意文件读脚本）即内容不可见；含 e 时脚本可能是
-			// 下一词元或粘连，保守起见一并按「不可证明」处理（读只读形态会被
-			// 更上面的显式 -e/--expression 分支接走）。
-			if strings.ContainsRune(f[1:], 'f') || strings.ContainsRune(f[1:], 'e') {
-				return true
+			// B377：短选项簇按 GNU sed 选项表展开。旗标段（簇首到首个带参
+			// 字母前）逐个字母判；遇 e/f/l/i 即停——其后属该选项的实参。
+			//   - e：实参是 sed 脚本（粘连在簇上，或取下一词元），交给
+			//     sedScriptWritesOrExecs 扫写/执行面；簇里出现过 e 即等于
+			//     有了显式脚本源，必须置 explicitScript，否则其后位置参数
+			//     （输入文件名）会被当脚本扫——`sed -ne '1,20p' web.log`
+			//     的 web.log 会被扫出 w 而误否决
+			//   - f：脚本来自文件、内容不可见 → 否决
+			//   - l：l 必带实参（行宽），可粘连（-l1）也可取下一词元（-l 1）。
+			//     簇尾为 l（其后无字符）时须吃掉下一词元，否则该实参会被当
+			//     位置脚本、真脚本会被当输入文件——`sed -nl 1 'w /tmp/out' f`
+			//     在此漏判为静默（review-2 真机 GNU sed 4.9 复现建文件）。
+			//   - i：可选后缀且只能粘连（-i.bak），不得吃下一词元
+			//   - 未知带参字母：不能证明的形态保守否决
+			body := f[1:]
+			i2 := 0
+			for i2 < len(body) {
+				switch body[i2] {
+				case 'n', 's', 'E', 'r', 'z', 'u':
+					i2++
+					continue
+				case 'e':
+					explicitScript = true
+					arg := body[i2+1:]
+					if arg == "" && i+1 < len(fields) {
+						i++
+						arg = fields[i]
+					}
+					if sedScriptWritesOrExecs(arg) {
+						return true
+					}
+					i2 = len(body)
+				case 'f':
+					return true
+				case 'l':
+					if body[i2+1:] == "" && i+1 < len(fields) {
+						i++
+					}
+					i2 = len(body)
+				case 'i':
+					i2 = len(body)
+				default:
+					return true
+				}
 			}
 			continue
 		}

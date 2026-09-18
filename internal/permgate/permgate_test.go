@@ -80,6 +80,25 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		{"git branch 只读列表", "git branch -a"},
 		{"git branch --list", "git branch --list 'feat/*'"},
 		{"sed -n 带 --quiet", "sed --quiet '1,20p' file"},
+		// B377：短选项簇里的 n 与整词 -n 是同一只读形态；--silent 是 GNU
+		// --quiet 的别名。簇里带参字母（e/f/l/i）之后的字符是该选项实参，
+		// 不再是旗标。
+		{"sed -ne 只读", `sed -ne '1,20p' f`},
+		{"sed -nE 只读", `sed -nE 's/a/A/p' f`},
+		{"sed -nsE 只读", `sed -nsE '1,2p' f`},
+		{"sed -ne 脚本粘连", `sed -ne'1,20p' f`},
+		{"sed --silent 只读", `sed --silent '1,20p' f`},
+		// B377 review-1：簇里的 e 吃掉脚本实参后即为显式脚本源，其后位置参数
+		// 是输入文件而非脚本。文件名以写/执行命令字母开头（web.log）时，若漏置
+		// explicitScript，整个文件名会被当脚本扫出 w 而误否决——须与拆开写的
+		// `sed -n -e '1,20p' web.log` 同判 AutoAllow。
+		{"sed -ne 输入文件名以写字母开头", `sed -ne '1,20p' web.log`},
+		{"sed -ne 脚本粘连且输入文件名以写字母开头", `sed -ne'1,20p' web.log`},
+		// B377 review-2：l 必带实参（行宽），可粘连（-l1）或取下一词元（-l 1）。
+		// 簇尾为 l 时吃掉下一词元，后续位置参数才是脚本；故 `-nl 1 'p'` 与
+		// `-nl1 'p'` 都是只读静默。
+		{"sed -nl 1 只读（l 吃下一词元）", `sed -nl 1 'p' f`},
+		{"sed -nl1 只读（l 粘连实参）", `sed -nl1 'p' f`},
 		// B376 复审：只读 sed 形态（替换打印、正则地址）仍须静默；守卫只拦写/执行。
 		{"sed -n 替换只读", `sed -n 's/foo/bar/p' f`},
 		{"sed -n 正则地址只读", `sed -n '/error/p' f`},
@@ -176,6 +195,26 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 		`sed -n 'p; q' -e 'w /tmp/out' f`,
 		`sed -n 'p' -ne 'w /tmp/out' f`,
 		`sed -n 'p' -e 'w /tmp/out' --expression='e touch /tmp/x' f`,
+		// B377：簇里的 n 可能是别的带参选项的实参，不得据此静默；簇展开后
+		// e 仍要吃脚本、f 仍否决。
+		`sed -en '1p' f`,
+		`sed -ln '1p' f`,
+		// B377 review-2：簇尾为 l（其后无字符）时 l 的实参是下一词元。旧实现只在
+		// 簇尾为 l 时跳过簇内剩余字符，没吃下一词元，于是 `sed -nl 1 'w /tmp/out' f`
+		// 的 `1` 被当位置脚本、真脚本 `w /tmp/out` 被当输入文件——真机写文件而门
+		// 静默放行（GNU sed 4.9 实测 `sed -nl 1 'w /tmp/sedtest_out'` 建文件）。两
+		// 条反向用例必须非 AutoAllow。i 是仅粘连的可选后缀，不得吃下一词元。
+		`sed -nl 1 'w /tmp/out' f`,
+		`sed -nl 1 'e touch /tmp/x' f`,
+		// B377 review-2：l 取下一词元的形态不限于簇尾——独立 `-l 1` 同样把
+		// 下一词元当行宽实参，真脚本仍在其后（真机 GNU sed 4.9 实测
+		// `sed -n -l 1 'w /tmp/out' /dev/stdin` 建文件）。已知旗标 case 把
+		// `-l` 当无参旗标是同一漏洞的第二个入口。
+		`sed -n -l 1 'w /tmp/out' f`,
+		`sed -n -l 1 'e touch /tmp/x' f`,
+		`sed -nf /tmp/script f`,
+		`sed -ne 's/a/b/e' f`,
+		`sed -ne 'p' -e 'w /tmp/out' f`,
 		// B376 复审：rg 新入白名单必须约束执行型标志，--pre 会执行任意程序。
 		`rg --pre 'rm -rf x' foo`,
 		"rg --pre=rm foo",
