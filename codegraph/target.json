@@ -82,9 +82,10 @@
    "to": "d_protocol",
    "legacyBudget": 1,
    "entries": [
-    "proto 实体"
+    "proto 实体",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。"
+   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。 B369.5：console --qr/--bundle 复用配对载体包级编解码（proto.EncodePairBundle），补 entry「proto（包级函数）」（contract §8.3 明令 CLI 不得重实现）。entries 命中不计 legacy，预算保持 1 不变。"
   },
   {
    "from": "d_cli",
