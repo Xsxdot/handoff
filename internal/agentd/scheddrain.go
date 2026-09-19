@@ -265,6 +265,16 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
 		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
 	}
+	// 远端载体 fail-closed：print 回合由本进程的 hostapi 拉起（载体 CLI 在本机执行），
+	// 载体登记的那台机器若不是本机，会话就落在错误的机器上、且 HomeDir 是对端路径。
+	// 旧 TUI 形态有远端 PTY 分支，print 形态没有——故显式拒绝，不静默跑错机器。
+	if !scheduling.IsLocalMachine(carrier.Machine) && !s.IsSelfTarget(carrier.Machine) {
+		err := fmt.Errorf("协调者载体 %s 在机器 %s（远端）：print 协调者只支持本机载体，"+
+			"请把协调者小队的成员指向本机载体", binding.Carrier, carrier.Machine)
+		s.log.Warn("协调者载体非本机，拒绝拉起", "card", card, "carrier", binding.Carrier,
+			"machine", carrier.Machine, "cause", err)
+		return zero, err
+	}
 	spec := keysclient.SessionSpec{
 		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
 		Workdir: s.resolveCoordWorkdir(card),

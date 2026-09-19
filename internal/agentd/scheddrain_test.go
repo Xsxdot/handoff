@@ -62,7 +62,7 @@ func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	allowCarrierMachines(t, env.srv, "ftm")
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
-		Name: "coord-carrier", Machine: "ftm", CLI: "opencode",
+		Name: "coord-carrier", Machine: "local", CLI: "opencode",
 		HomeDir: "/tmp/coord-home", Credential: scheduling.CredentialStandalone,
 		MaxConcurrency: 1,
 		Status:         scheduling.StatusOnline,

@@ -157,7 +157,7 @@ func createCoordCard(t *testing.T, env *ledgerEnv) string {
 func seedCoordinatorSquad(t *testing.T, env *ledgerEnv) {
 	t.Helper()
 	svc := mustScheduling(t, env.srv)
-	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "c1", Machine: "linux-01",
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "c1", Machine: "local",
 		CLI: "opencode", HomeDir: "/home/coordinator",
 		Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "coord", Role: scheduling.RoleCoordinator,
@@ -392,7 +392,7 @@ func TestCoordRebindSourceOnlySeatDoesNotLaunch(t *testing.T) {
 func TestCoordLaunchNoSquadActionableError(t *testing.T) {
 	env, _ := newCoordEnv(t)
 	svc := mustScheduling(t, env.srv)
-	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "e1", Machine: "linux-01",
+	putOnlineCarrier(t, svc, scheduling.Carrier{Name: "e1", Machine: "local",
 		CLI: "opencode", Credential: scheduling.CredentialStandalone,
 		Status: scheduling.StatusOnline})
 	if err := svc.PutSquad(scheduling.Squad{Name: "exec", Role: scheduling.RoleExecutor,
@@ -647,6 +647,46 @@ func TestCoordLaunchFailureReleasesCapacityAndKeeps502(t *testing.T) {
 	}
 }
 
+// TestCoordLaunchRejectsRemoteCarrier 锁「print 协调者只支持本机载体」：
+// 载体登记在远端时，回合必须被显式拒绝（旧 TUI 形态有远端 PTY 分支，print 没有），
+// 且不得留下半状态——席位仍空、名额归零。
+func TestCoordLaunchRejectsRemoteCarrier(t *testing.T) {
+	env, _ := newNoPTYCoordEnv(t)
+	svc := mustScheduling(t, env.srv)
+	putOnlineCarrier(t, svc, scheduling.Carrier{
+		Name: "remote-carrier", Machine: "linux-01", CLI: "opencode",
+		HomeDir: "/home/coordinator", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 1, Status: scheduling.StatusOnline,
+	})
+	if err := svc.PutSquad(scheduling.Squad{
+		Name: "coord", Role: scheduling.RoleCoordinator,
+		Members: []scheduling.SquadMember{{Carrier: "remote-carrier", MaxConcurrency: 1}},
+	}, 0); err != nil {
+		t.Fatalf("登记协调者小队: %v", err)
+	}
+	cardID := createCoordCard(t, env)
+
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/launch", `{}`)
+	if code == http.StatusOK {
+		t.Fatalf("远端载体不得被拉起，状态=%d body=%s", code, body)
+	}
+	if !strings.Contains(body, "远端") {
+		t.Fatalf("拒绝理由应点明远端载体：%s", body)
+	}
+	card, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.DriverSession != "" || card.DriverSource != "" {
+		t.Fatalf("被拒的拉起不得落席位: session=%q source=%q", card.DriverSession, card.DriverSource)
+	}
+	for _, key := range []string{"squad/coord/remote-carrier", "carrier/remote-carrier"} {
+		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+			t.Fatalf("被拒后名额 %s=%d，want 0", key, got)
+		}
+	}
+}
+
 // seatStealingRunner 在回合内抢先占座：模拟「回合已跑完但席位已被别人占」，
 // 让 agentd 回合后的 BindSeat 必然 CAS 冲突。用于验证「席位写失败不静默」。
 type seatStealingRunner struct {
@@ -782,7 +822,7 @@ func TestCoordStatusColdLocateUsesRegisteredHomeWithoutAdmission(t *testing.T) {
 func TestCoordStatusQuotesHomePathWithSpaces(t *testing.T) {
 	env, _ := newCoordEnv(t)
 	c1 := scheduling.Carrier{
-		Name: "c1", Machine: "linux-01", CLI: "opencode",
+		Name: "c1", Machine: "local", CLI: "opencode",
 		HomeDir:    "/home/coord docs",
 		Credential: scheduling.CredentialStandalone, Status: scheduling.StatusOnline,
 	}
