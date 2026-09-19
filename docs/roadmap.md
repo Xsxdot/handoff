@@ -897,3 +897,25 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **旧 `web:` 游标孤儿行不清理**：`room-cursors.json` 里老脸行在换脸后成为死行（无行为影响：不冒充已读、不脏读）；要不要清理随「老 `web:` 孤儿成员行展示治理」一并处置。
 - **源码守卫覆盖面**：`TestConsoleFaceNoWebFallbackSourceGuard` 只扫 `roomsapi.go`/`sessionsapi.go`，不含 `identity.go`（旧脸回落写进拒绝点所在文件时守卫不红；行为锁仍能兜住）。
 - **分支图快照混入别卡声明（图卫生）**：`cards/B358.9-*` 分支的 `codegraph/target.json` 带入 B370 的 `d_transport→d_ledger` 声明，其实现不在本分支，`codegraph check` 因此报 1 条 `dead-contract`；契约声明与实现应当同分支同行。来源：B358.9 acceptance §4。
+
+## 来自 B369 acceptance（2026-09-19，真机清单未验项）
+
+`docs/superpowers/specs/b369-breakdown.md` §5 的「未验证，需真机」七条逐条落账（本轮已完成/未完成的实际状态如下）：
+
+- **iOS XCFramework 未产出**：本机只有 CommandLineTools，`gomobile bind -target=ios` 报 `requires Xcode`；需完整 Xcode（用户 2026-09-19 记：Xcode 要求更高的系统版本，待升级系统后安装）。**Android 侧已真机跑通**（2026-09-19：`handoff-mobile.aar` 35MB，classes.jar + 四 ABI `libgojni.so`，javap 实证绑定面七方法 + `Machine` 类）。
+- **壳侧 Kotlin/Swift 孪生金样本**（§5-1）：按 P5=A 壳工程不进本仓，本仓只落共享 JSON fixture；壳侧解码一致性须在移动 CI/真机跑。
+- **程序化 ticket→cookie 与真 cookie jar 桥接**（§5-2）：本机只验 Go 核侧兑换语义；真实 `WKHTTPCookieStore`/`CookieManager` 下的注入、切机清罐彻底性、无 cookie 同机 App 被拒（回环门禁）归真机。
+- **移动端真机走查**（§5-4）：十一屏原型对照、终端键条与 IME 组合、外接键盘收起键条、安全区布局、扫码配对流程。本轮只做了**浏览器视口走查**（无头 Chrome 390×844，见 `notes/night-shift-report-20260918.md` §4.6/§4.7），不替代真机。
+- **真实 relay 服务端 + 真实 agentd 端到端**（§5-5）：机内只穿 fake relay。
+- **离线机上线补配**（§5-6）：真机拔网再恢复，验证 `Core.Retry` 把机器翻回 online 的实际行为。
+- **bundle 容量实测**（§5-7）：真机扫码 N 机 bundle 的实际字节数与二维码可扫性。
+- **壳工程本体**（Kotlin/Swift 工程、安全存储、扫码 UI）：P5=A 拍板不进本仓本期，真机侧另办。
+
+## 来自夜班机制体检（2026-09-19）
+
+- **B381 唤醒语义待裁决**：协调者唤醒的正确形态需拍板（tab 存活时「投递/让位」vs 今天「无头续会话」），属契约语义改动。评审给出的方向：可唤醒对象 = 存活 tab 或 coordinate 席位；唤醒动作分层，仅「席位在 + tab 不在 + 人未 attach」才允许无头兜底 resume。见卡 B381 的评审结论。
+- **协调者 TUI 与无头唤醒的写者互斥**：`keystone.Wake` 用 `runner.Resume` 无头续接 coordinate 会话；`AttachActive` 只由 `/attach` 端点写（开 tab 不算 attach）→ 人在 tab 里时两者会双写同一会话。随 B381 一并处置。
+- **席位无清空原语**：`ReleaseCard` 对非空席位直接拒绝、`closeCoordinatorTab` 只 release 名额不写席位 → 席位一旦写下即永久。随 B381 一并处置。
+- **`card coordinate` 的 `woke:true` 是假读数**：`scheddrain.go:299` 在未写席位、未调 Wake 时也返回 `RoundResult{Woke: true}`（HTTP 原样透传）。`proto/scheduling.go` 的该字段被 CLI 与 web 消费，只能新增字段不能改语义。
+- **唤醒失败即丢事件**：准入无位等唤醒失败时 `wakeconsumer` 仍推进游标（`wakeconsumer.go:414-440`）→ 事件静默丢失，与「不许静默」纪律冲突。
+- **机制发现卡待排期**：B379（七份历史视图 diff 与基线不一致）、B380（`card wait` 快照缺关单镜像）、B382（review 节点依赖 dispatched 快照）、B383（权限门噪声与往返成本四件）、B384（并发 5 个重上下文任务打爆 linux-01 OOM）。B385（假读数 739877 天前）本轮**已修**（`4ec97de44`）。
