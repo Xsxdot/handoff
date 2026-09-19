@@ -238,19 +238,15 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 		return zero, err
 	}
 	occupied := current.DriverSession != "" || current.DriverSource != ""
-	_, tabLive := s.coordinatorTab(card)
-	if !rebind && (occupied || tabLive) {
+	if !rebind && occupied {
 		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
 		s.log.Warn("协调者拉起在 Launch 前被席位拦截", "card", card, "source", source, "rebind", rebind, "cause", err)
 		return zero, err
 	}
-	if rebind && !occupied && !tabLive {
+	if rebind && !occupied {
 		err := fmt.Errorf("卡 %s 当前席位状态不适合此操作: %w", card, ledger.ErrCASConflict)
 		s.log.Warn("协调者换绑在 Launch 前被席位拦截", "card", card, "source", source, "cause", err)
 		return zero, err
-	}
-	if rebind {
-		s.closeCoordinatorTab(card)
 	}
 	squad, err := s.resolveCoordinatorSquad()
 	if err != nil {
@@ -260,11 +256,13 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	if err != nil {
 		return zero, &coordinatorAdmissionError{squad: squad.Name, err: err}
 	}
+	// 名额在本回合结束即归还：协调者是 print 一次性回合（无窗口可挂），
+	// 不再依赖「关 tab」释放，否则一次拉起会把该载体的协调者名额永久占住。
+	defer s.releaseSchedulingBinding(card, binding)
 	carrier, err := s.scheduling.Carrier(binding.Carrier)
 	if err != nil {
 		s.log.Error("读协调者载体失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		s.releaseSchedulingBinding(card, binding)
 		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
 	}
 	spec := keysclient.SessionSpec{
@@ -275,28 +273,49 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	if err != nil {
 		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		s.releaseSchedulingBinding(card, binding)
 		return zero, err
 	}
 	spec = normalized
-	s.log.Info("自动化拉起协调者 TUI", "card", card, "source", source,
+	s.log.Info("自动化拉起协调者回合", "card", card, "source", source,
 		"squad", binding.Squad, "carrier", binding.Carrier,
 		"cli", spec.CLI, "home_dir", spec.HomeDir, "workdir", spec.Workdir,
-		"machine", carrier.Machine)
-	ptyID, err := s.openCoordinatorTUI(card, carrier, spec)
+		"machine", carrier.Machine, "rebind", rebind)
+	// print 一次性回合：载体跑完这一轮即退出，会话身份由载体自报（agentd 不伪造）。
+	result, err := s.keystone.LaunchForCard(ctx, card, source, spec)
 	if err != nil {
-		s.releaseSchedulingBinding(card, binding)
-		s.log.Error("打开协调者 TUI 失败", "card", card, "source", source,
+		s.log.Error("拉起协调者回合失败", "card", card, "source", source,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
 		return zero, fmt.Errorf("拉起协调者回合失败: %w", err)
 	}
-	s.rememberCoordinatorTab(card, coordinatorLiveTab{
-		Binding: binding, PtyID: ptyID, Machine: carrier.Machine, Card: card,
-	})
-	// 席位由 TUI 进程用宿主 session 自己 bind；agentd 不伪造 session id。
-	s.log.Info("自动化拉起协调者 TUI 结束", "card", card, "source", source,
-		"pty", ptyID, "rebind", rebind)
-	return keystone.RoundResult{Woke: true}, nil
+	if result.SessionID == "" {
+		// 没有会话身份就落不了席位，也就永远唤不醒：宁可显式失败，不返回一个
+		// 看起来成功、实际叫不醒的回合。
+		err := fmt.Errorf("协调者回合未返回会话身份，无法落席位（card=%s）", card)
+		s.log.Error("协调者回合缺会话身份", "card", card, "source", source, "cause", err)
+		return zero, err
+	}
+	identity, err := proto.EncodeSeatIdentity(spec.CLI, result.SessionID)
+	if err != nil {
+		return zero, fmt.Errorf("编码协调者席位身份: %w", err)
+	}
+	if rebind {
+		err = s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, expect)
+	} else {
+		err = s.ledger.BindSeat(card, identity, proto.SeatSourceCoordinate)
+	}
+	if err != nil {
+		// 席位没落 = 这个会话永远不会被唤醒（空座在 wakeCoordinatorRound 里直接跳过），
+		// 因此不能静默成功：留 needs_human + 把新会话身份带回给调用方（409 体里有 session_id），
+		// 由人决定回收还是重绑。
+		s.log.Error("协调者回合已跑但席位未落", "card", card, "source", source,
+			"session", result.SessionID, "rebind", rebind, "cause", err)
+		_ = s.ledger.MarkNeedsHuman(card,
+			"协调者回合已跑但席位未落，该会话不会被唤醒，请人工处置（可 card rebind --self 或回收会话）", "coordinator")
+		return keystone.RoundResult{SessionID: result.SessionID}, &coordinatorSeatConflict{result: result}
+	}
+	s.log.Info("自动化拉起协调者回合结束", "card", card, "source", source,
+		"session", result.SessionID, "seat", identity, "rebind", rebind)
+	return keystone.RoundResult{Woke: true, SessionID: result.SessionID}, nil
 }
 
 // wakeCoordinatorRound 为 Wake 临时占用协调者回合名额，Wake 返回后释放。

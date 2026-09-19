@@ -354,14 +354,6 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 				continue
 			}
 		}
-		if ev.Type == ledger.EvStatusMoved && ev.CardID != "" {
-			var moved struct {
-				To string `json:"to"`
-			}
-			if json.Unmarshal(ev.Payload, &moved) == nil {
-				s.closeCoordinatorTabIfTerminal(ev.CardID, moved.To)
-			}
-		}
 		wakes, mapErr := s.automationWakeEvents(ev)
 		if mapErr != nil {
 			s.log.Error("自动化账本事件映射失败", "seq", ev.Seq, "card", ev.CardID,

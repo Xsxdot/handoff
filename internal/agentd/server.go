@@ -182,16 +182,8 @@ type Server struct {
 	// coordLocks 串行化同一卡的 Launch→席位 CAS；每张卡独立，避免不同卡互相阻塞。
 	coordLocksMu sync.Mutex
 	coordLocks   map[string]*sync.Mutex
-	// coordTabs 是控制台协调者 TUI tab：名额占到 tab 关掉，不是 Launch 返回就放。
-	coordTabsMu sync.Mutex
-	coordTabs   map[string]coordinatorLiveTab
-	// openCoordTUI 打开控制台 TUI；测试可替换。nil 走生产 PTY。
-	openCoordTUI func(card string, carrier scheduling.Carrier, spec keysclient.SessionSpec) (ptyID string, err error)
-	// createRemoteCoordPty / closeRemoteCoordPty / lookupRemoteCoordWorkdir
-	// 是远端协调者 TUI 的测试缝。nil 走 clientForTarget HTTP（B344）。
-	createRemoteCoordPty     func(machine string, req proto.CreatePtySessionReq) (ptyID string, err error)
-	closeRemoteCoordPty      func(machine, ptyID string) error
-	lookupRemoteCoordWorkdir func(machine, card string) (string, error)
+	// 协调者是 print 一次性回合，没有控制台 TUI tab：名额在回合结束即归还
+	// （见 scheddrain.go 的 launchCoordinatorRoundWithExpect）。
 	// automationStartOnce/automationKick protect the single host automation loop.
 	automationStartOnce   sync.Once
 	automationKick        chan struct{}

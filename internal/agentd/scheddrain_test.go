@@ -59,9 +59,6 @@ func (r *queueTraceRunner) markDispatch() {
 
 func seedQueueCoordinator(t *testing.T, env *ledgerEnv) *queueTraceRunner {
 	t.Helper()
-	env.srv.openCoordTUI = func(card string, carrier scheduling.Carrier, spec keysclient.SessionSpec) (string, error) {
-		return "pty-stub", nil
-	}
 	allowCarrierMachines(t, env.srv, "ftm")
 	svc := mustScheduling(t, env.srv)
 	putOnlineCarrier(t, svc, scheduling.Carrier{
@@ -239,8 +236,19 @@ func TestAutomationQueueRestartReplay(t *testing.T) {
 	if len(rows) != 0 {
 		t.Fatalf("重放后仍有 %d 行队列: %+v", len(rows), rows)
 	}
-	if _, ok := env.srv.coordinatorTab(ids[0]); !ok {
-		t.Fatal("协调者队列应打开 TUI tab")
+	// print 形态：协调者队列回合结束即落席位并归还名额（不再靠 tab 存活占位）。
+	coordCard, err := env.ledger.GetCard(ids[0])
+	if err != nil {
+		t.Fatalf("读回协调者席位: %v", err)
+	}
+	if coordCard.DriverSession == "" || coordCard.DriverSource != string(proto.SeatSourceCoordinate) {
+		t.Fatalf("协调者队列回合应落下 coordinate 席位，got session=%q source=%q",
+			coordCard.DriverSession, coordCard.DriverSource)
+	}
+	for _, key := range []string{"squad/coord/coord-carrier", "carrier/coord-carrier"} {
+		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+			t.Fatalf("协调者回合结束应立即释放名额 %s=%d，want 0", key, got)
+		}
 	}
 	_, resumes, _ := runner.snapshot()
 	if len(resumes) != 0 {
@@ -315,20 +323,14 @@ func TestAutomationRoundReleasesCoordinatorCounters(t *testing.T) {
 			if err := tc.call(); err != nil {
 				t.Fatalf("%s 回合: %v", tc.name, err)
 			}
-			want := 0
-			if tc.name == "launch" {
-				want = 1
-			}
+			// print 形态：launch 与 wake 都在回合返回即归还两级名额，不留窗口占用。
 			for key := range map[string]struct{}{
 				"squad/coord/coord-carrier": {},
 				"carrier/coord-carrier":     {},
 			} {
-				if got := runningCountIn(t, env.srv.autoLedger, key); got != want {
-					t.Fatalf("%s 后计数 %s=%d，want %d", tc.name, key, got, want)
+				if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+					t.Fatalf("%s 后计数 %s=%d，want 0", tc.name, key, got)
 				}
-			}
-			if tc.name == "launch" {
-				env.srv.closeCoordinatorTab(cardID)
 			}
 		})
 	}
@@ -339,13 +341,14 @@ func TestAutomationReleaseKicksDrain(t *testing.T) {
 	SetupAutomationForTest(t, env.srv, env.ledger)
 	seedQueueCoordinator(t, env)
 	cardID := createCoordCard(t, env)
+	// print 形态：名额在 launch 回合返回时即由 releaseSchedulingBinding 归还并 kick，
+	// 不再等「关 TUI tab」触发。
 	if _, err := env.srv.launchCoordinatorRound(context.Background(), cardID, "coordinate"); err != nil {
 		t.Fatalf("拉起回合: %v", err)
 	}
-	env.srv.closeCoordinatorTab(cardID)
 	select {
 	case <-env.srv.automationKick:
 	default:
-		t.Fatal("关闭 TUI 归还名额后没有收到清队唤醒信号")
+		t.Fatal("回合归还名额后没有收到清队唤醒信号")
 	}
 }
