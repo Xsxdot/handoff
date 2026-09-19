@@ -14,20 +14,52 @@
 
 ## 绑定面（壳的契约面）
 
-    func Pair(bundleJSON string) (mobilecore.PairResult, error)
+    func Pair(bundleJSON string) error
+    func MachineCount() int
+    func MachineAt(index int) *Machine      // Machine{Name, Origin string; Online bool}
     func Origin(machine string) (string, error)
-    func MachineNames() []string
+    func SessionCookie(machine string) (string, error)
+    func SwitchMachine(machine string) (string, error)
     func Close() error
 
 导出面**不含** `Token` / `Dial` / `Credential` 等可绕过回环门禁的入口（回环反代
 不注入凭据是承重安全属性，见 contract §4.2/§6）。
 
+**形状铁律（B386 的教训）**：参数与返回值只许 gomobile 真支持的形状——基本类型、
+`error`、以及**本包内定义**的结构体指针。`isSupported`（`bind/gen.go`）对 slice
+只放行 `[]byte`，对命名类型只放行 interface/指针且包必须在绑定集合内；违反者
+**不报错**，只是整条函数被静默跳过（产物里一行 `// skipped function …`），
+`go build`/`go test` 照样全绿而壳拿不到方法。故：
+
+- **列表一律用「计数 + 按索引取指针」表达**（`MachineCount` + `MachineAt`），不用 `[]T`；
+- **回给壳的结构体定义在本包**（见 `types.go`），字段只用 string/bool；
+- 加/改导出面后跑 `go test ./bind/ -run TestGomobileSurfaceHasNoSkips`——它跑真
+  gobind（java + objc）并断言产物里无 `skipped function/field` 且每个导出函数都在
+  产物里；`TestBindExportedSurfaceIsFrozen` 逐字钉住上表签名。
+
 ## 构建
 
-前置：go 1.26.1、gomobile、Xcode（iOS）、Android SDK + NDK 30.0.16248370。
+**Android 前置**（缺一项就在 bind 时报错，报错信息不一定指路）：
+
+| 依赖 | 说明 |
+| --- | --- |
+| go 1.26.1 | — |
+| JDK 21 | gomobile 要 `javac`/`jar`；装到 `~/Library/Java/JavaVirtualMachines/` 并把 `$JAVA_HOME/bin` 进 `PATH` |
+| Android cmdline-tools | `~/Library/Android/sdk/cmdline-tools/latest`（`sdkmanager` 入口） |
+| `platform-tools`、`build-tools;36.0.0` | `sdkmanager --install` |
+| **`ndk;30.0.16248370`** | 2.8G；gate 钉死这版 |
+| **`platforms;android-36`** | gomobile 找 `$ANDROID_HOME/platforms`；缺了报 `failed to find android SDK platform` |
+| `gomobile`/`gobind` | 下方 `go install`；装到 `$HOME/go/bin` |
+
+**iOS 前置**：完整 Xcode（CommandLineTools **不够**，`-target=ios` 会报 `requires Xcode`）。
 
     go install golang.org/x/mobile/cmd/gomobile@v0.0.0-20260908204917-8b95e45f8d3e
     go install golang.org/x/mobile/cmd/gobind@v0.0.0-20260908204917-8b95e45f8d3e
+
+    export JAVA_HOME=$(ls -d ~/Library/Java/JavaVirtualMachines/*/Contents/Home | head -1)
+    export PATH="$JAVA_HOME/bin:$HOME/go/bin:$PATH"
+    export ANDROID_HOME=~/Library/Android/sdk
+    export ANDROID_NDK_HOME=~/Library/Android/sdk/ndk/30.0.16248370
 
     ./build.sh android      # → ../dist/mobile/handoff-mobile.aar
     ./build.sh ios          # → ../dist/mobile/handoff-mobile.xcframework
@@ -42,8 +74,14 @@
    `missing golang.org/x/mobile dependency`。
 
 **`go build ./...` ≠ `gomobile bind`**：前者只证明 Go 源码可编译，不证明能产出
-AAR/XCFramework。真正的 bind 只能在装了 Xcode/NDK 的机器上跑；本仓 linux 开发机
-跑不了，别把 `go build` 全绿当成绑定产物已验证。
+AAR/XCFramework，更不证明绑定面**完整**（B386：`Pair`/`MachineNames` 被 gomobile 静默
+跳过，`go build` 与 `go test` 全绿而壳拿不到那两个方法）。两道真闸：
+`go test ./bind/ -run TestGomobileSurfaceHasNoSkips`（形状，任何机器可跑）与
+`./build.sh android|ios`（产物，需真工具链）。
+
+**已知真机读数**：Android AAR 于 2026-09-19 在 darwin 机（NDK 30.0.16248370 + JDK 21 齐，
+无 Xcode）一次构建通过 → `handoff-mobile.aar`（35MB，`classes.jar` + 四 ABI
+`libgojni.so`）；iOS XCFramework 尚未在装了完整 Xcode 的机器上跑过（**真机清单未验项**）。
 
 ## 凭据卫生与 token 轮换
 
