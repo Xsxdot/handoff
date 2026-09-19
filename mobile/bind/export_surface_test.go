@@ -13,17 +13,17 @@ import (
 	"sort"
 	"strings"
 	"testing"
-
-	"github.com/Xsxdot/handoff/internal/mobilecore"
 )
 
-// wantBindSurface 是绑定面的全部导出函数签名（壳的交接面，P4=A/P5=A 冻结）。
+// wantBindSurface 是绑定面的全部导出函数签名（壳的交接面，P4=A/P5=A 冻结；
+// B386 按 gomobile 真实支持集合修订：列表改计数/按索引取指针）。
 // 顺序无关；多一个、少一个、签名漂移都红。
 var wantBindSurface = []string{
 	"func Close() error",
-	"func MachineNames() []string",
+	"func MachineAt(index int) *Machine",
+	"func MachineCount() int",
 	"func Origin(machine string) (string, error)",
-	"func Pair(bundleJSON string) (mobilecore.PairResult, error)",
+	"func Pair(bundleJSON string) error",
 	"func SessionCookie(machine string) (string, error)",
 	"func SwitchMachine(machine string) (string, error)",
 }
@@ -106,10 +106,10 @@ func TestBindProductionHasNoProtocolLogic(t *testing.T) {
 	}
 }
 
-// resultTypes 返回绑定面返回给壳的结构体类型（跨 gomobile 映射边界的全部类型）。
+// resultTypes 返回绑定面回给壳的结构体类型（跨 gomobile 映射边界的全部类型）。
+// B386 后只有本包定义的 Machine——跨包类型会被 gomobile 静默跳过。
 func resultTypes() []reflect.Type {
 	return []reflect.Type{
-		reflect.TypeOf(mobilecore.PairResult{}),
-		reflect.TypeOf(mobilecore.PairedMachine{}),
+		reflect.TypeOf(Machine{}),
 	}
 }

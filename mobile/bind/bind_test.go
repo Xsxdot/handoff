@@ -3,31 +3,38 @@ package bind
 import (
 	"reflect"
 	"testing"
-
-	"github.com/Xsxdot/handoff/internal/mobilecore"
 )
 
 func TestBindPairForwardsToCore(t *testing.T) {
 	fc := newFakeCore()
 	defer swapCore(fc)()
-	res, err := Pair(`{"v":1}`)
-	if err != nil {
+	if err := Pair(`{"v":1}`); err != nil {
 		t.Fatalf("Pair: %v", err)
 	}
 	if fc.pairCalls != 1 || fc.lastBundleBytes != len(`{"v":1}`) {
 		t.Fatalf("Pair 未如实转发: calls=%d bytes=%d", fc.pairCalls, fc.lastBundleBytes)
 	}
-	if len(res.Machines) != 1 || res.Machines[0].Name != "devbox" || !res.Machines[0].Online {
-		t.Fatalf("Pair 结果漂移: %+v", res)
+	// 配对结果经 MachineCount / MachineAt 读回（B386：列表不能用 Go slice）。
+	if n := MachineCount(); n != 1 {
+		t.Fatalf("MachineCount 应反映核侧登记数: got=%d", n)
 	}
-	var _ mobilecore.PairResult = res
+	m := MachineAt(0)
+	if m == nil || m.Name != "devbox" || !m.Online || m.Origin == "" {
+		t.Fatalf("MachineAt(0) 结果漂移: %+v", m)
+	}
+	if m := MachineAt(1); m != nil {
+		t.Fatalf("越界索引应返回 nil，实得 %+v", m)
+	}
+	if m := MachineAt(-1); m != nil {
+		t.Fatalf("负索引应返回 nil，实得 %+v", m)
+	}
 }
 
 func TestBindPairSurfacesError(t *testing.T) {
 	fc := newFakeCore()
 	fc.pairErr = errBoom
 	defer swapCore(fc)()
-	if _, err := Pair(`{}`); err == nil {
+	if err := Pair(`{}`); err == nil {
 		t.Fatal("核侧错误必须上抛，不得吞成 nil")
 	}
 }
@@ -89,12 +96,15 @@ func TestBindSessionFailIsClosed(t *testing.T) {
 	}
 }
 
-func TestBindMachineNamesForwardsToCore(t *testing.T) {
+func TestBindMachineCountAndAtForwardToCore(t *testing.T) {
 	fc := newFakeCore()
 	defer swapCore(fc)()
-	got := MachineNames()
-	if len(got) != 1 || got[0] != "devbox" {
-		t.Fatalf("MachineNames 未如实转发: %v", got)
+	if n := MachineCount(); n != 1 {
+		t.Fatalf("MachineCount 未如实转发: %d", n)
+	}
+	m := MachineAt(0)
+	if m == nil || m.Name != "devbox" {
+		t.Fatalf("MachineAt 未如实转发: %+v", m)
 	}
 }
 
@@ -110,8 +120,9 @@ func TestBindCloseForwardsToCore(t *testing.T) {
 	}
 }
 
-// TestBindResultTypesAreGomobileSafe 锁跨语言映射边界：绑定面返回的结构体字段
-// 只能是 string/bool（gomobile 对 time.Time/error/接口支持有限，不可绑定）。
+// TestBindResultTypesAreGomobileSafe 锁跨语言映射边界：绑定面回给壳的结构体字段
+// 只能是 gomobile 支持的基本类型（string/bool）。**切片一律不许**——gomobile 的
+// `isSupported` 对 slice 只放行 []byte，用 []T 表达列表会被静默跳过（B386 的现场）。
 func TestBindResultTypesAreGomobileSafe(t *testing.T) {
 	for _, typ := range resultTypes() {
 		for i := 0; i < typ.NumField(); i++ {
@@ -121,12 +132,8 @@ func TestBindResultTypesAreGomobileSafe(t *testing.T) {
 			}
 			switch f.Type.Kind() {
 			case reflect.String, reflect.Bool:
-			case reflect.Slice:
-				if f.Type.Elem().Kind() != reflect.Struct {
-					t.Fatalf("%s.%s 切片元素非结构体: %s", typ.Name(), f.Name, f.Type)
-				}
 			default:
-				t.Fatalf("%s.%s 类型 %s 不是 gomobile 可绑定的 string/bool/结构体切片",
+				t.Fatalf("%s.%s 类型 %s 不是 gomobile 可绑定的 string/bool（列表请用 MachineCount+MachineAt）",
 					typ.Name(), f.Name, f.Type)
 			}
 		}
