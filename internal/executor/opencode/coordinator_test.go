@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -82,12 +83,15 @@ func TestCoordinatorCancelTurnUsesSessionID(t *testing.T) {
 			results <- result{id: got.SessionID, err: err}
 		}(sessionID)
 	}
-	time.Sleep(100 * time.Millisecond)
+	// 等两个回合都进在途表：Coordinator.turn 先登记在途表、再拉起 CLI，而假 CLI
+	// 脚本首段就把 argv 落进捕获文件，故「两个 -s 都出现」蕴含两个回合都已在途。
+	// 原来固定 sleep 100ms 在全量并行负载下不够（2026-09-19 实测全量红、单跑绿）。
+	waitSessionTurnStarted(t, os.Getenv("FAKECLI_ARGV_FILE"), "ses-a", "ses-b")
 	if err := c.CancelTurn(context.Background(), executor.CoordSessionRef{CLI: "opencode", SessionID: "ses-a"}); err != nil {
 		t.Fatal(err)
 	}
 	var canceled, completed bool
-	deadline := time.After(500 * time.Millisecond)
+	deadline := time.After(10 * time.Second)
 	for canceled == false || completed == false {
 		select {
 		case got := <-results:
@@ -138,4 +142,38 @@ func withArgvCapture(t *testing.T) string {
 	p := filepath.Join(t.TempDir(), "argv.txt")
 	t.Setenv("FAKECLI_ARGV_FILE", p)
 	return p
+}
+
+// waitSessionTurnStarted 轮询 argv 捕获文件，直到给定的 session id 全部出现。
+//
+// 判据链条：假 CLI 脚本首段就把 argv 落盘（在 sleep 之前），而 Coordinator.turn
+// 是**先登记在途表、再拉起 CLI**——故「id 出现在 argv 里」蕴含该回合已在途，
+// CancelTurn 可以命中。用它替代固定 sleep，是为了在「全量 go test ./...」的
+// 并行负载下不靠运气（2026-09-19 实测：固定 100ms 时该用例全量红、单跑绿）。
+func waitSessionTurnStarted(t *testing.T, argvFile string, ids ...string) {
+	t.Helper()
+	if argvFile == "" {
+		t.Fatal("FAKECLI_ARGV_FILE 未设置（installFakeCLI 应已设）")
+	}
+	budget := time.Now().Add(10 * time.Second)
+	for {
+		if b, err := os.ReadFile(argvFile); err == nil {
+			all := true
+			for _, id := range ids {
+				if !strings.Contains(string(b), id) {
+					all = false
+					break
+				}
+			}
+			if all {
+				return
+			}
+		} else if !os.IsNotExist(err) {
+			t.Fatalf("读 argv 捕获文件: %v", err)
+		}
+		if time.Now().After(budget) {
+			t.Fatalf("等待回合在途超时（10s）：%s 里未出现全部 %v", argvFile, ids)
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
