@@ -41,5 +41,3 @@ func permFingerprintHash(text string) string {
 func ReuseFingerprint(version, permFP string) string {
 	return permFingerprintHash(version + "\x00" + permFP)
 }
-
-

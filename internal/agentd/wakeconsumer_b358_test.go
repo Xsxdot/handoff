@@ -113,7 +113,9 @@ func TestB3583MentionCardWakesItsSeatOnce(t *testing.T) {
 	}
 }
 
-func contains(haystack, needle string) bool { return len(haystack) >= len(needle) && strings.Contains(haystack, needle) }
+func contains(haystack, needle string) bool {
+	return len(haystack) >= len(needle) && strings.Contains(haystack, needle)
+}
 
 func TestB3583NonMemberAndMissingCardTargetsDoNotWake(t *testing.T) {
 	env, runner := newNoPTYAutomationEnv(t)

@@ -4,7 +4,7 @@
 // 本文件 import internal/ledger(/proto) 仅存在于 _test.go：不构成生产跨域边。
 // B358.5 红窗改写：下方标注「B358.5 红窗改写」的 6 支原以 room send 卡房间/
 // 群房间成功为断言或夹具，随 B358.1 S1 只读归档失效；按新会话语义就地改写
-//（名字保留供红窗核算逐支比对），断言意图逐支对应迁移，见
+// （名字保留供红窗核算逐支比对），断言意图逐支对应迁移，见
 // docs/superpowers/plans/b358.5-plan.md §5。
 package cmd
 
@@ -41,7 +41,7 @@ func mustAddCard(t *testing.T, dir, title string) string {
 
 // TestRoomSendLandsRoomMessageWithUserKind（B358.5 红窗改写）：原断言「room send
 // 卡房间 kind=user 落账成功」随 S1 只读归档失效。改锁两半：(a) 旧面报错形状
-//（P7 保留报错——S1 归档语义经 CLI 呈现）；(b) kind=user 落账成功迁 session send
+// （P7 保留报错——S1 归档语义经 CLI 呈现）；(b) kind=user 落账成功迁 session send
 // 人形态，actor 沿用 cli:<user>@<host> 审计注入面，stdout 契约不变。
 func TestRoomSendLandsRoomMessageWithUserKind(t *testing.T) {
 	dir := t.TempDir()
@@ -308,7 +308,7 @@ func TestRoomReadStdoutSeqPrefix(t *testing.T) {
 }
 
 // TestRoomListSortedByActivity（B358.5 红窗改写）：活动降序断言迁 session list
-//（旧 room list 不含会话行、且发言面只在会话——0.2 表 #20，旧列表无法经发言
+// （旧 room list 不含会话行、且发言面只在会话——0.2 表 #20，旧列表无法经发言
 // 复现排序场）。cmd 层呈现排序（b358.5-plan §2.1）：后发言的会话排前。
 func TestRoomListSortedByActivity(t *testing.T) {
 	dir := t.TempDir()

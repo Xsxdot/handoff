@@ -92,4 +92,3 @@ func TestReuseFingerprintSaltsVersion(t *testing.T) {
 		t.Fatalf("hex sha256 长度=%d", len(a))
 	}
 }
-

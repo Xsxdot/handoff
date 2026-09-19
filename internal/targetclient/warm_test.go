@@ -132,4 +132,3 @@ func TestWarmSuccessDoesNotProbeAgentdHTTP(t *testing.T) {
 		t.Fatalf("Warm 成功不得去拨 agentd HTTP，hits=%d", hits)
 	}
 }
-

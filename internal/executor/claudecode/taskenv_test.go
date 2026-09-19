@@ -249,4 +249,3 @@ func TestWriteTaskEnvSnapshotAllowIsSubsetAndNotNakedBash(t *testing.T) {
 		}
 	}
 }
-

@@ -153,4 +153,3 @@ func TestPoolForReturnedClientMustStayReusable(t *testing.T) {
 		t.Fatal("调用方关空闲连接不得迫使池重建 client（隧道归池）")
 	}
 }
-

@@ -46,4 +46,3 @@ func TestGrokBaselineOneShotHasNoDefaultEffort(t *testing.T) {
 		}
 	}
 }
-

@@ -11,8 +11,6 @@ package main
 
 import (
 	"encoding/json"
-	"os/exec"
-	"regexp"
 	"flag"
 	"fmt"
 	"go/ast"
@@ -21,7 +19,9 @@ import (
 	"go/token"
 	"go/types"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -206,7 +206,7 @@ func loadBest() {
 	raw, err := os.ReadFile(filepath.Join(repoRoot, "codegraph", "best.json"))
 	must(err)
 	var best struct {
-		Domains    map[string]struct {
+		Domains map[string]struct {
 			Label  string `json:"label"`
 			Parent string `json:"parent"`
 			Type   string `json:"type"`
@@ -258,7 +258,7 @@ func scanGo(g *Graph) {
 		Mode: packages.NeedName | packages.NeedFiles | packages.NeedCompiledGoFiles |
 			packages.NeedSyntax | packages.NeedTypes | packages.NeedTypesInfo |
 			packages.NeedImports | packages.NeedDeps | packages.NeedModule,
-		Dir:     repoRoot,
+		Dir:   repoRoot,
 		Tests: false,
 		Fset:  fset,
 		ParseFile: func(fset *token.FileSet, filename string, src []byte) (*ast.File, error) {
@@ -412,7 +412,7 @@ func scanGo(g *Graph) {
 						n := &Node{
 							Kind: "model", Container: "k_" + pi.pkgPart + "_model",
 							Name: ts.Name.Name, File: fname,
-							Line: fset.Position(ts.Pos()).Line,
+							Line:    fset.Position(ts.Pos()).Line,
 							Summary: docText(doc), PkgDir: pi.dir, Decl: d,
 						}
 						if st, ok := ts.Type.(*ast.StructType); ok {
@@ -1108,7 +1108,7 @@ func walkCmdTree(g *Graph, pi *pkgInfo, cmds map[string]*cmdDecl, children map[s
 				rn := &Node{
 					Kind: "func", Container: "k_cmd_fn", Name: cd.varName + "." + field,
 					File: cd.file, Line: fset.Position(lit.Pos()).Line,
-					Summary: "",
+					Summary:   "",
 					Signature: "func(cmd *cobra.Command, args []string) error",
 					Params:    [][]string{{"cmd", "*cobra.Command", ""}, {"args", "[]string", ""}},
 					Returns:   "error", Body: &ast.FuncDecl{Type: &ast.FuncType{Params: &ast.FieldList{}, Results: &ast.FieldList{}}, Body: lit.Body},
@@ -1294,10 +1294,10 @@ func buildMainEntry(g *Graph) {
 // ---------- TS scan ----------
 
 type tsSym struct {
-	kind   string // func | model
-	name   string
-	line   int
-	sig    string
+	kind    string // func | model
+	name    string
+	line    int
+	sig     string
 	summary string
 }
 
@@ -1472,10 +1472,10 @@ func oldWebPartForFile(rel string) string {
 }
 
 var (
-	tsTypeRe  = regexp.MustCompile(`^(export\s+)?(default\s+)?(interface|type|class|enum)\s+([A-Za-z_$][\w$]*)`)
-	tsFnRe    = regexp.MustCompile(`^(export\s+)?(default\s+)?(async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)`)
-	tsConstRe = regexp.MustCompile(`^(export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(async\s*)?\([^)]*\)\s*(?::[^=]+)?=>`)
-	tsCompRe   = regexp.MustCompile(`^(export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(React\.)?(forwardRef|memo)[<(]`)
+	tsTypeRe       = regexp.MustCompile(`^(export\s+)?(default\s+)?(interface|type|class|enum)\s+([A-Za-z_$][\w$]*)`)
+	tsFnRe         = regexp.MustCompile(`^(export\s+)?(default\s+)?(async\s+)?function\s*\*?\s*([A-Za-z_$][\w$]*)`)
+	tsConstRe      = regexp.MustCompile(`^(export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(async\s*)?\([^)]*\)\s*(?::[^=]+)?=>`)
+	tsCompRe       = regexp.MustCompile(`^(export\s+)?const\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*(React\.)?(forwardRef|memo)[<(]`)
 	tsValueConstRe = regexp.MustCompile(`^(export\s+)?const\s+([A-Z][A-Z0-9_]*)\s*=\s*['"\x60\d]`)
 )
 
@@ -1694,8 +1694,6 @@ func modelTypeOf(mn *Node) types.Type {
 	}
 	return obj.Type()
 }
-
-
 
 // nodeSource 返回节点所在函数的源文（用于 writer 的持久化写入转录核验）。
 func nodeSource(n *Node) string {
@@ -2001,7 +1999,7 @@ func deriveTwins(g *Graph) {
 func deriveTests(g *Graph) {
 	// per package: parse _test.go, find Test functions, ident usage
 	for _, pi := range scanned {
-		testFns := map[string]testLoc{} // test name -> {file, line}
+		testFns := map[string]testLoc{}     // test name -> {file, line}
 		testIdents := map[string][]string{} // test name -> ident names
 		for _, f := range pi.syntax {
 			fname := relFile(fset.Position(f.Pos()).Filename)
@@ -2104,73 +2102,73 @@ func containerDomainFromNodes(g *Graph, cid string) string {
 }
 
 var goPkgDomain = map[string]string{
-	"internal/agentd": "d_gateway",
-	"internal/orchestration": "d_orchestration",
+	"internal/agentd":                           "d_gateway",
+	"internal/orchestration":                    "d_orchestration",
 	"internal/orchestration/internal/cacheplan": "d_orchestration",
-	"internal/approval":            "d_orchestration",
-	"internal/store":               "d_orchestration",
-	"internal/workspace":           "d_workspace",
-	"internal/workspace/internal/gitproc": "d_workspace",
-	"internal/launcher":            "d_workspace",
-	"internal/localsync":           "d_workspace",
-	"internal/projectid":           "d_workspace",
-	"internal/scheduling":          "d_scheduling",
-	"internal/scheduling/internal/logging": "d_scheduling",
-	"internal/schedclient":         "d_scheduling",
-	"internal/ledger":              "d_ledger",
-	"internal/ledgermirror":        "d_ledger",
-	"internal/ledgerstep":          "d_ledger",
-	"internal/ledger/api":          "d_ledger",
-	"internal/collab":              "d_collab",
-	"internal/collab/room":         "d_collab",
-	"internal/collab/cursor":       "d_collab",
-	"internal/collab/client":       "d_collab",
-	"internal/keystone":            "d_keystone",
-	"internal/keysclient":          "d_keystone",
-	"internal/executor":            "d_execution_contract",
-	"internal/executor/turn":       "d_execution_contract",
-	"internal/executor/claudecode": "d_execution_adapters",
-	"internal/executor/codex":      "d_execution_adapters",
-	"internal/executor/grok":       "d_execution_adapters",
-	"internal/executor/opencode":   "d_execution_adapters",
-	"internal/executor/agy":        "d_execution_adapters",
-	"internal/executor/fake":       "d_execution_adapters",
-	"internal/executor/rawtap":     "d_execution_adapters",
-	"internal/hostapi":             "d_execution_host",
-	"internal/prochost":            "d_execution_host",
-	"internal/client":              "d_transport_channel",
-	"internal/mobilecore":          "d_transport_channel",
-	"internal/targetclient":        "d_transport_channel",
-	"internal/relay":               "d_transport_tunnel",
-	"internal/proxycfg":            "d_transport_tunnel",
-	"internal/ptyapi":              "d_sessions",
-	"internal/ptyhost":             "d_sessions",
-	"internal/ptyhost/engine":      "d_sessions",
-	"internal/ptyhost/hostproc":    "d_sessions",
-	"internal/ptyhost/sessdir":     "d_sessions",
-	"internal/ptyhost/wire":        "d_sessions",
-	"internal/proto":               "d_protocol",
-	"internal/config":              "d_policy",
-	"internal/discipline":          "d_policy",
-	"internal/envfile":             "d_policy",
-	"internal/initflow":            "d_policy",
-	"internal/logx":                "d_policy",
-	"internal/pathenv":             "d_policy",
-	"internal/permgate":            "d_policy",
-	"internal/buildinfo":           "d_maintenance",
-	"internal/release":             "d_maintenance",
-	"internal/selfupdate":          "d_maintenance",
-	"internal/service":             "d_maintenance",
-	"internal/skill":               "d_maintenance",
-	"internal/toolchain":           "d_maintenance",
-	"internal/upgrade":             "d_maintenance",
-	"internal/webui":               "d_web_shell",
-	"cmd":                          "d_cli",
-	"internal/testhttp":            "d_gateway",
-	"internal/testperm":            "d_policy",
-	"internal/termseq":             "d_sessions",
-	"internal/ptytestroot":         "d_sessions",
-	"internal/approval/internal/decision": "d_orchestration",
+	"internal/approval":                         "d_orchestration",
+	"internal/store":                            "d_orchestration",
+	"internal/workspace":                        "d_workspace",
+	"internal/workspace/internal/gitproc":       "d_workspace",
+	"internal/launcher":                         "d_workspace",
+	"internal/localsync":                        "d_workspace",
+	"internal/projectid":                        "d_workspace",
+	"internal/scheduling":                       "d_scheduling",
+	"internal/scheduling/internal/logging":      "d_scheduling",
+	"internal/schedclient":                      "d_scheduling",
+	"internal/ledger":                           "d_ledger",
+	"internal/ledgermirror":                     "d_ledger",
+	"internal/ledgerstep":                       "d_ledger",
+	"internal/ledger/api":                       "d_ledger",
+	"internal/collab":                           "d_collab",
+	"internal/collab/room":                      "d_collab",
+	"internal/collab/cursor":                    "d_collab",
+	"internal/collab/client":                    "d_collab",
+	"internal/keystone":                         "d_keystone",
+	"internal/keysclient":                       "d_keystone",
+	"internal/executor":                         "d_execution_contract",
+	"internal/executor/turn":                    "d_execution_contract",
+	"internal/executor/claudecode":              "d_execution_adapters",
+	"internal/executor/codex":                   "d_execution_adapters",
+	"internal/executor/grok":                    "d_execution_adapters",
+	"internal/executor/opencode":                "d_execution_adapters",
+	"internal/executor/agy":                     "d_execution_adapters",
+	"internal/executor/fake":                    "d_execution_adapters",
+	"internal/executor/rawtap":                  "d_execution_adapters",
+	"internal/hostapi":                          "d_execution_host",
+	"internal/prochost":                         "d_execution_host",
+	"internal/client":                           "d_transport_channel",
+	"internal/mobilecore":                       "d_transport_channel",
+	"internal/targetclient":                     "d_transport_channel",
+	"internal/relay":                            "d_transport_tunnel",
+	"internal/proxycfg":                         "d_transport_tunnel",
+	"internal/ptyapi":                           "d_sessions",
+	"internal/ptyhost":                          "d_sessions",
+	"internal/ptyhost/engine":                   "d_sessions",
+	"internal/ptyhost/hostproc":                 "d_sessions",
+	"internal/ptyhost/sessdir":                  "d_sessions",
+	"internal/ptyhost/wire":                     "d_sessions",
+	"internal/proto":                            "d_protocol",
+	"internal/config":                           "d_policy",
+	"internal/discipline":                       "d_policy",
+	"internal/envfile":                          "d_policy",
+	"internal/initflow":                         "d_policy",
+	"internal/logx":                             "d_policy",
+	"internal/pathenv":                          "d_policy",
+	"internal/permgate":                         "d_policy",
+	"internal/buildinfo":                        "d_maintenance",
+	"internal/release":                          "d_maintenance",
+	"internal/selfupdate":                       "d_maintenance",
+	"internal/service":                          "d_maintenance",
+	"internal/skill":                            "d_maintenance",
+	"internal/toolchain":                        "d_maintenance",
+	"internal/upgrade":                          "d_maintenance",
+	"internal/webui":                            "d_web_shell",
+	"cmd":                                       "d_cli",
+	"internal/testhttp":                         "d_gateway",
+	"internal/testperm":                         "d_policy",
+	"internal/termseq":                          "d_sessions",
+	"internal/ptytestroot":                      "d_sessions",
+	"internal/approval/internal/decision":       "d_orchestration",
 }
 
 func pkgDomain(pkgDir, file string) string {

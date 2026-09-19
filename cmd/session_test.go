@@ -189,7 +189,7 @@ func TestSessionWaitInvalidFlags(t *testing.T) {
 // 唯一入口是 collab.Service.MessageWakeTargets；通道内不得出现第二份寻址
 // 判定，无成员集合形状）。B358.5 岔口 1 批准后收窄：kind 门控（RoomMsgUser）
 // 与 mentions 直读（.Mentions）两类禁令从文件级子串改为 wait 通道两函数
-//（runSessionWait/buildSessionWake）的 AST 级禁令——同文件续写的 session
+// （runSessionWait/buildSessionWake）的 AST 级禁令——同文件续写的 session
 // send 合法引用 proto.RoomMsgUser 构造发言、不在 wait 路径；广播帮手名仍是
 // 文件级禁令。结构体字面量键（Mentions: …）不是 SelectorExpr，天然豁免。
 func TestSessionWaitSourceGuard(t *testing.T) {
@@ -332,7 +332,7 @@ func TestSessionCreateCommand(t *testing.T) {
 // --member user:tester 下两条消息的会话 Unread=2、另一场 0 + --json 每行可
 // Unmarshal 回 proto.SessionSummary（冻结 DTO roundtrip，缺陷族 6）且有消息行
 // 键集恰 {id,kind,title,owner,archived,unread,needs_human,last_activity,preview,members}
-//（cards 空 → omitempty 缺键：缺失≠零值分辨）。
+// （cards 空 → omitempty 缺键：缺失≠零值分辨）。
 func TestSessionListColumnsAndUnread(t *testing.T) {
 	dir := t.TempDir()
 	svc, _, _, idA, _ := mustSendFixture(t, dir, "对账场A")
@@ -492,7 +492,7 @@ func TestSessionDetailThreeSections(t *testing.T) {
 }
 
 // TestSessionJoinLifecycle 锁：join 成功 {"ok":true} + 同会话重复 join 幂等 0
-//（契约条 10）+ 已属他会话非 0 且含「已属会话」（ErrBadState 文案）+ 不存在卡/
+// （契约条 10）+ 已属他会话非 0 且含「已属会话」（ErrBadState 文案）+ 不存在卡/
 // 会话非 0。
 func TestSessionJoinLifecycle(t *testing.T) {
 	dir := t.TempDir()
@@ -621,7 +621,7 @@ func TestSessionSendNegativePaths(t *testing.T) {
 }
 
 // TestSessionArchiveCommand 锁：archive 成功 {"ok":true} + 重复归档幂等 0
-//（契约条 6，Store 级短路）+ 详情 archived=true + 不存在会话非 0 且含 id。
+// （契约条 6，Store 级短路）+ 详情 archived=true + 不存在会话非 0 且含 id。
 func TestSessionArchiveCommand(t *testing.T) {
 	dir := t.TempDir()
 	_, _, _, sessionID, _ := mustSendFixture(t, dir, "归档场")
@@ -655,7 +655,7 @@ func TestSessionArchiveCommand(t *testing.T) {
 // —— B365：wait --follow 常驻形态 + send --reply-to 发送半边 ——
 
 // syncBuffer 是 goroutine 直调 runSessionWait 时并发安全的输出收集器
-//（test 二进制默认开 -race，bytes.Buffer 裸并发必炸）。
+// （test 二进制默认开 -race，bytes.Buffer 裸并发必炸）。
 type syncBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -746,7 +746,7 @@ func TestSessionWaitFollowOutputsEachHit(t *testing.T) {
 }
 
 // TestSessionWaitFollowTimeoutIsIdleNotTotal 锁 follow 下 --timeout 的空闲语义
-//（spec §2.1 字面：任意两命中帧之间的最大间隔）：第二条命中在「总时长」假想
+// （spec §2.1 字面：任意两命中帧之间的最大间隔）：第二条命中在「总时长」假想
 // 死线之后才落账、但仍在第一条命中的空闲窗内——总时长语义（WithTimeout 整体
 // 掐死）下第二条永不输出，空闲语义下两行全出、空闲窗重新计满后才 124。轮询
 // 节奏压到 20ms（sessionWaitPollInterval var 测试缝），收尾还原。
@@ -843,7 +843,7 @@ func TestSessionWaitFollowGracefulExitOnSignal(t *testing.T) {
 
 // TestSessionSendReplyToFlag 锁 send 回复锚发送半边（spec §2.2）：--reply-to
 // 透传 RoomMessage.ReplyTo 落账（payload 含 reply_to 键）；0 与缺省等价
-//（omitempty 不落键）；负值用法错且零落账；端到端——被回复原作者的 wait 收到
+// （omitempty 不落键）；负值用法错且零落账；端到端——被回复原作者的 wait 收到
 // 带 referenced 的唤醒载荷（接收侧 ResolveDelivery 隐式寻址，冻结判定）。
 func TestSessionSendReplyToFlag(t *testing.T) {
 	dir := t.TempDir()

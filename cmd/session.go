@@ -33,10 +33,10 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/logx"
 	"github.com/Xsxdot/handoff/internal/proto"
-	"github.com/Xsxdot/handoff/internal/collab/room"
 )
 
 var sessionCmd = &cobra.Command{

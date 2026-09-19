@@ -66,7 +66,7 @@ const (
 	EvDecisionAnswered   = "decision_answered"
 	EvTaskMirrored       = "task_mirrored"
 	EvWorkflowMigrated   = "workflow_migrated"
-	EvDriverTakeover = "driver_takeover"
+	EvDriverTakeover     = "driver_takeover"
 	// EvDriverSeatBound 协调者初始坐下（B358 补签轮）：空座被原子占为规范
 	// 席位的落账事实，载荷 {to: 席位身份}、actor=席位自称，与
 	// EvDriverTakeover（换绑，{from,to}）配对。会话 timeline 的 seat_bound

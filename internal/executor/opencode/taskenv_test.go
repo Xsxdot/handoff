@@ -388,4 +388,3 @@ func TestWritePermissionConfigRequiresVersion(t *testing.T) {
 		t.Fatal("缺 Version 必须拒绝")
 	}
 }
-
