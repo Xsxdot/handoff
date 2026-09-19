@@ -30,10 +30,17 @@ describe('成员状态渲染词表（看板不说谎的前端半边）', () => {
   it('last_active 且带时间戳渲染相对时间', () => {
     const member = { identity: 'user:sy', kind: 'human', status: 'last_active', last_active: '2026-09-12T00:00:00Z' } as SessionMember
     expect(memberStatusText(member)).toContain('最后活跃')
+    expect(memberStatusText(member)).not.toContain('未记录')
   })
-  it('last_active 无时间戳回落纯标签', () => {
+  // B385：Go 零值（协议里表示「无」）不得当有效时间算，否则渲染成「739877 天前」。
+  it('last_active 为零值时间戳渲染未记录，不编天数', () => {
+    const member = { identity: 'agent:commandcode', kind: 'agent', status: 'last_active', last_active: '0001-01-01T00:00:00Z' } as SessionMember
+    expect(memberStatusText(member)).toBe('最后活跃 未记录')
+    expect(memberStatusText(member)).not.toContain('天前')
+  })
+  it('last_active 无时间戳渲染未记录', () => {
     const member = { identity: 'u', kind: 'human', status: 'last_active' } as SessionMember
-    expect(memberStatusText(member)).toBe('最后活跃')
+    expect(memberStatusText(member)).toBe('最后活跃 未记录')
   })
 })
 

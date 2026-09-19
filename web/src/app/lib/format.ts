@@ -17,6 +17,20 @@ export function shortCommit(sha: string): string {
   return sha.length > 8 ? sha.slice(0, 8) : sha
 }
 
+// isUnrecordedTime 判断一个时间字符串是否「没有记录」而不是一个真实读数。
+//
+// 判据来源：Go 的 time.Time 零值（`0001-01-01T00:00:00Z`）在协议里表示**无**——
+// 例如 `proto/sessions.go` 的 `LastActive` 注释逐字写着「零值=无」。零值能被
+// `Date.parse` 解析成功，若当有效值走相对时间，会渲染成「739877 天前」这种
+// **假的精确读数**（比「未记录」更容易被当真，违背本仓「用 0 冒充不知道是在
+// 撒谎」的纪律）。故：解析失败、早于 Unix 纪元（本系统不存在纪元前的活动）
+// 一律视为未记录，由调用方渲染「未记录」而不是编一个天数。
+export function isUnrecordedTime(iso: string | undefined | null): boolean {
+  if (!iso) return true
+  const t = Date.parse(iso)
+  return Number.isNaN(t) || t <= 0
+}
+
 // formatRelative 把 RFC3339 时间换算成「N 秒/分钟/小时/天前」；解析失败回「—」。
 //
 // 参数：

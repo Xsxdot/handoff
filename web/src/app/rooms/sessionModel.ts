@@ -3,7 +3,7 @@
 // （proto 四值词表）与「未知值不白屏」（透传兜底）的前端半边，词表漂移由
 // sessionModel.test 与孪生金样本双侧拦截。
 import type { SessionMember, SessionSummary } from '../../api/rooms'
-import { formatRelative } from '../lib/format'
+import { formatRelative, isUnrecordedTime } from '../lib/format'
 
 // 恰四值（proto.SessionMember* 词表）；listening 生产零载体（B358.2 澄清③），
 // 词表位保留。反例断言：任何值含「在线/online」即红。
@@ -17,9 +17,15 @@ export function memberStatusLabel(status: string): string {
 }
 
 // memberStatusText 成员行的状态文案：last_active 附相对时间（可证实的读数）。
+//
+// 时间缺席、或为 Go 零值（`0001-01-01T00:00:00Z`，协议里表示「无」）时渲染
+// 「未记录」——零值不是「很久以前」，把它算成相对时间会得到「739877 天前」
+// 这种假的精确读数（B385 的现场）。只报可证实的，不知道就说不知道。
 export function memberStatusText(member: SessionMember): string {
-  if (member.status === 'last_active' && member.last_active) {
-    return `最后活跃 ${formatRelative(member.last_active)}`
+  if (member.status === 'last_active') {
+    const at = member.last_active
+    if (!at || isUnrecordedTime(at)) return '最后活跃 未记录'
+    return `最后活跃 ${formatRelative(at)}`
   }
   return memberStatusLabel(member.status)
 }
