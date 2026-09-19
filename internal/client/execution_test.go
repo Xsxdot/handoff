@@ -110,6 +110,17 @@ func TestDispatchOmitsStandardIdempotencyHeaders(t *testing.T) {
 	}
 }
 
+// TestProductionHTTPClientCallersAreGatewayOnly 锁 B233.3 冻结条 25：生产代码不得
+// 自取 `HTTPClient()` 拼请求——**自建第二套 HTTP 栈就绕开了选路**（relay 隧道 vs
+// 直连），relay 机器会退化成 "no Host in request URL"。
+//
+// 白名单的判据（2026-09-19 协调者裁决，卡 B378）：**允许的是「复用同一份传输的
+// 转发路径」，不是「某一类目录」**。agentd 的两条 forward 是服务端转发；mobilecore
+// 的 core.go/proxy.go 是**客户端侧**转发（把对端 agentd 的 HTTP 面经回环反代交给
+// webview），它取的是**共享 Transport**（`Transport: cl.HTTPClient().Transport`），
+// 正是这条判据要保护的对象——移动端没有网关可绕（它就是客户端），自己 new 一个
+// 反而违例。故按文件粒度豁免这两处，其余任何新增取用点（含 mobilecore 新文件）
+// 一律红。mobilecore 侧另有对偶守卫 `TestSessionFileHasNoRawHTTPClient`。
 func TestProductionHTTPClientCallersAreGatewayOnly(t *testing.T) {
 	_, thisFile, _, ok := runtime.Caller(0)
 	if !ok {
@@ -117,8 +128,12 @@ func TestProductionHTTPClientCallersAreGatewayOnly(t *testing.T) {
 	}
 	root := filepath.Clean(filepath.Join(filepath.Dir(thisFile), "../.."))
 	allowed := map[string]bool{
+		// 服务端转发路径（B233.3 原始白名单）
 		"internal/agentd/forward.go":    true,
 		"internal/agentd/forward_ws.go": true,
+		// 客户端侧转发路径（B378 裁决：移动核复用共享 Transport，非另起栈）
+		"internal/mobilecore/core.go":  true,
+		"internal/mobilecore/proxy.go": true,
 	}
 	var unexpected []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, walkErr error) error {
@@ -155,7 +170,9 @@ func TestProductionHTTPClientCallersAreGatewayOnly(t *testing.T) {
 		t.Fatal(err)
 	}
 	if len(unexpected) > 0 {
-		t.Fatalf("生产代码不得再取 HTTPClient 拼请求（网关 forward 除外）: %s", strings.Join(unexpected, ", "))
+		t.Fatalf("生产代码不得自取 HTTPClient 拼请求（只允许复用共享传输的转发路径："+
+			"agentd/forward*.go 服务端 + mobilecore/{core,proxy}.go 客户端侧）: %s",
+			strings.Join(unexpected, ", "))
 	}
 }
 
