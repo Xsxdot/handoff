@@ -54,6 +54,21 @@ func TestComposeEnabledWithEmptyBaseStillInjectsPlatformLayer(t *testing.T) {
 	}
 }
 
+// B383：临时文件口径必须写进平台层。当晚 40+ 张权限工单过半来自执行者硬编码 /tmp
+// （落在权限门作用域之外，每次读写都要人放行）。这条被删掉即视为回归。
+func TestComposeEnabledCarriesTmpdirRule(t *testing.T) {
+	got := Compose(Block{}, true)
+	if !strings.Contains(got.Text, "$TMPDIR") {
+		t.Fatal("平台正文缺少 $TMPDIR 临时文件口径")
+	}
+	// 反例：正文不得把 /tmp 当指定临时目录（只允许以「不要硬编码」的口吻出现）。
+	for _, bad := range []string{"写 /tmp", "用 /tmp", "存到 /tmp"} {
+		if strings.Contains(got.Text, bad) {
+			t.Fatalf("平台正文把 /tmp 当指定临时目录：%q", got.Text)
+		}
+	}
+}
+
 // B229.7：落台账要求已移出平台层（spec 第 80 行），由角色层只对产出型角色承载。
 // 平台层正文出现「台账」即视为有人把该条加了回来，必须红。
 func TestComposeEnabledWithEmptyBaseOmitsLedgerFromPlatformLayer(t *testing.T) {
