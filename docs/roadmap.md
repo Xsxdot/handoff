@@ -913,9 +913,10 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 ## 来自夜班机制体检（2026-09-19）
 
-- **B381 唤醒语义待裁决**：协调者唤醒的正确形态需拍板（tab 存活时「投递/让位」vs 今天「无头续会话」），属契约语义改动。评审给出的方向：可唤醒对象 = 存活 tab 或 coordinate 席位；唤醒动作分层，仅「席位在 + tab 不在 + 人未 attach」才允许无头兜底 resume。见卡 B381 的评审结论。
-- **协调者 TUI 与无头唤醒的写者互斥**：`keystone.Wake` 用 `runner.Resume` 无头续接 coordinate 会话；`AttachActive` 只由 `/attach` 端点写（开 tab 不算 attach）→ 人在 tab 里时两者会双写同一会话。随 B381 一并处置。
-- **席位无清空原语**：`ReleaseCard` 对非空席位直接拒绝、`closeCoordinatorTab` 只 release 名额不写席位 → 席位一旦写下即永久。随 B381 一并处置。
-- **`card coordinate` 的 `woke:true` 是假读数**：`scheddrain.go:299` 在未写席位、未调 Wake 时也返回 `RoundResult{Woke: true}`（HTTP 原样透传）。`proto/scheduling.go` 的该字段被 CLI 与 web 消费，只能新增字段不能改语义。
-- **唤醒失败即丢事件**：准入无位等唤醒失败时 `wakeconsumer` 仍推进游标（`wakeconsumer.go:414-440`）→ 事件静默丢失，与「不许静默」纪律冲突。
+- **B381 唤醒形态（已闭合，2026-09-19）**：用户裁决「协调者不要交互式窗口，print 一次性回合，用 `handoff card` 推流程，要人知道的事发到 IM」；已按此落地（`00bda1f5d`）：内部拉起改 print 回合 + 回合成功落 coordinate 席位 + 名额回合即还 + 删 TUI 路径 + 简报改写。唤醒侧（`resolveWakeCard` → `keystone.Wake` → 续跑）本就正确，此前只是没有对象。
+- **协调者 TUI 与无头唤醒的写者互斥（部分闭合，2026-09-19）**：协调者已改为 print 一次性回合（`00bda1f5d`），不再有「窗口里的会话」与「远程续跑」并存的主要形态；**仍开放**：人在 attach 期间自己开的交互进程与 agentd 的 print 续跑仍可能双写同一会话（`AttachActive` 只堵 agentd 侧）。
+- **席位无清空原语（仍开放）**：`ReleaseCard` 对非空席位直接拒绝、没有清席写点 → print 形态下落下的 coordinate 席位在卡进终态后仍在，同卡再 `card coordinate` 会 409，只能人 `card rebind --self` 让位或走换绑。
+- **`card coordinate` 的假读数（已闭合，2026-09-19）**：`scheddrain.go` 原先在未写席位、未唤醒时返回 `Woke: true`；现改为如实返回（填真实 `session_id`），席位写失败走 409 + `session_id` + `needs_human`。
+- **唤醒失败即丢事件（仍开放）**：准入无位等唤醒失败时 `wakeconsumer` 仍推进游标（`wakeconsumer.go`）→ 事件静默丢失，与「不许静默」纪律冲突。
+- **协调者回合不可取消（仍开放）**：`coordinatorRunner.Launch/Resume` 用 `context.Background()`，`opencode run` 回合（默认上界 30min）无法被 agentd 取消；`card coordinate` 是同步等待。
 - **机制发现卡待排期**：B379（七份历史视图 diff 与基线不一致）、B380（`card wait` 快照缺关单镜像）、B382（review 节点依赖 dispatched 快照）、B383（权限门噪声与往返成本四件）、B384（并发 5 个重上下文任务打爆 linux-01 OOM）。B385（假读数 739877 天前）本轮**已修**（`4ec97de44`）。
