@@ -60,12 +60,29 @@ func newTestClientEnv(t *testing.T) *newTestEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := agentd.NewServer(&config.Config{
+	cfg := &config.Config{
 		Token: testToken, Executor: config.ExecutorConfig{Default: "fake"},
-	}, st, logger)
+	}
+	srv := agentd.NewServer(cfg, st, logger)
+	injectTestManager(t, srv, st, cfg, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &newTestEnv{srv: srv, ts: ts, st: st, home: home, token: testToken}
+}
+
+// injectTestManager 给测试 server 挂真实编排实现（生产同款依赖，见 cmd/agentd.go:236）。
+//
+// B233.28 起任务读路径与 byTask 中间件走 s.mgr，未注入即 503 fail-closed；
+// 本包所有 httptest server 都必须走这里，否则用例整体 503。
+// hub 取 server 自己那个（应答唤醒要落在同一 hub 上）；ads 留空：本包用例不驱动
+// 真实执行者，中继失败因「执行者未注册」确定可判。
+func injectTestManager(t *testing.T, srv *agentd.Server, st *store.Store, cfg *config.Config, logger *slog.Logger) {
+	t.Helper()
+	gate, err := permgate.New(nil, logger)
+	if err != nil {
+		t.Fatalf("permgate.New: %v", err)
+	}
+	srv.SetManager(orchestration.NewManager(st, srv.Hub(), nil, cfg, nil, nil, gate, logger))
 }
 
 // createPendingTask 预置一个 pending 任务并返回其 ID。
@@ -307,7 +324,9 @@ func TestWaitEventReconnect(t *testing.T) {
 	// 先占一个固定地址，起第一台 server
 	ln := newTrackListener(t)
 	addr := "http://" + ln.Addr().String()
-	srv1 := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	cfg := &config.Config{Token: testToken}
+	srv1 := agentd.NewServer(cfg, st, logger)
+	injectTestManager(t, srv1, st, cfg, logger)
 	hs1 := &http.Server{Handler: srv1.Handler()}
 	done1 := make(chan struct{})
 	go func() {
@@ -339,7 +358,8 @@ func TestWaitEventReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("同地址重启 Listen: %v", err)
 	}
-	srv2 := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	srv2 := agentd.NewServer(cfg, st, logger)
+	injectTestManager(t, srv2, st, cfg, logger)
 	hs2 := &http.Server{Handler: srv2.Handler()}
 	go hs2.Serve(ln2)
 	t.Cleanup(func() { hs2.Close() })
@@ -456,8 +476,8 @@ func TestReplyRelayFailureSurfacesReason(t *testing.T) {
 		t.Fatalf("CreateTicket: %v", err)
 	}
 
-	// 未注入 manager（agentd bootstrap 窗口语义）：回答落库后无等待者、
-	// 无中继落点 → 502 + reason
+	// B233.28 后回复走编排门面：已注入 manager、无人等待应答 → 走 RelayAnswer
+	// 自愈中继；本夹具不注册执行者，中继必失败 → 502 + reason（原因确定可判）。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := client.New(env.ts.URL, env.token).Reply(ctx, taskID, "tk-1", "allow")
@@ -467,7 +487,7 @@ func TestReplyRelayFailureSurfacesReason(t *testing.T) {
 	if !strings.Contains(err.Error(), "502") {
 		t.Fatalf("错误应含 502 状态码（非 2xx 才让 CLI 非零退出）, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "manager 未注入") {
+	if !strings.Contains(err.Error(), "未注册") {
 		t.Fatalf("错误应含中继失败原因（响应体并入错误信息）, got: %v", err)
 	}
 }
