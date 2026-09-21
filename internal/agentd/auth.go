@@ -43,8 +43,13 @@ const (
 //
 // session 非空 = 由浏览器会话鉴权通过，值为会话 id；
 // session 为空 = 由主令牌（Bearer，即 CLI）鉴权通过。
+//
+// device 是登录会话登记的设备名（B358.9 端戳来源）：控制台发言落款用。它只做
+// 落款，不参与任何判定；主令牌身份（无登录会话）恒为空串——端戳缺失不拦门。
+// 在鉴权时随会话行一次读出，不再二次查库（无新增调用边）。
 type identity struct {
 	session string
+	device  string
 }
 
 // identityKey 是 identity 在 request context 中的键类型。

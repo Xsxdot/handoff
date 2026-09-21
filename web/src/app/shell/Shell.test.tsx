@@ -10,12 +10,13 @@
 // 注意：本文件依赖 Task 12-15 的组件（BoardOverlay / TicketsOverlay /
 // useGlobalTickets / SettingsPage），在那些任务落地前无法运行，属预期的全期红。
 import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
+import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
-import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import { coordinatorBase } from './Shell'
 import type { ProjectTreeResp, Task } from '../../api/types'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
 vi.mock('../../api/client', async () => {
   const actual = await vi.importActual<typeof import('../../api/client')>('../../api/client')
@@ -36,6 +37,7 @@ vi.mock('../../api/client', async () => {
 })
 const { fetchTasks, fetchProjectTree, fetchWorkspaceDir, fetchWorkspaceFile, fetchTaskDetail, fetchTaskDiff, fetchPtySessions, fetchWorkbenchState, fetchMachines, deletePtySession, createPtySession, ApiError } = await import('../../api/client')
 const { fetchLedgerHealth } = await import('../../api/ledger')
+const { fetchSessions } = await import('../../api/rooms')
 
 vi.mock('../../api/ledger', async () => {
   const actual = await vi.importActual<typeof import('../../api/ledger')>('../../api/ledger')
@@ -46,15 +48,21 @@ vi.mock('../../api/ledger', async () => {
   }
 })
 // —— B156.2 C8 追加：房间面路由与 dock 入口（seam 贯穿——点击/挂载最终到达 rooms API）——
+// B358.6：会话面经同一 rooms seam 进壳，fetchSessions/createSession/fetchSessionDetail 一并入桩。
 vi.mock('../../api/rooms', async () => {
   const actual = await vi.importActual<typeof import('../../api/rooms')>('../../api/rooms')
   return {
     ...actual,
-    fetchRooms: vi.fn().mockResolvedValue([]),
+    fetchRooms: vi.fn().mockResolvedValue({ rooms: [], has_more: false }),
     fetchInbox: vi.fn().mockResolvedValue([]),
     fetchRoomMessages: vi.fn().mockResolvedValue([]),
     markRoomRead: vi.fn().mockResolvedValue({ ok: true }),
     sendRoomMessage: vi.fn().mockResolvedValue({ seq: 1 }),
+    fetchSessions: vi.fn().mockResolvedValue([]),
+    fetchSessionDetail: vi.fn().mockResolvedValue(null),
+    createSession: vi.fn(),
+    addSessionMember: vi.fn().mockResolvedValue({ ok: true }),
+    fetchIdentity: vi.fn().mockResolvedValue({ member: 'user:sycm', device: '', configured: true }),
   }
 })
 // xterm 要量真实字体尺寸，jsdom 给不了。整体替身（照 TerminalTab.test.tsx）：
@@ -183,7 +191,16 @@ beforeAll(() => {
   } as unknown as typeof ResizeObserver
 })
 
+afterEach(() => {
+  // 紧凑视口用例会改写 innerWidth；每个用例后复位成 jsdom 默认（桌面档），
+  // 否则后面的桌面断言会被上一个用例污染（用例顺序耦合是隐性假绿）。
+  Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true, writable: true })
+})
+
 beforeEach(() => {
+  // 新建会话 owner 记忆是 localStorage 级状态：不清则上一个建会话用例的记忆
+  // 会预填进下一个对话框，user.type 变成追加（走查 09-17 修后回退链的连带）。
+  window.localStorage.clear()
   vi.mocked(fetchTasks).mockResolvedValue([t1])
   vi.mocked(fetchProjectTree).mockResolvedValue(tree)
   vi.mocked(fetchWorkspaceDir).mockResolvedValue({ entries: [{ name: 'go.mod', is_dir: false, size: 5 }] })
@@ -354,11 +371,12 @@ describe('Shell 三栏外框', () => {
     // 左栏已打开行与顶部 chrome 同名：任务原名（不再显示 TUI · T1）
     await waitFor(() => expect(sidebar.getAllByText('重构工单通道').length).toBeGreaterThanOrEqual(1))
     // 2 = 初始空组「组 1」+ 任务的组（基线语义：空组也渲染标签）
-    expect(screen.getAllByRole('tab')).toHaveLength(2)
+    expect(within(screen.getByRole('tablist', { name: '标签组' })).getAllByRole('tab')).toHaveLength(2)
     // 已打开行已带 aria-current（焦点态），点击后仍是聚焦且不新增
     fireEvent.click(sidebar.getAllByText('重构工单通道')[0])
     await waitFor(() => expect(screen.getByRole('tab', { name: /重构工单通道/ })).toHaveAttribute('aria-selected', 'true'))
-    expect(screen.getAllByRole('tab')).toHaveLength(2)
+    // B358.6：左栏新增「会话|任务」tab 行（role=tab），计数收窄到中央标签组
+    expect(within(screen.getByRole('tablist', { name: '标签组' })).getAllByRole('tab')).toHaveLength(2)
   })
 
   it('左栏任务的 DataTransfer 穿过 Shell 到同一组的中央分屏并保留项目机器', async () => {
@@ -414,7 +432,8 @@ describe('Shell 三栏外框', () => {
     setPaneRect(target)
     dropAt(target, dataTransfer)
     await waitFor(() => expect(screen.getByText('aim · linux-01')).toBeInTheDocument())
-    expect(screen.getAllByRole('tab')).toHaveLength(2)
+    // B358.6：左栏新增 tab 行，计数收窄到中央标签组
+    expect(within(screen.getByRole('tablist', { name: '标签组' })).getAllByRole('tab')).toHaveLength(2)
   })
 
   it('左栏机器与目录的真实 DataTransfer 穿过 WorkbenchPage，终端 cwd 保留来源', async () => {
@@ -604,7 +623,8 @@ describe('Shell 三栏外框', () => {
     const ev = new KeyboardEvent('keydown', { key: 'd', ctrlKey: true, bubbles: true, cancelable: true })
     window.dispatchEvent(ev)
 
-    await waitFor(() => expect(screen.getAllByRole('tablist')).toHaveLength(1))
+    // B358.6：左栏新增 tab 行自带 tablist，断言收窄到 main（中央）内
+    await waitFor(() => expect(within(screen.getByRole('main')).getAllByRole('tablist')).toHaveLength(1))
     expect(ev.defaultPrevented).toBe(false)
   })
 
@@ -1004,40 +1024,231 @@ describe('会话已经不在时弹层要说实话', () => {
   })
 })
 
-describe('统一房间面板挂载', () => {
-  it('/cards 将 RoomPanel 作为右侧常驻 sibling 挂载', async () => {
-    renderShell('/cards')
-    expect(await screen.findByTestId('room-panel')).toBeInTheDocument()
+// —— B361 会话 IA（B358.6）：左栏两 tab + 会话工作台 tab + 移除反例断言 ——
+const sessionSummary = (over: Record<string, unknown> = {}) => ({
+  id: 'session:1', kind: 'session', title: '架构物理化', owner: 'user:sy',
+  archived: false, unread: 0, needs_human: false, last_activity: '2026-09-12T00:00:00Z',
+  ...over,
+})
+
+describe('B361 会话 IA', () => {
+  it('左栏两 tab 点击切换：会话 tab 显列表（默认），任务 tab 显项目树且双挂载不卸载', async () => {
+    // 徽章读数需要非空会话流：本支显式给 unread=2（默认桩是空列表）
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary({ unread: 2 })] as never)
+    renderShell()
+    expect(await screen.findByTestId('session-list')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('tab', { name: /任务/ }))
+    expect(await screen.findByText('handoff')).toBeInTheDocument()
+    // 双挂载：切到任务 tab 后会话 pane 仍在文档里，仅以 hidden class 隐藏
+    // （attribute 版 hidden 会被 role/text 查询判不可达，见台账 Task 4 实证）
+    expect(screen.getByTestId('session-list').closest('.hidden')).not.toBeNull()
+    fireEvent.click(screen.getByRole('tab', { name: /会话/ }))
+    expect(screen.getByTestId('session-list').closest('.hidden')).toBeNull()
+    expect(screen.getByTestId('sidebar-unread')).toBeInTheDocument()
   })
 
-  it('/cards 房间栏父级带 min-h-0，高度约束不断', async () => {
-    renderShell('/cards')
-    const panel = await screen.findByTestId('room-panel')
-    expect(panel.className).toMatch(/min-h-0/)
-    expect(panel.parentElement?.className).toMatch(/min-h-0/)
+  it('账本关闭时不渲染会话 tab（与旧房间面同门控）', async () => {
+    vi.mocked(fetchLedgerHealth).mockResolvedValueOnce({ enabled: false, mirror: [] })
+    renderShell()
+    await waitFor(() => expect(screen.queryByRole('tab', { name: /会话/ })).toBeNull())
   })
 
-  it('/cards 的 main 与常驻栏切断固有宽，文档不能被工作台撑出横向滚动', async () => {
-    renderShell('/cards')
-    const panel = await screen.findByTestId('room-panel')
-    expect(panel.className).toMatch(/overflow-hidden/)
-    const main = panel.previousElementSibling
-    expect(main?.tagName).toBe('MAIN')
-    expect(main?.className).toMatch(/min-w-0/)
-    expect(main?.className).toMatch(/overflow-hidden/)
-    const shell = panel.closest('.h-dvh')
-    expect(shell?.className).toMatch(/overflow-hidden/)
+  it('会话行开成工作台 tab（组标签=会话 · 标题），可多开；面包屑跟会话 tab', async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([
+      sessionSummary(),
+      sessionSummary({ id: 'session:2', title: '桌面端体验' }),
+    ] as never)
+    const user = userEvent.setup()
+    renderShell()
+    // 两行会话使 session-row 非唯一：findAllBy 等行渲染完成（依赖 fetchSessions
+    // 落数，偶发晚于列表容器挂载——2026-09-12 偶发红根因），再按下标点行
+    const rows = await screen.findAllByTestId('session-row')
+    await user.click(rows[0])
+    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
+    await user.click(screen.getAllByTestId('session-row')[1])
+    expect(screen.getByRole('tab', { name: /桌面端体验/ })).toBeInTheDocument()
+    // 同一会话重复点击只聚焦不开新 tab（dedupKey 全局去重）
+    await user.click(screen.getAllByTestId('session-row')[0])
+    expect(within(screen.getByRole('tablist', { name: '标签组' })).getAllByRole('tab', { name: /架构物理化/ })).toHaveLength(1)
+    // 面包屑随工作台外壳恢复：焦点是会话 tab 时面包屑行仍在。已知缺口（台账
+    // Task 4）：breadcrumbSegments 对 kind==='home' 硬编码单段，会话基准
+    // （plan §2.4 kind:'home'）的内容名 tail 被吞——「第三段=会话标题」需
+    // Breadcrumb.tsx 一行修复（越界文件，归协调者裁决，本卡不动）。
+    expect(screen.getByLabelText('当前位置')).toBeInTheDocument()
   })
 
-  it('其它页面显示浮动房间入口，旧 rooms/inbox 页面不再由路由渲染', async () => {
+  it('左栏会话行的 DataTransfer 穿过 Shell 投到工作台窗格右缘分屏（B358.8 #1）', async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
+    renderShell()
+    const row = await screen.findByTestId('session-row')
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [] as string[],
+      setData: (type: string, value: string) => {
+        values.set(type, value)
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type)
+      },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    fireEvent.dragStart(row, { dataTransfer })
+    expect(dataTransfer.types).toContain(DRAG_SESSION_MIME)
+    expect(JSON.parse(values.get(DRAG_SESSION_MIME)!)).toMatchObject({ sessionId: 'session:1', title: '架构物理化' })
+
+    const target = screen.getAllByTestId('workbench-pane')[0]
+    setPaneRect(target)
+    dropAt(target, dataTransfer, 360, 200)
+    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
+    expect(within(screen.getByRole('tablist', { name: '标签组' })).getAllByRole('tab', { name: /架构物理化/ })).toHaveLength(1)
+  })
+
+  it('反例断言：旧房间面板任何形态都不再出现', async () => {
+    renderShell('/cards')
+    await screen.findByTestId('session-list')
+    expect(screen.queryByTestId('room-panel')).toBeNull()
+    expect(screen.queryByRole('button', { name: '打开房间面板' })).toBeNull()
+    expect(screen.queryByTestId('room-panel-corner')).toBeNull()
     renderShell('/settings')
-    expect(await screen.findByRole('button', { name: '打开房间面板' })).toBeInTheDocument()
-
-    renderShell('/rooms')
-    await waitFor(() => expect(screen.queryByTestId('room-list')).not.toBeInTheDocument())
-    expect(screen.queryByText('待回复收件箱')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: '打开房间面板' })).toBeNull()
   })
 
+  it('新建会话：对话框只有标题，createSession 只收标题并刷新列表（B358.9 反例：无群主输入）', async () => {
+    const { createSession } = await import('../../api/rooms')
+    vi.mocked(createSession).mockResolvedValue({ id: 'session:9', title: '新场', owner: 'user:sycm', archived: false, created_at: '', updated_at: '' })
+    vi.mocked(fetchSessions).mockResolvedValue([] as never)
+    const user = userEvent.setup()
+    renderShell()
+    await user.click(await screen.findByRole('button', { name: '新建会话' }))
+    expect(screen.queryByRole('combobox', { name: '群主身份' })).toBeNull()
+    await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    await waitFor(() => expect(createSession).toHaveBeenCalledWith('新场'))
+    // 不再有 owner 记忆（B358.9：owner 服务端按解析人名缺省）
+    expect(window.localStorage.getItem('handoff.last-session-owner')).toBeNull()
+  })
+
+  it('建会话后不调用 addSessionMember：owner 缺省即创建者入列，补员冗余（B358.9）', async () => {
+    const { addSessionMember, createSession } = await import('../../api/rooms')
+    vi.mocked(createSession).mockResolvedValue({ id: 'session:9', title: '新场', owner: 'user:sycm', archived: false, created_at: '', updated_at: '' })
+    vi.mocked(fetchSessions).mockResolvedValue([] as never)
+    const user = userEvent.setup()
+    renderShell()
+    await user.click(await screen.findByRole('button', { name: '新建会话' }))
+    await user.type(screen.getByRole('textbox', { name: '会话标题' }), '新场')
+    await user.click(screen.getByRole('button', { name: '创建' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '新建会话' })).toBeNull())
+    expect(addSessionMember).not.toHaveBeenCalled()
+  })
+
+  it('关闭会话 tab（组关闭）后 tabbar 不再含该会话', async () => {
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
+    const user = userEvent.setup()
+    renderShell()
+    await user.click(await screen.findByTestId('session-row'))
+    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
+    // 组关闭钮与窗格头关闭钮同名（「关闭 会话 · 架构物理化」）——收窄到标签组
+    // tablist（读数：TabClose aria-label = '关闭 ' + 组标签，plan 预留裁量区）
+    fireEvent.click(within(screen.getByRole('tablist', { name: '标签组' })).getByRole('button', { name: /关闭 会话 · 架构物理化/ }))
+    await waitFor(() => expect(within(screen.getByRole('tablist', { name: '标签组' })).queryByRole('tab', { name: /架构物理化/ })).toBeNull())
+  })
+})
+
+// —— B369.6 移动断点谱系：紧凑视口底栏四 tab、桌面零漂移、下钻往返 ——
+describe('B369.6 移动断点谱系', () => {
+  it('紧凑视口渲染底栏四 tab、不渲染桌面左栏与右栏文件树', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell()
+    await screen.findByTestId('mobile-home')
+    for (const tab of ['sessions', 'cards', 'projects', 'settings']) {
+      expect(screen.getByTestId(`mobile-tab-${tab}`)).toBeInTheDocument()
+    }
+    expect(screen.queryByRole('complementary', { name: '项目导航' })).toBeNull()
+    expect(screen.queryByText('文件')).toBeNull()
+  })
+
+  it('桌面视口不渲染底栏（既有三栏行为零漂移）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 1440, configurable: true, writable: true })
+    renderShell()
+    await screen.findByText('handoff')
+    expect(screen.queryByTestId('mobile-tabbar')).toBeNull()
+    expect(screen.getByRole('complementary', { name: '项目导航' })).toBeInTheDocument()
+  })
+
+  it('切换底栏 tab 换成对应内容面，工作台仍常驻（不卸载）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell()
+    await screen.findByTestId('mobile-home')
+    fireEvent.click(screen.getByTestId('mobile-tab-projects'))
+    expect(await screen.findByTestId('project-node-p1')).toBeInTheDocument()
+    // 工作台容器仍在 DOM（B280 keep-alive）
+    expect(document.querySelector('[data-testid="workbench-group"]')).not.toBeNull()
+  })
+
+  it('项目 tab → 目录 → 覆盖层；返回条回到底栏首页（下钻往返）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell()
+    fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    // 与桌面 openBranch 同款：机器行点击展开工作树子行；已展开时不要重复点
+    // （ProjectTree 的 toggle 会把它收回去）。
+    if (screen.queryByText('integration/b2-b3') === null) {
+      fireEvent.click(await screen.findByTestId('machine-row'))
+    }
+    fireEvent.click(await screen.findByText('integration/b2-b3'))
+    expect(await screen.findByTestId('mobile-dir')).toBeInTheDocument()
+    fireEvent.click(screen.getByTestId('mobile-dir-back'))
+    await waitFor(() => expect(screen.queryByTestId('mobile-dir')).toBeNull())
+    expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
+  })
+
+  it('点会话进下钻态：底栏首页让开、返回条出现；返回回到底栏首页', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    vi.mocked(fetchSessions).mockResolvedValue([sessionSummary()] as never)
+    renderShell()
+    fireEvent.click(await screen.findByTestId('session-row'))
+    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+    // 下钻态：底栏首页整层让开，工作台仍在 DOM（keep-alive）
+    expect(screen.queryByTestId('mobile-home')).toBeNull()
+    expect(document.querySelector('[data-testid="workbench-group"]')).not.toBeNull()
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    expect(await screen.findByTestId('mobile-home')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
+  })
+
+  it('移动「项目」tab：不可达位置标已断开且不渲染其目录内容（不降级只读）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    // 本机位置有一个可展开的工作树（证明树可用），另加一台远端位置探测失败：
+    // probe_error 非空即 CONTEXT「项目位置不可用」——只标状态、不渲染缓存内容。
+    vi.mocked(fetchProjectTree).mockResolvedValue({
+      ...tree,
+      machines: [],
+      projects: [{
+        ...tree.projects[0],
+        locations: [
+          ...tree.projects[0].locations,
+          {
+            machine: 'devbox', name: 'handoff', path: '/srv/handoff',
+            probe_error: 'dial tcp 10.0.0.8:7777: connect: connection refused',
+            workspaces: [{ path: '/srv/handoff/wt', branch: '离线分支', head: 'abc1234', is_main: false, managed: true, created_at: '' }],
+          },
+        ],
+      }],
+    })
+    renderShell()
+    fireEvent.click(await screen.findByTestId('mobile-tab-projects'))
+    // 离线机器行保持可见并标「已断开」——不静默少一台（CONTEXT「项目位置不可用」）。
+    expect(await screen.findByText('已断开')).toBeInTheDocument()
+    // 反例锁：离线位置的目录内容一格都不渲染（不降级只读、不摆缓存快照）。
+    expect(screen.queryByText('离线分支')).toBeNull()
+    // 位置不可用时该机器行不可展开（onClick 为 undefined）；本机行仍可展开。
+    const offlineRow = screen.getAllByTestId('machine-row').find((row) => row.getAttribute('aria-disabled') === 'true')
+    expect(offlineRow).toBeDefined()
+    expect(offlineRow?.getAttribute('aria-expanded')).toBeNull()
+  })
+})
+
+// —— 原「统一房间面板挂载」节内与房间面无关的回归支（B358.6 迁移保留）——
+describe('Shell 杂项回归', () => {
   it('Shell 不再挂更新提示组件', async () => {
     renderShell('/settings')
     await waitFor(() => expect(screen.queryByTestId('update-toasts')).not.toBeInTheDocument())

@@ -42,6 +42,7 @@ func TestSkillInstallReportsEverySite(t *testing.T) {
 	os.MkdirAll(filepath.Join(home, ".claude"), 0o755)
 	t.Setenv("HOME", home)
 	SetSkillContent("测试内容")
+	SetPluginContent("plugin-src")
 
 	out, err := runSkill(t, "install")
 	if err != nil {
@@ -60,7 +61,7 @@ func TestSkillReportsStale(t *testing.T) {
 	os.MkdirAll(filepath.Join(home, ".grok"), 0o755)
 	t.Setenv("HOME", home)
 	SetSkillContent("新内容")
-	skill.Install("新内容", home)
+	skill.Install("新内容", home, defaultSkillProviders(nil))
 	p := filepath.Join(home, ".grok", "skills", "handoff")
 	os.RemoveAll(p)
 	os.MkdirAll(p, 0o755)
@@ -72,6 +73,59 @@ func TestSkillReportsStale(t *testing.T) {
 	}
 	if !strings.Contains(out, ".grok") || !strings.Contains(out, "旧") {
 		t.Fatalf("应点名 .grok 那处旧了:\n%s", out)
+	}
+}
+
+// TestSkillInstallWritesOpenCodePlugin：有 OpenCode 配置目录时，install 必须
+// 把插件落到自动加载路径，且不得造 opencode.json。
+func TestSkillInstallWritesOpenCodePlugin(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	SetSkillContent("测试内容")
+	SetPluginContent("plugin-src-v1")
+
+	out, err := runSkill(t, "install")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "handoff-monitor.ts") {
+		t.Fatalf("输出应含插件落点:\n%s", out)
+	}
+	b, err := os.ReadFile(filepath.Join(home, skill.PluginRelFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "plugin-src-v1" {
+		t.Fatalf("插件内容 = %q", b)
+	}
+	if _, err := os.Stat(filepath.Join(home, ".config", "opencode", "opencode.json")); !os.IsNotExist(err) {
+		t.Fatal("不得改/造 opencode.json")
+	}
+}
+
+// TestSkillReportsStalePlugin：插件与 SKILL.md 是两份内嵌，改坏插件必须点名。
+func TestSkillReportsStalePlugin(t *testing.T) {
+	home := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("HOME", home)
+	SetSkillContent("skill-v1")
+	SetPluginContent("plugin-v2")
+	skill.InstallPlugin("plugin-v1", home)
+
+	out, err := runSkill(t)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "handoff-monitor.ts") || !strings.Contains(out, "旧") {
+		t.Fatalf("应点名插件旧了:\n%s", out)
+	}
+	if !strings.Contains(out, "handoff skill install") {
+		t.Fatalf("插件旧了应提示重新同步:\n%s", out)
 	}
 }
 

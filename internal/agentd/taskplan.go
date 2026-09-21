@@ -40,7 +40,12 @@ func (s *Server) handleTaskPlan(w http.ResponseWriter, r *http.Request) {
 	taskID := r.PathValue("id")
 	s.log.Info("派发指令请求", "method", r.Method, "path", r.URL.Path, "task", taskID)
 
-	task, err := s.st.GetTask(taskID)
+	if s.mgr == nil {
+		s.log.Warn("派发指令请求到达但 manager 未注入", "task", taskID)
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	task, err := s.mgr.GetTask(taskID)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.log.Warn("派发指令请求：任务不存在", "task", taskID)

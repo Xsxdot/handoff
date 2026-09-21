@@ -283,7 +283,7 @@ export function doneTask(id: string): Promise<{ ok: boolean }> {
 }
 
 // stopTask 主动中止任务（POST /api/tasks/{id}/stop）：停 executor、作废挂起
-// 工单、落 failed；worktree_removed 如实反映 managed worktree 是否被删除。
+// 工单、落 failed；成功 Stop 后恒 false，表示现场留存，不是清理失败。
 export function stopTask(id: string): Promise<StopResult> {
   return postJSON<StopResult>(`/api/tasks/${encodeURIComponent(id)}/stop`, {})
 }

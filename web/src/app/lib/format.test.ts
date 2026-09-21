@@ -4,7 +4,7 @@
 // 百分比，没有用量就不显用量，绝不用 0 或 — 占位。
 import { describe, expect, it } from 'vitest'
 
-import { formatCost, formatCumulativeLine, formatDuration, formatExecutorLine, formatTokens } from './format'
+import { formatCost, formatCumulativeLine, formatDuration, formatExecutorLine, formatTokens, isUnrecordedTime } from './format'
 
 describe('formatTokens', () => {
   it('千位以上用 k 缩写并保留一位小数', () => {
@@ -130,5 +130,27 @@ describe('formatDuration', () => {
   })
   it('负数夹到 0：调用方用「缺席」表达未知，不用负数', () => {
     expect(formatDuration(-1)).toBe('0ms')
+  })
+})
+
+// B385：Go 零值（协议里表示「无」，如 proto/sessions.go 的 LastActive 注释「零值=无」）
+// 必须被判成「没有记录」，否则会被相对时间渲染成「739877 天前」这种假的精确读数。
+describe('isUnrecordedTime', () => {
+  it('Go 零值时间戳算未记录', () => {
+    expect(isUnrecordedTime('0001-01-01T00:00:00Z')).toBe(true)
+  })
+  it('缺席与空串算未记录', () => {
+    expect(isUnrecordedTime(undefined)).toBe(true)
+    expect(isUnrecordedTime('')).toBe(true)
+  })
+  it('纪元前的时间算未记录（本系统不存在纪元前的活动）', () => {
+    expect(isUnrecordedTime('1969-12-31T23:59:59Z')).toBe(true)
+  })
+  it('解析不了的值算未记录', () => {
+    expect(isUnrecordedTime('不是时间')).toBe(true)
+  })
+  it('正常时间戳是已记录（不误伤）', () => {
+    expect(isUnrecordedTime('2026-09-12T00:00:00Z')).toBe(false)
+    expect(isUnrecordedTime('1970-01-01T00:00:01Z')).toBe(false)
   })
 })

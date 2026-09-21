@@ -39,6 +39,7 @@ func newRenderServer(t *testing.T, taskID, content string) (*httptest.Server, st
 	mustCreateTask(t, st, &proto.Task{ID: taskID, RepoPath: taskDir, State: proto.TaskStateRunning})
 	cfg := &config.Config{Token: "test", DataDir: dir}
 	s := NewServer(cfg, st, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	newManagerForServer(t, s, nil)
 	ts := testhttp.NewServer(t, s.Handler())
 	return ts, renderPath
 }

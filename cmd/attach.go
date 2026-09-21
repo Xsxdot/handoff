@@ -94,7 +94,7 @@ func sshHostFromTarget(t config.Target) string {
 // 注意：
 //   - target 解析沿用既有规则（显式 --target → 任务自身记录的 target → 本机），
 //     但换算结果只用于选 agentd endpoint，不再用于拼 ssh 命令
-func runAttach(cmd *cobra.Command, cli *client.Client, taskID string) error {
+func runAttach(cmd *cobra.Command, cli client.AttachClient, taskID string) error {
 	ctx := cmd.Context()
 	if ctx == nil {
 		ctx = context.Background() // 裸 cobra 命令（测试）Context() 返回 nil
@@ -124,7 +124,7 @@ func runAttach(cmd *cobra.Command, cli *client.Client, taskID string) error {
 //
 // 非 TTY（stdin 非字符设备，如脚本/管道调用）打印每行建议命令后退出 0，
 // 不进交互——无人值守场景给出可复制的命令即可。
-func pickAttachTask(cmd *cobra.Command, cli *client.Client) error {
+func pickAttachTask(cmd *cobra.Command, cli client.AttachClient) error {
 	tasks, err := cli.ListTasks(cmd.Context())
 	if err != nil {
 		return err

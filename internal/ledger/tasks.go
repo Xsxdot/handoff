@@ -5,6 +5,7 @@ package ledger
 
 import (
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -13,7 +14,11 @@ import (
 // TaskLink card_tasks 一行。JSON tag 服务直接编码账本结构的 CLI；HTTP 详情使用
 // proto 投影并刻意保留 PascalCase 线格式。
 type TaskLink struct {
-	CardID    string    `json:"card_id"`
+	CardID string `json:"card_id"`
+	// Node 是工作流节点名；空值表示非工作流直派或旧挂账。
+	Node string `json:"node,omitempty"`
+	// Attempt 是本次节点尝试的稳定身份；B233.6 约定由派发 task id 形成。
+	Attempt   string    `json:"attempt,omitempty"`
 	Target    string    `json:"target"`
 	TaskID    string    `json:"task_id"`
 	Purpose   string    `json:"purpose"`
@@ -37,11 +42,14 @@ func (s *Store) LinkTask(cardID, target, taskID, purpose, actor string) error {
 	})
 }
 
-// TasksOf 列一张卡挂的全部 task。
+// TasksOf 列一张卡挂的全部 task，并从同卡的最新 dispatched 快照投影
+// workflow Node/Attempt。card_tasks 保持五列兼容形状，旧挂账没有匹配快照
+// 时返回空投影，不从 task id 或 purpose 猜身份。
 func (s *Store) TasksOf(cardID string) ([]TaskLink, error) {
 	rows, err := s.db.Query(s.q(`SELECT card_id, target, task_id, purpose, created_at
 		FROM card_tasks WHERE card_id = ? ORDER BY created_at`), cardID)
 	if err != nil {
+		log().Warn("读挂账失败", "card", cardID, "cause", err)
 		return nil, fmt.Errorf("读挂账: %w", err)
 	}
 	defer rows.Close()
@@ -50,19 +58,26 @@ func (s *Store) TasksOf(cardID string) ([]TaskLink, error) {
 		var link TaskLink
 		var createdAt any
 		if err := rows.Scan(&link.CardID, &link.Target, &link.TaskID, &link.Purpose, &createdAt); err != nil {
+			log().Warn("扫描挂账失败", "card", cardID, "cause", err)
 			return nil, err
 		}
 		link.CreatedAt = toTime(createdAt)
 		out = append(out, link)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		log().Warn("读挂账行失败", "card", cardID, "cause", err)
+		return nil, fmt.Errorf("读挂账行: %w", err)
+	}
+	return s.projectTaskLinks(cardID, out)
 }
 
-// AllTaskLinks 全部挂账行（镜像对账用）。
+// AllTaskLinks 全部挂账行（镜像对账用），并投影每行所属卡的最新
+// dispatched 快照中的 workflow Node/Attempt。
 func (s *Store) AllTaskLinks() ([]TaskLink, error) {
 	rows, err := s.db.Query(`SELECT card_id, target, task_id, purpose, created_at
 		FROM card_tasks ORDER BY target, task_id`)
 	if err != nil {
+		log().Warn("读全部挂账失败", "cause", err)
 		return nil, fmt.Errorf("读全部挂账: %w", err)
 	}
 	defer rows.Close()
@@ -71,12 +86,92 @@ func (s *Store) AllTaskLinks() ([]TaskLink, error) {
 		var link TaskLink
 		var createdAt any
 		if err := rows.Scan(&link.CardID, &link.Target, &link.TaskID, &link.Purpose, &createdAt); err != nil {
+			log().Warn("扫描全部挂账失败", "cause", err)
 			return nil, err
 		}
 		link.CreatedAt = toTime(createdAt)
 		out = append(out, link)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		log().Warn("读全部挂账行失败", "cause", err)
+		return nil, fmt.Errorf("读全部挂账行: %w", err)
+	}
+	return s.projectTaskLinks("", out)
+}
+
+type dispatchProjection struct {
+	Node    string
+	Attempt string
+	Seq     int64
+}
+
+// projectTaskLinks 把 workflow 身份作为读取投影加入 card_tasks 行。
+// 为什么按卡事件逐条取最新快照：card_tasks 是跨机弱引用，不能扩列或把派发
+// 事实复制成第二权威；事件顺序同时保证重试后最新快照会覆盖旧身份。
+func (s *Store) projectTaskLinks(cardID string, links []TaskLink) ([]TaskLink, error) {
+	if len(links) == 0 {
+		return links, nil
+	}
+	query := `SELECT seq, card_id, payload FROM card_events WHERE type = ?`
+	args := []any{EvDispatched}
+	if cardID != "" {
+		query += ` AND card_id = ?`
+		args = append(args, cardID)
+	}
+	query += ` ORDER BY seq ASC`
+	rows, err := s.db.Query(s.q(query), args...)
+	if err != nil {
+		log().Warn("读派发快照投影失败", "card", cardID, "node", "", "attempt", "",
+			"target", "", "task", "", "seq", 0, "type", EvDispatched, "cause", err)
+		return nil, fmt.Errorf("读派发快照投影: %w", err)
+	}
+	defer rows.Close()
+	projections := make(map[string]dispatchProjection)
+	for rows.Next() {
+		var eventSeq int64
+		var eventCard, raw string
+		if err := rows.Scan(&eventSeq, &eventCard, &raw); err != nil {
+			log().Warn("扫描派发快照投影失败", "card", cardID, "node", "", "attempt", "",
+				"target", "", "task", "", "seq", eventSeq, "type", EvDispatched, "cause", err)
+			return nil, fmt.Errorf("扫描派发快照投影: %w", err)
+		}
+		var snapshot DispatchSnapshot
+		if err := json.Unmarshal([]byte(raw), &snapshot); err != nil {
+			log().Warn("派发快照投影解码失败，保留空身份", "card", eventCard,
+				"node", "", "attempt", "", "target", "", "task", "", "seq", eventSeq,
+				"type", EvDispatched, "cause", err)
+			continue
+		}
+		key := eventCard + "\x00" + snapshot.Target + "\x00" + snapshot.TaskID
+		projection := dispatchProjection{Seq: eventSeq}
+		if snapshot.Node != "" && snapshot.Attempt != "" {
+			projection.Node = snapshot.Node
+			projection.Attempt = snapshot.Attempt
+		}
+		projections[key] = projection
+	}
+	if err := rows.Err(); err != nil {
+		log().Warn("读取派发快照投影行失败", "card", cardID, "node", "", "attempt", "",
+			"target", "", "task", "", "seq", 0, "type", EvDispatched, "cause", err)
+		return nil, fmt.Errorf("读派发快照投影: %w", err)
+	}
+	for i := range links {
+		key := links[i].CardID + "\x00" + links[i].Target + "\x00" + links[i].TaskID
+		projection, ok := projections[key]
+		if !ok {
+			log().Debug("挂账没有匹配派发快照，保留空身份", "card", links[i].CardID,
+				"node", links[i].Node, "attempt", links[i].Attempt, "target", links[i].Target,
+				"task", links[i].TaskID, "seq", 0, "type", EvDispatched)
+			continue
+		}
+		links[i].Node = projection.Node
+		links[i].Attempt = projection.Attempt
+		log().Debug("挂账派发身份投影完成", "card", links[i].CardID, "node", links[i].Node,
+			"attempt", links[i].Attempt, "target", links[i].Target, "task", links[i].TaskID,
+			"seq", projection.Seq, "type", EvDispatched)
+	}
+	log().Debug("挂账派发身份投影完成", "card", cardID, "links", len(links))
+	return links, nil
 }
 
 // CardOfTask 反查 task 挂在哪张卡（镜像写入路径的热查询）。

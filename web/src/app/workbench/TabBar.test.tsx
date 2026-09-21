@@ -5,9 +5,9 @@
 import { act, fireEvent, render, renderHook, screen } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 import { TabBar } from './TabBar'
-import { DRAG_GROUP_MIME } from './paneDrop'
+import { DRAG_GROUP_MIME, DRAG_SESSION_MIME } from './paneDrop'
 import { EMPTY_WORKBENCH, createGroup as createGroupLayout, openTab } from './tabs'
-import { useWorkbench, type BaseDir } from './useWorkbench'
+import { useWorkbench, sessionBase, type BaseDir } from './useWorkbench'
 
 const local: BaseDir = { key: '/local', kind: 'workspace', path: '/local', label: 'local', projectName: 'handoff', machine: '' }
 
@@ -78,6 +78,17 @@ describe('TabBar（组标签条）', () => {
     expect(view.container.querySelector('.lucide-terminal')).not.toBeNull()
     expect(view.container.querySelector('.lucide-file-text')).not.toBeNull()
     expect(view.container.querySelector('.lucide-plus')).not.toBeNull()
+  })
+
+  it('session 焦点内容用会话语义图标，不落 default 的 Plus（B358.8 #5 反例）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:1', title: '架构物理化' }, sessionBase('session:1')))
+
+    const view = renderBar(hook.result.current)
+    // 图标位只看 TabIconSlot：组标签内还有 sr-only「新建内容」的 Plus，不算图标位
+    const iconSlot = view.getByRole('tab', { name: /架构物理化/ }).querySelector('span[aria-hidden]')!
+    expect(iconSlot.querySelector('.lucide-messages-square')).not.toBeNull()
+    expect(iconSlot.querySelector('.lucide-plus')).toBeNull()
   })
 
   it('所有标签都有状态面，只有激活组使用深一档药丸色', () => {
@@ -197,5 +208,64 @@ describe('TabBar（组标签条）', () => {
       },
     })
     expect(onMoveGroup).toHaveBeenCalledWith('g1', 'g2', 'center')
+  })
+
+  it('会话 MIME 投到组标签 → onDropSession 携会话源与目标组（B358.8 #1 组内打开）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'file', rel: 'a.ts' }, local))
+    act(() => hook.result.current.addGroup())
+    const onDropSession = vi.fn()
+    const view = render(
+      <TabBar
+        groups={hook.result.current.wb.groups}
+        activeGroupId={hook.result.current.wb.activeGroupId}
+        base={hook.result.current.base}
+        onActivateGroup={vi.fn()}
+        onCloseGroup={vi.fn()}
+        onNew={vi.fn()}
+        onNewGroup={vi.fn()}
+        onMoveGroup={vi.fn()}
+        onDropSession={onDropSession}
+      />,
+    )
+    const target = view.getByRole('tab', { name: '组 2' }).parentElement as HTMLElement
+    fireEvent.drop(target, {
+      clientX: 40,
+      dataTransfer: {
+        types: [DRAG_SESSION_MIME],
+        getData: (key: string) => key === DRAG_SESSION_MIME ? JSON.stringify({ sessionId: 'session:1', title: '架构物理化' }) : '',
+        setData: vi.fn(), effectAllowed: '', dropEffect: '',
+      },
+    })
+    expect(onDropSession).toHaveBeenCalledWith({ sessionId: 'session:1', title: '架构物理化' }, 'g2')
+  })
+
+  it('未传 onDropSession 时会话 MIME 投放被忽略，不触发组移动', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'file', rel: 'a.ts' }, local))
+    act(() => hook.result.current.addGroup())
+    const onMoveGroup = vi.fn()
+    const view = render(
+      <TabBar
+        groups={hook.result.current.wb.groups}
+        activeGroupId={hook.result.current.wb.activeGroupId}
+        base={hook.result.current.base}
+        onActivateGroup={vi.fn()}
+        onCloseGroup={vi.fn()}
+        onNew={vi.fn()}
+        onNewGroup={vi.fn()}
+        onMoveGroup={onMoveGroup}
+      />,
+    )
+    const target = view.getByRole('tab', { name: '组 2' }).parentElement as HTMLElement
+    fireEvent.drop(target, {
+      clientX: 40,
+      dataTransfer: {
+        types: [DRAG_SESSION_MIME],
+        getData: (key: string) => key === DRAG_SESSION_MIME ? JSON.stringify({ sessionId: 'session:1', title: '架构物理化' }) : '',
+        setData: vi.fn(), effectAllowed: '', dropEffect: '',
+      },
+    })
+    expect(onMoveGroup).not.toHaveBeenCalled()
   })
 })

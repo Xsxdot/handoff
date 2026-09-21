@@ -1,83 +1,38 @@
-// 本文件实现项目树：把扁平的位置表折成 project → location → workspace 三层，
-// 并对每个 location 现场探测工作树。
+// 本文件实现项目树的 gateway 消费面：GET /api/projects/tree 端点入口。
 //
 // 职责：
-//   - buildLocalTree：本机那一棵（GET /api/projects/tree）
-//   - handleProjectTree：端点入口，含 ?scope=all 的分流（汇总实现见 projectfanout.go）
+//   - handleProjectTree：端点入口，含 ?scope=all 的分流
 //
 // 边界：
+//   - 树构建与跨机汇总是域逻辑，已随 B233.19 迁往 internal/workspace
+//     （BuildLocalTree / FanoutProjectTree）；本文件只保留 handler 与两处
+//     注入胶水（本机 store 位置表 + target 池适配器）
 //   - 不改 B62 的 GET /api/projects：那条端点返回的就是位置表本身，语义本分。
 //     项目树是另一种表示（嵌套、带探测、可跨机），塞进同一个端点会让一个端点
 //     有两种响应形状，因此另开子路径
 //   - spec §5.3 提到的 “projects?scope=all” 落在**本端点**上：§3 明文
 //     「W3a 不动 /api/projects 那三条」，扁平端点保持单机
-//   - 不写库：树是读出来的，一个字节都不落盘
 package agentd
 
 import (
 	"context"
 	"net/http"
 	"path/filepath"
-	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
-// buildLocalTree 构建本机项目树。
-//
-// 返回：
-//   - 项目树（Projects/Unowned 永不为 nil）
-//   - 错误：只有「位置表都读不出来」才算错误；单个 location 探测失败是数据
-//
-// 注意：
-//   - 同一 project_id 的多行会被合并到一个 ProjectNode 下。本机理论上不可能
-//     出现（project_id 是主键），但代码按可能处理——真出现了就是库被手改过，
-//     此时合并展示比崩掉强
+// buildLocalTree 构建本机项目树，实现见 workspace.BuildLocalTree。
 func (s *Server) buildLocalTree(ctx context.Context) (proto.ProjectTreeResp, error) {
-	start := time.Now()
-	locs, err := s.st.ListProjectLocations()
-	if err != nil {
-		s.log.Error("项目树：查询位置表失败", "cause", err)
-		return proto.ProjectTreeResp{}, err
-	}
-	managedRoot := filepath.Join(s.conf().DataDir, "worktrees")
+	return workspace.BuildLocalTree(ctx, s.st,
+		filepath.Join(s.conf().DataDir, "worktrees"), s.log)
+}
 
-	resp := proto.ProjectTreeResp{Projects: []proto.ProjectNode{}, Unowned: []string{}}
-	byID := map[string]int{} // project_id → resp.Projects 下标
-	broken := 0
-	for _, l := range locs {
-		if l.ProjectID == "" {
-			// 算不出 project_id 的脏行：诚实列出，不吞、也不塞进某个项目里
-			resp.Unowned = append(resp.Unowned, l.Name)
-			continue
-		}
-		ws, probeErr := probeWorkspaces(ctx, l.Path, managedRoot)
-		if probeErr != "" {
-			broken++
-		}
-		node := proto.ProjectLocationNode{
-			Machine:    "", // 本机恒空串，与 tasks.target 的空串语义一致
-			Name:       l.Name,
-			Path:       l.Path,
-			Workspaces: ws,
-			ProbeError: probeErr,
-		}
-		if i, ok := byID[l.ProjectID]; ok {
-			resp.Projects[i].Locations = append(resp.Projects[i].Locations, node)
-			continue
-		}
-		byID[l.ProjectID] = len(resp.Projects)
-		resp.Projects = append(resp.Projects, proto.ProjectNode{
-			ProjectID: l.ProjectID,
-			OriginURL: l.OriginURL,
-			Name:      l.Name, // 取该项目下首条登记的 name
-			Locations: []proto.ProjectLocationNode{node},
-		})
-	}
-	s.log.Info("项目树构建完成", "projects", len(resp.Projects),
-		"locations", len(locs), "broken", broken, "unowned", len(resp.Unowned),
-		"elapsed_ms", time.Since(start).Milliseconds())
-	return resp, nil
+// buildTreeAll 汇总本机与全部 target 的项目树，实现见 workspace.FanoutProjectTree。
+func (s *Server) buildTreeAll(ctx context.Context) proto.ProjectTreeResp {
+	return workspace.FanoutProjectTree(ctx, s.buildLocalTree,
+		NewProjectTreeSource(s.pool), s.log)
 }
 
 // handleProjectTree 处理 GET /api/projects/tree[?scope=all]。

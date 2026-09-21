@@ -51,19 +51,9 @@ func TestIntegrationClientsUseFixtureTransportWrapper(t *testing.T) {
 	}
 }
 
-func TestMirrorPoolClientsUseFixtureTransport(t *testing.T) {
-	body, err := os.ReadFile("mirror_test.go")
-	if err != nil {
-		t.Fatal(err)
-	}
-	text := string(body)
-	if got := strings.Count(text, `pool.For("devbox")`); got != 3 {
-		t.Fatalf("mirror_test.go 中 pool.For(\"devbox\") 次数=%d，期望每个 NewPool 测试先取出 client", got)
-	}
-	if got := strings.Count(text, "testhttp.ConfigureClient(cli.HTTPClient())"); got != 3 {
-		t.Fatalf("mirror_test.go 中 testhttp.ConfigureClient 次数=%d，期望每个池 client 都配置 fixture transport", got)
-	}
-}
+// TestMirrorPoolClientsUseFixtureTransport 已随 mirror_test.go 迁走（B233.19）：
+// 镜像测试整体迁入 internal/workspace 并改用内存 RemoteTaskSource 替身，agentd
+// 侧不再有为镜像构造的 pool client，本守卫失去对象。
 
 func TestSockBufWebsocketClientUsesFixtureTransport(t *testing.T) {
 	body, err := os.ReadFile("ws_regression_round2_test.go")

@@ -15,6 +15,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/store"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // previewUnwired is the Ticket 0 boundary. The route and wire shape are
@@ -156,7 +157,7 @@ func (s *Server) handlePreviewRawWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handlePreviewWS(w http.ResponseWriter, r *http.Request) {
-	if s.previewOwner == nil || s.previewOwner.hub == nil {
+	if s.previewOwner == nil || s.previewOwner.Hub() == nil {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": previewUnwired})
 		return
 	}
@@ -167,7 +168,7 @@ func (s *Server) handlePreviewWS(w http.ResponseWriter, r *http.Request) {
 	}
 	defer conn.CloseNow()
 	ctx := conn.CloseRead(r.Context())
-	ch, cancel := s.previewOwner.hub.Subscribe()
+	ch, cancel := s.previewOwner.Hub().Subscribe()
 	defer cancel()
 	sent := 0
 	for {
@@ -211,11 +212,11 @@ func decodePreviewJSON(r *http.Request, dst any) error {
 
 func (s *Server) writePreviewError(w http.ResponseWriter, operation, id string, err error) {
 	status := http.StatusInternalServerError
-	var inputErr *previewInputError
+	var inputErr *workspace.PreviewInputError
 	switch {
 	case errors.As(err, &inputErr):
 		status = http.StatusBadRequest
-	case errors.Is(err, store.ErrNotFound), errors.Is(err, errPreviewClosed):
+	case errors.Is(err, store.ErrNotFound), errors.Is(err, workspace.ErrPreviewClosed):
 		status = http.StatusNotFound
 	}
 	s.log.Warn("预览操作失败", "operation", operation, "session", id, "status", status, "cause", err)

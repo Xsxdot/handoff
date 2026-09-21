@@ -23,7 +23,10 @@ func TestResumeMissingSession(t *testing.T) {
 }
 
 func TestResumeCold(t *testing.T) {
-	tmpDir := t.TempDir()
+	// shortSockDir 而非 t.TempDir()：Resume 会在 TaskDir 下建裁决 socket
+	// （resume.go 的 perm.sock），t.TempDir 把测试名拼进路径，测试名或 TMPDIR
+	// 一长就触发 newPermServer 的 107 字节守卫（同 perm_test.go shortSockDir 族）。
+	tmpDir := shortSockDir(t)
 	repoDir := t.TempDir()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	ad := New(logger)

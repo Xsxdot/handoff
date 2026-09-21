@@ -284,7 +284,7 @@ terminal:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Approver.Executor != "claude" || cfg.Approver.Model != "haiku" {
+	if len(cfg.Approver.Executor) != 1 || cfg.Approver.Executor[0] != "claude" || cfg.Approver.Model != "haiku" {
 		t.Fatalf("approver 解析错误: %+v", cfg.Approver)
 	}
 	if cfg.Approver.Timeout != 60*time.Second {
@@ -309,7 +309,7 @@ func TestLoadPhase2Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Approver.Executor != "" || cfg.Approver.Timeout != 60*time.Second {
+	if !cfg.Approver.Executor.Empty() || cfg.Approver.Timeout != 60*time.Second {
 		t.Fatalf("approver 默认值错误: %+v", cfg.Approver)
 	}
 	if cfg.Executor.Default != "opencode" || cfg.Terminal.Auto {
@@ -333,6 +333,76 @@ func TestValidateRejectsBadBlacklistRegex(t *testing.T) {
 	os.WriteFile(p, []byte("token: a\napprover:\n  executor: claude\n  blacklist:\n    - \"([\"\n"), 0o600)
 	if _, err := config.Load(p); err == nil {
 		t.Fatalf("非法正则应在启动期被拒绝，而不是运行期 panic")
+	}
+}
+
+// TestLoadApproverExecutorList 钉住 B376 第 2 条：同键 approver.executor
+// 接受 YAML 标量或序列，空仍=关闭审批链。
+func TestLoadApproverExecutorList(t *testing.T) {
+	cases := []struct {
+		name string
+		yaml string
+		want []string
+	}{
+		{"标量单值", "token: a\napprover:\n  executor: codex\n", []string{"codex"}},
+		{"序列多值", "token: a\napprover:\n  executor: [codex, grok]\n  timeout: 30s\n", []string{"codex", "grok"}},
+		{"块序列", "token: a\napprover:\n  executor:\n    - codex\n    - grok\n  timeout: 30s\n", []string{"codex", "grok"}},
+		{"空缺省关闭", "token: a\n", nil},
+		{"显式空标量关闭", "token: a\napprover:\n  executor: \"\"\n", nil},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			p := filepath.Join(t.TempDir(), "config.yaml")
+			if err := os.WriteFile(p, []byte(tc.yaml), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := config.Load(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := []string(cfg.Approver.Executor)
+			if len(got) != len(tc.want) {
+				t.Fatalf("executor = %#v, want %#v", got, tc.want)
+			}
+			for i := range tc.want {
+				if got[i] != tc.want[i] {
+					t.Fatalf("executor = %#v, want %#v", got, tc.want)
+				}
+			}
+		})
+	}
+}
+
+// TestLoadApproverExecutorListRejectsDuplicates 钉住重复候选在启动期被拒。
+//
+// 重复名只会让同一个 OneShot 被绑两次，failover 语义上是自欺——必须在
+// 配置加载期拦住而不是运行期静默去重。
+func TestLoadApproverExecutorListRejectsDuplicates(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(p, []byte("token: a\napprover:\n  executor: [codex, codex]\n  timeout: 30s\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err == nil {
+		t.Fatal("重复候选名应在启动期被拒绝")
+	}
+}
+
+// TestApproverExecutorListRoundTrip 锁序列化边界：标量与序列都经 Save/Load 往返。
+func TestApproverExecutorListRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Defaults()
+	cfg.Approver.Executor = config.ExecutorList{"codex", "grok"}
+	cfg.Approver.Timeout = 30 * time.Second
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := []string(loaded.Approver.Executor)
+	if len(got) != 2 || got[0] != "codex" || got[1] != "grok" {
+		t.Fatalf("roundtrip executor = %#v", got)
 	}
 }
 
@@ -841,5 +911,48 @@ func TestUnknownKeyErrorMentionsProxy(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "proxy") {
 		t.Errorf("错误文本应列出 proxy，实得 %q", err)
+	}
+}
+
+// TestConsoleUserRoundTrip 锁 B358.9 配置键 console_user：
+//   - 非空往返（Load 读回）；
+//   - 空值 omitempty 不写盘（旧版 agentd 不会被新键顶死）；
+//   - 未知键报错的已知键清单含 console_user。
+func TestConsoleUserRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	p := filepath.Join(dir, "config.yaml")
+	cfg := config.Defaults()
+	cfg.ConsoleUser = "sycm"
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	got, err := config.Load(p)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.ConsoleUser != "sycm" {
+		t.Fatalf("console_user 未往返: %q", got.ConsoleUser)
+	}
+	// 空值不写盘：omitempty 硬要求。
+	empty := config.Defaults()
+	emptyPath := filepath.Join(t.TempDir(), "empty.yaml")
+	if err := config.Save(emptyPath, empty); err != nil {
+		t.Fatalf("Save empty: %v", err)
+	}
+	raw, err := os.ReadFile(emptyPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "console_user") {
+		t.Fatalf("空 console_user 不得写盘（omitempty）: %s", raw)
+	}
+	// 已知键清单含 console_user。
+	badPath := filepath.Join(t.TempDir(), "bad.yaml")
+	if err := os.WriteFile(badPath, []byte("nonsense_key: 1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	_, err = config.Load(badPath)
+	if err == nil || !strings.Contains(err.Error(), "console_user") {
+		t.Fatalf("未知键清单应含 console_user: %v", err)
 	}
 }

@@ -19,6 +19,7 @@ export type TabContent =
   | { kind: 'terminal'; seq: number; sessionId?: string; rel?: string; incompatible?: boolean; launcher?: string; initCommand?: string; spawn?: boolean }
   | { kind: 'file'; rel: string; draft?: string; baseSha?: string }
   | { kind: 'tui'; taskId: string }
+  | { kind: 'session'; sessionId: string; title: string }
 
 /** 用户点出来的新终端：挂载时才允许建会话。spawn 是运行时字段，不落盘。 */
 export function spawnTerminalContent(
@@ -96,6 +97,7 @@ export function dedupKey(baseKey: string, content: TabContent): string | null {
     case 'file': return `file:${baseKey}:${content.rel}`
     case 'tui': return `tui:${content.taskId}`
     case 'terminal': return content.sessionId ? `pty:${content.sessionId}` : null
+    case 'session': return `session:${content.sessionId}` // 一会话一 tab，全局去重；title 是显示名不参与去重——会话标题不可改名，无 stale 风险
     case 'blank': return null
   }
 }
@@ -582,6 +584,7 @@ export function tabTitle(content: TabContent, baseLabel: string, taskName?: (tas
       const resolved = taskName?.(content.taskId)
       return resolved ? resolved : `TUI · ${content.taskId.slice(0, 8)}`
     }
+    case 'session': return `会话 · ${content.title}`
     case 'blank': return '新建标签页'
   }
 }

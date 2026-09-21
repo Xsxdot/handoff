@@ -1,7 +1,7 @@
 // agentd 命令测试：HTTP server 超时配置（P1-3）。
 //
 // 覆盖：newAgentdHTTPServer 的四个超时字段全部非零——这是「防 slowloris / 防
-// 半死连接挂起」的配置级守卫；另断言 WriteTimeout ≥ agentd.RunCmdTimeout——
+// 半死连接挂起」的配置级守卫；另断言 WriteTimeout ≥ workspace.RunCmdTimeout——
 // handleTaskRun 同步执行 RunCmd，写超时小于命令执行上限会把长审阅命令掐断
 // （退出码 124 契约无法兑现，见 cmd/agentd.go newAgentdHTTPServer 注释）。
 // http.Server 超时行为本身由 net/http 保证，httptest 用自己的 server 无法覆盖，
@@ -10,17 +10,23 @@ package cmd
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
-	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/executor/grok"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/toolchain"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // 注册表必须认识始终可用的执行者名：dispatch --executor <name> 的路由前提。
@@ -106,12 +112,34 @@ func TestNewAgentdHTTPServerTimeouts(t *testing.T) {
 	if s.WriteTimeout <= 0 {
 		t.Errorf("WriteTimeout 必须非零（响应写入上限），实际 %v", s.WriteTimeout)
 	}
-	if s.WriteTimeout < agentd.RunCmdTimeout {
+	if s.WriteTimeout < workspace.RunCmdTimeout {
 		t.Errorf("WriteTimeout %v 必须 >= run 路由执行上限 %v（否则长审阅命令被掐断）",
-			s.WriteTimeout, agentd.RunCmdTimeout)
+			s.WriteTimeout, workspace.RunCmdTimeout)
 	}
 	if s.IdleTimeout <= 0 {
 		t.Errorf("IdleTimeout 必须非零（keep-alive 空闲回收），实际 %v", s.IdleTimeout)
+	}
+}
+
+// TestB23310AgentdSetsUpLedgerBeforeRecovery 锁住启动组装顺序：恢复路径要求
+// Server.autoLedger 已由 setupLedger 注入；看门狗则必须仍在恢复之后启动。
+func TestB23310AgentdSetsUpLedgerBeforeRecovery(t *testing.T) {
+	source, err := os.ReadFile("agentd.go")
+	if err != nil {
+		t.Fatalf("读取 agentd.go: %v", err)
+	}
+	body := string(source)
+	setup := strings.Index(body, "stopLedger, err := setupLedger(")
+	recover := strings.Index(body, "if err := srv.RecoverOnStartup(")
+	watchdog := strings.Index(body, "go orchestration.RunWatchdog(")
+	if setup < 0 || recover < 0 || watchdog < 0 {
+		t.Fatalf("启动顺序锚点缺失: setup=%d recover=%d watchdog=%d", setup, recover, watchdog)
+	}
+	if setup >= recover {
+		t.Fatalf("setupLedger 必须位于 RecoverOnStartup 之前: setup=%d recover=%d", setup, recover)
+	}
+	if watchdog <= recover {
+		t.Fatalf("RunWatchdog 必须位于 RecoverOnStartup 之后: watchdog=%d recover=%d", watchdog, recover)
 	}
 }
 
@@ -192,4 +220,169 @@ func TestAdaptersForAlwaysAvailableKeepsAll(t *testing.T) {
 			t.Errorf("应注册 %s", name)
 		}
 	}
+}
+
+func TestProductionAdapterReportsMatchBaseline(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ads := adaptersForWithProbe("darwin", log, t.TempDir())
+	for _, name := range []string{"opencode", "claude", "codex", "agy"} {
+		ad, ok := ads[name]
+		if !ok {
+			t.Fatalf("缺少 %s", name)
+		}
+		p, ok := ad.(executor.Provider)
+		if !ok {
+			t.Fatalf("%s 未实现 Provider", name)
+		}
+		got := p.Report()
+		want, err := executor.BaselineReport(name)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got.Harness != want.Harness {
+			t.Fatalf("%s harness = %q", name, got.Harness)
+		}
+		if len(got.Caps) != 5 {
+			t.Fatalf("%s caps = %d", name, len(got.Caps))
+		}
+		for _, cap := range executor.AllCapabilityNames() {
+			if executor.ReportHas(got, cap) != executor.ReportHas(want, cap) {
+				t.Fatalf("%s %s = %v want %v", name, cap, executor.ReportHas(got, cap), executor.ReportHas(want, cap))
+			}
+		}
+		if name == executor.HarnessCodex {
+			var oneshot executor.CapabilityDecl
+			for _, c := range got.Caps {
+				if c.Name == executor.CapOneShot {
+					oneshot = c
+				}
+			}
+			if !containsStr(oneshot.NativeLimits, executor.NativeLimitSandboxReadOnly) ||
+				!containsStr(oneshot.NativeLimits, executor.NativeLimitInvokeExec) {
+				t.Fatalf("codex oneshot limits = %#v", oneshot.NativeLimits)
+			}
+		}
+		if name == executor.HarnessGrok {
+			for _, c := range got.Caps {
+				if c.Name != executor.CapOneShot {
+					continue
+				}
+				for _, lim := range c.NativeLimits {
+					if lim == "effort=low" || lim == executor.EffortLow {
+						t.Fatalf("grok oneshot 不得把 effort=low 编进 NativeLimits: %#v", c.NativeLimits)
+					}
+				}
+			}
+		}
+	}
+	if grokAd, ok := ads["grok"]; ok {
+		p := grokAd.(executor.Provider)
+		if executor.ReportHas(p.Report(), executor.CapCoordination) {
+			t.Fatal("grok 不得声明 coordination")
+		}
+	}
+}
+
+func TestFakeReportIsExecutionOnly(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ads := adaptersForWithProbe("darwin", log, t.TempDir())
+	p, ok := ads["fake"].(executor.Provider)
+	if !ok {
+		t.Fatal("fake 必须实现 Provider，否则 Registry 漏登记")
+	}
+	rep := p.Report()
+	if rep.Harness != "fake" {
+		t.Fatalf("fake harness = %q", rep.Harness)
+	}
+	if !executor.ReportHas(rep, executor.CapExecution) {
+		t.Fatal("fake 必须声明 execution")
+	}
+	for _, cap := range []executor.CapabilityName{
+		executor.CapCoordination, executor.CapOneShot, executor.CapProfile, executor.CapSkills,
+	} {
+		if executor.ReportHas(rep, cap) {
+			t.Fatalf("fake 不得冒充 %s", cap)
+		}
+	}
+}
+
+func TestRegistryGetUnknownListsSupportedHarnesses(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ads := adaptersForWithProbe("darwin", log, t.TempDir())
+	reg := executor.NewRegistry(providersFromAds(ads)...)
+	_, err := reg.Get("gemini")
+	if !errors.Is(err, executor.ErrUnknownHarness) {
+		t.Fatalf("err = %v", err)
+	}
+	msg := err.Error()
+	for _, name := range []string{"opencode", "claude", "grok", "agy", "codex"} {
+		if !strings.Contains(msg, name) {
+			t.Fatalf("未知 harness 错误必须列出 %s: %q", name, msg)
+		}
+	}
+}
+
+func TestRequireClaudeCoordinationIsUnsupported(t *testing.T) {
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	ads := adaptersForWithProbe("darwin", log, t.TempDir())
+	reg := executor.NewRegistry(providersFromAds(ads)...)
+	err := reg.Require(executor.HarnessClaude, executor.CapCoordination)
+	if !errors.Is(err, executor.ErrCapabilityUnsupported) {
+		t.Fatalf("err = %v", err)
+	}
+	want := "harness 不支持该能力: claude 不支持 coordination（禁止静默兜底到另一家）"
+	if err.Error() != want {
+		t.Fatalf("error = %q want %q", err.Error(), want)
+	}
+}
+
+func TestBindApproverOneShotRejectsMissingBinding(t *testing.T) {
+	ap, err := orchestration.NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"missing"}}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bindApproverOneShot(ap, map[string]executor.Adapter{}, []string{"missing"}, slog.Default())
+	if err == nil {
+		t.Fatal("未知执行者必须让审批者绑定失败")
+	}
+	for _, name := range executor.SupportedHarnesses() {
+		if !strings.Contains(err.Error(), name) {
+			t.Fatalf("绑定错误必须列出支持名单 %q，err=%q", name, err)
+		}
+	}
+}
+
+func TestBindApproverOneShotRejectsAdapterWithoutOneShot(t *testing.T) {
+	ap, err := orchestration.NewApprover(config.ApproverConfig{Executor: config.ExecutorList{"fake"}}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = bindApproverOneShot(ap, map[string]executor.Adapter{
+		"fake": &fake.Fake{},
+	}, []string{"fake"}, slog.Default())
+	if err == nil {
+		t.Fatal("未实现 OneShot 的执行者必须让审批者绑定失败")
+	}
+	if !strings.Contains(err.Error(), "fake") || !strings.Contains(err.Error(), executor.HarnessOpenCode) {
+		t.Fatalf("绑定错误必须包含执行者与支持名单，err=%q", err)
+	}
+}
+
+func providersFromAds(ads map[string]executor.Adapter) []executor.Provider {
+	out := make([]executor.Provider, 0, len(ads))
+	for _, ad := range ads {
+		if p, ok := ad.(executor.Provider); ok {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func containsStr(ss []string, w string) bool {
+	for _, s := range ss {
+		if s == w {
+			return true
+		}
+	}
+	return false
 }

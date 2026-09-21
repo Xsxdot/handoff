@@ -39,6 +39,7 @@ type warmState struct {
 //   - 只对 relay 形态的 target 生效
 //   - 单台失败按 1s→60s 指数退避，退避期内跳过该台，不影响其余
 //   - 新增的机器由下一轮扫到；删除的机器自然不再出现在 Names() 里
+//   - 预热成功只说明隧道，不能当成 agentd 可达（冻结 9）。
 func (p *Pool) Warm(ctx context.Context) {
 	p.log.Info("relay 隧道预热循环启动", "tick", p.warmTick.String())
 	states := make(map[string]*warmState)

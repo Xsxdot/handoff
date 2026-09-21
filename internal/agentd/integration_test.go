@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"io"
 	"log/slog"
 	"net/http"
@@ -33,9 +34,12 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/ledger"
+	orchestration "github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/projectid"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/testhttp"
 )
@@ -57,7 +61,7 @@ type integEnv struct {
 	st   *store.Store
 	fake *fake.Fake
 	cli  *client.Client
-	mgr  *agentd.Manager // 供测试直接登记项目（B62：派发必须先登记）
+	mgr  *orchestration.Manager // 供测试直接登记项目（B62：派发必须先登记）
 	// repo 是任务仓库（沙箱里 git init 的干净仓库，Dispatch 的分支准备落在这里）。
 	// repoPID 是它登记后的 project_id（懒登记，首次用时缓存）。
 	repo    string
@@ -95,17 +99,44 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := testhttp.NewServer(t, srv.Handler())
 	f := fake.New(script)
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
+	mgr := orchestration.NewManager(st, srv.Hub(), map[string]executor.Adapter{"fake": f}, cfg, nil, nil, newTestGate(t), logger)
+	mgr.SetWorkspace(workspace.NewCapability())
 	srv.SetManager(mgr)
+	ledgerPath := filepath.Join(t.TempDir(), "ledger.db")
+	led, lerr := ledger.Open(ledgerPath)
+	if lerr != nil {
+		t.Fatalf("打开测试账本: %v", lerr)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	srv.SetLedger(led)
+	svc := agentd.SetupAutomationForTest(t, srv, led)
+	putOnlineCarrierForInteg(t, svc, scheduling.Carrier{
+		Name: "muse", Machine: "local", CLI: "fake",
+		HomeDir: "", Credential: scheduling.CredentialStandalone,
+		MaxConcurrency: 0, Status: scheduling.StatusOnline,
+	})
+	if err := svc.SetDefaultCarrier("muse"); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
 	quiesceOnCleanup(t, st, mgr)
 	return &integEnv{srv: srv, ts: ts, st: st, fake: f, mgr: mgr, cli: newConfiguredClient(t, ts.URL, testToken), repo: newTestRepo(t)}
+}
+
+func putOnlineCarrierForInteg(t *testing.T, svc *scheduling.Service, c scheduling.Carrier) {
+	t.Helper()
+	if err := svc.PutCarrier(c, 0); err != nil {
+		t.Fatalf("登记集成测试载体 %s: %v", c.Name, err)
+	}
+	if _, err := svc.ApplyDetect(c.Name, scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("设置集成测试载体 %s online: %v", c.Name, err)
+	}
 }
 
 // quiesceOnCleanup 让用例结束时先把写方停干净，再让 testing 去删沙箱目录。
 //
 // 为什么非有不可：Manager 没有停机接口，每个任务一条 go m.mediate 协程。用例
 // 返回时仍在 running/waiting_* 的任务，协程还会继续 AppendEvent，而 AppendEvent
-// 的同步钩子（eventFrameHook）会往 DataDir/tasks/<id>/frames.jsonl 追加。
+// 的同步钩子（orchestration.EventFrameHook）会往 DataDir/tasks/<id>/frames.jsonl 追加。
 // DataDir 是 t.TempDir()，testing 收尾时对它 RemoveAll——RemoveAll 刚把某个任务
 // 目录清空、正要 unlink 它时对方又落一个 frames.jsonl，unlinkat 报
 // "directory not empty"，用例被判失败。这条曾以 6% 左右的概率打红
@@ -113,7 +144,7 @@ func newIntegEnvCfg(t *testing.T, script []fake.Step, cfgMut func(*config.Config
 //
 // 调用位置有讲究：t.Cleanup 是 LIFO，这行必须晚于第一次 t.TempDir()（那次注册了
 // 删目录）与 st.Close 的注册，才能拿到「先停写 → 再关库 → 最后删目录」的顺序。
-func quiesceOnCleanup(t *testing.T, st *store.Store, mgr *agentd.Manager) {
+func quiesceOnCleanup(t *testing.T, st *store.Store, mgr *orchestration.Manager) {
 	t.Helper()
 	t.Cleanup(func() {
 		// 先敲掉还活着的任务。Stop 对已是终态的任务会报错，所以先筛一遍；
@@ -164,7 +195,7 @@ func (e *integEnv) registerProject(t *testing.T, repo string) string {
 	}
 	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
 	runGit(t, repo, "remote", "add", "origin", origin)
-	loc, err := e.mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, err := e.mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if err != nil {
 		t.Fatalf("registerProject(%s): %v", repo, err)
 	}
@@ -674,6 +705,14 @@ func TestDispatchUnknownError500(t *testing.T) {
 // PATH）。用于断言 dispatch 失败时响应体携带可读真因而非扁平「派发任务失败」。
 type startFailAdapter struct{}
 
+func (startFailAdapter) Name() string { return "opencode" }
+func (startFailAdapter) Report() executor.CapabilityReport {
+	return executor.CapabilityReport{
+		Harness: "opencode",
+		Caps:    []executor.CapabilityDecl{{Name: executor.CapExecution, Supported: true}},
+	}
+}
+
 func (startFailAdapter) Start(context.Context, executor.StartReq) error {
 	return errors.New(`exec: "tmux": executable file not found in $PATH`)
 }
@@ -707,14 +746,32 @@ func TestDispatchExecutorStartFailureReturnsReason(t *testing.T) {
 	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "opencode"}}
 	srv := agentd.NewServer(cfg, st, logger)
 	ts := testhttp.NewServer(t, srv.Handler())
-	mgr := agentd.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
+	mgr := orchestration.NewManager(st, srv.Hub(), map[string]executor.Adapter{"opencode": startFailAdapter{}}, cfg, nil, nil, newTestGate(t), logger)
+	mgr.SetWorkspace(workspace.NewCapability())
 	srv.SetManager(mgr)
+	led, lerr := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if lerr != nil {
+		t.Fatalf("打开测试账本: %v", lerr)
+	}
+	t.Cleanup(func() { _ = led.Close() })
+	srv.SetLedger(led)
+	svc := agentd.SetupAutomationForTest(t, srv, led)
+	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "opencode",
+		Credential: scheduling.CredentialStandalone}, 0); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
+	if _, err := svc.ApplyDetect("muse", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("预置默认载体上线: %v", err)
+	}
+	if err := svc.SetDefaultCarrier("muse"); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
 
 	repo := newTestRepo(t)
 	// B62：派发必须先登记，登记会落到 store，随后 Dispatch 解析出同一路径
 	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
 	runGit(t, repo, "remote", "add", "origin", origin)
-	loc, rerr := mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, rerr := mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if rerr != nil {
 		t.Fatalf("RegisterProject: %v", rerr)
 	}
@@ -764,8 +821,28 @@ func TestResumeRoute(t *testing.T) {
 		}
 		return false
 	})
-	if hint, _ := payloadMap(t, failedEv)["hint"].(string); !strings.Contains(hint, "resume") {
-		t.Errorf("delivery_failed 事件应告诉协调者该执行 resume，实际 hint=%q", hint)
+	if failedEv == nil {
+		t.Fatal("store 中未找到 delivery_failed 事件")
+	}
+	if !client.WaitDeliveryPolicy(failedEv.Type) {
+		t.Fatalf("delivery_failed 必须穿过 WaitDeliveryPolicy 成为可交付事件，type=%s", failedEv.Type)
+	}
+	var failedPayload struct {
+		TicketID string `json:"ticket_id"`
+		Reason   string `json:"reason"`
+		Hint     string `json:"hint"`
+	}
+	if err := json.Unmarshal(failedEv.Payload, &failedPayload); err != nil {
+		t.Fatalf("解析 store 中 delivery_failed JSON: %v; raw=%s", err, failedEv.Payload)
+	}
+	if failedPayload.TicketID != ticketID {
+		t.Fatalf("delivery_failed ticket_id=%q，want %q; raw=%s", failedPayload.TicketID, ticketID, failedEv.Payload)
+	}
+	if !strings.Contains(failedPayload.Reason, "模拟半死 executor") {
+		t.Fatalf("delivery_failed reason 未保留真实原因=%q; raw=%s", failedPayload.Reason, failedEv.Payload)
+	}
+	if !strings.Contains(failedPayload.Hint, "resume") {
+		t.Errorf("delivery_failed 事件应告诉协调者该执行 resume，实际 hint=%q", failedPayload.Hint)
 	}
 
 	// 卡死现场：工单已被消耗，attach 看不到挂起项

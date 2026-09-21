@@ -26,6 +26,7 @@ func newTestServerWithTask(t *testing.T) (*Server, string) {
 	env := newTestAgentdEnvWithCfg(t,
 		&config.Config{Token: testToken, DataDir: t.TempDir()},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ensureTestManager(t, env)
 	taskID := "t-frames"
 	if err := env.st.CreateTask(&proto.Task{
 		ID: taskID, RepoPath: filepath.Join(env.srv.conf().DataDir, "tasks", taskID),

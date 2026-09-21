@@ -1,0 +1,365 @@
+# B376 implement 台账
+
+基线：`cards/B233.1-charter-7` @ `bcea5c33`（工作树起于 `cards/B376-charter-3`，按 extra 先 `git fetch origin cards/B233.1-charter-7` + `git reset --hard origin/cards/B233.1-charter-7`）。
+
+## 图查询
+
+- `codegraph --repo . summary` / `sym Gate.Judge` / `sym safeCommandID` / `sym Approver.Decide` / `sym Client.Request` 均命中。
+- `codegraph who-calls Gate.Judge`：仅命中 `approval.Authority.Judge`（`internal/approval/authority.go:160`），生产调用方仍以源码为准（`Client.Request` 经 `Hooks.JudgePermission`）。与 spec「图覆盖债」一致，无新增债。
+
+## Task 1 拆段静默 + 白名单补洞
+
+- 先红：`go test ./internal/permgate/ -count=1`。正例全红，原始输出样本：
+  `command "grep a && grep b" verdict = permgate.Verdict{Action:1, Reason:"黑名单未命中", Rule:""}, want AutoAllow safe-command`。
+  Action=1 即 Consult —— 红因是「功能缺失」，不是 typo；反例保持非 AutoAllow。
+- 实现：`splitSilentSegments` / `splitPipeStages` / `silentFields` / `matchSilentSegment` / `compoundSilent` / `matchSilentFields`（单段表抽出复用）；`judgeBash` 在原 `safeCommandID` 未命中后接 `compoundSilent`。白名单仍只认单段，未改 `splitSafeCommand` 吞 `&&`。
+- 绿：`go test ./internal/permgate/ -count=1` → `ok`。
+- 变异自验（均先确认编译通过）：
+  1. `compoundSilent` 循环内 `!ok` → `continue`（全段放行）→ `TestJudgeCompoundNotSilent` 等 4 例红。
+  2. `git branch` 的 `-d/-D/...` 守卫整块删除 → `TestJudgeCompoundNotSilent` 红。
+  3. `hasNonDiscardWriteRedirect` 短接 `if false && ...` → 全绿（该守卫在 `matchSilentFields` 内还有 `echo/printf` 重定向守卫，此变异不改变行为，判为未打中而非测试无牙，改用上面两条唯一守卫）。
+
+## 发现并修复的安全回归（自行发现，非 plan 明列）
+
+- 加 `echo` 进白名单后，`echo "$(rm -rf x)"` 从基线 Consult 变成 AutoAllow（`splitSafeCommand` 引号状态机把引号内当字面量，词元只看得到 echo）。
+- 修法：`hasCommandSubstitution` 独立扫原文拦 `` ` `` 与 `$(`；`matchSilentFields` 入口调用。纯变量展开 `$VAR`/`${VAR}` 不拦（不执行命令，且 `echo "$HOME"` 高频）。
+- 复测：`echo "$(rm -rf x)"` → consult；`grep "$(cat /etc/passwd)" f` → consult（基线此处是 AutoAllow，顺带补上一个既存洞）；``echo `rm -rf x` `` → escalate（黑名单）。
+- 新测试 `TestJudgeCommandSubstitutionNotSilent`；变异短接守卫后红，确认有牙。
+- `echo "$HOME"` → auto_allow（预期）。
+
+## Task 2 executor 列表 + Decide failover
+
+- 先红（编译红，新符号缺席）：`config.ExecutorList` undefined、`BindOneShotFor` undefined、`ApproverDecision.Executor/Attempts` undefined、`approach.Attempts` 等。
+- 实现：`config.ExecutorList`（标量/序列 `UnmarshalYAML`）、`Empty()`、validate 拒绝空串元素与重复名；`Approver.names []string` + `shots map`、`BindOneShotFor`、`Decide` 逐候选循环、`ApproverAttempt`；`bindApproverOneShot` 收 `[]string`，全绑不上启动失败、部分缺失 Warn。
+- 机械替换：19 处 `ApproverConfig{Executor: "x"}` → `config.ExecutorList{"x"}`；`initflow` 单值写回；`manager.go` 用 `!Empty()`；`cmd/init_test.go` 用 `.Empty()`。
+- 绿：`go test ./internal/config/ ./internal/orchestration/ -count=1` → `ok`。
+- 变异自验：
+  1. `attempt.Err == nil` → `attempt.Err == nil && attempt.Decision == "approve"`（干净 escalate 也继续 failover）→ `TestDecideFailoverCleanEscalateDoesNotTryNext` 红。
+  2. config validate 的重复名守卫删除 → `TestLoadApproverExecutorListRejectsDuplicates` 红。
+- 副作用：`decisionLabel` 成死代码，删除（`Decide` 内联 `decision` 计算）。
+
+## Task 3 失败可观测 + 停用理由
+
+- 先红：`approval.Hooks` 缺 `ConsultDisabledReason`、`ConsultDecision` 缺 `Executor/Attempts` 等。
+- 实现：`ConsultDecision` 增 `Executor`/`Attempts []ApproverAttempt`；`consult` 有 Attempts 时每候选各写一条 `approver_decision`（payload 增 `executor`），空 Attempts 保持单条；`Request` 在 Escalate 前用 `ConsultDisabledReason` 改写理由；`Manager.consultDisabledReason` 停用时返回「审批链已停用（连续 3 次失败）」；`bindApproval` 绑钩子并投影 Attempts。
+- 绿：`go test ./internal/approval/ ./internal/orchestration/ -count=1` → `ok`。
+- 变异自验：
+  1. `Request` 的停用理由改写整块短接 `if false && ...` → `TestClientDisabledEscalatesWithDisabledReason` 红。
+  2. `dec.Attempts` 改 `dec.Attempts[:1]`（只写第一条）→ `TestClientConsultWritesAttemptEvents` 红。
+- 序列化边界：attempt 事件从 Store 反序列化后断言 `executor` 非空（穿真实 JSON）。
+
+## 收尾检查
+
+- `go build ./...` → 通过。
+- `go vet ./...` → 无输出。
+- `gofmt -l` 触及文件 → 无输出（`cmd/room_test.go`、`cmd/session.go`、`cmd/session_test.go` 的格式债为基线既有，未触碰）。
+- 触及包测试：`permgate` / `config` / `orchestration` / `approval` / `initflow` 全绿。
+- 全 test 包编译：`go test ./... -run '^$' -count=1` 无编译失败。
+- 已知基线红：`cmd.TestRepoContractGate`（graph dead-contract，`d_transport→d_ledger`），`git stash` 后在基线同样红，与本卡无关。
+
+## 提交
+
+提交当时的命令与原始输出（历史读数；本条随同批 amend 收进）：
+
+```
+$ git commit -m "feat(B376): 权限门降噪——复合只读拆段静默 + 审批者 failover + 停用可观测 ..."
+[cards/B376-charter-3 c02e642d] feat(B376): 权限门降噪——复合只读拆段静默 + 审批者 failover + 停用可观测
+ 19 files changed, 1156 insertions(+), 142 deletions(-)
+ create mode 100644 docs/superpowers/ledgers/2026-09-17-b376-implement-ledger.md
+$ git status --short
+（空）
+```
+
+amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
+
+## 复审修复轮（review fail 三项 major）
+
+上一轮 review fail 指出三项 major + 一项 minor，逐项处置：
+
+1. **sed -i 后缀绕过**：`sed -n -i.bak` / `-i'.bak'` / `--in-place=.bak` / `-ni.bak`
+   仍 AutoAllow。先写反例进 `TestJudgeCompoundNotSilent`，红：
+   `compound non-readonly "sed -n -i.bak 's/a/b/' f" was auto-allowed`。
+   实装 `hasSedInPlace`：短选项簇按字母扫 `i`、`--in-place` 前缀匹配。绿。
+   变异（`!hasSedInPlace` → `!false`，命中唯一）→ 该反例红，确认有牙。
+2. **rg --pre 执行型标志**：`rg --pre '...'` / `--pre=...` 仍 AutoAllow（拉起任意程序）。
+   反例红后实装 `hasRGExecuteFlag`；`--pre-glob` 非执行仍静默（正例）。变异后红。
+3. **git branch -M/-C 强制改名**：`-M`/`-C` 原整词表遗漏。实装 `hasGitBranchMutator`：
+   短选项簇字母扫、长选项前缀匹配（`--move=` 亦中）。变异后红。
+
+**本轮自行发现的第 4 项回归（比 minor 更重）**：`cd` 静默段让后续参数位写命令的
+相对落点被按 Workdir 误判为范围内——`cd /etc && gofmt -w passwd` AutoAllow，实际写
+`/etc/passwd`。重定向落点有 `hasNonDiscardWriteRedirect` 全拦，参数位写命令（gofmt -w /
+git diff --output=）没有。反例红后实装：`compoundSilent` 里 `cd` 后的段若含相对参数位
+写落点则整条不静默（绝对落点与丢弃设备不受影响）。变异后红。
+
+正例回归补：`rg -n`、`rg --pre-glob`、`git branch -a/--list`、`sed --quiet`。
+
+复审命令与原始输出（历史读数）：
+
+```
+$ go test ./internal/permgate/ -count=1
+ok  	github.com/Xsxdot/handoff/internal/permgate	0.009s
+$ go build ./...
+build-exit=0
+$ go vet ./internal/permgate/
+（无输出）
+$ go test ./internal/permgate/ ./internal/approval/ ./internal/orchestration/ ./internal/config/ -count=1
+ok  	.../internal/permgate	0.009s
+ok  	.../internal/approval	1.079s
+ok  	.../internal/orchestration	45.633s
+ok  	.../internal/config	0.013s
+$ go test ./... -run '^$' -count=1
+（全 test 包编译通过，无 build failed）
+```
+
+M1/M3/M4/M5/M6 既有缝未触碰、未回退。`cd` 段带工作目录的 minor 以「参数位写落点
+守卫」封住（重定向落点本就有守卫）；未做完整 cwd 跟踪，成本可控且安全面无缺口。
+
+### 本修复轮提交
+
+提交当时的命令与原始输出（历史读数；本条随同批 amend 收进）：
+
+```
+$ git commit -m "fix(B376): 复审驳回三项——sed -i 后缀守卫 + rg --pre 执行型标志 + git branch 强制改名 ..."
+[cards/B376-charter-4 c82252a8] fix(B376): 复审驳回三项——sed -i 后缀守卫 + rg --pre 执行型标志 + git branch 强制改名
+ 3 files changed, 188 insertions(+), 7 deletions(-)
+$ git status --short
+（空）
+```
+
+amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
+
+## 复审修复轮 2（review-2 fail 四项 major + 两项 minor）
+
+上一轮 review-2 fail 逐项处置（TDD：先红→实现→绿→变异）：
+
+1. **sed 的 w/e 静默写/执行**：`sed -n 'w /path'`、`'e <cmd>'`、`'s///w /path'`、
+   `-e 'w ...'`、`-ne '...'`、`--expression=...`、`-f <任意脚本>` 均曾 AutoAllow
+   （`-i` 守卫拦不住）。先补反例进 `TestJudgeCompoundNotSilent`，红：
+   `compound non-readonly "sed -n 'w /tmp/sedout' f" was auto-allowed`。
+   实装 `hasSedWriteOrExec`（脚本命令位扫描，含 `;`/换行多命令切分）、
+   `sedScriptWritesOrExecs`、`splitSedCommands`、`sedSubstituteWrites`；
+   `-f/-e` 短选项簇保守否决。
+   变异：去掉 `!hasSedWriteOrExec(...)` 短接 → 反例红；`splitSedCommands` 改单元素
+   → `'p; w /tmp/sedout'` 反例红（确认多命令切分有牙）。
+2. **git branch 遗漏 -f/-u/-t/--set-upstream-to/--edit-description**：整词表只含
+   d/D/m/M/c/C。补齐 `hasGitBranchMutator` 短选项 f/u/t 与长选项 `--set-upstream-to`
+   / `--unset-upstream` / `--edit-description` / `--track`（含 `=值` 与粘连）。
+   反例红后实装。变异：短选项表去掉 f/u/t → `git branch -f main` 反例红。
+3. **停用理由与 per-attempt 观测须执行器无关**：`Manager.consultApprover`（claude/
+   grok/agy/codex 路径）此前只写一条汇总 `approver_decision`、停用理由只活在
+   OpenCode 的 `Client.Request`。实装：
+   - `consultApprover` 有 `Attempts` 时每候选各写一条 `approver_decision`（带
+     `executor`），空 Attempts 保持单条。
+   - `escalatePermissionReasoned`：Consult 出口停用时把「审批链已停用（连续 3 次
+     失败）」写进 gate 工单请求体与 `permission_request` 事件 payload。
+   - **边界**：只在 Consult 出口改写；判据自身的 Escalate（黑名单/自指令）理由
+     保留原文（反例 `TestBlacklistEscalateKeepsJudgeReasonWhenDisabled` 与
+     `TestClientJudgeEscalateKeepsReasonWhenDisabled` 锁住）。
+   - OpenCode `Client.escalate` 同步落 reason 进工单/事件（此前只改 Decision.Reason）。
+   测试：`TestConsultApproverWritesPerAttemptEventsManagerPath`、
+   `TestApproverDisabledEscalationReasonManagerPath`、client 侧
+   `TestClientDisabledEscalatesWithDisabledReason` 扩断言。变异：`len(d.Attempts)>0`
+   → false 红；`reason := m.consultDisabledReason` → "" 红；client 的 Consult 条件
+   去掉 → 判据原反例红。
+4. **b233.8-contract.md 冻结物被加字段**：`ConsultDecision`/`Hooks` 是契约 §3.1
+   冻结签名，B376 直接加 `Executor`/`Attempts`/`ConsultDisabledReason` 未走修订。
+   按 charter 冻结纪律回写 **§10 B376 修订记录（2026-09-18）**：说明加性扩张依据、
+   冻结正文（第 1–9 节）未改、`executor.ApprovalClient` 四方法与 F01–F18 不变。
+   `codegraph resolve --doc` 在基线 HEAD 同样 `file_missing`（存量图债，与本卡无关）。
+
+minor：
+- manager 路径 `ApproverDecisionPayload.Executor` 由上面第 3 项的两条测试断言
+  （`decisions[0].Executor=="codex"` / `==="grok"`）。
+- `codegraph --repo . sym ...` 进白名单：实装 `codegraphReadSubcommand` +
+  `codegraphValueFlags`，全局旗标出现在子命令前仍走闭集；未知子命令仍 Consult
+  （反例 `codegraph absorb` 保持红）。变异：`fields[1]` 直取 → absorb 反例红。
+
+复审命令与原始输出（历史读数）：
+
+```
+$ go build ./...
+build_exit=0
+$ go vet ./internal/permgate/ ./internal/approval/ ./internal/orchestration/
+vet_exit=0
+$ go test ./internal/permgate/ ./internal/approval/ ./internal/orchestration/ ./internal/config/ -count=1
+ok  	.../internal/permgate	0.011s
+ok  	.../internal/approval	1.847s
+ok  	.../internal/orchestration	59.515s
+ok  	.../internal/config	0.018s
+$ go test ./... -run '^$' -count=1
+（全 test 包编译通过，无 build failed）
+$ go test ./internal/client/ -run 'TestListTasksAndAttach|TestReplyRelayFailureSurfacesReason' -count=1
+（基线 HEAD 同红：本卡未触碰 internal/client，属存量红）
+```
+
+图查询：`codegraph --repo . sym Gate.Judge` / `sym safeCommandID` 命中；
+`who-calls Gate.Judge` 仅 `approval.Authority.Judge`，无新增债。
+
+### 本修复轮提交
+
+提交当时的命令与原始输出（历史读数；本条随同批 amend 收进）：
+
+```
+$ git commit -m "fix(B376): 复审 2——sed w/e 守卫 + git branch 上游/强制 + 停用理由执行器无关 + 契约修订回写 ..."
+[cards/B376-charter-5 0aa02716] fix(B376): 复审 2——sed w/e 守卫 + git branch 上游/强制 + 停用理由执行器无关 + 契约修订回写
+ 8 files changed, 610 insertions(+), 26 deletions(-)
+$ git status --short
+（空）
+```
+
+amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
+
+## 复审修复轮 3（review-3 fail：sed 地址语法族绕过）
+
+基线 `cards/B376-charter-6`，接 review-3 HEAD `c59fc262`。根因：`sedCommandWritesOrExecs`
+用 `TrimLeft(..., "0123456789$, \t")` 剥地址前缀，不认 `~`/`!`/正则范围；`sedSubstituteWrites`
+只查 flags 的 `w/W`，不查 `e`。实测以下全部 AutoAllow（旁路探针原始输出）：
+`sed -n '1~2w /tmp/out'`、`'/a/,/b/w ...'`、`'2,4!w ...'`、`'1~2e touch ...'`、
+`'s/a/x/e'`（带 `-n` 时）、`cd /etc && sed -n '1~2w passwd'`。
+
+TDD：
+
+1. 先补反例进 `TestJudgeCompoundNotSilent`、正例进 `TestJudgeCompoundSilentTable`，红：
+   `compound non-readonly "sed -n '1~2w /tmp/out' f" was auto-allowed`。
+2. 实现：删 `splitSedCommands`（先按 `;` 切分会把 `s/a;b/c/e` 的执行标志切掉），
+   `sedScriptWritesOrExecs` 改为对整段脚本一次左到右扫描；新增 `skipSedAddress`
+   （数字含 `~N`、`$`、`/re/` 含 `I/M` 标志、`\cre`、范围端点 `,+N`/`,~N`、`!`）、
+   `skipSedAddressItem`、`skipSedAddressFlags`、`parseSedSubstitute`、`parseSedY`、
+   `skipSedToLineEnd`/`skipSedToSeparator`。`sedSubstituteWrites` 成死代码删除。
+3. 绿：`go test ./internal/permgate/ -count=1` → `ok`（正例 31 PASS，反例 0 FAIL）。
+
+**本轮自行发现并一并封住的同族绕过**（review-3 未列，验证于真机 GNU sed）：
+- 正则地址 GNU 标志 `I`/`M`：`/a/Iw /tmp/o`、`/a/Ie touch /tmp/x` 真机会写/执行，原实现静默。
+- 相对端点 `,+N` / `,~N`：`'/a/,+2w ...'`、`'1,~3w ...'` 真机会写，原实现静默。
+- `s///` 的 pattern/replacement 正文含分号：`'s/a;b/c/e'`、`'s/a;b/c/w /tmp/out'`
+  真机会执行/写，原先切分实现漏掉。
+补进正/反例表锁死。`sed -n '/a/,/b/p'`、`'/a/Ip'`、`'y/a/b/'`、`'r /tmp/in'`
+等只读形态仍静默（未误伤）。
+
+变异自验（overlay，不污染工作树）：
+- `ContainsAny(flags, "wWe")` → `"wW"`：`TestJudgeCompoundNotSilent` 红（命中唯一）。
+- `case 'w','W','e'` → 去掉 `'e'`：`sed -n 'e echo pwned'` 反例红。
+- `parseSedSubstitute` 返回空 flags：`s/a/b/w` 反例红。
+- 地址 `~step`/`I`/`M`/`,+N` 的剥离分支单独删除后测试仍绿——它们是冗余兜底路径
+  （同样的写/执行面被命令字母分支拦下），属未打中，不记测试无牙；语义守卫三发均红。
+
+回归：review-2 已过的直写形态（`'w /tmp'`、`'e ...'`、`'s///w'`、`-f`、`-i.bak`）
+在本轮反例表中全部保留且红。failover/可观测/b233.8 契约未触碰。
+
+复审命令与原始输出（历史读数）：
+
+```
+$ go build ./...
+build_exit=0
+$ go vet ./internal/permgate/
+vet_exit=0
+$ gofmt -l internal/permgate/
+（无输出）
+$ go test ./internal/permgate/ -count=1
+ok  	github.com/Xsxdot/handoff/internal/permgate	0.010s
+$ go test ./internal/permgate/ ./internal/approval/ ./internal/config/ -count=1
+ok  	.../internal/permgate	0.010s
+ok  	.../internal/approval	1.610s
+ok  	.../internal/config	0.016s
+$ go test ./internal/orchestration/ -count=1
+ok  	.../internal/orchestration	54.845s
+$ go test ./... -run '^$' -count=1
+（全 test 包编译通过，无 build failed）
+```
+
+### 本修复轮提交
+
+提交当时的命令与原始输出（历史读数；本条随同批 amend 收进）：
+
+```
+$ git commit -m "fix(B376): 复审 3——sed 地址语法族（~/!/范围/正则标志/相对端点）与 s///e 全拦 ..."
+[cards/B376-charter-6 4ff7d0cc] fix(B376): 复审 3——sed 地址语法族（~/!/范围/正则标志/相对端点）与 s///e 全拦
+ 3 files changed, 324 insertions(+), 88 deletions(-)
+$ git status --short
+（空）
+```
+
+amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。
+
+## 复审修复轮 4（review-4 fail：位置脚本在前、-e/--expression/-f 写/执行在后）
+
+基线 `cards/B376-charter-7`，接 review-4 报 `cae39c32`（review-3 地址语法族已闭合，未回退）。
+根因：`hasSedWriteOrExec` 遇首个位置参数（脚本）即 `return sedScriptWritesOrExecs(f)`，
+其后的 `-e`/`--expression`/`-f` 根本不被扫描。
+
+**真机复现绕过**（旁路探针原始输出，修复前）：
+
+```
+$ sed -n 'p' -e 'w /tmp/sedout' /tmp/sedin.txt
+sed: can't read p: No such file or directory   # 位置参数按输入文件读并报错
+exit=2
+-rw-r--r-- 1 root root 4 /tmp/sedout            # -e 的 w 照样执行写文件
+```
+
+Gate 侧同轮 `Judge(Request{Tool:"bash", Command:"sed -n 'p' -e 'w /tmp/out' f"})`
+→ `auto_allow rule="safe-command" reason="安全命令白名单命中: sed-n"`（旁路探针日志原文）。
+
+TDD：
+
+1. 先补反例进 `TestJudgeCompoundNotSilent`（12 条：`-e`/`--expression`/`--expression=`/
+   `-ne`/`--file`/`--file=`/多个 `-e` 混合，写 `w` 与执行 `e` 均有），红原文：
+   `compound non-readonly "sed -n 'p' -e 'w /tmp/out' f" was auto-allowed:
+   permgate.Verdict{Action:0, Reason:"安全命令白名单命中: sed-n", Rule:"safe-command"}`。
+   红因是守卫短路（功能缺失），不是 typo。
+2. 实现：`hasSedWriteOrExec` 不再在首个位置参数处短路。改为扫全部显式脚本源
+   （每个 `-e`/`--expression`，含 `=` 粘连；`-f`/`--file`/`--file=` 直接否决）；
+   位置参数收集起来，仅当**无任何显式脚本源**时才把首个位置参数按脚本扫描——
+   有 `-e`/`-f` 时位置参数是输入文件，不执行，扫它会把 `sed -n -e 'p' /etc/passwd`
+   的路径正则误当写命令。顺带把单 `-`（stdin 占位，非选项词元）归入位置参数。
+3. 绿：`go test ./internal/permgate/ ./internal/config/ ./internal/orchestration/ ./internal/approval/ -count=1` → 全 `ok`。
+
+**变异自验**（均先确认 `go build ./...` 通过再数红，变异前断言命中唯一）：
+
+- `if !explicitScript && len(positionals) > 0` → `... < 0`：`TestJudgeCompoundNotSilent` 红
+  （`sed -n 'w /tmp/sedout' f` 被静默）——位置脚本路径有牙。
+- 删掉 `case "-e","--expression"` 分支里的 `sedScriptWritesOrExecs` 扫描：同名测试红
+  （`sed -n -e 'w /tmp/sedout' f` 被静默）——新 `-e` 扫描路径有牙。
+- 两次变异都编译通过（`build_exit=0`），不是「编译红假 0 红」。
+
+**回归**：review-3 地址语法族、只读 `sed -n` 静默、`git branch` 可变写、`disabled-reason`、
+b233.8 §10 契约修订全部保留且绿；本修复只改 `internal/permgate/permgate.go` 的 sed 守卫，
+未触碰 failover/可观测/契约面（`git diff --stat` 仅两文件）。
+
+复审命令与原始输出（历史读数）：
+
+```
+$ go vet ./internal/permgate/
+vet_exit=0
+$ gofmt -l internal/permgate/
+（无输出）
+$ go test ./internal/permgate/ -count=1
+ok  	github.com/Xsxdot/handoff/internal/permgate	0.010s
+$ go test ./internal/permgate/ ./internal/config/ ./internal/orchestration/ ./internal/approval/ -count=1
+ok  	.../internal/permgate	0.018s
+ok  	.../internal/config	0.041s
+ok  	.../internal/orchestration	63.762s
+ok  	.../internal/approval	2.174s
+$ go build ./...
+build_exit=0
+$ go test ./... -run '^$' -count=1
+（全 test 包编译通过，无 build failed/cannot）
+```
+
+图覆盖债：`codegraph --repo . sym hasSedWriteOrExec` / `who-calls hasSedWriteOrExec`
+均未命中（`节点 "hasSedWriteOrExec" 不在图中，近似候选: []`）——沿用 spec 已记的
+`who-calls Judge` 空边债，本轮不新增可解析债；守卫以源码为事实。
+
+### 本修复轮提交
+
+提交当时的命令与原始输出（历史读数；本条随同批 amend 收进）：
+
+```
+$ git commit -m "fix(B376): 复审 4——sed 位置脚本在前时仍扫全部 -e/--expression/-f 脚本源"
+[cards/B376-charter-7 35d18b5e] fix(B376): 复审 4——sed 位置脚本在前时仍扫全部 -e/--expression/-f 脚本源
+ 3 files changed, 119 insertions(+), 6 deletions(-)
+$ git status --short
+（空）
+```
+
+amend 后 HEAD 变化是 git 事实；收口判据是工作树干净，不以文件里的 hash 等于 HEAD。

@@ -61,6 +61,28 @@ func TestPermissionAutoAllowIsNotDeliverable(t *testing.T) {
 	}
 }
 
+func TestPermissionReuseIsNotDeliverable(t *testing.T) {
+	yes := []proto.EventType{
+		proto.EventTypeQuestion, proto.EventTypePermissionRequest,
+		proto.EventTypeDeliveryFailed, proto.EventTypeCompleted,
+		proto.EventTypeTurnFailed, proto.EventTypeFailed,
+	}
+	no := []proto.EventType{
+		proto.EventTypeProgress, proto.EventTypePermissionAutoAllow,
+		proto.EventTypeApproverDecision, proto.EventTypePermissionReuse,
+	}
+	for _, tpe := range yes {
+		if !isDeliverable(tpe) {
+			t.Errorf("%s 必须可交付", tpe)
+		}
+	}
+	for _, tpe := range no {
+		if isDeliverable(tpe) {
+			t.Errorf("%s 必须不可交付", tpe)
+		}
+	}
+}
+
 // TestIsPermanentStatus 覆盖握手状态码判定：400/401/403 永久，其余瞬时。
 func TestIsPermanentStatus(t *testing.T) {
 	cases := []struct {
