@@ -13,7 +13,6 @@
 package orchestration
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -264,11 +263,80 @@ func projectCoordinatorProviderConfig(mainHome, targetHome string) error {
 	return nil
 }
 
-// definesProvider 报告配置正文是否含真实的 provider 或 model 定义。
-// 判据故意用轻量字节扫描而非 JSONC 解析：opencode 配置允许注释与尾逗号，
-// 完整解析属上游 schema 面；这里只需区分「裸壳」与「有定义」两态。
+// definesProvider 报告配置正文是否含真实的 provider 或 model 顶层定义。
+// 判据：先剥掉 JSONC 注释，再只认「对象键位置」的 "provider"/"model"——注释里、
+// 字符串值里出现的同名文本不算定义。为什么不用 JSONC 解析：opencode 配置允许
+// 注释与尾逗号、还带上游自定义插件字段，完整解析属上游 schema 面且引入依赖；
+// 这里只需区分「裸壳」与「有定义」两态，一次手写扫描即可且不误触注释/字符串。
 func definesProvider(data []byte) bool {
-	return bytes.Contains(data, []byte(`"provider"`)) || bytes.Contains(data, []byte(`"model"`))
+	stripped := stripJSONCComments(data)
+	return hasConfigObjectKey(stripped, "provider") || hasConfigObjectKey(stripped, "model")
+}
+
+// stripJSONCComments 剔除 // 行注释与 /* */ 块注释，字符串字面量内的注释符原样
+// 保留（"http://…" 里的 // 不是注释）。不做完整词法分析：目的只是让后续键位扫描
+// 看不见注释里的 "provider"/"model"。
+func stripJSONCComments(data []byte) []byte {
+	out := make([]byte, 0, len(data))
+	for i := 0; i < len(data); {
+		switch {
+		case data[i] == '"':
+			// 字符串字面量整体照搬，尊重 \ 转义，避免 "a//b" 被当注释起点。
+			out = append(out, data[i])
+			i++
+			for i < len(data) {
+				out = append(out, data[i])
+				if data[i] == '\\' && i+1 < len(data) {
+					out = append(out, data[i+1])
+					i += 2
+					continue
+				}
+				if data[i] == '"' {
+					i++
+					break
+				}
+				i++
+			}
+		case data[i] == '/' && i+1 < len(data) && data[i+1] == '/':
+			for i < len(data) && data[i] != '\n' {
+				i++
+			}
+		case data[i] == '/' && i+1 < len(data) && data[i+1] == '*':
+			i += 2
+			for i+1 < len(data) && !(data[i] == '*' && data[i+1] == '/') {
+				i++
+			}
+			if i+1 < len(data) {
+				i += 2
+			}
+		default:
+			out = append(out, data[i])
+			i++
+		}
+	}
+	return out
+}
+
+// hasConfigObjectKey 报告剥注释后的正文里是否存在对象键 key（即 `"key"` 之后
+// 跳过空白紧接 `:`）。只认键位，不认值：`{"note":"provider"}` 里的 "provider"
+// 是值、不应命中。
+func hasConfigObjectKey(data []byte, key string) bool {
+	needle := `"` + key + `"`
+	s := string(data)
+	for from := 0; ; {
+		j := strings.Index(s[from:], needle)
+		if j < 0 {
+			return false
+		}
+		k := from + j + len(needle)
+		for k < len(s) && (s[k] == ' ' || s[k] == '\t' || s[k] == '\n' || s[k] == '\r') {
+			k++
+		}
+		if k < len(s) && s[k] == ':' {
+			return true
+		}
+		from = k
+	}
 }
 
 // copyMissingCoordinatorCredential 仅拷贝该 CLI 缺失的单文件登录凭据。

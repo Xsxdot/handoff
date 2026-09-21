@@ -1150,11 +1150,15 @@ func translateRegistryErr(err error) error {
 	}
 }
 
-// coordWakeTurnTimeout 是协调者无头回合的挂钟上界（B393 P2 拍板）。取 10m：
-// 短于 hostapi.DefaultTurnTimeout(30m)，给 5m 唤醒租约留一半余量——挂死回合
-// 必须在租约到期前判失败，否则他机会在租约过期后接管而同卡双跑（B393 候选 3）。
-// 变量而非 const：agentd 包内测试覆盖它到秒级，避免 10m 真等。
-var coordWakeTurnTimeout = 10 * time.Minute
+// coordWakeTurnTimeout 是协调者无头回合的挂钟上界，由驱动租约导出而非拍脑袋定值：
+// 取 ledger.DriverLeaseTTL/2（=2m30s），严格短于 5m 驱动租约，另一半作强杀进程树与
+// 错误上抛的余量。依据（B393 MAJOR-2）：挂死回合必须在租约被判过期前返回失败，
+// 否则他机会在租约过期后接管而同卡双跑（候选 3）；本分支唤醒路径未接 ClaimWake/
+// RenewDriverLease，超过租约的回合没有任何续租兜底，因此上界必须自缚于租约之内。
+// 为什么够用：健康协调者回合在秒级到分钟级返回（R1 真机取证：真回合 921 字节快速
+// 返回）；超过 DriverLeaseTTL 的回合在本分支本就已越过租约语义，不应被允许。
+// 变量而非 const：agentd 包内测试覆盖它到秒级，避免 2m30s 真等。
+var coordWakeTurnTimeout = ledger.DriverLeaseTTL / 2
 
 // wakeRoundLogLevel 是协调者唤醒回合生命周期日志的级别下限（spec §4.3：不设
 // HANDOFF_LOG_LEVEL 也要看得见）。缺省 slog 级别是 Warn（logx.go:59），Info 会被吞。

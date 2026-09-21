@@ -301,3 +301,147 @@ $ git log --oneline -1
 
 提交后本台账补记本节并 amend 一次收进同批；amend 换 hash 属 git 事实，收口判据是工作树干净。
 
+---
+
+# 第二轮复评修复（B393 复评，MAJOR-1/2 + MINOR×2）
+
+基线 = 上一批提交 `60532ffd`（即本节点起手 HEAD）。只修复评两条 major + 两条 minor，
+不重做已通过部分（五条红色回路未动）。命令原始输出见下。
+
+## R0. 起手与图覆盖债
+
+```text
+$ git branch --show-current            → cards/B393-charter-4
+$ go build ./...                       → BUILD_EXIT=0
+$ go test ./internal/agentd/ -run TestB393 -count=1   → ok 1.25s（基线绿）
+$ codegraph --repo . sym wakeCoordinatorRound → 命中 n_agentd_Server_wakeCoordinatorRound（scheddrain.go:336）
+```
+
+本轮 `codegraph sym` 未命中（图覆盖债，回落 grep）：`definesProvider`、
+`WakeRoundEvent`、`DriverLeaseTTL`、`projectCoordinatorProviderConfig`。
+
+## R1. MAJOR-1：失败路径落 phase="fail" 账本终态行
+
+新测试 `internal/agentd/b393_wakeround_fail_test.go`（缝 = `wakeCoordinatorRound`）：
+resume 与重建双失败时，账本须落恰一行 phase=fail（带 Err 摘要），同卡重复失败不追加。
+
+首跑红（功能缺失，非 typo）：
+
+```text
+$ go test ./internal/agentd/ -run TestB393WakeRoundFailureWritesFailEvent -count=1
+--- FAIL: TestB393WakeRoundFailureWritesFailEvent (0.22s)
+    b393_wakeround_fail_test.go:87: 失败态应恰一行 phase=fail，实得 0（全部注释: [{Phase:start Session:<nil> Err:<nil> DurationMs:<nil>}]）
+FAIL
+```
+
+实现：`internal/agentd/scheddrain.go` 失败分支落 `EnsureComment(card, "wake_round:fail", ...)`，
+Err 取 `truncateRunes(err.Error(), 400)`；写失败只 Warn 不覆盖唤醒结果。
+
+绿 + 变异自验（`Phase: "fail"` 改 `"end"`，起点 grep 断言命中唯一 `count: 1`）：
+
+```text
+$ go test ./internal/agentd/ -run TestB393 -count=1        → ok 1.50s（绿）
+变异后：
+--- FAIL: TestB393WakeRoundFailureWritesFailEvent (0.22s)
+    b393_wakeround_fail_test.go:87: 失败态应恰一行 phase=fail，实得 0（全部注释: [... {Phase:end ...}]）
+复原后：ok 1.50s
+```
+
+## R2. MAJOR-2：上界与驱动租约自洽（选项 a）
+
+新测试 `internal/agentd/b393_timeout_invariant_test.go`：断言 `coordWakeTurnTimeout`
+严格 < `ledger.DriverLeaseTTL`。
+
+首跑红：
+
+```text
+$ go test ./internal/agentd/ -run TestB393WakeTurnTimeoutWithinLease -count=1
+--- FAIL: TestB393WakeTurnTimeoutWithinLease (0.00s)
+    b393_timeout_invariant_test.go:26: 回合上界 10m0s 必须严格短于驱动租约 5m0s（挂死回合须在租约到期前判失败）
+FAIL
+```
+
+选择 (a)：把上界由租约导出——`var coordWakeTurnTimeout = ledger.DriverLeaseTTL / 2`
+（=2m30s，严格短于 5m，另一半作强杀+错误上抛余量）。注释改写为与事实自洽，并写明
+为何够用（健康回合秒级到分钟级；本分支未接 ClaimWake/RenewDriverLease，超过租约的
+回合无续租兜底，必须自缚于租约内）。`server.go` 补 `ledger` 已在 import（同批既有）。
+
+绿 + 变异自验（改回 10m，命中唯一 `count: 1`）：
+
+```text
+$ go test ./internal/agentd/ -run TestB393 -count=1        → ok 1.51s（绿）
+变异后：--- FAIL: ... 回合上界 10m0s 必须严格短于驱动租约 5m0s
+复原后：go build ./... → EXIT=0；coordWakeTurnTimeout = ledger.DriverLeaseTTL / 2
+```
+
+## R3. MINOR：definesProvider 不把注释/字符串当定义
+
+新测试 `internal/orchestration/b393_defines_provider_test.go`：8 条边界（裸壳、
+行/块注释提词、字符串值是词、真实键、键前有注释）。
+
+首跑红：
+
+```text
+$ go test ./internal/orchestration/ -run TestB393DefinesProviderBoundaries -count=1
+--- FAIL: TestB393DefinesProviderBoundaries (0.00s)
+    b393_defines_provider_test.go:34: 行注释提provider: definesProvider=true, want false
+FAIL
+```
+
+实现：`coordinator_home.go` 改为 `stripJSONCComments`（剥 // 与 /* */，字符串字面量
+内注释符原样保留）+ `hasConfigObjectKey`（只认 `"key"` 后接 `:` 的键位）。移除不再
+使用的 `bytes` import。
+
+绿 + 变异自验（退回「不剥注释」，命中唯一 `count: 1`）：
+
+```text
+$ go test ./internal/orchestration/ -run TestB393 -count=1 → ok 0.005s（绿）
+变异后：--- FAIL: ... 块注释提model: definesProvider=true, want false
+复原后：ok 0.005s
+```
+
+## R4. MINOR：hostapi 超时日志打实际生效外层上界
+
+新测试 `internal/hostapi/b393_timeout_bound_test.go`（缝 = `Host.RunTurn`）：
+`req.Timeout=45m` 但外层 ctx 只有 300ms 时，超时日志与错误不得报 45m。
+
+首跑红：
+
+```text
+$ go test ./internal/hostapi/ -run TestB393TimeoutLogsEffectiveOuterBound -count=1
+--- FAIL: TestB393TimeoutLogsEffectiveOuterBound (0.30s)
+    b393_timeout_bound_test.go:48: 错误报了自身 req 上界 45m0s，而非外层 ctx 生效上界: hostapi: 回合超时（上界 45m0s），已终止进程树: context deadline exceeded
+FAIL
+```
+
+实现：`driver.go` 新增 `effectiveTurnTimeout(ctx, timeout)`（取 req 上界与外层 ctx
+剩余期限的更早者），开始日志/超时日志/超时错误统一用它。
+
+绿 + 变异自验（超时错误改回 `timeout`，命中唯一 `count: 1`）：
+
+```text
+$ go test ./internal/hostapi/ -run TestB393 -count=1       → ok 0.306s（绿）
+变异后：--- FAIL: ... 错误报了自身 req 上界 45m0s...
+复原后：ok 0.309s
+```
+
+## R5. 收尾验证（触及包全量 + 全量编译）
+
+```text
+$ gofmt -l internal/agentd internal/hostapi internal/orchestration → （空）
+$ go vet ./internal/agentd/ ./internal/hostapi/ ./internal/orchestration/ → VET_EXIT=0
+$ go test ./internal/hostapi/ ./internal/keystone/ -count=1 → ok hostapi 0.964s / ok keystone 0.300s
+$ go test ./internal/orchestration/ -count=1               → ok 64.690s
+$ go test ./internal/agentd/ -count=1 -timeout 600s        → ok 180.843s
+$ go build ./...                                           → BUILD_EXIT=0
+```
+
+## R6. 提交事实（历史读数）
+
+```text
+$ git add -A && git commit -q -m "fix(B393): 复评修复——失败态落账 + 上界自缚租约 + 判据硬化"
+$ git log --oneline -1
+（见本批提交；提交后本节 amend 一次收进同批，收口判据是工作树干净）
+```
+
+
