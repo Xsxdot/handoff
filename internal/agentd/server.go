@@ -1150,6 +1150,25 @@ func translateRegistryErr(err error) error {
 	}
 }
 
+// coordWakeTurnTimeout 是协调者无头回合的挂钟上界（B393 P2 拍板）。取 10m：
+// 短于 hostapi.DefaultTurnTimeout(30m)，给 5m 唤醒租约留一半余量——挂死回合
+// 必须在租约到期前判失败，否则他机会在租约过期后接管而同卡双跑（B393 候选 3）。
+// 变量而非 const：agentd 包内测试覆盖它到秒级，避免 10m 真等。
+var coordWakeTurnTimeout = 10 * time.Minute
+
+// wakeRoundLogLevel 是协调者唤醒回合生命周期日志的级别下限（spec §4.3：不设
+// HANDOFF_LOG_LEVEL 也要看得见）。缺省 slog 级别是 Warn（logx.go:59），Info 会被吞。
+// hostapi 的 wakeRoundLogLevel 未导出、跨包取不到，agentd 侧同值另立。
+const wakeRoundLogLevel = slog.LevelWarn
+
+// readyCtx 返回带 coordWakeTurnTimeout 上界的 ctx。
+// 为什么不用入参 ctx：keysclient.Runner 接口冻结、无 ctx 参数；coordinatorRunner
+// 的调用方（keystone.Wake）虽带 ctx，但接口消化不到这里。自持期限是接口冻结下
+// 唯一能在「不返回的 CLI」上兜底的落点。
+func readyCtx() (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.Background(), coordWakeTurnTimeout)
+}
+
 // coordinatorRunner 把进程承载门面适配成 keystone 的会话承载缝。
 // Launch/Resume 前通过 prepareHome 按白名单供给隔离 HOME；
 // 供给失败在 child 启动前返回，绝不静默退回旧路径。
@@ -1179,14 +1198,21 @@ func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (k
 	if r.coord == nil {
 		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := readyCtx()
 	defer cancel()
+	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", spec.CLI,
+		"mode", "launch", "home_dir", spec.HomeDir, "workdir", spec.Workdir,
+		"timeout", coordWakeTurnTimeout.String())
 	got, err := r.coord.Launch(ctx, executor.CoordSessionSpec{
 		CLI: spec.CLI, HomeDir: spec.HomeDir, Model: spec.Model, Workdir: spec.Workdir, Env: spec.Env,
 	}, prompt)
 	if err != nil {
+		slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合失败", "cli", spec.CLI,
+			"mode", "launch", "home_dir", spec.HomeDir, "cause", err)
 		return keysclient.TurnResult{}, err
 	}
+	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合完成", "cli", spec.CLI,
+		"mode", "launch", "session", got.SessionID, "output_bytes", len(got.Output))
 	return keysclient.TurnResult{SessionID: got.SessionID, Output: got.Output}, nil
 }
 
@@ -1213,15 +1239,22 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	if r.coord == nil {
 		return keysclient.TurnResult{}, executor.UnsupportedError(name, executor.CapCoordination)
 	}
-	ctx, cancel := context.WithCancel(context.Background())
+	ctx, cancel := readyCtx()
 	defer cancel()
+	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", ref.CLI,
+		"mode", "resume", "session", ref.SessionID, "home_dir", ref.HomeDir,
+		"workdir", ref.Workdir, "timeout", coordWakeTurnTimeout.String())
 	got, err := r.coord.Resume(ctx, executor.CoordSessionRef{
 		CLI: ref.CLI, SessionID: ref.SessionID, HomeDir: ref.HomeDir,
 		Workdir: ref.Workdir, Model: ref.Model,
 	}, prompt)
 	if err != nil {
+		slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合失败", "cli", ref.CLI,
+			"mode", "resume", "session", ref.SessionID, "home_dir", ref.HomeDir, "cause", err)
 		return keysclient.TurnResult{}, err
 	}
+	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合完成", "cli", ref.CLI,
+		"mode", "resume", "session", got.SessionID, "output_bytes", len(got.Output))
 	return keysclient.TurnResult{SessionID: got.SessionID, Output: got.Output}, nil
 }
 

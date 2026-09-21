@@ -255,6 +255,25 @@ func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEve
 
 const wakeParentWalkLimit = 32
 
+// WakeRoundDedupePrefix 是唤醒回合起止注释的 dedupe_key 前缀（B393 spec §4.3：唤醒
+// 回合留一行在途读数）。落账走 ledger.Store.EnsureComment（type=EvComment），
+// 前缀进 dedupe_key，键形如 "wake_round:start" / "wake_round:end:<session>"。
+const WakeRoundDedupePrefix = "wake_round"
+
+// WakeRoundEvent 是写入注释正文的 payload 形状（序列化边界：json.Marshal 进
+// EnsureComment 的 body、消费方按需 json.Unmarshal；见 TestB393WakeRoundEventRoundTrip）。
+// 字段用指针：nil = 该回合未提供该字段（如未开始就失败无 duration_ms），
+// 非 nil 的零值 = 确有该读数且为零——两态不可混。
+type WakeRoundEvent struct {
+	Phase      string  `json:"phase"`                 // "start" | "end" | "fail"
+	Session    *string `json:"session,omitempty"`     // nil=未知
+	Err        *string `json:"err,omitempty"`         // nil=无错误
+	DurationMs *int64  `json:"duration_ms,omitempty"` // nil=未计时
+}
+
+// ptrInt64 返回 v 的地址，供 WakeRoundEvent.DurationMs 区分「缺失」与「零」。
+func ptrInt64(v int64) *int64 { return &v }
+
 // resolveWakeCard 把唤醒目标从事件卡收到真正有 coordinate 席位的卡。
 // 事件卡自己有 coordinate 席位 → 自己；事件卡是 bind → 空（bind 靠 CLI wait）；
 // 空座沿 parent_id 上走，bind 祖先跳过，coordinate 祖先接手。不改账本 card_id。

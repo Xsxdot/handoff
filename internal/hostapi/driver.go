@@ -53,6 +53,11 @@ var supportedCLIs = map[string]bool{"opencode": true}
 // log 返回包日志入口（跟随 agentd 的 slog 配置，先例 prochost.go:142）。
 func log() *slog.Logger { return slog.Default().With("mod", "hostapi") }
 
+// wakeRoundLogLevel 是唤醒回合生命周期日志的级别下限（B393 spec §4.3：不设
+// HANDOFF_LOG_LEVEL 也要看得见）。缺省 slog 级别是 Warn（logx.go:59），Info 会被吞，
+// 挂死路径连失败行都不会打（不返回就不打）——可见性是故障现场的唯一读数。
+const wakeRoundLogLevel = slog.LevelWarn
+
 // runTurn 是 RunTurn 的本体；hostapi.go 只留薄委托（冻结面文件零逻辑）。
 func runTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	if !supportedCLIs[filepath.Base(req.CLI)] {
@@ -124,7 +129,7 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	log().Info("协调者回合开始", "cli", req.CLI, "mode", resumeOrNew(req),
+	log().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", req.CLI, "mode", resumeOrNew(req),
 		"home_dir", expandedHome, "workdir", req.Workdir, "timeout", timeout.String(),
 		"prompt_bytes", len(req.Prompt)) // 提示词与环境变量值永不进日志，只记长度
 	started := time.Now()
@@ -167,7 +172,7 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 			"hostapi: 回合成功但事件流未携带 sessionID（载体 CLI %q 输出形态可能升级，需核对 plan §三 F1 抓取形状）",
 			req.CLI)
 	}
-	log().Info("协调者回合完成", "cli", req.CLI, "session_id", reply.SessionID,
+	log().Log(ctx, wakeRoundLogLevel, "协调者回合完成", "cli", req.CLI, "session_id", reply.SessionID,
 		"output_bytes", len(reply.Output), "duration", dur.String())
 	return reply, nil
 }

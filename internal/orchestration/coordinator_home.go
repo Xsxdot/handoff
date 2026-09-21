@@ -13,6 +13,7 @@
 package orchestration
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -92,6 +93,9 @@ func (p coordinatorHomeSupplier) Prepare(spec keysclient.SessionSpec) (string, e
 	slog.Default().Info("写入协调者隔离配置完成", "path", configPath)
 
 	if err := copyMissingCoordinatorCredential(mainHome, targetHome, spec.CLI, p.credentialPath); err != nil {
+		return "", err
+	}
+	if err := projectCoordinatorProviderConfig(mainHome, targetHome); err != nil {
 		return "", err
 	}
 	if p.profileFor == nil {
@@ -197,6 +201,7 @@ func rejectCoordinatorHomeSymlinks(targetHome string) error {
 		filepath.Join(targetHome, ".config", "opencode"),
 		filepath.Join(targetHome, ".config", "opencode", "AGENTS.md"),
 		filepath.Join(targetHome, ".config", "opencode", "skills"),
+		filepath.Join(targetHome, ".config", "opencode", "opencode.jsonc"),
 		filepath.Join(targetHome, ".local"),
 		filepath.Join(targetHome, ".local", "share"),
 		filepath.Join(targetHome, ".local", "share", "opencode"),
@@ -218,6 +223,52 @@ func rejectCoordinatorHomeSymlinks(targetHome string) error {
 		}
 	}
 	return nil
+}
+
+// projectCoordinatorProviderConfig 把主 HOME 的 opencode 模型/provider 定义
+// 投影进隔离 HOME（B393 R3.3：隔离 HOME 缺 provider 定义会让重建/首拉
+// 直接 ProviderModelNotFoundError，退化链断在起点）。
+// 边界：只写白名单内的单个 config 文件，绝不整树同步。
+// 「已有文件」处置：隔离侧已有**真实 provider/model 定义**时保留（可能比主 HOME
+// 更精确）；只有语义为空（无 provider 且无 model，如仅有 $schema 的裸壳）才投影。
+// 真机取证（2026-09-22）：生产隔离 HOME 的 opencode.jsonc 恰是这种裸壳，
+// 若按「文件存在即跳过」会让重建继续 ProviderModelNotFoundError——本卡要修的就是它。
+// 主 HOME 也没有源文件时不阻断供给，只留 Warn（B393 T2 可见性暴露后续失败）。
+func projectCoordinatorProviderConfig(mainHome, targetHome string) error {
+	rel := filepath.Join(".config", "opencode", "opencode.jsonc")
+	src := filepath.Join(mainHome, rel)
+	dst := filepath.Join(targetHome, rel)
+	if data, err := os.ReadFile(dst); err == nil {
+		if definesProvider(data) {
+			return nil // 隔离侧已有真实定义，保留
+		}
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("读隔离 provider 配置 %q: %w", dst, err)
+	}
+	data, err := os.ReadFile(src)
+	if errors.Is(err, os.ErrNotExist) {
+		slog.Default().Warn("主 HOME 缺 opencode provider 配置，重建可能因缺模型定义失败",
+			"source", src)
+		return nil // 主 HOME 也没有：不阻断供给，但留 Warn（B393 T2 可见性会暴露后续失败）
+	}
+	if err != nil {
+		return fmt.Errorf("读主 HOME provider 配置 %q: %w", src, err)
+	}
+	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
+		return fmt.Errorf("创建隔离 provider 配置目录 %q: %w", filepath.Dir(dst), err)
+	}
+	if err := os.WriteFile(dst, data, 0o600); err != nil {
+		return fmt.Errorf("写隔离 provider 配置 %q: %w", dst, err)
+	}
+	slog.Default().Info("协调者隔离 provider 配置已供给", "target", dst)
+	return nil
+}
+
+// definesProvider 报告配置正文是否含真实的 provider 或 model 定义。
+// 判据故意用轻量字节扫描而非 JSONC 解析：opencode 配置允许注释与尾逗号，
+// 完整解析属上游 schema 面；这里只需区分「裸壳」与「有定义」两态。
+func definesProvider(data []byte) bool {
+	return bytes.Contains(data, []byte(`"provider"`)) || bytes.Contains(data, []byte(`"model"`))
 }
 
 // copyMissingCoordinatorCredential 仅拷贝该 CLI 缺失的单文件登录凭据。
