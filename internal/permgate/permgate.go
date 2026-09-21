@@ -650,6 +650,14 @@ func splitSilentSegments(cmd string) ([]string, bool) {
 			quote = r
 			token.WriteRune(r)
 		case r == '&':
+			// fd 复制/关闭（2>&1、>&2、>&-）是重定向词元，不是命令连接符——
+			// 与 splitSafeCommand 的同名特例、RedirectTargets 的排除形态一致。
+			// 不豁免的话 `git diff ... 2>&1 | head` 这类只读管道整条落 Consult。
+			if i > 0 && rs[i-1] == '>' && i+1 < len(rs) &&
+				((rs[i+1] >= '0' && rs[i+1] <= '9') || rs[i+1] == '-') {
+				token.WriteRune(r)
+				continue
+			}
 			if i+1 >= len(rs) || rs[i+1] != '&' {
 				return nil, false
 			}

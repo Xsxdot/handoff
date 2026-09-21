@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
@@ -80,6 +81,31 @@ func New(lc client.LedgerClient) *Service {
 // 不调用则保持 New 的纯内存默认——游标非权威，重启丢失无害、打开房间即自愈。
 func (s *Service) SetCursorStore(st *cursor.Store) { s.cursor = st }
 
+// normalizeMentions 归一化消息的显式寻址：剥去每个 mention 的可选前导 '@'
+// 与首尾空白，空项丢弃；无有效项返回 nil（保持 wire omitempty 语义）。
+//
+// 为什么在写入边界而不是判定侧（B391 裁决）：契约 §3.6/§3.8 冻结的寻址口径是
+// 「mention 值即裸身份/卡号」（ResolveDelivery 规则 1、条 20/23），订阅通道
+// `handoff session wait <member>` 又对 target 逐字相等匹配（条 39）——若让判定
+// 侧容忍 '@'，存储里带前缀的值将永远匹配不上不带前缀的 member，把「@ 存原样、
+// GetCard 查不到」的静默失效原样保留。写入侧归一化后，存储保持契约裸口径，
+// ResolveDelivery/MessageWakeTargets/wakeconsumer/session wait 全部零改动。
+//
+// 只剥一个前导 '@'：`user:sy` 原样、`@user:sy`→`user:sy`、`@B1`→`B1`；
+// `@@B1`→`@B1` 仍按外部身份落空（不静默错配成别的卡）。返回 nil 而非空切片，
+// 保证 §7.3 最小金样本「mentions 缺省不出键」不被破坏。
+func normalizeMentions(mentions []string) []string {
+	var out []string
+	for _, mention := range mentions {
+		mention = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(mention), "@"))
+		if mention == "" {
+			continue
+		}
+		out = append(out, mention)
+	}
+	return out
+}
+
 // Send 发消息：身份与形态执法的唯一写入口（pointer 除外——它只能走 Pointer，
 // 经本方法一律拒收）。返回落账 seq。
 //
@@ -106,6 +132,14 @@ func (s *Service) Send(roomID string, msg proto.RoomMessage, actor string) (int6
 		// → ErrNoRoom）；走到这里的都是「在但已归档」的房间。
 		log().Info("旧房间已只读归档，发言拒收", "room", roomID, "kind", msg.Kind, "actor", actor)
 		return 0, room.ErrReadOnly
+	}
+	// 写入边界归一化显式寻址：把 CLI/HTTP 的 `@成员` 形态剥成契约裸身份再落账
+	// （存储即契约口径，判定与订阅零改动——理由见 normalizeMentions）。
+	rawMentions := msg.Mentions
+	msg.Mentions = normalizeMentions(rawMentions)
+	if len(rawMentions) > 0 {
+		log().Debug("会话寻址已归一化", "room", roomID,
+			"raw", len(rawMentions), "normalized", len(msg.Mentions))
 	}
 	return s.sendToSession(r, msg, actor)
 }
@@ -172,7 +206,8 @@ func (s *Service) sendToSession(r *room.Room, msg proto.RoomMessage, actor strin
 		// 不回滚（沿用既有取舍）。
 		s.consumeRoomMentions(r.ID, actor)
 	}
-	log().Info("会话消息已落账", "room", r.ID, "kind", msg.Kind, "actor", actor, "seq", seq)
+	log().Info("会话消息已落账", "room", r.ID, "kind", msg.Kind, "actor", actor,
+		"seq", seq, "mentions", len(msg.Mentions))
 	return seq, nil
 }
 

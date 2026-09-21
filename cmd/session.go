@@ -555,7 +555,7 @@ func init() {
 	sessionListCmd.Flags().BoolVar(&sessionListJSON, "json", false, "输出 SessionSummary JSON 流（每会话一行）")
 	sessionDetailCmd.Flags().BoolVar(&sessionDetailJSON, "json", false, "输出 SessionDetail JSON（一行）")
 	sessionSendCmd.Flags().StringArrayVar(&sessionSendRefs, "ref", nil, "引用锚（git 路径/timeline 锚/卡号/附件路径，可重复）")
-	sessionSendCmd.Flags().StringArrayVar(&sessionSendMention, "mention", nil, "@成员或卡号（可重复；寻址唤醒的来源）")
+	sessionSendCmd.Flags().StringArrayVar(&sessionSendMention, "mention", nil, "成员或卡号（@ 前缀可选；可重复；寻址唤醒的来源）")
 	sessionSendCmd.Flags().Int64Var(&sessionSendReplyTo, "reply-to", 0, "被回复消息的账本 seq（回复锚；隐式寻址原作者；0 = 无）")
 	sessionSendCmd.Flags().StringVar(&sessionSendCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
 	sessionSendCmd.Flags().StringVar(&sessionSendSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
