@@ -129,6 +129,21 @@ type LedgerEvent struct {
 	CreatedAt    time.Time       `json:"created_at"`
 }
 
+// CoordinatorWakeReq 是 agentd→agentd 协调者唤醒转交请求（B389 §3.3）。Seat 是
+// 承载记录里的席位身份（对端 CAS 见证）；Events 是本批唤醒事件（含 seq），供对端
+// 组装简报；Holder 是认领者标识，仅用于对端日志串联。
+type CoordinatorWakeReq struct {
+	Seat   string        `json:"seat"`
+	Events []LedgerEvent `json:"events"`
+	Holder string        `json:"holder,omitempty"`
+}
+
+// CoordinatorWakeResp 复用拉起响应形状并回报实际执行机器名（不造第二套）。
+type CoordinatorWakeResp struct {
+	CoordinatorLaunchResp
+	HandledBy string `json:"handled_by,omitempty"`
+}
+
 // CardView 是列表卡片及查询期派生标记的 wire DTO。
 type CardView struct {
 	ID              string       `json:"id"`

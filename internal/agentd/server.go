@@ -191,6 +191,10 @@ type Server struct {
 	automationCursor      int64
 	automationCursorStore *automationCursorStore
 	automationSeen        map[int64]struct{}
+	// automationBackoff 记录每张卡最近一次失败唤醒的 seq 与退避截止时刻（B389
+	// §3.5.4）：同卡同 seq 在退避窗内不重复试跑，防止失败事件反复引发唤醒。
+	// 进程内存：重启后重试一次是安全方向（不丢事件）。
+	automationBackoff map[string]wakeBackoff
 	// automationRoundHook is a test-only observation point; production leaves it nil.
 	automationRoundHook func(card string, result keystone.RoundResult)
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。

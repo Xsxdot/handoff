@@ -707,6 +707,65 @@ func samePhysicalMachine(left, right string) bool {
 	return left == right
 }
 
+// AdmitSeatCarrier 按冻结载体对协调者小队做一次两级 CAS 准入：载体由调用方
+// 指定（来自承载记录），不做候选遍历与打分。与 LaunchAdmit 的唯一差别是
+// 「载体由调用方冻结指定」；与 AdmitFrozen 的差别是协调者小队合法（后者明确
+// 拒绝协调者小队）。carrier 必须是该小队成员，否则 ErrRoleMismatch。
+func (s *Service) AdmitSeatCarrier(squad, carrier string) (Binding, error) {
+	logger := statusLog().With("squad", squad, "carrier", carrier)
+	logger.Info("冻结载体协调者准入开始", "error_kind", "admit_seat_start")
+	if strings.TrimSpace(squad) == "" || strings.TrimSpace(carrier) == "" {
+		err := fmt.Errorf("%w: 冻结载体协调者准入需要小队与载体", ErrInvalid)
+		logger.Error("冻结载体协调者准入参数缺失", "error_kind", "params_missing", "cause", err)
+		return Binding{}, err
+	}
+	q, err := s.Squad(squad)
+	if err != nil {
+		logger.Error("冻结载体协调者小队读取失败", "error_kind", "squad_read", "cause", err)
+		return Binding{}, err
+	}
+	if q.Role != RoleCoordinator {
+		err := fmt.Errorf("%w: %s 是执行者小队", ErrRoleMismatch, q.Name)
+		logger.Error("冻结载体协调者准入角色不符", "error_kind", "role_mismatch", "cause", err)
+		return Binding{}, err
+	}
+	member := SquadMember{Carrier: carrier}
+	found := false
+	for _, candidate := range q.Members {
+		if candidate.Carrier == carrier {
+			member, found = candidate, true
+			break
+		}
+	}
+	if !found {
+		err := fmt.Errorf("%w: 载体 %s 不在小队 %s", ErrRoleMismatch, carrier, q.Name)
+		logger.Warn("冻结载体不是协调者小队成员", "error_kind", "member_mismatch", "cause", err)
+		return Binding{}, err
+	}
+	c, err := s.Carrier(carrier)
+	if err != nil {
+		logger.Error("冻结载体读取失败", "error_kind", "carrier_read", "cause", err)
+		return Binding{}, err
+	}
+	if c.Status != StatusOnline {
+		err := fmt.Errorf("%w: 载体 %s 当前状态为 %s", ErrNoHealthy, carrier, c.Status)
+		logger.Warn("冻结载体不在线", "error_kind", "carrier_offline", "cause", err)
+		return Binding{}, err
+	}
+	binding, err := s.acquire(q, member, c, IgnitionRequest{Squad: q.Name, Actor: "admit_seat_carrier"})
+	if errors.Is(err, errMemberFull) {
+		err = ErrNoSlot
+	}
+	if err != nil {
+		logger.Error("冻结载体协调者准入失败", "error_kind", admissionErrorKind(err), "cause", err)
+		return Binding{}, err
+	}
+	logger.Info("冻结载体协调者准入成功", "member_key", OccupancyMemberKey(binding.Squad, binding.Carrier),
+		"carrier_key", OccupancyCarrierKey(binding.Carrier),
+		"target", binding.Target, "executor", binding.Executor, "error_kind", "admit_seat_success")
+	return binding, nil
+}
+
 // LaunchAdmit 对一次协调者拉起做两级准入（协调者小队的成员载体必须在协调机上，
 // 该约束由配置审核保证，本域只管计数）。
 func (s *Service) LaunchAdmit(squadName string) (Binding, error) {

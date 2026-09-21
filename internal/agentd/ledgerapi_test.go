@@ -189,6 +189,33 @@ func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore, ledgerPath: ledgerPath}
 }
 
+// newNoPTYLedgerEnvWithTargets 是 newNoPTYLedgerEnv 的变体：额外注入 config.Targets，
+// 供转交出站测试构造「对端机器」直连目标。
+func newNoPTYLedgerEnvWithTargets(t *testing.T, targets map[string]config.Target) *ledgerEnv {
+	t.Helper()
+	ledgerPath := filepath.Join(t.TempDir(), "ledger.db")
+	ledgerStore, err := ledger.Open(ledgerPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ledgerStore.Close() })
+	seedAgentdLedger(t, ledgerStore)
+	backend, err := store.Open(t.TempDir() + "/handoff.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = backend.Close() })
+	cfg := &config.Config{Token: testToken, DataDir: t.TempDir(), Targets: targets}
+	log := slog.New(slog.NewTextHandler(io.Discard, nil))
+	srv := NewServer(cfg, backend, log)
+	srv.SetLedger(ledgerStore)
+	newManagerForServer(t, srv, nil)
+	srv.SetConfigPath(filepath.Join(t.TempDir(), "config.yaml"))
+	ts := testhttp.NewServer(t, srv.Handler())
+	cfg.Listen = strings.TrimPrefix(ts.URL, "http://")
+	return &ledgerEnv{testAgentdEnv: &testAgentdEnv{srv: srv, ts: ts, st: backend, token: testToken}, ledger: ledgerStore, ledgerPath: ledgerPath}
+}
+
 func TestFlowBoardLayoutEndpointRoundTripAndValidation(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	valid := `{"nodes":[{"name":"待办"}],"board":{"columns":["收集","沟通","实现","验收","完成"],"state_to_column":{"待办":"收集","终止":"完成"},"fallback":"实现"}}`

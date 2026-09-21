@@ -706,6 +706,11 @@ func (s *Store) CloseCard(id, reason, actor string) error {
 			StatusClosed, reason, s.tval(time.Now()), id); err != nil {
 			return fmt.Errorf("写终止: %w", err)
 		}
+		// 终态转移在同一事务内清席位与承载记录（B389 §2.2 规则 6）：不允许
+		// 「先关单、后台再清」，否则会留下终态带席位的窗口。
+		if err := s.clearSeatTx(tx, id); err != nil {
+			return fmt.Errorf("终止清席位 %s: %w", id, err)
+		}
 		_, err = s.appendEvent(tx, sink, id, EvStatusMoved, actor,
 			map[string]any{"from": card.Status, "to": StatusClosed, "reason": reason})
 		return err

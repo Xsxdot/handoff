@@ -897,3 +897,163 @@ func TestCoordAttachHomeExpansionFailureReturns400(t *testing.T) {
 		t.Fatalf("定位失败后 AttachState 应回滚为 false")
 	}
 }
+
+// wakeEndpointRunner 是 handleCoordWake 的 runner：Resume 可失败以触发重建，
+// Launch 返回新 session。
+type wakeEndpointRunner struct {
+	failResume bool
+	launchID   string
+	resumes    int
+	launches   int
+}
+
+func (r *wakeEndpointRunner) Launch(keysclient.SessionSpec, string) (keysclient.TurnResult, error) {
+	r.launches++
+	if r.launchID == "" {
+		r.launchID = "sess-new"
+	}
+	return keysclient.TurnResult{SessionID: r.launchID, Output: "ok"}, nil
+}
+
+func (r *wakeEndpointRunner) Resume(ref keysclient.SessionRef, _ string) (keysclient.TurnResult, error) {
+	r.resumes++
+	if r.failResume {
+		return keysclient.TurnResult{}, errors.New("resume failed")
+	}
+	return keysclient.TurnResult{SessionID: ref.SessionID, Output: "ok"}, nil
+}
+
+// TestB389WakeEndpointSeatMismatch409 锁 §4-26：body 的 seat 与账本不符 → 409，
+// 不改状态、零回合。
+func TestB389WakeEndpointSeatMismatch409(t *testing.T) {
+	env, _ := newNoPTYCoordEnv(t)
+	seedCoordinatorSquad(t, env)
+	runner := &wakeEndpointRunner{}
+	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	cardID := createCoordCard(t, env)
+	bindCoordSeatForWake(t, env, cardID)
+	appendMirroredForConsumer(t, env.ledger, cardID, "wake-mismatch", "completed", 1, `{"text":"done"}`)
+
+	body := `{"seat":"cli:opencode#stale","events":[{"seq":1,"card_id":"` + cardID + `","type":"task_mirrored"}]}`
+	code, _ := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/wake", body)
+	if code != http.StatusConflict {
+		t.Fatalf("seat 不符应 409，得 %d", code)
+	}
+	if runner.resumes != 0 || runner.launches != 0 {
+		t.Fatalf("409 不得发起回合: resumes=%d launches=%d", runner.resumes, runner.launches)
+	}
+	card, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.DriverSession == "cli:opencode#stale" {
+		t.Fatal("409 不得改席位")
+	}
+}
+
+// TestB389WakeEndpointExecutesAndRebinds 锁 §4-27：seat 相符且 resume 失败触发重建
+// 时，对端用 RebindSeat(expect=旧身份) 落库，本机读卡看到新身份。
+func TestB389WakeEndpointExecutesAndRebinds(t *testing.T) {
+	env, _ := newNoPTYCoordEnv(t)
+	seedCoordinatorSquad(t, env)
+	cardID := createCoordCard(t, env)
+	bindCoordSeatForWake(t, env, cardID)
+	runner := &wakeEndpointRunner{failResume: true, launchID: "sess-new"}
+	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	card, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendMirroredForConsumer(t, env.ledger, cardID, "wake-ok", "completed", 1, `{"text":"done"}`)
+	events, err := env.ledger.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := events[len(events)-1].Seq
+
+	reqBody, _ := json.Marshal(proto.CoordinatorWakeReq{
+		Seat: card.DriverSession, Holder: "other#1",
+		Events: []proto.LedgerEvent{{Seq: seq, CardID: cardID, Type: ledger.EvTaskMirrored,
+			Payload: []byte(`{"node":"n","attempt":"a","task_type":"completed","payload":{"text":"done"}}`)}},
+	})
+	code, body := ledgerPostWithClient(t, env.testAgentdEnv, http.DefaultClient,
+		"/api/cards/"+cardID+"/coordinator/wake", string(reqBody))
+	if code != http.StatusOK {
+		t.Fatalf("转交唤醒应 200，得 %d body=%s", code, body)
+	}
+	var resp proto.CoordinatorWakeResp
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("响应解码: %v body=%s", err, body)
+	}
+	if resp.HandledBy == "" || !resp.Rebuilt {
+		t.Fatalf("响应应回报 handled_by 与 rebuilt: %+v", resp)
+	}
+	after, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantIdentity, _ := proto.EncodeSeatIdentity("opencode", "sess-new")
+	if after.DriverSession != wantIdentity {
+		t.Fatalf("重建后本机应看到新身份: got %q want %q", after.DriverSession, wantIdentity)
+	}
+}
+
+// TestB389WakeEndpointNoRebuildKeepsSeat 对照：resume 成功返回原 session 时
+// Rebuilt=false 且席位不变。
+func TestB389WakeEndpointNoRebuildKeepsSeat(t *testing.T) {
+	env, _ := newNoPTYCoordEnv(t)
+	seedCoordinatorSquad(t, env)
+	cardID := createCoordCard(t, env)
+	bindCoordSeatForWake(t, env, cardID)
+	runner := &wakeEndpointRunner{}
+	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	card, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	appendMirroredForConsumer(t, env.ledger, cardID, "wake-norebuild", "completed", 1, `{"text":"done"}`)
+	events, err := env.ledger.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq := events[len(events)-1].Seq
+	reqBody, _ := json.Marshal(proto.CoordinatorWakeReq{
+		Seat: card.DriverSession,
+		Events: []proto.LedgerEvent{{Seq: seq, CardID: cardID, Type: ledger.EvTaskMirrored,
+			Payload: []byte(`{"node":"n","attempt":"a","task_type":"completed","payload":{"text":"done"}}`)}},
+	})
+	code, body := ledgerPostWithClient(t, env.testAgentdEnv, http.DefaultClient,
+		"/api/cards/"+cardID+"/coordinator/wake", string(reqBody))
+	if code != http.StatusOK {
+		t.Fatalf("转交唤醒应 200，得 %d body=%s", code, body)
+	}
+	var resp proto.CoordinatorWakeResp
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Rebuilt {
+		t.Fatalf("resume 成功不应 rebuilt: %+v", resp)
+	}
+	after, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if after.DriverSession != card.DriverSession {
+		t.Fatalf("resume 成功席位不得变: got %q want %q", after.DriverSession, card.DriverSession)
+	}
+}
+
+// bindCoordSeatForWake 直接给卡落一个 coordinate 席位 + 承载（Carrier=c1，与
+// seedCoordinatorSquad 登记的协调者小队成员一致），不经 LaunchForCard，避免
+// 预绑定回合污染 runner 计数。
+func bindCoordSeatForWake(t *testing.T, env *ledgerEnv, cardID string) {
+	t.Helper()
+	seat, err := proto.EncodeSeatIdentity("opencode", "sess-old")
+	if err != nil {
+		t.Fatalf("编码席位: %v", err)
+	}
+	if err := env.ledger.BindSeat(cardID, seat, proto.SeatSourceCoordinate,
+		ledger.SeatBearing{Carrier: "c1", Machine: "local"}); err != nil {
+		t.Fatalf("落协调者席位: %v", err)
+	}
+}

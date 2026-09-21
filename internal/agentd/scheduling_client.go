@@ -33,6 +33,9 @@ type SchedulingClient interface {
 	AdmitFrozen(binding scheduling.Binding) (scheduling.Binding, error)
 	Select(req scheduling.IgnitionRequest) (scheduling.Binding, error)
 	LaunchAdmit(squadName string) (scheduling.Binding, error)
+	// AdmitSeatCarrier 按承载记录里的冻结载体对协调者小队做两级 CAS 准入
+	// （B389 §3.4）；唤醒路径不再经 LaunchAdmit 重选载体。
+	AdmitSeatCarrier(squad, carrier string) (scheduling.Binding, error)
 	Release(squadName, carrierName string) error
 
 	// —— 点火队列（scheddispatch / scheddrain）——

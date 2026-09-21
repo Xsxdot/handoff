@@ -30,6 +30,27 @@ func (c *Client) CoordinatorRebind(ctx context.Context, cardID string, req proto
 	return &out, nil
 }
 
+// CoordinatorWake 把本批唤醒事件转交给承载席位所在机器的 agentd 执行（B389
+// §3.3）。出站方负责加防环头（调用方用 MarkForwarded）；本方法只发一次请求、
+// 原样透出非 2xx 错误正文。请求/返回/错误边界见 proto.CoordinatorWakeReq/Resp。
+func (c *Client) CoordinatorWake(ctx context.Context, cardID string,
+	req proto.CoordinatorWakeReq) (*proto.CoordinatorWakeResp, error) {
+	resp, err := c.do(ctx, http.MethodPost,
+		"/api/cards/"+url.PathEscape(cardID)+"/coordinator/wake", req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, c.httpError("coordinator wake", resp)
+	}
+	var out proto.CoordinatorWakeResp
+	if err := decodeWire(resp, &out); err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
 // CoordinatorForget 通知本机 agentd 丢弃卡的旧协调者会话引用。
 // 参数：ctx 控制请求；cardID 是卡号。返回：agentd 返回 200 才为 nil。
 // 注意：该方法不写账本；席位 CAS 由 CLI 或 agentd 控制面先完成。

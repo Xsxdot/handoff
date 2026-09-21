@@ -1128,3 +1128,27 @@ func TestSessionSendToMissingSessionRoomIsErrNoRoom(t *testing.T) {
 		t.Fatalf("不得误报只读（房间不是在而是无）: %v", err)
 	}
 }
+
+// TestB389SessionListNeedsHumanTagKept 锁 §4-20 回归：B389 判据收口只动唤醒映射，
+// 会话列表「需要你」待办（SessionDetail.Summary.NeedsHuman）照常亮起，不改码。
+func TestB389SessionListNeedsHumanTagKept(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	card := sessionCard(t, st, "B389 待办标签")
+	session, err := svc.CreateSession("B389 会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(card.ID, "需要你处置", "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	detail, err := svc.SessionDetail(session.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !detail.Summary.NeedsHuman {
+		t.Fatal("needs_human 后会话列表「需要你」待办应亮起")
+	}
+}

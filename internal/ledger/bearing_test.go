@@ -136,6 +136,79 @@ func TestSeatBearingFollowsSeatLifecycle(t *testing.T) {
 	}
 }
 
+// TestSetSeatBearingRepairsMissingRecord 锁 B389 §2.3 的存量修复写面：
+// 存量 coordinate 席位无承载时，人工按载体登记补写；CAS 断言席位未变；
+// 只 upsert 承载行，不动席位真源。
+func TestSetSeatBearingRepairsMissingRecord(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "补承载", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// 空座不能补承载。
+	repair := SeatBearing{Carrier: "coord-carrier", Machine: "linux-01",
+		HomeDir: "/home/coordinator", Model: "m1"}
+	if err := s.SetSeatBearing(c.ID, "", repair); !errors.Is(err, ErrBadState) {
+		t.Fatalf("空座补承载应 ErrBadState，得 %v", err)
+	}
+
+	// bind 席位不能补承载（人尺度坐下没有载体归属）。
+	bindSeat, _ := proto.EncodeSeatIdentity("codex", "mine")
+	if err := s.BindSeat(c.ID, bindSeat, proto.SeatSourceBind, SeatBearing{}); err != nil {
+		t.Fatalf("人尺度坐下: %v", err)
+	}
+	if err := s.SetSeatBearing(c.ID, bindSeat, repair); !errors.Is(err, ErrBadState) {
+		t.Fatalf("bind 席位补承载应 ErrBadState，得 %v", err)
+	}
+	if _, ok, _ := s.SeatBearingOf(c.ID); ok {
+		t.Fatal("bind 席位不得留下承载行")
+	}
+	if err := s.ClearSeat(c.ID); err != nil {
+		t.Fatalf("清座: %v", err)
+	}
+
+	// 存量 coordinate 席位（正常坐下再删承载行模拟旧库）。
+	seat, _ := proto.EncodeSeatIdentity("opencode", "sess-legacy")
+	if err := s.BindSeat(c.ID, seat, proto.SeatSourceCoordinate,
+		SeatBearing{Carrier: "coord-carrier", Machine: "local"}); err != nil {
+		t.Fatalf("写存量席位: %v", err)
+	}
+	if _, err := s.db.Exec(`DELETE FROM seat_bearings WHERE card_id = ?`, c.ID); err != nil {
+		t.Fatalf("删承载行模拟存量: %v", err)
+	}
+	if _, ok, _ := s.SeatBearingOf(c.ID); ok {
+		t.Fatal("前置条件：承载行应已删除")
+	}
+
+	// CAS 不符 → 拒绝且不写承载。
+	if err := s.SetSeatBearing(c.ID, "cli:opencode#stale", repair); !errors.Is(err, ErrCASConflict) {
+		t.Fatalf("CAS 不符应 ErrCASConflict，得 %v", err)
+	}
+	if _, ok, _ := s.SeatBearingOf(c.ID); ok {
+		t.Fatal("CAS 失败后不得写入承载行")
+	}
+
+	// CAS 相符 → 写入承载，席位真源原样不动。
+	if err := s.SetSeatBearing(c.ID, seat, repair); err != nil {
+		t.Fatalf("补写承载: %v", err)
+	}
+	got, ok, err := s.SeatBearingOf(c.ID)
+	if err != nil || !ok {
+		t.Fatalf("读补写的承载: ok=%v err=%v", ok, err)
+	}
+	if got != repair {
+		t.Fatalf("补写承载 = %+v，期望 %+v", got, repair)
+	}
+	card, err := s.GetCard(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.DriverSession != seat || card.DriverSource != string(proto.SeatSourceCoordinate) {
+		t.Fatalf("补承载不得改席位真源: %+v", card)
+	}
+}
+
 // 契约 §4-7：承载写入失败时席位不得留下——两件事在同一事务里。
 // 用"把承载表拆掉"制造真实失败，验证的是事务边界而不是分支。
 func TestSeatBearingWriteFailureRollsBackSeat(t *testing.T) {
@@ -159,5 +232,41 @@ func TestSeatBearingWriteFailureRollsBackSeat(t *testing.T) {
 	}
 	if card.DriverSession != "" || card.DriverSource != "" {
 		t.Fatalf("承载失败后席位必须回滚为空: %+v", card)
+	}
+}
+
+// TestCloseCardClearsSeatAndBearing 锁契约 §4-11：终态转移在同一事务内清席位
+// 与承载记录；复活后可重新坐下。
+func TestCloseCardClearsSeatAndBearing(t *testing.T) {
+	s := seedStore(t)
+	c, err := s.CreateCard(NewCard{Title: "终态清座", Project: "p", Workflow: "bug", Actor: "t"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seat, _ := proto.EncodeSeatIdentity("opencode", "sess-terminal")
+	if err := s.BindSeat(c.ID, seat, proto.SeatSourceCoordinate,
+		SeatBearing{Carrier: "coord-carrier", Machine: "linux-01", HomeDir: "/h"}); err != nil {
+		t.Fatalf("叫机器人坐下: %v", err)
+	}
+	if err := s.CloseCard(c.ID, CloseShelved, "t"); err != nil {
+		t.Fatalf("终止卡: %v", err)
+	}
+	card, err := s.GetCard(c.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if card.DriverSession != "" || card.DriverSource != "" {
+		t.Fatalf("终态后席位必须为空: %+v", card)
+	}
+	if _, ok, _ := s.SeatBearingOf(c.ID); ok {
+		t.Fatal("终态后承载行必须不存在")
+	}
+	// 复活后重新坐下：终态清座不阻碍新会话。
+	if err := s.ReviveCard(c.ID, "t"); err != nil {
+		t.Fatalf("复活卡: %v", err)
+	}
+	if err := s.BindSeat(c.ID, seat, proto.SeatSourceCoordinate,
+		SeatBearing{Carrier: "coord-carrier", Machine: "linux-01"}); err != nil {
+		t.Fatalf("复活后重新坐下: %v", err)
 	}
 }

@@ -379,6 +379,60 @@ func (s *Store) RecordBranchMerged(cardID, workBranch, base string, pushedWorkBr
 	})
 }
 
+// ReportSeatBearingMissing 落一条 EvSeatBearingMissing（契约 §2.3）；同一卡同一
+// 席位在承载补齐前只落一次。返回是否本次真的写入，供调用方决定要不要一并打
+// 「需要人」标记（避免重复展示）。检查与追加在同一 mutate 事务内，排他靠事务
+// 串行化。payload 固定 {"seat":"<identity>"}。参数：cardID 卡号；seat 席位身份。
+func (s *Store) ReportSeatBearingMissing(cardID, seat string) (bool, error) {
+	if cardID == "" || seat == "" {
+		return false, fmt.Errorf("缺承载报告参数不完整（card=%q seat=%q）: %w", cardID, seat, ErrBadState)
+	}
+	written := false
+	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			return fmt.Errorf("缺承载报告读卡 %s: %w", cardID, err)
+		}
+		rows, err := tx.Query(s.q(`SELECT payload FROM card_events
+			WHERE card_id = ? AND type = ? ORDER BY seq DESC`), cardID, EvSeatBearingMissing)
+		if err != nil {
+			return fmt.Errorf("缺承载报告查历史 %s: %w", cardID, err)
+		}
+		defer rows.Close()
+		for rows.Next() {
+			var raw string
+			if err := rows.Scan(&raw); err != nil {
+				return fmt.Errorf("缺承载报告扫描 %s: %w", cardID, err)
+			}
+			var payload struct {
+				Seat string `json:"seat"`
+			}
+			if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+				return fmt.Errorf("缺承载报告解码 %s: %w", cardID, err)
+			}
+			if payload.Seat == seat {
+				return nil // 同席位已报告过，幂等
+			}
+		}
+		if err := rows.Err(); err != nil {
+			return fmt.Errorf("缺承载报告遍历结束 %s: %w", cardID, err)
+		}
+		if _, err := s.appendEvent(tx, sink, cardID, EvSeatBearingMissing, "agentd",
+			map[string]string{"seat": seat}); err != nil {
+			return fmt.Errorf("缺承载报告落事件 %s: %w", cardID, err)
+		}
+		written = true
+		return nil
+	})
+	if err != nil {
+		log().Warn("缺承载报告失败", "card", cardID, "cause", err)
+		return false, err
+	}
+	if written {
+		log().Info("缺承载报告已落", "card", cardID, "seat", seat)
+	}
+	return written, nil
+}
+
 // MarkNeedsHuman 打等人标记（reason 必填）；ClearNeedsHuman 清除。
 // 等人不落列，从最后一条 needs_human/needs_cleared 事件推导（spec §2）。
 func (s *Store) MarkNeedsHuman(cardID, reason, actor string) error {

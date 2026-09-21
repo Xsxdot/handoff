@@ -12,7 +12,9 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"sort"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab/room"
@@ -20,6 +22,71 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+const (
+	// wakeClaimTTL 是唤醒认领租期：短于 agentd stalltimeout（默认 2h），
+	// 够一台机器崩溃后被另一台接管；不设无限期，避免认领行永久挡住宿主游标。
+	wakeClaimTTL = 5 * time.Minute
+	// wakeRetryBackoff 是同卡同 seq 失败后的退避窗（契约 §3.5.4）。取 30s：
+	// 长于一次 attach/重建的常见完成时间，短到不让人等太久；同 seq 退避期内
+	// 不重复试跑，防止失败事件再引发唤醒的自激。
+	wakeRetryBackoff = 30 * time.Second
+	// wakeRetryMax 是同卡连续失败的重试上限；超过后按失败次数线性延长退避，
+	// 不再自动无限试跑。
+	wakeRetryMax = 3
+)
+
+// wakeBackoff 记录一张卡的退避状态。
+type wakeBackoff struct {
+	Seq      int64
+	Until    time.Time
+	Attempts int
+}
+
+// maxSeqOf 返回一批 seq 的最大值（三行纯函数，退避按同卡最大 seq 记账）。
+func maxSeqOf(seqs []int64) int64 {
+	var max int64
+	for _, seq := range seqs {
+		if seq > max {
+			max = seq
+		}
+	}
+	return max
+}
+
+// shouldSkipByBackoff 判断该卡本批最大 seq 是否仍在退避窗内（同 seq 不重复试跑）。
+func (s *Server) shouldSkipByBackoff(card string, seq int64) bool {
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	state, ok := s.automationBackoff[card]
+	if !ok || state.Seq != seq {
+		return false
+	}
+	return time.Now().Before(state.Until)
+}
+
+// recordWakeBackoff 记录一次失败退避；超过 wakeRetryMax 后按失败次数线性延长
+// 退避窗，且失败已由 keystone 的 Escalated 路径落 needs_human 展示。
+func (s *Server) recordWakeBackoff(card string, seq int64) {
+	s.automationMu.Lock()
+	defer s.automationMu.Unlock()
+	if s.automationBackoff == nil {
+		s.automationBackoff = make(map[string]wakeBackoff)
+	}
+	state := s.automationBackoff[card]
+	if state.Seq != seq {
+		state = wakeBackoff{Seq: seq}
+	}
+	state.Attempts++
+	delay := wakeRetryBackoff
+	if state.Attempts > wakeRetryMax {
+		delay = wakeRetryBackoff * time.Duration(state.Attempts)
+	}
+	state.Until = time.Now().Add(delay)
+	s.automationBackoff[card] = state
+	s.log.Info("唤醒失败进入退避", "card", card, "seq", seq,
+		"attempts", state.Attempts, "until", state.Until.Format(time.RFC3339))
+}
 
 type mirroredTaskEnvelope struct {
 	Node     *string         `json:"node"`
@@ -116,12 +183,16 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 			return keystone.WakeEvent{}, false, nil
 		}
 		return keystone.WakeEvent{}, false, nil
-	case ledger.EvNeedsHuman, ledger.EvNeedsCleared,
+	case ledger.EvNeedsCleared,
 		ledger.EvDecisionOpened, ledger.EvDecisionAnswered:
 		return keystone.WakeEvent{
 			Kind: keystone.WakeTaskTerminal, Card: ev.CardID,
 			Summary: fmt.Sprintf("%s: %s", ev.Type, truncateRunes(string(ev.Payload), 400)),
 		}, true, nil
+	case ledger.EvNeedsHuman, ledger.EvSeatBearingMissing:
+		// 判据收口（契约 §3.5.1）：等人与缺承载不唤醒协调者；两条展示通路
+		// （卡级订阅 / 会话列表待办）由既有消费者承担，本函数只保证不唤醒。
+		return keystone.WakeEvent{}, false, nil
 	default:
 		return keystone.WakeEvent{}, false, nil
 	}
@@ -293,6 +364,68 @@ func (s *Server) resolveWakeCard(cardID string) string {
 	return ""
 }
 
+// wakeClaimHolder 是本机器 + 本 agentd 实例的认领者标识（契约 §3.1 holder）：
+// 机器名 + 进程号，供他机日志串联与「同持有者可续期」判定。
+func (s *Server) wakeClaimHolder() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		host = "agentd"
+	}
+	return fmt.Sprintf("%s#%d", host, os.Getpid())
+}
+
+// claimWakeBatch 在占名额与试跑之前逐 seq 认领本批事件（契约 §3.1.4）；拿不到
+// 的 seq 表示他机持有，本机跳过、不占名额、不发起回合。返回实际拿到的 seq。
+func (s *Server) claimWakeBatch(card string, seqs []int64) ([]int64, error) {
+	if s.ledger == nil {
+		return nil, fmt.Errorf("唤醒认领缺少账本")
+	}
+	holder := s.wakeClaimHolder()
+	claimed := make([]int64, 0, len(seqs))
+	for _, seq := range seqs {
+		got, err := s.ledger.ClaimWake(seq, card, holder, wakeClaimTTL)
+		if err != nil {
+			return claimed, fmt.Errorf("认领唤醒事件 seq=%d card=%s: %w", seq, card, err)
+		}
+		if !got {
+			s.log.Info("唤醒事件已被他机认领，本机跳过", "seq", seq, "card", card, "holder", holder)
+			continue
+		}
+		claimed = append(claimed, seq)
+	}
+	return claimed, nil
+}
+
+// completeWakeBatch 收尾本批认领；失败只留日志，不覆盖唤醒结果（认领行会在
+// 租约到期后被他机接管，不会永久挡路）。
+func (s *Server) completeWakeBatch(seqs []int64) {
+	if s.ledger == nil {
+		return
+	}
+	holder := s.wakeClaimHolder()
+	for _, seq := range seqs {
+		if err := s.ledger.CompleteWake(seq, holder); err != nil {
+			s.log.Error("唤醒认领收尾失败", "seq", seq, "holder", holder, "cause", err)
+			continue
+		}
+		s.log.Info("唤醒认领收尾完成", "seq", seq, "holder", holder)
+	}
+}
+
+// advanceAutomationCursorWatermark 把候选水位收紧成终局前缀水位再推进：在飞的
+// 认领挡住推进，避免对端崩溃后该事件被永久跳过（契约 §3.1.3）。
+func (s *Server) advanceAutomationCursorWatermark(from, candidate int64) error {
+	if s.ledger == nil {
+		return s.advanceAutomationCursor(candidate)
+	}
+	w, err := s.ledger.CursorWatermark(from, candidate)
+	if err != nil {
+		s.log.Error("终局前缀水位计算失败，不推进游标", "from", from, "candidate", candidate, "cause", err)
+		return err
+	}
+	return s.advanceAutomationCursor(w)
+}
+
 func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int, escalated bool, err error) {
 	if s.autoLedger == nil || s.keystone == nil {
 		s.log.Error("自动化事件消费失败：依赖尚未装配",
@@ -305,6 +438,7 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		s.automationSeen = make(map[int64]struct{})
 	}
 	s.automationMu.Unlock()
+	var firstWakeErr error
 	events, err := s.autoLedger.EventsFromAsc(nil, from, 500)
 	if err != nil {
 		s.log.Error("读自动化账本事件失败", "cursor", from, "cause", err)
@@ -315,6 +449,7 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		seq int64
 		typ string
 		ev  keystone.WakeEvent
+		raw proto.LedgerEvent
 	}
 	pendingByCard := map[string][]pending{}
 	maxProcessed := from
@@ -375,7 +510,7 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 					s.log.Info("自动化唤醒冒泡到祖先席位", "from", wake.Card, "to", target, "seq", ev.Seq)
 				}
 				wake.Card = target
-				pendingByCard[target] = append(pendingByCard[target], pending{seq: ev.Seq, typ: ev.Type, ev: wake})
+				pendingByCard[target] = append(pendingByCard[target], pending{seq: ev.Seq, typ: ev.Type, ev: wake, raw: ev})
 				queued++
 				s.log.Debug("自动化事件进入 pending", "seq", ev.Seq, "card", wake.Card,
 					"type", ev.Type, "kind", string(wake.Kind), "cursor", from,
@@ -403,12 +538,60 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 	sort.Strings(cards)
 	for _, card := range cards {
 		batch := pendingByCard[card]
-		evs := make([]keystone.WakeEvent, 0, len(batch))
+		// 终态卡闸（§3.2 第 1 步 / §4-32）：卡已终态仍带席位（MoveCard→已完成
+		// 不清席位）时不得再唤醒。必须标 seen 并 continue，不能 return——终态卡
+		// 的 pending 若不消费，游标不推进、下一轮重复读到同一条，形成活锁。
+		if cardRow, readErr := s.ledger.GetCard(card); readErr == nil &&
+			(cardRow.Status == ledger.StatusDone || cardRow.Status == ledger.StatusClosed) {
+			s.keystone.Forget(card)
+			for _, item := range batch {
+				s.automationMu.Lock()
+				s.automationSeen[item.seq] = struct{}{}
+				s.automationMu.Unlock()
+			}
+			s.log.Info("终态卡不再唤醒", "card", card, "status", cardRow.Status,
+				"event_count", len(batch))
+			continue
+		}
+		// 认领在占名额与试跑之前（§3.1.4）：拿不到认领的 seq 表示他机持有，
+		// 本机跳过、不占名额、不发起回合。
+		seqs := make([]int64, 0, len(batch))
 		for _, item := range batch {
+			seqs = append(seqs, item.seq)
+		}
+		claimed, claimErr := s.claimWakeBatch(card, seqs)
+		if claimErr != nil {
+			return processed, escalated, claimErr
+		}
+		if len(claimed) == 0 {
+			continue
+		}
+		claimedSet := make(map[int64]bool, len(claimed))
+		for _, seq := range claimed {
+			claimedSet[seq] = true
+		}
+		evs := make([]keystone.WakeEvent, 0, len(claimed))
+		raws := make([]proto.LedgerEvent, 0, len(claimed))
+		claimedSeqs := make([]int64, 0, len(claimed))
+		for _, item := range batch {
+			if !claimedSet[item.seq] {
+				continue
+			}
 			evs = append(evs, item.ev)
+			raws = append(raws, item.raw)
+			claimedSeqs = append(claimedSeqs, item.seq)
+		}
+		// 退避闸（§3.5.4）：同卡同 seq 在退避窗内不重复试跑，认领照常收尾。
+		if s.shouldSkipByBackoff(card, maxSeqOf(claimedSeqs)) {
+			s.log.Info("唤醒退避窗内，跳过同 seq 重复试跑", "card", card)
+			s.completeWakeBatch(claimedSeqs)
+			continue
 		}
 		decision := s.keystone.Decide(evs[0])
 		if !decision.Wake {
+			// attach 暂缓不试跑、不收尾、不推进游标（与既有行为一致：
+			// TestAutomationAttachDefersAndThenWakes 断言暂缓期 cursor 文件不写）。
+			// 认领留到租约到期——它同时挡住水位推进，正好是我们要的。
 			s.log.Info("自动化事件因 attach 暂缓", "card", card,
 				"event_count", len(evs), "reason", decision.Reason)
 			for _, item := range batch {
@@ -418,44 +601,28 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			}
 			return processed, escalated, nil
 		}
-		result, wakeErr := s.wakeCoordinatorRound(ctx, card, evs)
+		result, wakeErr := s.wakeCoordinatorRoundRaw(ctx, card, evs, raws)
+		s.completeWakeBatch(claimedSeqs)
 		if wakeErr != nil {
 			s.log.Error("自动化事件批次唤醒失败", "card", card,
 				"event_count", len(evs), "cause", wakeErr)
-			// 失败也推进游标：同一条用户消息重试会反复 launchRound，失败前若
-			// 再落指针就把房间刷爆（B274）。attach 暂缓走上面的 early return，
-			// 不经过这里。
-			// 双失败会在账本里落一条 needs_human；它是本轮失败的结果，不是
-			// 新的唤醒请求。把这条自生事件一并标记，避免转等人后立即再次
-			// Launch 形成自激重试；其它并发事件仍留给下一轮读取。
+			// 单卡失败不断整轮（契约 §3.5.4 / §4-30）：退避后继续处理同批与
+			// 后续卡，轮末统一推进终局前缀水位。失败已 CompleteWake，游标不会
+			// 被它永久挡。判据收口后 needs_human 已不在唤醒映射里（契约
+			// §3.5.3），「把自生 needs_human 标 seen」的补丁随之删除。
+			s.recordWakeBackoff(card, maxSeqOf(claimedSeqs))
 			if result.Escalated {
-				generated, readErr := s.autoLedger.EventsFromAsc(nil, maxProcessed, 500)
-				if readErr != nil {
-					s.log.Warn("升级后读取自生等人事件失败", "card", card, "cause", readErr)
-				} else {
-					for _, generatedEvent := range generated {
-						if generatedEvent.Type != ledger.EvNeedsHuman || generatedEvent.CardID != card {
-							continue
-						}
-						s.automationMu.Lock()
-						s.automationSeen[generatedEvent.Seq] = struct{}{}
-						s.automationMu.Unlock()
-						if generatedEvent.Seq > maxProcessed {
-							maxProcessed = generatedEvent.Seq
-						}
-					}
-				}
+				escalated = true
 			}
-			for _, item := range batch {
-				s.log.Debug("自动化 pending 事件唤醒失败，推进 cursor", "seq", item.seq,
-					"card", card, "type", item.typ, "cursor", from,
-					"cursor_candidate", maxProcessed, "cause", wakeErr)
+			if firstWakeErr == nil {
+				firstWakeErr = wakeErr
 			}
-			cursorErr := s.advanceAutomationCursor(maxProcessed)
-			if cursorErr != nil {
-				return processed, escalated || result.Escalated, errors.Join(wakeErr, cursorErr)
+			for _, seq := range claimedSeqs {
+				s.automationMu.Lock()
+				s.automationSeen[seq] = struct{}{}
+				s.automationMu.Unlock()
 			}
-			return processed, escalated || result.Escalated, wakeErr
+			continue
 		}
 		if s.automationRoundHook != nil {
 			s.automationRoundHook(card, result)
@@ -463,23 +630,20 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		if result.Escalated {
 			escalated = true
 		}
-		for _, item := range batch {
+		for _, seq := range claimedSeqs {
 			s.automationMu.Lock()
-			s.automationSeen[item.seq] = struct{}{}
+			s.automationSeen[seq] = struct{}{}
 			s.automationMu.Unlock()
 			processed++
-			s.log.Debug("自动化 pending 事件标记 seen", "seq", item.seq,
-				"card", card, "type", item.typ, "cursor", from,
-				"cursor_candidate", maxProcessed, "reason", "wake_succeeded")
 		}
 		s.log.Info("自动化事件批次已唤醒", "card", card,
 			"event_count", len(evs), "session", result.SessionID,
 			"rebuilt", result.Rebuilt, "escalated", result.Escalated)
 	}
-	if cursorErr := s.advanceAutomationCursor(maxProcessed); cursorErr != nil {
-		return processed, escalated, cursorErr
+	if cursorErr := s.advanceAutomationCursorWatermark(from, maxProcessed); cursorErr != nil {
+		return processed, escalated, errors.Join(firstWakeErr, cursorErr)
 	}
 	s.log.Info("自动化事件消费轮完成", "from_cursor", from,
 		"to_cursor", maxProcessed, "processed", processed, "escalated", escalated)
-	return processed, escalated, nil
+	return processed, escalated, firstWakeErr
 }
