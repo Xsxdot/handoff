@@ -19,6 +19,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/targetclient"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 const previewMirrorBackoffMax = 10 * time.Second
@@ -26,8 +27,8 @@ const previewMirrorBackoffMax = 10 * time.Second
 // PreviewMirror is a bounded supervisor for owner snapshots and preview WS streams.
 type PreviewMirror struct {
 	pool         *targetclient.Pool
-	owner        *PreviewOwner
-	hub          *PreviewHub
+	owner        *workspace.PreviewOwner
+	hub          *workspace.PreviewHub
 	isSelfTarget func(string) bool
 	log          *slog.Logger
 
@@ -44,16 +45,16 @@ type PreviewMirror struct {
 }
 
 // NewPreviewMirror constructs a projection with no persistent coordinator state.
-func NewPreviewMirror(pool *targetclient.Pool, owner *PreviewOwner, hub *PreviewHub,
+func NewPreviewMirror(pool *targetclient.Pool, owner *workspace.PreviewOwner, hub *workspace.PreviewHub,
 	isSelfTarget func(string) bool, log *slog.Logger) *PreviewMirror {
 	if log == nil {
 		log = slog.Default()
 	}
 	if hub == nil && owner != nil {
-		hub = owner.hub
+		hub = owner.Hub()
 	}
 	if hub == nil {
-		hub = NewPreviewHub(log)
+		hub = workspace.NewPreviewHub(log)
 	}
 	return &PreviewMirror{
 		pool: pool, owner: owner, hub: hub, isSelfTarget: isSelfTarget, log: log,

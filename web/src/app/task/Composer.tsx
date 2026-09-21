@@ -164,7 +164,7 @@ export function Composer({ task, disabled, onChanged }: { task: Task; disabled: 
           void runAction('stop', async () => {
             const r = await stopTask(task.id)
             setMessage({
-              text: r.worktree_removed ? '已停止；agentd 创建的工作树已删除。' : '已停止（工作树保留：用户自带工作树 / 原地模式，或清理失败）。',
+              text: r.worktree_removed ? '已停止；agentd 创建的工作树已删除。' : '已停止；现场已留存，显式 reclaim/gc 才清。',
               kind: 'info',
             })
           })

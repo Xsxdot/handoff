@@ -149,8 +149,7 @@ func newLedgerEnv(t *testing.T) *ledgerEnv {
 	env := newTestAgentdEnv(t)
 	env.srv.SetLedger(st)
 	// 空 target 的 card step 对本机 /api/status 探活；没 manager 会 503。
-	env.srv.SetManager(NewManager(env.st, env.srv.Hub(), nil, env.srv.conf(), nil, nil, nil,
-		slog.New(slog.NewTextHandler(io.Discard, nil))))
+	newManagerForServer(t, env.srv, nil)
 	return &ledgerEnv{testAgentdEnv: env, ledger: st, ledgerPath: ledgerPath}
 }
 
@@ -182,7 +181,7 @@ func newNoPTYLedgerEnv(t *testing.T) *ledgerEnv {
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 	srv := NewServer(cfg, backend, log)
 	srv.SetLedger(ledgerStore)
-	srv.SetManager(NewManager(backend, srv.Hub(), nil, cfg, nil, nil, nil, log))
+	newManagerForServer(t, srv, nil)
 	ts := testhttp.NewServer(t, srv.Handler())
 	// Task 3 的本机纪律探活走真实 HTTP；把临时服务地址回填为本机监听地址，
 	// 避免零值 Listen 被误当成 relay 的空端点。
@@ -928,6 +927,53 @@ func TestCardDetailReturnsChildren(t *testing.T) {
 	}
 }
 
+func TestCardDetailProjectsMirroredSourceIdentity(t *testing.T) {
+	env := newLedgerEnv(t)
+	card := seedCard(t, env, "source HTTP 投影")
+	if _, err := env.ledger.AddComment(card.ID, "原生 comment", "普通", "test"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := env.ledger.AppendMirroredEvent(card.ID, ledger.MirroredEvent{
+		Target: "linux-01", Task: "task-http-source", SourceSeq: 11,
+		Type: string(proto.EventTypeDeliveryFailed), Payload: []byte(`{"reason":"late"}`), CreatedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	code, body := ledgerGet(t, env.testAgentdEnv, "/api/cards/"+card.ID)
+	if code != http.StatusOK {
+		t.Fatalf("code=%d body=%s", code, body)
+	}
+	var detail proto.CardDetail
+	if err := json.Unmarshal([]byte(body), &detail); err != nil {
+		t.Fatalf("解析卡详情: %v body=%s", err, body)
+	}
+	var mirrored, native *proto.LedgerEvent
+	for i := range detail.Events {
+		event := &detail.Events[i]
+		switch event.Type {
+		case ledger.EvTaskMirrored:
+			mirrored = event
+		case ledger.EvComment:
+			if native == nil {
+				native = event
+			}
+		}
+	}
+	if mirrored == nil || mirrored.SourceTarget != "linux-01" ||
+		mirrored.SourceTask != "task-http-source" || mirrored.SourceSeq != 11 {
+		t.Fatalf("HTTP 镜像 source 投影丢失: %+v", mirrored)
+	}
+	if !strings.Contains(body, `"source_target":"linux-01"`) ||
+		!strings.Contains(body, `"source_task":"task-http-source"`) ||
+		!strings.Contains(body, `"source_seq":11`) {
+		t.Fatalf("HTTP JSON 缺 source 三列: %s", body)
+	}
+	if native == nil || native.SourceTarget != "" || native.SourceTask != "" || native.SourceSeq != 0 {
+		t.Fatalf("HTTP 卡原生事件 source 应为零值: %+v", native)
+	}
+}
+
 // TestCardAcceptRecordsEvidence 验收写入口落事件。
 func TestCardAcceptRecordsEvidence(t *testing.T) {
 	env := newLedgerEnv(t)
@@ -1574,7 +1620,7 @@ func TestCardStepRejectsUnknownNode(t *testing.T) {
 func TestCardStepRejectsSeatActorMismatch(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
-	if err := env.ledger.BindSeat("B1", "cli:codex#bound", proto.SeatSourceBind); err != nil {
+	if err := env.ledger.BindSeat("B1", "cli:codex#bound", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatalf("准备坐下席位: %v", err)
 	}
 	called := make(chan struct{}, 1)

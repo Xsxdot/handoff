@@ -24,6 +24,7 @@ func newBundleEnv(t *testing.T, branch string) (env *testAgentdEnv, taskID, repo
 	t.Helper()
 	env = newTestAgentdEnvWithCfg(t, &config.Config{Token: testToken, DataDir: t.TempDir()},
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ensureTestManager(t, env)
 	repo, baseSHA = newBundleRepo(t)
 	taskID = "t-bundle"
 	if err := env.st.CreateTask(&proto.Task{

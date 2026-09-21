@@ -38,6 +38,7 @@ type ResumeReq struct {
 	Model      string
 	MarkRoot   string
 	Cold       bool
+	Approval   ApprovalClient // nil = 本任务不走新 client；OpenCode 冷恢复必须非 nil
 }
 
 // 恢复实际走到的级别（ResumeOutcome.Mode 的取值）。

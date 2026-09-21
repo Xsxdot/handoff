@@ -260,7 +260,7 @@ func TestRunnerKeepsRunLockWithoutChangingSeat(t *testing.T) {
 
 func TestRunnerDoesNotOverwriteExistingSeat(t *testing.T) {
 	st, card := nodeLedger(t)
-	if err := st.BindSeat(card.ID, "cli:codex#holder", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(card.ID, "cli:codex#holder", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatalf("预先认领: %v", err)
 	}
 	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {
@@ -738,7 +738,7 @@ func TestRunnerLocalClientUsesWaitAndDiffWire(t *testing.T) {
 			}
 			return taskID, "", nil
 		}},
-		Clients: func(target string) (*client.Client, error) {
+		Clients: func(target string) (StepClient, error) {
 			if target != "" {
 				return nil, fmt.Errorf("本机 runner 收到非空 target %q", target)
 			}
@@ -762,6 +762,95 @@ func TestRunnerLocalClientUsesWaitAndDiffWire(t *testing.T) {
 	if wsHits.Load() != 1 || attachHits.Load() != 1 || doneHits.Load() != 1 || diffHits.Load() != 1 {
 		t.Fatalf("本机 runner HTTP hits ws/attach/done/diff = %d/%d/%d/%d，期望均 1",
 			wsHits.Load(), attachHits.Load(), doneHits.Load(), diffHits.Load())
+	}
+}
+
+// TestB2336TerminalRunDoesNotBecomeBusinessVerdict keeps executor lifecycle
+// separate from card business acceptance.  A terminal event without a typed
+// handoff-verdict is only an execution observation, even when Run reaches its
+// normal terminal handling path.
+func TestB2336TerminalRunDoesNotBecomeBusinessVerdict(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	terminalEvents := []struct {
+		name    string
+		typ     proto.EventType
+		payload string
+	}{
+		{name: "completed", typ: proto.EventTypeCompleted, payload: `{"summary":"executor finished","final_text":"executor finished"}`},
+		{name: "turn_failed", typ: proto.EventTypeTurnFailed, payload: `{"fail_reason":"turn stopped"}`},
+		{name: "failed", typ: proto.EventTypeFailed, payload: `{"fail_reason":"executor failed"}`},
+	}
+	for _, tc := range terminalEvents {
+		t.Run(tc.name, func(t *testing.T) {
+			const taskID = "task-terminal-observation"
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				switch {
+				case r.URL.Path == "/ws/events":
+					conn, err := websocket.Accept(w, r, nil)
+					if err != nil {
+						t.Errorf("Accept WS: %v", err)
+						return
+					}
+					defer conn.CloseNow()
+					ev := proto.Event{Seq: 1, TaskID: taskID, Type: tc.typ, Payload: json.RawMessage(tc.payload)}
+					body, err := json.Marshal(ev)
+					if err != nil {
+						t.Errorf("marshal terminal event: %v", err)
+						return
+					}
+					if err := conn.Write(r.Context(), websocket.MessageText, body); err != nil {
+						t.Errorf("write terminal event: %v", err)
+					}
+				case r.URL.Path == "/api/tasks/"+taskID && r.Method == http.MethodGet:
+					_, _ = io.WriteString(w, fmt.Sprintf(`{"recent_events":[{"seq":1,"task_id":%q,"type":%q,"payload":%s}]}`,
+						taskID, tc.typ, tc.payload))
+				case r.URL.Path == "/api/tasks/"+taskID+"/done" && r.Method == http.MethodPost:
+					_, _ = io.WriteString(w, `{"ok":true}`)
+				default:
+					http.NotFound(w, r)
+				}
+			}))
+			t.Cleanup(ts.Close)
+
+			st, _ := dispatchTestCard(t)
+			if _, err := st.PutWorkflow("terminal-observation", ledger.WorkflowDef{Nodes: []ledger.NodeDef{
+				{Name: ledger.StatusTodo, Next: "审阅"},
+				{Name: "审阅", Dispatch: true, Verdict: true, Template: "feature-impl"},
+			}}); err != nil {
+				t.Fatalf("写终态测试工作流: %v", err)
+			}
+			card, err := st.CreateCard(ledger.NewCard{
+				Title: "终态观察", Project: "demo", Workflow: "terminal-observation", Actor: "test",
+			})
+			if err != nil {
+				t.Fatalf("建终态测试卡: %v", err)
+			}
+			runner := &StepRunner{
+				St: st, Session: "terminal-test", Target: "mac-02", RunHolder: "run:terminal#1#1",
+				Dispatcher: &Dispatcher{St: st, Actor: "terminal-test", Transport: func(context.Context, DispatchOpts) (string, string, error) {
+					return taskID, "", nil
+				}},
+				Clients: func(target string) (StepClient, error) {
+					return client.New(ts.URL, "test-token"), nil
+				},
+			}
+			outcome, runErr := runner.Run(context.Background(), card.ID, "审阅")
+			if runErr != nil || outcome.Action != ActionNeedsHuman {
+				t.Fatalf("缺少业务 handoff-verdict 的终态应转为 needs_human: outcome=%+v err=%v", outcome, runErr)
+			}
+			events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+			if err != nil {
+				t.Fatalf("读终态账本: %v", err)
+			}
+			for _, event := range events {
+				switch event.Type {
+				case ledger.EvReviewVerdict:
+					t.Fatalf("执行终态不得冒充 review verdict: %+v", event)
+				case ledger.EvAcceptanceRecorded:
+					t.Fatalf("执行终态不得冒充 acceptance: %+v", event)
+				}
+			}
+		})
 	}
 }
 

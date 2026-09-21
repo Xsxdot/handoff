@@ -110,6 +110,45 @@ func TestInboxItemGoldenThreeOrigins(t *testing.T) {
 	}
 }
 
+func TestRoomsPageGoldenEnvelope(t *testing.T) {
+	full := RoomsPage{
+		Rooms:      []RoomSummary{{ID: "B1", Kind: "card", Title: "卡会话", Unread: 0}},
+		NextCursor: "eyJhIjoxNzAwMDAwMDAwMDAwMDAwMDAwLCJyIjoiQjQyIn0",
+		HasMore:    true,
+	}
+	raw, err := json.Marshal(full)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["has_more"] != true || got["next_cursor"] != full.NextCursor {
+		t.Fatalf("分页信封编码错误: %s", raw)
+	}
+	if _, ok := got["rooms"]; !ok {
+		t.Fatalf("rooms 键恒出: %s", raw)
+	}
+
+	// has_more=false 时 next_cursor 必须省略；has_more 键恒在。
+	last := RoomsPage{Rooms: []RoomSummary{}, HasMore: false}
+	raw, err = json.Marshal(last)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got = map[string]any{}
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if got["has_more"] != false {
+		t.Fatalf("has_more 必须恒出且为 false: %s", raw)
+	}
+	if _, ok := got["next_cursor"]; ok {
+		t.Fatalf("has_more=false 时 next_cursor 必须省略: %s", raw)
+	}
+}
+
 func TestRoomSummaryGoldenProjection(t *testing.T) {
 	card := RoomSummary{
 		ID: "B1", Kind: "card", Title: "卡会话", Live: true,

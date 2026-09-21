@@ -9,7 +9,9 @@ import (
 )
 
 func TestServePermissionHookAllow(t *testing.T) {
-	sockDir := t.TempDir()
+	// 用 shortSockDir 而非 t.TempDir()：t.TempDir 会把测试名拼进路径，
+	// 测试名一长 unix socket 全路径就超 macOS 104 字节上限（见 permission_mcp_test.go）。
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 
 	ln, err := net.Listen("unix", sockPath)
@@ -51,7 +53,7 @@ func TestServePermissionHookAllow(t *testing.T) {
 }
 
 func TestServePermissionHookDenyWithReasonAndStep0(t *testing.T) {
-	sockDir := t.TempDir()
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 
 	ln, err := net.Listen("unix", sockPath)

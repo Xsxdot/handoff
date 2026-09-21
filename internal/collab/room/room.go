@@ -14,6 +14,7 @@ package room
 import (
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -23,24 +24,27 @@ import (
 func log() *slog.Logger { return slog.Default() }
 
 // 房间三类（proto.RoomSummary.Kind 词表；C5 的列表投影共用，等值由
-// service_test.go 的字面量测试钉住）。
+// service_test.go 的字面量测试钉住）。B358 起会话（群）是唯一的工作单元房间，
+// 旧的卡/项目群/全员群只读归档。
 const (
 	KindCard    = "card"
 	KindProject = "project"
 	KindGlobal  = "global"
+	// KindSession 会话（群）房间 id 形如 session:<n>，B358 的工作单元。
+	KindSession = "session"
+	// sessionPrefix 会话房间标识前缀。
+	sessionPrefix = "session:"
 )
 
 // Room 是房间解析的完整结果：识别房间形态并携带执法所需全部上下文。
-// Card 为 nil 表示群房间（无卡可比）；ParentSession 只在卡房间且卡有直接父
-// 时可能非空（直接父卡当前绑定者，供 relay/user 的一级父判定，拍板 5.5）。
+// Card 为 nil 表示群/会话房间（无卡可比）。
 type Room struct {
-	ID            string
-	CardID        string
-	Kind          string
-	Project       string
-	ReadOnly      bool
-	Card          *proto.Card
-	ParentSession string
+	ID       string
+	CardID   string
+	Kind     string
+	Project  string
+	ReadOnly bool
+	Card     *proto.Card
 }
 
 // Resolve 把房间标识解析为执法上下文。
@@ -57,6 +61,12 @@ func Resolve(lc client.LedgerClient, roomID string) (*Room, error) {
 		kind, name := groupRoomKind(roomID)
 		log().Info("房间解析为群房间", "room", roomID, "kind", kind, "project", name)
 		return &Room{ID: roomID, Kind: kind, Project: name}, nil
+	}
+	// B358 会话（群）房间：与旧群房间同为无卡可比的讨论面，恒可写（归档只读
+	// 判定由门面在会话本体上做——本函数只解析形态，不查会话表）。
+	if IsSessionRoom(roomID) {
+		log().Info("房间解析为会话房间", "room", roomID)
+		return &Room{ID: roomID, Kind: KindSession}, nil
 	}
 	cards, err := lc.ListAllCards("")
 	if err != nil {
@@ -79,85 +89,28 @@ func Resolve(lc client.LedgerClient, roomID string) (*Room, error) {
 		ReadOnly: IsTerminalStatus(c.Status) || c.Following != "",
 		Card:     &c,
 	}
-	if c.ParentID != "" {
-		if p, ok := byID[c.ParentID]; ok {
-			r.ParentSession = p.DriverSession
-		}
-	}
 	log().Info("房间解析完成", "room", roomID, "card", c.ID, "read_only", r.ReadOnly,
-		"bound", c.DriverSession, "parent_session", r.ParentSession)
+		"bound", c.DriverSession)
 	return r, nil
 }
 
-// VerifyWriter 按 kind 执法书写者身份（契约 §3.3 执法规则 + §4 清单）。失败
-// 统一返回 ErrNotWriter（含空 actor）。
-//
-// 矩阵：
-//   - 协调者类（escalation/deviation/closing/reply）：actor==该卡当前绑定值；
-//   - relay：actor==该卡当前绑定值，或 actor==直接父卡当前绑定值（只查一级，
-//     拍板 5.5）；
-//   - user：actor 非空且不等于该卡当前绑定值；卡有直接父时亦不等于直接父卡
-//     绑定值（岔口十最窄读法：相关卡={该卡, 直接父}，与拍板 5.5 一级父同构）；
-//   - 群房间无卡可比：仅 user 可写且要求 actor 非空。
-func VerifyWriter(r *Room, kind, actor string) error {
-	if actor == "" {
-		log().Warn("书写者被拒：actor 为空", "room", r.ID, "kind", kind)
+// VerifyWriter 会话书写者执法（B358：kind 书写者矩阵废止，本函数体只剩两件
+// 事——actor 非空与成员执法；breakdown §3.2 ③ 源码审查项）。writers 是门面
+// 按会话组装的书写者集（显式成员 ∪ 会话内各卡当前席位，见
+// collab.Service.sessionWriters）——契约 §3.7：Resolve 只解析形态、不查会话
+// 表，所以成员集由门面送进来。非成员一律 ErrNotWriter（含空 actor）。
+func VerifyWriter(writers []string, actor string) error {
+	if strings.TrimSpace(actor) == "" {
+		log().Warn("书写者被拒：actor 为空")
 		return ErrNotWriter
 	}
-	switch kind {
-	case proto.RoomMsgUser:
-		if r.Card == nil {
+	for _, w := range writers {
+		if w == actor {
 			return nil
 		}
-		if actor == r.Card.DriverSession {
-			log().Warn("user 被拒：actor 是房间卡绑定者", "room", r.ID,
-				"card", r.CardID, "actor", actor)
-			return ErrNotWriter
-		}
-		if r.ParentSession != "" && actor == r.ParentSession {
-			log().Warn("user 被拒：actor 是直接父卡绑定者", "room", r.ID,
-				"card", r.CardID, "parent_actor", actor)
-			return ErrNotWriter
-		}
-	case proto.RoomMsgRelay:
-		if r.Card == nil {
-			log().Warn("relay 被拒：群房间无卡可比", "room", r.ID)
-			return ErrNotWriter
-		}
-		if actor != r.Card.DriverSession && actor != r.ParentSession {
-			log().Warn("relay 被拒：非本卡或直接父绑定者", "room", r.ID,
-				"card", r.CardID, "actor", actor, "bound", r.Card.DriverSession,
-				"parent_session", r.ParentSession)
-			return ErrNotWriter
-		}
-	default:
-		if r.Card == nil {
-			log().Warn("协调者类被拒：群房间无绑定席位可比", "room", r.ID, "kind", kind)
-			return ErrNotWriter
-		}
-		if err := proto.ValidateSeat(r.Card.DriverSession, proto.SeatSource(r.Card.DriverSource)); err != nil {
-			log().Warn("协调者类被拒：卡席位不是规范身份", "room", r.ID,
-				"card", r.CardID, "kind", kind, "cause", err)
-			return ErrNotWriter
-		}
-		if actor != r.Card.DriverSession {
-			log().Warn("协调者类被拒：非当前绑定者", "room", r.ID,
-				"card", r.CardID, "kind", kind, "actor", actor,
-				"bound", r.Card.DriverSession)
-			return ErrNotWriter
-		}
 	}
-	return nil
-}
-
-// KindAllowed kind 是否在受控词表内。
-func KindAllowed(kind string) bool {
-	switch kind {
-	case proto.RoomMsgEscalation, proto.RoomMsgDeviation, proto.RoomMsgClosing,
-		proto.RoomMsgRelay, proto.RoomMsgReply, proto.RoomMsgUser, proto.RoomMsgPointer:
-		return true
-	}
-	return false
+	log().Warn("书写者被拒：非会话成员", "actor", actor, "writers", len(writers))
+	return ErrNotWriter
 }
 
 // IsTerminalStatus 卡终态判据。取值必须等于 ledger.StatusDone/StatusClosed
@@ -171,6 +124,11 @@ func IsTerminalStatus(status string) bool {
 func isGroupRoom(roomID string) bool {
 	const prefix = "project:"
 	return roomID == "global" || len(roomID) > len(prefix) && roomID[:len(prefix)] == prefix
+}
+
+// IsSessionRoom 会话房间标识形如 session:<n>（B358 的工作单元）。
+func IsSessionRoom(roomID string) bool {
+	return len(roomID) > len(sessionPrefix) && roomID[:len(sessionPrefix)] == sessionPrefix
 }
 
 // groupRoomKind 解析群房间形态：global 返回 (global,"")；project 群返回
@@ -188,10 +146,10 @@ func groupRoomKind(roomID string) (kind, name string) {
 // （internal/proto/rooms_fixture_test.go / service_test.go）钉住。
 const RoomEventType = "room_message"
 
-// SameRoom 判断事件是否属于该房间：卡房间的 card_id 即房间号；群级事件看
-// 载荷 Room 字段。
+// SameRoom 判断事件是否属于该房间：卡房间的 card_id 即房间号；群级/会话级
+// 无卡事件看载荷 Room 字段。
 func SameRoom(ev proto.LedgerEvent, roomID string) bool {
-	if isGroupRoom(roomID) {
+	if isGroupRoom(roomID) || IsSessionRoom(roomID) {
 		var msg proto.RoomMessage
 		if err := UnmarshalMessage(ev.Payload, &msg); err != nil {
 			return false

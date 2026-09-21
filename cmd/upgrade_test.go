@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -28,6 +30,24 @@ func TestUpgradeWaitTimeoutPushLeavesRoomForWindowsRepetition(t *testing.T) {
 	const windowsWorstCaseGap = 60 * time.Second
 	if upgradeWaitTimeoutPush < 2*windowsWorstCaseGap {
 		t.Fatalf("推送超时 %v 不足 Windows 最坏空窗 %v 的两倍；Windows 换版靠计划任务每分钟重复触发拉起，余量不足会让换版间歇性失败", upgradeWaitTimeoutPush, windowsWorstCaseGap)
+	}
+}
+
+func TestUpgradeProductionDoesNotCallNewRelay(t *testing.T) {
+	_, thisFile, _, ok := runtime.Caller(0)
+	if !ok {
+		t.Fatal("runtime.Caller 失败")
+	}
+	body, err := os.ReadFile(filepath.Join(filepath.Dir(thisFile), "upgrade.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(body)
+	if strings.Contains(text, "client.NewRelay") {
+		t.Fatal("cmd/upgrade.go 生产路径不得调用 client.NewRelay；具名 relay 走 targetclient.New")
+	}
+	if !strings.Contains(text, "targetclient.New") {
+		t.Fatal("cmd/upgrade.go 必须经 targetclient.New 选路")
 	}
 }
 

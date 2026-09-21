@@ -225,6 +225,12 @@ func ddlStatements(pg bool) []string {
 				target TEXT NOT NULL, task_id TEXT NOT NULL, purpose TEXT NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (target, task_id))`,
 			`CREATE INDEX IF NOT EXISTS idx_card_tasks_card ON card_tasks(card_id)`,
+			`CREATE TABLE IF NOT EXISTS card_dispatch_rounds (
+				card_id TEXT NOT NULL REFERENCES cards(id),
+				purpose TEXT NOT NULL,
+				created_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS idx_card_dispatch_rounds_card_purpose
+				ON card_dispatch_rounds(card_id, purpose)`,
 			`CREATE TABLE IF NOT EXISTS card_events (
 				seq BIGSERIAL PRIMARY KEY, card_id TEXT REFERENCES cards(id),
 				type TEXT NOT NULL, actor TEXT NOT NULL, payload JSONB NOT NULL,
@@ -265,6 +271,37 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS driver_leases (
 				session TEXT PRIMARY KEY,
 				expires_at TIMESTAMPTZ NOT NULL)`,
+			// B389 承载记录：协调者席位"生在哪个载体/哪台机器"的唯一归属来源。
+			// identity 只是同事务写入的一致性见证，席位真源仍是 cards.driver_session。
+			`CREATE TABLE IF NOT EXISTS seat_bearings (
+				card_id TEXT PRIMARY KEY,
+				identity TEXT NOT NULL,
+				carrier TEXT NOT NULL,
+				machine TEXT NOT NULL,
+				home_dir TEXT NOT NULL,
+				workdir TEXT NOT NULL,
+				model TEXT NOT NULL,
+				bound_at TIMESTAMPTZ NOT NULL)`,
+			// B389 唤醒认领：共库下同一条事件只允许一台机器处理。
+			// seq 取自 card_events.seq（全局唯一），不再叠加卡号。
+			`CREATE TABLE IF NOT EXISTS wake_claims (
+				seq BIGINT PRIMARY KEY,
+				card TEXT NOT NULL,
+				holder TEXT NOT NULL,
+				lease_until TIMESTAMPTZ NOT NULL,
+				done_at TIMESTAMPTZ)`,
+			`CREATE INDEX IF NOT EXISTS idx_wake_claims_card ON wake_claims(card)`,
+			`CREATE TABLE IF NOT EXISTS sessions (
+				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
+				archived BOOLEAN NOT NULL DEFAULT false, members JSONB NOT NULL DEFAULT '[]',
+				created_at TIMESTAMPTZ NOT NULL, updated_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS session_cards (
+				session_id TEXT NOT NULL REFERENCES sessions(id),
+				card_id TEXT NOT NULL REFERENCES cards(id),
+				created_at TIMESTAMPTZ NOT NULL,
+				PRIMARY KEY (session_id, card_id))`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uq_session_cards_card
+				ON session_cards(card_id)`,
 			`CREATE TABLE IF NOT EXISTS card_prefixes (
 				project TEXT PRIMARY KEY, prefix TEXT NOT NULL UNIQUE)`,
 			`CREATE TABLE IF NOT EXISTS registry (
@@ -302,6 +339,12 @@ func ddlStatements(pg bool) []string {
 				target TEXT NOT NULL, task_id TEXT NOT NULL, purpose TEXT NOT NULL,
 				created_at TEXT NOT NULL, PRIMARY KEY (target, task_id))`,
 			`CREATE INDEX IF NOT EXISTS idx_card_tasks_card ON card_tasks(card_id)`,
+			`CREATE TABLE IF NOT EXISTS card_dispatch_rounds (
+				card_id TEXT NOT NULL REFERENCES cards(id),
+				purpose TEXT NOT NULL,
+				created_at TEXT NOT NULL)`,
+			`CREATE INDEX IF NOT EXISTS idx_card_dispatch_rounds_card_purpose
+				ON card_dispatch_rounds(card_id, purpose)`,
 			`CREATE TABLE IF NOT EXISTS card_events (
 				seq INTEGER PRIMARY KEY AUTOINCREMENT, card_id TEXT REFERENCES cards(id),
 				type TEXT NOT NULL, actor TEXT NOT NULL, payload TEXT NOT NULL,
@@ -345,6 +388,33 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS driver_leases (
 				session TEXT PRIMARY KEY,
 				expires_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS seat_bearings (
+				card_id TEXT PRIMARY KEY,
+				identity TEXT NOT NULL,
+				carrier TEXT NOT NULL,
+				machine TEXT NOT NULL,
+				home_dir TEXT NOT NULL,
+				workdir TEXT NOT NULL,
+				model TEXT NOT NULL,
+				bound_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS wake_claims (
+				seq INTEGER PRIMARY KEY,
+				card TEXT NOT NULL,
+				holder TEXT NOT NULL,
+				lease_until TEXT NOT NULL,
+				done_at TEXT)`,
+			`CREATE INDEX IF NOT EXISTS idx_wake_claims_card ON wake_claims(card)`,
+			`CREATE TABLE IF NOT EXISTS sessions (
+				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
+				archived INTEGER NOT NULL DEFAULT 0, members TEXT NOT NULL DEFAULT '[]',
+				created_at TEXT NOT NULL, updated_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS session_cards (
+				session_id TEXT NOT NULL REFERENCES sessions(id),
+				card_id TEXT NOT NULL REFERENCES cards(id),
+				created_at TEXT NOT NULL,
+				PRIMARY KEY (session_id, card_id))`,
+			`CREATE UNIQUE INDEX IF NOT EXISTS uq_session_cards_card
+				ON session_cards(card_id)`,
 			`CREATE TABLE IF NOT EXISTS registry (
 				kind TEXT NOT NULL, id TEXT NOT NULL, version INTEGER NOT NULL,
 				seq INTEGER NOT NULL, body TEXT NOT NULL,

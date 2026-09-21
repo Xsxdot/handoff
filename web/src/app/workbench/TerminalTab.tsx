@@ -35,6 +35,7 @@ import { isTerminalHostResponse, takeLeadingFocusReport } from './terminalHostRe
 import { altBufferWheelReports, mouseEncodingOf, pointerCell, wheelForcesSelection, wheelPixelDeltaY } from './terminalWheel'
 import { installTerminalInputFix } from './terminalInput'
 import { parseOsc52 } from './terminalOsc52'
+import { MobileKeybar } from './MobileKeybar'
 import { registerFileDropTarget, shellQuote } from '../lib/desktopFileDrop'
 import { copyToClipboard } from '../lib/clipboard'
 import type { BaseDir } from './useWorkbench'
@@ -64,6 +65,9 @@ export interface TerminalTabProps {
   // 浮窗等不关心连接态的宿主不传即无行为。'connecting' 不上报：会话建立中的
   // 一瞬不该闪红，首帧 open 的 true 才是第一份事实。
   onConnection?: (connected: boolean) => void
+  // keybar 为真时在终端下方挂移动特殊键条（紧凑视口由 Shell 传 compact）。
+  // 默认缺席 = 桌面形态，既有渲染逐字节不变。
+  keybar?: boolean
 }
 
 // ptyBase 把一个基准目录翻译成建会话请求的两个字段。
@@ -110,7 +114,7 @@ function xtermDebugSnap(term: Terminal, host: HTMLElement): Record<string, unkno
 }
 
 export function TerminalTab({
-  base, seq, sessionId, spawn = false, rel, envFile, initCommand, incompatible = false, onSession, active = true, onConnection,
+  base, seq, sessionId, spawn = false, rel, envFile, initCommand, incompatible = false, onSession, active = true, onConnection, keybar = false,
 }: TerminalTabProps) {
   const hostRef = useRef<HTMLDivElement>(null)
   const termRef = useRef<Terminal | null>(null)
@@ -370,7 +374,10 @@ export function TerminalTab({
     const wheelOnce = new WeakSet<WheelEvent>()
     const isMac = /Mac|iPhone|iPod|iPad/.test(navigator.platform || navigator.userAgent)
     const handleAltWheel = (ev: WheelEvent): boolean => {
-      if (!activeRef.current) return true
+      // 滚轮跟指针走，不跟键盘焦点走：分屏里未聚焦但看得见的 pane
+      // 也要能滑。后台 keep-alive 组带 aria-hidden/inert，事件到不了这里；
+      // 若到了也必须放行，不能把滚轮送给看不见的 TUI。
+      if (host.closest('[aria-hidden="true"]') || host.closest('[inert]')) return true
       if (term.buffer.active.type !== 'alternate') return true
       if (term.modes.mouseTrackingMode === 'none') {
         const now = Date.now()
@@ -690,6 +697,16 @@ export function TerminalTab({
   return (
     <div className="flex h-full flex-col">
       <div ref={hostRef} data-testid="pty-host" className="min-h-0 flex-1 overscroll-none bg-[#0b0b0c]" />
+      {keybar && (
+        <MobileKeybar
+          onKey={(seq) => {
+            // 走 term.input 而不是直接 handle.send：与手敲输入合流，取证与尺寸逻辑
+            // 不必知道键条存在（与 terminalInput.ts 同一条纪律）。
+            console.debug('term.keybar.send', { seq: JSON.stringify(seq) })
+            termRef.current?.input(seq)
+          }}
+        />
+      )}
       {error !== null && (
         <div className="flex items-center gap-3 border-t px-3 py-1.5 text-xs text-destructive">
           <span>{error}</span>

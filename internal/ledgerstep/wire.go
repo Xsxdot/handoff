@@ -16,6 +16,13 @@ import (
 
 var turnEndGrace = time.Second
 
+// finalMessageClient 是最终报文取用的最小面：只读 attach 快照。接口定义在使用方
+// 并嵌入提供方内部冻结的 client.ExecutionClient（B233.16 契约冻结）。
+type finalMessageClient interface {
+	client.ExecutionClient
+	Attach(ctx context.Context, taskID string) (*client.AttachInfo, error)
+}
+
 type completedPayload struct {
 	Summary   string  `json:"summary"`
 	FinalText *string `json:"final_text"`
@@ -112,7 +119,7 @@ func waitForTurnEndGrace(ctx context.Context, wait func(context.Context) (*proto
 
 // clientFinalMessage 从 attach 快照取最后一条 completed/turn_failed/failed
 // 事件，按真实协议字段返回最终报文；缺失即报错，不拿 progress 凑数。
-func clientFinalMessage(ctx context.Context, cl *client.Client, taskID string) (string, error) {
+func clientFinalMessage(ctx context.Context, cl finalMessageClient, taskID string) (string, error) {
 	info, err := cl.Attach(ctx, taskID)
 	if err != nil {
 		slog.ErrorContext(ctx, "取审阅 Attach 快照失败", "task", taskID, "error", err)

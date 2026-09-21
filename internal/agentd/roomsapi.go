@@ -23,6 +23,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -42,26 +43,124 @@ func collabErr(w http.ResponseWriter, err error) {
 	writeErr(w, code, err)
 }
 
-// roomUserActor 是房间面的控制台成员/actor 标识（服务端注入）：沿用
-// ledgerapi.go:458 的 step 补 actor 先例（"web:"+hostOnly）。@用户的提及
-// 与已读游标都以此标识为成员维度（D-identity，台账 L15）。
-func (s *Server) roomUserActor(r *http.Request) string {
-	return "web:" + hostOnly(r.RemoteAddr)
+// requireConsoleIdentity 解析本请求的控制台身份；未配名/非法名时写 403 可行动
+// 错误并返回 ok=false（调用方立即 return）。这是会话/房间「需要谁是我」端点的
+// 统一身份门（B358.9 决定 8 fail-closed）：未配名 ≠ 非成员——文案写清
+// console_user，前端据 GET /api/identity 的 configured 渲染横幅并把原文透传
+// （breakdown P-1 甲）。读面与写面同门（P-2 甲），不降级放行。
+func (s *Server) requireConsoleIdentity(w http.ResponseWriter, r *http.Request) (consoleIdentity, bool) {
+	id := s.resolveConsoleIdentity(r)
+	if !id.Configured {
+		s.log.Warn("控制台身份未配置，请求拒收（fail-closed）", "method", r.Method, "path", r.URL.Path)
+		writeErr(w, http.StatusForbidden, errors.New(
+			"本机未配置控制台人名 console_user，无法确定身份；请在 agentd 配置文件中设置 console_user 后重试"))
+		return consoleIdentity{}, false
+	}
+	return id, true
 }
 
-// handleRoomsList GET /api/rooms?project= → ListRooms（扁平活动排序列表）。
+// roomsListDefaultLimit / roomsListMaxLimit 是 GET /api/rooms 分页的默认与上限，
+// 与 collab 侧 roomsPageDefaultLimit/roomsPageMaxLimit 同值（契约 §3.3）。
+const (
+	roomsListDefaultLimit = 50
+	roomsListMaxLimit     = 200
+)
+
+// roomsListLegacyMessage 是旧客户端阻断文案（契约 §3.3，冻结，一字不改）。
+const roomsListLegacyMessage = "客户端版本过旧：会话列表已改为分页加载，请升级 handoff 桌面端与控制台后重试。"
+
+// roomsListParams 是 GET /api/rooms 的分页参数决议结果（B374）。
+//
+// Legacy 为真表示请求 query 里 limit 与 cursor 双双缺席——旧客户端判据
+// （拍板 P4）：handler 据此回 426，不调用 ListRoomsPage。
+type roomsListParams struct {
+	Limit  int
+	Cursor string
+	Legacy bool
+}
+
+// parseRoomsListParams 解析分页 query（B374，冻结清单 F5–F9）。
+//
+// limit 与 cursor 双双缺席 → Legacy=true（旧客户端，handler 回 426）。
+// limit 缺席但带 cursor → 非 legacy，limit 取默认；limit 非整数 → error
+// （handler 直回 400，不得经 roomsListErrorStatus 变 500）。
+func parseRoomsListParams(r *http.Request) (roomsListParams, error) {
+	q := r.URL.Query()
+	rawLimit := q.Get("limit")
+	rawCursor := q.Get("cursor")
+	if rawLimit == "" && rawCursor == "" {
+		return roomsListParams{Limit: roomsListDefaultLimit, Legacy: true}, nil
+	}
+	params := roomsListParams{Cursor: rawCursor}
+	if rawLimit == "" {
+		params.Limit = roomsListDefaultLimit
+		return params, nil
+	}
+	n, err := strconv.Atoi(rawLimit)
+	if err != nil {
+		return roomsListParams{}, fmt.Errorf("limit 非法: %q", rawLimit)
+	}
+	if n <= 0 {
+		n = roomsListDefaultLimit
+	}
+	if n > roomsListMaxLimit {
+		n = roomsListMaxLimit
+	}
+	params.Limit = n
+	return params, nil
+}
+
+// handleRoomsList GET /api/rooms?project=&limit=&cursor= → ListRoomsPage
+// （扁平活动排序分页列表，B374）。
+//
+// 错误分流三路（冻结）：parse 错 → 400 直回；仅 collab.ErrInvalidCursor 经
+// roomsListErrorStatus → 400；其余 ListRoomsPage 失败（读卡/读事件/游标快照）
+// → 500。旧客户端（limit 与 cursor 双缺席）→ 426 + 冻结文案（F9/US5）。
+//
+// 刷新限域：attach 投影与后台刷新只对本页 rooms 对应的 links（F17/F18），
+// 由 enrichRoomAttachments 收窄入参。
 func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 	project := r.URL.Query().Get("project")
-	member := s.roomUserActor(r)
-	rooms, err := s.rooms.ListRoomsForMember(project, member)
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
+	member := id.Member
+	params, err := parseRoomsListParams(r)
 	if err != nil {
+		s.log.Warn("会话列表分页参数无效", "project", project, "cause", err)
+		writeErr(w, http.StatusBadRequest, err)
+		return
+	}
+	if params.Legacy {
+		s.log.Warn("会话列表命中旧客户端请求，回 426", "project", project)
+		writeErr(w, http.StatusUpgradeRequired, errors.New(roomsListLegacyMessage))
+		return
+	}
+	page, err := s.rooms.ListRoomsPage(project, member, params.Cursor, params.Limit)
+	if err != nil {
+		if code := roomsListErrorStatus(err); code == http.StatusBadRequest {
+			s.log.Warn("会话列表游标非法", "project", project, "cause", err)
+			writeErr(w, code, err)
+			return
+		}
 		s.log.Warn("会话列表读取失败", "project", project, "member", member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
-	s.enrichRoomAttachments(r.Context(), rooms)
-	s.log.Info("会话列表响应成功", "project", project, "member", member, "rooms", len(rooms))
-	writeJSON(w, http.StatusOK, map[string]any{"rooms": rooms})
+	s.enrichRoomAttachments(r.Context(), page.Rooms)
+	s.log.Debug("会话列表响应成功", "project", project, "member", member, "rooms", len(page.Rooms))
+	writeJSON(w, http.StatusOK, page)
+}
+
+// roomsListErrorStatus 把 ListRoomsPage 的错误映射为 HTTP 状态（契约冻结清单
+// F10）：游标非法（collab.ErrInvalidCursor 经 decodeRoomCursor 裹出）→ 400；
+// 其余（读卡/读事件/游标快照等列表组装失败）→ 500。
+func roomsListErrorStatus(err error) int {
+	if errors.Is(err, collab.ErrInvalidCursor) {
+		return http.StatusBadRequest
+	}
+	return http.StatusInternalServerError
 }
 
 const (
@@ -81,6 +180,10 @@ type roomAttachCacheEntry struct {
 // enrichRoomAttachments 给 card 房间补最新可解析的挂账 task；群房间没有 task，
 // 保持 Attach=nil。远端 attach 是非承重字段：请求只读取本地挂账与缓存，缺失项
 // 交给后台刷新，避免一个 relay 延迟拖住整个房间列表。
+//
+// B374 限域（P-4）：仍读**全量** AllTaskLinks 建索引（本机任务索引依赖全量判定），
+// 但只收集入参（本页）rooms 对应的 links 传给 startRoomAttachRefresh——页外房间
+// 不投影、不触发远端 fan-out（F17/F18）。刷新体（workers/TTL/节流）不改。
 func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSummary) {
 	if s.ledger == nil {
 		return
@@ -100,12 +203,22 @@ func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSumm
 		})
 	}
 
-	localTasks := make(map[string]proto.Task)
-	for _, link := range links {
-		if link.Target != "" || s.st == nil {
+	// 限域（B374 P-4）：只收集本页 rooms 的 links，fan-out 用该子集。
+	pageLinks := make([]ledger.TaskLink, 0)
+	for i := range rooms {
+		if rooms[i].Kind != room.KindCard {
 			continue
 		}
-		tasks, listErr := s.st.ListTasks()
+		pageLinks = append(pageLinks, linksByRoom[rooms[i].ID]...)
+	}
+
+	localTasks := make(map[string]proto.Task)
+	for _, link := range pageLinks {
+		if link.Target != "" || s.mgr == nil {
+			// 房间列表只读降级：manager 未注入时不阻断主响应，只是禁用本机 attach
+			continue
+		}
+		tasks, listErr := s.mgr.ListTasks()
 		if listErr != nil {
 			s.log.Warn("读取本机任务列表失败，attach 降级禁用", "cause", listErr)
 			break
@@ -135,20 +248,20 @@ func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSumm
 					continue
 				}
 				rooms[i].Attach = attach
-				s.log.Info("房间 attach 投影成功", "room", rooms[i].ID,
+				s.log.Debug("房间 attach 投影成功", "room", rooms[i].ID,
 					"target", link.Target, "task", link.TaskID, "workdir", attach.WorkDir)
 				break
 			}
 			if attach := s.cachedRoomAttach(link); attach != nil {
 				rooms[i].Attach = attach
-				s.log.Info("房间 attach 从缓存投影成功", "room", rooms[i].ID,
+				s.log.Debug("房间 attach 从缓存投影成功", "room", rooms[i].ID,
 					"target", link.Target, "task", link.TaskID, "workdir", attach.WorkDir)
 				break
 			}
 		}
 	}
-	s.startRoomAttachRefresh(links)
-	s.log.Info("房间 attach 投影完成", "rooms", len(rooms), "links", len(links))
+	s.startRoomAttachRefresh(pageLinks)
+	s.log.Debug("房间 attach 投影完成", "rooms", len(rooms), "links", len(pageLinks))
 }
 
 // startRoomAttachRefresh asynchronously resolves remote task workdirs. A single
@@ -208,12 +321,12 @@ func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
 					return
 				}
 				s.storeRoomAttach(link, attach)
-				s.log.Info("房间 attach 后台刷新成功", "target", link.Target,
+				s.log.Debug("房间 attach 后台刷新成功", "target", link.Target,
 					"task", link.TaskID, "workdir", attach.WorkDir)
 			}()
 		}
 		wg.Wait()
-		s.log.Info("房间 attach 后台刷新完成", "links", len(remoteLinks),
+		s.log.Debug("房间 attach 后台刷新完成", "links", len(remoteLinks),
 			"timed_out", ctx.Err() != nil)
 	}()
 }
@@ -318,36 +431,54 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 
 // handleRoomSend POST /api/rooms/{id}/messages → 用户发言（kind 服务端固定 user，
 // actor 服务端注入，均不经请求体）。空正文拒绝（无意义消息不进房间）。
+// reply_to 是回复锚发送半边（B365）：可选，逐字映射 RoomMessage.ReplyTo——
+// 接收侧 ResolveDelivery 隐式寻址原作者（冻结判定，本 handler 不碰）；负值 400
+// （0 = 无回复锚，与缺省等价，wire omitempty 下不落键）。
 func (s *Server) handleRoomSend(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("id")
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		Body     string   `json:"body"`
 		Refs     []string `json:"refs,omitempty"`
 		Mentions []string `json:"mentions,omitempty"`
+		ReplyTo  int64    `json:"reply_to,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
+		return
+	}
+	if req.ReplyTo < 0 {
+		writeErr(w, http.StatusBadRequest, errors.New("reply_to 必须为非负 seq；0 = 无回复锚"))
 		return
 	}
 	if strings.TrimSpace(req.Body) == "" {
 		writeErr(w, http.StatusBadRequest, errors.New("消息正文不能为空"))
 		return
 	}
+	// 端戳只做落款：登录会话设备名随 payload 走（决定 1/3），不参与任何判定。
 	seq, err := s.rooms.Send(roomID, proto.RoomMessage{
 		Kind: proto.RoomMsgUser, Body: req.Body, Refs: req.Refs, Mentions: req.Mentions,
-	}, s.roomUserActor(r))
+		ReplyTo: req.ReplyTo, Device: id.Device,
+	}, id.Member)
 	if err != nil {
-		s.log.Warn("房间消息发送失败", "room", roomID, "actor", s.roomUserActor(r), "cause", err)
+		s.log.Warn("房间消息发送失败", "room", roomID, "actor", id.Member, "cause", err)
 		collabErr(w, err)
 		return
 	}
-	s.log.Info("房间消息已发送", "room", roomID, "seq", seq, "actor", s.roomUserActor(r))
+	s.log.Info("房间消息已发送", "room", roomID, "seq", seq, "actor", id.Member)
 	writeJSON(w, http.StatusOK, map[string]int64{"seq": seq})
 }
 
 // handleRoomRead POST /api/rooms/{id}/read {upto_seq} → MarkRead（打开房间即已读）。
 func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("id")
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
 	var req struct {
 		UptoSeq int64 `json:"upto_seq"`
 	}
@@ -355,8 +486,8 @@ func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, errors.New("bad json"))
 		return
 	}
-	if err := s.rooms.MarkRead(s.roomUserActor(r), roomID, req.UptoSeq); err != nil {
-		s.log.Warn("已读游标置位失败", "room", roomID, "member", s.roomUserActor(r), "cause", err)
+	if err := s.rooms.MarkRead(id.Member, roomID, req.UptoSeq); err != nil {
+		s.log.Warn("已读游标置位失败", "room", roomID, "member", id.Member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -367,7 +498,18 @@ func (s *Server) handleRoomRead(w http.ResponseWriter, r *http.Request) {
 // gateway 层）。decision/mention 源失败如实 500（承重）；ticket 源失败降级跳过
 // （与 handleCardsList 的 tickets 徽标同族，不吞主查询）。
 func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
+	id, ok := s.requireConsoleIdentity(w, r)
+	if !ok {
+		return
+	}
+	member := id.Member
 	items := make([]proto.InboxItem, 0, 8)
+
+	if s.mgr == nil {
+		s.log.Warn("收件箱请求到达但 manager 未注入")
+		writeErr(w, http.StatusServiceUnavailable, errors.New("manager 未就绪"))
+		return
+	}
 
 	// 源① decision：open 裁决全量（含 CardID 为空的项目级），岔口二方案 A 直调面。
 	decisions, err := s.ledger.ListDecisions(true)
@@ -390,7 +532,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 
 	// 源② ticket：等待人工输入态任务上的未答复工单；Watchers>0 排除（无人驱动
 	// 才上浮），破坏性工单不受限（既有硬纪律，D-destructive 判据见 ticketDestructive）。
-	tasks, err := s.st.ListTasks()
+	tasks, err := s.mgr.ListTasks()
 	if err != nil {
 		s.log.Warn("收件箱 ticket 源读取失败", "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
@@ -400,7 +542,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		if task.State != proto.TaskStateWaitingAnswer {
 			continue
 		}
-		pending, err := s.st.PendingTickets(task.ID)
+		pending, err := s.mgr.PendingTickets(task.ID)
 		if err != nil {
 			s.log.Warn("收件箱 ticket 源读取失败", "task", task.ID, "cause", err)
 			continue
@@ -420,9 +562,9 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 源③ mention：@用户的未消费提及（collab.Mentions 已含未消费过滤，C5 锁住）。
-	mentions, err := s.rooms.Mentions(s.roomUserActor(r), 0, 0)
+	mentions, err := s.rooms.Mentions(member, 0, 0)
 	if err != nil {
-		s.log.Warn("收件箱 mention 源读取失败", "member", s.roomUserActor(r), "cause", err)
+		s.log.Warn("收件箱 mention 源读取失败", "member", member, "cause", err)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -437,7 +579,7 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 
-	s.log.Info("收件箱已聚合", "member", s.roomUserActor(r), "items", len(items))
+	s.log.Info("收件箱已聚合", "member", member, "items", len(items))
 	writeJSON(w, http.StatusOK, map[string]any{"items": items})
 }
 
@@ -446,7 +588,11 @@ func (s *Server) handleInbox(w http.ResponseWriter, r *http.Request) {
 // （ticket_id 匹配且 decision ∈ {escalate, error}）——审批者不敢放行或裁决失败即
 // 系统标记的危险请求。窗口用 recentEventsLimit=100（server.go:65，与任务详情同款）。
 func (s *Server) ticketDestructive(taskID, ticketID string) bool {
-	events, err := s.st.EventsFrom(taskID, 0, recentEventsLimit)
+	if s.mgr == nil {
+		// 读不出就保守：不标破坏性，避免在 manager 未就绪时误判
+		return false
+	}
+	events, err := s.mgr.EventsFrom(taskID, 0, recentEventsLimit)
 	if err != nil {
 		return false
 	}
@@ -454,7 +600,7 @@ func (s *Server) ticketDestructive(taskID, ticketID string) bool {
 		if ev.Type != proto.EventTypeApproverDecision {
 			continue
 		}
-		var p approverDecisionPayload
+		var p orchestration.ApproverDecisionPayload
 		if err := json.Unmarshal(ev.Payload, &p); err != nil {
 			continue
 		}

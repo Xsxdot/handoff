@@ -94,8 +94,9 @@ func listWatchers(t *testing.T, srv *Server, taskID string) int {
 // 刻意设成 90m 而不是默认的 2h：默认值恒等于零值之外的另一个常数，测不出
 // 「到底是读了配置还是写死了」。
 func TestStatusCarriesStallTimeout(t *testing.T) {
-	m, _, _, _ := newTestManager(t)
-	m.cfg.StallTimeout = 90 * time.Minute
+	cfg := testManagerCfg(t)
+	cfg.StallTimeout = 90 * time.Minute
+	m, _, _ := newTestManagerWithCfg(t, nil, cfg)
 	resp, err := m.Status()
 	if err != nil {
 		t.Fatalf("Status: %v", err)
@@ -147,7 +148,7 @@ func TestDoneClosesEventSubscriptions(t *testing.T) {
 	ch, cancel := hub.Subscribe(id)
 	defer cancel()
 
-	if err := m.Done(context.Background(), id, ""); err != nil {
+	if _, err := m.Done(context.Background(), id, ""); err != nil {
 		t.Fatalf("Done: %v", err)
 	}
 	// 为什么先收 archived 再收关闭：done 现在会先发归档事件、再关订阅（B68）。

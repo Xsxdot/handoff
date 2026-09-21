@@ -118,12 +118,15 @@ type Decision struct {
 
 // LedgerEvent 是账本事件的 wire DTO。
 type LedgerEvent struct {
-	Seq       int64           `json:"seq"`
-	CardID    string          `json:"card_id"`
-	Type      string          `json:"type"`
-	Actor     string          `json:"actor"`
-	Payload   json.RawMessage `json:"payload"`
-	CreatedAt time.Time       `json:"created_at"`
+	Seq          int64           `json:"seq"`
+	CardID       string          `json:"card_id"`
+	Type         string          `json:"type"`
+	Actor        string          `json:"actor"`
+	Payload      json.RawMessage `json:"payload"`
+	SourceTarget string          `json:"source_target,omitempty"`
+	SourceTask   string          `json:"source_task,omitempty"`
+	SourceSeq    int64           `json:"source_seq,omitempty"`
+	CreatedAt    time.Time       `json:"created_at"`
 }
 
 // CardView 是列表卡片及查询期派生标记的 wire DTO。

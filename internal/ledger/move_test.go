@@ -94,7 +94,7 @@ func TestReleaseCardDoesNotClearSeat(t *testing.T) {
 	if err := s.ReleaseCard(c.ID, "cli:a@h"); err != nil {
 		t.Fatalf("无主卡释放应幂等成功: %v", err)
 	}
-	if err := s.BindSeat(c.ID, "cli:codex#session-a", proto.SeatSourceBind); err != nil {
+	if err := s.BindSeat(c.ID, "cli:codex#session-a", proto.SeatSourceBind, SeatBearing{}); err != nil {
 		t.Fatalf("绑定: %v", err)
 	}
 	if err := s.ReleaseCard(c.ID, "cli:a@h"); !errors.Is(err, ErrBadState) {

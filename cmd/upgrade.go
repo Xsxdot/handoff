@@ -39,6 +39,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/relay"
 	"github.com/Xsxdot/handoff/internal/release"
+	"github.com/Xsxdot/handoff/internal/targetclient"
 	"github.com/Xsxdot/handoff/internal/upgrade"
 	"github.com/spf13/cobra"
 )
@@ -73,6 +74,26 @@ type agentdPeer interface {
 	WaitVersion(ctx context.Context, want string, timeout, interval time.Duration, checkPull bool) error
 }
 
+// upgradeDialErr 是构造 client 失败时的失败替身。
+//
+// why：测试缝保持 func(Endpoint) agentdPeer，构造失败不能改签名也不能 panic；
+// 将错误推迟到后续首个方法调用时返回。
+type upgradeDialErr struct{ err error }
+
+func (u upgradeDialErr) Status(context.Context) (*proto.StatusResp, error) { return nil, u.err }
+func (u upgradeDialErr) PushUpdate(context.Context, string, string, []byte, bool) (*proto.UpdateResp, error) {
+	return nil, u.err
+}
+func (u upgradeDialErr) PullUpdate(context.Context, string, string, bool) (*proto.UpdateResp, error) {
+	return nil, u.err
+}
+func (u upgradeDialErr) RestartAgentd(context.Context, bool) (*proto.UpdateResp, error) {
+	return nil, u.err
+}
+func (u upgradeDialErr) WaitVersion(context.Context, string, time.Duration, time.Duration, bool) error {
+	return u.err
+}
+
 // 七个缝，测试替换它们以避免联网、动真实二进制与真实 agentd。
 var (
 	newReleaseChecker = func() releaseChecker {
@@ -87,14 +108,31 @@ var (
 	activateBinary = release.Activate
 	rollbackBinary = release.Rollback
 	// newAgentdClient 是「怎么跟一台 agentd 说话」这一层的缝：测试替换它
-	// 就能整套替身化远端，而不必起真实 HTTP 服务
+	// 就能整套替身化远端，而不必起真实 HTTP 服务。
+	//
+	// why：具名 relay 选路只许经 targetclient.New 工厂，upgrade 曾经是第二份旁路。
 	newAgentdClient = func(ep Endpoint) agentdPeer {
 		if ep.RelayURL != "" {
-			// Upgrade is still executor traffic: relay targets must not fall back to
-			// the placeholder HTTP address. The short-lived CLI owns this dialer;
-			// its tunnel is closed when the process exits.
-			d := relay.NewDialer(ep.RelayURL, ep.Credential, ep.Node, ep.Token, "", slog.Default())
-			return client.NewRelay(d, ep.Token)
+			name := ep.Name
+			if name == "" {
+				name = ep.Node
+				if name == "" {
+					name = "upgrade-relay"
+				}
+			}
+			c, _, err := targetclient.New(name, config.Target{
+				Relay:      ep.RelayURL,
+				Credential: ep.Credential,
+				Node:       ep.Node,
+				Token:      ep.Token,
+			}, slog.Default())
+			if err != nil {
+				slog.Default().Error("upgrade 经工厂构造 relay client 失败", "target", name, "cause", err)
+				return upgradeDialErr{err: err}
+			}
+			slog.Default().Info("upgrade 经选路工厂构造 relay client",
+				"target", name, "base_url", c.BaseURL(), "relay", true)
+			return c
 		}
 		return client.New(ep.Addr, ep.Token)
 	}

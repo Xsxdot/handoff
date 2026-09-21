@@ -26,8 +26,14 @@ func TestComposeEnabledKeepsHeadBaseTailOrderAndSources(t *testing.T) {
 	if strings.Contains(got.Text, "handoff graph") {
 		t.Fatal("平台正文不得提供 handoff graph 执行入口")
 	}
-	if !strings.Contains(got.Text, "go run github.com/Xsxdot/charter/graph/cmd/codegraph") {
-		t.Fatal("平台正文缺少 canonical codegraph 查询入口")
+	if strings.Contains(got.Text, "go run github.com/Xsxdot/charter/graph/cmd/codegraph") {
+		t.Fatal("平台正文不得再把 go run 当查图入口")
+	}
+	if !strings.Contains(got.Text, "已安装的 codegraph 二进制") {
+		t.Fatal("平台正文缺少已安装 codegraph 入口")
+	}
+	if !strings.Contains(got.Text, `{"ask":"本机未安装 codegraph，请安装后再继续"}`) {
+		t.Fatal("平台正文缺少缺二进制时的 ask 工单")
 	}
 	if !(strings.Index(got.Text, head) < strings.Index(got.Text, "角色纪律正文") &&
 		strings.Index(got.Text, "角色纪律正文") < strings.Index(got.Text, tail)) {
@@ -45,6 +51,21 @@ func TestComposeEnabledWithEmptyBaseStillInjectsPlatformLayer(t *testing.T) {
 	}
 	if !strings.Contains(got.Text, "收口前逐条自查：") {
 		t.Fatal("空 base 时缺平台尾部自查")
+	}
+}
+
+// B383：临时文件口径必须写进平台层。当晚 40+ 张权限工单过半来自执行者硬编码 /tmp
+// （落在权限门作用域之外，每次读写都要人放行）。这条被删掉即视为回归。
+func TestComposeEnabledCarriesTmpdirRule(t *testing.T) {
+	got := Compose(Block{}, true)
+	if !strings.Contains(got.Text, "$TMPDIR") {
+		t.Fatal("平台正文缺少 $TMPDIR 临时文件口径")
+	}
+	// 反例：正文不得把 /tmp 当指定临时目录（只允许以「不要硬编码」的口吻出现）。
+	for _, bad := range []string{"写 /tmp", "用 /tmp", "存到 /tmp"} {
+		if strings.Contains(got.Text, bad) {
+			t.Fatalf("平台正文把 /tmp 当指定临时目录：%q", got.Text)
+		}
 	}
 }
 

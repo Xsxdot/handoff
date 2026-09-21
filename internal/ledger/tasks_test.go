@@ -5,6 +5,71 @@ import (
 	"testing"
 )
 
+func TestB2336TaskLinkProjection(t *testing.T) {
+	s := seedStore(t)
+	card := mk(t, s, "工作流投影")
+	if err := s.LinkTask(card.ID, "mac-02", "task-review", "review", "test"); err != nil {
+		t.Fatalf("LinkTask review: %v", err)
+	}
+	if err := s.LinkTask(card.ID, "mac-02", "task-old", "implement", "test"); err != nil {
+		t.Fatalf("LinkTask old: %v", err)
+	}
+	if err := s.LinkTask(card.ID, "mac-02", "task-plain", "implement", "test"); err != nil {
+		t.Fatalf("LinkTask plain: %v", err)
+	}
+	if err := s.RecordDispatch(card.ID, DispatchSnapshot{
+		Target: "mac-02", TaskID: "task-review", Node: "review", Attempt: "attempt-review",
+		Branch: "cards/" + card.ID + "-review", Purpose: PurposeReview, Actor: "test",
+	}); err != nil {
+		t.Fatalf("RecordDispatch review: %v", err)
+	}
+	if err := s.RecordDispatch(card.ID, DispatchSnapshot{
+		Target: "mac-02", TaskID: "task-old", Node: "review", Attempt: "",
+		Branch: "cards/" + card.ID + "-old", Purpose: PurposeImplement, Actor: "test",
+	}); err != nil {
+		t.Fatalf("RecordDispatch old: %v", err)
+	}
+	if err := s.RecordDispatch(card.ID, DispatchSnapshot{
+		Target: "mac-02", TaskID: "task-plain", Branch: "cards/" + card.ID + "-plain",
+		Purpose: PurposeImplement, Actor: "test",
+	}); err != nil {
+		t.Fatalf("RecordDispatch plain: %v", err)
+	}
+
+	links, err := s.TasksOf(card.ID)
+	if err != nil {
+		t.Fatalf("TasksOf: %v", err)
+	}
+	if len(links) != 3 {
+		t.Fatalf("TasksOf length=%d, want 3: %+v", len(links), links)
+	}
+	byTask := make(map[string]TaskLink, len(links))
+	for _, link := range links {
+		byTask[link.TaskID] = link
+	}
+	if got := byTask["task-review"]; got.Node != "review" || got.Attempt != "attempt-review" {
+		t.Fatalf("workflow projection=%+v, want node/attempt review/attempt-review", got)
+	}
+	if got := byTask["task-old"]; got.Node != "" || got.Attempt != "" {
+		t.Fatalf("empty attempt must not be guessed: %+v", got)
+	}
+	if got := byTask["task-plain"]; got.Node != "" || got.Attempt != "" {
+		t.Fatalf("plain dispatch must not be guessed: %+v", got)
+	}
+
+	allLinks, err := s.AllTaskLinks()
+	if err != nil {
+		t.Fatalf("AllTaskLinks: %v", err)
+	}
+	allByTask := make(map[string]TaskLink, len(allLinks))
+	for _, link := range allLinks {
+		allByTask[link.TaskID] = link
+	}
+	if got := allByTask["task-review"]; got.Node != "review" || got.Attempt != "attempt-review" {
+		t.Fatalf("AllTaskLinks projection=%+v, want node/attempt review/attempt-review", got)
+	}
+}
+
 func TestLinkTask(t *testing.T) {
 	s := seedStore(t)
 	card := mk(t, s, "卡")

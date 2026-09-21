@@ -1,4 +1,5 @@
 // terminalHostResponse —— 识别 xterm 解析器对「终端查询」的自动回包。
+/* eslint-disable no-control-regex -- 本文件的核心就是匹配 ESC(0x1b) 控制序列，禁用该规则是唯一正确表达 */
 //
 // 职责：判断一段 onData 是不是 xterm 在解析输出时自动生成的设备回包
 //       （DA / CPR / OSC 颜色 / DECRPM），而不是用户按键。

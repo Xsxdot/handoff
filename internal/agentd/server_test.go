@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"io"
 	"log/slog"
 	"net/http"
@@ -18,7 +19,10 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/ledger"
+	orchestration "github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/testhttp"
 	"github.com/coder/websocket"
@@ -67,6 +71,15 @@ func newTestEnvWithCfg(t *testing.T, cfg *config.Config, logger *slog.Logger) *t
 	}
 	t.Cleanup(func() { st.Close() })
 	srv := agentd.NewServer(cfg, st, logger)
+	// B233.28 P-1-A：任务/项目读路径切 s.mgr 后，未注入 manager 的读接口会 503。
+	// 生产恒在 Serve 前 SetManager（cmd/agentd.go），故测试夹具默认注入真 Manager；
+	// 需要 manager 缺席语义的用例（登记 503 等）用 newTestAgentdEnv 或自行覆盖。
+	srvMgr := orchestration.NewManager(st, srv.Hub(),
+		map[string]executor.Adapter{"fake": fake.New(nil)},
+		&config.Config{Token: cfg.Token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	srvMgr.SetWorkspace(workspace.NewCapability())
+	srv.SetManager(srvMgr)
 	ts := testhttp.NewServer(t, srv.Handler())
 	return &testEnv{srv: srv, ts: ts, st: st, token: cfg.Token}
 }
@@ -441,11 +454,12 @@ func TestReplySelfHealsWithoutWaiter(t *testing.T) {
 
 	// 注入 manager（真实 hub + fake executor）：reply 路由的自愈中继落点
 	f := fake.New(nil)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(workspace.NewCapability())
 	env.srv.SetManager(mgr)
 
 	// 全程无任何 WaitAnswer 等待者（模拟重启后等待 goroutine 已消亡）
@@ -520,11 +534,12 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 	// 与 opencode adapter 的「任务不在运行中」错误同构，见 adapter.go lookup 判空）
 	f := fake.New(nil)
 	f.SetPermError(fmt.Errorf("任务 %s 不在运行中", taskID))
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(workspace.NewCapability())
 	env.srv.SetManager(mgr)
 
 	resp := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"allow"}`)
@@ -556,12 +571,18 @@ func TestReplyRelayFailureReturns502(t *testing.T) {
 		t.Fatalf("中继失败后 state = %s, want waiting_answer（保留恢复路径）", task.State)
 	}
 
-	// 回答已落库不可回滚：二次 reply 404（answer IS NULL 守卫已消耗）
+	// 回答已落库：二次相同 reply 幂等返回 200（idempotent=true），不同回答返回 409
 	resp2 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"allow"}`)
-	if resp2.StatusCode != http.StatusNotFound {
-		t.Fatalf("二次 reply 返回 %d, want 404（回答已落库）", resp2.StatusCode)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("二次相同 reply 返回 %d, want 200（幂等）", resp2.StatusCode)
 	}
 	resp2.Body.Close()
+
+	resp3 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-gate","answer":"deny"}`)
+	if resp3.StatusCode != http.StatusConflict {
+		t.Fatalf("二次不同 reply 返回 %d, want 409（冲突）", resp3.StatusCode)
+	}
+	resp3.Body.Close()
 }
 
 // TestStopReturnsWorktreeRemovedInBody 验证 stop 响应体把「本次是否删了 managed
@@ -577,11 +598,12 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 	}
 
 	f := fake.New(nil)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(workspace.NewCapability())
 	env.srv.SetManager(mgr)
 
 	resp := env.post(t, "/api/tasks/"+taskID+"/stop", "")
@@ -604,6 +626,46 @@ func TestStopReturnsWorktreeRemovedInBody(t *testing.T) {
 	}
 }
 
+func TestStopManagedReturnsWorktreeRemovedFalseInBody(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-stop-managed-wt"
+	if err := env.st.CreateTask(&proto.Task{
+		ID: taskID, Target: "opencode", RepoPath: "/repo", WorkDir: "/repo/wt",
+		WorktreeManaged: true, State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+
+	f := fake.New(nil)
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil, nil,
+		newTestGate(t),
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(workspace.NewCapability())
+	env.srv.SetManager(mgr)
+
+	resp := env.post(t, "/api/tasks/"+taskID+"/stop", "")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("stop 返回 %d, want 200", resp.StatusCode)
+	}
+	var body struct {
+		Status          string `json:"status"`
+		WorktreeRemoved bool   `json:"worktree_removed"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("解码 stop 响应: %v", err)
+	}
+	if body.Status != "stopped" {
+		t.Fatalf("stop 响应 status = %q, want stopped", body.Status)
+	}
+	if body.WorktreeRemoved {
+		t.Fatal("managed 模式任务 stop 后 worktree_removed 恒为 false（契约 C-6）")
+	}
+}
+
 // TestContinueErrTaskNotRunningReturns409 覆盖 agentd 重启后 waiting_review 任务
 // 续接失败的映射：Continue 遇到 executor.ErrTaskNotRunning（executor 运行态已随
 // 进程消亡丢失，agentd 可能重启过）必须回带可行动文本的 409，而不是扁平 500——
@@ -620,11 +682,12 @@ func TestContinueErrTaskNotRunningReturns409(t *testing.T) {
 	// Send 一律返回 ErrTaskNotRunning（模拟 adapter 无该任务运行态）
 	f := fake.New(nil)
 	f.SetSendError(fmt.Errorf("任务 %s 不在运行中: %w", taskID, executor.ErrTaskNotRunning))
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
 		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		newTestGate(t),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(workspace.NewCapability())
 	env.srv.SetManager(mgr)
 
 	resp := env.post(t, "/api/tasks/"+taskID+"/continue", `{"instructions":"改一下"}`)
@@ -867,15 +930,32 @@ func TestDispatchEnvFailureReturns500WithCause(t *testing.T) {
 		Env:      map[string]string{"fake": "missing.env"}}
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	env := newTestEnvWithCfg(t, cfg, logger)
-	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(),
 		map[string]executor.Adapter{"fake": fake.New(nil)}, cfg, env.srv.EnvMapping, nil, newTestGate(t), logger)
+	mgr.SetWorkspace(workspace.NewCapability())
 	env.srv.SetManager(mgr)
+	ledgerStore, lerr := ledger.Open(filepath.Join(t.TempDir(), "ledger.db"))
+	if lerr != nil {
+		t.Fatalf("打开测试账本: %v", lerr)
+	}
+	t.Cleanup(func() { _ = ledgerStore.Close() })
+	env.srv.SetLedger(ledgerStore)
+	svc := agentd.SetupAutomationForTest(t, env.srv, ledgerStore)
+	if err := svc.PutCarrier(scheduling.Carrier{Name: "muse", Machine: "local", CLI: "fake", HomeDir: "", Credential: scheduling.CredentialStandalone}, 0); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
+	if _, err := svc.ApplyDetect("muse", scheduling.DetectEvidence{Reachable: true}, ""); err != nil {
+		t.Fatalf("预置默认载体上线: %v", err)
+	}
+	if err := svc.SetDefaultCarrier("muse"); err != nil {
+		t.Fatalf("预置默认载体: %v", err)
+	}
 
 	// B62：派发必须先登记；env 解析发生在任何 git 动作之前，登记到真实项目即可
 	repo := newTestRepo(t)
 	origin := "git@handoff.test:" + strings.ReplaceAll(strings.TrimPrefix(repo, "/"), "/", "-") + ".git"
 	runGit(t, repo, "remote", "add", "origin", origin)
-	loc, rerr := mgr.RegisterProject(context.Background(), agentd.RegisterProjectReq{OriginURL: origin, Path: repo})
+	loc, rerr := mgr.RegisterProject(context.Background(), workspace.RegisterProjectReq{OriginURL: origin, Path: repo})
 	if rerr != nil {
 		t.Fatalf("RegisterProject: %v", rerr)
 	}
@@ -917,11 +997,12 @@ func newDoneEnvWithState(t *testing.T, taskID string, state proto.TaskState) *te
 		CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatalf("CreateTask: %v", err)
 	}
-	mgr := agentd.NewManager(env.st, env.srv.Hub(),
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(),
 		map[string]executor.Adapter{"fake": fake.New(nil)},
 		&config.Config{Token: testToken, DataDir: t.TempDir(),
 			Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(workspace.NewCapability())
 	env.srv.SetManager(mgr)
 	return env
 }
@@ -1061,5 +1142,100 @@ func TestDoneStillRejectsNonReviewStates(t *testing.T) {
 				t.Fatalf("%s 状态下 done 应 409，实际 %d", state, resp.StatusCode)
 			}
 		})
+	}
+}
+
+func TestHandleReplyIdempotentDoesNotRelayTwice(t *testing.T) {
+	env := newTestEnv(t)
+	now := time.Now().UTC()
+	taskID := "task-idemp-1"
+	if err := env.st.CreateTask(&proto.Task{ID: taskID, Target: "fake", RepoPath: "/repo", State: proto.TaskStateWaitingAnswer, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if _, err := env.st.CreateTicket(&proto.Ticket{ID: "tk-ask-1", TaskID: taskID, Kind: "ask", Request: json.RawMessage(`{"kind":"ask","question":"which option?"}`), CreatedAt: now}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	f := fake.New(nil)
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": f},
+		&config.Config{Token: testToken, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
+		nil, nil, newTestGate(t), slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mgr.SetWorkspace(workspace.NewCapability())
+	env.srv.SetManager(mgr)
+
+	// 第一次 reply
+	resp1 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-ask-1","answer":"option A"}`)
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("第一次 reply 返回 %d, want 200", resp1.StatusCode)
+	}
+	resp1.Body.Close()
+
+	// 第二次相同 reply
+	resp2 := env.post(t, "/api/tasks/"+taskID+"/reply", `{"ticket_id":"tk-ask-1","answer":"option A"}`)
+	if resp2.StatusCode != http.StatusOK {
+		t.Fatalf("第二次 reply 返回 %d, want 200", resp2.StatusCode)
+	}
+	var rbody struct {
+		OK         bool `json:"ok"`
+		Relayed    bool `json:"relayed"`
+		Idempotent bool `json:"idempotent"`
+	}
+	if err := json.NewDecoder(resp2.Body).Decode(&rbody); err != nil {
+		t.Fatalf("解码第二次 reply 响应: %v", err)
+	}
+	resp2.Body.Close()
+	if !rbody.OK || !rbody.Relayed || !rbody.Idempotent {
+		t.Fatalf("第二次 reply 响应 = %+v, want ok=true relayed=true idempotent=true", rbody)
+	}
+
+	// 确认底层 f.Sends() 只有 1 条记录（没有二次中继）
+	sends := f.Sends()
+	if len(sends) != 1 {
+		t.Fatalf("底层 Send 次数 = %d, want 1（幂等不二次中继）", len(sends))
+	}
+}
+
+// recordingOrchClient 借嵌入接口获得完整方法集，覆盖 reply 路径关心的方法与
+// byTask 中间件会调用的查询方法（reply 路由被 byTask 包住）。
+type recordingOrchClient struct {
+	orchestration.OrchestrationClient
+	answerCalls int
+	resumeCalls int
+	applied     bool
+	answerErr   error
+}
+
+func (c *recordingOrchClient) GetTask(string) (*proto.Task, error) { return nil, store.ErrNotFound }
+func (c *recordingOrchClient) MirrorTaskTarget(string) (string, bool, error) {
+	return "", false, nil
+}
+func (c *recordingOrchClient) AnswerTicket(_ context.Context, _, _, _ string) (bool, error) {
+	c.answerCalls++
+	return c.applied, c.answerErr
+}
+func (c *recordingOrchClient) ResumeIfIdle(context.Context, string)     { c.resumeCalls++ }
+func (c *recordingOrchClient) RelayAnswer(string, string, string) error { return nil }
+func (c *recordingOrchClient) NoteDeliveryFailed(string, string, error) {}
+
+// TestHandleReplyDelegatesToFacade 锁 S1：reply 只打编排门面，不再自己
+// GetTicket/AnswerTicketApplied/AppendEvent/CAS 回迁。fake client 未落库，
+// 若 handler 回退直打 s.st，answerCalls 恒 0 且回报 404 → 本测红。
+func TestHandleReplyDelegatesToFacade(t *testing.T) {
+	env := newTestEnvWithCfg(t, &config.Config{Token: testToken,
+		Executor: config.ExecutorConfig{Default: "fake"}},
+		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	fakeMgr := &recordingOrchClient{applied: true}
+	env.srv.SetManager(fakeMgr)
+
+	resp := env.post(t, "/api/tasks/t1/reply", `{"ticket_id":"tk1","answer":"允许"}`)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("reply 返回 %d, want 200", resp.StatusCode)
+	}
+	if fakeMgr.answerCalls != 1 {
+		t.Fatalf("门面 AnswerTicket 调用次数=%d, want 1", fakeMgr.answerCalls)
+	}
+	if fakeMgr.resumeCalls != 1 {
+		t.Fatalf("门面 ResumeIfIdle 调用次数=%d, want 1", fakeMgr.resumeCalls)
 	}
 }

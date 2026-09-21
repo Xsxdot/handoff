@@ -40,6 +40,12 @@ export function scratchBase(root: string, machine: string): BaseDir {
   return { key: `scratch:${machine}:${root}`, kind: 'scratch', path: root, label: '临时', projectName: '', machine }
 }
 
+/** 会话工作台 tab 的 BaseDir（B358.6）：kind 取白名单内的 'home'——会话不挂目录，
+ * path 留空；key 唯一化使 openItems 已打开行互不撞键。 */
+export function sessionBase(sessionId: string): BaseDir {
+  return { key: `session:${sessionId}`, kind: 'home', path: '', label: '会话', projectName: '', machine: '' }
+}
+
 export interface WorkbenchApi {
   base: BaseDir | null
   wb: Workbench

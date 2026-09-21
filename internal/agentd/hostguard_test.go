@@ -35,6 +35,7 @@ func newHostTestEnv(t *testing.T, cfg *config.Config) (*Server, *httptest.Server
 	t.Cleanup(func() { st.Close() })
 	var logs strings.Builder
 	srv := NewServer(cfg, st, slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	newManagerForServer(t, srv, nil)
 	ts := testhttp.NewServer(t, srv.Handler())
 	return srv, ts, &logs
 }

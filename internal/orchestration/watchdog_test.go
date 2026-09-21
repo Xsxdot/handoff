@@ -1,0 +1,614 @@
+// agentd 看门狗与启动恢复的白盒测试（package orchestration，直接驱动未导出的 runWatchdog）。
+//
+// 覆盖（brief Task 12 Step 1 三个用例）：
+//   - TestWatchdogFiresOnceOnStall：卡住任务触发 stalled，且「只发一次」防事件风暴
+//     （tick 两轮只产生一条 stalled，订阅者只收到一次广播）
+//   - TestWatchdogIgnoresFreshAndTerminal：新鲜任务（事件未超阈值）与终态任务不触发
+//   - TestRecoverOnStartup：探活恒 false → failed 事件 + waiting_review；
+//     探活恒 true → 任务保持 running 不动；终态任务不被探测
+//
+// 为什么用「注入极小 stallTimeout」模拟「last event 3h 前」：AppendEvent 的时间戳
+// 由 store 内部取当前时间，测试无法直接回填旧时间（否则要改公开 API 或直改
+// SQLite 表）。stallTimeout 本就是可注入参数（与 tick 同款，见 runWatchdog），
+// 传入 time.Nanosecond 等价于「最新事件远超阈值」，语义与 3h 前事件完全一致。
+package orchestration
+
+import (
+	"context"
+	"encoding/json"
+	"io"
+	"log/slog"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
+)
+
+// discardLogger 返回丢弃输出的 logger，保证测试输出干净（与 hub_test 的 TestMain 同款）。
+func discardLogger() *slog.Logger {
+	return slog.New(slog.NewTextHandler(io.Discard, nil))
+}
+
+// seedRunningTask 创建任务并迁移到 running，随后追加一条事件（看门狗判定的基准）。
+func seedRunningTask(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	createRunningTask(t, st, id)
+	if _, err := st.AppendEvent(id, proto.EventTypeProgress, map[string]string{"text": "开始干活"}); err != nil {
+		t.Fatalf("AppendEvent(%s): %v", id, err)
+	}
+}
+
+// seedWaitingAnswerTask 创建任务并迁移到 waiting_answer（running→waiting_answer 合法）。
+func seedWaitingAnswerTask(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	createRunningTask(t, st, id)
+	if err := st.UpdateTaskState(id, proto.TaskStateWaitingAnswer); err != nil {
+		t.Fatalf("置为 waiting_answer: %v", err)
+	}
+	if _, err := st.AppendEvent(id, proto.EventTypePermissionRequest, map[string]string{"text": "等待审批"}); err != nil {
+		t.Fatalf("AppendEvent(%s): %v", id, err)
+	}
+}
+
+// seedCompletedTask 创建任务并迁到终态 completed（seedRunningTask 的事件基准保留）。
+func seedCompletedTask(t *testing.T, st *store.Store, id string) {
+	t.Helper()
+	seedRunningTask(t, st, id)
+	if err := st.UpdateTaskState(id, proto.TaskStateWaitingReview); err != nil {
+		t.Fatalf("置为 waiting_review: %v", id)
+	}
+	if err := st.UpdateTaskState(id, proto.TaskStateCompleted); err != nil {
+		t.Fatalf("置为 completed: %v", id)
+	}
+}
+
+// stalledEvents 返回任务的全部 stalled 事件（断言用）。
+func stalledEvents(t *testing.T, st *store.Store, taskID string) []proto.Event {
+	t.Helper()
+	evs, err := st.EventsFrom(taskID, 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	var out []proto.Event
+	for _, ev := range evs {
+		if ev.Type == proto.EventTypeStalled {
+			out = append(out, ev)
+		}
+	}
+	return out
+}
+
+// assertState 断言任务当前状态。
+func assertState(t *testing.T, st *store.Store, taskID string, want proto.TaskState) {
+	t.Helper()
+	task, err := st.GetTask(taskID)
+	if err != nil {
+		t.Fatalf("GetTask(%s): %v", taskID, err)
+	}
+	if task.State != want {
+		t.Fatalf("任务 %s 状态期望 %s，实际 %s", taskID, want, task.State)
+	}
+}
+
+// TestWatchdogFiresOnceOnStall：卡住任务（事件远超 stallTimeout）触发 stalled，
+// 但两轮 tick 只产生一条——「只发一次」防事件风暴。
+func TestWatchdogFiresOnceOnStall(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedRunningTask(t, st, "task-stalled")
+
+	// 订阅事件流：断言的第二通道（事件既落库也经 hub 广播）
+	evCh, unsubscribe := hub.Subscribe("task-stalled")
+	defer unsubscribe()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// tick 10ms 注入（测试参数），stallTimeout 极小 = 事件必然超阈值
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string, string) error { return nil }, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
+
+	// 等第一条 stalled 落库（首轮触发）
+	eventually(t, 2*time.Second, "stalled 事件已落库", func() bool {
+		return len(stalledEvents(t, st, "task-stalled")) == 1
+	})
+	// 再等 3 个 tick 窗口：若「只发一次」失效，此间会重复触发
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	got := stalledEvents(t, st, "task-stalled")
+	if len(got) != 1 {
+		t.Fatalf("期望恰好 1 条 stalled 事件，实际 %d 条（只发一次失效）", len(got))
+	}
+
+	// payload 断言：last_seq 指向触发时刻的最新事件，idle 非空
+	var pl stalledPayload
+	if err := json.Unmarshal(got[0].Payload, &pl); err != nil {
+		t.Fatalf("解析 stalled payload: %v", err)
+	}
+	if pl.LastSeq == 0 || pl.Idle == "" {
+		t.Fatalf("stalled payload 缺字段: %+v", pl)
+	}
+
+	// 广播断言：订阅者收到且只收到一条 stalled
+	select {
+	case ev := <-evCh:
+		if ev.Type != proto.EventTypeStalled {
+			t.Fatalf("订阅者收到非 stalled 事件: %s", ev.Type)
+		}
+	default:
+		t.Fatal("订阅者未收到 stalled 事件（Publish 未生效）")
+	}
+	select {
+	case ev := <-evCh:
+		t.Fatalf("订阅者收到第二条事件（只发一次失效）: %s", ev.Type)
+	default:
+	}
+}
+
+// TestWatchdogIgnoresFreshAndTerminal：新鲜任务与终态任务都不触发 stalled。
+func TestWatchdogIgnoresFreshAndTerminal(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	// 新鲜任务：事件刚产生（stallTimeout 1h 远超事件年龄），不判定卡住
+	seedRunningTask(t, st, "task-fresh")
+	// 终态任务：即使事件陈旧也不在扫描范围（只扫 running/waiting_answer）
+	seedCompletedTask(t, st, "task-done")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	go runWatchdog(ctx, st, hub, time.Hour, 10*time.Millisecond, 0, 0, func(string, string) error { return nil }, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+
+	if got := stalledEvents(t, st, "task-fresh"); len(got) != 0 {
+		t.Fatalf("新鲜任务不应触发 stalled，实际 %d 条", len(got))
+	}
+	if got := stalledEvents(t, st, "task-done"); len(got) != 0 {
+		t.Fatalf("终态任务不应触发 stalled，实际 %d 条", len(got))
+	}
+}
+
+// TestWatchdogRefiresStalledAfterReply（P1-15a）：已 stalled 的任务在协调者回答后
+// 仍无新事件产出（executor 假死），下一轮 tick 必须二次触发 stalled——这是最需要
+// 二次告警的场景（旧实现「只发一次」裁决后永远不再告警）；而无活动时依旧只发一次
+// 不刷屏。
+func TestWatchdogRefiresStalledAfterReply(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingAnswerTask(t, st, "task-reply")
+	// 补一个挂起工单供 reply 回答，走真实 handleReply 的 AnswerTicket 路径
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "task-reply:t1", TaskID: "task-reply",
+		Kind: "gate", Request: []byte(`{"kind":"gate"}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string, string) error { return nil }, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
+
+	// 第一轮：stalled 触发一次
+	eventually(t, 2*time.Second, "首条 stalled 已落库", func() bool {
+		return len(stalledEvents(t, st, "task-reply")) == 1
+	})
+
+	// 模拟协调者回答 + 回迁（server.handleReply 的回程：AnswerTicket → resumeIfIdle）
+	if err := st.AnswerTicket("task-reply:t1", "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	if err := st.UpdateTaskState("task-reply", proto.TaskStateRunning); err != nil {
+		t.Fatalf("回迁 running: %v", err)
+	}
+
+	// 第二轮：executor 仍无事件产出但 updated_at 已前进 → 必须二次 stalled
+	eventually(t, 2*time.Second, "二次 stalled 已落库", func() bool {
+		return len(stalledEvents(t, st, "task-reply")) == 2
+	})
+
+	// 之后无活动不刷屏：再等若干 tick，仍只有 2 条（二次告警是活动驱动的，不是每轮重发）
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+	if got := len(stalledEvents(t, st, "task-reply")); got != 2 {
+		t.Fatalf("无活动后 stalled 应保持 2 条，实际 %d（二次告警刷屏）", got)
+	}
+}
+
+// TestWatchdogCatchesZeroEventTask（P1-15b）：从未产出任何事件的任务（静默挂起）
+// 不再被跳过——以 task.UpdatedAt 兜底基线，超时后同样触发 stalled 且只触发一次，
+// 事件锚点 LastSeq 记 0（无事件可锚）。
+func TestWatchdogCatchesZeroEventTask(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	createRunningTask(t, st, "task-silent") // 无事件：只有任务行
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go runWatchdog(ctx, st, hub, time.Nanosecond, 10*time.Millisecond, 0, 0, func(string, string) error { return nil }, time.Now().Add(-time.Hour), 30*time.Second, func(string, proto.TaskState, string) error { return nil }, discardLogger())
+
+	eventually(t, 2*time.Second, "零事件任务 stalled 已落库", func() bool {
+		return len(stalledEvents(t, st, "task-silent")) == 1
+	})
+	time.Sleep(30 * time.Millisecond)
+	cancel()
+	if got := len(stalledEvents(t, st, "task-silent")); got != 1 {
+		t.Fatalf("零事件任务 stalled 应恰好 1 条，实际 %d（应只发一次）", got)
+	}
+	var pl stalledPayload
+	evs := stalledEvents(t, st, "task-silent")
+	if err := json.Unmarshal(evs[0].Payload, &pl); err != nil {
+		t.Fatalf("解析 stalled payload: %v", err)
+	}
+	if pl.LastSeq != 0 {
+		t.Fatalf("零事件任务 stalled LastSeq=%d, want 0（无事件可锚）", pl.LastSeq)
+	}
+	if pl.Idle == "" {
+		t.Fatal("零事件任务 stalled 缺 Idle 字段")
+	}
+}
+
+// TestRecoverOnStartupVoidsPendingTickets（P1-16）：探活失败的 dead 任务，其挂起
+// 工单被作废——attach 的 pending_tickets 不再出现无法操作的挂起项（executor 已不
+// 在，一操作就撞 P0-5）；answer 置为 VoidAnswer 留审计痕迹，且该任务仍迁移
+// waiting_review 交协调者裁决。
+func TestRecoverOnStartupVoidsPendingTickets(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingAnswerTask(t, st, "task-dead-tk")
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "task-dead-tk:p1", TaskID: "task-dead-tk",
+		Kind: "gate", Request: []byte(`{"kind":"gate"}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	if err := RecoverOnStartup(st, hub, func(string) bool { return false }, func(string) {}, discardLogger()); err != nil {
+		t.Fatalf("RecoverOnStartup: %v", err)
+	}
+
+	// 任务仍按既有恢复语义落 waiting_review
+	assertState(t, st, "task-dead-tk", proto.TaskStateWaitingReview)
+
+	// attach 数据源：pending_tickets 为空（作废后 answer 非空，天然不再返回）
+	pending, err := st.PendingTickets("task-dead-tk")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("dead 任务恢复后 pending_tickets=%d, want 0（挂起项必须作废）", len(pending))
+	}
+	// 审计痕迹：answer 置为 VoidAnswer
+	tk, err := st.GetTicket("task-dead-tk:p1")
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	if tk.Answer == nil || *tk.Answer != store.VoidAnswer {
+		t.Fatalf("作废工单 answer=%v, want VoidAnswer(%q)", tk.Answer, store.VoidAnswer)
+	}
+}
+
+// TestRecoverOnStartup：探活失败 → failed 事件 + waiting_review；
+// 探活成功 → 任务保持 running 不动；终态任务不被探测。
+func TestRecoverOnStartup(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+
+	// 探活恒 false：running 与 waiting_answer 任务都要转 failed 交协调者裁决
+	seedRunningTask(t, st, "task-dead-run")
+	seedWaitingAnswerTask(t, st, "task-dead-wa")
+	// 探活恒 true：任务保持 running 不动
+	seedRunningTask(t, st, "task-alive")
+	// 终态任务：不在恢复范围，也不该被探测
+	seedCompletedTask(t, st, "task-done")
+
+	probed := map[string]int{}
+	probe := func(taskID string) bool {
+		probed[taskID]++
+		return taskID == "task-alive"
+	}
+
+	if err := RecoverOnStartup(st, hub, probe, func(string) {}, discardLogger()); err != nil {
+		t.Fatalf("RecoverOnStartup: %v", err)
+	}
+
+	// 失败路径：两个非存活任务都落到 waiting_review
+	assertState(t, st, "task-dead-run", proto.TaskStateWaitingReview)
+	assertState(t, st, "task-dead-wa", proto.TaskStateWaitingReview)
+	// 成功路径：任务不动
+	assertState(t, st, "task-alive", proto.TaskStateRunning)
+	// 终态：不动、不被探测
+	assertState(t, st, "task-done", proto.TaskStateCompleted)
+	if _, ok := probed["task-done"]; ok {
+		t.Fatal("终态任务不应被探活")
+	}
+
+	// turn_failed 事件断言：running 与 waiting_answer 各追加一条，原因固定。
+	// 是 turn_failed 不是 failed——两个任务都收在 waiting_review（见上面的 assertState），没有终结（B100 补漏）
+	for _, id := range []string{"task-dead-run", "task-dead-wa"} {
+		evs, err := st.EventsFrom(id, 0, 100)
+		if err != nil {
+			t.Fatalf("EventsFrom(%s): %v", id, err)
+		}
+		var failed []proto.Event
+		for _, ev := range evs {
+			if ev.Type == proto.EventTypeTurnFailed {
+				failed = append(failed, ev)
+			}
+		}
+		if len(failed) != 1 {
+			t.Fatalf("任务 %s 期望 1 条 turn_failed 事件，实际 %d 条", id, len(failed))
+		}
+		var pl FailedPayload
+		if err := json.Unmarshal(failed[0].Payload, &pl); err != nil {
+			t.Fatalf("解析 failed payload: %v", err)
+		}
+		if pl.FailReason != "agentd 重启后执行器已不在" {
+			t.Fatalf("任务 %s failed 原因期望固定文案，实际 %q", id, pl.FailReason)
+		}
+	}
+
+	// 成功路径：task-alive 不应有新事件
+	evs, err := st.EventsFrom("task-alive", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom(task-alive): %v", err)
+	}
+	for _, ev := range evs {
+		if ev.Type == proto.EventTypeFailed {
+			t.Fatalf("存活任务不应产生 failed 事件: seq=%d", ev.Seq)
+		}
+	}
+}
+
+// TestRecoverOnStartupRebuildsWaitingReview 覆盖 agentd 重启后 waiting_review 任务
+// 的续接恢复：executor 存活（probe=true）时必须重建订阅与中介循环（即被探活），
+// 但**不改任务状态**——waiting_review 是协调者裁决的落点，就该留在原地等人；也不得
+// 追加任何事件。旧实现显式跳过 waiting_review（「是人的节奏」），续接上下文随
+// agentd 进程消亡而丢失，continue 永久失败。
+func TestRecoverOnStartupRebuildsWaitingReview(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingReviewTask(t, st, "task-review-alive")
+
+	probed := map[string]int{}
+	probe := func(taskID string) bool {
+		probed[taskID]++
+		return true
+	}
+
+	if err := RecoverOnStartup(st, hub, probe, func(string) {}, discardLogger()); err != nil {
+		t.Fatalf("RecoverOnStartup: %v", err)
+	}
+	if probed["task-review-alive"] != 1 {
+		t.Fatalf("waiting_review 存活任务应被探活重建，probed=%d, want 1", probed["task-review-alive"])
+	}
+	assertState(t, st, "task-review-alive", proto.TaskStateWaitingReview)
+
+	evs, err := st.EventsFrom("task-review-alive", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	for _, ev := range evs {
+		if ev.Type == proto.EventTypeFailed {
+			t.Fatalf("waiting_review 存活重建不得追加 failed 事件: seq=%d", ev.Seq)
+		}
+	}
+}
+
+// TestRecoverOnStartupKeepsDeadWaitingReview 覆盖 waiting_review 任务 executor 已不在
+// 的恢复：保持现状即可——不追加 failed 事件、不迁移状态（它本来就是待审核终态，
+// 追加事件只会产生噪音）。与 running/waiting_answer 的「failed 迁移」路径严格区分。
+func TestRecoverOnStartupKeepsDeadWaitingReview(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingReviewTask(t, st, "task-review-dead")
+
+	probed := map[string]int{}
+	probe := func(taskID string) bool {
+		probed[taskID]++
+		return false
+	}
+	swept := 0
+
+	if err := RecoverOnStartup(st, hub, probe, func(string) { swept++ }, discardLogger()); err != nil {
+		t.Fatalf("RecoverOnStartup: %v", err)
+	}
+	if probed["task-review-dead"] != 1 {
+		t.Fatalf("waiting_review 任务应被探活判断，probed=%d, want 1", probed["task-review-dead"])
+	}
+	assertState(t, st, "task-review-dead", proto.TaskStateWaitingReview)
+	if swept != 1 {
+		t.Fatalf("waiting_review 保持分支也必须清扫一次残留，实际 %d 次", swept)
+	}
+
+	evs, err := st.EventsFrom("task-review-dead", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	for _, ev := range evs {
+		if ev.Type == proto.EventTypeFailed {
+			t.Fatalf("waiting_review 任务 executor 不在也不得追加 failed 事件: seq=%d", ev.Seq)
+		}
+	}
+}
+
+// TestMismatchVerdict 覆盖 mismatchVerdict 失配判据的六条护栏（B97 Task 2），
+// 逐条对应 spec §6 第 2 点的判据。
+//
+//  1. 最新事件 failed + running + 事件 60s 前 → true
+//  2. 同上但事件只有 10s → false（防抢：Stop/对账正常执行时也会短暂处在中间态）
+//  3. 最新事件是 progress（历史上有 failed）→ false
+//  4. 最新事件是 turn_failed + waiting_review → false
+//     这是**防误伤的正身**：turn_failed + waiting_review 是健康态，任务正等着
+//     协调者裁决，挂三天都正常，扫描一根手指都不许碰
+//  5. failed 事件产生于 agentd 启动之前 → false
+//     为什么：B100 之前的历史数据里存在**合法的** failed + waiting_review，
+//     没这条护栏，升级后会把正等着裁决的存量任务直接判死
+//  6. 任务已是终态（failed 与 completed 两态都覆盖）→ false
+func TestMismatchVerdict(t *testing.T) {
+	now := time.Now()
+	startedAt := now.Add(-time.Hour)
+	minAge := 30 * time.Second
+
+	cases := []struct {
+		name   string
+		state  proto.TaskState
+		latest *proto.Event
+		want   bool
+	}{
+		{
+			name:   "1 最新事件failed+running+60s前→true",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   true,
+		},
+		{
+			name:   "2 事件仅10s→false（防抢）",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-10 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "事件年龄恰等于 minAge→true（>= 边界）",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-minAge)},
+			want:   true,
+		},
+		{
+			name:   "3 最新事件是progress（历史上有failed）→false",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeProgress, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "4 turn_failed+waiting_review→false（防误伤正身）",
+			state:  proto.TaskStateWaitingReview,
+			latest: &proto.Event{Type: proto.EventTypeTurnFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "5 failed事件产生于agentd启动之前→false",
+			state:  proto.TaskStateRunning,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: startedAt.Add(-time.Hour)},
+			want:   false,
+		},
+		{
+			name:   "6a 已是failed终态→false",
+			state:  proto.TaskStateFailed,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+		{
+			name:   "6b 已是completed终态→false",
+			state:  proto.TaskStateCompleted,
+			latest: &proto.Event{Type: proto.EventTypeFailed, CreatedAt: now.Add(-60 * time.Second)},
+			want:   false,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := mismatchVerdict(tc.state, tc.latest, now, startedAt, minAge)
+			if got != tc.want {
+				t.Fatalf("mismatchVerdict(state=%s, latest.type=%v, latest.age=%s) = %v, want %v",
+					tc.state, tc.latest.Type, now.Sub(tc.latest.CreatedAt), got, tc.want)
+			}
+		})
+	}
+}
+
+// TestScanStateMismatchTransitsAndAudits（B97 Task 3）：失配任务（最新事件 failed、
+// 状态却非终态）被迁到 failed，且挂起工单已被作废——证明走的是 transit 而非裸
+// UpdateTaskState（裸改状态不会触发终态收口），且留下一条 progress 审计，文本含
+// 原始 failed 事件的 seq。
+func TestScanStateMismatchTransitsAndAudits(t *testing.T) {
+	// 直接用生产接线 m.MismatchTransit()（与 cmd/agentd.go:193 同一接线点，
+	// 终态收口挂在 transit 内部）
+	m, st, hub, _ := newTestManager(t)
+	createRunningTask(t, st, "t1")
+	// 追加一条 failed 事件作为最新事件（事件年龄 ≥ minAge=time.Nanosecond 恒成立）
+	fevt, err := st.AppendEvent("t1", proto.EventTypeFailed, FailedPayload{FailReason: "对账失败"})
+	if err != nil {
+		t.Fatalf("AppendEvent(failed): %v", err)
+	}
+	seq := fevt.Seq
+	// 造一张挂起工单：若扫描走 transit，终态收口会把它作废
+	if _, err := st.CreateTicket(&proto.Ticket{ID: "t1:p1", TaskID: "t1", Kind: "gate",
+		Request: json.RawMessage(`{"kind":"gate"}`), CreatedAt: time.Now().UTC()}); err != nil {
+		t.Fatalf("CreateTicket: %v", err)
+	}
+
+	// startedAt 早于事件（护栏「本次启动之后」放行），minAge 足够小（事件必够老）
+	scanStateMismatch(st, hub, time.Now().Add(-time.Hour), time.Nanosecond, m.MismatchTransit(), discardLogger())
+
+	assertState(t, st, "t1", proto.TaskStateFailed)
+
+	// 挂起工单已被作废（transit 的终态收口生效 → 证明走的是 transit 不是裸改状态）
+	pending, err := st.PendingTickets("t1")
+	if err != nil {
+		t.Fatalf("PendingTickets: %v", err)
+	}
+	if len(pending) != 0 {
+		t.Fatalf("失配任务迁移后挂起工单应被作废（走 transit 收口），实际 %d 张", len(pending))
+	}
+
+	// 审计：存在一条 progress 事件，payload 文本含原始 failed 事件 seq；
+	// 且不应补第二条 failed 事件（审计用 progress 而非重复 failed）
+	evs, err := st.EventsFrom("t1", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom: %v", err)
+	}
+	foundAudit := false
+	failedCount := 0
+	for _, ev := range evs {
+		switch ev.Type {
+		case proto.EventTypeFailed:
+			failedCount++
+		case proto.EventTypeProgress:
+			if strings.Contains(string(ev.Payload), strconv.FormatInt(seq, 10)) {
+				foundAudit = true
+			}
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("缺少含原始 failed 事件 seq=%d 的 progress 审计事件", seq)
+	}
+	if failedCount != 1 {
+		t.Fatalf("不应补第二条 failed 事件，实际 %d 条", failedCount)
+	}
+}
+
+// TestScanStateMismatchLeavesHealthyTaskAlone（B97 Task 3）：turn_failed + waiting_review
+// 是健康态（任务正等着协调者裁决，挂三天都正常），扫描一根手指都不许碰——transit
+// 不被调用、状态不动、事件数不变。判 false 的直接原因是最新事件类型是 turn_failed
+// 而非 failed（waiting_review 不是终态，终态只有 completed/failed）。
+func TestScanStateMismatchLeavesHealthyTaskAlone(t *testing.T) {
+	st := newTestStore(t)
+	hub := NewHub()
+	seedWaitingReviewTask(t, st, "task-healthy")
+	// turn_failed 事件作为最新事件：mismatchVerdict 判 false（latest 不是 failed）
+	if _, err := st.AppendEvent("task-healthy", proto.EventTypeTurnFailed,
+		FailedPayload{FailReason: "回合失败"}); err != nil {
+		t.Fatalf("AppendEvent(turn_failed): %v", err)
+	}
+	before, err := st.EventsFrom("task-healthy", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom(before): %v", err)
+	}
+
+	called := 0
+	transit := func(id string, to proto.TaskState, reason string) error {
+		called++
+		return nil
+	}
+	scanStateMismatch(st, hub, time.Now().Add(-time.Hour), time.Nanosecond, transit, discardLogger())
+
+	if called != 0 {
+		t.Fatalf("健康任务不应触发迁移回调，实际调用 %d 次", called)
+	}
+	assertState(t, st, "task-healthy", proto.TaskStateWaitingReview)
+
+	after, err := st.EventsFrom("task-healthy", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFrom(after): %v", err)
+	}
+	if len(after) != len(before) {
+		t.Fatalf("健康任务事件数应不变（无审计、无新事件），期望 %d 条，实际 %d 条", len(before), len(after))
+	}
+}

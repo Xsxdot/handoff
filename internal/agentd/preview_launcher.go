@@ -26,6 +26,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // PreviewLaunchSpec contains the exact isolated-browser inputs. ProxyBypassList
@@ -79,7 +80,7 @@ const previewProcessStopTimeout = 5 * time.Second
 // browser resources in memory only; owner session truth remains in Store and
 // the coordinator projection remains in PreviewMirror.
 type PreviewOpenService struct {
-	owner    *PreviewOwner
+	owner    *workspace.PreviewOwner
 	mirror   *PreviewMirror
 	pool     *targetclient.Pool
 	launcher PreviewLauncher
@@ -95,7 +96,7 @@ type PreviewOpenService struct {
 
 // NewPreviewOpenService constructs the local open boundary. A nil launcher
 // selects the platform launcher; tests should inject a fake launcher.
-func NewPreviewOpenService(owner *PreviewOwner, mirror *PreviewMirror, pool *targetclient.Pool,
+func NewPreviewOpenService(owner *workspace.PreviewOwner, mirror *PreviewMirror, pool *targetclient.Pool,
 	launcher PreviewLauncher, log *slog.Logger) *PreviewOpenService {
 	if log == nil {
 		log = slog.Default()
@@ -107,11 +108,11 @@ func NewPreviewOpenService(owner *PreviewOwner, mirror *PreviewMirror, pool *tar
 		owner: owner, mirror: mirror, pool: pool, launcher: launcher, log: log,
 		processes: make(map[string]*previewProcess),
 	}
-	hubs := make([]*PreviewHub, 0, 2)
-	if owner != nil && owner.hub != nil {
-		hubs = append(hubs, owner.hub)
+	hubs := make([]*workspace.PreviewHub, 0, 2)
+	if owner != nil && owner.Hub() != nil {
+		hubs = append(hubs, owner.Hub())
 	}
-	if mirror != nil && mirror.hub != nil && (owner == nil || mirror.hub != owner.hub) {
+	if mirror != nil && mirror.hub != nil && (owner == nil || mirror.hub != owner.Hub()) {
 		// Remote events are published by PreviewMirror, so this subscription is
 		// required even when the local owner uses a separate hub.
 		hubs = append(hubs, mirror.hub)
@@ -148,7 +149,7 @@ func (o *PreviewOpenService) OpenPreview(ctx context.Context, id, machine string
 			return resp, fmt.Errorf("聚焦 preview 浏览器: %w", err)
 		}
 		if machine == "" {
-			if err := o.owner.Touch(ctx, id, o.owner.deps.Now()); err != nil {
+			if err := o.owner.Touch(ctx, id, o.owner.Now()); err != nil {
 				o.log.Warn("聚焦后续命本机 preview 失败", "operation", "preview_touch", "session", id, "machine", machine, "cause", err)
 				return resp, fmt.Errorf("续命 preview 会话: %w", err)
 			}
@@ -228,7 +229,7 @@ func (o *PreviewOpenService) OpenPreview(ctx context.Context, id, machine string
 	o.processes[key] = process
 	go o.watchProcess(key, process)
 	if machine == "" {
-		if err := o.owner.Touch(ctx, id, o.owner.deps.Now()); err != nil {
+		if err := o.owner.Touch(ctx, id, o.owner.Now()); err != nil {
 			delete(o.processes, key)
 			if cleanupErr := o.stopAndCleanupProcess(ctx, id, machine, process); cleanupErr != nil {
 				o.log.Warn("preview 浏览器启动后续命失败且本地回收不完整", "operation", "preview_touch_cleanup", "session", id, "machine", machine, "pid", browser.PID, "cause", cleanupErr)
@@ -339,14 +340,14 @@ func (o *PreviewOpenService) resolveSession(ctx context.Context, id, machine str
 		}
 		return session, nil
 	}
-	if o.owner == nil || o.owner.st == nil {
+	if o.owner == nil {
 		return proto.PreviewSession{}, errors.New("preview owner 未配置")
 	}
-	row, err := o.owner.st.GetPreview(id)
+	row, err := o.owner.Get(id)
 	if err != nil {
 		return proto.PreviewSession{}, err
 	}
-	if row.ClosedAt != nil || !row.LastActiveAt.Add(time.Duration(row.Session.TTLSeconds)*time.Second).After(o.owner.deps.Now().UTC()) {
+	if row.ClosedAt != nil || !row.LastActiveAt.Add(time.Duration(row.Session.TTLSeconds)*time.Second).After(o.owner.Now().UTC()) {
 		return proto.PreviewSession{}, fmt.Errorf("preview 会话 %s: %w", id, store.ErrNotFound)
 	}
 	return row.Session, nil

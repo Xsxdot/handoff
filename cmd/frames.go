@@ -58,7 +58,7 @@ func runFrames(ctx context.Context, addr, token, taskID string,
 	return runFramesClient(ctx, client.New(addr, token), taskID, offset, tail, follow, out)
 }
 
-func runFramesClient(ctx context.Context, c *client.Client, taskID string,
+func runFramesClient(ctx context.Context, c client.FramesClient, taskID string,
 	offset, tail int64, follow bool, out io.Writer) error {
 	rc, size, err := c.FramesStream(ctx, taskID, offset, tail, follow)
 	if err != nil {

@@ -23,6 +23,7 @@ import (
 func newRevealEnv(t *testing.T) (*testAgentdEnv, string) {
 	t.Helper()
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	repo := initGitRepoWithOrigin(t, "git@github.com:x/demo.git")
 	mustWriteFile(t, filepath.Join(repo, "a.txt"), "a")
 	if err := env.st.CreateProjectLocation(&proto.ProjectLocation{

@@ -1,6 +1,6 @@
 // 本文件锁死账本镜像「跟随活配置」的三条判据：运行期新增机器即起订、
 // 机器配置变更即退订重订、机器消失即退订；外加一条编译期断言，钉死
-// 生产实现（target 客户端池）满足 Machines。
+// 生产底座（target 客户端池）的客户端形状。
 //
 // why：这三条过去都不成立——机器清单是启动快照、在飞订阅按值捕获
 // config.Target、relay 形态因为拿 addr 拨号而永远连不上（B163）。
@@ -24,10 +24,15 @@ import (
 	"github.com/Xsxdot/handoff/internal/targetclient"
 )
 
-// 生产实现必须是 target 客户端池：池按 target 形态选路（直连 / relay），
+// 生产底座必须是 target 客户端池：池按 target 形态选路（直连 / relay），
 // 账本镜像因此对 relay 形态的执行机也成立——这正是 B163 ④ 修掉的缺陷。
-// 这条断言把「Pool 满足 Machines」钉在编译期，签名漂移当场编译失败。
-var _ Machines = (*targetclient.Pool)(nil)
+// B233.20 起 For 的返回经 gateway 侧适配器（agentd.LedgerMirrorMachines，
+// 它在 agentd 包内用 var _ 断言满足 Machines）收窄为事件流订阅缝；这里钉
+// 池侧形状，池签名漂移仍当场编译失败。
+var _ interface {
+	Names() []string
+	For(name string) (*client.Client, error)
+} = (*targetclient.Pool)(nil)
 
 type safeBuf struct {
 	mu  sync.Mutex
@@ -53,12 +58,12 @@ func (b *safeBuf) String() string {
 // 变了，池已重建客户端」；移除表示「机器被删」。
 type fakeMachines struct {
 	mu      sync.Mutex
-	clients map[string]*client.Client
+	clients map[string]client.EventStreamClient
 	calls   []string
 }
 
 func newFakeMachines() *fakeMachines {
-	return &fakeMachines{clients: map[string]*client.Client{}}
+	return &fakeMachines{clients: map[string]client.EventStreamClient{}}
 }
 
 // machinesWith 造一个已登记若干机器的 fake，每台一个独立客户端实例。
@@ -82,7 +87,7 @@ func (f *fakeMachines) Names() []string {
 	return names
 }
 
-func (f *fakeMachines) For(name string) (*client.Client, error) {
+func (f *fakeMachines) For(name string) (client.EventStreamClient, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls = append(f.calls, name)
@@ -100,7 +105,7 @@ func (f *fakeMachines) forCalls() []string {
 }
 
 // set 登记或替换一台机器的客户端（替换 = 配置被改，池重建了实例）。
-func (f *fakeMachines) set(name string, c *client.Client) {
+func (f *fakeMachines) set(name string, c client.EventStreamClient) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.clients[name] = c
@@ -115,7 +120,7 @@ func (f *fakeMachines) remove(name string) {
 
 // srcCall 是事件源被调用一次的记录。
 type srcCall struct {
-	client *client.Client
+	client client.EventStreamClient
 	from   int64
 	ctx    context.Context
 }
@@ -123,7 +128,7 @@ type srcCall struct {
 // recordingSource 造一个记录每次调用并保持阻塞的事件源。
 // replay 非空时，第一次连接会把这些事件喂给 onEvent（用来推高水位）。
 func recordingSource(calls chan<- srcCall, replay []proto.Event) Source {
-	return func(ctx context.Context, c *client.Client, taskID string, fromSeq int64,
+	return func(ctx context.Context, c client.EventStreamClient, taskID string, fromSeq int64,
 		onEvent func(proto.Event) error) error {
 		calls <- srcCall{client: c, from: fromSeq, ctx: ctx}
 		for _, e := range replay {

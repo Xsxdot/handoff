@@ -9,6 +9,7 @@ import (
 	"log/slog"
 
 	"github.com/Xsxdot/handoff/internal/client"
+	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/spf13/cobra"
 )
@@ -34,7 +35,7 @@ var cardBindCmd = &cobra.Command{
 			return err
 		}
 		defer st.Close()
-		if err := st.BindSeat(id, identity, proto.SeatSourceBind); err != nil {
+		if err := st.BindSeat(id, identity, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 			slog.Default().Warn("CLI 坐下失败", "card", id, "cause", err)
 			return fmt.Errorf("坐下卡 %s: %w", id, err)
 		}
@@ -122,7 +123,7 @@ var cardRebindCmd = &cobra.Command{
 			if err != nil {
 				return fmt.Errorf("读取换绑卡 %s: %w", id, err)
 			}
-			if err := st.RebindSeat(id, identity, proto.SeatSourceBind, card.DriverSession); err != nil {
+			if err := st.RebindSeat(id, identity, proto.SeatSourceBind, card.DriverSession, ledger.SeatBearing{}); err != nil {
 				slog.Default().Warn("CLI self 换绑失败", "card", id, "cause", err)
 				return fmt.Errorf("换绑卡 %s: %w", id, err)
 			}
