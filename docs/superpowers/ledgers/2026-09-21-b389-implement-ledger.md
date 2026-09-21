@@ -224,3 +224,134 @@ $ git status --short --branch
 
 本提交即本节点产出物；随后的 amend 只把这段读数收进同一提交（amend 换 hash 属
 git 事实，收口判据是工作树干净，不是文件内 hash 等于 HEAD）。
+
+---
+
+# 第二轮实现（修订轮三件，2026-09-21，分支 cards/B389-charter-9）
+
+依据：契约 `docs/superpowers/specs/b389-contract.md` @ `b14d2d82`（cards/B389-charter-8）；
+任务卡 B389 的 `review_verdict`（退回三项）。起手 HEAD `b14d2d82`。工作树
+`/root/.handoff/worktrees/70807630`。
+
+## 起手
+
+```text
+$ git log --oneline -1        → b14d2d82 docs(B389): 契约修订轮…
+$ go build ./...              → exit 0
+```
+
+## 图查询（codegraph，只读）
+
+```text
+$ codegraph --repo . sym ClaimWake                   → MISS（图覆盖债）
+$ codegraph --repo . sym AdmitSeatCarrier            → MISS（图覆盖债）
+$ codegraph --repo . sym migrateWakeClaimsCompositeKey → MISS（本卡新符号，图覆盖债）
+$ codegraph --repo . check                           → "fails": []，exit 0
+```
+
+图覆盖债：`ClaimWake`/`CompleteWake`/`WakeClaimsBefore`/`AdmitSeatCarrier`/
+`migrateWakeClaimsCompositeKey` 均未被图覆盖；实现以源码与测试为准。
+`codegraph check` 无 fails——本轮只改既有边语义（ledger 认领主键、agentd 组装点
+调用），未新增跨域依赖方向。
+
+## 第一件：认领键改 (card,seq) 复合键
+
+改动：`internal/ledger/store.go` 两方言 DDL 主键改 `(card,seq)`、索引
+`idx_wake_claims_card`→`idx_wake_claims_seq`；新增
+`internal/ledger/wakeclaim_migrate.go`（旧单键表 Open 迁移：SQLite 查 PK 成员、
+PG 查 pg_index indisprimary，判据是「card 属于主键」而不是「存在 card 列」）；
+`wakeclaim.go` 三个方法改复合键（`CompleteWake` 加 `card` 参数、`WakeClaimsBefore`
+DISTINCT seq）；`agentd/wakeconsumer.go` 的 `completeWakeBatch` 加 `card` 参数。
+
+红绿与变异自验（所有变异先确认 `go build ./...` 通过再数失败）：
+
+```text
+$ go test ./internal/ledger/ -run 'TestClaimWake|TestCompleteWake|TestCursorWatermark' -count=1 → ok
+$ go test ./internal/agentd/ -run TestB389Fanout -count=1                                      → ok
+
+变异①（ClaimWake 回退 seq 单键查找：WHERE card=? AND seq=? → WHERE seq=?）：
+  --- FAIL: TestB389FanoutWakesBothCardsOnce            （processed=1，第二张卡被吞）
+  --- FAIL: TestB389FanoutSiblingClaimDoesNotBlockOtherCard
+变异②（WakeClaimsBefore 去掉 DISTINCT）：
+  --- FAIL: TestCursorWatermarkStopsBeforeInFlightClaims
+    wakeclaim_test.go:111: 同 seq 两卡在飞应 DISTINCT 成一条，实得 [15 15]
+变异③（迁移探测改「存在 card 列即算已迁移」）：
+  --- FAIL: TestWakeClaimsLegacySingleKeyTableMigrates
+    wakeclaim_migrate_test.go:75: 迁移后主键应为 (card,seq)，实得 map[seq:1]
+变异④（迁移整体禁用）：
+  --- FAIL: TestWakeClaimsLegacySingleKeyTableMigrates（同上读数）
+恢复后各命令全部 → ok。
+```
+
+扇出实测（§4-33/34/35）：`TestB389FanoutWakesBothCardsOnce` 一条 room_message
+@ 两张各有 coordinate 席位的卡 → `processed=2`、`resumes=2`、`cursor>=seq`、
+在飞认领清空；`TestB389FanoutSiblingClaimDoesNotBlockOtherCard` 他机预持卡1
+`(card1,seq)` → `processed=1`、卡2 仍被唤醒、卡1 认领仍在飞挡水位。
+
+## 第二件：§4-29 锁点重做
+
+原锁点 `TestB389WakeUsesFrozenCarrierNotLaunchAdmit` 只在回合结束后读计数，对
+`AdmitSeatCarrier`/`LaunchAdmit` 不可区分（契约 §5.1(b) 已实测）。改为在
+`bearingTraceRunner.Resume` 内（名额尚未归还时）采集「回合进行中」的两级占用读数。
+
+```text
+冻结路径（AdmitSeatCarrier）：carrier/coord-carrier=0 carrier/coord-carrier-2=1 → ok
+变异（sed 把 AdmitSeatCarrier(squad.Name, bearing.Carrier) 换成 LaunchAdmit(squad.Name)，
+      先确认 go build ./... 通过）：
+  --- FAIL: TestB389WakeUsesFrozenCarrierNotLaunchAdmit
+    scheddrain_test.go:667: 回合进行中冻结载体应被占用:
+      map[carrier/coord-carrier:1 carrier/coord-carrier-2:0]（AdmitSeatCarrier 未生效或换成了 LaunchAdmit）
+恢复后 → ok。
+```
+
+## 第三件：§4-36–33 的锁点与迁移用例
+
+新增 `internal/ledger/wakeclaim_migrate_test.go`：
+- `TestWakeClaimsLegacySingleKeyTableMigrates`：建基线单键表（含存量行）→ 断言
+  Open 后主键为 `(card,seq)`（PRAGMA pk 序号）+ 三方法在新结构上工作；
+- `TestWakeClaimsCompositeTableReopenIdempotent`：已迁移库重复 Open 不重建、不清行。
+
+两条均先跑红（迁移未实现/探测错误即红）后绿，变异读数见上。
+
+## 触及包与全量
+
+```text
+$ gofmt -l internal cmd                 → （空）
+$ go build ./...                        → exit 0
+$ go vet ./internal/ledger/ ./internal/agentd/ ./internal/scheduling/ → exit 0
+$ go test ./internal/ledger/... -count=1
+    ok  github.com/Xsxdot/handoff/internal/ledger      22.575s
+    ok  github.com/Xsxdot/handoff/internal/ledger/api   1.206s
+$ go test ./internal/agentd/... -count=1
+    ok  github.com/Xsxdot/handoff/internal/agentd     181.142s
+$ go test ./internal/scheduling/... -count=1
+    ok  github.com/Xsxdot/handoff/internal/scheduling                5.692s
+    ok  github.com/Xsxdot/handoff/internal/scheduling/internal/logging 0.002s
+$ go test ./cmd/... -count=1
+    ok  github.com/Xsxdot/handoff/cmd                 68.483s
+$ go vet ./...                          → exit 0
+$ codegraph --repo . check              → "fails": []，exit 0
+```
+
+## 显式欠账（不静默）
+
+- 真机验收链（spec §4.3：`@B382` → 认领 → 路由 linux-01 → `cmd` 载体 resume
+  `ses_f45bc164…`）由协调者执行，本节点未跑，**未验证**。
+- PG 侧 `idx_wake_claims_seq` 与迁移分支未在真 PG 实跑（无 `LEDGER_TEST_PG_DSN`），
+  逻辑与 SQLite 同构，**未验证**。
+
+## 提交事实（历史读数）
+
+```text
+$ git add -A
+$ git commit -m "feat(B389): 认领键改 (card,seq) 复合键 + §4-29 锁点重做 + 迁移用例…"
+[cards/B389-charter-9 dda7bb6b] feat(B389): 认领键改 (card,seq) 复合键 + §4-29 锁点重做 + 迁移用例
+ 9 files changed, 607 insertions(+), 69 deletions(-)
+ create mode 100644 internal/ledger/wakeclaim_migrate.go
+ create mode 100644 internal/ledger/wakeclaim_migrate_test.go
+$ git status --short
+（空）
+```
+
+本提交即本节点产出物；随后的 amend 只把这段读数收进同一提交（amend 换 hash 属
+git 事实，收口判据是工作树干净，不是文件内 hash 等于 HEAD）。

@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
@@ -1656,5 +1657,94 @@ func releaseWakeClaimForTest(t *testing.T, env *ledgerEnv, seq int64) {
 	defer db.Close()
 	if _, err := db.Exec(`DELETE FROM wake_claims WHERE seq = ?`, seq); err != nil {
 		t.Fatalf("删认领行: %v", err)
+	}
+}
+
+// fanoutTwoCardFixture 建一个会话、拉两张各有 coordinate 席位的卡进群，返回
+// (会话 id, 群主 svc, 卡1, 卡2)。两张卡的会话 id 不同（单键认领会把第二张吞掉，
+// 这正是本组用例要照到的缺陷族）。
+func fanoutTwoCardFixture(t *testing.T, env *ledgerEnv) (string, *collab.Service, string, string) {
+	t.Helper()
+	svc := env.srv.rooms
+	session, err := svc.CreateSession("扇出对账场", "user:tester", "user:tester")
+	if err != nil {
+		t.Fatalf("建会话: %v", err)
+	}
+	card1 := createCoordCard(t, env)
+	card2 := createCoordCard(t, env)
+	for _, cardID := range []string{card1, card2} {
+		if err := svc.JoinCard(session.ID, cardID, "user:tester"); err != nil {
+			t.Fatalf("拉卡 %s 进群: %v", cardID, err)
+		}
+	}
+	bindCoordSeedForTest(t, env, card1, "sess-fan-1")
+	bindCoordSeedForTest(t, env, card2, "sess-fan-2")
+	drainAutomation(t, env)
+	return session.ID, svc, card1, card2
+}
+
+// TestB389FanoutWakesBothCardsOnce 锁 §4-33/34：一条 room_message 寻址命中两张
+// 各有 coordinate 席位的卡时，两张各被唤醒恰一次（processed==2、resumes==2），
+// 游标推进到该 seq 之外且两个 (card,seq) 认领行都已 done_at 收尾。
+func TestB389FanoutWakesBothCardsOnce(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	sessionID, svc, card1, card2 := fanoutTwoCardFixture(t, env)
+	seq := sendSessionMessage(t, svc, sessionID, "user:tester", "请两张卡都看", []string{card1, card2}, 0)
+
+	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil || escalated {
+		t.Fatalf("扇出消费失败: err=%v escalated=%v", err, escalated)
+	}
+	if processed != 2 {
+		t.Fatalf("两张卡应各被唤醒一次，processed=%d", processed)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 2 {
+		t.Fatalf("扇出应唤醒两张卡（单键会吞掉第二张）: %v", resumes)
+	}
+	env.srv.automationMu.Lock()
+	cursor := env.srv.automationCursor
+	env.srv.automationMu.Unlock()
+	if cursor < seq {
+		t.Fatalf("扇出后游标应越过该 seq: cursor=%d seq=%d", cursor, seq)
+	}
+	inFlight, err := env.ledger.WakeClaimsBefore(seq + 1)
+	if err != nil {
+		t.Fatalf("读在飞认领: %v", err)
+	}
+	if len(inFlight) != 0 {
+		t.Fatalf("两张卡的认领行都应 done_at 收尾，在飞=%v", inFlight)
+	}
+}
+
+// TestB389FanoutSiblingClaimDoesNotBlockOtherCard 锁 §4-35：扇出中某张卡的
+// (card,seq) 已被他机持有时只跳过该卡，另一张卡仍被唤醒（排他收窄为按卡）。
+func TestB389FanoutSiblingClaimDoesNotBlockOtherCard(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	sessionID, svc, card1, card2 := fanoutTwoCardFixture(t, env)
+	seq := sendSessionMessage(t, svc, sessionID, "user:tester", "请两张卡都看", []string{card1, card2}, 0)
+	// 他机预持卡1 的 (card1,seq)；卡2 的 (card2,seq) 仍可被本机认领。
+	if got, err := env.ledger.ClaimWake(seq, card1, "other#1", time.Minute); err != nil || !got {
+		t.Fatalf("他机预认领卡1: got=%v err=%v", got, err)
+	}
+
+	processed, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil {
+		t.Fatalf("扇出消费: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("他机持有的一张卡应被跳过，另一张仍唤醒，processed=%d", processed)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 1 || !strings.Contains(resumes[0], "卡号：B2") {
+		t.Fatalf("卡2 应仍被唤醒且恰一次: %v", resumes)
+	}
+	// 卡1 的他机认领仍在飞，挡住该水位；卡1 不得被本机收尾。
+	inFlight, err := env.ledger.WakeClaimsBefore(seq + 1)
+	if err != nil {
+		t.Fatalf("读在飞认领: %v", err)
+	}
+	if len(inFlight) != 1 || inFlight[0] != seq {
+		t.Fatalf("卡1 他机认领应仍在飞: %v", inFlight)
 	}
 }

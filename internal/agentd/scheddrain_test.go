@@ -360,9 +360,14 @@ func TestAutomationReleaseKicksDrain(t *testing.T) {
 
 // bearingTraceRunner 记录 Resume 收到的 SessionRef，用来断言唤醒 spec 来自承载记录
 // （既有 queueTraceRunner.Resume 丢弃 ref，锁不住 HomeDir/Model 来源）。
+// onResume 可选：在 Resume 进行中（名额尚未归还）采集一次观测，供 §4-29 的
+// 「回合进行中占用读数」锁点用——回合结束后的计数对 AdmitSeatCarrier 与
+// LaunchAdmit 不可区分（§5.1(b) 实测）。
 type bearingTraceRunner struct {
-	mu   sync.Mutex
-	refs []keysclient.SessionRef
+	mu          sync.Mutex
+	refs        []keysclient.SessionRef
+	onResume    func()
+	duringRound map[string]int
 }
 
 func (r *bearingTraceRunner) Launch(keysclient.SessionSpec, string) (keysclient.TurnResult, error) {
@@ -371,8 +376,12 @@ func (r *bearingTraceRunner) Launch(keysclient.SessionSpec, string) (keysclient.
 
 func (r *bearingTraceRunner) Resume(ref keysclient.SessionRef, _ string) (keysclient.TurnResult, error) {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.refs = append(r.refs, ref)
+	hook := r.onResume
+	r.mu.Unlock()
+	if hook != nil {
+		hook()
+	}
 	return keysclient.TurnResult{SessionID: ref.SessionID}, nil
 }
 
@@ -380,6 +389,16 @@ func (r *bearingTraceRunner) snapshot() []keysclient.SessionRef {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]keysclient.SessionRef(nil), r.refs...)
+}
+
+func (r *bearingTraceRunner) duringSnapshot() map[string]int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make(map[string]int, len(r.duringRound))
+	for k, v := range r.duringRound {
+		out[k] = v
+	}
+	return out
 }
 
 // TestB389WakeUsesBearingForSpec 锁 B389 §3.2 第 4 步：本机唤醒的 SessionSpec
@@ -572,7 +591,10 @@ func TestB389RemoteBearingKeepsLocalSlotsUnchanged(t *testing.T) {
 }
 
 // TestB389WakeUsesFrozenCarrierNotLaunchAdmit 锁 §4-29：唤醒只打承载记录里的
-// 载体，即使小队里另有可用成员也不做候选遍历。
+// 载体，即使小队里另有可用成员也不做候选遍历。锁点必须能区分 AdmitSeatCarrier
+// 与 LaunchAdmit——两者在回合结束后的计数都归零（§5.1(b) 实测原件如此，抓不住），
+// 故改读「回合进行中」的两级占用：冻结路径下承载载体键为 1、首个成员键为 0；
+// 换成 LaunchAdmit 会按小队顺序回落到首个成员，读数恰好相反。
 // 本测试自建双成员协调者小队，不复用 seedQueueCoordinator（后者已登记单成员
 // coord 小队，再 PutSquad(expect=0) 会 CAS 冲突）。
 func TestB389WakeUsesFrozenCarrierNotLaunchAdmit(t *testing.T) {
@@ -597,7 +619,18 @@ func TestB389WakeUsesFrozenCarrierNotLaunchAdmit(t *testing.T) {
 		}}, 0); err != nil {
 		t.Fatalf("登记双成员协调者小队: %v", err)
 	}
+	// 回合进行中的占用读数（Resume 内采集）：冻结路径应为
+	// carrier/coord-carrier-2=1、carrier/coord-carrier=0；LaunchAdmit 回落到
+	// 首个成员后读数恰好相反。
 	runner := &bearingTraceRunner{}
+	runner.onResume = func() {
+		runner.mu.Lock()
+		defer runner.mu.Unlock()
+		runner.duringRound = map[string]int{
+			"carrier/coord-carrier":   runningCountIn(t, env.srv.autoLedger, "carrier/coord-carrier"),
+			"carrier/coord-carrier-2": runningCountIn(t, env.srv.autoLedger, "carrier/coord-carrier-2"),
+		}
+	}
 	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
 	cardID := createCoordCard(t, env)
 	result, err := env.srv.keystone.LaunchForCard(context.Background(), cardID, "coordinate",
@@ -626,14 +659,21 @@ func TestB389WakeUsesFrozenCarrierNotLaunchAdmit(t *testing.T) {
 	if refs := runner.snapshot(); len(refs) != 1 {
 		t.Fatalf("应唤醒一次，实得 %d", len(refs))
 	}
-	// 冻结载体是 coord-carrier-2：名额计数应落在它，而不是首个成员 coord-carrier。
+	if refs := runner.snapshot(); refs[0].HomeDir != "/tmp/coord-home-2" {
+		t.Fatalf("唤醒应使用冻结载体的环境: %+v", refs[0])
+	}
+	during := runner.duringSnapshot()
+	if during["carrier/coord-carrier-2"] != 1 {
+		t.Fatalf("回合进行中冻结载体应被占用: %v（AdmitSeatCarrier 未生效或换成了 LaunchAdmit）", during)
+	}
+	if during["carrier/coord-carrier"] != 0 {
+		t.Fatalf("回合进行中不得占用首个成员（LaunchAdmit 候选遍历特征）: %v", during)
+	}
+	// 回合结束后名额归还（§4-24 同族读数的收尾侧）。
 	for _, key := range []string{"squad/coord/coord-carrier", "carrier/coord-carrier",
 		"squad/coord/coord-carrier-2", "carrier/coord-carrier-2"} {
 		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
 			t.Fatalf("回合结束名额应归还/不误占 %s=%d", key, got)
 		}
-	}
-	if refs := runner.snapshot(); refs[0].HomeDir != "/tmp/coord-home-2" {
-		t.Fatalf("唤醒应使用冻结载体的环境: %+v", refs[0])
 	}
 }

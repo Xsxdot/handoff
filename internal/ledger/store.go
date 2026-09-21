@@ -282,15 +282,20 @@ func ddlStatements(pg bool) []string {
 				workdir TEXT NOT NULL,
 				model TEXT NOT NULL,
 				bound_at TIMESTAMPTZ NOT NULL)`,
-			// B389 唤醒认领：共库下同一条事件只允许一台机器处理。
-			// seq 取自 card_events.seq（全局唯一），不再叠加卡号。
+			// B389 唤醒认领：共库下同一张卡的同一事件只允许一台机器处理。
+			// 主键是 (card, seq) 复合键——card_events.seq 全局唯一，但一条事件可
+			// 合法扇出到多张卡（room_message 寻址），单键会让第二张卡认领失败并
+			// 被静默跳过、游标越过、永久丢唤醒（契约 §3.1.1/§6-2）。
+			// idx_wake_claims_seq 支撑 WakeClaimsBefore 的 DISTINCT seq 水位扫描：
+			// 复合主键索引以 card 为前导，按 seq 范围扫会退化为全表扫。
 			`CREATE TABLE IF NOT EXISTS wake_claims (
-				seq BIGINT PRIMARY KEY,
 				card TEXT NOT NULL,
+				seq BIGINT NOT NULL,
 				holder TEXT NOT NULL,
 				lease_until TIMESTAMPTZ NOT NULL,
-				done_at TIMESTAMPTZ)`,
-			`CREATE INDEX IF NOT EXISTS idx_wake_claims_card ON wake_claims(card)`,
+				done_at TIMESTAMPTZ,
+				PRIMARY KEY (card, seq))`,
+			`CREATE INDEX IF NOT EXISTS idx_wake_claims_seq ON wake_claims(seq)`,
 			`CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
 				archived BOOLEAN NOT NULL DEFAULT false, members JSONB NOT NULL DEFAULT '[]',
@@ -398,12 +403,13 @@ func ddlStatements(pg bool) []string {
 				model TEXT NOT NULL,
 				bound_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS wake_claims (
-				seq INTEGER PRIMARY KEY,
 				card TEXT NOT NULL,
+				seq INTEGER NOT NULL,
 				holder TEXT NOT NULL,
 				lease_until TEXT NOT NULL,
-				done_at TEXT)`,
-			`CREATE INDEX IF NOT EXISTS idx_wake_claims_card ON wake_claims(card)`,
+				done_at TEXT,
+				PRIMARY KEY (card, seq))`,
+			`CREATE INDEX IF NOT EXISTS idx_wake_claims_seq ON wake_claims(seq)`,
 			`CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
 				archived INTEGER NOT NULL DEFAULT 0, members TEXT NOT NULL DEFAULT '[]',
@@ -432,6 +438,13 @@ func ddlStatements(pg bool) []string {
 // EXISTS 列表顺序执行，无版本号——幂等即契约；后续加列走「ALTER +
 // 容忍 duplicate column」。
 func (s *Store) ensureSchema() error {
+	// B389 修订轮：旧库的 wake_claims 是 seq 单键表，必须先于 DDL 列表重建成
+	// (card,seq) 复合键——否则 CREATE TABLE IF NOT EXISTS 对旧表是 no-op，
+	// 后续三个方法用 WHERE card=? 会静默错配到无 card 主键的旧表（契约 §4-36）。
+	// 迁移在无表时是 no-op，由紧随其后的 CREATE TABLE 建新表。
+	if err := s.migrateWakeClaimsCompositeKey(); err != nil {
+		return err
+	}
 	for _, stmt := range ddlStatements(s.dialect == dialectPG) {
 		if _, err := s.db.Exec(stmt); err != nil {
 			short := stmt
