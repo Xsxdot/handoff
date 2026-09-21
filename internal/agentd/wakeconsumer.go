@@ -396,19 +396,19 @@ func (s *Server) claimWakeBatch(card string, seqs []int64) ([]int64, error) {
 	return claimed, nil
 }
 
-// completeWakeBatch 收尾本批认领；失败只留日志，不覆盖唤醒结果（认领行会在
-// 租约到期后被他机接管，不会永久挡路）。
-func (s *Server) completeWakeBatch(seqs []int64) {
+// completeWakeBatch 收尾某张卡本批认领（key 为 (card,seq)）；失败只留日志，
+// 不覆盖唤醒结果（认领行会在租约到期后被他机接管，不会永久挡路）。
+func (s *Server) completeWakeBatch(card string, seqs []int64) {
 	if s.ledger == nil {
 		return
 	}
 	holder := s.wakeClaimHolder()
 	for _, seq := range seqs {
-		if err := s.ledger.CompleteWake(seq, holder); err != nil {
-			s.log.Error("唤醒认领收尾失败", "seq", seq, "holder", holder, "cause", err)
+		if err := s.ledger.CompleteWake(seq, card, holder); err != nil {
+			s.log.Error("唤醒认领收尾失败", "seq", seq, "card", card, "holder", holder, "cause", err)
 			continue
 		}
-		s.log.Info("唤醒认领收尾完成", "seq", seq, "holder", holder)
+		s.log.Info("唤醒认领收尾完成", "seq", seq, "card", card, "holder", holder)
 	}
 }
 
@@ -584,7 +584,7 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 		// 退避闸（§3.5.4）：同卡同 seq 在退避窗内不重复试跑，认领照常收尾。
 		if s.shouldSkipByBackoff(card, maxSeqOf(claimedSeqs)) {
 			s.log.Info("唤醒退避窗内，跳过同 seq 重复试跑", "card", card)
-			s.completeWakeBatch(claimedSeqs)
+			s.completeWakeBatch(card, claimedSeqs)
 			continue
 		}
 		decision := s.keystone.Decide(evs[0])
@@ -602,7 +602,7 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			return processed, escalated, nil
 		}
 		result, wakeErr := s.wakeCoordinatorRoundRaw(ctx, card, evs, raws)
-		s.completeWakeBatch(claimedSeqs)
+		s.completeWakeBatch(card, claimedSeqs)
 		if wakeErr != nil {
 			s.log.Error("自动化事件批次唤醒失败", "card", card,
 				"event_count", len(evs), "cause", wakeErr)
