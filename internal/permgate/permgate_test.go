@@ -119,6 +119,8 @@ func TestJudgeCompoundSilentTable(t *testing.T) {
 		{"单段 go test 回归", "go test ./..."},
 		{"单段 grep 回归", "grep -R x docs"},
 		{"单段 git status 回归", "git status --short"},
+		{"fd 复制只读管道", "git diff internal/a.go 2>&1 | head -160"},
+		{"cd 带 fd 复制只读管道", "cd src && git diff internal/a.go 2>&1 | head -160"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -137,6 +139,9 @@ func TestJudgeCompoundNotSilent(t *testing.T) {
 	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
 	for _, command := range []string{
 		"grep a && rm x",
+		// fd 豁免不得放过后台执行符：`&` 前不是 `>` 或后不跟数字/`-` 仍不静默。
+		"ls &",
+		"grep a & grep b",
 		"git branch -d topic",
 		"sed -i 's/a/b/' f",
 		// B376 复审：sed 的 -i 守卫必须覆盖带后缀形态，否则可静默改写文件。
