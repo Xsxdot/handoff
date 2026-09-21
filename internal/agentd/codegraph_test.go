@@ -108,6 +108,7 @@ func registerCodegraphProject(t *testing.T, env *testAgentdEnv, repo string) {
 
 func TestCodegraphEndpoint(t *testing.T) {
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	repo := codegraphFixtureRepo(t)
 	registerCodegraphProject(t, env, repo)
 
@@ -256,6 +257,7 @@ func TestCodegraphDeclsWireConditions(t *testing.T) {
 			var logs bytes.Buffer
 			logger := slog.New(slog.NewTextHandler(&logs, nil))
 			env := newTestAgentdEnvWithCfg(t, &config.Config{Token: testToken}, logger)
+			ensureTestManager(t, env)
 			repo := codegraphFixtureRepo(t)
 			registerCodegraphProject(t, env, repo)
 			tc.mutate(t, repo)
@@ -314,6 +316,7 @@ func TestCodegraphDeclsWireConditions(t *testing.T) {
 
 func TestCodegraphComparisonDataOptional(t *testing.T) {
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	repo := codegraphFixtureRepo(t)
 	registerCodegraphProject(t, env, repo)
 
@@ -351,6 +354,7 @@ func TestCodegraphComparisonDataOptional(t *testing.T) {
 
 func TestCodegraphComparisonDataTargetFailure(t *testing.T) {
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	repo := codegraphFixtureRepo(t)
 	registerCodegraphProject(t, env, repo)
 	if err := os.WriteFile(filepath.Join(repo, "codegraph", "target.json"), []byte("{"), 0o644); err != nil {
@@ -377,6 +381,7 @@ func TestCodegraphComparisonDataTargetFailure(t *testing.T) {
 
 func TestCodegraphSource(t *testing.T) {
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	repo := codegraphFixtureRepo(t)
 	registerCodegraphProject(t, env, repo)
 

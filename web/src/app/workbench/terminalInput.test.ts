@@ -410,3 +410,33 @@ describe('Option 当 Meta：WKWebView 的 key 是符号、keyCode 经常是 0', 
     expect(rig.data).toEqual(['\x1bb'])
   })
 })
+
+// B369.6：移动 IME 组合输入路径（合成 IME event）。
+//
+// 为什么这条必须在这里：移动端终端输入层验收要求「IME 组合输入路径有单元测试」，
+// 而组合落定在 xterm 5.5.0 里是**异步**的——CompositionHelper._finalizeComposition
+// 用 setTimeout(…,0) 从 textarea.value 取串发 onData（探针实测：不 await 拿不到）。
+// 不 await 的测试会假绿（断言空数组==空数组），所以下面的用例显式等一个宏任务。
+function composeAndSettle(r: Rig, text: string): Promise<void> {
+  r.ta.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true, composed: true }))
+  r.ta.value = text
+  const end = new CompositionEvent('compositionend', { bubbles: true, composed: true })
+  r.ta.dispatchEvent(end)
+  return new Promise((resolve) => setTimeout(resolve, 10))
+}
+
+describe('③ 移动 IME 组合输入（B369.6）', () => {
+  it('组合落定后完整上屏一次，补漏不双发', async () => {
+    rig = makeRig(true)
+    rig.ta.focus()
+    await composeAndSettle(rig, '你好')
+    expect(rig.data).toEqual(['你好'])
+  })
+
+  it('不装补漏时同一序列也恰好一次（补漏不接管 composition 通道）', async () => {
+    rig = makeRig(false)
+    rig.ta.focus()
+    await composeAndSettle(rig, '世界')
+    expect(rig.data).toEqual(['世界'])
+  })
+})

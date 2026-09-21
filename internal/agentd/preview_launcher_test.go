@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 type previewLauncherStub struct {
@@ -175,7 +176,7 @@ func TestPreviewOpenServiceStartFailureCleansProfile(t *testing.T) {
 }
 
 func TestPreviewOpenServiceTouchFailureStopsPIDBeforeCleanup(t *testing.T) {
-	_, owner := newPreviewOwnerEnv(t)
+	env, owner := newPreviewOwnerEnv(t)
 	session, err := owner.Create(context.Background(), protoPreviewPortReq())
 	if err != nil {
 		t.Fatalf("create owner session: %v", err)
@@ -184,7 +185,7 @@ func TestPreviewOpenServiceTouchFailureStopsPIDBeforeCleanup(t *testing.T) {
 	stopPIDCalled := make(chan struct{})
 	launcher := &previewLauncherStub{done: done}
 	launcher.startHook = func() {
-		if _, _, err := owner.st.ClosePreview(session.ID, owner.deps.Now()); err != nil {
+		if _, _, err := env.st.ClosePreview(session.ID, owner.Now()); err != nil {
 			t.Errorf("close owner session in start hook: %v", err)
 		}
 	}
@@ -311,7 +312,7 @@ func TestPreviewOpenServiceOwnerCloseStopsPIDBeforeCleanup(t *testing.T) {
 }
 
 func TestPreviewOpenServiceOwnerExpireStopsPIDBeforeCleanup(t *testing.T) {
-	_, owner := newPreviewOwnerEnv(t)
+	env, owner := newPreviewOwnerEnv(t)
 	session, err := owner.Create(context.Background(), protoPreviewPortReq())
 	if err != nil {
 		t.Fatalf("create owner session: %v", err)
@@ -333,7 +334,7 @@ func TestPreviewOpenServiceOwnerExpireStopsPIDBeforeCleanup(t *testing.T) {
 	launcher.mu.Lock()
 	profile := launcher.starts[0].UserDataDir
 	launcher.mu.Unlock()
-	if _, err := owner.st.TouchPreview(session.ID, owner.deps.Now().Add(-time.Duration(previewTTLSeconds)*time.Second)); err != nil {
+	if _, err := env.st.TouchPreview(session.ID, owner.Now().Add(-time.Duration(workspace.PreviewTTLSeconds)*time.Second)); err != nil {
 		t.Fatalf("age preview session: %v", err)
 	}
 	if err := owner.Expire(context.Background()); err != nil {
@@ -356,7 +357,7 @@ func TestPreviewOpenServiceOwnerExpireStopsPIDBeforeCleanup(t *testing.T) {
 
 func TestPreviewOpenServiceUsesMirrorHubForRemoteClose(t *testing.T) {
 	_, owner := newPreviewOwnerEnv(t)
-	mirrorHub := NewPreviewHub(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	mirrorHub := workspace.NewPreviewHub(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	mirror := NewPreviewMirror(nil, owner, mirrorHub, nil, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	session := proto.PreviewSession{ID: "preview-remote", EntryURL: "http://localhost:5173"}
 	mirror.mu.Lock()
@@ -396,12 +397,11 @@ func TestPreviewOpenServiceUsesMirrorHubForRemoteClose(t *testing.T) {
 }
 
 func TestPreviewOpenServiceClosedEventsDoNotBlockOnFirstBrowser(t *testing.T) {
-	_, owner := newPreviewOwnerEnv(t)
+	_, owner := newPreviewOwnerEnvWithIDs(t, []string{"preview-test", "preview-second"})
 	first, err := owner.Create(context.Background(), protoPreviewPortReq())
 	if err != nil {
 		t.Fatalf("create first owner session: %v", err)
 	}
-	owner.deps.NewID = func() string { return "preview-second" }
 	second, err := owner.Create(context.Background(), protoPreviewPortReq())
 	if err != nil {
 		t.Fatalf("create second owner session: %v", err)

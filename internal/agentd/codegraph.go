@@ -30,7 +30,11 @@ func (s *Server) handleProjectCodegraph(w http.ResponseWriter, r *http.Request) 
 	}
 	name := r.PathValue("name")
 	s.log.Info("代码图请求", "name", name, "machine", r.URL.Query().Get("machine"))
-	loc, err := s.st.GetProjectLocationByName(name)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	loc, err := s.mgr.GetProjectLocationByName(name)
 	if err != nil {
 		if errors.Is(err, store.ErrNotFound) {
 			s.log.Warn("代码图被拒：项目不存在", "name", name, "cause", err)
@@ -141,7 +145,11 @@ func (s *Server) handleProjectCodegraphSource(w http.ResponseWriter, r *http.Req
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "file 必须是仓库内相对路径"})
 		return
 	}
-	loc, err := s.st.GetProjectLocationByName(name)
+	if s.mgr == nil {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "manager 未就绪"})
+		return
+	}
+	loc, err := s.mgr.GetProjectLocationByName(name)
 	if err != nil {
 		s.log.Warn("代码图源码被拒：项目不存在", "name", name, "cause", err)
 		writeJSON(w, http.StatusNotFound, map[string]string{"error": "项目 " + name + " 未登记"})

@@ -7,25 +7,29 @@
 //   - 对外服务前做启动恢复（RecoverOnStartup）：探活未终结任务的执行器，重建订阅或转 failed
 //   - 启动任务卡住看门狗 goroutine（RunWatchdog），长时间无事件产出触发 stalled 唤醒协调者
 //   - 监听配置中的 Listen 地址，进程生命周期与 HTTP server 一致
-//   - 经 agentd.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
+//   - 经 orchestration.Shutdown 提供优雅关停：SIGINT/SIGTERM 停收新连接 → 等在途请求
 //     → 停看门狗 → 关库 → 放锁；正常关停 exit 0，供进程管理器据此拉起新版
 //
 // 边界：
 //   - 不创建任务/工单：任务生命周期由 manager 驱动（executor 按 --executor 挂载）
-//   - 不决定何时停机：信号与进程内触发都汇到 agentd.Shutdown，本文件只接线
+//   - 不决定何时停机：信号与进程内触发都汇到 orchestration.Shutdown，本文件只接线
 package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/agentd"
+	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/envfile"
 	"github.com/Xsxdot/handoff/internal/executor"
@@ -35,16 +39,21 @@ import (
 	"github.com/Xsxdot/handoff/internal/executor/fake"
 	"github.com/Xsxdot/handoff/internal/executor/grok"
 	"github.com/Xsxdot/handoff/internal/executor/opencode"
+	"github.com/Xsxdot/handoff/internal/hostapi"
+	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgermirror"
 	"github.com/Xsxdot/handoff/internal/logx"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/pathenv"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/prochost"
 	"github.com/Xsxdot/handoff/internal/proxycfg"
 	"github.com/Xsxdot/handoff/internal/relay"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/toolchain"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/spf13/cobra"
 )
 
@@ -52,7 +61,7 @@ import (
 //
 // 注意：
 //   - logx.Setup 之后必须立即 slog.SetDefault：hub 在 NewServer 构造时捕获 slog.Default()
-//     （见 agentd.NewHub），顺序颠倒会让 hub 的日志落在初始默认 logger 上
+//     （见 orchestration.NewHub），顺序颠倒会让 hub 的日志落在初始默认 logger 上
 var agentdCmd = &cobra.Command{
 	Use:   "agentd",
 	Short: "启动 agentd 服务（HTTP API + WS 事件流）",
@@ -108,7 +117,7 @@ var agentdCmd = &cobra.Command{
 		// systemd KillMode 自检（拆 tmux 后的部署硬要求）：setsid 不脱离 cgroup，
 		// KillMode 非 process 时 agentd 重启会连坐执行者。只提示不阻断；非 systemd
 		// 环境（macOS 开发机）完全静默。
-		agentd.WarnIfKillModeUnsafe(logger)
+		orchestration.WarnIfKillModeUnsafe(logger)
 
 		// DataDir 首次运行可能不存在（config.Load 只保证配置目录），
 		// store.Open 与 taskDir 创建都依赖它，必须先建
@@ -127,7 +136,7 @@ var agentdCmd = &cobra.Command{
 		// **最后**一条语句，在它之前 RecoverOnStartup 已经对在役 agentd 的活
 		// 执行器重建了订阅并写入状态迁移；store.Open 开了 WAL 也不拦多进程
 		// 打开。破坏发生在撞端口之前，所以锁必须卡在这里。
-		lock, err := agentd.AcquireDataDirLock(cfg.DataDir, logger)
+		lock, err := orchestration.AcquireDataDirLock(cfg.DataDir, logger)
 		if err != nil {
 			// 不再包一层：撞锁时 err 本身就是一段完整的可行动指引，
 			// 前面再缀「启动 agentd 失败:」只会把重点冲淡
@@ -150,7 +159,7 @@ var agentdCmd = &cobra.Command{
 
 		// 审批链接线：配置启用了 approver 时构造裁决器；黑名单正则等配置错误
 		// 直接启动失败（属配置错误，改配置重启即可，不该带病运行）
-		ap, err := agentd.NewApprover(cfg.Approver, envRes, logger)
+		ap, err := orchestration.NewApprover(cfg.Approver, envRes, logger)
 		if err != nil {
 			return fmt.Errorf("初始化审批链: %w", err)
 		}
@@ -163,15 +172,23 @@ var agentdCmd = &cobra.Command{
 
 		// git 出网代理必须在任何 clone/fetch 之前注入。放在 NewServer 之前而不是
 		// 之后：自动登记（B62）的 clone 可能在服务起来后的第一个请求就发生
-		agentd.SetGitProxy(cfg.Proxy)
+		workspace.ConfigureGitNet(workspace.GitNetConfig{
+			Argv:   proxycfg.GitArgs(cfg.Proxy),
+			Redact: proxycfg.Redact(cfg.Proxy),
+		})
+		workspace.SetForkFailureNote(prochost.ExplainForkFailure)
+		workspace.SetProcHeadroom(orchestration.CheckProcHeadroom)
 		if cfg.Proxy != "" {
 			logger.Info("git 出网将使用代理", "proxy", proxycfg.Redact(cfg.Proxy))
 		}
 
 		srv := agentd.NewServer(cfg, st, logger)
 		srv.SetConfigPath(p)
-		previewHub := agentd.NewPreviewHub(logger)
-		previewOwner := agentd.NewPreviewOwner(st, previewHub, agentd.PreviewOwnerDeps{}, logger)
+		previewHub := workspace.NewPreviewHub(logger)
+		// B233.19：owner truth 在 internal/workspace；静态 HTTP 服务（gateway 面）
+		// 与本机 store 行适配器由本组装点注入。
+		previewOwner := workspace.NewPreviewOwner(agentd.NewPreviewStore(st), previewHub,
+			workspace.PreviewOwnerDeps{Static: agentd.NewPreviewStaticServer(logger)}, logger)
 		previewMirror := agentd.NewPreviewMirror(srv.Pool(), previewOwner, previewHub, srv.IsSelfTarget, logger)
 		previewOpener := agentd.NewPreviewOpenService(previewOwner, previewMirror, srv.Pool(), nil, logger)
 		srv.SetPreviewOwner(previewOwner)
@@ -185,6 +202,11 @@ var agentdCmd = &cobra.Command{
 		// 是真实执行，fake 用于演示/测试。Windows 由 adaptersFor 裁剪掉未实现的两家，
 		// 缺省由 cfg.Executor.Default 决定（--executor flag 覆盖）
 		ads := defaultAdapters(logger)
+		if ap != nil {
+			if err := bindApproverOneShot(ap, ads, cfg.Approver.Executor, logger); err != nil {
+				return fmt.Errorf("绑定审批者 OneShot 失败: %w", err)
+			}
+		}
 		if executorFlag != "" {
 			if _, ok := ads[executorFlag]; !ok {
 				if runtime.GOOS == "windows" {
@@ -206,24 +228,33 @@ var agentdCmd = &cobra.Command{
 				return fmt.Errorf("codex 环境预检未通过: %w", err)
 			}
 		}
-		mgr := agentd.NewManager(st, srv.Hub(), ads, cfg, srv.EnvMapping, ap, gate, logger)
+		srv.SetProviders(orchestration.RegistryFromAds(ads))
+		srv.SetRuleLoader(loadCarrierRules)
+		mgr := orchestration.NewManager(st, srv.Hub(), ads, cfg, srv.EnvMapping, ap, gate, logger)
+		mgr.SetWorkspace(workspace.NewCapability())
+		mgr.SetLiveConfig(srv.Conf()) // B233.13 P1：活配置注入移出 SetManager，改组装点显式接线
 		srv.SetManager(mgr)
 		// 任务级进程点名（B93 §3.2）：watchdog 的 scanTaskProcs 按任务数进程，
 		// 生产计数实现恒为 Manager.TaskProcCount（与 sweep 的 mgr.SweepTaskProcs 同款接线）
-		agentd.SetTaskProcCounter(mgr.TaskProcCount)
+		orchestration.SetTaskProcCounter(mgr.TaskProcCount)
+		// 恢复前先挂自动化账本：RecoverOnStartup 会通过 Server.autoLedger
+		// 对任务占用做启动期对账，账本尚未装配时必须拒绝启动，而不是让恢复
+		// 进入一个不完整的服务状态。
+		wdCtx, wdCancel := context.WithCancel(context.Background())
+		defer wdCancel()
+		stopLedger, err := setupLedger(cfg, srv, st, wdCtx, logger)
+		if err != nil {
+			return err
+		}
+		defer stopLedger()
 
 		// 启动恢复（spec §8）：在对外服务前，把 agentd 崩溃前未终结的任务拉回正轨——
 		// 执行器存活的任务经 mgr.ResumeTask 重建 SSE 订阅并重启中介循环，已不在的
 		// 任务转 failed/waiting_review 交协调者裁决。探活与「重建订阅」封装在同一个
 		// 闭包里（watchdog.go RecoverOnStartup 的 seam 说明），此处即其接线点
-		if err := agentd.RecoverOnStartup(st, srv.Hub(), mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
+		if err := srv.RecoverOnStartup(mgr.ResumeTask, mgr.SweepTaskProcs, logger); err != nil {
 			return fmt.Errorf("启动恢复: %w", err)
 		}
-		// 看门狗随停机一起收：以前挂在 context.Background() 上靠进程退出终止，
-		// 有了优雅关停之后必须显式取消，否则关停期间它还在扫任务、写事件，
-		// 而数据库正要被关掉
-		wdCtx, wdCancel := context.WithCancel(context.Background())
-		defer wdCancel()
 		if err := srv.StartPreviewServices(wdCtx); err != nil {
 			return fmt.Errorf("启动预览服务: %w", err)
 		}
@@ -242,25 +273,16 @@ var agentdCmd = &cobra.Command{
 		// 在启动看门狗前取——启动恢复可能已把若干任务迁进终态，取早于它们的时刻
 		// 会让这些合法的迁移在首轮就被误判成失配
 		wdStart := time.Now()
-		go agentd.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
+		go orchestration.RunWatchdog(wdCtx, st, srv.Hub(), cfg.StallTimeout,
 			cfg.ProcFence.TaskBudget, cfg.ProcFence.TaskHardLimit, mgr.ForceReclaim,
-			wdStart, agentd.MismatchScanMinAge, mgr.MismatchTransit(), logger)
+			wdStart, orchestration.MismatchScanMinAge, mgr.MismatchTransit(), logger)
 
 		// 恒启动：镜像的机器清单现在来自活快照，启动时没有机器不代表以后没有。
 		// 留着 len>0 的闸会让控制台新增的第一台机器永远等不到镜像。
-		mirror := agentd.NewMirror(srv.Pool(), st, srv.Hub(), srv.IsSelfTarget, logger)
+		mirror := workspace.NewMirror(agentd.NewMirrorTaskSource(srv.Pool()), st, srv.Hub(), srv.IsSelfTarget, logger)
 		go mirror.Run(wdCtx)
 		logger.Info("事件镜像已启动", "targets", len(srv.Pool().Names()), "tick", "30s",
 			"note", "运行期新增的机器无需重启")
-
-		// 账本域是必需品（B229 §2.6：enabled 开关已退休，配置里的键被忽略）：
-		// 恒开库恒挂镜像。dsn 空 = DataDir/ledger.db 单机回退；web 侧靠
-		// /api/ledger/health 拿到 enabled:true 后渲染入口。
-		stopLedger, err := setupLedger(cfg, srv, st, wdCtx, logger)
-		if err != nil {
-			return err
-		}
-		defer stopLedger()
 
 		// B85：listen 绑单网卡 IP 时追加 loopback 辅助监听，本机 CLI 恒走 127.0.0.1
 		//（spec §3.2）。任一地址绑不上都启动失败——辅助监听与主监听同等对待
@@ -290,7 +312,7 @@ var agentdCmd = &cobra.Command{
 		// store.Close 与 lock.Release 上面已有 defer，这里不重复调用——
 		// defer 在 RunE 返回后仍会执行，顺序是 lock.Release 后于 st.Close，
 		// 正是我们要的。
-		sd := agentd.NewShutdown(logger)
+		sd := orchestration.NewShutdown(logger)
 		// 换版接口靠它退出进程，交接给进程管理器拉起的新二进制
 		srv.SetRestart(sd.Trigger)
 		// 两侧都要保留：main 侧把 wdCancel 包进了 PTY 感知的优雅关停清理，
@@ -405,7 +427,7 @@ func adaptersForWithProbe(goos string, logger *slog.Logger, probeDir string) map
 //     goroutine）；配合 IdleTimeout 保证半死连接被回收
 //   - ReadTimeout 30s：请求体读取上限（reply/fetch 等请求体都很小，30s 充足）。
 //     只作用于请求头/体的读取，不约束 handler 执行时长，无需随 run 上限放大
-//   - WriteTimeout 11min（= agentd.RunCmdTimeout + 1min 余量）：响应写入上限，
+//   - WriteTimeout 11min（= workspace.RunCmdTimeout + 1min 余量）：响应写入上限，
 //     **必须** ≥ run 路由的执行上限——handleTaskRun 在 handler 内同步执行 RunCmd
 //     （最长 RunCmdTimeout=10min），net/http 的 WriteTimeout 在 handler 执行前设下
 //     deadline、响应写完前不重置，若小于命令执行上限，跑测试/lint 的审阅命令
@@ -422,7 +444,7 @@ func newAgentdHTTPServer(listen string, handler http.Handler) *http.Server {
 		Handler:           handler,
 		ReadHeaderTimeout: 10 * time.Second,
 		ReadTimeout:       30 * time.Second,
-		WriteTimeout:      agentd.RunCmdTimeout + time.Minute,
+		WriteTimeout:      workspace.RunCmdTimeout + time.Minute,
 		IdleTimeout:       120 * time.Second,
 	}
 }
@@ -461,9 +483,48 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}
 	srv.SetLedger(lst)
-	// B156.2 协作房间面装配：collab 入站门面 + 换绑端口 + 游标介质。设计上
-	// SetupAutomation 是全仓唯一组装点（target.json assembly 登记），此处激活。
+	// B156.3 自动化层装配。B233.18：SetupAutomation 收缩为账本门面 / automation
+	// cursor / ptyGate 的纯装配；房间/keystone/hostapi 三域构造上移本组装点
+	// （target.json assembly 登记点语义随之由 cmd 承接）——先备 facade，再构造注入。
 	srv.SetupAutomation(lst)
+	// 房间面（B156.2）：collab 入站门面 + 游标介质，经 SetRooms 注入。
+	facade := srv.AutoLedger()
+	rooms := collab.New(facade)
+	rooms.SetCursorStore(cursor.New(filepath.Join(srv.Conf()().DataDir, "room-cursors.json")))
+	srv.SetRooms(rooms)
+	// 凭据相对路径表仍由 toolchain 唯一维护；组装点注入给 hostapi，避免
+	// hostapi 反向 import maintenance 域或复制三家 CLI 的平台规则。
+	hostAPI := hostapi.NewWithCredentialPathFor(toolchain.CredRelPathFor)
+	srv.SetHostAPI(hostAPI)
+	// keystone 域（B156.3）：协调者会话承载 + 隔离 HOME 供给 + ref 解析 +
+	// 叙事/attach 适配，经 SetKeystone 注入。
+	prepareHome := orchestration.NewCoordinatorPrepareHome(srv.Conf(), srv.Providers(), srv.RuleLoader())
+	coord := opencode.NewCoordinator(hostAPI, slog.Default())
+	runner := agentd.NewCoordinatorRunner(coord, srv.Providers(), prepareHome)
+	resolver := agentd.NewCoordinatorSessionRefResolver(srv, hostapi.ExpandHomePath)
+	ks := keystone.New(runner, keystone.NewRoomNarrator(rooms), facade,
+		agentd.NewAttachLocator(hostapi.ExpandHomePath))
+	ks.SetSessionRefResolver(resolver)
+	srv.SetKeystone(ks)
+	// B233.14：编制域具体服务在 cmd 组装点构造（scheduling.New 不再落 gateway）。
+	// 注册表由 gateway 经 SchedulingRegistry() 交出台账→Registry 适配；判空拒启动，
+	// 不得把 nil 喂给 New 静默建出坏服务。
+	reg := srv.SchedulingRegistry()
+	if reg == nil {
+		_ = lst.Close()
+		return nil, fmt.Errorf("编制域装配：SchedulingRegistry 为空（SetupAutomation 未装配账本门面）")
+	}
+	sched := scheduling.New(reg)
+	// 保留控制台改机器清单不必重启 agentd：闭包经 Conf() 读活配置。
+	sched.SetKnownMachines(func(name string) bool {
+		cfg := srv.Conf()()
+		if cfg == nil {
+			return false
+		}
+		_, ok := cfg.Targets[name]
+		return ok
+	})
+	srv.SetScheduling(sched)
 	// B156.3 K5：账本打开后才能启动自动化事件流。
 	// ctx 随 agentd 停机取消；首轮先重放事件与队列，再进入轮询。
 	srv.StartAutomation(ctx)
@@ -473,7 +534,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	// 机器永远等不到账本镜像（与任务镜像同一条纪律，B163 ①）。
 	// 池必须与任务镜像共用同一个：两个池等于两套 relay 隧道。
 	host, _ := os.Hostname()
-	lm := ledgermirror.New(lst, srv.Pool(), ledgermirror.Options{
+	lm := ledgermirror.New(lst, agentd.NewLedgerMirrorMachines(srv.Pool()), ledgermirror.Options{
 		Holder:       host,
 		LocalSource:  ledgermirror.NewLocalSource(taskStore, logger.With("source", "local")),
 		IsSelfTarget: srv.IsSelfTarget,
@@ -486,4 +547,122 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 		lm.Stop()
 		lst.Close()
 	}, nil
+}
+
+// bindApproverOneShot 绑定审批者使用的 OneShot 能力。
+// 架构法边界：组装点只从同一 ads Bundle 取 OneShot；未实现能力必须启动失败，
+// 禁止另起一份按名称构造表。
+//
+// B376：names 是有序候选列表。逐个从 ads 取；一个都绑不上 → 启动失败（与今天
+// 单名未注册相同）；部分缺失 → Warn，Decide 时该名当不可用（记为一次 error
+// attempt 后试下一个）。候选名为空=审批链关闭，直接返回。
+func bindApproverOneShot(ap *orchestration.Approver, ads map[string]executor.Adapter, names []string, log *slog.Logger) error {
+	if ap == nil || len(names) == 0 {
+		return nil
+	}
+	if log == nil {
+		log = slog.Default()
+	}
+	supported := strings.Join(executor.SupportedHarnesses(), ", ")
+	bound := 0
+	for _, name := range names {
+		if name == "" {
+			continue
+		}
+		ad, ok := ads[name]
+		if !ok {
+			log.Warn("审批者候选未注册，跳过该候选（Decide 时按不可用处理）",
+				"executor", name, "supported", supported)
+			continue
+		}
+		shot, ok := ad.(executor.OneShot)
+		if !ok {
+			log.Warn("审批者候选未实现 OneShot，跳过该候选",
+				"executor", name, "supported", supported)
+			continue
+		}
+		ap.BindOneShotFor(name, shot)
+		bound++
+		log.Info("审批者候选已绑定 OneShot", "executor", name)
+	}
+	if bound == 0 {
+		err := fmt.Errorf("审批者候选 %v 全部无法绑定 OneShot（支持 OneShot 的执行者: %s）", names, supported)
+		log.Error("审批者候选全部无法绑定 OneShot，启动失败", "executors", names, "cause", err)
+		return err
+	}
+	return nil
+}
+
+// loadCarrierRules 为协调者供给隔离 HOME 读取主 HOME 的载体规则和技能树。
+// 架构法边界：组装点持有五家规则相对路径常量，负责从主 HOME 读取文本，
+// 编排层（internal/agentd）零知识接收抽象规则集。
+func loadCarrierRules(mainHome, cli string) ([]executor.ProfileFile, []executor.ProfileFile, error) {
+	base := filepath.Base(cli)
+	var ruleRel, skillsRel string
+	switch base {
+	case executor.HarnessOpenCode:
+		ruleRel, skillsRel = opencode.RulesRelFile, opencode.SkillsRelDir
+	case executor.HarnessClaude:
+		ruleRel, skillsRel = claudecode.RulesRelFile, claudecode.SkillsRelDir
+	case executor.HarnessGrok:
+		ruleRel, skillsRel = grok.RulesRelFile, grok.SkillsRelDir
+	case executor.HarnessCodex:
+		ruleRel, skillsRel = codex.RulesRelFile, codex.SkillsRelDir
+	case executor.HarnessAGY:
+		ruleRel, skillsRel = agy.RulesRelFile, agy.SkillsRelDir
+	default:
+		return nil, nil, executor.UnsupportedError(base, executor.CapProfile)
+	}
+	var rules []executor.ProfileFile
+	if b, err := os.ReadFile(filepath.Join(mainHome, ruleRel)); err == nil {
+		rules = append(rules, executor.ProfileFile{Name: filepath.Base(ruleRel), Content: string(b)})
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return nil, nil, err
+	}
+	skills, err := readSkillTree(filepath.Join(mainHome, skillsRel), "")
+	return rules, skills, err
+}
+
+// readSkillTree 递归读取技能目录树为平铺的 ProfileFile 切片。
+func readSkillTree(root, rel string) ([]executor.ProfileFile, error) {
+	dir := root
+	if rel != "" {
+		dir = filepath.Join(root, rel)
+	}
+	entries, err := os.ReadDir(dir)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var out []executor.ProfileFile
+	for _, e := range entries {
+		child := e.Name()
+		if rel != "" {
+			child = filepath.Join(rel, e.Name())
+		}
+		p := filepath.Join(root, child)
+		info, err := os.Lstat(p)
+		if err != nil {
+			return nil, err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return nil, fmt.Errorf("规则源含 symlink %q", p)
+		}
+		if e.IsDir() {
+			sub, err := readSkillTree(root, child)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, sub...)
+			continue
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, executor.ProfileFile{Name: child, Content: string(b)})
+	}
+	return out, nil
 }

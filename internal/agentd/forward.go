@@ -108,8 +108,7 @@ func copyForwardHeaders(w http.ResponseWriter, headers http.Header) {
 // forwardJSON 经目标机客户端发一次有大小上限的 JSON 请求，把完整响应交回调用方。
 //
 // 为什么状态码的处置留给调用方而不在这里收口：建树这条路的成功与失败去向不同——
-// 成功之后还要在**本端**接着挂卡（响应要改写），失败则必须把目标机的报文一字不动
-// 地透出去（改写会把真因换成一句转发层的套话）。这个分叉只有路由自己知道。
+// 成功/失败分叉留给调用方：失败原样透传；成功由 handler 挂卡再写响应。本函数不写账本。
 func (s *Server) forwardJSON(r *http.Request, name string, c *client.Client, token string, body []byte) (status int, headers http.Header, payload []byte, err error) {
 	target, err := forwardURL(c.BaseURL(), r.URL)
 	if err != nil {
@@ -152,58 +151,60 @@ func (s *Server) forwardJSON(r *http.Request, name string, c *client.Client, tok
 
 // forwardWorktreeIfRequested 是建树请求专用的 ?machine 转发路径。
 //
-// 为什么建树不能走通用的 forwardIfRequested：card_ids 指的是**协调者这台机器的
-// 账本**里的卡。通用转发原样搬运请求体，目标机会拿一批它不认识的卡号去写自己的
-// 账本——要么全部失败，要么在目标机没挂账本时静默成空操作（树建好了、卡一张没挂、
-// card_results 还因 omitempty 被省略，界面上看不出异常）。所以这里的分工是：
-// **目标机只建树，回来之后由本端用返回的 ws.Branch 挂卡。**
-func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Request) bool {
+// 返回：
+//   - handled=false：不是跨机请求，调用方走本机建树
+//   - handled=true 且 ws==nil：已向 w 写入拒绝或目标错误，调用方必须直接 return
+//   - handled=true 且 ws!=nil：目标建树成功。本函数不写账本、不写成功响应；
+//     copyForwardHeaders 已落到 w。调用方用 cardIDs 挂卡后再 writeJSON。
+//
+// 为什么建树不能走通用的 forwardIfRequested：card_ids 指的是协调者本机账本里的卡。
+func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Request) (handled bool, ws *proto.Workspace, cardIDs []string) {
 	name := r.URL.Query().Get("machine")
 	if name == "" || isForwarded(r) {
-		return false
+		return false, nil, nil
 	}
 	s.log.Info("建树请求开始专用转发", "machine", name, "path", r.URL.Path)
 	target, ok := s.conf().Targets[name]
 	if !ok {
 		s.log.Warn("建树专用转发被拒：机器未定义", "machine", name)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "机器 " + name + " 未定义"})
-		return true
+		return true, nil, nil
 	}
 	c, err := s.pool.For(name)
 	if err != nil {
 		s.log.Error("建树专用转发失败：取目标客户端", "machine", name, "cause", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "转发到 " + name + " 失败: " + err.Error()})
-		return true
+		return true, nil, nil
 	}
 	raw, err := io.ReadAll(io.LimitReader(r.Body, forwardBodyLimit+1))
 	if err != nil {
 		s.log.Error("建树专用转发失败：读取请求", "machine", name, "cause", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "读取转发请求失败: " + err.Error()})
-		return true
+		return true, nil, nil
 	}
 	if len(raw) > forwardBodyLimit {
 		s.log.Warn("建树专用转发被拒：请求体过大", "machine", name, "bytes", len(raw),
 			"limit", forwardBodyLimit)
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "请求体超过 1 MiB 上限"})
-		return true
+		return true, nil, nil
 	}
 	var original proto.CreateWorktreeReq
 	if err := json.Unmarshal(raw, &original); err != nil {
 		s.log.Warn("建树专用转发失败：请求 JSON 无法解析", "machine", name, "cause", err)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON {mode, branch, base}"})
-		return true
+		return true, nil, nil
 	}
 	body, stripErr := stripWorktreeCardIDs(raw)
 	if stripErr != nil {
 		s.log.Warn("建树专用转发失败：请求对象无法裁剪", "machine", name, "cause", stripErr)
 		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "请求体必须是 JSON object"})
-		return true
+		return true, nil, nil
 	}
 	status, headers, payload, err := s.forwardJSON(r, name, c, target.Token, body)
 	if err != nil {
 		s.log.Error("建树专用转发失败：目标请求", "machine", name, "cause", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "转发到 " + name + " 失败: " + err.Error()})
-		return true
+		return true, nil, nil
 	}
 	if status < http.StatusOK || status >= http.StatusMultipleChoices {
 		s.log.Warn("建树专用转发原样回送目标错误", "machine", name, "status", status)
@@ -212,23 +213,19 @@ func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Reque
 		if _, err := w.Write(payload); err != nil {
 			s.log.Warn("建树专用转发回送目标错误失败", "machine", name, "status", status, "cause", err)
 		}
-		return true
+		return true, nil, nil
 	}
-	var ws proto.Workspace
-	if err := json.Unmarshal(payload, &ws); err != nil {
+	var out proto.Workspace
+	if err := json.Unmarshal(payload, &out); err != nil {
 		s.log.Error("建树专用转发失败：目标响应不是 Workspace", "machine", name, "status", status, "cause", err)
 		writeJSON(w, http.StatusBadGateway, map[string]string{"error": "目标建树响应无法解析: " + err.Error()})
-		return true
+		return true, nil, nil
 	}
-	ws.CardResults = nil
-	if len(original.CardIDs) > 0 && s.ledger != nil {
-		ws = s.attachCardBaseBranches(ws, original.CardIDs, s.ledgerActor(r))
-	}
+	out.CardResults = nil
 	copyForwardHeaders(w, headers)
-	writeJSON(w, http.StatusOK, ws)
-	s.log.Info("建树专用转发完成并在本机挂卡", "machine", name, "branch", ws.Branch,
-		"card_result_count", len(ws.CardResults))
-	return true
+	s.log.Info("建树专用转发成功，交应用挂卡", "machine", name, "branch", out.Branch,
+		"card_count", len(original.CardIDs))
+	return true, &out, original.CardIDs
 }
 
 // forwardTo 把请求原样搬到目标机器，并把响应原样回送。

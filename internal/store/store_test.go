@@ -2,6 +2,7 @@
 package store_test
 
 import (
+	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
+	_ "modernc.org/sqlite"
 )
 
 // TestTaskLifecycle 覆盖 Create→Get 回读一致、合法状态链、非法迁移拒绝与字段白名单。
@@ -428,6 +430,103 @@ func TestCreateTaskPersistsCarrierHome(t *testing.T) {
 	}
 	if got.HomeDir != task.HomeDir {
 		t.Fatalf("HomeDir = %q, want %q", got.HomeDir, task.HomeDir)
+	}
+}
+
+// TestCreateTaskPersistsCarrier 锁定派发时载体名只写入创建快照，不进入字段白名单。
+func TestCreateTaskPersistsCarrier(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+	task := &proto.Task{
+		ID: "carrier-col", RepoPath: "/repo", Carrier: "muse",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreateTask(task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Carrier != "muse" {
+		t.Fatalf("Carrier = %q, want muse", got.Carrier)
+	}
+	if err := s.SetTaskField(task.ID, "carrier", "other"); err == nil {
+		t.Fatal("carrier 不得进入 SetTaskField 白名单")
+	}
+	list, err := s.ListTasks()
+	if err != nil || len(list) != 1 || list[0].Carrier != "muse" {
+		t.Fatalf("ListTasks 必须扫回 carrier，got %+v err=%v", list, err)
+	}
+}
+
+// TestCreateTaskPersistsSquad 锁定小队名与载体名一同作为派发时快照落库，且不进字段白名单。
+func TestCreateTaskPersistsSquad(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatalf("Open 失败: %v", err)
+	}
+	defer s.Close()
+	task := &proto.Task{
+		ID: "squad-col", RepoPath: "/repo", Squad: "rd", Carrier: "muse",
+		State: proto.TaskStatePending, CreatedAt: time.Now().UTC(), UpdatedAt: time.Now().UTC(),
+	}
+	if err := s.CreateTask(task); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.GetTask(task.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Squad != "rd" {
+		t.Fatalf("Squad = %q, want rd", got.Squad)
+	}
+	if err := s.SetTaskField(task.ID, "squad", "other"); err == nil {
+		t.Fatal("squad 不得进入 SetTaskField 白名单")
+	}
+}
+
+// TestOpenMigratesCarrierColumnOnLegacyDB 用没有 carrier 的旧 tasks 表验证增量迁移。
+func TestOpenMigratesCarrierColumnOnLegacyDB(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "old.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`CREATE TABLE tasks (
+  id TEXT PRIMARY KEY, target TEXT NOT NULL DEFAULT '', repo_path TEXT NOT NULL,
+  branch TEXT NOT NULL DEFAULT '', plan_path TEXT NOT NULL DEFAULT '',
+  plan_summary TEXT NOT NULL DEFAULT '', executor_session TEXT NOT NULL DEFAULT '',
+  state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL
+)`)
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO tasks (id, repo_path, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`,
+		"legacy", "/r", proto.TaskStatePending, time.Now().UTC().Format(time.RFC3339Nano), time.Now().UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		db.Close()
+		t.Fatal(err)
+	}
+	if err := db.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s, err := store.Open(path)
+	if err != nil {
+		t.Fatalf("打开旧库: %v", err)
+	}
+	defer s.Close()
+	got, err := s.GetTask("legacy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Carrier != "" {
+		t.Fatalf("旧行 Carrier 必须空串，实得 %q", got.Carrier)
 	}
 }
 
@@ -1291,5 +1390,62 @@ func TestSaveTaskEmptyDisciplineName(t *testing.T) {
 	}
 	if got.DisciplineName != "" {
 		t.Fatalf("未点名的任务应为空串，实得 %q", got.DisciplineName)
+	}
+}
+
+func openStore(t *testing.T) *store.Store {
+	t.Helper()
+	s, err := store.Open(filepath.Join(t.TempDir(), "handoff.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { s.Close() })
+	return s
+}
+
+func createAskTicket(t *testing.T, s *store.Store, taskID, ticketID string) {
+	t.Helper()
+	now := time.Now().UTC()
+	if err := s.CreateTask(&proto.Task{ID: taskID, RepoPath: "/r", State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now}); err != nil {
+		t.Fatal(err)
+	}
+	ok, err := s.CreateTicket(&proto.Ticket{ID: ticketID, TaskID: taskID, Kind: "ask", Request: json.RawMessage(`{}`), CreatedAt: now})
+	if err != nil || !ok {
+		t.Fatalf("CreateTicket: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestAnswerTicketSameAnswerIdempotent(t *testing.T) {
+	s := openStore(t)
+	createAskTicket(t, s, "t1", "tk1")
+	if err := s.AnswerTicket("tk1", "hello"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerTicket("tk1", "hello"); err != nil {
+		t.Fatalf("相同答案第二次必须成功: %v", err)
+	}
+}
+
+func TestAnswerTicketDifferentAnswerRejected(t *testing.T) {
+	s := openStore(t)
+	createAskTicket(t, s, "t1", "tk1")
+	if err := s.AnswerTicket("tk1", "a"); err != nil {
+		t.Fatal(err)
+	}
+	err := s.AnswerTicket("tk1", "b")
+	if err == nil || !errors.Is(err, store.ErrTicketConflict) {
+		t.Fatalf("不同答案必须 ErrTicketConflict，got %v", err)
+	}
+}
+
+func TestAnswerTicketVoidRejected(t *testing.T) {
+	s := openStore(t)
+	createAskTicket(t, s, "t1", "tk1")
+	if _, err := s.VoidPendingTickets("t1"); err != nil {
+		t.Fatal(err)
+	}
+	err := s.AnswerTicket("tk1", "hello")
+	if err == nil || !errors.Is(err, store.ErrTicketConflict) {
+		t.Fatalf("作废后迟到答案必须拒绝，got %v", err)
 	}
 }

@@ -174,7 +174,12 @@ func Apply(cfg *config.Config, fields []Field, answers map[string]string) error 
 		case "repo_root":
 			cfg.RepoRoot = ans
 		case "approver_executor":
-			cfg.Approver.Executor = ans
+			// init 向导仍只问一个审批者（B376）：标量单值写回；空=关闭
+			if ans == "" {
+				cfg.Approver.Executor = nil
+			} else {
+				cfg.Approver.Executor = config.ExecutorList{ans}
+			}
 		case "approver_model":
 			cfg.Approver.Model = ans
 		case "sync_auto":
@@ -191,6 +196,17 @@ func optionContains(opts []Option, v string) bool {
 		}
 	}
 	return false
+}
+
+// approverDefault 把审批链候选列表压成向导 Select 的单个默认值（B376）。
+//
+// init 向导仍只问一个审批者；存量配置可能是 failover 多选列表（手改 yaml
+// 得到），这里取首要候选作为默认，向导不因列表而报错。
+func approverDefault(list config.ExecutorList) string {
+	if len(list) == 0 {
+		return ""
+	}
+	return list[0]
 }
 
 // Form 按当前状态构造字段表。
@@ -252,7 +268,7 @@ func Form(cfg *config.Config, rs []toolchain.Result, goos string, cfgExisted boo
 		{Key: "repo_root", Kind: KindInput, Title: "项目落点根目录 repo_root（自动登记时 clone 到这里）",
 			Default: cfg.RepoRoot, Roles: []string{RoleExecutor, RoleBoth}, Advanced: true},
 		{Key: "approver_executor", Kind: KindSelect, Title: "审批链执行者",
-			Default: cfg.Approver.Executor, Options: approverOpts, Roles: []string{RoleExecutor, RoleBoth},
+			Default: approverDefault(cfg.Approver.Executor), Options: approverOpts, Roles: []string{RoleExecutor, RoleBoth},
 			Advanced: true},
 		{Key: "approver_model", Kind: KindInput, Title: "审批链模型（空=用执行者自身默认）",
 			Default: cfg.Approver.Model, Roles: []string{RoleExecutor, RoleBoth},

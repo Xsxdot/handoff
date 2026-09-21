@@ -17,35 +17,38 @@ import (
 )
 
 // TestCursorFilePersistsAcrossInstances 文件介质跨实例持久化：MarkRead 后新
-// Service + 新 Store 同路径重开，水位仍在（重启/换实例不丢已读）。
+// Service + 新 Store 同路径重开，水位仍在（重启/换实例不丢已读）。夹具房间
+// 迁会话（B358.1：旧房间发言入口已归档，会话是唯一活着的发言面；本测试锁
+// 的是游标介质，房间形态与断言无关）。
 func TestCursorFilePersistsAcrossInstances(t *testing.T) {
 	svc, st := newFixture(t)
-	card := mustAnyCard(t, svc, st)
-	seq, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy")
+	sid := mustSession(t, svc, st, "游标持久化会话")
+	seq, err := svc.Send(sid, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy")
 	if err != nil {
 		t.Fatal(err)
 	}
 	path := filepath.Join(t.TempDir(), "cursors.json")
 	svc.SetCursorStore(cursor.New(path))
-	if err := svc.MarkRead("user:sy", card.ID, seq); err != nil {
+	if err := svc.MarkRead("user:sy", sid, seq); err != nil {
 		t.Fatal(err)
 	}
 	svc2 := New(ledgerapi.New(st))
 	svc2.SetCursorStore(cursor.New(path))
-	if n, err := svc2.Unread("user:sy", card.ID); err != nil || n != 0 {
+	if n, err := svc2.Unread("user:sy", sid); err != nil || n != 0 {
 		t.Fatalf("持久化游标应生效: %v %d", err, n)
 	}
 }
 
 // TestCursorConcurrentMarkRead 并发 MarkRead 无交错损坏 + 单调水位：50 个
 // goroutine 各写一个消息 seq，最终水位取最大（只进不退）、文件仍可被新实例
-// 完整解析（tmp+rename 原子性证明）。
+// 完整解析（tmp+rename 原子性证明）。夹具房间迁会话（同上：锁游标介质，
+// 不锁房间形态）。
 func TestCursorConcurrentMarkRead(t *testing.T) {
 	svc, st := newFixture(t)
-	card := mustAnyCard(t, svc, st)
+	sid := mustSession(t, svc, st, "游标并发会话")
 	seqs := make([]int64, 0, 50)
 	for i := 0; i < 50; i++ {
-		seq, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy")
+		seq, err := svc.Send(sid, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -59,19 +62,19 @@ func TestCursorConcurrentMarkRead(t *testing.T) {
 		wg.Add(1)
 		go func(seq int64) {
 			defer wg.Done()
-			if err := svc.MarkRead("user:sy", card.ID, seq); err != nil {
+			if err := svc.MarkRead("user:sy", sid, seq); err != nil {
 				t.Errorf("MarkRead(%d): %v", seq, err)
 			}
 		}(s)
 	}
 	wg.Wait()
 
-	if n, err := svc.Unread("user:sy", card.ID); err != nil || n != 0 {
+	if n, err := svc.Unread("user:sy", sid); err != nil || n != 0 {
 		t.Fatalf("单调水位应取最大 seq，未读应 0: %v %d", err, n)
 	}
 	svc2 := New(ledgerapi.New(st))
 	svc2.SetCursorStore(cursor.New(path))
-	if n, err := svc2.Unread("user:sy", card.ID); err != nil || n != 0 {
+	if n, err := svc2.Unread("user:sy", sid); err != nil || n != 0 {
 		t.Fatalf("并发写后文件应完好且水位=最大 seq: %v %d", err, n)
 	}
 }

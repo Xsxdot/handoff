@@ -371,3 +371,38 @@ describe('CardsPage 从浏览器打开', () => {
     expect(screen.getByTitle('镜像正常')).toHaveClass('ml-auto')
   })
 })
+
+describe('B369.6 状态词表筛选（移动卡 tab）', () => {
+  const cardView = (over: Partial<import('../../api/ledger').CardView>) => ({
+    id: 'B1', title: '卡', status: '待办', priority: '中', project: 'handoff', workflow: 'feature',
+    parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+    merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+    conflict: false, open_tickets: 0, ...over,
+  })
+
+  it('chip 行逐值渲染受控词表的五个状态', async () => {
+    renderPage()
+    for (const status of ['待办', '进行中', '待审阅', '已完成', '终止']) {
+      expect(await screen.findByTestId(`card-status-${status}`)).toBeInTheDocument()
+    }
+  })
+
+  it('点状态 chip 只留该状态；再点一次回全部', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [
+        cardView({ id: 'B1', title: '已完成卡', status: '已完成' }),
+        cardView({ id: 'B2', title: '进行中卡', status: '进行中' }),
+      ],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    } as never)
+    renderPage()
+    fireEvent.click(await screen.findByTestId('card-status-已完成'))
+    // 断言钉在标题而非卡号：队列面板等别处的 fixture 也可能带同样的 B 号，
+    // 用卡号会撞到跨用例残留 mock（假红）。
+    expect(await screen.findByText('已完成卡')).toBeInTheDocument()
+    await waitFor(() => expect(screen.queryByText('进行中卡')).toBeNull())
+    fireEvent.click(screen.getByTestId('card-status-已完成'))
+    expect(await screen.findByText('进行中卡')).toBeInTheDocument()
+  })
+})

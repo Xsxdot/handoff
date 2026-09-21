@@ -85,6 +85,10 @@ func Open(path string) (*Store, error) {
 		`CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY, target TEXT NOT NULL DEFAULT '', repo_path TEXT NOT NULL,
   home_dir TEXT NOT NULL DEFAULT '',
+  -- carrier 是派发时绑定的载体名；旧任务为空串，空串不可再解释为默认载体。
+  carrier TEXT NOT NULL DEFAULT '',
+  -- squad 是派发时解析出的小队名；旧任务为空串，终态释放据此归还成员占用。
+  squad TEXT NOT NULL DEFAULT '',
   branch TEXT NOT NULL DEFAULT '', plan_path TEXT NOT NULL DEFAULT '',
   plan_summary TEXT NOT NULL DEFAULT '', executor_session TEXT NOT NULL DEFAULT '',
   state TEXT NOT NULL, created_at TIMESTAMP NOT NULL, updated_at TIMESTAMP NOT NULL,
@@ -277,6 +281,8 @@ func Open(path string) (*Store, error) {
 	// column 属预期，忽略即可（与 tickets.delivered_at 的迁移写法保持一致）。
 	for col, typ := range map[string]string{
 		"home_dir":             "TEXT NOT NULL DEFAULT ''",
+		"carrier":              "TEXT NOT NULL DEFAULT ''",
+		"squad":                "TEXT NOT NULL DEFAULT ''",
 		"name":                 "TEXT NOT NULL DEFAULT ''",
 		"executor":             "TEXT NOT NULL DEFAULT ''",
 		"model":                "TEXT NOT NULL DEFAULT ''",
@@ -318,7 +324,7 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
-// CreateTask 写入一个新任务。
+// CreateTask 写入一个新任务。Carrier 与 HomeDir 同款只写入创建时的身份快照。
 //
 // 参数：
 //   - t: 任务数据；ID 必须非空且唯一，重复 ID 返回底层主键冲突错误
@@ -327,10 +333,10 @@ func (s *Store) Close() error {
 //   - 状态迁移合法性由 UpdateTaskState 校验，此处仅原样入库，不含业务规则
 func (s *Store) CreateTask(t *proto.Task) error {
 	_, err := s.db.ExecContext(context.Background(), `
-INSERT INTO tasks (id, target, repo_path, home_dir, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+INSERT INTO tasks (id, target, repo_path, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, discipline_name, discipline_version)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		t.ID, t.Target, t.RepoPath, t.HomeDir, t.Branch, t.PlanPath, t.PlanSummary,
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		t.ID, t.Target, t.RepoPath, t.HomeDir, t.Carrier, t.Squad, t.Branch, t.PlanPath, t.PlanSummary,
 		t.ExecutorSession, t.State, fmtTime(t.CreatedAt), fmtTime(t.UpdatedAt),
 		t.Name, t.Executor, t.Model, t.WorkDir, boolToInt(t.WorktreeManaged),
 		t.BaseCommit, t.BaseAhead, t.RepoDirtyCount, t.RepoDirtyFiles, t.DisciplineName,
@@ -347,7 +353,7 @@ VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 //
 // 加一列要改**四处**：建表 DDL、迁移 map、INSERT（列清单 + 占位符 + 实参）、
 // 本常量 + scanTaskRow。原注释只提了后两处，照着做会漏掉前两处。
-const taskColumns = `id, target, repo_path, home_dir, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
+const taskColumns = `id, target, repo_path, home_dir, carrier, squad, branch, plan_path, plan_summary, executor_session, state, created_at, updated_at,
   name, executor, model, work_dir, worktree_managed, base_commit, base_ahead, repo_dirty_count, repo_dirty_files, done_note,
   actual_model, usage_context_tokens, usage_context_window, discipline_name, discipline_version`
 
@@ -369,7 +375,7 @@ func scanTaskRow(sc rowScanner) (proto.Task, error) {
 		ctxTokens       int
 		ctxWindow       int
 	)
-	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.HomeDir, &task.Branch, &task.PlanPath,
+	if err := sc.Scan(&task.ID, &task.Target, &task.RepoPath, &task.HomeDir, &task.Carrier, &task.Squad, &task.Branch, &task.PlanPath,
 		&task.PlanSummary, &task.ExecutorSession, &task.State, &createdAt, &updatedAt,
 		&task.Name, &task.Executor, &task.Model, &task.WorkDir, &worktreeManaged,
 		&task.BaseCommit, &task.BaseAhead, &task.RepoDirtyCount, &task.RepoDirtyFiles,
@@ -1252,29 +1258,57 @@ ORDER BY answered_at ASC`, taskID, VoidAnswer)
 //   - 回答成功后刷新所属任务的 updated_at（子查询取 task_id）：answer 落库是任务
 //     活动信号，看门狗以此判定「stalled 之后是否有回复」从而二次告警（P1-15a）；
 //     否则「已 stalled → 协调者回答 → executor 仍死」永远不再告警
+//
+// ErrTicketConflict 在工单已有不同答案或已作废时返回。
+var ErrTicketConflict = errors.New("工单已有不同答案")
+
+// AnswerTicket 回答指定工单。若答案已存在且相同则幂等返回 nil；若不同或工单已作废则返回 ErrTicketConflict。
 func (s *Store) AnswerTicket(id, answer string) error {
+	_, err := s.AnswerTicketApplied(id, answer)
+	return err
+}
+
+// AnswerTicketApplied 回答指定工单，并返回本次是否真正写入新答案。
+// applied=true：本次将答案从 NULL 更新为 answer；
+// applied=false 且 err=nil：工单已有相同答案（幂等）；
+// err 非 nil：工单不存在（ErrNotFound）或已有不同答案/已作废（ErrTicketConflict）。
+func (s *Store) AnswerTicketApplied(id, answer string) (applied bool, err error) {
 	res, err := s.db.ExecContext(context.Background(),
 		"UPDATE tickets SET answer = ?, answered_at = ? WHERE id = ? AND answer IS NULL",
 		answer, fmtTime(time.Now()), id)
 	if err != nil {
-		return fmt.Errorf("回答工单 %s: %w", id, err)
+		return false, fmt.Errorf("回答工单 %s: %w", id, err)
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return fmt.Errorf("读取工单影响行数: %w", err)
+		return false, fmt.Errorf("读取工单影响行数: %w", err)
 	}
-	if n == 0 {
-		return ErrNotFound
+	if n == 1 {
+		s.touchTaskUpdatedAt(id)
+		return true, nil
 	}
-	// 刷新所属任务的活动时间。失败仅 Warn 不回滚回答：工单答案已持久化是审计
-	// 事实，回滚会让已答工单重新出现 pending 而裁决记录消失；刷新失败只影响
-	// 看门狗二次告警的时机，不影响回答本身的正确性
+	tk, gerr := s.GetTicket(id)
+	if gerr != nil {
+		return false, ErrNotFound
+	}
+	if tk.Answer == nil {
+		return false, ErrNotFound
+	}
+	if *tk.Answer == VoidAnswer {
+		return false, fmt.Errorf("%w: 工单已作废", ErrTicketConflict)
+	}
+	if *tk.Answer == answer {
+		return false, nil
+	}
+	return false, fmt.Errorf("%w", ErrTicketConflict)
+}
+
+func (s *Store) touchTaskUpdatedAt(ticketID string) {
 	if _, err := s.db.ExecContext(context.Background(),
 		"UPDATE tasks SET updated_at = ? WHERE id = (SELECT task_id FROM tickets WHERE id = ?)",
-		fmtTime(time.Now()), id); err != nil {
-		log().Warn("回答工单后刷新任务活动时间失败", "ticket", id, "cause", err)
+		fmtTime(time.Now()), ticketID); err != nil {
+		log().Warn("回答工单后刷新任务活动时间失败", "ticket", ticketID, "cause", err)
 	}
-	return nil
 }
 
 // VoidAnswer 是 VoidPendingTickets 写入的占位答案值。

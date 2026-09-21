@@ -1,5 +1,5 @@
 // 模板派发的共用段：取模板 → 算分支与基线 → 拼 prompt → 经注入的 Transport
-// 派发 → 回链挂账 → 落 dispatched 快照。
+// 派发 → 先落 dispatched 快照 → 回链挂账；本地账本失败时回消该次落账。
 //
 // 职责：把「一张卡按某个模板派出去」这件事收口成一处，CLI 与 agentd 共用。
 // 边界：
@@ -26,6 +26,12 @@ import (
 // 读成 PlanB64/PlanName；其余字段与 agentd 的派发协议一一对应。
 type DispatchOpts struct {
 	Prompt, Branch, Target, Project, Executor, Model, PlanB64, PlanName, Base, ExistingBranch, Discipline string
+	// Receiver 是统一接收者名（载体或小队）。空=默认载体。Ticket 0 只声明。
+	Receiver string
+	// Carrier/Squad 是卡节点已经冻结的执行身份；空=普通派发或旧调用。
+	// ledgerstep 只透传，不解析、不准入、不释放。
+	Carrier string
+	Squad   string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	HomeDir *string
 	// B229：DisciplineText 是协调者侧组装好的纪律正文（缝 1 discipline.ResolveDispatch 产物），
@@ -48,12 +54,21 @@ type DispatchOpts struct {
 // BaseCommit 必须原样来自目标 agentd，ledgerstep 不在协调者仓库猜测起点。
 type Transport func(ctx context.Context, opts DispatchOpts) (taskID string, baseCommit string, err error)
 
+// DispatchCompensator 是派发成功但本地账本落账失败时的远端补偿钩子。
+// target 为空时由调用方按普通派发的本机 client 语义选路；ledgerstep 不直接依赖
+// client，也不解释 Stop/Reclaim 的 HTTP 错误。它只接收已创建 task 的失败回收，
+// 不改变 ViaTemplate 的原始账本错误。
+type DispatchCompensator func(ctx context.Context, target, taskID string) error
+
 // DispatchResult 是模板派发完成后的回显与审计信息。
 type DispatchResult struct {
-	Card   string `json:"card"`
-	Task   string `json:"task"`
-	Target string `json:"target"`
-	Branch string `json:"branch"`
+	Card string `json:"card"`
+	Task string `json:"task"`
+	Node string `json:"node,omitempty"`
+	// Attempt 是本次节点尝试身份，按契约取返回的 TaskID。
+	Attempt string `json:"attempt,omitempty"`
+	Target  string `json:"target"`
+	Branch  string `json:"branch"`
 	// Base 是本次传给 agentd 的起点分支名；它不是卡的 effective base_branch。
 	Base string `json:"base"`
 	// BaseCommit 是目标 agentd Task.BaseCommit 的原样回传值。
@@ -69,10 +84,16 @@ type DispatchResult struct {
 type Dispatcher struct {
 	St        *ledger.Store
 	Transport Transport
-	Actor     string
+	// Compensate 在 Transport 已成功返回 task id、但本地快照/挂账或写闸失败时调用。
+	// nil 表示未装配；此时仍记录失败轮次但不执行远端动作。
+	Compensate DispatchCompensator
+	Actor      string
 	// HomeDir 是小队绑定载体 HOME 的可空原指针；nil 表示普通派发，指向空串
 	// 表示显式不覆盖目标进程 HOME。ledgerstep 不展开、清理或改写该字符串。
 	HomeDir *string
+	// Carrier/Squad 是卡节点起源侧已冻结的执行身份；普通派发保持空值。
+	Carrier string
+	Squad   string
 	// NormalizeTarget 把调用方已确认的自机登记名归一成空串；nil 等价于恒等
 	// 函数。未知目标名不得在此处改写，目标身份判断归组装点负责。
 	NormalizeTarget func(target string) string
@@ -88,11 +109,15 @@ type Dispatcher struct {
 
 // TemplateDispatch 描述一次按模板派发：模板、目标机、可选 plan 与纪律角色覆盖。
 type TemplateDispatch struct {
-	Template           string
-	Target             string
+	Template string
+	Target   string
+	// Receiver 是已由调用方解析的统一接收者名；空值沿用默认载体语义。
+	Receiver string
+	// Node 是工作流节点名；普通 card dispatch 为空。
+	Node               string
 	PlanPath           string
 	DisciplineOverride string
-	// WriteGate 在 Transport 成功后、每一处账本写入前调用；nil 表示不设闸。
+	// WriteGate 在 Transport 成功后、原子账本事务写入前调用；nil 表示不设闸。
 	// 运行节点用它阻止失去运行锁后的挂账与 dispatched 快照写入。
 	WriteGate func() bool
 	// ExecutorOverride / ModelOverride 是调用方对模板的单字段覆盖；空 = 用模板的。
@@ -122,6 +147,8 @@ type TemplateDispatch struct {
 //
 // 注意：不含协调者席位语义。实现类与环节派发都只负责派任务；运行互斥由
 // 节点编排的 RunLock 负责，席位由 bind/coordinate/rebind 命令管理。
+// 本次只调用一次 Transport；快照和五列挂账在一个事务内完成，不因本地落账
+// 失败重派第二个 task。已创建 task 的失败回收由 Compensate 注入，不删除分支。
 //
 // req.PlanPath 按调用方进程的 CWD 解析。agentd 一侧永远传空串：
 // 浏览器里没有 plan 文件，实现类派发也不从界面走。
@@ -296,7 +323,8 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		planName = filepath.Base(req.PlanPath)
 	}
 	slog.Default().Info("按模板派发",
-		"card", c.ID, "template", req.Template, "target", target,
+		"card", c.ID, "node", req.Node, "template", req.Template, "target", target,
+		"receiver", req.Receiver, "carrier", d.Carrier, "squad", d.Squad, "home_dir_set", d.HomeDir != nil,
 		"executor", executor, "model", model, "discipline", disciplineName,
 		"discipline_version", d.DisciplineVersion,
 		"discipline_bytes", len(d.DisciplineText),
@@ -307,11 +335,15 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		"carry_card_context", req.CarryCardContext, "has_extra", strings.TrimSpace(req.Extra) != "",
 		"output_path", req.OutputPath,
 		"prompt_bytes", len(prompt))
-	slog.Default().Info("派发前已确定节点产出路径", "card", c.ID, "template", req.Template,
-		"target", target, "output_path", req.OutputPath)
+	slog.Default().Info("派发前已确定节点产出路径", "card", c.ID, "node", req.Node,
+		"template", req.Template, "target", target, "receiver", req.Receiver,
+		"output_path", req.OutputPath)
 	taskID, baseCommit, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
+		Receiver:   req.Receiver,
+		Carrier:    d.Carrier,
+		Squad:      d.Squad,
 		HomeDir:    d.HomeDir,
 		OutputPath: req.OutputPath,
 		PlanName:   planName, Base: base, NewWorktree: true,
@@ -323,54 +355,96 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		LocalBaseBranch:    localBaseBranch,
 	})
 	if err != nil {
-		slog.Default().Warn("模板派发传输失败", "card", c.ID, "target", target,
-			"branch", branch, "base", base, "cause", err)
+		slog.Default().Warn("模板派发传输失败", "card", c.ID, "node", req.Node,
+			"attempt", "", "target", target, "task", "", "seq", 0,
+			"type", ledger.EvDispatched, "branch", branch, "base", base, "cause", err)
 		return zero, fmt.Errorf("派发: %w", err)
 	}
-	slog.Default().Info("模板派发传输已返回", "card", c.ID, "target", target,
-		"task", taskID, "base", base, "base_commit", baseCommit)
-	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "template", req.Template,
-		"discipline", disciplineName, "overridden", req.DisciplineOverride != "")
+	slog.Default().Info("模板派发传输已返回", "card", c.ID, "node", req.Node,
+		"attempt", taskID, "target", target, "task", taskID, "seq", 0,
+		"type", ledger.EvDispatched, "receiver", req.Receiver, "carrier", d.Carrier, "squad", d.Squad,
+		"base", base, "base_commit", baseCommit)
+	slog.Default().Info("模板派发已裁定纪律块角色", "card", c.ID, "node", req.Node,
+		"template", req.Template, "discipline", disciplineName,
+		"overridden", req.DisciplineOverride != "")
 	snapshotBranch := branch
 	if snapshotBranch == "" {
 		snapshotBranch = existingBranch
 	}
+	// 先落快照再挂账：镜像对账能在 LinkTask 可见前取得 Node/Attempt 投影，
+	// 避免空身份事件先消耗 source watermark 后无法用新身份重放。两步在账本
+	// 同一事务内完成，挂账失败时事务回消快照；已创建 task 交给注入的
+	// Compensate best-effort 回收，失败不改变本地原始错误。
 	if req.WriteGate != nil && !req.WriteGate() {
-		err := fmt.Errorf("挂账被拒：%w", ErrWriteGateClosed)
-		slog.Default().Warn("失去写权，停止派发挂账", "card", c.ID, "target", target, "task", taskID, "cause", err)
-		return zero, err
+		originalErr := fmt.Errorf("派发落账被拒：%w", ErrWriteGateClosed)
+		slog.Default().Warn("失去写权，停止派发快照与挂账", "card", c.ID,
+			"node", req.Node, "attempt", taskID, "target", target, "task", taskID,
+			"seq", 0, "type", ledger.EvDispatched, "cause", originalErr)
+		d.compensateFailedDispatch(ctx, c, purpose, target, taskID, originalErr)
+		return zero, originalErr
 	}
-	if err := d.St.LinkTask(c.ID, target, taskID, purpose, d.Actor); err != nil {
-		slog.Default().Warn("模板派发回链挂账失败", "card", c.ID, "target", target,
-			"task", taskID, "cause", err)
-		return zero, fmt.Errorf("回链挂账: %w", err)
-	}
-	if req.WriteGate != nil && !req.WriteGate() {
-		err := fmt.Errorf("快照落账被拒：%w", ErrWriteGateClosed)
-		slog.Default().Warn("失去写权，停止派发快照落账", "card", c.ID, "target", target, "task", taskID, "cause", err)
-		return zero, err
-	}
-	if err := d.St.RecordDispatch(c.ID, ledger.DispatchSnapshot{
+	snapshot := ledger.DispatchSnapshot{
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,
 		Target:            target, TaskID: taskID, Branch: snapshotBranch,
+		Node: req.Node, Attempt: taskID,
 		Base: base, BaseCommit: baseCommit,
 		Executor: executor, Model: model,
 		Purpose: purpose, PlanPath: req.PlanPath, Actor: d.Actor,
-	}); err != nil {
-		slog.Default().Warn("模板派发快照落账失败", "card", c.ID, "target", target,
-			"task", taskID, "base", base, "base_commit", baseCommit, "cause", err)
-		return zero, fmt.Errorf("快照落账: %w", err)
 	}
-	slog.Default().Info("模板派发完成", "card", c.ID, "template", tpl.Name,
-		"task", taskID, "target", target, "executor", executor, "model", model,
-		"branch", snapshotBranch, "discipline", disciplineName)
+	slog.Default().Info("模板派发快照与挂账落账开始", "card", c.ID, "node", req.Node,
+		"attempt", taskID, "target", target, "task", taskID, "seq", 0,
+		"type", ledger.EvDispatched, "snapshot", snapshot)
+	snapshotSeq, linkSeq, err := d.St.RecordDispatchAndLinkTask(c.ID, snapshot)
+	if err != nil {
+		slog.Default().Warn("模板派发快照与挂账落账失败", "card", c.ID, "node", req.Node,
+			"attempt", taskID, "target", target, "task", taskID, "seq", snapshotSeq,
+			"type", ledger.EvDispatched, "link_seq", linkSeq, "cause", err)
+		originalErr := fmt.Errorf("快照与挂账落账: %w", err)
+		d.compensateFailedDispatch(ctx, c, purpose, target, taskID, originalErr)
+		return zero, originalErr
+	}
+	slog.Default().Info("模板派发快照与挂账落账完成", "card", c.ID, "node", req.Node,
+		"attempt", taskID, "target", target, "task", taskID, "seq", linkSeq,
+		"type", ledger.EvComment, "snapshot_seq", snapshotSeq, "snapshot", snapshot)
+	slog.Default().Info("模板派发完成", "card", c.ID, "node", req.Node, "template", tpl.Name,
+		"attempt", taskID, "task", taskID, "target", target, "receiver", req.Receiver,
+		"carrier", d.Carrier, "squad", d.Squad, "home_dir_set", d.HomeDir != nil,
+		"executor", executor, "model", model, "branch", snapshotBranch, "discipline", disciplineName)
 	return DispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,
+		Node: req.Node, Attempt: taskID,
 		Base: base, BaseCommit: baseCommit,
 		Template: tpl.Name, TemplateVersion: tpl.Version, DisciplineName: disciplineName,
 		DisciplineVersion: d.DisciplineVersion,
 	}, nil
+}
+
+// compensateFailedDispatch 记录已创建 task 的耗费轮次并执行一次注入补偿。
+// 失败轮次独立于 card_tasks：后者随失败的快照事务回滚，若复用它会让重试再次
+// 使用仍留在执行机上的首轮分支名。副作用失败只记日志，保留 ViaTemplate 原错。
+func (d *Dispatcher) compensateFailedDispatch(
+	ctx context.Context,
+	card ledger.Card,
+	purpose, target, taskID string,
+	originalErr error,
+) {
+	logger := slog.Default().With("card", card.ID, "purpose", purpose,
+		"target", target, "task", taskID)
+	logger.Warn("模板派发记录失败，登记耗费轮次", "cause", originalErr)
+	if err := d.St.RecordDispatchRound(card.ID, purpose); err != nil {
+		logger.Error("派发耗费轮次落账失败，保留原始错误", "cause", err)
+	}
+	if d.Compensate == nil {
+		logger.Warn("派发补偿钩子未装配")
+		return
+	}
+	logger.Info("派发失败补偿开始")
+	if err := d.Compensate(ctx, target, taskID); err != nil {
+		logger.Error("派发失败补偿失败，保留原始错误", "cause", err)
+		return
+	}
+	logger.Info("派发失败补偿完成")
 }
 
 // disciplineAndTarget 返回一次模板派发的有效（纪律角色名，目标机）：

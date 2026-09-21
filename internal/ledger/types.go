@@ -67,6 +67,12 @@ const (
 	EvTaskMirrored       = "task_mirrored"
 	EvWorkflowMigrated   = "workflow_migrated"
 	EvDriverTakeover     = "driver_takeover"
+	// EvDriverSeatBound 协调者初始坐下（B358 补签轮）：空座被原子占为规范
+	// 席位的落账事实，载荷 {to: 席位身份}、actor=席位自称，与
+	// EvDriverTakeover（换绑，{from,to}）配对。会话 timeline 的 seat_bound
+	// 行（proto.SessionEventSeatBound）以本事件为唯一载体；结构事件，
+	// 不唤醒任何人。
+	EvDriverSeatBound = "driver_seat_bound"
 	// EvRoomMessage 协作房间域（B156.2）的唯一内容事件；kind 受控词表在
 	// proto.RoomMsgKind*。卡会话消息 CardID=卡号；项目群/全员群消息
 	// CardID=""（无卡事件——follow.go 现状把项目级事件排除在多路 wait 外，
@@ -76,6 +82,19 @@ const (
 	// 同一 mutate 事务内查后写（照 ClearNeedsHumanFrom 同形），权威在事件
 	// 存在性；会话侧游标只是缓存。
 	EvMessageConsumed = "message_consumed"
+
+	// B358 会话（群）域的结构事件。会话是工作单元（人/主 agent 开的一场
+	// 会话），卡是会话里的工作项。结构事件只进详情页 timeline、不唤醒任何人
+	// （投递寻址化的扇出禁令），也不进群聊流。
+	//
+	// EvSessionCreated 会话建立（群主 = 人或主 agent 会话身份）。
+	EvSessionCreated = "session_created"
+	// EvSessionArchived 会话显式归档；归档后只读。卡的终态不等于会话结束。
+	EvSessionArchived = "session_archived"
+	// EvSessionCardJoined 卡进群（只建讨论面，不等于配人——配人仍走 B307 三按钮）。
+	EvSessionCardJoined = "session_card_joined"
+	// EvSessionCardLeft 卡移出会话。
+	EvSessionCardLeft = "session_card_left"
 )
 
 // WorkflowTarget 是跨流迁移的显式目标。Version==0 表示在迁移事务内取目标流最新版。

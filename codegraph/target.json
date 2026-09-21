@@ -6,7 +6,7 @@
  "assembly": [
   "main.go",
   "internal/agentd/server.go",
-  "internal/agentd/codegraph.go"
+  "cmd/agentd.go"
  ],
  "contracts": [
   {
@@ -16,7 +16,7 @@
    "entries": [
     "proto 实体"
    ],
-   "legacyBudgetNote": "B156.2：新增方向。房间消息/收件箱/会话列表的 wire DTO 在 proto 唯一定义处（internal/proto/rooms.go）；竖切路径 Service.Send/History/Mentions 已有真实引用边。B312：卡 DTO 的 driver_session/driver_source 仍经 proto 唯一投影；席位身份编码 helper 归 d_protocol，不在 collab 复制。 B312 finish：席位 helper 真实引用边 1，预算 0→1。"
+   "legacyBudgetNote": "B156.2：新增方向。房间消息/收件箱/会话列表的 wire DTO 在 proto 唯一定义处（internal/proto/rooms.go）；竖切路径 Service.Send/History/Mentions 已有真实引用边。B312：卡 DTO 的 driver_session/driver_source 仍经 proto 唯一投影；席位身份编码 helper 归 d_protocol，不在 collab 复制。 B312 finish：席位 helper 真实引用边 1，预算 0→1。 B358：会话（群）域 DTO（Session/SessionMember/SessionSummary/SessionDetail）继续复用 proto 实体唯一投影；不新增方向或预算。"
   },
   {
    "from": "d_ledger",
@@ -25,7 +25,7 @@
    "entries": [
     "proto 实体"
    ],
-   "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。 B312 finish：席位 helper 真实引用边 2，预算 0→2。"
+   "legacyBudgetNote": "B156.2：新增方向。RecordRoomMessage 载荷取 proto.RoomMessage；此前 ledger 零 import proto（2026-08-25 本工作树实测），本边全新且仅此一用。 B312 finish：席位 helper 真实引用边 2，预算 0→2。B349：LedgerEvent 的 source 三字段继续复用 proto 实体唯一投影；不新增方向或预算，source identity 闸留在两个消费点。 B358：会话消息仍取 proto.RoomMessage；会话本体 DTO 经 ledger/api 投影，ledger 不直接 import proto 新类型。"
   },
   {
    "from": "d_collab",
@@ -34,7 +34,7 @@
    "interfaces": [
     "LedgerClient"
    ],
-   "legacyBudgetNote": "B156.2：出站 client 接口缝（会话→账本）。接口定义在会话侧 internal/collab/client，实现 ledger/api.Facade 由组装点绑定；本方向零调用预算——collab 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红，穿透禁令由此执法。B312：collab 继续只消费 proto.Card 的规范席位字符串，不新增直接账本调用。"
+   "legacyBudgetNote": "B156.2：出站 client 接口缝（会话→账本）。接口定义在会话侧 internal/collab/client，实现 ledger/api.Facade 由组装点绑定；本方向零调用预算——collab 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红，穿透禁令由此执法。B312：collab 继续只消费 proto.Card 的规范席位字符串，不新增直接账本调用。 B358：会话本体与卡↔会话归属经 LedgerClient 接口缝读写（CreateSession/GetSession/ListSessions/ArchiveSession/JoinCardToSession/…），接口归会话侧、实现由组装点绑定 Facade；仍零调用预算，穿透仍违法。"
   },
   {
    "from": "d_cli",
@@ -50,16 +50,17 @@
   {
    "from": "d_cli",
    "to": "d_ledger",
-   "legacyBudget": 4,
+   "legacyBudget": 11,
    "entries": [
     "ledger.Store"
    ],
-   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。B312：card bind/rebind 的席位写入仍复用既有 ledger.Store 容器，CAS 与来源校验不下沉到 CLI。"
+   "legacyBudgetNote": "B229：discipline CLI 族（cmd/discipline.go）沿用 openLedger() 既有模式直读账本，与 card/workflow/template/decision 等 13 个既有 cmd 文件同构；本次 +3 为 Put/Get/ListDisciplineNames 三个 Store 方法。B312：card bind/rebind 的席位写入仍复用既有 ledger.Store 容器，CAS 与来源校验不下沉到 CLI。B353：card wait 继续复用 ledger.Store.Follow/GetCard/MaxSeq/Subtree；过滤只发生在 CLI 消费点，账本审计事件不删；不新增方向或预算。B349：card wait 的当前派发快照扫描继续复用 ledger.Store.EventsFromAsc；事件所属卡取数、不新增 ledger 派生 API 或预算。 B233.23 重扫棘轮 4→11：CLI 卡/工作流/镜像消费面直引 ledger 实体（NewCard 等载荷字面量 5）、ledgerstep 实体与 Dispatcher、ledgermirror 与 ledger_api 包级函数；均为公开读写面，收窄沿 B233.20 九面先例另行开卡。"
   },
   {
    "from": "d_cli",
    "to": "d_maintenance",
-   "legacyBudget": 18
+   "legacyBudget": 25,
+   "legacyBudgetNote": " B233.23 重扫棘轮 18→25：CLI 维护命令族（skill/buildinfo/selfupdate/upgrade/toolchain/release）直引维护域公开函数与 Verdict/State 实体，是 d_cli 的既定形态；无新增方向，只按重扫实况抬预算。"
   },
   {
    "from": "d_cli",
@@ -69,19 +70,22 @@
   {
    "from": "d_cli",
    "to": "d_policy",
-   "legacyBudget": 32,
+   "legacyBudget": 35,
    "entries": [
     "discipline（包级函数）"
-   ]
+   ],
+   "interfaces": [],
+   "legacyBudgetNote": " B233.23 重扫棘轮 32→35：CLI 配置/环境/路径面直引 config（包级函数 22）、envfile/logx/pathenv/initflow/permgate 公开函数与 Target/Resolver 实体；discipline（包级函数）entry 保留。"
   },
   {
    "from": "d_cli",
    "to": "d_protocol",
-   "legacyBudget": 1,
+   "legacyBudget": 2,
    "entries": [
-    "proto 实体"
+    "proto 实体",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。"
+   "legacyBudgetNote": "B294：CLI preview open 只经 client.Client 发送 PreviewOpenReq；不穿透 agentd。B312：CLI 只经 proto 的席位身份编码 helper 生成 actor，不复制编码规则。 B358.9：CLI session send --agent 出示主 agent 启动身份，经 proto.MemberIdentity（包级函数）构造 agent:<启动身份>，不复制记法规则（与 agentd 侧同一唯一入口）。预算按新增消费面 1→2 抬一档——这是本卡引入的新消费点，非重扫棘轮；entries 补 proto（包级函数）。 B369.5：console --qr/--bundle 复用配对载体包级编解码（proto.EncodePairBundle），同用「proto（包级函数）」entry（contract §8.3 明令 CLI 不得重实现 bundle 编解码）；entries 命中不计 legacy，预算在 B358.9 抬到 2 后不再变化（本卡合线时两边预算与 entries 已一致，仅并说明文字）。"
   },
   {
    "from": "d_cli",
@@ -91,17 +95,25 @@
   {
    "from": "d_cli",
    "to": "d_transport",
-   "legacyBudget": 10,
+   "legacyBudget": 12,
    "entries": [
     "client 实体",
-    "client.Client"
+    "client.Client",
+    "client（包级函数）"
    ],
-   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。"
+   "legacyBudgetNote": "B293：既有 card dispatch→client.Dispatch 面补透传可空 home_dir；nil=缺席、显式空串与非空载体 HomeDir 由 client 手搭 map 保留三态，不新开 env 通道或方向。B233.3：执行能力跨机调用面冻结为 ExecutionClient（Dispatch/Reply/Continue/Stop/WaitEvent/FollowEvents），接口符号住在 d_transport 的 internal/client，不在 d_cli 再声明 interfaces（声明会 dead-interface）。*Client 仍是兼容聚合门面。不新开方向、不改预算。B353：handoff wait/card wait 任务事件口径均消费 client.WaitDeliveryPolicy；card wait 不在 CLI 复制任务白名单，不新增方向或预算。B351：bare card dispatch 的补偿装配复用既有 targetClient 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_cli→d_transport 方向或预算。 B233.16：CLI 执行消费点（stop/reply/continue/dispatch/card dispatch/wait）依赖声明收窄为使用方组合面（嵌入 client.ExecutionClient）；entries 仍含 client.Client（图内调用边落点仍是实现方法，ExecutionClient 未入图，覆盖债），client 实体 已在场；不新开方向、不改预算。 B233.23 重扫棘轮 10→12：entries 增 client（包级函数）/targetclient（包级函数）后残余为 console/shim 直连装配对 proxycfg/relay 的直引（B233.3 远程控制台既存消费）；收窄沿 B233.16 组合面先例另行开卡。 B370：card wait 的身份闸消费点由 client.JudgeMirroredWake（client 包级函数）承载，与 B353 的 WaitDeliveryPolicy 同容器；entries 补 client（包级函数）（B233.23 曾声明但当前条目缺失），消费边落该容器，不新增方向或预算。"
   },
   {
    "from": "d_cli",
    "to": "d_workspace",
-   "legacyBudget": 9
+   "legacyBudget": 0,
+   "entries": [
+    "workspace（包级函数）",
+    "projectid（包级函数）",
+    "localsync（包级函数）",
+    "localsync 实体"
+   ],
+   "legacyBudgetNote": "B233.15 迁出工作区实现后本方向超配额（11/9）。B233.17：CLI 命令面消费的是工作区公开具名能力（MainWorktreeRoot/ID8）、项目身份 helper（projectid.FromOrigin）与本地同步面（localsync）；这些是直引的公开能力，写成 entries，直调预算按门面口径降到 0（不抬到现状 11）。"
   },
   {
    "from": "d_execution",
@@ -113,15 +125,24 @@
    ]
   },
   {
+   "from": "d_execution",
+   "to": "d_orchestration",
+   "legacyBudget": 0,
+   "interfaces": [
+    "ApprovalClient"
+   ],
+   "legacyBudgetNote": "B233.1：OpenCode 已消费 ApprovalClient 接口缝，实现由编排侧绑定；零调用预算。 B233.8：生产实现物理落点冻结为 internal/approval（best 归 d_orchestration），Manager.bindApproval 仍是组装缝；复用既有接口方向与零调用预算，不新增方向。"
+  },
+  {
    "from": "d_gateway",
    "to": "d_execution",
-   "legacyBudget": 1,
+   "legacyBudget": 11,
    "entries": [
     "executor（包级函数）",
     "hostapi.Host",
     "hostapi（包级函数）"
    ],
-   "legacyBudgetNote": "B293：hostapi.Host 增 ProbeHome / WakeHome（本机隔离 HOME 探测与一次性唤起）。不新开方向；检测写状态仍走 d_scheduling。"
+   "legacyBudgetNote": "B293：hostapi.Host 增 ProbeHome / WakeHome（本机隔离 HOME 探测与一次性唤起）。不新开方向；检测写状态仍走 d_scheduling。 B233.23 重扫棘轮 1→11：残余为 gateway 的执行域装配与回放消费——executor.Registry 装配（coordinator 组装）、prochost.Admission/包级函数（CheckProcHeadroom 准入探针，B233.22 placement B4 留驻面）、turn.FrameWriter/包级函数（render/frames 回放解析）；entries 保留 executor（包级函数）/hostapi.Host/hostapi（包级函数）。"
   },
   {
    "from": "d_gateway",
@@ -129,9 +150,11 @@
    "legacyBudget": 0,
    "entries": [
     "keystone.Service",
-    "keystone（包级函数）"
+    "keystone（包级函数）",
+    "keysclient 实体",
+    "keystone 实体"
    ],
-   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调 keystone 域（拉起/唤醒/互斥/attach 定位）；预算 0 = 一律走门面，穿透内部即违法。B312：coordinate/rebind--launch 仍只经 keystone.Service；座位落账由同一控制面组装点完成。"
+   "legacyBudgetNote": "B156.3：新方向。控制面经入站 api 门面调 keystone 域（拉起/唤醒/互斥/attach 定位）；预算 0 = 一律走门面，穿透内部即违法。B312：coordinate/rebind--launch 仍只经 keystone.Service；座位落账由同一控制面组装点完成。 B233.23：entries 增 keysclient 实体与 keystone 实体——gateway 装配消费 keystone 定位/席位 DTO（coordapi/scheddrain 组装面），沿 entries 口径、预算保持 0。"
   },
   {
    "from": "d_keystone",
@@ -162,9 +185,10 @@
    "to": "d_protocol",
    "legacyBudget": 2,
    "entries": [
-    "proto 实体"
+    "proto 实体",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B312：Wake 读账本席位后来源执法调用 proto.ParseSeatIdentity/ValidateSeat；helper 归 d_protocol，不在 keystone 复制。"
+   "legacyBudgetNote": "B312：Wake 读账本席位后来源执法调用 proto.ParseSeatIdentity/ValidateSeat；helper 归 d_protocol，不在 keystone 复制。 B233.23：entries 增 proto（包级函数）——席位身份/来源判据 helper 直引，与 proto 实体同口径。"
   },
   {
    "from": "d_gateway",
@@ -175,50 +199,45 @@
     "ledgerstep.StepRunner",
     "账本薄门面 Facade"
    ],
-   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经账本薄门面（entries 内的 账本薄门面 Facade 容器，internal/ledger/api），不扩大直调债；门面归一轮起 internal/ledgerapi 已退役，两份门面归一为 internal/ledger/api 一份。B312：控制面新增的 BindSeat/RebindSeat 仍属于 ledger.Store 权威写面，协作/keystone 不穿透。"
-  },
-  {
-   "from": "d_scheduling",
-   "to": "d_ledger",
-   "legacyBudget": 0,
-   "interfaces": [
-    "Registry"
-   ],
-   "entries": [
-    "账本薄门面 Facade"
-   ],
-   "legacyBudgetNote": "B156.3 门面归一轮：出站接口缝（编制域→账本）。Registry 定义在使用方侧 internal/schedclient（字节化端口，拍板记录①），实现 internal/ledger/api.Facade 的 Put/Get/List/Delete 由组装点适配注入（facadeAsRegistry 翻译错误哨兵与 Record 形状）；B292 只改变编制域在 sched_running 中的成员政策键，不新增账本依赖或第三类 registry kind。本方向零调用预算——scheduling 生产代码任何对 ledger 的直接 call 边都会因无 entries 且超预算而变红。声明与首个消费边（implements）同提交落地。"
+   "legacyBudgetNote": "B229：账本成为纪律块正文的权威副本，缝 1 解析在派发前必须读它——新增 GetDiscipline/ListDisciplineNames/PreflightDiscipline 三处直调，是已批准设计的直接后果。B156.3 起新增账本能力调用一律经账本薄门面（entries 内的 账本薄门面 Facade 容器，internal/ledger/api），不扩大直调债；门面归一轮起 internal/ledgerapi 已退役，两份门面归一为 internal/ledger/api 一份。B312：控制面新增的 BindSeat/RebindSeat 仍属于 ledger.Store 权威写面，协作/keystone 不穿透。B233.6：工作流节点继续经 ledgerstep.StepRunner 进入共享 Dispatcher；节点/attempt 只作为账本投影与镜像 envelope 补充，不新增工作流→执行直连或第二事件总线。"
   },
   {
    "from": "d_gateway",
    "to": "d_maintenance",
-   "legacyBudget": 7
+   "legacyBudget": 25,
+   "legacyBudgetNote": " B233.23 重扫棘轮 7→25：机器升级/自更新消费面（update.go/machineupgrade.go 直引 release/selfupdate/upgrade 公开函数与 Verdict/Status 实体）随 B233.18–.22 组装上移落 gateway，按重扫实况抬预算；收窄另行开卡。"
   },
   {
    "from": "d_gateway",
    "to": "d_orchestration",
-   "legacyBudget": 321,
+   "legacyBudget": 76,
    "entries": [
-    "agentd.Manager"
+    "orchestration.Manager",
+    "orchestration（包级函数）",
+    "orchestration 实体"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline→PreflightDiscipline 与 handleDisciplineMapping→两个 k_agentd_fn 助手（best.json 将 k_agentd_fn 归 d_orchestration），+2/319。"
+   "legacyBudgetNote": "B233.26 反转 D1：OrchestrationClient 契约族随十文件迁入提供方 orchestration（m_orchestration_OrchestrationClient 归 k_orchestration_model），gateway 不再持有该接口，interfaces 声明从本方向移除（接口不再定义在使用方）。方向语义随反转：不再是「gateway 直读留驻 store」，而是 gateway 对编排实现与数据的真实依赖。重扫实况 raw 87（store.Store 59、orchestration 包级函数 8、orchestration.Hub 6、orchestration.PullTracker 6、store 实体/包级函数 6、orchestration 实体 2）；其中 10 条落已声明公开 entries（orchestration 包级函数 8 / orchestration 实体 2），check 判定的直调实为 76（另 1 条源在 assembly 免除）——预算按「只降不抬」由 B233.23 的 83 收紧到 76，未抬配额抹绿。收窄（经查询门面）归后续卡。"
   },
   {
    "from": "d_gateway",
    "to": "d_policy",
-   "legacyBudget": 27,
+   "legacyBudget": 31,
    "entries": [
     "discipline（包级函数）"
-   ]
+   ],
+   "legacyBudgetNote": " B233.23 重扫棘轮 27→31：env 面直引 envfile（包级函数 19）、config 装配与 Target/Config 实体、discipline 实体读回；discipline（包级函数）entry 保留，其余按重扫实况抬预算。"
   },
   {
    "from": "d_gateway",
    "to": "d_protocol",
    "legacyBudget": 1,
    "entries": [
-    "proto 实体"
+    "proto 实体",
+    "proto.Task",
+    "proto.TaskState",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：agentd preview HTTP/WS 门面只消费冻结 DTO；owner truth 与编排实现留在 gateway。 B312 finish：席位 helper 真实引用边 1，预算 0→1。"
+   "legacyBudgetNote": "B294：agentd preview HTTP/WS 门面只消费冻结 DTO；owner truth 与编排实现留在 gateway。 B312 finish：席位 helper 真实引用边 1，预算 0→1。 B233.23：entries 增 proto.Task/TaskState 方法容器与包级函数——proto 是词表包，状态迁移判据（CanTransit/IsTerminal）直引属设计允许的类型跨缝。 B358.9：控制台身份读缝 GET /api/identity 返回 proto.IdentityResp，身份解析经 proto.MemberIdentity（包级函数）构造 user:<name>——DTO 与记法 helper 都在 proto 唯一定义处，不新增方向、不抬预算（已落既有 entries「proto 实体」「proto（包级函数）」）。"
   },
   {
    "from": "d_gateway",
@@ -226,9 +245,14 @@
    "legacyBudget": 0,
    "entries": [
     "scheduling.Service",
-    "scheduling（包级函数）"
+    "scheduling（包级函数）",
+    "scheduling 实体",
+    "schedclient 实体"
    ],
-   "legacyBudgetNote": "B156.3：新方向。B292 沿用该唯一入站边，控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；成员政策位与载体物理位的规则仍只在 scheduling.Service 收口。预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。"
+   "legacyBudgetNote": "B156.3：新方向。B292 沿用该唯一入站边，控制面经入站 api 门面调编制域（准入/排队/载体解析/小队登记）；成员政策位与载体物理位的规则仍只在 scheduling.Service 收口。预算 0 = 一律走门面，穿透内部即违法。B293：同一门面增 ApplyDetect / DefaultHomeDir / RunCommand；不新开方向。B233.5：同一门面增 ResolveLookup / BindPhysical / OccupancyKeys / EncodeDefaultCarrier（包级函数）；本节点不接线生产路径、不新开 d_orchestration→d_scheduling。名称解析与物理绑定权威在编制域。B233.10：同一 scheduling.Service 门面新增 Select/AdmitFrozen 契约，选择与冻结准入仍不新增方向或预算。 B233.14：gateway 入站封界——生产字段类型改为使用方接口 SchedulingClient（落 interfaces，与 d_execution→d_orchestration 的 ApprovalClient 同形）；entries 保留 provider 容器 scheduling.Service / 包级函数（图内 call 边仍解析到 *Service 实现方法，删容器是假棘轮，与 B233.13 的 client.Client 同理）。预算保持 0。 B233.23：entries 增 scheduling 实体与 schedclient 实体——gateway 装配/探测面直引编制域 DTO（探测请求、载体登记载荷），沿 entries 口径、预算保持 0。",
+   "interfaces": [
+    "SchedulingClient"
+   ]
   },
   {
    "from": "d_gateway",
@@ -237,8 +261,13 @@
    "entries": [
     "ptyhost 实体",
     "ptyapi.Host",
-    "ptyapi（包级函数）"
-   ]
+    "ptyapi（包级函数）",
+    "ptyhost.Host",
+    "ptyhost.Attachment",
+    "ptyhost（包级函数）",
+    "sessdir（包级函数）"
+   ],
+   "legacyBudgetNote": "B233.23：entries 增 gateway 直引的 PTY 会话公开能力（ptyhost.Host/Attachment、ptyhost 与 sessdir 包级函数）——会话创建、附件与磁盘落点是 gateway 的既定消费面，沿 entries 口径；预算 14 为存量余量，重扫后直调全部落 entries。"
   },
   {
    "from": "d_gateway",
@@ -246,14 +275,27 @@
    "legacyBudget": 9,
    "entries": [
     "targetclient.Pool",
-    "client.Client"
+    "client.Client",
+    "client 实体",
+    "client（包级函数）"
    ],
-   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。"
+   "legacyBudgetNote": "B229：resolveStepDiscipline 的能力位探活 cl.Status 直调。此调用是契约 §判据6 的实现前提——每次派发前判 targetCap、nil/false 拒发，而取得 targetCap 的唯一途径即探活；不加此边则判据 6 无法实现。B293：stepTransport 仅把可空 home_dir 透传给既有 client.Dispatch，不新开方向。B294：preview mirror 与点击开窗复用同一 targetclient.Pool/Client，连接方向仍为 gateway→transport。B233.3：HTTPClient()/Transport 仅供网关原样搬运（forward.go / forward_ws.go）；不新开方向、不改预算。禁止经本边把卡账本写入塞进传输。B233.6：receiver 沿既有 client.Dispatch wire 透传；事件回流仍由既有 ledgermirror 承载。B351：agentd startCardStep 的补偿装配复用既有 Server.clientForTarget 选路，并经 client.Client.StopAndReclaim 进入既有 Stop/Reclaim；不新增 d_gateway→d_transport 方向或预算。B233.10：carrier/squad 作为冻结身份沿既有 client.Dispatch 发送，不新增传输方向或预算。 B233.16：agentd 执行消费点（stepTransport/补偿/推分支/探活）依赖声明收窄为使用方组合面（嵌入 client.ExecutionClient）；entries 增 client 实体（能力接口符号在场），client.Client 保留（图内调用边仍落实现方法）；不新开方向、不改预算。 B370：acceptsCurrentWorkflowAttempt 的身份闸判定改调 client.JudgeMirroredWake（client 包级函数），与 B353 的 WaitDeliveryPolicy 同容器；entries 补 client（包级函数），消费边落该容器，不新增方向或预算。"
   },
   {
    "from": "d_gateway",
    "to": "d_workspace",
-   "legacyBudget": 1
+   "legacyBudget": 0,
+   "legacyBudgetNote": "B233.15 迁出后本方向超配额（17/1）。B233.17：gateway handler 消费工作区公开文件/条目能力与 ResolveBaseBranch/ProbeWorkspaces 等具名能力，以及 projectid helper；直引公开能力写成 entries，直调预算降到 0（不抬到现状 17）。server.go 的 SetManager/handleTask* 组装与 handler 边由 assembly 豁免。 B233.23：entries 增 B233.19 迁入的 preview/项目索引公开能力（PreviewOwner/PreviewHub/ProjectIndex）与 launcher 包级函数——沿门面口径把直引公开能力写成 entries，直调预算保持 0。",
+   "entries": [
+    "workspace（包级函数）",
+    "workspace 实体",
+    "projectid（包级函数）",
+    "workspace.PreviewOwner",
+    "workspace.PreviewHub",
+    "workspace.ProjectIndex",
+    "launcher（包级函数）",
+    "launcher 实体"
+   ]
   },
   {
    "from": "d_maintenance",
@@ -261,22 +303,21 @@
    "legacyBudget": 1
   },
   {
-   "from": "d_maintenance",
-   "to": "d_transport",
-   "legacyBudget": 3
-  },
-  {
    "from": "d_orchestration",
    "to": "d_execution",
    "legacyBudget": 27,
    "entries": [
-    "executor（包级函数）"
-   ]
-  },
-  {
-   "from": "d_orchestration",
-   "to": "d_gateway",
-   "legacyBudget": 2
+    "executor（包级函数）",
+    "executor 实体",
+    "executor.Registry",
+    "turn（包级函数）",
+    "turn.FrameWriter",
+    "prochost（包级函数）",
+    "prochost.Admission",
+    "prochost.Lock",
+    "hostapi（包级函数）"
+   ],
+   "legacyBudgetNote": "B233.1：ApprovalClient / AskResponder / PermFingerprint / NamespacedTicketID 落在既有 executor 包（best 归属 d_execution_contract）。本卡不新开 d_execution→d_orchestration，也不新立顶层审批域——client 接口在使用方，首个消费边落地时再声明 interfaces 方向。 B233.2：Coordinator / OneShot / Profile / Skills / Recoverer / CapabilityReport 同样落在 executor。 B233.7：复用既有 executor.AskResponder、Adapter.RespondPermission、ApprovalClient 与 Profile 接缝；失败事实回 Manager.NoteDeliveryFailed。 B233.8：internal/approval 仅实现既有 executor.ApprovalClient。 B233.23：entries 增 executor 实体。 B233.26：十文件（watchdog/admission/eventframes/coordinator_home 等）迁入 orchestration 后，其中对执行域公开能力的直引随迁（turn.TruncateRunes/WriterFor/FrameWriter、prochost.CheckAdmission/Footprint/UIDUsage/ResolveMarkRoot/Sweep/Lock、executor.Registry、hostapi.ExpandHomePath）——均为执行域公开 helper/实体，按门面口径写成 entries，预算保持 27 不抬。"
   },
   {
    "from": "d_orchestration",
@@ -285,8 +326,28 @@
   },
   {
    "from": "d_orchestration",
+   "to": "d_scheduling",
+   "legacyBudget": 0,
+   "entries": [
+    "scheduling（包级函数）"
+   ],
+   "legacyBudgetNote": "B233.26：反转 D1 后登记既存方向。ReconcileSchedRunning（watchdog.go 随十文件迁入 orchestration）直引编制域公开 helper OccupancyCarrierKey/OccupancyMemberKey（internal/scheduling/occupancy.go），是编排对载具占位键的既有消费；两条边均落 scheduling（包级函数）entries，直调预算 0 = 不再扩大。"
+  },
+  {
+   "from": "d_orchestration",
    "to": "d_policy",
-   "legacyBudget": 16
+   "legacyBudget": 16,
+   "entries": [
+    "config（包级函数）",
+    "config 实体",
+    "envfile（包级函数）",
+    "envfile.Resolver",
+    "permgate（包级函数）",
+    "permgate 实体",
+    "permgate.Action",
+    "permgate.Gate"
+   ],
+   "legacyBudgetNote": "B233.26：十文件迁入的 coordinator_home.go（config.Save/Config）与既有 approval/watchdog/manager 对 envfile/permgate 公开能力面的直引，按门面口径写成 entries；预算保持 16 不抬（超出的 2 条 config 边随迁入，由 entries 覆盖而非抬配额）。"
   },
   {
    "from": "d_orchestration",
@@ -294,34 +355,34 @@
    "legacyBudget": 5,
    "entries": [
     "proto 实体",
-    "proto.Task"
+    "proto.Task",
+    "proto.TaskState",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B298 absorb：Manager.GC / appendGCWorktreesPreview / appendGCWorktreesExecute / activeLeafOccupied 直调 TaskState.IsTerminal（+4）；既有 1 条为 Store.UpdateTaskState→CanTransit。"
-  },
-  {
-   "from": "d_orchestration",
-   "to": "d_sessions",
-   "legacyBudget": 2
-  },
-  {
-   "from": "d_orchestration",
-   "to": "d_transport",
-   "legacyBudget": 5
+   "legacyBudgetNote": "B298 absorb：Manager.GC / appendGCWorktreesPreview / appendGCWorktreesExecute / activeLeafOccupied 直调 TaskState.IsTerminal（+4）；既有 1 条为 Store.UpdateTaskState→CanTransit。B349：wakeconsumer 读取既有 proto.LedgerEvent source 三列；身份比较仍在消费点，不新增 proto 方向或预算。 B233.23：entries 增 proto.TaskState 方法容器与包级函数（状态机判据直引），与 proto 实体同口径。"
   },
   {
    "from": "d_orchestration",
    "to": "d_workspace",
-   "legacyBudget": 19
+   "legacyBudget": 0,
+   "legacyBudgetNote": "B233.15 迁出后本方向超配额（49/19）。B233.17：编排经 Manager 持有的工作区 Capability 具名能力与公开工作区函数消费；直引公开能力/类型写成 entries，直调预算降到 0（不抬到现状 49）。基线残留经 internal/agentd（DirtyWorktreeError/Mirror）的陈旧归属边属 B233.13 未 absorb，实现期随本卡收口。",
+   "entries": [
+    "workspace（包级函数）",
+    "workspace 实体",
+    "projectid（包级函数）"
+   ]
   },
   {
    "from": "d_policy",
    "to": "d_maintenance",
-   "legacyBudget": 2
+   "legacyBudget": 3,
+   "legacyBudgetNote": " B233.23 重扫棘轮 2→3：config 装配读 toolchain 探测结果与 State 实体（版本归一），公开函数直引，按重扫实况抬 1。"
   },
   {
    "from": "d_policy",
    "to": "d_transport",
-   "legacyBudget": 2
+   "legacyBudget": 2,
+   "legacyBudgetNote": "B233.17 复核：两条边为 config.validate→proxycfg.Validate、config.Load→proxycfg.Redact，是代理参数解析/脱敏，不是跨机执行面消费点（与 ExecutionClient 收窄无关），故本卡核实、不动数字（预算 2）。"
   },
   {
    "from": "d_sessions",
@@ -335,22 +396,34 @@
   },
   {
    "from": "d_transport",
+   "to": "d_ledger",
+   "legacyBudget": 0,
+   "entries": [
+    "ledger.Store",
+    "ledger 实体"
+   ],
+   "legacyBudgetNote": "B370：新增方向。镜像身份闸判定正文（含降级三分支）收成一处共享实现，落 internal/client（与 WaitDeliveryPolicy 同包、两处消费点都依赖），代价是 client 读 ledger.Store.EventsFromAsc 与 ledger.DispatchSnapshot 取当前派发快照——这是本方向的唯一消费面，写成 entries，直调预算 0 = 不再扩大。agentd 侧消费点只经本包，不新增 d_gateway→d_ledger 的判定边。骨架提交时活跃边承载在分支视图 cards-B370-charter-4；实现轮重扫后改由 cards-B370-charter-8 背书（图对账 2026-09-15 以 44258345 与 HEAD 两次独立全量重扫逐项核对，锚点与 HEAD 一致、零矛盾），charter-4 同日退役（其 edgesAdded 含 HEAD 已不存在的边 n_client_CurrentWorkflowAttempt→n_ledger_Store_EventsFromAsc，CurrentWorkflowAttempt 已改为委托 scanCardDispatchSnapshots）；absorb 时以 charter-8 为唯一累计视图，absorb 后本方向由基线活跃边背书。"
+  },
+  {
+   "from": "d_transport",
    "to": "d_protocol",
    "legacyBudget": 0,
    "entries": [
-    "proto 实体"
+    "proto 实体",
+    "proto（包级函数）"
    ],
-   "legacyBudgetNote": "B294：transport Client 的 preview REST/WS 镜像只经 proto DTO；不反向依赖 gateway。"
-  },
-  {
-   "from": "d_workspace",
-   "to": "d_orchestration",
-   "legacyBudget": 2
+   "legacyBudgetNote": "B294：transport Client 的 preview REST/WS 镜像只经 proto DTO；不反向依赖 gateway。 B369：移动连接核复用配对载体的 proto 包级编解码（Encode/DecodePairBundle）；transport→protocol 既有方向，补 entry。"
   },
   {
    "from": "d_workspace",
    "to": "d_protocol",
-   "legacyBudget": 3
+   "legacyBudget": 0,
+   "entries": [
+    "proto 实体",
+    "proto.Task",
+    "proto.TaskState"
+   ],
+   "legacyBudgetNote": "B233.15 迁出后本方向超配额（23/3）。B233.17：proto 是词表包，工作区对 proto DTO 的直引是设计允许的类型跨缝；全部 23 条均落「proto 实体」容器，写成 entries，预算按门面口径降到 0（不抬到现状 23）。 B233.23：entries 增 proto.Task/TaskState 方法容器（工作区读任务状态做分支判据），与 proto 实体同口径。"
   },
   {
    "from": "d_cli",
@@ -370,6 +443,62 @@
     "collab 入站门面"
    ],
    "legacyBudgetNote": "B156.2：预定声明落地（契约 §2.3，entries 用实际容器 label『collab 入站门面』，非 §2.3 字面——逐字照抄会 dead-entry，探针证据台账 L7）。控制面经入站 api 门面调协作房间域（六端点 handler）；预算 0 = 一律走门面，穿透内部即违法。与首个消费边同提交。"
+  },
+  {
+   "from": "d_gateway",
+   "to": "d_web",
+   "legacyBudget": 0,
+   "entries": [
+    "webui（包级函数）"
+   ],
+   "legacyBudgetNote": "B233.23：登记既存方向。gateway 是嵌入控制台资产的宿主（server.go 组装 SPA/FS 服务，handlers.go handleStatus 读 webui.Embedded 供版本提示）；消费面就是 webui 包级函数与嵌入实体，预算 0 = 不再扩大。 （webui.Embedded 为包级符号，归 webui（包级函数）容器。）"
+  },
+  {
+   "from": "d_maintenance",
+   "to": "d_execution",
+   "legacyBudget": 0,
+   "entries": [
+    "executor 实体"
+   ],
+   "legacyBudgetNote": "B233.23：登记既存方向。skill 安装面把技能落点写成 executor 契约 DTO（SkillInstallReq 字面量），是维护域对执行契约的类型消费，不新增调用边。"
+  },
+  {
+   "from": "d_ledger",
+   "to": "d_gateway",
+   "legacyBudget": 0,
+   "interfaces": [
+    "Machines"
+   ],
+   "legacyBudgetNote": "B233.23：登记 B233.20 既有缝。账本镜像的机器枚举回调接口 Machines 住在 ledgermirror，由 gateway 侧适配器 agentd.LedgerMirrorMachines 实现（b23320_adapter.go），组装点绑定；零调用预算，穿透内部即违法。"
+  },
+  {
+   "from": "d_workspace",
+   "to": "d_gateway",
+   "legacyBudget": 0,
+   "interfaces": [
+    "PreviewStore",
+    "ProjectTreeSource",
+    "RemoteTaskSource"
+   ],
+   "legacyBudgetNote": "B233.23：登记 B233.19 既有缝。工作区 preview/项目树/镜像任务源回调接口由 gateway 侧组装适配器（b23319_adapter.go previewStore/ProjectTreeSource/MirrorTaskSource）实现，接口归使用方（workspace）、实现由组装点绑定；零调用预算。"
+  },
+  {
+   "from": "d_policy",
+   "to": "d_cli",
+   "legacyBudget": 0,
+   "interfaces": [
+    "Prompter"
+   ],
+   "legacyBudgetNote": "B233.23：登记既存回调缝。init 命令的 huhPrompter（cmd/init_huh.go）实现 initflow.Prompter 端口（接口归使用方 d_policy，实现由组装点注入），重扫后按方法集核证入图；零调用预算。"
+  },
+  {
+   "from": "d_scheduling",
+   "to": "d_gateway",
+   "legacyBudget": 0,
+   "interfaces": [
+    "Registry"
+   ],
+   "legacyBudgetNote": "B233.23：登记组装上移后的绑定缝。编制域持久化端口 schedclient.Registry 的绑定适配器 facadeAsRegistry 随 B233.18–.22 组装上移落在 gateway 组装点（internal/agentd/server.go，负责错误哨兵翻译），接口仍归使用方 d_scheduling；实现由组装点绑定，零调用预算——scheduling 生产代码对 gateway 的任何直接 call 边都因无 entries 且超预算而变红。"
   }
  ]
 }

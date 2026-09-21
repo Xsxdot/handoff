@@ -1,0 +1,667 @@
+// Package approval_test exercises the production approval client through its
+// public seam and a real SQLite store, including the durable ticket/event
+// projections that make approval decisions recoverable.
+package approval_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/approval"
+	"github.com/Xsxdot/handoff/internal/executor"
+	"github.com/Xsxdot/handoff/internal/permgate"
+	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/store"
+)
+
+type testHub struct {
+	mu          sync.Mutex
+	events      []proto.Event
+	waiters     map[string]chan string
+	waiterReady chan string
+}
+
+func (h *testHub) Publish(ev proto.Event) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.events = append(h.events, ev)
+}
+
+func (h *testHub) WaitAnswer(ctx context.Context, ticketID string) (string, error) {
+	ch := make(chan string, 1)
+	h.mu.Lock()
+	if h.waiters == nil {
+		h.waiters = map[string]chan string{}
+	}
+	h.waiters[ticketID] = ch
+	ready := h.waiterReady
+	h.mu.Unlock()
+	if ready != nil {
+		select {
+		case ready <- ticketID:
+		default:
+		}
+	}
+	defer func() {
+		h.mu.Lock()
+		delete(h.waiters, ticketID)
+		h.mu.Unlock()
+	}()
+	select {
+	case answer := <-ch:
+		return answer, nil
+	case <-ctx.Done():
+		return "", ctx.Err()
+	}
+}
+
+func (h *testHub) NotifyAnswer(ticketID, answer string) {
+	h.mu.Lock()
+	ch := h.waiters[ticketID]
+	h.mu.Unlock()
+	if ch != nil {
+		ch <- answer
+	}
+}
+
+func (h *testHub) published() []proto.Event {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return append([]proto.Event(nil), h.events...)
+}
+
+type hookCalls struct {
+	mu             sync.Mutex
+	autoAllows     int
+	transitions    []proto.TaskState
+	failures       int
+	resets         int
+	deliveries     []string
+	disabledReason string
+}
+
+func newClientFixture(t *testing.T, verdict permgate.Verdict,
+	shouldConsult bool, decide func(context.Context, string, string) approval.ConsultDecision,
+) (*store.Store, *testHub, *approval.Client, *hookCalls) {
+	t.Helper()
+	workdir := t.TempDir()
+	taskdir := t.TempDir()
+	tmpdir := filepath.Join(taskdir, "tmp")
+	if err := os.MkdirAll(tmpdir, 0o700); err != nil {
+		t.Fatalf("MkdirAll task tmp: %v", err)
+	}
+	st, err := store.Open(filepath.Join(t.TempDir(), "test.db"))
+	if err != nil {
+		t.Fatalf("store.Open: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	const taskID = "task-client-fixture"
+	now := time.Now().UTC()
+	if err := st.CreateTask(&proto.Task{
+		ID: taskID, RepoPath: workdir, WorkDir: workdir,
+		State: proto.TaskStateRunning, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	hub := &testHub{}
+	calls := &hookCalls{}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	if decide == nil {
+		decide = func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{Reason: "fixture 未提供审批结论"}
+		}
+	}
+	hooks := approval.Hooks{
+		Log: logger, Store: st, Hub: hub,
+		JudgePermission: func(string, executor.AdapterEvent) permgate.Verdict { return verdict },
+		ShouldConsult:   func(string) bool { return shouldConsult },
+		Decide:          decide,
+		CountConsultFailure: func(string) {
+			calls.mu.Lock()
+			calls.failures++
+			calls.mu.Unlock()
+		},
+		ResetConsultFailure: func(string) {
+			calls.mu.Lock()
+			calls.resets++
+			calls.mu.Unlock()
+		},
+		AutoAllow: func(string, executor.AdapterEvent, permgate.Verdict) {
+			calls.mu.Lock()
+			calls.autoAllows++
+			calls.mu.Unlock()
+		},
+		TransitBestEffort: func(_ string, to proto.TaskState, _ string) {
+			calls.mu.Lock()
+			calls.transitions = append(calls.transitions, to)
+			calls.mu.Unlock()
+		},
+		NoteDeliveryFailed: func(_, ticketID string, cause error) {
+			calls.mu.Lock()
+			calls.deliveries = append(calls.deliveries, ticketID+": "+cause.Error())
+			calls.mu.Unlock()
+		},
+		ConsultDisabledReason: func(string) string {
+			calls.mu.Lock()
+			defer calls.mu.Unlock()
+			return calls.disabledReason
+		},
+	}
+	snap := executor.PolicySnapshot{
+		Version: "v1",
+		Scope:   executor.ApprovalScope{Workdir: workdir, TaskDir: taskdir, TaskTmpDir: tmpdir},
+	}
+	return st, hub, approval.NewClient(taskID, snap, hooks), calls
+}
+
+func permissionRequest(nativeID, text string) executor.ApprovalRequest {
+	return executor.ApprovalRequest{
+		NativeID: nativeID,
+		Text:     text,
+		Perm:     &executor.PermRequest{Tool: executor.PermToolBash, Command: text},
+	}
+}
+
+func eventCount(events []proto.Event, typ proto.EventType) int {
+	n := 0
+	for _, ev := range events {
+		if ev.Type == typ {
+			n++
+		}
+	}
+	return n
+}
+
+func payloadMap(t *testing.T, payload []byte) map[string]any {
+	t.Helper()
+	var out map[string]any
+	if err := json.Unmarshal(payload, &out); err != nil {
+		t.Fatalf("Unmarshal payload %q: %v", payload, err)
+	}
+	return out
+}
+
+func TestNewClientFillsAndPreservesTaskID(t *testing.T) {
+	snap := executor.PolicySnapshot{Version: "v1", Scope: executor.ApprovalScope{Workdir: "/work"}}
+	client := approval.NewClient("T1", snap, approval.Hooks{})
+	got, err := client.PolicySnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("PolicySnapshot: %v", err)
+	}
+	if got.TaskID != "T1" || got.Version != "v1" || got.Scope.Workdir != "/work" {
+		t.Fatalf("空 TaskID 快照未正确补全: %+v", got)
+	}
+	preserved := executor.PolicySnapshot{Version: "v2", TaskID: "original", Scope: executor.ApprovalScope{TaskDir: "/task"}}
+	got, err = approval.NewClient("T2", preserved, approval.Hooks{}).PolicySnapshot(context.Background())
+	if err != nil {
+		t.Fatalf("PolicySnapshot preserved: %v", err)
+	}
+	if got != preserved {
+		t.Fatalf("非空 snapshot.TaskID 不应覆盖: got=%+v want=%+v", got, preserved)
+	}
+}
+
+func TestClientAutoAllowHasNoTicket(t *testing.T) {
+	st, hub, client, calls := newClientFixture(t, permgate.Verdict{Action: permgate.AutoAllow, Rule: "safe"}, false, nil)
+	res, err := client.Request(context.Background(), permissionRequest("native-auto", "echo safe"))
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Decision.Status != executor.ApprovalAllow || res.Ref.ID != "task-client-fixture:native-auto" {
+		t.Fatalf("auto allow result=%+v", res)
+	}
+	if calls.autoAllows != 1 {
+		t.Fatalf("AutoAllow hook calls=%d, want 1", calls.autoAllows)
+	}
+	if _, err := st.GetTicket(res.Ref.ID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("auto allow must not create ticket, err=%v", err)
+	}
+	if got := eventCount(hub.published(), proto.EventTypePermissionRequest); got != 0 {
+		t.Fatalf("auto allow published permission_request=%d", got)
+	}
+}
+
+func TestClientRequestFailClosedAndEscalates(t *testing.T) {
+	st, hub, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Escalate, Reason: "needs review"}, false, nil)
+	res, err := client.Request(context.Background(), executor.ApprovalRequest{
+		NativeID: "native-truncated", Text: "bash: long command", Truncated: true,
+	})
+	if err != nil {
+		t.Fatalf("truncated Request: %v", err)
+	}
+	if res.Decision.Status != executor.ApprovalPending {
+		t.Fatalf("truncated status=%q, want pending", res.Decision.Status)
+	}
+	tk, err := st.GetTicket(res.Ref.ID)
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	request := payloadMap(t, tk.Request)
+	if request["kind"] != "gate" || request["permission"] != "bash: long command" {
+		t.Fatalf("ticket request JSON=%v", request)
+	}
+	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	if eventCount(events, proto.EventTypePermissionRequest) != 1 || eventCount(hub.published(), proto.EventTypePermissionRequest) != 1 {
+		t.Fatalf("escalation event store=%d hub=%d", eventCount(events, proto.EventTypePermissionRequest), eventCount(hub.published(), proto.EventTypePermissionRequest))
+	}
+	if _, err := client.Request(context.Background(), executor.ApprovalRequest{Text: "missing native id"}); err == nil {
+		t.Fatal("空 NativeID 必须返回错误")
+	}
+	if _, err := st.GetTicket("task-client-fixture:"); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("空 NativeID 不得建单，err=%v", err)
+	}
+}
+
+func TestClientAwaitReadsStoreAfterCancel(t *testing.T) {
+	st, hub, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Escalate}, false, nil)
+	res, err := client.Request(context.Background(), permissionRequest("native-await", "echo await"))
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	hub.mu.Lock()
+	hub.waiterReady = make(chan string, 1)
+	hub.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan struct {
+		d   executor.ApprovalDecision
+		err error
+	}, 1)
+	go func() {
+		d, err := client.Await(ctx, res.Ref)
+		result <- struct {
+			d   executor.ApprovalDecision
+			err error
+		}{d, err}
+	}()
+	select {
+	case <-hub.waiterReady:
+	case <-time.After(time.Second):
+		t.Fatal("Await 未进入 Hub 等待")
+	}
+	if err := st.AnswerTicket(res.Ref.ID, "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	cancel()
+	got := <-result
+	if got.err != nil || got.d.Status != executor.ApprovalAllow {
+		t.Fatalf("Store 已落答案时 Await=%+v", got)
+	}
+	ctx, cancel = context.WithCancel(context.Background())
+	cancel()
+	_, err = client.Await(ctx, executor.ApprovalRef{ID: "task-client-fixture:never"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("无答案取消应保留 context.Canceled，err=%v", err)
+	}
+}
+
+func TestClientAcknowledgeStages(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Escalate}, false, nil)
+	req := permissionRequest("native-ack", "echo ack")
+	res, err := client.Request(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if err := st.AnswerTicket(res.Ref.ID, "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	ack := func(stage executor.AckStage) error {
+		return client.Acknowledge(context.Background(), executor.ApprovalAck{Ref: res.Ref, NativeID: req.NativeID, Stage: stage})
+	}
+	if err := ack(executor.AckFormed); err != nil {
+		t.Fatalf("AckFormed: %v", err)
+	}
+	tk, err := st.GetTicket(res.Ref.ID)
+	if err != nil || tk.DeliveredAt != nil {
+		t.Fatalf("AckFormed ticket=%+v err=%v", tk, err)
+	}
+	if err := ack(executor.AckDelivered); err != nil {
+		t.Fatalf("AckDelivered: %v", err)
+	}
+	tk, err = st.GetTicket(res.Ref.ID)
+	if err != nil || tk.DeliveredAt == nil {
+		t.Fatalf("AckDelivered ticket=%+v err=%v", tk, err)
+	}
+	deliveredAt := *tk.DeliveredAt
+	if err := ack(executor.AckExecuted); err != nil {
+		t.Fatalf("AckExecuted: %v", err)
+	}
+	tk, err = st.GetTicket(res.Ref.ID)
+	if err != nil || tk.DeliveredAt == nil || !tk.DeliveredAt.Equal(deliveredAt) {
+		t.Fatalf("AckExecuted changed DeliveredAt: ticket=%+v err=%v", tk, err)
+	}
+	if err := ack(executor.AckStage("unknown")); err == nil {
+		t.Fatal("未知 AckStage 必须返回错误")
+	}
+}
+
+func TestClientReuseRequiresDeliveredGrant(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Escalate}, false, nil)
+	first, err := client.Request(context.Background(), permissionRequest("native-reuse-1", "python3 script.py"))
+	if err != nil {
+		t.Fatalf("first Request: %v", err)
+	}
+	if err := st.AnswerTicket(first.Ref.ID, "allow"); err != nil {
+		t.Fatalf("AnswerTicket: %v", err)
+	}
+	undelivered, err := client.Request(context.Background(), permissionRequest("native-reuse-2", "python3 script.py"))
+	if err != nil {
+		t.Fatalf("undelivered Request: %v", err)
+	}
+	if undelivered.Decision.Status == executor.ApprovalAllow && undelivered.Decision.Rule == "reuse" {
+		t.Fatal("未送达 allow 不得成为复用先例")
+	}
+	if err := client.Acknowledge(context.Background(), executor.ApprovalAck{Ref: first.Ref, Stage: executor.AckDelivered}); err != nil {
+		t.Fatalf("AckDelivered: %v", err)
+	}
+	reused, err := client.Request(context.Background(), permissionRequest("native-reuse-3", "python3 script.py"))
+	if err != nil {
+		t.Fatalf("reused Request: %v", err)
+	}
+	if reused.Decision.Status != executor.ApprovalAllow || reused.Decision.Rule != "reuse" {
+		t.Fatalf("已送达同指纹应复用: %+v", reused.Decision)
+	}
+	if reused.Ref.ID != "task-client-fixture:native-reuse-3" {
+		t.Fatalf("reuse ref=%q", reused.Ref.ID)
+	}
+}
+
+func TestClientConsultFailClosed(t *testing.T) {
+	cases := []struct {
+		name   string
+		decide func(context.Context, string, string) approval.ConsultDecision
+	}{{
+		name: "error",
+		decide: func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{Err: errors.New("approver unavailable")}
+		},
+	}, {
+		name: "deny",
+		decide: func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{Reason: "not confident"}
+		},
+	}}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, client, calls := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true, tc.decide)
+			res, err := client.Request(context.Background(), permissionRequest("native-consult-"+tc.name, "python3 script.py"))
+			if err != nil {
+				t.Fatalf("Request: %v", err)
+			}
+			if res.Decision.Status == executor.ApprovalAllow || res.Decision.Status != executor.ApprovalPending {
+				t.Fatalf("consult %s must fail closed to pending: %+v", tc.name, res.Decision)
+			}
+			calls.mu.Lock()
+			failures, resets := calls.failures, calls.resets
+			calls.mu.Unlock()
+			if tc.name == "error" && failures != 1 {
+				t.Fatalf("CountConsultFailure=%d", failures)
+			}
+			if tc.name == "deny" && resets != 1 {
+				t.Fatalf("ResetConsultFailure=%d", resets)
+			}
+		})
+	}
+}
+
+func TestClientConsultAllowPersistsGrant(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true,
+		func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{Approve: true, Reason: "approved by fixture", ElapsedMS: 7}
+		})
+	req := permissionRequest("native-approver", "python3 script.py")
+	first, err := client.Request(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if first.Decision.Status != executor.ApprovalAllow || first.Decision.Rule != "approver" {
+		t.Fatalf("approver allow result=%+v", first.Decision)
+	}
+	fp := executor.ReuseFingerprint("v1", executor.PermFingerprint(executor.AdapterEvent{
+		PermissionID: req.NativeID, Text: req.Text, Perm: req.Perm,
+	}))
+	tk, err := st.GetTicket(first.Ref.ID)
+	if err != nil || tk.Answer == nil || *tk.Answer != "allow" {
+		t.Fatalf("审批者批准必须落 answer=allow 的工单: %+v err=%v", tk, err)
+	}
+	if tk.DeliveredAt != nil {
+		t.Fatalf("Request 返回 allow 时不得已送达（DeliveredAt 必须为空）: %+v", tk)
+	}
+	if prior, err := st.FindReusableGrant("task-client-fixture", fp); err != nil || prior != nil {
+		t.Fatalf("未送达 allow 不得被复用: prior=%+v err=%v", prior, err)
+	}
+	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	if eventCount(events, proto.EventTypeApproverDecision) != 1 ||
+		eventCount(events, proto.EventTypeTicketAnswered) != 1 ||
+		eventCount(events, proto.EventTypePermissionRequest) != 0 {
+		t.Fatalf("approver events=%+v", events)
+	}
+	decision := payloadMap(t, events[0].Payload)
+	if decision["decision"] != "approve" || decision["elapsed_ms"] != float64(7) {
+		t.Fatalf("approver_decision payload=%v", decision)
+	}
+	// 送达确认只在 AckDelivered。
+	if err := client.Acknowledge(context.Background(), executor.ApprovalAck{
+		Ref: first.Ref, NativeID: req.NativeID, Stage: executor.AckDelivered,
+	}); err != nil {
+		t.Fatalf("AckDelivered: %v", err)
+	}
+	tk, err = st.GetTicket(first.Ref.ID)
+	if err != nil || tk.DeliveredAt == nil {
+		t.Fatalf("AckDelivered 之后必须送达: %+v err=%v", tk, err)
+	}
+	second, err := client.Request(context.Background(), permissionRequest("native-approver-2", "python3 script.py"))
+	if err != nil {
+		t.Fatalf("reuse Request: %v", err)
+	}
+	if second.Decision.Status != executor.ApprovalAllow || second.Decision.Rule != "reuse" {
+		t.Fatalf("已送达同指纹应复用: %+v", second.Decision)
+	}
+}
+
+// ticketListed 报告待投列表里是否有指定工单，供 #12 时序断言复用。
+func ticketListed(tickets []proto.Ticket, id string) bool {
+	for _, tk := range tickets {
+		if tk.ID == id {
+			return true
+		}
+	}
+	return false
+}
+
+// TestClientApproverAllowUndeliveredUntilAck 锁冻结 #12：审批者 allow 之后、
+// 原生回传成功（Acknowledge(AckDelivered)）之前，工单必须留在 UndeliveredAnswers
+// 待投列表里，且不得被 FindReusableGrant 当作先例；AckDelivered 之后才从待投列表消失。
+//
+// 反向变异：把 MarkTicketDelivered 加回 consult → Request 返回时工单已被标记送达，
+// UndeliveredAnswers 为空、FindReusableGrant 命中，本测试红。
+func TestClientApproverAllowUndeliveredUntilAck(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true,
+		func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{Approve: true, Reason: "approved by fixture"}
+		})
+	req := permissionRequest("native-undelivered", "python3 script.py")
+	first, err := client.Request(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if first.Decision.Status != executor.ApprovalAllow || first.Decision.Rule != "approver" {
+		t.Fatalf("approver allow result=%+v", first.Decision)
+	}
+	fp := executor.ReuseFingerprint("v1", executor.PermFingerprint(executor.AdapterEvent{
+		PermissionID: req.NativeID, Text: req.Text, Perm: req.Perm,
+	}))
+	undelivered, err := st.UndeliveredAnswers("task-client-fixture")
+	if err != nil {
+		t.Fatalf("UndeliveredAnswers: %v", err)
+	}
+	if !ticketListed(undelivered, first.Ref.ID) {
+		t.Fatalf("审批者 allow 未送达前必须留在待投列表（#12）: got=%+v", undelivered)
+	}
+	if prior, err := st.FindReusableGrant("task-client-fixture", fp); err != nil || prior != nil {
+		t.Fatalf("未送达 allow 不得被复用: prior=%+v err=%v", prior, err)
+	}
+	if err := client.Acknowledge(context.Background(), executor.ApprovalAck{
+		Ref: first.Ref, NativeID: req.NativeID, Stage: executor.AckDelivered,
+	}); err != nil {
+		t.Fatalf("AckDelivered: %v", err)
+	}
+	undelivered, err = st.UndeliveredAnswers("task-client-fixture")
+	if err != nil {
+		t.Fatalf("UndeliveredAnswers after ack: %v", err)
+	}
+	if ticketListed(undelivered, first.Ref.ID) {
+		t.Fatalf("AckDelivered 之后不得仍在待投列表（#12）: got=%+v", undelivered)
+	}
+}
+
+// TestClientDisabledEscalatesWithDisabledReason 钉住 B376 第 3 条：审批链停用
+// 后 Escalate 的理由必须点名停用，不得再回落「黑名单未命中」。
+func TestClientDisabledEscalatesWithDisabledReason(t *testing.T) {
+	st, _, client, calls := newClientFixture(t, permgate.Verdict{Action: permgate.Consult, Reason: "黑名单未命中"}, false, nil)
+	calls.mu.Lock()
+	calls.disabledReason = "审批链已停用（连续 3 次失败）"
+	calls.mu.Unlock()
+	res, err := client.Request(context.Background(), permissionRequest("native-disabled", "python3 script.py"))
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Decision.Status != executor.ApprovalPending {
+		t.Fatalf("停用后应升级为 pending: %+v", res.Decision)
+	}
+	if !strings.Contains(res.Decision.Reason, "审批链已停用") {
+		t.Fatalf("升级理由必须含停用说明，得到 %q", res.Decision.Reason)
+	}
+	if res.Decision.Reason == "黑名单未命中" {
+		t.Fatalf("停用后不得回落「黑名单未命中」，得到 %q", res.Decision.Reason)
+	}
+	tk, err := st.GetTicket(res.Ref.ID)
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	request := payloadMap(t, tk.Request)
+	if reason, _ := request["permission"].(string); reason == "" {
+		t.Fatalf("工单请求缺 permission: %v", request)
+	}
+	// B376 复审：停用理由必须落进工单请求体与 permission_request 事件，
+	// 不能只活在返回给 adapter 的 Decision.Reason 里——协调者从任一入口都
+	// 要看到「审批链坏了」，而不是「命令没命中判据」。
+	if reason, _ := request["reason"].(string); !strings.Contains(reason, "审批链已停用") {
+		t.Fatalf("工单请求体理由必须点名停用，得到 %q", reason)
+	}
+	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var evReason string
+	for _, e := range events {
+		if e.Type != proto.EventTypePermissionRequest {
+			continue
+		}
+		if reason, _ := payloadMap(t, e.Payload)["reason"].(string); reason != "" {
+			evReason = reason
+		}
+	}
+	if !strings.Contains(evReason, "审批链已停用") {
+		t.Fatalf("permission_request 事件理由必须点名停用，得到 %q", evReason)
+	}
+}
+
+// TestClientConsultWritesAttemptEvents 钉住 B376 第 3 条：每次候选尝试各写一条
+// approver_decision，payload 能看出 executor 与 decision；这里从 Store 真读，
+// 穿过 AppendEvent 的真实 JSON 反序列化。
+func TestClientConsultWritesAttemptEvents(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true,
+		func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{
+				Approve:   true,
+				Reason:    "grok 放行",
+				ElapsedMS: 12,
+				Executor:  "grok",
+				Attempts: []approval.ApproverAttempt{
+					{Executor: "codex", Decision: "error", Reason: "codex 挂了", Err: errors.New("codex 挂了")},
+					{Executor: "grok", Decision: "approve", Reason: "grok 放行"},
+				},
+			}
+		})
+	if _, err := client.Request(context.Background(), permissionRequest("native-attempts", "python3 script.py")); err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	events, err := st.EventsFromAsc("task-client-fixture", 0, 100)
+	if err != nil {
+		t.Fatalf("EventsFromAsc: %v", err)
+	}
+	var got []map[string]any
+	for _, ev := range events {
+		if ev.Type != proto.EventTypeApproverDecision {
+			continue
+		}
+		got = append(got, payloadMap(t, ev.Payload))
+	}
+	if len(got) != 2 {
+		t.Fatalf("期望 2 条 approver_decision，得到 %d: %+v", len(got), got)
+	}
+	if got[0]["executor"] != "codex" || got[0]["decision"] != "error" {
+		t.Fatalf("第一条 = %+v，期望 codex/error", got[0])
+	}
+	if got[1]["executor"] != "grok" || got[1]["decision"] != "approve" {
+		t.Fatalf("第二条 = %+v，期望 grok/approve", got[1])
+	}
+}
+
+// TestClientJudgeEscalateKeepsReasonWhenDisabled 反锁复审边界：审批链停用时，
+// 判据自身的 Escalate（黑名单命中）理由必须保留原文，不得被停用说明掩盖。
+func TestClientJudgeEscalateKeepsReasonWhenDisabled(t *testing.T) {
+	st, _, client, calls := newClientFixture(t, permgate.Verdict{Action: permgate.Escalate, Reason: "命中黑名单 sudo"}, false, nil)
+	calls.mu.Lock()
+	calls.disabledReason = "审批链已停用（连续 3 次失败）"
+	calls.mu.Unlock()
+	res, err := client.Request(context.Background(), permissionRequest("native-judge-escalate", "sudo rm -rf /"))
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	if res.Decision.Reason != "命中黑名单 sudo" {
+		t.Fatalf("判据 Escalate 理由应为原文，得到 %q", res.Decision.Reason)
+	}
+	if strings.Contains(res.Decision.Reason, "审批链已停用") {
+		t.Fatalf("判据 Escalate 理由不得被停用说明掩盖，得到 %q", res.Decision.Reason)
+	}
+	tk, err := st.GetTicket(res.Ref.ID)
+	if err != nil {
+		t.Fatalf("GetTicket: %v", err)
+	}
+	if reason, _ := payloadMap(t, tk.Request)["reason"].(string); strings.Contains(reason, "审批链已停用") {
+		t.Fatalf("工单理由不得被停用说明掩盖，得到 %q", reason)
+	}
+}
+
+func TestClientNoteDeliveryFailedTaskIsolation(t *testing.T) {
+	_, _, client, calls := newClientFixture(t, permgate.Verdict{Action: permgate.Escalate}, false, nil)
+	cause := errors.New("respond failed")
+	client.NoteDeliveryFailed("other-task", "other-task:ticket", cause)
+	calls.mu.Lock()
+	if len(calls.deliveries) != 0 {
+		t.Fatalf("cross-task delivery failure must not invoke hook: %v", calls.deliveries)
+	}
+	calls.mu.Unlock()
+	client.NoteDeliveryFailed("task-client-fixture", "task-client-fixture:ticket", cause)
+	calls.mu.Lock()
+	defer calls.mu.Unlock()
+	if len(calls.deliveries) != 1 || calls.deliveries[0] != "task-client-fixture:ticket: respond failed" {
+		t.Fatalf("same-task delivery failure=%v", calls.deliveries)
+	}
+}

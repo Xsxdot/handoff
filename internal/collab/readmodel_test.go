@@ -16,6 +16,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -66,6 +67,23 @@ func (f *fakeLC) RecordRoomMessage(cardID string, msg proto.RoomMessage, actor s
 func (f *fakeLC) RecordMessageConsumed(cardID string, msgSeq int64, consumer string) error {
 	return nil
 }
+
+// --- B358 会话（群）域账本能力（本文件不测会话；给出编译期占位实现）---
+
+func (f *fakeLC) CreateSession(title, owner, actor string) (proto.Session, error) {
+	return proto.Session{ID: "session:1", Title: title, Owner: owner}, nil
+}
+func (f *fakeLC) GetSession(id string) (proto.Session, error) {
+	return proto.Session{ID: id}, nil
+}
+func (f *fakeLC) ListSessions() ([]proto.Session, error) { return nil, nil }
+func (f *fakeLC) ArchiveSession(id, actor string) error  { return nil }
+func (f *fakeLC) JoinCardToSession(sessionID, cardID, actor string) error {
+	return nil
+}
+func (f *fakeLC) LeaveCardToSession(sessionID, cardID, actor string) error { return nil }
+func (f *fakeLC) SessionOfCard(cardID string) (string, error)              { return "", nil }
+func (f *fakeLC) AddSessionMember(sessionID, identity, actor string) error { return nil }
 func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	f.eventReads++
 	if limit <= 0 {
@@ -236,16 +254,18 @@ func countConsumedFor(t *testing.T, st *ledger.Store, consumer string) int {
 }
 
 // TestPendingGroupMentionAndConsume 契约 §4「Pending 返回群级@」：@ 到
-// consumer 的未消费群消息进 Pending；消费后消失；未提及的不进。
+// consumer 的未消费群消息进 Pending；消费后消失。夹具迁会话房间（会话消息
+// 同为无卡事件，Pending 的 CardID=="" 分支同样覆盖）。
 func TestPendingGroupMentionAndConsume(t *testing.T) {
-	svc, _ := newFixture(t)
+	svc, st := newFixture(t)
+	sid := mustSession(t, svc, st, "群提及会话")
 	consumer := "cli:codex#a"
-	seq, err := svc.Send("project:handoff",
+	seq, err := svc.Send(sid,
 		proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@cli:codex#a 看", Mentions: []string{consumer}}, "user:sy")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Send("project:handoff",
+	if _, err := svc.Send(sid,
 		proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "无提及"}, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
@@ -268,24 +288,26 @@ func TestPendingGroupMentionAndConsume(t *testing.T) {
 	}
 }
 
-// TestPendingCardRoomUserMessages 契约 §4「其绑定卡房间的未消费留言」：
-// 未绑定卡房间的留言不进；协调者类消息（非 user 留言）不进。
+// TestPendingCardRoomUserMessages Pending 的绑定卡房间读侧过滤（B156.2 语义
+// 残余：旧房间归档后不再有新留言，历史行仍应可查——分支不删）。卡房间发言
+// 入口已死，历史行用出站接口直接落（测试文件 import，不构成生产边）。
 func TestPendingCardRoomUserMessages(t *testing.T) {
 	svc, st := newFixture(t)
+	lc := ledgerapi.New(st)
 	consumer := "cli:codex#a"
 	bound := mustCard(t, svc, st, "绑定卡")
 	other := mustCard(t, svc, st, "非绑定卡")
 	mustBind(t, st, bound.ID, consumer)
 	mustBind(t, st, other.ID, "cli:codex#b")
 
-	msgSeq, err := svc.Send(bound.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "给我留言"}, "user:sy")
+	msgSeq, err := lc.RecordRoomMessage(bound.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "给我留言"}, "user:sy")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Send(other.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "别人的卡留言"}, "user:sy"); err != nil {
+	if _, err := lc.RecordRoomMessage(other.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "别人的卡留言"}, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.Send(bound.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "简报"}, consumer); err != nil {
+	if _, err := lc.RecordRoomMessage(bound.ID, proto.RoomMessage{Kind: proto.RoomMsgEscalation, Body: "简报"}, consumer); err != nil {
 		t.Fatal(err)
 	}
 	pending, err := svc.Pending(consumer)
@@ -297,11 +319,12 @@ func TestPendingCardRoomUserMessages(t *testing.T) {
 	}
 }
 
-// TestConsumeIdempotentSameArgs 契约 §4「同参重试返回 nil 且不产生第二条」。
+// TestConsumeIdempotentSameArgs 契约 §4「同参重试返回 nil 且不产生第二条」
+// （夹具迁会话房间）。
 func TestConsumeIdempotentSameArgs(t *testing.T) {
 	svc, st := newFixture(t)
-	card := mustAnyCard(t, svc, st)
-	seq, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy")
+	sid := mustSession(t, svc, st, "幂等消费会话")
+	seq, err := svc.Send(sid, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -317,12 +340,12 @@ func TestConsumeIdempotentSameArgs(t *testing.T) {
 	}
 }
 
-// TestConsumeSecondConsumerOwnMarker 契约 §4「他人已消费的同一条返回 nil」：
-// 各消费者一条自己的标记，互不顶替（账本侧 C2 已锁，此处锁门面路径）。
+// TestConsumeSecondConsumerOwnMarker 各消费者一条自己的标记，互不顶替
+// （夹具迁会话房间）。
 func TestConsumeSecondConsumerOwnMarker(t *testing.T) {
 	svc, st := newFixture(t)
-	card := mustAnyCard(t, svc, st)
-	seq, _ := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy")
+	sid := mustSession(t, svc, st, "双消费者会话")
+	seq, _ := svc.Send(sid, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy")
 	if err := svc.Consume(seq, "cli:codex#a"); err != nil {
 		t.Fatal(err)
 	}
@@ -337,13 +360,16 @@ func TestConsumeSecondConsumerOwnMarker(t *testing.T) {
 	}
 }
 
-// TestConsumeInvalidSeq 岔口六方案甲：seq 不存在或非 room_message 一律幂等
-// nil 且不落标记。基线探针绿（stub 本就无副作用），本测试是回归锁——
-// 变异靶：实现写标记或返回错误即红。
+// TestConsumeInvalidSeq seq 不存在或非 room_message 一律幂等 nil 且不落标记
+// （夹具迁会话房间；评论行仍挂卡上）。
 func TestConsumeInvalidSeq(t *testing.T) {
 	svc, st := newFixture(t)
+	sid := mustSession(t, svc, st, "无效消费会话")
 	card := mustAnyCard(t, svc, st)
 	if _, err := st.AddComment(card.ID, "普通评论", "普通", "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Send(sid, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
 	if err := svc.Consume(999999, "cli:codex#a"); err != nil {
@@ -367,15 +393,16 @@ func TestConsumeInvalidSeq(t *testing.T) {
 	}
 }
 
-// TestConsumePayloadTwoKeys 契约 §4「payload 含 message_seq 与 consumer 两键」。
+// TestConsumePayloadTwoKeys 消费标记 payload 恰 message_seq/consumer 两键
+// （夹具迁会话房间）。
 func TestConsumePayloadTwoKeys(t *testing.T) {
 	svc, st := newFixture(t)
-	card := mustAnyCard(t, svc, st)
-	seq, _ := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy")
+	sid := mustSession(t, svc, st, "消费载荷会话")
+	seq, _ := svc.Send(sid, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "留言"}, "user:sy")
 	if err := svc.Consume(seq, "cli:codex#a"); err != nil {
 		t.Fatal(err)
 	}
-	events, err := st.EventsFromAsc([]string{card.ID}, 0, 100)
+	events, err := st.EventsFromAsc([]string{}, 0, 1000)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,11 +422,12 @@ func TestConsumePayloadTwoKeys(t *testing.T) {
 	t.Fatal("没有消费标记事件")
 }
 
-// TestMentionsExcludesConsumed 契约 §3.3「未消费提及」：消费后从 Mentions 消失。
+// TestMentionsExcludesConsumed 未消费提及：消费后从 Mentions 消失（夹具迁
+// 会话房间——会话 mention 源是 B358 的活语义）。
 func TestMentionsExcludesConsumed(t *testing.T) {
 	svc, st := newFixture(t)
-	mustAnyCard(t, svc, st)
-	seq, err := svc.Send("project:handoff",
+	sid := mustSession(t, svc, st, "提及消费会话")
+	seq, err := svc.Send(sid,
 		proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@B145 看", Mentions: []string{"B145"}}, "user:sy")
 	if err != nil {
 		t.Fatal(err)
@@ -619,13 +647,13 @@ func TestListRoomsLiveRealStore(t *testing.T) {
 	}
 }
 
-// TestListRoomsUnmergeRestoresAndKeepsHistory 契约 §4「拆回解冻」：并入时
-// 房间 ReadOnly=true；UnmergeCard 后回 false；历史消息不丢。
+// TestListRoomsUnmergeRestoresAndKeepsHistory 拆回解冻 + 历史不丢（旧房间
+// 读面对质：Pointer 夹具造消息；Send 断言翻成「旧房间恒 ErrReadOnly」）。
 func TestListRoomsUnmergeRestoresAndKeepsHistory(t *testing.T) {
 	svc, st := newFixture(t)
 	carrier := mustCard(t, svc, st, "承载卡")
 	member := mustCard(t, svc, st, "并入卡")
-	seq, err := svc.Send(member.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "并入前留言"}, "user:sy")
+	seq, err := svc.Pointer(member.ID, proto.RoomMessage{Body: "并入前指针行"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -644,7 +672,7 @@ func TestListRoomsUnmergeRestoresAndKeepsHistory(t *testing.T) {
 		t.Fatal("并入卡房间应只读")
 	}
 	if _, err := svc.Send(member.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "user:sy"); err != ErrReadOnly {
-		t.Fatalf("并入房间发送应 ErrReadOnly: %v", err)
+		t.Fatalf("旧房间发送应 ErrReadOnly（归档语义）: %v", err)
 	}
 	if err := st.UnmergeCard(member.ID, "test"); err != nil {
 		t.Fatal(err)
@@ -669,55 +697,55 @@ func TestListRoomsUnmergeRestoresAndKeepsHistory(t *testing.T) {
 	}
 }
 
-// TestMarkReadUnreadWatermark 未读水位：未读=该房间 seq>游标的 room_message
-// 条数；MarkRead 到某 seq 后只数之后的；读尽即 0。
+// TestMarkReadUnreadWatermark 未读水位（夹具迁会话房间；发送者=群主，
+// Task 3 成员执法落地后不需改）。
 func TestMarkReadUnreadWatermark(t *testing.T) {
 	svc, st := newFixture(t)
-	card := mustAnyCard(t, svc, st)
+	sid := mustSession(t, svc, st, "未读水位会话")
 	seqs := []int64{}
 	for _, body := range []string{"一", "二", "三"} {
-		seq, err := svc.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: body}, "user:sy")
+		seq, err := svc.Send(sid, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: body}, "user:sy")
 		if err != nil {
 			t.Fatal(err)
 		}
 		seqs = append(seqs, seq)
 	}
-	if n, err := svc.Unread("user:sy", card.ID); err != nil || n != 3 {
+	if n, err := svc.Unread("user:sy", sid); err != nil || n != 3 {
 		t.Fatalf("未读应 3: %v %d", err, n)
 	}
-	if err := svc.MarkRead("user:sy", card.ID, seqs[1]); err != nil {
+	if err := svc.MarkRead("user:sy", sid, seqs[1]); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := svc.Unread("user:sy", card.ID); err != nil || n != 1 {
+	if n, err := svc.Unread("user:sy", sid); err != nil || n != 1 {
 		t.Fatalf("读到第二条后未读应 1: %v %d", err, n)
 	}
-	if err := svc.MarkRead("user:sy", card.ID, seqs[2]); err != nil {
+	if err := svc.MarkRead("user:sy", sid, seqs[2]); err != nil {
 		t.Fatal(err)
 	}
-	if n, err := svc.Unread("user:sy", card.ID); err != nil || n != 0 {
+	if n, err := svc.Unread("user:sy", sid); err != nil || n != 0 {
 		t.Fatalf("读尽后未读应 0: %v %d", err, n)
 	}
 }
 
-// TestMarkReadPerRoomAndMember 游标按成员按房间独立。
+// TestMarkReadPerRoomAndMember 游标按成员按房间独立（夹具迁会话房间）。
 func TestMarkReadPerRoomAndMember(t *testing.T) {
 	svc, st := newFixture(t)
-	cardA := mustCard(t, svc, st, "卡A")
-	cardB := mustCard(t, svc, st, "卡B")
-	seqA, _ := svc.Send(cardA.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "a1"}, "user:sy")
-	if _, err := svc.Send(cardB.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "b1"}, "user:sy"); err != nil {
+	sidA := mustSession(t, svc, st, "会话A")
+	sidB := mustSession(t, svc, st, "会话B")
+	seqA, _ := svc.Send(sidA, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "a1"}, "user:sy")
+	if _, err := svc.Send(sidB, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "b1"}, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
-	if err := svc.MarkRead("user:sy", cardA.ID, seqA); err != nil {
+	if err := svc.MarkRead("user:sy", sidA, seqA); err != nil {
 		t.Fatal(err)
 	}
-	if n, _ := svc.Unread("user:sy", cardA.ID); n != 0 {
-		t.Fatalf("卡A 已读应 0: %d", n)
+	if n, _ := svc.Unread("user:sy", sidA); n != 0 {
+		t.Fatalf("会话A 已读应 0: %d", n)
 	}
-	if n, _ := svc.Unread("user:sy", cardB.ID); n != 1 {
-		t.Fatalf("卡B 未读应 1: %d", n)
+	if n, _ := svc.Unread("user:sy", sidB); n != 1 {
+		t.Fatalf("会话B 未读应 1: %d", n)
 	}
-	if n, _ := svc.Unread("cli:codex#a", cardA.ID); n != 1 {
+	if n, _ := svc.Unread("cli:codex#a", sidA); n != 1 {
 		t.Fatalf("另一成员游标独立，应 1: %d", n)
 	}
 }

@@ -119,7 +119,7 @@ handoff done <task> --note "已验收"        # 满意：归档并回收 executo
 
 想实时看 executor 在干什么，任何时候 `handoff attach <task>`。
 
-> 协调者是 AI 会话时，不需要记这些：安装时已自动装好 handoff skill（Claude Code / opencode / grok / codex 四家都装），AI 会按 skill 里的纪律驱动整个回路。一处能力差异：Claude Code 与 grok 有后台任务唤醒机制，可挂 `wait --follow` 长订阅；opencode 与 codex 没有，skill 会引导它们退回前台逐轮 `wait` 阻塞等待。
+> 协调者是 AI 会话时，不需要记这些：安装时已自动装好 handoff skill（Claude Code / opencode / grok / codex 四家都装），AI 会按 skill 里的纪律驱动整个回路。一处能力差异：Claude Code、grok、以及 `handoff skill install` 装了 monitor 插件的 OpenCode，可挂 `wait --follow` 长订阅；Codex 与 Command Code 没有按行叫醒，skill 会引导它们用不带 `--follow` 的一次性 wait，每收到一个事件就退出。
 
 ## 连接远程执行机
 

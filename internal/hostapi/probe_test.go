@@ -16,6 +16,15 @@ import (
 	"time"
 )
 
+// testWakeBudget 是递交给 WakeHome 的探测预算。
+//
+// 用例断言的是**判定结果**（ready / need_login / …），不是延迟；假 CLI 秒回，
+// 1s 预算在「全量 go test ./...」的并行负载下会翻车（2026-09-19 实测：
+// TestWakeHomeSuppliesMainCredentialBeforeTurn / TestWakeHomeReadyRequiresTurnOutputNotCredFile
+// 全量跑红、单跑绿）。放到 10s：只有真挂死才会走到超时分支。
+// 断言超时语义的用例（TestWakeHomeHonorsTimeoutViaRunTurn）仍用自己的短预算，不受影响。
+const testWakeBudget = 10 * time.Second
+
 func swapUserHomeDir(t *testing.T, home string) {
 	t.Helper()
 	old := userHomeDir
@@ -169,7 +178,7 @@ func TestWakeHomeSuppliesMainCredentialBeforeTurn(t *testing.T) {
 	capture := withArgvCapture(t)
 	target := filepath.Join(t.TempDir(), "carrier-home")
 	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
-		CLI: "opencode", HomeDir: target, Credential: "main_home_sync", Timeout: time.Second,
+		CLI: "opencode", HomeDir: target, Credential: "main_home_sync", Timeout: testWakeBudget,
 	})
 	if err != nil || got.Outcome != WakeReady {
 		t.Fatalf("WakeHome = %+v/%v，want ready/nil", got, err)
@@ -221,7 +230,7 @@ func TestWakeHomeOccupiedNeverOverwrites(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
-		CLI: "opencode", HomeDir: target, Credential: "main_home_sync", Timeout: time.Second,
+		CLI: "opencode", HomeDir: target, Credential: "main_home_sync", Timeout: testWakeBudget,
 	}); err != nil {
 		t.Fatalf("occupied 唤起不应因供给失败: %v", err)
 	}
@@ -274,7 +283,7 @@ func TestWakeHomeUnsupportedCLIWritesUnreachableNotReady(t *testing.T) {
 	isolateEmptyPATH(t)
 	rejectDetectTurn(t)
 	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
-		CLI: "grok", HomeDir: t.TempDir(), Timeout: time.Second,
+		CLI: "grok", HomeDir: t.TempDir(), Timeout: testWakeBudget,
 	})
 	if err != nil {
 		t.Fatalf("找不到命令应映射为 WakeReply 而非 error: %v", err)
@@ -299,7 +308,7 @@ func TestWakeHomeUnsupportedCLIPathReadySkipsTurn(t *testing.T) {
 	t.Setenv("PATH", binDir)
 	rejectDetectTurn(t)
 	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
-		CLI: "grok", HomeDir: t.TempDir(), Timeout: time.Second,
+		CLI: "grok", HomeDir: t.TempDir(), Timeout: testWakeBudget,
 	})
 	if err != nil || got.Outcome != WakeReady {
 		t.Fatalf("PATH 命中 = %+v/%v，want ready/nil", got, err)
@@ -319,7 +328,7 @@ func TestWakeHomeUnsupportedCLIFallbackDirReadySkipsTurn(t *testing.T) {
 	}
 	rejectDetectTurn(t)
 	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
-		CLI: "grok", HomeDir: t.TempDir(), Timeout: time.Second,
+		CLI: "grok", HomeDir: t.TempDir(), Timeout: testWakeBudget,
 	})
 	if err != nil || got.Outcome != WakeReady {
 		t.Fatalf("安装位命中 = %+v/%v，want ready/nil", got, err)
@@ -338,7 +347,7 @@ func TestWakeHomeReadyRequiresTurnOutputNotCredFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	got, err := newProbeHost().WakeHome(context.Background(), WakeRequest{
-		CLI: "opencode", HomeDir: target, Timeout: time.Second,
+		CLI: "opencode", HomeDir: target, Timeout: testWakeBudget,
 	})
 	if err != nil {
 		t.Fatalf("鉴权失败应映射为 WakeReply 而非 error: %v", err)

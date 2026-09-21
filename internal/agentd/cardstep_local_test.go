@@ -174,6 +174,27 @@ func TestLocalStepTransportUsesLocalClient(t *testing.T) {
 	}
 }
 
+// TestLocalStepTransportKeepsFrozenBindingTarget 证明本机目标的 canonical 只用于
+// 选择直连 client；冻结载体的原始 Machine 仍须作为 DispatchOpts.Target 进入既有
+// HTTP wire，不能把身份快照改写成空串。
+func TestLocalStepTransportKeepsFrozenBindingTarget(t *testing.T) {
+	h := newLocalStepHTTPHarness(t, `{"disciplines_supported":true}`)
+	if _, _, err := h.srv.stepTransport(context.Background(), ledgerstep.DispatchOpts{
+		Target: "local", Project: "demo", Prompt: "冻结本机任务", Executor: "fake",
+		Carrier: "carrier-local", Squad: "squad-local",
+	}); err != nil {
+		t.Fatalf("冻结本机 stepTransport: %v", err)
+	}
+	body := h.lastBody()
+	var gotTarget string
+	if err := json.Unmarshal(body["target"], &gotTarget); err != nil {
+		t.Fatalf("解冻结本机 target: %v", err)
+	}
+	if gotTarget != "local" {
+		t.Fatalf("冻结本机 wire target = %q，want %q", gotTarget, "local")
+	}
+}
+
 // TestCanonicalTargetLocalMachineAliases 锁住 CanonicalTarget 的本机别名归一口径：
 // 空串、"本机"、"local" 均折成本机空 target；未指向 Listen 的远端名（如 linux-01）保留原值。
 func TestCanonicalTargetLocalMachineAliases(t *testing.T) {

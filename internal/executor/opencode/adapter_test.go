@@ -137,6 +137,7 @@ type fakeServer struct {
 	children         map[string]childSession // 子会话 id -> 详情
 	sessionGets      []string                // 收到的 GET /session/{id} 顺序
 	sessionGetStatus map[string]int          // 一次性故障注入：子会话 id -> 要返回的状态码
+	permissionStatus int                     // 非零时权限回传使用该 HTTP 状态码
 }
 
 // newFakeServer 启动假服务端；SSE 事件经 push 注入（可先入队、连接后送达）。
@@ -161,7 +162,13 @@ func newFakeServer(t *testing.T) *fakeServer {
 			body, _ := io.ReadAll(r.Body)
 			fs.mu.Lock()
 			fs.permCalls = append(fs.permCalls, permCall{path: r.URL.Path, body: string(body)})
+			status := fs.permissionStatus
 			fs.mu.Unlock()
+			if status != 0 {
+				w.WriteHeader(status)
+				_, _ = w.Write([]byte("permission delivery failed"))
+				return
+			}
 			w.Write([]byte("true"))
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/session/") &&
 			!strings.Contains(strings.TrimPrefix(r.URL.Path, "/session/"), "/"):
@@ -223,6 +230,14 @@ func (fs *fakeServer) perms() []permCall {
 	fs.mu.Lock()
 	defer fs.mu.Unlock()
 	return append([]permCall(nil), fs.permCalls...)
+}
+
+// failPermissionResponses 让下一轮权限回传返回指定状态码，验证决定已形成但
+// 原生投递失败时由调用方观察到失败，而不是误记为 AckDelivered。
+func (fs *fakeServer) failPermissionResponses(code int) {
+	fs.mu.Lock()
+	defer fs.mu.Unlock()
+	fs.permissionStatus = code
 }
 
 // addChild 登记一个子会话，供 GET /session/{id} 应答。
@@ -979,6 +994,40 @@ func TestStopReclaimsRun(t *testing.T) {
 	}
 }
 
+func TestStopRejectsPendingPermissions(t *testing.T) {
+	quietLog(t)
+	taskID := "task-stop-perm-01"
+	fs := newFakeServer(t)
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	r := ad.lookup(taskID)
+	if r == nil {
+		t.Fatal("启动后运行态应已登记")
+	}
+
+	r.sessMu.Lock()
+	r.permTiming["perm-stop-1"] = permissionTiming{part: "call-1", paused: true}
+	r.permSession["perm-stop-1"] = "sess-1"
+	r.sessMu.Unlock()
+
+	if err := ad.Stop(taskID); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+
+	fs.mu.Lock()
+	calls := append([]permCall(nil), fs.permCalls...)
+	fs.mu.Unlock()
+
+	if len(calls) != 1 {
+		t.Fatalf("期望收到 1 次权限拒绝调用，实际收到 %d 次", len(calls))
+	}
+	if calls[0].path != "/session/sess-1/permissions/perm-stop-1" {
+		t.Errorf("权限路径不符: got %s", calls[0].path)
+	}
+	if !strings.Contains(calls[0].body, `"reject"`) {
+		t.Errorf("期望拒绝权限，实际 body=%s", calls[0].body)
+	}
+}
+
 // TestServeDeathEmitsFailed 验证 serve 死亡判定：
 // 探活失败 + SSE 断流后，产出 result !OK（FailReason 含 stderr 尾部），
 // 事件通道随后关闭（执行终结），运行态随订阅退出被注销。
@@ -1704,5 +1753,324 @@ func TestRespondPermissionRoutesToChildSession(t *testing.T) {
 	want := "/session/sess-child/permissions/perm-r"
 	if calls[0].path != want {
 		t.Fatalf("应答 path=%q，期望 %q（必须发往子会话，不是父会话）", calls[0].path, want)
+	}
+}
+
+func TestOpenCodeNilApprovalIsCapabilityError(t *testing.T) {
+	a := New(slog.Default())
+	err := a.Start(context.Background(), executor.StartReq{
+		Task:     proto.Task{ID: "t-nil"},
+		TaskDir:  t.TempDir(),
+		Approval: nil,
+	})
+	if err == nil {
+		t.Fatal("Start with nil Approval must fail")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "不是") && !strings.Contains(msg, "免审") && !strings.Contains(msg, "Approval") {
+		t.Fatalf("unexpected error message: %v", msg)
+	}
+}
+
+type fakeApprovalClient struct {
+	mu       sync.Mutex
+	reqs     []executor.ApprovalRequest
+	acks     []executor.ApprovalAck
+	failures []deliveryFailure
+	decision executor.ApprovalDecision
+}
+
+type deliveryFailure struct {
+	taskID   string
+	ticketID string
+	cause    error
+}
+
+func (f *fakeApprovalClient) PolicySnapshot(context.Context) (executor.PolicySnapshot, error) {
+	return executor.PolicySnapshot{Version: "v1"}, nil
+}
+
+func (f *fakeApprovalClient) setDecision(dec executor.ApprovalDecision) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.decision = dec
+}
+
+func (f *fakeApprovalClient) Request(_ context.Context, req executor.ApprovalRequest) (executor.ApprovalResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.reqs = append(f.reqs, req)
+	dec := f.decision
+	if dec.Status == "" {
+		dec = executor.ApprovalDecision{Status: executor.ApprovalAllow, Rule: "approver"}
+	}
+	return executor.ApprovalResult{
+		Ref:      executor.ApprovalRef{ID: "ref-1"},
+		Decision: dec,
+	}, nil
+}
+func (f *fakeApprovalClient) Await(context.Context, executor.ApprovalRef) (executor.ApprovalDecision, error) {
+	return executor.ApprovalDecision{Status: executor.ApprovalAllow}, nil
+}
+func (f *fakeApprovalClient) recordAck(ack executor.ApprovalAck) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.acks = append(f.acks, ack)
+}
+
+func (f *fakeApprovalClient) Acknowledge(_ context.Context, ack executor.ApprovalAck) error {
+	f.recordAck(ack)
+	return nil
+}
+
+// NoteDeliveryFailed 实现 adapter 的可选回调缝；生产实现由 Manager 注入的
+// 生产 approval.Client 提供，测试仅记录参数以验证 adapter 没有自行写 store。
+func (f *fakeApprovalClient) NoteDeliveryFailed(taskID, ticketID string, cause error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failures = append(f.failures, deliveryFailure{taskID: taskID, ticketID: ticketID, cause: cause})
+	return
+}
+
+func (f *fakeApprovalClient) snapshot() (reqs []executor.ApprovalRequest, acks []executor.ApprovalAck, failures []deliveryFailure) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]executor.ApprovalRequest(nil), f.reqs...),
+		append([]executor.ApprovalAck(nil), f.acks...),
+		append([]deliveryFailure(nil), f.failures...)
+}
+
+func TestMapPermissionAskedWithApprovalClientDoesNotEmitPermission(t *testing.T) {
+	a, r := newAdapterWithRunForTest(t)
+	fakeClient := &fakeApprovalClient{}
+	r.approval = fakeClient
+	props := []byte(`{"id":"p1","permission":"bash","metadata":{"command":"ls"}}`)
+	a.mapPermissionAsked(r, props)
+	select {
+	case ev := <-r.EventsForTest():
+		t.Fatalf("ApprovalClient 存在时不得向事件通道 emit permission，实得 %+v", ev)
+	case <-time.After(50 * time.Millisecond):
+		// 正常不产出
+	}
+}
+
+// TestAuthorizeNativePermissionReportsDeliveryFailure exercises the real
+// permission.asked → Authorize → RespondPermission path. The reporter is the
+// existing injected approval object; the adapter must not write manager/store
+// state itself and must not acknowledge delivery after the HTTP failure.
+func TestAuthorizeNativePermissionReportsDeliveryFailure(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.failPermissionResponses(http.StatusBadGateway)
+	taskID := "task-permission-delivery-failed"
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	r := ad.lookup(taskID)
+	approval := &fakeApprovalClient{}
+	r.approval = approval
+
+	fs.push(permissionAskedEvent("perm-delivery-failed", "bash", "echo fail"))
+	deadline := time.After(2 * time.Second)
+	for {
+		_, _, failures := approval.snapshot()
+		if len(failures) == 1 {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("权限审批与回传失败回调超时")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+
+	reqs, acks, failures := approval.snapshot()
+	if len(reqs) != 1 || reqs[0].NativeID != "perm-delivery-failed" {
+		t.Fatalf("审批 client 未消费当前 permission: %+v", reqs)
+	}
+	calls := fs.perms()
+	if len(calls) != 1 || calls[0].path != "/session/sess-1/permissions/perm-delivery-failed" {
+		t.Fatalf("RespondPermission 调用=%+v", calls)
+	}
+	if len(failures) != 1 || failures[0].taskID != taskID || failures[0].ticketID != taskID+":perm-delivery-failed" {
+		t.Fatalf("delivery failure 回调=%+v", failures)
+	}
+	if !strings.Contains(failures[0].cause.Error(), "502") {
+		t.Fatalf("delivery failure 原因未保留 HTTP 错误: %v", failures[0].cause)
+	}
+	for _, ack := range acks {
+		if ack.Stage == executor.AckDelivered || ack.Stage == executor.AckExecuted {
+			t.Fatalf("投递失败后不得 AckDelivered/AckExecuted: %+v", acks)
+		}
+	}
+}
+
+func ackStagePresent(acks []executor.ApprovalAck, stage executor.AckStage) bool {
+	for _, ack := range acks {
+		if ack.Stage == stage {
+			return true
+		}
+	}
+	return false
+}
+
+func TestAuthorizeNativePermissionAllowDeliversOnce(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	taskID := "task-permission-allow-once"
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	r := ad.lookup(taskID)
+	approval := &fakeApprovalClient{}
+	approval.setDecision(executor.ApprovalDecision{Status: executor.ApprovalAllow, Rule: "approver"})
+	r.approval = approval
+
+	fs.push(permissionAskedEvent("perm-allow-once", "bash", "echo once"))
+	deadline := time.After(2 * time.Second)
+	for {
+		_, acks, _ := approval.snapshot()
+		if ackStagePresent(acks, executor.AckDelivered) {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("等待 AckDelivered 超时")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	calls := fs.perms()
+	if len(calls) != 1 {
+		t.Fatalf("一次权限请求应恰发 1 次原生应答，实得 %d", len(calls))
+	}
+	if !strings.Contains(calls[0].body, `"response":"once"`) {
+		t.Fatalf("应答体=%q，应含 once", calls[0].body)
+	}
+	_, _, failures := approval.snapshot()
+	if len(failures) != 0 {
+		t.Fatalf("成功路径不得上报投递失败: %+v", failures)
+	}
+}
+
+// 缝 #11：免审 AutoAllow（无工单）回传失败不得上报 NoteDeliveryFailed。
+// 反向变异：去掉 decide 闸门无条件上报 → failures 非空，测试红。
+func TestAuthorizeNativePermissionAutoAllowFailureDoesNotReport(t *testing.T) {
+	quietLog(t)
+	fs := newFakeServer(t)
+	fs.failPermissionResponses(http.StatusBadGateway)
+	taskID := "task-permission-autoallow-fail"
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+	r := ad.lookup(taskID)
+	approval := &fakeApprovalClient{}
+	approval.setDecision(executor.ApprovalDecision{Status: executor.ApprovalAllow, Rule: "safe-command"})
+	r.approval = approval
+
+	fs.push(permissionAskedEvent("perm-autoallow-fail", "bash", "go test ./..."))
+	deadline := time.After(2 * time.Second)
+	for len(fs.perms()) == 0 {
+		select {
+		case <-deadline:
+			t.Fatal("等待原生应答尝试超时")
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	time.Sleep(100 * time.Millisecond)
+	_, acks, failures := approval.snapshot()
+	if len(failures) != 0 {
+		t.Fatalf("免审 AutoAllow 无工单，失败不得上报 delivery_failed: %+v", failures)
+	}
+	if ackStagePresent(acks, executor.AckDelivered) || ackStagePresent(acks, executor.AckExecuted) {
+		t.Fatalf("投递失败后不得 AckDelivered/AckExecuted: %+v", acks)
+	}
+}
+
+// TestApplySnapshotDefaultFailClosed 验证生产路径无 probe 时 fail-closed 报能力不足（Major 2 item 3）
+func TestApplySnapshotDefaultFailClosed(t *testing.T) {
+	fs := newFakeServer(t)
+	taskID := "task-snap-failclosed"
+	taskDir := t.TempDir()
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), taskDir)
+
+	snap := executor.PolicySnapshot{
+		Version: "v1-test",
+		TaskID:  taskID,
+		Scope:   executor.ApprovalScope{Workdir: t.TempDir(), TaskDir: taskDir},
+	}
+
+	err := ad.ApplySnapshot(context.Background(), taskID, snap)
+	if err == nil {
+		t.Fatal("生产路径默认无 probe 必须报能力不足，实际返回 nil")
+	}
+	if !strings.Contains(err.Error(), "未重载") {
+		t.Fatalf("错误信息必须指出未重载能力不足，实际: %v", err)
+	}
+}
+
+// TestApplySnapshotInjectedProbeSuccess 读取真实写入的配置文件作为 observable
+// probe，验证 ApplySnapshot 成功且配置落盘；这不是跨机真实引擎 ready 证据。
+func TestApplySnapshotInjectedProbeSuccess(t *testing.T) {
+	fs := newFakeServer(t)
+	taskID := "task-snap-probe-ok"
+	taskDir := t.TempDir()
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), taskDir)
+
+	r := ad.lookup(taskID)
+	if r == nil {
+		t.Fatal("lookup task 失败")
+	}
+	r.reloadProbe = func(ctx context.Context) (bool, error) {
+		if err := ctx.Err(); err != nil {
+			return false, err
+		}
+		cfgPath := filepath.Join(taskDir, configFileName)
+		data, err := os.ReadFile(cfgPath)
+		if err != nil {
+			return false, fmt.Errorf("读取 observable 配置 %s: %w", cfgPath, err)
+		}
+		var cfg opencodeConfig
+		if err := json.Unmarshal(data, &cfg); err != nil {
+			return false, fmt.Errorf("解析 observable 配置 %s: %w", cfgPath, err)
+		}
+		if cfg.Permission.ExternalDirectory != "ask" || cfg.Permission.Bash["*"] != "ask" {
+			return false, fmt.Errorf("observable 配置权限状态不符: external_directory=%q bash_default=%q",
+				cfg.Permission.ExternalDirectory, cfg.Permission.Bash["*"])
+		}
+		return true, nil
+	}
+
+	snap := executor.PolicySnapshot{
+		Version: "v2-probed",
+		TaskID:  taskID,
+		Scope:   executor.ApprovalScope{Workdir: t.TempDir(), TaskDir: taskDir},
+	}
+
+	if err := ad.ApplySnapshot(context.Background(), taskID, snap); err != nil {
+		t.Fatalf("注入 probe=true 时 ApplySnapshot 必须成功: %v", err)
+	}
+
+	cfgPath := filepath.Join(taskDir, configFileName)
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("读取新快照配置文件 %s: %v", cfgPath, err)
+	}
+	var cfg opencodeConfig
+	if err := json.Unmarshal(data, &cfg); err != nil {
+		t.Fatalf("解析新快照配置文件 %s: %v", cfgPath, err)
+	}
+	if cfg.Permission.ExternalDirectory != "ask" || cfg.Permission.Bash["*"] != "ask" {
+		t.Fatalf("配置内容不正确: %s", string(data))
+	}
+}
+
+// TestAdapterBindApproval 验证运行态任务成功重绑 ApprovalClient
+func TestAdapterBindApproval(t *testing.T) {
+	fs := newFakeServer(t)
+	taskID := "task-bind-approval"
+	ad, _ := startFakeRun(t, fs, taskID, t.TempDir(), t.TempDir())
+
+	fakeClient := &fakeApprovalClient{}
+	if err := ad.BindApproval(taskID, fakeClient); err != nil {
+		t.Fatalf("BindApproval 失败: %v", err)
+	}
+
+	r := ad.lookup(taskID)
+	if r == nil || r.approval != fakeClient {
+		t.Fatal("BindApproval 后 r.approval 必须更新为新 client")
 	}
 }

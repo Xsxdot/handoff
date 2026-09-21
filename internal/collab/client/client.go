@@ -9,10 +9,17 @@
 package client
 
 import (
+	"errors"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+// ErrNotFound 是出站账本能力「对象不存在」的会话侧哨兵（架构法第九条：接口
+// 归使用方）。实现侧（internal/ledger/api.Facade）把账本 ErrNotFound 翻译成
+// 它；门面据它映射 collab.ErrNoRoom。接口不 import ledger，故哨兵只能定义
+// 在使用方一侧——否则把账本错误类型泄进接口。
+var ErrNotFound = errors.New("collab: 账本对象不存在")
 
 // LedgerClient 会话子系统消费账本能力的唯一通道。方法集与契约文档
 // §3.4 一一对应；扩方法先回 contract 节点。
@@ -34,6 +41,23 @@ type LedgerClient interface {
 	RecordMessageConsumed(cardID string, msgSeq int64, consumer string) error
 	// EventsFromAsc 升序游标读事件（cardIDs 空 = 全流含群级无卡事件）。
 	EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// --- B358 会话（群）域账本能力 ---
+	// CreateSession 建一场会话（群），返回带分配 id 的会话本体。
+	CreateSession(title, owner, actor string) (proto.Session, error)
+	// GetSession 读单会话；不存在返回错误（由组装点翻译为 ErrNoRoom）。
+	GetSession(id string) (proto.Session, error)
+	// ListSessions 列全部会话（含归档），按创建序。
+	ListSessions() ([]proto.Session, error)
+	// ArchiveSession 显式归档会话；归档后只读，幂等。
+	ArchiveSession(id, actor string) error
+	// JoinCardToSession 把卡拉进会话；卡已属其它会话时返回错误。
+	JoinCardToSession(sessionID, cardID, actor string) error
+	// LeaveCardToSession 把卡移出会话；幂等。
+	LeaveCardToSession(sessionID, cardID, actor string) error
+	// SessionOfCard 返回该卡当前所属会话 id；不属于任何会话返回空串。
+	SessionOfCard(cardID string) (string, error)
+	// AddSessionMember 把一个显式成员（人或主 agent 外部会话身份）记入会话。
+	AddSessionMember(sessionID, identity, actor string) error
 	// BindDriver 绑定/换绑（expect=CAS 前值；实现侧落 EvDriverTakeover 审计）。
 	BindDriver(id, session, carrier, expect string) error
 	// DriverLease 读绑定者活性租约：过期时刻 + 行是否存在。不过滤过期，
