@@ -167,10 +167,10 @@ func TestSquadCreateSurfacesActionableServerReject(t *testing.T) {
 	}
 }
 
-// TD-4：list 表格/NDJSON 双形态；请求打 GET /api/squads。
+// TD-4：list 表格/NDJSON 双形态；请求打 GET /api/squads；B390 运行位段。
 func TestSquadListRendersTableAndJSON(t *testing.T) {
 	dir := t.TempDir()
-	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"version":1}],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1","max_concurrency":2}],"version":1}]}`
+	fixture := `{"carriers":[{"name":"c1","machine":"m1","cli":"opencode","home_dir":"/h","credential":"standalone","max_concurrency":2,"version":1}],"squads":[{"name":"sq","role":"executor","members":[{"carrier":"c1","max_concurrency":2}],"version":1}],"running":[{"key":"squad/sq/c1","count":2},{"key":"carrier/c1","count":1}]}`
 	stubSquadAgentd(t, dir, http.StatusOK, fixture, func(r *http.Request, _ string) {
 		if r.URL.Path != "/api/squads" {
 			t.Errorf("list 应打 /api/squads，得 %s", r.URL.Path)
@@ -180,7 +180,7 @@ func TestSquadListRendersTableAndJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{"载体", "c1", "小队", "sq", "executor", "c1/2"} {
+	for _, want := range []string{"载体", "c1", "小队", "sq", "executor", "c1/2", "运行位", "squad/sq/c1", "carrier/c1"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("表格缺内容 %q：%s", want, out)
 		}
@@ -200,8 +200,8 @@ func TestSquadListRendersTableAndJSON(t *testing.T) {
 		t.Fatal(err)
 	}
 	lines := nonEmptyLines(out2)
-	if len(lines) != 2 {
-		t.Fatalf("--json 应两行（载体+小队），得 %d：%s", len(lines), out2)
+	if len(lines) != 4 {
+		t.Fatalf("--json 应四行（载体+小队+两条运行位），得 %d：%s", len(lines), out2)
 	}
 	var head map[string]any
 	if err := json.Unmarshal([]byte(lines[0]), &head); err != nil {
@@ -221,6 +221,13 @@ func TestSquadListRendersTableAndJSON(t *testing.T) {
 	}
 	if _, ok := squad["max_concurrency"]; ok {
 		t.Fatalf("JSON 小队行不应有队级总帽：%s", lines[1])
+	}
+	var running map[string]any
+	if err := json.Unmarshal([]byte(lines[2]), &running); err != nil {
+		t.Fatalf("第三行非 JSON: %v", err)
+	}
+	if running["key"] != "squad/sq/c1" || running["count"] != float64(2) {
+		t.Fatalf("JSON 运行位行不符: %s", lines[2])
 	}
 }
 

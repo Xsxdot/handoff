@@ -166,7 +166,7 @@ var squadListCmd = &cobra.Command{
 		}
 		slog.Default().Info("squad.list succeeded", "carrier_count", len(resp.Carriers),
 			"squad_count", len(resp.Squads), "member_count", memberCount,
-			"policy_count", policyCount, "dialed", true)
+			"policy_count", policyCount, "running_count", len(resp.Running), "dialed", true)
 		if squadJSON {
 			enc := json.NewEncoder(cmd.OutOrStdout())
 			for _, c := range resp.Carriers {
@@ -181,6 +181,13 @@ var squadListCmd = &cobra.Command{
 					return err
 				}
 			}
+			// 运行位（名额键残留）按既有「一行一对象」风格追加；空时不出行。
+			for _, r := range resp.Running {
+				if err := enc.Encode(r); err != nil {
+					slog.Default().Error("squad.list render failed", "kind", "running", "cause", err)
+					return err
+				}
+			}
 			return nil
 		}
 		w := tabwriter.NewWriter(cmd.OutOrStdout(), 2, 4, 2, ' ', 0)
@@ -192,6 +199,9 @@ var squadListCmd = &cobra.Command{
 		for _, s := range resp.Squads {
 			fmt.Fprintf(w, "小队\t%s\t%s\t%s\t-\t%d\n",
 				s.Name, s.Role, formatSquadMembers(s.Members), s.Version)
+		}
+		for _, r := range resp.Running {
+			fmt.Fprintf(w, "运行位\t%s\t-\t-\t%d\t-\n", r.Key, r.Count)
 		}
 		if err := w.Flush(); err != nil {
 			slog.Default().Error("squad.list render failed", "kind", "table", "cause", err)

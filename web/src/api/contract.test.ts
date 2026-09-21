@@ -141,6 +141,7 @@ import {
   type HomeWakeReq,
   type HomeWakeResp,
   type QueueEntry,
+  type RegistryRunningView,
   type SquadView,
   CARRIER_STATUS_LABEL,
   defaultHomeDir,
@@ -595,6 +596,13 @@ describe('scheduling wire', () => {
     expect(s.members[0].max_concurrency).toBe(2)
     expect(s.members[1].max_concurrency).toBeUndefined() // omitempty：0 以键缺席表达
     expect(squadsFixture.squads[1].members).toEqual([])
+  })
+  it('SquadsResp 携带 sched_running 占用行（B390 运行位）', () => {
+    const r: RegistryRunningView = squadsFixture.running[0]
+    expect(r.key).toBe('carrier/mac-01-opencode')
+    expect(r.count).toBe(1)
+    expect(squadsFixture.running[1].key).toBe('squad/coord/mac-01-opencode')
+    expect(squadsFixture.running[1].count).toBe(2)
   })
   it('QueueEntry 的 ready=false 显式在场且位次为正', () => {
     const e: QueueEntry = queueFixture.queue[0]

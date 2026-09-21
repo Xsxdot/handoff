@@ -77,6 +77,27 @@ func (s *Service) CarrierRows() ([]CarrierRow, error) {
 	return out, nil
 }
 
+// RunningCounts 读出全部 sched_running 计数（id → count）。只读：不清零、
+// 不判断归属——名额键残留的 TTL/自愈是架构级议题（B390 台账 R3），本读面
+// 只让操作者看得见「谁占着、多少」。缺失键不出现在返回 map 中（区分缺失与零）。
+func (s *Service) RunningCounts() (map[string]int, error) {
+	recs, err := s.repo.List(kindRunning)
+	if err != nil {
+		return nil, err
+	}
+	out := make(map[string]int, len(recs))
+	for _, rec := range recs {
+		var body struct {
+			Count int `json:"count"`
+		}
+		if err := json.Unmarshal(rec.Body, &body); err != nil {
+			return nil, fmt.Errorf("运行计数 %s 解码失败: %w", rec.ID, err)
+		}
+		out[rec.ID] = body.Count
+	}
+	return out, nil
+}
+
 // QueueSnapshot 按 QueueKinds 的清队顺序返回两个队列的全部排队请求与全局位次。
 // Position 从 1 起连续计数：launch_queue 整队在前（QueueKinds 是法定清队顺序），
 // 队内位次 = position() 原样取用。只读不出队——PopReady 才删除头部。

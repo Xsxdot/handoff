@@ -114,7 +114,7 @@ export type SchedulingPageProps = Record<string, never>
 export function SchedulingPage(props: SchedulingPageProps = {}): ReactElement {
   void props
   // 空快照先占位，保证操作入口在首个网络响应前也可见；响应到达后替换为服务端真值。
-  const [snapshot, setSnapshot] = useState<SquadsResp>({ carriers: [], squads: [] })
+  const [snapshot, setSnapshot] = useState<SquadsResp>({ carriers: [], squads: [], running: [] })
   const [loadError, setLoadError] = useState('')
   const [loading, setLoading] = useState(true)
   const [dialog, setDialog] = useState<EntityDialog>(null)

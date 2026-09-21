@@ -25,6 +25,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"sort"
 	"strconv"
 
 	"github.com/Xsxdot/handoff/internal/hostapi"
@@ -83,7 +84,23 @@ func (s *Server) handleSquadsGet(w http.ResponseWriter, r *http.Request) {
 	for _, row := range squadRows {
 		resp.Squads = append(resp.Squads, squadView(row.Squad, row.Version))
 	}
-	s.log.Info("已读取编制登记面", "carriers", len(resp.Carriers), "squads", len(resp.Squads))
+	counts, err := s.scheduling.RunningCounts()
+	if err != nil {
+		s.log.Error("读运行计数失败", "cause", err)
+		writeErr(w, http.StatusInternalServerError, err)
+		return
+	}
+	keys := make([]string, 0, len(counts))
+	for key := range counts {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	resp.Running = make([]proto.RegistryRunningView, 0, len(keys))
+	for _, key := range keys {
+		resp.Running = append(resp.Running, proto.RegistryRunningView{Key: key, Count: counts[key]})
+	}
+	s.log.Info("已读取编制登记面", "carriers", len(resp.Carriers),
+		"squads", len(resp.Squads), "running_keys", len(resp.Running))
 	writeJSON(w, http.StatusOK, resp)
 }
 

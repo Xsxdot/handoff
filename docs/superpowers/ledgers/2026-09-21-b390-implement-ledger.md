@@ -43,3 +43,57 @@
 - 变异③（升级阈值守卫改早退）：`if attempts != automationStallEscalateAfter {` → `if attempts >= 1 {`（count=1，唯一）。该变异让守卫在第一次失败就 `return`，永远走不到 `MarkNeedsHuman`（即「永不落」）。编译过。`go test -run TestB390WakeStallRedLoop` → 红：`RED(b)` + `RETRY(d) 停摆等人应恰落一次，实得 0`。**变异有牙**。已还原。
 - 变异④（去重失效-每次落）：同锚 → `if false {`。编译过。`go test -run TestB390WakeStallRedLoop` → 红：`RETRY(d) 停摆等人应恰落一次，实得 3`。**变异有牙**。已还原（`if attempts != automationStallEscalateAfter {` count=1）。
 
+## T3 名额键残留观察面（CLI/HTTP，红→绿）
+
+- 文件集：`internal/scheduling/registry_read.go`、`internal/agentd/scheduling_client.go`、`internal/proto/scheduling.go`、`internal/agentd/schedapi.go`、`cmd/squad.go`、`web/src/api/scheduling.ts` + 各自测试/fixture；`internal/proto/contract_fixture_test.go` 与 web 页测试的 mock 同步补 `running`。
+- 契约触碰声明（plan T3 Interfaces 要求）：`SchedulingClient` 增 `RunningCounts()` 一行（只读观察面，schedapi 读面延伸；plan 要求「执行者动手前须把此接口增量记入本卡台账并请协调者确认」——本行即该记录，协调者四条裁决已授权本卡做 T3）。
+- 先红：`go test ./internal/scheduling/ -run TestRunningCounts -count=1` → `undefined: svc.RunningCounts`（编译红，新建缝符号首红允许）；`go test ./internal/agentd/ -run TestSquadsGetReportsRunning -count=1` → `resp.Running undefined`；`go test ./cmd/ -run TestSquadListRendersTableAndJSON` → 表格缺内容 "运行位"。
+- 绿：三包各自绿 + `go test ./internal/proto/ -run TestContractFixtures` 绿（fixture 用 `-update` 显式刷新后复跑绿）。
+- TS：`cd web && npm run typecheck` 绿（需先补 `web/node_modules`——本工作树缺依赖，从既有工作树 `ce48ca83` 复制同 lock 的 `node_modules`；`web/node_modules` 已被 gitignore）；`npx vitest run src/api/contract.test.ts src/app/settings/SchedulingPage.test.tsx src/app/settings/SettingsPage.test.tsx src/app/flows/FlowsPage.test.tsx` → `Test Files 4 passed (4) / Tests 78 passed (78)`。
+- 触及包全量：`go test ./internal/agentd/ ./internal/scheduling/ ./internal/proto/ ./cmd/ -count=1` → 四个包全 `ok`（agentd 175.205s / scheduling 7.016s / proto 0.014s / cmd 71.191s）。
+
+### T3 变异自验
+
+- 变异①（count 投影）：`out[rec.ID] = body.Count` → `body.Count + 1`（count=1，唯一）。编译过。`go test ./internal/scheduling/ -run TestRunningCounts` → 红 `运行计数不符: map[carrier/cmd:2 squad/pro/cmd:3]`。已还原。
+- 变异②（HTTP 投影）：`Count: counts[key]}` → `Count: counts[key] + 100}`（count=1，唯一）。编译过。`go test ./internal/agentd/ -run TestSquadsGetReportsRunning` → 红 `运行位投影不符: [{Key:carrier/cmd Count:101} ...]`。已还原。
+- 变异③（CLI 表格段）：删掉 `fmt.Fprintf(w, "运行位...", r.Key, r.Count)` 行（count=1，唯一）。编译过。`go test ./cmd/ -run TestSquadListRendersTableAndJSON` → 红 `表格缺内容 "运行位"`。已还原（`grep -c 运行位` = 2：注释+渲染）。
+
+## 收尾自审
+
+- 错误分支带上下文日志：T2 的 `recordAdmissionStall`（Warn + attempts，落等人失败再 Error）、非准入错误 Error 带 cause；T3 `RunningCounts` 解码失败带 id、`handleSquadsGet` 读计数失败带 cause。成功路径出口日志：`runAutomationPass` 有事发生打 Warn；`handleSquadsGet` Info 带 running_keys；CLI `squad.list succeeded` 带 running_count。
+- 新文件头注释：`b390_wake_stall_test.go`、`b390_running_counts_test.go` 均有职责+边界；导出函数 `RunningCounts` 有参数/返回/边界注释。
+- 服务端 `automationStall` 字段、`admissionStalled`/`recordAdmissionStall`/`clearWakeStall` 均有「为什么」注释。
+- 与 plan Interfaces 签名：T3 完全一致；T2 按协调者 P2 裁决偏离 plan 甲案（内存重试表未落地，改认领挡水位），已在台账显式声明；T1 桩方法由 `LaunchAdmit` 改 `AdmitSeatCarrier`（B389 后路径），已声明。
+- 未做：P3 `@` 前缀（另立 B391）；R3 TTL/自愈（回 spec）；真机清单（归协调者）。
+
+## 提交事实（命令原文与提交时读数）
+
+```
+$ git add internal/agentd/b390_wake_stall_test.go && git commit -m "test(B390): ..."
+[cards/B390-charter-4 d086ac10] test(B390): 唤醒停摆红色回路转正——runAutomationPass 三条断言（现状红）
+ 1 file changed, 145 insertions(+)
+
+$ git add internal/agentd/wakeconsumer.go internal/agentd/scheddrain.go internal/agentd/server.go docs/superpowers/ledgers/2026-09-21-b390-implement-ledger.md && git commit -m "fix(B390): ..."
+[cards/B390-charter-4 ab7d8df2] fix(B390): 准入持续失败保留认领按节拍重试并恰一次落 needs_human，消费轮不再静默
+ 4 files changed, 129 insertions(+), 6 deletions(-)
+
+$ git add <T3 17 文件> && git commit -m "feat(B390): ..."
+[cards/B390-charter-4 9d15d2e5] feat(B390): 名额键残留观察面——GET /api/squads 与 squad list 暴露运行计数
+ 17 files changed, 235 insertions(+), 17 deletions(-)
+```
+
+- 收尾全仓检查：`go build ./...` 退出 0；`go vet ./internal/agentd/ ./internal/scheduling/ ./internal/proto/ ./cmd/` 退出 0；`web && npm run typecheck`（`tsc -b`）退出 0。
+- 硬性第一步合并提交 `07f6252a`（`git merge --no-edit 130a6634`）。
+- 工作树在 amend 前应干净（除本台账的提交事实段本身，随 amend 收进同批提交）。
+- 注：本段在提交后追加，随后 amend 一次收进 `9d15d2e5` 的同批提交；amend 会换 hash——这是 git 的事实，收口判据是工作树干净。
+
+## 图覆盖债（codegraph 亲跑读数）
+
+- `codegraph --repo . sym runAutomationPass`（EXIT 0）命中 `n_agentd_Server_runAutomationPass`，domain=`d_gateway`，container=`k_agentd_Server`，file=`internal/agentd/scheddrain.go:83`——**但图中 signature 是修改前版本**（`if _, _, err := s.consumeAutomationEventsOnce...`），说明图是改动前 baseline，不反映本卡新增。
+- `codegraph --repo . sym consumeAutomationEventsOnce` 命中 `Server.consumeAutomationEventsOnce`。
+- `codegraph --repo . sym admissionStalled` → `Error: 符号 "admissionStalled" 不在图中`（近似候选空）；`sym RunningCounts` 同样未命中（无输出）。原因：两者是**本卡新增**符号，图未重建（baseline 视图不含新符号）。
+- 债务登记：`admissionStalled` / `recordAdmissionStall` / `clearWakeStall` / `RunningCounts` 未在图中；本节点以 grep 复核唯一命中（变异脚本的 `grep -c` =1 即证据），图重建后应补。未对新增符号跑 `flow`（二进制支持但 baseline 不含新点，跑了也无意义）；旧符号靠读源码复核。
+
+
+
+

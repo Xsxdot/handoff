@@ -46,6 +46,9 @@ type SchedulingClient interface {
 	// —— 载体/小队登记读（schedapi / coordapi）——
 	CarrierRows() ([]scheduling.CarrierRow, error)
 	SquadRows() ([]scheduling.SquadRow, error)
+	// RunningCounts 是 sched_running 占用行的只读投影（B390 名额键残留观察面，
+	// schedapi 读面延伸：只读、不加任务状态、不改写路径）。
+	RunningCounts() (map[string]int, error)
 
 	// —— 载体/小队登记写（schedapi）——
 	PutCarrier(c scheduling.Carrier, expect int) error

@@ -19,7 +19,7 @@ vi.mock('../../api/scheduling', async () => {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [] })
+  vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [], running: [] })
   vi.mocked(deleteCarrier).mockResolvedValue({ name: 'mbp', version: 1 })
   vi.mocked(detectCarrier).mockResolvedValue({ name: 'mbp', status: 'online', version: 1 })
   vi.mocked(getCarrierRunCommand).mockResolvedValue({ command: 'HOME=/h opencode' })
@@ -54,6 +54,7 @@ describe('SchedulingPage', () => {
     vi.mocked(getSquads).mockResolvedValue({
       carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }],
       squads: [{ name: 'coord', role: 'coordinator', members: [{ carrier: 'mbp' }], version: 2 }],
+      running: [],
     })
     render(<SchedulingPage />)
     expect(await screen.findByText('mbp')).toBeVisible()
@@ -69,6 +70,7 @@ describe('SchedulingPage', () => {
         { name: 'unknown', machine: 'local', cli: 'opencode', home_dir: '/unknown', credential: 'standalone', status: 'mystery' as never, version: 2 },
       ],
       squads: [],
+      running: [],
     })
     render(<SchedulingPage />)
     expect(await screen.findAllByText('未上线')).toHaveLength(2)
@@ -94,6 +96,7 @@ describe('SchedulingPage', () => {
     vi.mocked(getSquads).mockResolvedValue({
       carriers: [{ name: 'plain', machine: '本机', cli: 'grok', home_dir: '', credential: 'standalone', status: 'online', version: 1 }],
       squads: [],
+      running: [],
     })
     render(<SchedulingPage />)
     expect(await screen.findByText('主 HOME')).toBeVisible()
@@ -124,6 +127,7 @@ describe('SchedulingPage', () => {
         { name: 'c2', machine: 'local', cli: 'opencode', home_dir: '/h2', model: 'flash', credential: 'standalone', status: 'online', version: 1 },
       ],
       squads: [],
+      running: [],
     })
     render(<SchedulingPage />)
     await screen.findByText('c1')
@@ -148,6 +152,7 @@ describe('SchedulingPage', () => {
     vi.mocked(getSquads).mockResolvedValueOnce({
       carriers: [{ name: 'c1', machine: 'local', cli: 'opencode', home_dir: '/h', model: '', credential: 'standalone', status: 'online', version: 1 }],
       squads: [],
+      running: [],
     })
     render(<SchedulingPage />)
     await screen.findByText('c1')
@@ -165,7 +170,7 @@ describe('SchedulingPage', () => {
 
   it('creates with expect zero and edits with the row version', async () => {
     const user = userEvent.setup()
-    vi.mocked(getSquads).mockResolvedValueOnce({ carriers: [], squads: [] })
+    vi.mocked(getSquads).mockResolvedValueOnce({ carriers: [], squads: [], running: [] })
     render(<SchedulingPage />)
     await user.click(screen.getByRole('button', { name: '登记载体' }))
     await user.type(screen.getByLabelText('载体名'), 'mbp')
@@ -179,7 +184,7 @@ describe('SchedulingPage', () => {
     expect(detectCarrier).toHaveBeenCalledTimes(1)
     expect(vi.mocked(putCarrier).mock.calls[0]?.[2]).not.toHaveProperty('max_concurrency')
 
-    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [{ name: 'exec', role: 'executor', members: [], version: 7 }] })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [{ name: 'exec', role: 'executor', members: [], version: 7 }], running: [] })
     render(<SchedulingPage />)
     await user.click(await screen.findByRole('button', { name: '编辑' }))
     await user.click(screen.getByRole('button', { name: '保存' }))
@@ -188,7 +193,7 @@ describe('SchedulingPage', () => {
 
   it('shows an actionable CAS conflict and retains the modal', async () => {
     const user = userEvent.setup()
-    vi.mocked(getSquads).mockResolvedValue({ carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }], squads: [] })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }], squads: [], running: [] })
     vi.mocked(putCarrier).mockRejectedValue(new Error('409: 版本冲突，请刷新后重试'))
     render(<SchedulingPage />)
     await user.click(await screen.findByRole('button', { name: '编辑 mbp' }))
@@ -204,10 +209,12 @@ describe('SchedulingPage', () => {
       .mockResolvedValueOnce({
         carriers: [{ name: 'b334-probe', machine: '本机', cli: 'opencode', home_dir: '', credential: 'standalone', status: 'pending', version: 1 }],
         squads: [],
+        running: [],
       })
       .mockResolvedValueOnce({
         carriers: [],
         squads: [],
+        running: [],
       })
     render(<SchedulingPage />)
     expect(await screen.findByText('b334-probe')).toBeVisible()
@@ -222,6 +229,7 @@ describe('SchedulingPage', () => {
     vi.mocked(getSquads).mockResolvedValue({
       carriers: [{ name: 'grok', machine: '本机', cli: 'opencode', home_dir: '', credential: 'standalone', status: 'online', version: 2 }],
       squads: [{ name: 'runner', role: 'executor', members: [{ carrier: 'grok' }], version: 1 }],
+      running: [],
     })
     vi.mocked(deleteCarrier).mockRejectedValue(new Error('400: 载体 grok 仍在小队 runner 中，请先从小队移除'))
     render(<SchedulingPage />)
@@ -239,6 +247,7 @@ describe('SchedulingPage 编辑弹窗对齐原型（B287）', () => {
     vi.mocked(getSquads).mockResolvedValue({
       carriers: [{ name: 'mbp', machine: 'local', cli: 'opencode', home_dir: '/h', credential: 'standalone', status: 'online', version: 3 }],
       squads: [{ name: 'coord', role: 'coordinator', members: [], version: 1 }],
+      running: [],
     })
     render(<SchedulingPage />)
     await user.click(await screen.findByRole('button', { name: '编辑' }))

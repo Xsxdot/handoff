@@ -77,7 +77,7 @@ describe('SettingsPage', () => {
 
   it('opens automation directly from the query string', async () => {
     window.history.pushState({}, '', '/settings?section=automation')
-    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [] })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [], running: [] })
     render(<SettingsPage onClose={vi.fn()} />)
     expect(await screen.findByRole('heading', { name: '自动化' })).toBeVisible()
     expect(screen.getByRole('button', { name: '自动化' })).toHaveAttribute('aria-current', 'true')

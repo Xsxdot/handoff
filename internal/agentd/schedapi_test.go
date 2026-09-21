@@ -17,6 +17,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -117,6 +118,44 @@ func TestSquadsGetEmptyIsLegalState(t *testing.T) {
 	}
 	if resp.Carriers == nil || resp.Squads == nil {
 		t.Fatalf("解码后切片不得为 nil（null 会把前端引向报错分支）：%s", body)
+	}
+}
+
+// TC1b（B390）：GET /api/squads 暴露 sched_running 占用行——同载体的成员键与
+// 载体键各自独立成行，count 精确；未种子的键不出现。证明能列占用者而非一个 int。
+func TestSquadsGetReportsRunning(t *testing.T) {
+	env := newSchedEnv(t)
+	if err := env.svc.PutCarrier(scheduling.Carrier{Name: "cmd", Machine: "m1",
+		CLI: "opencode", HomeDir: "/h", Credential: scheduling.CredentialStandalone}, 0); err != nil {
+		t.Fatalf("登记载体: %v", err)
+	}
+	if err := env.svc.PutSquad(scheduling.Squad{Name: "pro", Role: scheduling.RoleCoordinator,
+		Members: []scheduling.SquadMember{{Carrier: "cmd", MaxConcurrency: 2}}}, 0); err != nil {
+		t.Fatalf("登记小队: %v", err)
+	}
+	for key, count := range map[string]int{"squad/pro/cmd": 2, "carrier/cmd": 1} {
+		body := []byte(`{"count":` + strconv.Itoa(count) + `}`)
+		if _, err := env.srv.autoLedger.Put("sched_running", key, 0, body, "test"); err != nil {
+			t.Fatalf("种子运行计数 %s: %v", key, err)
+		}
+	}
+	code, body := schedReq(t, env, http.MethodGet, "/api/squads", "")
+	if code != http.StatusOK {
+		t.Fatalf("GET 应 200，得 %d：%s", code, body)
+	}
+	var resp proto.SquadsResp
+	if err := json.Unmarshal([]byte(body), &resp); err != nil {
+		t.Fatalf("解码: %v", err)
+	}
+	got := map[string]int{}
+	for _, row := range resp.Running {
+		got[row.Key] = row.Count
+	}
+	if len(got) != 2 || got["squad/pro/cmd"] != 2 || got["carrier/cmd"] != 1 {
+		t.Fatalf("运行位投影不符: %+v（原始 %s）", resp.Running, body)
+	}
+	if _, present := got["squad/absent/cmd"]; present {
+		t.Fatalf("未种子的键不得出现: %+v", resp.Running)
 	}
 }
 

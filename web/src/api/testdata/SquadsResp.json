@@ -41,5 +41,15 @@
       "members": [],
       "version": 4
     }
+  ],
+  "running": [
+    {
+      "key": "carrier/mac-01-opencode",
+      "count": 1
+    },
+    {
+      "key": "squad/coord/mac-01-opencode",
+      "count": 2
+    }
   ]
 }

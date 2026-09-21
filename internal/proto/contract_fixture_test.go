@@ -162,6 +162,10 @@ func TestContractFixtures(t *testing.T) {
 			}, {
 				Name: "empty", Role: "executor", Members: []SquadMember{}, Version: 4,
 			}},
+			Running: []RegistryRunningView{
+				{Key: "carrier/mac-01-opencode", Count: 1},
+				{Key: "squad/coord/mac-01-opencode", Count: 2},
+			},
 		}},
 		{"QueueResp", QueueResp{Queue: []QueueEntry{{
 			Kind: "ignition_queue", ID: "B242|implement", Card: "B242", Node: "implement",

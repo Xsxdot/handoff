@@ -6,7 +6,7 @@ import { getSquads } from '../../api/scheduling'
 import { FlowsPage } from './FlowsPage'
 
 vi.mock('../../api/scheduling', () => ({
-  getSquads: vi.fn().mockResolvedValue({ carriers: [], squads: [] }),
+  getSquads: vi.fn().mockResolvedValue({ carriers: [], squads: [], running: [] }),
 }))
 
 vi.mock('../../api/ledger', async (importOriginal) => ({
@@ -101,7 +101,7 @@ describe('工作流页可编辑', () => {
       nodes: [{ name: '待办', override: { executor: 'old' } }, { name: '进行中' }],
       board: { columns: ['代办', '沟通中', '进行中', '审核中', '结束'], fallback: '代办', state_to_column: { 待办: '代办', 进行中: '进行中' } },
     })
-    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [] })
+    vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [], running: [] })
     render(<FlowsPage />)
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
     const orchestration = await screen.findByRole('region', { name: '节点编排' })
@@ -125,7 +125,7 @@ describe('工作流页可编辑', () => {
     vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [
       { name: 'exec', role: 'executor', members: [], version: 1 },
       { name: 'coord', role: 'coordinator', members: [], version: 1 },
-    ] })
+    ], running: [] })
     render(<FlowsPage />)
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
     fireEvent.change(await screen.findByRole('combobox', { name: '节点 进行中 的派发小队' }), { target: { value: 'exec' } })
@@ -147,7 +147,7 @@ describe('工作流页可编辑', () => {
     vi.mocked(getSquads).mockResolvedValue({ carriers: [], squads: [
       { name: 'coord-a', role: 'coordinator', members: [], version: 1 },
       { name: 'coord-b', role: 'coordinator', members: [], version: 1 },
-    ] })
+    ], running: [] })
     render(<FlowsPage />)
     fireEvent.click(await screen.findByRole('button', { name: '编辑' }))
     expect(await screen.findByText(/协调者小队不唯一/)).toBeVisible()

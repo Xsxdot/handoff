@@ -35,6 +35,13 @@ export interface SquadMember {
 export interface SquadsResp {
   carriers: CarrierView[]
   squads: SquadView[]
+  /** sched_running 占用行（B390 名额键残留观察面）：key + 当前计数。 */
+  running: RegistryRunningView[]
+}
+
+export interface RegistryRunningView {
+  key: string
+  count: number
 }
 
 export interface CarrierInput {

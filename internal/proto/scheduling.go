@@ -47,6 +47,16 @@ type SquadView struct {
 type SquadsResp struct {
 	Carriers []CarrierView `json:"carriers"`
 	Squads   []SquadView   `json:"squads"`
+	// Running 是 sched_running 占用行清单（B390 名额键残留观察面）：每行一个
+	// 键+计数，操作者据此看见「谁占着、多少」。空库 = []，与既有空数组纪律一致。
+	Running []RegistryRunningView `json:"running"`
+}
+
+// RegistryRunningView 是一条 sched_running 占用行（key + 当前计数）。
+// key 形如 squad/<squad>/<carrier> 或 carrier/<carrier>（见 scheduling.OccupancyKeys）。
+type RegistryRunningView struct {
+	Key   string `json:"key"`
+	Count int    `json:"count"`
 }
 
 // CarrierInput 是 PUT 载体的请求体。刻意不含 status / last_error / healthy：
