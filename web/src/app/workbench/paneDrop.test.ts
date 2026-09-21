@@ -2,10 +2,12 @@ import { describe, expect, it } from 'vitest'
 import {
   DRAG_BASE_MIME,
   DRAG_GROUP_MIME,
+  DRAG_SESSION_MIME,
   DRAG_TAB_MIME,
   dropZoneAt,
   readDragBase,
   readDragGroup,
+  readDragSession,
   readDragTab,
 } from './paneDrop'
 
@@ -37,6 +39,26 @@ describe('dropZoneAt', () => {
     expect(readDragTab(JSON.stringify({ groupId: 'g1' }))).toBeNull()
     expect(readDragGroup(JSON.stringify({ groupId: 'g1' }))).toEqual({ groupId: 'g1' })
     expect(readDragGroup('null')).toBeNull()
+  })
+})
+
+describe('readDragSession（B358.8 #1 会话拖源）', () => {
+  it('正例：sessionId/title 双非空字符串原样解析', () => {
+    expect(readDragSession(JSON.stringify({ sessionId: 'session:1', title: '架构物理化' })))
+      .toEqual({ sessionId: 'session:1', title: '架构物理化' })
+  })
+  it.each([
+    ['缺字段', JSON.stringify({ sessionId: 'session:1' })],
+    ['错型', JSON.stringify({ sessionId: 'session:1', title: 42 })],
+    ['空串', JSON.stringify({ sessionId: '', title: '架构物理化' })],
+    ['坏 JSON', '{bad-json'],
+    ['null 字面量', 'null'],
+    ['数组载荷', JSON.stringify(['session:1'])],
+  ])('%s 载荷返 null，不抛异常', (_label, raw) => {
+    expect(readDragSession(raw)).toBeNull()
+  })
+  it('MIME 常量保持 text/handoff-session 命名边界', () => {
+    expect(DRAG_SESSION_MIME).toBe('text/handoff-session')
   })
 })
 

@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -22,6 +23,50 @@ import (
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/coder/websocket"
 )
+
+func TestB353FollowFiltersAndPreservesAllMode(t *testing.T) {
+	evs := []proto.Event{
+		{Seq: 1, TaskID: "t-b353", Type: proto.EventTypeProgress, Payload: json.RawMessage(`{"n":1}`)},
+		{Seq: 2, TaskID: "t-b353", Type: proto.EventTypeApproverDecision, Payload: json.RawMessage(`{"decision":"approve"}`)},
+		{Seq: 3, TaskID: "t-b353", Type: proto.EventTypeApproverDisabled, Payload: json.RawMessage(`{"reason":"fail-closed"}`)},
+		{Seq: 4, TaskID: "t-b353", Type: proto.EventTypeTicketsVoided, Payload: json.RawMessage(`{"count":1}`)},
+		{Seq: 5, TaskID: "t-b353", Type: proto.EventTypeTicketAnswered, Payload: json.RawMessage(`{"ticket_id":"q1"}`)},
+		{Seq: 6, TaskID: "t-b353", Type: proto.EventTypePermissionAutoAllow, Payload: json.RawMessage(`{"rule":"safe-command"}`)},
+		{Seq: 7, TaskID: "t-b353", Type: proto.EventTypePermissionReuse, Payload: json.RawMessage(`{"fingerprint":"f1"}`)},
+		{Seq: 8, TaskID: "t-b353", Type: proto.EventTypeDeliveryFailed, Payload: json.RawMessage(`{"ticket_id":"q1"}`)},
+		{Seq: 9, TaskID: "t-b353", Type: proto.EventTypeStalled, Payload: json.RawMessage(`{"last_seq":8}`)},
+		{Seq: 10, TaskID: "t-b353", Type: proto.EventTypeApprovalDropped, Payload: json.RawMessage(`{"ticket_id":"q1"}`)},
+		{Seq: 11, TaskID: "t-b353", Type: proto.EventTypeArchived, Payload: json.RawMessage(`{"note":"done"}`)},
+		{Seq: 12, TaskID: "t-b353", Type: proto.EventTypeFailed, Payload: json.RawMessage(`{"reason":"stop"}`)},
+	}
+	filteredServer := pushEvents(t, evs, func(*websocket.Conn) {})
+	var filtered []proto.Event
+	if err := client.New(filteredServer.URL, "").FollowEvents(t.Context(), "t-b353", false, 0,
+		func(ev *proto.Event) error { filtered = append(filtered, *ev); return nil }, nil); err != nil {
+		t.Fatalf("FollowEvents all=false: %v", err)
+	}
+	if len(filtered) != 5 {
+		t.Fatalf("all=false count=%d, want 5", len(filtered))
+	}
+	if got := []int64{filtered[0].Seq, filtered[1].Seq, filtered[2].Seq, filtered[3].Seq, filtered[4].Seq}; !reflect.DeepEqual(got, []int64{8, 9, 10, 11, 12}) {
+		t.Fatalf("all=false seq=%v, want [8 9 10 11 12]", got)
+	}
+	allServer := pushEvents(t, evs, func(*websocket.Conn) {})
+	var all []proto.Event
+	if err := client.New(allServer.URL, "").FollowEvents(t.Context(), "t-b353", true, 0,
+		func(ev *proto.Event) error { all = append(all, *ev); return nil }, nil); err != nil {
+		t.Fatalf("FollowEvents all=true: %v", err)
+	}
+	if len(all) != len(evs) {
+		t.Fatalf("all=true count=%d, want %d", len(all), len(evs))
+	}
+	for i := range evs {
+		if all[i].Seq != evs[i].Seq || all[i].Type != evs[i].Type ||
+			string(all[i].Payload) != string(evs[i].Payload) {
+			t.Fatalf("all=true event[%d]=%+v, want %+v", i, all[i], evs[i])
+		}
+	}
+}
 
 // pushEvents 起一个把给定事件依次推给客户端的 WS 端点，推完按 after 收尾。
 func pushEvents(t *testing.T, evs []proto.Event, after func(*websocket.Conn)) *httptest.Server {

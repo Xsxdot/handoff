@@ -7,12 +7,14 @@ import { BlankTab, type PickKind } from './BlankTab'
 import { GroupDivider } from './GroupDivider'
 import { TabBar } from './TabBar'
 import { TaskPickerDialog } from './TaskPickerDialog'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME, dropZoneAt, readDragBase, readDragTab, type DropZone } from './paneDrop'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME, dropZoneAt, readDragBase, readDragSession, readDragTab, type DropZone } from './paneDrop'
 import { MAX_PANES_PER_COLUMN, MIN_PANE_PX, nextTerminalSeq, spawnTerminalContent, tabTitle, type BaseDir, type PaneTarget, type Tab, type TabContent } from './tabs'
 import type { Launcher, ProjectTreeResp, Task } from '../../api/types'
 import type { WorkbenchApi } from './useWorkbench'
+import { sessionBase } from './useWorkbench'
 import { createUntitledFile } from './newFile'
 import { errorMessage } from '../lib/format'
+import { openSessionDetail } from '../rooms/sessionDetailOpener'
 import { cn } from '@/lib/utils'
 
 export interface WorkbenchPageProps {
@@ -28,6 +30,7 @@ export interface WorkbenchPageProps {
   // taskName 把 tui 的 taskId 解析成任务原名，由持有任务流的 Shell 构建
   // 下传（单一口径：标签条、窗格标题、面包屑共用）；省略时 tabTitle 自己回退。
   taskName?: (taskId: string) => string | undefined
+  // B358.8：固定「◫ 分屏」按钮退役——分屏由左栏会话行拖拽承载（同 spec #1）。
 }
 
 type DragOver = {
@@ -51,14 +54,15 @@ export function WorkbenchPage({
   const [dragOver, setDragOver] = useState<DragOver | null>(null)
   const [dropWarning, setDropWarning] = useState('')
 
-  // dragging 标记「有左栏任务正在被拖」。拖动期间每个窗格的内容层 pointer-events
-  // 关闭（原型 body.dragging .pane-body 规则）：xterm 的 canvas 会吃掉 dragover，
-  // 落点预览根本出不来；从内容层放行才能保证落点指示在黑底终端上也稳定出现。
-  // dragstart 只认带 data-drag-task 的来源；dragend 与 drop 双保险复位，防泄漏。
+  // dragging 标记「有左栏内容（任务/会话）正在被拖」。拖动期间每个窗格的内容层
+  // pointer-events 关闭（原型 body.dragging .pane-body 规则）：xterm 的 canvas 会吃掉
+  // dragover，落点预览根本出不来；从内容层放行才能保证落点指示在黑底终端上也稳定出现。
+  // dragstart 只认带 data-drag-task / data-drag-session 的来源；dragend 与 drop
+  // 双保险复位，防泄漏。
   const [dragging, setDragging] = useState(false)
   useEffect(() => {
     const onDragStart = (event: DragEvent) => {
-      if ((event.target as HTMLElement | null)?.closest?.('[data-drag-task]')) setDragging(true)
+      if ((event.target as HTMLElement | null)?.closest?.('[data-drag-task], [data-drag-session]')) setDragging(true)
     }
     const reset = () => setDragging(false)
     window.addEventListener('dragstart', onDragStart)
@@ -137,9 +141,49 @@ export function WorkbenchPage({
     return { target: { groupId, column, row, zone }, requestedZone, canAddPane }
   }
 
+  // findSessionTab 全局找已开的会话 tab（去重键 session:<id>）。placeSource 的
+  // kind:'new' 不查重，会话投放必须先在这里查——tabs.ts「一会话一 tab」不变式
+  // 由 drop 分支前置保证（B358.8 #1）。
+  const findSessionTab = (sessionId: string): { groupId: string; tabId: string } | null => {
+    for (const group of wb.groups) {
+      for (const column of group.columns) {
+        for (const tab of column.panes) {
+          if (tab?.content.kind === 'session' && tab.content.sessionId === sessionId) {
+            return { groupId: group.id, tabId: tab.id }
+          }
+        }
+      }
+    }
+    return null
+  }
+
+  // dropSessionIntoGroup 是组标签接收会话投放的落点：组内去重激活、他组移动
+  // （复用 openTab 的选格逻辑——先填空格、无空格在末列右侧追列）、未开才新开。
+  const dropSessionIntoGroup = (source: { sessionId: string; title: string }, groupId: string) => {
+    const existing = findSessionTab(source.sessionId)
+    if (existing !== null) {
+      if (existing.groupId === groupId) {
+        api.activate(groupId, existing.tabId)
+      } else {
+        const targetGroup = wb.groups.find((group) => group.id === groupId)
+        const emptyAt = targetGroup?.columns
+          .flatMap((column, index) => column.panes.map((tab, row) => ({ tab, column: index, row })))
+          .find((slot) => slot.tab === null)
+        const target: PaneTarget = emptyAt
+          ? { groupId, column: emptyAt.column, row: emptyAt.row, zone: 'center' }
+          : { groupId, column: (targetGroup?.columns.length ?? 1) - 1, row: 0, zone: 'right' }
+        api.place({ kind: 'tab', ...existing }, target)
+      }
+      console.debug('workbench.drop.session_group_dedup', { sessionId: source.sessionId, groupId })
+      return
+    }
+    api.open({ kind: 'session', sessionId: source.sessionId, title: source.title }, sessionBase(source.sessionId), groupId)
+    console.debug('workbench.drop.session_group', { sessionId: source.sessionId, groupId })
+  }
+
   const placeFromDrop = (event: React.DragEvent<HTMLElement>, groupId: string, column: number, row: number) => {
     const types = event.dataTransfer.types
-    const ours = types.includes(DRAG_TASK_MIME) || types.includes(DRAG_DIR_MIME) || types.includes(DRAG_TAB_MIME)
+    const ours = types.includes(DRAG_TASK_MIME) || types.includes(DRAG_DIR_MIME) || types.includes(DRAG_TAB_MIME) || types.includes(DRAG_SESSION_MIME)
     setDragOver(null)
     if (!ours) return
     event.preventDefault()
@@ -156,6 +200,27 @@ export function WorkbenchPage({
       console.warn('workbench.drop.pane_limit', {
         ...dropContext(), groupId, column, row, zone: requestedZone, reason: 'column already has two panes',
       })
+    }
+    if (types.includes(DRAG_SESSION_MIME)) {
+      const source = readDragSession(event.dataTransfer.getData(DRAG_SESSION_MIME))
+      if (!source) {
+        console.warn('workbench.drop.invalid_mime', {
+          ...dropContext(), groupId, column, row, zone: target.zone, reason: 'session MIME payload is missing or invalid',
+        })
+        return
+      }
+      const existing = findSessionTab(source.sessionId)
+      if (existing !== null) {
+        // 已开在本组只激活；开在别的组整支移动过去（一会话一 tab，不复制）。
+        if (existing.groupId === groupId) api.activate(groupId, existing.tabId)
+        else api.place({ kind: 'tab', ...existing }, target)
+        console.debug('workbench.drop.session_dedup', { sessionId: source.sessionId, groupId, column, row, zone: target.zone })
+        return
+      }
+      const content: TabContent = { kind: 'session', sessionId: source.sessionId, title: source.title }
+      api.place({ kind: 'new', base: sessionBase(source.sessionId), content }, target)
+      console.debug('workbench.drop.session', { sessionId: source.sessionId, groupId, column, row, zone: target.zone })
+      return
     }
     if (types.includes(DRAG_TAB_MIME)) {
       const source = readDragTab(event.dataTransfer.getData(DRAG_TAB_MIME))
@@ -235,7 +300,19 @@ export function WorkbenchPage({
   }
 
   const renderGroup = (group: typeof activeGroup, visible: boolean) => (
-    <div className={cn('flex min-h-0 flex-1 flex-col', !visible && 'pointer-events-none absolute -left-[10000px] top-0 h-full w-full')} aria-hidden={!visible}>
+    // 后台组叠在原位（inset-0），不移出视口、不 opacity-0（那些会弄死 WebGL）。
+    // 但必须 pointer-events-none + inert：z-0 的 WebGL 画布会从激活组抢走滚轮，
+    // 眼前那条 TUI 就划不动。激活组从未加过这个类，不走「去掉后命中回不来」。
+    // min-w-0 切断设置往返的 min-content 撑越。
+    <div
+      data-testid="workbench-group"
+      className={cn(
+        'absolute inset-0 flex min-h-0 min-w-0 flex-col bg-background',
+        visible ? 'z-10' : 'z-0 pointer-events-none',
+      )}
+      aria-hidden={!visible}
+      {...(!visible ? { inert: true } : {})}
+    >
       {/* 原型 .cols { overflow: hidden }：列压进容器，不出现横向滚动 */}
       <div className="flex min-h-0 flex-1 overflow-hidden bg-border">
         {group.columns.map((column, columnIndex) => (
@@ -250,7 +327,7 @@ export function WorkbenchPage({
                 className="relative flex min-h-0 flex-1 flex-col bg-background"
                 onDragOver={(event) => {
                   const types = event.dataTransfer.types
-                  if (!types.includes(DRAG_TASK_MIME) && !types.includes(DRAG_DIR_MIME) && !types.includes(DRAG_TAB_MIME)) return
+                  if (!types.includes(DRAG_TASK_MIME) && !types.includes(DRAG_DIR_MIME) && !types.includes(DRAG_TAB_MIME) && !types.includes(DRAG_SESSION_MIME)) return
                   event.preventDefault()
                   const calculation = dropTargetAt(event, group.id, columnIndex, row)
                   if (calculation === null) return
@@ -296,6 +373,20 @@ export function WorkbenchPage({
                     {tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}
                     {tab?.base.projectName && <span className="ml-2 text-muted-foreground">{tab.base.projectName}{tab.base.machine ? ` · ${tab.base.machine}` : ''}</span>}
                   </div>
+                  {tab && tab.content.kind === 'session' && (
+                    <button
+                      type="button"
+                      aria-label="会话详情"
+                      title="会话详情（成员/卡/归档）"
+                      onClick={(event) => {
+                        event.stopPropagation()
+                        // 外层已保证 session；闭包内重判一次做收窄（tab 是回调参数）。
+                        if (tab.content.kind !== 'session') return
+                        openSessionDetail(tab.content.sessionId)
+                      }}
+                      className="rounded p-0.5 text-muted-foreground hover:bg-accent"
+                    >⋯</button>
+                  )}
                   <button
                     type="button"
                     aria-label={`关闭 ${tab ? tabTitle(tab.content, tab.base.label, taskName) : '空窗格'}`}
@@ -320,28 +411,39 @@ export function WorkbenchPage({
   )
 
   return (
-    <div className="relative flex h-full min-h-0 flex-col overflow-hidden bg-border">
-      <TabBar
-        groups={wb.groups}
-        activeGroupId={wb.activeGroupId}
-        base={base}
-        taskName={taskName}
-        onActivateGroup={api.activateGroup}
-        onCloseGroup={api.closeGroup}
-        onNew={openNew}
-        onNewLauncher={openLauncher}
-        launchers={launcherItems}
-        terminalUnavailable={terminalUnavailable}
-        onNewGroup={api.addGroup}
-        onMoveGroup={moveGroup}
-      />
+    <div className="relative flex h-full min-h-0 min-w-0 flex-col overflow-hidden bg-border">
+      <div className="flex min-h-0 items-stretch">
+        <div className="min-w-0 flex-1">
+          <TabBar
+            groups={wb.groups}
+            activeGroupId={wb.activeGroupId}
+            base={base}
+            taskName={taskName}
+            onActivateGroup={api.activateGroup}
+            onCloseGroup={api.closeGroup}
+            onNew={openNew}
+            onNewLauncher={openLauncher}
+            launchers={launcherItems}
+            terminalUnavailable={terminalUnavailable}
+            onNewGroup={api.addGroup}
+            onMoveGroup={moveGroup}
+            onDropSession={dropSessionIntoGroup}
+          />
+        </div>
+      </div>
       {dropWarning !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">{dropWarning}</p>}
       {newFileError !== '' && <p role="alert" className="bg-destructive/10 px-3 py-1 text-xs text-destructive">新建文件失败：{newFileError}</p>}
-      <div className="relative flex min-h-0 flex-1">
+      <div className="relative isolate min-h-0 min-w-0 flex-1 overflow-hidden">
         {wb.groups.map((group) => (
+          // 单槽位条件：visible 翻转只改同一 div 的类名/aria/inert，不换槽位。
+          // 写成 `{a && el}{b && el}` 双槽位时，visible 一翻 React 就按索引
+          // 卸载重建——xterm 全套 teardown/replay、Viewport 定时器打在已
+          // dispose 的 RenderService 上刷 dimensions、PTY 重连定时器变孤儿
+          // （B367 回归实测）。纯文件/会话组后台仍照旧卸载（keep-alive 只保终端）。
           <Fragment key={group.id}>
-            {group.id === wb.activeGroupId && renderGroup(group, true)}
-            {group.id !== wb.activeGroupId && group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'terminal')) && renderGroup(group, false)}
+            {(group.id === wb.activeGroupId ||
+              group.columns.some((column) => column.panes.some((tab) => tab?.content.kind === 'terminal'))) &&
+              renderGroup(group, group.id === wb.activeGroupId)}
           </Fragment>
         ))}
       </div>

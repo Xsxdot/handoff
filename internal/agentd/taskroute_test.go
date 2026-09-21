@@ -22,6 +22,7 @@ type taskDetailWire struct {
 // GET /api/tasks/{id} 的响应来自远端（任务名是远端那条）。
 func TestTaskRouteForwardsViaMirrorIndex(t *testing.T) {
 	remote := newTestAgentdEnv(t)
+	ensureTestManager(t, remote)
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
 	mustCreateTask(t, remote.st, &proto.Task{ID: taskID, Name: "远端任务",
@@ -32,6 +33,7 @@ func TestTaskRouteForwardsViaMirrorIndex(t *testing.T) {
 		Token:   testToken,
 		Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}},
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ensureTestManager(t, local)
 	// 本机没有任务，但有镜像路由记录
 	if err := local.st.UpsertMirrorTask("devbox", proto.Task{
 		ID: taskID, Name: "远端任务", State: proto.TaskStateRunning,
@@ -52,6 +54,7 @@ func TestTaskRouteForwardsViaMirrorIndex(t *testing.T) {
 // TestTaskRoute404WhenNowhere 断言：两处都没有 → 404（与今天一致）。
 func TestTaskRoute404WhenNowhere(t *testing.T) {
 	local := newTestAgentdEnv(t)
+	ensureTestManager(t, local)
 	code := local.getJSON(t, "/api/tasks/"+uuid.NewString(), nil)
 	if code != http.StatusNotFound {
 		t.Fatalf("状态码 = %d，期望 404", code)
@@ -61,6 +64,7 @@ func TestTaskRoute404WhenNowhere(t *testing.T) {
 // TestTaskRouteNeverForwardsWhenForwarded 断言：带转发头时不再转发 → 404（防环）。
 func TestTaskRouteNeverForwardsWhenForwarded(t *testing.T) {
 	remote := newTestAgentdEnv(t)
+	ensureTestManager(t, remote)
 	now := time.Now().UTC()
 	taskID := uuid.NewString()
 	mustCreateTask(t, remote.st, &proto.Task{ID: taskID, Name: "远端任务",
@@ -70,6 +74,7 @@ func TestTaskRouteNeverForwardsWhenForwarded(t *testing.T) {
 		Token:   testToken,
 		Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}},
 	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ensureTestManager(t, local)
 	if err := local.st.UpsertMirrorTask("devbox", proto.Task{
 		ID: taskID, Name: "远端任务", State: proto.TaskStateRunning,
 	}, now); err != nil {

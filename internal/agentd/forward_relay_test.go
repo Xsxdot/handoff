@@ -40,6 +40,7 @@ func newRelayForwardEnv(t *testing.T) *testAgentdEnv {
 	t.Helper()
 	env := newTestAgentdEnvWithCfg(t, relayTargetCfg(),
 		slog.New(slog.NewTextHandler(io.Discard, nil)))
+	ensureTestManager(t, env)
 	t.Cleanup(func() { _ = env.srv.CloseTargets() })
 	return env
 }

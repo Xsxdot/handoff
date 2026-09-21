@@ -72,6 +72,10 @@ type StartReq struct {
 	// 实现方必须把它作为第三个参数传给 turn.RenderPrompt，这是对所有 adapter
 	// 的统一要求，放在契约上而非各 adapter 的构造参数上，理由同 Env。
 	Discipline string
+	// Approval 是绑定到本执行实例的审批 client（B233.1）。nil 表示本任务
+	// 不走新审批 client（本卡仅 OpenCode 路径注入；其它 harness 保持旧 Manager 链）。
+	// 实现方不得把 nil 解释成「全部免审」。
+	Approval ApprovalClient
 }
 
 // Result 是一次执行回合的终态结果（OK 或 FailReason 二选一）。

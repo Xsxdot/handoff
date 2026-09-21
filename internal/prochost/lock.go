@@ -13,7 +13,8 @@
 //
 // 本文件由 internal/agentd/flock_unix.go / flock_other.go（B34）上移而来，
 // 因为拆 tmux 后「文件锁」同时是 agentd 单实例保护与 executor 存活判定的基础，
-// 两处各写一份是重复造轮子。agentd 侧的 AcquireDataDirLock 现在是本 API 的调用方。
+// 两处各写一份是重复造轮子。internal/orchestration 的 AcquireDataDirLock
+// （B233.22 自 agentd 迁入）现在是本 API 的调用方。
 package prochost
 
 import (

@@ -53,18 +53,248 @@ func TestJudgeSafeCommandTable(t *testing.T) {
 	}
 }
 
+// TestJudgeCompoundSilentTable 钉住 B376 第 1 条：复合只读拆段后整条静默。
+//
+// 入口仍是 Gate.Judge——拆段只服务静默判定，不是新的判据权威。每段都要能
+// 单独证明只读才整条 AutoAllow；半段放行被产品明禁。
+func TestJudgeCompoundSilentTable(t *testing.T) {
+	g := newTestGate(t)
+	work := t.TempDir()
+	sc := Scope{Workdir: work, TaskDir: t.TempDir(), TaskTmpDir: filepath.Join(work, "tmp")}
+	cases := []struct {
+		name    string
+		command string
+	}{
+		{"与连接的两段只读", "grep a && grep b"},
+		{"cd 段带出工作目录", "cd src && rg foo"},
+		{"三段只读 git", "git status && git branch --show-current && git rev-parse HEAD"},
+		{"管道只读", "ls | head"},
+		{"sed -n 只读", "sed -n '1,20p' file"},
+		{"分号串 sed 与 echo", `sed -n '219,300p' f; echo "=== cursor"`},
+		{"codegraph 读图补全", "codegraph sym Gate.Judge"},
+		{"npm --prefix", "npm --prefix web test"},
+		{"printf 无重定向", `printf '%s\n' hello`},
+		// B376 复审：守卫只拦执行型/改写型标志，只读形态仍须静默。
+		{"rg 普通检索", `rg -n "pattern" internal/`},
+		{"rg --pre-glob 非执行", `rg --pre-glob '*.go' foo`},
+		{"git branch 只读列表", "git branch -a"},
+		{"git branch --list", "git branch --list 'feat/*'"},
+		{"sed -n 带 --quiet", "sed --quiet '1,20p' file"},
+		// B377：短选项簇里的 n 与整词 -n 是同一只读形态；--silent 是 GNU
+		// --quiet 的别名。簇里带参字母（e/f/l/i）之后的字符是该选项实参，
+		// 不再是旗标。
+		{"sed -ne 只读", `sed -ne '1,20p' f`},
+		{"sed -nE 只读", `sed -nE 's/a/A/p' f`},
+		{"sed -nsE 只读", `sed -nsE '1,2p' f`},
+		{"sed -ne 脚本粘连", `sed -ne'1,20p' f`},
+		{"sed --silent 只读", `sed --silent '1,20p' f`},
+		// B377 review-1：簇里的 e 吃掉脚本实参后即为显式脚本源，其后位置参数
+		// 是输入文件而非脚本。文件名以写/执行命令字母开头（web.log）时，若漏置
+		// explicitScript，整个文件名会被当脚本扫出 w 而误否决——须与拆开写的
+		// `sed -n -e '1,20p' web.log` 同判 AutoAllow。
+		{"sed -ne 输入文件名以写字母开头", `sed -ne '1,20p' web.log`},
+		{"sed -ne 脚本粘连且输入文件名以写字母开头", `sed -ne'1,20p' web.log`},
+		// B377 review-2：l 必带实参（行宽），可粘连（-l1）或取下一词元（-l 1）。
+		// 簇尾为 l 时吃掉下一词元，后续位置参数才是脚本；故 `-nl 1 'p'` 与
+		// `-nl1 'p'` 都是只读静默。
+		{"sed -nl 1 只读（l 吃下一词元）", `sed -nl 1 'p' f`},
+		{"sed -nl1 只读（l 粘连实参）", `sed -nl1 'p' f`},
+		// B376 复审：只读 sed 形态（替换打印、正则地址）仍须静默；守卫只拦写/执行。
+		{"sed -n 替换只读", `sed -n 's/foo/bar/p' f`},
+		{"sed -n 正则地址只读", `sed -n '/error/p' f`},
+		// B376 复审 3：地址前缀闭族（数字范围、GNU 步长、! 取反、正则范围）
+		// 本身是只读形态，真正的写/执行在他们之后的命令字母；未闭合地址
+		// 解析不得把只读命令误判成写。
+		{"sed -n 数字范围只读", `sed -n '1,5p' f`},
+		{"sed -n 正则范围只读", `sed -n '/a/,/b/p' f`},
+		{"sed -n 取反地址只读", `sed -n '2!p' f`},
+		{"sed -n GNU 步长地址只读", `sed -n '1~2p' f`},
+		// B376 复审 minor：codegraph 的 --repo 是全局旗标，其后子命令仍走闭集。
+		{"codegraph --repo 读图", "codegraph --repo . sym Gate.Judge"},
+		{"codegraph --view 读图", "codegraph --view cards-B376 sym Gate.Judge"},
+		{"codegraph help", "codegraph --help"},
+		{"sed 正则含 w 只读", `sed -n '/write/p' f`},
+		{"git branch 远程/详情只读", "git branch -r"},
+		{"git branch -v 只读", "git branch -v"},
+		{"单段 go test 回归", "go test ./..."},
+		{"单段 grep 回归", "grep -R x docs"},
+		{"单段 git status 回归", "git status --short"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := g.Judge(Request{Tool: "bash", Command: tc.command}, sc)
+			if v.Action != AutoAllow || v.Rule != RuleSafeCommand {
+				t.Fatalf("command %q verdict = %#v, want AutoAllow safe-command", tc.command, v)
+			}
+		})
+	}
+}
+
+// TestJudgeCompoundNotSilent 钉住 B376 的反例面：只读段不能把写段带过门，
+// 未知段一律整条 Consult，不做半段放行。
+func TestJudgeCompoundNotSilent(t *testing.T) {
+	g := newTestGate(t)
+	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
+	for _, command := range []string{
+		"grep a && rm x",
+		"git branch -d topic",
+		"sed -i 's/a/b/' f",
+		// B376 复审：sed 的 -i 守卫必须覆盖带后缀形态，否则可静默改写文件。
+		"sed -n -i.bak 's/a/b/' f",
+		"sed -n -i'.bak' 's/a/b/' f",
+		"sed -n --in-place=.bak 's/a/b/' f",
+		"sed -n -e 's/a/b/' -i.bak f",
+		"sed -ni.bak 's/a/b/' f",
+		// B376 复审 2：sed 的 w（写文件）与 e（执行命令）命令是静默面外的写/执行
+		// 面，独立成 `-e`/脚本或作为 `s///w file` 标志出现；`-i` 守卫拦不住它们。
+		`sed -n 'w /tmp/sedout' f`,
+		`sed -n 'e echo pwned' f`,
+		`sed -n 's/a/b/w /tmp/sedout' f`,
+		`sed -n -e 'w /tmp/sedout' f`,
+		`sed -ne 'w /tmp/sedout' f`,
+		`sed -n --expression='w /tmp/sedout' f`,
+		`sed -n '1,5w /tmp/sedout' f`,
+		`sed -n 'p; w /tmp/sedout' f`,
+		`sed -n '/re/p;w /tmp/sedout' f`,
+		`sed -n 'p; e echo pwned' f`,
+		// B376 复审 3：地址前缀（数字范围、GNU ~ 步长、! 取反、正则范围）后的
+		// w/W/e 仍是写/执行面；s///e 的 e 标志执行替换结果。地址剥离或 flags
+		// 解析不认这些形态就会被静默放行。
+		`sed -n '1~2w /tmp/out' f`,
+		`sed -n '/a/,/b/w /tmp/out' f`,
+		`sed -n '2,4!w /tmp/out' f`,
+		`sed -n '1~2e touch /tmp/x' f`,
+		`sed -n '/a/,/b/e touch /tmp/x' f`,
+		`sed -n '2,4!W /tmp/out' f`,
+		`sed -n 's/a/x/e' f`,
+		`sed -n 's/a/x/we /tmp/out' f`,
+		// B376 复审 3：地址族还有更隐蔽的成员——正则地址的 GNU 标志 I/M、
+		// 相对行数端点 +N、相对步长端点 ~N；s/// 的 pattern/replacement 正文里
+		// 可以含分号，先按 `;` 切分会把执行标志吃掉。
+		`sed -n '/a/Iw /tmp/out' f`,
+		`sed -n '/a/Mw /tmp/out' f`,
+		`sed -n '/a/,+2w /tmp/out' f`,
+		`sed -n '/a/,~2w /tmp/out' f`,
+		`sed -n '1,~3w /tmp/out' f`,
+		`sed -n 's/a;b/c/e' f`,
+		`sed -n 's/a;b/c/w /tmp/out' f`,
+		`printf 'w /tmp/sedout\n' | sed -n -f /dev/stdin f`,
+		// B376 复审 4：位置脚本在前、-e/--expression/-f 写/执行在后。
+		// 旧扫描遇首个位置脚本即 return，其后的显式脚本源根本不被看见；
+		// 真机 GNU sed 里 `-e` 仍会执行（位置参数此时按输入文件读，报错也拦不住
+		// -e 的 w/e）。任何脚本源含写/执行都必须整段否决。
+		`sed -n 'p' -e 'w /tmp/out' f`,
+		`sed -n 'p' -e 'e touch /tmp/x' f`,
+		`sed -n 'p' --expression='w /tmp/out' f`,
+		`sed -n 'p' --expression='e touch /tmp/x' f`,
+		`sed -n 'p' -f /tmp/script f`,
+		`sed -n 'p' --file /tmp/script f`,
+		`sed -n 'p' --file=/tmp/script f`,
+		`sed -n 'p' -e 'p' -e 'w /tmp/out' f`,
+		`sed -n 'p' -e 's/a/b/w /tmp/out' f`,
+		`sed -n 'p; q' -e 'w /tmp/out' f`,
+		`sed -n 'p' -ne 'w /tmp/out' f`,
+		`sed -n 'p' -e 'w /tmp/out' --expression='e touch /tmp/x' f`,
+		// B377：簇里的 n 可能是别的带参选项的实参，不得据此静默；簇展开后
+		// e 仍要吃脚本、f 仍否决。
+		`sed -en '1p' f`,
+		`sed -ln '1p' f`,
+		// B377 review-2：簇尾为 l（其后无字符）时 l 的实参是下一词元。旧实现只在
+		// 簇尾为 l 时跳过簇内剩余字符，没吃下一词元，于是 `sed -nl 1 'w /tmp/out' f`
+		// 的 `1` 被当位置脚本、真脚本 `w /tmp/out` 被当输入文件——真机写文件而门
+		// 静默放行（GNU sed 4.9 实测 `sed -nl 1 'w /tmp/sedtest_out'` 建文件）。两
+		// 条反向用例必须非 AutoAllow。i 是仅粘连的可选后缀，不得吃下一词元。
+		`sed -nl 1 'w /tmp/out' f`,
+		`sed -nl 1 'e touch /tmp/x' f`,
+		// B377 review-2：l 取下一词元的形态不限于簇尾——独立 `-l 1` 同样把
+		// 下一词元当行宽实参，真脚本仍在其后（真机 GNU sed 4.9 实测
+		// `sed -n -l 1 'w /tmp/out' /dev/stdin` 建文件）。已知旗标 case 把
+		// `-l` 当无参旗标是同一漏洞的第二个入口。
+		`sed -n -l 1 'w /tmp/out' f`,
+		`sed -n -l 1 'e touch /tmp/x' f`,
+		`sed -nf /tmp/script f`,
+		`sed -ne 's/a/b/e' f`,
+		`sed -ne 'p' -e 'w /tmp/out' f`,
+		// B376 复审：rg 新入白名单必须约束执行型标志，--pre 会执行任意程序。
+		`rg --pre 'rm -rf x' foo`,
+		"rg --pre=rm foo",
+		`rg --pre 'sh -c x' pattern .`,
+		// B376 复审：cd 段改变后续段的实际工作目录，而写落点按 Workdir 解析，
+		// 相对写落点会被误判成范围内。cd 之后的参数位写段一律不静默。
+		"cd /etc && gofmt -w passwd",
+		"cd /tmp && git diff --output=x HEAD",
+		"cd src && gofmt -w x.go",
+		// B376 复审 3：相对路径 w 落点不得因地址前缀绕过 cd 守卫。
+		`cd /etc && sed -n '1~2w passwd' f`,
+		`cd /etc && sed -n '/a/,/b/w passwd' f`,
+		// B376 复审 2：git branch 的强制改名/上游/描述写入形态都改 ref 或 .git/config。
+		"git branch -f main",
+		"git branch -u origin/main",
+		"git branch --set-upstream-to=origin/main",
+		"git branch --edit-description",
+		"git branch -M newname",
+		"git branch -C copy",
+		"ls | tee out",
+		"echo x > file",
+		"go test ./... | tee /tmp/out",
+		`bash -c "go test ./..."`,
+		"go run ./...",
+		"git log -S x --oneline || true",
+		"codegraph absorb",
+		"npm --prefix web ci",
+	} {
+		v := g.Judge(Request{Tool: "bash", Command: command}, sc)
+		if v.Action == AutoAllow && v.Rule == RuleSafeCommand {
+			t.Fatalf("compound non-readonly %q was auto-allowed: %#v", command, v)
+		}
+	}
+}
+
+// TestJudgeCommandSubstitutionNotSilent 钉住命令替换不得静默：`echo "$(cmd)"`
+// 的词元匹配只看得到 echo，但 shell 在引号内照样执行替换。判据是「静态可
+// 证明」，内容不可见就不在静默面——这是不要用 echo 白名单开洞的守卫。
+func TestJudgeCommandSubstitutionNotSilent(t *testing.T) {
+	g := newTestGate(t)
+	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
+	for _, command := range []string{
+		`echo "$(rm -rf x)"`,
+		`echo "$(cat /etc/passwd)"`,
+		`printf '%s' "$(whoami)"`,
+		"grep \"$(cat /etc/passwd)\" f",
+	} {
+		v := g.Judge(Request{Tool: "bash", Command: command}, sc)
+		if v.Action == AutoAllow && v.Rule == RuleSafeCommand {
+			t.Fatalf("命令替换 %q 不得静默放行: %#v", command, v)
+		}
+	}
+}
+
+// TestJudgeEchoMimicIsEchoNotGoTest 反锁子串误判：echo 的正文含 "go test"
+// 时只能命中 echo，不得被当成 go-test 命中。
+func TestJudgeEchoMimicIsEchoNotGoTest(t *testing.T) {
+	g := newTestGate(t)
+	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
+	v := g.Judge(Request{Tool: "bash", Command: `echo "go test ./..."`}, sc)
+	if v.Action != AutoAllow || v.Rule != RuleSafeCommand {
+		t.Fatalf(`echo "go test ./..." 应按 echo 静默，实得 %#v`, v)
+	}
+	if !strings.Contains(v.Reason, "echo") || strings.Contains(v.Reason, "go-test") {
+		t.Fatalf("reason = %q，必须含 echo 且不得含 go-test", v.Reason)
+	}
+}
+
 // TestJudgeSafeCommandRejectsMimicsAndConnectors keeps shell wrappers and
 // untrusted command joins outside the positive whitelist.
+//
+// B376 起，纯只读的 `;` / `&&` 连接串改走 TestJudgeCompoundSilentTable 正例，
+// 本表只保留真正的包装器、管道进写工具、换行与写落点形态。
 func TestJudgeSafeCommandRejectsMimicsAndConnectors(t *testing.T) {
 	g := newTestGate(t)
 	sc := Scope{Workdir: t.TempDir(), TaskDir: t.TempDir(), TaskTmpDir: t.TempDir()}
 	for _, command := range []string{
-		`echo "go test ./..."`,
 		`bash -c "go test ./..."`,
 		"go test ./... | tee /tmp/out",
-		"go test ./...; cat file",
 		"go test ./...\ncat file",
-		"git status && git log",
 		"git log -S HANDOFF_SESSION_CLI --oneline || true",
 		"git show --output=/tmp/x HEAD",
 		"go run ./...",

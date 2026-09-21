@@ -132,6 +132,13 @@ type Config struct {
 	// 为什么第三档不同：env 内容是机器特有的，猜错不如不猜；纪律块内容是 handoff
 	// 通用的，不给默认等于让用户退回人工粘贴到 plan 头部（见 B129 spec §2.4）。
 	Discipline map[string]string
+	// ConsoleUser 是控制台里的「本机用户人名」（B358.9 决定 3）：全局名，
+	// 各机器配同一个。控制台发言/@/成员/已读只认这个名字，端戳只做落款。
+	//
+	// 空 = 未配置：控制台身份解析 fail-closed（发话拒收 + 可行动报错），
+	// 绝不回落到旧传输层临时脸 web:<host>（决定 8）。omitempty 是硬要求，
+	// 理由同 PathDirs：空值不写盘，旧版 agentd 不会被新键顶死。
+	ConsoleUser string `yaml:"console_user,omitempty"`
 	// PlatformInvariants 是平台底线恒在层的显式开关。
 	//
 	// nil 表示未配置，PlatformInvariantsEnabled 将其解释为 true；非 nil 的 false
@@ -186,16 +193,55 @@ type SyncConfig struct {
 // ApproverConfig 描述审批链的廉价模型审批者。
 //
 // 参数语义：
-//   - Executor：审批者执行者名（如 opencode/claude/grok/agy/codex）；空=不启用审批链
-//   - Model：审批者模型名；空=用执行者自身默认模型
+//   - Executor：审批者执行者有序候选（如 opencode/claude/grok/agy/codex）；
+//     空=不启用审批链。YAML 标量与序列都合法（B376）
+//   - Model：审批者模型名；空=用执行者自身默认模型（全候选共用）
 //   - Timeout：单次裁决超时，超时按 escalate 处理（fail-closed）
 //   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工协调者
 type ApproverConfig struct {
-	Executor  string
+	Executor  ExecutorList
 	Model     string
 	Timeout   time.Duration
 	Blacklist []string
 }
+
+// ExecutorList 是 approver.executor 的值类型：YAML 标量或序列都合法。
+//
+// 为什么需要自定义反序列化（B376）：旧配置是标量 `executor: codex`，
+// 新语义是有序 failover 候选列表。同一键必须两形态都吃——另起键名会让
+// 存量配置静默失效。
+type ExecutorList []string
+
+// UnmarshalYAML 接受标量（单元素）与序列（原样），其余形态报错。
+func (l *ExecutorList) UnmarshalYAML(value *yaml.Node) error {
+	switch value.Kind {
+	case yaml.ScalarNode:
+		// 空标量（`executor:` 或 `executor: ""`）是历史「不启用」写法，
+		// 必须保持关闭语义，不能变成含一个空串元素的列表（那会被校验拒绝）。
+		if value.Tag == "!!null" || value.Value == "" {
+			*l = nil
+			return nil
+		}
+		var s string
+		if err := value.Decode(&s); err != nil {
+			return err
+		}
+		*l = ExecutorList{s}
+		return nil
+	case yaml.SequenceNode:
+		var out []string
+		if err := value.Decode(&out); err != nil {
+			return err
+		}
+		*l = ExecutorList(out)
+		return nil
+	default:
+		return fmt.Errorf("approver.executor 必须是标量或序列（第 %d 行）", value.Line)
+	}
+}
+
+// Empty 报告候选列表是否为空（即审批链关闭）。
+func (l ExecutorList) Empty() bool { return len(l) == 0 }
 
 // ExecutorConfig 描述 dispatch 未显式指定执行者时的缺省选择。
 type ExecutorConfig struct {
@@ -531,9 +577,22 @@ func (c *Config) validate() error {
 	}
 	// approver 相关的取值域校验只在审批链启用时生效（Executor 非空）：
 	// 未启用时写不写这些键都不影响行为，写错也不该拦启动。
-	if c.Approver.Executor != "" {
+	if !c.Approver.Executor.Empty() {
 		if c.Approver.Timeout <= 0 {
 			return fmt.Errorf("approver.timeout 必须为正时长（当前 %s）", c.Approver.Timeout)
+		}
+		// 候选列表的两条形态校验（B376）：空串元素没有可路由的执行者名；
+		// 重复名会让同一个 OneShot 被绑两次，failover 语义上自欺——都在
+		// 启动期拦，不留到运行期静默去重。
+		seen := make(map[string]bool, len(c.Approver.Executor))
+		for i, name := range c.Approver.Executor {
+			if name == "" {
+				return fmt.Errorf("approver.executor[%d] 不能为空串", i)
+			}
+			if seen[name] {
+				return fmt.Errorf("approver.executor 含重复候选 %q", name)
+			}
+			seen[name] = true
 		}
 		for i, r := range c.Approver.Blacklist {
 			// 黑名单是正则，必须在启动期编译校验：运行期才 panic 会让
@@ -568,7 +627,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/console_user/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

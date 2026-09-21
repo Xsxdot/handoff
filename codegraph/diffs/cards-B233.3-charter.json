@@ -1,0 +1,400 @@
+{
+  "view": "cards/B233.3-charter",
+  "base": "124121e4",
+  "summary": "B233.3：能力 client/Transport 接缝、relay 断线语义、建树转发挂卡边界与升级选路；B233.24 锚保鲜：悬空引用改指迁包后当前基线 id（orchestration/workspace/cmd），已吸收或已消亡的引用删除",
+  "nodesAdded": {
+    "m_client_Transport": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 400,
+      "name": "Transport",
+      "file": "internal/client/execution.go",
+      "line": 25,
+      "signature": "type Transport interface {\n\tBaseURL() string\n\tHTTPClient() *http.Client\n}",
+      "summary": "Transport 是直连与 relay 共用的字节通道。HTTPClient 仅供网关原样搬运。",
+      "fields": [
+        [
+          "BaseURL",
+          "func() string",
+          ""
+        ],
+        [
+          "HTTPClient",
+          "func() *http.Client",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "m_client_ExecutionClient": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 401,
+      "name": "ExecutionClient",
+      "file": "internal/client/execution.go",
+      "line": 35,
+      "signature": "type ExecutionClient interface {\n\tDispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, error)\n\tReply(ctx context.Context, taskID, ticketID, answer string) error\n\tContinue(ctx context.Context, taskID, instructions string) error\n\tStop(ctx context.Context, taskID string) (worktreeRemoved bool, err error)\n\tWaitEvent(ctx context.Context, taskID string, all bool) (*proto.Event, error)\n\tFollowEvents(ctx context.Context, taskID string, all bool, idle time.Duration, onEvent func(*proto.Event) error, onBacklog func(*BacklogSummary) error) error\n}",
+      "summary": "ExecutionClient 是 233.1 执行能力在跨机调用面上的类型化入口。",
+      "fields": [
+        [
+          "Dispatch",
+          "func(ctx context.Context, opts DispatchOpts) (*proto.Task, error)",
+          ""
+        ],
+        [
+          "Reply",
+          "func(ctx context.Context, taskID, ticketID, answer string) error",
+          ""
+        ],
+        [
+          "Continue",
+          "func(ctx context.Context, taskID, instructions string) error",
+          ""
+        ],
+        [
+          "Stop",
+          "func(ctx context.Context, taskID string) (worktreeRemoved bool, err error)",
+          ""
+        ],
+        [
+          "WaitEvent",
+          "func(ctx context.Context, taskID string, all bool) (*proto.Event, error)",
+          ""
+        ],
+        [
+          "FollowEvents",
+          "func(ctx context.Context, taskID string, all bool, idle time.Duration, onEvent func(*proto.Event) error, onBacklog func(*BacklogSummary) error) error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_client_WaitDeliveryPolicy": {
+      "kind": "func",
+      "container": "k_client_fn",
+      "order": 400,
+      "name": "WaitDeliveryPolicy",
+      "file": "internal/client/delivery.go",
+      "line": 23,
+      "signature": "func WaitDeliveryPolicy(t proto.EventType) bool",
+      "params": [
+        [
+          "t",
+          "proto.EventType",
+          ""
+        ]
+      ],
+      "returns": "bool",
+      "summary": "WaitDeliveryPolicy 是任务事件消费策略：哪些事件唤醒 wait/follow。不是传输过滤。",
+      "tests": [
+        {
+          "name": "TestWaitDeliveryPolicyMatchesIsDeliverableAlias",
+          "file": "internal/client/execution_test.go:21"
+        },
+        {
+          "name": "TestIsDeliverableAliasesWaitDeliveryPolicy",
+          "file": "internal/client/delivery_internal_test.go:9"
+        }
+      ]
+    },
+    "m_cmd_upgradeDialErr": {
+      "kind": "model",
+      "container": "c_cli",
+      "order": 81,
+      "name": "upgradeDialErr",
+      "file": "cmd/upgrade.go",
+      "line": 81,
+      "signature": "type upgradeDialErr struct{ err error }",
+      "summary": "upgradeDialErr 把升级 client 构造错误延迟到 agentdPeer 方法调用，保持测试接缝签名不变。",
+      "fields": [
+        [
+          "err",
+          "error",
+          ""
+        ]
+      ],
+      "modelKind": "dto"
+    },
+    "n_cmd_upgradeDialErr_Status": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 83,
+      "name": "upgradeDialErr.Status",
+      "file": "cmd/upgrade.go",
+      "line": 83,
+      "signature": "func (u upgradeDialErr) Status(context.Context) (*proto.StatusResp, error) { return nil, u.err }",
+      "returns": "*proto.StatusResp, error"
+    },
+    "n_cmd_upgradeDialErr_PushUpdate": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 84,
+      "name": "upgradeDialErr.PushUpdate",
+      "file": "cmd/upgrade.go",
+      "line": 84,
+      "signature": "func (u upgradeDialErr) PushUpdate(context.Context, string, string, []byte, bool) (*proto.UpdateResp, error) {",
+      "returns": "*proto.UpdateResp, error"
+    },
+    "n_cmd_upgradeDialErr_PullUpdate": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 87,
+      "name": "upgradeDialErr.PullUpdate",
+      "file": "cmd/upgrade.go",
+      "line": 87,
+      "signature": "func (u upgradeDialErr) PullUpdate(context.Context, string, string, bool) (*proto.UpdateResp, error) {",
+      "returns": "*proto.UpdateResp, error"
+    },
+    "n_cmd_upgradeDialErr_RestartAgentd": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 90,
+      "name": "upgradeDialErr.RestartAgentd",
+      "file": "cmd/upgrade.go",
+      "line": 90,
+      "signature": "func (u upgradeDialErr) RestartAgentd(context.Context, bool) (*proto.UpdateResp, error) {",
+      "returns": "*proto.UpdateResp, error"
+    },
+    "n_cmd_upgradeDialErr_WaitVersion": {
+      "kind": "func",
+      "container": "c_cli",
+      "order": 93,
+      "name": "upgradeDialErr.WaitVersion",
+      "file": "cmd/upgrade.go",
+      "line": 93,
+      "signature": "func (u upgradeDialErr) WaitVersion(context.Context, string, time.Duration, time.Duration, bool) error {",
+      "returns": "error"
+    }
+  },
+  "nodesModified": {
+    "m_client_Client": {
+      "kind": "model",
+      "container": "k_client_model",
+      "order": 178,
+      "name": "Client",
+      "file": "internal/client/client.go",
+      "line": 156,
+      "signature": "type Client struct {",
+      "summary": "Client 是 agentd 的 HTTP/WS 客户端，持有服务地址与 Bearer 令牌。 并发安全：baseURL/token/hc 与 WS 节奏字段构造后只读；游标根由 cursorRootOnce 保护，首次调用解析、后续读缓存，可被多个 goroutine 同时使用。",
+      "modelKind": "dto"
+    },
+    "n_client_isDeliverable": {
+      "kind": "func",
+      "container": "k_client_fn",
+      "order": 139,
+      "name": "isDeliverable",
+      "file": "internal/client/client.go",
+      "line": 125,
+      "signature": "func isDeliverable(t proto.EventType) bool",
+      "params": [
+        [
+          "t",
+          "proto.EventType",
+          ""
+        ]
+      ],
+      "returns": "bool",
+      "summary": "isDeliverable 是 WaitDeliveryPolicy 的包内别名。既有 wait/follow/backlog 调用点未迁；策略归属见 WaitDeliveryPolicy（应用，不在传输）。",
+      "tests": [
+        {
+          "name": "TestIsDeliverableAliasesWaitDeliveryPolicy",
+          "file": "internal/client/delivery_internal_test.go:9"
+        }
+      ]
+    },
+    "n_client_NewRelay": {
+      "kind": "func",
+      "container": "k_client_fn",
+      "order": 205,
+      "name": "NewRelay",
+      "file": "internal/client/client.go",
+      "line": 208,
+      "signature": "func NewRelay(d *relay.Dialer, token string) *Client",
+      "params": [
+        [
+          "d",
+          "*relay.Dialer",
+          ""
+        ],
+        [
+          "token",
+          "string",
+          ""
+        ]
+      ],
+      "returns": "*Client",
+      "summary": "NewRelay 创建 relay-backed client，并标记后续传输失败为 ErrTunnelDisconnected。",
+      "tests": [
+        {
+          "name": "TestNewRelayUsesPlaceholderAndDialerTransport",
+          "file": "internal/client/client_relay_test.go:10"
+        },
+        {
+          "name": "TestRelayClosedDispatchIsTunnelDisconnected",
+          "file": "internal/client/execution_test.go:154"
+        },
+        {
+          "name": "TestRelayCanceledDispatchIsNotTunnelOrUnreachable",
+          "file": "internal/client/execution_test.go:173"
+        }
+      ]
+    },
+    "n_client_Client_MarkForwarded": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 326,
+      "name": "Client.MarkForwarded",
+      "file": "internal/client/client.go",
+      "line": 326,
+      "signature": "func (c *Client) MarkForwarded() *Client {",
+      "returns": "*Client",
+      "summary": "MarkForwarded 返回带防环头的副本，并保留 relay 传输失败分类。",
+      "tests": [
+        {
+          "name": "TestMarkForwardedRelayCopyKeepsTunnelSentinel",
+          "file": "internal/client/execution_test.go:189"
+        }
+      ]
+    },
+    "n_client_Client_NoRedirect": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 354,
+      "name": "Client.NoRedirect",
+      "file": "internal/client/client.go",
+      "line": 354,
+      "signature": "func (c *Client) NoRedirect() *Client {",
+      "returns": "*Client",
+      "summary": "NoRedirect 返回禁用重定向且保留 relay 传输失败分类的副本。"
+    },
+    "n_client_Client_do": {
+      "kind": "func",
+      "container": "k_client_Client",
+      "order": 382,
+      "name": "Client.do",
+      "file": "internal/client/client.go",
+      "line": 382,
+      "signature": "func (c *Client) do(ctx context.Context, method, path string, body any) (*http.Response, error)",
+      "params": [
+        [
+          "ctx",
+          "context.Context",
+          ""
+        ],
+        [
+          "method",
+          "string",
+          ""
+        ],
+        [
+          "path",
+          "string",
+          ""
+        ],
+        [
+          "body",
+          "any",
+          ""
+        ]
+      ],
+      "returns": "*http.Response, error",
+      "summary": "do 单次发送带 Bearer token 的请求；relay 非上下文传输失败包装为 ErrTunnelDisconnected，直连包装为 ErrUnreachable。"
+    },
+    "n_agentd_Server_forwardJSON": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1829,
+      "name": "Server.forwardJSON",
+      "file": "internal/agentd/forward.go",
+      "line": 110,
+      "signature": "func (s *Server) forwardJSON(r *http.Request, name string, c *client.Client, token string, body []byte) (status int, headers http.Header, payload []byte, err error)",
+      "params": [
+        [
+          "r",
+          "*http.Request",
+          ""
+        ],
+        [
+          "name",
+          "string",
+          ""
+        ],
+        [
+          "c",
+          "*client.Client",
+          ""
+        ],
+        [
+          "token",
+          "string",
+          ""
+        ],
+        [
+          "body",
+          "[]byte",
+          ""
+        ]
+      ],
+      "returns": "status int, headers http.Header, payload []byte, err error",
+      "summary": "forwardJSON 经目标机客户端发一次有大小上限的 JSON 请求，把完整响应交回调用方。 成功/失败分叉留给调用方：失败原样透传；成功由 handler 挂卡再写响应。本函数不写账本。"
+    },
+    "n_agentd_Server_forwardWorktreeIfRequested": {
+      "kind": "func",
+      "container": "k_agentd_Server",
+      "order": 1830,
+      "name": "Server.forwardWorktreeIfRequested",
+      "file": "internal/agentd/forward.go",
+      "line": 161,
+      "signature": "func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Request) (handled bool, ws *proto.Workspace, cardIDs []string)",
+      "signatureOld": "func (s *Server) forwardWorktreeIfRequested(w http.ResponseWriter, r *http.Request) bool",
+      "params": [
+        [
+          "w",
+          "http.ResponseWriter",
+          ""
+        ],
+        [
+          "r",
+          "*http.Request",
+          ""
+        ]
+      ],
+      "returns": "handled bool, ws *proto.Workspace, cardIDs []string",
+      "summary": "forwardWorktreeIfRequested 是建树请求专用的 ?machine 转发路径。 返回： - handled=false：不是跨机请求，调用方走本机建树 - handled=true 且 ws==nil：已向 w 写入拒绝或目标错误，调用方必须直接 return - handled=true 且 ws!=nil：目标建树成功。本函数不写账本、不写成功响应； copyForwardHeaders 已落到 w。调用方用 cardIDs 挂卡后再 writeJSON。 为什么建树不能走通用的 forwardIfRequested：card_ids 指的是协调者本机账本里的卡。",
+      "tests": [
+        {
+          "name": "TestForwardWorktreeStripsCardIDsAndAttachesLocally",
+          "file": "internal/agentd/forward_test.go:212"
+        },
+        {
+          "name": "TestForwardWorktreeErrorAndCancel",
+          "file": "internal/agentd/forward_test.go:288"
+        }
+      ]
+    }
+  },
+  "edgesAdded": [
+    [
+      "n_client_isDeliverable",
+      "n_client_WaitDeliveryPolicy"
+    ],
+    [
+      "n_agentd_Server_handleProjectWorktreeCreate",
+      "n_agentd_Server_forwardWorktreeIfRequested"
+    ]
+  ],
+  "implementsAdded": [
+    [
+      "m_client_Client",
+      "m_client_Transport"
+    ],
+    [
+      "m_client_Client",
+      "m_client_ExecutionClient"
+    ],
+    [
+      "m_cmd_upgradeDialErr",
+      "m_cmd_agentdPeer"
+    ]
+  ]
+}

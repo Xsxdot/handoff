@@ -283,3 +283,24 @@ describe('immutability', () => {
     expect(after).not.toBe(before)
   })
 })
+
+// —— B358.6 会话 tab 模型分支 ——
+describe('session tab (B358.6)', () => {
+  const content = { kind: 'session' as const, sessionId: 'session:7', title: '架构物理化' }
+  const base: BaseDir = { key: 'session:session:7', kind: 'home', path: '', label: '会话', projectName: '', machine: '' }
+
+  it('dedupKey= session:<id>，与 title 无关', () => {
+    expect(dedupKey(base.key, content)).toBe('session:session:7')
+    expect(dedupKey(base.key, { ...content, title: '改名也不影响去重' })).toBe('session:session:7')
+  })
+
+  it('tabTitle= 会话 · <title>', () => {
+    expect(tabTitle(content, base.label)).toBe('会话 · 架构物理化')
+  })
+
+  it('openOrFocus 全局去重：第二次点击聚焦原 tab 不开新组', () => {
+    const first = openOrFocus(EMPTY_WORKBENCH, base, content)
+    const again = openOrFocus(first, base, { ...content, title: '架构物理化' })
+    expect(again.groups).toHaveLength(first.groups.length)
+  })
+})

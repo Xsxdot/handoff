@@ -5,6 +5,7 @@
 package agentd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -19,6 +20,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/discipline"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/testhttp"
 )
@@ -26,11 +28,13 @@ import (
 // fakeTargetMachine 是一台 httptest 假目标机：/api/status 按给定能力位应答，
 // /api/tasks 记录收到的派发 body 并计数。
 type fakeTargetMachine struct {
-	ts           *httptest.Server
-	mu           sync.Mutex
-	dispatchBody map[string]any
-	dispatches   int
-	capSupported *bool
+	ts            *httptest.Server
+	mu            sync.Mutex
+	dispatchBody  map[string]any
+	dispatches    int
+	capSupported  *bool
+	requests      []string
+	reclaimBodies []map[string]bool
 }
 
 func newFakeTargetMachine(t *testing.T, capSupported *bool) *fakeTargetMachine {
@@ -56,9 +60,28 @@ func newFakeTargetMachine(t *testing.T, capSupported *bool) *fakeTargetMachine {
 			ftm.mu.Lock()
 			ftm.dispatchBody = body
 			ftm.dispatches++
+			ftm.requests = append(ftm.requests, r.Method+" "+r.URL.Path)
 			ftm.mu.Unlock()
 			w.Header().Set("Content-Type", "application/json")
 			fmt.Fprint(w, `{"id":"T-fake-01","state":"running","base_commit":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"}`)
+		case strings.HasPrefix(r.URL.Path, "/api/tasks/") && strings.HasSuffix(r.URL.Path, "/stop") && r.Method == http.MethodPost:
+			ftm.mu.Lock()
+			ftm.requests = append(ftm.requests, r.Method+" "+r.URL.Path)
+			ftm.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"status":"stopped","worktree_removed":false}`)
+		case strings.HasPrefix(r.URL.Path, "/api/tasks/") && strings.HasSuffix(r.URL.Path, "/reclaim") && r.Method == http.MethodPost:
+			var body map[string]bool
+			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+				http.Error(w, "bad reclaim json: "+err.Error(), http.StatusBadRequest)
+				return
+			}
+			ftm.mu.Lock()
+			ftm.requests = append(ftm.requests, r.Method+" "+r.URL.Path)
+			ftm.reclaimBodies = append(ftm.reclaimBodies, body)
+			ftm.mu.Unlock()
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"removed":true,"action":"removed"}`)
 		default:
 			http.NotFound(w, r)
 		}
@@ -76,6 +99,20 @@ func (f *fakeTargetMachine) lastDispatch() map[string]any {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.dispatchBody
+}
+
+func (f *fakeTargetMachine) requestPaths() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.requests...)
+}
+
+func (f *fakeTargetMachine) reclaimForceValues() []map[string]bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]map[string]bool, len(f.reclaimBodies))
+	copy(out, f.reclaimBodies)
+	return out
 }
 
 // registerFakeTarget 把假目标机以直连形态写进 agentd 活配置。
@@ -162,6 +199,70 @@ func TestCardStepDeliversResolvedDiscipline(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatal("未等到带 base_commit 的 dispatched 事件")
+}
+
+func TestB351AgentdStartCardStepAssemblesCompensator(t *testing.T) {
+	env := newNoPTYLedgerEnv(t)
+	env.srv.SetConfigPath(filepath.Join(env.srv.conf().DataDir, "config.yaml"))
+	seedCardWithProject(t, env.srv, "handoff")
+	card, err := env.ledger.GetCard("B1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seedDisciplineOnLedger(t, env, discipline.NameImplement, "B351 实现纪律")
+	yes := true
+	ftm := newFakeTargetMachine(t, &yes)
+	registerFakeTarget(t, env.srv, "fake-01", ftm)
+	if err := env.ledger.LinkTask(card.ID, "fake-01", "T-fake-01", ledger.PurposeImplement, "test"); err != nil {
+		t.Fatalf("预占 task link: %v", err)
+	}
+	runnerCh := make(chan *ledgerstep.StepRunner, 1)
+	env.srv.runStepFn = func(_ context.Context, runner *ledgerstep.StepRunner, _, _ string) {
+		runnerCh <- runner
+	}
+	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+card.ID+"/step",
+		`{"step":"进行中","target":"fake-01","actor":"cli:b351"}`)
+	if code != http.StatusAccepted {
+		t.Fatalf("受理应 202，实得 %d（%s）", code, body)
+	}
+	var runner *ledgerstep.StepRunner
+	select {
+	case runner = <-runnerCh:
+	case <-time.After(2 * time.Second):
+		t.Fatal("未捕获 startCardStep 装配的 runner")
+	}
+	if runner.Dispatcher.Compensate == nil {
+		t.Fatal("startCardStep 装配的 Dispatcher.Compensate 不应为空")
+	}
+	_, err = runner.Dispatcher.ViaTemplate(context.Background(), card, ledgerstep.TemplateDispatch{
+		Template: "feature-impl", Target: "fake-01", Node: "doing",
+	})
+	if err == nil {
+		t.Fatal("重复挂账应使 agentd ViaTemplate 失败")
+	}
+	wantRequests := []string{"POST /api/tasks", "POST /api/tasks/T-fake-01/stop", "POST /api/tasks/T-fake-01/reclaim"}
+	gotRequests := ftm.requestPaths()
+	if len(gotRequests) != len(wantRequests) || gotRequests[0] != wantRequests[0] || gotRequests[1] != wantRequests[1] {
+		t.Fatalf("agentd 补偿请求 = %v，want %v", gotRequests, wantRequests)
+	}
+	bodies := ftm.reclaimForceValues()
+	if len(bodies) != 1 {
+		t.Fatalf("agentd reclaim 请求数 = %d，want 1", len(bodies))
+	}
+	force, ok := bodies[0]["force"]
+	if !ok || !force {
+		t.Fatalf("agentd reclaim force = (%v,%v)，want 存在且为 true", force, ok)
+	}
+	if count, err := env.ledger.PurposeRounds(card.ID, ledger.PurposeImplement); err != nil || count != 2 {
+		t.Fatalf("agentd 失败后的 implement 轮次 count=%d err=%v，want count=2 err=nil", count, err)
+	}
+	links, err := env.ledger.TasksOf(card.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(links) != 1 || links[0].TaskID != "T-fake-01" {
+		t.Fatalf("agentd 失败后的挂账 = %+v，want 预占一行", links)
+	}
 }
 
 // TestStartCardStepRejectsUnsupportedTarget 三态能力位 nil/false 都必须拒发：

@@ -7,14 +7,40 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 )
 
+// shortSockDir 为裁决 socket 选一个短临时目录。
+//
+// newPermServer 对 socket 全路径有 107 字节守卫（perm.go sunPathMax），而
+// t.TempDir() 会把测试名拼进路径，测试名一长就触发守卫报错；TMPDIR 本身
+// 过长时同理。这里按 os.TempDir → /tmp 的顺序取第一个「目录 + /perm.sock
+// 总长不超过 103 字节」的候选（macOS 内核实测 104 字节起 bind 失败，比
+// 107 的生产守卫更紧，统一按 103 预算），都不可用则报错，不静默跳过。
+func shortSockDir(t *testing.T) string {
+	t.Helper()
+	const permSock = "/perm.sock"
+	for _, base := range []string{os.TempDir(), "/tmp"} {
+		dir, err := os.MkdirTemp(base, "agyperm-")
+		if err != nil {
+			continue // base 不可写时退到下一个候选
+		}
+		if len(filepath.Join(dir, permSock)) <= 103 {
+			t.Cleanup(func() { os.RemoveAll(dir) })
+			return dir
+		}
+		os.RemoveAll(dir)
+	}
+	t.Fatal("找不到足够短的裁决 socket 临时目录")
+	return ""
+}
+
 func TestPermServerAskAndRespond(t *testing.T) {
-	sockDir := t.TempDir()
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -74,7 +100,7 @@ func TestPermServerAskAndRespond(t *testing.T) {
 }
 
 func TestAdapterRespondPermissionOnceMapsToAllow(t *testing.T) {
-	sockDir := t.TempDir()
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -139,7 +165,7 @@ func TestAdapterRespondPermissionOnceMapsToAllow(t *testing.T) {
 }
 
 func TestAdapterRespondPermissionRejectMapsToDeny(t *testing.T) {
-	sockDir := t.TempDir()
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -204,7 +230,7 @@ func TestAdapterRespondPermissionRejectMapsToDeny(t *testing.T) {
 }
 
 func TestPermServerRespondNotFound(t *testing.T) {
-	sockDir := t.TempDir()
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -220,7 +246,7 @@ func TestPermServerRespondNotFound(t *testing.T) {
 }
 
 func TestPermServerLargePayloadDecode(t *testing.T) {
-	sockDir := t.TempDir()
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -272,7 +298,7 @@ func TestPermServerLargePayloadDecode(t *testing.T) {
 }
 
 func TestPermServerDisconnectBeforeRespond(t *testing.T) {
-	sockDir := t.TempDir()
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 
@@ -317,7 +343,7 @@ func TestPermServerDisconnectBeforeRespond(t *testing.T) {
 }
 
 func TestAdapterRespondPermissionEmptyReason(t *testing.T) {
-	sockDir := t.TempDir()
+	sockDir := shortSockDir(t)
 	sockPath := filepath.Join(sockDir, "perm.sock")
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 

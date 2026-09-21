@@ -19,6 +19,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -30,6 +31,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/executor/fake"
+	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/permgate"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
@@ -58,12 +60,29 @@ func newTestClientEnv(t *testing.T) *newTestEnv {
 	}
 	t.Cleanup(func() { st.Close() })
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	srv := agentd.NewServer(&config.Config{
+	cfg := &config.Config{
 		Token: testToken, Executor: config.ExecutorConfig{Default: "fake"},
-	}, st, logger)
+	}
+	srv := agentd.NewServer(cfg, st, logger)
+	injectTestManager(t, srv, st, cfg, logger)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &newTestEnv{srv: srv, ts: ts, st: st, home: home, token: testToken}
+}
+
+// injectTestManager 给测试 server 挂真实编排实现（生产同款依赖，见 cmd/agentd.go:236）。
+//
+// B233.28 起任务读路径与 byTask 中间件走 s.mgr，未注入即 503 fail-closed；
+// 本包所有 httptest server 都必须走这里，否则用例整体 503。
+// hub 取 server 自己那个（应答唤醒要落在同一 hub 上）；ads 留空：本包用例不驱动
+// 真实执行者，中继失败因「执行者未注册」确定可判。
+func injectTestManager(t *testing.T, srv *agentd.Server, st *store.Store, cfg *config.Config, logger *slog.Logger) {
+	t.Helper()
+	gate, err := permgate.New(nil, logger)
+	if err != nil {
+		t.Fatalf("permgate.New: %v", err)
+	}
+	srv.SetManager(orchestration.NewManager(st, srv.Hub(), nil, cfg, nil, nil, gate, logger))
 }
 
 // createPendingTask 预置一个 pending 任务并返回其 ID。
@@ -209,6 +228,33 @@ func TestWaitEventSkipsProgress(t *testing.T) {
 	}
 }
 
+func TestB353WaitEventDeliversDeliveryFailedAfterAudit(t *testing.T) {
+	env := newTestClientEnv(t)
+	taskID := env.createPendingTask(t)
+	if _, err := env.st.AppendEvent(taskID, proto.EventTypePermissionAutoAllow,
+		map[string]any{"rule": "safe-command"}); err != nil {
+		t.Fatalf("AppendEvent audit: %v", err)
+	}
+	failed, err := env.st.AppendEvent(taskID, proto.EventTypeDeliveryFailed,
+		map[string]any{"ticket_id": "ticket-1"})
+	if err != nil {
+		t.Fatalf("AppendEvent delivery_failed: %v", err)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	got, err := client.New(env.ts.URL, env.token).WaitEvent(ctx, taskID, false)
+	if err != nil {
+		t.Fatalf("WaitEvent: %v", err)
+	}
+	if got.Seq != failed.Seq || got.Type != proto.EventTypeDeliveryFailed {
+		t.Fatalf("WaitEvent = seq=%d type=%q, want seq=%d type=%q",
+			got.Seq, got.Type, failed.Seq, proto.EventTypeDeliveryFailed)
+	}
+	if got.Payload == nil || string(got.Payload) == "null" {
+		t.Fatalf("delivery_failed payload 被丢失: %s", got.Payload)
+	}
+}
+
 // trackListener 包装 net.Listener，记录每次 Accept 得到的连接，提供 closeAll 强杀全部连接。
 //
 // 为什么需要它：http.Server.Close 不关闭已 hijack 的 WS 连接（net/http 对 hijack 后的
@@ -278,7 +324,9 @@ func TestWaitEventReconnect(t *testing.T) {
 	// 先占一个固定地址，起第一台 server
 	ln := newTrackListener(t)
 	addr := "http://" + ln.Addr().String()
-	srv1 := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	cfg := &config.Config{Token: testToken}
+	srv1 := agentd.NewServer(cfg, st, logger)
+	injectTestManager(t, srv1, st, cfg, logger)
 	hs1 := &http.Server{Handler: srv1.Handler()}
 	done1 := make(chan struct{})
 	go func() {
@@ -310,7 +358,8 @@ func TestWaitEventReconnect(t *testing.T) {
 	if err != nil {
 		t.Fatalf("同地址重启 Listen: %v", err)
 	}
-	srv2 := agentd.NewServer(&config.Config{Token: testToken}, st, logger)
+	srv2 := agentd.NewServer(cfg, st, logger)
+	injectTestManager(t, srv2, st, cfg, logger)
 	hs2 := &http.Server{Handler: srv2.Handler()}
 	go hs2.Serve(ln2)
 	t.Cleanup(func() { hs2.Close() })
@@ -354,7 +403,7 @@ func TestReplyRoundTrip(t *testing.T) {
 	if gerr != nil {
 		t.Fatalf("permgate.New: %v", gerr)
 	}
-	mgr := agentd.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)},
+	mgr := orchestration.NewManager(env.st, env.srv.Hub(), map[string]executor.Adapter{"fake": fake.New(nil)},
 		&config.Config{Token: env.token, DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}},
 		nil, nil,
 		gate,
@@ -378,6 +427,37 @@ func TestReplyRoundTrip(t *testing.T) {
 	}
 }
 
+// TestB2336TypedReplyKeepsTaskTicketBoundary locks the typed client seam used
+// by both question answers and permission replies: task and ticket ownership
+// stay in the URL/body while the answer remains uninterpreted text here.
+func TestB2336TypedReplyKeepsTaskTicketBoundary(t *testing.T) {
+	var gotPath string
+	var gotBody map[string]string
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		if r.Method != http.MethodPost {
+			t.Errorf("Reply method=%s, want POST", r.Method)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&gotBody); err != nil {
+			t.Errorf("解 Reply JSON: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"ok":true}`)
+	}))
+	t.Cleanup(ts.Close)
+
+	if err := client.New(ts.URL, testToken).Reply(context.Background(), "task-current", "ticket-current", "deny:需要更多信息"); err != nil {
+		t.Fatalf("Reply: %v", err)
+	}
+	if gotPath != "/api/tasks/task-current/reply" {
+		t.Fatalf("Reply path=%q, want task-scoped path", gotPath)
+	}
+	want := map[string]string{"ticket_id": "ticket-current", "answer": "deny:需要更多信息"}
+	if !reflect.DeepEqual(gotBody, want) {
+		t.Fatalf("Reply JSON=%v, want %v", gotBody, want)
+	}
+}
+
 // TestReplyRelayFailureSurfacesReason 覆盖 P0-5 的客户端可见性：回答已落库但
 // executor 侧递送失败（无等待者且 manager 未注入，应答未回传 executor）时
 // agentd 返回 502，client.Reply 的错误信息必须携带状态码与 reason——协调者在
@@ -396,8 +476,8 @@ func TestReplyRelayFailureSurfacesReason(t *testing.T) {
 		t.Fatalf("CreateTicket: %v", err)
 	}
 
-	// 未注入 manager（agentd bootstrap 窗口语义）：回答落库后无等待者、
-	// 无中继落点 → 502 + reason
+	// B233.28 后回复走编排门面：已注入 manager、无人等待应答 → 走 RelayAnswer
+	// 自愈中继；本夹具不注册执行者，中继必失败 → 502 + reason（原因确定可判）。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := client.New(env.ts.URL, env.token).Reply(ctx, taskID, "tk-1", "allow")
@@ -407,7 +487,7 @@ func TestReplyRelayFailureSurfacesReason(t *testing.T) {
 	if !strings.Contains(err.Error(), "502") {
 		t.Fatalf("错误应含 502 状态码（非 2xx 才让 CLI 非零退出）, got: %v", err)
 	}
-	if !strings.Contains(err.Error(), "manager 未注入") {
+	if !strings.Contains(err.Error(), "未注册") {
 		t.Fatalf("错误应含中继失败原因（响应体并入错误信息）, got: %v", err)
 	}
 }
@@ -937,6 +1017,124 @@ func TestReclaimUnknownTaskIsNotMistakenForUnsupported(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "不存在") {
 		t.Fatalf("错误应透传服务端真因，实得 %v", err)
+	}
+}
+
+// TestB351StopAndReclaimOrderAndSoftErrors 锁住远端孤儿补偿的真实 HTTP 接缝：
+// Stop 的状态决定是否进入 Reclaim，Reclaim 一律携带 force=true；只有契约规定的
+// 404/旧端不支持是软成功，未知 500 必须保留为错误。
+func TestB351StopAndReclaimOrderAndSoftErrors(t *testing.T) {
+	type testCase struct {
+		name       string
+		stopStatus int
+		reclaim    int
+		listStatus int
+		wantErr    bool
+		wantList   bool
+	}
+	cases := []testCase{
+		{name: "stop 404", stopStatus: http.StatusNotFound},
+		{name: "stop 409 then reclaim 200", stopStatus: http.StatusConflict, reclaim: http.StatusOK},
+		{name: "stop 500", stopStatus: http.StatusInternalServerError, wantErr: true},
+		{name: "stop 200 then reclaim 404", stopStatus: http.StatusOK, reclaim: http.StatusNotFound, listStatus: http.StatusOK, wantList: true},
+		{name: "stop 200 then reclaim 500", stopStatus: http.StatusOK, reclaim: http.StatusInternalServerError, wantErr: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var paths []string
+			var forceValues []map[string]bool
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				paths = append(paths, r.Method+" "+r.URL.Path)
+				switch r.URL.Path {
+				case "/api/tasks/task-b351/stop":
+					status := tc.stopStatus
+					if status == http.StatusOK {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(status)
+						_, _ = w.Write([]byte(`{"status":"stopped","worktree_removed":false}`))
+						return
+					}
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(`{"error":"stop failure"}`))
+				case "/api/tasks/task-b351/reclaim":
+					var body map[string]bool
+					if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+						t.Errorf("解码 reclaim body: %v", err)
+					}
+					forceValues = append(forceValues, body)
+					status := tc.reclaim
+					if status == http.StatusOK {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(status)
+						_, _ = w.Write([]byte(`{"removed":true,"action":"removed"}`))
+						return
+					}
+					w.WriteHeader(status)
+					_, _ = w.Write([]byte(`{"error":"reclaim failure"}`))
+				case "/api/reclaim":
+					if tc.listStatus == http.StatusOK {
+						w.Header().Set("Content-Type", "application/json")
+						w.WriteHeader(http.StatusOK)
+						_, _ = w.Write([]byte(`{"rows":[],"scanned":0}`))
+						return
+					}
+					w.WriteHeader(tc.listStatus)
+				default:
+					t.Errorf("收到意外请求 %s %s", r.Method, r.URL.Path)
+					w.WriteHeader(http.StatusInternalServerError)
+				}
+			}))
+			defer srv.Close()
+
+			err := client.New(srv.URL, "tok").StopAndReclaim(context.Background(), "task-b351")
+			if tc.wantErr && err == nil {
+				t.Fatalf("应返回错误，实得 nil")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("应软成功，实得 %v", err)
+			}
+			if tc.wantErr && strings.Contains(tc.name, "reclaim") && errors.Is(err, client.ErrReclaimUnsupported) {
+				t.Fatalf("未知 reclaim 错误不得判为不支持: %v", err)
+			}
+			wantPaths := []string{"POST /api/tasks/task-b351/stop"}
+			if tc.stopStatus == http.StatusConflict || tc.stopStatus == http.StatusOK {
+				wantPaths = append(wantPaths, "POST /api/tasks/task-b351/reclaim")
+			}
+			if tc.wantList {
+				wantPaths = append(wantPaths, "GET /api/reclaim")
+			}
+			if !reflect.DeepEqual(paths, wantPaths) {
+				t.Fatalf("请求顺序 = %v，want %v", paths, wantPaths)
+			}
+			for i, body := range forceValues {
+				force, ok := body["force"]
+				if !ok || !force {
+					t.Fatalf("第 %d 个 reclaim 请求 force = (%v,%v)，want 存在且为 true；body=%v", i+1, force, ok, body)
+				}
+			}
+		})
+	}
+
+	// 旧 agentd 的 stop 端点可用而 reclaim 两条路由均不存在时，复合操作仍应
+	// 以 ErrReclaimUnsupported 的既有语义收口为软成功。
+	var paths []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		paths = append(paths, r.Method+" "+r.URL.Path)
+		if r.URL.Path == "/api/tasks/task-b351/stop" {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"status":"stopped","worktree_removed":false}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer srv.Close()
+	if err := client.New(srv.URL, "tok").StopAndReclaim(context.Background(), "task-b351"); err != nil {
+		t.Fatalf("旧 agentd reclaim 不支持应软成功: %v", err)
+	}
+	wantPaths := []string{"POST /api/tasks/task-b351/stop", "POST /api/tasks/task-b351/reclaim", "GET /api/reclaim"}
+	if !reflect.DeepEqual(paths, wantPaths) {
+		t.Fatalf("旧 agentd 请求顺序 = %v，want %v", paths, wantPaths)
 	}
 }
 

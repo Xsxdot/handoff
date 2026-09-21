@@ -16,7 +16,7 @@
     }
   ],
   "lifecycle": {
-    "from": "internal/agentd/manager.go#Dispatch",
-    "to": "internal/agentd/manager.go#transit"
+    "from": "internal/orchestration/manager.go#Dispatch",
+    "to": "internal/orchestration/manager.go#transit"
   }
 }

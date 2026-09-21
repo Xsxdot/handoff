@@ -12,8 +12,18 @@ package cmd
 import (
 	"fmt"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
+
+// runContinue 把一次续接指令经执行能力面下发。具名入口（原为 RunE 内联）。
+func runContinue(cmd *cobra.Command, c client.ExecutionClient, taskID, instructions string) error {
+	if err := c.Continue(cmd.Context(), taskID, instructions); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
+	return nil
+}
 
 // continueCmd 向任务续发修改指令，要求任务处于 waiting_review。
 //
@@ -29,11 +39,7 @@ var continueCmd = &cobra.Command{
 			return err
 		}
 		defer cleanup()
-		if err := c.Continue(cmd.Context(), taskID, instructions); err != nil {
-			return err
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
-		return nil
+		return runContinue(cmd, c, taskID, instructions)
 	},
 }
 

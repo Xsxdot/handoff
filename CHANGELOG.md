@@ -10,8 +10,30 @@
 
 ## [Unreleased]
 
+### 新增
+
+- **OpenCode 协调者可挂 `wait --follow`（B373）。** `handoff skill install` 把仓内 monitor 插件写到 `~/.config/opencode/plugins/`（不改 `opencode.json`）。Command Code / Codex 仍走不带 `--follow` 的一次性 wait，每收到一个事件（含工单）就退出。
+
+### 变更
+
+- **会话身份按「人名」落定，端名只做落款（B358.9）。** 控制台发言、已读、收件箱与列表面一律以配置里的 `console_user`（`user:<名>`）判定，机器位 `web:<host>` 退役；端戳取本次登录会话登记的设备名（`handoff console --device`，缺省本机名），只进签名，不参与成员/写权/@ 判定。未配 `console_user` 时写面与读面一律拒收（403 + 文案含 `console_user`，零落账），不再回落机器位。已读水位按人合并：同一人在另一台设备标记已读，各端未读一起归零。控制台新增身份读缝 `GET /api/identity`（`member`/`device`/`configured`），落款显示「人名 · 端名」、端戳缺失只出人名，新建会话表单不再手输群主。
+- **会话可由外部自理的主 agent 发起（B358.9）。** `session create --owner agent:<名>` 建群、`session send --agent <名>` 出示身份发言、`session wait <名>` 订阅自己的 @；`agent:<名>` 走统一记法校验，身份不绑定具体执行器。卡席位（`cli:`）语义与 B366 自助加入路径不变。
+- **`task_mirrored` 只叫醒当前派发（B349）。** `card wait` 与小队自动化都核事件所属卡上最新 `EvDispatched` 的 Attempt/Target，以及账本 `source_task`/`source_target`。旧 attempt、错机器、无当前快照的镜像留账本，不打 stdout、不拉协调者。本机两边 target 都空仍算匹配。
+- **自动化消费水位写在本机 DataDir（B352）。** agentd 重启从 `automation-cursor.json` 续拉，已处理过的卡不会再被全量重放叫醒；崩溃在落盘前允许再醒一次。不进共享账本，不复用 `wait` 游标。
+- **`card wait` 默认一条可动作即退出，`--follow` 才长挂（B353）。** 自动审批、挂账 comment 等审计不再打到 stdout；等人、裁决、房间真人消息、以及 `WaitDeliveryPolicy` 为真的任务镜像才会叫醒。grok / Claude Code 继续一条 `--follow`；opencode / Codex 一次一挂。小队自动化对 `delivery_failed` 与任务 wait 同口径。
+- **派发失败先查状态再决定，不自动认重（B233.7）。** 网络/502 后用 `handoff tasks` / `show` 核对本地与远端，再决定 `dispatch` 或 `resume`；说明书不再保证「再派仍是同一任务」。`reply` 投递失败仍走既有 `resume`。
+- **普通派发改走已确认默认载体，禁止覆盖已绑定载体的机器/引擎/HOME（B233.5）。** `handoff dispatch` 未给 `--receiver` 时使用编制域默认载体；没有有效默认则失败，不再回退 `executor.default` 或裸环境。`--executor` 与载体 CLI 不同会被拒绝，不再单独决定执行落点。全局 `--target` 只选择控制面 agentd，不是执行落点。小队节点仍禁止点名机器/执行器。
+- **跨机失败可区分目标不可达与 relay 隧道断开（B233.3）。** `ExecutionClient` 在 relay 传输失败时返回可 `errors.Is` 的隧道断开哨兵，不再与「机器未登记 / 够不着」混用。跨机建树转发不再由传输层写卡账本；挂卡留在建树 handler，HTTP `CardResults` 不变。
+- **harness 能力归拢（B233.2）。** 审批一次性改走 OneShot 能力面；grok `--effort low` 改为调用方 Limits，不再是 grok 一次性默认。协调 Launch 对未实装协调能力的家返回明确不支持错误（禁止静默兜底到 OpenCode）。隔离 HOME 规则写入改走 Profile，不再写死 `.config/opencode`。`handoff skill install` 不再由调用方持各家路径表。
+- **OpenCode 普通派发改走审批 client 与 RespondAsk（B233.1）。** `permission_reuse` 不再唤醒 `handoff wait`。OpenCode 答问不再走无关联 `Send`。原生免审改为当前政策快照的精确子集（bash 默认 ask，范围内 edit 仍可原生 allow）。拒绝理由不再优先吞掉下一条提问。
+- **Stop/取消不再删除 managed 工作树（B233.4）。** `handoff stop` 与控制台「停止任务」只把任务落 failed，现场留到显式 `handoff reclaim` / `gc` 或归档 `handoff done`。CLI/Web 提示改为留存，不再把 `worktree_removed=false` 说成清理失败。
+
 ### 修复
 
+- **切走终端再回来 TUI 花屏、划不动（B367）。** 后台组叠在原位，不移出视口、不 opacity-0。隐藏组 `pointer-events-none` + `inert`，避免 z-0 的 WebGL 画布抢走滚轮；激活组不加这个类。滚轮跟指针走。组容器 `min-w-0`，进设置再回来不再被画布固有宽撑出一串 SIGWINCH。
+- **审批 client 生产实现迁出 agentd（B233.8）。** OpenCode 派发 / continue / resume 仍注入同一 `ApprovalClient`；`internal/agentd` 只组装。非 OpenCode 权限权威与跨机真机延后 B233.9。
+- **远端落账失败会停孤儿任务并改名重试（B351）。** `ViaTemplate` 在 Transport 成功但本地挂账失败时记独立耗费轮次，`PurposeRounds` 按成功挂账加失败轮次计数；CLI 与 agentd 注入 Stop 后强制 Reclaim，不删分支。跨机真机延后 B233.9。
+- **质量复审 R1–R9 / B350 核销（B233.7）。** 已答提问再抛出时新工单仍能答回原题（持久化原生 QuestionID）；OpenCode 权限回传失败写入既有 `delivery_failed`，`wait` 可见；任务附加纪律随派发写入 Profile 任务层，Verify 验内容且不覆盖全局规则；任务 diff 在 `ResultRef.Commit` 非空时用该 commit。竖切测试与「载体是谁，执行者就是谁」对齐。跨机真机仍延后到全部收尾卡之后。
 - **重启后工作台终端 tab 只增不减（B322）。** 恢复不再把 workspace 活会话收成新组；没有 sessionId 的恢复 tab 不再静默建 shell，只给「重开一个终端」。`targets.local` 指向本机回环时，`scope=all` 不再把本机会话列两遍。存量已炸开的布局不会自动清掉，只是再打开不再涨。
 
 ## [v0.4.1] - 2026-09-04

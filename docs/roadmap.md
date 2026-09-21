@@ -25,6 +25,16 @@
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
 
+## 来自 B376 spec（2026-09-17）
+
+- **`go run github.com/…/codegraph` 认成 codegraph 查询**：会编译，不是只读查询。来源：`docs/superpowers/specs/b376.md` Out of Scope。
+- **`handoff init` 多选审批者**：本期 init 仍问一个；多选用手改 yaml。来源：同上。
+- **每候选单独 `approver.model`**：本期共用一个 model。来源：同上。
+- **剥 `/bin/bash -lc` 再做静默匹配**：不改执行器上报形态。来源：同上。
+- **`find` / `npx vitest` 进白名单**：近 14 天不是噪声源或有副作用面。来源：同上。
+- **`approver_disabled` 改成 wait 可交付**：会碰 B233.1 假集合。来源：同上。
+- **控制台设置页审批者表单**：今天没有；权威是执行机 yaml。来源：同上。
+
 ## 来自 B356 spec（2026-09-11）
 
 - **card wait 持久 cursor / 逐条回放**：建连快照覆盖「挂 wait 前已镜像的子卡工单」；子树成员集动态时 cursor 回放未做。来源：`docs/superpowers/specs/b356.md` Out of Scope（与 B253 同口径）。
@@ -83,6 +93,109 @@
 
 - **首次配置与自动发现基础载体**：发现引擎、登记基础载体、默认载体选择。用户已暂缓；B233.1 只接现有普通派发入口，不改 init / 发现。来源：`docs/superpowers/specs/b233.1.md` Out of Scope；配套讨论在 `2026-09-06-foundation-domain-model-draft.md` §11。
 - **push 责任主体与默认授权**：平台按任务授权统一 push，还是执行者在同一权限模型下 push，尚未裁定。B233.1 不擅改发布路径。来源：同上 spec OOS；模型草案 §7 / §10。
+
+## 来自 B233.3 验收（2026-09-07）
+
+- **relay 连通未验**：本环境无 relay 节点，不发明拓扑。隧道断开 `ErrTunnelDisconnected` 只在机内夹具锁过。来源：B233.3 plan §11.8；acceptance 已验。
+- **未实现自动重试器**：P5-(a) 本卡只锁 `do` 一次 `hc.Do` 与禁标准幂等头；写请求失败后的处置是先查状态，再由协调者决定是否重新派发，不自动认重。来源：拍板 P5；acceptance 已标明。
+- **跨机 Ask/审批/建树 card_ids 未在本 SHA 真机**：对端 agentd 仍是线上二进制，不是功能线。合 main 部署后再验。来源：B233.3 acceptance。
+- **handleProjectWorktreeCreate 缺 why 注释**：review minor，不阻塞。来源：B233.3 review；file `internal/agentd/projectadmin.go`。
+
+## 来自 B233.4 验收（2026-09-07）
+
+- **契约预算未棘轮**：图对账视图已补 Capability / gitCapability / MayRecycle 等符号与 implements；`codegraph check` 仍 5 红（cli→orchestration 15/13、cli→workspace 10/9、gateway→workspace 3/1、orchestration→workspace 41/19、off-interface Capability）。recon 无权改 `target.json`，合 main 时 contract/absorb 再抬。来源：B233.4 图对账-2 `79f9c438`。
+- **真机未在本 SHA**：对端 agentd 仍是线上 `86a08861`，Stop 留存 / reclaim 未对真任务验。合 main 部署后再验。来源：B233.4 acceptance。
+- **assembleResultRef 丢弃引用**：已由 B233.7 核销（`handleTaskDiff` 非空 `ResultRef.Commit` 作 DiffRange head）。来源：独立质量复审 R9；核销 DUT `1ee954d3`。
+- **web Composer.test 未跑**：本机未装 vitest / `@tailwindcss/vite`。来源：B233.4 review-2 minor。
+- **Client.Stop 注释仍写 true=删树**：与 C-6 生产恒 `false` 不完全对齐。来源：B233.4 review-2 minor。
+
+## 来自 B233.2 验收（2026-09-07）
+
+- **真机十六条未在本 SHA**：对端 agentd 仍是线上 `86a08861`。breakdown §5 的本机/linux-01 五家执行、Claude 协调不支持、OpenCode 协调 HOME、审批 OneShot、并发 Overlay、失败 HOME、skill install、免费模型不可用、claude 凭据、EngineOK、ctx 取消、Windows 抽查，合 main 部署后再验。来源：B233.2 acceptance。
+- **Adapter.Prepare/Verify 与 \*Profile 双入口**：各家 Adapter 仍委托 Prepare/Verify，与独立 `*Profile` 并存。来源：B233.2 review-2/3 minor；file `internal/executor/opencode/profile.go`。
+- **HOME 接缝夹具直调 Profile()**：不锁生产 `ProfileFromProvider`。来源：B233.2 review-2/3 minor；file `internal/agentd/coordinator_home_test.go`。
+- **TaskOverlay 无消费者**：已由 B233.7 核销（Dispatch 写入 `ProfileReq.TaskOverlay`，Verify 验内容）。来源：独立质量复审 R6；核销 DUT `1ee954d3`。
+
+## 来自 B233.5 验收（2026-09-07）
+
+- **真机未在本 SHA**：对端 agentd 仍是线上 `86a08861`。默认载体、`--receiver`、禁止物理覆盖、裸派发满员报忙、失败/Stop 释放占用，合 main 部署后再验。来源：B233.5 acceptance。
+- **handleDone 小队成员键无独立缝测**：只靠与 handleStop 共用的 `releaseTaskCarrierOccupancy`。来源：B233.5 review-2 minor。
+- **Web vitest 未跑**：本机缺 pnpm / node_modules。来源：B233.5 implement minor。
+
+## 来自 B233.10 spec（2026-09-10）
+
+- **审批拥有审批事实**：政策、决策、升级、送达确认有唯一归属；harness 只做原生协议转换。第一刀投递/送达归 B233.12（spec 待批）。其余 Hooks（Judge/Transit/Store）随 B233.13；非 OpenCode 权威仍待迁。`AckExecuted` 紧跟回传、不改持久事实。来源：`docs/superpowers/specs/b233.10.md` Out of Scope；B233.12。
+- **OpenCode Continue 热加载**：生产 `probeServeReloadsConfig` 恒 false，Continue 无条件 `ApplySnapshot` 会失败。不要跳过快照（原生 allow 可能宽于新政策）；要有真实重载证据或重启 serve。来源：`4485a4e7` 审查 P1-6；B233.12 OOS。
+- **B233.12 真机未验**：接缝测试与变异已过；未跑真实 OpenCode 会话确认免审只回传一次、无假 `delivery_failed`。来源：B233.12 acceptance 2026-09-11。
+- **工作区能力主体迁出 agentd**：`gitCapability` 仍转调 agentd 包级函数，属 B233.4 声明的中间态——已由 B233.15（spec 2026-09-11）承接：git/工作区实现文件整包迁进 `internal/workspace`。搬后残余见「来自 B233.15 spec」段。来源：同上。
+- **ExecutionClient 成为生产消费类型**：接口与编译断言已在，生产调用方仍持有聚合 `*client.Client`。来源：同上。
+- **全仓 internal/ 按 best.json 重排**：物理搬家仍暂缓，目录是结果不是手段。来源：同上。
+
+## 来自 B233.17 spec（2026-09-12）
+
+- **SetupAutomation 里房间 / keystone / hostapi 的构造仍在 gateway 文件**：本卡只让处理请求的函数退出免检名单，不把这三处 `New` 上移 `cmd`。B233.14 已划出。要收口时从本条重走 spec。来源：`docs/superpowers/specs/b233.17.md` Out of Scope。
+- **非 12–16 方向的老债配额**：`d_gateway → d_ledger` 17、`d_cli → d_policy` 32 等本卡不清零。棘轮只覆盖 12–16 交出的有门面方向。来源：同上。
+- **全仓 internal/ 按 best.json 重排**：本卡再确认不做（只封已迁出的四包）。原条见「来自 B233.10 spec」。
+
+## 来自 B233.17 验收（2026-09-13，DUT `53bbce50e`，合线 absorb 同提交）
+
+- **真机 OpenCode 会话未验**：结构闸，无用户可观察行为变更；acceptance 用既有 HTTP 级测试代替 live。来源：B233.17 plan §10；acceptance 口径。
+- **`codegraph check` 仍 6 红（P1-A）**：3 条 dead-entry（`orchestration.Manager` / 包级 / 实体 在 `d_orchestration` 找不到——`best.json` 仍把容器归 `d_coordination_task`）+ 3 条 over-budget（gateway→orchestration 296/0、orchestration→workspace 9/0、workspace→orchestration 3/0）。本卡不改 `best.json`/`baseline` 重扫。吸图后 dead-interface `OrchestrationClient` 消失（合前无视图 7 红 → 合后 6 红）。来源：finish 合线后 `codegraph check`。
+- **`codegraph validate` 完整性问题 ~130**：基线文件锚滞后（handler 仍有节点写 `server.go`）。视图 `nodesModified` 已吸进基线，未做全仓重扫。来源：图对账 minor；finish validate。
+- **合后全量测试存量红（非本卡引入）**：`TestRepoContractGate`、`TestLegacyNodeEventSequenceUnchanged`、`TestServePermissionHookDenyWithReasonAndStep0`、agy permission 族、`TestCoordinatorCancelTurnUsesSessionID`、hostapi wakehome 两条。与 B233.13/14 合线后分类一致。`TestB23317*` 与 `TestCLIExecutionSurfaceGuardHasTeeth` 绿。
+- **`d_policy` / `d_maintenance → d_transport`**：本卡复核，无新增执行面消费点，数字不动。来源：contract §6；B233.16 spec 交办。
+
+## 来自 B233.16 spec（2026-09-11）
+
+- **非执行能力面的消费点收窄**：B233.16 只覆盖「一次任务/卡节点执行闭环」这条缝。仍持聚合 `*client.Client` 且无卡承接的：任务事件镜像（`internal/ledgermirror` 的 `Machines.For`/`Source` 做 `StreamEventsOnce`/`ListTasks`）、PTY（`internal/agentd` 的 coordinator PTY 路径）、预览、回收、项目、机器、会话、升级，以及纯查询命令（`tasks`/`show`/`diff`/`attach`/`frames`/`footprint` 等）。这些面要各自按使用方声明能力接口（如事件流需另立订阅缝），单独定性。来源：`docs/superpowers/specs/b233.16.md` Out of Scope。
+- **其余入传输边的 entries 复核**：~~`d_cli`/`d_gateway`/`d_ledger` → `d_transport` 三条边由 B233.16 按现实棘轮更新~~（**注**：原表述沿用了 spec 的错误，`d_ledger→d_transport` 在图中**不存在**，见「来自 B233.16 验收」段与 spec 勘误；B233.16 实际只动了 `d_gateway→d_transport` 的 entries）；仍有效的是后半：`d_policy`/`d_maintenance` → `d_transport` 两条边（预算 2/3）不在 B233.16 清单内，留 B233.17 棘轮时逐条复核是否也含执行面消费点。**B233.17 已复核：无新增执行面消费点，数字不动。** 来源：同上；`codegraph/target.json`；B233.16 验收校正；B233.17 contract。
+
+## 来自 B233.16 验收（2026-09-12，DUT `3041605d`）
+
+- ~~**T3 守卫的包级漏判盲点**~~：**B233.17 已修**（`executionSurfaceViolations` 按花括号深度重置函数名；`TestCLIExecutionSurfaceGuardHasTeeth` 可变红）。原条见 B233.16 验收；正主收口在 B233.17 W3。
+- **本卡的「行为不变」未在部署环境验证**：B233.16 的生产改动（8 组合接口 + 9 具名入口 + `StepRunner.Clients` 收窄）全在类型/结构层、方法体逐字搬运（contract §2.1.3 逐文件复核），且分支未合入功能线 → agentd 二进制不含本卡代码，真机行为**不可得**。合并部署后应确认：`dispatch`/`card dispatch`/`reply`/`continue`/`stop`/`wait`（三形态）与 `card step` 的 stdout、退出码、HTTP 路径与今日逐字一致。来源：B233.16 breakdown §6；acceptance 判定。
+- **基线 flaky（非本卡引入，待登记观察）**：全量 `go test ./...` 两次跑出的失败集合不稳定——BASE（起点 `4bdd8bcd`）11 条 vs HEAD（`3041605d`）9 条，其中 `TestWakeHomeReadyRequiresTurnOutputNotCredFile`、`TestWakeHomeSuppliesMainCredentialBeforeTurn` 只在 BASE 红（HEAD 绿），另一次 HEAD 跑到 20 条（含 opencode/hostapi 的 permission 族）。判据：**只在 HEAD 红 = 空**（本卡零新增红）；但 flaky 本身值得单独定性（`internal/hostapi`、`internal/executor/opencode`、`internal/agentd` 的 wakehome 族）。来源：B233.16 acceptance 复跑对照。
+- **跨节点事实不继承（流程改进）**：`--deny --reason` 的理由只回到**当前任务**的 executor；每个节点是全新会话，同一事实（如「本机 `codegraph` 在 PATH，勿用 `go run`」）需要在每个节点重复驳回。B233.16 的 plan 与 review 两轮各被驳回一次。要根治需把这类「本机工具链事实」写进**纪律块或项目文档**（跨任务可见）。来源：B233.16 acceptance 观察。
+- **★ 测试必须串行跑（finish 阶段实测的环境判据）**：合并后在本机跑 `go test ./cmd/ ./internal/agentd/ ./internal/ledgerstep/`（**默认并行**）出现**上百条假红**（`TestStopCLIRetainCopy`、`TestStatusJSON`、`TestSquadListRendersTableAndJSON` 等大批本应绿的用例）；改 `-p 1` 串行后红集合立刻回落到与验收基线**逐名一致**的三条存量红。根因：本机 agentd 常驻 + 三包并发争抢同一批资源（HOME/端口/数据目录）。**判据：本仓跑多包测试一律加 `-p 1`**，否则绿红不可信。来源：B233.16 finish 合后全量对照。
+
+## 来自 B233.15 spec（2026-09-11）
+
+- **工作区域剩余文件的迁包**：B233.15 只搬 git/工作区实现文件（`workspace.go`、`manualworktree.go`、`workspaceprobe.go`、`gitroot.go`、`gitignore.go`、procgroup），下列仍留在 `internal/agentd`，本卡只改它们的调用点：项目登记（`projectadmin.go`，best 已归 `k_agentd_projectIndex`→`d_workspace`）、镜像 bundle（`bundle.go`，已归 `k_agentd_Mirror`）、回收编排（`reclaim.go`）、预览仓主（`preview_owner.go`）。来源：`docs/superpowers/specs/b233.15.md` Out of Scope。
+- **`d_workspace→d_orchestration` 预算清零**：B233.15 把 `k_agentd_Mirror`/`k_agentd_projectIndex` 的消费点同域化后，该方向的两条边应消失；预算与 entries 的收尾（含 `.13` 迁包后的 `d_gateway→d_orchestration`）留 B233.17 一次棘轮到门面。**实况更正（finish）**：absorb 后该方向仍有 3 条直调边（3/2 超预算），未清零——spec 预期偏乐观，棘轮时需逐条看这 3 条是残留还是新形态。来源：同上；`codegraph/target.json`。
+
+## 来自 B233.15 验收（2026-09-11，DUT `a1b59515`）
+
+- **diff 三连点语义无测试锁定**：`Diff`/`DiffRange` 用 `base...head`（只显示本分支改动），变异成 `base..head` 后 `TestDiffShowsCommits` 仍绿——该用例的 base 分支在分支后没动过，两种点法结果相同。真机取证：base 前进后两连点会把 base 的改动显示成本分支的删除。既有盲区（起点 `bdeda1e9` 同形态），非本卡引入；补一支「base 前进后 diff 不含 base 改动」的用例即可锁死。来源：B233.15 验收变异复验；file `internal/workspace/gitworkspace.go`。
+- **macOS 下 cmd 包既有红**：`TestServePermissionHookDenyWithReasonAndStep0` 在 `t.TempDir()` 下 bind unix socket 报 `invalid argument`（路径长度超限），起点 `bdeda1e9` 同样失败。来源：B233.15 验收复跑。
+- **plan §2.1 冻结签名表陈旧**：已由 B233.15 finish 核销（`224861e4` 同步签名表、改写表与实况注记，spec 现状锚一并改指迁移后位置，两文档锚点自检 exit 0）。来源：B233.15 review-2 minor。
+- **本卡带来的 5 条 over-budget 待棘轮（DUT `03005e58`）**：absorb 后 `codegraph check` fails=5，全部是预算未抬——`d_cli→d_workspace` 11/9、`d_gateway→d_workspace` 17/1、`d_orchestration→d_workspace` 49/19、`d_workspace→d_orchestration` 3/2、`d_workspace→d_protocol` 23/3。根因：符号随实现迁入 `d_workspace`，跨域边计数整体上移，而 `target.json` 预算未动（用户裁决跳过 contract，spec 明文「预算数字归 contract 落地」）。正主是 **B233.17**（卡名即「预算棘轮」）；absorb 前后 fails 逐项一致，非本卡新增违规。来源：B233.15 finish；`codegraph/target.json`。
+
+## 来自 B233.11 spec（2026-09-10）
+
+- **占用记录写入 task/machine owner，再按 owner 回收**：AdmitFrozen→CreateTask 崩溃窗口与本机终态漏释放，不能靠「本机任务表没有 owner」去清共享键。B233.11 只禁止跨机误清。来源：`docs/superpowers/specs/b233.11.md` Out of Scope。
+
+## 来自 B233.10 验收（2026-09-10，DUT `4e39434f`）
+
+- **真机/跨机矩阵未在本 SHA**：对端 agentd 仍是线上 `86a08861`，不是功能线。plan §9 未跑：本地 squad A/B 精确冻结与满载、origin→linux-01 跨机 HTTP、adapter start failure 真实进程、AdmitFrozen→CreateTask 前后及 agentd 重启三个窗口、Done/Stop/重复 Done/Continue/Resume 真实 CLI、direct carrier dispatch 与 queue 满载、Linux/macOS/Windows 矩阵。合 main 部署后再验。来源：B233.10 plan §9；acceptance。
+- **冻结空 Model 的 acquire 成功日志仍打印当前载体 Model**：最终快照日志已是冻结值，acquire 成功那行口径不一致。review-4 minor，不阻塞。来源：B233.10 review-4；file `internal/scheduling/scheduling.go`。
+- **TestLegacyNodeEventSequenceUnchanged 基线已红**：`comment`/`dispatched` 序在 charter-5 / `3fd6874f` 即红，非本卡引入。来源：B233.10 acceptance 复跑。
+
+## 来自 B233.13 验收（2026-09-12，DUT `f74c347d`）
+
+- **cards-B233.4 视图失效边**：`codegraph validate` 2 红，`n_agentd_Manager_appendGCWorktreesExecute` 仍锚 `internal/agentd/gc.go`，实体已随本卡迁到 `internal/orchestration/gc.go`。本卡不 absorb 他卡图。来源：B233.13 review-3 major；acceptance 复跑 validate exit 1。
+- **完整图重扫未做 / absorb 拒收**：合进功能线后 `codegraph absorb cards-B233.13-charter` 拒收——视图仍引用 B233.15 已迁走的 `n_agentd_PrepareWorkspace` / `classifyWorktree` 等节点。`check` 仍有 `dead-interface OrchestrationClient`。正主是重扫或重写本卡视图后再 absorb，不在本卡造假基线。来源：B233.13 finish；DUT merge `78425778`。
+- **transitClaim 早幂等 / CAS-loser 重读无独立缝测**：handler `Claimed` 门变异已红（`TestB23313ConcurrentDoneReleasesOnce` before=v1 after=v3）。协调者把 CAS-loser `return true` 变异后 B23313ConcurrentDone 仍绿。来源：review-3 minor；acceptance 复验。
+- **真机 OpenCode 未验**：并发 Done 只核过夹具；未跑真实会话。来源：B233.13 acceptance；用户未要求 live OpenCode。
+
+## 来自 B233.14 验收（2026-09-12，DUT `d8931e96`，合线 absorb `9d785ae5`）
+
+- **真机 OpenCode / 空 HOME 真机派发未验**：空 HOME×纪律只核过夹具。来源：B233.14 plan §6；acceptance 未跑 live。
+- **taskProfileHome 图覆盖债**：写入点助手在 `internal/orchestration`，B233.13 视图未 absorb，本卡 baseline-relative 视图不能重复声明 `k_orchestration_fn`。合线后 B233.14 absorb 已过（+2 节点）；orchestration 函数组仍靠 13 重扫。来源：B233.14 图对账。
+- **TestRepoContractGate dead-interface OrchestrationClient**：B233.13 absorb 拒收遗留。来源：B233.13 finish；B233.14 合后全量仍红。
+
+## 来自 B353 spec（2026-09-09）
+
+- **两次 wait 之间无人订阅的真空**：一次性 wait 退出到下一挂之间没人听事件（08-11 曾空转 7h）。本卡不另开实现、不做常驻订阅者；grok/Claude 走 `--follow` 避开真空，opencode/Codex 接受偶发。若以后做 handoff 进程内常驻订阅，从本条重走 spec。来源：`docs/superpowers/specs/b353.md` Out of Scope。
 
 ## 来自 B203 spec（2026-08-23）
 
@@ -674,6 +787,16 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **`CreatePtySessionReq` 增加通用 env 字段或桌面标记**。本卡写死在目标机 Env 末尾，不改 HTTP 契约。来源：同上。
 - **给已经在跑的 PTY 补注入**。重开终端。来源：同上。
 - **未升级的旧 agentd 上让 Grok 发 OSC 52**。注入发生在目标机 fork；旧二进制没有这颗变量。来源：同上。
+
+## 来自 B374 acceptance（2026-09-16，真机未验）
+
+- **366 房间首屏 ≤2s / card wait 秒级**：机内 httptest 不代替真负载。来源：B374 spec US1/US2。
+- **真桌面端 426 呈现**：旧客户端无 `limit`/`cursor` 的 HTTP 426 机内已锁；桌面 UI 文案未真机。来源：B374 spec US5。
+- **真 Attach RPC 从 800+ 降到本页**：限域入参机内计数已锁；relay 实况未验。来源：B374 spec 刷新限域。
+- **linux-01 镜像 `context deadline exceeded` 归因**：机内仅证发现循环与房间刷新无共享锁。来源：B374 契约欠账 8。
+- **launchd 下 agentd.log 单写与 100MB×5 轮转实况**：logx 单写/轮转机内已锁；launchd 重定向实况未验。来源：B374 F20/F21。
+- **Windows 轮转改名句柄**：未验。来源：B374 拆解族 3。
+- **b358 §4.4 文档修订**：本树无该文档；已在 b156.2 两处加废止注。来源：B374 欠账 9 / 拍板 P-1。
 
 ## 来自 B289 残余（2026-08-28，B274 移植轮登记）——本期不做、后续要做
 

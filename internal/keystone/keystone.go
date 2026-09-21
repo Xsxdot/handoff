@@ -302,8 +302,13 @@ func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) ke
 // briefing 把开场评估要读的东西拼成回合简报：卡字段、基线新鲜度、本次积压
 // 事件。以 ledger 为准不信记忆——每回合重读，天然幂等。
 func (s *Service) briefing(card string, evs []WakeEvent) string {
-	b := "你是本卡的机器协调者。醒来第一件事：读卡、查依赖、看基线新鲜度；" +
-		"不适合现在推就在房间说明原因并休眠。\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
+	b := "你是本卡的机器协调者。**你是一次性回合**：没有交互窗口，本轮跑完即结束；" +
+		"下一次有事会被再次唤醒（续跑同一会话）。\n" +
+		"醒来第一件事：读卡、查依赖、看基线新鲜度；要推动工作流就用 `handoff card ...` 命令" +
+		"（派发、移列、记笔记都在它里面）。\n" +
+		"需要人知道的事**发到 IM 房间**：`handoff session send <会话> <正文>`" +
+		"（本卡所在会话可用 `handoff session list` 找到，会话条目里列着本卡）。" +
+		"不适合现在推就在房间说明原因并结束本轮。\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
 	if c, err := s.ledger.GetCard(card); err == nil {
 		b += "- 标题：" + c.Title + "\n"
 	}

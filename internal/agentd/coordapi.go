@@ -29,6 +29,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // errNoCoordinatorSquad 表示仓内没有 role=coordinator 的小队（岔口四 B：不做出厂
@@ -184,12 +185,11 @@ func (s *Server) handleCoordRebind(w http.ResponseWriter, r *http.Request) {
 		ledgerErr(w, err)
 		return
 	}
-	_, tabLive := s.coordinatorTab(id)
-	if card.DriverSession == "" && card.DriverSource == "" && !tabLive {
+	if card.DriverSession == "" && card.DriverSource == "" {
 		writeErr(w, http.StatusConflict, fmt.Errorf("卡 %s 为空座，请使用 card bind 或 card coordinate", id))
 		return
 	}
-	if card.DriverSession == "" && !tabLive {
+	if card.DriverSession == "" {
 		err := fmt.Errorf("卡 %s 的旧席位缺少身份，不能直接换绑", id)
 		s.log.Warn("协调者换绑被拒：存量席位身份为空", "card", id, "source", card.DriverSource, "cause", err)
 		writeErr(w, http.StatusConflict, err)
@@ -256,16 +256,20 @@ func (s *Server) handleCoordForget(w http.ResponseWriter, r *http.Request) {
 // （SessionSpec.Workdir=项目位置根）。解析不到不阻断拉起（置空由承载层缺省），
 // 只留日志——plan §D5.2 的 best-effort 定案。
 func (s *Server) resolveCoordWorkdir(cardID string) string {
+	if s.mgr == nil {
+		// best-effort 解析：缺 manager 只留空，由承载层缺省决定工作目录
+		return ""
+	}
 	card, err := s.ledger.GetCard(cardID)
 	if err != nil {
 		return ""
 	}
-	entries, err := s.st.ListProjectLocations()
+	entries, err := s.mgr.ListProjectLocations()
 	if err != nil {
 		s.log.Warn("协调者工作目录解析失败：列项目位置出错", "card", cardID, "cause", err)
 		return ""
 	}
-	loc, err := resolveProject("", card.Project, entries)
+	loc, err := workspace.ResolveProject("", card.Project, entries)
 	if err != nil {
 		s.log.Warn("协调者工作目录解析失败：项目未登记", "card", cardID, "project", card.Project, "cause", err)
 		return ""

@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 type previewStatic struct {
@@ -22,7 +24,7 @@ type previewStatic struct {
 }
 
 // NewPreviewStaticServer returns the production owner-side static server.
-func NewPreviewStaticServer(log *slog.Logger) PreviewStaticServer {
+func NewPreviewStaticServer(log *slog.Logger) workspace.PreviewStaticServer {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -34,7 +36,7 @@ func (s *previewStatic) Start(ctx context.Context, workspaceRoot, relativePath s
 	if err != nil {
 		return "", nil, fmt.Errorf("解析静态服务 workspace root: %w", err)
 	}
-	if _, err := validatePreviewRelativePath(root, relativePath); err != nil {
+	if _, err := workspace.ValidatePreviewRelativePath(root, relativePath); err != nil {
 		return "", nil, err
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")

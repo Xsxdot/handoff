@@ -20,6 +20,7 @@ import (
 //  3. 帧形状与本机任务无差别（能直接 json.Unmarshal 成 proto.Event）
 func TestMirrorWSReplaysAndLive(t *testing.T) {
 	env := newTestAgentdEnv(t)
+	ensureTestManager(t, env)
 	taskID := uuid.NewString()
 	now := time.Now().UTC()
 	if err := env.st.UpsertMirrorTask("devbox", proto.Task{

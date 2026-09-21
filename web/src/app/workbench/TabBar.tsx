@@ -10,11 +10,11 @@
 // 本组件不持有布局状态（dropWarning 告警文案除外）。pane 内没有 tab row；
 // 每列最多两格的布局约束由 WorkbenchPage/tabs.ts 负责。
 import { Fragment, useState, type DragEvent } from 'react'
-import { FileText, Plus, Terminal, X } from 'lucide-react'
+import { FileText, MessagesSquare, Plus, Terminal, X } from 'lucide-react'
 import dispatchTaskUrl from '../../assets/dispatch-task.png'
 import { launchersFor, pickItemsFor, type LauncherItem, type PickKind } from './BlankTab'
 import { IconMenu, type IconMenuItem } from '../lib/IconMenu'
-import { DRAG_GROUP_MIME, readDragGroup } from './paneDrop'
+import { DRAG_GROUP_MIME, DRAG_SESSION_MIME, readDragGroup, readDragSession } from './paneDrop'
 import { tabTitle, type BaseDir, type Tab, type TabContent, type TabGroup } from './tabs'
 import { cn } from '@/lib/utils'
 
@@ -33,6 +33,9 @@ export interface TabBarProps {
   terminalUnavailable?: string
   onNewGroup: () => void
   onMoveGroup: (sourceGroupId: string, targetGroupId: string, zone: 'left' | 'right' | 'center') => void
+  // 会话 MIME 投到组标签 = 该组内打开（B358.8 #1）。去重/移动语义由持有布局的
+  // 上层（WorkbenchPage）承接；不传不挂分支，既有调用面零波及。
+  onDropSession?: (source: { sessionId: string; title: string }, groupId: string) => void
 }
 
 function groupContentCount(group: TabGroup): number {
@@ -62,12 +65,15 @@ function groupLabel(group: TabGroup, focused: Tab | null, taskName?: (taskId: st
 }
 
 // TabTypeIcon 按焦点内容种类映射图标：tui 用 dispatch-task 资产图标（与原型的
-// 图标映射一致），terminal/file 用同形线性图标，空组/空白仍用 + 作为内容类型提示。
+// 图标映射一致），terminal/file/session 用同形线性图标，空组/空白仍用 + 作为
+// 内容类型提示。session 不落 default 的 +：走查（B358.8 #5）把会话 tab 的
+// 缺省加号误读成「新建」按钮，改用会话语义图标。
 function TabTypeIcon({ content }: { content: TabContent | null }) {
   switch (content?.kind) {
     case 'tui': return <img src={dispatchTaskUrl} className="size-[15px]" alt="" />
     case 'terminal': return <Terminal className="size-[15px]" />
     case 'file': return <FileText className="size-[15px]" />
+    case 'session': return <MessagesSquare className="size-[15px]" />
     default: return <Plus className="size-[15px]" />
   }
 }
@@ -98,7 +104,7 @@ function TabClose({ label, onClose }: { label: string; onClose: () => void }) {
 
 export function TabBar({
   groups, activeGroupId, base, taskName, onActivateGroup, onCloseGroup, onNew, onNewLauncher,
-  launchers = [], terminalUnavailable, onNewGroup, onMoveGroup,
+  launchers = [], terminalUnavailable, onNewGroup, onMoveGroup, onDropSession,
 }: TabBarProps) {
   const [dropWarning, setDropWarning] = useState<string | null>(null)
 
@@ -141,12 +147,24 @@ export function TabBar({
                 event.dataTransfer.effectAllowed = 'move'
               }}
               onDragOver={(event) => {
-                if (!event.dataTransfer.types.includes(DRAG_GROUP_MIME)) return
+                const types = event.dataTransfer.types
+                if (!types.includes(DRAG_GROUP_MIME) && !types.includes(DRAG_SESSION_MIME)) return
                 event.preventDefault()
                 event.dataTransfer.dropEffect = 'move'
               }}
               onDrop={(event) => {
-                if (!event.dataTransfer.types.includes(DRAG_GROUP_MIME)) return
+                const types = event.dataTransfer.types
+                // 会话行投到组标签：作为该组新 tab 打开（去重在上层 dropSessionIntoGroup）。
+                if (types.includes(DRAG_SESSION_MIME)) {
+                  if (!onDropSession) return
+                  event.preventDefault()
+                  const source = readDragSession(event.dataTransfer.getData(DRAG_SESSION_MIME))
+                  if (!source) return
+                  setDropWarning(null)
+                  onDropSession(source, group.id)
+                  return
+                }
+                if (!types.includes(DRAG_GROUP_MIME)) return
                 event.preventDefault()
                 const source = readDragGroup(event.dataTransfer.getData(DRAG_GROUP_MIME))
                 if (!source || source.groupId === group.id) return

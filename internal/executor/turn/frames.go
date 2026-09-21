@@ -88,7 +88,7 @@ func NewFrameWriter(taskDir string, log *slog.Logger) (*FrameWriter, error) {
 // writerRegistry 是进程级共享 FrameWriter 的注册表：按解析后的任务目录去重。
 //
 // 为什么必须共享而不是每次新建：adapter 在 Start 时持有一个长命的 FrameWriter
-// （r.frames），而 agentd 的事件钩子（eventFrameHook）每收到一个事件也要往
+// （r.frames），而编排包的事件钩子（orchestration.EventFrameHook）每收到一个事件也要往
 // 同一个 frames.jsonl 写 event 引用帧。若钩子每次自己 New 一个 writer，两个实例
 // 各持一份内存 seq，写同一文件就会互相覆盖帧号（落盘 1 2 3 3）。
 //

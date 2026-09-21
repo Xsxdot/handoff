@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"testing"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/config"
 )
 
@@ -21,6 +22,8 @@ func TestNewDirect(t *testing.T) {
 	if got := c.BaseURL(); got != "http://10.0.0.2:7777" {
 		t.Fatalf("baseURL = %q，要 http://10.0.0.2:7777", got)
 	}
+	var _ client.ExecutionClient = c
+	var _ client.Transport = c
 }
 
 // TestNewRelay：relay target → relay-backed client（baseURL 恒为 loopback 占位）。
@@ -43,6 +46,8 @@ func TestNewRelay(t *testing.T) {
 	if got := c.BaseURL(); got != "http://localhost" {
 		t.Fatalf("baseURL = %q，relay 形态要 http://localhost", got)
 	}
+	var _ client.ExecutionClient = c
+	var _ client.Transport = c
 }
 
 // TestNewNoEndpoint：既无 addr 又无 relay → ErrNoEndpoint，且错误里点名是哪台。

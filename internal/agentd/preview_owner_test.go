@@ -18,6 +18,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/testhttp"
+	"github.com/Xsxdot/handoff/internal/workspace"
 	"github.com/coder/websocket"
 )
 
@@ -39,7 +40,13 @@ func (s *previewStaticStub) Start(context.Context, string, string) (string, func
 	}, nil
 }
 
-func newPreviewOwnerEnv(t *testing.T) (*testAgentdEnv, *PreviewOwner) {
+func newPreviewOwnerEnv(t *testing.T) (*testAgentdEnv, *workspace.PreviewOwner) {
+	return newPreviewOwnerEnvWithIDs(t, nil)
+}
+
+// newPreviewOwnerEnvWithIDs 允许测试按顺序钉住会话 ID；队列耗尽后重复最后一个
+// （等价于旧写法里在两次 Create 之间改写 owner.deps.NewID）。
+func newPreviewOwnerEnvWithIDs(t *testing.T, ids []string) (*testAgentdEnv, *workspace.PreviewOwner) {
 	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "handoff.db"))
@@ -58,9 +65,21 @@ func newPreviewOwnerEnv(t *testing.T) (*testAgentdEnv, *PreviewOwner) {
 	}
 	now := time.Date(2026, 8, 29, 1, 2, 3, 0, time.UTC)
 	static := &previewStaticStub{}
-	owner := NewPreviewOwner(env.st, NewPreviewHub(previewTestLogger(t)), PreviewOwnerDeps{
+	newID := func() string { return "preview-test" }
+	if len(ids) > 0 {
+		i := 0
+		newID = func() string {
+			if i >= len(ids) {
+				i = len(ids) - 1
+			}
+			id := ids[i]
+			i++
+			return id
+		}
+	}
+	owner := workspace.NewPreviewOwner(NewPreviewStore(env.st), workspace.NewPreviewHub(previewTestLogger(t)), workspace.PreviewOwnerDeps{
 		Now:   func() time.Time { return now },
-		NewID: func() string { return "preview-test" },
+		NewID: newID,
 		Getwd: func() (string, error) { return root, nil },
 		ProbePort: func(_ context.Context, port int) error {
 			if port != 5173 {
@@ -154,25 +173,6 @@ func TestPreviewOwnerHTTPCreateListClose(t *testing.T) {
 	}
 }
 
-func TestDefaultPreviewWorkspaceResolverReadsGitMetadata(t *testing.T) {
-	repo := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/handoff.git")
-	gitAt(t, repo, "checkout", "-q", "-b", "feature/preview")
-
-	root, origin, branch, err := defaultPreviewWorkspaceResolver(context.Background(), func() (string, error) {
-		return repo, nil
-	})
-	if err != nil {
-		t.Fatalf("resolve workspace: %v", err)
-	}
-	wantRoot, err := filepath.EvalSymlinks(repo)
-	if err != nil {
-		t.Fatalf("eval repo: %v", err)
-	}
-	if root != wantRoot || origin != "git@github.com:Xsxdot/handoff.git" || branch != "feature/preview" {
-		t.Fatalf("workspace metadata root=%q origin=%q branch=%q want root=%q", root, origin, branch, wantRoot)
-	}
-}
-
 func TestPreviewOwnerPathUsesRequestCWDForWorkspace(t *testing.T) {
 	repo := initGitRepoWithOrigin(t, "git@github.com:Xsxdot/handoff.git")
 	gitAt(t, repo, "checkout", "-q", "-b", "feature/preview")
@@ -183,7 +183,7 @@ func TestPreviewOwnerPathUsesRequestCWDForWorkspace(t *testing.T) {
 		t.Fatalf("open preview store: %v", err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	owner := NewPreviewOwner(st, NewPreviewHub(previewTestLogger(t)), PreviewOwnerDeps{
+	owner := workspace.NewPreviewOwner(NewPreviewStore(st), workspace.NewPreviewHub(previewTestLogger(t)), workspace.PreviewOwnerDeps{
 		Now:    func() time.Time { return time.Date(2026, 8, 30, 1, 2, 3, 0, time.UTC) },
 		NewID:  func() string { return "preview-request-cwd" },
 		Getwd:  func() (string, error) { return nonRepo, nil },

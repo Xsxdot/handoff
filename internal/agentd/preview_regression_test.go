@@ -15,6 +15,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/store"
 	"github.com/Xsxdot/handoff/internal/targetclient"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 type failingPreviewOpener struct{}
@@ -65,7 +66,7 @@ func TestPreviewCloseEventReclaimsLocalBrowserResources(t *testing.T) {
 
 func TestStopPreviewServicesContinuesOwnerCleanupAfterOpenerError(t *testing.T) {
 	env, owner := newPreviewOwnerEnv(t)
-	events, cancel := owner.hub.Subscribe()
+	events, cancel := owner.Hub().Subscribe()
 	defer cancel()
 	env.srv.SetPreviewOpener(failingPreviewOpener{})
 	if err := env.srv.StopPreviewServices(context.Background()); err == nil {
@@ -87,7 +88,7 @@ func TestStopPreviewServicesContinuesOwnerCleanupAfterOpenerError(t *testing.T) 
 func TestPreviewRegressionOwnerMirrorProjection(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
 	defer cancel()
-	remoteEnv, remoteOwner := newPreviewOwnerEnv(t)
+	remoteEnv, remoteOwner := newPreviewOwnerEnvWithIDs(t, []string{"preview-test", "preview-active"})
 	remoteClient := client.New(remoteEnv.ts.URL, testToken)
 
 	streamCtx, cancelStream := context.WithCancel(ctx)
@@ -99,7 +100,7 @@ func TestPreviewRegressionOwnerMirrorProjection(t *testing.T) {
 			return nil
 		})
 	}()
-	waitPreviewHubSubscribers(t, remoteOwner.hub, 1)
+	waitPreviewHubSubscribers(t, remoteOwner.Hub(), 1)
 
 	created, err := remoteClient.CreatePreview(ctx, protoPreviewPortReq())
 	if err != nil {
@@ -123,7 +124,6 @@ func TestPreviewRegressionOwnerMirrorProjection(t *testing.T) {
 		t.Fatalf("owner WS did not close: %v", ctx.Err())
 	}
 
-	remoteOwner.deps.NewID = func() string { return "preview-active" }
 	active, err := remoteClient.CreatePreview(ctx, protoPreviewPortReq())
 	if err != nil {
 		t.Fatalf("owner HTTP create for mirror: %v", err)
@@ -138,7 +138,7 @@ func TestPreviewRegressionOwnerMirrorProjection(t *testing.T) {
 		return &config.Config{Targets: map[string]config.Target{"devbox": {Addr: remoteEnv.ts.URL, Token: testToken}}}
 	}, previewTestLogger(t))
 	defer pool.Close()
-	mirror := NewPreviewMirror(pool, localOwner, localOwner.hub, nil, previewTestLogger(t))
+	mirror := NewPreviewMirror(pool, localOwner, localOwner.Hub(), nil, previewTestLogger(t))
 	localEnv.srv.SetPreviewMirror(mirror)
 	done := make(chan error)
 	launcher := &previewLauncherStub{done: done}
@@ -157,7 +157,7 @@ func TestPreviewRegressionOwnerMirrorProjection(t *testing.T) {
 	if len(all.Machines) != 2 || all.Machines[0].Name != "" || all.Machines[1].Name != "devbox" || !all.Machines[1].Ok {
 		t.Fatalf("coordinator machines=%+v", all.Machines)
 	}
-	if _, err := localOwner.st.GetPreview(active.ID); !errors.Is(err, store.ErrNotFound) {
+	if _, err := localEnv.st.GetPreview(active.ID); !errors.Is(err, store.ErrNotFound) {
 		t.Fatalf("remote owner session leaked into local store: err=%v", err)
 	}
 	if _, err := localClient.ClosePreview(ctx, active.ID); err == nil {
@@ -173,10 +173,10 @@ func TestPreviewRegressionOwnerMirrorProjection(t *testing.T) {
 	}
 	launcher.mu.Unlock()
 
-	projectedEvents, cancelEvents := localOwner.hub.Subscribe()
+	projectedEvents, cancelEvents := localOwner.Hub().Subscribe()
 	defer cancelEvents()
 	go mirror.Run(ctx)
-	waitPreviewHubSubscribers(t, remoteOwner.hub, 1)
+	waitPreviewHubSubscribers(t, remoteOwner.Hub(), 1)
 	if _, err := remoteClient.ClosePreview(ctx, active.ID); err != nil {
 		t.Fatalf("remote close for mirror: %v", err)
 	}
@@ -221,14 +221,11 @@ func readPreviewRegressionEvent(t *testing.T, ctx context.Context, events <-chan
 	}
 }
 
-func waitPreviewHubSubscribers(t *testing.T, hub *PreviewHub, want int) {
+func waitPreviewHubSubscribers(t *testing.T, hub *workspace.PreviewHub, want int) {
 	t.Helper()
 	deadline := time.Now().Add(time.Second)
 	for time.Now().Before(deadline) {
-		hub.mu.Lock()
-		got := len(hub.subscribers)
-		hub.mu.Unlock()
-		if got >= want {
+		if got := hub.SubscriberCount(); got >= want {
 			return
 		}
 		time.Sleep(time.Millisecond)

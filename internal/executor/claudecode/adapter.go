@@ -265,7 +265,17 @@ func (a *Adapter) Start(ctx context.Context, req executor.StartReq) (err error) 
 		rollback()
 		return fmt.Errorf("定位 handoff 二进制: %w", err)
 	}
-	settingsPath, mcpPath, promptText, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.PlanContent, sockPath, bin, req.Discipline)
+	var snap executor.PolicySnapshot
+	if req.Approval != nil {
+		s, serr := req.Approval.PolicySnapshot(ctx)
+		if serr != nil {
+			rollback()
+			return fmt.Errorf("读取政策快照: %w", serr)
+		}
+		snap = s
+		a.log.Info("claude 使用政策快照", "task", req.Task.ID, "version", snap.Version)
+	}
+	settingsPath, mcpPath, promptText, err := WriteTaskEnv(req.TaskDir, req.Task.ID, req.PlanContent, sockPath, bin, req.Discipline, snap)
 	if err != nil {
 		rollback()
 		return err

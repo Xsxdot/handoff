@@ -1,8 +1,10 @@
 import { act, createEvent, fireEvent, render, renderHook, within } from '@testing-library/react'
+import { useEffect } from 'react'
 import { describe, expect, it, vi } from 'vitest'
+import { registerSessionDetailOpener } from '../rooms/sessionDetailOpener'
 import { WorkbenchPage } from './WorkbenchPage'
-import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
-import { useWorkbench, type BaseDir } from './useWorkbench'
+import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TAB_MIME, DRAG_TASK_MIME } from './paneDrop'
+import { useWorkbench, sessionBase, type BaseDir } from './useWorkbench'
 
 const local: BaseDir = { key: '/local', kind: 'workspace', path: '/local', label: 'local', projectName: 'handoff', machine: '' }
 const remote: BaseDir = { key: '/remote@linux-01', kind: 'workspace', path: '/remote', label: 'remote', projectName: 'aim', machine: 'linux-01' }
@@ -20,6 +22,15 @@ function page(api: ReturnType<typeof useWorkbench>) {
     renderContent={(content, base) => <div>{content.kind === 'file' ? content.rel : `${content.kind}:${base.projectName}`}</div>}
   />
 }
+
+// sessionDropPayload 造左栏会话行的拖放载荷（B358.8 #1）。
+const sessionDropPayload = (sessionId = 'session:1', title = '架构物理化') => ({
+  types: [DRAG_SESSION_MIME],
+  getData: (key: string) => key === DRAG_SESSION_MIME ? JSON.stringify({ sessionId, title }) : '',
+  setData: vi.fn(),
+  effectAllowed: '',
+  dropEffect: '',
+})
 
 describe('WorkbenchPage', () => {
   it('最外容器裁掉横向溢出：列压进窗口，不允许横滑', () => {
@@ -386,5 +397,204 @@ describe('WorkbenchPage', () => {
       project: 'handoff', machine: '', path: '/local',
     }))
     warn.mockRestore()
+  })
+
+  it('后台终端组叠在原位：不移出视口，但让出命中，且能缩到小于画布固有宽', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const firstGroup = hook.result.current.wb.activeGroupId
+    act(() => hook.result.current.addGroup())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 2 }, local))
+    const view = render(page(hook.result.current))
+    const panes = view.container.querySelectorAll('[data-testid="workbench-pane"]')
+    expect(panes.length).toBe(2)
+    const groups = () => [...view.container.querySelectorAll('[data-testid="workbench-group"]')] as HTMLElement[]
+    expect(groups()).toHaveLength(2)
+    const hiddenRoot = groups().find((el) => el.getAttribute('aria-hidden') === 'true')
+    expect(hiddenRoot).toBeDefined()
+    // 后台组必须让出命中：z-0 的 WebGL 画布会从激活组手里抢走滚轮，
+    // 看起来就是「眼前这条 TUI 划不动」。不移出视口、不 opacity-0。
+    expect(hiddenRoot!.className).toContain('pointer-events-none')
+    expect(hiddenRoot!.hasAttribute('inert')).toBe(true)
+    expect(hiddenRoot!.className).not.toContain('-left-[10000px]')
+    expect(hiddenRoot!.className).not.toContain('opacity-0')
+    expect(hiddenRoot!.className).not.toContain('invisible')
+    expect(hiddenRoot!.className).toContain('z-0')
+    expect(hiddenRoot!.className).toContain('inset-0')
+    expect(hiddenRoot!.className).toContain('min-w-0')
+    act(() => hook.result.current.activateGroup(firstGroup))
+    view.rerender(page(hook.result.current))
+    const revealed = groups().find((el) => el.getAttribute('aria-hidden') === 'false')
+    expect(revealed).toBeDefined()
+    expect(revealed!.className).toContain('z-10')
+    expect(revealed!.className).not.toContain('pointer-events-none')
+    expect(revealed!.hasAttribute('inert')).toBe(false)
+  })
+
+  // B367 回归：换组只许翻 visible 标记，不许重挂终端子树。
+  // 双条件 `{a && el} {b && el}` 把同一 div 放在两个 keyless 槽位，
+  // visible 一翻 React 就按槽位卸载重建——xterm 全套 teardown/replay、
+  // Viewport 定时器打在已 dispose 的 RenderService 上刷 dimensions、
+  // PTY 重连定时器变孤儿。keep-alive 名存实亡。
+  function MountProbe({ id, mounts }: { id: string; mounts: Map<string, number> }) {
+    useEffect(() => {
+      mounts.set(id, (mounts.get(id) ?? 0) + 1)
+    }, [id, mounts])
+    return <div data-mount-probe={id} />
+  }
+
+  it('换组只翻 visible 标记：组容器是同一 DOM 节点，终端内容只挂载一次', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 1 }, local))
+    const firstGroup = hook.result.current.wb.activeGroupId
+    act(() => hook.result.current.addGroup())
+    act(() => hook.result.current.open({ kind: 'terminal', seq: 2 }, local))
+    const secondGroup = hook.result.current.wb.activeGroupId
+    const mounts = new Map<string, number>()
+    const view = render(
+      <WorkbenchPage
+        api={hook.result.current}
+        tree={null}
+        tasks={[]}
+        onAddProject={vi.fn()}
+        renderContent={(content, _base, groupId, tabId) => (
+          <MountProbe id={`${groupId}:${tabId}:${content.kind}`} mounts={mounts} />
+        )}
+      />,
+    )
+    const rerenderPage = () => view.rerender(
+      <WorkbenchPage
+        api={hook.result.current}
+        tree={null}
+        tasks={[]}
+        onAddProject={vi.fn()}
+        renderContent={(content, _base, groupId, tabId) => (
+          <MountProbe id={`${groupId}:${tabId}:${content.kind}`} mounts={mounts} />
+        )}
+      />,
+    )
+    const groups = () => [...view.container.querySelectorAll('[data-testid="workbench-group"]')] as HTMLElement[]
+    expect(groups()).toHaveLength(2)
+    const before = groups()
+    act(() => hook.result.current.activateGroup(firstGroup))
+    rerenderPage()
+    act(() => hook.result.current.activateGroup(secondGroup))
+    rerenderPage()
+    const after = groups()
+    expect(after).toHaveLength(2)
+    // 组容器必须是同一批 DOM 节点：换组只改类名/aria/inert，不替换子树
+    expect(after[0]).toBe(before[0])
+    expect(after[1]).toBe(before[1])
+    // 每个 tab 内容只挂载一次：重挂 = xterm 重建 + backlog 重放 + 重连风暴
+    expect(mounts.size).toBe(2)
+    for (const count of mounts.values()) expect(count).toBe(1)
+  })
+
+  it('纯文件组切走即卸，不占终端 keep-alive', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'file', rel: 'a.md' }, local))
+    act(() => hook.result.current.addGroup())
+    act(() => hook.result.current.open({ kind: 'file', rel: 'b.md' }, local))
+    const view = render(page(hook.result.current))
+    expect(view.container.querySelectorAll('[data-testid="workbench-group"]')).toHaveLength(1)
+    expect(view.container.querySelectorAll('[data-testid="workbench-pane"]')).toHaveLength(1)
+  })
+
+  it('会话拖到窗格右缘 → 新列分屏出会话 tab，base 为会话基准（B358.8 #1 主诉求）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'tui', taskId: 'local' }, local))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const dataTransfer = sessionDropPayload()
+
+    const dragOver = createEvent.dragOver(pane, { dataTransfer })
+    Object.defineProperty(dragOver, 'clientX', { value: 360 })
+    Object.defineProperty(dragOver, 'clientY', { value: 200 })
+    fireEvent(pane, dragOver)
+    expect(view.getByTestId('drop-right')).toBeInTheDocument()
+
+    const drop = createEvent.drop(pane, { dataTransfer })
+    Object.defineProperty(drop, 'clientX', { value: 360 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(pane, drop)
+    expect(hook.result.current.wb.groups[0].columns).toHaveLength(2)
+    const placed = hook.result.current.wb.groups[0].columns[1].panes[0]
+    expect(placed).toMatchObject({ base: sessionBase('session:1'), content: { kind: 'session', sessionId: 'session:1', title: '架构物理化' } })
+  })
+
+  it('会话已开在别的组时投到窗格 center 整支移动过去，不复制出第二个 tab（去重前置）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:1', title: '架构物理化' }, sessionBase('session:1')))
+    const sourceTabId = hook.result.current.wb.groups[0].columns[0].panes[0]!.id
+    act(() => hook.result.current.addGroup()) // g2 空组
+    const targetGroupId = hook.result.current.wb.activeGroupId
+    const view = render(page(hook.result.current))
+    const panes = view.container.querySelectorAll('[data-testid="workbench-pane"]')
+    const target = panes[panes.length - 1] as HTMLElement
+    setRect(target)
+    const drop = createEvent.drop(target, { dataTransfer: sessionDropPayload() })
+    Object.defineProperty(drop, 'clientX', { value: 200 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(target, drop)
+
+    const sessionTabs = hook.result.current.wb.groups
+      .flatMap((group) => group.columns.flatMap((column) => column.panes))
+      .filter((tab) => tab?.content.kind === 'session')
+    expect(sessionTabs).toHaveLength(1)
+    expect(sessionTabs[0]!.id).toBe(sourceTabId)
+    expect(sessionTabs[0]!.base.projectName).toBe('')
+    expect(hook.result.current.wb.groups.find((group) => group.id === targetGroupId)!.columns[0].panes[0]!.id).toBe(sourceTabId)
+  })
+
+  it('会话已开在本组时投到本组窗格只激活，不改变布局', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:1', title: '架构物理化' }, sessionBase('session:1')))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const drop = createEvent.drop(pane, { dataTransfer: sessionDropPayload() })
+    Object.defineProperty(drop, 'clientX', { value: 200 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(pane, drop)
+    const sessionTabs = hook.result.current.wb.groups
+      .flatMap((group) => group.columns.flatMap((column) => column.panes))
+      .filter((tab) => tab?.content.kind === 'session')
+    expect(sessionTabs).toHaveLength(1)
+    expect(hook.result.current.wb.groups).toHaveLength(1)
+    expect(hook.result.current.wb.activeGroupId).toBe('g1')
+  })
+
+  it('会话 MIME 载荷损坏时拒绝放置，布局不变', () => {
+    const hook = renderHook(() => useWorkbench())
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    setRect(pane)
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {})
+    const dataTransfer = { types: [DRAG_SESSION_MIME], getData: () => '{bad-json', setData: vi.fn(), dropEffect: '' }
+    const drop = createEvent.drop(pane, { dataTransfer })
+    Object.defineProperty(drop, 'clientX', { value: 200 })
+    Object.defineProperty(drop, 'clientY', { value: 200 })
+    fireEvent(pane, drop)
+    expect(hook.result.current.wb.groups[0].columns[0].panes[0]).toBeNull()
+    expect(warn).toHaveBeenCalledWith('workbench.drop.invalid_mime', expect.objectContaining({ reason: 'session MIME payload is missing or invalid' }))
+    warn.mockRestore()
+  })
+
+  it('会话窗格标题行含 ⋯：与标题/× 同行，点击开启该会话详情（走查 09-17 #3）', () => {
+    const hook = renderHook(() => useWorkbench())
+    act(() => hook.result.current.open({ kind: 'session', sessionId: 'session:1', title: '架构物理化' }, sessionBase('session:1')))
+    const view = render(page(hook.result.current))
+    const pane = view.container.querySelector('[data-testid="workbench-pane"]') as HTMLElement
+    const more = within(pane).getByRole('button', { name: '会话详情' })
+    expect(more).toHaveTextContent('⋯')
+    // 与标题、关闭钮同处窗格标题行（内容区 stub 不渲染 ⋯，按钮只能来自标题行）
+    const close = within(pane).getByRole('button', { name: '关闭 会话 · 架构物理化' })
+    expect(more.parentElement).toContainElement(close)
+    const opener = vi.fn()
+    const unregister = registerSessionDetailOpener('session:1', opener)
+    fireEvent.click(more)
+    expect(opener).toHaveBeenCalledTimes(1)
+    unregister()
   })
 })

@@ -33,6 +33,87 @@ import (
 // errStepInFlight 表示该卡已有环节在跑，调用方应答 409。
 var errStepInFlight = errors.New("该卡已有环节在运行")
 
+// 以下三个接口是 agentd（控制门面）跨机执行消费面，定义在使用方并嵌入提供方
+// 内部冻结的 client.ExecutionClient，额外方法只含各自路径今日真实调用
+// （B233.16 契约冻结）。工厂 / 组装点 Server.clientForTarget 仍返回聚合 *client.Client。
+
+// runClient 是 push 工作分支路径的执行消费面：执行动作 + 一次性命令。
+type runClient interface {
+	client.ExecutionClient
+	Run(ctx context.Context, taskID, cmd string) (string, int, error)
+}
+
+// statusClient 是纪律探活路径的执行消费面：执行动作 + 能力位探活。
+type statusClient interface {
+	client.ExecutionClient
+	Status(ctx context.Context) (*proto.StatusResp, error)
+}
+
+// stopReclaimClient 是派发失败补偿路径的执行消费面：执行动作 + 回收。
+type stopReclaimClient interface {
+	client.ExecutionClient
+	StopAndReclaim(ctx context.Context, taskID string) error
+}
+
+// dispatchStep 是节点派发的具名执行消费点，依赖声明收窄到 client.ExecutionClient。
+// 只把 ledgerstep 已经装配好的请求镜像成 client.DispatchOpts，不做准入或改写。
+func dispatchStep(ctx context.Context, cl client.ExecutionClient, opts ledgerstep.DispatchOpts, target string) (*proto.Task, error) {
+	return cl.Dispatch(ctx, client.DispatchOpts{
+		Prompt: opts.Prompt, Target: target,
+		Receiver: opts.Receiver,
+		Carrier:  opts.Carrier, Squad: opts.Squad,
+		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
+		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
+		HomeDir:           opts.HomeDir,
+		Discipline:        opts.Discipline,
+		DisciplineText:    opts.DisciplineText,
+		DisciplineVersion: opts.DisciplineVersion,
+		PlanB64:           opts.PlanB64, PlanName: opts.PlanName, Base: opts.Base,
+		ResolveDefaultBase: opts.ResolveDefaultBase,
+		LocalBaseBranch:    opts.LocalBaseBranch,
+		NewWorktree:        opts.NewWorktree,
+	})
+}
+
+// probeStatus 是纪律探活的具名执行消费点，统一 10s 时限。
+func probeStatus(ctx context.Context, cl statusClient) (*proto.StatusResp, error) {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	return cl.Status(ctx)
+}
+
+// compensateStep 回收一次已取得 task id 的失败派发。具名入口（原为内联闭包），
+// 依赖声明收窄到 stopReclaimClient；只回收，不改原始错误。
+func (s *Server) compensateStep(ctx context.Context, cl stopReclaimClient, cardID, target, taskID string) error {
+	s.log.Info("agentd 派发失败补偿开始", "card", cardID, "target", target, "task", taskID)
+	if err := cl.StopAndReclaim(ctx, taskID); err != nil {
+		s.log.Error("agentd 派发失败补偿失败", "card", cardID, "target", target, "task", taskID, "cause", err)
+		return err
+	}
+	s.log.Info("agentd 派发失败补偿完成", "card", cardID, "target", target, "task", taskID)
+	return nil
+}
+
+// pushWorkBranchVia 在持有工作分支的机器上执行一次 git push。具名入口，
+// 依赖声明收窄到 runClient；canonical target 由调用方归一后传入。
+func (s *Server) pushWorkBranchVia(ctx context.Context, cl runClient, target, branch, taskID string) error {
+	cmd := "git push origin " + strconv.Quote(branch)
+	s.log.Info("推送工作分支到 origin", "target", target, "branch", branch, "task", taskID)
+	out, code, runErr := cl.Run(ctx, taskID, cmd)
+	if runErr != nil {
+		s.log.Error("推送工作分支请求失败", "target", target, "branch", branch,
+			"task", taskID, "cause", runErr)
+		return runErr
+	}
+	if code != 0 {
+		s.log.Error("推送工作分支非零退出", "target", target, "branch", branch,
+			"task", taskID, "exit", code)
+		return fmt.Errorf("git push origin %s 退出码 %d：%s", branch, code, strings.TrimSpace(out))
+	}
+	s.log.Info("工作分支已推到 origin", "target", target, "branch", branch, "task", taskID)
+	return nil
+}
+
 // startCardStep 装配并异步启动一个卡节点。
 //
 // 参数：cardID 是卡号；req 是已完成 actor 归一和字段校验的规范请求。
@@ -72,11 +153,12 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 				node.Name, node.Override.Squad, named)
 		}
 	}
-	// B156.3 K2：节点绑小队时编制域先裁决本次派发（解析层插在纪律解析之前——
+	// B156.3 K2：节点绑小队时编制域先选择本次派发身份（解析层插在纪律解析之前——
 	// 有效目标机要等 Binding 出来才知道，能力位探活必须打 Binding.Target）。
 	// 三种同步结局：admitted→Binding 三元组接管覆盖继续装配；queued→已持久
 	// 入队，本轮以排队形态结束（释放槽位返回 nil，不起 goroutine、无 task、
-	// 卡事件流零写入）；error→受理失败上浮（HTTP 非 202），已准入的先回滚名额。
+	// 卡事件流零写入）；error→受理失败上浮（HTTP 非 202）。Select 只读，不需要
+	// 回滚执行名额。
 	binding := scheduling.Binding{}
 	if node.Override.Squad != "" {
 		outcome := squadDispatchAdmitted
@@ -95,34 +177,18 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		target = binding.Target
 	}
 	var dispatchHomeDir *string
-	if binding.Squad != "" {
-		carrier, carrierErr := s.scheduling.Carrier(binding.Carrier)
-		if carrierErr != nil {
-			s.log.Error("卡节点准入后读取载体 HOME 失败", "card", cardID,
-				"squad", binding.Squad, "carrier", binding.Carrier, "cause", carrierErr)
-			s.releaseCardStep(cardID)
-			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {
-				s.log.Warn("载体 HOME 读取失败后的准入回滚失败", "card", cardID,
-					"squad", binding.Squad, "carrier", binding.Carrier, "cause", relErr)
-			}
-			return fmt.Errorf("卡 %s 读取准入载体 %s: %w", cardID, binding.Carrier, carrierErr)
-		}
+	if binding.Carrier != "" {
 		// 指针指向本次装配的稳定副本，避免下层误读可变 registry 对象；值本身
 		// 仍逐字节传递，目标 executor 才负责把它放进进程环境。
-		homeDir := carrier.HomeDir
+		homeDir := binding.HomeDir
 		dispatchHomeDir = &homeDir
 	}
 	resolved, target, err := s.resolveStepDiscipline(node, target)
 	if err != nil {
 		s.releaseCardStep(cardID)
-		if binding.Squad != "" {
-			// 准入成功但后续装配失败：回滚两级名额防泄漏假满（Release 幂等；
-			// 回滚失败计数偏高属保守方向，只告警不阻断上报原错误）。
-			if relErr := s.scheduling.Release(binding.Squad, binding.Carrier); relErr != nil {
-				s.log.Warn("准入回滚失败（计数偏高属保守方向）", "card", cardID,
-					"squad", binding.Squad, "carrier", binding.Carrier, "cause", relErr)
-			}
-		}
+		s.log.Warn("卡节点冻结身份后装配失败，未释放执行占用", "card", cardID,
+			"node", req.Step, "squad", binding.Squad, "carrier", binding.Carrier,
+			"error_kind", "assembly", "cause", err)
 		return err
 	}
 	host, _ := os.Hostname()
@@ -131,12 +197,26 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		RunHolder: fmt.Sprintf("run:%s#%d#%d", host, os.Getpid(), time.Now().UnixNano()),
 		Dispatcher: &ledgerstep.Dispatcher{
 			St: s.ledger, Transport: s.stepTransport, Actor: req.Actor,
+			// agentd 补偿借用 Server 持有的 client pool；不复制 target/relay
+			// 选路，也不关闭池，只回收已取得 task id 的失败派发。
+			Compensate: func(ctx context.Context, target, taskID string) error {
+				cl, err := s.clientForTarget(target)
+				if err != nil {
+					s.log.Error("agentd 派发失败补偿创建 client 失败", "card", cardID, "target", target, "task", taskID, "cause", err)
+					return err
+				}
+				return s.compensateStep(ctx, cl, cardID, target, taskID)
+			},
 			HomeDir:           dispatchHomeDir,
+			Carrier:           binding.Carrier,
+			Squad:             binding.Squad,
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
 			NormalizeTarget:   s.CanonicalTarget,
 		},
-		Clients:  s.clientForTarget,
+		Clients: func(target string) (ledgerstep.StepClient, error) {
+			return s.clientForTarget(target)
+		},
 		Target:   target,
 		Executor: req.Executor,
 		Model:    req.Model,
@@ -159,12 +239,12 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 	}
 	go func() {
 		defer s.releaseCardStep(cardID)
-		defer s.releaseSchedulingBinding(cardID, binding)
 		s.log.Info("卡节点回合开始", "card", cardID, "node", req.Step,
 			"squad", binding.Squad, "carrier", binding.Carrier)
 		s.runStepFn(context.Background(), runner, cardID, req.Step)
 		s.log.Info("卡节点回合返回", "card", cardID, "node", req.Step,
-			"squad", binding.Squad, "carrier", binding.Carrier)
+			"squad", binding.Squad, "carrier", binding.Carrier,
+			"occupancy_owner", "task_terminal", "card_slot_owner", "card_step")
 	}()
 	return nil
 }
@@ -185,21 +265,7 @@ func (s *Server) pushWorkBranchOrigin(ctx context.Context, target, branch, taskI
 			"branch", branch, "task", taskID, "cause", err)
 		return fmt.Errorf("取得 %s 客户端去 push origin: %w", target, err)
 	}
-	cmd := "git push origin " + strconv.Quote(branch)
-	s.log.Info("推送工作分支到 origin", "target", canonical, "branch", branch, "task", taskID)
-	out, code, runErr := cl.Run(ctx, taskID, cmd)
-	if runErr != nil {
-		s.log.Error("推送工作分支请求失败", "target", canonical, "branch", branch,
-			"task", taskID, "cause", runErr)
-		return runErr
-	}
-	if code != 0 {
-		s.log.Error("推送工作分支非零退出", "target", canonical, "branch", branch,
-			"task", taskID, "exit", code)
-		return fmt.Errorf("git push origin %s 退出码 %d：%s", branch, code, strings.TrimSpace(out))
-	}
-	s.log.Info("工作分支已推到 origin", "target", canonical, "branch", branch, "task", taskID)
-	return nil
+	return s.pushWorkBranchVia(ctx, cl, canonical, branch, taskID)
 }
 
 // runStep 是 runStepFn 的生产实现：跑环节并把结果记进日志。
@@ -264,9 +330,7 @@ func (s *Server) resolveStepDiscipline(node ledger.NodeDef, reqTarget string) (d
 		return discipline.ResolvedDiscipline{}, target, fmt.Errorf(
 			"目标机探活失败：请确认目标机可达、agentd 正在运行且 token 一致：%w", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	status, err := cl.Status(ctx)
+	status, err := probeStatus(context.Background(), cl)
 	if err != nil {
 		s.log.Error("环节纪律探活失败", "node", node.Name, "target", target,
 			"canonical_target", target, "cause", err)
@@ -312,9 +376,7 @@ func (s *Server) disciplineTargetCap(target string) *bool {
 		s.log.Warn("环节派发前取得目标机客户端失败", "target", target, "cause", err)
 		return nil
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-	status, serr := cl.Status(ctx)
+	status, serr := probeStatus(context.Background(), cl)
 	if serr != nil {
 		s.log.Warn("环节派发前能力位探活失败", "target", target, "cause", serr)
 		return nil
@@ -327,11 +389,19 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 	if isLocalMachine(canonical) {
 		canonical = ""
 	}
+	dispatchTarget := canonical
+	if opts.Carrier != "" {
+		// canonical 只决定 client 走本机直连还是远端池；冻结载体的
+		// Machine 是任务物理身份，必须原样进入 DispatchOpts，供目标机
+		// AdmitFrozen 用同一套本机别名规则核验。
+		dispatchTarget = opts.Target
+	}
 	// 远端仍走 target 客户端池以保留 relay；本机则直连当前 agentd，避免把
 	// loopback 登记名当成远端再次进入镜像/WS 路径。
 	s.log.Info("agentd 节点派发请求", "target", opts.Target, "canonical_target", canonical,
 		"executor", opts.Executor,
 		"model", opts.Model, "prompt_bytes", len(opts.Prompt),
+		"carrier", opts.Carrier, "squad", opts.Squad, "home_dir_set", opts.HomeDir != nil,
 		"discipline", opts.Discipline, "discipline_version", opts.DisciplineVersion,
 		"discipline_bytes", len(opts.DisciplineText))
 	cl, err := s.clientForTarget(canonical)
@@ -340,27 +410,15 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 			"canonical_target", canonical, "cause", err)
 		return "", "", err
 	}
-	task, err := cl.Dispatch(ctx, client.DispatchOpts{
-		Prompt: opts.Prompt, Target: canonical,
-		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
-		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
-		HomeDir:           opts.HomeDir,
-		Discipline:        opts.Discipline,
-		DisciplineText:    opts.DisciplineText,
-		DisciplineVersion: opts.DisciplineVersion,
-		PlanB64:           opts.PlanB64, PlanName: opts.PlanName, Base: opts.Base,
-		ResolveDefaultBase: opts.ResolveDefaultBase,
-		LocalBaseBranch:    opts.LocalBaseBranch,
-		NewWorktree:        opts.NewWorktree,
-	})
+	task, err := dispatchStep(ctx, cl, opts, dispatchTarget)
 	if err != nil {
 		s.log.Warn("agentd 节点派发失败", "target", opts.Target, "canonical_target", canonical,
-			"executor", opts.Executor,
+			"executor", opts.Executor, "carrier", opts.Carrier, "squad", opts.Squad,
 			"model", opts.Model, "cause", err)
 		return "", "", err
 	}
 	s.log.Info("agentd 节点派发已受理", "target", opts.Target, "canonical_target", canonical, "task", task.ID,
-		"base_commit", task.BaseCommit)
+		"carrier", task.Carrier, "squad", task.Squad, "base_commit", task.BaseCommit)
 	return task.ID, task.BaseCommit, nil
 }
 

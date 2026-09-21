@@ -102,7 +102,10 @@ if ! grep -aq -- "$REV" "$OUT"; then
   exit 1
 fi
 # 字段形态是 `build<TAB>vcs.revision=<sha>`，等号连着，不能按空白切第 3 列
-AUTO_REV="$(go version -m "$OUT" 2>/dev/null | grep -o 'vcs\.revision=[0-9a-f]*' | cut -d= -f2)"
+# 无 vcs.revision 行（如本机 worktree 构建）时 grep 无命中返回 1，set -o pipefail
+# 下会让命令替换赋值直接终止脚本；末尾 || true 把「无自动戳」降级成空值，
+# 走下面既有的 [ -n "$AUTO_REV" ] 提示分支，不打断构建收尾。
+AUTO_REV="$(go version -m "$OUT" 2>/dev/null | grep -o 'vcs\.revision=[0-9a-f]*' | cut -d= -f2 || true)"
 if [ -n "$AUTO_REV" ] && [ "$AUTO_REV" != "$REV" ]; then
   echo "提示：Go 自动戳是 ${AUTO_REV:0:12}（主工作树），已被注入值 ${REV:0:12} 覆盖"
 fi

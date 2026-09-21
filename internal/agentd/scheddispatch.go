@@ -1,8 +1,8 @@
 // 编制域派发接入（B156.3 K2）：节点绑小队后的 Squad 解析层与排队分支。
 //
 // 职责：
-//   - Override.Squad 非空的节点，先把本次一次性覆盖交给编制域 Admit，用 Binding
-//     的有效三元组接管本次派发的目标机/执行者/模型（契约 §5 解析层形态）
+//   - Override.Squad 非空的节点，先把本次一次性覆盖交给编制域 Select，用 Binding
+//     的冻结三元组接管本次派发的目标机/执行者/模型；Select 只读，不占执行容量
 //   - 满员（ErrNoSlot）或准入重试预算耗尽（ErrRetryExhausted，瞬态争用）转
 //     Enqueue 持久排队，本轮以排队形态结束：不起 runner、不产生 task、不留痕
 //     失败（后者必须先落 WARN 标记词，预算耗尽信号不许静默吞掉）
@@ -34,13 +34,14 @@ const (
 	squadDispatchQueued
 )
 
-// admitSquadStep 对绑了小队的节点做准入或入队。
+// admitSquadStep 对绑了小队的节点做冻结身份选择或入队。
 //
 // 参数：cardID 卡号；req 规范环节请求；node 已解出的节点定义（Override.Squad 非空，
 // 由调用方保证）。返回：admitted 时 binding 为有效三级组；queued 时 binding 为零值、
 // 请求已在 ignition_queue 持久排队；error 为受理失败，调用方应释放卡槽位并上浮。
 //
-// 注意：ErrNoHealthy/ErrNotFound/ErrRoleMismatch 都经 %w 包装上浮，调用方继续用
+// 注意：Select 只读 Registry，执行容量只在目标 agentd 的 AdmitFrozen 中取得。
+// ErrNoHealthy/ErrNotFound/ErrRoleMismatch 都经 %w 包装上浮，调用方继续用
 // errors.Is 分流；本函数自己消化 ErrNoSlot 与 ErrRetryExhausted（都转排队，收敛
 // 在同一个 Enqueue 调用点；预算耗尽先落 WARN 标记词）。Ready 快照恒 true 的
 // 取值决策见 plan §D4。
@@ -54,6 +55,16 @@ func (s *Server) admitSquadStep(cardID string, req proto.CardStepReq, node ledge
 	if err != nil {
 		return scheduling.Binding{}, 0, fmt.Errorf("读卡取优先级快照: %w", err)
 	}
+	resolved, err := s.resolveReceiver(node.Override.Squad)
+	if err != nil {
+		return scheduling.Binding{}, 0, fmt.Errorf("节点 %s 解析小队 %q: %w", node.Name, node.Override.Squad, err)
+	}
+	if resolved.Kind != scheduling.ReceiverSquad {
+		err := fmt.Errorf("%w: 节点 %s 绑定的接收者 %q 不是小队", scheduling.ErrInvalid, node.Name, resolved.Name)
+		s.log.Error("小队节点接收者类型错误", "card", cardID, "node", node.Name,
+			"receiver", resolved.Name, "kind", string(resolved.Kind), "cause", err)
+		return scheduling.Binding{}, 0, err
+	}
 	target, executor, model := effectiveCovers(req, node)
 	ireq := scheduling.IgnitionRequest{
 		Card: cardID, Squad: node.Override.Squad, Node: req.Step,
@@ -62,14 +73,25 @@ func (s *Server) admitSquadStep(cardID string, req proto.CardStepReq, node ledge
 		Ready:    true, // 入队快照恒就绪，决策与备选方案见 plan §D4
 		Actor:    req.Actor,
 	}
-	s.log.Info("小队节点准入开始", "card", cardID, "node", node.Name,
+	s.log.Info("小队节点冻结身份选择开始", "card", cardID, "node", node.Name,
 		"squad", node.Override.Squad, "cover_target", target,
 		"cover_executor", executor, "cover_model", model, "priority", card.Priority)
-	binding, err := s.scheduling.Admit(ireq)
+	binding, err := s.scheduling.Select(ireq)
 	if err == nil {
-		s.log.Info("小队节点准入成功", "card", cardID, "node", node.Name,
+		id := scheduling.PhysicalIdentity{Machine: binding.Target, CLI: binding.Executor, HomeDir: binding.HomeDir}
+		bound, bindErr := scheduling.BindPhysical(id, scheduling.PhysicalOverlay{})
+		if bindErr != nil {
+			s.log.Error("小队节点绑定物理身份失败", "card", cardID, "node", node.Name,
+				"squad", binding.Squad, "carrier", binding.Carrier, "error_kind", "physical_bind", "cause", bindErr)
+			return scheduling.Binding{}, 0, bindErr
+		}
+		binding.Target = bound.Machine
+		binding.Executor = bound.CLI
+		binding.HomeDir = bound.HomeDir
+		binding.Model = scheduling.EffectiveModel(binding.Model, model)
+		s.log.Info("小队节点冻结身份选择成功", "card", cardID, "node", node.Name,
 			"squad", binding.Squad, "carrier", binding.Carrier, "target", binding.Target,
-			"executor", binding.Executor, "model", binding.Model)
+			"executor", binding.Executor, "model", binding.Model, "error_kind", "select_success")
 		return binding, squadDispatchAdmitted, nil
 	}
 	if errors.Is(err, scheduling.ErrNoSlot) || errors.Is(err, scheduling.ErrRetryExhausted) {
@@ -84,32 +106,25 @@ func (s *Server) admitSquadStep(cardID string, req proto.CardStepReq, node ledge
 		}
 		position, enqErr := s.scheduling.Enqueue(ireq, scheduling.KindIgnitionQueue)
 		if enqErr != nil {
+			s.log.Error("小队满员后写入点火队列失败", "card", cardID, "node", node.Name,
+				"squad", node.Override.Squad, "queue_position", position, "error_kind", "enqueue", "cause", enqErr)
 			return scheduling.Binding{}, 0, fmt.Errorf("满员转排队失败: %w", enqErr)
 		}
 		s.log.Info("小队满员，点火请求已持久排队", "card", cardID, "node", node.Name,
 			"squad", node.Override.Squad, "queue_position", position, "actor", req.Actor)
 		return scheduling.Binding{}, squadDispatchQueued, nil
 	}
-	return scheduling.Binding{}, 0, fmt.Errorf("小队 %q 准入被拒: %w", node.Override.Squad, err)
+	s.log.Error("小队节点冻结身份选择被拒", "card", cardID, "node", node.Name,
+		"squad", node.Override.Squad, "error_kind", "select_rejected", "cause", err)
+	return scheduling.Binding{}, 0, fmt.Errorf("小队 %q 冻结身份选择被拒: %w", node.Override.Squad, err)
 }
 
-// effectiveCovers 算出本次派发的一次性覆盖三元组：请求覆盖 > 节点覆盖，
-// executor/model 沿用 dispatchNodeWithGate（runner.go:311）的成对规则——换掉
-// 执行器时切断下层模型，显式重述同一执行器不改变模型。
+// effectiveCovers 只算模型覆盖；物理身份必须由已准入载体提供。
+// 返回的 target/executor 恒为空，避免卡节点在绑定前后形成第二条物理落点路径。
 //
-// 为什么装配侧要有这份副本：Squad 解析必须在 ViaTemplate 之前拿到完整覆盖去问
-// 编制域，而既有合并在 ledgerstep 内部发生、ledgerstep 又不得 import 编制域
-// （契约 §5）。两份公式的等价性由两侧各自的矩阵测试锁住：
-//   - 本副本：TestEffectiveCoversParityMatrix（本文件同名测试文件）；
-//   - 链路侧：TestRunnerExecutorModelOverridePriorityAndPairRule
-//     （internal/ledgerstep/runner_test.go:117）；
-//
-// 两侧矩阵逐行对应，任何一侧改规则必须同步另一侧，否则其中一处测试翻红。
+// 模型的成对规则仍与 dispatchNodeWithGate 一致；ledgerstep 不再接收卡节点物理
+// 覆盖。模型行由本文件的矩阵测试锁定，物理恒空是本卡 P7(a) 的新边界。
 func effectiveCovers(req proto.CardStepReq, node ledger.NodeDef) (target, executor, model string) {
-	target = req.Target
-	if target == "" {
-		target = node.Override.Target
-	}
 	executor = node.Override.Executor
 	model = node.Override.Model
 	if req.Executor != "" {
@@ -120,5 +135,5 @@ func effectiveCovers(req proto.CardStepReq, node ledger.NodeDef) (target, execut
 	} else if req.Model != "" {
 		model = req.Model
 	}
-	return target, executor, model
+	return "", "", model
 }

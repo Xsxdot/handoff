@@ -145,7 +145,7 @@ func syncViaBundle(ctx context.Context, addr, token, taskID, have, branch, local
 	return syncViaBundleClient(ctx, client.New(addr, token), taskID, have, branch, localRepo)
 }
 
-func syncViaBundleClient(ctx context.Context, c *client.Client, taskID, have, branch, localRepo string) (localsync.Result, error) {
+func syncViaBundleClient(ctx context.Context, c client.BundleClient, taskID, have, branch, localRepo string) (localsync.Result, error) {
 	rc, err := c.Bundle(ctx, taskID, have)
 	if err != nil {
 		return localsync.Result{}, err

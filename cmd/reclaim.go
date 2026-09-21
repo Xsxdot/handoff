@@ -64,7 +64,7 @@ func init() {
 //
 // 注意：**恒退 0**。这是一份报告，「有残留」是它的正常结论而非失败；
 // 只有拿不到列表（连不上、401、5xx）才退非零
-func runReclaimList(cmd *cobra.Command, cl *client.Client, addr string) error {
+func runReclaimList(cmd *cobra.Command, cl client.ReclaimClient, addr string) error {
 	out := cmd.OutOrStdout()
 	resp, err := cl.ReclaimList(cmd.Context())
 	switch {
@@ -88,7 +88,7 @@ func runReclaimList(cmd *cobra.Command, cl *client.Client, addr string) error {
 //
 // 注意：脏树被拒时把清单渲染到 stdout，只让 cobra 往 stderr 打一行短因由——
 // 详情给人看、单行给脚本看，两边都不被对方淹没
-func runReclaimOne(cmd *cobra.Command, cl *client.Client, taskID, addr string) error {
+func runReclaimOne(cmd *cobra.Command, cl client.ReclaimClient, taskID, addr string) error {
 	out := cmd.OutOrStdout()
 	resp, err := cl.Reclaim(cmd.Context(), taskID, reclaimForce)
 	var rej *client.ReclaimRejected

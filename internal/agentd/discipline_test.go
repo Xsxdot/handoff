@@ -30,9 +30,7 @@ func newDisciplineEnv(t *testing.T, mapping map[string]string, execs ...string) 
 	for _, n := range execs {
 		ads[n] = &failStartAdapter{} // 只需要名字进注册表，本组用例不启动任何 executor
 	}
-	mgr := NewManager(env.st, env.srv.Hub(), ads, env.srv.conf(),
-		nil, nil, newTestGate(t), discardLogger())
-	env.srv.SetManager(mgr)
+	mgr := newManagerForServer(t, env.srv, ads)
 	env.mgr = mgr
 	return env, filepath.Join(dataDir, "discipline")
 }

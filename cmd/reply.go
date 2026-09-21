@@ -15,8 +15,19 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/spf13/cobra"
 )
+
+// runReply 把一次工单应答经执行能力面回传。具名入口（原为 RunE 内联），
+// 使最小替身可在不改命令构造的情况下替换跨机客户端。
+func runReply(cmd *cobra.Command, c client.ExecutionClient, taskID, answer string) error {
+	if err := c.Reply(cmd.Context(), taskID, replyTicketID, answer); err != nil {
+		return err
+	}
+	fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
+	return nil
+}
 
 var (
 	replyTicketID string
@@ -44,11 +55,7 @@ var replyCmd = &cobra.Command{
 			return err
 		}
 		defer cleanup()
-		if err := c.Reply(cmd.Context(), taskID, replyTicketID, answer); err != nil {
-			return err
-		}
-		fmt.Fprintln(cmd.OutOrStdout(), `{"ok":true}`)
-		return nil
+		return runReply(cmd, c, taskID, answer)
 	},
 }
 

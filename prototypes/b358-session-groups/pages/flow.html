@@ -1,0 +1,255 @@
+<!doctype html>
+<!--
+  B358 运转流程图 —— 北极星之二（过程）。
+  回答「这个形态跑起来时，事情是怎么一步步发生的」：谁触发谁、落在哪、唤醒谁。
+  与 pages/sessions.html（北极星之一·形态）配套，两份合起来才是本卡的完整基准。
+
+  本页是设计文档，不是产品页面：不进产品导航，只从原型 README 与 sessions.html 的 dock 进入。
+  零依赖、file:// 直开。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>B358 运转流程图 · handoff</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #fafafa; }
+  .wrap { max-width: 1080px; margin: 0 auto; padding: 28px 24px 60px; }
+  .doc-head { border-bottom: 1px solid var(--border); padding-bottom: 14px; margin-bottom: 24px; }
+  .doc-head h1 { font-size: 20px; margin: 0 0 6px; }
+  .doc-head .sub { font-size: 13px; color: var(--muted-foreground); line-height: 1.7; }
+  .doc-head .links { margin-top: 10px; font-size: 12.5px; }
+  .doc-head .links a { color: var(--foreground); }
+
+  section { margin-bottom: 34px; }
+  h2 { font-size: 15px; margin: 0 0 4px; }
+  h2 .n { font-family: var(--font-mono); font-size: 12px; color: var(--muted-foreground); margin-right: 6px; }
+  .lead { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 12px; line-height: 1.7; }
+
+  /* 泳道：列 = 角色，行 = 步骤；每格是该步在本角色上的落点 */
+  .lane { border: 1px solid var(--border); border-radius: 10px; background: #fff; overflow: hidden; }
+  .lane-head { display: grid; grid-template-columns: 64px repeat(4, 1fr); border-bottom: 1px solid var(--border); background: var(--sidebar); }
+  .lane-head > div { padding: 8px 10px; font-size: 12px; font-weight: 600; }
+  .lane-head > div:first-child { color: var(--muted-foreground); font-weight: 400; }
+  .lane-row { display: grid; grid-template-columns: 64px repeat(4, 1fr); border-bottom: 1px solid #f0f0f0; }
+  .lane-row:last-child { border-bottom: none; }
+  .lane-row > div { padding: 10px; font-size: 12.5px; line-height: 1.6; border-left: 1px solid #f0f0f0; }
+  .lane-row > div:first-child { border-left: none; font-family: var(--font-mono); font-size: 11px; color: var(--muted-foreground); }
+  .cell { }
+  .cell.act { background: #f8fbff; border-radius: 6px; }
+  .cell.mute { color: #b0b0b0; }
+  .cell b { font-weight: 600; }
+  .wake { display: inline-block; font-size: 10.5px; font-weight: 600; color: var(--amber); background: #fef3c7; border: 1px solid #fde68a; border-radius: 999px; padding: 0 6px; margin-left: 4px; vertical-align: 1px; }
+  .nowake { display: inline-block; font-size: 10.5px; color: var(--muted-foreground); background: var(--muted); border-radius: 999px; padding: 0 6px; margin-left: 4px; vertical-align: 1px; }
+
+  /* 竖向流程：步骤 + 箭头 */
+  .flow { display: flex; flex-direction: column; align-items: stretch; }
+  .fstep { border: 1px solid var(--border); border-radius: 8px; background: #fff; padding: 10px 12px; font-size: 13px; line-height: 1.6; }
+  .fstep .t { font-weight: 600; }
+  .fstep .d { color: var(--muted-foreground); font-size: 12px; margin-top: 2px; }
+  .fstep.amber { border-color: #fde68a; background: #fffbeb; }
+  .fstep.blue { border-color: #dbeafe; background: #f8fbff; }
+  .farrow { text-align: center; color: #c0c0c0; font-size: 13px; padding: 3px 0; }
+  .fbranch { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .fbranch .col > .h { font-size: 12px; font-weight: 600; margin-bottom: 6px; }
+  .fbranch .col.yes > .h { color: var(--amber); }
+  .fbranch .col.no > .h { color: var(--muted-foreground); }
+
+  table { width: 100%; border-collapse: collapse; background: #fff; border: 1px solid var(--border); border-radius: 10px; overflow: hidden; font-size: 12.5px; }
+  th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid #f0f0f0; vertical-align: top; line-height: 1.6; }
+  th { background: var(--sidebar); font-size: 12px; font-weight: 600; }
+  tr:last-child td { border-bottom: none; }
+  td code, .fstep code, .cell code { font-family: var(--font-mono); font-size: 11.5px; background: var(--muted); padding: 1px 4px; border-radius: 3px; }
+  .rule { border: 1px dashed #e5e7eb; border-radius: 8px; padding: 9px 12px; font-size: 12px; color: #6b7280; background: #fff; line-height: 1.7; margin-top: 10px; }
+  .rule b { color: #374151; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="doc-head">
+    <h1>B358 运转流程图 <span style="font-size:12px;color:var(--muted-foreground);font-weight:400">北极星之二 · 过程</span></h1>
+    <div class="sub">
+      形态看 <code>pages/sessions.html</code>（北极星之一）；本页回答另一半：<b>这套形态跑起来时，事情是怎么一步步发生的</b>——
+      谁触发谁、落在哪、<b>唤醒了谁</b>。四张图：会话生命线 / 消息投递 / 升级三档 / 席位与换绑。
+    </div>
+    <div class="links">→ <a href="sessions.html">会话面原型</a> · 回 <a href="../index.html">工作台</a></div>
+  </div>
+
+  <!-- ==================== 1 ==================== -->
+  <section>
+    <h2><span class="n">图 1</span>一场会话的生命线（四条泳道）</h2>
+    <p class="lead">从人开口，到卡收口。空白的格子表示这一步没有该角色的动作——人的格子越往下越空，正是目标。</p>
+    <div class="lane">
+      <div class="lane-head"><div>步骤</div><div>人（董事长）</div><div>主 agent（CEO）</div><div>协调者（总监）</div><div>系统</div></div>
+
+      <div class="lane-row">
+        <div>1</div>
+        <div class="cell act">新建会话，说需求与目标<span class="nowake">不唤醒</span></div>
+        <div class="cell mute">—</div><div class="cell mute">—</div>
+        <div class="cell">建会话；群主 = 人或主 agent</div>
+      </div>
+
+      <div class="lane-row">
+        <div>2</div>
+        <div class="cell act">与主 agent 来回聊（原型 / 流程 / spec）</div>
+        <div class="cell act">写原型与流程图，出 spec</div><div class="cell mute">—</div>
+        <div class="cell">只落账；<b>无 @ 不唤醒任何人</b></div>
+      </div>
+
+      <div class="lane-row">
+        <div>3</div>
+        <div class="cell act">点头：可以了</div>
+        <div class="cell act">建卡 / 把已有的卡拉进会话</div><div class="cell mute">—</div>
+        <div class="cell">进群写一条 timeline 结构事件<span class="nowake">不唤醒</span></div>
+      </div>
+
+      <div class="lane-row">
+        <div>4</div>
+        <div class="cell act">按一颗按钮：我来坐 / 叫机器人 / 换绑</div>
+        <div class="cell act">或由主 agent 代按</div><div class="cell">起身（席位写入该卡）</div>
+        <div class="cell">席位 = <code>(cli, session_id)</code> + 来源</div>
+      </div>
+
+      <div class="lane-row">
+        <div>5</div>
+        <div class="cell mute">—</div><div class="cell mute">—</div>
+        <div class="cell act">推节点：派发 → 看产出 → 判断 → 再派发</div>
+        <div class="cell">派发任务、镜像终态；<b>不 @ 任何人</b><span class="nowake">不唤醒</span></div>
+      </div>
+
+      <div class="lane-row">
+        <div>6</div>
+        <div class="cell mute">—</div>
+        <div class="cell mute">—</div>
+        <div class="cell act">分档：填补级自己拍 / 推翻级升级</div>
+        <div class="cell">填补级只落账；推翻级可唤醒</div>
+      </div>
+
+      <div class="lane-row">
+        <div>7</div>
+        <div class="cell mute">—</div>
+        <div class="cell amber act">被 @ 醒来（只看到那条 + 引用 + 未读）</div>
+        <div class="cell amber act">@ 主 agent，停卡等裁决<span class="wake">唤醒主 agent</span></div>
+        <div class="cell">投递只给被 @ 的成员</div>
+      </div>
+
+      <div class="lane-row">
+        <div>8</div>
+        <div class="cell amber act">被 @ 醒来；判不了就答复</div>
+        <div class="cell amber act">判不了 → @ 人<span class="wake">唤醒人</span></div>
+        <div class="cell">停在原地等（不推进下一节点）</div>
+        <div class="cell">人的被 @ 进会话列表「需要你」</div>
+      </div>
+
+      <div class="lane-row">
+        <div>9</div>
+        <div class="cell act">点选答复（落账），卡恢复推进</div>
+        <div class="cell">接着判下一步</div><div class="cell act">醒来看答复，继续推</div>
+        <div class="cell">答复回落账 → 唤醒等它的那个</div>
+      </div>
+
+      <div class="lane-row">
+        <div>10</div>
+        <div class="cell mute">—</div>
+        <div class="cell act">看验收证据，确认结论</div>
+        <div class="cell act">收口：发收口摘要，卡进终列</div>
+        <div class="cell">结构事件进 timeline；<b>群聊面不刷进度</b></div>
+      </div>
+
+      <div class="lane-row">
+        <div>11</div>
+        <div class="cell act">确认合并进 main（永远人工）</div>
+        <div class="cell mute">—</div><div class="cell mute">—</div>
+        <div class="cell">会话显式归档后才只读</div>
+      </div>
+    </div>
+    <div class="rule"><b>读法</b>：人只在 1 / 2 的开头、3、4、8（被 @ 时）、9、11 出现；中间整段（5–7、10）人是空的。
+      「@」是唯一能打断人的东西，而它由判据决定，不由频率决定。</div>
+  </section>
+
+  <!-- ==================== 2 ==================== -->
+  <section>
+    <h2><span class="n">图 2</span>一条消息的投递（决定谁醒）</h2>
+    <p class="lead">接收人由<b>发送者写下的寻址</b>决定，与「群里有谁」无关。这是本卡最硬的规则。</p>
+    <div class="flow">
+      <div class="fstep"><div class="t">发言落账</div><div class="d">群消息（无卡），可带卡引用锚；身份可验证（人 = 会话身份，agent = 席位身份）</div></div>
+      <div class="farrow">↓</div>
+      <div class="fstep blue"><div class="t">这条消息有寻址吗？</div><div class="d">寻址 = 显式 @（可多个）或回复某条消息（reply_to）</div></div>
+      <div class="farrow">↓</div>
+      <div class="fbranch">
+        <div class="col yes">
+          <div class="h">有寻址</div>
+          <div class="fstep"><div class="t">@ 卡号 → 解析该卡<b>当前席位</b></div><div class="d">换绑后自动指向新席位；@ 到的人不必知道是谁在坐</div></div>
+          <div class="farrow">↓</div>
+          <div class="fstep"><div class="t">回复 → 寻址原作者</div><div class="d">原作者是卡席位时，同样解析到当前席位（一人）</div></div>
+          <div class="farrow">↓</div>
+          <div class="fstep amber"><div class="t">命中者被唤醒</div><div class="d">载荷 = 这一条 + 它引用的那条 + 未读数；其余靠它自己按需读</div></div>
+          <div class="farrow">↓</div>
+          <div class="fstep"><div class="t">其他人：只入未读</div><div class="d">红点角标，不唤醒、不进上下文</div></div>
+        </div>
+        <div class="col no">
+          <div class="h">没有寻址</div>
+          <div class="fstep"><div class="t">谁也不唤醒</div><div class="d">它是一句「记在群里的话」，不是一件「要谁办的事」</div></div>
+          <div class="farrow">↓</div>
+          <div class="fstep"><div class="t">全员只记未读</div><div class="d">想跟上的自己来读；要人办就补一条 @</div></div>
+          <div class="farrow">↓</div>
+          <div class="fstep"><div class="t">兜底在 <code>needs_human</code></div><div class="d">卡级的「需要你」标记聚合到会话列表标签，它才是机械出口</div></div>
+        </div>
+      </div>
+    </div>
+    <div class="rule"><b>扇出禁令</b>：任何「按群成员集合」的投递都是缺陷——系统永不代劳。
+      要叫几个人，就由发送者写几个 @，且渲染上看得见叫了谁。系统结构事件（卡进群 / 叫机器人 / 换绑 / 收口 / needs_human）<b>不唤醒任何人</b>。</div>
+  </section>
+
+  <!-- ==================== 3 ==================== -->
+  <section>
+    <h2><span class="n">图 3</span>升级三档（协调者什么时候必须开口）</h2>
+    <p class="lead">判据写死，不由频率兜底；「每轮都 @」是反模式——那等于协调者没有实权。</p>
+    <table>
+      <thead><tr><th style="width:150px">档</th><th style="width:300px">什么情况</th><th>谁拍 / 谁醒</th></tr></thead>
+      <tbody>
+        <tr>
+          <td><b>填补级</b><br><span class="dim">不出声</span></td>
+          <td>spec 没覆盖的实现选择；顺手小修；发现的新问题落新卡；测试策略微调</td>
+          <td>协调者自己拍，落进卡的账。<b>一个 @ 都不发。</b></td>
+        </tr>
+        <tr>
+          <td><b>推翻级</b><br><span class="dim">@ 主 agent</span></td>
+          <td>实测证伪了 spec 的商定；要动范围 / 验收判据 / 契约语义；超轮僵局；不可逆动作的<b>提案</b></td>
+          <td>停卡（在飞的那轮跑完，不推进下一节点），发一条带「商定 vs 实测 / 影响半径 / 选项与推荐 / 停在哪」的简报，<b>只唤醒主 agent</b>。</td>
+        </tr>
+        <tr>
+          <td><b>人工门</b><br><span class="dim">@ 人</span></td>
+          <td>spec 批准；验收结论确认；合 main</td>
+          <td>协调者把机械证据摆好，<b>结论由人点</b>；主 agent 也可以把「自己拍不了」的往上 @ 人。</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="rule"><b>推 vs 拉</b>：推只发生在上面三类时刻；<b>拉随时可行</b>——主 agent 定时巡场看有没有跑偏（会话列表标签 → 详情页任务节点 / timeline → 卡抽屉），
+      它不需要被每个动作叫醒。人看的是「需要你」标签与收口摘要，不是节点流水。</div>
+  </section>
+
+  <!-- ==================== 4 ==================== -->
+  <section>
+    <h2><span class="n">图 4</span>席位与换绑（@ 卡号为什么稳）</h2>
+    <p class="lead">席位权威在卡上：<code>(cli, session_id)</code> + 来源（我来坐 / 叫机器人）。会话里的「人」是投影，不是第二份真相。</p>
+    <div class="flow">
+      <div class="fstep"><div class="t">卡 B233.16 · 席位 = (grok, spark-session-7) · 来源：叫机器人</div></div>
+      <div class="farrow">↓</div>
+      <div class="fstep blue"><div class="t">会话成员里出现「B233.16 协调者」</div><div class="d">卡进群时，该卡<b>当前席位</b>以成员身份出现；没配人的卡只有卡，没有成员</div></div>
+      <div class="farrow">↓</div>
+      <div class="fstep"><div class="t">有人 @B233.16</div><div class="d">不是 @ 某个 session，而是 @ 这张卡 → 解析到当前席位</div></div>
+      <div class="farrow">↓</div>
+      <div class="fstep amber"><div class="t">换绑：B233.16 ← opencode·muse</div><div class="d">写入席位即剥旧会话的权：旧席位再发协调者消息被拒、不再被唤醒</div></div>
+      <div class="farrow">↓</div>
+      <div class="fstep"><div class="t">此后再 @B233.16 → 命中新席位</div><div class="d">历史消息不动，成员随席位换人；接手者读群史 + timeline 就能接上</div></div>
+    </div>
+    <div class="rule"><b>为什么不做「@ 人」</b>：@ 到具体 session 时，一次换绑就会让所有历史 @ 指向一个已经无权的人；
+      @ 卡号把「谁在坐」这件事永远交给账本回答。</div>
+  </section>
+
+</div>
+</body>
+</html>
