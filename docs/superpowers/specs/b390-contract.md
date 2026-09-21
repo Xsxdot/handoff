@@ -3,6 +3,7 @@
 **上游状态：已批准**（源 spec `docs/superpowers/specs/b390.md` 头部「上游状态：已批准」已核实；本节点为 B390 复评 fail 后的**契约回写轮**）
 **级别：L2 单子系统**（agentd 消费循环 + scheduling 准入；本节点只改文档，不落码）
 **入口节点：contract**（角色：契约落地与冻结；本节点产出物 = 本文件）
+**复评 2 纠正轮（2026-09-21）**：复评 2（任务 `2dbd292b`，judge=fail）指出 §5.2/§8-3 冒充 §4-41 已锁、§6-5「反过来写不会变红」理据与事实不符。本轮就地更正 §2.4、§4、§6-4、§7、§8 与 `b389-contract.md` §5.2/§6-5/§8-1/§8-3/§8-4/§8-5：§4-41 统一表述为「无独立夹具、实现节点欠账」；拍板记录理据改为「改已冻结失败路径语义、需修订号与可判条目」（非「测不出来」）。
 **有效基线：`cards/B390-charter-5` @ `a65baefc`**
 **架构形态：按子系统分域的平铺领域包，无横向 controller/service/dao 分层**（`codegraph/best.json`）
 **冻结状态：随本提交冻结**（本节点触及的三份既有契约就地修订，不新增跨域方向、不新增符号，`codegraph/target.json` / `best.json` 无增量——见 §5）
@@ -66,7 +67,7 @@
 
 ### 2.4 拍板记录（命中三重闸门：难逆转 + 无上下文会惊讶 + 真取舍）
 
-准入失败不 `CompleteWake`、保留认领挡水位、按轮询节拍重试，且**去掉退避**——这三条各自都改了 B389 已冻结的失败路径语义，回改要动认领/游标/退避三处；后人看到失败分支不收尾认领会想「补上 `CompleteWake` 让它前进」，那恰好重开 B390 要修的静默停摆（B332 卡死 leader 名额后整条唤醒链死 18 小时）；被否方案：甲（失败即 `CompleteWake` + 退避 = 现状，导致「失败一次就再也不试」）、乙（内存重试表，跨重启丢，B390 plan 原案，被协调者 P2 裁决弃）。**关键：这处偏离「反过来写不会变红」**——补回 `CompleteWake` 后现有测试不自动红（复评实测只有专门夹具照得到），故必须靠拍板记录 + §4-37/38 冻结条目锁住，防后人一次「顺手优化」无声推翻。
+准入失败不 `CompleteWake`、保留认领挡水位、按轮询节拍重试，且**去掉退避**——这三条各自都改了 B389 已冻结的失败路径语义，回改要动认领/游标/退避三处；后人看到失败分支不收尾认领会想「补上 `CompleteWake` 让它前进」，那恰好重开 B390 要修的静默停摆（B332 卡死 leader 名额后整条唤醒链死 18 小时）；被否方案：甲（失败即 `CompleteWake` + 退避 = 现状，导致「失败一次就再也不试」）、乙（内存重试表，跨重启丢，B390 plan 原案，被协调者 P2 裁决弃）。**记录依据（复评 2 更正）**：复评 2 在隔离副本实测，准入分支补回 `completeWakeBatch` 即令 `TestB390WakeStallRedLoop` 报 RED(a)/(b)/RETRY(d)，故本条**不是「反过来写不会变红」**；要记是因为它改的是 B389 **已冻结**的失败路径语义（§3.2 第 5 步 / §4-31），需修订号 + §4-37/38 可独立打勾的条目才能在修订面被追责，且只有专用夹具照得到、B389 既有回归对它无感。
 
 ---
 
@@ -104,24 +105,47 @@
 1. **契约增量文档落盘**：本文件 + 三处就地回写（`b389-contract.md`、`b233.14-contract.md`、`b390.md`）；每个签名带 `file#Symbol` 符号锚。
 2. **目标图**：无增量（§5）——只改既有契约文档措辞，不引入代码，`codegraph/target.json`/`best.json` 随本提交保持原状；本分支合法无视图 diff。`codegraph --repo . check` → `CHECK_EXIT=0`。
 3. **Ticket 0 骨架**：无（只改文档）。
-4. **可执行冻结**：本轮**无命中**（哈希/密钥派生/编码格式均不涉及）；新增冻结条目 §4-37–42 由 B390 已有 Go 测试承载，本轮实跑核对读数见 §7。
+4. **可执行冻结**：本轮**无命中**（哈希/密钥派生/编码格式均不涉及）；新增冻结条目 §4-37–40、§4-42 由 B390 已有 Go 测试承载、本轮实跑核对读数见 §7；**§4-41 无夹具**（复评 2 变异实测无牙），列为欠账、不冒充已锁。
 5. **三重闸门**：命中 1 项（§2.4 准入失败豁免），已补进 `b389-contract.md` §6-5；F2 为漂移收口、未命中三重闸门（单文档修订、对侧不可见）。
 
 ## 7. 本轮亲跑读数（原始输出）
 
+**7.1 冻结条目承载测试（复评 2 纠正轮，工作树 `cards/B390-charter-6`，HEAD `d2f15a59`，只跑不改实现）**
+
 ```text
 $ go test ./internal/agentd/ -run 'TestB390|TestB389WakeBackoff' -count=1 -v
---- PASS: TestB390NonAdmissionErrorDoesNotStall (0.51s)
---- PASS: TestB390WakeStallRedLoop (0.26s)
---- PASS: TestB389WakeBackoffSkipsSameSeqNextRound (0.30s)
+--- PASS: TestB390NonAdmissionErrorDoesNotStall (0.26s)
+--- PASS: TestB390WakeStallRedLoop (0.25s)
+--- PASS: TestB389WakeBackoffSkipsSameSeqNextRound (0.23s)
 PASS
-ok  github.com/Xsxdot/handoff/internal/agentd  1.080s
+ok  github.com/Xsxdot/handoff/internal/agentd  0.749s
 
-$ go build ./...        → BUILD_EXIT=0
-$ codegraph --repo . check   → CHECK_EXIT=0
+$ go build ./...                     → BUILD_EXIT=0
+$ codegraph --repo . check           → CHECK_EXIT=0
 ```
 
-（工作树 `cards/B390-charter-5`，HEAD `a65baefc`，只跑不改实现；完整命令与输出见台账 `docs/superpowers/ledgers/2026-09-21-b390-contract-ledger.md`。）
+**7.2 §4-41 无牙变异实测（隔离副本 `$TMPDIR/b390-mut`，仓内工作树未改）**
+
+```
+# 变异 A：准入分支补回 completeWakeBatch
+$ git checkout $TMPDIR/b390-mut（d2f15a59）；在 wakeconsumer.go admissionStalled 分支插入 s.completeWakeBatch(card, claimedSeqs)
+$ go test ./internal/agentd/ -run 'TestB390WakeStallRedLoop' -count=1 -v
+    b390_wake_stall_test.go:131: RED(a) 准入持续失败时未按节拍重试：3 轮只尝试 1 次（want ≥ 3）
+    b390_wake_stall_test.go:135: RED(b) 准入持续失败未落成 needs_human（账本无卡级可见事件）
+    b390_wake_stall_test.go:143: RETRY(d) 停摆等人应恰落一次，实得 0
+--- FAIL: TestB390WakeStallRedLoop
+→ §4-37/38/39 有牙；且证明「补回 completeWakeBatch 会变红」，§6-5 原「反过来写不会变红」理据为误。
+
+# 变异 B：删除 wakeconsumer.go:676 与 :692 两处 clearWakeStall 调用（_ = card 占位）
+$ go build ./internal/agentd/  → BUILD_EXIT=0
+$ go test ./internal/agentd/ -run 'TestB390' -count=1 -v
+--- PASS: TestB390NonAdmissionErrorDoesNotStall (0.22s)
+--- PASS: TestB390WakeStallRedLoop (0.24s)
+PASS
+→ §4-41 无独立夹具：删掉全部 clearWakeStall 后 B390 两测试仍绿，故不宣称 §4-41 已锁。
+```
+
+（完整命令与原始输出见台账 `docs/superpowers/ledgers/2026-09-21-b390-contract-ledger.md`。）
 
 ## 8. 欠账（显式，不静默）
 

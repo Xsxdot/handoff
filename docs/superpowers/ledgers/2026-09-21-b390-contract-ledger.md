@@ -98,3 +98,85 @@ $ git show --stat HEAD
 - §4-41（连续计数清零）当前无独立夹具，归实现/plan 后续补。
 - 图覆盖债：上述新符号未入 baseline 图，待重建。
 - 本节点不落码；实现已在 `ab7d8df2`/`a65baefc` 全绿，后续实现改动须重走 contract 节点。
+
+---
+
+## 复评 2 纠正轮（2026-09-21，工作树 `cards/B390-charter-6`，起手 HEAD `d2f15a59`）
+
+**触发**：复评 2 任务 `2dbd292b-f926-4e14-abeb-60ddad8dc671`，`handoff.db` 事件 `type=completed`，judge=**fail**，两条发现：
+
+```
+major: b389-contract §5.2(line367)与§8-3(line390)宣称§4-37–42(含§4-41)由b390_wake_stall_test.go承载/§4-41属该回路,
+       与b390-contract §2.3/§4/§8「§4-41无独立夹具」自相矛盾;实测删除全部clearWakeStall后
+       TestB390WakeStallRedLoop仍ok,§4-41确无牙——冻结物间冲突,属「不许冒充已锁」
+minor: b389-contract §6-5与b390-contract §2.4断言「反过来写不会变红/补回CompleteWake后现有测试不自动红」,
+       与事实不符:在准入分支补回completeWakeBatch即令TestB390WakeStallRedLoop报RED(a)/(b)/RETRY(d)
+```
+
+复评原文锚：任务 `2dbd292b` 的 `completed` 事件（只读读取命令：
+`sqlite3 /root/.handoff/handoff.db "select payload from events where task_id='2dbd292b-f926-4e14-abeb-60ddad8dc671' and type='completed';"`）。
+
+**本轮变异实测（隔离副本 `$TMPDIR/b390-mut`，`cp -a` 自 HEAD `d2f15a59`；仓内工作树未改）**
+
+```
+$ cp -a /root/.handoff/worktrees/ac9787f8 $TMPDIR/b390-mut && cd $TMPDIR/b390-mut   # d2f15a59
+
+# 变异 A：准入分支补回 completeWakeBatch（wakeconsumer.go admissionStalled 分支）
+$ go build ./internal/agentd/    → BUILD_EXIT=0
+$ go test ./internal/agentd/ -run 'TestB390WakeStallRedLoop' -count=1 -v
+    b390_wake_stall_test.go:131: RED(a) 准入持续失败时未按节拍重试：3 轮只尝试 1 次（want ≥ 3）
+    b390_wake_stall_test.go:135: RED(b) 准入持续失败未落成 needs_human（账本无卡级可见事件）
+    b390_wake_stall_test.go:143: RETRY(d) 停摆等人应恰落一次，实得 0
+--- FAIL: TestB390WakeStallRedLoop (0.21s)   TEST_EXIT=1
+→ 证 §4-37/38/39 有牙；并证 §6-5/§2.4 原「反过来写不会变红」理据为误。
+
+# 变异 B：删除 wakeconsumer.go:676 与 :692 两处 clearWakeStall 调用（`_ = card` 占位）
+$ go build ./internal/agentd/    → BUILD_EXIT=0
+$ go test ./internal/agentd/ -run 'TestB390' -count=1 -v
+--- PASS: TestB390NonAdmissionErrorDoesNotStall (0.22s)
+--- PASS: TestB390WakeStallRedLoop (0.24s)
+ok  github.com/Xsxdot/handoff/internal/agentd  0.463s   TEST_EXIT=0
+→ 证 §4-41 无独立夹具（删全部 clearWakeStall 不红）。
+```
+
+**本轮纠正动作（只改文档）**
+
+1. `b389-contract.md` §5.2 载体段：删「§4-37–39、§4-41 的回路」，改为「§4-37/38/39（**不含 §4-41**）」并注明 §4-41 无独立夹具、变异实测无牙。
+2. `b389-contract.md` §5.2 末尾新增「复评 2 纠正」块，贴变异命令与原始结果。
+3. `b389-contract.md` §6-5、§8-4：把「反过来写不会变红」改为「改已冻结失败路径语义、需修订号与可判条目」，并注明补回 `completeWakeBatch` 即 RED(a)/(b)/RETRY(d)。
+4. `b389-contract.md` §8-1（`file#Symbol` 出处行）：`b390_wake_stall_test.go` 标注由「§4-37–39/41 载体」改为「§4-37–39 载体；§4-41 无夹具」。
+5. `b389-contract.md` §8-3：覆盖声明由「§4-37–42 由…承载」改为「§4-37–40、§4-42…；§4-41 无独立夹具」。
+6. `b389-contract.md` §8-5：新增 §4-41 欠账条。
+7. `b390-contract.md` §2.4、§6-4：同步改正「反过来写不会变红」理据与覆盖声明。
+8. `b390-contract.md` 头部加「复评 2 纠正轮」一行；§7 补纠正轮亲跑读数与变异实测原始输出。
+
+**本轮纠正后亲跑读数（工作树 `cards/B390-charter-6`，HEAD `d2f15a59`，只跑不改实现）**
+
+```
+$ go test ./internal/agentd/ -run 'TestB390|TestB389WakeBackoff' -count=1 -v
+--- PASS: TestB390NonAdmissionErrorDoesNotStall (0.26s)
+--- PASS: TestB390WakeStallRedLoop (0.25s)
+--- PASS: TestB389WakeBackoffSkipsSameSeqNextRound (0.23s)
+ok  github.com/Xsxdot/handoff/internal/agentd  0.749s   TEST_EXIT=0
+$ go build ./...              → BUILD_EXIT=0
+$ codegraph --repo . check    → CHECK_EXIT=0
+```
+
+**纠正后一致性自查（两份冻结物同一口径）**：`b389-contract.md` §5.2/§8-1/§8-3/§8-5 与 `b390-contract.md` §2.3/§4/§6-4/§8-1 对 §4-41 的表述统一为「无独立夹具、实现节点欠账，不冒充已锁」；§4-37–40、§4-42 统一为「由 `b390_wake_stall_test.go` 承载、实跑通过」；§6-5/§2.4 拍板理据统一为「改已冻结失败路径语义、需修订号与可判条目」，两处均不再有「反过来写不会变红」的断言式表述（§6-2 中该短语仅用于**否认**其适用于 §4-2 复合键，语义相反，保留）。
+
+**复评 2 纠正轮提交事实（命令原文与提交时读数）**
+
+```
+$ git add docs/superpowers/specs/b390-contract.md docs/superpowers/specs/b389-contract.md docs/superpowers/ledgers/2026-09-21-b390-contract-ledger.md
+$ git commit -q -m "contract(B390): 复评 2 纠正——§4-41 统一为无独立夹具欠账，拍板理据更正为改冻结语义"
+$ git log --oneline -1
+b2e2eea5 contract(B390): 复评 2 纠正——§4-41 统一为无独立夹具欠账，拍板理据更正为改冻结语义
+
+$ git show --stat HEAD
+ .../ledgers/2026-09-21-b390-contract-ledger.md | 65 ++++++++++++++++++++++
+ docs/superpowers/specs/b389-contract.md        | 27 +++++++--
+ docs/superpowers/specs/b390-contract.md        | 42 +++++++++++---
+ 3 files changed, 120 insertions(+), 14 deletions(-)
+```
+
+本段在提交后追加，随后 amend 一次收进同批提交；amend 会换 hash——这是 git 的事实，收口判据是工作树干净。

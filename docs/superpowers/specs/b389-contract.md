@@ -364,9 +364,25 @@ $ go build ./...                                        → BUILD_EXIT=0
 $ codegraph --repo . check                              → CHECK_EXIT=0
 ```
 
-§4-37–42 的现有载体对应（行号为本轮读数；`Server.recordAdmissionStall`/`Server.clearWakeStall`/`admissionStalled` 是本卡新增符号、**不在 baseline 图中**，故用 `file:line` 锚，属图覆盖债）：`internal/agentd/wakeconsumer.go:59`（`recordAdmissionStall`：阈值 3 恰一次 + 去重）、`internal/agentd/wakeconsumer.go:84`（`clearWakeStall`：成功/非准入清零）、`internal/agentd/wakeconsumer.go:47`（`admissionStalled`：只认 `coordinatorAdmissionError` + `scheduling.ErrNoSlot`）、`internal/agentd/b390_wake_stall_test.go#TestB390WakeStallRedLoop`（§4-37–39、§4-41 的回路，含去重断言 `RETRY(d)`）、`internal/agentd/wakeconsumer.go:659-671`（准入分支 `continue`，不 complete）。
+§4-37–42 的现有载体对应（行号为本轮读数；`Server.recordAdmissionStall`/`Server.clearWakeStall`/`admissionStalled` 是本卡新增符号、**不在 baseline 图中**，故用 `file:line` 锚，属图覆盖债）：`internal/agentd/wakeconsumer.go:59`（`recordAdmissionStall`：阈值 3 恰一次 + 去重）、`internal/agentd/wakeconsumer.go:84`（`clearWakeStall`：成功/非准入清零）、`internal/agentd/wakeconsumer.go:47`（`admissionStalled`：只认 `coordinatorAdmissionError` + `scheduling.ErrNoSlot`）、`internal/agentd/b390_wake_stall_test.go#TestB390WakeStallRedLoop`（§4-37/38/39 的回路，含去重断言 `RETRY(d)`；**不含 §4-41**）、`internal/agentd/wakeconsumer.go:659-671`（准入分支 `continue`，不 complete）。**§4-41（连续计数清零）当前无独立夹具**：复评 2 在隔离副本删除全部 `clearWakeStall` 调用后 `TestB390WakeStallRedLoop`/`TestB390NonAdmissionErrorDoesNotStall` 仍绿（无牙），故不把 §4-41 计入上述任何回路，列为实现节点欠账（见 §8-5）。
 
 **诚实差异**：§4-40 的现有反例夹具 `nonAdmissionScheduling` 用 `scheduling.ErrNoHealthy` 桩，不覆盖「认领后真实 `Resume` 失败」那一支；后者由既有 `TestB389WakeBackoffSkipsSameSeqNextRound` 覆盖（走 `recordWakeBackoff`），两条合看是 §4-40 的全貌，单看任一条都不完整。
+
+**复评 2 纠正（2026-09-21，隔离副本 `$TMPDIR` 自变异，仓内工作树未改）**：复评 2 指出上一轮本节的 §4-41 覆盖声明为误。实测（HEAD `d2f15a59`）：
+
+```text
+# 变异：删除 wakeconsumer.go:676 与 :692 两处 clearWakeStall 调用
+$ go build ./internal/agentd/  → BUILD_EXIT=0
+$ go test ./internal/agentd/ -run 'TestB390' -count=1 -v
+--- PASS: TestB390NonAdmissionErrorDoesNotStall (0.22s)
+--- PASS: TestB390WakeStallRedLoop (0.24s)
+PASS
+# 对照变异：准入分支补回 completeWakeBatch
+$ go test ./internal/agentd/ -run 'TestB390WakeStallRedLoop' -count=1 -v
+    RED(a) 3 轮只尝试 1 次 / RED(b) 未落 needs_human / RETRY(d) 实得 0  → FAIL
+```
+
+结论：§4-37/38/39 由专用夹具锁住且实跑通过（补回 `completeWakeBatch` 即红）；**§4-41 无独立夹具**（删 `clearWakeStall` 不红），故本节及 §8-3 **不再宣称 §4-41 属该回路**，明确列为实现节点欠账。
 
 ## 6. 三重闸门拍板记录
 
@@ -374,7 +390,7 @@ $ codegraph --repo . check                              → CHECK_EXIT=0
 2. **认领键取 `(card,seq)` 复合键，游标是终局前缀水位。**（2026-09-21 修订：原条为「取 `seq` 本身」，其前提「同一事件只会唤醒一张卡、`seq` 单键即可排他」被实测证伪——`roomMessageWakeEvents` 对一条 `room_message` 按寻址扇出多条 wake，同一 seq 可合法出现在多张卡上。单键会让第二张卡认领失败并被静默跳过、游标越过、永久丢唤醒，见 §5.1(a)。这不是「反过来写不会变红」的裁决——**多卡扇出即触发**，只是需要一条双卡夹具才照得到。）排他语义收窄为「同一张卡的同一事件只允许一个持有者」，扇出场景每卡各自可被认领；游标的「在飞挡住推进」必须按 seq 的**任一**认领行在飞来判（`DISTINCT seq`）。被否方案是纯靠镜像租约（只覆盖镜像不回执唤醒）与按卡去重（无法表达同卡多事件）。后人看到 `(card,seq)` 复合键容易「顺手」退回单键以「简化」——那会重新打开扇出丢事件，且只有多卡夹具能照到。
 3. **唤醒执行按承载记录的冻结载体申请名额，不重选载体。** 首次拉起挑载体、后续只认记录；没有本上下文时后人会在唤醒路径复用 `LaunchAdmit(squad)` 让功能"看起来能跑"，那会让同一张卡在不同机器上反复改归属并互抢名额；被否方案是继续用 `LaunchAdmit` 并"事后纠正"。**锁点必须能区分两者**（§4-29）：回合结束后的计数归零读数对两条路径都成立，照不出差异；要用回合进行中的占用读数或记录型准入调用。
 4. **承载记录只随 `coordinate` 席位存在**：`bind` 席位必须为零承载（人尺度坐下没有载体归属）。后人会想"给 bind 也补个机器名"让界面统一；被否方案是给所有席位都写承载、以及"缺失时按本机补齐"。
-5. **准入失败（`ErrNoSlot`）是排队态而非失败态，不 `CompleteWake`、保留认领挡水位、按轮询节拍重试。**（2026-09-21 修订轮 2 随 B390 落地回写。）难逆转：它改了 §3.2 第 5 步「无论成功失败都要 `CompleteWake`」与 §4-31 退避这两条已冻结语义，回改要动认领/游标/退避三处；无上下文会惊讶：后人看到失败分支**不**收尾认领、**不**进退避、游标被一条"已完成失败"的事件挡住，会想「补上 `CompleteWake` 让它前进」——那恰好重新打开 B390 要修的静默停摆（B332 卡死 leader 名额后整条唤醒链死 18 小时的根因）；真取舍：被否方案是（甲）失败即 `CompleteWake` + 退避（现状，会导致「失败一次就再也不试」）、（乙）内存重试表跨重启丢（B390 plan 原案，被协调者 P2 裁决弃）。**「反过来写不会变红」——补回 `CompleteWake` 后现有测试不自动红**（B390 复评已实测：这处偏离只有专门夹具照得到），故必须靠本拍板记录 + §4-37/38 冻结条目锁住。与 §3.5.5 的「不设秒级退避」同源：节拍 = 轮询本身，否则背靠背 N 轮夹具转不红/绿。
+5. **准入失败（`ErrNoSlot`）是排队态而非失败态，不 `CompleteWake`、保留认领挡水位、按轮询节拍重试。**（2026-09-21 修订轮 2 随 B390 落地回写。）难逆转：它改了 §3.2 第 5 步「无论成功失败都要 `CompleteWake`」与 §4-31 退避这两条已冻结语义，回改要动认领/游标/退避三处；无上下文会惊讶：后人看到失败分支**不**收尾认领、**不**进退避、游标被一条"已完成失败"的事件挡住，会想「补上 `CompleteWake` 让它前进」——那恰好重新打开 B390 要修的静默停摆（B332 卡死 leader 名额后整条唤醒链死 18 小时的根因）；真取舍：被否方案是（甲）失败即 `CompleteWake` + 退避（现状，会导致「失败一次就再也不试」）、（乙）内存重试表跨重启丢（B390 plan 原案，被协调者 P2 裁决弃）。**记录依据（复评 2 更正，非「反过来写不会变红」）**：复评 2 在隔离副本实测，准入分支补回 `completeWakeBatch` 即令 `TestB390WakeStallRedLoop` 报 RED(a)/(b)/RETRY(d)，故本条**并非「测不出来」**；必须记录是因为它改的是本契约**已冻结**的失败路径语义（§3.2 第 5 步「无论成功失败都要 `CompleteWake`」/§4-31 退避），需修订号与可独立打勾的条目（§4-37–42）才能在修订面上被发现，且只有专用夹具照得到、B389 既有回归（退避/多卡扇出）对它无感。与 §3.5.5 的「不设秒级退避」同源：节拍 = 轮询本身，否则背靠背 N 轮夹具转不红/绿。
 
 ## 7. 移交 plan 附区（不计冻结条目）
 
@@ -385,10 +401,11 @@ $ codegraph --repo . check                              → CHECK_EXIT=0
 
 ## 8. 本节点法定产出与欠账声明
 
-1. **契约增量文档**：本文件。现状签名带 `file#Symbol` 符号锚；关键行号为本轮亲自核对（改动前基线 `241b71720`：`internal/ledger/binding.go:32/74`、`internal/ledger/store.go:416`、PG 语句表 `:204` 起 / SQLite `:388` 起、`ddlStatements` 的方言对齐防线在 `internal/ledger/store_test.go`）。修订轮新增代码事实出处：`internal/agentd/wakeconsumer.go:261`（`roomMessageWakeEvents`）、`:315`（每卡一条 wake 的扇出点）、`:379`（`claimWakeBatch`）、`:391`（拿不到认领即静默跳过）、`:401`（`completeWakeBatch`）；`internal/ledger/wakeclaim.go:37/54/82/110`（单键表的四句 SQL）、`:27/76/109/133`（四个方法签名）；`internal/agentd/scheddrain.go:449`（`AdmitSeatCarrier` 调用点）；`internal/agentd/scheddrain_test.go:578`（原 §4-29 锁点）。修订轮 2（B390 F1 回写）新增代码事实出处：`internal/agentd/wakeconsumer.go:59`（`Server.recordAdmissionStall`，本卡新增符号，未入 baseline 图）/ `:84`（`Server.clearWakeStall`，同上）/ `:47`（`admissionStalled`，同上）、`internal/agentd/wakeconsumer.go:659-671`（准入分支不 complete 的 `continue`）、`internal/agentd/b390_wake_stall_test.go`（§4-37–39/41 载体）。
+1. **契约增量文档**：本文件。现状签名带 `file#Symbol` 符号锚；关键行号为本轮亲自核对（改动前基线 `241b71720`：`internal/ledger/binding.go:32/74`、`internal/ledger/store.go:416`、PG 语句表 `:204` 起 / SQLite `:388` 起、`ddlStatements` 的方言对齐防线在 `internal/ledger/store_test.go`）。修订轮新增代码事实出处：`internal/agentd/wakeconsumer.go:261`（`roomMessageWakeEvents`）、`:315`（每卡一条 wake 的扇出点）、`:379`（`claimWakeBatch`）、`:391`（拿不到认领即静默跳过）、`:401`（`completeWakeBatch`）；`internal/ledger/wakeclaim.go:37/54/82/110`（单键表的四句 SQL）、`:27/76/109/133`（四个方法签名）；`internal/agentd/scheddrain.go:449`（`AdmitSeatCarrier` 调用点）；`internal/agentd/scheddrain_test.go:578`（原 §4-29 锁点）。修订轮 2（B390 F1 回写）新增代码事实出处：`internal/agentd/wakeconsumer.go:59`（`Server.recordAdmissionStall`，本卡新增符号，未入 baseline 图）/ `:84`（`Server.clearWakeStall`，同上）/ `:47`（`admissionStalled`，同上）、`internal/agentd/wakeconsumer.go:659-671`（准入分支不 complete 的 `continue`）、`internal/agentd/b390_wake_stall_test.go`（§4-37–39 载体；§4-41 无夹具）。
 2. **Ticket 0 骨架**：两方言 DDL（`seat_bearings`、`wake_claims`、索引）、`SeatBearing` 类型与其形态执法、四个新签名（`BindSeat`/`RebindSeat` 加承载参数、`SeatBearingOf`、`ClearSeat`）、五个生产调用点与 60 处测试调用点补齐。本轮 `go build ./...` 退出码 0、`go vet` 无输出、`gofmt -l` 为空、受影响七包测试全绿（原始输出见 §5）。
-3. **金样本**：`internal/ledger/bearing_test.go` 落第 1–10、12、13 条并本轮实跑通过；第 11 条随第 3 片落。§4-37–42（修订轮 2）由 B390 的 `internal/agentd/b390_wake_stall_test.go` 承载，本轮实跑通过（§5.2）。
-4. **三重闸门**：本文件 §6 记录 4 项命中决定；无其它未记录决定。第 2 项于 2026-09-21 修订轮改写（原理由被实测证伪）；第 5 项于修订轮 2 新增（B390 准入失败豁免，命中「反过来写不会变红」型）。
+3. **金样本**：`internal/ledger/bearing_test.go` 落第 1–10、12、13 条并本轮实跑通过；第 11 条随第 3 片落。§4-37–40、§4-42（修订轮 2）由 B390 的 `internal/agentd/b390_wake_stall_test.go` 承载，本轮实跑通过（§5.2）；**§4-41 当前无独立夹具**（复评 2 变异实测：删全部 `clearWakeStall` 后 B390 两测试仍绿），列为实现节点欠账，不冒充已锁。
+4. **三重闸门**：本文件 §6 记录 4 项命中决定；无其它未记录决定。第 2 项于 2026-09-21 修订轮改写（原理由被实测证伪）；第 5 项于修订轮 2 新增（B390 准入失败豁免）；复评 2 更正其记录依据——**不是**「反过来写不会变红」（补回 `completeWakeBatch` 会令专用夹具报 RED(a)/(b)/RETRY(d)），要记是因为它改了已冻结的失败路径语义、需修订号与可判条目。
 5. **欠账（显式，不静默）**：
+   - **§4-41（连续计数清零）无独立夹具**：复评 2 变异实测（删全部 `clearWakeStall` 后 B390 两测试仍绿）证其无牙，不冒充已锁；归实现/plan 后续补「成功唤醒 → 再准入失败 → 重新累计到阈值」序列测试（见 `docs/superpowers/specs/b390-contract.md` §4 移交区）。
    - `codegraph/target.json` **未追加本卡条目**：该文件是 `{from,to,entries[]}` 的 51 条契约数组，追加需按域对逐条落位。本节点只改既有边的语义（ledger 写面新增承载记录、agentd 组装点写承载），**未新增跨域依赖方向**；落位与 `codegraph/diffs/cards-B233.1-charter-7.json` 视图 diff 由第 1 片随代码提交补齐（新符号 `SeatBearing`/`SeatBearingOf`/`ClearSeat`/`ClaimWake` 届时入图）。
    - 契约 §4 第 11、14–32 条为实现节点欠账，分片归属见 §5；修订轮新增 §4-33–36 与 §4-29 锁点重做（见 §5 末）。
