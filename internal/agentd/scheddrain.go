@@ -8,6 +8,7 @@ package agentd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -479,13 +480,42 @@ func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
 	s.log.Info("自动化唤醒协调者回合", "card", card,
 		"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier,
 		"cli", spec.CLI, "home_dir", spec.HomeDir, "frozen_from_bearing", true)
+	// 回合开始：恰一行在途读数（dedupeKey 保证同卡同 phase 幂等，重复不重写）。
+	// session 未知（resume 前）→ Session 留 nil，序列化边界保留「缺失 vs 零」。
+	startPayload, _ := json.Marshal(WakeRoundEvent{Phase: "start"})
+	if _, err := s.ledger.EnsureComment(card, WakeRoundDedupePrefix+":start", string(startPayload), "agentd"); err != nil {
+		s.log.Warn("唤醒回合起止事件写入失败（不覆盖唤醒结果）", "card", card, "cause", err)
+	}
+	started := time.Now()
+	s.log.Log(ctx, wakeRoundLogLevel, "唤醒回合开始", "card", card,
+		"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier)
 	result, err := s.keystone.Wake(ctx, card, evs, spec)
 	if err != nil {
-		s.log.Error("自动化唤醒协调者回合失败", "card", card,
-			"event_count", len(evs), "squad", binding.Squad,
-			"carrier", binding.Carrier, "cause", err)
+		// 失败终态行：phase=fail + 原因摘要（与 start 同前缀，dedupe_key 保证同卡
+		// 反复失败不刷行）。失败分支过去只打日志不下账，现场只剩 needs_human 一条，
+		// 无法从账本区分「没跑」与「跑了但失败」——本行就是那条区分度（B393 MAJOR-1）。
+		reason := truncateRunes(err.Error(), 400)
+		failPayload, _ := json.Marshal(WakeRoundEvent{Phase: "fail", Err: &reason})
+		if _, werr := s.ledger.EnsureComment(card, WakeRoundDedupePrefix+":fail",
+			string(failPayload), "agentd"); werr != nil {
+			s.log.Warn("唤醒回合失败事件写入失败（不覆盖唤醒结果）", "card", card, "cause", werr)
+		}
+		s.log.Log(ctx, wakeRoundLogLevel, "唤醒回合失败", "card", card,
+			"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier,
+			"cause", err)
 		return result, fmt.Errorf("唤醒协调者回合失败: %w", err)
 	}
+	dur := time.Since(started)
+	endPayload, _ := json.Marshal(WakeRoundEvent{
+		Phase: "end", Session: &result.SessionID, DurationMs: ptrInt64(dur.Milliseconds()),
+	})
+	if _, err := s.ledger.EnsureComment(card, WakeRoundDedupePrefix+":end:"+result.SessionID,
+		string(endPayload), "agentd"); err != nil {
+		s.log.Warn("唤醒回合结束事件写入失败", "card", card, "cause", err)
+	}
+	s.log.Log(ctx, wakeRoundLogLevel, "唤醒回合结束", "card", card,
+		"rebuilt", result.Rebuilt, "escalated", result.Escalated,
+		"session", result.SessionID, "duration", dur.String())
 	if result.Rebuilt && result.SessionID != "" && result.SessionID != current.DriverSession {
 		identity, encodeErr := proto.EncodeSeatIdentity(cli, result.SessionID)
 		if encodeErr != nil {

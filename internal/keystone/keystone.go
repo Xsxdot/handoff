@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/Xsxdot/handoff/internal/keysclient"
@@ -161,11 +162,28 @@ func (s *Service) rebuildAfterResumeFailure(card, prompt string, spec keysclient
 	rebuildSpec.CLI = ref.CLI
 	rebuilt, launchErr := s.launchRound(card, prompt, rebuildSpec, true)
 	if launchErr != nil {
-		_ = s.ledger.MarkNeedsHuman(card, "协调者唤醒失败：resume 与重建均不可用", "keystone")
+		// 理由必须可行动：带上两条真实失败原因摘要（截断），否则现场只剩一句
+		// 「resume 与重建均不可用」，排障只能靠猜（spec §4.4）。
+		reason := fmt.Sprintf("协调者唤醒失败：resume 与重建均不可用（resume: %v; 重建: %v）——"+
+			"请人工处置：检查隔离 HOME 是否缺模型凭据/配置，或 card rebind --self 换会话",
+			truncateCause(resumeErr), truncateCause(launchErr))
+		_ = s.ledger.MarkNeedsHuman(card, reason, "keystone")
 		return RoundResult{Escalated: true}, fmt.Errorf("resume: %v; 重建: %w", resumeErr, launchErr)
 	}
 	rebuilt.Rebuilt = true
 	return rebuilt, nil
+}
+
+// truncateCause 把错误压成一行短文本，避免账本理由被长 stderr 尾部刷爆。
+func truncateCause(err error) string {
+	if err == nil {
+		return ""
+	}
+	s := strings.ReplaceAll(err.Error(), "\n", " ")
+	if len(s) > 200 {
+		s = s[:200] + "…"
+	}
+	return s
 }
 
 // LaunchForCard 仅承接 coordinate 来源的机器人新会话。席位由 agentd 组装点在

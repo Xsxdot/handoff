@@ -53,6 +53,11 @@ var supportedCLIs = map[string]bool{"opencode": true}
 // log 返回包日志入口（跟随 agentd 的 slog 配置，先例 prochost.go:142）。
 func log() *slog.Logger { return slog.Default().With("mod", "hostapi") }
 
+// wakeRoundLogLevel 是唤醒回合生命周期日志的级别下限（B393 spec §4.3：不设
+// HANDOFF_LOG_LEVEL 也要看得见）。缺省 slog 级别是 Warn（logx.go:59），Info 会被吞，
+// 挂死路径连失败行都不会打（不返回就不打）——可见性是故障现场的唯一读数。
+const wakeRoundLogLevel = slog.LevelWarn
+
 // runTurn 是 RunTurn 的本体；hostapi.go 只留薄委托（冻结面文件零逻辑）。
 func runTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	if !supportedCLIs[filepath.Base(req.CLI)] {
@@ -91,6 +96,10 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	if timeout <= 0 {
 		timeout = DefaultTurnTimeout
 	}
+	// 实际生效上界可能是外层 ctx 更早的 deadline（协调者入口 coordWakeTurnTimeout
+	// 就短于本包缺省 30m）。日志与超时错误必须报生效值，否则现场读数是误导
+	// （B393 MINOR：挂死回合报 30m，实际 2m30s 就被外层杀掉）。
+	effective := effectiveTurnTimeout(ctx, timeout)
 	bin, err := lookPathWithFallback(req.CLI)
 	if err != nil {
 		log().Error("找不到载体 CLI", "cli", req.CLI, "cause", err)
@@ -124,8 +133,8 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 
-	log().Info("协调者回合开始", "cli", req.CLI, "mode", resumeOrNew(req),
-		"home_dir", expandedHome, "workdir", req.Workdir, "timeout", timeout.String(),
+	log().Log(ctx, wakeRoundLogLevel, "协调者回合开始", "cli", req.CLI, "mode", resumeOrNew(req),
+		"home_dir", expandedHome, "workdir", req.Workdir, "timeout", effective.String(),
 		"prompt_bytes", len(req.Prompt)) // 提示词与环境变量值永不进日志，只记长度
 	started := time.Now()
 	if err := cmd.Start(); err != nil {
@@ -142,9 +151,9 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 
 	if ctx.Err() != nil {
 		log().Warn("协调者回合超时终止", "cli", req.CLI,
-			"timeout", timeout.String(), "duration", dur.String())
+			"timeout", effective.String(), "duration", dur.String())
 		return TurnReply{}, fmt.Errorf("hostapi: 回合超时（上界 %v），已终止进程树: %w",
-			timeout, ctx.Err())
+			effective, ctx.Err())
 	}
 	if waitErr != nil {
 		tail := tailBytes(&stderr, 4096)
@@ -167,7 +176,7 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 			"hostapi: 回合成功但事件流未携带 sessionID（载体 CLI %q 输出形态可能升级，需核对 plan §三 F1 抓取形状）",
 			req.CLI)
 	}
-	log().Info("协调者回合完成", "cli", req.CLI, "session_id", reply.SessionID,
+	log().Log(ctx, wakeRoundLogLevel, "协调者回合完成", "cli", req.CLI, "session_id", reply.SessionID,
 		"output_bytes", len(reply.Output), "duration", dur.String())
 	return reply, nil
 }
@@ -178,6 +187,23 @@ func resumeOrNew(req TurnRequest) string {
 		return "new"
 	}
 	return "resume"
+}
+
+// effectiveTurnTimeout 返回实际生效的回合上界：取 req 上界与外层 ctx 剩余期限
+// 的更早者。外层 ctx 无 deadline 时即 req 上界。用于日志与超时错误报「生效值」
+// 而非「自身值」——协调者入口的 coordWakeTurnTimeout 短于本包缺省 30m。
+func effectiveTurnTimeout(ctx context.Context, reqTimeout time.Duration) time.Duration {
+	if ctx != nil {
+		if deadline, ok := ctx.Deadline(); ok {
+			if remaining := time.Until(deadline); remaining < reqTimeout {
+				if remaining < 0 {
+					return 0
+				}
+				return remaining
+			}
+		}
+	}
+	return reqTimeout
 }
 
 // watchDeadline 在 ctx 到点时杀掉整棵进程树；done 关闭后安静退出。杀失败只
