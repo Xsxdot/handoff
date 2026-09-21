@@ -10,6 +10,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/keysclient"
@@ -330,10 +331,76 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 	return keystone.RoundResult{Woke: true, SessionID: result.SessionID}, nil
 }
 
+// localMachineName 返回本机名（与 IsLocalMachine 的 hostname 判据同源），用于
+// 转交响应回报实际执行机器。
+func (s *Server) localMachineName() string {
+	host, err := os.Hostname()
+	if err != nil || host == "" {
+		return "local"
+	}
+	return host
+}
+
+// transferCoordinatorWake 把唤醒请求转交给承载席位所在机器的 agentd（契约 §3.3）：
+// 出站走 target 客户端池并带防环头；对端不可达/超时/409 都视为失败，不重选载体。
+func (s *Server) transferCoordinatorWake(ctx context.Context, card, seat, machine string,
+	raws []proto.LedgerEvent, holder string) (keystone.RoundResult, error) {
+	target, err := s.clientForTarget(machine)
+	if err != nil {
+		s.log.Error("转交唤醒取目标客户端失败", "card", card, "machine", machine, "cause", err)
+		return keystone.RoundResult{}, fmt.Errorf("转交唤醒取目标客户端 %s: %w", machine, err)
+	}
+	resp, err := target.MarkForwarded().CoordinatorWake(ctx, card, proto.CoordinatorWakeReq{
+		Seat: seat, Events: raws, Holder: holder,
+	})
+	if err != nil {
+		s.log.Error("转交唤醒到目标机失败", "card", card, "machine", machine, "cause", err)
+		return keystone.RoundResult{}, fmt.Errorf("转交唤醒到 %s: %w", machine, err)
+	}
+	s.log.Info("协调者唤醒已转交", "card", card, "machine", machine,
+		"handled_by", resp.HandledBy, "event_count", len(raws))
+	return keystone.RoundResult{
+		Woke: resp.Woke, SessionID: resp.SessionID,
+		Rebuilt: resp.Rebuilt, Escalated: resp.Escalated, Output: resp.Output,
+	}, nil
+}
+
+// reportSeatBearingMissing 是缺承载的显式路径（契约 §2.3）：落恰一条
+// EvSeatBearingMissing（幂等），并按「需要人」展示（额外 MarkNeedsHuman，
+// 让卡级订阅与会话列表待办照常亮起），本轮该卡跳过。返回：落事件或打展示
+// 失败显式上抛，不静默吞。
+func (s *Server) reportSeatBearingMissing(card, seat string) error {
+	written, err := s.ledger.ReportSeatBearingMissing(card, seat)
+	if err != nil {
+		return err
+	}
+	if !written {
+		s.log.Info("席位缺承载已报告过，跳过重复展示", "card", card)
+		return nil
+	}
+	if err := s.ledger.MarkNeedsHuman(card,
+		"协调者席位缺承载记录：请 handoff card seat bearing set <id> --carrier <carrier>，"+
+			"或 card rebind --launch 重建会话", "agentd"); err != nil {
+		s.log.Error("缺承载落地后打等人标记失败", "card", card, "cause", err)
+		return err
+	}
+	s.log.Warn("协调者席位缺承载记录，已落需要人展示", "card", card, "seat", seat)
+	return nil
+}
+
 // wakeCoordinatorRound 为 Wake 临时占用协调者回合名额，Wake 返回后释放。
 // Release 失败只留完整身份日志，不覆盖 Wake 原始结果；启动对账仅是兜底。
 func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 	evs []keystone.WakeEvent) (keystone.RoundResult, error) {
+	return s.wakeCoordinatorRoundRaw(ctx, card, evs, nil)
+}
+
+// wakeCoordinatorRoundRaw 是唤醒回合的现行实现（B389 §3.2）：先读承载记录定
+// 归属，本机分支用承载记录构造 SessionSpec 并按冻结载体申请名额（不再
+// LaunchAdmit 重选载体），远端分支转交（T4）。raws 是本批原始账本事件，转交面
+// 需要它携带本批 seq 集合（D4：queue_release 合成唤醒没有账本行）。
+func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
+	evs []keystone.WakeEvent, raws []proto.LedgerEvent) (keystone.RoundResult, error) {
 	var zero keystone.RoundResult
 	current, err := s.ledger.GetCard(card)
 	if err != nil {
@@ -352,24 +419,50 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 	if err := proto.ValidateSeat(current.DriverSession, proto.SeatSource(current.DriverSource)); err != nil {
 		return zero, fmt.Errorf("唤醒席位非法: %w", err)
 	}
+	bearing, hasBearing, err := s.ledger.SeatBearingOf(card)
+	if err != nil {
+		return zero, fmt.Errorf("读取唤醒承载记录: %w", err)
+	}
+	if !hasBearing {
+		// 存量 coordinate 席位无承载：显式修复路径（契约 §2.3）——落恰一条
+		// EvSeatBearingMissing 并按「需要人」展示，本轮该卡跳过。
+		if err := s.reportSeatBearingMissing(card, current.DriverSession); err != nil {
+			return zero, fmt.Errorf("卡 %s 缺承载显式路径: %w", card, err)
+		}
+		return zero, nil
+	}
+	if !scheduling.IsLocalMachine(bearing.Machine) && !s.IsSelfTarget(bearing.Machine) {
+		if len(raws) == 0 {
+			// D4：队列出队的合成唤醒没有 card_events 行，装不进冻结 DTO。显式失败，
+			// 由 drainIgnitionRequest 回填队列并留需要人痕迹；不静默本机执行。
+			return keystone.RoundResult{}, fmt.Errorf(
+				"协调者承载在远端 %s，但本批唤醒无账本事件（queue_release 合成唤醒）不可转交",
+				bearing.Machine)
+		}
+		return s.transferCoordinatorWake(ctx, card, current.DriverSession, bearing.Machine,
+			raws, s.wakeClaimHolder())
+	}
 	squad, err := s.resolveCoordinatorSquad()
 	if err != nil {
 		return zero, &coordinatorLookupError{err: err}
 	}
-	binding, err := s.scheduling.LaunchAdmit(squad.Name)
+	binding, err := s.scheduling.AdmitSeatCarrier(squad.Name, bearing.Carrier)
 	if err != nil {
 		return zero, &coordinatorAdmissionError{squad: squad.Name, err: err}
 	}
 	defer s.releaseSchedulingBinding(card, binding)
-	carrier, err := s.scheduling.Carrier(binding.Carrier)
+	carrier, err := s.scheduling.Carrier(bearing.Carrier)
 	if err != nil {
 		s.log.Error("读协调者载体失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
 		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
 	}
+	cli, _, err := proto.ParseSeatIdentity(current.DriverSession)
+	if err != nil {
+		return zero, fmt.Errorf("解析唤醒席位 CLI: %w", err)
+	}
 	spec := keysclient.SessionSpec{
-		CLI: binding.Executor, HomeDir: carrier.HomeDir, Model: binding.Model,
-		Workdir: s.resolveCoordWorkdir(card),
+		CLI: cli, HomeDir: bearing.HomeDir, Model: bearing.Model, Workdir: bearing.Workdir,
 	}
 	normalized, err := orchestration.NormalizeCoordinatorSpec(spec)
 	if err != nil {
@@ -380,7 +473,7 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 	spec = normalized
 	s.log.Info("自动化唤醒协调者回合", "card", card,
 		"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier,
-		"cli", spec.CLI, "home_dir", spec.HomeDir)
+		"cli", spec.CLI, "home_dir", spec.HomeDir, "frozen_from_bearing", true)
 	result, err := s.keystone.Wake(ctx, card, evs, spec)
 	if err != nil {
 		s.log.Error("自动化唤醒协调者回合失败", "card", card,
@@ -389,10 +482,6 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 		return result, fmt.Errorf("唤醒协调者回合失败: %w", err)
 	}
 	if result.Rebuilt && result.SessionID != "" && result.SessionID != current.DriverSession {
-		cli, _, parseErr := proto.ParseSeatIdentity(current.DriverSession)
-		if parseErr != nil {
-			return result, fmt.Errorf("重建后解析旧席位: %w", parseErr)
-		}
 		identity, encodeErr := proto.EncodeSeatIdentity(cli, result.SessionID)
 		if encodeErr != nil {
 			return result, fmt.Errorf("重建后编码新席位: %w", encodeErr)

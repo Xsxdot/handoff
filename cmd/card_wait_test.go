@@ -1022,3 +1022,46 @@ func TestB370CardWaitDegradedIdentity(t *testing.T) {
 		})
 	}
 }
+
+// TestB389NeedsHumanStillActionableInCardWait 锁 §4-19 回归：B389 判据收口把
+// needs_human 移出**唤醒**映射，但卡级订阅（card wait）仍是展示通路——此处不改
+// 码，只断言 needs_human 依旧可动作、照常输出。
+func TestB389NeedsHumanStillActionableInCardWait(t *testing.T) {
+	dir := t.TempDir()
+	cardID := createCardWaitFixture(t, dir)
+	writerErr := make(chan error, 1)
+	go func() {
+		var writeErr error
+		defer func() { writerErr <- writeErr }()
+		time.Sleep(250 * time.Millisecond)
+		st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+		if err != nil {
+			writeErr = err
+			return
+		}
+		defer st.Close()
+		if err := st.MarkNeedsHuman(cardID, "需要你", "test"); err != nil {
+			writeErr = err
+			return
+		}
+		writeErr = moveCardWaitFixtureToDone(st, cardID)
+	}()
+	out, _, err := runLedgerCLI(t, dir, "card", "wait", cardID, "--timeout", "5s")
+	if err != nil {
+		t.Fatalf("card wait: %v", err)
+	}
+	if err := <-writerErr; err != nil {
+		t.Fatalf("写入事件: %v", err)
+	}
+	lines := cardWaitActionableLines(out)
+	if len(lines) != 1 {
+		t.Fatalf("needs_human 应照常输出一条，实际 %d 行: %q", len(lines), out)
+	}
+	var event ledger.Event
+	if err := json.Unmarshal([]byte(lines[0]), &event); err != nil {
+		t.Fatalf("stdout 非 ledger.Event: %v", err)
+	}
+	if event.Type != ledger.EvNeedsHuman {
+		t.Fatalf("事件类型=%s，want needs_human", event.Type)
+	}
+}

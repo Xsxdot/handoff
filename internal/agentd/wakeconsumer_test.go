@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -108,6 +109,21 @@ func appendRawMirroredWithoutSourceTask(t *testing.T, env *ledgerEnv, cardID, ta
 		t.Fatalf("读取缺 source_task 事件 seq: %v", err)
 	}
 	return seq
+}
+
+// deleteSeatBearingRow 用 raw sqlite 删承载行（模拟契约 §2.3 的存量态：
+// 有 coordinate 席位、无承载记录）。照抄 appendRawMirroredWithoutSourceTask
+// 的开库手法。
+func deleteSeatBearingRow(t *testing.T, env *ledgerEnv, cardID string) {
+	t.Helper()
+	db, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(on)")
+	if err != nil {
+		t.Fatalf("打开 raw ledger: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DELETE FROM seat_bearings WHERE card_id = ?`, cardID); err != nil {
+		t.Fatalf("删承载行: %v", err)
+	}
 }
 
 func TestB349AutomationSourceIdentity(t *testing.T) {
@@ -351,7 +367,7 @@ func prebindConsumerSession(t *testing.T, env *ledgerEnv, cardID string) {
 	if err != nil {
 		t.Fatalf("编码预绑定协调者席位: %v", err)
 	}
-	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
+	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "coord-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("写预绑定协调者席位: %v", err)
 	}
 }
@@ -518,25 +534,26 @@ func TestB353AutomationMapsCardActionEvents(t *testing.T) {
 	if err := env.ledger.MoveCard(cardID, ledger.StatusTodo, "", "test"); err != nil {
 		t.Fatal(err)
 	}
-	if err := env.ledger.CloseCard(cardID, ledger.CloseCancelled, "test"); err != nil {
-		t.Fatal(err)
-	}
 
-	// B358.3：广播形状删除（条 30），卡房间消息不再唤醒——processed 5→4。
+	// B389 判据收口（契约 §3.5.1）：needs_human 移出唤醒清单——processed 4→3，
+	// 但 needs_cleared/decision_opened/decision_answered 仍唤醒。
 	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
-	if err != nil || escalated || processed != 4 {
-		t.Fatalf("卡原生动作消费 processed=%d escalated=%v err=%v，want 4/nil/false", processed, escalated, err)
+	if err != nil || escalated || processed != 3 {
+		t.Fatalf("卡原生动作消费 processed=%d escalated=%v err=%v，want 3/nil/false", processed, escalated, err)
 	}
 	_, resumes, _ := runner.snapshot()
 	if len(resumes) != 1 {
 		t.Fatalf("卡原生动作应合并一次 Resume，实得 %d", len(resumes))
 	}
-	for _, want := range []string{"needs human payload", "needs_cleared", "decision body", "answer"} {
+	for _, want := range []string{"needs_cleared", "decision body", "answer"} {
 		if !strings.Contains(resumes[0], want) {
 			t.Fatalf("卡原生动作 briefing 缺少 %q: %s", want, resumes[0])
 		}
 	}
-	for _, unwanted := range []string{"真人 room payload", "系统 room payload", "comment audit", "协调者指针", ledger.StatusTodo, ledger.StatusClosed} {
+	if strings.Contains(resumes[0], "needs human payload") {
+		t.Fatalf("needs_human 已收口，不得进入 briefing: %s", resumes[0])
+	}
+	for _, unwanted := range []string{"真人 room payload", "系统 room payload", "comment audit", "协调者指针", ledger.StatusTodo} {
 		if strings.Contains(resumes[0], unwanted) {
 			t.Fatalf("非动作事件 %q 不应进入 briefing: %s", unwanted, resumes[0])
 		}
@@ -839,7 +856,7 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("编码既有会话席位: %v", err)
 	}
-	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
+	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "coord-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("写既有会话席位: %v", err)
 	}
 	runner.failResume = true
@@ -1069,15 +1086,17 @@ func TestB349AutomationCursorPersistence(t *testing.T) {
 		SetupAutomationForTest(t, resumed, env.ledger)
 		resumed.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, resumed.autoLedger, attachLocator{}))
 		processed, _, err = resumed.consumeAutomationEventsOnce(context.Background())
-		if err != nil || processed != 1 {
-			t.Fatalf("Save 失败后新 Server 应从未落盘水位重试，processed=%d err=%v", processed, err)
+		// B389 §3.1：事件已在首轮认领并 CompleteWake（done_at 非空），即使 cursor
+		// 未落盘也不得重放——认领表是 exactly-once 的权威，重试会重复唤醒。
+		if err != nil || processed != 0 {
+			t.Fatalf("已完成认领的事件不得重放，processed=%d err=%v，want 0/nil", processed, err)
 		}
 		if _, err := os.Stat(cursorPath); err != nil {
-			t.Fatalf("新 Server 重试成功后应保存 cursor: %v", err)
+			t.Fatalf("新 Server 读回后应保存收窄后的水位: %v", err)
 		}
 		_, resumes, _ = runner.snapshot()
-		if len(resumes) != 2 {
-			t.Fatalf("Save 失败事件应在新 Server 重试并唤醒两次，resumes=%v", resumes)
+		if len(resumes) != 1 {
+			t.Fatalf("已完成认领的事件不得再次唤醒，resumes=%v", resumes)
 		}
 	})
 }
@@ -1318,5 +1337,324 @@ func TestAutomationWakeDoesNotWakeBindParent(t *testing.T) {
 	_, resumes, _ := runner.snapshot()
 	if len(resumes) != 0 {
 		t.Fatalf("父卡 bind 不应自动 Resume，实得 %v", resumes)
+	}
+}
+
+// TestB389NeedsHumanDoesNotWake 锁 §4-18：needs_human 不再触发协调者唤醒
+// （resumes/launches 为 0，processed 为 0）。
+func TestB389NeedsHumanDoesNotWake(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	if err := env.ledger.MarkNeedsHuman(cardID, "需要人处理", "test"); err != nil {
+		t.Fatal(err)
+	}
+	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil || escalated {
+		t.Fatalf("消费失败: err=%v escalated=%v", err, escalated)
+	}
+	if processed != 0 {
+		t.Fatalf("needs_human 不应被消费为唤醒，processed=%d", processed)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 0 {
+		t.Fatalf("needs_human 不得唤醒协调者，resumes=%v", resumes)
+	}
+}
+
+// TestB389TerminalCardDoesNotWake 锁 §4-32：MoveCard 到终态（不清席位，D2 边界）
+// 后收到任意事件都不再唤醒，且不占名额。
+func TestB389TerminalCardDoesNotWake(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	seedAgentdLedger(t, env.ledger, "bug")
+	card, err := env.ledger.CreateCard(ledger.NewCard{
+		Title: "终态卡", Project: "handoff", Workflow: "bug", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	prebindConsumerSession(t, env, card.ID) // 席位 + 承载 coord-carrier/local
+	for _, to := range []string{ledger.StatusDoing, ledger.StatusReview, ledger.StatusDone} {
+		if err := env.ledger.MoveCard(card.ID, to, "", "test"); err != nil {
+			t.Fatalf("移列到 %s: %v", to, err)
+		}
+	}
+	if got, _ := env.ledger.GetCard(card.ID); got.Status != ledger.StatusDone || got.DriverSession == "" {
+		t.Fatalf("前置条件：终态卡仍带席位，status=%q session=%q", got.Status, got.DriverSession)
+	}
+	appendMirroredForConsumer(t, env.ledger, card.ID, "terminal", "question", 1, `{"ticket_id":"tk"}`)
+	if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
+		t.Fatalf("消费: %v", err)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 0 {
+		t.Fatalf("终态卡不得唤醒，resumes=%v", resumes)
+	}
+	for _, key := range []string{"squad/coord/coord-carrier", "carrier/coord-carrier"} {
+		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+			t.Fatalf("终态卡不得占名额 %s=%d", key, got)
+		}
+	}
+}
+
+// TestB389ClaimExcludesOtherMachine 锁 §3.1/§4-23 核心：事件已被他机认领时，
+// 本机跳过——不占名额、不发起回合，游标不越过该 seq（在飞认领挡住水位）。
+func TestB389ClaimExcludesOtherMachine(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	seq := appendMirroredForConsumer(t, env.ledger, cardID, "claim", "completed", 1, `{"text":"done"}`)
+	if got, err := env.ledger.ClaimWake(seq, cardID, "other#1", time.Minute); err != nil || !got {
+		t.Fatalf("预认领: got=%v err=%v", got, err)
+	}
+	if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
+		t.Fatalf("消费: %v", err)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 0 {
+		t.Fatalf("他机持有认领时本机不得发起回合: %v", resumes)
+	}
+	inFlight, err := env.ledger.WakeClaimsBefore(seq + 1)
+	if err != nil {
+		t.Fatalf("读在飞认领: %v", err)
+	}
+	if len(inFlight) != 1 || inFlight[0] != seq {
+		t.Fatalf("他机在飞认领应仍在: %v", inFlight)
+	}
+	env.srv.automationMu.Lock()
+	cursor := env.srv.automationCursor
+	env.srv.automationMu.Unlock()
+	if cursor >= seq {
+		t.Fatalf("在飞认领应挡住游标推进: cursor=%d seq=%d", cursor, seq)
+	}
+}
+
+// TestB389LocalWakeCompletesClaim 锁 §3.1.5：本机认领并处理成功后收尾（done_at
+// 非空），不再挡住宿主游标。
+func TestB389LocalWakeCompletesClaim(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	seq := appendMirroredForConsumer(t, env.ledger, cardID, "claim-ok", "completed", 1, `{"text":"done"}`)
+	if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err != nil {
+		t.Fatalf("消费: %v", err)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 1 {
+		t.Fatalf("本机应唤醒一次，实得 %d", len(resumes))
+	}
+	inFlight, err := env.ledger.WakeClaimsBefore(seq + 1)
+	if err != nil {
+		t.Fatalf("读在飞认领: %v", err)
+	}
+	if len(inFlight) != 0 {
+		t.Fatalf("本机认领应已收尾，在飞=%v", inFlight)
+	}
+	if !wakeClaimRowExists(t, env, seq) {
+		t.Fatal("本机处理必须留下认领行（收尾而非不认领）")
+	}
+}
+
+// wakeClaimRowExists 直读认领行存在性，区分「认领后收尾」与「根本没认领」。
+func wakeClaimRowExists(t *testing.T, env *ledgerEnv, seq int64) bool {
+	t.Helper()
+	db, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("打开 raw ledger: %v", err)
+	}
+	defer db.Close()
+	var done any
+	err = db.QueryRow(`SELECT done_at FROM wake_claims WHERE seq = ?`, seq).Scan(&done)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false
+	}
+	if err != nil {
+		t.Fatalf("读认领行: %v", err)
+	}
+	return done != nil
+}
+
+// TestB389MissingBearingSkipsWithoutSlots 锁 §4-21/22：缺承载时本机不发起回合、
+// 不占名额，但事件照常消费一次（否则该 seq 一直重试），认领已收尾。
+func TestB389MissingBearingSkipsWithoutSlots(t *testing.T) {
+	env, runner := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	deleteSeatBearingRow(t, env, cardID)
+	appendMirroredForConsumer(t, env.ledger, cardID, "missing", "completed", 1, `{"text":"done"}`)
+	processed, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err != nil {
+		t.Fatalf("消费: %v", err)
+	}
+	if processed != 1 {
+		t.Fatalf("缺承载事件应被消费一次（无回合），processed=%d", processed)
+	}
+	_, resumes, _ := runner.snapshot()
+	if len(resumes) != 0 {
+		t.Fatalf("缺承载不应发起回合: %v", resumes)
+	}
+	for _, key := range []string{"squad/coord/coord-carrier", "carrier/coord-carrier"} {
+		if got := runningCountIn(t, env.srv.autoLedger, key); got != 0 {
+			t.Fatalf("缺承载不应占名额 %s=%d", key, got)
+		}
+	}
+	inFlight, err := env.ledger.WakeClaimsBefore(math.MaxInt64)
+	if err != nil {
+		t.Fatalf("读在飞认领: %v", err)
+	}
+	if len(inFlight) != 0 {
+		t.Fatalf("缺承载事件应已收尾，在飞=%v", inFlight)
+	}
+}
+
+// TestB389SeatBearingMissingIdempotent 锁 §4-22：同席位重复调用只落一条事件，
+// 且「需要人」展示亮起。
+func TestB389SeatBearingMissingIdempotent(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+	deleteSeatBearingRow(t, env, cardID)
+	card, err := env.ledger.GetCard(cardID)
+	if err != nil {
+		t.Fatalf("读卡: %v", err)
+	}
+	for i := 0; i < 2; i++ {
+		if err := env.srv.reportSeatBearingMissing(cardID, card.DriverSession); err != nil {
+			t.Fatalf("第 %d 次报告缺承载: %v", i+1, err)
+		}
+	}
+	events, err := env.ledger.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		t.Fatalf("读事件: %v", err)
+	}
+	missing := 0
+	for _, ev := range events {
+		if ev.Type == ledger.EvSeatBearingMissing {
+			missing++
+		}
+	}
+	if missing != 1 {
+		t.Fatalf("EvSeatBearingMissing 应恰一条，实得 %d", missing)
+	}
+	if needs, err := env.ledger.NeedsOf(cardID); err != nil || needs == "" {
+		t.Fatalf("缺承载应亮起需要人展示: needs=%q err=%v", needs, err)
+	}
+}
+
+// siblingWakeRunner 按会话 id 决定 Resume 成败；Launch 恒失败（失败卡的兜底重建
+// 也失败，从而触发错误；成功卡只 Resume 不重建）。用来构造「A 卡失败、B 卡成功」。
+type siblingWakeRunner struct {
+	mu             sync.Mutex
+	failResumeSeat string
+	resumes        []string
+	launches       int
+}
+
+func (r *siblingWakeRunner) Launch(keysclient.SessionSpec, string) (keysclient.TurnResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.launches++
+	return keysclient.TurnResult{}, errors.New("launch failed")
+}
+
+func (r *siblingWakeRunner) Resume(ref keysclient.SessionRef, _ string) (keysclient.TurnResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.resumes = append(r.resumes, ref.SessionID)
+	if ref.SessionID == r.failResumeSeat {
+		return keysclient.TurnResult{}, errors.New("resume failed")
+	}
+	return keysclient.TurnResult{SessionID: ref.SessionID}, nil
+}
+
+func (r *siblingWakeRunner) snapshot() ([]string, int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]string(nil), r.resumes...), r.launches
+}
+
+// bindCoordSeedForTest 直接落一个 coordinate 席位 + 承载（不经 Launch），
+// 会话 id 由调用方给定，便于按会话指定失败。
+func bindCoordSeedForTest(t *testing.T, env *ledgerEnv, cardID, sessionID string) string {
+	t.Helper()
+	seat, err := proto.EncodeSeatIdentity("opencode", sessionID)
+	if err != nil {
+		t.Fatalf("编码席位: %v", err)
+	}
+	if err := env.ledger.BindSeat(cardID, seat, proto.SeatSourceCoordinate,
+		ledger.SeatBearing{Carrier: "coord-carrier", Machine: "local"}); err != nil {
+		t.Fatalf("落席位: %v", err)
+	}
+	return seat
+}
+
+// TestB389WakeFailureDoesNotBlockSiblingCard 锁 §4-30：单卡唤醒失败不得阻断同批
+// 其他卡（B 卡仍被唤醒，processed==1），失败卡进入退避。
+func TestB389WakeFailureDoesNotBlockSiblingCard(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	runner := &siblingWakeRunner{failResumeSeat: "sess-a"}
+	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	cardA := createCoordCard(t, env)
+	cardB := createCoordCard(t, env)
+	bindCoordSeedForTest(t, env, cardA, "sess-a")
+	bindCoordSeedForTest(t, env, cardB, "sess-b")
+	appendMirroredForConsumer(t, env.ledger, cardA, "a", "completed", 1, `{"text":"a"}`)
+	appendMirroredForConsumer(t, env.ledger, cardB, "b", "completed", 1, `{"text":"b"}`)
+
+	processed, _, err := env.srv.consumeAutomationEventsOnce(context.Background())
+	if err == nil {
+		t.Fatal("A 卡失败应返回错误")
+	}
+	if processed != 1 {
+		t.Fatalf("B 卡仍应被唤醒，processed=%d", processed)
+	}
+	resumes, _ := runner.snapshot()
+	if len(resumes) != 2 {
+		t.Fatalf("两张卡各应尝试一次 Resume，实得 %v", resumes)
+	}
+}
+
+// TestB389WakeBackoffSkipsSameSeqNextRound 锁 §4-31：同卡同 seq 失败后进入退避，
+// 相邻两轮不重复试跑同一 seq（把认领行清掉模拟他机释放/重放，仍不得再跑）。
+func TestB389WakeBackoffSkipsSameSeqNextRound(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	runner := &siblingWakeRunner{failResumeSeat: "sess-a"}
+	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+	cardA := createCoordCard(t, env)
+	bindCoordSeedForTest(t, env, cardA, "sess-a")
+	seq := appendMirroredForConsumer(t, env.ledger, cardA, "a", "completed", 1, `{"text":"a"}`)
+
+	if _, _, err := env.srv.consumeAutomationEventsOnce(context.Background()); err == nil {
+		t.Fatal("首轮应失败")
+	}
+	resumes, _ := runner.snapshot()
+	if len(resumes) != 1 {
+		t.Fatalf("首轮应尝试一次，实得 %v", resumes)
+	}
+	// 模拟他机释放/重放：删认领行、回退游标、清 seen。
+	releaseWakeClaimForTest(t, env, seq)
+	env.srv.automationMu.Lock()
+	env.srv.automationCursor = seq - 1
+	delete(env.srv.automationSeen, seq)
+	env.srv.automationMu.Unlock()
+
+	if _, _, _ = env.srv.consumeAutomationEventsOnce(context.Background()); false {
+	}
+	resumes, _ = runner.snapshot()
+	if len(resumes) != 1 {
+		t.Fatalf("退避窗内不得重复试跑同 seq，resumes=%v", resumes)
+	}
+}
+
+// releaseWakeClaimForTest 用 raw sqlite 删掉某 seq 的认领行（模拟租约到期后他机
+// 释放，使第二轮重新可认领——否则认领本身就挡住了重放，测不到退避）。
+func releaseWakeClaimForTest(t *testing.T, env *ledgerEnv, seq int64) {
+	t.Helper()
+	db, err := sql.Open("sqlite", env.ledgerPath+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatalf("打开 raw ledger: %v", err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`DELETE FROM wake_claims WHERE seq = ?`, seq); err != nil {
+		t.Fatalf("删认领行: %v", err)
 	}
 }

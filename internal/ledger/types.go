@@ -62,6 +62,9 @@ const (
 	EvComment            = "comment"
 	EvNeedsHuman         = "needs_human"
 	EvNeedsCleared       = "needs_cleared"
+	// EvSeatBearingMissing 是 coordinate 席位缺承载记录的显式修复信号（B389
+	// §2.3）。它不唤醒协调者（判据收口），只进卡事件流与「需要人」展示。
+	EvSeatBearingMissing = "seat_bearing_missing"
 	EvDecisionOpened     = "decision_opened"
 	EvDecisionAnswered   = "decision_answered"
 	EvTaskMirrored       = "task_mirrored"

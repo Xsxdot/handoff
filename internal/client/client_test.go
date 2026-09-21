@@ -1225,3 +1225,61 @@ func TestCardStepAckFalseCarriesBody(t *testing.T) {
 		t.Fatalf("错误应带上响应体里的原因，实得 %v", err)
 	}
 }
+
+// TestCoordinatorWakePostsOnceWithBatchSeqs 锁 B389 §4-25：Client.CoordinatorWake
+// 发一次 POST，路径正确，body 含 seat 与 events[].seq。
+func TestCoordinatorWakePostsOnceWithBatchSeqs(t *testing.T) {
+	var calls int
+	var gotMethod, gotPath, gotBody string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		gotMethod, gotPath = r.Method, r.URL.Path
+		body, _ := io.ReadAll(r.Body)
+		gotBody = string(body)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"woke":true,"session_id":"sess-new","handled_by":"linux-01"}`)
+	}))
+	defer srv.Close()
+	cl := client.New(srv.URL, testToken)
+	resp, err := cl.CoordinatorWake(context.Background(), "B42", proto.CoordinatorWakeReq{
+		Seat: "cli:opencode#s1", Holder: "h1",
+		Events: []proto.LedgerEvent{{Seq: 7, CardID: "B42", Type: "task_mirrored"}},
+	})
+	if err != nil {
+		t.Fatalf("CoordinatorWake: %v", err)
+	}
+	if calls != 1 || gotMethod != http.MethodPost || gotPath != "/api/cards/B42/coordinator/wake" {
+		t.Fatalf("请求不符: calls=%d method=%s path=%s", calls, gotMethod, gotPath)
+	}
+	if resp.HandledBy != "linux-01" || resp.SessionID != "sess-new" || !resp.Woke {
+		t.Fatalf("响应不符: %+v", resp)
+	}
+	var body struct {
+		Seat   string `json:"seat"`
+		Events []struct {
+			Seq int64 `json:"seq"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal([]byte(gotBody), &body); err != nil {
+		t.Fatalf("body 非 JSON: %s", gotBody)
+	}
+	if body.Seat != "cli:opencode#s1" || len(body.Events) != 1 || body.Events[0].Seq != 7 {
+		t.Fatalf("body 缺 seat/seq: %s", gotBody)
+	}
+}
+
+// TestCoordinatorWakePreservesErrorBody 锁非 2xx 原样透出错误正文。
+func TestCoordinatorWakePreservesErrorBody(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+		_, _ = io.WriteString(w, `{"error":"席位与账本不符，拒绝转交唤醒"}`)
+	}))
+	defer srv.Close()
+	cl := client.New(srv.URL, testToken)
+	_, err := cl.CoordinatorWake(context.Background(), "B42", proto.CoordinatorWakeReq{
+		Seat: "cli:opencode#s1", Events: []proto.LedgerEvent{{Seq: 1}},
+	})
+	if err == nil || !strings.Contains(err.Error(), "席位与账本不符") {
+		t.Fatalf("应保留错误正文，得 %v", err)
+	}
+}

@@ -26,6 +26,7 @@ import (
 	"strings"
 
 	"github.com/Xsxdot/handoff/internal/keysclient"
+	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
@@ -44,6 +45,7 @@ func (s *Server) registerCoordRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/cards/{id}/coordinator", s.withLedger(s.withCoordinator(s.handleCoordStatus)))
 	api.HandleFunc("POST /api/cards/{id}/coordinator/rebind", s.withLedger(s.withCoordinator(s.handleCoordRebind)))
 	api.HandleFunc("POST /api/cards/{id}/coordinator/forget", s.withLedger(s.withCoordinator(s.handleCoordForget)))
+	api.HandleFunc("POST /api/cards/{id}/coordinator/wake", s.withLedger(s.withCoordinator(s.handleCoordWake)))
 	api.HandleFunc("POST /api/cards/{id}/attach", s.withLedger(s.withCoordinator(s.handleCoordAttach)))
 }
 
@@ -160,6 +162,62 @@ func (s *Server) handleCoordLaunch(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, proto.CoordinatorLaunchResp{
 		Woke: result.Woke, SessionID: result.SessionID, Rebuilt: result.Rebuilt,
 		Escalated: result.Escalated, Output: result.Output,
+	})
+}
+
+// handleCoordWake 接收另一台 agentd 转交的协调者唤醒请求（契约 §3.3）。执行前
+// 再次校验 Seat 与账本当前 driver_session 相等（CAS），不符返回 409 且不改任何
+// 状态；相符则按本机执行分支跑一轮，结果只回执——席位重建由本端自己用
+// RebindSeat(expect=旧身份) 落库（共库下请求方读卡自然看到新身份）。
+func (s *Server) handleCoordWake(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	var req proto.CoordinatorWakeReq
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		s.log.Warn("转交唤醒请求体解码失败", "card", id, "cause", err)
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("解析请求体: %w", err))
+		return
+	}
+	if req.Seat == "" || len(req.Events) == 0 {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("seat 与 events 必填"))
+		return
+	}
+	card, err := s.ledger.GetCard(id)
+	if err != nil {
+		ledgerErr(w, err)
+		return
+	}
+	if card.DriverSession != req.Seat {
+		s.log.Warn("转交唤醒席位不符，拒绝且不改状态", "card", id, "holder", req.Holder)
+		writeErr(w, http.StatusConflict, fmt.Errorf("席位与账本不符，拒绝转交唤醒"))
+		return
+	}
+	var evs []keystone.WakeEvent
+	for _, ev := range req.Events {
+		wakes, mapErr := s.automationWakeEvents(ev)
+		if mapErr != nil {
+			s.log.Warn("转交唤醒事件映射失败", "card", id, "seq", ev.Seq, "cause", mapErr)
+			writeErr(w, http.StatusBadRequest, mapErr)
+			return
+		}
+		evs = append(evs, wakes...)
+	}
+	if len(evs) == 0 {
+		writeJSON(w, http.StatusOK, proto.CoordinatorWakeResp{HandledBy: s.localMachineName()})
+		return
+	}
+	s.log.Info("转交唤醒本端执行", "card", id, "holder", req.Holder, "event_count", len(evs))
+	result, err := s.wakeCoordinatorRoundRaw(r.Context(), id, evs, req.Events)
+	if err != nil {
+		s.log.Error("转交唤醒执行失败", "card", id, "holder", req.Holder, "cause", err)
+		writeErr(w, http.StatusBadGateway, fmt.Errorf("转交唤醒失败: %w", err))
+		return
+	}
+	writeJSON(w, http.StatusOK, proto.CoordinatorWakeResp{
+		CoordinatorLaunchResp: proto.CoordinatorLaunchResp{
+			Woke: result.Woke, SessionID: result.SessionID,
+			Rebuilt: result.Rebuilt, Escalated: result.Escalated, Output: result.Output,
+		},
+		HandledBy: s.localMachineName(),
 	})
 }
 

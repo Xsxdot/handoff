@@ -140,6 +140,44 @@ func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect 
 	return nil
 }
 
+// SetSeatBearing 为已有 coordinate 席位补写承载记录（契约 §2.3 存量修复路径：
+// 会话已知在哪台机器）。CAS 断言卡上席位身份未变；只接受 coordinate 来源的
+// 非空席位；只 upsert 承载行，不改 cards 席位两列（席位真源不动）。补齐后该
+// 卡恢复可唤醒。参数：id 卡号；expect 期望的当前席位身份；bearing 承载记录
+// （Carrier/Machine 必填）。返回：读卡失败/CAS 不符/席位非 coordinate 均显式
+// 报错，不静默忽略。
+func (s *Store) SetSeatBearing(id, expect string, bearing SeatBearing) error {
+	log().Info("补写承载记录", "card", id, "has_expect", expect != "", "carrier", bearing.Carrier)
+	if strings.TrimSpace(bearing.Carrier) == "" || strings.TrimSpace(bearing.Machine) == "" {
+		err := fmt.Errorf("补写承载记录必须给载体与机器归属: %w", ErrBadState)
+		log().Warn("补写承载记录被拒：归属缺失", "card", id, "cause", err)
+		return err
+	}
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		card, err := getCardTx(s, tx, id)
+		if err != nil {
+			return fmt.Errorf("补写承载读卡 %s: %w", id, err)
+		}
+		if card.DriverSource != string(proto.SeatSourceCoordinate) || card.DriverSession == "" {
+			err := fmt.Errorf("卡 %s 不是 coordinate 席位，不能补写承载: %w", id, ErrBadState)
+			log().Warn("补写承载被拒：非叫机器人席位", "card", id, "source", card.DriverSource, "cause", err)
+			return err
+		}
+		if card.DriverSession != expect {
+			err := fmt.Errorf("卡 %s 当前席位与期望不符，请重读后补写: %w", id, ErrCASConflict)
+			log().Warn("补写承载被拒：CAS 冲突", "card", id, "cause", err)
+			return err
+		}
+		return s.writeSeatBearing(tx, id, card.DriverSession, bearing)
+	})
+	if err != nil {
+		log().Warn("补写承载记录失败", "card", id, "cause", err)
+		return err
+	}
+	log().Info("补写承载记录完成", "card", id, "carrier", bearing.Carrier)
+	return nil
+}
+
 // SeatBearing 是协调者席位的承载记录（B389）：这一次会话实际生在哪个载体、
 // 哪台机器，以及恢复它所需的运行环境。它只随 coordinate 席位存在——人尺度
 // 坐下（bind）没有载体归属，唤醒本就是 no-op。
@@ -219,6 +257,17 @@ func (s *Store) SeatBearingOf(id string) (SeatBearing, bool, error) {
 	return b, true, nil
 }
 
+// clearSeatTx 在调用方事务内清空席位三列并删除承载行（幂等）。终态转移与
+// 人工清座共用，保证「关单」与「清座」不会分成两步——分成两步就会出现
+// 「卡已终态、席位仍在」的中间态，唤醒路径要靠终态闸额外兜底。
+func (s *Store) clearSeatTx(tx *sql.Tx, card string) error {
+	if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_source = '', driver_heartbeat_at = ? WHERE id = ?`),
+		s.tval(time.Time{}), card); err != nil {
+		return fmt.Errorf("清席位写卡 %s: %w", card, err)
+	}
+	return s.deleteSeatBearing(tx, card)
+}
+
 // ClearSeat 显式清空席位与承载记录（同事务，幂等）：终态卡与人工修复路径共用。
 // 清席位不落席位事件——它是"席位不再存在"，不是换绑。
 func (s *Store) ClearSeat(id string) error {
@@ -229,13 +278,9 @@ func (s *Store) ClearSeat(id string) error {
 			return fmt.Errorf("清席位读卡 %s: %w", id, err)
 		}
 		if card.DriverSession != "" || card.DriverSource != "" {
-			if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_source = '', driver_heartbeat_at = ? WHERE id = ?`),
-				s.tval(time.Time{}), id); err != nil {
-				return fmt.Errorf("清席位写卡 %s: %w", id, err)
-			}
 			cleared = true
 		}
-		return s.deleteSeatBearing(tx, id)
+		return s.clearSeatTx(tx, id)
 	})
 	if err != nil {
 		log().Warn("清席位失败", "card", id, "cause", err)
