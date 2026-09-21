@@ -309,9 +309,11 @@ func (s *Server) launchCoordinatorRoundWithExpect(ctx context.Context, card, sou
 		return zero, fmt.Errorf("编码协调者席位身份: %w", err)
 	}
 	if rebind {
-		err = s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, expect)
+		err = s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, expect,
+			coordinatorBearing(binding, carrier, spec))
 	} else {
-		err = s.ledger.BindSeat(card, identity, proto.SeatSourceCoordinate)
+		err = s.ledger.BindSeat(card, identity, proto.SeatSourceCoordinate,
+			coordinatorBearing(binding, carrier, spec))
 	}
 	if err != nil {
 		// 席位没落 = 这个会话永远不会被唤醒（空座在 wakeCoordinatorRound 里直接跳过），
@@ -395,7 +397,8 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 		if encodeErr != nil {
 			return result, fmt.Errorf("重建后编码新席位: %w", encodeErr)
 		}
-		if rebindErr := s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, current.DriverSession); rebindErr != nil {
+		if rebindErr := s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, current.DriverSession,
+			coordinatorBearing(binding, carrier, spec)); rebindErr != nil {
 			if errors.Is(rebindErr, ledger.ErrCASConflict) {
 				s.log.Error("协调者重建后席位 CAS 冲突，新会话保留待人工回收", "card", card,
 					"event_count", len(evs), "session", result.SessionID, "cause", rebindErr)
@@ -409,6 +412,19 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 		"event_count", len(evs), "session", result.SessionID,
 		"rebuilt", result.Rebuilt, "escalated", result.Escalated)
 	return result, nil
+}
+
+// coordinatorBearing 把本次实际挑中的载体与恢复环境固化成承载记录（B389）：
+// 首次拉起挑载体，后续唤醒只认这份记录，不再重选。
+func coordinatorBearing(binding scheduling.Binding, carrier scheduling.Carrier,
+	spec keysclient.SessionSpec) ledger.SeatBearing {
+	return ledger.SeatBearing{
+		Carrier: binding.Carrier,
+		Machine: carrier.Machine,
+		HomeDir: spec.HomeDir,
+		Workdir: spec.Workdir,
+		Model:   spec.Model,
+	}
 }
 
 // releaseSchedulingBinding 释放一次准入产生的计数；直派 binding 只有载体键。

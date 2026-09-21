@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -28,9 +29,10 @@ const (
 // BindSeat 只把空座原子地占为规范 identity/source，不写 driver_carrier；
 // 同一事务落恰一条 EvDriverSeatBound（B358：协调者入群的 timeline 事实源，
 // 与换绑的 EvDriverTakeover 配对）。读、判空、写入、落事件在同一个账本
-// 事务内完成。
-func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error {
-	log().Info("开始坐下", "card", id, "source", source)
+// 事务内完成。B389：叫机器人席位必须同时落承载记录（§2.2 规则 1-3），
+// 人尺度坐下必须为零承载（规则 4）。
+func (s *Store) BindSeat(id, identity string, source proto.SeatSource, bearing SeatBearing) error {
+	log().Info("开始坐下", "card", id, "source", source, "carrier", bearing.Carrier)
 	if identity == "" {
 		err := fmt.Errorf("坐下需要当前会话席位身份: %w", ErrBadState)
 		log().Warn("坐下被拒：身份为空", "card", id, "source", source, "cause", err)
@@ -40,6 +42,10 @@ func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error {
 		wrapped := fmt.Errorf("坐下席位无效: %w", err)
 		log().Warn("坐下被拒：席位无效", "card", id, "source", source, "cause", wrapped)
 		return wrapped
+	}
+	if err := validateSeatBearing(source, bearing); err != nil {
+		log().Warn("坐下被拒：承载记录不合法", "card", id, "source", source, "cause", err)
+		return err
 	}
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		card, err := getCardTx(s, tx, id)
@@ -54,6 +60,9 @@ func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error {
 		if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = ?, driver_source = ?, driver_heartbeat_at = ? WHERE id = ?`),
 			identity, source, s.tval(s.timeNow()), id); err != nil {
 			return fmt.Errorf("坐下写席位 %s: %w", id, err)
+		}
+		if err := s.writeSeatBearing(tx, id, identity, bearing); err != nil {
+			return err
 		}
 		if _, err := s.appendEvent(tx, sink, id, EvDriverSeatBound, identity,
 			map[string]string{"to": identity}); err != nil {
@@ -71,8 +80,9 @@ func (s *Store) BindSeat(id, identity string, source proto.SeatSource) error {
 
 // RebindSeat 以 expect 原始字节值 CAS 覆写非空席位，并在同一事务落恰一条
 // EvDriverTakeover。expect 由服务层从账本读出，不来自用户可控 flag。
-func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect string) error {
-	log().Info("开始换绑席位", "card", id, "source", source, "has_expect", expect != "")
+// B389：承载记录随席位同事务整体覆写——换绑可能同时换机器、换载体、换环境。
+func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect string, bearing SeatBearing) error {
+	log().Info("开始换绑席位", "card", id, "source", source, "has_expect", expect != "", "carrier", bearing.Carrier)
 	if identity == "" {
 		err := fmt.Errorf("换绑需要目标会话席位身份: %w", ErrBadState)
 		log().Warn("换绑被拒：身份为空", "card", id, "source", source, "cause", err)
@@ -82,6 +92,10 @@ func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect 
 		wrapped := fmt.Errorf("换绑席位无效: %w", err)
 		log().Warn("换绑被拒：席位无效", "card", id, "source", source, "cause", wrapped)
 		return wrapped
+	}
+	if err := validateSeatBearing(source, bearing); err != nil {
+		log().Warn("换绑被拒：承载记录不合法", "card", id, "source", source, "cause", err)
+		return err
 	}
 	var old string
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
@@ -108,6 +122,9 @@ func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect 
 			identity, source, s.tval(s.timeNow()), id); err != nil {
 			return fmt.Errorf("换绑写席位 %s: %w", id, err)
 		}
+		if err := s.writeSeatBearing(tx, id, identity, bearing); err != nil {
+			return err
+		}
 		if _, err := s.appendEvent(tx, sink, id, EvDriverTakeover, identity,
 			map[string]string{"from": card.DriverSession, "to": identity}); err != nil {
 			return fmt.Errorf("换绑落事件 %s: %w", id, err)
@@ -120,6 +137,111 @@ func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect 
 		return err
 	}
 	log().Info("换绑席位成功", "card", id, "source", source, "had_old", old != "")
+	return nil
+}
+
+// SeatBearing 是协调者席位的承载记录（B389）：这一次会话实际生在哪个载体、
+// 哪台机器，以及恢复它所需的运行环境。它只随 coordinate 席位存在——人尺度
+// 坐下（bind）没有载体归属，唤醒本就是 no-op。
+//
+// 席位真源仍是 cards.driver_session/driver_source；本记录的 identity 列只是
+// 同事务写入的一致性见证，读取方不得拿它当席位来源。
+type SeatBearing struct {
+	Carrier string // 载体登记名（scheduling.Carrier.Name）
+	Machine string // 载体所在机器名
+	HomeDir string // 恢复环境：Resume 用的 HOME（该 CLI 用默认环境时为空）
+	Workdir string
+	Model   string
+}
+
+// IsZero 报告承载记录是否为空值（人尺度坐下的唯一合法形态）。
+func (b SeatBearing) IsZero() bool {
+	return b.Carrier == "" && b.Machine == "" && b.HomeDir == "" && b.Workdir == "" && b.Model == ""
+}
+
+// validateSeatBearing 执法 §2.2 的两条形态规则：叫机器人必有载体与机器归属，
+// 人尺度坐下必须无归属。宁可显式失败，不静默忽略半个记录。
+func validateSeatBearing(source proto.SeatSource, bearing SeatBearing) error {
+	if source == proto.SeatSourceCoordinate {
+		if strings.TrimSpace(bearing.Carrier) == "" || strings.TrimSpace(bearing.Machine) == "" {
+			return fmt.Errorf("叫机器人席位必须带载体与机器归属（carrier=%q machine=%q）: %w",
+				bearing.Carrier, bearing.Machine, ErrBadState)
+		}
+		return nil
+	}
+	if !bearing.IsZero() {
+		return fmt.Errorf("人尺度坐下不应带载体归属（carrier=%q）: %w", bearing.Carrier, ErrBadState)
+	}
+	return nil
+}
+
+// writeSeatBearing 在调用方事务内 upsert 承载记录；upsert 让换绑天然整体覆写。
+func (s *Store) writeSeatBearing(tx *sql.Tx, card, identity string, bearing SeatBearing) error {
+	if bearing.IsZero() {
+		// 人尺度坐下：确保没有上一段会话留下的承载行。
+		return s.deleteSeatBearing(tx, card)
+	}
+	if _, err := tx.Exec(s.q(`INSERT INTO seat_bearings
+			(card_id, identity, carrier, machine, home_dir, workdir, model, bound_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+			ON CONFLICT(card_id) DO UPDATE SET identity = excluded.identity,
+				carrier = excluded.carrier, machine = excluded.machine,
+				home_dir = excluded.home_dir, workdir = excluded.workdir,
+				model = excluded.model, bound_at = excluded.bound_at`),
+		card, identity, bearing.Carrier, bearing.Machine, bearing.HomeDir,
+		bearing.Workdir, bearing.Model, s.tval(s.timeNow())); err != nil {
+		return fmt.Errorf("写承载记录 %s: %w", card, err)
+	}
+	return nil
+}
+
+// deleteSeatBearing 在调用方事务内删除承载记录（幂等）。
+func (s *Store) deleteSeatBearing(tx *sql.Tx, card string) error {
+	if _, err := tx.Exec(s.q(`DELETE FROM seat_bearings WHERE card_id = ?`), card); err != nil {
+		return fmt.Errorf("删承载记录 %s: %w", card, err)
+	}
+	return nil
+}
+
+// SeatBearingOf 读该卡的承载记录；无记录返回 ok=false 且不报错。
+// 它不参与"是不是空座"的判定——空座只由 cards 两列判。
+func (s *Store) SeatBearingOf(id string) (SeatBearing, bool, error) {
+	var b SeatBearing
+	err := s.db.QueryRow(s.q(`SELECT carrier, machine, home_dir, workdir, model
+		FROM seat_bearings WHERE card_id = ?`), id).
+		Scan(&b.Carrier, &b.Machine, &b.HomeDir, &b.Workdir, &b.Model)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SeatBearing{}, false, nil
+	}
+	if err != nil {
+		return SeatBearing{}, false, fmt.Errorf("读承载记录 %s: %w", id, err)
+	}
+	return b, true, nil
+}
+
+// ClearSeat 显式清空席位与承载记录（同事务，幂等）：终态卡与人工修复路径共用。
+// 清席位不落席位事件——它是"席位不再存在"，不是换绑。
+func (s *Store) ClearSeat(id string) error {
+	cleared := false
+	err := s.mutate(func(tx *sql.Tx, _ *eventSink) error {
+		card, err := getCardTx(s, tx, id)
+		if err != nil {
+			return fmt.Errorf("清席位读卡 %s: %w", id, err)
+		}
+		if card.DriverSession != "" || card.DriverSource != "" {
+			if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_source = '', driver_heartbeat_at = ? WHERE id = ?`),
+				s.tval(time.Time{}), id); err != nil {
+				return fmt.Errorf("清席位写卡 %s: %w", id, err)
+			}
+			cleared = true
+		}
+		return s.deleteSeatBearing(tx, id)
+	})
+	if err != nil {
+		log().Warn("清席位失败", "card", id, "cause", err)
+		return err
+	}
+	log().Info("清席位完成", "card", id, "had_seat", cleared)
 	return nil
 }
 

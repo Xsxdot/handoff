@@ -271,6 +271,26 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS driver_leases (
 				session TEXT PRIMARY KEY,
 				expires_at TIMESTAMPTZ NOT NULL)`,
+			// B389 承载记录：协调者席位"生在哪个载体/哪台机器"的唯一归属来源。
+			// identity 只是同事务写入的一致性见证，席位真源仍是 cards.driver_session。
+			`CREATE TABLE IF NOT EXISTS seat_bearings (
+				card_id TEXT PRIMARY KEY,
+				identity TEXT NOT NULL,
+				carrier TEXT NOT NULL,
+				machine TEXT NOT NULL,
+				home_dir TEXT NOT NULL,
+				workdir TEXT NOT NULL,
+				model TEXT NOT NULL,
+				bound_at TIMESTAMPTZ NOT NULL)`,
+			// B389 唤醒认领：共库下同一条事件只允许一台机器处理。
+			// seq 取自 card_events.seq（全局唯一），不再叠加卡号。
+			`CREATE TABLE IF NOT EXISTS wake_claims (
+				seq BIGINT PRIMARY KEY,
+				card TEXT NOT NULL,
+				holder TEXT NOT NULL,
+				lease_until TIMESTAMPTZ NOT NULL,
+				done_at TIMESTAMPTZ)`,
+			`CREATE INDEX IF NOT EXISTS idx_wake_claims_card ON wake_claims(card)`,
 			`CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
 				archived BOOLEAN NOT NULL DEFAULT false, members JSONB NOT NULL DEFAULT '[]',
@@ -368,6 +388,22 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS driver_leases (
 				session TEXT PRIMARY KEY,
 				expires_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS seat_bearings (
+				card_id TEXT PRIMARY KEY,
+				identity TEXT NOT NULL,
+				carrier TEXT NOT NULL,
+				machine TEXT NOT NULL,
+				home_dir TEXT NOT NULL,
+				workdir TEXT NOT NULL,
+				model TEXT NOT NULL,
+				bound_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS wake_claims (
+				seq INTEGER PRIMARY KEY,
+				card TEXT NOT NULL,
+				holder TEXT NOT NULL,
+				lease_until TEXT NOT NULL,
+				done_at TEXT)`,
+			`CREATE INDEX IF NOT EXISTS idx_wake_claims_card ON wake_claims(card)`,
 			`CREATE TABLE IF NOT EXISTS sessions (
 				id TEXT PRIMARY KEY, title TEXT NOT NULL, owner TEXT NOT NULL,
 				archived INTEGER NOT NULL DEFAULT 0, members TEXT NOT NULL DEFAULT '[]',

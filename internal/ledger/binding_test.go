@@ -81,7 +81,7 @@ func TestBindSeatAndRebindSeatUseAtomicSeatContract(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.BindSeat(c.ID, first, proto.SeatSourceBind); err != nil {
+	if err := s.BindSeat(c.ID, first, proto.SeatSourceBind, SeatBearing{}); err != nil {
 		t.Fatalf("空座 bind: %v", err)
 	}
 	got, err := s.GetCard(c.ID)
@@ -92,20 +92,20 @@ func TestBindSeatAndRebindSeatUseAtomicSeatContract(t *testing.T) {
 		t.Fatalf("bind 不应落 takeover 事件: %+v", evs)
 	}
 	second, _ := proto.EncodeSeatIdentity("opencode", "thread-02")
-	if err := s.BindSeat(c.ID, second, proto.SeatSourceCoordinate); !errors.Is(err, ErrCASConflict) {
+	if err := s.BindSeat(c.ID, second, proto.SeatSourceCoordinate, SeatBearing{Carrier: "test-carrier", Machine: "local"}); !errors.Is(err, ErrCASConflict) {
 		t.Fatalf("已有合法席位 bind 应冲突: %v", err)
 	}
 	if after, _ := s.GetCard(c.ID); after.DriverSession != first || after.DriverSource != string(proto.SeatSourceBind) {
 		t.Fatalf("bind 冲突不得修改席位: %+v", after)
 	}
-	if err := s.RebindSeat(c.ID, second, proto.SeatSourceCoordinate, "wrong"); !errors.Is(err, ErrCASConflict) {
+	if err := s.RebindSeat(c.ID, second, proto.SeatSourceCoordinate, "wrong", SeatBearing{Carrier: "test-carrier", Machine: "local"}); !errors.Is(err, ErrCASConflict) {
 		t.Fatalf("expect 不符应冲突: %v", err)
 	}
 	unchanged, _ := s.GetCard(c.ID)
 	if unchanged.DriverSession != first || unchanged.DriverSource != string(proto.SeatSourceBind) {
 		t.Fatalf("CAS 冲突不得修改身份和来源: %+v", unchanged)
 	}
-	if err := s.RebindSeat(c.ID, second, proto.SeatSourceCoordinate, first); err != nil {
+	if err := s.RebindSeat(c.ID, second, proto.SeatSourceCoordinate, first, SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("正确 expect 换绑: %v", err)
 	}
 	final, _ := s.GetCard(c.ID)
@@ -156,7 +156,7 @@ func TestBindSeatFallsDriverSeatBoundEventInSameTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.BindSeat(c.ID, identity, proto.SeatSourceBind); err != nil {
+	if err := s.BindSeat(c.ID, identity, proto.SeatSourceBind, SeatBearing{}); err != nil {
 		t.Fatalf("空座 bind: %v", err)
 	}
 	bound := countSeatBoundEvents(t, s, c.ID)
@@ -175,7 +175,7 @@ func TestBindSeatFallsDriverSeatBoundEventInSameTransaction(t *testing.T) {
 	}
 	// 换绑不得误落 seat_bound（席位变更的 timeline 行只归 EvDriverTakeover）。
 	next, _ := proto.EncodeSeatIdentity("codex", "thread-b358-2")
-	if err := s.RebindSeat(c.ID, next, proto.SeatSourceCoordinate, identity); err != nil {
+	if err := s.RebindSeat(c.ID, next, proto.SeatSourceCoordinate, identity, SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("换绑: %v", err)
 	}
 	if bound = countSeatBoundEvents(t, s, c.ID); len(bound) != 1 {
@@ -186,10 +186,10 @@ func TestBindSeatFallsDriverSeatBoundEventInSameTransaction(t *testing.T) {
 	}
 	// 拒绝路径零事件：CAS 冲突与身份无效都不得落 seat_bound。
 	other, _ := proto.EncodeSeatIdentity("grok", "thread-b358-3")
-	if err := s.BindSeat(c.ID, other, proto.SeatSourceBind); !errors.Is(err, ErrCASConflict) {
+	if err := s.BindSeat(c.ID, other, proto.SeatSourceBind, SeatBearing{}); !errors.Is(err, ErrCASConflict) {
 		t.Fatalf("已有席位 bind 应冲突: %v", err)
 	}
-	if err := s.BindSeat(c.ID, "", proto.SeatSourceBind); !errors.Is(err, ErrBadState) {
+	if err := s.BindSeat(c.ID, "", proto.SeatSourceBind, SeatBearing{}); !errors.Is(err, ErrBadState) {
 		t.Fatalf("空身份 bind 应拒绝: %v", err)
 	}
 	if bound = countSeatBoundEvents(t, s, c.ID); len(bound) != 1 {
@@ -207,17 +207,17 @@ func TestBindSeatRejectsLegacyAndRebindRejectsEmptySeat(t *testing.T) {
 		t.Fatal(err)
 	}
 	identity, _ := proto.EncodeSeatIdentity("codex", "thread-03")
-	if err := s.BindSeat(c.ID, identity, proto.SeatSourceBind); !errors.Is(err, ErrCASConflict) {
+	if err := s.BindSeat(c.ID, identity, proto.SeatSourceBind, SeatBearing{}); !errors.Is(err, ErrCASConflict) {
 		t.Fatalf("非法旧席位也应视为占用: %v", err)
 	}
 	legacy, _ := s.GetCard(c.ID)
 	if legacy.DriverSession != "cli:old@host" || legacy.DriverSource != "" {
 		t.Fatalf("非法旧席位必须原样保留: %+v", legacy)
 	}
-	if err := s.RebindSeat(c.ID, identity, proto.SeatSourceBind, ""); !errors.Is(err, ErrCASConflict) {
+	if err := s.RebindSeat(c.ID, identity, proto.SeatSourceBind, "", SeatBearing{}); !errors.Is(err, ErrCASConflict) {
 		t.Fatalf("空座 rebind 应拒绝: %v", err)
 	}
-	if err := s.RebindSeat("missing", identity, proto.SeatSourceBind, "x"); !errors.Is(err, ErrNotFound) {
+	if err := s.RebindSeat("missing", identity, proto.SeatSourceBind, "x", SeatBearing{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("未知卡应返回 ErrNotFound: %v", err)
 	}
 }
@@ -235,7 +235,7 @@ func TestRebindSeatRejectsSourceOnlyLegacySeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RebindSeat(c.ID, "cli:codex#replacement", proto.SeatSourceBind, ""); !errors.Is(err, ErrBadState) {
+	if err := s.RebindSeat(c.ID, "cli:codex#replacement", proto.SeatSourceBind, "", SeatBearing{}); !errors.Is(err, ErrBadState) {
 		t.Fatalf("仅来源席位应拒绝换绑并返回状态错误: %v", err)
 	}
 	after, err := s.GetCard(c.ID)
@@ -450,10 +450,10 @@ func TestRebindDriverConflictKeepsEverything(t *testing.T) {
 func TestRebindDriverSuccessGoldPayload(t *testing.T) {
 	s := seedStore(t)
 	c, _ := s.CreateCard(NewCard{Title: "换绑金样本", Project: "p", Workflow: "bug", Actor: "t"})
-	if err := s.BindSeat(c.ID, "cli:codex#sess-old", proto.SeatSourceCoordinate); err != nil {
+	if err := s.BindSeat(c.ID, "cli:codex#sess-old", proto.SeatSourceCoordinate, SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RebindSeat(c.ID, "cli:codex#sess-new", proto.SeatSourceCoordinate, "cli:codex#sess-old"); err != nil {
+	if err := s.RebindSeat(c.ID, "cli:codex#sess-new", proto.SeatSourceCoordinate, "cli:codex#sess-old", SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("正确前值应成功: %v", err)
 	}
 	got, _ := s.GetCard(c.ID)
@@ -482,13 +482,13 @@ func TestRebindDriverSuccessGoldPayload(t *testing.T) {
 func TestRebindDriverEmptyExpectRequiresUnbound(t *testing.T) {
 	s := seedStore(t)
 	c, _ := s.CreateCard(NewCard{Title: "空期望", Project: "p", Workflow: "bug", Actor: "t"})
-	if err := s.RebindSeat(c.ID, "cli:codex#first", proto.SeatSourceBind, ""); !errors.Is(err, ErrCASConflict) {
+	if err := s.RebindSeat(c.ID, "cli:codex#first", proto.SeatSourceBind, "", SeatBearing{}); !errors.Is(err, ErrCASConflict) {
 		t.Fatalf("空座换绑应 CAS 冲突: %v", err)
 	}
-	if err := s.BindSeat(c.ID, "cli:codex#first", proto.SeatSourceBind); err != nil {
+	if err := s.BindSeat(c.ID, "cli:codex#first", proto.SeatSourceBind, SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.RebindSeat(c.ID, "cli:codex#second", proto.SeatSourceBind, ""); !errors.Is(err, ErrCASConflict) {
+	if err := s.RebindSeat(c.ID, "cli:codex#second", proto.SeatSourceBind, "", SeatBearing{}); !errors.Is(err, ErrCASConflict) {
 		t.Fatalf("有绑定但 expect 为空应 CAS 冲突: %v", err)
 	}
 }
@@ -501,7 +501,7 @@ func TestCarrierOpaqueRoundTrip(t *testing.T) {
 	if _, err := s.db.Exec(s.q(`UPDATE cards SET driver_carrier = ? WHERE id = ?`), carrier, c.ID); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.BindSeat(c.ID, "cli:codex#opaque", proto.SeatSourceBind); err != nil {
+	if err := s.BindSeat(c.ID, "cli:codex#opaque", proto.SeatSourceBind, SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
 	if got := carrierOf(t, s, c.ID); got != carrier {

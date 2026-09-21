@@ -68,7 +68,7 @@ func TestSessionVerticalSlice(t *testing.T) {
 		t.Fatalf("拉卡进群: %v", err)
 	}
 	// 进群 ≠ 配人：卡在群里但席位为空座。
-	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("配人: %v", err)
 	}
 
@@ -125,7 +125,7 @@ func TestSessionVerticalSlice(t *testing.T) {
 func TestWakeTargetsAddressing(t *testing.T) {
 	svc, st, _ := newSessionFixture(t)
 	card := sessionCard(t, st, "寻址卡")
-	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("配人: %v", err)
 	}
 	session, err := svc.CreateSession("寻址会话", "user:sy", "user:sy")
@@ -150,7 +150,7 @@ func TestWakeTargetsAddressing(t *testing.T) {
 	}
 
 	// 换绑后 @同一卡号 → 命中新席位。
-	if err := st.RebindSeat(card.ID, "cli:codex#seat-2", proto.SeatSourceCoordinate, "cli:opencode#seat-1"); err != nil {
+	if err := st.RebindSeat(card.ID, "cli:codex#seat-2", proto.SeatSourceCoordinate, "cli:opencode#seat-1", ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("换绑: %v", err)
 	}
 	targets, err = svc.WakeTargets(mentioned)
@@ -349,7 +349,7 @@ func TestSessionSeatMemberKindDerivedFromCard(t *testing.T) {
 	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(card.ID, "cli:opencode#seat-k", proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(card.ID, "cli:opencode#seat-k", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatal(err)
 	}
 	detail, err := svc.SessionDetail(session.ID)
@@ -508,17 +508,17 @@ func TestSessionTimelineBelongsToOneSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	// 无会话卡 B：坐下 + 换绑，落 seat_bound 与 takeover 两个卡事件。
-	if err := st.BindSeat(cardB.ID, "cli:opencode#b-1", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(cardB.ID, "cli:opencode#b-1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RebindSeat(cardB.ID, "cli:codex#b-2", proto.SeatSourceCoordinate, "cli:opencode#b-1"); err != nil {
+	if err := st.RebindSeat(cardB.ID, "cli:codex#b-2", proto.SeatSourceCoordinate, "cli:opencode#b-1", ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatal(err)
 	}
 	// 会话一成员卡 A 坐下再换绑：seat_rebound 行必须留在会话一（防过删）。
-	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.RebindSeat(cardA.ID, "cli:codex#a-2", proto.SeatSourceCoordinate, "cli:opencode#a-1"); err != nil {
+	if err := st.RebindSeat(cardA.ID, "cli:codex#a-2", proto.SeatSourceCoordinate, "cli:opencode#a-1", ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatal(err)
 	}
 
@@ -640,10 +640,10 @@ func TestSessionTimelineSeatBoundAndCardClosed(t *testing.T) {
 	}
 
 	// R2：成员卡坐下 → seat_bound 行；无会话卡坐下 → 不进任何 timeline。
-	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(cardB.ID, "cli:opencode#b-1", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(cardB.ID, "cli:opencode#b-1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
 	d1, err := svc.SessionDetail(session1.ID)
@@ -859,7 +859,7 @@ func TestSessionMemberStatusHonest(t *testing.T) {
 	if err := svc.JoinCard(session1.ID, cardC.ID, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
 	// 注入时钟与租约判定同源（条 18）：nowFn 拨到可拨源 cur，working →

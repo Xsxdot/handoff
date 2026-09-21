@@ -106,7 +106,7 @@ func TestRoomSendCoordinatorAcceptsExplicitSeatFlags(t *testing.T) {
 	if err := facade.JoinCardToSession(sessionID, id, "user:tester"); err != nil {
 		t.Fatalf("夹具拉卡: %v", err)
 	}
-	if err := st.BindSeat(id, "cli:claude#room-seat", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(id, "cli:claude#room-seat", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
 	out, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "协调者正文",
@@ -157,7 +157,7 @@ func TestRoomSendCoordinatorKindUsesGrokHostSession(t *testing.T) {
 	if err := facade.JoinCardToSession(sessionID, id, "user:tester"); err != nil {
 		t.Fatalf("夹具拉卡: %v", err)
 	}
-	if err := st.BindSeat(id, "cli:grok#grok-room", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(id, "cli:grok#grok-room", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
 	out, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "grok 宿主回复",

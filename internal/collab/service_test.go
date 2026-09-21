@@ -65,7 +65,7 @@ func mustCardWithParent(t *testing.T, s *Service, st *ledger.Store, title, paren
 // mustBind 用规范 coordinate 席位给测试卡绑定协调者会话。
 func mustBind(t *testing.T, st *ledger.Store, id, owner string) {
 	t.Helper()
-	if err := st.BindSeat(id, owner, proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(id, owner, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("绑定 %s→%s: %v", id, owner, err)
 	}
 }
@@ -525,10 +525,10 @@ func TestSessionMembershipEnforcement(t *testing.T) {
 	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("配人: %v", err)
 	}
-	if err := st.BindSeat(outsider.ID, "cli:codex#outside", proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(outsider.ID, "cli:codex#outside", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("配外卡: %v", err)
 	}
 
@@ -601,14 +601,14 @@ func TestSessionRebindRevokesOldSeatWriter(t *testing.T) {
 	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(card.ID, "cli:opencode#old", proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(card.ID, "cli:opencode#old", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("配人: %v", err)
 	}
 	seqBefore, err := svc.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "换绑前"}, "cli:opencode#old")
 	if err != nil {
 		t.Fatalf("换绑前旧席位发言应成功: %v", err)
 	}
-	if err := st.RebindSeat(card.ID, "cli:opencode#new", proto.SeatSourceCoordinate, "cli:opencode#old"); err != nil {
+	if err := st.RebindSeat(card.ID, "cli:opencode#new", proto.SeatSourceCoordinate, "cli:opencode#old", ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("换绑: %v", err)
 	}
 	if _, err := svc.Send(session.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "换绑后旧席位"}, "cli:opencode#old"); err != ErrNotWriter {
@@ -652,7 +652,7 @@ func TestSendConsumesRoomMentions(t *testing.T) {
 	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("配人: %v", err)
 	}
 	// 席位成员 @群主。

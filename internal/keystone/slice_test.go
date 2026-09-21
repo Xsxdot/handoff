@@ -223,7 +223,7 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("编码协调者席位: %v", err)
 	}
-	if err := st.BindSeat(card.ID, identity, proto.SeatSourceCoordinate); err != nil {
+	if err := st.BindSeat(card.ID, identity, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("记录协调者席位: %v", err)
 	}
 	if len(runner.launches) != 1 {

@@ -268,7 +268,7 @@ func TestAutomationIgnitionDrainWakesBeforeTrueDispatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("编码预绑定协调者席位: %v", err)
 	}
-	if err := env.ledger.BindSeat(ids[1], identity, proto.SeatSourceCoordinate); err != nil {
+	if err := env.ledger.BindSeat(ids[1], identity, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("写预绑定协调者席位: %v", err)
 	}
 	if _, err := mustScheduling(t, env.srv).Enqueue(scheduling.IgnitionRequest{

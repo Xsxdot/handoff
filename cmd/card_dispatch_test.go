@@ -350,7 +350,7 @@ func TestCardDispatchGuardFollowsOwnership(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(c.ID, "cli:codex#other", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(c.ID, "cli:codex#other", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatalf("预占: %v", err)
 	}
 	st.Close()
@@ -844,7 +844,7 @@ func TestCardDispatchStepAcceptsExplicitSeatFlagsForOccupiedCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(cardID, "cli:grok#step-seat", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(cardID, "cli:grok#step-seat", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		st.Close()
 		t.Fatal(err)
 	}
@@ -949,7 +949,7 @@ func TestCardReleaseRejectsOccupiedSeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.BindSeat(c.ID, "cli:codex#someone-else", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(c.ID, "cli:codex#someone-else", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatalf("预占: %v", err)
 	}
 	st.Close()

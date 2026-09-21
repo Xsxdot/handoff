@@ -351,7 +351,7 @@ func prebindConsumerSession(t *testing.T, env *ledgerEnv, cardID string) {
 	if err != nil {
 		t.Fatalf("编码预绑定协调者席位: %v", err)
 	}
-	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate); err != nil {
+	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("写预绑定协调者席位: %v", err)
 	}
 }
@@ -839,7 +839,7 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	if err != nil {
 		t.Fatalf("编码既有会话席位: %v", err)
 	}
-	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate); err != nil {
+	if err := env.ledger.BindSeat(cardID, identity, proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("写既有会话席位: %v", err)
 	}
 	runner.failResume = true
@@ -1305,7 +1305,7 @@ func TestAutomationWakeDoesNotBubbleWhenChildHasCoordinateSeat(t *testing.T) {
 func TestAutomationWakeDoesNotWakeBindParent(t *testing.T) {
 	env, runner := newNoPTYAutomationEnv(t)
 	parentID := createCoordCard(t, env)
-	if err := env.ledger.BindSeat(parentID, "cli:grok#bind-parent", proto.SeatSourceBind); err != nil {
+	if err := env.ledger.BindSeat(parentID, "cli:grok#bind-parent", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatalf("父卡 bind: %v", err)
 	}
 	childID := splitCoordChild(t, env, parentID)

@@ -345,7 +345,7 @@ func TestCoordRebindEmptySeatConflicts(t *testing.T) {
 func TestCoordRebindNoSquadIsActionableBadRequest(t *testing.T) {
 	env, runner := newNoPTYCoordEnv(t)
 	cardID := createCoordCard(t, env)
-	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-old", proto.SeatSourceCoordinate); err != nil {
+	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-old", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("预置协调者席位: %v", err)
 	}
 	code, body := ledgerPost(t, env.testAgentdEnv, "/api/cards/"+cardID+"/coordinator/rebind", `{"mode":"launch"}`)
@@ -514,10 +514,10 @@ func TestCoordForgetAfterSelfRebindClearsStaleSession(t *testing.T) {
 	if _, err := env.srv.keystone.LaunchForCard(context.Background(), cardID, "coordinate", keysclient.SessionSpec{CLI: "opencode"}); err != nil {
 		t.Fatalf("准备旧 coordinate 会话: %v", err)
 	}
-	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-old", proto.SeatSourceCoordinate); err != nil {
+	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-old", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("准备旧 coordinate 席位: %v", err)
 	}
-	if err := env.ledger.RebindSeat(cardID, "cli:codex#sess-new", proto.SeatSourceBind, "cli:opencode#sess-old"); err != nil {
+	if err := env.ledger.RebindSeat(cardID, "cli:codex#sess-new", proto.SeatSourceBind, "cli:opencode#sess-old", ledger.SeatBearing{}); err != nil {
 		t.Fatalf("模拟 self 换绑: %v", err)
 	}
 
@@ -695,7 +695,7 @@ type seatStealingRunner struct {
 }
 
 func (r *seatStealingRunner) Launch(keysclient.SessionSpec, string) (keysclient.TurnResult, error) {
-	if err := r.env.ledger.BindSeat(r.card, "cli:opencode#sess-intruder", proto.SeatSourceCoordinate); err != nil {
+	if err := r.env.ledger.BindSeat(r.card, "cli:opencode#sess-intruder", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		return keysclient.TurnResult{}, err
 	}
 	return keysclient.TurnResult{SessionID: "sess-coord", Output: "ok"}, nil
@@ -785,7 +785,7 @@ func TestCoordStatusColdLocateUsesRegisteredHomeWithoutAdmission(t *testing.T) {
 	cardID := createCoordCard(t, env)
 
 	// 直接绑定席位，不种 keystone 内存会话（模拟冷路径）
-	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-cold", proto.SeatSourceCoordinate); err != nil {
+	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-cold", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("绑定席位: %v", err)
 	}
 
@@ -840,7 +840,7 @@ func TestCoordStatusQuotesHomePathWithSpaces(t *testing.T) {
 	}
 
 	cardID := createCoordCard(t, env)
-	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-cold", proto.SeatSourceCoordinate); err != nil {
+	if err := env.ledger.BindSeat(cardID, "cli:opencode#sess-cold", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("绑定席位: %v", err)
 	}
 

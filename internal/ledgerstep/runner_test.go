@@ -260,7 +260,7 @@ func TestRunnerKeepsRunLockWithoutChangingSeat(t *testing.T) {
 
 func TestRunnerDoesNotOverwriteExistingSeat(t *testing.T) {
 	st, card := nodeLedger(t)
-	if err := st.BindSeat(card.ID, "cli:codex#holder", proto.SeatSourceBind); err != nil {
+	if err := st.BindSeat(card.ID, "cli:codex#holder", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatalf("预先认领: %v", err)
 	}
 	runner := dispatchRunner(t, st, func(ctx context.Context, opts DispatchOpts) (string, string, error) {

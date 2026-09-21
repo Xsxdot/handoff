@@ -952,7 +952,7 @@ func TestRoomSendErrMapping(t *testing.T) {
 	}
 	// 绑定者本人以 user 发言 → 403（ErrNotWriter）
 	card := seedCard(t, env, "卡E")
-	if err := env.ledger.BindSeat(card.ID, "cli:codex#web", proto.SeatSourceBind); err != nil {
+	if err := env.ledger.BindSeat(card.ID, "cli:codex#web", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := env.srv.rooms.Send(card.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "x"}, "cli:codex#web"); err == nil {

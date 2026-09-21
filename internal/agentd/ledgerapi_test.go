@@ -1620,7 +1620,7 @@ func TestCardStepRejectsUnknownNode(t *testing.T) {
 func TestCardStepRejectsSeatActorMismatch(t *testing.T) {
 	env := newNoPTYLedgerEnv(t)
 	seedCardWithProject(t, env.srv, "handoff")
-	if err := env.ledger.BindSeat("B1", "cli:codex#bound", proto.SeatSourceBind); err != nil {
+	if err := env.ledger.BindSeat("B1", "cli:codex#bound", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatalf("准备坐下席位: %v", err)
 	}
 	called := make(chan struct{}, 1)

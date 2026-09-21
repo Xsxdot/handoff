@@ -201,7 +201,7 @@ func TestB3583ReplyToReboundOldSeatDoesNotWake(t *testing.T) {
 		t.Fatalf("编码新席位: %v", err)
 	}
 	// RebindSeat 四参：expect = 当前席位（CAS 语义与 MoveCard 同款）。
-	if err := env.ledger.RebindSeat(cardID, newIdentity, proto.SeatSourceCoordinate, oldSeat.DriverSession); err != nil {
+	if err := env.ledger.RebindSeat(cardID, newIdentity, proto.SeatSourceCoordinate, oldSeat.DriverSession, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("换绑: %v", err)
 	}
 	sendSessionMessage(t, svc, sessionID, "user:tester", "回复换绑前的旧消息", nil, original)
@@ -229,7 +229,7 @@ func TestB3583ReboundCardMentionHitsNewSeat(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := env.ledger.RebindSeat(cardID, newIdentity, proto.SeatSourceCoordinate, oldSeat.DriverSession); err != nil {
+	if err := env.ledger.RebindSeat(cardID, newIdentity, proto.SeatSourceCoordinate, oldSeat.DriverSession, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("换绑: %v", err)
 	}
 	sendSessionMessage(t, svc, sessionID, "user:tester", "换绑后再叫这张卡", []string{cardID}, 0)
@@ -288,10 +288,10 @@ func TestB3583StructureEventsNeverWake(t *testing.T) {
 	if err := svc.JoinCard(sessionID, freshCard, "user:tester"); err != nil {
 		t.Fatalf("进群: %v", err)
 	}
-	if err := env.ledger.BindSeat(freshCard, "cli:opencode#seat-bound", proto.SeatSourceCoordinate); err != nil {
+	if err := env.ledger.BindSeat(freshCard, "cli:opencode#seat-bound", proto.SeatSourceCoordinate, ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("坐下: %v", err)
 	}
-	if err := env.ledger.RebindSeat(freshCard, "cli:opencode#seat-rebound", proto.SeatSourceCoordinate, "cli:opencode#seat-bound"); err != nil {
+	if err := env.ledger.RebindSeat(freshCard, "cli:opencode#seat-rebound", proto.SeatSourceCoordinate, "cli:opencode#seat-bound", ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
 		t.Fatalf("换绑: %v", err)
 	}
 	if err := svc.ArchiveSession(sessionID, "user:tester"); err != nil {
