@@ -1038,3 +1038,75 @@ func TestSessionSendActorResolution(t *testing.T) {
 		t.Fatal("非法 agent 启动身份必须报错")
 	}
 }
+
+// TestSessionSendMentionAtPrefixWakesSeat 锁 B391 修复的用户缝（spec §4.1）：
+// `handoff session send <会话> --mention @<卡号>` 必须剥前缀、落账裸口径、
+// 并唤醒该卡当前席位（`session wait <席位>` 收到命中）。
+// 修复前红（存储 @B1、席位订阅收不到）；Task 1 实现后绿。
+func TestSessionSendMentionAtPrefixWakesSeat(t *testing.T) {
+	clearSeatSourceEnv(t)
+	dir := t.TempDir()
+	cardID := mustAddCard(t, dir, "B391 @前缀卡")
+	_, facade, st, sessionID, _ := mustSendFixture(t, dir, "B391 @前缀场")
+	if err := facade.JoinCardToSession(sessionID, cardID, "user:tester"); err != nil {
+		t.Fatalf("拉卡进群: %v", err)
+	}
+	seat := "cli:claude#b391-seat"
+	if err := st.BindSeat(cardID, seat, proto.SeatSourceCoordinate,
+		ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
+		t.Fatalf("配人: %v", err)
+	}
+	body := "@" + cardID + " 看这里"
+	out, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, body, "--mention", "@"+cardID)
+	if err != nil || !strings.Contains(out, `"ok":true`) {
+		t.Fatalf("session send --mention @卡号: err=%v out=%q", err, out)
+	}
+	// 落账载荷为契约裸口径（True 序列化边界：CLI flag → payload → SQLite）。
+	events, err := st.EventsFromAsc(nil, 0, 10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, ev := range events {
+		if ev.Type != ledger.EvRoomMessage {
+			continue
+		}
+		var msg proto.RoomMessage
+		if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+			t.Fatal(err)
+		}
+		if msg.Body != body {
+			continue
+		}
+		found = true
+		if len(msg.Mentions) != 1 || msg.Mentions[0] != cardID {
+			t.Fatalf("落账 mentions 应剥 @ 前缀为 %q，实得 %q", cardID, msg.Mentions)
+		}
+	}
+	if !found {
+		t.Fatal("消息未落账")
+	}
+	// 端到端：席位订阅收到命中（@卡号 → 当前席位）。
+	out, _, err = runLedgerCLI(t, dir, "session", "wait", seat, "--since", "0")
+	if err != nil {
+		t.Fatalf("session wait 席位: %v", err)
+	}
+	wake := decodeSessionWake(t, out)
+	if wake.Session != sessionID || wake.Hit.Body != body {
+		t.Fatalf("@卡号 未唤醒该卡当前席位: %+v", wake)
+	}
+}
+
+// TestSessionSendMentionHelpMatchesAcceptedForms 锁 spec §4.4：--mention 帮助
+// 措辞与真实接受的形态（可带 @、可裸写）一致。
+func TestSessionSendMentionHelpMatchesAcceptedForms(t *testing.T) {
+	flag := sessionSendCmd.Flags().Lookup("mention")
+	if flag == nil {
+		t.Fatal("找不到 --mention flag")
+	}
+	for _, want := range []string{"成员", "卡号", "@", "可选"} {
+		if !strings.Contains(flag.Usage, want) {
+			t.Fatalf("--mention 说明应含 %q，实得 %q", want, flag.Usage)
+		}
+	}
+}

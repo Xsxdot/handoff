@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1126,5 +1127,157 @@ func TestSessionSendToMissingSessionRoomIsErrNoRoom(t *testing.T) {
 	}
 	if errors.Is(err, ErrReadOnly) {
 		t.Fatalf("不得误报只读（房间不是在而是无）: %v", err)
+	}
+}
+
+// TestSendNormalizesMentionAtPrefixToSeat 锁 B391（spec §4.1）：写入边界把
+// `@卡号` / `@身份` 归一化为契约裸口径，落账的 mentions 是 `B1`，判定命中
+// 该卡当前席位。当前 bug：存储 @B1、GetCard 查不到、targets=["@B1"] 不命中。
+// 变异复验：去掉 Send 的 normalizeMentions 调用，本测试重新变红。
+func TestSendNormalizesMentionAtPrefixToSeat(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	card := sessionCard(t, st, "B391 归一化卡")
+	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate,
+		ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
+		t.Fatalf("配人: %v", err)
+	}
+	session, err := svc.CreateSession("B391 归一化场", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	// 三种 @ 形态同发：卡号、user: 身份、agent: 身份。
+	seq, err := svc.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "@" + card.ID + " @user:sy @agent:opencode 看这里",
+		Mentions: []string{"@" + card.ID, "@user:sy", "@agent:opencode"},
+	}, "user:sy")
+	if err != nil {
+		t.Fatalf("发言: %v", err)
+	}
+
+	// 穿真实序列化边界：从 SQLite 读回 payload 原文再解码，断言存储即契约裸口径。
+	events, err := st.EventsFromAsc([]string{}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var (
+		stored proto.RoomMessage
+		found  bool
+	)
+	for _, ev := range events {
+		if ev.Seq != seq || ev.Type != "room_message" {
+			continue
+		}
+		found = true
+		if err := json.Unmarshal(ev.Payload, &stored); err != nil {
+			t.Fatalf("解码落账载荷: %v", err)
+		}
+	}
+	if !found {
+		t.Fatalf("未找到 seq=%d 的 room_message", seq)
+	}
+	// 存储边界断言：payload 里的 mentions 已是契约裸口径（body 仍保留 @ 前缀，
+	// 不参与本断言——逐字相等只针对 Mentions 数组）。
+	wantMentions := []string{card.ID, "user:sy", "agent:opencode"}
+	if !slices.Equal(stored.Mentions, wantMentions) {
+		t.Fatalf("落账 mentions 应为契约裸口径 %v，实得 %q", wantMentions, stored.Mentions)
+	}
+
+	// 判定命中该卡当前席位；两个外部身份原样。
+	targets, err := svc.MessageWakeTargets(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantTargets := []string{"cli:opencode#seat-1", "user:sy", "agent:opencode"}
+	if !slices.Equal(targets, wantTargets) {
+		t.Fatalf("寻址结果 %v want %v", targets, wantTargets)
+	}
+
+	// 换绑后同一落账消息仍解析到新席位（@卡号 的能力不因换绑丢失）。
+	if err := st.RebindSeat(card.ID, "cli:codex#seat-2", proto.SeatSourceCoordinate,
+		"cli:opencode#seat-1", ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
+		t.Fatalf("换绑: %v", err)
+	}
+	targets, err = svc.MessageWakeTargets(stored)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantAfterRebind := []string{"cli:codex#seat-2", "user:sy", "agent:opencode"}
+	if !slices.Equal(targets, wantAfterRebind) {
+		t.Fatalf("换绑后寻址结果 %v want %v", targets, wantAfterRebind)
+	}
+}
+
+// TestSendMentionNormalizationReverseCases 两条反例不回归（spec §4.2/§4.3）：
+// 无寻址不唤醒任何人；@空座卡不落空到别人；裸卡号既有行为不变。
+func TestSendMentionNormalizationReverseCases(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	card := sessionCard(t, st, "B391 反例卡")
+	if err := st.BindSeat(card.ID, "cli:opencode#seat-1", proto.SeatSourceCoordinate,
+		ledger.SeatBearing{Carrier: "test-carrier", Machine: "local"}); err != nil {
+		t.Fatalf("配人: %v", err)
+	}
+	empty := sessionCard(t, st, "B391 空座卡")
+	session, err := svc.CreateSession("B391 反例场", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(session.ID, empty.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	noAddrSeq, err := svc.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "没人要办的话"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	emptySeatSeq, err := svc.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "@空座", Mentions: []string{"@" + empty.ID}}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bareSeq, err := svc.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "裸卡号", Mentions: []string{card.ID}}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.EventsFromAsc([]string{}, 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	bySeq := map[int64]proto.RoomMessage{}
+	for _, ev := range events {
+		if ev.Type != "room_message" {
+			continue
+		}
+		var m proto.RoomMessage
+		if err := json.Unmarshal(ev.Payload, &m); err != nil {
+			t.Fatal(err)
+		}
+		bySeq[ev.Seq] = m
+	}
+	for _, tc := range []struct {
+		name      string
+		seq       int64
+		wantEmpty bool
+	}{
+		{"无寻址不唤醒", noAddrSeq, true},
+		{"@空座卡不落空", emptySeatSeq, true},
+		{"裸卡号既有行为", bareSeq, false},
+	} {
+		targets, err := svc.MessageWakeTargets(bySeq[tc.seq])
+		if err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if tc.wantEmpty && len(targets) != 0 {
+			t.Fatalf("%s: 应空集，实得 %v", tc.name, targets)
+		}
+		if !tc.wantEmpty && (len(targets) != 1 || targets[0] != "cli:opencode#seat-1") {
+			t.Fatalf("%s: 应命中席位，实得 %v", tc.name, targets)
+		}
 	}
 }
