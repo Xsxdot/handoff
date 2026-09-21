@@ -82,8 +82,13 @@ func (s *Server) automationLoop(ctx context.Context) {
 }
 
 func (s *Server) runAutomationPass(ctx context.Context) {
-	if _, _, err := s.consumeAutomationEventsOnce(ctx); err != nil {
+	processed, escalated, err := s.consumeAutomationEventsOnce(ctx)
+	if err != nil {
 		s.log.Error("自动化事件消费轮失败", "cause", err)
+	} else if processed > 0 || escalated {
+		// B390 R4：正常空轮不刷屏，但「本轮有事发生」必须可见——默认日志级别是
+		// warn（logx 缺省，见 H5），故用 Warn 而非 Info，否则成功心跳仍被吞。
+		s.log.Warn("自动化事件消费轮完成", "processed", processed, "escalated", escalated)
 	}
 	if _, err := s.drainQueuesOnce(ctx); err != nil {
 		s.log.Error("自动化队列清队轮失败", "cause", err)

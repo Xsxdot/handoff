@@ -21,6 +21,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
 const (
@@ -34,7 +35,57 @@ const (
 	// wakeRetryMax 是同卡连续失败的重试上限；超过后按失败次数线性延长退避，
 	// 不再自动无限试跑。
 	wakeRetryMax = 3
+	// automationStallEscalateAfter 是同卡连续「协调者准入满员」的升级阈值：达到即
+	// 落一次 needs_human，让人看见唤醒链停摆（B390 spec §4.2「不允许静默」）。
+	// 节拍沿用既有 automationPollInterval=2s（P4）：不设秒级退避，否则 T1 回路
+	// 背靠背 3 轮内转不绿；「按节拍重试」的字面节拍就是轮询本身。
+	automationStallEscalateAfter = 3
 )
+
+// admissionStalled 只认「协调者准入满员」这一可恢复排队态（B390 R1）：账本故障、
+// 承载缺失、席位非法等非准入错误不进重试与升级，避免把真实故障说成满员。
+func admissionStalled(err error) bool {
+	var adm *coordinatorAdmissionError
+	return errors.As(err, &adm) && errors.Is(err, scheduling.ErrNoSlot)
+}
+
+// recordAdmissionStall 记一次连续准入失败并留可见痕：每次失败都 Warn（2s 节拍
+// 可见），连续失败恰达到阈值那一次落一条 needs_human（按「次数==阈值」去重，
+// 之后继续重试不再重复落，避免每次刷屏）。返回累计连续失败次数。
+//
+// 重试载体是 B389 的认领挡水位，不是本表：准入失败时调用方**不**
+// completeWakeBatch、**不**标 seen，认领留在飞挡住终局前缀水位，下一轮重读到、
+// 重新尝试（P2）。本表只做升级阈值计数。
+func (s *Server) recordAdmissionStall(card string) int {
+	s.automationMu.Lock()
+	if s.automationStall == nil {
+		s.automationStall = make(map[string]int)
+	}
+	s.automationStall[card]++
+	attempts := s.automationStall[card]
+	s.automationMu.Unlock()
+
+	s.log.Warn("自动化唤醒准入失败，保留认领按节拍重试", "card", card, "attempts", attempts)
+	if attempts != automationStallEscalateAfter {
+		return attempts
+	}
+	reason := fmt.Sprintf("自动化唤醒持续准入失败 %d 次：协调者小队名额被占满，唤醒链停摆，请人工处置"+
+		"（可 handoff squad list --json 查看运行位残留、或等待释放）", attempts)
+	if err := s.ledger.MarkNeedsHuman(card, reason, "agentd"); err != nil {
+		s.log.Error("准入停摆落等人失败", "card", card, "attempts", attempts, "cause", err)
+		return attempts
+	}
+	s.log.Error("准入停摆已落 needs_human", "card", card, "attempts", attempts)
+	return attempts
+}
+
+// clearWakeStall 在唤醒成功或遇非准入错误时清掉该卡的连续准入失败计数，使下一次
+// 停摆重新走一遍「累计到阈值落一次」的节奏。
+func (s *Server) clearWakeStall(card string) {
+	s.automationMu.Lock()
+	delete(s.automationStall, card)
+	s.automationMu.Unlock()
+}
 
 // wakeBackoff 记录一张卡的退避状态。
 type wakeBackoff struct {
@@ -602,14 +653,28 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			return processed, escalated, nil
 		}
 		result, wakeErr := s.wakeCoordinatorRoundRaw(ctx, card, evs, raws)
-		s.completeWakeBatch(card, claimedSeqs)
 		if wakeErr != nil {
 			s.log.Error("自动化事件批次唤醒失败", "card", card,
 				"event_count", len(evs), "cause", wakeErr)
-			// 单卡失败不断整轮（契约 §3.5.4 / §4-30）：退避后继续处理同批与
-			// 后续卡，轮末统一推进终局前缀水位。失败已 CompleteWake，游标不会
-			// 被它永久挡。判据收口后 needs_human 已不在唤醒映射里（契约
-			// §3.5.3），「把自生 needs_human 标 seen」的补丁随之删除。
+			if admissionStalled(wakeErr) {
+				// B390 P2：准入满员是可恢复排队态——**不** completeWakeBatch、
+				// **不**标 seen。认领留在飞挡住终局前缀水位，游标不越过该 seq，
+				// 下一轮自然重读到并重试（同持有者可续期认领）。本表只累计连续
+				// 失败次数，用于恰一次落 needs_human（P4）。
+				s.recordAdmissionStall(card)
+				if result.Escalated {
+					escalated = true
+				}
+				if firstWakeErr == nil {
+					firstWakeErr = wakeErr
+				}
+				continue
+			}
+			// 非准入错误维持既有终局处置（B389 §3.5.4/§4-30）：单卡失败不断整轮，
+			// 退避后继续处理同批与后续卡，轮末统一推进终局前缀水位。失败已
+			// CompleteWake，游标不会被它永久挡。
+			s.clearWakeStall(card)
+			s.completeWakeBatch(card, claimedSeqs)
 			s.recordWakeBackoff(card, maxSeqOf(claimedSeqs))
 			if result.Escalated {
 				escalated = true
@@ -624,6 +689,8 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			}
 			continue
 		}
+		s.clearWakeStall(card)
+		s.completeWakeBatch(card, claimedSeqs)
 		if s.automationRoundHook != nil {
 			s.automationRoundHook(card, result)
 		}

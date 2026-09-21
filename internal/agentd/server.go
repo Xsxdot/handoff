@@ -195,6 +195,11 @@ type Server struct {
 	// §3.5.4）：同卡同 seq 在退避窗内不重复试跑，防止失败事件反复引发唤醒。
 	// 进程内存：重启后重试一次是安全方向（不丢事件）。
 	automationBackoff map[string]wakeBackoff
+	// automationStall 是每张卡连续「协调者准入满员」的次数（B390 P4）。它**不是**
+	// 重试载体——重试靠 B389 的认领挡水位、下一轮自然重读（不 completeWakeBatch、
+	// 不标 seen）；这里只数连续失败次数，用于恰一次落 needs_human 的去重阈值。
+	// 成功或遇非准入错误即清。进程内存：重启后重新计数，安全方向。
+	automationStall map[string]int
 	// automationRoundHook is a test-only observation point; production leaves it nil.
 	automationRoundHook func(card string, result keystone.RoundResult)
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
@@ -287,6 +292,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		coordLocks:              make(map[string]*sync.Mutex),
 		automationKick:          make(chan struct{}, 1),
 		automationSeen:          make(map[int64]struct{}),
+		automationStall:         make(map[string]int),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade
