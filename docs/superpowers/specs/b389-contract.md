@@ -6,6 +6,7 @@
 **架构形态：按子系统分域的平铺领域包，无横向 controller/service/dao 分层**（`codegraph/best.json`）
 **冻结状态：本提交随 `codegraph/target.json` 与 `codegraph/diffs/cards-B233.1-charter-7.json` 冻结**
 **修订轮（2026-09-21，review 退回三项）**：§3.1.1 认领键由 `seq` 单键改为 `(card,seq)` 复合键（原理由被实测证伪，见 §6-2）；§4-29 锁点重做（原测试对 `AdmitSeatCarrier`/`LaunchAdmit` 不可区分，见 §4-29）；新增多卡扇出冻结条目 §4-33–35 与旧表迁移条目 §4-36。本轮证据见 §5.1。
+**修订轮 2（2026-09-21，B390 复评 F1 回写）**：§3.2 第 5 步与 §3.5 新增**准入失败豁免条款**——准入满员（`ErrNoSlot`）是可恢复**排队态而非失败态**：不 `CompleteWake`、不标 seen，保留认领挡住终局前缀水位，下一轮按轮询节拍自然重试；同卡连续失败达阈值恰落一次 `needs_human`（去重）。§3.5.4 的退避规则与 §4-31 收窄为**仅适用于非准入失败**。新增冻结条目 §4-37–42。本轮证据见 §5.2，拍板记录见 §6-5。回写依据见 `docs/superpowers/specs/b390-contract.md`。
 
 ## 0. 用户前提（不可挑战，逐条落进本契约）
 
@@ -138,7 +139,7 @@ func (s *Store) WakeClaimsBefore(seq int64) (inFlight []int64, err error)       
 4. **归属判定在任何名额申请之前**：
    - `Machine` 是本机（含 `IsSelfTarget`）→ 本机执行：从承载记录构造 `keysclient.SessionSpec{CLI, HomeDir, Model, Workdir}`（CLI 由席位身份解出），按**冻结载体**申请名额（§3.4），再 `keystone.Wake`。
    - `Machine` 非本机 → **转交**（§3.3）：本机不申请协调者名额、不发起回合、不落席位。
-5. 处理结果无论成功失败都要 `CompleteWake(seq, card, holder)`（key 为 `(card,seq)`）；失败额外落"需要人"展示并进入退避（§3.5）。
+5. 处理结果：**非准入失败与成功**都要 `CompleteWake(seq, card, holder)`（key 为 `(card,seq)`）；失败额外落"需要人"展示并进入退避（§3.5）。**准入满员例外**（B390 §修订轮 2）：协调者席位准入返回 `ErrNoSlot`（可恢复排队态）时**不 `CompleteWake`、不标 seen**，认领留在飞挡住终局前缀水位（§3.1.3），下一轮按 `automationPollInterval` 节拍自然重读到并重试；不进退避（§3.5.4 只辖非准入失败），连续失败达阈值恰落一次 `needs_human`（去重），见 §3.5.5。
 
 ### 3.3 转交面（agentd → agentd）
 
@@ -192,7 +193,12 @@ func (s *Scheduling) AdmitSeatCarrier(squad, carrier string) (Binding, error)
 1. `automationWakeEvent` 把 `EvNeedsHuman`（及本卡新引入的 `EvSeatBearingMissing`）**移出唤醒映射**；`needs_human` 不再是唤醒源（对齐 B358 契约规则 31）。
 2. **保留**两条展示通路：卡级订阅输出（`session wait` / 卡事件订阅）与会话列表"需要你"待办——判据收口不得改这两条；实现时以它们的既有测试仍绿为准。
 3. 删除"把自生 `needs_human` 标 seen"的补丁（判据收口后它没有存在理由）。
-4. 单卡处理失败**不得 `return` 断整轮**：留痕（展示）+ 退避（同卡同 seq 在退避窗口内不重复试跑）+ 继续处理同批与后续卡。退避窗与重试上限取常量，写进实现并在测试里断言"相邻两轮不重复试跑同一 seq"。
+4. 单卡处理失败**不得 `return` 断整轮**：留痕（展示）+ 退避（同卡同 seq 在退避窗口内不重复试跑）+ 继续处理同批与后续卡。退避窗与重试上限取常量，写进实现并在测试里断言"相邻两轮不重复试跑同一 seq"。**本条的退避仅辖非准入失败**；准入满员（`ErrNoSlot`）走 §3.5.5 的排队态重试，不进本条退避。
+5. **准入失败的排队态语义（B390 修订轮 2 新增）**：协调者准入返回 `ErrNoSlot` 时，按**可恢复排队态**处置，与账本故障/承载缺失/席位非法等**非准入失败态**分流：
+   - **不 `CompleteWake`、不标 seen**：认领留在飞，挡住终局前缀水位（`WakeClaimsBefore` 以 `DISTINCT seq` 聚合，任一行在飞即挡），游标不越过该 seq；
+   - **下一轮自然重试**：节拍 = 既有 `automationPollInterval=2s` 轮询本身，**不设秒级退避**（同持有者可续期认领，下一轮重读到同 seq 并再次尝试准入）；
+   - **恰一次 `needs_human`**：同卡连续准入失败计数达阈值（实现取 3）落**恰一条** `needs_human`（按「次数==阈值」去重，之后继续重试不重复落）；成功或遇非准入错误即清零计数；
+   - **非准入失败不受本条影响**：仍按 §3.2 第 5 步完成 `CompleteWake`、标 seen、进退避（§3.5.4 / §4-31），不断整轮。
 
 ## 4. 原子冻结清单
 
@@ -228,12 +234,18 @@ func (s *Scheduling) AdmitSeatCarrier(squad, carrier string) (Binding, error)
 28. 唤醒执行走 `AdmitSeatCarrier`：载体非该小队成员时拒绝。
 29. 唤醒执行真正打到承载记录里的载体，且**不经 `LaunchAdmit` 的候选遍历**。锁点必须能让「换成 `LaunchAdmit`」变红——断言回合进行中 `carrier/<承载.Carrier>` 键被占用（`LaunchAdmit` 按小队顺序回落到首个成员，该键为 0），或注入一个只在冻结准入路径出现的可观测副作用。原测试 `TestB389WakeUsesFrozenCarrierNotLaunchAdmit`（`internal/agentd/scheddrain_test.go:578`）在回合结束后的计数上断言，对 `AdmitSeatCarrier`/`LaunchAdmit` 不可区分，本轮实测已证（§5.1），必须重做。
 30. 单卡处理失败不阻断同批其他卡（B 卡仍被唤醒）。
-31. 单卡失败后进入退避：相邻两轮不重复试跑同一 `(card,seq)`。
+31. 单卡**非准入**失败后进入退避：相邻两轮不重复试跑同一 `(card,seq)`。（准入失败的排队态重试见 §4-38，不走本条退避。）
 32. 终态卡收到任意事件不再唤醒（`resumes`/`launches` 为 0）。
 33. 多卡扇出：一条 `room_message` 事件寻址命中两张各有 `coordinate` 席位的卡时，**两张卡各被唤醒恰一次**（`resumes`/`launches` 命中共 2 次，`processed==2`）。
 34. 多卡扇出后游标推进到该 seq 之外（`cursor >= seq`），且两张卡的 `(card,seq)` 认领行都已 `done_at` 收尾——游标不得被扇出中的任一卡永久挡住。
 35. 多卡扇出中，若某张卡的 `(card,seq)` 已被他机持有，只有该卡跳过，**另一张卡仍被唤醒**（排他收窄为按卡，不误伤扇出兄弟）。
 36. 旧库（基线 `wake_claims(seq)` 单键表）升级到本契约定型后，`ClaimWake`/`CompleteWake`/`WakeClaimsBefore` 在新表结构上工作：存量单键表要么被显式迁移成 `(card,seq)` 主键，要么在 `Open` 时被安全重建（见 §5.1 的 `DROP`/`CREATE` 处置），不出现"查询用 `WHERE card=?` 撞上无 card 主键的旧表"这类静默错配。
+37. 准入失败（`ErrNoSlot`）时不 `CompleteWake`：同卡同 seq 的认领行在失败后仍 `done_at IS NULL`（在飞）。
+38. 准入失败后认领挡水位：存在该在飞认领时，`CursorWatermark` 返回小于该 seq 的水位、游标不越过该 seq；下一轮消费重读到同 seq 并**再次尝试准入**（同一批 N 轮背靠背，准入被尝试 ≥ N 次）。
+39. 准入失败连续达阈值恰落**一次** `needs_human`：阈值前不落；第 3 次恰落一条；第 4 次及以后不再新增（去重）。
+40. 非准入失败不落 `needs_human`、不按节拍重试：走 §4-30/§4-31 的终局路径（`CompleteWake` + 退避），N 轮内准入只被尝试 1 次。
+41. 准入失败成功后连续计数清零：一次成功唤醒后再遇到准入失败，`needs_human` 重新从 1 累计到阈值再落一次（不因历史计数而静默）。
+42. 准入失败仍收尾本次消费轮：单卡准入持续失败不阻断同批其他卡，轮末正常返回（不 panic、不空转死循环）。
 
 ## 5. 可执行冻结与本轮验证
 
@@ -336,12 +348,33 @@ ok  github.com/Xsxdot/handoff/internal/agentd  0.223s     ← 四包全绿，锁
   - [ ] 多卡扇出与按卡排他：33–35（锁在 agentd 消费循环，属第 4 片）；
   - [ ] 旧单键表迁移：36（属第 1 片的 `Open` 迁移处置）。
 
+### 5.2 修订轮 2 实测证据（2026-09-21，B390 实现树上实跑）
+
+本轮为 **B390 复评 F1 的契约回写**：把 B390 已落地的「准入失败=排队态、不 complete、保认领挡水位、按 2s 节拍重试、恰一次 needs_human」从「plan 层临时裁决」升格为本契约的显式豁免条款，并给出可判 pass/fail 的冻结条目 §4-37–42。回写前状态：`git log --oneline -S "不 completeWakeBatch" -- docs/` 只有 B390 的 plan/implement 文件，`b389-contract.md` 零命中（复评 F1 原文即据此判 fail）。
+
+本轮亲跑读数（工作树 `cards/B390-charter-5`，HEAD `a65baefc`，只跑不改实现）：
+
+```text
+$ go test ./internal/agentd/ -run 'TestB390|TestB389WakeBackoff' -count=1 -v
+--- PASS: TestB390NonAdmissionErrorDoesNotStall (0.51s)   ← §4-40：非准入不重试、不落 needs_human
+--- PASS: TestB390WakeStallRedLoop (0.26s)               ← §4-37/38/39：不 complete、挡水位重试、恰一次
+--- PASS: TestB389WakeBackoffSkipsSameSeqNextRound (0.30s) ← §4-31：非准入退避不回退
+ok  github.com/Xsxdot/handoff/internal/agentd  1.080s
+$ go build ./...                                        → BUILD_EXIT=0
+$ codegraph --repo . check                              → CHECK_EXIT=0
+```
+
+§4-37–42 的现有载体对应（行号为本轮读数；`Server.recordAdmissionStall`/`Server.clearWakeStall`/`admissionStalled` 是本卡新增符号、**不在 baseline 图中**，故用 `file:line` 锚，属图覆盖债）：`internal/agentd/wakeconsumer.go:59`（`recordAdmissionStall`：阈值 3 恰一次 + 去重）、`internal/agentd/wakeconsumer.go:84`（`clearWakeStall`：成功/非准入清零）、`internal/agentd/wakeconsumer.go:47`（`admissionStalled`：只认 `coordinatorAdmissionError` + `scheduling.ErrNoSlot`）、`internal/agentd/b390_wake_stall_test.go#TestB390WakeStallRedLoop`（§4-37–39、§4-41 的回路，含去重断言 `RETRY(d)`）、`internal/agentd/wakeconsumer.go:659-671`（准入分支 `continue`，不 complete）。
+
+**诚实差异**：§4-40 的现有反例夹具 `nonAdmissionScheduling` 用 `scheduling.ErrNoHealthy` 桩，不覆盖「认领后真实 `Resume` 失败」那一支；后者由既有 `TestB389WakeBackoffSkipsSameSeqNextRound` 覆盖（走 `recordWakeBackoff`），两条合看是 §4-40 的全貌，单看任一条都不完整。
+
 ## 6. 三重闸门拍板记录
 
 1. **承载记录用独立小表 `seat_bearings`，不塞进 `cards` 列、不复用 `driver_carrier`。** 牵动 DDL、读写面、换绑与终态清理，回改要动多域；没有本上下文时后人会问"为什么不放卡上"或直接把 `driver_carrier` 用起来；被否方案是"卡上四列"与"启用兼容列"。不做第二席位真源——`identity` 只是同事务见证，读取一律以 `cards.driver_session` 为准。
 2. **认领键取 `(card,seq)` 复合键，游标是终局前缀水位。**（2026-09-21 修订：原条为「取 `seq` 本身」，其前提「同一事件只会唤醒一张卡、`seq` 单键即可排他」被实测证伪——`roomMessageWakeEvents` 对一条 `room_message` 按寻址扇出多条 wake，同一 seq 可合法出现在多张卡上。单键会让第二张卡认领失败并被静默跳过、游标越过、永久丢唤醒，见 §5.1(a)。这不是「反过来写不会变红」的裁决——**多卡扇出即触发**，只是需要一条双卡夹具才照得到。）排他语义收窄为「同一张卡的同一事件只允许一个持有者」，扇出场景每卡各自可被认领；游标的「在飞挡住推进」必须按 seq 的**任一**认领行在飞来判（`DISTINCT seq`）。被否方案是纯靠镜像租约（只覆盖镜像不回执唤醒）与按卡去重（无法表达同卡多事件）。后人看到 `(card,seq)` 复合键容易「顺手」退回单键以「简化」——那会重新打开扇出丢事件，且只有多卡夹具能照到。
 3. **唤醒执行按承载记录的冻结载体申请名额，不重选载体。** 首次拉起挑载体、后续只认记录；没有本上下文时后人会在唤醒路径复用 `LaunchAdmit(squad)` 让功能"看起来能跑"，那会让同一张卡在不同机器上反复改归属并互抢名额；被否方案是继续用 `LaunchAdmit` 并"事后纠正"。**锁点必须能区分两者**（§4-29）：回合结束后的计数归零读数对两条路径都成立，照不出差异；要用回合进行中的占用读数或记录型准入调用。
 4. **承载记录只随 `coordinate` 席位存在**：`bind` 席位必须为零承载（人尺度坐下没有载体归属）。后人会想"给 bind 也补个机器名"让界面统一；被否方案是给所有席位都写承载、以及"缺失时按本机补齐"。
+5. **准入失败（`ErrNoSlot`）是排队态而非失败态，不 `CompleteWake`、保留认领挡水位、按轮询节拍重试。**（2026-09-21 修订轮 2 随 B390 落地回写。）难逆转：它改了 §3.2 第 5 步「无论成功失败都要 `CompleteWake`」与 §4-31 退避这两条已冻结语义，回改要动认领/游标/退避三处；无上下文会惊讶：后人看到失败分支**不**收尾认领、**不**进退避、游标被一条"已完成失败"的事件挡住，会想「补上 `CompleteWake` 让它前进」——那恰好重新打开 B390 要修的静默停摆（B332 卡死 leader 名额后整条唤醒链死 18 小时的根因）；真取舍：被否方案是（甲）失败即 `CompleteWake` + 退避（现状，会导致「失败一次就再也不试」）、（乙）内存重试表跨重启丢（B390 plan 原案，被协调者 P2 裁决弃）。**「反过来写不会变红」——补回 `CompleteWake` 后现有测试不自动红**（B390 复评已实测：这处偏离只有专门夹具照得到），故必须靠本拍板记录 + §4-37/38 冻结条目锁住。与 §3.5.5 的「不设秒级退避」同源：节拍 = 轮询本身，否则背靠背 N 轮夹具转不红/绿。
 
 ## 7. 移交 plan 附区（不计冻结条目）
 
@@ -352,10 +385,10 @@ ok  github.com/Xsxdot/handoff/internal/agentd  0.223s     ← 四包全绿，锁
 
 ## 8. 本节点法定产出与欠账声明
 
-1. **契约增量文档**：本文件。现状签名带 `file#Symbol` 符号锚；关键行号为本轮亲自核对（改动前基线 `241b71720`：`internal/ledger/binding.go:32/74`、`internal/ledger/store.go:416`、PG 语句表 `:204` 起 / SQLite `:388` 起、`ddlStatements` 的方言对齐防线在 `internal/ledger/store_test.go`）。修订轮新增代码事实出处：`internal/agentd/wakeconsumer.go:261`（`roomMessageWakeEvents`）、`:315`（每卡一条 wake 的扇出点）、`:379`（`claimWakeBatch`）、`:391`（拿不到认领即静默跳过）、`:401`（`completeWakeBatch`）；`internal/ledger/wakeclaim.go:37/54/82/110`（单键表的四句 SQL）、`:27/76/109/133`（四个方法签名）；`internal/agentd/scheddrain.go:449`（`AdmitSeatCarrier` 调用点）；`internal/agentd/scheddrain_test.go:578`（原 §4-29 锁点）。
+1. **契约增量文档**：本文件。现状签名带 `file#Symbol` 符号锚；关键行号为本轮亲自核对（改动前基线 `241b71720`：`internal/ledger/binding.go:32/74`、`internal/ledger/store.go:416`、PG 语句表 `:204` 起 / SQLite `:388` 起、`ddlStatements` 的方言对齐防线在 `internal/ledger/store_test.go`）。修订轮新增代码事实出处：`internal/agentd/wakeconsumer.go:261`（`roomMessageWakeEvents`）、`:315`（每卡一条 wake 的扇出点）、`:379`（`claimWakeBatch`）、`:391`（拿不到认领即静默跳过）、`:401`（`completeWakeBatch`）；`internal/ledger/wakeclaim.go:37/54/82/110`（单键表的四句 SQL）、`:27/76/109/133`（四个方法签名）；`internal/agentd/scheddrain.go:449`（`AdmitSeatCarrier` 调用点）；`internal/agentd/scheddrain_test.go:578`（原 §4-29 锁点）。修订轮 2（B390 F1 回写）新增代码事实出处：`internal/agentd/wakeconsumer.go:59`（`Server.recordAdmissionStall`，本卡新增符号，未入 baseline 图）/ `:84`（`Server.clearWakeStall`，同上）/ `:47`（`admissionStalled`，同上）、`internal/agentd/wakeconsumer.go:659-671`（准入分支不 complete 的 `continue`）、`internal/agentd/b390_wake_stall_test.go`（§4-37–39/41 载体）。
 2. **Ticket 0 骨架**：两方言 DDL（`seat_bearings`、`wake_claims`、索引）、`SeatBearing` 类型与其形态执法、四个新签名（`BindSeat`/`RebindSeat` 加承载参数、`SeatBearingOf`、`ClearSeat`）、五个生产调用点与 60 处测试调用点补齐。本轮 `go build ./...` 退出码 0、`go vet` 无输出、`gofmt -l` 为空、受影响七包测试全绿（原始输出见 §5）。
-3. **金样本**：`internal/ledger/bearing_test.go` 落第 1–10、12、13 条并本轮实跑通过；第 11 条随第 3 片落。
-4. **三重闸门**：本文件 §6 记录 4 项命中决定；无其它未记录决定。第 2 项于 2026-09-21 修订轮改写（原理由被实测证伪）。
+3. **金样本**：`internal/ledger/bearing_test.go` 落第 1–10、12、13 条并本轮实跑通过；第 11 条随第 3 片落。§4-37–42（修订轮 2）由 B390 的 `internal/agentd/b390_wake_stall_test.go` 承载，本轮实跑通过（§5.2）。
+4. **三重闸门**：本文件 §6 记录 4 项命中决定；无其它未记录决定。第 2 项于 2026-09-21 修订轮改写（原理由被实测证伪）；第 5 项于修订轮 2 新增（B390 准入失败豁免，命中「反过来写不会变红」型）。
 5. **欠账（显式，不静默）**：
    - `codegraph/target.json` **未追加本卡条目**：该文件是 `{from,to,entries[]}` 的 51 条契约数组，追加需按域对逐条落位。本节点只改既有边的语义（ledger 写面新增承载记录、agentd 组装点写承载），**未新增跨域依赖方向**；落位与 `codegraph/diffs/cards-B233.1-charter-7.json` 视图 diff 由第 1 片随代码提交补齐（新符号 `SeatBearing`/`SeatBearingOf`/`ClearSeat`/`ClaimWake` 届时入图）。
    - 契约 §4 第 11、14–32 条为实现节点欠账，分片归属见 §5；修订轮新增 §4-33–36 与 §4-29 锁点重做（见 §5 末）。
