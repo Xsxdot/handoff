@@ -392,12 +392,14 @@ const wakeParentWalkLimit = 32
 // 键形如 "wake_round:start:<roundID>" / "wake_round:end:<roundID>" /
 // "wake_round:fail:<roundID>"。
 //
-// 口径修订（B393 复评 6d85425a，修订号 r2）：推翻「每次唤醒恰一行」的旧说法。
-// 现行定义——**一轮** = 一次逻辑唤醒从打开 roundID 到写终态（end/fail 且不再
-// 被同一请求重试）的账本痕迹单元。队列路径（drainIgnitionRequest）上，同卡
-// 同一条 IgnitionRequest 的 2s 重试共享同一 roundID，故 fail/start 不随重试
-// 增行（一轮一组为上限）；非队列路径（事件批次、HTTP 转交端点）每次进入
-// wakeCoordinatorRoundRaw 即新开一轮，跨轮各得一组、不吞行。
+// 口径修订（B393 复评 6d85425a，修订号 r2；review-4 确认键=请求身份）：推翻
+// 「每次唤醒恰一行」的旧说法。现行定义——**一轮** = 一次逻辑唤醒从打开 roundID
+// 到写终态（end/fail 且不再被同一请求重试）的账本痕迹单元。队列路径
+// （drainIgnitionRequest）上，**同一 IgnitionRequest** 的失败回填 2s 重试共享
+// 同一 roundID（键按 wakeQueueRoundKey 请求身份分组，同卡换节点是新请求、
+// 新开一轮），故 fail/start 不随重试增行（一轮一组为上限）；非队列路径
+// （事件批次、HTTP 转交端点）每次进入 wakeCoordinatorRoundRaw 即新开一轮，
+// 跨轮各得一组、不吞行。
 const WakeRoundDedupePrefix = "wake_round"
 
 // wakeRoundSeq 是进程内唤醒轮次序号，与 UnixNano 拼成 roundID。

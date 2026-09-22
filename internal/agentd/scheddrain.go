@@ -193,17 +193,18 @@ func (s *Server) drainIgnitionRequest(ctx context.Context, req scheduling.Igniti
 			"node", req.Node, "reason", decision.Reason)
 		return fmt.Errorf("队列出队暂缓：%s", decision.Reason)
 	}
-	// 一轮一组（B393 复评 major）：出队前取该卡未收尾的队列轮 roundID（首出队
-	// 新建）；失败回填后 2s 重试复用同一 ID，EnsureComment 幂等 → 重试不新增行。
-	// 成功收尾才清，下一条 IgnitionRequest 开新一轮。
-	roundID := s.retainWakeQueueRound(req.Card)
+	// 一轮一组（B393 复评 major + review-4 major）：出队前取该请求未收尾的
+	// 队列轮 roundID（键=IgnitionRequest 身份，首出队新建）；失败回填后 2s
+	// 重试是同一请求 → 复用同一 ID，EnsureComment 幂等 → 重试不新增行。
+	// 成功收尾才清，下一条 IgnitionRequest（即使同卡换节点）开新一轮。
+	roundID := s.retainWakeQueueRound(req)
 	result, err := s.wakeCoordinatorRoundID(ctx, req.Card, []keystone.WakeEvent{{
 		Kind: keystone.WakeQueueRelease, Card: req.Card, Summary: summary,
 	}}, nil, roundID)
 	if err != nil {
 		return fmt.Errorf("队列出队唤醒失败: %w", err)
 	}
-	s.clearWakeQueueRound(req.Card)
+	s.clearWakeQueueRound(req)
 	if result.Woke {
 		s.log.Info("队列出队唤醒完成，进入节点再入口", "card", req.Card, "node", req.Node)
 	} else {
@@ -595,28 +596,46 @@ func coordinatorBearing(binding scheduling.Binding, carrier scheduling.Carrier,
 	}
 }
 
-// retainWakeQueueRound 返回该卡未收尾的队列轮 roundID；没有则新建并记住。
+// wakeQueueRoundKey 是队列路径「一轮」的分组键：同一 IgnitionRequest（失败
+// 回填后字段逐位相同）得同一键，共享 roundID；同卡不同请求（如 implement→
+// review）键不同，各开一轮——契约是「同一 IgnitionRequest 为一轮」，不是
+// 「同一卡为一轮」（B393 review-4 major）。用 JSON 序列化整个请求做身份：
+// 字段集就是队列持久化面，回填→出队 round-trip 后逐字节稳定。
+func wakeQueueRoundKey(req scheduling.IgnitionRequest) string {
+	b, err := json.Marshal(req)
+	if err != nil {
+		// IgnitionRequest 全是标量字段，Marshal 理论上不会失败；兜底退化为
+		// card+node 复合键，仍区分同卡换节点，不静默合并成 card 键。
+		return req.Card + "\x00" + req.Node
+	}
+	return string(b)
+}
+
+// retainWakeQueueRound 返回该请求未收尾的队列轮 roundID；没有则新建并记住。
 // 队列出队失败回填后 2s 重试复用同一 ID——一轮一组为上限，重试不得新增行
 // （B393 复评 major）。成功收尾由 clearWakeQueueRound 摘除。
-func (s *Server) retainWakeQueueRound(card string) string {
+func (s *Server) retainWakeQueueRound(req scheduling.IgnitionRequest) string {
+	key := wakeQueueRoundKey(req)
 	s.wakeQueueRoundsMu.Lock()
 	defer s.wakeQueueRoundsMu.Unlock()
 	if s.wakeQueueRounds == nil {
 		s.wakeQueueRounds = make(map[string]string)
 	}
-	if id, ok := s.wakeQueueRounds[card]; ok && id != "" {
+	if id, ok := s.wakeQueueRounds[key]; ok && id != "" {
 		return id
 	}
 	id := nextWakeRoundID()
-	s.wakeQueueRounds[card] = id
+	s.wakeQueueRounds[key] = id
 	return id
 }
 
-// clearWakeQueueRound 摘除该卡的队列轮身份；下一次出队开新一轮。
-func (s *Server) clearWakeQueueRound(card string) {
+// clearWakeQueueRound 摘除该请求的队列轮身份；下一次出队（同请求重来或
+// 换新请求）开新一轮。
+func (s *Server) clearWakeQueueRound(req scheduling.IgnitionRequest) {
+	key := wakeQueueRoundKey(req)
 	s.wakeQueueRoundsMu.Lock()
 	defer s.wakeQueueRoundsMu.Unlock()
-	delete(s.wakeQueueRounds, card)
+	delete(s.wakeQueueRounds, key)
 }
 
 // releaseSchedulingBinding 释放一次准入产生的计数；直派 binding 只有载体键。

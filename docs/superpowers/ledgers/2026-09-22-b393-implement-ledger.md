@@ -667,3 +667,121 @@ $ git log --oneline -1
 提交后本台账补记本节并 amend 一次收进同批；amend 换 hash 属 git 事实，
 收口判据是工作树干净。
 ```
+
+---
+
+# 第五轮复评修复（review-4 f354b830：请求身份键 + 冻结口径回写 + clear 测试锁）
+
+基线 = 起手 HEAD `e81b34a1`（分支 `cards/B393-charter-11`）。只收 review-4 三条 finding，范围不外扩。
+
+## R0. 起手与图覆盖债
+
+```text
+$ git branch --show-current            → cards/B393-charter-11
+$ git log --oneline -1                 → e81b34a1 fix(B393): 队列唤醒一轮一组…
+$ go build ./...                       → BUILD_EXIT=0
+$ go test ./internal/agentd/ -run TestB393WakeRound -count=1 → ok 1.062s（基线绿）
+$ codegraph --repo . sym drainIgnitionRequest → 命中 n_agentd_Server_drainIgnitionRequest
+$ codegraph --repo . sym EnsureComment         → 命中 n_ledger_Store_EnsureComment
+$ codegraph --repo . sym retainWakeQueueRound/clearWakeQueueRound/wakeQueueRoundKey
+                                              → MISS（图覆盖债，回落 grep）
+```
+
+## R1. F1（major）：队列轮次键按 IgnitionRequest 身份分组
+
+新文件 `internal/agentd/b393_wakeround_reqround_test.go`：
+- `TestB393WakeRoundQueueGroupsPerRequest`：同卡 implement→review 两个不同请求
+  各失败一次 → 应两行 fail、两行 start 键互异。
+
+首跑断言红（功能缺失，非编译红）：
+
+```text
+$ go test ./internal/agentd/ -run TestB393WakeRoundQueueGroupsPerRequest -count=1
+--- FAIL: TestB393WakeRoundQueueGroupsPerRequest (0.21s)
+    b393_wakeround_reqround_test.go:62: 同卡两个不同请求应各落一行 phase=fail（键按请求身份分组），实得 1
+FAIL
+```
+
+⇒ 红因：键按 card 分组，两请求共享 roundID，第二行 fail 被 EnsureComment 幂等吞掉。
+
+实现：
+- `scheddrain.go` 新增 `wakeQueueRoundKey(req)`（json.Marshal 整请求；Marshal
+  失败兜底 `card\x00node`，不静默合并成 card 键）；
+- `retainWakeQueueRound(req)` / `clearWakeQueueRound(req)` 改收整个请求、按键存取；
+- `drainIgnitionRequest` 两处调用改传 `req`；
+- `server.go` wakeQueueRounds 注释改「IgnitionRequest 身份键」并写明契约是
+  「同一 IgnitionRequest 为一轮」不是「同一卡为一轮」。
+
+绿：`go test ./internal/agentd/ -run TestB393 -count=1 → ok 3.022s`。
+
+**变异自验 F1**（retain 里 `key := wakeQueueRoundKey(req)` → `key := req.Card`，先断言
+`count=2` 唯一命中 retain 那一处语义）：
+
+```text
+count=2
+mutated retain only
+--- FAIL: TestB393WakeRoundQueueGroupsPerRequest (0.26s)
+    同卡两个不同请求应各落一行 phase=fail（键按请求身份分组），实得 1
+```
+
+⇒ 复现按卡分组吞行。复原后复绿（既有 `TestB393WakeRoundQueueRetryDoesNotFloodFailRows`
+同轮仍绿 = 负向锁保留：同请求 5 次重试仍恰一行 fail）。
+
+## R2. F3（minor）：clearWakeQueueRound 成功收尾测试锁
+
+同文件 `TestB393WakeQueueRoundClearsAfterSuccess`：两次成功 drain 同一请求 →
+应各得一组 start/end（clear 后下一条开新一轮）。
+
+**首红（先删 clear 取断言红，再恢复）**：
+
+```text
+mutated count=1
+--- FAIL: TestB393WakeQueueRoundClearsAfterSuccess (0.24s)
+    b393_wakeround_reqround_test.go:104: 成功收尾后下一条 IgnitionRequest 应开新一轮（两行 start），实得 1
+```
+
+⇒ 红因是功能缺失（clear 不在），非 typo。恢复 clear 后绿。
+
+**变异复红（收尾再验）**（删 `s.clearWakeQueueRound(req)` 调用，命中唯一 `count=1`）：
+
+```text
+mutated clear count=1
+--- FAIL: TestB393WakeQueueRoundClearsAfterSuccess (0.22s)
+    成功收尾后下一条 IgnitionRequest 应开新一轮（两行 start），实得 1
+```
+
+复原后 `go test ./internal/agentd/ -run TestB393 -count=1 → ok 3.016s`。
+
+## R3. F2（major 阻塞）：冻结口径回写 spec §4.3
+
+`docs/superpowers/specs/b393.md` §4.3 第 3 条：把「一行账本事件」改为带
+**修订号 r2** 的完整口径 + 理由（EnsureComment 幂等会吞行 / 无界新键会刷屏），
+并写明队列路径键按**请求身份**分组、同卡换节点新开一轮。
+同步收紧 `wakeconsumer.go` WakeRoundDedupePrefix 注释措辞（「同卡同一条」→
+「同一 IgnitionRequest + wakeQueueRoundKey 请求身份」），避免再被读成按卡。
+
+## R4. 收尾验证
+
+```text
+$ gofmt -l internal/agentd              → （空）
+$ go build ./...                        → BUILD_EXIT=0
+$ go vet ./internal/agentd/             → VET_EXIT=0
+$ go test ./internal/agentd/ -count=1 -timeout 600s → ok 173.827s
+$ go test ./internal/agentd/ -run TestB393 -count=1 → ok 3.016s
+```
+
+## R5. 图覆盖债（本节点新增）
+
+`codegraph sym` 未命中：`wakeQueueRoundKey`、`retainWakeQueueRound`、
+`clearWakeQueueRound`。回退 grep 取源码。
+
+## R6. 提交事实（历史读数）
+
+```text
+$ git add -A && git commit -q -m "fix(B393): 队列轮次键按请求身份 + spec r2 回写 + clear 测试锁"
+$ git log --oneline -1
+b5090ae6 fix(B393): 队列轮次键按请求身份 + spec r2 回写 + clear 测试锁
+
+提交后本台账补记本节并 amend 一次收进同批；amend 换 hash 属 git 事实，
+收口判据是工作树干净。
+```

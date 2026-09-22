@@ -200,11 +200,14 @@ type Server struct {
 	// 不标 seen）；这里只数连续失败次数，用于恰一次落 needs_human 的去重阈值。
 	// 成功或遇非准入错误即清。进程内存：重启后重新计数，安全方向。
 	automationStall map[string]int
-	// wakeQueueRounds 锁定「一轮」的队列路径身份：card → 未收尾的 wake roundID。
-	// drainIgnitionRequest 出队失败回填后，2s 重试必须复用同一 roundID——否则
-	// EnsureComment 键随 nextWakeRoundID 每次漂移，D4/转交失败/本机 Wake 失败
-	// 三条出口会无界刷 fail 行（B393 复评 major）。成功收尾或换新请求时清。
-	// 进程内存：重启后重开一轮是安全方向（最多多落一组，不会吞行）。
+	// wakeQueueRounds 锁定「一轮」的队列路径身份：IgnitionRequest 身份键
+	// （wakeQueueRoundKey）→ 未收尾的 wake roundID。契约是「同一 IgnitionRequest
+	// 为一轮」（plan r2），不是「同一卡为一轮」——同卡换节点是新请求、新开一轮
+	// （B393 review-4 major）。drainIgnitionRequest 出队失败回填后，2s 重试是
+	// 同一请求必须复用同一 roundID——否则 EnsureComment 键随 nextWakeRoundID
+	// 每次漂移，D4/转交失败/本机 Wake 失败三条出口会无界刷 fail 行（B393 复评
+	// major）。成功收尾时按请求键摘除。进程内存：重启后重开一轮是安全方向
+	// （最多多落一组，不会吞行）。
 	wakeQueueRoundsMu sync.Mutex
 	wakeQueueRounds   map[string]string
 	// automationRoundHook is a test-only observation point; production leaves it nil.
