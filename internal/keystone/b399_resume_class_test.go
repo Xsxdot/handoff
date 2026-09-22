@@ -72,8 +72,8 @@ func TestB399ResumeTimeoutKeepsSessionNoLaunch(t *testing.T) {
 	if len(runner.launches) != 0 {
 		t.Fatalf("超时不得重建（Launch 次数=%d）", len(runner.launches))
 	}
-	if len(runner.resumes) != 1 {
-		t.Fatalf("应尝试一次 Resume，实得 %d", len(runner.resumes))
+	if len(runner.refs) != 1 {
+		t.Fatalf("应尝试一次 Resume，实得 %d", len(runner.refs))
 	}
 	if result.SessionID != "sess-old" {
 		t.Fatalf("回执应保留原会话 sess-old，实得 %q", result.SessionID)

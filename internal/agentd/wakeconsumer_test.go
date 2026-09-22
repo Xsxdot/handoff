@@ -806,12 +806,12 @@ func TestAutomationAttachDefersAndThenWakes(t *testing.T) {
 }
 
 type fallbackConsumerRunner struct {
-	mu            sync.Mutex
-	launches      int
-	resumes       int
-	failLaunch    bool
-	failResume    bool
-	resumeTimeout bool // Resume 错误包裹 keysclient.ErrTurnTimeout
+	mu             sync.Mutex
+	launches       int
+	resumes        int
+	failLaunch     bool
+	failResume     bool
+	resumeTimeout  bool // Resume 错误包裹 keysclient.ErrTurnTimeout
 	resumeNotFound bool // Resume 错误包裹 keysclient.ErrSessionNotFound
 }
 
@@ -872,6 +872,7 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	}
 	runner.failResume = true
 	runner.failLaunch = true
+	runner.resumeNotFound = true
 	appendMirroredForConsumer(t, env.ledger, cardID, "terminal", "completed", 1, `{"text":"done"}`)
 
 	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())

@@ -442,7 +442,7 @@ func wakeFailClass(err error) string {
 	switch {
 	case err == nil:
 		return wakeFailClassOther
-	case false:
+	case errors.Is(err, keysclient.ErrTurnTimeout):
 		return wakeFailClassTimeout
 	case errors.Is(err, keysclient.ErrSessionNotFound):
 		return wakeFailClassSessionNotFound

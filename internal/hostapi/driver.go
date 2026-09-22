@@ -29,6 +29,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -57,6 +58,14 @@ func log() *slog.Logger { return slog.Default().With("mod", "hostapi") }
 // HANDOFF_LOG_LEVEL 也要看得见）。缺省 slog 级别是 Warn（logx.go:59），Info 会被吞，
 // 挂死路径连失败行都不会打（不返回就不打）——可见性是故障现场的唯一读数。
 const wakeRoundLogLevel = slog.LevelWarn
+
+// ErrTurnTimeout 表示回合被挂钟上界终止（进程树已杀）。它**不等于**会话不存在：
+// keystone 据此保留会话、下轮续接同一 session（B399 spec r2 §5）。
+var ErrTurnTimeout = errors.New("hostapi: 回合被时限终止")
+
+// ErrSessionNotFound 表示载体 CLI 明确报告会话不存在（stderr 含 "Session not found"）。
+// 这是唯一允许 keystone 降级 Launch 重建的判据（B399 spec r2 §5）。
+var ErrSessionNotFound = errors.New("hostapi: 会话不存在")
 
 // runTurn 是 RunTurn 的本体；hostapi.go 只留薄委托（冻结面文件零逻辑）。
 func runTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
@@ -152,8 +161,10 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 	if ctx.Err() != nil {
 		log().Warn("协调者回合超时终止", "cli", req.CLI,
 			"timeout", effective.String(), "duration", dur.String())
+		// errors.Join 保留 ctx.Err() 文本，同时让 errors.Is(err, ErrTurnTimeout) 成真；
+		// 报错前缀与既有形态逐字保留（排障读数不变）。
 		return TurnReply{}, fmt.Errorf("hostapi: 回合超时（上界 %v），已终止进程树: %w",
-			effective, ctx.Err())
+			effective, errors.Join(ErrTurnTimeout, ctx.Err()))
 	}
 	if waitErr != nil {
 		tail := tailBytes(&stderr, 4096)
@@ -161,6 +172,11 @@ func driveTurn(ctx context.Context, req TurnRequest) (TurnReply, error) {
 			"stderr_tail_bytes", len(tail))
 		// stderr 尾部进错误消息：resume 打错 id 时 keystone 兜底链需要看到
 		// 「Session not found」（plan §三 F3）才能正确降级重建。
+		// B399 r2：只有这一判据允许降级重建，包成哨兵供 keystone errors.Is 分流。
+		if strings.Contains(tail, "Session not found") {
+			return TurnReply{}, fmt.Errorf("hostapi: 回合失败（%v）stderr 尾部: %s: %w",
+				waitErr, tail, ErrSessionNotFound)
+		}
 		return TurnReply{}, fmt.Errorf("hostapi: 回合失败（%v）stderr 尾部: %s",
 			waitErr, tail)
 	}

@@ -17,9 +17,9 @@ func TestB393WakeRoundEventRoundTrip(t *testing.T) {
 	zero := ""
 	var zeroMs int64 = 0
 	cases := []WakeRoundEvent{
-		{Phase: "start"},                                // 全缺省
+		{Phase: "start"}, // 全缺省
 		{Phase: "end", Session: &zero, DurationMs: &zeroMs}, // 显式零值
-		{Phase: "fail", Class: &zero, Err: &zero},       // class 显式零值
+		{Phase: "fail", Class: &zero, Err: &zero},           // class 显式零值
 	}
 	for _, want := range cases {
 		raw, err := json.Marshal(want)

@@ -214,3 +214,97 @@ ok  	github.com/Xsxdot/handoff/internal/agentd	…（以会话为准）
 
 注：会话中已亲跑四包全量（keystone/hostapi/ledger + agentd -count=1 -timeout 400s），
 agentd 全量结果以 af3.out / 会话原文为准；无 --- FAIL 即绿。台账不追写未在会话复核的 hash。
+
+## 15. charter-3 续接（2026-09-23，工作树 cards/B399-charter-3，起手 HEAD=2580425c）
+
+从 2580425c 续接。复核：2580425c 未含 internal/hostapi/driver.go（T1.1 哨兵 + T1.2/T1.3 包裹），
+本树 build 红。其余（T2 keystone 分流/简报、T3 agentd 上界/续租/失败收口、T4 夹具与回归改写）经 grep 复核均在位。
+
+```text
+$ go build ./...
+# github.com/Xsxdot/handoff/internal/agentd
+internal/agentd/server.go:1290:28: undefined: hostapi.ErrTurnTimeout
+internal/agentd/server.go:1293:28: undefined: hostapi.ErrSessionNotFound
+BUILD_EXIT=1
+```
+
+hostapi 测试首红（编译红，符号名与 plan T1.1 逐字一致、非拼写错）：
+
+```text
+$ go test ./internal/hostapi/ -run TestB399 -count=1
+# github.com/Xsxdot/handoff/internal/hostapi [github.com/Xsxdot/handoff/internal/hostapi.test]
+internal/hostapi/b399_error_class_test.go:33:21: undefined: ErrTurnTimeout
+internal/hostapi/b399_error_class_test.go:36:20: undefined: ErrSessionNotFound
+internal/hostapi/b399_error_class_test.go:56:21: undefined: ErrSessionNotFound
+internal/hostapi/b399_error_class_test.go:59:20: undefined: ErrTurnTimeout
+FAIL	github.com/Xsxdot/handoff/internal/hostapi [build failed]
+FAIL
+EXIT=1
+```
+
+### 15.1 TDD 红绿与变异（本节点亲跑）
+
+空壳哨兵落地后断言红（非拼写错，错误文本为生产形态）：
+
+```text
+$ go test ./internal/hostapi/ -run TestB399 -count=1
+--- FAIL: TestB399TimeoutErrorCarriesSentinel (0.20s)
+    b399_error_class_test.go:34: 超时错误未携带 ErrTurnTimeout: hostapi: 回合超时（上界 199.994149ms），已终止进程树: context deadline exceeded
+--- FAIL: TestB399SessionNotFoundErrorCarriesSentinel (0.00s)
+    b399_error_class_test.go:57: 错误未携带 ErrSessionNotFound: hostapi: 回合失败（exit status 1）stderr 尾部: Session not found
+EXIT=1
+```
+
+实现 T1.2/T1.3 后绿：`ok … 0.207s`，`go build ./...` BUILD_EXIT=0。
+
+变异自验（四发，两段判定，唯一命中均先 grep -c==1）：
+- A hostapi 超时去哨兵：MUTBUILD=0，行为红 MUT_EXIT=1，还原复绿 RESTORE_EXIT=0。
+- B hostapi Session not found 判据改 `SessionNotFound`（语义改非删行）：MUTBUILD=0，行为红 MUT_EXIT=1，还原复绿。
+- C keystone 分流把 `|| errors.Is(ErrTurnTimeout)` 并入重建分支：MUTBUILD=0，`TestB399ResumeTimeoutKeepsSessionNoLaunch` FAIL MUT_EXIT=1。
+- D agentd 上界改回 `ledger.DriverLeaseTTL / 2`：MUTBUILD=0，`TestB399WakeTurnBoundIsHostapiDefault` FAIL（实得 2m30s）MUT_EXIT=1。
+- C/D 还原经 `git checkout --` 完成（首试 cp 备份与并行编辑竞态被污染，已改用 checkout，diff 复核仅 driver.go/台账两文件残留）。
+
+### 15.2 四包全量首次三红与修复（本节点亲跑）
+
+```text
+$ go test ./internal/keystone/ ./internal/hostapi/ ./internal/ledger/ -count=1
+--- FAIL: TestB399ResumeTimeoutKeepsSessionNoLaunch — 应尝试一次 Resume，实得 0
+$ go test ./internal/agentd/ …
+--- FAIL: TestB399TimeoutWritesClassAndEndAndOneNeedsHuman — 超时轮应恰一行 class=timeout 的 fail，实得 0
+--- FAIL: TestAutomationFallbackResumeRebuildFailure — err=唤醒协调者回合失败: resume: resume failed
+```
+
+根因（三处均为 2580425c 遗留，非本节点引入）：
+1. `wakeFailClass` 的 `case errors.Is(err, keysclient.ErrTurnTimeout)` 在 HEAD 里是 `case false:`（上轮变异未还原即提交）→ 改回 errors.Is。
+2. `TestAutomationFallbackResumeRebuildFailure` 缺 T4.4 的 `runner.resumeNotFound = true` → 补上。
+3. `TestB399ResumeTimeoutKeepsSessionNoLaunch` 断言误用只记成功 Resume 的 `resumes`，意图是「尝试一次」→ 改用 `refs`。
+
+### 15.3 收口全量（本节点亲跑，原始输出）
+
+```text
+$ go build ./... && go vet ./internal/agentd/ ./internal/keystone/ ./internal/hostapi/ ./internal/ledger/ ./internal/keysclient/
+BUILD_OK
+VET_OK
+$ go test ./internal/keystone/ ./internal/hostapi/ ./internal/ledger/ -count=1
+EXIT3=0
+ok  	github.com/Xsxdot/handoff/internal/keystone	0.916s
+ok  	github.com/Xsxdot/handoff/internal/hostapi	1.164s
+ok  	github.com/Xsxdot/handoff/internal/ledger	24.260s
+$ go test ./internal/agentd/ -count=1 -timeout 400s
+AGENTD_EXIT=0
+grep -c '^--- FAIL' → 0
+ok  	github.com/Xsxdot/handoff/internal/agentd	181.664s
+```
+
+### 15.4 图覆盖债（本节点）
+
+`codegraph sym` 未命中（回退 grep，记债）：wakeFailClass、classifyRunnerErr、
+ErrTurnTimeout、startWakeClaimRenewal、failResumeKeepingSession。
+
+### 15.5 结论纪律自查（本节点）
+
+- 未派发、未调用 handoff CLI、未起新 executor。
+- codegraph 用已安装二进制 /usr/local/bin/codegraph。
+- 临时文件落 $TMPDIR=/root/.handoff/tmp/f4bc1139。
+- 上列命令与输出均为本节点亲跑原文；变异还原处经 git diff --stat 复核。
+- 操作形态：文件写入用编辑工具/单命令 cp，git add+commit，无 heredoc/python -c/rm -rf。

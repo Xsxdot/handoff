@@ -6,10 +6,10 @@ package agentd
 
 import (
 	"context"
-	"fmt"
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
