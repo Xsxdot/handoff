@@ -16,6 +16,11 @@ import (
 
 var turnEndGrace = time.Second
 
+// errTurnArchived 表示节点等待的 task 已被归档（done 等外部动作），此后不会再
+// 产出 completed/failed 裁决报文。它是一类明确的终止信号，不是普通断线——必须
+// 让等待收口，否则运行锁与卡槽位永不释放（B396 陈旧运行锁不自愈）。
+var errTurnArchived = errors.New("等待的 task 已归档，回合不会再产出裁决报文")
+
 // finalMessageClient 是最终报文取用的最小面：只读 attach 快照。接口定义在使用方
 // 并嵌入提供方内部冻结的 client.ExecutionClient（B233.16 契约冻结）。
 type finalMessageClient interface {
@@ -39,8 +44,8 @@ func decodeCompletedPayload(event *proto.Event) (completedPayload, error) {
 	return payload, nil
 }
 
-// waitForTurnEnd 反复 wait 直到收到带正文的 completed 或真实失败终态，
-// 中途的权限门与工单一律跳过继续等。
+// waitForTurnEnd 反复 wait 直到收到带正文的 completed、真实失败终态，
+// 或 task 归档（archived，B396），中途的权限门与工单一律跳过继续等。
 //
 // why 要循环：WaitEvent 返回的是「首个可动作事件」而非终态。审阅虽只跑
 // 只读命令，但同样要过权限门，也可能发工单——2026-08-19 真机实测，环节
@@ -62,6 +67,13 @@ func waitForTurnEnd(ctx context.Context, wait func(context.Context) (*proto.Even
 			continue
 		}
 		switch event.Type {
+		case proto.EventTypeArchived:
+			// B396：task 已被归档（外部 done/resume --force 后再 done），此后不会
+			// 再产出 completed/failed 裁决报文。继续等只会把运行锁与卡节点槽位
+			// 钉死，使同卡同节点永远 409。收口为可行动错误，由上游落等人标记。
+			slog.WarnContext(ctx, "等待的 task 已归档，回合不会再有终态报文",
+				"seq", event.Seq, "task", event.TaskID, "cause", errTurnArchived)
+			return errTurnArchived
 		case proto.EventTypeCompleted:
 			payload, decodeErr := decodeCompletedPayload(event)
 			if decodeErr != nil {
@@ -110,6 +122,11 @@ func waitForTurnEndGrace(ctx context.Context, wait func(context.Context) (*proto
 			}
 			slog.InfoContext(ctx, "宽限内收到残缺 completed，继续等待", "final_text_present", payload.FinalText != nil)
 			continue
+		}
+		if event.Type == proto.EventTypeArchived {
+			slog.WarnContext(ctx, "宽限期内 task 已归档，回合不会再有终态报文",
+				"seq", event.Seq, "task", event.TaskID, "cause", errTurnArchived)
+			return errTurnArchived
 		}
 		if event.Type == proto.EventTypeTurnFailed || event.Type == proto.EventTypeFailed {
 			slog.InfoContext(ctx, "宽限内忽略失败事件，继续等待 completed", "event_type", event.Type)
