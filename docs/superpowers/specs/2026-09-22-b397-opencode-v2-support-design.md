@@ -2,7 +2,8 @@
 
 - 日期：2026-09-22
 - 卡：B397（高，charter · 待办）
-- 状态：brainstorm 定稿，待用户过目
+- 状态：spike 已完成，设计已按实测修订，待用户过目
+- spike 报告：`docs/superpowers/specs/b397-spike-v2-serve.md`（136 条路由表 `b397-spike-v2-serve-routes.md`；OpenAPI 全文在 spike 目录归档）
 
 ## 背景
 
@@ -32,7 +33,7 @@ superpowers 插件已从本机 `~/.config/opencode/opencode.json` 摘除（用�
 - monitor 插件仓内 v1/v2 双源码，`handoff skill install` 按探测分发。
 - 新执行器 `opencode2`：toolchain 探测、配置键（env/approver/纪律映射/默认执行者）、CLI 枚举、agentd 拉起。
 - `internal/executor/opencode2` MVP adapter：起 serve → 建会话 → 灌 prompt → 权限/提问/终态 → reply/continue/done 闭环。
-- 实现前置：spike 真 `opencode2 serve` 协议（路径、鉴权、SSE/事件形状、权限与提问如何冒出）。
+- 实现前置：spike 真 `opencode2 serve` 协议——**已完成**（§4，报告 `b397-spike-v2-serve.md`）。
 - skill（`skills/handoff/SKILL.md`）与 README（中英）：`opencode2` 条目、monitor 能力按 V1/V2 分述、降级清单。
 - fail-closed：`--executor opencode` + v2 二进制拒发。
 
@@ -69,7 +70,7 @@ var pluginContentV2 string
 
 - 导出形态：`export default Plugin.define({ id: "handoff-monitor", setup(ctx) { ... } })`。
 - 工具注册：`ctx.tool.transform` → `editor.add({ name, description, input, execute })`；`monitor` 工具语义与 V1 对齐（起后台 `handoff wait --follow`，stdout 按行叫醒会话）。
-- 加载落点：V2 仍发现全局 `~/.config/opencode/plugins/` 下的 `.ts`（官方文档）；**spike 时复核**，若实际发现路径变了，分发目标路径随之改，不硬编码假设。
+- 加载落点：V2 全局插件发现 **`~/.config/opencode/plugins/`（spike 实测不变）**；现有 V1 插件在 V2 下 `state.status:"failed"`（导出不符 `Plugin must export a default definition with an id and an effect or setup function`）。
 - 依赖：`@opencode/plugin`（V2 包名）；V1 侧继续 `@opencode-ai/plugin`。全局 `package.json` 若只服务插件编译/类型，按需加依赖或两份各自可独立 typecheck。
 
 ### 2.3 分发与状态
@@ -92,8 +93,8 @@ var pluginContentV2 string
 
 - `order`：`opencode, opencode2, claude, grok, codex, agy`（`opencode2` 紧随 `opencode`）。
 - `lookPath("opencode2")` + 跑 `opencode2 --version` 须含 `v2` 才算装了；`lookPath` 成功但 version 非 v2（或 version 跑不了）→ `StateMissing`（Result 无 Note 字段，中文态串足够 init 表达）。
-- 凭证：首版沿用 `opencode` 的 `auth.json` 判据（与 V2 是否同路径由 spike 核实；若不同，表加独立项）。
-- `credRelPath` Windows 过滤逻辑对 `opencode2` 同样适用（若凭证路径相同）。
+- 凭证：spike 实测 V2 仍用 `~/.local/share/opencode/auth.json`，首版直接沿用 `opencode` 的判据。
+- `credRelPath` Windows 过滤逻辑对 `opencode2` 同样适用（凭证路径相同）。
 
 ### 3.2 fail-closed（V1 adapter）
 
@@ -106,22 +107,22 @@ var pluginContentV2 string
 
 ### 3.3 新包 MVP（`internal/executor/opencode2`）
 
-实现 `executor.Adapter` 五动作的最小闭环：
+实现 `executor.Adapter` 五动作的最小闭环（HTTP/SSE 契约按 spike §4.2，OpenAPI 归档为实现依据）：
 
 | 动作 | MVP 行为 |
 |---|---|
-| Start | 经 prochost 起 `opencode2 serve`（或 spike 实锤的等价命令）→ 就绪探测 → 建会话 → 渲染 prompt（`turn.RenderPrompt`，Discipline 必传）→ 订阅事件流 |
-| Events | 权限 / 提问 / 进度 / result 四类映射到 `AdapterEvent`；原生 id 有则填 `PermissionID`/`QuestionID` |
-| Send | 同会话续接（continue/answer） |
-| RespondPermission | once / reject；deny 理由若 V2 带外可注入则注入，否则如实走 manager 降级（`DenyReasonInBand` 可选接口按实测） |
-| Stop | kill serve + 关事件流 |
+| Start | 经 prochost 起 `opencode2 serve --port <随机> --hostname 127.0.0.1`，`OPENCODE_SERVER_PASSWORD` 注入（与 V1 同款）→ 就绪探测（HTTP 层可应答即算，密码校验属后续请求）→ `POST /api/session` → 渲染 prompt（`turn.RenderPrompt`，Discipline 必传）→ `POST /api/session/{sid}/prompt` → 订阅 `GET /api/event` SSE |
+| Events | 从 SSE `type` 映射：`permission.asked`→permission（`PermissionID`=data.id，`Perm` 由 action/resources 归一）、`session.execution.succeeded`→result OK、失败终态→result Fail（形状实现期补验）、text/tool 进度→progress；提问若无原生通道，按 MVP 降级见降级清单 |
+| Send | `POST /api/session/{sid}/prompt`（delivery steer/queue 按续接语义） |
+| RespondPermission | `POST /api/session/{sid}/permission/{pid}/reply` `{"decision":"once\|reject"}` → 204；reject 的 reason 回流实现期补验（spike 只验 once），做不到就走带外注入降级 |
+| Stop | kill serve + 关 SSE；会话保留（不 DELETE，供 continue） |
 
 **降级清单机制**：包内 `var Degraded = []string{...}`（或等价常量），首版至少声明：
 
-- 断线冷恢复 / resume 对账：**不支持**——serve 死亡直接终态失败，提示重新 dispatch 或人工处置（不假装能 resume）。
+- 断线冷恢复 / resume 对账 / `Last-Event-ID` SSE 重放（spike 未验且不在首版）：**不支持**——serve 死亡直接终态失败，提示重新 dispatch 或人工处置（不假装能 resume）。
 - Spend / Timing / Usage 细粒度：不上报（事件不带这些字段），UI 显示空 ≠ 报 0。
 - reconcile / 未知终态兜底：若 MVP 未实现，遇未知帧 fail-closed 收束为 turn_failed 或 failed 并留 serve.log 尾部。
-- deny 同帧送达：视 spike；做不到就走既有带外注入路径。
+- deny 同帧送达：spike 只验 `once`；reject 的 reason 回流实现期补验，做不到就走既有带外注入路径。
 
 清单出处：包级 doc comment + README 表 + SKILL.md 各 executor 须知一节，三处一致。
 
@@ -149,18 +150,39 @@ var pluginContentV2 string
 
 回落发生在**读取配置的组装点**，不在 store 层造第二份配置语义；日志打实际用的键与回落来源。
 
-## 4. Spike（实现前置，只读协议）
+## 4. Spike（已完成，2026-09-22，v2.0.12 真机）
 
-拿真 `opencode2 serve`（本机已有 v2.0.12）在隔离目录验证并记录：
+### 4.1 实测确认「不变」的假设
 
-1. 启动 argv / 端口 / 密码 env 是否仍适用（`OPENCODE_SERVER_PASSWORD`、`OPENCODE_CONFIG` 是否仍被认）。
-2. 建会话、发 prompt 的 HTTP 路径与请求体。
-3. 事件流：SSE 还是轮询；权限/提问/完成事件的 JSON 形状与 id 字段。
-4. 权限应答端点与 deny reason 是否可带。
-5. 全局插件发现路径是否仍为 `~/.config/opencode/plugins/`。
-6. 凭证文件路径是否仍为 `~/.local/share/opencode/auth.json`。
+| 假设 | 实测 |
+|---|---|
+| `OPENCODE_SERVER_PASSWORD` 生效 | 生效；另有别名 `OPENCODE_PASSWORD`；都不设则 serve 随机生成并打 stdout。401 空 body，用户固定 `opencode` |
+| `OPENCODE_CONFIG` 生效 | 生效；坏路径/非法 json **静默容忍**（不报错） |
+| 全局插件发现 `~/.config/opencode/plugins/` | 不变；`opencode2 plugin list` 正常列出本地 `.ts` |
+| 凭证 `~/.local/share/opencode/auth.json` | 不变（`~/.config/opencode/auth.json` 已废弃） |
+| 真实 prompt / 权限闭环可跑 | 已跑通（默认 provider），生命周期与 `permission.asked/replied` 事件抓到原文 |
 
-产出：`docs/superpowers/specs/b397-spike-v2-serve.md`（或并入 plan 前置任务）。spike 改变上文假设时，**先改本设计再实现**。
+**额外实锤**：本机现存 V1 monitor 插件在 V2 下加载失败：`Plugin must export a default definition with an id and an effect or setup function.` —— 双源码分发的必要性直接证实。
+
+### 4.2 实测推翻 / 修订的假设（adapter 按此实现）
+
+| v1 习惯 | v2 实测 |
+|---|---|
+| 根路径 API（`/session`、`/event`…） | 全部加 **`/api` 前缀**；根路径落 SPA HTML 兜底 |
+| SSE 端点 | **`GET /api/event`**；只有 `data:` 行、事件名在 JSON `type`，`: heartbeat` 注释帧 |
+| `POST /session/<id>/message` | 取消；发消息 = **`POST /api/session/{sid}/prompt`**（`delivery: steer\|queue`），无写入型 `/message` |
+| `POST /permission/<id>` | **`POST /api/session/{sid}/permission/{pid}/reply`**，body `{"decision":"once\|always\|reject"}` → **204** |
+| `/doc` 是 OpenAPI | `/doc` 是 HTML；唯一 OpenAPI = **`GET /openapi.json`**（3.1，113 paths / 245 schemas） |
+| 权限事件形状 | `permission.asked`：`{id(per_…), sessionID, action(bash/shell/…), resources[], save[], source{type,messageID,id}}`；待决列表 `GET /api/permission/request` |
+| 终态与回合事件 | 成功终态 `session.execution.succeeded`（失败形态待补验）；回合内 `session.step.started/streamed/ended`、`session.text.*`、`session.tool.*`、`session.usage.updated`；等待可用 `POST /api/experimental/session/{sid}/wait` |
+| 错误体 | 400/401/404/500 JSON 带 `_tag`（未知路由 404 **空 body**，不要假设 JSON） |
+
+事件 type 全集、SSE 原文样例、错误体形状在 spike 报告 §三/§七；实现以 `openapi.json` 归档为准。`Last-Event-ID` 断线重放**未验证**——归入降级清单。
+
+### 4.3 实现期补验项（spike 未覆盖）
+
+- 失败/异常回合的终态事件形状（succeeded 已见，failed/aborted 未见）——首只真任务时补验。
+- deny（reject）后模型侧收到什么（理由如何回流）——spike 只验了 once；实现 RespondPermission 时补验。
 
 ## 5. 文档
 
@@ -170,7 +192,7 @@ var pluginContentV2 string
 
 ## 6. 验收锚点（整卡怎么算过）
 
-1. 纯 V1 机器：`skill install` 写 V1 插件，`PluginStatus` in_sync；有 V2（`opencode2` 或 `opencode` 报 v2）写 V2 插件，哈希 in_sync。
+1. 纯 V1 机器：`skill install` 写 V1 插件，`PluginStatus` in_sync；有 V2（`opencode2` 或 `opencode` 报 v2）写 V2 插件，哈希 in_sync；装出的 V2 插件在 `opencode2 plugin list` / `GET /api/plugin` 里 `status != failed`。
 2. V1 adapter 在 v2 二进制上 Start 返回拒发文案，任务 failed，不发任何 V1 协议请求。
 3. `--executor opencode2` 在本机跑通 MVP：权限 approve/deny、question 回答、continue、done 全链路至少各一次真机。
 4. 配置回落：只配 `env.opencode` 时 `opencode2` 任务注入同一 env；只配 `env.opencode2` 时覆盖生效。
@@ -181,7 +203,7 @@ var pluginContentV2 string
 
 | 风险 | 缓解 |
 |---|---|
-| V2 beta API 继续变 | MVP+降级清单；spike 先行；假设被证伪先改设计 |
-| 插件发现路径/env 变了 | spike 第 5/6 条；分发与探测参数化，不散落硬编码 |
+| V2 beta API 继续变 | MVP+降级清单；spike 先行（已完成）；剩余未验项（4.3）实现期补验 |
+| 插件发现路径/env 变了 | spike 已实测不变；分发与探测仍参数化，不散落硬编码 |
 | 共享层抽错形状 | 只抽稳定重复；宁可短期两份 |
 | `opencode` 名字被 v2 覆盖的存量机器 | fail-closed 文案指路 `opencode2`；toolchain 探测把 v2 装机报成「有 opencode2 能力」 |
