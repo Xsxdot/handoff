@@ -308,3 +308,48 @@ ErrTurnTimeout、startWakeClaimRenewal、failResumeKeepingSession。
 - 临时文件落 $TMPDIR=/root/.handoff/tmp/f4bc1139。
 - 上列命令与输出均为本节点亲跑原文；变异还原处经 git diff --stat 复核。
 - 操作形态：文件写入用编辑工具/单命令 cp，git add+commit，无 heredoc/python -c/rm -rf。
+
+## 16. review-1 两 major 修复（2026-09-23，cards/B399-charter-4）
+
+### 16.1 race 修复（必现 3/3 → 绿）
+
+根因：`startWakeClaimRenewal` 续租 goroutine 读包级 `wakeClaimRenewInterval`/`wakeClaimTTL`，
+而 `b399_wake_renewal_test.go` 的 defer 还原包级变量；`stop()` 只 `close(done)` 不 join。
+
+修法（并用 review ①+②）：`internal/agentd/wakeconsumer.go#startWakeClaimRenewal`
+- (a) 调用方 goroutine 读一次包级 var 捕获为本地 `ttl, interval`，续租 goroutine 不再读包级变量；
+- (b) 增加 `stopped` 通道，`stop()` 关闭 `done` 后 `<-stopped` 等 goroutine 真正退出再返回。
+
+```text
+$ go test -race ./internal/agentd/ -run TestB399 -count=1
+ok  	github.com/Xsxdot/handoff/internal/agentd	3.636s
+RACE_EXIT=0
+```
+
+### 16.2 classifyRunnerErr 端到端测试（零测试缝补齐）
+
+新文件 `internal/agentd/b399_classify_runner_err_test.go`：
+- `TestB399ClassifyRunnerErrTimeoutSentinel`：sleepy CLI + 200ms 上界 → Resume 超时，
+  断言 `errors.Is(err, keysclient.ErrTurnTimeout)` 且不命中 `ErrSessionNotFound`。
+- `TestB399ClassifyRunnerErrSessionNotFoundSentinel`：PATH 假 CLI 打 stderr `Session not found`
+  exit 1 → 断言 `errors.Is(err, keysclient.ErrSessionNotFound)` 且不命中 `ErrTurnTimeout`。
+
+夹具照 `b393_timeout_test.go`（`installSleepyCoordinatorCLI` / `testCoordRunner`）。
+
+变异自验（两发，均先断言 `count(old)==1`、两段判定 build+test）：
+- identity（`classifyRunnerErr` 直接 return err）：MUTBUILD=0，两测试 FAIL MUT_EXIT=1，还原复绿 RESTORE_EXIT=0。
+- 两哨兵对调：MUTBUILD=0，两测试 FAIL（报文显示串类）MUT_EXIT=1，还原复绿 RESTORE_EXIT=0。
+
+```text
+$ go build ./... && go vet ./internal/agentd/
+BUILD_EXIT=0 VET_EXIT=0
+$ go test ./internal/agentd/ -run 'TestB399ClassifyRunnerErr' -count=1   # 还原后
+ok  	github.com/Xsxdot/handoff/internal/agentd	0.215s
+```
+
+### 16.3 结论纪律自查（本节点）
+
+- 未派发、未调用 handoff CLI、未起新 executor。
+- codegraph 本轮未新查图（review 已指名符号，grep 已在上轮记债）。
+- 临时文件落 $TMPDIR=/root/.handoff/tmp/31105a05（server.go 变异备份）。
+- 上列命令与输出均为本节点亲跑原文；变异还原经 `git diff --stat` 复核为空。

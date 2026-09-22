@@ -577,16 +577,22 @@ func (s *Server) completeWakeBatch(card string, seqs []int64) {
 // 崩溃时他机 5m 后可接管（B399 r2 §5，恢复窗口不变）。
 // 为什么复用 ClaimWake：它的语义是「同 holder 未终局即 upsert 续期」（wakeclaim.go:52），
 // 正是续租所需，无需新增账本方法。
+// B399 review-1 race 修复：(a) ttl/interval 在调用方 goroutine 上读包级 var 后
+// 捕获为本地副本，续租 goroutine 不再读包级变量——测试 defer/t.Cleanup 还原全局
+// 与 goroutine 之间不再有共享写读；(b) stop() 关闭 done 后等待 goroutine 真正
+// 退出（stopped 通道）再返回——stop 返回后保证无人再碰 ttl/interval。
 func (s *Server) startWakeClaimRenewal(card string, seqs []int64) func() {
 	if s.ledger == nil || len(seqs) == 0 {
 		return func() {}
 	}
+	ttl, interval := wakeClaimTTL, wakeClaimRenewInterval
 	done := make(chan struct{})
+	stopped := make(chan struct{})
 	var once sync.Once
-	stop := func() { once.Do(func() { close(done) }) }
 	holder := s.wakeClaimHolder()
 	go func() {
-		ticker := time.NewTicker(wakeClaimRenewInterval)
+		defer close(stopped)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
@@ -594,7 +600,7 @@ func (s *Server) startWakeClaimRenewal(card string, seqs []int64) func() {
 				return
 			case <-ticker.C:
 				for _, seq := range seqs {
-					got, err := s.ledger.ClaimWake(seq, card, holder, wakeClaimTTL)
+					got, err := s.ledger.ClaimWake(seq, card, holder, ttl)
 					if err != nil {
 						s.log.Warn("唤醒认领续租失败", "card", card, "seq", seq, "cause", err)
 						continue
@@ -606,6 +612,10 @@ func (s *Server) startWakeClaimRenewal(card string, seqs []int64) func() {
 			}
 		}
 	}()
+	stop := func() {
+		once.Do(func() { close(done) })
+		<-stopped
+	}
 	return stop
 }
 
