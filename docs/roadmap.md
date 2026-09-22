@@ -817,3 +817,9 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **唤醒假失败标记**：17:29:53 落 `needs_human`『协调者唤醒失败：resume 与重建均不可用』，与 17:29:54 起成功收口的唤醒半回合并存（本机 agentd 17:30:15『自动化事件消费轮完成 processed=1, escalated=false』）。疑为并行消费者/认领路径的假失败标记，归 B389 面。来源：B393 验收真机。
 - **载体/模型可靠性（本轮实测）**：runner 小队缺省模型 `commandcode/xiaomi/mimo-v2.6-flash` 两次事故——B393 implement 第 4 轮『回合结束但零文本产出』、B395 图对账首轮 `ContentFilterErr` 连拒两次；`opencode-go/*` 前缀在本机凭据下 403（『An active OpenCode Go subscription is required to use Go models』）。跨机复用模型名前须核对本机订阅，缺省载体模型需评估稳定性。来源：B395 图对账三次重派记录（卡 B395）。
 - **图视图命名与分支不一致**：B395 视图落在 `codegraph/diffs/cards-B395-charter-5.json`（执行者所选名），其所在分支为 `cards/B395-charter-6`。absorb 前建议核对命名与分支的对应关系。来源：B395 图对账节点产出（`4c874ca0`）。
+
+## 来自 B382 spec（2026-09-22，本期不做、后续要做）
+
+- **卡字段 `work_branch`（A′ 形态）**：若「人工登记工作分支」的事件路径在实践中暴露不足（需要按分支索引、需要与卡字段一同 CAS、需要更强的唯一性约束），改为「卡上加 `work_branch` 列」的形态。来源：B382 spec §3 弃选 A′ / §7 Out of Scope。
+- **登记可覆盖快照**：支持人工接手一条已派发卡的工作分支（把 review/后续节点改派到另一条分支）。前置：先定「快照 vs 登记」两处真相的优先级与告警，否则就是又一次静默看错树。来源：B382 spec §3「生效范围」/ §7 Out of Scope（2026-09-22 用户裁定本期只在无快照时生效）。
+- **合并回基线未落账**：`RecordBranchMerged`（`internal/ledger/events.go:358`「落合并环节的外部动作事件」）全仓无生产调用方——「合并回基线」目前只有人工 note/收口摘要，账本无机器记录。来源：B382 spec 台账 §4 旁证（2026-09-22 核查）。
