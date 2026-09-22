@@ -726,8 +726,12 @@ type DispatchOpts struct {
 	Carrier string
 	Squad   string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
-	HomeDir  *string
-	Executor string
+	HomeDir *string
+	// FrozenTarget 是起源侧已冻结的执行物理身份机器名（B398）；空=普通派发。
+	// 与 Target 分工：Target 是路由值（客户端拿它选路），FrozenTarget 是身份快照，
+	// 原样进 wire 的 frozen_target，接收端据此做冻结准入。
+	FrozenTarget string
+	Executor     string
 	// Discipline 是本次派发点名的纪律块角色名；空=未点名。
 	// B229：名字仅作审计展示；正文由协调者侧缝 1 组装后经 DisciplineText 下发，
 	// 执行机不再解析。DisciplineText 与 DisciplineVersion 由 discipline.ResolveDispatch 产出；
@@ -783,6 +787,9 @@ func (c *Client) Dispatch(ctx context.Context, opts DispatchOpts) (*proto.Task, 
 	}
 	if opts.HomeDir != nil {
 		body["home_dir"] = *opts.HomeDir
+	}
+	if opts.FrozenTarget != "" {
+		body["frozen_target"] = opts.FrozenTarget
 	}
 	c.log().Info("Dispatch 进入", "url", c.baseURL, "relay", c.relayBacked,
 		"executor", opts.Executor, "target", opts.Target, "carrier", opts.Carrier, "squad", opts.Squad,

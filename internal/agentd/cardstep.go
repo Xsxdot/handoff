@@ -65,6 +65,7 @@ func dispatchStep(ctx context.Context, cl client.ExecutionClient, opts ledgerste
 		NewBranch: opts.Branch, Branch: opts.ExistingBranch,
 		ProjectName: opts.Project, Executor: opts.Executor, Model: opts.Model,
 		HomeDir:           opts.HomeDir,
+		FrozenTarget:      opts.FrozenTarget,
 		Discipline:        opts.Discipline,
 		DisciplineText:    opts.DisciplineText,
 		DisciplineVersion: opts.DisciplineVersion,
@@ -210,6 +211,7 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 			HomeDir:           dispatchHomeDir,
 			Carrier:           binding.Carrier,
 			Squad:             binding.Squad,
+			FrozenTarget:      binding.Target,
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
 			NormalizeTarget:   s.CanonicalTarget,
@@ -226,7 +228,8 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 		},
 	}
 	s.log.Info("卡节点装配完成", "card", cardID, "node", req.Step,
-		"actor", req.Actor, "target", req.Target, "canonical_target", target, "executor", req.Executor,
+		"actor", req.Actor, "target", req.Target, "canonical_target", target,
+		"frozen_target", binding.Target, "executor", req.Executor,
 		"model", req.Model, "run_holder", runner.RunHolder,
 		"has_extra", strings.TrimSpace(req.Extra) != "")
 	if binding.Squad != "" {
@@ -402,6 +405,7 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		"executor", opts.Executor,
 		"model", opts.Model, "prompt_bytes", len(opts.Prompt),
 		"carrier", opts.Carrier, "squad", opts.Squad, "home_dir_set", opts.HomeDir != nil,
+		"frozen_target", opts.FrozenTarget,
 		"discipline", opts.Discipline, "discipline_version", opts.DisciplineVersion,
 		"discipline_bytes", len(opts.DisciplineText))
 	cl, err := s.clientForTarget(canonical)
@@ -418,7 +422,8 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 		return "", "", err
 	}
 	s.log.Info("agentd 节点派发已受理", "target", opts.Target, "canonical_target", canonical, "task", task.ID,
-		"carrier", task.Carrier, "squad", task.Squad, "base_commit", task.BaseCommit)
+		"carrier", task.Carrier, "squad", task.Squad, "frozen_target", opts.FrozenTarget,
+		"base_commit", task.BaseCommit)
 	return task.ID, task.BaseCommit, nil
 }
 

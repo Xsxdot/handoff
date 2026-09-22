@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -1380,5 +1382,70 @@ func TestCardDispatchProbeFailureDoesNotClaimUnsupported(t *testing.T) {
 	}
 	if card.DriverSession != "" {
 		t.Fatalf("探活失败不得认领卡，driver_session=%q", card.DriverSession)
+	}
+}
+
+// TestCliTransportProjectsFrozenTargetOntoWire 走**真实** dispatchTransportWithOpts
+// （不 swap 测试缝），对着本机 httptest 端点断言 frozen_target 确实进了 HTTP body。
+// 为什么必须另有一条：TestCliTransportForwardsFrozenTarget 把
+// dispatchTransportWithOpts 整个换掉了，只锁到 cliTransport→dispatchRequest 这一段；
+// 内层 dispatchRequest→client.DispatchOpts 的手写投影若丢字段，那条测试照样绿——
+// 变异自验实测该投影删掉后前一条不红，故补此穿真实网络边界的投影锁。
+func TestCliTransportProjectsFrozenTargetOntoWire(t *testing.T) {
+	var body map[string]json.RawMessage
+	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Fatalf("解析 dispatch body: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"id":"T-proj","state":"running"}`))
+	}))
+	defer ts.Close()
+
+	cfgPath := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := &config.Config{
+		Listen: strings.TrimPrefix(ts.URL, "http://"), Token: testToken, DataDir: t.TempDir(),
+		StallTimeout: 2 * time.Hour, Ledger: config.LedgerConfig{Enabled: true},
+	}
+	if err := config.Save(cfgPath, cfg); err != nil {
+		t.Fatalf("写测试配置: %v", err)
+	}
+	oldConfig := configPath
+	configPath = cfgPath
+	defer func() { configPath = oldConfig }()
+
+	if _, _, err := dispatchTransportWithOpts(dispatchRequest{
+		prompt: "p", frozenTarget: "linux-01",
+	}); err != nil {
+		t.Fatalf("dispatchTransportWithOpts: %v", err)
+	}
+	var got string
+	if raw, ok := body["frozen_target"]; !ok {
+		t.Fatalf("真实 HTTP body 缺少 frozen_target: %s", body)
+	} else if err := json.Unmarshal(raw, &got); err != nil || got != "linux-01" {
+		t.Fatalf("frozen_target = %q（err=%v），want linux-01", got, err)
+	}
+}
+
+// TestCliTransportForwardsFrozenTarget CLI 侧 Transport 必须把
+// ledgerstep.DispatchOpts.FrozenTarget 原样投影进 client 请求，不得丢字段。
+// 内部锁声明：CLI 今日没有生产冻结派发（Dispatcher.Carrier 恒空），从 spec 三条缝
+// 构造不出这条断言；它是「手写投影点必须显式锁定」的附加锁，不顶替任何缝级断言。
+func TestCliTransportForwardsFrozenTarget(t *testing.T) {
+	var got dispatchRequest
+	var called bool
+	restore := swapDispatchTransportWithOpts(func(req dispatchRequest) (string, string, error) {
+		got = req
+		called = true
+		return "T-frozen", "", nil
+	})
+	defer restore()
+	if _, _, err := cliTransport(context.Background(), ledgerstep.DispatchOpts{
+		Prompt: "p", FrozenTarget: "linux-01",
+	}); err != nil {
+		t.Fatalf("cliTransport: %v", err)
+	}
+	if !called || got.frozenTarget != "linux-01" {
+		t.Fatalf("cliTransport 未透传 frozenTarget: called=%v got=%q", called, got.frozenTarget)
 	}
 }
