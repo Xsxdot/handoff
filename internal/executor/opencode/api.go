@@ -898,3 +898,66 @@ func (a *API) dispatch(data []string, onEvent func(json.RawMessage)) {
 	}
 	onEvent(raw)
 }
+
+// PendingPermission 是一条挂在 opencode 侧、尚未裁决的权限请求
+// （GET /permission 的数组元素）。
+//
+// 形状与 SSE permission.asked 的 properties 同形（OpenAPI
+// #/components/schemas/PermissionRequest），故可直接重放给 mapPermissionAsked。
+// 响应里还有 always 字段，本层不消费，按未知字段忽略。
+//
+// Metadata 保留原始 JSON：键随权限类别而变（bash 的 command、edit 的 filepath、
+// external_directory 的 directories/parentDir），本层不解析——解析归 adapter。
+type PendingPermission struct {
+	ID         string                `json:"id"`
+	SessionID  string                `json:"sessionID"`
+	Permission string                `json:"permission"`
+	Patterns   []string              `json:"patterns"`
+	Metadata   json.RawMessage       `json:"metadata"`
+	Tool       PendingPermissionTool `json:"tool"`
+}
+
+// PendingPermissionTool 是挂起权限的工具配对键（messageID + callID）。单独成
+// 命名类型而非匿名结构：跨文件构造（测试/恢复路径）不必复述匿名结构字面量，
+// 也避免两处字段名漂移。
+type PendingPermissionTool struct {
+	MessageID string `json:"messageID"`
+	CallID    string `json:"callID"`
+}
+
+// ListPendingPermissions 拉取当前全部挂起的权限请求（跨会话）。
+//
+// 参数：ctx 控制单次请求超时。
+// 返回：挂起权限列表；请求失败或解析失败返回错误，列表为 nil。
+//
+// 注意：
+//   - 返回的是**全部会话**的挂起权限，调用方必须按 SessionID 过滤出自己的
+//     （与 ListPendingQuestions 同款约定）
+//   - GET /permission 更早版本可能 404。调用方（rediscoverPendingPermissions）
+//     必须把错误当可降级处理，保留旧的人工兜底告警，不得因端点缺失打断恢复
+func (a *API) ListPendingPermissions(ctx context.Context) (out []PendingPermission, err error) {
+	start := time.Now()
+	const path = "/permission"
+	a.log().Info("opencode 查询挂起权限", "path", path)
+	defer func() {
+		if err != nil {
+			a.log().Error("opencode 查询挂起权限失败", "path", path, "cause", err)
+		} else {
+			a.log().Info("opencode 挂起权限已取得", "path", path, "count", len(out),
+				"elapsed_ms", time.Since(start).Milliseconds())
+		}
+	}()
+
+	resp, err := a.do(ctx, http.MethodGet, path, nil)
+	if err != nil {
+		return nil, fmt.Errorf("查询挂起权限请求: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, a.httpError("查询挂起权限", resp)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return nil, fmt.Errorf("解析挂起权限: %w", err)
+	}
+	return out, nil
+}

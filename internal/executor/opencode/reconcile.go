@@ -7,10 +7,10 @@
 //   - 不写 store、不改任务状态：补发的事件经既有 evCh 交给 manager，状态迁移归它
 //   - 不发明事件语义：取回的文本交给既有的 turn.ParseTrailer 分类，产出与实时
 //     路径同形的 question / result
-//   - **不捧回权限请求**：opencode 的消息流里 tool part 只有 callID 没有权限 id，
-//     而 RespondPermission 要求真实 id、伪造即 404（更早的 spike 结论，见
-//     adapter.go 的 onReconnect 降级告警）。建一张批了也送不回去的工单比不建更糟，
-//     故 ReconcileOutcome.Pending 在本 adapter 恒为 0
+//   - **不在此捧回权限请求**：消息流里 tool part 只有 callID 没有权限 id。
+//     B395 起，未决权限改由 rediscoverPendingPermissions（permission_recover.go）
+//     经 GET /permission 重新发现——它重放的是与实时路径同形的事件，不走对账的
+//     消息尾部判据，故 ReconcileOutcome.Pending 在本 adapter 仍恒为 0
 package opencode
 
 import (

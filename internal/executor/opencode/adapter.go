@@ -1108,14 +1108,15 @@ func (r *runState) subscribeLoop(a *Adapter) {
 	err := r.api.SubscribeEvents(r.runCtx, func(raw json.RawMessage) {
 		a.mapEvent(r, raw)
 	}, func() {
-		// P1-10b：/event 无重放语义，断连间隙服务端产出的事件永久丢失。
-		// B38 起，回合终态那半边由对账补回；权限请求那半边补不回来——消息流的
-		// tool part 只有 callID 没有权限 id，应答端点要求真实 id、伪造即 404，
-		// 故仍保留本告警，它是协调者知道「可能需要 attach 人工兜底」的唯一信号
-		a.log.Warn("SSE 断连已恢复：断连间隙的权限请求可能丢失（/event 无重放语义），"+
-			"若任务卡在等待决策请 handoff attach 查看或 handoff resume --force 收口",
+		// /event 无重放语义，断连间隙服务端产出的事件永久丢失。B38 起回合终态由
+		// 对账补回；B395 起权限请求由 rediscoverPendingPermissions 经 GET /permission
+		// 重问未决项补回（旧版无该端点时该方法自身降级、保留人工兜底）。
+		// 保留本 Warn：它是「恢复已尝试、若仍卡住需 attach / resume --force」的可见信号
+		a.log.Warn("SSE 断连已恢复：断连间隙的权限请求可能丢失（/event 无重放语义），正在重问未决项，"+
+			"若任务仍卡在等待决策请 handoff attach 查看或 handoff resume --force 收口",
 			"task", r.taskID, "session", r.session)
 		go a.reconcileAfterRecovery(context.Background(), r.taskID, "reconnect")
+		go a.rediscoverPendingPermissions(context.Background(), r.taskID)
 	})
 	select {
 	case <-r.stopCh:
