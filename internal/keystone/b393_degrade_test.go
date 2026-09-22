@@ -8,6 +8,7 @@ package keystone_test
 
 import (
 	"context"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -46,7 +47,7 @@ func TestB393DegradeRecordsActionableReason(t *testing.T) {
 		t.Fatalf("写席位: %v", err)
 	}
 
-	runner := &fakeRunner{failNext: 1, failLaunches: true}
+	runner := &fakeRunner{failNext: 1, failLaunches: true, resumeErr: fmt.Errorf("resume 不可用: %w", keysclient.ErrSessionNotFound)}
 	narr := &fakeNarrator{}
 	view := &recordingLedger{f: facade}
 	svc := keystone.New(runner, narr, view, nil)

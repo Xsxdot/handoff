@@ -8,6 +8,7 @@ package keystone_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -24,9 +25,11 @@ import (
 // fakeRunner 记录每次调用并按脚本应答，供断言「唤醒合并为一回合」与兜底链。
 type fakeRunner struct {
 	launches     []string
-	resumes      []string
-	failNext     int  // >0 时接下来 N 次 Resume 返回错误
-	failLaunches bool // 置真后 Launch 一律失败（重建也不可用的兜底场景）
+	resumes      []string                // 成功 Resume 的 prompt（既有）
+	refs         []keysclient.SessionRef // 每次 Resume 的 ref（B399 断言续接同一 session）
+	failNext     int                     // >0 时接下来 N 次 Resume 返回错误
+	failLaunches bool                    // 置真后 Launch 一律失败（重建也不可用的兜底场景）
+	resumeErr    error                   // 非空时作 Resume 错误（可含 keysclient 哨兵）；nil = 通用错误 "resume 不可用"
 }
 
 func (f *fakeRunner) Launch(spec keysclient.SessionSpec, prompt string) (keysclient.TurnResult, error) {
@@ -38,8 +41,12 @@ func (f *fakeRunner) Launch(spec keysclient.SessionSpec, prompt string) (keyscli
 }
 
 func (f *fakeRunner) Resume(ref keysclient.SessionRef, prompt string) (keysclient.TurnResult, error) {
+	f.refs = append(f.refs, ref)
 	if f.failNext > 0 {
 		f.failNext--
+		if f.resumeErr != nil {
+			return keysclient.TurnResult{}, f.resumeErr
+		}
 		return keysclient.TurnResult{}, errors.New("resume 不可用")
 	}
 	f.resumes = append(f.resumes, prompt)
@@ -255,11 +262,13 @@ func TestIgnitionVerticalSlice(t *testing.T) {
 	}
 	ks.SetAttach(card.ID, false)
 
-	// 兜底降级链第一段：resume 失败 → 换载体重建（房间落「载体已更换」指针）。
+	// 兜底降级链第一段：会话不存在 → 换载体重建（房间落「载体已更换」指针）。
+	// B399 r2：generic 错误不再重建；只有 ErrSessionNotFound 才走重建。
 	runner.failNext = 99
+	runner.resumeErr = fmt.Errorf("resume 不可用: %w", keysclient.ErrSessionNotFound)
 	rebuilt, wakeErr := ks.Wake(ctx, card.ID, []keystone.WakeEvent{{Kind: keystone.WakeTaskTerminal, Card: card.ID}}, keysclient.SessionSpec{CLI: "opencode"})
 	if wakeErr != nil {
-		t.Fatalf("resume 失败后重建应成功: %v", wakeErr)
+		t.Fatalf("会话不存在后重建应成功: %v", wakeErr)
 	}
 	if !rebuilt.Rebuilt || rebuilt.SessionID != "sess-new" {
 		t.Fatalf("重建回执不完整: %+v", rebuilt)

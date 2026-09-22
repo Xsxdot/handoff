@@ -17,9 +17,9 @@ func TestB393WakeRoundEventRoundTrip(t *testing.T) {
 	zero := ""
 	var zeroMs int64 = 0
 	cases := []WakeRoundEvent{
-		{Phase: "start"}, // 全缺省
+		{Phase: "start"},                                // 全缺省
 		{Phase: "end", Session: &zero, DurationMs: &zeroMs}, // 显式零值
-		{Phase: "fail", Err: &zero},
+		{Phase: "fail", Class: &zero, Err: &zero},       // class 显式零值
 	}
 	for _, want := range cases {
 		raw, err := json.Marshal(want)
@@ -31,10 +31,14 @@ func TestB393WakeRoundEventRoundTrip(t *testing.T) {
 			t.Fatalf("decode: %v", err)
 		}
 		if got.Phase != want.Phase ||
+			(got.Class == nil) != (want.Class == nil) ||
 			(got.Session == nil) != (want.Session == nil) ||
 			(got.Err == nil) != (want.Err == nil) ||
 			(got.DurationMs == nil) != (want.DurationMs == nil) {
 			t.Fatalf("round-trip 不等：\n got=%+v\nwant=%+v", got, want)
+		}
+		if want.Class != nil && *got.Class != *want.Class {
+			t.Fatalf("class 零值字段丢失：got=%q", *got.Class)
 		}
 		if want.Session != nil && *got.Session != *want.Session {
 			t.Fatalf("零值字段丢失：got=%q", *got.Session)

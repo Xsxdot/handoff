@@ -8,7 +8,17 @@
 // task（B156.3 spec 测试接缝 3）——Runner 的任何实现都不得调用执行域派发路径。
 package keysclient
 
-import "github.com/Xsxdot/handoff/internal/proto"
+import (
+	"errors"
+
+	"github.com/Xsxdot/handoff/internal/proto"
+)
+
+// ErrTurnTimeout / ErrSessionNotFound 是 keystone 消费 Runner 结果时的契约哨兵
+// （B399 r2 §5）：实现（agentd.coordinatorRunner）负责把承载层错误翻译成它们，
+// keystone 只用 errors.Is 判定——超时保留会话，只有会话不存在才重建。
+var ErrTurnTimeout = errors.New("keysclient: 回合被时限终止")
+var ErrSessionNotFound = errors.New("keysclient: 会话不存在")
 
 // SessionSpec 是一次无头拉起的会话规格。HomeDir 是隔离 HOME 档案：协调者
 // 全套（全局规则/skill/MCP/账本凭据），与执行者的干净 HOME 相反（spec §4.3）。

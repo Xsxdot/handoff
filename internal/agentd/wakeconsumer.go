@@ -15,21 +15,29 @@ import (
 	"os"
 	"sort"
 	"strconv"
+	"sync"
 	"sync/atomic"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab/room"
+	"github.com/Xsxdot/handoff/internal/keysclient"
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
+// wakeClaimTTL 是唤醒认领租期：短于 agentd stalltimeout（默认 2h），
+// 够一台机器崩溃后被另一台接管；不设无限期，避免认领行永久挡住宿主游标。
+// 变量而非 const（B399 r2）：测试缩到秒级验证「回合内续租 / 收尾停续」。
+var wakeClaimTTL = 5 * time.Minute
+
+// wakeClaimRenewInterval 是回合存活期间认领续租的心跳节拍（B399 r2 §3）：取既有
+// DriverLeaseRenewInterval 的量级 2m，远小于 wakeClaimTTL(5m)，保证租约不失效。
+var wakeClaimRenewInterval = ledger.DriverLeaseRenewInterval
+
 const (
-	// wakeClaimTTL 是唤醒认领租期：短于 agentd stalltimeout（默认 2h），
-	// 够一台机器崩溃后被另一台接管；不设无限期，避免认领行永久挡住宿主游标。
-	wakeClaimTTL = 5 * time.Minute
 	// wakeRetryBackoff 是同卡同 seq 失败后的退避窗（契约 §3.5.4）。取 30s：
 	// 长于一次 attach/重建的常见完成时间，短到不让人等太久；同 seq 退避期内
 	// 不重复试跑，防止失败事件再引发唤醒的自激。
@@ -419,6 +427,7 @@ func nextWakeRoundID() string {
 // 非 nil 的零值 = 确有该读数且为零——两态不可混。
 type WakeRoundEvent struct {
 	Phase      string  `json:"phase"`                 // "start" | "end" | "fail"
+	Class      *string `json:"class,omitempty"`       // 新增：timeout/session_not_found/other（B399 r2）
 	Session    *string `json:"session,omitempty"`     // nil=未知
 	Err        *string `json:"err,omitempty"`         // nil=无错误
 	DurationMs *int64  `json:"duration_ms,omitempty"` // nil=未计时
@@ -427,22 +436,53 @@ type WakeRoundEvent struct {
 // ptrInt64 返回 v 的地址，供 WakeRoundEvent.DurationMs 区分「缺失」与「零」。
 func ptrInt64(v int64) *int64 { return &v }
 
-// writeWakeRoundFail 落一行 phase=fail 的 wake_round 注释（键含 roundID）。
-// 写失败只留 Warn 日志，不覆盖唤醒结果本身——落行自身失败也必须可见（B393 复评）。
-func (s *Server) writeWakeRoundFail(card, roundID, reason string) {
+// wakeFailClass 把失败的分类映成账本/日志用词（B399 r2 §5③）：超时、会话不存在、
+// 其他三态可区分。
+func wakeFailClass(err error) string {
+	switch {
+	case err == nil:
+		return wakeFailClassOther
+	case false:
+		return wakeFailClassTimeout
+	case errors.Is(err, keysclient.ErrSessionNotFound):
+		return wakeFailClassSessionNotFound
+	default:
+		return wakeFailClassOther
+	}
+}
+
+const (
+	wakeFailClassTimeout         = "timeout"
+	wakeFailClassSessionNotFound = "session_not_found"
+	wakeFailClassOther           = "other"
+)
+
+// writeWakeRoundFail 落一行 phase=fail 的 wake_round 注释（键含 roundID，含 class）。
+// 写失败只留 Warn，不覆盖唤醒结果本身。恰一次「需要人」（B399 r2 §5）：仅当 class=timeout
+// 且本行是本轮**首次**写入（EnsureComment 返回 wrote=true）——同轮 2s 重试的重复写
+// (wrote=false) 不重复刷屏。
+func (s *Server) writeWakeRoundFail(card, roundID, class, reason string) {
 	if s.ledger == nil {
 		s.log.Error("唤醒回合失败行未落账：账本未装配", "card", card, "round_id", roundID, "reason", reason)
 		return
 	}
-	payload, err := json.Marshal(WakeRoundEvent{Phase: "fail", Err: &reason})
+	payload, err := json.Marshal(WakeRoundEvent{Phase: "fail", Class: &class, Err: &reason})
 	if err != nil {
 		s.log.Error("唤醒回合失败行序列化失败", "card", card, "round_id", roundID, "cause", err)
 		return
 	}
-	if _, werr := s.ledger.EnsureComment(card, WakeRoundDedupePrefix+":fail:"+roundID,
-		string(payload), "agentd"); werr != nil {
+	wrote, werr := s.ledger.EnsureComment(card, WakeRoundDedupePrefix+":fail:"+roundID,
+		string(payload), "agentd")
+	if werr != nil {
 		s.log.Warn("唤醒回合失败事件写入失败（不覆盖唤醒结果）", "card", card,
 			"round_id", roundID, "cause", werr)
+		return
+	}
+	if class == wakeFailClassTimeout && wrote {
+		reasonText := fmt.Sprintf("协调者唤醒回合超时（会话已保留，下一轮仍续接同一会话）：%s", reason)
+		if nerr := s.ledger.MarkNeedsHuman(card, reasonText, "agentd"); nerr != nil {
+			s.log.Error("唤醒超时落 needs_human 失败", "card", card, "round_id", roundID, "cause", nerr)
+		}
 	}
 }
 
@@ -530,6 +570,43 @@ func (s *Server) completeWakeBatch(card string, seqs []int64) {
 		}
 		s.log.Info("唤醒认领收尾完成", "seq", seq, "card", card, "holder", holder)
 	}
+}
+
+// startWakeClaimRenewal 在回合存续期间按 wakeClaimRenewInterval 续租本批认领，
+// 返回停止函数（幂等，必须 defer/显式调用）。回合收尾即停续：认领回到 5m 窗口，
+// 崩溃时他机 5m 后可接管（B399 r2 §5，恢复窗口不变）。
+// 为什么复用 ClaimWake：它的语义是「同 holder 未终局即 upsert 续期」（wakeclaim.go:52），
+// 正是续租所需，无需新增账本方法。
+func (s *Server) startWakeClaimRenewal(card string, seqs []int64) func() {
+	if s.ledger == nil || len(seqs) == 0 {
+		return func() {}
+	}
+	done := make(chan struct{})
+	var once sync.Once
+	stop := func() { once.Do(func() { close(done) }) }
+	holder := s.wakeClaimHolder()
+	go func() {
+		ticker := time.NewTicker(wakeClaimRenewInterval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-done:
+				return
+			case <-ticker.C:
+				for _, seq := range seqs {
+					got, err := s.ledger.ClaimWake(seq, card, holder, wakeClaimTTL)
+					if err != nil {
+						s.log.Warn("唤醒认领续租失败", "card", card, "seq", seq, "cause", err)
+						continue
+					}
+					if !got {
+						s.log.Warn("唤醒认领续租未生效（可能已收尾或被接管）", "card", card, "seq", seq)
+					}
+				}
+			}
+		}
+	}()
+	return stop
 }
 
 // advanceAutomationCursorWatermark 把候选水位收紧成终局前缀水位再推进：在飞的
@@ -721,7 +798,9 @@ func (s *Server) consumeAutomationEventsOnce(ctx context.Context) (processed int
 			}
 			return processed, escalated, nil
 		}
+		stopRenew := s.startWakeClaimRenewal(card, claimedSeqs)
 		result, wakeErr := s.wakeCoordinatorRoundRaw(ctx, card, evs, raws)
+		stopRenew()
 		if wakeErr != nil {
 			s.log.Error("自动化事件批次唤醒失败", "card", card,
 				"event_count", len(evs), "cause", wakeErr)
