@@ -14,6 +14,8 @@ import (
 	"log/slog"
 	"os"
 	"sort"
+	"strconv"
+	"sync/atomic"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/client"
@@ -385,10 +387,23 @@ func (s *Server) roomMessageWakeEvents(ev proto.LedgerEvent) ([]keystone.WakeEve
 
 const wakeParentWalkLimit = 32
 
-// WakeRoundDedupePrefix 是唤醒回合起止注释的 dedupe_key 前缀（B393 spec §4.3：唤醒
+// WakeRoundDedupePrefix 是唤醒回合注释的 dedupe_key 前缀（B393 spec §4.3：唤醒
 // 回合留一行在途读数）。落账走 ledger.Store.EnsureComment（type=EvComment），
-// 前缀进 dedupe_key，键形如 "wake_round:start" / "wake_round:end:<session>"。
+// 键形如 "wake_round:start:<roundID>" / "wake_round:end:<roundID>" /
+// "wake_round:fail:<roundID>"——roundID 按轮次生成，同卡每轮各得一组
+// start/end 或 start/fail（一轮一组为上限，不跨轮吞行、不轮内刷屏）。
 const WakeRoundDedupePrefix = "wake_round"
+
+// wakeRoundSeq 是进程内唤醒轮次序号，与 UnixNano 拼成 roundID。
+var wakeRoundSeq atomic.Uint64
+
+// nextWakeRoundID 返回本轮唤醒的轮次标识：墙钟纳秒 + 进程内单调序号。
+// 为什么两者都要：只用墙钟在同纳秒内两轮会撞键（测试连续两轮必现）；
+// 只用序号在 agentd 重启后会与历史键冲突（EnsureComment 按键幂等，撞键=吞行）。
+func nextWakeRoundID() string {
+	return strconv.FormatInt(time.Now().UnixNano(), 10) + "-" +
+		strconv.FormatUint(wakeRoundSeq.Add(1), 10)
+}
 
 // WakeRoundEvent 是写入注释正文的 payload 形状（序列化边界：json.Marshal 进
 // EnsureComment 的 body、消费方按需 json.Unmarshal；见 TestB393WakeRoundEventRoundTrip）。
@@ -403,6 +418,25 @@ type WakeRoundEvent struct {
 
 // ptrInt64 返回 v 的地址，供 WakeRoundEvent.DurationMs 区分「缺失」与「零」。
 func ptrInt64(v int64) *int64 { return &v }
+
+// writeWakeRoundFail 落一行 phase=fail 的 wake_round 注释（键含 roundID）。
+// 写失败只留 Warn 日志，不覆盖唤醒结果本身——落行自身失败也必须可见（B393 复评）。
+func (s *Server) writeWakeRoundFail(card, roundID, reason string) {
+	if s.ledger == nil {
+		s.log.Error("唤醒回合失败行未落账：账本未装配", "card", card, "round_id", roundID, "reason", reason)
+		return
+	}
+	payload, err := json.Marshal(WakeRoundEvent{Phase: "fail", Err: &reason})
+	if err != nil {
+		s.log.Error("唤醒回合失败行序列化失败", "card", card, "round_id", roundID, "cause", err)
+		return
+	}
+	if _, werr := s.ledger.EnsureComment(card, WakeRoundDedupePrefix+":fail:"+roundID,
+		string(payload), "agentd"); werr != nil {
+		s.log.Warn("唤醒回合失败事件写入失败（不覆盖唤醒结果）", "card", card,
+			"round_id", roundID, "cause", werr)
+	}
+}
 
 // resolveWakeCard 把唤醒目标从事件卡收到真正有 coordinate 席位的卡。
 // 事件卡自己有 coordinate 席位 → 自己；事件卡是 bind → 空（bind 靠 CLI wait）；

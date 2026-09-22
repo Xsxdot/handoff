@@ -445,3 +445,144 @@ $ git log --oneline -1
 ```
 
 
+
+---
+
+# 第三轮复评修复（B393：wake_round 键按轮次 + 失败出口含转交路径）
+
+基线：起手 HEAD `5a1d70cb`，先并 `origin/cards/B233.1-charter-7`（fast-forward 到
+`c5505a44`，含 B396 修复 `198a10c8`）。分支 `cards/B393-charter-8`。
+只修两处缺口，不动路由/承载语义、不改 needs_cleared、不动线上状态。
+
+## R0. 基线确认与图覆盖债
+
+```text
+$ git log --oneline -5
+c5505a44 docs(B395): spec——SSE 断连丢权限工具等待窗口致回合永挂（debug 入口）
+198a10c8 fix(B396): waitForTurnEnd 认 archived 为终态——归档后释放卡槽位与运行锁
+5b12c7b0 plan(B396): 陈旧环节运行位不自愈——根因/分流 + archived 收口修复计划
+5a1d70cb docs(B396): spec——陈旧运行锁不自愈（debug 入口，先根因后修）
+d39b8b32 docs(B394): 台账补记提交 hash 读数
+$ git merge-base --is-ancestor 198a10c8 HEAD && echo in-HEAD → in-HEAD
+$ grep -n 'transferCoordinatorWake|wakeCoordinatorRoundRaw' internal/agentd/scheddrain.go
+350:transferCoordinatorWake ... 408:wakeCoordinatorRoundRaw ... ✓
+$ go build ./... → BUILD_EXIT=0
+$ codegraph --repo . sym transferCoordinatorWake → MISS（图覆盖债）
+$ codegraph --repo . sym wakeCoordinatorRoundRaw → MISS（图覆盖债）
+$ codegraph --repo . sym WakeRoundEvent → MISS（图覆盖债）
+$ codegraph --repo . sym nextWakeRoundID → MISS（图覆盖债，新符号）
+$ codegraph --repo . sym writeWakeRoundFail → MISS（图覆盖债，新符号）
+$ codegraph --repo . sym EnsureComment → 命中 n_ledger_Store_EnsureComment（events.go:299）
+```
+
+## R1. 红测试（先红后绿）
+
+新文件 `internal/agentd/b393_wakeround_roundkey_test.go`：
+- `TestB393WakeRoundKeysGroupPerRound`：同卡两轮 → 两行 start + 两行 end，键互异；
+- `TestB393TransferWakeFailureWritesLocalFail`：对端 502 → 本机恰一行 fail 且 Err 含机器名；
+- `TestB393TransferNoTargetWritesLocalFail`：目标未登记 → 同上。
+
+改写 `b393_wakeround_fail_test.go` 第二段断言：同卡两轮失败应**两行** fail
+（旧断言「重复失败不得追加行」正是被修的跨轮吞行失明）。
+
+首跑红（全部断言红，非编译红——红因是功能缺失）：
+
+```text
+--- FAIL: TestB393WakeRoundFailureWritesFailEvent (0.25s)
+    同卡两轮失败应两行 phase=fail（键按轮次分组），实得 1
+    （日志原文：说明评论幂等跳过：同键已存在 dedupe_key=wake_round:fail）
+--- FAIL: TestB393WakeRoundKeysGroupPerRound (0.28s)
+    同卡两轮应两行 start，实得 1（键未按轮次分组=只看到第一轮）
+    （日志原文：说明评论幂等跳过：同键已存在 dedupe_key=wake_round:start）
+--- FAIL: TestB393TransferWakeFailureWritesLocalFail (0.19s)
+    转交对端失败应恰一行本机 phase=fail，实得 0（rows=[]）
+--- FAIL: TestB393TransferNoTargetWritesLocalFail (0.23s)
+    转交取客户端失败应恰一行本机 phase=fail，实得 0（rows=[]）
+FAIL
+```
+
+## R2. 缺口 (1)：wake_round 键按轮次
+
+`internal/agentd/wakeconsumer.go`：
+- `nextWakeRoundID()` = UnixNano + 进程内 `atomic.Uint64` 序号（只用墙钟同纳秒撞键、
+  只用序号重启后撞历史键，两者拼接）；
+- `WakeRoundDedupePrefix` 注释改键形：`wake_round:{start|end|fail}:<roundID>`。
+
+`internal/agentd/scheddrain.go` `wakeCoordinatorRoundRaw`：
+- start/end/fail 三键都拼同一 `roundID`（一轮一组）；start/end 写失败仍 Warn 不覆盖结果。
+
+## R3. 缺口 (2)：失败出口审计（含转交路径 + 落行自身失败）
+
+新增 `writeWakeRoundFail(card, roundID, reason)`：Marshal 失败 / 账本未装配 / EnsureComment
+失败三条落行自身失败分支都带 card/round_id 上下文的日志（Error/Warn），不覆盖唤醒结果。
+
+失败出口逐条：
+| 出口 | 落行 | 理由 |
+|---|---|---|
+| GetCard 失败 | 不落 | EnsureComment 同要读卡，落行必败 |
+| ValidateSeat / SeatBearingOf / 缺承载路径失败 | 落 | |
+| 远端+无 raws（转交前置） | 落，Err 含机器名 | |
+| `transferCoordinatorWake` 取客户端失败 | 落，Err 含机器名 | 复评明确要求 |
+| `transferCoordinatorWake` 对端非 2xx | 落，Err 含机器名 | 复评明确要求 |
+| resolveCoordinatorSquad / Carrier / ParseSeat / Normalize | 落 | |
+| `AdmitSeatCarrier` 准入失败 | **不落** | 2s 节拍重试会刷屏；B390 recordAdmissionStall 承担可见性 |
+| keystone.Wake 失败 | 落（同 roundID） | MAJOR-1 既有 |
+| 重建后 Encode/Rebind（含 CAS 冲突） | 落（同 roundID） | end 之后的失败也留痕 |
+
+## R4. 绿 + 变异自验
+
+```text
+$ go test ./internal/agentd/ -run 'TestB393' -count=1 → ok 2.247s
+```
+
+变异三发（每发先断言 `count==1` 唯一命中，再改语义；编译均过）：
+
+1. start 键改回固定 `":start"`：
+```text
+count: 1
+--- FAIL: TestB393WakeRoundKeysGroupPerRound (0.22s)
+    同卡两轮应两行 start，实得 1（键未按轮次分组=只看到第一轮）
+```
+⇒ 复现「只看到第一轮」失明。复原。
+
+2. 去掉转交 CoordinatorWake 失败分支的 writeWakeRoundFail：
+```text
+count: 1
+--- FAIL: TestB393TransferWakeFailureWritesLocalFail (0.18s)
+    转交对端失败应恰一行本机 phase=fail，实得 0（rows=[]）
+```
+复原。
+
+3. 去掉转交 clientForTarget 失败分支的 writeWakeRoundFail：
+```text
+count: 1
+--- FAIL: TestB393TransferNoTargetWritesLocalFail (0.16s)
+    转交取客户端失败应恰一行本机 phase=fail，实得 0（rows=[]）
+```
+复原。
+
+复原后复绿：`ok github.com/Xsxdot/handoff/internal/agentd 2.103s`。
+
+## R5. 收尾验证（触及包）
+
+```text
+$ gofmt -l internal/agentd → （空，首轮曾报 roundkey_test.go 已 gofmt -w）
+$ go vet ./internal/agentd/ → VET_EXIT=0
+$ go build ./... → BUILD_EXIT=0
+$ go test ./internal/agentd/ -count=1 -timeout 600s → ok 184.501s
+```
+
+## R6. 图覆盖债（本节点新增）
+
+`codegraph sym` 未命中：`transferCoordinatorWake`、`wakeCoordinatorRoundRaw`、
+`WakeRoundEvent`、`nextWakeRoundID`、`writeWakeRoundFail`。回退 grep 取源码。
+
+## R7. 提交事实（历史读数）
+
+```text
+$ git add -A && git commit -q -m "fix(B393): wake_round 键按轮次分组 + 失败出口审计含转交路径落行"
+$ git log --oneline -1
+4ec6de43 fix(B393): wake_round 键按轮次分组 + 失败出口审计含转交路径落行
+```
+
+提交后本节 amend 一次收进同批；amend 换 hash 属 git 事实，收口判据是工作树干净。
