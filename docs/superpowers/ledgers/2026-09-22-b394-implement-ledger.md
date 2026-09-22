@@ -121,6 +121,12 @@ Error: 符号 "EvNeedsCleared" 不在图中（图未覆盖或名字有误）；�
 ## 提交事实
 
 ```
-$ git add -A && git commit -m "fix(B394): 清标移出唤醒映射——断协调者账务动作的回声自激"
-<见回合末提交 hash>
+$ git add -A && git commit -q -m "fix(B394): 清标移出唤醒映射——断协调者账务动作的回声自激"
+$ git log --oneline -1
+184c5d53 fix(B394): 清标移出唤醒映射——断协调者账务动作的回声自激
+$ git status --short
+（空）
 ```
+
+第一次提交实得 `184c5d53`；本台账补记（上面两行）随后单独提交，故收口时 HEAD 会前移，
+以 `git status` 干净为收口判据。
