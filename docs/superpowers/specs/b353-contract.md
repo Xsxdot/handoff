@@ -87,7 +87,9 @@
 37. `task_mirrored` 的 `task_type` 为 `question` 且策略为真时，映射为 `keystone.WakeTicket`。
 38. `task_mirrored` 的其它策略为真的任务类型映射为 `keystone.WakeTaskTerminal`，至少覆盖 `delivery_failed`、`stalled`、`approval_dropped` 与 `archived`，从而 `delivery_failed` 会唤醒协调者执行 `resume`。
 39. `needs_human` 产生 `keystone.WakeTaskTerminal`。
-40. `needs_cleared` 产生 `keystone.WakeTaskTerminal`。
+40. ~~`needs_cleared` 产生 `keystone.WakeTaskTerminal`。~~
+    **（B394 取代，2026-09-22）`needs_cleared` 不再产生唤醒**：清标是 needs_human 的状态翻转，
+    唤醒它会形成协调者自回声（清→重打的乒乓）。展示通路（条目 15）不变。见 `b394-contract.md`。
 41. `decision_opened` 产生 `keystone.WakeTaskTerminal`。
 42. `decision_answered` 产生 `keystone.WakeTaskTerminal`。
 43. 只有 `RoomMessage{Kind: proto.RoomMsgUser, BySystem: false}` 的 `room_message` 产生 `keystone.WakeMessage`。

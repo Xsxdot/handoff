@@ -536,17 +536,18 @@ func TestB353AutomationMapsCardActionEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// B389 判据收口（契约 §3.5.1）：needs_human 移出唤醒清单——processed 4→3，
-	// 但 needs_cleared/decision_opened/decision_answered 仍唤醒。
+	// B389 判据收口（契约 §3.5.1）移出 needs_human；B394（b394-contract 条目 1）再移出
+	// needs_cleared——processed 4→3→2，只剩 decision_opened/decision_answered 唤醒。
 	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())
-	if err != nil || escalated || processed != 3 {
-		t.Fatalf("卡原生动作消费 processed=%d escalated=%v err=%v，want 3/nil/false", processed, escalated, err)
+	if err != nil || escalated || processed != 2 {
+		t.Fatalf("卡原生动作消费 processed=%d escalated=%v err=%v，want 2/nil/false", processed, escalated, err)
 	}
 	_, resumes, _ := runner.snapshot()
 	if len(resumes) != 1 {
 		t.Fatalf("卡原生动作应合并一次 Resume，实得 %d", len(resumes))
 	}
-	for _, want := range []string{"needs_cleared", "decision body", "answer"} {
+	// decision_opened/decision_answered 仍唤醒（B394 不动它们）；needs_cleared 不再唤醒。
+	for _, want := range []string{"decision body", "answer"} {
 		if !strings.Contains(resumes[0], want) {
 			t.Fatalf("卡原生动作 briefing 缺少 %q: %s", want, resumes[0])
 		}

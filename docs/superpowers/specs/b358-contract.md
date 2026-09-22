@@ -393,7 +393,8 @@ SessionEventCardClosed = "card_closed"
 28. `AddressesCard` 仅当消息寻址命中该卡当前席位时返回 true；卡无席位或账本缺失返回 false。
 29. 唤醒路径对无寻址消息不唤醒任何人（`wakeconsumer` 实现节点锁定）。
 30. 唤醒路径对 `@` 命中才唤醒（广播形状删除）。
-31. 系统结构事件（入群/移出/归档/席位变更/needs_human）不唤醒任何人。
+31. 系统结构事件（入群/移出/归档/席位变更/needs_human/needs_cleared）不唤醒任何人。
+    （needs_cleared 由 B394 于 2026-09-22 补入；见 `b394-contract.md`。）
 
 ### 4.4 房间形态与只读
 

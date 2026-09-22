@@ -234,8 +234,16 @@ func automationWakeEvent(ev proto.LedgerEvent) (keystone.WakeEvent, bool, error)
 			return keystone.WakeEvent{}, false, nil
 		}
 		return keystone.WakeEvent{}, false, nil
-	case ledger.EvNeedsCleared,
-		ledger.EvDecisionOpened, ledger.EvDecisionAnswered:
+	case ledger.EvNeedsCleared:
+		// B394：清标是 needs_human 的状态翻转（注意力平面），与等人同族，不唤醒。
+		// 唤醒它会让协调者自己的账务动作把自己叫醒（清→重打的回声乒乓，真机 B382
+		// 17726 needs_cleared → 新一轮唤醒 → 17727 keystone 重打 needs_human）。
+		// 展示通路（card wait / 会话列表 needsHumanByCard）不经本函数，不受影响。
+		slog.Default().Debug("needs_cleared 不唤醒：清标是注意力平面状态翻转，防回声自激",
+			"seq", ev.Seq, "card", ev.CardID, "type", ev.Type,
+			"reason", "needs_cleared_not_actionable")
+		return keystone.WakeEvent{}, false, nil
+	case ledger.EvDecisionOpened, ledger.EvDecisionAnswered:
 		return keystone.WakeEvent{
 			Kind: keystone.WakeTaskTerminal, Card: ev.CardID,
 			Summary: fmt.Sprintf("%s: %s", ev.Type, truncateRunes(string(ev.Payload), 400)),
