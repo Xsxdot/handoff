@@ -806,3 +806,14 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
   （`24be42238`）修复后的形态；`docs/superpowers/specs/b289.md`。
 - **终态卡房间出列表剪枝**：B374 Out of Scope，需另修 b358 §4.4 冻结语义（旧卡房间语义不变）。来源：B374 spec Out of Scope（2026-09-15）。
 - **roomAttachRefreshInterval/TTL 动态化**：B374 分页后 fan-out 已降量级，动态节流列为优化项。来源：B374 spec Out of Scope（2026-09-15）。
+
+## 来自 B393 / B395 验收（2026-09-22，真机 linux-01 @ e13bd4cac956）
+
+- **B395 · 应答侧冗余原生应答**：deny 路径先终止工具、再补一发 `RespondPermission`，此时 serve 已无该权限 ⇒ 404 `PermissionNotFoundError`，落『未找到工具等待窗口』WARN +『RespondPermission 失败』ERROR 双噪声。对应 B395 review minor-1（`rediscoverPendingPermissions` 无 in-flight/seen 去重）。来源：B395 验收真机（17:14:22，探针 21324c6b；17:33:50 图对账轮再次复现两次）。
+- **B395 · 生产分支无测试**：新缝级测试用 `approval==nil`，而 opencode 生产任务恒注入 `ApprovalClient`（`manager.go:1021-1028`），`authorizeNativePermission` 分支无覆盖。来源：B395 review minor-2。
+- **B395 · 取证可见性**：「恢复后重新发现挂起权限 count=…」只在 Info 级，缺省 `warn` 级别下真机不可见（本卡验收靠 `frames.jsonl` 与时间戳推定）。建议提级或补一行账本事件。来源：B395 验收真机。
+- **B393 · 承重属性缺测试锁**：`wakeQueueRoundKey` 以整请求 JSON 作身份键，「一轮一组」依赖该键经真实 `Enqueue→PopReady` 往返逐字节稳定；现无提交测试锁（review-5 major，已用 overlay 探针实测当前成立）。来源：B393 review-5。
+- **B393 · plan 口径未同步**：`plans/b393-plan.md` §5/T2.3 仍写「同卡同一 IgnitionRequest 的 2s 重试共享同一 roundID」，未同步 spec r2 的「同卡换节点=新请求、新开一轮」边界。来源：B393 review-5 minor。
+- **唤醒假失败标记**：17:29:53 落 `needs_human`『协调者唤醒失败：resume 与重建均不可用』，与 17:29:54 起成功收口的唤醒半回合并存（本机 agentd 17:30:15『自动化事件消费轮完成 processed=1, escalated=false』）。疑为并行消费者/认领路径的假失败标记，归 B389 面。来源：B393 验收真机。
+- **载体/模型可靠性（本轮实测）**：runner 小队缺省模型 `commandcode/xiaomi/mimo-v2.6-flash` 两次事故——B393 implement 第 4 轮『回合结束但零文本产出』、B395 图对账首轮 `ContentFilterErr` 连拒两次；`opencode-go/*` 前缀在本机凭据下 403（『An active OpenCode Go subscription is required to use Go models』）。跨机复用模型名前须核对本机订阅，缺省载体模型需评估稳定性。来源：B395 图对账三次重派记录（卡 B395）。
+- **图视图命名与分支不一致**：B395 视图落在 `codegraph/diffs/cards-B395-charter-5.json`（执行者所选名），其所在分支为 `cards/B395-charter-6`。absorb 前建议核对命名与分支的对应关系。来源：B395 图对账节点产出（`4c874ca0`）。
