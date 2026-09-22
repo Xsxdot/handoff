@@ -190,6 +190,9 @@ func (a *Adapter) Resume(req executor.ResumeReq) (out executor.ResumeOutcome, er
 	if mode != executor.ResumeModeFresh {
 		go a.reconcileAfterRecovery(context.Background(), req.TaskID, "startup")
 		go a.rediscoverPendingQuestions(context.Background(), req.TaskID)
+		// B395：提问之外，权限请求同样会随 agentd 重启窗口丢失（/event 无重放
+		// 语义）——不重问，executor 就阻塞在一个没人应答的权限门上
+		go a.rediscoverPendingPermissions(context.Background(), req.TaskID)
 	}
 	return executor.ResumeOutcome{
 		Alive: true, Mode: mode, SessionID: sessionID,
