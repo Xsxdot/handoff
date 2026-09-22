@@ -586,3 +586,84 @@ $ git log --oneline -1
 ```
 
 提交后本节 amend 一次收进同批；amend 换 hash 属 git 事实，收口判据是工作树干净。
+
+---
+
+# 第四轮复评修复（B393 复评 6d85425a：队列重试刷屏 + 口径修订）
+
+基线 = 起手 HEAD `7ac818a9`（分支 `cards/B393-charter-10`）。只修三条 finding，范围不外扩。
+
+## R0. 起手与图覆盖债
+
+```text
+$ git branch --show-current            → cards/B393-charter-10
+$ go build ./...                       → BUILD_EXIT=0
+$ codegraph --repo . sym wakeCoordinatorRound → 命中 n_agentd_Server_wakeCoordinatorRound
+$ codegraph --repo . sym drainIgnitionRequest → 命中 n_agentd_Server_drainIgnitionRequest
+$ codegraph --repo . sym EnsureComment         → 命中 n_ledger_Store_EnsureComment
+$ codegraph --repo . sym nextWakeRoundID/writeWakeRoundFail/wakeCoordinatorRoundRaw → MISS（图覆盖债，回落 grep）
+```
+
+## R1. 负向测试先红（finding 2）
+
+扩展 `internal/agentd/b393_wakeround_fail_test.go`：新增
+`TestB393WakeRoundQueueRetryDoesNotFloodFailRows`（经 drainIgnitionRequest 5 次出队失败）。
+
+```text
+$ go test ./internal/agentd/ -run TestB393WakeRoundQueueRetryDoesNotFloodFailRows -count=1
+--- FAIL: TestB393WakeRoundQueueRetryDoesNotFloodFailRows (0.23s)
+    b393_wakeround_fail_test.go:153: 队列 5 次重试应恰一行 phase=fail（一轮一组，重试不新增行），实得 5
+FAIL
+```
+
+⇒ 断言红（功能缺失），非编译红；既有 TestB393WakeRoundFailureWritesFailEvent 同轮绿。
+
+## R2. 实现（finding 1：一轮一组为上限）
+
+- `server.go`：新增 `wakeQueueRounds map[string]string` + `wakeQueueRoundsMu`（card → 未收尾队列轮 roundID）。
+- `scheddrain.go`：
+  - 新增 `retainWakeQueueRound(card)` / `clearWakeQueueRound(card)`；
+  - `drainIgnitionRequest` 出队前 retain、成功后 clear，失败回填保留；
+  - 抽出 `wakeCoordinatorRoundID(..., roundID)`：roundID 非空沿用、空串新开；
+  - `wakeCoordinatorRoundRaw` / `wakeCoordinatorRound` 委托且新开一轮；
+  - D4/ValidateSeat/SeatBearingOf/缺承载/resolveSquad/读载体/ParseSeat/Normalize/本机 Wake
+    全部改用入参 roundID（不再每出口 `nextWakeRoundID()`）；
+  - `transferCoordinatorWake` 增加 `roundID` 参数，空串才自生成。
+
+绿：
+
+```text
+$ go test ./internal/agentd/ -run TestB393 -count=1 → ok 2.602s
+```
+
+**变异自验**（retainWakeQueueRound 去掉「已有则复用」分支，先断言 `count: 1` 唯一命中）：
+
+```text
+count: 1
+--- FAIL: TestB393WakeRoundQueueRetryDoesNotFloodFailRows (0.42s)
+    队列 5 次重试应恰一行 phase=fail（一轮一组，重试不新增行），实得 5
+```
+
+⇒ 测试有牙。复原后复绿。
+
+## R3. 口径修订回写（finding 3）
+
+- `wakeconsumer.go` WakeRoundDedupePrefix 注释：修订号 r2 + 「一轮」定义（队列路径同
+  IgnitionRequest 共享 roundID；非队列每次新开一轮）；推翻「每次唤醒恰一行」。
+- `docs/superpowers/plans/b393-plan.md` §5/T2.3 实现卡注意：同款修订号与定义。
+
+## R4. 图覆盖债（本节点）
+
+`codegraph sym` 未命中：`nextWakeRoundID`、`writeWakeRoundFail`、`wakeCoordinatorRoundRaw`。
+回退 grep 取源码。
+
+## R5. 提交事实（历史读数）
+
+```text
+$ git add -A && git commit -q -m "fix(B393): 队列唤醒一轮一组——重试复用 roundID 不刷屏 + 口径修订 r2"
+$ git log --oneline -1
+779a1994 fix(B393): 队列唤醒一轮一组——重试复用 roundID 不刷屏 + 口径修订 r2
+
+提交后本台账补记本节并 amend 一次收进同批；amend 换 hash 属 git 事实，
+收口判据是工作树干净。
+```

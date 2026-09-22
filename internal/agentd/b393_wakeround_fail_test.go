@@ -3,7 +3,11 @@
 // 职责：钉住 agentd.wakeCoordinatorRound 在 keystone.Wake 返回错误时，必须往
 // 账本落 phase="fail" 的 wake_round 注释（带原因摘要）；键按轮次分组——同卡
 // 每轮各得一行 fail，一轮一组为上限（不跨轮吞行、也不在轮内刷屏）。
-// 缝：agentd.Server.wakeCoordinatorRound（消费循环调用 Wake 的真实入口）。
+// 另钉队列 2s 重试路径：同一 IgnitionRequest 反复出队失败时，重试不得新增行。
+// 缝：agentd.Server.wakeCoordinatorRound（消费循环调用 Wake 的真实入口）；
+//
+//	agentd.Server.drainIgnitionRequest（队列出队→唤醒的重试入口）。
+//
 // 边界：只观察账本里落的注释行；不复制 keystone 的重建/升级规则。
 package agentd
 
@@ -15,6 +19,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/keystone"
 	"github.com/Xsxdot/handoff/internal/ledger"
+	"github.com/Xsxdot/handoff/internal/scheduling"
 )
 
 // readWakeRoundComments 收集该卡上所有 dedupe_key 以 WakeRoundDedupePrefix 开头
@@ -47,6 +52,15 @@ func readWakeRoundComments(t *testing.T, env *ledgerEnv, cardID string) []WakeRo
 		out = append(out, round)
 	}
 	return out
+}
+
+// countWakeRoundPhases 统计 wake_round 注释里各 phase 的行数。
+func countWakeRoundPhases(rounds []WakeRoundEvent) map[string]int {
+	phases := map[string]int{}
+	for _, r := range rounds {
+		phases[r.Phase]++
+	}
+	return phases
 }
 
 // TestB393WakeRoundFailureWritesFailEvent 锁 B393 MAJOR-1 + 复评缺口 (1)：
@@ -106,5 +120,42 @@ func TestB393WakeRoundFailureWritesFailEvent(t *testing.T) {
 	}
 	if fails != 2 {
 		t.Fatalf("同卡两轮失败应两行 phase=fail（键按轮次分组），实得 %d（全部注释: %+v）", fails, rounds)
+	}
+}
+
+// TestB393WakeRoundQueueRetryDoesNotFloodFailRows 锁复评 major：D4（远端无
+// raws）/本机 Wake 失败经 drainIgnitionRequest 的 2s 队列重试时，fail 行以
+// 「一轮一组」为上限——重试不得新增行。
+//
+// 红（修复前）：每轮 nextWakeRoundID 新键 → 5 次重试落 5 行 fail（探针读数）。
+// 绿：5 次 drainIgnitionRequest 失败后仍恰一行 fail（同一轮复用 roundID）。
+// 变异：去掉队列路径的 roundID 复用 → 每次新键 → 5 行 → 复红。
+func TestB393WakeRoundQueueRetryDoesNotFloodFailRows(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+
+	// 本机 Wake 失败路径：resume+rebuild 双失败，每次出队必走 fail 落行。
+	failRunner := &fallbackConsumerRunner{failResume: true, failLaunch: true}
+	env.srv.SetKeystone(keystone.New(failRunner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+
+	req := scheduling.IgnitionRequest{
+		Card: cardID, Squad: "coord", Node: "implement",
+		Actor: "test", Ready: true,
+	}
+	for i := 0; i < 5; i++ {
+		err := env.srv.drainIgnitionRequest(context.Background(), req)
+		if err == nil {
+			t.Fatalf("第 %d 次队列出队唤醒必须返回错误", i+1)
+		}
+	}
+
+	phases := countWakeRoundPhases(readWakeRoundComments(t, env, cardID))
+	if phases["fail"] != 1 {
+		t.Fatalf("队列 5 次重试应恰一行 phase=fail（一轮一组，重试不新增行），实得 %d", phases["fail"])
+	}
+	// start 同样一轮一组：5 次重试不得刷出 5 行 start。
+	if phases["start"] > 1 {
+		t.Fatalf("队列重试不得新增 start 行，一轮至多一组，实得 start=%d", phases["start"])
 	}
 }

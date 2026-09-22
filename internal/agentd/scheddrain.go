@@ -193,12 +193,17 @@ func (s *Server) drainIgnitionRequest(ctx context.Context, req scheduling.Igniti
 			"node", req.Node, "reason", decision.Reason)
 		return fmt.Errorf("队列出队暂缓：%s", decision.Reason)
 	}
-	result, err := s.wakeCoordinatorRound(ctx, req.Card, []keystone.WakeEvent{{
+	// 一轮一组（B393 复评 major）：出队前取该卡未收尾的队列轮 roundID（首出队
+	// 新建）；失败回填后 2s 重试复用同一 ID，EnsureComment 幂等 → 重试不新增行。
+	// 成功收尾才清，下一条 IgnitionRequest 开新一轮。
+	roundID := s.retainWakeQueueRound(req.Card)
+	result, err := s.wakeCoordinatorRoundID(ctx, req.Card, []keystone.WakeEvent{{
 		Kind: keystone.WakeQueueRelease, Card: req.Card, Summary: summary,
-	}})
+	}}, nil, roundID)
 	if err != nil {
 		return fmt.Errorf("队列出队唤醒失败: %w", err)
 	}
+	s.clearWakeQueueRound(req.Card)
 	if result.Woke {
 		s.log.Info("队列出队唤醒完成，进入节点再入口", "card", req.Card, "node", req.Node)
 	} else {
@@ -351,9 +356,12 @@ func (s *Server) localMachineName() string {
 // 出站走 target 客户端池并带防环头；对端不可达/超时/409 都视为失败，不重选载体。
 // 失败出口（取客户端失败、对端非 2xx）都在本机落一行标明目标机器的 wake_round
 // fail（B393 复评：本机认领→转交→对端失败时本机侧也须留痕）。
+// roundID 由调用方传入：队列路径跨重试复用同一轮，转交失败行不得随 2s 重试增行。
 func (s *Server) transferCoordinatorWake(ctx context.Context, card, seat, machine string,
-	raws []proto.LedgerEvent, holder string) (keystone.RoundResult, error) {
-	roundID := nextWakeRoundID()
+	raws []proto.LedgerEvent, holder, roundID string) (keystone.RoundResult, error) {
+	if roundID == "" {
+		roundID = nextWakeRoundID()
+	}
 	target, err := s.clientForTarget(machine)
 	if err != nil {
 		s.log.Error("转交唤醒取目标客户端失败", "card", card, "machine", machine, "cause", err)
@@ -401,6 +409,7 @@ func (s *Server) reportSeatBearingMissing(card, seat string) error {
 
 // wakeCoordinatorRound 为 Wake 临时占用协调者回合名额，Wake 返回后释放。
 // Release 失败只留完整身份日志，不覆盖 Wake 原始结果；启动对账仅是兜底。
+// 非队列入口：每次调用新开一轮（roundID 内部生成）。
 func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 	evs []keystone.WakeEvent) (keystone.RoundResult, error) {
 	return s.wakeCoordinatorRoundRaw(ctx, card, evs, nil)
@@ -410,14 +419,25 @@ func (s *Server) wakeCoordinatorRound(ctx context.Context, card string,
 // 归属，本机分支用承载记录构造 SessionSpec 并按冻结载体申请名额（不再
 // LaunchAdmit 重选载体），远端分支转交（T4）。raws 是本批原始账本事件，转交面
 // 需要它携带本批 seq 集合（D4：queue_release 合成唤醒没有账本行）。
+// 非队列路径每次新开一轮。
 func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
 	evs []keystone.WakeEvent, raws []proto.LedgerEvent) (keystone.RoundResult, error) {
+	return s.wakeCoordinatorRoundID(ctx, card, evs, raws, "")
+}
+
+// wakeCoordinatorRoundID 是唤醒回合的现行实现。roundID 非空时沿用调用方给定的
+// 轮次标识（队列路径跨重试复用，一轮一组为上限）；空串则新开一轮。
+// 失败出口审计（B393 复评）：start 之前/转交/回合中的错误分支都尽量本机落一行
+// wake_round fail（键含 roundID，一轮一组）。例外两条：
+//  1. GetCard 失败——EnsureComment 同样要读卡，落行必败，只上抛错误；
+//  2. AdmitSeatCarrier 准入失败——消费循环按 2s 节拍重试（B390 P2 不收尾），
+//     每次落行会刷屏；可见性由 recordAdmissionStall 阈值 needs_human 承担。
+func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
+	evs []keystone.WakeEvent, raws []proto.LedgerEvent, roundID string) (keystone.RoundResult, error) {
 	var zero keystone.RoundResult
-	// 失败出口审计（B393 复评）：start 之前/转交/回合中的错误分支都尽量本机落一行
-	// wake_round fail（键含 roundID，一轮一组）。例外两条：
-	//   1) GetCard 失败——EnsureComment 同样要读卡，落行必败，只上抛错误；
-	//   2) AdmitSeatCarrier 准入失败——消费循环按 2s 节拍重试（B390 P2 不收尾），
-	//      每次落行会刷屏；可见性由 recordAdmissionStall 阈值 needs_human 承担。
+	if roundID == "" {
+		roundID = nextWakeRoundID()
+	}
 	current, err := s.ledger.GetCard(card)
 	if err != nil {
 		return zero, fmt.Errorf("读取唤醒席位: %w", err)
@@ -433,19 +453,19 @@ func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
 		return zero, nil
 	}
 	if err := proto.ValidateSeat(current.DriverSession, proto.SeatSource(current.DriverSource)); err != nil {
-		s.writeWakeRoundFail(card, nextWakeRoundID(), fmt.Sprintf("唤醒席位非法: %v", err))
+		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("唤醒席位非法: %v", err))
 		return zero, fmt.Errorf("唤醒席位非法: %w", err)
 	}
 	bearing, hasBearing, err := s.ledger.SeatBearingOf(card)
 	if err != nil {
-		s.writeWakeRoundFail(card, nextWakeRoundID(), fmt.Sprintf("读取唤醒承载记录: %v", err))
+		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("读取唤醒承载记录: %v", err))
 		return zero, fmt.Errorf("读取唤醒承载记录: %w", err)
 	}
 	if !hasBearing {
 		// 存量 coordinate 席位无承载：显式修复路径（契约 §2.3）——落恰一条
 		// EvSeatBearingMissing 并按「需要人」展示，本轮该卡跳过。
 		if err := s.reportSeatBearingMissing(card, current.DriverSession); err != nil {
-			s.writeWakeRoundFail(card, nextWakeRoundID(), fmt.Sprintf("卡 %s 缺承载显式路径: %v", card, err))
+			s.writeWakeRoundFail(card, roundID, fmt.Sprintf("卡 %s 缺承载显式路径: %v", card, err))
 			return zero, fmt.Errorf("卡 %s 缺承载显式路径: %w", card, err)
 		}
 		return zero, nil
@@ -455,7 +475,7 @@ func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
 			// D4：队列出队的合成唤醒没有 card_events 行，装不进冻结 DTO。显式失败，
 			// 由 drainIgnitionRequest 回填队列并留需要人痕迹；不静默本机执行。
 			// 转交前置失败同样本机留痕，标明目标机器（B393 复评：转交路径失败出口）。
-			s.writeWakeRoundFail(card, nextWakeRoundID(), fmt.Sprintf(
+			s.writeWakeRoundFail(card, roundID, fmt.Sprintf(
 				"协调者承载在远端 %s，但本批唤醒无账本事件（queue_release 合成唤醒）不可转交",
 				bearing.Machine))
 			return keystone.RoundResult{}, fmt.Errorf(
@@ -463,11 +483,11 @@ func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
 				bearing.Machine)
 		}
 		return s.transferCoordinatorWake(ctx, card, current.DriverSession, bearing.Machine,
-			raws, s.wakeClaimHolder())
+			raws, s.wakeClaimHolder(), roundID)
 	}
 	squad, err := s.resolveCoordinatorSquad()
 	if err != nil {
-		s.writeWakeRoundFail(card, nextWakeRoundID(), fmt.Sprintf("识别协调者小队失败: %v", err))
+		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("识别协调者小队失败: %v", err))
 		return zero, &coordinatorLookupError{err: err}
 	}
 	binding, err := s.scheduling.AdmitSeatCarrier(squad.Name, bearing.Carrier)
@@ -480,12 +500,12 @@ func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
 	if err != nil {
 		s.log.Error("读协调者载体失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		s.writeWakeRoundFail(card, nextWakeRoundID(), fmt.Sprintf("读载体 %s 失败: %v", binding.Carrier, err))
+		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("读载体 %s 失败: %v", binding.Carrier, err))
 		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
 	}
 	cli, _, err := proto.ParseSeatIdentity(current.DriverSession)
 	if err != nil {
-		s.writeWakeRoundFail(card, nextWakeRoundID(), fmt.Sprintf("解析唤醒席位 CLI 失败: %v", err))
+		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("解析唤醒席位 CLI 失败: %v", err))
 		return zero, fmt.Errorf("解析唤醒席位 CLI: %w", err)
 	}
 	spec := keysclient.SessionSpec{
@@ -495,16 +515,15 @@ func (s *Server) wakeCoordinatorRoundRaw(ctx context.Context, card string,
 	if err != nil {
 		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		s.writeWakeRoundFail(card, nextWakeRoundID(), fmt.Sprintf("规范化协调者 SessionSpec 失败: %v", err))
+		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("规范化协调者 SessionSpec 失败: %v", err))
 		return zero, err
 	}
 	spec = normalized
 	s.log.Info("自动化唤醒协调者回合", "card", card,
 		"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier,
 		"cli", spec.CLI, "home_dir", spec.HomeDir, "frozen_from_bearing", true)
-	// 每轮独立 roundID：start/end/fail 共用同一键段，同卡每轮各得一组（一轮一组
-	// 为上限）；session 未知（resume 前）→ Session 留 nil，序列化边界保留「缺失 vs 零」。
-	roundID := nextWakeRoundID()
+	// start/end/fail 共用同一 roundID（一轮一组为上限）；session 未知（resume 前）
+	// → Session 留 nil，序列化边界保留「缺失 vs 零」。
 	startPayload, _ := json.Marshal(WakeRoundEvent{Phase: "start"})
 	if _, err := s.ledger.EnsureComment(card, WakeRoundDedupePrefix+":start:"+roundID,
 		string(startPayload), "agentd"); err != nil {
@@ -574,6 +593,30 @@ func coordinatorBearing(binding scheduling.Binding, carrier scheduling.Carrier,
 		Workdir: spec.Workdir,
 		Model:   spec.Model,
 	}
+}
+
+// retainWakeQueueRound 返回该卡未收尾的队列轮 roundID；没有则新建并记住。
+// 队列出队失败回填后 2s 重试复用同一 ID——一轮一组为上限，重试不得新增行
+// （B393 复评 major）。成功收尾由 clearWakeQueueRound 摘除。
+func (s *Server) retainWakeQueueRound(card string) string {
+	s.wakeQueueRoundsMu.Lock()
+	defer s.wakeQueueRoundsMu.Unlock()
+	if s.wakeQueueRounds == nil {
+		s.wakeQueueRounds = make(map[string]string)
+	}
+	if id, ok := s.wakeQueueRounds[card]; ok && id != "" {
+		return id
+	}
+	id := nextWakeRoundID()
+	s.wakeQueueRounds[card] = id
+	return id
+}
+
+// clearWakeQueueRound 摘除该卡的队列轮身份；下一次出队开新一轮。
+func (s *Server) clearWakeQueueRound(card string) {
+	s.wakeQueueRoundsMu.Lock()
+	defer s.wakeQueueRoundsMu.Unlock()
+	delete(s.wakeQueueRounds, card)
 }
 
 // releaseSchedulingBinding 释放一次准入产生的计数；直派 binding 只有载体键。

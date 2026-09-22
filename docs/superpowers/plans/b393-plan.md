@@ -591,8 +591,12 @@ func TestB393WakeRoundEventRoundTrip(t *testing.T) {
 ```
 
 > **实现卡注意**：`EnsureComment` 的查重按 `card_id + type(EvComment) + dedupe_key` 一次
-> 线性扫描（`events.go:313-336`），dedupe_key 含 `session` 时同卡不同会话各留一行——
-> 符合「每次唤醒恰一行」。`ptrInt64` 是实现卡要加的一行小 helper（`func ptrInt64(v int64) *int64 { return &v }`），
+> 线性扫描（`events.go:313-336`），dedupe_key 含 `session` 时同卡不同会话各留一行。
+> **口径修订（B393 复评 6d85425a，修订号 r2）**：推翻「每次唤醒恰一行」的旧说法。
+> 现行定义——**一轮** = 一次逻辑唤醒从打开 roundID 到写终态（end/fail 且不再被
+> 同一请求重试）的账本痕迹单元；队列路径同卡同一 IgnitionRequest 的 2s 重试共享
+> 同一 roundID（一轮一组为上限，重试不新增行），非队列路径每次进入即新开一轮。
+> `ptrInt64` 是实现卡要加的一行小 helper（`func ptrInt64(v int64) *int64 { return &v }`），
 > 与 `WakeRoundEvent.DurationMs *int64` 配套。若嫌注释形态不合「事件」语义，须改账本
 > schema（新 `EvWakeRound` 类型 + 门面写方法），**属架构级，回 spec 定级**；本计划按
 > `EnsureComment` 最小落法。`WakeRoundEvent` 常量与 round-trip 测试仍保留（锁 payload 形状）。

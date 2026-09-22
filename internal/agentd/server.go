@@ -200,6 +200,13 @@ type Server struct {
 	// 不标 seen）；这里只数连续失败次数，用于恰一次落 needs_human 的去重阈值。
 	// 成功或遇非准入错误即清。进程内存：重启后重新计数，安全方向。
 	automationStall map[string]int
+	// wakeQueueRounds 锁定「一轮」的队列路径身份：card → 未收尾的 wake roundID。
+	// drainIgnitionRequest 出队失败回填后，2s 重试必须复用同一 roundID——否则
+	// EnsureComment 键随 nextWakeRoundID 每次漂移，D4/转交失败/本机 Wake 失败
+	// 三条出口会无界刷 fail 行（B393 复评 major）。成功收尾或换新请求时清。
+	// 进程内存：重启后重开一轮是安全方向（最多多落一组，不会吞行）。
+	wakeQueueRoundsMu sync.Mutex
+	wakeQueueRounds   map[string]string
 	// automationRoundHook is a test-only observation point; production leaves it nil.
 	automationRoundHook func(card string, result keystone.RoundResult)
 	// desktopMu 保护薄壳状态：上报与控制台读取来自不同 HTTP 连接。
@@ -293,6 +300,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		automationKick:          make(chan struct{}, 1),
 		automationSeen:          make(map[int64]struct{}),
 		automationStall:         make(map[string]int),
+		wakeQueueRounds:         make(map[string]string),
 	}
 	s.pty = ptyhost.New(s.ptyRootPath, exe, log)
 	s.machineUpgradeRunner = s.executeMachineUpgrade

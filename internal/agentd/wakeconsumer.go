@@ -390,8 +390,14 @@ const wakeParentWalkLimit = 32
 // WakeRoundDedupePrefix 是唤醒回合注释的 dedupe_key 前缀（B393 spec §4.3：唤醒
 // 回合留一行在途读数）。落账走 ledger.Store.EnsureComment（type=EvComment），
 // 键形如 "wake_round:start:<roundID>" / "wake_round:end:<roundID>" /
-// "wake_round:fail:<roundID>"——roundID 按轮次生成，同卡每轮各得一组
-// start/end 或 start/fail（一轮一组为上限，不跨轮吞行、不轮内刷屏）。
+// "wake_round:fail:<roundID>"。
+//
+// 口径修订（B393 复评 6d85425a，修订号 r2）：推翻「每次唤醒恰一行」的旧说法。
+// 现行定义——**一轮** = 一次逻辑唤醒从打开 roundID 到写终态（end/fail 且不再
+// 被同一请求重试）的账本痕迹单元。队列路径（drainIgnitionRequest）上，同卡
+// 同一条 IgnitionRequest 的 2s 重试共享同一 roundID，故 fail/start 不随重试
+// 增行（一轮一组为上限）；非队列路径（事件批次、HTTP 转交端点）每次进入
+// wakeCoordinatorRoundRaw 即新开一轮，跨轮各得一组、不吞行。
 const WakeRoundDedupePrefix = "wake_round"
 
 // wakeRoundSeq 是进程内唤醒轮次序号，与 UnixNano 拼成 roundID。
