@@ -35,6 +35,7 @@ import type {
   FileResult,
   FileWriteReq,
   FileWriteResp,
+  DropPutResp,
   ExecutorDefaultReq,
   ExecutorDefaultResp,
   MachinesResp,
@@ -150,6 +151,20 @@ async function requestAllowNoContent<T>(path: string): Promise<T | null> {
 }
 
 // postJSON 以 JSON body 发起 POST 请求。
+// uploadDropFile 把未编码文件字节写到 PTY 所在机器的 ~/.handoff/drop/。
+//
+// name 是单层文件名；machine 非空时本机 agentd 转发到那台机器。
+export function uploadDropFile(name: string, data: Blob, machine?: string): Promise<DropPutResp> {
+  return request<DropPutResp>(
+    `/api/drop?name=${encodeURIComponent(name)}${machineQuery(machine, '&')}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: data,
+    },
+  )
+}
+
 export function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',

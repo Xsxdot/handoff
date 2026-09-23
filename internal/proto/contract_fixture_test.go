@@ -98,6 +98,7 @@ func TestContractFixtures(t *testing.T) {
 		{"FileRead", fileReadSample()},
 		{"FileWriteReq", fileWriteReqSample()},
 		{"FileWriteResp", fileWriteRespSample()},
+		{"DropPutResp", dropPutRespSample()},
 		{"FileConflictResp", fileConflictSample()},
 		{"ProjectBranchesResp", projectBranchesSample()},
 		{"CreateWorktreeReq", createWorktreeReqSample()},
@@ -705,6 +706,13 @@ func fileWriteRespSample() FileWriteResp {
 	return FileWriteResp{
 		SHA256: "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08",
 		Size:   29,
+	}
+}
+
+func dropPutRespSample() DropPutResp {
+	return DropPutResp{
+		Path:  "/Users/dev/.handoff/drop/photo.png",
+		Bytes: 3,
 	}
 }
 

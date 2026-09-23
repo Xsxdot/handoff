@@ -685,6 +685,7 @@ func (s *Server) swapConf(mutate func(*config.Config) error) error {
 //   - DELETE /api/projects/{name}      注销项目位置（只删登记，不动磁盘）
 //   - PATCH /api/projects/{name}       改项目位置的引用名与/或路径（本机或 ?machine= 指定机器）
 //   - GET  /ws/events                   事件流（补发 + 实时）
+//   - POST /api/drop                    把未编码文件字节写入 ~/.handoff/drop/（?name=&machine=）
 //   - GET  /ws/pty                      PTY 会话双向字节通道（binary=数据，text=控制）
 //   - POST /api/auth/tickets            主令牌签发一次性 ticket，返回 /console 兑换 URL
 //   - GET  /api/auth/sessions           列出会话（含已吊销）
@@ -780,6 +781,7 @@ func (s *Server) Handler() http.Handler {
 	api.HandleFunc("POST /api/projects/{name}/worktrees", s.handleProjectWorktreeCreate)
 	api.HandleFunc("GET /api/pty/sessions", s.handleListPtySessions)
 	api.HandleFunc("POST /api/pty/sessions", s.handleCreatePtySession)
+	api.HandleFunc("POST /api/drop", s.handleDropPut)
 	api.HandleFunc("DELETE /api/pty/sessions/{id}", s.handleDeletePtySession)
 	api.HandleFunc("POST /api/previews", s.handlePreviewCreate)
 	api.HandleFunc("GET /api/previews", s.handlePreviewList)

@@ -28,6 +28,7 @@ import fileConflictRespFixture from './testdata/FileConflictResp.json'
 import fileReadFixture from './testdata/FileRead.json'
 import fileWriteReqFixture from './testdata/FileWriteReq.json'
 import fileWriteRespFixture from './testdata/FileWriteResp.json'
+import dropPutRespFixture from './testdata/DropPutResp.json'
 import machinesFixture from './testdata/MachinesResp.json'
 import projectLocationFixture from './testdata/ProjectLocation.json'
 import projectTreeFixture from './testdata/ProjectTreeResp.json'
@@ -82,6 +83,7 @@ import {
   type FileRead,
   type FileWriteReq,
   type FileWriteResp,
+  type DropPutResp,
   type Frame,
   type MachinesResp,
   type ProjectLocation,
@@ -524,6 +526,12 @@ describe('文件读写的契约', () => {
     const resp: FileWriteResp = fileWriteRespFixture
     expect(typeof resp.sha256).toBe('string')
     expect(typeof resp.size).toBe('number')
+  })
+
+  it('DropPutResp：成功响应带绝对路径与字节数', () => {
+    const d: DropPutResp = dropPutRespFixture
+    expect(d.path).toBe('/Users/dev/.handoff/drop/photo.png')
+    expect(d.bytes).toBe(3)
   })
 
   it('FileConflictResp：409 体带磁盘现状 current', () => {

@@ -12,6 +12,7 @@
 
 ### 新增
 
+- **把本机文件拖进远程终端会传到对端 `~/.handoff/drop/`（B272）。** 桌面壳或浏览器里，拖到登记远程机的终端（或浏览器直连远端 agentd 的终端）时，文件按原字节写入那台机器的收件箱，同名加 `-2` 后缀、单文件 32 MiB；成功后命令行插入对端绝对路径。本机桌面终端仍只插入访达真实路径，不拷贝。
 - **OpenCode 协调者可挂 `wait --follow`（B373）。** `handoff skill install` 把仓内 monitor 插件写到 `~/.config/opencode/plugins/`（不改 `opencode.json`）。Command Code / Codex 仍走不带 `--follow` 的一次性 wait，每收到一个事件（含工单）就退出。
 
 ### 变更
