@@ -14,8 +14,9 @@ import "github.com/Xsxdot/handoff/internal/proto"
 // 可交付 = 全部类型 − {progress, approver_decision, approver_disabled,
 // tickets_voided, ticket_answered, permission_auto_allow, permission_reuse}。
 //
-// 审计类在服务端只入库不 Publish，实时流本就见不到；WS 重放读 store 会把它们
-// 一并推来。不过滤就会出现「重连交付比实时流更多」的唤醒风暴。tickets_voided
+// 审计类大多在服务端只入库不 Publish；ticket_answered 自 B380 起会 Publish 进
+// 实时流供账本镜像关单，但仍不可交付（见 proto 注记）。WS 重放读 store 会把
+// 它们一并推来。不过滤就会出现「重连交付比实时流更多」的唤醒风暴。tickets_voided
 // 与 completed/failed 同时刻产生，可交付会抢走一次性 wait 的收手权。
 //
 // 词表与 B233.1 冻结 17–26 对齐；本卡冻结的是归属（应用，不在传输），不是另造一套。
