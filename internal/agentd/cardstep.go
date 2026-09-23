@@ -28,6 +28,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
 	"github.com/Xsxdot/handoff/internal/scheduling"
+	"github.com/Xsxdot/handoff/internal/workspace"
 )
 
 // errStepInFlight 表示该卡已有环节在跑，调用方应答 409。
@@ -215,6 +216,7 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 			DisciplineText:    resolved.Text,
 			DisciplineVersion: resolved.Version,
 			NormalizeTarget:   s.CanonicalTarget,
+			ProbeBaseAttachments: s.probeBaseAttachments,
 		},
 		Clients: func(target string) (ledgerstep.StepClient, error) {
 			return s.clientForTarget(target)
@@ -435,4 +437,39 @@ func (s *Server) stepTransport(ctx context.Context, opts ledgerstep.DispatchOpts
 // 如果未来增加本地文件字段，必须先改冻结契约并把拒绝测试落在同一条 wire 上。
 func requiresInlineLocalFile(req proto.CardStepReq) bool {
 	return false
+}
+
+// probeBaseAttachments 是首派基线护栏（B400）的生产探针：在**本机**解析项目
+// 仓库位置，交给 workspace 判断附件路径是否在基线远端提交树上。
+//
+// 参数：project 是卡的 project 名；base 是有效基线分支名（空=解析默认分支）；
+// paths 是仓内相对路径。
+// 返回：解析到的基线分支名、缺失路径、错误。项目在本机没有位置时返回
+// ledgerstep.ErrBaseProbeUnavailable，由护栏侧跳过（不误杀远端派发，P1 甲）。
+//
+// 为什么在本机查：默认线与 SHA 的解析（ResolveDefaultBaseBranch/ResolveDispatchBase）
+// 需要项目仓库路径，而仓库路径按设计只在目标机解析（Manager.Dispatch）；本机若
+// 登记了同一项目，就用本机这份镜像查——这正是 spec §3「默认线在协调者侧解析」。
+func (s *Server) probeBaseAttachments(ctx context.Context, project, base string, paths []string) (string, []string, error) {
+	entries, err := s.st.ListProjectLocations()
+	if err != nil {
+		return "", nil, fmt.Errorf("列项目位置: %w", err)
+	}
+	loc, err := workspace.ResolveProject("", project, entries)
+	if err != nil {
+		if errors.Is(err, workspace.ErrProjectNotRegistered) {
+			s.log.Warn("首派基线护栏：项目在本机无位置，跳过探查", "project", project)
+			return "", nil, ledgerstep.ErrBaseProbeUnavailable
+		}
+		return "", nil, err
+	}
+	resolvedBase, missing, err := workspace.BaseTreeMissingPaths(ctx, loc.Path, base, paths)
+	if err != nil {
+		s.log.Warn("首派基线护栏探查基线树失败", "project", project, "repo", loc.Path,
+			"base", base, "paths", paths, "cause", err)
+		return resolvedBase, nil, err
+	}
+	s.log.Info("首派基线护栏探查完成", "project", project, "repo", loc.Path,
+		"base", base, "resolved_base", resolvedBase, "paths", paths, "missing", missing)
+	return resolvedBase, missing, nil
 }

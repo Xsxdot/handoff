@@ -39,9 +39,14 @@ func gitOut(t *testing.T, dir string, args ...string) string {
 }
 
 // writeAndCommit 在仓库里写文件并提交，返回提交后的 HEAD。
+// 父目录按需创建：夹具常提交嵌套路径（如 docs/x.md），否则 os.WriteFile 会 ENOENT。
 func writeAndCommit(t *testing.T, repo, name, content string) string {
 	t.Helper()
-	if err := os.WriteFile(filepath.Join(repo, name), []byte(content), 0o644); err != nil {
+	full := filepath.Join(repo, name)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		t.Fatalf("建父目录 for %s: %v", name, err)
+	}
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatalf("写 %s: %v", name, err)
 	}
 	gitAt(t, repo, "add", name)
