@@ -182,7 +182,7 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 		ID: session.ID, Kind: proto.SessionKind, Title: session.Title,
 		Owner: session.Owner, Archived: session.Archived,
 		LastActivity: session.UpdatedAt,
-		Members:      s.sessionMembers(session, byCard),
+		Members:      s.sessionMembers(session, byCard, events),
 		Cards:        sessionCards(session, byCard),
 	}
 	for _, cardID := range session.Cards {
@@ -214,12 +214,14 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 }
 
 // sessionMembers 派生会话成员：显式成员（人/主 agent）+ 会话内各卡的当前席位。
-// 状态只报可证实的——有未过期租约报 working/listening，否则报 last_active；
-// 空座报 empty。不报「在线」（外部会话随时可能被关掉）。
+// 状态只报可证实的——B385 起 last_active 来自会话范围账本事件推导（缝 1），
+// 不再读 driver_leases；空座报 empty。不报「在线」（外部会话随时可能被关掉）。
 //
 // 显式成员 kind 按统一记法前缀判定（B358.9 契约 §5 H 组条 39/40）：user:→human、
 // agent:→agent。历史脏行（旧 web:/cli: 脸）不崩：kind 按最保守的 human 兜底并留痕。
-func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.Card) []proto.SessionMember {
+func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.Card,
+	events []proto.LedgerEvent) []proto.SessionMember {
+	lastActive := deriveMemberLastActive(events, session, byCard)
 	members := make([]proto.SessionMember, 0, len(session.Members)+len(session.Cards))
 	for _, identity := range session.Members {
 		kind := proto.SessionMemberHuman
@@ -231,9 +233,9 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 		case parsedKind == proto.IdentityKindAgent:
 			kind = proto.SessionMemberAgent
 		}
-		status, lastActive := s.memberStatus(identity)
+		status, activeAt := s.memberStatus(identity, lastActive[identity])
 		members = append(members, proto.SessionMember{
-			Identity: identity, Kind: kind, Status: status, LastActive: lastActive,
+			Identity: identity, Kind: kind, Status: status, LastActive: activeAt,
 		})
 	}
 	for _, cardID := range session.Cards {
@@ -248,24 +250,24 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 			member.Status = proto.SessionMemberEmpty
 		} else {
 			member.Identity = card.DriverSession
-			member.Status, member.LastActive = s.memberStatus(card.DriverSession)
+			member.Status, member.LastActive = s.memberStatus(card.DriverSession, lastActive[card.DriverSession])
 		}
 		members = append(members, member)
 	}
 	return members
 }
 
-// memberStatus 判定成员状态：有未过期租约报 working（活跃租约视为可续租），
-// 否则按可证实性报 last_active。绝不报「在线」。
-func (s *Service) memberStatus(identity string) (string, time.Time) {
-	expiresAt, exists, err := s.lc.DriverLease(identity)
-	if err != nil || !exists {
+// memberStatus 判定成员状态与最后活跃读数：B385 起数据源是会话范围账本事件
+// 推导的 lastActive（调用方 sessionMembers 单遍扫描后传入），不再读
+// driver_leases（B189 后恒空死表，恒零值假读数根因）。有读数报 last_active+
+// 时刻；无读数报 last_active+零值（前端「未记录」）。working/listening 是租约
+// 语义，本路径不产出（归 B189）。绝不报「在线」。
+func (s *Service) memberStatus(identity string, lastActive time.Time) (string, time.Time) {
+	if lastActive.IsZero() {
+		log().Debug("成员无会话内可证实活动", "identity", identity)
 		return proto.SessionMemberLastActive, time.Time{}
 	}
-	if expiresAt.After(nowFn()) {
-		return proto.SessionMemberWorking, expiresAt
-	}
-	return proto.SessionMemberLastActive, expiresAt
+	return proto.SessionMemberLastActive, lastActive
 }
 
 // sessionCards 投影会话里的工作项卡（空座卡 Seat 为空串）。

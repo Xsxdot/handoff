@@ -841,14 +841,98 @@ func memberByIdentity(t *testing.T, d proto.SessionDetail, identity string) prot
 	return proto.SessionMember{}
 }
 
-// TestSessionMemberStatusHonest 成员状态诚实判据（契约条 17/18 + breakdown
-// §2.4 澄清 3）：working 只能由未过期租约推出，判据时钟与租约判定同一注入
-// 时钟（拨钟即翻）；无租约报 last_active+零值；空座报 empty；观察到的状态串
-// ⊆ {working,last_active,empty}——四值词表减 listening（生产零载体，澄清 3），
-// 「online」等词表外串自然被拒。本测试写下去应绿（行为已在）——红即停手上报。
-func TestSessionMemberStatusHonest(t *testing.T) {
+// TestSessionMemberLastActiveFromLedger B385 端到端：有过活动的成员/席位读
+// 真实账本时刻；无活动成员零值（前端「未记录」）；旧传输脸归一命中；agentd
+// 系统行不算任何人。memberStatus 不再读 driver_leases。
+func TestSessionMemberLastActiveFromLedger(t *testing.T) {
 	svc, st, lc := newSessionFixture(t)
-	cardA := sessionCard(t, st, "租约卡")
+	card := sessionCard(t, st, "B385 读数卡")
+	session, err := svc.CreateSession("B385 读数场", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatalf("建会话: %v", err)
+	}
+	if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatalf("拉卡: %v", err)
+	}
+	if err := st.AddSessionMember(session.ID, "user:alice", "user:sy"); err != nil {
+		t.Fatalf("加无活动成员: %v", err)
+	}
+	if err := st.BindSeat(card.ID, "cli:opencode#b385-1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+		t.Fatalf("配人: %v", err)
+	}
+
+	// user:sy 群内发言（有活动）。
+	speakAt := time.Now().UTC().Truncate(time.Second)
+	if _, err := svc.Send(session.ID, proto.RoomMessage{
+		Kind: proto.RoomMsgUser, Body: "验收发言",
+	}, "user:sy"); err != nil {
+		t.Fatalf("群发言: %v", err)
+	}
+	// 旧传输脸发言：绕过 collab 写权限面直落账（历史脏行形态）。
+	if _, err := lc.RecordRoomMessage("", proto.RoomMessage{
+		Room: session.ID, Kind: proto.RoomMsgUser, Body: "旧脸发言",
+	}, "cli:sycm@sycmdeMacBook-Air.local"); err != nil {
+		t.Fatalf("旧脸落账: %v", err)
+	}
+	// agentd 系统行：不得抬高任何成员读数。
+	if err := st.MarkNeedsHuman(card.ID, "系统标记", "agentd"); err != nil {
+		t.Fatalf("系统行: %v", err)
+	}
+
+	detail, err := svc.SessionDetail(session.ID)
+	if err != nil {
+		t.Fatalf("详情: %v", err)
+	}
+
+	sy := memberByIdentity(t, detail, "user:sy")
+	if sy.Status != proto.SessionMemberLastActive || sy.LastActive.IsZero() {
+		t.Fatalf("有活动成员应报 last_active+真实时刻: %+v", sy)
+	}
+	if sy.LastActive.Before(speakAt.Add(-time.Minute)) {
+		t.Fatalf("user:sy 读数应接近发言时刻 %v，实得 %v", speakAt, sy.LastActive)
+	}
+
+	// 群主成员名是 user:sy，但另加 user:sycm 才能让旧脸归一命中——此处断言
+	// 无匹配旧脸不建错误读数；归一命中由下面 user:sycm 成员验证。
+	if err := st.AddSessionMember(session.ID, "user:sycm", "user:sy"); err != nil {
+		t.Fatalf("加 sycm: %v", err)
+	}
+	detail, err = svc.SessionDetail(session.ID)
+	if err != nil {
+		t.Fatalf("详情二读: %v", err)
+	}
+	sycm := memberByIdentity(t, detail, "user:sycm")
+	if sycm.LastActive.IsZero() {
+		t.Fatalf("旧脸 cli:sycm@… 应归一命中 user:sycm 真实时刻: %+v", sycm)
+	}
+
+	alice := memberByIdentity(t, detail, "user:alice")
+	if alice.Status != proto.SessionMemberLastActive || !alice.LastActive.IsZero() {
+		t.Fatalf("无活动成员应报 last_active+零值: %+v", alice)
+	}
+
+	seat := memberByCard(t, detail, card.ID)
+	if seat.Status != proto.SessionMemberLastActive || seat.LastActive.IsZero() {
+		t.Fatalf("席位应由卡事件（坐下）得到真实时刻: %+v", seat)
+	}
+	if seat.Status == proto.SessionMemberWorking {
+		t.Fatalf("B385 起不读租约，不得报 working: %+v", seat)
+	}
+
+	// 系统行不给 alice 造读数（alice 仍零值——上面已断言；双保险看 needs 仍在）。
+	if !detail.Summary.NeedsHuman {
+		t.Fatal("agentd needs_human 仍应点亮会话标签（与读数无关）")
+	}
+}
+
+// TestSessionMemberStatusHonest 成员状态诚实判据（B385 改判）：读数源是会话
+// 范围账本事件推导，不再读 driver_leases——有活动报 last_active+时刻，无活动
+// 报 last_active+零值，空座报 empty；working/listening 租约语义本路径不产出
+// （归 B189）。观察到的状态串 ⊆ {last_active,empty}（working 无生产载体）。
+// 本测试写下去应绿（行为已在）——红即停手上报。
+func TestSessionMemberStatusHonest(t *testing.T) {
+	svc, st, _ := newSessionFixture(t)
+	cardA := sessionCard(t, st, "读数卡")
 	cardC := sessionCard(t, st, "空座卡")
 	session1, err := svc.CreateSession("状态会话", "user:sy", "user:sy")
 	if err != nil {
@@ -863,67 +947,35 @@ func TestSessionMemberStatusHonest(t *testing.T) {
 	if err := st.BindSeat(cardA.ID, "cli:opencode#a-1", proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 		t.Fatal(err)
 	}
-	// 注入时钟与租约判定同源（条 18）：nowFn 拨到可拨源 cur，working →
-	// last_active 的翻转只由 cur 前拨触发（同源范式先例
-	// readmodel_test.go#TestListRoomsLiveFlip）。
-	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
-	cur := base
-	oldNow := nowFn
-	nowFn = func() time.Time { return cur }
-	t.Cleanup(func() { nowFn = oldNow })
 
-	// 未过期租约：Store.RenewDriverLease 是本测试专属生产者（生产零调用方，
-	// 澄清 3）；expiresAt = 墙钟 + 1h，必在 cur（2026-01-01）之后 → working。
-	if _, err := st.RenewDriverLease("cli:opencode#a-1", time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	exp, exists, err := lc.DriverLease("cli:opencode#a-1")
-	if err != nil || !exists {
-		t.Fatalf("租约应可读: exp=%v exists=%v err=%v", exp, exists, err)
-	}
 	d1, err := svc.SessionDetail(session1.ID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	seat := memberByCard(t, d1, cardA.ID)
-	if seat.Status != proto.SessionMemberWorking {
-		t.Fatalf("未过期租约应报 working: %+v", seat)
-	}
-	if !seat.LastActive.Equal(exp) {
-		t.Fatalf("working 的 LastActive 应为租约到期时刻 %v（可证实的「活到几点」）: %+v", exp, seat)
-	}
-
-	// 拨钟过期（同一 cur 前拨过 expiresAt）→ last_active；LastActive 仍是
-	// 到期时刻。拨钟即翻 = 判据用的是注入钟的证明（缺陷族 4）。
-	cur = time.Now().Add(2 * time.Hour)
-	d1, err = svc.SessionDetail(session1.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	seat = memberByCard(t, d1, cardA.ID)
 	if seat.Status != proto.SessionMemberLastActive {
-		t.Fatalf("拨钟过期后应翻 last_active: %+v", seat)
+		t.Fatalf("B385 起席位报 last_active（事件推导），不得报 working: %+v", seat)
 	}
-	if !seat.LastActive.Equal(exp) {
-		t.Fatalf("过期租约的 LastActive 应为到期时刻 %v: %+v", exp, seat)
+	if seat.LastActive.IsZero() {
+		t.Fatalf("坐下卡事件应给出真实最后活跃时刻: %+v", seat)
 	}
 
-	// 无租约的显式成员：last_active + 零值 LastActive（无「最后活跃」可证实读数）。
+	// 无活动的显式成员：last_active + 零值 LastActive（前端「未记录」）。
 	owner := memberByIdentity(t, d1, "user:sy")
 	if owner.Status != proto.SessionMemberLastActive || !owner.LastActive.IsZero() {
-		t.Fatalf("无租约成员应报 last_active+零值: %+v", owner)
+		t.Fatalf("无活动成员应报 last_active+零值: %+v", owner)
 	}
 	// 空座卡：empty + 空身份 + 零值。
 	empty := memberByCard(t, d1, cardC.ID)
 	if empty.Status != proto.SessionMemberEmpty || empty.Identity != "" || !empty.LastActive.IsZero() {
 		t.Fatalf("空座卡应报 empty: %+v", empty)
 	}
-	// 词表扫（缺陷族 8 + 澄清 3）：全部观察值 ∈ {working,last_active,empty}。
+	// 词表扫：B385 后本路径只产出 last_active / empty（working 无载体）。
 	for _, m := range d1.Summary.Members {
 		switch m.Status {
-		case proto.SessionMemberWorking, proto.SessionMemberLastActive, proto.SessionMemberEmpty:
+		case proto.SessionMemberLastActive, proto.SessionMemberEmpty:
 		default:
-			t.Fatalf("成员状态词表外取值（listening 无生产载体；online 不可证实）: %+v", m)
+			t.Fatalf("成员状态出现 B385 本路径外取值（working/listening 归 B189）: %+v", m)
 		}
 	}
 }
