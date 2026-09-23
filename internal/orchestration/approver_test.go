@@ -390,6 +390,7 @@ func TestApproverFailClosedCountsAndDisables(t *testing.T) {
 func TestConsultApproverWritesPerAttemptEventsManagerPath(t *testing.T) {
 	ap, err := NewApprover(config.ApproverConfig{
 		Executor: config.ExecutorList{"codex", "grok"}, Timeout: time.Second,
+		Models: map[string]string{"grok": "grok-model"},
 	}, nil, slog.Default())
 	if err != nil {
 		t.Fatal(err)
@@ -427,6 +428,13 @@ func TestConsultApproverWritesPerAttemptEventsManagerPath(t *testing.T) {
 	}
 	if decisions[1].Executor != "grok" || decisions[1].Decision != "approve" {
 		t.Fatalf("第二条 = %+v，期望 grok/approve", decisions[1])
+	}
+	if decisions[0].Model != ApproverModelDefaultLabel {
+		t.Fatalf("codex 未指定模型，payload.Model 应显式记 %q，得到 %q",
+			ApproverModelDefaultLabel, decisions[0].Model)
+	}
+	if decisions[1].Model != "grok-model" {
+		t.Fatalf("grok payload.Model = %q，期望 grok-model", decisions[1].Model)
 	}
 }
 
@@ -1023,4 +1031,123 @@ func extractNonceForTest(prompt string) string {
 		return rest[:j]
 	}
 	return rest
+}
+
+// TestDecidePerCandidateModel 钉住 B405 故事 1（目标场景）：executor=[agy,codex]
+// + models={codex: gpt-6-luna}，链级 model 空。agy 候选不带模型名（走 agy
+// 默认），codex 候选带 gpt-6-luna；agy 失败 failover 到 codex 后各自取值。
+func TestDecidePerCandidateModel(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"agy", "codex"},
+		Models:   map[string]string{"codex": "gpt-6-luna"},
+		Timeout:  time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyShot := &stubShot{fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+		return executor.OneShotReply{Status: executor.OneShotFailed}, errors.New("agy 挂了")
+	}}
+	codexShot := &stubShot{out: `{"decision":"approve","reason":"ok"}`}
+	a.BindOneShotFor("agy", agyShot)
+	a.BindOneShotFor("codex", codexShot)
+
+	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	if !d.Approve || d.Err != nil {
+		t.Fatalf("codex 干净放行应 approve: %+v", d)
+	}
+	if agyShot.last.Model != "" {
+		t.Fatalf("agy 未指定模型，OneShotReq.Model 应为空（走默认），得到 %q", agyShot.last.Model)
+	}
+	if codexShot.last.Model != "gpt-6-luna" {
+		t.Fatalf("codex OneShotReq.Model = %q，期望 gpt-6-luna", codexShot.last.Model)
+	}
+	if len(d.Attempts) != 2 {
+		t.Fatalf("Attempts = %+v，期望两条", d.Attempts)
+	}
+	if d.Attempts[0].Model != ApproverModelDefaultLabel {
+		t.Fatalf("agy attempt.Model = %q，未指定应显式记 %q", d.Attempts[0].Model, ApproverModelDefaultLabel)
+	}
+	if d.Attempts[1].Model != "gpt-6-luna" {
+		t.Fatalf("codex attempt.Model = %q，期望 gpt-6-luna", d.Attempts[1].Model)
+	}
+	if d.Model != "gpt-6-luna" {
+		t.Fatalf("最终生效 Model = %q，期望 gpt-6-luna", d.Model)
+	}
+}
+
+// TestDecideCandidateEmptyEntryFallsBackToChain 钉住批准意见：候选条目值空串
+// 与缺条目同义，先回落链级 model，不是直接跳到执行者默认。
+func TestDecideCandidateEmptyEntryFallsBackToChain(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"agy", "codex"},
+		Model:    "chain-m",
+		Models:   map[string]string{"codex": ""},
+		Timeout:  time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyShot := &stubShot{fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+		return executor.OneShotReply{Status: executor.OneShotFailed}, errors.New("agy 挂了")
+	}}
+	codexShot := &stubShot{out: `{"decision":"approve","reason":"ok"}`}
+	a.BindOneShotFor("agy", agyShot)
+	a.BindOneShotFor("codex", codexShot)
+
+	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	if agyShot.last.Model != "chain-m" {
+		t.Fatalf("agy 缺条目应回落链级 chain-m，得到 %q", agyShot.last.Model)
+	}
+	if codexShot.last.Model != "chain-m" {
+		t.Fatalf("codex 空串条目应回落链级 chain-m，得到 %q", codexShot.last.Model)
+	}
+	if d.Attempts[0].Model != "chain-m" || d.Attempts[1].Model != "chain-m" {
+		t.Fatalf("attempt 模型 = %q/%q，期望均为 chain-m", d.Attempts[0].Model, d.Attempts[1].Model)
+	}
+}
+
+// TestDecideNoModelAnywhereUsesDefaultLabel 钉住故事 1/4 的边界：链级与候选级
+// 都空→请求不带模型名（执行者默认），审计记录显式记「默认」。
+func TestDecideNoModelAnywhereUsesDefaultLabel(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"agy"}, Timeout: time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	shot := &stubShot{out: `{"decision":"approve","reason":"ok"}`}
+	a.BindOneShot(shot)
+	d := a.Decide(context.Background(), "Bash: ls", "摘要")
+	if shot.last.Model != "" {
+		t.Fatalf("无任何模型配置时 OneShotReq.Model 应为空，得到 %q", shot.last.Model)
+	}
+	if len(d.Attempts) != 1 || d.Attempts[0].Model != ApproverModelDefaultLabel {
+		t.Fatalf("attempt.Model 应显式记 %q，得到 %+v", ApproverModelDefaultLabel, d.Attempts)
+	}
+}
+
+// TestDecideChainModelRegression 钉住故事 2：只配链级 model（无 models）时
+// 每候选仍收到同一模型名，与 B376 前一致。
+func TestDecideChainModelRegression(t *testing.T) {
+	a, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"agy", "codex"},
+		Model:    "chain-m",
+		Timeout:  time.Second,
+	}, nil, slog.Default())
+	if err != nil {
+		t.Fatal(err)
+	}
+	agyShot := &stubShot{fn: func(context.Context, executor.OneShotReq) (executor.OneShotReply, error) {
+		return executor.OneShotReply{Status: executor.OneShotFailed}, errors.New("agy 挂了")
+	}}
+	codexShot := &stubShot{out: `{"decision":"approve","reason":"ok"}`}
+	a.BindOneShotFor("agy", agyShot)
+	a.BindOneShotFor("codex", codexShot)
+	if d := a.Decide(context.Background(), "Bash: ls", "摘要"); d.Err != nil {
+		t.Fatalf("Decide: %+v", d)
+	}
+	if agyShot.last.Model != "chain-m" || codexShot.last.Model != "chain-m" {
+		t.Fatalf("存量链级 model 应逐候选同值，得到 agy=%q codex=%q", agyShot.last.Model, codexShot.last.Model)
+	}
 }

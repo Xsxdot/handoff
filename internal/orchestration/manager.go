@@ -2375,10 +2375,10 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 				atReason = at.Err.Error()
 			}
 			m.log.Info("审批者候选尝试", "task", taskID, "ticket", ticketID,
-				"executor", at.Executor, "decision", at.Decision)
+				"executor", at.Executor, "decision", at.Decision, "model", at.Model)
 			if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, ApproverDecisionPayload{
 				TicketID: ticketID, Permission: permEventText(ev.Text), Decision: at.Decision,
-				Reason: atReason, ElapsedMS: at.ElapsedMS, Executor: at.Executor,
+				Reason: atReason, ElapsedMS: at.ElapsedMS, Executor: at.Executor, Model: at.Model,
 			}); err != nil {
 				m.log.Error("追加 approver_decision 事件失败", "task", taskID,
 					"ticket", ticketID, "executor", at.Executor, "cause", err)
@@ -2391,7 +2391,7 @@ func (m *Manager) consultApprover(ctx context.Context, taskID string, ev executo
 		}
 		if _, err := m.st.AppendEvent(taskID, proto.EventTypeApproverDecision, ApproverDecisionPayload{
 			TicketID: ticketID, Permission: permEventText(ev.Text), Decision: decision,
-			Reason: reason, ElapsedMS: d.ElapsedMS, Executor: d.Executor,
+			Reason: reason, ElapsedMS: d.ElapsedMS, Executor: d.Executor, Model: d.Model,
 		}); err != nil {
 			m.log.Error("追加 approver_decision 事件失败", "task", taskID, "ticket", ticketID, "cause", err)
 		}

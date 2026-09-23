@@ -36,6 +36,8 @@ type ApproverAttempt struct {
 	Reason    string
 	Err       error
 	ElapsedMS int64
+	// Model 是本候选实际使用的模型名；未指定时 = "默认"（B405）。
+	Model string
 }
 
 // ConsultDecision is the agentd-independent result of an approver call.
@@ -52,7 +54,9 @@ type ConsultDecision struct {
 	ElapsedMS int64
 	Err       error
 	Executor  string
-	Attempts  []ApproverAttempt
+	// Model 是最终生效候选实际使用的模型名；未指定时 = "默认"（B405）。
+	Model    string
+	Attempts []ApproverAttempt
 }
 
 // Hooks supplies the orchestration capabilities required by Client.
@@ -347,7 +351,7 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 				reason = at.Err.Error()
 			}
 			c.logger().Info("审批者候选尝试", "task", c.taskID, "ticket", ticketID,
-				"executor", at.Executor, "decision", at.Decision)
+				"executor", at.Executor, "decision", at.Decision, "model", at.Model)
 			if _, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypeApproverDecision, approverDecisionPayload{
 				TicketID:   ticketID,
 				Permission: permText,
@@ -355,6 +359,7 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 				Reason:     reason,
 				ElapsedMS:  at.ElapsedMS,
 				Executor:   at.Executor,
+				Model:      at.Model,
 			}); err != nil {
 				c.logger().Error("追加 approver_decision 事件失败", "task", c.taskID,
 					"ticket", ticketID, "executor", at.Executor, "cause", err)
@@ -379,6 +384,7 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 			Reason:     reason,
 			ElapsedMS:  dec.ElapsedMS,
 			Executor:   dec.Executor,
+			Model:      dec.Model,
 		}); err != nil {
 			c.logger().Error("追加 approver_decision 事件失败", "task", c.taskID, "ticket", ticketID, "cause", err)
 		}
@@ -543,6 +549,7 @@ type approverDecisionPayload struct {
 	Reason     string `json:"reason"`
 	ElapsedMS  int64  `json:"elapsed_ms"`
 	Executor   string `json:"executor,omitempty"`
+	Model      string `json:"model,omitempty"`
 }
 
 type ticketAnsweredPayload struct {

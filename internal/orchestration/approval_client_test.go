@@ -2,6 +2,7 @@ package orchestration
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -668,5 +669,84 @@ func TestApprovalClientAutoAllowProductionHookDoesNotRespond(t *testing.T) {
 	}
 	if got := m.takeAutoAllowed(taskID); got != 1 {
 		t.Fatalf("P3：计数应跟审计走，实得 %d", got)
+	}
+}
+
+// TestApprovalClientPerCandidateModelReachesEventPayload 钉住 B405 故事 4 的
+// 序列化边界：候选级模型从 config → Decide → OneShotReq.Model → attempt →
+// toApprovalAttempts 投影 → approval 包 approver_decision payload（真实 JSON），
+// 一路不丢。入口 c.Request 经 bindApproval → Approver.Decide（spec 缝 2）。
+func TestApprovalClientPerCandidateModelReachesEventPayload(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	app, err := NewApprover(config.ApproverConfig{
+		Executor: config.ExecutorList{"opencode"},
+		Models:   map[string]string{"opencode": "gpt-6-luna"},
+		Timeout:  time.Second,
+	}, nil, logger)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var capturedReq executor.OneShotReq
+	app.BindOneShot(&stubShot{
+		fn: func(_ context.Context, req executor.OneShotReq) (executor.OneShotReply, error) {
+			capturedReq = req
+			return executor.OneShotReply{
+				Text:   fmt.Sprintf(`{"decision":"approve","reason":"safe test","nonce":%q}`, extractNonceForTest(req.Prompt)),
+				Status: executor.OneShotOK,
+			}, nil
+		},
+	})
+	st, err := store.Open(filepath.Join(looseTempDir(t), "test.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	hub := NewHub()
+	cfg := &config.Config{Token: "test", DataDir: t.TempDir(), Executor: config.ExecutorConfig{Default: "fake"}}
+	m := NewManager(st, hub, map[string]executor.Adapter{"fake": &chanAdapter{evCh: make(chan executor.AdapterEvent, 1)}}, cfg, nil, app, newTestGate(t), logger)
+	task := &proto.Task{ID: "T-model", RepoPath: t.TempDir(), WorkDir: t.TempDir(),
+		State: proto.TaskStateRunning, Executor: "fake"}
+	mustCreateTask(t, st, task)
+	scope := executor.ApprovalScope{
+		Workdir:    task.Workdir(),
+		TaskDir:    taskDirOf(m, "T-model"),
+		TaskTmpDir: executor.TaskTmpDir(m.cfg.DataDir, "T-model"),
+	}
+	c := m.bindApproval("T-model", executor.PolicySnapshot{Version: "v1", TaskID: "T-model", Scope: scope})
+
+	res, err := c.Request(context.Background(), executor.ApprovalRequest{
+		NativeID: "perm-model",
+		Text:     "bash: python3 script.py",
+		Perm:     &executor.PermRequest{Tool: executor.PermToolBash, Command: "python3 script.py"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.Decision.Status != executor.ApprovalAllow {
+		t.Fatalf("approver approve 应为 allow, got %q", res.Decision.Status)
+	}
+	if capturedReq.Model != "gpt-6-luna" {
+		t.Fatalf("OneShotReq.Model = %q，期望 gpt-6-luna", capturedReq.Model)
+	}
+	events, err := st.EventsFromAsc("T-model", 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []map[string]any
+	for _, e := range events {
+		if e.Type != proto.EventTypeApproverDecision {
+			continue
+		}
+		var p map[string]any
+		if err := json.Unmarshal(e.Payload, &p); err != nil {
+			t.Fatalf("解析 approver_decision: %v", err)
+		}
+		got = append(got, p)
+	}
+	if len(got) != 1 {
+		t.Fatalf("期望 1 条 approver_decision，得到 %d: %+v", len(got), got)
+	}
+	if got[0]["model"] != "gpt-6-luna" {
+		t.Fatalf("approver_decision payload model = %v，期望 gpt-6-luna", got[0]["model"])
 	}
 }

@@ -46,7 +46,8 @@ func (m *Manager) bindApproval(taskID string, snap executor.PolicySnapshot) exec
 			return approval.ConsultDecision{
 				Approve: d.Approve, Reason: d.Reason,
 				ElapsedMS: d.ElapsedMS, Err: d.Err,
-				Executor: d.Executor, Attempts: toApprovalAttempts(d.Attempts),
+				Executor: d.Executor, Model: d.Model,
+				Attempts: toApprovalAttempts(d.Attempts),
 			}
 		},
 		CountConsultFailure: m.countApproverFail,
@@ -77,7 +78,7 @@ func toApprovalAttempts(in []ApproverAttempt) []approval.ApproverAttempt {
 	for _, a := range in {
 		out = append(out, approval.ApproverAttempt{
 			Executor: a.Executor, Decision: a.Decision, Reason: a.Reason,
-			Err: a.Err, ElapsedMS: a.ElapsedMS,
+			Err: a.Err, ElapsedMS: a.ElapsedMS, Model: a.Model,
 		})
 	}
 	return out

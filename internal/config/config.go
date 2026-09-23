@@ -23,6 +23,8 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proxycfg"
@@ -195,12 +197,16 @@ type SyncConfig struct {
 // 参数语义：
 //   - Executor：审批者执行者有序候选（如 opencode/claude/grok/agy/codex）；
 //     空=不启用审批链。YAML 标量与序列都合法（B376）
-//   - Model：审批者模型名；空=用执行者自身默认模型（全候选共用）
+//   - Model：链级模型名，作为候选未单独指定时的回落；空=用执行者自身默认模型
+//   - Models：候选执行者名 → 该候选模型名（B405）。候选无同名条目或值空串→
+//     回落 Model；Model 也空→用该执行者自身默认。键必须是 Executor 候选成员
+//     （approver 启用时启动期校验）
 //   - Timeout：单次裁决超时，超时按 escalate 处理（fail-closed）
 //   - Blacklist：自定义黑名单正则；命中即跳过审批者直接升级人工协调者
 type ApproverConfig struct {
 	Executor  ExecutorList
 	Model     string
+	Models    map[string]string `yaml:"models,omitempty"`
 	Timeout   time.Duration
 	Blacklist []string
 }
@@ -594,6 +600,23 @@ func (c *Config) validate() error {
 			}
 			seen[name] = true
 		}
+		// B405：approver.models 的键必须是候选成员。错字键（codex 写成 codexx）
+		// 会被静默忽略——用户以为给某候选配了模型，实际它悄悄回落到链级/默认，
+		// 只能靠行为差异发现。与 blacklist 正则在启动期硬拒同一条纪律。
+		// 先收集再排序：map 迭代无序，多个错字时错误文本必须稳定可复现。
+		if len(c.Approver.Models) > 0 {
+			bad := make([]string, 0, len(c.Approver.Models))
+			for key := range c.Approver.Models {
+				if !seen[key] {
+					bad = append(bad, key)
+				}
+			}
+			if len(bad) > 0 {
+				sort.Strings(bad)
+				return fmt.Errorf("approver.models 含非候选键 %s（候选: %s）",
+					strings.Join(bad, ","), strings.Join(c.Approver.Executor, ","))
+			}
+		}
 		for i, r := range c.Approver.Blacklist {
 			// 黑名单是正则，必须在启动期编译校验：运行期才 panic 会让
 			// 任务权限处理在仲裁中途崩溃，而启动期报错只需改配置重启。
@@ -627,7 +650,7 @@ func decodeStrict(b []byte, cfg *Config) error {
 		}
 		// 已知键清单与 yaml 报错文本（含未知键名）一起返回；
 		// 旧版 access_key/secret_key 等键已不支持，提示直接删除或升级配置
-		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/console_user/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
+		return fmt.Errorf("配置包含未知字段（支持: listen/token/datadir/repo_root/path_dirs/proxy/env_forward/stalltimeout/console_user/relay{url,credential,node}/targets{addr,user,token,relay,credential,node}/ledger{enabled,dsn}/approver{executor,model,models,timeout,blacklist}/executor{default,model}/terminal{auto}/sync{auto}/proc_fence/env{<agent>: <文件名>}/discipline{<executor>: <文件名>}/platform_invariants）: %w；旧版 access_key/secret_key 等键已废弃，请删除未知键或升级配置", err)
 	}
 	return nil
 }

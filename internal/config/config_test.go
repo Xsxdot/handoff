@@ -956,3 +956,75 @@ func TestConsoleUserRoundTrip(t *testing.T) {
 		t.Fatalf("未知键清单应含 console_user: %v", err)
 	}
 }
+
+// TestLoadApproverModels 钉住 B405：approver.models 是候选名→模型名映射；
+// 值可空串（与缺条目同义，回落逻辑在 orchestration 面）。
+func TestLoadApproverModels(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "token: a\napprover:\n  executor: [agy, codex]\n  model: chain-m\n  models:\n    codex: gpt-6-luna\n    agy: \"\"\n  timeout: 30s\n"
+	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Approver.Model != "chain-m" {
+		t.Fatalf("链级 model = %q，期望 chain-m", cfg.Approver.Model)
+	}
+	if got := cfg.Approver.Models["codex"]; got != "gpt-6-luna" {
+		t.Fatalf("models[codex] = %q，期望 gpt-6-luna", got)
+	}
+	if v, ok := cfg.Approver.Models["agy"]; !ok || v != "" {
+		t.Fatalf("models[agy] 显式空串应解析为空串条目，得到 %q ok=%v", v, ok)
+	}
+}
+
+// TestLoadApproverModelsRejectsNonCandidate 钉住 B405 故事 3：错字键在审批链
+// 启用时于启动期硬拒，报错点名错字键。
+func TestLoadApproverModelsRejectsNonCandidate(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "token: a\napprover:\n  executor: [agy, codex]\n  models:\n    codexx: gpt-6-luna\n  timeout: 30s\n"
+	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := config.Load(p)
+	if err == nil {
+		t.Fatal("approver.models 含非候选键应在启动期被拒绝")
+	}
+	if !strings.Contains(err.Error(), "codexx") {
+		t.Fatalf("报错必须点名错字键 codexx，得到: %v", err)
+	}
+}
+
+// TestLoadApproverModelsIgnoredWhenDisabled 反锁：审批链未启用时 models 出现
+// 与否都不校验（与现有 approver 取值域校验只在启用时生效同款）。
+func TestLoadApproverModelsIgnoredWhenDisabled(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	raw := "token: a\napprover:\n  models:\n    any-key: any-model\n"
+	if err := os.WriteFile(p, []byte(raw), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := config.Load(p); err != nil {
+		t.Fatalf("未启用审批链时 models 不应被校验: %v", err)
+	}
+}
+
+// TestApproverModelsRoundTrip 锁序列化边界：models 经 Save/Load 往返，值不丢。
+func TestApproverModelsRoundTrip(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "config.yaml")
+	cfg := config.Defaults()
+	cfg.Approver.Executor = config.ExecutorList{"agy", "codex"}
+	cfg.Approver.Models = map[string]string{"codex": "gpt-6-luna"}
+	cfg.Approver.Timeout = 30 * time.Second
+	if err := config.Save(p, cfg); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := config.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.Approver.Models["codex"] != "gpt-6-luna" {
+		t.Fatalf("roundtrip models = %#v", loaded.Approver.Models)
+	}
+}
