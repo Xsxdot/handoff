@@ -1171,15 +1171,12 @@ func translateRegistryErr(err error) error {
 	}
 }
 
-// coordWakeTurnTimeout 是协调者无头回合的挂钟上界，由驱动租约导出而非拍脑袋定值：
-// 取 ledger.DriverLeaseTTL/2（=2m30s），严格短于 5m 驱动租约，另一半作强杀进程树与
-// 错误上抛的余量。依据（B393 MAJOR-2）：挂死回合必须在租约被判过期前返回失败，
-// 否则他机会在租约过期后接管而同卡双跑（候选 3）；本分支唤醒路径未接 ClaimWake/
-// RenewDriverLease，超过租约的回合没有任何续租兜底，因此上界必须自缚于租约之内。
-// 为什么够用：健康协调者回合在秒级到分钟级返回（R1 真机取证：真回合 921 字节快速
-// 返回）；超过 DriverLeaseTTL 的回合在本分支本就已越过租约语义，不应被允许。
-// 变量而非 const：agentd 包内测试覆盖它到秒级，避免 2m30s 真等。
-var coordWakeTurnTimeout = ledger.DriverLeaseTTL / 2
+// coordWakeTurnTimeout 是协调者无头回合的挂钟上界（B399 spec r2）：取 hostapi 既有
+// 缺省 30 分钟，不再由 DriverLeaseTTL 派生。跨机互斥由 wake_claims 认领保证，且回合
+// 存续期间由 startWakeClaimRenewal 续租（wakeconsumer.go）——认领租期仍 5m 不变
+// （崩溃恢复窗口不变），但回合不再自缚于 5m 之内；30m 上限仍在，不回到无界挂死。
+// 变量而非 const：agentd 包内测试覆盖它到秒级，避免 30m 真等。
+var coordWakeTurnTimeout = hostapi.DefaultTurnTimeout
 
 // wakeRoundLogLevel 是协调者唤醒回合生命周期日志的级别下限（spec §4.3：不设
 // HANDOFF_LOG_LEVEL 也要看得见）。缺省 slog 级别是 Warn（logx.go:59），Info 会被吞。
@@ -1234,7 +1231,7 @@ func (r coordinatorRunner) Launch(spec keysclient.SessionSpec, prompt string) (k
 	if err != nil {
 		slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合失败", "cli", spec.CLI,
 			"mode", "launch", "home_dir", spec.HomeDir, "cause", err)
-		return keysclient.TurnResult{}, err
+		return keysclient.TurnResult{}, classifyRunnerErr(err)
 	}
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合完成", "cli", spec.CLI,
 		"mode", "launch", "session", got.SessionID, "output_bytes", len(got.Output))
@@ -1276,11 +1273,27 @@ func (r coordinatorRunner) Resume(ref keysclient.SessionRef, prompt string) (key
 	if err != nil {
 		slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合失败", "cli", ref.CLI,
 			"mode", "resume", "session", ref.SessionID, "home_dir", ref.HomeDir, "cause", err)
-		return keysclient.TurnResult{}, err
+		return keysclient.TurnResult{}, classifyRunnerErr(err)
 	}
 	slog.Default().Log(ctx, wakeRoundLogLevel, "协调者回合完成", "cli", ref.CLI,
 		"mode", "resume", "session", got.SessionID, "output_bytes", len(got.Output))
 	return keysclient.TurnResult{SessionID: got.SessionID, Output: got.Output}, nil
+}
+
+// classifyRunnerErr 把承载层（hostapi）错误翻译成 keysclient 契约哨兵：
+// 「回合超时」与会话不存在必须可判，keystone 据此分流（超时保留会话，只有
+// 会话不存在才降级重建，B399 spec r2 §5）。其余错误原样透传。
+func classifyRunnerErr(err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, hostapi.ErrTurnTimeout) {
+		return fmt.Errorf("%w: %v", keysclient.ErrTurnTimeout, err)
+	}
+	if errors.Is(err, hostapi.ErrSessionNotFound) {
+		return fmt.Errorf("%w: %v", keysclient.ErrSessionNotFound, err)
+	}
+	return err
 }
 
 // NewCoordinatorRunner 构造 keystone 的会话承载缝（B233.18：类型与 Launch/Resume

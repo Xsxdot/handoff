@@ -37,10 +37,9 @@ func installSleepyCoordinatorCLI(t *testing.T, sleepSec int) {
 
 // TestB393ResumeHangsBoundedByTimeout 锁 R3.1：挂死的 resume 必须在
 // coordWakeTurnTimeout 附近返回错误，而不是钉死到 hostapi 的 30m 缺省。
+// 绿态仍是 1s 覆盖后秒级返回（有界退出红线不变）。被界砍掉之后不许丢会话、
+// 不许无脑重建，见 T2 的分流测试（b399_resume_class_test.go）。
 //
-// 红（当前 HEAD）：coordinatorRunner.Resume 用 context.WithCancel(Background())
-// 无期限，hostapi 走 30m 缺省 → 本测试在 10s 窗内收不到返回，超时红。
-// 绿（T1.2）：readyCtx 给 1s 上界，秒级返回错误。
 // 变异自验：把 readyCtx 的 WithTimeout 改回 WithCancel → 复红。
 func TestB393ResumeHangsBoundedByTimeout(t *testing.T) {
 	prev := coordWakeTurnTimeout

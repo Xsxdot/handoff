@@ -9,6 +9,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"os/exec"
@@ -902,6 +903,7 @@ func TestCoordAttachHomeExpansionFailureReturns400(t *testing.T) {
 // Launch 返回新 session。
 type wakeEndpointRunner struct {
 	failResume bool
+	resumeErr  error // 非空时作 Resume 错误（可含 keysclient 哨兵）
 	launchID   string
 	resumes    int
 	launches   int
@@ -918,6 +920,9 @@ func (r *wakeEndpointRunner) Launch(keysclient.SessionSpec, string) (keysclient.
 func (r *wakeEndpointRunner) Resume(ref keysclient.SessionRef, _ string) (keysclient.TurnResult, error) {
 	r.resumes++
 	if r.failResume {
+		if r.resumeErr != nil {
+			return keysclient.TurnResult{}, r.resumeErr
+		}
 		return keysclient.TurnResult{}, errors.New("resume failed")
 	}
 	return keysclient.TurnResult{SessionID: ref.SessionID, Output: "ok"}, nil
@@ -958,7 +963,7 @@ func TestB389WakeEndpointExecutesAndRebinds(t *testing.T) {
 	seedCoordinatorSquad(t, env)
 	cardID := createCoordCard(t, env)
 	bindCoordSeatForWake(t, env, cardID)
-	runner := &wakeEndpointRunner{failResume: true, launchID: "sess-new"}
+	runner := &wakeEndpointRunner{failResume: true, resumeErr: fmt.Errorf("resume failed: %w", keysclient.ErrSessionNotFound), launchID: "sess-new"}
 	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
 	card, err := env.ledger.GetCard(cardID)
 	if err != nil {

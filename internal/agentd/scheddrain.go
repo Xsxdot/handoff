@@ -366,7 +366,7 @@ func (s *Server) transferCoordinatorWake(ctx context.Context, card, seat, machin
 	target, err := s.clientForTarget(machine)
 	if err != nil {
 		s.log.Error("转交唤醒取目标客户端失败", "card", card, "machine", machine, "cause", err)
-		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("转交唤醒取目标客户端 %s 失败: %v", machine, err))
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("转交唤醒取目标客户端 %s 失败: %v", machine, err))
 		return keystone.RoundResult{}, fmt.Errorf("转交唤醒取目标客户端 %s: %w", machine, err)
 	}
 	resp, err := target.MarkForwarded().CoordinatorWake(ctx, card, proto.CoordinatorWakeReq{
@@ -374,7 +374,7 @@ func (s *Server) transferCoordinatorWake(ctx context.Context, card, seat, machin
 	})
 	if err != nil {
 		s.log.Error("转交唤醒到目标机失败", "card", card, "machine", machine, "cause", err)
-		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("转交唤醒到 %s 失败: %v", machine, err))
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("转交唤醒到 %s 失败: %v", machine, err))
 		return keystone.RoundResult{}, fmt.Errorf("转交唤醒到 %s: %w", machine, err)
 	}
 	s.log.Info("协调者唤醒已转交", "card", card, "machine", machine,
@@ -454,19 +454,19 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 		return zero, nil
 	}
 	if err := proto.ValidateSeat(current.DriverSession, proto.SeatSource(current.DriverSource)); err != nil {
-		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("唤醒席位非法: %v", err))
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("唤醒席位非法: %v", err))
 		return zero, fmt.Errorf("唤醒席位非法: %w", err)
 	}
 	bearing, hasBearing, err := s.ledger.SeatBearingOf(card)
 	if err != nil {
-		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("读取唤醒承载记录: %v", err))
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("读取唤醒承载记录: %v", err))
 		return zero, fmt.Errorf("读取唤醒承载记录: %w", err)
 	}
 	if !hasBearing {
 		// 存量 coordinate 席位无承载：显式修复路径（契约 §2.3）——落恰一条
 		// EvSeatBearingMissing 并按「需要人」展示，本轮该卡跳过。
 		if err := s.reportSeatBearingMissing(card, current.DriverSession); err != nil {
-			s.writeWakeRoundFail(card, roundID, fmt.Sprintf("卡 %s 缺承载显式路径: %v", card, err))
+			s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("卡 %s 缺承载显式路径: %v", card, err))
 			return zero, fmt.Errorf("卡 %s 缺承载显式路径: %w", card, err)
 		}
 		return zero, nil
@@ -476,7 +476,7 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 			// D4：队列出队的合成唤醒没有 card_events 行，装不进冻结 DTO。显式失败，
 			// 由 drainIgnitionRequest 回填队列并留需要人痕迹；不静默本机执行。
 			// 转交前置失败同样本机留痕，标明目标机器（B393 复评：转交路径失败出口）。
-			s.writeWakeRoundFail(card, roundID, fmt.Sprintf(
+			s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf(
 				"协调者承载在远端 %s，但本批唤醒无账本事件（queue_release 合成唤醒）不可转交",
 				bearing.Machine))
 			return keystone.RoundResult{}, fmt.Errorf(
@@ -488,7 +488,7 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 	}
 	squad, err := s.resolveCoordinatorSquad()
 	if err != nil {
-		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("识别协调者小队失败: %v", err))
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("识别协调者小队失败: %v", err))
 		return zero, &coordinatorLookupError{err: err}
 	}
 	binding, err := s.scheduling.AdmitSeatCarrier(squad.Name, bearing.Carrier)
@@ -501,12 +501,12 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 	if err != nil {
 		s.log.Error("读协调者载体失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("读载体 %s 失败: %v", binding.Carrier, err))
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("读载体 %s 失败: %v", binding.Carrier, err))
 		return zero, fmt.Errorf("读载体 %s: %w", binding.Carrier, err)
 	}
 	cli, _, err := proto.ParseSeatIdentity(current.DriverSession)
 	if err != nil {
-		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("解析唤醒席位 CLI 失败: %v", err))
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("解析唤醒席位 CLI 失败: %v", err))
 		return zero, fmt.Errorf("解析唤醒席位 CLI: %w", err)
 	}
 	spec := keysclient.SessionSpec{
@@ -516,7 +516,7 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 	if err != nil {
 		s.log.Error("规范化协调者 SessionSpec 失败", "card", card,
 			"squad", binding.Squad, "carrier", binding.Carrier, "cause", err)
-		s.writeWakeRoundFail(card, roundID, fmt.Sprintf("规范化协调者 SessionSpec 失败: %v", err))
+		s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("规范化协调者 SessionSpec 失败: %v", err))
 		return zero, err
 	}
 	spec = normalized
@@ -537,13 +537,17 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 		"round_id", roundID)
 	result, err := s.keystone.Wake(ctx, card, evs, spec)
 	if err != nil {
-		// 失败终态行：phase=fail + 原因摘要（与 start 同 roundID，一轮一组）。
-		// 失败分支过去只打日志不下账，现场只剩 needs_human 一条，
-		// 无法从账本区分「没跑」与「跑了但失败」——本行就是那条区分度（B393 MAJOR-1）。
-		s.writeWakeRoundFail(card, roundID, truncateRunes(err.Error(), 400))
+		class := wakeFailClass(err)
+		// 失败终态行：phase=fail + class + 原因摘要（与 start 同 roundID，一轮一组）。
+		// 失败分支过去只打日志不下账；本行给账本「没跑 vs 跑了但失败」的区分度，
+		// 并让超时轮恰一次落 needs_human（B399 r2 §5）。
+		s.writeWakeRoundFail(card, roundID, class, truncateRunes(err.Error(), 400))
 		s.log.Log(ctx, wakeRoundLogLevel, "唤醒回合失败", "card", card,
 			"event_count", len(evs), "squad", binding.Squad, "carrier", binding.Carrier,
-			"round_id", roundID, "cause", err)
+			"round_id", roundID, "class", class, "cause", err)
+		// 失败路径补 end 行（B399 r2 用户裁定 4）：start/end 对称，可按 round_id 对账。
+		s.log.Log(ctx, wakeRoundLogLevel, "唤醒回合结束", "card", card,
+			"round_id", roundID, "class", class, "ok", false)
 		return result, fmt.Errorf("唤醒协调者回合失败: %w", err)
 	}
 	dur := time.Since(started)
@@ -557,11 +561,12 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 	}
 	s.log.Log(ctx, wakeRoundLogLevel, "唤醒回合结束", "card", card,
 		"rebuilt", result.Rebuilt, "escalated", result.Escalated,
-		"session", result.SessionID, "duration", dur.String(), "round_id", roundID)
+		"session", result.SessionID, "duration", dur.String(), "round_id", roundID,
+		"class", "", "ok", true)
 	if result.Rebuilt && result.SessionID != "" && result.SessionID != current.DriverSession {
 		identity, encodeErr := proto.EncodeSeatIdentity(cli, result.SessionID)
 		if encodeErr != nil {
-			s.writeWakeRoundFail(card, roundID, fmt.Sprintf("重建后编码新席位失败: %v", encodeErr))
+			s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("重建后编码新席位失败: %v", encodeErr))
 			return result, fmt.Errorf("重建后编码新席位: %w", encodeErr)
 		}
 		if rebindErr := s.ledger.RebindSeat(card, identity, proto.SeatSourceCoordinate, current.DriverSession,
@@ -569,10 +574,10 @@ func (s *Server) wakeCoordinatorRoundID(ctx context.Context, card string,
 			if errors.Is(rebindErr, ledger.ErrCASConflict) {
 				s.log.Error("协调者重建后席位 CAS 冲突，新会话保留待人工回收", "card", card,
 					"event_count", len(evs), "session", result.SessionID, "cause", rebindErr)
-				s.writeWakeRoundFail(card, roundID, fmt.Sprintf("重建后席位 CAS 冲突: %v", rebindErr))
+				s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("重建后席位 CAS 冲突: %v", rebindErr))
 				return result, &coordinatorSeatConflict{result: result}
 			}
-			s.writeWakeRoundFail(card, roundID, fmt.Sprintf("重建后写协调者席位失败: %v", rebindErr))
+			s.writeWakeRoundFail(card, roundID, wakeFailClassOther, fmt.Sprintf("重建后写协调者席位失败: %v", rebindErr))
 			return result, fmt.Errorf("重建后写协调者席位: %w", rebindErr)
 		}
 		s.log.Info("协调者重建后席位已更新", "card", card, "event_count", len(evs), "session", result.SessionID)

@@ -806,11 +806,13 @@ func TestAutomationAttachDefersAndThenWakes(t *testing.T) {
 }
 
 type fallbackConsumerRunner struct {
-	mu         sync.Mutex
-	launches   int
-	resumes    int
-	failLaunch bool
-	failResume bool
+	mu             sync.Mutex
+	launches       int
+	resumes        int
+	failLaunch     bool
+	failResume     bool
+	resumeTimeout  bool // Resume 错误包裹 keysclient.ErrTurnTimeout
+	resumeNotFound bool // Resume 错误包裹 keysclient.ErrSessionNotFound
 }
 
 func (r *fallbackConsumerRunner) Launch(keysclient.SessionSpec, string) (keysclient.TurnResult, error) {
@@ -828,7 +830,14 @@ func (r *fallbackConsumerRunner) Resume(keysclient.SessionRef, string) (keysclie
 	defer r.mu.Unlock()
 	r.resumes++
 	if r.failResume {
-		return keysclient.TurnResult{}, errors.New("resume failed")
+		switch {
+		case r.resumeTimeout:
+			return keysclient.TurnResult{}, fmt.Errorf("resume timeout: %w", keysclient.ErrTurnTimeout)
+		case r.resumeNotFound:
+			return keysclient.TurnResult{}, fmt.Errorf("resume failed: %w", keysclient.ErrSessionNotFound)
+		default:
+			return keysclient.TurnResult{}, errors.New("resume failed")
+		}
 	}
 	return keysclient.TurnResult{SessionID: "fallback-session"}, nil
 }
@@ -863,6 +872,7 @@ func TestAutomationFallbackResumeRebuildFailure(t *testing.T) {
 	}
 	runner.failResume = true
 	runner.failLaunch = true
+	runner.resumeNotFound = true
 	appendMirroredForConsumer(t, env.ledger, cardID, "terminal", "completed", 1, `{"text":"done"}`)
 
 	processed, escalated, err := env.srv.consumeAutomationEventsOnce(context.Background())

@@ -134,7 +134,7 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec k
 		return zero, fmt.Errorf("keystone: 解析卡 %s 席位: %w", card, err)
 	}
 	s.mu.Lock()
-	ref, ok := s.sessions[card]
+	ref, _ := s.sessions[card]
 	s.mu.Unlock()
 	ref.CLI = cli
 	ref.SessionID = sessionID
@@ -143,18 +143,26 @@ func (s *Service) Wake(ctx context.Context, card string, evs []WakeEvent, spec k
 	s.sessions[card] = ref
 	s.mu.Unlock()
 	prompt := s.briefing(card, evs)
-	if !ok {
-		result, resumeErr := s.runner.Resume(ref, prompt)
-		if resumeErr == nil {
-			return RoundResult{Woke: true, SessionID: result.SessionID, Output: result.Output}, nil
-		}
-		return s.rebuildAfterResumeFailure(card, prompt, spec, ref, resumeErr)
-	}
 	result, err := s.runner.Resume(ref, prompt)
 	if err == nil {
 		return RoundResult{Woke: true, SessionID: result.SessionID, Output: result.Output}, nil
 	}
-	return s.rebuildAfterResumeFailure(card, prompt, spec, ref, err)
+	// 错误分流是契约（B399 spec r2 §5）：只有「会话真的不存在」才降级重建；
+	// 回合超时与其他错误一律保留会话，下一轮仍 resume 同一 session。
+	if errors.Is(err, keysclient.ErrSessionNotFound) {
+		return s.rebuildAfterResumeFailure(card, prompt, spec, ref, err)
+	}
+	return s.failResumeKeepingSession(card, ref, err)
+}
+
+// failResumeKeepingSession 是「回合失败但不重建」的收口（B399 spec r2 §5②）：
+// 会话保留（sessions[card] 仍是 ref 指向的同一 session），下一轮仍 resume 同一
+// session；错误上抛由 agentd 侧按分类落可见（超时落恰一次「需要人」）。
+// 绝不调用 Launch——重建只在真正 Session not found 时才是净收益（用户 2026-09-22 裁定）。
+func (s *Service) failResumeKeepingSession(card string, ref keysclient.SessionRef, resumeErr error) (RoundResult, error) {
+	log().Warn("协调者唤醒回合失败，保留会话不重建", "card", card,
+		"session", ref.SessionID, "cause", resumeErr)
+	return RoundResult{SessionID: ref.SessionID}, fmt.Errorf("resume: %w", resumeErr)
 }
 
 func (s *Service) rebuildAfterResumeFailure(card, prompt string, spec keysclient.SessionSpec, ref keysclient.SessionRef, resumeErr error) (RoundResult, error) {
@@ -168,7 +176,9 @@ func (s *Service) rebuildAfterResumeFailure(card, prompt string, spec keysclient
 			"请人工处置：检查隔离 HOME 是否缺模型凭据/配置，或 card rebind --self 换会话",
 			truncateCause(resumeErr), truncateCause(launchErr))
 		_ = s.ledger.MarkNeedsHuman(card, reason, "keystone")
-		return RoundResult{Escalated: true}, fmt.Errorf("resume: %v; 重建: %w", resumeErr, launchErr)
+		// resume 侧必须 %w：链穿透让 wakeFailClass 能区分 session_not_found/其他
+		// （B399 r2 §5③；%v 会断链使 errors.Is 恒 false）。多 %w 自 Go1.20 合法。
+		return RoundResult{Escalated: true}, fmt.Errorf("resume: %w; 重建: %w", resumeErr, launchErr)
 	}
 	rebuilt.Rebuilt = true
 	return rebuilt, nil
@@ -317,13 +327,13 @@ func overlayResumeRef(ref keysclient.SessionRef, spec keysclient.SessionSpec) ke
 	return ref
 }
 
-// briefing 把开场评估要读的东西拼成回合简报：卡字段、基线新鲜度、本次积压
-// 事件。以 ledger 为准不信记忆——每回合重读，天然幂等。
+// briefing 把本轮的增量上下文拼成回合简报：卡最小指针（卡号、标题、基线）与
+// 本次唤醒事件。会话里已有的上下文留在会话里，账本只补充增量——不再指示模型
+// 「先读卡」（B399 spec r2 §5：是否读卡由协调者自己判断）。以 ledger 为准不信
+// 记忆——每回合重读，天然幂等。
 func (s *Service) briefing(card string, evs []WakeEvent) string {
 	b := "你是本卡的机器协调者。**你是一次性回合**：没有交互窗口，本轮跑完即结束；" +
 		"下一次有事会被再次唤醒（续跑同一会话）。\n" +
-		"醒来第一件事：读卡、查依赖、看基线新鲜度；要推动工作流就用 `handoff card ...` 命令" +
-		"（派发、移列、记笔记都在它里面）。\n" +
 		"需要人知道的事**发到 IM 房间**：`handoff session send <会话> <正文>`" +
 		"（本卡所在会话可用 `handoff session list` 找到，会话条目里列着本卡）。" +
 		"不适合现在推就在房间说明原因并结束本轮。\n\n## 本卡上下文\n\n- 卡号：" + card + "\n"
@@ -339,6 +349,5 @@ func (s *Service) briefing(card string, evs []WakeEvent) string {
 			b += "- [" + string(ev.Kind) + "] " + ev.Summary + "\n"
 		}
 	}
-	b += "\n点火前看上一节点产出：先看文件清单再看裁决块。\n"
 	return b
 }
