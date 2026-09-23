@@ -461,8 +461,12 @@ type dispatchRequest struct {
 	Carrier string `json:"carrier,omitempty"`
 	Squad   string `json:"squad,omitempty"`
 	// HomeDir 是小队派发载体 HOME 的可空字段；缺席与显式空串必须可区分。
-	HomeDir  *string `json:"home_dir,omitempty"`
-	Executor string  `json:"executor"`
+	HomeDir *string `json:"home_dir,omitempty"`
+	// FrozenTarget 是 B398 的冻结物理身份字段（原始载体机器名）；缺席=旧发送方，
+	// 接收端回落 req.Target。用指针区分「字段缺席」与「显式空串」：带 Carrier 的
+	// 请求里显式空串按快照丢失处理（不静默回落），使发送方 bug 保持可见。
+	FrozenTarget *string `json:"frozen_target,omitempty"`
+	Executor     string  `json:"executor"`
 	// Discipline 是派发点名的纪律块角色名；空=未点名（只注入平台层）。
 	// B229：正文由协调者侧组装后经 DisciplineText 下发，本机收文即用不再解析；
 	// DisciplineVersion 是命中的账本版本，随任务落盘供回放。
@@ -510,6 +514,7 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 	}
 	s.log.Info("dispatch 请求身份", "project", req.ProjectID, "receiver", req.Receiver,
 		"carrier", req.Carrier, "squad", req.Squad, "target", req.Target,
+		"frozen_target", req.FrozenTarget,
 		"executor", req.Executor, "model", req.Model, "home_dir_set", req.HomeDir != nil)
 	var binding scheduling.Binding
 	var resolved scheduling.ResolvedReceiver
@@ -524,12 +529,20 @@ func (s *Server) handleDispatch(w http.ResponseWriter, r *http.Request) {
 				"target", req.Target, "error_kind", "frozen_home_dir_missing", "cause", err)
 		} else {
 			homeDir := *req.HomeDir
+			// B398：有冻结字段用冻结字段建 Binding（快照优先），缺席时回落
+			// req.Target（旧发送方逐字兼容）。显式空串不静默回落——按快照丢失
+			// 交给 AdmitFrozen 判据拒掉，让发送方 bug 可见。
+			frozenTarget := req.Target
+			if req.FrozenTarget != nil {
+				frozenTarget = *req.FrozenTarget
+			}
 			binding, err = s.scheduling.AdmitFrozen(scheduling.Binding{
-				Squad: req.Squad, Carrier: req.Carrier, Target: req.Target,
+				Squad: req.Squad, Carrier: req.Carrier, Target: frozenTarget,
 				Executor: req.Executor, Model: req.Model, HomeDir: homeDir,
 			})
 			s.log.Info("dispatch 冻结身份准入", "project", req.ProjectID, "receiver", req.Receiver,
-				"carrier", req.Carrier, "squad", req.Squad, "target", req.Target,
+				"carrier", req.Carrier, "squad", req.Squad, "route_target", req.Target,
+				"frozen_target", frozenTarget,
 				"executor", req.Executor, "model", req.Model, "error_kind", "frozen_admit")
 		}
 	} else if req.Squad != "" {

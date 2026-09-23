@@ -34,6 +34,11 @@ type DispatchOpts struct {
 	Squad   string
 	// HomeDir 是小队派发载体 HOME 的可空透传值；nil=字段缺席，指向空串=显式空值。
 	HomeDir *string
+	// FrozenTarget 是卡节点冻结的执行物理身份（Binding.Target 的原始机器名）。
+	// 与 Target 分工：Target 是路由值，可被 NormalizeTarget 折成本机空串；
+	// FrozenTarget 是身份快照，原样透传，不解析、不归一、不校验（B398）。
+	// 空=普通派发或旧调用。
+	FrozenTarget string
 	// B229：DisciplineText 是协调者侧组装好的纪律正文（缝 1 discipline.ResolveDispatch 产物），
 	// 随请求下发；执行机收文即用，不再自行解析。DisciplineVersion 是命中的账本
 	// 版本号（未点名或临时正文为 0），供快照与回放。Ticket 0 仅声明，接线归实现票。
@@ -94,6 +99,10 @@ type Dispatcher struct {
 	// Carrier/Squad 是卡节点起源侧已冻结的执行身份；普通派发保持空值。
 	Carrier string
 	Squad   string
+	// FrozenTarget 是卡节点起源侧已冻结的执行物理身份（Binding.Target 原始机器名）。
+	// 与 ViaTemplate 的 Target 分工：Target 参与路由归一，FrozenTarget 不归一，
+	// 原样进入 DispatchOpts 供接收端 AdmitFrozen（B398）。空=普通派发或旧调用。
+	FrozenTarget string
 	// NormalizeTarget 把调用方已确认的自机登记名归一成空串；nil 等价于恒等
 	// 函数。未知目标名不得在此处改写，目标身份判断归组装点负责。
 	NormalizeTarget func(target string) string
@@ -175,7 +184,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		disciplineName = req.DisciplineOverride
 	}
 	slog.Default().Info("模板派发目标已归一", "card", c.ID, "template", req.Template,
-		"raw_target", rawTarget, "target", target)
+		"raw_target", rawTarget, "target", target, "frozen_target", d.FrozenTarget)
 
 	// 有效用途：节点覆盖优先于模板。下面**所有**按用途裁决的地方都读它，
 	// 不再直接读取模板用途字段——漏掉任何一处都会让节点只对了一半（例如分支
@@ -325,6 +334,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	slog.Default().Info("按模板派发",
 		"card", c.ID, "node", req.Node, "template", req.Template, "target", target,
 		"receiver", req.Receiver, "carrier", d.Carrier, "squad", d.Squad, "home_dir_set", d.HomeDir != nil,
+		"frozen_target", d.FrozenTarget,
 		"executor", executor, "model", model, "discipline", disciplineName,
 		"discipline_version", d.DisciplineVersion,
 		"discipline_bytes", len(d.DisciplineText),
@@ -341,12 +351,13 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	taskID, baseCommit, err := d.Transport(ctx, DispatchOpts{
 		Prompt: prompt, Branch: branch, Target: target, Project: c.Project,
 		Executor: executor, Model: model, PlanB64: planB64,
-		Receiver:   req.Receiver,
-		Carrier:    d.Carrier,
-		Squad:      d.Squad,
-		HomeDir:    d.HomeDir,
-		OutputPath: req.OutputPath,
-		PlanName:   planName, Base: base, NewWorktree: true,
+		Receiver:     req.Receiver,
+		Carrier:      d.Carrier,
+		Squad:        d.Squad,
+		HomeDir:      d.HomeDir,
+		FrozenTarget: d.FrozenTarget,
+		OutputPath:   req.OutputPath,
+		PlanName:     planName, Base: base, NewWorktree: true,
 		ExistingBranch: existingBranch, Discipline: disciplineName,
 		// B229：调用方经缝 1 解析好的正文与版本，原样下发（§3.1 未点名也带平台层）。
 		DisciplineText:     d.DisciplineText,
@@ -410,6 +421,7 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 	slog.Default().Info("模板派发完成", "card", c.ID, "node", req.Node, "template", tpl.Name,
 		"attempt", taskID, "task", taskID, "target", target, "receiver", req.Receiver,
 		"carrier", d.Carrier, "squad", d.Squad, "home_dir_set", d.HomeDir != nil,
+		"frozen_target", d.FrozenTarget,
 		"executor", executor, "model", model, "branch", snapshotBranch, "discipline", disciplineName)
 	return DispatchResult{
 		Card: c.ID, Task: taskID, Target: target, Branch: snapshotBranch,

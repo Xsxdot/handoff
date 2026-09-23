@@ -765,6 +765,50 @@ func TestDispatchSerializesHomeDirThreeStates(t *testing.T) {
 	}
 }
 
+// TestDispatchSerializesFrozenTargetPresence 钉住 B398 冻结身份字段穿过真实 JSON
+// 的缺席/非空两态：空值必须完全不出现键（旧发送方兼容），非空原样出现。
+func TestDispatchSerializesFrozenTargetPresence(t *testing.T) {
+	cases := []struct {
+		name        string
+		frozen      string
+		wantPresent bool
+		wantValue   string
+	}{
+		{name: "缺席（空值）", frozen: ""},
+		{name: "非空", frozen: "linux-01", wantPresent: true, wantValue: "linux-01"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				var got map[string]json.RawMessage
+				if err := json.NewDecoder(r.Body).Decode(&got); err != nil {
+					t.Fatalf("解析 dispatch 请求: %v", err)
+				}
+				raw, present := got["frozen_target"]
+				if present != tc.wantPresent {
+					t.Errorf("frozen_target 是否出现 = %v, want %v; body=%s", present, tc.wantPresent, raw)
+				}
+				if present {
+					var value string
+					if err := json.Unmarshal(raw, &value); err != nil {
+						t.Errorf("frozen_target 应为 JSON string: %v", err)
+					} else if value != tc.wantValue {
+						t.Errorf("frozen_target = %q, want %q", value, tc.wantValue)
+					}
+				}
+				w.Header().Set("Content-Type", "application/json")
+				_, _ = w.Write([]byte(`{"id":"T-frozen"}`))
+			}))
+			defer ts.Close()
+			if _, err := client.New(ts.URL, testToken).Dispatch(context.Background(), client.DispatchOpts{
+				ProjectID: "deadbeefdeadbeef", Prompt: "frozen", FrozenTarget: tc.frozen,
+			}); err != nil {
+				t.Fatalf("Dispatch: %v", err)
+			}
+		})
+	}
+}
+
 // TestCardStepSerializesAllFields 钉住卡节点请求的真实 HTTP 线格式、路径与认证头。
 func TestCardStepSerializesAllFields(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

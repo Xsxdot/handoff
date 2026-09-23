@@ -48,14 +48,16 @@ type dispatchRequest struct {
 	// discipline 是本次派发点名的纪律块角色名；空=未点名（只注入平台层）。
 	// B229：名字仅作审计展示，正文由本进程在认领前经缝 1 组装后随请求下发
 	// （disciplineText/DisciplineVersion），执行机收文即用不再自行解析。
-	discipline         string
-	disciplineText     string
-	disciplineVersion  int
-	model              string
-	planB64            string
-	planName           string
-	base               string
-	homeDir            *string
+	discipline        string
+	disciplineText    string
+	disciplineVersion int
+	model             string
+	planB64           string
+	planName          string
+	base              string
+	homeDir           *string
+	// frozenTarget 是起源侧已冻结的物理身份机器名（B398）；空=普通派发。
+	frozenTarget       string
 	resolveDefaultBase bool
 	localBaseBranch    bool
 }
@@ -98,6 +100,7 @@ var dispatchTransportWithOpts = func(req dispatchRequest) (string, string, error
 		NewBranch: req.branch, Branch: req.existingBranch,
 		ProjectName: req.project, Executor: req.executor, Model: req.model,
 		HomeDir:           req.homeDir,
+		FrozenTarget:      req.frozenTarget,
 		Discipline:        req.discipline,
 		DisciplineText:    req.disciplineText,
 		DisciplineVersion: req.disciplineVersion,
@@ -122,8 +125,9 @@ func cliTransport(ctx context.Context, opts ledgerstep.DispatchOpts) (string, st
 		prompt: opts.Prompt, branch: opts.Branch, target: opts.Target, project: opts.Project,
 		executor: opts.Executor, model: opts.Model, planB64: opts.PlanB64,
 		planName: opts.PlanName, base: opts.Base, existingBranch: opts.ExistingBranch,
-		homeDir:    opts.HomeDir,
-		discipline: opts.Discipline,
+		homeDir:      opts.HomeDir,
+		frozenTarget: opts.FrozenTarget,
+		discipline:   opts.Discipline,
 		// B229：ViaTemplate 透传下来的缝 1 产物（Dispatcher 数据字段），原样上 wire。
 		disciplineText:     opts.DisciplineText,
 		disciplineVersion:  opts.DisciplineVersion,
