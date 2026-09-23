@@ -830,6 +830,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **卡字段 `work_branch`（A′ 形态）**：若「人工登记工作分支」的事件路径在实践中暴露不足（需要按分支索引、需要与卡字段一同 CAS、需要更强的唯一性约束），改为「卡上加 `work_branch` 列」的形态。来源：B382 spec §3 弃选 A′ / §7 Out of Scope。
 - **登记可覆盖快照**：支持人工接手一条已派发卡的工作分支（把 review/后续节点改派到另一条分支）。前置：先定「快照 vs 登记」两处真相的优先级与告警，否则就是又一次静默看错树。来源：B382 spec §3「生效范围」/ §7 Out of Scope（2026-09-22 用户裁定本期只在无快照时生效）。
 - **合并回基线未落账**：`RecordBranchMerged`（`internal/ledger/events.go:358`「落合并环节的外部动作事件」）全仓无生产调用方——「合并回基线」目前只有人工 note/收口摘要，账本无机器记录。来源：B382 spec 台账 §4 旁证（2026-09-22 核查）。
+- **node.go pass 后对登记分支的 pushTarget 未覆盖**：`internal/ledgerstep/node.go` pass 后推 origin 时，若工作分支来自人工登记（`info.Target==""`），会用**当前轮 target** 作为 pushTarget——登记分支不在那台机上时会推错或失败。来源：B382 plan §7 残余风险（2026-09-23 review minor#1，review 通过时承诺回写）。
 
 ## 来自 B398 spec（2026-09-22，本期不做、后续要做）
 
