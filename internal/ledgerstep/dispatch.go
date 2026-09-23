@@ -85,6 +85,12 @@ type DispatchResult struct {
 	DisciplineVersion int `json:"discipline_version"`
 }
 
+// ErrBaseProbeUnavailable 表示首个节点基线护栏无法在**本机**完成探查（例如项目
+// 只登记在远端开发机、本机没有仓库位置）。它不是「基线错了」，而是「本机查不了」：
+// 护栏对这类派发放行并记 Warn（P1 推荐甲），把否决权留给真正能读到基线树的机器，
+// 避免因为协调机没有本地仓而把远端派发全部误杀。
+var ErrBaseProbeUnavailable = errors.New("本机无法探查项目基线树")
+
 // Dispatcher 持有模板派发需要的账本、传输和审计 actor。
 type Dispatcher struct {
 	St        *ledger.Store
@@ -106,6 +112,12 @@ type Dispatcher struct {
 	// NormalizeTarget 把调用方已确认的自机登记名归一成空串；nil 等价于恒等
 	// 函数。未知目标名不得在此处改写，目标身份判断归组装点负责。
 	NormalizeTarget func(target string) string
+
+	// ProbeBaseAttachments 是首个节点派发前的基线附件探针（B400）。首个非审阅
+	// 派发、卡无显式基线、且有 spec/plan 可查附件时，ViaTemplate 调它确认附件
+	// 路径确实在解析出的基线远端提交树上；缺则拒发。nil = 不检查（旧调用/裸派发）。
+	// 探针实现归调用方（需要项目仓库位置），本包只做决策与文案。
+	ProbeBaseAttachments func(ctx context.Context, project, base string, paths []string) (resolvedBase string, missing []string, err error)
 
 	// B229 缝 1 产物（数据字段，不是解析函数）：调用方装配时经
 	// discipline.ResolveDispatch 解析好的纪律正文与账本版本号。未点名模板的
@@ -147,6 +159,64 @@ type TemplateDispatch struct {
 	// OutputPath 是本节点声明路径在协调者侧按本轮派发日期渲染后的确定值。
 	// 它独立于 CarryCardContext：即使不携带卡上下文，执行者仍必须收到该法定路径。
 	OutputPath string
+}
+
+// baseAttachmentPaths 取需要随基线一起在场的附件路径：spec 必查，plan 有时一并查。
+// 其余 kind（contract/doc 等）要么是后续节点产出（不在首派基线树上），要么不由
+// charter 首派保证，故不纳入——判据宁可少查一条，也不误杀合法首派。
+func baseAttachmentPaths(attachments []ledger.Attachment) []string {
+	paths := make([]string, 0, len(attachments))
+	for _, att := range attachments {
+		if att.Kind == "spec" || att.Kind == "plan" {
+			if p := strings.TrimSpace(att.Path); p != "" {
+				paths = append(paths, p)
+			}
+		}
+	}
+	return paths
+}
+
+// guardFirstDispatchBase 是 B400 首派基线护栏：卡的首次非审阅派发时，若没有显式
+// 基线、又有可查附件，则确认附件路径存在于解析出的基线树；缺则拒发。
+//
+// 决策顺序（spec §5）：
+//  1. hasWorkBranch（已有非审阅派发）= 后续节点 ⇒ 跳过；
+//  2. c.BaseBranch 非空 = 卡自有显式基线，是人工否决权 ⇒ 跳过；
+//  3. 没有 spec/plan 可查附件 ⇒ 放行（「无附件可检」交既有列门，避免双重执法）；
+//  4. 否则探针查路径在场性：缺 ⇒ 拒发（文案含分支名+缺失路径+改法）；
+//     探针不可用（ErrBaseProbeUnavailable）⇒ 放行并告警；其它探针错误 ⇒ 拒发（fail-closed）。
+func (d *Dispatcher) guardFirstDispatchBase(ctx context.Context, c ledger.Card, hasWorkBranch bool, base string) error {
+	if hasWorkBranch {
+		return nil
+	}
+	if c.BaseBranch != "" {
+		return nil
+	}
+	paths := baseAttachmentPaths(c.Attachments)
+	if len(paths) == 0 || d.ProbeBaseAttachments == nil {
+		return nil
+	}
+	resolvedBase, missing, err := d.ProbeBaseAttachments(ctx, c.Project, base, paths)
+	if err != nil {
+		if errors.Is(err, ErrBaseProbeUnavailable) {
+			slog.Default().Warn("首派基线护栏无法探查，跳过", "card", c.ID,
+				"project", c.Project, "base", base, "paths", paths, "cause", err)
+			return nil
+		}
+		slog.Default().Warn("首派基线护栏探查失败，拒发", "card", c.ID,
+			"project", c.Project, "base", base, "paths", paths, "cause", err)
+		return fmt.Errorf("首个节点派发前的基线附件校验失败: %w", err)
+	}
+	if len(missing) > 0 {
+		action := fmt.Sprintf("请显式声明基线后重试：handoff card update %s --base-branch <分支>（确认默认线正确的场景也请显式声明该线）", c.ID)
+		slog.Default().Warn("首派基线缺附件，拒发", "card", c.ID, "project", c.Project,
+			"resolved_base", resolvedBase, "missing_paths", missing)
+		return fmt.Errorf("拒发：解析到的基线分支 %q 的提交树里找不到本卡附件 %s；默认线可能不是本卡工作线。%s",
+			resolvedBase, strings.Join(missing, "、"), action)
+	}
+	slog.Default().Info("首派基线附件在场校验通过", "card", c.ID, "project", c.Project,
+		"resolved_base", resolvedBase, "paths", paths)
+	return nil
 }
 
 // ViaTemplate 按模板把一张卡派出去。
@@ -294,6 +364,9 @@ func (d *Dispatcher) ViaTemplate(ctx context.Context, c ledger.Card, req Templat
 		}
 	}
 	resolveDefaultBase := base == ""
+	if err := d.guardFirstDispatchBase(ctx, c, hasWorkBranch, base); err != nil {
+		return zero, err
+	}
 	// 三段拼装要用到有效基线，所以必须排在 base 算完之后。审阅轮的 base 被
 	// 换成了工作分支，但卡上下文里要写的是**卡的**基线（合并目标），两者不同，
 	// 因此这里重新取一次而不是复用上面的 base。
