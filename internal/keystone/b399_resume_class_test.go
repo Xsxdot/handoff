@@ -115,3 +115,31 @@ func TestB399ResumeNotFoundTriggersLaunch(t *testing.T) {
 		t.Fatalf("重建回执不完整: %+v", result)
 	}
 }
+
+// TestB399RebuildFailPreservesResumeErrChain 锁 r2 §5③ 错误链穿透：resume 报
+// Session not found 且重建也失败时，上抛错误必须仍能 errors.Is 命中
+// keysclient.ErrSessionNotFound——wakeFailClass 靠它把 class 落成 session_not_found，
+// 否则三态不可区分（review-2 major：keystone.go:179 的 %v 包装断链）。
+//
+// 红（当前 HEAD）：rebuildAfterResumeFailure 用 %v 包 resumeErr，errors.Is 恒 false。
+// 绿：改 %w 双包，链穿透。
+// 变异：把 resumeErr 的 %w 改回 %v → 复红。
+func TestB399RebuildFailPreservesResumeErrChain(t *testing.T) {
+	svc, cardID, runner := resumeClassSeed(t)
+	runner.failNext = 99
+	runner.resumeErr = fmt.Errorf("resume 不可用: %w", keysclient.ErrSessionNotFound)
+	runner.failLaunches = true
+
+	_, err := svc.Wake(context.Background(), cardID, []keystone.WakeEvent{
+		{Kind: keystone.WakeTaskTerminal, Card: cardID, Summary: "x"},
+	}, keysclient.SessionSpec{CLI: "opencode", HomeDir: "/h", Workdir: "/w"})
+	if err == nil {
+		t.Fatalf("resume+重建均失败应返回错误")
+	}
+	if !errors.Is(err, keysclient.ErrSessionNotFound) {
+		t.Fatalf("重建失败时错误链必须保留 ErrSessionNotFound（三态可区分）: %v", err)
+	}
+	if len(runner.launches) != 0 {
+		t.Fatalf("Launch 失败不计入 launches（failLaunches 时），实得 %d", len(runner.launches))
+	}
+}

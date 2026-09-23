@@ -176,7 +176,9 @@ func (s *Service) rebuildAfterResumeFailure(card, prompt string, spec keysclient
 			"请人工处置：检查隔离 HOME 是否缺模型凭据/配置，或 card rebind --self 换会话",
 			truncateCause(resumeErr), truncateCause(launchErr))
 		_ = s.ledger.MarkNeedsHuman(card, reason, "keystone")
-		return RoundResult{Escalated: true}, fmt.Errorf("resume: %v; 重建: %w", resumeErr, launchErr)
+		// resume 侧必须 %w：链穿透让 wakeFailClass 能区分 session_not_found/其他
+		// （B399 r2 §5③；%v 会断链使 errors.Is 恒 false）。多 %w 自 Go1.20 合法。
+		return RoundResult{Escalated: true}, fmt.Errorf("resume: %w; 重建: %w", resumeErr, launchErr)
 	}
 	rebuilt.Rebuilt = true
 	return rebuilt, nil

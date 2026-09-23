@@ -12,6 +12,8 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"testing"
@@ -185,5 +187,60 @@ func TestB399TimeoutWritesClassAndEndAndOneNeedsHuman(t *testing.T) {
 	}
 	if !strings.Contains(logs, "class=timeout") {
 		t.Fatalf("结束行应带 class=timeout:\n%s", logs)
+	}
+}
+
+// TestB399WakeFailClassThreeStates 锁 spec §6 接缝3断言③：超时/会话不存在/其他
+// 三态经 wakeFailClass 可区分（T3.9-4 原只断言 timeout 一态）。
+//
+// 纯映射直接断言：当前 wakeFailClass 分支正确时本测绿；与下面 e2e 成对，
+// 保证 e2e 的 session_not_found 红不是映射表本身缺支。
+func TestB399WakeFailClassThreeStates(t *testing.T) {
+	cases := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"超时", fmt.Errorf("回合超时: %w", keysclient.ErrTurnTimeout), wakeFailClassTimeout},
+		{"会话不存在", fmt.Errorf("resume 失败: %w", keysclient.ErrSessionNotFound), wakeFailClassSessionNotFound},
+		{"其他", errors.New("resume failed"), wakeFailClassOther},
+		{"nil", nil, wakeFailClassOther},
+	}
+	for _, tc := range cases {
+		if got := wakeFailClass(tc.err); got != tc.want {
+			t.Fatalf("%s: wakeFailClass=%q want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestB399SessionNotFoundRebuildFailWritesClass 锁 r2 §5③ 端到端：resume 报
+// Session not found、重建也失败 → phase=fail 注释 class=session_not_found。
+//
+// 红（当前 HEAD）：keystone.go:179 用 %v 包 resumeErr，链断，wakeFailClass 落 other。
+// 绿（%w 修复）：class=session_not_found。
+// 变异：把 resumeErr 的 %w 改回 %v → 复红。
+func TestB399SessionNotFoundRebuildFailWritesClass(t *testing.T) {
+	env, _ := newNoPTYAutomationEnv(t)
+	cardID := createCoordCard(t, env)
+	prebindConsumerSession(t, env, cardID)
+
+	runner := &fallbackConsumerRunner{failResume: true, resumeNotFound: true, failLaunch: true}
+	env.srv.SetKeystone(keystone.New(runner, &fakeCoordNarrator{}, env.srv.autoLedger, attachLocator{}))
+
+	req := scheduling.IgnitionRequest{
+		Card: cardID, Squad: "coord", Node: "implement", Actor: "test", Ready: true,
+	}
+	if err := env.srv.drainIgnitionRequest(context.Background(), req); err == nil {
+		t.Fatalf("resume+重建均失败应返回错误")
+	}
+
+	found := 0
+	for _, r := range readWakeRoundComments(t, env, cardID) {
+		if r.Phase == "fail" && r.Class != nil && *r.Class == wakeFailClassSessionNotFound {
+			found++
+		}
+	}
+	if found != 1 {
+		t.Fatalf("重建失败轮应恰一行 class=session_not_found，实得 %d", found)
 	}
 }

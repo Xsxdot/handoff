@@ -353,3 +353,104 @@ ok  	github.com/Xsxdot/handoff/internal/agentd	0.215s
 - codegraph 本轮未新查图（review 已指名符号，grep 已在上轮记债）。
 - 临时文件落 $TMPDIR=/root/.handoff/tmp/31105a05（server.go 变异备份）。
 - 上列命令与输出均为本节点亲跑原文；变异还原经 `git diff --stat` 复核为空。
+
+## 17. review-2 major 修复（2026-09-23，cards/B399-charter-9，起手 HEAD=c2a5e4e03）
+
+靶子（协调者指定，探针先验勿重做）：
+1. `internal/keystone/keystone.go:179` 的 `resume: %v; 重建: %w` 使 `errors.Is(ErrSessionNotFound)` 恒 false；
+2. `wakeFailClass` 三态（timeout/session_not_found/other）缺会话不存在态断言（spec §6 接缝3断言③）。
+
+### 17.1 图查询（亲跑）
+
+```text
+$ codegraph --repo . sym wakeFailClass
+Error: 符号 "wakeFailClass" 不在图中…（记图覆盖债）
+$ codegraph --repo . sym rebuildAfterResumeFailure
+命中 n_keystone_Service_rebuildAfterResumeFailure（internal/keystone/keystone.go:168）
+$ codegraph --repo . sym failResumeKeepingSession
+Error: 符号 "failResumeKeepingSession" 不在图中…（记图覆盖债）
+```
+
+### 17.2 红（亲跑）
+
+新增 `TestB399RebuildFailPreservesResumeErrChain`（keystone）与
+`TestB399WakeFailClassThreeStates` + `TestB399SessionNotFoundRebuildFailWritesClass`（agentd）。
+
+```text
+$ go test ./internal/keystone/ -run TestB399RebuildFailPreservesResumeErrChain -count=1
+--- FAIL: TestB399RebuildFailPreservesResumeErrChain (0.12s)
+    b399_resume_class_test.go:140: 重建失败时错误链必须保留 ErrSessionNotFound（三态可区分）: resume: resume 不可用: keysclient: 会话不存在; 重建: 拉起不可用
+EXIT=1
+
+$ go test ./internal/agentd/ -run 'TestB399WakeFailClassThreeStates|TestB399SessionNotFoundRebuildFailWritesClass' -count=1
+（首跑编译红：drainIgnitionRequest 返回 1 值非 2 —— 夹具签名修正后复跑）
+--- FAIL: TestB399SessionNotFoundRebuildFailWritesClass (0.22s)
+    b399_wake_renewal_test.go:244: 重建失败轮应恰一行 class=session_not_found，实得 0
+EXIT=1
+（TestB399WakeFailClassThreeStates 绿：纯映射表本身正确，红由断链 e2e 承担。）
+```
+
+两处均为断言红（非编译红）：keystone 报文显示哨兵在文本里但链断；agentd e2e 落 0 行 session_not_found。
+
+### 17.3 绿（亲跑）
+
+`keystone.go:179` 改 `resume: %w; 重建: %w`（多 %w 自 Go1.20；go.mod go1.26.1）。
+
+```text
+$ go test ./internal/keystone/ -run TestB399RebuildFailPreservesResumeErrChain -count=1
+ok  	github.com/Xsxdot/handoff/internal/keystone	0.113s   EXIT=0
+$ go test ./internal/agentd/ -run 'TestB399WakeFailClassThreeStates|TestB399SessionNotFoundRebuildFailWritesClass' -count=1
+ok  	github.com/Xsxdot/handoff/internal/agentd	0.202s   EXIT=0
+$ go build ./...
+BUILD_OK
+```
+
+### 17.4 变异自验（两段判定，亲跑）
+
+唯一命中：`grep -c 'resume: %w; 重建: %w' internal/keystone/keystone.go` → COUNT=1。
+
+变异：`%w`→`%v`（仅 resumeErr 槽位，语义变异非删行）。
+
+```text
+$ go build ./internal/keystone/ && echo MUTBUILD_OK
+MUTBUILD_OK
+$ go test ./internal/keystone/ -run TestB399RebuildFailPreservesResumeErrChain -count=1
+--- FAIL: TestB399RebuildFailPreservesResumeErrChain … 必须保留 ErrSessionNotFound…
+FAIL
+$ go test ./internal/agentd/ -run TestB399SessionNotFoundRebuildFailWritesClass -count=1
+--- FAIL: … class=session_not_found，实得 0
+FAIL
+```
+
+变异生效（编译过 + 两处行为红）。还原经 `git checkout --` 后曾短暂回到未修态，已重新落 `%w` 并复绿
+（K_EXIT=0 / A_EXIT=0；`git diff --stat` 仅三文件）。
+
+### 17.5 收口全量（亲跑）
+
+```text
+$ go build ./... → BUILD=0
+$ go vet ./internal/agentd/ ./internal/keystone/ → VET=0
+$ go test ./internal/keystone/ -count=1 → KEYSTONE=0  ok 0.800s  FAIL=0
+$ go test ./internal/agentd/ -count=1 -timeout 400s
+  首跑 AGENTD=1，唯一红 TestPtyWSAttachedBacklogBytesKeyPresent（backlog_bytes=24 期望 0）
+  ——与本改动无关；stash 本改动后基线 -count=3 同样 FAIL（BASE_PTY=1），复现于无改动基线。
+  复跑 AGENTD2=0，FAIL=0，ok 157.794s。
+$ go test ./internal/hostapi/ ./internal/ledger/ -count=1 → HL=0（两包 ok）
+$ go test ./internal/agentd/ -run TestB399 → B399=0；keystone TestB399 → KB399=0
+```
+
+PTY 失败原文：`pty_ws_test.go:123: 新会话 backlog_bytes = 24，期望 0`（单跑 count=3 通过 EXIT=0，
+全量偶发；基线亦红，判定既有 flake，非本卡引入）。
+
+### 17.6 图覆盖债（本节点）
+
+codegraph sym 未命中：`wakeFailClass`、`failResumeKeepingSession`（回退 grep）。
+命中：`rebuildAfterResumeFailure`。
+
+### 17.7 结论纪律自查（本节点）
+
+- 未派发、未调用 handoff CLI、未起新 executor。
+- codegraph 用已安装二进制 /usr/local/bin/codegraph。
+- 临时文件落 $TMPDIR=/root/.handoff/tmp/4876b104。
+- 未访问上轮死亡树；探针先验直接用 prompt。
+- 上列命令与输出均为本节点亲跑原文。
