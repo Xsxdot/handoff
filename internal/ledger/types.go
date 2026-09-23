@@ -51,7 +51,12 @@ const (
 	EvDispatched  = "dispatched"
 	// EvWorkBranchPublished 工作分支已 push 到 origin，下一台机器可以 fetch 续接。
 	EvWorkBranchPublished = "work_branch_published"
-	EvReviewVerdict       = "review_verdict"
+	// EvWorkBranchRegistered 人工登记某卡的工作分支来源（B382）。只在卡上还没有
+	// 非审阅 dispatched 快照时被 WorkBranch 采纳；有快照时快照为权威，本事件只留痕。
+	// 载荷见 WorkBranchRegistration；branch 为空串表示清除登记。追加式事件，老读者
+	// 忽略未知类型即在（与 work_branch_published 同形）。
+	EvWorkBranchRegistered = "work_branch_registered"
+	EvReviewVerdict        = "review_verdict"
 	EvMerged              = "merged"
 	// EvBranchMerged 合并环节把工作分支合进基线并推 origin。与 EvMerged
 	// （卡并入承载卡）是两回事，不可复用。
