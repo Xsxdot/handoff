@@ -461,6 +461,14 @@ handoff card dispatch <id> --step <节点名>   # 走工作流节点（节点名
 handoff card wait <id> [--subtree] [--follow] [--timeout 3h]
 ```
 
+- **新卡首个节点前先确认基线（B400 首派基线护栏）**：卡无显式 `base_branch` 时，基线由
+  项目仓库的**远端默认分支**（`origin/HEAD`）解析；当项目实际工作线不是默认分支（如本仓
+  长期在功能线上、main 落后数百提交）时，首派会被护栏 fail-closed 拒发——文案给出解析到的
+  分支名、缺失的附件路径与改法，卡上不留 dispatched 快照（此刻基线仍可设）。正确姿势是
+  **派发前**先 `handoff card update <卡> --base-branch <工作线>` 显式声明基线；它也是
+  「默认线其实正确、只是附件恰好不在其树上」场景的唯一豁免出口（显式声明即跳过护栏）。
+  首派被拒后卡落 `needs_human(派发失败)`，先 `card update --base-branch` 设基线、再
+  `card needs <卡> --clear`、然后重派同一节点。
 - **裸 `card dispatch`（不带 `--step`）不要用在卡驱动上。** 卡驱动一律走 `--step`
   ——它才带节点语义（自动挂卡、模板与纪律块快照、裁决路由）。占座只走「占座」三颗按钮。
 - `--step` 会自动做三件事：**取得运行锁**（**不写席位**；有席位则出示必须等于席位，
