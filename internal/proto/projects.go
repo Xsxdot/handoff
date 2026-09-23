@@ -322,6 +322,14 @@ type FileWriteResp struct {
 	Size   int64  `json:"size"`
 }
 
+// DropPutResp 是 POST /api/drop 成功时的响应。
+//
+// Path 是对端磁盘上写成的绝对路径（不是 ~ 字面量）。Bytes 是未编码内容长度。
+type DropPutResp struct {
+	Path  string `json:"path"`
+	Bytes int64  `json:"bytes"`
+}
+
 // AddMachineReq 是 POST /api/machines 的请求体。
 //
 // **Token 只进不出**：本结构仅用于反序列化请求。任何响应体、任何日志

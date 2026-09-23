@@ -40,6 +40,13 @@
 - **card wait 持久 cursor / 逐条回放**：建连快照覆盖「挂 wait 前已镜像的子卡工单」；子树成员集动态时 cursor 回放未做。来源：`docs/superpowers/specs/b356.md` Out of Scope（与 B253 同口径）。
 - **图覆盖债**：新增导出 `Store.OpenTickets` / `Store.NeedsReasons` 未写入 `codegraph/baseline.json`（`OpenTicketCounts` 已在图中）。来源：B356 finish，本卡未出视图 diff。
 
+## 来自 B272 spec（2026-09-04）
+
+- **drop 收件箱自动清理**：远端 `$HOME/.handoff/drop/` 会随拖放累积，本期不删。要产品闸（多久、是否提示、是否按会话）。来源：`docs/superpowers/specs/b272.md` Out of Scope。
+- **拖目录到远程终端**：本期只收单文件。递归上传是另一条体积/命名/失败面。来源：同上。
+- **剪贴板粘贴图片到远程终端**：本卡只做拖放；截图后粘贴是另一手势。来源：同上。
+- **本机浏览器对本机终端的拖放**：浏览器没有文件系统路径，同机又不该拷到 drop。来源：同上。
+
 ## 来自 B322 spec（2026-09-04）
 
 - **无引用 PTY 的空闲回收**：修复后 workspace 活会话不再被收编成 tab，ptyhost 里可能留下没人点开的 shell。自动杀掉会误伤后台任务，需要单独的产品闸（空闲多久、是否提示）。来源：`docs/superpowers/specs/b322.md` Out of Scope。
