@@ -90,8 +90,11 @@ wire 字段形状与「零值=无」语义不变（`internal/proto/sessions.go:6
      包内非导出函数即可（无跨包调用方，contract/plan 核）。
   2. 新建旧脸归一符号（读侧，`cli:<名字>@<主机>`/`web:<名字>@<主机>` → `user:<名字>`）
      ← 推导符号内调。
-  3. `memberStatus`（`internal/collab/sessions.go:260`，存量）← `sessionMembers`
-     （`:234`/`:251` 两处调用）——本卡改写其函数体，签名不变。
+   3. `memberStatus`（`internal/collab/sessions.go:260`，存量）← `sessionMembers`
+      （`:234`/`:251` 两处调用）——本卡改写其函数体；实现落地时为携带会话范围推导读数
+      增参 `lastActive time.Time`（review-1 minor 记录，协调者 2026-09-23 追认：返回形状
+      `(string,time.Time)` 不变，调用方 `sessionMembers` 同文件内单遍扫描后传入，无跨包
+      面变化）。
 
 ## 实现决定
 
