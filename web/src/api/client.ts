@@ -165,6 +165,15 @@ export function uploadDropFile(name: string, data: Blob, machine?: string): Prom
   )
 }
 
+// uploadDroppedPath 让本机 agentd 读取访达拖进来的绝对路径，再写入 PTY 所在机器的收件箱。
+// 桌面壳只交路径、不交 File；浏览器拖放仍走 uploadDropFile。
+export function uploadDroppedPath(path: string, machine?: string): Promise<DropPutResp> {
+  return request<DropPutResp>(
+    `/api/drop/local?path=${encodeURIComponent(path)}${machineQuery(machine, '&')}`,
+    { method: 'POST' },
+  )
+}
+
 export function postJSON<T>(path: string, body: unknown): Promise<T> {
   return request<T>(path, {
     method: 'POST',

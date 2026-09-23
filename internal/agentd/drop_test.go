@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"testing"
@@ -133,6 +134,73 @@ func TestDropForwardDeliversBytesToRemote(t *testing.T) {
 	}
 	if !bytes.Equal(raw, payload) {
 		t.Fatalf("远端内容与上传不一致 path=%s n=%d", got.Path, len(raw))
+	}
+}
+
+func TestDropFromPathForwardsLocalFile(t *testing.T) {
+	remoteHome := t.TempDir()
+	useDropHome(t, remoteHome)
+	remote := newTestAgentdEnv(t)
+	local := newTestAgentdEnvWithCfg(t, &config.Config{
+		Token:   testToken,
+		Targets: map[string]config.Target{"devbox": {Addr: remote.ts.URL, Token: testToken}},
+	}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+
+	srcDir := t.TempDir()
+	src := filepath.Join(srcDir, "截图.png")
+	payload := []byte("png-bytes")
+	if err := os.WriteFile(src, payload, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	req, err := http.NewRequest(http.MethodPost,
+		local.ts.URL+"/api/drop/local?path="+url.QueryEscape(src)+"&machine=devbox", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+testToken)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, b)
+	}
+	var got proto.DropPutResp
+	if err := json.NewDecoder(resp.Body).Decode(&got); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(got.Path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, payload) {
+		t.Fatalf("远端内容 = %q，想要 %q", raw, payload)
+	}
+	if filepath.Base(got.Path) != "截图.png" {
+		t.Fatalf("落盘名 = %s", got.Path)
+	}
+}
+
+func TestDropFromPathRejectsDirectory(t *testing.T) {
+	useDropHome(t, t.TempDir())
+	env := newTestAgentdEnv(t)
+	dir := t.TempDir()
+	req, err := http.NewRequest(http.MethodPost,
+		env.ts.URL+"/api/drop/local?path="+url.QueryEscape(dir), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		b, _ := io.ReadAll(resp.Body)
+		t.Fatalf("status=%d body=%s", resp.StatusCode, b)
 	}
 }
 

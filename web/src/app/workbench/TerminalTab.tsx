@@ -28,7 +28,7 @@ import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
-import { createPtySession, deletePtySession, uploadDropFile } from '../../api/client'
+import { createPtySession, deletePtySession, uploadDropFile, uploadDroppedPath } from '../../api/client'
 import { connectPty, type PtyHandle } from '../../api/pty'
 import { describeElement, logTermDrop, logTermFocus, logTermHost, logTermInput, logTermKeepalive, logTermOsc52, logTermResize, logTermWheel, logTermWheelBypass, terminalDebugEnabled } from './terminalDebug'
 import { isTerminalHostResponse, takeLeadingFocusReport } from './terminalHostResponse'
@@ -466,15 +466,33 @@ export function TerminalTab({
     // 走 term.input() 而不是直接 handle.send()：路径因此与手敲的输入合流到同一条
     // onData，取证日志与 WS 未就绪的告警都照常适用，不必在这里重复一遍那些判断。
     const remote = isRemoteTerminal(base)
+    // 访达拖进桌面壳时，Wails 的拖放层把这次拖放吃掉，页面只收到绝对路径，
+    // HTML5 File 不会再到。远程终端不能把本机路径敲进对端，改由本机 agentd 读盘再转发。
     const unregisterDrop = registerFileDropTarget({
       host,
       accept: (paths) => {
-        if (remote) {
-          logTermDrop(label, 'native-skip', { 原因: 'remote' })
+        if (!remote) {
+          term.focus()
+          term.input(`${paths.map(shellQuote).join(' ')} `)
           return
         }
-        term.focus()
-        term.input(`${paths.map(shellQuote).join(' ')} `)
+        logTermDrop(label, 'native-read', { 个数: paths.length, machine: base.machine })
+        setDropNotice({ kind: 'progress', text: '正在传到对端…' })
+        void (async () => {
+          let lastError: string | null = null
+          for (const path of paths) {
+            try {
+              const res = await uploadDroppedPath(path, base.machine || undefined)
+              term.focus()
+              term.input(`${shellQuote(res.path)} `)
+              logTermDrop(label, 'ok', { path: res.path, bytes: res.bytes })
+            } catch (err) {
+              lastError = errorMessage(err)
+              logTermDrop(label, 'fail', { name: path, 原因: lastError })
+            }
+          }
+          setDropNotice(lastError ? { kind: 'error', text: lastError } : null)
+        })()
       },
     })
 

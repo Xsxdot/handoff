@@ -58,10 +58,12 @@ const createPtySession = vi.fn()
 const deletePtySession = vi.fn()
 const connectPty = vi.fn()
 const uploadDropFile = vi.fn()
+const uploadDroppedPath = vi.fn()
 vi.mock('../../api/client', () => ({
   createPtySession: (...a: unknown[]) => createPtySession(...a),
   deletePtySession: (...a: unknown[]) => deletePtySession(...a),
   uploadDropFile: (...a: unknown[]) => uploadDropFile(...a),
+  uploadDroppedPath: (...a: unknown[]) => uploadDroppedPath(...a),
 }))
 
 let nativeAccept: ((paths: string[]) => void) | undefined
@@ -119,6 +121,7 @@ beforeEach(() => {
   deletePtySession.mockResolvedValue({ ok: true })
   connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
   uploadDropFile.mockResolvedValue({ path: '/home/dev/.handoff/drop/photo.png', bytes: 3 })
+  uploadDroppedPath.mockResolvedValue({ path: '/home/dev/.handoff/drop/photo.png', bytes: 3 })
   nativeAccept = undefined
 })
 
@@ -919,12 +922,14 @@ describe('TerminalTab 建连时重申尺寸', () => {
     await waitFor(() => expect(termInstance.input).toHaveBeenCalledWith('/home/dev/.handoff/drop/photo.png '))
   })
 
-  it('跨机原生 accept 不插入本机路径', async () => {
+  it('跨机原生拖放按本机路径上传，不插入访达路径', async () => {
     render(<TerminalTab base={REMOTE} seq={1} sessionId="s" onSession={vi.fn()} />)
     await waitFor(() => expect(nativeAccept).toBeTypeOf('function'))
-    nativeAccept!(['/Users/me/photo.png'])
+    nativeAccept!(['/Users/me/截图.png'])
+    await waitFor(() => expect(uploadDroppedPath).toHaveBeenCalledWith('/Users/me/截图.png', 'devbox'))
     expect(uploadDropFile).not.toHaveBeenCalled()
-    expect(termInstance.input).not.toHaveBeenCalled()
+    await waitFor(() => expect(termInstance.input).toHaveBeenCalledWith('/home/dev/.handoff/drop/photo.png '))
+    expect(termInstance.input).not.toHaveBeenCalledWith(expect.stringContaining('/Users/me'))
   })
 
   it('同机 HTML5 拖放不上传', async () => {

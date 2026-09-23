@@ -14,15 +14,89 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
+	"path/filepath"
 
 	"github.com/Xsxdot/handoff/internal/dropdir"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
+// errDropBadPath 是本机路径上传收到的非绝对路径。
+var errDropBadPath = errors.New("路径无效")
+
 // homeDir 取写入目标的 HOME。测试替换它，避免把 t.TempDir 设成进程 HOME
 // 把 go 模块缓存在用例目录里、清理失败。
 var homeDir = os.UserHomeDir
+
+// handleDropFromPath 处理 POST /api/drop/local?path=&machine=。
+//
+// 桌面壳的访达拖放只把绝对路径交给页面，WKWebView 拿不到 File。
+// 页面把路径交回本机 agentd，由这里读盘再走和 POST /api/drop 相同的落盘或转发。
+func (s *Server) handleDropFromPath(w http.ResponseWriter, r *http.Request) {
+	src := r.URL.Query().Get("path")
+	name, body, err := readDroppedLocalFile(src)
+	if err != nil {
+		s.writeLocalDropError(w, src, err)
+		return
+	}
+	q := url.Values{}
+	q.Set("name", name)
+	if machine := r.URL.Query().Get("machine"); machine != "" {
+		q.Set("machine", machine)
+	}
+	req := r.Clone(r.Context())
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	req.ContentLength = int64(len(body))
+	req.URL = &url.URL{Path: "/api/drop", RawQuery: q.Encode()}
+	req.Header = r.Header.Clone()
+	req.Header.Set("Content-Type", "application/octet-stream")
+	if s.forwardDropIfRequested(w, req) {
+		return
+	}
+	s.putDrop(w, name, body)
+}
+
+// readDroppedLocalFile 读取用户刚拖进来的本机普通文件。
+// 拒绝相对路径、目录和非普通文件，并按未编码字节套用 dropdir 上限。
+func readDroppedLocalFile(path string) (string, []byte, error) {
+	if path == "" || !filepath.IsAbs(path) {
+		return "", nil, errDropBadPath
+	}
+	path = filepath.Clean(path)
+	st, err := os.Stat(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if !st.Mode().IsRegular() {
+		return "", nil, dropdir.ErrNotFile
+	}
+	if st.Size() > dropdir.MaxBytes {
+		return "", nil, dropdir.ErrTooLarge
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		return "", nil, err
+	}
+	if int64(len(body)) > dropdir.MaxBytes {
+		return "", nil, dropdir.ErrTooLarge
+	}
+	return filepath.Base(path), body, nil
+}
+
+func (s *Server) writeLocalDropError(w http.ResponseWriter, path string, err error) {
+	base := filepath.Base(path)
+	switch {
+	case errors.Is(err, errDropBadPath):
+		s.log.Warn("drop 本机路径拒绝", "name", base, "cause", err)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "路径无效"})
+	case errors.Is(err, os.ErrNotExist):
+		s.log.Warn("drop 本机路径不存在", "name", base)
+		writeJSON(w, http.StatusBadRequest, map[string]string{"error": "读不到这个文件"})
+	default:
+		s.writeDropError(w, base, err)
+	}
+}
 
 // handleDropPut 处理 POST /api/drop?name=[&machine=]。
 //
@@ -38,12 +112,6 @@ func (s *Server) handleDropPut(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "文件超过 32 MiB"})
 		return
 	}
-	home, err := homeDir()
-	if err != nil || home == "" {
-		s.log.Error("drop 上传失败：取 HOME", "cause", err)
-		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法确定 HOME"})
-		return
-	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, dropdir.MaxBytes+1))
 	if err != nil {
 		s.log.Error("drop 上传读取失败", "name", name, "cause", err)
@@ -53,6 +121,16 @@ func (s *Server) handleDropPut(w http.ResponseWriter, r *http.Request) {
 	if int64(len(body)) > dropdir.MaxBytes {
 		s.log.Warn("drop 上传拒绝：体超限", "name", name, "bytes", len(body))
 		writeJSON(w, http.StatusRequestEntityTooLarge, map[string]string{"error": "文件超过 32 MiB"})
+		return
+	}
+	s.putDrop(w, name, body)
+}
+
+func (s *Server) putDrop(w http.ResponseWriter, name string, body []byte) {
+	home, err := homeDir()
+	if err != nil || home == "" {
+		s.log.Error("drop 上传失败：取 HOME", "cause", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": "无法确定 HOME"})
 		return
 	}
 	path, n, err := dropdir.Put(home, name, bytes.NewReader(body))
