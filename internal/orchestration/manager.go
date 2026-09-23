@@ -2574,9 +2574,12 @@ func (m *Manager) approvePermission(taskID, ticketID, permID, permission, fp, re
 		m.countApproverFail(taskID)
 		return
 	}
-	if _, err := m.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
+	if evt, err := m.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
 		TicketAnsweredPayload{TicketID: ticketID, Answer: "allow"}); err != nil {
 		m.log.Warn("审批者批准：追加工单答复事件失败", "task", taskID, "ticket", ticketID, "cause", err)
+	} else {
+		// 关单进实时流（B380 C-1）：客户端不可交付、不唤醒 wait，但账本镜像靠它关单
+		m.hub.Publish(evt)
 	}
 	ad, err := m.adapterFor(taskID)
 	if err != nil {

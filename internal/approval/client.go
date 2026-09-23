@@ -427,11 +427,14 @@ func (c *Client) consult(ctx context.Context, ev executor.AdapterEvent) (executo
 		}
 		return c.escalate(ctx, ev, "审批者工单应答失败")
 	}
-	if _, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypeTicketAnswered, ticketAnsweredPayload{
+	if evt, err := c.hooks.Store.AppendEvent(c.taskID, proto.EventTypeTicketAnswered, ticketAnsweredPayload{
 		TicketID: ticketID,
 		Answer:   "allow",
 	}); err != nil {
 		c.logger().Warn("审批者批准：追加工单答复事件失败", "task", c.taskID, "ticket", ticketID, "cause", err)
+	} else if c.hooks.Hub != nil {
+		// 关单进实时流（B380 C-1）：复用既有 nil 安全事件缝；客户端不可交付、不唤醒 wait
+		c.hooks.Hub.Publish(evt)
 	}
 	// 送达时间戳归 Acknowledge(AckDelivered)（B233.7 第 58 条 / 冻结 #5、#7）；
 	// 本函数只负责形成并持久化决定，绝不在此写 delivered_at。

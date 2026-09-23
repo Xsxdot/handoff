@@ -101,9 +101,11 @@ func (m *Manager) UpdateProjectLocation(name, newName, newPath string) (proto.Pr
 //   - applied=false, err=nil：同值重答（幂等），调用方按 200 + idempotent 应答
 //   - store.ErrTicketConflict / store.ErrNotFound：原样透出（不许重包装，会断 errors.Is）
 //
-// 为什么只 AppendEvent 不 hub.Publish：与现状 gateway.handleReply 及编排内
-// approvePermission 逐字一致；唤醒 executor 由 gateway 侧 hub.NotifyAnswer 承担
-// （contract C-3）。事件只落库，attach/wait 从事件表读。
+// 为什么 AppendEvent 成功后补 hub.Publish（B380 C-1）：ticket_answered 在客户端
+// 不可交付（client.WaitDeliveryPolicy 已列为 false），发布它不会唤醒任何
+// wait/唤醒消费；但账本镜像只镜像 hub 实时流（internal/ledgermirror），不发布
+// 就会让关单镜像断流，OpenTickets 重放出幽灵未决单。唤醒 executor 仍由 gateway
+// 侧 hub.NotifyAnswer 承担（contract C-3）。
 func (m *Manager) AnswerTicket(ctx context.Context, taskID, ticketID, answer string) (applied bool, err error) {
 	m.log.Info("工单应答门面进入", "task", taskID, "ticket", ticketID)
 	tk, err := m.st.GetTicket(ticketID)
@@ -122,10 +124,13 @@ func (m *Manager) AnswerTicket(ctx context.Context, taskID, ticketID, answer str
 		m.log.Info("工单应答幂等（同值重答）", "task", taskID, "ticket", ticketID)
 		return false, nil
 	}
-	if _, aerr := m.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
-		TicketAnsweredPayload{TicketID: ticketID, Answer: answer}); aerr != nil {
-		// 与现状一致：事件追加失败只 Warn，不阻断应答成功
+	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeTicketAnswered,
+		TicketAnsweredPayload{TicketID: ticketID, Answer: answer})
+	if aerr != nil {
+		// 事件追加失败只 Warn，不阻断应答成功；发布也一并跳过（无事件可发）
 		m.log.Warn("追加工单答复事件失败", "task", taskID, "ticket", ticketID, "cause", aerr)
+	} else {
+		m.hub.Publish(evt)
 	}
 	m.log.Info("工单应答完成", "task", taskID, "ticket", ticketID)
 	return true, nil

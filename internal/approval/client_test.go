@@ -649,6 +649,57 @@ func TestClientJudgeEscalateKeepsReasonWhenDisabled(t *testing.T) {
 	}
 }
 
+// TestB380ConsultApprovalPublishesTicketAnswered 锁 B380 C-1 的 approval 发布点：
+// 审批者批准消耗工单后，ticket_answered 必须经既有 Hooks.Hub 事件缝发布
+// （账本镜像靠它关单）。Hub 为 nil 时只入库、不 panic、行为同现状。
+func TestB380ConsultApprovalPublishesTicketAnswered(t *testing.T) {
+	_, hub, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true,
+		func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{Approve: true, Reason: "approved by fixture"}
+		})
+	res, err := client.Request(context.Background(), permissionRequest("native-b380", "python3 script.py"))
+	if err != nil {
+		t.Fatalf("Request: %v", err)
+	}
+	var published []proto.Event
+	for _, ev := range hub.published() {
+		if ev.Type == proto.EventTypeTicketAnswered {
+			published = append(published, ev)
+		}
+	}
+	if len(published) != 1 {
+		t.Fatalf("审批者批准应恰好发布一条 ticket_answered，实得 %d（全部 %+v）", len(published), hub.published())
+	}
+	got := payloadMap(t, published[0].Payload)
+	if got["ticket_id"] != res.Ref.ID || got["answer"] != "allow" {
+		t.Fatalf("发布 payload=%v, want ticket_id=%s answer=allow", got, res.Ref.ID)
+	}
+}
+
+// TestB380ConsultApprovalNilHubNoPanic 锁 B380 的 nil 安全：Hooks.Hub 为 nil 时
+// 审批者批准仍只入库不 panic——旧装配不破坏。
+func TestB380ConsultApprovalNilHubNoPanic(t *testing.T) {
+	st, _, client, _ := newClientFixture(t, permgate.Verdict{Action: permgate.Consult}, true,
+		func(context.Context, string, string) approval.ConsultDecision {
+			return approval.ConsultDecision{Approve: true, Reason: "approved by fixture"}
+		})
+	client = approval.NewClient("task-client-fixture", executor.PolicySnapshot{Version: "v1"},
+		approval.Hooks{
+			Store: st,
+			JudgePermission: func(string, executor.AdapterEvent) permgate.Verdict {
+				return permgate.Verdict{Action: permgate.Consult}
+			},
+			ShouldConsult: func(string) bool { return true },
+			Decide: func(context.Context, string, string) approval.ConsultDecision {
+				return approval.ConsultDecision{Approve: true, Reason: "approved by fixture"}
+			},
+		})
+	res, err := client.Request(context.Background(), permissionRequest("native-b380-nilhub", "python3 script.py"))
+	if err != nil || res.Decision.Status != executor.ApprovalAllow {
+		t.Fatalf("nil Hub 下审批者批准应照常放行: res=%+v err=%v", res, err)
+	}
+}
+
 func TestClientNoteDeliveryFailedTaskIsolation(t *testing.T) {
 	_, _, client, calls := newClientFixture(t, permgate.Verdict{Action: permgate.Escalate}, false, nil)
 	cause := errors.New("respond failed")

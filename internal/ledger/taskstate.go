@@ -185,7 +185,14 @@ func (s *Store) OpenTickets() ([]OpenTicket, error) {
 			if ticket.TicketID != "" {
 				delete(open, keyOf(ticket.TicketID))
 			}
-		case evTicketsVoided:
+		case evTicketsVoided, "completed", "failed", "archived":
+			// tickets_voided：任务终结时作废其剩余挂起单。
+			//
+			// completed/failed/archived 是终态镜像关单（B380 C-2）：任务一旦进
+			// 终态，名下不可能再有合法未决工单。这既让存量幽灵单随重放自愈，
+			// 也为未来任何漏发关单事件的路径兜底。注意 completed 在订阅视角
+			// 仍算在飞（mirrorTaskTerminal 只收 archived/failed），两者语义不同、
+			// 不得合并。
 			for key := range open {
 				if key.cardID == cardID && key.target == target && key.taskID == taskID {
 					delete(open, key)

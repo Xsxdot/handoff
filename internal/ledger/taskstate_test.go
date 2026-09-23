@@ -168,6 +168,71 @@ func TestOpenTicketCounts(t *testing.T) {
 	}
 }
 
+// TestOpenTicketsTerminalMirrorClosesAll 锁 B380 C-2：任务终态镜像
+// （completed / failed / archived）一到，该任务名下全部未决工单清零。
+// 这是存量幽灵单的自愈路径，也是关单镜像再断流时的兜底。
+func TestOpenTicketsTerminalMirrorClosesAll(t *testing.T) {
+	for _, terminal := range []string{"completed", "failed", "archived"} {
+		t.Run(terminal, func(t *testing.T) {
+			s := seedStore(t)
+			c := mk(t, s, "终态关单-"+terminal)
+			task := "T-" + terminal
+			if err := s.LinkTask(c.ID, "mac-02", task, "implement", "t"); err != nil {
+				t.Fatal(err)
+			}
+			seq := int64(0)
+			put := func(typ, payload string) {
+				seq++
+				if _, err := s.AppendMirroredEvent(c.ID, MirroredEvent{Target: "mac-02", Task: task,
+					SourceSeq: seq, Type: typ, Payload: []byte(payload), CreatedAt: time.Now()}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			put(evTicketCreated, `{"ticket_id":"q1"}`)
+			put(evTicketQuestion, `{"ticket_id":"q2"}`)
+			if counts, err := s.OpenTicketCounts(); err != nil || counts[c.ID] != 2 {
+				t.Fatalf("终态前应两单未决: %v %+v", err, counts)
+			}
+			put(terminal, `{}`)
+			open, err := s.OpenTickets()
+			if err != nil {
+				t.Fatalf("OpenTickets: %v", err)
+			}
+			for _, ticket := range open {
+				if ticket.CardID == c.ID {
+					t.Fatalf("%s 终态后仍留未决单: %+v", terminal, ticket)
+				}
+			}
+		})
+	}
+}
+
+// TestOpenTicketsTerminalBeforeAnswerDoesNotResurrect 锁 B380 C-2 的边界：
+// 终态镜像的 ledger seq 早于答复事件时（seq 先后颠倒），答复不得让已清空的
+// 工单复活。
+func TestOpenTicketsTerminalBeforeAnswerDoesNotResurrect(t *testing.T) {
+	s := seedStore(t)
+	c := mk(t, s, "终态先于答复")
+	if err := s.LinkTask(c.ID, "mac-02", "T1", "implement", "t"); err != nil {
+		t.Fatal(err)
+	}
+	seq := int64(0)
+	put := func(typ, payload string) {
+		seq++
+		if _, err := s.AppendMirroredEvent(c.ID, MirroredEvent{Target: "mac-02", Task: "T1",
+			SourceSeq: seq, Type: typ, Payload: []byte(payload), CreatedAt: time.Now()}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put(evTicketCreated, `{"ticket_id":"q1"}`)
+	put("archived", `{}`)
+	put(evTicketAnswered, `{"ticket_id":"q1"}`)
+	counts, err := s.OpenTicketCounts()
+	if err != nil || counts[c.ID] != 0 {
+		t.Fatalf("终态后答复不应复活工单: %v %+v", err, counts)
+	}
+}
+
 func TestCardStepInFlightNoEvents(t *testing.T) {
 	s := seedStore(t)
 	inFlight, err := s.CardStepInFlight("B167")

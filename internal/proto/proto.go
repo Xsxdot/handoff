@@ -102,7 +102,10 @@ const (
 	// completed/failed 同时刻产生，可交付就会抢走一次性 wait 的收手权。
 	EventTypeTicketsVoided EventType = "tickets_voided"
 	// EventTypeTicketAnswered 是 reply/审批者自动批准消耗工单后的审计事件。
-	// 它供账本镜像回放清除对应的未决工单，不唤醒 wait（应答回程另有 hub）。
+	//
+	// **会 Publish**（B380）：关单要靠它进账本镜像实时流，否则镜像断流会在
+	// 卡流投影出幽灵未决单；但在客户端不可交付（见 client.WaitDeliveryPolicy）
+	// ——发布它不唤醒任何 wait/唤醒消费，应答回程另有 hub.NotifyAnswer。
 	EventTypeTicketAnswered EventType = "ticket_answered"
 	// EventTypeArchived 是任务被 done 归档时追加的终态事件，payload 为 ArchivedPayload。
 	//
