@@ -191,3 +191,12 @@ ok  	github.com/Xsxdot/handoff/internal/approval
 - **文档同步**：`README.md:435` 与 `skills/handoff/SKILL.md:95` 把七类放一起说「不唤醒 / 只入库」；C-1 后 `ticket_answered` 会 Publish 但仍不可交付，**「只入库」措辞对该事件不再准确**。plan 出稿时核对同步（`proto.go` 注记已在骨架内修订）。
 - **实现形态**：发布分支用 `if err != nil { Warn } else { Publish }`，不提前 return；`approval` 侧多一层 `c.hooks.Hub != nil` 守卫（旧装配）。无导出符号变化、无新字段。
 - **台账落点**：`docs/superpowers/ledgers/2026-09-23-b380-contract-ledger.md`（与本节点产出同批提交）。
+
+## 9. 修订记录（breakdown 出稿轮，2026-09-23）
+
+来源：`docs/superpowers/specs/b380-breakdown.md` §2.1/§2.4（不退回 contract，只记边界事实与状态位缺失）：
+
+1. **域归属按图修正**：`internal/approval` 在 `codegraph/best.json` 归 `d_orchestration`（`n_approval_Client_consult → d_orchestration`）。故本契约标题所称「L2 单子系统（orchestration + approval + ledger）」在图上是**两个逻辑顶层域**（`d_orchestration`、`d_ledger`）+ 一处 `d_protocol` 注释改动。**定级不改**，仅记图事实。
+2. **消费面域归属补记**：`cmd/card_wait.go#encodeCardWaitSnapshot` 属 `d_cli`（图外），`internal/agentd/ledgerapi.go#Server.handleCardsList` 属 `d_gateway`；两者本卡零改动。
+3. **C-1 必要性链路证据**：镜像走 `internal/client/client.go#Client.StreamEventsOnce`（不过 `WaitDeliveryPolicy`）且 `internal/ledgermirror/mirror.go` 的 `mirrorSkip` 不含 `ticket_answered` → 发布即进镜像。
+4. **状态位缺失（待协调者处置）**：本契约头部**无「冻结状态」行**（对比 `b370-contract.md`/`b374-contract.md`）；上游 spec `docs/superpowers/specs/b380.md` **不在本工作树/本分支/合并目标**，仅可达于 `origin/cards/B380-charter-1 @117bbd5a`（草稿 `68035fa3`，头部「上游状态：已批准」）。合并时是否把 spec 并入合并目标由协调者定；否则合并后上链引用悬空。
