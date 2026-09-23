@@ -435,7 +435,9 @@ Task wait/follow filters the same seven audit types at the application consumer:
 `ticket_answered`, `permission_auto_allow`, and `permission_reuse`. Every other
 existing task event—including `delivery_failed`, `stalled`, `approval_dropped`,
 `archived`, and pressure alerts—is actionable; `delivery_failed` means run
-`handoff resume <task>`.
+`handoff resume <task>`. Note `ticket_answered` is still published to the live
+event stream so the ledger mirror can close tickets (B380); it stays
+non-deliverable to wait — filtered here, not at the source.
 
 Card wait applies that task policy after unpacking `task_mirrored` and additionally
 wakes for `needs_human`, `needs_cleared`, `decision_opened`, `decision_answered`,

@@ -92,8 +92,10 @@ handoff wait <task> --notify --timeout 1h
 无人值守时务必带 `--timeout`：它是配置错误的最后一道防线，退出码 124 可以和真失败区分开。
 
 `progress` / `approver_decision` / `approver_disabled` / `tickets_voided` /
-`ticket_answered` / `permission_auto_allow` / `permission_reuse` 七类事件**不会**唤醒
-`wait`（只入库）。任务流的集合外全是可动作事件，包括 `delivery_failed`、`stalled`、
+`permission_auto_allow` / `permission_reuse` 六类事件**不会**唤醒 `wait`（只入库）。
+`ticket_answered` 同样**不会**唤醒 `wait`，但它**会 Publish 进实时流**（B380）：
+它要进事件流供账本镜像投影关单，只是客户端不可交付——「不唤醒」不等于「只入库」。
+任务流的集合外全是可动作事件，包括 `delivery_failed`、`stalled`、
 `approval_dropped`、`archived` 和压力告警；`delivery_failed` 要去
 `handoff resume <task>`。审计事件仍可在 `show` 的事件历史里对质。
 
