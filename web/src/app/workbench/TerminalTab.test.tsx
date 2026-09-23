@@ -57,10 +57,26 @@ vi.mock('@xterm/addon-webgl', () => ({ WebglAddon: vi.fn(function () { return we
 const createPtySession = vi.fn()
 const deletePtySession = vi.fn()
 const connectPty = vi.fn()
+const uploadDropFile = vi.fn()
+const uploadDroppedPath = vi.fn()
 vi.mock('../../api/client', () => ({
   createPtySession: (...a: unknown[]) => createPtySession(...a),
   deletePtySession: (...a: unknown[]) => deletePtySession(...a),
+  uploadDropFile: (...a: unknown[]) => uploadDropFile(...a),
+  uploadDroppedPath: (...a: unknown[]) => uploadDroppedPath(...a),
 }))
+
+let nativeAccept: ((paths: string[]) => void) | undefined
+vi.mock('../lib/desktopFileDrop', async () => {
+  const actual = await vi.importActual<typeof import('../lib/desktopFileDrop')>('../lib/desktopFileDrop')
+  return {
+    ...actual,
+    registerFileDropTarget: ({ accept }: { accept: (paths: string[]) => void }) => {
+      nativeAccept = accept
+      return () => { nativeAccept = undefined }
+    },
+  }
+})
 vi.mock('../../api/pty', () => ({ connectPty: (...a: unknown[]) => connectPty(...a) }))
 
 const WS: BaseDir = {
@@ -69,6 +85,9 @@ const WS: BaseDir = {
 }
 const HOME: BaseDir = {
   key: '~', kind: 'home', path: '~', label: 'home', projectName: '', machine: '',
+}
+const REMOTE: BaseDir = {
+  ...WS, machine: 'devbox', key: 'devbox:/home/dev/handoff',
 }
 
 // roCallbacks 收着组件注册的 ResizeObserver 回调，测试用它模拟「容器尺寸变了」。
@@ -101,6 +120,9 @@ beforeEach(() => {
   createPtySession.mockResolvedValue({ id: 'new-1', base_path: WS.path })
   deletePtySession.mockResolvedValue({ ok: true })
   connectPty.mockReturnValue({ close: vi.fn(), send: vi.fn(), resize: vi.fn() })
+  uploadDropFile.mockResolvedValue({ path: '/home/dev/.handoff/drop/photo.png', bytes: 3 })
+  uploadDroppedPath.mockResolvedValue({ path: '/home/dev/.handoff/drop/photo.png', bytes: 3 })
+  nativeAccept = undefined
 })
 
 describe('TerminalTab', () => {
@@ -871,5 +893,64 @@ describe('TerminalTab 建连时重申尺寸', () => {
     render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} />)
     await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
     expect(screen.queryByTestId('mobile-keybar')).toBeNull()
+  })
+
+  function dropFiles(host: HTMLElement, file: File, directory = false) {
+    const item = {
+      kind: 'file',
+      type: file.type,
+      getAsFile: () => file,
+      webkitGetAsEntry: () => ({ isFile: !directory, isDirectory: directory }),
+    }
+    const dataTransfer = {
+      files: [file],
+      items: [item],
+      types: ['Files'],
+      dropEffect: 'copy',
+    }
+    fireEvent.dragOver(host, { dataTransfer })
+    fireEvent.drop(host, { dataTransfer })
+  }
+
+  it('跨机 HTML5 拖放上传后插入对端路径', async () => {
+    render(<TerminalTab base={REMOTE} seq={1} sessionId="s" onSession={vi.fn()} />)
+    const host = screen.getByTestId('pty-host')
+    const file = new File(['png'], 'photo.png', { type: 'image/png' })
+    dropFiles(host, file)
+    await waitFor(() => expect(uploadDropFile).toHaveBeenCalledTimes(1))
+    expect(uploadDropFile).toHaveBeenCalledWith('photo.png', file, 'devbox')
+    await waitFor(() => expect(termInstance.input).toHaveBeenCalledWith('/home/dev/.handoff/drop/photo.png '))
+  })
+
+  it('跨机原生拖放按本机路径上传，不插入访达路径', async () => {
+    render(<TerminalTab base={REMOTE} seq={1} sessionId="s" onSession={vi.fn()} />)
+    await waitFor(() => expect(nativeAccept).toBeTypeOf('function'))
+    nativeAccept!(['/Users/me/截图.png'])
+    await waitFor(() => expect(uploadDroppedPath).toHaveBeenCalledWith('/Users/me/截图.png', 'devbox'))
+    expect(uploadDropFile).not.toHaveBeenCalled()
+    await waitFor(() => expect(termInstance.input).toHaveBeenCalledWith('/home/dev/.handoff/drop/photo.png '))
+    expect(termInstance.input).not.toHaveBeenCalledWith(expect.stringContaining('/Users/me'))
+  })
+
+  it('同机 HTML5 拖放不上传', async () => {
+    render(<TerminalTab base={WS} seq={1} sessionId="s" onSession={vi.fn()} />)
+    dropFiles(screen.getByTestId('pty-host'), new File(['x'], 'a.txt', { type: 'text/plain' }))
+    expect(uploadDropFile).not.toHaveBeenCalled()
+  })
+
+  it('拖目录可见拒绝且不上传', async () => {
+    render(<TerminalTab base={REMOTE} seq={1} sessionId="s" onSession={vi.fn()} />)
+    dropFiles(screen.getByTestId('pty-host'), new File([], 'folder'), true)
+    expect(uploadDropFile).not.toHaveBeenCalled()
+    expect(termInstance.input).not.toHaveBeenCalled()
+    expect(await screen.findByTestId('drop-notice')).toHaveTextContent('不能上传目录')
+  })
+
+  it('上传失败不插路径并给出错误', async () => {
+    uploadDropFile.mockRejectedValueOnce(new Error('磁盘满'))
+    render(<TerminalTab base={REMOTE} seq={1} sessionId="s" onSession={vi.fn()} />)
+    dropFiles(screen.getByTestId('pty-host'), new File(['png'], 'photo.png', { type: 'image/png' }))
+    expect(await screen.findByTestId('drop-notice')).toHaveTextContent('磁盘满')
+    expect(termInstance.input).not.toHaveBeenCalled()
   })
 })

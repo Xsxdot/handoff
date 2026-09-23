@@ -146,6 +146,12 @@ type WorkBranchInfo struct {
 	TaskID string
 }
 
+// WorkBranchRegistration 人工登记工作分支事件的载荷。
+// Branch 为空串表示清除登记（清除也落事件，留审计痕迹）。
+type WorkBranchRegistration struct {
+	Branch string `json:"branch"`
+}
+
 // RecordDispatch 落派发事件。
 func (s *Store) RecordDispatch(cardID string, snap DispatchSnapshot) error {
 	return s.mutate(func(tx *sql.Tx, sink *eventSink) error {
@@ -567,26 +573,24 @@ func (s *Store) Subtree(rootID string) ([]string, error) {
 	return out, rows.Err()
 }
 
-// WorkBranch 卡的工作分支：最近一次**非审阅**派发所用的分支。
-// 审阅是只读的、跑在工作分支上，不新开分支——所以「卡的分支」这个问题
-// 的答案必须跳过审阅轮，否则合并节点会去合一条审阅分支，而第二轮审阅
-// 会撞上第一轮的同名分支（真机实测：fatal: a branch named ... already exists）。
-// 老快照没有 purpose 字段时回落到挂账表按 task_id 查用途。
-func (s *Store) WorkBranch(cardID string) (WorkBranchInfo, error) {
-	var zero WorkBranchInfo
+// nonReviewDispatch 返回卡最后一条**非审阅** dispatched 快照，并报告卡上是否
+// 存在过这样的快照。老快照没有 purpose 字段时回落到挂账表按 task_id 查用途。
+// 它是 WorkBranch 与 RegisterWorkBranch 共用的唯一用途判定，避免两处漂移。
+func (s *Store) nonReviewDispatch(cardID string) (WorkBranchInfo, bool, error) {
 	events, err := s.EventsFromAsc([]string{cardID}, 0, 10000)
 	if err != nil {
-		return zero, fmt.Errorf("读卡 dispatched 事件: %w", err)
+		return WorkBranchInfo{}, false, fmt.Errorf("读卡 dispatched 事件: %w", err)
 	}
 	links, err := s.TasksOf(cardID)
 	if err != nil {
-		return zero, err
+		return WorkBranchInfo{}, false, err
 	}
 	purposeOf := map[string]string{}
 	for _, link := range links {
 		purposeOf[link.TaskID] = link.Purpose
 	}
 	info := WorkBranchInfo{}
+	has := false
 	for _, event := range events {
 		if event.Type != EvDispatched {
 			continue
@@ -602,14 +606,98 @@ func (s *Store) WorkBranch(cardID string) (WorkBranchInfo, error) {
 		if purpose == PurposeReview {
 			continue
 		}
+		has = true
 		if snapshot.Branch != "" {
 			info = WorkBranchInfo{Branch: snapshot.Branch, Target: snapshot.Target, TaskID: snapshot.TaskID}
 		}
 	}
-	if info.Branch == "" {
-		return zero, fmt.Errorf("卡 %s 没有非审阅的 dispatched 快照（还没派过实现轮？）: %w", cardID, ErrNotFound)
+	return info, has, nil
+}
+
+// lastWorkBranchRegistration 返回卡最后一条 work_branch_registered 事件的
+// branch；无登记或最后一条是清除（空串）都返回空串（最后一条胜，spec §5）。
+func (s *Store) lastWorkBranchRegistration(cardID string) (string, error) {
+	events, err := s.EventsFromAsc([]string{cardID}, 0, 10000)
+	if err != nil {
+		return "", fmt.Errorf("读卡工作分支登记事件: %w", err)
 	}
-	return info, nil
+	branch := ""
+	for _, event := range events {
+		if event.Type != EvWorkBranchRegistered {
+			continue
+		}
+		var payload WorkBranchRegistration
+		if err := json.Unmarshal(event.Payload, &payload); err != nil {
+			continue
+		}
+		branch = strings.TrimSpace(payload.Branch)
+	}
+	return branch, nil
+}
+
+// RegisterWorkBranch 人工登记（或覆盖、清除）卡的工作分支来源（B382）。
+//
+// 参数：cardID 卡号；branch 工作分支名，空串（含纯空白）= 清除登记；actor 审计身份。
+// 返回：applied 表示本次登记是否落在**生效范围**内（卡上还没有任何非审阅 dispatched
+// 快照）。有快照时登记仍落事件留痕，但 WorkBranch 不采纳——返回 applied=false，
+// 由调用方提示；本方法不因此报错（spec §5「不报错、不进判据」）。
+//
+// 为什么允许覆盖且最后一条胜：人工可能登记错分支，重新登记即可纠正；清除同样留事件
+// （空 branch），事件流因此完整记录「谁、何时、登记成哪条」。
+//
+// 注意：applied 只是调用方的提示位，不参与 WorkBranch 的裁决；WorkBranch 每次读都按
+// 「快照存在即为权威」重新判定，故与写入并发时 applied 陈旧不会改变查询结果。
+func (s *Store) RegisterWorkBranch(cardID, branch, actor string) (bool, error) {
+	branch = strings.TrimSpace(branch)
+	_, hasSnapshot, err := s.nonReviewDispatch(cardID)
+	if err != nil {
+		return false, err
+	}
+	err = s.mutate(func(tx *sql.Tx, sink *eventSink) error {
+		if _, err := getCardTx(s, tx, cardID); err != nil {
+			return fmt.Errorf("登记工作分支: 卡 %s: %w", cardID, err)
+		}
+		_, err := s.appendEvent(tx, sink, cardID, EvWorkBranchRegistered, actor,
+			WorkBranchRegistration{Branch: branch})
+		return err
+	})
+	if err != nil {
+		return false, err
+	}
+	applied := !hasSnapshot
+	log().Info("工作分支登记已落账", "card", cardID, "branch", branch,
+		"applied", applied, "actor", actor)
+	return applied, nil
+}
+
+// WorkBranch 卡的工作分支：来源顺序为**非审阅 dispatched 快照 → 人工登记 → 报错**。
+//
+// 审阅只读、跑在工作分支上不新开分支，所以「卡的分支」的答案必须跳过审阅轮；人工在
+// 本机实现（没有任何 dispatched 快照）的卡没有快照来源，B382 补一条人工登记来源。
+// 快照一旦存在即为权威——此时登记被忽略（spec §3 生效范围裁定）。报错指路登记命令
+// （B382 文案），而不是旧文「还没派过实现轮？」。老快照没有 purpose 字段时回落到挂账
+// 表按 task_id 查用途。
+func (s *Store) WorkBranch(cardID string) (WorkBranchInfo, error) {
+	var zero WorkBranchInfo
+	info, hasSnapshot, err := s.nonReviewDispatch(cardID)
+	if err != nil {
+		return zero, err
+	}
+	if hasSnapshot && info.Branch != "" {
+		return info, nil
+	}
+	if !hasSnapshot {
+		branch, err := s.lastWorkBranchRegistration(cardID)
+		if err != nil {
+			return zero, err
+		}
+		if branch != "" {
+			return WorkBranchInfo{Branch: branch}, nil
+		}
+	}
+	return zero, fmt.Errorf("卡 %s 还没有工作分支：既没有非审阅的 dispatched 快照，也没有人工登记。"+
+		"本机人工实现的卡请先登记后重试：handoff card work-branch %s <分支>: %w",
+		cardID, cardID, ErrNotFound)
 }
 
 // WorkBranchPublishedSnap 是 origin 交接成功的快照。

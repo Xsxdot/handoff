@@ -175,3 +175,8 @@ export function logTermOsc52(label: string, event: string, extra?: Record<string
   if (!terminalDebugEnabled()) return
   console.debug('[term:osc52]', { 终端: label, 事件: event, ...extra })
 }
+
+export function logTermDrop(label: string, event: string, extra?: Record<string, unknown>): void {
+  if (!terminalDebugEnabled()) return
+  console.debug('[term:drop]', { 终端: label, 事件: event, ...extra })
+}

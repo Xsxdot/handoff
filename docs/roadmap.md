@@ -40,6 +40,13 @@
 - **card wait 持久 cursor / 逐条回放**：建连快照覆盖「挂 wait 前已镜像的子卡工单」；子树成员集动态时 cursor 回放未做。来源：`docs/superpowers/specs/b356.md` Out of Scope（与 B253 同口径）。
 - **图覆盖债**：新增导出 `Store.OpenTickets` / `Store.NeedsReasons` 未写入 `codegraph/baseline.json`（`OpenTicketCounts` 已在图中）。来源：B356 finish，本卡未出视图 diff。
 
+## 来自 B272 spec（2026-09-04）
+
+- **drop 收件箱自动清理**：远端 `$HOME/.handoff/drop/` 会随拖放累积，本期不删。要产品闸（多久、是否提示、是否按会话）。来源：`docs/superpowers/specs/b272.md` Out of Scope。
+- **拖目录到远程终端**：本期只收单文件。递归上传是另一条体积/命名/失败面。来源：同上。
+- **剪贴板粘贴图片到远程终端**：本卡只做拖放；截图后粘贴是另一手势。来源：同上。
+- **本机浏览器对本机终端的拖放**：浏览器没有文件系统路径，同机又不该拷到 drop。来源：同上。
+
 ## 来自 B322 spec（2026-09-04）
 
 - **无引用 PTY 的空闲回收**：修复后 workspace 活会话不再被收编成 tab，ptyhost 里可能留下没人点开的 shell。自动杀掉会误伤后台任务，需要单独的产品闸（空闲多久、是否提示）。来源：`docs/superpowers/specs/b322.md` Out of Scope。
@@ -823,6 +830,7 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **卡字段 `work_branch`（A′ 形态）**：若「人工登记工作分支」的事件路径在实践中暴露不足（需要按分支索引、需要与卡字段一同 CAS、需要更强的唯一性约束），改为「卡上加 `work_branch` 列」的形态。来源：B382 spec §3 弃选 A′ / §7 Out of Scope。
 - **登记可覆盖快照**：支持人工接手一条已派发卡的工作分支（把 review/后续节点改派到另一条分支）。前置：先定「快照 vs 登记」两处真相的优先级与告警，否则就是又一次静默看错树。来源：B382 spec §3「生效范围」/ §7 Out of Scope（2026-09-22 用户裁定本期只在无快照时生效）。
 - **合并回基线未落账**：`RecordBranchMerged`（`internal/ledger/events.go:358`「落合并环节的外部动作事件」）全仓无生产调用方——「合并回基线」目前只有人工 note/收口摘要，账本无机器记录。来源：B382 spec 台账 §4 旁证（2026-09-22 核查）。
+- **node.go pass 后对登记分支的 pushTarget 未覆盖**：`internal/ledgerstep/node.go` pass 后推 origin 时，若工作分支来自人工登记（`info.Target==""`），会用**当前轮 target** 作为 pushTarget——登记分支不在那台机上时会推错或失败。来源：B382 plan §7 残余风险（2026-09-23 review minor#1，review 通过时承诺回写）。
 
 ## 来自 B398 spec（2026-09-22，本期不做、后续要做）
 
