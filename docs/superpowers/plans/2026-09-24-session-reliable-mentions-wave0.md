@@ -15,3 +15,8 @@
 - 被测代码基准：`3390cd2f3e7ca86c17d3a5b0841b7a7ac4c1deda`；本机 agentd/CLI 版本 `3390cd2f3e7c`。Linux 临时 CLI SHA256 为 `e24a0163d339d88f147d54c742696e446816dbd2600d1743d9a53b2a414709d1`。跨机轨迹、独立 review、全量测试与承重变异结果记在 `docs/superpowers/ledgers/2026-09-24-session-incidents.md`。
 - 分工草案与下一去向：进入 `charter:breakdown`，按 S1（正文 @ 编译及桌面金样本一致）、S3（积压摘要与 `--follow`）、S4（无效/无寻址/reply_to/卡席位边界）整理故事证据和最终验收清单；桌面假空态与取消超时链单列回归轨迹。实现已先于 Wave 0 验收完成的顺序偏差照实保留，不为补流程重排提交或虚构子卡完成历史。随后按可取得证据进入最终 acceptance；当前尚未最终归档、recon 或 finish。
 - 运行边界：`linux-01` 原配置中的 `approver.models` 与新 CLI 不兼容，本次只用权限 `0600` 的临时最小账本配置跑异机 CLI，并已删除临时文件；正式配置和远端 agentd 未改。该兼容残余见 roadmap 队列第 6 项。
+
+## 后续交棒（2026-09-24，breakdown 已拍板）
+
+- Breakdown 提案 `docs/superpowers/specs/2026-09-24-session-reliable-mentions-breakdown.md` 已由协调者审阅并拍板；原列出的两项分岔均有裁决与理由，不建重复实现/验收卡，Linux 配置问题留在 roadmap 单独定性。
+- Wave 0 的下一站 breakdown 已完成。当前下一站是最终 acceptance：按 breakdown §5 补核 S1 完整寻址矩阵、S3 多条积压摘要后继续 follow、S4 负例/reply/席位矩阵，并单列桌面假空态与取消轨迹；稳定的 `3390cd2f` / PostgreSQL 接缝可复用 S2 Wave 0 证据。完整最终验收尚未通过，不得 finish 或归档。
