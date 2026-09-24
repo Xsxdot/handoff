@@ -41,3 +41,9 @@
 - 本批：`git add docs/superpowers/specs/b392-breakdown.md docs/superpowers/ledgers/2026-09-24-b392-breakdown-ledger.md && git commit -m "breakdown(B392): …"`。
   提交当时的原始输出：`[cards/B392-charter-3 306b3714] breakdown(B392): mobile bind 生产接线轻档复核提案——0 子卡单实现轮 + P1-P5 待拍板` / `2 files changed, 281 insertions(+)`。随后 `git status --short` → 空。
   本条为 amend 收进同批（amend 换 hash 是 git 事实，收口判据是工作树干净，不是文件里的 hash 等于 HEAD）。
+
+## 2026-09-24 协调者拍板与契约修订
+
+- P1 甲：0 子卡，单实现轮；P2 甲：保留 `context.Background()`；P3 甲：独立真实 Core 竖切 + 默认 `liveCore` 身份守卫，旧空态测试改显式替身；P4 甲：回写 contract；P5 甲：`-race` + `TryLock` 双闸。
+- P4 修订：`b392-contract.md` 冻结项 2 改为“生产默认装配不包含占位”，不再声称源码文本零命中；补充 `_test.go` 可为夹具 import `internal/client` / `internal/proto`、生产文件仍禁止的边界澄清，并记录于 contract §11。
+- breakdown 状态改为“已拍板（2026-09-24）”，P1–P5 裁决与理由写入 breakdown §8；canonical contract 修订与本拆解裁决同批提交后才进入 plan。

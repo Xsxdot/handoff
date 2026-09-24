@@ -1,30 +1,32 @@
 # B392 拆解稿：mobile bind 生产接线 SessionCookie / SwitchMachine（去掉 notWiredSessions）
 
-状态：**待拍板**（handoff 派发形态——executor 出稿，本地协调者拍板；裁决待回填 §8）
+状态：**已拍板**（协调者 2026-09-24；P1–P5 裁决见 §8）
 卡：B392
 标题：mobile bind：生产接线 SessionCookie/SwitchMachine（去掉 notWiredSessions）
 定级：**L3 轻档**（spec §2.3；contract 头部「级别」）。非「只动内部实现」——对接既有 gomobile 跨语言契约与平台 cookie jar，本侧零形状修改仍算动契约层
 路由：spec → contract → **breakdown（轻档复核，不拆子卡；本稿）** → plan（单实现轮）→ implement → review / acceptance / finish
 有效基线：`cards/B392-spec` @ `400ee3c4`（任务卡注明的本卡合并目标；`origin/cards/B392-spec` 实读同号）；当前工作分支 `cards/B392-charter-3` @ `6efc3954`（不切换、不越过）
 上游 spec：`docs/superpowers/specs/b392.md` —— **在本工作树/本分支内**（`400ee3c4` 为 HEAD 祖先，实读「状态：已批准（用户 2026-09-24 批准…）」）
-冻结 contract：`docs/superpowers/specs/b392-contract.md` —— 头部有「冻结状态：本提交随 Ticket 0 骨架…冻结」；本轮实读基线链（spec 父 `a8e60208` / 第 1 轮基线 `cards/B392-spec @400ee3c4` / 第 2 轮续接点 `origin/cards/B392-charter @d2cd3246`，与 `6efc3954` 同父 `400ee3c4`）——**逐条核对通过**
+冻结 contract：`docs/superpowers/specs/b392-contract.md` —— 头部有「冻结状态：本提交随 Ticket 0 骨架…冻结」；本轮实读基线链（spec 父 `a8e60208` / 第 1 轮基线 `cards/B392-spec @400ee3c4` / 第 2 轮续接点（breakdown 执行时）`origin/cards/B392-charter @d2cd3246`，与 `6efc3954` 同父 `400ee3c4`；其后 canonical 修订为 `bccfabcf`，内容等价且已进入远端）——**逐条核对通过**
 图依据：`codegraph/best.json`（`parent` 缺省 = 顶层子系统）；本分支**无** `codegraph/diffs/<分支>.json`（合法：`mobile/` 图外嵌套 module，本卡未引入根模块新符号）
 本稿台账：`docs/superpowers/ledgers/2026-09-24-b392-breakdown-ledger.md`
 角色边界：本文是**提案**；不写实现代码、不建卡、不派发、不调用 handoff CLI、不起新 executor。扇出与拍板归协调者。
 
 ---
 
-## 0. 待拍板岔口清单（集中，拍板者按此裁决）
+## 0. 拍板岔口清单（已裁决）
 
 | 编号 | 岔口 | 方案与取舍 | 本稿倾向 |
 | --- | --- | --- | --- |
 | **P1** | 本卡子卡形态 | spec §2.3 已批准「**不拆子卡**」，contract 把生产代码与适配器契约测试在 Ticket 0 一次落齐。**甲（推荐）：0 子卡**——剩余工作量收敛为单实现轮（真实 Core 竖切测试 + 生产守卫/变异 + README），plan 直接排期，不再拆卡。**乙**：另立 1 张 implement 子卡承载同范围（多一次派发往返；产出与 spec §8 欠账逐字重复）。 | **甲**。上游已冻结「不拆」，且唯一实现链无并行面；再拆卡只增加流程成本。 |
 | **P2** | `context.Background()` 与取消策略 | contract §4.2 已把 `ctx` 来源冻为 `context.Background()`（§6 记「不立」），但 §9.3（移交 plan 附区）又把「注入 `func() context.Context` vs 保留 Background + 壳侧整体放弃」交给 plan 二选一——两处并存。**甲（推荐）：保留 `context.Background()`**，不下沉取消策略；若壳需要超时/取消，另开卡（contract §8.6）。**乙**：本轮给适配器注入 `func() context.Context`（改生产签名与 Ticket 0 测试，反转 §4.2 冻结）。 | **甲**。与已冻 §4.2/§6 一致；Core 内 `exchangeTimeout=5s` 已兜底单次兑换。建议 plan 明确「§9.3 由 §4.2 冻结吸收、不另开」以消歧义。 |
 | **P3** | 真实 Core 竖切与生产守卫的测试隔离 | 生产守卫（spec §8.3）**禁止** `swapCore`/`swapSessions`，必须走包级默认 `sessions = newCoreSessions(liveCore)`；而现存 `mobile/bind/bind_test.go:90 TestBindSessionFailIsClosed` 也直接用默认 `sessions`，靠「共享 `liveCore` 无任何机器」才通过，注释仍写「S2 未接线时」。守卫测试一旦在 `liveCore` 上配对成功，二者会互相污染、结果依赖测试次序。**甲（推荐）**：守卫测试自建**独立**真实 Core（`mobilecore.New` + 本地夹具）走完整链，**不碰** `liveCore`；`TestBindSessionFailIsClosed` 改为显式注入空替身（或改名/改注释为「未配对即失败」），消除对全局空态的隐式依赖。**乙**：守卫测试直接复用 `liveCore` 并在末尾 `Close`+重配收尾（次序脆弱、易假红）。**丙**：把默认运行时守卫挪进独立测试包/二进制（隔离最彻底，但 `sessions`/`liveCore` 未导出，跨包不可见，需额外导出缝——越界）。 | **甲**。丙不可行（需新导出缝，违 spec §6.1「不另造只为测试存在的生产 seam」）；乙脆弱。注意：spec §8.3 的「不调用 swap」只约束**守卫测试本身**，不禁止修既有测试。 |
-| **P4** | 契约回写 | contract §5.1-2 标注 `[T0]`「生产包中不存在 `notWiredSessions` 与 `errSessionsNotWired`（源码零命中）」并称由 `adapter_test.go` 锁住，但：①`adapter_test.go` **无此断言**；②`session.go:5` 注释仍含 `notWiredSessions` 字样（源码文本非零命中）。**甲（推荐）**：本卡把该条改述为「生产**不装配**占位」——由 `TestDefaultRuntimeSharesOneCore`（类型断言 + 指针同一性）锁住；「源码零命中」若保留则须删注释并加 grep 断言（自相矛盾，不取）。同时在 contract 末尾补一行修订记录，并补「测试文件可 import `internal/client`/`internal/proto`，生产文件不可」这条边界澄清（`export_surface_test.go` 的 import 禁令只扫非 `_test.go`，实现竖切夹具依赖此事实）。**乙**：不再回写，澄清只活在本稿。 | **甲**。纪律：澄清只活在拆解稿里，review 的冻结物触碰行会对不上账。 |
+| **P4** | 契约回写 | 原 contract §5.1-2 标注 `[T0]`「生产包中不存在 `notWiredSessions` 与 `errSessionsNotWired`（源码零命中）」并称由 `adapter_test.go` 锁住，但：①`adapter_test.go` **无此断言**；②`session.go:5` 注释仍含 `notWiredSessions` 字样（源码文本非零命中）。**甲（推荐）**：本卡把该条改述为「生产**不装配**占位」——由 `TestDefaultRuntimeSharesOneCore`（类型断言 + 指针同一性）锁住；「源码零命中」若保留则须删注释并加 grep 断言（自相矛盾，不取）。同时在 contract 末尾补一行修订记录，并补「测试文件可 import `internal/client`/`internal/proto`，生产文件不可」这条边界澄清（`export_surface_test.go` 的 import 禁令只扫非 `_test.go`，实现竖切夹具依赖此事实）。**乙**：不再回写，澄清只活在本稿。 | **甲**。纪律：澄清只活在拆解稿里，review 的冻结物触碰行会对不上账。 |
 | **P5** | 真实 Core 竖切是否必须落 `-race` 且不串机 | spec §8.2-8 已要求并发 `SwitchMachine`/`SessionCookie` 在 `-race` 下通过且不把 B 的 cookie 返给 A。**甲（推荐）**：实现轮按冻结判据落 `-race` 并保留适配器锁的确定性握手（`TryLock`）测法，双保险。**乙**：只跑 `-race` 不保留握手断言（`-race` 只是附加闸、不保证复现无锁交错）。 | **甲**。contract §7.3 的 `TryLock` 握手是确定性打红手段，real-Core 版应沿用。 |
 
-> 若协调者裁决改变契约冻结面（如 P2 选乙改签名、P4 选乙不回写），须先回写 `b392-contract.md` 再扇出；本稿不自行吸收。
+> 协调者裁决口径（2026-09-24）：P1–P5 全按推荐方向。P3 的“独立真实 Core”只用于行为竖切；默认生产身份守卫仍直接检查 `liveCore` 与 `sessions` 的同一实例，且不替换为 fake。P4 的 contract 修订已回写 `b392-contract.md §11`，不是只留在本稿。
+
+> 若协调者裁决改变契约冻结面（如 P2 选乙改签名、P4 选乙不回写），须先回写 `b392-contract.md` 再进入 plan；本轮已按 P1–P5 甲案吸收。
 
 ---
 
@@ -70,7 +72,7 @@
 | §4.2 适配器签名与顺序 | `mobile/bind/adapter.go`：`sessionCoreAPI`（`Activate/Session/ActiveMachine/Origin`）、`coreSessions{mu, core}`、`newCoreSessions`、`SessionCookie`（先 `ActiveMachine()==machine` 再 `Session()` 再判空值）、`SwitchMachine`（`Activate(context.Background())`→判空→`Origin`，任一步失败 `("",err)`）。`ctx` 来源 = `context.Background()`。 | **不越界**，逐字在位 |
 | §4.3 壳侧顺序与 cookie 属性 | 属**交接文档面**（`mobile/README.md`），尚未写；spec §9.8 列为欠账。 | **不越界**（未落项已入欠账） |
 | §4.4 图面 | `mobile/` 图外；`target.json`/`best.json` 未改；本分支无视图 diff。`codegraph check` excludes mobile。 | **不越界** |
-| §5 原子冻结清单 | 除 §5.1-2 的「源码零命中」无对应测试（见 P4）外，其余 17 条均有在位测试或编译期锁定（台账 4–9）。 | **一条措辞/测试缺口**，见 P4；不构成新接缝 |
+| §5 原子冻结清单 | 原 §5.1-2 的“源码零命中”缺口已按 P4 回写为“生产默认装配不包含占位”；其余 17 条均有在位测试或编译期锁定（台账 4–9）。 | **已修订**，不构成新接缝 |
 | §7.2 可执行冻结 | 无哈希/密钥/编码新命中（本卡只透传 Core 兑换值）。 | **不越界** |
 | §7.3 变异证据 | contract 自述三条 double 层变异红（`return "",nil` / 去活动机检查 / 去互斥）；**本节点未复跑**（避免扰动工作树），如实标注。 | 记录事实，非本稿结论 |
 
@@ -175,7 +177,7 @@
 **4. 假红 / 假绿测试**
 - 既有适配器测试锁**调用方可观察行为**（顺序、失败闭合、错机拒绝、锁串行化），非内部帮手；换实现只要行为不变仍绿。
 - **反面断言在位**：`FailsClosed` 断言失败时 `origin==""` 且 `Activate` 失败后**不调** `Origin`；`RejectsWrongMachine` 断言错机/空值/核错均 `("",err)`；`LockSerializesSwitchAndRead` 用同包 `TryLock` 确定性握手（去锁即红，不靠定时器猜）。
-- **假绿温床（本稿发现，须由 I1 处置）**：① 生产装配目前只有**身份/指针同一性**断言（`TestDefaultRuntimeSharesOneCore`，`adapter_test.go:226`），**无**「真实 Core 穿过导出面走完整链」的守卫——这正是 spec §8.3 欠账，也是本卡假绿根源，必须在 I1 补齐。② `bind_test.go:90 TestBindSessionFailIsClosed` 注释与语义**已过期**（写「S2 未接线时」，实则靠共享 `liveCore` 无机器才通过），且与「守卫测试跑真实 Core」存在**共享全局态次序耦合**——P3 必须处置，否则新守卫带来假红/假绿。③ contract §5.1-2 声称的「源码零命中」**无对应测试**（P4）。
+- **假绿温床（本稿发现，须由 I1 处置）**：① 生产装配目前只有**身份/指针同一性**断言（`TestDefaultRuntimeSharesOneCore`，`adapter_test.go:226`），**无**「真实 Core 穿过导出面走完整链」的守卫——这正是 spec §8.3 欠账，也是本卡假绿根源，必须在 I1 补齐。② `bind_test.go:90 TestBindSessionFailIsClosed` 注释与语义**已过期**（写「S2 未接线时」，实则靠共享 `liveCore` 无机器才通过），且与「守卫测试跑真实 Core」存在**共享全局态次序耦合**——P3 必须处置，否则新守卫带来假红/假绿。③ 原 contract §5.1-2 的「源码零命中」缺口已按 P4 回写为生产装配语义。
 - 负载/并发：真实 Core 并发竖切须在 `-race` 下跑，且用阻塞式交错（沿用 double 的 `sessionEntered`/`sessionGate` 思路）确定性验证「读 A 期间切 B 不串机」。
 - **独立验收集合纪律**：spec §8.1 表禁以 fake Core 作验收集合；I1 的真实 Core 夹具必须按机器/ticket 签发**可区分**的 `Set-Cookie`，断言与响应对得上，**不得**预置与响应无关的假值制造通过（spec §8.2 末）。
 
@@ -217,7 +219,7 @@
 ## 7. 出稿自检
 
 - [x] **产出四样齐全**：§1 子系统清单每个带 best.json 类型（并标 `mobile/bind` 图外逻辑+边界）；§2 契约增量逐条有结论（§2.3 无退回、§2.4 四条边界澄清）；§3 子卡=0（L3 不拆）且唯一实现工作流 I1 四段式、判据行为化；§5 缺陷族逐族含「无，因为…」。
-- [x] **「待拍板」岔口集中**：P1–P5 全在 §0，正文岔口回指。
+- [x] **「拍板」岔口集中**：P1–P5 全在 §0，正文岔口回指。
 - [x] **「未验证，需真机」汇总**：§6 六条（含 2 条「机内欠跑」显式标注）。
 - [x] **每张子卡有界文件集核过**：I1 已圈（`mobile/bind/*_test.go` + `mobile/README.md` [+可选 contract 修订记录]）；子卡数 0，Ticket 0 非扇出卡。
 - [x] **行为闭环每行五格完整**：§4，归属存在；无无人认领格子。
@@ -231,10 +233,10 @@
 
 | 编号 | 裁决 | 理由 |
 | --- | --- | --- |
-| **P1** | 待填 | |
-| **P2** | 待填 | |
-| **P3** | 待填 | |
-| **P4** | 待填 | |
-| **P5** | 待填 | |
+| **P1** | **甲：0 子卡，单实现轮** | spec 已冻结不拆；剩余测试与 README 是一条有界实现链，拆卡只增加往返。 |
+| **P2** | **甲：保留 `context.Background()`** | 与 contract §4.2/§6 一致；Core 已有 5 秒兑换超时，未来取消需求另开契约卡。 |
+| **P3** | **甲：独立真实 Core 竖切 + 默认身份守卫** | 独立 Core 避免污染包级 `liveCore`；默认 `TestDefaultRuntimeSharesOneCore` 仍直接证明生产不是占位/第二 Core；旧空态测试改为显式替身。 |
+| **P4** | **甲：回写 contract** | “源码零命中”与注释事实不符；已改为生产不装配占位，并由身份守卫锁定；测试 import 边界澄清写入 contract §11。 |
+| **P5** | **甲：`-race` + `TryLock` 双闸** | race 检查并发安全，TryLock 确定性证明去锁变异可红；二者不可互相替代。 |
 
-（回填后头部状态行改为「已拍板（日期）」，并与裁决同批提交；状态行与裁决记录不一致视同未拍板。）
+（以上裁决与 contract 修订同批提交；状态行与裁决记录一致。）

@@ -159,7 +159,7 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 ### 5.1 组装不变量
 
 1. `[T0]` 生产默认装配下，配对面（`core`）与会话面（`sessions`）指向同一 `*mobilecore.Core` 实例（`TestDefaultRuntimeSharesOneCore`）。
-2. `[T0]` 生产包中不存在 `notWiredSessions` 与 `errSessionsNotWired`（源码零命中）。
+2. `[T0]` 生产默认装配不包含 `notWiredSessions` / `errSessionsNotWired`：`sessions` 必须由 `newCoreSessions(liveCore)` 构造，且 `TestDefaultRuntimeSharesOneCore` 锁定类型与同一实例；生产不依赖源码文本零命中。
 3. `[T0]` 导入面不变：七函数签名逐字等于 `wantBindSurface`；无 Token/Dial 导出（`TestBindExportedSurfaceIsFrozen` 继续绿）。
 
 ### 5.2 SwitchMachine
@@ -280,7 +280,7 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 
 1. **测试替身形态**：`adapter_test.go` 的 `sessionCoreDouble`（`sessionCoreAPI` 可控替身，含 `sessionEntered`/`sessionGate` 阻塞通道）配合同包 `TryLock` 握手，已能确定性复现「无锁串机」；implement 的真实 Core 夹具可沿用其交错控制思路，但不得以它替代真实 Core 验收集合。
 2. **夹具签发**：本地 HTTP 夹具按目标机器/ticket 签发不同 `handoff_session` value，使 A/B 差异来自真实 `Set-Cookie` 响应；不得预置与响应无关的假值。
-3. **取消策略**：若壳需超时/取消，考虑给适配器注入 `func() context.Context` 或保留 `context.Background()` + 壳侧整体放弃，二选一在 plan 定。
+3. **取消策略（已由协调者拍板吸收）**：保留 `context.Background()`；Core 内 `exchangeTimeout=5s` 兜底单次兑换。本卡不注入 `func() context.Context`，若壳未来需要取消/自定义超时，另开卡并重新走契约。
 4. **README 段落落点**：`mobile/README.md` 现无「调用顺序」小节，建议置于「绑定面（壳的契约面）」之后。
 
 ---
@@ -296,3 +296,9 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 - 基线：spec 父基线 / 第 1 轮 contract 实际基线 / 第 2 轮续接点在头部逐条区分（原「有效基线」单行已拆）。
 - 三重闸门：§6 记命中一条 + 不立四条判据，非空着。
 - 欠账：§8 逐条列明，无静默带账；图债/后续图登记不占欠账，只留 `docs/roadmap.md` 指针。
+
+## 11. 协调者修订记录
+
+- **2026-09-24 / breakdown P2**：拍板保留 `context.Background()`，吸收 §9.3 的原二选一表述；Core 的 5 秒兑换超时仍是本卡边界。
+- **2026-09-24 / breakdown P4**：将冻结项 2 从“源码零命中”改为“生产默认装配不包含占位”，由 `TestDefaultRuntimeSharesOneCore` 的类型/同一实例断言锁住；测试文件允许为真实 Core 夹具 import `internal/client` / `internal/proto`，生产文件仍禁止这些协议实现依赖。
+- **2026-09-24 / breakdown P3/P5**：真实行为竖切使用独立真实 Core 与本地夹具；默认生产身份守卫直接检查 `liveCore`/`sessions`；并发同时要求 `-race` 与 `TryLock` 确定性握手。以上均不新增跨语言接缝。

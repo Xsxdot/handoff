@@ -119,3 +119,9 @@ codegraph resolve --doc docs/superpowers/specs/b392-contract.md → 退出 0，�
 - 提交事实（历史读数）：amend 前 HEAD = `d2cd3246`（第 1 轮 contract 冻结提交）。命令：
   `git add docs/superpowers/specs/b392-contract.md docs/superpowers/ledgers/2026-09-24-b392-contract-ledger.md mobile/bind/adapter_test.go && git commit --amend`
   amend 会换 hash，不把新 hash 回写本台账；收口判据是工作树干净。
+
+## 2026-09-24 breakdown 协调者修订
+
+- P4 修正冻结项 2：从“源码文本零命中”改为“生产默认装配不包含占位”，由 `TestDefaultRuntimeSharesOneCore` 的类型/同一实例断言锁定。
+- 边界澄清：真实 Core 夹具可在 `_test.go` import `internal/client` / `internal/proto`；生产 `mobile/bind/*.go` 仍禁止协议实现依赖。
+- P2 拍板保留 `context.Background()`，吸收原 §9.3 二选一；P3/P5 的独立真实 Core 竖切、默认身份守卫、`-race` + `TryLock` 双闸写入 breakdown 裁决与 contract §11。
