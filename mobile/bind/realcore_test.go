@@ -22,6 +22,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -465,6 +466,7 @@ func TestRealCoreConcurrentNoCrossMachine(t *testing.T) {
 
 	const workers, iters = 8, 20
 	errCh := make(chan string, workers*iters)
+	var successReads atomic.Int64
 	var wg sync.WaitGroup
 	for i := 0; i < workers; i++ {
 		wg.Add(1)
@@ -483,6 +485,7 @@ func TestRealCoreConcurrentNoCrossMachine(t *testing.T) {
 				if err != nil {
 					continue // 另一个 worker 已切走，错机拒绝合法
 				}
+				successReads.Add(1)
 				if !strings.Contains(v, "-"+m+"-") {
 					errCh <- fmt.Sprintf("SessionCookie(%s) 返回了错机 cookie: %q", m, v)
 					return
@@ -494,5 +497,8 @@ func TestRealCoreConcurrentNoCrossMachine(t *testing.T) {
 	close(errCh)
 	for msg := range errCh {
 		t.Error(msg)
+	}
+	if successReads.Load() == 0 {
+		t.Error("并发补充测试应至少有一次成功读取（全部被错机拒绝则覆盖为空）")
 	}
 }

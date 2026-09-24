@@ -24,6 +24,9 @@ type sessionCoreDouble struct {
 	origin        string
 	activateCalls []string
 	originCalls   []string
+	// callSeq 是 Activate/Origin 的共享调用序列（按真实发生顺序 append），用于
+	// 断言相对顺序（Activate 先于 Origin）；分开的两个切片只能证明各自被调用。
+	callSeq []string
 
 	sessionEntered chan struct{} // 非 nil：Session() 进入即关闭
 	sessionGate    chan struct{} // 非 nil：Session() 等它关闭再取值
@@ -36,6 +39,7 @@ func newSessionCoreDouble() *sessionCoreDouble {
 func (d *sessionCoreDouble) Activate(_ context.Context, machine string) (mobilecore.SessionCookie, error) {
 	d.mu.Lock()
 	d.activateCalls = append(d.activateCalls, machine)
+	d.callSeq = append(d.callSeq, "Activate:"+machine)
 	err := d.activateErr
 	if err == nil {
 		d.active = machine
@@ -84,6 +88,7 @@ func (d *sessionCoreDouble) Origin(machine string) (string, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.originCalls = append(d.originCalls, machine)
+	d.callSeq = append(d.callSeq, "Origin:"+machine)
 	if d.originErr != nil {
 		return "", d.originErr
 	}
@@ -91,6 +96,7 @@ func (d *sessionCoreDouble) Origin(machine string) (string, error) {
 }
 
 // TestCoreSessionsSwitchMachineSequence：切机必须先 Activate 再 Origin，返回核侧 origin。
+// 相对顺序由共享 callSeq 断言（Activate 先于 Origin），不只数各自切片的调用次数。
 func TestCoreSessionsSwitchMachineSequence(t *testing.T) {
 	d := newSessionCoreDouble()
 	a := newCoreSessions(d)
@@ -106,6 +112,9 @@ func TestCoreSessionsSwitchMachineSequence(t *testing.T) {
 	}
 	if len(d.originCalls) != 1 || d.originCalls[0] != "A" {
 		t.Fatalf("应再 Origin(A): %v", d.originCalls)
+	}
+	if len(d.callSeq) != 2 || d.callSeq[0] != "Activate:A" || d.callSeq[1] != "Origin:A" {
+		t.Fatalf("共享调用序列须 Activate 先于 Origin: %v", d.callSeq)
 	}
 }
 

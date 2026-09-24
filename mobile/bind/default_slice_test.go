@@ -78,8 +78,12 @@ func TestDefaultProductionVerticalSlice(t *testing.T) {
 	if err != nil {
 		t.Fatalf("默认生产竖转子进程失败: %v\n%s", err, out)
 	}
-	if !strings.Contains(string(out), "PASS") {
-		t.Fatalf("子进程未报告 PASS:\n%s", out)
+	// 必须亲眼看到本测试在子进程里 RUN 且 PASS：拒绝 SKIP / no tests / 只剩汇总行。
+	outText := string(out)
+	if strings.Contains(outText, "SKIP") ||
+		!strings.Contains(outText, "=== RUN   TestDefaultProductionVerticalSlice") ||
+		!strings.Contains(outText, "--- PASS: TestDefaultProductionVerticalSlice") {
+		t.Fatalf("子进程未明确执行并通过默认生产竖切（可能 no tests/skip）:\n%s", out)
 	}
 }
 
