@@ -20,3 +20,10 @@
 
 - Breakdown 提案 `docs/superpowers/specs/2026-09-24-session-reliable-mentions-breakdown.md` 已由协调者审阅并拍板；原列出的两项分岔均有裁决与理由，不建重复实现/验收卡，Linux 配置问题留在 roadmap 单独定性。
 - Wave 0 的下一站 breakdown 已完成。当前下一站是最终 acceptance：按 breakdown §5 补核 S1 完整寻址矩阵、S3 多条积压摘要后继续 follow、S4 负例/reply/席位矩阵，并单列桌面假空态与取消轨迹；稳定的 `3390cd2f` / PostgreSQL 接缝可复用 S2 Wave 0 证据。完整最终验收尚未通过，不得 finish 或归档。
+
+## 最终验收交棒（2026-09-24，r2 故事验证完成；原始查询性能残余未关闭）
+
+- 被测代码仍为 `3390cd2f3e7ca86c17d3a5b0841b7a7ac4c1deda`；没有改动实现。新鲜定向复跑：`cmd` 会话等待/发送/回复 6 项通过（2.115s），`internal/collab` 寻址/取消/回复 5 项通过（0.880s），前端 `usePoll`、`SessionChat`、`SessionTab`、`sessionModel` 4 个测试文件共 58 项通过（1.71s）。
+- S1/S3/S4 最终共享 PG 真 CLI 轨迹、UI 页面截图证据、临时数据回收、代码图结果和根因读数均在 `docs/superpowers/ledgers/2026-09-24-session-incidents.md`。S2 引用已通过的 Wave 0 异机基线。批准的 r2 故事 S1–S4 可裁为通过。
+- 原始“会话页面打不开/像无消息”问题仍未完全收敛：实机页面曾先停在加载态，随后显示列表请求超时（15000ms），重试后恢复并显示消息；现有全事件顺序扫描造成 13–22s 读延迟，CLI `--timeout 5s` 也实测超过时限。昨晚 20:00–22:00 的专属根因没有请求级历史证据。此查询优化会新增账本/协作读缝，已转至 roadmap 队列第 1 项，需先经独立 Charter spec/契约批准，未在本轮改代码。
+- Charter 阶段结论：批准的 r2 行为验收通过；原始故障的性能/过载残余仍开着，因此本任务不作整体完成、recon 或 finish 声明。下一去向为 roadmap 第 1 项的 spec 裁决。
