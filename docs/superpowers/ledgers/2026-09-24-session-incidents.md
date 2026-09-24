@@ -26,6 +26,9 @@
 - 审查修订红绿：新增 `TestMessageWakeTargetsReadFailureFailsClosed` 首红（卡读错误被当未命中）；前端 `sessionModel` 的 U+0085 金样本首红（桌面提取 `agent:a\u0085b`，CLI 仅提取 `agent:a`）。改动后相关 Go focused 命令通过，前端 24 个模型测试通过。显式双 `@` 增加真实 CLI 发送/监听反例；旧引用超过 200 条和跨会话引用增加真 SQLite 测试，focused Go 均通过。`EventsFromAscContext` 经账本→会话→HTTP handler 传递取消信号，取消后的列表/详情/历史读测试通过。
 - 审查后前端全量 `npm test -- --run`：135 files / 1476 tests passed；`npm run typecheck` 通过。第一次 `npm run lint -- --quiet` 红于显式 Go 空白字符正则触发 `no-control-regex`；加解释性单行禁用后，lint 通过；`npm run build` 通过，仍仅有现存 500 kB chunk warning。`git diff --check` 和 `codegraph check` 退出 0，后者 `fails=[]`。`go test ./...` 全量复跑退出 0，`cmd` 56.163s、`internal/agentd` 115.134s、`internal/collab` 3.817s。
 - 独立审查对修订树只读复核：原两项阻断关闭，`MessageReference` 精确点读、同房间回复约束和 HTTP 取消链未见新的可复现阻断；审查员聚焦 Go/前端 43 项、typecheck、Go 编译与 diff 检查通过。修订提交 `3390cd2f` 为审查后闭环版。`OUT=/private/tmp/handoff-session-r2-final scripts/build-deploy.sh` 退出 0：内嵌前端 1989 模块、`internal/webui` embedweb 自检通过，产物 28M，版本 `3390cd2f3e7c`、`modified=false`，SHA256 `bfc172e6764d276cbc2859c0b0a54340128e8636044450182735b92977855620`。本机运行版仍为 `93770b5ded86+dirty9`，尚未换版；安装还涉及中止并重启当前 agentd，且会同时带入本分支祖先的其它提交。
+- Charter acceptance 承重变异：仅把 `resolveMessageTargets` 的卡查询错误分支临时变为 `continue`，`go test ./internal/collab -run '^TestMessageWakeTargetsReadFailureFailsClosed$' -count=1` 按预期断言红（错误被吞）；恢复源码后相同命令退出 0，`git diff --exit-code -- internal/collab/sessions.go` 通过。该变异针对数据丢失防护，确认编译成功并跑到了断言。
+- Charter 阶段裁决：当前代码与 review 不能记作 Wave 0 acceptance pass。计划要求的同共享 PG 的异机停监听/续收/不重复尚未跑；`command -v pg_ctl/postgres/psql` 无结果，`docker info --format '{{.ServerVersion}}'` 因 daemon socket 不存在失败。现有真链仅是本机 SQLite 独立 CLI 进程；按 acceptance 纪律，此项不抵异机行为。该残余已落 `docs/roadmap.md` 队列第 6 项。finish 与合并前 recon 均未开始；运行中的 agentd 未部署本分支。
+- 流程顺序偏差：L3 重档 plan 把 `--follow` 积压摘要与 CLI 正文 `@` 列为 Wave 0 之后故事；实现提交在 Wave 0 acceptance 前已把这些故事与 Wave 0 一起完成。现在补做验收不能把原执行顺序改写成合规顺序，因此如实保留为 Charter 偏差；不通过重排提交伪造阶段历史。
 
 ## 图覆盖债
 
