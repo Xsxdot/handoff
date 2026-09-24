@@ -131,6 +131,9 @@ func TestProductionHTTPClientCallersAreGatewayOnly(t *testing.T) {
 		// 服务端转发路径（B233.3 原始白名单）
 		"internal/agentd/forward.go":    true,
 		"internal/agentd/forward_ws.go": true,
+		// drop 32 MiB 专用转发（B272）：同属复用共享传输的服务端转发路径；
+		// B272 并入基线晚于 B378 豁免裁决，故当时白名单未列它（B380 recon 补记）
+		"internal/agentd/drop.go": true,
 		// 客户端侧转发路径（B378 裁决：移动核复用共享 Transport，非另起栈）
 		"internal/mobilecore/core.go":  true,
 		"internal/mobilecore/proxy.go": true,
@@ -142,7 +145,7 @@ func TestProductionHTTPClientCallersAreGatewayOnly(t *testing.T) {
 		}
 		if d.IsDir() {
 			base := d.Name()
-			if base == ".git" || base == "vendor" || base == "node_modules" || base == "web" {
+			if base == ".git" || base == "vendor" || base == "node_modules" || base == "web" || base == ".worktrees" || base == "node_modules/.vite" {
 				return filepath.SkipDir
 			}
 			return nil
