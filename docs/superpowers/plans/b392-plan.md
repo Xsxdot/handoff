@@ -1264,8 +1264,19 @@ m_restore() {  # $1=相对路径；还原后按原始 hash 与备份双重核验
   local f="$1" bak hf want now
   bak="$(m_bak "$f")"; hf="$(m_hashf "$f")"
   if [ ! -f "$bak" ]; then
-    printf 'untouched\n' > "$(m_statef "$f")"   # 未变异过：无可还原
-    return 0
+    local prior_state
+    prior_state="$(m_state "$f")"
+    case "$prior_state" in
+      backed-up|failed)
+        printf 'failed\n' > "$(m_statef "$f")"
+        echo "RESTORE-FAILED $f: 状态为 $prior_state 但备份不存在 $bak" >&2
+        return 1
+        ;;
+      *)
+        printf 'untouched\n' > "$(m_statef "$f")"   # 未变异过：无可还原
+        return 0
+        ;;
+    esac
   fi
   if [ ! -f "$hf" ]; then
     cp -- "$bak" "$f"
@@ -1475,8 +1486,13 @@ m_restore mobile/bind/adapter.go
 ```bash
 echo "=== 6.5 还原核验 ==="
 for f in $MUT_FILES; do m_restore "$f"; done   # 每条已显式还原；此处幂等复核（逐条打印 RESTORED-OK）
-echo "--- 原始红输出（逐字抄进台账）---"
-cat "$MUT_ROOT"/mut*.red
+EVIDENCE_LEDGER="docs/superpowers/ledgers/2026-09-24-b392-implement-ledger.md"
+{
+  printf '\n## 2026-09-24 B392 Task 6 原始变异输出\n\n'
+  cat "$MUT_ROOT"/mut*.red
+} >> "$EVIDENCE_LEDGER"
+test -s "$EVIDENCE_LEDGER"
+echo "EVIDENCE-APPENDED $EVIDENCE_LEDGER"
 ( cd mobile && go test ./... -count=1 )               # 全绿
 changed="$(git diff --name-only)"
 for f in mobile/bind/adapter.go mobile/bind/bind.go mobile/bind/session.go; do
@@ -1489,7 +1505,7 @@ echo "PROD-FILES-CLEAN"
 ```
 
 - 生产文件还原一致性以 6.0 的 **原始 sha256 + `cmp`** 为准，不以「`git status` 看起来对」为准；`git diff --name-only` 不得列出上述三个生产文件。
-- 变异临时文件（`MUT_ROOT`）在任务工作树内唯一 `.b392-mut.*` 目录；红输出已由上面的 `cat` 打进终端、抄进台账后，只有原始 `rc=0` 且还原成功才由 `trap on_exit` 清理；任一原始失败或还原失败都保留红输出与现场。除本 task 自身新增/修改的测试与 README 外，无生产 `.go` 变更。
+- 变异临时文件（`MUT_ROOT`）在任务工作树内唯一 `.b392-mut.*` 目录；红输出先逐字追加到 `docs/superpowers/ledgers/2026-09-24-b392-implement-ledger.md`，只有原始 `rc=0` 且还原成功才由 `trap on_exit` 清理；任一原始失败或还原失败都保留红输出与现场，并在台账记录保留路径供协调者审阅后清理。除本 task 自身新增/修改的测试与 README 外，无生产 `.go` 变更。
 
 ---
 
@@ -1635,6 +1651,6 @@ codegraph --repo . resolve --doc docs/superpowers/plans/b392-plan.md   # 本 pla
 - **2026-09-24 / 第 4.1 版（v4 review fail 处置）**：
   - `MUT_ROOT` 改为任务工作树内唯一 `.b392-mut.*` 目录；执行方式改为同一 Bash 进程内交互执行，禁止固定仓外脚本路径；仓外临时目录权限被拒时停止并记未验。
   - `m_restore` 在备份存在但 hash 元数据缺失时也先复制备份再报错，避免异常路径留下变异。
-  - `on_exit` 仅在原始 `rc=0` 且所有文件还原成功时清理；任一原始失败或还原失败都保留 `MUT_ROOT` 与逐条红输出，`m_cleanup` 增加任务私有路径保护。
+  - `on_exit` 仅在原始 `rc=0` 且所有文件还原成功时清理；任一原始失败或还原失败都保留 `MUT_ROOT` 与逐条红输出，6.5 先把原始输出追加到 implement ledger，`m_cleanup` 增加任务私有路径保护。
   - TryLock 失败路径增加有界 reader/switcher join 尝试；仍无法退出时明确 `t.Errorf`，不再把缓冲 channel 误称为已回收。
   - v4.1 仍未执行四变异；实际红证据与真机项留 implement/acceptance。
