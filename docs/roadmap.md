@@ -29,7 +29,7 @@
 
 - **`go run github.com/…/codegraph` 认成 codegraph 查询**：会编译，不是只读查询。来源：`docs/superpowers/specs/b376.md` Out of Scope。
 - **`handoff init` 多选审批者**：本期 init 仍问一个；多选用手改 yaml。来源：同上。
-- **每候选单独 `approver.model`**：本期共用一个 model。来源：同上。
+- ~~**每候选单独 `approver.model`**：本期共用一个 model。来源：同上。~~（2026-09-24 B405 已交付：`approver.models` 映射，候选条目>链级>默认）
 - **剥 `/bin/bash -lc` 再做静默匹配**：不改执行器上报形态。来源：同上。
 - **`find` / `npx vitest` 进白名单**：近 14 天不是噪声源或有副作用面。来源：同上。
 - **`approver_disabled` 改成 wait 可交付**：会碰 B233.1 假集合。来源：同上。
