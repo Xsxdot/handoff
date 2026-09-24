@@ -1,0 +1,16 @@
+# 2026-09-24 会话故障排查台账
+
+> 只记录实际读数。UI 小修位于独立 worktree `session-loading-diagnosis`；@ 可靠接收方案尚未实现。
+
+- 2026-09-23 19:03:48 +08:00 `pmset -g log`：本机合盖休眠；19:59:57 完整唤醒。用户随后确认 20:00–22:00 同机桌面端仍无法打开会话，未重启桌面端，只切换会话。因此休眠不能解释整段故障。
+- 2026-09-23 20:00–22:00 `~/.handoff/agentd.log`：会话成员投影的警告每约 5 秒出现；`ListSessions` 源码在该警告前会读取完整账本事件流。未找到该时段“会话列表读取失败”“房间历史读取失败”“会话详情读取失败”或鉴权失败日志。证明部分列表请求及事件流读取继续完成；不能据此断言历史请求也完成，历史成功没有日志。
+- 2026-09-24 直连本机 agentd：`/api/rooms/session%3A10/messages?limit=200` 返回 200、17 条；session:15 返回 200、35 条。本机桌面端首次打开 session:10/15 的第一帧可见“还没有消息”，下一帧出现真实历史。此为可观察的假空态；昨夜特定请求是否卡住仍无请求级历史证据。
+- 2026-09-24 查 macOS 统一日志：`log show --start '2026-09-23 20:00:00' --end '2026-09-23 22:00:00' --predicate '(process == "handoff-desktop" OR process == "WebKit.Networking") AND (messageType == error OR messageType == fault)'` 无匹配；这不证明网络层正常。当前 `ps` 显示桌面进程自 2026-09-23 16:21:20 持续运行，符合用户“未重启”的补充。
+- `npm test -- --run src/app/data/usePoll.test.ts src/app/rooms/SessionTab.test.tsx` 首红：请求不返回后轮询仍只调用 1 次；历史首拉与 401 均显示“还没有消息”。3 failed / 15 passed。随后 UI 小修后同命令 18 passed。
+- `npm run typecheck` 初次失败：两个既有 fetcher 的可选参数与新增 `AbortSignal` 形参不兼容；改为无参包装后通过。`npm test -- --run src/app/data src/app/rooms src/app/shell/Shell.test.tsx src/api/rooms.fetch.test.ts`：补信号断言和日志后复跑 16 files / 176 tests passed。`npm run lint -- --quiet`：通过。`npm run build`：通过（Vite 仅提示现存 500 kB chunk warning）。
+- 会话宿主追加“首拉挂住、20 秒后恢复”的真实组件路径断言。第一次运行因断言误以为轮询只会发 2 次而红（实际 5 秒续拉在 20 秒又发第 3 次），改为断言至少重试一次与真实消息出现；`npm test -- --run src/app/rooms/SessionTab.test.tsx` 复跑 11 passed。此红属测试时间预期错误，不是生产行为回归。
+- 真机定向对照：消息 #19946 有 `mentions=['agent:grok']`，`session wait agent:grok --since 19945 --timeout 15s` 能输出；消息 #19954 正文有 `@agent:grok` 但 `mentions=[]`，`session wait agent:grok --since 19953 --timeout 6s` 退出 124。无 `--since` 从当前 `MaxSeq` 起，历史显式 @ #17656 不交付；加 `--since 17655` 可输出 #17656。命令均在排查时亲自执行。
+- 排查分流：UI 假空态与无界在飞请求有确定性红绿反馈，小修已完成但未部署；CLI 正文 @ 与停机补收涉及对外投递语义，进入待审 spec，不在排查现场直接改写现有冻结契约。
+- 方案回路：用户先确认“CLI 正文有效 @ 自动寻址”“恢复后补收并避免重复处理”，随后质疑 r1 逐条 `ack`：希望与 `card wait` / 普通 `wait` 一样连续监听。核源码：`card wait` 缺省一条后退出、`--follow` 连续；建连时发当前待办快照并从当时 `MaxSeq` 跟随（`cmd/card_wait.go:100-154`）。普通 `wait --follow` 在可交付事件写出时推进本地 cursor，断线前对账当前 `pending_tickets`（`internal/client/client.go:1741-1812`）。它能续拉已积压但未写出的事件；已写到 stdout 而模型因限额未处理的事件不保证重放。r1 已标退回，待用户选择交付级游标还是处理完成信号后重写。
+- 用户随后选“像 wait 一样，无逐条确认”；r2 已改为一次性/`--follow` 两形态共用持久交付游标、重挂补收与积压摘要，明确 stdout 已写出但模型未处理的限制。用户于 2026-09-24 明确批准“r2，继续实现”；随后进入 contract，CLI/账本实现尚未开始。
+- Contract 前置冻结：`codegraph resolve --doc docs/superpowers/specs/2026-09-24-session-reliable-mentions-contract.md` 退出 0，四个符号锚能解析（3 moved、1 ok）；`git diff --check` 退出 0。`git add` 三份文档后 `git commit -m 'docs: freeze reliable session mention delivery contract'` 输出 `[detached HEAD 328cfff5] ... 3 files changed, 108 insertions(+)`。本条按 contract 纪律随后的唯一 amend 收进同批，历史 hash 保留为当时原始输出。图目标方向沿已有 `d_cli→d_ledger`、`d_cli→d_collab`，本轮无新符号/组装点，故无目标图及视图 diff；协议金样本仅在文档，待 Wave 0 转成运行用例（此项欠账显式移交）。
