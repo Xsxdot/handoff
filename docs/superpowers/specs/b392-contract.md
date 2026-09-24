@@ -302,3 +302,4 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 - **2026-09-24 / breakdown P2**：拍板保留 `context.Background()`，吸收 §9.3 的原二选一表述；Core 的 5 秒兑换超时仍是本卡边界。
 - **2026-09-24 / breakdown P4**：将冻结项 2 从“源码零命中”改为“生产默认装配不包含占位”，由 `TestDefaultRuntimeSharesOneCore` 的类型/同一实例断言锁住；测试文件允许为真实 Core 夹具 import `internal/client` / `internal/proto`，生产文件仍禁止这些协议实现依赖。
 - **2026-09-24 / breakdown P3/P5**：真实行为竖切使用独立真实 Core 与本地夹具；默认生产身份守卫直接检查 `liveCore`/`sessions`；并发同时要求 `-race` 与 `TryLock` 确定性握手。以上均不新增跨语言接缝。
+- **2026-09-24 / plan review 对齐**：§8.2-2 的默认生产竖切是必做承重项，必须在不调用 `swapCore`/`swapSessions` 的隔离子进程中直接使用 `liveCore`；独立 Core + swap 仅作补充行为覆盖，不能替代默认守卫。去互斥的确定性红证据以同包 `TryLock` 为准，真实 gate/`-race` 为补充闸门。

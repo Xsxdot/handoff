@@ -44,6 +44,7 @@
 
 ## 2026-09-24 协调者拍板与契约修订
 
-- P1 甲：0 子卡，单实现轮；P2 甲：保留 `context.Background()`；P3 甲：独立真实 Core 竖切 + 默认 `liveCore` 身份守卫，旧空态测试改显式替身；P4 甲：回写 contract；P5 甲：`-race` + `TryLock` 双闸。
+- P1 甲：0 子卡，单实现轮；P2 甲：保留 `context.Background()`；P3 甲：默认生产无 swap 真实 Core 竖切（隔离子进程）+ 独立 Core swap 补充 + 默认 `liveCore` 身份守卫，旧空态测试改显式替身；P4 甲：回写 contract；P5 甲：`-race` + `TryLock` 双闸。
 - P4 修订：`b392-contract.md` 冻结项 2 改为“生产默认装配不包含占位”，不再声称源码文本零命中；补充 `_test.go` 可为夹具 import `internal/client` / `internal/proto`、生产文件仍禁止的边界澄清，并记录于 contract §11。
 - breakdown 状态改为“已拍板（2026-09-24）”，P1–P5 裁决与理由写入 breakdown §8；canonical contract 修订与本拆解裁决同批提交后才进入 plan。
+- 2026-09-24 plan review 对齐：P3 的默认生产无 swap 子进程竖切为 §8.3 必做承重项；独立 Core + swap 仅补充行为覆盖；TryLock 是去互斥变异唯一确定性红证据，真实 gate/-race 为补充。

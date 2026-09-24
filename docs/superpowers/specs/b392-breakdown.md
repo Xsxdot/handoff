@@ -20,11 +20,11 @@
 | --- | --- | --- | --- |
 | **P1** | 本卡子卡形态 | spec §2.3 已批准「**不拆子卡**」，contract 把生产代码与适配器契约测试在 Ticket 0 一次落齐。**甲（推荐）：0 子卡**——剩余工作量收敛为单实现轮（真实 Core 竖切测试 + 生产守卫/变异 + README），plan 直接排期，不再拆卡。**乙**：另立 1 张 implement 子卡承载同范围（多一次派发往返；产出与 spec §8 欠账逐字重复）。 | **甲**。上游已冻结「不拆」，且唯一实现链无并行面；再拆卡只增加流程成本。 |
 | **P2** | `context.Background()` 与取消策略 | contract §4.2 已把 `ctx` 来源冻为 `context.Background()`（§6 记「不立」），但 §9.3（移交 plan 附区）又把「注入 `func() context.Context` vs 保留 Background + 壳侧整体放弃」交给 plan 二选一——两处并存。**甲（推荐）：保留 `context.Background()`**，不下沉取消策略；若壳需要超时/取消，另开卡（contract §8.6）。**乙**：本轮给适配器注入 `func() context.Context`（改生产签名与 Ticket 0 测试，反转 §4.2 冻结）。 | **甲**。与已冻 §4.2/§6 一致；Core 内 `exchangeTimeout=5s` 已兜底单次兑换。建议 plan 明确「§9.3 由 §4.2 冻结吸收、不另开」以消歧义。 |
-| **P3** | 真实 Core 竖切与生产守卫的测试隔离 | 生产守卫（spec §8.3）**禁止** `swapCore`/`swapSessions`，必须走包级默认 `sessions = newCoreSessions(liveCore)`；而现存 `mobile/bind/bind_test.go:90 TestBindSessionFailIsClosed` 也直接用默认 `sessions`，靠「共享 `liveCore` 无任何机器」才通过，注释仍写「S2 未接线时」。守卫测试一旦在 `liveCore` 上配对成功，二者会互相污染、结果依赖测试次序。**甲（推荐）**：守卫测试自建**独立**真实 Core（`mobilecore.New` + 本地夹具）走完整链，**不碰** `liveCore`；`TestBindSessionFailIsClosed` 改为显式注入空替身（或改名/改注释为「未配对即失败」），消除对全局空态的隐式依赖。**乙**：守卫测试直接复用 `liveCore` 并在末尾 `Close`+重配收尾（次序脆弱、易假红）。**丙**：把默认运行时守卫挪进独立测试包/二进制（隔离最彻底，但 `sessions`/`liveCore` 未导出，跨包不可见，需额外导出缝——越界）。 | **甲**。丙不可行（需新导出缝，违 spec §6.1「不另造只为测试存在的生产 seam」）；乙脆弱。注意：spec §8.3 的「不调用 swap」只约束**守卫测试本身**，不禁止修既有测试。 |
+| **P3** | 真实 Core 竖切与生产守卫的测试隔离 | 生产守卫（spec §8.3）**禁止** `swapCore`/`swapSessions`，必须走包级默认 `sessions = newCoreSessions(liveCore)`；而现存 `mobile/bind/bind_test.go:90 TestBindSessionFailIsClosed` 也直接用默认 `sessions`，靠「共享 `liveCore` 无任何机器」才通过，注释仍写「S2 未接线时」。守卫测试一旦在 `liveCore` 上配对成功，二者会互相污染、结果依赖测试次序。**甲（推荐）**：必须新增一条不调用 `swapCore`/`swapSessions` 的默认生产真实 Core 竖切（隔离子进程，直接走 `liveCore`）；独立真实 Core + swap 仅作补充行为覆盖，不替代默认守卫；`TestBindSessionFailIsClosed` 改为显式注入空替身（或改名/改注释为「未配对即失败」），消除对全局空态的隐式依赖。**乙**：守卫测试直接复用 `liveCore` 并在末尾 `Close`+重配收尾（次序脆弱、易假红）。**丙**：把默认运行时守卫挪进独立测试包/二进制（隔离最彻底，但 `sessions`/`liveCore` 未导出，跨包不可见，需额外导出缝——越界）。 | **甲**。丙不可行（需新导出缝，违 spec §6.1「不另造只为测试存在的生产 seam」）；乙脆弱。注意：spec §8.3 的「不调用 swap」只约束**守卫测试本身**，不禁止修既有测试。 |
 | **P4** | 契约回写 | 原 contract §5.1-2 标注 `[T0]`「生产包中不存在 `notWiredSessions` 与 `errSessionsNotWired`（源码零命中）」并称由 `adapter_test.go` 锁住，但：①`adapter_test.go` **无此断言**；②`session.go:5` 注释仍含 `notWiredSessions` 字样（源码文本非零命中）。**甲（推荐）**：本卡把该条改述为「生产**不装配**占位」——由 `TestDefaultRuntimeSharesOneCore`（类型断言 + 指针同一性）锁住；「源码零命中」若保留则须删注释并加 grep 断言（自相矛盾，不取）。同时在 contract 末尾补一行修订记录，并补「测试文件可 import `internal/client`/`internal/proto`，生产文件不可」这条边界澄清（`export_surface_test.go` 的 import 禁令只扫非 `_test.go`，实现竖切夹具依赖此事实）。**乙**：不再回写，澄清只活在本稿。 | **甲**。纪律：澄清只活在拆解稿里，review 的冻结物触碰行会对不上账。 |
 | **P5** | 真实 Core 竖切是否必须落 `-race` 且不串机 | spec §8.2-8 已要求并发 `SwitchMachine`/`SessionCookie` 在 `-race` 下通过且不把 B 的 cookie 返给 A。**甲（推荐）**：实现轮按冻结判据落 `-race` 并保留适配器锁的确定性握手（`TryLock`）测法，双保险。**乙**：只跑 `-race` 不保留握手断言（`-race` 只是附加闸、不保证复现无锁交错）。 | **甲**。contract §7.3 的 `TryLock` 握手是确定性打红手段，real-Core 版应沿用。 |
 
-> 协调者裁决口径（2026-09-24）：P1–P5 全按推荐方向。P3 的“独立真实 Core”只用于行为竖切；默认生产身份守卫仍直接检查 `liveCore` 与 `sessions` 的同一实例，且不替换为 fake。P4 的 contract 修订已回写 `b392-contract.md §11`，不是只留在本稿。
+> 协调者裁决口径（2026-09-24）：P1–P5 全按推荐方向。P3 的**默认生产无 swap 真实 Core 竖切**是 spec §8.3 的必做承重项；独立真实 Core + swap 仅作补充行为覆盖，默认 `liveCore` 身份守卫仍直接检查 `liveCore` 与 `sessions` 的同一实例，且不替换为 fake。P4 的 contract 修订已回写 `b392-contract.md §11`，不是只留在本稿。
 
 > 若协调者裁决改变契约冻结面（如 P2 选乙改签名、P4 选乙不回写），须先回写 `b392-contract.md` 再进入 plan；本轮已按 P1–P5 甲案吸收。
 
@@ -120,7 +120,7 @@
 - **生产守卫**（spec §8.3）：一条**不调用 `swapCore`/`swapSessions`**、从默认生产组装直走 `Pair → SwitchMachine → SessionCookie` 的真实 Core 测试；并实测四变异，保存**原始红输出**后还原——① 生产恢复 `notWiredSessions` → 守卫红；② 去掉 `ActiveMachine==requested` 检查 → A/B 串机测试红；③ 任一失败路径改 `return "", nil` → 失败语义测试红；④ 去掉适配器互斥 → 阻塞式并发测试确定性打红（`-race` 作附加闸，`TryLock` 握手作确定性打红）。
 - **模块回归**（spec §9.6）：`cd mobile && go build ./... && go test ./... -count=1 && go test ./bind/ -race -count=1 && go vet ./...`，`gofmt -l` 无输出。
 - **根模块**（spec §9.7）：根 `go build ./...`、根全量测试不退化；`go list ./...`/`go list -deps ./...` 均不含 `github.com/Xsxdot/handoff/mobile`。
-- **测试隔离**（P3=甲）：守卫测试自建独立 Core、不污染包级 `liveCore`；`TestBindSessionFailIsClosed` 语义/隔离收口。
+- **测试隔离**（P3=甲）：默认生产竖切在隔离子进程中直接使用 `liveCore`；独立 Core + swap 仅作补充行为覆盖、不污染包级 `liveCore`；`TestBindSessionFailIsClosed` 语义/隔离收口。
 
 *文档面（`mobile/README.md`）：*
 - 明写「`SwitchMachine(target)` 成功 → 清该 loopback host 全部端口的旧 `handoff_session` → `SessionCookie(target)` → 写 host-only cookie（`Path=/`、`HttpOnly=true`、`SameSite=Lax`、`Secure=false`、无持久 `Max-Age/Expires`）→ 导航到返回 origin」，并写「任一步失败不得导航；清 jar/注入失败由壳呈现可行动错误，Go 绑定层不操作平台 cookie store」（spec §9.8）。可 grep 断言该顺序串与失败不导航句。
@@ -235,7 +235,7 @@
 | --- | --- | --- |
 | **P1** | **甲：0 子卡，单实现轮** | spec 已冻结不拆；剩余测试与 README 是一条有界实现链，拆卡只增加往返。 |
 | **P2** | **甲：保留 `context.Background()`** | 与 contract §4.2/§6 一致；Core 已有 5 秒兑换超时，未来取消需求另开契约卡。 |
-| **P3** | **甲：独立真实 Core 竖切 + 默认身份守卫** | 独立 Core 避免污染包级 `liveCore`；默认 `TestDefaultRuntimeSharesOneCore` 仍直接证明生产不是占位/第二 Core；旧空态测试改为显式替身。 |
+| **P3** | **甲：默认生产无 swap 真实竖切（子进程）+ 独立 Core 补充 + 默认身份守卫** | spec §8.3 的默认生产路径必须直接穿过 `liveCore`；独立 Core + swap 只补充行为/并发覆盖，不能替代；旧空态测试改为显式替身。 |
 | **P4** | **甲：回写 contract** | “源码零命中”与注释事实不符；已改为生产不装配占位，并由身份守卫锁定；测试 import 边界澄清写入 contract §11。 |
 | **P5** | **甲：`-race` + `TryLock` 双闸** | race 检查并发安全，TryLock 确定性证明去锁变异可红；二者不可互相替代。 |
 
