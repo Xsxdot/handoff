@@ -2,9 +2,18 @@
 
 读者：对代码库零上下文的执行者。级别 **L3 轻档**（spec §2.3；breakdown 定级）。
 上游：spec `docs/superpowers/specs/b392.md`、contract `docs/superpowers/specs/b392-contract.md`、breakdown `docs/superpowers/specs/b392-breakdown.md`（均在本分支内，`cards/B392-spec @400ee3c4` 为合并目标）。
-工作分支：`cards/B392-charter-6`（第 3 版节点）。**只在本分支工作，不切分支、不改 git 配置、不 push。**
+工作分支：`cards/B392-charter-7`（第 4 版节点）。**只在本分支工作，不切分支、不改 git 配置、不 push。**
 本节点台账：`docs/superpowers/ledgers/2026-09-24-b392-plan-ledger.md`。
 
+> **第 4 版（v3 review fail 修订）**：第 3 版被判 fail，本版逐条修：
+> ① **变异 harness 改 Darwin Bash 3.2 兼容**——删掉两处 `declare -A`（macOS 自带 bash 3.2 不支持关联数组），改为「每文件一个 `$MUT_ROOT/<tag>.orig.sha` + `.state` 元数据文件」，哈希用 `sha256_of` 便携函数（GNU `sha256sum` → macOS `shasum -a 256` → `openssl dgst`）；`MUT_ROOT` 由 trap 在成功路径 `rm -rf` 清理（失败保留现场排障）。
+> ② **每条变异逐测试名断言 FAIL 与红证据**——`run_expect_red` 新增第 4 参数「要求逐名 `--- FAIL:` 的测试名（空格分隔）」，逐名用 `grep -Fq "--- FAIL: <name>"` 断言、缺一即硬失败；全程无 `|| true` 吞结果（`set +e` 仅用于取 `PIPESTATUS`）。
+> ③ **TryLock 测试所有 channel 收全改 `select`+timer 并回收**（`sessionEntered`/`readDone`/`switchDone` 都加超时；缓冲 channel + `defer` 关 `sessionGate` 保证失败路径不泄漏 goroutine）。
+> ④ **gobind 严格字符串钉版**——`go version -m` 用 `awk '$1=="mod" && $2=="golang.org/x/mobile"{print $3}'` 取版本字段后 `[ "$got" = "$gobind_pinned" ]` 严格字符串相等，不用带 `.` 的正则 `grep -E`。
+> ⑤ **hash 状态初始化/恢复边界**——每文件元数据随 `m_backup` 建立、`m_restore` 对「无备份=untouched / 有备份必须先有 original hash」显式分界，`set -u` 下无未绑定引用；`restore_all` 遍历改用空格分隔字符串（无数组）。
+> ⑥ **`readBStarted` 注释准确**——信号在**调用之前**发出，注释改述为「goroutine 已启动、即将进入导出面调用」，不再声称「读请求确已发起」。
+> ⑦ **承重归属再强化**——默认无 swap 子进程真实竖切（Task 3）是 spec §8.3 的**必做**承重项，独立 swap Core / gate / `-race` 仅补充；**TryLock 是去适配器互斥的唯一确定性红证据**。上游 breakdown §0 P3 已在 `2749dd2a` 对齐（见 §0.1）。详见 §9。
+>
 > **第 3 版（v2 review fail 修订）**：第 2 版被判 fail，六条必改：① Task 6 改**严格 shell 失败语义**（`set -euo pipefail`、不用 `|| true` 吞结果、`PIPESTATUS`/显式断言测试非零且含预期红证据、build/唯一命中/还原失败硬失败、`trap` 聚合两文件并按原始 hash 核验）；② 默认子进程改 `exec.CommandContext` + 超时、HTTP client timeout，gate 的 entered/read/switch channel 全 `select`+timer、release 安全关闭 defer、失败不互等；③ gate 必须有读请求已启动的同步证据，且明确 gate 只作**正向**真实链覆盖、TryLock 是**唯一**确定性去锁红证据、不得声称 gate 令变异④必红，`-race` 继续作附加闸；④ gobind 版本检查把 `v0.0.0-20260908204917-8b95e45f8d3e` 纳入**退出码断言**，缺工具/版本不符阻塞；⑤ 子进程过滤环境变量、检查 last-cookie HTTP 状态、断言 `Close` 返回 nil；⑥ 明确**默认无 swap 竖切（Task 3）是 spec §8.3 唯一承重项**，独立 swap 真实 Core 仅补充，并记录上游 breakdown P3 旧措辞待协调者对齐。详见 §9。
 >
 > **第 2 版（review fail 修订）**：第 1 版把 spec §8.3 的「默认生产竖切」降格为「既有身份断言 + swap 隔离的真实 Core 竖切」，被 review 判 P0。本版按 review 指令改回：**新增默认生产竖切**——不调用 `swapCore`/`swapSessions`，直接用包级 `liveCore`（`DefaultDial`）走 `Pair → SwitchMachine → SessionCookie → Close`，用真实 Core + 本地 HTTP 对端，断言真实 cookie 值与归属；swap 隔离的真实 Core 竖切**保留**（spec §8.2 行为覆盖），但不再顶替默认生产竖切。P1 各项同时修订（见 §9 修订记录）。
@@ -34,7 +43,7 @@ go list -deps ./... | grep -c handoff/mobile→ 打印 0，grep 退出码 1（�
 
 > **grep -c 退出码**：`grep -c` 在无匹配时仍打印 `0` 但退出码为 1。收口判据以**打印的计数**为准（`0`），不得把退出码 1 当成命令失败；若要机器判，用 `test "$(go list ./... | grep -c handoff/mobile)" = 0`（命令替换不传退出码）。
 >
-> **第 3 版复核**：以上基线读数本节点（`cards/B392-charter-6`）重跑一致（`go1.26.1`，root build exit 0，`mobile` test 全 `ok`，vet/gofmt 干净）；另 `codegraph check` `fails=[]`、`resolve --doc` 两锚 `ok`。原始读数见台账。
+> **第 4 版复核**：以上基线读数本节点（`cards/B392-charter-7`）重跑一致（`go1.26.1 linux/amd64`，root build exit 0，`mobile` `go build`/`go test ./... -count=1`/`go test ./bind/ -race -count=1` 全 `ok`，vet/gofmt 干净）；另 `codegraph check` 退出 0 `fails=[]`、`resolve --doc` 两锚 `ok`、`sym coreSessions` 退出 1（mobile 图外，预期）。原始读数见台账。
 
 - 现状守卫在场：`mobile/bind/adapter_test.go`（顺序/失败闭合/错机/锁/`TestDefaultRuntimeSharesOneCore`）、`mobile/bind/export_surface_test.go`（七函数逐字冻结、生产 import 禁令）、`mobile/bind/gobind_surface_test.go`（真 gobind 产物，缺 `gobind` 时 skip）。
 - 现状欠账（必须在本轮补齐，contract §8.1–8.4）：**默认生产竖切**、真实 Core 竖切、生产守卫与四变异红、`mobile/README.md` 调用顺序。gobind 真产物与 AAR/XCFramework 属真机，归协调者（§4.4）。
@@ -49,9 +58,9 @@ spec §8.3 字面要求「不调用 `swapCore`/`swapSessions`、从默认生产�
 
 实现者按此写：**默认竖切（#1）必须在场**；不得在 `liveCore` 上直接配对后留在主测试进程（会污染同包测试），也不得用 swap 版竖切或纯身份断言顶替 #1。
 
-> **承重归属（第 3 版明确，review 指令）**：**默认无 swap 生产竖切（#1）是 spec §8.3 的唯一承重项**——只有它证明「不 swap 时生产默认路径仍走同一真实 Core 并返回真实 cookie」。身份守卫（#2）与 **独立 swap 真实 Core 竖切（#3）都只是补充**：#3 提供 §8.2 的 A→B→A/缓存/失败闭合行为覆盖与并发夹具，它**不顶替**、也**不能替代** #1。删掉 #1、只留 #2+#3 的 plan 即 review P0 复现。
+> **承重归属（第 4 版强化）**：**默认无 swap 生产竖切（#1，Task 3）是 spec §8.3 的必做承重项**——只有它证明「不 swap 时生产默认路径仍走同一真实 Core 并返回真实 cookie」。身份守卫（#2）与 **独立 swap 真实 Core 竖切（#3）都只是补充**：#3 提供 §8.2 的 A→B→A/缓存/失败闭合行为覆盖与并发夹具（gate / `-race`），它**不顶替**、也**不能替代** #1。**去适配器互斥（变异④）的唯一确定性红证据是 Task 4.2 的同包 `TryLock` 测试**；gate 与 `-race` 不承担该断言。删掉 #1、只留 #2+#3 的 plan 即 review P0 复现。
 >
-> **上游 breakdown P3 旧措辞待协调者对齐**：`docs/superpowers/specs/b392-breakdown.md §0 P3=甲` 写「守卫测试自建**独立**真实 Core 走完整链，**不碰** `liveCore`」——该措辞与本次 review 指令（默认无 swap 竖切承重、独立 Core 仅补充）不一致。本 plan 以 review 指令为准并已落成 #1+#3；breakdown 文本的修订**不属本节点权限**，记为待协调者对齐项（台账同记）。
+> **上游 breakdown 已对齐（第 4 版核实）**：第 3 版曾记「`docs/superpowers/specs/b392-breakdown.md §0 P3=甲` 旧措辞与 review 口径冲突、待协调者对齐」。协调者已在本分支上游提交 `2749dd2a`（`breakdown(B392): 对齐默认生产守卫与计划口径`）改述为「**默认生产无 swap 真实 Core 竖切是 spec §8.3 的必做承重项；独立真实 Core + swap 仅作补充行为覆盖**」，并同步 §0 裁决口径、§120 测试隔离、P3 汇总行。本版核对 `git show 2749dd2a` 确认三处措辞均与本 plan 一致，**该项已闭合，不再有冲突**。本节点仍不改 `b392-breakdown.md`。
 
 ---
 
@@ -532,8 +541,12 @@ func TestRealCoreGateSerializesSwitchAndRead(t *testing.T) {
 		t.Fatal("超时：B 的 /console 兑换未进入 gate")
 	}
 
-	// 读请求的「已进入/已启动」同步证据：每个读 goroutine 在调用导出面前先发信号，
-	// 测试收到两个信号后才放行切机——证明放行时两个读请求确已发起。
+	// 读请求的「goroutine 已启动」证据：每个读 goroutine 在**调用导出面之前** close
+	// 自己的 started channel，测试收齐两个信号后才放行切机——证明放行时两个读调用
+	// 已**即将发起**（goroutine 已调度到调用点）。
+	// 边界（勿过度声称）：信号在调用**之前**发出，故它不证明导出面已持适配器锁、
+	// 也不证明已进入 Core。真实 Core 无确定性 TOCTOU 注入缝，确定性去锁证据归
+	// Task 4.2 的 TryLock 测试；本测试只作正向真实链覆盖。
 	readBStarted := make(chan struct{})
 	readAStarted := make(chan struct{})
 	readB := make(chan readOutcome, 1)
@@ -928,11 +941,24 @@ func TestBindSessionNotPairedFailsClosed(t *testing.T) {
 
 ### 4.2 `mobile/bind/adapter_test.go`（TryLock 失败路径清理，review P1c）
 
-**问题**：`TestCoreSessionsLockSerializesSwitchAndRead` 在去锁变异（Task 6 变异④）下于 `t.Fatal` 提前返回，但读者 goroutine 仍阻塞在 `<-d.sessionGate`，永久泄漏。改用 `defer`（带已关闭检测）保证任何失败路径都放行该 goroutine。
+**问题**：`TestCoreSessionsLockSerializesSwitchAndRead` 在去锁变异（Task 6 变异④）下于 `t.Fatal` 提前返回，但读者 goroutine 仍阻塞在 `<-d.sessionGate`；且所有 channel 收都是无超时阻塞读，任一环节挂起即永久挂起。改用 `select`+`time.After`、`defer`（带已关闭检测）保证任何失败路径都放行并回收该 goroutine。
 
 **步骤**
 
-1. 把 `adapter_test.go:178-222` 的 `TestCoreSessionsLockSerializesSwitchAndRead` 整段替换为：
+1. import 块（`adapter_test.go:3-10`）加 `"time"`：
+```go
+import (
+	"context"
+	"errors"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/mobilecore"
+)
+```
+
+2. 把 `adapter_test.go:178-222` 的 `TestCoreSessionsLockSerializesSwitchAndRead` 整段替换为：
 
 ```go
 // TestCoreSessionsLockSerializesSwitchAndRead 证明适配器锁让「校验活动机 + 读 cookie」
@@ -940,16 +966,19 @@ func TestBindSessionNotPairedFailsClosed(t *testing.T) {
 // 锁必须被持有着（去掉适配器锁则 TryLock 成功，测试确定性打红，不靠定时器猜）。
 // 同时保留 A/B 行为断言——读 A 期间切 B，不得把 B 的 cookie 交给调用者。
 //
-// 清理：无论断言在哪一步失败，defer 都必须放行阻塞在 Session() 里的读者
-// goroutine——去锁变异时失败路径若不放行会永久泄漏一个阻塞 goroutine。
+// 回收与超时：所有 channel 收取都用 select+time.After——任一环节挂起即失败而非
+// 永久阻塞；readDone/switchDone 带 1 容量缓冲，defer 无条件放行阻塞在 Session()
+// 的读者，使去锁变异（Task 6 变异④）的失败路径也不泄漏 goroutine。
 func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
+	const step = 5 * time.Second
 	d := newSessionCoreDouble()
 	d.active = "A"
 	d.sessionEntered = make(chan struct{})
 	d.sessionGate = make(chan struct{})
+	// 安全放行：无论测试在哪一步失败都关闭 sessionGate 解除读者阻塞；已关闭 no-op。
 	defer func() {
 		select {
-		case <-d.sessionGate: // 正常路径已显式 close
+		case <-d.sessionGate:
 		default:
 			close(d.sessionGate)
 		}
@@ -966,9 +995,13 @@ func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 		readDone <- readResult{v, err}
 	}()
 
-	// sessionEntered 在 `Session()` 内、持锁路径上关闭，因此 observe 到它即代表
-	// 读者已持适配器锁并阻塞在 Session()。
-	<-d.sessionEntered
+	// sessionEntered 在 `Session()` 内、持锁路径上关闭，observe 到它即代表读者已持
+	// 适配器锁并阻塞在 Session()。select+timeout 防读者卡死时测试永久挂起。
+	select {
+	case <-d.sessionEntered:
+	case <-time.After(step):
+		t.Fatal("超时：读请求未进入 Session()")
+	}
 
 	// 确定性握手：阻塞期间适配器锁必须被持有；去掉锁则 TryLock 会成功。
 	if a.mu.TryLock() {
@@ -983,26 +1016,36 @@ func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 	}()
 
 	close(d.sessionGate)
-	r := <-readDone
+	var r readResult
+	select {
+	case r = <-readDone:
+	case <-time.After(step):
+		t.Fatal("超时：读 A 会话未返回")
+	}
 	if r.err != nil {
 		t.Fatalf("读 A 会话失败: %v（若无锁，切机已改活动机导致错机拒绝）", r.err)
 	}
 	if r.value != "sess-A" {
 		t.Fatalf("读到非 A 的 cookie: %q（适配器锁未串行化切机与读）", r.value)
 	}
-	if err := <-switchDone; err != nil {
-		t.Fatalf("切机 B 失败: %v", err)
+	select {
+	case err := <-switchDone:
+		if err != nil {
+			t.Fatalf("切机 B 失败: %v", err)
+		}
+	case <-time.After(step):
+		t.Fatal("超时：切机 B 未返回")
 	}
 }
 ```
 
-2. **跑绿**：
+3. **跑绿**：
    ```
    cd mobile && go test ./bind/ -run 'TestCoreSessionsLockSerializesSwitchAndRead' -count=1
    cd mobile && go build ./...
    ```
 
-3. **注释核对**：已在测试头写清清理理由；`adapter_test.go` 其余测试不动。
+4. **注释核对**：已在测试头写清回收/超时理由；`adapter_test.go` 其余测试不动。
 
 ---
 
@@ -1120,9 +1163,22 @@ func TestReadmeDocumentsShellCallOrder(t *testing.T) {
 - ④ 去适配器互斥：**唯一确定性红证据 = 同包 TryLock 测试**（`TestCoreSessionsLockSerializesSwitchAndRead`，Task 4.2）。真实链 gate 测试只作**正向覆盖**，**不作变异④的必红判据**（真实 Core 的 `ActiveMachine` 与 `Session` 之间无确定性 TOCTOU 注入缝，去锁后该场景很可能照样绿）；`-race` gate 为**附加闸，只记录不断言**。
 - 任何一条要求的红未出现 → 守卫缺失，**停下来报协调者，不得改测试放过**。
 
-### 6.0 变异 harness（`set -euo pipefail`；唯一命中/build/还原失败均硬失败）
+### 6.0 变异 harness（`set -euo pipefail`；唯一命中/build/还原失败均硬失败；Darwin Bash 3.2 兼容）
 
-在**一个 bash 会话**里先跑下列定义与函数；`MUT_ROOT` 为该任务私有唯一临时目录（落在 `$TMPDIR`，不在仓内）。**全程 `set -euo pipefail`**：build 失败、唯一命中数不符、还原核验失败都直接中止。`trap` 在**任意退出路径**（含中途硬失败）聚合两个文件的还原状态，`m_restore` 用**原始 sha256 + `cmp` 双重核验**。测试命令**不用 `|| true` 吞结果**：`run_expect_red` 显式断言「非零退出 **且** 输出含 FAIL/panic 标记 **且** 输出含预期红证据」；附加闸 `run_capture` 显式记录退出码，不断言。
+**执行方式（必须）**：本节所有命令放进**同一个 bash 进程**执行——把它们存成任务私有脚本
+`"${TMPDIR:?}/b392-mutations.sh"` 后 `bash` 之，或在一个交互式 bash 会话里逐块粘贴。原因：还原与
+清理靠 `trap ... EXIT`，只有同进程退出才会触发；拆成多个进程会漏还原。`MUT_ROOT` 为任务私有唯一
+临时目录（落在 `$TMPDIR`，不在仓内），trap 在成功路径 `rm -rf` 清理，失败路径保留现场排障。
+
+**Darwin Bash 3.2 约束**：不得用 `declare -A`（macOS 自带 bash 3.2 不支持关联数组）。每文件元数据落
+`$MUT_ROOT/<tag>.orig.sha`（原始 hash）与 `$MUT_ROOT/<tag>.state`（还原状态）两个任务私有文件；哈希
+用 `sha256_of` 便携函数（GNU `sha256sum` → macOS `shasum -a 256` → `openssl dgst -sha256`）；文件清单
+用空格分隔**字符串**（不用数组）。
+
+**严格失败语义**：build 失败、唯一命中数不符、还原核验失败都直接中止。测试命令**不用 `|| true`**
+吞结果：`run_expect_red` 显式断言「非零退出 **且** 输出含 FAIL/panic 标记 **且** 每个指定测试名都出现
+`--- FAIL: <name>` **且** 输出含预期红证据」；附加闸 `run_capture` 显式记录退出码，不断言。`set +e` 只
+用于临时关掉 `-e` 以取 `PIPESTATUS`，不是吞结果。
 
 ```bash
 set -euo pipefail
@@ -1130,55 +1186,96 @@ set -euo pipefail
 MUT_ROOT="$(mktemp -d "${TMPDIR:?}/b392-mut.XXXXXX")"
 echo "MUT_ROOT=$MUT_ROOT"
 
-declare -A MUT_HASH=()
-declare -A MUT_STATE=()
-MUT_FILES=(mobile/bind/session.go mobile/bind/adapter.go)
+MUT_FILES="mobile/bind/session.go mobile/bind/adapter.go"
 
 m_tag() { printf '%s' "$1" | tr '/' '_'; }
 
-m_backup() {  # $1=相对路径；备份并把原始 sha256 记进内存与 orig.sha
-  local f="$1" tag; tag="$(m_tag "$f")"
-  cp -- "$f" "$MUT_ROOT/$tag.bak"
-  MUT_HASH["$f"]="$(sha256sum -- "$f" | awk '{print $1}')"
-  printf '%s  %s\n' "${MUT_HASH[$f]}" "$f" >> "$MUT_ROOT/orig.sha"
-  echo "BACKUP-OK $f sha256=${MUT_HASH[$f]}"
+# sha256_of 打印文件的 sha256 hex：优先 GNU sha256sum，回落 macOS shasum，再回落 openssl。
+# （Darwin 无 sha256sum；Bash 3.2 无关联数组，故每文件元数据都落独立文件。）
+sha256_of() {
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum -- "$1" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 -- "$1" | awk '{print $1}'
+  else
+    openssl dgst -sha256 "$1" | awk '{print $NF}'
+  fi
 }
 
-m_restore() {  # $1=相对路径；还原后按**原始 hash**与备份双重核验
-  local f="$1" tag; tag="$(m_tag "$f")"
-  [ -f "$MUT_ROOT/$tag.bak" ] || { MUT_STATE["$f"]="untouched"; return 0; }
-  cp -- "$MUT_ROOT/$tag.bak" "$f"
-  local now; now="$(sha256sum -- "$f" | awk '{print $1}')"
-  if [ "$now" != "${MUT_HASH[$f]}" ]; then
-    MUT_STATE["$f"]="failed"
-    echo "RESTORE-FAILED $f: hash $now != orig ${MUT_HASH[$f]}" >&2
+m_bak()    { printf '%s/%s.bak'      "$MUT_ROOT" "$(m_tag "$1")"; }
+m_hashf()  { printf '%s/%s.orig.sha' "$MUT_ROOT" "$(m_tag "$1")"; }
+m_statef() { printf '%s/%s.state'    "$MUT_ROOT" "$(m_tag "$1")"; }
+
+# m_state 打印文件当前还原状态；无记录按 untouched（不引用未绑定变量，set -u 安全）。
+m_state() {
+  local sf; sf="$(m_statef "$1")"
+  if [ -f "$sf" ]; then cat "$sf"; else printf 'untouched\n'; fi
+}
+
+m_backup() {  # $1=相对路径；备份并写原始 sha256 + 初始 state
+  local f="$1" bak hf
+  bak="$(m_bak "$f")"; hf="$(m_hashf "$f")"
+  cp -- "$f" "$bak"
+  sha256_of "$f" > "$hf"
+  printf 'backed-up\n' > "$(m_statef "$f")"
+  echo "BACKUP-OK $f sha256=$(cat "$hf")"
+}
+
+m_restore() {  # $1=相对路径；还原后按原始 hash 与备份双重核验
+  local f="$1" bak hf want now
+  bak="$(m_bak "$f")"; hf="$(m_hashf "$f")"
+  if [ ! -f "$bak" ]; then
+    printf 'untouched\n' > "$(m_statef "$f")"   # 未变异过：无可还原
+    return 0
+  fi
+  if [ ! -f "$hf" ]; then
+    printf 'failed\n' > "$(m_statef "$f")"
+    echo "RESTORE-FAILED $f: 有备份但缺原始 hash 记录 $hf" >&2
     return 1
   fi
-  if ! cmp -s -- "$MUT_ROOT/$tag.bak" "$f"; then
-    MUT_STATE["$f"]="failed"
+  cp -- "$bak" "$f"
+  want="$(cat "$hf")"; now="$(sha256_of "$f")"
+  if [ "$now" != "$want" ]; then
+    printf 'failed\n' > "$(m_statef "$f")"
+    echo "RESTORE-FAILED $f: hash $now != orig $want" >&2
+    return 1
+  fi
+  if ! cmp -s -- "$bak" "$f"; then
+    printf 'failed\n' > "$(m_statef "$f")"
     echo "RESTORE-FAILED $f: cmp 与备份不一致" >&2
     return 1
   fi
-  MUT_STATE["$f"]="restored"
+  printf 'restored\n' > "$(m_statef "$f")"
   echo "RESTORED-OK $f sha256=$now"
 }
 
-restore_all() {  # trap 聚合两文件状态；任一失败即整体失败
-  local rc=0 f
-  for f in "${MUT_FILES[@]}"; do
+m_cleanup() {  # 成功收口后清掉任务私有临时目录（失败路径保留现场排障）
+  if [ -n "${MUT_ROOT:-}" ] && [ -d "$MUT_ROOT" ]; then
+    rm -rf -- "$MUT_ROOT"
+    echo "MUT-ROOT-CLEANED $MUT_ROOT"
+  fi
+}
+
+restore_all() {  # trap：逐文件还原并聚合状态；任一失败即整体失败
+  local rc=0 f summary=""
+  for f in $MUT_FILES; do
     m_restore "$f" || rc=1
+    summary="$summary$f=$(m_state "$f") "
   done
-  local summary=""
-  for f in "${MUT_FILES[@]}"; do summary+="${f}=${MUT_STATE[$f]:-untouched} "; done
   echo "TRAP-RESTORE-SUMMARY $summary"
-  [ "$rc" -eq 0 ] || echo "TRAP-RESTORE-FAILED 工作树可能残留变异" >&2
+  [ "$rc" -eq 0 ] || echo "TRAP-RESTORE-FAILED 工作树可能残留变异，已保留 $MUT_ROOT" >&2
   return "$rc"
 }
 
 on_exit() {
   local rc=$?
   trap - EXIT
-  restore_all || { [ "$rc" -eq 0 ] && rc=1; }  # 原本成功但还原失败 → 整体失败
+  if restore_all; then
+    m_cleanup
+  else
+    if [ "$rc" -eq 0 ]; then rc=1; fi   # 原本成功但还原失败 → 整体失败
+    echo "MUT-ROOT-KEPT $MUT_ROOT（还原失败，保留现场排障）" >&2
+  fi
   exit "$rc"
 }
 trap on_exit EXIT
@@ -1197,9 +1294,9 @@ m_unique_hit() {  # $1=期望次数 $2=文件 $3=固定串；计数不等即硬�
 
 mut_build() { ( cd mobile && go build ./... ) && echo "MUT-BUILD-OK"; }
 
-run_expect_red() {  # $1=标签 $2=输出文件 $3=红证据 ERE；余下=go test 参数
-  local tag="$1" out="$2" evid="$3"; shift 3
-  local st
+run_expect_red() {  # $1=标签 $2=输出文件 $3=红证据 ERE $4=要求逐名 FAIL 的测试名（空格分隔）；余下=go test 参数
+  local tag="$1" out="$2" evid="$3" names="$4"; shift 4
+  local st missing="" n
   set +e
   ( cd mobile && go test "$@" -count=1 ) 2>&1 | tee "$out"
   st="${PIPESTATUS[0]}"   # go test 的退出码（tee 的在 [1]）；须紧跟管道取
@@ -1210,10 +1307,16 @@ run_expect_red() {  # $1=标签 $2=输出文件 $3=红证据 ERE；余下=go tes
   if ! grep -Eq '^(--- FAIL|FAIL([[:space:]]|$)|panic:)' "$out"; then
     echo "MUT-NO-FAIL-MARK[$tag]: 非零退出但无 FAIL/panic 标记（疑似编译错）" >&2; cat "$out" >&2; exit 1
   fi
+  for n in $names; do
+    grep -Fq -- "--- FAIL: $n" "$out" || missing="$missing $n"
+  done
+  if [ -n "$missing" ]; then
+    echo "MUT-NO-PERTEST-FAIL[$tag]: 以下测试未按名 FAIL:$missing" >&2; cat "$out" >&2; exit 1
+  fi
   if ! grep -Eq -- "$evid" "$out"; then
     echo "MUT-NO-EVIDENCE[$tag]: 输出缺预期红证据 /$evid/" >&2; cat "$out" >&2; exit 1
   fi
-  echo "MUT-RED-OK[$tag]: exit=$st，证据命中 /$evid/"
+  echo "MUT-RED-OK[$tag]: exit=$st，逐名 FAIL 命中「$names」，证据命中 /$evid/"
 }
 
 run_capture() {  # $1=标签 $2=输出文件；余下=go test 参数（附加闸：只记录退出码，不断言必红）
@@ -1227,7 +1330,16 @@ run_capture() {  # $1=标签 $2=输出文件；余下=go test 参数（附加闸
 }
 ```
 
-**每条变异的统一节奏**：① `m_unique_hit` 唯一命中检查（数不符即硬失败）→ ② `m_backup` 备份并记原始 hash → ③ 应用变异 → ④ `mut_build`（编译不过即中止）→ ⑤ `run_expect_red`（断言非零 + FAIL 标记 + 预期证据，原始输出落 `$MUT_ROOT/*.red`）→ ⑥ `m_restore` 还原并确认 `RESTORED-OK`。
+**每条变异的统一节奏**：① `m_unique_hit` 唯一命中检查（数不符即硬失败）→ ② `m_backup` 备份并记原始 hash → ③ 应用变异 → ④ `mut_build`（编译不过即中止）→ ⑤ `run_expect_red`（断言非零 + FAIL 标记 + **每个指定测试名逐名 `--- FAIL:`** + 预期证据，原始输出落 `$MUT_ROOT/*.red`）→ ⑥ `m_restore` 还原并确认 `RESTORED-OK`。
+
+**变异与测试名映射（逐名断言，缺一即红）**：
+
+| 变异 | 要求逐名 FAIL 的测试 |
+|---|---|
+| ① 生产恢复占位 | `TestDefaultProductionVerticalSlice`、`TestDefaultRuntimeSharesOneCore` |
+| ② 去活动机检查 | `TestCoreSessionsSessionCookieRejectsWrongMachine`、`TestRealCoreSwitchAndCookieOwnership`、`TestRealCoreGateSerializesSwitchAndRead` |
+| ③ 失败路径 `return "", nil` | `TestCoreSessionsSwitchMachineFailsClosed`、`TestRealCoreFailsClosed` |
+| ④ 去适配器互斥 | `TestCoreSessionsLockSerializesSwitchAndRead`（唯一确定性红证据；`-race` gate 仅 `run_capture` 记录） |
 
 ### 6.1 变异①：生产恢复占位（默认生产竖切红）
 
@@ -1251,11 +1363,12 @@ EOF
 mut_build
 run_expect_red mut1 "$MUT_ROOT/mut1.red" \
   '默认生产竖转子进程失败|会话面生产装配不是 coreSessions' \
+  'TestDefaultProductionVerticalSlice TestDefaultRuntimeSharesOneCore' \
   -run 'TestDefaultProductionVerticalSlice|TestDefaultRuntimeSharesOneCore'
 m_restore mobile/bind/session.go
 ```
 
-预期：`TestDefaultProductionVerticalSlice` 父测试报 `默认生产竖转子进程失败`，或 `TestDefaultRuntimeSharesOneCore` 报 `会话面生产装配不是 coreSessions`（两者至少一支命中；实际两支都应红）。
+预期：两支都 FAIL——`TestDefaultProductionVerticalSlice` 父测试报 `默认生产竖转子进程失败`；`TestDefaultRuntimeSharesOneCore` 报 `会话面生产装配不是 coreSessions`（`run_expect_red` 逐名断言，缺一即硬失败）。
 
 ### 6.2 变异②：去掉活动机检查（串机红）
 
@@ -1267,11 +1380,12 @@ perl -0pi -e 's/if a\.core\.ActiveMachine\(\) != machine \{/if false \&\& a.core
 mut_build
 run_expect_red mut2 "$MUT_ROOT/mut2.red" \
   '错机必须返回|取 A 必须失败|SessionCookie\(A\) 必须失败' \
+  'TestCoreSessionsSessionCookieRejectsWrongMachine TestRealCoreSwitchAndCookieOwnership TestRealCoreGateSerializesSwitchAndRead' \
   -run 'TestCoreSessionsSessionCookieRejectsWrongMachine|TestRealCoreSwitchAndCookieOwnership|TestRealCoreGateSerializesSwitchAndRead'
 m_restore mobile/bind/adapter.go
 ```
 
-预期三支 FAIL（double 层 `错机必须返回 ("", err): value="sess-B"`；真实层 `切到 B 后取 A 必须失败`；gate 测试 `SessionCookie(A) 必须失败`）。
+预期三支逐名 FAIL（double 层 `错机必须返回 ("", err): value="sess-B"`；真实层 `切到 B 后取 A 必须失败`；gate 测试 `SessionCookie(A) 必须失败`）。gate 测试在此变异下确定性红：切机 B 持锁完成、读 A 在锁后必读到 active=B 的 cookie（去检查后不再拒绝）。
 
 ### 6.3 变异③：失败路径改 `return "", nil`（失败语义红）
 
@@ -1284,11 +1398,12 @@ m_unique_hit 1 mobile/bind/adapter.go 'return "", nil'   # 复核已改成 retur
 mut_build
 run_expect_red mut3 "$MUT_ROOT/mut3.red" \
   '必须 \("", err\)' \
+  'TestCoreSessionsSwitchMachineFailsClosed TestRealCoreFailsClosed' \
   -run 'TestCoreSessionsSwitchMachineFailsClosed|TestRealCoreFailsClosed'
 m_restore mobile/bind/adapter.go
 ```
 
-预期两支 FAIL（`Activate 失败必须返回 ("", err)` / `未配对切机必须 ("", err)`）。
+预期两支逐名 FAIL（`Activate 失败必须返回 ("", err)` / `未配对切机必须 ("", err)`）。
 
 ### 6.4 变异④：去掉适配器互斥（TryLock 确定性红；`-race` 附加）
 
@@ -1302,6 +1417,7 @@ mut_build
 # 要求必红：同包 TryLock 握手（唯一确定性去锁证据）
 run_expect_red mut4-trylock "$MUT_ROOT/mut4-trylock.red" \
   '适配器锁未被持有' \
+  'TestCoreSessionsLockSerializesSwitchAndRead' \
   -run 'TestCoreSessionsLockSerializesSwitchAndRead'
 # 附加闸：-race gate 只记录退出码，不断言必红
 run_capture mut4-race "$MUT_ROOT/mut4-race.red" \
@@ -1309,13 +1425,15 @@ run_capture mut4-race "$MUT_ROOT/mut4-race.red" \
 m_restore mobile/bind/adapter.go
 ```
 
-预期：`TestCoreSessionsLockSerializesSwitchAndRead` FAIL：`Session 阻塞期间适配器锁未被持有：切机与读会互相穿插`（TryLock 失败路径由 Task 4.2 的 `defer` 放行，读者 goroutine 不泄漏）。`run_capture` 的 `-race` gate 结果只记录（可能绿，属预期）。
+预期：`TestCoreSessionsLockSerializesSwitchAndRead` 逐名 FAIL：`Session 阻塞期间适配器锁未被持有：切机与读会互相穿插`（Task 4.2 的 `select`+`defer` 让失败路径放行并回收读者 goroutine，不泄漏、不挂起）。`run_capture` 的 `-race` gate 结果只记录（可能绿，属预期），不作必红判据。
 
 ### 6.5 还原核验（四条跑完后）
 
 ```bash
 echo "=== 6.5 还原核验 ==="
-for f in "${MUT_FILES[@]}"; do m_restore "$f"; done   # 每条已显式还原；此处幂等复核
+for f in $MUT_FILES; do m_restore "$f"; done   # 每条已显式还原；此处幂等复核（逐条打印 RESTORED-OK）
+echo "--- 原始红输出（逐字抄进台账）---"
+cat "$MUT_ROOT"/mut*.red
 ( cd mobile && go test ./... -count=1 )               # 全绿
 changed="$(git diff --name-only)"
 for f in mobile/bind/adapter.go mobile/bind/bind.go mobile/bind/session.go; do
@@ -1328,8 +1446,7 @@ echo "PROD-FILES-CLEAN"
 ```
 
 - 生产文件还原一致性以 6.0 的 **原始 sha256 + `cmp`** 为准，不以「`git status` 看起来对」为准；`git diff --name-only` 不得列出上述三个生产文件。
-- 变异临时文件在 `$TMPDIR` 下，不在仓内；除本 task 自身新增/修改的测试与 README 外，无生产 `.go` 变更。
-- 原始红输出（`$MUT_ROOT/mut*.red`）逐字抄进本节点台账。
+- 变异临时文件（`MUT_ROOT`）在 `$TMPDIR` 下、不在仓内；红输出已由上面的 `cat` 打进终端、抄进台账后，由 `trap on_exit` 在脚本成功退出时 `rm -rf $MUT_ROOT` 清理（还原失败则 `MUT-ROOT-KEPT` 保留现场）。除本 task 自身新增/修改的测试与 README 外，无生产 `.go` 变更。
 
 ---
 
@@ -1369,13 +1486,16 @@ echo "PROD-FILES-CLEAN"
 
 `mobile/bind` 含边界型面（平台 cookie jar，对面是 Android/iOS 壳现实）。机内不可判，须真机/CI（spec §9.5/§9.9，breakdown §6）。**这些步骤由协调者执行，不派发**：
 
-1. **gobind 钉版比对（退出码断言，缺工具/版本不符均阻塞）**：`gobindPinned = v0.0.0-20260908204917-8b95e45f8d3e`（`gobind_surface_test.go:18`）必须**逐字**出现在 `go version -m` 输出里，否则本步非零退出、release 阻塞，**不得降级判据**：
+1. **gobind 钉版比对（严格字符串相等 + 退出码断言，缺工具/版本不符均阻塞）**：`gobindPinned = v0.0.0-20260908204917-8b95e45f8d3e`（`gobind_surface_test.go:18`）必须与 `go version -m` 里 `golang.org/x/mobile` 的 `mod` 版本字段**逐字相等**，否则本步非零退出、release 阻塞，**不得降级判据**（不用正则 `grep -E`：版本里的 `.` 会被当通配符，不够严格）：
    ```bash
    set -euo pipefail
    gobind_pinned='v0.0.0-20260908204917-8b95e45f8d3e'
    gobind_bin="$(command -v gobind)" || { echo "阻塞：未安装 gobind（要求 ${gobind_pinned}）"; exit 1; }
-   go version -m "$gobind_bin" | grep -qE "golang\.org/x/mobile[[:space:]]+${gobind_pinned}" \
-     || { echo "阻塞：gobind 版本不符（要求 ${gobind_pinned}）"; exit 1; }
+   got="$(go version -m "$gobind_bin" | awk '$1=="mod" && $2=="golang.org/x/mobile" {print $3}')"
+   if [ "$got" != "$gobind_pinned" ]; then
+     echo "阻塞：gobind 版本不符（要求 ${gobind_pinned}，实得 ${got:-未找到}）"; exit 1
+   fi
+   echo "gobind 版本严格匹配: $got"
    ```
    版本不符 → 报「工具版本不符」并停，**不得降级判据**。随后跑：
    `cd mobile && go test ./bind/ -run TestGomobileSurfaceHasNoSkips -v -count=1`
@@ -1458,3 +1578,13 @@ codegraph --repo . resolve --doc docs/superpowers/plans/b392-plan.md   # 本 pla
   - **必改⑤（子进程卫生）**：Task 3 新增 `childEnv` 过滤父环境 `B392_*` 后再注入；`fetchLastCookie` 断言 `StatusCode == 200`；`runDefaultProductionVerticalSlice` 末尾显式断言 `Close()==nil`。
   - **必改⑥（承重归属）**：§0.1 与 §4.5 明写**默认无 swap 生产竖切（Task 3）是 spec §8.3 唯一承重项**，独立 swap 真实 Core（Task 1/2）仅补充、不顶替；并记录**上游 breakdown §0 P3=甲 旧措辞（「守卫测试自建独立真实 Core 走完整链，不碰 liveCore」）与本次 review 口径冲突，待协调者对齐**，本节点不改 breakdown。
   - 收尾纪律：只在本分支 commit，**不 push**（与纪律块一致；「提交并推送」中的 push 被纪律块覆盖，见台账）。
+
+- **2026-09-24 / 第 4 版（v3 review fail 处置）**：
+  - **①Darwin Bash 3.2 兼容 harness**：删掉两处 `declare -A MUT_HASH`/`MUT_STATE`（macOS 自带 bash 3.2 不支持关联数组）。每文件元数据落 `$MUT_ROOT/<tag>.orig.sha` + `.state`；哈希改 `sha256_of` 便携函数（GNU `sha256sum` → macOS `shasum -a 256` → `openssl dgst -sha256`）；文件清单改空格分隔字符串。`MUT_ROOT` 由 `trap on_exit` 成功路径 `m_cleanup` 的 `rm -rf` 清理，失败路径 `MUT-ROOT-KEPT` 保留现场。
+  - **②逐测试名断言 FAIL + 无 `|| true`**：`run_expect_red` 增第 4 参数「要求逐名 `--- FAIL:` 的测试名（空格分隔）」，用 `grep -Fq "--- FAIL: <name>"` 逐名断言、缺一硬失败；新增「变异↔测试名」映射表；全程无 `|| true`（`set +e` 仅用于紧取 `PIPESTATUS[0]`）。
+  - **③TryLock 全 `select`+timer 并回收**：Task 4.2 的 `sessionEntered`/`readDone`/`switchDone` 收取全部 `select`+`time.After(step=5s)`；`readDone`/`switchDone` 带缓冲、`defer` 关 `sessionGate`，失败路径不泄漏、不挂起；import 增 `"time"`。
+  - **④gobind 严格字符串钉版**：§4.4 第 1 项改 `awk '$1=="mod" && $2=="golang.org/x/mobile"{print $3}'` 取字段 + `[ "$got" != "$gobind_pinned" ]` 严格相等，弃用带 `.` 的正则 `grep -E`。
+  - **⑤hash 状态初始化/恢复边界**：`m_backup` 建立 `.orig.sha`+`.state`；`m_restore` 对「无备份=untouched / 有备份必须先有 original hash」显式分界并在缺记录时 `RESTORE-FAILED`；`restore_all`/`m_cleanup` 用 `set -u` 安全的引用，无未绑定变量、无数组。
+  - **⑥`readBStarted` 注释准确**：Task 2 gate 测试注释改述为「goroutine 已启动、即将调用导出面」，并明写其**不证明**已持锁/已进入 Core，去锁确定性证据归 TryLock。
+  - **⑦承重归属再强化 + breakdown 已对齐**：§0.1 明写默认无 swap 竖切（Task 3）为 spec §8.3 **必做承重项**、独立 swap/gate/`-race` 仅补充、**TryLock 是去互斥唯一确定性红证据**；核实上游 `2749dd2a` 已把 breakdown §0 P3 改述为同口径，**第 3 版所记「待协调者对齐」项闭合**。
+  - 收尾纪律：只在本分支 commit，**不 push**。
