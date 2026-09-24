@@ -8,3 +8,10 @@
 4. **Wave 0 验收**：局部 Go 测试、CLI 真 SQLite 进程重启测试、PG 能连接时做异机同 DSN 验证；前端既有小修单独跑 typecheck/test/build。记录所跑命令与限制，代码图 check 与图覆盖债。若 PG 不可用，不能声称异机真链已验，留给集成。
 
 后续故事：`--follow` 积压摘要与正文 @ 解析在同一 CLI 读写链补齐；桌面 token 金样本和 CLI 相同。UI 假空态修复另走已有 debug 红绿链，不依赖此 Wave 0。旧 B358 流尾测试必须随外部契约有意识更新，不能机械保持。
+
+## Wave 0 验收交棒（2026-09-24，追加；批准基准未改）
+
+- 阶段裁决：**Wave 0 通过**。本轮选定故事为 S2 的共享交付进度与跨机器恢复竖切；验收边界是同一 PostgreSQL 中“Mac 首次消费 → 停听时入账 → Linux CLI 重挂补收 → Mac 重挂不重复”。S1/S3/S4 与桌面会话页面不由本次 Wave 0 单独核销。
+- 被测代码基准：`3390cd2f3e7ca86c17d3a5b0841b7a7ac4c1deda`；本机 agentd/CLI 版本 `3390cd2f3e7c`。Linux 临时 CLI SHA256 为 `e24a0163d339d88f147d54c742696e446816dbd2600d1743d9a53b2a414709d1`。跨机轨迹、独立 review、全量测试与承重变异结果记在 `docs/superpowers/ledgers/2026-09-24-session-incidents.md`。
+- 分工草案与下一去向：进入 `charter:breakdown`，按 S1（正文 @ 编译及桌面金样本一致）、S3（积压摘要与 `--follow`）、S4（无效/无寻址/reply_to/卡席位边界）整理故事证据和最终验收清单；桌面假空态与取消超时链单列回归轨迹。实现已先于 Wave 0 验收完成的顺序偏差照实保留，不为补流程重排提交或虚构子卡完成历史。随后按可取得证据进入最终 acceptance；当前尚未最终归档、recon 或 finish。
+- 运行边界：`linux-01` 原配置中的 `approver.models` 与新 CLI 不兼容，本次只用权限 `0600` 的临时最小账本配置跑异机 CLI，并已删除临时文件；正式配置和远端 agentd 未改。该兼容残余见 roadmap 队列第 6 项。

@@ -24,13 +24,13 @@
    spec 的弃选三。
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
-6. **会话定向续收异机验收**：r2 已在本机通过共享 PostgreSQL 的独立 CLI 进程验证：
-   首次无游标扫描、停听期间入账后重挂补收、`--follow` 实时收取、重复挂听不重交；
-   但尚未在第二台执行机运行新 CLI，因此“异机重挂”仍未验。当前 handoff CLI 已从配置
-   连接共享 PG；本机没有 `psql`/PostgreSQL 服务且 Docker daemon 未运行，不代表共享 PG
-   不可用。来源：
-   `docs/superpowers/specs/2026-09-24-session-reliable-mentions.md` Wave 0 与
-   `docs/superpowers/plans/2026-09-24-session-reliable-mentions-wave0.md` §4。
+6. **CLI 配置解析失败时静默退回本地 SQLite**：`loadCLIConfig()` 把解析错误变成空配置，
+   `openLedger()` 随后以相对路径打开 `ledger.db`。`linux-01` 的 `/root/.handoff/config.yaml`
+   含当前解析器不支持的 `approver.models`；用新 CLI 运行时详情报“房间不存在”，wait 在
+   空本地账本上超时。Wave 0 临时配置验证已绕过此环境问题，但正式配置与远端 agentd 均未改；
+   后续应让账本命令对配置错误 fail closed，并单独处理目标机配置兼容。来源：
+   `docs/superpowers/ledgers/2026-09-24-session-incidents.md` 的异机验收记录，
+   `cmd/root.go` 与 `cmd/ledgercli.go`。
 
 ## 来自 B376 spec（2026-09-17）
 
