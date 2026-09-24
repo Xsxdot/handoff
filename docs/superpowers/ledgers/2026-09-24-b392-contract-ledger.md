@@ -71,3 +71,51 @@ go build ./... (root) → exit 0
 - 产出：`docs/superpowers/specs/b392-contract.md`（冻结清单 19 条，其中 `[T0]` 14 条）。
 - 欠账：真实 Core 竖切、生产守卫变异、gobind 真产物、README 调用顺序、真机证据、ctx 取消策略、图对齐。
 - 交棒：breakdown。
+
+## 2026-09-24 第 2 轮回炉（协调者第 1 轮审查返工）
+
+### 返工项与落点
+
+1. **基线区分**：头部原「有效基线：cards/B233.1-charter-7 @ a8e60208」单行拆为基线链——spec 父基线 `cards/B233.1-charter-7@a8e60208`；第 1 轮 contract 实际基线 `cards/B392-spec@400ee3c4`（亦合并目标）；第 2 轮续接点 = 已发布 `cards/B392-charter@d2cd3246`（第 1 轮冻结提交），回炉 amend 该提交，新提交与 `d2cd3246` 同父 `400ee3c4`。
+2. **§8 欠账**：移除原第 7 条「图对齐/后续图登记」，改为 `docs/roadmap.md`「mobilecore 图覆盖债」指针，不占 implement 欠账名额。
+3. **并发锁测试去定时猜锁**：`mobile/bind/adapter_test.go` 删除 `sessionCoreDouble` 的 `activated`/`activateGate` 通道与 `time.After` 猜锁；`TestCoreSessionsLockSerializesSwitchAndRead` 改为在 `Session()` 阻塞期间用同包 `a.mu.TryLock()` 确定性握手证明适配器锁被持有（去掉锁则 TryLock 成功 → 打红），保留 A/B 断言（读 A 期间切 B 必须仍是 `sess-A`）。移除 `time` import。
+
+### 本轮跑过的命令与结果（第 2 轮，原始读数）
+
+```text
+go version → go1.26.1 linux/amd64
+go build ./... (root) → exit 0
+(cd mobile) go build ./... → exit 0
+(cd mobile) go test ./... -count=1 → ok mobile; ok mobile/bind
+(cd mobile) go test ./bind/ -race -count=1 → ok
+(cd mobile) go vet ./... → exit 0（无输出）
+(cd mobile) gofmt -l . → 无输出
+go list ./... | grep -c handoff/mobile → 0; go list -deps ./... | grep -c handoff/mobile → 0
+codegraph check → fails=[]，退出 0
+codegraph resolve --doc docs/superpowers/specs/b392-contract.md → 退出 0，两锚 ok
+```
+
+### 变异证明（第 2 轮重跑，改动后立即用 $TMPDIR 备份还原）
+
+```text
+变异① Activate 失败路径 return "", nil：
+  go test ./bind/ -count=1 -run TestCoreSessionsSwitchMachineFailsClosed
+  → FAIL adapter_test.go:119: Activate 失败必须返回 ("", err): origin="" err=<nil>
+
+变异② 去掉 ActiveMachine==machine 检查（if false && …）：
+  go test ./bind/ -count=1 -run TestCoreSessionsSessionCookieRejectsWrongMachine
+  → FAIL adapter_test.go:157: 错机必须返回 ("", err): value="sess-B" err=<nil>
+
+变异③ 去掉适配器 mu.Lock/Unlock（两处）：
+  go test ./bind/ -count=1 -run TestCoreSessionsLockSerializesSwitchAndRead
+  → FAIL adapter_test.go:202: Session 阻塞期间适配器锁未被持有：切机与读会互相穿插
+```
+
+还原后 `adapter.go` 与备份逐字节一致（`diff` 空），`go test ./...` 全绿。三条均确定性打红，无定时器依赖。
+
+### 收口
+
+- 本轮回炉 amend 第 1 轮冻结提交，工作树干净；产出无新增文件（仅改 `adapter_test.go`、契约文档、本台账）。
+- 提交事实（历史读数）：amend 前 HEAD = `d2cd3246`（第 1 轮 contract 冻结提交）。命令：
+  `git add docs/superpowers/specs/b392-contract.md docs/superpowers/ledgers/2026-09-24-b392-contract-ledger.md mobile/bind/adapter_test.go && git commit --amend`
+  amend 会换 hash，不把新 hash 回写本台账；收口判据是工作树干净。

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Xsxdot/handoff/internal/mobilecore"
 )
@@ -27,8 +26,6 @@ type sessionCoreDouble struct {
 
 	sessionEntered chan struct{} // 非 nil：Session() 进入即关闭
 	sessionGate    chan struct{} // 非 nil：Session() 等它关闭再取值
-	activated      chan struct{} // 非 nil：Activate() 置 active 后关闭
-	activateGate   chan struct{} // 非 nil：Activate() 置 active 后等它关闭
 }
 
 func newSessionCoreDouble() *sessionCoreDouble {
@@ -50,12 +47,6 @@ func (d *sessionCoreDouble) Activate(_ context.Context, machine string) (mobilec
 	d.mu.Unlock()
 	if err != nil {
 		return mobilecore.SessionCookie{}, err
-	}
-	if d.activated != nil {
-		close(d.activated)
-	}
-	if d.activateGate != nil {
-		<-d.activateGate
 	}
 	return ck, nil
 }
@@ -181,14 +172,14 @@ func TestCoreSessionsSessionCookieRejectsWrongMachine(t *testing.T) {
 }
 
 // TestCoreSessionsLockSerializesSwitchAndRead 证明适配器锁让「校验活动机 + 读 cookie」
-// 与「切机」互不穿插：去掉锁时，读 A 会在阻塞期间被切到 B 并读到 B 的 cookie。
+// 与「切机」互不穿插。读请求阻塞在 Session() 期间，用同包 `TryLock` 做确定性握手：
+// 锁必须被持有着（去掉适配器锁则 TryLock 成功，测试确定性打红，不靠定时器猜）。
+// 同时保留 A/B 行为断言——读 A 期间切 B，不得把 B 的 cookie 交给调用者。
 func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 	d := newSessionCoreDouble()
 	d.active = "A"
 	d.sessionEntered = make(chan struct{})
 	d.sessionGate = make(chan struct{})
-	d.activated = make(chan struct{})
-	d.activateGate = make(chan struct{})
 	a := newCoreSessions(d)
 
 	type readResult struct {
@@ -201,10 +192,14 @@ func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 		readDone <- readResult{v, err}
 	}()
 
-	select {
-	case <-d.sessionEntered:
-	case <-time.After(time.Second):
-		t.Fatal("读请求未进入 Session()")
+	// sessionEntered 在 `Session()` 内、持锁路径上关闭，因此 observe 到它即代表
+	// 读者已持适配器锁并阻塞在 Session()。
+	<-d.sessionEntered
+
+	// 确定性握手：阻塞期间适配器锁必须被持有；去掉锁则 TryLock 会成功。
+	if a.mu.TryLock() {
+		a.mu.Unlock()
+		t.Fatal("Session 阻塞期间适配器锁未被持有：切机与读会互相穿插")
 	}
 
 	switchDone := make(chan error, 1)
@@ -212,14 +207,6 @@ func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 		_, err := a.SwitchMachine("B")
 		switchDone <- err
 	}()
-
-	select {
-	case <-d.activated:
-		// 无锁时切机会在读完成前就改活动机；下面读到的将是 B 的 cookie。
-		t.Log("切机竞态进入 Activate（无锁则复现串机）")
-	case <-time.After(100 * time.Millisecond):
-		// 有锁：切机堵在适配器锁上，符合预期。
-	}
 
 	close(d.sessionGate)
 	r := <-readDone
@@ -229,7 +216,6 @@ func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 	if r.value != "sess-A" {
 		t.Fatalf("读到非 A 的 cookie: %q（适配器锁未串行化切机与读）", r.value)
 	}
-	close(d.activateGate)
 	if err := <-switchDone; err != nil {
 		t.Fatalf("切机 B 失败: %v", err)
 	}

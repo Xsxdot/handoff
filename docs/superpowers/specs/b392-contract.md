@@ -3,7 +3,10 @@
 **上游状态：已批准**（源 spec：`docs/superpowers/specs/b392.md`，头部状态行「状态：已批准（用户 2026-09-24 批准；D1 锚点与 S1–S3 建议已吸收）」——本轮对工作树复核一致，无需回写）
 **级别：L3 轻档**（spec §2.3）
 **冻结状态：本提交随 Ticket 0 骨架、能变红的适配器契约测试与本台账冻结**（`codegraph/target.json` / `best.json` / 本分支视图 diff 无变更——见 §4；本卡不引入根模块新符号）
-**有效基线：`cards/B233.1-charter-7` @ `a8e60208`**（spec §6 显式基线；任务卡注明的 `cards/B392-spec` 之上即为该线，实际在飞线以 `cards/B233.1-charter-7` 为准）
+**基线链（第 2 轮回炉后）：**
+- spec 父基线 = `cards/B233.1-charter-7` @ `a8e60208`（spec §6 显式基线；B392 spec 冻结提交的直接父）
+- 第 1 轮 contract 实际基线 = `cards/B392-spec` @ `400ee3c4`（spec 冻结提交，亦是任务卡注明的本卡合并目标分支）
+- 第 2 轮续接点 = 已发布 `cards/B392-charter` @ `d2cd3246`（第 1 轮 contract 冻结提交）。本轮回炉 amend 该冻结提交，故本分支新冻结提交与 `d2cd3246` 同父 `400ee3c4`。
 **架构形态：** 按子系统分域的平铺领域包，无横向 controller/service/dao 分层（沿用 `codegraph/best.json`）。本卡不新增顶层子系统，也不改任何根模块归属。
 **交棒：** breakdown。
 
@@ -177,7 +180,7 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 
 ### 5.4 互斥与失败闭合
 
-14. `[T0]` `SwitchMachine` 与 `SessionCookie` 共用一把锁：「校验活动机 + 读 cookie」与「切机」互不穿插；去掉锁时阻塞式并发测试确定性返回错机 cookie（`TestCoreSessionsLockSerializesSwitchAndRead`，变异证据 §7.3）。
+14. `[T0]` `SwitchMachine` 与 `SessionCookie` 共用一把锁：「校验活动机 + 读 cookie」与「切机」互不穿插；`Session()` 阻塞期间用同包 `TryLock` 确定性握手断言适配器锁仍被持有（去掉锁则 `TryLock` 成功、测试打红），并保留 A/B 断言——读 A 期间切 B 不得返回 B 的 cookie（`TestCoreSessionsLockSerializesSwitchAndRead`，变异证据 §7.3）。
 15. `[T0]` 所有失败路径返回 `("", err)`，无 `("", nil)`、无 token/origin 冒充 cookie（`TestCoreSessions*FailsClosed`、`...RejectsWrongMachine`）。
 
 ### 5.5 核侧与协议零重实现
@@ -229,11 +232,11 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 
 本轮亲自执行并保存原始输出，改动后立即还原：
 
-| 变异 | 命令 | 原始结果 |
+| 变异 | 命令 | 原始结果（第 2 轮重跑） |
 | --- | --- | --- |
-| 保留 `return "", err` 语义、把 `Activate` 失败路径改 `return "", nil` | `go test ./bind/ -count=1 -run TestCoreSessionsSwitchMachineFailsClosed` | FAIL：`adapter_test.go:128: Activate 失败必须返回 ("", err): origin="" err=<nil>` |
-| 去掉 `ActiveMachine() == machine` 检查（改 `if false && …`） | `go test ./bind/ -count=1 -run TestCoreSessionsSessionCookieRejectsWrongMachine` | FAIL：`adapter_test.go:166: 错机必须返回 ("", err): value="sess-B" err=<nil>` |
-| 去掉适配器 `mu.Lock()/Unlock()`（两处） | `go test ./bind/ -count=1 -run TestCoreSessionsLockSerializesSwitchAndRead` | FAIL：`adapter_test.go:219 切机竞态进入 Activate（无锁则复现串机）`、`:230 读到非 A 的 cookie: "sess-B"` |
+| 保留 `return "", err` 语义、把 `Activate` 失败路径改 `return "", nil` | `go test ./bind/ -count=1 -run TestCoreSessionsSwitchMachineFailsClosed` | FAIL：`adapter_test.go:119: Activate 失败必须返回 ("", err): origin="" err=<nil>` |
+| 去掉 `ActiveMachine() == machine` 检查（改 `if false && …`） | `go test ./bind/ -count=1 -run TestCoreSessionsSessionCookieRejectsWrongMachine` | FAIL：`adapter_test.go:157: 错机必须返回 ("", err): value="sess-B" err=<nil>` |
+| 去掉适配器 `mu.Lock()/Unlock()`（两处） | `go test ./bind/ -count=1 -run TestCoreSessionsLockSerializesSwitchAndRead` | FAIL：`adapter_test.go:202: Session 阻塞期间适配器锁未被持有：切机与读会互相穿插`（`TryLock` 握手，非定时器猜锁） |
 
 三条变异均在 **test double** 层面确定性打红；生产恢复 `notWiredSessions` 的守卫与真实 Core 变体归 implement（§9.1/§9.2）。变异后已还原，工作树 `go test ./...` 全绿。
 
@@ -248,8 +251,11 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 | `go test ./bind/ -race -count=1`（`mobile/`） | `ok` |
 | `go vet ./...`（`mobile/`） | 0（无输出） |
 | `gofmt -l .`（`mobile/`） | 无输出 |
-| 三组变异测试（§7.3） | 各自 FAIL，还原后 `ok` |
-| `codegraph check` | `fails=0`（基线） |
+| `go list ./... \| grep -c handoff/mobile`（根模块） | `0`（根模块不依赖 `mobile`） |
+| `go list -deps ./... \| grep -c handoff/mobile`（根模块） | `0` |
+| 三组变异测试（§7.3） | 各自 FAIL，还原后 `go test ./...` 全 `ok` |
+| `codegraph check` | `fails=[]`，退出 0（warns 为基线既存） |
+| `codegraph resolve --doc docs/superpowers/specs/b392-contract.md` | 退出 0：两锚 `n_client_Client_IssueAuthTicket`、`n_agentd_sessionCookie` 均 `ok` |
 | `codegraph validate` | 退出 1：**2 个既存问题**（`cards-B272-charter` 的 `k_dropdir_fn` 引用不存在领域；`cards-B374-charter` 的 `k_collab_model` 重复）——均非本卡视图（本卡无视图） |
 | `codegraph sym coreSessions` / `sym newCoreSessions` | 「不在图中」（预期：`mobile` 图外） |
 
@@ -263,7 +269,8 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 4. **`mobile/README.md` 补齐 §4.4 调用顺序与职责边界（spec §9.8）**：明写「切机成功 → 清旧 jar → 取 cookie → 注入 → 导航」及任一步失败不得导航。
 5. **真机证据（spec §9.9）**：移动 CI/真机可用时重建 Android AAR 或 iOS XCFramework，验证切机后 API/WebSocket 带新 cookie、旧机 cookie 不再发送、无 cookie 仍 401；不可用须由用户明确接受「未验」逐项落账。
 6. **`context.Background()` 无取消（§4.2/§6）**：若壳需要取消或自定义超时，另开卡。本期接受 Core 内 5s 兑换超时。
-7. **图对齐**：`mobile/bind` 是图外组装点（嵌套 module），其导出面变更不触发 `graph check`；后续图对齐时按 B369 先例补登记（本卡不偷带）。
+
+> 图债与后续图登记**不属本节点欠账**：`mobile/bind` 是图外组装点（嵌套 module），导出面变更不触发 `graph check`，也不在 implement 补齐；登记由 `docs/roadmap.md`「mobilecore 图覆盖债」（§3 同源）跟踪，本卡不偷带。
 
 ---
 
@@ -271,7 +278,7 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 
 （本区由 plan 出稿时吸收，吸收后在区头标注「已由 plan〈文档〉吸收（日期）」销区。不占冻结条目名额。）
 
-1. **测试替身形态**：`adapter_test.go` 的 `sessionCoreDouble`（`sessionCoreAPI` 可控替身，含 `sessionEntered`/`sessionGate`/`activated`/`activateGate` 通道）已能确定性复现「无锁串机」，implement 的真实 Core 夹具可沿用其交错控制思路，但不得以它替代真实 Core 验收集合。
+1. **测试替身形态**：`adapter_test.go` 的 `sessionCoreDouble`（`sessionCoreAPI` 可控替身，含 `sessionEntered`/`sessionGate` 阻塞通道）配合同包 `TryLock` 握手，已能确定性复现「无锁串机」；implement 的真实 Core 夹具可沿用其交错控制思路，但不得以它替代真实 Core 验收集合。
 2. **夹具签发**：本地 HTTP 夹具按目标机器/ticket 签发不同 `handoff_session` value，使 A/B 差异来自真实 `Set-Cookie` 响应；不得预置与响应无关的假值。
 3. **取消策略**：若壳需超时/取消，考虑给适配器注入 `func() context.Context` 或保留 `context.Background()` + 壳侧整体放弃，二选一在 plan 定。
 4. **README 段落落点**：`mobile/README.md` 现无「调用顺序」小节，建议置于「绑定面（壳的契约面）」之后。
@@ -285,6 +292,7 @@ func (a *coreSessions) SwitchMachine(machine string) (string, error)
 - 目标图：`mobile/` 图外、本卡无根模块新符号 → `target.json` / `best.json` 无变更、无视图 diff（§3/§4.4）；`codegraph check` 基线 `fails=0`。
 - Ticket 0 编译：本轮根 `go build ./...` 退出 0；`mobile/` `go build ./...` 退出 0；`mobile/` `go test ./... -count=1`、`go test ./bind/ -race -count=1`、`go vet ./...`、`gofmt -l .` 全绿（§7.4）。
 - 可执行冻结：无哈希/密钥派生/编码新命中（§7.2）。
-- 变异：三条（失败路径 `return "",nil`、去活动机检查、去互斥）本轮实测打红并还原（§7.3）。
+- 变异：三条（失败路径 `return "",nil`、去活动机检查、去互斥）本轮实测打红并还原；互斥条改由同包 `TryLock` 握手确定性打红，无 100ms 定时猜锁（§7.3）。
+- 基线：spec 父基线 / 第 1 轮 contract 实际基线 / 第 2 轮续接点在头部逐条区分（原「有效基线」单行已拆）。
 - 三重闸门：§6 记命中一条 + 不立四条判据，非空着。
-- 欠账：§8 逐条列明，无静默带账。
+- 欠账：§8 逐条列明，无静默带账；图债/后续图登记不占欠账，只留 `docs/roadmap.md` 指针。
