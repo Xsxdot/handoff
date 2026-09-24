@@ -966,30 +966,69 @@ import (
 // 锁必须被持有着（去掉适配器锁则 TryLock 成功，测试确定性打红，不靠定时器猜）。
 // 同时保留 A/B 行为断言——读 A 期间切 B，不得把 B 的 cookie 交给调用者。
 //
-// 回收与超时：所有 channel 收取都用 select+time.After——任一环节挂起即失败而非
-// 永久阻塞；readDone/switchDone 带 1 容量缓冲，defer 无条件放行阻塞在 Session()
-// 的读者，使去锁变异（Task 6 变异④）的失败路径也不泄漏 goroutine。
+// 回收与超时：所有 channel 收取都用 select+time.After；失败路径先放行 gate，
+// 再对已启动的 reader/switcher 做有界 join 尝试，仍无法退出则明确报错，不把
+// 缓冲 channel 误称为已回收。
 func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 	const step = 5 * time.Second
 	d := newSessionCoreDouble()
 	d.active = "A"
 	d.sessionEntered = make(chan struct{})
 	d.sessionGate = make(chan struct{})
-	// 安全放行：无论测试在哪一步失败都关闭 sessionGate 解除读者阻塞；已关闭 no-op。
-	defer func() {
-		select {
-		case <-d.sessionGate:
-		default:
-			close(d.sessionGate)
-		}
-	}()
 	a := newCoreSessions(d)
 
 	type readResult struct {
 		value string
 		err   error
 	}
-	readDone := make(chan readResult, 1)
+	var readDone chan readResult
+	var switchDone chan error
+	var readStarted, switchStarted bool
+	var readJoined, switchJoined bool
+	failed := false
+	failf := func(format string, args ...any) {
+		failed = true
+		t.Fatalf(format, args...)
+	}
+	release := func() {
+		select {
+		case <-d.sessionGate:
+		default:
+			close(d.sessionGate)
+		}
+	}
+	joinRead := func() {
+		if !readStarted || readJoined {
+			return
+		}
+		select {
+		case <-readDone:
+			readJoined = true
+		case <-time.After(step):
+			t.Errorf("回收超时：reader goroutine 未退出")
+		}
+	}
+	joinSwitch := func() {
+		if !switchStarted || switchJoined {
+			return
+		}
+		select {
+		case <-switchDone:
+			switchJoined = true
+		case <-time.After(step):
+			t.Errorf("回收超时：switcher goroutine 未退出")
+		}
+	}
+	defer func() {
+		release()
+		if failed {
+			joinRead()
+			joinSwitch()
+		}
+	}()
+
+	readDone = make(chan readResult, 1)
+	readStarted = true
 	go func() {
 		v, err := a.SessionCookie("A")
 		readDone <- readResult{v, err}
@@ -1000,16 +1039,17 @@ func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 	select {
 	case <-d.sessionEntered:
 	case <-time.After(step):
-		t.Fatal("超时：读请求未进入 Session()")
+		failf("超时：读请求未进入 Session()")
 	}
 
 	// 确定性握手：阻塞期间适配器锁必须被持有；去掉锁则 TryLock 会成功。
 	if a.mu.TryLock() {
 		a.mu.Unlock()
-		t.Fatal("Session 阻塞期间适配器锁未被持有：切机与读会互相穿插")
+		failf("Session 阻塞期间适配器锁未被持有：切机与读会互相穿插")
 	}
 
-	switchDone := make(chan error, 1)
+	switchDone = make(chan error, 1)
+	switchStarted = true
 	go func() {
 		_, err := a.SwitchMachine("B")
 		switchDone <- err
@@ -1019,22 +1059,24 @@ func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 	var r readResult
 	select {
 	case r = <-readDone:
+		readJoined = true
 	case <-time.After(step):
-		t.Fatal("超时：读 A 会话未返回")
+		failf("超时：读 A 会话未返回")
 	}
 	if r.err != nil {
-		t.Fatalf("读 A 会话失败: %v（若无锁，切机已改活动机导致错机拒绝）", r.err)
+		failf("读 A 会话失败: %v（若无锁，切机已改活动机导致错机拒绝）", r.err)
 	}
 	if r.value != "sess-A" {
-		t.Fatalf("读到非 A 的 cookie: %q（适配器锁未串行化切机与读）", r.value)
+		failf("读到非 A 的 cookie: %q（适配器锁未串行化切机与读）", r.value)
 	}
 	select {
 	case err := <-switchDone:
+		switchJoined = true
 		if err != nil {
-			t.Fatalf("切机 B 失败: %v", err)
+			failf("切机 B 失败: %v", err)
 		}
 	case <-time.After(step):
-		t.Fatal("超时：切机 B 未返回")
+		failf("超时：切机 B 未返回")
 	}
 }
 ```
@@ -1165,11 +1207,7 @@ func TestReadmeDocumentsShellCallOrder(t *testing.T) {
 
 ### 6.0 变异 harness（`set -euo pipefail`；唯一命中/build/还原失败均硬失败；Darwin Bash 3.2 兼容）
 
-**执行方式（必须）**：本节所有命令放进**同一个 bash 进程**执行——把它们存成任务私有脚本
-`"${TMPDIR:?}/b392-mutations.sh"` 后 `bash "${TMPDIR:?}/b392-mutations.sh"; rm -f "${TMPDIR:?}/b392-mutations.sh"`，
-或在一个交互式 bash 会话里逐块粘贴。原因：还原与清理靠 `trap ... EXIT`，只有同进程退出才会触发；
-拆成多个进程会漏还原。`MUT_ROOT` 为任务私有唯一临时目录（落在 `$TMPDIR`，不在仓内），trap 在成功
-路径 `rm -rf` 清理、失败路径保留现场排障；脚本文件本身在运行后 `rm -f` 清理。**不往仓内写任何临时文件。**
+**执行方式（必须）**：本节所有命令放进**同一个 Bash 3.2 进程**执行，优先在交互式 Bash 中逐块粘贴；不要求也不允许固定的仓外脚本路径。若必须落脚本，只能在任务工作树内用唯一 `mktemp` 路径并由外层 trap 清理；禁止写 `$TMPDIR` 或其它仓外路径。`MUT_ROOT` 同样使用任务工作树内唯一目录，成功收口才清理，任何原始失败保留红输出与现场排障。若权限门拒绝任务内临时目录，停止 Task 6 并记未验，不得退回仓外路径。
 
 **Darwin Bash 3.2 约束**：不得用 `declare -A`（macOS 自带 bash 3.2 不支持关联数组）。每文件元数据落
 `$MUT_ROOT/<tag>.orig.sha`（原始 hash）与 `$MUT_ROOT/<tag>.state`（还原状态）两个任务私有文件；哈希
@@ -1184,7 +1222,7 @@ func TestReadmeDocumentsShellCallOrder(t *testing.T) {
 ```bash
 set -euo pipefail
 
-MUT_ROOT="$(mktemp -d "${TMPDIR:?}/b392-mut.XXXXXX")"
+MUT_ROOT="$(mktemp -d ./.b392-mut.XXXXXX)"
 echo "MUT_ROOT=$MUT_ROOT"
 
 MUT_FILES="mobile/bind/session.go mobile/bind/adapter.go"
@@ -1230,8 +1268,9 @@ m_restore() {  # $1=相对路径；还原后按原始 hash 与备份双重核验
     return 0
   fi
   if [ ! -f "$hf" ]; then
+    cp -- "$bak" "$f"
     printf 'failed\n' > "$(m_statef "$f")"
-    echo "RESTORE-FAILED $f: 有备份但缺原始 hash 记录 $hf" >&2
+    echo "RESTORE-FAILED $f: 有备份但缺原始 hash 记录 $hf（已先还原备份）" >&2
     return 1
   fi
   cp -- "$bak" "$f"
@@ -1250,10 +1289,12 @@ m_restore() {  # $1=相对路径；还原后按原始 hash 与备份双重核验
   echo "RESTORED-OK $f sha256=$now"
 }
 
-m_cleanup() {  # 成功收口后清掉任务私有临时目录（失败路径保留现场排障）
+m_cleanup() {  # 仅成功收口后清掉任务私有临时目录；失败路径保留现场排障
   if [ -n "${MUT_ROOT:-}" ] && [ -d "$MUT_ROOT" ]; then
-    rm -rf -- "$MUT_ROOT"
-    echo "MUT-ROOT-CLEANED $MUT_ROOT"
+    case "$MUT_ROOT" in
+      ./.b392-mut.*) rm -rf -- "$MUT_ROOT"; echo "MUT-ROOT-CLEANED $MUT_ROOT" ;;
+      *) echo "MUT-ROOT-REFUSED $MUT_ROOT（路径不在任务私有前缀）" >&2; return 1 ;;
+    esac
   fi
 }
 
@@ -1271,11 +1312,12 @@ restore_all() {  # trap：逐文件还原并聚合状态；任一失败即整体
 on_exit() {
   local rc=$?
   trap - EXIT
-  if restore_all; then
-    m_cleanup
+  local restored=0
+  if restore_all; then restored=1; else rc=1; fi
+  if [ "$rc" -eq 0 ] && [ "$restored" -eq 1 ]; then
+    m_cleanup || rc=1
   else
-    if [ "$rc" -eq 0 ]; then rc=1; fi   # 原本成功但还原失败 → 整体失败
-    echo "MUT-ROOT-KEPT $MUT_ROOT（还原失败，保留现场排障）" >&2
+    echo "MUT-ROOT-KEPT $MUT_ROOT（原始 rc=$rc；保留红输出与现场排障）" >&2
   fi
   exit "$rc"
 }
@@ -1447,7 +1489,7 @@ echo "PROD-FILES-CLEAN"
 ```
 
 - 生产文件还原一致性以 6.0 的 **原始 sha256 + `cmp`** 为准，不以「`git status` 看起来对」为准；`git diff --name-only` 不得列出上述三个生产文件。
-- 变异临时文件（`MUT_ROOT`）在 `$TMPDIR` 下、不在仓内；红输出已由上面的 `cat` 打进终端、抄进台账后，由 `trap on_exit` 在脚本成功退出时 `rm -rf $MUT_ROOT` 清理（还原失败则 `MUT-ROOT-KEPT` 保留现场）。除本 task 自身新增/修改的测试与 README 外，无生产 `.go` 变更。
+- 变异临时文件（`MUT_ROOT`）在任务工作树内唯一 `.b392-mut.*` 目录；红输出已由上面的 `cat` 打进终端、抄进台账后，只有原始 `rc=0` 且还原成功才由 `trap on_exit` 清理；任一原始失败或还原失败都保留红输出与现场。除本 task 自身新增/修改的测试与 README 外，无生产 `.go` 变更。
 
 ---
 
@@ -1589,3 +1631,10 @@ codegraph --repo . resolve --doc docs/superpowers/plans/b392-plan.md   # 本 pla
   - **⑥`readBStarted` 注释准确**：Task 2 gate 测试注释改述为「goroutine 已启动、即将调用导出面」，并明写其**不证明**已持锁/已进入 Core，去锁确定性证据归 TryLock。
   - **⑦承重归属再强化 + breakdown 已对齐**：§0.1 明写默认无 swap 竖切（Task 3）为 spec §8.3 **必做承重项**、独立 swap/gate/`-race` 仅补充、**TryLock 是去互斥唯一确定性红证据**；核实上游 `2749dd2a` 已把 breakdown §0 P3 改述为同口径，**第 3 版所记「待协调者对齐」项闭合**。
   - 收尾纪律：只在本分支 commit，**不 push**。
+
+- **2026-09-24 / 第 4.1 版（v4 review fail 处置）**：
+  - `MUT_ROOT` 改为任务工作树内唯一 `.b392-mut.*` 目录；执行方式改为同一 Bash 进程内交互执行，禁止固定仓外脚本路径；仓外临时目录权限被拒时停止并记未验。
+  - `m_restore` 在备份存在但 hash 元数据缺失时也先复制备份再报错，避免异常路径留下变异。
+  - `on_exit` 仅在原始 `rc=0` 且所有文件还原成功时清理；任一原始失败或还原失败都保留 `MUT_ROOT` 与逐条红输出，`m_cleanup` 增加任务私有路径保护。
+  - TryLock 失败路径增加有界 reader/switcher join 尝试；仍无法退出时明确 `t.Errorf`，不再把缓冲 channel 误称为已回收。
+  - v4.1 仍未执行四变异；实际红证据与真机项留 implement/acceptance。
