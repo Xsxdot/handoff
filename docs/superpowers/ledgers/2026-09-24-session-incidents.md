@@ -35,6 +35,7 @@
 - 2026-09-24 breakdown：独立出稿者基于 r2、contract、Wave 0 基线和 codegraph 产出 `docs/superpowers/specs/2026-09-24-session-reliable-mentions-breakdown.md`；协调者逐项审阅并拍板。由于当前任务从 cardless 本地任务开始且没有待实现工程单元，不追建父卡/重复子卡，最终验收由本地协调者在计划与本台账记录；Linux 配置兼容问题保留为单独 roadmap 缺陷，不扩入 r2。文档通过 `codegraph resolve --doc`（7 个锚均解析，含 moved 状态）与 `git diff --check`。下一步进入最终 acceptance，仍需完成 S1/S3/S4 真机清单和相邻 UI 轨迹；本次不声称最终验收通过。
 - 主 agent 操作说明：仓库 `skills/handoff/SKILL.md` 的 r2 发言/续收段原已更新；Codex 实际加载的 `~/.codex/skills/handoff/SKILL.md` 原仍陈旧。本轮只同步这两段并留备份 `/private/tmp/handoff-skill-before-session-r2-acceptance.md`；往返校验确认其余文本未改，保留了用户已有的 B380 段。`handoff skill status` 仍把精确哈希不一致报告为“旧”，故没有跑会覆盖整份文件的 `skill install`；其它 agent 的 skill 副本未动。
 - 流程顺序偏差：L3 重档 plan 把 `--follow` 积压摘要与 CLI 正文 `@` 列为 Wave 0 之后故事；实现提交在 Wave 0 acceptance 前已把这些故事与 Wave 0 一起完成。现在补做验收不能把原执行顺序改写成合规顺序，因此如实保留为 Charter 偏差；不通过重排提交伪造阶段历史。
+- 2026-09-24 18:30–18:32 最终验收续查：`handoff session detail session:18 --json` 复核 `archived=true`，成员只有临时 source agent；命令面仅提供归档、没有恢复，故不能复用该会话补跑 S1/S3/S4。`handoff status --json` 新鲜复核本机 agentd revision `3390cd2f3e7ca86c17d3a5b0841b7a7ac4c1deda`、`reachable=true`、`degraded=false`；`handoff status --target linux-01 --json` 可达，但远端 agentd 版本字段为空，未替换。为遵守先前“一场临时会话”的授权，没有再向共享 PG 建会话或改远端配置。SuperDev `list_browser_targets` 返回的四个 deployment 均不属于 handoff，没有可用的受管前端调试目标，因此本轮未跑桌面 UI 真机轨迹。S1/S3/S4 及 UI 轨迹继续列为最终验收未完成项。
 
 ## 图覆盖债
 
