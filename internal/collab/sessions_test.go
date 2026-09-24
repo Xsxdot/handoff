@@ -8,6 +8,7 @@
 package collab
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -22,6 +23,91 @@ import (
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+// failingAddressLC 在出站账本缝注入瞬时读错，确保补拉寻址不会将其当作未命中。
+type failingAddressLC struct {
+	client.LedgerClient
+	cardErr  error
+	eventErr error
+}
+
+func (f failingAddressLC) GetCard(id string) (proto.Card, error) {
+	if f.cardErr != nil {
+		return proto.Card{}, f.cardErr
+	}
+	return f.LedgerClient.GetCard(id)
+}
+
+func (f failingAddressLC) EventsFromAsc(ids []string, from int64, limit int) ([]proto.LedgerEvent, error) {
+	if f.eventErr != nil {
+		return nil, f.eventErr
+	}
+	return f.LedgerClient.EventsFromAsc(ids, from, limit)
+}
+
+func TestMessageWakeTargetsReadFailureFailsClosed(t *testing.T) {
+	_, _, lc := newSessionFixture(t)
+	readErr := errors.New("transient ledger read")
+	cardReader := New(failingAddressLC{LedgerClient: lc, cardErr: readErr})
+	if _, err := cardReader.MessageWakeTargets(proto.RoomMessage{Kind: proto.RoomMsgUser, Mentions: []string{"B1"}}); !errors.Is(err, readErr) {
+		t.Fatalf("卡读取失败必须上抛，得到 %v", err)
+	}
+	replyReader := New(failingAddressLC{LedgerClient: lc, eventErr: readErr})
+	if _, err := replyReader.MessageWakeTargets(proto.RoomMessage{Room: "session:1", Kind: proto.RoomMsgUser, ReplyTo: 1}); !errors.Is(err, readErr) {
+		t.Fatalf("回复原作者读取失败必须上抛，得到 %v", err)
+	}
+}
+
+func TestMessageReferenceUsesExactSameRoomSeqBeyondHistoryWindow(t *testing.T) {
+	svc, _, _ := newSessionFixture(t)
+	first, err := svc.CreateSession("原会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := svc.CreateSession("另一会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, err := svc.Send(first.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "旧引用原文"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 205; i++ {
+		if _, err := svc.Send(first.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "后续消息"}, "user:sy"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	ref, err := svc.MessageReference(proto.RoomMessage{Room: first.ID, ReplyTo: seq})
+	if err != nil || ref == nil || ref.Seq != seq || ref.Body != "旧引用原文" {
+		t.Fatalf("200 条窗口外的引用应可按 seq 解析: %+v err=%v", ref, err)
+	}
+	foreign := proto.RoomMessage{Room: other.ID, Kind: proto.RoomMsgUser, ReplyTo: seq}
+	if targets, err := svc.MessageWakeTargets(foreign); err != nil || len(targets) != 0 {
+		t.Fatalf("跨会话回复不得寻址原作者: %v err=%v", targets, err)
+	}
+	if ref, err := svc.MessageReference(foreign); err != nil || ref != nil {
+		t.Fatalf("跨会话回复不得带引用: %+v err=%v", ref, err)
+	}
+}
+
+func TestSessionReadsHonorCanceledRequest(t *testing.T) {
+	svc, _, _ := newSessionFixture(t)
+	session, err := svc.CreateSession("取消读取", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := svc.HistoryContext(ctx, session.ID, 0, 200); !errors.Is(err, context.Canceled) {
+		t.Fatalf("历史读取未取消: %v", err)
+	}
+	if _, err := svc.SessionDetailContext(ctx, session.ID); !errors.Is(err, context.Canceled) {
+		t.Fatalf("详情读取未取消: %v", err)
+	}
+	if _, err := svc.ListSessionsContext(ctx, "user:sy"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("列表读取未取消: %v", err)
+	}
+}
 
 // newSessionFixture 起真 SQLite 账本并挂 collab.Service；同时返回出站接口
 // （Facade）以断言接口直接能力。

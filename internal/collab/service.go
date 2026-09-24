@@ -11,6 +11,7 @@
 package collab
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -271,10 +272,15 @@ func (s *Service) Pointer(roomID string, msg proto.RoomMessage) (int64, error) {
 // （B274 真机：发送 200 列表不动）。ReadAllEvents 已按 1000 翻页，这里不再把
 // beforeSeq 误当成 from 游标。
 func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	return s.HistoryContext(context.Background(), roomID, beforeSeq, limit)
+}
+
+// HistoryContext 用于 HTTP 请求；浏览器超时或切换会话会取消账本扫描。
+func (s *Service) HistoryContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
-	events, err := room.ReadAllEvents(s.lc, 0)
+	events, err := room.ReadAllEventsContext(ctx, s.lc, 0)
 	if err != nil {
 		return nil, err
 	}

@@ -9,6 +9,7 @@
 package client
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -41,6 +42,8 @@ type LedgerClient interface {
 	RecordMessageConsumed(cardID string, msgSeq int64, consumer string) error
 	// EventsFromAsc 升序游标读事件（cardIDs 空 = 全流含群级无卡事件）。
 	EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// EventsFromAscContext 供 HTTP 会话读取在客户端断开时取消事件流查询。
+	EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
 	// --- B358 会话（群）域账本能力 ---
 	// CreateSession 建一场会话（群），返回带分配 id 的会话本体。
 	CreateSession(title, owner, actor string) (proto.Session, error)

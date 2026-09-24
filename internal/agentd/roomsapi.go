@@ -415,7 +415,7 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 	roomID := r.PathValue("id")
 	before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
-	events, err := s.rooms.History(roomID, before, limit)
+	events, err := s.rooms.HistoryContext(r.Context(), roomID, before, limit)
 	if err != nil {
 		if errors.Is(err, collab.ErrNoRoom) {
 			s.log.Warn("房间历史请求命中不存在房间", "room", roomID)

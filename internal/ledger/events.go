@@ -4,6 +4,7 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -61,6 +62,11 @@ func (s *Store) appendEventAt(tx *sql.Tx, sink *eventSink, cardID, typ, actor st
 // 排他；limit<=0 取 1000。升序 + LIMIT 截尾，游标语义与 store.EventsFromAsc
 // 一致——绝不能改成降序截头，那会让游标永久跨过缺口。
 func (s *Store) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]Event, error) {
+	return s.EventsFromAscContext(context.Background(), cardIDs, fromSeq, limit)
+}
+
+// EventsFromAscContext 允许 HTTP 客户端放弃请求时中断长事件流扫描。
+func (s *Store) EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]Event, error) {
 	if limit <= 0 {
 		limit = 1000
 	}
@@ -75,7 +81,7 @@ func (s *Store) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]Eve
 	}
 	q += ` ORDER BY seq ASC LIMIT ?`
 	args = append(args, limit)
-	rows, err := s.db.Query(s.q(q), args...)
+	rows, err := s.db.QueryContext(ctx, s.q(q), args...)
 	if err != nil {
 		return nil, fmt.Errorf("读账本事件流: %w", err)
 	}

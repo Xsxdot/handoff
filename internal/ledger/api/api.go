@@ -8,6 +8,7 @@
 package api
 
 import (
+	"context"
 	"errors"
 	"time"
 
@@ -31,7 +32,7 @@ var _ client.LedgerClient = (*Facade)(nil)
 func (f *Facade) GetCard(id string) (proto.Card, error) {
 	card, err := f.st.GetCard(id)
 	if err != nil {
-		return proto.Card{}, err
+		return proto.Card{}, translateNotFound(err)
 	}
 	// Store.GetCard 返回裸 Card（单卡读不派生跟随态），包一层视图后
 	// Following 恒空；并入态的取数源是 ListActiveCards/ListAllCards。
@@ -80,7 +81,11 @@ func (f *Facade) RecordMessageConsumed(cardID string, msgSeq int64, consumer str
 }
 
 func (f *Facade) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
-	events, err := f.st.EventsFromAsc(cardIDs, fromSeq, limit)
+	return f.EventsFromAscContext(context.Background(), cardIDs, fromSeq, limit)
+}
+
+func (f *Facade) EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	events, err := f.st.EventsFromAscContext(ctx, cardIDs, fromSeq, limit)
 	if err != nil {
 		return nil, err
 	}

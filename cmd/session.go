@@ -280,29 +280,11 @@ func sessionWaitMatch(svc *collab.Service, ev ledger.Event, member string) (prot
 
 // sessionWaitReference 只投影回复引用条；积压摘要不需要逐条重算未读列表。
 func sessionWaitReference(svc *collab.Service, msg proto.RoomMessage) (*proto.SessionCite, error) {
-	if msg.ReplyTo <= 0 {
-		return nil, nil
-	}
-	history, err := svc.History(msg.Room, 0, 0)
-	if err != nil {
-		return nil, fmt.Errorf("session wait 读取引用条: %w", err)
-	}
-	for _, h := range history {
-		if h.Seq != msg.ReplyTo {
-			continue
-		}
-		var ref proto.RoomMessage
-		if json.Unmarshal(h.Payload, &ref) == nil {
-			return &proto.SessionCite{Seq: h.Seq, Room: msg.Room, Actor: h.Actor, Body: ref.Body}, nil
-		}
-		break
-	}
-	return nil, nil
+	return svc.MessageReference(msg)
 }
 
 // buildSessionWake 装配三件套（spec §4.3：命中条 + 引用条 + 未读数）。
-// referenced 取 ReplyTo 指向消息的引用条；History 默认窗（200 条）外或解码
-// 失败按「无引用锚」省键（plan 裁定 5 的降级声明）。unread 与
+// referenced 取 ReplyTo 指向的同会话消息；无有效引用锚时省键。unread 与
 // ListSessions(member) 的 Unread 同一投影（条 44——同一游标介质，含命中条）。
 // ev 用 ledger.Event：CLI 读侧 Store.EventsFromAsc 的既有返回类型
 // （与 proto.LedgerEvent 同形；card_wait 同款）。
@@ -615,16 +597,22 @@ var sessionCardMention = regexp.MustCompile(`^[A-Z]{1,4}[0-9]+(\.[0-9]+)*$`)
 func sessionMessageMentions(body string, explicit []string) []string {
 	seen := make(map[string]bool)
 	var out []string
-	add := func(token string) {
-		token = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(token), "@"))
-		if token == "" || seen[token] {
+	add := func(raw string, explicit bool) {
+		raw = strings.TrimSpace(raw)
+		canonical := strings.TrimSpace(strings.TrimPrefix(raw, "@"))
+		if canonical == "" || seen[canonical] {
 			return
 		}
-		seen[token] = true
-		out = append(out, token)
+		seen[canonical] = true
+		if explicit {
+			// 只在 Service.Send 写入边界剥一次；这里保留原文，避免 @@ 被剥两次。
+			out = append(out, raw)
+		} else {
+			out = append(out, canonical)
+		}
 	}
 	for _, token := range explicit {
-		add(token)
+		add(token, true)
 	}
 	for _, field := range strings.Fields(body) {
 		if !strings.HasPrefix(field, "@") {
@@ -632,7 +620,7 @@ func sessionMessageMentions(body string, explicit []string) []string {
 		}
 		token := strings.TrimPrefix(field, "@")
 		if proto.ValidateMemberIdentity(token) || sessionCardMention.MatchString(token) {
-			add(token)
+			add(token, false)
 		}
 	}
 	return out

@@ -1,6 +1,6 @@
 # 2026-09-24 会话故障排查台账
 
-> 只记录实际读数。UI 小修位于独立 worktree `session-loading-diagnosis`；@ 可靠接收方案尚未实现。
+> 只记录实际读数。改动位于独立 worktree `session-loading-diagnosis`；运行中的桌面端与 agentd 尚未换版。
 
 - 2026-09-23 19:03:48 +08:00 `pmset -g log`：本机合盖休眠；19:59:57 完整唤醒。用户随后确认 20:00–22:00 同机桌面端仍无法打开会话，未重启桌面端，只切换会话。因此休眠不能解释整段故障。
 - 2026-09-23 20:00–22:00 `~/.handoff/agentd.log`：会话成员投影的警告每约 5 秒出现；`ListSessions` 源码在该警告前会读取完整账本事件流。未找到该时段“会话列表读取失败”“房间历史读取失败”“会话详情读取失败”或鉴权失败日志。证明部分列表请求及事件流读取继续完成；不能据此断言历史请求也完成，历史成功没有日志。
@@ -20,3 +20,12 @@
 - 完整验证：`go test ./...` 首跑退出 1，唯一红项 `internal/agentd.TestPtyWSAttachedBacklogBytesKeyPresent`（新 PTY 的 `backlog_bytes=160` 而测试假设 0）；它未触及本次改动路径，单独复跑第一次也红。相同原始基线 a8e60208 的临时干净 worktree 单跑绿；随后两边各 `-count=3` 均绿，显示此项受 shell 起动输出时间竞争影响，不能拿一次红断言本次回归，也不冒称它永不再红。`go test ./...` 第二次退出 0，`cmd` 54.681s、`internal/agentd` 105.495s。临时基线 worktree 已移除。
 - 最终前端复跑（会话列表超时补丁后）：16 files / 180 tests passed；`npm run typecheck`、`npm run lint -- --quiet`、`npm run build` 退出 0。`codegraph check` 复跑退出 0，`fails=[]`。`go test ./internal/ledger -run 'TestSessionDeliveryCursor|TestPGSessionDeliveryCursor|TestDDLDialectParity' -count=1 -v` 退出 0：SQLite 游标及双方言 DDL parity pass；PG 双连接测试因 `LEDGER_TEST_PG_DSN` 未设置而 skip。Docker 命令可用但 daemon 无 socket，未启动容器。
 - 真 CLI 跨进程（临时 SQLite 库）：`go build -o /private/tmp/handoff-session-r2 ./` 后依次用独立进程 `session create --owner agent:main`、`session send '@agent:target 第一条' --agent main`、`session wait agent:target --timeout 2s`、原样重挂 500ms、再 send 第二条、再 wait。stdout JSON 核对：首次 `session_backlog` 1 hit；重挂退出 124；第二次 `session_backlog` 1 hit，`from_seq=2,to_seq=3`。此证据覆盖进程重启/同库续收，不冒称异机或 PG 真链。
+- 实现提交原始输出：`git commit -m 'fix: recover session mentions and distinguish stalled history'` 返回 `[detached HEAD 52adea99] ... 24 files changed, 664 insertions(+), 87 deletions(-)`。`OUT=/private/tmp/handoff-session-r2-embed scripts/build-deploy.sh` 退出 0：前端 1989 模块构建，`CGO_ENABLED=0` 内嵌前端二进制 28M，`go test -tags embedweb ./internal/webui/...` 通过，版本自检显示 `52adea997726`、`modified=false`。`/private/tmp/handoff-session-r2-embed version` 回报 revision `52adea9977265db83b54b4f2c7da059e4c637d4e`、darwin/arm64。运行中的本机 agentd / 桌面端未换版。
+- 本机现有运行版的只读计时：`handoff session detail session:15 --json` 退出 0，`real 0.98s`、timeline 16 项；`handoff session list --json` 退出 0，`real 1.18s`、输出 11 行。只代表当前可用时段，不能倒推昨夜 20:00–22:00 的请求时延或数据库根因。
+- 独立审查在 `a8e60208..52adea99` 找到两项实际问题：积压扫描的寻址读错原先被吞，后续命中会把持久水位越过漏判的消息；显式 `--mention @@...` 在 CLI 与 Service 双层剥前缀，会意外变成有效目标。另指出回复引用的 200 条历史窗、跨会话 `reply_to`、Unicode 空白差异、回复积压反复全流扫描，以及浏览器超时后服务端不取消事件查询。这些均在审查后修订中处理，不能拿审查前绿窗作最终交付证据。
+- 审查修订红绿：新增 `TestMessageWakeTargetsReadFailureFailsClosed` 首红（卡读错误被当未命中）；前端 `sessionModel` 的 U+0085 金样本首红（桌面提取 `agent:a\u0085b`，CLI 仅提取 `agent:a`）。改动后相关 Go focused 命令通过，前端 24 个模型测试通过。显式双 `@` 增加真实 CLI 发送/监听反例；旧引用超过 200 条和跨会话引用增加真 SQLite 测试，focused Go 均通过。`EventsFromAscContext` 经账本→会话→HTTP handler 传递取消信号，取消后的列表/详情/历史读测试通过。
+- 审查后前端全量 `npm test -- --run`：135 files / 1476 tests passed；`npm run typecheck` 通过。第一次 `npm run lint -- --quiet` 红于显式 Go 空白字符正则触发 `no-control-regex`；加解释性单行禁用后，lint 通过；`npm run build` 通过，仍仅有现存 500 kB chunk warning。`git diff --check` 和 `codegraph check` 退出 0，后者 `fails=[]`。`go test ./...` 全量复跑退出 0，`cmd` 56.163s、`internal/agentd` 115.134s、`internal/collab` 3.817s。
+
+## 图覆盖债
+
+- `codegraph sym MessageReference` 与 `codegraph sym EventsFromAscContext` 均报告不在图中；用源码定位完成审查。这两个新方法沿既有会话→账本接口与 HTTP→会话组装方向，没有新增跨域方向；本分支未改目标图或视图 diff。`codegraph validate --stale` 的旧视图完整性问题与失鲜节点另见上方实测，不能将 `codegraph check` 绿冒充图全量有效。

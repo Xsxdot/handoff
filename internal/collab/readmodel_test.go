@@ -8,12 +8,14 @@
 package collab
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/collab/room"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
@@ -36,7 +38,7 @@ func (f *fakeLC) GetCard(id string) (proto.Card, error) {
 			return c, nil
 		}
 	}
-	return proto.Card{}, ledger.ErrNotFound
+	return proto.Card{}, client.ErrNotFound
 }
 func (f *fakeLC) ListActiveCards(project string) ([]proto.Card, error) {
 	var out []proto.Card
@@ -112,6 +114,13 @@ func (f *fakeLC) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]pr
 		}
 	}
 	return out, nil
+}
+
+func (f *fakeLC) EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return f.EventsFromAsc(cardIDs, fromSeq, limit)
 }
 
 // TestListRoomsForMemberScansEventsOnceForUnreadAndActivity 锁住列表性能接缝：

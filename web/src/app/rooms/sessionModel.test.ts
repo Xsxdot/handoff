@@ -14,6 +14,9 @@ describe('CLI/桌面共用的 @ 金样本', () => {
     expect(extractSessionMentions('@agent:main @user:sy @B233.16 @agent:main')).toEqual(['agent:main', 'user:sy', 'B233.16'])
     expect(extractSessionMentions('@agent: @B23x @unknown email@agent:main')).toEqual([])
   })
+  it('按 Go Unicode 空白分隔，避免桌面与 CLI 寻址分歧', () => {
+    expect(extractSessionMentions('@agent:a\u0085b')).toEqual(['agent:a'])
+  })
 })
 
 describe('成员状态渲染词表（看板不说谎的前端半边）', () => {

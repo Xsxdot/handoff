@@ -364,9 +364,18 @@ func TestSessionWaitSourceGuard(t *testing.T) {
 
 func TestSessionMessageMentionsGoldens(t *testing.T) {
 	got := sessionMessageMentions("@agent:main @user:sy @B233.16 @agent:main @agent: @B23x @unknown email@agent:main", []string{"@user:sy", "agent:main"})
-	want := []string{"user:sy", "agent:main", "B233.16"}
+	want := []string{"@user:sy", "agent:main", "B233.16"}
 	if fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Fatalf("mentions=%v want %v", got, want)
+	}
+	// 显式输入只能在 Send 写入边界剥一次；@@ 不得变成有效寻址。
+	got = sessionMessageMentions("", []string{"@@B1", "@@agent:main"})
+	if fmt.Sprint(got) != fmt.Sprint([]string{"@@B1", "@@agent:main"}) {
+		t.Fatalf("双 @ 提前归一化: %v", got)
+	}
+	got = sessionMessageMentions("@agent:a\u0085b", nil)
+	if fmt.Sprint(got) != fmt.Sprint([]string{"agent:a"}) {
+		t.Fatalf("Go 空白分隔漂移: %v", got)
 	}
 }
 
@@ -401,6 +410,34 @@ func TestSessionSendBodyMentionWakesTarget(t *testing.T) {
 	wake := decodeSessionWake(t, out)
 	if wake.Hit.Seq != events[0].Seq {
 		t.Fatalf("主 agent 未收到正文 @：%+v", wake)
+	}
+}
+
+func TestSessionSendExplicitDoubleAtDoesNotWakeTarget(t *testing.T) {
+	dir := t.TempDir()
+	_, _, st, sessionID, _ := mustSendFixture(t, dir, "显式双前缀")
+	before, err := st.MaxSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "测试", "--mention", "@@agent:main"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.EventsFromAsc(nil, before, 10)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("落账消息: %v err=%v", events, err)
+	}
+	var msg proto.RoomMessage
+	if err := json.Unmarshal(events[0].Payload, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(msg.Mentions) != "[@agent:main]" {
+		t.Fatalf("双前缀应只剥一次: %v", msg.Mentions)
+	}
+	_, _, err = runLedgerCLI(t, dir, "session", "wait", "agent:main", "--since", fmt.Sprint(before), "--timeout", "100ms")
+	var timedOut *exitCodeError
+	if !errors.As(err, &timedOut) || timedOut.code != ExitTimeout {
+		t.Fatalf("双前缀不得唤醒主 agent: %v", err)
 	}
 }
 
