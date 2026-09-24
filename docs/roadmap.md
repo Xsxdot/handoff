@@ -24,9 +24,11 @@
    spec 的弃选三。
 5. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
-6. **会话定向续收异机验收**：已批准 r2 的实现尚未在两台执行机通过共享 PostgreSQL
-   账本验证“停机期间入账 → 另一机重挂补收 → 已输出不重复”。当前只有本机 SQLite
-   多进程证据；本机没有 PostgreSQL 客户端/服务，Docker daemon 未运行。来源：
+6. **会话定向续收异机验收**：r2 已在本机通过共享 PostgreSQL 的独立 CLI 进程验证：
+   首次无游标扫描、停听期间入账后重挂补收、`--follow` 实时收取、重复挂听不重交；
+   但尚未在第二台执行机运行新 CLI，因此“异机重挂”仍未验。当前 handoff CLI 已从配置
+   连接共享 PG；本机没有 `psql`/PostgreSQL 服务且 Docker daemon 未运行，不代表共享 PG
+   不可用。来源：
    `docs/superpowers/specs/2026-09-24-session-reliable-mentions.md` Wave 0 与
    `docs/superpowers/plans/2026-09-24-session-reliable-mentions-wave0.md` §4。
 
