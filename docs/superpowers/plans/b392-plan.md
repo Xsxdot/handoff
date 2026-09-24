@@ -1166,9 +1166,10 @@ func TestReadmeDocumentsShellCallOrder(t *testing.T) {
 ### 6.0 变异 harness（`set -euo pipefail`；唯一命中/build/还原失败均硬失败；Darwin Bash 3.2 兼容）
 
 **执行方式（必须）**：本节所有命令放进**同一个 bash 进程**执行——把它们存成任务私有脚本
-`"${TMPDIR:?}/b392-mutations.sh"` 后 `bash` 之，或在一个交互式 bash 会话里逐块粘贴。原因：还原与
-清理靠 `trap ... EXIT`，只有同进程退出才会触发；拆成多个进程会漏还原。`MUT_ROOT` 为任务私有唯一
-临时目录（落在 `$TMPDIR`，不在仓内），trap 在成功路径 `rm -rf` 清理，失败路径保留现场排障。
+`"${TMPDIR:?}/b392-mutations.sh"` 后 `bash "${TMPDIR:?}/b392-mutations.sh"; rm -f "${TMPDIR:?}/b392-mutations.sh"`，
+或在一个交互式 bash 会话里逐块粘贴。原因：还原与清理靠 `trap ... EXIT`，只有同进程退出才会触发；
+拆成多个进程会漏还原。`MUT_ROOT` 为任务私有唯一临时目录（落在 `$TMPDIR`，不在仓内），trap 在成功
+路径 `rm -rf` 清理、失败路径保留现场排障；脚本文件本身在运行后 `rm -f` 清理。**不往仓内写任何临时文件。**
 
 **Darwin Bash 3.2 约束**：不得用 `declare -A`（macOS 自带 bash 3.2 不支持关联数组）。每文件元数据落
 `$MUT_ROOT/<tag>.orig.sha`（原始 hash）与 `$MUT_ROOT/<tag>.state`（还原状态）两个任务私有文件；哈希
