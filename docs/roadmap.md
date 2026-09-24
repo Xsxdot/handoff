@@ -8,32 +8,40 @@
 
 ## 队列
 
-1. **会话列表/历史与定向 wait 避免全账本顺序扫描**：当前会话列表、详情、历史从全局
-   `card_events` seq 0 分页读取，再在内存中过滤房间；`session wait` 也逐页扫描全流，
-   且底层调用不接 CLI timeout 的取消信号。2026-09-24 共享 PG 实测：房间读取约 13s、
-   内置页面约 22s 才呈现消息，列表请求触发 15s 超时；`session wait --timeout 5s`
-   实测约 12.5s 才退出。用户报告的昨晚 20:00–22:00 故障没有请求级日志，不能据此
-   倒推其唯一根因。下一轮需定清账本层按房间/收件人限域读取与取消语义，并以 PG+SQLite
-   真机及至少 2 万条无关事件验收。排查同时发现 `room read --after` 实际传入排他
-   `beforeSeq`，命令帮助与实现方向相反，应在同一轮独立修正并加 CLI 反例。来源：
-   `docs/superpowers/ledgers/2026-09-24-session-incidents.md` 本轮最终验收记录。
-2. **完工提交号落账**：账本今天不记任务的完工提交（全仓 `Commit` 只命中 `tx.Commit()`），
+1. **用户可见账本读路径分域与投影性能**：工作项列表和 `card wait` 快照折叠所有镜像工单；
+   会话/房间列表、详情、历史、未读、收件箱、消费清理和 `session wait` 从全局流读出后再
+   过滤。2026-09-24 共享 PG 实测：会话/房间列表约 13.6s，看板 API 8.3–9.7s；完整事件流
+   客户端耗时 12.1s、镜像投影客户端耗时 7.95s，而 PG 对应 SELECT 执行仅约 0.2ms / 20ms、
+   取样无锁等待。已证问题是应用读取/重放超出展示所需的数据；传输与应用处理都在客户端
+   总耗时内，但网络占比、连接池等待未被单独量化。昨晚 20:00–22:00 故障仍缺请求级证据，
+   不能倒推为同一唯一根因。r2 spec 提议在账本边界提供范围/游标读模型、将 target 探测移出
+   首屏同步路径，并覆盖 PG+SQLite、至少 2 万条无关事件及镜像规模增长；p95 ≤2s 已获同意，
+   spec 已由用户批准并进入 L3 重档；陈旧摘要标注观测时间，且不驱动筛选。见
+   `docs/superpowers/specs/2026-09-24-ledger-read-performance.md` 与
+   `docs/superpowers/ledgers/2026-09-24-session-incidents.md`。`room read --after` 方向错误
+   保留独立 CLI 反例/修正要求。来源：本轮新 spec 与排查台账。
+2. **后台自动化唤醒消费读路径**：`internal/agentd/wakeconsumer.go` 从全局账本按单独保存的
+   automation cursor 读取，启动后可能有积压补扫；当前没有证据证明它造成页面慢，先与用户
+   可见查询分开，测清启动积压规模、查询耗时及其对唤醒/认领语义的影响，再单独立 spec。
+   来源：`2026-09-24-ledger-read-performance.md` 的 Out of Scope 与
+   `internal/agentd/wakeconsumer.go`、`internal/agentd/automation_cursor.go`。
+3. **完工提交号落账**：账本今天不记任务的完工提交（全仓 `Commit` 只命中 `tx.Commit()`），
    于是「卡的工作分支现在指向哪个提交」答不出来。补上它之后，节点派发的起点可以传
    提交号而不是分支名，复用既有的 commit 解析路径（本地有就不拉），比分支名形态更
    可靠。来源：`specs/2026-08-23-b192-node-base-continuation.md` 的弃选方案 D。
-3. **派发时自动 push 工作分支到 origin**：能让 charter 流的节点跨机接续（今天跨机
+4. **派发时自动 push 工作分支到 origin**：能让 charter 流的节点跨机接续（今天跨机
    一律拒发并指路）。是外部可见的写动作，且与合并环节的 push 语义重叠，需要单独
    定性。来源：同上 spec 的弃选方案 C 与 Out of Scope。
-4. **派发前校验附件在目标基线上可达**：基线修对之后，这条从「主要修法」降级为
+5. **派发前校验附件在目标基线上可达**：基线修对之后，这条从「主要修法」降级为
    安全网——抓「基线设了、但附件仍不在那条分支上」的剩余情形。先让基线对，再看
    还漏什么。来源：`specs/2026-08-23-card-baseline-at-worktree-creation.md`
    的弃选一与 Out of Scope。
-5. **迁流时也能设卡基线**：`workflow migrate`（领取即跨流）处再开一个写入口。
+6. **迁流时也能设卡基线**：`workflow migrate`（领取即跨流）处再开一个写入口。
    等「开工作树时挂卡」跑一段时间，看人是否真的会先迁流后建树再定。来源：同上
    spec 的弃选三。
-6. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
+7. **卡与工作树双向可见**：从工作树看「这棵树上挂着哪些卡」。上条 spec 本期只做
    单向（卡知道自己的基线）。来源：同上 spec 的 Out of Scope。
-7. **CLI 配置解析失败时静默退回本地 SQLite**：`loadCLIConfig()` 把解析错误变成空配置，
+8. **CLI 配置解析失败时静默退回本地 SQLite**：`loadCLIConfig()` 把解析错误变成空配置，
    `openLedger()` 随后以相对路径打开 `ledger.db`。`linux-01` 的 `/root/.handoff/config.yaml`
    含当前解析器不支持的 `approver.models`；用新 CLI 运行时详情报“房间不存在”，wait 在
    空本地账本上超时。Wave 0 临时配置验证已绕过此环境问题，但正式配置与远端 agentd 均未改；
