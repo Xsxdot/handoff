@@ -16,7 +16,7 @@ export function useDesktopState(): PollState<DesktopState | null> {
 
 // useLatest 每 10s 读取最新 release 缓存。
 export function useLatest(): PollState<LatestResp> {
-  return usePoll(fetchLatest, UPDATE_INTERVAL)
+  return usePoll(() => fetchLatest(), UPDATE_INTERVAL)
 }
 
 // useDownload 在下载相关 UI 活跃时每 1s 读取进度；不活跃时完全停表。

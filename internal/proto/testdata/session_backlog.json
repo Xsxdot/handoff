@@ -1,0 +1,1 @@
+{"type":"session_backlog","member":"agent:main","from_seq":10,"to_seq":14,"hits":[{"hit":{"seq":12,"room":"session:1","actor":"user:sy","body":"@agent:main 看这里"}},{"hit":{"seq":14,"room":"session:1","actor":"user:sy","body":"回复"},"referenced":{"seq":11,"room":"session:1","actor":"agent:main","body":"原消息"}}]}

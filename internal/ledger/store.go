@@ -262,6 +262,9 @@ func ddlStatements(pg bool) []string {
 			`CREATE TABLE IF NOT EXISTS mirror_cursors (
 				target TEXT PRIMARY KEY, last_seq BIGINT NOT NULL,
 				updated_at TIMESTAMPTZ NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS session_delivery_cursors (
+				member TEXT PRIMARY KEY, last_seq BIGINT NOT NULL,
+				updated_at TIMESTAMPTZ NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_run_locks (
 				card_id TEXT PRIMARY KEY REFERENCES cards(id),
 				node TEXT NOT NULL, holder TEXT NOT NULL,
@@ -381,6 +384,9 @@ func ddlStatements(pg bool) []string {
 				holder TEXT NOT NULL, lease_until TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS mirror_cursors (
 				target TEXT PRIMARY KEY, last_seq INTEGER NOT NULL,
+				updated_at TEXT NOT NULL)`,
+			`CREATE TABLE IF NOT EXISTS session_delivery_cursors (
+				member TEXT PRIMARY KEY, last_seq INTEGER NOT NULL,
 				updated_at TEXT NOT NULL)`,
 			`CREATE TABLE IF NOT EXISTS card_run_locks (
 				card_id TEXT PRIMARY KEY REFERENCES cards(id),

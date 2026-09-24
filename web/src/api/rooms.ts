@@ -166,7 +166,7 @@ export const fetchRooms = (
 // limit<=0 由服务端取 200；返回升序 room_message 事件。
 export const fetchRoomMessages = (
   id: string,
-  opts: { before?: number; limit?: number } = {},
+  opts: { before?: number; limit?: number; signal?: AbortSignal } = {},
 ): Promise<RoomHistoryItem[]> => {
   const q = new URLSearchParams()
   if (opts.before !== undefined) q.set('before', String(opts.before))
@@ -174,6 +174,7 @@ export const fetchRoomMessages = (
   const qs = q.toString()
   return request<{ messages: RoomHistoryItem[] }>(
     `/api/rooms/${encodeURIComponent(id)}/messages${qs ? `?${qs}` : ''}`,
+    { signal: opts.signal },
   ).then((response) => response.messages ?? [])
 }
 
@@ -215,12 +216,12 @@ export const fetchIdentity = (): Promise<IdentityResp> => request<IdentityResp>(
 
 // fetchSessions 会话列表（GET /api/sessions）：member 维度服务端注入（解析人名），
 // 前端不得自报身份——不设 member 参数（与 S4 缺陷族 5 反例镜像）。
-export const fetchSessions = (): Promise<SessionSummary[]> =>
-  request<{ sessions: SessionSummary[] }>('/api/sessions').then((r) => r.sessions ?? [])
+export const fetchSessions = (signal?: AbortSignal): Promise<SessionSummary[]> =>
+  request<{ sessions: SessionSummary[] }>('/api/sessions', { signal }).then((r) => r.sessions ?? [])
 
 // fetchSessionDetail 会话详情三块（GET /api/sessions/{id}）。
-export const fetchSessionDetail = (id: string): Promise<SessionDetail> =>
-  request<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`)
+export const fetchSessionDetail = (id: string, signal?: AbortSignal): Promise<SessionDetail> =>
+  request<SessionDetail>(`/api/sessions/${encodeURIComponent(id)}`, { signal })
 
 // createSession 建会话（POST /api/sessions {title}）：owner 由服务端按解析人名
 // 缺省（B358.9 契约 §3.8；决定 6 owner=创建者），前端不传 owner。

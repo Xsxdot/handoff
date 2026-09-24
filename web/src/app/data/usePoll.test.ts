@@ -75,6 +75,22 @@ describe('usePoll', () => {
     await waitFor(() => expect(fetcher).toHaveBeenCalledTimes(2))
   })
 
+  it('请求一直不返回时达到上限并重试，恢复后显示新数据', async () => {
+    let firstSignal: AbortSignal | undefined
+    const fetcher = vi.fn()
+      .mockImplementationOnce((signal: AbortSignal) => {
+        firstSignal = signal
+        return new Promise<string>(() => {})
+      })
+      .mockResolvedValue('recovered')
+    const { result } = renderHook(() => usePoll(fetcher, 1000, { timeoutMs: 2500 }))
+
+    await act(async () => { await vi.advanceTimersByTimeAsync(3000) })
+    expect(fetcher).toHaveBeenCalledTimes(2)
+    expect(firstSignal?.aborted).toBe(true)
+    expect(result.current.data).toBe('recovered')
+  })
+
   it('StrictMode effect 重放不丢失首拉结果', async () => {
     let resolveFirst!: (value: string) => void
     const first = new Promise<string>((resolve) => { resolveFirst = resolve })

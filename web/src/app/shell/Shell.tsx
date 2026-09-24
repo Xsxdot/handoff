@@ -174,7 +174,7 @@ export function Shell() {
       setMobileTab('projects')
     }
   }, [compact, ledgerLoading, ledgerEnabled, mobileTab])
-  const cardsState = usePoll(fetchCards, 2500, { enabled: ledgerEnabled })
+  const cardsState = usePoll(() => fetchCards(), 2500, { enabled: ledgerEnabled })
   const decisionsState = usePoll(() => fetchDecisions(true), 2500, { enabled: ledgerEnabled })
   const cardNeedsCount = useMemo(() => {
     // 账本未启用时角标恒 0：轮询已关，cardsState 永远是 null，这里显式返回
@@ -195,7 +195,10 @@ export function Shell() {
   }, [cardsState.data])
   // 会话流（B361）：徽章要在任务 tab 激活时也活着，数据源在 Shell 持有，
   // 列表组件只渲染。未启用账本时轮询关闭（与旧房间面同门控）。
-  const sessionsState = usePoll(fetchSessions, COLLAB_POLL_MS, { enabled: ledgerEnabled })
+  const sessionsState = usePoll((signal) => fetchSessions(signal), COLLAB_POLL_MS,
+    { enabled: ledgerEnabled, timeoutMs: 15_000 })
+  const sessionsError = sessionsState.sessionExpired ? '会话失效，请重新打开 handoff console'
+    : sessionsState.disconnected ? sessionsState.errorText : ''
   const sessions = useMemo(() => sessionsState.data ?? [], [sessionsState.data])
   const [sidebarTab, setSidebarTab] = useState<'sessions' | 'tasks'>('sessions')
   const [createOpen, setCreateOpen] = useState(false)
@@ -838,8 +841,8 @@ export function Shell() {
         </div>
         {ledgerEnabled && (
           <div className={`flex min-h-0 flex-1 flex-col ${sidebarTab !== 'sessions' ? 'hidden' : ''}`}>
-            <SessionSidebar sessions={sessions} loading={sessionsState.data === null && !sessionsState.disconnected}
-              errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
+            <SessionSidebar sessions={sessions} loading={sessionsState.data === null && sessionsError === ''}
+              errorText={sessionsError}
               needsOnly={needsOnly}
               onToggleNeeds={() => setNeedsOnly((current) => !current)}
               projectFilter={projectFilter}
@@ -996,8 +999,8 @@ export function Shell() {
                   ledgerEnabled ? (
                     <SessionSidebar
                       sessions={sessions}
-                      loading={sessionsState.data === null && !sessionsState.disconnected}
-                      errorText={sessionsState.disconnected ? sessionsState.errorText : ''}
+                      loading={sessionsState.data === null && sessionsError === ''}
+                      errorText={sessionsError}
                       needsOnly={needsOnly}
                       onToggleNeeds={() => setNeedsOnly((current) => !current)}
                       projectFilter={projectFilter}

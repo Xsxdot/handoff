@@ -44,6 +44,18 @@ export function timelineKindLabel(kind: string): string {
 
 export interface BodySegment { text: string; mention: boolean }
 
+// extractSessionMentions 与 CLI 的完整 @token 金样本一致：只收空白分隔且
+// 合法的统一身份或卡号，避免正文里的邮箱和残缺 @ 无意寻址。
+export function extractSessionMentions(body: string): string[] {
+  const seen = new Set<string>()
+  for (const field of body.split(/\s+/)) {
+    if (!field.startsWith('@')) continue
+    const token = field.slice(1)
+    if (/^(?:user|agent):[^\s:]+$/.test(token) || /^[A-Z]{1,4}[0-9]+(?:\.[0-9]+)*$/.test(token)) seen.add(token)
+  }
+  return [...seen]
+}
+
 // segmentBody 按空白切 @token，与 mentions 逐字比对（token 去 @ 前缀）。
 export function segmentBody(body: string, mentions?: string[]): BodySegment[] {
   const set = new Set(mentions ?? [])

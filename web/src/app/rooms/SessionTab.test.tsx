@@ -6,6 +6,7 @@ import userEvent from '@testing-library/user-event'
 import { archiveSession, fetchRoomMessages, fetchSessionDetail, joinSessionCard, markRoomRead } from '../../api/rooms'
 import { fetchCards } from '../../api/ledger'
 import { openSessionDetail } from './sessionDetailOpener'
+import { ApiError } from '../../api/client'
 import type { RoomHistoryItem, SessionDetail, SessionSummary } from '../../api/rooms'
 import fixture from '../../api/testdata/RoomsFixture.json'
 import { SessionTab } from './SessionTab'
@@ -52,6 +53,36 @@ beforeEach(() => {
 })
 
 describe('SessionTab', () => {
+  it('历史首拉未返回时显示读取中，不谎报会话没有消息', () => {
+    vi.mocked(fetchRoomMessages).mockReturnValue(new Promise(() => {}))
+    render(<SessionTab sessionId="session:7" title="架构物理化" />)
+    expect(screen.getByText('正在读取消息…')).toBeInTheDocument()
+    expect(screen.queryByText('（还没有消息）')).toBeNull()
+  })
+
+  it('历史鉴权失败时显示失效原因，不谎报会话没有消息', async () => {
+    vi.mocked(fetchRoomMessages).mockRejectedValue(new ApiError(401, '会话失效'))
+    render(<SessionTab sessionId="session:7" title="架构物理化" />)
+    expect(await screen.findByRole('alert')).toHaveTextContent('会话失效')
+    expect(screen.queryByText('（还没有消息）')).toBeNull()
+  })
+
+  it('首个历史请求挂住后继续轮询，恢复时显示真实消息', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.mocked(fetchRoomMessages)
+        .mockReturnValueOnce(new Promise(() => {}))
+        .mockResolvedValue([event(7, '恢复后的消息')])
+      render(<SessionTab sessionId="session:7" title="架构物理化" />)
+      expect(screen.getByText('正在读取消息…')).toBeInTheDocument()
+      await act(async () => { await vi.advanceTimersByTimeAsync(20_000) })
+      expect(vi.mocked(fetchRoomMessages).mock.calls.length).toBeGreaterThanOrEqual(2)
+      expect(screen.getByText('恢复后的消息')).toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('头部精简：无标题行、无拉卡钮、无 ⋯（⋯ 住窗格标题行，标题唯一来源不变）', async () => {
     render(<SessionTab sessionId="session:7" title="架构物理化" />)
     await screen.findByRole('textbox', { name: '发送消息' })

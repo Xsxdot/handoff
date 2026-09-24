@@ -122,16 +122,124 @@ func TestSessionWaitReferencedAndUnread(t *testing.T) {
 	}
 }
 
-func TestSessionWaitDefaultSinceOnlyWaitsForNewEvents(t *testing.T) {
+func TestSessionWaitDefaultRecoversBacklogAndDoesNotRepeat(t *testing.T) {
 	dir := t.TempDir()
-	svc, _, _, sessionID := mustWaitFixture(t, dir)
-	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 启动前就有的消息", Mentions: []string{"user:sy"}}, "user:tester"); err != nil {
+	svc, _, st, sessionID := mustWaitFixture(t, dir)
+	first, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 第一条", Mentions: []string{"user:sy"}}, "user:tester")
+	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--timeout", "300ms")
+	second, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 第二条", Mentions: []string{"user:sy"}}, "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--timeout", "300ms")
+	if err != nil {
+		t.Fatalf("积压应立即输出: %v", err)
+	}
+	var backlog proto.SessionBacklog
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &backlog); err != nil {
+		t.Fatal(err)
+	}
+	if backlog.Type != "session_backlog" || backlog.Member != "user:sy" || backlog.ToSeq != second || len(backlog.Hits) != 2 || backlog.Hits[0].Hit.Seq != first {
+		t.Fatalf("积压摘要错: %+v", backlog)
+	}
+	seq, err := st.SessionDeliveryCursor("user:sy")
+	if err != nil || seq != second {
+		t.Fatalf("交付水位=%d err=%v", seq, err)
+	}
+	_, _, err = runLedgerCLI(t, dir, "session", "wait", "user:sy", "--timeout", "300ms")
 	codeErr := &exitCodeError{}
 	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
-		t.Fatalf("缺省 --since 应从流尾只等新事件，短超时内不得命中历史消息: err=%v", err)
+		t.Fatalf("重挂无新消息应超时而非重复: %v", err)
+	}
+	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 第三条", Mentions: []string{"user:sy"}}, "user:tester"); err != nil {
+		t.Fatal(err)
+	}
+	out, _, err = runLedgerCLI(t, dir, "session", "wait", "user:sy", "--timeout", "300ms")
+	if err != nil {
+		t.Fatalf("第三条应补收: %v", err)
+	}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &backlog); err != nil || len(backlog.Hits) != 1 || backlog.Hits[0].Hit.Seq <= second {
+		t.Fatalf("续收错: %+v err=%v", backlog, err)
+	}
+}
+
+type sessionFailWriter struct{}
+
+func (sessionFailWriter) Write([]byte) (int, error) { return 0, fmt.Errorf("stdout unavailable") }
+
+func TestSessionWaitFailedOutputDoesNotAdvanceDelivery(t *testing.T) {
+	dir := t.TempDir()
+	svc, _, st, sessionID := mustWaitFixture(t, dir)
+	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy", Mentions: []string{"user:sy"}}, "user:tester"); err != nil {
+		t.Fatal(err)
+	}
+	mustWaitConfig(t, dir)
+	c := &cobra.Command{Use: "wait"}
+	c.SetOut(sessionFailWriter{})
+	if err := runSessionWait(c, "user:sy", 0, false, 0, false); err == nil {
+		t.Fatal("stdout 失败应返回错误")
+	}
+	seq, err := st.SessionDeliveryCursor("user:sy")
+	if err != nil || seq != 0 {
+		t.Fatalf("失败后水位=%d err=%v", seq, err)
+	}
+}
+
+func TestSessionWaitExplicitSinceDoesNotAdvanceDelivery(t *testing.T) {
+	dir := t.TempDir()
+	svc, _, st, sessionID := mustWaitFixture(t, dir)
+	if _, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy", Mentions: []string{"user:sy"}}, "user:tester"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "session", "wait", "user:sy", "--since", "0"); err != nil {
+		t.Fatal(err)
+	}
+	seq, err := st.SessionDeliveryCursor("user:sy")
+	if err != nil || seq != 0 {
+		t.Fatalf("手工回放不得推进水位: %d err=%v", seq, err)
+	}
+}
+
+func TestSessionWaitFollowBacklogThenRealtime(t *testing.T) {
+	dir := t.TempDir()
+	svc, _, st, sessionID := mustWaitFixture(t, dir)
+	first, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 积压", Mentions: []string{"user:sy"}}, "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	mustWaitConfig(t, dir)
+	oldInterval := sessionWaitPollInterval
+	sessionWaitPollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { sessionWaitPollInterval = oldInterval })
+	var out syncBuffer
+	c := &cobra.Command{Use: "wait"}
+	c.SetOut(&out)
+	c.SetContext(context.Background())
+	errCh := make(chan error, 1)
+	go func() { errCh <- runSessionWait(c, "user:sy", 0, false, 300*time.Millisecond, true) }()
+	waitOutputLines(t, &out, 1, 5*time.Second)
+	second, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@user:sy 实时", Mentions: []string{"user:sy"}}, "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitOutputLines(t, &out, 2, 5*time.Second)
+	if err := <-errCh; err == nil {
+		t.Fatal("空闲超时应退出")
+	}
+	lines := strings.Split(strings.TrimSpace(out.String()), "\n")
+	var backlog proto.SessionBacklog
+	if err := json.Unmarshal([]byte(lines[0]), &backlog); err != nil || backlog.ToSeq != first {
+		t.Fatalf("首行积压: %+v err=%v", backlog, err)
+	}
+	var wake proto.SessionWake
+	if err := json.Unmarshal([]byte(lines[1]), &wake); err != nil || wake.Hit.Seq != second {
+		t.Fatalf("次行实时: %+v err=%v", wake, err)
+	}
+	seq, err := st.SessionDeliveryCursor("user:sy")
+	if err != nil || seq != second {
+		t.Fatalf("实时后水位=%d err=%v", seq, err)
 	}
 }
 
@@ -189,7 +297,7 @@ func TestSessionWaitInvalidFlags(t *testing.T) {
 // 唯一入口是 collab.Service.MessageWakeTargets；通道内不得出现第二份寻址
 // 判定，无成员集合形状）。B358.5 岔口 1 批准后收窄：kind 门控（RoomMsgUser）
 // 与 mentions 直读（.Mentions）两类禁令从文件级子串改为 wait 通道两函数
-// （runSessionWait/buildSessionWake）的 AST 级禁令——同文件续写的 session
+// （runSessionWait/sessionWaitMatch/buildSessionWake）的 AST 级禁令——同文件续写的 session
 // send 合法引用 proto.RoomMsgUser 构造发言、不在 wait 路径；广播帮手名仍是
 // 文件级禁令。结构体字面量键（Mentions: …）不是 SelectorExpr，天然豁免。
 func TestSessionWaitSourceGuard(t *testing.T) {
@@ -211,7 +319,7 @@ func TestSessionWaitSourceGuard(t *testing.T) {
 		t.Fatalf("解析 session.go: %v", err)
 	}
 	waitFuncs := map[string]*ast.FuncDecl{}
-	for _, name := range []string{"runSessionWait", "buildSessionWake"} {
+	for _, name := range []string{"runSessionWait", "sessionWaitMatch", "buildSessionWake"} {
 		ast.Inspect(f, func(n ast.Node) bool {
 			if d, ok := n.(*ast.FuncDecl); ok && d.Name.Name == name {
 				waitFuncs[name] = d
@@ -223,12 +331,16 @@ func TestSessionWaitSourceGuard(t *testing.T) {
 		}
 	}
 	callsAddressing := false
-	for _, name := range []string{"runSessionWait", "buildSessionWake"} {
+	callsMatch := false
+	for _, name := range []string{"runSessionWait", "sessionWaitMatch", "buildSessionWake"} {
 		ast.Inspect(waitFuncs[name], func(n ast.Node) bool {
 			switch node := n.(type) {
 			case *ast.CallExpr:
 				if sel, ok := node.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MessageWakeTargets" {
 					callsAddressing = true
+				}
+				if call, ok := node.Fun.(*ast.Ident); ok && name == "runSessionWait" && call.Name == "sessionWaitMatch" {
+					callsMatch = true
 				}
 			case *ast.SelectorExpr:
 				if node.Sel.Name == "RoomMsgUser" || node.Sel.Name == "Mentions" {
@@ -238,7 +350,7 @@ func TestSessionWaitSourceGuard(t *testing.T) {
 			return true
 		})
 	}
-	if !callsAddressing {
+	if !callsAddressing || !callsMatch {
 		t.Fatalf("通道未经 MessageWakeTargets——命中判定唯一入口被绕过（条 42）")
 	}
 }
@@ -249,6 +361,48 @@ func TestSessionWaitSourceGuard(t *testing.T) {
 // 同款先例——成员扩张无 CLI/HTTP 面，B358.4 拍板 2）。断言：§2.1/§2.3 逐命令
 // stdout 形状、退出码契约（成功 0 / 用法与存在性错误非 0）、--json roundtrip
 // 回冻结 DTO 键集（breakdown §3.6 缺陷族 6）。
+
+func TestSessionMessageMentionsGoldens(t *testing.T) {
+	got := sessionMessageMentions("@agent:main @user:sy @B233.16 @agent:main @agent: @B23x @unknown email@agent:main", []string{"@user:sy", "agent:main"})
+	want := []string{"user:sy", "agent:main", "B233.16"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("mentions=%v want %v", got, want)
+	}
+}
+
+func TestSessionSendBodyMentionWakesTarget(t *testing.T) {
+	dir := t.TempDir()
+	_, _, st, sessionID, _ := mustSendFixture(t, dir, "正文提及场")
+	before, err := st.MaxSeq()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := runLedgerCLI(t, dir, "session", "send", sessionID, "@agent:main 请处理"); err != nil {
+		t.Fatal(err)
+	}
+	events, err := st.EventsFromAsc(nil, before, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 1 {
+		t.Fatalf("发言事件数=%d", len(events))
+	}
+	var msg proto.RoomMessage
+	if err := json.Unmarshal(events[0].Payload, &msg); err != nil {
+		t.Fatal(err)
+	}
+	if fmt.Sprint(msg.Mentions) != "[agent:main]" {
+		t.Fatalf("正文 @ 未落 mentions: %v", msg.Mentions)
+	}
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", "agent:main", "--since", fmt.Sprint(before))
+	if err != nil {
+		t.Fatal(err)
+	}
+	wake := decodeSessionWake(t, out)
+	if wake.Hit.Seq != events[0].Seq {
+		t.Fatalf("主 agent 未收到正文 @：%+v", wake)
+	}
+}
 
 // mustSendFixture 开真账本、建会话（owner=user:tester，群主即初始成员——契约
 // 条 3）并把 CLI 审计 actor（ledgerActor()=cli:<user>@<host>）坐进显式成员：

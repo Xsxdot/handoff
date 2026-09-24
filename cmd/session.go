@@ -3,7 +3,7 @@
 // 本卡（B358.3）只落 wait 子命令——外部会话（人/主 agent）的 R1 订阅通道
 // （契约 §3.8/§4.6 条 39–46）：全流升序轮询读 + 复用冻结寻址唯一入口
 // collab.Service.MessageWakeTargets 过滤，只收「寻址命中我」的会话消息；
-// 一次性原语，命中输出恰一行 SessionWake JSON 后退出 0，超时 124，订阅只读。
+// 一次性原语，命中输出恰一行 SessionWake JSON 后退出 0，超时 124。
 // S5 续写 list/detail/create/archive/join/leave/send（交界申报见 b358.3-plan §0）。
 //
 // 组装走既有 CLI 组装点 openRoomService/roomServiceFor（不新增组装点、不新增
@@ -15,6 +15,8 @@
 // SIGINT/SIGTERM 退 0、--timeout 变空闲上限，同 card_wait follow 语义）；
 // send 增 --reply-to 发送半边（透传 proto.RoomMessage.ReplyTo，接收半边
 // ResolveDelivery 隐式寻址原作者已冻结）。
+// 2026-09-24 r2：CLI 正文有效 @ 自动寻址；默认 wait 使用共享账本交付水位，
+// 重挂时积压合成一行摘要；显式 --since 仍是只读手工回放。
 package cmd
 
 import (
@@ -24,6 +26,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"regexp"
 	"sort"
 	"strings"
 	"syscall"
@@ -59,7 +62,7 @@ var sessionWaitPollInterval = 2 * time.Second
 
 var sessionWaitCmd = &cobra.Command{
 	Use:   "wait <member>",
-	Short: "订阅会话寻址：命中输出一行 SessionWake JSON（缺省首个命中即退 0；--follow 常驻）",
+	Short: "订阅会话寻址：续收积压摘要或实时 SessionWake（缺省一条即退 0；--follow 常驻）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if sessionWaitTimeout < 0 {
@@ -69,13 +72,11 @@ var sessionWaitCmd = &cobra.Command{
 	},
 }
 
-// runSessionWait 是 R1 通道本体（契约条 39–46）。member 与寻址 target 逐字
-// 相等（不透明串，不做大小写/前后缀归一）；--since 缺省 = 启动时流尾（排他），
-// 只等新事件；只对会话房间的 EvRoomMessage 做命中判定，其余事件推进游标、
-// 零输出；不落账、不推进未读游标、不经 keystone（订阅只读，条 45）。
+// runSessionWait 订阅会话定向消息。无 --since 时从共享交付水位补收；显式
+// --since 保持手工排他回放，不改变共享水位。寻址只经 MessageWakeTargets。
 //
-// 双形态（B365），一次性与 follow 共享同一条读循环（EventsFromAsc 全流轮询），
-// 分叉点只在「首个命中后是否退出」：
+// 双形态（B365）共用升序读循环；默认先扫描积压，单行摘要成功写出后
+// 推进共享交付水位。之后分叉点是「实时首个命中后是否退出」：
 //   - 一次性（缺省）：首个命中输出一行 SessionWake 后退出 0（条 46）；--timeout
 //     是等待总时长，到点 124；
 //   - --follow：每个命中各自输出一行后重置空闲计时、继续推进游标等下一条，
@@ -97,9 +98,9 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 	defer st.Close()
 	cursor := sinceFlag
 	if !sinceSet {
-		cursor, err = st.MaxSeq()
+		cursor, err = st.SessionDeliveryCursor(member)
 		if err != nil {
-			return fmt.Errorf("session wait 读取起点: %w", err)
+			return fmt.Errorf("session wait 读取交付水位: %w", err)
 		}
 	}
 	ctx := cmd.Context()
@@ -124,6 +125,71 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 		}
 	}
 	enc := json.NewEncoder(cmd.OutOrStdout())
+	if !sinceSet {
+		fence, err := st.MaxSeq()
+		if err != nil {
+			return fmt.Errorf("session wait 读取积压边界: %w", err)
+		}
+		from := cursor
+		scan := cursor
+		backlog := proto.SessionBacklog{Type: "session_backlog", Member: member, FromSeq: from, Hits: []proto.SessionBacklogHit{}}
+		for scan < fence {
+			events, err := st.EventsFromAsc(nil, scan, 500)
+			if err != nil {
+				return fmt.Errorf("session wait 扫描积压: %w", err)
+			}
+			if len(events) == 0 {
+				break
+			}
+			for _, ev := range events {
+				if ev.Seq > fence {
+					break
+				}
+				scan = ev.Seq
+				msg, hit, err := sessionWaitMatch(svc, ev, member)
+				if err != nil {
+					return err
+				}
+				if !hit {
+					continue
+				}
+				cite := proto.SessionCite{Seq: ev.Seq, Room: msg.Room, Actor: ev.Actor, Body: msg.Body}
+				ref, err := sessionWaitReference(svc, msg)
+				if err != nil {
+					return err
+				}
+				backlog.Hits = append(backlog.Hits, proto.SessionBacklogHit{Hit: cite, Referenced: ref})
+				backlog.ToSeq = ev.Seq
+			}
+			if scan >= fence {
+				break
+			}
+		}
+		slog.Info("session wait 积压扫描完成", "member", member, "from_seq", from, "through_seq", scan, "hits", len(backlog.Hits))
+		if len(backlog.Hits) > 0 {
+			if err := enc.Encode(backlog); err != nil {
+				return fmt.Errorf("session wait 输出积压摘要: %w", err)
+			}
+			if err := st.AdvanceSessionDeliveryCursor(member, backlog.ToSeq); err != nil {
+				slog.Warn("session wait 积压已输出但进度写入失败", "member", member, "seq", backlog.ToSeq, "cause", err)
+				return fmt.Errorf("session wait 写交付水位: %w", err)
+			}
+			slog.Info("session wait 积压已交付", "member", member, "from_seq", from, "to_seq", backlog.ToSeq, "hits", len(backlog.Hits))
+			if !follow {
+				return nil
+			}
+			if idleTimer != nil {
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(timeout)
+			}
+		}
+		cursor = scan // 扫描到的非命中事件无须再次判定；只持久化已输出的命中水位。
+	}
 	ticker := time.NewTicker(sessionWaitPollInterval)
 	defer ticker.Stop()
 	for {
@@ -133,26 +199,9 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 		}
 		for _, ev := range events {
 			cursor = ev.Seq // 其余事件类型推进游标、零输出（条 41）
-			if ev.Type != ledger.EvRoomMessage {
-				continue
-			}
-			var msg proto.RoomMessage
-			if err := json.Unmarshal(ev.Payload, &msg); err != nil {
-				return fmt.Errorf("session wait 事件 %d 载荷解码失败: %w", ev.Seq, err)
-			}
-			if !room.IsSessionRoom(msg.Room) {
-				continue
-			}
-			targets, err := svc.MessageWakeTargets(msg)
+			msg, hit, err := sessionWaitMatch(svc, ev, member)
 			if err != nil {
-				return fmt.Errorf("session wait 事件 %d 寻址判定失败: %w", ev.Seq, err)
-			}
-			hit := false
-			for _, target := range targets {
-				if target == member { // 逐字相等（条 39）
-					hit = true
-					break
-				}
+				return err
 			}
 			if !hit {
 				continue
@@ -163,6 +212,12 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 			}
 			if err := enc.Encode(wake); err != nil {
 				return fmt.Errorf("session wait 输出唤醒载荷: %w", err)
+			}
+			if !sinceSet {
+				if err := st.AdvanceSessionDeliveryCursor(member, ev.Seq); err != nil {
+					slog.Warn("session wait 唤醒已输出但进度写入失败", "member", member, "seq", ev.Seq, "cause", err)
+					return fmt.Errorf("session wait 写交付水位: %w", err)
+				}
 			}
 			slog.Info("session wait 命中并输出", "member", member,
 				"session", msg.Room, "seq", ev.Seq, "follow", follow)
@@ -198,6 +253,53 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 	}
 }
 
+// sessionWaitMatch 仅在会话房间里调用协作域唯一寻址判据，防止 CLI 自己
+// 根据 mentions/成员列表发明第二套唤醒规则。
+func sessionWaitMatch(svc *collab.Service, ev ledger.Event, member string) (proto.RoomMessage, bool, error) {
+	if ev.Type != ledger.EvRoomMessage {
+		return proto.RoomMessage{}, false, nil
+	}
+	var msg proto.RoomMessage
+	if err := json.Unmarshal(ev.Payload, &msg); err != nil {
+		return msg, false, fmt.Errorf("session wait 事件 %d 载荷解码失败: %w", ev.Seq, err)
+	}
+	if !room.IsSessionRoom(msg.Room) {
+		return msg, false, nil
+	}
+	targets, err := svc.MessageWakeTargets(msg)
+	if err != nil {
+		return msg, false, fmt.Errorf("session wait 事件 %d 寻址判定失败: %w", ev.Seq, err)
+	}
+	for _, target := range targets {
+		if target == member {
+			return msg, true, nil
+		}
+	}
+	return msg, false, nil
+}
+
+// sessionWaitReference 只投影回复引用条；积压摘要不需要逐条重算未读列表。
+func sessionWaitReference(svc *collab.Service, msg proto.RoomMessage) (*proto.SessionCite, error) {
+	if msg.ReplyTo <= 0 {
+		return nil, nil
+	}
+	history, err := svc.History(msg.Room, 0, 0)
+	if err != nil {
+		return nil, fmt.Errorf("session wait 读取引用条: %w", err)
+	}
+	for _, h := range history {
+		if h.Seq != msg.ReplyTo {
+			continue
+		}
+		var ref proto.RoomMessage
+		if json.Unmarshal(h.Payload, &ref) == nil {
+			return &proto.SessionCite{Seq: h.Seq, Room: msg.Room, Actor: h.Actor, Body: ref.Body}, nil
+		}
+		break
+	}
+	return nil, nil
+}
+
 // buildSessionWake 装配三件套（spec §4.3：命中条 + 引用条 + 未读数）。
 // referenced 取 ReplyTo 指向消息的引用条；History 默认窗（200 条）外或解码
 // 失败按「无引用锚」省键（plan 裁定 5 的降级声明）。unread 与
@@ -211,23 +313,10 @@ func buildSessionWake(svc *collab.Service, ev ledger.Event, msg proto.RoomMessag
 			Seq: ev.Seq, Room: msg.Room, Actor: ev.Actor, Body: msg.Body,
 		},
 	}
-	if msg.ReplyTo > 0 {
-		history, err := svc.History(msg.Room, 0, 0)
-		if err != nil {
-			return proto.SessionWake{}, fmt.Errorf("session wait 读取引用条: %w", err)
-		}
-		for _, h := range history {
-			if h.Seq != msg.ReplyTo {
-				continue
-			}
-			var ref proto.RoomMessage
-			if json.Unmarshal(h.Payload, &ref) == nil {
-				wake.Referenced = &proto.SessionCite{
-					Seq: h.Seq, Room: msg.Room, Actor: h.Actor, Body: ref.Body,
-				}
-			}
-			break
-		}
+	var err error
+	wake.Referenced, err = sessionWaitReference(svc, msg)
+	if err != nil {
+		return proto.SessionWake{}, err
 	}
 	summaries, err := svc.ListSessions(member)
 	if err != nil {
@@ -473,7 +562,7 @@ var (
 
 var sessionSendCmd = &cobra.Command{
 	Use:   "send <session> <text...>",
-	Short: "会话发言（--agent 出示主 agent 身份；--cli/--session 成对出示协调者席位；无 flag 用人尺度 actor）",
+	Short: "会话发言（正文有效 @ 自动寻址；--agent 出示主 agent 身份；--cli/--session 成对出示协调者席位）",
 	Args:  cobra.MinimumNArgs(2),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		// 身份判定先于开账本：用法错误不触账本（0 落账）。三形态（B358.9）：
@@ -506,7 +595,7 @@ var sessionSendCmd = &cobra.Command{
 		defer st.Close()
 		msg := proto.RoomMessage{
 			Kind: proto.RoomMsgUser, Body: body,
-			Refs: sessionSendRefs, Mentions: sessionSendMention,
+			Refs: sessionSendRefs, Mentions: sessionMessageMentions(body, sessionSendMention),
 			ReplyTo: sessionSendReplyTo,
 		}
 		seq, err := svc.Send(args[0], msg, actor)
@@ -517,6 +606,36 @@ var sessionSendCmd = &cobra.Command{
 		slog.Default().Info("CLI 会话消息已发送", "session", args[0], "kind", proto.RoomMsgUser, "actor", actor, "seq", seq)
 		return json.NewEncoder(cmd.OutOrStdout()).Encode(map[string]any{"ok": true, "seq": seq})
 	},
+}
+
+var sessionCardMention = regexp.MustCompile(`^[A-Z]{1,4}[0-9]+(\.[0-9]+)*$`)
+
+// sessionMessageMentions 把正文中完整的 @身份/@卡号编译为既有 mentions，
+// 保留显式 --mention 的先行次序与宽松兼容口径，统一去重以免重复寻址。
+func sessionMessageMentions(body string, explicit []string) []string {
+	seen := make(map[string]bool)
+	var out []string
+	add := func(token string) {
+		token = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(token), "@"))
+		if token == "" || seen[token] {
+			return
+		}
+		seen[token] = true
+		out = append(out, token)
+	}
+	for _, token := range explicit {
+		add(token)
+	}
+	for _, field := range strings.Fields(body) {
+		if !strings.HasPrefix(field, "@") {
+			continue
+		}
+		token := strings.TrimPrefix(field, "@")
+		if proto.ValidateMemberIdentity(token) || sessionCardMention.MatchString(token) {
+			add(token)
+		}
+	}
+	return out
 }
 
 // sessionSendActor 决议 session send 的发言 actor（B358.9 接缝 #5）。
@@ -544,7 +663,7 @@ func sessionSendActor(agentFlag, cliFlag, sessionFlag string, cliChanged bool) (
 }
 
 func init() {
-	sessionWaitCmd.Flags().Int64Var(&sessionWaitSince, "since", -1, "订阅起点（账本 seq，排他）；缺省 = 启动时流尾，只等新事件")
+	sessionWaitCmd.Flags().Int64Var(&sessionWaitSince, "since", -1, "手工回放起点（账本 seq，排他）；缺省从共享交付水位续收积压")
 	sessionWaitCmd.Flags().DurationVar(&sessionWaitTimeout, "timeout", 0,
 		"缺省=等待总时长，--follow=命中间空闲上限；到点以 124 退出；0 = 不限")
 	sessionWaitCmd.Flags().BoolVar(&sessionWaitFollow, "follow", false,
@@ -555,7 +674,7 @@ func init() {
 	sessionListCmd.Flags().BoolVar(&sessionListJSON, "json", false, "输出 SessionSummary JSON 流（每会话一行）")
 	sessionDetailCmd.Flags().BoolVar(&sessionDetailJSON, "json", false, "输出 SessionDetail JSON（一行）")
 	sessionSendCmd.Flags().StringArrayVar(&sessionSendRefs, "ref", nil, "引用锚（git 路径/timeline 锚/卡号/附件路径，可重复）")
-	sessionSendCmd.Flags().StringArrayVar(&sessionSendMention, "mention", nil, "成员或卡号（@ 前缀可选；可重复；寻址唤醒的来源）")
+	sessionSendCmd.Flags().StringArrayVar(&sessionSendMention, "mention", nil, "显式成员或卡号（@ 前缀可选；可重复；与正文有效 @ 合并去重）")
 	sessionSendCmd.Flags().Int64Var(&sessionSendReplyTo, "reply-to", 0, "被回复消息的账本 seq（回复锚；隐式寻址原作者；0 = 无）")
 	sessionSendCmd.Flags().StringVar(&sessionSendCLI, "cli", "", "手填当前会话物种名（需与 --session 成对）")
 	sessionSendCmd.Flags().StringVar(&sessionSendSession, "session", "", "手填当前会话 id（需与 --cli 成对）")
