@@ -25,6 +25,7 @@
 - 独立审查在 `a8e60208..52adea99` 找到两项实际问题：积压扫描的寻址读错原先被吞，后续命中会把持久水位越过漏判的消息；显式 `--mention @@...` 在 CLI 与 Service 双层剥前缀，会意外变成有效目标。另指出回复引用的 200 条历史窗、跨会话 `reply_to`、Unicode 空白差异、回复积压反复全流扫描，以及浏览器超时后服务端不取消事件查询。这些均在审查后修订中处理，不能拿审查前绿窗作最终交付证据。
 - 审查修订红绿：新增 `TestMessageWakeTargetsReadFailureFailsClosed` 首红（卡读错误被当未命中）；前端 `sessionModel` 的 U+0085 金样本首红（桌面提取 `agent:a\u0085b`，CLI 仅提取 `agent:a`）。改动后相关 Go focused 命令通过，前端 24 个模型测试通过。显式双 `@` 增加真实 CLI 发送/监听反例；旧引用超过 200 条和跨会话引用增加真 SQLite 测试，focused Go 均通过。`EventsFromAscContext` 经账本→会话→HTTP handler 传递取消信号，取消后的列表/详情/历史读测试通过。
 - 审查后前端全量 `npm test -- --run`：135 files / 1476 tests passed；`npm run typecheck` 通过。第一次 `npm run lint -- --quiet` 红于显式 Go 空白字符正则触发 `no-control-regex`；加解释性单行禁用后，lint 通过；`npm run build` 通过，仍仅有现存 500 kB chunk warning。`git diff --check` 和 `codegraph check` 退出 0，后者 `fails=[]`。`go test ./...` 全量复跑退出 0，`cmd` 56.163s、`internal/agentd` 115.134s、`internal/collab` 3.817s。
+- 独立审查对修订树只读复核：原两项阻断关闭，`MessageReference` 精确点读、同房间回复约束和 HTTP 取消链未见新的可复现阻断；审查员聚焦 Go/前端 43 项、typecheck、Go 编译与 diff 检查通过。修订提交 `3390cd2f` 为审查后闭环版。`OUT=/private/tmp/handoff-session-r2-final scripts/build-deploy.sh` 退出 0：内嵌前端 1989 模块、`internal/webui` embedweb 自检通过，产物 28M，版本 `3390cd2f3e7c`、`modified=false`，SHA256 `bfc172e6764d276cbc2859c0b0a54340128e8636044450182735b92977855620`。本机运行版仍为 `93770b5ded86+dirty9`，尚未换版；安装还涉及中止并重启当前 agentd，且会同时带入本分支祖先的其它提交。
 
 ## 图覆盖债
 
