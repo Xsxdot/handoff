@@ -37,6 +37,18 @@
   gobind（java + objc）并断言产物里无 `skipped function/field` 且每个导出函数都在
   产物里；`TestBindExportedSurfaceIsFrozen` 逐字钉住上表签名。
 
+## 切机与会话调用顺序（壳侧）
+
+壳切换到一个目标机时，必须严格按以下顺序调用绑定面，任一步失败都**不得导航**：
+
+1. `SwitchMachine(target)` —— 成功返回后核内已清旧会话并为目标机重兑换，壳拿到目标 loopback 源。
+2. 清除该 loopback host 的全部旧 cookie：按 `name=handoff_session + host + Path=/` 删除，**不区分端口**（cookie 不按端口隔离，须覆盖该 host 的所有端口）。
+3. `SessionCookie(target)` —— 返回目标机当前有效会话的 cookie 值。
+4. 把返回值**写回 cookie jar**：host-only `handoff_session`，`Path=/`、`HttpOnly=true`、`SameSite=Lax`、`Secure=false`，不设持久 `Max-Age/Expires`（进程内会话 cookie；服务端到期仍是最终权威）。
+5. **导航到第 1 步返回的 origin**。
+
+任一步失败（切机失败、清 jar 失败、取 cookie 失败、写入失败）都不得导航；清 jar / 注入失败由壳呈现可行动错误，可重试。**Go 绑定层只返回 cookie 值，不操作平台 cookie store**——`WKHTTPCookieStore` / `CookieManager` 的写入是壳的职责；绑定面不返回 token / origin 冒充 cookie。
+
 ## 构建
 
 **Android 前置**（缺一项就在 bind 时报错，报错信息不一定指路）：

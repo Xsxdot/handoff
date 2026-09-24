@@ -5,6 +5,7 @@ import (
 	"errors"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/mobilecore"
 )
@@ -175,7 +176,12 @@ func TestCoreSessionsSessionCookieRejectsWrongMachine(t *testing.T) {
 // 与「切机」互不穿插。读请求阻塞在 Session() 期间，用同包 `TryLock` 做确定性握手：
 // 锁必须被持有着（去掉适配器锁则 TryLock 成功，测试确定性打红，不靠定时器猜）。
 // 同时保留 A/B 行为断言——读 A 期间切 B，不得把 B 的 cookie 交给调用者。
+//
+// 回收与超时：所有 channel 收取都用 select+time.After；失败路径先放行 gate，
+// 再对已启动的 reader/switcher 做有界 join 尝试，仍无法退出则明确报错，不把
+// 缓冲 channel 误称为已回收。
 func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
+	const step = 5 * time.Second
 	d := newSessionCoreDouble()
 	d.active = "A"
 	d.sessionEntered = make(chan struct{})
@@ -186,38 +192,102 @@ func TestCoreSessionsLockSerializesSwitchAndRead(t *testing.T) {
 		value string
 		err   error
 	}
-	readDone := make(chan readResult, 1)
+	var readDone chan readResult
+	var switchDone chan error
+	var readStarted, switchStarted bool
+	var readJoined, switchJoined bool
+	failed := false
+	failf := func(format string, args ...any) {
+		failed = true
+		t.Fatalf(format, args...)
+	}
+	release := func() {
+		select {
+		case <-d.sessionGate:
+		default:
+			close(d.sessionGate)
+		}
+	}
+	joinRead := func() {
+		if !readStarted || readJoined {
+			return
+		}
+		select {
+		case <-readDone:
+			readJoined = true
+		case <-time.After(step):
+			t.Errorf("回收超时：reader goroutine 未退出")
+		}
+	}
+	joinSwitch := func() {
+		if !switchStarted || switchJoined {
+			return
+		}
+		select {
+		case <-switchDone:
+			switchJoined = true
+		case <-time.After(step):
+			t.Errorf("回收超时：switcher goroutine 未退出")
+		}
+	}
+	defer func() {
+		release()
+		if failed {
+			joinRead()
+			joinSwitch()
+		}
+	}()
+
+	readDone = make(chan readResult, 1)
+	readStarted = true
 	go func() {
 		v, err := a.SessionCookie("A")
 		readDone <- readResult{v, err}
 	}()
 
-	// sessionEntered 在 `Session()` 内、持锁路径上关闭，因此 observe 到它即代表
-	// 读者已持适配器锁并阻塞在 Session()。
-	<-d.sessionEntered
+	// sessionEntered 在 `Session()` 内、持锁路径上关闭，observe 到它即代表读者已持
+	// 适配器锁并阻塞在 Session()。select+timeout 防读者卡死时测试永久挂起。
+	select {
+	case <-d.sessionEntered:
+	case <-time.After(step):
+		failf("超时：读请求未进入 Session()")
+	}
 
 	// 确定性握手：阻塞期间适配器锁必须被持有；去掉锁则 TryLock 会成功。
 	if a.mu.TryLock() {
 		a.mu.Unlock()
-		t.Fatal("Session 阻塞期间适配器锁未被持有：切机与读会互相穿插")
+		failf("Session 阻塞期间适配器锁未被持有：切机与读会互相穿插")
 	}
 
-	switchDone := make(chan error, 1)
+	switchDone = make(chan error, 1)
+	switchStarted = true
 	go func() {
 		_, err := a.SwitchMachine("B")
 		switchDone <- err
 	}()
 
 	close(d.sessionGate)
-	r := <-readDone
+	var r readResult
+	select {
+	case r = <-readDone:
+		readJoined = true
+	case <-time.After(step):
+		failf("超时：读 A 会话未返回")
+	}
 	if r.err != nil {
-		t.Fatalf("读 A 会话失败: %v（若无锁，切机已改活动机导致错机拒绝）", r.err)
+		failf("读 A 会话失败: %v（若无锁，切机已改活动机导致错机拒绝）", r.err)
 	}
 	if r.value != "sess-A" {
-		t.Fatalf("读到非 A 的 cookie: %q（适配器锁未串行化切机与读）", r.value)
+		failf("读到非 A 的 cookie: %q（适配器锁未串行化切机与读）", r.value)
 	}
-	if err := <-switchDone; err != nil {
-		t.Fatalf("切机 B 失败: %v", err)
+	select {
+	case err := <-switchDone:
+		switchJoined = true
+		if err != nil {
+			failf("切机 B 失败: %v", err)
+		}
+	case <-time.After(step):
+		failf("超时：切机 B 未返回")
 	}
 }
 

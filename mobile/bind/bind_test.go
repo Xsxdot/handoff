@@ -3,6 +3,8 @@ package bind
 import (
 	"reflect"
 	"testing"
+
+	"github.com/Xsxdot/handoff/internal/mobilecore"
 )
 
 func TestBindPairForwardsToCore(t *testing.T) {
@@ -86,13 +88,18 @@ func TestBindSessionCookieAndSwitchAreOneJarToOneMachine(t *testing.T) {
 	}
 }
 
-// TestBindSessionFailIsClosed：S2 未接线时不得静默成功（空 cookie + error）。
-func TestBindSessionFailIsClosed(t *testing.T) {
-	if _, err := SessionCookie("devbox"); err == nil {
-		t.Fatal("核侧会话入口未接线时必须返回错误，不得静默成功")
+// TestBindSessionNotPairedFailsClosed：用显式注入的空真实 Core（无任何配对）
+// 锁绑定导出面对未配对机器的失败闭合，不依赖包级 liveCore 的空态（B392 P3=A）。
+func TestBindSessionNotPairedFailsClosed(t *testing.T) {
+	empty := mobilecore.New(nil, log)
+	defer empty.Close()
+	defer swapSessions(newCoreSessions(empty))()
+
+	if v, err := SessionCookie("devbox"); err == nil || v != "" {
+		t.Fatalf("未配对取 cookie 必须 (\"\", err): value=%q err=%v", v, err)
 	}
-	if _, err := SwitchMachine("devbox"); err == nil {
-		t.Fatal("核侧会话入口未接线时切机必须返回错误")
+	if v, err := SwitchMachine("devbox"); err == nil || v != "" {
+		t.Fatalf("未配对切机必须 (\"\", err): value=%q err=%v", v, err)
 	}
 }
 
