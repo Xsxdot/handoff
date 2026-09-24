@@ -947,3 +947,79 @@ none
 - ② 未碰 handoff CLI、未起新 executor。
 - Task 6 在任务工作树内唯一 `./.b392-mut.r4xIl1` 同一 Bash 进程执行（未用仓外脚本），`./bind/` 包路径固定，四变异 MUT-RED-OK，还原 RESTORED-OK，MUT-ROOT-CLEANED，PROD-FILES-CLEAN。
 - 永久改动仅：`mobile/bind/default_slice_test.go`、`adapter_test.go`、`realcore_test.go`、本台账。
+
+---
+
+## 2026-09-24 charter-10 小修（基于 charter-9@de13b690）
+
+分支：`cards/B392-charter-10`。基线 HEAD=`de13b690`。只改 `mobile/bind/realcore_test.go` 与本台账。
+
+### 协调者补充要求（原文要点）
+
+- 并发 worker 等待改为带 timeout 的 done 通道，避免无界 `wg.Wait`；
+- 增加确定性的真实读活性证明或等价的 `successReads` 断言，不能让全部 SessionCookie 错误仍然通过；
+- 不要删除或弱化 gate、TryLock、四变异证据；
+- 补 implement ledger，触及包与 race/vet/gofmt 复跑；只改测试和台账，完成后提交。
+
+### 改动（`mobile/bind/realcore_test.go`，仅 TestRealCoreConcurrentNoCrossMachine）
+
+1. `wg.Wait()` → `done` 通道 + `select`/`time.After(30s)`；超时 `t.Fatalf`（带上下文），禁止无界等待。
+2. 读活性两层：
+   - 并发前置串行读：`SwitchMachine(A/B)` 后立刻 `SessionCookie` 必须成功且含 `-A-`/`-B-`（确定性，不依赖调度）；
+   - 并发结束保留既有 `successReads atomic.Int64 > 0` 断言（防「全部错机拒绝」通过）。
+3. 未动：`gateConsole`/`TestRealCoreGateSerializesSwitchAndRead`、`TryLock`/`TestCoreSessionsLockSerializesSwitchAndRead`、四变异证据与 adapter/default_slice 文件。
+
+### 亲跑读数（原始输出）
+
+```text
+branch= cards/B392-charter-10
+base HEAD= de13b6902037c1ca5a6ba3c15b02d866fab94f58
+go version= go1.26.1 linux/amd64
+
+=== build ===
+(cd mobile) go build ./...
+build_exit=0
+
+=== test bind ===
+(cd mobile) go test ./bind/ -count=1
+ok  	github.com/Xsxdot/handoff/mobile/bind	0.136s
+test_exit=0
+
+=== race bind ===
+(cd mobile) go test ./bind/ -race -count=1
+ok  	github.com/Xsxdot/handoff/mobile/bind	2.390s
+race_exit=0
+
+=== vet ===
+(cd mobile) go vet ./...
+vet_exit=0
+
+=== gofmt ===
+(cd mobile) gofmt -l .
+gofmt_exit=0   （无输出）
+
+=== concurrent x5（抗 successReads 抖动）===
+ok  	github.com/Xsxdot/handoff/mobile/bind	0.078s
+ok  	github.com/Xsxdot/handoff/mobile/bind	0.073s
+ok  	github.com/Xsxdot/handoff/mobile/bind	0.084s
+ok  	github.com/Xsxdot/handoff/mobile/bind	0.065s
+ok  	github.com/Xsxdot/handoff/mobile/bind	0.076s
+
+=== gate+trylock+竖切回归 ===
+(cd mobile) go test ./bind/ -count=1 -run 'TestRealCoreGateSerializesSwitchAndRead|TestCoreSessionsLockSerializesSwitchAndRead|TestRealCoreFailsClosed|TestRealCoreSwitchAndCookieOwnership|TestDefaultProductionVerticalSlice'
+ok  	github.com/Xsxdot/handoff/mobile/bind	0.022s
+
+=== git status（改前）===
+ M mobile/bind/realcore_test.go
+
+=== git diff --stat ===
+ mobile/bind/realcore_test.go | 22 +++++++++++++++++++++-
+ 1 file changed, 21 insertions(+), 1 deletion(-)
+```
+
+### 自审（charter-10）
+
+- ① 无未跑结论：上列命令均有本回合原始输出；未宣称 acceptance；未宣称根模块全量。
+- ② 未碰 handoff CLI、未起新 executor、未改生产 `.go`/internal。
+- gate、TryLock、四变异证据未删除未弱化（回归测试仍在场且绿）。
+- 永久改动仅：`mobile/bind/realcore_test.go`、本台账。

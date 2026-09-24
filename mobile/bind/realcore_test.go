@@ -454,14 +454,25 @@ func TestRealCoreGateSerializesSwitchAndRead(t *testing.T) {
 // TestRealCoreConcurrentNoCrossMachine 是 -race 附加闸（补充，不替代上面的 gate
 // 测试）：并发 SwitchMachine/SessionCookie 在 -race 下通过，且成功读取的值必带
 // 本机标记（A/B 值可区分），绝不把 B 的 cookie 返回给 A。
+//
+// 读活性两层：并发前先做确定性串行读（不依赖调度，证明链路活着）；并发结束后
+// 断言 successReads > 0，防止「全部 SessionCookie 被错机拒绝」仍通过。
+// worker 等待用 done 通道 + 超时，禁止无界 wg.Wait 挂死测试。
 func TestRealCoreConcurrentNoCrossMachine(t *testing.T) {
+	const workerTimeout = 30 * time.Second
 	rc := newRealChain(t, "A", "B")
 	rc.pair(t, "A", "B")
 	if _, err := SwitchMachine("A"); err != nil {
 		t.Fatalf("前置切机 A: %v", err)
 	}
+	if v, err := SessionCookie("A"); err != nil || !strings.Contains(v, "-A-") {
+		t.Fatalf("并发前置串行读 A 应成功（确定性读活性）: value=%q err=%v", v, err)
+	}
 	if _, err := SwitchMachine("B"); err != nil {
 		t.Fatalf("前置切机 B: %v", err)
+	}
+	if v, err := SessionCookie("B"); err != nil || !strings.Contains(v, "-B-") {
+		t.Fatalf("并发前置串行读 B 应成功（确定性读活性）: value=%q err=%v", v, err)
 	}
 
 	const workers, iters = 8, 20
@@ -493,7 +504,16 @@ func TestRealCoreConcurrentNoCrossMachine(t *testing.T) {
 			}
 		}(i)
 	}
-	wg.Wait()
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(workerTimeout):
+		t.Fatalf("超时(%s)：并发 worker 未全部退出（禁止无界等待）", workerTimeout)
+	}
 	close(errCh)
 	for msg := range errCh {
 		t.Error(msg)
