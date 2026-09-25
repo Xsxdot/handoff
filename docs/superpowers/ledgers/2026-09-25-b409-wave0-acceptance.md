@@ -1,8 +1,8 @@
 # B409 Wave 0 验收记录：S2 房间消息首屏限域读
 
-**状态**：S2 实现 review 通过；Wave 0 交棒待封版。按独立 review 的 Important findings，须先提交被测实现与证据、记录可取得的源码 SHA 后，才能把阶段改判为通过。仅覆盖 S2，不代表 B409 的 S1–S5 全部完成。
+**状态**：S2 / Wave 0 阶段验收通过（2026-09-25；独立实现 review PASS，I1/I2 已关闭）；仅覆盖 S2，不代表 B409 的 S1–S5 全部完成。
 
-**工作树**：`codex/session-reliable-mentions`，实现基线 `75c518f235b1abdda0e9156de51fd1154e39f78d`；本记录将随 S2 实现与证据提交，后续追加记录其被测提交 SHA。
+**工作树**：`codex/session-reliable-mentions`，S2 实现与首批验收证据提交 `0703b2eb1675b2229a5f4124998683d2de9dd02f`（tree `92698d7855956899a2c36b8d64c536c38836d338`）。
 
 ## 结果
 
@@ -63,10 +63,16 @@ PG 性能专项使用本机隔离 PostgreSQL 16 容器与专用数据库 `handof
 
 ## 独立复审与阶段裁决
 
-- **独立复审：实现轴 PASS（2026-09-25）**。GPT-6-Sol 子 agent 对照已批准 spec r2、Wave 0 计划及 B156.2 §3.4.1/§3.5 复核实现、冻结边界、测试与真机证据；代码未发现阻塞问题。发现两项 Important 交棒缺口：I1 被测实现未提交；I2 最新 clone CLI 样本错误归属旧二进制且原始 stderr 含连接位置。两项仍待关闭，阶段裁决保持待封版。
+- **独立复审：实现轴 PASS（2026-09-25）**。GPT-6-Sol 子 agent 对照已批准 spec r2、Wave 0 计划及 B156.2 §3.4.1/§3.5 复核实现、冻结边界、测试与真机证据；代码未发现阻塞问题。发现两项 Important 交棒缺口：I1 被测实现未提交；I2 最新 clone CLI 样本错误归属旧二进制且原始 stderr 含连接位置。关闭记录见下方。
 - 审查者逐项核对三阶段 100 个 UI 原始样本、各 5 次预热与 0 错误，独立复算 p50/p95/max 为 406.5/436/458 ms、406/435/515 ms、412.5/496/509 ms；SQL 复核最终克隆库为 50,609 行（其中夹具 50,607）、`task_mirrored=18,674` / 12,752,128 bytes、`mirror_event=0`；截图可见目标会话和 `#341874` 起的消息。审查者也确认较早 CLI 证据走过当前 Store/Service 查询日志；旧 clone CLI 输出不被计入。
 - 审查者在最新源码上重跑聚焦 Go 测试（exit 0）；代码图 `check --stale` 为 0 fail。全量 Go suite 使用协调者此前对相同工作树的运行记录（exit 0），审查者未重复执行。`codegraph validate` 的 B272/B374 两条视图问题是既有问题，不属于本次 finding。
-- **当前阶段裁决：待封版**。已测实现仍需先落为可取得提交；此后本台账追加提交 SHA 及两项 Important 的关闭证据。最终 clone 的旧 CLI stderr 已删除，替代为不含连接 URL 的当前路径摘要及筛选日志。被测 UI 构建曾运行于隔离 `7788`，隔离数据库及临时凭证已回收；原 `7777` agentd 未重启且仍可用。
+- **首轮阶段裁决：待封版**。当时实现尚未提交；后续关闭记录见下节。最终 clone 的旧 CLI stderr 已删除，替代为不含连接 URL 的当前路径摘要及筛选日志。被测 UI 构建曾运行于隔离 `7788`，隔离数据库及临时凭证已回收；原 `7777` agentd 未重启且仍可用。
+
+## Important findings 关闭与最终阶段裁决（2026-09-25）
+
+- **I1 关闭：被测实现与证据已提交。** S2 源码、测试、Wave 0 计划及首批验收证据同属提交 `0703b2eb1675b2229a5f4124998683d2de9dd02f`，tree `92698d7855956899a2c36b8d64c536c38836d338`；`git status --short` 为空。独立审查后没有修改被测代码。提交后按同一 SHA 新鲜运行 `go test ./cmd ./internal/ledger ./internal/ledger/api ./internal/collab ./internal/agentd -run 'TestSetupLedgerFailureDoesNotLogDSNCredentials|TestRoomHistory|TestRoomMessagesEndpoint' -count=1`，五个包均 exit 0。全量 `go test -p 1 ./... -count=1`、Web 1,476 测试、typecheck 与 build 对应同一代码树的既有新鲜记录；本次不重复全量套件。
+- **I2 关闭：CLI 证据归属已纠正并脱敏。** 最终 clone 的旧安装版 CLI 原始 `room-read.stdout/stderr` 已从提交材料删除；旧版序号不得再作为本次路径证明。早先 CLI 的原始输出仅留在 `/private/tmp`，仓内只保留 `[room-read-current-cli-summary.json](evidence/2026-09-25-b409-wave0/room-read-current-cli-summary.json)` 与筛选后的 `[room-read-current-cli.stderr](evidence/2026-09-25-b409-wave0/room-read-current-cli.stderr)`：200 条、seq `172653–172852` 严格递增，包含当前 Store 查询开始/完成和 collab 完成日志。原始 CLI build ID 未留存，已明确标为未知，不冒称可核对的二进制 SHA。对提交证据目录扫描 `postgres://` 与旧 `target=` 字段，均无命中。
+- **最终阶段裁决：Wave 0 通过，仅限 S2。** 被测提交 SHA、PG/SQLite、HTTP/CLI、内置浏览器、取消/空/错误和承重变异证据已可取得；两项 Important 已关闭。B409 S1–S5 完整目标、昨晚 20:00–22:00 的整体故障根因、linux-01 部署和父卡最终验收仍未完成。
 
 ## 边界
 
