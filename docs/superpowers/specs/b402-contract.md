@@ -248,3 +248,12 @@ $ codegraph --repo . validate                               → 退出 1，2 个
 1. §6 移交区的邻近分支反例断言、跨进程端到端回路、日志断言未在本节点落测试，交 plan。
 2. 分支视图为最小结构增量，非全量扫描（§8），absorb 前的重扫交后续扫描轮。
 3. `internal/agentd/cardstep.go`、`internal/ledger/types.go` 为开工前既存未 `gofmt` 文件，本节点未触碰（不属本卡欠账，仅记录事实）。
+
+## 10. 修订记录（breakdown 出稿轮，2026-09-25）
+
+以下四条为 breakdown 节点的**边界澄清**（均不改变本契约冻结面，不退回重冻），逐条对照 `codegraph/best.json` 与 `codegraph --repo . --view cards-B402-charter sym` 实读得出；产出见 `docs/superpowers/specs/b402-breakdown.md` §1/§2.4。
+
+1. **域归属按图修正**：头部所称「跨 proto/executor/orchestration/ledgerstep 四域」在图上是 5 个逻辑域/子域——`proto.FailureClass → d_protocol`、`executor.Result → d_execution_contract`、五家 adapter → `d_execution_adapters`、`FailedPayload`/`handleResult`/`Continue → d_orchestration`、`ledgerstep`（`TurnEnd`/`waitForTurnEnd`/`awaitNode`/`RunOnce`）→ `d_ledger`；另有零改动的边界面 `d_gateway`/`d_transport`。定级不变，仅记图事实。
+2. **驱动接缝域归属补记**：`internal/agentd/cardstep.go#Server.runStep` 与 `internal/agentd/handlers.go#Server.handleContinue`/`#Server.handleEvents` 归 `d_gateway`；本卡在这三处零生产改动，仅作端到端 e2e 接缝。
+3. **续接客户端面域归属补记**：`internal/client/client.go#Client.Continue` 归 `d_transport_channel`（父 `d_transport`）；`ExecutionClient.Continue` 接口面未入图。本卡零改动。
+4. **§6 移交区与 spec §9.2 矩阵的差额显性化**：spec §9.2 还含「`zero_text→普通 turn_failed`」「`NoTrailerResult` 有新提交不续接」「旧 wire 缺字段形状」「diff/产出/发布/写闸失败均不调用 Done」四项未落测试；它们**不是新接缝**（冻结载体齐备），由 breakdown 落为 S1/S2/S3 验收，不退回 contract。
