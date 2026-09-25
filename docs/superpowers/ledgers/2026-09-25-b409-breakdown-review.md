@@ -66,3 +66,12 @@
 - 提交命令与原始输出：`git commit -m "docs: plan B409.3 card wait snapshot"` → `[codex/session-reliable-mentions 37b61f33] docs: plan B409.3 card wait snapshot`；`2 files changed, 81 insertions(+)`，新增 plan。随后只 amend 一次收入本次实际提交输出，不追记 amend 后的新 hash。
 - B409.4 计划已完成并经协调者审查：`docs/superpowers/plans/2026-09-25-b409-4-plan.md`；附件挂接成功，review note seq 21593。复核 session list/detail、room page、member unread 的真实生产链，以及 B0、B156.2、B358、B374 边界；计划通过，卡保持 `plan`。协调者新跑 `codegraph --repo . resolve --doc ...` exit 0（无坏锚）和 `git diff --no-index --check -- /dev/null ...` exit 1（新文件差异、无空白诊断）；未运行测试（plan 节点）。
 - 提交命令与原始输出：`git commit -m "docs: plan B409.4 session read paths"` → `[codex/session-reliable-mentions 6ec36af0] docs: plan B409.4 session read paths`；`2 files changed, 83 insertions(+), 1 deletion(-)`，新增 plan。随后仅 amend 一次收入原始输出，不追记 amend 后的新 hash。
+
+## B409.4 unread 复审与 B409.5 计划（2026-09-25）
+
+- 协调者复审 B409.4 时发现 `ListSessionsContext` 在 session 循环内重复执行 `unreadByRoom(events, cursors)`，对同一 events 重复折叠。计划作者已修订 `docs/superpowers/plans/2026-09-25-b409-4-plan.md`：改为循环外一次 room→unread 聚合，并加入结果等价与重复扫描反例。计划仍为 `plan`；卡 note seq 21594 记录了修订，原 plan 附件路径不变。
+- B409.5 本机 subagent 完成 `docs/superpowers/plans/2026-09-25-b409-5-plan.md`。协调者复核 CLI 正文寻址、Pending/Mentions/Consume、共享 cursor、backlog/follow 输出时序、stdout 成功后推进、无逐条 ack、错误/cancel/timeout、多机恢复、wakeconsumer 边界及 U7 最终验收责任；计划单卡审查通过并挂附件，B409.5 note seq 21596，卡仍在 `plan`。
+- B409.5 明确 implement 阻塞：B358 §3.8/§4.6 的订阅全流物理读取、session reliable-mentions contract 的 `(cursor, MaxSeq]` 全流分页与 B409 r2 的限域候选读要求不一致；须在实现前完成最小 contract delta。另需核 U4/U5 是否共享新增 `LedgerClient` seam，若共享先冻结接缝；全七计划集独立审计通过前所有实现派发关闭。没有修改冻结契约、没有测试或实现。
+- 复核命令：B409.4 与 B409.5 的 `codegraph --repo . resolve --doc ...` 均 exit 0，`anchors: []`；B409.4 `git diff --check -- docs/superpowers/plans/2026-09-25-b409-4-plan.md` exit 0；B409.5 `git diff --no-index --check /dev/null docs/superpowers/plans/2026-09-25-b409-5-plan.md` exit 1（新文件差异，输出为空、无空白诊断）。未运行测试，因当前仍为 plan 节点。
+- B409.6 与 B409.7 远端 plan 同样无法取得 origin 不含的本机批准分支，故转本机 subagent 仅撰写计划；卡 notes seq 21597/21598 留痕。没有派发实现，未改变节点状态。
+- 本次文档提交命令与原始输出：`git commit -m "docs: review B409.4 and plan B409.5"` → `[codex/session-reliable-mentions 39f32277] docs: review B409.4 and plan B409.5`；`3 files changed, 98 insertions(+), 1 deletion(-)`，新增 B409.5 plan。随后仅 amend 一次收入原始提交输出；不追记 amend 后的新 hash。
