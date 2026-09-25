@@ -54,3 +54,10 @@
 - 按全局执行规则改走本地 subagent，仅由其撰写 `docs/superpowers/plans/2026-09-25-b409-1-plan.md`，计划审查/验收前 B409.1 保持 `plan`，不派发实现；卡 note seq 21583 记录了回退理由。当前其他子卡仍在 `plan` 且受 DAG 阻塞，未部署 `linux-01`。
 
 本次追加的提交命令与原始输出：`git commit -m "docs: record B409 Wave 0 review closure"` → `[codex/session-reliable-mentions dd7a1e0a] docs: record B409 Wave 0 review closure`；`1 file changed, 6 insertions(+)`。随后仅 amend 一次，把该历史输出收入同批提交；不追记 amend 后的新 hash。
+
+## B409.1 计划节点追加记录（2026-09-25）
+
+- 本机 subagent 完成 L3 重档子卡计划 `docs/superpowers/plans/2026-09-25-b409-1-plan.md`；协调者按 `charter:plan` 复核目标、改动边界、真实调用路径、B380 C-2/B156.2 适用契约及验收责任。计划通过单卡审查并挂入 B409.1 `plan` 附件；卡 note seq 21585 记录审查和阻塞门。计划把三档合成增长矩阵的固定业务状态、实际传输行/字节观测及 U1 与 S1/U7 的性能责任边界写明；并明确 B409.2–B409.7 计划未齐稿、独立计划集审计未通过前，不派发任何 implement。B409.1 仍留在 `plan`，不代表允许开始实现。
+- 复核命令：`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-1-plan.md` → exit 0，两个源码锚均为 `moved`；`git diff --no-index --check -- /dev/null docs/superpowers/plans/2026-09-25-b409-1-plan.md` → exit 1（新文件有差异，无空白诊断）；未运行 Go 测试，因为本节点只交计划、不实现代码。CLI `handoff card update B409.1 --attach plan:docs/superpowers/plans/2026-09-25-b409-1-plan.md` 成功；`handoff card note B409.1 ...` 成功，seq 21585。未改变卡状态、未派发实现、未部署。
+- 此记录与计划同批提交。提交后按 `charter:plan` 仅 amend 一次收入本次提交原始输出；不追写 amend 后的新 hash。
+- 提交命令与原始输出：`git commit -m "docs: plan B409.1 open ticket read model"` → `[codex/session-reliable-mentions df4a9493] docs: plan B409.1 open ticket read model`；`2 files changed, 89 insertions(+)`，新增计划文件。随后仅 amend 一次将该历史输出纳入同批提交；不追记 amend 后的新 hash。
