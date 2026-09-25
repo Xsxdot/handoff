@@ -136,6 +136,9 @@ func TestFallbackWithNewCommitDoesNotDeclareCompletion(t *testing.T) {
 	if ev.Result.VoidReason != executor.VoidReasonTurnDiscipline {
 		t.Fatalf("作废理由不对: %q", ev.Result.VoidReason)
 	}
+	if ev.Result.FailureClass != "" {
+		t.Fatalf("无 trailer 有新提交不得分类（避免重复执行），FailureClass=%q", ev.Result.FailureClass)
+	}
 }
 
 func TestFallbackWithoutNewCommitStillAsks(t *testing.T) {

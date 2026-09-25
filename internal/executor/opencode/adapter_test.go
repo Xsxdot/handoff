@@ -626,6 +626,9 @@ func TestIdleFallbackNoTrailer(t *testing.T) {
 		if !strings.Contains(ev.Result.FailReason, assistantText) {
 			t.Errorf("兜底 FailReason 缺回合尾部: %q", ev.Result.FailReason)
 		}
+		if ev.Result.FailureClass != "" {
+			t.Fatalf("无 trailer 有新提交不得分类（避免重复执行），FailureClass=%q", ev.Result.FailureClass)
+		}
 	})
 }
 
@@ -1067,6 +1070,9 @@ func TestServeDeathEmitsFailed(t *testing.T) {
 	}
 	if !strings.Contains(ev.Result.FailReason, "fake stderr tail") {
 		t.Errorf("FailReason=%q，应含 stderr 尾部", ev.Result.FailReason)
+	}
+	if ev.Result.FailureClass != "" {
+		t.Fatalf("serve 死亡是进程退出，不是零文本流中断，不得分类，FailureClass=%q", ev.Result.FailureClass)
 	}
 
 	// 死亡后事件通道应关闭（执行终结，中介循环据此退出）

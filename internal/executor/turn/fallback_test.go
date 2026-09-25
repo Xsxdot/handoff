@@ -61,3 +61,13 @@ func TestNoTrailerFailReasonClampsLongBody(t *testing.T) {
 			len([]rune(reason)))
 	}
 }
+
+// TestNoTrailerResultCarriesNoFailureClass 锁 B402：无 trailer 但有新提交不得
+// 分类为 zero_text——那不是「流中断」，是「已有工作等协调者裁决」，自动续接会
+// 重复执行已落地修改（contract §2.3 / spec §4.1）。
+func TestNoTrailerResultCarriesNoFailureClass(t *testing.T) {
+	r := NoTrailerResult("sess-1", "handoff/T1", "abc1234def", "干完了，已提交。")
+	if r.FailureClass != "" {
+		t.Fatalf("NoTrailerResult 不得带失败分类，FailureClass=%q", r.FailureClass)
+	}
+}

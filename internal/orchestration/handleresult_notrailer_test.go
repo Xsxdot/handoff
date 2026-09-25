@@ -8,6 +8,7 @@
 package orchestration
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -166,5 +167,20 @@ func TestVoidReasonDefaultsToExecutorGone(t *testing.T) {
 	}
 	if p.Reason != executor.VoidReasonExecutorGone {
 		t.Fatalf("未填时应回落到缺省理由，got %q", p.Reason)
+	}
+}
+
+// TestFailedEventTerminalCarriesNoFailureClass 锁 B402：failed 终态（Stop /
+// 对账，manager.go 用字面 "" 构造）不得带 failure_class——只有 turn_failed 的
+// 明确零文本分支才可自动续接（contract §3-10 / §4）。
+func TestFailedEventTerminalCarriesNoFailureClass(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustTaskWithTicket(t, st, "t-failed-fc", proto.TaskStateRunning)
+	if _, err := m.Stop(context.Background(), "t-failed-fc"); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	ev := lastEventOfType(t, m, "t-failed-fc", string(proto.EventTypeFailed))
+	if strings.Contains(string(ev.Payload), "failure_class") {
+		t.Fatalf("failed 终态不得带 failure_class: %s", ev.Payload)
 	}
 }

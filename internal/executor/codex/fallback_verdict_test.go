@@ -122,6 +122,9 @@ func TestNoTrailerWithNewCommitDoesNotDeclareCompletion(t *testing.T) {
 	if ev.Result.SessionID == "" {
 		t.Fatal("SessionID 丢失：codex 侧应传 r.threadID")
 	}
+	if ev.Result.FailureClass != "" {
+		t.Fatalf("无 trailer 有新提交不得分类（避免重复执行），FailureClass=%q", ev.Result.FailureClass)
+	}
 }
 
 func TestNoTrailerAskedViaToolStillSuppresses(t *testing.T) {

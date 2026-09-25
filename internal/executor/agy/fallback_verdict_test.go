@@ -84,6 +84,9 @@ func TestFallbackClassifyWithNewCommit(t *testing.T) {
 		if !strings.Contains(ev.Result.FailReason, "相对回合起点有新提交") {
 			t.Fatalf("FailReason 未正确说明有新提交: %s", ev.Result.FailReason)
 		}
+		if ev.Result.FailureClass != "" {
+			t.Fatalf("无 trailer 有新提交不得分类（避免重复执行），FailureClass=%q", ev.Result.FailureClass)
+		}
 	default:
 		t.Fatalf("未收到事件")
 	}
