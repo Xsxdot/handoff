@@ -134,3 +134,17 @@
 - GPT-6-Sol 定向复审 PASS：最终接受候选页使用一致席位状态；`ClearSeat`/`clearSeatTx` 图缺失说明准确，`CloseCard` 调用由当前源码核实；U5 plan 的结构化日志与意图注释步骤符合计划阶段纪律。无新的行为复审或测试结论。
 - Fresh `codegraph --repo . resolve --doc docs/superpowers/specs/2026-09-25-session-bounded-candidate-read-contract.md` exit 0；`docs/superpowers/plans/2026-09-25-b409-5-plan.md` resolve exit 0；`git diff --check` exit 0。此前计划集 audit PASS 已登记于上方；实现仍须遵守 B409.4→B409.5 账本阻塞边。
 - 当前依赖快照来自 `handoff card list --project handoff --json`：B409.1 为 `review`；B409.2/.3 受 B409.1 阻塞；B409.4 受 B409.2/.3 阻塞；B409.5 受 B409.4 阻塞。不得因计划集 audit PASS 而跳过故事依赖和逐卡 review/accept。
+
+## B409.1 Important 修复：PG 同金样与增长矩阵（2026-09-25）
+
+- 按 GPT-6-Sol review 的两项 Important，在 `internal/ledger/taskstate_projection_test.go` 抽出 SQLite/PG 共用有序事件夹具：两方言验证相同开单、重复、答复、作废、失败事件，按字段/生产排序/canonical JSON payload/计数对照，并验证 PG 显式重建恢复同一结果。SQLite 继续单独断言原始 payload 字节；PG `JSONB` 规范化空白/键序，因此跨方言比较 JSON 值，不伪称其传输字节完全一致。
+- 将三阶段 100 工单增长矩阵抽成方言共用 helper，新增隔离 PostgreSQL 16 集成路径；PG 使用直接插入唯一卡夹具并清理事件/投影/卡，避免污染全局项目号前缀表。统计 PG JSONB 以 `octet_length(payload::text)` 计真实传输文本字节；SQLite 以 `length(payload)` 统计 ASCII 夹具字节。样本均固定 100 单、四卡各 25 单，包含基线、+20,000 无关事件、镜像行数和 payload 字节翻倍。
+- 隔离临时容器 `handoff-b409-pg-20260925` 中的 PG 16 测试库名为 `handoff_b409_test`，只绑定 loopback；完成后容器已删除，`docker ps -a --filter name=handoff-b409-pg-20260925` 无结果。跨方言金样与增长定向测试 exit 0；PG 增长实际观测为：阶段① 21,266 events / 9,337 mirrors / 6,514,248 mirror payload bytes / detail 100 rows 4,900 bytes / count 4 rows 0 bytes；阶段② 41,266 / 9,337 / 6,514,248 / 100 / 4,900 / 4 / 0；阶段③ 50,603 / 18,674 / 13,087,496 / 100 / 4,900 / 4 / 0。SQLite 同夹具 exit 0：21,270 / 9,337 / 6,473,800 / 100 / 2,100 / 4 / 0；41,270 / 9,337 / 6,473,800 / 100 / 2,100 / 4 / 0；50,607 / 18,674 / 13,009,700 / 100 / 2,100 / 4 / 0。
+- Fresh `LEDGER_TEST_PG_DSN=<隔离本机PG16测试库> go test ./internal/ledger/... -count=1` exit 0：`internal/ledger` 29.752s，`internal/ledger/api` 1.033s；含 SQLite/PG 全金样、重建、三阶段增长、方言 DDL 与既有回归。环境变量值和连接信息未存入仓库。
+- 承重变异复验：从增量投影的终态分支暂时移除 `failed`，代码保持可编译；`TestOpenTicketProjectionMatchesCanonicalReplay` 和 `TestOpenTicketProjectionPostgresMatchesSQLiteGolden` 均失败。还原后两测试均通过。此前一次命中重建分支的变异仅使 PG 重建断言转红，未作为双路径变异证据。
+- 本轮提交前 SQLite 新鲜定向复跑：`gofmt -d internal/ledger/taskstate_projection_test.go && go test ./internal/ledger -run '^(TestOpenTicketProjectionMatchesCanonicalReplay|TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded)$' -count=1`，gofmt 无输出；测试原始结果 `ok\tgithub.com/Xsxdot/handoff/internal/ledger\t1.882s`。
+- `git diff --check` exit 0，生产源码无差异；本次只改测试。B409.1 回到 `implement`，待修订后的独立 review 与阶段验收，不推进 U2/U3 或声称 S1 完成。
+- 提交时命令与原始输出（历史读数；后续 amend 会改变提交 hash）：
+  - `$ git commit -m 'test: align postgres ticket projection evidence'`
+  - `[codex/session-reliable-mentions 3cb82710] test: align postgres ticket projection evidence`
+  - ` 2 files changed, 260 insertions(+), 42 deletions(-)`

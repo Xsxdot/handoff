@@ -79,10 +79,25 @@ func replayOpenTicketsOracle(t *testing.T, s *Store) []OpenTicket {
 	return out
 }
 
-func TestOpenTicketProjectionMatchesCanonicalReplay(t *testing.T) {
-	s := seedStore(t)
-	cardA := mk(t, s, "投影 A")
-	cardB := mk(t, s, "投影 B")
+func sortCanonicalOpenTickets(tickets []OpenTicket) {
+	sort.Slice(tickets, func(i, j int) bool {
+		if tickets[i].CardID != tickets[j].CardID {
+			return tickets[i].CardID < tickets[j].CardID
+		}
+		if tickets[i].TicketID != tickets[j].TicketID {
+			return tickets[i].TicketID < tickets[j].TicketID
+		}
+		if tickets[i].Target != tickets[j].Target {
+			return tickets[i].Target < tickets[j].Target
+		}
+		return tickets[i].TaskID < tickets[j].TaskID
+	})
+}
+
+// seedOpenTicketProjectionParityFixture 为 SQLite 与 PostgreSQL 提供同一有序镜像事件金样。
+// prefix 仅隔离共享测试账本的唯一键；规范化断言会把它映射回固定 target/task 标签。
+func seedOpenTicketProjectionParityFixture(t *testing.T, s *Store, cardA, cardB Card, prefix string) string {
+	t.Helper()
 	sequences := map[string]int64{}
 	appendMirror := func(cardID, target, taskID, typ, raw string) (bool, int64) {
 		t.Helper()
@@ -97,26 +112,99 @@ func TestOpenTicketProjectionMatchesCanonicalReplay(t *testing.T) {
 		return inserted, seq
 	}
 
+	target1, target2 := prefix+"-mac-01", prefix+"-mac-02"
+	task1, task2, task3 := prefix+"-task-1", prefix+"-task-2", prefix+"-task-3"
 	createdRaw := "{ \"ticket_id\":\"same-id\", \"question\":\"keep spacing\" }"
-	inserted, seq := appendMirror(cardA.ID, "mac-01", "task-1", evTicketQuestion, createdRaw)
+	inserted, seq := appendMirror(cardA.ID, target1, task1, evTicketQuestion, createdRaw)
 	if !inserted {
 		t.Fatal("首次镜像应插入")
 	}
 	// 同一来源事件重放不得重复影响投影。
-	inserted, err := s.AppendMirroredEvent(cardA.ID, MirroredEvent{Target: "mac-01", Task: "task-1",
+	inserted, err := s.AppendMirroredEvent(cardA.ID, MirroredEvent{Target: target1, Task: task1,
 		SourceSeq: seq, Type: evTicketQuestion, Payload: []byte(createdRaw), CreatedAt: time.Now()})
 	if err != nil || inserted {
 		t.Fatalf("重复镜像应幂等跳过: inserted=%v err=%v", inserted, err)
 	}
-	appendMirror(cardA.ID, "mac-01", "task-1", evTicketCreated, `{"ticket_id":"answered"}`)
-	appendMirror(cardB.ID, "mac-01", "task-1", evTicketQuestion, `{"ticket_id":"same-id"}`)
-	appendMirror(cardA.ID, "mac-02", "task-1", evTicketQuestion, `{"ticket_id":"same-id"}`)
-	appendMirror(cardA.ID, "mac-01", "task-2", evTicketQuestion, `{"ticket_id":"same-id"}`)
-	appendMirror(cardA.ID, "mac-01", "task-1", evTicketAnswered, `{"ticket_id":"answered"}`)
-	appendMirror(cardB.ID, "mac-01", "task-1", "failed", `{}`)
-	appendMirror(cardA.ID, "mac-01", "task-1", evTicketsVoided, `{}`)
-	appendMirror(cardA.ID, "mac-01", "task-1", evTicketQuestion, `{"ticket_id":"late-open"}`)
-	appendMirror(cardA.ID, "mac-01", "task-3", evTicketQuestion, createdRaw)
+	appendMirror(cardA.ID, target1, task1, evTicketCreated, `{"ticket_id":"answered"}`)
+	appendMirror(cardB.ID, target1, task1, evTicketQuestion, `{"ticket_id":"same-id"}`)
+	appendMirror(cardA.ID, target2, task1, evTicketQuestion, `{"ticket_id":"same-id"}`)
+	appendMirror(cardA.ID, target1, task2, evTicketQuestion, `{"ticket_id":"same-id"}`)
+	appendMirror(cardA.ID, target1, task1, evTicketAnswered, `{"ticket_id":"answered"}`)
+	appendMirror(cardB.ID, target1, task1, "failed", `{}`)
+	appendMirror(cardA.ID, target1, task1, evTicketsVoided, `{}`)
+	appendMirror(cardA.ID, target1, task1, evTicketQuestion, `{"ticket_id":"late-open"}`)
+	appendMirror(cardA.ID, target1, task3, evTicketQuestion, createdRaw)
+	return createdRaw
+}
+
+type normalizedProjectionTicket struct {
+	Card, Target, Task, TicketID, TaskType, Payload string
+}
+
+// normalizeProjectionTickets compares semantic JSON across SQLite TEXT and PostgreSQL JSONB,
+// whose canonical whitespace/key encoding differs while the stored JSON value is the same.
+func normalizeProjectionTickets(t *testing.T, tickets []OpenTicket, cardAID, cardBID, prefix string) []normalizedProjectionTicket {
+	t.Helper()
+	got := make([]normalizedProjectionTicket, 0, len(tickets))
+	for _, ticket := range tickets {
+		card := ""
+		switch ticket.CardID {
+		case cardAID:
+			card = "A"
+		case cardBID:
+			card = "B"
+		default:
+			t.Fatalf("金样出现未知卡片 %q", ticket.CardID)
+		}
+		var payload any
+		if err := json.Unmarshal(ticket.Payload, &payload); err != nil {
+			t.Fatalf("解析金样 payload: %v", err)
+		}
+		canonical, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("规范化金样 payload: %v", err)
+		}
+		got = append(got, normalizedProjectionTicket{
+			Card: card, Target: strings.TrimPrefix(ticket.Target, prefix+"-"),
+			Task: strings.TrimPrefix(ticket.TaskID, prefix+"-"), TicketID: ticket.TicketID,
+			TaskType: ticket.TaskType, Payload: string(canonical),
+		})
+	}
+	sort.Slice(got, func(i, j int) bool {
+		if got[i].Card != got[j].Card {
+			return got[i].Card < got[j].Card
+		}
+		if got[i].TicketID != got[j].TicketID {
+			return got[i].TicketID < got[j].TicketID
+		}
+		if got[i].Target != got[j].Target {
+			return got[i].Target < got[j].Target
+		}
+		return got[i].Task < got[j].Task
+	})
+	return got
+}
+
+func assertProjectionParityGolden(t *testing.T, tickets []OpenTicket, cardAID, cardBID, prefix string) {
+	t.Helper()
+	want := []normalizedProjectionTicket{
+		{Card: "A", Target: "mac-01", Task: "task-1", TicketID: "late-open", TaskType: evTicketQuestion, Payload: `{"ticket_id":"late-open"}`},
+		{Card: "A", Target: "mac-01", Task: "task-2", TicketID: "same-id", TaskType: evTicketQuestion, Payload: `{"ticket_id":"same-id"}`},
+		{Card: "A", Target: "mac-01", Task: "task-3", TicketID: "same-id", TaskType: evTicketQuestion, Payload: `{"question":"keep spacing","ticket_id":"same-id"}`},
+		{Card: "A", Target: "mac-02", Task: "task-1", TicketID: "same-id", TaskType: evTicketQuestion, Payload: `{"ticket_id":"same-id"}`},
+	}
+	got := normalizeProjectionTickets(t, tickets, cardAID, cardBID, prefix)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("SQLite/PostgreSQL 共用金样结果不一致: got=%+v want=%+v", got, want)
+	}
+}
+
+func TestOpenTicketProjectionMatchesCanonicalReplay(t *testing.T) {
+	s := seedStore(t)
+	cardA := mk(t, s, "投影 A")
+	cardB := mk(t, s, "投影 B")
+	prefix := "projection-golden"
+	createdRaw := seedOpenTicketProjectionParityFixture(t, s, cardA, cardB, prefix)
 
 	want := replayOpenTicketsOracle(t, s)
 	previousLogger := slog.Default()
@@ -127,22 +215,7 @@ func TestOpenTicketProjectionMatchesCanonicalReplay(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenTickets: %v", err)
 	}
-	canonicalOrder := func(tickets []OpenTicket) {
-		sort.Slice(tickets, func(i, j int) bool {
-			if tickets[i].CardID != tickets[j].CardID {
-				return tickets[i].CardID < tickets[j].CardID
-			}
-			if tickets[i].TicketID != tickets[j].TicketID {
-				return tickets[i].TicketID < tickets[j].TicketID
-			}
-			if tickets[i].Target != tickets[j].Target {
-				return tickets[i].Target < tickets[j].Target
-			}
-			return tickets[i].TaskID < tickets[j].TaskID
-		})
-	}
-	canonicalOrder(got)
-	canonicalOrder(want)
+	sortCanonicalOpenTickets(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("OpenTickets 与 card_events oracle 不一致\n got: %#v\nwant: %#v", got, want)
 	}
@@ -211,13 +284,14 @@ func TestOpenTicketProjectionMatchesCanonicalReplay(t *testing.T) {
 	}
 	preserved := false
 	for _, ticket := range want {
-		if ticket.TaskID == "task-3" && ticket.TicketID == "same-id" && string(ticket.Payload) == createdRaw {
+		if strings.HasSuffix(ticket.TaskID, "-task-3") && ticket.TicketID == "same-id" && string(ticket.Payload) == createdRaw {
 			preserved = true
 		}
 	}
 	if len(want) != 4 || !preserved {
 		t.Fatalf("oracle 样本没有覆盖原始 payload 与跨 key 隔离: %s", fmt.Sprint(want))
 	}
+	assertProjectionParityGolden(t, got, cardA.ID, cardB.ID, prefix)
 }
 
 func TestOpenTicketProjectionRebuildRepairsMissingRows(t *testing.T) {
@@ -373,6 +447,87 @@ func filterTicketsByCard(tickets []OpenTicket, cardID string) []OpenTicket {
 	return filtered
 }
 
+func filterTicketsByCards(tickets []OpenTicket, cardIDs ...string) []OpenTicket {
+	allowed := make(map[string]bool, len(cardIDs))
+	for _, cardID := range cardIDs {
+		allowed[cardID] = true
+	}
+	filtered := make([]OpenTicket, 0)
+	for _, ticket := range tickets {
+		if allowed[ticket.CardID] {
+			filtered = append(filtered, ticket)
+		}
+	}
+	return filtered
+}
+
+// TestOpenTicketProjectionPostgresMatchesSQLiteGolden exercises the exact shared event sequence
+// from TestOpenTicketProjectionMatchesCanonicalReplay on PostgreSQL as well as SQLite.
+func TestOpenTicketProjectionPostgresMatchesSQLiteGolden(t *testing.T) {
+	s := newB409PGStore(t)
+	prefix := fmt.Sprintf("projection-parity-%d", time.Now().UnixNano())
+	suffix := strings.TrimPrefix(prefix, "projection-parity-")
+	cardAID, cardBID := "B409-PA-"+suffix, "B409-PB-"+suffix
+	now := time.Now()
+	for i, id := range []string{cardAID, cardBID} {
+		if _, err := s.db.Exec(s.q(`INSERT INTO cards
+			(id, title, status, priority, project, workflow_name, workflow_version, attachments, created_at, updated_at)
+			VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), id, fmt.Sprintf("B409 跨方言金样卡 %d", i+1), StatusTodo, "中",
+			"b409-projection-parity", "bug", 1, "[]", s.tval(now), s.tval(now)); err != nil {
+			t.Fatalf("建立专用 PG 测试卡 %d: %v", i+1, err)
+		}
+	}
+	t.Cleanup(func() {
+		if _, err := s.db.Exec(s.q(`DELETE FROM open_ticket_projection WHERE card_id IN (?, ?)`), cardAID, cardBID); err != nil {
+			t.Errorf("清理 PG 金样投影: %v", err)
+		}
+		if _, err := s.db.Exec(s.q(`DELETE FROM card_events WHERE card_id IN (?, ?)`), cardAID, cardBID); err != nil {
+			t.Errorf("清理 PG 金样事件: %v", err)
+		}
+		if err := s.rebuildOpenTicketProjection(); err != nil {
+			t.Errorf("金样清理后重建 PG 投影: %v", err)
+		}
+		if _, err := s.db.Exec(s.q(`DELETE FROM cards WHERE id IN (?, ?)`), cardAID, cardBID); err != nil {
+			t.Errorf("清理 PG 金样卡: %v", err)
+		}
+	})
+	cardA, cardB := Card{ID: cardAID}, Card{ID: cardBID}
+	seedOpenTicketProjectionParityFixture(t, s, cardA, cardB, prefix)
+	want := filterTicketsByCards(replayOpenTicketsOracle(t, s), cardAID, cardBID)
+	sortCanonicalOpenTickets(want)
+	got, err := s.OpenTickets()
+	if err != nil {
+		t.Fatalf("PG OpenTickets: %v", err)
+	}
+	got = filterTicketsByCards(got, cardAID, cardBID)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PG OpenTickets 与 canonical replay 不一致: got=%+v want=%+v", got, want)
+	}
+	assertProjectionParityGolden(t, got, cardAID, cardBID, prefix)
+	counts, err := s.OpenTicketCounts()
+	if err != nil || counts[cardAID] != 4 || counts[cardBID] != 0 {
+		t.Fatalf("PG OpenTicketCounts 与共用金样不一致: counts=%v err=%v", counts, err)
+	}
+	if _, err := s.db.Exec(s.q(`DELETE FROM open_ticket_projection WHERE card_id IN (?, ?)`), cardAID, cardBID); err != nil {
+		t.Fatalf("模拟 PG 金样投影缺行: %v", err)
+	}
+	if _, err := s.OpenTickets(); err == nil {
+		t.Fatal("PG 金样投影缺行不得静默返回结果")
+	}
+	if err := s.rebuildOpenTicketProjection(); err != nil {
+		t.Fatalf("PG 金样显式重建投影: %v", err)
+	}
+	got, err = s.OpenTickets()
+	if err != nil {
+		t.Fatalf("PG 金样重建后 OpenTickets: %v", err)
+	}
+	got = filterTicketsByCards(got, cardAID, cardBID)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("PG 金样重建后结果与 canonical replay 不一致: got=%+v want=%+v", got, want)
+	}
+	assertProjectionParityGolden(t, got, cardAID, cardBID, prefix)
+}
+
 func TestAppendMirroredEventProjectionFailureRollsBackEvent(t *testing.T) {
 	s := seedStore(t)
 	card := mk(t, s, "投影事务原子性")
@@ -397,11 +552,59 @@ func TestAppendMirroredEventProjectionFailureRollsBackEvent(t *testing.T) {
 
 func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 	s := seedStore(t)
+	runOpenTicketProjectionGrowthMatrix(t, s)
+}
+
+func TestOpenTicketProjectionPostgresGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
+	s := newB409PGStore(t)
+	runOpenTicketProjectionGrowthMatrix(t, s)
+}
+
+func runOpenTicketProjectionGrowthMatrix(t *testing.T, s *Store) {
+	t.Helper()
 	cards := make([]Card, 4)
+	if s.dialect == dialectPG {
+		// Direct inserts keep the disposable PG fixture from persisting global project-prefix state.
+		stamp := fmt.Sprintf("%d", time.Now().UnixNano())
+		for i := range cards {
+			cardID := fmt.Sprintf("B409-G-%s-%02d", stamp, i+1)
+			if _, err := s.db.Exec(s.q(`INSERT INTO cards
+				(id, title, status, priority, project, workflow_name, workflow_version, attachments, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), cardID, fmt.Sprintf("B409 投影增长卡 %d", i+1), StatusTodo, "中",
+				"b409-projection-growth-"+stamp, "bug", 1, "[]", s.tval(time.Now()), s.tval(time.Now())); err != nil {
+				t.Fatalf("建立专用 PG 增长卡 %d: %v", i+1, err)
+			}
+			cards[i] = Card{ID: cardID}
+		}
+	} else {
+		for i := range cards {
+			cards[i] = mk(t, s, fmt.Sprintf("投影增长卡 %d", i+1))
+		}
+	}
+	if s.dialect == dialectPG {
+		t.Cleanup(func() {
+			for _, card := range cards {
+				if _, err := s.db.Exec(s.q(`DELETE FROM open_ticket_projection WHERE card_id = ?`), card.ID); err != nil {
+					t.Errorf("清理 PG 增长投影卡 %s: %v", card.ID, err)
+				}
+				if _, err := s.db.Exec(s.q(`DELETE FROM card_events WHERE card_id = ?`), card.ID); err != nil {
+					t.Errorf("清理 PG 增长事件卡 %s: %v", card.ID, err)
+				}
+			}
+			if err := s.rebuildOpenTicketProjection(); err != nil {
+				t.Errorf("清理 PG 增长数据后重建投影: %v", err)
+			}
+			for _, card := range cards {
+				if _, err := s.db.Exec(s.q(`DELETE FROM cards WHERE id = ?`), card.ID); err != nil {
+					t.Errorf("清理 PG 增长测试卡 %s: %v", card.ID, err)
+				}
+			}
+		})
+	}
+	growthTarget := fmt.Sprintf("growth-card-%d", time.Now().UnixNano())
 	for i := range cards {
-		cards[i] = mk(t, s, fmt.Sprintf("投影增长卡 %d", i+1))
 		for ticket := 1; ticket <= 25; ticket++ {
-			if _, err := s.AppendMirroredEvent(cards[i].ID, MirroredEvent{Target: "growth-card", Task: fmt.Sprintf("task-%d", i+1),
+			if _, err := s.AppendMirroredEvent(cards[i].ID, MirroredEvent{Target: growthTarget, Task: fmt.Sprintf("%s-task-%d", growthTarget, i+1),
 				SourceSeq: int64(ticket), Type: evTicketQuestion,
 				Payload:   []byte(fmt.Sprintf(`{"ticket_id":"%s-%02d"}`, cards[i].ID, ticket)),
 				CreatedAt: time.Now()}); err != nil {
@@ -417,7 +620,7 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 	if len(mirrorPayload) != bodySize {
 		t.Fatalf("增长镜像 payload 长度=%d，期望=%d", len(mirrorPayload), bodySize)
 	}
-	insertGrowthMirrors(t, s, cards[0].ID, 1, baselineMirrors-len(cards)*25, mirrorPayload)
+	insertGrowthMirrors(t, s, cards[0].ID, growthTarget, "unrelated-task", 1, baselineMirrors-len(cards)*25, mirrorPayload)
 	// Match the plan's baseline ledger size while retaining fixed open-ticket
 	// cardinality. This unrelated history is deliberately outside the read sample.
 	insertGrowthEvents(t, s, cards[0].ID, 11929)
@@ -428,7 +631,7 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 		{name: "baseline"},
 		{name: "unrelated-ledger", seed: func() { insertGrowthEvents(t, s, cards[0].ID, unrelatedEvents) }},
 		{name: "doubled-mirrors", seed: func() {
-			insertGrowthMirrors(t, s, cards[0].ID, int64(baselineMirrors-len(cards)*25+1),
+			insertGrowthMirrors(t, s, cards[0].ID, growthTarget, "unrelated-task", int64(baselineMirrors-len(cards)*25+1),
 				baselineMirrors, mirrorPayload)
 		}},
 	}
@@ -445,7 +648,7 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 		if err := s.rebuildOpenTicketProjection(); err != nil {
 			t.Fatalf("%s 样本前显式重建投影: %v", stage.name, err)
 		}
-		mirrorRows, mirrorBytes := projectionGrowthMirrorStats(t, s)
+		mirrorRows, mirrorBytes := projectionGrowthMirrorStats(t, s, growthTarget)
 		if stage.name == "baseline" {
 			baselineMirrorCount, baselineMirrorBytes = mirrorRows, mirrorBytes
 		} else if stage.name == "doubled-mirrors" && (mirrorRows < baselineMirrorCount*2 || mirrorBytes < baselineMirrorBytes*2) {
@@ -505,7 +708,7 @@ func assertNoTicketProjectionRebuildInRead(t *testing.T, logs []byte, operation 
 	}
 }
 
-func insertGrowthMirrors(t *testing.T, s *Store, cardID string, firstSourceSeq int64, count int, payload string) {
+func insertGrowthMirrors(t *testing.T, s *Store, cardID, target, taskID string, firstSourceSeq int64, count int, payload string) {
 	t.Helper()
 	tx, err := s.db.Begin()
 	if err != nil {
@@ -516,7 +719,7 @@ func insertGrowthMirrors(t *testing.T, s *Store, cardID string, firstSourceSeq i
 		if _, err := tx.Exec(s.q(`INSERT INTO card_events
 			(card_id, type, actor, payload, source_target, source_task, source_seq, created_at)
 			VALUES (?, ?, ?, ?, ?, ?, ?, ?)`), cardID, EvTaskMirrored, "growth-test", payload,
-			"growth-noise", "unrelated-task", firstSourceSeq+int64(i), s.tval(time.Now())); err != nil {
+			target, taskID, firstSourceSeq+int64(i), s.tval(time.Now())); err != nil {
 			t.Fatalf("种增长镜像 %d/%d: %v", i+1, count, err)
 		}
 	}
@@ -543,10 +746,15 @@ func insertGrowthEvents(t *testing.T, s *Store, cardID string, count int) {
 	}
 }
 
-func projectionGrowthMirrorStats(t *testing.T, s *Store) (rows, payloadBytes int64) {
+func projectionGrowthMirrorStats(t *testing.T, s *Store, target string) (rows, payloadBytes int64) {
 	t.Helper()
-	if err := s.db.QueryRow(`SELECT COUNT(*), COALESCE(SUM(length(payload)), 0)
-		FROM card_events WHERE type = 'task_mirrored'`).Scan(&rows, &payloadBytes); err != nil {
+	payloadLength := "length(payload)"
+	if s.dialect == dialectPG {
+		payloadLength = "octet_length(payload::text)"
+	}
+	query := fmt.Sprintf(`SELECT COUNT(*), COALESCE(SUM(%s), 0)
+		FROM card_events WHERE type = 'task_mirrored' AND source_target = ?`, payloadLength)
+	if err := s.db.QueryRow(s.q(query), target).Scan(&rows, &payloadBytes); err != nil {
 		t.Fatalf("读取增长镜像统计: %v", err)
 	}
 	return rows, payloadBytes
