@@ -37,6 +37,10 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if indexName != "idx_card_dispatch_rounds_card_purpose" {
 		t.Fatalf("B351 失败轮次索引名 = %q", indexName)
 	}
+	if err := s.db.QueryRow(`SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_room_messages_room_seq'`).Scan(&indexName); err != nil {
+		t.Fatalf("房间历史表达式索引不存在: %v", err)
+	}
 	rows, err := s.db.Query(`PRAGMA table_info(card_dispatch_rounds)`)
 	if err != nil {
 		t.Fatalf("读取 B351 失败轮次列: %v", err)
@@ -81,13 +85,13 @@ func TestQRebind(t *testing.T) {
 	}
 }
 
-func TestRedactDSN(t *testing.T) {
-	got := redactDSN("postgres://user:secret@example.test:5432/handoff", dialectPG)
-	if got != "postgres://user@example.test:5432/handoff" {
-		t.Fatalf("DSN 脱敏: %q", got)
+func TestDatabaseLabelExcludesConnectionString(t *testing.T) {
+	got := databaseLabel("postgres://user:secret@example.test:5432/handoff?sslmode=disable", dialectPG)
+	if got != "handoff" {
+		t.Fatalf("PG 日志标签应只保留数据库名: %q", got)
 	}
-	if got := redactDSN("/tmp/ledger.db", dialectSQLite); got != "/tmp/ledger.db" {
-		t.Fatalf("SQLite 路径不应改写: %q", got)
+	if got := databaseLabel("/tmp/ledger.db", dialectSQLite); got != "ledger.db" {
+		t.Fatalf("SQLite 日志标签应只保留文件名: %q", got)
 	}
 }
 

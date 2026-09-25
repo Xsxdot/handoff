@@ -1,15 +1,163 @@
-// 协作房间域（B156.2）在账本侧的两个事件写入点：房间消息与消费标记。
-// 房间、成员、白名单等规则归 d_collab；账本只承事件流机制——这里不解释
-// RoomMessage 的业务字段，只保证「存在性校验 + 同事务 append」的落账纪律。
+// 协作房间域（B156.2）在账本侧的写入与查询：房间消息、消费标记及有界历史读取。
+// 房间、成员、白名单等规则归 d_collab；账本只承事件流机制和可重建查询索引，
+// 不解释 RoomMessage 的业务字段。
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+// RoomMessagesBeforeContext 只从账本取指定房间最新 limit 条 room_message。
+// beforeSeq>0 时使用排他上界；数据库先按倒序截取，返回前再转成升序。
+func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]Event, error) {
+	started := time.Now()
+	log().Info("房间历史账本查询开始", "room_id", roomID,
+		"before_seq", beforeSeq, "limit", limit)
+	if limit <= 0 {
+		err := fmt.Errorf("房间历史 limit 必须为正数: %d", limit)
+		log().Warn("房间历史账本查询参数无效", "room_id", roomID, "limit", limit, "cause", err)
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		log().Info("房间历史账本查询已取消", "room_id", roomID,
+			"before_seq", beforeSeq, "elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+		return nil, err
+	}
+
+	// RoomIDOf 先取非空 card_id，仅无卡事件才使用 payload.Room；拆开查询分支
+	// 让卡索引和下方 JSON 表达式索引各自限域，再合并两边各自最多 limit 条。
+	roomExpr := `payload->>'room'`
+	if s.dialect == dialectSQLite {
+		roomExpr = `json_extract(payload, '$.room')`
+	}
+	upper := ""
+	cardArgs := []any{roomID}
+	payloadArgs := []any{roomID}
+	if beforeSeq > 0 {
+		upper = ` AND seq < ?`
+		cardArgs = append(cardArgs, beforeSeq)
+		payloadArgs = append(payloadArgs, beforeSeq)
+	}
+	// Keep the event type literal so PostgreSQL can prove the partial-index predicate
+	// even if pgx reuses a generic prepared plan.
+	cardQuery := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+		FROM card_events WHERE type = 'room_message' AND card_id = ?` + upper + ` ORDER BY seq DESC LIMIT ?`
+	cardArgs = append(cardArgs, limit)
+	payloadQuery := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+		FROM card_events WHERE type = 'room_message' AND card_id IS NULL AND ` + roomExpr + ` = ?` + upper + ` ORDER BY seq DESC LIMIT ?`
+	payloadArgs = append(payloadArgs, limit)
+	// 两个分支的局部 LIMIT 防止收集该房间的全部历史；最终再按全局 seq 截最近窗口。
+	query := `WITH card_room AS (` + cardQuery + `), payload_room AS (` + payloadQuery + `)
+		SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+		FROM (SELECT * FROM card_room UNION ALL SELECT * FROM payload_room) AS room_events
+		ORDER BY seq DESC LIMIT ?`
+	args := make([]any, 0, len(cardArgs)+len(payloadArgs)+1)
+	args = append(args, cardArgs...)
+	args = append(args, payloadArgs...)
+	args = append(args, limit)
+
+	// 单独获取 *sql.Conn 才能把本请求的池等待与发起 SQL 的耗时分开；
+	// DB.Stats().WaitDuration 是全池累计值，在并发场景不能归因给当前请求。
+	poolStarted := time.Now()
+	conn, err := s.db.Conn(ctx)
+	poolWait := time.Since(poolStarted)
+	if err != nil {
+		level := log().Warn
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			level = log().Info
+		}
+		level("房间历史账本获取连接失败", "room_id", roomID,
+			"before_seq", beforeSeq, "limit", limit,
+			"pool_wait_ns", poolWait.Nanoseconds(),
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+		return nil, fmt.Errorf("获取账本连接: %w", err)
+	}
+	defer conn.Close()
+	dbStarted := time.Now()
+	queryStarted := time.Now()
+	rows, err := conn.QueryContext(ctx, s.q(query), args...)
+	sqlCall := time.Since(queryStarted)
+	if err != nil {
+		level := log().Warn
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			level = log().Info
+		}
+		level("房间历史账本 SQL 调用失败", "room_id", roomID,
+			"before_seq", beforeSeq, "limit", limit,
+			"pool_wait_ns", poolWait.Nanoseconds(),
+			"sql_call_ns", sqlCall.Nanoseconds(),
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+		return nil, fmt.Errorf("读房间消息: %w", err)
+	}
+	defer rows.Close()
+
+	// QueryContext 时长覆盖 SQL 执行和首批结果到达；逐行传输/扫描另计，
+	// 这样慢首包与大量结果的读取成本不会混成一个数字。
+	out := make([]Event, 0, limit)
+	payloadBytes := 0
+	rowReadStarted := time.Now()
+	for rows.Next() {
+		var event Event
+		var cardID, sourceTarget, sourceTask sql.NullString
+		var sourceSeq sql.NullInt64
+		var raw string
+		var createdAt any
+		if err := rows.Scan(&event.Seq, &cardID, &event.Type, &event.Actor, &raw,
+			&sourceTarget, &sourceTask, &sourceSeq, &createdAt); err != nil {
+			log().Warn("房间历史账本行读取失败", "room_id", roomID,
+				"before_seq", beforeSeq, "limit", limit, "rows_read", len(out),
+				"pool_wait_ns", poolWait.Nanoseconds(),
+				"sql_call_ns", sqlCall.Nanoseconds(),
+				"row_read_ns", time.Since(rowReadStarted).Nanoseconds(),
+				"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+			return nil, fmt.Errorf("扫描房间消息行: %w", err)
+		}
+		event.CardID = cardID.String
+		event.SourceTarget = sourceTarget.String
+		event.SourceTask = sourceTask.String
+		event.SourceSeq = sourceSeq.Int64
+		event.Payload = json.RawMessage(raw)
+		event.CreatedAt = toTime(createdAt)
+		payloadBytes += len(raw)
+		out = append(out, event)
+	}
+	if err := rows.Err(); err != nil {
+		level := log().Warn
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			level = log().Info
+		}
+		level("房间历史账本遍历失败", "room_id", roomID,
+			"before_seq", beforeSeq, "limit", limit, "rows_read", len(out),
+			"payload_bytes", payloadBytes,
+			"pool_wait_ns", poolWait.Nanoseconds(),
+			"sql_call_ns", sqlCall.Nanoseconds(),
+			"row_read_ns", time.Since(rowReadStarted).Nanoseconds(),
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+		return nil, fmt.Errorf("遍历房间消息行: %w", err)
+	}
+	rowRead := time.Since(rowReadStarted)
+	for left, right := 0, len(out)-1; left < right; left, right = left+1, right-1 {
+		out[left], out[right] = out[right], out[left]
+	}
+
+	dbReadDuration := time.Since(dbStarted)
+	log().Info("房间历史账本查询完成", "room_id", roomID,
+		"before_seq", beforeSeq, "limit", limit, "rows_returned", len(out),
+		"payload_bytes", payloadBytes,
+		"pool_wait_ns", poolWait.Nanoseconds(),
+		"sql_call_ns", sqlCall.Nanoseconds(),
+		"row_read_ns", rowRead.Nanoseconds(),
+		"db_read_ns", dbReadDuration.Nanoseconds(),
+		"elapsed_ns", time.Since(started).Nanoseconds())
+	return out, nil
+}
 
 // RecordRoomMessage 落一条房间消息事件。cardID 非空 = 卡会话消息（必须
 // 指向存在的卡）；空 = 群级无卡事件（项目群/全员群，天然不进多路 wait）。

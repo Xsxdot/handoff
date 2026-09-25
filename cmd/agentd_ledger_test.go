@@ -3,6 +3,7 @@
 package cmd
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
@@ -82,6 +83,27 @@ func TestSetupLedgerMountsWithRetiredEnabledFlag(t *testing.T) {
 	}
 	if resp.StatusCode != http.StatusOK || !strings.Contains(body.String(), `"enabled":true`) {
 		t.Fatalf("health 应报 enabled:true，得到 %d %s", resp.StatusCode, body.String())
+	}
+}
+
+// TestSetupLedgerFailureDoesNotLogDSNCredentials keeps startup diagnostics useful
+// without exposing a PostgreSQL password when the database cannot be opened.
+func TestSetupLedgerFailureDoesNotLogDSNCredentials(t *testing.T) {
+	const password = "b409-test-password-must-not-appear"
+	dsn := "postgres://ledger-user:" + password + "@127.0.0.1:1/ledger-db?sslmode=disable"
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	cfg := &config.Config{Ledger: config.LedgerConfig{DSN: dsn}}
+
+	_, err := setupLedger(cfg, nil, nil, context.Background(), logger)
+	if err == nil {
+		t.Fatal("连接不可用的账本应返回错误")
+	}
+	if strings.Contains(logs.String(), dsn) || strings.Contains(logs.String(), password) {
+		t.Fatalf("账本打开失败日志泄露了 DSN 凭据: %s", logs.String())
+	}
+	if !strings.Contains(logs.String(), "dsn_configured=true") {
+		t.Fatalf("日志应保留 DSN 是否配置的诊断信息: %s", logs.String())
 	}
 }
 

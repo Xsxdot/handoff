@@ -1,0 +1,17 @@
+{
+  "capture_source": "earlier isolated PostgreSQL CLI run; raw output intentionally not copied",
+  "stderr_signals": {
+    "bounded_store_query_started": true,
+    "bounded_store_query_completed": true,
+    "collab_history_completed": true,
+    "legacy_target_connection_field_present": false
+  },
+  "stdout": {
+    "message_count": 200,
+    "first_seq": 172653,
+    "last_seq": 172852,
+    "strictly_increasing": true
+  },
+  "connection_string_or_credentials_persisted": false,
+  "binary_build_id": "not retained in original capture; runtime query-path logs identify current bounded implementation"
+}

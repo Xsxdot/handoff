@@ -96,6 +96,19 @@ func (f *Facade) EventsFromAscContext(ctx context.Context, cardIDs []string, fro
 	return out, nil
 }
 
+// RoomMessagesBeforeContext 直通账本房间历史查询并投影 wire 事件。
+func (f *Facade) RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	events, err := f.st.RoomMessagesBeforeContext(ctx, roomID, beforeSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]proto.LedgerEvent, 0, len(events))
+	for _, ev := range events {
+		out = append(out, eventWire(ev))
+	}
+	return out, nil
+}
+
 // --- B358 会话（群）域直通镜像：逐方法转调 Store，不含业务判断 ---
 
 func (f *Facade) CreateSession(title, owner, actor string) (proto.Session, error) {

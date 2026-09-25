@@ -3,8 +3,15 @@
 package ledger
 
 import (
+	"context"
+	"database/sql"
+	"errors"
+	"fmt"
 	"os"
 	"testing"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/proto"
 )
 
 func newPGStore(t *testing.T) *Store {
@@ -19,6 +26,209 @@ func newPGStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { s.Close() })
 	return s
+}
+
+// newB409PGStore 验证数据库名后才打开 schema，避免把 B409 合成数据写进其它账本。
+func newB409PGStore(t *testing.T) *Store {
+	t.Helper()
+	dsn := os.Getenv("LEDGER_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("未设 LEDGER_TEST_PG_DSN，跳过 B409 PG 房间历史测试")
+	}
+	probe, err := sql.Open("pgx", dsn)
+	if err != nil {
+		t.Fatalf("连接 B409 PG 测试库: %v", err)
+	}
+	var databaseName string
+	if err := probe.QueryRow(`SELECT current_database()`).Scan(&databaseName); err != nil {
+		probe.Close()
+		t.Fatalf("确认 B409 PG 测试库名称: %v", err)
+	}
+	if err := probe.Close(); err != nil {
+		t.Fatalf("关闭 B409 PG 名称探针: %v", err)
+	}
+	if databaseName != "handoff_b409_test" {
+		t.Fatalf("拒绝向非专用 PostgreSQL 数据库写入合成数据: current_database()=%q", databaseName)
+	}
+	store, err := Open(dsn)
+	if err != nil {
+		t.Fatalf("打开 B409 PG 测试库: %v", err)
+	}
+	t.Cleanup(func() { store.Close() })
+	return store
+}
+
+func TestRoomHistoryPostgresMatchesWindowContract(t *testing.T) {
+	s := newB409PGStore(t)
+	if err := seedTestWorkflows(t, s); err != nil {
+		t.Fatalf("准备隔离测试工作流: %v", err)
+	}
+	roomID := fmt.Sprintf("session:b409-pg-%d", time.Now().UnixNano())
+	otherRoomID := roomID + "-other"
+	seqs := make([]int64, 0, 260)
+	t.Cleanup(func() {
+		for _, seq := range seqs {
+			if _, err := s.db.Exec(s.q(`DELETE FROM card_events WHERE seq = ?`), seq); err != nil {
+				t.Errorf("清理 B409 PG 合成事件 %d: %v", seq, err)
+			}
+		}
+	})
+	targetSeqs := make([]int64, 0, 205)
+	for i := 0; i < 205; i++ {
+		if i%4 == 0 {
+			seq, err := s.RecordRoomMessage("", proto.RoomMessage{
+				Room: otherRoomID, Kind: proto.RoomMsgUser, Body: "unrelated",
+			}, "b409-pg-test")
+			if err != nil {
+				t.Fatalf("写入无关 PostgreSQL 房间: %v", err)
+			}
+			seqs = append(seqs, seq)
+		}
+		seq, err := s.RecordRoomMessage("", proto.RoomMessage{
+			Room: roomID, Kind: proto.RoomMsgUser, Body: fmt.Sprintf("target-%03d", i),
+		}, "b409-pg-test")
+		if err != nil {
+			t.Fatalf("写入 PostgreSQL 目标消息 %d: %v", i, err)
+		}
+		seqs = append(seqs, seq)
+		targetSeqs = append(targetSeqs, seq)
+	}
+
+	got, err := s.RoomMessagesBeforeContext(t.Context(), roomID, 0, 200)
+	if err != nil {
+		t.Fatalf("PostgreSQL 最近窗口查询: %v", err)
+	}
+	if len(got) != 200 {
+		t.Fatalf("PostgreSQL 最近窗口应有 200 条，得到 %d", len(got))
+	}
+	for i, event := range got {
+		if want := targetSeqs[i+5]; event.Seq != want {
+			t.Fatalf("PostgreSQL 升序窗口第 %d 条 seq=%d，期望 %d", i, event.Seq, want)
+		}
+	}
+	page, err := s.RoomMessagesBeforeContext(t.Context(), roomID, targetSeqs[204], 20)
+	if err != nil {
+		t.Fatalf("PostgreSQL beforeSeq 查询: %v", err)
+	}
+	if len(page) != 20 || page[len(page)-1].Seq >= targetSeqs[204] {
+		t.Fatalf("PostgreSQL beforeSeq 必须排他并返回最近窗口: count=%d page=%+v", len(page), page)
+	}
+	const cardProject = "b409-pg-test"
+	if err := s.SetCardPrefix(cardProject, "Z"); err != nil {
+		t.Fatalf("给隔离夹具设置未占用前缀: %v", err)
+	}
+	card, err := s.CreateCard(NewCard{Title: "B409 卡房间读取夹具", Project: cardProject, Workflow: "bug", Actor: "b409-pg-test"})
+	if err != nil {
+		t.Fatalf("创建 B409 卡房间夹具: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := s.db.Exec(`DELETE FROM card_events WHERE card_id = $1`, card.ID); err != nil {
+			t.Errorf("清理 B409 卡事件: %v", err)
+		}
+		if _, err := s.db.Exec(`DELETE FROM cards WHERE id = $1`, card.ID); err != nil {
+			t.Errorf("清理 B409 卡: %v", err)
+		}
+	})
+	if _, err := s.RecordRoomMessage(card.ID, proto.RoomMessage{
+		Room: "session:b409-payload-must-not-win", Kind: proto.RoomMsgUser, Body: "card room",
+	}, "b409-pg-test"); err != nil {
+		t.Fatalf("写入 PostgreSQL 卡房间消息: %v", err)
+	}
+	legacySeq, err := s.RecordRoomMessage("", proto.RoomMessage{
+		Room: card.ID, Kind: proto.RoomMsgUser, Body: "legacy card room",
+	}, "b409-pg-test")
+	if err != nil {
+		t.Fatalf("写入 PostgreSQL 旧式卡房间消息: %v", err)
+	}
+	seqs = append(seqs, legacySeq)
+	cardRoom, err := s.RoomMessagesBeforeContext(t.Context(), card.ID, 0, 200)
+	if err != nil {
+		t.Fatalf("PostgreSQL 卡房间身份读取: %v", err)
+	}
+	if len(cardRoom) != 2 || cardRoom[0].CardID != card.ID || cardRoom[1].CardID != "" {
+		t.Fatalf("PostgreSQL 卡片身份优先于载荷 Room，且保留旧事件：%+v", cardRoom)
+	}
+	wrongRoom, err := s.RoomMessagesBeforeContext(t.Context(), "session:b409-payload-must-not-win", 0, 200)
+	if err != nil || len(wrongRoom) != 0 {
+		t.Fatalf("PostgreSQL 非空 card_id 不得因载荷 Room 串房间: events=%+v err=%v", wrongRoom, err)
+	}
+	if _, err := s.RoomMessagesBeforeContext(t.Context(), roomID+"-missing", 0, 200); err != nil {
+		t.Fatalf("PostgreSQL 空房间应返回空结果: %v", err)
+	}
+	if _, err := s.RoomMessagesBeforeContext(t.Context(), roomID, 0, 0); err == nil {
+		t.Fatal("PostgreSQL 非正 limit 应报错")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.RoomMessagesBeforeContext(ctx, roomID, 0, 200); err != context.Canceled {
+		t.Fatalf("PostgreSQL 取消未传播: %v", err)
+	}
+}
+
+func TestRoomHistoryPostgresCancelsBlockedRead(t *testing.T) {
+	s := newB409PGStore(t)
+
+	// ACCESS EXCLUSIVE makes the real room-history SELECT wait inside PostgreSQL;
+	// cancel only after pg_stat_activity confirms it reached the lock wait.
+	lockConn, err := s.db.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("获取 PostgreSQL 锁连接: %v", err)
+	}
+	defer lockConn.Close()
+	lockTx, err := lockConn.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("开启 PostgreSQL 锁事务: %v", err)
+	}
+	defer lockTx.Rollback()
+	if _, err := lockTx.ExecContext(t.Context(), `LOCK TABLE card_events IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("锁住隔离账本事件表: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := s.RoomMessagesBeforeContext(ctx, "session:b409-cancel", 0, 200)
+		result <- err
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	blocked := false
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := s.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND state = 'active'
+			AND wait_event_type = 'Lock' AND query LIKE 'WITH card_room AS (%'`).Scan(&waiting); err != nil {
+			t.Fatalf("确认 PostgreSQL 房间历史查询进入锁等待: %v", err)
+		}
+		if waiting > 0 {
+			blocked = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !blocked {
+		cancel()
+		select {
+		case <-result:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatal("房间历史查询未进入 PostgreSQL 锁等待，无法验证在途取消")
+	}
+
+	canceledAt := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("PostgreSQL 在途查询取消应传播 context.Canceled，得到 %v", err)
+		}
+		if elapsed := time.Since(canceledAt); elapsed > 2*time.Second {
+			t.Fatalf("PostgreSQL 在途查询取消耗时过长: %s", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PostgreSQL 查询在 context 取消后仍未退出")
+	}
 }
 
 // smokeProject 冒烟数据的项目名——同时是清理段的作用域边界。

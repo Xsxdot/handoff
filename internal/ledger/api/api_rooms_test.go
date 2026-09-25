@@ -9,6 +9,7 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"path/filepath"
@@ -47,6 +48,34 @@ func mustCardFor(t *testing.T, st *ledger.Store, title string) ledger.Card {
 		t.Fatalf("建卡: %v", err)
 	}
 	return card
+}
+
+func TestRoomHistoryThroughLedgerClientSeam(t *testing.T) {
+	f, _ := newFixture(t)
+	const roomID = "session:api-history"
+	for i := 0; i < 3; i++ {
+		if _, err := f.RecordRoomMessage("", proto.RoomMessage{
+			Room: roomID, Kind: proto.RoomMsgUser, Body: string(rune('a' + i)),
+		}, "test"); err != nil {
+			t.Fatalf("写入房间消息: %v", err)
+		}
+	}
+	if _, err := f.RecordRoomMessage("", proto.RoomMessage{
+		Room: "session:api-other", Kind: proto.RoomMsgUser, Body: "other",
+	}, "test"); err != nil {
+		t.Fatalf("写入无关房间消息: %v", err)
+	}
+
+	got, err := f.RoomMessagesBeforeContext(context.Background(), roomID, 0, 2)
+	if err != nil {
+		t.Fatalf("经 LedgerClient 读房间历史: %v", err)
+	}
+	if len(got) != 2 || got[0].Seq >= got[1].Seq || got[0].Type != ledger.EvRoomMessage {
+		t.Fatalf("门面应只返回升序目标房间 room_message：%+v", got)
+	}
+	if got[0].CardID != "" || len(got[0].Payload) == 0 {
+		t.Fatalf("事件 wire 映射丢失字段: %+v", got[0])
+	}
 }
 
 // markersOf 数全流上的 message_consumed 事件并解出载荷键集。直查库：

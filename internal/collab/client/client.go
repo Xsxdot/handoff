@@ -44,6 +44,8 @@ type LedgerClient interface {
 	EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
 	// EventsFromAscContext 供 HTTP 会话读取在客户端断开时取消事件流查询。
 	EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// RoomMessagesBeforeContext 只读指定房间最近消息；beforeSeq 为排他上界，limit 必须为正。
+	RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error)
 	// --- B358 会话（群）域账本能力 ---
 	// CreateSession 建一场会话（群），返回带分配 id 的会话本体。
 	CreateSession(title, owner, actor string) (proto.Session, error)

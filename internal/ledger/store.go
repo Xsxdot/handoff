@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"fmt"
 	"net/url"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -79,24 +80,24 @@ func Open(dsn string) (*Store, error) {
 	if s.dialect == dialectSQLite {
 		dialectName = "sqlite"
 	}
-	log().Info("账本库已打开", "dialect", dialectName, "target", redactDSN(dsn, s.dialect))
+	log().Info("账本库已打开", "dialect", dialectName, "database", databaseLabel(dsn, s.dialect))
 	return s, nil
 }
 
-// redactDSN 保留 Open 日志需要的目标定位信息，同时不把 PG URL 中的密码
-// 写进日志；SQLite 路径没有凭据，原样保留。
-func redactDSN(dsn string, d dialect) string {
+// databaseLabel 只保留本地数据库名，不让连接串、主机或凭据进入日志。
+func databaseLabel(dsn string, d dialect) string {
 	if d != dialectPG {
-		return dsn
+		return filepath.Base(dsn)
 	}
 	u, err := url.Parse(dsn)
 	if err != nil {
-		return "<postgres dsn>"
+		return "<postgres>"
 	}
-	if u.User != nil {
-		u.User = url.User(u.User.Username())
+	database := strings.TrimPrefix(u.Path, "/")
+	if database == "" {
+		return "<postgres>"
 	}
-	return u.String()
+	return database
 }
 
 // Close 关闭底层连接。
@@ -240,6 +241,10 @@ func ddlStatements(pg bool) []string {
 				ON card_events(source_target, source_task, source_seq)
 				WHERE source_target IS NOT NULL`,
 			`CREATE INDEX IF NOT EXISTS idx_events_card ON card_events(card_id, seq)`,
+			// Partial expression index makes the contract's card_id-is-null payload room path bounded.
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
+				ON card_events((payload->>'room'), seq DESC)
+				WHERE type = 'room_message' AND card_id IS NULL`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INT NOT NULL, definition JSONB NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (name, version))`,
@@ -363,6 +368,10 @@ func ddlStatements(pg bool) []string {
 			`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_mirror
 				ON card_events(source_target, source_task, source_seq)`,
 			`CREATE INDEX IF NOT EXISTS idx_events_card ON card_events(card_id, seq)`,
+			// SQLite mirrors the PG expression index; both are rebuildable from canonical card_events.
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
+				ON card_events(json_extract(payload, '$.room'), seq DESC)
+				WHERE type = 'room_message' AND card_id IS NULL`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INTEGER NOT NULL, definition TEXT NOT NULL,
 				created_at TEXT NOT NULL, PRIMARY KEY (name, version))`,

@@ -123,6 +123,26 @@ func (f *fakeLC) EventsFromAscContext(ctx context.Context, cardIDs []string, fro
 	return f.EventsFromAsc(cardIDs, fromSeq, limit)
 }
 
+func (f *fakeLC) RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive")
+	}
+	var out []proto.LedgerEvent
+	for _, ev := range f.events {
+		if ev.Type != room.RoomEventType || room.RoomIDOf(ev) != roomID || (beforeSeq > 0 && ev.Seq >= beforeSeq) {
+			continue
+		}
+		out = append(out, ev)
+	}
+	if len(out) > limit {
+		out = out[len(out)-limit:]
+	}
+	return out, nil
+}
+
 // TestListRoomsForMemberScansEventsOnceForUnreadAndActivity 锁住列表性能接缝：
 // 活动时间与成员未读必须复用同一次事件流扫描，不能退化为每个房间各读一遍。
 // 205 张卡刻意超过验收门的 200+ 规模；计数断言比挂钟更稳定。

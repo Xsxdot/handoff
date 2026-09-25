@@ -479,7 +479,7 @@ func setupLedger(cfg *config.Config, srv *agentd.Server, taskStore *store.Store,
 	}
 	lst, err := ledger.Open(ldsn)
 	if err != nil {
-		logger.Error("打开账本库失败", "dsn", ldsn, "cause", err)
+		logger.Error("打开账本库失败", "dsn_configured", cfg.Ledger.DSN != "", "cause", err)
 		return nil, fmt.Errorf("打开账本库: %w", err)
 	}
 	srv.SetLedger(lst)

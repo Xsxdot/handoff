@@ -267,37 +267,45 @@ func (s *Service) Pointer(roomID string, msg proto.RoomMessage) (int64, error) {
 //
 // beforeSeq<=0 表示无上界，返回该房间最新 limit 条；beforeSeq>0 是排他上界
 // （seq < beforeSeq），与 HTTP query `before` 同名。limit<=0 取 historyDefaultLimit。
-//
-// 必须读完整事件流再从尾部截：从最老一侧 break 会让新消息永远进不了窗口
-// （B274 真机：发送 200 列表不动）。ReadAllEvents 已按 1000 翻页，这里不再把
-// beforeSeq 误当成 from 游标。
 func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	return s.HistoryContext(context.Background(), roomID, beforeSeq, limit)
 }
 
-// HistoryContext 用于 HTTP 请求；浏览器超时或切换会话会取消账本扫描。
+// HistoryContext 用于 HTTP 请求；浏览器超时或切换会话会取消数据库查询。
 func (s *Service) HistoryContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
-	events, err := room.ReadAllEventsContext(ctx, s.lc, 0)
+	started := time.Now()
+	log().Info("房间历史读取开始", "room_id", roomID,
+		"before_seq", beforeSeq, "limit", limit)
+	// Keep the ledger boundary separate from the collab pass that totals payload bytes.
+	ledgerStarted := time.Now()
+	events, err := s.lc.RoomMessagesBeforeContext(ctx, roomID, beforeSeq, limit)
+	ledgerCallNs := time.Since(ledgerStarted).Nanoseconds()
 	if err != nil {
+		level := log().Warn
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			level = log().Info
+		}
+		level("房间历史账本读取失败", "room_id", roomID,
+			"before_seq", beforeSeq, "limit", limit,
+			"ledger_call_ns", ledgerCallNs,
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
 		return nil, err
 	}
-	out := make([]proto.LedgerEvent, 0, limit)
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType || !room.SameRoom(ev, roomID) {
-			continue
-		}
-		if beforeSeq > 0 && ev.Seq >= beforeSeq {
-			continue
-		}
-		out = append(out, ev)
+	// This pass measures collab-side accounting only; HTTP serialization is timed by the handler.
+	assemblyStarted := time.Now()
+	payloadBytes := 0
+	for _, event := range events {
+		payloadBytes += len(event.Payload)
 	}
-	if n := len(out); n > limit {
-		out = out[n-limit:]
-	}
-	return out, nil
+	assemblyNs := time.Since(assemblyStarted).Nanoseconds()
+	log().Info("房间历史读取完成", "room_id", roomID,
+		"before_seq", beforeSeq, "limit", limit, "rows_returned", len(events),
+		"payload_bytes", payloadBytes, "ledger_call_ns", ledgerCallNs,
+		"assembly_ns", assemblyNs, "elapsed_ns", time.Since(started).Nanoseconds())
+	return events, nil
 }
 
 // Pending @定向消费队列（读侧）：全流扫描「mentions∋consumer 且尚无本人

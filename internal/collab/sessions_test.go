@@ -109,6 +109,50 @@ func TestSessionReadsHonorCanceledRequest(t *testing.T) {
 	}
 }
 
+type roomHistoryProbe struct {
+	client.LedgerClient
+	roomID      string
+	beforeSeq   int64
+	limit       int
+	called      bool
+	fullScanHit bool
+	result      []proto.LedgerEvent
+}
+
+func (p *roomHistoryProbe) RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	p.called = true
+	p.roomID, p.beforeSeq, p.limit = roomID, beforeSeq, limit
+	return p.result, nil
+}
+
+func (p *roomHistoryProbe) EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	p.fullScanHit = true
+	return nil, errors.New("房间历史不应调用全流事件读取")
+}
+
+func TestRoomHistoryContextUsesBoundedLedgerRead(t *testing.T) {
+	svc, _, lc := newSessionFixture(t)
+	probe := &roomHistoryProbe{
+		LedgerClient: lc,
+		result:       []proto.LedgerEvent{{Seq: 7, Type: room.RoomEventType}},
+	}
+	svc.lc = probe
+
+	got, err := svc.HistoryContext(context.Background(), "session:bounded", 42, 0)
+	if err != nil {
+		t.Fatalf("HistoryContext: %v", err)
+	}
+	if !probe.called || probe.fullScanHit {
+		t.Fatalf("HistoryContext 必须调用限域读取且不得扫全流: %+v", probe)
+	}
+	if probe.roomID != "session:bounded" || probe.beforeSeq != 42 || probe.limit != historyDefaultLimit {
+		t.Fatalf("历史参数未按契约传递: room=%q before=%d limit=%d", probe.roomID, probe.beforeSeq, probe.limit)
+	}
+	if len(got) != 1 || got[0].Seq != 7 {
+		t.Fatalf("HistoryContext 应直通账本窗口: %+v", got)
+	}
+}
+
 // newSessionFixture 起真 SQLite 账本并挂 collab.Service；同时返回出站接口
 // （Facade）以断言接口直接能力。
 func newSessionFixture(t *testing.T) (*Service, *ledger.Store, client.LedgerClient) {
