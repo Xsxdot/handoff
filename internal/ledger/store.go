@@ -241,6 +241,15 @@ func ddlStatements(pg bool) []string {
 				ON card_events(source_target, source_task, source_seq)
 				WHERE source_target IS NOT NULL`,
 			`CREATE INDEX IF NOT EXISTS idx_events_card ON card_events(card_id, seq)`,
+			`CREATE INDEX IF NOT EXISTS idx_events_mirrored_seq ON card_events(seq)
+				WHERE type = 'task_mirrored'`,
+			`CREATE TABLE IF NOT EXISTS open_ticket_projection (
+				card_id TEXT NOT NULL, source_target TEXT NOT NULL, source_task TEXT NOT NULL,
+				ticket_id TEXT NOT NULL, task_type TEXT NOT NULL, payload JSONB NOT NULL,
+				PRIMARY KEY (card_id, source_target, source_task, ticket_id))`,
+			`CREATE TABLE IF NOT EXISTS open_ticket_projection_state (
+				id INT PRIMARY KEY CHECK (id = 1), version INT NOT NULL,
+				ledger_seq BIGINT NOT NULL, open_count BIGINT NOT NULL)`,
 			// Partial expression index makes the contract's card_id-is-null payload room path bounded.
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
 				ON card_events((payload->>'room'), seq DESC)
@@ -368,6 +377,15 @@ func ddlStatements(pg bool) []string {
 			`CREATE UNIQUE INDEX IF NOT EXISTS uq_events_mirror
 				ON card_events(source_target, source_task, source_seq)`,
 			`CREATE INDEX IF NOT EXISTS idx_events_card ON card_events(card_id, seq)`,
+			`CREATE INDEX IF NOT EXISTS idx_events_mirrored_seq ON card_events(seq)
+				WHERE type = 'task_mirrored'`,
+			`CREATE TABLE IF NOT EXISTS open_ticket_projection (
+				card_id TEXT NOT NULL, source_target TEXT NOT NULL, source_task TEXT NOT NULL,
+				ticket_id TEXT NOT NULL, task_type TEXT NOT NULL, payload TEXT NOT NULL,
+				PRIMARY KEY (card_id, source_target, source_task, ticket_id))`,
+			`CREATE TABLE IF NOT EXISTS open_ticket_projection_state (
+				id INTEGER PRIMARY KEY CHECK (id = 1), version INTEGER NOT NULL,
+				ledger_seq INTEGER NOT NULL, open_count INTEGER NOT NULL)`,
 			// SQLite mirrors the PG expression index; both are rebuildable from canonical card_events.
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
 				ON card_events(json_extract(payload, '$.room'), seq DESC)
@@ -495,6 +513,9 @@ func (s *Store) ensureSchema() error {
 		log().Info("cards.driver_source 列已存在，跳过加列")
 	} else {
 		log().Info("账本加列迁移完成", "table", "cards", "column", "driver_source")
+	}
+	if err := s.ensureOpenTicketProjection(); err != nil {
+		return fmt.Errorf("初始化未决工单投影: %w", err)
 	}
 	return nil
 }

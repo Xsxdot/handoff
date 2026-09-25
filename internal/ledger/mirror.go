@@ -37,6 +37,11 @@ type MirrorHealthRow struct {
 func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, error) {
 	log().Debug("镜像事件写入入口", "card", cardID, "target", ev.Target, "task", ev.Task,
 		"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type)
+	if err := s.ensureOpenTicketProjection(); err != nil {
+		log().Error("镜像事件写入前投影校验失败", "card", cardID, "target", ev.Target,
+			"task", ev.Task, "source_seq", ev.SourceSeq, "type", ev.Type, "cause", err)
+		return false, fmt.Errorf("校验镜像工单投影: %w", err)
+	}
 	inserted := false
 	err := s.mutate(func(tx *sql.Tx, sink *eventSink) error {
 		var one int
@@ -86,6 +91,16 @@ func (s *Store) AppendMirroredEvent(cardID string, ev MirroredEvent) (bool, erro
 			log().Warn("镜像事件写入失败", "card", cardID, "target", ev.Target, "task", ev.Task,
 				"node", ev.Node, "attempt", ev.Attempt, "seq", ev.SourceSeq, "type", ev.Type, "cause", err)
 			return fmt.Errorf("写镜像事件 %s/%s#%d: %w", ev.Target, ev.Task, ev.SourceSeq, err)
+		}
+		projectionEvent := ev
+		if len(projectionEvent.Payload) == 0 {
+			// The canonical envelope stores an empty caller payload as JSON null.
+			projectionEvent.Payload = []byte("null")
+		}
+		if err := s.applyOpenTicketMirrorTx(tx, cardID, projectionEvent, seq); err != nil {
+			log().Error("镜像事件工单投影更新失败", "card", cardID, "target", ev.Target,
+				"task", ev.Task, "source_seq", ev.SourceSeq, "ledger_seq", seq, "task_type", ev.Type, "cause", err)
+			return fmt.Errorf("同步镜像工单投影: %w", err)
 		}
 		sink.seqs = append(sink.seqs, seq)
 		inserted = true

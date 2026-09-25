@@ -23,7 +23,8 @@ func TestOpenCreatesSchema(t *testing.T) {
 	s := newTestStore(t)
 	// 全部表都建出来了：逐表 SELECT 不报错即证明 DDL 幂等执行成功
 	for _, tbl := range []string{"cards", "card_relations", "card_tasks",
-		"card_dispatch_rounds", "card_events", "workflows", "dispatch_templates", "decisions",
+		"card_dispatch_rounds", "card_events", "open_ticket_projection", "open_ticket_projection_state",
+		"workflows", "dispatch_templates", "decisions",
 		"mirror_lease", "mirror_cursors", "ledger_meta", "card_prefixes"} {
 		if _, err := s.db.Exec("SELECT * FROM " + tbl + " LIMIT 0"); err != nil {
 			t.Fatalf("表 %s 不存在: %v", tbl, err)
@@ -40,6 +41,10 @@ func TestOpenCreatesSchema(t *testing.T) {
 	if err := s.db.QueryRow(`SELECT name FROM sqlite_master
 		WHERE type = 'index' AND name = 'idx_room_messages_room_seq'`).Scan(&indexName); err != nil {
 		t.Fatalf("房间历史表达式索引不存在: %v", err)
+	}
+	if err := s.db.QueryRow(`SELECT name FROM sqlite_master
+		WHERE type = 'index' AND name = 'idx_events_mirrored_seq'`).Scan(&indexName); err != nil {
+		t.Fatalf("镜像事件投影水位索引不存在: %v", err)
 	}
 	rows, err := s.db.Query(`PRAGMA table_info(card_dispatch_rounds)`)
 	if err != nil {
