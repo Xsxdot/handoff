@@ -89,3 +89,10 @@
 - 计划明确依赖 U1–U5 稳定实现/review；U5 的 B358/session wait contract delta 未冻结时 U6 implement 也阻塞。S4 故障诊断样本与 U7 三档全性能/方言验收区分；不把当前诊断外推成 20:00–22:00 历史故障根因。
 - 复核命令：`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-6-plan.md` exit 0，`anchors: []`；`git diff --no-index --check /dev/null docs/superpowers/plans/2026-09-25-b409-6-plan.md` exit 1（新文件差异、输出为空、无空白诊断）；相关 agentd/collab/CLI 生产入口 `rg` 复核 exit 0。未运行测试，因为仍是 plan 节点。
 - 本计划提交命令与原始输出：`git commit -m "docs: plan B409.6 diagnostics"` → `[codex/session-reliable-mentions 372f1bdf] docs: plan B409.6 diagnostics`；`2 files changed, 111 insertions(+)`，新增 B409.6 plan。随后仅 amend 一次收入原始提交输出；不追记 amend 后的新 hash。
+
+## B409.7 S5/最终验收计划（2026-09-25）
+
+- 本机 subagent 完成 `docs/superpowers/plans/2026-09-25-b409-7-plan.md`。协调者复核 PG/SQLite golden、旧库升级、投影重建/重复重建/中断恢复、水位定义归属、隔离三阶段 seed、每故事生产入口、U5 真实跨机重挂证据、U6 诊断和本机/`linux-01` 最终验收责任。初稿将 p95/100 样本门扩大到 CLI；协调者要求按批准 r2/breakdown 精确限于 HTTP 与对应 Web 首屏。修订后其余 CLI/API 走故事功能验收及描述性计时，保留唯一 CLI 数值门 `session wait --timeout 5s` 30 次各 ≤6s。另修正已存在 U6 plan 被误报缺失的问题。
+- 单卡复审通过并挂到 B409.7，card note seq 21604；卡仍在 `plan`。计划中的硬阻塞为七计划集独立审计、U5 的 B358/session reliable-mentions contract delta、U1–U6 实现 review/集成、确认可丢弃 PG 库及 U5 跨机器故事证据；不部署、不写真实/共享账本种子，协调者负责授权的本机和 `linux-01` UI/真机验收。
+- 复核命令：`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-7-plan.md` exit 0；store/open、web fetchCards 锚为 `ok`，handleCardsList 与 runCardWait 为 `moved`，未覆盖项回落源码并记录图债。`git diff --no-index --check /dev/null docs/superpowers/plans/2026-09-25-b409-7-plan.md` exit 1（新文件差异、输出为空、无空白诊断）。未运行测试，仍为 plan 节点。
+- 本计划提交命令与原始输出：`git commit -m "docs: plan B409.7 final matrix"` → `[codex/session-reliable-mentions cfcf83c6] docs: plan B409.7 final matrix`；`2 files changed, 110 insertions(+)`，新增 B409.7 plan。随后仅 amend 一次收入原始提交输出；不追记 amend 后的新 hash。
