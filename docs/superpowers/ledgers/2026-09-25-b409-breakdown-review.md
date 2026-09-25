@@ -75,3 +75,10 @@
 - 复核命令：B409.4 与 B409.5 的 `codegraph --repo . resolve --doc ...` 均 exit 0，`anchors: []`；B409.4 `git diff --check -- docs/superpowers/plans/2026-09-25-b409-4-plan.md` exit 0；B409.5 `git diff --no-index --check /dev/null docs/superpowers/plans/2026-09-25-b409-5-plan.md` exit 1（新文件差异，输出为空、无空白诊断）。未运行测试，因当前仍为 plan 节点。
 - B409.6 与 B409.7 远端 plan 同样无法取得 origin 不含的本机批准分支，故转本机 subagent 仅撰写计划；卡 notes seq 21597/21598 留痕。没有派发实现，未改变节点状态。
 - 本次文档提交命令与原始输出：`git commit -m "docs: review B409.4 and plan B409.5"` → `[codex/session-reliable-mentions 39f32277] docs: review B409.4 and plan B409.5`；`3 files changed, 98 insertions(+), 1 deletion(-)`，新增 B409.5 plan。随后仅 amend 一次收入原始提交输出；不追记 amend 后的新 hash。
+
+## B409.2 计划复审（2026-09-25）
+
+- 协调者复核 `/api/cards` 的实际路径 `handleCardsList → unlinkedSummary → Store.AllTaskLinks → projectTaskLinks("")`，确认 key 摘要只用 Target/TaskID，却随旧实现扫描全局 `EvDispatched` 投影。B409.2 计划因此修订为新增 context-aware、key-only 的 additive Store read；不调用 `projectTaskLinks`，保留既有 `AllTaskLinks()` 与全部旧消费者语义。计划加入隔离 PostgreSQL 下固定链接键、增加至少 10,000 条无关 dispatched 历史并测量 driver 实际 rows/列值 bytes 的验收，以及取消/超时关停验证。
+- 当前 B409.4/5 计划没有复用此 key-only Store seam；B409.2 计划仍要求独立计划集审计重新核对，发现共享后先冻结契约。计划已通过单卡复审并挂到 B409.2，card note seq 21600；卡仍为 `plan`，依赖 U1 review/集成与全套计划审计。
+- 复核命令：`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-2-plan.md` exit 0，3 个源码锚均为 `ok`；`git diff --no-index --check /dev/null docs/superpowers/plans/2026-09-25-b409-2-plan.md` exit 1（新文件差异，输出为空、无空白诊断）。未运行测试，因为计划节点不实现代码。
+- 本计划提交命令与原始输出：`git commit -m "docs: plan B409.2 async target summary"` → `[codex/session-reliable-mentions 7b326f59] docs: plan B409.2 async target summary`；`2 files changed, 83 insertions(+)`，新增 B409.2 plan。随后仅 amend 一次收入原始提交输出；不追记 amend 后的新 hash。
