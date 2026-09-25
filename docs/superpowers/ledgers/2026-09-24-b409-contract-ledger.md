@@ -44,3 +44,19 @@
 - U4/U5 seam 按当前计划所需结果语义清点：U4 的 room/session/card 投影查询与 U5 的 recipient-address 候选/消费/seq 点读无共同新增 LedgerClient 语义，不造全用途接口；实际最终签名若收敛成相同公开 seam，实施前仍停下单独冻结。U5 plan 已引用该增量，并将候选查询的执行计划/返回 rows 与 payload bytes 纳入增长核验。
 - 自检实际运行：`codegraph --repo . resolve --doc docs/superpowers/specs/2026-09-25-session-bounded-candidate-read-contract.md` 退出 0，9 个锚解析（`Store.EventsFromAsc`、`ResolveDelivery` 为 `ok`，其它当前源码锚为 `moved`）；首次用 receiver-qualified 形式 `Store.SessionDeliveryCursor` 造成 resolve `vanished`，改为实际方法名后通过。`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-5-plan.md` 退出 0（无锚）；`git diff --check` 退出 0。文档没有新增代码、跨域边或 wire，因此无 Ticket 0、无金样本运行测试。新契约与计划修订待独立 `charter:review` / `charter:plan` 复审。
 - 契约冻结提交原始命令与输出：`git commit -m "docs: freeze bounded session candidate reads"` → `[codex/session-reliable-mentions f63d8898] docs: freeze bounded session candidate reads`；`3 files changed, 95 insertions(+), 11 deletions(-)`。本提交随后仅 amend 一次收入原始提交输出；不追记 amend 后新 hash。
+
+## U5/S3 契约独立审查修订（2026-09-25）
+
+- GPT-6-Sol 独立 fresh review 针对干净 HEAD `e91b20f9326c6f268f6784e0efea87fbf51c7467` 判 contract 与 U5 plan 均 FAIL；2 项 Important、无 Critical/Minor。其一：卡候选查询按 member 当前席位过滤，但 `MessageWakeTargets` 在 `internal/collab/sessions.go` 再次读卡；两读之间换绑会令新 member 应命中的历史 `@<card>` 在候选阶段被漏掉。其二：契约项 34 将 backlog/live JSON、stdout 交付、游标失败重投和 no-ack 几个可独立判定断言打包；项 32–33 也各含多方言断言。
+- 依 review 修订契约：增加“候选枚举至最终判定间席位变化时，从该页未提交 seq 下界重枚举”的规则，并将不输出与不推进 scan watermark 分开编号；再次判定仍只调用 `MessageWakeTargets`。拆分 PG/SQLite 的候选集合、排序、边界、错误、取消断言；将 backlog/live JSON、stdout 写入成功、stdout 失败不推进、游标失败显错、失败后允许重投、无 ack 各自独立编号。物理读取替代引用改为第 1–40 条。U5 plan 加入确定性换绑红例及执行步骤/成功条件/反例。
+
+- 第二次 fresh review 指出：只比较席位集合前后值会漏 A→member→A ABA；空候选页不调用 `MessageWakeTargets`，因而不能依赖命中候选触发变化检测；`--since` 与多来源读取错误条目仍有复合承诺；替代编号误把 JSON 形状计入物理读面，并漏掉前置候选/范围条款；单次换绑红例本身不能使旧全流实现变红。
+- 第二轮 fresh review 最终 verdict 为 FAIL：除 ABA/空候选页外，`--since` 及多类读错误仍有复合断言，替代范围把 JSON 算进物理读面且漏前置候选条款，单向换绑回归例不能让旧全流实现变红。新修订将席位一致性拆为逐项条件；revision 路径明确候选前读取、全部 target 检查后复读（含空页）、变化时丢弃并从原 seq 下界重读，revision 写入要求原子递增且不可复用；锁路径阻止页面期间提交。`--since` 范围/读/写及三种读错误分别编号；物理替代精确为第 1–25 条及 37–55 条，r2 语义保留范围为第 26–36 条及 56–62 条。U5 plan 覆盖空页、单向换绑、ABA、锁与真实红门边界。待下一次 fresh independent review。
+- 契约头状态已标为“独立审查修订中，待复核”。改动尚未提交；`codegraph resolve`、`git diff --check` 与独立复审待本轮运行，未作通过声明。
+
+## U5/S3 契约独立审查通过（2026-09-25）
+
+- GPT-6-Sol 对最终席位一致性条款和 U5 日志/注释计划步骤完成定向 fresh review，结论 PASS；行为层结论沿用前轮 PASS。确认候选读取与 `MessageWakeTargets` 页内一致性、空页验证、ABA 防护、精确替代范围均保持，步骤 7 的字段和不变量符合 `charter:implement` 与 `instrumenting-code` 计划要求。审查特别确认 `Store.CloseCard` 当前源码调用清席位路径，图缺此调用属已记录的覆盖债。
+- 校验实际运行：`git diff --check` exit 0；契约 `codegraph --repo . resolve --doc ...` exit 0（12 个可解析源码锚，另两个图缺失 helper 明确作为图覆盖债说明）；计划 `codegraph --repo . resolve --doc ...` exit 0（无锚）。本轮仅文档复审，未运行行为测试。
+- 契约头与 U5 plan 状态已更新为独立审查通过并冻结。B409.5 仍在 `plan` 且受 B409.4 前置依赖阻塞；此结论不授权越过账本依赖实现。
+- 本轮提交原始命令与输出：`git commit -m "docs: finalize bounded session read contract"` → `[codex/session-reliable-mentions ffd9ef01] docs: finalize bounded session read contract`；`4 files changed, 98 insertions(+), 45 deletions(-)`。已按 Charter 仅 amend 一次收入该原始输出；不追记 amend 后的新 hash。

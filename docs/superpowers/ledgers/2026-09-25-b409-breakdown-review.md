@@ -126,3 +126,11 @@
 - GPT-6-Sol 独立 fresh review 对当前干净 HEAD `8865403c5e2e734a0174d1c9b005b83c37dbeb0d` 的裁决：U1 代码目标/实现差异 PASS；Charter 架构与证据轴因 PG 必验腿未运行而 FAIL（证据未齐，不是已确认代码缺陷）；Critical/Minor 均无。审查确认 NULL `card_id` 水位/重放/oracle 一致过滤、旧库 Open 回归通过；增长矩阵样本外重建和热读无重建断言通过。实际复审 `go test ./internal/ledger/... -count=1` 退出 0；PG 定向测试用例 SKIP（`LEDGER_TEST_PG_DSN` 未设置），因此 DDL、JSONB、事务/重建及双方言一致仍未验。不能迁卡到 accepted，也不能宣称 U1 完整 PASS；U2/U3/U7 等相关验收仍受该缺口影响。
 - 尝试将 fresh review 结果写入 B409.1 卡 note，`handoff card note B409.1 ...` 退出 1；为避免回显后端连接信息，命令输出被抑制。卡状态没有因此改变，也未直接改共享账本；待 CLI 可用时补写审查结论和状态。
 - 审查证据提交原始命令与输出：`git commit -m "docs: record B409.1 review evidence"` → `[codex/session-reliable-mentions a28cc78f] docs: record B409.1 review evidence`；`1 file changed, 2 insertions(+)`。本提交随后仅 amend 一次收入原始提交输出；不追记 amend 后新 hash。
+
+- U1 PostgreSQL 证据补齐（2026-09-25）：检测到本机 Docker Engine 可用并有 PostgreSQL 16 镜像；新建 `--rm` 临时容器，只使用数据库名 `handoff_b409_test`，没有连接共享账本。设置 `LEDGER_TEST_PG_DSN` 后先运行 `go test ./internal/ledger -run '^TestOpenTicketProjectionPostgresReplayAndRebuild$' -count=1 -v` → exit 0，`TestOpenTicketProjectionPostgresReplayAndRebuild` PASS；随后 `go test ./internal/ledger/... -count=1` → exit 0，`internal/ledger` 6.109s、`internal/ledger/api` 0.772s。容器已 stop，`docker ps -a --filter name=handoff-b409-pg-20260925` 无结果。此证据关闭先前“PG 测试跳过”的环境缺口；独立审查已确认的 U1 源码/增长矩阵 verdict 与卡/故事状态尚未通过 ledger CLI 更新，本记录不自行推进卡状态。
+
+## U5 contract 校验与依赖闸更新（2026-09-25）
+
+- GPT-6-Sol 定向复审 PASS：最终接受候选页使用一致席位状态；`ClearSeat`/`clearSeatTx` 图缺失说明准确，`CloseCard` 调用由当前源码核实；U5 plan 的结构化日志与意图注释步骤符合计划阶段纪律。无新的行为复审或测试结论。
+- Fresh `codegraph --repo . resolve --doc docs/superpowers/specs/2026-09-25-session-bounded-candidate-read-contract.md` exit 0；`docs/superpowers/plans/2026-09-25-b409-5-plan.md` resolve exit 0；`git diff --check` exit 0。此前计划集 audit PASS 已登记于上方；实现仍须遵守 B409.4→B409.5 账本阻塞边。
+- 当前依赖快照来自 `handoff card list --project handoff --json`：B409.1 为 `review`；B409.2/.3 受 B409.1 阻塞；B409.4 受 B409.2/.3 阻塞；B409.5 受 B409.4 阻塞。不得因计划集 audit PASS 而跳过故事依赖和逐卡 review/accept。
