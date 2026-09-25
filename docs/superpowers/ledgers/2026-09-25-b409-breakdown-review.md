@@ -46,3 +46,11 @@
 父卡已挂 `b409-contract.md` 和 `b409-breakdown.md`，`handoff card move B409 integrate --expect implement` exit 0，当前父卡状态 `integrate`。尚未派发 plan 或 implement：S2 Wave 0 实现仍在本地工作树未提交，先完成独立 review 并将已验基线提交后再按依赖派发。此时没有部署 `linux-01`。
 
 该追加记录提交命令与原始输出：`git commit -m "docs: record B409 child card fanout"` → `[codex/session-reliable-mentions 94127aee] docs: record B409 child card fanout`；`1 file changed, 18 insertions(+)`。随后只 amend 一次，把该历史输出收入同批提交；不追记 amend 后的新 hash。
+
+## S2 Wave 0 封版与计划派发回退（2026-09-25）
+
+- S2 源码、测试及脱敏证据已提交 `0703b2eb1675b2229a5f4124998683d2de9dd02f`；独立 GPT-6-Sol 实现 review PASS，I1（缺可取得被测提交）与 I2（旧 CLI 样本归属/连接位置材料）按 `docs/superpowers/ledgers/2026-09-25-b409-wave0-acceptance.md` 关闭。提交后聚焦 Go 测试 exit 0。父卡 B409 的 note seq 21575 记录验收完成（仅 S2）。
+- B409.1 `plan` 首派 seq 21577 因远端默认 `main` 不含父 spec 被拒；按 handoff skill 设显式基线 `codex/session-reliable-mentions` 并清掉 `needs_human` 后重派，第二次仍因 `origin` 没有该本机分支而失败（seq 21581）。没有推送分支。
+- 按全局执行规则改走本地 subagent，仅由其撰写 `docs/superpowers/plans/2026-09-25-b409-1-plan.md`，计划审查/验收前 B409.1 保持 `plan`，不派发实现；卡 note seq 21583 记录了回退理由。当前其他子卡仍在 `plan` 且受 DAG 阻塞，未部署 `linux-01`。
+
+本次追加的提交命令与原始输出：`git commit -m "docs: record B409 Wave 0 review closure"` → `[codex/session-reliable-mentions dd7a1e0a] docs: record B409 Wave 0 review closure`；`1 file changed, 6 insertions(+)`。随后仅 amend 一次，把该历史输出收入同批提交；不追记 amend 后的新 hash。
