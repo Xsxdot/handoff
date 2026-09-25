@@ -26,3 +26,23 @@
 ## 当前边界
 
 本台账和两份文档完成协调者审议与冻结；S1–S5 除 S2 Wave 0 外仍未实现/验收。未创建子卡、未派发实现，不能据此宣称 B409 或生产 20:00–22:00 故障已整体解决。
+
+## 子卡扇出追加记录（2026-09-25 12:29）
+
+上段记录了拆解提交当时的状态。随后按 `product-backlog` 的 L3 重档流程完成子卡扇出：`handoff card list --project handoff --json` 在操作前未找到 B409 子卡；`card split` 新建下列七张，随后统一设为高优先级、挂父 spec/contract/breakdown 与适用既有契约，并从 `待办` 移到 `plan`。
+
+| 子卡 | 工作单元 | 当前状态 |
+|---|---|---|
+| B409.1 | S1-U1 ledger 未决工单读模型 | plan |
+| B409.2 | S1-U2 /api/cards 与 Web 远端摘要状态 | plan |
+| B409.3 | S1-U3 card wait 建连快照 | plan |
+| B409.4 | S2-U4 session/room 列表与未读投影 | plan |
+| B409.5 | S3-U5 收件箱消费与 session wait 限域恢复 | plan |
+| B409.6 | S4-U6 账本读路径诊断闭环 | plan |
+| B409.7 | S5-U7 PG/SQLite 投影重建与增长矩阵验收 | plan |
+
+实际阻塞边（`handoff card link <blocker> <blocked>`，每条 exit 0）：B409.1→B409.2、B409.1→B409.3、B409.2→B409.4、B409.3→B409.4、B409.4→B409.5、B409.5→B409.6、B409.6→B409.7。各子卡已写入节点中立的验收判据；B409.5 另挂 B156.2、B358 与 session reliable-mentions 冻结物，B409.4/B409.7 挂 B156.2。
+
+父卡已挂 `b409-contract.md` 和 `b409-breakdown.md`，`handoff card move B409 integrate --expect implement` exit 0，当前父卡状态 `integrate`。尚未派发 plan 或 implement：S2 Wave 0 实现仍在本地工作树未提交，先完成独立 review 并将已验基线提交后再按依赖派发。此时没有部署 `linux-01`。
+
+该追加记录提交命令与原始输出：`git commit -m "docs: record B409 child card fanout"` → `[codex/session-reliable-mentions 94127aee] docs: record B409 child card fanout`；`1 file changed, 18 insertions(+)`。随后只 amend 一次，把该历史输出收入同批提交；不追记 amend 后的新 hash。
