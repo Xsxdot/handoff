@@ -468,7 +468,26 @@ func TestOpenTicketProjectionPostgresMatchesSQLiteGolden(t *testing.T) {
 	prefix := fmt.Sprintf("projection-parity-%d", time.Now().UnixNano())
 	suffix := strings.TrimPrefix(prefix, "projection-parity-")
 	cardAID, cardBID := "B409-PA-"+suffix, "B409-PB-"+suffix
+	insertedCardIDs := make([]string, 0, 2)
 	now := time.Now()
+	t.Cleanup(func() {
+		for _, cardID := range insertedCardIDs {
+			if _, err := s.db.Exec(s.q(`DELETE FROM open_ticket_projection WHERE card_id = ?`), cardID); err != nil {
+				t.Errorf("清理 PG 金样投影 %s: %v", cardID, err)
+			}
+			if _, err := s.db.Exec(s.q(`DELETE FROM card_events WHERE card_id = ?`), cardID); err != nil {
+				t.Errorf("清理 PG 金样事件 %s: %v", cardID, err)
+			}
+		}
+		if err := s.rebuildOpenTicketProjection(); err != nil {
+			t.Errorf("金样清理后重建 PG 投影: %v", err)
+		}
+		for _, cardID := range insertedCardIDs {
+			if _, err := s.db.Exec(s.q(`DELETE FROM cards WHERE id = ?`), cardID); err != nil {
+				t.Errorf("清理 PG 金样卡 %s: %v", cardID, err)
+			}
+		}
+	})
 	for i, id := range []string{cardAID, cardBID} {
 		if _, err := s.db.Exec(s.q(`INSERT INTO cards
 			(id, title, status, priority, project, workflow_name, workflow_version, attachments, created_at, updated_at)
@@ -476,21 +495,8 @@ func TestOpenTicketProjectionPostgresMatchesSQLiteGolden(t *testing.T) {
 			"b409-projection-parity", "bug", 1, "[]", s.tval(now), s.tval(now)); err != nil {
 			t.Fatalf("建立专用 PG 测试卡 %d: %v", i+1, err)
 		}
+		insertedCardIDs = append(insertedCardIDs, id)
 	}
-	t.Cleanup(func() {
-		if _, err := s.db.Exec(s.q(`DELETE FROM open_ticket_projection WHERE card_id IN (?, ?)`), cardAID, cardBID); err != nil {
-			t.Errorf("清理 PG 金样投影: %v", err)
-		}
-		if _, err := s.db.Exec(s.q(`DELETE FROM card_events WHERE card_id IN (?, ?)`), cardAID, cardBID); err != nil {
-			t.Errorf("清理 PG 金样事件: %v", err)
-		}
-		if err := s.rebuildOpenTicketProjection(); err != nil {
-			t.Errorf("金样清理后重建 PG 投影: %v", err)
-		}
-		if _, err := s.db.Exec(s.q(`DELETE FROM cards WHERE id IN (?, ?)`), cardAID, cardBID); err != nil {
-			t.Errorf("清理 PG 金样卡: %v", err)
-		}
-	})
 	cardA, cardB := Card{ID: cardAID}, Card{ID: cardBID}
 	seedOpenTicketProjectionParityFixture(t, s, cardA, cardB, prefix)
 	want := filterTicketsByCards(replayOpenTicketsOracle(t, s), cardAID, cardBID)
@@ -566,40 +572,41 @@ func runOpenTicketProjectionGrowthMatrix(t *testing.T, s *Store) {
 	if s.dialect == dialectPG {
 		// Direct inserts keep the disposable PG fixture from persisting global project-prefix state.
 		stamp := fmt.Sprintf("%d", time.Now().UnixNano())
+		insertedCardIDs := make([]string, 0, len(cards))
 		for i := range cards {
-			cardID := fmt.Sprintf("B409-G-%s-%02d", stamp, i+1)
-			if _, err := s.db.Exec(s.q(`INSERT INTO cards
-				(id, title, status, priority, project, workflow_name, workflow_version, attachments, created_at, updated_at)
-				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), cardID, fmt.Sprintf("B409 投影增长卡 %d", i+1), StatusTodo, "中",
-				"b409-projection-growth-"+stamp, "bug", 1, "[]", s.tval(time.Now()), s.tval(time.Now())); err != nil {
-				t.Fatalf("建立专用 PG 增长卡 %d: %v", i+1, err)
-			}
-			cards[i] = Card{ID: cardID}
+			cards[i] = Card{ID: fmt.Sprintf("B409-G-%s-%02d", stamp, i+1)}
 		}
-	} else {
-		for i := range cards {
-			cards[i] = mk(t, s, fmt.Sprintf("投影增长卡 %d", i+1))
-		}
-	}
-	if s.dialect == dialectPG {
 		t.Cleanup(func() {
-			for _, card := range cards {
-				if _, err := s.db.Exec(s.q(`DELETE FROM open_ticket_projection WHERE card_id = ?`), card.ID); err != nil {
-					t.Errorf("清理 PG 增长投影卡 %s: %v", card.ID, err)
+			for _, cardID := range insertedCardIDs {
+				if _, err := s.db.Exec(s.q(`DELETE FROM open_ticket_projection WHERE card_id = ?`), cardID); err != nil {
+					t.Errorf("清理 PG 增长投影卡 %s: %v", cardID, err)
 				}
-				if _, err := s.db.Exec(s.q(`DELETE FROM card_events WHERE card_id = ?`), card.ID); err != nil {
-					t.Errorf("清理 PG 增长事件卡 %s: %v", card.ID, err)
+				if _, err := s.db.Exec(s.q(`DELETE FROM card_events WHERE card_id = ?`), cardID); err != nil {
+					t.Errorf("清理 PG 增长事件卡 %s: %v", cardID, err)
 				}
 			}
 			if err := s.rebuildOpenTicketProjection(); err != nil {
 				t.Errorf("清理 PG 增长数据后重建投影: %v", err)
 			}
-			for _, card := range cards {
-				if _, err := s.db.Exec(s.q(`DELETE FROM cards WHERE id = ?`), card.ID); err != nil {
-					t.Errorf("清理 PG 增长测试卡 %s: %v", card.ID, err)
+			for _, cardID := range insertedCardIDs {
+				if _, err := s.db.Exec(s.q(`DELETE FROM cards WHERE id = ?`), cardID); err != nil {
+					t.Errorf("清理 PG 增长测试卡 %s: %v", cardID, err)
 				}
 			}
 		})
+		for i, card := range cards {
+			if _, err := s.db.Exec(s.q(`INSERT INTO cards
+				(id, title, status, priority, project, workflow_name, workflow_version, attachments, created_at, updated_at)
+				VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`), card.ID, fmt.Sprintf("B409 投影增长卡 %d", i+1), StatusTodo, "中",
+				"b409-projection-growth-"+stamp, "bug", 1, "[]", s.tval(time.Now()), s.tval(time.Now())); err != nil {
+				t.Fatalf("建立专用 PG 增长卡 %d: %v", i+1, err)
+			}
+			insertedCardIDs = append(insertedCardIDs, card.ID)
+		}
+	} else {
+		for i := range cards {
+			cards[i] = mk(t, s, fmt.Sprintf("投影增长卡 %d", i+1))
+		}
 	}
 	growthTarget := fmt.Sprintf("growth-card-%d", time.Now().UnixNano())
 	for i := range cards {
@@ -750,6 +757,7 @@ func projectionGrowthMirrorStats(t *testing.T, s *Store, target string) (rows, p
 	t.Helper()
 	payloadLength := "length(payload)"
 	if s.dialect == dialectPG {
+		// JSONB::text measures PostgreSQL's rendered value bytes, not pgwire bytes.
 		payloadLength = "octet_length(payload::text)"
 	}
 	query := fmt.Sprintf(`SELECT COUNT(*), COALESCE(SUM(%s), 0)
