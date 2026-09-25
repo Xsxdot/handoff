@@ -1,0 +1,28 @@
+# B409 breakdown 与 S1 摘要契约审议台账
+
+日期：2026-09-25
+父卡：B409「全账本读路径分域与投影性能：卡片、会话、房间与等待」
+批准基准：`docs/superpowers/specs/2026-09-24-ledger-read-performance.md` r2
+已验阶段：S2 Wave 0，证据见 `docs/superpowers/ledgers/2026-09-25-b409-wave0-acceptance.md`
+
+## 协调者裁决
+
+- S1 采用 U1 ledger 提供侧、U2 API/Web、U3 `card wait` 三个有界工作单元；先完成 U1，再由 U2/U3 并行消费，最终仍以 S1 故事集成验收。
+- U4（S2 列表/未读）与 U5（S3 收件箱/wait）保持独立故事单元。当前无证据要求它们必然共用新增 LedgerClient 方法；plan 查实若跨单元共享新公开接缝，则在首个消费者实现前冻结最小契约，否则不造空 contract。
+- S1 的外部摘要形状冻结在 `docs/superpowers/specs/b409-contract.md`：保留 `count/tasks/unknown_targets`，新增 `status/observed_at`；只有完整、30 秒内的 `latest` 可驱动当前数量和筛选。30 秒后展示陈旧观测及年龄，不设隐藏期限。
+- 远端部署授权核对：`handoff card show B409` 的事件 seq 21326 记录用户已授权本机和 `linux-01` 更新部署，并明确 UI 验收不经 SuperDev。Wave 0 本轮只使用隔离验收 agentd，未部署 `linux-01`；最终真机 acceptance 阶段按既有授权执行。
+- 用户问及 5 分钟陈旧值的理由后，按已批准 r2 澄清：**没有 5 分钟隐藏上限**。保留历史观测用于区分“旧数据”和“从未有数据”，同时通过 `status` 禁止陈旧值参与当前计数/筛选。
+
+## 图与文档核对
+
+- `codegraph sym` 命中：`Store.OpenTicketCounts`、`Server.handleCardsList`、`Server.unlinkedSummary`、`Service.ListSessions`、`Service.ListRooms`、`Service.Unread`、`runCardWait`、Web `UnlinkedSummary`、`UnlinkedRow`、`unlinkedOnly`；现状锚状态为 `moved` 或 `ok`。
+- `codegraph sym` 未命中：`Store.OpenTickets`、`Store.RoomMessagesBeforeContext`、`runSessionWait`、Shell 局部值 `unlinkedTaskIds`。已按真源码回落定位并在 breakdown 中登记为图覆盖债；未伪造图节点。
+- `codegraph --repo . resolve --doc docs/superpowers/specs/b409-breakdown.md` → exit 0；现有符号锚均解析为 `moved`。
+- `codegraph --repo . resolve --doc docs/superpowers/specs/b409-contract.md` → exit 0；Go 锚为 `moved`，Web 已登记锚为 `ok`。
+- `git diff --check` → exit 0。
+- 本节点没有修改 `codegraph/target.json`、`best.json` 或分支视图；无新依赖方向、组装点或预算。没有建立 Ticket 0；协议由现有 `/api/cards` additive JSON 面表达。
+- 提交命令与原始输出：`git commit -m "docs: freeze B409 ledger breakdown and summary contract"` → `[codex/session-reliable-mentions bbb6f2d2] docs: freeze B409 ledger breakdown and summary contract`；`3 files changed, 278 insertions(+)`。随后只 amend 一次，把该历史输出收入同批提交；不追记 amend 后的新 hash。
+
+## 当前边界
+
+本台账和两份文档完成协调者审议与冻结；S1–S5 除 S2 Wave 0 外仍未实现/验收。未创建子卡、未派发实现，不能据此宣称 B409 或生产 20:00–22:00 故障已整体解决。
