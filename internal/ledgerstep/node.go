@@ -280,15 +280,10 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		logger.Warn("未取到报文，转等人", "cause", err)
 		return n.haltForHuman(cardID, "未取到裁决报文", "本节点未取到裁决报文：\n"+err.Error())
 	}
-	if n.FinishTask != nil {
-		defer func() {
-			if finErr := n.FinishTask(ctx, target, taskID); finErr != nil {
-				logger.Warn("归档节点 task 失败（报文已取到）", "cause", finErr)
-			} else {
-				logger.Info("节点 task 已归档")
-			}
-		}()
-	}
+	// FinishTask 不再是无条件 defer：只有业务裁决落账、审阅只读闸、产出校验、
+	// 工作分支发布与路由等收口动作全部完成后，才在函数末尾显式归档。任何早退
+	// （解析失败、diff/产出/发布/路由失败、失去写权）都必须把任务留在
+	// waiting_review，绝不 Done——Done 会回收 worktree 并让协调者只能拿到 409。
 	verdict, parseErr := ParseVerdict(message)
 	if parseErr != nil {
 		logger.Info("裁决解析失败转等人", "cause", parseErr)
@@ -485,6 +480,16 @@ func (n *NodeStep) RunOnce(ctx context.Context, cardID string) (Outcome, error) 
 		reason := fmt.Sprintf("裁决已落账但移到 %q 失败", to)
 		logger.Warn("路由失败转等人", "to", to, "cause", err)
 		return n.haltForHuman(cardID, reason, reason+"：\n"+err.Error())
+	}
+	// 收口动作全部成功后才归档本轮 task。归档失败不能伪装成「已移卡」：
+	// 显式记日志并转人工可见结果，让协调者知道 task 还没被回收。
+	if n.FinishTask != nil {
+		if finErr := n.FinishTask(ctx, target, taskID); finErr != nil {
+			logger.Warn("归档节点 task 失败，转等人", "cause", finErr)
+			return n.haltForHuman(cardID, "task 归档失败",
+				"本节点收口动作已完成，但归档 task 失败，任务不会自动回收：\n"+finErr.Error())
+		}
+		logger.Info("节点 task 已归档")
 	}
 	logger.Info("节点结束", "action", string(action), "moved_to", to)
 	return Outcome{Action: action, Verdict: verdict}, nil

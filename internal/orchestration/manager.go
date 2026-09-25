@@ -1805,7 +1805,7 @@ func (m *Manager) Stop(ctx context.Context, taskID string) (outcome TerminalOutc
 		// 不释放、不重复追加事件（契约 §5.2 #11）。
 		return TerminalOutcome{}, fmt.Errorf("任务 %s 已在并发中被终结: %w", taskID, store.ErrBadTransit)
 	}
-	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, NewFailedPayload("协调者主动中止（handoff stop）", "", ""))
+	evt, err := m.st.AppendEvent(taskID, proto.EventTypeFailed, NewFailedPayload("协调者主动中止（handoff stop）", "", "", ""))
 	if err != nil {
 		return TerminalOutcome{}, fmt.Errorf("追加中止事件: %w", err)
 	}
@@ -3495,7 +3495,7 @@ func (m *Manager) handleResult(taskID string, ev executor.AdapterEvent) {
 		// waiting_review，它**没有终结**。发 failed 会让 wait --follow 打出
 		// 「任务已失败」并以 0 退出，而此时任务好端端等着审（B100 两次真机实测）。
 		evt, err = m.st.AppendEvent(taskID, proto.EventTypeTurnFailed,
-			NewFailedPayload(r.FailReason, r.Branch, r.CommitHash))
+			NewFailedPayload(r.FailReason, r.Branch, r.CommitHash, r.FailureClass))
 	}
 	if err != nil {
 		m.log.Error("追加 result 事件失败", "task", taskID, "cause", err)

@@ -164,6 +164,9 @@ func TestNoTrailerZeroTextStillFailsWithLiveExecutor(t *testing.T) {
 		t.Fatalf("零文本时 executor 还活着，作废理由应为纪律类，got %q",
 			ev.Result.VoidReason)
 	}
+	if string(ev.Result.FailureClass) != "zero_text" {
+		t.Fatalf("明确零文本分支必须写 failure_class=zero_text，实际 %q", ev.Result.FailureClass)
+	}
 }
 
 func TestNoTrailerWithoutNewCommitStillAsks(t *testing.T) {

@@ -890,7 +890,8 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 			a.log.Warn("回合零文本且无新提交，转失败结果交协调者", "task", r.taskID)
 			a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session,
 				Result: &executor.Result{OK: false, SessionID: r.session,
-					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
+					FailureClass: proto.FailureClassZeroText,
+					FailReason:   "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
 					// 与上一行的 FailReason 保持一致：executor 还活着，
 					// 审计不得记它已终结（spec §3.3）
 					VoidReason: executor.VoidReasonTurnDiscipline}})

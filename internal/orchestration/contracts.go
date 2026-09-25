@@ -136,6 +136,10 @@ type CompletedPayload struct {
 // FailedPayload 是 failed 事件的 payload。
 type FailedPayload struct {
 	FailReason string `json:"fail_reason"`
+	// FailureClass 是 additive、omitempty 的封闭失败分类（B402）。空=未分类，
+	// 旧 wire 形状不变；只有 executor 明确零文本分支才会带 zero_text。
+	// 消费方只认精确值，未知值一律 fail-closed，不得从 FailReason 反推。
+	FailureClass proto.FailureClass `json:"failure_class,omitempty"`
 	// Branch/CommitHash 为 omitempty：绝大多数 failed（executor 崩溃、看门狗
 	// 判死）没有 git 实况，让空字段出现在 payload 里会让下游以为「查过 git 且
 	// 分支是空」。只有回合纪律类失败（无 trailer 但有新提交）才带这两个字段——
@@ -154,9 +158,10 @@ type FailedPayload struct {
 // NewFailedPayload 构造带占用快照的失败载荷。
 //
 // 参数：reason 为失败原因，原样保留不做改写；branch/commit 为可选的 git 实况，
-// 绝大多数失败路径没有（进程退出、对账），传空串即可
-func NewFailedPayload(reason, branch, commit string) FailedPayload {
-	p := FailedPayload{FailReason: reason, Branch: branch, CommitHash: commit}
+// 绝大多数失败路径没有（进程退出、对账），传空串即可；class 为封闭失败分类，
+// 未分类传空串——只有回合零文本失败才传 proto.FailureClassZeroText。
+func NewFailedPayload(reason, branch, commit string, class proto.FailureClass) FailedPayload {
+	p := FailedPayload{FailReason: reason, Branch: branch, CommitHash: commit, FailureClass: class}
 	if a := admissionFn(); a.Known {
 		p.ProcUsage = &a
 	}
@@ -261,7 +266,7 @@ func ReconcileExecutorGone(st *store.Store, hub *Hub, taskID, reason string,
 	// 报成死的。B100 首轮漏了这条：它的 spec 把这一行误记成「任务落 failed」，
 	// 没去看 recoverTransit 的实际迁移目标（见 watchdog.go 里 transitFailedWithEvent
 	// 的注释，那里明写着「reconcileExecutorGone 收的是 waiting_review」）。
-	evt, err := st.AppendEvent(taskID, proto.EventTypeTurnFailed, NewFailedPayload(reason, "", ""))
+	evt, err := st.AppendEvent(taskID, proto.EventTypeTurnFailed, NewFailedPayload(reason, "", "", ""))
 	if err != nil {
 		log.Error("对账追加 turn_failed 事件失败（状态已迁 waiting_review）", "task", taskID, "cause", err)
 		sweep(taskID) // 事件没发成不代表 executor 还活着，残留照收

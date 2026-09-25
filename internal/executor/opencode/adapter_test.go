@@ -769,6 +769,9 @@ func TestApprovedPermissionEmptyTurnEmitsFailedResult(t *testing.T) {
 			if ev.Type != "result" || ev.Result == nil || ev.Result.OK {
 				t.Fatalf("批准后的零文本回合应产出失败结果（B21），实际 %+v", ev)
 			}
+			if string(ev.Result.FailureClass) != "zero_text" {
+				t.Fatalf("明确零文本分支必须写 failure_class=zero_text，实际 %q", ev.Result.FailureClass)
+			}
 			return
 		case <-deadline:
 			t.Fatal("等待零文本回合失败结果超时")

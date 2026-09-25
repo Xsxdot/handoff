@@ -1,0 +1,260 @@
+{
+ "view": "cards/B402-charter",
+ "base": "5d6607fcf344f0d3e533b67b40e174f2e4223f4f",
+ "summary": "B402：回合零文本失败单次自动续接（FailureClass/TurnEnd 契约面 + 生命周期不早归档）",
+ "nodesAdded": {
+  "m_proto_FailureClass": {
+   "kind": "model",
+   "container": "k_proto_model",
+   "name": "FailureClass",
+   "file": "internal/proto/failure.go",
+   "line": 15,
+   "signature": "type FailureClass string",
+   "summary": "FailureClass 是一个回合失败的封闭分类。",
+   "fields": [
+    [
+     "",
+     "string",
+     "底层类型 string"
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_ledgerstep_TurnEnd": {
+   "kind": "model",
+   "container": "k_ledgerstep_model",
+   "name": "TurnEnd",
+   "file": "internal/ledgerstep/wire.go",
+   "line": 41,
+   "signature": "// TurnEnd 是等待层观察到的一次回合终态事实：事件类型、事件序号与失败分类。\n//\n// 为什么不能只返回 error：下游要按结构化字段判断「这是不是一次明确的零文本\n// 故障」，把它压成裸字符串就等于逼消费方回去解析 fail_reason 散文（B100 禁止）。\n// FailureClass 只从 turn_failed payload 的精确字段取，空/未知一律零值。\ntype TurnEnd struct {\n\tEventType    proto.EventType\n\tSeq          int64\n\tFailureClass proto.FailureClass\n}",
+   "summary": "TurnEnd 是等待层观察到的一次回合终态事实：事件类型、事件序号与失败分类。",
+   "fields": [
+    [
+     "EventType",
+     "proto.EventType",
+     ""
+    ],
+    [
+     "Seq",
+     "int64",
+     ""
+    ],
+    [
+     "FailureClass",
+     "proto.FailureClass",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "n_ledgerstep_failureClassOf": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "name": "failureClassOf",
+   "file": "internal/ledgerstep/wire.go",
+   "line": 55,
+   "signature": "// failureClassOf 只从 turn_failed 事件 payload 里取封闭分类；failed 事件与\n// 缺字段、未知值一律返回零值（不可自动重试）。\nfunc failureClassOf(event *proto.Event) proto.FailureClass {\n\tif event == nil || event.Type != proto.EventTypeTurnFailed {\n\t\treturn \"\"\n\t}\n\tvar payload failedPayload\n\tif err := json.Unmarshal(event.Payload, &payload); err != nil {\n\t\treturn \"\"\n\t}\n\treturn payload.FailureClass\n}",
+   "params": [
+    [
+     "event",
+     "*proto.Event",
+     ""
+    ]
+   ],
+   "returns": "proto.FailureClass",
+   "summary": "failureClassOf 只从 turn_failed 事件 payload 里取封闭分类；failed 事件与缺字段、未知值一律返回零值（不可自动重试）。"
+  }
+ },
+ "nodesModified": {
+  "m_executor_Result": {
+   "kind": "model",
+   "container": "k_executor_model",
+   "order": 27,
+   "name": "Result",
+   "file": "internal/executor/executor.go",
+   "line": 82,
+   "signature": "// Result 是一次执行回合的终态结果（OK 或 FailReason 二选一）。\ntype Result struct {\n\tBranch     string // executor 工作分支名（如 handoff/T1）\n\tCommitHash string // 回合收尾 commit 的哈希\n\tSessionID  string // executor 会话标识（如 opencode session id），供续接与归档\n\tSummary    string // 执行摘要（给协调者看的完成说明）\n\t// FinalText 是回合末正文的尾部窗口。它与 Summary 分开传递，因为裁决块\n\t// 属于正文而不是 trailer 摘要；adapter 只保留正文尾部，以便在结果 payload\n\t// 有界时仍保全契约要求位于报文末尾的 handoff-verdict block。\n\tFinalText  string\n\tOK         bool   // true=正常完成；false=失败（见 FailReason）\n\tFailReason string // OK=false 时的失败原因/日志尾部\n\t// FailureClass 是 OK=false 时的封闭失败分类（proto.FailureClass）。\n\t// 空=未分类：旧 adapter 与绝大多数失败路径不填，消费方按「不可自动重试」\n\t// 处置。只有 adapter 的明确零文本分支写 proto.FailureClassZeroText。\n\tFailureClass proto.FailureClass\n\t// VoidReason 是本次失败导致挂起工单被作废时写进审计事件的理由。\n\t// 空表示沿用缺省 VoidReasonExecutorGone——绝大多数失败路径（进程退出、\n\t// 看门狗判死）确实是 executor 没了，不必逐个填。\n\tVoidReason string\n}",
+   "summary": "Result 是一次执行回合的终态结果（OK 或 FailReason 二选一）。",
+   "fields": [
+    [
+     "Branch",
+     "string",
+     ""
+    ],
+    [
+     "CommitHash",
+     "string",
+     ""
+    ],
+    [
+     "SessionID",
+     "string",
+     ""
+    ],
+    [
+     "Summary",
+     "string",
+     ""
+    ],
+    [
+     "FinalText",
+     "string",
+     ""
+    ],
+    [
+     "OK",
+     "bool",
+     ""
+    ],
+    [
+     "FailReason",
+     "string",
+     ""
+    ],
+    [
+     "FailureClass",
+     "proto.FailureClass",
+     ""
+    ],
+    [
+     "VoidReason",
+     "string",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "m_orchestration_FailedPayload": {
+   "kind": "model",
+   "container": "k_orchestration_model",
+   "order": 8,
+   "name": "FailedPayload",
+   "file": "internal/orchestration/contracts.go",
+   "line": 137,
+   "signature": "// FailedPayload 是 failed 事件的 payload。\ntype FailedPayload struct {\n\tFailReason string `json:\"fail_reason\"`\n\t// FailureClass 是 additiv、omitempty 的封闭失败分类（B402）。空=未分类，\n\t// 旧 wire 形状不变；只有 executor 明确零文本分支才会带 zero_text。\n\t// 消费方只认精确值，未知值一律 fail-closed，不得从 FailReason 反推。\n\tFailureClass proto.FailureClass `json:\"failure_class,omitempty\"`\n\t// Branch/CommitHash 为 omitempty：绝大多数 failed（executor 崩溃、看门狗\n\t// 判死）没有 git 实况，让空字段出现在 payload 里会让下游以为「查过 git 且\n\t// 分支是空」。只有回合纪律类失败（无 trailer 但有新提交）才带这两个字段——\n\t// 它们是协调者判断「这回合到底干到哪儿」的唯一结构化依据，降级成 FailReason\n\t// 里的一段自由文本就没法再结构化取用了。\n\tBranch     string `json:\"branch,omitempty\"`\n\tCommitHash string `json:\"commit,omitempty\"`\n\t// ProcUsage 是任务失败时刻的进程占用快照；读不出数时为 nil。\n\t//\n\t// 为什么用指针 + omitempty 而不是零值：一个「0/0」的快照会被读成\n\t// 「死亡时机器很空闲」，那是彻头彻尾的谎话，比没有快照更糟。nil 表示\n\t// 「没测到」，与「测到了，很空闲」是两件事，必须能区分\n\tProcUsage *prochost.Admission `json:\"proc_usage,omitempty\"`\n}",
+   "summary": "FailedPayload 是 failed 事件的 payload。",
+   "fields": [
+    [
+     "FailReason",
+     "string",
+     ""
+    ],
+    [
+     "FailureClass",
+     "proto.FailureClass",
+     ""
+    ],
+    [
+     "Branch",
+     "string",
+     ""
+    ],
+    [
+     "CommitHash",
+     "string",
+     ""
+    ],
+    [
+     "ProcUsage",
+     "*prochost.Admission",
+     ""
+    ]
+   ],
+   "modelKind": "dto"
+  },
+  "n_orchestration_NewFailedPayload": {
+   "kind": "func",
+   "container": "k_orchestration_fn",
+   "order": 8,
+   "name": "NewFailedPayload",
+   "file": "internal/orchestration/contracts.go",
+   "line": 163,
+   "signature": "// NewFailedPayload 构造带占用快照的失败载荷。\n//\n// 参数：reason 为失败原因，原样保留不做改写；branch/commit 为可选的 git 实况，\n// 绝大多数失败路径没有（进程退出、对账），传空串即可；class 为封闭失败分类，\n// 未分类传空串——只有回合零文本失败才传 proto.FailureClassZeroText。\nfunc NewFailedPayload(reason, branch, commit string, class proto.FailureClass) FailedPayload {\n\tp := FailedPayload{FailReason: reason, Branch: branch, CommitHash: commit, FailureClass: class}\n\tif a := admissionFn(); a.Known {\n\t\tp.ProcUsage = &a\n\t}\n\treturn p\n}",
+   "params": [
+    [
+     "reason",
+     "string",
+     ""
+    ],
+    [
+     "branch",
+     "string",
+     ""
+    ],
+    [
+     "commit",
+     "string",
+     ""
+    ],
+    [
+     "class",
+     "proto.FailureClass",
+     ""
+    ]
+   ],
+   "returns": "FailedPayload",
+   "summary": "NewFailedPayload 构造带占用快照的失败载荷。 参数：reason 为失败原因，原样保留不做改写；branch/commit 为可选的 git 实况， 绝大多数失败路径没有（进程退出、对账），传空串即可"
+  },
+  "n_ledgerstep_waitForTurnEnd": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 21,
+   "name": "waitForTurnEnd",
+   "file": "internal/ledgerstep/wire.go",
+   "line": 88,
+   "signature": "// waitForTurnEnd 反复 wait 直到收到带正文的 completed、真实失败终态，\n// 或 task 归档（archived，B396），中途的权限门与工单一律跳过继续等。\n//\n// why 要循环：WaitEvent 返回的是「首个可动作事件」而非终态。审阅虽只跑\n// 只读命令，但同样要过权限门，也可能发工单——2026-08-19 真机实测，环节\n// 几乎必然醒在 permission_request/question 上，随即去取最终报文，报\n// 「事件流中没有 completed/failed 最终报文」，一轮审阅白跑。函数头写的\n// 「wait 终态」是意图，WaitEvent 的语义不是，这里补上差额。\n//\n// 收到缺正文的 completed 后，后续 wait 使用秒级 child deadline 给迟到正文机会；\n// deadline 到期且 parent 仍存活时返回成功，由 Attach 快照回落摘要。\nfunc waitForTurnEnd(ctx context.Context, wait func(context.Context) (*proto.Event, error)) (TurnEnd, error) {\n\tfor {\n\t\tevent, err := wait(ctx)\n\t\tif err != nil {\n\t\t\tslog.ErrorContext(ctx, \"等待回合终态失败\", \"saw_completed\", false, \"error\", err)\n\t\t\treturn TurnEnd{}, err\n\t\t}\n\t\tif event == nil {\n\t\t\tslog.WarnContext(ctx, \"等待回合终态收到空事件\")\n\t\t\tcontinue\n\t\t}\n\t\tswitch event.Type {\n\t\tcase proto.EventTypeArchived:\n\t\t\t// B396：task 已被归档（外部 done/resume --force 后再 done），此后不会\n\t\t\t// 再产出 completed/failed 裁决报文。继续等只会把运行锁与卡节点槽位\n\t\t\t// 钉死，使同卡同节点永远 409。收口为可行动错误，由上游落等人标记。\n\t\t\tslog.WarnContext(ctx, \"等待的 task 已归档，回合不会再有终态报文\",\n\t\t\t\t\"seq\", event.Seq, \"task\", event.TaskID, \"cause\", errTurnArchived)\n\t\t\treturn TurnEnd{}, errTurnArchived\n\t\tcase proto.EventTypeCompleted:\n\t\t\tpayload, decodeErr := decodeCompletedPayload(event)\n\t\t\tif decodeErr != nil {\n\t\t\t\tslog.WarnContext(ctx, \"completed payload 不可解析，进入宽限\", \"error\", decodeErr)\n\t\t\t} else if payload.FinalText != nil && *payload.FinalText != \"\" {\n\t\t\t\tslog.InfoContext(ctx, \"收到带 final_text 的 completed\")\n\t\t\t\treturn TurnEnd{EventType: proto.EventTypeCompleted, Seq: event.Seq}, nil\n\t\t\t} else {\n\t\t\t\tfinalTextPresent := payload.FinalText != nil\n\t\t\t\tslog.InfoContext(ctx, \"收到残缺 completed，进入宽限\", \"final_text_present\", finalTextPresent)\n\t\t\t}\n\t\t\treturn waitForTurnEndGrace(ctx, wait, TurnEnd{EventType: proto.EventTypeCompleted, Seq: event.Seq})\n\t\tcase proto.EventTypeTurnFailed, proto.EventTypeFailed:\n\t\t\tclass := failureClassOf(event)\n\t\t\tslog.InfoContext(ctx, \"未见 completed，失败事件收口\",\n\t\t\t\t\"event_type\", event.Type, \"failure_class\", class)\n\t\t\treturn TurnEnd{\n\t\t\t\tEventType:    event.Type,\n\t\t\t\tSeq:          event.Seq,\n\t\t\t\tFailureClass: class,\n\t\t\t}, nil\n\t\t}\n\t}\n}",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "wait",
+     "func(context.Context) (*proto.Event, error)",
+     ""
+    ]
+   ],
+   "returns": "(TurnEnd, error)",
+   "summary": "waitForTurnEnd 反复 wait 直到收到带正文的 completed 或真实失败终态， 中途的权限门与工单一律跳过继续等。 why 要循环：WaitEvent 返回的是「首个可动作事件」而非终态。审阅虽只跑 只读命令，但同样要过权限门，也可能发工单——2026-08-19 真机实测，环节 几乎必然醒在 permission_request/question 上，随即去取最终报文，报 「事件流中没有 completed/failed 最终报文」，一轮审阅白跑。函数头写的 「wait 终态」是意图，WaitEvent 的语义不是，这里补上差额。 收到缺正文的 completed 后，后续 wait 使用秒级 child deadline 给迟到正文机会； deadline 到期且 parent 仍存活时返回成功，由 Attach 快照回落摘要。"
+  },
+  "n_ledgerstep_waitForTurnEndGrace": {
+   "kind": "func",
+   "container": "k_ledgerstep_fn",
+   "order": 22,
+   "name": "waitForTurnEndGrace",
+   "file": "internal/ledgerstep/wire.go",
+   "line": 135,
+   "signature": "// waitForTurnEndGrace 在收到缺正文的 completed 后，用秒级 child deadline 给迟到\n// 正文一次机会；到期且 parent 仍存活时返回已观察到的 completed 终态（seq 来自\n// 首个 completed），由 Attach 快照回落摘要。\nfunc waitForTurnEndGrace(ctx context.Context, wait func(context.Context) (*proto.Event, error), completed TurnEnd) (TurnEnd, error) {\n\twaitCtx, cancel := context.WithTimeout(ctx, turnEndGrace)\n\tdefer cancel()\n\tfor {\n\t\tevent, err := wait(waitCtx)\n\t\tif err != nil {\n\t\t\tif errors.Is(err, context.DeadlineExceeded) && ctx.Err() == nil {\n\t\t\t\tslog.InfoContext(ctx, \"completed 宽限到期，继续收取 Attach 摘要\")\n\t\t\t\treturn completed, nil\n\t\t\t}\n\t\t\tslog.ErrorContext(ctx, \"等待回合终态失败\", \"saw_completed\", true, \"error\", err)\n\t\t\treturn TurnEnd{}, err\n\t\t}\n\t\tif event == nil {\n\t\t\tslog.WarnContext(ctx, \"等待回合终态收到空事件\")\n\t\t\tcontinue\n\t\t}\n\t\tif event.Type == proto.EventTypeCompleted {\n\t\t\tpayload, decodeErr := decodeCompletedPayload(event)\n\t\t\tif decodeErr != nil {\n\t\t\t\tslog.WarnContext(ctx, \"宽限内 completed payload 不可解析，继续等待\", \"error\", decodeErr)\n\t\t\t\tcontinue\n\t\t\t}\n\t\t\tif payload.FinalText != nil && *payload.FinalText != \"\" {\n\t\t\t\tslog.InfoContext(ctx, \"宽限内收到带 final_text 的 completed\")\n\t\t\t\treturn TurnEnd{EventType: proto.EventTypeCompleted, Seq: event.Seq}, nil\n\t\t\t}\n\t\t\tslog.InfoContext(ctx, \"宽限内收到残缺 completed，继续等待\", \"final_text_present\", payload.FinalText != nil)\n\t\t\tcontinue\n\t\t}\n\t\tif event.Type == proto.EventTypeArchived {\n\t\t\tslog.WarnContext(ctx, \"宽限期内 task 已归档，回合不会再有终态报文\",\n\t\t\t\t\"seq\", event.Seq, \"task\", event.TaskID, \"cause\", errTurnArchived)\n\t\t\treturn TurnEnd{}, errTurnArchived\n\t\t}\n\t\tif event.Type == proto.EventTypeTurnFailed || event.Type == proto.EventTypeFailed {\n\t\t\tslog.InfoContext(ctx, \"宽限内忽略失败事件，继续等待 completed\", \"event_type\", event.Type)\n\t\t}\n\t}\n}",
+   "params": [
+    [
+     "ctx",
+     "context.Context",
+     ""
+    ],
+    [
+     "wait",
+     "func(context.Context) (*proto.Event, error)",
+     ""
+    ],
+    [
+     "completed",
+     "TurnEnd",
+     ""
+    ]
+   ],
+   "returns": "(TurnEnd, error)"
+  },
+  "n_ledgerstep_StepRunner_awaitNode": {
+   "kind": "func",
+   "container": "k_ledgerstep_StepRunner",
+   "order": 8,
+   "name": "StepRunner.awaitNode",
+   "file": "internal/ledgerstep/runner.go",
+   "line": 426,
+   "signature": "// awaitNode 生产 NodeStep.Await：等回合终态并取最终报文。归档在 FinishTask，\n// 必须排在 PublishWorkBranch 之后。\n//\n// 自动续接边界（spec §4.2）：首个终态若是 turn_failed 且分类精确为 zero_text，\n// 复用既有 client.Continue 向同一 task 续接恰一次，再等第二个终态；第二个终态\n// 才交给节点裁决。续接失败、外部已抢先续接（409）一律 fail-closed 返回错误，\n// 由上游落等人，绝不归档。\nfunc (r *StepRunner) awaitNode() func(context.Context, string, string) (string, error) {\n\treturn func(ctx context.Context, target, taskID string) (string, error) {\n\t\tlogger := slog.Default().With(\"target\", target, \"task\", taskID)\n\t\tlogger.Info(\"节点等待开始\")\n\t\tif r.Clients == nil {\n\t\t\terr := fmt.Errorf(\"节点等待客户端未装配\")\n\t\t\tlogger.Warn(\"取得节点等待客户端失败\", \"cause\", err)\n\t\t\treturn \"\", err\n\t\t}\n\t\tcl, err := r.Clients(target)\n\t\tif err != nil {\n\t\t\tlogger.Warn(\"取得节点等待客户端失败\", \"cause\", err)\n\t\t\treturn \"\", err\n\t\t}\n\t\t// 本机任务仍走正式 /ws/events；任务镜像已跳过本机，不会再次 Publish\n\t\t// 同一事件。这样节点等待、CLI wait 与远端任务继续共用同一协议。\n\t\tlogger.Info(\"节点等待客户端已就绪\")\n\t\tend, err := waitForTurnEnd(ctx, func(ctx context.Context) (*proto.Event, error) {\n\t\t\treturn cl.WaitEvent(ctx, taskID, false)\n\t\t})\n\t\tif err != nil {\n\t\t\tlogger.Warn(\"节点等待终态失败\", \"cause\", err)\n\t\t\treturn \"\", fmt.Errorf(\"等回合终态: %w\", err)\n\t\t}\n\t\tif end.EventType == proto.EventTypeTurnFailed && end.FailureClass == proto.FailureClassZeroText {\n\t\t\tlogger.Warn(\"首回合零文本失败，自动续接一次\", \"task\", taskID, \"seq\", end.Seq)\n\t\t\tif contErr := cl.Continue(ctx, taskID, ZeroTextContinueInstruction); contErr != nil {\n\t\t\t\tlogger.Warn(\"零文本自动续接失败，fail-closed\", \"task\", taskID, \"cause\", contErr)\n\t\t\t\treturn \"\", fmt.Errorf(\"零文本自动续接: %w\", contErr)\n\t\t\t}\n\t\t\tend, err = waitForTurnEnd(ctx, func(ctx context.Context) (*proto.Event, error) {\n\t\t\t\treturn cl.WaitEvent(ctx, taskID, false)\n\t\t\t})\n\t\t\tif err != nil {\n\t\t\t\tlogger.Warn(\"续接后等待终态失败\", \"cause\", err)\n\t\t\t\treturn \"\", fmt.Errorf(\"等回合终态（续接后）: %w\", err)\n\t\t\t}\n\t\t\tlogger.Info(\"零文本自动续接后收到终态\",\n\t\t\t\t\"task\", taskID, \"event_type\", end.EventType,\n\t\t\t\t\"failure_class\", end.FailureClass, \"seq\", end.Seq)\n\t\t}\n\t\tmessage, err := clientFinalMessage(ctx, cl, taskID)\n\t\tif err != nil {\n\t\t\tlogger.Warn(\"节点读取最终报文失败\", \"cause\", err)\n\t\t\treturn \"\", err\n\t\t}\n\t\tlogger.Info(\"节点等待完成\", \"message_bytes\", len(message))\n\t\treturn message, nil\n\t}\n}",
+   "returns": "func(context.Context, string, string) (string, error)",
+   "summary": "awaitNode 生产 NodeStep.Await：等回合终态并取最终报文。归档在 FinishTask， 必须排在 PublishWorkBranch 之后。"
+  }
+ }
+}

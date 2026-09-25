@@ -90,6 +90,10 @@ type Result struct {
 	FinalText  string
 	OK         bool   // true=正常完成；false=失败（见 FailReason）
 	FailReason string // OK=false 时的失败原因/日志尾部
+	// FailureClass 是 OK=false 时的封闭失败分类（proto.FailureClass）。
+	// 空=未分类：旧 adapter 与绝大多数失败路径不填，消费方按「不可自动重试」
+	// 处置。只有 adapter 的明确零文本分支写 proto.FailureClassZeroText。
+	FailureClass proto.FailureClass
 	// VoidReason 是本次失败导致挂起工单被作废时写进审计事件的理由。
 	// 空表示沿用缺省 VoidReasonExecutorGone——绝大多数失败路径（进程退出、
 	// 看门狗判死）确实是 executor 没了，不必逐个填。

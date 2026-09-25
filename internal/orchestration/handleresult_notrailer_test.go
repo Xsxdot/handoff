@@ -100,6 +100,36 @@ func TestFailedPayloadOmitsGitTruthWhenAbsent(t *testing.T) {
 	}
 }
 
+// TestFailedPayloadCarriesFailureClassAdditively 锁 B402：failure_class 是
+// Result → turn_failed payload 透传的 additive/omitempty 字段；有字段精确保留，
+// 无字段时旧 wire 形状一字不变（旧消费者按缺字段 fail-closed）。
+func TestFailedPayloadCarriesFailureClassAdditively(t *testing.T) {
+	m, st, _, _ := newTestManager(t)
+	mustTaskWithTicket(t, st, "t-fc", proto.TaskStateRunning)
+	m.handleResult("t-fc", executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK:           false,
+		FailReason:   "供应商文案随便写",
+		FailureClass: proto.FailureClassZeroText,
+	}})
+	ev := lastEventOfType(t, m, "t-fc", string(proto.EventTypeTurnFailed))
+	var p FailedPayload
+	if err := json.Unmarshal(ev.Payload, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.FailureClass != proto.FailureClassZeroText {
+		t.Fatalf("failure_class 未从 Result 透传到 turn_failed payload: %q", p.FailureClass)
+	}
+
+	createRunningTask(t, st, "t-fc-legacy")
+	m.handleResult("t-fc-legacy", executor.AdapterEvent{Type: "result", Result: &executor.Result{
+		OK: false, FailReason: "executor 进程退出 code=1",
+	}})
+	legacy := lastEventOfType(t, m, "t-fc-legacy", string(proto.EventTypeTurnFailed))
+	if strings.Contains(string(legacy.Payload), "failure_class") {
+		t.Fatalf("未分类时不该出现 failure_class 字段（旧 wire 形状）: %s", legacy.Payload)
+	}
+}
+
 func TestVoidReasonComesFromResultNotHardcoded(t *testing.T) {
 	m, st, _, _ := newTestManager(t)
 	mustTaskWithTicket(t, st, "t3", proto.TaskStateRunning)

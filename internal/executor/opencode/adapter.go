@@ -2228,7 +2228,8 @@ func (a *Adapter) mapIdle(r *runState, raw json.RawMessage) {
 		a.log.Warn("idle 但回合无文本，转失败结果交协调者", "task", r.taskID,
 			"event", turn.TailRunes(string(raw), 120))
 		a.emit(r, executor.AdapterEvent{Type: "result", SessionID: r.session, Result: &executor.Result{
-			OK: false,
+			OK:           false,
+			FailureClass: proto.FailureClassZeroText,
 			FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，" +
 				"可 continue 续接重试",
 		}})

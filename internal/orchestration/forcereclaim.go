@@ -49,7 +49,7 @@ func (m *Manager) ForceReclaim(taskID, reason string) error {
 		m.log.Error("强制回收落 failed 失败", "task", taskID, "cause", terr)
 		return fmt.Errorf("强制回收落 failed: %w", terr)
 	}
-	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeFailed, NewFailedPayload(reason, "", ""))
+	evt, aerr := m.st.AppendEvent(taskID, proto.EventTypeFailed, NewFailedPayload(reason, "", "", ""))
 	if aerr != nil {
 		m.log.Error("强制回收追加 failed 事件失败", "task", taskID, "cause", aerr)
 		return fmt.Errorf("强制回收追加事件: %w", aerr)

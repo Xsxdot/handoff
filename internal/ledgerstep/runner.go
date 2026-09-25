@@ -409,8 +409,20 @@ func (r *StepRunner) diffNode() func(context.Context, string, string) ([]string,
 	}
 }
 
+// ZeroTextContinueInstruction 是零文本故障自动续接时发给同一 task 的固定指令。
+//
+// 契约（spec §8）：固定、非空、不携带用户自由输入或任何从现场拼出来的内容——
+// 它是协议动作而不是提示词工程，内容变化会改变 executor 行为，必须显式改这里。
+const ZeroTextContinueInstruction = "上一回合以零文本结束（可能是供应商流中断）。请在不重复已完成工作的前提下继续当前任务，" +
+	"并在回合结束时按纪律输出 handoff-verdict 裁决块。"
+
 // awaitNode 生产 NodeStep.Await：等回合终态并取最终报文。归档在 FinishTask，
 // 必须排在 PublishWorkBranch 之后。
+//
+// 自动续接边界（spec §4.2）：首个终态若是 turn_failed 且分类精确为 zero_text，
+// 复用既有 client.Continue 向同一 task 续接恰一次，再等第二个终态；第二个终态
+// 才交给节点裁决。续接失败、外部已抢先续接（409）一律 fail-closed 返回错误，
+// 由上游落等人，绝不归档。
 func (r *StepRunner) awaitNode() func(context.Context, string, string) (string, error) {
 	return func(ctx context.Context, target, taskID string) (string, error) {
 		logger := slog.Default().With("target", target, "task", taskID)
@@ -428,11 +440,29 @@ func (r *StepRunner) awaitNode() func(context.Context, string, string) (string, 
 		// 本机任务仍走正式 /ws/events；任务镜像已跳过本机，不会再次 Publish
 		// 同一事件。这样节点等待、CLI wait 与远端任务继续共用同一协议。
 		logger.Info("节点等待客户端已就绪")
-		if err := waitForTurnEnd(ctx, func(ctx context.Context) (*proto.Event, error) {
+		end, err := waitForTurnEnd(ctx, func(ctx context.Context) (*proto.Event, error) {
 			return cl.WaitEvent(ctx, taskID, false)
-		}); err != nil {
+		})
+		if err != nil {
 			logger.Warn("节点等待终态失败", "cause", err)
 			return "", fmt.Errorf("等回合终态: %w", err)
+		}
+		if end.EventType == proto.EventTypeTurnFailed && end.FailureClass == proto.FailureClassZeroText {
+			logger.Warn("首回合零文本失败，自动续接一次", "task", taskID, "seq", end.Seq)
+			if contErr := cl.Continue(ctx, taskID, ZeroTextContinueInstruction); contErr != nil {
+				logger.Warn("零文本自动续接失败，fail-closed", "task", taskID, "cause", contErr)
+				return "", fmt.Errorf("零文本自动续接: %w", contErr)
+			}
+			end, err = waitForTurnEnd(ctx, func(ctx context.Context) (*proto.Event, error) {
+				return cl.WaitEvent(ctx, taskID, false)
+			})
+			if err != nil {
+				logger.Warn("续接后等待终态失败", "cause", err)
+				return "", fmt.Errorf("等回合终态（续接后）: %w", err)
+			}
+			logger.Info("零文本自动续接后收到终态",
+				"task", taskID, "event_type", end.EventType,
+				"failure_class", end.FailureClass, "seq", end.Seq)
 		}
 		message, err := clientFinalMessage(ctx, cl, taskID)
 		if err != nil {

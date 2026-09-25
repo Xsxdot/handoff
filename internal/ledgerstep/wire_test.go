@@ -121,7 +121,7 @@ func TestWaitForTurnEndSkipsNonTerminalEvents(t *testing.T) {
 		proto.EventTypeCompleted,
 	}
 	calls := 0
-	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+	_, err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
 		ev := &proto.Event{Type: seq[calls]}
 		if ev.Type == proto.EventTypeCompleted {
 			ev.Payload = json.RawMessage("{\"final_text\":\"\\u0060\\u0060\\u0060handoff-verdict\\n{\\\"verdict\\\":\\\"pass\\\"}\\n\\u0060\\u0060\\u0060\"}")
@@ -143,7 +143,7 @@ func TestWaitForTurnEndWaitsForCompletedFinalText(t *testing.T) {
 		{Type: proto.EventTypeCompleted, Payload: json.RawMessage("{\"summary\":\"最终摘要\",\"final_text\":\"\\u0060\\u0060\\u0060handoff-verdict\\n{\\\"verdict\\\":\\\"pass\\\"}\\n\\u0060\\u0060\\u0060\"}")},
 	}
 	calls := 0
-	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+	_, err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
 		event := events[calls]
 		calls++
 		return event, nil
@@ -163,7 +163,7 @@ func TestWaitForTurnEndGraceDeadlineReturnsSuccess(t *testing.T) {
 	defer func() { turnEndGrace = oldGrace }()
 	calls := 0
 	deadlineSeen := make(chan bool, 1)
-	err := waitForTurnEnd(context.Background(), func(ctx context.Context) (*proto.Event, error) {
+	_, err := waitForTurnEnd(context.Background(), func(ctx context.Context) (*proto.Event, error) {
 		calls++
 		if calls == 1 {
 			return first, nil
@@ -186,7 +186,7 @@ func TestWaitForTurnEndDoesNotSwallowParentCancellation(t *testing.T) {
 	defer cancel()
 	first := &proto.Event{Type: proto.EventTypeCompleted, Payload: json.RawMessage(`{"summary":"摘要"}`)}
 	calls := 0
-	err := waitForTurnEnd(parent, func(ctx context.Context) (*proto.Event, error) {
+	_, err := waitForTurnEnd(parent, func(ctx context.Context) (*proto.Event, error) {
 		calls++
 		if calls == 1 {
 			return first, nil
@@ -207,7 +207,7 @@ func TestWaitForTurnEndIgnoresFailureDuringGrace(t *testing.T) {
 	second := &proto.Event{Type: proto.EventTypeCompleted, Payload: json.RawMessage("{\"final_text\":\"\\u0060\\u0060\\u0060handoff-verdict\\n{\\\"verdict\\\":\\\"pass\\\"}\\n\\u0060\\u0060\\u0060\"}")}
 	events := []*proto.Event{first, failed, turnFailed, second}
 	calls := 0
-	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+	_, err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
 		event := events[calls]
 		calls++
 		return event, nil
@@ -225,7 +225,7 @@ func TestWaitForTurnEndReturnsFailureWithoutCompleted(t *testing.T) {
 		t.Run(string(eventType), func(t *testing.T) {
 			event := &proto.Event{Type: eventType, Payload: json.RawMessage(`{"error":"failed"}`)}
 			calls := 0
-			if err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+			if _, err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
 				calls++
 				return event, nil
 			}); err != nil {
@@ -251,11 +251,58 @@ func TestFinalMessageUsesNonEmptyFinalTextAcrossCompletedEvents(t *testing.T) {
 	}
 }
 
+// B402：等待层必须把 turn_failed payload 里的封闭分类带到结构化终态上，
+// 而不是让消费方回去解析 fail_reason 散文。
+func TestWaitForTurnEndCarriesZeroTextClass(t *testing.T) {
+	end, err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+		return &proto.Event{Seq: 42, Type: proto.EventTypeTurnFailed,
+			Payload: json.RawMessage(`{"fail_reason":"供应商文案随便写","failure_class":"zero_text"}`)}, nil
+	})
+	if err != nil {
+		t.Fatalf("waitForTurnEnd: %v", err)
+	}
+	if end.EventType != proto.EventTypeTurnFailed || end.Seq != 42 {
+		t.Fatalf("终态类型/序号丢了: %+v", end)
+	}
+	if end.FailureClass != proto.FailureClassZeroText {
+		t.Fatalf("failure_class 必须透传 zero_text，实际 %q", end.FailureClass)
+	}
+}
+
+// 分类只认 turn_failed 且只认精确值：failed 事件不分类、缺字段空、未知值不可
+// 当作 zero_text。
+func TestWaitForTurnEndClassIsClosedAndTurnFailedOnly(t *testing.T) {
+	cases := []struct {
+		name  string
+		event *proto.Event
+	}{
+		{"failed 事件即使带字段也不分类", &proto.Event{Type: proto.EventTypeFailed,
+			Payload: json.RawMessage(`{"failure_class":"zero_text"}`)}},
+		{"turn_failed 缺字段", &proto.Event{Type: proto.EventTypeTurnFailed,
+			Payload: json.RawMessage(`{"fail_reason":"x"}`)}},
+		{"turn_failed 未知分类值", &proto.Event{Type: proto.EventTypeTurnFailed,
+			Payload: json.RawMessage(`{"fail_reason":"x","failure_class":"someday"}`)}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			end, err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+				return tc.event, nil
+			})
+			if err != nil {
+				t.Fatalf("waitForTurnEnd: %v", err)
+			}
+			if end.FailureClass == proto.FailureClassZeroText {
+				t.Fatalf("不该把它当 zero_text 可重试，实际 %q", end.FailureClass)
+			}
+		})
+	}
+}
+
 // turn_failed 也是回合终态：executor 还活着，但这一回合结束了，报文在
 // fail_reason 里——不能继续等下去把环节挂死。
 func TestWaitForTurnEndAcceptsTurnFailed(t *testing.T) {
 	calls := 0
-	err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
+	_, err := waitForTurnEnd(context.Background(), func(context.Context) (*proto.Event, error) {
 		calls++
 		return &proto.Event{Type: proto.EventTypeTurnFailed}, nil
 	})

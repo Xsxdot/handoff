@@ -686,10 +686,11 @@ func (a *Adapter) fallbackClassify(r *runState, text string) {
 				Type:      "result",
 				SessionID: r.session,
 				Result: &executor.Result{
-					OK:         false,
-					SessionID:  r.session,
-					FailReason: "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
-					VoidReason: executor.VoidReasonTurnDiscipline,
+					OK:           false,
+					SessionID:    r.session,
+					FailureClass: proto.FailureClassZeroText,
+					FailReason:   "回合结束但零文本产出（可能是供应商流中断）；executor 仍在线，可 continue 续接重试",
+					VoidReason:   executor.VoidReasonTurnDiscipline,
 				},
 			})
 			return

@@ -58,6 +58,9 @@ func TestFinishTurnEmptyTextEmitsFailedResult(t *testing.T) {
 		if ev.Result.FailReason == "" {
 			t.Fatalf("FailReason 必须写清现场，否则协调者不知道发生了什么")
 		}
+		if string(ev.Result.FailureClass) != "zero_text" {
+			t.Fatalf("明确零文本分支必须写 failure_class=zero_text，实际 %q", ev.Result.FailureClass)
+		}
 	default:
 		t.Fatalf("零文本回合应产出事件")
 	}

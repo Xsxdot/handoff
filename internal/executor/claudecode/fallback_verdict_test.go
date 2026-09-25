@@ -164,6 +164,9 @@ func TestFallbackZeroTextGuardStillFires(t *testing.T) {
 		t.Fatalf("零文本时 executor 还活着，作废理由应为纪律类，got %q",
 			events[0].Result.VoidReason)
 	}
+	if string(events[0].Result.FailureClass) != "zero_text" {
+		t.Fatalf("明确零文本分支必须写 failure_class=zero_text，实际 %q", events[0].Result.FailureClass)
+	}
 }
 
 func TestFallbackWithGitErrorStillAsks(t *testing.T) {
