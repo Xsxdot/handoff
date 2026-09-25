@@ -82,3 +82,10 @@
 - 当前 B409.4/5 计划没有复用此 key-only Store seam；B409.2 计划仍要求独立计划集审计重新核对，发现共享后先冻结契约。计划已通过单卡复审并挂到 B409.2，card note seq 21600；卡仍为 `plan`，依赖 U1 review/集成与全套计划审计。
 - 复核命令：`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-2-plan.md` exit 0，3 个源码锚均为 `ok`；`git diff --no-index --check /dev/null docs/superpowers/plans/2026-09-25-b409-2-plan.md` exit 1（新文件差异，输出为空、无空白诊断）。未运行测试，因为计划节点不实现代码。
 - 本计划提交命令与原始输出：`git commit -m "docs: plan B409.2 async target summary"` → `[codex/session-reliable-mentions 7b326f59] docs: plan B409.2 async target summary`；`2 files changed, 83 insertions(+)`，新增 B409.2 plan。随后仅 amend 一次收入原始提交输出；不追记 amend 后的新 hash。
+
+## B409.6 S4 诊断计划（2026-09-25）
+
+- 本机 subagent 完成 `docs/superpowers/plans/2026-09-25-b409-6-plan.md`。协调者按 S4/r2 复核 request/CLI 总耗时、pool acquire、SQL/rows/bytes、collab 投影、U2/U4 后台 target、context cancel、敏感日志边界与真实调用入口；计划复用 Wave 0 的 DB.Conn pool wait 计时及历史查询日志字段，不建立通用 metrics 子系统。单卡审查通过并挂到 B409.6，card note seq 21602；卡保持 `plan`。
+- 计划明确依赖 U1–U5 稳定实现/review；U5 的 B358/session wait contract delta 未冻结时 U6 implement 也阻塞。S4 故障诊断样本与 U7 三档全性能/方言验收区分；不把当前诊断外推成 20:00–22:00 历史故障根因。
+- 复核命令：`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-6-plan.md` exit 0，`anchors: []`；`git diff --no-index --check /dev/null docs/superpowers/plans/2026-09-25-b409-6-plan.md` exit 1（新文件差异、输出为空、无空白诊断）；相关 agentd/collab/CLI 生产入口 `rg` 复核 exit 0。未运行测试，因为仍是 plan 节点。
+- 本计划提交命令与原始输出：`git commit -m "docs: plan B409.6 diagnostics"` → `[codex/session-reliable-mentions 372f1bdf] docs: plan B409.6 diagnostics`；`2 files changed, 111 insertions(+)`，新增 B409.6 plan。随后仅 amend 一次收入原始提交输出；不追记 amend 后的新 hash。
