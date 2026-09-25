@@ -96,3 +96,10 @@
 - 单卡复审通过并挂到 B409.7，card note seq 21604；卡仍在 `plan`。计划中的硬阻塞为七计划集独立审计、U5 的 B358/session reliable-mentions contract delta、U1–U6 实现 review/集成、确认可丢弃 PG 库及 U5 跨机器故事证据；不部署、不写真实/共享账本种子，协调者负责授权的本机和 `linux-01` UI/真机验收。
 - 复核命令：`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-7-plan.md` exit 0；store/open、web fetchCards 锚为 `ok`，handleCardsList 与 runCardWait 为 `moved`，未覆盖项回落源码并记录图债。`git diff --no-index --check /dev/null docs/superpowers/plans/2026-09-25-b409-7-plan.md` exit 1（新文件差异、输出为空、无空白诊断）。未运行测试，仍为 plan 节点。
 - 本计划提交命令与原始输出：`git commit -m "docs: plan B409.7 final matrix"` → `[codex/session-reliable-mentions cfcf83c6] docs: plan B409.7 final matrix`；`2 files changed, 110 insertions(+)`，新增 B409.7 plan。随后仅 amend 一次收入原始提交输出；不追记 amend 后的新 hash。
+
+## B409.1–B409.7 独立计划集审查修订（2026-09-25）
+
+- GPT-6-Sol 独立审查者以干净提交 `a4f9fed41b7bb561b9c1acacdaacc54cfbd4da12` 审查七份计划，判定计划集暂不通过 implement 派发门：目标轴有一项 Important，U7 将工作台 SessionSidebar 列表和打开房间消息首屏合写，未分别锁定独立 100 样本与 p95 门槛；架构/证据轴计划层面通过，Critical/Minor 均无。它确认 U5 的 B358/session-v1 全流物理读与 r2 有界候选读冲突是计划已识别的实现硬门，不属于遗漏；当前证据不能证明 U4/U5 必然共享新 LedgerClient 方法，若实现前清点发现共享，再冻结最小 seam。
+- 按审查意见修订 `docs/superpowers/plans/2026-09-25-b409-7-plan.md` 第 58、62、81 行：Web 明确拆成 `/cards` 卡片列表、`/` SessionSidebar 会话列表、`/` 已选中目标房间消息首屏三组；每组在每个数据档分别记首请求、5 次预热、100 次计入样本、独立 p50/p95/max/错误/response bytes，分别判 p95 ≤2s。为消息首屏预先打开并选中 fixture tab，刷新计时以导航开始为准，避免把列表与消息等待合成单个时长。B409.7 卡保持 plan，note seq 21605 记录首轮发现、修订与复审待完成；implement 派发门仍关闭。
+- 新鲜校验：`git diff --check` exit 0；`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-7-plan.md` exit 0，4 个锚均解析、无坏锚。未运行测试，因为本轮只修 Charter plan，不实现代码。修订后待独立审查者按新提交重新审计；在收到 PASS 前不派发 implement。
+- 修订提交命令与原始输出：`git commit -m "docs: clarify B409 Web acceptance samples"` → `[codex/session-reliable-mentions 8617d1fd] docs: clarify B409 Web acceptance samples`；`2 files changed, 9 insertions(+), 3 deletions(-)`。随后按 Charter 仅 amend 一次收入该历史输出；不追记 amend 后 hash。
