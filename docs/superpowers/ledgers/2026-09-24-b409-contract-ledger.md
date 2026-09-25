@@ -36,3 +36,11 @@
 - Wave 0 plan 选定能满足等价语义、PG/SQLite 同构、历史回建与 p95 验收的账本查询实现；不得改变本台账冻结的调用方语义。
 - 实现及 fresh review 后对 S2 的真 CLI/内置浏览器路径做 Wave 0 验收，并完成查询/页面端到端采样与承重变异。
 - S3 开始前修订 B358 全流 session wait 与已批准 r2 会话续收契约：保留 `(cursor, MaxSeq]`、升序命中输出、共享水位、断线补收和无逐条确认；只替换低效读取机制，不改变投递保证。
+
+## S3 / U5 会话候选读契约增量（2026-09-25）
+
+- 新鲜源码复核：`codegraph --repo . sym Store.EventsFromAsc` 退出 0，明确该账本 API 的 `cardIDs=[]` 会执行全流 `seq > fromSeq ORDER BY seq LIMIT`；`codegraph sym collab.Service.MessageWakeTargets`、`Service.Mentions` 与 session cursor 符号未命中，按纪律回落读取当前 `cmd/session.go#runSessionWait`、`sessionWaitMatch`、`internal/collab/sessions.go#MessageWakeTargets` / `replyAuthorOf`、`internal/ledger/session_delivery_cursor.go` 源码。当前 backlog 与 follow 均逐页调用 `EventsFromAsc(nil, ...)`；最终寻址仍由 `MessageWakeTargets` 决定。
+- 由于 B358 §3.8 / §4.6 条 49 与已批准 r2 / U5 的有界恢复读面冲突，新增 [`2026-09-25-session-bounded-candidate-read-contract.md`](../specs/2026-09-25-session-bounded-candidate-read-contract.md)：候选集合必须完整覆盖直接身份 mention、当前席位卡 mention、有效同房间 reply；最终判定不复制；候选页升序和有界；扫描水位与已交付持久游标分离；数据库以选择性地址键读取，错误可见，CLI JSON 与 no-ack 交付语义不变；若派生投影则与 canonical append 原子并可重建。未冻结方法名/签名/DTO/SQL，也未新建跨域方向或 Ticket 0。
+- U4/U5 seam 按当前计划所需结果语义清点：U4 的 room/session/card 投影查询与 U5 的 recipient-address 候选/消费/seq 点读无共同新增 LedgerClient 语义，不造全用途接口；实际最终签名若收敛成相同公开 seam，实施前仍停下单独冻结。U5 plan 已引用该增量，并将候选查询的执行计划/返回 rows 与 payload bytes 纳入增长核验。
+- 自检实际运行：`codegraph --repo . resolve --doc docs/superpowers/specs/2026-09-25-session-bounded-candidate-read-contract.md` 退出 0，9 个锚解析（`Store.EventsFromAsc`、`ResolveDelivery` 为 `ok`，其它当前源码锚为 `moved`）；首次用 receiver-qualified 形式 `Store.SessionDeliveryCursor` 造成 resolve `vanished`，改为实际方法名后通过。`codegraph --repo . resolve --doc docs/superpowers/plans/2026-09-25-b409-5-plan.md` 退出 0（无锚）；`git diff --check` 退出 0。文档没有新增代码、跨域边或 wire，因此无 Ticket 0、无金样本运行测试。新契约与计划修订待独立 `charter:review` / `charter:plan` 复审。
+- 契约冻结提交原始命令与输出：`git commit -m "docs: freeze bounded session candidate reads"` → `[codex/session-reliable-mentions f63d8898] docs: freeze bounded session candidate reads`；`3 files changed, 95 insertions(+), 11 deletions(-)`。本提交随后仅 amend 一次收入原始提交输出；不追记 amend 后新 hash。
