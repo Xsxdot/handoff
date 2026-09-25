@@ -20,7 +20,8 @@ type ticketOracleKey struct {
 func replayOpenTicketsOracle(t *testing.T, s *Store) []OpenTicket {
 	t.Helper()
 	rows, err := s.db.Query(s.q(`SELECT card_id, source_target, source_task, payload
-		FROM card_events WHERE type = ? AND source_target IS NOT NULL AND source_task IS NOT NULL ORDER BY seq ASC`), EvTaskMirrored)
+		FROM card_events WHERE type = ? AND card_id IS NOT NULL
+		AND source_target IS NOT NULL AND source_task IS NOT NULL ORDER BY seq ASC`), EvTaskMirrored)
 	if err != nil {
 		t.Fatalf("读取 oracle 镜像事件: %v", err)
 	}
@@ -268,6 +269,15 @@ func TestOpenTicketProjectionUpgradeReplaysExistingEvents(t *testing.T) {
 			t.Fatalf("建立旧账本镜像事件: %v", err)
 		}
 	}
+	// Room-history mirror rows can have a valid source identity but no card ID.
+	// They are not card tickets and must not make an older ledger fail to open.
+	if _, err := s.db.Exec(s.q(`INSERT INTO card_events
+		(card_id, type, actor, payload, source_target, source_task, source_seq, created_at)
+		VALUES (NULL, ?, ?, ?, ?, ?, ?, ?)`), EvTaskMirrored, "upgrade-test",
+		`{"task_type":"ticket_question","payload":{"ticket_id":"no-card-ticket"}}`,
+		"room-history", "room-task", 1, s.tval(time.Now())); err != nil {
+		t.Fatalf("建立无 card_id 的历史镜像事件: %v", err)
+	}
 	want := replayOpenTicketsOracle(t, s)
 	path := s.path
 	if _, err := s.db.Exec(`DROP TABLE open_ticket_projection_state`); err != nil {
@@ -408,6 +418,9 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 		t.Fatalf("增长镜像 payload 长度=%d，期望=%d", len(mirrorPayload), bodySize)
 	}
 	insertGrowthMirrors(t, s, cards[0].ID, 1, baselineMirrors-len(cards)*25, mirrorPayload)
+	// Match the plan's baseline ledger size while retaining fixed open-ticket
+	// cardinality. This unrelated history is deliberately outside the read sample.
+	insertGrowthEvents(t, s, cards[0].ID, 11929)
 	stages := []struct {
 		name string
 		seed func()
@@ -429,6 +442,9 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 		if stage.seed != nil {
 			stage.seed()
 		}
+		if err := s.rebuildOpenTicketProjection(); err != nil {
+			t.Fatalf("%s 样本前显式重建投影: %v", stage.name, err)
+		}
 		mirrorRows, mirrorBytes := projectionGrowthMirrorStats(t, s)
 		if stage.name == "baseline" {
 			baselineMirrorCount, baselineMirrorBytes = mirrorRows, mirrorBytes
@@ -449,6 +465,7 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 		if !reflect.DeepEqual(tickets, allTickets) {
 			t.Fatalf("%s 明细与事件 oracle 不同", stage.name)
 		}
+		assertNoTicketProjectionRebuildInRead(t, logBuffer.Bytes(), stage.name+" OpenTickets")
 		detailRead := decodeTicketReadObservation(t, logBuffer.Bytes(), "读取未决工单投影完成")
 
 		logBuffer.Reset()
@@ -459,6 +476,7 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 		if len(counts) != len(cards) {
 			t.Fatalf("%s 应返回 4 张卡的聚合计数: %v", stage.name, counts)
 		}
+		assertNoTicketProjectionRebuildInRead(t, logBuffer.Bytes(), stage.name+" OpenTicketCounts")
 		for _, card := range cards {
 			if counts[card.ID] != 25 {
 				t.Fatalf("%s 卡 %s 应有 25 单: %v", stage.name, card.ID, counts)
@@ -475,6 +493,15 @@ func TestOpenTicketProjectionGrowthKeepsRowsAndPayloadBounded(t *testing.T) {
 		t.Logf("stage=%s events=%d mirrors=%d mirror_payload_bytes=%d detail_rows=%d detail_payload_bytes=%d count_rows=%d count_payload_bytes=%d",
 			stage.name, projectionGrowthEventCount(t, s), mirrorRows, mirrorBytes,
 			detailRead.RowsRead, detailRead.PayloadBytes, countRead.RowsRead, countRead.PayloadBytes)
+	}
+}
+
+func assertNoTicketProjectionRebuildInRead(t *testing.T, logs []byte, operation string) {
+	t.Helper()
+	for _, marker := range []string{"开始重建未决工单投影", "从权威事件流重建未决工单投影"} {
+		if bytes.Contains(logs, []byte(marker)) {
+			t.Fatalf("%s 样本内不应包含全量投影重建，log=%s", operation, logs)
+		}
 	}
 }
 

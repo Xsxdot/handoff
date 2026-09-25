@@ -188,10 +188,12 @@ func (s *Store) openTicketProjectionNeedsRebuild(q ticketProjectionQueryer) (boo
 		return false, fmt.Errorf("读取未决工单投影状态: %w", err)
 	}
 	var currentSeq int64
-	// Malformed legacy mirror rows with a missing source_task are intentionally
-	// outside this read model: they have no task key and must not block later writes.
+	// Historical room-history mirrors may have a valid source identity but NULL
+	// card_id. They cannot key a card ticket, so exclude them alongside malformed
+	// rows missing source_task from this projection's rebuild watermark.
 	if err := q.QueryRow(s.q(`SELECT COALESCE(MAX(seq), 0) FROM card_events
-		WHERE type = ? AND source_target IS NOT NULL AND source_task IS NOT NULL`), EvTaskMirrored).Scan(&currentSeq); err != nil {
+		WHERE type = ? AND card_id IS NOT NULL
+		AND source_target IS NOT NULL AND source_task IS NOT NULL`), EvTaskMirrored).Scan(&currentSeq); err != nil {
 		return false, fmt.Errorf("读取镜像事件水位: %w", err)
 	}
 	return version != openTicketProjectionVersion || ledgerSeq != currentSeq, nil
@@ -215,7 +217,8 @@ func (s *Store) rebuildOpenTicketProjectionTx(tx *sql.Tx) error {
 		return fmt.Errorf("清空未决工单投影: %w", err)
 	}
 	rows, err := tx.Query(s.q(`SELECT seq, card_id, source_target, source_task, payload
-		FROM card_events WHERE type = ? AND source_target IS NOT NULL AND source_task IS NOT NULL ORDER BY seq ASC`), EvTaskMirrored)
+		FROM card_events WHERE type = ? AND card_id IS NOT NULL
+		AND source_target IS NOT NULL AND source_task IS NOT NULL ORDER BY seq ASC`), EvTaskMirrored)
 	if err != nil {
 		return fmt.Errorf("读取投影重建事件: %w", err)
 	}
