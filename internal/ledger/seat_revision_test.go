@@ -160,7 +160,7 @@ func TestPGSeatRevisionSameSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	run := fmt.Sprintf("u5-seatrev-%d", time.Now().UnixNano())
-	card, err := s.CreateCard(NewCard{Project: "p", Title: run, Actor: run})
+	card, err := s.CreateCard(NewCard{Project: "u5", Title: run, Actor: run, Workflow: "charter"})
 	if err != nil {
 		t.Fatal(err)
 	}

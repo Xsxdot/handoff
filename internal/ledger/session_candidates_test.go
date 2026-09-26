@@ -61,11 +61,11 @@ func u5FinishFixture(t *testing.T, s *Store) *u5Fixture {
 	if _, err := s.PutWorkflow("charter", WorkflowDef{States: []string{"待办", "完成"}}); err != nil {
 		t.Fatal(err)
 	}
-	c1, err := s.CreateCard(NewCard{Project: "p", Title: "U5 候选夹具 C1", Actor: "u5-tester"})
+	c1, err := s.CreateCard(NewCard{Project: "u5", Title: "U5 候选夹具 C1", Actor: "u5-tester", Workflow: "charter"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := s.CreateCard(NewCard{Project: "p", Title: "U5 候选夹具 C2", Actor: "u5-tester"})
+	c2, err := s.CreateCard(NewCard{Project: "u5", Title: "U5 候选夹具 C2", Actor: "u5-tester", Workflow: "charter"})
 	if err != nil {
 		t.Fatal(err)
 	}

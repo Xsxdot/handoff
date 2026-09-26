@@ -29,11 +29,11 @@ func candidatePerfFixture(t *testing.T, s *Store, actor string) (memberCard stri
 	if _, err := s.PutWorkflow("charter", WorkflowDef{States: []string{"待办", "完成"}}); err != nil {
 		t.Fatal(err)
 	}
-	c1, err := s.CreateCard(NewCard{Project: "p", Title: actor + " C1", Actor: actor})
+	c1, err := s.CreateCard(NewCard{Project: "u5", Title: actor + " C1", Actor: actor, Workflow: "charter"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	c2, err := s.CreateCard(NewCard{Project: "p", Title: actor + " C2", Actor: actor})
+	c2, err := s.CreateCard(NewCard{Project: "u5", Title: actor + " C2", Actor: actor, Workflow: "charter"})
 	if err != nil {
 		t.Fatal(err)
 	}

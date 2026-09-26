@@ -77,11 +77,35 @@
 - 隔离 PG 探活：`current_database()=handoff_b409_test`，PostgreSQL 16.15
   (Debian 16.15-1.pgdg13+)，初始 0 事件。
 
-## 四、变异自验（占位，收尾前逐条回填）
+## 四、变异自验（两段判定：先确认编译过，再数红；还原后回绿）
 
-- 待回填。
+| # | 变异点 | 变异内容 | 编译 | 变异后红 | 还原后绿 |
+|---|--------|----------|------|----------|----------|
+| M1 | `cmd/session.go#sessionWaitPage` | `if revAfter != revBefore` → `... && false`（席位一致性守卫短路） | ✅ | `TestSessionWaitABARebindDetectedAndRedelivered`、`TestSessionWaitOneWayRebindStillDeliversOnce` FAIL（重读次数/下界断言） | ✅ 两测试 ok |
+| M2 | `cmd/session.go` 积压输出条件 | `len(backlog.Hits) > 0` → `>= 0`（空积压也输出+推进） | ✅ | `TestSessionWaitDefaultRecoversBacklogAndDoesNotRepeat`、`TestSessionWaitEmptyPageStillVerifiesSeat` FAIL | ✅ 两测试 ok |
+| M3 | `internal/ledger/seat_revision.go` | `current+1` → `current`（版本永不递增） | ✅ | `TestSeatRevisionIncrementsOnEverySeatWritePath`、`TestSeatRevisionNotReusedAfterABA` FAIL | ✅ ok |
+| M4 | `internal/ledger/message_candidates.go` | 删除 mentions∋member 的 SQL 过滤（`query += " AND " + mentionMatchExpr` 移除） | ✅ | `TestMentionCandidatesBoundedRead` FAIL（ledger 金样）+ `TestPendingGroupMentionAndConsume` FAIL（collab 全链路） | ✅ 两包 ok |
 
-## 五、遗留与移交
+- M4 先行尝试（collab 侧 Pending 过滤循环中删 `MentionsMember`）变异存活——
+  该 Go 侧检查对账本缝而言已是纵深防御冗余（SQL 已保证 mentions∋member），
+  真正守卫在 ledger 缝；遂改打 ledger 缝过滤本身（M4），全链路两处变红。
+  collab 侧检查保留：它是 B156.2 裁决链在门面内的显式表达，代价为零值检查。
+
+## 五、第 8 步：单机端到端等价链路（真 CLI 二进制 × 两进程 × 共享 PG）
+
+- 证据原文：`docs/superpowers/evidence/2026-09-26-b409-u5/e2e-single-machine.md`
+  （完整 transcript）。
+- 链路：`go build` 真 binary → 首挂空等（124，无积压无推进）→ listener 停止，
+  生产者（同 DB）建会话并投递 @agent:e2e-u5 ×2 + @agent:other-b ×1 → 同 member
+  重挂：backlog 恰 2 hits（冻结格式、@他人不在、无效 token 不寻址）exit 0 →
+  再挂不回放（124）→ 另一进程 `--follow` 常驻 + 生产者实时投递：两行冻结
+  `SessionWake`（@他人不叫醒）→ 空闲超时 124。
+- 持久游标直读：`session_delivery_cursors.last_seq = 140132`（恰为最后一条
+  已输出命中 seq；两轮 E2E 各自验证）。
+- 跨机器重挂验收：留 S3 故事级验收（协调者）。同机两进程共享同一 PG 与同一
+  member 身份，游标/账本链路与跨机一致；差异仅在进程宿主机。
+
+## 六、遗留与移交
 
 - 跨机器真机重挂验收：留协调者（S3 故事级验收）；本卡做单机两 CLI 进程 +
   共享 PG 等价链路（见台账 §三后续记录）。
