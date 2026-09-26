@@ -811,6 +811,11 @@ func TestB409CardWaitSnapshotFiltersTicketsAndNeedsByMembers(t *testing.T) {
 	}
 	appendMirror(rootID, "root-target", "root-live", 1, "question",
 		`{ "ticket_id": "root-open", "question": "keep raw payload" }`)
+	appendMirror(rootID, "shared-target", "shared-task-a", 1, "question", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "shared-target", "shared-task-b", 1, "question", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "other-shared-target", "shared-task-a", 1, "question", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "shared-target", "shared-task-b", 2, "ticket_answered", `{"ticket_id":"shared-ticket"}`)
+	appendMirror(rootID, "other-shared-target", "shared-task-a", 2, "ticket_answered", `{"ticket_id":"shared-ticket"}`)
 	appendMirror(rootID, "root-target", "root-answered", 1, "permission_request", `{"ticket_id":"root-answered"}`)
 	appendMirror(rootID, "root-target", "root-answered", 2, "ticket_answered", `{"ticket_id":"root-answered"}`)
 	appendMirror(rootID, "root-target", "root-voided", 1, "question", `{"ticket_id":"root-voided"}`)
@@ -839,25 +844,41 @@ func TestB409CardWaitSnapshotFiltersTicketsAndNeedsByMembers(t *testing.T) {
 		t.Fatalf("close fixture ledger: %v", err)
 	}
 
+	type expectedTicket struct {
+		cardID, target, taskID, ticketID, taskType string
+	}
+	type ticketIdentity struct {
+		cardID, target, taskID, ticketID string
+	}
+	identity := func(cardID, target, taskID, ticketID string) ticketIdentity {
+		return ticketIdentity{cardID: cardID, target: target, taskID: taskID, ticketID: ticketID}
+	}
 	for _, tc := range []struct {
-		name       string
-		args       []string
-		wantMember []string
-		wantTicket []string
-		wantNeeds  map[string]string
+		name        string
+		args        []string
+		wantMember  []string
+		wantTickets []expectedTicket
+		wantNeeds   map[string]string
 	}{
 		{
 			name:       "root only",
 			wantMember: []string{rootID},
-			wantTicket: []string{"root-open"},
-			wantNeeds:  map[string]string{rootID: "root needs"},
+			wantTickets: []expectedTicket{
+				{rootID, "root-target", "root-live", "root-open", "question"},
+				{rootID, "shared-target", "shared-task-a", "shared-ticket", "question"},
+			},
+			wantNeeds: map[string]string{rootID: "root needs"},
 		},
 		{
 			name:       "subtree excludes unrelated card",
 			args:       []string{"--subtree"},
 			wantMember: []string{rootID, child.ID},
-			wantTicket: []string{"root-open", "child-open"},
-			wantNeeds:  map[string]string{rootID: "root needs", child.ID: "child needs"},
+			wantTickets: []expectedTicket{
+				{rootID, "root-target", "root-live", "root-open", "question"},
+				{rootID, "shared-target", "shared-task-a", "shared-ticket", "question"},
+				{child.ID, "child-target", "child-live", "child-open", "permission_request"},
+			},
+			wantNeeds: map[string]string{rootID: "root needs", child.ID: "child needs"},
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -911,7 +932,7 @@ func TestB409CardWaitSnapshotFiltersTicketsAndNeedsByMembers(t *testing.T) {
 			if !ok || actionable == nil {
 				t.Fatalf("actionable 必须是数组: %+v", snap["actionable"])
 			}
-			gotTickets := make(map[string]map[string]any, len(actionable))
+			gotTickets := make(map[ticketIdentity]map[string]any, len(actionable))
 			for _, raw := range actionable {
 				row, ok := raw.(map[string]any)
 				if !ok || len(row) != 6 {
@@ -922,18 +943,26 @@ func TestB409CardWaitSnapshotFiltersTicketsAndNeedsByMembers(t *testing.T) {
 						t.Fatalf("actionable 行缺少 %q: %+v", key, row)
 					}
 				}
+				cardID, _ := row["card_id"].(string)
+				target, _ := row["source_target"].(string)
+				taskID, _ := row["source_task"].(string)
 				ticketID, _ := row["ticket_id"].(string)
-				gotTickets[ticketID] = row
+				gotTickets[identity(cardID, target, taskID, ticketID)] = row
 			}
-			if len(gotTickets) != len(tc.wantTicket) {
-				t.Fatalf("未决工单集合=%v want=%v", gotTickets, tc.wantTicket)
+			if len(gotTickets) != len(tc.wantTickets) {
+				t.Fatalf("未决工单身份集合=%v want=%v", gotTickets, tc.wantTickets)
 			}
-			for _, ticketID := range tc.wantTicket {
-				if gotTickets[ticketID] == nil {
-					t.Fatalf("快照缺少未决工单 %s: %+v", ticketID, gotTickets)
+			for _, expected := range tc.wantTickets {
+				key := identity(expected.cardID, expected.target, expected.taskID, expected.ticketID)
+				row := gotTickets[key]
+				if row == nil {
+					t.Fatalf("快照缺少未决工单身份 %+v: %+v", key, gotTickets)
+				}
+				if row["task_type"] != expected.taskType {
+					t.Fatalf("工单身份 %+v task_type=%v want=%s", key, row["task_type"], expected.taskType)
 				}
 			}
-			rootRow := gotTickets["root-open"]
+			rootRow := gotTickets[identity(rootID, "root-target", "root-live", "root-open")]
 			if rootRow["card_id"] != rootID || rootRow["source_target"] != "root-target" ||
 				rootRow["source_task"] != "root-live" || rootRow["task_type"] != "question" {
 				t.Fatalf("工单 source 身份或 task_type 有误: %+v", rootRow)
@@ -1005,6 +1034,48 @@ func TestB409CardWaitSnapshotReadFailureDoesNotEmitEmptySnapshot(t *testing.T) {
 	}
 	if strings.TrimSpace(out) != "" {
 		t.Fatalf("快照读失败不得输出伪成功的空快照: %q", out)
+	}
+}
+
+func TestB409CardWaitSnapshotPrecedesLiveEvent(t *testing.T) {
+	dir := t.TempDir()
+	cardID := createCardWaitFixture(t, dir)
+	writerErr := make(chan error, 1)
+	go func() {
+		time.Sleep(250 * time.Millisecond)
+		st, err := ledger.Open(filepath.Join(dir, "ledger.db"))
+		if err != nil {
+			writerErr <- err
+			return
+		}
+		defer st.Close()
+		writerErr <- st.MarkNeedsHuman(cardID, "live event after snapshot", "test")
+	}()
+
+	out, _, waitErr := runLedgerCLI(t, dir, "card", "wait", cardID, "--timeout", "5s")
+	if err := <-writerErr; err != nil {
+		t.Fatalf("append live card event: %v", err)
+	}
+	if waitErr != nil {
+		t.Fatalf("card wait should emit the live event and exit: %v; output=%q", waitErr, out)
+	}
+	lines := strings.Split(strings.TrimSpace(out), "\n")
+	if len(lines) != 2 {
+		t.Fatalf("want exactly snapshot then one live event, got %d lines: %q", len(lines), out)
+	}
+	var snapshot map[string]any
+	if err := json.Unmarshal([]byte(lines[0]), &snapshot); err != nil {
+		t.Fatalf("first line is not snapshot JSON: %v; line=%q", err, lines[0])
+	}
+	if snapshot["type"] != cardSnapshotType || snapshot["card_id"] != cardID {
+		t.Fatalf("first line must be the selected card snapshot: %+v", snapshot)
+	}
+	var event ledger.Event
+	if err := json.Unmarshal([]byte(lines[1]), &event); err != nil {
+		t.Fatalf("second line is not a live ledger event: %v; line=%q", err, lines[1])
+	}
+	if event.Type != ledger.EvNeedsHuman || event.CardID != cardID {
+		t.Fatalf("second line should be the live event for this card: %+v", event)
 	}
 }
 
