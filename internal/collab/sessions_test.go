@@ -290,6 +290,55 @@ func newSessionFixture(t *testing.T) (*Service, *ledger.Store, client.LedgerClie
 	return New(lc), st, lc
 }
 
+type failingDriverLeaseClient struct {
+	client.LedgerClient
+	target string
+	err    error
+}
+
+func (f failingDriverLeaseClient) DriverLease(identity string) (time.Time, bool, error) {
+	if identity == f.target {
+		return time.Time{}, false, f.err
+	}
+	return f.LedgerClient.DriverLease(identity)
+}
+
+func TestSessionSummariesPropagateDriverLeaseReadErrors(t *testing.T) {
+	for _, memberPath := range []struct {
+		name     string
+		identity string
+	}{
+		{name: "explicit member", identity: "user:sy"},
+		{name: "card seat", identity: "cli:agent#one"},
+	} {
+		t.Run(memberPath.name, func(t *testing.T) {
+			svc, st, lc := newSessionFixture(t)
+			session, err := svc.CreateSession("租约读取错误", "user:sy", "user:sy")
+			if err != nil {
+				t.Fatal(err)
+			}
+			if memberPath.name == "card seat" {
+				card := sessionCard(t, st, "租约读取错误席位")
+				if err := st.BindSeat(card.ID, memberPath.identity, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
+					t.Fatal(err)
+				}
+				if err := svc.JoinCard(session.ID, card.ID, "user:sy"); err != nil {
+					t.Fatal(err)
+				}
+			}
+			leaseErr := errors.New("driver lease database unavailable")
+			svc.lc = failingDriverLeaseClient{LedgerClient: lc, target: memberPath.identity, err: leaseErr}
+
+			if _, err := svc.ListSessionsContext(context.Background(), ""); !errors.Is(err, leaseErr) {
+				t.Errorf("ListSessionsContext 必须传播 DriverLease 错误: %v", err)
+			}
+			if _, err := svc.SessionDetailContext(context.Background(), session.ID); !errors.Is(err, leaseErr) {
+				t.Errorf("SessionDetailContext 必须传播 DriverLease 错误: %v", err)
+			}
+		})
+	}
+}
+
 func sessionCard(t *testing.T, st *ledger.Store, title string) ledger.Card {
 	t.Helper()
 	card, err := st.CreateCard(ledger.NewCard{Title: title, Project: "handoff", Workflow: "bug", Actor: "t"})

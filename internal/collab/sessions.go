@@ -86,7 +86,11 @@ func (s *Service) ListSessionsContext(ctx context.Context, member string) ([]pro
 		if hasSnapshot {
 			lastMessage = &snapshot
 		}
-		summary := s.summarizeSession(session, byCard, lastMessage, needs)
+		summary, err := s.summarizeSession(session, byCard, lastMessage, needs)
+		if err != nil {
+			log().Warn("会话列表组装失败：读取成员租约", "session", session.ID, "cause", err)
+			return nil, err
+		}
 		if member != "" {
 			summary.Unread = int(snapshot.MessagesAfter)
 		}
@@ -127,9 +131,13 @@ func (s *Service) SessionDetailContext(ctx context.Context, id string) (proto.Se
 		latestMessage = &roomSnapshots[0]
 	}
 	detail := proto.SessionDetail{
-		Summary:  s.summarizeSession(session, byCard, latestMessage, needs),
 		Nodes:    sessionNodes(session, byCard, events),
 		Timeline: sessionTimeline(events, session),
+	}
+	detail.Summary, err = s.summarizeSession(session, byCard, latestMessage, needs)
+	if err != nil {
+		log().Warn("会话详情组装失败：读取成员租约", "session", session.ID, "cause", err)
+		return proto.SessionDetail{}, err
 	}
 	return detail, nil
 }
@@ -264,12 +272,16 @@ func (s *Service) replyAuthorOf(msg proto.RoomMessage) (string, error) {
 
 // summarizeSession 组装会话列表/详情头部的会话摘要。
 func (s *Service) summarizeSession(session proto.Session, byCard map[string]proto.Card,
-	latestMessage *client.RoomMessageSnapshot, needs map[string]bool) proto.SessionSummary {
+	latestMessage *client.RoomMessageSnapshot, needs map[string]bool) (proto.SessionSummary, error) {
+	members, err := s.sessionMembers(session, byCard)
+	if err != nil {
+		return proto.SessionSummary{}, err
+	}
 	summary := proto.SessionSummary{
 		ID: session.ID, Kind: proto.SessionKind, Title: session.Title,
 		Owner: session.Owner, Archived: session.Archived,
 		LastActivity: session.UpdatedAt,
-		Members:      s.sessionMembers(session, byCard),
+		Members:      members,
 		Cards:        sessionCards(session, byCard),
 	}
 	for _, cardID := range session.Cards {
@@ -292,7 +304,7 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 			}
 		}
 	}
-	return summary
+	return summary, nil
 }
 
 func (s *Service) sessionCardsByID(ctx context.Context, cardIDs []string) (map[string]proto.Card, error) {
@@ -328,7 +340,7 @@ func latestNeedsByCard(events []proto.LedgerEvent) map[string]bool {
 //
 // 显式成员 kind 按统一记法前缀判定（B358.9 契约 §5 H 组条 39/40）：user:→human、
 // agent:→agent。历史脏行（旧 web:/cli: 脸）不崩：kind 按最保守的 human 兜底并留痕。
-func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.Card) []proto.SessionMember {
+func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.Card) ([]proto.SessionMember, error) {
 	members := make([]proto.SessionMember, 0, len(session.Members)+len(session.Cards))
 	for _, identity := range session.Members {
 		kind := proto.SessionMemberHuman
@@ -340,7 +352,11 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 		case parsedKind == proto.IdentityKindAgent:
 			kind = proto.SessionMemberAgent
 		}
-		status, lastActive := s.memberStatus(identity)
+		status, lastActive, err := s.memberStatus(identity)
+		if err != nil {
+			log().Warn("会话成员租约读取失败", "session", session.ID, "identity", identity, "cause", err)
+			return nil, fmt.Errorf("读取会话 %s 成员 %s 租约: %w", session.ID, identity, err)
+		}
 		members = append(members, proto.SessionMember{
 			Identity: identity, Kind: kind, Status: status, LastActive: lastActive,
 		})
@@ -357,24 +373,33 @@ func (s *Service) sessionMembers(session proto.Session, byCard map[string]proto.
 			member.Status = proto.SessionMemberEmpty
 		} else {
 			member.Identity = card.DriverSession
-			member.Status, member.LastActive = s.memberStatus(card.DriverSession)
+			status, lastActive, err := s.memberStatus(card.DriverSession)
+			if err != nil {
+				log().Warn("会话席位租约读取失败", "session", session.ID,
+					"card", cardID, "identity", card.DriverSession, "cause", err)
+				return nil, fmt.Errorf("读取会话 %s 卡 %s 席位租约: %w", session.ID, cardID, err)
+			}
+			member.Status, member.LastActive = status, lastActive
 		}
 		members = append(members, member)
 	}
-	return members
+	return members, nil
 }
 
 // memberStatus 判定成员状态：有未过期租约报 working（活跃租约视为可续租），
-// 否则按可证实性报 last_active。绝不报「在线」。
-func (s *Service) memberStatus(identity string) (string, time.Time) {
+// 缺租约或已过期时报 last_active；租约读取失败向摘要组装方返回错误，不能伪装离线。
+func (s *Service) memberStatus(identity string) (string, time.Time, error) {
 	expiresAt, exists, err := s.lc.DriverLease(identity)
-	if err != nil || !exists {
-		return proto.SessionMemberLastActive, time.Time{}
+	if err != nil {
+		return "", time.Time{}, err
+	}
+	if !exists {
+		return proto.SessionMemberLastActive, time.Time{}, nil
 	}
 	if expiresAt.After(nowFn()) {
-		return proto.SessionMemberWorking, expiresAt
+		return proto.SessionMemberWorking, expiresAt, nil
 	}
-	return proto.SessionMemberLastActive, expiresAt
+	return proto.SessionMemberLastActive, expiresAt, nil
 }
 
 // sessionCards 投影会话里的工作项卡（空座卡 Seat 为空串）。
