@@ -187,7 +187,10 @@ func ledgerDecisionWire(decision ledger.Decision) proto.Decision {
 
 func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
-	views, err := s.ledger.ListCards(ledger.CardFilter{
+	// B409.6 review Important-1：cards 读路径接通 Context 入口——请求取消传播
+	// 到 ledger SQL 阶段，列卡/聚合日志与外围收口行共享同一 operation_id
+	//（与 enrichRoomAttachments 的 roomsapi.go 接线同款）。
+	views, err := s.ledger.ListCardsContext(r.Context(), ledger.CardFilter{
 		Project:         q.Get("project"),
 		Status:          q.Get("status"),
 		BaseBranch:      q.Get("base_branch"),
@@ -199,7 +202,7 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 		ledgerErr(w, err)
 		return
 	}
-	tickets, err := s.ledger.OpenTicketCounts()
+	tickets, err := s.ledger.OpenTicketCountsContext(r.Context())
 	if err != nil {
 		s.log.Warn("未决工单推导失败（徽标退化为不显示，不阻塞列表）", "err", err)
 		tickets = nil

@@ -382,3 +382,43 @@ func TestReadDiagCardsSeparatesLocalAndRemote(t *testing.T) {
 		t.Fatalf("remote_status=%q want latest（无 target 合法空）", attrs["remote_status"])
 	}
 }
+
+// TestCardsReadLogsCorrelatedOperationID 锁 cards 路由的跨层关联（review
+// Important-1）：同一次 GET /api/cards 在 HTTP 外围收口行、ledger 列卡 SQL
+// 阶段行与未决工单投影聚合 SQL 阶段行共享同一 operation_id。cards handler
+// 必须把 r.Context() 传进 ListCardsContext / OpenTicketCountsContext，否则
+// 这两行退化为 Background context、丢 id，与收口行拼不回同一次读取。
+func TestCardsReadLogsCorrelatedOperationID(t *testing.T) {
+	capture := &diagLogCapture{}
+	env := newDiagEnv(t, capture)
+	mustCardDiag(t, env)
+
+	code, body := diagGet(t, env, "/api/cards")
+	if code != http.StatusOK {
+		t.Fatalf("cards 应 200: %d %s", code, body)
+	}
+	wrap, ok := capture.find("读取操作完成")
+	if !ok {
+		t.Fatalf("缺外围收口日志：\n%s", capture.allText())
+	}
+	wrapID, ok := attrValue(wrap, "operation_id")
+	if !ok || wrapID.String() == "" {
+		t.Fatalf("收口行缺 operation_id：%s", capture.allText())
+	}
+	ids := capture.operationIDs()
+	if len(ids) != 1 {
+		t.Fatalf("同一次读取应只有一个 operation_id，得到 %v", ids)
+	}
+	for _, msg := range []string{
+		"列卡完成",         // ledger 列卡 SQL 阶段
+		"聚合未决工单投影完成", // 未决工单聚合 SQL 阶段
+	} {
+		rec, found := capture.find(msg)
+		if !found {
+			t.Fatalf("缺少日志 %q：\n%s", msg, capture.allText())
+		}
+		if v, ok := attrValue(rec, "operation_id"); !ok || v.String() != wrapID.String() {
+			t.Fatalf("日志 %q 缺 operation_id=%s：%s", msg, wrapID.String(), capture.allText())
+		}
+	}
+}
