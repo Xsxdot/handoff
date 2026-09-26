@@ -9,14 +9,17 @@
 package cmd
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"path/filepath"
 	"strings"
 	"text/tabwriter"
+	"time"
 
 	"github.com/Xsxdot/handoff/internal/collab"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	ledgerapi "github.com/Xsxdot/handoff/internal/ledger/api"
@@ -90,20 +93,34 @@ var roomReadCmd = &cobra.Command{
 	Short: "读房间历史（stdout 每行以 #<seq> 开头；--after 排他）",
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
+		started := time.Now()
+		opID := diag.NewOperationID()
+		ctx := diag.With(context.Background(), diag.Info{OperationID: opID})
 		svc, st, err := openRoomService()
 		if err != nil {
 			return err
 		}
 		defer st.Close()
-		events, err := svc.History(args[0], roomReadAfter, 0)
+		counter := &countingWriter{w: cmd.OutOrStdout()}
+		// B409.6：经 HistoryContext 让 op id 贯通到账本查询日志（History 的
+		// background 包装看不到 CLI 上下文）。
+		events, err := svc.HistoryContext(ctx, args[0], roomReadAfter, 0)
 		if err != nil {
-			slog.Default().Warn("CLI 读房间历史失败", "room", args[0], "after", roomReadAfter, "cause", err)
+			slog.Default().Warn("CLI 读房间历史失败", append(diag.Attrs(ctx), "room", args[0],
+				"after", roomReadAfter, "cause", err)...)
 			return fmt.Errorf("读房间历史: %w", err)
 		}
 		for _, ev := range events {
-			fmt.Fprintf(cmd.OutOrStdout(), "#%d\t%s\t%s\n", ev.Seq, ev.Actor, roomMessageBody(ev))
+			fmt.Fprintf(counter, "#%d\t%s\t%s\n", ev.Seq, ev.Actor, roomMessageBody(ev))
 		}
-		slog.Default().Info("CLI 房间历史已输出", "room", args[0], "count", len(events))
+		outcome := "success_empty"
+		if len(events) > 0 {
+			outcome = "success_nonempty"
+		}
+		slog.Default().Info("CLI 房间历史已输出", append(diag.Attrs(ctx), "room", args[0], "count", len(events))...)
+		slog.Default().Info("CLI room read 完成", append(diag.Attrs(ctx), "command", "room_read",
+			"room", args[0], "rows_returned", len(events), "stdout_bytes", counter.n,
+			"outcome", outcome, "elapsed_ns", time.Since(started).Nanoseconds())...)
 		return nil
 	},
 }

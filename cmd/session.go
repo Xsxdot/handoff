@@ -22,6 +22,7 @@ package cmd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -38,6 +39,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/room"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/logx"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -125,16 +127,20 @@ type sessionHit struct {
 // 不选锁方案的原因：锁需要跨「账本候选读」与「collab 判定读」两段持锁，而
 // collab 经接口缝读卡，锁无法横跨两个组件的事务边界；revision 在读多写少的
 // 订阅路径上无写侧争用，且把一致性判据收敛为单一单调量。
-func sessionWaitPage(svc *collab.Service, st *ledger.Store, member string, from, to int64) (hits []sessionHit, next int64, err error) {
+// sessionWaitPage 读一页候选并在席位状态版本护栏内判定。B409.6：ctx 贯通到
+// 候选读与席位版本读（取消时 SQL 真正中断，不只在 select 处感知）；每页判定
+// 收口一行（候选数/命中数/重读次数/耗时）。
+func sessionWaitPage(ctx context.Context, svc *collab.Service, st *ledger.Store, member string, from, to int64) (hits []sessionHit, next int64, err error) {
+	started := time.Now()
 	for attempt := 1; ; attempt++ {
-		revBefore, err := st.SeatRevision()
+		revBefore, err := st.SeatRevisionContext(ctx)
 		if err != nil {
 			return nil, 0, fmt.Errorf("session wait 读席位状态版本: %w", err)
 		}
 		if sessionWaitBeforeQuery != nil {
 			sessionWaitBeforeQuery(from, to)
 		}
-		candidates, err := st.SessionMessageCandidates(member, from, to, sessionWaitPageLimit)
+		candidates, err := st.SessionMessageCandidatesContext(ctx, member, from, to, sessionWaitPageLimit)
 		if err != nil {
 			return nil, 0, fmt.Errorf("session wait 读候选页: %w", err)
 		}
@@ -153,7 +159,7 @@ func sessionWaitPage(svc *collab.Service, st *ledger.Store, member string, from,
 			}
 			lastSeq = ev.Seq
 		}
-		revAfter, err := st.SeatRevision()
+		revAfter, err := st.SeatRevisionContext(ctx)
 		if err != nil {
 			return nil, 0, fmt.Errorf("session wait 复读席位状态版本: %w", err)
 		}
@@ -173,10 +179,25 @@ func sessionWaitPage(svc *collab.Service, st *ledger.Store, member string, from,
 		if len(candidates) < sessionWaitPageLimit && to > 0 {
 			// 窗口已穷尽：本页查询覆盖 (from, to] 全部，扫描水位可跨到 to
 			//（契约第 31 条——可跨过无候选的已查询范围）。
+			slog.Debug("session wait 候选页判定完成", append(diag.Attrs(ctx),
+				"member", member, "from_seq", from, "to_seq", to,
+				"candidates", len(candidates), "hits", len(pageHits),
+				"attempt", attempt, "elapsed_ns", time.Since(started).Nanoseconds())...)
 			return pageHits, to, nil
 		}
+		slog.Debug("session wait 候选页判定完成", append(diag.Attrs(ctx),
+			"member", member, "from_seq", from, "to_seq", to,
+			"candidates", len(candidates), "hits", len(pageHits),
+			"attempt", attempt, "elapsed_ns", time.Since(started).Nanoseconds())...)
 		return pageHits, lastSeq, nil
 	}
+}
+
+// isWaitCancel 报告 err 是否为 wait ctx 的取消/到期（区别于真实读错误）。
+// ctx 贯通查询后，取消会以查询错误形态冒出；这里统一识别，交给调用方按
+// 运行模式映射退出语义（follow 退 0 / 一次性 124）。
+func isWaitCancel(err error) bool {
+	return errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)
 }
 
 // runSessionWait 订阅会话定向消息。无 --since 时从共享交付水位补收；显式
@@ -190,34 +211,102 @@ func sessionWaitPage(svc *collab.Service, st *ledger.Store, member string, from,
 //     不主动退出——SIGINT/SIGTERM 退出 0；--timeout 语义变为空闲上限（任意
 //     两命中帧之间的最大间隔，0 = 不设限），到点 124（与 runCardWait 的
 //     follow 语义同形，card_wait.go:55-56）。
+// countingWriter 统计经 stdout 写出的字节数（B409.6 诊断用；原样透传，
+// 不改写内容——stdout 的每行 JSON 语义不动）。
+type countingWriter struct {
+	w io.Writer
+	n int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.w.Write(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// stockDefaultLogger 记录包加载时的 slog 默认 logger：生产 CLI 进程用它判断
+// 「默认出口还是原始 slog」，从而装配 cli 组件 logger；已被组装方替换（测试
+// 捕获 / 嵌入宿主自备 logger）时不覆盖，诊断日志走既有出口。
+var stockDefaultLogger = slog.Default()
+
 func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error {
-	slog.SetDefault(logx.Setup("cli", ""))
-	slog.Info("session wait 入口", "member", member, "since", sinceFlag,
-		"since_set", sinceSet, "timeout", timeout.String(), "follow", follow)
+	started := time.Now()
+	opID := diag.NewOperationID()
+	baseCtx := cmd.Context()
+	if baseCtx == nil {
+		// 直调（测试/嵌入）未 SetContext 时 cobra 返回 nil；诊断 ctx 仍需落底。
+		baseCtx = context.Background()
+	}
+	ctx := diag.With(baseCtx, diag.Info{OperationID: opID})
+	if slog.Default() == stockDefaultLogger {
+		slog.SetDefault(logx.Setup("cli", ""))
+	}
+	slog.Info("session wait 入口", append(diag.Attrs(ctx), "member", member, "since", sinceFlag,
+		"since_set", sinceSet, "timeout", timeout.String(), "follow", follow)...)
 	if sinceSet && sinceFlag < 0 {
 		return fmt.Errorf("--since 必须为非负 seq（当前 %d）", sinceFlag)
 	}
+	openStarted := time.Now()
 	svc, st, err := openRoomService()
+	openNs := time.Since(openStarted).Nanoseconds()
 	if err != nil {
-		slog.Error("session wait 打开会话服务失败", "member", member, "cause", err)
+		slog.Error("session wait 打开会话服务失败", append(diag.Attrs(ctx),
+			"member", member, "open_ns", openNs, "cause", err)...)
+		slog.Warn("session wait 完成", append(diag.Attrs(ctx), "command", "session_wait",
+			"member", member, "outcome", "error", "error_class", "open_failed",
+			"stdout_bytes", int64(0), "elapsed_ns", time.Since(started).Nanoseconds())...)
 		return fmt.Errorf("session wait 打开会话服务: %w", err)
 	}
 	defer st.Close()
-	return sessionWaitRun(cmd.Context(), svc, st, cmd.OutOrStdout(), member, sinceFlag, sinceSet, timeout, follow)
+	counter := &countingWriter{w: cmd.OutOrStdout()}
+	runErr := sessionWaitRun(ctx, svc, st, counter, member, sinceFlag, sinceSet, timeout, follow)
+
+	// B409.6 收口：结果分类 + stdout 字节 + 总耗时；诊断只写 stderr（slog
+	// 出口），stdout 的 JSON 行与退出码语义不变。
+	attrs := append(diag.Attrs(ctx), "command", "session_wait", "member", member,
+		"follow", follow, "open_ns", openNs, "stdout_bytes", counter.n,
+		"elapsed_ns", time.Since(started).Nanoseconds())
+	var codeErr *exitCodeError
+	outcome := ""
+	switch {
+	case runErr == nil && counter.n > 0:
+		outcome = "success_nonempty"
+	case runErr == nil:
+		outcome = "canceled"
+		attrs = append(attrs, "cancel_reason", "context_canceled")
+	case errors.As(runErr, &codeErr) && codeErr.code == ExitTimeout:
+		outcome = "canceled"
+		attrs = append(attrs, "cancel_reason", "deadline_exceeded")
+	case isWaitCancel(runErr):
+		outcome = "canceled"
+		attrs = append(attrs, "cancel_reason", "context_canceled")
+	default:
+		outcome = "error"
+		attrs = append(attrs, "error_class", "cli_error")
+	}
+	attrs = append(attrs, "outcome", outcome)
+	level := slog.Info
+	if outcome == "error" {
+		level = slog.Warn
+	}
+	level("session wait 完成", attrs...)
+	return runErr
 }
 
 // sessionWaitRun 是订阅通道的核心循环（runSessionWait 的依赖注入形态，测试
 // 用它注入假 writer / 已关闭账本 / 竞态钩子）。ctx 只用于退出信号；查询自身
 // 按页有界，取消语义沿用既有 select 轮询（两方言一致，契约第 55 条）。
 func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, out io.Writer, member string, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error {
+	runStarted := time.Now()
 	if !sinceSet {
 		// 默认：读共享交付水位。读错必须显式失败——把读错当 0 会把停听期间
 		// 已交付的窗口当作未交付全量重放，反向会把未交付窗口当已交付丢掉
-		//（契约第 10/43/44 条的反向）。
+		//（契约第 10/43/44 条的反向）。B409.6：点读随 ctx 取消。
 		var err error
-		sinceFlag, err = st.SessionDeliveryCursor(member)
+		sinceFlag, err = st.SessionDeliveryCursorContext(ctx, member)
 		if err != nil {
-			slog.Error("session wait 读取交付水位失败", "member", member, "cause", err)
+			slog.Error("session wait 读取交付水位失败", append(diag.Attrs(ctx),
+				"member", member, "cause", err)...)
 			return fmt.Errorf("session wait 读取交付水位: %w", err)
 		}
 	}
@@ -254,8 +343,19 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 		scan := cursor
 		backlog := proto.SessionBacklog{Type: "session_backlog", Member: member, FromSeq: from, Hits: []proto.SessionBacklogHit{}}
 		for scan < fence {
-			hits, next, err := sessionWaitPage(svc, st, member, scan, fence)
+			hits, next, err := sessionWaitPage(ctx, svc, st, member, scan, fence)
 			if err != nil {
+				if isWaitCancel(err) {
+					// ctx 贯通后取消以查询错误冒出：follow 主动退 0，一次性按
+					// 超时 124——与 select 分支同语义，不把取消记成读错误。
+					slog.Info("session wait 积压扫描被取消", append(diag.Attrs(ctx),
+						"member", member, "from_seq", from, "through_seq", scan,
+						"elapsed_ns", time.Since(runStarted).Nanoseconds())...)
+					if follow {
+						return nil
+					}
+					return &exitCodeError{code: ExitTimeout, err: fmt.Errorf("session wait 超时")}
+				}
 				return err
 			}
 			if next <= scan {
@@ -274,8 +374,9 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 			}
 			scan = next
 		}
-		slog.Info("session wait 积压扫描完成", "member", member, "from_seq", from,
-			"through_seq", scan, "hits", len(backlog.Hits))
+		slog.Info("session wait 积压扫描完成", append(diag.Attrs(ctx), "member", member,
+			"from_seq", from, "through_seq", scan, "hits", len(backlog.Hits),
+			"elapsed_ns", time.Since(runStarted).Nanoseconds())...)
 		if len(backlog.Hits) > 0 {
 			// stdout 成功才算交付（契约第 58 条）；随后推进到最高命中 seq。
 			if err := enc.Encode(backlog); err != nil {
@@ -310,13 +411,32 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 	ticker := time.NewTicker(sessionWaitPollInterval)
 	defer ticker.Stop()
 	for {
-		fence, err := st.MaxSeq()
+		fence, err := st.MaxSeqContext(ctx)
 		if err != nil {
+			// ctx 到期/取消不会自愈：与页查询同款退出映射（follow 退 0 /
+			// 一次性 124）。这里若 continue，到期的 ctx 会让循环原地打转。
+			if isWaitCancel(err) {
+				slog.Info("session wait 读取流边界被取消", append(diag.Attrs(ctx),
+					"member", member, "elapsed_ns", time.Since(runStarted).Nanoseconds())...)
+				if follow {
+					return nil
+				}
+				return &exitCodeError{code: ExitTimeout, err: fmt.Errorf("session wait 超时")}
+			}
 			return fmt.Errorf("session wait 读取流边界: %w", err)
 		}
 		if fence > cursor {
-			hits, next, err := sessionWaitPage(svc, st, member, cursor, fence)
+			hits, next, err := sessionWaitPage(ctx, svc, st, member, cursor, fence)
 			if err != nil {
+				if isWaitCancel(err) {
+					slog.Info("session wait 实时扫描被取消", append(diag.Attrs(ctx),
+						"member", member, "through_seq", cursor,
+						"elapsed_ns", time.Since(runStarted).Nanoseconds())...)
+					if follow {
+						return nil
+					}
+					return &exitCodeError{code: ExitTimeout, err: fmt.Errorf("session wait 超时")}
+				}
 				return err
 			}
 			for _, h := range hits {
@@ -337,8 +457,9 @@ func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, 
 						return fmt.Errorf("session wait 写交付水位: %w", err)
 					}
 				}
-				slog.Info("session wait 命中并输出", "member", member,
-					"session", h.msg.Room, "seq", h.ev.Seq, "follow", follow)
+				slog.Info("session wait 命中并输出", append(diag.Attrs(ctx), "member", member,
+					"session", h.msg.Room, "seq", h.ev.Seq, "follow", follow,
+					"elapsed_ns", time.Since(runStarted).Nanoseconds())...)
 				if !follow {
 					return nil // 一次性原语：首个命中输出后退出 0（条 46）
 				}
