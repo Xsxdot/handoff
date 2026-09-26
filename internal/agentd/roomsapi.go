@@ -330,7 +330,8 @@ func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
 					s.invalidateRoomAttach(link)
 					s.log.Warn("房间 attach 后台刷新失败", "refresh_id", refreshID,
 						"target", link.Target, "task", link.TaskID,
-						"outcome", attachOutcome(err), "target_call_ns", elapsedNs, "cause", err)
+						"outcome", attachOutcome(err), "error_class", attachErrorClass(err),
+						"target_call_ns", elapsedNs, "cause", err)
 					return
 				}
 				s.storeRoomAttach(link, attach)
@@ -673,5 +674,18 @@ func attachOutcome(err error) string {
 		return "canceled"
 	default:
 		return "error"
+	}
+}
+
+// attachErrorClass 与 unlinkedTargetErrorClass 同族：attach lookup 失败行的
+// 有限安全分类。
+func attachErrorClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	default:
+		return "target_error"
 	}
 }

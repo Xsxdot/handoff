@@ -274,6 +274,19 @@ type unlinkedTargetResult struct {
 	outcome   string
 }
 
+// unlinkedTargetErrorClass 给失败 target 收口行一个有限安全分类（原始错误
+// 文案不可视为安全，不进分类行）。
+func unlinkedTargetErrorClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	case errors.Is(err, context.Canceled):
+		return "context_canceled"
+	default:
+		return "target_error"
+	}
+}
+
 // unlinkedTargetOutcome 把一台 target 的调用结果归入有限类别：success/empty/
 // error/deadline/canceled。总 deadline 与单台 timeout、关停取消分开可辨。
 func unlinkedTargetOutcome(err error, rows []map[string]any) string {
@@ -556,9 +569,14 @@ func (s *Server) readUnlinkedTarget(ctx context.Context, cfg *config.Config, nam
 		if result.outcome == "error" || result.outcome == "deadline" {
 			level = s.log.Warn
 		}
-		level("未挂账 target 读取结束", append(diag.Attrs(ctx), "target", name,
+		attrs := append(diag.Attrs(ctx), "target", name,
 			"outcome", result.outcome, "target_call_ns", result.elapsedNs,
-			"task_count", len(result.rows))...)
+			"task_count", len(result.rows))
+		if result.outcome != "success" && result.outcome != "empty" {
+			// 失败行带安全分类；原始错误文案只进既有 cause 行，不进分类行。
+			attrs = append(attrs, "error_class", unlinkedTargetErrorClass(result.err))
+		}
+		level("未挂账 target 读取结束", attrs...)
 	}()
 	result.name = name
 	result.rows = make([]map[string]any, 0)
