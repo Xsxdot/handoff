@@ -3,11 +3,15 @@
 package ledger
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -229,6 +233,168 @@ func TestRoomHistoryPostgresCancelsBlockedRead(t *testing.T) {
 	case <-time.After(2 * time.Second):
 		t.Fatal("PostgreSQL 查询在 context 取消后仍未退出")
 	}
+}
+
+func TestTaskLinkKeysPostgresPayloadDoesNotGrowWithDispatchedHistory(t *testing.T) {
+	s := newB409PGStore(t)
+	if err := seedTestWorkflows(t, s); err != nil {
+		t.Fatalf("准备隔离测试工作流: %v", err)
+	}
+	project := fmt.Sprintf("b409-key-read-%d", time.Now().UnixNano())
+	prefixValue := time.Now().UnixNano()
+	prefix := string([]byte{
+		byte('A' + prefixValue%26), byte('A' + prefixValue/26%26),
+		byte('A' + prefixValue/676%26), byte('A' + prefixValue/17576%26),
+	})
+	if err := s.SetCardPrefix(project, prefix); err != nil {
+		t.Fatalf("给隔离夹具设置未占用前缀: %v", err)
+	}
+	card, err := s.CreateCard(NewCard{Title: "B409 link key read", Project: project, Workflow: "bug", Actor: "b409-pg-test"})
+	if err != nil {
+		t.Fatalf("创建 B409 link-key 卡夹具: %v", err)
+	}
+	t.Cleanup(func() {
+		if _, err := s.db.Exec(`DELETE FROM card_events WHERE card_id = $1`, card.ID); err != nil {
+			t.Errorf("清理 B409 link-key 事件: %v", err)
+		}
+		if _, err := s.db.Exec(`DELETE FROM card_tasks WHERE card_id = $1`, card.ID); err != nil {
+			t.Errorf("清理 B409 link-key 关联: %v", err)
+		}
+		if _, err := s.db.Exec(`DELETE FROM cards WHERE id = $1`, card.ID); err != nil {
+			t.Errorf("清理 B409 link-key 卡: %v", err)
+		}
+		if _, err := s.db.Exec(`DELETE FROM card_prefixes WHERE project = $1`, project); err != nil {
+			t.Errorf("清理 B409 link-key 卡号前缀: %v", err)
+		}
+	})
+	for _, snapshot := range []DispatchSnapshot{
+		{Target: "mac-02", TaskID: "task-a", Node: "implement", Attempt: "task-a", Purpose: PurposeImplement, Actor: "b409-pg-test"},
+		{Target: "linux-01", TaskID: "task-b", Node: "review", Attempt: "task-b", Purpose: PurposeReview, Actor: "b409-pg-test"},
+	} {
+		if err := s.RecordDispatch(card.ID, snapshot); err != nil {
+			t.Fatalf("写入派发快照: %v", err)
+		}
+		if err := s.LinkTask(card.ID, snapshot.Target, snapshot.TaskID, snapshot.Purpose, "b409-pg-test"); err != nil {
+			t.Fatalf("写入固定关联键: %v", err)
+		}
+	}
+	beforeKeys, beforeRows, beforeBytes := captureTaskLinkKeyRead(t, s)
+	if len(beforeKeys) != 2 || beforeRows != 2 || beforeBytes != int64(len("linux-01task-b")+len("mac-02task-a")) {
+		t.Fatalf("基准 Store/PG 扫描边界不符: keys=%+v rows=%d bytes=%d", beforeKeys, beforeRows, beforeBytes)
+	}
+
+	const unrelatedDispatches = 10_000
+	if _, err := s.db.Exec(`INSERT INTO card_events(card_id, type, actor, payload, created_at)
+		SELECT $1, $2, 'b409-pg-noise',
+			jsonb_build_object('target', 'noise', 'task_id', 'noise-' || n,
+				'node', 'unrelated-node', 'attempt', 'noise-' || n,
+				'body', repeat('x', 256)), now()
+		FROM generate_series(1, $3) AS series(n)`, card.ID, EvDispatched, unrelatedDispatches); err != nil {
+		t.Fatalf("写入 10k 无关 EvDispatched 历史: %v", err)
+	}
+
+	afterKeys, afterRows, afterBytes := captureTaskLinkKeyRead(t, s)
+	if len(afterKeys) != 2 || afterRows != beforeRows || afterBytes != beforeBytes {
+		t.Fatalf("10k 无关 EvDispatched 不得扩大 key-only PG 读取: before=%d/%d after=%d/%d keys=%+v",
+			beforeRows, beforeBytes, afterRows, afterBytes, afterKeys)
+	}
+	t.Logf("B409_KEY_READ rows_before=%d key_bytes_before=%d rows_after_10k=%d key_bytes_after_10k=%d unrelated_events=%d",
+		beforeRows, beforeBytes, afterRows, afterBytes, unrelatedDispatches)
+	legacy, err := s.AllTaskLinks()
+	if err != nil {
+		t.Fatalf("旧投影读面语义应保持可用: %v", err)
+	}
+	if len(legacy) != 2 || legacy[0].Node == "" || legacy[0].Attempt == "" || legacy[1].Node == "" || legacy[1].Attempt == "" {
+		t.Fatalf("旧 AllTaskLinks 派发身份投影被改变: %+v", legacy)
+	}
+}
+
+func TestTaskLinkKeysPostgresCancelsBlockedRead(t *testing.T) {
+	s := newB409PGStore(t)
+	lockConn, err := s.db.Conn(t.Context())
+	if err != nil {
+		t.Fatalf("获取 PostgreSQL 锁连接: %v", err)
+	}
+	defer lockConn.Close()
+	lockTx, err := lockConn.BeginTx(t.Context(), nil)
+	if err != nil {
+		t.Fatalf("开启 PostgreSQL 锁事务: %v", err)
+	}
+	defer lockTx.Rollback()
+	if _, err := lockTx.ExecContext(t.Context(), `LOCK TABLE card_tasks IN ACCESS EXCLUSIVE MODE`); err != nil {
+		t.Fatalf("锁住隔离账本关联表: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	result := make(chan error, 1)
+	go func() {
+		_, err := s.AllTaskLinkKeysContext(ctx)
+		result <- err
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	blocked := false
+	for time.Now().Before(deadline) {
+		var waiting int
+		if err := s.db.QueryRowContext(t.Context(), `SELECT COUNT(*) FROM pg_stat_activity
+			WHERE datname = current_database() AND state = 'active' AND wait_event_type = 'Lock'
+			AND query LIKE 'SELECT target, task_id FROM card_tasks%'`).Scan(&waiting); err != nil {
+			t.Fatalf("确认 key-only PostgreSQL 查询进入锁等待: %v", err)
+		}
+		if waiting > 0 {
+			blocked = true
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !blocked {
+		cancel()
+		select {
+		case <-result:
+		case <-time.After(2 * time.Second):
+		}
+		t.Fatal("key-only 查询未进入 PostgreSQL 锁等待，无法验证在途取消")
+	}
+	canceledAt := time.Now()
+	cancel()
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("取消 PostgreSQL key-only 查询应返回 context.Canceled，得到 %v", err)
+		}
+		if elapsed := time.Since(canceledAt); elapsed > 2*time.Second {
+			t.Fatalf("取消 PostgreSQL key-only 查询耗时过长: %s", elapsed)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("PostgreSQL key-only 查询在 context 取消后仍未退出")
+	}
+}
+
+// captureTaskLinkKeyRead observes the actual rows and string payload bytes
+// scanned by the Store method through its structured completion log.
+func captureTaskLinkKeyRead(t *testing.T, s *Store) ([]TaskLinkKey, int, int64) {
+	t.Helper()
+	var output bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&output, nil)))
+	defer slog.SetDefault(previous)
+	keys, err := s.AllTaskLinkKeysContext(t.Context())
+	if err != nil {
+		t.Fatalf("Store AllTaskLinkKeysContext: %v", err)
+	}
+	var rows int
+	var keyBytes int64
+	for _, line := range strings.Split(strings.TrimSpace(output.String()), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("解析 key-only 读取探针: %v; line=%s", err, line)
+		}
+		if record["msg"] == "读取未挂账关联键完成" {
+			rows = int(record["rows_read"].(float64))
+			keyBytes = int64(record["key_bytes"].(float64))
+		}
+	}
+	return keys, rows, keyBytes
 }
 
 // smokeProject 冒烟数据的项目名——同时是清理段的作用域边界。

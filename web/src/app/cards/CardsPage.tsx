@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useLocation, useNavigate, useSearchParams } from 'react-router-dom'
 import { ApiError } from '../../api/client'
-import { answerDecision, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
+import { answerDecision, effectiveUnlinkedSummary, fetchCards, fetchDecisions, fetchFlow, fetchFlows, fetchLedgerHealth } from '../../api/ledger'
 import { getQueue } from '../../api/scheduling'
 import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import type { QueueEntry } from '../../api/scheduling'
 import type { CardView, Decision, FlowDetail, FlowsResp, NodeDef, UnlinkedSummary } from '../../api/ledger'
 import { usePoll } from '../data/usePoll'
+import { useUnlinkedSummaryClock } from '../data/useUnlinkedSummaryClock'
 import { useTasks } from '../data/useTasks'
 import { isDesktopShell, requestOpenCurrentPageInBrowser } from '../lib/desktopShell'
 import { errorMessage } from '../lib/format'
@@ -32,20 +33,56 @@ function projectDecisionCount(decisions: Decision[]): number {
 }
 
 function UnlinkedRow({ summary }: { summary: UnlinkedSummary }) {
-  const hasUnknown = (summary.unknown_targets?.length ?? 0) > 0
-  if (summary.count === 0 && !hasUnknown) return null
+  const now = useUnlinkedSummaryClock(summary.observed_at)
+  const effective = effectiveUnlinkedSummary(summary, now)
+  const unknownTargets = effective.unknownTargets
+  const hasUnknown = unknownTargets.length > 0
+  const status = effective.status
+  const tasks = effective.tasks
+  const count = effective.count
+  if (status === 'latest' && count === 0 && !hasUnknown) return null
+
   const groups = new Map<string, number>()
-  for (const task of summary.tasks ?? []) groups.set(task.target, (groups.get(task.target) ?? 0) + 1)
-  const compact = [...groups.entries()].map(([target, count]) => `${target}×${count}`).join('、')
+  for (const task of tasks) groups.set(task.target, (groups.get(task.target) ?? 0) + 1)
+  const compact = [...groups.entries()].map(([target, taskCount]) => `${target}×${taskCount}`).join('、')
+  const observedLabel = unlinkedObservedLabel(effective.observedAt, now)
+  let heading: string
+  switch (status) {
+    case 'latest':
+      heading = `未挂账 task ${count}${compact ? `（${compact}）` : ''}`
+      break
+    case 'partial':
+      heading = `未挂账 task ${count}（部分观测）${compact ? `（${compact}）` : ''}`
+      break
+    case 'stale':
+      heading = `未挂账 task ${count}（上次观测：${observedLabel}）`
+      break
+    default:
+      heading = '未挂账摘要暂无可用观测'
+  }
   return (
-    <details className="border-y border-amber-200 bg-amber-50 px-4 py-1.5 text-xs text-amber-800">
-      <summary className="cursor-pointer">未挂账 task {summary.count}{compact ? `（${compact}）` : ''}{hasUnknown ? `／不可达: ${summary.unknown_targets?.join('、')}` : ''}</summary>
+    <details data-testid="unlinked-summary-row" data-status={status} className="border-y border-amber-200 bg-amber-50 px-4 py-1.5 text-xs text-amber-800">
+      <summary className="cursor-pointer">{heading}{hasUnknown ? `／未知目标: ${unknownTargets.join('、')}` : ''}</summary>
       <div className="flex flex-wrap gap-1.5 py-2">
-        {(summary.tasks ?? []).map((task) => <span key={`${task.target}/${task.task_id}`} className="rounded border border-amber-200 bg-background px-2 py-1"><b>{task.target}</b> · <span className="font-mono">{task.task_id}</span> · {task.title} · {task.state}</span>)}
-        {hasUnknown && <span>不可达：{summary.unknown_targets?.join('、')}</span>}
+        {status === 'stale' && <span>历史观测时间：<time dateTime={effective.observedAt ?? undefined}>{observedLabel}</time>；当前数量尚未确认。</span>}
+        {status === 'unavailable' && <span>系统尚未取得可用摘要，因此不能判断当前是否为零。</span>}
+        {tasks.map((task) => <span key={`${task.target}/${task.task_id}`} className="rounded border border-amber-200 bg-background px-2 py-1"><b>{task.target}</b> · <span className="font-mono">{task.task_id}</span> · {task.title} · {task.state}</span>)}
+        {hasUnknown && <span>未知目标：{unknownTargets.join('、')}</span>}
       </div>
     </details>
   )
+}
+
+function unlinkedObservedLabel(observedAt?: string | null, now = Date.now()): string {
+  if (!observedAt) return '时间未知'
+  const timestamp = Date.parse(observedAt)
+  if (!Number.isFinite(timestamp)) return '时间未知'
+  const ageMs = Math.max(0, now - timestamp)
+  const age = ageMs < 60_000 ? '不到 1 分钟' : ageMs < 60 * 60_000
+    ? `${Math.floor(ageMs / 60_000)} 分钟` : ageMs < 24 * 60 * 60_000
+      ? `${Math.floor(ageMs / (60 * 60_000))} 小时` : `${Math.floor(ageMs / (24 * 60 * 60_000))} 天`
+  const absolute = new Date(timestamp).toISOString().replace('T', ' ').replace('.000Z', ' UTC').replace(/Z$/, ' UTC')
+  return `${absolute}（已过 ${age}）`
 }
 
 function ProjectDecisions({ decisions }: { decisions: Decision[] }) {
@@ -310,7 +347,7 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
       />
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
-      <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
+      {cardsPoll.data?.unlinked && <UnlinkedRow summary={cardsPoll.data.unlinked} />}
       {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, boardLayout).map((column) => { const inColumn = cardsInColumn(filtered, column, boardLayout); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => { const pinned = pinnedWorkflowKey(card); const detail = pinned ? pinnedWorkflows[pinned] : undefined; const cardStates = detail?.states ?? []; const cardBoard = detail ? normalizeBoardLayout(detail.board, cardStates) : boardLayout; const cardNodes = detail?.nodes?.map((node) => node.name) ?? []; return <CardItem key={card.id} card={card} queuePosition={queuePositions.get(card.id)} nodeTag={detail ? nodeLabelFor(card.status, cardNodes, cardBoard) : undefined} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} /> })}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
       {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? boardLayout : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} />}

@@ -1,9 +1,54 @@
 package ledger
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
+
+func TestAllTaskLinkKeysContextReturnsOnlyConsumerKeys(t *testing.T) {
+	s := seedStore(t)
+	card := mk(t, s, "link keys")
+	for _, link := range []struct{ target, task string }{
+		{"mac-02", "task-b"},
+		{"linux-01", "task-a"},
+		{"mac-02", "task-a"},
+	} {
+		if err := s.LinkTask(card.ID, link.target, link.task, "implement", "test"); err != nil {
+			t.Fatalf("LinkTask(%s,%s): %v", link.target, link.task, err)
+		}
+	}
+	if err := s.RecordDispatch(card.ID, DispatchSnapshot{
+		Target: "mac-02", TaskID: "task-a", Node: "review", Attempt: "attempt-1",
+		Purpose: PurposeReview, Actor: "test",
+	}); err != nil {
+		t.Fatalf("RecordDispatch: %v", err)
+	}
+
+	got, err := s.AllTaskLinkKeysContext(context.Background())
+	if err != nil {
+		t.Fatalf("AllTaskLinkKeysContext: %v", err)
+	}
+	want := []TaskLinkKey{
+		{Target: "linux-01", TaskID: "task-a"},
+		{Target: "mac-02", TaskID: "task-a"},
+		{Target: "mac-02", TaskID: "task-b"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("keys length=%d, want %d: %+v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("keys[%d]=%+v, want %+v", i, got[i], want[i])
+		}
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := s.AllTaskLinkKeysContext(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("cancelled context should stop the scoped key read, got %v", err)
+	}
+}
 
 func TestB2336TaskLinkProjection(t *testing.T) {
 	s := seedStore(t)

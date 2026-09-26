@@ -14,7 +14,8 @@ import userEvent from '@testing-library/user-event'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
-import { coordinatorBase } from './Shell'
+import { coordinatorBase, unlinkedTaskIdsForSummary } from './Shell'
+import type { UnlinkedSummary } from '../../api/ledger'
 import type { ProjectTreeResp, Task } from '../../api/types'
 import { DRAG_BASE_MIME, DRAG_DIR_MIME, DRAG_SESSION_MIME, DRAG_TASK_MIME } from '../workbench/paneDrop'
 
@@ -101,6 +102,30 @@ vi.mock('../data/usePreviews', async () => {
   return { ...actual, usePreviews: vi.fn() }
 })
 const { usePreviews } = await import('../data/usePreviews')
+
+describe('未挂账筛选可信边界', () => {
+  const latest: UnlinkedSummary = {
+    status: 'latest', observed_at: new Date().toISOString(), count: 1,
+    tasks: [{ target: 'linux-01', task_id: 'T1', title: '任务', state: 'running' }],
+    unknown_targets: [],
+  }
+
+  it('只有带时间戳的完整最新观测能生成当前筛选集合', () => {
+    expect([...unlinkedTaskIdsForSummary(latest)!]).toEqual(['T1'])
+    expect(unlinkedTaskIdsForSummary({ ...latest, observed_at: null })).toBeNull()
+    expect(unlinkedTaskIdsForSummary({ ...latest, unknown_targets: ['linux-02'] })).toBeNull()
+    const observedAt = Date.parse(latest.observed_at!)
+    expect(unlinkedTaskIdsForSummary(latest, observedAt + 30_000)).not.toBeNull()
+    expect(unlinkedTaskIdsForSummary(latest, observedAt + 30_001)).toBeNull()
+  })
+
+  it('partial、stale、unavailable、缺失状态和未知状态都不过滤任务', () => {
+    for (const status of ['partial', 'stale', 'unavailable', undefined, 'future'] as const) {
+      const summary = { ...latest, status } as unknown as UnlinkedSummary
+      expect(unlinkedTaskIdsForSummary(summary), String(status)).toBeNull()
+    }
+  })
+})
 
 // T1 挂在 /w/b2-b3 这个工作树上（project_id 'p1'、本机、running）。
 // plan_summary 与 name 不同文：taskDisplayName 口径下「名是摘要前缀」视为
@@ -192,6 +217,7 @@ beforeAll(() => {
 })
 
 afterEach(() => {
+  vi.unstubAllGlobals()
   // 紧凑视口用例会改写 innerWidth；每个用例后复位成 jsdom 默认（桌面档），
   // 否则后面的桌面断言会被上一个用例污染（用例顺序耦合是隐性假绿）。
   Object.defineProperty(window, 'innerWidth', { value: 1024, configurable: true, writable: true })
@@ -255,6 +281,55 @@ function renderShell(path = '/') {
     </MemoryRouter>,
   )
 }
+
+describe('Shell 到 BoardPage 的摘要真实 JSON 接缝', () => {
+  it('仅新鲜完整 latest 过滤 task；其他 wire 状态都把全量 task 交给看板', async () => {
+    const now = Date.now()
+    const linkedTask = { target: 'linux-01', task_id: 'T2', title: '未挂账任务', state: 'running' }
+    const states = [
+      { name: 'latest', expected: 1, summary: { status: 'latest', observed_at: new Date(now).toISOString(), count: 1, tasks: [linkedTask], unknown_targets: [] } },
+      { name: 'partial', expected: 2, summary: { status: 'partial', observed_at: new Date(now).toISOString(), count: 1, tasks: [linkedTask], unknown_targets: ['linux-02'] } },
+      { name: 'expired latest', expected: 2, summary: { status: 'latest', observed_at: new Date(now - 30_001).toISOString(), count: 1, tasks: [linkedTask], unknown_targets: [] } },
+      { name: 'stale', expected: 2, summary: { status: 'stale', observed_at: '2020-01-01T00:00:00Z', count: 1, tasks: [linkedTask], unknown_targets: [] } },
+      { name: 'unavailable', expected: 2, summary: { status: 'unavailable', observed_at: null, count: 0, tasks: [], unknown_targets: ['linux-02'] } },
+      { name: 'missing status', expected: 2, summary: { observed_at: new Date(now).toISOString(), count: 1, tasks: [linkedTask], unknown_targets: [] } },
+      { name: 'unknown status', expected: 2, summary: { status: 'future', observed_at: new Date(now).toISOString(), count: 1, tasks: [linkedTask], unknown_targets: [] } },
+      { name: 'malformed count', expected: 2, summary: { status: 'latest', observed_at: new Date(now).toISOString(), count: 2, tasks: [linkedTask], unknown_targets: [] } },
+    ]
+    const secondTask: Task = { ...t1, id: 'T2', name: '未挂账任务', repo_path: '/w/second', work_dir: '/w/second' }
+    vi.mocked(fetchTasks).mockResolvedValue([t1, secondTask])
+    const json = (body: unknown) => new Response(JSON.stringify(body), {
+      status: 200,
+      headers: { 'Content-Type': 'application/json' },
+    })
+    let currentUnlinked: unknown = states[0].summary
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const path = String(input)
+      if (path === '/api/cards') return json({
+        cards: [{ id: 'C1', project: 'p1', needs: '等待处理', open_decisions: 0, conflict: false, open_tickets: 0 }],
+        unlinked: currentUnlinked,
+      })
+      if (path === '/api/decisions?open=1') return json({ decisions: [] })
+      throw new Error(`unexpected network request: ${path}`)
+    })
+    vi.stubGlobal('fetch', fetchMock)
+
+    let cardsResponses = 0
+    for (const state of states) {
+      currentUnlinked = state.summary
+      const responseNo = cardsResponses + 1
+      const rendered = renderShell()
+      await waitFor(() => {
+        cardsResponses = fetchMock.mock.calls.filter(([input]) => String(input) === '/api/cards').length
+        expect(cardsResponses).toBeGreaterThanOrEqual(responseNo)
+        expect(screen.getByRole('button', { name: '工作项' })).toHaveTextContent('1')
+      })
+      await userEvent.click(screen.getByRole('button', { name: '任务看板' }))
+      expect(await screen.findByText(`共 ${state.expected} 个任务`), state.name).toBeInTheDocument()
+      rendered.unmount()
+    }
+  })
+})
 
 async function openBranch() {
   // 从整页路由回来时 ProjectTree 仍保留 directoryOpen；只有收起时才展开，

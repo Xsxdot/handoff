@@ -108,11 +108,20 @@ type Server struct {
 	cfgPath string
 	st      *store.Store
 	ledger  *ledger.Store
-	// unlinked* caches the only web ledger join that may dial registered targets.
-	// The cache keeps the cards endpoint bounded when a target is unavailable.
-	unlinkedMu    sync.Mutex
-	unlinkedAt    time.Time
-	unlinkedCache map[string]any
+	// unlinked* owns the cached remote summary refresh. The HTTP reader only
+	// snapshots this state; refresh I/O runs outside the lock on its own context.
+	unlinkedMu             sync.Mutex
+	unlinkedCache          *unlinkedSummarySnapshot
+	unlinkedRefreshing     bool
+	unlinkedStopped        bool
+	unlinkedLastAttemptAt  time.Time
+	unlinkedLastAttemptFor map[string]config.Target
+	unlinkedLastAttemptCfg *config.Config
+	unlinkedRefreshCtx     context.Context
+	unlinkedRefreshCancel  context.CancelFunc
+	unlinkedRefreshWG      sync.WaitGroup
+	unlinkedCloseOnce      sync.Once
+	unlinkedCloseErr       error
 	// roomAttachCache stores resolved remote task workdirs with per-entry TTL. Remote
 	// attach lookup is non-critical for the rooms list, so refreshes run in the background;
 	// failed refreshes remove the old projection instead of keeping stale executable data.
@@ -272,6 +281,7 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 	}
 	inst := release.NewInstaller(log, tr)
 	releaseClient := release.NewClient(tr)
+	unlinkedRefreshCtx, unlinkedRefreshCancel := context.WithCancel(context.Background())
 	exe, err := os.Executable()
 	if err != nil {
 		// 拿不到自身路径就起不了 ptyhost；PTY 是控制台的附属能力，不应拖垮 agentd。
@@ -299,6 +309,8 @@ func NewServer(cfg *config.Config, st *store.Store, log *slog.Logger) *Server {
 		machineUpgradeInstaller: inst,
 		cardStepFlight:          make(map[string]bool),
 		roomAttachCache:         make(map[string]roomAttachCacheEntry),
+		unlinkedRefreshCtx:      unlinkedRefreshCtx,
+		unlinkedRefreshCancel:   unlinkedRefreshCancel,
 		coordLocks:              make(map[string]*sync.Mutex),
 		automationKick:          make(chan struct{}, 1),
 		automationSeen:          make(map[int64]struct{}),
@@ -583,10 +595,25 @@ func (s *Server) StopPreviewServices(ctx context.Context) error {
 	return stopErr
 }
 
-// CloseTargets 关掉池内全部客户端与 relay 隧道。
+// CloseTargets stops and joins background unlinked-summary refreshes before
+// closing all pooled clients and relay tunnels.
 //
-// 注意：只在进程退出路径调用。池关了就不再复活（relay.Dialer.Close 是终态）。
-func (s *Server) CloseTargets() error { return s.pool.Close() }
+// 注意：只在进程退出路径调用。停止门与 WaitGroup.Add 共用 unlinkedMu，
+// 保证关停开始后不会再有 worker 加入等待集；池关了就不再复活。
+func (s *Server) CloseTargets() error {
+	s.unlinkedCloseOnce.Do(func() {
+		s.unlinkedMu.Lock()
+		s.unlinkedStopped = true
+		cancel := s.unlinkedRefreshCancel
+		s.unlinkedMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		s.unlinkedRefreshWG.Wait()
+		s.unlinkedCloseErr = s.pool.Close()
+	})
+	return s.unlinkedCloseErr
+}
 
 // swapConf 以写时复制的方式修改配置并落盘。
 //

@@ -16,6 +16,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
@@ -240,54 +241,239 @@ func (s *Server) cfgTargets() map[string]config.Target {
 	return s.conf().Targets
 }
 
-// unlinkedSummary 「未挂账」摘要：登记 target 上存在、card_tasks 里没有、
-// **且还没走到终态**的 task。拨号失败进入 unknown_targets，而不是假装为零。
-//
-// 为什么排除终态（见 unlinkedRowsFor）：这个摘要的用途是「账目对不上，需要
-// 补挂卡」的兜底提醒——已 completed/failed 的历史任务补挂已无意义，把它们
-// 算进来只会让角标常年停在三位数（实测本机 164 条全是终态），提醒退化成噪声。
+const (
+	unlinkedSummaryTTL       = 30 * time.Second
+	unlinkedSummaryDeadline  = 2 * time.Second
+	unlinkedTargetDeadline   = 2 * time.Second
+	unlinkedSummaryFanoutMax = 8
+)
+
+type unlinkedSummarySnapshot struct {
+	Tasks            []map[string]any
+	TargetConfigs    map[string]config.Target
+	SuccessfulTarget map[string]struct{}
+	ObservedAt       time.Time
+}
+
+type unlinkedTargetResult struct {
+	name string
+	rows []map[string]any
+	err  error
+}
+
+// unlinkedSummary 只投影缓存。target 网络请求与限域关联键查询由单飞 worker
+// 完成，因此卡片主列表不会等待远端摘要；缺失或陈旧状态由 Web 明确呈现。
 func (s *Server) unlinkedSummary() map[string]any {
-	s.unlinkedMu.Lock()
-	defer s.unlinkedMu.Unlock()
-	if time.Since(s.unlinkedAt) < 30*time.Second && s.unlinkedCache != nil {
-		return s.unlinkedCache
-	}
-
-	linked := map[string]bool{}
-	if links, err := s.ledger.AllTaskLinks(); err == nil {
-		for _, link := range links {
-			linked[link.Target+"/"+link.TaskID] = true
+	cfg := s.conf()
+	targets := cloneTargetConfigs(cfg.Targets)
+	names := configuredTargetNames(targets)
+	now := time.Now()
+	if len(targets) == 0 {
+		return map[string]any{
+			"status": "latest", "observed_at": now.UTC().Format(time.RFC3339Nano),
+			"count": 0, "tasks": make([]map[string]any, 0), "unknown_targets": make([]string, 0),
 		}
-	} else {
-		s.log.Warn("读取挂账 task 失败，未挂账摘要可能不完整", "err", err)
+	}
+	s.unlinkedMu.Lock()
+	snapshot := s.unlinkedCache
+	needsRefresh := snapshot == nil || now.Sub(snapshot.ObservedAt) > unlinkedSummaryTTL ||
+		!sameTargetConfigs(snapshot.TargetConfigs, targets)
+	recentAttempt := !s.unlinkedLastAttemptAt.IsZero() &&
+		now.Sub(s.unlinkedLastAttemptAt) <= unlinkedSummaryTTL &&
+		s.unlinkedLastAttemptCfg == cfg &&
+		sameTargetConfigs(s.unlinkedLastAttemptFor, targets)
+	if needsRefresh && !recentAttempt && !s.unlinkedStopped && !s.unlinkedRefreshing {
+		s.unlinkedRefreshing = true
+		s.unlinkedRefreshWG.Add(1)
+		go s.refreshUnlinkedSummary(cfg, targets)
+	}
+	s.unlinkedMu.Unlock()
+
+	if snapshot == nil {
+		return map[string]any{
+			"status": "unavailable", "observed_at": nil,
+			"count": 0, "tasks": make([]map[string]any, 0),
+			"unknown_targets": names,
+		}
 	}
 
-	rows := make([]map[string]any, 0)
-	unknown := make([]string, 0)
-	targets := s.cfgTargets()
+	status, observedAt, rows, unknown := projectUnlinkedSnapshot(snapshot, targets, now)
+	if status == "unavailable" {
+		return map[string]any{
+			"status": status, "observed_at": nil,
+			"count": 0, "tasks": make([]map[string]any, 0),
+			"unknown_targets": unknown,
+		}
+	}
+	return map[string]any{
+		"status": status, "observed_at": observedAt.UTC().Format(time.RFC3339Nano),
+		"count": len(rows), "tasks": rows, "unknown_targets": unknown,
+	}
+}
+
+func projectUnlinkedSnapshot(snapshot *unlinkedSummarySnapshot, targets map[string]config.Target, now time.Time) (string, time.Time, []map[string]any, []string) {
+	unknownSet := make(map[string]struct{}, len(targets))
+	matched := make(map[string]struct{}, len(targets))
+	for name, target := range targets {
+		cachedTarget, cached := snapshot.TargetConfigs[name]
+		if !cached || cachedTarget != target {
+			unknownSet[name] = struct{}{}
+			continue
+		}
+		if _, ok := snapshot.SuccessfulTarget[name]; !ok {
+			unknownSet[name] = struct{}{}
+			continue
+		}
+		matched[name] = struct{}{}
+	}
+	unknown := make([]string, 0, len(unknownSet))
+	for name := range unknownSet {
+		unknown = append(unknown, name)
+	}
+	sort.Strings(unknown)
+
+	// A cached row is current only for the exact target configuration that
+	// successfully produced it. If every current target is new or failed, old
+	// rows cannot describe the current target set and must not look like zero.
+	if len(targets) > 0 && len(matched) == 0 {
+		return "unavailable", time.Time{}, []map[string]any{}, unknown
+	}
+	rows := make([]map[string]any, 0, len(snapshot.Tasks))
+	for _, row := range snapshot.Tasks {
+		name, _ := row["target"].(string)
+		if _, ok := matched[name]; ok {
+			rows = append(rows, row)
+		}
+	}
+	status := unlinkedSnapshotStatus(snapshot.ObservedAt, now, len(unknown) > 0)
+	return status, snapshot.ObservedAt, rows, unknown
+}
+
+func unlinkedSnapshotStatus(observedAt, now time.Time, hasUnknown bool) string {
+	if now.Sub(observedAt) > unlinkedSummaryTTL {
+		return "stale"
+	}
+	if hasUnknown {
+		return "partial"
+	}
+	return "latest"
+}
+
+// configuredTargetNames makes a stable projection order without logging target secrets.
+func configuredTargetNames(targets map[string]config.Target) []string {
 	names := make([]string, 0, len(targets))
 	for name := range targets {
 		names = append(names, name)
 	}
 	sort.Strings(names)
-	for _, name := range names {
-		// 走 target 客户端池：relay 形态的机器没有 addr，直连构造对它们恒失败
-		// （见 internal/targetclient 与 nodirectclient_test）。取不到客户端与
-		// 拿不到任务列表同归「未知」——本区块的语义就是「这台机器对不上账」。
-		cl, err := s.pool.For(name)
-		if err != nil {
-			s.log.Warn("取 target 客户端失败，该机器计入未对账", "target", name, "cause", err)
+	return names
+}
+
+func cloneTargetConfigs(targets map[string]config.Target) map[string]config.Target {
+	copy := make(map[string]config.Target, len(targets))
+	for name, target := range targets {
+		copy[name] = target
+	}
+	return copy
+}
+
+func sameTargetConfigs(left, right map[string]config.Target) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for name, target := range left {
+		if right[name] != target {
+			return false
+		}
+	}
+	return true
+}
+
+// refreshUnlinkedSummary owns the single background refresh. The lock protects
+// only admission and publication; SQL and target I/O always run outside it.
+func (s *Server) refreshUnlinkedSummary(cfg *config.Config, targets map[string]config.Target) {
+	names := configuredTargetNames(targets)
+	defer s.unlinkedRefreshWG.Done()
+	defer func() {
+		s.unlinkedMu.Lock()
+		s.unlinkedRefreshing = false
+		s.unlinkedLastAttemptAt = time.Now()
+		s.unlinkedLastAttemptFor = cloneTargetConfigs(targets)
+		s.unlinkedLastAttemptCfg = cfg
+		s.unlinkedMu.Unlock()
+	}()
+
+	started := time.Now()
+	s.log.Info("未挂账摘要后台刷新开始", "target_count", len(names), "deadline_ms", unlinkedSummaryDeadline.Milliseconds())
+	ctx, cancel := context.WithTimeout(s.unlinkedRefreshCtx, unlinkedSummaryDeadline)
+	defer cancel()
+	keys, err := s.ledger.AllTaskLinkKeysContext(ctx)
+	if err != nil {
+		s.log.Warn("未挂账摘要关联键读取失败，保留上次观测", "cause", err)
+		return
+	}
+	linked := make(map[ledger.TaskLinkKey]struct{}, len(keys))
+	for _, key := range keys {
+		linked[key] = struct{}{}
+	}
+
+	results := make([]unlinkedTargetResult, len(names))
+	if len(names) > 0 {
+		workerCount := min(len(names), unlinkedSummaryFanoutMax)
+		jobs := make(chan int)
+		var workers sync.WaitGroup
+		workers.Add(workerCount)
+		for worker := 0; worker < workerCount; worker++ {
+			go func() {
+				defer workers.Done()
+				for index := range jobs {
+					name := names[index]
+					results[index] = s.readUnlinkedTarget(ctx, cfg, name, targets[name], linked)
+				}
+			}()
+		}
+	feed:
+		for index := range names {
+			select {
+			case jobs <- index:
+			case <-ctx.Done():
+				break feed
+			}
+		}
+		close(jobs)
+		workers.Wait()
+	}
+	if err := ctx.Err(); err != nil {
+		s.log.Warn("未挂账摘要刷新达到总时限或关停取消", "target_count", len(names), "cause", err)
+	}
+	if s.conf() != cfg {
+		s.log.Info("target 配置在未挂账摘要刷新期间变更，丢弃旧配置观测", "target_count", len(names))
+		return
+	}
+
+	rows := make([]map[string]any, 0)
+	unknown := make([]string, 0)
+	successful := make(map[string]struct{}, len(names))
+	successes := 0
+	for index, name := range names {
+		result := results[index]
+		if result.name == "" {
+			result.err = ctx.Err()
+			if result.err == nil {
+				result.err = errors.New("target refresh did not start")
+			}
+		}
+		if result.err != nil {
 			unknown = append(unknown, name)
 			continue
 		}
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		tasks, err := cl.ListTasks(ctx)
-		cancel()
-		if err != nil {
-			unknown = append(unknown, name)
-			continue
-		}
-		rows = append(rows, unlinkedRowsFor(name, tasks, linked)...)
+		successes++
+		successful[name] = struct{}{}
+		rows = append(rows, result.rows...)
+	}
+	if len(names) > 0 && successes == 0 {
+		s.log.Warn("未挂账摘要没有成功 target 观测，保留上次观测", "target_count", len(names), "unknown_count", len(unknown))
+		return
 	}
 	sort.Slice(rows, func(i, j int) bool {
 		leftTarget, _ := rows[i]["target"].(string)
@@ -300,11 +486,64 @@ func (s *Server) unlinkedSummary() map[string]any {
 		return leftTask < rightTask
 	})
 	sort.Strings(unknown)
-	s.unlinkedCache = map[string]any{
-		"count": len(rows), "tasks": rows, "unknown_targets": unknown,
+	snapshot := &unlinkedSummarySnapshot{
+		Tasks: rows, TargetConfigs: cloneTargetConfigs(targets),
+		SuccessfulTarget: successful, ObservedAt: time.Now().UTC(),
 	}
-	s.unlinkedAt = time.Now()
-	return s.unlinkedCache
+	allowDeadlinePartial := errors.Is(ctx.Err(), context.DeadlineExceeded) && successes > 0
+	s.unlinkedMu.Lock()
+	published := false
+	if !s.unlinkedStopped && s.unlinkedRefreshCtx.Err() == nil && (ctx.Err() == nil || allowDeadlinePartial) {
+		s.unlinkedCache = snapshot
+		published = true
+	}
+	s.unlinkedMu.Unlock()
+	if published {
+		s.log.Info("未挂账摘要后台刷新完成", "target_count", len(names), "success_count", successes,
+			"unknown_count", len(unknown), "task_count", len(rows), "elapsed_ms", time.Since(started).Milliseconds())
+	}
+}
+
+func (s *Server) readUnlinkedTarget(ctx context.Context, cfg *config.Config, name string, target config.Target, linked map[ledger.TaskLinkKey]struct{}) unlinkedTargetResult {
+	result := unlinkedTargetResult{name: name, rows: make([]map[string]any, 0)}
+	targetCtx, cancel := context.WithTimeout(ctx, unlinkedTargetDeadline)
+	defer cancel()
+	if err := targetCtx.Err(); err != nil {
+		result.err = err
+		return result
+	}
+	if s.conf() != cfg {
+		result.err = errors.New("target configuration changed during summary refresh")
+		return result
+	}
+	if configured, ok := cfg.Targets[name]; !ok || configured != target {
+		result.err = errors.New("target configuration changed before summary target read")
+		return result
+	}
+	s.log.Debug("读取未挂账 target 开始", "target", name)
+	client, err := s.pool.For(name)
+	if err != nil {
+		result.err = err
+		s.log.Warn("读取未挂账 target 客户端失败", "target", name, "cause", err)
+		return result
+	}
+	if s.conf() != cfg {
+		result.err = errors.New("target configuration changed during summary refresh")
+		return result
+	}
+	tasks, err := client.ListTasks(targetCtx)
+	if err != nil {
+		result.err = err
+		s.log.Warn("读取未挂账 target 任务失败", "target", name, "cause", err)
+		return result
+	}
+	if s.conf() != cfg {
+		result.err = errors.New("target configuration changed during summary refresh")
+		return result
+	}
+	result.rows = unlinkedRowsForKeys(name, tasks, linked)
+	s.log.Debug("读取未挂账 target 完成", "target", name, "task_count", len(result.rows))
+	return result
 }
 
 // unlinkedRowsFor 从一台 target 的任务列表里挑出该计入「未挂账」的行。
@@ -318,9 +557,22 @@ func (s *Server) unlinkedSummary() map[string]any {
 //   - 终态（completed / failed）的跳过——终态任务不再有 executor 持有工作区，
 //     事后补挂卡改变不了任何事实；它们是历史残留而非待办
 func unlinkedRowsFor(target string, tasks []proto.TaskView, linked map[string]bool) []map[string]any {
+	return unlinkedRowsForPredicate(target, tasks, func(taskID string) bool {
+		return linked[target+"/"+taskID]
+	})
+}
+
+func unlinkedRowsForKeys(target string, tasks []proto.TaskView, linked map[ledger.TaskLinkKey]struct{}) []map[string]any {
+	return unlinkedRowsForPredicate(target, tasks, func(taskID string) bool {
+		_, exists := linked[ledger.TaskLinkKey{Target: target, TaskID: taskID}]
+		return exists
+	})
+}
+
+func unlinkedRowsForPredicate(target string, tasks []proto.TaskView, isLinked func(string) bool) []map[string]any {
 	rows := make([]map[string]any, 0, len(tasks))
 	for _, task := range tasks {
-		if linked[target+"/"+task.ID] {
+		if isLinked(task.ID) {
 			continue
 		}
 		if task.State.IsTerminal() {

@@ -4,6 +4,7 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,45 @@ type TaskLink struct {
 	TaskID    string    `json:"task_id"`
 	Purpose   string    `json:"purpose"`
 	CreatedAt time.Time `json:"created_at"`
+}
+
+// TaskLinkKey is the minimal target/task identity needed to compare the local
+// ledger with remote task inventories. It intentionally omits card workflow
+// projections that this read path does not consume.
+type TaskLinkKey struct {
+	Target string
+	TaskID string
+}
+
+// AllTaskLinkKeysContext returns only target/task keys and honors cancellation.
+// The method exists to keep card-list refreshes independent of unrelated
+// dispatched-event history; unlike AllTaskLinks it does not project workflow
+// Node/Attempt fields.
+func (s *Store) AllTaskLinkKeysContext(ctx context.Context) ([]TaskLinkKey, error) {
+	log().Info("读取未挂账关联键开始", "query", "task_link_keys")
+	rows, err := s.db.QueryContext(ctx, s.q(`SELECT target, task_id FROM card_tasks ORDER BY target, task_id`))
+	if err != nil {
+		log().Error("读取未挂账关联键失败", "query", "task_link_keys", "rows_read", 0, "key_bytes", 0, "cause", err)
+		return nil, fmt.Errorf("读未挂账关联键: %w", err)
+	}
+	defer rows.Close()
+	keys := make([]TaskLinkKey, 0)
+	var keyBytes int64
+	for rows.Next() {
+		var key TaskLinkKey
+		if err := rows.Scan(&key.Target, &key.TaskID); err != nil {
+			log().Error("扫描未挂账关联键失败", "query", "task_link_keys", "rows_read", len(keys), "key_bytes", keyBytes, "cause", err)
+			return nil, fmt.Errorf("扫描未挂账关联键: %w", err)
+		}
+		keyBytes += int64(len(key.Target) + len(key.TaskID))
+		keys = append(keys, key)
+	}
+	if err := rows.Err(); err != nil {
+		log().Error("读取未挂账关联键行失败", "query", "task_link_keys", "rows_read", len(keys), "key_bytes", keyBytes, "cause", err)
+		return nil, fmt.Errorf("读未挂账关联键行: %w", err)
+	}
+	log().Info("读取未挂账关联键完成", "query", "task_link_keys", "rows_read", len(keys), "key_bytes", keyBytes)
+	return keys, nil
 }
 
 // LinkTask 把 (target, task) 挂到卡上。purpose ∈ {implement, review, merge}

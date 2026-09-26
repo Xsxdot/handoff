@@ -19,7 +19,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate, useParams, useSearchParams } from 'react-router-dom'
 import { ApiError, deleteProject, deletePtySession, fetchLaunchers, fetchPtySessions } from '../../api/client'
-import { fetchCards, fetchDecisions } from '../../api/ledger'
+import { currentUnlinkedTaskIds, fetchCards, fetchDecisions } from '../../api/ledger'
+import type { UnlinkedSummary } from '../../api/ledger'
 import type { ProjectNode, ProjectTreeResp, Task } from '../../api/types'
 import type { CoordinatorAttachInfo } from '../../api/scheduling'
 import { useMachines } from '../data/useMachines'
@@ -29,6 +30,7 @@ import { usePreviews } from '../data/usePreviews'
 import { useMachineCaps } from '../data/useMachineCaps'
 import { useLedgerEnabled } from '../data/useLedgerEnabled'
 import { usePoll } from '../data/usePoll'
+import { useUnlinkedSummaryClock } from '../data/useUnlinkedSummaryClock'
 import { DisconnectedBanner, SessionExpiredBanner } from '../lib/Banners'
 import { ConfirmDialog } from '../lib/ConfirmDialog'
 import { isDesktopShell } from '../lib/desktopShell'
@@ -92,6 +94,12 @@ export function coordinatorBase(tree: ProjectTreeResp | null, info: CoordinatorA
     projectName: '',
     machine: info.machine,
   }
+}
+
+// Only a complete, timestamped current observation is safe to use as a filter
+// source. Unknown status or fields fail closed to the unfiltered task list.
+export function unlinkedTaskIdsForSummary(summary?: UnlinkedSummary | null, now = Date.now()): Set<string> | null {
+  return currentUnlinkedTaskIds(summary, now)
 }
 
 // focusedPaneBase 是顶部展示的单向投影：左树 selected base 仍服务于打开新内容，
@@ -176,6 +184,8 @@ export function Shell() {
   }, [compact, ledgerLoading, ledgerEnabled, mobileTab])
   const cardsState = usePoll(() => fetchCards(), 2500, { enabled: ledgerEnabled })
   const decisionsState = usePoll(() => fetchDecisions(true), 2500, { enabled: ledgerEnabled })
+  const unlinkedSummary = cardsState.data?.unlinked
+  const unlinkedNow = useUnlinkedSummaryClock(unlinkedSummary?.observed_at)
   const cardNeedsCount = useMemo(() => {
     // 账本未启用时角标恒 0：轮询已关，cardsState 永远是 null，这里显式返回
     // 比依赖「null 恰好算出 0」可靠
@@ -189,10 +199,8 @@ export function Shell() {
   // （工作项看板是主入口），所以这个集合同时喂给 dock 角标与看板的默认筛选。
   // 账本还没读到时给 null——不过滤，宁可多显示也不能凭空藏任务。
   const unlinkedTaskIds = useMemo(() => {
-    const summary = cardsState.data?.unlinked
-    if (!summary) return null
-    return new Set((summary.tasks ?? []).map((task) => task.task_id))
-  }, [cardsState.data])
+    return currentUnlinkedTaskIds(unlinkedSummary, unlinkedNow)
+  }, [unlinkedSummary, unlinkedNow])
   // 会话流（B361）：徽章要在任务 tab 激活时也活着，数据源在 Shell 持有，
   // 列表组件只渲染。未启用账本时轮询关闭（与旧房间面同门控）。
   const sessionsState = usePoll((signal) => fetchSessions(signal), COLLAB_POLL_MS,
