@@ -37,6 +37,79 @@ func log() *slog.Logger { return slog.Default() }
 // 读真实时钟、夹具拨别的钟」的假绿。
 var nowFn = time.Now
 
+// —— B409.6 S4 投影诊断件：账本调用与应用装配分段 + 结果分类 ——
+
+// projectionTimer 聚合一次 collab 投影读的账本调用耗时与调用次数。分页候选
+// 读会对账本多次调用，ledgerNs 是累计值；总耗时与装配段在收口日志里给。
+type projectionTimer struct {
+	started     time.Time
+	ledgerNs    int64
+	ledgerCalls int
+}
+
+// timedLedger 计一次账本调用耗时（多次调用累计）。
+func timedLedger[T any](t *projectionTimer, fn func() (T, error)) (T, error) {
+	t.ledgerCalls++
+	started := time.Now()
+	v, err := fn()
+	t.ledgerNs += time.Since(started).Nanoseconds()
+	return v, err
+}
+
+// timedLedgerVoid 计一次多返回值账本调用的耗时（Go 方法不支持类型参数，
+// 多返回值场景用本变体闭包赋值）。
+func timedLedgerVoid(t *projectionTimer, fn func()) {
+	t.ledgerCalls++
+	started := time.Now()
+	fn()
+	t.ledgerNs += time.Since(started).Nanoseconds()
+}
+
+// projectionOutcome 把投影结果归入有限类别：空与非空分开，取消单独记。
+// 真实错误绝不记成 success_empty（B409.6 反例红线）。
+func projectionOutcome(err error, rows int) string {
+	if err != nil {
+		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+			return "canceled"
+		}
+		return "error"
+	}
+	if rows == 0 {
+		return "success_empty"
+	}
+	return "success_nonempty"
+}
+
+// projectionErrorClass 有限安全分类；driver 错误原文不进日志。
+func projectionErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return ""
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline_exceeded"
+	default:
+		return "read_error"
+	}
+}
+
+// finishLogAttrs 组装一次投影读的统一收口字段：关联 id、账本/装配分段
+//（projection_ns = elapsed - ledger，账本之外的应用装配耗时）、行数、结果
+// 分类与总耗时。失败时附 error_class；extra 由调用方补语义字段。
+func (t *projectionTimer) finishLogAttrs(ctx context.Context, rows int, err error, extra ...any) []any {
+	elapsedNs := time.Since(t.started).Nanoseconds()
+	attrs := append(diag.Attrs(ctx),
+		"ledger_call_ns", t.ledgerNs, "ledger_calls", t.ledgerCalls,
+		"projection_ns", elapsedNs-t.ledgerNs,
+		"rows_returned", rows, "outcome", projectionOutcome(err, rows),
+		"elapsed_ns", elapsedNs)
+	if err != nil {
+		attrs = append(attrs, "error_class", projectionErrorClass(err))
+	}
+	return append(attrs, extra...)
+}
+
 // 错误哨兵。调用方（CLI/agentd）按哨兵翻译为退出码或 HTTP 状态：
 // ErrNoRoom→400/404、ErrKindNotAllowed→400、ErrNotWriter→403、
 // ErrReadOnly/ErrNotBound→409。定义在 room 子包（执法内核产生它们），
@@ -226,6 +299,14 @@ func (s *Service) sendToSession(r *room.Room, msg proto.RoomMessage, actor strin
 // SameRoom 的 SQL 超集；SameRoom/mentions 语义的权威判定仍在 Go 侧执行
 // （不在账本复制房间规则）。不再为每条命中触发全流重读。
 func (s *Service) consumeRoomMentions(roomID, member string) {
+	t := &projectionTimer{started: time.Now()}
+	cleaned := 0
+	defer func() {
+		log().Info("回复后提及清理完成", append(diag.Attrs(context.Background()),
+			"ledger_call_ns", t.ledgerNs, "ledger_calls", t.ledgerCalls,
+			"projection_ns", time.Since(t.started).Nanoseconds()-t.ledgerNs,
+			"rows_returned", cleaned, "elapsed_ns", time.Since(t.started).Nanoseconds())...)
+	}()
 	markers, err := s.lc.ConsumedMessageSeqsContext(context.Background(), member, 0)
 	if err != nil {
 		log().Warn("回复后清理提及失败：读消费标记", "room", roomID, "member", member, "cause", err)
@@ -254,7 +335,9 @@ func (s *Service) consumeRoomMentions(roomID, member string) {
 			}
 			if err := s.Consume(ev.Seq, member); err != nil {
 				log().Warn("回复后清理提及失败：消费落账", "room", roomID, "member", member, "seq", ev.Seq, "cause", err)
+				continue
 			}
+			cleaned++
 		}
 		after = page[len(page)-1].Seq
 		if len(page) < inboxCandidatePageSize {
@@ -346,21 +429,42 @@ const inboxCandidatePageSize = 500
 // 绑定卡用户消息走 CardRoomUserMessages、消费状态走 ConsumedMessageSeqs 批量；
 // 不再把全流事件读进 collab 过滤。裁决口径（mentions 语义、kind、幂等消费权威）
 // 全部保持：账本候选只是超集取数面。两源各自升序，这里按 seq 归并。
+// Pending @定向消费队列（读侧）：语义见 PendingContext。旧签名以 background
+// context 执行（行为不变）。
 func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
+	return s.PendingContext(context.Background(), consumer)
+}
+
+// PendingContext 是 Pending 的可取消入口（B409.6）：候选读随上游 context 取消，
+// 收口日志带关联 id、账本/装配分段与结果分类。裁决口径不变。
+func (s *Service) PendingContext(ctx context.Context, consumer string) (out []proto.LedgerEvent, err error) {
+	t := &projectionTimer{started: time.Now()}
 	bound := map[string]bool{}
-	cards, err := s.lc.ListAllCards("")
+	merged := []proto.LedgerEvent{}
+	boundIDs := []string{}
+	defer func() {
+		attrs := t.finishLogAttrs(ctx, len(out), err, "consumer", consumer,
+			"candidates", len(merged), "bound_cards", len(boundIDs))
+		level := log().Info
+		if err != nil {
+			level = log().Warn
+		}
+		level("待消费队列已组装", attrs...)
+	}()
+	var cards []proto.Card
+	cards, err = timedLedger(t, func() ([]proto.Card, error) { return s.lc.ListAllCards("") })
 	if err != nil {
 		log().Warn("待消费队列组装失败：读卡列表", "consumer", consumer, "cause", err)
 		return nil, err
 	}
-	boundIDs := make([]string, 0, len(cards))
 	for _, c := range cards {
 		if c.DriverSession == consumer {
 			bound[c.ID] = true
 			boundIDs = append(boundIDs, c.ID)
 		}
 	}
-	consumed, err := s.lc.ConsumedMessageSeqsContext(context.Background(), consumer, 0)
+	var consumed []int64
+	consumed, err = timedLedger(t, func() ([]int64, error) { return s.lc.ConsumedMessageSeqsContext(ctx, consumer, 0) })
 	if err != nil {
 		log().Warn("待消费队列组装失败：读消费标记", "consumer", consumer, "cause", err)
 		return nil, err
@@ -370,10 +474,12 @@ func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
 		consumedSeqs[seq] = true
 	}
 	// 群级（无卡）提及候选：分页取全（每次查询都是限域读）。
-	merged := []proto.LedgerEvent{}
 	after := int64(0)
 	for {
-		page, err := s.lc.MentionCandidatesContext(context.Background(), consumer, "", true, after, inboxCandidatePageSize)
+		var page []proto.LedgerEvent
+		page, err = timedLedger(t, func() ([]proto.LedgerEvent, error) {
+			return s.lc.MentionCandidatesContext(ctx, consumer, "", true, after, inboxCandidatePageSize)
+		})
 		if err != nil {
 			log().Warn("待消费队列组装失败：读群级提及候选", "consumer", consumer, "cause", err)
 			return nil, err
@@ -388,7 +494,10 @@ func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
 	if len(boundIDs) > 0 {
 		after := int64(0)
 		for {
-			page, err := s.lc.CardRoomUserMessagesContext(context.Background(), boundIDs, after, inboxCandidatePageSize)
+			var page []proto.LedgerEvent
+			page, err = timedLedger(t, func() ([]proto.LedgerEvent, error) {
+				return s.lc.CardRoomUserMessagesContext(ctx, boundIDs, after, inboxCandidatePageSize)
+			})
 			if err != nil {
 				log().Warn("待消费队列组装失败：读绑定卡用户消息", "consumer", consumer, "cards", len(boundIDs), "cause", err)
 				return nil, err
@@ -401,7 +510,7 @@ func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
 		}
 	}
 	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Seq < merged[j].Seq })
-	out := []proto.LedgerEvent{}
+	out = []proto.LedgerEvent{}
 	for _, ev := range merged {
 		if ev.Type != room.RoomEventType || consumedSeqs[ev.Seq] {
 			continue
@@ -416,8 +525,6 @@ func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
 			out = append(out, ev)
 		}
 	}
-	log().Info("待消费队列已组装", "consumer", consumer, "count", len(out),
-		"candidates", len(merged), "bound_cards", len(boundIDs))
 	return out, nil
 }
 
@@ -458,11 +565,21 @@ func (s *Service) Consume(seq int64, consumer string) error {
 // 分页直到取满 limit 条未消费或候选耗尽；消费状态走 ConsumedMessageSeqs 批量
 // （afterSeq 是安全上界：标记事件 seq 必大于被标记消息 seq）。查询失败原样
 // 上抛，不伪装成空列表。
-func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
+func (s *Service) Mentions(member string, afterSeq int64, limit int) (out []proto.LedgerEvent, err error) {
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
-	markers, err := s.lc.ConsumedMessageSeqsContext(context.Background(), member, afterSeq)
+	t := &projectionTimer{started: time.Now()}
+	defer func() {
+		attrs := t.finishLogAttrs(context.Background(), len(out), err, "member", member, "after_seq", afterSeq)
+		level := log().Info
+		if err != nil {
+			level = log().Warn
+		}
+		level("未消费提及已组装", attrs...)
+	}()
+	var markers []int64
+	markers, err = timedLedger(t, func() ([]int64, error) { return s.lc.ConsumedMessageSeqsContext(context.Background(), member, afterSeq) })
 	if err != nil {
 		log().Warn("提及读取失败：读消费标记", "member", member, "cause", err)
 		return nil, err
@@ -471,10 +588,13 @@ func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.Le
 	for _, seq := range markers {
 		consumed[seq] = true
 	}
-	out := []proto.LedgerEvent{}
+	out = []proto.LedgerEvent{}
 	after := afterSeq
 	for len(out) < limit {
-		page, err := s.lc.MentionCandidatesContext(context.Background(), member, "", false, after, inboxCandidatePageSize)
+		var page []proto.LedgerEvent
+		page, err = timedLedger(t, func() ([]proto.LedgerEvent, error) {
+			return s.lc.MentionCandidatesContext(context.Background(), member, "", false, after, inboxCandidatePageSize)
+		})
 		if err != nil {
 			log().Warn("提及读取失败：读提及候选", "member", member, "cause", err)
 			return nil, err
@@ -499,7 +619,6 @@ func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.Le
 			break
 		}
 	}
-	log().Info("未消费提及已组装", "member", member, "count", len(out))
 	return out, nil
 }
 
@@ -671,13 +790,23 @@ func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error)
 	return s.listRoomsContext(context.Background(), project, member)
 }
 
-func (s *Service) listRoomsContext(ctx context.Context, project, member string) ([]proto.RoomSummary, error) {
-	cards, err := s.lc.ListAllCards(project)
+func (s *Service) listRoomsContext(ctx context.Context, project, member string) (rooms []proto.RoomSummary, err error) {
+	// B409.6：全部路径（成功/空/读错/取消）经 defer 统一收口一次投影日志。
+	t := &projectionTimer{started: time.Now()}
+	defer func() {
+		attrs := t.finishLogAttrs(ctx, len(rooms), err, "project", project, "member", member)
+		level := log().Info
+		if err != nil {
+			level = log().Warn
+		}
+		level("会话列表已组装", attrs...)
+	}()
+	cards, err := timedLedger(t, func() ([]proto.Card, error) { return s.lc.ListAllCards(project) })
 	if err != nil {
 		log().Warn("会话列表组装失败：读卡列表", "project", project, "cause", err)
 		return nil, err
 	}
-	rooms := []proto.RoomSummary{}
+	rooms = []proto.RoomSummary{}
 	byID := map[string]int{}
 	terminal := map[string]bool{}
 	projects := map[string]bool{}
@@ -714,7 +843,9 @@ func (s *Service) listRoomsContext(ctx context.Context, project, member string) 
 	for _, roomSummary := range rooms {
 		roomWatermarks[roomSummary.ID] = cursors[roomSummary.ID]
 	}
-	messageSnapshots, err := s.lc.RoomMessageSnapshotsContext(ctx, roomWatermarks)
+	messageSnapshots, err := timedLedger(t, func() ([]client.RoomMessageSnapshot, error) {
+		return s.lc.RoomMessageSnapshotsContext(ctx, roomWatermarks)
+	})
 	if err != nil {
 		log().Warn("会话列表组装失败：读房间消息摘要", "project", project, "rooms", len(rooms), "cause", err)
 		return nil, err
@@ -748,7 +879,11 @@ func (s *Service) listRoomsContext(ctx context.Context, project, member string) 
 			continue
 		}
 		sessionSeen[r.BoundSession] = true
-		expiresAt, exists, err := s.lc.DriverLease(r.BoundSession)
+		var exists bool
+		var expiresAt time.Time
+		timedLedgerVoid(t, func() {
+			expiresAt, exists, err = s.lc.DriverLease(r.BoundSession)
+		})
 		if err != nil {
 			log().Warn("会话列表组装失败：读租约", "session", r.BoundSession, "cause", err)
 			return nil, err
@@ -761,7 +896,7 @@ func (s *Service) listRoomsContext(ctx context.Context, project, member string) 
 		}
 	}
 	if member != "" {
-		log().Info("会话列表未读聚合完成", "project", project, "member", member,
+		log().Debug("会话列表未读聚合中间量", "project", project, "member", member,
 			"rooms", len(rooms), "snapshot_rows", len(messageSnapshots))
 	}
 	// 排序：非终态（含群房间）按活动降序在前，终态卡房间沉底（各自内部按
@@ -777,7 +912,6 @@ func (s *Service) listRoomsContext(ctx context.Context, project, member string) 
 	}
 	sort.SliceStable(active, func(i, j int) bool { return active[i].LastActivity.After(active[j].LastActivity) })
 	sort.SliceStable(sunk, func(i, j int) bool { return sunk[i].LastActivity.After(sunk[j].LastActivity) })
-	log().Info("会话列表已组装", "project", project, "count", len(rooms))
 	return append(active, sunk...), nil
 }
 
@@ -809,21 +943,33 @@ func (s *Service) Unread(member, roomID string) (int, error) {
 }
 
 // UnreadContext 在给定水位上读取单房间消息数，支持上游取消数据库查询。
-func (s *Service) UnreadContext(ctx context.Context, member, roomID string) (int, error) {
-	cursorSeq, err := s.cursor.Cursor(member, roomID)
+// B409.6：收口日志带关联 id、账本/装配分段与结果分类。
+func (s *Service) UnreadContext(ctx context.Context, member, roomID string) (n int, err error) {
+	t := &projectionTimer{started: time.Now()}
+	defer func() {
+		attrs := t.finishLogAttrs(ctx, 0, err, "member", member, "room", roomID, "unread", n)
+		level := log().Info
+		if err != nil {
+			level = log().Warn
+		}
+		level("未读计数完成", attrs...)
+	}()
+	var cursorSeq int64
+	cursorSeq, err = s.cursor.Cursor(member, roomID)
 	if err != nil {
 		log().Warn("未读计数失败：读游标", "member", member, "room", roomID, "cause", err)
 		return 0, err
 	}
-	snapshots, err := s.lc.RoomMessageSnapshotsContext(ctx, map[string]int64{roomID: cursorSeq})
+	var snapshots []client.RoomMessageSnapshot
+	snapshots, err = timedLedger(t, func() ([]client.RoomMessageSnapshot, error) {
+		return s.lc.RoomMessageSnapshotsContext(ctx, map[string]int64{roomID: cursorSeq})
+	})
 	if err != nil {
 		log().Warn("未读计数失败：读房间消息摘要", "member", member, "room", roomID, "cause", err)
 		return 0, err
 	}
-	n := 0
 	if len(snapshots) > 0 {
 		n = int(snapshots[0].MessagesAfter)
 	}
-	log().Info("未读计数完成", "member", member, "room", roomID, "unread", n)
 	return n, nil
 }

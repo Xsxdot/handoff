@@ -35,12 +35,25 @@ func (s *Service) ListSessions(member string) ([]proto.SessionSummary, error) {
 }
 
 // ListSessionsContext 用于 HTTP 请求，事件流读取随客户端取消而停止。
-func (s *Service) ListSessionsContext(ctx context.Context, member string) ([]proto.SessionSummary, error) {
-	sessions, err := s.lc.ListSessions()
+// B409.6：全部路径经 defer 统一收口一次投影日志（关联 id + 账本/装配分段 +
+// 结果分类）。
+func (s *Service) ListSessionsContext(ctx context.Context, member string) (summaries []proto.SessionSummary, err error) {
+	t := &projectionTimer{started: time.Now()}
+	defer func() {
+		attrs := t.finishLogAttrs(ctx, len(summaries), err, "member", member)
+		level := log().Info
+		if err != nil {
+			level = log().Warn
+		}
+		level("会话列表投影完成", attrs...)
+	}()
+	var sessions []proto.Session
+	sessions, err = timedLedger(t, func() ([]proto.Session, error) { return s.lc.ListSessions() })
 	if err != nil {
 		return nil, err
 	}
-	cards, err := s.lc.ListAllCards("")
+	var cards []proto.Card
+	cards, err = timedLedger(t, func() ([]proto.Card, error) { return s.lc.ListAllCards("") })
 	if err != nil {
 		return nil, err
 	}
@@ -55,7 +68,8 @@ func (s *Service) ListSessionsContext(ctx context.Context, member string) ([]pro
 		roomWatermarks[session.ID] = 0
 	}
 	if member != "" {
-		cursors, err := s.cursor.Snapshot(member)
+		var cursors map[string]int64
+		cursors, err = s.cursor.Snapshot(member)
 		if err != nil {
 			log().Warn("会话列表组装失败：读游标快照", "member", member, "cause", err)
 			return nil, err
@@ -64,13 +78,17 @@ func (s *Service) ListSessionsContext(ctx context.Context, member string) ([]pro
 			roomWatermarks[sessionID] = cursors[sessionID]
 		}
 	}
-	needsEvents, err := s.lc.LatestNeedsEventsContext(ctx, cardIDs)
+	var needsEvents []proto.LedgerEvent
+	needsEvents, err = timedLedger(t, func() ([]proto.LedgerEvent, error) { return s.lc.LatestNeedsEventsContext(ctx, cardIDs) })
 	if err != nil {
 		log().Warn("会话列表组装失败：读成员卡 needs 状态", "sessions", len(sessions), "cards", len(cardIDs), "cause", err)
 		return nil, err
 	}
 	needs := latestNeedsByCard(needsEvents)
-	roomSnapshots, err := s.lc.RoomMessageSnapshotsContext(ctx, roomWatermarks)
+	var roomSnapshots []client.RoomMessageSnapshot
+	roomSnapshots, err = timedLedger(t, func() ([]client.RoomMessageSnapshot, error) {
+		return s.lc.RoomMessageSnapshotsContext(ctx, roomWatermarks)
+	})
 	if err != nil {
 		log().Warn("会话列表组装失败：读房间活动摘要", "sessions", len(sessions), "cause", err)
 		return nil, err
@@ -86,7 +104,11 @@ func (s *Service) ListSessionsContext(ctx context.Context, member string) ([]pro
 		if hasSnapshot {
 			lastMessage = &snapshot
 		}
-		summary, err := s.summarizeSession(session, byCard, lastMessage, needs)
+		// 计入租约读取的账本耗时（summarizeSession 内部经接口读账本）。
+		var summary proto.SessionSummary
+		timedLedgerVoid(t, func() {
+			summary, err = s.summarizeSession(session, byCard, lastMessage, needs)
+		})
 		if err != nil {
 			log().Warn("会话列表组装失败：读取成员租约", "session", session.ID, "cause", err)
 			return nil, err
@@ -96,7 +118,8 @@ func (s *Service) ListSessionsContext(ctx context.Context, member string) ([]pro
 		}
 		out = append(out, summary)
 	}
-	return out, nil
+	summaries = out
+	return summaries, nil
 }
 
 // SessionDetail 读会话详情页投影：成员与成员状态、协调者派发的任务节点、
@@ -106,22 +129,40 @@ func (s *Service) SessionDetail(id string) (proto.SessionDetail, error) {
 }
 
 // SessionDetailContext 用于 HTTP 请求，取消详情投影的长事件流扫描。
-func (s *Service) SessionDetailContext(ctx context.Context, id string) (proto.SessionDetail, error) {
-	session, err := s.lc.GetSession(id)
+// B409.6：全部路径经 defer 统一收口一次投影日志。
+func (s *Service) SessionDetailContext(ctx context.Context, id string) (detail proto.SessionDetail, err error) {
+	t := &projectionTimer{started: time.Now()}
+	defer func() {
+		attrs := t.finishLogAttrs(ctx, len(detail.Timeline), err, "session", id)
+		level := log().Info
+		if err != nil {
+			level = log().Warn
+		}
+		level("会话详情投影完成", attrs...)
+	}()
+	var session proto.Session
+	session, err = timedLedger(t, func() (proto.Session, error) { return s.lc.GetSession(id) })
 	if err != nil {
 		return proto.SessionDetail{}, mapSessionError(err)
 	}
-	byCard, err := s.sessionCardsByID(ctx, session.Cards)
+	var byCard map[string]proto.Card
+	byCard, err = s.sessionCardsByID(ctx, session.Cards)
 	if err != nil {
 		return proto.SessionDetail{}, err
 	}
-	events, err := s.lc.SessionProjectionEventsContext(ctx, session.ID, session.Cards)
+	var events []proto.LedgerEvent
+	events, err = timedLedger(t, func() ([]proto.LedgerEvent, error) {
+		return s.lc.SessionProjectionEventsContext(ctx, session.ID, session.Cards)
+	})
 	if err != nil {
 		log().Warn("会话详情组装失败：读限域投影事件", "session", session.ID, "cards", len(session.Cards), "cause", err)
 		return proto.SessionDetail{}, err
 	}
 	needs := needsHumanByCard(events)
-	roomSnapshots, err := s.lc.RoomMessageSnapshotsContext(ctx, map[string]int64{session.ID: 0})
+	var roomSnapshots []client.RoomMessageSnapshot
+	roomSnapshots, err = timedLedger(t, func() ([]client.RoomMessageSnapshot, error) {
+		return s.lc.RoomMessageSnapshotsContext(ctx, map[string]int64{session.ID: 0})
+	})
 	if err != nil {
 		log().Warn("会话详情组装失败：读房间活动摘要", "session", session.ID, "cause", err)
 		return proto.SessionDetail{}, err
@@ -130,11 +171,13 @@ func (s *Service) SessionDetailContext(ctx context.Context, id string) (proto.Se
 	if len(roomSnapshots) > 0 {
 		latestMessage = &roomSnapshots[0]
 	}
-	detail := proto.SessionDetail{
+	detail = proto.SessionDetail{
 		Nodes:    sessionNodes(session, byCard, events),
 		Timeline: sessionTimeline(events, session),
 	}
-	detail.Summary, err = s.summarizeSession(session, byCard, latestMessage, needs)
+	timedLedgerVoid(t, func() {
+		detail.Summary, err = s.summarizeSession(session, byCard, latestMessage, needs)
+	})
 	if err != nil {
 		log().Warn("会话详情组装失败：读取成员租约", "session", session.ID, "cause", err)
 		return proto.SessionDetail{}, err
