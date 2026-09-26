@@ -25,6 +25,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/client"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
@@ -149,7 +150,8 @@ func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 	member := id.Member
 	summaries, err := s.rooms.ListSessionsContext(r.Context(), member)
 	if err != nil {
-		s.log.Warn("会话列表读取失败", "member", member, "cause", err)
+		s.log.Warn("会话列表读取失败", append(diag.Attrs(r.Context()),
+			"member", member, "cause", err)...)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}

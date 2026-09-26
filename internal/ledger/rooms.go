@@ -415,7 +415,7 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 
 	// 单独获取 *sql.Conn 才能把本请求的池等待与发起 SQL 的耗时分开；
 	// DB.Stats().WaitDuration 是全池累计值，在并发场景不能归因给当前请求。
-	poolStarted := time.Now() // MUTATED
+	poolStarted := time.Now()
 	conn, err := s.db.Conn(ctx)
 	poolWait := time.Since(poolStarted)
 	if err != nil {

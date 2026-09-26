@@ -946,8 +946,12 @@ func (s *Service) Unread(member, roomID string) (int, error) {
 // B409.6：收口日志带关联 id、账本/装配分段与结果分类。
 func (s *Service) UnreadContext(ctx context.Context, member, roomID string) (n int, err error) {
 	t := &projectionTimer{started: time.Now()}
+	var snapshots []client.RoomMessageSnapshot
 	defer func() {
-		attrs := t.finishLogAttrs(ctx, 0, err, "member", member, "room", roomID, "unread", n)
+		// rows_returned 记账本真实返回行数（单房间标量读：房间有消息命中 1 行，
+		// 无消息为 0 行）。review Minor 4：不再硬编码 0——硬编码会让 unread>0 的
+		// 成功读被 outcome 误分类成 success_empty。
+		attrs := t.finishLogAttrs(ctx, len(snapshots), err, "member", member, "room", roomID, "unread", n)
 		level := log().Info
 		if err != nil {
 			level = log().Warn
@@ -960,7 +964,6 @@ func (s *Service) UnreadContext(ctx context.Context, member, roomID string) (n i
 		log().Warn("未读计数失败：读游标", "member", member, "room", roomID, "cause", err)
 		return 0, err
 	}
-	var snapshots []client.RoomMessageSnapshot
 	snapshots, err = timedLedger(t, func() ([]client.RoomMessageSnapshot, error) {
 		return s.lc.RoomMessageSnapshotsContext(ctx, map[string]int64{roomID: cursorSeq})
 	})
