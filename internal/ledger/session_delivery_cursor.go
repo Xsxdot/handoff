@@ -2,23 +2,37 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/diag"
 )
 
 // SessionDeliveryCursor 读已成功输出给监听器的最大命中 seq；无记录为 0。
 func (s *Store) SessionDeliveryCursor(member string) (int64, error) {
+	return s.SessionDeliveryCursorContext(context.Background(), member)
+}
+
+// SessionDeliveryCursorContext 是 SessionDeliveryCursor 的可取消入口
+//（B409.6：补收起点读随 CLI context 取消）。点读不单独量池等待。
+func (s *Store) SessionDeliveryCursorContext(ctx context.Context, member string) (int64, error) {
 	if member == "" {
 		return 0, fmt.Errorf("交付游标成员不能为空")
 	}
+	started := time.Now()
 	var seq int64
-	err := s.db.QueryRow(s.q(`SELECT last_seq FROM session_delivery_cursors WHERE member=?`), member).Scan(&seq)
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT last_seq FROM session_delivery_cursors WHERE member=?`), member).Scan(&seq)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
 	if err != nil {
+		log().Warn("读取会话交付游标失败", append(diag.Attrs(ctx), "error_class", readErrorClass(err, ""), "cause", err)...)
 		return 0, fmt.Errorf("读取会话交付游标: %w", err)
 	}
+	log().Debug("读取会话交付游标完成", append(diag.Attrs(ctx), "last_seq", seq,
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return seq, nil
 }
 

@@ -27,11 +27,14 @@ type RoomMessageSnapshot struct {
 }
 
 // RoomMessageSnapshotsContext 按调用方提供的 room→seq 水位批量读取消息摘要。
+// B409.6：分块查询经 timedReadQuery 分离 pool/sql/row 阶段；完成与失败日志
+// 携带关联 id 与阶段字段。result_bytes 是 latest 消息 payload 的应用层字节。
 func (s *Store) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]RoomMessageSnapshot, error) {
 	started := time.Now()
 	roomIDs := sortedKeys(afterByRoom)
 	if err := ctx.Err(); err != nil {
-		log().Info("房间消息摘要读取已取消", "rooms", len(roomIDs), "cause", err)
+		log().Info("房间消息摘要读取已取消", append(diag.Attrs(ctx), "rooms", len(roomIDs),
+			"failed_stage", stageFailedStart, "error_class", readErrorClass(err, stageFailedStart), "cause", err)...)
 		return nil, err
 	}
 	if len(roomIDs) == 0 {
@@ -48,6 +51,7 @@ func (s *Store) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map
 	// limit: each requested room contributes its id and seq watermark.
 	const roomChunkSize = 400
 	out := make([]RoomMessageSnapshot, 0, len(roomIDs))
+	var total readStage
 	for start := 0; start < len(roomIDs); start += roomChunkSize {
 		end := start + roomChunkSize
 		if end > len(roomIDs) {
@@ -55,64 +59,69 @@ func (s *Store) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map
 		}
 		chunk := roomIDs[start:end]
 		query, args := roomMessageSnapshotsQuery(roomExpr, chunk, afterByRoom, s.dialect == dialectPG)
-		rows, err := s.db.QueryContext(ctx, s.q(query), args...)
-		if err != nil {
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				log().Info("房间消息摘要 SQL 已取消", "rooms", len(chunk), "elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
-			} else {
-				log().Warn("房间消息摘要 SQL 失败", "rooms", len(chunk), "cause", err)
+		chunkStage, err := s.timedReadQuery(ctx, query, args, func(rows *sql.Rows) (int, int64, error) {
+			read := 0
+			var payloadBytes int64
+			for rows.Next() {
+				var snapshot RoomMessageSnapshot
+				var event Event
+				var cardID, sourceTarget, sourceTask sql.NullString
+				var sourceSeq sql.NullInt64
+				var raw string
+				var createdAt, lastActivity any
+				if err := rows.Scan(&snapshot.RoomID, &snapshot.MessagesAfter, &lastActivity,
+					&event.Seq, &cardID, &event.Type, &event.Actor, &raw,
+					&sourceTarget, &sourceTask, &sourceSeq, &createdAt); err != nil {
+					log().Warn("房间消息摘要行读取失败", append(diag.Attrs(ctx), "room", snapshot.RoomID,
+						"rows_read", len(out), "error_class", readErrorClass(err, stageFailedRowRead), "cause", err)...)
+					return read, payloadBytes, fmt.Errorf("扫描房间消息摘要: %w", err)
+				}
+				event.CardID = cardID.String
+				event.SourceTarget = sourceTarget.String
+				event.SourceTask = sourceTask.String
+				event.SourceSeq = sourceSeq.Int64
+				event.Payload = json.RawMessage(raw)
+				event.CreatedAt = toTime(createdAt)
+				snapshot.Latest = event
+				snapshot.LastActivity = toTime(lastActivity)
+				out = append(out, snapshot)
+				payloadBytes += int64(len(raw))
+				read++
 			}
+			return read, payloadBytes, rows.Err()
+		})
+		total.poolWaitNs += chunkStage.poolWaitNs
+		total.sqlCallNs += chunkStage.sqlCallNs
+		total.rowReadNs += chunkStage.rowReadNs
+		total.dbReadNs += chunkStage.dbReadNs
+		total.rowsRead += chunkStage.rowsRead
+		total.resultBytes += chunkStage.resultBytes
+		if err != nil {
+			if chunkStage.failedStage == stageFailedRowRead {
+				// 行读取失败已在 scan 内记日志（含已读行数），这里只上抛。
+				return nil, err
+			}
+			class := readErrorClass(err, chunkStage.failedStage)
+			level := log().Warn
+			if class == "canceled" || class == "deadline_exceeded" {
+				level = log().Info
+			}
+			level("房间消息摘要读取失败", append(diag.Attrs(ctx), "rooms", len(chunk),
+				"error_class", readErrorClass(err, chunkStage.failedStage), "failed_stage", chunkStage.failedStage,
+				"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 			return nil, fmt.Errorf("读房间消息摘要: %w", err)
 		}
-		for rows.Next() {
-			var snapshot RoomMessageSnapshot
-			var event Event
-			var cardID, sourceTarget, sourceTask sql.NullString
-			var sourceSeq sql.NullInt64
-			var raw string
-			var createdAt, lastActivity any
-			if err := rows.Scan(&snapshot.RoomID, &snapshot.MessagesAfter, &lastActivity,
-				&event.Seq, &cardID, &event.Type, &event.Actor, &raw,
-				&sourceTarget, &sourceTask, &sourceSeq, &createdAt); err != nil {
-				rows.Close()
-				log().Warn("房间消息摘要行读取失败", "room", snapshot.RoomID, "rows_read", len(out), "cause", err)
-				return nil, fmt.Errorf("扫描房间消息摘要: %w", err)
-			}
-			event.CardID = cardID.String
-			event.SourceTarget = sourceTarget.String
-			event.SourceTask = sourceTask.String
-			event.SourceSeq = sourceSeq.Int64
-			event.Payload = json.RawMessage(raw)
-			event.CreatedAt = toTime(createdAt)
-			snapshot.Latest = event
-			snapshot.LastActivity = toTime(lastActivity)
-			out = append(out, snapshot)
-		}
-		if err := rows.Err(); err != nil {
-			rows.Close()
-			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-				log().Info("房间消息摘要遍历已取消", "rooms", len(chunk), "rows_read", len(out), "cause", err)
-			} else {
-				log().Warn("房间消息摘要遍历失败", "rooms", len(chunk), "rows_read", len(out), "cause", err)
-			}
-			return nil, fmt.Errorf("遍历房间消息摘要: %w", err)
-		}
-		if err := rows.Close(); err != nil {
-			log().Warn("关闭房间消息摘要结果失败", "rooms", len(chunk), "cause", err)
-			return nil, fmt.Errorf("关闭房间消息摘要结果: %w", err)
-		}
 	}
-	payloadBytes := 0
-	for _, snapshot := range out {
-		payloadBytes += len(snapshot.Latest.Payload)
-	}
-	log().Info("房间消息摘要读取完成", "rooms_requested", len(roomIDs),
-		"rows_returned", len(out), "payload_bytes", payloadBytes,
-		"elapsed_ns", time.Since(started).Nanoseconds())
+	attrs := append(diag.Attrs(ctx), "rooms_requested", len(roomIDs), "rows_returned", len(out))
+	attrs = append(attrs, total.logAttrs()...)
+	attrs = append(attrs, "elapsed_ns", time.Since(started).Nanoseconds())
+	log().Info("房间消息摘要读取完成", attrs...)
 	return out, nil
 }
 
 // SessionProjectionEventsContext 读取单会话详情真正需要的结构和当前成员卡事件。
+// B409.6：两类查询经 timedReadQuery 分离阶段；完成与失败日志带关联 id 与阶段
+// 字段。失败时已读行数统计到失败块之前为止（块内半途行不计，块的量级有限）。
 func (s *Store) SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]Event, error) {
 	started := time.Now()
 	cardIDs = uniqueSorted(cardIDs)
@@ -122,10 +131,39 @@ func (s *Store) SessionProjectionEventsContext(ctx context.Context, sessionID st
 		return nil, fmt.Errorf("会话详情投影读取需要 session id")
 	}
 	if err := ctx.Err(); err != nil {
-		log().Info("会话详情投影读取已取消", "session", sessionID, "cards", len(cardIDs), "cause", err)
+		log().Info("会话详情投影读取已取消", append(diag.Attrs(ctx), "session", sessionID,
+			"cards", len(cardIDs), "failed_stage", stageFailedStart, "error_class", readErrorClass(err, stageFailedStart), "cause", err)...)
 		return nil, err
 	}
 	var out []Event
+	var total readStage
+	collect := func(query string, args []any, failMsg string) error {
+		chunkStage, err := s.timedReadQuery(ctx, query, args, func(rows *sql.Rows) (int, int64, error) {
+			events, scanErr := scanProjectionEvents(rows)
+			if scanErr != nil {
+				return 0, 0, scanErr
+			}
+			out = append(out, events...)
+			return len(events), payloadBytesOf(events), nil
+		})
+		total.poolWaitNs += chunkStage.poolWaitNs
+		total.sqlCallNs += chunkStage.sqlCallNs
+		total.rowReadNs += chunkStage.rowReadNs
+		total.dbReadNs += chunkStage.dbReadNs
+		total.rowsRead += chunkStage.rowsRead
+		total.resultBytes += chunkStage.resultBytes
+		if err != nil {
+			class := readErrorClass(err, chunkStage.failedStage)
+			level := log().Warn
+			if class == "canceled" || class == "deadline_exceeded" {
+				level = log().Info
+			}
+			level(failMsg, append(diag.Attrs(ctx), "session", sessionID,
+				"error_class", readErrorClass(err, chunkStage.failedStage), "failed_stage", chunkStage.failedStage, "cause", err)...)
+			return err
+		}
+		return nil
+	}
 	const cardChunkSize = 400
 	for start := 0; start < len(cardIDs); start += cardChunkSize {
 		end := start + cardChunkSize
@@ -141,22 +179,9 @@ func (s *Store) SessionProjectionEventsContext(ctx context.Context, sessionID st
 			args = append(args, cardID)
 		}
 		query += ` ORDER BY seq ASC`
-		rows, err := s.db.QueryContext(ctx, s.q(query), args...)
-		if err != nil {
-			log().Warn("会话详情成员卡投影 SQL 失败", "session", sessionID, "cards", len(chunk), "cause", err)
+		if err := collect(query, args, "会话详情成员卡投影读取失败"); err != nil {
 			return nil, fmt.Errorf("读会话 %s 成员卡投影事件: %w", sessionID, err)
 		}
-		events, scanErr := scanProjectionEvents(rows)
-		closeErr := rows.Close()
-		if scanErr != nil {
-			log().Warn("会话详情成员卡投影行读取失败", "session", sessionID, "cards", len(chunk), "cause", scanErr)
-			return nil, fmt.Errorf("扫会话 %s 成员卡投影事件: %w", sessionID, scanErr)
-		}
-		if closeErr != nil {
-			log().Warn("关闭会话详情成员卡投影结果失败", "session", sessionID, "cards", len(chunk), "cause", closeErr)
-			return nil, fmt.Errorf("关闭会话 %s 成员卡投影结果: %w", sessionID, closeErr)
-		}
-		out = append(out, events...)
 	}
 
 	sessionExpr := `payload->>'session'`
@@ -171,40 +196,25 @@ func (s *Store) SessionProjectionEventsContext(ctx context.Context, sessionID st
 		SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
 		FROM card_events WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left') AND ` + sessionExpr + ` = ?
 		ORDER BY seq ASC`
-	rows, err := s.db.QueryContext(ctx, s.q(query), sessionID, sessionID)
-	if err != nil {
-		log().Warn("会话详情结构事件 SQL 失败", "session", sessionID, "cause", err)
+	if err := collect(query, []any{sessionID, sessionID}, "会话详情结构事件读取失败"); err != nil {
 		return nil, fmt.Errorf("读会话 %s 结构事件: %w", sessionID, err)
 	}
-	events, scanErr := scanProjectionEvents(rows)
-	closeErr := rows.Close()
-	if scanErr != nil {
-		log().Warn("会话详情结构事件行读取失败", "session", sessionID, "cause", scanErr)
-		return nil, fmt.Errorf("扫会话 %s 结构事件: %w", sessionID, scanErr)
-	}
-	if closeErr != nil {
-		log().Warn("关闭会话详情结构事件结果失败", "session", sessionID, "cause", closeErr)
-		return nil, fmt.Errorf("关闭会话 %s 结构事件结果: %w", sessionID, closeErr)
-	}
-	out = append(out, events...)
 	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
-	payloadBytes := 0
-	for _, event := range out {
-		payloadBytes += len(event.Payload)
-	}
-	log().Info("会话详情投影事件读取完成", "session", sessionID,
-		"cards", len(cardIDs), "rows_returned", len(out), "payload_bytes", payloadBytes,
-		"elapsed_ns", time.Since(started).Nanoseconds())
+	log().Info("会话详情投影事件读取完成", append(append(append(diag.Attrs(ctx), "session", sessionID,
+		"cards", len(cardIDs), "rows_returned", len(out)), total.logAttrs()...),
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return out, nil
 }
 
 // LatestNeedsEventsContext 返回每张指定卡最新的一条 needs_human/needs_cleared。
+// B409.6：分块查询经 timedReadQuery 分离阶段，日志带关联 id 与阶段字段。
 func (s *Store) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]Event, error) {
 	cardIDs = uniqueSorted(cardIDs)
 	started := time.Now()
 	log().Debug("卡 needs 最新事实读取开始", "cards", len(cardIDs))
 	if err := ctx.Err(); err != nil {
-		log().Info("卡 needs 最新事实读取已取消", "cards", len(cardIDs), "cause", err)
+		log().Info("卡 needs 最新事实读取已取消", append(diag.Attrs(ctx), "cards", len(cardIDs),
+			"failed_stage", stageFailedStart, "error_class", readErrorClass(err, stageFailedStart), "cause", err)...)
 		return nil, err
 	}
 	if len(cardIDs) == 0 {
@@ -212,6 +222,7 @@ func (s *Store) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) 
 	}
 	const cardChunkSize = 400
 	var out []Event
+	var total readStage
 	for start := 0; start < len(cardIDs); start += cardChunkSize {
 		end := start + cardChunkSize
 		if end > len(cardIDs) {
@@ -229,30 +240,45 @@ func (s *Store) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) 
 		for _, cardID := range chunk {
 			args = append(args, cardID)
 		}
-		rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+		chunkStage, err := s.timedReadQuery(ctx, query, args, func(rows *sql.Rows) (int, int64, error) {
+			events, scanErr := scanProjectionEvents(rows)
+			if scanErr != nil {
+				return 0, 0, scanErr
+			}
+			out = append(out, events...)
+			return len(events), payloadBytesOf(events), nil
+		})
+		total.poolWaitNs += chunkStage.poolWaitNs
+		total.sqlCallNs += chunkStage.sqlCallNs
+		total.rowReadNs += chunkStage.rowReadNs
+		total.dbReadNs += chunkStage.dbReadNs
+		total.rowsRead += chunkStage.rowsRead
+		total.resultBytes += chunkStage.resultBytes
 		if err != nil {
-			log().Warn("卡 needs 最新事实 SQL 失败", "cards", len(chunk), "cause", err)
+			class := readErrorClass(err, chunkStage.failedStage)
+			level := log().Warn
+			if class == "canceled" || class == "deadline_exceeded" {
+				level = log().Info
+			}
+			level("卡 needs 最新事实读取失败", append(diag.Attrs(ctx), "cards", len(chunk),
+				"error_class", readErrorClass(err, chunkStage.failedStage), "failed_stage", chunkStage.failedStage, "cause", err)...)
 			return nil, fmt.Errorf("读卡 needs 最新状态: %w", err)
 		}
-		events, scanErr := scanProjectionEvents(rows)
-		closeErr := rows.Close()
-		if scanErr != nil {
-			log().Warn("卡 needs 最新事实行读取失败", "cards", len(chunk), "cause", scanErr)
-			return nil, fmt.Errorf("扫卡 needs 最新状态: %w", scanErr)
-		}
-		if closeErr != nil {
-			log().Warn("关闭卡 needs 查询结果失败", "cards", len(chunk), "cause", closeErr)
-			return nil, fmt.Errorf("关闭卡 needs 查询结果: %w", closeErr)
-		}
-		out = append(out, events...)
 	}
-	payloadBytes := 0
-	for _, event := range out {
-		payloadBytes += len(event.Payload)
-	}
-	log().Info("卡 needs 最新事实读取完成", "cards_requested", len(cardIDs),
-		"rows_returned", len(out), "payload_bytes", payloadBytes, "elapsed_ns", time.Since(started).Nanoseconds())
+	log().Info("卡 needs 最新事实读取完成", append(append(append(diag.Attrs(ctx), "cards_requested", len(cardIDs),
+		"rows_returned", len(out)), total.logAttrs()...),
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return out, nil
+}
+
+// payloadBytesOf 统计事件的 payload 应用层字节（驱动交给应用的字节数，
+// 不是 wire bytes）。
+func payloadBytesOf(events []Event) int64 {
+	var total int64
+	for _, event := range events {
+		total += int64(len(event.Payload))
+	}
+	return total
 }
 
 func roomMessageSnapshotsQuery(roomExpr string, roomIDs []string, afterByRoom map[string]int64, castWatermarkToBigint bool) (string, []any) {
@@ -389,7 +415,7 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 
 	// 单独获取 *sql.Conn 才能把本请求的池等待与发起 SQL 的耗时分开；
 	// DB.Stats().WaitDuration 是全池累计值，在并发场景不能归因给当前请求。
-	poolStarted := time.Now()
+	poolStarted := time.Now() // MUTATED
 	conn, err := s.db.Conn(ctx)
 	poolWait := time.Since(poolStarted)
 	if err != nil {
@@ -399,7 +425,8 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 		}
 		level("房间历史账本获取连接失败", append(diag.Attrs(ctx), "room_id", roomID,
 			"before_seq", beforeSeq, "limit", limit,
-			"pool_wait_ns", poolWait.Nanoseconds(),
+			"error_class", readErrorClass(err, stageFailedPool), "failed_stage", stageFailedPool,
+			"pool_wait_ns", poolWait.Nanoseconds(), "sql_call_ns", int64(0),
 			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		return nil, fmt.Errorf("获取账本连接: %w", err)
 	}
@@ -415,6 +442,7 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 		}
 		level("房间历史账本 SQL 调用失败", append(diag.Attrs(ctx), "room_id", roomID,
 			"before_seq", beforeSeq, "limit", limit,
+			"error_class", readErrorClass(err, stageFailedSQL), "failed_stage", stageFailedSQL,
 			"pool_wait_ns", poolWait.Nanoseconds(),
 			"sql_call_ns", sqlCall.Nanoseconds(),
 			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
@@ -437,6 +465,7 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 			&sourceTarget, &sourceTask, &sourceSeq, &createdAt); err != nil {
 			log().Warn("房间历史账本行读取失败", append(diag.Attrs(ctx), "room_id", roomID,
 				"before_seq", beforeSeq, "limit", limit, "rows_read", len(out),
+				"error_class", readErrorClass(err, stageFailedRowRead), "failed_stage", stageFailedRowRead,
 				"pool_wait_ns", poolWait.Nanoseconds(),
 				"sql_call_ns", sqlCall.Nanoseconds(),
 				"row_read_ns", time.Since(rowReadStarted).Nanoseconds(),
@@ -460,6 +489,7 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 		level("房间历史账本遍历失败", append(diag.Attrs(ctx), "room_id", roomID,
 			"before_seq", beforeSeq, "limit", limit, "rows_read", len(out),
 			"payload_bytes", payloadBytes,
+			"error_class", readErrorClass(err, stageFailedRowRead), "failed_stage", stageFailedRowRead,
 			"pool_wait_ns", poolWait.Nanoseconds(),
 			"sql_call_ns", sqlCall.Nanoseconds(),
 			"row_read_ns", time.Since(rowReadStarted).Nanoseconds(),

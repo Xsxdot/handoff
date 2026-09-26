@@ -16,9 +16,13 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"fmt"
 	"strconv"
+	"time"
+
+	"github.com/Xsxdot/handoff/internal/diag"
 )
 
 // seatRevisionKey 是席位版本计数器的 ledger_meta 键（复用 sessions.go 的
@@ -27,18 +31,29 @@ const seatRevisionKey = "seat_revision"
 
 // SeatRevision 读取当前席位状态版本。无任何席位写入历史时返回 0。
 func (s *Store) SeatRevision() (int64, error) {
+	return s.SeatRevisionContext(context.Background())
+}
+
+// SeatRevisionContext 是 SeatRevision 的可取消入口（B409.6：候选页护栏读随
+// CLI context 取消）。单行点读以 QueryContext 执行并记耗时与关联 id；点读
+// 不单独量池等待，日志不冒充已拆分阶段。
+func (s *Store) SeatRevisionContext(ctx context.Context) (int64, error) {
+	started := time.Now()
 	var raw string
-	err := s.db.QueryRow(s.q(`SELECT value FROM ledger_meta WHERE key = ?`), seatRevisionKey).Scan(&raw)
+	err := s.db.QueryRowContext(ctx, s.q(`SELECT value FROM ledger_meta WHERE key = ?`), seatRevisionKey).Scan(&raw)
 	if err == sql.ErrNoRows {
 		return 0, nil
 	}
 	if err != nil {
+		log().Warn("读席位状态版本失败", append(diag.Attrs(ctx), "error_class", readErrorClass(err, ""), "cause", err)...)
 		return 0, fmt.Errorf("读席位状态版本: %w", err)
 	}
 	rev, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
 		return 0, fmt.Errorf("解析席位状态版本 %q: %w", raw, err)
 	}
+	log().Debug("读席位状态版本完成", append(diag.Attrs(ctx), "seat_revision", rev,
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return rev, nil
 }
 

@@ -2,11 +2,14 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/diag"
 )
 
 const openTicketProjectionVersion = 1
@@ -23,61 +26,60 @@ type openTicketTaskKey struct {
 
 // OpenTickets reads only active ticket rows. The left join also makes a missing
 // projection marker distinguishable from a valid empty projection.
+// B409.6：查询经 timedReadQuery 分离阶段，日志带关联 id；旧签名委托 Context 入口。
 func (s *Store) OpenTickets() ([]OpenTicket, error) {
+	return s.OpenTicketsContext(context.Background())
+}
+
+// OpenTicketsContext 是 OpenTickets 的可取消入口（B409.6：card wait / cards 读
+// 路径的取消传播与阶段诊断）。语义与旧入口一致。
+func (s *Store) OpenTicketsContext(ctx context.Context) ([]OpenTicket, error) {
+	started := time.Now()
 	if err := s.ensureOpenTicketProjection(); err != nil {
 		return nil, fmt.Errorf("校验未决工单投影: %w", err)
 	}
-	rows, err := s.db.Query(`SELECT st.open_count, p.card_id, p.source_target, p.source_task,
+	const query = `SELECT st.open_count, p.card_id, p.source_target, p.source_task,
 		p.ticket_id, p.task_type, p.payload
 		FROM open_ticket_projection_state st
 		LEFT JOIN open_ticket_projection p ON 1 = 1
 		WHERE st.id = 1
-		ORDER BY p.card_id, p.ticket_id, p.source_target, p.source_task`)
-	if err != nil {
-		err = fmt.Errorf("读未决工单投影: %w", err)
-		log().Error("读取未决工单投影失败", "cause", err)
-		return nil, err
-	}
-	defer rows.Close()
-
+		ORDER BY p.card_id, p.ticket_id, p.source_target, p.source_task`
 	out := make([]OpenTicket, 0)
 	var expected int64
 	var stateSeen bool
-	var resultRows, payloadBytes int64
-	for rows.Next() {
-		var cardID, target, taskID, ticketID, taskType, payload sql.NullString
-		if err := rows.Scan(&expected, &cardID, &target, &taskID, &ticketID, &taskType, &payload); err != nil {
-			err = fmt.Errorf("扫未决工单投影: %w", err)
-			log().Error("扫描未决工单投影失败", "cause", err)
-			return nil, err
-		}
-		stateSeen = true
-		resultRows++
-		if !cardID.Valid {
-			continue // Valid empty projection sentinel from the LEFT JOIN.
-		}
-		if !target.Valid || !taskID.Valid || !ticketID.Valid || !taskType.Valid || !payload.Valid {
-			err := fmt.Errorf("未决工单投影存在空字段")
-			log().Error("未决工单投影损坏", "cause", err, "card", cardID.String)
-			return nil, err
-		}
-		body := json.RawMessage(payload.String)
-		var bodyTicket ticketPayload
-		if err := json.Unmarshal(body, &bodyTicket); err != nil || bodyTicket.TicketID != ticketID.String {
-			if err == nil {
-				err = fmt.Errorf("投影 ticket_id 与正文不一致")
+	stage, err := s.timedReadQuery(ctx, query, nil, func(rows *sql.Rows) (int, int64, error) {
+		var resultRows, payloadBytes int64
+		for rows.Next() {
+			var cardID, target, taskID, ticketID, taskType, payload sql.NullString
+			if err := rows.Scan(&expected, &cardID, &target, &taskID, &ticketID, &taskType, &payload); err != nil {
+				return int(resultRows), payloadBytes, fmt.Errorf("扫未决工单投影: %w", err)
 			}
-			err = fmt.Errorf("校验未决工单投影正文: %w", err)
-			log().Error("未决工单投影损坏", "cause", err, "card", cardID.String, "ticket", ticketID.String)
-			return nil, err
+			stateSeen = true
+			resultRows++
+			if !cardID.Valid {
+				continue // Valid empty projection sentinel from the LEFT JOIN.
+			}
+			if !target.Valid || !taskID.Valid || !ticketID.Valid || !taskType.Valid || !payload.Valid {
+				return int(resultRows), payloadBytes, fmt.Errorf("未决工单投影存在空字段")
+			}
+			body := json.RawMessage(payload.String)
+			var bodyTicket ticketPayload
+			if err := json.Unmarshal(body, &bodyTicket); err != nil || bodyTicket.TicketID != ticketID.String {
+				if err == nil {
+					err = fmt.Errorf("投影 ticket_id 与正文不一致")
+				}
+				return int(resultRows), payloadBytes, fmt.Errorf("校验未决工单投影正文: %w", err)
+			}
+			out = append(out, OpenTicket{CardID: cardID.String, Target: target.String, TaskID: taskID.String,
+				TicketID: ticketID.String, TaskType: taskType.String, Payload: append(json.RawMessage(nil), body...)})
+			payloadBytes += int64(len(body))
 		}
-		out = append(out, OpenTicket{CardID: cardID.String, Target: target.String, TaskID: taskID.String,
-			TicketID: ticketID.String, TaskType: taskType.String, Payload: append(json.RawMessage(nil), body...)})
-		payloadBytes += int64(len(body))
-	}
-	if err := rows.Err(); err != nil {
-		err = fmt.Errorf("读未决工单投影结束: %w", err)
-		log().Error("读取未决工单投影失败", "cause", err)
+		return int(resultRows), payloadBytes, rows.Err()
+	})
+	if err != nil {
+		log().Error("读取未决工单投影失败", append(diag.Attrs(ctx),
+			"error_class", readErrorClass(err, stage.failedStage), "failed_stage", stage.failedStage,
+			"rows_read", stage.rowsRead, "cause", err)...)
 		return nil, err
 	}
 	if !stateSeen {
@@ -90,50 +92,56 @@ func (s *Store) OpenTickets() ([]OpenTicket, error) {
 		log().Error("未决工单投影校验失败", "cause", err, "expected_rows", expected, "actual_rows", len(out))
 		return nil, err
 	}
-	log().Debug("读取未决工单投影完成", "rows_read", resultRows, "tickets", len(out), "payload_bytes", payloadBytes)
+	// payload_bytes 保留既有字段名（U1 传输边界测试按它取数）；与 result_bytes 同值。
+	log().Debug("读取未决工单投影完成", append(append(append(diag.Attrs(ctx), "tickets", len(out),
+		"payload_bytes", stage.resultBytes), stage.logAttrs()...),
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return out, nil
 }
 
 // OpenTicketCounts aggregates in SQL and never returns ticket bodies to Go.
+// B409.6：旧签名委托 Context 入口，两入口同一把尺。
 func (s *Store) OpenTicketCounts() (map[string]int, error) {
+	return s.OpenTicketCountsContext(context.Background())
+}
+
+// OpenTicketCountsContext 是 OpenTicketCounts 的可取消入口（B409.6：cards 读
+// 路径的 HTTP context 取消传播；阶段诊断见完成/失败日志）。语义与旧入口一致。
+func (s *Store) OpenTicketCountsContext(ctx context.Context) (map[string]int, error) {
+	started := time.Now()
 	if err := s.ensureOpenTicketProjection(); err != nil {
 		return nil, fmt.Errorf("校验未决工单投影: %w", err)
 	}
-	rows, err := s.db.Query(`SELECT st.open_count, p.card_id, COUNT(p.ticket_id)
+	const query = `SELECT st.open_count, p.card_id, COUNT(p.ticket_id)
 		FROM open_ticket_projection_state st
 		LEFT JOIN open_ticket_projection p ON 1 = 1
 		WHERE st.id = 1
 		GROUP BY st.open_count, p.card_id
-		ORDER BY p.card_id`)
-	if err != nil {
-		err = fmt.Errorf("聚合未决工单投影: %w", err)
-		log().Error("聚合未决工单投影失败", "cause", err)
-		return nil, err
-	}
-	defer rows.Close()
-
+		ORDER BY p.card_id`
 	counts := make(map[string]int)
 	var expected, total int64
 	var stateSeen bool
-	var resultRows int64
-	for rows.Next() {
-		var cardID sql.NullString
-		var cardCount int64
-		if err := rows.Scan(&expected, &cardID, &cardCount); err != nil {
-			err = fmt.Errorf("扫未决工单聚合: %w", err)
-			log().Error("扫描未决工单聚合失败", "cause", err)
-			return nil, err
+	stage, err := s.timedReadQuery(ctx, query, nil, func(rows *sql.Rows) (int, int64, error) {
+		var resultRows int64
+		for rows.Next() {
+			var cardID sql.NullString
+			var cardCount int64
+			if err := rows.Scan(&expected, &cardID, &cardCount); err != nil {
+				return int(resultRows), 0, fmt.Errorf("扫未决工单聚合: %w", err)
+			}
+			stateSeen = true
+			resultRows++
+			total += cardCount
+			if cardID.Valid {
+				counts[cardID.String] = int(cardCount)
+			}
 		}
-		stateSeen = true
-		resultRows++
-		total += cardCount
-		if cardID.Valid {
-			counts[cardID.String] = int(cardCount)
-		}
-	}
-	if err := rows.Err(); err != nil {
-		err = fmt.Errorf("聚合未决工单结束: %w", err)
-		log().Error("聚合未决工单失败", "cause", err)
+		return int(resultRows), 0, rows.Err()
+	})
+	if err != nil {
+		log().Error("聚合未决工单投影失败", append(diag.Attrs(ctx),
+			"error_class", readErrorClass(err, stage.failedStage), "failed_stage", stage.failedStage,
+			"rows_read", stage.rowsRead, "cause", err)...)
 		return nil, err
 	}
 	if !stateSeen {
@@ -146,7 +154,9 @@ func (s *Store) OpenTicketCounts() (map[string]int, error) {
 		log().Error("未决工单投影计数校验失败", "cause", err, "expected_rows", expected, "actual_rows", total)
 		return nil, err
 	}
-	log().Debug("聚合未决工单投影完成", "rows_read", resultRows, "cards", len(counts), "payload_bytes", 0)
+	log().Info("聚合未决工单投影完成", append(append(append(diag.Attrs(ctx), "cards", len(counts),
+		"payload_bytes", stage.resultBytes), stage.logAttrs()...),
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return counts, nil
 }
 

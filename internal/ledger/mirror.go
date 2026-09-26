@@ -4,10 +4,13 @@
 package ledger
 
 import (
+	"context"
 	"database/sql"
 	"errors"
 	"fmt"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/diag"
 )
 
 // MirroredEvent 一条待镜像的 task 事件（来源三元组 + 原始负载）。
@@ -214,9 +217,20 @@ func (s *Store) MirrorHealth() ([]MirrorHealthRow, error) {
 
 // MaxSeq 账本单流当前最大 seq（wait 的起点）。
 func (s *Store) MaxSeq() (int64, error) {
+	return s.MaxSeqContext(context.Background())
+}
+
+// MaxSeqContext 是 MaxSeq 的可取消入口（B409.6：session wait 的边界快照随
+// CLI context 取消）。单行点读以 QueryContext 执行并记耗时与关联 id；点读
+// 不单独量池等待，日志不冒充已拆分阶段。
+func (s *Store) MaxSeqContext(ctx context.Context) (int64, error) {
+	started := time.Now()
 	var m sql.NullInt64
-	if err := s.db.QueryRow(`SELECT MAX(seq) FROM card_events`).Scan(&m); err != nil {
+	if err := s.db.QueryRowContext(ctx, `SELECT MAX(seq) FROM card_events`).Scan(&m); err != nil {
+		log().Warn("查最大 seq 失败", append(diag.Attrs(ctx), "error_class", readErrorClass(err, ""), "cause", err)...)
 		return 0, fmt.Errorf("查最大 seq: %w", err)
 	}
+	log().Debug("查最大 seq 完成", append(diag.Attrs(ctx), "max_seq", m.Int64,
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return m.Int64, nil
 }

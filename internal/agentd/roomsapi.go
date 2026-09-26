@@ -185,11 +185,12 @@ type roomAttachCacheEntry struct {
 // B374 限域（P-4）：仍读**全量** AllTaskLinks 建索引（本机任务索引依赖全量判定），
 // 但只收集入参（本页）rooms 对应的 links 传给 startRoomAttachRefresh——页外房间
 // 不投影、不触发远端 fan-out（F17/F18）。刷新体（workers/TTL/节流）不改。
-func (s *Server) enrichRoomAttachments(_ context.Context, rooms []proto.RoomSummary) {
+func (s *Server) enrichRoomAttachments(ctx context.Context, rooms []proto.RoomSummary) {
 	if s.ledger == nil {
 		return
 	}
-	links, err := s.ledger.AllTaskLinks()
+	// B409.6：挂账读取随请求 context 取消（此前显式丢弃 ctx）。
+	links, err := s.ledger.AllTaskLinksContext(ctx)
 	if err != nil {
 		s.log.Warn("读取房间挂账失败", "cause", err)
 		return

@@ -25,8 +25,11 @@ package ledger
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 	"time"
+
+	"github.com/Xsxdot/handoff/internal/diag"
 )
 
 // sessionCandidatesLimitMax 单页候选上限的保守天花板；调用方（CLI 扫描器）
@@ -135,6 +138,7 @@ func (s *Store) SessionMessageCandidates(member string, fromSeq, toSeq int64, li
 }
 
 // SessionMessageCandidatesContext 同 SessionMessageCandidates，带取消传播。
+// B409.6：查询经 timedReadQuery 分离 pool/sql/row 阶段，日志带关联 id。
 func (s *Store) SessionMessageCandidatesContext(ctx context.Context, member string, fromSeq, toSeq int64, limit int) ([]Event, error) {
 	if member == "" {
 		return nil, fmt.Errorf("会话候选读需要 member")
@@ -146,26 +150,35 @@ func (s *Store) SessionMessageCandidatesContext(ctx context.Context, member stri
 	query, args := s.sessionCandidatesSQL(member, fromSeq, toSeq)
 	args = append(args, limit)
 	if err := ctx.Err(); err != nil {
-		log().Info("会话候选读已取消", "member", member, "from_seq", fromSeq, "to_seq", toSeq, "cause", err)
+		log().Info("会话候选读已取消", append(diag.Attrs(ctx), "member", member,
+			"from_seq", fromSeq, "to_seq", toSeq,
+			"failed_stage", stageFailedStart, "error_class", readErrorClass(err, stageFailedStart), "cause", err)...)
 		return nil, err
 	}
-	rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+	var out []Event
+	stage, err := s.timedReadQuery(ctx, query, args, func(rows *sql.Rows) (int, int64, error) {
+		events, scanErr := scanProjectionEvents(rows)
+		if scanErr != nil {
+			return 0, 0, scanErr
+		}
+		out = events
+		return len(events), payloadBytesOf(events), nil
+	})
 	if err != nil {
-		log().Warn("会话候选读 SQL 失败", "member", member, "from_seq", fromSeq, "to_seq", toSeq, "cause", err)
+		class := readErrorClass(err, stage.failedStage)
+		level := log().Warn
+		if class == "canceled" || class == "deadline_exceeded" {
+			level = log().Info
+		}
+		level("会话候选读 SQL 失败", append(diag.Attrs(ctx), "member", member,
+			"from_seq", fromSeq, "to_seq", toSeq,
+			"error_class", readErrorClass(err, stage.failedStage), "failed_stage", stage.failedStage,
+			"pool_wait_ns", stage.poolWaitNs, "sql_call_ns", stage.sqlCallNs,
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		return nil, fmt.Errorf("读会话消息候选: %w", err)
 	}
-	defer rows.Close()
-	out, scanErr := scanProjectionEvents(rows)
-	if scanErr != nil {
-		log().Warn("会话候选读行扫描失败", "member", member, "rows_read", len(out), "cause", scanErr)
-		return nil, fmt.Errorf("扫会话消息候选: %w", scanErr)
-	}
-	payloadBytes := 0
-	for _, event := range out {
-		payloadBytes += len(event.Payload)
-	}
-	log().Info("会话候选读完成", "member", member, "from_seq", fromSeq, "to_seq", toSeq,
-		"rows_returned", len(out), "payload_bytes", payloadBytes,
-		"elapsed_ns", time.Since(started).Nanoseconds())
+	log().Info("会话候选读完成", append(append(append(diag.Attrs(ctx), "member", member,
+		"from_seq", fromSeq, "to_seq", toSeq, "rows_returned", len(out)), stage.logAttrs()...),
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return out, nil
 }
