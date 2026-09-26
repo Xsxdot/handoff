@@ -262,6 +262,12 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_seq
 				ON card_events(seq)
 				WHERE type = 'room_message'`,
+			// 会话候选读的主扫描域：无卡（群级/会话级）房间消息的 seq 范围。
+			// 比 idx_events_card 的 card_id IS NULL 段更紧——镜像/结构等无卡
+			// 事件被索引谓词排除在扫描域外（EQP 证据断言）。
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_cardless_seq
+				ON card_events(seq)
+				WHERE type = 'room_message' AND card_id IS NULL`,
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_actor_seq
 				ON card_events(actor, seq)
 				WHERE type = 'room_message'`,
@@ -428,6 +434,10 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_seq
 				ON card_events(seq)
 				WHERE type = 'room_message'`,
+			// 会话候选读的主扫描域：与 PG 分支同名同谓词的更紧局部索引。
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_cardless_seq
+				ON card_events(seq)
+				WHERE type = 'room_message' AND card_id IS NULL`,
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_actor_seq
 				ON card_events(actor, seq)
 				WHERE type = 'room_message'`,

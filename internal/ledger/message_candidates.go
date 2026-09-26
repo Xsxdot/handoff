@@ -59,6 +59,34 @@ func (s *Store) kindExpr() string {
 	return kindExprPG
 }
 
+// mentionCandidatesSQL 组装提及候选查询与参数（不含末尾的 ORDER BY/LIMIT——
+// 调用方补 ` ORDER BY seq ASC LIMIT ?` 与 limit 参数后执行）。单独抽出是为了
+// 让方言执行计划测试复用同一份 SQL 文本。
+func (s *Store) mentionCandidatesSQL(member, roomID string, cardlessOnly bool, afterSeq int64) (string, []any) {
+	query := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+		FROM card_events WHERE type = 'room_message' AND seq > ?`
+	args := []any{afterSeq}
+	if cardlessOnly {
+		// 群级/会话级源（Pending）：钉死到无卡 room_message 的 seq 范围——
+		// SQLite 优化器会偏向 idx_events_card 的 card_id IS NULL 段（把镜像等
+		// 无卡事件拉进域），显式 INDEXED BY 压域；PG 自行选择局部索引。
+		indexed := ""
+		if s.dialect == dialectSQLite {
+			indexed = ` INDEXED BY idx_room_messages_cardless_seq`
+		}
+		query = `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+			FROM card_events` + indexed + ` WHERE type = 'room_message' AND card_id IS NULL AND seq > ?`
+		args = []any{afterSeq}
+	}
+	if roomID != "" {
+		query += ` AND (card_id = ? OR (card_id IS NULL AND ` + s.roomExpr() + ` = ?))`
+		args = append(args, roomID, roomID)
+	}
+	query += ` AND ` + s.mentionMatchExpr()
+	args = append(args, member)
+	return query, args
+}
+
 // MentionCandidatesContext 读一页 @member 的 room_message 候选超集（mentions
 // 数组精确含 member），seq 升序。
 //
@@ -74,18 +102,9 @@ func (s *Store) MentionCandidatesContext(ctx context.Context, member, roomID str
 		return nil, fmt.Errorf("提及候选读 limit 必须在 (0,%d]: %d", candidateLimitMax, limit)
 	}
 	started := time.Now()
-	query := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
-		FROM card_events WHERE type = 'room_message' AND seq > ?`
-	args := []any{afterSeq}
-	if cardlessOnly {
-		query += ` AND card_id IS NULL`
-	}
-	if roomID != "" {
-		query += ` AND (card_id = ? OR (card_id IS NULL AND ` + s.roomExpr() + ` = ?))`
-		args = append(args, roomID, roomID)
-	}
-	query += ` AND ` + s.mentionMatchExpr() + ` ORDER BY seq ASC LIMIT ?`
-	args = append(args, member, limit)
+	query, args := s.mentionCandidatesSQL(member, roomID, cardlessOnly, afterSeq)
+	query += ` ORDER BY seq ASC LIMIT ?`
+	args = append(args, limit)
 	if err := ctx.Err(); err != nil {
 		log().Info("提及候选读已取消", "member", member, "room_restricted", roomID != "", "cause", err)
 		return nil, err

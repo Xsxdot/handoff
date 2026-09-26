@@ -52,46 +52,78 @@ const (
 	replyToExprSQLite = `json_extract(%s.payload, '$.reply_to')`
 )
 
+// sessionCandidatesBranchSQL 组装单条分支查询与参数（不含 ORDER BY/LIMIT——
+// 复合选择只允许末尾一个 ORDER BY；分支单独执行时由调用方补
+// ` ORDER BY seq ASC LIMIT ?`）。branch: "mentions"（身份 @ + 当前席位卡 @）
+// 或 "reply"（reply_to→member 作者）。单独抽出是为了让方言执行计划测试能对
+// 每个分支分别取证，主查询用 UNION 组合。
+//
+// SQLite 对两分支显式 INDEXED BY idx_room_messages_cardless_seq：优化器在
+// idx_events_card(card_id IS NULL, seq) 与 room_message 局部索引之间会选前者，
+// 把全部无卡事件（含镜像/结构）拉进扫描域——显式钉死到无卡 room_message 的
+// seq 范围（EQP 证据断言扫描域，见 session_candidates_perf_test）。PG 优化器
+// 对同一谓词自行选择 room_message 局部索引，无需钉死。
+func (s *Store) sessionCandidatesBranchSQL(member string, fromSeq, toSeq int64, branch string) (string, []any) {
+	upper := ""
+	if toSeq > 0 {
+		upper = ` AND seq <= ?`
+	}
+	indexed := ""
+	if s.dialect == dialectSQLite {
+		indexed = ` INDEXED BY idx_room_messages_cardless_seq`
+	}
+	var query string
+	var args []any
+	switch branch {
+	case "mentions":
+		mentionMatch, mentionCardMatch := mentionMatchPG, mentionCardMatchPG
+		if s.dialect == dialectSQLite {
+			mentionMatch, mentionCardMatch = mentionMatchSQLite, mentionCardMatchSQLite
+		}
+		query = `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+			FROM card_events` + indexed + `
+			WHERE type = 'room_message' AND card_id IS NULL AND seq > ?` + upper + `
+			AND (` + mentionMatch + ` OR ` + mentionCardMatch + `)`
+		args = append(args, fromSeq)
+		if toSeq > 0 {
+			args = append(args, toSeq)
+		}
+		// 一参给身份精确匹配，一参给 member 当前席位卡（cards.driver_session）。
+		args = append(args, member, member)
+	case "reply":
+		replyToExpr := replyToExprPG
+		if s.dialect == dialectSQLite {
+			replyToExpr = replyToExprSQLite
+		}
+		query = `SELECT e.seq, e.card_id, e.type, e.actor, e.payload, e.source_target, e.source_task, e.source_seq, e.created_at
+			FROM card_events e` + indexed + `
+			WHERE e.type = 'room_message' AND e.card_id IS NULL AND e.seq > ?` + upper + `
+			AND EXISTS (SELECT 1 FROM card_events r WHERE r.seq = ` + fmt.Sprintf(replyToExpr, "e") + `
+				AND r.type = 'room_message' AND r.actor = ?)`
+		args = append(args, fromSeq)
+		if toSeq > 0 {
+			args = append(args, toSeq)
+		}
+		args = append(args, member)
+	default:
+		return "", nil
+	}
+	return query, args
+}
+
 // sessionCandidatesSQL 组装候选读的两分支 UNION 查询与参数（不含末尾 LIMIT 的
 // 参数——调用方取回 args 后 append(limit) 再执行）。fromSeq 排他；toSeq 包含
 // （<=0 表示无上界，follow 实时段用）。单独抽出是为了让方言执行计划测试复用
 // 同一份 SQL 文本。
 func (s *Store) sessionCandidatesSQL(member string, fromSeq, toSeq int64) (string, []any) {
-	upperCardless := ""
-	upperAliased := ""
-	if toSeq > 0 {
-		upperCardless = ` AND seq <= ?`
-		upperAliased = ` AND e.seq <= ?`
-	}
-	mentionMatch, mentionCardMatch, replyToExpr := mentionMatchPG, mentionCardMatchPG, replyToExprPG
-	if s.dialect == dialectSQLite {
-		mentionMatch, mentionCardMatch, replyToExpr = mentionMatchSQLite, mentionCardMatchSQLite, replyToExprSQLite
-	}
 	// UNION 去重：同一消息可能同时命中身份 @ 与 reply 两分支（整体行相同）。
-	query := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
-		FROM card_events
-		WHERE type = 'room_message' AND card_id IS NULL AND seq > ?` + upperCardless + `
-		AND (` + mentionMatch + ` OR ` + mentionCardMatch + `)
+	mentionsQuery, mentionsArgs := s.sessionCandidatesBranchSQL(member, fromSeq, toSeq, "mentions")
+	replyQuery, replyArgs := s.sessionCandidatesBranchSQL(member, fromSeq, toSeq, "reply")
+	query := mentionsQuery + `
 		UNION
-		SELECT e.seq, e.card_id, e.type, e.actor, e.payload, e.source_target, e.source_task, e.source_seq, e.created_at
-		FROM card_events e
-		WHERE e.type = 'room_message' AND e.card_id IS NULL AND e.seq > ?` + upperAliased + `
-		AND EXISTS (SELECT 1 FROM card_events r WHERE r.seq = ` + fmt.Sprintf(replyToExpr, "e") + `
-			AND r.type = 'room_message' AND r.actor = ?)
+		` + replyQuery + `
 		ORDER BY seq ASC LIMIT ?`
-	var args []any
-	args = append(args, fromSeq)
-	if toSeq > 0 {
-		args = append(args, toSeq)
-	}
-	// mentions 两分支共用 member：一是 mentions∋member 身份精确匹配，二是
-	// member 当前席位卡号（cards.driver_session 查询）。
-	args = append(args, member, member, fromSeq)
-	if toSeq > 0 {
-		args = append(args, toSeq)
-	}
-	args = append(args, member)
-	return query, args
+	return query, append(mentionsArgs, replyArgs...)
 }
 
 // SessionMessageCandidates 读一页会话消息候选：member 身份 @、member 当前席位
