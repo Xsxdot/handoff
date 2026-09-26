@@ -884,3 +884,9 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 
 - **镜像 watermark 逐 seq 连续性对账（补洞重拉）**：水位 = `MAX(source_seq)` 会跳过缺口，缺口以下的关单类审计事件永久丢失；B380 用投影层终态关单兜住可见后果，未根治整族。来源：`docs/superpowers/specs/b380.md` §3.3；`b380-contract.md` §5。
 - **`tickets_voided` 发布语义修订**：投影层终态关单已覆盖其全部投影职责，多发布一种审计事件无增量收益。来源：`docs/superpowers/specs/b380.md` §3.3。
+
+## 来自 B409.6 acceptance（2026-09-26，本期不做、后续要做）
+
+- **wakeconsumer 唤醒日志打印 mention 目标值**：`internal/agentd/wakeconsumer.go:390` 把 @ token 列表写进日志，违反 B409 脱敏红线（「日志不含 @ token」）；该文件属 U6 禁改清单故未随卡修复，修复前该日志族持续违反红线。修法：改记 targets_count 数值。来源：B409.6 实现者范围外发现 + 独立 review 确认；`docs/superpowers/ledgers/2026-09-26-b409-6-acceptance.md` §5。
+- **诊断包装日志 `cause=err` 家族收敛**：U6 新增包装日志与既有 `derived.go`/`mirror.go` 家族沿用 `cause=err` 直排 driver error 原文，开库失败行含 user/host:port（无密码）；与 plan「不得将任意 driver error 原文当 cause」条文相抵，实测五哨兵零泄漏。建议单独小卡统一收敛为 error_class。来源：B409.6 review Minor#4。
+- **脱敏哨兵注入空转断言**：`internal/agentd/redaction_diag_test.go:20` sentinelDSNPassword 只扫描未注入，该条为空转；DSN 密码类实际由其它夹具覆盖。修法：注入或删条目。来源：B409.6 review Minor#3。
