@@ -10,6 +10,8 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -48,6 +50,16 @@ func attrValue(r slog.Record, key string) (slog.Value, bool) {
 		return true
 	})
 	return found, ok
+}
+
+// recordAttrs 把一条记录的全部属性展开为 map。
+func recordAttrs(r slog.Record) map[string]string {
+	out := map[string]string{}
+	r.Attrs(func(a slog.Attr) bool {
+		out[a.Key] = a.Value.String()
+		return true
+	})
+	return out
 }
 
 // allText 把每条记录渲染为文本（含消息与属性），供哨兵扫描类断言。
@@ -198,5 +210,175 @@ func TestRoomMessagesReadLogsCorrelatedOperationID(t *testing.T) {
 		if v, ok := attrValue(rec, "operation_id"); !ok || v.String() != opID {
 			t.Fatalf("日志 %q 缺 operation_id=%s：%s", msg, opID, capture.allText())
 		}
+	}
+}
+
+// mustCardDiag 建一张卡作 cards 读金样。
+func mustCardDiag(t *testing.T, env *ledgerEnv) ledger.Card {
+	t.Helper()
+	card, err := env.ledger.CreateCard(ledger.NewCard{Title: "诊断卡", Project: "handoff", Actor: "test"})
+	if err != nil {
+		t.Fatalf("建卡: %v", err)
+	}
+	return card
+}
+
+// —— B409.6 Step 5：HTTP 外围收口（状态码/响应字节/结果分类/取消） ——
+
+// TestReadDiagCompletionHasStatusBytesAndOutcome 锁外围收口行：真实写出后的
+// status_code、response_bytes、outcome 与 elapsed 在同一 operation_id 下可查。
+func TestReadDiagCompletionHasStatusBytesAndOutcome(t *testing.T) {
+	capture := &diagLogCapture{}
+	env := newDiagEnv(t, capture)
+	roomID := seedSessionRoom(t, env.ledger, 2)
+
+	code, body := diagGet(t, env, "/api/rooms/"+roomID+"/messages?limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("应 200: %d", code)
+	}
+	rec, ok := capture.find("读取操作完成")
+	if !ok {
+		t.Fatalf("缺外围收口日志：\n%s", capture.allText())
+	}
+	attrs := recordAttrs(rec)
+	if attrs["status_code"] != "200" {
+		t.Fatalf("status_code=%q want 200", attrs["status_code"])
+	}
+	if got, err := strconv.Atoi(attrs["response_bytes"]); err != nil || got <= 0 || got != len(body) {
+		t.Fatalf("response_bytes=%q 应等于实际响应体 %d", attrs["response_bytes"], len(body))
+	}
+	if attrs["outcome"] != "success_nonempty" {
+		t.Fatalf("outcome=%q want success_nonempty", attrs["outcome"])
+	}
+	if attrs["route"] != "room_messages" {
+		t.Fatalf("route=%q want room_messages（受限标签，不是原始 URL）", attrs["route"])
+	}
+	if _, ok := attrs["elapsed_ns"]; !ok {
+		t.Fatalf("收口缺 elapsed_ns: %v", attrs)
+	}
+}
+
+// TestReadDiagEmptyReadClassifiedSuccessEmpty 锁合法空读：200 + 0 行 = 
+// success_empty，不伪造错误也不冒充非空。
+func TestReadDiagEmptyReadClassifiedSuccessEmpty(t *testing.T) {
+	capture := &diagLogCapture{}
+	env := newDiagEnv(t, capture)
+	roomID := seedSessionRoom(t, env.ledger, 0)
+
+	code, body := diagGet(t, env, "/api/rooms/"+roomID+"/messages?limit=10")
+	if code != http.StatusOK {
+		t.Fatalf("空房间应 200: %d %s", code, body)
+	}
+	rec, ok := capture.find("读取操作完成")
+	if !ok {
+		t.Fatalf("缺外围收口日志：\n%s", capture.allText())
+	}
+	attrs := recordAttrs(rec)
+	if attrs["outcome"] != "success_empty" || attrs["rows"] != "0" {
+		t.Fatalf("合法空读分类错误: %v", attrs)
+	}
+}
+
+// TestReadDiagHTTPFailureOutcomeNotSuccess 锁失败收口：DB 读失败 → 外围 500、
+// outcome=error、error_class 可查，与 operation_id 对齐。
+func TestReadDiagHTTPFailureOutcomeNotSuccess(t *testing.T) {
+	capture := &diagLogCapture{}
+	env := newDiagEnv(t, capture)
+	roomID := seedSessionRoom(t, env.ledger, 1)
+	if err := env.ledger.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	code, _ := diagGet(t, env, "/api/rooms/"+roomID+"/messages?limit=10")
+	if code != http.StatusInternalServerError {
+		t.Fatalf("DB 失败应 500: %d", code)
+	}
+	rec, ok := capture.find("读取操作完成")
+	if !ok {
+		t.Fatalf("缺外围收口日志：\n%s", capture.allText())
+	}
+	attrs := recordAttrs(rec)
+	if attrs["status_code"] != "500" || attrs["outcome"] != "error" {
+		t.Fatalf("失败收口分类错误: %v", attrs)
+	}
+	if attrs["error_class"] == "" {
+		t.Fatalf("失败收口缺 error_class: %v", attrs)
+	}
+}
+
+// TestReadDiagCanceledOutcomeWithReason 锁取消收口：请求 context 取消 →
+// outcome=canceled 且 cancel_reason 区分 context_canceled；不得记成泛化
+// error 也不得谎报成功。
+func TestReadDiagCanceledOutcomeWithReason(t *testing.T) {
+	capture := &diagLogCapture{}
+	env := newDiagEnv(t, capture)
+	roomID := seedSessionRoom(t, env.ledger, 1)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	req, err := http.NewRequest(http.MethodGet, env.ts.URL+"/api/rooms/"+roomID+"/messages?limit=10", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.token)
+	req = req.WithContext(ctx)
+	resp, err := http.DefaultClient.Do(req)
+	if err == nil {
+		resp.Body.Close()
+		t.Fatal("已取消请求不应得到正常响应")
+	}
+	// 客户端断连下服务端可能已写部分响应；直接经 mux 调一次以确保收口稳定。
+	muxReq := httptest.NewRequest(http.MethodGet, "/api/rooms/"+roomID+"/messages?limit=10", nil)
+	muxReq.Host = "127.0.0.1" // httptest 默认 example.com 会被 hostGuard 拒掉
+	muxReq.Header.Set("Authorization", "Bearer "+env.token)
+	muxReq = muxReq.WithContext(ctx)
+	recorder := httptest.NewRecorder()
+	env.srv.Handler().ServeHTTP(recorder, muxReq)
+
+	rec, ok := capture.find("读取操作完成")
+	if !ok {
+		t.Fatalf("缺外围收口日志：\n%s", capture.allText())
+	}
+	attrs := recordAttrs(rec)
+	if attrs["outcome"] != "canceled" {
+		t.Fatalf("outcome=%q want canceled: %v", attrs["outcome"], attrs)
+	}
+	if attrs["cancel_reason"] != "context_canceled" {
+		t.Fatalf("cancel_reason=%q want context_canceled", attrs["cancel_reason"])
+	}
+}
+
+// TestReadDiagRecorderPreservesFlusher 锁 recorder 接口面：包装不得吞掉
+// Flusher 行为（既有 SSE/flush 语义依赖它）。
+func TestReadDiagRecorderPreservesFlusher(t *testing.T) {
+	rec := &readResponseRecorder{ResponseWriter: httptest.NewRecorder()}
+	if _, ok := any(rec).(http.Flusher); !ok {
+		t.Fatal("readResponseRecorder 必须实现 http.Flusher")
+	}
+	rec.Flush() // 不应 panic
+}
+
+// TestReadDiagCardsSeparatesLocalAndRemote 锁 cards 双面记账：本地主数据
+// success 分类与远端摘要状态分开记（HTTP 200 下两者互不覆盖）。
+func TestReadDiagCardsSeparatesLocalAndRemote(t *testing.T) {
+	capture := &diagLogCapture{}
+	env := newDiagEnv(t, capture)
+	mustCardDiag(t, env)
+
+	code, body := diagGet(t, env, "/api/cards")
+	if code != http.StatusOK {
+		t.Fatalf("cards 应 200: %d %s", code, body)
+	}
+	rec, ok := capture.find("读取操作完成")
+	if !ok {
+		t.Fatalf("缺外围收口日志：\n%s", capture.allText())
+	}
+	attrs := recordAttrs(rec)
+	if attrs["route"] != "cards_list" || attrs["outcome"] != "success_nonempty" {
+		t.Fatalf("本地 cards 收口错误: %v", attrs)
+	}
+	// 无配置 target 是合法 latest 空摘要：远端状态单独记录，不与本地混叠。
+	if attrs["remote_status"] != "latest" {
+		t.Fatalf("remote_status=%q want latest（无 target 合法空）", attrs["remote_status"])
 	}
 }

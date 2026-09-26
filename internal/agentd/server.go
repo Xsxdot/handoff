@@ -1002,23 +1002,147 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	}
 }
 
+// —— B409.6 S4 HTTP 外围：路线限定响应记录器与读操作收口 ——
+
+// readResultKey 是 readResult 的 context 键（包私有）。
+type readResultKey struct{}
+
+// readResult 收集 handler 在处理过程中已知的结果注记：主结果行数与远端摘要
+// 状态。由 observeRead 创建并放入 context，handler 经 annotateReadRows /
+// annotateReadRemote 填写，外围收口时读取。
+type readResult struct {
+	rows         int
+	remoteStatus string
+	remoteCount  int
+}
+
+// annotateReadRows 记录本次读操作的主结果行数；非观测路由无 readResult，
+// 静默跳过（写路径复用 handler 时不会有副作用）。
+func annotateReadRows(ctx context.Context, rows int) {
+	if rr, ok := ctx.Value(readResultKey{}).(*readResult); ok {
+		rr.rows = rows
+	}
+}
+
+// annotateReadRemote 记录远端摘要状态（latest/partial/stale/unavailable）与
+// 观测任务数。本地成功与远端降级分开记，互不覆盖。
+func annotateReadRemote(ctx context.Context, status string, count int) {
+	if rr, ok := ctx.Value(readResultKey{}).(*readResult); ok {
+		rr.remoteStatus, rr.remoteCount = status, count
+	}
+}
+
+// readResponseRecorder 统计实际写出状态与字节，仅用于有限 JSON 读路由。
+// 显式实现 Flusher 并向底层委托——包装不得吞掉流式语义；Hijacker 未实现：
+// 五条被观测路由都是纯 JSON 响应，不升级连接。
+type readResponseRecorder struct {
+	http.ResponseWriter
+	status int // 0 = 尚未显式写出；收口时按 Go 默认 200 归一
+	bytes  int
+}
+
+func (r *readResponseRecorder) WriteHeader(code int) {
+	if r.status == 0 {
+		r.status = code
+	}
+	r.ResponseWriter.WriteHeader(code)
+}
+
+func (r *readResponseRecorder) Write(b []byte) (int, error) {
+	if r.status == 0 {
+		r.status = http.StatusOK
+	}
+	n, err := r.ResponseWriter.Write(b)
+	r.bytes += n
+	return n, err
+}
+
+func (r *readResponseRecorder) Flush() {
+	if f, ok := r.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// readErrorClassFromStatus 把 HTTP 状态归入有限安全分类；err 原文不进日志。
+func readErrorClassFromStatus(code int) string {
+	switch code {
+	case http.StatusBadRequest:
+		return "bad_request"
+	case http.StatusForbidden:
+		return "forbidden"
+	case http.StatusNotFound:
+		return "not_found"
+	case http.StatusConflict:
+		return "conflict"
+	case http.StatusUpgradeRequired:
+		return "upgrade_required"
+	case http.StatusInternalServerError:
+		return "internal"
+	case http.StatusServiceUnavailable:
+		return "unavailable"
+	default:
+		return "http_error"
+	}
+}
+
 // observeRead 是 B409 读路由的路线限定观测包装（非全站中间件）：为一次同步
-// 读取生成服务端 operation_id 并注入请求 context，使 collab 投影与 ledger
+// 读取生成服务端 operation_id 并注入请求 context，响应写出后统一收口一次
+// 完成日志（状态码/响应字节/结果分类/取消原因），使 collab 投影与 ledger
 // 查询的阶段日志可以按同一 id 拼回本次读取（B409.6 S4）。只由
 // registerLedgerRoutes 的五条 B409 GET 读路由使用；写路径与普通业务端点
 // 不经过它，也不把 id 加进任何响应 JSON。
 //
 // route 是受限的观测标签（如 cards_list），不是原始 URL/query string。
+// 结果分类优先级：请求 context 已取消 → canceled（附 cancel_reason）；否则
+// 状态码非 2xx → error（附 error_class）；否则按注记行数分 success_empty /
+// success_nonempty。取消发生在哪一层（pool/SQL/row read/collab/写出）由同
+// operation_id 的下游阶段日志给出，这里不猜。
 func (s *Server) observeRead(route string, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		opID := diag.NewOperationID()
-		r = r.WithContext(diag.With(r.Context(), diag.Info{OperationID: opID}))
+		result := &readResult{}
+		ctx := diag.With(r.Context(), diag.Info{OperationID: opID})
+		ctx = context.WithValue(ctx, readResultKey{}, result)
+		r = r.WithContext(ctx)
 		started := time.Now()
-		h(w, r)
-		// 完成行只记受限标签与总时长；状态码/响应字节/结果分类由
-		// readResponseRecorder（同文件 B409.6 段）补齐，不在这里重复记。
-		s.log.Debug("读取操作结束", "route", route,
-			"operation_id", opID, "elapsed_ns", time.Since(started).Nanoseconds())
+		rec := &readResponseRecorder{ResponseWriter: w}
+		h(rec, r)
+		status := rec.status
+		if status == 0 {
+			status = http.StatusOK // handler 未显式 WriteHeader 时的隐式 200
+		}
+
+		attrs := append(diag.Attrs(r.Context()),
+			"route", route,
+			"status_code", status,
+			"response_bytes", rec.bytes,
+			"rows", result.rows)
+		if result.remoteStatus != "" {
+			attrs = append(attrs, "remote_status", result.remoteStatus, "remote_count", result.remoteCount)
+		}
+		outcome := ""
+		if err := r.Context().Err(); err != nil {
+			outcome = "canceled"
+			reason := "context_canceled"
+			if errors.Is(err, context.DeadlineExceeded) {
+				reason = "deadline_exceeded"
+			}
+			attrs = append(attrs, "cancel_reason", reason)
+		} else if status >= http.StatusBadRequest {
+			outcome = "error"
+			attrs = append(attrs, "error_class", readErrorClassFromStatus(status))
+		} else if result.rows == 0 {
+			outcome = "success_empty"
+		} else {
+			outcome = "success_nonempty"
+		}
+		attrs = append(attrs, "outcome", outcome,
+			"elapsed_ns", time.Since(started).Nanoseconds())
+		level := s.log.Info
+		if status >= http.StatusInternalServerError {
+			level = s.log.Warn
+		}
+		level("读取操作完成", attrs...)
 	}
 }
 

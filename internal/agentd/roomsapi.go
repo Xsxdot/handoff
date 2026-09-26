@@ -150,6 +150,7 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.enrichRoomAttachments(r.Context(), page.Rooms)
+	annotateReadRows(r.Context(), len(page.Rooms))
 	s.log.Debug("会话列表响应成功", "project", project, "member", member, "rooms", len(page.Rooms))
 	writeJSON(w, http.StatusOK, page)
 }
@@ -439,6 +440,7 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 	for _, event := range events {
 		payloadBytes += len(event.Payload)
 	}
+	annotateReadRows(r.Context(), len(events))
 	writeJSON(w, http.StatusOK, map[string]any{"messages": events})
 	s.log.Info("房间历史 HTTP 请求完成", append(diag.Attrs(r.Context()),
 		"room_id", roomID,

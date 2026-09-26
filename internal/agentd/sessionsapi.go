@@ -153,6 +153,7 @@ func (s *Server) handleSessionsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
+	annotateReadRows(r.Context(), len(summaries))
 	s.log.Info("会话列表响应成功", "member", member, "sessions", len(summaries))
 	writeJSON(w, http.StatusOK, map[string]any{"sessions": summaries})
 }
@@ -170,6 +171,7 @@ func (s *Server) handleSessionDetail(w http.ResponseWriter, r *http.Request) {
 		sessionErr(w, fmt.Errorf("会话 %s: %w", id, err))
 		return
 	}
+	annotateReadRows(r.Context(), len(detail.Timeline))
 	s.log.Info("会话详情响应成功", "session", id)
 	writeJSON(w, http.StatusOK, detail)
 }

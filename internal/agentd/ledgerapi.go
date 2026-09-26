@@ -231,9 +231,16 @@ func (s *Server) handleCardsList(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, ledgerCardViewWire(view, conflict, tickets[view.ID]))
 	}
+	// B409.6：本地主数据行数与远端摘要状态分开注记，外围收口分两条事实记。
+	unlinked := s.unlinkedSummary()
+	annotateReadRows(r.Context(), len(out))
+	if status, ok := unlinked["status"].(string); ok {
+		count, _ := unlinked["count"].(int)
+		annotateReadRemote(r.Context(), status, count)
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"cards":    out,
-		"unlinked": s.unlinkedSummary(),
+		"unlinked": unlinked,
 	})
 }
 
