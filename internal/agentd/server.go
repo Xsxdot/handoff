@@ -40,6 +40,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/client"
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/executor"
 	"github.com/Xsxdot/handoff/internal/hostapi"
 	"github.com/Xsxdot/handoff/internal/keysclient"
@@ -998,6 +999,26 @@ func writeJSON(w http.ResponseWriter, status int, v any) {
 	w.WriteHeader(status)
 	if err := json.NewEncoder(w).Encode(v); err != nil {
 		slog.Default().Warn("JSON 编码失败", "err", err)
+	}
+}
+
+// observeRead 是 B409 读路由的路线限定观测包装（非全站中间件）：为一次同步
+// 读取生成服务端 operation_id 并注入请求 context，使 collab 投影与 ledger
+// 查询的阶段日志可以按同一 id 拼回本次读取（B409.6 S4）。只由
+// registerLedgerRoutes 的五条 B409 GET 读路由使用；写路径与普通业务端点
+// 不经过它，也不把 id 加进任何响应 JSON。
+//
+// route 是受限的观测标签（如 cards_list），不是原始 URL/query string。
+func (s *Server) observeRead(route string, h http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		opID := diag.NewOperationID()
+		r = r.WithContext(diag.With(r.Context(), diag.Info{OperationID: opID}))
+		started := time.Now()
+		h(w, r)
+		// 完成行只记受限标签与总时长；状态码/响应字节/结果分类由
+		// readResponseRecorder（同文件 B409.6 段）补齐，不在这里重复记。
+		s.log.Debug("读取操作结束", "route", route,
+			"operation_id", opID, "elapsed_ns", time.Since(started).Nanoseconds())
 	}
 }
 

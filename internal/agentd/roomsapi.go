@@ -22,6 +22,7 @@ import (
 
 	"github.com/Xsxdot/handoff/internal/collab"
 	"github.com/Xsxdot/handoff/internal/collab/room"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/orchestration"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -416,18 +417,20 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 	before, _ := strconv.ParseInt(r.URL.Query().Get("before"), 10, 64)
 	limit, _ := strconv.Atoi(r.URL.Query().Get("limit"))
 	started := time.Now()
-	s.log.Info("房间历史 HTTP 请求开始", "room_id", roomID,
-		"before_seq", before, "limit", limit)
+	s.log.Info("房间历史 HTTP 请求开始", append(diag.Attrs(r.Context()),
+		"room_id", roomID, "before_seq", before, "limit", limit)...)
 	events, err := s.rooms.HistoryContext(r.Context(), roomID, before, limit)
 	if err != nil {
 		if errors.Is(err, collab.ErrNoRoom) {
-			s.log.Warn("房间历史请求命中不存在房间", "room_id", roomID,
-				"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+			s.log.Warn("房间历史请求命中不存在房间", append(diag.Attrs(r.Context()),
+				"room_id", roomID,
+				"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 			writeErr(w, http.StatusNotFound, err)
 			return
 		}
-		s.log.Warn("房间历史读取失败", "room_id", roomID,
-			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+		s.log.Warn("房间历史读取失败", append(diag.Attrs(r.Context()),
+			"room_id", roomID,
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		writeErr(w, http.StatusInternalServerError, err)
 		return
 	}
@@ -436,9 +439,10 @@ func (s *Server) handleRoomMessages(w http.ResponseWriter, r *http.Request) {
 		payloadBytes += len(event.Payload)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"messages": events})
-	s.log.Info("房间历史 HTTP 请求完成", "room_id", roomID,
+	s.log.Info("房间历史 HTTP 请求完成", append(diag.Attrs(r.Context()),
+		"room_id", roomID,
 		"rows_returned", len(events), "payload_bytes", payloadBytes,
-		"elapsed_ns", time.Since(started).Nanoseconds())
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 }
 
 // handleRoomSend POST /api/rooms/{id}/messages → 用户发言（kind 服务端固定 user，

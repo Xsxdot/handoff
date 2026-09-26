@@ -24,6 +24,7 @@ import (
 	"github.com/Xsxdot/handoff/internal/collab/client"
 	"github.com/Xsxdot/handoff/internal/collab/cursor"
 	"github.com/Xsxdot/handoff/internal/collab/room"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -294,13 +295,15 @@ func (s *Service) History(roomID string, beforeSeq int64, limit int) ([]proto.Le
 }
 
 // HistoryContext 用于 HTTP 请求；浏览器超时或切换会话会取消数据库查询。
+// B409.6：本层完成/失败日志携带请求 context 里的 operation_id（无关联时省略），
+// 与 HTTP 外围及 ledger 查询日志拼回同一次读取。
 func (s *Service) HistoryContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
 	started := time.Now()
-	log().Info("房间历史读取开始", "room_id", roomID,
-		"before_seq", beforeSeq, "limit", limit)
+	log().Info("房间历史读取开始", append(diag.Attrs(ctx),
+		"room_id", roomID, "before_seq", beforeSeq, "limit", limit)...)
 	// Keep the ledger boundary separate from the collab pass that totals payload bytes.
 	ledgerStarted := time.Now()
 	events, err := s.lc.RoomMessagesBeforeContext(ctx, roomID, beforeSeq, limit)
@@ -310,10 +313,10 @@ func (s *Service) HistoryContext(ctx context.Context, roomID string, beforeSeq i
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			level = log().Info
 		}
-		level("房间历史账本读取失败", "room_id", roomID,
+		level("房间历史账本读取失败", append(diag.Attrs(ctx), "room_id", roomID,
 			"before_seq", beforeSeq, "limit", limit,
 			"ledger_call_ns", ledgerCallNs,
-			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		return nil, err
 	}
 	// This pass measures collab-side accounting only; HTTP serialization is timed by the handler.
@@ -323,10 +326,10 @@ func (s *Service) HistoryContext(ctx context.Context, roomID string, beforeSeq i
 		payloadBytes += len(event.Payload)
 	}
 	assemblyNs := time.Since(assemblyStarted).Nanoseconds()
-	log().Info("房间历史读取完成", "room_id", roomID,
+	log().Info("房间历史读取完成", append(diag.Attrs(ctx), "room_id", roomID,
 		"before_seq", beforeSeq, "limit", limit, "rows_returned", len(events),
 		"payload_bytes", payloadBytes, "ledger_call_ns", ledgerCallNs,
-		"assembly_ns", assemblyNs, "elapsed_ns", time.Since(started).Nanoseconds())
+		"assembly_ns", assemblyNs, "elapsed_ns", time.Since(started).Nanoseconds())...)
 	return events, nil
 }
 

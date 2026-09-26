@@ -29,7 +29,9 @@ import (
 func (s *Server) SetLedger(st *ledger.Store) { s.ledger = st }
 
 func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
-	api.HandleFunc("GET /api/cards", s.withLedger(s.handleCardsList))
+	// B409.6 S4：五条读路由套 observeRead（路线限定观测包装），生成贯穿
+	// collab/ledger 日志的 operation_id；写路径与其余端点不套。
+	api.HandleFunc("GET /api/cards", s.observeRead("cards_list", s.withLedger(s.handleCardsList)))
 	api.HandleFunc("GET /api/cards/{id}", s.withLedger(s.handleCardDetail))
 	api.HandleFunc("POST /api/cards", s.withLedger(s.handleCardCreate))
 	api.HandleFunc("PATCH /api/cards/{id}", s.withLedger(s.handleCardPatch))
@@ -47,16 +49,16 @@ func (s *Server) registerLedgerRoutes(api *http.ServeMux) {
 	api.HandleFunc("GET /api/flows/{name}", s.withLedger(s.handleFlowGet))
 	api.HandleFunc("PUT /api/flows/{name}", s.withLedger(s.handleFlowPut))
 	api.HandleFunc("GET /api/disciplines", s.withLedger(s.handleDisciplineNames))
-	api.HandleFunc("GET /api/rooms", s.withRooms(s.handleRoomsList))
-	api.HandleFunc("GET /api/rooms/{id}/messages", s.withRooms(s.handleRoomMessages))
+	api.HandleFunc("GET /api/rooms", s.observeRead("rooms_list", s.withRooms(s.handleRoomsList)))
+	api.HandleFunc("GET /api/rooms/{id}/messages", s.observeRead("room_messages", s.withRooms(s.handleRoomMessages)))
 	api.HandleFunc("POST /api/rooms/{id}/messages", s.withRooms(s.handleRoomSend))
 	api.HandleFunc("POST /api/rooms/{id}/read", s.withRooms(s.handleRoomRead))
 	api.HandleFunc("GET /api/inbox", s.withRooms(s.handleInbox))
 	// B358.4 会话（群）六端点：全部经 withRooms 守卫（未装配 503，与 rooms 同款）；
 	// 发言/已读/历史复用上方 /api/rooms 端点（会话房间以 session:<n> 作 {id}）。
 	api.HandleFunc("POST /api/sessions", s.withRooms(s.handleSessionCreate))
-	api.HandleFunc("GET /api/sessions", s.withRooms(s.handleSessionsList))
-	api.HandleFunc("GET /api/sessions/{id}", s.withRooms(s.handleSessionDetail))
+	api.HandleFunc("GET /api/sessions", s.observeRead("sessions_list", s.withRooms(s.handleSessionsList)))
+	api.HandleFunc("GET /api/sessions/{id}", s.observeRead("session_detail", s.withRooms(s.handleSessionDetail)))
 	api.HandleFunc("POST /api/sessions/{id}/archive", s.withRooms(s.handleSessionArchive))
 	api.HandleFunc("POST /api/sessions/{id}/cards", s.withRooms(s.handleSessionJoinCard))
 	api.HandleFunc("DELETE /api/sessions/{id}/cards/{cardID}", s.withRooms(s.handleSessionLeaveCard))

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/proto"
 )
 
@@ -341,16 +342,16 @@ func uniqueSorted(values []string) []string {
 // beforeSeq>0 时使用排他上界；数据库先按倒序截取，返回前再转成升序。
 func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]Event, error) {
 	started := time.Now()
-	log().Info("房间历史账本查询开始", "room_id", roomID,
-		"before_seq", beforeSeq, "limit", limit)
+	log().Info("房间历史账本查询开始", append(diag.Attrs(ctx),
+		"room_id", roomID, "before_seq", beforeSeq, "limit", limit)...)
 	if limit <= 0 {
 		err := fmt.Errorf("房间历史 limit 必须为正数: %d", limit)
-		log().Warn("房间历史账本查询参数无效", "room_id", roomID, "limit", limit, "cause", err)
+		log().Warn("房间历史账本查询参数无效", append(diag.Attrs(ctx), "room_id", roomID, "limit", limit, "cause", err)...)
 		return nil, err
 	}
 	if err := ctx.Err(); err != nil {
-		log().Info("房间历史账本查询已取消", "room_id", roomID,
-			"before_seq", beforeSeq, "elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+		log().Info("房间历史账本查询已取消", append(diag.Attrs(ctx), "room_id", roomID,
+			"before_seq", beforeSeq, "elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		return nil, err
 	}
 
@@ -396,10 +397,10 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			level = log().Info
 		}
-		level("房间历史账本获取连接失败", "room_id", roomID,
+		level("房间历史账本获取连接失败", append(diag.Attrs(ctx), "room_id", roomID,
 			"before_seq", beforeSeq, "limit", limit,
 			"pool_wait_ns", poolWait.Nanoseconds(),
-			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		return nil, fmt.Errorf("获取账本连接: %w", err)
 	}
 	defer conn.Close()
@@ -412,11 +413,11 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			level = log().Info
 		}
-		level("房间历史账本 SQL 调用失败", "room_id", roomID,
+		level("房间历史账本 SQL 调用失败", append(diag.Attrs(ctx), "room_id", roomID,
 			"before_seq", beforeSeq, "limit", limit,
 			"pool_wait_ns", poolWait.Nanoseconds(),
 			"sql_call_ns", sqlCall.Nanoseconds(),
-			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		return nil, fmt.Errorf("读房间消息: %w", err)
 	}
 	defer rows.Close()
@@ -434,12 +435,12 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 		var createdAt any
 		if err := rows.Scan(&event.Seq, &cardID, &event.Type, &event.Actor, &raw,
 			&sourceTarget, &sourceTask, &sourceSeq, &createdAt); err != nil {
-			log().Warn("房间历史账本行读取失败", "room_id", roomID,
+			log().Warn("房间历史账本行读取失败", append(diag.Attrs(ctx), "room_id", roomID,
 				"before_seq", beforeSeq, "limit", limit, "rows_read", len(out),
 				"pool_wait_ns", poolWait.Nanoseconds(),
 				"sql_call_ns", sqlCall.Nanoseconds(),
 				"row_read_ns", time.Since(rowReadStarted).Nanoseconds(),
-				"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+				"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 			return nil, fmt.Errorf("扫描房间消息行: %w", err)
 		}
 		event.CardID = cardID.String
@@ -456,13 +457,13 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 		if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 			level = log().Info
 		}
-		level("房间历史账本遍历失败", "room_id", roomID,
+		level("房间历史账本遍历失败", append(diag.Attrs(ctx), "room_id", roomID,
 			"before_seq", beforeSeq, "limit", limit, "rows_read", len(out),
 			"payload_bytes", payloadBytes,
 			"pool_wait_ns", poolWait.Nanoseconds(),
 			"sql_call_ns", sqlCall.Nanoseconds(),
 			"row_read_ns", time.Since(rowReadStarted).Nanoseconds(),
-			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+			"elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)...)
 		return nil, fmt.Errorf("遍历房间消息行: %w", err)
 	}
 	rowRead := time.Since(rowReadStarted)
@@ -471,14 +472,14 @@ func (s *Store) RoomMessagesBeforeContext(ctx context.Context, roomID string, be
 	}
 
 	dbReadDuration := time.Since(dbStarted)
-	log().Info("房间历史账本查询完成", "room_id", roomID,
+	log().Info("房间历史账本查询完成", append(diag.Attrs(ctx), "room_id", roomID,
 		"before_seq", beforeSeq, "limit", limit, "rows_returned", len(out),
 		"payload_bytes", payloadBytes,
 		"pool_wait_ns", poolWait.Nanoseconds(),
 		"sql_call_ns", sqlCall.Nanoseconds(),
 		"row_read_ns", rowRead.Nanoseconds(),
 		"db_read_ns", dbReadDuration.Nanoseconds(),
-		"elapsed_ns", time.Since(started).Nanoseconds())
+		"elapsed_ns", time.Since(started).Nanoseconds())...)
 	return out, nil
 }
 
