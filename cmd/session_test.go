@@ -1461,24 +1461,40 @@ func TestSessionWaitOneWayRebindStillDeliversOnce(t *testing.T) {
 	}
 }
 
-// 空候选页也必须校验席位状态（契约第 7/11 条）：空页内把卡绑给监听 member，
-// 版本变化必须被发现并重读；空页确认后无输出、不推进水位。
+// 空候选页也必须校验席位状态（契约第 7/11 条）：页查询时卡无席位，@卡号 寻址
+// 落空——候选为空页；空页内（BeforeJudge 缝）把卡绑给监听 member，复读席位
+// 版本必须发现变化：丢弃本页、从原下界重读，第二次查询该消息成为候选并交付。
+// 夹具预置 @无席位卡号 的房间消息，使「空页跳过复读」的变异无法靠无输出蒙混
+// ——没有这条消息时，空页复读与否行为全同，护栏咬不住（B409.5 review #1）。
+// 版本无变化的空页确认后仍无输出、不推进水位（阶段一）。
 func TestSessionWaitEmptyPageStillVerifiesSeat(t *testing.T) {
 	dir := t.TempDir()
-	_, _, st, _ := mustWaitFixture(t, dir)
+	svc, _, st, sessionID := mustWaitFixture(t, dir)
 	const member = "cli:member#m1"
 	cardID := mustSeatFixtureWithoutSeat(t, st)
+	seq, err := svc.Send(sessionID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "@" + cardID + " 空页换绑", Mentions: []string{cardID}}, "user:tester")
+	if err != nil {
+		t.Fatal(err)
+	}
 	resetWaitHooks(t)
+	bindArmed := false
 	judgeCount := 0
+	var queryFroms []int64
+	sessionWaitBeforeQuery = func(from, to int64) {
+		queryFroms = append(queryFroms, from)
+	}
 	sessionWaitBeforeJudge = func(from, to int64) {
 		judgeCount++
-		if judgeCount == 1 {
+		if bindArmed {
+			bindArmed = false
 			if err := st.BindSeat(cardID, member, proto.SeatSourceBind, ledger.SeatBearing{}); err != nil {
 				t.Errorf("空页坐下: %v", err)
 			}
 		}
 	}
-	_, _, err := runLedgerCLI(t, dir, "session", "wait", member, "--timeout", "300ms")
+
+	// 阶段一：卡未绑定，候选为空页且版本无变化——空页确认后无输出、不推进水位。
+	_, _, err = runLedgerCLI(t, dir, "session", "wait", member, "--timeout", "300ms")
 	codeErr := &exitCodeError{}
 	if !errors.As(err, &codeErr) || codeErr.code != ExitTimeout {
 		t.Fatalf("空积压应超时而非输出: %v", err)
@@ -1488,6 +1504,36 @@ func TestSessionWaitEmptyPageStillVerifiesSeat(t *testing.T) {
 	}
 	if cursor, err := st.SessionDeliveryCursor(member); err != nil || cursor != 0 {
 		t.Fatalf("空页不得推进水位：%d err=%v", cursor, err)
+	}
+
+	// 阶段二（变异咬合点）：空页内把卡绑给监听 member。复读 revision 必须发现
+	// 变化——丢弃空页、从原下界重读，第二次查询该消息成为候选并交付；
+	// 「空页跳过复读」的变异在此不交付、超时 124 变红。
+	bindArmed = true
+	judgeCount = 0
+	queryFroms = nil
+	out, _, err := runLedgerCLI(t, dir, "session", "wait", member, "--timeout", "2s")
+	if err != nil {
+		t.Fatalf("空页复读 revision 后必须补收并交付: %v", err)
+	}
+	var backlog proto.SessionBacklog
+	if err := json.Unmarshal([]byte(strings.TrimSpace(out)), &backlog); err != nil {
+		t.Fatalf("积压解码: %v 原文=%s", err, out)
+	}
+	if len(backlog.Hits) != 1 || backlog.Hits[0].Hit.Seq != seq {
+		t.Fatalf("必须恰好交付一次且 seq 正确: %+v (want seq=%d)", backlog.Hits, seq)
+	}
+	if cursor, err := st.SessionDeliveryCursor(member); err != nil || cursor != seq {
+		t.Fatalf("交付水位=%d err=%v want=%d", cursor, err, seq)
+	}
+	if judgeCount < 2 {
+		t.Fatalf("空页必须触发复读重判（judge 次数=%d）", judgeCount)
+	}
+	// 重读必须从同一未提交 seq 下界出发（契约第 13 条）。
+	for i, from := range queryFroms {
+		if from != queryFroms[0] {
+			t.Fatalf("重读下界漂移 @%d：%v", i, queryFroms)
+		}
 	}
 }
 
