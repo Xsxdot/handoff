@@ -292,6 +292,12 @@ func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
 	s.roomAttachLastRefresh = now
 	s.roomAttachMu.Unlock()
 
+	// B409.6：每轮刷新有独立 refresh_id；每个 link 的 lookup 收口一行
+	// （outcome/target_call_ns/refresh_id），总 deadline、单台失败与关停取消
+	// 分类可辨。workdir 只在既有投影日志出现，不进收口分类行。
+	refreshID := diag.NewRefreshID()
+	started0 := time.Now()
+	s.log.Debug("房间 attach 后台刷新开始", "refresh_id", refreshID, "links", len(remoteLinks))
 	go func() {
 		defer func() {
 			s.roomAttachMu.Lock()
@@ -308,28 +314,34 @@ func (s *Server) startRoomAttachRefresh(links []ledger.TaskLink) {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				started := time.Now()
 				select {
 				case workers <- struct{}{}:
 				case <-ctx.Done():
-					s.log.Warn("房间 attach 后台刷新取消", "target", link.Target,
-						"task", link.TaskID, "cause", ctx.Err())
+					s.log.Warn("房间 attach 后台刷新取消", "refresh_id", refreshID,
+						"target", link.Target, "task", link.TaskID,
+						"outcome", "canceled", "cause", ctx.Err())
 					return
 				}
 				defer func() { <-workers }()
 				attach, err := s.lookupRoomAttach(ctx, link, nil)
+				elapsedNs := time.Since(started).Nanoseconds()
 				if err != nil {
 					s.invalidateRoomAttach(link)
-					s.log.Warn("房间 attach 后台刷新失败", "target", link.Target,
-						"task", link.TaskID, "cause", err)
+					s.log.Warn("房间 attach 后台刷新失败", "refresh_id", refreshID,
+						"target", link.Target, "task", link.TaskID,
+						"outcome", attachOutcome(err), "target_call_ns", elapsedNs, "cause", err)
 					return
 				}
 				s.storeRoomAttach(link, attach)
-				s.log.Debug("房间 attach 后台刷新成功", "target", link.Target,
-					"task", link.TaskID, "workdir", attach.WorkDir)
+				s.log.Debug("房间 attach 后台刷新成功", "refresh_id", refreshID,
+					"target", link.Target, "task", link.TaskID,
+					"outcome", "success", "target_call_ns", elapsedNs)
 			}()
 		}
 		wg.Wait()
-		s.log.Debug("房间 attach 后台刷新完成", "links", len(remoteLinks),
+		s.log.Debug("房间 attach 后台刷新完成", "refresh_id", refreshID,
+			"links", len(remoteLinks), "elapsed_ns", time.Since(started0).Nanoseconds(),
 			"timed_out", ctx.Err() != nil)
 	}()
 }
@@ -648,4 +660,18 @@ func ticketTitle(tk proto.Ticket) string {
 		return "权限工单待答复"
 	}
 	return "提问工单待答复"
+}
+
+
+// attachOutcome 把一次 attach lookup 的失败归入有限类别（成功路径不调用）：
+// 总 deadline 与关停取消分开，其余按错误处理。
+func attachOutcome(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	default:
+		return "error"
+	}
 }

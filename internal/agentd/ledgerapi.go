@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/config"
+	"github.com/Xsxdot/handoff/internal/diag"
 	"github.com/Xsxdot/handoff/internal/ledger"
 	"github.com/Xsxdot/handoff/internal/ledgerstep"
 	"github.com/Xsxdot/handoff/internal/proto"
@@ -268,6 +269,27 @@ type unlinkedTargetResult struct {
 	name string
 	rows []map[string]any
 	err  error
+	// B409.6 逐台记账：本次 target 调用耗时与结果分类。
+	elapsedNs int64
+	outcome   string
+}
+
+// unlinkedTargetOutcome 把一台 target 的调用结果归入有限类别：success/empty/
+// error/deadline/canceled。总 deadline 与单台 timeout、关停取消分开可辨。
+func unlinkedTargetOutcome(err error, rows []map[string]any) string {
+	if err == nil {
+		if len(rows) == 0 {
+			return "empty"
+		}
+		return "success"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "canceled"
+	}
+	return "error"
 }
 
 // unlinkedSummary 只投影缓存。target 网络请求与限域关联键查询由单飞 worker
@@ -413,8 +435,11 @@ func (s *Server) refreshUnlinkedSummary(cfg *config.Config, targets map[string]c
 	}()
 
 	started := time.Now()
-	s.log.Info("未挂账摘要后台刷新开始", "target_count", len(names), "deadline_ms", unlinkedSummaryDeadline.Milliseconds())
-	ctx, cancel := context.WithTimeout(s.unlinkedRefreshCtx, unlinkedSummaryDeadline)
+	refreshID := diag.NewRefreshID()
+	refreshCtx := diag.With(s.unlinkedRefreshCtx, diag.Info{RefreshID: refreshID})
+	s.log.Info("未挂账摘要后台刷新开始", "refresh_id", refreshID,
+		"target_count", len(names), "deadline_ms", unlinkedSummaryDeadline.Milliseconds())
+	ctx, cancel := context.WithTimeout(refreshCtx, unlinkedSummaryDeadline)
 	defer cancel()
 	keys, err := s.ledger.AllTaskLinkKeysContext(ctx)
 	if err != nil {
@@ -453,7 +478,8 @@ func (s *Server) refreshUnlinkedSummary(cfg *config.Config, targets map[string]c
 		workers.Wait()
 	}
 	if err := ctx.Err(); err != nil {
-		s.log.Warn("未挂账摘要刷新达到总时限或关停取消", "target_count", len(names), "cause", err)
+		s.log.Warn("未挂账摘要刷新达到总时限或关停取消", "refresh_id", refreshID,
+			"target_count", len(names), "cause", err)
 	}
 	if s.conf() != cfg {
 		s.log.Info("target 配置在未挂账摘要刷新期间变更，丢弃旧配置观测", "target_count", len(names))
@@ -481,7 +507,8 @@ func (s *Server) refreshUnlinkedSummary(cfg *config.Config, targets map[string]c
 		rows = append(rows, result.rows...)
 	}
 	if len(names) > 0 && successes == 0 {
-		s.log.Warn("未挂账摘要没有成功 target 观测，保留上次观测", "target_count", len(names), "unknown_count", len(unknown))
+		s.log.Warn("未挂账摘要没有成功 target 观测，保留上次观测", "refresh_id", refreshID,
+			"target_count", len(names), "unknown_count", len(unknown))
 		return
 	}
 	sort.Slice(rows, func(i, j int) bool {
@@ -508,15 +535,33 @@ func (s *Server) refreshUnlinkedSummary(cfg *config.Config, targets map[string]c
 	}
 	s.unlinkedMu.Unlock()
 	if published {
-		s.log.Info("未挂账摘要后台刷新完成", "target_count", len(names), "success_count", successes,
-			"unknown_count", len(unknown), "task_count", len(rows), "elapsed_ms", time.Since(started).Milliseconds())
+		s.log.Info("未挂账摘要后台刷新完成", "refresh_id", refreshID,
+			"target_count", len(names), "success_count", successes,
+			"unknown_count", len(unknown), "task_count", len(rows),
+			"elapsed_ns", time.Since(started).Nanoseconds())
 	}
 }
 
-func (s *Server) readUnlinkedTarget(ctx context.Context, cfg *config.Config, name string, target config.Target, linked map[ledger.TaskLinkKey]struct{}) unlinkedTargetResult {
-	result := unlinkedTargetResult{name: name, rows: make([]map[string]any, 0)}
+// readUnlinkedTarget 读取一台 target 的未挂账任务。B409.6：无论成败，每台
+// target 收口一行记账（outcome/target_call_ns/task_count/refresh_id）；原始
+// 错误文案不进收口行（不可视为安全的字符串），只进分类。
+func (s *Server) readUnlinkedTarget(ctx context.Context, cfg *config.Config, name string, target config.Target, linked map[ledger.TaskLinkKey]struct{}) (result unlinkedTargetResult) {
+	started := time.Now()
 	targetCtx, cancel := context.WithTimeout(ctx, unlinkedTargetDeadline)
 	defer cancel()
+	defer func() {
+		result.elapsedNs = time.Since(started).Nanoseconds()
+		result.outcome = unlinkedTargetOutcome(result.err, result.rows)
+		level := s.log.Debug
+		if result.outcome == "error" || result.outcome == "deadline" {
+			level = s.log.Warn
+		}
+		level("未挂账 target 读取结束", append(diag.Attrs(ctx), "target", name,
+			"outcome", result.outcome, "target_call_ns", result.elapsedNs,
+			"task_count", len(result.rows))...)
+	}()
+	result.name = name
+	result.rows = make([]map[string]any, 0)
 	if err := targetCtx.Err(); err != nil {
 		result.err = err
 		return result
@@ -551,7 +596,6 @@ func (s *Server) readUnlinkedTarget(ctx context.Context, cfg *config.Config, nam
 		return result
 	}
 	result.rows = unlinkedRowsForKeys(name, tasks, linked)
-	s.log.Debug("读取未挂账 target 完成", "target", name, "task_count", len(result.rows))
 	return result
 }
 
