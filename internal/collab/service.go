@@ -220,22 +220,44 @@ func (s *Service) sendToSession(r *room.Room, msg proto.RoomMessage, actor strin
 // 消费身份 = 发送 actor，与收件箱 mention 源（Service.Mentions）同标识，保证
 // 「发前亮、回复后灭」同一把尺子。幂等由 Consume 兜底；失败逐条告警，下次
 // 回复自然重试。
+//
+// B409 U5：取数改为 MentionCandidates(roomID 限定) 分页——账本按地址键返回
+// SameRoom 的 SQL 超集；SameRoom/mentions 语义的权威判定仍在 Go 侧执行
+// （不在账本复制房间规则）。不再为每条命中触发全流重读。
 func (s *Service) consumeRoomMentions(roomID, member string) {
-	events, err := room.ReadAllEvents(s.lc, 0)
+	markers, err := s.lc.ConsumedMessageSeqsContext(context.Background(), member, 0)
 	if err != nil {
-		log().Warn("回复后清理提及失败：读事件流", "room", roomID, "member", member, "cause", err)
+		log().Warn("回复后清理提及失败：读消费标记", "room", roomID, "member", member, "cause", err)
 		return
 	}
-	consumed := room.ConsumedSeqs(events, member)
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType || !room.SameRoom(ev, roomID) || consumed[ev.Seq] {
-			continue
+	consumed := make(map[int64]bool, len(markers))
+	for _, seq := range markers {
+		consumed[seq] = true
+	}
+	after := int64(0)
+	for {
+		page, err := s.lc.MentionCandidatesContext(context.Background(), member, roomID, false, after, inboxCandidatePageSize)
+		if err != nil {
+			log().Warn("回复后清理提及失败：读提及候选", "room", roomID, "member", member, "cause", err)
+			return
 		}
-		if !room.MentionsMember(ev, member) {
-			continue
+		if len(page) == 0 {
+			return
 		}
-		if err := s.Consume(ev.Seq, member); err != nil {
-			log().Warn("回复后清理提及失败：消费落账", "room", roomID, "member", member, "seq", ev.Seq, "cause", err)
+		for _, ev := range page {
+			if ev.Type != room.RoomEventType || !room.SameRoom(ev, roomID) || consumed[ev.Seq] {
+				continue
+			}
+			if !room.MentionsMember(ev, member) {
+				continue
+			}
+			if err := s.Consume(ev.Seq, member); err != nil {
+				log().Warn("回复后清理提及失败：消费落账", "room", roomID, "member", member, "seq", ev.Seq, "cause", err)
+			}
+		}
+		after = page[len(page)-1].Seq
+		if len(page) < inboxCandidatePageSize {
+			return
 		}
 	}
 }
@@ -308,31 +330,77 @@ func (s *Service) HistoryContext(ctx context.Context, roomID string, beforeSeq i
 	return events, nil
 }
 
-// Pending @定向消费队列（读侧）：全流扫描「mentions∋consumer 且尚无本人
-// message_consumed 标记的群级消息」∪「consumer 所绑卡房间内未消费的用户
-// 留言（kind==user）」。所绑卡房间 = ListAllCards 里 DriverSession==consumer
+// inboxCandidatePageSize 收件箱限域候选读的单页大小；Pending/Mentions/
+// consumeRoomMentions 内部分页取全，单次查询始终是地址键限域的有界读。
+const inboxCandidatePageSize = 500
+
+// Pending @定向消费队列（读侧）：B156.2 冻结语义不变——「mentions∋consumer 且
+// 尚无本人 message_consumed 标记的群级消息」∪「consumer 所绑卡房间内未消费的
+// 用户留言（kind==user）」。所绑卡房间 = ListAllCards 里 DriverSession==consumer
 // 的全部卡（含终态/并入卡——只读冻结防新写，不抹旧留言，杜绝无人消费的黑洞）。
+//
+// B409 U5：取数改为按地址键限域——群级提及走 MentionCandidates(cardlessOnly)、
+// 绑定卡用户消息走 CardRoomUserMessages、消费状态走 ConsumedMessageSeqs 批量；
+// 不再把全流事件读进 collab 过滤。裁决口径（mentions 语义、kind、幂等消费权威）
+// 全部保持：账本候选只是超集取数面。两源各自升序，这里按 seq 归并。
 func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
-	events, err := room.ReadAllEvents(s.lc, 0)
-	if err != nil {
-		log().Warn("待消费队列组装失败：读事件流", "consumer", consumer, "cause", err)
-		return nil, err
-	}
-	consumed := room.ConsumedSeqs(events, consumer)
 	bound := map[string]bool{}
 	cards, err := s.lc.ListAllCards("")
 	if err != nil {
 		log().Warn("待消费队列组装失败：读卡列表", "consumer", consumer, "cause", err)
 		return nil, err
 	}
+	boundIDs := make([]string, 0, len(cards))
 	for _, c := range cards {
 		if c.DriverSession == consumer {
 			bound[c.ID] = true
+			boundIDs = append(boundIDs, c.ID)
 		}
 	}
+	consumed, err := s.lc.ConsumedMessageSeqsContext(context.Background(), consumer, 0)
+	if err != nil {
+		log().Warn("待消费队列组装失败：读消费标记", "consumer", consumer, "cause", err)
+		return nil, err
+	}
+	consumedSeqs := make(map[int64]bool, len(consumed))
+	for _, seq := range consumed {
+		consumedSeqs[seq] = true
+	}
+	// 群级（无卡）提及候选：分页取全（每次查询都是限域读）。
+	merged := []proto.LedgerEvent{}
+	after := int64(0)
+	for {
+		page, err := s.lc.MentionCandidatesContext(context.Background(), consumer, "", true, after, inboxCandidatePageSize)
+		if err != nil {
+			log().Warn("待消费队列组装失败：读群级提及候选", "consumer", consumer, "cause", err)
+			return nil, err
+		}
+		merged = append(merged, page...)
+		if len(page) < inboxCandidatePageSize {
+			break
+		}
+		after = page[len(page)-1].Seq
+	}
+	// 绑定卡房间的 user 留言候选：分页取全。
+	if len(boundIDs) > 0 {
+		after := int64(0)
+		for {
+			page, err := s.lc.CardRoomUserMessagesContext(context.Background(), boundIDs, after, inboxCandidatePageSize)
+			if err != nil {
+				log().Warn("待消费队列组装失败：读绑定卡用户消息", "consumer", consumer, "cards", len(boundIDs), "cause", err)
+				return nil, err
+			}
+			merged = append(merged, page...)
+			if len(page) < inboxCandidatePageSize {
+				break
+			}
+			after = page[len(page)-1].Seq
+		}
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Seq < merged[j].Seq })
 	out := []proto.LedgerEvent{}
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType || consumed[ev.Seq] {
+	for _, ev := range merged {
+		if ev.Type != room.RoomEventType || consumedSeqs[ev.Seq] {
 			continue
 		}
 		if ev.CardID == "" {
@@ -345,7 +413,8 @@ func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
 			out = append(out, ev)
 		}
 	}
-	log().Info("待消费队列已组装", "consumer", consumer, "count", len(out))
+	log().Info("待消费队列已组装", "consumer", consumer, "count", len(out),
+		"candidates", len(merged), "bound_cards", len(boundIDs))
 	return out, nil
 }
 
@@ -353,53 +422,77 @@ func (s *Service) Pending(consumer string) ([]proto.LedgerEvent, error) {
 // 幂等：同参重复消费返回 nil；seq 不存在或非 room_message 同样幂等 nil
 // （岔口六方案甲——「已消费」目标态对不存在消息天然成立，静默面由
 // Pending/Mentions 只列未消费兜底）。查重与写入的原子性在账本同 mutate
-// 事务内（C2 已锁），本方法只负责定位消息所在卡并把 cardID 传给 client。
+// 事务内（C2 已锁）。
+//
+// B409 U5：消息定位从全流扫描改为 EventBySeq 点读——按全局 seq 直接取行拿
+// cardID，其余语义逐字保持。
 func (s *Service) Consume(seq int64, consumer string) error {
-	events, err := room.ReadAllEvents(s.lc, 0)
+	ev, ok, err := s.lc.EventBySeq(seq)
 	if err != nil {
-		log().Warn("消费失败：读事件流", "seq", seq, "consumer", consumer, "cause", err)
+		log().Warn("消费失败：点读事件", "seq", seq, "consumer", consumer, "cause", err)
 		return err
 	}
-	for _, ev := range events {
-		if ev.Seq != seq {
-			continue
-		}
-		if ev.Type != room.RoomEventType {
-			return nil // 非 room_message：幂等 nil，不落标记
-		}
-		if err := s.lc.RecordMessageConsumed(ev.CardID, seq, consumer); err != nil {
-			log().Warn("消费落账失败", "seq", seq, "consumer", consumer, "card", ev.CardID, "cause", err)
-			return err
-		}
-		log().Info("消息已消费", "seq", seq, "consumer", consumer, "card", ev.CardID)
-		return nil
+	if !ok {
+		return nil // 不存在：幂等 nil
 	}
-	return nil // 不存在：幂等 nil
+	if ev.Type != room.RoomEventType {
+		return nil // 非 room_message：幂等 nil，不落标记
+	}
+	if err := s.lc.RecordMessageConsumed(ev.CardID, seq, consumer); err != nil {
+		log().Warn("消费落账失败", "seq", seq, "consumer", consumer, "card", ev.CardID, "cause", err)
+		return err
+	}
+	log().Info("消息已消费", "seq", seq, "consumer", consumer, "card", ev.CardID)
+	return nil
 }
 
-// Mentions 收件箱源③：@member 的未消费提及。全流扫描 afterSeq 之后、
-// mentions∋member 且尚无本人 message_consumed 标记的 room_message。
-// limit<=0 取 historyDefaultLimit。
+// Mentions 收件箱源③：@member 的未消费提及。B156.2 冻结语义不变——afterSeq
+// 之后、mentions∋member 且尚无本人 message_consumed 标记的 room_message（卡
+// 房间与群/会话房间都在内）；limit<=0 取 historyDefaultLimit；升序；截尾按
+// 「未消费命中数」计（已消费行不占名额）。
+//
+// B409 U5：取数改为 MentionCandidates 按 (member, seq>afterSeq) 地址键限域，
+// 分页直到取满 limit 条未消费或候选耗尽；消费状态走 ConsumedMessageSeqs 批量
+// （afterSeq 是安全上界：标记事件 seq 必大于被标记消息 seq）。查询失败原样
+// 上抛，不伪装成空列表。
 func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
 	if limit <= 0 {
 		limit = historyDefaultLimit
 	}
-	events, err := room.ReadAllEvents(s.lc, afterSeq)
+	markers, err := s.lc.ConsumedMessageSeqsContext(context.Background(), member, afterSeq)
 	if err != nil {
-		log().Warn("提及读取失败：读事件流", "member", member, "cause", err)
+		log().Warn("提及读取失败：读消费标记", "member", member, "cause", err)
 		return nil, err
 	}
-	consumed := room.ConsumedSeqs(events, member)
+	consumed := make(map[int64]bool, len(markers))
+	for _, seq := range markers {
+		consumed[seq] = true
+	}
 	out := []proto.LedgerEvent{}
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType || !room.MentionsMember(ev, member) {
-			continue
+	after := afterSeq
+	for len(out) < limit {
+		page, err := s.lc.MentionCandidatesContext(context.Background(), member, "", false, after, inboxCandidatePageSize)
+		if err != nil {
+			log().Warn("提及读取失败：读提及候选", "member", member, "cause", err)
+			return nil, err
 		}
-		if consumed[ev.Seq] {
-			continue
+		if len(page) == 0 {
+			break
 		}
-		out = append(out, ev)
-		if len(out) >= limit {
+		for _, ev := range page {
+			if ev.Type != room.RoomEventType || !room.MentionsMember(ev, member) {
+				continue
+			}
+			if consumed[ev.Seq] {
+				continue
+			}
+			out = append(out, ev)
+			if len(out) >= limit {
+				break
+			}
+		}
+		after = page[len(page)-1].Seq
+		if len(page) < inboxCandidatePageSize {
 			break
 		}
 	}

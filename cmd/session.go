@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -66,16 +67,122 @@ var sessionWaitCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		if sessionWaitTimeout < 0 {
-			return fmt.Errorf("--timeout 必须为正时长（当前 %s）；不设上限请省略该参数", sessionWaitTimeout)
+			return fmt.Errorf("--timeout 必须为正时长（当前 %s）", sessionWaitTimeout)
 		}
 		return runSessionWait(cmd, args[0], sessionWaitSince, cmd.Flags().Changed("since"), sessionWaitTimeout, sessionWaitFollow)
 	},
 }
 
+// —— B409 U5 有界候选读的扫描器（冻结语义见
+// docs/superpowers/specs/2026-09-25-session-bounded-candidate-read-contract.md）——
+//
+// 进程内扫描水位与持久交付游标严格分离（契约第 31/32 条）：扫描水位可跨过
+// 未命中候选与无候选的已查范围，只表示「哪些 seq 已在某个已确认的席位状态下
+// 完成过候选枚举与判定」；持久 session_delivery_cursors.last_seq 只在定向命中
+// 成功写入 stdout 后推进到该输出覆盖的最大命中 seq（第 33/34/35 条）。两者
+// 分离是恢复语义的根基：重挂补收读持久游标，页内推进读扫描水位——混用任何
+// 一方都会造成「无命中也推进交付水位」（丢消息）或「重复扫描」（无害但退化
+// 成全流读）。
+
+// sessionWaitPageLimit 单页候选读条数；与旧全流分页 500 同量级。
+const sessionWaitPageLimit = 500
+
+// sessionWaitSeatRetries 席位状态版本不稳定时的有界重试上限；超过即返回可见
+// 错误（契约第 17 条），绝不带着未确认的页输出或推进。
+const sessionWaitSeatRetries = 8
+
+// sessionWaitBeforeQuery / sessionWaitBeforeJudge / sessionWaitBeforeAdvance
+// 是确定性竞态与失败注入的测试缝（生产恒 nil）：分别 fired 于「席位版本读取
+// 之后、候选查询之前」「候选查询之后、最终判定之前」「stdout 成功之后、持久
+// 游标推进之前」。有界候选读的回归护栏（单向换绑、空页换绑、A→member→A 的
+// ABA、游标写失败）依赖这些同步点构造确定性交错。
+var (
+	sessionWaitBeforeQuery   func(from, to int64)
+	sessionWaitBeforeJudge   func(from, to int64)
+	sessionWaitBeforeAdvance func(member string, seq int64)
+)
+
+// sessionHit 一条已判定命中的候选：原事件与解码后的消息。
+type sessionHit struct {
+	ev  ledger.Event
+	msg proto.RoomMessage
+}
+
+// sessionWaitPage 读一页有界候选，并在席位状态版本护栏内完成该页全部
+// MessageWakeTargets 判定。返回确认命中的行与推进后的进程内扫描水位 next。
+//
+// 席位一致性（契约第 6–17 条）的实现选择是 **revision 复读**而非页内锁：
+//   - 候选查询前读取席位版本（第 10 条）；
+//   - 该页全部判定之后复读版本，空候选页同样复读（第 7/11 条）；
+//   - 版本不同说明枚举与判定观察了不同席位状态——丢弃本页结果（第 12 条），
+//     从原未提交 seq 下界重读（第 13 条）；版本单调不复用（席位变更路径原子
+//     递增，internal/ledger/seat_revision.go），因此 A→member→A 的 ABA 必然
+//     改变版本被发现——这正是「只比较席位集合值」做不到的（拍板记录明确
+//     拒绝集合值比较）；
+//   - 一致性未确认前不输出、不推进扫描水位（第 15/16 条）；有界重试仍不稳定
+//     则返回可见错误（第 17 条）。
+//
+// 不选锁方案的原因：锁需要跨「账本候选读」与「collab 判定读」两段持锁，而
+// collab 经接口缝读卡，锁无法横跨两个组件的事务边界；revision 在读多写少的
+// 订阅路径上无写侧争用，且把一致性判据收敛为单一单调量。
+func sessionWaitPage(svc *collab.Service, st *ledger.Store, member string, from, to int64) (hits []sessionHit, next int64, err error) {
+	for attempt := 1; ; attempt++ {
+		revBefore, err := st.SeatRevision()
+		if err != nil {
+			return nil, 0, fmt.Errorf("session wait 读席位状态版本: %w", err)
+		}
+		if sessionWaitBeforeQuery != nil {
+			sessionWaitBeforeQuery(from, to)
+		}
+		candidates, err := st.SessionMessageCandidates(member, from, to, sessionWaitPageLimit)
+		if err != nil {
+			return nil, 0, fmt.Errorf("session wait 读候选页: %w", err)
+		}
+		if sessionWaitBeforeJudge != nil {
+			sessionWaitBeforeJudge(from, to)
+		}
+		pageHits := make([]sessionHit, 0, len(candidates))
+		lastSeq := from
+		for _, ev := range candidates {
+			msg, hit, err := sessionWaitMatch(svc, ev, member)
+			if err != nil {
+				return nil, 0, err
+			}
+			if hit {
+				pageHits = append(pageHits, sessionHit{ev: ev, msg: msg})
+			}
+			lastSeq = ev.Seq
+		}
+		revAfter, err := st.SeatRevision()
+		if err != nil {
+			return nil, 0, fmt.Errorf("session wait 复读席位状态版本: %w", err)
+		}
+		if revAfter != revBefore {
+			// 枚举与判定观察了不同席位状态：本页整体作废，从原下界重读。
+			// 不输出、不推进任何水位。
+			slog.Warn("session wait 候选页席位状态发生变化，丢弃重读",
+				"member", member, "from_seq", from, "to_seq", to,
+				"rev_before", revBefore, "rev_after", revAfter, "attempt", attempt,
+				"candidates", len(candidates))
+			if attempt >= sessionWaitSeatRetries {
+				return nil, 0, fmt.Errorf("session wait 候选页席位状态在 %d 次重读后仍不稳定（seq 范围 %d→%d）",
+					sessionWaitSeatRetries, from, to)
+			}
+			continue
+		}
+		if len(candidates) < sessionWaitPageLimit && to > 0 {
+			// 窗口已穷尽：本页查询覆盖 (from, to] 全部，扫描水位可跨到 to
+			//（契约第 31 条——可跨过无候选的已查询范围）。
+			return pageHits, to, nil
+		}
+		return pageHits, lastSeq, nil
+	}
+}
+
 // runSessionWait 订阅会话定向消息。无 --since 时从共享交付水位补收；显式
 // --since 保持手工排他回放，不改变共享水位。寻址只经 MessageWakeTargets。
 //
-// 双形态（B365）共用升序读循环；默认先扫描积压，单行摘要成功写出后
+// 双形态（B365）共用有界候选读循环；默认先扫描积压，单行摘要成功写出后
 // 推进共享交付水位。之后分叉点是「实时首个命中后是否退出」：
 //   - 一次性（缺省）：首个命中输出一行 SessionWake 后退出 0（条 46）；--timeout
 //     是等待总时长，到点 124；
@@ -96,14 +203,24 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 		return fmt.Errorf("session wait 打开会话服务: %w", err)
 	}
 	defer st.Close()
-	cursor := sinceFlag
+	return sessionWaitRun(cmd.Context(), svc, st, cmd.OutOrStdout(), member, sinceFlag, sinceSet, timeout, follow)
+}
+
+// sessionWaitRun 是订阅通道的核心循环（runSessionWait 的依赖注入形态，测试
+// 用它注入假 writer / 已关闭账本 / 竞态钩子）。ctx 只用于退出信号；查询自身
+// 按页有界，取消语义沿用既有 select 轮询（两方言一致，契约第 55 条）。
+func sessionWaitRun(ctx context.Context, svc *collab.Service, st *ledger.Store, out io.Writer, member string, sinceFlag int64, sinceSet bool, timeout time.Duration, follow bool) error {
 	if !sinceSet {
-		cursor, err = st.SessionDeliveryCursor(member)
+		// 默认：读共享交付水位。读错必须显式失败——把读错当 0 会把停听期间
+		// 已交付的窗口当作未交付全量重放，反向会把未交付窗口当已交付丢掉
+		//（契约第 10/43/44 条的反向）。
+		var err error
+		sinceFlag, err = st.SessionDeliveryCursor(member)
 		if err != nil {
+			slog.Error("session wait 读取交付水位失败", "member", member, "cause", err)
 			return fmt.Errorf("session wait 读取交付水位: %w", err)
 		}
 	}
-	ctx := cmd.Context()
 	if !follow && timeout > 0 {
 		// 一次性：--timeout 是等待总时长（现状不变）。
 		var cancel context.CancelFunc
@@ -124,8 +241,11 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 			idleC = idleTimer.C
 		}
 	}
-	enc := json.NewEncoder(cmd.OutOrStdout())
+	enc := json.NewEncoder(out)
+	cursor := sinceFlag
 	if !sinceSet {
+		// 积压扫描：启动时一次 MaxSeq 快照为冻结上界（契约第 26/27 条），
+		// 扫描 (cursor, MaxSeq] 的有界候选页；扫描期新增事件留给实时循环。
 		fence, err := st.MaxSeq()
 		if err != nil {
 			return fmt.Errorf("session wait 读取积压边界: %w", err)
@@ -134,47 +254,42 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 		scan := cursor
 		backlog := proto.SessionBacklog{Type: "session_backlog", Member: member, FromSeq: from, Hits: []proto.SessionBacklogHit{}}
 		for scan < fence {
-			events, err := st.EventsFromAsc(nil, scan, 500)
+			hits, next, err := sessionWaitPage(svc, st, member, scan, fence)
 			if err != nil {
-				return fmt.Errorf("session wait 扫描积压: %w", err)
+				return err
 			}
-			if len(events) == 0 {
-				break
+			if next <= scan {
+				return fmt.Errorf("session wait 积压扫描水位未推进（scan=%d next=%d）", scan, next)
 			}
-			for _, ev := range events {
-				if ev.Seq > fence {
-					break
-				}
-				scan = ev.Seq
-				msg, hit, err := sessionWaitMatch(svc, ev, member)
+			for _, h := range hits {
+				ref, err := sessionWaitReference(svc, h.msg)
 				if err != nil {
 					return err
 				}
-				if !hit {
-					continue
-				}
-				cite := proto.SessionCite{Seq: ev.Seq, Room: msg.Room, Actor: ev.Actor, Body: msg.Body}
-				ref, err := sessionWaitReference(svc, msg)
-				if err != nil {
-					return err
-				}
-				backlog.Hits = append(backlog.Hits, proto.SessionBacklogHit{Hit: cite, Referenced: ref})
-				backlog.ToSeq = ev.Seq
+				backlog.Hits = append(backlog.Hits, proto.SessionBacklogHit{
+					Hit:        proto.SessionCite{Seq: h.ev.Seq, Room: h.msg.Room, Actor: h.ev.Actor, Body: h.msg.Body},
+					Referenced: ref,
+				})
+				backlog.ToSeq = h.ev.Seq
 			}
-			if scan >= fence {
-				break
-			}
+			scan = next
 		}
-		slog.Info("session wait 积压扫描完成", "member", member, "from_seq", from, "through_seq", scan, "hits", len(backlog.Hits))
+		slog.Info("session wait 积压扫描完成", "member", member, "from_seq", from,
+			"through_seq", scan, "hits", len(backlog.Hits))
 		if len(backlog.Hits) > 0 {
+			// stdout 成功才算交付（契约第 58 条）；随后推进到最高命中 seq。
 			if err := enc.Encode(backlog); err != nil {
 				return fmt.Errorf("session wait 输出积压摘要: %w", err)
+			}
+			if sessionWaitBeforeAdvance != nil {
+				sessionWaitBeforeAdvance(member, backlog.ToSeq)
 			}
 			if err := st.AdvanceSessionDeliveryCursor(member, backlog.ToSeq); err != nil {
 				slog.Warn("session wait 积压已输出但进度写入失败", "member", member, "seq", backlog.ToSeq, "cause", err)
 				return fmt.Errorf("session wait 写交付水位: %w", err)
 			}
-			slog.Info("session wait 积压已交付", "member", member, "from_seq", from, "to_seq", backlog.ToSeq, "hits", len(backlog.Hits))
+			slog.Info("session wait 积压已交付", "member", member, "from_seq", from,
+				"to_seq", backlog.ToSeq, "hits", len(backlog.Hits))
 			if !follow {
 				return nil
 			}
@@ -188,53 +303,59 @@ func runSessionWait(cmd *cobra.Command, member string, sinceFlag int64, sinceSet
 				idleTimer.Reset(timeout)
 			}
 		}
-		cursor = scan // 扫描到的非命中事件无须再次判定；只持久化已输出的命中水位。
+		// 扫描到的非命中事件无须再次判定；只持久化已输出的命中水位（契约
+		// 第 32/35 条——进程内水位与持久游标分离）。
+		cursor = scan
 	}
 	ticker := time.NewTicker(sessionWaitPollInterval)
 	defer ticker.Stop()
 	for {
-		events, err := st.EventsFromAsc(nil, cursor, 500)
+		fence, err := st.MaxSeq()
 		if err != nil {
-			return fmt.Errorf("session wait 读取事件流: %w", err)
+			return fmt.Errorf("session wait 读取流边界: %w", err)
 		}
-		for _, ev := range events {
-			cursor = ev.Seq // 其余事件类型推进游标、零输出（条 41）
-			msg, hit, err := sessionWaitMatch(svc, ev, member)
+		if fence > cursor {
+			hits, next, err := sessionWaitPage(svc, st, member, cursor, fence)
 			if err != nil {
 				return err
 			}
-			if !hit {
-				continue
-			}
-			wake, err := buildSessionWake(svc, ev, msg, member)
-			if err != nil {
-				return err
-			}
-			if err := enc.Encode(wake); err != nil {
-				return fmt.Errorf("session wait 输出唤醒载荷: %w", err)
-			}
-			if !sinceSet {
-				if err := st.AdvanceSessionDeliveryCursor(member, ev.Seq); err != nil {
-					slog.Warn("session wait 唤醒已输出但进度写入失败", "member", member, "seq", ev.Seq, "cause", err)
-					return fmt.Errorf("session wait 写交付水位: %w", err)
+			for _, h := range hits {
+				wake, err := buildSessionWake(svc, h.ev, h.msg, member)
+				if err != nil {
+					return err
 				}
-			}
-			slog.Info("session wait 命中并输出", "member", member,
-				"session", msg.Room, "seq", ev.Seq, "follow", follow)
-			if !follow {
-				return nil // 一次性原语：首个命中输出后退出 0（条 46）
-			}
-			// follow：本命中帧起再等一个完整空闲窗；排空可能已到点的旧火药
-			//（card_wait startCardWaitIdle 同款排空-重置）。
-			if idleTimer != nil {
-				if !idleTimer.Stop() {
-					select {
-					case <-idleTimer.C:
-					default:
+				if err := enc.Encode(wake); err != nil {
+					// stdout 失败不得推进持久水位（契约第 59 条）。
+					return fmt.Errorf("session wait 输出唤醒载荷: %w", err)
+				}
+				if !sinceSet {
+					if sessionWaitBeforeAdvance != nil {
+						sessionWaitBeforeAdvance(member, h.ev.Seq)
+					}
+					if err := st.AdvanceSessionDeliveryCursor(member, h.ev.Seq); err != nil {
+						slog.Warn("session wait 唤醒已输出但进度写入失败", "member", member, "seq", h.ev.Seq, "cause", err)
+						return fmt.Errorf("session wait 写交付水位: %w", err)
 					}
 				}
-				idleTimer.Reset(timeout)
+				slog.Info("session wait 命中并输出", "member", member,
+					"session", h.msg.Room, "seq", h.ev.Seq, "follow", follow)
+				if !follow {
+					return nil // 一次性原语：首个命中输出后退出 0（条 46）
+				}
+				// follow：本命中帧起再等一个完整空闲窗；排空可能已到点的旧火药
+				//（card_wait startCardWaitIdle 同款排空-重置）。
+				if idleTimer != nil {
+					if !idleTimer.Stop() {
+						select {
+						case <-idleTimer.C:
+						default:
+						}
+					}
+					idleTimer.Reset(timeout)
+				}
 			}
+			// 进程内扫描水位推进到已确认页的边界；持久游标只随输出推进。
+			cursor = next
 		}
 		select {
 		case <-ctx.Done():

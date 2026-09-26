@@ -257,6 +257,20 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_card_seq
 				ON card_events(card_id, seq DESC)
 				WHERE type = 'room_message' AND card_id IS NOT NULL`,
+			// B409 U5 有界候选读：@ 寻址与消费链的地址键读面。四条全部局部
+			// 索引（room_message/message_consumed 行），镜像与结构事件不进扫描域。
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_seq
+				ON card_events(seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_actor_seq
+				ON card_events(actor, seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_room_reply_to_seq
+				ON card_events(((payload->>'reply_to')::bigint), seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_consumed_actor_seq
+				ON card_events(actor, seq)
+				WHERE type = 'message_consumed'`,
 			`CREATE INDEX IF NOT EXISTS idx_session_projection_card_seq
 				ON card_events(card_id, seq DESC)
 				WHERE type IN ('task_mirrored','needs_human','needs_cleared','driver_takeover','driver_seat_bound','status_moved')`,
@@ -408,6 +422,21 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_card_seq
 				ON card_events(card_id, seq DESC)
 				WHERE type = 'room_message' AND card_id IS NOT NULL`,
+			// B409 U5 有界候选读：与 PG 分支同名同谓词的局部索引；SQLite 无
+			// GIN/表达式蕴含，mentions 成员判定按 seq 范围 + 逐行 json_each 过滤
+			// （执行计划由 session_candidates_perf_test 断言不出现全表 SCAN）。
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_seq
+				ON card_events(seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_actor_seq
+				ON card_events(actor, seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_room_reply_to_seq
+				ON card_events(json_extract(payload, '$.reply_to'), seq)
+				WHERE type = 'room_message'`,
+			`CREATE INDEX IF NOT EXISTS idx_consumed_actor_seq
+				ON card_events(actor, seq)
+				WHERE type = 'message_consumed'`,
 			`CREATE INDEX IF NOT EXISTS idx_session_projection_card_seq
 				ON card_events(card_id, seq DESC)
 				WHERE type IN ('task_mirrored','needs_human','needs_cleared','driver_takeover','driver_seat_bound','status_moved')`,

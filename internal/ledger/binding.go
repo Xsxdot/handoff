@@ -68,6 +68,11 @@ func (s *Store) BindSeat(id, identity string, source proto.SeatSource, bearing S
 			map[string]string{"to": identity}); err != nil {
 			return fmt.Errorf("坐下落事件 %s: %w", id, err)
 		}
+		// 席位状态版本随席位写入原子递增（seat_revision.go）：会话候选读的
+		// 页内一致性判据依赖「版本变化 ⇔ 状态变化」。
+		if err := s.bumpSeatRevisionTx(tx); err != nil {
+			return err
+		}
 		return nil
 	})
 	if err != nil {
@@ -128,6 +133,10 @@ func (s *Store) RebindSeat(id, identity string, source proto.SeatSource, expect 
 		if _, err := s.appendEvent(tx, sink, id, EvDriverTakeover, identity,
 			map[string]string{"from": card.DriverSession, "to": identity}); err != nil {
 			return fmt.Errorf("换绑落事件 %s: %w", id, err)
+		}
+		// 席位状态版本随席位写入原子递增（seat_revision.go）。
+		if err := s.bumpSeatRevisionTx(tx); err != nil {
+			return err
 		}
 		old = card.DriverSession
 		return nil
@@ -260,10 +269,18 @@ func (s *Store) SeatBearingOf(id string) (SeatBearing, bool, error) {
 // clearSeatTx 在调用方事务内清空席位三列并删除承载行（幂等）。终态转移与
 // 人工清座共用，保证「关单」与「清座」不会分成两步——分成两步就会出现
 // 「卡已终态、席位仍在」的中间态，唤醒路径要靠终态闸额外兜底。
+//
+// 清座同时递增席位状态版本（seat_revision.go）。幂等重入（座位本已为空）也会
+// 递增：多余递增只会让候选扫描器多重读一页，方向安全；反过来「清座不递增」
+// 才是漏检方向。clearSeatTx 不感知座位是否非空，把判断留给调用方会让 CloseCard
+// 的终态路径漏掉递增，故统一在此递增。
 func (s *Store) clearSeatTx(tx *sql.Tx, card string) error {
 	if _, err := tx.Exec(s.q(`UPDATE cards SET driver_session = '', driver_source = '', driver_heartbeat_at = ? WHERE id = ?`),
 		s.tval(time.Time{}), card); err != nil {
 		return fmt.Errorf("清席位写卡 %s: %w", card, err)
+	}
+	if err := s.bumpSeatRevisionTx(tx); err != nil {
+		return err
 	}
 	return s.deleteSeatBearing(tx, card)
 }

@@ -139,6 +139,40 @@ func (f *Facade) LatestNeedsEventsContext(ctx context.Context, cardIDs []string)
 	return eventWires(events), nil
 }
 
+// --- B409 U5 收件箱限域读直通镜像：逐方法转调 Store，不含业务判断 ---
+
+// MentionCandidatesContext 直通账本提及候选读。
+func (f *Facade) MentionCandidatesContext(ctx context.Context, member, roomID string, cardlessOnly bool, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	events, err := f.st.MentionCandidatesContext(ctx, member, roomID, cardlessOnly, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
+}
+
+// CardRoomUserMessagesContext 直通账本绑定卡用户消息读。
+func (f *Facade) CardRoomUserMessagesContext(ctx context.Context, cardIDs []string, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	events, err := f.st.CardRoomUserMessagesContext(ctx, cardIDs, afterSeq, limit)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
+}
+
+// ConsumedMessageSeqsContext 直通账本消费标记批量读。
+func (f *Facade) ConsumedMessageSeqsContext(ctx context.Context, consumer string, afterSeq int64) ([]int64, error) {
+	return f.st.ConsumedMessageSeqsContext(ctx, consumer, afterSeq)
+}
+
+// EventBySeq 直通账本 seq 点读。
+func (f *Facade) EventBySeq(seq int64) (proto.LedgerEvent, bool, error) {
+	event, ok, err := f.st.EventBySeq(seq)
+	if err != nil || !ok {
+		return proto.LedgerEvent{}, ok, err
+	}
+	return eventWire(event), true, nil
+}
+
 // --- B358 会话（群）域直通镜像：逐方法转调 Store，不含业务判断 ---
 
 func (f *Facade) CreateSession(title, owner, actor string) (proto.Session, error) {

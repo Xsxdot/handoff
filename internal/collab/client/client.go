@@ -62,6 +62,24 @@ type LedgerClient interface {
 	SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error)
 	// LatestNeedsEventsContext 返回每张指定卡最新一条 needs_human/needs_cleared 事实。
 	LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error)
+	// --- B409 U5 收件箱限域读（recipient-address 候选；U4/U5 seam 清点见
+	// internal/ledger/message_candidates.go 文件头——与 U4 的范围投影读无共同方法）---
+	// MentionCandidatesContext 读一页 mentions 精确含 member 的 room_message 候选
+	// 超集。roomID 非空时限房间（SameRoom 的 SQL 超集：挂卡行按 card_id、无卡行
+	// 按 payload.room——SameRoom 权威判定仍由调用方执行）；cardlessOnly 只取无卡
+	// 行（Pending 群级源）；afterSeq 排他；limit 必须 >0。kind/by_system 不在账本
+	// 过滤——裁决在 collab。
+	MentionCandidatesContext(ctx context.Context, member, roomID string, cardlessOnly bool, afterSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// CardRoomUserMessagesContext 读给定卡集合上 kind=user 的房间消息行（Pending
+	// 第二源）。cardIDs 空返回空集；块间各自升序，跨源归并排序由调用方负责。
+	CardRoomUserMessagesContext(ctx context.Context, cardIDs []string, afterSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// ConsumedMessageSeqsContext 读 consumer 已消费的 message_seq 集合（载荷
+	// message_seq/consumer 精确匹配为权威）。afterSeq 是安全上界：标记事件 seq
+	// 必大于被标记消息 seq，故不会漏掉 message_seq>afterSeq 的相关标记。
+	ConsumedMessageSeqsContext(ctx context.Context, consumer string, afterSeq int64) ([]int64, error)
+	// EventBySeq 按全局 seq 点读单条事件（Consume 定位消息所属卡的限域替身）；
+	// ok=false 表示 seq 不存在。
+	EventBySeq(seq int64) (proto.LedgerEvent, bool, error)
 	// --- B358 会话（群）域账本能力 ---
 	// CreateSession 建一场会话（群），返回带分配 id 的会话本体。
 	CreateSession(title, owner, actor string) (proto.Session, error)

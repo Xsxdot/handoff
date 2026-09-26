@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -187,6 +188,85 @@ func (f *fakeLC) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom ma
 		out = append(out, byRoom[roomID])
 	}
 	return out, nil
+}
+
+// --- B409 U5 收件箱限域读（fake 上按 events 字段模拟账本地址键过滤）---
+
+func (f *fakeLC) MentionCandidatesContext(ctx context.Context, member, roomID string, cardlessOnly bool, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive")
+	}
+	var out []proto.LedgerEvent
+	for _, ev := range f.events {
+		if ev.Type != room.RoomEventType || ev.Seq <= afterSeq || !room.MentionsMember(ev, member) {
+			continue
+		}
+		if cardlessOnly && ev.CardID != "" {
+			continue
+		}
+		if roomID != "" && !room.SameRoom(ev, roomID) {
+			continue
+		}
+		out = append(out, ev)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLC) CardRoomUserMessagesContext(ctx context.Context, cardIDs []string, afterSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if limit <= 0 {
+		return nil, fmt.Errorf("limit must be positive")
+	}
+	cardSet := map[string]bool{}
+	for _, id := range cardIDs {
+		cardSet[id] = true
+	}
+	var out []proto.LedgerEvent
+	for _, ev := range f.events {
+		if ev.Type != room.RoomEventType || ev.Seq <= afterSeq || !cardSet[ev.CardID] {
+			continue
+		}
+		if room.MessageKind(ev) != proto.RoomMsgUser {
+			continue
+		}
+		out = append(out, ev)
+		if len(out) >= limit {
+			break
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLC) ConsumedMessageSeqsContext(ctx context.Context, consumer string, afterSeq int64) ([]int64, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	consumed := room.ConsumedSeqs(f.events, consumer)
+	seqs := make([]int64, 0, len(consumed))
+	for seq := range consumed {
+		if seq > afterSeq {
+			seqs = append(seqs, seq)
+		}
+	}
+	sort.Slice(seqs, func(i, j int) bool { return seqs[i] < seqs[j] })
+	return seqs, nil
+}
+
+func (f *fakeLC) EventBySeq(seq int64) (proto.LedgerEvent, bool, error) {
+	for _, ev := range f.events {
+		if ev.Seq == seq {
+			return ev, true, nil
+		}
+	}
+	return proto.LedgerEvent{}, false, nil
 }
 
 func (f *fakeLC) SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error) {
