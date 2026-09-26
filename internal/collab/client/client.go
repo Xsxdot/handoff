@@ -22,6 +22,15 @@ import (
 // 在使用方一侧——否则把账本错误类型泄进接口。
 var ErrNotFound = errors.New("collab: 账本对象不存在")
 
+// RoomMessageSnapshot 是账本按 room 与调用方 seq 水位汇总后的消息事实。
+// MessagesAfter 仅表示 seq > caller watermark 的行数，不代表授权或 member unread。
+type RoomMessageSnapshot struct {
+	RoomID        string
+	Latest        proto.LedgerEvent
+	LastActivity  time.Time
+	MessagesAfter int64
+}
+
 // LedgerClient 会话子系统消费账本能力的唯一通道。方法集与契约文档
 // §3.4 一一对应；扩方法先回 contract 节点。
 type LedgerClient interface {
@@ -46,6 +55,13 @@ type LedgerClient interface {
 	EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error)
 	// RoomMessagesBeforeContext 只读指定房间最近消息；beforeSeq 为排他上界，limit 必须为正。
 	RoomMessagesBeforeContext(ctx context.Context, roomID string, beforeSeq int64, limit int) ([]proto.LedgerEvent, error)
+	// RoomMessageSnapshotsContext 批量返回目标 room 最新消息、最大 created_at 与给定 seq 水位之后的消息行数。
+	// 房间身份按 RoomIDOf 语义解析：card_id 优先，无卡事件才取 payload.room；不解释 member/unread。
+	RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]RoomMessageSnapshot, error)
+	// SessionProjectionEventsContext 返回单会话结构事件及调用方给定当前成员卡上的投影事件。
+	SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error)
+	// LatestNeedsEventsContext 返回每张指定卡最新一条 needs_human/needs_cleared 事实。
+	LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error)
 	// --- B358 会话（群）域账本能力 ---
 	// CreateSession 建一场会话（群），返回带分配 id 的会话本体。
 	CreateSession(title, owner, actor string) (proto.Session, error)

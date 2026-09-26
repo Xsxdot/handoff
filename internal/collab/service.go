@@ -415,7 +415,12 @@ func (s *Service) Mentions(member string, afterSeq int64, limit int) ([]proto.Le
 // ListRooms 返回不带成员未读视图的会话列表。需要成员维度时使用
 // ListRoomsForMember；保留本入口供不关心用户身份的调用方使用。
 func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
-	return s.listRooms(project, "")
+	return s.ListRoomsContext(context.Background(), project)
+}
+
+// ListRoomsContext 支持 HTTP 请求取消房间摘要的账本读取。
+func (s *Service) ListRoomsContext(ctx context.Context, project string) ([]proto.RoomSummary, error) {
+	return s.listRoomsContext(ctx, project, "")
 }
 
 // ListRoomsForMember 返回会话列表并把指定成员的未读数投影到每一行。
@@ -424,7 +429,7 @@ func (s *Service) ListRooms(project string) ([]proto.RoomSummary, error) {
 // B374：本入口保留全量语义（CLI 与既有测试依赖），分页入口另见
 // ListRoomsPage；裁剪规则只在 service 层一处（trimRoomPage）。
 func (s *Service) ListRoomsForMember(project, member string) ([]proto.RoomSummary, error) {
-	return s.listRooms(project, member)
+	return s.listRoomsContext(context.Background(), project, member)
 }
 
 // roomsPageDefaultLimit / roomsPageMaxLimit 是 GET /api/rooms 分页的默认与上限。
@@ -441,7 +446,12 @@ const (
 // 错误：游标非法 → 裹 ErrInvalidCursor（gateway 映射 400）；listRooms 失败
 // 原样向上传播，不吞。
 func (s *Service) ListRoomsPage(project, member, pageCursor string, limit int) (proto.RoomsPage, error) {
-	rooms, err := s.listRooms(project, member)
+	return s.ListRoomsPageContext(context.Background(), project, member, pageCursor, limit)
+}
+
+// ListRoomsPageContext 是可取消的分页列表入口。
+func (s *Service) ListRoomsPageContext(ctx context.Context, project, member, pageCursor string, limit int) (proto.RoomsPage, error) {
+	rooms, err := s.listRoomsContext(ctx, project, member)
 	if err != nil {
 		return proto.RoomsPage{}, err
 	}
@@ -562,14 +572,13 @@ func trimRoomPage(rooms []proto.RoomSummary, pageCursor string, limit int) ([]pr
 }
 
 func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error) {
+	return s.listRoomsContext(context.Background(), project, member)
+}
+
+func (s *Service) listRoomsContext(ctx context.Context, project, member string) ([]proto.RoomSummary, error) {
 	cards, err := s.lc.ListAllCards(project)
 	if err != nil {
 		log().Warn("会话列表组装失败：读卡列表", "project", project, "cause", err)
-		return nil, err
-	}
-	events, err := room.ReadAllEvents(s.lc, 0)
-	if err != nil {
-		log().Warn("会话列表组装失败：读事件流", "project", project, "cause", err)
 		return nil, err
 	}
 	rooms := []proto.RoomSummary{}
@@ -596,30 +605,43 @@ func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error)
 	}
 	byID["global"] = len(rooms)
 	rooms = append(rooms, proto.RoomSummary{ID: "global", Kind: room.KindGlobal, Title: "全员"})
-	// 活动：扫全流，逐房间取最新 room_message 时刻（升序遍历，后写覆盖）。
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType {
-			continue
+	roomWatermarks := make(map[string]int64, len(rooms))
+	var cursors map[string]int64
+	if member != "" {
+		cursors, err = s.cursor.Snapshot(member)
+		if err != nil {
+			log().Warn("会话列表组装失败：读游标快照",
+				"project", project, "member", member, "cause", err)
+			return nil, err
 		}
-		roomID := room.RoomIDOf(ev)
-		idx, ok := byID[roomID]
+	}
+	for _, roomSummary := range rooms {
+		roomWatermarks[roomSummary.ID] = cursors[roomSummary.ID]
+	}
+	messageSnapshots, err := s.lc.RoomMessageSnapshotsContext(ctx, roomWatermarks)
+	if err != nil {
+		log().Warn("会话列表组装失败：读房间消息摘要", "project", project, "rooms", len(rooms), "cause", err)
+		return nil, err
+	}
+	for _, snapshot := range messageSnapshots {
+		idx, ok := byID[snapshot.RoomID]
 		if !ok {
 			continue
 		}
-		if ev.CreatedAt.After(rooms[idx].LastActivity) {
-			rooms[idx].LastActivity = ev.CreatedAt
+		if snapshot.LastActivity.After(rooms[idx].LastActivity) {
+			rooms[idx].LastActivity = snapshot.LastActivity
+		}
+		if member != "" {
+			rooms[idx].Unread = int(snapshot.MessagesAfter)
 		}
 		var msg proto.RoomMessage
-		if err := room.UnmarshalMessage(ev.Payload, &msg); err != nil {
+		if err := room.UnmarshalMessage(snapshot.Latest.Payload, &msg); err != nil {
 			log().Warn("会话列表预览投影跳过：消息载荷无效",
-				"project", project, "room", roomID, "seq", ev.Seq, "cause", err)
-			continue
-		}
-		if rooms[idx].Preview != nil && rooms[idx].Preview.Seq >= ev.Seq {
+				"project", project, "room", snapshot.RoomID, "seq", snapshot.Latest.Seq, "cause", err)
 			continue
 		}
 		rooms[idx].Preview = &proto.RoomPreview{
-			Body: truncateRoomPreview(msg.Body), Seq: ev.Seq, CreatedAt: ev.CreatedAt,
+			Body: truncateRoomPreview(msg.Body), Seq: snapshot.Latest.Seq, CreatedAt: snapshot.Latest.CreatedAt,
 		}
 	}
 	// 活性：按不同绑定会话去重读租约（兼任多席只问一次「会话活着吗」）。
@@ -643,18 +665,8 @@ func (s *Service) listRooms(project, member string) ([]proto.RoomSummary, error)
 		}
 	}
 	if member != "" {
-		cursors, err := s.cursor.Snapshot(member)
-		if err != nil {
-			log().Warn("会话列表组装失败：读游标快照",
-				"project", project, "member", member, "cause", err)
-			return nil, err
-		}
-		unread := unreadByRoom(events, cursors)
-		for i := range rooms {
-			rooms[i].Unread = unread[rooms[i].ID]
-		}
 		log().Info("会话列表未读聚合完成", "project", project, "member", member,
-			"rooms", len(rooms))
+			"rooms", len(rooms), "snapshot_rows", len(messageSnapshots))
 	}
 	// 排序：非终态（含群房间）按活动降序在前，终态卡房间沉底（各自内部按
 	// 活动降序；Stable 保证同活动时保持插入序，输出形状确定）。
@@ -683,25 +695,6 @@ func truncateRoomPreview(body string) string {
 	return string(runes[:roomPreviewMaxRunes-1]) + "…"
 }
 
-// unreadByRoom 从列表已经读取的全量事件中聚合成员未读数。
-//
-// 列表本来就需要一次事件流读取来计算 LastActivity；复用这批事件，并在一次
-// Snapshot 游标快照上比较水位，避免每个房间再次 Cursor+ReadAllEvents。
-func unreadByRoom(events []proto.LedgerEvent, cursors map[string]int64) map[string]int {
-	out := make(map[string]int)
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType {
-			continue
-		}
-		roomID := room.RoomIDOf(ev)
-		if roomID == "" || ev.Seq <= cursors[roomID] {
-			continue
-		}
-		out[roomID]++
-	}
-	return out
-}
-
 // MarkRead 未读游标置位（打开房间即已读）。按成员按房间记 seq 水位，单调
 // 只进不退；并发到达由 cursor.Store 互斥锁 + tmp+rename 原子写兜底。
 func (s *Service) MarkRead(member, roomID string, uptoSeq int64) error {
@@ -716,22 +709,24 @@ func (s *Service) MarkRead(member, roomID string, uptoSeq int64) error {
 // Unread 未读计数：该房间内 room_message 事件中 seq 大于该成员游标的条数
 // （水位语义：打开房间 MarkRead 到当前最大 seq 后即 0；未读过 = 全量）。
 func (s *Service) Unread(member, roomID string) (int, error) {
+	return s.UnreadContext(context.Background(), member, roomID)
+}
+
+// UnreadContext 在给定水位上读取单房间消息数，支持上游取消数据库查询。
+func (s *Service) UnreadContext(ctx context.Context, member, roomID string) (int, error) {
 	cursorSeq, err := s.cursor.Cursor(member, roomID)
 	if err != nil {
 		log().Warn("未读计数失败：读游标", "member", member, "room", roomID, "cause", err)
 		return 0, err
 	}
-	events, err := room.ReadAllEvents(s.lc, cursorSeq)
+	snapshots, err := s.lc.RoomMessageSnapshotsContext(ctx, map[string]int64{roomID: cursorSeq})
 	if err != nil {
-		log().Warn("未读计数失败：读事件流", "member", member, "room", roomID, "cause", err)
+		log().Warn("未读计数失败：读房间消息摘要", "member", member, "room", roomID, "cause", err)
 		return 0, err
 	}
 	n := 0
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType || !room.SameRoom(ev, roomID) {
-			continue
-		}
-		n++
+	if len(snapshots) > 0 {
+		n = int(snapshots[0].MessagesAfter)
 	}
 	log().Info("未读计数完成", "member", member, "room", roomID, "unread", n)
 	return n, nil

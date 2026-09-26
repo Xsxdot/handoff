@@ -102,11 +102,41 @@ func (f *Facade) RoomMessagesBeforeContext(ctx context.Context, roomID string, b
 	if err != nil {
 		return nil, err
 	}
-	out := make([]proto.LedgerEvent, 0, len(events))
-	for _, ev := range events {
-		out = append(out, eventWire(ev))
+	return eventWires(events), nil
+}
+
+// RoomMessageSnapshotsContext 直通账本批量房间消息摘要，并映射最新事件 wire。
+func (f *Facade) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]client.RoomMessageSnapshot, error) {
+	snapshots, err := f.st.RoomMessageSnapshotsContext(ctx, afterByRoom)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]client.RoomMessageSnapshot, 0, len(snapshots))
+	for _, snapshot := range snapshots {
+		out = append(out, client.RoomMessageSnapshot{
+			RoomID: snapshot.RoomID, Latest: eventWire(snapshot.Latest),
+			LastActivity: snapshot.LastActivity, MessagesAfter: snapshot.MessagesAfter,
+		})
 	}
 	return out, nil
+}
+
+// SessionProjectionEventsContext 直通单会话详情事件范围，不在 facade 解释业务。
+func (f *Facade) SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error) {
+	events, err := f.st.SessionProjectionEventsContext(ctx, sessionID, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
+}
+
+// LatestNeedsEventsContext 直通各卡最新 needs 状态事件。
+func (f *Facade) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error) {
+	events, err := f.st.LatestNeedsEventsContext(ctx, cardIDs)
+	if err != nil {
+		return nil, err
+	}
+	return eventWires(events), nil
 }
 
 // --- B358 会话（群）域直通镜像：逐方法转调 Store，不含业务判断 ---
@@ -252,4 +282,12 @@ func eventWire(ev ledger.Event) proto.LedgerEvent {
 		SourceSeq:    ev.SourceSeq,
 		CreatedAt:    ev.CreatedAt,
 	}
+}
+
+func eventWires(events []ledger.Event) []proto.LedgerEvent {
+	out := make([]proto.LedgerEvent, 0, len(events))
+	for _, event := range events {
+		out = append(out, eventWire(event))
+	}
+	return out
 }

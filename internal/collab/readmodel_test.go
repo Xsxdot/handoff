@@ -11,6 +11,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -26,10 +27,12 @@ import (
 // 供 ListRooms 排序/筛选/活性翻转等需要精确时刻的读模型测试使用。全部方法
 // 保持与接口一一对应；未用到的写方法返回 nil（本文件不测它们）。
 type fakeLC struct {
-	cards      []proto.Card
-	events     []proto.LedgerEvent
-	leases     map[string]time.Time // session -> expiresAt
-	eventReads int
+	cards             []proto.Card
+	events            []proto.LedgerEvent
+	leases            map[string]time.Time // session -> expiresAt
+	roomSnapshots     []client.RoomMessageSnapshot
+	eventReads        int
+	roomSnapshotReads int
 }
 
 func (f *fakeLC) GetCard(id string) (proto.Card, error) {
@@ -143,6 +146,135 @@ func (f *fakeLC) RoomMessagesBeforeContext(ctx context.Context, roomID string, b
 	return out, nil
 }
 
+func (f *fakeLC) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]client.RoomMessageSnapshot, error) {
+	f.roomSnapshotReads++
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if f.roomSnapshots != nil {
+		return slices.Clone(f.roomSnapshots), nil
+	}
+	byRoom := map[string]client.RoomMessageSnapshot{}
+	for _, event := range f.events {
+		if event.Type != room.RoomEventType {
+			continue
+		}
+		roomID := room.RoomIDOf(event)
+		after, ok := afterByRoom[roomID]
+		if !ok {
+			continue
+		}
+		snapshot, exists := byRoom[roomID]
+		if !exists || event.Seq > snapshot.Latest.Seq {
+			snapshot.RoomID = roomID
+			snapshot.Latest = event
+		}
+		if !exists || event.CreatedAt.After(snapshot.LastActivity) {
+			snapshot.LastActivity = event.CreatedAt
+		}
+		if event.Seq > after {
+			snapshot.MessagesAfter++
+		}
+		byRoom[roomID] = snapshot
+	}
+	ids := make([]string, 0, len(byRoom))
+	for roomID := range byRoom {
+		ids = append(ids, roomID)
+	}
+	slices.Sort(ids)
+	out := make([]client.RoomMessageSnapshot, 0, len(ids))
+	for _, roomID := range ids {
+		out = append(out, byRoom[roomID])
+	}
+	return out, nil
+}
+
+func (f *fakeLC) SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	cardSet := map[string]bool{}
+	for _, cardID := range cardIDs {
+		cardSet[cardID] = true
+	}
+	var out []proto.LedgerEvent
+	for _, event := range f.events {
+		cardFact := cardSet[event.CardID] && strings.Contains("|task_mirrored|needs_human|needs_cleared|driver_takeover|driver_seat_bound|status_moved|", "|"+event.Type+"|")
+		sessionFact := false
+		switch event.Type {
+		case "session_created":
+			sessionFact = payloadString(event.Payload, "id") == sessionID
+		case "session_archived", "session_card_joined", "session_card_left":
+			sessionFact = payloadString(event.Payload, "session") == sessionID
+		}
+		if cardFact || sessionFact {
+			out = append(out, event)
+		}
+	}
+	return out, nil
+}
+
+func (f *fakeLC) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	cardSet := map[string]bool{}
+	for _, cardID := range cardIDs {
+		cardSet[cardID] = true
+	}
+	latest := map[string]proto.LedgerEvent{}
+	for _, event := range f.events {
+		if !cardSet[event.CardID] || (event.Type != "needs_human" && event.Type != "needs_cleared") {
+			continue
+		}
+		if previous, ok := latest[event.CardID]; !ok || event.Seq > previous.Seq {
+			latest[event.CardID] = event
+		}
+	}
+	out := make([]proto.LedgerEvent, 0, len(latest))
+	for _, event := range latest {
+		out = append(out, event)
+	}
+	slices.SortFunc(out, func(a, b proto.LedgerEvent) int {
+		if a.Seq < b.Seq {
+			return -1
+		}
+		if a.Seq > b.Seq {
+			return 1
+		}
+		return 0
+	})
+	return out, nil
+}
+
+func TestListRoomsKeepsUnreadCountWhenLatestPreviewPayloadIsInvalid(t *testing.T) {
+	base := time.Date(2026, 9, 25, 0, 0, 0, 0, time.UTC)
+	fake := &fakeLC{
+		cards:  []proto.Card{{ID: "B1", Title: "卡", Status: "进行中", Project: "p1", CreatedAt: base, UpdatedAt: base}},
+		leases: map[string]time.Time{},
+		roomSnapshots: []client.RoomMessageSnapshot{{
+			RoomID: "B1", Latest: proto.LedgerEvent{Seq: 9, Type: room.RoomEventType, Payload: json.RawMessage("{")},
+			LastActivity: base.Add(time.Minute), MessagesAfter: 4,
+		}},
+	}
+	rooms, err := New(fake).ListRoomsForMember("p1", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, summary := range rooms {
+		if summary.ID == "B1" {
+			if summary.Unread != 4 {
+				t.Fatalf("预览载荷解码失败不应抹掉已聚合未读: got %d want 4", summary.Unread)
+			}
+			if summary.Preview != nil {
+				t.Fatalf("无效预览载荷不得展示: %+v", summary.Preview)
+			}
+			return
+		}
+	}
+	t.Fatalf("房间列表缺目标卡: %+v", rooms)
+}
+
 // TestListRoomsForMemberScansEventsOnceForUnreadAndActivity 锁住列表性能接缝：
 // 活动时间与成员未读必须复用同一次事件流扫描，不能退化为每个房间各读一遍。
 // 205 张卡刻意超过验收门的 200+ 规模；计数断言比挂钟更稳定。
@@ -166,8 +298,8 @@ func TestListRoomsForMemberScansEventsOnceForUnreadAndActivity(t *testing.T) {
 	if len(rooms) != 207 { // 205 卡 + 项目群 + 全员群
 		t.Fatalf("房间数量: got %d want 207", len(rooms))
 	}
-	if fake.eventReads != 1 {
-		t.Fatalf("列表应只扫描一次事件流，实际读取 %d 次", fake.eventReads)
+	if fake.roomSnapshotReads != 1 || fake.eventReads != 0 {
+		t.Fatalf("列表应一次批量读房间摘要且不扫全流: snapshots=%d full_scans=%d", fake.roomSnapshotReads, fake.eventReads)
 	}
 	for _, r := range rooms {
 		if r.Kind == room.KindCard && r.Unread != 1 {

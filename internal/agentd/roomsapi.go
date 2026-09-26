@@ -137,7 +137,7 @@ func (s *Server) handleRoomsList(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusUpgradeRequired, errors.New(roomsListLegacyMessage))
 		return
 	}
-	page, err := s.rooms.ListRoomsPage(project, member, params.Cursor, params.Limit)
+	page, err := s.rooms.ListRoomsPageContext(r.Context(), project, member, params.Cursor, params.Limit)
 	if err != nil {
 		if code := roomsListErrorStatus(err); code == http.StatusBadRequest {
 			s.log.Warn("会话列表游标非法", "project", project, "cause", err)

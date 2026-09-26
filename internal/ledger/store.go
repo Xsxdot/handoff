@@ -254,6 +254,21 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
 				ON card_events((payload->>'room'), seq DESC)
 				WHERE type = 'room_message' AND card_id IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type = 'room_message' AND card_id IS NOT NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_session_projection_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type IN ('task_mirrored','needs_human','needs_cleared','driver_takeover','driver_seat_bound','status_moved')`,
+			`CREATE INDEX IF NOT EXISTS idx_needs_events_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type IN ('needs_human','needs_cleared')`,
+			`CREATE INDEX IF NOT EXISTS idx_session_created_id_seq
+				ON card_events((payload->>'id'), seq)
+				WHERE card_id IS NULL AND type = 'session_created'`,
+			`CREATE INDEX IF NOT EXISTS idx_session_structure_session_seq
+				ON card_events((payload->>'session'), seq)
+				WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left')`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INT NOT NULL, definition JSONB NOT NULL,
 				created_at TIMESTAMPTZ NOT NULL, PRIMARY KEY (name, version))`,
@@ -390,6 +405,21 @@ func ddlStatements(pg bool) []string {
 			`CREATE INDEX IF NOT EXISTS idx_room_messages_room_seq
 				ON card_events(json_extract(payload, '$.room'), seq DESC)
 				WHERE type = 'room_message' AND card_id IS NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_room_messages_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type = 'room_message' AND card_id IS NOT NULL`,
+			`CREATE INDEX IF NOT EXISTS idx_session_projection_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type IN ('task_mirrored','needs_human','needs_cleared','driver_takeover','driver_seat_bound','status_moved')`,
+			`CREATE INDEX IF NOT EXISTS idx_needs_events_card_seq
+				ON card_events(card_id, seq DESC)
+				WHERE type IN ('needs_human','needs_cleared')`,
+			`CREATE INDEX IF NOT EXISTS idx_session_created_id_seq
+				ON card_events(json_extract(payload, '$.id'), seq)
+				WHERE card_id IS NULL AND type = 'session_created'`,
+			`CREATE INDEX IF NOT EXISTS idx_session_structure_session_seq
+				ON card_events(json_extract(payload, '$.session'), seq)
+				WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left')`,
 			`CREATE TABLE IF NOT EXISTS workflows (
 				name TEXT NOT NULL, version INTEGER NOT NULL, definition TEXT NOT NULL,
 				created_at TEXT NOT NULL, PRIMARY KEY (name, version))`,

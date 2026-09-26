@@ -109,6 +109,123 @@ func TestSessionReadsHonorCanceledRequest(t *testing.T) {
 	}
 }
 
+type sessionProjectionProbe struct {
+	client.LedgerClient
+	fullReads        int
+	roomReads        int
+	needsReads       int
+	detailEventReads int
+}
+
+func (p *sessionProjectionProbe) EventsFromAsc(cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	p.fullReads++
+	return nil, errors.New("session projection must not read the event stream")
+}
+
+func (p *sessionProjectionProbe) EventsFromAscContext(ctx context.Context, cardIDs []string, fromSeq int64, limit int) ([]proto.LedgerEvent, error) {
+	p.fullReads++
+	return nil, errors.New("session projection must not read the event stream")
+}
+
+func (p *sessionProjectionProbe) RoomMessageSnapshotsContext(ctx context.Context, after map[string]int64) ([]client.RoomMessageSnapshot, error) {
+	p.roomReads++
+	return p.LedgerClient.RoomMessageSnapshotsContext(ctx, after)
+}
+
+func (p *sessionProjectionProbe) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]proto.LedgerEvent, error) {
+	p.needsReads++
+	return p.LedgerClient.LatestNeedsEventsContext(ctx, cardIDs)
+}
+
+func (p *sessionProjectionProbe) SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]proto.LedgerEvent, error) {
+	p.detailEventReads++
+	return p.LedgerClient.SessionProjectionEventsContext(ctx, sessionID, cardIDs)
+}
+
+func TestB409SessionListAndDetailUseBoundedLedgerProjections(t *testing.T) {
+	svc, st, lc := newSessionFixture(t)
+	memberCard := sessionCard(t, st, "当前会话卡")
+	foreignCard := sessionCard(t, st, "另一会话卡")
+	first, err := svc.CreateSession("目标会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := svc.CreateSession("相邻会话", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(first.ID, memberCard.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.JoinCard(second.ID, foreignCard.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(memberCard.ID, "当前会话待处理", "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(foreignCard.ID, "另一会话待处理", "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	firstSeq, err := svc.Send(first.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "已读基线"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.MarkRead("user:sy", first.ID, firstSeq); err != nil {
+		t.Fatal(err)
+	}
+	latestSeq, err := svc.Send(first.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "目标预览"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.Send(second.ID, proto.RoomMessage{Kind: proto.RoomMsgUser, Body: "相邻预览"}, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+
+	probe := &sessionProjectionProbe{LedgerClient: lc}
+	svc.lc = probe
+	summaries, err := svc.ListSessionsContext(context.Background(), "user:sy")
+	if err != nil {
+		t.Fatalf("ListSessionsContext: %v", err)
+	}
+	var firstSummary, secondSummary *proto.SessionSummary
+	for i := range summaries {
+		switch summaries[i].ID {
+		case first.ID:
+			firstSummary = &summaries[i]
+		case second.ID:
+			secondSummary = &summaries[i]
+		}
+	}
+	if firstSummary == nil || secondSummary == nil {
+		t.Fatalf("会话列表缺行: %+v", summaries)
+	}
+	if firstSummary.Unread != 1 || firstSummary.Preview == nil || firstSummary.Preview.Seq != latestSeq || firstSummary.Preview.Body != "目标预览" || !firstSummary.NeedsHuman {
+		t.Fatalf("目标会话摘要与游标/预览/needs 金样不符: %+v", firstSummary)
+	}
+	if secondSummary.Unread != 1 || secondSummary.Preview == nil || secondSummary.Preview.Body != "相邻预览" || !secondSummary.NeedsHuman {
+		t.Fatalf("相邻会话摘要与游标/预览/needs 金样不符: %+v", secondSummary)
+	}
+	if probe.fullReads != 0 || probe.roomReads != 1 || probe.needsReads != 1 {
+		t.Fatalf("会话列表必须一次批量读 room 摘要与 needs 最新态，且不扫全流: %+v", probe)
+	}
+
+	detail, err := svc.SessionDetailContext(context.Background(), first.ID)
+	if err != nil {
+		t.Fatalf("SessionDetailContext: %v", err)
+	}
+	if detail.Summary.ID != first.ID || detail.Summary.Preview == nil || detail.Summary.Preview.Body != "目标预览" || len(detail.Summary.Cards) != 1 || detail.Summary.Cards[0].CardID != memberCard.ID {
+		t.Fatalf("详情头部必须保持 session 与当前成员卡投影: %+v", detail.Summary)
+	}
+	for _, event := range detail.Timeline {
+		if event.CardID != "" && event.CardID != memberCard.ID {
+			t.Fatalf("详情 timeline 泄露另一会话卡: %+v", event)
+		}
+	}
+	if probe.fullReads != 0 || probe.roomReads != 2 || probe.needsReads != 1 || probe.detailEventReads != 1 {
+		t.Fatalf("会话详情必须按目标 session/card 查询且不扫全流: %+v", probe)
+	}
+}
+
 type roomHistoryProbe struct {
 	client.LedgerClient
 	roomID      string

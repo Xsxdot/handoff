@@ -82,3 +82,22 @@ func TestB351DispatchRoundsDDLDialectParity(t *testing.T) {
 		})
 	}
 }
+
+func TestB409ProjectionIndexesExistInBothDialects(t *testing.T) {
+	want := []string{
+		"idx_room_messages_card_seq", "idx_session_projection_card_seq", "idx_needs_events_card_seq",
+		"idx_session_created_id_seq", "idx_session_structure_session_seq",
+	}
+	for _, ddl := range []struct {
+		name string
+		text string
+	}{{"postgres", strings.Join(ddlStatements(true), "\n")}, {"sqlite", strings.Join(ddlStatements(false), "\n")}} {
+		t.Run(ddl.name, func(t *testing.T) {
+			for _, index := range want {
+				if !strings.Contains(ddl.text, index) {
+					t.Errorf("%s DDL 缺少 B409 范围读取索引 %q", ddl.name, index)
+				}
+			}
+		})
+	}
+}

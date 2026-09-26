@@ -9,10 +9,327 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/Xsxdot/handoff/internal/proto"
 )
+
+// RoomMessageSnapshot 是按房间身份聚合出的最后一条消息、最大活动时间和
+// seq 水位之后的消息数。账本只执行字段/水位投影，不解释 member 或 unread。
+type RoomMessageSnapshot struct {
+	RoomID        string
+	Latest        Event
+	LastActivity  time.Time
+	MessagesAfter int64
+}
+
+// RoomMessageSnapshotsContext 按调用方提供的 room→seq 水位批量读取消息摘要。
+func (s *Store) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map[string]int64) ([]RoomMessageSnapshot, error) {
+	started := time.Now()
+	roomIDs := sortedKeys(afterByRoom)
+	if err := ctx.Err(); err != nil {
+		log().Info("房间消息摘要读取已取消", "rooms", len(roomIDs), "cause", err)
+		return nil, err
+	}
+	if len(roomIDs) == 0 {
+		return []RoomMessageSnapshot{}, nil
+	}
+	roomExpr := `payload->>'room'`
+	if s.dialect == dialectSQLite {
+		roomExpr = `json_extract(payload, '$.room')`
+	}
+
+	// Bound parameters stay comfortably below SQLite/PG limits while still querying
+	// many rooms in one batch rather than issuing one scan per room.
+	// Keep every generated query below SQLite's conservative 999-bind-parameter
+	// limit: each requested room contributes its id and seq watermark.
+	const roomChunkSize = 400
+	out := make([]RoomMessageSnapshot, 0, len(roomIDs))
+	for start := 0; start < len(roomIDs); start += roomChunkSize {
+		end := start + roomChunkSize
+		if end > len(roomIDs) {
+			end = len(roomIDs)
+		}
+		chunk := roomIDs[start:end]
+		query, args := roomMessageSnapshotsQuery(roomExpr, chunk, afterByRoom)
+		rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+		if err != nil {
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				log().Info("房间消息摘要 SQL 已取消", "rooms", len(chunk), "elapsed_ns", time.Since(started).Nanoseconds(), "cause", err)
+			} else {
+				log().Warn("房间消息摘要 SQL 失败", "rooms", len(chunk), "cause", err)
+			}
+			return nil, fmt.Errorf("读房间消息摘要: %w", err)
+		}
+		for rows.Next() {
+			var snapshot RoomMessageSnapshot
+			var event Event
+			var cardID, sourceTarget, sourceTask sql.NullString
+			var sourceSeq sql.NullInt64
+			var raw string
+			var createdAt, lastActivity any
+			if err := rows.Scan(&snapshot.RoomID, &snapshot.MessagesAfter, &lastActivity,
+				&event.Seq, &cardID, &event.Type, &event.Actor, &raw,
+				&sourceTarget, &sourceTask, &sourceSeq, &createdAt); err != nil {
+				rows.Close()
+				log().Warn("房间消息摘要行读取失败", "room", snapshot.RoomID, "rows_read", len(out), "cause", err)
+				return nil, fmt.Errorf("扫描房间消息摘要: %w", err)
+			}
+			event.CardID = cardID.String
+			event.SourceTarget = sourceTarget.String
+			event.SourceTask = sourceTask.String
+			event.SourceSeq = sourceSeq.Int64
+			event.Payload = json.RawMessage(raw)
+			event.CreatedAt = toTime(createdAt)
+			snapshot.Latest = event
+			snapshot.LastActivity = toTime(lastActivity)
+			out = append(out, snapshot)
+		}
+		if err := rows.Err(); err != nil {
+			rows.Close()
+			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+				log().Info("房间消息摘要遍历已取消", "rooms", len(chunk), "rows_read", len(out), "cause", err)
+			} else {
+				log().Warn("房间消息摘要遍历失败", "rooms", len(chunk), "rows_read", len(out), "cause", err)
+			}
+			return nil, fmt.Errorf("遍历房间消息摘要: %w", err)
+		}
+		if err := rows.Close(); err != nil {
+			log().Warn("关闭房间消息摘要结果失败", "rooms", len(chunk), "cause", err)
+			return nil, fmt.Errorf("关闭房间消息摘要结果: %w", err)
+		}
+	}
+	payloadBytes := 0
+	for _, snapshot := range out {
+		payloadBytes += len(snapshot.Latest.Payload)
+	}
+	log().Info("房间消息摘要读取完成", "rooms_requested", len(roomIDs),
+		"rows_returned", len(out), "payload_bytes", payloadBytes,
+		"elapsed_ns", time.Since(started).Nanoseconds())
+	return out, nil
+}
+
+// SessionProjectionEventsContext 读取单会话详情真正需要的结构和当前成员卡事件。
+func (s *Store) SessionProjectionEventsContext(ctx context.Context, sessionID string, cardIDs []string) ([]Event, error) {
+	started := time.Now()
+	cardIDs = uniqueSorted(cardIDs)
+	log().Debug("会话详情投影事件读取开始", "session", sessionID, "cards", len(cardIDs))
+	if sessionID == "" {
+		log().Warn("会话详情投影事件读取参数无效", "cause", "empty session id")
+		return nil, fmt.Errorf("会话详情投影读取需要 session id")
+	}
+	if err := ctx.Err(); err != nil {
+		log().Info("会话详情投影读取已取消", "session", sessionID, "cards", len(cardIDs), "cause", err)
+		return nil, err
+	}
+	var out []Event
+	const cardChunkSize = 400
+	for start := 0; start < len(cardIDs); start += cardChunkSize {
+		end := start + cardChunkSize
+		if end > len(cardIDs) {
+			end = len(cardIDs)
+		}
+		chunk := cardIDs[start:end]
+		query := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+			FROM card_events WHERE card_id IN (?` + strings.Repeat(",?", len(chunk)-1) + `)
+			AND type IN ('task_mirrored','needs_human','needs_cleared','driver_takeover','driver_seat_bound','status_moved')`
+		args := make([]any, 0, len(chunk))
+		for _, cardID := range chunk {
+			args = append(args, cardID)
+		}
+		query += ` ORDER BY seq ASC`
+		rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+		if err != nil {
+			log().Warn("会话详情成员卡投影 SQL 失败", "session", sessionID, "cards", len(chunk), "cause", err)
+			return nil, fmt.Errorf("读会话 %s 成员卡投影事件: %w", sessionID, err)
+		}
+		events, scanErr := scanProjectionEvents(rows)
+		closeErr := rows.Close()
+		if scanErr != nil {
+			log().Warn("会话详情成员卡投影行读取失败", "session", sessionID, "cards", len(chunk), "cause", scanErr)
+			return nil, fmt.Errorf("扫会话 %s 成员卡投影事件: %w", sessionID, scanErr)
+		}
+		if closeErr != nil {
+			log().Warn("关闭会话详情成员卡投影结果失败", "session", sessionID, "cards", len(chunk), "cause", closeErr)
+			return nil, fmt.Errorf("关闭会话 %s 成员卡投影结果: %w", sessionID, closeErr)
+		}
+		out = append(out, events...)
+	}
+
+	sessionExpr := `payload->>'session'`
+	createdExpr := `payload->>'id'`
+	if s.dialect == dialectSQLite {
+		sessionExpr = `json_extract(payload, '$.session')`
+		createdExpr = `json_extract(payload, '$.id')`
+	}
+	query := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+		FROM card_events WHERE card_id IS NULL AND type = 'session_created' AND ` + createdExpr + ` = ?
+		UNION ALL
+		SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+		FROM card_events WHERE card_id IS NULL AND type IN ('session_archived','session_card_joined','session_card_left') AND ` + sessionExpr + ` = ?
+		ORDER BY seq ASC`
+	rows, err := s.db.QueryContext(ctx, s.q(query), sessionID, sessionID)
+	if err != nil {
+		log().Warn("会话详情结构事件 SQL 失败", "session", sessionID, "cause", err)
+		return nil, fmt.Errorf("读会话 %s 结构事件: %w", sessionID, err)
+	}
+	events, scanErr := scanProjectionEvents(rows)
+	closeErr := rows.Close()
+	if scanErr != nil {
+		log().Warn("会话详情结构事件行读取失败", "session", sessionID, "cause", scanErr)
+		return nil, fmt.Errorf("扫会话 %s 结构事件: %w", sessionID, scanErr)
+	}
+	if closeErr != nil {
+		log().Warn("关闭会话详情结构事件结果失败", "session", sessionID, "cause", closeErr)
+		return nil, fmt.Errorf("关闭会话 %s 结构事件结果: %w", sessionID, closeErr)
+	}
+	out = append(out, events...)
+	sort.Slice(out, func(i, j int) bool { return out[i].Seq < out[j].Seq })
+	payloadBytes := 0
+	for _, event := range out {
+		payloadBytes += len(event.Payload)
+	}
+	log().Info("会话详情投影事件读取完成", "session", sessionID,
+		"cards", len(cardIDs), "rows_returned", len(out), "payload_bytes", payloadBytes,
+		"elapsed_ns", time.Since(started).Nanoseconds())
+	return out, nil
+}
+
+// LatestNeedsEventsContext 返回每张指定卡最新的一条 needs_human/needs_cleared。
+func (s *Store) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) ([]Event, error) {
+	cardIDs = uniqueSorted(cardIDs)
+	started := time.Now()
+	log().Debug("卡 needs 最新事实读取开始", "cards", len(cardIDs))
+	if err := ctx.Err(); err != nil {
+		log().Info("卡 needs 最新事实读取已取消", "cards", len(cardIDs), "cause", err)
+		return nil, err
+	}
+	if len(cardIDs) == 0 {
+		return []Event{}, nil
+	}
+	const cardChunkSize = 400
+	var out []Event
+	for start := 0; start < len(cardIDs); start += cardChunkSize {
+		end := start + cardChunkSize
+		if end > len(cardIDs) {
+			end = len(cardIDs)
+		}
+		chunk := cardIDs[start:end]
+		query := `SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at
+			FROM (
+				SELECT seq, card_id, type, actor, payload, source_target, source_task, source_seq, created_at,
+					ROW_NUMBER() OVER (PARTITION BY card_id ORDER BY seq DESC) AS row_number
+				FROM card_events WHERE card_id IN (?` + strings.Repeat(",?", len(chunk)-1) + `)
+					AND type IN ('needs_human','needs_cleared')
+			) AS latest_needs WHERE row_number = 1 ORDER BY seq ASC`
+		args := make([]any, 0, len(chunk))
+		for _, cardID := range chunk {
+			args = append(args, cardID)
+		}
+		rows, err := s.db.QueryContext(ctx, s.q(query), args...)
+		if err != nil {
+			log().Warn("卡 needs 最新事实 SQL 失败", "cards", len(chunk), "cause", err)
+			return nil, fmt.Errorf("读卡 needs 最新状态: %w", err)
+		}
+		events, scanErr := scanProjectionEvents(rows)
+		closeErr := rows.Close()
+		if scanErr != nil {
+			log().Warn("卡 needs 最新事实行读取失败", "cards", len(chunk), "cause", scanErr)
+			return nil, fmt.Errorf("扫卡 needs 最新状态: %w", scanErr)
+		}
+		if closeErr != nil {
+			log().Warn("关闭卡 needs 查询结果失败", "cards", len(chunk), "cause", closeErr)
+			return nil, fmt.Errorf("关闭卡 needs 查询结果: %w", closeErr)
+		}
+		out = append(out, events...)
+	}
+	payloadBytes := 0
+	for _, event := range out {
+		payloadBytes += len(event.Payload)
+	}
+	log().Info("卡 needs 最新事实读取完成", "cards_requested", len(cardIDs),
+		"rows_returned", len(out), "payload_bytes", payloadBytes, "elapsed_ns", time.Since(started).Nanoseconds())
+	return out, nil
+}
+
+func roomMessageSnapshotsQuery(roomExpr string, roomIDs []string, afterByRoom map[string]int64) (string, []any) {
+	values := make([]string, 0, len(roomIDs))
+	args := make([]any, 0, len(roomIDs)*2)
+	for _, roomID := range roomIDs {
+		values = append(values, "(?, ?)")
+		args = append(args, roomID, afterByRoom[roomID])
+	}
+	query := `WITH target(room_id, after_seq) AS (VALUES ` + strings.Join(values, ",") + `),
+	matching AS (
+		SELECT e.seq, t.room_id, t.after_seq, e.created_at
+		FROM card_events e JOIN target t ON e.card_id = t.room_id
+		WHERE e.type = 'room_message' AND e.card_id IS NOT NULL
+		UNION ALL
+		SELECT e.seq, t.room_id, t.after_seq, e.created_at
+		FROM card_events e JOIN target t ON ` + roomExpr + ` = t.room_id
+		WHERE e.type = 'room_message' AND e.card_id IS NULL
+	), aggregate_by_room AS (
+		SELECT room_id, SUM(CASE WHEN seq > after_seq THEN 1 ELSE 0 END) AS messages_after,
+			MAX(created_at) AS last_activity, MAX(seq) AS latest_seq
+		FROM matching GROUP BY room_id
+	)
+	SELECT a.room_id, a.messages_after, a.last_activity,
+		e.seq, e.card_id, e.type, e.actor, e.payload, e.source_target, e.source_task, e.source_seq, e.created_at
+	FROM aggregate_by_room a JOIN card_events e ON e.seq = a.latest_seq
+	ORDER BY a.room_id`
+	return query, args
+}
+
+func scanProjectionEvents(rows *sql.Rows) ([]Event, error) {
+	var out []Event
+	for rows.Next() {
+		var event Event
+		var cardID, sourceTarget, sourceTask sql.NullString
+		var sourceSeq sql.NullInt64
+		var raw string
+		var createdAt any
+		if err := rows.Scan(&event.Seq, &cardID, &event.Type, &event.Actor, &raw,
+			&sourceTarget, &sourceTask, &sourceSeq, &createdAt); err != nil {
+			return nil, err
+		}
+		event.CardID = cardID.String
+		event.SourceTarget = sourceTarget.String
+		event.SourceTask = sourceTask.String
+		event.SourceSeq = sourceSeq.Int64
+		event.Payload = json.RawMessage(raw)
+		event.CreatedAt = toTime(createdAt)
+		out = append(out, event)
+	}
+	return out, rows.Err()
+}
+
+func sortedKeys(values map[string]int64) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		if key != "" {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func uniqueSorted(values []string) []string {
+	set := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		if value != "" {
+			set[value] = struct{}{}
+		}
+	}
+	out := make([]string, 0, len(set))
+	for value := range set {
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
 
 // RoomMessagesBeforeContext 只从账本取指定房间最新 limit 条 room_message。
 // beforeSeq>0 时使用排他上界；数据库先按倒序截取，返回前再转成升序。

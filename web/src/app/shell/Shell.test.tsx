@@ -1107,7 +1107,14 @@ const sessionSummary = (over: Record<string, unknown> = {}) => ({
 })
 
 describe('B361 会话 IA', () => {
-  it('左栏两 tab 点击切换：会话 tab 显列表（默认），任务 tab 显项目树且双挂载不卸载', async () => {
+	it('会话列表首拉失败时经 Shell 显示错误，不显示真实空态', async () => {
+		vi.mocked(fetchSessions).mockRejectedValueOnce(new Error('账本查询超时'))
+		renderShell()
+		expect(await screen.findByRole('alert')).toHaveTextContent('账本查询超时')
+		expect(screen.queryByText('（暂无会话）')).toBeNull()
+	})
+
+	it('左栏两 tab 点击切换：会话 tab 显列表（默认），任务 tab 显项目树且双挂载不卸载', async () => {
     // 徽章读数需要非空会话流：本支显式给 unread=2（默认桩是空列表）
     vi.mocked(fetchSessions).mockResolvedValue([sessionSummary({ unread: 2 })] as never)
     renderShell()

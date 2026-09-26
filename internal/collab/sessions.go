@@ -48,23 +48,47 @@ func (s *Service) ListSessionsContext(ctx context.Context, member string) ([]pro
 	for _, c := range cards {
 		byCard[c.ID] = c
 	}
-	events, err := room.ReadAllEventsContext(ctx, s.lc, 0)
-	if err != nil {
-		return nil, err
+	cardIDs := make([]string, 0)
+	roomWatermarks := make(map[string]int64, len(sessions))
+	for _, session := range sessions {
+		cardIDs = append(cardIDs, session.Cards...)
+		roomWatermarks[session.ID] = 0
 	}
-	needs := needsHumanByCard(events)
-	var cursors map[string]int64
 	if member != "" {
-		cursors, err = s.cursor.Snapshot(member)
+		cursors, err := s.cursor.Snapshot(member)
 		if err != nil {
+			log().Warn("会话列表组装失败：读游标快照", "member", member, "cause", err)
 			return nil, err
 		}
+		for sessionID := range roomWatermarks {
+			roomWatermarks[sessionID] = cursors[sessionID]
+		}
+	}
+	needsEvents, err := s.lc.LatestNeedsEventsContext(ctx, cardIDs)
+	if err != nil {
+		log().Warn("会话列表组装失败：读成员卡 needs 状态", "sessions", len(sessions), "cards", len(cardIDs), "cause", err)
+		return nil, err
+	}
+	needs := latestNeedsByCard(needsEvents)
+	roomSnapshots, err := s.lc.RoomMessageSnapshotsContext(ctx, roomWatermarks)
+	if err != nil {
+		log().Warn("会话列表组装失败：读房间活动摘要", "sessions", len(sessions), "cause", err)
+		return nil, err
+	}
+	roomByID := make(map[string]client.RoomMessageSnapshot, len(roomSnapshots))
+	for _, snapshot := range roomSnapshots {
+		roomByID[snapshot.RoomID] = snapshot
 	}
 	out := make([]proto.SessionSummary, 0, len(sessions))
 	for _, session := range sessions {
-		summary := s.summarizeSession(session, byCard, events, needs)
+		snapshot, hasSnapshot := roomByID[session.ID]
+		var lastMessage *client.RoomMessageSnapshot
+		if hasSnapshot {
+			lastMessage = &snapshot
+		}
+		summary := s.summarizeSession(session, byCard, lastMessage, needs)
 		if member != "" {
-			summary.Unread = unreadByRoom(events, cursors)[session.ID]
+			summary.Unread = int(snapshot.MessagesAfter)
 		}
 		out = append(out, summary)
 	}
@@ -83,21 +107,27 @@ func (s *Service) SessionDetailContext(ctx context.Context, id string) (proto.Se
 	if err != nil {
 		return proto.SessionDetail{}, mapSessionError(err)
 	}
-	cards, err := s.lc.ListAllCards("")
+	byCard, err := s.sessionCardsByID(ctx, session.Cards)
 	if err != nil {
 		return proto.SessionDetail{}, err
 	}
-	byCard := make(map[string]proto.Card, len(cards))
-	for _, c := range cards {
-		byCard[c.ID] = c
-	}
-	events, err := room.ReadAllEventsContext(ctx, s.lc, 0)
+	events, err := s.lc.SessionProjectionEventsContext(ctx, session.ID, session.Cards)
 	if err != nil {
+		log().Warn("会话详情组装失败：读限域投影事件", "session", session.ID, "cards", len(session.Cards), "cause", err)
 		return proto.SessionDetail{}, err
 	}
 	needs := needsHumanByCard(events)
+	roomSnapshots, err := s.lc.RoomMessageSnapshotsContext(ctx, map[string]int64{session.ID: 0})
+	if err != nil {
+		log().Warn("会话详情组装失败：读房间活动摘要", "session", session.ID, "cause", err)
+		return proto.SessionDetail{}, err
+	}
+	var latestMessage *client.RoomMessageSnapshot
+	if len(roomSnapshots) > 0 {
+		latestMessage = &roomSnapshots[0]
+	}
 	detail := proto.SessionDetail{
-		Summary:  s.summarizeSession(session, byCard, events, needs),
+		Summary:  s.summarizeSession(session, byCard, latestMessage, needs),
 		Nodes:    sessionNodes(session, byCard, events),
 		Timeline: sessionTimeline(events, session),
 	}
@@ -234,7 +264,7 @@ func (s *Service) replyAuthorOf(msg proto.RoomMessage) (string, error) {
 
 // summarizeSession 组装会话列表/详情头部的会话摘要。
 func (s *Service) summarizeSession(session proto.Session, byCard map[string]proto.Card,
-	events []proto.LedgerEvent, needs map[string]bool) proto.SessionSummary {
+	latestMessage *client.RoomMessageSnapshot, needs map[string]bool) proto.SessionSummary {
 	summary := proto.SessionSummary{
 		ID: session.ID, Kind: proto.SessionKind, Title: session.Title,
 		Owner: session.Owner, Archived: session.Archived,
@@ -248,26 +278,48 @@ func (s *Service) summarizeSession(session proto.Session, byCard map[string]prot
 			break
 		}
 	}
-	// 活动与预览：扫全流取该会话最新 room_message（升序遍历，后写覆盖）。
-	for _, ev := range events {
-		if ev.Type != room.RoomEventType || !room.SameRoom(ev, session.ID) {
-			continue
-		}
-		if ev.CreatedAt.After(summary.LastActivity) {
-			summary.LastActivity = ev.CreatedAt
+	if latestMessage != nil {
+		if latestMessage.LastActivity.After(summary.LastActivity) {
+			summary.LastActivity = latestMessage.LastActivity
 		}
 		var msg proto.RoomMessage
-		if err := room.UnmarshalMessage(ev.Payload, &msg); err != nil {
-			continue
-		}
-		if summary.Preview != nil && summary.Preview.Seq >= ev.Seq {
-			continue
-		}
-		summary.Preview = &proto.RoomPreview{
-			Body: truncateRoomPreview(msg.Body), Seq: ev.Seq, CreatedAt: ev.CreatedAt,
+		if err := room.UnmarshalMessage(latestMessage.Latest.Payload, &msg); err != nil {
+			log().Warn("会话摘要预览投影跳过：消息载荷无效", "session", session.ID,
+				"seq", latestMessage.Latest.Seq, "cause", err)
+		} else {
+			summary.Preview = &proto.RoomPreview{
+				Body: truncateRoomPreview(msg.Body), Seq: latestMessage.Latest.Seq, CreatedAt: latestMessage.Latest.CreatedAt,
+			}
 		}
 	}
 	return summary
+}
+
+func (s *Service) sessionCardsByID(ctx context.Context, cardIDs []string) (map[string]proto.Card, error) {
+	byCard := make(map[string]proto.Card, len(cardIDs))
+	for _, cardID := range cardIDs {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		card, err := s.lc.GetCard(cardID)
+		if errors.Is(err, client.ErrNotFound) {
+			continue
+		}
+		if err != nil {
+			log().Warn("会话详情组装失败：读成员卡", "card", cardID, "cause", err)
+			return nil, err
+		}
+		byCard[card.ID] = card
+	}
+	return byCard, nil
+}
+
+func latestNeedsByCard(events []proto.LedgerEvent) map[string]bool {
+	needs := make(map[string]bool, len(events))
+	for _, event := range events {
+		needs[event.CardID] = event.Type == "needs_human"
+	}
+	return needs
 }
 
 // sessionMembers 派生会话成员：显式成员（人/主 agent）+ 会话内各卡的当前席位。

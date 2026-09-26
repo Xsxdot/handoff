@@ -179,6 +179,26 @@ func TestSessionsListUnreadAndMemberForgery(t *testing.T) {
 	}
 }
 
+func TestB409SessionReadFailuresRemainHTTPFailures(t *testing.T) {
+	env := newRoomsEnv(t)
+	session := mustConsoleSession(t, env, "数据库错误不可显示为空")
+	if err := env.ledger.Close(); err != nil {
+		t.Fatalf("关闭隔离 SQLite fixture: %v", err)
+	}
+	for _, path := range []string{"/api/sessions", "/api/sessions/" + session.ID, "/api/rooms?limit=50"} {
+		code, body := ledgerGet(t, env.testAgentdEnv, path)
+		var response struct {
+			Error string `json:"error"`
+		}
+		if err := json.Unmarshal([]byte(body), &response); err != nil {
+			t.Fatalf("%s 错误响应不是 JSON: %v (%s)", path, err, body)
+		}
+		if code != 500 || response.Error == "" || strings.Contains(body, `"sessions":[]`) || strings.Contains(body, `"rooms":[]`) {
+			t.Fatalf("%s 数据库读取失败必须可观察且不得伪装空结果: status=%d body=%s", path, code, body)
+		}
+	}
+}
+
 // TestSessionDetailEndpointKeyset 锁：详情响应键集与 proto.SessionDetail 金样本
 // 逐键一致（handler 不手抖改键——序列化边界断言穿真实 HTTP，不是本地 marshal）；
 // omitempty 三态语义（nodes 无 task_mirrored 时**缺键**而非 null）；不存在会话

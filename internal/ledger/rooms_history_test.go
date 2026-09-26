@@ -143,3 +143,48 @@ func TestRoomHistoryPayloadPathUsesRoomIndex(t *testing.T) {
 		t.Fatal("SQLite 未选择房间 payload 表达式索引，历史读取仍可能扫描无关消息")
 	}
 }
+
+func TestB409ProjectionQueriesUseScopedIndexes(t *testing.T) {
+	s := newTestStore(t)
+	roomQuery, roomArgs := roomMessageSnapshotsQuery(`json_extract(payload, '$.room')`, []string{"B10001", "global"}, map[string]int64{"B10001": 2, "global": 3})
+	plans := []struct {
+		name, query, index string
+		args               []any
+	}{
+		{name: "room snapshot", query: roomQuery, args: roomArgs, index: "idx_room_messages_card_seq"},
+		{name: "member card projection", query: `SELECT seq FROM card_events WHERE card_id IN (?)
+			AND type IN ('task_mirrored','needs_human','needs_cleared','driver_takeover','driver_seat_bound','status_moved') ORDER BY seq ASC`,
+			args: []any{"B10001"}, index: "idx_session_projection_card_seq"},
+		{name: "latest needs", query: `SELECT seq FROM card_events WHERE card_id IN (?)
+			AND type IN ('needs_human','needs_cleared') ORDER BY seq DESC`, args: []any{"B10001"}, index: "idx_needs_events_card_seq"},
+		{name: "session created", query: `SELECT seq FROM card_events WHERE card_id IS NULL AND type = 'session_created'
+			AND json_extract(payload, '$.id') = ?`, args: []any{"session:100"}, index: "idx_session_created_id_seq"},
+		{name: "session structure", query: `SELECT seq FROM card_events WHERE card_id IS NULL
+			AND type IN ('session_archived','session_card_joined','session_card_left')
+			AND json_extract(payload, '$.session') = ?`, args: []any{"session:100"}, index: "idx_session_structure_session_seq"},
+	}
+	for _, probe := range plans {
+		t.Run(probe.name, func(t *testing.T) {
+			rows, err := s.db.Query("EXPLAIN QUERY PLAN "+probe.query, probe.args...)
+			if err != nil {
+				t.Fatalf("读取查询计划: %v", err)
+			}
+			defer rows.Close()
+			used := false
+			for rows.Next() {
+				var id, parent, notUsed int
+				var detail string
+				if err := rows.Scan(&id, &parent, &notUsed, &detail); err != nil {
+					t.Fatalf("扫描查询计划: %v", err)
+				}
+				used = used || strings.Contains(detail, probe.index)
+			}
+			if err := rows.Err(); err != nil {
+				t.Fatalf("遍历查询计划: %v", err)
+			}
+			if !used {
+				t.Fatalf("SQLite 范围查询未选择 %s: query=%s", probe.index, probe.query)
+			}
+		})
+	}
+}

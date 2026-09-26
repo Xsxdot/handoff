@@ -78,6 +78,62 @@ func TestRoomHistoryThroughLedgerClientSeam(t *testing.T) {
 	}
 }
 
+func TestB409ReadProjectionsThroughLedgerClientSeam(t *testing.T) {
+	f, st := newFixture(t)
+	card := mustCardFor(t, st, "会话投影卡")
+	session, err := st.CreateSession("范围投影", "user:sy", "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.JoinCardToSession(session.ID, card.ID, "user:sy"); err != nil {
+		t.Fatal(err)
+	}
+	if err := st.MarkNeedsHuman(card.ID, "等待人工", "test"); err != nil {
+		t.Fatal(err)
+	}
+	cardSeq, err := f.RecordRoomMessage(card.ID, proto.RoomMessage{Room: "misleading-payload-room", Kind: proto.RoomMsgUser, Body: "卡房间消息"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+	groupSeq, err := f.RecordRoomMessage("", proto.RoomMessage{Room: session.ID, Kind: proto.RoomMsgUser, Body: "群消息"}, "user:sy")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	snapshots, err := f.RoomMessageSnapshotsContext(context.Background(), map[string]int64{card.ID: cardSeq - 1, session.ID: groupSeq - 1})
+	if err != nil {
+		t.Fatalf("批量消息摘要经 LedgerClient: %v", err)
+	}
+	if len(snapshots) != 2 {
+		t.Fatalf("Facade 应映射两个目标房间: %+v", snapshots)
+	}
+	byRoom := map[string]client.RoomMessageSnapshot{}
+	for _, snapshot := range snapshots {
+		byRoom[snapshot.RoomID] = snapshot
+	}
+	if got := byRoom[card.ID]; got.Latest.Seq != cardSeq || got.MessagesAfter != 1 {
+		t.Fatalf("卡房间 wire 映射/水位错: %+v", got)
+	}
+	if got := byRoom[session.ID]; got.Latest.Seq != groupSeq || got.MessagesAfter != 1 {
+		t.Fatalf("群房间 wire 映射/水位错: %+v", got)
+	}
+
+	projections, err := f.SessionProjectionEventsContext(context.Background(), session.ID, []string{card.ID})
+	if err != nil {
+		t.Fatalf("详情投影经 LedgerClient: %v", err)
+	}
+	if len(projections) < 3 {
+		t.Fatalf("需含会话结构、进群与成员卡状态事实: %+v", projections)
+	}
+	needs, err := f.LatestNeedsEventsContext(context.Background(), []string{card.ID})
+	if err != nil {
+		t.Fatalf("needs 投影经 LedgerClient: %v", err)
+	}
+	if len(needs) != 1 || needs[0].Type != ledger.EvNeedsHuman || needs[0].CardID != card.ID {
+		t.Fatalf("需保留 latest needs wire 字段: %+v", needs)
+	}
+}
+
 // markersOf 数全流上的 message_consumed 事件并解出载荷键集。直查库：
 // 经 *ledger.Store.EventsFromAsc 读原始账本事件，不经 wire 投影。
 func markersOf(t *testing.T, st *ledger.Store) map[int64]struct {
