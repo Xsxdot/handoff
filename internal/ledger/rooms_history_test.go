@@ -146,7 +146,7 @@ func TestRoomHistoryPayloadPathUsesRoomIndex(t *testing.T) {
 
 func TestB409ProjectionQueriesUseScopedIndexes(t *testing.T) {
 	s := newTestStore(t)
-	roomQuery, roomArgs := roomMessageSnapshotsQuery(`json_extract(payload, '$.room')`, []string{"B10001", "global"}, map[string]int64{"B10001": 2, "global": 3})
+	roomQuery, roomArgs := roomMessageSnapshotsQuery(`json_extract(payload, '$.room')`, []string{"B10001", "global"}, map[string]int64{"B10001": 2, "global": 3}, false)
 	plans := []struct {
 		name, query, index string
 		args               []any

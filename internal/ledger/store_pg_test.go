@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -60,6 +61,157 @@ func newB409PGStore(t *testing.T) *Store {
 	}
 	t.Cleanup(func() { store.Close() })
 	return store
+}
+
+func TestRoomMessageSnapshotsPostgresUsesBigintWatermarks(t *testing.T) {
+	s := newB409PGStore(t)
+	runID := fmt.Sprintf("b409-pg-room-snapshot-%d", time.Now().UnixNano())
+	workflowName := "workflow-" + runID
+	cardID := "B" + fmt.Sprintf("%d", time.Now().UnixNano())
+	var eventSeqs []int64
+	t.Cleanup(func() {
+		for start := 0; start < len(eventSeqs); start += 500 {
+			end := start + 500
+			if end > len(eventSeqs) {
+				end = len(eventSeqs)
+			}
+			placeholders := strings.TrimSuffix(strings.Repeat("?,", end-start), ",")
+			args := make([]any, 0, end-start)
+			for _, seq := range eventSeqs[start:end] {
+				args = append(args, seq)
+			}
+			if _, err := s.db.Exec(s.q(`DELETE FROM card_events WHERE seq IN (`+placeholders+`)`), args...); err != nil {
+				t.Errorf("按本测试 seq 清理 PG 合成事件: %v", err)
+			}
+		}
+		if _, err := s.db.Exec(`DELETE FROM card_events WHERE card_id = $1`, cardID); err != nil {
+			t.Errorf("按本测试 card_id 清理 PG 合成事件: %v", err)
+		}
+		if _, err := s.db.Exec(`DELETE FROM cards WHERE id = $1`, cardID); err != nil {
+			t.Errorf("清理本测试 PG 合成卡: %v", err)
+		}
+		if _, err := s.db.Exec(`DELETE FROM workflows WHERE name = $1`, workflowName); err != nil {
+			t.Errorf("清理本测试 PG 工作流: %v", err)
+		}
+	})
+
+	if _, err := s.PutWorkflow(workflowName, WorkflowDef{Nodes: []NodeDef{
+		{Name: StatusTodo, Next: StatusDoing},
+		{Name: StatusDoing},
+	}}); err != nil {
+		t.Fatalf("写入本测试 PG 工作流: %v", err)
+	}
+	card, err := s.ImportCard(cardID, "B409 PG 房间摘要回归", NewCard{
+		Title: "B409 PG room snapshot", Project: runID, Workflow: workflowName, Actor: runID,
+	})
+	if err != nil {
+		t.Fatalf("创建本测试 PG 卡房间: %v", err)
+	}
+
+	sessionRoom := "session:" + runID
+	roomMessages := []struct {
+		roomID string
+		cardID string
+	}{
+		{roomID: sessionRoom},
+		{roomID: "global"},
+		{roomID: card.ID, cardID: card.ID},
+	}
+	afterByRoom := make(map[string]int64, len(roomMessages))
+	wantLatest := make(map[string]int64, len(roomMessages))
+	for _, room := range roomMessages {
+		first, err := s.RecordRoomMessage(room.cardID, proto.RoomMessage{
+			Room: room.roomID, Kind: proto.RoomMsgUser, Body: "first-" + runID,
+		}, runID)
+		if err != nil {
+			t.Fatalf("写入 PG 房间 %s 的首条消息: %v", room.roomID, err)
+		}
+		eventSeqs = append(eventSeqs, first)
+		latest, err := s.RecordRoomMessage(room.cardID, proto.RoomMessage{
+			Room: room.roomID, Kind: proto.RoomMsgUser, Body: "latest-" + runID,
+		}, runID)
+		if err != nil {
+			t.Fatalf("写入 PG 房间 %s 的最新消息: %v", room.roomID, err)
+		}
+		eventSeqs = append(eventSeqs, latest)
+		afterByRoom[room.roomID] = first
+		wantLatest[room.roomID] = latest
+	}
+
+	baseline, err := s.RoomMessageSnapshotsContext(t.Context(), afterByRoom)
+	if err != nil {
+		t.Fatalf("PG Store 房间摘要查询: %v", err)
+	}
+	assertB409RoomSnapshotWatermarks(t, baseline, afterByRoom, wantLatest)
+
+	noiseSeqs, err := insertB409PGUnrelatedRoomSnapshotRows(t, s, runID, 20_000)
+	if err != nil {
+		t.Fatalf("增加 20k 条 PG 无关事件: %v", err)
+	}
+	eventSeqs = append(eventSeqs, noiseSeqs...)
+	afterGrowth, err := s.RoomMessageSnapshotsContext(t.Context(), afterByRoom)
+	if err != nil {
+		t.Fatalf("增长后 PG Store 房间摘要查询: %v", err)
+	}
+	assertB409RoomSnapshotWatermarks(t, afterGrowth, afterByRoom, wantLatest)
+	if !reflect.DeepEqual(afterGrowth, baseline) {
+		t.Fatalf("增加 20k 条无关事件改变了房间摘要: baseline=%+v after_growth=%+v", baseline, afterGrowth)
+	}
+}
+
+func assertB409RoomSnapshotWatermarks(t *testing.T, snapshots []RoomMessageSnapshot, afterByRoom, wantLatest map[string]int64) {
+	t.Helper()
+	if len(snapshots) != len(afterByRoom) {
+		t.Fatalf("PG 摘要只应返回目标 session/global/card 三个房间: got=%+v", snapshots)
+	}
+	byRoom := snapshotByRoom(snapshots)
+	for roomID, latest := range wantLatest {
+		snapshot, ok := byRoom[roomID]
+		if !ok || snapshot.Latest.Seq != latest || snapshot.MessagesAfter != 1 {
+			t.Errorf("PG 房间 %s 摘要不符: got=%+v want_latest_seq=%d messages_after=1", roomID, snapshot, latest)
+		}
+		if afterByRoom[roomID] <= 0 {
+			t.Errorf("PG 房间 %s 没有正数水位: %d", roomID, afterByRoom[roomID])
+		}
+	}
+}
+
+func insertB409PGUnrelatedRoomSnapshotRows(t *testing.T, s *Store, runID string, count int) ([]int64, error) {
+	t.Helper()
+	tx, err := s.db.BeginTx(t.Context(), nil)
+	if err != nil {
+		return nil, fmt.Errorf("开启 PG 无关事件事务: %w", err)
+	}
+	defer tx.Rollback()
+	rows, err := tx.QueryContext(t.Context(), `INSERT INTO card_events (card_id, type, actor, payload, created_at)
+		SELECT NULL, 'comment', $1::text, jsonb_build_object('room_snapshot_run', $1::text, 'item', n), now()
+		FROM generate_series(1, $2::integer) AS unrelated(n) RETURNING seq`, runID, count)
+	if err != nil {
+		return nil, fmt.Errorf("插入 PG 无关事件: %w", err)
+	}
+	seqs := make([]int64, 0, count)
+	for rows.Next() {
+		var seq int64
+		if err := rows.Scan(&seq); err != nil {
+			rows.Close()
+			return nil, fmt.Errorf("读取 PG 无关事件 seq: %w", err)
+		}
+		seqs = append(seqs, seq)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return nil, fmt.Errorf("遍历 PG 无关事件 seq: %w", err)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, fmt.Errorf("关闭 PG 无关事件结果: %w", err)
+	}
+	if len(seqs) != count {
+		return nil, fmt.Errorf("PG 无关事件行数=%d，期望 %d", len(seqs), count)
+	}
+	if err := tx.Commit(); err != nil {
+		return nil, fmt.Errorf("提交 PG 无关事件: %w", err)
+	}
+	return seqs, nil
 }
 
 func TestRoomHistoryPostgresMatchesWindowContract(t *testing.T) {

@@ -53,7 +53,7 @@ func (s *Store) RoomMessageSnapshotsContext(ctx context.Context, afterByRoom map
 			end = len(roomIDs)
 		}
 		chunk := roomIDs[start:end]
-		query, args := roomMessageSnapshotsQuery(roomExpr, chunk, afterByRoom)
+		query, args := roomMessageSnapshotsQuery(roomExpr, chunk, afterByRoom, s.dialect == dialectPG)
 		rows, err := s.db.QueryContext(ctx, s.q(query), args...)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
@@ -254,11 +254,17 @@ func (s *Store) LatestNeedsEventsContext(ctx context.Context, cardIDs []string) 
 	return out, nil
 }
 
-func roomMessageSnapshotsQuery(roomExpr string, roomIDs []string, afterByRoom map[string]int64) (string, []any) {
+func roomMessageSnapshotsQuery(roomExpr string, roomIDs []string, afterByRoom map[string]int64, castWatermarkToBigint bool) (string, []any) {
 	values := make([]string, 0, len(roomIDs))
 	args := make([]any, 0, len(roomIDs)*2)
+	watermarkExpr := "?"
+	if castWatermarkToBigint {
+		// PostgreSQL resolves a VALUES-only parameter as text unless its type is
+		// explicit, which makes seq > after_seq fail for BIGINT event sequences.
+		watermarkExpr = "CAST(? AS BIGINT)"
+	}
 	for _, roomID := range roomIDs {
-		values = append(values, "(?, ?)")
+		values = append(values, "(?, "+watermarkExpr+")")
 		args = append(args, roomID, afterByRoom[roomID])
 	}
 	query := `WITH target(room_id, after_seq) AS (VALUES ` + strings.Join(values, ",") + `),
