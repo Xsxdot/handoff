@@ -1,0 +1,14 @@
+{"scenario":"cards","http_status":200,"time_total_s":0.012222,"size_bytes":496}
+{"scenario":"sessions","http_status":200,"time_total_s":0.007130,"size_bytes":696}
+{"scenario":"session_detail","http_status":200,"time_total_s":0.003806,"size_bytes":504}
+{"scenario":"rooms","http_status":200,"time_total_s":0.003590,"size_bytes":481}
+{"scenario":"room_messages","http_status":200,"time_total_s":0.001643,"size_bytes":652}
+{"scenario":"room_messages_empty","http_status":200,"time_total_s":0.001397,"size_bytes":16}
+{"scenario":"cards_target_down","http_status":200,"time_total_s":0.006609,"size_bytes":496}
+lock_held=1
+{"scenario":"room_messages_lock_cancel","http_status":000,"time_total_s":0.811396,"size_bytes":0}
+{"scenario":"sessions_collab_fail","http_status":500,"time_total_s":0.005699,"size_bytes":93}
+{"scenario":"rooms_db_down","http_status":500,"time_total_s":0.000732,"size_bytes":96}
+{"scenario":"rooms_recovered","http_status":200,"time_total_s":0.011726,"size_bytes":481}
+{"scenario":"cli_wait_hit","exit_code":0,"time_total_s":.059}
+{"scenario":"cli_wait_empty_timeout","exit_code":124,"time_total_s":1.052}

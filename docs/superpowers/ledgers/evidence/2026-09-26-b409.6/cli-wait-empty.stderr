@@ -1,0 +1,8 @@
+time=2026-09-26T22:49:22.879+08:00 level=INFO msg="session wait 入口" component=cli operation_id=op-07ccf8e5 member=user:nobody since=0 since_set=true timeout=1s follow=false
+time=2026-09-26T22:49:22.900+08:00 level=INFO msg="cards.driver_carrier 列已存在，跳过加列" component=cli
+time=2026-09-26T22:49:22.900+08:00 level=INFO msg="cards.driver_source 列已存在，跳过加列" component=cli
+time=2026-09-26T22:49:22.902+08:00 level=INFO msg=账本库已打开 component=cli dialect=postgres database=handoff_b409_u6_evidence
+time=2026-09-26T22:49:22.905+08:00 level=INFO msg=会话候选读完成 component=cli operation_id=op-07ccf8e5 member=user:nobody from_seq=0 to_seq=6 rows_returned=0 pool_wait_ns=2083 sql_call_ns=1583416 row_read_ns=6875 db_read_ns=1590583 rows_read=0 result_bytes=0 elapsed_ns=1602875
+time=2026-09-26T22:49:23.904+08:00 level=INFO msg="session wait 超时退出" component=cli member=user:nobody timeout=1s
+time=2026-09-26T22:49:23.904+08:00 level=INFO msg="session wait 完成" component=cli operation_id=op-07ccf8e5 command=session_wait member=user:nobody follow=false open_ns=23066542 stdout_bytes=0 elapsed_ns=1025844583 cancel_reason=deadline_exceeded outcome=canceled
+Error: session wait 超时
