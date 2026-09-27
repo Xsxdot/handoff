@@ -675,17 +675,20 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                     className="size-[17px] shrink-0 text-[#16a34a]"
                   />
                   <span className="min-w-0 truncate">{project.name}</span>
-                </span>
-                <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">
                   {/* B369.8：compact 位置状态摘要——「项目优先、位置为状态信息」。
                       位置数 + 断开数（locationProblem 判据），StateDot tone 随之；
-                      明细点 Arrow 展开逐台看。桌面不渲染（铺开面自答这个问题）。 */}
+                      明细点 Arrow 展开逐台看。放在名旁而不是右侧簇：右簇还要给
+                      B369.7 的「工作项」绝对定位钮（right-20）让位，摘要在簇内
+                      会伸进钮区（390 目检项 1 的挤压）；名旁随 min-w-0 收缩，
+                      超长时项目名先截断。桌面不渲染（铺开面自答这个问题）。 */}
                   {compact && project.locations.length > 0 && (
-                    <span data-testid="project-loc-summary" className="flex items-center gap-1 text-[13px]">
+                    <span data-testid="project-loc-summary" className="flex shrink-0 items-center gap-1 text-[13px] text-muted-foreground">
                       <StateDot tone={locationProblemCount > 0 ? 'failed' : 'active'} />
                       <span>{project.locations.length} 处位置{locationProblemCount > 0 ? ` · ${locationProblemCount} 处断开` : ''}</span>
                     </span>
                   )}
+                </span>
+                <span className="flex shrink-0 items-center gap-[7px] text-[15px] font-medium text-muted-foreground">
                   <span data-testid="project-running-count" className="flex items-center gap-[7px]">
                     <img src={dispatchTaskUrl} className="size-4" alt="" />
                     <span className="text-[16px]">{pCounts.running + pCounts.pending + pCounts.previews}</span>
