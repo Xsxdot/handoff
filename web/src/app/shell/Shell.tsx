@@ -1060,7 +1060,17 @@ export function Shell() {
                     taskJumpHref={taskJumpHref}
                   />
                 )}
-                {nav.tab === 'projects' && (projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>)}
+                {nav.tab === 'projects' && (
+                  // B369.7 验收实走修正：ProjectTree 根是 flex-1 三段式（树独滚、
+                  // 底部入口行与解释文案钉底），只在有界的 flex 父级里成立；
+                  // mobile-home 的滚动容器是普通块级，不包裹的话页脚会被 16 个
+                  // 项目推到 scrollHeight 底（实测 note top:6454 / 视口 844），
+                  // 「隐藏并给出解释」的解释永远不在视口内。h-full 让 ProjectTree
+                  // 自带的三段式在紧凑视口照常钉底；桌面 aside 不经过此处，零接触。
+                  <div className="flex h-full min-h-0 flex-col">
+                    {projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>}
+                  </div>
+                )}
                 {nav.tab === 'settings' && <SettingsPage onClose={() => nav.setTab('sessions')} />}
               </div>
               <MobileTabBar
