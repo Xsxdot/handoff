@@ -872,4 +872,34 @@ describe('TerminalTab 建连时重申尺寸', () => {
     await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
     expect(screen.queryByTestId('mobile-keybar')).toBeNull()
   })
+
+  // —— B369.10：粘滞 Ctrl（每终端独立 armed，state 归 TerminalTab）——
+  it('点 ctrl 键位翻转 armed：on 态高亮类在场/缺席', async () => {
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} keybar />)
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    const ctrl = screen.getByTestId('keybar-ctrl')
+    expect(ctrl.className).not.toContain('bg-[#636366]')
+    fireEvent.click(ctrl)
+    expect(ctrl.className).toContain('bg-[#636366]')
+    fireEvent.click(ctrl)
+    expect(ctrl.className).not.toContain('bg-[#636366]')
+  })
+
+  it('armed 下点方向 → 发 CSI 修饰序列并解除 armed', async () => {
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} keybar />)
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByTestId('keybar-ctrl'))
+    fireEvent.click(screen.getByTestId('keybar-up'))
+    expect(termInstance.input).toHaveBeenLastCalledWith('\x1b[1;5A')
+    expect(screen.getByTestId('keybar-ctrl').className).not.toContain('bg-[#636366]')
+  })
+
+  it('armed 下点 ctrl-c → 仍直发 \\x03 且 armed 保持（两通道互不污染）', async () => {
+    render(<TerminalTab base={WS} seq={1} spawn onSession={vi.fn()} keybar />)
+    await waitFor(() => expect(createPtySession).toHaveBeenCalledTimes(1))
+    fireEvent.click(screen.getByTestId('keybar-ctrl'))
+    fireEvent.click(screen.getByTestId('keybar-ctrl-c'))
+    expect(termInstance.input).toHaveBeenLastCalledWith('\x03')
+    expect(screen.getByTestId('keybar-ctrl').className).toContain('bg-[#636366]')
+  })
 })
