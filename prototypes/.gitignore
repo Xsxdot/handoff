@@ -2,4 +2,6 @@
 *
 !base/
 !base/**
+!mobile-app/
+!mobile-app/**
 !.gitignore

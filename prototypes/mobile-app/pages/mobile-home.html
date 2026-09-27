@@ -1,0 +1,174 @@
+<!doctype html>
+<!--
+  移动端原型屏 1:家 = 会话列表(B358「会话即工作单元」的移动端镜像)。
+  IA 依据:prototypes/b358-session-groups/pages/sessions-v2.html(B361 定稿)——
+  会话列表为家,「需要你」可筛选;桌面端的项目树在移动端独立成「项目」tab。
+  流程:点会话行 → mobile-session.html。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>会话 · 移动端原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #e9e9ec; }
+  .stage { max-width: 1120px; margin: 0 auto; padding: 20px 24px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+  .row { display: flex; gap: 28px; align-items: flex-start; }
+
+  .phone { width: 390px; flex-shrink: 0; background: #111; border-radius: 44px; padding: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+  .screen { background: #fff; border-radius: 34px; overflow: hidden; height: 800px; display: flex; flex-direction: column; }
+  .notch { height: 30px; display: flex; align-items: center; justify-content: center; }
+  .notch::after { content: ""; width: 110px; height: 22px; background: #111; border-radius: 999px; }
+
+  .apphead { padding: 4px 16px 10px; display: flex; align-items: center; gap: 10px; }
+  .apphead .t { font-size: 24px; font-weight: 700; flex: 1; }
+  .apphead .new { font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 4px 10px; color: var(--muted-foreground); }
+  .filter { margin: 0 16px 8px; display: flex; gap: 8px; }
+  .filter .f { font-size: 12px; padding: 4px 10px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted-foreground); }
+  .filter .f.on { background: #fef3c7; border-color: #fde68a; color: var(--amber); font-weight: 600; }
+
+  .feed { flex: 1; overflow-y: auto; }
+  .conv { display: flex; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--muted); text-decoration: none; color: inherit; align-items: center; }
+  .conv.needs { background: #fffbeb; }
+  .conv-avatar { width: 46px; height: 46px; border-radius: 12px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: 700; position: relative; }
+  .conv-avatar .abadge { position: absolute; top: -5px; right: -5px; background: var(--destructive); color: #fff; font-size: 10px; border-radius: 999px; padding: 1px 5px; box-shadow: 0 0 0 2px #fff; }
+  .conv-main { flex: 1; min-width: 0; }
+  .conv-top { display: flex; align-items: baseline; gap: 8px; }
+  .conv-name { font-size: 14.5px; font-weight: 600; flex: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .conv-time { font-size: 11px; color: var(--muted-foreground); flex-shrink: 0; }
+  .conv-preview { font-size: 12.5px; color: var(--muted-foreground); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; margin-top: 3px; }
+  .conv-tag { color: var(--amber); font-weight: 600; }
+  .conv-sub { display: flex; align-items: center; gap: 6px; margin-top: 5px; }
+  .sx-members { display: flex; align-items: center; }
+  .sx-members .mv { width: 18px; height: 18px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 9px; font-weight: 600; margin-left: -5px; box-shadow: 0 0 0 2px #fff; }
+  .sx-members .mv:first-child { margin-left: 0; }
+  .conv-owner { font-size: 11px; color: var(--muted-foreground); }
+
+  .tabbar { display: flex; border-top: 1px solid var(--border); background: #fff; padding: 6px 0 14px; }
+  .tabbar .tb { flex: 1; text-align: center; font-size: 11px; color: var(--muted-foreground); padding-top: 4px; text-decoration: none; }
+  .tabbar .tb .ic { font-size: 19px; display: block; position: relative; width: fit-content; margin: 0 auto; }
+  .tabbar .tb.on { color: var(--foreground); font-weight: 600; }
+  .tabbar .tb .ic .bd { position: absolute; top: -4px; right: -14px; background: var(--destructive); color: #fff; font-size: 9px; border-radius: 999px; padding: 0 4px; }
+
+  .notes { flex: 1; min-width: 0; }
+  .notes h2 { font-size: 16px; margin: 4px 0 4px; }
+  .notes .sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .note { display: flex; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.7; }
+  .note .no { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ref { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 10px; text-align: center; line-height: 16px; vertical-align: 2px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html">方案一图流</a>
+    <a href="mobile-home.html" class="active">会话</a>
+    <a href="mobile-cards.html">卡</a>
+    <a href="mobile-projects.html">项目</a>
+    <a href="mobile-pairing.html">设置</a>
+  </div>
+  <div class="row">
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="apphead">
+          <div class="t">会话<span class="ref">③</span></div>
+          <div class="new">＋ 新建会话</div>
+        </div>
+        <div class="filter" id="filter">
+          <span class="f on" data-f="needs">⚑ 需要你 2</span>
+          <span class="f" data-f="all">全部</span>
+        </div>
+        <div class="feed">
+
+          <a class="conv needs" href="mobile-session.html">
+            <div class="conv-avatar" style="background:#dbeafe">B233<span class="abadge">3</span></div>
+            <div class="conv-main">
+              <div class="conv-top"><div class="conv-name">架构物理化(B233.1–B233.17)<span class="ref">①</span></div><div class="conv-time">12:04</div></div>
+              <div class="conv-preview"><span class="conv-tag">需要你</span> B233.17 needs_human 亮起 · 等裁决</div>
+              <div class="conv-sub">
+                <div class="sx-members"><span class="mv" style="background:#fde68a">我</span><span class="mv" style="background:#dbeafe">CL</span><span class="mv" style="background:#dcfce7">14</span><span class="mv" style="background:#ede9fe">16</span><span class="mv" style="background:#fce7f3">17</span></div>
+                <span class="conv-owner">群主:Claude 桌面端</span>
+              </div>
+            </div>
+          </a>
+
+          <a class="conv needs" href="mobile-session.html">
+            <div class="conv-avatar" style="background:#fee2e2">B320<span class="abadge">1</span></div>
+            <div class="conv-main">
+              <div class="conv-top"><div class="conv-name">桌面端体验</div><div class="conv-time">11:20</div></div>
+              <div class="conv-preview"><span class="conv-tag">需要你</span> opencode 请求权限 git push<span class="ref">④</span></div>
+              <div class="conv-sub">
+                <div class="sx-members"><span class="mv" style="background:#fde68a">我</span><span class="mv" style="background:#fee2e2">32</span></div>
+                <span class="conv-owner">群主:我</span>
+              </div>
+            </div>
+          </a>
+
+          <a class="conv" href="mobile-session.html">
+            <div class="conv-avatar" style="background:#dcfce7">B9</div>
+            <div class="conv-main">
+              <div class="conv-top"><div class="conv-name">跨机执行面(B233.9)</div><div class="conv-time">昨天</div></div>
+              <div class="conv-preview">Claude:隔离环境已跑满,证据落 notes</div>
+              <div class="conv-sub">
+                <div class="sx-members"><span class="mv" style="background:#dbeafe">CL</span><span class="mv" style="background:#dcfce7">9</span></div>
+                <span class="conv-owner">群主:Claude 桌面端</span>
+              </div>
+            </div>
+          </a>
+
+          <a class="conv" href="mobile-session.html">
+            <div class="conv-avatar" style="background:#f3e8ff">B93</div>
+            <div class="conv-main">
+              <div class="conv-top"><div class="conv-name">benchmarking</div><div class="conv-time">周一</div></div>
+              <div class="conv-preview">我:基准评测的结果归档到 ledgers</div>
+              <div class="conv-sub">
+                <div class="sx-members"><span class="mv" style="background:#fde68a">我</span><span class="mv" style="background:#f3e8ff">93</span></div>
+                <span class="conv-owner">群主:我</span>
+              </div>
+            </div>
+          </a>
+
+        </div>
+        <div class="tabbar">
+          <a class="tb on" href="mobile-home.html"><span class="ic">💬<span class="bd">2</span></span>会话</a>
+          <a class="tb" href="mobile-cards.html"><span class="ic">▤<span class="bd">2</span></span>卡<span class="ref">②</span></a>
+          <a class="tb" href="mobile-projects.html"><span class="ic">🗂</span>项目</a>
+          <a class="tb" href="mobile-pairing.html"><span class="ic">⚙</span>设置</a>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>家 = 会话列表(B358 之后)</h2>
+      <p class="sub">B358/B361 把工作单元从卡翻转到会话;移动端的首屏跟着走,不再造一个「任务看板」。</p>
+      <div class="note"><div class="no">①</div><div><b>「需要你」是筛选器,不是另一个列表。</b>等待审批/回答的会话染琥珀底、预览行带标签,与桌面端 sessions-v2 同一语言。点行进入会话(下一屏)。</div></div>
+      <div class="note"><div class="no">②</div><div><b>「卡」是第四个一级 tab(2026-09-13 你的拍板)。</b>底栏:会话 | 卡 | 项目 | 设置——会话是执行面,卡是工作项面(桌面 dock ▤ 工作项账本的镜像),平级双跳;「项目」tab 的裁决不变:机器不是一等公民,项目才是。</div></div>
+      <div class="note"><div class="no">③</div><div><b>这页全是存量数据。</b>会话列表、未读、需要你、成员——B358 的 <code>/api</code> 已经供得上;移动端的活是响应式镜像,不是新接口。</div></div>
+      <div class="note"><div class="no">④</div><div><b>审批不再流落孤岛。</b>旧稿我做过一个独立「任务面板」,那是 B358 之前的语言;现在等待态挂在会话上,上下文(哪张卡、谁群主、什么冲突)一眼俱全。</div></div>
+    </div>
+  </div>
+</div>
+<script>
+  // 「需要你/全部」筛选(mock,与卡屏同一交互深度)
+  document.querySelectorAll('#filter .f').forEach((chip) => {
+    chip.addEventListener('click', () => {
+      document.querySelectorAll('#filter .f').forEach((c) => c.classList.remove('on'));
+      chip.classList.add('on');
+      const needsOnly = chip.dataset.f === 'needs';
+      document.querySelectorAll('.feed .conv').forEach((row) => {
+        row.style.display = (needsOnly && !row.classList.contains('needs')) ? 'none' : '';
+      });
+    });
+  });
+</script>
+</body>
+</html>

@@ -1,0 +1,1026 @@
+<!doctype html>
+<!--
+  项目树原型：复现 handoff 项目导航的「项目 > 任务 > 目录」层级。
+
+  职责：
+    - 提供一个可扫读、可折叠、可搜索的左侧项目导航原型
+    - 仅覆盖选定视觉稿中的左栏，右侧工作区保留为空白
+  - 通过静态图标资产渲染真实线性图标；派发任务图标使用用户提供的参考图
+
+  边界：
+    - 不连接真实任务流、机器服务或后端 API
+    - 不实现终端、文件树、看板等右侧工作区功能
+    - 不改变真实 web/ 前端，只作为 prototypes/base 下的独立形态稿
+-->
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>handoff · 项目导航原型</title>
+    <style>
+      :root {
+        --background: #ffffff;
+        --foreground: #171717;
+        --muted-foreground: #737373;
+        --subtle-foreground: #a3a3a3;
+        --border: #e5e5e5;
+        --rail: #dedede;
+        --panel-tint: #f7f7f7;
+        --selected: #ededed;
+        --hover: #fafafa;
+        --icon-surface: #f1f1f1;
+        --green: #16a34a;
+        --sidebar-width: 456px;
+        --font-sans: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      }
+
+      * { box-sizing: border-box; }
+
+      html, body { min-height: 100%; }
+
+      body {
+        margin: 0;
+        min-width: 320px;
+        min-height: 100vh;
+        color: var(--foreground);
+        background: var(--background);
+        font-family: var(--font-sans);
+        font-size: 14px;
+        -webkit-font-smoothing: antialiased;
+      }
+
+      button, input { font: inherit; }
+
+      button { color: inherit; }
+
+      .app-shell {
+        display: flex;
+        min-height: 100vh;
+        background: var(--background);
+      }
+
+      .sidebar {
+        display: flex;
+        flex: 0 0 var(--sidebar-width);
+        flex-direction: column;
+        min-height: 100vh;
+        border-right: 1px solid var(--border);
+        background: var(--background);
+      }
+
+      .sidebar-scroll {
+        flex: 1;
+        min-height: 0;
+        overflow-y: auto;
+        padding: 13px 18px 20px 26px;
+        scrollbar-width: none;
+      }
+      .sidebar-scroll::-webkit-scrollbar { display: none; }
+
+      .search {
+        display: flex;
+        align-items: center;
+        gap: 9px;
+        min-height: 39px;
+        padding: 0 10px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--background);
+        color: var(--muted-foreground);
+        transition: border-color 140ms ease, box-shadow 140ms ease;
+      }
+
+      .search:focus-within {
+        border-color: #bdbdbd;
+        box-shadow: 0 0 0 3px rgba(23, 23, 23, 0.06);
+      }
+
+      .search .icon {
+        flex: 0 0 auto;
+        color: #525252;
+      }
+
+      .search input {
+        width: 100%;
+        min-width: 0;
+        padding: 0;
+        border: 0;
+        outline: 0;
+        background: transparent;
+        color: var(--foreground);
+        font-size: 14px;
+      }
+
+      .search input::placeholder { color: var(--muted-foreground); }
+
+      .kbd {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        min-height: 22px;
+        padding: 0 6px;
+        border: 1px solid var(--border);
+        border-radius: 5px;
+        color: var(--muted-foreground);
+        background: #fafafa;
+        font-size: 12px;
+        line-height: 1;
+      }
+
+      .project-count {
+        display: none;
+      }
+
+      #project-list {
+        position: relative;
+        margin-top: 23px;
+        padding-left: 16px;
+      }
+
+      /* 主树干表达项目之间的同级关系；项目内部再由 project-content 另起一级。 */
+      #project-list::before {
+        position: absolute;
+        top: 16px;
+        bottom: 30px;
+        left: 0;
+        width: 1px;
+        background: var(--rail);
+        content: "";
+      }
+
+      .project-group {
+        position: relative;
+        margin: 0 0 7px;
+        border-bottom: 1px solid var(--border);
+        padding: 0 0 9px;
+      }
+
+      .project-group:last-child {
+        margin-bottom: 0;
+        border-bottom: 0;
+      }
+
+      .project-head,
+      .task-row,
+      .directory-row {
+        width: 100%;
+        border: 0;
+        background: transparent;
+        text-align: left;
+        cursor: pointer;
+      }
+
+      /* 鼠标选中任务时不显示浏览器默认蓝框；键盘导航仍保留可辨识的焦点环。 */
+      .project-head:focus:not(:focus-visible),
+      .task-row:focus:not(:focus-visible),
+      .directory-row:focus:not(:focus-visible),
+      .directory-child:focus:not(:focus-visible) { outline: none; }
+
+      .project-head:focus-visible,
+      .task-row:focus-visible { outline: 2px solid #bdbdbd; outline-offset: 1px; }
+
+      /* 目录行的 hover 背景本身就是状态反馈，避免鼠标操作再叠加浏览器焦点框。 */
+      .directory-row:focus,
+      .directory-child:focus { outline: none; }
+
+      .project-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 10px;
+        min-height: 31px;
+        padding: 0;
+        border-radius: 8px;
+        font-size: 18px;
+        font-weight: 400;
+      }
+
+      .project-head:hover { background: #fafafa; }
+
+      .project-head-main {
+        display: flex;
+        min-width: 0;
+        align-items: center;
+        gap: 10px;
+      }
+
+      .project-head-main > .icon { width: 17px; height: 17px; }
+
+      .project-head-main > span:nth-child(2) {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .project-head .project-number {
+        color: var(--muted-foreground);
+        font-size: 16px;
+        font-weight: 500;
+      }
+
+      .project-node {
+        position: absolute;
+        top: 11px;
+        left: -20px;
+        width: 9px;
+        height: 9px;
+        border: 2px solid #a3a3a3;
+        border-radius: 50%;
+        background: var(--background);
+        content: "";
+      }
+
+      .project-group:first-child .project-node {
+        border-color: #737373;
+      }
+
+      .project-meta {
+        display: flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 7px;
+        color: var(--muted-foreground);
+        font-size: 15px;
+        font-weight: 500;
+      }
+
+      .project-meta .icon { color: #737373; }
+
+      .project-meta .project-task-icon {
+        flex: 0 0 16px;
+        width: 16px;
+        height: 16px;
+      }
+
+      .project-content {
+        position: relative;
+        margin-left: 7px;
+        padding: 6px 0 0 16px;
+      }
+
+      .project-content::before {
+        position: absolute;
+        top: 0;
+        bottom: 25px;
+        left: 0;
+        width: 1px;
+        background: var(--rail);
+        content: "";
+      }
+
+      .section-label {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 24px;
+        color: var(--muted-foreground);
+        font-size: 15px;
+        font-weight: 500;
+      }
+
+      .tasks-stack {
+        position: relative;
+        margin: 7px 0 8px;
+      }
+
+      /* 任务组空状态：没有任何进行中的东西时占住节奏，别让空白像渲染缺了什么 */
+      .task-empty {
+        display: flex;
+        align-items: center;
+        min-height: 30px;
+        padding: 0 8px;
+        color: var(--muted-foreground);
+        opacity: 0.7;
+        font-size: 13px;
+      }
+
+      .task-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 34px;
+        padding: 2px 8px 2px 8px;
+        border-radius: 8px;
+        transition: background 140ms ease, color 140ms ease;
+      }
+
+      .task-row:hover,
+      .task-row.is-open { background: var(--hover); }
+
+      .task-row.is-selected {
+        background: var(--selected);
+      }
+
+      .task-icon {
+        display: inline-flex;
+        flex: 0 0 22px;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        color: #666666;
+      }
+
+      .task-icon .icon { width: 17px; height: 17px; }
+
+      .task-copy {
+        display: flex;
+        min-width: 0;
+        flex: 1;
+        align-items: baseline;
+        gap: 8px;
+      }
+
+      .task-name {
+        flex: 1;
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 15px;
+        font-weight: 500;
+      }
+
+      .machine-meta {
+        display: flex;
+        flex: 0 0 auto;
+        margin-left: auto;
+        align-items: center;
+        gap: 7px;
+        max-width: 88px;
+        overflow: hidden;
+        color: var(--muted-foreground);
+        font-size: 14px;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .directory-group {
+        margin-top: 7px;
+        border-radius: 0;
+        background: transparent;
+        padding: 0;
+      }
+
+      .directory-group .section-label {
+        padding: 0;
+      }
+
+      .directory-list {
+        margin-top: 8px;
+        border-radius: 11px;
+        background: var(--panel-tint);
+        padding: 4px 9px 5px;
+      }
+
+      .directory-item { min-width: 0; }
+
+      .directory-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        min-height: 32px;
+        padding: 2px 4px;
+        border-radius: 7px;
+      }
+
+      .directory-row:hover { background: rgba(255, 255, 255, 0.82); }
+
+      .directory-row.is-expanded { background: rgba(255, 255, 255, 0.82); }
+
+      .directory-children {
+        margin: 0 4px 4px 33px;
+        border-left: 1px solid #dedede;
+        padding-left: 4px;
+      }
+
+      .directory-child {
+        display: flex;
+        align-items: center;
+        width: 100%;
+        min-height: 30px;
+        margin: 0;
+        border: 0;
+        border-radius: 7px;
+        padding: 2px 8px 2px 9px;
+        background: transparent;
+        color: var(--muted-foreground);
+        text-align: left;
+        font-size: 14px;
+        cursor: pointer;
+      }
+
+      .directory-child:hover,
+      .directory-child.is-selected { background: var(--hover); }
+
+      .directory-child-name {
+        min-width: 0;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+      }
+
+      .directory-chevron {
+        display: inline-flex;
+        flex: 0 0 14px;
+        align-items: center;
+        justify-content: center;
+        width: 14px;
+        height: 18px;
+      }
+
+      .directory-chevron .icon { width: 14px; height: 14px; }
+
+      .directory-actions {
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 9px;
+        margin-left: auto;
+        color: var(--muted-foreground);
+        opacity: 0;
+        pointer-events: none;
+        transition: opacity 140ms ease;
+      }
+
+      .directory-row:hover .directory-actions,
+      .directory-row:focus-visible .directory-actions,
+      .directory-child:hover .directory-actions,
+      .directory-child:focus-visible .directory-actions,
+      .directory-child.is-selected .directory-actions { opacity: 1; }
+
+      .directory-actions .icon { width: 15px; height: 15px; }
+
+      .status-dot {
+        flex: 0 0 auto;
+        width: 8px;
+        height: 8px;
+        border-radius: 50%;
+        background: var(--green);
+      }
+
+      .directory-icon {
+        display: inline-flex;
+        flex: 0 0 22px;
+        align-items: center;
+        justify-content: center;
+        width: 22px;
+        height: 22px;
+        color: #666666;
+      }
+
+      .directory-icon .icon { width: 17px; height: 17px; }
+
+      .directory-name {
+        min-width: 0;
+        flex: 1;
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+        font-size: 15px;
+      }
+
+      .icon {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        width: 18px;
+        height: 18px;
+        line-height: 0;
+      }
+
+      .icon img {
+        display: block;
+        width: 100%;
+        height: 100%;
+      }
+
+      .project-head .icon:first-child { color: var(--green); }
+
+      .project-head > .icon { color: #737373; }
+
+      .empty-state {
+        display: none;
+        padding: 28px 12px;
+        color: var(--muted-foreground);
+        text-align: center;
+        font-size: 13px;
+      }
+
+      .workspace {
+        display: flex;
+        flex: 1;
+        min-width: 0;
+        min-height: 100vh;
+        flex-direction: column;
+        background: var(--background);
+      }
+
+      /* 右侧只保留标签栏的视觉样式；下面的工作区保持空白，避免把原型范围扩成真实内容页。 */
+      .workspace-chrome {
+        flex: 0 0 auto;
+        border-bottom: 1px solid #e7e7e7;
+        background: #ffffff;
+      }
+
+      .workspace-context {
+        display: flex;
+        min-width: 0;
+        height: 28px;
+        align-items: center;
+        border-bottom: 1px solid #e7e7e7;
+        padding: 0 18px;
+        background: #ffffff;
+        color: #7c7c7c;
+        font-size: 13px;
+        line-height: 1;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .workspace-tabbar {
+        display: flex;
+        min-width: 0;
+        height: 44px;
+        align-items: stretch;
+        gap: 0;
+        overflow-x: auto;
+        overflow-y: hidden;
+        padding: 0 8px;
+        background: #fafaf9;
+        scrollbar-width: none;
+      }
+
+      .workspace-tabbar::-webkit-scrollbar { display: none; }
+
+      .workspace-tab {
+        position: relative;
+        display: inline-flex;
+        flex: 0 0 auto;
+        align-items: center;
+        gap: 9px;
+        min-width: 0;
+        height: 100%;
+        border: 0;
+        border-right: 0;
+        padding: 0 15px;
+        background: transparent;
+        color: #6f6f6f;
+        font-size: 14px;
+        font-weight: 450;
+        white-space: nowrap;
+        cursor: pointer;
+        transition: background 140ms ease, color 140ms ease;
+      }
+
+      .workspace-tab:hover {
+        background: #efefee;
+        color: #333333;
+      }
+
+      /* 参考图使用的是短的节奏线，不是把 tab 切成一格一格的完整边框。 */
+      .workspace-tab::after {
+        position: absolute;
+        top: 50%;
+        right: 0;
+        width: 1px;
+        height: 20px;
+        transform: translateY(-50%);
+        background: #e1e1e1;
+        content: "";
+      }
+
+      .workspace-tab.is-active {
+        align-self: stretch;
+        height: 100%;
+        padding: 0 18px;
+        background: transparent;
+        color: #2a2a2a;
+        font-weight: 600;
+      }
+
+      .workspace-tab-surface {
+        display: inline-flex;
+        height: calc(100% - 12px);
+        align-items: center;
+        gap: 9px;
+        border-radius: 10px;
+        padding: 0 9px;
+        background: #f0f0ef;
+      }
+
+      /* 鼠标点击后的焦点不应变成第二层边框；激活态本身已经承担状态表达。 */
+      .workspace-tab:focus { outline: none; }
+
+      .workspace-tab .tab-icon {
+        display: inline-flex;
+        flex: 0 0 15px;
+        width: 15px;
+        height: 15px;
+        align-items: center;
+        justify-content: center;
+        opacity: 0.85;
+      }
+
+      .workspace-tab .tab-icon img {
+        width: 15px;
+        height: 15px;
+        object-fit: contain;
+      }
+
+      .workspace-tab-label {
+        max-width: 230px;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }
+
+      .workspace-tab-close {
+        display: inline-flex;
+        flex: 0 0 15px;
+        width: 15px;
+        height: 15px;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: #777777;
+        cursor: pointer;
+        opacity: 0.9;
+      }
+
+      .workspace-tab-close:hover { color: #222222; }
+
+      .workspace-tab-close .icon {
+        width: 13px;
+        height: 13px;
+      }
+
+      .workspace-tab-add {
+        display: inline-flex;
+        flex: 0 0 42px;
+        align-items: center;
+        justify-content: center;
+        border: 0;
+        padding: 0;
+        background: transparent;
+        color: #737373;
+        cursor: pointer;
+      }
+
+      .workspace-tab-add:hover { background: #f1f1f0; color: #2f2f2f; }
+
+      .workspace-tab-add .icon {
+        width: 16px;
+        height: 16px;
+      }
+
+      .workspace-empty {
+        flex: 1;
+        min-height: 0;
+        background: var(--background);
+      }
+
+      @media (max-width: 720px) {
+        .app-shell { display: block; }
+
+        .sidebar {
+          width: 100%;
+          min-height: 100vh;
+          border-right: 0;
+        }
+
+        .workspace { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar" aria-label="项目导航">
+        <div class="sidebar-scroll">
+          <label class="search" for="project-search">
+            <span class="icon" data-icon="search" aria-hidden="true"></span>
+            <input id="project-search" type="search" placeholder="搜索项目、机器或任务" autocomplete="off" />
+            <span class="kbd" aria-hidden="true">⌘K</span>
+          </label>
+
+          <div class="project-count"><span>项目</span><span id="project-count-value">3</span></div>
+
+          <div id="project-list">
+            <section class="project-group" data-project-group data-search="handoff 你是 charter 流程的节点 bash main b264 标签组与分屏 tabs.ts 本机 linux-01">
+              <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
+                <span class="project-node" aria-hidden="true"></span>
+                <span class="project-head-main">
+                  <span class="icon" data-icon="folder" aria-hidden="true"></span>
+                  <span>handoff</span>
+                </span>
+                <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">3</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
+              </button>
+              <div class="project-content">
+                <div class="tasks-stack">
+                  <button class="task-row is-selected is-open" type="button" aria-current="true" data-open="true" data-search="你是 charter 流程的节点 本机">
+                    <span class="task-icon"><span class="icon" data-icon="dispatch-task" aria-hidden="true"></span></span>
+                    <span class="task-copy"><span class="task-name">你是 charter 流程的节点...</span><span class="machine-meta"><span class="status-dot" aria-hidden="true"></span><span>本机</span></span></span>
+                  </button>
+                  <button class="task-row is-open" type="button" data-open="true" data-search="bash main 2 本机">
+                    <span class="task-icon"><span class="icon" data-icon="terminal" aria-hidden="true"></span></span>
+                    <span class="task-copy"><span class="task-name">bash · main (2)</span><span class="machine-meta"><span class="status-dot" aria-hidden="true"></span><span>本机</span></span></span>
+                  </button>
+                  <button class="task-row" type="button" data-search="B264 标签组与分屏 本机">
+                    <span class="task-icon"><span class="icon" data-icon="dispatch-task" aria-hidden="true"></span></span>
+                    <span class="task-copy"><span class="task-name">B264 标签组与分屏</span><span class="machine-meta"><span class="status-dot" aria-hidden="true"></span><span>本机</span></span></span>
+                  </button>
+                  <button class="task-row" type="button" data-search="tabs.ts 本机">
+                    <span class="task-icon"><span class="icon" data-icon="file-text" aria-hidden="true"></span></span>
+                    <span class="task-copy"><span class="task-name">tabs.ts</span><span class="machine-meta"><span class="status-dot" aria-hidden="true"></span><span>本机</span></span></span>
+                  </button>
+                </div>
+                <div class="directory-group">
+                  <div class="section-label"><span>目录</span></div>
+                  <div class="directory-list">
+                    <div class="directory-item" data-directory-item>
+                      <button class="directory-row" type="button" aria-expanded="false" data-toggle-directory data-search="本机 handoff">
+                        <span class="directory-chevron"><span class="icon" data-icon="chevron-right" data-directory-chevron aria-hidden="true"></span></span><span class="directory-icon"><span class="icon" data-icon="monitor" aria-hidden="true"></span></span><span class="status-dot" aria-hidden="true"></span><span class="directory-name">本机</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span><span class="icon" data-icon="plus"></span></span>
+                      </button>
+                      <div class="directory-children" hidden>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">master</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">eval/batch3</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                      </div>
+                    </div>
+                    <div class="directory-item" data-directory-item>
+                      <button class="directory-row" type="button" aria-expanded="false" data-toggle-directory data-search="linux-01 handoff">
+                        <span class="directory-chevron"><span class="icon" data-icon="chevron-right" data-directory-chevron aria-hidden="true"></span></span><span class="directory-icon"><span class="icon" data-icon="server" aria-hidden="true"></span></span><span class="status-dot" aria-hidden="true"></span><span class="directory-name">linux-01</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span><span class="icon" data-icon="plus"></span></span>
+                      </button>
+                      <div class="directory-children" hidden>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">master</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">eval/batch3</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="project-group" data-project-group data-search="benchmarking linux-01 本机">
+              <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
+                <span class="project-node" aria-hidden="true"></span>
+                <span class="project-head-main">
+                  <span class="icon" data-icon="folder" aria-hidden="true"></span>
+                  <span>benchmarking</span>
+                </span>
+                <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">0</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
+              </button>
+              <div class="project-content">
+                <div class="tasks-stack">
+                  <p class="task-empty">暂无进行中的任务</p>
+                </div>
+                <div class="directory-group">
+                  <div class="section-label"><span>目录</span></div>
+                  <div class="directory-list">
+                    <div class="directory-item" data-directory-item>
+                      <button class="directory-row" type="button" aria-expanded="false" data-toggle-directory data-search="本机 benchmarking">
+                        <span class="directory-chevron"><span class="icon" data-icon="chevron-right" data-directory-chevron aria-hidden="true"></span></span><span class="directory-icon"><span class="icon" data-icon="monitor" aria-hidden="true"></span></span><span class="status-dot" aria-hidden="true"></span><span class="directory-name">本机</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span><span class="icon" data-icon="plus"></span></span>
+                      </button>
+                      <div class="directory-children" hidden>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">master</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">eval/batch3</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                      </div>
+                    </div>
+                    <div class="directory-item" data-directory-item>
+                      <button class="directory-row" type="button" aria-expanded="false" data-toggle-directory data-search="linux-01 benchmarking">
+                        <span class="directory-chevron"><span class="icon" data-icon="chevron-right" data-directory-chevron aria-hidden="true"></span></span><span class="directory-icon"><span class="icon" data-icon="server" aria-hidden="true"></span></span><span class="status-dot" aria-hidden="true"></span><span class="directory-name">linux-01</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span><span class="icon" data-icon="plus"></span></span>
+                      </button>
+                      <div class="directory-children" hidden>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">master</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">eval/batch3</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="project-group" data-project-group data-search="charter bash master 5 C1.9 图下钻 本机 linux-01">
+              <button class="project-head" type="button" aria-expanded="true" data-toggle-project>
+                <span class="project-node" aria-hidden="true"></span>
+                <span class="project-head-main">
+                  <span class="icon" data-icon="folder" aria-hidden="true"></span>
+                  <span>charter</span>
+                </span>
+                <span class="project-meta"><span class="icon project-task-icon" data-icon="dispatch-task" aria-hidden="true"></span><span class="project-number">2</span><span class="icon" data-icon="chevron-down" data-toggle-chevron aria-hidden="true"></span></span>
+              </button>
+              <div class="project-content">
+                <div class="tasks-stack">
+                  <button class="task-row" type="button" data-search="bash master 5 本机">
+                    <span class="task-icon"><span class="icon" data-icon="terminal" aria-hidden="true"></span></span>
+                    <span class="task-copy"><span class="task-name">bash · master (5)</span><span class="machine-meta"><span class="status-dot" aria-hidden="true"></span><span>本机</span></span></span>
+                  </button>
+                  <button class="task-row" type="button" data-search="C1.9 图下钻 本机">
+                    <span class="task-icon"><span class="icon" data-icon="dispatch-task" aria-hidden="true"></span></span>
+                    <span class="task-copy"><span class="task-name">C1.9 图下钻</span><span class="machine-meta"><span class="status-dot" aria-hidden="true"></span><span>本机</span></span></span>
+                  </button>
+                </div>
+                <div class="directory-group">
+                  <div class="section-label"><span>目录</span></div>
+                  <div class="directory-list">
+                    <div class="directory-item" data-directory-item>
+                      <button class="directory-row" type="button" aria-expanded="false" data-toggle-directory data-search="本机 charter">
+                        <span class="directory-chevron"><span class="icon" data-icon="chevron-right" data-directory-chevron aria-hidden="true"></span></span><span class="directory-icon"><span class="icon" data-icon="monitor" aria-hidden="true"></span></span><span class="status-dot" aria-hidden="true"></span><span class="directory-name">本机</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span><span class="icon" data-icon="plus"></span></span>
+                      </button>
+                      <div class="directory-children" hidden>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">master</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">eval/batch3</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                      </div>
+                    </div>
+                    <div class="directory-item" data-directory-item>
+                      <button class="directory-row" type="button" aria-expanded="false" data-toggle-directory data-search="linux-01 charter">
+                        <span class="directory-chevron"><span class="icon" data-icon="chevron-right" data-directory-chevron aria-hidden="true"></span></span><span class="directory-icon"><span class="icon" data-icon="server" aria-hidden="true"></span></span><span class="status-dot" aria-hidden="true"></span><span class="directory-name">linux-01</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span><span class="icon" data-icon="plus"></span></span>
+                      </button>
+                      <div class="directory-children" hidden>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">master</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                        <button class="directory-child" type="button" data-directory-child><span class="directory-child-name">eval/batch3</span><span class="directory-actions" aria-hidden="true"><span class="icon" data-icon="terminal"></span></span></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+
+          <div class="empty-state" id="empty-state">没有匹配的项目、任务或目录</div>
+        </div>
+      </aside>
+
+      <main class="workspace" aria-label="空白工作区">
+        <div class="workspace-chrome">
+          <div class="workspace-context" title="本机 / handoff / B264 标签组与分屏以及中央工作台列表模型确认">
+            本机 / handoff / B264 标签组与分屏以及中央工作台列表模型确认
+          </div>
+          <nav class="workspace-tabbar" aria-label="工作区标签">
+            <button class="workspace-tab is-active" type="button" aria-current="page" data-workspace-tab>
+              <span class="workspace-tab-surface">
+                <span class="tab-icon icon" data-icon="dispatch-task" aria-hidden="true"></span>
+                <span class="workspace-tab-label">审 B264</span>
+                <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                  <span class="icon" data-icon="close" aria-hidden="true"></span>
+                </span>
+              </span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab>
+              <span class="tab-icon icon" data-icon="terminal" aria-hidden="true"></span>
+              <span class="workspace-tab-label">handoff · 项目导航</span>
+              <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                <span class="icon" data-icon="close" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab>
+              <span class="tab-icon icon" data-icon="terminal" aria-hidden="true"></span>
+              <span class="workspace-tab-label">handoff · 项目导航</span>
+              <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                <span class="icon" data-icon="close" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab>
+              <span class="tab-icon icon" data-icon="file-text" aria-hidden="true"></span>
+              <span class="workspace-tab-label">已生成图像 1.png</span>
+              <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                <span class="icon" data-icon="close" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button class="workspace-tab" type="button" data-workspace-tab>
+              <span class="tab-icon icon" data-icon="monitor" aria-hidden="true"></span>
+              <span class="workspace-tab-label">审阅</span>
+              <span class="workspace-tab-close" aria-hidden="true" data-tab-close>
+                <span class="icon" data-icon="close" aria-hidden="true"></span>
+              </span>
+            </button>
+            <button class="workspace-tab-add" type="button" aria-label="新增标签">
+              <span class="icon" data-icon="plus" aria-hidden="true"></span>
+            </button>
+          </nav>
+        </div>
+        <div class="workspace-empty" aria-hidden="true"></div>
+      </main>
+    </div>
+
+    <script>
+      const iconAssets = {
+        "chevron-down": "chevron-down.svg",
+        "chevron-right": "chevron-right.svg",
+        close: "close.svg",
+        "dispatch-task": "dispatch-task.png",
+        "file-text": "file-text.svg",
+        folder: "folder.svg",
+        monitor: "monitor.svg",
+        plus: "plus.svg",
+        search: "search.svg",
+        server: "server.svg",
+        terminal: "terminal.svg",
+      };
+
+      // 原型只负责替换静态资源；这样浏览器离线打开时也不会依赖 React 运行时。
+      function renderIcon(target, name) {
+        const asset = iconAssets[name];
+        if (!asset) return;
+
+        const image = document.createElement("img");
+        image.src = `../assets/${asset}`;
+        image.alt = "";
+        image.setAttribute("aria-hidden", "true");
+        target.replaceChildren(image);
+      }
+
+      document.querySelectorAll("[data-icon]").forEach((target) => {
+        renderIcon(target, target.dataset.icon);
+      });
+
+      const searchInput = document.querySelector("#project-search");
+      const projectGroups = [...document.querySelectorAll("[data-project-group]")];
+      const emptyState = document.querySelector("#empty-state");
+
+      function updateSearch() {
+        const query = searchInput.value.trim().toLocaleLowerCase();
+        let visibleGroupCount = 0;
+
+        for (const group of projectGroups) {
+          const matches = !query || group.dataset.search.toLocaleLowerCase().includes(query);
+          group.hidden = !matches;
+          if (matches) visibleGroupCount += 1;
+        }
+
+        emptyState.style.display = visibleGroupCount === 0 ? "block" : "none";
+      }
+
+      searchInput.addEventListener("input", updateSearch);
+
+      document.querySelectorAll("[data-toggle-project]").forEach((toggle) => {
+        toggle.addEventListener("click", () => {
+          const content = toggle.nextElementSibling;
+          const expanded = toggle.getAttribute("aria-expanded") === "true";
+          toggle.setAttribute("aria-expanded", String(!expanded));
+          content.hidden = expanded;
+          const iconTarget = toggle.querySelector("[data-toggle-chevron]");
+          renderIcon(iconTarget, expanded ? "chevron-right" : "chevron-down");
+        });
+      });
+
+      document.querySelectorAll("[data-toggle-directory]").forEach((toggle) => {
+        const item = toggle.closest("[data-directory-item]");
+        const children = item?.querySelector(".directory-children");
+        const iconTarget = toggle.querySelector("[data-directory-chevron]");
+        if (!children || !iconTarget) return;
+
+        toggle.addEventListener("click", () => {
+          const expanded = toggle.getAttribute("aria-expanded") === "true";
+          toggle.setAttribute("aria-expanded", String(!expanded));
+          toggle.classList.toggle("is-expanded", !expanded);
+          children.hidden = expanded;
+          renderIcon(iconTarget, expanded ? "chevron-right" : "chevron-down");
+        });
+      });
+
+      document.querySelectorAll("[data-directory-child]").forEach((child) => {
+        child.addEventListener("click", () => {
+          document.querySelectorAll(".directory-child.is-selected").forEach((selected) => {
+            selected.classList.remove("is-selected");
+          });
+          child.classList.add("is-selected");
+        });
+      });
+
+      document.querySelectorAll(".task-row").forEach((task) => {
+        task.addEventListener("click", () => {
+          document.querySelectorAll(".task-row.is-selected").forEach((selected) => {
+            selected.classList.remove("is-selected");
+            selected.removeAttribute("aria-current");
+          });
+          task.classList.add("is-selected");
+          task.classList.add("is-open");
+          task.setAttribute("aria-current", "true");
+        });
+      });
+
+      document.querySelectorAll("[data-workspace-tab]").forEach((tab) => {
+        tab.addEventListener("click", (event) => {
+          if (event.target.closest("[data-tab-close]")) return;
+          document.querySelectorAll("[data-workspace-tab].is-active").forEach((activeTab) => {
+            activeTab.classList.remove("is-active");
+            activeTab.removeAttribute("aria-current");
+          });
+          tab.classList.add("is-active");
+          tab.setAttribute("aria-current", "page");
+        });
+      });
+
+      // 快捷键只负责把焦点带到搜索框，不拦截输入法或页面其它组合键。
+      document.addEventListener("keydown", (event) => {
+        if ((event.metaKey || event.ctrlKey) && event.key.toLocaleLowerCase() === "k") {
+          event.preventDefault();
+          searchInput.focus();
+          searchInput.select();
+        }
+      });
+    </script>
+  </body>
+</html>
