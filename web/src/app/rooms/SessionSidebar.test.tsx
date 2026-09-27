@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import fixture from '../../api/testdata/RoomsFixture.json'
-import type { SessionSummary } from '../../api/rooms'
+import type { SessionMember, SessionSummary } from '../../api/rooms'
 import { DRAG_SESSION_MIME } from '../workbench/paneDrop'
 import { SessionSidebar } from './SessionSidebar'
 
@@ -87,5 +87,72 @@ describe('SessionSidebar', () => {
     await user.selectOptions(screen.getByTestId('session-project-filter'), '')
     rerender(<SessionSidebar sessions={[golden, noCard]} {...defaultProps} projectOptions={['handoff', 'aim']} projectOfCard={projectOfCard} />)
     expect(screen.getByTestId('session-total')).toHaveTextContent('2 个会话')
+  })
+})
+
+// —— B369.10 T6：compact 会话首页（chips 行 + 行内成员横排/群主行，岔口 5/8）——
+describe('B369.10 compact 会话首页', () => {
+  const golden = () => cases.find((c) => c.case === 'session-summary-golden')!.summary!
+  const member = (identity: string): SessionMember => ({ identity, kind: 'agent', status: 'listening' })
+  const withMembers = (members: SessionMember[], owner = 'user:sy'): SessionSummary => ({ ...golden(), members, owner })
+
+  it('chips 行在上、筛选行在下：needs-count 在场，两态切换走既有 needsOnly 回调', async () => {
+    const user = userEvent.setup()
+    const onToggleNeeds = vi.fn()
+    const { rerender } = render(<SessionSidebar sessions={[golden()]} {...defaultProps} compact onToggleNeeds={onToggleNeeds} />)
+    // 次序：chips 行在项目筛选行之前（原型「筛选紧贴头部」阅读序）
+    const chips = screen.getByTestId('session-filter-chips')
+    expect(chips.compareDocumentPosition(screen.getByTestId('session-project-filter')) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    expect(screen.getByTestId('needs-count')).toHaveTextContent('1')
+    // needsOnly=false：需要你 chip 未按下，点它 → 回调翻转
+    const needsChip = screen.getByRole('button', { name: /需要你/ })
+    expect(needsChip).toHaveAttribute('aria-pressed', 'false')
+    await user.click(needsChip)
+    expect(onToggleNeeds).toHaveBeenCalledTimes(1)
+    // needsOnly=true：全部 chip 未按下，点它 → 回调翻转；点已按下的需要你 chip 不再翻转
+    rerender(<SessionSidebar sessions={[golden()]} {...defaultProps} compact needsOnly onToggleNeeds={onToggleNeeds} />)
+    expect(screen.getByRole('button', { name: /需要你/ })).toHaveAttribute('aria-pressed', 'true')
+    await user.click(screen.getByRole('button', { name: '全部' }))
+    expect(onToggleNeeds).toHaveBeenCalledTimes(2)
+    await user.click(screen.getByRole('button', { name: /需要你/ }))
+    expect(onToggleNeeds).toHaveBeenCalledTimes(2)
+  })
+
+  it('成员横排 ≤5 全显：逐枚身份染色块（aria-label=identity）+ 群主行', () => {
+    const members = ['user:sy', 'cli:claude#1', 'cli:codex#2', 'cli:opencode#3', 'cli:grok#4'].map(member)
+    render(<SessionSidebar sessions={[withMembers(members)]} {...defaultProps} compact />)
+    const row = screen.getByTestId('session-members')
+    const avatars = Array.from(row.querySelectorAll('span[aria-label]'))
+    expect(avatars).toHaveLength(5)
+    expect(avatars.map((a) => a.getAttribute('aria-label'))).toEqual(['user:sy', 'cli:claude#1', 'cli:codex#2', 'cli:opencode#3', 'cli:grok#4'])
+    expect(avatars[0].textContent).toBe('us')
+    expect(avatars[0].className).not.toContain('bg-amber')
+    expect(screen.getByTestId('session-owner')).toHaveTextContent('群主：user:sy')
+    expect(screen.queryByTestId('session-members-more')).toBeNull()
+  })
+
+  it('成员 >5 溢出「+N」：前 5 枚折后 N=总数−5', () => {
+    const members = Array.from({ length: 8 }, (_, i) => member(`cli:agent-${i}`))
+    render(<SessionSidebar sessions={[withMembers(members)]} {...defaultProps} compact />)
+    expect(screen.getAllByText('cl').length).toBeGreaterThanOrEqual(5)
+    expect(screen.getByTestId('session-members-more')).toHaveTextContent('+3')
+  })
+
+  it('owner 空串不渲染群主行；无成员不渲染横排', () => {
+    render(<SessionSidebar sessions={[{ ...golden(), members: undefined, owner: '' }]} {...defaultProps} compact />)
+    expect(screen.queryByTestId('session-members')).toBeNull()
+    expect(screen.queryByTestId('session-owner')).toBeNull()
+  })
+
+  it('桌面反例锁：toggle 行原样、chips 行与成员横排/群主行均不渲染', () => {
+    const members = Array.from({ length: 8 }, (_, i) => member(`cli:agent-${i}`))
+    render(<SessionSidebar sessions={[withMembers(members)]} {...defaultProps} />)
+    // toggle 行原样：aria-pressed 钮 + needs-count + session-total 读数
+    expect(screen.getByRole('button', { name: /需要你/ })).toHaveAttribute('aria-pressed', 'false')
+    expect(screen.getByTestId('needs-count')).toBeInTheDocument()
+    expect(screen.getByTestId('session-total')).toBeInTheDocument()
+    expect(screen.queryByTestId('session-filter-chips')).toBeNull()
+    expect(screen.queryByTestId('session-members')).toBeNull()
+    expect(screen.queryByTestId('session-owner')).toBeNull()
   })
 })

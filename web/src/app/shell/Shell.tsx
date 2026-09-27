@@ -1145,6 +1145,7 @@ export function Shell() {
                       projectOfCard={projectOfCard}
                       onOpen={openSession}
                       onCreate={() => { setCreateError(''); setCreateOpen(true) }}
+                      compact={compact}
                     />
                   ) : (
                     <p className="p-4 text-sm text-muted-foreground">账本未启用，会话不可用。</p>
