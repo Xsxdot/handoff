@@ -890,3 +890,8 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **wakeconsumer 唤醒日志打印 mention 目标值**：`internal/agentd/wakeconsumer.go:390` 把 @ token 列表写进日志，违反 B409 脱敏红线（「日志不含 @ token」）；该文件属 U6 禁改清单故未随卡修复，修复前该日志族持续违反红线。修法：改记 targets_count 数值。来源：B409.6 实现者范围外发现 + 独立 review 确认；`docs/superpowers/ledgers/2026-09-26-b409-6-acceptance.md` §5。
 - **诊断包装日志 `cause=err` 家族收敛**：U6 新增包装日志与既有 `derived.go`/`mirror.go` 家族沿用 `cause=err` 直排 driver error 原文，开库失败行含 user/host:port（无密码）；与 plan「不得将任意 driver error 原文当 cause」条文相抵，实测五哨兵零泄漏。建议单独小卡统一收敛为 error_class。来源：B409.6 review Minor#4。
 - **脱敏哨兵注入空转断言**：`internal/agentd/redaction_diag_test.go:20` sentinelDSNPassword 只扫描未注入，该条为空转；DSN 密码类实际由其它夹具覆盖。修法：注入或删条目。来源：B409.6 review Minor#3。
+
+## 来自 B409 finish（2026-09-27，部署实测残余）
+
+- **target 升级 config 兼容**：升级到含 `35e0b6ba`（配置严格解析）的版本时，target 机 config 的遗留未知键会被拒启（linux-01 实测：`approver.models` 触发 exit 1，已清理并备份 `config.yaml.bak-*`）；mac-02 尚在旧版 93770b5d，下次升级前同查 config。`handoff upgrade` 流程可考虑预检 target config 未知键并提示。
+- **darwin 手动部署需 ad-hoc 签名**：本机构建二进制覆盖 `~/.local/bin/handoff` 后 launchd 拉起被 `OS_REASON_CODESIGNING` 杀，需 `codesign -s - --force` 后重启服务（2026-09-27 实测处置）；`handoff upgrade` 的发布渠道二进制不受此影响。
