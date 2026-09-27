@@ -472,3 +472,80 @@ describe('B369.8 compact 单列', () => {
     expect(document.querySelector('main')!.className).toContain('button:not(.min-h-11)')
   })
 })
+
+describe('B369.8 compact 抽屉 a11y（cards-surface 与焦点归还）', () => {
+  const surfaceCard = {
+    id: 'B1', title: '面卡', status: '进行中', priority: '中', project: 'handoff', workflow: '',
+    parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+    merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+    conflict: false, open_tickets: 0,
+  }
+
+  async function renderCompactSurface(entry = '/cards') {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [surfaceCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: surfaceCard, relations: [], events: [], task_states: [],
+      effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    render(
+      <MemoryRouter initialEntries={[entry]}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage compact />} />
+          <Route path="/tasks/:id" element={<p>deep-link-hit</p>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    await screen.findByTestId('cards-single-column')
+  }
+
+  it('抽屉开 → surface aria-hidden="true"+inert；关 → 撤覆盖属性', async () => {
+    await renderCompactSurface()
+    const surface = screen.getByTestId('cards-surface')
+    // 覆盖前：aria-hidden="false"（与 WorkbenchPage 先例同款 boolean 写法）、无 inert
+    expect(surface.getAttribute('aria-hidden')).toBe('false')
+    expect(surface.hasAttribute('inert')).toBe(false)
+    fireEvent.click(screen.getByText('面卡'))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(surface.getAttribute('aria-hidden')).toBe('true')
+    expect(surface.hasAttribute('inert')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
+    expect(surface.getAttribute('aria-hidden')).toBe('false')
+    expect(surface.hasAttribute('inert')).toBe(false)
+  })
+
+  it('关闭归还焦点到打开抽屉的触发钮（isConnected 守卫路径）', async () => {
+    await renderCompactSurface()
+    // 触发钮先取（抽屉开后卡标题在抽屉里重复出现，getByText 会撞多元素）
+    const trigger = screen.getByText('面卡').closest('article')!
+    trigger.focus()
+    fireEvent.click(trigger)
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    // 开抽屉焦点移入面板（compact aria-modal 档）
+    expect(document.activeElement).toBe(drawer)
+    fireEvent.click(screen.getByRole('button', { name: '关闭' }))
+    await waitFor(() => expect(screen.queryByRole('dialog', { name: '工作项详情' })).toBeNull())
+    expect(document.activeElement).toBe(trigger)
+  })
+
+  it('桌面反例锁：抽屉开时 cards-surface 不存在（双栏可达性显式反例）', async () => {
+    const ledger = await import('../../api/ledger')
+    vi.mocked(ledger.fetchCards).mockResolvedValue({ cards: [surfaceCard], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: surfaceCard, relations: [], events: [], task_states: [],
+      effective_base_branch: '', decisions: [], needs: '',
+    } as never)
+    render(
+      <MemoryRouter initialEntries={['/cards']}>
+        <Routes>
+          <Route path="/cards" element={<CardsPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    fireEvent.click(await screen.findByText('面卡'))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(screen.queryByTestId('cards-surface')).toBeNull()
+    expect(document.querySelector('main')!.className).not.toContain('button:not(.min-h-11)')
+  })
+})

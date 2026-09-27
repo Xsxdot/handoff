@@ -39,6 +39,7 @@ function UnlinkedRow({ summary }: { summary: UnlinkedSummary }) {
   const groups = new Map<string, number>()
   for (const task of summary.tasks ?? []) groups.set(task.target, (groups.get(task.target) ?? 0) + 1)
   const compact = [...groups.entries()].map(([target, count]) => `${target}×${count}`).join('、')
+
   return (
     <details className="border-y border-amber-200 bg-amber-50 px-4 py-1.5 text-xs text-amber-800">
       <summary className="cursor-pointer">未挂账 task {summary.count}{compact ? `（${compact}）` : ''}{hasUnknown ? `／不可达: ${summary.unknown_targets?.join('、')}` : ''}</summary>
@@ -255,7 +256,14 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
       })
     return () => { cancelled = true }
   }, [selected, selectedWorkflowName, selectedWorkflowVersion, selectedPinnedWorkflow])
+  // drawerTriggerRef 记「打开抽屉时焦点在哪」（B369.8 §4，compact-only）：
+  // openDrawer 时记 document.activeElement，closeDrawer 归还（isConnected 守卫
+  // 兜住触发钮已被重渲染/卸载摘走的情形）。桌面双栏非模态，不记不还（零变化）。
+  const drawerTriggerRef = useRef<HTMLElement | null>(null)
   const openDrawer = (id: string, focus?: 'merge') => {
+    if (compact) {
+      drawerTriggerRef.current = document.activeElement instanceof HTMLElement ? document.activeElement : null
+    }
     setSelected(id)
     setDrawerFocus(focus)
     onDrawerCardChange?.(id)
@@ -264,6 +272,11 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
     setSelected(null)
     setDrawerFocus(undefined)
     onDrawerCardChange?.(null)
+    if (compact) {
+      const trigger = drawerTriggerRef.current
+      drawerTriggerRef.current = null
+      if (trigger && trigger.isConnected) trigger.focus()
+    }
     // card 参数的 URL 清理归注入 seam 的层收口（紧凑 closeCard 会保留 project）；
     // 未注入 seam（桌面）维持既有 replace 行为。
     if (!onDrawerCardChange && new URLSearchParams(location.search).has('card')) navigate('/cards', { replace: true })
@@ -297,6 +310,40 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
       />
     )
   }
+
+  // 卡面内容（除抽屉与对话框外的全部）。compact 时包进 display:contents 的
+  // cards-surface 包装（§4）：包装盒不生成、布局零变化；抽屉覆盖期整块
+  // aria-hidden + inert——display:contents 无盒，pointer-events 类无意义且
+  // 不需要，inert 在平面树上断指针与焦点。桌面不包（双栏可见可点是设计形态）。
+  const surfaceContent = (
+    <>
+      <QueuePanel
+        entries={queueEntries}
+        open={queueOpen}
+        loading={queuePoll.data === null && !queuePoll.disconnected && !queuePoll.sessionExpired}
+        disconnected={queuePoll.disconnected}
+        sessionExpired={queuePoll.sessionExpired}
+        errorText={queuePoll.errorText}
+        onToggle={() => setQueueOpen((current) => !current)}
+        onOpenCard={(id) => openDrawer(id)}
+      />
+      {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
+      {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} compact={compact} />}
+      <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
+      {cardsPoll.data === null ? (
+        <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p>
+      ) : compact ? (
+        // B369.8 T3：compact 单列扫描面——看板横滚与八列表格不作为扫描面
+        //（view 切换控件在 compact 头部不渲染，view 恒 'board'，这里不再判它）。
+        // 传参经 renderCardItem 与看板列内完全一致。
+        <div data-testid="cards-single-column" className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
+          {filtered.map(renderCardItem)}
+          {filtered.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（没有匹配的工作项）</p>}
+        </div>
+      ) : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, boardLayout).map((column) => { const inColumn = cardsInColumn(filtered, column, boardLayout); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => { const pinned = pinnedWorkflowKey(card); const detail = pinned ? pinnedWorkflows[pinned] : undefined; const cardStates = detail?.states ?? []; const cardBoard = detail ? normalizeBoardLayout(detail.board, cardStates) : boardLayout; const cardNodes = detail?.nodes?.map((node) => node.name) ?? []; return <CardItem key={card.id} card={card} queuePosition={queuePositions.get(card.id)} nodeTag={detail ? nodeLabelFor(card.status, cardNodes, cardBoard) : undefined} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} /> })}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
+      {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
+    </>
+  )
 
   return (
     <main className={cn('relative flex h-full min-h-0 w-full flex-col bg-background', compact && TOUCH_BASELINE)}>
@@ -397,32 +444,19 @@ export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJ
           <span className={`${showOpenInBrowser ? '' : 'ml-auto'} flex items-center gap-1 text-[11px] ${healthStale ? 'text-amber-700' : 'text-green-600'}`} title={healthStale ? `${healthLabel}——该机器的事件已停止镜像，卡上的 task 实况可能是陈的` : '镜像正常'}>{healthStale ? healthLabel : '●'}</span>
         </header>
       )}
-      <QueuePanel
-        entries={queueEntries}
-        open={queueOpen}
-        loading={queuePoll.data === null && !queuePoll.disconnected && !queuePoll.sessionExpired}
-        disconnected={queuePoll.disconnected}
-        sessionExpired={queuePoll.sessionExpired}
-        errorText={queuePoll.errorText}
-        onToggle={() => setQueueOpen((current) => !current)}
-        onOpenCard={(id) => openDrawer(id)}
-      />
-      {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
-      {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} compact={compact} />}
-      <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
-      {cardsPoll.data === null ? (
-        <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p>
-      ) : compact ? (
-        // B369.8 T3：compact 单列扫描面——看板横滚与八列表格不作为扫描面
-        //（view 切换控件在 compact 头部不渲染，view 恒 'board'，这里不再判它）。
-        // 传参经 renderCardItem 与看板列内完全一致。
-        <div data-testid="cards-single-column" className="flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-3">
-          {filtered.map(renderCardItem)}
-          {filtered.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（没有匹配的工作项）</p>}
+      {compact ? (
+        <div
+          data-testid="cards-surface"
+          className="contents"
+          aria-hidden={selected !== null}
+          {...(selected !== null ? { inert: true } : {})}
+        >
+          {surfaceContent}
         </div>
-      ) : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, boardLayout).map((column) => { const inColumn = cardsInColumn(filtered, column, boardLayout); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => { const pinned = pinnedWorkflowKey(card); const detail = pinned ? pinnedWorkflows[pinned] : undefined; const cardStates = detail?.states ?? []; const cardBoard = detail ? normalizeBoardLayout(detail.board, cardStates) : boardLayout; const cardNodes = detail?.nodes?.map((node) => node.name) ?? []; return <CardItem key={card.id} card={card} queuePosition={queuePositions.get(card.id)} nodeTag={detail ? nodeLabelFor(card.status, cardNodes, cardBoard) : undefined} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} /> })}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
-      {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? boardLayout : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} />}
+      ) : (
+        surfaceContent
+      )}
+      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? boardLayout : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} compact={compact} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}
