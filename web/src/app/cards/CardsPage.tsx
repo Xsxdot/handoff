@@ -12,7 +12,8 @@ import { isDesktopShell, requestOpenCurrentPageInBrowser } from '../lib/desktopS
 import { errorMessage } from '../lib/format'
 import { CardDrawer } from './CardDrawer'
 import { CardItem } from './CardItem'
-import { boardColumns, cardsInColumn, filterNeeds, mergeStateOrder, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
+import { boardColumns, cardsInColumn, DEFAULT_BOARD_COLUMNS, filterNeeds, mergeStateOrder, mergedLayoutFor, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
+import type { CardLayoutResolver, WorkflowBoardLookup } from './columns'
 import { CARD_STATUSES } from './statusVocab'
 import { ListView } from './ListView'
 import { MigrateDialog } from './MigrateDialog'
@@ -131,7 +132,16 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
 
   useEffect(() => {
     let cancelled = false
-    void fetchFlows().then((result) => { if (!cancelled) setFlows(result) }).catch((err: unknown) => { if (!cancelled) setFlowsError(errorMessage(err)) })
+    void fetchFlows()
+      .then((result) => {
+        if (cancelled) return
+        setFlows(result)
+        console.info('cards.flows.loaded', {
+          workflows: result.workflows.length,
+          withBoard: result.workflows.filter((flow) => flow.def.board).length,
+        })
+      })
+      .catch((err: unknown) => { if (!cancelled) setFlowsError(errorMessage(err)) })
     return () => { cancelled = true }
   }, [])
 
@@ -154,7 +164,32 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
     () => normalizeBoardLayout(workflow ? selectedWorkflow?.def.board : undefined, workflowStates),
     [selectedWorkflow, workflow, workflowStates],
   )
-  const displayedColumns = useMemo(() => boardColumns(workflowStates, boardLayout), [boardLayout, workflowStates])
+  // 呈现布局按流**当前版本**的 board 解析（D1）：合并视图逐卡解析，单流视图所有卡用选中流。
+  const layoutForWorkflow = useMemo<WorkflowBoardLookup>(
+    () => (name) => {
+      const flow = flows?.workflows.find((item) => item.name === name)
+      return flow ? normalizeBoardLayout(flow.def.board, flow.def.states) : undefined
+    },
+    [flows],
+  )
+  const cardLayoutResolver = useMemo<CardLayoutResolver>(
+    () => (workflow ? () => boardLayout : (card) => mergedLayoutFor(card, layoutForWorkflow)),
+    [boardLayout, layoutForWorkflow, workflow],
+  )
+  // 合并视图列集合恒默认五列（D2）；单流视图沿用该流自身列名（现状不变）。
+  const displayedColumns = useMemo(
+    () => (workflow ? boardColumns(workflowStates, boardLayout) : [...DEFAULT_BOARD_COLUMNS]),
+    [boardLayout, workflow, workflowStates],
+  )
+  // 卡挂了 flows 里没有的流（已删/改名）时留一条可查告警；归列仍按默认映射诚实回落。
+  const missingWorkflows = useMemo(() => {
+    if (!flows) return []
+    const known = new Set(flows.workflows.map((flow) => flow.name))
+    return [...new Set(cards.map((card) => card.workflow).filter((name) => name !== '' && !known.has(name)))]
+  }, [cards, flows])
+  useEffect(() => {
+    if (missingWorkflows.length > 0) console.warn('cards.board.workflow.missing', { workflows: missingWorkflows })
+  }, [missingWorkflows])
   const healthRows = healthPoll.data?.mirror ?? []
   // 滞后要点名是哪台：判据⑦ 判的是「断链期看板该 target 亮事件流滞后」，
   // 只报一个全局「镜像异常」等于告诉你「有台机器哑了，自己猜是哪台」。
@@ -311,9 +346,9 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
       {flowsError && <p role="alert" className="mx-4 mt-2 text-xs text-destructive">流程读取失败：{flowsError}</p>}
       {projectDecisions.length > 0 && <ProjectDecisions decisions={projectDecisions} />}
       <UnlinkedRow summary={cardsPoll.data?.unlinked ?? { count: 0, tasks: [], unknown_targets: [] }} />
-      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, boardLayout).map((column) => { const inColumn = cardsInColumn(filtered, column, boardLayout); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => { const pinned = pinnedWorkflowKey(card); const detail = pinned ? pinnedWorkflows[pinned] : undefined; const cardStates = detail?.states ?? []; const cardBoard = detail ? normalizeBoardLayout(detail.board, cardStates) : boardLayout; const cardNodes = detail?.nodes?.map((node) => node.name) ?? []; return <CardItem key={card.id} card={card} queuePosition={queuePositions.get(card.id)} nodeTag={detail ? nodeLabelFor(card.status, cardNodes, cardBoard) : undefined} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} /> })}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
+      {cardsPoll.data === null ? <p className="p-4 text-sm text-muted-foreground">正在读取账本…</p> : view === 'list' ? <ListView cards={filtered} includeArchived={includeArchived} onIncludeArchivedChange={setIncludeArchived} onOpen={(id) => openDrawer(id)} /> : <div className="flex min-h-0 flex-1 gap-2 overflow-x-auto px-4 py-3">{visibleColumns(displayedColumns, filtered, needsOnly, cardLayoutResolver).map((column) => { const inColumn = cardsInColumn(filtered, column, cardLayoutResolver); return <section key={column} className="flex min-h-0 w-60 shrink-0 flex-col"><header className="flex items-center gap-1.5 px-1 pb-2 text-xs font-semibold"><span>{column}</span><span className="font-normal text-muted-foreground">{inColumn.length}</span></header><div className="min-h-0 flex-1 space-y-2 overflow-y-auto pb-2">{inColumn.map((card) => { const pinned = pinnedWorkflowKey(card); const detail = pinned ? pinnedWorkflows[pinned] : undefined; const cardLayout = cardLayoutResolver(card); const cardNodes = detail?.nodes?.map((node) => node.name) ?? []; return <CardItem key={card.id} card={card} queuePosition={queuePositions.get(card.id)} nodeTag={detail ? nodeLabelFor(card.status, cardNodes, cardLayout) : undefined} onOpen={(focus) => openDrawer(card.id, focus)} onMigrate={() => setMigrateCardId(card.id)} /> })}{inColumn.length === 0 && <p className="px-1 py-2 text-xs text-muted-foreground">（空）</p>}</div></section> })}</div>}
       {cardsPoll.disconnected && <p className="border-t bg-amber-50 px-4 py-1.5 text-xs text-amber-800">已断开：{cardsPoll.errorText}（保留最后一次账本数据）</p>}
-      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedPinnedWorkflow ? normalizeBoardLayout(selectedPinnedWorkflow.board, selectedPinnedWorkflow.states) : selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? boardLayout : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} />}
+      {selected && <CardDrawer id={selected} onClose={closeDrawer} onOpenCard={(id) => openDrawer(id)} workflowStates={selectedPinnedWorkflow?.states ?? (selectedWorkflowVersion !== undefined && selectedWorkflowVersion > 0 ? workflowStates : undefined)} boardLayout={selectedCard ? cardLayoutResolver(selectedCard) : undefined} initialSection={drawerFocus} nodes={drawerNodes} tasks={tasksPoll.data ?? undefined} onJumpToTask={jumpToTask} onOpenCoordinatorTerminal={onOpenCoordinatorTerminal} />}
       <NewCardDialog
         open={newCardOpen} project={project} cardProjects={projectOptions} workflows={newCardWorkflows}
         onClose={() => setNewCardOpen(false)}

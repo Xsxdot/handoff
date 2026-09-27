@@ -406,3 +406,75 @@ describe('B369.6 状态词表筛选（移动卡 tab）', () => {
     expect(await screen.findByText('进行中卡')).toBeInTheDocument()
   })
 })
+
+describe('B412 合并视图按各流当前版本看板配置归列', () => {
+  const charterCard = (over: Record<string, unknown> = {}) => ({
+    id: 'B1', title: '卡', status: '待办', priority: '中', project: 'p', workflow: 'charter',
+    parent: '', base_branch: '', attachments: [], following: '', blocked: false, blocked_by: [],
+    merged_count: 0, needs: '', open_decisions: 0, children_total: 0, children_done: 0,
+    conflict: false, open_tickets: 0, ...over,
+  })
+  const charterFlows = {
+    workflows: [{
+      name: 'charter', version: 12,
+      def: {
+        states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '图对账', 'finish'],
+        board: {
+          columns: ['代办', '沟通中', '进行中', '审核中', '结束'],
+          state_to_column: {
+            spec: '沟通中', review: '审核中', acceptance: '审核中', integrate: '审核中',
+            图对账: '审核中', finish: '结束', 待办: '代办', plan: '进行中', implement: '进行中',
+          },
+          fallback: '进行中',
+        },
+      },
+    }],
+    templates: [],
+  }
+  const columnSection = (name: string): HTMLElement => {
+    // 只认列头里的列名：状态词表 chip 行也渲染「进行中」等词，裸 getByText 会撞多元素。
+    const headerSpan = screen.getByText(name, { selector: 'section header span' })
+    const section = headerSpan.closest('section')
+    if (!section) throw new Error(`找不到看板列 ${name}`)
+    return section
+  }
+
+  it('全部工作流视图按各流当前版本 board 归列、列恒五列，抽屉列胶囊与看板一致', async () => {
+    const ledger = await import('../../api/ledger')
+    // 卡钉 v9 → 会拉 v9 的节点集（动作面）；board 归属仍看当前 v12。这里给一份可解析的 v9 详情，
+    // 避免 fetchFlow 解析到 undefined 触发未处理拒绝。
+    vi.mocked(ledger.fetchFlow).mockResolvedValue({
+      name: 'charter', version: 9,
+      states: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '图对账', 'finish'],
+      nodes: ['待办', 'spec', 'plan', 'implement', 'review', 'acceptance', 'integrate', '图对账', 'finish']
+        .map((name) => ({ name })),
+    })
+    vi.mocked(ledger.fetchFlows).mockResolvedValue(charterFlows)
+    // spec 卡钉 v9（v9 无 board）——D1：列归属看当前 v12，不看钉版本。
+    vi.mocked(ledger.fetchCards).mockResolvedValue({
+      cards: [
+        charterCard({ id: 'Bs', title: 'spec 卡', status: 'spec', workflow_version: 9 }),
+        charterCard({ id: 'Br', title: 'review 卡', status: 'review', workflow_version: 12 }),
+        charterCard({ id: 'Bf', title: 'finish 卡', status: 'finish', workflow_version: 12 }),
+        charterCard({ id: 'Bp', title: 'plan 卡', status: 'plan', workflow_version: 12 }),
+      ],
+      unlinked: { count: 0, tasks: [], unknown_targets: [] },
+    })
+    vi.mocked(ledger.fetchCardDetail).mockResolvedValue({
+      card: { ...charterCard({ id: 'Bs', title: 'spec 卡', status: 'spec' }), workflow_version: 9, acceptance_criteria: '', created_at: '', updated_at: '' },
+      relations: [], events: [], task_states: [], effective_base_branch: '', decisions: [], needs: '',
+    })
+
+    renderPage()
+    expect(await screen.findByText('spec 卡')).toBeInTheDocument()
+    expect(within(columnSection('沟通中')).getByText('spec 卡')).toBeInTheDocument()
+    expect(within(columnSection('审核中')).getByText('review 卡')).toBeInTheDocument()
+    expect(within(columnSection('结束')).getByText('finish 卡')).toBeInTheDocument()
+    expect(within(columnSection('进行中')).getByText('plan 卡')).toBeInTheDocument()
+
+    // 抽屉列胶囊与看板一致：点开 spec 卡 → 「沟通中」高亮。
+    fireEvent.click(screen.getByText('spec 卡'))
+    const drawer = await screen.findByRole('dialog', { name: '工作项详情' })
+    expect(within(drawer).getByText('沟通中').className).toContain('bg-primary')
+  })
+})

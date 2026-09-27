@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { CardView } from '../../api/ledger'
-import { boardColumnFor, boardColumns, cardsInColumn, defaultBoardLayout, filterNeeds, mergeStateOrder, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
+import { boardColumnFor, boardColumns, cardsInColumn, DEFAULT_BOARD_COLUMNS, defaultBoardLayout, filterNeeds, mergeIntoDefaultColumns, mergeStateOrder, mergedLayoutFor, needsAttention, nodeLabelFor, normalizeBoardLayout, visibleColumns } from './columns'
+import type { BoardLayout, CardLayoutResolver } from './columns'
 
 const card = (over: Partial<CardView>): CardView => ({
   id: 'B1', title: 't', status: '待办', priority: '中', project: 'p', workflow: 'bug', parent: '',
@@ -85,5 +86,58 @@ describe('需要你筛选时的空列', () => {
   })
   it('筛选关着时列全在（空列也画，看板要能看出流程形状）', () => {
     expect(visibleColumns(['代办', '进行中', '审核中'], cards, false)).toEqual(['代办', '进行中', '审核中'])
+  })
+})
+
+describe('B412 合并视图按各流当前版本 board 归列', () => {
+  const charterBoard: BoardLayout = {
+    columns: ['代办', '沟通中', '进行中', '审核中', '结束'],
+    state_to_column: { spec: '沟通中', review: '审核中', finish: '结束', 待办: '代办', plan: '进行中', implement: '进行中' },
+    fallback: '进行中',
+  }
+  const customBoard: BoardLayout = {
+    columns: ['收集', '沟通', '实现', '验收', '完成'],
+    state_to_column: { spec: '收集' }, fallback: '实现',
+  }
+
+  it('按卡的流当前版本 board 解析列，列集合恒默认五列', () => {
+    const layout = mergedLayoutFor(card({ workflow: 'charter', status: 'spec' }),
+      (name) => (name === 'charter' ? charterBoard : undefined))
+    expect(boardColumnFor('spec', layout)).toBe('沟通中')
+    expect(layout.columns).toEqual(DEFAULT_BOARD_COLUMNS)
+  })
+
+  it('映射目标不在默认五列的状态落「进行中」（D3）', () => {
+    const layout = mergedLayoutFor(card({ workflow: 'x', status: 'spec' }), () => customBoard)
+    expect(layout.columns).toEqual(DEFAULT_BOARD_COLUMNS)
+    expect(boardColumnFor('spec', layout)).toBe('进行中')
+    expect(mergeIntoDefaultColumns(customBoard).columns).toEqual(DEFAULT_BOARD_COLUMNS)
+  })
+
+  it('流未知（flows 未加载/已删改名）退回默认映射，不抛错', () => {
+    const layout = mergedLayoutFor(card({ workflow: 'gone', status: '待审阅' }), () => undefined)
+    expect(boardColumnFor('待审阅', layout)).toBe('审核中')
+    expect(layout.columns).toEqual(DEFAULT_BOARD_COLUMNS)
+  })
+
+  it('合并视图列集合恒默认五列，单流视图列集合用该流自身列名', () => {
+    expect(mergedLayoutFor(card({ workflow: 'x', status: '待办' }), () => customBoard).columns)
+      .toEqual(DEFAULT_BOARD_COLUMNS)
+    expect(normalizeBoardLayout(customBoard, ['待办']).columns).toEqual(customBoard.columns)
+  })
+
+  it('同一视图内不同流的卡各按其流映射落列（多流夹具）；被并卡不成列', () => {
+    const resolver: CardLayoutResolver = (item) => mergedLayoutFor(
+      item, (name) => (name === 'charter' ? charterBoard : undefined))
+    const cards = [
+      card({ id: 'Bs', workflow: 'charter', status: 'spec' }),
+      card({ id: 'Br', workflow: 'charter', status: 'review' }),
+      card({ id: 'Bp', workflow: 'charter', status: 'plan' }),
+      card({ id: 'Bx', workflow: 'other', status: 'spec' }),
+      card({ id: 'Bf', workflow: 'charter', status: 'spec', following: 'Bs' }),
+    ]
+    expect(cardsInColumn(cards, '沟通中', resolver).map((item) => item.id)).toEqual(['Bs'])
+    expect(cardsInColumn(cards, '审核中', resolver).map((item) => item.id)).toEqual(['Br'])
+    expect(cardsInColumn(cards, '进行中', resolver).map((item) => item.id)).toEqual(['Bp', 'Bx'])
   })
 })

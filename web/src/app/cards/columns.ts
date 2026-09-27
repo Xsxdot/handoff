@@ -35,6 +35,35 @@ export function normalizeBoardLayout(layout: BoardLayout | undefined, states: st
   return { columns, state_to_column, fallback: safeFallback }
 }
 
+// mergeIntoDefaultColumns 把某条流的布局收敛到固定默认五列（合并视图，spec D2/D3）。
+//
+// 参数：layout 是某条流当前版本的看板布局（调用方负责先 normalize）。
+// 返回：列集合恒为 DEFAULT_BOARD_COLUMNS；映射目标不在默认五列的状态落「进行中」；
+//       未映射状态走 fallback「进行中」。
+// 注意：只在「全部工作流」合并视图用；单流视图保留该流自身列名（含自定义），不调本函数。
+export function mergeIntoDefaultColumns(layout: BoardLayout): BoardLayout {
+  const state_to_column: Record<string, string> = {}
+  for (const [state, column] of Object.entries(layout.state_to_column)) {
+    state_to_column[state] = DEFAULT_BOARD_COLUMNS.includes(column) ? column : '进行中'
+  }
+  return { columns: [...DEFAULT_BOARD_COLUMNS], state_to_column, fallback: '进行中' }
+}
+
+// WorkflowBoardLookup 按工作流名取该流**当前版本**的看板布局；未知流返回 undefined。
+export type WorkflowBoardLookup = (workflow: string) => BoardLayout | undefined
+
+// mergedLayoutFor 是合并视图下单张卡的呈现布局（spec D1/D3）。
+//
+// 参数：card 只读其 workflow 与 status；lookup 是流当前版本 board 的解析器（flows 列表已带）。
+// 返回：该流布局收敛到默认五列；流未知（flows 未加载完/已删改名）时退回默认映射——
+//       与现状同形的诚实兜底，不新增请求。
+export function mergedLayoutFor(
+  card: Pick<CardView, 'workflow' | 'status'>,
+  lookup: WorkflowBoardLookup,
+): BoardLayout {
+  return mergeIntoDefaultColumns(lookup(card.workflow) ?? defaultBoardLayout([card.status]))
+}
+
 export function boardColumnFor(status: string, layout: BoardLayout): string {
   const mapped = layout.state_to_column[status]
   return mapped && layout.columns.includes(mapped) ? mapped : layout.fallback
@@ -53,9 +82,23 @@ export function boardColumns(states: string[], layout?: BoardLayout): string[] {
   return normalizeBoardLayout(layout, states).columns
 }
 
-export function cardsInColumn(cards: CardView[], column: string, layout?: BoardLayout): CardView[] {
-  const resolved = normalizeBoardLayout(layout, cards.map((card) => card.status))
-  return cards.filter((card) => boardColumnFor(card.status, resolved) === column && !card.following)
+// CardLayoutResolver 给一张卡解析它的呈现布局：合并视图逐卡按流解析，单流视图所有卡共用一份。
+export type CardLayoutResolver = (card: CardView) => BoardLayout
+
+// asLayoutResolver 兼容两种 layout 入参形态：既有调用点传 BoardLayout（或 undefined）零改动；
+// 合并视图传 CardLayoutResolver 逐卡解析。BoardLayout 是对象、resolver 是函数，用 typeof 区分。
+function asLayoutResolver(
+  layout: BoardLayout | CardLayoutResolver | undefined,
+  states: string[],
+): CardLayoutResolver {
+  if (typeof layout === 'function') return layout
+  const resolved = normalizeBoardLayout(layout, states)
+  return () => resolved
+}
+
+export function cardsInColumn(cards: CardView[], column: string, layout?: BoardLayout | CardLayoutResolver): CardView[] {
+  const resolve = asLayoutResolver(layout, cards.map((card) => card.status))
+  return cards.filter((card) => boardColumnFor(card.status, resolve(card)) === column && !card.following)
 }
 
 export function needsAttention(card: CardView): boolean {
@@ -113,7 +156,7 @@ export function mergeStateOrder(sequences: string[][]): string[] {
 // why 筛选时要折叠空列：「需要你」筛完只剩两三张卡，但看板照画全部列，命中的
 // 卡被中间的空列推到横向滚动区外面——徽标写着 4、屏幕上只看得见 2
 // （2026-08-19 真机看到）。不筛选时空列要留着，看板得能看出流程形状。
-export function visibleColumns(columns: string[], cards: CardView[], collapseEmpty: boolean, layout?: BoardLayout): string[] {
+export function visibleColumns(columns: string[], cards: CardView[], collapseEmpty: boolean, layout?: BoardLayout | CardLayoutResolver): string[] {
   if (!collapseEmpty) return columns
   return columns.filter((column) => cardsInColumn(cards, column, layout).length > 0)
 }
