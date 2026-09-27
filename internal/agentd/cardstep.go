@@ -209,13 +209,13 @@ func (s *Server) startCardStep(cardID string, req proto.CardStepReq) error {
 				}
 				return s.compensateStep(ctx, cl, cardID, target, taskID)
 			},
-			HomeDir:           dispatchHomeDir,
-			Carrier:           binding.Carrier,
-			Squad:             binding.Squad,
-			FrozenTarget:      binding.Target,
-			DisciplineText:    resolved.Text,
-			DisciplineVersion: resolved.Version,
-			NormalizeTarget:   s.CanonicalTarget,
+			HomeDir:              dispatchHomeDir,
+			Carrier:              binding.Carrier,
+			Squad:                binding.Squad,
+			FrozenTarget:         binding.Target,
+			DisciplineText:       resolved.Text,
+			DisciplineVersion:    resolved.Version,
+			NormalizeTarget:      s.CanonicalTarget,
 			ProbeBaseAttachments: s.probeBaseAttachments,
 		},
 		Clients: func(target string) (ledgerstep.StepClient, error) {

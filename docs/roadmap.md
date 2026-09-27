@@ -895,6 +895,12 @@ _test.go/注释/声明行；正控 New=220 生产命中。卡上证据：B156.2 
 - **镜像 watermark 逐 seq 连续性对账（补洞重拉）**：水位 = `MAX(source_seq)` 会跳过缺口，缺口以下的关单类审计事件永久丢失；B380 用投影层终态关单兜住可见后果，未根治整族。来源：`docs/superpowers/specs/b380.md` §3.3；`b380-contract.md` §5。
 - **`tickets_voided` 发布语义修订**：投影层终态关单已覆盖其全部投影职责，多发布一种审计事件无增量收益。来源：`docs/superpowers/specs/b380.md` §3.3。
 
+## 来自 B402 spec（2026-09-25，本期不做、后续要做）
+
+- **首个零文本事件的唤醒抑制与 retry ownership 全局可见性**：B402 不抑制首个 `turn_failed(zero_text)` 的 Publish/唤醒，`wait --follow` 仍可能看到；安全性靠「任何路径不早归档」与 `waiting_review` 状态门，而非隐藏事件。来源：`docs/superpowers/specs/b402.md` §10；`b402-contract.md` §3。
+- **跨 agentd 重启的同一 task 自动续接计数与恢复**：B402 的一次续接不做持久计数，进程重启不重放已消费的失败事件；恢复语义需单独冻结持久化/恢复契约。来源：`docs/superpowers/specs/b402.md` §4.2/§10。
+- **供应商流中断本身的根因治理**：B402 只处理已确认的零文本分类、一次续接与生命周期不早归档，不修供应商断流根因。来源：`docs/superpowers/specs/b402.md` §10。
+
 ## 来自 B409.6 acceptance（2026-09-26，本期不做、后续要做）
 
 - **wakeconsumer 唤醒日志打印 mention 目标值**：`internal/agentd/wakeconsumer.go:390` 把 @ token 列表写进日志，违反 B409 脱敏红线（「日志不含 @ token」）；该文件属 U6 禁改清单故未随卡修复，修复前该日志族持续违反红线。修法：改记 targets_count 数值。来源：B409.6 实现者范围外发现 + 独立 review 确认；`docs/superpowers/ledgers/2026-09-26-b409-6-acceptance.md` §5。
