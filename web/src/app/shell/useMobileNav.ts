@@ -51,7 +51,10 @@ export interface MobileNav {
   from: MobileFrom | null
   // 写（compact 下写 URL；桌面下写内部 state、URL 一字不动）
   setTab(t: MobileTab): void
-  enterDetail(ctx?: { from?: MobileFrom | null; tab?: MobileTab }): void
+  // ctx 值放宽为 string|null：调用方（TaskDeepLink/openTaskTui）从 URL 参数原样
+  // 透传，非法值按「未指定」处理——from 未指定时保留当前 URL 的 from（同一任务
+  // 现场里经看板换任务不丢来源链），tab 未指定时用派生 tab。
+  enterDetail(ctx?: { from?: string | null; tab?: string | null }): void
   exitDetail(): void
   setDir(key: string | null): void
   openCard(cardId: string, from?: MobileFrom): void
@@ -90,13 +93,17 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     navigate(to)
   }, [compact, here, navigate])
 
-  const enterDetail = useCallback((ctx?: { from?: MobileFrom | null; tab?: MobileTab }) => {
+  const enterDetail = useCallback((ctx?: { from?: string | null; tab?: string | null }) => {
     if (!compact) {
       setDesktopDetail(true)
       return
     }
-    const nextTab = ctx?.tab ?? tab
-    const src = ctx?.from ?? null
+    const rawTab = ctx?.tab ?? null
+    const nextTab = rawTab !== null && MOBILE_TABS.includes(rawTab) ? (rawTab as MobileTab) : tab
+    // from：ctx 给了合法值就用它；未给/非法（含 null）保留当前 URL 的 from——
+    // 任务现场之间换入口不该抹掉「你从哪来」。
+    const ctxFrom = ctx?.from ?? null
+    const src = isMobileFrom(ctxFrom) ? ctxFrom : from
     const p = new URLSearchParams()
     p.set('tab', nextTab)
     p.set('detail', '1')
@@ -110,7 +117,7 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
     // /tasks/:id 等瞬态路径（非 '/' 与 '/cards'）用 replace：跳板不留历史格。
     const transient = location.pathname !== '/' && location.pathname !== '/cards'
     navigate(to, { replace: transient })
-  }, [compact, tab, params, here, location.pathname, navigate])
+  }, [compact, tab, from, params, here, location.pathname, navigate])
 
   const exitDetail = useCallback(() => {
     if (!compact) {
@@ -196,7 +203,10 @@ export function useMobileNav({ compact }: { compact: boolean }): MobileNav {
       return
     }
     // ② '/' 上 tab=cards 且无 detail 是任务现场/返回后的残留形状，归一成 /cards。
-    if (!isCards && p.get('tab') === 'cards' && p.get('detail') !== '1') {
+    // 瞬态跳板路径（/tasks/:id 等）不动：其参数正由跳板消费者（TaskDeepLink）
+    // 读取，此刻改写会跟 enterDetail 的收口竞态、把跳板 URL 撕掉。
+    if (location.pathname !== '/' && !isCards) return
+    if (location.pathname === '/' && p.get('tab') === 'cards' && p.get('detail') !== '1') {
       if (here !== '/cards') {
         console.debug('shell.mobile_nav.normalize', { rule: 'cards_shape', from: here })
         navigate('/cards', { replace: true })

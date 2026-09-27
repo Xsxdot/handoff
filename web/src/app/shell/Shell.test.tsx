@@ -45,8 +45,23 @@ vi.mock('../../api/ledger', async () => {
     ...actual,
     // Shell 既有路由/工作台回归按账本已启用基线运行；关闭态由门控专项断言。
     fetchLedgerHealth: vi.fn().mockResolvedValue({ enabled: true, mirror: [] }),
+    // B369.7：卡流/卡详情入桩（默认空集；此前为真 fetch 失败被静默吞掉的等价
+    // 空态，现在可断言也不外发请求）。用例内按需覆写。
+    fetchCards: vi.fn().mockResolvedValue({ cards: [], unlinked: { count: 0, tasks: [], unknown_targets: [] } }),
+    fetchCardDetail: vi.fn().mockResolvedValue(null),
   }
 })
+// —— B369.7：协调者状态/attach 入桩（默认未绑定；用例⑧在用例内覆写）。
+// getQueue 维持真实现（与既有基线一致），只拦协调者两枚。
+vi.mock('../../api/scheduling', async () => {
+  const actual = await vi.importActual<typeof import('../../api/scheduling')>('../../api/scheduling')
+  return {
+    ...actual,
+    getCoordinatorStatus: vi.fn().mockResolvedValue({ bound: false, attach_active: false, attach: null }),
+    attachCoordinator: vi.fn(),
+  }
+})
+const { getCoordinatorStatus, attachCoordinator } = await import('../../api/scheduling')
 // —— B156.2 C8 追加：房间面路由与 dock 入口（seam 贯穿——点击/挂载最终到达 rooms API）——
 // B358.6：会话面经同一 rooms seam 进壳，fetchSessions/createSession/fetchSessionDetail 一并入桩。
 vi.mock('../../api/rooms', async () => {
@@ -1250,7 +1265,34 @@ describe('Shell 杂项回归', () => {
   })
 })
 
-// —— B369.7 紧凑导航统一：URL 单一事实源（tab↔URL 双向、账本门改写）——
+// —— B369.7 紧凑导航统一：URL 单一事实源（tab↔URL 双向、账本门改写、
+// 会话↔卡深链与返回语义）——
+// 卡夹具：字段集对齐 api/ledger 的 CardView / CardDetail 消费面（与
+// CardsPage.test.tsx 的 wireCard 同一真相），抽屉 URL effect 与详情轮询都能落数。
+const b1CardView = {
+  id: 'B1', title: '卡甲', status: '进行中', priority: '中', project: 'handoff',
+  workflow: '', workflow_version: 1, parent: '', base_branch: '', attachments: [],
+  acceptance_criteria: '', created_at: '', updated_at: '', following: '', blocked: false,
+  blocked_by: [], merged_count: 0, needs: '', open_decisions: 0, children_total: 0,
+  children_done: 0, conflict: false, open_tickets: 0,
+}
+const b1CardDetail = (over: Record<string, unknown> = {}) => ({
+  card: b1CardView,
+  relations: [],
+  events: [],
+  task_states: [],
+  effective_base_branch: '',
+  decisions: [],
+  needs: '',
+  ...over,
+})
+
+async function mockCardLedger(taskStates: Record<string, unknown>[] = []) {
+  const ledger = vi.mocked(await import('../../api/ledger'))
+  ledger.fetchCards.mockResolvedValue({ cards: [b1CardView], unlinked: { count: 0, tasks: [], unknown_targets: [] } })
+  ledger.fetchCardDetail.mockResolvedValue(b1CardDetail({ task_states: taskStates }) as never)
+}
+
 describe('B369.7 紧凑导航统一', () => {
   it('点底栏 tab 写 URL：projects → /?tab=projects（tab→URL）', async () => {
     Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
@@ -1281,5 +1323,98 @@ describe('B369.7 紧凑导航统一', () => {
     renderShell()
     await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
     expect(screen.getByTestId('mobile-tab-projects')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('会话卡身份行 → 卡 tab 卡详情（带会话来源），不直接进任务现场', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    const rooms = vi.mocked(await import('../../api/rooms'))
+    rooms.fetchSessions.mockResolvedValue([sessionSummary()] as never)
+    rooms.fetchSessionDetail.mockResolvedValue({
+      summary: { ...sessionSummary(), cards: [{ card_id: 'B1', title: '卡甲', seat: 'user:sy' }] },
+      nodes: [],
+      timeline: [],
+    } as never)
+    await mockCardLedger()
+    renderShell('/')
+    fireEvent.click(await screen.findByTestId('session-row'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
+    // 会话 tab 在场 →「⋯」开详情抽屉 → 点卡身份行
+    fireEvent.click(await screen.findByRole('button', { name: '会话详情' }))
+    fireEvent.click(await screen.findByTestId('session-card-row'))
+    // from 值里的会话 id 冒号按 URLSearchParams 规则转义；读回时自动解码
+    await waitFor(() => expect(locationRef()).toBe('/cards?card=B1&from=session-session%3A1'))
+    expect(screen.getByTestId('mobile-tab-cards')).toHaveAttribute('aria-selected', 'true')
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    // 卡身份入口只到卡详情，不进任务现场
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
+  })
+
+  it('直达 /cards?card=<id>&from=session-<sid> 与会话进入得到同一状态', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    await mockCardLedger()
+    renderShell('/cards?card=B1&from=session-session:1')
+    await waitFor(() => expect(screen.getByTestId('mobile-tab-cards')).toHaveAttribute('aria-selected', 'true'))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
+    expect(locationRef()).toBe('/cards?card=B1&from=session-session:1')
+  })
+
+  it('卡抽屉 ↗ → 任务现场 /?tab=cards&detail=1&from=card-<选中卡>，TUI tab 在场', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    await mockCardLedger([{ Target: 'local', TaskID: 'T1', Purpose: 'implement', LastType: 'question', LastSeq: 3 }])
+    renderShell('/cards?card=B1')
+    fireEvent.click(await screen.findByRole('button', { name: '跳到 T1' }))
+    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+    await waitFor(() => expect(locationRef()).toBe('/?tab=cards&detail=1&from=card-B1'))
+    expect(await screen.findByRole('tab', { name: /重构工单通道/ })).toBeInTheDocument()
+  })
+
+  it('协调者「打开终端」→ 同款任务现场断言（来源卡取自 URL card 参数）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    await mockCardLedger()
+    vi.mocked(getCoordinatorStatus).mockResolvedValue({ bound: true, attach_active: false, attach: { machine: '', dir: '/r/handoff', command: 'coord command' } })
+    vi.mocked(attachCoordinator).mockResolvedValue({ machine: '', dir: '/r/handoff', command: 'coord command' })
+    renderShell('/cards?card=B1')
+    fireEvent.click(await screen.findByRole('button', { name: '打开终端' }))
+    fireEvent.click(await screen.findByRole('button', { name: '确认 attach' }))
+    expect(await screen.findByTestId('mobile-detail-bar')).toBeInTheDocument()
+    await waitFor(() => expect(locationRef()).toBe('/?tab=cards&detail=1&from=card-B1'))
+    // 终端 tab 命名口径：bash · <基准 label>（attach 落在主目录基准上）
+    expect(await screen.findByRole('tab', { name: /bash · 主目录/ })).toBeInTheDocument()
+  })
+
+  it('from=card-<id> 点返回 → /cards?card=<id> 抽屉重开（不带 from：来源链到此为止）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    await mockCardLedger()
+    renderShell('/?tab=cards&detail=1&from=card-B1')
+    fireEvent.click(await screen.findByTestId('mobile-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/cards?card=B1'))
+    expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()
+  })
+
+  it('from=session-<id> 点返回 → 会话 workbench tab 重建且仍在下钻态（from 清除）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    const rooms = vi.mocked(await import('../../api/rooms'))
+    rooms.fetchSessions.mockResolvedValue([sessionSummary()] as never)
+    renderShell('/?tab=sessions&detail=1&from=session-session:1')
+    // 返回分派要用会话流解析标题：等 fetchSessions 真的落数再点返回
+    await waitFor(() => expect(rooms.fetchSessions.mock.results.some((r) => r.type === 'return')).toBe(true))
+    fireEvent.click(await screen.findByTestId('mobile-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
+    expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
+    expect(screen.getByTestId('mobile-detail-bar')).toBeInTheDocument()
+    // from 已清除：再点返回走无 from 兜底（逐级出栈）
+    fireEvent.click(screen.getByTestId('mobile-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions'))
+    expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
+  })
+
+  it('无 from 点返回 → 回底栏首页（现状兜底不回归）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/?tab=sessions&detail=1')
+    fireEvent.click(await screen.findByTestId('mobile-detail-back'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=sessions'))
+    expect(screen.getByTestId('mobile-home')).toBeInTheDocument()
+    expect(screen.queryByTestId('mobile-detail-bar')).toBeNull()
   })
 })

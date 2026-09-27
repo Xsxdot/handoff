@@ -149,10 +149,31 @@ export function Shell() {
   const location = useLocation()
   const openCoordinatorTerminal = useCallback((info: CoordinatorAttachInfo) => {
     console.info('coordinator.terminal.open', { machine: info.machine, dir: info.dir, opened: true, cause: 'attach' })
-    openMobileDetail()
+    if (compact) {
+      // B369.7：紧凑下抽屉选中已 URL 化，来源卡从当前 location 的 card 参数读，
+      // 不需要改 CardsPageProps 回调签名；进任务现场形态 /?tab=cards&detail=1&from=card-<id>。
+      const cardParam = new URLSearchParams(location.search).get('card')
+      nav.enterDetail({ from: `card-${cardParam ?? ''}`, tab: 'cards' })
+    } else {
+      openMobileDetail()
+    }
     wb.openTerminalWithCommand(info.command, coordinatorBase(treeState.data, info))
-  }, [treeState.data, wb, openMobileDetail])
+  }, [compact, location.search, nav, treeState.data, wb, openMobileDetail])
   const [routeParams] = useSearchParams()
+
+  // B369.7 seam：紧凑下抽屉开关与任务跳转的 URL 收口。只注入给紧凑视口的
+  // CardsPage 挂载点；桌面缺省不注入 = CardsPage 既有内部行为零改动。
+  const onDrawerCardChange = useCallback((cardId: string | null) => {
+    if (cardId === null) nav.closeCard()
+    else nav.openCard(cardId)
+  }, [nav])
+
+  const taskJumpHref = useCallback((taskId: string) => {
+    // 卡到任务的唯一出口仍是 /tasks/:id 深链（B181）；紧凑下把任务现场返回语境
+    // 带上：from 取当前 URL 的来源，缺省回落卡来源（紧凑下抽屉选中已 URL 化）。
+    const src = nav.from ?? `card-${routeParams.get('card') ?? ''}`
+    return `/tasks/${taskId}?from=${encodeURIComponent(src)}&tab=cards`
+  }, [nav, routeParams])
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
@@ -594,10 +615,13 @@ export function Shell() {
   // 左栏任务行、看板卡片、/tasks/:id 深链、工单弹层的「跳到该任务」都走它。
   // 首参为 null（工单弹层、未归属任务）时先用树解析任务自己的目录；解析不出
   // （任务真的不在树上）才退回「当前选中目录」，一个都没选中则 wb.open 空操作。
-  const openTaskTui = (base: BaseDir | null, taskId: string) => {
+  // opts（B369.7）：/tasks 跳板期间把来源与 tab 透传给 nav.enterDetail，修正
+  // 瞬态路径上 tab 派生错误；看板弹层/ProjectTree 等既有调用方不传，零感知。
+  const openTaskTui = (base: BaseDir | null, taskId: string, opts?: { from?: string | null; tab?: string | null }) => {
     setOverlay('none')
     backToWorkbench()
-    openMobileDetail()
+    if (compact) nav.enterDetail(opts)
+    else openMobileDetail()
     let target = base
     if (target === null && treeState.data) {
       target = findBaseOfTask(treeState.data, tasks, taskId)
@@ -961,7 +985,12 @@ export function Shell() {
                       <SessionTab
                         sessionId={c.sessionId}
                         title={c.title}
-                        onOpenCard={(cardId) => navigate(`/cards?card=${encodeURIComponent(cardId)}`)}
+                        onOpenCard={(cardId) => {
+                          // B369.7：紧凑下会话卡身份只进卡 tab/对应卡详情（带会话来源，
+                          // 不直接跳任务现场）；桌面走既有 /cards 深链。
+                          if (compact) nav.openCard(cardId, `session-${c.sessionId}`)
+                          else navigate(`/cards?card=${encodeURIComponent(cardId)}`)
+                        }}
                       />
                     )
                   case 'tui':
@@ -993,7 +1022,7 @@ export function Shell() {
               />
             )}
             <Route path="/machines" element={<Navigate to="/settings" replace />} />
-            <Route path="/tasks/:id" element={<FullPageCover><TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} /></FullPageCover>} />
+            <Route path="/tasks/:id" element={<FullPageCover><TaskDeepLink tree={treeState.data} tasks={tasks} onOpen={openTaskTui} compact={compact} /></FullPageCover>} />
           </Routes>
           {/* 紧凑视口的移动内容面。用绝对覆盖层而不是条件卸载：WorkbenchPage 必须
               常驻（B280——卸了 xterm 会断 WS 再重放，OpenTUI/Grok 卡死），覆盖层
@@ -1021,7 +1050,13 @@ export function Shell() {
                     <p className="p-4 text-sm text-muted-foreground">账本未启用，会话不可用。</p>
                   )
                 )}
-                {nav.tab === 'cards' && <CardsPage onOpenCoordinatorTerminal={openCoordinatorTerminal} />}
+                {nav.tab === 'cards' && (
+                  <CardsPage
+                    onOpenCoordinatorTerminal={openCoordinatorTerminal}
+                    onDrawerCardChange={onDrawerCardChange}
+                    taskJumpHref={taskJumpHref}
+                  />
+                )}
                 {nav.tab === 'projects' && (projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>)}
                 {nav.tab === 'settings' && <SettingsPage onClose={() => nav.setTab('sessions')} />}
               </div>
@@ -1044,7 +1079,25 @@ export function Shell() {
               <button
                 type="button"
                 data-testid="mobile-detail-back"
-                onClick={() => nav.exitDetail()}
+                onClick={() => {
+                  // B369.7 返回条按来源分派（plan §3.2）：会话来源重建会话 tab 且
+                  // 仍在下钻态（from 清除，再返回走无 from 兜底——逐级出栈）；卡来源
+                  // 落 /cards?card=<id> 不带 from（from=card-Y 意味着卡详情原本无
+                  // 来源，没有「来源的来源」可恢复）；无 from 走 exitDetail 兜底。
+                  const src = nav.from
+                  if (src !== null && src.startsWith('session-')) {
+                    const sessionId = src.slice('session-'.length)
+                    const session = sessions.find((s) => s.id === sessionId)
+                    wb.openOrFocus({ kind: 'session', sessionId, title: session?.title ?? sessionId }, sessionBase(sessionId))
+                    console.debug('shell.mobile_nav.detail_back', { from: src })
+                    navigate('/?tab=sessions&detail=1', { replace: true })
+                  } else if (src !== null && src.startsWith('card-')) {
+                    console.debug('shell.mobile_nav.detail_back', { from: src })
+                    navigate(`/cards?card=${encodeURIComponent(src.slice('card-'.length))}`, { replace: true })
+                  } else {
+                    nav.exitDetail()
+                  }
+                }}
                 className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 ‹ 返回
@@ -1237,26 +1290,36 @@ function FullPageCover({ children }: { children: ReactNode }) {
 // 不停在一个不再有对应页面的路径上。
 // B181 起 /cards 抽屉里每行任务的 ↗ 也落到这条深链——它是本路由的第二个消费者；
 // 目录解析/开 TUI tab 的行为以这里为唯一实现，消费方不得复制。
+// B369.7：compact 下 from/tab 参数原样透传给 openTaskTui（→ nav.enterDetail 落
+// 任务现场 URL），终态导航省略——URL 已由 enterDetail 以 replace 收口；桌面保留
+// navigate('/', { replace: true })。
 function TaskDeepLink({
   tree,
   tasks,
   onOpen,
+  compact,
 }: {
   tree: ProjectTreeResp | null
   tasks: Task[]
-  onOpen: (base: BaseDir | null, taskId: string) => void
+  onOpen: (base: BaseDir | null, taskId: string, opts?: { from?: string | null; tab?: string | null }) => void
+  compact: boolean
 }) {
   const { id } = useParams<{ id: string }>()
   const navigate = useNavigate()
+  const [searchParams] = useSearchParams()
   const [done, setDone] = useState(false)
 
   useEffect(() => {
     // 等树到位再解析目录：树还没来时目录解析不出来，会把 tab 开在错的基准上
     if (!id || done || !tree) return
-    onOpen(findBaseOfTask(tree, tasks, id), id)
+    onOpen(
+      findBaseOfTask(tree, tasks, id),
+      id,
+      compact ? { from: searchParams.get('from'), tab: searchParams.get('tab') } : undefined,
+    )
     setDone(true)
-    navigate('/', { replace: true })
-  }, [id, done, tree, tasks, onOpen, navigate])
+    if (!compact) navigate('/', { replace: true })
+  }, [id, done, tree, tasks, onOpen, navigate, compact, searchParams])
 
   return <p className="p-4 text-sm text-muted-foreground">正在打开任务…</p>
 }
