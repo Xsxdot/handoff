@@ -1826,6 +1826,9 @@ describe('B369.9 单焦点投影', () => {
     setViewport(375)
     renderShell('/?tab=projects')
     await openWorkspaceTerminal('主目录')
+    // review 建议修：返回→再进的「返回」分支直接锁死验收原句「返回…不重连」——
+    // 第一个终端的 pty-host 节点跨返回/再开/切组全程身份保留
+    const host1 = screen.getByTestId('pty-host')
     fireEvent.click(screen.getByTestId('mobile-detail-back'))
     await screen.findByTestId('mobile-home')
     await openWorkspaceTerminal('integration/b2-b3')
@@ -1839,6 +1842,7 @@ describe('B369.9 单焦点投影', () => {
     await waitFor(() => expect(within(reachablePanes()[0]).getAllByText(/bash · 主目录/).length).toBeGreaterThan(0))
     expect(reachablePanes()).toHaveLength(1)
     expect(reachableKeybars()).toHaveLength(1)
+    expect(screen.getAllByTestId('pty-host')).toContain(host1)
   })
 
   it('变异锁·卸载即红：切组往返后 pty-host 恒 2 且两节点身份都保留', async () => {
