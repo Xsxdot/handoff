@@ -1358,8 +1358,8 @@ describe('B369.7 紧凑导航统一', () => {
     renderShell('/')
     fireEvent.click(await screen.findByTestId('session-row'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
-    // 会话 tab 在场 →「⋯」开详情抽屉 → 点卡身份行
-    fireEvent.click(await screen.findByRole('button', { name: '会话详情' }))
+    // 会话 tab 在场 → compact「详情」tab（B369.8 T5：两态取代「⋯」抽屉）→ 点卡身份行
+    fireEvent.click(await screen.findByTestId('session-view-detail'))
     fireEvent.click(await screen.findByTestId('session-card-row'))
     // from 值里的会话 id 冒号按 URLSearchParams 规则转义；读回时自动解码
     await waitFor(() => expect(locationRef()).toBe('/cards?card=B1&from=session-session%3A1'))
@@ -1491,8 +1491,9 @@ describe('B369.7 紧凑导航统一', () => {
     // ① 会话行 → 下钻态
     fireEvent.click(await screen.findByTestId('session-row'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
-    // ② 卡身份行 → 卡 tab 卡详情（不进任务现场）
-    fireEvent.click(await screen.findByRole('button', { name: '会话详情' }))
+    // ② 卡身份行 → 卡 tab 卡详情（不进任务现场）；
+    //    详情面板入口 = compact「详情」tab（B369.8 T5：两态取代「⋯」抽屉）
+    fireEvent.click(await screen.findByTestId('session-view-detail'))
     fireEvent.click(await screen.findByTestId('session-card-row'))
     await waitFor(() => expect(locationRef()).toBe('/cards?card=B1&from=session-session%3A1'))
     expect(await screen.findByRole('dialog', { name: '工作项详情' })).toBeInTheDocument()

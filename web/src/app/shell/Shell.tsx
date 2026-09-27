@@ -1025,6 +1025,8 @@ export function Shell() {
                       <SessionTab
                         sessionId={c.sessionId}
                         title={c.title}
+                        // B369.8 T5：compact 用「群聊|详情」两态替换「⋯」抽屉。
+                        compact={compact}
                         onOpenCard={(cardId) => {
                           // B369.7：紧凑下会话卡身份只进卡 tab/对应卡详情（带会话来源，
                           // 不直接跳任务现场）；桌面走既有 /cards 深链。

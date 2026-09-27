@@ -138,3 +138,57 @@ describe('SessionTab', () => {
     expect(screen.getByRole('checkbox', { name: '选择 B1' })).toBeDisabled()
   })
 })
+
+// —— B369.8 T5：compact「群聊 | 详情」两态（岔口 5）——
+// panelByLabel：hidden 面板不进可达性树（这正是闸的证据），name 过滤会撞
+// 「隐藏元素可名计算为空」的库行为，故 role 全量（hidden:true）后按 aria-label 挑。
+const panelByLabel = (label: string) =>
+  screen.getAllByRole('tabpanel', { hidden: true }).find((p) => p.getAttribute('aria-label') === label)!
+
+describe('B369.8 compact 两态', () => {
+  it('缺省群聊态：无叠加 aside、无 ⋯；详情面板 hidden、tab 选中态正确', async () => {
+    render(<SessionTab sessionId="session:7" title="架构物理化" compact />)
+    await screen.findByRole('textbox', { name: '发送消息' })
+    expect(screen.queryByTestId('session-drawer')).toBeNull()
+    expect(screen.queryByRole('button', { name: '会话详情' })).toBeNull()
+    expect(screen.getByTestId('session-view-chat')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('session-view-detail')).toHaveAttribute('aria-selected', 'false')
+    expect(panelByLabel('群聊').hasAttribute('hidden')).toBe(false)
+    // 详情面板 hidden：不进可达性树（可见面查询 getByRole 摸不到它，闸的正面证据）
+    expect(screen.queryByRole('tabpanel', { name: '会话详情' })).toBeNull()
+    expect(panelByLabel('会话详情').hasAttribute('hidden')).toBe(true)
+  })
+
+  it('点「详情」→ aria-selected 翻转 + 五块全宽在场 + 群聊容器 hidden + 无 aside', async () => {
+    render(<SessionTab sessionId="session:7" title="架构物理化" compact />)
+    await screen.findByRole('textbox', { name: '发送消息' })
+    fireEvent.click(screen.getByTestId('session-view-detail'))
+    expect(screen.getByTestId('session-view-detail')).toHaveAttribute('aria-selected', 'true')
+    expect(screen.getByTestId('session-view-chat')).toHaveAttribute('aria-selected', 'false')
+    const detailPanel = panelByLabel('会话详情')
+    expect(detailPanel.hasAttribute('hidden')).toBe(false)
+    for (const name of ['成员', '会话卡', '任务节点', '会话 timeline', '会话管理']) {
+      expect(within(detailPanel).getByRole('region', { name })).toBeInTheDocument()
+    }
+    expect(panelByLabel('群聊').hasAttribute('hidden')).toBe(true)
+    expect(screen.queryByTestId('session-drawer')).toBeNull()
+  })
+
+  it('切回群聊：草稿跨切换存活（hidden 保挂载的核心收益）', async () => {
+    render(<SessionTab sessionId="session:7" title="架构物理化" compact />)
+    await screen.findByRole('textbox', { name: '发送消息' })
+    fireEvent.change(screen.getByRole('textbox', { name: '发送消息' }), { target: { value: '草稿甲' } })
+    fireEvent.click(screen.getByTestId('session-view-detail'))
+    fireEvent.click(screen.getByTestId('session-view-chat'))
+    expect(screen.getByRole('textbox', { name: '发送消息' })).toHaveValue('草稿甲')
+  })
+
+  it('Esc 关详情态回群聊（compact 下的第二收起通道）', async () => {
+    render(<SessionTab sessionId="session:7" title="架构物理化" compact />)
+    await screen.findByRole('textbox', { name: '发送消息' })
+    fireEvent.click(screen.getByTestId('session-view-detail'))
+    expect(panelByLabel('会话详情').hasAttribute('hidden')).toBe(false)
+    fireEvent.keyDown(window, { key: 'Escape' })
+    expect(panelByLabel('群聊').hasAttribute('hidden')).toBe(false)
+  })
+})
