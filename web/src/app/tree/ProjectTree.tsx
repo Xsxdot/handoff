@@ -127,6 +127,13 @@ export interface ProjectTreeProps {
   onOpenSettings: () => void
   onOpenCodegraph?: () => void
   onOpenProjectCodegraph?: (project: ProjectNode) => void
+  // compact（B369.7）：紧凑视口形态。缺省 false = 桌面行为零改动。
+  // 三个处置：①项目行右侧簇常驻渲染「工作项」钮（触屏无 hover 也可见可点），
+  // 「代码图」子钮不渲染；②底部「流程」「代码图」钮配合回调缺席一并隐藏——
+  // /flows、/codegraph 整页路由只在桌面注册，紧凑下点了就是「URL 变了没人消费」
+  // 的死按钮；③底部入口行下方渲染一行解释文案（mobile-nav-note），同一视口内
+  // 说清「为什么不在、去哪用」。
+  compact?: boolean
   // onAddProject 打开项目登记向导。入口是「项目 N」标题行右侧的 + 图标——
   // 它改变树本身，与底部那排「去别处看」的跳转入口不是一类东西。
   onAddProject?: () => void
@@ -310,7 +317,7 @@ function TaskIconSlot({ kind }: { kind: 'tui' | 'terminal' | 'file' | 'preview' 
   )
 }
 
-export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, onAddProject, onUnregister, onEdit, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
+export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDir, openItems, focusedTaskId, onFocusOpenItem, onCloseOpenItem, onOpenTerminalAt, onOpenDirectory, onOpenTask, onOpenBoard, onOpenCards, onOpenProjectCards, ledgerEnabled = false, onOpenFlows, cardNeedsCount = 0, unlinkedCount = 0, onOpenTickets, onOpenSettings, onOpenCodegraph, onOpenProjectCodegraph, compact = false, onAddProject, onUnregister, onEdit, onWorktreeCreated, previews = [], previewMachines = [], previewOpenKeys = new Set<string>(), previewOpeningKeys = new Set<string>(), onOpenPreview = () => {} }: ProjectTreeProps) {
   // collapsed：空集 = 全展开。为什么用「收起集合」而不是「展开集合」：默认全展开
   // 意味着初值空集，渲染时 `!collapsed.has(key)` 天然为真，不用为每个节点预填。
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
@@ -668,20 +675,33 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
                   {project.locations.length > 0 && <Arrow open={pOpen} onToggle={() => toggle(pKey)} />}
                 </span>
               </button>
+              {/* B369.7：桌面 hidden group-hover:flex 逐字节保留；compact 下容器
+                  常驻 flex（触屏无 hover），「代码图」子钮不渲染（/codegraph 整页
+                  只在桌面注册，compact 点了就是死入口），「工作项」钮触点与底栏
+                  同档（p-1.5）。同一 aria-label，两档只差可见性策略。offset 用
+                  right-20（桌面 right-14）：compact 行宽 390 下两位数进行中计数
+                  （图标 16 + 间距 7 + 两位数字 ≈19 + 间距 7 + 箭头 16 ≈ 65px）
+                  比 right-14 的 56px 让位更宽，常驻钮不与计数/箭头挤压。 */}
               {(onOpenProjectCards || onOpenProjectCodegraph) && (
-                <span className="absolute right-14 top-1/2 hidden -translate-y-1/2 items-center gap-0.5 bg-background group-hover:flex">
+                <span className={cn(
+                  'absolute top-1/2 -translate-y-1/2 items-center gap-0.5 bg-background',
+                  compact ? 'right-20 flex' : 'right-14 hidden group-hover:flex',
+                )}>
                   {onOpenProjectCards && (
                     <button
                       type="button"
                       aria-label={'打开 ' + project.name + ' 工作项'}
                       title="工作项"
                       onClick={() => onOpenProjectCards(project)}
-                      className="rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
+                      className={cn(
+                        'rounded text-muted-foreground hover:bg-accent hover:text-foreground',
+                        compact ? 'p-1.5' : 'p-0.5',
+                      )}
                     >
                       <SquareKanban className="size-3.5" />
                     </button>
                   )}
-                  {onOpenProjectCodegraph && (
+                  {!compact && onOpenProjectCodegraph && (
                     <button
                       type="button"
                       aria-label={'打开 ' + project.name + ' 代码图'}
@@ -1163,7 +1183,9 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
             </span>
           )}
         </button>
-        {ledgerEnabled && (
+        {/* B369.7：紧凑下 onOpenFlows 缺省（/flows 整页只在桌面注册）→ 按钮不渲染。
+            与代码图钮的 onOpenCodegraph 注入门控同一先例。 */}
+        {ledgerEnabled && onOpenFlows && (
           <button
             type="button"
             aria-label="流程"
@@ -1211,6 +1233,15 @@ export function ProjectTree({ tree, tasks, selectedKey, ticketCount, ticketsByDi
           <Settings className="size-4" />
         </button>
       </div>
+
+      {/* B369.7：被藏入口的解释文案——一行覆盖全部三类（底栏「流程」、底栏
+          「代码图」、项目行「代码图」），只在 compact 渲染，与入口隐藏同条件
+          挂在同一 prop 缝上，永不脱钩（plan §2 岔口 3，措辞逐字定死）。 */}
+      {compact && (
+        <p data-testid="mobile-nav-note" className="px-3 pb-2 pt-1.5 text-[11px] leading-4 text-muted-foreground">
+          流程与代码图暂未适配移动端，请在桌面宽屏使用。
+        </p>
+      )}
 
       {onUnregister && (
         <ConfirmDialog

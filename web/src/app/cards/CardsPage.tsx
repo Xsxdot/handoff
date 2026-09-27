@@ -77,10 +77,17 @@ function ProjectDecisions({ decisions }: { decisions: Decision[] }) {
 /** 可选终端回调由 Shell 注入；工作项页不持有 Workbench 具体实现。 */
 export interface CardsPageProps {
   onOpenCoordinatorTerminal?: (info: CoordinatorAttachInfo) => void
+  // B369.7 seam：抽屉开关上抛（Shell 紧凑下写 URL：open=nav.openCard、close=
+  // nav.closeCard）。缺省不注入 = 桌面与既有单测零改动；注入方负责 URL 收口，
+  // 本组件仍维护内部 selected state（URL→state 恢复 effect 不变）。
+  onDrawerCardChange?: (cardId: string | null) => void
+  // B369.7 seam：任务跳转 href 注入（紧凑下带 from/tab 任务现场返回语境）。
+  // 缺省 = 裸 /tasks/:id（桌面原样）。/tasks/:id 作为卡到任务唯一出口不变（B181）。
+  taskJumpHref?: (taskId: string) => string
 }
 
-/** 参数：协调者终端回调；返回：工作项看板/列表与抽屉。 */
-export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
+/** 参数：协调者终端回调与紧凑 seam；返回：工作项看板/列表与抽屉。 */
+export function CardsPage({ onOpenCoordinatorTerminal, onDrawerCardChange, taskJumpHref }: CardsPageProps = {}) {
   const [searchParams] = useSearchParams()
   const projectFromUrl = searchParams.get('project') ?? ''
   const [view, setView] = useState<'board' | 'list'>('board')
@@ -241,11 +248,18 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
       })
     return () => { cancelled = true }
   }, [selected, selectedWorkflowName, selectedWorkflowVersion, selectedPinnedWorkflow])
-  const openDrawer = (id: string, focus?: 'merge') => { setSelected(id); setDrawerFocus(focus) }
+  const openDrawer = (id: string, focus?: 'merge') => {
+    setSelected(id)
+    setDrawerFocus(focus)
+    onDrawerCardChange?.(id)
+  }
   const closeDrawer = () => {
     setSelected(null)
     setDrawerFocus(undefined)
-    if (new URLSearchParams(location.search).has('card')) navigate('/cards', { replace: true })
+    onDrawerCardChange?.(null)
+    // card 参数的 URL 清理归注入 seam 的层收口（紧凑 closeCard 会保留 project）；
+    // 未注入 seam（桌面）维持既有 replace 行为。
+    if (!onDrawerCardChange && new URLSearchParams(location.search).has('card')) navigate('/cards', { replace: true })
   }
   const newCardWorkflows = flows?.workflows.map((item) => item.name) ?? []
   // 卡到任务的唯一出口是 /tasks/:id 深链：目录解析、开 TUI tab、跨机全由
@@ -253,7 +267,7 @@ export function CardsPage({ onOpenCoordinatorTerminal }: CardsPageProps = {}) {
   // 禁止复制那套逻辑）。跳转即离开 /cards 是接受的代价（spec §3.3 已弃选回退机制）。
   const jumpToTask = (taskId: string) => {
     console.debug('[cards] 从卡跳转任务深链', taskId)
-    navigate(`/tasks/${taskId}`)
+    navigate(taskJumpHref?.(taskId) ?? `/tasks/${taskId}`)
   }
 
   return (
