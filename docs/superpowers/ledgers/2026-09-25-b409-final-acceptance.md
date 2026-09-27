@@ -120,3 +120,23 @@ U7 新增测试符号（b409_final_acceptance_test.go 的金样/oracle/升级/�
 2. **Important-1——金样 PG 腿缺隔离**。金样含全库绝对量断言（未决工单恰 2 条、oracle 全表重放），在含外来数据的库上误红（run7 夹具下 2 实得 4）。修复：金样 PG 腿照抄升级腿的 schema 命名空间隔离模式（库内 `CREATE SCHEMA b409_gold_*` + search_path DSN + 用后 `DROP SCHEMA CASCADE`），只换 Store 打开方式，断言零改动；全库断言同类的三个既有测试（`TestPGSessionCandidatesGrowth`、`TestPGSessionMessageCandidatesSameGolden`、`TestOpenTicketProjectionPostgresGrowthKeepsRowsAndPayloadBounded`——全包 DSN 复跑中被同一脏库咬红）按同一最小模式改造，断言语义零改动。验证：在含 run7 矩阵残留 + 3 个陈旧 `b409_preproj_*` schema 的库上，`go test ./internal/ledger/ -run 'TestB409U7' -count=1`（带 DSN）exit 0 全 PASS；全包 DSN 复跑 exit 0（27.1s）；金样腿用后库内无 `b409_gold_*` 残留。复跑前置说明补入 §5a。
 3. **Minor-1——harness 脱敏模式含口令字面量**。`handoff_b409_local` 字面量移除，改泛化模式（`postgres(ql)?://…[:@]` 连接串 / `password[=:]` 赋值 / Bearer token）；run8 采集脱敏扫描通过。
 4. **Minor-2——数字表述**。§3 镜像 bytes 改 ≥ 语义（14,100,947 ≥ 2×7,048,844=14,097,688，差额 3,259 为金样镜像翻倍增量）；§4 response bytes 改逐场景 min–max（cards 949–953，sessions/rooms/messages 逐字节恒定），§1 postgres 金样字节 819→818（schema 隔离重采的 seq 落位微差，语义等值如实记录）。
+
+## 8. Web 三组真实浏览器首屏读数（协调者执行，run id `b409-u7-web-1790485889`）
+
+执行者：协调者（主 agent）派本会话子 agent；browser-use 在 subagent 上下文不可用，改用等价的本机 Google Chrome 154 无头 CDP（playwright-core 1.63.0，真实浏览器 + 循环脚本批量采集），工具替代已留痕于证据 `env.txt`。构建 SHA `645b643d`，agentd 隔离端口 17878 一次启动全程未重启，三档经 `TestB409U7PGSeedPhase` 增量 seed（①21,021 / ②41,021 / ③50,363 事件；镜像 9,342→18,684 行、bytes 翻倍，与 run8 一致）。
+
+口径：每组 1 冷首请求 + 5 预热（不计入）+ 100 计入样本，nearest-rank；计时 = 页面内 `performance.timeOrigin → 目标元素入 DOM`（MutationObserver + 兜底轮询）；缓存策略 = 文档导航带唯一参数强制网络取回、`/api` 服务端 no-store、hash 静态资源 immutable；错误样本保留（本 run 零错误）。选择器依据 web/src 源码（CardItem `article[role=button]` 卡号 span、SessionSidebar `button[data-testid=session-row]`、SessionChat `div[data-msg-seq]`）。
+
+| 档 | 组 | 首请求(ms) | p50 | p95 | max | 错误 |
+|---|---|---:|---:|---:|---:|---:|
+| ① | /cards 列表 | 144 | 118 | 141 | 171 | 0 |
+| ① | 工作台会话列表 | 104 | 87 | 111 | 162 | 0 |
+| ① | 消息首屏 | 119 | 72 | 106 | 117 | 0 |
+| ② | /cards | 150 | 126 | 184 | 252 | 0 |
+| ② | 会话列表 | 121 | 86 | 106 | 141 | 0 |
+| ② | 消息首屏 | 102 | 62 | 88 | 97 | 0 |
+| ③ | /cards | 134 | 104 | 121 | 151 | 0 |
+| ③ | 会话列表 | 86 | 77 | 99 | 196 | 0 |
+| ③ | 消息首屏 | 57 | 70 | 96 | 207 | 0 |
+
+**9/9 组 p95 ≤ 2s 全部通过**（最高 184ms，为阈值 9.2%）；三组独立分布未合并；api 字节三档基本持平（cards ~56KB、sessions ~49KB、messages ~48KB），Web 侧与限域读不随无关/镜像增长的后端结论互相印证。真机截图 `cards-evidence.png` 可见 fixture 卡在看板与主会话在侧栏。原始样本 9×TSV（各 107 行=1+5+100）、`web-stats.json`、环境与 seed 实测记录入仓 `evidence/2026-09-27-b409-u7-web/`（16 文件，凭据扫描零命中；DSN/token 只在 /tmp 配置）。过程备注：两次失败重跑（Playwright 伪类误用、ticket 过期）废样本整体删除未混入。
