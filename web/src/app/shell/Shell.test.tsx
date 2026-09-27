@@ -1417,8 +1417,11 @@ describe('B369.7 紧凑导航统一', () => {
     const rooms = vi.mocked(await import('../../api/rooms'))
     rooms.fetchSessions.mockResolvedValue([sessionSummary()] as never)
     renderShell('/?tab=sessions&detail=1&from=session-session:1')
-    // 返回分派要用会话流解析标题：等 fetchSessions 真的落数再点返回
+    // 返回分派要用会话流解析标题：等 fetchSessions 真的落数再点返回。
+    // mock resolve ≠ React 已提交 sessions state（usePoll 在 then 里 setData），
+    // 先 act 冲刷微任务，否则点击落进兜底标题（sessionId）且不会自愈。
     await waitFor(() => expect(rooms.fetchSessions.mock.results.some((r) => r.type === 'return')).toBe(true))
+    await act(async () => {})
     fireEvent.click(await screen.findByTestId('mobile-detail-back'))
     await waitFor(() => expect(locationRef()).toBe('/?tab=sessions&detail=1'))
     expect(await screen.findByRole('tab', { name: /架构物理化/ })).toBeInTheDocument()
