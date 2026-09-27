@@ -836,6 +836,32 @@ export function Shell() {
   // focusedTaskId：焦点窗格是 tui 内容时的 taskId，左栏任务行据此画焦点态。
   const focusedTaskId = focusedTab && focusedTab.content.kind === 'tui' ? focusedTab.content.taskId : null
 
+  // 裁决横幅判据（B369.10 岔口 4）：焦点**组**内存在 tui 窗格、其任务处于
+  // waiting_review，或该任务有挂起工单。判据字面取「焦点窗格是 tui」会让
+  // 切到终端段横幅即消失，直接违背原型 note ①「钉在顶部，切对话/终端/文件
+  // 都不丢」的法定语义——落点在 Shell 层（不进 WorkbenchPage 窗格树，B369.9
+  // 两把 pty-host 锁的守恒前提），组内切换只动 wb 焦点、横幅不随之卸载。
+  // 时差备注：判据源是任务流（2.5s）与工单聚合，与 TUI 会话流存在 ≤2.5s
+  // 时差——横幅是提示面、允许早晚、不二次轮询，不承载状态迁移（spec §6 风险 3）。
+  const bannerTask = useMemo(() => {
+    if (!compact) return null
+    const group = wb.wb.groups.find((g) => g.id === wb.wb.activeGroupId)
+    if (!group) return null
+    for (const column of group.columns) {
+      for (const pane of column.panes) {
+        if (pane === null || pane.content.kind !== 'tui') continue
+        const taskId = pane.content.taskId
+        const task = tasks.find((t) => t.id === taskId)
+        if (task === undefined) continue
+        const ticketCount = tickets.items.filter((item) => item.task.id === taskId).length
+        if (task.state === 'waiting_review' || ticketCount > 0) {
+          return { tabId: pane.id, taskId, inReview: task.state === 'waiting_review', ticketCount }
+        }
+      }
+    }
+    return null
+  }, [compact, wb.wb.groups, wb.wb.activeGroupId, tasks, tickets.items])
+
   // handleWorktreeCreated 是「建完工作树」的唯一善后：先刷新树再选中。选中只改
   // useWorkbench 的 base，树上那一行要等这次 refresh 回来才会出现，两件事都必须
   // 做。ProjectTree 机器行与移动项目详情面（B369.10）两个入口共用，不得分叉。
@@ -1068,7 +1094,7 @@ export function Shell() {
                       />
                     )
                   case 'tui':
-                    return <TuiTab taskId={c.taskId} />
+                    return <TuiTab taskId={c.taskId} compact={compact} />
                   default:
                     return null
                 }
@@ -1193,10 +1219,35 @@ export function Shell() {
               （桌面靠左栏与面包屑，手机两者都不挂）。固定在顶部，含当前焦点内容名。
               紧凑视口下 fullPageRoute 恒假（S2d-1），故不与整页路由互压。 */}
           {compact && nav.detail && (
-            <div
-              data-testid="mobile-detail-bar"
-              className="absolute inset-x-0 top-0 z-30 flex items-center gap-2 border-b bg-background px-2 py-1.5"
-            >
+            // B369.10：单条 absolute bar 升格为「bar + 裁决横幅」的组合容器——
+            // 横幅判据与落点理由见 bannerTask memo（Shell 层、不进窗格树）。
+            <div className="absolute inset-x-0 top-0 z-30 flex min-h-0 flex-col">
+              {bannerTask !== null && (
+                <div
+                  data-testid="task-verdict-banner"
+                  className="flex items-center gap-2 border-b border-amber-200 bg-amber-50 px-2 py-1.5 text-xs text-amber-900"
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {bannerTask.inReview
+                      ? '等你裁决 · 交付与作答在对话段'
+                      : `${bannerTask.ticketCount} 张工单等你答复`}
+                  </span>
+                  {/* 去查证 = 激活该 tui 窗格（焦点切回对话段）；waiting_review 的
+                      审阅面由 TuiTab 既有 effect 自动展开。横幅不承载作答。 */}
+                  <button
+                    type="button"
+                    data-testid="task-verdict-activate"
+                    onClick={() => wb.activate(wb.wb.activeGroupId, bannerTask.tabId)}
+                    className="shrink-0 rounded border border-amber-300 px-2 py-0.5 font-medium text-amber-900 hover:bg-amber-100"
+                  >
+                    去查证
+                  </button>
+                </div>
+              )}
+              <div
+                data-testid="mobile-detail-bar"
+                className="flex items-center gap-2 border-b bg-background px-2 py-1.5"
+              >
               <button
                 type="button"
                 data-testid="mobile-detail-back"
@@ -1224,6 +1275,7 @@ export function Shell() {
                 ‹ 返回
               </button>
               <span className="min-w-0 flex-1 truncate text-sm">{crumbTail ?? focusedBase?.label ?? ''}</span>
+              </div>
             </div>
           )}
           {/* 紧凑视口的目录面（项目 tab → 位置 → 目录）：右栏无处安放，改为覆盖层，

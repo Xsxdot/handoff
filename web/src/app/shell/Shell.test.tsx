@@ -2025,3 +2025,122 @@ describe('B369.10 项目详情', () => {
     expect(await screen.findByTestId('project-node-p1')).toBeInTheDocument()
   })
 })
+
+// —— B369.10 T5：Shell 裁决横幅（组级判据、切段不丢、去查证）——
+// 判据落点=焦点**组**扫描（bannerTask memo），不是焦点窗格——原型 note ①
+// 「钉在顶部，切对话/终端/文件都不丢」的法定语义锁在第二个用例。横幅在 Shell
+// 层 absolute 容器内，不进 WorkbenchPage 窗格树（B369.9 两把锁不需要新增）。
+describe('B369.10 裁决横幅', () => {
+  const setViewport = (width: number) =>
+    Object.defineProperty(window, 'innerWidth', { value: width, configurable: true, writable: true })
+  const reachable = (el: HTMLElement) =>
+    el.closest('[inert]') === null && el.closest('[aria-hidden="true"]') === null
+  const reachablePanes = () => screen.getAllByTestId('workbench-pane').filter(reachable)
+
+  // 横幅用例的夹具基取 t2（等你批）：判据语义就是「等你」任务，TuiHeader/中央
+  // tab 条渲染 task.name，断言（/等你批/）跟着夹具走；state 由参数覆写。
+  function mockTaskState(state: string, pendingTickets: number = 0) {
+    const task = { ...t2, state }
+    vi.mocked(fetchTasks).mockResolvedValue([task])
+    vi.mocked(fetchTaskDetail).mockResolvedValue({
+      task,
+      pending_tickets: Array.from({ length: pendingTickets }, (_, i) => ({
+        id: `tk-${i}`, task_id: task.id, kind: 'question', request: {}, created_at: '',
+      })),
+      recent_events: [],
+    })
+  }
+
+  // 下钻任务现场：compact 展开项目 → 点任务组第一行（openTaskTui → detail=1）。
+  async function openTaskScene() {
+    await expandCompactProject()
+    fireEvent.click(screen.getAllByTestId('task-row')[0])
+    await screen.findByTestId('mobile-detail-bar')
+    await screen.findByRole('tab', { name: /等你批/ })
+  }
+
+  // dropDirOntoPane：把目录拖进焦点窗格右半 → 同组新列终端窗格并夺焦（place
+  // 语义，B369.9 describe 同款手法）。由此焦点窗格不再是 tui，但组内仍有 tui
+  // ——组级判据的分界样本。clientX/clientY 必须显式给：jsdom 的 drop 事件不带
+  // 坐标，NaN 会投影成 center 落点、把 tui 窗格整个替换掉（切段不丢语义就没了）。
+  async function dropDirOntoPane() {
+    const values = new Map<string, string>()
+    const dataTransfer = {
+      types: [DRAG_DIR_MIME, DRAG_BASE_MIME],
+      setData: (type: string, value: string) => {
+        values.set(type, value)
+        if (!dataTransfer.types.includes(type)) dataTransfer.types.push(type)
+      },
+      getData: (type: string) => values.get(type) ?? '',
+      effectAllowed: '',
+      dropEffect: '',
+    }
+    const dirBase = { key: '/w/b2-b3', kind: 'workspace', path: '/w/b2-b3', label: 'integration/b2-b3', projectName: 'handoff', machine: '' }
+    values.set(DRAG_DIR_MIME, JSON.stringify(dirBase))
+    values.set(DRAG_BASE_MIME, JSON.stringify(dirBase))
+    const pane = reachablePanes()[0]
+    setPaneRect(pane!, 800, 600)
+    const event = createEvent.drop(pane!, { dataTransfer: dataTransfer as unknown as DataTransfer })
+    Object.defineProperty(event, 'clientX', { value: 720 })
+    Object.defineProperty(event, 'clientY', { value: 300 })
+    fireEvent(pane!, event)
+    await screen.findAllByTestId('workbench-pane')
+  }
+
+  it('waiting_review 任务下钻 → 横幅在场（等你裁决文案 + 去查证钮）', async () => {
+    setViewport(375)
+    mockTaskState('waiting_review')
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    expect(screen.getByTestId('task-verdict-banner')).toBeInTheDocument()
+    expect(screen.getByTestId('task-verdict-banner').textContent).toContain('等你裁决 · 交付与作答在对话段')
+    expect(screen.getByTestId('task-verdict-activate')).toBeInTheDocument()
+  })
+
+  it('组级判据：焦点切到同组终端窗格后横幅仍在场（切段不丢）', async () => {
+    setViewport(375)
+    mockTaskState('waiting_review')
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    await dropDirOntoPane()
+    // 拖放后焦点窗格是终端段——若判据字面取「焦点窗格是 tui」，此刻横幅已消失
+    expect(screen.getByTestId('task-verdict-banner')).toBeInTheDocument()
+  })
+
+  it('去查证 → 焦点回 tui 窗格（审阅面由 TuiTab 既有 effect 自动展开）', async () => {
+    setViewport(375)
+    mockTaskState('waiting_review')
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    await dropDirOntoPane()
+    fireEvent.click(screen.getByTestId('task-verdict-activate'))
+    await waitFor(() => expect(reachablePanes()[0].textContent).toContain('等你批'))
+  })
+
+  it('waiting_answer + 挂起工单 → 工单文案横幅（N 张工单等你答复）', async () => {
+    setViewport(375)
+    mockTaskState('waiting_answer', 2)
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    await waitFor(() => expect(screen.getByTestId('task-verdict-banner')).toBeInTheDocument())
+    expect(screen.getByTestId('task-verdict-banner').textContent).toContain('2 张工单等你答复')
+  })
+
+  it('running 任务 → 横幅不在场', async () => {
+    setViewport(375)
+    mockTaskState('running')
+    renderShell('/?tab=projects')
+    await openTaskScene()
+    expect(screen.queryByTestId('task-verdict-banner')).toBeNull()
+  })
+
+  it('桌面档不渲染横幅（compact 判据）', async () => {
+    setViewport(1024)
+    mockTaskState('waiting_review')
+    renderShell('/')
+    await screen.findByTestId('task-row')
+    fireEvent.click(screen.getAllByTestId('task-row')[0])
+    await screen.findByRole('tab', { name: /等你批/ })
+    expect(screen.queryByTestId('task-verdict-banner')).toBeNull()
+  })
+})
