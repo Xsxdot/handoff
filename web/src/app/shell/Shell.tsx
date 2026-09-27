@@ -69,7 +69,8 @@ import { needsAttention } from '../cards/columns'
 import { Breadcrumb } from './Breadcrumb'
 import { DesktopTitleBar } from './DesktopTitleBar'
 import { ResizableSidebar } from './ResizableSidebar'
-import { MobileTabBar, type MobileTab } from './MobileTabBar'
+import { MobileTabBar } from './MobileTabBar'
+import { useMobileNav } from './useMobileNav'
 import { isCompactViewport, useShellViewport } from './useShellViewport'
 
 // OverlayKind 是当前打开的弹层。同时只允许一个（spec §0）：两个叠在一起时
@@ -131,18 +132,17 @@ export function Shell() {
   // 响应式断点（B369.6）：判据与理由见 useShellViewport 文件头。
   const viewport = useShellViewport()
   const compact = isCompactViewport(viewport)
-  // 紧凑视口的底栏当前页；默认「会话」（spec：会话即工作单元、首屏=会话列表）。
-  const [mobileTab, setMobileTab] = useState<MobileTab>('sessions')
-  // mobileDetail：紧凑视口是否处在「下钻态」——打开了会话/任务/终端后，
-  // 内容面从底栏首页切到常驻的工作台（spec 原型 mobile-home → mobile-session /
-  // mobile-task 的下钻，复用既有工作台而不新开 /m 树）。返回条清回底栏首页。
-  const [mobileDetail, setMobileDetail] = useState(false)
-  // openMobileDetail 在紧凑视口把内容面切到工作台；桌面是空操作（工作台本就常驻）。
+  // 紧凑导航统一模型（B369.7）：mobileTab / mobileDetail / fileDrawer 三个状态源
+  // 收编进一个以 URL 为唯一事实源的 hook——任何导航动作 = 写 URL，任何 UI 呈现 =
+  // 读 URL。桌面直通（内部 state、URL 不动），行为契约见 useMobileNav 文件头。
+  const nav = useMobileNav({ compact })
+  // openMobileDetail 在紧凑视口把内容面切到工作台（写 URL：/?tab=<tab>&detail=1）；
+  // 桌面是空操作（工作台本就常驻）。
   // 为什么不做成 effect 监听 openedItems：用户点「返回」后底栏首页要能停住，
   // 而 openedItems 依然非空——"有 tab" 推不出 "想看它"。
   const openMobileDetail = useCallback(() => {
-    if (compact) setMobileDetail(true)
-  }, [compact])
+    if (compact) nav.enterDetail()
+  }, [compact, nav])
   useEffect(() => {
     console.debug('shell.viewport', { viewport, compact })
   }, [viewport, compact])
@@ -156,7 +156,13 @@ export function Shell() {
 
   const [overlay, setOverlay] = useState<OverlayKind>('none')
   const [wizardOpen, setWizardOpen] = useState(false)
-  const [fileDrawer, setFileDrawer] = useState<BaseDir | null>(null)
+  // fileDrawer 拆成两半（B369.7）：桌面沿用 useState（写点 openDirectory 与桌面
+  // FileTree onClose）；紧凑由 nav.dirKey 从树上反解（URL 是事实源，树未加载或
+  // 键失效时为 null——覆盖层不渲染、URL 残参自愈）。下游读点共用合成的同名变量。
+  const [desktopFileDrawer, setDesktopFileDrawer] = useState<BaseDir | null>(null)
+  const fileDrawer = compact
+    ? (nav.dirKey !== null && treeState.data ? findBaseByKey(treeState.data, nav.dirKey) : null)
+    : desktopFileDrawer
   // fileTreeNonce 是右栏刷新的触发器。中央区新建文件后递增它。
   // 用计数器而不是把 FileTree 的 refresh 传上来：那会把中央区与右栏焊死，
   // 而它们现在互不认识
@@ -166,15 +172,13 @@ export function Shell() {
   const machinesState = useMachines(wizardOpen)
   const tickets = useGlobalTickets(tasks)
   const { enabled: ledgerEnabled, loading: ledgerLoading } = useLedgerEnabled()
-  // 账本未启用时会话/卡两个 tab 无内容面，移动首屏退到「项目」，
-  // 否则首屏是一句「不可用」——状态门要与桌面门控（ledgerEnabled）一致。
-  // 必须等探测结束（!ledgerLoading）：enabled 在探到之前恒 false，若不等，
-  // 移动首屏会在加载期被误判成「账本未启用」而立刻切走，探测回来后也回不去。
+  // 账本未启用时会话/卡两个 tab 无内容面，移动首屏退到「项目」，否则首屏是一句
+  // 「不可用」——状态门要与桌面门控（ledgerEnabled）一致。归 nav.normalize：
+  // 除账本门改写外，它还负责「/ 上 tab=cards 无 detail → /cards」的形状归一与
+  // 残参清理（URL 变化会让 normalize 换新身份、effect 重跑；写前比对，幂等）。
   useEffect(() => {
-    if (compact && !ledgerLoading && !ledgerEnabled && (mobileTab === 'sessions' || mobileTab === 'cards')) {
-      setMobileTab('projects')
-    }
-  }, [compact, ledgerLoading, ledgerEnabled, mobileTab])
+    nav.normalize({ ledgerEnabled, ledgerLoading })
+  }, [nav, ledgerEnabled, ledgerLoading])
   const cardsState = usePoll(fetchCards, 2500, { enabled: ledgerEnabled })
   const decisionsState = usePoll(() => fetchDecisions(true), 2500, { enabled: ledgerEnabled })
   const cardNeedsCount = useMemo(() => {
@@ -479,19 +483,22 @@ export function Shell() {
   // 是面包屑跟着变了、中央还是原来那一页，看着像点击没反应（2026-08-19 真机
   // 踩到）。工作台本身常驻不卸（B280），但盖住它的那一层要靠导航拿掉。
   // 已在 / 上时不导航，避免往历史里塞无意义的同址条目。
+  // B369.7：紧凑分支改 no-op——pathname 由 nav setter 收口（每个入口动作随后
+  // 都落完整 URL），/tasks 跳板由 enterDetail 的 replace 处理；桌面原样。
   const backToWorkbench = () => {
+    if (compact) return
     if (location.pathname !== '/') navigate('/')
   }
 
   // openCardsSurface/openSettingsSurface 是两个「去别处看」入口的移动分支：
-  // 紧凑视口下切底栏 tab（内容面直接换成对应页），桌面仍走整页路由。
+  // 紧凑视口下切底栏 tab（写 URL：/cards 或 /?tab=settings），桌面仍走整页路由。
   // 抽成回调解 ProjectTree 的既有 prop 契约不变（它只发信号，不关心去哪）。
   const openCardsSurface = () => {
-    if (compact) setMobileTab('cards')
+    if (compact) nav.setTab('cards')
     else navigate('/cards')
   }
   const openSettingsSurface = () => {
-    if (compact) setMobileTab('settings')
+    if (compact) nav.setTab('settings')
     else navigate('/settings')
   }
 
@@ -540,10 +547,12 @@ export function Shell() {
 
   // onOpenDirectory 是左栏目录的完整入口：选中基准并打开可关闭的文件抽屉。
   // 抽屉自己的文件点击只开 tab，不清掉 drawer，直到用户明确点 X。
+  // B369.7：紧凑下抽屉开关 = 写 URL（/?tab=projects&dir=<key>），桌面沿用 state。
   const openDirectory = (base: BaseDir) => {
     backToWorkbench()
     wb.select(base)
-    setFileDrawer(base)
+    if (compact) nav.setDir(base.key)
+    else setDesktopFileDrawer(base)
     console.debug('shell.directory.open', { project: base.projectName, machine: base.machine, baseKey: base.key, path: base.path })
   }
 
@@ -990,10 +999,10 @@ export function Shell() {
               常驻（B280——卸了 xterm 会断 WS 再重放，OpenTUI/Grok 卡死），覆盖层
               与既有 FullPageCover 同一手法，只是带底栏且由 tab 状态驱动。
               mobileDetail 为真时整层让开，露出下面的常驻工作台（下钻态）。 */}
-          {compact && !mobileDetail && (
+          {compact && !nav.detail && (
             <div data-testid="mobile-home" className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background">
               <div className="min-h-0 flex-1 overflow-auto">
-                {mobileTab === 'sessions' && (
+                {nav.tab === 'sessions' && (
                   ledgerEnabled ? (
                     <SessionSidebar
                       sessions={sessions}
@@ -1012,20 +1021,13 @@ export function Shell() {
                     <p className="p-4 text-sm text-muted-foreground">账本未启用，会话不可用。</p>
                   )
                 )}
-                {mobileTab === 'cards' && <CardsPage onOpenCoordinatorTerminal={openCoordinatorTerminal} />}
-                {mobileTab === 'projects' && (projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>)}
-                {mobileTab === 'settings' && <SettingsPage onClose={() => setMobileTab('sessions')} />}
+                {nav.tab === 'cards' && <CardsPage onOpenCoordinatorTerminal={openCoordinatorTerminal} />}
+                {nav.tab === 'projects' && (projectTree ?? <p className="p-4 text-sm text-muted-foreground">正在读取项目…</p>)}
+                {nav.tab === 'settings' && <SettingsPage onClose={() => nav.setTab('sessions')} />}
               </div>
               <MobileTabBar
-                active={mobileTab}
-                onSelect={(tab) => {
-                  console.debug('shell.mobile_tab.select', { tab })
-                  // 先把整页路由收回工作台：从 /cards 等整页深链进来时，若不导航，
-                  // Routes 里的整页会与下面的移动内容面各渲染一份 CardsPage（撞 testid）。
-                  backToWorkbench()
-                  setMobileDetail(false)
-                  setMobileTab(tab)
-                }}
+                active={nav.tab}
+                onSelect={nav.setTab}
                 needsCount={ledgerEnabled ? cardNeedsCount : 0}
                 unread={totalUnread(sessions)}
               />
@@ -1034,7 +1036,7 @@ export function Shell() {
           {/* 下钻态的返回条：没有它，手机用户进了会话/任务现场就回不到底栏首页
               （桌面靠左栏与面包屑，手机两者都不挂）。固定在顶部，含当前焦点内容名。
               紧凑视口下 fullPageRoute 恒假（S2d-1），故不与整页路由互压。 */}
-          {compact && mobileDetail && (
+          {compact && nav.detail && (
             <div
               data-testid="mobile-detail-bar"
               className="absolute inset-x-0 top-0 z-30 flex items-center gap-2 border-b bg-background px-2 py-1.5"
@@ -1042,10 +1044,7 @@ export function Shell() {
               <button
                 type="button"
                 data-testid="mobile-detail-back"
-                onClick={() => {
-                  console.debug('shell.mobile_detail.back', { tab: mobileTab })
-                  setMobileDetail(false)
-                }}
+                onClick={() => nav.exitDetail()}
                 className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
               >
                 ‹ 返回
@@ -1055,15 +1054,15 @@ export function Shell() {
           )}
           {/* 紧凑视口的目录面（项目 tab → 位置 → 目录）：右栏无处安放，改为覆盖层，
               带返回条回项目列表。文件/终端下钻切工作台（S2b 的两个回调）——
-              下钻时本层让开（!mobileDetail），返回条再把它露回来，形成
+              下钻时本层让开（!nav.detail），返回条再把它露回来，形成
               任务/文件 → 目录 → 底栏首页 的逐级返回。 */}
-          {compact && fileDrawer !== null && !mobileDetail && (
+          {compact && fileDrawer !== null && !nav.detail && (
             <div data-testid="mobile-dir" className="absolute inset-0 z-30 flex min-h-0 flex-col bg-background">
               <div className="flex shrink-0 items-center gap-2 border-b px-2 py-1.5">
                 <button
                   type="button"
                   data-testid="mobile-dir-back"
-                  onClick={() => setFileDrawer(null)}
+                  onClick={() => nav.setDir(null)}
                   className="rounded px-2 py-1 text-sm text-muted-foreground hover:bg-accent hover:text-foreground"
                 >
                   ‹ 返回
@@ -1078,7 +1077,7 @@ export function Shell() {
                   onOpenFile={(rel) => openMobileFile(fileDrawer, rel)}
                   onOpenTerminal={(rel) => openMobileTerminal(fileDrawer, rel)}
                   revealSupported={caps.reveal('')}
-                  onClose={() => setFileDrawer(null)}
+                  onClose={() => nav.setDir(null)}
                 />
               </div>
             </div>
@@ -1097,7 +1096,7 @@ export function Shell() {
             onOpenTerminal={(rel) => wb.openTerminal(fileDrawer, undefined, rel)}
             revealSupported={caps.reveal('')}
             onClose={() => {
-              setFileDrawer(null)
+              setDesktopFileDrawer(null)
               console.debug('shell.directory.close', { project: fileDrawer.projectName, machine: fileDrawer.machine, baseKey: fileDrawer.key, path: fileDrawer.path })
             }}
           />

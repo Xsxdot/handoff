@@ -11,7 +11,7 @@
 // useGlobalTickets / SettingsPage），在那些任务落地前无法运行，属预期的全期红。
 import { createEvent, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter } from 'react-router-dom'
+import { MemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 import { AppRoutes } from '../../App'
 import { coordinatorBase } from './Shell'
@@ -243,12 +243,25 @@ beforeEach(() => {
   })
 })
 
+// LocationProbe 把当前 URL 投到 DOM（data-ref=pathname+search），B369.7 起本文件
+// 全部 URL 断言的读取口；与 AppRoutes 并排挂在同一 Router 下，不影响被测路由。
+function LocationProbe() {
+  const location = useLocation()
+  return <span data-testid="test-location" data-ref={location.pathname + location.search} />
+}
+
 function renderShell(path = '/') {
   return render(
     <MemoryRouter initialEntries={[path]}>
+      <LocationProbe />
       <AppRoutes />
     </MemoryRouter>,
   )
+}
+
+// locationRef 读探针当前记录的 URL。
+function locationRef(): string | null {
+  return screen.getByTestId('test-location').getAttribute('data-ref')
 }
 
 async function openBranch() {
@@ -1234,5 +1247,39 @@ describe('Shell 杂项回归', () => {
   it('Shell 不再挂更新提示组件', async () => {
     renderShell('/settings')
     await waitFor(() => expect(screen.queryByTestId('update-toasts')).not.toBeInTheDocument())
+  })
+})
+
+// —— B369.7 紧凑导航统一：URL 单一事实源（tab↔URL 双向、账本门改写）——
+describe('B369.7 紧凑导航统一', () => {
+  it('点底栏 tab 写 URL：projects → /?tab=projects（tab→URL）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell()
+    await screen.findByTestId('mobile-home')
+    fireEvent.click(screen.getByTestId('mobile-tab-projects'))
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    expect(screen.getByTestId('mobile-tab-projects')).toHaveAttribute('aria-selected', 'true')
+  })
+
+  it('直达 /?tab=projects → projects tab 高亮且树渲染（URL→tab）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/?tab=projects')
+    await waitFor(() => expect(screen.getByTestId('mobile-tab-projects')).toHaveAttribute('aria-selected', 'true'))
+    expect(await screen.findByTestId('project-node-p1')).toBeInTheDocument()
+  })
+
+  it('直达 /cards → cards tab 高亮 + CardsPage 内容面（pathname 即卡 tab 表达）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    renderShell('/cards')
+    await waitFor(() => expect(screen.getByTestId('mobile-tab-cards')).toHaveAttribute('aria-selected', 'true'))
+    expect(await screen.findByText('工作项')).toBeInTheDocument()
+  })
+
+  it('账本关闭 compact 首屏改写 /?tab=projects（normalize ①）', async () => {
+    Object.defineProperty(window, 'innerWidth', { value: 375, configurable: true, writable: true })
+    vi.mocked(fetchLedgerHealth).mockResolvedValueOnce({ enabled: false, mirror: [] })
+    renderShell()
+    await waitFor(() => expect(locationRef()).toBe('/?tab=projects'))
+    expect(screen.getByTestId('mobile-tab-projects')).toHaveAttribute('aria-selected', 'true')
   })
 })
