@@ -139,7 +139,7 @@ export function SessionTab({ sessionId, title, onOpenCard, compact = false }: {
           <div role="tabpanel" aria-label="群聊" hidden={paneDetail ? true : undefined} className="flex min-h-0 flex-1 flex-col">
             <SessionChat sessionId={sessionId} summary={detail?.summary ?? null} events={history}
               historyError={historyPoll.disconnected ? historyPoll.errorText : ''} onSent={() => historyPoll.refresh()}
-              onJoinCard={() => setJoinOpen(true)} compact={compact} />
+              onJoinCard={() => setJoinOpen(true)} compact={compact} onOpenCard={onOpenCard} />
           </div>
           {/* 详情态占满会话内容区（五块全宽）；归档/拉卡流程接线原样。 */}
           <div role="tabpanel" aria-label="会话详情" hidden={paneDetail ? undefined : true} className="min-h-0 flex-1 overflow-y-auto">
