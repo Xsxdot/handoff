@@ -1,0 +1,269 @@
+<!doctype html>
+<!--
+  移动端原型屏:卡详情(桌面工作项看板 v2 抽屉的移动端镜像)。
+  镜像 sections:验收区(判据+已验开关+证据)/ 关系区 / 分层 timeline
+  (评论=气泡主视觉,系统事件=浅色 meta 行)/ 评论框 #引用成链。
+  双跳通路:驾驶会话 → mobile-session.html(执行面);
+  当前节点任务现场 → mobile-task.html(裁决动作面)。
+  会话里的卡身份始终先落到本页;from 参数只决定返回来源。
+  状态流转一律走 card move、由工作流 gate 校验(cmd/card_records.go:6 边界)。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>卡详情 · 移动端原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #e9e9ec; }
+  .stage { max-width: 1120px; margin: 0 auto; padding: 20px 24px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+  .row { display: flex; gap: 28px; align-items: flex-start; }
+
+  .phone { width: 390px; flex-shrink: 0; background: #111; border-radius: 44px; padding: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+  .screen { background: #fff; border-radius: 34px; overflow: hidden; height: 800px; display: flex; flex-direction: column; }
+  .notch { height: 30px; display: flex; align-items: center; justify-content: center; }
+  .notch::after { content: ""; width: 110px; height: 22px; background: #111; border-radius: 999px; }
+
+  .nhead { padding: 6px 12px 8px; display: flex; align-items: center; gap: 8px; border-bottom: 1px solid var(--border); }
+  .nhead .back { text-decoration: none; color: var(--foreground); font-size: 18px; padding: 2px 6px; }
+  .nhead .nid { font-family: var(--font-mono); font-size: 13px; color: var(--muted-foreground); }
+  .nhead .badge { font-size: 11px; padding: 2px 10px; border-radius: 999px; background: #fef3c7; color: var(--amber); font-weight: 600; }
+  .nhead .node-tag { font-size: 10.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px; background: #111827; color: #fff; }
+
+  .body { flex: 1; overflow-y: auto; padding: 12px 16px 16px; }
+  .ctitle { font-size: 17px; font-weight: 700; line-height: 1.5; margin: 2px 0 8px; }
+  .cmeta { display: flex; gap: 5px; flex-wrap: wrap; margin-bottom: 12px; }
+  .chip { display: inline-flex; align-items: center; gap: 3px; font-size: 10.5px; padding: 0 6px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted-foreground); }
+  .chip.prio { border-color: #fecaca; color: var(--destructive); }
+
+  .jump { display: flex; align-items: center; gap: 10px; border: 1px solid var(--border); border-radius: 10px; padding: 9px 12px; text-decoration: none; color: inherit; margin-bottom: 8px; font-size: 12.5px; }
+  .jump .ji { font-size: 16px; }
+  .jump .jt { flex: 1; min-width: 0; }
+  .jump .jt b { display: block; font-size: 12.5px; }
+  .jump .jt span { font-size: 11px; color: var(--muted-foreground); }
+  .jump .arr { color: var(--muted-foreground); }
+  .jump.hot { border-color: #fde68a; background: #fffbeb; }
+
+  .sec { margin-top: 16px; }
+  .sec .st { font-size: 12px; font-weight: 600; color: var(--muted-foreground); margin-bottom: 8px; }
+  .ac { display: flex; gap: 10px; align-items: flex-start; padding: 8px 0; border-bottom: 1px solid var(--muted); font-size: 12.5px; line-height: 1.6; }
+  .ac:last-child { border-bottom: none; }
+  .ac .tgl { width: 34px; height: 20px; border-radius: 999px; background: var(--muted); flex-shrink: 0; position: relative; cursor: pointer; margin-top: 1px; }
+  .ac .tgl::after { content: ""; position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,.2); transition: left .15s; }
+  .ac .tgl.on { background: var(--green); }
+  .ac .tgl.on::after { left: 16px; }
+  .ac .ev { display: block; font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 2px; }
+
+  .rel { display: flex; gap: 6px; flex-wrap: wrap; }
+  .rel .rc { font-size: 11.5px; border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; text-decoration: none; color: inherit; }
+  .rel .rc b { font-weight: 400; color: var(--muted-foreground); }
+
+  .acts { display: flex; gap: 8px; margin-top: 14px; }
+  .acts .abtn { flex: 1; text-align: center; font-size: 13px; padding: 9px 0; border-radius: 10px; border: 1px solid var(--border); cursor: pointer; background: #fff; }
+  .acts .abtn.primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); font-weight: 600; }
+
+  .tl { margin-top: 4px; }
+  .tl .meta { font-size: 11.5px; color: var(--muted-foreground); padding: 5px 0 5px 14px; border-left: 2px solid var(--border); margin-left: 3px; line-height: 1.6; }
+  .tl .msg { margin: 10px 0; font-size: 12.5px; }
+  .tl .msg .who { font-size: 11px; color: var(--muted-foreground); margin-bottom: 3px; }
+  .tl .msg .bub { background: var(--muted); border-radius: 2px 12px 12px 12px; padding: 8px 12px; line-height: 1.6; }
+  .tl .msg.me .who { text-align: right; }
+  .tl .msg.me .bub { border-radius: 12px 12px 2px 12px; }
+
+  .composer { border-top: 1px solid var(--border); padding: 8px 12px 16px; }
+  .composer .box { border: 1px solid var(--border); border-radius: 10px; padding: 7px 10px; display: flex; gap: 8px; align-items: center; }
+  .composer input { flex: 1; border: none; outline: none; font-size: 12.5px; font-family: inherit; background: transparent; }
+  .composer .send { font-size: 12px; color: var(--primary); font-weight: 600; }
+
+  .notes { flex: 1; min-width: 0; }
+  .notes h2 { font-size: 16px; margin: 4px 0 4px; }
+  .notes .sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .note { display: flex; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.7; }
+  .note .no { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ref { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 10px; text-align: center; line-height: 16px; vertical-align: 2px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html">方案一图流</a>
+    <a href="mobile-home.html">会话</a>
+    <a href="mobile-cards.html" class="active">卡</a>
+    <a href="mobile-projects.html">项目</a>
+    <a href="mobile-pairing.html">设置</a>
+  </div>
+  <div class="row">
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="nhead">
+          <a class="back" id="backLink" href="mobile-cards.html" aria-label="返回">‹</a>
+          <span class="nid">B93</span>
+          <span class="badge">待审阅</span>
+          <span class="node-tag">review</span>
+          <span class="ref">⑤</span>
+        </div>
+
+        <div class="body">
+          <div class="ctitle">基准评测 opencode-qwen</div>
+          <div class="cmeta">
+            <span class="chip prio">高</span>
+            <span class="chip">📎 spec</span>
+            <span class="chip">handoff</span>
+            <span class="chip">工作流 feature · v3</span>
+            <span class="chip">mac-02</span>
+          </div>
+
+          <a class="jump hot" id="taskLink" href="mobile-task.html?card=B93&amp;from=card">
+            <span class="ji">⚑</span>
+            <span class="jt"><b>当前节点等你裁决<span class="ref">①</span></b><span>review 节点 · 交付摘要与 diff 在任务现场</span></span>
+            <span class="arr">›</span>
+          </a>
+          <a class="jump" id="sessionLink" href="mobile-session.html?card=B93&amp;from=card">
+            <span class="ji">💬</span>
+            <span class="jt"><b>驾驶会话:B93 benchmarking<span class="ref">②</span></b><span>群主:我 · opencode 在跑 · 最后活跃 14:31</span></span>
+            <span class="arr">›</span>
+          </a>
+
+          <div class="sec">
+            <div class="st">验收(2/3 已验)<span class="ref">③</span></div>
+            <div class="ac"><div class="tgl on"></div><div>终态即清扫:worktree 回收后无残留进程<span class="ev">证据:notes/b93-t1.md</span></div></div>
+            <div class="ac"><div class="tgl on"></div><div>watchdog 按任务两档点名,全量回归 29 包 0 FAIL<span class="ev">证据:notes/b93-t2.md</span></div></div>
+            <div class="ac"><div class="tgl" data-tgl></div><div>真机复验:bench 脚本在 mac-02 跑通一轮<span class="ev">待真机验 —— 手机端可标记,不伪造证据</span></div></div>
+          </div>
+
+          <div class="sec">
+            <div class="st">关系</div>
+            <div class="rel">
+              <a class="rc" href="mobile-card.html?card=B90">拆分自 B90</a>
+              <a class="rc" href="mobile-card.html?card=B97">阻塞 B97</a>
+              <a class="rc" href="mobile-card.html?card=B91">发现自 B91</a>
+            </div>
+          </div>
+
+          <div class="acts">
+            <button class="abtn" id="rejectBtn">打回修改</button>
+            <button class="abtn primary" id="acceptBtn">✓ 验收通过<span class="ref">④</span></button>
+          </div>
+
+          <div class="sec">
+            <div class="st">动态</div>
+            <div class="tl">
+              <div class="meta">14:31 · 系统 · 回合 2 结束,进入待审(waiting_review)</div>
+              <div class="msg"><div class="who">opencode(执行)· 14:31</div><div class="bub">B93 全部完成。7 个 commit,全量回归 29 包 0 FAIL,ledger 含变异测试记录。</div></div>
+              <div class="msg me"><div class="who">我 · 14:20</div><div class="bub">ledger 里补上变异测试的记录,再做最后一次全量回归取证。</div></div>
+              <div class="meta">11:31 · 系统 · status_moved:进行中 → 待审阅(节点 review)</div>
+              <div class="meta">11:16 · 系统 · 派发给 opencode,工作树 7a8334f4</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="composer">
+          <div class="box">
+            <input placeholder="评论…(#B142 引用自动成链)">
+            <span class="send">发送</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>卡详情 = 桌面抽屉的移动形态</h2>
+      <p class="sub">知识流主视觉:验收、关系、评论;保真信号沉默。动作只有两条:验收通过 / 打回修改。</p>
+      <div class="note"><div class="no">①</div><div><b>裁决进现场,不在卡里拍。</b>卡详情只呈现「该你去哪」；「当前节点等你裁决」才跳进任务现场(裁决横幅 + diff + 终端查证)。</div></div>
+      <div class="note"><div class="no">②</div><div><b>驾驶会话双跳。</b>卡 ↔ 会话互为入口:会话顶部「本会话的卡」横排跳到卡,卡里这条跳回群聊。执行面与工作项面平级互通,这是第四个 tab 存在的意义。</div></div>
+      <div class="note"><div class="no">③</div><div><b>验收开关就是 mobile 端的核心增量动作。</b>外出时对照证据逐条验;「待真机验」项可以标记但系统不伪造证据——与桌面验收区同一语义(判据 + 已验开关 + 证据附件)。</div></div>
+      <div class="note"><div class="no">④</div><div><b>「验收通过」= card move,过工作流 gate。</b>状态流转一律走 card move 由 gate 校验(cmd/card_records.go:6 边界:别的路径只落事件不改状态);手机上同样二次确认,不给误触留门。</div></div>
+      <div class="note"><div class="no">⑤</div><div><b>节点标签只在「列答不出节点」时显形。</b>待审阅/待合并两个节点共用「审核中」语义,所以出深色胶囊示节点名;一一对应的状态列沉默(桌面 v2 同一规则)。</div></div>
+    </div>
+  </div>
+</div>
+<script>
+  // 深链 mock:同一张卡可从会话或卡列表进入,返回路径由 from 保留。
+  const params = new URLSearchParams(location.search);
+  const cardId = params.get('card') || 'B93';
+  const from = params.get('from');
+  const cards = {
+    B93: {
+      id: 'B93', title: '基准评测 opencode-qwen', status: '待审阅', node: 'review',
+      meta: ['高', '📎 spec', 'handoff', '工作流 feature · v3', 'mac-02'],
+      task: '当前节点等你裁决', taskSub: 'review 节点 · 交付摘要与 diff 在任务现场',
+      session: '驾驶会话:B93 benchmarking', sessionSub: '群主:我 · opencode 在跑 · 最后活跃 14:31',
+      accept: '验收通过?B93 将移列「已完成」(card move,经工作流 gate 校验)。',
+      reject: '打回修改?B93 将回到「进行中」并通知驾驶会话。'
+    },
+    'B233.17': {
+      id: 'B233.17', title: '架构物理化 · 组装点冲突', status: '待裁决', node: 'contract',
+      meta: ['高', '📎 spec', 'handoff', '17 子卡', '本机 · claude'],
+      task: '当前节点等你裁决', taskSub: '契约节点 · 两条写法在任务现场查证',
+      session: '驾驶会话:架构物理化', sessionSub: '群主:Claude 桌面端 · 本机 claude · 刚刚活跃',
+      acceptance: ['冲突两条候选已在任务现场复核', '契约预算与组装点证据已附', '真机复验：裁决后再跑一轮'],
+      timeline: ['12:04 · 系统 · needs_human 亮起,等待你的裁决', '11:58 · Claude · 发现 cli→orchestration 预算冲突', '11:40 · 系统 · B233.17 契约节点派发至本机'],
+      accept: '验收通过?B233.17 将移列「已完成」(card move,经工作流 gate 校验)。',
+      reject: '打回修改?B233.17 将回到「进行中」并通知驾驶会话。'
+    },
+    'B233.16': {
+      id: 'B233.16', title: '架构物理化 · 执行面收窄', status: '已完成', node: 'finish',
+      meta: ['中', 'handoff', '已验', 'B233 会话'],
+      task: '查看当前节点', taskSub: '已完成 · 交付摘要与证据在任务现场',
+      session: '驾驶会话:架构物理化', sessionSub: '群主:Claude 桌面端 · 最后活跃 12:04',
+      acceptance: ['执行面已收窄', '证据已归档', '真机复验已完成'],
+      timeline: ['12:04 · 系统 · B233.16 已完成', '11:40 · 系统 · 验收证据归档'],
+      accept: '验收通过?B233.16 已经是「已完成」(mock)。',
+      reject: '打回修改?B233.16 将回到「进行中」并通知驾驶会话。'
+    }
+  };
+  const card = cards[cardId] || cards.B93;
+  const esc = encodeURIComponent(card.id);
+  document.title = `${card.id} 卡详情 · 移动端原型`;
+  document.querySelector('.nid').textContent = card.id;
+  document.querySelector('.badge').textContent = card.status;
+  document.querySelector('.node-tag').textContent = card.node;
+  document.querySelector('.ctitle').textContent = card.title;
+  document.querySelector('.cmeta').innerHTML = card.meta.map((item, i) => `<span class="chip${i === 0 ? ' prio' : ''}">${item}</span>`).join('');
+  document.querySelector('#taskLink').href = `mobile-task.html?card=${esc}&from=card`;
+  document.querySelector('#sessionLink').href = `mobile-session.html?card=${esc}&from=card`;
+  document.querySelector('.jump.hot .jt b').innerHTML = `${card.task}<span class="ref">①</span>`;
+  document.querySelector('.jump.hot .jt > span').textContent = card.taskSub;
+  document.querySelector('#sessionLink .jt b').innerHTML = `${card.session}<span class="ref">②</span>`;
+  document.querySelector('#sessionLink .jt > span').textContent = card.sessionSub;
+  document.querySelector('#backLink').href = from === 'session' ? 'mobile-session.html' : 'mobile-cards.html';
+  if (card.acceptance) {
+    const acceptanceSection = document.querySelector('.sec');
+    acceptanceSection.querySelector('.st').innerHTML = `验收(${card.id === 'B233.16' ? '3/3' : '0/3'} 已验)<span class="ref">③</span>`;
+    acceptanceSection.querySelectorAll('.ac > div:last-child').forEach((row, i) => {
+      row.firstChild.textContent = card.acceptance[i] || card.acceptance[card.acceptance.length - 1];
+      const evidence = row.querySelector('.ev');
+      if (evidence) evidence.textContent = i < (card.id === 'B233.16' ? 3 : 2) ? '证据已附 · 可展开核对' : '待任务现场复验';
+    });
+    acceptanceSection.querySelectorAll('.tgl').forEach((toggle) => toggle.classList.toggle('on', card.id === 'B233.16'));
+    document.querySelector('.tl').innerHTML = card.timeline.map(item => `<div class="meta">${item}</div>`).join('');
+  }
+  document.querySelector('#acceptBtn').dataset.card = card.id;
+  document.querySelector('#rejectBtn').dataset.card = card.id;
+
+  // 验收开关(mock):手机上可标记已验,不伪造证据
+  document.querySelectorAll('[data-tgl]').forEach((t) => {
+    t.addEventListener('click', () => t.classList.toggle('on'));
+  });
+  // 验收通过/打回:mock 反馈;真实路径是 card move 过 gate + 二次确认
+  document.getElementById('acceptBtn').addEventListener('click', () => {
+    if (confirm(card.accept)) {
+      document.querySelector('.nhead .badge').textContent = '已完成';
+      document.querySelector('.nhead .badge').style.background = 'var(--muted)';
+      document.querySelector('.nhead .badge').style.color = 'var(--muted-foreground)';
+    }
+  });
+  document.getElementById('rejectBtn').addEventListener('click', () => {
+    confirm(card.reject);
+  });
+</script>
+</body>
+</html>

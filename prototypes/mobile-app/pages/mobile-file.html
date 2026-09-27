@@ -1,0 +1,96 @@
+<!doctype html>
+<!--
+  移动端原型屏 7:文件查看(只读)。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>README.md · 移动端原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #e9e9ec; }
+  .stage { max-width: 1120px; margin: 0 auto; padding: 20px 24px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+  .row { display: flex; gap: 28px; align-items: flex-start; }
+
+  .phone { width: 390px; flex-shrink: 0; background: #111; border-radius: 44px; padding: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+  .screen { background: #fff; border-radius: 34px; overflow: hidden; height: 800px; display: flex; flex-direction: column; }
+  .notch { height: 30px; display: flex; align-items: center; justify-content: center; }
+  .notch::after { content: ""; width: 110px; height: 22px; background: #111; border-radius: 999px; }
+
+  .scenehead { display: flex; align-items: center; gap: 10px; padding: 4px 14px 10px; border-bottom: 1px solid var(--border); }
+  .scenehead .back { font-size: 20px; color: var(--foreground); text-decoration: none; }
+  .scenehead .tt { flex: 1; min-width: 0; }
+  .scenehead .tt .a { font-size: 14px; font-weight: 600; font-family: var(--font-mono); }
+  .scenehead .tt .b { font-size: 11px; color: var(--muted-foreground); }
+  .scenehead .act { font-size: 12px; color: var(--muted-foreground); border: 1px solid var(--border); border-radius: 999px; padding: 3px 10px; }
+
+  .feed { flex: 1; overflow: auto; padding: 14px 16px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.75; white-space: pre-wrap; }
+  .feed .h1 { font-size: 15px; font-weight: 700; }
+  .feed .c { color: #22863a; } .feed .b { color: #005cc5; } .feed .k { color: #d73a49; }
+
+  .notes { flex: 1; min-width: 0; }
+  .notes h2 { font-size: 16px; margin: 4px 0 4px; }
+  .notes .sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .note { display: flex; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.7; }
+  .note .no { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ref { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 10px; text-align: center; line-height: 16px; vertical-align: 2px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html">方案一图流</a>
+    <a href="mobile-home.html">会话</a>
+    <a href="mobile-cards.html">卡</a>
+    <a href="mobile-projects.html" class="active">项目</a>
+    <a href="mobile-pairing.html">设置</a>
+  </div>
+  <div class="row">
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="scenehead">
+          <a class="back" href="mobile-files.html">‹</a>
+          <div class="tt">
+            <div class="a">README.md</div>
+            <div class="b">handoff · main · 本机 · 28 KB<span class="ref">①</span></div>
+          </div>
+          <div class="act">只读<span class="ref">②</span></div>
+        </div>
+        <div class="feed"><span class="h1">handoff</span>
+
+Hand an implementation plan to another AI. You just review.
+
+handoff is a CLI-only, two-role collaboration tool. You — or any coding-agent session: Claude Code, opencode, grok, and codex all work — play the <span class="b">coordinator</span>: write the plan, dispatch the task, rule on permissions, review the changes. The <span class="b">executor</span> does the actual work in its own independent session.
+
+<span class="c">write plan → handoff dispatch → executor works independently</span>
+<span class="c">                  ↑                        │</span>
+<span class="c">     reply: approve/answer ←── permission gate / question wakes you</span>
+
+<span class="k">Why not just open a terminal and let the AI run?</span>
+
+· <span class="b">Execution is separated from review</span>…
+· <span class="b">Nothing is lost when you disconnect</span>…
+· <span class="b">Remote compute</span>…
+· <span class="b">No central anything</span>…</div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>文件查看:只读、够用</h2>
+      <p class="sub">查看器形态:等宽 + 着色 + 搜索,不做编辑。</p>
+      <div class="note"><div class="no">①</div><div>大文件分段加载(mock 不演示);markdown 先按纯文本着色,富渲染列后续(桌面端同源能力下来时一起下)。</div></div>
+      <div class="note"><div class="no">②</div><div>「只读」徽标是显式承诺:小屏不给编辑错觉——改代码的出路是下一屏那个终端。</div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

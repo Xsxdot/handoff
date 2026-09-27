@@ -1,0 +1,421 @@
+<!doctype html>
+<!--
+  移动端方案一图流(2026-09-13 spec 配套沟通页,非产品页面)。
+  目的:让「我完全没理解你打算怎么做」在一页内解决。
+  配套原型屏(可点通流程):会话 mobile-home → mobile-session → mobile-task;
+  卡 mobile-cards → mobile-card;项目 mobile-projects → mobile-project →
+  mobile-files/mobile-file/mobile-terminal;设置·配对 mobile-pairing。
+  底栏四个一级 tab:会话 | 卡 | 项目 | 设置(「卡」2026-09-13 用户拍板升一级)。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>移动端方案一图流 · handoff 原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: var(--muted); }
+  .page { max-width: 1200px; margin: 0 auto; padding: 24px 28px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 20px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  h2 { font-size: 15px; margin: 36px 0 4px; }
+  h2 .no { color: var(--muted-foreground); font-weight: 400; margin-right: 6px; }
+  .sub { color: var(--muted-foreground); font-size: 13px; margin: 0 0 14px; }
+  .lead { font-size: 14.5px; line-height: 1.8; background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 14px 18px; }
+  .lead b { white-space: nowrap; }
+
+  .sheet { background: #fff; border: 1px solid var(--border); border-radius: var(--radius); padding: 20px; }
+
+  /* ---- 通路图:盒子 + 箭头 ---- */
+  .chain { display: flex; align-items: stretch; gap: 0; }
+  .node {
+    flex: 1; min-width: 0; border: 1.5px solid var(--border); border-radius: 10px;
+    padding: 12px 14px; background: #fff; position: relative;
+  }
+  .node .who { font-size: 12px; color: var(--muted-foreground); margin-bottom: 4px; }
+  .node .what { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+  .node .detail { font-size: 12px; color: var(--muted-foreground); line-height: 1.7; }
+  .node .detail code { font-family: var(--font-mono); font-size: 11px; background: var(--muted); padding: 1px 4px; border-radius: 4px; }
+  .link { display: flex; flex-direction: column; justify-content: center; align-items: center; padding: 0 6px; min-width: 108px; }
+  .link .arrow { font-size: 18px; line-height: 1; color: var(--foreground); }
+  .link .how { font-size: 11px; color: var(--muted-foreground); text-align: center; line-height: 1.5; margin-top: 4px; }
+  .link .how b { color: var(--foreground); }
+
+  /* 存量/新建标签 */
+  .tag { display: inline-block; font-size: 10.5px; padding: 1px 7px; border-radius: 999px; border: 1px solid; vertical-align: 1px; margin-left: 6px; font-weight: 500; }
+  .tag.old { color: var(--green); border-color: #bbf7d0; background: #f0fdf4; }
+  .tag.new { color: var(--amber); border-color: #fde68a; background: #fffbeb; }
+  .node.old { border-color: #bbf7d0; }
+  .node.new { border-color: #fde68a; background: #fffdf5; }
+
+  .zone { border: 1.5px dashed var(--border); border-radius: 12px; padding: 14px; display: flex; gap: 14px; }
+  .zone .zlabel { writing-mode: vertical-rl; font-size: 11px; letter-spacing: 2px; color: var(--muted-foreground); display: flex; align-items: center; justify-content: center; border-right: 1px dashed var(--border); padding-right: 10px; }
+  .zone .zbody { flex: 1; display: flex; align-items: stretch; }
+  .caption { font-size: 12px; color: var(--muted-foreground); margin-top: 10px; line-height: 1.7; }
+  .caption code { font-family: var(--font-mono); font-size: 11px; background: var(--muted); padding: 1px 4px; border-radius: 4px; }
+
+  /* ---- 配对步骤 ---- */
+  .steps { display: flex; gap: 0; align-items: stretch; }
+  .step { flex: 1; border: 1px solid var(--border); border-radius: 10px; padding: 12px; background: #fff; }
+  .step .n { width: 22px; height: 22px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 12px; display: flex; align-items: center; justify-content: center; margin-bottom: 8px; }
+  .step .t { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .step .d { font-size: 12px; color: var(--muted-foreground); line-height: 1.6; }
+  .step .d code { font-family: var(--font-mono); font-size: 11px; background: var(--muted); padding: 1px 4px; border-radius: 4px; }
+  .step-arrow { display: flex; align-items: center; padding: 0 8px; color: var(--muted-foreground); }
+
+  /* ---- 新建 vs 存量 ---- */
+  .twocol { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+  .col h3 { font-size: 13px; margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+  .col ul { margin: 0; padding-left: 18px; font-size: 13px; line-height: 2; }
+  .col li small { color: var(--muted-foreground); }
+  .col.new { border: 1.5px solid #fde68a; background: #fffdf5; border-radius: 10px; padding: 14px; }
+  .col.old { border: 1.5px solid #bbf7d0; background: #fbfffc; border-radius: 10px; padding: 14px; }
+
+  .props { display: flex; gap: 10px; flex-wrap: wrap; }
+  .prop { flex: 1; min-width: 200px; border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; background: #fff; }
+  .prop .k { font-size: 13px; font-weight: 600; margin-bottom: 4px; }
+  .prop .v { font-size: 12px; color: var(--muted-foreground); line-height: 1.6; }
+</style>
+</head>
+<body>
+<div class="page">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html" class="active">方案一图流</a>
+    <a href="mobile-home.html">会话</a>
+    <a href="mobile-cards.html">卡</a>
+    <a href="mobile-projects.html">项目</a>
+    <a href="mobile-pairing.html">设置</a>
+  </div>
+
+  <h1>移动端方案一图流</h1>
+  <p class="sub">2026-09-13 · 对应 spec <code>docs/superpowers/specs/2026-09-13-mobile-app-design.md</code>(待批准)</p>
+
+  <div class="lead">
+    <b>一句话:</b>手机上装一个很薄的 App,里面是一个 webview;webview 显示的页面和你电脑浏览器里打开的控制台是<b>同一份</b>——区别只在于,这份页面是手机先问「手机里的 Go 模块」要,Go 模块再穿过一条加密隧道,从执行机的 agentd 那儿取回来的。
+  </div>
+
+  <!-- ================= 图 1:外出通路 ================= -->
+  <h2><span class="no">①</span>外出时,一个页面请求走的路(核心图)</h2>
+  <p class="sub">你在 4G/咖啡馆 Wi-Fi 下打开 App —— 数据从左到右走一个来回。整条路上只有 relay 那一段出手机,而它全程是密文。</p>
+  <div class="sheet">
+    <div class="chain">
+      <div class="node new">
+        <div class="who">手机里 · App 壳</div>
+        <div class="what">webview<span class="tag new">新建</span></div>
+        <div class="detail">显示 UI 的浏览器窗口<br>(iOS: WKWebView / Android: WebView)</div>
+      </div>
+      <div class="link">
+        <div class="arrow">⟶</div>
+        <div class="how"><b>HTTP 回环</b><br><code>127.0.0.1:端口</code><br>不出手机</div>
+      </div>
+      <div class="node new">
+        <div class="who">手机里 · App 壳内</div>
+        <div class="what">Go 连接核<span class="tag new">新打包</span></div>
+        <div class="detail">回环反代 + relay 客户端<br><b>内部全是仓库里现成的 Go 代码</b>,经 gomobile 编进 App</div>
+      </div>
+      <div class="link">
+        <div class="arrow">⟶</div>
+        <div class="how"><b>E2E 加密隧道</b><br>Noise + yamux<br>走 WSS 出手机</div>
+      </div>
+      <div class="node old">
+        <div class="who">你的 VPS</div>
+        <div class="what">relay 服务器<span class="tag old">存量</span></div>
+        <div class="detail">哑管道,只转发<br><b>看不到明文</b>(它从来解不开隧道)</div>
+      </div>
+      <div class="link">
+        <div class="arrow">⟶</div>
+        <div class="how"><b>密文</b><br>relay 原样转发</div>
+      </div>
+      <div class="node old">
+        <div class="who">执行机(家/公司)</div>
+        <div class="what">agentd<span class="tag old">存量零改动</span></div>
+        <div class="detail">供出 <code>/console</code> 页面<br>+ <code>/api</code> + <code>/ws</code><br>和桌面端用的是同一份</div>
+      </div>
+    </div>
+    <div class="caption">
+      响应沿同一条路流回手机。今天 CLI 走的就是 <b>Go 连接核 → relay → agentd</b> 这一段(协调机远程派发形态,已上线);
+      移动端唯一新的事情,是把这一段从「你电脑上的 CLI」搬进「手机里的 Go 模块」,再在头顶加一个 webview。
+    </div>
+  </div>
+
+  <div class="twocol" style="margin-top:14px">
+    <div class="col old" style="border-color:#bfdbfe;background:#f8fbff">
+      <h3 style="font-size:13px;margin:0 0 8px">Q:webview 地址栏里到底是什么?</h3>
+      <div style="font-size:12.5px;line-height:1.9">
+        <code style="font-family:var(--font-mono);font-size:11px;background:var(--muted);padding:1px 5px;border-radius:4px">http://127.0.0.1:端口/</code> —— <b>手机自己的回环地址</b>,壳里的 Go 核在那儿起监听。<br>
+        页面内容<b>不是 relay 供的</b>(relay 只搬字节,不供任何页面),也<b>不是打包进壳的</b>——是 <b>agentd 供的</b>,而且前端资产<b>编译进 agentd 二进制</b>(发布构建带 <code style="font-family:var(--font-mono);font-size:11px;background:var(--muted);padding:1px 5px;border-radius:4px">embedweb</code> tag)。所以 agentd 一升级,所有端的页面一起新,壳永不更新。<br>
+        为什么不直接填 agentd 的地址?relay 形态下根本没有可直连的地址;统一回环源后,relay/LAN 两种形态对页面和 cookie 完全同构。
+      </div>
+    </div>
+    <div class="col old" style="border-color:#bfdbfe;background:#f8fbff">
+      <h3 style="font-size:13px;margin:0 0 8px">Q:relay 的 host 去哪找?</h3>
+      <div style="font-size:12.5px;line-height:1.9">
+        <b>从配对 QR 里来,手机永远不用发现或输入。</b><br>
+        relay 地址(<code style="font-family:var(--font-mono);font-size:11px;background:var(--muted);padding:1px 5px;border-radius:4px">wss://你的VPS/relay</code>)在你当初按 README 配 relay 时就写在<b>电脑的 handoff 配置</b>里;<code style="font-family:var(--font-mono);font-size:11px;background:var(--muted);padding:1px 5px;border-radius:4px">handoff console --qr</code> 打包 bundle 时把它装进去。<br>
+        <b>没有「默认 relay host」</b>——项目不运营公共 relay(无中心哲学)。你的 relay 就是你自己的 VPS;没配 relay,外出形态就不存在,手机只剩 LAN 直连。
+      </div>
+    </div>
+  </div>
+
+  <div class="sheet" style="margin-top:14px;border-color:#bfdbfe;background:#f8fbff">
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px">Q:所以 App 里装的是一个 Go?一个 agentd?它算另一台协调机吗?</div>
+    <div style="font-size:12.5px;line-height:1.9">
+      <b>带 Go,对</b>——仓库里现成的几个 Go 包(relay 拨号、HTTP 反代、会话存取)经 gomobile 编成一个库塞进壳,不是通用 Go 环境。<br>
+      <b>是 agentd,错</b>——agentd 管任务、拉起执行器、托管 PTY、供页面、落账本,这些事手机里一样都没有;App 只带客户端那一小半:拨隧道 + 回环反代 + 存凭据。<br>
+      <b>算另一台协调机,也不算</b>——它在「协调者 vs 执行者」模型里站在协调者一侧,但它不是一台「机」:不持有账本、不存配置、不发起派发,每个动作都只是 API 调用、由 agentd 落账。它的正确定位是<b>桌面端控制台的孪生兄弟</b>(桌面端 = wails 壳 + Go + webview;手机 = Swift/Kotlin 壳 + Go + webview)。「第二台协调机」在 roadmap 上是推迟项(B156.1 双协调机对等),本方案不复活它——手机丢了是丢一台客户端,不是丢半个协调权。
+    </div>
+  </div>
+
+  <!-- ================= relay 连接时序 ================= -->
+  <h2><span class="no">②</span>relay 到底是怎么连上的(拆开看)</h2>
+  <p class="sub">最常见的误会先拆掉:<b>手机不去 relay「登录」、relay 也不发任何钥匙</b>。钥匙只在你自己的设备之间经 QR 拷贝;relay 对这次拷贝全程无感。</p>
+
+  <div class="sheet" style="margin-bottom:14px;border-color:#fecaca;background:#fffafa">
+    <div style="font-size:13.5px;font-weight:600;margin-bottom:6px">⚠ 不是这个模型:手机 → relay 登录 → relay 发 token → 手机凭 token 连机器</div>
+    <div style="font-size:13px;line-height:1.8">
+      relay 没有账号体系,它谁也不认识,也没有什么可发。<b>如果 relay 能发钥匙,它就成了「能授权访问你所有机器」的信任锚</b>——谁攻破 relay 谁就能给自己发一把,整个设计最值钱的那条性质(下面第 4 步)当场死亡。
+      所以配对不走网络、不找 relay:<b>是从你自己的电脑,把钥匙经 QR 物理拷到手机</b>。
+    </div>
+  </div>
+
+  <div class="sheet" style="margin-bottom:14px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:10px">钥匙都住在哪(四种,两种 relay 永远碰不到)</div>
+    <table style="width:100%;border-collapse:collapse;font-size:12.5px;line-height:1.7">
+      <thead>
+        <tr style="text-align:left;font-size:12px;color:var(--muted-foreground)">
+          <th style="padding:5px 10px;border-bottom:1px solid var(--border)">钥匙</th>
+          <th style="padding:5px 10px;border-bottom:1px solid var(--border)">干什么用</th>
+          <th style="padding:5px 10px;border-bottom:1px solid var(--border)">relay 持有?</th>
+          <th style="padding:5px 10px;border-bottom:1px solid var(--border)">agentd 持有?</th>
+          <th style="padding:5px 10px;border-bottom:1px solid var(--border)">电脑 CLI 持有?</th>
+          <th style="padding:5px 10px;border-bottom:1px solid var(--border)">手机(扫码后)?</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)"><b>管道 credential</b></td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">挂上 relay / 经 relay 找机器——只证明「我有资格用这根管道」</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅(它只认识这个)</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅(QR 拷入)</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)"><b>node token</b>(每台机器一把)</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">Noise 握手的密钥源——「你凭什么连这台机器」的全部证明</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border);color:var(--destructive);font-weight:600">❌ 永远没有</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅(QR 拷入,存 Keychain)</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)"><b>一次性 ticket</b></td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">找 agentd 换登录会话(cookie),用完即弃</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">❌</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅(它签发)</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅(代领)</td>
+          <td style="padding:7px 10px;border-bottom:1px solid var(--border)">✅(QR 拷入)</td>
+        </tr>
+        <tr>
+          <td style="padding:7px 10px"><b>登录 cookie</b></td>
+          <td style="padding:7px 10px">之后每次 HTTP/WS 请求的会话凭据,可吊销</td>
+          <td style="padding:7px 10px">❌</td>
+          <td style="padding:7px 10px">✅(它校验)</td>
+          <td style="padding:7px 10px">—</td>
+          <td style="padding:7px 10px">✅(ticket 换来)</td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="sheet">
+    <table style="width:100%;border-collapse:collapse;font-size:13px;line-height:1.7">
+      <thead>
+        <tr style="text-align:left;font-size:12px;color:var(--muted-foreground)">
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border);width:36px">步</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border);width:220px">谁 → 谁</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border)">干什么</th>
+          <th style="padding:6px 10px;border-bottom:1px solid var(--border);width:250px">用什么凭据</th>
+        </tr>
+      </thead>
+      <tbody>
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">1</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><b>agentd → relay</b></td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">注册「我是 linux-01」,并一直保持这条长连接(断了自动重连)。执行机主动拨出来,所以它在 NAT 后无所谓。</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">管道 credential</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">2</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><b>手机 Go 核 → relay</b></td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">「我要找 linux-01」。手机也只出站,4G/咖啡馆 Wi-Fi 都行。<b>注意:这一步 relay 只是传话,不是审批</b>——它无权决定你能不能连。</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">管道 credential + 节点名</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">3</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><b>relay 配对两头</b></td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">给这次「找」开一条字节流,之后 relay 只搬字节,不理解内容。</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">—</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">4</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><b>手机 ⇄ agentd</b>(在流里)</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><b>Noise 握手</b>:双方各自用「node token + 账号 + 节点名」导出同一把会话密钥,对上才通。<b>「你有权连这台机器」的证明在这一步现场算出来,不是任何人发的票。</b></td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><b>node token</b><br><span style="color:var(--muted-foreground);font-size:12px">relay 没有 → 它冒充不了手机,也读不了内容</span></td>
+        </tr>
+        <tr>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">5</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)"><b>加密流之上</b></td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">yamux 多路复用:一条物理连接里并发多条流——页面请求、事件推送、终端 PTY 各占一条,互不堵。</td>
+          <td style="padding:8px 10px;border-bottom:1px solid var(--border)">—</td>
+        </tr>
+        <tr>
+          <td style="padding:8px 10px">6</td>
+          <td style="padding:8px 10px">—</td>
+          <td style="padding:8px 10px">此后就是普通 HTTP/WS:<code>/console</code> 页面、<code>/api</code>、<code>/ws</code> 事件,和桌面端同一套。</td>
+          <td style="padding:8px 10px">ticket → cookie 会话</td>
+        </tr>
+      </tbody>
+    </table>
+    <div class="caption">
+      这套流程今天就在跑:CLI 远程派发走的就是第 2~6 步(只是第 2 步的发起者是你电脑,不是手机)。
+    </div>
+  </div>
+
+  <div class="sheet" style="margin-top:14px">
+    <div style="font-size:13px;font-weight:600;margin-bottom:8px">那「连一台机器不就够了」吗?——状态层是的,动作层按需</div>
+    <div style="font-size:13px;line-height:2">
+      执行机之间<b>不是网状互联</b>:是各机把任务事件<b>镜像到协调机的账本</b>里。所以——<br>
+      · <b>状态层(会话列表 / 需要你 / 卡动态):连协调机一台就够</b>,账本上已汇总了全部机器。这条连接常挂着。<br>
+      · <b>动作层(开 linux-01 的终端、看它的任务现场、读它的文件):按需经 relay 拨到那台</b>。跨机 REST/WS 转发面其实是存量(桌面控制台经协调机 ?machine= 取数在用),但手机不押给协调机中转——<b>但不用逐台扫码</b>:<br>
+      · <b>一次扫码配全部(bundle)</b>:QR 里装 relay 地址 + credential + <b>每台机器</b>的 node/token + 各机一张 ticket(协调机配置里本来就全有)。扫一次,所有机器到位;用哪台连哪台。<br>
+      · 被砍的替代:枢纽机转发(手机只连协调机、由它代理)——转发面虽是存量,但把手机的一切远程可达性押给协调机在线:笔记本一合盖,所有远程机跟着失联,尽管它们自己活着;逐机直连则合盖无感。<b>不取。</b>
+    </div>
+  </div>
+
+  <!-- ================= 图 2:同局域网 ================= -->
+  <h2><span class="no">③</span>同一 Wi-Fi 下(不绕 VPS)</h2>
+  <p class="sub">配对时登记两种形态,App 自动选:外出走 relay,回家直连。</p>
+  <div class="sheet">
+    <div class="chain">
+      <div class="node new">
+        <div class="who">手机里</div>
+        <div class="what">App(webview + Go 核)<span class="tag new">新建</span></div>
+      </div>
+      <div class="link">
+        <div class="arrow">⟶</div>
+        <div class="how"><b>直连</b><br><code>192.168.x.x:7777</code><br>局域网 HTTP</div>
+      </div>
+      <div class="node old">
+        <div class="who">执行机</div>
+        <div class="what">agentd<span class="tag old">存量</span></div>
+      </div>
+    </div>
+    <div class="caption">与今天「电脑浏览器直接开 <code>http://执行机:7777/console</code>」完全同构,只是换成了 App 里的 webview。</div>
+  </div>
+
+  <!-- ================= 图 3:配对 ================= -->
+  <h2><span class="no">④</span>配对:手机怎么认识你的全部执行机(扫一次)</h2>
+  <p class="sub">不用手输任何地址和令牌,也不用每台机器扫一次。QR 的内容 = <b>全家桶 bundle</b>:relay 地址 + 管道 credential + <b>每台</b>已知执行机的 node/token + 各机一张一次性 ticket(协调机的配置里本来就全有)。</p>
+  <div class="sheet">
+    <div class="steps">
+      <div class="step">
+        <div class="n">1</div>
+        <div class="t">电脑上出 QR</div>
+        <div class="d"><code>handoff console --qr</code><br>生成配对 bundle:全部执行机的连接信息 + 各机一张 ticket</div>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step">
+        <div class="n">2</div>
+        <div class="t">App 扫码</div>
+        <div class="d">相机对准即完成,无手输</div>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step">
+        <div class="n">3</div>
+        <div class="t">凭据落安全存储</div>
+        <div class="d">隧道凭据进 Keychain / Keystore,以后打开 App 自动用</div>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step">
+        <div class="n">4</div>
+        <div class="t">ticket 换会话</div>
+        <div class="d">一次性 ticket 换成登录 cookie —— 与今天浏览器登录同一机制</div>
+      </div>
+      <div class="step-arrow">→</div>
+      <div class="step">
+        <div class="n">5</div>
+        <div class="t">完成</div>
+        <div class="d">全部机器出现在 App;平时常连协调机看状态,点进哪台的现场才按需连哪台;手机丢了 → <code>sessions revoke</code> 吊销</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ================= 图 4:新建 vs 存量 ================= -->
+  <h2><span class="no">⑤</span>这期到底要造什么:六件新的,其余全是复用</h2>
+  <p class="sub">「App」听起来很大,拆开看:协议、加密、页面、鉴权全都已经在仓库里跑着,新活集中在壳和形态。</p>
+  <div class="twocol">
+    <div class="col new">
+      <h3><span class="tag new" style="margin-left:0">新建</span>本项目的活</h3>
+      <ul>
+        <li><b>iOS 壳</b> <small>Swift,只有 webview + 扫码 + 安全存储</small></li>
+        <li><b>Android 壳</b> <small>Kotlin,同上</small></li>
+        <li><b>Go 核打包</b> <small>gomobile 把现有 Go 代码编成 AAR/XCFramework</small></li>
+        <li><b>配对载体 + QR</b> <small>扩展已设计未实现的 <code>console --qr</code></small></li>
+        <li><b>web UI 响应式</b> <small>手机竖屏 / 折叠展开 / pad 断点谱系</small></li>
+        <li><b>移动终端输入层</b> <small>Esc/Ctrl/Tab/方向键条 + 输入法组合</small></li>
+      </ul>
+    </div>
+    <div class="col old">
+      <h3><span class="tag old" style="margin-left:0">存量</span>零改动复用</h3>
+      <ul>
+        <li><b>relay 隧道</b> <small>Noise E2E + yamux,已上线(远程派发在跑)</small></li>
+        <li><b>agentd 与 /console</b> <small>页面、API、WebSocket 原样</small></li>
+        <li><b>web UI 本身</b> <small>同一份代码,桌面/手机永不漂移</small></li>
+        <li><b>ticket → cookie 鉴权</b> <small>当初就是为手机设计的</small></li>
+        <li><b>会话吊销</b> <small><code>handoff sessions revoke</code> 管手机丢失</small></li>
+        <li><b>relay 服务器</b> <small>哑管道,不碰它</small></li>
+      </ul>
+    </div>
+  </div>
+
+  <!-- ================= 图 5:关键性质 ================= -->
+  <h2><span class="no">⑥</span>这样设计换来的四条性质</h2>
+  <p class="sub"></p>
+  <div class="props">
+    <div class="prop">
+      <div class="k">🔒 加密一路到手机</div>
+      <div class="v">E2E 隧道终点在手机的 Go 核里,不在任何中间机器。relay(你的 VPS)全程只见密文——这是密钥位置决定的硬属性,不是运维承诺。</div>
+    </div>
+    <div class="prop">
+      <div class="k">📄 UI 永远只有一份</div>
+      <div class="v">手机看到的页面就是桌面那份,agentd 升级即全端升级。不会出现「手机版落后于桌面版」。</div>
+    </div>
+    <div class="prop">
+      <div class="k">🤏 壳薄到没有协议</div>
+      <div class="v">Swift/Kotlin 代码只管窗口、扫码、存凭据;讲协议的代码一行都不重写——重写协议才是这类项目真正烧钱的地方。</div>
+    </div>
+    <div class="prop">
+      <div class="k">🔔 通知随时能长出来</div>
+      <div class="v">一期你主动打开 App 才看到「等待审批」;壳里预留了推送注册位,以后接 APNs/FCM 不用推翻任何东西(已记 roadmap)。</div>
+    </div>
+  </div>
+
+  <!-- ================= 被砍方案 ================= -->
+  <h2><span class="no">⑦</span>路过但不走的两条路</h2>
+  <p class="sub"></p>
+  <div class="sheet">
+    <div style="font-size:13px;line-height:2">
+      <b>云端网关(手机浏览器直接开网页)</b>:能免安装,但得有个服务器替你终结 HTTPS 再转发——明文落在那台机器上,且与「要 App」的决定冲突。<span style="color:var(--muted-foreground)">→ 砍,未来若要「免安装」再单独立项。</span><br>
+      <b>浏览器里重新实现隧道协议(JS/WASM)</b>:浏览器说不出 Noise/yamux,得把整套加密协议移植进网页;而「谁下发这份加密代码,谁就能动手脚」——等于信任锚又绕回服务器,白烧一份协议实现。<span style="color:var(--muted-foreground)">→ 砍。</span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

@@ -1,0 +1,148 @@
+<!doctype html>
+<!--
+  移动端原型屏 5:项目详情(位置切换 + 工作树/目录 + 文件与终端入口)。
+  这是「我要通过项目查看不同机器的目录、文件以及打开终端」的落点屏。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>handoff 项目 · 移动端原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #e9e9ec; }
+  .stage { max-width: 1120px; margin: 0 auto; padding: 20px 24px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+  .row { display: flex; gap: 28px; align-items: flex-start; }
+
+  .phone { width: 390px; flex-shrink: 0; background: #111; border-radius: 44px; padding: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+  .screen { background: var(--muted); border-radius: 34px; overflow: hidden; height: 800px; display: flex; flex-direction: column; }
+  .notch { height: 30px; display: flex; align-items: center; justify-content: center; }
+  .notch::after { content: ""; width: 110px; height: 22px; background: #111; border-radius: 999px; }
+
+  .scenehead { display: flex; align-items: center; gap: 10px; padding: 4px 14px 10px; background: #fff; border-bottom: 1px solid var(--border); }
+  .scenehead .back { font-size: 20px; color: var(--foreground); text-decoration: none; }
+  .scenehead .tt { flex: 1; min-width: 0; }
+  .scenehead .tt .a { font-size: 16px; font-weight: 700; }
+  .scenehead .tt .b { font-size: 11px; color: var(--muted-foreground); }
+
+  .locbar { display: flex; gap: 8px; padding: 10px 14px; background: #fff; border-bottom: 1px solid var(--border); overflow-x: auto; }
+  .locp { flex-shrink: 0; font-size: 12px; padding: 5px 12px; border-radius: 999px; border: 1px solid var(--border); color: var(--muted-foreground); display: inline-flex; align-items: center; gap: 6px; cursor: pointer; background:#fff; }
+  .locp .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); }
+  .locp.on { border-color: var(--primary); color: var(--foreground); font-weight: 600; }
+  .locp.off { opacity: .55; }
+  .locp.off .dot { background: #d4d4d4; }
+
+  .feed { flex: 1; overflow-y: auto; padding: 10px 14px 14px; }
+  .sect { font-size: 12px; color: var(--muted-foreground); margin: 10px 2px 8px; display: flex; align-items: center; gap: 8px; }
+  .sect .path { font-family: var(--font-mono); font-size: 11px; }
+
+  .wt { background: #fff; border: 1px solid var(--border); border-radius: 14px; padding: 12px 14px; margin-bottom: 10px; }
+  .wt .top { display: flex; align-items: center; gap: 8px; }
+  .wt .br { font-family: var(--font-mono); font-size: 13px; font-weight: 600; flex: 1; }
+  .wt .br .main { font-size: 10.5px; color: var(--muted-foreground); font-weight: 400; border: 1px solid var(--border); border-radius: 999px; padding: 1px 7px; margin-left: 6px; }
+  .wt .path { font-size: 11px; color: var(--muted-foreground); font-family: var(--font-mono); margin-top: 4px; }
+  .wt .run { font-size: 11.5px; color: var(--green); margin-top: 5px; }
+  .wt .acts { display: flex; gap: 8px; margin-top: 10px; }
+  .wt .acts a { flex: 1; text-align: center; font-size: 12.5px; padding: 7px 0; border-radius: 8px; border: 1px solid var(--border); text-decoration: none; color: var(--foreground); background:#fff; }
+  .wt .acts a.primary { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); font-weight: 600; }
+  .wt.off { opacity: .55; }
+  .wt.off .acts a { pointer-events: none; background: var(--muted); }
+
+  .newwt { width: 100%; padding: 11px; border: 1.5px dashed var(--border); border-radius: 14px; background: none; font-size: 13px; color: var(--muted-foreground); }
+
+  .notes { flex: 1; min-width: 0; }
+  .notes h2 { font-size: 16px; margin: 4px 0 4px; }
+  .notes .sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .note { display: flex; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.7; }
+  .note .no { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ref { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 10px; text-align: center; line-height: 16px; vertical-align: 2px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html">方案一图流</a>
+    <a href="mobile-home.html">会话</a>
+    <a href="mobile-cards.html">卡</a>
+    <a href="mobile-projects.html" class="active">项目</a>
+    <a href="mobile-pairing.html">设置</a>
+  </div>
+  <div class="row">
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="scenehead">
+          <a class="back" href="mobile-projects.html">‹</a>
+          <div class="tt">
+            <div class="a">handoff</div>
+            <div class="b">3 个位置 · 5 个活跃任务</div>
+          </div>
+        </div>
+        <div class="locbar">
+          <span class="locp on"><span class="dot"></span>本机</span>
+          <span class="locp"><span class="dot"></span>linux-01</span>
+          <span class="locp off"><span class="dot"></span>mac-02 · 离线<span class="ref">①</span></span>
+        </div>
+        <div class="feed">
+          <div class="sect">工作树 <span class="path">~/workspace/handoff</span><span class="ref">②</span></div>
+
+          <div class="wt">
+            <div class="top"><div class="br">main<span class="main">主目录</span></div></div>
+            <div class="path">/Users/xushixin/workspace/handoff</div>
+            <div class="run">● 1 个任务在跑 · B358.4 实现节点</div>
+            <div class="acts">
+              <a href="mobile-terminal.html" class="primary">打开终端<span class="ref">③</span></a>
+              <a href="mobile-files.html">浏览文件</a>
+            </div>
+          </div>
+
+          <div class="wt">
+            <div class="top"><div class="br">acc/b249</div></div>
+            <div class="path">.worktrees/acc/b249</div>
+            <div class="run">● 1 个任务在跑 · B249 权限降噪</div>
+            <div class="acts">
+              <a href="mobile-terminal.html" class="primary">打开终端</a>
+              <a href="mobile-files.html">浏览文件</a>
+            </div>
+          </div>
+
+          <div class="wt">
+            <div class="top"><div class="br">cards/B233.17</div></div>
+            <div class="path">.worktrees/cards/B233.17</div>
+            <div class="acts">
+              <a href="mobile-terminal.html" class="primary">打开终端</a>
+              <a href="mobile-files.html">浏览文件</a>
+            </div>
+          </div>
+
+          <button class="newwt">＋ 从分支建工作树</button>
+
+          <div class="sect" style="margin-top:18px">这台机器上的终端会话 <span class="ref">④</span></div>
+          <div class="wt">
+            <div class="top"><div class="br" style="font-family:inherit;font-size:13px">终端 1 · main · zsh</div><span style="font-size:11px;color:var(--green)">活着</span></div>
+            <div class="path">开于 09:32 · 服务端托管,关 App 不死</div>
+            <div class="acts"><a href="mobile-terminal.html" class="primary">回到这个终端</a></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>项目详情:位置 → 目录 → 终端/文件</h2>
+      <p class="sub">「我要通过项目查看不同机器的目录、文件以及打开终端」的落点。</p>
+      <div class="note"><div class="no">①</div><div><b>位置切换条:</b>同一个项目在不同机器上的位置是平级 tab。离线的位置(CONTEXT.md「项目位置不可用」)灰显——不做离线只读缓存,标记状态,重连才恢复。</div></div>
+      <div class="note"><div class="no">②</div><div><b>目录 = 工作树。</b>主目录 + 各分支工作树,路径写全(「工作树是文件与运行时边界」,不是分支别名)。</div></div>
+      <div class="note"><div class="no">③</div><div><b>每个工作树两个主动作:打开终端 / 浏览文件。</b>终端直接开在这台机器的这个目录里(下一屏);文件进入目录浏览器。linux-01 位置下完全同构——只是数据经 relay 取。</div></div>
+      <div class="note"><div class="no">④</div><div><b>终端会话由 agentd 托管。</b>关掉 App、换设备,终端不死;回来点开接着敲——桌面端「终端标签页持久会话」语义在移动端同样成立。</div></div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

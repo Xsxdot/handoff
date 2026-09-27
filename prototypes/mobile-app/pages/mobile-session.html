@@ -1,0 +1,176 @@
+<!doctype html>
+<!--
+  移动端原型屏 2:会话页(群聊 + 详情)。
+  形态依据:B358 北极星——群聊只有人话,结构事件/任务节点进详情;
+  会话中的卡身份进入卡详情(mobile-card.html);明确的任务节点动作才进入任务现场(mobile-task.html)。
+-->
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>会话详情 · 移动端原型</title>
+<link rel="stylesheet" href="../shared/styles.css">
+<style>
+  body { background: #e9e9ec; }
+  .stage { max-width: 1120px; margin: 0 auto; padding: 20px 24px 64px; }
+  .mnav { display: flex; gap: 8px; align-items: center; margin-bottom: 18px; font-size: 13px; flex-wrap: wrap; }
+  .mnav a { padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px; background: #fff; text-decoration: none; color: var(--foreground); }
+  .mnav a.active { background: var(--primary); color: var(--primary-foreground); border-color: var(--primary); }
+  .mnav .sep { color: var(--muted-foreground); }
+  .row { display: flex; gap: 28px; align-items: flex-start; }
+
+  .phone { width: 390px; flex-shrink: 0; background: #111; border-radius: 44px; padding: 10px; box-shadow: 0 18px 50px rgba(0,0,0,.28); }
+  .screen { background: #fff; border-radius: 34px; overflow: hidden; height: 800px; display: flex; flex-direction: column; }
+  .notch { height: 30px; display: flex; align-items: center; justify-content: center; }
+  .notch::after { content: ""; width: 110px; height: 22px; background: #111; border-radius: 999px; }
+
+  .scenehead { display: flex; align-items: center; gap: 10px; padding: 4px 14px 8px; border-bottom: 1px solid var(--border); }
+  .scenehead .back { font-size: 20px; color: var(--foreground); text-decoration: none; }
+  .scenehead .avatar { width: 34px; height: 34px; border-radius: 9px; background: #dbeafe; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 700; }
+  .scenehead .tt { flex: 1; min-width: 0; }
+  .scenehead .tt .a { font-size: 14px; font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .scenehead .tt .b { font-size: 11px; color: var(--muted-foreground); }
+  .scenehead .more { font-size: 18px; color: var(--muted-foreground); }
+
+  .segtabs { display: flex; gap: 2px; padding: 8px 14px 0; border-bottom: 1px solid var(--border); }
+  .segtabs .st { font: inherit; font-size: 12.5px; padding: 6px 12px; min-height: 36px; border: 0; border-radius: 8px 8px 0 0; color: var(--muted-foreground); background: transparent; cursor: pointer; }
+  .segtabs .st.on { background: var(--muted); color: var(--foreground); font-weight: 600; }
+
+  .pane { flex: 1; overflow-y: auto; }
+  .pane[hidden] { display: none; }
+
+  /* 群聊 */
+  .chat { padding: 14px; }
+  .chiprow { display: flex; gap: 8px; overflow-x: auto; padding: 2px 0 12px; }
+  .chip { flex-shrink: 0; display: flex; align-items: center; gap: 6px; font-size: 12px; border: 1px solid var(--border); border-radius: 999px; padding: 5px 11px; text-decoration: none; color: inherit; background: #fff; }
+  .chip.need { background: #fffbeb; border-color: #fde68a; color: var(--amber); font-weight: 600; }
+  .msg { margin-bottom: 12px; max-width: 82%; }
+  .msg .who { font-size: 11px; color: var(--muted-foreground); margin-bottom: 3px; }
+  .msg .bub { background: var(--muted); border-radius: 12px 12px 12px 2px; padding: 8px 12px; font-size: 13px; line-height: 1.6; }
+  .msg.me { margin-left: auto; }
+  .msg.me .who { text-align: right; }
+  .msg.me .bub { background: #dbeafe; border-radius: 12px 12px 2px 12px; }
+  .msg .anno { font-size: 11px; color: var(--muted-foreground); margin-top: 3px; }
+  .sysline { text-align: center; font-size: 11px; color: var(--muted-foreground); margin: 14px 0; }
+  .composer { display: flex; gap: 8px; padding: 10px 14px 16px; border-top: 1px solid var(--border); }
+  .composer input { flex: 1; border: 1px solid var(--border); border-radius: 999px; padding: 8px 14px; font-size: 13px; }
+
+  /* 详情 */
+  .detail { padding: 14px; }
+  .dtitle { font-size: 12px; color: var(--muted-foreground); margin: 16px 0 8px; }
+  .dtitle:first-child { margin-top: 0; }
+  .mrow { display: flex; align-items: center; gap: 10px; padding: 8px 0; border-bottom: 1px solid var(--muted); }
+  .mrow .mv { width: 30px; height: 30px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: 600; }
+  .mrow .nm { flex: 1; font-size: 13px; }
+  .mrow .stt { font-size: 11px; color: var(--muted-foreground); }
+  .mrow .stt.work { color: var(--green); }
+  .tnode { display: flex; align-items: center; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; text-decoration: none; color: inherit; }
+  .tnode.need { background: #fffbeb; border-color: #fde68a; }
+  .tnode .st { font-size: 11px; font-weight: 600; padding: 2px 8px; border-radius: 999px; background: var(--muted); flex-shrink: 0; }
+  .tnode.need .st { background: #fef3c7; color: var(--amber); }
+  .tnode .tt2 { flex: 1; font-size: 13px; }
+  .tnode-action { flex-shrink: 0; font-size: 11px; color: var(--primary); font-weight: 600; }
+  .tl-row { display: flex; gap: 10px; font-size: 12px; padding: 5px 0; border-bottom: 1px dashed var(--muted); }
+  .tl-time { color: var(--muted-foreground); flex-shrink: 0; font-family: var(--font-mono); font-size: 11px; }
+  .tl-body b { font-weight: 600; }
+  .tl-body .sub { color: var(--muted-foreground); }
+
+  .notes { flex: 1; min-width: 0; }
+  .notes h2 { font-size: 16px; margin: 4px 0 4px; }
+  .notes .sub { font-size: 12.5px; color: var(--muted-foreground); margin: 0 0 14px; }
+  .note { display: flex; gap: 10px; background: #fff; border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; margin-bottom: 8px; font-size: 12.5px; line-height: 1.7; }
+  .note .no { width: 20px; height: 20px; flex-shrink: 0; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 11px; display: flex; align-items: center; justify-content: center; margin-top: 1px; }
+  .ref { display: inline-block; width: 16px; height: 16px; border-radius: 50%; background: var(--primary); color: var(--primary-foreground); font-size: 10px; text-align: center; line-height: 16px; vertical-align: 2px; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="mnav">
+    <a href="../index.html">← 工作台</a><span class="sep">|</span>
+    <span style="color:var(--muted-foreground)">移动端原型:</span>
+    <a href="mobile-architecture.html">方案一图流</a>
+    <a href="mobile-home.html" class="active">会话</a>
+    <a href="mobile-cards.html">卡</a>
+    <a href="mobile-projects.html">项目</a>
+    <a href="mobile-pairing.html">设置</a>
+  </div>
+  <div class="row">
+
+    <div class="phone">
+      <div class="screen">
+        <div class="notch"></div>
+        <div class="scenehead">
+          <a class="back" href="mobile-home.html">‹</a>
+          <div class="avatar">B233</div>
+          <div class="tt">
+            <div class="a">架构物理化(B233.1–B233.17)</div>
+            <div class="b">5 名成员 · 群主 Claude 桌面端</div>
+          </div>
+          <div class="more">⋯</div>
+        </div>
+        <div class="segtabs">
+          <button class="st on" type="button" data-tab="chat" aria-selected="true">群聊</button>
+          <button class="st" type="button" data-tab="detail" aria-selected="false">详情</button>
+        </div>
+
+        <div class="pane" data-pane="chat">
+          <div class="chat">
+            <div class="chiprow">
+              <span style="font-size:11px;color:var(--muted-foreground);align-self:center;flex-shrink:0">本会话的卡:<span class="ref">①</span></span>
+              <a class="chip need" aria-label="查看卡 B233.17，当前等你裁决" href="mobile-card.html?card=B233.17&amp;from=session">⚑ B233.17 · 查看卡<span class="ref">④</span></a>
+              <a class="chip" aria-label="查看卡 B233.16，已完成" href="mobile-card.html?card=B233.16&amp;from=session">B233.16 · 查看卡</a>
+            </div>
+            <div class="msg"><div class="who">Claude 桌面端 · 12:01</div><div class="bub">B233.17 跑到组装点了,target.json 的 entries 撞了一处冲突,我不敢替你拍。</div></div>
+            <div class="msg me"><div class="who">我 · 12:03</div><div class="bub">@B233.17 把冲突两条贴出来看看</div><div class="anno">@ 寻址 → 只叫醒他</div></div>
+            <div class="msg"><div class="who">B233.17(执行中)· 12:04</div><div class="bub">冲突是 cli→orchestration 这条边:现状 15 条直调,预算 13。两条候选写法我放在任务现场了,等你裁决。</div></div>
+            <div class="sysline">— 上面是人话;结构事件在「详情」<span class="ref">②</span> —</div>
+          </div>
+        </div>
+        <div class="composer"><input placeholder="发消息…(@ 选成员,回复只叫醒他)"><span style="align-self:center">↩</span></div>
+
+        <div class="pane" data-pane="detail" hidden>
+          <div class="detail">
+            <div class="dtitle">成员(只报可证实的状态)</div>
+            <div class="mrow"><div class="mv" style="background:#fde68a">我</div><div class="nm">我(手机 App)</div><div class="stt work">工作中</div></div>
+            <div class="mrow"><div class="mv" style="background:#dbeafe">CL</div><div class="nm">Claude 桌面端 · 群主</div><div class="stt work">工作中</div></div>
+            <div class="mrow"><div class="mv" style="background:#dcfce7">14</div><div class="nm">B233.14 · codex@linux-01</div><div class="stt">最后活跃 昨天 22:14</div></div>
+            <div class="mrow"><div class="mv" style="background:#fce7f3">17</div><div class="nm">B233.17 · claude@本机</div><div class="stt" style="color:var(--amber)">等你裁决</div></div>
+
+            <div class="dtitle">协调者派发的任务节点 <span class="ref">③</span></div>
+            <a class="tnode need" aria-label="进入任务现场：B233.17 契约节点，等你裁决" href="mobile-task.html?card=B233.17&amp;from=session"><span class="st">等你裁决</span><span class="tt2">B233.17 · 契约节点 · 组装点冲突</span><span class="tnode-action">进入现场 ›</span></a>
+            <a class="tnode" aria-label="进入任务现场：B233.17 实现节点，运行中" href="mobile-task.html?card=B233.17&amp;from=session"><span class="st">运行中</span><span class="tt2">B233.17 · 实现节点 · 47:12</span><span class="tnode-action">进入现场 ›</span></a>
+            <a class="tnode" aria-label="进入任务现场：B233.16 执行面收窄，已完成" href="mobile-task.html?card=B233.16&amp;from=session"><span class="st">已完成</span><span class="tt2">B233.16 · 执行面收窄</span><span class="tnode-action">进入现场 ›</span></a>
+
+            <div class="dtitle">会话 timeline(结构事件,不进群聊)</div>
+            <div class="tl-row"><span class="tl-time">11:40</span><span class="tl-body">B233.17 <b>dispatched</b> <span class="sub">· 契约节点 → 本机 claude</span></span></div>
+            <div class="tl-row"><span class="tl-time">11:58</span><span class="tl-body">B233.17 <b>needs_human</b> 亮起 <span class="sub">· 组装点冲突,等裁决</span></span></div>
+            <div class="tl-row"><span class="tl-time">12:04</span><span class="tl-body">你 <b>@B233.17</b> <span class="sub">· 「把冲突两条贴出来」</span></span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="notes">
+      <h2>会话页:群聊 + 详情</h2>
+      <p class="sub">B358 北极星的移动形态:群聊只有人话,结构与进度全部收进「详情」。</p>
+      <div class="note"><div class="no">①</div><div><b>「本会话的卡」横排在群聊顶部。</b>这里的胶囊是卡身份入口,点击进入卡详情；详情里的「当前节点等你裁决」才进入任务现场,把工作项与动作面分开。</div></div>
+      <div class="note"><div class="no">②</div><div><b>群聊面不放结构事件。</b>dispatched/needs_human 这些不进聊天流,详情页的 timeline 里可查可对质——与桌面端逐字同源。</div></div>
+      <div class="note"><div class="no">③</div><div><b>任务节点挂在详情里。</b>成员状态只报可证实的(工作中/最后活跃/等你),「在线」这种编不出来的不报。</div></div>
+      <div class="note"><div class="no">④</div><div><b>卡身份与任务动作分开。</b>点「⚑ B233.17 · 查看卡」进卡详情；点详情节点上的「进入现场」才打开任务现场:横幅裁决 + 终端查证。</div></div>
+    </div>
+  </div>
+</div>
+<script>
+  // 群聊 ↔ 详情 切换(light-interaction 约定)
+  document.querySelectorAll('.segtabs .st').forEach(tab => {
+    tab.addEventListener('click', () => {
+      document.querySelectorAll('.segtabs .st').forEach(t => t.classList.remove('on'));
+      document.querySelectorAll('.pane').forEach(p => p.hidden = true);
+      tab.classList.add('on');
+      document.querySelectorAll('.segtabs .st').forEach(t => t.setAttribute('aria-selected', String(t === tab)));
+      document.querySelector(`.pane[data-pane="${tab.dataset.tab}"]`).hidden = false;
+    });
+  });
+</script>
+</body>
+</html>
