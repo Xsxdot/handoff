@@ -15,6 +15,7 @@
 import { ChevronLeft } from 'lucide-react'
 import { SETTINGS_SUB_KEYS, normalizeSettingsSub, type SettingsSub } from '../shell/useMobileNav'
 import type { DesktopState, LatestResp, ProjectTreeResp } from '../../api/types'
+import { TOUCH_BASELINE } from '@/lib/touch'
 import { useWebPrefs } from './useWebPrefs'
 import { GeneralPage } from './GeneralPage'
 import { MachinesPage } from '../machines/MachinesPage'
@@ -57,7 +58,7 @@ export function SettingsHub({
 
   if (active !== null) {
     return (
-      <div className="[&_button]:min-h-6 [&_button]:min-w-6 [&_input]:min-h-6 [&_select]:min-h-6">
+      <div className={TOUCH_BASELINE}>
         <button
           type="button"
           data-testid="settings-sub-back"
@@ -78,7 +79,7 @@ export function SettingsHub({
   }
 
   return (
-    <div className="[&_button]:min-h-6 [&_button]:min-w-6 [&_input]:min-h-6 [&_select]:min-h-6">
+    <div className={TOUCH_BASELINE}>
       {/* ① 会话打开方式（B369.8 §3.4）：compact 打开会话行的落点偏好。
           scene 档是尽力解析不是承诺，解析不到静默回落群聊（Shell.openSession）。 */}
       <section data-testid="pref-session-open-mode" className="border-b p-4">

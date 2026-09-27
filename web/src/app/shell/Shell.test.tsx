@@ -1610,7 +1610,8 @@ describe('B369.8 设置两级（compact）', () => {
     renderShell('/')
     await screen.findByTestId('mobile-home')
     const sessionsTab = screen.getByTestId('mobile-tab-sessions')
-    expect(within(sessionsTab).getByText('2')).toBeInTheDocument()
+    // 会话流是异步的：徽标渲染要等 fetchSessions 落数（同步 getByText 会跑赢数据）
+    expect(await within(sessionsTab).findByText('2')).toBeInTheDocument()
     fireEvent.click(screen.getByTestId('mobile-tab-settings'))
     fireEvent.click(await screen.findByLabelText(/底栏显示/))
     await waitFor(() => expect(within(sessionsTab).queryByText('2')).toBeNull())

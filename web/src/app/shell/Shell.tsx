@@ -1095,6 +1095,7 @@ export function Shell() {
                     onOpenCoordinatorTerminal={openCoordinatorTerminal}
                     onDrawerCardChange={onDrawerCardChange}
                     taskJumpHref={taskJumpHref}
+                    compact={compact}
                   />
                 )}
                 {nav.tab === 'projects' && (
